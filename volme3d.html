@@ -38,6 +38,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh
 .sli-item:hover{background:var(--alit);color:var(--acc)}
 .sli-item:first-child{border-radius:var(--rs) var(--rs) 0 0}
 .sli-hint{padding:4px 12px 7px;font-size:10px;color:var(--dim);border-top:1px solid var(--border)}
+.sli-sep{height:1px;background:var(--border);margin:3px 0}
 #tbr{margin-left:auto;display:flex;align-items:center;gap:4px}
 #snp{display:flex;align-items:center;gap:5px;padding:4px 9px;background:var(--bg);border:1.5px solid var(--border2);border-radius:20px;font-size:10px;font-weight:800;color:var(--dim);cursor:pointer;transition:all .12s}
 #snp.on{border-color:var(--acc);color:var(--acc);background:var(--alit)}
@@ -525,10 +526,12 @@ const firebaseConfig = {
       <button class="btn pri main-stl" onclick="exportSTL()" title="STL herunterladen">⬇ STL</button>
       <button class="btn pri spl" onclick="toggleStlMenu(event)" title="An Slicer senden">▾</button>
       <div id="stl-menu">
+        <div class="sli-item" onclick="exportOBJ()">⬇ OBJ</div>
+        <div class="sli-item" onclick="exportSTEP()">⬇ STEP (extern)</div>
+        <div class="sli-sep"></div>
         <div class="sli-item" onclick="sendToSlicer('bambu')">🖨 Bambu Studio</div>
         <div class="sli-item" onclick="sendToSlicer('prusa')">🖨 PrusaSlicer</div>
         <div class="sli-item" onclick="sendToSlicer('orca')">🖨 Orca Slicer</div>
-        <div class="sli-hint">STL wird heruntergeladen, dann Slicer geöffnet</div>
       </div>
     </div>
     <div class="sep" id="auth-sep" style="display:none"></div>
@@ -3479,26 +3482,87 @@ function exportSTL() {
   notify(`STL exportiert ✓ (${r.count} Dreiecke)`, 'ok');
 }
 
-function toggleStlMenu(e) {
-  e.stopPropagation();
-  document.getElementById('stl-menu').classList.toggle('show');
+function exportOBJ() {
+  document.getElementById('stl-menu').classList.remove('show');
+  if (!objects.length) { notify('Keine Objekte', 'w'); return; }
+  const lines = ['# Volme3D OBJ Export'];
+  let vOffset = 1;
+  function collectMesh(mesh) {
+    const geo = mesh.geometry.clone().toNonIndexed();
+    mesh.updateMatrixWorld(true);
+    geo.applyMatrix4(mesh.matrixWorld);
+    if (!geo.attributes.normal) geo.computeVertexNormals();
+    const pos = geo.attributes.position;
+    const norm = geo.attributes.normal;
+    const count = pos.count;
+    for (let i = 0; i < count; i++)
+      lines.push(`v ${pos.getX(i).toFixed(6)} ${pos.getY(i).toFixed(6)} ${pos.getZ(i).toFixed(6)}`);
+    for (let i = 0; i < count; i++)
+      lines.push(`vn ${norm.getX(i).toFixed(6)} ${norm.getY(i).toFixed(6)} ${norm.getZ(i).toFixed(6)}`);
+    for (let i = 0; i < Math.floor(count / 3); i++) {
+      const a = vOffset + i*3, b = a+1, c = a+2;
+      lines.push(`f ${a}//${a} ${b}//${b} ${c}//${c}`);
+    }
+    vOffset += count;
+    geo.dispose();
+  }
+  function traverse(o) {
+    if (o.isMesh && !o.userData.isHole) collectMesh(o);
+    if (o.children) o.children.forEach(traverse);
+  }
+  objects.forEach(traverse);
+  if (vOffset === 1) { notify('Keine sichtbaren Flächen', 'w'); return; }
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'volme3d.obj';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  notify('OBJ exportiert ✓', 'ok');
 }
 
-function sendToSlicer(type) {
+function exportSTEP() {
   document.getElementById('stl-menu').classList.remove('show');
   const r = _buildStlBlob(); if (!r) return;
   const a = document.createElement('a');
   a.href = URL.createObjectURL(r.blob);
   a.download = 'volme3d.stl';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  notify('STL heruntergeladen — lade sie auf imagetostl.com hoch um STEP zu erhalten', 'ok');
+  setTimeout(() => window.open('https://www.imagetostl.com/convert/file/stl/to/step', '_blank'), 500);
+}
+
+function toggleStlMenu(e) {
+  e.stopPropagation();
+  document.getElementById('stl-menu').classList.toggle('show');
+}
+
+async function sendToSlicer(type) {
+  document.getElementById('stl-menu').classList.remove('show');
+  const r = _buildStlBlob(); if (!r) return;
   const apps = {
     bambu: { scheme: 'bambustudio://open', name: 'Bambu Studio' },
-    prusa: { scheme: 'prusaslicer://',     name: 'PrusaSlicer'  },
+    prusa: { scheme: 'prusaslicer://open', name: 'PrusaSlicer'  },
     orca:  { scheme: 'orcaslicer://open',  name: 'Orca Slicer'  },
   };
   const app = apps[type];
-  setTimeout(() => { window.location.href = app.scheme; }, 300);
-  notify(`STL heruntergeladen — in ${app.name} über Datei → Öffnen importieren`, 'ok');
+  try {
+    const res = await fetch('/volme3d-export.stl', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: r.blob,
+    });
+    if (!res.ok) throw new Error('Upload fehlgeschlagen');
+    const fileUrl = `${window.location.origin}/volme3d-export.stl`;
+    window.location.href = `${app.scheme}?file=${encodeURIComponent(fileUrl)}`;
+    notify(`${app.name} wird geöffnet…`, 'ok');
+  } catch {
+    // Fallback: normaler Download wenn Server kein POST unterstützt
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(r.blob);
+    a.download = 'volme3d.stl';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    notify(`STL heruntergeladen — in ${app.name} über Datei → Öffnen importieren`, 'ok');
+  }
 }
 
 document.addEventListener('click', () => {
