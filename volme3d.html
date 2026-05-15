@@ -29,6 +29,15 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh
 .btn.pri:hover{background:var(--ahov)}
 .btn.red:hover{border-color:var(--red);color:var(--red);background:#fff0f0}
 .btn:disabled{opacity:.55;cursor:not-allowed;border-color:var(--border);color:var(--dim)}
+#stl-wrap{position:relative;display:flex}
+#stl-wrap .main-stl{border-radius:var(--rs) 0 0 var(--rs)}
+#stl-wrap .spl{padding:5px 7px;border-left:1px solid rgba(255,255,255,.35);border-radius:0 var(--rs) var(--rs) 0}
+#stl-menu{display:none;position:absolute;right:0;top:calc(100% + 4px);background:var(--white);border:1px solid var(--border);border-radius:var(--rs);box-shadow:var(--shm);z-index:300;min-width:170px}
+#stl-menu.show{display:block}
+.sli-item{display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:12px;font-weight:600;cursor:pointer;color:var(--text);white-space:nowrap}
+.sli-item:hover{background:var(--alit);color:var(--acc)}
+.sli-item:first-child{border-radius:var(--rs) var(--rs) 0 0}
+.sli-hint{padding:4px 12px 7px;font-size:10px;color:var(--dim);border-top:1px solid var(--border)}
 #tbr{margin-left:auto;display:flex;align-items:center;gap:4px}
 #snp{display:flex;align-items:center;gap:5px;padding:4px 9px;background:var(--bg);border:1.5px solid var(--border2);border-radius:20px;font-size:10px;font-weight:800;color:var(--dim);cursor:pointer;transition:all .12s}
 #snp.on{border-color:var(--acc);color:var(--acc);background:var(--alit)}
@@ -512,7 +521,17 @@ const firebaseConfig = {
     <button class="btn" id="btn-undo" onclick="undo()" title="Strg+Z">↩ Rückgängig</button>
     <button class="btn" id="btn-redo" onclick="redo()" title="Strg+Y">↪ Wiederholen</button>
     <button class="btn red" onclick="deleteSelected()" title="Del">🗑</button>
-    <button class="btn pri" onclick="exportSTL()" title="STL exportieren">⬇ STL</button>
+    <div id="stl-wrap">
+      <button class="btn pri main-stl" onclick="exportSTL()" title="STL herunterladen">⬇ STL</button>
+      <button class="btn pri spl" onclick="toggleStlMenu(event)" title="An Slicer senden">▾</button>
+      <div id="stl-menu">
+        <div class="sli-item" onclick="sendToSlicer('bambu')">🖨 Bambu Studio</div>
+        <div class="sli-item" onclick="sendToSlicer('prusa')">🖨 PrusaSlicer</div>
+        <div class="sli-item" onclick="sendToSlicer('orca')">🖨 Orca Slicer</div>
+        <div class="sli-item" onclick="exportSTL()">⬇ Download</div>
+        <div class="sli-hint">Slicer muss installiert sein</div>
+      </div>
+    </div>
     <div class="sep" id="auth-sep" style="display:none"></div>
     <div id="auth-user-chip"><span></span></div>
     <button class="btn" id="btn-logout" onclick="_authLogout()" style="display:none" title="Abmelden">↩ Abmelden</button>
@@ -3404,10 +3423,8 @@ window.addEventListener('keydown', e => {
 });
 
 // ═══ STL EXPORT (Binary) ══════════════════════════════════════════════
-function exportSTL() {
-  if (!objects.length) { notify('Keine Objekte', 'w'); return; }
-
-  // Zähle alle Dreiecke
+function _buildStlBlob() {
+  if (!objects.length) { notify('Keine Objekte', 'w'); return null; }
   const triangles = [];
   function collectMesh(mesh) {
     const geo = mesh.geometry.clone();
@@ -3436,13 +3453,9 @@ function exportSTL() {
     if (o.children) o.children.forEach(traverse);
   }
   objects.forEach(traverse);
-
-  if (!triangles.length) { notify('Keine sichtbaren Flächen', 'w'); return; }
-
-  // Binary STL: 80-Byte-Header + 4-Byte-Count + 50 Bytes pro Dreieck
+  if (!triangles.length) { notify('Keine sichtbaren Flächen', 'w'); return null; }
   const buf = new ArrayBuffer(84 + triangles.length * 50);
   const view = new DataView(buf);
-  // Header (80 Bytes ASCII)
   const header = 'Volme3D Export                                                                  ';
   for (let i = 0; i < 80; i++) view.setUint8(i, header.charCodeAt(i) || 32);
   view.setUint32(80, triangles.length, true);
@@ -3452,19 +3465,42 @@ function exportSTL() {
     view.setFloat32(offset+12, t.ax, true); view.setFloat32(offset+16, t.ay, true); view.setFloat32(offset+20, t.az, true);
     view.setFloat32(offset+24, t.bx, true); view.setFloat32(offset+28, t.by, true); view.setFloat32(offset+32, t.bz, true);
     view.setFloat32(offset+36, t.cx, true); view.setFloat32(offset+40, t.cy, true); view.setFloat32(offset+44, t.cz, true);
-    view.setUint16(offset+48, 0, true); // attribute byte count
+    view.setUint16(offset+48, 0, true);
     offset += 50;
   });
-
-  const blob = new Blob([buf], { type: 'application/octet-stream' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'volme3d.stl';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  notify(`STL exportiert ✓ (${triangles.length} Dreiecke)`, 'ok');
+  return { blob: new Blob([buf], { type: 'application/octet-stream' }), count: triangles.length };
 }
+
+function exportSTL() {
+  const r = _buildStlBlob(); if (!r) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(r.blob);
+  a.download = 'volme3d.stl';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  notify(`STL exportiert ✓ (${r.count} Dreiecke)`, 'ok');
+}
+
+function toggleStlMenu(e) {
+  e.stopPropagation();
+  document.getElementById('stl-menu').classList.toggle('show');
+}
+
+function sendToSlicer(type) {
+  document.getElementById('stl-menu').classList.remove('show');
+  const r = _buildStlBlob(); if (!r) return;
+  const url = URL.createObjectURL(r.blob);
+  const schemes = {
+    bambu: 'bambustudio://open?file=',
+    prusa: 'prusaslicer://open?file=',
+    orca:  'orcaslicer://open?file=',
+  };
+  window.location.href = schemes[type] + encodeURIComponent(url);
+  notify('Slicer wird geöffnet…', 'ok');
+}
+
+document.addEventListener('click', () => {
+  document.getElementById('stl-menu')?.classList.remove('show');
+});
 
 // ═══ SZENE SPEICHERN / LADEN ═════════════════════════════════════════
 function saveScene() {
