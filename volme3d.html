@@ -372,6 +372,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh
 </style>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 </head>
 <body>
 
@@ -413,6 +414,8 @@ const firebaseConfig = {
 
 (function _initAuth() {
   var overlay = document.getElementById('auth-overlay');
+  window._fbUser = null;
+  window._fbDb   = null;
 
   if (!USE_FIREBASE) {
     window._authLogout = function(){};
@@ -422,10 +425,12 @@ const firebaseConfig = {
   firebase.initializeApp(firebaseConfig);
   var auth = firebase.auth();
   var googleProvider = new firebase.auth.GoogleAuthProvider();
+  window._fbDb = firebase.firestore();
 
   overlay.classList.remove('hidden');
 
   auth.onAuthStateChanged(function(user) {
+    window._fbUser = user;
     var chip      = document.getElementById('auth-user-chip');
     var logoutBtn = document.getElementById('btn-logout');
     var logoutSep = document.getElementById('auth-sep');
@@ -434,6 +439,8 @@ const firebaseConfig = {
       if (chip)      { chip.style.display = 'flex'; chip.querySelector('span').textContent = user.displayName || user.email || ''; }
       if (logoutBtn) logoutBtn.style.display = '';
       if (logoutSep) logoutSep.style.display = '';
+      // Designs aus Firestore laden (Funktion ist im Haupt-Script definiert, wird nach dem IIFE geladen)
+      setTimeout(function() { if (typeof _fsLoadAllToCache === 'function') _fsLoadAllToCache(); }, 0);
     } else {
       overlay.classList.remove('hidden');
       if (chip)      chip.style.display = 'none';
@@ -2916,7 +2923,7 @@ function _newCreate(save) {
   deselect(); objects.forEach(o => scene.remove(o)); objects = [];
   undoStack = []; redoStack = [];
   updateUndoRedoButtons(); updateTree();
-  const name = 'Design ' + new Date().toLocaleDateString('de-DE');
+  const name = _randomDesignName();
   dsSaveDesign(currentDesignId, _sceneSnapshot(), '', name);
   _updateDesignLabel(name);
   notify('Neue Szene', 'ok');
@@ -3331,6 +3338,7 @@ window.addEventListener('keydown', e => {
   if (ctrl) {
     if (k === 'z') { e.preventDefault(); undo(); return; }
     if (k === 'y' || (e.shiftKey && k === 'z')) { e.preventDefault(); redo(); return; }
+    if (k === 's') { e.preventDefault(); _doAutoSave(); notify('Gespeichert ✓', 'ok'); return; }
     if (k === 'd') { e.preventDefault(); smartDuplicate(); return; }
     if (k === 'a') { e.preventDefault(); selectObjs([...objects]); return; }
     if (k === 'c') { e.preventDefault(); copySelected(); return; }
@@ -3965,14 +3973,28 @@ function _cancelSize() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// DESIGN MANAGER — localStorage-based multi-design system
+// DESIGN MANAGER — localStorage (synchron) + Firestore (async) Hybrid
 // ═══════════════════════════════════════════════════════════════════════════
 const DS_IDX_KEY = 'volme3d_designs';
 let currentDesignId = null;
 let _autoSaveTimer  = null;
 let _autoSaveBusy   = false;
 
-// ── Storage helpers ────────────────────────────────────────────────────────
+// ── Zufallsnamen (Tinkercad-Style) ─────────────────────────────────────────
+function _randomDesignName() {
+  const adj   = ['Amazing','Awesome','Bold','Brave','Bright','Cool','Crazy','Dazzling','Epic','Fancy',
+                  'Fast','Funky','Groovy','Happy','Jolly','Keen','Lively','Lucky','Magic','Mighty',
+                  'Neat','Noble','Quick','Rapid','Sharp','Shiny','Slick','Smart','Snappy','Super',
+                  'Swift','Vivid','Wild','Witty','Wondrous','Zesty'];
+  const names = ['Aalto','Babbage','Bardeen','Bohr','Brahe','Brattain','Cantor','Curie','Darwin',
+                  'Edison','Einstein','Euler','Faraday','Fermat','Fermi','Fleming','Franklin','Galileo',
+                  'Gauss','Hawking','Heisenberg','Hopper','Hubble','Huygens','Jaagub','Jobs','Joule',
+                  'Kelvin','Kepler','Lovelace','Meitner','Mendel','Newton','Noether','Ohm','Pascal',
+                  'Pasteur','Planck','Tesla','Turing','Volta','Watt','Wiener','Wozniak'];
+  return adj[Math.floor(Math.random() * adj.length)] + ' ' + names[Math.floor(Math.random() * names.length)];
+}
+
+// ── localStorage-Helfer ────────────────────────────────────────────────────
 function _dsIdx() {
   try { return JSON.parse(localStorage.getItem(DS_IDX_KEY) || '[]'); } catch { return []; }
 }
@@ -3983,17 +4005,92 @@ function _dsDataKey(id)  { return 'volme3d_d_' + id; }
 function _dsThumbKey(id) { return 'volme3d_t_' + id; }
 function _dsQuotaWarn(e) { if (e?.name === 'QuotaExceededError') notify('Speicher voll! Bitte alte Designs löschen.', 'e'); }
 
+// ── Firestore-Helfer ───────────────────────────────────────────────────────
+function _fsDesignsRef() {
+  const uid = window._fbUser?.uid;
+  if (!uid || !window._fbDb) return null;
+  return window._fbDb.collection('users').doc(uid).collection('designs');
+}
+
+async function _resizeThumb(base64, w, h) {
+  if (!base64) return '';
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const off = document.createElement('canvas');
+      off.width = w; off.height = h;
+      off.getContext('2d').drawImage(img, 0, 0, w, h);
+      resolve(off.toDataURL('image/jpeg', 0.65));
+    };
+    img.onerror = () => resolve('');
+    img.src = base64;
+  });
+}
+
+async function _fsSaveDesign(id, data, thumb, name) {
+  const ref = _fsDesignsRef();
+  if (!ref) return;
+  try {
+    const meta = _dsIdx().find(d => d.id === id);
+    const now  = Date.now();
+    const smallThumb = await _resizeThumb(thumb, 200, 150);
+    await ref.doc(id).set({
+      name:    name || meta?.name || 'Design',
+      created: meta?.created || now,
+      updated: now,
+      data:    JSON.stringify(data),
+      thumb:   smallThumb
+    });
+  } catch(e) { console.warn('[Firestore] save:', e); }
+}
+
+async function _fsDeleteDesign(id) {
+  const ref = _fsDesignsRef();
+  if (!ref) return;
+  try { await ref.doc(id).delete(); } catch(e) { console.warn('[Firestore] delete:', e); }
+}
+
+async function _fsRenameDesign(id, name) {
+  const ref = _fsDesignsRef();
+  if (!ref) return;
+  try { await ref.doc(id).update({ name, updated: Date.now() }); } catch(e) { console.warn('[Firestore] rename:', e); }
+}
+
+// Beim Login: lokale Designs hochladen, dann alle Firestore-Designs als Cache laden
+async function _fsLoadAllToCache() {
+  const ref = _fsDesignsRef();
+  if (!ref) return;
+  try {
+    // 1. Lokale Designs, die noch nicht in Firestore sind, hochladen
+    const snap  = await ref.get();
+    const fsIds = new Set(snap.docs.map(d => d.id));
+    for (const entry of _dsIdx()) {
+      if (!fsIds.has(entry.id)) {
+        const data = dsLoadData(entry.id);
+        if (data) await _fsSaveDesign(entry.id, data, dsThumb(entry.id), entry.name);
+      }
+    }
+    // 2. Alle Firestore-Designs in localStorage cachen
+    const fresh = await ref.orderBy('updated', 'desc').get();
+    const idx = [];
+    fresh.docs.forEach(doc => {
+      const d = doc.data();
+      idx.push({ id: doc.id, name: d.name, created: d.created || 0, updated: d.updated || 0 });
+      if (d.data)  localStorage.setItem(_dsDataKey(doc.id), d.data);
+      if (d.thumb) localStorage.setItem(_dsThumbKey(doc.id), d.thumb);
+    });
+    _dsSetIdx(idx);
+    if (document.getElementById('ds-modal')?.classList.contains('show')) _renderGallery();
+  } catch(e) { console.warn('[Firestore] sync:', e); }
+}
+
+// ── Öffentliche API (synchrone Reads aus localStorage, async Writes nach Firestore) ─
 function dsNewId() { return 'ds_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6); }
 
-function dsGetAll() {
-  return _dsIdx().sort((a, b) => b.updated - a.updated);
-}
-function dsGetMeta(id) { return _dsIdx().find(d => d.id === id) || null; }
-
-function dsLoadData(id) {
-  try { return JSON.parse(localStorage.getItem(_dsDataKey(id))); } catch { return null; }
-}
-function dsThumb(id) { return localStorage.getItem(_dsThumbKey(id)) || ''; }
+function dsGetAll()     { return _dsIdx().sort((a, b) => b.updated - a.updated); }
+function dsGetMeta(id)  { return _dsIdx().find(d => d.id === id) || null; }
+function dsLoadData(id) { try { return JSON.parse(localStorage.getItem(_dsDataKey(id))); } catch { return null; } }
+function dsThumb(id)    { return localStorage.getItem(_dsThumbKey(id)) || ''; }
 
 function dsSaveDesign(id, data, thumb, name) {
   const idx = _dsIdx();
@@ -4010,6 +4107,7 @@ function dsSaveDesign(id, data, thumb, name) {
     localStorage.setItem(_dsDataKey(id), JSON.stringify(data));
     if (thumb) localStorage.setItem(_dsThumbKey(id), thumb);
   } catch(e) { _dsQuotaWarn(e); }
+  _fsSaveDesign(id, data, thumb, name); // async, fire & forget
 }
 
 function dsDeleteDesign(id) {
@@ -4017,12 +4115,14 @@ function dsDeleteDesign(id) {
   localStorage.removeItem(_dsDataKey(id));
   localStorage.removeItem(_dsThumbKey(id));
   if (currentDesignId === id) { currentDesignId = null; localStorage.removeItem('volme3d_cur'); }
+  _fsDeleteDesign(id); // async, fire & forget
 }
 
 function dsRenameDesign(id, name) {
   const idx = _dsIdx();
   const d = idx.find(x => x.id === id);
   if (d) { d.name = name; _dsSetIdx(idx); }
+  _fsRenameDesign(id, name); // async, fire & forget
 }
 
 // ── Scene serialization helpers ────────────────────────────────────────────
@@ -4080,7 +4180,7 @@ function _doAutoSave() {
       localStorage.setItem('volme3d_cur', currentDesignId);
     }
     const meta = dsGetMeta(currentDesignId);
-    const name = meta?.name || 'Unbenanntes Design';
+    const name = meta?.name || _randomDesignName();
     dsSaveDesign(currentDesignId, _sceneSnapshot(), captureThumbnail(), name);
     _updateDesignLabel(name);
     _flashSaveDot();
@@ -4094,6 +4194,7 @@ function _startAutoSave() {
 
 // ── Gallery UI ─────────────────────────────────────────────────────────────
 function showDesigns() {
+  _doAutoSave();
   document.getElementById('ds-modal').classList.add('show');
   _renderGallery();
 }
@@ -4140,7 +4241,7 @@ function newDesignFromGallery() {
   objects.forEach(o => scene.remove(o)); objects = [];
   deselect(); undoStack = []; redoStack = [];
   updateUndoRedoButtons(); updateTree();
-  const name = 'Design ' + new Date().toLocaleDateString('de-DE');
+  const name = _randomDesignName();
   dsSaveDesign(currentDesignId, _sceneSnapshot(), '', name);
   _updateDesignLabel(name);
   hideDesigns();
