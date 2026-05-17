@@ -39,6 +39,11 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh
 .sli-item:first-child{border-radius:var(--rs) var(--rs) 0 0}
 .sli-hint{padding:4px 12px 7px;font-size:10px;color:var(--dim);border-top:1px solid var(--border)}
 .sli-sep{height:1px;background:var(--border);margin:3px 0}
+#lt-workplane.pick-mode{color:var(--acc);background:var(--alit)}
+#lt-workplane.wp-set{color:#f97316}
+.fp-edge-row{padding:6px 0 2px}
+.fp-btn{font-size:11px;font-weight:700;padding:4px 10px;border-radius:5px;border:1.5px solid var(--border);background:var(--alit);color:var(--acc);cursor:pointer;margin-right:4px}
+.fp-btn:hover{background:var(--acc);color:#fff}
 #tbr{margin-left:auto;display:flex;align-items:center;gap:4px}
 #snp{display:flex;align-items:center;gap:5px;padding:4px 9px;background:var(--bg);border:1.5px solid var(--border2);border-radius:20px;font-size:10px;font-weight:800;color:var(--dim);cursor:pointer;transition:all .12s}
 #snp.on{border-color:var(--acc);color:var(--acc);background:var(--alit)}
@@ -523,9 +528,10 @@ const firebaseConfig = {
     <button class="btn" id="btn-redo" onclick="redo()" title="Strg+Y">↪ Wiederholen</button>
     <button class="btn red" onclick="deleteSelected()" title="Del">🗑</button>
     <div id="stl-wrap">
-      <button class="btn pri main-stl" onclick="exportSTL()" title="STL herunterladen">⬇ STL</button>
+      <button class="btn pri main-stl" onclick="exportSTL()" title="STL herunterladen">⬇ Export</button>
       <button class="btn pri spl" onclick="toggleStlMenu(event)" title="An Slicer senden">▾</button>
       <div id="stl-menu">
+        <div class="sli-item" onclick="exportSTL()">⬇ STL</div>
         <div class="sli-item" onclick="exportOBJ()">⬇ OBJ</div>
         <div class="sli-item" onclick="exportSTEP()">⬇ STEP (extern)</div>
         <div class="sli-sep"></div>
@@ -564,6 +570,20 @@ const firebaseConfig = {
   <div class="lt" onclick="dropToGround()">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="4" y="2" width="8" height="7" rx="1"/><path d="M8 9v4" stroke-dasharray="2,1.5"/><path d="M2 14h12" stroke-width="1.8"/></svg>
     <span class="tip">Auf Boden (D)</span>
+  </div>
+  <div class="lt" id="lt-workplane" onclick="toggleWorkplane()">
+    <svg viewBox="0 0 16 16" fill="currentColor" stroke="none">
+      <circle cx="3" cy="3" r="1.5"/>
+      <circle cx="8" cy="3" r="1.5"/>
+      <circle cx="13" cy="3" r="1.5"/>
+      <circle cx="3" cy="8" r="1.5"/>
+      <circle cx="8" cy="8" r="1.5"/>
+      <circle cx="13" cy="8" r="1.5"/>
+      <circle cx="3" cy="13" r="1.5"/>
+      <circle cx="8" cy="13" r="1.5"/>
+      <circle cx="13" cy="13" r="1.5"/>
+    </svg>
+    <span class="tip">Arbeitsebene setzen (P)</span>
   </div>
   <div class="lsep"></div>
   <div class="lt" id="lt-ruler" onclick="toggleRuler()">
@@ -995,6 +1015,7 @@ const firebaseConfig = {
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FontLoader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/geometries/TextGeometry.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/geometries/RoundedBoxGeometry.js"></script>
 <script>
 // Minimal BSP-CSG for Three.js r128
 // Based on csg.js by Evan Wallace (MIT License)
@@ -1216,6 +1237,38 @@ function buildGrid() {
   scene.add(groundMesh);
 }
 buildGrid();
+let workplaneMode = false;
+let workplaneNormal = new THREE.Vector3(0, 1, 0);
+let workplanePoint  = new THREE.Vector3(0, 0, 0);
+const _wpHL = new THREE.Mesh(
+  new THREE.PlaneGeometry(2, 2),
+  new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthTest: false })
+);
+_wpHL.visible = false; _wpHL.renderOrder = 999;
+scene.add(_wpHL);
+const _wpGrid = new THREE.GridHelper(8, 8, 0xff6600, 0xff8800);
+_wpGrid.visible = false;
+scene.add(_wpGrid);
+
+let _edgeMode  = false;
+let _edgeObj   = null;
+let _edgeLines = null;
+let _edgeSel   = new Set();
+let _edgeHover = -1;
+const EDGE_ENDPOINTS = [
+  [[ 1, 1,-1],[ 1, 1, 1]],
+  [[-1, 1,-1],[-1, 1, 1]],
+  [[-1,-1,-1],[-1,-1, 1]],
+  [[ 1,-1,-1],[ 1,-1, 1]],
+  [[-1, 1, 1],[ 1, 1, 1]],
+  [[-1,-1, 1],[ 1,-1, 1]],
+  [[-1,-1,-1],[ 1,-1,-1]],
+  [[-1, 1,-1],[ 1, 1,-1]],
+  [[ 1,-1, 1],[ 1, 1, 1]],
+  [[-1,-1, 1],[-1, 1, 1]],
+  [[-1,-1,-1],[-1, 1,-1]],
+  [[ 1,-1,-1],[ 1, 1,-1]],
+];
 function toggleGrid() {
   gridOn = !gridOn;
   gridMesh.visible = gridOn;
@@ -1401,118 +1454,113 @@ const typeCounts = {};
 
 // ─── Rounded Box (Fillet) ─────────────────────────────────────────────
 function buildRoundedBox(sx, sy, sz, radius, segs) {
-  segs = segs || 4;
-  radius = Math.min(radius, Math.min(sx,sy,sz)/2 * 0.99);
-  if (radius <= 0.01) return new THREE.BoxGeometry(sx,sy,sz);
+  segs = segs || 8;
+  radius = Math.min(radius, Math.min(sx, sy, sz) / 2 * 0.99);
+  if (radius <= 0.01) return new THREE.BoxGeometry(sx, sy, sz);
+  return new THREE.RoundedBoxGeometry(sx, sy, sz, segs, radius);
+}
 
-  // Build via ExtrudeGeometry: rounded rect cross-section extruded in Z,
-  // then add rounded top/bottom via separate pass
-  // Simple approach: use SphereGeometry-based corner rounding
-  // Create rounded box using merged geometries approach
+// ─── Per-Edge Rounded Box ─────────────────────────────────────────────
+function buildRoundedBoxEdges(sx, sy, sz, edgeBevels, segs) {
+  segs = segs || 12;
+  const maxR = Math.min(sx,sy,sz)/2 * 0.99;
+  const r = edgeBevels.map(e => Math.min((e.fillet + e.chamfer) / 20, maxR));
+  const eSegs = edgeBevels.map(e => e.fillet > 0 ? segs : 1);
+  if (r.every(v => v <= 0.01)) return new THREE.BoxGeometry(sx,sy,sz);
 
-  const r = radius;
-  const hw = sx/2 - r, hh = sy/2 - r, hd = sz/2 - r;
-
-  const positions = [];
-  const normals   = [];
-  const uvs       = [];
-  const idxs      = [];
-
-  function addQuad(p0,p1,p2,p3, n) {
-    const b = positions.length/3;
-    [p0,p1,p2,p3].forEach(p => { positions.push(...p); normals.push(...n); uvs.push(0,0); });
-    idxs.push(b,b+1,b+2, b,b+2,b+3);
+  const positions=[], normals=[], uvs=[], idxs=[];
+  function addQuad(p0,p1,p2,p3,n) {
+    const b=positions.length/3;
+    [p0,p1,p2,p3].forEach(p=>{positions.push(...p);normals.push(...n);uvs.push(0,0);});
+    idxs.push(b,b+1,b+2,b,b+2,b+3);
   }
+  // 6 flat faces with asymmetric per-edge insets
+  // +Y face: left edge1, right edge0, front edge4, back edge7
+  addQuad([-(sx/2-r[1]),sy/2,(sz/2-r[4])],[(sx/2-r[0]),sy/2,(sz/2-r[4])],
+          [(sx/2-r[0]),sy/2,-(sz/2-r[7])],[-(sx/2-r[1]),sy/2,-(sz/2-r[7])],[0,1,0]);
+  // -Y face: left edge2, right edge3, front edge5, back edge6
+  addQuad([-(sx/2-r[2]),-sy/2,-(sz/2-r[6])],[(sx/2-r[3]),-sy/2,-(sz/2-r[6])],
+          [(sx/2-r[3]),-sy/2,(sz/2-r[5])],[-(sx/2-r[2]),-sy/2,(sz/2-r[5])],[0,-1,0]);
+  // +X face: bottom edge3, top edge0, front edge8, back edge11
+  addQuad([sx/2,-(sy/2-r[3]),-(sz/2-r[11])],[sx/2,(sy/2-r[0]),-(sz/2-r[11])],
+          [sx/2,(sy/2-r[0]),(sz/2-r[8])],[sx/2,-(sy/2-r[3]),(sz/2-r[8])],[1,0,0]);
+  // -X face: bottom edge2, top edge1, front edge9, back edge10
+  addQuad([-sx/2,-(sy/2-r[2]),(sz/2-r[9])],[-sx/2,(sy/2-r[1]),(sz/2-r[9])],
+          [-sx/2,(sy/2-r[1]),-(sz/2-r[10])],[-sx/2,-(sy/2-r[2]),-(sz/2-r[10])],[-1,0,0]);
+  // +Z face: left edge9, right edge8, bottom edge5, top edge4
+  addQuad([-(sx/2-r[9]),-(sy/2-r[5]),sz/2],[(sx/2-r[8]),-(sy/2-r[5]),sz/2],
+          [(sx/2-r[8]),(sy/2-r[4]),sz/2],[-(sx/2-r[9]),(sy/2-r[4]),sz/2],[0,0,1]);
+  // -Z face: right edge11, left edge10, bottom edge6, top edge7
+  addQuad([(sx/2-r[11]),-(sy/2-r[6]),-sz/2],[-(sx/2-r[10]),-(sy/2-r[6]),-sz/2],
+          [-(sx/2-r[10]),(sy/2-r[7]),-sz/2],[(sx/2-r[11]),(sy/2-r[7]),-sz/2],[0,0,-1]);
 
-  // 6 flat faces (inset by r)
-  addQuad([-hw,sy/2,-hd],[hw,sy/2,-hd],[hw,sy/2,hd],[-hw,sy/2,hd],[0,1,0]);
-  addQuad([-hw,-sy/2,hd],[hw,-sy/2,hd],[hw,-sy/2,-hd],[-hw,-sy/2,-hd],[0,-1,0]);
-  addQuad([sx/2,-hh,-hd],[sx/2,hh,-hd],[sx/2,hh,hd],[sx/2,-hh,hd],[1,0,0]);
-  addQuad([-sx/2,-hh,hd],[-sx/2,hh,hd],[-sx/2,hh,-hd],[-sx/2,-hh,-hd],[-1,0,0]);
-  addQuad([-hw,-hh,sz/2],[hw,-hh,sz/2],[hw,hh,sz/2],[-hw,hh,sz/2],[0,0,1]);
-  addQuad([hw,-hh,-sz/2],[-hw,-hh,-sz/2],[-hw,hh,-sz/2],[hw,hh,-sz/2],[0,0,-1]);
-
-  // 12 rounded edges (cylinder segments)
-  function addEdgeCyl(cx,cy,cz, axis, len, na, nb, startAng, endAng) {
-    const steps = segs;
-    for (let i = 0; i < steps; i++) {
-      const a0 = startAng + (endAng-startAng)*i/steps;
-      const a1 = startAng + (endAng-startAng)*(i+1)/steps;
-      const cos0=Math.cos(a0), sin0=Math.sin(a0);
-      const cos1=Math.cos(a1), sin1=Math.sin(a1);
-      const p = (sign) => {
-        const lv = sign * len/2;
-        return [
-          [cx + na[0]*r*cos0 + nb[0]*r*sin0 + axis[0]*lv,
-           cy + na[1]*r*cos0 + nb[1]*r*sin0 + axis[1]*lv,
-           cz + na[2]*r*cos0 + nb[2]*r*sin0 + axis[2]*lv],
-          [cx + na[0]*r*cos1 + nb[0]*r*sin1 + axis[0]*lv,
-           cy + na[1]*r*cos1 + nb[1]*r*sin1 + axis[1]*lv,
-           cz + na[2]*r*cos1 + nb[2]*r*sin1 + axis[2]*lv],
-        ];
+  // 12 edge cylinders (own radius + segs per edge)
+  function addEdgeCyl(cx,cy,cz,axis,len,na,nb,ri,si) {
+    if (ri <= 0.01) return;
+    for (let i=0;i<si;i++) {
+      const a0=i/si*Math.PI/2, a1=(i+1)/si*Math.PI/2;
+      const c0=Math.cos(a0),s0=Math.sin(a0),c1=Math.cos(a1),s1=Math.sin(a1);
+      const pt=(sign)=>{
+        const lv=sign*len/2;
+        return [[cx+na[0]*ri*c0+nb[0]*ri*s0+axis[0]*lv,cy+na[1]*ri*c0+nb[1]*ri*s0+axis[1]*lv,cz+na[2]*ri*c0+nb[2]*ri*s0+axis[2]*lv],
+                [cx+na[0]*ri*c1+nb[0]*ri*s1+axis[0]*lv,cy+na[1]*ri*c1+nb[1]*ri*s1+axis[1]*lv,cz+na[2]*ri*c1+nb[2]*ri*s1+axis[2]*lv]];
       };
-      const [p00,p10] = p(-1);
-      const [p01,p11] = p(+1);
-      const n0=[na[0]*cos0+nb[0]*sin0, na[1]*cos0+nb[1]*sin0, na[2]*cos0+nb[2]*sin0];
-      const n1=[na[0]*cos1+nb[0]*sin1, na[1]*cos1+nb[1]*sin1, na[2]*cos1+nb[2]*sin1];
-      const b = positions.length/3;
+      const [p00,p10]=pt(-1),[p01,p11]=pt(1);
+      const n0=[na[0]*c0+nb[0]*s0,na[1]*c0+nb[1]*s0,na[2]*c0+nb[2]*s0];
+      const n1=[na[0]*c1+nb[0]*s1,na[1]*c1+nb[1]*s1,na[2]*c1+nb[2]*s1];
+      const b=positions.length/3;
       positions.push(...p00,...p10,...p11,...p01);
       normals.push(...n0,...n1,...n1,...n0);
       uvs.push(0,0,1,0,1,1,0,1);
-      idxs.push(b,b+1,b+2, b,b+2,b+3);
+      idxs.push(b,b+1,b+2,b,b+2,b+3);
     }
   }
+  const hw=sx/2,hh=sy/2,hd=sz/2;
+  // Z-axis edges 0-3
+  addEdgeCyl(hw-r[0], hh-r[0],0, [0,0,1],sz,[1,0,0],[0,1,0],   r[0],eSegs[0]);
+  addEdgeCyl(-hw+r[1],hh-r[1],0, [0,0,1],sz,[0,1,0],[-1,0,0],  r[1],eSegs[1]);
+  addEdgeCyl(-hw+r[2],-hh+r[2],0,[0,0,1],sz,[-1,0,0],[0,-1,0], r[2],eSegs[2]);
+  addEdgeCyl(hw-r[3], -hh+r[3],0,[0,0,1],sz,[0,-1,0],[1,0,0],  r[3],eSegs[3]);
+  // X-axis edges 4-7
+  addEdgeCyl(0, hh-r[4], hd-r[4],[1,0,0],sx,[0,1,0],[0,0,1],   r[4],eSegs[4]);
+  addEdgeCyl(0,-hh+r[5], hd-r[5],[1,0,0],sx,[0,0,1],[0,-1,0],  r[5],eSegs[5]);
+  addEdgeCyl(0,-hh+r[6],-hd+r[6],[1,0,0],sx,[0,-1,0],[0,0,-1], r[6],eSegs[6]);
+  addEdgeCyl(0, hh-r[7],-hd+r[7],[1,0,0],sx,[0,0,-1],[0,1,0],  r[7],eSegs[7]);
+  // Y-axis edges 8-11
+  addEdgeCyl(hw-r[8], 0, hd-r[8], [0,1,0],sy,[1,0,0],[0,0,1],  r[8],eSegs[8]);
+  addEdgeCyl(-hw+r[9],0, hd-r[9], [0,1,0],sy,[0,0,1],[-1,0,0], r[9],eSegs[9]);
+  addEdgeCyl(-hw+r[10],0,-hd+r[10],[0,1,0],sy,[-1,0,0],[0,0,-1],r[10],eSegs[10]);
+  addEdgeCyl(hw-r[11],0,-hd+r[11],[0,1,0],sy,[0,0,-1],[1,0,0], r[11],eSegs[11]);
 
-  const PI2 = Math.PI/2;
-  // 4 Z-axis edges
-  addEdgeCyl( hw, hh,0, [0,0,1],sz, [1,0,0],[0,1,0], 0,    PI2);
-  addEdgeCyl(-hw, hh,0, [0,0,1],sz, [0,1,0],[-1,0,0],0,    PI2);
-  addEdgeCyl(-hw,-hh,0, [0,0,1],sz, [-1,0,0],[0,-1,0],0,   PI2);
-  addEdgeCyl( hw,-hh,0, [0,0,1],sz, [0,-1,0],[1,0,0], 0,   PI2);
-  // 4 X-axis edges
-  addEdgeCyl(0, hh, hd, [1,0,0],sx, [0,1,0],[0,0,1],  0,   PI2);
-  addEdgeCyl(0,-hh, hd, [1,0,0],sx, [0,0,1],[0,-1,0], 0,   PI2);
-  addEdgeCyl(0,-hh,-hd, [1,0,0],sx, [0,-1,0],[0,0,-1],0,   PI2);
-  addEdgeCyl(0, hh,-hd, [1,0,0],sx, [0,0,-1],[0,1,0], 0,   PI2);
-  // 4 Y-axis edges
-  addEdgeCyl( hw,0, hd, [0,1,0],sy, [1,0,0],[0,0,1],  0,   PI2);
-  addEdgeCyl(-hw,0, hd, [0,1,0],sy, [0,0,1],[-1,0,0], 0,   PI2);
-  addEdgeCyl(-hw,0,-hd, [0,1,0],sy, [-1,0,0],[0,0,-1],0,   PI2);
-  addEdgeCyl( hw,0,-hd, [0,1,0],sy, [0,0,-1],[1,0,0], 0,   PI2);
-
-  // 8 sphere corners
-  function addCorner(cx,cy,cz, sx2,sy2,sz2) {
-    const steps = segs;
-    for (let i=0;i<steps;i++) {
-      for (let j=0;j<steps;j++) {
-        const phi0=j/steps*PI2, phi1=(j+1)/steps*PI2;
-        const tht0=i/steps*PI2, tht1=(i+1)/steps*PI2;
-        function pt(phi,tht) {
-          const nx=sx2*Math.cos(phi)*Math.sin(tht);
-          const ny=sy2*Math.sin(phi);
-          const nz=sz2*Math.cos(phi)*Math.cos(tht);
-          return { p:[cx+nx*r,cy+ny*r,cz+nz*r], n:[nx,ny,nz] };
-        }
-        const v0=pt(phi0,tht0),v1=pt(phi0,tht1),v2=pt(phi1,tht1),v3=pt(phi1,tht0);
-        const b=positions.length/3;
-        [v0,v1,v2,v3].forEach(v=>{positions.push(...v.p);normals.push(...v.n);uvs.push(0,0);});
-        idxs.push(b,b+1,b+2,b,b+2,b+3);
-      }
+  // 8 corners: radius = min of 3 adjacent edges
+  const CEDGES=[[0,4,8],[1,4,9],[3,5,8],[2,5,9],[0,7,11],[1,7,10],[3,6,11],[2,6,10]];
+  const CSIGNS=[[1,1,1],[-1,1,1],[1,-1,1],[-1,-1,1],[1,1,-1],[-1,1,-1],[1,-1,-1],[-1,-1,-1]];
+  const PI2=Math.PI/2;
+  CEDGES.forEach(([e0,e1,e2], ci) => {
+    const rc=Math.min(r[e0],r[e1],r[e2]);
+    if (rc<=0.01) return;
+    const [sx2,sy2,sz2]=CSIGNS[ci];
+    const cx=(hw-rc)*sx2, cy=(hh-rc)*sy2, cz=(hd-rc)*sz2;
+    for (let ii=0;ii<segs;ii++) for (let jj=0;jj<segs;jj++) {
+      const phi0=jj/segs*PI2,phi1=(jj+1)/segs*PI2;
+      const tht0=ii/segs*PI2,tht1=(ii+1)/segs*PI2;
+      const ptc=(phi,tht)=>{
+        const nx=sx2*Math.cos(phi)*Math.sin(tht);
+        const ny=sy2*Math.sin(phi);
+        const nz=sz2*Math.cos(phi)*Math.cos(tht);
+        return {p:[cx+nx*rc,cy+ny*rc,cz+nz*rc],n:[nx,ny,nz]};
+      };
+      const v0=ptc(phi0,tht0),v1=ptc(phi0,tht1),v2=ptc(phi1,tht1),v3=ptc(phi1,tht0);
+      const b=positions.length/3;
+      [v0,v1,v2,v3].forEach(v=>{positions.push(...v.p);normals.push(...v.n);uvs.push(0,0);});
+      idxs.push(b,b+1,b+2,b,b+2,b+3);
     }
-  }
-  addCorner( hw, hh, hd, 1, 1, 1);
-  addCorner(-hw, hh, hd,-1, 1, 1);
-  addCorner( hw,-hh, hd, 1,-1, 1);
-  addCorner(-hw,-hh, hd,-1,-1, 1);
-  addCorner( hw, hh,-hd, 1, 1,-1);
-  addCorner(-hw, hh,-hd,-1, 1,-1);
-  addCorner( hw,-hh,-hd, 1,-1,-1);
-  addCorner(-hw,-hh,-hd,-1,-1,-1);
+  });
 
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
-  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,3));
-  geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs,2));
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+  geo.setAttribute('normal',  new THREE.Float32BufferAttribute(normals,3));
+  geo.setAttribute('uv',      new THREE.Float32BufferAttribute(uvs,2));
   geo.setIndex(idxs);
   geo.computeVertexNormals();
   return geo;
@@ -1522,90 +1570,61 @@ function buildRoundedBox(sx, sy, sz, radius, segs) {
 function buildChamferBox(sx, sy, sz, chamfer) {
   chamfer = Math.min(chamfer, Math.min(sx,sy,sz)/2 * 0.99);
   if (chamfer <= 0.01) return new THREE.BoxGeometry(sx,sy,sz);
+  const c=chamfer, hw=sx/2, hh=sy/2, hd=sz/2;
+  const positions=[], normals=[];
 
-  const c = chamfer;
-  const hw=sx/2, hh=sy/2, hd=sz/2;
-
-  // Chamfer = cut each edge at 45°, creating triangular faces on edges
-  // and hexagonal cuts on corners
-  // Build convex hull from chamfered corner points
-  const pts = [];
-  const signs = [[1,1,1],[-1,1,1],[1,-1,1],[-1,-1,1],[1,1,-1],[-1,1,-1],[1,-1,-1],[-1,-1,-1]];
-  signs.forEach(([sx2,sy2,sz2]) => {
-    // Each corner becomes 3 chamfer points
-    pts.push(new THREE.Vector3(sx2*(hw-c), sy2*hh,      sz2*hd));
-    pts.push(new THREE.Vector3(sx2*hw,      sy2*(hh-c), sz2*hd));
-    pts.push(new THREE.Vector3(sx2*hw,      sy2*hh,      sz2*(hd-c)));
-  });
-
-  // Build convex hull manually
-  return buildConvexGeo(pts);
-}
-
-function buildConvexGeo(points) {
-  // Chamfered box: 6 main faces + 12 edge chamfer quads + 8 corner triangles
-  // points layout per corner i (8 corners):
-  //   p[i*3+0] = cut on X-edge (lies on ±Y face)
-  //   p[i*3+1] = cut on Y-edge (lies on ±X face)
-  //   p[i*3+2] = cut on Z-edge (lies on ±Z face)
-  // Corner order: [+X+Y+Z, -X+Y+Z, +X-Y+Z, -X-Y+Z, +X+Y-Z, -X+Y-Z, +X-Y-Z, -X-Y-Z]
-
-  const positions = [], normals = [];
-  const p = points;
-
-  function tri(a, b, c) {
-    const ab = b.clone().sub(a), ac = c.clone().sub(a);
-    const n = ab.cross(ac).normalize();
-    if (isNaN(n.x)) return;
-    [a,b,c].forEach(v => { positions.push(v.x,v.y,v.z); normals.push(n.x,n.y,n.z); });
+  function tri(ax,ay,az, bx,by,bz, cx,cy,cz) {
+    const abx=bx-ax,aby=by-ay,abz=bz-az;
+    const acx=cx-ax,acy=cy-ay,acz=cz-az;
+    const nx=aby*acz-abz*acy, ny=abz*acx-abx*acz, nz=abx*acy-aby*acx;
+    const len=Math.sqrt(nx*nx+ny*ny+nz*nz)||1;
+    for(let i=0;i<3;i++) normals.push(nx/len,ny/len,nz/len);
+    positions.push(ax,ay,az, bx,by,bz, cx,cy,cz);
   }
-  function quad(a,b,c,d) { tri(a,b,c); tri(a,c,d); }
-
-  // 6 main flat faces
-  quad(p[0],   p[3],  p[15], p[12]); // +Y: corners 0,1,5,4 → X-edge pts (idx 0)
-  quad(p[6],   p[9],  p[21], p[18]); // -Y: corners 2,3,7,6
-  quad(p[1],   p[7],  p[19], p[13]); // +X: corners 0,2,6,4 → Y-edge pts (idx 1)
-  quad(p[4],   p[10], p[22], p[16]); // -X: corners 1,3,7,5
-  quad(p[2],   p[8],  p[11], p[5]);  // +Z: corners 0,2,3,1 → Z-edge pts (idx 2)
-  quad(p[14],  p[20], p[23], p[17]); // -Z: corners 4,6,7,5
-
-  // 12 edge chamfer quads (each shared between 2 adjacent corners)
-  // 4 Y-axis edges (vertical)
-  quad(p[1],  p[2],  p[8],  p[7]);  // +X+Z edge: corners 0,2
-  quad(p[4],  p[5],  p[11], p[10]); // -X+Z edge: corners 1,3
-  quad(p[13], p[14], p[20], p[19]); // +X-Z edge: corners 4,6
-  quad(p[16], p[17], p[23], p[22]); // -X-Z edge: corners 5,7
-
-  // 4 X-axis edges (horizontal top/bottom)
-  quad(p[0],  p[3],  p[9],  p[6]);  // +Y+Z top: corners 0,1 (X-edge → Z-edge)
-  quad(p[12], p[15], p[21], p[18]); // -Y+Z bottom
-  quad(p[0],  p[12], p[13], p[1]);  // +Y+X: corners 0,4
-  quad(p[3],  p[15], p[16], p[4]);  // +Y-X: corners 1,5
-
-  // 4 Z-axis edges
-  quad(p[6],  p[18], p[19], p[7]);  // -Y+X
-  quad(p[9],  p[21], p[22], p[10]); // -Y-X
-  quad(p[2],  p[5],  p[17], p[14]); // +Z-Z top/bottom
-  quad(p[8],  p[11], p[23], p[20]); // extra
-
-  // 8 corner triangles
-  for (let i = 0; i < 8; i++) {
-    const a=p[i*3], b=p[i*3+1], c=p[i*3+2];
-    // Winding: outward normal depends on corner sign
-    const cx=(a.x+b.x+c.x)/3, cy=(a.y+b.y+c.y)/3, cz=(a.z+b.z+c.z)/3;
-    if (cx>=0 && cy>=0 && cz>=0) tri(a,c,b);
-    else if (cx< 0 && cy>=0 && cz>=0) tri(a,b,c);
-    else if (cx>=0 && cy< 0 && cz>=0) tri(a,b,c);
-    else if (cx< 0 && cy< 0 && cz>=0) tri(a,c,b);
-    else if (cx>=0 && cy>=0 && cz< 0) tri(a,b,c);
-    else if (cx< 0 && cy>=0 && cz< 0) tri(a,c,b);
-    else if (cx>=0 && cy< 0 && cz< 0) tri(a,c,b);
-    else                               tri(a,b,c);
+  function quad(ax,ay,az,bx,by,bz,cx,cy,cz,dx,dy,dz) {
+    tri(ax,ay,az,bx,by,bz,cx,cy,cz);
+    tri(ax,ay,az,cx,cy,cz,dx,dy,dz);
   }
 
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
-  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,3));
+  // 6 main faces (inset by c in both perpendicular axes, windings verified)
+  quad( hw,-(hh-c),-(hd-c),  hw, (hh-c),-(hd-c),  hw, (hh-c),(hd-c),  hw,-(hh-c),(hd-c));  // +X
+  quad(-hw,-(hh-c),(hd-c), -hw,(hh-c),(hd-c), -hw,(hh-c),-(hd-c), -hw,-(hh-c),-(hd-c));    // -X
+  quad(-(hw-c),hh,(hd-c), (hw-c),hh,(hd-c), (hw-c),hh,-(hd-c), -(hw-c),hh,-(hd-c));        // +Y
+  quad(-(hw-c),-hh,-(hd-c), (hw-c),-hh,-(hd-c), (hw-c),-hh,(hd-c), -(hw-c),-hh,(hd-c));    // -Y
+  quad(-(hw-c),-(hh-c),hd, (hw-c),-(hh-c),hd, (hw-c),(hh-c),hd, -(hw-c),(hh-c),hd);        // +Z
+  quad( (hw-c),-(hh-c),-hd, -(hw-c),-(hh-c),-hd, -(hw-c),(hh-c),-hd, (hw-c),(hh-c),-hd);  // -Z
+
+  // 12 edge chamfer quads (diagonal faces, all windings verified via cross-product)
+  // Y-axis edges (chamfer between ±X and ±Z faces)
+  quad( hw-c,-(hh-c),hd,  hw,-(hh-c),hd-c,  hw,hh-c,hd-c,   hw-c,hh-c,hd);                // +X+Z
+  quad(-hw+c,-(hh-c),hd, -hw+c,hh-c,hd, -hw,hh-c,hd-c,  -hw,-(hh-c),hd-c);                // -X+Z
+  quad( hw-c,-(hh-c),-hd, hw-c,hh-c,-hd,  hw,hh-c,-(hd-c),  hw,-(hh-c),-(hd-c));          // +X-Z
+  quad(-hw+c,-(hh-c),-hd, -hw,-(hh-c),-(hd-c), -hw,hh-c,-(hd-c), -hw+c,hh-c,-hd);         // -X-Z
+  // X-axis edges (chamfer between ±Y and ±Z faces)
+  quad(-(hw-c),hh-c,hd,  hw-c,hh-c,hd,  hw-c,hh,hd-c,  -(hw-c),hh,hd-c);                  // +Y+Z
+  quad(-(hw-c),-hh+c,hd, -(hw-c),-hh,hd-c, hw-c,-hh,hd-c,  hw-c,-hh+c,hd);                // -Y+Z
+  quad(-(hw-c),hh-c,-hd, -(hw-c),hh,-(hd-c), hw-c,hh,-(hd-c), hw-c,hh-c,-hd);             // +Y-Z
+  quad(-(hw-c),-hh+c,-hd, hw-c,-hh+c,-hd, hw-c,-hh,-(hd-c), -(hw-c),-hh,-(hd-c));         // -Y-Z
+  // Z-axis edges (chamfer between ±X and ±Y faces)
+  quad( hw,hh-c,hd-c,   hw,hh-c,-(hd-c),  hw-c,hh,-(hd-c),  hw-c,hh,hd-c);                // +X+Y
+  quad(-hw,hh-c,hd-c,  -hw+c,hh,hd-c, -hw+c,hh,-(hd-c), -hw,hh-c,-(hd-c));                // -X+Y
+  quad( hw,-hh+c,hd-c,  hw-c,-hh,hd-c,  hw-c,-hh,-(hd-c),  hw,-hh+c,-(hd-c));             // +X-Y
+  quad(-hw,-hh+c,-(hd-c), -hw+c,-hh,-(hd-c), -hw+c,-hh,hd-c, -hw,-hh+c,hd-c);             // -X-Y
+
+  // 8 corner triangles (winding: sx2*sy2*sz2>0 → CCW as-is, else swap b/c)
+  [[ 1, 1, 1],[-1, 1, 1],[ 1,-1, 1],[-1,-1, 1],
+   [ 1, 1,-1],[-1, 1,-1],[ 1,-1,-1],[-1,-1,-1]]
+    .forEach(([sx2,sy2,sz2]) => {
+      const p0=[sx2*(hw-c), sy2*(hh-c), sz2*hd];
+      const p1=[sx2*hw,     sy2*(hh-c), sz2*(hd-c)];
+      const p2=[sx2*(hw-c), sy2*hh,     sz2*(hd-c)];
+      if (sx2*sy2*sz2 > 0) tri(...p0,...p1,...p2);
+      else                  tri(...p0,...p2,...p1);
+    });
+
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+  geo.setAttribute('normal',  new THREE.Float32BufferAttribute(normals,3));
   geo.computeVertexNormals();
   return geo;
 }
@@ -1641,6 +1660,87 @@ function applyFillet(filletVal, chamferVal) {
   o.geometry = geo;
   o.userData.fillet  = filletVal;
   o.userData.chamfer = chamferVal;
+}
+
+// ─── Edge Mode ────────────────────────────────────────────────────────
+function enterEdgeMode() {
+  const o = getFirst();
+  if (!o || o.userData.shapeType !== 'box') return;
+  o.userData.edgeBevels = Array.from({length:12}, () => ({fillet:0, chamfer:0}));
+  _edgeObj = o; _edgeSel.clear(); _edgeHover = -1; _edgeMode = true;
+  const verts = [];
+  EDGE_ENDPOINTS.forEach(([a,b]) => verts.push(...a,...b));
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  const cols = new Float32Array(24*3).fill(0.55);
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+  _edgeLines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({vertexColors:true, linewidth:2}));
+  _edgeLines.renderOrder = 999;
+  o.add(_edgeLines);
+  _fpCurType = null; updateFP();
+  canvas.style.cursor = 'crosshair';
+  notify('Kante anklicken — Shift für Mehrfachauswahl — ESC zum Beenden', 'ok');
+}
+
+function exitEdgeMode() {
+  if (_edgeLines) { _edgeObj.remove(_edgeLines); _edgeLines.geometry.dispose(); _edgeLines = null; }
+  _edgeMode = false; _edgeObj = null; _edgeSel.clear(); _edgeHover = -1;
+  canvas.style.cursor = '';
+  _fpCurType = null; updateFP();
+}
+
+function _updateEdgeColors() {
+  if (!_edgeLines) return;
+  const col = _edgeLines.geometry.attributes.color;
+  for (let i=0; i<12; i++) {
+    const isS=_edgeSel.has(i), isH=(i===_edgeHover && !isS);
+    const [rv,gv,bv] = isS ? [1,0.4,0] : isH ? [1,0.85,0.2] : [0.55,0.55,0.55];
+    col.setXYZ(i*2, rv,gv,bv); col.setXYZ(i*2+1, rv,gv,bv);
+  }
+  col.needsUpdate = true;
+}
+
+function _distRayToSegment(ray, a, b) {
+  const ab=b.clone().sub(a), oa=ray.origin.clone().sub(a), d=ray.direction;
+  const D=d.dot(ab), L2=ab.lengthSq(), e=oa.dot(d), f=oa.dot(ab);
+  const denom=L2-D*D;
+  const t=denom<1e-8 ? 0 : Math.max(0,Math.min(1,(f-e*D)/denom));
+  const cSeg=a.clone().addScaledVector(ab,t);
+  const s=Math.max(0,cSeg.clone().sub(ray.origin).dot(d));
+  return cSeg.distanceTo(ray.origin.clone().addScaledVector(d,s));
+}
+
+function _findHoveredEdge(e) {
+  if (!_edgeObj || !_edgeMode) return -1;
+  getNorm(e);
+  raycaster.setFromCamera(mousev, camera);
+  const mat=_edgeObj.matrixWorld;
+  let minD=Infinity, minI=-1;
+  EDGE_ENDPOINTS.forEach(([a,b],i) => {
+    const wa=new THREE.Vector3(...a).applyMatrix4(mat);
+    const wb=new THREE.Vector3(...b).applyMatrix4(mat);
+    const d=_distRayToSegment(raycaster.ray, wa, wb);
+    if (d<minD) { minD=d; minI=i; }
+  });
+  return minD < 0.15 ? minI : -1;
+}
+
+function applyEdgeBevels() {
+  const o = _edgeObj; if (!o || !_edgeSel.size) return;
+  const fv = parseFloat(document.getElementById('fp-edge-fil')?.value) || 0;
+  const cv = parseFloat(document.getElementById('fp-edge-cha')?.value) || 0;
+  _edgeSel.forEach(i => { o.userData.edgeBevels[i] = {fillet:fv, chamfer:cv}; });
+  o.geometry.dispose();
+  o.geometry = buildRoundedBoxEdges(2, 2, 2, o.userData.edgeBevels, 12);
+  o.geometry.computeVertexNormals();
+}
+
+function _resetAllEdges() {
+  if (!_edgeObj) return;
+  _edgeObj.userData.edgeBevels = Array.from({length:12}, () => ({fillet:0, chamfer:0}));
+  _edgeObj.geometry.dispose();
+  _edgeObj.geometry = new THREE.BoxGeometry(2,2,2);
+  _edgeSel.clear(); _updateEdgeColors(); _fpCurType = null; updateFP();
 }
 
 function buildGeo(type) {
@@ -1684,11 +1784,16 @@ function addShape(type) {
   const mesh = new THREE.Mesh(buildGeo(type), mat);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
-  mesh.position.set(
-    snapV((Math.random() - 0.5) * 6),
-    1,
-    snapV((Math.random() - 0.5) * 6)
-  );
+  {
+    const spawnN = workplaneNormal;
+    const ref = Math.abs(spawnN.y) < 0.9 ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0);
+    const t1 = new THREE.Vector3().crossVectors(ref, spawnN).normalize();
+    const t2 = new THREE.Vector3().crossVectors(spawnN, t1).normalize();
+    mesh.position.copy(workplanePoint)
+      .addScaledVector(spawnN, 1)
+      .addScaledVector(t1, snapV((Math.random()-0.5)*6))
+      .addScaledVector(t2, snapV((Math.random()-0.5)*6));
+  }
   typeCounts[type] = (typeCounts[type] || 0) + 1;
   mesh.userData = {
     id: idCtr++, type: type, shapeType: type,
@@ -1719,7 +1824,16 @@ function addTextShape() {
     const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.38, metalness: 0.05, transparent: isHole, opacity: isHole ? 0.52 : 1.0 });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.castShadow = true; mesh.receiveShadow = true;
-    mesh.position.set(snapV((Math.random() - 0.5) * 6), 1, snapV((Math.random() - 0.5) * 6));
+    {
+      const spawnN = workplaneNormal;
+      const ref = Math.abs(spawnN.y) < 0.9 ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0);
+      const t1 = new THREE.Vector3().crossVectors(ref, spawnN).normalize();
+      const t2 = new THREE.Vector3().crossVectors(spawnN, t1).normalize();
+      mesh.position.copy(workplanePoint)
+        .addScaledVector(spawnN, 1)
+        .addScaledVector(t1, snapV((Math.random()-0.5)*6))
+        .addScaledVector(t2, snapV((Math.random()-0.5)*6));
+    }
     typeCounts['text'] = (typeCounts['text'] || 0) + 1;
     mesh.userData = { id: idCtr++, type: 'text', shapeType: 'text', name: 'Text ' + typeCounts['text'], color, isHole, fillet: 0, chamfer: 0, textStr: txt };
     scene.add(mesh); objects.push(mesh);
@@ -2541,9 +2655,16 @@ document.addEventListener('mousedown', e => {
 function dropToGround() {
   if (!selectedObjs.length) return;
   saveUndo();
+  const n = workplaneNormal;
   selectedObjs.forEach(o => {
     const box = getMeshBox(o);
-    o.position.y -= box.min.y;
+    const lo = new THREE.Vector3(
+      n.x >= 0 ? box.min.x : box.max.x,
+      n.y >= 0 ? box.min.y : box.max.y,
+      n.z >= 0 ? box.min.z : box.max.z
+    );
+    const dist = lo.clone().sub(workplanePoint).dot(n);
+    o.position.addScaledVector(n, -dist);
   });
   updateTFInputs();
   notify('Auf Boden', 'ok');
@@ -2647,19 +2768,25 @@ function buildObjectFromData(data) {
   obj.position.set(data.px || 0, data.py || 0, data.pz || 0);
   obj.rotation.set(data.rx || 0, data.ry || 0, data.rz || 0);
   obj.scale.set(data.sx || 1, data.sy || 1, data.sz || 1);
-  obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, type: data.type, isGroup: !!data.isGroup, textStr: data.textStr || '' };
+  obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, type: data.type, shapeType: data.shapeType || data.type, isGroup: !!data.isGroup, textStr: data.textStr || '', fillet: data.fillet || 0, chamfer: data.chamfer || 0, segments: data.segments, tubeRatio: data.tubeRatio, edgeBevels: data.edgeBevels };
   return obj;
 }
 
 function objectToData(o) {
   const d = {
     id: o.userData.id, name: o.userData.name, color: o.userData.color,
-    isHole: o.userData.isHole, type: o.userData.type, isGroup: o.userData.isGroup || o.isGroup,
+    isHole: o.userData.isHole, type: o.userData.type, shapeType: o.userData.shapeType,
+    isGroup: o.userData.isGroup || o.isGroup,
     px: o.position.x, py: o.position.y, pz: o.position.z,
     rx: o.rotation.x, ry: o.rotation.y, rz: o.rotation.z,
     sx: o.scale.x,    sy: o.scale.y,    sz: o.scale.z
   };
-  if (o.userData.textStr) d.textStr = o.userData.textStr;
+  if (o.userData.textStr)    d.textStr    = o.userData.textStr;
+  if (o.userData.fillet)     d.fillet     = o.userData.fillet;
+  if (o.userData.chamfer)    d.chamfer    = o.userData.chamfer;
+  if (o.userData.segments)   d.segments   = o.userData.segments;
+  if (o.userData.tubeRatio)  d.tubeRatio  = o.userData.tubeRatio;
+  if (o.userData.edgeBevels) d.edgeBevels = o.userData.edgeBevels;
   if (o.isMesh && (!o.userData.type || o.userData.type === 'custom' || o.userData.type === 'text')) {
     d.geometry = o.geometry.toJSON();
   }
@@ -3023,6 +3150,21 @@ window.addEventListener('mousedown', e => {
 canvas.addEventListener('mousedown', e => {
   mouseDownPos = { x: e.clientX, y: e.clientY };
   if (e.button !== 0) return;
+  if (_edgeMode) {
+    const idx = _findHoveredEdge(e);
+    if (idx >= 0) {
+      if (e.shiftKey) { if (_edgeSel.has(idx)) _edgeSel.delete(idx); else _edgeSel.add(idx); }
+      else { _edgeSel.clear(); _edgeSel.add(idx); }
+      _updateEdgeColors(); _fpCurType = null; updateFP();
+    }
+    return;
+  }
+  if (workplaneMode) {
+    const hits = pickObjects(e);
+    if (hits.length > 0) setWorkplaneFromFace(hits[0]);
+    else { workplaneMode = false; _wpHL.visible = false; canvas.style.cursor = ''; document.getElementById('lt-workplane').classList.remove('pick-mode'); }
+    return;
+  }
   if (e.button === 0) {
     const hits = pickObjects(e);
     const hitObj = hits.length > 0 ? (() => {
@@ -3067,6 +3209,21 @@ canvas.addEventListener('mousedown', e => {
 
 // All drag/orbit/pan: window-level so mouse-over-handle divs doesn't break anything
 window.addEventListener('mousemove', e => {
+  if (workplaneMode) {
+    const hits = pickObjects(e);
+    if (hits.length > 0) {
+      const hit = hits[0];
+      const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+      _wpHL.position.copy(hit.point).addScaledVector(n, 0.02);
+      _wpHL.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+      _wpHL.visible = true;
+    } else { _wpHL.visible = false; }
+  }
+  if (_edgeMode) {
+    const h = _findHoveredEdge(e);
+    if (h !== _edgeHover) { _edgeHover = h; _updateEdgeColors(); }
+    canvas.style.cursor = h >= 0 ? 'pointer' : 'crosshair';
+  }
   // Orbit (right-click drag)
   if (isOrbit && !isPan && !ttOn) {
     sph.theta -= (e.clientX - orbitStart.x) * 0.006;
@@ -3354,6 +3511,41 @@ canvas.addEventListener('dblclick', e => {
   }
 });
 
+// ═══ WORKPLANE ═════════════════════════════════════════════════════════
+function toggleWorkplane() {
+  const btn = document.getElementById('lt-workplane');
+  if (workplaneMode) {
+    workplaneMode = false; _wpHL.visible = false;
+    canvas.style.cursor = ''; btn.classList.remove('pick-mode');
+  } else if (workplaneNormal.y < 0.999 || workplanePoint.lengthSq() > 0.001) {
+    resetWorkplane();
+  } else {
+    workplaneMode = true;
+    btn.classList.add('pick-mode');
+    canvas.style.cursor = 'crosshair';
+    notify('Fläche anklicken um Arbeitsebene zu setzen — ESC zum Abbrechen', 'ok');
+  }
+}
+function setWorkplaneFromFace(hit) {
+  const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+  workplaneNormal.copy(n);
+  workplanePoint.copy(hit.point);
+  workplaneMode = false; _wpHL.visible = false; canvas.style.cursor = '';
+  const btn = document.getElementById('lt-workplane');
+  btn.classList.remove('pick-mode'); btn.classList.add('wp-set');
+  _wpGrid.position.copy(workplanePoint);
+  _wpGrid.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), workplaneNormal);
+  _wpGrid.visible = true;
+  notify('Arbeitsebene gesetzt', 'ok');
+}
+function resetWorkplane() {
+  workplaneMode = false; workplaneNormal.set(0, 1, 0); workplanePoint.set(0, 0, 0);
+  _wpHL.visible = false; canvas.style.cursor = '';
+  document.getElementById('lt-workplane').classList.remove('pick-mode', 'wp-set');
+  _wpGrid.visible = false;
+  notify('Arbeitsebene zurückgesetzt', 'ok');
+}
+
 // ═══ KEYBOARD ══════════════════════════════════════════════════════════
 window.addEventListener('keydown', e => {
   if (['INPUT','TEXTAREA'].includes(e.target.tagName)) return;
@@ -3363,6 +3555,8 @@ window.addEventListener('keydown', e => {
     if (document.getElementById('new-modal').classList.contains('show')) { _newCancel(); return; }
     if (document.getElementById('sz-modal').classList.contains('show')) { _cancelSize(); return; }
     if (document.getElementById('ds-modal').classList.contains('show')) { hideDesigns(); return; }
+    if (_edgeMode) { exitEdgeMode(); return; }
+    if (workplaneMode) { toggleWorkplane(); return; }
     if (specialMode) exitSpecialMode(); else deselect(); return;
   }
 
@@ -3401,6 +3595,7 @@ window.addEventListener('keydown', e => {
   if (k === 'ArrowDown')  { selectedObjs.forEach(o => o.position.z += mv); updateTFInputs(); _doRepositionDimHandles(); return; }
 
   switch (k.toLowerCase()) {
+    case 'p':   toggleWorkplane(); break;
     case 'q':   setMode('select'); break;
     case 'w':   setMode('move'); break;
     case 'e':   setMode('rotate'); break;
@@ -4508,11 +4703,22 @@ function _fpBuildRows(type, o) {
 
   switch (type) {
     case 'box':
-      return row('Länge X', 'fpw',    w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
-             row('Tiefe Y',  'fpd',    d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
-             row('Höhe Z',   'fph',    h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+      if (_edgeMode && _edgeObj === o && o.userData.edgeBevels) {
+        const selCount = _edgeSel.size;
+        const fb = selCount > 0 ? o.userData.edgeBevels[[..._edgeSel][0]] : {fillet:0,chamfer:0};
+        return `<div class="fp-row"><span class="fp-lbl">${selCount} Kante${selCount!==1?'n':''} ausgewählt</span></div>` +
+          row('Abrundung',   'fp-edge-fil', fb.fillet,  'applyEdgeBevels()', '%', 0, 100, 0.5) +
+          row('Abschrägung', 'fp-edge-cha', fb.chamfer, 'applyEdgeBevels()', '%', 0, 100, 0.5) +
+          `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="exitEdgeMode()">Fertig</button>` +
+          `<button class="fp-btn" onclick="_resetAllEdges()">Zurücksetzen</button></div>`;
+      }
+      return row('Länge X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
+             row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
+             row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
-             row('Abrundung', 'fp-fil', o.userData.fillet||0, "applyFillet(this.value,"+(o.userData.chamfer||0)+")", '%', 0, 100, 0.5);
+             row('Abrundung',   'fp-fil', o.userData.fillet||0,  "applyFillet(this.value,0)",   '%', 0, 100, 0.5) +
+             row('Abschrägung', 'fp-cha', o.userData.chamfer||0, "applyFillet(0,this.value)",   '%', 0, 100, 0.5) +
+             `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="enterEdgeMode()">⬡ Kanten bearbeiten</button></div>`;
     case 'cylinder': case 'tube': {
       const rad = r2(sz.x / 2 * 10);
       return row('Radius',   'fp-r',  rad, "fpApplyRadius(this.value)",  'mm', 0.1, 250) +
@@ -4569,7 +4775,8 @@ function _fpSyncValues() {
   switch (type) {
     case 'box':
       set('fpw', w); set('fph', h); set('fpd', d);
-      set('fp-fil', o.userData.fillet||0); break;
+      set('fp-fil', o.userData.fillet||0);
+      set('fp-cha', o.userData.chamfer||0); break;
     case 'cylinder': case 'tube':
       set('fp-r', r2(sz.x/2*10)); set('fph', h);
       set('fp-seg', o.userData.segments||32); break;
