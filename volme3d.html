@@ -1461,14 +1461,15 @@ function buildRoundedBox(sx, sy, sz, radius, segs) {
 }
 
 // ─── Per-Edge Rounded Box ─────────────────────────────────────────────
-function buildRoundedBoxEdges(sx, sy, sz, edgeBevels, segs) {
+function buildRoundedBoxEdges(sx, sy, sz, edgeBevels, segs, scale) {
   segs = segs || 12;
   const activeIdx = edgeBevels.findIndex(e => e.fillet > 0 || e.chamfer > 0);
   if (activeIdx < 0) return new THREE.BoxGeometry(sx, sy, sz);
 
   const eb = edgeBevels[activeIdx];
+  const minScale = scale ? Math.min(scale.x, scale.y, scale.z) : 1;
   const maxR = Math.min(sx, sy, sz) / 2 * 0.48;
-  const r = Math.min((eb.fillet + eb.chamfer) / 10, maxR);
+  const r = Math.min(((eb.fillet + eb.chamfer) / (minScale * 20)) * 2 * 0.48, maxR);
   if (r <= 0.01) return new THREE.BoxGeometry(sx, sy, sz);
   const isFillet = eb.fillet > 0;
 
@@ -1635,17 +1636,13 @@ function applyFillet(filletVal, chamferVal) {
   document.getElementById('sl-chamfer').value = chamferVal;
   document.getElementById('dn-chamfer').value = chamferVal;
 
-  const box = getMeshBox(o);
-  const sz  = box.getSize(new THREE.Vector3());
-
+  const minScale = Math.min(o.scale.x, o.scale.y, o.scale.z);
   let geo;
   if (filletVal > 0) {
-    const maxR = Math.min(sz.x, sz.y, sz.z) / 2 / o.scale.x * 0.45;
-    const r = Math.min(filletVal / 20, maxR);
+    const r = Math.min((filletVal / (minScale * 20)) * 2 * 0.48, 0.48);
     geo = buildRoundedBox(2, 2, 2, r * 2, 6);
   } else if (chamferVal > 0) {
-    const maxC = Math.min(sz.x, sz.y, sz.z) / 2 / o.scale.x * 0.45;
-    const c = Math.min(chamferVal / 20, maxC);
+    const c = Math.min((chamferVal / (minScale * 20)) * 2 * 0.48, 0.48);
     geo = buildChamferBox(2, 2, 2, c * 2);
   } else {
     geo = new THREE.BoxGeometry(2, 2, 2);
@@ -1727,7 +1724,7 @@ function applyEdgeBevels() {
   o.userData.edgeBevels = Array.from({length:12}, () => ({fillet:0, chamfer:0}));
   _edgeSel.forEach(i => { o.userData.edgeBevels[i] = {fillet:fv, chamfer:cv}; });
   o.geometry.dispose();
-  o.geometry = buildRoundedBoxEdges(2, 2, 2, o.userData.edgeBevels, 12);
+  o.geometry = buildRoundedBoxEdges(2, 2, 2, o.userData.edgeBevels, 12, o.scale);
   o.geometry.computeVertexNormals();
 }
 
@@ -4705,19 +4702,20 @@ function _fpBuildRows(type, o) {
       if (_edgeMode && _edgeObj === o && o.userData.edgeBevels) {
         const selCount = _edgeSel.size;
         const fb = selCount > 0 ? o.userData.edgeBevels[[..._edgeSel][0]] : {fillet:0,chamfer:0};
-        const maxMm = Math.round(Math.min(o.scale.x, o.scale.y, o.scale.z) * 10 * 0.48 * 10) / 10;
+        const maxMm = Math.round(Math.min(o.scale.x, o.scale.y, o.scale.z) * 10 * 10) / 10;
         return `<div class="fp-row"><span class="fp-lbl">${selCount} Kante${selCount!==1?'n':''} ausgewählt</span></div>` +
           row('Radius',      'fp-edge-fil', fb.fillet,  'applyEdgeBevels()', 'mm', 0, maxMm, 0.1) +
           row('Abschrägung', 'fp-edge-cha', fb.chamfer, 'applyEdgeBevels()', 'mm', 0, maxMm, 0.1) +
           `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="exitEdgeMode()">Fertig</button>` +
           `<button class="fp-btn" onclick="_resetAllEdges()">Zurücksetzen</button></div>`;
       }
+      const fpMaxMm = Math.round(Math.min(o.scale.x, o.scale.y, o.scale.z) * 10 * 10) / 10;
       return row('Länge X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
-             row('Abrundung',   'fp-fil', o.userData.fillet||0,  "applyFillet(this.value,0)",   '%', 0, 100, 0.5) +
-             row('Abschrägung', 'fp-cha', o.userData.chamfer||0, "applyFillet(0,this.value)",   '%', 0, 100, 0.5) +
+             row('Radius',      'fp-fil', o.userData.fillet||0,  "applyFillet(this.value,0)",   'mm', 0, fpMaxMm, 0.1) +
+             row('Abschrägung', 'fp-cha', o.userData.chamfer||0, "applyFillet(0,this.value)",   'mm', 0, fpMaxMm, 0.1) +
              `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="enterEdgeMode()">⬡ Kanten bearbeiten</button></div>`;
     case 'cylinder': case 'tube': {
       const rad = r2(sz.x / 2 * 10);
