@@ -1463,107 +1463,100 @@ function buildRoundedBox(sx, sy, sz, radius, segs) {
 // ─── Per-Edge Rounded Box ─────────────────────────────────────────────
 function buildRoundedBoxEdges(sx, sy, sz, edgeBevels, segs) {
   segs = segs || 12;
-  const maxR = Math.min(sx,sy,sz)/2 * 0.48;
-  const r = edgeBevels.map(e => Math.min((e.fillet + e.chamfer) / 100 * maxR, maxR));
-  const eSegs = edgeBevels.map(e => e.fillet > 0 ? segs : 1);
-  if (r.every(v => v <= 0.01)) return new THREE.BoxGeometry(sx,sy,sz);
+  const activeIdx = edgeBevels.findIndex(e => e.fillet > 0 || e.chamfer > 0);
+  if (activeIdx < 0) return new THREE.BoxGeometry(sx, sy, sz);
 
-  const positions=[], normals=[], uvs=[], idxs=[];
-  function addQuad(p0,p1,p2,p3,n) {
-    const b=positions.length/3;
-    [p0,p1,p2,p3].forEach(p=>{positions.push(...p);normals.push(...n);uvs.push(0,0);});
-    idxs.push(b,b+1,b+2,b,b+2,b+3);
+  const eb = edgeBevels[activeIdx];
+  const maxR = Math.min(sx, sy, sz) / 2 * 0.48;
+  const r = Math.min((eb.fillet + eb.chamfer) / 100 * maxR, maxR);
+  if (r <= 0.01) return new THREE.BoxGeometry(sx, sy, sz);
+  const isFillet = eb.fillet > 0;
+
+  // Axis group determines profile plane, extrude axis, corner mapping and transform.
+  //
+  // Z-axis edges (0-3): profile in XY, extrude along +Z.
+  //   shape-X→world-X, shape-Y→world-Y, extrude→world-Z
+  //   corners: 0=TR(+X+Y) 1=TL(-X+Y) 2=BL(-X-Y) 3=BR(+X-Y)
+  //
+  // X-axis edges (4-7): profile in ZY, extrude along world-(-X).
+  //   Ry(-90°): shape-X→world-Z, shape-Y→world-Y, extrude→world-(-X)
+  //   profW=sz (horizontal=Z), profH=sy (vertical=Y)
+  //   corners: 4→TR 5→BR 6→BL 7→TL
+  //
+  // Y-axis edges (8-11): profile in X(-Z), extrude along world-Y.
+  //   Custom rot: shape-X→world-X, shape-Y→world-(-Z), extrude→world-Y
+  //   profW=sx (horizontal=X), profH=sz (vertical=-Z)
+  //   corners: 8→BR 9→BL 10→TL 11→TR
+
+  let profW, profH, extrudeLen, cornerIdx, rotMat = null, tx = 0, ty = 0, tz = 0;
+
+  if (activeIdx <= 3) {
+    profW = sx; profH = sy; extrudeLen = sz;
+    cornerIdx = activeIdx;
+    tz = -sz / 2;
+  } else if (activeIdx <= 7) {
+    profW = sz; profH = sy; extrudeLen = sx;
+    cornerIdx = [0, 3, 2, 1][activeIdx - 4];
+    rotMat = new THREE.Matrix4().makeRotationY(-Math.PI / 2);
+    tx = sx / 2;
+  } else {
+    profW = sx; profH = sz; extrudeLen = sy;
+    cornerIdx = [3, 2, 1, 0][activeIdx - 8];
+    // shape-X→X, shape-Y→-Z, extrude(shape-Z)→Y
+    rotMat = new THREE.Matrix4().set(
+      1,  0, 0, 0,
+      0,  0, 1, 0,
+      0, -1, 0, 0,
+      0,  0, 0, 1
+    );
+    ty = -sy / 2;
   }
-  // 6 flat faces with asymmetric per-edge insets
-  // +Y face: left edge1, right edge0, front edge4, back edge7
-  addQuad([-(sx/2-r[1]),sy/2,(sz/2-r[4])],[(sx/2-r[0]),sy/2,(sz/2-r[4])],
-          [(sx/2-r[0]),sy/2,-(sz/2-r[7])],[-(sx/2-r[1]),sy/2,-(sz/2-r[7])],[0,1,0]);
-  // -Y face: left edge2, right edge3, front edge5, back edge6
-  addQuad([-(sx/2-r[2]),-sy/2,-(sz/2-r[6])],[(sx/2-r[3]),-sy/2,-(sz/2-r[6])],
-          [(sx/2-r[3]),-sy/2,(sz/2-r[5])],[-(sx/2-r[2]),-sy/2,(sz/2-r[5])],[0,-1,0]);
-  // +X face: bottom edge3, top edge0, front edge8, back edge11
-  addQuad([sx/2,-(sy/2-r[3]),-(sz/2-r[11])],[sx/2,(sy/2-r[0]),-(sz/2-r[11])],
-          [sx/2,(sy/2-r[0]),(sz/2-r[8])],[sx/2,-(sy/2-r[3]),(sz/2-r[8])],[1,0,0]);
-  // -X face: bottom edge2, top edge1, front edge9, back edge10
-  addQuad([-sx/2,-(sy/2-r[2]),(sz/2-r[9])],[-sx/2,(sy/2-r[1]),(sz/2-r[9])],
-          [-sx/2,(sy/2-r[1]),-(sz/2-r[10])],[-sx/2,-(sy/2-r[2]),-(sz/2-r[10])],[-1,0,0]);
-  // +Z face: left edge9, right edge8, bottom edge5, top edge4
-  addQuad([-(sx/2-r[9]),-(sy/2-r[5]),sz/2],[(sx/2-r[8]),-(sy/2-r[5]),sz/2],
-          [(sx/2-r[8]),(sy/2-r[4]),sz/2],[-(sx/2-r[9]),(sy/2-r[4]),sz/2],[0,0,1]);
-  // -Z face: right edge11, left edge10, bottom edge6, top edge7
-  addQuad([(sx/2-r[11]),-(sy/2-r[6]),-sz/2],[-(sx/2-r[10]),-(sy/2-r[6]),-sz/2],
-          [-(sx/2-r[10]),(sy/2-r[7]),-sz/2],[(sx/2-r[11]),(sy/2-r[7]),-sz/2],[0,0,-1]);
 
-  // 12 edge cylinders (own radius + segs per edge)
-  function addEdgeCyl(cx,cy,cz,axis,len,na,nb,ri,si,flip=false) {
-    if (ri <= 0.01) return;
-    for (let i=0;i<si;i++) {
-      const a0=i/si*Math.PI/2, a1=(i+1)/si*Math.PI/2;
-      const c0=Math.cos(a0),s0=Math.sin(a0),c1=Math.cos(a1),s1=Math.sin(a1);
-      const pt=(sign)=>{
-        const lv=sign*len/2;
-        return [[cx+na[0]*ri*c0+nb[0]*ri*s0+axis[0]*lv,cy+na[1]*ri*c0+nb[1]*ri*s0+axis[1]*lv,cz+na[2]*ri*c0+nb[2]*ri*s0+axis[2]*lv],
-                [cx+na[0]*ri*c1+nb[0]*ri*s1+axis[0]*lv,cy+na[1]*ri*c1+nb[1]*ri*s1+axis[1]*lv,cz+na[2]*ri*c1+nb[2]*ri*s1+axis[2]*lv]];
-      };
-      const [p00,p10]=pt(-1),[p01,p11]=pt(1);
-      const n0=[na[0]*c0+nb[0]*s0,na[1]*c0+nb[1]*s0,na[2]*c0+nb[2]*s0];
-      const n1=[na[0]*c1+nb[0]*s1,na[1]*c1+nb[1]*s1,na[2]*c1+nb[2]*s1];
-      const b=positions.length/3;
-      positions.push(...p00,...p10,...p11,...p01);
-      normals.push(...n0,...n1,...n1,...n0);
-      uvs.push(0,0,1,0,1,1,0,1);
-      if(!flip) idxs.push(b,b+1,b+2,b,b+2,b+3);
-      else      idxs.push(b,b+2,b+1,b,b+3,b+2);
-    }
+  // CCW rectangle corners: 0=TR 1=TL 2=BL 3=BR
+  const hw = profW / 2, hh = profH / 2;
+  const C = [[hw, hh], [-hw, hh], [-hw, -hh], [hw, -hh]];
+
+  // Arc: [centerX, centerY, startAngle, endAngle] CCW per corner
+  const A = [
+    [ hw - r,  hh - r,  0,            Math.PI / 2],  // TR
+    [-hw + r,  hh - r,  Math.PI / 2,  Math.PI],       // TL
+    [-hw + r, -hh + r,  Math.PI,      3 * Math.PI / 2], // BL
+    [ hw - r, -hh + r, -Math.PI / 2,  0],             // BR
+  ];
+
+  // Chamfer: [entry, exit] tangent points per corner
+  const P = [
+    [[hw, hh - r],    [hw - r, hh]],    // TR
+    [[-hw + r, hh],   [-hw, hh - r]],   // TL
+    [[-hw, -hh + r],  [-hw + r, -hh]],  // BL
+    [[hw - r, -hh],   [hw, -hh + r]],   // BR
+  ];
+
+  // Build CCW shape starting at the corner after the beveled one
+  const si = (cornerIdx + 1) % 4;
+  const shape = new THREE.Shape();
+  shape.moveTo(...C[si]);
+  shape.lineTo(...C[(si + 1) % 4]);
+  shape.lineTo(...C[(si + 2) % 4]);
+
+  if (isFillet) {
+    const [cx, cy, a0, a1] = A[cornerIdx];
+    shape.lineTo(cx + r * Math.cos(a0), cy + r * Math.sin(a0));
+    shape.absarc(cx, cy, r, a0, a1, false);
+  } else {
+    shape.lineTo(...P[cornerIdx][0]);
+    shape.lineTo(...P[cornerIdx][1]);
   }
-  const hw=sx/2,hh=sy/2,hd=sz/2;
-  // Z-axis edges 0-3
-  addEdgeCyl(hw-r[0], hh-r[0],0, [0,0,1],sz,[1,0,0],[0,1,0],   r[0],eSegs[0]);
-  addEdgeCyl(-hw+r[1],hh-r[1],0, [0,0,1],sz,[0,1,0],[-1,0,0],  r[1],eSegs[1]);
-  addEdgeCyl(-hw+r[2],-hh+r[2],0,[0,0,1],sz,[-1,0,0],[0,-1,0], r[2],eSegs[2]);
-  addEdgeCyl(hw-r[3], -hh+r[3],0,[0,0,1],sz,[0,-1,0],[1,0,0],  r[3],eSegs[3]);
-  // X-axis edges 4-7
-  addEdgeCyl(0, hh-r[4], hd-r[4],[1,0,0],sx,[0,1,0],[0,0,1],   r[4],eSegs[4]);
-  addEdgeCyl(0,-hh+r[5], hd-r[5],[1,0,0],sx,[0,0,1],[0,-1,0],  r[5],eSegs[5]);
-  addEdgeCyl(0,-hh+r[6],-hd+r[6],[1,0,0],sx,[0,-1,0],[0,0,-1], r[6],eSegs[6]);
-  addEdgeCyl(0, hh-r[7],-hd+r[7],[1,0,0],sx,[0,0,-1],[0,1,0],  r[7],eSegs[7]);
-  // Y-axis edges 8-11
-  addEdgeCyl(hw-r[8], 0, hd-r[8], [0,1,0],sy,[1,0,0],[0,0,1],  r[8],eSegs[8],true);
-  addEdgeCyl(-hw+r[9],0, hd-r[9], [0,1,0],sy,[0,0,1],[-1,0,0], r[9],eSegs[9],true);
-  addEdgeCyl(-hw+r[10],0,-hd+r[10],[0,1,0],sy,[-1,0,0],[0,0,-1],r[10],eSegs[10],true);
-  addEdgeCyl(hw-r[11],0,-hd+r[11],[0,1,0],sy,[0,0,-1],[1,0,0], r[11],eSegs[11],true);
+  shape.closePath();
 
-  // 8 corners: radius = min of 3 adjacent edges
-  const CEDGES=[[0,4,8],[1,4,9],[3,5,8],[2,5,9],[0,7,11],[1,7,10],[3,6,11],[2,6,10]];
-  const CSIGNS=[[1,1,1],[-1,1,1],[1,-1,1],[-1,-1,1],[1,1,-1],[-1,1,-1],[1,-1,-1],[-1,-1,-1]];
-  const PI2=Math.PI/2;
-  CEDGES.forEach(([e0,e1,e2], ci) => {
-    const rc=Math.min(r[e0],r[e1],r[e2]);
-    if (rc<=0.01) return;
-    const [sx2,sy2,sz2]=CSIGNS[ci];
-    const cx=(hw-rc)*sx2, cy=(hh-rc)*sy2, cz=(hd-rc)*sz2;
-    for (let ii=0;ii<segs;ii++) for (let jj=0;jj<segs;jj++) {
-      const phi0=jj/segs*PI2,phi1=(jj+1)/segs*PI2;
-      const tht0=ii/segs*PI2,tht1=(ii+1)/segs*PI2;
-      const ptc=(phi,tht)=>{
-        const nx=sx2*Math.cos(phi)*Math.sin(tht);
-        const ny=sy2*Math.sin(phi);
-        const nz=sz2*Math.cos(phi)*Math.cos(tht);
-        return {p:[cx+nx*rc,cy+ny*rc,cz+nz*rc],n:[nx,ny,nz]};
-      };
-      const v0=ptc(phi0,tht0),v1=ptc(phi0,tht1),v2=ptc(phi1,tht1),v3=ptc(phi1,tht0);
-      const b=positions.length/3;
-      [v0,v1,v2,v3].forEach(v=>{positions.push(...v.p);normals.push(...v.n);uvs.push(0,0);});
-      if(sx2*sy2*sz2>0) idxs.push(b,b+1,b+2,b,b+2,b+3);
-      else              idxs.push(b,b+2,b+1,b,b+3,b+2);
-    }
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: extrudeLen,
+    bevelEnabled: false,
+    curveSegments: isFillet ? segs : 1,
   });
 
-  const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
-  geo.setAttribute('normal',  new THREE.Float32BufferAttribute(normals,3));
-  geo.setAttribute('uv',      new THREE.Float32BufferAttribute(uvs,2));
-  geo.setIndex(idxs);
+  if (rotMat) geo.applyMatrix4(rotMat);
+  geo.translate(tx, ty, tz);
   geo.computeVertexNormals();
   return geo;
 }
@@ -1733,7 +1726,12 @@ function applyEdgeBevels() {
   const cv = parseFloat(document.getElementById('fp-edge-cha')?.value) || 0;
   o.userData.edgeBevels = Array.from({length:12}, () => ({fillet:0, chamfer:0}));
   _edgeSel.forEach(i => { o.userData.edgeBevels[i] = {fillet:fv, chamfer:cv}; });
+  console.log('_edgeSel:', [..._edgeSel]);
+  console.log('aktive edgeBevels:', o.userData.edgeBevels
+    .map((e,i) => e.fillet||e.chamfer ? `[${i}]:f=${e.fillet},c=${e.chamfer}` : null)
+    .filter(Boolean));
   o.geometry.dispose();
+  console.log('r[0] =', 50/100 * Math.min(2,2,2)/2 * 0.48);
   o.geometry = buildRoundedBoxEdges(2, 2, 2, o.userData.edgeBevels, 12);
   o.geometry.computeVertexNormals();
 }
