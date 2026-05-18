@@ -1642,29 +1642,41 @@ function applyFillet(filletVal, chamferVal) {
 // ─── Edge Mode ────────────────────────────────────────────────────────
 function _buildEdgesFromGeometry(mesh) {
   const edgesGeo = new THREE.EdgesGeometry(mesh.geometry, 55);
-  const pos = edgesGeo.attributes.position;
+  const ePos = edgesGeo.attributes.position;
+  const srcPos = mesh.geometry.attributes.position;
+  const EPS = 1e-2;
   const edges = [];
   const maxEdges = 30;
-  for (let i = 0; i < Math.min(pos.count / 2, maxEdges) * 2; i += 2) {
-    edges.push([
-      [pos.getX(i),   pos.getY(i),   pos.getZ(i)],
-      [pos.getX(i+1), pos.getY(i+1), pos.getZ(i+1)]
-    ]);
+  const findAllIdx = (x, y, z) => {
+    const v = new THREE.Vector3(x, y, z);
+    const result = [];
+    for (let i = 0; i < srcPos.count; i++) {
+      if (v.distanceTo(new THREE.Vector3(srcPos.getX(i), srcPos.getY(i), srcPos.getZ(i))) < EPS)
+        result.push(i);
+    }
+    return result;
+  };
+  const limit = Math.min(ePos.count / 2, maxEdges);
+  for (let i = 0; i < limit * 2; i += 2) {
+    const ax = ePos.getX(i),   ay = ePos.getY(i),   az = ePos.getZ(i);
+    const bx = ePos.getX(i+1), by = ePos.getY(i+1), bz = ePos.getZ(i+1);
+    edges.push({ worldA: [ax,ay,az], worldB: [bx,by,bz],
+                 indicesA: findAllIdx(ax,ay,az), indicesB: findAllIdx(bx,by,bz) });
   }
   edgesGeo.dispose();
   return edges;
 }
 
 function _applyBufferGeometryChamfer(mesh, edgeIndex, chamferDist) {
-  const EPS = 1e-2;
   const dynEdge = mesh.userData._dynamicEdges[edgeIndex];
-  if (!dynEdge) return false;
-  const A = new THREE.Vector3(...dynEdge[0]);
-  const B = new THREE.Vector3(...dynEdge[1]);
+  if (!dynEdge || !dynEdge.indicesA?.length || !dynEdge.indicesB?.length) return false;
+  const setA = new Set(dynEdge.indicesA);
+  const setB = new Set(dynEdge.indicesB);
+  const A = new THREE.Vector3(...dynEdge.worldA);
+  const B = new THREE.Vector3(...dynEdge.worldB);
   const geo = mesh.geometry;
   const pos = geo.attributes.position;
 
-  // Build triangle list
   const tris = [];
   for (let i = 0; i < pos.count; i += 3) {
     tris.push({ idx: i, verts: [
@@ -1674,16 +1686,17 @@ function _applyBufferGeometryChamfer(mesh, edgeIndex, chamferDist) {
     ]});
   }
 
-  const nearA = v => v.distanceTo(A) < EPS;
-  const nearB = v => v.distanceTo(B) < EPS;
+  const isA = (t, j) => setA.has(t.idx + j);
+  const isB = (t, j) => setB.has(t.idx + j);
+  const hasA = t => [0,1,2].some(j => isA(t,j));
+  const hasB = t => [0,1,2].some(j => isB(t,j));
 
-  // Find exactly 2 triangles sharing both A and B
-  const adjTris = tris.filter(t => t.verts.some(nearA) && t.verts.some(nearB));
+  const adjTris = tris.filter(t => hasA(t) && hasB(t));
   if (adjTris.length !== 2) return false;
 
   const [T1, T2] = adjTris;
-  const C1 = T1.verts.find(v => !nearA(v) && !nearB(v));
-  const C2 = T2.verts.find(v => !nearA(v) && !nearB(v));
+  const C1 = T1.verts.find((v, j) => !isA(T1,j) && !isB(T1,j));
+  const C2 = T2.verts.find((v, j) => !isA(T2,j) && !isB(T2,j));
   if (!C1 || !C2) return false;
 
   // In-face direction: perpendicular to edge AB, pointing toward opposite vertex
@@ -1711,14 +1724,14 @@ function _applyBufferGeometryChamfer(mesh, edgeIndex, chamferDist) {
 
   for (const t of tris) {
     if (t === T1) {
-      t.verts.forEach(v => push(nearA(v) ? A1 : nearB(v) ? B1 : v));
+      t.verts.forEach((v,j) => push(isA(T1,j) ? A1 : isB(T1,j) ? B1 : v));
     } else if (t === T2) {
-      t.verts.forEach(v => push(nearA(v) ? A2 : nearB(v) ? B2 : v));
+      t.verts.forEach((v,j) => push(isA(T2,j) ? A2 : isB(T2,j) ? B2 : v));
     } else {
       const tn = triNorm(t);
-      t.verts.forEach(v => {
-        if (nearA(v)) push(tn.dot(n1) >= tn.dot(n2) ? A1 : A2);
-        else if (nearB(v)) push(tn.dot(n1) >= tn.dot(n2) ? B1 : B2);
+      t.verts.forEach((v,j) => {
+        if (isA(t,j)) push(tn.dot(n1) >= tn.dot(n2) ? A1 : A2);
+        else if (isB(t,j)) push(tn.dot(n1) >= tn.dot(n2) ? B1 : B2);
         else push(v);
       });
     }
@@ -1804,9 +1817,15 @@ function _findHoveredEdge(e) {
   const edges = _edgeObj.userData._dynamicEdges || EDGE_ENDPOINTS;
   const isDynamic = !!_edgeObj.userData._dynamicEdges;
   let minD=Infinity, minI=-1;
-  edges.forEach(([a,b],i) => {
-    const wa = isDynamic ? new THREE.Vector3(...a) : new THREE.Vector3(...a).applyMatrix4(mat);
-    const wb = isDynamic ? new THREE.Vector3(...b) : new THREE.Vector3(...b).applyMatrix4(mat);
+  edges.forEach((edge, i) => {
+    let wa, wb;
+    if (isDynamic) {
+      wa = new THREE.Vector3(...edge.worldA);
+      wb = new THREE.Vector3(...edge.worldB);
+    } else {
+      wa = new THREE.Vector3(...edge[0]).applyMatrix4(mat);
+      wb = new THREE.Vector3(...edge[1]).applyMatrix4(mat);
+    }
     const d=_distRayToSegment(raycaster.ray, wa, wb);
     if (d<minD) { minD=d; minI=i; }
   });
