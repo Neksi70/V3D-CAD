@@ -1654,6 +1654,91 @@ function _buildEdgesFromGeometry(mesh) {
   return edges;
 }
 
+function _applyBufferGeometryChamfer(mesh, edgeIndex, chamferDist) {
+  const EPS = 1e-4;
+  const dynEdge = mesh.userData._dynamicEdges[edgeIndex];
+  if (!dynEdge) return false;
+  const A = new THREE.Vector3(...dynEdge[0]);
+  const B = new THREE.Vector3(...dynEdge[1]);
+  const geo = mesh.geometry;
+  const pos = geo.attributes.position;
+
+  // Build triangle list
+  const tris = [];
+  for (let i = 0; i < pos.count; i += 3) {
+    tris.push({ idx: i, verts: [
+      new THREE.Vector3(pos.getX(i),   pos.getY(i),   pos.getZ(i)),
+      new THREE.Vector3(pos.getX(i+1), pos.getY(i+1), pos.getZ(i+1)),
+      new THREE.Vector3(pos.getX(i+2), pos.getY(i+2), pos.getZ(i+2)),
+    ]});
+  }
+
+  const nearA = v => v.distanceTo(A) < EPS;
+  const nearB = v => v.distanceTo(B) < EPS;
+
+  // Find exactly 2 triangles sharing both A and B
+  const adjTris = tris.filter(t => t.verts.some(nearA) && t.verts.some(nearB));
+  if (adjTris.length !== 2) return false;
+
+  const [T1, T2] = adjTris;
+  const C1 = T1.verts.find(v => !nearA(v) && !nearB(v));
+  const C2 = T2.verts.find(v => !nearA(v) && !nearB(v));
+  if (!C1 || !C2) return false;
+
+  // In-face direction: perpendicular to edge AB, pointing toward opposite vertex
+  const edgeDir = B.clone().sub(A).normalize();
+  const getPerp = (C) => {
+    const AC = C.clone().sub(A);
+    return AC.clone().sub(edgeDir.clone().multiplyScalar(AC.dot(edgeDir))).normalize();
+  };
+  const perp1 = getPerp(C1);
+  const perp2 = getPerp(C2);
+
+  const A1 = A.clone().addScaledVector(perp1, chamferDist);
+  const B1 = B.clone().addScaledVector(perp1, chamferDist);
+  const A2 = A.clone().addScaledVector(perp2, chamferDist);
+  const B2 = B.clone().addScaledVector(perp2, chamferDist);
+
+  // Face normals for side classification
+  const triNorm = t => t.verts[1].clone().sub(t.verts[0]).cross(t.verts[2].clone().sub(t.verts[0])).normalize();
+  const n1 = triNorm(T1);
+  const n2 = triNorm(T2);
+
+  // Rebuild position buffer
+  const newPos = [];
+  const push = v => newPos.push(v.x, v.y, v.z);
+
+  for (const t of tris) {
+    if (t === T1) {
+      t.verts.forEach(v => push(nearA(v) ? A1 : nearB(v) ? B1 : v));
+    } else if (t === T2) {
+      t.verts.forEach(v => push(nearA(v) ? A2 : nearB(v) ? B2 : v));
+    } else {
+      const tn = triNorm(t);
+      t.verts.forEach(v => {
+        if (nearA(v)) push(tn.dot(n1) >= tn.dot(n2) ? A1 : A2);
+        else if (nearB(v)) push(tn.dot(n1) >= tn.dot(n2) ? B1 : B2);
+        else push(v);
+      });
+    }
+  }
+
+  // Chamfer quad — check winding against expected normal (bisector outward)
+  const chamferNorm = n1.clone().add(n2).normalize();
+  const testNorm = A2.clone().sub(A1).cross(B2.clone().sub(A1));
+  if (testNorm.dot(chamferNorm) < 0) {
+    push(A1); push(B2); push(A2);
+    push(A1); push(B1); push(B2);
+  } else {
+    push(A1); push(A2); push(B2);
+    push(A1); push(B2); push(B1);
+  }
+
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(newPos, 3));
+  geo.computeVertexNormals();
+  return true;
+}
+
 function enterEdgeMode() {
   const o = getFirst();
   const _isBox = o.userData.shapeType === 'box' || o.geometry instanceof THREE.BoxGeometry || !!o.userData.edgeBevels;
@@ -1725,7 +1810,21 @@ function _findHoveredEdge(e) {
 
 function applyEdgeBevels() {
   const o = _edgeObj; if (!o || !_edgeSel.size) return;
-  if (o.userData._dynamicEdges) { notify('Fillet/Chamfer nur für Box-Objekte', 'w'); return; }
+  if (o.userData._dynamicEdges) {
+    const cv = parseFloat(document.getElementById('fp-edge-cha')?.value) || 0;
+    if (cv <= 0) return;
+    saveUndo();
+    const dist = cv / 10;
+    let applied = 0;
+    _edgeSel.forEach(i => { if (_applyBufferGeometryChamfer(o, i, dist)) applied++; });
+    if (applied > 0) {
+      exitEdgeMode(); enterEdgeMode();
+      notify(applied + ' Kante(n) abgeschrägt', 'ok');
+    } else {
+      notify('Kante nicht modifizierbar (Randkante?)', 'w');
+    }
+    return;
+  }
   const fv = parseFloat(document.getElementById('fp-edge-fil')?.value) || 0;
   const cv = parseFloat(document.getElementById('fp-edge-cha')?.value) || 0;
   o.userData.edgeBevels = Array.from({length:12}, () => ({fillet:0, chamfer:0}));
