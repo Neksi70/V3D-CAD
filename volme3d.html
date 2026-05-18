@@ -1234,11 +1234,12 @@ const _wpGrid = new THREE.GridHelper(8, 8, 0xff6600, 0xff8800);
 _wpGrid.visible = false;
 scene.add(_wpGrid);
 
-let _edgeMode  = false;
-let _edgeObj   = null;
-let _edgeLines = null;
-let _edgeSel   = new Set();
-let _edgeHover = -1;
+let _edgeMode   = false;
+let _edgeGlobal = false;
+let _edgeObj    = null;
+let _edgeLines  = null;
+let _edgeSel    = new Set();
+let _edgeHover  = -1;
 const EDGE_ENDPOINTS = [
   [[ 1, 1,-1],[ 1, 1, 1]],
   [[-1, 1,-1],[-1, 1, 1]],
@@ -1761,12 +1762,23 @@ function _applyBufferGeometryChamfer(mesh, edgeIndex, chamferDist) {
 function enterEdgeMode() {
   const o = getFirst();
   const _isBox = o.userData.shapeType === 'box' || o.geometry instanceof THREE.BoxGeometry || !!o.userData.edgeBevels;
-  if (!_isBox) return;
+  _edgeObj = o; _edgeSel.clear(); _edgeHover = -1; _edgeMode = true;
+
+  if (!_isBox) {
+    _edgeGlobal = true;
+    saveUndo();
+    o.userData._globalChamferOrigGeo = o.geometry.clone();
+    _fpCurType = null; updateFP();
+    canvas.style.cursor = 'default';
+    notify('Abschrägung einstellen — ESC zum Beenden', 'ok');
+    return;
+  }
+
+  _edgeGlobal = false;
   const edges = o.userData.shapeType === 'box' ? EDGE_ENDPOINTS : _buildEdgesFromGeometry(o);
   if (o.userData.shapeType !== 'box') o.userData._dynamicEdges = edges;
   if (!o.userData.edgeBevels || o.userData.edgeBevels.length !== edges.length)
     o.userData.edgeBevels = Array.from({length: edges.length}, () => ({fillet:0, chamfer:0}));
-  _edgeObj = o; _edgeSel.clear(); _edgeHover = -1; _edgeMode = true;
   const verts = [];
   edges.forEach(edge => verts.push(
     ...(Array.isArray(edge) ? edge[0] : edge.worldA),
@@ -1786,8 +1798,11 @@ function enterEdgeMode() {
 
 function exitEdgeMode() {
   if (_edgeLines) { _edgeObj.remove(_edgeLines); _edgeLines.geometry.dispose(); _edgeLines = null; }
-  if (_edgeObj) delete _edgeObj.userData._dynamicEdges;
-  _edgeMode = false; _edgeObj = null; _edgeSel.clear(); _edgeHover = -1;
+  if (_edgeObj) {
+    delete _edgeObj.userData._dynamicEdges;
+    delete _edgeObj.userData._globalChamferOrigGeo;
+  }
+  _edgeMode = false; _edgeGlobal = false; _edgeObj = null; _edgeSel.clear(); _edgeHover = -1;
   canvas.style.cursor = '';
   _fpCurType = null; updateFP();
 }
@@ -1839,6 +1854,36 @@ function _findHoveredEdge(e) {
   const objSize = Math.max(sz.x, sz.y, sz.z);
   const threshold = isDynamic ? Math.max(0.5, objSize * 0.2) : Math.max(0.15, objSize * 0.05);
   return minD < threshold ? minI : -1;
+}
+
+function applyGlobalChamfer(mesh, chamferDist) {
+  const origGeo = mesh.userData._globalChamferOrigGeo;
+  if (!origGeo) return;
+  mesh.geometry.dispose();
+  mesh.geometry = origGeo.clone();
+  if (chamferDist <= 0) return;
+  const initialEdges = _buildEdgesFromGeometry(mesh);
+  const maxPasses = initialEdges.length;
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const edges = _buildEdgesFromGeometry(mesh);
+    mesh.userData._dynamicEdges = edges;
+    let found = false;
+    for (let i = 0; i < edges.length; i++) {
+      if (_applyBufferGeometryChamfer(mesh, i, chamferDist)) { found = true; break; }
+    }
+    if (!found) break;
+  }
+  delete mesh.userData._dynamicEdges;
+}
+
+function _resetGlobalChamfer() {
+  if (!_edgeObj?.userData._globalChamferOrigGeo) return;
+  _edgeObj.geometry.dispose();
+  _edgeObj.geometry = _edgeObj.userData._globalChamferOrigGeo.clone();
+  const inp = document.getElementById('fp-edge-cha');
+  if (inp) inp.value = 0;
+  const sl = document.getElementById('fp-edge-cha-sl');
+  if (sl) sl.value = 0;
 }
 
 function applyEdgeBevels() {
@@ -3288,11 +3333,13 @@ canvas.addEventListener('mousedown', e => {
   mouseDownPos = { x: e.clientX, y: e.clientY };
   if (e.button !== 0) return;
   if (_edgeMode) {
-    const idx = _findHoveredEdge(e);
-    if (idx >= 0) {
-      if (e.shiftKey) { if (_edgeSel.has(idx)) _edgeSel.delete(idx); else _edgeSel.add(idx); }
-      else { _edgeSel.clear(); _edgeSel.add(idx); }
-      _updateEdgeColors(); _fpCurType = null; updateFP();
+    if (!_edgeGlobal) {
+      const idx = _findHoveredEdge(e);
+      if (idx >= 0) {
+        if (e.shiftKey) { if (_edgeSel.has(idx)) _edgeSel.delete(idx); else _edgeSel.add(idx); }
+        else { _edgeSel.clear(); _edgeSel.add(idx); }
+        _updateEdgeColors(); _fpCurType = null; updateFP();
+      }
     }
     return;
   }
@@ -3356,7 +3403,7 @@ window.addEventListener('mousemove', e => {
       _wpHL.visible = true;
     } else { _wpHL.visible = false; }
   }
-  if (_edgeMode) {
+  if (_edgeMode && !_edgeGlobal) {
     const h = _findHoveredEdge(e);
     if (h !== _edgeHover) { _edgeHover = h; _updateEdgeColors(); }
     canvas.style.cursor = h >= 0 ? 'pointer' : 'crosshair';
@@ -4842,6 +4889,14 @@ function _fpBuildRows(type, o) {
 
   const isBoxGeom = type === 'box' || o.geometry instanceof THREE.BoxGeometry || !!o.userData.edgeBevels
     || type === 'subtract' || type === 'union' || type === 'import';
+
+  if (_edgeGlobal && _edgeMode && _edgeObj === o) {
+    const maxMm = Math.round(Math.min(o.scale.x, o.scale.y, o.scale.z) * 10 * 10) / 10;
+    return `<div class="fp-row"><span class="fp-lbl">Alle Kanten abschrägen</span></div>` +
+      row('Abschrägung', 'fp-edge-cha', 0, 'applyGlobalChamfer(_edgeObj,(parseFloat(document.getElementById(\'fp-edge-cha\').value)||0)/10)', 'mm', 0, maxMm, 0.1) +
+      `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="exitEdgeMode()">Fertig</button>` +
+      `<button class="fp-btn" onclick="_resetGlobalChamfer()">Zurücksetzen</button></div>`;
+  }
 
   if (isBoxGeom && _edgeMode && _edgeObj === o && o.userData.edgeBevels) {
     const selCount = _edgeSel.size;
