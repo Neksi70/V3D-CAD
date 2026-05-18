@@ -1640,17 +1640,34 @@ function applyFillet(filletVal, chamferVal) {
 }
 
 // ─── Edge Mode ────────────────────────────────────────────────────────
+function _buildEdgesFromGeometry(mesh) {
+  const edgesGeo = new THREE.EdgesGeometry(mesh.geometry, 30);
+  const pos = edgesGeo.attributes.position;
+  const edges = [];
+  for (let i = 0; i < pos.count; i += 2) {
+    edges.push([
+      [pos.getX(i),   pos.getY(i),   pos.getZ(i)],
+      [pos.getX(i+1), pos.getY(i+1), pos.getZ(i+1)]
+    ]);
+  }
+  edgesGeo.dispose();
+  return edges;
+}
+
 function enterEdgeMode() {
   const o = getFirst();
   const _isBox = o.userData.shapeType === 'box' || o.geometry instanceof THREE.BoxGeometry || !!o.userData.edgeBevels;
   if (!_isBox) return;
-  if (!o.userData.edgeBevels) o.userData.edgeBevels = Array.from({length:12}, () => ({fillet:0, chamfer:0}));
+  const edges = o.userData.shapeType === 'box' ? EDGE_ENDPOINTS : _buildEdgesFromGeometry(o);
+  if (o.userData.shapeType !== 'box') o.userData._dynamicEdges = edges;
+  if (!o.userData.edgeBevels || o.userData.edgeBevels.length !== edges.length)
+    o.userData.edgeBevels = Array.from({length: edges.length}, () => ({fillet:0, chamfer:0}));
   _edgeObj = o; _edgeSel.clear(); _edgeHover = -1; _edgeMode = true;
   const verts = [];
-  EDGE_ENDPOINTS.forEach(([a,b]) => verts.push(...a,...b));
+  edges.forEach(([a,b]) => verts.push(...a,...b));
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-  const cols = new Float32Array(24*3).fill(0.55);
+  const cols = new Float32Array(edges.length * 2 * 3).fill(0.55);
   geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
   _edgeLines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({vertexColors:true, linewidth:2}));
   _edgeLines.renderOrder = 999;
@@ -1662,6 +1679,7 @@ function enterEdgeMode() {
 
 function exitEdgeMode() {
   if (_edgeLines) { _edgeObj.remove(_edgeLines); _edgeLines.geometry.dispose(); _edgeLines = null; }
+  if (_edgeObj) delete _edgeObj.userData._dynamicEdges;
   _edgeMode = false; _edgeObj = null; _edgeSel.clear(); _edgeHover = -1;
   canvas.style.cursor = '';
   _fpCurType = null; updateFP();
@@ -1670,7 +1688,8 @@ function exitEdgeMode() {
 function _updateEdgeColors() {
   if (!_edgeLines) return;
   const col = _edgeLines.geometry.attributes.color;
-  for (let i=0; i<12; i++) {
+  const edgeCount = _edgeLines.geometry.attributes.color.count / 2;
+  for (let i=0; i<edgeCount; i++) {
     const isS=_edgeSel.has(i), isH=(i===_edgeHover && !isS);
     const [rv,gv,bv] = isS ? [1,0.4,0] : isH ? [1,0.85,0.2] : [0.55,0.55,0.55];
     col.setXYZ(i*2, rv,gv,bv); col.setXYZ(i*2+1, rv,gv,bv);
@@ -1693,8 +1712,9 @@ function _findHoveredEdge(e) {
   getNorm(e);
   raycaster.setFromCamera(mousev, camera);
   const mat=_edgeObj.matrixWorld;
+  const edges = _edgeObj.userData._dynamicEdges || EDGE_ENDPOINTS;
   let minD=Infinity, minI=-1;
-  EDGE_ENDPOINTS.forEach(([a,b],i) => {
+  edges.forEach(([a,b],i) => {
     const wa=new THREE.Vector3(...a).applyMatrix4(mat);
     const wb=new THREE.Vector3(...b).applyMatrix4(mat);
     const d=_distRayToSegment(raycaster.ray, wa, wb);
@@ -1705,6 +1725,7 @@ function _findHoveredEdge(e) {
 
 function applyEdgeBevels() {
   const o = _edgeObj; if (!o || !_edgeSel.size) return;
+  if (o.userData._dynamicEdges) { notify('Fillet/Chamfer nur für Box-Objekte', 'w'); return; }
   const fv = parseFloat(document.getElementById('fp-edge-fil')?.value) || 0;
   const cv = parseFloat(document.getElementById('fp-edge-cha')?.value) || 0;
   o.userData.edgeBevels = Array.from({length:12}, () => ({fillet:0, chamfer:0}));
@@ -1717,6 +1738,9 @@ function applyEdgeBevels() {
 
 function _resetAllEdges() {
   if (!_edgeObj) return;
+  if (_edgeObj.userData._dynamicEdges) {
+    _edgeSel.clear(); _updateEdgeColors(); _fpCurType = null; updateFP(); return;
+  }
   _edgeObj.userData.edgeBevels = Array.from({length:12}, () => ({fillet:0, chamfer:0}));
   _edgeObj.geometry.dispose();
   _edgeObj.geometry = new THREE.BoxGeometry(2,2,2);
