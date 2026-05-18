@@ -3387,13 +3387,25 @@ window.addEventListener('mousedown', e => {
 canvas.addEventListener('mousedown', e => {
   mouseDownPos = { x: e.clientX, y: e.clientY };
   if (e.button !== 0) return;
+  if (_edgeMode && _edgeHandle && !_edgeGlobal) {
+    getNorm(e);
+    raycaster.setFromCamera(mousev, camera);
+    const hits = raycaster.intersectObject(_edgeHandle);
+    if (hits.length > 0) {
+      _edgeHandleDrag = true;
+      _edgeHandleDragStart = {x: e.clientX, y: e.clientY};
+      _edgeHandleDragVal = 0;
+      e.preventDefault();
+      return;
+    }
+  }
   if (_edgeMode) {
     if (!_edgeGlobal) {
       const idx = _findHoveredEdge(e);
       if (idx >= 0) {
         if (e.shiftKey) { if (_edgeSel.has(idx)) _edgeSel.delete(idx); else _edgeSel.add(idx); }
         else { _edgeSel.clear(); _edgeSel.add(idx); }
-        _updateEdgeColors(); _fpCurType = null; updateFP();
+        _updateEdgeColors(); _updateEdgeHandle(); _fpCurType = null; updateFP();
       }
     }
     return;
@@ -3458,10 +3470,24 @@ window.addEventListener('mousemove', e => {
       _wpHL.visible = true;
     } else { _wpHL.visible = false; }
   }
+  if (_edgeHandleDrag) {
+    const dx = e.clientX - _edgeHandleDragStart.x;
+    const dy = _edgeHandleDragStart.y - e.clientY;
+    _edgeHandleDragVal = -(dx + dy) / 2 * 0.1;
+    const lbl = document.getElementById('edge-drag-lbl');
+    if (lbl) {
+      const mm = Math.abs(_edgeHandleDragVal).toFixed(1);
+      lbl.textContent = _edgeHandleDragVal < 0 ? `Abschrägung: ${mm} mm` : `${mm} mm`;
+      lbl.style.left = (e.clientX + 12) + 'px';
+      lbl.style.top  = (e.clientY - 20) + 'px';
+      lbl.style.display = 'block';
+    }
+    canvas.style.cursor = 'ew-resize';
+  }
   if (_edgeMode && !_edgeGlobal) {
     const h = _findHoveredEdge(e);
     if (h !== _edgeHover) { _edgeHover = h; _updateEdgeColors(); }
-    canvas.style.cursor = h >= 0 ? 'pointer' : 'crosshair';
+    if (!_edgeHandleDrag) canvas.style.cursor = h >= 0 ? 'pointer' : 'crosshair';
   }
   // Orbit (right-click drag)
   if (isOrbit && !isPan && !ttOn) {
@@ -3527,7 +3553,20 @@ window.addEventListener('mousemove', e => {
 // Orbit/pan/drag stop: window-level so mouseup outside canvas is caught
 window.addEventListener('mouseup', e => {
   if (e.button === 2 || e.button === 1) { isOrbit = false; isPan = false; }
-  if (e.button === 0) { isDrag = false; dragData = null; }
+  if (e.button === 0) {
+    if (_edgeHandleDrag) {
+      _edgeHandleDrag = false;
+      const lbl = document.getElementById('edge-drag-lbl');
+      if (lbl) lbl.style.display = 'none';
+      canvas.style.cursor = 'crosshair';
+      if (_edgeHandleDragVal < -0.5) {
+        _applyEdgeHandleValue(Math.abs(_edgeHandleDragVal) / 10);
+      }
+      _edgeHandleDragVal = 0;
+      return;
+    }
+    isDrag = false; dragData = null;
+  }
 });
 
 canvas.addEventListener('mouseup', e => {
