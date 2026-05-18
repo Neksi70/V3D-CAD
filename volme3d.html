@@ -1659,8 +1659,9 @@ function applyFillet(filletVal, chamferVal) {
 // ─── Edge Mode ────────────────────────────────────────────────────────
 function enterEdgeMode() {
   const o = getFirst();
-  if (!o || o.userData.shapeType !== 'box') return;
-  o.userData.edgeBevels = Array.from({length:12}, () => ({fillet:0, chamfer:0}));
+  const _isBox = o.userData.shapeType === 'box' || o.geometry instanceof THREE.BoxGeometry || !!o.userData.edgeBevels;
+  if (!_isBox) return;
+  if (!o.userData.edgeBevels) o.userData.edgeBevels = Array.from({length:12}, () => ({fillet:0, chamfer:0}));
   _edgeObj = o; _edgeSel.clear(); _edgeHover = -1; _edgeMode = true;
   const verts = [];
   EDGE_ENDPOINTS.forEach(([a,b]) => verts.push(...a,...b));
@@ -4697,18 +4698,33 @@ function _fpBuildRows(type, o) {
   };
   const segs = o.userData.segments;
 
+  const isBoxGeom = type === 'box' || o.geometry instanceof THREE.BoxGeometry || !!o.userData.edgeBevels;
+
+  if (isBoxGeom && _edgeMode && _edgeObj === o && o.userData.edgeBevels) {
+    const selCount = _edgeSel.size;
+    const fb = selCount > 0 ? o.userData.edgeBevels[[..._edgeSel][0]] : {fillet:0,chamfer:0};
+    const maxMm = Math.round(Math.min(o.scale.x, o.scale.y, o.scale.z) * 10 * 10) / 10;
+    return `<div class="fp-row"><span class="fp-lbl">${selCount} Kante${selCount!==1?'n':''} ausgewählt</span></div>` +
+      row('Radius',      'fp-edge-fil', fb.fillet,  'applyEdgeBevels()', 'mm', 0, maxMm, 0.1) +
+      row('Abschrägung', 'fp-edge-cha', fb.chamfer, 'applyEdgeBevels()', 'mm', 0, maxMm, 0.1) +
+      `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="exitEdgeMode()">Fertig</button>` +
+      `<button class="fp-btn" onclick="_resetAllEdges()">Zurücksetzen</button></div>`;
+  }
+
+  const edgeBtn = isBoxGeom
+    ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="enterEdgeMode()">⬡ Kanten bearbeiten</button></div>`
+    : '';
+
+  if (isBoxGeom && type !== 'box') {
+    const fpMaxMm = Math.round(Math.min(o.scale.x, o.scale.y, o.scale.z) * 10 * 10) / 10;
+    return row('Länge X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
+           row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
+           row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+           '<div class="fp-sep"></div>' + edgeBtn;
+  }
+
   switch (type) {
-    case 'box':
-      if (_edgeMode && _edgeObj === o && o.userData.edgeBevels) {
-        const selCount = _edgeSel.size;
-        const fb = selCount > 0 ? o.userData.edgeBevels[[..._edgeSel][0]] : {fillet:0,chamfer:0};
-        const maxMm = Math.round(Math.min(o.scale.x, o.scale.y, o.scale.z) * 10 * 10) / 10;
-        return `<div class="fp-row"><span class="fp-lbl">${selCount} Kante${selCount!==1?'n':''} ausgewählt</span></div>` +
-          row('Radius',      'fp-edge-fil', fb.fillet,  'applyEdgeBevels()', 'mm', 0, maxMm, 0.1) +
-          row('Abschrägung', 'fp-edge-cha', fb.chamfer, 'applyEdgeBevels()', 'mm', 0, maxMm, 0.1) +
-          `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="exitEdgeMode()">Fertig</button>` +
-          `<button class="fp-btn" onclick="_resetAllEdges()">Zurücksetzen</button></div>`;
-      }
+    case 'box': {
       const fpMaxMm = Math.round(Math.min(o.scale.x, o.scale.y, o.scale.z) * 10 * 10) / 10;
       return row('Länge X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
@@ -4716,7 +4732,8 @@ function _fpBuildRows(type, o) {
              '<div class="fp-sep"></div>' +
              row('Radius',      'fp-fil', o.userData.fillet||0,  "applyFillet(this.value,0)",   'mm', 0, fpMaxMm, 0.1) +
              row('Abschrägung', 'fp-cha', o.userData.chamfer||0, "applyFillet(0,this.value)",   'mm', 0, fpMaxMm, 0.1) +
-             `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="enterEdgeMode()">⬡ Kanten bearbeiten</button></div>`;
+             edgeBtn;
+    }
     case 'cylinder': case 'tube': {
       const rad = r2(sz.x / 2 * 10);
       return row('Radius',   'fp-r',  rad, "fpApplyRadius(this.value)",  'mm', 0.1, 250) +
