@@ -618,6 +618,7 @@ const firebaseConfig = {
   <svg id="rov" class="dim-line-svg"></svg>
   <div id="sel-box"></div>
   <div id="dim-handles"></div>
+  <div id="edge-drag-lbl" style="position:fixed;pointer-events:none;display:none;background:rgba(0,0,0,0.7);color:#fff;padding:3px 8px;border-radius:4px;font-size:13px;font-family:monospace;z-index:9999"></div>
 
   <!-- Rotation ring handles (shown in rotate mode) -->
   <svg id="rot-svg">
@@ -1234,12 +1235,16 @@ const _wpGrid = new THREE.GridHelper(8, 8, 0xff6600, 0xff8800);
 _wpGrid.visible = false;
 scene.add(_wpGrid);
 
-let _edgeMode   = false;
-let _edgeGlobal = false;
-let _edgeObj    = null;
-let _edgeLines  = null;
-let _edgeSel    = new Set();
-let _edgeHover  = -1;
+let _edgeMode            = false;
+let _edgeGlobal          = false;
+let _edgeObj             = null;
+let _edgeLines           = null;
+let _edgeSel             = new Set();
+let _edgeHover           = -1;
+let _edgeHandle          = null;
+let _edgeHandleDrag      = false;
+let _edgeHandleDragStart = null;
+let _edgeHandleDragVal   = 0;
 const EDGE_ENDPOINTS = [
   [[ 1, 1,-1],[ 1, 1, 1]],
   [[-1, 1,-1],[-1, 1, 1]],
@@ -1790,11 +1795,15 @@ function enterEdgeMode() {
 }
 
 function exitEdgeMode() {
+  if (_edgeHandle) { _edgeObj.remove(_edgeHandle); _edgeHandle.geometry.dispose(); _edgeHandle.material.dispose(); _edgeHandle = null; }
   if (_edgeLines) { _edgeObj.remove(_edgeLines); _edgeLines.geometry.dispose(); _edgeLines = null; }
   if (_edgeObj) {
     delete _edgeObj.userData._dynamicEdges;
     delete _edgeObj.userData._globalChamferOrigGeo;
   }
+  const lbl = document.getElementById('edge-drag-lbl');
+  if (lbl) lbl.style.display = 'none';
+  _edgeHandleDrag = false; _edgeHandleDragVal = 0; _edgeHandleDragStart = null;
   _edgeMode = false; _edgeGlobal = false; _edgeObj = null; _edgeSel.clear(); _edgeHover = -1;
   canvas.style.cursor = '';
   _fpCurType = null; updateFP();
@@ -1810,6 +1819,59 @@ function _updateEdgeColors() {
     col.setXYZ(i*2, rv,gv,bv); col.setXYZ(i*2+1, rv,gv,bv);
   }
   col.needsUpdate = true;
+}
+
+function _updateEdgeHandle() {
+  if (_edgeHandle) { _edgeObj.remove(_edgeHandle); _edgeHandle.geometry.dispose(); _edgeHandle.material.dispose(); _edgeHandle = null; }
+  const dynEdges = _edgeObj?.userData._dynamicEdges;
+  if (!dynEdges || _edgeSel.size === 0) return;
+  const firstIdx = [..._edgeSel][0];
+  const edge = dynEdges[firstIdx];
+  if (!edge) return;
+  const box = getMeshBox(_edgeObj);
+  const sz = box.getSize(new THREE.Vector3());
+  const handleSize = Math.max(sz.x, sz.y, sz.z) * 0.05;
+  const mid = new THREE.Vector3(
+    (edge.worldA[0]+edge.worldB[0])/2,
+    (edge.worldA[1]+edge.worldB[1])/2,
+    (edge.worldA[2]+edge.worldB[2])/2
+  );
+  _edgeHandle = new THREE.Mesh(
+    new THREE.BoxGeometry(handleSize, handleSize, handleSize),
+    new THREE.MeshBasicMaterial({color:0xffffff, depthTest:false})
+  );
+  _edgeHandle.position.copy(mid);
+  _edgeHandle.renderOrder = 1001;
+  _edgeObj.add(_edgeHandle);
+}
+
+function _applyEdgeHandleValue(chamferDist) {
+  if (!_edgeObj || !_edgeObj.userData._dynamicEdges || _edgeSel.size === 0) return;
+  saveUndo();
+  const dynEdges = _edgeObj.userData._dynamicEdges;
+  const targets = [..._edgeSel].map(i => {
+    const e = dynEdges[i];
+    return new THREE.Vector3(
+      (e.worldA[0]+e.worldB[0])/2, (e.worldA[1]+e.worldB[1])/2, (e.worldA[2]+e.worldB[2])/2
+    );
+  });
+  let applied = 0;
+  for (const target of targets) {
+    const edges = _buildEdgesFromGeometry(_edgeObj);
+    _edgeObj.userData._dynamicEdges = edges;
+    let minD=Infinity, bestIdx=-1;
+    edges.forEach((e,i) => {
+      const mid = new THREE.Vector3(
+        (e.worldA[0]+e.worldB[0])/2,(e.worldA[1]+e.worldB[1])/2,(e.worldA[2]+e.worldB[2])/2
+      );
+      const d = target.distanceTo(mid);
+      if (d<minD) { minD=d; bestIdx=i; }
+    });
+    if (bestIdx>=0 && _applyBufferGeometryChamfer(_edgeObj, bestIdx, chamferDist)) applied++;
+  }
+  exitEdgeMode(); enterEdgeMode();
+  if (applied>0) notify(applied+' Kante(n) abgeschrägt','ok');
+  else notify('Kante nicht modifizierbar','w');
 }
 
 function _distRayToSegment(ray, a, b) {
