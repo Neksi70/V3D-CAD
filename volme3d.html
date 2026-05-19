@@ -1675,11 +1675,8 @@ function _buildEdgesFromGeometry(mesh) {
 }
 
 function _applyBufferGeometryChamfer(mesh, edgeIndex, chamferDist) {
-  console.log('bufferChamfer: edgeIdx=', edgeIndex, 'dist=', chamferDist);
-  console.log('bufferChamfer: geo=', mesh.geometry ? mesh.geometry.type : 'FEHLT');
   const dynEdge = mesh.userData._dynamicEdges[edgeIndex];
   if (!dynEdge || !dynEdge.worldA || !dynEdge.worldB) {
-    console.log('bufferChamfer FAIL: kein dynEdge oder fehlende worldA/B', dynEdge);
     return false;
   }
   const A = new THREE.Vector3(...dynEdge.worldA);
@@ -1703,18 +1700,12 @@ function _applyBufferGeometryChamfer(mesh, edgeIndex, chamferDist) {
   const hasB = t => [0,1,2].some(j => isB(t,j));
 
   const adjTris = tris.filter(t => hasA(t) && hasB(t));
-  if (adjTris.length !== 2) {
-    console.log('bufferChamfer FAIL: adjTris.length=', adjTris.length, '(erwartet 2)');
-    return false;
-  }
+  if (adjTris.length !== 2) return false;
 
   const [T1, T2] = adjTris;
   const C1 = T1.verts.find((v, j) => !isA(T1,j) && !isB(T1,j));
   const C2 = T2.verts.find((v, j) => !isA(T2,j) && !isB(T2,j));
-  if (!C1 || !C2) {
-    console.log('bufferChamfer FAIL: C1=', C1, 'C2=', C2, '(kein opposite vertex gefunden)');
-    return false;
-  }
+  if (!C1 || !C2) return false;
 
   // In-face direction: perpendicular to edge AB, pointing toward opposite vertex
   const edgeDir = B.clone().sub(A).normalize();
@@ -1772,6 +1763,7 @@ function _applyBufferGeometryChamfer(mesh, edgeIndex, chamferDist) {
   newGeo.computeBoundingSphere();
   mesh.geometry.dispose();
   mesh.geometry = newGeo;
+  mesh.geometry.attributes.position.needsUpdate = true;
   return true;
 }
 
@@ -1867,10 +1859,8 @@ function _updateEdgeBevelHandleDOM() {
 }
 
 function _applyEdgeHandleValue(chamferDist) {
-  console.log('applyEdge: _edgeObj=', _edgeObj, '_edgeSel=', [..._edgeSel], 'dist=', chamferDist);
   if (!_edgeObj) return;
   if (!_edgeObj.userData._dynamicEdges || _edgeSel.size === 0) return;
-  console.log('dynEdges=', _edgeObj.userData._dynamicEdges.length + ' Kanten');
   saveUndo();
   const dynEdges = _edgeObj.userData._dynamicEdges;
   const targets = [..._edgeSel].map(i => {
@@ -1879,7 +1869,6 @@ function _applyEdgeHandleValue(chamferDist) {
       (e.worldA[0]+e.worldB[0])/2, (e.worldA[1]+e.worldB[1])/2, (e.worldA[2]+e.worldB[2])/2
     );
   });
-  console.log('targets=', targets);
   let applied = 0;
   for (const target of targets) {
     const edges = _buildEdgesFromGeometry(_edgeObj);
@@ -1892,11 +1881,7 @@ function _applyEdgeHandleValue(chamferDist) {
       const d = target.distanceTo(mid);
       if (d<minD) { minD=d; bestIdx=i; }
     });
-    if (bestIdx >= 0) {
-      const ok = _applyBufferGeometryChamfer(_edgeObj, bestIdx, chamferDist);
-      console.log('chamfer bestIdx=', bestIdx, 'result=', ok);
-      if (ok) applied++;
-    }
+    if (bestIdx >= 0 && _applyBufferGeometryChamfer(_edgeObj, bestIdx, chamferDist)) applied++;
   }
   exitEdgeMode(); enterEdgeMode();
   if (applied>0) notify(applied+' Kante(n) abgeschrägt','ok');
@@ -3497,10 +3482,8 @@ window.addEventListener('mousemove', e => {
     } else { _wpHL.visible = false; }
   }
   if (_edgeBevelDragging) {
-    console.log('mousemove: dragStart=', _edgeBevelDragStart, 'clientX=', e.clientX);
     const dx = e.clientX - (_edgeBevelDragStart ? _edgeBevelDragStart.x : 0);
     _edgeBevelDragVal = dx * 0.1;
-    console.log('edge drag move dx=', dx, 'val=', _edgeBevelDragVal);
     canvas.style.cursor = 'ew-resize';
   }
   if (_edgeMode && !_edgeGlobal) {
@@ -3574,7 +3557,6 @@ window.addEventListener('mouseup', e => {
   if (e.button === 2 || e.button === 1) { isOrbit = false; isPan = false; }
   if (e.button === 0) {
     if (_edgeBevelDragging) {
-      console.log('edge-bevel mouseup: dragging=true val=', _edgeBevelDragVal);
       _edgeBevelDragging = false;
       canvas.style.cursor = 'crosshair';
       const val = _edgeBevelDragVal;
@@ -4502,10 +4484,8 @@ animate();
 document.getElementById('edge-bevel-handle').addEventListener('mousedown', e => {
   if (e.button !== 0) return;
   e.stopPropagation(); e.preventDefault();
-  console.log('edge-bevel-handle mousedown');
   _edgeBevelDragging = true;
   _edgeBevelDragStart = {x: e.clientX, y: e.clientY};
-  console.log('_edgeBevelDragStart gesetzt:', _edgeBevelDragStart);
   _edgeBevelDragVal = 0;
 });
 
