@@ -1260,6 +1260,20 @@ const EDGE_ENDPOINTS = [
   [[-1,-1,-1],[-1, 1,-1]],
   [[ 1,-1,-1],[ 1, 1,-1]],
 ];
+const EDGE_NORMALS = [
+  [[1,0,0],[0,1,0]],   // 0: +X+Y
+  [[-1,0,0],[0,1,0]],  // 1: -X+Y
+  [[-1,0,0],[0,-1,0]], // 2: -X-Y
+  [[1,0,0],[0,-1,0]],  // 3: +X-Y
+  [[0,1,0],[0,0,1]],   // 4: +Y+Z
+  [[0,-1,0],[0,0,1]],  // 5: -Y+Z
+  [[0,-1,0],[0,0,-1]], // 6: -Y-Z
+  [[0,1,0],[0,0,-1]],  // 7: +Y-Z
+  [[1,0,0],[0,0,1]],   // 8: +X+Z
+  [[-1,0,0],[0,0,1]],  // 9: -X+Z
+  [[-1,0,0],[0,0,-1]], // 10: -X-Z
+  [[1,0,0],[0,0,-1]],  // 11: +X-Z
+];
 function toggleGrid() {
   gridOn = !gridOn;
   gridMesh.visible = gridOn;
@@ -1869,6 +1883,41 @@ function _updateEdgeBevelHandleDOM() {
   lbl.style.display = Math.abs(_edgeBevelDragVal) > 0.05 ? 'block' : 'none';
 }
 
+function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
+  const A = new THREE.Vector3(...dynEdge.worldA);
+  const B = new THREE.Vector3(...dynEdge.worldB);
+  const edgeMid = A.clone().add(B).multiplyScalar(0.5);
+  const edgeDir = B.clone().sub(A).normalize();
+  const edgeLen = A.distanceTo(B);
+
+  const normalMatrix = new THREE.Matrix3().getNormalMatrix(obj.matrixWorld);
+  const N1 = new THREE.Vector3(...EDGE_NORMALS[edgeIndex][0]).applyMatrix3(normalMatrix).normalize();
+  const N2 = new THREE.Vector3(...EDGE_NORMALS[edgeIndex][1]).applyMatrix3(normalMatrix).normalize();
+
+  const d = chamferDist;
+  const s = d * Math.SQRT2;
+  const cutterGeo = new THREE.BoxGeometry(s, s, edgeLen + 0.1);
+  const cutter = new THREE.Mesh(cutterGeo, new THREE.MeshStandardMaterial());
+  const basis = new THREE.Matrix4().makeBasis(N1, N2, edgeDir);
+  cutter.setRotationFromMatrix(basis);
+  cutter.rotateOnWorldAxis(edgeDir, Math.PI / 4);
+  cutter.position.copy(edgeMid);
+  cutter.updateWorldMatrix(true, true);
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(obj.userData.color || '#0078ff'),
+    roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide
+  });
+  const result = ThreeCSG.subtract(obj, cutter, mat);
+  result.castShadow = true; result.receiveShadow = true;
+  result.userData = { ...obj.userData, type: 'custom', shapeType: 'custom' };
+  const i = objects.indexOf(obj);
+  if (i >= 0) objects[i] = result;
+  scene.remove(obj);
+  scene.add(result);
+  return result;
+}
+
 function _applyEdgeHandleValue(chamferDist) {
   if (!_edgeObj) return;
   if (!_edgeObj.userData._dynamicEdges || _edgeSel.size === 0) return;
@@ -1876,18 +1925,32 @@ function _applyEdgeHandleValue(chamferDist) {
   const o = _edgeObj;
 
   if (o.userData.shapeType === 'box') {
-    const displayMm = chamferDist * 10;
-    const mm = Math.abs(displayMm);
-    const bevels = Array.from({length: 12}, () => ({fillet:0, chamfer:0}));
-    _edgeSel.forEach(i => {
-      bevels[i] = chamferDist >= 0 ? {fillet:0, chamfer:mm} : {fillet:mm, chamfer:0};
-    });
-    o.userData.edgeBevels = bevels;
-    o.geometry.dispose();
-    o.geometry = buildRoundedBoxEdges(2, 2, 2, bevels, 12, o.scale);
-    o.geometry.computeVertexNormals();
-    exitEdgeMode(); enterEdgeMode();
-    notify(_edgeSel.size + ' Kante(n) abgeschrägt', 'ok');
+    if (chamferDist > 0) {
+      const edgeData = [..._edgeSel].map(i => ({
+        idx: i,
+        dynEdge: { worldA: [...o.userData._dynamicEdges[i].worldA],
+                   worldB: [...o.userData._dynamicEdges[i].worldB] }
+      }));
+      exitEdgeMode();
+      let current = o;
+      for (const {idx, dynEdge} of edgeData) {
+        const next = _applyCSGChamfer(current, dynEdge, idx, chamferDist);
+        if (next) current = next;
+      }
+      selectObjs([current]);
+      enterEdgeMode();
+      notify(edgeData.length + ' Kante(n) abgeschrägt', 'ok');
+    } else {
+      const mm = Math.abs(chamferDist * 10);
+      const bevels = Array.from({length: 12}, () => ({fillet:0, chamfer:0}));
+      _edgeSel.forEach(i => { bevels[i] = {fillet:mm, chamfer:0}; });
+      o.userData.edgeBevels = bevels;
+      o.geometry.dispose();
+      o.geometry = buildRoundedBoxEdges(2, 2, 2, bevels, 12, o.scale);
+      o.geometry.computeVertexNormals();
+      exitEdgeMode(); enterEdgeMode();
+      notify(_edgeSel.size + ' Kante(n) abgerundet', 'ok');
+    }
     return;
   }
 
