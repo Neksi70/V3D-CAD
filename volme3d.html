@@ -1928,9 +1928,36 @@ function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
   const edgeLen  = A.distanceTo(B);
 
   const normalMatrix = new THREE.Matrix3().getNormalMatrix(obj.matrixWorld);
-  const N1 = new THREE.Vector3(...EDGE_NORMALS[edgeIndex][0]).applyMatrix3(normalMatrix).normalize();
-  const N2 = new THREE.Vector3(...EDGE_NORMALS[edgeIndex][1]).applyMatrix3(normalMatrix).normalize();
-  const bisector = N1.clone().add(N2).normalize();
+  let bisector;
+  if (edgeIndex < EDGE_NORMALS.length) {
+    const N1 = new THREE.Vector3(...EDGE_NORMALS[edgeIndex][0]).applyMatrix3(normalMatrix).normalize();
+    const N2 = new THREE.Vector3(...EDGE_NORMALS[edgeIndex][1]).applyMatrix3(normalMatrix).normalize();
+    bisector = N1.clone().add(N2).normalize();
+  } else {
+    const inv = new THREE.Matrix4().copy(obj.matrixWorld).invert();
+    const lA = A.clone().applyMatrix4(inv);
+    const lB = B.clone().applyMatrix4(inv);
+    const bbox = new THREE.Box3().setFromObject(obj);
+    const size = bbox.getSize(new THREE.Vector3());
+    const EPS = Math.min(size.x, size.y, size.z) * 0.01;
+    const geo = obj.geometry.index ? obj.geometry.toNonIndexed() : obj.geometry;
+    const pos = geo.attributes.position;
+    const hasV = (i, lP) =>
+      Math.abs(pos.getX(i)-lP.x)<EPS && Math.abs(pos.getY(i)-lP.y)<EPS && Math.abs(pos.getZ(i)-lP.z)<EPS;
+    const adjNorms = [];
+    for (let i = 0; i < pos.count && adjNorms.length < 2; i += 3) {
+      if ((hasV(i,lA)||hasV(i+1,lA)||hasV(i+2,lA)) && (hasV(i,lB)||hasV(i+1,lB)||hasV(i+2,lB))) {
+        const v0 = new THREE.Vector3(pos.getX(i),  pos.getY(i),  pos.getZ(i));
+        const v1 = new THREE.Vector3(pos.getX(i+1),pos.getY(i+1),pos.getZ(i+1));
+        const v2 = new THREE.Vector3(pos.getX(i+2),pos.getY(i+2),pos.getZ(i+2));
+        adjNorms.push(v1.clone().sub(v0).cross(v2.clone().sub(v0)).normalize());
+      }
+    }
+    if (adjNorms.length < 2) return null;
+    const wn0 = adjNorms[0].clone().applyMatrix3(normalMatrix).normalize();
+    const wn1 = adjNorms[1].clone().applyMatrix3(normalMatrix).normalize();
+    bisector = wn0.clone().add(wn1).normalize();
+  }
 
   const cutterGeo = new THREE.CylinderGeometry(filletR, filletR, edgeLen + 0.1, 16);
   const cutter = new THREE.Mesh(cutterGeo, new THREE.MeshStandardMaterial());
