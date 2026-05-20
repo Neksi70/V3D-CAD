@@ -1920,6 +1920,59 @@ function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
   return result;
 }
 
+function _applyCSGFillet(obj, dynEdge, filletR) {
+  const A = new THREE.Vector3(...dynEdge.worldA);
+  const B = new THREE.Vector3(...dynEdge.worldB);
+  const edgeMid = A.clone().add(B).multiplyScalar(0.5);
+  const edgeDir  = B.clone().sub(A).normalize();
+  const edgeLen  = A.distanceTo(B);
+
+  const inv = new THREE.Matrix4().copy(obj.matrixWorld).invert();
+  const lA = A.clone().applyMatrix4(inv);
+  const lB = B.clone().applyMatrix4(inv);
+  const pos = obj.geometry.attributes.position;
+  const EPS = 1e-2;
+  const hasV = (i, lP) =>
+    Math.abs(pos.getX(i)-lP.x)<EPS && Math.abs(pos.getY(i)-lP.y)<EPS && Math.abs(pos.getZ(i)-lP.z)<EPS;
+  const adjNorms = [];
+  for (let i = 0; i < pos.count && adjNorms.length < 2; i += 3) {
+    const hA = hasV(i,lA)||hasV(i+1,lA)||hasV(i+2,lA);
+    const hB = hasV(i,lB)||hasV(i+1,lB)||hasV(i+2,lB);
+    if (hA && hB) {
+      const v0 = new THREE.Vector3(pos.getX(i),  pos.getY(i),  pos.getZ(i));
+      const v1 = new THREE.Vector3(pos.getX(i+1),pos.getY(i+1),pos.getZ(i+1));
+      const v2 = new THREE.Vector3(pos.getX(i+2),pos.getY(i+2),pos.getZ(i+2));
+      adjNorms.push(v1.clone().sub(v0).cross(v2.clone().sub(v0)).normalize());
+    }
+  }
+  if (adjNorms.length < 2) return null;
+  const nm = new THREE.Matrix3().getNormalMatrix(obj.matrixWorld);
+  const wn0 = adjNorms[0].clone().applyMatrix3(nm).normalize();
+  const wn1 = adjNorms[1].clone().applyMatrix3(nm).normalize();
+  const bisector = wn0.clone().add(wn1).normalize();
+
+  const cutterGeo = new THREE.CylinderGeometry(filletR, filletR, edgeLen + 0.1, 16);
+  const cutter = new THREE.Mesh(cutterGeo, new THREE.MeshStandardMaterial());
+  cutter.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), edgeDir);
+  cutter.position.copy(edgeMid).addScaledVector(bisector, -filletR * Math.SQRT2);
+  cutter.updateWorldMatrix(true, true);
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(obj.userData.color || '#0078ff'),
+    roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide
+  });
+  const result = ThreeCSG.subtract(obj, cutter, mat);
+  result.castShadow = true; result.receiveShadow = true;
+  result.userData = { ...obj.userData, type: 'custom', shapeType: 'custom', wasBox: true };
+  delete result.userData.edgeBevels;
+  delete result.userData._dynamicEdges;
+  const idx = objects.indexOf(obj);
+  if (idx >= 0) objects[idx] = result;
+  scene.remove(obj);
+  scene.add(result);
+  return result;
+}
+
 function _applyEdgeHandleValue(chamferDist) {
   if (!_edgeObj) return;
   if (!_edgeObj.userData._dynamicEdges || _edgeSel.size === 0) return;
@@ -1943,18 +1996,21 @@ function _applyEdgeHandleValue(chamferDist) {
       selectObjs([current]);
       notify(edgeData.length + ' Kante(n) abgeschrägt', 'ok');
     } else {
-      const mm = Math.abs(chamferDist * 10);
-      const bevels = Array.from({length: 12}, () => ({fillet:0, chamfer:0}));
-      _edgeSel.forEach(i => { bevels[i] = {fillet:mm, chamfer:0}; });
-      o.userData.edgeBevels = bevels;
-      o.geometry.dispose();
-      o.geometry = buildRoundedBoxEdges(2, 2, 2, bevels, 12, o.scale);
-      o.geometry.computeVertexNormals();
-      const count = _edgeSel.size;
+      const filletR = Math.abs(chamferDist);
+      const edgeData = [..._edgeSel].map(i => ({
+        idx: i,
+        dynEdge: { worldA: [...o.userData._dynamicEdges[i].worldA],
+                   worldB: [...o.userData._dynamicEdges[i].worldB] }
+      }));
+      deselect();
       exitEdgeMode();
-      selectObjs([o]);
-      enterEdgeMode();
-      notify(count + ' Kante(n) abgerundet', 'ok');
+      let current = o;
+      for (const {dynEdge} of edgeData) {
+        const next = _applyCSGFillet(current, dynEdge, filletR);
+        if (next) current = next;
+      }
+      selectObjs([current]);
+      notify(edgeData.length + ' Kante(n) abgerundet', 'ok');
     }
     return;
   }
