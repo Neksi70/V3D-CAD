@@ -1920,41 +1920,22 @@ function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
   return result;
 }
 
-function _applyCSGFillet(obj, dynEdge, filletR) {
+function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
   const A = new THREE.Vector3(...dynEdge.worldA);
   const B = new THREE.Vector3(...dynEdge.worldB);
   const edgeMid = A.clone().add(B).multiplyScalar(0.5);
   const edgeDir  = B.clone().sub(A).normalize();
   const edgeLen  = A.distanceTo(B);
 
-  const inv = new THREE.Matrix4().copy(obj.matrixWorld).invert();
-  const lA = A.clone().applyMatrix4(inv);
-  const lB = B.clone().applyMatrix4(inv);
-  const pos = obj.geometry.attributes.position;
-  const EPS = 1e-2;
-  const hasV = (i, lP) =>
-    Math.abs(pos.getX(i)-lP.x)<EPS && Math.abs(pos.getY(i)-lP.y)<EPS && Math.abs(pos.getZ(i)-lP.z)<EPS;
-  const adjNorms = [];
-  for (let i = 0; i < pos.count && adjNorms.length < 2; i += 3) {
-    const hA = hasV(i,lA)||hasV(i+1,lA)||hasV(i+2,lA);
-    const hB = hasV(i,lB)||hasV(i+1,lB)||hasV(i+2,lB);
-    if (hA && hB) {
-      const v0 = new THREE.Vector3(pos.getX(i),  pos.getY(i),  pos.getZ(i));
-      const v1 = new THREE.Vector3(pos.getX(i+1),pos.getY(i+1),pos.getZ(i+1));
-      const v2 = new THREE.Vector3(pos.getX(i+2),pos.getY(i+2),pos.getZ(i+2));
-      adjNorms.push(v1.clone().sub(v0).cross(v2.clone().sub(v0)).normalize());
-    }
-  }
-  if (adjNorms.length < 2) return null;
-  const nm = new THREE.Matrix3().getNormalMatrix(obj.matrixWorld);
-  const wn0 = adjNorms[0].clone().applyMatrix3(nm).normalize();
-  const wn1 = adjNorms[1].clone().applyMatrix3(nm).normalize();
-  const bisector = wn0.clone().add(wn1).normalize();
+  const normalMatrix = new THREE.Matrix3().getNormalMatrix(obj.matrixWorld);
+  const N1 = new THREE.Vector3(...EDGE_NORMALS[edgeIndex][0]).applyMatrix3(normalMatrix).normalize();
+  const N2 = new THREE.Vector3(...EDGE_NORMALS[edgeIndex][1]).applyMatrix3(normalMatrix).normalize();
+  const bisector = N1.clone().add(N2).normalize();
 
   const cutterGeo = new THREE.CylinderGeometry(filletR, filletR, edgeLen + 0.1, 16);
   const cutter = new THREE.Mesh(cutterGeo, new THREE.MeshStandardMaterial());
   cutter.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), edgeDir);
-  cutter.position.copy(edgeMid).addScaledVector(bisector, -filletR * Math.SQRT2);
+  cutter.position.copy(edgeMid).addScaledVector(bisector, filletR * Math.SQRT2);
   cutter.updateWorldMatrix(true, true);
 
   const mat = new THREE.MeshStandardMaterial({
@@ -2005,8 +1986,8 @@ function _applyEdgeHandleValue(chamferDist) {
       deselect();
       exitEdgeMode();
       let current = o;
-      for (const {dynEdge} of edgeData) {
-        const next = _applyCSGFillet(current, dynEdge, filletR);
+      for (const {idx, dynEdge} of edgeData) {
+        const next = _applyCSGFillet(current, dynEdge, idx, filletR);
         if (next) current = next;
       }
       selectObjs([current]);
