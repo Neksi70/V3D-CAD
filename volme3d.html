@@ -1883,6 +1883,87 @@ function _updateEdgeBevelHandleDOM() {
   lbl.style.display = Math.abs(_edgeBevelDragVal) > 0.05 ? 'block' : 'none';
 }
 
+// ─── OCCT Lazy-Load + Hilfsfunktionen ────────────────────────────────────────
+let _oc = null;
+let _ocLoadPromise = null;
+
+function _loadOCCT() {
+  if (_oc) return Promise.resolve(_oc);
+  if (_ocLoadPromise) return _ocLoadPromise;
+  _ocLoadPromise = import('./volme3d.js')
+    .then(m => m.default({ locateFile: f => './' + f }))
+    .then(oc => { _oc = oc; return oc; })
+    .catch(err => { _ocLoadPromise = null; throw err; });
+  return _ocLoadPromise;
+}
+
+function _occtShapeToThreeGeo(oc, shape, offset) {
+  const mesher = new oc.BRepMesh_IncrementalMesh_2(shape, 0.05, false, 0.5, false);
+  const positions = [], indices = [];
+  let vOff = 0;
+  const fExp = new oc.TopExp_Explorer_2(shape, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+  while (fExp.More()) {
+    const face = oc.TopoDS.Face_1(fExp.Current());
+    const loc  = new oc.TopLoc_Location_1();
+    const tri  = oc.BRep_Tool.Triangulation(face, loc, 0);
+    if (!tri.IsNull()) {
+      const isRev = face.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED;
+      const trsf  = !loc.IsIdentity() ? loc.Transformation() : null;
+      const nb = tri.get().NbNodes(), nbT = tri.get().NbTriangles();
+      for (let i = 1; i <= nb; i++) {
+        const n = tri.get().Node(i);
+        if (trsf) {
+          const p = new oc.gp_Pnt_3(n.X(), n.Y(), n.Z());
+          p.Transform(trsf);
+          positions.push(p.X() + offset.x, p.Y() + offset.y, p.Z() + offset.z);
+          p.delete();
+        } else {
+          positions.push(n.X() + offset.x, n.Y() + offset.y, n.Z() + offset.z);
+        }
+      }
+      for (let i = 1; i <= nbT; i++) {
+        const t = tri.get().Triangle(i);
+        const a = t.Value(1)-1, b = t.Value(2)-1, c = t.Value(3)-1;
+        if (isRev) indices.push(vOff+a, vOff+c, vOff+b);
+        else       indices.push(vOff+a, vOff+b, vOff+c);
+      }
+      vOff += nb;
+    }
+    fExp.Next();
+  }
+  fExp.delete();
+  mesher.delete();
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function _findOCCTEdge(oc, shape, mx, my, mz) {
+  const exp = new oc.TopExp_Explorer_2(shape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+  let best = null, bestD = Infinity;
+  while (exp.More()) {
+    const edge = oc.TopoDS.Edge_1(exp.Current());
+    const vExp = new oc.TopExp_Explorer_2(edge, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+    let cx = 0, cy = 0, cz = 0, cnt = 0;
+    while (vExp.More()) {
+      const pt = oc.BRep_Tool.Pnt(oc.TopoDS.Vertex_1(vExp.Current()));
+      cx += pt.X(); cy += pt.Y(); cz += pt.Z(); cnt++;
+      vExp.Next();
+    }
+    vExp.delete();
+    if (cnt > 0) {
+      const ddx = cx/cnt-mx, ddy = cy/cnt-my, ddz = cz/cnt-mz;
+      const dd = ddx*ddx + ddy*ddy + ddz*ddz;
+      if (dd < bestD) { bestD = dd; best = edge; }
+    }
+    exp.Next();
+  }
+  exp.delete();
+  return best;
+}
+
 function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
   const A = new THREE.Vector3(...dynEdge.worldA);
   const B = new THREE.Vector3(...dynEdge.worldB);
@@ -1959,40 +2040,114 @@ function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
   return result;
 }
 
-function _applyEdgeHandleValue(chamferDist) {
+async function _applyEdgeHandleValue(chamferDist) {
   if (!_edgeObj) return;
   if (!_edgeObj.userData._dynamicEdges || _edgeSel.size === 0) return;
   saveUndo();
   const o = _edgeObj;
 
   if (o.userData.shapeType === 'box' || o.userData.wasBox) {
-    if (chamferDist > 0) {
-      const edgeData = [..._edgeSel].map(i => ({
-        idx: i,
-        dynEdge: { worldA: [...o.userData._dynamicEdges[i].worldA],
-                   worldB: [...o.userData._dynamicEdges[i].worldB] }
-      }));
-      deselect();
-      exitEdgeMode();
-      let current = o;
+    const isPos = chamferDist > 0;
+    const dist  = Math.abs(chamferDist);
+    const edgeData = [..._edgeSel].map(i => ({
+      idx: i,
+      dynEdge: { worldA: [...o.userData._dynamicEdges[i].worldA],
+                 worldB: [...o.userData._dynamicEdges[i].worldB] }
+    }));
+    deselect();
+    exitEdgeMode();
+
+    // OCCT-Pfad: nur für unrotierte Boxen
+    if (o.userData.shapeType === 'box') {
+      const q = o.quaternion;
+      if (Math.abs(q.x) + Math.abs(q.y) + Math.abs(q.z) < 0.01) {
+        try {
+          if (!_oc && !_ocLoadPromise) notify('OCCT wird geladen…', 'ok');
+          const oc = await _loadOCCT();
+          const sx = o.scale.x, sy = o.scale.y, sz = o.scale.z;
+          const w = 2*sx, h = 2*sy, dp = 2*sz;
+          const geoOff = { x: o.position.x - sx, y: o.position.y - sy, z: o.position.z - sz };
+
+          const bm = new oc.BRepPrimAPI_MakeBox_2(w, h, dp);
+          const boxShape = bm.Shape();
+          bm.delete();
+
+          let finalShape = boxShape;
+          let opOk = true;
+
+          if (isPos) {
+            const ch = new oc.BRepFilletAPI_MakeChamfer(boxShape);
+            for (const {idx} of edgeData) {
+              const ep = EDGE_ENDPOINTS[idx];
+              const mx = ((ep[0][0]+ep[1][0])/2 + 1) * sx;
+              const my = ((ep[0][1]+ep[1][1])/2 + 1) * sy;
+              const mz = ((ep[0][2]+ep[1][2])/2 + 1) * sz;
+              const e = _findOCCTEdge(oc, boxShape, mx, my, mz);
+              if (e) ch.Add_2(dist, e); else { opOk = false; break; }
+            }
+            if (opOk) {
+              const pr = new oc.Message_ProgressRange_1();
+              ch.Build(pr); pr.delete();
+              opOk = ch.IsDone();
+              if (opOk) finalShape = ch.Shape();
+            }
+            ch.delete();
+          } else {
+            const fi = new oc.BRepFilletAPI_MakeFillet(boxShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
+            for (const {idx} of edgeData) {
+              const ep = EDGE_ENDPOINTS[idx];
+              const mx = ((ep[0][0]+ep[1][0])/2 + 1) * sx;
+              const my = ((ep[0][1]+ep[1][1])/2 + 1) * sy;
+              const mz = ((ep[0][2]+ep[1][2])/2 + 1) * sz;
+              const e = _findOCCTEdge(oc, boxShape, mx, my, mz);
+              if (e) fi.Add_2(dist, e); else { opOk = false; break; }
+            }
+            if (opOk) {
+              const pr = new oc.Message_ProgressRange_1();
+              fi.Build(pr); pr.delete();
+              opOk = fi.IsDone();
+              if (opOk) finalShape = fi.Shape();
+            }
+            fi.delete();
+          }
+
+          if (opOk) {
+            const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
+            const mat = new THREE.MeshStandardMaterial({
+              color: new THREE.Color(o.userData.color || '#0078ff'),
+              roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide
+            });
+            const result = new THREE.Mesh(geo, mat);
+            result.castShadow = true; result.receiveShadow = true;
+            result.userData = { ...o.userData, type: 'custom', shapeType: 'custom', wasBox: true };
+            delete result.userData.edgeBevels;
+            delete result.userData._dynamicEdges;
+            const ii = objects.indexOf(o);
+            if (ii >= 0) objects[ii] = result;
+            scene.remove(o); scene.add(result);
+            selectObjs([result]);
+            notify(edgeData.length + ' Kante(n) ' + (isPos ? 'abgeschrägt' : 'abgerundet') + ' (OCCT)', 'ok');
+            updateTree();
+            return;
+          }
+        } catch(err) {
+          console.warn('OCCT Fehler, ThreeCSG Fallback:', err);
+        }
+      }
+    }
+
+    // ThreeCSG Fallback
+    let current = o;
+    if (isPos) {
       for (const {idx, dynEdge} of edgeData) {
-        const next = _applyCSGChamfer(current, dynEdge, idx, chamferDist);
+        const next = _applyCSGChamfer(current, dynEdge, idx, dist);
         if (next) current = next;
       }
       selectObjs([current]);
       notify(edgeData.length + ' Kante(n) abgeschrägt', 'ok');
     } else {
-      const filletR = Math.abs(chamferDist);
-      const edgeData = [..._edgeSel].map(i => ({
-        idx: i,
-        dynEdge: { worldA: [...o.userData._dynamicEdges[i].worldA],
-                   worldB: [...o.userData._dynamicEdges[i].worldB] }
-      }));
-      deselect();
-      exitEdgeMode();
-      let current = o;
       for (const {idx, dynEdge} of edgeData) {
-        const next = _applyCSGFillet(current, dynEdge, idx, filletR);
+        const next = _applyCSGFillet(current, dynEdge, idx, dist);
         if (next === null) {
           notify('Abrundung nicht möglich für diese Kante', 'w');
           selectObjs([current]);
