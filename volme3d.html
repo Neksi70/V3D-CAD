@@ -1940,28 +1940,31 @@ function _occtShapeToThreeGeo(oc, shape, offset) {
   return geo;
 }
 
-function _findOCCTEdge(oc, shape, mx, my, mz) {
+function _findAllOCCTEdges(oc, shape, ax, ay, az, bx, by, bz, tol) {
+  tol = tol || 0.01;
+  const found = [];
   const exp = new oc.TopExp_Explorer_2(shape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
-  let best = null, bestD = Infinity;
   while (exp.More()) {
     const edge = oc.TopoDS.Edge_1(exp.Current());
     const vExp = new oc.TopExp_Explorer_2(edge, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
-    let cx = 0, cy = 0, cz = 0, cnt = 0;
+    const pts = [];
     while (vExp.More()) {
       const pt = oc.BRep_Tool.Pnt(oc.TopoDS.Vertex_1(vExp.Current()));
-      cx += pt.X(); cy += pt.Y(); cz += pt.Z(); cnt++;
+      pts.push({ x: pt.X(), y: pt.Y(), z: pt.Z() });
       vExp.Next();
     }
     vExp.delete();
-    if (cnt > 0) {
-      const ddx = cx/cnt-mx, ddy = cy/cnt-my, ddz = cz/cnt-mz;
-      const dd = ddx*ddx + ddy*ddy + ddz*ddz;
-      if (dd < bestD) { bestD = dd; best = edge; }
+    if (pts.length >= 2) {
+      const near = (p, x, y, z) => Math.abs(p.x-x)<tol && Math.abs(p.y-y)<tol && Math.abs(p.z-z)<tol;
+      if ((near(pts[0],ax,ay,az) && near(pts[1],bx,by,bz)) ||
+          (near(pts[0],bx,by,bz) && near(pts[1],ax,ay,az))) {
+        found.push(edge);
+      }
     }
     exp.Next();
   }
   exp.delete();
-  return best;
+  return found;
 }
 
 function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
@@ -2079,34 +2082,36 @@ async function _applyEdgeHandleValue(chamferDist) {
             const ch = new oc.BRepFilletAPI_MakeChamfer(boxShape);
             for (const {idx} of edgeData) {
               const ep = EDGE_ENDPOINTS[idx];
-              const mx = ((ep[0][0]+ep[1][0])/2 + 1) * sx;
-              const my = ((ep[0][1]+ep[1][1])/2 + 1) * sy;
-              const mz = ((ep[0][2]+ep[1][2])/2 + 1) * sz;
-              const e = _findOCCTEdge(oc, boxShape, mx, my, mz);
-              if (e) ch.Add_2(dist, e); else { opOk = false; break; }
+              const ax = (ep[0][0]+1)*sx, ay = (ep[0][1]+1)*sy, az = (ep[0][2]+1)*sz;
+              const bx = (ep[1][0]+1)*sx, by = (ep[1][1]+1)*sy, bz = (ep[1][2]+1)*sz;
+              const matches = _findAllOCCTEdges(oc, boxShape, ax, ay, az, bx, by, bz);
+              if (matches.length === 0) { opOk = false; break; }
+              for (const e of matches) ch.Add_2(dist, e);
             }
             if (opOk) {
               const pr = new oc.Message_ProgressRange_1();
               ch.Build(pr); pr.delete();
               opOk = ch.IsDone();
               if (opOk) finalShape = ch.Shape();
+              else console.warn('OCCT Chamfer IsDone=false, Kanten:', edgeData.map(d=>d.idx), 'dist=', dist);
             }
             ch.delete();
           } else {
             const fi = new oc.BRepFilletAPI_MakeFillet(boxShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
             for (const {idx} of edgeData) {
               const ep = EDGE_ENDPOINTS[idx];
-              const mx = ((ep[0][0]+ep[1][0])/2 + 1) * sx;
-              const my = ((ep[0][1]+ep[1][1])/2 + 1) * sy;
-              const mz = ((ep[0][2]+ep[1][2])/2 + 1) * sz;
-              const e = _findOCCTEdge(oc, boxShape, mx, my, mz);
-              if (e) fi.Add_2(dist, e); else { opOk = false; break; }
+              const ax = (ep[0][0]+1)*sx, ay = (ep[0][1]+1)*sy, az = (ep[0][2]+1)*sz;
+              const bx = (ep[1][0]+1)*sx, by = (ep[1][1]+1)*sy, bz = (ep[1][2]+1)*sz;
+              const matches = _findAllOCCTEdges(oc, boxShape, ax, ay, az, bx, by, bz);
+              if (matches.length === 0) { opOk = false; break; }
+              for (const e of matches) fi.Add_2(dist, e);
             }
             if (opOk) {
               const pr = new oc.Message_ProgressRange_1();
               fi.Build(pr); pr.delete();
               opOk = fi.IsDone();
               if (opOk) finalShape = fi.Shape();
+              else console.warn('OCCT Fillet IsDone=false, Kanten:', edgeData.map(d=>d.idx), 'dist=', dist);
             }
             fi.delete();
           }
