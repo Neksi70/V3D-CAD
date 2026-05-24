@@ -2095,6 +2095,8 @@ async function _applyEdgeHandleValue(chamferDist) {
 
         let opOk = true;
         let opI = 0;
+        // Toleranz wächst nach jeder Op: verschobene Vertices (dist/√2 ≈ 0.71·dist) noch findbar
+        let accumTol = 0.01;
         while (opI < allOps.length && opOk) {
           const curType = allOps[opI].type;
           const group = [];
@@ -2106,16 +2108,21 @@ async function _applyEdgeHandleValue(chamferDist) {
               const ep = EDGE_ENDPOINTS[op.idx];
               const ax = (ep[0][0]+1)*sx, ay = (ep[0][1]+1)*sy, az = (ep[0][2]+1)*sz;
               const bx = (ep[1][0]+1)*sx, by = (ep[1][1]+1)*sy, bz = (ep[1][2]+1)*sz;
-              const matches = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz);
-              if (matches.length === 0) { opOk = false; break; }
+              const matches = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz, accumTol);
+              if (matches.length === 0) {
+                console.warn('OCCT Chamfer: Edge nicht gefunden idx=', op.idx, 'accumTol=', accumTol);
+                opOk = false; break;
+              }
               for (const e of matches) ch.Add_2(op.dist, e);
             }
             if (opOk) {
               const pr = new oc.Message_ProgressRange_1();
               ch.Build(pr); pr.delete();
               opOk = ch.IsDone();
-              if (opOk) curShape = ch.Shape();
-              else console.warn('OCCT Chamfer IsDone=false', group);
+              if (opOk) {
+                curShape = ch.Shape();
+                accumTol = Math.max(accumTol, Math.max(...group.map(o => o.dist)) + 0.01);
+              } else console.warn('OCCT Chamfer IsDone=false', group);
             }
             ch.delete();
           } else {
@@ -2124,16 +2131,21 @@ async function _applyEdgeHandleValue(chamferDist) {
               const ep = EDGE_ENDPOINTS[op.idx];
               const ax = (ep[0][0]+1)*sx, ay = (ep[0][1]+1)*sy, az = (ep[0][2]+1)*sz;
               const bx = (ep[1][0]+1)*sx, by = (ep[1][1]+1)*sy, bz = (ep[1][2]+1)*sz;
-              const matches = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz);
-              if (matches.length === 0) { opOk = false; break; }
+              const matches = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz, accumTol);
+              if (matches.length === 0) {
+                console.warn('OCCT Fillet: Edge nicht gefunden idx=', op.idx, 'accumTol=', accumTol);
+                opOk = false; break;
+              }
               for (const e of matches) fi.Add_2(op.dist, e);
             }
             if (opOk) {
               const pr = new oc.Message_ProgressRange_1();
               fi.Build(pr); pr.delete();
               opOk = fi.IsDone();
-              if (opOk) curShape = fi.Shape();
-              else console.warn('OCCT Fillet IsDone=false', group);
+              if (opOk) {
+                curShape = fi.Shape();
+                accumTol = Math.max(accumTol, Math.max(...group.map(o => o.dist)) + 0.01);
+              } else console.warn('OCCT Fillet IsDone=false', group);
             }
             fi.delete();
           }
@@ -5651,6 +5663,52 @@ window._getSph       = () => ({ theta: sph.theta, phi: sph.phi, r: sph.r });
 Object.defineProperty(window, '_edgeSel', { get: () => _edgeSel, configurable: true });
 Object.defineProperty(window, '_edgeMode', { get: () => _edgeMode, configurable: true });
 Object.defineProperty(window, '_edgeObj', { get: () => _edgeObj, configurable: true });
+// OCCT module access for test helpers
+window._getOC = () => _oc;
+window.EDGE_ENDPOINTS_exposed = EDGE_ENDPOINTS;
+
+// Test helper: run sequential OCCT ops on unit box (sx=sy=sz=1) and return vertex count + opsCount
+window._testOCCTSequential = async function(ops) {
+  const oc = await _loadOCCT();
+  const sx=1,sy=1,sz=1;
+  const geoOff={x:0,y:0,z:0};
+  const bm = new oc.BRepPrimAPI_MakeBox_2(2*sx,2*sy,2*sz);
+  let curShape = bm.Shape(); bm.delete();
+  let opOk=true, opI=0, accumTol=0.01;
+  while(opI<ops.length&&opOk){
+    const curType=ops[opI].type;
+    const group=[];
+    while(opI<ops.length&&ops[opI].type===curType) group.push(ops[opI++]);
+    if(curType==='chamfer'){
+      const ch=new oc.BRepFilletAPI_MakeChamfer(curShape);
+      for(const op of group){
+        const ep=EDGE_ENDPOINTS[op.idx];
+        const ax=(ep[0][0]+1)*sx,ay=(ep[0][1]+1)*sy,az=(ep[0][2]+1)*sz;
+        const bx=(ep[1][0]+1)*sx,by=(ep[1][1]+1)*sy,bz=(ep[1][2]+1)*sz;
+        const m=_findAllOCCTEdges(oc,curShape,ax,ay,az,bx,by,bz,accumTol);
+        if(m.length===0){console.warn('testOCCT chamfer: edge not found idx=',op.idx,'tol=',accumTol);opOk=false;break;}
+        for(const e of m) ch.Add_2(op.dist,e);
+      }
+      if(opOk){const pr=new oc.Message_ProgressRange_1();ch.Build(pr);pr.delete();opOk=ch.IsDone();if(opOk){curShape=ch.Shape();accumTol=Math.max(accumTol,Math.max(...group.map(o=>o.dist))+0.01);}}
+      ch.delete();
+    } else {
+      const fi=new oc.BRepFilletAPI_MakeFillet(curShape,oc.ChFi3d_FilletShape.ChFi3d_Rational);
+      for(const op of group){
+        const ep=EDGE_ENDPOINTS[op.idx];
+        const ax=(ep[0][0]+1)*sx,ay=(ep[0][1]+1)*sy,az=(ep[0][2]+1)*sz;
+        const bx=(ep[1][0]+1)*sx,by=(ep[1][1]+1)*sy,bz=(ep[1][2]+1)*sz;
+        const m=_findAllOCCTEdges(oc,curShape,ax,ay,az,bx,by,bz,accumTol);
+        if(m.length===0){console.warn('testOCCT fillet: edge not found idx=',op.idx,'tol=',accumTol);opOk=false;break;}
+        for(const e of m) fi.Add_2(op.dist,e);
+      }
+      if(opOk){const pr=new oc.Message_ProgressRange_1();fi.Build(pr);pr.delete();opOk=fi.IsDone();if(opOk){curShape=fi.Shape();accumTol=Math.max(accumTol,Math.max(...group.map(o=>o.dist))+0.01);}}
+      fi.delete();
+    }
+  }
+  if(!opOk) return {opOk:false,opsCount:0,verts:0};
+  const geo=_occtShapeToThreeGeo(oc,curShape,geoOff);
+  return {opOk:true,opsCount:ops.length,verts:geo.attributes.position.count};
+};
 
 </script>
 </body>
