@@ -1282,6 +1282,7 @@ let _edgeMode            = false;
 let _edgeGlobal          = false;
 let _edgeObj             = null;
 let _edgeLines           = null;
+let _edgeCircles         = null;
 let _edgeSel             = new Set();
 let _edgeHover           = -1;
 let _edgeBevelHandlePos = null;
@@ -1867,6 +1868,24 @@ function enterEdgeMode() {
       const w = new THREE.Vector3(...c).applyMatrix4(mat);
       return { worldA: w.toArray(), worldB: w.toArray() };
     });
+    // Kreislinien als eigenes Objekt
+    const SEG = 32;
+    const circVerts = [], circEdgeMap = [];
+    (isCyl ? [1, -1] : [-1]).forEach((y, edgeIdx) => {
+      const start = circVerts.length / 3;
+      for (let i = 0; i < SEG; i++) {
+        const a0 = (i / SEG) * Math.PI * 2, a1 = ((i + 1) / SEG) * Math.PI * 2;
+        circVerts.push(Math.cos(a0), y, Math.sin(a0), Math.cos(a1), y, Math.sin(a1));
+      }
+      circEdgeMap.push({ start, end: circVerts.length / 3 });
+    });
+    const circGeo = new THREE.BufferGeometry();
+    circGeo.setAttribute('position', new THREE.Float32BufferAttribute(circVerts, 3));
+    circGeo.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(circVerts.length).fill(0.55), 3));
+    _edgeCircles = new THREE.LineSegments(circGeo, new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false }));
+    _edgeCircles.renderOrder = 999;
+    _edgeCircles.userData._edgeMap = circEdgeMap;
+    o.add(_edgeCircles);
   } else {
     o.userData._dynamicEdges = edges;
   }
@@ -1884,6 +1903,7 @@ function enterEdgeMode() {
   _edgeLines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({vertexColors:true, linewidth:2, depthTest:false}));
   _edgeLines.renderOrder = 999;
   o.add(_edgeLines);
+  if (o.userData.shapeType === 'cylinder' || o.userData.shapeType === 'cone') _edgeLines.visible = false;
   _fpCurType = null; updateFP();
   canvas.style.cursor = 'crosshair';
   const msg = _isBox
@@ -1894,6 +1914,7 @@ function enterEdgeMode() {
 
 function exitEdgeMode() {
   if (_edgeLines) { _edgeObj.remove(_edgeLines); _edgeLines.geometry.dispose(); _edgeLines = null; }
+  if (_edgeCircles) { _edgeObj.remove(_edgeCircles); _edgeCircles.geometry.dispose(); _edgeCircles = null; }
   if (_edgeObj) {
     delete _edgeObj.userData._dynamicEdges;
     delete _edgeObj.userData._globalChamferOrigGeo;
@@ -1915,6 +1936,15 @@ function _updateEdgeColors() {
     col.setXYZ(i*2, rv,gv,bv); col.setXYZ(i*2+1, rv,gv,bv);
   }
   col.needsUpdate = true;
+  if (_edgeCircles) {
+    const cc = _edgeCircles.geometry.attributes.color;
+    _edgeCircles.userData._edgeMap.forEach(({ start, end }, edgeIdx) => {
+      const isS = _edgeSel.has(edgeIdx), isH = edgeIdx === _edgeHover && !isS;
+      const [rv, gv, bv] = isS ? [1, 0.4, 0] : isH ? [1, 0.85, 0.2] : [0.55, 0.55, 0.55];
+      for (let v = start; v < end; v++) cc.setXYZ(v, rv, gv, bv);
+    });
+    cc.needsUpdate = true;
+  }
 }
 
 function _getClosestPointOnEdge(ray, a, b) {
