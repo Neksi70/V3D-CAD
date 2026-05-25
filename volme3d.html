@@ -1988,6 +1988,46 @@ function _findAllOCCTEdges(oc, shape, ax, ay, az, bx, by, bz, tol) {
   return found;
 }
 
+function _mergeOCCTOps(prevOps, newOps) {
+  const m = new Map(prevOps.map(op => [op.idx, op]));
+  for (const op of newOps) m.set(op.idx, op);
+  return [...m.values()];
+}
+
+function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz) {
+  const chamferOps = ops.filter(op => op.type === 'chamfer');
+  const filletOps  = ops.filter(op => op.type === 'fillet');
+  let curShape = baseShape;
+  let opOk = true;
+  if (chamferOps.length > 0) {
+    const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
+    for (const op of chamferOps) {
+      const ep = EDGE_ENDPOINTS[op.idx];
+      const ax=(ep[0][0]+1)*sx, ay=(ep[0][1]+1)*sy, az=(ep[0][2]+1)*sz;
+      const bx=(ep[1][0]+1)*sx, by=(ep[1][1]+1)*sy, bz=(ep[1][2]+1)*sz;
+      const ms = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz, 0.01);
+      if (!ms.length) { opOk = false; break; }
+      for (const e of ms) ch.Add_2(op.dist, e);
+    }
+    if (opOk) { ch.Build(); opOk = ch.IsDone(); if (opOk) curShape = ch.Shape(); }
+    ch.delete();
+  }
+  if (filletOps.length > 0 && opOk) {
+    const tol = chamferOps.length > 0 ? Math.max(...chamferOps.map(o => o.dist)) + 0.1 : 0.01;
+    const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
+    for (const op of filletOps) {
+      const ep = EDGE_ENDPOINTS[op.idx];
+      const ax=(ep[0][0]+1)*sx, ay=(ep[0][1]+1)*sy, az=(ep[0][2]+1)*sz;
+      const bx=(ep[1][0]+1)*sx, by=(ep[1][1]+1)*sy, bz=(ep[1][2]+1)*sz;
+      const ms = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz, tol);
+      if (!ms.length) { opOk = false; break; }
+      for (const e of ms) fi.Add_2(op.dist, e);
+    }
+    if (opOk) { fi.Build(); opOk = fi.IsDone(); if (opOk) curShape = fi.Shape(); }
+    fi.delete();
+  }
+  return { shape: curShape, opOk };
+}
 
 async function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
   try {
@@ -2000,41 +2040,11 @@ async function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
       geoOff = { x: obj.position.x - sx, y: obj.position.y - sy, z: obj.position.z - sz };
       prevOps = [];
     }
+    const allOps = _mergeOCCTOps(prevOps, [{ idx: edgeIndex, dist: chamferDist, type: 'chamfer' }]);
     const bm = new oc.BRepPrimAPI_MakeBox_1(2*sx, 2*sy, 2*sz);
-    let curShape = bm.Shape();
-    bm.delete();
-    let accumTol = 0.01;
-    for (const op of prevOps) {
-      const ep = EDGE_ENDPOINTS[op.idx];
-      const ax=(ep[0][0]+1)*sx, ay=(ep[0][1]+1)*sy, az=(ep[0][2]+1)*sz;
-      const bx=(ep[1][0]+1)*sx, by=(ep[1][1]+1)*sy, bz=(ep[1][2]+1)*sz;
-      const ms = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz, accumTol);
-      if (!ms.length) return null;
-      if (op.type === 'chamfer') {
-        const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
-        for (const e of ms) ch.Add_2(op.dist, e);
-        ch.Build();
-        if (!ch.IsDone()) { ch.delete(); return null; }
-        curShape = ch.Shape(); ch.delete();
-      } else {
-        const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
-        for (const e of ms) fi.Add_2(op.dist, e);
-        fi.Build();
-        if (!fi.IsDone()) { fi.delete(); return null; }
-        curShape = fi.Shape(); fi.delete();
-      }
-      accumTol = Math.max(accumTol, op.dist + 0.01);
-    }
-    const ep = EDGE_ENDPOINTS[edgeIndex];
-    const ax=(ep[0][0]+1)*sx, ay=(ep[0][1]+1)*sy, az=(ep[0][2]+1)*sz;
-    const bxc=(ep[1][0]+1)*sx, byc=(ep[1][1]+1)*sy, bzc=(ep[1][2]+1)*sz;
-    const matches = _findAllOCCTEdges(oc, curShape, ax, ay, az, bxc, byc, bzc, accumTol);
-    if (!matches.length) return null;
-    const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
-    for (const e of matches) ch.Add_2(chamferDist, e);
-    ch.Build();
-    if (!ch.IsDone()) { ch.delete(); return null; }
-    const finalShape = ch.Shape(); ch.delete();
+    const baseShape = bm.Shape(); bm.delete();
+    const { shape: finalShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
+    if (!opOk) return null;
     const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
     const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(obj.userData.color || '#0078ff'),
@@ -2043,7 +2053,7 @@ async function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
     const result = new THREE.Mesh(geo, mat);
     result.castShadow = true; result.receiveShadow = true;
     result.userData = { ...obj.userData, type: 'custom', shapeType: 'custom', wasBox: true,
-      _occtParams: { sx, sy, sz, geoOff, ops: [...prevOps, { idx: edgeIndex, dist: chamferDist, type: 'chamfer' }] } };
+      _occtParams: { sx, sy, sz, geoOff, ops: allOps } };
     delete result.userData.edgeBevels;
     delete result.userData._dynamicEdges;
     const i = objects.indexOf(obj);
@@ -2067,41 +2077,11 @@ async function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
       geoOff = { x: obj.position.x - sx, y: obj.position.y - sy, z: obj.position.z - sz };
       prevOps = [];
     }
+    const allOps = _mergeOCCTOps(prevOps, [{ idx: edgeIndex, dist: filletR, type: 'fillet' }]);
     const bm = new oc.BRepPrimAPI_MakeBox_1(2*sx, 2*sy, 2*sz);
-    let curShape = bm.Shape();
-    bm.delete();
-    let accumTol = 0.01;
-    for (const op of prevOps) {
-      const ep = EDGE_ENDPOINTS[op.idx];
-      const ax=(ep[0][0]+1)*sx, ay=(ep[0][1]+1)*sy, az=(ep[0][2]+1)*sz;
-      const bx=(ep[1][0]+1)*sx, by=(ep[1][1]+1)*sy, bz=(ep[1][2]+1)*sz;
-      const ms = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz, accumTol);
-      if (!ms.length) return null;
-      if (op.type === 'chamfer') {
-        const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
-        for (const e of ms) ch.Add_2(op.dist, e);
-        ch.Build();
-        if (!ch.IsDone()) { ch.delete(); return null; }
-        curShape = ch.Shape(); ch.delete();
-      } else {
-        const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
-        for (const e of ms) fi.Add_2(op.dist, e);
-        fi.Build();
-        if (!fi.IsDone()) { fi.delete(); return null; }
-        curShape = fi.Shape(); fi.delete();
-      }
-      accumTol = Math.max(accumTol, op.dist + 0.01);
-    }
-    const ep = EDGE_ENDPOINTS[edgeIndex];
-    const ax=(ep[0][0]+1)*sx, ay=(ep[0][1]+1)*sy, az=(ep[0][2]+1)*sz;
-    const bxf=(ep[1][0]+1)*sx, byf=(ep[1][1]+1)*sy, bzf=(ep[1][2]+1)*sz;
-    const matches = _findAllOCCTEdges(oc, curShape, ax, ay, az, bxf, byf, bzf, accumTol);
-    if (!matches.length) return null;
-    const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
-    for (const e of matches) fi.Add_2(filletR, e);
-    fi.Build();
-    if (!fi.IsDone()) { fi.delete(); return null; }
-    const finalShape = fi.Shape(); fi.delete();
+    const baseShape = bm.Shape(); bm.delete();
+    const { shape: finalShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
+    if (!opOk) return null;
     const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
     const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(obj.userData.color || '#0078ff'),
@@ -2110,7 +2090,7 @@ async function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
     const result = new THREE.Mesh(geo, mat);
     result.castShadow = true; result.receiveShadow = true;
     result.userData = { ...obj.userData, type: 'custom', shapeType: 'custom', wasBox: true,
-      _occtParams: { sx, sy, sz, geoOff, ops: [...prevOps, { idx: edgeIndex, dist: filletR, type: 'fillet' }] } };
+      _occtParams: { sx, sy, sz, geoOff, ops: allOps } };
     delete result.userData.edgeBevels;
     delete result.userData._dynamicEdges;
     const idx = objects.indexOf(obj);
@@ -2160,67 +2140,11 @@ async function _applyEdgeHandleValue(chamferDist) {
         }
 
         const newOps = edgeData.map(({ idx }) => ({ idx, dist, type: isPos ? 'chamfer' : 'fillet' }));
-        const allOps = [...prevOps, ...newOps];
+        const allOps = _mergeOCCTOps(prevOps, newOps);
 
         const bm = new oc.BRepPrimAPI_MakeBox_1(2*sx, 2*sy, 2*sz);
-        let curShape = bm.Shape();
-        bm.delete();
-
-        let opOk = true;
-        let opI = 0;
-        // Toleranz wächst nach jeder Op: verschobene Vertices (dist/√2 ≈ 0.71·dist) noch findbar
-        let accumTol = 0.01;
-        while (opI < allOps.length && opOk) {
-          const curType = allOps[opI].type;
-          const group = [];
-          while (opI < allOps.length && allOps[opI].type === curType) group.push(allOps[opI++]);
-
-          if (curType === 'chamfer') {
-            const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
-            for (const op of group) {
-              const ep = EDGE_ENDPOINTS[op.idx];
-              const ax = (ep[0][0]+1)*sx, ay = (ep[0][1]+1)*sy, az = (ep[0][2]+1)*sz;
-              const bx = (ep[1][0]+1)*sx, by = (ep[1][1]+1)*sy, bz = (ep[1][2]+1)*sz;
-              const matches = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz, accumTol);
-              if (matches.length === 0) {
-                console.warn('OCCT Chamfer: Edge nicht gefunden idx=', op.idx, 'accumTol=', accumTol);
-                opOk = false; break;
-              }
-              for (const e of matches) ch.Add_2(op.dist, e);
-            }
-            if (opOk) {
-              ch.Build();
-              opOk = ch.IsDone();
-              if (opOk) {
-                curShape = ch.Shape();
-                accumTol = Math.max(accumTol, Math.max(...group.map(o => o.dist)) + 0.01);
-              } else console.warn('OCCT Chamfer IsDone=false', group);
-            }
-            ch.delete();
-          } else {
-            const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
-            for (const op of group) {
-              const ep = EDGE_ENDPOINTS[op.idx];
-              const ax = (ep[0][0]+1)*sx, ay = (ep[0][1]+1)*sy, az = (ep[0][2]+1)*sz;
-              const bx = (ep[1][0]+1)*sx, by = (ep[1][1]+1)*sy, bz = (ep[1][2]+1)*sz;
-              const matches = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz, accumTol);
-              if (matches.length === 0) {
-                console.warn('OCCT Fillet: Edge nicht gefunden idx=', op.idx, 'accumTol=', accumTol);
-                opOk = false; break;
-              }
-              for (const e of matches) fi.Add_2(op.dist, e);
-            }
-            if (opOk) {
-              fi.Build();
-              opOk = fi.IsDone();
-              if (opOk) {
-                curShape = fi.Shape();
-                accumTol = Math.max(accumTol, Math.max(...group.map(o => o.dist)) + 0.01);
-              } else console.warn('OCCT Fillet IsDone=false', group);
-            }
-            fi.delete();
-          }
-        }
+        const baseShape = bm.Shape(); bm.delete();
+        const { shape: curShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
 
         if (opOk) {
           const geo = _occtShapeToThreeGeo(oc, curShape, geoOff);
@@ -5744,41 +5668,12 @@ window._testOCCTSequential = async function(ops) {
   const sx=1,sy=1,sz=1;
   const geoOff={x:0,y:0,z:0};
   const bm = new oc.BRepPrimAPI_MakeBox_1(2*sx,2*sy,2*sz);
-  let curShape = bm.Shape(); bm.delete();
-  let opOk=true, opI=0, accumTol=0.01;
-  while(opI<ops.length&&opOk){
-    const curType=ops[opI].type;
-    const group=[];
-    while(opI<ops.length&&ops[opI].type===curType) group.push(ops[opI++]);
-    if(curType==='chamfer'){
-      const ch=new oc.BRepFilletAPI_MakeChamfer(curShape);
-      for(const op of group){
-        const ep=EDGE_ENDPOINTS[op.idx];
-        const ax=(ep[0][0]+1)*sx,ay=(ep[0][1]+1)*sy,az=(ep[0][2]+1)*sz;
-        const bx=(ep[1][0]+1)*sx,by=(ep[1][1]+1)*sy,bz=(ep[1][2]+1)*sz;
-        const m=_findAllOCCTEdges(oc,curShape,ax,ay,az,bx,by,bz,accumTol);
-        if(m.length===0){console.warn('testOCCT chamfer: edge not found idx=',op.idx,'tol=',accumTol);opOk=false;break;}
-        for(const e of m) ch.Add_2(op.dist,e);
-      }
-      if(opOk){ch.Build();opOk=ch.IsDone();if(opOk){curShape=ch.Shape();accumTol=Math.max(accumTol,Math.max(...group.map(o=>o.dist))+0.01);}}
-      ch.delete();
-    } else {
-      const fi=new oc.BRepFilletAPI_MakeFillet(curShape,oc.ChFi3d_FilletShape.ChFi3d_Rational);
-      for(const op of group){
-        const ep=EDGE_ENDPOINTS[op.idx];
-        const ax=(ep[0][0]+1)*sx,ay=(ep[0][1]+1)*sy,az=(ep[0][2]+1)*sz;
-        const bx=(ep[1][0]+1)*sx,by=(ep[1][1]+1)*sy,bz=(ep[1][2]+1)*sz;
-        const m=_findAllOCCTEdges(oc,curShape,ax,ay,az,bx,by,bz,accumTol);
-        if(m.length===0){console.warn('testOCCT fillet: edge not found idx=',op.idx,'tol=',accumTol);opOk=false;break;}
-        for(const e of m) fi.Add_2(op.dist,e);
-      }
-      if(opOk){fi.Build();opOk=fi.IsDone();if(opOk){curShape=fi.Shape();accumTol=Math.max(accumTol,Math.max(...group.map(o=>o.dist))+0.01);}}
-      fi.delete();
-    }
-  }
+  const baseShape = bm.Shape(); bm.delete();
+  const dedupOps = _mergeOCCTOps([], ops);
+  const { shape: curShape, opOk } = _replayOCCTOps(oc, baseShape, dedupOps, sx, sy, sz);
   if(!opOk) return {opOk:false,opsCount:0,verts:0};
   const geo=_occtShapeToThreeGeo(oc,curShape,geoOff);
-  return {opOk:true,opsCount:ops.length,verts:geo.attributes.position.count};
+  return {opOk:true,opsCount:dedupOps.length,verts:geo.attributes.position.count};
 };
 
 </script>

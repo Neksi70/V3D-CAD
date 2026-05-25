@@ -300,3 +300,61 @@ test('OCCT Box Fillet — Handle links (negativ)', async ({ page }) => {
   expect(result.verts).toBeGreaterThan(20);
   console.log('✓ Fillet OK — Vertices:', result.verts);
 });
+
+test('OCCT Chamfer+Fillet auf benachbarten Kanten (Corner)', async ({ page }) => {
+  await page.goto(URL);
+  await page.waitForFunction(() => window._isReady === true, { timeout: 15000 });
+  await page.addStyleTag({ content: '#auth-overlay { display: none !important; }' });
+  await page.waitForTimeout(500);
+
+  // Kante 0 (+X+Y vertikal) und Kante 8 (+X+Z) teilen Ecke [+X+Y+Z]
+  // Erst Chamfer auf Kante 0, dann Fillet auf Kante 8
+  await page.evaluate(() => {
+    addShape('box');
+    const objs = window._getObjects();
+    const box = objs[objs.length - 1];
+    box.scale.set(20, 20, 20);
+    box.position.set(0, 20, 0);
+    box.updateWorldMatrix(true, true);
+    const sel = window._getSelectedObjs();
+    sel.length = 0; sel.push(box);
+    enterEdgeMode();
+    _edgeSel.add(0);
+    _updateEdgeColors();
+  });
+  await page.waitForTimeout(300);
+
+  await page.evaluate(async () => { await _applyEdgeHandleValue(3.0); });
+  await page.waitForTimeout(3000);
+
+  // Jetzt Fillet auf Kante 8 (teilt Ecke mit Kante 0)
+  await page.evaluate(() => {
+    enterEdgeMode();
+    _edgeSel.add(8);
+    _updateEdgeColors();
+  });
+  await page.waitForTimeout(300);
+
+  await page.evaluate(async () => { await _applyEdgeHandleValue(-3.0); });
+  await page.waitForTimeout(3000);
+  await page.screenshot({ path: '/tmp/corner_chamfer_fillet.png' });
+
+  const result = await page.evaluate(() => {
+    const objs = window._getObjects();
+    const obj = objs[objs.length - 1];
+    return {
+      wasBox: obj?.userData?.wasBox,
+      opsCount: obj?.userData?._occtParams?.ops?.length ?? 0,
+      ops: obj?.userData?._occtParams?.ops ?? [],
+      verts: obj?.geometry?.attributes?.position?.count ?? -1,
+    };
+  });
+  console.log('Corner Chamfer+Fillet:', result);
+
+  expect(result.wasBox).toBe(true);
+  expect(result.opsCount).toBe(2);
+  expect(result.ops.some(o => o.type === 'chamfer')).toBe(true);
+  expect(result.ops.some(o => o.type === 'fillet')).toBe(true);
+  expect(result.verts).toBeGreaterThan(30);
+  console.log('✓ Corner Chamfer+Fillet OK — Vertices:', result.verts);
+});
