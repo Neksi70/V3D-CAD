@@ -1018,6 +1018,11 @@ const firebaseConfig = {
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FontLoader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/geometries/TextGeometry.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/geometries/RoundedBoxGeometry.js"></script>
+<script type="module">
+import initOCCT from './volme3d-occt.js';
+window._occtReady = initOCCT({ locateFile: f => './volme3d-occt.wasm' });
+window._occtReady.then(oc => { window._oc = oc; console.log('OCCT bereit'); });
+</script>
 <script>
 // Minimal BSP-CSG for Three.js r128
 // Based on csg.js by Evan Wallace (MIT License)
@@ -1896,10 +1901,14 @@ let _ocLoadPromise = null;
 
 function _loadOCCT() {
   if (_oc) return Promise.resolve(_oc);
+  if (window._oc) { _oc = window._oc; return Promise.resolve(_oc); }
+  if (window._occtReady) {
+    return window._occtReady.then(oc => { _oc = oc; window._oc = oc; return oc; });
+  }
   if (_ocLoadPromise) return _ocLoadPromise;
-  _ocLoadPromise = import('./volme3d.js')
-    .then(m => m.default({ locateFile: f => './' + f }))
-    .then(oc => { _oc = oc; return oc; })
+  _ocLoadPromise = import('./volme3d-occt.js')
+    .then(m => m.default({ locateFile: f => './volme3d-occt.wasm' }))
+    .then(oc => { _oc = oc; window._oc = oc; return oc; })
     .catch(err => { _ocLoadPromise = null; throw err; });
   return _ocLoadPromise;
 }
@@ -1974,80 +1983,138 @@ function _findAllOCCTEdges(oc, shape, ax, ay, az, bx, by, bz, tol) {
   return found;
 }
 
-function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
-  const A = new THREE.Vector3(...dynEdge.worldA);
-  const B = new THREE.Vector3(...dynEdge.worldB);
-  const edgeMid = A.clone().add(B).multiplyScalar(0.5);
-  const edgeDir = B.clone().sub(A).normalize();
-  const edgeLen = A.distanceTo(B);
-
-  const normalMatrix = new THREE.Matrix3().getNormalMatrix(obj.matrixWorld);
-  const N1 = new THREE.Vector3(...EDGE_NORMALS[edgeIndex][0]).applyMatrix3(normalMatrix).normalize();
-  const N2 = new THREE.Vector3(...EDGE_NORMALS[edgeIndex][1]).applyMatrix3(normalMatrix).normalize();
-  const d = chamferDist;
-  const s = d * Math.SQRT2;
-  const cutterGeo = new THREE.BoxGeometry(s, s, edgeLen + 0.1);
-  const cutter = new THREE.Mesh(cutterGeo, new THREE.MeshStandardMaterial());
-  const bisector = N1.clone().add(N2).normalize();
-  const perp = edgeDir.clone().cross(bisector).normalize();
-  const basis = new THREE.Matrix4().makeBasis(bisector, perp, edgeDir);
-  cutter.quaternion.setFromRotationMatrix(basis);
-  cutter.position.copy(edgeMid);
-  cutter.updateWorldMatrix(true, true);
-
-  const mat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(obj.userData.color || '#0078ff'),
-    roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide
-  });
-  const result = ThreeCSG.subtract(obj, cutter, mat);
-  result.castShadow = true; result.receiveShadow = true;
-  result.userData = { ...obj.userData, type: 'custom', shapeType: 'custom', wasBox: true };
-  delete result.userData.edgeBevels;
-  delete result.userData._dynamicEdges;
-  const i = objects.indexOf(obj);
-  if (i >= 0) objects[i] = result;
-  scene.remove(obj);
-  scene.add(result);
-  return result;
-}
-
-function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
-  if (!EDGE_NORMALS[edgeIndex] || EDGE_NORMALS[edgeIndex].length < 2) return null;
-  const A = new THREE.Vector3(...dynEdge.worldA);
-  const B = new THREE.Vector3(...dynEdge.worldB);
-  const edgeMid = A.clone().add(B).multiplyScalar(0.5);
-  const edgeDir  = B.clone().sub(A).normalize();
-  const edgeLen  = A.distanceTo(B);
-
-  const normalMatrix = new THREE.Matrix3().getNormalMatrix(obj.matrixWorld);
-  const N1 = new THREE.Vector3(...EDGE_NORMALS[edgeIndex][0]).applyMatrix3(normalMatrix).normalize();
-  const N2 = new THREE.Vector3(...EDGE_NORMALS[edgeIndex][1]).applyMatrix3(normalMatrix).normalize();
-  const bisector = N1.clone().add(N2).normalize();
-
-  const cutterGeo = new THREE.CylinderGeometry(filletR, filletR, edgeLen + 0.1, 16);
-  const cutter = new THREE.Mesh(cutterGeo, new THREE.MeshStandardMaterial());
-  cutter.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), edgeDir);
-  cutter.position.copy(edgeMid).addScaledVector(bisector, filletR * Math.SQRT2);
-  cutter.updateWorldMatrix(true, true);
-
-  const mat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(obj.userData.color || '#0078ff'),
-    roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide
-  });
-  const result = ThreeCSG.subtract(obj, cutter, mat);
-  if (!result || !result.geometry ||
-      result.geometry.attributes.position.count < 12) {
+async function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
+  try {
+    const oc = await _loadOCCT();
+    let sx, sy, sz, geoOff, prevOps;
+    if (obj.userData.wasBox && obj.userData._occtParams) {
+      ({ sx, sy, sz, geoOff, ops: prevOps } = obj.userData._occtParams);
+    } else {
+      sx = obj.scale.x; sy = obj.scale.y; sz = obj.scale.z;
+      geoOff = { x: obj.position.x - sx, y: obj.position.y - sy, z: obj.position.z - sz };
+      prevOps = [];
+    }
+    const bm = new oc.BRepPrimAPI_MakeBox_2(2*sx, 2*sy, 2*sz);
+    let curShape = bm.Shape();
+    bm.delete();
+    let accumTol = 0.01;
+    for (const op of prevOps) {
+      const ep = EDGE_ENDPOINTS[op.idx];
+      const ax=(ep[0][0]+1)*sx, ay=(ep[0][1]+1)*sy, az=(ep[0][2]+1)*sz;
+      const bx=(ep[1][0]+1)*sx, by=(ep[1][1]+1)*sy, bz=(ep[1][2]+1)*sz;
+      const ms = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz, accumTol);
+      if (!ms.length) return null;
+      if (op.type === 'chamfer') {
+        const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
+        for (const e of ms) ch.Add_2(op.dist, e);
+        const pr = new oc.Message_ProgressRange_1(); ch.Build(pr); pr.delete();
+        if (!ch.IsDone()) { ch.delete(); return null; }
+        curShape = ch.Shape(); ch.delete();
+      } else {
+        const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
+        for (const e of ms) fi.Add_2(op.dist, e);
+        const pr = new oc.Message_ProgressRange_1(); fi.Build(pr); pr.delete();
+        if (!fi.IsDone()) { fi.delete(); return null; }
+        curShape = fi.Shape(); fi.delete();
+      }
+      accumTol = Math.max(accumTol, op.dist + 0.01);
+    }
+    const ep = EDGE_ENDPOINTS[edgeIndex];
+    const ax=(ep[0][0]+1)*sx, ay=(ep[0][1]+1)*sy, az=(ep[0][2]+1)*sz;
+    const bxc=(ep[1][0]+1)*sx, byc=(ep[1][1]+1)*sy, bzc=(ep[1][2]+1)*sz;
+    const matches = _findAllOCCTEdges(oc, curShape, ax, ay, az, bxc, byc, bzc, accumTol);
+    if (!matches.length) return null;
+    const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
+    for (const e of matches) ch.Add_2(chamferDist, e);
+    const pr = new oc.Message_ProgressRange_1(); ch.Build(pr); pr.delete();
+    if (!ch.IsDone()) { ch.delete(); return null; }
+    const finalShape = ch.Shape(); ch.delete();
+    const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(obj.userData.color || '#0078ff'),
+      roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide
+    });
+    const result = new THREE.Mesh(geo, mat);
+    result.castShadow = true; result.receiveShadow = true;
+    result.userData = { ...obj.userData, type: 'custom', shapeType: 'custom', wasBox: true,
+      _occtParams: { sx, sy, sz, geoOff, ops: [...prevOps, { idx: edgeIndex, dist: chamferDist, type: 'chamfer' }] } };
+    delete result.userData.edgeBevels;
+    delete result.userData._dynamicEdges;
+    const i = objects.indexOf(obj);
+    if (i >= 0) objects[i] = result;
+    scene.remove(obj); scene.add(result);
+    return result;
+  } catch(e) {
+    console.warn('_applyCSGChamfer OCCT Fehler:', e);
     return null;
   }
-  result.castShadow = true; result.receiveShadow = true;
-  result.userData = { ...obj.userData, type: 'custom', shapeType: 'custom', wasBox: true };
-  delete result.userData.edgeBevels;
-  delete result.userData._dynamicEdges;
-  const idx = objects.indexOf(obj);
-  if (idx >= 0) objects[idx] = result;
-  scene.remove(obj);
-  scene.add(result);
-  return result;
+}
+
+async function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
+  try {
+    const oc = await _loadOCCT();
+    let sx, sy, sz, geoOff, prevOps;
+    if (obj.userData.wasBox && obj.userData._occtParams) {
+      ({ sx, sy, sz, geoOff, ops: prevOps } = obj.userData._occtParams);
+    } else {
+      sx = obj.scale.x; sy = obj.scale.y; sz = obj.scale.z;
+      geoOff = { x: obj.position.x - sx, y: obj.position.y - sy, z: obj.position.z - sz };
+      prevOps = [];
+    }
+    const bm = new oc.BRepPrimAPI_MakeBox_2(2*sx, 2*sy, 2*sz);
+    let curShape = bm.Shape();
+    bm.delete();
+    let accumTol = 0.01;
+    for (const op of prevOps) {
+      const ep = EDGE_ENDPOINTS[op.idx];
+      const ax=(ep[0][0]+1)*sx, ay=(ep[0][1]+1)*sy, az=(ep[0][2]+1)*sz;
+      const bx=(ep[1][0]+1)*sx, by=(ep[1][1]+1)*sy, bz=(ep[1][2]+1)*sz;
+      const ms = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz, accumTol);
+      if (!ms.length) return null;
+      if (op.type === 'chamfer') {
+        const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
+        for (const e of ms) ch.Add_2(op.dist, e);
+        const pr = new oc.Message_ProgressRange_1(); ch.Build(pr); pr.delete();
+        if (!ch.IsDone()) { ch.delete(); return null; }
+        curShape = ch.Shape(); ch.delete();
+      } else {
+        const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
+        for (const e of ms) fi.Add_2(op.dist, e);
+        const pr = new oc.Message_ProgressRange_1(); fi.Build(pr); pr.delete();
+        if (!fi.IsDone()) { fi.delete(); return null; }
+        curShape = fi.Shape(); fi.delete();
+      }
+      accumTol = Math.max(accumTol, op.dist + 0.01);
+    }
+    const ep = EDGE_ENDPOINTS[edgeIndex];
+    const ax=(ep[0][0]+1)*sx, ay=(ep[0][1]+1)*sy, az=(ep[0][2]+1)*sz;
+    const bxf=(ep[1][0]+1)*sx, byf=(ep[1][1]+1)*sy, bzf=(ep[1][2]+1)*sz;
+    const matches = _findAllOCCTEdges(oc, curShape, ax, ay, az, bxf, byf, bzf, accumTol);
+    if (!matches.length) return null;
+    const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
+    for (const e of matches) fi.Add_2(filletR, e);
+    const pr = new oc.Message_ProgressRange_1(); fi.Build(pr); pr.delete();
+    if (!fi.IsDone()) { fi.delete(); return null; }
+    const finalShape = fi.Shape(); fi.delete();
+    const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(obj.userData.color || '#0078ff'),
+      roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide
+    });
+    const result = new THREE.Mesh(geo, mat);
+    result.castShadow = true; result.receiveShadow = true;
+    result.userData = { ...obj.userData, type: 'custom', shapeType: 'custom', wasBox: true,
+      _occtParams: { sx, sy, sz, geoOff, ops: [...prevOps, { idx: edgeIndex, dist: filletR, type: 'fillet' }] } };
+    delete result.userData.edgeBevels;
+    delete result.userData._dynamicEdges;
+    const idx = objects.indexOf(obj);
+    if (idx >= 0) objects[idx] = result;
+    scene.remove(obj); scene.add(result);
+    return result;
+  } catch(e) {
+    console.warn('_applyCSGFillet OCCT Fehler:', e);
+    return null;
+  }
 }
 
 async function _applyEdgeHandleValue(chamferDist) {
@@ -2180,14 +2247,14 @@ async function _applyEdgeHandleValue(chamferDist) {
     let current = o;
     if (isPos) {
       for (const {idx, dynEdge} of edgeData) {
-        const next = _applyCSGChamfer(current, dynEdge, idx, dist);
+        const next = await _applyCSGChamfer(current, dynEdge, idx, dist);
         if (next) current = next;
       }
       selectObjs([current]);
       notify(edgeData.length + ' Kante(n) abgeschrägt', 'ok');
     } else {
       for (const {idx, dynEdge} of edgeData) {
-        const next = _applyCSGFillet(current, dynEdge, idx, dist);
+        const next = await _applyCSGFillet(current, dynEdge, idx, dist);
         if (next === null) {
           notify('Abrundung nicht möglich für diese Kante', 'w');
           selectObjs([current]);
