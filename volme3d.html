@@ -397,6 +397,11 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 </head>
 <body>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js');
+}
+</script>
 
 <!-- FIREBASE AUTH OVERLAY -->
 <div id="auth-overlay" class="hidden">
@@ -1020,7 +1025,7 @@ const firebaseConfig = {
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/geometries/RoundedBoxGeometry.js"></script>
 <script type="module">
 import initOCCT from './volme3d-occt.js';
-window._occtReady = initOCCT({ locateFile: f => './volme3d-occt.wasm' });
+window._occtReady = initOCCT({ locateFile: f => '/volme3d-occt.wasm' });
 window._occtReady.then(oc => { window._oc = oc; console.log('OCCT bereit'); });
 </script>
 <script>
@@ -1907,7 +1912,7 @@ function _loadOCCT() {
   }
   if (_ocLoadPromise) return _ocLoadPromise;
   _ocLoadPromise = import('./volme3d-occt.js')
-    .then(m => m.default({ locateFile: f => './volme3d-occt.wasm' }))
+    .then(m => m.default({ locateFile: f => '/volme3d-occt.wasm' }))
     .then(oc => { _oc = oc; window._oc = oc; return oc; })
     .catch(err => { _ocLoadPromise = null; throw err; });
   return _ocLoadPromise;
@@ -1921,7 +1926,7 @@ function _occtShapeToThreeGeo(oc, shape, offset) {
   while (fExp.More()) {
     const face = oc.TopoDS.Face_1(fExp.Current());
     const loc  = new oc.TopLoc_Location_1();
-    const tri  = oc.BRep_Tool.Triangulation(face, loc, 0);
+    const tri  = oc.BRep_Tool.Triangulation(face, loc);
     if (!tri.IsNull()) {
       const isRev = face.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED;
       const trsf  = !loc.IsIdentity() ? loc.Transformation() : null;
@@ -1995,7 +2000,7 @@ async function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
       geoOff = { x: obj.position.x - sx, y: obj.position.y - sy, z: obj.position.z - sz };
       prevOps = [];
     }
-    const bm = new oc.BRepPrimAPI_MakeBox_2(2*sx, 2*sy, 2*sz);
+    const bm = new oc.BRepPrimAPI_MakeBox_1(2*sx, 2*sy, 2*sz);
     let curShape = bm.Shape();
     bm.delete();
     let accumTol = 0.01;
@@ -2008,13 +2013,13 @@ async function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
       if (op.type === 'chamfer') {
         const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
         for (const e of ms) ch.Add_2(op.dist, e);
-        const pr = new oc.Message_ProgressRange_1(); ch.Build(pr); pr.delete();
+        ch.Build();
         if (!ch.IsDone()) { ch.delete(); return null; }
         curShape = ch.Shape(); ch.delete();
       } else {
         const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
         for (const e of ms) fi.Add_2(op.dist, e);
-        const pr = new oc.Message_ProgressRange_1(); fi.Build(pr); pr.delete();
+        fi.Build();
         if (!fi.IsDone()) { fi.delete(); return null; }
         curShape = fi.Shape(); fi.delete();
       }
@@ -2027,7 +2032,7 @@ async function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
     if (!matches.length) return null;
     const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
     for (const e of matches) ch.Add_2(chamferDist, e);
-    const pr = new oc.Message_ProgressRange_1(); ch.Build(pr); pr.delete();
+    ch.Build();
     if (!ch.IsDone()) { ch.delete(); return null; }
     const finalShape = ch.Shape(); ch.delete();
     const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
@@ -2062,7 +2067,7 @@ async function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
       geoOff = { x: obj.position.x - sx, y: obj.position.y - sy, z: obj.position.z - sz };
       prevOps = [];
     }
-    const bm = new oc.BRepPrimAPI_MakeBox_2(2*sx, 2*sy, 2*sz);
+    const bm = new oc.BRepPrimAPI_MakeBox_1(2*sx, 2*sy, 2*sz);
     let curShape = bm.Shape();
     bm.delete();
     let accumTol = 0.01;
@@ -2075,13 +2080,13 @@ async function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
       if (op.type === 'chamfer') {
         const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
         for (const e of ms) ch.Add_2(op.dist, e);
-        const pr = new oc.Message_ProgressRange_1(); ch.Build(pr); pr.delete();
+        ch.Build();
         if (!ch.IsDone()) { ch.delete(); return null; }
         curShape = ch.Shape(); ch.delete();
       } else {
         const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
         for (const e of ms) fi.Add_2(op.dist, e);
-        const pr = new oc.Message_ProgressRange_1(); fi.Build(pr); pr.delete();
+        fi.Build();
         if (!fi.IsDone()) { fi.delete(); return null; }
         curShape = fi.Shape(); fi.delete();
       }
@@ -2094,7 +2099,7 @@ async function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
     if (!matches.length) return null;
     const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
     for (const e of matches) fi.Add_2(filletR, e);
-    const pr = new oc.Message_ProgressRange_1(); fi.Build(pr); pr.delete();
+    fi.Build();
     if (!fi.IsDone()) { fi.delete(); return null; }
     const finalShape = fi.Shape(); fi.delete();
     const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
@@ -2157,7 +2162,7 @@ async function _applyEdgeHandleValue(chamferDist) {
         const newOps = edgeData.map(({ idx }) => ({ idx, dist, type: isPos ? 'chamfer' : 'fillet' }));
         const allOps = [...prevOps, ...newOps];
 
-        const bm = new oc.BRepPrimAPI_MakeBox_2(2*sx, 2*sy, 2*sz);
+        const bm = new oc.BRepPrimAPI_MakeBox_1(2*sx, 2*sy, 2*sz);
         let curShape = bm.Shape();
         bm.delete();
 
@@ -2184,8 +2189,7 @@ async function _applyEdgeHandleValue(chamferDist) {
               for (const e of matches) ch.Add_2(op.dist, e);
             }
             if (opOk) {
-              const pr = new oc.Message_ProgressRange_1();
-              ch.Build(pr); pr.delete();
+              ch.Build();
               opOk = ch.IsDone();
               if (opOk) {
                 curShape = ch.Shape();
@@ -2207,8 +2211,7 @@ async function _applyEdgeHandleValue(chamferDist) {
               for (const e of matches) fi.Add_2(op.dist, e);
             }
             if (opOk) {
-              const pr = new oc.Message_ProgressRange_1();
-              fi.Build(pr); pr.delete();
+              fi.Build();
               opOk = fi.IsDone();
               if (opOk) {
                 curShape = fi.Shape();
@@ -5740,7 +5743,7 @@ window._testOCCTSequential = async function(ops) {
   const oc = await _loadOCCT();
   const sx=1,sy=1,sz=1;
   const geoOff={x:0,y:0,z:0};
-  const bm = new oc.BRepPrimAPI_MakeBox_2(2*sx,2*sy,2*sz);
+  const bm = new oc.BRepPrimAPI_MakeBox_1(2*sx,2*sy,2*sz);
   let curShape = bm.Shape(); bm.delete();
   let opOk=true, opI=0, accumTol=0.01;
   while(opI<ops.length&&opOk){
@@ -5757,7 +5760,7 @@ window._testOCCTSequential = async function(ops) {
         if(m.length===0){console.warn('testOCCT chamfer: edge not found idx=',op.idx,'tol=',accumTol);opOk=false;break;}
         for(const e of m) ch.Add_2(op.dist,e);
       }
-      if(opOk){const pr=new oc.Message_ProgressRange_1();ch.Build(pr);pr.delete();opOk=ch.IsDone();if(opOk){curShape=ch.Shape();accumTol=Math.max(accumTol,Math.max(...group.map(o=>o.dist))+0.01);}}
+      if(opOk){ch.Build();opOk=ch.IsDone();if(opOk){curShape=ch.Shape();accumTol=Math.max(accumTol,Math.max(...group.map(o=>o.dist))+0.01);}}
       ch.delete();
     } else {
       const fi=new oc.BRepFilletAPI_MakeFillet(curShape,oc.ChFi3d_FilletShape.ChFi3d_Rational);
@@ -5769,7 +5772,7 @@ window._testOCCTSequential = async function(ops) {
         if(m.length===0){console.warn('testOCCT fillet: edge not found idx=',op.idx,'tol=',accumTol);opOk=false;break;}
         for(const e of m) fi.Add_2(op.dist,e);
       }
-      if(opOk){const pr=new oc.Message_ProgressRange_1();fi.Build(pr);pr.delete();opOk=fi.IsDone();if(opOk){curShape=fi.Shape();accumTol=Math.max(accumTol,Math.max(...group.map(o=>o.dist))+0.01);}}
+      if(opOk){fi.Build();opOk=fi.IsDone();if(opOk){curShape=fi.Shape();accumTol=Math.max(accumTol,Math.max(...group.map(o=>o.dist))+0.01);}}
       fi.delete();
     }
   }

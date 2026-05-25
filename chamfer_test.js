@@ -206,7 +206,7 @@ test('Face-Count Diagnose — Plain Box', async ({ page }) => {
     const oc = await _loadOCCT();
     const sx = box.scale.x, sy = box.scale.y, sz = box.scale.z;
     const geoOff = { x: box.position.x - sx, y: box.position.y - sy, z: box.position.z - sz };
-    const bm = new oc.BRepPrimAPI_MakeBox_2(2*sx, 2*sy, 2*sz);
+    const bm = new oc.BRepPrimAPI_MakeBox_1(2*sx, 2*sy, 2*sz);
     _occtShapeToThreeGeo(oc, bm.Shape(), geoOff);
     bm.delete();
   });
