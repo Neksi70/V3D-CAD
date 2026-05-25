@@ -134,7 +134,7 @@ test('OCCT Box Chamfer - alle Flächen sichtbar', async ({ page }) => {
     const objs = window._getObjects();
     const obj = objs[objs.length - 1];
     return {
-      wasBox: obj?.userData?.wasBox,
+      occtShape: obj?.userData?.occtShape,
       hasOcctParams: !!obj?.userData?._occtParams,
       ops: obj?.userData?._occtParams?.ops?.length ?? 0,
       verts: obj?.geometry?.attributes?.position?.count ?? -1,
@@ -144,7 +144,7 @@ test('OCCT Box Chamfer - alle Flächen sichtbar', async ({ page }) => {
   await page.screenshot({ path: '/tmp/occt_after.png' });
   console.log('OCCT Box Chamfer:', result);
 
-  expect(result.wasBox).toBe(true);
+  expect(result.occtShape).toBe('box');
   expect(result.verts).toBeGreaterThan(20); // flat box faces = wenige Vertices
   console.log('✓ OCCT Box Chamfer OK — Vertices:', result.verts, '| ops:', result.ops);
 });
@@ -287,7 +287,7 @@ test('OCCT Box Fillet — Handle links (negativ)', async ({ page }) => {
     const objs = window._getObjects();
     const obj = objs[objs.length - 1];
     return {
-      wasBox: obj?.userData?.wasBox,
+      occtShape: obj?.userData?.occtShape,
       ops: obj?.userData?._occtParams?.ops ?? [],
       verts: obj?.geometry?.attributes?.position?.count ?? -1,
     };
@@ -295,7 +295,7 @@ test('OCCT Box Fillet — Handle links (negativ)', async ({ page }) => {
   console.log('Fillet Ergebnis:', result);
   console.log('Op-Typ:', result.ops[0]?.type);
 
-  expect(result.wasBox).toBe(true);
+  expect(result.occtShape).toBe('box');
   expect(result.ops[0]?.type).toBe('fillet');
   expect(result.verts).toBeGreaterThan(20);
   console.log('✓ Fillet OK — Vertices:', result.verts);
@@ -343,7 +343,7 @@ test('OCCT Chamfer+Fillet auf benachbarten Kanten (Corner)', async ({ page }) =>
     const objs = window._getObjects();
     const obj = objs[objs.length - 1];
     return {
-      wasBox: obj?.userData?.wasBox,
+      occtShape: obj?.userData?.occtShape,
       opsCount: obj?.userData?._occtParams?.ops?.length ?? 0,
       ops: obj?.userData?._occtParams?.ops ?? [],
       verts: obj?.geometry?.attributes?.position?.count ?? -1,
@@ -351,7 +351,7 @@ test('OCCT Chamfer+Fillet auf benachbarten Kanten (Corner)', async ({ page }) =>
   });
   console.log('Corner Chamfer+Fillet:', result);
 
-  expect(result.wasBox).toBe(true);
+  expect(result.occtShape).toBe('box');
   expect(result.opsCount).toBe(2);
   expect(result.ops.some(o => o.type === 'chamfer')).toBe(true);
   expect(result.ops.some(o => o.type === 'fillet')).toBe(true);
