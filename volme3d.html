@@ -398,11 +398,33 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh
 </head>
 <body>
 <script>
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js');
+async function _loadOCCTCached() {
+  const DB_NAME = 'volme3d-occt';
+  const STORE   = 'wasm';
+  const KEY     = 'volme3d-occt-v1';
+  const db = await new Promise((res, rej) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(STORE);
+    req.onsuccess = e => res(e.target.result);
+    req.onerror   = rej;
+  });
+  const cached = await new Promise(res => {
+    const tx  = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).get(KEY);
+    req.onsuccess = e => res(e.target.result);
+    req.onerror   = () => res(null);
+  });
+  if (cached) { console.log('OCCT aus IndexedDB Cache geladen'); return cached; }
+  console.log('OCCT wird heruntergeladen...');
+  const resp = await fetch('./volme3d-occt.wasm');
+  const buf  = await resp.arrayBuffer();
+  await new Promise(res => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(buf, KEY);
+    tx.oncomplete = res;
+  });
+  return buf;
 }
-</script>
-<script>
 window.addEventListener('load', () => {
   setTimeout(() => {
     _loadOCCT().catch(() => {});
@@ -1032,7 +1054,10 @@ const firebaseConfig = {
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/geometries/RoundedBoxGeometry.js"></script>
 <script type="module">
 import initOCCT from './volme3d-occt.js';
-window._occtReady = initOCCT({ locateFile: f => '/volme3d-occt.wasm' });
+window._occtReady = (async () => {
+  const wasmBuf = await _loadOCCTCached();
+  return initOCCT({ wasmBinary: wasmBuf, locateFile: f => './volme3d-occt.wasm' });
+})();
 window._occtReady.then(oc => { window._oc = oc; console.log('OCCT bereit'); });
 </script>
 <script>
