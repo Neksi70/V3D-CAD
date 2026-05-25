@@ -6,6 +6,7 @@ import sys
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 TMP_STL = '/tmp/volme3d-export.stl'
+WASM_GZ = 'volme3d-occt.wasm.gz'
 
 class Handler(SimpleHTTPRequestHandler):
     def do_OPTIONS(self):
@@ -38,6 +39,16 @@ class Handler(SimpleHTTPRequestHandler):
             self._cors()
             self.send_header('Content-Type', 'model/stl')
             self.send_header('Content-Disposition', 'attachment; filename="volme3d.stl"')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        elif self.path.split('?')[0] == '/volme3d-occt.wasm' and os.path.exists(WASM_GZ):
+            with open(WASM_GZ, 'rb') as f:
+                data = f.read()
+            self.send_response(200)
+            self._cors()
+            self.send_header('Content-Type', 'application/wasm')
+            self.send_header('Content-Encoding', 'gzip')
             self.send_header('Content-Length', str(len(data)))
             self.end_headers()
             self.wfile.write(data)
