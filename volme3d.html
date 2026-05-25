@@ -1849,8 +1849,9 @@ function enterEdgeMode() {
       worldA: [(ep[0][0]+1)*sx + geoOff.x, (ep[0][1]+1)*sy + geoOff.y, (ep[0][2]+1)*sz + geoOff.z],
       worldB: [(ep[1][0]+1)*sx + geoOff.x, (ep[1][1]+1)*sy + geoOff.y, (ep[1][2]+1)*sz + geoOff.z]
     }));
-  } else if (o.userData.shapeType === 'cylinder' || o.userData.shapeType === 'cone') {
-    const isCyl = o.userData.shapeType === 'cylinder';
+  } else if (o.userData.shapeType === 'cylinder' || o.userData.shapeType === 'tube' ||
+             o.userData.shapeType === 'cone'     || o.userData.shapeType === 'pyramid') {
+    const isCyl = o.userData.shapeType === 'cylinder' || o.userData.shapeType === 'tube';
     const mat = o.matrixWorld;
     const meshPos = new THREE.Vector3().setFromMatrixPosition(mat);
     const toCamera = camera.position.clone().sub(meshPos);
@@ -2119,14 +2120,20 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz) {
 }
 
 function _buildOCCTBaseShape(oc, occtShape, sx, sy, sz) {
-  if (occtShape === 'cylinder' || occtShape === 'cone') {
+  if (occtShape === 'cylinder' || occtShape === 'tube' ||
+      occtShape === 'cone'     || occtShape === 'pyramid') {
     const orig = new oc.gp_Pnt_1();
     const dir  = new oc.gp_Dir_4(0, 1, 0);
     const ax2  = new oc.gp_Ax2_3(orig, dir);
-    const bm   = occtShape === 'cylinder'
+    const bm   = (occtShape === 'cylinder' || occtShape === 'tube')
       ? new oc.BRepPrimAPI_MakeCylinder_3(ax2, sx, 2*sy)
       : new oc.BRepPrimAPI_MakeCone_3(ax2, sx, 0.001, 2*sy);
     const s = bm.Shape(); bm.delete(); ax2.delete(); dir.delete(); orig.delete();
+    return s;
+  }
+  if (occtShape === 'wedge') {
+    const bm = new oc.BRepPrimAPI_MakeWedge_1(2*sx, 2*sy, 2*sz, 0);
+    const s = bm.Shape(); bm.delete();
     return s;
   }
   const bm = new oc.BRepPrimAPI_MakeBox_1(2*sx, 2*sy, 2*sz);
@@ -2144,7 +2151,7 @@ async function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
       toOcct = w => [w[0]-geoOff.x, w[1]-geoOff.y, w[2]-geoOff.z];
     } else {
       sx = obj.scale.x; sy = obj.scale.y; sz = obj.scale.z;
-      if (occtShape === 'cylinder' || occtShape === 'cone') {
+      if (occtShape === 'cylinder' || occtShape === 'tube' || occtShape === 'cone' || occtShape === 'pyramid') {
         geoOff = { x: obj.position.x, y: obj.position.y - sy, z: obj.position.z };
       } else {
         geoOff = { x: obj.position.x - sx, y: obj.position.y - sy, z: obj.position.z - sz };
@@ -2189,7 +2196,7 @@ async function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
       toOcct = w => [w[0]-geoOff.x, w[1]-geoOff.y, w[2]-geoOff.z];
     } else {
       sx = obj.scale.x; sy = obj.scale.y; sz = obj.scale.z;
-      if (occtShape === 'cylinder' || occtShape === 'cone') {
+      if (occtShape === 'cylinder' || occtShape === 'tube' || occtShape === 'cone' || occtShape === 'pyramid') {
         geoOff = { x: obj.position.x, y: obj.position.y - sy, z: obj.position.z };
       } else {
         geoOff = { x: obj.position.x - sx, y: obj.position.y - sy, z: obj.position.z - sz };
@@ -2256,7 +2263,7 @@ async function _applyEdgeHandleValue(chamferDist) {
           toOcct = w => [w[0]-geoOff.x, w[1]-geoOff.y, w[2]-geoOff.z];
         } else {
           sx = o.scale.x; sy = o.scale.y; sz = o.scale.z;
-          if (occtShape === 'cylinder' || occtShape === 'cone') {
+          if (occtShape === 'cylinder' || occtShape === 'tube' || occtShape === 'cone' || occtShape === 'pyramid') {
             geoOff = { x: o.position.x, y: o.position.y - sy, z: o.position.z };
           } else {
             geoOff = { x: o.position.x - sx, y: o.position.y - sy, z: o.position.z - sz };
@@ -5465,6 +5472,7 @@ function _fpBuildRows(type, o) {
   const segs = o.userData.segments;
 
   const isBoxGeom = type === 'box' || type === 'cylinder' || type === 'cone'
+    || type === 'tube' || type === 'pyramid' || type === 'wedge'
     || o.geometry instanceof THREE.BoxGeometry || !!o.userData.edgeBevels
     || type === 'subtract' || type === 'union' || type === 'import' || type === 'custom';
 
