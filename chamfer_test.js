@@ -91,14 +91,15 @@ test('Edge Chamfer auf CSG-Objekt', async ({ page }) => {
   await page.screenshot({ path: '/tmp/chamfer_before.png' });
   console.log('Vor Chamfer — Vertices:', vertCountBefore);
 
+  await page.evaluate(async () => { await _applyEdgeHandleValue(2.0); });
+  await page.waitForTimeout(3000);
+  await page.screenshot({ path: '/tmp/chamfer_after.png' });
+
   const applyResult = await page.evaluate(() => {
-    _applyEdgeHandleValue(2.0);
     const objs = window._getObjects();
     const csg = objs[objs.length - 1];
     return csg?.geometry?.attributes?.position?.count ?? -1;
   });
-  await page.waitForTimeout(500);
-  await page.screenshot({ path: '/tmp/chamfer_after.png' });
   console.log('Nach Chamfer — Vertices:', applyResult);
 
   expect(applyResult).toBeGreaterThan(vertCountBefore);
@@ -253,4 +254,49 @@ test('Face-Count Diagnose — nach OCCT Chamfer', async ({ page }) => {
     return objs[objs.length-1]?.geometry?.attributes?.position?.count ?? -1;
   });
   console.log('Result verts:', verts);
+});
+
+test('OCCT Box Fillet — Handle links (negativ)', async ({ page }) => {
+  await page.goto(URL);
+  await page.waitForFunction(() => window._isReady === true, { timeout: 15000 });
+  await page.addStyleTag({ content: '#auth-overlay { display: none !important; }' });
+  await page.waitForTimeout(500);
+
+  await page.evaluate(() => {
+    addShape('box');
+    const objs = window._getObjects();
+    const box = objs[objs.length - 1];
+    box.scale.set(30, 20, 25);
+    box.position.set(0, 20, 0);
+    box.updateWorldMatrix(true, true);
+    const sel = window._getSelectedObjs();
+    sel.length = 0; sel.push(box);
+    enterEdgeMode();
+    _edgeSel.add(0);
+    _updateEdgeColors();
+  });
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: '/tmp/fillet_before.png' });
+
+  // Negativer Wert → Fillet statt Chamfer
+  await page.evaluate(async () => { await _applyEdgeHandleValue(-4.0); });
+  await page.waitForTimeout(4000);
+  await page.screenshot({ path: '/tmp/fillet_after.png' });
+
+  const result = await page.evaluate(() => {
+    const objs = window._getObjects();
+    const obj = objs[objs.length - 1];
+    return {
+      wasBox: obj?.userData?.wasBox,
+      ops: obj?.userData?._occtParams?.ops ?? [],
+      verts: obj?.geometry?.attributes?.position?.count ?? -1,
+    };
+  });
+  console.log('Fillet Ergebnis:', result);
+  console.log('Op-Typ:', result.ops[0]?.type);
+
+  expect(result.wasBox).toBe(true);
+  expect(result.ops[0]?.type).toBe('fillet');
+  expect(result.verts).toBeGreaterThan(20);
+  console.log('✓ Fillet OK — Vertices:', result.verts);
 });
