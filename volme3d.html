@@ -1955,10 +1955,126 @@ function enterEdgeMode(quiet = false) {
 
 function refreshEdgeMode() {
   if (!_edgeMode || !_edgeObj) return;
-  const savedSel = new Set(_edgeSel);
-  exitEdgeMode();
-  enterEdgeMode(true);
-  _edgeSel = savedSel;
+  const o = _edgeObj;
+
+  // --- Cleanup: nur Visuals, kein State-Reset ---
+  if (_edgeLines) { o.remove(_edgeLines); _edgeLines.geometry.dispose(); _edgeLines = null; }
+  if (_edgeCircles) { o.remove(_edgeCircles); _edgeCircles.geometry.dispose(); _edgeCircles = null; }
+  if (_edgeMeshes.length > 0) {
+    const mat = _edgeMeshes[0]?.material;
+    _edgeMeshes.forEach(m => { scene.remove(m); m.geometry.dispose(); });
+    if (mat) mat.dispose();
+    _edgeMeshes = [];
+  }
+
+  // --- _dynamicEdges neu berechnen (matrix-math, kein OCCT-Rebuild) ---
+  const _isOcctBox = (o.userData.occtShape === 'box' || o.userData.occtShape === 'pyramid' || o.userData.occtShape === 'wedge') && o.userData._occtParams;
+  const _isOcctWasBox = !o.userData.occtShape && o.userData.wasBox && o.userData._occtParams;
+  const _isFreshPyramid = !o.userData._occtParams && (o.userData.shapeType === 'pyramid' || o.userData.shapeType === 'wedge');
+  let edges;
+  if (o.userData.shapeType === 'box') {
+    edges = EDGE_ENDPOINTS;
+    const mat = o.matrixWorld;
+    o.userData._dynamicEdges = EDGE_ENDPOINTS.map(ep => ({
+      worldA: new THREE.Vector3(...ep[0]).applyMatrix4(mat).toArray(),
+      worldB: new THREE.Vector3(...ep[1]).applyMatrix4(mat).toArray()
+    }));
+  } else if (_isOcctBox || _isOcctWasBox) {
+    edges = EDGE_ENDPOINTS;
+    const { sx, sy, sz, geoOff } = o.userData._occtParams;
+    o.userData._dynamicEdges = EDGE_ENDPOINTS.map(ep => ({
+      worldA: [(ep[0][0]+1)*sx + geoOff.x, (ep[0][1]+1)*sy + geoOff.y, (ep[0][2]+1)*sz + geoOff.z],
+      worldB: [(ep[1][0]+1)*sx + geoOff.x, (ep[1][1]+1)*sy + geoOff.y, (ep[1][2]+1)*sz + geoOff.z]
+    }));
+  } else if (_isFreshPyramid) {
+    edges = EDGE_ENDPOINTS;
+    const sx = o.scale.x, sy = o.scale.y, sz = o.scale.z;
+    const gx = o.position.x - sx, gy = o.position.y - sy, gz = o.position.z - sz;
+    o.userData._dynamicEdges = EDGE_ENDPOINTS.map(ep => ({
+      worldA: [(ep[0][0]+1)*sx + gx, (ep[0][1]+1)*sy + gy, (ep[0][2]+1)*sz + gz],
+      worldB: [(ep[1][0]+1)*sx + gx, (ep[1][1]+1)*sy + gy, (ep[1][2]+1)*sz + gz]
+    }));
+  } else if (o.userData.shapeType === 'cylinder' || o.userData.shapeType === 'tube' ||
+             o.userData.shapeType === 'cone') {
+    const isCyl = o.userData.shapeType === 'cylinder' || o.userData.shapeType === 'tube';
+    const mat = o.matrixWorld;
+    const meshPos = new THREE.Vector3().setFromMatrixPosition(mat);
+    const toCamera = camera.position.clone().sub(meshPos);
+    const rimDir = new THREE.Vector3(toCamera.x, 0, toCamera.z);
+    let rx = 1, rz = 0;
+    if (rimDir.lengthSq() > 0.01) { rimDir.normalize(); rx = rimDir.x; rz = rimDir.z; }
+    edges = isCyl
+      ? [{ worldA: [rx, 1, rz], worldB: [rx, 1, rz] },
+         { worldA: [rx, -1, rz], worldB: [rx, -1, rz] }]
+      : [{ worldA: [rx, -1, rz], worldB: [rx, -1, rz] }];
+    const centerLocal = isCyl ? [[0, 1, 0], [0, -1, 0]] : [[0, -1, 0]];
+    o.userData._dynamicEdges = centerLocal.map(c => {
+      const w = new THREE.Vector3(...c).applyMatrix4(mat);
+      return { worldA: w.toArray(), worldB: w.toArray() };
+    });
+    const SEG = 32;
+    const circVerts = [], circEdgeMap = [];
+    (isCyl ? [1, -1] : [-1]).forEach((y) => {
+      const start = circVerts.length / 3;
+      for (let i = 0; i < SEG; i++) {
+        const a0 = (i / SEG) * Math.PI * 2, a1 = ((i + 1) / SEG) * Math.PI * 2;
+        circVerts.push(Math.cos(a0), y, Math.sin(a0), Math.cos(a1), y, Math.sin(a1));
+      }
+      circEdgeMap.push({ start, end: circVerts.length / 3 });
+    });
+    const circGeo = new THREE.BufferGeometry();
+    circGeo.setAttribute('position', new THREE.Float32BufferAttribute(circVerts, 3));
+    circGeo.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(circVerts.length).fill(0.55), 3));
+    _edgeCircles = new THREE.LineSegments(circGeo, new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false }));
+    _edgeCircles.renderOrder = 999;
+    _edgeCircles.userData._edgeMap = circEdgeMap;
+    o.add(_edgeCircles);
+  } else {
+    edges = o.userData._dynamicEdges || [];
+  }
+
+  // --- Visuals neu aufbauen ---
+  const verts = [];
+  edges.forEach(edge => verts.push(
+    ...(Array.isArray(edge) ? edge[0] : edge.worldA),
+    ...(Array.isArray(edge) ? edge[1] : edge.worldB)
+  ));
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  const cols = new Float32Array(edges.length * 2 * 3).fill(0.55);
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+  _edgeLines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({vertexColors:true, linewidth:2, depthTest:false}));
+  _edgeLines.renderOrder = 999;
+  o.add(_edgeLines);
+  if (o.userData.shapeType === 'cylinder' || o.userData.shapeType === 'cone') _edgeLines.visible = false;
+  {
+    const _b3 = getMeshBox(o);
+    const _bsz = _b3.getSize(new THREE.Vector3());
+    const _hitR = Math.max(1, Math.max(_bsz.x, _bsz.y, _bsz.z) * 0.03);
+    const _hitMat = new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide });
+    _edgeMeshes = [];
+    (o.userData._dynamicEdges || []).forEach((edge, idx) => {
+      const wa = new THREE.Vector3(...edge.worldA);
+      const wb = new THREE.Vector3(...edge.worldB);
+      const len = wa.distanceTo(wb);
+      if (len < 0.01) return;
+      const mid = wa.clone().lerp(wb, 0.5);
+      const dir = wb.clone().sub(wa).normalize();
+      const up  = new THREE.Vector3(0, 1, 0);
+      const hgeo = new THREE.CylinderGeometry(_hitR, _hitR, len, 6, 1, false);
+      const hmesh = new THREE.Mesh(hgeo, _hitMat);
+      hmesh.position.copy(mid);
+      const dot = Math.max(-1, Math.min(1, up.dot(dir)));
+      if (Math.abs(dot) > 0.9999) {
+        if (dir.y < 0) hmesh.quaternion.setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI);
+      } else {
+        hmesh.quaternion.setFromAxisAngle(up.clone().cross(dir).normalize(), Math.acos(dot));
+      }
+      hmesh.userData.edgeIndex = idx;
+      scene.add(hmesh);
+      _edgeMeshes.push(hmesh);
+    });
+  }
   _updateEdgeColors();
 }
 
