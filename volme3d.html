@@ -1836,7 +1836,8 @@ function enterEdgeMode() {
 
   const _isOcctBox = (o.userData.occtShape === 'box' || o.userData.occtShape === 'pyramid' || o.userData.occtShape === 'wedge') && o.userData._occtParams;
   const _isOcctWasBox = !o.userData.occtShape && o.userData.wasBox && o.userData._occtParams;
-  let edges = (o.userData.shapeType === 'box' || _isOcctBox || _isOcctWasBox) ? EDGE_ENDPOINTS : _buildEdgesFromGeometry(o);
+  const _isFreshPyramid = !o.userData._occtParams && (o.userData.shapeType === 'pyramid' || o.userData.shapeType === 'wedge');
+  let edges = (o.userData.shapeType === 'box' || _isFreshPyramid || _isOcctBox || _isOcctWasBox) ? EDGE_ENDPOINTS : _buildEdgesFromGeometry(o);
   if (o.userData.shapeType === 'box') {
     const mat = o.matrixWorld;
     o.userData._dynamicEdges = EDGE_ENDPOINTS.map(ep => ({
@@ -1848,6 +1849,13 @@ function enterEdgeMode() {
     o.userData._dynamicEdges = EDGE_ENDPOINTS.map(ep => ({
       worldA: [(ep[0][0]+1)*sx + geoOff.x, (ep[0][1]+1)*sy + geoOff.y, (ep[0][2]+1)*sz + geoOff.z],
       worldB: [(ep[1][0]+1)*sx + geoOff.x, (ep[1][1]+1)*sy + geoOff.y, (ep[1][2]+1)*sz + geoOff.z]
+    }));
+  } else if (_isFreshPyramid) {
+    const sx = o.scale.x, sy = o.scale.y, sz = o.scale.z;
+    const gx = o.position.x - sx, gy = o.position.y - sy, gz = o.position.z - sz;
+    o.userData._dynamicEdges = EDGE_ENDPOINTS.map(ep => ({
+      worldA: [(ep[0][0]+1)*sx + gx, (ep[0][1]+1)*sy + gy, (ep[0][2]+1)*sz + gz],
+      worldB: [(ep[1][0]+1)*sx + gx, (ep[1][1]+1)*sy + gy, (ep[1][2]+1)*sz + gz]
     }));
   } else if (o.userData.shapeType === 'cylinder' || o.userData.shapeType === 'tube' ||
              o.userData.shapeType === 'cone') {
@@ -2130,9 +2138,18 @@ function _buildOCCTBaseShape(oc, occtShape, sx, sy, sz) {
     const s = bm.Shape(); bm.delete(); ax2.delete(); dir.delete(); orig.delete();
     return s;
   }
-  if (occtShape === 'wedge' || occtShape === 'pyramid') {
+  if (occtShape === 'wedge') {
     const bm = new oc.BRepPrimAPI_MakeWedge_1(2*sx, 2*sy, 2*sz, 0);
     const s = bm.Shape(); bm.delete();
+    return s;
+  }
+  if (occtShape === 'pyramid') {
+    const bm = new oc.BRepPrimAPI_MakeWedge_1(2*sx, 2*sy, 2*sz, 0);
+    const s0 = bm.Shape(); bm.delete();
+    const trsf = new oc.gp_Trsf_1();
+    trsf.SetTranslation_1(new oc.gp_Vec_4(-sx, -sy, -sz));
+    const builder = new oc.BRepBuilderAPI_Transform_2(s0, trsf, false);
+    const s = builder.Shape(); builder.delete(); trsf.delete();
     return s;
   }
   const bm = new oc.BRepPrimAPI_MakeBox_1(2*sx, 2*sy, 2*sz);
