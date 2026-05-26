@@ -1289,6 +1289,7 @@ let _edgeBevelHandlePos = null;
 let _edgeBevelDragging  = false;
 let _edgeBevelDragStart = null;
 let _edgeBevelDragVal   = 0;
+let _edgeMeshes         = [];  // Unsichtbare Klick-Cylinder (World-Space) für präzises Raycasting
 const EDGE_ENDPOINTS = [
   [[ 1, 1,-1],[ 1, 1, 1]],
   [[-1, 1,-1],[-1, 1, 1]],
@@ -1913,6 +1914,35 @@ function enterEdgeMode() {
   _edgeLines.renderOrder = 999;
   o.add(_edgeLines);
   if (o.userData.shapeType === 'cylinder' || o.userData.shapeType === 'cone') _edgeLines.visible = false;
+  // Unsichtbare Klick-Cylinder für präzises Raycasting (Kante direkt anklicken)
+  {
+    const _b3 = getMeshBox(o);
+    const _bsz = _b3.getSize(new THREE.Vector3());
+    const _hitR = Math.max(1, Math.max(_bsz.x, _bsz.y, _bsz.z) * 0.03);
+    const _hitMat = new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide });
+    _edgeMeshes = [];
+    (o.userData._dynamicEdges || []).forEach((edge, idx) => {
+      const wa = new THREE.Vector3(...edge.worldA);
+      const wb = new THREE.Vector3(...edge.worldB);
+      const len = wa.distanceTo(wb);
+      if (len < 0.01) return;
+      const mid = wa.clone().lerp(wb, 0.5);
+      const dir = wb.clone().sub(wa).normalize();
+      const up  = new THREE.Vector3(0, 1, 0);
+      const hgeo = new THREE.CylinderGeometry(_hitR, _hitR, len, 6, 1, false);
+      const hmesh = new THREE.Mesh(hgeo, _hitMat);
+      hmesh.position.copy(mid);
+      const dot = Math.max(-1, Math.min(1, up.dot(dir)));
+      if (Math.abs(dot) > 0.9999) {
+        if (dir.y < 0) hmesh.quaternion.setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI);
+      } else {
+        hmesh.quaternion.setFromAxisAngle(up.clone().cross(dir).normalize(), Math.acos(dot));
+      }
+      hmesh.userData.edgeIndex = idx;
+      scene.add(hmesh);
+      _edgeMeshes.push(hmesh);
+    });
+  }
   _fpCurType = null; updateFP();
   canvas.style.cursor = 'crosshair';
   const msg = _isBox
@@ -1924,6 +1954,12 @@ function enterEdgeMode() {
 function exitEdgeMode() {
   if (_edgeLines) { _edgeObj.remove(_edgeLines); _edgeLines.geometry.dispose(); _edgeLines = null; }
   if (_edgeCircles) { _edgeObj.remove(_edgeCircles); _edgeCircles.geometry.dispose(); _edgeCircles = null; }
+  if (_edgeMeshes.length > 0) {
+    const mat = _edgeMeshes[0]?.material;
+    _edgeMeshes.forEach(m => { scene.remove(m); m.geometry.dispose(); });
+    if (mat) mat.dispose();
+    _edgeMeshes = [];
+  }
   if (_edgeObj) {
     delete _edgeObj.userData._dynamicEdges;
     delete _edgeObj.userData._globalChamferOrigGeo;
@@ -2385,27 +2421,25 @@ function _findHoveredEdge(e) {
   if (!_edgeObj || !_edgeMode) return -1;
   getNorm(e);
   raycaster.setFromCamera(mousev, camera);
-  const mat=_edgeObj.matrixWorld;
-  const edges = _edgeObj.userData._dynamicEdges || EDGE_ENDPOINTS;
-  const isDynamic = !!_edgeObj.userData._dynamicEdges;
-  let minD=Infinity, minI=-1;
+  // Primär: Cylinder-Mesh Raycasting (präziser Kanten-Klick)
+  if (_edgeMeshes.length > 0) {
+    const hits = raycaster.intersectObjects(_edgeMeshes, false);
+    if (hits.length > 0) return hits[0].object.userData.edgeIndex;
+  }
+  // Fallback: Distanz-Logik nur für Kreiskanten (degenerate worldA≈worldB)
+  const edges = _edgeObj.userData._dynamicEdges;
+  if (!edges) return -1;
+  let minD = Infinity, minI = -1;
   edges.forEach((edge, i) => {
-    let wa, wb;
-    if (isDynamic) {
-      wa = new THREE.Vector3(...edge.worldA);
-      wb = new THREE.Vector3(...edge.worldB);
-    } else {
-      wa = new THREE.Vector3(...edge[0]).applyMatrix4(mat);
-      wb = new THREE.Vector3(...edge[1]).applyMatrix4(mat);
-    }
-    const d=_distRayToSegment(raycaster.ray, wa, wb);
-    if (d<minD) { minD=d; minI=i; }
+    const wa = new THREE.Vector3(...edge.worldA);
+    const wb = new THREE.Vector3(...edge.worldB);
+    if (wa.distanceTo(wb) >= 0.01) return;
+    const d = _distRayToSegment(raycaster.ray, wa, wb);
+    if (d < minD) { minD = d; minI = i; }
   });
   const box = getMeshBox(_edgeObj);
-  const sz = box.getSize(new THREE.Vector3());
-  const objSize = Math.max(sz.x, sz.y, sz.z);
-  const threshold = isDynamic ? Math.max(0.5, objSize * 0.2) : Math.max(0.15, objSize * 0.05);
-  return minD < threshold ? minI : -1;
+  const objSize = Math.max(...box.getSize(new THREE.Vector3()).toArray());
+  return minD < Math.max(0.5, objSize * 0.2) ? minI : -1;
 }
 
 function applyGlobalChamfer(mesh, chamferDist) {
