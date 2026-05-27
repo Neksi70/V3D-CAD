@@ -4368,11 +4368,6 @@ window.addEventListener('mousemove', e => {
       _wpHL.visible = true;
     } else { _wpHL.visible = false; }
   }
-  if (_edgeBevelDragging) {
-    const dx = e.clientX - (_edgeBevelDragStart ? _edgeBevelDragStart.x : 0);
-    _edgeBevelDragVal = dx * 0.1;
-    canvas.style.cursor = 'ew-resize';
-  }
   if (_edgeMode && !_edgeGlobal) {
     const h = _findHoveredEdge(e);
     if (h !== _edgeHover) { _edgeHover = h; _updateEdgeColors(); }
@@ -4443,15 +4438,6 @@ window.addEventListener('mousemove', e => {
 window.addEventListener('mouseup', e => {
   if (e.button === 2 || e.button === 1) { isOrbit = false; isPan = false; }
   if (e.button === 0) {
-    if (_edgeBevelDragging) {
-      _edgeBevelDragging = false;
-      canvas.style.cursor = 'crosshair';
-      const val = _edgeBevelDragVal;
-      if (Math.abs(val) > 0.5) {
-        _applyEdgeHandleValue(val / 10);
-      }
-      return;
-    }
     isDrag = false; dragData = null;
   }
 });
@@ -5282,8 +5268,8 @@ function _rhStartDrag(axis, event) {
   // Highlight active ring
   ['x','y','z'].forEach(a => document.getElementById('rot-ring-'+a).classList.toggle('rot-ring-active', a === axis));
   document.getElementById('rot-sector').setAttribute('d', '');
-  document.addEventListener('mousemove', _rhMove, { passive: false });
-  document.addEventListener('mouseup',   _rhUp);
+  document.addEventListener('pointermove', _rhMove, { passive: false });
+  document.addEventListener('pointerup',   _rhUp);
 }
 
 // ── Move ───────────────────────────────────────────────────────────────
@@ -5329,8 +5315,8 @@ function _rhMove(event) {
 function _rhUp() {
   if (!rh_on) return;
   rh_on = false;
-  document.removeEventListener('mousemove', _rhMove);
-  document.removeEventListener('mouseup',   _rhUp);
+  document.removeEventListener('pointermove', _rhMove);
+  document.removeEventListener('pointerup',   _rhUp);
   document.getElementById('rot-angle-lbl').style.display = 'none';
   document.getElementById('rot-sector').setAttribute('d', '');
   ['x','y','z'].forEach(a => document.getElementById('rot-ring-'+a).classList.remove('rot-ring-active'));
@@ -5342,7 +5328,8 @@ function _rhUp() {
 // ── Wire up all handle <g> elements ───────────────────────────────────
 function _rhInit() {
   document.querySelectorAll('.rot-hdl').forEach(g =>
-    g.addEventListener('mousedown', e => _rhStartDrag(g.dataset.a, e)));
+    g.style.touchAction = 'none';
+    g.addEventListener('pointerdown', e => _rhStartDrag(g.dataset.a, e)));
 }
 
 // ═══ RENDER LOOP ═══════════════════════════════════════════════════════
@@ -5364,12 +5351,28 @@ function animate() {
 }
 animate();
 
-document.getElementById('edge-bevel-handle').addEventListener('mousedown', e => {
-  if (e.button !== 0) return;
+const _ebh = document.getElementById('edge-bevel-handle');
+_ebh.style.touchAction = 'none';
+_ebh.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
   e.stopPropagation(); e.preventDefault();
   _edgeBevelDragging = true;
   _edgeBevelDragStart = {x: e.clientX, y: e.clientY};
   _edgeBevelDragVal = 0;
+  e.target.setPointerCapture(e.pointerId);
+});
+_ebh.addEventListener('pointermove', e => {
+  if (!_edgeBevelDragging) return;
+  const dx = e.clientX - (_edgeBevelDragStart ? _edgeBevelDragStart.x : 0);
+  _edgeBevelDragVal = dx * 0.1;
+  canvas.style.cursor = 'ew-resize';
+});
+_ebh.addEventListener('pointerup', e => {
+  if (!_edgeBevelDragging) return;
+  _edgeBevelDragging = false;
+  canvas.style.cursor = 'crosshair';
+  const val = _edgeBevelDragVal;
+  if (Math.abs(val) > 0.5) _applyEdgeHandleValue(val / 10);
 });
 
 // ═══ SIZE & POSITION DIALOG ════════════════════════════════════════════════
