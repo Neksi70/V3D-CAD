@@ -654,6 +654,12 @@ const firebaseConfig = {
   <div id="dim-handles"></div>
   <div id="edge-bevel-handle" style="position:fixed;display:none;width:12px;height:12px;background:#F97316;border:2px solid #888;border-radius:50%;cursor:ew-resize;transform:translate(-50%,-50%);pointer-events:all;z-index:9000"></div>
   <div id="edge-bevel-label" style="position:fixed;display:none;background:white;border:1px solid #ccc;border-radius:4px;padding:2px 6px;font-size:11px;pointer-events:none;z-index:9001;font-family:monospace"></div>
+  <div id="revolve-bar" style="display:none;position:fixed;bottom:56px;left:50%;transform:translateX(-50%);background:rgba(24,24,32,0.93);border:1px solid #444;border-radius:8px;padding:7px 12px;align-items:center;gap:10px;z-index:8500;font-size:12px;color:#ccc;white-space:nowrap">
+    <span id="revolve-count" style="font-weight:700;color:#aaa">0 Punkte</span>
+    <button onclick="_revolveUndo()" style="background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px">← Zurück</button>
+    <button onclick="finishRevolve()" style="background:#F97316;border:none;color:#fff;border-radius:5px;padding:3px 10px;cursor:pointer;font-size:11px;font-weight:700">✓ Fertig</button>
+    <button onclick="exitRevolveMode()" style="background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:3px 8px;cursor:pointer;font-size:11px">✕ ESC</button>
+  </div>
 
   <!-- Rotation ring handles (shown in rotate mode) -->
   <svg id="rot-svg">
@@ -785,6 +791,15 @@ const firebaseConfig = {
         </div>
         <div class="shp" onclick="addShape('wedge')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><polygon points="3,19 21,19 21,7 3,19"/></svg>Keil
+        </div>
+        <div class="shp" onclick="enterRevolveMode()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+            <line x1="7" y1="2" x2="7" y2="22" stroke-width="1.2"/>
+            <path d="M7 5c2 0 6 2 8 7s-4 8-8 9"/>
+            <path d="M7 5c-2.5 0-2.5 3.5 0 4.5" stroke-dasharray="2,2" stroke-width="1"/>
+            <path d="M7 15c-2.5 1-2.5 4 0 5" stroke-dasharray="2,2" stroke-width="1"/>
+          </svg>
+          Drehen
         </div>
         <div class="shp" onclick="addTextShape()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><text x="3" y="18" font-size="16" font-weight="bold" stroke="currentColor" fill="none" font-family="serif">A</text></svg>Text
@@ -1290,6 +1305,15 @@ let _edgeBevelDragging  = false;
 let _edgeBevelDragStart = null;
 let _edgeBevelDragVal   = 0;
 let _edgeMeshes         = [];  // Unsichtbare Klick-Cylinder (World-Space) für präzises Raycasting
+let _revolveMode        = false;
+let _revolvePoints      = [];
+let _revolvePreview     = null;
+let _revolveAxisLine    = null;
+let _revolveDots        = [];
+let _revolvePlaneN      = null;
+let _revolveRight       = null;
+let _revolveSavedCam    = null;
+let _revolvePreviewMesh = null;
 const EDGE_ENDPOINTS = [
   [[ 1, 1,-1],[ 1, 1, 1]],
   [[-1, 1,-1],[-1, 1, 1]],
@@ -1498,7 +1522,7 @@ function switchTab(name) {
 
 // ═══ GEOMETRY BUILDERS ═══════════════════════════════════════════════
 const typeNames = { box:'Box', sphere:'Kugel', cylinder:'Zylinder', cone:'Kegel',
-                    torus:'Torus', pyramid:'Pyramide', tube:'Rohr', star:'Stern', wedge:'Keil', text:'Text' };
+                    torus:'Torus', pyramid:'Pyramide', tube:'Rohr', star:'Stern', wedge:'Keil', text:'Text', revolve:'Drehen' };
 const typeCounts = {};
 
 // ─── Rounded Box (Fillet) ─────────────────────────────────────────────
@@ -1832,7 +1856,7 @@ function _applyBufferGeometryChamfer(mesh, edgeIndex, chamferDist) {
 function enterEdgeMode(quiet = false) {
   const o = getFirst();
   if (!o || !o.userData) return;
-  if (o.userData._occtParams) {
+  if (o.userData._occtParams && !o.userData.occtShape) {
     const b = getMeshBox(o);
     const s = b.getSize(new THREE.Vector3());
     o.userData._occtParams.sx = s.x / 2;
@@ -1846,8 +1870,9 @@ function enterEdgeMode(quiet = false) {
 
   const _isOcctBox = (o.userData.occtShape === 'box' || o.userData.occtShape === 'pyramid' || o.userData.occtShape === 'wedge') && o.userData._occtParams;
   const _isOcctWasBox = !o.userData.occtShape && o.userData.wasBox && o.userData._occtParams;
-  const _isFreshPyramid = !o.userData._occtParams && (o.userData.shapeType === 'pyramid' || o.userData.shapeType === 'wedge');
-  let edges = (o.userData.shapeType === 'box' || _isFreshPyramid || _isOcctBox || _isOcctWasBox) ? EDGE_ENDPOINTS : _buildEdgesFromGeometry(o);
+  const _isFreshPyramid = !o.userData._occtParams && o.userData.shapeType === 'pyramid';
+  const _isFreshWedge   = !o.userData._occtParams && o.userData.shapeType === 'wedge';
+  let edges = (o.userData.shapeType === 'box' || _isFreshPyramid || _isFreshWedge || _isOcctBox || _isOcctWasBox) ? EDGE_ENDPOINTS : _buildEdgesFromGeometry(o);
   if (o.userData.shapeType === 'box') {
     const mat = o.matrixWorld;
     o.userData._dynamicEdges = EDGE_ENDPOINTS.map(ep => ({
@@ -1870,10 +1895,32 @@ function enterEdgeMode(quiet = false) {
         { worldA: [ox+2*sx, oy, oz],        worldB: [ox+2*sx, oy, oz+2*sz] },
         { worldA: [ox,      oy, oz+2*sz],   worldB: [ox+2*sx, oy, oz+2*sz] },
         { worldA: [ox,      oy, oz],        worldB: [ox+2*sx, oy, oz] },
-        { worldA: [ox,      oy, oz],        worldB: apex },
-        { worldA: [ox+2*sx, oy, oz],        worldB: apex },
-        { worldA: [ox+2*sx, oy, oz+2*sz],   worldB: apex },
-        { worldA: [ox,      oy, oz+2*sz],   worldB: apex },
+        { worldA: [ox,      oy, oz],        worldB: [...apex] },
+        { worldA: [ox+2*sx, oy, oz],        worldB: [...apex] },
+        { worldA: [ox+2*sx, oy, oz+2*sz],   worldB: [...apex] },
+        { worldA: [ox,      oy, oz+2*sz],   worldB: [...apex] },
+      ];
+    } else if (o.userData.occtShape === 'wedge') {
+      const ox = geoOff.x, oy = geoOff.y, oz = geoOff.z;
+      const tfl = [ox,        oy+2*sy, oz];
+      const tfr = [ox+2*sx,   oy+2*sy, oz];
+      edges = [
+        [[-1,-1,-1],[ 1,-1,-1]], [[ 1,-1,-1],[ 1,-1, 1]],
+        [[ 1,-1, 1],[-1,-1, 1]], [[-1,-1, 1],[-1,-1,-1]],
+        [[-1, 1,-1],[ 1, 1,-1]],
+        [[-1,-1,-1],[-1, 1,-1]], [[ 1,-1,-1],[ 1, 1,-1]],
+        [[-1, 1,-1],[-1,-1, 1]], [[ 1, 1,-1],[ 1,-1, 1]],
+      ];
+      o.userData._dynamicEdges = [
+        { worldA: [ox,      oy, oz],        worldB: [ox+2*sx, oy, oz] },
+        { worldA: [ox+2*sx, oy, oz],        worldB: [ox+2*sx, oy, oz+2*sz] },
+        { worldA: [ox+2*sx, oy, oz+2*sz],   worldB: [ox,      oy, oz+2*sz] },
+        { worldA: [ox,      oy, oz+2*sz],   worldB: [ox,      oy, oz] },
+        { worldA: [...tfl],                 worldB: [...tfr] },
+        { worldA: [ox,      oy, oz],        worldB: [...tfl] },
+        { worldA: [ox+2*sx, oy, oz],        worldB: [...tfr] },
+        { worldA: [...tfl],                 worldB: [ox,      oy, oz+2*sz] },
+        { worldA: [...tfr],                 worldB: [ox+2*sx, oy, oz+2*sz] },
       ];
     } else {
       o.userData._dynamicEdges = EDGE_ENDPOINTS.map(ep => ({
@@ -1896,10 +1943,33 @@ function enterEdgeMode(quiet = false) {
       { worldA: [mx.x, mn.y, mn.z], worldB: [mx.x, mn.y, mx.z] },
       { worldA: [mn.x, mn.y, mx.z], worldB: [mx.x, mn.y, mx.z] },
       { worldA: [mn.x, mn.y, mn.z], worldB: [mx.x, mn.y, mn.z] },
-      { worldA: [mn.x, mn.y, mn.z], worldB: apex },
-      { worldA: [mx.x, mn.y, mn.z], worldB: apex },
-      { worldA: [mx.x, mn.y, mx.z], worldB: apex },
-      { worldA: [mn.x, mn.y, mx.z], worldB: apex },
+      { worldA: [mn.x, mn.y, mn.z], worldB: [...apex] },
+      { worldA: [mx.x, mn.y, mn.z], worldB: [...apex] },
+      { worldA: [mx.x, mn.y, mx.z], worldB: [...apex] },
+      { worldA: [mn.x, mn.y, mx.z], worldB: [...apex] },
+    ];
+  } else if (_isFreshWedge) {
+    const bbox = getMeshBox(o);
+    const mn = bbox.min, mx = bbox.max;
+    const tfl = [mn.x, mx.y, mn.z];
+    const tfr = [mx.x, mx.y, mn.z];
+    edges = [
+      [[-1,-1,-1],[ 1,-1,-1]], [[ 1,-1,-1],[ 1,-1, 1]],
+      [[ 1,-1, 1],[-1,-1, 1]], [[-1,-1, 1],[-1,-1,-1]],
+      [[-1, 1,-1],[ 1, 1,-1]],
+      [[-1,-1,-1],[-1, 1,-1]], [[ 1,-1,-1],[ 1, 1,-1]],
+      [[-1, 1,-1],[-1,-1, 1]], [[ 1, 1,-1],[ 1,-1, 1]],
+    ];
+    o.userData._dynamicEdges = [
+      { worldA: [mn.x, mn.y, mn.z], worldB: [mx.x, mn.y, mn.z] },
+      { worldA: [mx.x, mn.y, mn.z], worldB: [mx.x, mn.y, mx.z] },
+      { worldA: [mx.x, mn.y, mx.z], worldB: [mn.x, mn.y, mx.z] },
+      { worldA: [mn.x, mn.y, mx.z], worldB: [mn.x, mn.y, mn.z] },
+      { worldA: [...tfl],            worldB: [...tfr] },
+      { worldA: [mn.x, mn.y, mn.z], worldB: [...tfl] },
+      { worldA: [mx.x, mn.y, mn.z], worldB: [...tfr] },
+      { worldA: [...tfl],            worldB: [mn.x, mn.y, mx.z] },
+      { worldA: [...tfr],            worldB: [mx.x, mn.y, mx.z] },
     ];
   } else if (o.userData.shapeType === 'cylinder' || o.userData.shapeType === 'tube' ||
              o.userData.shapeType === 'cone') {
@@ -2014,6 +2084,149 @@ function exitEdgeMode() {
   _edgeMode = false; _edgeGlobal = false; _edgeObj = null; _edgeSel.clear(); _edgeHover = -1;
   canvas.style.cursor = '';
   _fpCurType = null; updateFP();
+}
+
+// ═══ REVOLVE / SKETCH-DREHEN ════════════════════════════════════════════
+function enterRevolveMode() {
+  if (_edgeMode) exitEdgeMode();
+  _revolveSavedCam = { theta: sph.theta, phi: sph.phi, r: sph.r, target: orbitTarget.clone() };
+  setView('front');
+  const hDir = new THREE.Vector3(camera.position.x, 0, camera.position.z);
+  if (hDir.lengthSq() < 0.001) hDir.set(0, 0, 1);
+  hDir.normalize();
+  _revolvePlaneN = hDir.clone();
+  _revolveRight  = new THREE.Vector3(hDir.z, 0, -hDir.x);
+  _revolveMode   = true;
+  _revolvePoints = [];
+  canvas.style.cursor = 'crosshair';
+
+  const axMat = new THREE.LineDashedMaterial({color:0x2288ff, dashSize:0.6, gapSize:0.25, depthTest:false});
+  _revolveAxisLine = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,-20,0), new THREE.Vector3(0,20,0)]),
+    axMat
+  );
+  _revolveAxisLine.computeLineDistances();
+  _revolveAxisLine.renderOrder = 998;
+  scene.add(_revolveAxisLine);
+
+  const preGeo = new THREE.BufferGeometry();
+  preGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0,0,0,0,0,0]), 3));
+  _revolvePreview = new THREE.Line(preGeo, new THREE.LineBasicMaterial({color:0x0088ff, depthTest:false}));
+  _revolvePreview.renderOrder = 999;
+  scene.add(_revolvePreview);
+
+  const bar = document.getElementById('revolve-bar');
+  bar.style.display = 'flex';
+  _revolveUpdateBar();
+  notify('Profil-Punkte klicken — Y-Achse = Drehachse — Doppelklick: Fertig', 'ok');
+}
+
+function exitRevolveMode() {
+  _revolveMode = false;
+  canvas.style.cursor = '';
+  if (_revolveAxisLine)    { scene.remove(_revolveAxisLine);    _revolveAxisLine.geometry.dispose(); _revolveAxisLine.material.dispose(); _revolveAxisLine = null; }
+  if (_revolvePreview)     { scene.remove(_revolvePreview);     _revolvePreview.geometry.dispose();  _revolvePreview  = null; }
+  if (_revolvePreviewMesh) { scene.remove(_revolvePreviewMesh); _revolvePreviewMesh.geometry.dispose(); _revolvePreviewMesh.material.dispose(); _revolvePreviewMesh = null; }
+  _revolveDots.forEach(d => { scene.remove(d); d.geometry.dispose(); d.material.dispose(); });
+  _revolveDots = [];
+  _revolvePoints = [];
+  _revolvePlaneN = null; _revolveRight = null;
+  if (_revolveSavedCam) {
+    sph.theta = _revolveSavedCam.theta; sph.phi = _revolveSavedCam.phi; sph.r = _revolveSavedCam.r;
+    orbitTarget.copy(_revolveSavedCam.target); sph2cam(); _revolveSavedCam = null;
+  }
+  document.getElementById('revolve-bar').style.display = 'none';
+}
+
+function _revolveAddPoint(e) {
+  if (!_revolvePlaneN) return;
+  getNorm(e);
+  raycaster.setFromCamera(mousev, camera);
+  const plane = new THREE.Plane(_revolvePlaneN, 0);
+  const hit = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(plane, hit)) return;
+  const r = snapV(Math.max(0, hit.dot(_revolveRight)));
+  const h = snapV(hit.y);
+  const world = new THREE.Vector3(r * _revolveRight.x, h, r * _revolveRight.z);
+  _revolvePoints.push({ r, h, world });
+
+  const dot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.12, 7, 7),
+    new THREE.MeshBasicMaterial({color:0x0088ff, depthTest:false})
+  );
+  dot.position.copy(world);
+  dot.renderOrder = 1000;
+  scene.add(dot);
+  _revolveDots.push(dot);
+  _revolveUpdatePreview();
+  _revolveUpdateBar();
+}
+
+function _revolveUndo() {
+  if (_revolvePoints.length === 0) return;
+  _revolvePoints.pop();
+  const dot = _revolveDots.pop();
+  if (dot) { scene.remove(dot); dot.geometry.dispose(); dot.material.dispose(); }
+  _revolveUpdatePreview();
+  _revolveUpdateBar();
+}
+
+function _revolveUpdatePreview() {
+  if (!_revolvePreview) return;
+  const pts = _revolvePoints.map(p => p.world);
+  const arr = pts.length >= 2 ? pts : [new THREE.Vector3(), new THREE.Vector3()];
+  _revolvePreview.geometry.setFromPoints(arr);
+  _revolvePreview.geometry.computeBoundingSphere();
+
+  if (_revolvePreviewMesh) {
+    scene.remove(_revolvePreviewMesh);
+    _revolvePreviewMesh.geometry.dispose();
+    _revolvePreviewMesh.material.dispose();
+    _revolvePreviewMesh = null;
+  }
+  if (_revolvePoints.length >= 2) {
+    const lathePts = _revolvePoints.map(p => new THREE.Vector2(p.r, p.h));
+    const geo = new THREE.LatheGeometry(lathePts, 32);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x2288ff, transparent: true, opacity: 0.25,
+      side: THREE.DoubleSide, depthWrite: false
+    });
+    _revolvePreviewMesh = new THREE.Mesh(geo, mat);
+    _revolvePreviewMesh.renderOrder = 997;
+    scene.add(_revolvePreviewMesh);
+  }
+}
+
+function _revolveUpdateBar() {
+  const n = _revolvePoints.length;
+  const el = document.getElementById('revolve-count');
+  if (el) el.textContent = n + (n === 1 ? ' Punkt' : ' Punkte');
+}
+
+function finishRevolve() {
+  if (_revolvePoints.length < 2) { notify('Mindestens 2 Punkte nötig', 'w'); return; }
+  saveUndo();
+  const pts = _revolvePoints.map(p => new THREE.Vector2(p.r, p.h));
+  const ptCount = _revolvePoints.length;
+  const geo = new THREE.LatheGeometry(pts, 64);
+  const isHole = shapeMode === 'hole';
+  const color  = isHole ? '#f03030' : currentColor;
+  const mat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color), roughness: 0.38, metalness: 0.05,
+    transparent: isHole, opacity: isHole ? 0.52 : 1.0, side: THREE.DoubleSide
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  _updateObjEdgeLines(mesh);
+  typeCounts['revolve'] = (typeCounts['revolve'] || 0) + 1;
+  mesh.userData = {
+    id: idCtr++, type: 'revolve', shapeType: 'revolve',
+    name: 'Drehen ' + typeCounts['revolve'], color, isHole, fillet: 0, chamfer: 0
+  };
+  objects.push(mesh); scene.add(mesh);
+  selectObjs([mesh]); updateTree();
+  exitRevolveMode();
+  notify('Rotationskörper erstellt (' + ptCount + ' Punkte)', 'ok');
 }
 
 function _updateEdgeColors() {
@@ -2220,7 +2433,8 @@ function _buildOCCTBaseShape(oc, occtShape, sx, sy, sz) {
     return s;
   }
   if (occtShape === 'wedge') {
-    const bm = new oc.BRepPrimAPI_MakeWedge_1(2*sx, 2*sy, 2*sz, 0);
+    // MakeWedge_3: Top-Kante bei z=0 (Vorderkante oben) → Türstopper-Form
+    const bm = new oc.BRepPrimAPI_MakeWedge_3(2*sx, 2*sy, 2*sz, 0, 0, 2*sx, 0);
     const s = bm.Shape(); bm.delete();
     return s;
   }
@@ -2585,10 +2799,24 @@ function buildGeo(type) {
       return new THREE.ExtrudeGeometry(new THREE.Shape(pts), { depth: 0.4, bevelEnabled: false });
     }
     case 'wedge': {
-      // Keil (Rampe): Dreieck-Profil in XY, extrudiert in Z
-      const s = new THREE.Shape();
-      s.moveTo(-1, -1); s.lineTo(1, -1); s.lineTo(1, 1); s.lineTo(-1, -1);
-      return new THREE.ExtrudeGeometry(s, { depth: 2, bevelEnabled: false });
+      // Türstopper: 6 Punkte, 5 Flächen
+      // V0-V3: Boden (y=-1); V4-V5: Vorder-Oberkante (y=1, z=-1)
+      const pos = new Float32Array([
+        -1,-1,-1,  1,-1,-1,  1,-1,1, -1,-1,1,
+        -1, 1,-1,  1, 1,-1
+      ]);
+      const idx = new Uint16Array([
+        0,2,1, 0,3,2,   // Boden
+        0,1,5, 0,5,4,   // Vorne
+        4,5,2, 4,2,3,   // Rampe
+        0,4,3,          // Links
+        1,2,5           // Rechts
+      ]);
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.setIndex(new THREE.BufferAttribute(idx, 1));
+      g.computeVertexNormals();
+      return g;
     }
     default: return new THREE.BoxGeometry(2, 2, 2);
   }
@@ -4045,6 +4273,7 @@ window.addEventListener('mousedown', e => {
 canvas.addEventListener('mousedown', e => {
   mouseDownPos = { x: e.clientX, y: e.clientY };
   if (e.button !== 0) return;
+  if (_revolveMode) { _revolveAddPoint(e); return; }
   if (!_edgeMode && _edgeBevelDragging) { _edgeBevelDragging = false; _edgeBevelDragStart = null; }
   if (_edgeMode) {
     if (!_edgeGlobal) {
@@ -4435,6 +4664,7 @@ canvas.addEventListener('touchend', e => {
 }, { passive: false });
 
 canvas.addEventListener('dblclick', e => {
+  if (_revolveMode) { finishRevolve(); return; }
   const hits = pickObjects(e);
   if (hits.length > 0) {
     hits[0].object.getWorldPosition(orbitTarget);
@@ -4486,6 +4716,7 @@ window.addEventListener('keydown', e => {
     if (document.getElementById('new-modal').classList.contains('show')) { _newCancel(); return; }
     if (document.getElementById('sz-modal').classList.contains('show')) { _cancelSize(); return; }
     if (document.getElementById('ds-modal').classList.contains('show')) { hideDesigns(); return; }
+    if (_revolveMode) { exitRevolveMode(); return; }
     if (_edgeMode) { exitEdgeMode(); return; }
     if (workplaneMode) { toggleWorkplane(); return; }
     if (specialMode) exitSpecialMode(); else deselect(); return;
