@@ -4891,8 +4891,9 @@ window.addEventListener('keydown', e => {
 });
 
 // ═══ STL EXPORT (Binary) ══════════════════════════════════════════════
-function _buildStlBlob() {
-  if (!objects.length) { notify('Keine Objekte', 'w'); return null; }
+function _buildStlBlob(objs) {
+  const src = objs || objects;
+  if (!src.length) { notify('Keine Objekte', 'w'); return null; }
   const triangles = [];
   function collectMesh(mesh) {
     const geo = mesh.geometry.clone();
@@ -4920,7 +4921,7 @@ function _buildStlBlob() {
     if (o.isMesh && !o.userData.isHole) collectMesh(o);
     if (o.children) o.children.forEach(traverse);
   }
-  objects.forEach(traverse);
+  src.forEach(traverse);
   if (!triangles.length) { notify('Keine sichtbaren Flächen', 'w'); return null; }
   const buf = new ArrayBuffer(84 + triangles.length * 50);
   const view = new DataView(buf);
@@ -4946,6 +4947,19 @@ function exportSTL() {
   a.download = 'volme3d.stl';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   notify(`STL exportiert ✓ (${r.count} Dreiecke)`, 'ok');
+}
+
+function exportToBumpMesh() {
+  const o = getFirst();
+  if (!o) { notify('Kein Objekt ausgewählt', 'w'); return; }
+  const r = _buildStlBlob([o]);
+  if (!r) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(r.blob);
+  a.download = (o.userData.name || 'objekt').replace(/[^a-z0-9_-]/gi, '_') + '.stl';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  window.open('https://bumpmesh.com', '_blank');
+  notify('STL exportiert → BumpMesh geöffnet', 'ok');
 }
 
 function exportOBJ() {
@@ -5994,6 +6008,8 @@ function _fpBuildRows(type, o) {
     `</div>`;
   };
   const segs = o.userData.segments;
+  const bumpBtn = '<div class="fp-sep"></div>' +
+    '<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="exportToBumpMesh()">⬡ BumpMesh.com</button></div>';
   const _dispRows = () => {
     const pat  = o.userData.displacementPattern || 'keine';
     const amp  = o.userData.displacementAmp  != null ? o.userData.displacementAmp  : 0.05;
@@ -6062,7 +6078,7 @@ function _fpBuildRows(type, o) {
              '<div class="fp-sep"></div>' +
              row('Radius',      'fp-fil', o.userData.fillet||0,  "applyFillet(this.value,0)",   'mm', 0, fpMaxMm, 0.1) +
              row('Abschrägung', 'fp-cha', o.userData.chamfer||0, "applyFillet(0,this.value)",   'mm', 0, fpMaxMm, 0.1) +
-             edgeBtn + _dispRows();
+             edgeBtn + _dispRows() + bumpBtn;
     }
     case 'cylinder': case 'tube': {
       const rad = r2(sz.x / 2 * 10);
@@ -6070,14 +6086,14 @@ function _fpBuildRows(type, o) {
              row('Höhe',     'fph',   h,   "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
              row('Seiten', 'fp-seg', segs||32, "fpApplySegs(this.value)", '', 3, 128, 1) +
-             _dispRows();
+             _dispRows() + bumpBtn;
     }
     case 'sphere': {
       const rad = r2(sz.x / 2 * 10);
       return row('Radius',   'fp-r',  rad,    "fpApplyRadius(this.value)", 'mm', 0.1, 250) +
              '<div class="fp-sep"></div>' +
              row('Schritte', 'fp-seg', segs||32, "fpApplySegs(this.value)", '', 3, 128, 1) +
-             _dispRows();
+             _dispRows() + bumpBtn;
     }
     case 'cone': case 'pyramid': {
       const rad = r2(sz.x / 2 * 10);
@@ -6086,7 +6102,7 @@ function _fpBuildRows(type, o) {
              row('Höhe',     'fph',   h,   "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
              row('Seiten', 'fp-seg', segs||defSegs, "fpApplySegs(this.value)", '', 3, 128, 1) +
-             _dispRows();
+             _dispRows() + bumpBtn;
     }
     case 'torus': {
       const outerR = r2(sz.x / 2 * 10);
@@ -6096,13 +6112,13 @@ function _fpBuildRows(type, o) {
              row('Rohrradius',  'fp-tr', tubeR,  "fpApplyTube(this.value)",   'mm', 0.1, 150) +
              '<div class="fp-sep"></div>' +
              row('Seiten', 'fp-seg', segs||48, "fpApplySegs(this.value)", '', 3, 128, 1) +
-             _dispRows();
+             _dispRows() + bumpBtn;
     }
     default:
       return row('Breite X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
-             _dispRows();
+             _dispRows() + bumpBtn;
   }
 }
 
