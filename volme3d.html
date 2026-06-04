@@ -6739,51 +6739,41 @@ async function _meshToOCCTSolid(oc, mesh) {
   const idx = geo.index ? geo.index.array : null;
   const triCount = idx ? idx.length / 3 : pos.count / 3;
 
-  const sewing = new oc.BRepBuilderAPI_Sewing(0.001, true, true, true, false);
+  const nbN = pos.count, nbT = triCount;
+  const polyTri = new oc.Poly_Triangulation_2(nbN, nbT);
+  for (let i = 0; i < nbN; i++) {
+    const p = new oc.gp_Pnt_3(
+      pos.getX(i), pos.getY(i), pos.getZ(i));
+    polyTri.get().SetNode(i + 1, p);
+    p.delete();
+  }
   let added = 0;
-  for (let t = 0; t < triCount; t++) {
-    if (t % 500 === 0 && t > 0) {
-      await new Promise(r => setTimeout(r, 0));
-      notify(`Sewing ${t}/${triCount}…`, 'ok');
-    }
-    const a = idx?idx[t*3]:t*3, b = idx?idx[t*3+1]:t*3+1, c = idx?idx[t*3+2]:t*3+2;
-    const ax=pos.getX(a),ay=pos.getY(a),az=pos.getZ(a);
-    const bx=pos.getX(b),by=pos.getY(b),bz=pos.getZ(b);
-    const cx=pos.getX(c),cy=pos.getY(c),cz=pos.getZ(c);
-    const ex=bx-ax,ey=by-ay,ez=bz-az,fx=cx-ax,fy=cy-ay,fz=cz-az;
-    if((ey*fz-ez*fy)**2+(ez*fx-ex*fz)**2+(ex*fy-ey*fx)**2 < 1e-14) continue;
-    const poly = new oc.BRepBuilderAPI_MakePolygon_1();
-    [[ax,ay,az],[bx,by,bz],[cx,cy,cz]].forEach(([x,y,z])=>{const g=new oc.gp_Pnt_3(x,y,z);poly.Add_1(g);g.delete();});
-    poly.Close();
-    if (!poly.IsDone()) { poly.delete(); continue; }
-    const mkf = new oc.BRepBuilderAPI_MakeFace_15(poly.Wire(), false);
-    poly.delete();
-    if (!mkf.IsDone()) { mkf.delete(); continue; }
-    sewing.Add(mkf.Face()); mkf.delete(); added++;
+  for (let t = 0; t < nbT; t++) {
+    const a = idx ? idx[t*3]+1   : t*3+1;
+    const b = idx ? idx[t*3+1]+1 : t*3+2;
+    const c = idx ? idx[t*3+2]+1 : t*3+3;
+    const pt = new oc.Poly_Triangle_1(a, b, c);
+    polyTri.get().SetTriangle(t + 1, pt);
+    pt.delete();
+    added++;
   }
-  notify(`Sewing ${added} Flächen…`, 'ok');
+  notify(`Poly_Triangulation: ${added} Dreiecke`, 'ok');
   await new Promise(r => setTimeout(r, 0));
-  // Perform braucht 1 Argument (Message_ProgressRange) — probiere verschiedene Werte
-  let sewPerformed = false;
-  for (const arg of [{}, null, 0, undefined]) {
-    try { sewing.Perform(arg); sewPerformed = true; break; } catch(e) {}
-  }
-  if (!sewPerformed) {
-    // Fallback: Poly_Triangulation direkt (kein Sewing)
-    sewing.delete();
-    notify('Sewing n.v. — baue Triangulation direkt…', 'ok');
-    await new Promise(r => setTimeout(r, 0));
-    return _meshToOCCTPoly(oc, geo, pos, idx, triCount);
-  }
-  const sewn = sewing.SewedShape(); sewing.delete();
-  // Shell → Solid
-  const mkS = new oc.BRepBuilderAPI_MakeSolid_1();
-  const exp = new oc.TopExp_Explorer_2(sewn, oc.TopAbs_ShapeEnum.TopAbs_SHELL, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
-  let shells = 0;
-  while (exp.More()) { mkS.Add(oc.TopoDS.Shell_1(exp.Current())); exp.Next(); shells++; }
-  exp.delete();
-  if (shells > 0 && mkS.IsDone()) { const s=mkS.Solid(); mkS.delete(); return s; }
-  mkS.delete(); return sewn;
+
+  const hTri = new oc.Handle_Poly_Triangulation_2(polyTri);
+  const loc  = new oc.TopLoc_Location_1();
+  const face = new oc.TopoDS_Face();
+  const bb   = new oc.BRep_Builder();
+  bb.MakeFace(face);
+  bb.UpdateFace(face, hTri, loc, 0.001);
+  loc.delete(); bb.delete();
+
+  const comp = new oc.TopoDS_Compound();
+  const bb2  = new oc.BRep_Builder();
+  bb2.MakeCompound(comp);
+  bb2.Add(comp, face);
+  bb2.delete();
+  return comp;
 }
 
 function _meshToOCCTPoly(oc, geo, pos, idx, triCount) {
@@ -8070,6 +8060,15 @@ canvas.addEventListener('touchend', e => {
   }
 }, { passive: false });
 
+// Verhindert Browser-Zoom durch Ctrl+Scroll/Pinch → steuert stattdessen sph.r
+document.addEventListener('wheel', e => {
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    sph.r = Math.max(1.5, Math.min(200, sph.r * (e.deltaY > 0 ? 1.1 : 0.91)));
+    sph2cam();
+  }
+}, { passive: false });
+
 canvas.addEventListener('dblclick', e => {
   if (_revolveMode) { finishRevolve(); return; }
   const hits = pickObjects(e);
@@ -8180,6 +8179,9 @@ window.addEventListener('keydown', e => {
     if (k === 'g') { e.preventDefault(); e.shiftKey ? ungroupSelected() : groupSelected(); return; }
     if (k === 'h') { e.preventDefault(); e.shiftKey ? showAllObjects() : toggleHideSelected(); return; }
     if (k === 'l') { e.preventDefault(); toggleLockSelected(); return; }
+    // Ctrl++ / Ctrl+= → rein, Ctrl+- → raus (verhindert Browser-Zoom)
+    if (k === '+' || k === '=') { e.preventDefault(); sph.r = Math.max(1.5, sph.r * 0.85); sph2cam(); return; }
+    if (k === '-')              { e.preventDefault(); sph.r = Math.min(200, sph.r * 1.18); sph2cam(); return; }
     // Arrow up/down = move on Y axis
     if (k === 'ArrowUp')   { e.preventDefault(); selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.y += (snapGrid || 1)); updateTFInputs(); _doRepositionDimHandles(); return; }
     if (k === 'ArrowDown') { e.preventDefault(); selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.y -= (snapGrid || 1)); updateTFInputs(); _doRepositionDimHandles(); return; }
