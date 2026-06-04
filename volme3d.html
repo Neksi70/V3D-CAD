@@ -6853,13 +6853,16 @@ function _simplifyMesh(mesh, targetFaces) {
   mesh.updateMatrixWorld(true);
   const geo = mesh.geometry.clone();
   geo.applyMatrix4(mesh.matrixWorld);
-  const merged = THREE.BufferGeometryUtils.mergeVertices(geo, 1e-4);
+  // Position-only merge: liefert echten Vertex-Count (SimplifyModifier entfernt intern auch Normals)
+  const posOnly = geo.clone();
+  for (const name in posOnly.attributes) if (name !== 'position') posOnly.deleteAttribute(name);
+  const merged = THREE.BufferGeometryUtils.mergeVertices(posOnly, 1e-4);
   const targetVerts = Math.max(12, Math.round(targetFaces / 2));
-  let simplified;
-  if (merged.attributes.position.count > targetVerts) {
-    simplified = new THREE.SimplifyModifier().modify(merged, targetVerts);
-  } else {
-    simplified = merged;
+  const collapses = merged.attributes.position.count - targetVerts;
+  let simplified = merged;
+  if (collapses > 0) {
+    const out = new THREE.SimplifyModifier().modify(merged, collapses);
+    if (out && out.attributes.position.count > 0) simplified = out;
   }
   simplified.computeVertexNormals();
   const m = new THREE.Mesh(simplified);
