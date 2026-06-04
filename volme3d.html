@@ -6841,6 +6841,42 @@ function _meshToOCCTPoly(oc, geo, pos, idx, triCount) {
   } catch(e) { console.warn('Poly fallback Fehler:', e); return null; }
 }
 
+// ── Mesh → binäres STL-ArrayBuffer in App-Units (kein ×10-Scale) ─────────────
+function _meshToStlBuf(mesh) {
+  const geo = mesh.geometry.clone();
+  mesh.updateMatrixWorld(true);
+  geo.applyMatrix4(mesh.matrixWorld);
+  if (!geo.attributes.normal) geo.computeVertexNormals();
+  const pos = geo.attributes.position;
+  const idx = geo.index?.array;
+  const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
+  const buf = new ArrayBuffer(84 + nTri * 50);
+  const dv  = new DataView(buf);
+  dv.setUint32(80, nTri, true);
+  let off = 84;
+  for (let i = 0; i < nTri; i++) {
+    const ia = idx ? idx[i*3] : i*3, ib = idx ? idx[i*3+1] : i*3+1, ic = idx ? idx[i*3+2] : i*3+2;
+    dv.setFloat32(off,    0, true); dv.setFloat32(off+4,  0, true); dv.setFloat32(off+8,  0, true);
+    dv.setFloat32(off+12, pos.getX(ia), true); dv.setFloat32(off+16, pos.getY(ia), true); dv.setFloat32(off+20, pos.getZ(ia), true);
+    dv.setFloat32(off+24, pos.getX(ib), true); dv.setFloat32(off+28, pos.getY(ib), true); dv.setFloat32(off+32, pos.getZ(ib), true);
+    dv.setFloat32(off+36, pos.getX(ic), true); dv.setFloat32(off+40, pos.getY(ic), true); dv.setFloat32(off+44, pos.getZ(ic), true);
+    dv.setUint16(off+48, 0, true);
+    off += 50;
+  }
+  geo.dispose();
+  return buf;
+}
+
+// ── ArrayBuffer → Base64 (chunk-weise, kein Stack-Overflow bei großen Puffern)
+function _bufToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let s = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK)
+    s += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  return btoa(s);
+}
+
 function _matrixToOCCTTrsf(oc, m4) {
   // Three.js Matrix4 (column-major) → gp_Trsf (SetValues row-major 3x4)
   const e = m4.elements;
@@ -6890,19 +6926,37 @@ async function _occtFullBooleanCut(solid, svgHole) {
     const trsf = new oc.gp_Trsf_1(); trsf.SetTranslation_1(tv); tv.delete();
     const xf = new oc.BRepBuilderAPI_Transform_2(shaped, trsf, false); trsf.delete();
     solidOCCT = xf.IsDone() ? xf.Shape() : shaped; xf.delete();
-  } else {
-    notify('Mesh → OCCT konvertiert…', 'ok');
-    let solidMeshForOCCT = solid;
-    if (solid.userData.type === 'import') {
-      const _g = solid.geometry, _idx = _g.index;
-      const _triCount = _idx ? _idx.count / 3 : _g.attributes.position.count / 3;
-      if (_triCount > 2000) {
-        notify(`Mesh vereinfacht (${Math.round(_triCount)}→800 Faces)…`, 'ok');
-        solidMeshForOCCT = _simplifyMesh(solid, 800);
-      }
-    }
+  } else if (solid.userData.type === 'import') {
+    // ── Pfad 2a: STL-Import → occt-server Backend ─────────────────────────────
+    notify('Mesh-Cut via Server…', 'ok');
     try {
-      solidOCCT = await _meshToOCCTSolid(oc, solidMeshForOCCT);
+      const stlBuf    = _meshToStlBuf(solid);
+      const stlBase64 = _bufToBase64(stlBuf);
+      svgHole.updateMatrixWorld(true);
+      const resp = await fetch('http://127.0.0.1:3001/api/occt-subtract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          stlBase64,
+          svgPathData:          svgHole.userData._svgPathData,
+          svgTransformM:        { ...svgHole.userData._svgTransformM,
+                                   svgSize: svgHole.userData.svgSize || 50 },
+          svgHoleMatrixElements: Array.from(svgHole.matrixWorld.elements)
+        })
+      });
+      const data = await resp.json();
+      if (data.error) { console.warn('Server Cut Fehler:', data.error); return null; }
+      const bytes = Uint8Array.from(atob(data.resultStlBase64), c => c.charCodeAt(0));
+      return parseSTL(bytes.buffer);
+    } catch(e) {
+      console.warn('Server Cut Exception:', e.message);
+      return null;
+    }
+  } else {
+    // ── Pfad 2b: andere nicht-native Meshes → lokale _meshToOCCTSolid ─────────
+    notify('Mesh → OCCT konvertiert…', 'ok');
+    try {
+      solidOCCT = await _meshToOCCTSolid(oc, solid);
       console.log('_meshToOCCTSolid Ergebnis:', solidOCCT?.constructor?.name || solidOCCT);
     } catch(meshErr) {
       console.error('_meshToOCCTSolid Fehler:', meshErr);
