@@ -1766,6 +1766,8 @@ const firebaseConfig = {
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/geometries/RoundedBoxGeometry.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/SVGLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/modifiers/SimplifyModifier.js"></script>
 <script type="module">
 import initOCCT from './volme3d-occt.js';
 window._occtReady = (async () => {
@@ -6847,6 +6849,24 @@ function _matrixToOCCTTrsf(oc, m4) {
   return trsf;
 }
 
+function _simplifyMesh(mesh, targetFaces) {
+  mesh.updateMatrixWorld(true);
+  const geo = mesh.geometry.clone();
+  geo.applyMatrix4(mesh.matrixWorld);
+  const merged = THREE.BufferGeometryUtils.mergeVertices(geo, 1e-4);
+  const targetVerts = Math.max(12, Math.round(targetFaces / 2));
+  let simplified;
+  if (merged.attributes.position.count > targetVerts) {
+    simplified = new THREE.SimplifyModifier().modify(merged, targetVerts);
+  } else {
+    simplified = merged;
+  }
+  simplified.computeVertexNormals();
+  const m = new THREE.Mesh(simplified);
+  m.userData = mesh.userData;
+  return m;
+}
+
 async function _occtFullBooleanCut(solid, svgHole) {
   const oc = await _loadOCCT().catch(() => null);
   if (!oc) return null;
@@ -6869,8 +6889,17 @@ async function _occtFullBooleanCut(solid, svgHole) {
     solidOCCT = xf.IsDone() ? xf.Shape() : shaped; xf.delete();
   } else {
     notify('Mesh → OCCT konvertiert…', 'ok');
+    let solidMeshForOCCT = solid;
+    if (solid.userData.type === 'import') {
+      const _g = solid.geometry, _idx = _g.index;
+      const _triCount = _idx ? _idx.count / 3 : _g.attributes.position.count / 3;
+      if (_triCount > 2000) {
+        notify(`Mesh vereinfacht (${Math.round(_triCount)}→800 Faces)…`, 'ok');
+        solidMeshForOCCT = _simplifyMesh(solid, 800);
+      }
+    }
     try {
-      solidOCCT = await _meshToOCCTSolid(oc, solid);
+      solidOCCT = await _meshToOCCTSolid(oc, solidMeshForOCCT);
       console.log('_meshToOCCTSolid Ergebnis:', solidOCCT?.constructor?.name || solidOCCT);
     } catch(meshErr) {
       console.error('_meshToOCCTSolid Fehler:', meshErr);
