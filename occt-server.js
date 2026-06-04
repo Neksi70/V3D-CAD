@@ -243,6 +243,16 @@ function buildChildrenMap(pathData) {
 
 // ── Express-App ───────────────────────────────────────────────────────────────
 const app = express();
+// CORS: nur localhost + Tailscale erlauben
+app.use((req, res, next) => {
+  const origin = req.headers.origin || '';
+  if (!origin || /^https?:\/\/(localhost|127\.0\.0\.1|.*\.ts\.net)(:\d+)?$/.test(origin))
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 app.use(express.json({ limit: '100mb' }));
 
 /*
@@ -351,8 +361,14 @@ app.post('/debug-occt', async (req, res) => {
 });
 
 const PORT = 3001;
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`OCCT-Server läuft auf http://127.0.0.1:${PORT}`);
+const https = require('https');
+const fs2   = require('fs');
+const creds = {
+  cert: fs2.readFileSync('/home/v3da/v3da.tailf05fe9.ts.net.crt'),
+  key:  fs2.readFileSync('/home/v3da/v3da.tailf05fe9.ts.net.key')
+};
+https.createServer(creds, app).listen(PORT, '0.0.0.0', () => {
+  console.log(`OCCT-Server läuft auf https://v3da.tailf05fe9.ts.net:${PORT}`);
   getOC()
     .then(() => console.log('OCCT bereit'))
     .catch(e  => console.error('OCCT Init Fehler:', e.message));
