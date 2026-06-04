@@ -6739,27 +6739,38 @@ async function _meshToOCCTSolid(oc, mesh) {
   const idx = geo.index ? geo.index.array : null;
   const triCount = idx ? idx.length / 3 : pos.count / 3;
 
-  const nbN = pos.count, nbT = triCount;
-  const polyTri = new oc.Poly_Triangulation_2(nbN, nbT);
-  for (let i = 0; i < nbN; i++) {
-    const p = new oc.gp_Pnt_3(
-      pos.getX(i), pos.getY(i), pos.getZ(i));
-    try { polyTri.SetNode(i + 1, p); }
-    catch(e) { polyTri.get().SetNode(i + 1, p); }
-    p.delete();
+  // Face-Count-Limit: über 2000 Faces direkt abbrechen
+  if (triCount > 2000) {
+    console.warn(`Mesh zu komplex (${triCount} Faces) → null`);
+    return null;
   }
   let added = 0;
-  for (let t = 0; t < nbT; t++) {
-    const a = idx ? idx[t*3]+1   : t*3+1;
-    const b = idx ? idx[t*3+1]+1 : t*3+2;
-    const c = idx ? idx[t*3+2]+1 : t*3+3;
-    const pt = new oc.Poly_Triangle_1(a, b, c);
-    try { polyTri.SetTriangle(t + 1, pt); }
-    catch(e) { polyTri.get().SetTriangle(t + 1, pt); }
-    pt.delete();
-    added++;
+  const sewing = new oc.BRepBuilderAPI_Sewing_2(0.001, true, true, true, false);
+  for (let t = 0; t < triCount; t++) {
+    if (t % 200 === 0 && t > 0) {
+      await new Promise(r => setTimeout(r, 0));
+      notify(`Sewing ${t}/${triCount}…`, 'ok');
+    }
+    const a = idx?idx[t*3]:t*3, b = idx?idx[t*3+1]:t*3+1, c = idx?idx[t*3+2]:t*3+2;
+    const ax=pos.getX(a),ay=pos.getY(a),az=pos.getZ(a);
+    const bx=pos.getX(b),by=pos.getY(b),bz=pos.getZ(b);
+    const cx=pos.getX(c),cy=pos.getY(c),cz=pos.getZ(c);
+    const ex=bx-ax,ey=by-ay,ez=bz-az,fx=cx-ax,fy=cy-ay,fz=cz-az;
+    if((ey*fz-ez*fy)**2+(ez*fx-ex*fz)**2+(ex*fy-ey*fx)**2 < 1e-14) continue;
+    try {
+      const poly = new oc.BRepBuilderAPI_MakePolygon_1();
+      [[ax,ay,az],[bx,by,bz],[cx,cy,cz]].forEach(([x,y,z])=>{
+        const g=new oc.gp_Pnt_3(x,y,z); poly.Add_1(g); g.delete();
+      });
+      poly.Close();
+      if (!poly.IsDone()) { poly.delete(); continue; }
+      const mkf = new oc.BRepBuilderAPI_MakeFace_15(poly.Wire(), false);
+      poly.delete();
+      if (!mkf.IsDone()) { mkf.delete(); continue; }
+      sewing.Add(mkf.Face()); mkf.delete(); added++;
+    } catch(e) { continue; }
   }
-  notify(`Poly_Triangulation: ${added} Dreiecke`, 'ok');
+  notify(`Sewing ${added} Flächen…`, 'ok');
   await new Promise(r => setTimeout(r, 0));
 
   const hTri = new oc.Handle_Poly_Triangulation_2(polyTri);
