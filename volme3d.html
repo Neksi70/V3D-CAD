@@ -6740,27 +6740,33 @@ async function _meshToOCCTSolid(oc, mesh) {
   const triCount = idx ? idx.length / 3 : pos.count / 3;
 
   const sewing = new oc.BRepBuilderAPI_Sewing(0.001, true, true, true, false);
-  let added = 0;
-  for (let t = 0; t < triCount; t++) {
-    if (t % 500 === 0 && t > 0) {
-      await new Promise(r => setTimeout(r, 0));
-      notify(`Sewing ${t}/${triCount}…`, 'ok');
-    }
-    const a = idx?idx[t*3]:t*3, b = idx?idx[t*3+1]:t*3+1, c = idx?idx[t*3+2]:t*3+2;
-    const ax=pos.getX(a),ay=pos.getY(a),az=pos.getZ(a);
-    const bx=pos.getX(b),by=pos.getY(b),bz=pos.getZ(b);
-    const cx=pos.getX(c),cy=pos.getY(c),cz=pos.getZ(c);
-    const ex=bx-ax,ey=by-ay,ez=bz-az,fx=cx-ax,fy=cy-ay,fz=cz-az;
-    if((ey*fz-ez*fy)**2+(ez*fx-ex*fz)**2+(ex*fy-ey*fx)**2 < 1e-14) continue;
-    const poly = new oc.BRepBuilderAPI_MakePolygon_1();
-    [[ax,ay,az],[bx,by,bz],[cx,cy,cz]].forEach(([x,y,z])=>{const g=new oc.gp_Pnt_3(x,y,z);poly.Add_1(g);g.delete();});
-    poly.Close();
-    if (!poly.IsDone()) { poly.delete(); continue; }
-    const mkf = new oc.BRepBuilderAPI_MakeFace_15(poly.Wire(), false);
-    poly.delete();
-    if (!mkf.IsDone()) { mkf.delete(); continue; }
-    sewing.Add(mkf.Face()); mkf.delete(); added++;
+
+  const nodes = new oc.TColgp_Array1OfPnt_1(1, pos.count);
+  for (let i = 0; i < pos.count; i++) {
+    const pt = new oc.gp_Pnt_3(
+      pos.getX(i), pos.getY(i), pos.getZ(i));
+    nodes.SetValue(i + 1, pt);
+    pt.delete();
   }
+  const tris = new oc.Poly_Array1OfTriangle(1, triCount);
+  for (let t = 0; t < triCount; t++) {
+    const a = idx ? idx[t*3]   : t*3;
+    const b = idx ? idx[t*3+1] : t*3+1;
+    const c = idx ? idx[t*3+2] : t*3+2;
+    const tri = new oc.Poly_Triangle_1(a+1, b+1, c+1);
+    tris.SetValue(t + 1, tri);
+    tri.delete();
+  }
+  const polyTri = new oc.Poly_Triangulation_2(pos.count, triCount);
+  for (let i = 0; i < pos.count; i++) {
+    polyTri.SetNode(i + 1, nodes.Value(i + 1));
+  }
+  for (let t = 0; t < triCount; t++) {
+    polyTri.SetTriangle(t + 1, tris.Value(t + 1));
+  }
+  nodes.delete();
+  tris.delete();
+  const added = triCount;
   notify(`Sewing ${added} Flächen…`, 'ok');
   await new Promise(r => setTimeout(r, 0));
   // Perform braucht 1 Argument (Message_ProgressRange) — probiere verschiedene Werte
