@@ -6768,6 +6768,24 @@ async function _meshToOCCTSolid(oc, mesh) {
   bb.UpdateFace(face, hTri, loc, 0.001);
   loc.delete(); bb.delete();
 
+  // Sewing über einzelne Face → Shell → Solid
+  try {
+    const sew = new oc.BRepBuilderAPI_Sewing_2(0.001, true, true, true, false);
+    sew.Add(face);
+    const pr = new oc.Message_ProgressRange_1();
+    sew.Perform(pr); pr.delete();
+    const sewn = sew.SewedShape(); sew.delete();
+    const mkSol = new oc.BRepBuilderAPI_MakeSolid_1();
+    const exp = new oc.TopExp_Explorer_2(
+      sewn,
+      oc.TopAbs_ShapeEnum.TopAbs_SHELL,
+      oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    );
+    if (exp.More()) { mkSol.Add(exp.Current()); }
+    exp.delete();
+    if (mkSol.IsDone()) { return mkSol.Solid(); }
+  } catch(e) { console.warn('Sewing→Solid fehlgeschlagen:', e); }
+  // Fallback: Compound
   const comp = new oc.TopoDS_Compound();
   const bb2  = new oc.BRep_Builder();
   bb2.MakeCompound(comp);
