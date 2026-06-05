@@ -56,10 +56,9 @@ function parseSTLBinary(buf) {
   return tris;
 }
 
-// ── STL via OCCT-FS lesen + Sewing → Solid ───────────────────────────────────
+// ── STL via OCCT-FS lesen → Shape direkt (kein Sewing) ───────────────────────
 function stlToOCCTSolid(oc, stlBuf) {
   try {
-    // OCCT StlAPI_Reader braucht einen kurzen Root-Pfad ohne Sonderzeichen
     const tmpPath = '/s.stl';
     oc.FS.writeFile(tmpPath, new Uint8Array(stlBuf));
     const written = oc.FS.stat(tmpPath).size;
@@ -71,23 +70,9 @@ function stlToOCCTSolid(oc, stlBuf) {
     try { oc.FS.unlink(tmpPath); } catch(_) {}
     console.log('[stl2occt] StlAPI_Reader.Read:', ok);
     if (!ok) return null;
-
-    // Sewing (5 Pflicht-Args)
-    const sew = new oc.BRepBuilderAPI_Sewing(0.001, true, true, true, false);
-    sew.Add(shape);
-    const pr = new oc.Handle_Message_ProgressIndicator_1();
-    sew.Perform(pr); pr.delete();
-    const sewn = sew.SewedShape(); sew.delete();
-    console.log('[stl2occt] Sewing done:', !!sewn);
-
-    // Shell → Solid wrappen (BRepBuilderAPI_MakeSolid_1 = default ctor)
-    try {
-      const mkSolid = new oc.BRepBuilderAPI_MakeSolid_1();
-      mkSolid.Add(oc.TopoDS.Shell_1(sewn));
-      if (mkSolid.IsDone()) { const s = mkSolid.Solid(); mkSolid.delete(); return s; }
-      mkSolid.delete();
-    } catch(_) {}
-    return sewn;  // Fallback: Sewed Shape direkt (Shell)
+    // Sewing bewusst weggelassen — O(n²) über große Meshes → Timeout.
+    // BRepAlgoAPI_Cut_3 arbeitet direkt mit dem ungenaehten Compound.
+    return shape;
   } catch(e) {
     console.error('[stl2occt] Fehler:', e.message);
     return null;
