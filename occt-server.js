@@ -56,7 +56,7 @@ function parseSTLBinary(buf) {
   return tris;
 }
 
-// ── STL via OCCT-FS lesen → Shape direkt (kein Sewing) ───────────────────────
+// ── STL via OCCT-FS lesen → Solid (mit Sewing, Tolerance 1mm) ────────────────
 function stlToOCCTSolid(oc, stlBuf) {
   try {
     const tmpPath = '/s.stl';
@@ -70,9 +70,43 @@ function stlToOCCTSolid(oc, stlBuf) {
     try { oc.FS.unlink(tmpPath); } catch(_) {}
     console.log('[stl2occt] StlAPI_Reader.Read:', ok);
     if (!ok) return null;
-    // Sewing bewusst weggelassen — O(n²) über große Meshes → Timeout.
-    // BRepAlgoAPI_Cut_3 arbeitet direkt mit dem ungenaehten Compound.
-    return shape;
+
+    // Sewing (1mm Tolerance) verbindet die losen Dreiecke zu einem echten Solid.
+    // Größere Tolerance als Default (1e-6) → deutlich schneller auf großen Meshes.
+    const t0 = Date.now();
+    const sew = new oc.BRepBuilderAPI_Sewing(1.0, true, true, true, false);
+    sew.Add(shape);
+    const prog = new oc.Handle_Message_ProgressIndicator_1();
+    sew.Perform(prog);
+    prog.delete();
+    const sewn = sew.SewedShape();
+    sew.delete();
+    console.log('[stl2occt] Sewing done in', Date.now()-t0, 'ms');
+
+    // Versuche Shell → Solid
+    try {
+      const mkSolid = new oc.BRepBuilderAPI_MakeSolid_1();
+      // Iteriere über Shells im Sewing-Ergebnis
+      const exp = new oc.TopExp_Explorer_2(sewn, oc.TopAbs_ShapeEnum.TopAbs_SHELL, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+      let shellCount = 0;
+      while (exp.More()) {
+        const shell = oc.TopoDS.Shell_1(exp.Current());
+        mkSolid.Add(shell);
+        shellCount++;
+        exp.Next();
+      }
+      exp.delete();
+      if (shellCount > 0 && mkSolid.IsDone()) {
+        const solid = mkSolid.Solid(); mkSolid.delete();
+        console.log('[stl2occt] Solid aus', shellCount, 'Shells');
+        return solid;
+      }
+      mkSolid.delete();
+    } catch(_) {}
+
+    // Fallback: genähte Shell direkt verwenden
+    console.log('[stl2occt] Fallback: genähte Shell');
+    return sewn;
   } catch(e) {
     console.error('[stl2occt] Fehler:', e.message);
     return null;
@@ -193,6 +227,21 @@ function solidToSTLBuffer(oc, shape) {
   return buf;
 }
 
+// ── BBox eines Shapes (min/max XYZ via Bnd_Box CornerMin/CornerMax) ──────────
+function getBBox(oc, shape) {
+  try {
+    const box = new oc.Bnd_Box_1();
+    oc.BRepBndLib.Add(shape, box, false);
+    if (box.IsVoid()) { box.delete(); return 'VOID'; }
+    const mn = box.CornerMin(); const mx = box.CornerMax();
+    box.delete();
+    const f = v => v.toFixed(3);
+    const r = `x[${f(mn.X())},${f(mx.X())}] y[${f(mn.Y())},${f(mx.Y())}] z[${f(mn.Z())},${f(mx.Z())}]`;
+    mn.delete(); mx.delete();
+    return r;
+  } catch(e) { return 'ERR:' + e.message; }
+}
+
 // ── Containment-Analyse (Kinder-Pfade für Ring-Buchstaben) ───────────────────
 function buildChildrenMap(pathData) {
   function area(pts) {
@@ -302,6 +351,12 @@ app.post('/api/occt-subtract', async (req, res) => {
         xf.delete();
       }
 
+      // BBox-Logging (temporär — Diagnose SVG-Überschneidung)
+      if (i === 0) {
+        console.log('[cut-debug] solidBBox:', getBBox(oc, result));
+        console.log('[cut-debug] svgBBox:  ', getBBox(oc, svgWorld));
+      }
+
       // Boolean Subtract
       const cut = new oc.BRepAlgoAPI_Cut_3(result, svgWorld); cut.Build();
       if (cut.IsDone()) { result = cut.Shape(); cutCount++; }
@@ -323,6 +378,55 @@ app.post('/api/occt-subtract', async (req, res) => {
 
 app.get('/health', (_, res) => res.json({ status: 'ok', occtReady: !!_oc }));
 
+// Debug: Schneidet einen OCCT-Box (kein STL) mit einem SVG-Prism
+app.get('/debug-box-cut', async (_, res) => {
+  try {
+    const oc = await getOC();
+    // 100×100×50mm Box
+    const box = new oc.BRepPrimAPI_MakeBox_2(
+      new oc.gp_Pnt_3(0, 0, 0), 100, 100, 50
+    );
+    let solid = box.Shape(); box.delete();
+
+    // Kleines 20×20mm Quadrat als SVG-Prism (in XZ, extrudiert 10mm in Y)
+    const poly = new oc.BRepBuilderAPI_MakePolygon_1();
+    for (const [x,z] of [[-10,0],[10,0],[10,20],[-10,20]]) {
+      const p = new oc.gp_Pnt_3(x, 0, z); poly.Add_1(p); p.delete();
+    }
+    poly.Close();
+    const wire = poly.Wire(); poly.delete();
+    const face = new oc.BRepBuilderAPI_MakeFace_15(wire, false).Face();
+    const vec  = new oc.gp_Vec_4(0, 10, 0);
+    const prism = new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true);
+    let tool = prism.Shape(); prism.delete(); vec.delete();
+
+    // Tool auf Box-Frontfläche (z=50) positionieren: y+5 damit es 5mm ins Solid geht
+    const trsf = new oc.gp_Trsf_1();
+    trsf.SetTranslation_1(new oc.gp_Vec_4(50, -5, 30)); // zentriert auf Box
+    const xf = new oc.BRepBuilderAPI_Transform_2(tool, trsf, false); trsf.delete();
+    tool = xf.Shape(); xf.delete();
+
+    const bboxBefore = getBBox(oc, solid);
+    const cut = new oc.BRepAlgoAPI_Cut_3(solid, tool); cut.Build();
+    const done = cut.IsDone();
+    const result = done ? cut.Shape() : solid;
+    cut.delete();
+
+    const outBuf = solidToSTLBuffer(oc, result);
+    const trisOut = (outBuf.length - 84) / 50;
+    res.json({
+      boxBBox: bboxBefore,
+      cutDone: done,
+      inputTris: 12,  // box hat 12 triangles
+      outputTris: trisOut,
+      different: trisOut !== 12,
+      resultStlBase64: outBuf.toString('base64'),
+    });
+  } catch(e) {
+    res.json({ error: e.message || String(e) });
+  }
+});
+
 app.post('/debug-occt', async (req, res) => {
   const oc = await getOC();
   const stlBuf = Buffer.from(req.body.stlBase64, 'base64');
@@ -330,6 +434,14 @@ app.post('/debug-occt', async (req, res) => {
   result.ocReady = !!oc;
   result.stlBufLen = stlBuf.length;
   result.sewingType = typeof oc.BRepBuilderAPI_Sewing;
+  try {
+    const sew = new oc.BRepBuilderAPI_Sewing(1.0, true, true, true, false);
+    result.sewingMethods = Object.getOwnPropertyNames(Object.getPrototypeOf(sew))
+      .filter(m => /perform/i.test(m));
+    result.progressKeys = Object.getOwnPropertyNames(oc)
+      .filter(k => /Progress|Message_P/i.test(k)).slice(0, 15);
+    sew.delete();
+  } catch(e) { result.sewingErr = e.message; }
   // Gleiche Datei, 3x lesen
   oc.FS.writeFile('/test.stl', new Uint8Array(stlBuf));
   result.fileSize = oc.FS.stat('/test.stl').size;
