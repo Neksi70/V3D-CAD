@@ -7090,28 +7090,36 @@ async function _occtFullBooleanCut(solid, svgHole) {
       const stlBuf    = _meshToStlBuf(solid);
       const stlBase64 = _bufToBase64(stlBuf);
       svgHole.updateMatrixWorld(true);
+      console.log('pathData:', svgHole.userData._svgPathData?.length);
+      console.log('transformM:', svgHole.userData._svgTransformM);
+      const _body = JSON.stringify({
+        stlBase64,
+        svgPathData:          svgHole.userData._svgPathData,
+        svgTransformM:        { ...svgHole.userData._svgTransformM,
+                                 svgSize: svgHole.userData.svgSize || 50 },
+        svgHoleMatrixElements: (() => {
+          const _svgSize = svgHole.userData.svgSize || 50;
+          const _depthMM = svgHole.userData._svgTransformM?.depthMM || 3;
+          const snapM = _findFrontFaceMatrix(solid, _svgSize, _depthMM);
+          console.log('matrixElements:', snapM?.length);
+          if (snapM) return snapM;
+          // Fallback: matrixWorld mit Translation ×10 (App-Units → mm)
+          const e = svgHole.matrixWorld.elements.slice();
+          e[12] *= 10; e[13] *= 10; e[14] *= 10;
+          return Array.from(e);
+        })()
+      });
+      console.log('>>> FETCH STARTET body.length:', _body.length);
       const resp = await fetch('https://v3da.tailf05fe9.ts.net:18790/api/occt-subtract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          stlBase64,
-          svgPathData:          svgHole.userData._svgPathData,
-          svgTransformM:        { ...svgHole.userData._svgTransformM,
-                                   svgSize: svgHole.userData.svgSize || 50 },
-          svgHoleMatrixElements: (() => {
-            const _svgSize = svgHole.userData.svgSize || 50;
-            const _depthMM = svgHole.userData._svgTransformM?.depthMM || 3;
-            const snapM = _findFrontFaceMatrix(solid, _svgSize, _depthMM);
-            if (snapM) return snapM;
-            // Fallback: matrixWorld mit Translation ×10 (App-Units → mm)
-            const e = svgHole.matrixWorld.elements.slice();
-            e[12] *= 10; e[13] *= 10; e[14] *= 10;
-            return Array.from(e);
-          })()
-        })
+        body: _body
       });
       const data = await resp.json();
-      if (data.error) { console.warn('Server Cut Fehler:', data.error); return null; }
+      console.log('data keys:', Object.keys(data));
+      console.log('resultStlBase64 length:', data.resultStlBase64?.length);
+      console.log('error:', data.error);
+      if (data.error) { console.error('Server Cut Fehler:', data.error); return null; }
       const bytes = Uint8Array.from(atob(data.resultStlBase64), c => c.charCodeAt(0));
       const resultGeo = parseSTL(bytes.buffer);
       // Server gibt mm zurück → App-Units (÷10) wie normaler STL-Import
@@ -7119,7 +7127,7 @@ async function _occtFullBooleanCut(solid, svgHole) {
       resultGeo.computeVertexNormals();
       return resultGeo;
     } catch(e) {
-      console.warn('Server Cut Exception:', e.message);
+      console.error('Server Cut Exception:', e);
       return null;
     }
   } else {
