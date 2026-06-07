@@ -6538,6 +6538,9 @@ async function _buildCleanSvgMeshes(svgHole) {
 // ═══ FACE-ONLY OCCT GRAVUR FÜR STL-IMPORTS ═══════════════════════════════════
 // Kein Face-Entfernen, kein Sewing — SVG-Slab als Overlay auf Original-Mesh
 async function _occtFaceOnlyCut(solid, svgHole) {
+  console.log('[FaceOnly] START solid:', solid.userData.type,
+    'hole type:', svgHole.userData.type,
+    'isHole:', svgHole.userData.isHole);
   const oc = await _loadOCCT().catch(() => null);
   if (!oc) return null;
 
@@ -6554,6 +6557,8 @@ async function _occtFaceOnlyCut(solid, svgHole) {
   const pos = geo.attributes.position;
   const idx = geo.index ? geo.index.array : null;
   const triCount = idx ? idx.length/3 : pos.count/3;
+  console.log('[FaceOnly] triCount:', triCount,
+    'svgPathData:', svgHole.userData._svgPathData?.length);
   const fpDot = facePt.dot(faceNormal);
   const svgBB = new THREE.Box3().setFromObject(svgHole);
   const expN=0.5, expP=20;
@@ -6576,6 +6581,8 @@ async function _occtFaceOnlyCut(solid, svgHole) {
     const d=Math.abs(cD-fpDot);
     if(d<bestD){bestD=d;bestPD=cD-fpDot;}
   }
+  console.log('[FaceOnly] bestPD:', bestPD,
+    'faceNormal:', faceNormal?.toArray());
   if(bestD===Infinity){console.warn('Face-Only: keine Fläche');return null;}
   notify('Fläche gefunden, OCCT schneidet…','ok');
   await new Promise(r=>setTimeout(r,0));
@@ -6907,6 +6914,131 @@ function _simplifyMesh(mesh, targetFaces) {
   return m;
 }
 
+// ── Snap-Matrix für SVG-Emboss (Z-up, identisch zu test_svg_emboss.mjs) ──────
+function _buildSnapMatrix(facePoint, normal, svgSize, depthMM) {
+  const [nx,ny,nz] = normal;
+  const S = svgSize / 2;
+  const dotUp = nz;
+  const projUpX=-nx*dotUp, projUpY=-ny*dotUp, projUpZ=1-nz*dotUp;
+  const projLen=Math.sqrt(projUpX**2+projUpY**2+projUpZ**2);
+  const cY=[nx,ny,nz], cZ=[-projUpX/projLen,-projUpY/projLen,-projUpZ/projLen];
+  const colX=[(cY[1]*cZ[2]-cY[2]*cZ[1])*S,(cY[2]*cZ[0]-cY[0]*cZ[2])*S,(cY[0]*cZ[1]-cY[1]*cZ[0])*S];
+  const colY=[nx*S,ny*S,nz*S];
+  const colZ=[cZ[0]*S,cZ[1]*S,cZ[2]*S];
+  const hd=depthMM/2;
+  const p=[facePoint[0]-nx*hd, facePoint[1]-ny*hd, facePoint[2]-nz*hd];
+  return [colX[0],colX[1],colX[2],0, colY[0],colY[1],colY[2],0, colZ[0],colZ[1],colZ[2],0, p[0],p[1],p[2],1];
+}
+
+// ── Frontfläche automatisch erkennen und Snap-Matrix berechnen ───────────────
+// Analysiert Solid-Geometrie in mm (world × 10), liefert matrixElements-Array
+// oder null bei Fehler (dann Fallback auf svgHole.matrixWorld).
+function _findFrontFaceMatrix(solid, svgSize, depthMM) {
+  solid.updateMatrixWorld(true);
+  const mw = solid.matrixWorld;
+  const geo = solid.geometry;
+  const pos = geo.attributes.position;
+  const idx = geo.index?.array;
+  const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
+
+  const keys = ['+X','-X','+Y','-Y','+Z','-Z'];
+  const groups = {};
+  keys.forEach(k => groups[k] = []);
+
+  const _vm = ii => {
+    const v = new THREE.Vector3(pos.getX(ii), pos.getY(ii), pos.getZ(ii)).applyMatrix4(mw);
+    return [v.x*10, v.y*10, v.z*10]; // app-units → mm
+  };
+
+  for (let i = 0; i < nTri; i++) {
+    const ia=idx?idx[i*3]:i*3, ib=idx?idx[i*3+1]:i*3+1, ic=idx?idx[i*3+2]:i*3+2;
+    const A=_vm(ia), B=_vm(ib), C=_vm(ic);
+    const ex=B[0]-A[0],ey=B[1]-A[1],ez=B[2]-A[2];
+    const fx=C[0]-A[0],fy=C[1]-A[1],fz=C[2]-A[2];
+    let nx=ey*fz-ez*fy, ny=ez*fx-ex*fz, nz=ex*fy-ey*fx;
+    const nl=Math.sqrt(nx*nx+ny*ny+nz*nz);
+    if (nl<1e-10) continue;
+    nx/=nl; ny/=nl; nz/=nl;
+    const ax=Math.abs(nx),ay=Math.abs(ny),az=Math.abs(nz);
+    let key;
+    if      (ax>=ay&&ax>=az) key=nx>0?'+X':'-X';
+    else if (ay>=ax&&ay>=az) key=ny>0?'+Y':'-Y';
+    else                      key=nz>0?'+Z':'-Z';
+    groups[key].push({nx,ny,nz,vs:[A,B,C]});
+  }
+
+  const bestKey=['-Y','+Y','-X','+X','-Z','+Z']
+    .reduce((a,b)=>(groups[a]?.length??0)>=(groups[b]?.length??0)?a:b);
+  const group=groups[bestKey];
+  if (!group.length) return null;
+
+  let anx=0,any=0,anz=0;
+  for (const t of group){anx+=t.nx;any+=t.ny;anz+=t.nz;}
+  anx/=group.length;any/=group.length;anz/=group.length;
+  const anl=Math.sqrt(anx*anx+any*any+anz*anz);
+  anx/=anl;any/=anl;anz/=anl;
+
+  const isXFace=bestKey==='-X'||bestKey==='+X';
+  const isYFace=bestKey==='-Y'||bestKey==='+Y';
+  const outward=bestKey[0]==='+'?1:-1;
+  const axIdx=isXFace?0:isYFace?1:2;
+  const sliceBin=10;
+  const slices={};
+  let globalMinX=Infinity,globalMaxX=-Infinity;
+
+  for (const t of group) {
+    for (const v of t.vs) {
+      const z=v[2],dc=v[axIdx],x=v[0];
+      const bin=Math.round(z/sliceBin)*sliceBin;
+      if (!slices[bin]) slices[bin]={outerDepth:outward>0?-Infinity:Infinity,cnt:0,centerCnt:0,_xcs:[]};
+      slices[bin].cnt++;
+      if (outward>0){if(dc>slices[bin].outerDepth)slices[bin].outerDepth=dc;}
+      else          {if(dc<slices[bin].outerDepth)slices[bin].outerDepth=dc;}
+      if (x<globalMinX)globalMinX=x;
+      if (x>globalMaxX)globalMaxX=x;
+    }
+    const xc=(t.vs[0][0]+t.vs[1][0]+t.vs[2][0])/3;
+    const zc=(t.vs[0][2]+t.vs[1][2]+t.vs[2][2])/3;
+    const cbin=Math.round(zc/sliceBin)*sliceBin;
+    if (!slices[cbin]) slices[cbin]={outerDepth:outward>0?-Infinity:Infinity,cnt:0,centerCnt:0,_xcs:[]};
+    slices[cbin]._xcs.push(xc);
+  }
+
+  const xRange=globalMaxX-globalMinX, xCenter=(globalMinX+globalMaxX)/2;
+  const xBandLo=xCenter-xRange*0.2, xBandHi=xCenter+xRange*0.2;
+  for (const s of Object.values(slices)){
+    s.centerCnt=s._xcs.filter(xc=>xc>=xBandLo&&xc<=xBandHi).length;
+    delete s._xcs;
+  }
+
+  const allBins=Object.entries(slices).filter(([,s])=>s.cnt>=6).sort(([a],[b])=>+a-+b);
+  if (!allBins.length) return null;
+
+  const zVals=allBins.map(([z])=>+z);
+  const zMin=Math.min(...zVals),zMax=Math.max(...zVals);
+  const zLo=zMin+(zMax-zMin)*0.15, zHi=zMax-(zMax-zMin)*0.10;
+  const midBins=allBins.filter(([z])=>+z>=zLo&&+z<=zHi);
+  const searchBins=midBins.length>0?midBins:allBins;
+  const maxCenter=Math.max(...searchBins.map(([,s])=>s.centerCnt));
+
+  let zCenter;
+  if (maxCenter>=1) {
+    const zTarget25=zMin+(zMax-zMin)*0.25;
+    const denseBins=searchBins.filter(([,s])=>s.centerCnt===maxCenter);
+    zCenter=+denseBins.reduce((best,cur)=>
+      Math.abs(+cur[0]-zTarget25)<Math.abs(+best[0]-zTarget25)?cur:best)[0];
+  } else {
+    zCenter=zMin+(zMax-zMin)*0.25;
+  }
+
+  const closestBin=allBins.reduce((best,cur)=>
+    Math.abs(+cur[0]-zCenter)<Math.abs(+best[0]-zCenter)?cur:best);
+  const facePoint=[xCenter, closestBin[1].outerDepth, zCenter];
+  console.log(`findFrontFace: ${bestKey}, Z=${zMin.toFixed(0)}–${zMax.toFixed(0)}mm, logoZ=${zCenter.toFixed(0)}mm, pt=(${facePoint.map(v=>v.toFixed(1)).join(',')})`);
+
+  return _buildSnapMatrix(facePoint,[anx,any,anz],svgSize,depthMM);
+}
+
 async function _occtFullBooleanCut(solid, svgHole) {
   const oc = await _loadOCCT().catch(() => null);
   if (!oc) return null;
@@ -6943,9 +7075,13 @@ async function _occtFullBooleanCut(solid, svgHole) {
           svgTransformM:        { ...svgHole.userData._svgTransformM,
                                    svgSize: svgHole.userData.svgSize || 50 },
           svgHoleMatrixElements: (() => {
-            // matrixWorld ist in App-Units, Server erwartet mm (×10)
+            const _svgSize = svgHole.userData.svgSize || 50;
+            const _depthMM = svgHole.userData._svgTransformM?.depthMM || 3;
+            const snapM = _findFrontFaceMatrix(solid, _svgSize, _depthMM);
+            if (snapM) return snapM;
+            // Fallback: matrixWorld mit Translation ×10 (App-Units → mm)
             const e = svgHole.matrixWorld.elements.slice();
-            e[12] *= 10; e[13] *= 10; e[14] *= 10; // Translation ×10
+            e[12] *= 10; e[13] *= 10; e[14] *= 10;
             return Array.from(e);
           })()
         })
