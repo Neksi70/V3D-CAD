@@ -6930,138 +6930,6 @@ function _buildSnapMatrix(facePoint, normal, svgSize, depthMM) {
   return [colX[0],colX[1],colX[2],0, colY[0],colY[1],colY[2],0, colZ[0],colZ[1],colZ[2],0, p[0],p[1],p[2],1];
 }
 
-// ── Frontfläche automatisch erkennen und Snap-Matrix berechnen ───────────────
-// Analysiert Solid-Geometrie in mm (world × 10), liefert matrixElements-Array
-// oder null bei Fehler (dann Fallback auf svgHole.matrixWorld).
-function _findFrontFaceMatrix(solid, svgSize, depthMM) {
-  solid.updateMatrixWorld(true);
-  const mw = solid.matrixWorld;
-  const geo = solid.geometry;
-  const pos = geo.attributes.position;
-  const idx = geo.index?.array;
-  const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
-
-  // Analyse in LOCAL mm (= rohe STL-Koordinaten, Z-up CAD garantiert).
-  // matrixWorld wird NICHT auf Vertices angewandt — nur die Rotation wird
-  // am Ende auf die fertige Snap-Matrix angewandt.
-  const _vl = ii => [pos.getX(ii), pos.getY(ii), pos.getZ(ii)];
-
-  const keys = ['+X','-X','+Y','-Y','+Z','-Z'];
-  const groups = {};
-  keys.forEach(k => groups[k] = []);
-
-  for (let i = 0; i < nTri; i++) {
-    const ia=idx?idx[i*3]:i*3, ib=idx?idx[i*3+1]:i*3+1, ic=idx?idx[i*3+2]:i*3+2;
-    const A=_vl(ia), B=_vl(ib), C=_vl(ic);
-    const ex=B[0]-A[0],ey=B[1]-A[1],ez=B[2]-A[2];
-    const fx=C[0]-A[0],fy=C[1]-A[1],fz=C[2]-A[2];
-    let nx=ey*fz-ez*fy, ny=ez*fx-ex*fz, nz=ex*fy-ey*fx;
-    const nl=Math.sqrt(nx*nx+ny*ny+nz*nz);
-    if (nl<1e-10) continue;
-    nx/=nl; ny/=nl; nz/=nl;
-    const ax=Math.abs(nx),ay=Math.abs(ny),az=Math.abs(nz);
-    let key;
-    if      (ax>=ay&&ax>=az) key=nx>0?'+X':'-X';
-    else if (ay>=ax&&ay>=az) key=ny>0?'+Y':'-Y';
-    else                      key=nz>0?'+Z':'-Z';
-    groups[key].push({nx,ny,nz,vs:[A,B,C]});
-  }
-
-  // Grösste Nicht-Boden/Deckel-Fläche — in Local-Z-up-Raum ist das -Y (Front)
-  const bestKey=['-Y','+Y','-X','+X','-Z','+Z']
-    .reduce((a,b)=>(groups[a]?.length??0)>=(groups[b]?.length??0)?a:b);
-  const group=groups[bestKey];
-  if (!group.length) return null;
-
-  let anx=0,any=0,anz=0;
-  for (const t of group){anx+=t.nx;any+=t.ny;anz+=t.nz;}
-  anx/=group.length;any/=group.length;anz/=group.length;
-  const anl=Math.sqrt(anx*anx+any*any+anz*anz);
-  anx/=anl;any/=anl;anz/=anl;
-
-  // Z-Slice-Analyse in lokalem Z-up-Raum (v[2] = STL-Z = CAD-Höhe ✓)
-  const isXFace=bestKey==='-X'||bestKey==='+X';
-  const isYFace=bestKey==='-Y'||bestKey==='+Y';
-  const outward=bestKey[0]==='+'?1:-1;
-  const axIdx=isXFace?0:isYFace?1:2;
-  const sliceBin=10;
-  const slices={};
-  let globalMinX=Infinity,globalMaxX=-Infinity;
-
-  for (const t of group) {
-    for (const v of t.vs) {
-      const z=v[2],dc=v[axIdx],x=v[0];
-      const bin=Math.round(z/sliceBin)*sliceBin;
-      if (!slices[bin]) slices[bin]={outerDepth:outward>0?-Infinity:Infinity,cnt:0,centerCnt:0,_xcs:[]};
-      slices[bin].cnt++;
-      if (outward>0){if(dc>slices[bin].outerDepth)slices[bin].outerDepth=dc;}
-      else          {if(dc<slices[bin].outerDepth)slices[bin].outerDepth=dc;}
-      if (x<globalMinX)globalMinX=x;
-      if (x>globalMaxX)globalMaxX=x;
-    }
-    const xc=(t.vs[0][0]+t.vs[1][0]+t.vs[2][0])/3;
-    const zc=(t.vs[0][2]+t.vs[1][2]+t.vs[2][2])/3;
-    const cbin=Math.round(zc/sliceBin)*sliceBin;
-    if (!slices[cbin]) slices[cbin]={outerDepth:outward>0?-Infinity:Infinity,cnt:0,centerCnt:0,_xcs:[]};
-    slices[cbin]._xcs.push(xc);
-  }
-
-  const xRange=globalMaxX-globalMinX, xCenter=(globalMinX+globalMaxX)/2;
-  const xBandLo=xCenter-xRange*0.2, xBandHi=xCenter+xRange*0.2;
-  for (const s of Object.values(slices)){
-    s.centerCnt=s._xcs.filter(xc=>xc>=xBandLo&&xc<=xBandHi).length;
-    delete s._xcs;
-  }
-
-  const allBins=Object.entries(slices).filter(([,s])=>s.cnt>=6).sort(([a],[b])=>+a-+b);
-  if (!allBins.length) return null;
-
-  const zVals=allBins.map(([z])=>+z);
-  const zMin=Math.min(...zVals),zMax=Math.max(...zVals);
-  const zLo=zMin+(zMax-zMin)*0.15, zHi=zMax-(zMax-zMin)*0.10;
-  const midBins=allBins.filter(([z])=>+z>=zLo&&+z<=zHi);
-  const searchBins=midBins.length>0?midBins:allBins;
-  const maxCenter=Math.max(...searchBins.map(([,s])=>s.centerCnt));
-
-  let zCenter;
-  if (maxCenter>=1) {
-    const zTarget25=zMin+(zMax-zMin)*0.25;
-    const denseBins=searchBins.filter(([,s])=>s.centerCnt===maxCenter);
-    zCenter=+denseBins.reduce((best,cur)=>
-      Math.abs(+cur[0]-zTarget25)<Math.abs(+best[0]-zTarget25)?cur:best)[0];
-  } else {
-    zCenter=zMin+(zMax-zMin)*0.25;
-  }
-
-  const closestBin=allBins.reduce((best,cur)=>
-    Math.abs(+cur[0]-zCenter)<Math.abs(+best[0]-zCenter)?cur:best);
-  // facePoint in LOCAL mm (Z-up): (X-Mitte, Y-Oberfläche, Z-Logo-Höhe)
-  const facePoint=[xCenter, closestBin[1].outerDepth, zCenter];
-  console.log(`findFrontFace [local ${bestKey}]: Z=${zMin.toFixed(0)}–${zMax.toFixed(0)}mm, logoZ=${zCenter.toFixed(0)}mm, pt=(${facePoint.map(v=>v.toFixed(1)).join(',')})`);
-
-  // Snap-Matrix in LOCAL mm (Z-up, worldUp=(0,0,1))
-  const Ml = _buildSnapMatrix(facePoint,[anx,any,anz],svgSize,depthMM);
-
-  // Rotation aus matrixWorld extrahieren (normalisierte Spalten → reine Rotation)
-  // Formel: world_mm = R × local_mm  (scale 0.1 × ×10 = ×1 → kürzt sich heraus)
-  const e=mw.elements;
-  const sX=Math.sqrt(e[0]**2+e[1]**2+e[2]**2)||1;
-  const sY=Math.sqrt(e[4]**2+e[5]**2+e[6]**2)||1;
-  const sZ=Math.sqrt(e[8]**2+e[9]**2+e[10]**2)||1;
-  // R × v (matrix × column-vector, Three.js column-major convention)
-  const rotV=(x,y,z)=>[
-    (e[0]/sX)*x+(e[4]/sY)*y+(e[8]/sZ)*z,
-    (e[1]/sX)*x+(e[5]/sY)*y+(e[9]/sZ)*z,
-    (e[2]/sX)*x+(e[6]/sY)*y+(e[10]/sZ)*z,
-  ];
-  // Alle vier Spalten der lokalen Matrix in World-mm transformieren
-  const cx=rotV(Ml[0],Ml[1],Ml[2]);
-  const cy=rotV(Ml[4],Ml[5],Ml[6]);
-  const cz=rotV(Ml[8],Ml[9],Ml[10]);
-  const pw=rotV(Ml[12],Ml[13],Ml[14]);
-  console.log(`findFrontFace [world]: pt=(${pw.map(v=>v.toFixed(1)).join(',')}), n=(${cy.map(v=>(v/(svgSize/2)).toFixed(3)).join(',')})`);
-  return [cx[0],cx[1],cx[2],0, cy[0],cy[1],cy[2],0, cz[0],cz[1],cz[2],0, pw[0],pw[1],pw[2],1];
-}
 
 async function _occtFullBooleanCut(solid, svgHole) {
   const oc = await _loadOCCT().catch(() => null);
@@ -7096,11 +6964,9 @@ async function _occtFullBooleanCut(solid, svgHole) {
         stlBase64,
         svgPathData:          svgHole.userData._svgPathData,
         svgTransformM:        { ...svgHole.userData._svgTransformM,
-                                 svgSize: svgHole.userData.svgSize || 50 },
+                                 svgSize:  svgHole.userData.svgSize  || 50,
+                                 depthMM:  svgHole.userData.svgDepth || 3 },
         svgHoleMatrixElements: (() => {
-          const _svgSize = svgHole.userData.svgSize || 50;
-          const _depthMM = 20; // TEST: fixe Tiefe statt svgHole.userData._svgTransformM?.depthMM || 3
-          // Nutze svgHole.matrixWorld direkt (in mm = App-Units × 10)
           const e = svgHole.matrixWorld.elements.slice();
           e[12] *= 10; e[13] *= 10; e[14] *= 10;
           console.log('matrixElements world:', e[12].toFixed(1), e[13].toFixed(1), e[14].toFixed(1));
