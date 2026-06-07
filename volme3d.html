@@ -6967,17 +6967,23 @@ async function _occtFullBooleanCut(solid, svgHole) {
                                  svgSize:  svgHole.userData.svgSize  || 50,
                                  depthMM:  svgHole.userData.svgDepth || 3 },
         svgHoleMatrixElements: (() => {
-          // SVG matrixWorld ist in App-Units (÷10 = mm)
-          // Solid matrixWorld enthält Position/Rotation des STL in App-Units
-          // Wir müssen SVG relativ zum Solid-Local-Space berechnen
-          // dann ×10 für mm (STL-Koordinaten)
-          const solidInv = new THREE.Matrix4().copy(solid.matrixWorld).invert();
-          const svgLocal = new THREE.Matrix4().copy(svgHole.matrixWorld).premultiply(solidInv);
-          const e = svgLocal.elements.slice();
-          // Scale: App-Unit = 0.1mm, STL = mm → ×10
-          // Aber Solid hat scale=0.1, also local coords sind schon in STL-mm
-          e[12] *= 10; e[13] *= 10; e[14] *= 10;
-          console.log('matrixElements local→STL:', e[12].toFixed(1), e[13].toFixed(1), e[14].toFixed(1));
+          // SVG Position in App-Units → mm (×10)
+          // Solid Position in App-Units → mm (×10) = STL-Offset
+          // SVG in STL-Koordinaten = (svgWorld - solidWorld) × 10 + solidSTLoffset
+          // solidSTLoffset = solid userData._origStlOffset (gesetzt beim Import)
+          const svgW = new THREE.Vector3().setFromMatrixPosition(svgHole.matrixWorld);
+          const solidW = new THREE.Vector3().setFromMatrixPosition(solid.matrixWorld);
+          const rel = svgW.clone().sub(solidW); // relativ zum Solid-Zentrum in App-Units
+          // STL-Koordinaten: rel × 10 + STL-BBox-Zentrum
+          const stlCx = solid.userData._stlCx || 128;
+          const stlCy = solid.userData._stlCy || 128;
+          const stlCz = solid.userData._stlCz || 101;
+          // Rotation aus svgHole.matrixWorld (nur Rotation, kein Scale)
+          const e = svgHole.matrixWorld.elements.slice();
+          e[12] = rel.x * 10 + stlCx;
+          e[13] = rel.y * 10 + stlCy;
+          e[14] = rel.z * 10 + stlCz;
+          console.log('matrixElements STL-coords:', e[12].toFixed(1), e[13].toFixed(1), e[14].toFixed(1));
           return Array.from(e);
         })()
       });
@@ -8688,7 +8694,10 @@ function handleImport(e) {
       mesh.castShadow = true;
       // STL-Koordinaten sind in mm; App-Einheit = 10mm → Faktor 0.1
       mesh.scale.setScalar(0.1);
-      mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import', name: file.name.replace(/\.stl$/i, ''), color: currentColor, isHole: false, _origGeo: geo, _origStlBuf: ev.target.result };
+      mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import', name: file.name.replace(/\.stl$/i, ''), color: currentColor, isHole: false, _origGeo: geo, _origStlBuf: ev.target.result,
+        _stlCx: (geo.boundingBox ? (geo.boundingBox.min.x + geo.boundingBox.max.x) / 2 * 10 : 128),
+        _stlCy: (geo.boundingBox ? (geo.boundingBox.min.y + geo.boundingBox.max.y) / 2 * 10 : 128),
+        _stlCz: (geo.boundingBox ? (geo.boundingBox.min.z + geo.boundingBox.max.z) / 2 * 10 : 101) };
       scene.add(mesh); objects.push(mesh); selectObjs([mesh]); updateTree();
       _showSizeDialog(() => notify('"' + file.name + '" importiert & positioniert ✓', 'ok'));
     } catch(err) { notify('Import Fehler: ' + err.message, 'e'); }
