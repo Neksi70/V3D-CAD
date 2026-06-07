@@ -6957,42 +6957,16 @@ async function _occtFullBooleanCut(solid, svgHole) {
     try {
       const stlBuf    = solid.userData._origStlBuf || _meshToStlBuf(solid);
       const stlBase64 = _bufToBase64(stlBuf);
-      svgHole.updateMatrixWorld(true);
+      const _sn = svgHole.userData._snapNormal;
       console.log('pathData:', svgHole.userData._svgPathData?.length);
-      console.log('transformM:', svgHole.userData._svgTransformM);
+      console.log('snapNormal:', _sn ? `(${_sn.x.toFixed(3)}, ${_sn.y.toFixed(3)}, ${_sn.z.toFixed(3)})` : 'fehlt');
       const _body = JSON.stringify({
         stlBase64,
-        svgPathData:          svgHole.userData._svgPathData,
-        svgTransformM:        { ...svgHole.userData._svgTransformM,
-                                 svgSize:  svgHole.userData.svgSize  || 50,
-                                 depthMM:  svgHole.userData.svgDepth || 3 },
-        svgHoleMatrixElements: (() => {
-          // Exakt wie buildFrontFaceMatrix im test_svg_emboss.mjs
-          // Matrix in STL-Koordinaten (mm), column-major
-          const _geo = solid.userData._origGeo;
-          _geo.computeBoundingBox();
-          const bb = _geo.boundingBox;
-          // STL BBox in mm (geo ist in App-Units, ×10 = mm)
-          const stlMinX = bb.min.x * 10, stlMaxX = bb.max.x * 10;
-          const stlMinY = bb.min.y * 10, stlMaxY = bb.max.y * 10;
-          const stlMaxZ = bb.max.z * 10;
-          const stlCx = (stlMinX + stlMaxX) / 2;
-          const stlCy = (stlMinY + stlMaxY) / 2;
-          const svgSize = svgHole.userData.svgSize || 50;
-          const S = svgSize / 2;
-          // Col 0: local X → world X (scaled S)
-          // Col 1: local Y → world -Z (extrusion INS Solid)
-          // Col 2: local Z → world Y (oben)
-          // Col 3: position in STL-mm
-          const mat = [
-            S, 0, 0, 0,
-            0, 0,-S, 0,
-            0, S, 0, 0,
-            stlCx, stlCy, stlMaxZ, 1
-          ];
-          console.log('matrix STL pos:', stlCx.toFixed(1), stlCy.toFixed(1), stlMaxZ.toFixed(1));
-          return mat;
-        })()
+        svgPathData:  svgHole.userData._svgPathData,
+        svgTransformM: { ...svgHole.userData._svgTransformM,
+                          svgSize:  svgHole.userData.svgSize  || 50,
+                          depthMM:  svgHole.userData.svgDepth || 3 },
+        snapNormal: _sn ? { x: _sn.x, y: _sn.y, z: _sn.z } : null
       });
       console.log('>>> FETCH STARTET body.length:', _body.length);
       const resp = await fetch('https://v3da.tailf05fe9.ts.net:18790/api/occt-subtract', {
@@ -10565,7 +10539,9 @@ function _applySvgSnap(svgMesh, {obj}) {
   const hit = _svgSnapHit;
   if (!hit || !hit.face) return;
 
-  // Flächennormale (outward)
+  // Geometry-local normal (= STL-Koordinaten) für Server speichern
+  svgMesh.userData._snapNormal = hit.face.normal.clone();
+  // Flächennormale (outward, world-space für Browser-Positionierung)
   let n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
   if (n.dot(raycaster.ray.direction) > 0) n.negate();
 

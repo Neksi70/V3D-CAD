@@ -192,15 +192,7 @@ function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, depthMM) {
   vec.delete();
   if (!prism.IsDone()) { prism.delete(); return null; }
   const shape = prism.Shape(); prism.delete();
-
-  // Zentrieren: Prism ragt symmetrisch in Solid (depthLocal/2 nach -Y)
-  const trsf = new oc.gp_Trsf_1();
-  const tv   = new oc.gp_Vec_4(0, -depthLocal/2, 0);
-  trsf.SetTranslation_1(tv); tv.delete();
-  const xf = new oc.BRepBuilderAPI_Transform_2(shape, trsf, false); trsf.delete();
-  if (!xf.IsDone()) { xf.delete(); return shape; }
-  const moved = xf.Shape(); xf.delete();
-  return moved;
+  return shape;
 }
 
 // ── OCCT Shape → binäres STL (manuell aus Triangulierung) ────────────────────
@@ -314,15 +306,62 @@ app.use(express.json({ limit: '100mb' }));
 /*
  * POST /api/occt-subtract
  * Body: {
- *   stlBase64:          string   — STL-Datei als Base64
- *   svgPathData:        array    — [{pts:[[x,y],...], holes:[...]}, ...]
- *   svgTransformM:      object   — {scale, cx, cy, depthMM, svgSize?}
- *   svgHoleMatrixElements: array — (optional) 16 Floats der 4×4 svgHole.matrixWorld
+ *   stlBase64:    string  — STL-Datei als Base64
+ *   svgPathData:  array   — [{pts:[[x,y],...], holes:[...]}, ...]
+ *   svgTransformM: object — {scale, cx, cy, depthMM, svgSize?}
+ *   snapNormal:   object  — {x,y,z} Geometry-local Normale der Snap-Fläche (STL-Raum)
  * }
  * Response: { resultStlBase64: string } | { error: string }
  */
+function buildMatrixFromSnapNormal(stlBuf, snapNormal, svgSize) {
+  const tris = parseSTLBinary(stlBuf);
+  const sn = [snapNormal.x, snapNormal.y, snapNormal.z];
+  const snLen = Math.sqrt(sn[0]**2 + sn[1]**2 + sn[2]**2);
+  const n = sn.map(v => v / snLen);
+
+  const matched = [];
+  for (const [A, B, C] of tris) {
+    const ex=B[0]-A[0], ey=B[1]-A[1], ez=B[2]-A[2];
+    const fx=C[0]-A[0], fy=C[1]-A[1], fz=C[2]-A[2];
+    let nx=ey*fz-ez*fy, ny=ez*fx-ex*fz, nz=ex*fy-ey*fx;
+    const nl=Math.sqrt(nx*nx+ny*ny+nz*nz);
+    if (nl < 1e-10) continue;
+    nx/=nl; ny/=nl; nz/=nl;
+    if (nx*n[0] + ny*n[1] + nz*n[2] > 0.9) matched.push([A, B, C]);
+  }
+  if (!matched.length) {
+    console.log('[snapNormal] Keine passenden Dreiecke (dot > 0.9)');
+    return null;
+  }
+
+  let pcx=0, pcy=0, pcz=0, cnt=0;
+  for (const [A, B, C] of matched) {
+    pcx += A[0]+B[0]+C[0]; pcy += A[1]+B[1]+C[1]; pcz += A[2]+B[2]+C[2];
+    cnt += 3;
+  }
+  pcx /= cnt; pcy /= cnt; pcz /= cnt;
+  console.log(`[snapNormal] ${matched.length} Dreiecke, Centroid=(${pcx.toFixed(1)},${pcy.toFixed(1)},${pcz.toFixed(1)})`);
+
+  const S = (svgSize || 50) / 2;
+  const colY = [-n[0], -n[1], -n[2]];  // SVG lokal +Y → -normal (ins Solid)
+  const worldUp = (Math.abs(n[1]) < 0.9) ? [0,1,0] : [0,0,1];
+  const dotUp = worldUp[0]*n[0]+worldUp[1]*n[1]+worldUp[2]*n[2];
+  let colZ = [worldUp[0]-dotUp*n[0], worldUp[1]-dotUp*n[1], worldUp[2]-dotUp*n[2]];
+  const lenZ = Math.sqrt(colZ[0]**2+colZ[1]**2+colZ[2]**2);
+  colZ = colZ.map(v => v/lenZ);
+  const colX = [colY[1]*colZ[2]-colY[2]*colZ[1], colY[2]*colZ[0]-colY[0]*colZ[2], colY[0]*colZ[1]-colY[1]*colZ[0]];
+
+  return [
+    colX[0]*S, colX[1]*S, colX[2]*S, 0,
+    colY[0]*S, colY[1]*S, colY[2]*S, 0,
+    colZ[0]*S, colZ[1]*S, colZ[2]*S, 0,
+    pcx, pcy, pcz, 1
+  ];
+}
+
 app.post('/api/occt-subtract', async (req, res) => {
-  const { stlBase64, svgPathData, svgTransformM, svgHoleMatrixElements } = req.body;
+  const { stlBase64, svgPathData, svgTransformM, snapNormal } = req.body;
+  let svgHoleMatrixElements = req.body.svgHoleMatrixElements || null;
   if (!stlBase64)          return res.json({ error: 'stlBase64 fehlt' });
   if (!svgPathData?.length) return res.json({ error: 'svgPathData fehlt' });
   if (!svgTransformM)       return res.json({ error: 'svgTransformM fehlt' });
@@ -335,6 +374,13 @@ app.post('/api/occt-subtract', async (req, res) => {
     console.log('[debug] Request empfangen, STL bytes:', stlBuf.length);
     const tris      = parseSTLBinary(stlBuf);
     console.log(`[occt-subtract] STL: ${tris.length} Dreiecke`);
+
+    // snapNormal → Matrix berechnen (wenn kein svgHoleMatrixElements)
+    if (snapNormal && !svgHoleMatrixElements) {
+      svgHoleMatrixElements = buildMatrixFromSnapNormal(stlBuf, snapNormal, svgTransformM.svgSize || 50);
+      if (svgHoleMatrixElements) console.log('[snapNormal] Matrix berechnet OK');
+      else console.log('[snapNormal] Matrix-Berechnung fehlgeschlagen, kein Fallback');
+    }
 
     const solidOCCT = stlToOCCTSolid(oc, stlBuf);
     console.log('[debug] solidOCCT:', solidOCCT ? 'vorhanden' : 'NULL');
