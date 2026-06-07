@@ -6967,24 +6967,31 @@ async function _occtFullBooleanCut(solid, svgHole) {
                                  svgSize:  svgHole.userData.svgSize  || 50,
                                  depthMM:  svgHole.userData.svgDepth || 3 },
         svgHoleMatrixElements: (() => {
-          // SVG Position in App-Units → mm (×10)
-          // Solid Position in App-Units → mm (×10) = STL-Offset
-          // SVG in STL-Koordinaten = (svgWorld - solidWorld) × 10 + solidSTLoffset
-          // solidSTLoffset = solid userData._origStlOffset (gesetzt beim Import)
-          const svgW = new THREE.Vector3().setFromMatrixPosition(svgHole.matrixWorld);
-          const solidW = new THREE.Vector3().setFromMatrixPosition(solid.matrixWorld);
-          const rel = svgW.clone().sub(solidW); // relativ zum Solid-Zentrum in App-Units
-          // STL-Koordinaten: rel × 10 + STL-BBox-Zentrum
-          const stlCx = solid.userData._stlCx || 128;
-          const stlCy = solid.userData._stlCy || 128;
-          const stlCz = solid.userData._stlCz || 101;
-          // Rotation aus svgHole.matrixWorld (nur Rotation, kein Scale)
-          const e = svgHole.matrixWorld.elements.slice();
-          e[12] = rel.x * 10 + stlCx;
-          e[13] = rel.y * 10 + stlCy;
-          e[14] = rel.z * 10 + stlCz;
-          console.log('matrixElements STL-coords:', e[12].toFixed(1), e[13].toFixed(1), e[14].toFixed(1));
-          return Array.from(e);
+          // Exakt wie buildFrontFaceMatrix im test_svg_emboss.mjs
+          // Matrix in STL-Koordinaten (mm), column-major
+          const _geo = solid.userData._origGeo;
+          _geo.computeBoundingBox();
+          const bb = _geo.boundingBox;
+          // STL BBox in mm (geo ist in App-Units, ×10 = mm)
+          const stlMinX = bb.min.x * 10, stlMaxX = bb.max.x * 10;
+          const stlMinY = bb.min.y * 10, stlMaxY = bb.max.y * 10;
+          const stlMaxZ = bb.max.z * 10;
+          const stlCx = (stlMinX + stlMaxX) / 2;
+          const stlCy = (stlMinY + stlMaxY) / 2;
+          const svgSize = svgHole.userData.svgSize || 50;
+          const S = svgSize / 2;
+          // Col 0: local X → world X (scaled S)
+          // Col 1: local Y → world -Z (extrusion INS Solid)
+          // Col 2: local Z → world Y (oben)
+          // Col 3: position in STL-mm
+          const mat = [
+            S, 0, 0, 0,
+            0, 0,-S, 0,
+            0, S, 0, 0,
+            stlCx, stlCy, stlMaxZ, 1
+          ];
+          console.log('matrix STL pos:', stlCx.toFixed(1), stlCy.toFixed(1), stlMaxZ.toFixed(1));
+          return mat;
         })()
       });
       console.log('>>> FETCH STARTET body.length:', _body.length);
