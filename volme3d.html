@@ -6941,18 +6941,18 @@ function _findFrontFaceMatrix(solid, svgSize, depthMM) {
   const idx = geo.index?.array;
   const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
 
+  // Analyse in LOCAL mm (= rohe STL-Koordinaten, Z-up CAD garantiert).
+  // matrixWorld wird NICHT auf Vertices angewandt — nur die Rotation wird
+  // am Ende auf die fertige Snap-Matrix angewandt.
+  const _vl = ii => [pos.getX(ii), pos.getY(ii), pos.getZ(ii)];
+
   const keys = ['+X','-X','+Y','-Y','+Z','-Z'];
   const groups = {};
   keys.forEach(k => groups[k] = []);
 
-  const _vm = ii => {
-    const v = new THREE.Vector3(pos.getX(ii), pos.getY(ii), pos.getZ(ii)).applyMatrix4(mw);
-    return [v.x*10, v.y*10, v.z*10]; // app-units → mm
-  };
-
   for (let i = 0; i < nTri; i++) {
     const ia=idx?idx[i*3]:i*3, ib=idx?idx[i*3+1]:i*3+1, ic=idx?idx[i*3+2]:i*3+2;
-    const A=_vm(ia), B=_vm(ib), C=_vm(ic);
+    const A=_vl(ia), B=_vl(ib), C=_vl(ic);
     const ex=B[0]-A[0],ey=B[1]-A[1],ez=B[2]-A[2];
     const fx=C[0]-A[0],fy=C[1]-A[1],fz=C[2]-A[2];
     let nx=ey*fz-ez*fy, ny=ez*fx-ex*fz, nz=ex*fy-ey*fx;
@@ -6967,6 +6967,7 @@ function _findFrontFaceMatrix(solid, svgSize, depthMM) {
     groups[key].push({nx,ny,nz,vs:[A,B,C]});
   }
 
+  // Grösste Nicht-Boden/Deckel-Fläche — in Local-Z-up-Raum ist das -Y (Front)
   const bestKey=['-Y','+Y','-X','+X','-Z','+Z']
     .reduce((a,b)=>(groups[a]?.length??0)>=(groups[b]?.length??0)?a:b);
   const group=groups[bestKey];
@@ -6978,6 +6979,7 @@ function _findFrontFaceMatrix(solid, svgSize, depthMM) {
   const anl=Math.sqrt(anx*anx+any*any+anz*anz);
   anx/=anl;any/=anl;anz/=anl;
 
+  // Z-Slice-Analyse in lokalem Z-up-Raum (v[2] = STL-Z = CAD-Höhe ✓)
   const isXFace=bestKey==='-X'||bestKey==='+X';
   const isYFace=bestKey==='-Y'||bestKey==='+Y';
   const outward=bestKey[0]==='+'?1:-1;
@@ -7033,10 +7035,32 @@ function _findFrontFaceMatrix(solid, svgSize, depthMM) {
 
   const closestBin=allBins.reduce((best,cur)=>
     Math.abs(+cur[0]-zCenter)<Math.abs(+best[0]-zCenter)?cur:best);
+  // facePoint in LOCAL mm (Z-up): (X-Mitte, Y-Oberfläche, Z-Logo-Höhe)
   const facePoint=[xCenter, closestBin[1].outerDepth, zCenter];
-  console.log(`findFrontFace: ${bestKey}, Z=${zMin.toFixed(0)}–${zMax.toFixed(0)}mm, logoZ=${zCenter.toFixed(0)}mm, pt=(${facePoint.map(v=>v.toFixed(1)).join(',')})`);
+  console.log(`findFrontFace [local ${bestKey}]: Z=${zMin.toFixed(0)}–${zMax.toFixed(0)}mm, logoZ=${zCenter.toFixed(0)}mm, pt=(${facePoint.map(v=>v.toFixed(1)).join(',')})`);
 
-  return _buildSnapMatrix(facePoint,[anx,any,anz],svgSize,depthMM);
+  // Snap-Matrix in LOCAL mm (Z-up, worldUp=(0,0,1))
+  const Ml = _buildSnapMatrix(facePoint,[anx,any,anz],svgSize,depthMM);
+
+  // Rotation aus matrixWorld extrahieren (normalisierte Spalten → reine Rotation)
+  // Formel: world_mm = R × local_mm  (scale 0.1 × ×10 = ×1 → kürzt sich heraus)
+  const e=mw.elements;
+  const sX=Math.sqrt(e[0]**2+e[1]**2+e[2]**2)||1;
+  const sY=Math.sqrt(e[4]**2+e[5]**2+e[6]**2)||1;
+  const sZ=Math.sqrt(e[8]**2+e[9]**2+e[10]**2)||1;
+  // R × v (matrix × column-vector, Three.js column-major convention)
+  const rotV=(x,y,z)=>[
+    (e[0]/sX)*x+(e[4]/sY)*y+(e[8]/sZ)*z,
+    (e[1]/sX)*x+(e[5]/sY)*y+(e[9]/sZ)*z,
+    (e[2]/sX)*x+(e[6]/sY)*y+(e[10]/sZ)*z,
+  ];
+  // Alle vier Spalten der lokalen Matrix in World-mm transformieren
+  const cx=rotV(Ml[0],Ml[1],Ml[2]);
+  const cy=rotV(Ml[4],Ml[5],Ml[6]);
+  const cz=rotV(Ml[8],Ml[9],Ml[10]);
+  const pw=rotV(Ml[12],Ml[13],Ml[14]);
+  console.log(`findFrontFace [world]: pt=(${pw.map(v=>v.toFixed(1)).join(',')}), n=(${cy.map(v=>(v/(svgSize/2)).toFixed(3)).join(',')})`);
+  return [cx[0],cx[1],cx[2],0, cy[0],cy[1],cy[2],0, cz[0],cz[1],cz[2],0, pw[0],pw[1],pw[2],1];
 }
 
 async function _occtFullBooleanCut(solid, svgHole) {
