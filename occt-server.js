@@ -83,10 +83,9 @@ function stlToOCCTSolid(oc, stlBuf) {
     sew.delete();
     console.log('[stl2occt] Sewing done in', Date.now()-t0, 'ms');
 
-    // Versuche Shell → Solid
+    // Versuch 1: BRepBuilderAPI_MakeSolid aus Shells
     try {
       const mkSolid = new oc.BRepBuilderAPI_MakeSolid_1();
-      // Iteriere über Shells im Sewing-Ergebnis
       const exp = new oc.TopExp_Explorer_2(sewn, oc.TopAbs_ShapeEnum.TopAbs_SHELL, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
       let shellCount = 0;
       while (exp.More()) {
@@ -98,14 +97,35 @@ function stlToOCCTSolid(oc, stlBuf) {
       exp.delete();
       if (shellCount > 0 && mkSolid.IsDone()) {
         const solid = mkSolid.Solid(); mkSolid.delete();
-        console.log('[stl2occt] Solid aus', shellCount, 'Shells');
+        console.log('[stl2occt] Solid aus', shellCount, 'Shells (MakeSolid)');
         return solid;
       }
+      console.log('[stl2occt] MakeSolid IsDone=false, shellCount=', shellCount);
       mkSolid.delete();
-    } catch(_) {}
+    } catch(e1) { console.log('[stl2occt] MakeSolid failed:', e1.message); }
 
-    // Fallback: genähte Shell direkt verwenden
-    console.log('[stl2occt] Fallback: genähte Shell');
+    // Versuch 2: ShapeFix_Solid repariert Shell → Solid
+    try {
+      const sfs = new oc.ShapeFix_Solid_1();
+      const exp2 = new oc.TopExp_Explorer_2(sewn, oc.TopAbs_ShapeEnum.TopAbs_SHELL, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+      if (exp2.More()) {
+        const shell = oc.TopoDS.Shell_1(exp2.Current());
+        exp2.delete();
+        const solid = sfs.SolidFromShell(shell);
+        sfs.delete();
+        if (solid && solid.ShapeType().value === 2) {
+          console.log('[stl2occt] Solid via ShapeFix_Solid OK');
+          return solid;
+        }
+        console.log('[stl2occt] ShapeFix_Solid kein Solid (type=', solid && solid.ShapeType().value, ')');
+      } else {
+        exp2.delete();
+        sfs.delete();
+      }
+    } catch(e2) { console.log('[stl2occt] ShapeFix_Solid failed:', e2.message); }
+
+    // Fallback: genähtes Compound direkt (Boolean-Op kann damit umgehen)
+    console.log('[stl2occt] Fallback: genähtes Compound, ShapeType=', sewn.ShapeType().value);
     return sewn;
   } catch(e) {
     console.error('[stl2occt] Fehler:', e.message);
@@ -138,11 +158,13 @@ function buildWireXZ(oc, pts2d) {
   } catch(_) { return null; }
 }
 
-// ── SVG-Pfad → OCCT Prism (exakt wie _occtBuildOneSvgSolid in volme3d.html) ──
+// ── SVG-Pfad → OCCT Prism ────────────────────────────────────────────────────
+// normF=1: Koordinaten direkt in mm (scale bereits px→mm).
+// matrixWorld enthält den vollständigen World-Transform inkl. Scale.
 function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, depthMM) {
   const outerXZ = pathInfo.pts.map(p => [
-    (p[0]*scale - cx*scale)*normF,
-    (p[1]-cy)*scale*normF
+    (p[0] - cx) * scale,
+    (p[1] - cy) * scale
   ]);
   const outerWire = buildWireXZ(oc, outerXZ);
   if (!outerWire) return null;
@@ -153,8 +175,8 @@ function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, depthMM) {
   if (pathInfo.holes?.length) {
     for (const holePts of pathInfo.holes) {
       const hXZ = holePts.map(p => [
-        (p[0]*scale - cx*scale)*normF,
-        (p[1]-cy)*scale*normF
+        (p[0] - cx) * scale,
+        (p[1] - cy) * scale
       ]);
       const hWire = buildWireXZ(oc, hXZ);
       if (hWire) try { mkFace.Add(hWire); } catch(_) {}
@@ -162,7 +184,7 @@ function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, depthMM) {
   }
 
   const face       = mkFace.Face(); mkFace.delete();
-  const depthLocal = depthMM * normF;
+  const depthLocal = depthMM;  // normF=1, direkt in mm
   const vec        = new oc.gp_Vec_4(0, depthLocal, 0);
   let   prism;
   try   { prism = new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true); }
@@ -310,15 +332,18 @@ app.post('/api/occt-subtract', async (req, res) => {
 
     // 1. STL → OCCT Solid
     const stlBuf    = Buffer.from(stlBase64, 'base64');
+    console.log('[debug] Request empfangen, STL bytes:', stlBuf.length);
     const tris      = parseSTLBinary(stlBuf);
     console.log(`[occt-subtract] STL: ${tris.length} Dreiecke`);
 
     const solidOCCT = stlToOCCTSolid(oc, stlBuf);
+    console.log('[debug] solidOCCT:', solidOCCT ? 'vorhanden' : 'NULL');
     if (!solidOCCT) return res.json({ error: 'STL → OCCT Solid fehlgeschlagen' });
+    console.log('[stl2occt] ShapeType value:', solidOCCT.ShapeType().value);
 
     // 2. SVG-Extrusion(en) aufbauen und Boolean Cut durchführen
     const { scale, cx, cy, depthMM } = svgTransformM;
-    const normF      = 2 / (svgTransformM.svgSize || 50);
+    const normF      = 2 / (svgTransformM.svgSize || 50);  // unused: normF=1 in buildSvgSolid
     const childrenOf = buildChildrenMap(svgPathData);
     const done       = new Set();
     let   result     = solidOCCT;
@@ -359,7 +384,12 @@ app.post('/api/occt-subtract', async (req, res) => {
 
       // Boolean Subtract
       const cut = new oc.BRepAlgoAPI_Cut_3(result, svgWorld); cut.Build();
-      if (cut.IsDone()) { result = cut.Shape(); cutCount++; }
+      console.log('[cut] IsDone:', cut.IsDone());
+      if (cut.IsDone()) {
+        result = cut.Shape();
+        console.log('[cut] result ShapeType value:', result.ShapeType().value);
+        cutCount++;
+      }
       cut.delete();
     }
 
