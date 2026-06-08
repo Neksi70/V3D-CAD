@@ -74,7 +74,7 @@ function stlToOCCTSolid(oc, stlBuf) {
     // Sewing (1mm Tolerance) verbindet die losen Dreiecke zu einem echten Solid.
     // Größere Tolerance als Default (1e-6) → deutlich schneller auf großen Meshes.
     const t0 = Date.now();
-    const sew = new oc.BRepBuilderAPI_Sewing(1.0, true, true, true, false);
+    const sew = new oc.BRepBuilderAPI_Sewing(0.1, true, true, true, false);
     sew.Add(shape);
     const prog = new oc.Handle_Message_ProgressIndicator_1();
     sew.Perform(prog);
@@ -313,7 +313,7 @@ app.use(express.json({ limit: '100mb' }));
  * }
  * Response: { resultStlBase64: string } | { error: string }
  */
-function buildMatrixFromSnapNormal(stlBuf, snapNormal, svgSize) {
+function buildMatrixFromSnapNormal(stlBuf, snapNormal, snapPoint, svgSize) {
   const tris = parseSTLBinary(stlBuf);
   const sn = [snapNormal.x, snapNormal.y, snapNormal.z];
   const snLen = Math.sqrt(sn[0]**2 + sn[1]**2 + sn[2]**2);
@@ -334,33 +334,31 @@ function buildMatrixFromSnapNormal(stlBuf, snapNormal, svgSize) {
     return null;
   }
 
-  let pcx=0, pcy=0, pcz=0, cnt=0;
-  for (const [A, B, C] of matched) {
-    pcx += A[0]+B[0]+C[0]; pcy += A[1]+B[1]+C[1]; pcz += A[2]+B[2]+C[2];
-    cnt += 3;
-  }
-  pcx /= cnt; pcy /= cnt; pcz /= cnt;
-  console.log(`[snapNormal] ${matched.length} Dreiecke, Centroid=(${pcx.toFixed(1)},${pcy.toFixed(1)},${pcz.toFixed(1)})`);
+  // Position: snapPoint (Klickpunkt in STL-mm) direkt nutzen
+  const pcx = snapPoint.x, pcy = snapPoint.y, pcz = snapPoint.z;
+  console.log(`[snapNormal] ${matched.length} Dreiecke, snapPoint=(${pcx.toFixed(1)},${pcy.toFixed(1)},${pcz.toFixed(1)})`);
 
-  const S = (svgSize || 50) / 2;
+  // S=1: buildSvgSolid liefert Geometrie bereits in mm — Matrix nur rotieren+übersetzen
   const colY = [-n[0], -n[1], -n[2]];  // SVG lokal +Y → -normal (ins Solid)
-  const worldUp = (Math.abs(n[1]) < 0.9) ? [0,1,0] : [0,0,1];
+  // worldUp wie Browser: |n.y|>0.85 → (0,0,-1), sonst (0,1,0)
+  const worldUp = (Math.abs(n[1]) < 0.85) ? [0,1,0] : [0,0,-1];
   const dotUp = worldUp[0]*n[0]+worldUp[1]*n[1]+worldUp[2]*n[2];
   let colZ = [worldUp[0]-dotUp*n[0], worldUp[1]-dotUp*n[1], worldUp[2]-dotUp*n[2]];
   const lenZ = Math.sqrt(colZ[0]**2+colZ[1]**2+colZ[2]**2);
   colZ = colZ.map(v => v/lenZ);
-  const colX = [colY[1]*colZ[2]-colY[2]*colZ[1], colY[2]*colZ[0]-colY[0]*colZ[2], colY[0]*colZ[1]-colY[1]*colZ[0]];
+  // cross(colZ, colY) statt cross(colY, colZ) → gleiche Händigkeit wie Browser
+  const colX = [colZ[1]*colY[2]-colZ[2]*colY[1], colZ[2]*colY[0]-colZ[0]*colY[2], colZ[0]*colY[1]-colZ[1]*colY[0]];
 
   return [
-    colX[0]*S, colX[1]*S, colX[2]*S, 0,
-    colY[0]*S, colY[1]*S, colY[2]*S, 0,
-    colZ[0]*S, colZ[1]*S, colZ[2]*S, 0,
+    colX[0], colX[1], colX[2], 0,
+    colY[0], colY[1], colY[2], 0,
+    colZ[0], colZ[1], colZ[2], 0,
     pcx, pcy, pcz, 1
   ];
 }
 
 app.post('/api/occt-subtract', async (req, res) => {
-  const { stlBase64, svgPathData, svgTransformM, snapNormal } = req.body;
+  const { stlBase64, svgPathData, svgTransformM, snapNormal, snapPoint } = req.body;
   let svgHoleMatrixElements = req.body.svgHoleMatrixElements || null;
   if (!stlBase64)          return res.json({ error: 'stlBase64 fehlt' });
   if (!svgPathData?.length) return res.json({ error: 'svgPathData fehlt' });
@@ -376,8 +374,8 @@ app.post('/api/occt-subtract', async (req, res) => {
     console.log(`[occt-subtract] STL: ${tris.length} Dreiecke`);
 
     // snapNormal → Matrix berechnen (wenn kein svgHoleMatrixElements)
-    if (snapNormal && !svgHoleMatrixElements) {
-      svgHoleMatrixElements = buildMatrixFromSnapNormal(stlBuf, snapNormal, svgTransformM.svgSize || 50);
+    if (snapNormal && snapPoint && !svgHoleMatrixElements) {
+      svgHoleMatrixElements = buildMatrixFromSnapNormal(stlBuf, snapNormal, snapPoint, svgTransformM.svgSize || 50);
       if (svgHoleMatrixElements) console.log('[snapNormal] Matrix berechnet OK');
       else console.log('[snapNormal] Matrix-Berechnung fehlgeschlagen, kein Fallback');
     }
@@ -389,61 +387,54 @@ app.post('/api/occt-subtract', async (req, res) => {
 
     // 2. SVG-Extrusion(en) aufbauen und Boolean Cut durchführen
     const { scale, cx, cy, depthMM } = svgTransformM;
-    const normF      = 2 / (svgTransformM.svgSize || 50);  // unused: normF=1 in buildSvgSolid
-    const childrenOf = buildChildrenMap(svgPathData);
-    const done       = new Set();
-    let   result     = solidOCCT;
-    let   cutCount   = 0;
+    console.log('[debug] depthMM:', depthMM, 'svgSize:', svgTransformM.svgSize, 'scale:', scale, 'cx:', cx?.toFixed(2), 'cy:', cy?.toFixed(2));
+    const normF = 2 / (svgTransformM.svgSize || 50);  // unused: normF=1 in buildSvgSolid
+
+    // Alle SVG-Shapes in ein Compound packen, dann einmal schneiden.
+    // (Sequenzielle Cuts werden nach jedem Schnitt langsamer, Compound-Tool ist schnell.)
+    const compound = new oc.TopoDS_Compound();
+    const builder  = new oc.BRep_Builder();
+    builder.MakeCompound(compound);
+    let shapeCount = 0;
 
     for (let i=0; i<svgPathData.length; i++) {
-      if (done.has(i)) continue;
-      let shape = buildSvgSolid(oc, svgPathData[i], scale, cx, cy, normF, depthMM);
+      const shape = buildSvgSolid(oc, svgPathData[i], scale, cx, cy, normF, depthMM);
       if (!shape) continue;
-
-      // Kinder subtrahieren → Ring-Form (für Buchstaben wie O, D, B)
-      for (const ci of (childrenOf[i]||[])) {
-        const cs = buildSvgSolid(oc, svgPathData[ci], scale, cx, cy, normF, depthMM);
-        if (cs) {
-          const c = new oc.BRepAlgoAPI_Cut_3(shape, cs); c.Build();
-          if (c.IsDone()) shape = c.Shape();
-          c.delete(); done.add(ci);
-        }
-      }
 
       // SVG lokal → Weltkoordinaten (wenn matrixWorld übergeben)
       let svgWorld = shape;
       if (svgHoleMatrixElements?.length === 16) {
         const e    = svgHoleMatrixElements;
         const trsf = new oc.gp_Trsf_1();
-        // Three.js Matrix4 column-major → gp_Trsf row-major 3×4
         trsf.SetValues(e[0],e[4],e[8],e[12], e[1],e[5],e[9],e[13], e[2],e[6],e[10],e[14]);
         const xf = new oc.BRepBuilderAPI_Transform_2(shape, trsf, false); trsf.delete();
         if (xf.IsDone()) svgWorld = xf.Shape();
         xf.delete();
       }
 
-      // BBox-Logging (temporär — Diagnose SVG-Überschneidung)
       if (i === 0) {
-        console.log('[cut-debug] solidBBox:', getBBox(oc, result));
+        console.log('[cut-debug] solidBBox:', getBBox(oc, solidOCCT));
         console.log('[cut-debug] svgBBox:  ', getBBox(oc, svgWorld));
       }
 
-      // Boolean Subtract
-      const cut = new oc.BRepAlgoAPI_Cut_3(result, svgWorld); cut.Build();
-      console.log('[cut] IsDone:', cut.IsDone());
-      if (cut.IsDone()) {
-        result = cut.Shape();
-        console.log('[cut] result ShapeType value:', result.ShapeType().value);
-        cutCount++;
-      }
-      cut.delete();
+      builder.Add(compound, svgWorld);
+      shapeCount++;
     }
 
-    if (cutCount === 0) return res.json({ error: 'Kein Boolean Cut erfolgreich' });
+    if (shapeCount === 0) return res.json({ error: 'Keine SVG-Formen aufgebaut' });
+    console.log(`[cut] ${shapeCount} SVG-Shapes im Compound, führe einzelnen Boolean Cut durch`);
+    console.log('[cut-debug] compoundBBox:', getBBox(oc, compound));
+
+    // Einziger Boolean Cut mit Compound-Tool
+    const cut = new oc.BRepAlgoAPI_Cut_3(solidOCCT, compound); cut.Build();
+    console.log('[cut] IsDone:', cut.IsDone());
+    if (!cut.IsDone()) { cut.delete(); return res.json({ error: 'Boolean Cut fehlgeschlagen' }); }
+    const result = cut.Shape();
+    cut.delete();
 
     // 3. Ergebnis → STL
     const outBuf = solidToSTLBuffer(oc, result);
-    console.log(`[occt-subtract] OK — ${cutCount} Pfade, ${outBuf.length} Bytes`);
+    console.log(`[occt-subtract] OK — ${shapeCount} Pfade, ${outBuf.length} Bytes`);
     res.json({ resultStlBase64: outBuf.toString('base64') });
 
   } catch (e) {
@@ -511,7 +502,7 @@ app.post('/debug-occt', async (req, res) => {
   result.stlBufLen = stlBuf.length;
   result.sewingType = typeof oc.BRepBuilderAPI_Sewing;
   try {
-    const sew = new oc.BRepBuilderAPI_Sewing(1.0, true, true, true, false);
+    const sew = new oc.BRepBuilderAPI_Sewing(0.1, true, true, true, false);
     result.sewingMethods = Object.getOwnPropertyNames(Object.getPrototypeOf(sew))
       .filter(m => /perform/i.test(m));
     result.progressKeys = Object.getOwnPropertyNames(oc)

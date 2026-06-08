@@ -6958,15 +6958,38 @@ async function _occtFullBooleanCut(solid, svgHole) {
       const stlBuf    = solid.userData._origStlBuf || _meshToStlBuf(solid);
       const stlBase64 = _bufToBase64(stlBuf);
       const _sn = svgHole.userData._snapNormal;
+      // snapPoint: zentrierte SVG-Position (nach BBox-Korrektur) → Oberfläche
+      // OVERLAP: Prism startet 0.5mm außerhalb der Oberfläche damit OCCT eine
+      // saubere Schnittkurve findet (bei rein-internen Schnitten schlägt BooleanCut fehl)
+      const _OVERLAP_MM = 0.5;
+      const _snapPoint = (() => {
+        if (!_sn) return null;
+        svgHole.updateMatrixWorld(true);
+        const inv = solid.matrixWorld.clone().invert();
+        // SVG-Zentrum (world) → STL-mm (inv(matrixWorld) liefert direkt STL-mm)
+        const localCenter = new THREE.Vector3()
+          .setFromMatrixPosition(svgHole.matrixWorld)
+          .applyMatrix4(inv);
+        // halfDepth bringt localCenter → Oberfläche; +OVERLAP verschiebt nach außen
+        const halfDepth = (svgHole.userData.svgDepth || 3) / 2;
+        return {
+          x: localCenter.x + _sn.x * (halfDepth + _OVERLAP_MM),
+          y: localCenter.y + _sn.y * (halfDepth + _OVERLAP_MM),
+          z: localCenter.z + _sn.z * (halfDepth + _OVERLAP_MM)
+        };
+      })();
       console.log('pathData:', svgHole.userData._svgPathData?.length);
       console.log('snapNormal:', _sn ? `(${_sn.x.toFixed(3)}, ${_sn.y.toFixed(3)}, ${_sn.z.toFixed(3)})` : 'fehlt');
+      console.log('snapPoint STL-mm:', _snapPoint ? `(${_snapPoint.x.toFixed(1)}, ${_snapPoint.y.toFixed(1)}, ${_snapPoint.z.toFixed(1)})` : 'fehlt');
       const _body = JSON.stringify({
         stlBase64,
         svgPathData:  svgHole.userData._svgPathData,
         svgTransformM: { ...svgHole.userData._svgTransformM,
                           svgSize:  svgHole.userData.svgSize  || 50,
-                          depthMM:  svgHole.userData.svgDepth || 3 },
-        snapNormal: _sn ? { x: _sn.x, y: _sn.y, z: _sn.z } : null
+                          // +OVERLAP damit effektive Schnitttiefe = svgDepth bleibt
+                          depthMM:  (svgHole.userData.svgDepth || 3) + _OVERLAP_MM },
+        snapNormal: _sn ? { x: _sn.x, y: _sn.y, z: _sn.z } : null,
+        snapPoint:  _snapPoint
       });
       console.log('>>> FETCH STARTET body.length:', _body.length);
       const resp = await fetch('https://v3da.tailf05fe9.ts.net:18790/api/occt-subtract', {
@@ -7098,6 +7121,44 @@ function subtractHoles() {
 
   saveUndo();
   const hasSvg = holes.some(h => h.userData.type === 'svg');
+
+  if (hasSvg) {
+    const svgHoles = holes.filter(h => h.userData.type === 'svg');
+    const currentDepth = svgHoles[0].userData.svgDepth || 3;
+
+    // Wandstärke berechnen via Raycaster
+    let wallMm = null;
+    const svgH = svgHoles[0];
+    const _sn  = svgH.userData._snapNormal;
+    const _hp  = svgH.userData._snapHitPoint;
+    const solidM = solids[0];
+    if (_sn && _hp && solidM) {
+      try {
+        const outW = _sn.clone().transformDirection(solidM.matrixWorld).normalize();
+        const startPt = _hp.clone().addScaledVector(outW, 0.5);
+        const inW = outW.clone().negate();
+        const ray = new THREE.Raycaster(startPt, inW);
+        const origSide = solidM.material.side;
+        solidM.material.side = THREE.DoubleSide;
+        const hits = ray.intersectObject(solidM, false);
+        solidM.material.side = origSide;
+        if (hits.length >= 2) wallMm = (hits[1].distance - hits[0].distance) * 10;
+        else if (hits.length === 1) wallMm = hits[0].distance * 10;
+      } catch(_) {}
+    }
+
+    const engraveDepth = wallMm ? +(Math.min(wallMm * 0.65, wallMm - 0.3)).toFixed(1) : currentDepth;
+    const cutThruDepth = wallMm ? +(wallMm * 1.2).toFixed(1)  : null;
+    const hint = wallMm
+      ? `Wandstärke: ~${wallMm.toFixed(1)} mm  |  Prägung: ${engraveDepth} mm  |  Durchschnitt: ${cutThruDepth} mm\n`
+      : '';
+    const input = prompt(`${hint}Gravur-Tiefe (mm):`, engraveDepth);
+    if (input === null) return;
+    const depth = parseFloat(input);
+    if (isNaN(depth) || depth <= 0) { notify('Ungültige Tiefe', 'w'); return; }
+    svgHoles.forEach(h => { h.userData.svgDepth = depth; });
+  }
+
   notify(hasSvg ? 'OCCT SVG-Abzug läuft…' : 'CSG läuft…', 'ok');
 
   _doSubtractHoles(solids, holes).catch(err => {
@@ -7154,7 +7215,11 @@ async function _doSubtractHoles(solids, holes) {
         catch(e) { console.warn('OCCT Full Cut Fehler:', e); }
       }
       if (newGeo) {
+        const prev = solidMesh;
         solidMesh = new THREE.Mesh(newGeo, mat);
+        // Position + Rotation des Originals übernehmen (Geometrie bereits in App-Units)
+        solidMesh.position.copy(prev.position);
+        solidMesh.quaternion.copy(prev.quaternion);
         solidMesh.castShadow = true; solidMesh.receiveShadow = true;
         solidMesh.updateMatrixWorld(true, true);
         notify('✓ OCCT Gravur fertig', 'ok');
@@ -7168,7 +7233,10 @@ async function _doSubtractHoles(solids, holes) {
         catch(e) { console.warn('Face-Only Fehler:', e); }
       }
       if (newGeo) {
+        const prev = solidMesh;
         solidMesh = new THREE.Mesh(newGeo, mat);
+        solidMesh.position.copy(prev.position);
+        solidMesh.quaternion.copy(prev.quaternion);
         solidMesh.castShadow = true; solidMesh.receiveShadow = true;
         solidMesh.updateMatrixWorld(true, true);
         notify('✓ SVG Gravur fertig', 'ok');
@@ -7217,12 +7285,15 @@ async function _doSubtractHoles(solids, holes) {
 
   solidMesh.castShadow = true;
   solidMesh.receiveShadow = true;
+  const _origUD = solids[0].userData;
   solidMesh.userData = {
     id: idCtr++,
     name: 'Subtract ' + idCtr,
-    color: solids[0].userData.color || currentColor,
+    color: _origUD.color || currentColor,
     isHole: false,
-    type: 'custom',
+    type: _origUD.type || 'custom',
+    // STL-Buffer + Snap-Daten für mögliche weitere Gravuren erhalten
+    _origStlBuf: _origUD._origStlBuf || null,
     edgeBevels: Array.from({length:12}, () => ({fillet:0, chamfer:0}))
   };
 
@@ -10539,8 +10610,10 @@ function _applySvgSnap(svgMesh, {obj}) {
   const hit = _svgSnapHit;
   if (!hit || !hit.face) return;
 
-  // Geometry-local normal (= STL-Koordinaten) für Server speichern
+  // Geometry-local normal (= STL-Koordinaten) + Klickpunkt für Server speichern
   svgMesh.userData._snapNormal = hit.face.normal.clone();
+  svgMesh.userData._snapHitPoint = hit.point.clone();   // world space, app-units
+  svgMesh.userData._snapSolid   = hit.object;           // referenz auf geklicktes Solid
   // Flächennormale (outward, world-space für Browser-Positionierung)
   let n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
   if (n.dot(raycaster.ray.direction) > 0) n.negate();
