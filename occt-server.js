@@ -248,11 +248,45 @@ function buildWireXZ(oc, pts2d) {
 // beeinflusst die Gravurtiefe NICHT.
 const SVG_OVERLAP_MM = 2.0;
 
+// 2D-Segmentschnitt (echte Kreuzung, keine geteilten Endpunkte)
+function _segCross(a, b, c, d) {
+  const o = (p,q,r) => Math.sign((q[0]-p[0])*(r[1]-p[1]) - (q[1]-p[1])*(r[0]-p[0]));
+  const o1=o(a,b,c),o2=o(a,b,d),o3=o(c,d,a),o4=o(c,d,b);
+  return o1!==o2 && o3!==o4 && o1!==0 && o2!==0 && o3!==0 && o4!==0;
+}
+// Kontur reinigen: aufeinanderfolgende Duplikate raus + Selbstüberschneidungen
+// per 2-opt entkreuzen (verdrehten Abschnitt umkehren). Behebt die Kurven-
+// Sampling-Artefakte bei runden Glyphen (o,e,3,d) → gültige OCCT-Faces.
+function cleanContour(pts) {
+  let p = pts.filter((pt, i) => {
+    const q = pts[(i - 1 + pts.length) % pts.length];
+    return Math.abs(pt[0]-q[0]) > 1e-6 || Math.abs(pt[1]-q[1]) > 1e-6;
+  });
+  if (p.length < 4) return p;
+  for (let pass = 0; pass < 8; pass++) {
+    const n = p.length; let fixed = false;
+    for (let i = 0; i < n - 1 && !fixed; i++) {
+      const a = p[i], b = p[i+1];
+      for (let j = i + 2; j < n; j++) {
+        if (i === 0 && j === n - 1) continue;   // erste & letzte teilen den Closing-Punkt
+        if (_segCross(a, b, p[j], p[(j+1) % n])) {
+          // verdrehten Abschnitt p[i+1..j] umkehren → Kreuzung weg
+          const seg = p.slice(i+1, j+1).reverse();
+          p = p.slice(0, i+1).concat(seg, p.slice(j+1));
+          fixed = true; break;
+        }
+      }
+    }
+    if (!fixed) break;
+  }
+  return p;
+}
+
 // ── SVG-Pfad → OCCT Prism ────────────────────────────────────────────────────
 // normF=1: Koordinaten direkt in mm (scale bereits px→mm).
 // matrixWorld enthält den vollständigen World-Transform inkl. Scale.
 function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, depthMM) {
-  const outerXZ = pathInfo.pts.map(p => [
+  const outerXZ = cleanContour(pathInfo.pts).map(p => [
     (p[0] - cx) * scale,
     (p[1] - cy) * scale
   ]);
@@ -264,7 +298,7 @@ function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, depthMM) {
 
   if (pathInfo.holes?.length) {
     for (const holePts of pathInfo.holes) {
-      const hXZ = holePts.map(p => [
+      const hXZ = cleanContour(holePts).map(p => [
         (p[0] - cx) * scale,
         (p[1] - cy) * scale
       ]);
@@ -552,46 +586,37 @@ app.post('/api/occt-subtract', async (req, res) => {
       return result;
     }
 
-    // Alle Glyphen in EIN Compound bauen, dann ein einziger Boolean Cut.
-    // (Sequenzielle Einzel-Cuts entfernen auf dem STL-Solid kein Material —
-    //  opencascade.js-Eigenheit beim Verketten von Cut.Shape().)
-    const cmp = new oc.TopoDS_Compound();
-    const bld = new oc.BRep_Builder();
-    bld.MakeCompound(cmp);
-    let shapeCount = 0;
+    // Prismen erst zu EINEM Werkzeug verschmelzen (Fuse), dann EINMAL schneiden.
+    // Überlappende Logo-Striche werden so zu sauberer Geometrie vereint → der
+    // anschließende Cut bleibt manifold (statt non-manifold beim Compound-Cut).
+    const tools = [];
     for (let i = 0; i < svgPathData.length; i++) {
       const s = buildAndTransform(svgPathData[i], depthMM);
-      if (!s) { console.log(`[path-${i}] kein Shape`); continue; }
-      console.log(`[path-${i}] bbox: ${getBBox(oc, s)}`);
-      bld.Add(cmp, s);
-      shapeCount++;
+      if (s) tools.push({i, s});
+      else   console.log(`[path-${i}] kein Shape`);
     }
-    if (shapeCount === 0) return res.json({ error: 'Keine SVG-Formen aufgebaut' });
-    console.log(`[cut] ${shapeCount} Shapes im Compound, ein Boolean Cut`);
+    if (!tools.length) return res.json({ error: 'Keine SVG-Formen aufgebaut' });
 
-    const cut = new oc.BRepAlgoAPI_Cut_3(solidOCCT, cmp); cut.Build();
+    const keep = [];
+    let tool = tools[0].s;
+    for (let k = 1; k < tools.length; k++) {
+      try {
+        const f = new oc.BRepAlgoAPI_Fuse_3(tool, tools[k].s); f.Build();
+        if (f.IsDone()) { tool = f.Shape(); keep.push(f); }
+        else { f.delete(); console.log(`[fuse path-${tools[k].i}] FAIL — Glyph fällt raus`); }
+      } catch(e) { console.log(`[fuse path-${tools[k].i}] EXCEPTION ${e.message}`); }
+    }
+    console.log(`[cut] ${tools.length} Prismen gefust → 1 Werkzeug`);
+
+    const cut = new oc.BRepAlgoAPI_Cut_3(solidOCCT, tool); cut.Build();
     console.log('[cut] IsDone:', cut.IsDone());
     if (!cut.IsDone()) { cut.delete(); return res.json({ error: 'Boolean Cut fehlgeschlagen' }); }
     const result = cut.Shape();
-    cut.delete();
-
-    // Boolean-Ergebnis kann inkonsistent orientierte Flächen haben (→ schwarze,
-    // invertierte Dreiecke im Mesh). ShapeFix repariert die Orientierung.
-    let meshShape = result;
-    try {
-      const sf = new oc.ShapeFix_Shape_2(result);
-      sf.Perform(new oc.Message_ProgressRange_1());
-      const f = sf.Shape();
-      if (f && !f.IsNull()) meshShape = f;
-      sf.delete();
-      console.log('[fix] ShapeFix_Shape angewandt');
-    } catch(e) { console.log('[fix] ShapeFix übersprungen:', e.message); }
 
     // 3. Ergebnis → STL
-    const outBuf = solidToSTLBuffer(oc, meshShape);
-    console.log(`[occt-subtract] OK — ${shapeCount} Pfade, ${outBuf.length} Bytes`);
-    try { fs.writeFileSync('/tmp/last_in.stl', stlBuf); fs.writeFileSync('/tmp/last_cut.stl', outBuf);
-          console.log('[dump] /tmp/last_in.stl + /tmp/last_cut.stl geschrieben'); } catch(_) {}
+    const outBuf = solidToSTLBuffer(oc, result);
+    cut.delete(); for (const f of keep) { try { f.delete(); } catch(_) {} }
+    console.log(`[occt-subtract] OK — ${tools.length} Pfade, ${outBuf.length} Bytes`);
     res.json({ resultStlBase64: outBuf.toString('base64') });
 
   } catch (e) {
