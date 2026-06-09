@@ -1856,26 +1856,22 @@ var ThreeCSG = (function() {
       actualMesh = found;
     }
     var geo = actualMesh.geometry;
-    // Indexierte Geometrie normalisieren, nicht-indexierte direkt verwenden
     if (geo.index) geo = geo.toNonIndexed();
-    if (!geo.attributes.normal) geo.computeVertexNormals();
     var pos = geo.attributes.position;
-    var norm = geo.attributes.normal;
-    var normalMatrix = new THREE.Matrix3().getNormalMatrix(actualMesh.matrixWorld);
+    var mw  = actualMesh.matrixWorld;
     var polys = [];
     for(var i=0;i<pos.count;i+=3) {
-      var verts = [];
-      for(var j=0;j<3;j++) {
-        var k=i+j;
-        var p=new THREE.Vector3(pos.getX(k),pos.getY(k),pos.getZ(k)).applyMatrix4(actualMesh.matrixWorld);
-        var n=new THREE.Vector3(norm.getX(k),norm.getY(k),norm.getZ(k)).applyNormalMatrix(normalMatrix).normalize();
-        if (expandEps) p.addScaledVector(n, expandEps);
-        verts.push(new Vertex(p,n));
-      }
-      try {
-        var pl = Plane.fromPoints(verts[0].pos,verts[1].pos,verts[2].pos);
-        if(!isNaN(pl.normal.x)) polys.push(new Polygon(verts,pl));
-      } catch(e){}
+      var pA=new THREE.Vector3(pos.getX(i),  pos.getY(i),  pos.getZ(i)  ).applyMatrix4(mw);
+      var pB=new THREE.Vector3(pos.getX(i+1),pos.getY(i+1),pos.getZ(i+1)).applyMatrix4(mw);
+      var pC=new THREE.Vector3(pos.getX(i+2),pos.getY(i+2),pos.getZ(i+2)).applyMatrix4(mw);
+      // Flächennormale per Kreuzprodukt aus Welt-Positionen (konsistent mit Plane)
+      var faceN=pB.clone().sub(pA).cross(pC.clone().sub(pA));
+      var len=faceN.length();
+      if(len<1e-10) continue; // degeneriertes Dreieck überspringen
+      faceN.divideScalar(len);
+      if(expandEps){ pA.addScaledVector(faceN,expandEps); pB.addScaledVector(faceN,expandEps); pC.addScaledVector(faceN,expandEps); }
+      var verts=[new Vertex(pA,faceN),new Vertex(pB,faceN),new Vertex(pC,faceN)];
+      polys.push(new Polygon(verts, new Plane(faceN.clone(), faceN.dot(verts[0].pos))));
     }
     return polys;
   }
