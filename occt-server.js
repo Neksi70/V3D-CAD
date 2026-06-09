@@ -56,6 +56,89 @@ function parseSTLBinary(buf) {
   return tris;
 }
 
+// Ray durch alle STL-Dreiecke (Möller–Trumbore) → sortierte, entduplizierte
+// Liste positiver Treffer-Distanzen t entlang (dx,dy,dz) ab (ox,oy,oz).
+function rayTriHits(tris, ox, oy, oz, dx, dy, dz) {
+  const EPS = 1e-6;
+  const hits = [];
+  for (const [a, b, c] of tris) {
+    const e1x=b[0]-a[0], e1y=b[1]-a[1], e1z=b[2]-a[2];
+    const e2x=c[0]-a[0], e2y=c[1]-a[1], e2z=c[2]-a[2];
+    const px=dy*e2z-dz*e2y, py=dz*e2x-dx*e2z, pz=dx*e2y-dy*e2x;
+    const det=e1x*px+e1y*py+e1z*pz;
+    if (det > -EPS && det < EPS) continue;
+    const inv=1/det;
+    const tx=ox-a[0], ty=oy-a[1], tz=oz-a[2];
+    const u=(tx*px+ty*py+tz*pz)*inv;
+    if (u < -1e-6 || u > 1+1e-6) continue;
+    const qx=ty*e1z-tz*e1y, qy=tz*e1x-tx*e1z, qz=tx*e1y-ty*e1x;
+    const v=(dx*qx+dy*qy+dz*qz)*inv;
+    if (v < -1e-6 || u+v > 1+1e-6) continue;
+    const t=(e2x*qx+e2y*qy+e2z*qz)*inv;
+    if (t > EPS) hits.push(t);
+  }
+  if (!hits.length) return [];
+  hits.sort((p,q)=>p-q);
+  const uniq = [hits[0]];
+  for (let i=1;i<hits.length;i++) if (hits[i]-uniq[uniq.length-1] > 0.05) uniq.push(hits[i]);
+  return uniq;
+}
+
+// Wandstärke am Klickpunkt (Außenfläche → erste Innenfläche). Nur fürs Logging.
+function measureWallThickness(tris, snapPoint, outwardNormal) {
+  if (!snapPoint || !outwardNormal) return null;
+  const nl = Math.hypot(outwardNormal.x, outwardNormal.y, outwardNormal.z);
+  if (nl < 1e-9) return null;
+  const nx = outwardNormal.x/nl, ny = outwardNormal.y/nl, nz = outwardNormal.z/nl;
+  const START = 5.0;
+  const hits = rayTriHits(tris,
+    snapPoint.x + nx*START, snapPoint.y + ny*START, snapPoint.z + nz*START,
+    -nx, -ny, -nz);
+  return hits.length >= 2 ? hits[1] - hits[0] : null;
+}
+
+// Maximale Blind-Tiefe so, dass über die GANZE Gravurfläche immer ≥ margin mm
+// Material stehen bleibt. Schräge/unebene Wände werden erfasst, weil an vielen
+// Punkten der Footprint entlang der Schnittrichtung (colY) gemessen wird und das
+// Minimum zählt. matrixE = 16er-Matrix (col-major), Footprint in (x,z) wie buildSvgSolid.
+function computeMaxBlindDepth(tris, matrixE, svgPathData, scale, cx, cy, margin) {
+  if (!(matrixE?.length === 16)) return null;
+  const cX=[matrixE[0],matrixE[1],matrixE[2]];
+  const cY=[matrixE[4],matrixE[5],matrixE[6]];   // Schnittrichtung (in Solid, Einheitsvektor)
+  const cZ=[matrixE[8],matrixE[9],matrixE[10]];
+  const O =[matrixE[12],matrixE[13],matrixE[14]];
+  const BIG = 1000;  // weit außerhalb starten
+
+  // Footprint-Punkte sammeln (alle Pfade), auf max ~120 Samples ausdünnen
+  const pts = [];
+  for (const pi of svgPathData) {
+    if (pi?.pts) for (const p of pi.pts) pts.push(p);
+    if (pi?.holes) for (const h of pi.holes) for (const p of h) pts.push(p);
+  }
+  if (!pts.length) return null;
+  const stride = Math.max(1, Math.floor(pts.length / 120));
+
+  let minAvail = Infinity, samples = 0;
+  for (let i = 0; i < pts.length; i += stride) {
+    const x = (pts[i][0] - cx) * scale;
+    const z = (pts[i][1] - cy) * scale;
+    // Punkt auf der Matrix-Ebene (y=0) in Weltkoordinaten
+    const wx = O[0] + cX[0]*x + cZ[0]*z;
+    const wy = O[1] + cX[1]*x + cZ[1]*z;
+    const wz = O[2] + cX[2]*x + cZ[2]*z;
+    // weit außerhalb starten, entlang colY (in Solid) schießen
+    const ox = wx - cY[0]*BIG, oy = wy - cY[1]*BIG, oz = wz - cY[2]*BIG;
+    const hits = rayTriHits(tris, ox, oy, oz, cY[0], cY[1], cY[2]);
+    if (hits.length < 2) continue;            // Ray verfehlt Wand hier
+    // hits[1] = Innenfläche der getroffenen Wand; Distanz ab Matrix-Ebene:
+    const avail = hits[1] - BIG;
+    if (avail < minAvail) minAvail = avail;
+    samples++;
+  }
+  if (!samples || !isFinite(minAvail)) return null;
+  return { minAvail, maxDepth: Math.max(0.2, minAvail - margin), samples };
+}
+
 // ── STL via OCCT-FS lesen → Solid (mit Sewing, Tolerance 1mm) ────────────────
 function stlToOCCTSolid(oc, stlBuf) {
   try {
@@ -158,6 +241,13 @@ function buildWireXZ(oc, pts2d) {
   } catch(_) { return null; }
 }
 
+// Uniformer Overlap (mm) im lokalen Normalen-Raum: jedes Glyph ragt um diesen
+// Betrag aus der Eintrittsfläche heraus → keine (fast-)koplanaren Flächen, der
+// Boolean-Cut bleibt stabil. Wert deckt die beobachtete Matrix/Fläche-Schräge
+// (~1.4mm bei gedrafteten Flächen) ab. Liegt komplett auf der Außenseite →
+// beeinflusst die Gravurtiefe NICHT.
+const SVG_OVERLAP_MM = 2.0;
+
 // ── SVG-Pfad → OCCT Prism ────────────────────────────────────────────────────
 // normF=1: Koordinaten direkt in mm (scale bereits px→mm).
 // matrixWorld enthält den vollständigen World-Transform inkl. Scale.
@@ -183,8 +273,17 @@ function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, depthMM) {
     }
   }
 
-  const face       = mkFace.Face(); mkFace.delete();
-  const depthLocal = depthMM;  // normF=1, direkt in mm
+  let   face       = mkFace.Face(); mkFace.delete();
+  // Face um -OVERLAP entlang lokaler Y verschieben → Prisma startet außerhalb
+  // der Fläche und ragt für JEDES Glyph gleich weit heraus.
+  if (SVG_OVERLAP_MM > 0) {
+    const t = new oc.gp_Trsf_1();
+    t.SetTranslation_1(new oc.gp_Vec_4(0, -SVG_OVERLAP_MM, 0));
+    const xf = new oc.BRepBuilderAPI_Transform_2(face, t, false); t.delete();
+    if (xf.IsDone()) face = xf.Shape();
+    xf.delete();
+  }
+  const depthLocal = depthMM + SVG_OVERLAP_MM;  // normF=1, direkt in mm
   const vec        = new oc.gp_Vec_4(0, depthLocal, 0);
   let   prism;
   try   { prism = new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true); }
@@ -210,11 +309,24 @@ function solidToSTLBuffer(oc, shape) {
     if (!tri.IsNull()) {
       const isRev = face.Orientation_1().value === REV.value;
       const poly  = tri.get();
-      const trsf  = !loc.IsIdentity() ? loc.IsIdentity() : null; // unused, coords are local
+      // WICHTIG: Face-Location auf die Knoten anwenden. Nach Boolean-Cuts haben
+      // manche Faces eine Nicht-Identitäts-Location → Knoten liegen im lokalen
+      // Frame. Ohne Transform landen die Dreiecke falsch (verschmiert/schwarz).
+      const useTrsf = !loc.IsIdentity();
+      const trsf = useTrsf ? loc.Transformation() : null;
       const nodes = [];
       for (let i = 1; i <= poly.NbNodes(); i++) {
-        const n = poly.Node(i); nodes.push([n.X(), n.Y(), n.Z()]);
+        const nd = poly.Node(i);
+        if (useTrsf) {
+          const p = new oc.gp_Pnt_3(nd.X(), nd.Y(), nd.Z());
+          p.Transform(trsf);
+          nodes.push([p.X(), p.Y(), p.Z()]);
+          p.delete();
+        } else {
+          nodes.push([nd.X(), nd.Y(), nd.Z()]);
+        }
       }
+      if (trsf) trsf.delete();
       for (let i = 1; i <= poly.NbTriangles(); i++) {
         const t = poly.Triangle(i);
         const a = t.Value(1)-1, b = t.Value(2)-1, c = t.Value(3)-1;
@@ -254,6 +366,17 @@ function getBBox(oc, shape) {
     mn.delete(); mx.delete();
     return r;
   } catch(e) { return 'ERR:' + e.message; }
+}
+
+function getBBoxNum(oc, shape) {
+  const box = new oc.Bnd_Box_1();
+  oc.BRepBndLib.Add(shape, box, false);
+  if (box.IsVoid()) { box.delete(); return null; }
+  const mn = box.CornerMin(); const mx = box.CornerMax();
+  const r = { xMin: mn.X(), yMin: mn.Y(), zMin: mn.Z(),
+               xMax: mx.X(), yMax: mx.Y(), zMax: mx.Z() };
+  mn.delete(); mx.delete(); box.delete();
+  return r;
 }
 
 // ── Containment-Analyse (Kinder-Pfade für Ring-Buchstaben) ───────────────────
@@ -386,55 +509,89 @@ app.post('/api/occt-subtract', async (req, res) => {
     console.log('[stl2occt] ShapeType value:', solidOCCT.ShapeType().value);
 
     // 2. SVG-Extrusion(en) aufbauen und Boolean Cut durchführen
-    const { scale, cx, cy, depthMM } = svgTransformM;
+    const { scale, cx, cy } = svgTransformM;
+    let depthMM = svgTransformM.depthMM;
     console.log('[debug] depthMM:', depthMM, 'svgSize:', svgTransformM.svgSize, 'scale:', scale, 'cx:', cx?.toFixed(2), 'cy:', cy?.toFixed(2));
     const normF = 2 / (svgTransformM.svgSize || 50);  // unused: normF=1 in buildSvgSolid
 
-    // Alle SVG-Shapes in ein Compound packen, dann einmal schneiden.
-    // (Sequenzielle Cuts werden nach jedem Schnitt langsamer, Compound-Tool ist schnell.)
-    const compound = new oc.TopoDS_Compound();
-    const builder  = new oc.BRep_Builder();
-    builder.MakeCompound(compound);
-    let shapeCount = 0;
-
-    for (let i=0; i<svgPathData.length; i++) {
-      const shape = buildSvgSolid(oc, svgPathData[i], scale, cx, cy, normF, depthMM);
-      if (!shape) continue;
-
-      // SVG lokal → Weltkoordinaten (wenn matrixWorld übergeben)
-      let svgWorld = shape;
-      if (svgHoleMatrixElements?.length === 16) {
-        const e    = svgHoleMatrixElements;
-        const trsf = new oc.gp_Trsf_1();
-        trsf.SetValues(e[0],e[4],e[8],e[12], e[1],e[5],e[9],e[13], e[2],e[6],e[10],e[14]);
-        const xf = new oc.BRepBuilderAPI_Transform_2(shape, trsf, false); trsf.delete();
-        if (xf.IsDone()) svgWorld = xf.Shape();
-        xf.delete();
+    // Material immer ≥ FLOOR_MM stehen lassen → immer eine Prägung, nie ein
+    // Durchbruch. Es wird über die GANZE Gravurfläche gemessen (nicht nur am
+    // Klickpunkt), damit auch schräge/unebene Wände korrekt erfasst werden.
+    const FLOOR_MM = 0.7;  // Restboden: dünner (0.3) → OCCT vernetzt den Boden mit
+                           // Splittern (degenerierter Boolean). 0.7 mm bleibt sauber.
+    if (snapNormal && snapPoint) {
+      const wallAtClick = measureWallThickness(tris, snapPoint, snapNormal);
+      const fp = computeMaxBlindDepth(tris, svgHoleMatrixElements, svgPathData, scale, cx, cy, FLOOR_MM);
+      if (fp) {
+        console.log(`[wall] Klickpunkt-Wand=${wallAtClick != null ? wallAtClick.toFixed(2) : '?'}mm, ` +
+                    `min.Material über Fläche=${fp.minAvail.toFixed(2)}mm (${fp.samples} Samples), ` +
+                    `maxTiefe=${fp.maxDepth.toFixed(2)}mm, angefragt=${depthMM}mm`);
+        if (depthMM > fp.maxDepth) {
+          console.log(`[wall] Tiefe geklemmt: ${depthMM} → ${fp.maxDepth.toFixed(2)}mm (Restboden ≥${FLOOR_MM}mm)`);
+          depthMM = fp.maxDepth;
+        }
+      } else {
+        console.log('[wall] Material nicht messbar (Ray verfehlt/massiv) — keine Klemmung');
       }
-
-      if (i === 0) {
-        console.log('[cut-debug] solidBBox:', getBBox(oc, solidOCCT));
-        console.log('[cut-debug] svgBBox:  ', getBBox(oc, svgWorld));
-      }
-
-      builder.Add(compound, svgWorld);
-      shapeCount++;
     }
 
-    if (shapeCount === 0) return res.json({ error: 'Keine SVG-Formen aufgebaut' });
-    console.log(`[cut] ${shapeCount} SVG-Shapes im Compound, führe einzelnen Boolean Cut durch`);
-    console.log('[cut-debug] compoundBBox:', getBBox(oc, compound));
+    const solidBBoxNum = getBBoxNum(oc, solidOCCT);
+    console.log('[cut-debug] solidBBox:', getBBox(oc, solidOCCT));
 
-    // Einziger Boolean Cut mit Compound-Tool
-    const cut = new oc.BRepAlgoAPI_Cut_3(solidOCCT, compound); cut.Build();
+    // Transformation mit optionalem Y-Versatz (Welt-Y) um Compound-Exit sicherzustellen
+    function buildAndTransform(pathInfo, depth, yShift = 0) {
+      const s = buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, depth);
+      if (!s) return null;
+      if (!(svgHoleMatrixElements?.length === 16)) return s;
+      const e = svgHoleMatrixElements;
+      const trsf = new oc.gp_Trsf_1();
+      trsf.SetValues(e[0],e[4],e[8],e[12], e[1],e[5],e[9],e[13]+yShift, e[2],e[6],e[10],e[14]);
+      const xf = new oc.BRepBuilderAPI_Transform_2(s, trsf, false); trsf.delete();
+      const result = xf.IsDone() ? xf.Shape() : s;
+      xf.delete();
+      return result;
+    }
+
+    // Alle Glyphen in EIN Compound bauen, dann ein einziger Boolean Cut.
+    // (Sequenzielle Einzel-Cuts entfernen auf dem STL-Solid kein Material —
+    //  opencascade.js-Eigenheit beim Verketten von Cut.Shape().)
+    const cmp = new oc.TopoDS_Compound();
+    const bld = new oc.BRep_Builder();
+    bld.MakeCompound(cmp);
+    let shapeCount = 0;
+    for (let i = 0; i < svgPathData.length; i++) {
+      const s = buildAndTransform(svgPathData[i], depthMM);
+      if (!s) { console.log(`[path-${i}] kein Shape`); continue; }
+      console.log(`[path-${i}] bbox: ${getBBox(oc, s)}`);
+      bld.Add(cmp, s);
+      shapeCount++;
+    }
+    if (shapeCount === 0) return res.json({ error: 'Keine SVG-Formen aufgebaut' });
+    console.log(`[cut] ${shapeCount} Shapes im Compound, ein Boolean Cut`);
+
+    const cut = new oc.BRepAlgoAPI_Cut_3(solidOCCT, cmp); cut.Build();
     console.log('[cut] IsDone:', cut.IsDone());
     if (!cut.IsDone()) { cut.delete(); return res.json({ error: 'Boolean Cut fehlgeschlagen' }); }
     const result = cut.Shape();
     cut.delete();
 
+    // Boolean-Ergebnis kann inkonsistent orientierte Flächen haben (→ schwarze,
+    // invertierte Dreiecke im Mesh). ShapeFix repariert die Orientierung.
+    let meshShape = result;
+    try {
+      const sf = new oc.ShapeFix_Shape_2(result);
+      sf.Perform(new oc.Message_ProgressRange_1());
+      const f = sf.Shape();
+      if (f && !f.IsNull()) meshShape = f;
+      sf.delete();
+      console.log('[fix] ShapeFix_Shape angewandt');
+    } catch(e) { console.log('[fix] ShapeFix übersprungen:', e.message); }
+
     // 3. Ergebnis → STL
-    const outBuf = solidToSTLBuffer(oc, result);
+    const outBuf = solidToSTLBuffer(oc, meshShape);
     console.log(`[occt-subtract] OK — ${shapeCount} Pfade, ${outBuf.length} Bytes`);
+    try { fs.writeFileSync('/tmp/last_in.stl', stlBuf); fs.writeFileSync('/tmp/last_cut.stl', outBuf);
+          console.log('[dump] /tmp/last_in.stl + /tmp/last_cut.stl geschrieben'); } catch(_) {}
     res.json({ resultStlBase64: outBuf.toString('base64') });
 
   } catch (e) {

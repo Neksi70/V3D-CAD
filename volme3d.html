@@ -1842,20 +1842,32 @@ var ThreeCSG = (function() {
 
   function meshToPolygons(mesh, expandEps) {
     mesh.updateMatrixWorld(true);
-    var geo = mesh.geometry;
-    if (geo.index) geo = geo.toNonIndexed();
-    if (!geo.attributes.normal) {
-      geo.computeVertexNormals();
+    // Wenn kein .geometry (z.B. Group/Object3D): erstes Kind-Mesh mit Geometrie suchen
+    var actualMesh = mesh;
+    if (!mesh.geometry) {
+      var found = null;
+      mesh.traverse(function(child) {
+        if (!found && child.isMesh && child.geometry) found = child;
+      });
+      if (!found) {
+        if (typeof notify === 'function') notify('Kein Mesh in Objekt gefunden', 'w');
+        return [];
+      }
+      actualMesh = found;
     }
+    var geo = actualMesh.geometry;
+    // Indexierte Geometrie normalisieren, nicht-indexierte direkt verwenden
+    if (geo.index) geo = geo.toNonIndexed();
+    if (!geo.attributes.normal) geo.computeVertexNormals();
     var pos = geo.attributes.position;
     var norm = geo.attributes.normal;
-    var normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+    var normalMatrix = new THREE.Matrix3().getNormalMatrix(actualMesh.matrixWorld);
     var polys = [];
     for(var i=0;i<pos.count;i+=3) {
       var verts = [];
       for(var j=0;j<3;j++) {
         var k=i+j;
-        var p=new THREE.Vector3(pos.getX(k),pos.getY(k),pos.getZ(k)).applyMatrix4(mesh.matrixWorld);
+        var p=new THREE.Vector3(pos.getX(k),pos.getY(k),pos.getZ(k)).applyMatrix4(actualMesh.matrixWorld);
         var n=new THREE.Vector3(norm.getX(k),norm.getY(k),norm.getZ(k)).applyNormalMatrix(normalMatrix).normalize();
         if (expandEps) p.addScaledVector(n, expandEps);
         verts.push(new Vertex(p,n));
@@ -6875,6 +6887,33 @@ function _meshToStlBuf(mesh) {
   return buf;
 }
 
+// Geometrie im LOKALEN Frame (mm, OHNE matrixWorld) → STL. Konsistent mit
+// snapPoint/snapNormal, die über inv(matrixWorld) ebenfalls im lokalen
+// Geometrie-Frame liegen → immun gegen Drehen/Verschieben des Teils.
+// (Im Gegensatz zu _meshToStlBuf, das matrixWorld einbäckt = Welt-Frame.)
+function _meshGeoToStlBufLocal(mesh) {
+  const geo = mesh.geometry.clone();   // bereits in mm (Import & Cut-Ergebnis)
+  if (!geo.attributes.normal) geo.computeVertexNormals();
+  const pos = geo.attributes.position;
+  const idx = geo.index?.array;
+  const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
+  const buf = new ArrayBuffer(84 + nTri * 50);
+  const dv  = new DataView(buf);
+  dv.setUint32(80, nTri, true);
+  let off = 84;
+  for (let i = 0; i < nTri; i++) {
+    const ia = idx ? idx[i*3] : i*3, ib = idx ? idx[i*3+1] : i*3+1, ic = idx ? idx[i*3+2] : i*3+2;
+    dv.setFloat32(off, 0, true); dv.setFloat32(off+4, 0, true); dv.setFloat32(off+8, 0, true);
+    dv.setFloat32(off+12, pos.getX(ia), true); dv.setFloat32(off+16, pos.getY(ia), true); dv.setFloat32(off+20, pos.getZ(ia), true);
+    dv.setFloat32(off+24, pos.getX(ib), true); dv.setFloat32(off+28, pos.getY(ib), true); dv.setFloat32(off+32, pos.getZ(ib), true);
+    dv.setFloat32(off+36, pos.getX(ic), true); dv.setFloat32(off+40, pos.getY(ic), true); dv.setFloat32(off+44, pos.getZ(ic), true);
+    dv.setUint16(off+48, 0, true);
+    off += 50;
+  }
+  geo.dispose();
+  return buf;
+}
+
 // ── ArrayBuffer → Base64 (chunk-weise, kein Stack-Overflow bei großen Puffern)
 function _bufToBase64(buf) {
   const bytes = new Uint8Array(buf);
@@ -6955,27 +6994,38 @@ async function _occtFullBooleanCut(solid, svgHole) {
     // ── Pfad 2a: STL-Import → occt-server Backend ─────────────────────────────
     notify('Mesh-Cut via Server…', 'ok');
     try {
-      const stlBuf    = solid.userData._origStlBuf || _meshToStlBuf(solid);
+      // _origStlBuf bevorzugen (hohe Qualität, lokaler Frame). Fallback: rohe
+      // lokale Geometrie. NIE _meshToStlBuf — das bäckt matrixWorld (Welt-Frame)
+      // ein und war die Ursache des Frame-Mismatch.
+      const stlBuf    = solid.userData._origStlBuf || _meshGeoToStlBufLocal(solid);
       const stlBase64 = _bufToBase64(stlBuf);
       const _sn = svgHole.userData._snapNormal;
       // snapPoint: zentrierte SVG-Position (nach BBox-Korrektur) → Oberfläche
-      // OVERLAP: Prism startet 0.5mm außerhalb der Oberfläche damit OCCT eine
-      // saubere Schnittkurve findet (bei rein-internen Schnitten schlägt BooleanCut fehl)
-      const _OVERLAP_MM = 0.5;
+      // OVERLAP: Prisma startet außerhalb der Oberfläche. Gesamthöhe mind. 4mm,
+      // damit OCCT genug STL-Dreiecke schneidet und den Boolean-Cut korrekt auflöst.
+      const _userDepth = svgHole.userData.svgDepth || 3;
+      // Overlap wird jetzt server-seitig uniform im Normalen-Raum angelegt
+      // (buildSvgSolid). Hier snapPoint exakt auf die Oberfläche, depthMM = userDepth.
       const _snapPoint = (() => {
         if (!_sn) return null;
         svgHole.updateMatrixWorld(true);
         const inv = solid.matrixWorld.clone().invert();
-        // SVG-Zentrum (world) → STL-mm (inv(matrixWorld) liefert direkt STL-mm)
+        // Bevorzugt: beim Snap gespeicherter exakter Oberflächenpunkt (SVG-lokal,
+        // wandert mit) → in STL-mm. Kein halfDepth-Skalen-Mismatch mehr.
+        const sl = svgHole.userData._snapSurfaceLocal;
+        if (sl) {
+          const p = svgHole.localToWorld(sl.clone()).applyMatrix4(inv);
+          return { x: p.x, y: p.y, z: p.z };
+        }
+        // Fallback (alt): SVG-Zentrum + normal*halfDepth
         const localCenter = new THREE.Vector3()
           .setFromMatrixPosition(svgHole.matrixWorld)
           .applyMatrix4(inv);
-        // halfDepth bringt localCenter → Oberfläche; +OVERLAP verschiebt nach außen
-        const halfDepth = (svgHole.userData.svgDepth || 3) / 2;
+        const halfDepth = _userDepth / 2;
         return {
-          x: localCenter.x + _sn.x * (halfDepth + _OVERLAP_MM),
-          y: localCenter.y + _sn.y * (halfDepth + _OVERLAP_MM),
-          z: localCenter.z + _sn.z * (halfDepth + _OVERLAP_MM)
+          x: localCenter.x + _sn.x * halfDepth,
+          y: localCenter.y + _sn.y * halfDepth,
+          z: localCenter.z + _sn.z * halfDepth
         };
       })();
       console.log('pathData:', svgHole.userData._svgPathData?.length);
@@ -6986,8 +7036,7 @@ async function _occtFullBooleanCut(solid, svgHole) {
         svgPathData:  svgHole.userData._svgPathData,
         svgTransformM: { ...svgHole.userData._svgTransformM,
                           svgSize:  svgHole.userData.svgSize  || 50,
-                          // +OVERLAP damit effektive Schnitttiefe = svgDepth bleibt
-                          depthMM:  (svgHole.userData.svgDepth || 3) + _OVERLAP_MM },
+                          depthMM:  _userDepth },
         snapNormal: _sn ? { x: _sn.x, y: _sn.y, z: _sn.z } : null,
         snapPoint:  _snapPoint
       });
@@ -7005,14 +7054,9 @@ async function _occtFullBooleanCut(solid, svgHole) {
       const bytes = Uint8Array.from(atob(data.resultStlBase64), c => c.charCodeAt(0));
       const resultGeo = parseSTL(bytes.buffer);
       console.log('parseSTL Dreiecke:', resultGeo?.attributes?.position?.count / 3);
-      resultGeo.computeBoundingBox();
-      console.log('resultGeo bbox vor scale:', JSON.stringify(resultGeo.boundingBox));
-      // Server gibt mm zurück → App-Units (÷10) wie normaler STL-Import
-      resultGeo.scale(0.1, 0.1, 0.1);
-      resultGeo.computeBoundingBox();
-      console.log('resultGeo bbox nach scale:', JSON.stringify(resultGeo.boundingBox));
+      // Geometrie bleibt in mm — Mesh bekommt scale=0.1 wie beim STL-Import
       resultGeo.computeVertexNormals();
-      return resultGeo;
+      return { geo: resultGeo, stlBuf: bytes };
     } catch(e) {
       console.error('Server Cut Exception:', e);
       return null;
@@ -7125,36 +7169,9 @@ function subtractHoles() {
   if (hasSvg) {
     const svgHoles = holes.filter(h => h.userData.type === 'svg');
     const currentDepth = svgHoles[0].userData.svgDepth || 3;
-
-    // Wandstärke berechnen via Raycaster
-    let wallMm = null;
-    const svgH = svgHoles[0];
-    const _sn  = svgH.userData._snapNormal;
-    const _hp  = svgH.userData._snapHitPoint;
-    const solidM = solids[0];
-    if (_sn && _hp && solidM) {
-      try {
-        const outW = _sn.clone().transformDirection(solidM.matrixWorld).normalize();
-        const startPt = _hp.clone().addScaledVector(outW, 0.5);
-        const inW = outW.clone().negate();
-        const ray = new THREE.Raycaster(startPt, inW);
-        const origSide = solidM.material.side;
-        solidM.material.side = THREE.DoubleSide;
-        const hits = ray.intersectObject(solidM, false);
-        solidM.material.side = origSide;
-        if (hits.length >= 2) wallMm = (hits[1].distance - hits[0].distance) * 10;
-        else if (hits.length === 1) wallMm = hits[0].distance * 10;
-      } catch(_) {}
-    }
-
-    const engraveDepth = wallMm ? +(Math.min(wallMm * 0.65, wallMm - 0.3)).toFixed(1) : currentDepth;
-    const cutThruDepth = wallMm ? +(wallMm * 1.2).toFixed(1)  : null;
-    const hint = wallMm
-      ? `Wandstärke: ~${wallMm.toFixed(1)} mm  |  Prägung: ${engraveDepth} mm  |  Durchschnitt: ${cutThruDepth} mm\n`
-      : '';
-    const input = prompt(`${hint}Gravur-Tiefe (mm):`, engraveDepth);
+    const input = prompt('Gravur-Tiefe (mm):\n(Hinweis: dünne Wände können durchgeschnitten werden)', currentDepth);
     if (input === null) return;
-    const depth = parseFloat(input);
+    const depth = parseFloat(input.replace(',', '.'));
     if (isNaN(depth) || depth <= 0) { notify('Ungültige Tiefe', 'w'); return; }
     svgHoles.forEach(h => { h.userData.svgDepth = depth; });
   }
@@ -7209,17 +7226,19 @@ async function _doSubtractHoles(solids, holes) {
       // Pfad 1: Vollständiger OCCT Boolean (nur für native OCCT-Körper: Box, Zylinder…)
       const _isOCCTNative = ['box','cylinder','cone','wedge','pyramid','tube'].includes(
         solidMesh.userData.shapeType || solidMesh.userData.occtShape || '');
-      let newGeo = null;
+      let newResult = null;
       if (hole.userData._svgPathData?.length) {
-        try { newGeo = await _occtFullBooleanCut(solidMesh, hole); }
+        try { newResult = await _occtFullBooleanCut(solidMesh, hole); }
         catch(e) { console.warn('OCCT Full Cut Fehler:', e); }
       }
-      if (newGeo) {
+      if (newResult) {
+        const { geo, stlBuf } = newResult;
         const prev = solidMesh;
-        solidMesh = new THREE.Mesh(newGeo, mat);
-        // Position + Rotation des Originals übernehmen (Geometrie bereits in App-Units)
+        solidMesh = new THREE.Mesh(geo, mat);
+        solidMesh.scale.set(0.1, 0.1, 0.1);        // Geometrie in mm, wie STL-Import
         solidMesh.position.copy(prev.position);
         solidMesh.quaternion.copy(prev.quaternion);
+        solidMesh.userData._origStlBuf = stlBuf;    // Cut-Ergebnis für Folge-Schnitte
         solidMesh.castShadow = true; solidMesh.receiveShadow = true;
         solidMesh.updateMatrixWorld(true, true);
         notify('✓ OCCT Gravur fertig', 'ok');
@@ -7235,6 +7254,7 @@ async function _doSubtractHoles(solids, holes) {
       if (newGeo) {
         const prev = solidMesh;
         solidMesh = new THREE.Mesh(newGeo, mat);
+        solidMesh.scale.set(0.1, 0.1, 0.1);
         solidMesh.position.copy(prev.position);
         solidMesh.quaternion.copy(prev.quaternion);
         solidMesh.castShadow = true; solidMesh.receiveShadow = true;
@@ -7293,7 +7313,7 @@ async function _doSubtractHoles(solids, holes) {
     isHole: false,
     type: _origUD.type || 'custom',
     // STL-Buffer + Snap-Daten für mögliche weitere Gravuren erhalten
-    _origStlBuf: _origUD._origStlBuf || null,
+    _origStlBuf: solidMesh.userData._origStlBuf || _origUD._origStlBuf || null,
     edgeBevels: Array.from({length:12}, () => ({fillet:0, chamfer:0}))
   };
 
@@ -10606,6 +10626,36 @@ function _svgSnapDetect(svgMesh, mouseEvent) {
   }
 }
 
+// Mittelpunkt der geklickten Fläche (Welt): flächengewichteter Schwerpunkt aller
+// Dreiecke des Meshes, die ~gleich ausgerichtet sind wie das Klick-Dreieck und auf
+// derselben Ebene liegen. So snappt die SVG automatisch in die Flächen-Mitte.
+function _faceCenterWorld(mesh, hitFace) {
+  const geo = mesh.geometry, pos = geo.attributes.position;
+  if (!pos) return null;
+  const idx = geo.index?.array;
+  const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
+  const nL = hitFace.normal.clone().normalize();
+  const va = new THREE.Vector3().fromBufferAttribute(pos, hitFace.a);
+  const planeD = nL.dot(va);
+  const TOL = 1.0;  // mm: streng koplanar → nur die tatsächlich angeklickte Wand,
+                    // keine vorstehenden Lippen/Absätze/Nachbarflächen
+  const A=new THREE.Vector3(),B=new THREE.Vector3(),C=new THREE.Vector3();
+  const e1=new THREE.Vector3(),e2=new THREE.Vector3(),cr=new THREE.Vector3(),ctr=new THREE.Vector3();
+  const acc=new THREE.Vector3(); let wSum=0;
+  for (let t=0;t<nTri;t++){
+    const ia=idx?idx[t*3]:t*3, ib=idx?idx[t*3+1]:t*3+1, ic=idx?idx[t*3+2]:t*3+2;
+    A.fromBufferAttribute(pos,ia); B.fromBufferAttribute(pos,ib); C.fromBufferAttribute(pos,ic);
+    e1.subVectors(B,A); e2.subVectors(C,A); cr.crossVectors(e1,e2);
+    const a2=cr.length(); if (a2<1e-9) continue;       // a2 = 2*Fläche
+    if (cr.dot(nL)/a2 < 0.99) continue;                // praktisch gleiche Normale (~8°)
+    ctr.copy(A).add(B).add(C).divideScalar(3);
+    if (Math.abs(nL.dot(ctr)-planeD) > TOL) continue;  // gleiche Ebene (±1mm)
+    acc.addScaledVector(ctr, a2); wSum += a2;
+  }
+  if (wSum < 1e-9) return null;
+  return acc.divideScalar(wSum).applyMatrix4(mesh.matrixWorld);
+}
+
 function _applySvgSnap(svgMesh, {obj}) {
   const hit = _svgSnapHit;
   if (!hit || !hit.face) return;
@@ -10638,15 +10688,29 @@ function _applySvgSnap(svgMesh, {obj}) {
   const normF = 2 / (svgMesh.userData.svgSize || 50);
   const halfDepth = depthMm * normF * sc / 2;  // halbe Tiefe in Szene-Einheiten
 
-  // Position: Trefferpunkt, Geometrie-Mitte auf Fläche (halfDepth innen + außen)
-  svgMesh.position.copy(hit.point).addScaledVector(n, -halfDepth);
-  // Korrektur: Bounding-Box Mitte auf Trefferpunkt zentrieren (XZ-Zentrierung)
+  // Ziel: in-plane zur MITTE der geklickten Fläche verschieben, der Normalen-
+  // Abstand bleibt aber exakt wie am Klickpunkt (der sauber auf der Oberfläche
+  // sitzt) → Tiefe/Durchbruch-Verhalten unverändert.
+  const _fc = _faceCenterWorld(hit.object, hit.face);
+  const _target = hit.point.clone();
+  if (_fc) {
+    const _d = _fc.clone().sub(hit.point);
+    _target.add(_d).addScaledVector(n, -_d.dot(n));  // nur In-Flächen-Anteil von (fc - hit)
+  }
+  // Position: Geometrie-Mitte auf Fläche (halfDepth innen + außen)
+  svgMesh.position.copy(_target).addScaledVector(n, -halfDepth);
+  // Korrektur: Bounding-Box Mitte auf Ziel zentrieren (XZ-Zentrierung)
   svgMesh.updateMatrixWorld(true);
   const _bb = new THREE.Box3().setFromObject(svgMesh);
-  const _ctr = _bb.getCenter(new THREE.Vector3()).sub(hit.point);
+  const _ctr = _bb.getCenter(new THREE.Vector3()).sub(_target);
   // Nur in-Fläche-Richtungen zentrieren (nicht in Normalen-Richtung)
   const _nProj = n.clone().multiplyScalar(_ctr.dot(n));
   svgMesh.position.sub(_ctr.clone().sub(_nProj));
+  // Exakten Oberflächenpunkt (_target liegt auf der Wand) im SVG-LOKALEN Frame
+  // speichern → beim Cut direkt als snapPoint nutzen. Vermeidet die halfDepth-
+  // Skalen-Verwechslung (Szene- vs. mm-Einheiten) und wandert mit der SVG mit.
+  svgMesh.updateMatrixWorld(true);
+  svgMesh.userData._snapSurfaceLocal = svgMesh.worldToLocal(_target.clone());
   // Boden-Schutz deaktiviert — hebt SVG von Frontflächen weg
   // svgMesh.updateMatrixWorld(true);
   // const bb = new THREE.Box3().setFromObject(svgMesh);
