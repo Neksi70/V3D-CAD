@@ -707,7 +707,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.4.7<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.4.8<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -10923,8 +10923,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.4.7';
+const VOLME3D_VERSION = '1.4.8';
 const VOLME3D_CHANGELOG = [
+  { version:'1.4.8', date:'2026-06-10', changes:[
+    ['🔧','Gewinde bleibt beim Ändern von Höhe/Steigung/Durchmesser im Menü auf der Buildplate (hob sich vorher in die Luft bzw. sackte durch)'],
+  ]},
   { version:'1.4.7', date:'2026-06-10', changes:[
     ['✨','Buildplate: Mittellinienkreuz (X-/Z-Achse) durch den Plattenmittelpunkt'],
     ['🔧','Gewinde sitzt beim Einfügen auf der Buildplate statt in der Luft zu schweben'],
@@ -12528,20 +12531,35 @@ function fpApplyTube(val) {
 }
 
 // Apply thread parameter change and rebuild geometry
+// Unterkante des Gewindes nach einem Geometrie-Rebuild erhalten,
+// damit es auf der Buildplate bleibt (Geometrie ist um den Ursprung zentriert,
+// also würde es sonst um die Mitte wachsen/schrumpfen und abheben/durchsacken).
+function _threadKeepBottom(o, bottomBefore) {
+  o.updateMatrixWorld(true);
+  const bb = getMeshBox(o);
+  o.position.y += (bottomBefore - bb.min.y);
+  o.updateMatrixWorld(true);
+  const bb2 = getMeshBox(o);
+  if (bb2.min.y < -1e-4) o.position.y -= bb2.min.y;   // nie unter die Buildplate
+}
 function fpThreadPreset(diam, pitch) {
   const o = getFirst(); if (!o || o.userData.shapeType !== 'thread') return;
   saveUndoDebounced();
+  o.updateMatrixWorld(true);
+  const bottomBefore = getMeshBox(o).min.y;
   o.userData.threadDiameter = diam;
   o.userData.threadPitch    = pitch;
   // Höhe beibehalten, Drehungen neu berechnen
   const curH = (o.userData.threadPitch_prev || pitch) * (o.userData.threadTurns || 5);
   o.userData.threadTurns = Math.max(1, Math.round(curH / pitch));
-  _fpRebuildThread(o); _fpSyncValues();
+  _fpRebuildThread(o); _threadKeepBottom(o, bottomBefore); _fpSyncValues();
 }
 function fpApplyThread(param, val) {
   const o = getFirst(); if (!o || o.userData.shapeType !== 'thread') return;
   const v = parseFloat(val); if (isNaN(v)) return;
   saveUndoDebounced();
+  o.updateMatrixWorld(true);
+  const bottomBefore = getMeshBox(o).min.y;
   if (param === 'd') o.userData.threadDiameter = Math.max(1, v);
   if (param === 'p') {
     // Steigung ändern: Höhe festhalten, Drehungen anpassen
@@ -12556,7 +12574,7 @@ function fpApplyThread(param, val) {
   }
   if (param === 't') o.userData.threadTurns = Math.max(1, Math.round(v));
   if (param === 's') o.userData.segments    = Math.max(8, Math.round(v));
-  _fpRebuildThread(o); _fpSyncValues();
+  _fpRebuildThread(o); _threadKeepBottom(o, bottomBefore); _fpSyncValues();
   if (selectedObjs.length > 0) _doRepositionDimHandles();
 }
 function _fpRebuildThread(o) {
