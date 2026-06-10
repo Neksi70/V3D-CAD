@@ -707,7 +707,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.4.3<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.4.4<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -4644,6 +4644,26 @@ function _text3dSetFace(f) {
   });
 }
 
+// Font-Konturen → SVG-String (Y-Flip: THREE-Y-up → SVG-Y-down; Löcher als Subpaths).
+// Liefert { svg, w, h } (w/h = Bounding-Box in Font-Einheiten, für die mm-Skalierung).
+function _textToSvg(font, txt, size) {
+  const shapes = font.generateShapes(txt, size);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, paths = '';
+  for (const sh of shapes) {
+    const subs = [sh.getPoints(14), ...((sh.holes || []).map(h => h.getPoints(14)))];
+    let d = '';
+    for (const pts of subs) {
+      if (!pts || pts.length < 2) continue;
+      d += `M ${pts[0].x.toFixed(3)} ${(-pts[0].y).toFixed(3)} `;
+      for (let i = 1; i < pts.length; i++) d += `L ${pts[i].x.toFixed(3)} ${(-pts[i].y).toFixed(3)} `;
+      d += 'Z ';
+      for (const p of pts) { if (p.x<minX)minX=p.x; if (p.x>maxX)maxX=p.x; if (p.y<minY)minY=p.y; if (p.y>maxY)maxY=p.y; }
+    }
+    if (d) paths += `<path d="${d}"/>`;
+  }
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg">${paths}</svg>`, w: maxX - minX, h: maxY - minY };
+}
+
 function _confirmText3d() {
   const txt = document.getElementById('text3d-input').value.trim();
   if (!txt) { notify('Bitte Text eingeben', 'w'); return; }
@@ -4657,34 +4677,32 @@ function _confirmText3d() {
   const sizeU  = sizeMm / 10; // Three.js units (1 unit ≈ 10mm)
 
   function _create(font) {
-    saveUndo();
-    const extrudeH = Math.max(0.05, sizeU * 0.25);
-    const geo = new THREE.TextGeometry(txt, { font, size: sizeU, height: extrudeH, curveSegments: 10, bevelEnabled: false });
-    geo.computeBoundingBox();
-    const bb = geo.boundingBox;
-    const tw = bb.max.x - bb.min.x;
-    const th = bb.max.y - bb.min.y;
-    // X zentrieren, Y: Unterkante auf y=0 (nicht vertikal zentriert → kein "unter null")
-    geo.translate(-tw / 2, -bb.min.y, 0);
-
-    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.38, metalness: 0.05, transparent: !!isHole, opacity: isHole ? 0.52 : 1.0, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.castShadow = true; mesh.receiveShadow = true;
-
+    // Zylinder-Wickeln braucht echtes 3D-Text-Mesh → alter TextGeometry-Weg
     if (mode === 'cylinder' && selectedObjs.length > 0) {
+      saveUndo();
+      const extrudeH = Math.max(0.05, sizeU * 0.25);
+      const geo = new THREE.TextGeometry(txt, { font, size: sizeU, height: extrudeH, curveSegments: 10, bevelEnabled: false });
+      geo.computeBoundingBox();
+      const bb = geo.boundingBox;
+      geo.translate(-(bb.max.x - bb.min.x) / 2, -bb.min.y, 0);
+      const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.38, metalness: 0.05, transparent: !!isHole, opacity: isHole ? 0.52 : 1.0, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true; mesh.receiveShadow = true;
       _placeTextCylinder(mesh, font, txt, sizeU, extrudeH, selectedObjs[0]);
-    } else if (mode === 'surface' && selectedObjs.length > 0) {
-      _placeTextSurface(mesh, selectedObjs[0]);
-    } else {
-      _wpSpawnMesh(mesh, 0); // Unterkante bereits auf y=0
+      typeCounts['text'] = (typeCounts['text'] || 0) + 1;
+      mesh.userData = { id: idCtr++, type: 'text', shapeType: 'text', name: 'Text ' + typeCounts['text'], color, isHole, fillet: 0, chamfer: 0, textStr: txt, textFont: fontKey, textSizeMm: sizeMm };
+      scene.add(mesh); objects.push(mesh);
+      _updateObjEdgeLines(mesh); selectObjs([mesh]); updateTree();
+      notify('Text "' + txt + '" hinzugefügt', 'ok');
+      return;
     }
-
-    typeCounts['text'] = (typeCounts['text'] || 0) + 1;
-    mesh.userData = { id: idCtr++, type: 'text', shapeType: 'text', name: 'Text ' + typeCounts['text'], color, isHole, fillet: 0, chamfer: 0, textStr: txt, textFont: fontKey, textSizeMm: sizeMm };
-    scene.add(mesh); objects.push(mesh);
-    _updateObjEdgeLines(mesh);
-    selectObjs([mesh]); updateTree();
-    notify('Text "' + txt + '" hinzugefügt', 'ok');
+    // Sonst: Text aus Font-Konturen als SVG-Objekt bauen → erbt die komplette
+    // Gravur-Maschinerie (Snap, Schieberegler erhaben/vertieft, Wandklemmung,
+    // Zweifarb-Inlay, 3MF-Export) genau wie ein importiertes SVG.
+    const ts = _textToSvg(font, txt, sizeU);
+    if (!ts.w || !ts.h) { notify('Text ohne Kontur', 'w'); return; }
+    const targetMM = sizeMm * Math.max(ts.w, ts.h) / ts.h;   // Höhe = eingestellte Größe
+    _importSvgConfirm({ svgText: ts.svg, mode: 'extrude', depthMM: Math.max(1, sizeMm * 0.25), targetMM, name: txt });
   }
 
   const cacheKey = '_threeFont_' + fontKey;
@@ -4902,20 +4920,22 @@ function _closeSvgModal() {
   _svgParsedData = null;
 }
 
-function _importSvgConfirm() {
-  if (!_svgParsedData) return;
+function _importSvgConfirm(override) {
+  const ov = (override && override.svgText) ? override : null;   // programmatisch (z.B. Text)
+  if (!ov && !_svgParsedData) return;
   if (!window.THREE || !THREE.SVGLoader) {
     notify('SVGLoader nicht geladen', 'w'); return;
   }
 
-  const mode = document.querySelector('input[name="svg-mode"]:checked').value; // 'extrude' | 'flat'
-  const depthMM = parseFloat(document.getElementById('svg-depth-range').value);
-  const targetMM = parseFloat(document.getElementById('svg-scale-range').value);
+  const mode     = ov ? (ov.mode || 'extrude') : document.querySelector('input[name="svg-mode"]:checked').value;
+  const depthMM  = ov ? ov.depthMM  : parseFloat(document.getElementById('svg-depth-range').value);
+  const targetMM = ov ? ov.targetMM : parseFloat(document.getElementById('svg-scale-range').value);
+  const _svgText = ov ? ov.svgText  : _svgParsedData.svgText;
 
   // Parse SVG
   const loader = new THREE.SVGLoader();
   let data;
-  try { data = loader.parse(_svgParsedData.svgText); }
+  try { data = loader.parse(_svgText); }
   catch(err) { notify('SVG Fehler: ' + err.message, 'w'); return; }
 
   const paths = data.paths;
@@ -5059,7 +5079,7 @@ function _importSvgConfirm() {
   _wpSpawnMesh(mesh, (isHole && mode === 'extrude') ? 0 : halfH);
 
   typeCounts['svg'] = (typeCounts['svg'] || 0) + 1;
-  const fname = _svgParsedData.fileName.replace(/\.svg$/i, '');
+  const fname = ov ? (ov.name || 'Text') : _svgParsedData.fileName.replace(/\.svg$/i, '');
 
   // SVG-Pfad-Daten für OCCT-basierten CSG (gespeichert vor Extrusion, für robuste Reconstruction)
   const _svgPathData = allShapes.map(shape => ({
@@ -5109,8 +5129,10 @@ function _importSvgConfirm() {
   _updateObjEdgeLines(mesh);
   selectObjs([mesh]); updateTree();
   fitToObjects([mesh]);
+  if (ov) { notify('Text "' + fname + '" hinzugefügt', 'ok'); return mesh; }
   notify('SVG "' + fname + '" importiert', 'ok');
   _closeSvgModal();
+  return mesh;
 }
 
 // ═══ SELECTION ═══════════════════════════════════════════════════════
@@ -9575,11 +9597,41 @@ function _dsIdx() {
   try { return JSON.parse(localStorage.getItem(DS_IDX_KEY) || '[]'); } catch { return []; }
 }
 function _dsSetIdx(arr) {
-  try { localStorage.setItem(DS_IDX_KEY, JSON.stringify(arr)); } catch(e) { _dsQuotaWarn(e); }
+  _lsSetWithEvict(DS_IDX_KEY, JSON.stringify(arr), null);
 }
 function _dsDataKey(id)  { return 'volme3d_d_' + id; }
 function _dsThumbKey(id) { return 'volme3d_t_' + id; }
-function _dsQuotaWarn(e) { if (e?.name === 'QuotaExceededError') notify('Speicher voll! Bitte alte Designs löschen.', 'e'); }
+let _dsQuotaWarnAt = 0;
+function _dsQuotaWarn(e) {
+  if (e?.name !== 'QuotaExceededError') return;
+  const now = Date.now();
+  if (now - _dsQuotaWarnAt < 30000) return;   // höchstens alle 30s, kein Spam
+  _dsQuotaWarnAt = now;
+  notify('Speicher voll! Bitte alte Designs löschen.', 'e');
+}
+// localStorage-Set mit Auto-Aufräumen: bei „voll" alte Design-Caches (Daten/Thumbs)
+// entfernen (sind in Firestore gesichert) und erneut versuchen. Aktuelles Design +
+// Index bleiben geschützt. Gibt true bei Erfolg.
+function _lsSetWithEvict(key, val, keepId) {
+  try { localStorage.setItem(key, val); return true; }
+  catch(e) {
+    if (e?.name !== 'QuotaExceededError') { console.warn('[ls] setItem:', e?.name); return false; }
+    const protect = new Set([key, DS_IDX_KEY]);
+    if (keepId) { protect.add(_dsDataKey(keepId)); protect.add(_dsThumbKey(keepId)); }
+    const victims = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('volme3d_d_') || k.startsWith('volme3d_t_')) && !protect.has(k)) victims.push(k);
+    }
+    // Thumbs zuerst, dann Daten (Thumbs sind leichter re-fetchbar)
+    victims.sort((a, b) => (a.startsWith('volme3d_t_') ? 0 : 1) - (b.startsWith('volme3d_t_') ? 0 : 1));
+    for (const k of victims) {
+      localStorage.removeItem(k);
+      try { localStorage.setItem(key, val); return true; } catch(_) {}
+    }
+    return false;
+  }
+}
 
 // Design-Daten gzip-komprimieren (Geometrie-JSON schrumpft ~5–10×) → passt unter
 // localStorage- und Firestore-Limit. Präfix "GZ1:" + base64. Alte (unkomprimierte)
@@ -9671,7 +9723,7 @@ async function _fsLoadAllToCache() {
     for (const entry of _dsIdx()) {
       if (!fsIds.has(entry.id)) {
         const data = dsLoadData(entry.id);
-        if (data) await _fsSaveDesign(entry.id, data, dsThumb(entry.id), entry.name);
+        if (data) await _fsSaveDesign(entry.id, data, dsThumb(entry.id), entry.name, true);  // still
       }
     }
     // 2. Alle Firestore-Designs in localStorage cachen
@@ -9680,8 +9732,8 @@ async function _fsLoadAllToCache() {
     fresh.docs.forEach(doc => {
       const d = doc.data();
       idx.push({ id: doc.id, name: d.name, created: d.created || 0, updated: d.updated || 0 });
-      if (d.data)  localStorage.setItem(_dsDataKey(doc.id), d.data);
-      if (d.thumb) localStorage.setItem(_dsThumbKey(doc.id), d.thumb);
+      try { if (d.data)  localStorage.setItem(_dsDataKey(doc.id), d.data); } catch(_) {}   // bei voll: überspringen, on-demand nachladen
+      try { if (d.thumb) localStorage.setItem(_dsThumbKey(doc.id), d.thumb); } catch(_) {}
     });
     _dsSetIdx(idx);
     if (document.getElementById('ds-modal')?.classList.contains('show')) _renderGallery();
@@ -9706,11 +9758,11 @@ function dsSaveDesign(id, data, thumb, name, silent) {
   } else {
     idx.push({ id, name: name || 'Design', created: now, updated: now });
   }
-  try {
-    _dsSetIdx(idx);
-    localStorage.setItem(_dsDataKey(id), _dsCompress(JSON.stringify(data)));
-    if (thumb) localStorage.setItem(_dsThumbKey(id), thumb);
-  } catch(e) { if (silent) console.warn('[autosave] localStorage voll:', e?.name); else _dsQuotaWarn(e); }
+  _dsSetIdx(idx);
+  // Daten komprimiert + mit Auto-Aufräumen speichern (räumt alte Caches bei „voll")
+  const ok = _lsSetWithEvict(_dsDataKey(id), _dsCompress(JSON.stringify(data)), id);
+  if (thumb) _lsSetWithEvict(_dsThumbKey(id), thumb, id);
+  if (!ok && !silent) _dsQuotaWarn({ name: 'QuotaExceededError' });   // nur wenn selbst nach Aufräumen kein Platz
   _fsSaveDesign(id, data, thumb, name, silent); // async, fire & forget
 }
 
@@ -10830,8 +10882,12 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.4.3';
+const VOLME3D_VERSION = '1.4.4';
 const VOLME3D_CHANGELOG = [
+  { version:'1.4.4', date:'2026-06-10', changes:[
+    ['✨','Text gravieren wie SVG: Text wird aus seinen Konturen gebaut → Schieberegler (erhaben/vertieft), Zweifarbe, Wandklemmung, 3MF — alles wie beim SVG (Zylinder-Wickeln unverändert)'],
+    ['🔧','„Speicher voll" / „Design zu groß" behoben: alte Design-Caches werden bei Bedarf automatisch geräumt, Login-Sync läuft still, Warnungen gedrosselt'],
+  ]},
   { version:'1.4.3', date:'2026-06-10', changes:[
     ['🔧','Auto-Speichern meldet sich nicht mehr mit „Speicher voll" / „Design zu groß" (läuft still im Hintergrund; Warnungen nur noch bei manuellem Speichern)'],
   ]},
