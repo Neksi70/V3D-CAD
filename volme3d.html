@@ -751,6 +751,8 @@ const firebaseConfig = {
         <button class="btn pri spl" onclick="toggleStlMenu(event)" title="An Slicer senden">▾</button>
         <div id="stl-menu">
           <div class="sli-item" onclick="exportSTL()">⬇ STL</div>
+          <div class="sli-item" onclick="export3MF()">⬇ 3MF (Mehrfarbe, Bambu/Orca)</div>
+          <div class="sli-item" onclick="exportPartsSTL()">⬇ STL pro Körper</div>
           <div class="sli-item" onclick="exportOBJ()">⬇ OBJ</div>
           <div class="sli-item" onclick="exportSTEP()">⬇ STEP (extern)</div>
           <div class="sli-sep"></div>
@@ -1767,6 +1769,7 @@ const firebaseConfig = {
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/SVGLoader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/modifiers/SimplifyModifier.js"></script>
 <script type="module">
 import initOCCT from './volme3d-occt.js';
@@ -1841,7 +1844,9 @@ var ThreeCSG = (function() {
   Node.prototype.build=function(polys){if(!polys.length)return;if(!this.plane)this.plane=polys[0].plane.clone();var f=[],b=[];polys.forEach(p=>this.plane.splitPolygon(p,this.polygons,this.polygons,f,b));if(f.length){if(!this.front)this.front=new Node();this.front.build(f);}if(b.length){if(!this.back)this.back=new Node();this.back.build(b);}};
 
   function meshToPolygons(mesh, expandEps) {
-    mesh.updateMatrixWorld(true);
+    // updateWorldMatrix(parents=true, children=true): stellt sicher, dass die
+    // vollständige Parent-Kette aktualisiert ist, bevor matrixWorld gelesen wird.
+    mesh.updateWorldMatrix(true, true);
     // Wenn kein .geometry (z.B. Group/Object3D): erstes Kind-Mesh mit Geometrie suchen
     var actualMesh = mesh;
     if (!mesh.geometry) {
@@ -1858,13 +1863,17 @@ var ThreeCSG = (function() {
     var geo = actualMesh.geometry;
     if (geo.index) geo = geo.toNonIndexed();
     var pos = geo.attributes.position;
-    var mw  = actualMesh.matrixWorld;
+    // matrixWorld von actualMesh (enthält die vollständige Welttransform inkl. Scale).
+    // normalMatrix = Transponierte-Inverse der 3×3-Submatrix → korrekte Normalen-Transformation.
+    var mw = actualMesh.matrixWorld;
+    var normalMatrix = new THREE.Matrix3().getNormalMatrix(mw);
     var polys = [];
     for(var i=0;i<pos.count;i+=3) {
+      // Positionen: lokaler Raum → Weltraum via applyMatrix4
       var pA=new THREE.Vector3(pos.getX(i),  pos.getY(i),  pos.getZ(i)  ).applyMatrix4(mw);
       var pB=new THREE.Vector3(pos.getX(i+1),pos.getY(i+1),pos.getZ(i+1)).applyMatrix4(mw);
       var pC=new THREE.Vector3(pos.getX(i+2),pos.getY(i+2),pos.getZ(i+2)).applyMatrix4(mw);
-      // Flächennormale per Kreuzprodukt aus Welt-Positionen (konsistent mit Plane)
+      // Flächennormale: aus Weltkoordinaten, entspricht applyMatrix3(normalMatrix) auf lokaler Normale
       var faceN=pB.clone().sub(pA).cross(pC.clone().sub(pA));
       var len=faceN.length();
       if(len<1e-10) continue; // degeneriertes Dreieck überspringen
@@ -7052,7 +7061,17 @@ async function _occtFullBooleanCut(solid, svgHole) {
       console.log('parseSTL Dreiecke:', resultGeo?.attributes?.position?.count / 3);
       // Geometrie bleibt in mm — Mesh bekommt scale=0.1 wie beim STL-Import
       resultGeo.computeVertexNormals();
-      return { geo: resultGeo, stlBuf: bytes };
+      // Inlay-Körper (bündiges Gravur-Volumen) für Zweifarb-Druck
+      let inlayGeo = null, inlayBytes = null;
+      if (data.inlayStlBase64) {
+        try {
+          inlayBytes = Uint8Array.from(atob(data.inlayStlBase64), c => c.charCodeAt(0));
+          inlayGeo = parseSTL(inlayBytes.buffer);
+          inlayGeo.computeVertexNormals();
+          console.log('Inlay Dreiecke:', inlayGeo?.attributes?.position?.count / 3);
+        } catch(e) { console.warn('Inlay parse fehlgeschlagen:', e); inlayGeo = null; }
+      }
+      return { geo: resultGeo, stlBuf: bytes, inlayGeo, inlayStlBuf: inlayBytes };
     } catch(e) {
       console.error('Server Cut Exception:', e);
       return null;
@@ -7210,6 +7229,8 @@ async function _doSubtractHoles(solids, holes) {
     );
   };
 
+  const _pendingInlays = [];  // bündige farbige Gravur-Körper (Zweifarb-Druck)
+
   for (const hole of holes) {
 
     // ── SVG: OCCT-Abzug ────────────────────────────────────────────────────────
@@ -7228,7 +7249,7 @@ async function _doSubtractHoles(solids, holes) {
         catch(e) { console.warn('OCCT Full Cut Fehler:', e); }
       }
       if (newResult) {
-        const { geo, stlBuf } = newResult;
+        const { geo, stlBuf, inlayGeo, inlayStlBuf } = newResult;
         const prev = solidMesh;
         solidMesh = new THREE.Mesh(geo, mat);
         solidMesh.scale.set(0.1, 0.1, 0.1);        // Geometrie in mm, wie STL-Import
@@ -7237,6 +7258,21 @@ async function _doSubtractHoles(solids, holes) {
         solidMesh.userData._origStlBuf = stlBuf;    // Cut-Ergebnis für Folge-Schnitte
         solidMesh.castShadow = true; solidMesh.receiveShadow = true;
         solidMesh.updateMatrixWorld(true, true);
+        // Bündiges Inlay als eigenes farbiges Mesh (für Zweifarb-Druck/Slicer)
+        if (inlayGeo) {
+          const inlayMat = new THREE.MeshStandardMaterial({
+            color: new THREE.Color(0x111111), roughness: 0.4, metalness: 0.05, side: THREE.DoubleSide });
+          const inlayMesh = new THREE.Mesh(inlayGeo, inlayMat);
+          inlayMesh.scale.set(0.1, 0.1, 0.1);
+          inlayMesh.position.copy(prev.position);
+          inlayMesh.quaternion.copy(prev.quaternion);
+          inlayMesh.castShadow = true; inlayMesh.receiveShadow = true;
+          inlayMesh.userData = { id: idCtr++, name: 'Gravur-Inlay', color: '#111111',
+                                 isHole: false, type: 'inlay', isInlay: true,
+                                 _origStlBuf: inlayStlBuf || null };
+          inlayMesh.updateMatrixWorld(true, true);
+          _pendingInlays.push(inlayMesh);
+        }
         notify('✓ OCCT Gravur fertig', 'ok');
         continue;
       }
@@ -7296,6 +7332,11 @@ async function _doSubtractHoles(solids, holes) {
     }
 
     solidMesh = ThreeCSG.subtract(solidMesh, csgProxy, mat);
+    // Geometrie liegt bereits in Weltkoordinaten → Transform auf Identity lassen,
+    // damit matrixWorld==Identity und keine doppelte Transform in Folge-Ops.
+    solidMesh.position.set(0, 0, 0);
+    solidMesh.quaternion.identity();
+    solidMesh.scale.set(1, 1, 1);
     solidMesh.updateWorldMatrix(true, true);
   }
 
@@ -7322,6 +7363,12 @@ async function _doSubtractHoles(solids, holes) {
 
   scene.add(solidMesh);
   objects.push(solidMesh);
+
+  // ── Bündige Inlay-Körper anhängen (bewegen sich mit dem Teil, eigene Farbe) ──
+  for (const inl of _pendingInlays) {
+    solidMesh.attach(inl);   // behält Welt-Transform, wird Kind des Teils
+  }
+  if (_pendingInlays.length) solidMesh.updateWorldMatrix(true, true);
 
   // ── Gewinde-Overlay anhängen ──────────────────────────────────────────────
   solidMesh.updateWorldMatrix(true, true);
@@ -8553,16 +8600,27 @@ function exportToBumpMesh() {
 function exportOBJ() {
   document.getElementById('stl-menu').classList.remove('show');
   if (!objects.length) { notify('Keine Objekte', 'w'); return; }
-  const lines = ['# Volme3D OBJ Export'];
-  let vOffset = 1;
+  const base = _designFilename('obj').replace(/\.obj$/i, '');
+  const mtlName = base + '.mtl';
+  // Jeder Körper als eigenes 'o'-Objekt + 'usemtl' → der Slicer kann pro Objekt
+  // ein Filament/Farbe zuweisen (z.B. Teil vs. Gravur-Inlay).
+  const lines = ['# Volme3D OBJ Export', `mtllib ${mtlName}`];
+  const mats = new Map();   // colorHex → matName
+  let vOffset = 1, objIdx = 0;
+  function matFor(mesh) {
+    const c = mesh.material?.color || new THREE.Color(0xcccccc);
+    const hex = c.getHexString();
+    if (!mats.has(hex)) mats.set(hex, `mat_${mats.size}`);
+    return mats.get(hex);
+  }
   function collectMesh(mesh) {
     const geo = mesh.geometry.clone().toNonIndexed();
     mesh.updateMatrixWorld(true);
     geo.applyMatrix4(mesh.matrixWorld);
     if (!geo.attributes.normal) geo.computeVertexNormals();
-    const pos = geo.attributes.position;
-    const norm = geo.attributes.normal;
-    const count = pos.count;
+    const pos = geo.attributes.position, norm = geo.attributes.normal, count = pos.count;
+    const name = (mesh.userData?.name || 'Objekt').replace(/\s+/g, '_') + '_' + (objIdx++);
+    lines.push(`o ${name}`, `usemtl ${matFor(mesh)}`);
     for (let i = 0; i < count; i++)
       lines.push(`v ${(pos.getX(i)*10).toFixed(6)} ${(pos.getY(i)*10).toFixed(6)} ${(pos.getZ(i)*10).toFixed(6)}`);
     for (let i = 0; i < count; i++)
@@ -8575,17 +8633,137 @@ function exportOBJ() {
     geo.dispose();
   }
   function traverse(o) {
-    if (o.isMesh && !o.userData.isHole) collectMesh(o);
+    if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false) collectMesh(o);
     if (o.children) o.children.forEach(traverse);
   }
   objects.forEach(traverse);
   if (vOffset === 1) { notify('Keine sichtbaren Flächen', 'w'); return; }
-  const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+  // MTL aus den gesammelten Farben
+  const mtl = ['# Volme3D MTL'];
+  for (const [hex, name] of mats) {
+    const r = parseInt(hex.slice(0,2),16)/255, g = parseInt(hex.slice(2,4),16)/255, b = parseInt(hex.slice(4,6),16)/255;
+    mtl.push(`newmtl ${name}`, `Kd ${r.toFixed(4)} ${g.toFixed(4)} ${b.toFixed(4)}`, 'Ka 0.0000 0.0000 0.0000', 'd 1.0', 'illum 1');
+  }
+  const dl = (text, fname) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+    a.download = fname; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  };
+  dl(lines.join('\n'), base + '.obj');
+  setTimeout(() => dl(mtl.join('\n'), mtlName), 150);
+  notify(`OBJ + MTL exportiert (${mats.size} Material/Farbe) ✓`, 'ok');
+}
+
+// Jeden Körper (Teil + Gravur-Inlay) als EIGENE STL-Datei → in Bambu/Prusa beide
+// laden (gleicher Ursprung = deckungsgleich), pro Objekt ein Filament zuweisen.
+function exportPartsSTL() {
+  document.getElementById('stl-menu').classList.remove('show');
+  if (!objects.length) { notify('Keine Objekte', 'w'); return; }
+  const base = _designFilename('stl').replace(/\.stl$/i, '');
+  const meshes = [];
+  function traverse(o) {
+    if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false) meshes.push(o);
+    if (o.children) o.children.forEach(traverse);
+  }
+  objects.forEach(traverse);
+  if (!meshes.length) { notify('Keine Flächen', 'w'); return; }
+  const used = {};
+  meshes.forEach((m, i) => {
+    const buf = _meshToStlBuf(m);
+    let nm = (m.userData?.name || ('Koerper' + i)).replace(/[\\/\s]+/g, '_');
+    used[nm] = (used[nm] || 0) + 1; if (used[nm] > 1) nm += '_' + used[nm];
+    setTimeout(() => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([buf], { type: 'application/octet-stream' }));
+      a.download = `${base}_${nm}.stl`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    }, i * 250);
+  });
+  notify(`${meshes.length} STL-Dateien (pro Körper) exportiert ✓`, 'ok');
+}
+
+// 3MF mit getrennten, farbigen Körpern → Bambu/Orca öffnet sie deckungsgleich
+// als zwei zuweisbare Objekte (kein Dreieck-Bemalen). Geometrie verschweißt =
+// wasserdicht (keine "open edges").
+function export3MF() {
+  document.getElementById('stl-menu').classList.remove('show');
+  if (typeof fflate === 'undefined') { notify('Zip-Bibliothek lädt noch — kurz warten, erneut versuchen', 'w'); return; }
+  if (!objects.length) { notify('Keine Objekte', 'w'); return; }
+  const meshes = [];
+  (function traverse(list){ list.forEach(o => {
+    if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false) meshes.push(o);
+    if (o.children) traverse(o.children);
+  }); })(objects);
+  if (!meshes.length) { notify('Keine Flächen', 'w'); return; }
+
+  const matLines = [], objLines = [], buildLines = [];
+  const colorIndex = new Map();
+  let nextObjId = 2;  // id 1 = basematerials
+  for (const m of meshes) {
+    const col = m.material?.color || new THREE.Color(0xcccccc);
+    const hex = col.getHexString().toUpperCase();
+    if (!colorIndex.has(hex)) {
+      colorIndex.set(hex, matLines.length);
+      const nm = (m.userData?.name || 'Material').replace(/[<>&"]/g, '');
+      matLines.push(`   <base name="${nm}" displaycolor="#${hex}FF"/>`);
+    }
+    const pindex = colorIndex.get(hex);
+    let geo = m.geometry.clone().toNonIndexed();
+    m.updateMatrixWorld(true);
+    geo.applyMatrix4(m.matrixWorld);
+    geo.scale(10, 10, 10);                                  // App-Einheiten → mm
+    for (const name in geo.attributes) if (name !== 'position') geo.deleteAttribute(name);
+    geo = THREE.BufferGeometryUtils.mergeVertices(geo, 1e-4); // rein nach Position → wasserdicht
+    const pos = geo.attributes.position, idx = geo.index ? geo.index.array : null;
+    const verts = [];
+    for (let i = 0; i < pos.count; i++)
+      verts.push(`    <vertex x="${pos.getX(i).toFixed(5)}" y="${pos.getY(i).toFixed(5)}" z="${pos.getZ(i).toFixed(5)}"/>`);
+    const tris = [];
+    const triN = idx ? idx.length / 3 : pos.count / 3;
+    for (let i = 0; i < triN; i++) {
+      const a = idx ? idx[i*3] : i*3, b = idx ? idx[i*3+1] : i*3+1, c = idx ? idx[i*3+2] : i*3+2;
+      tris.push(`    <triangle v1="${a}" v2="${b}" v3="${c}"/>`);
+    }
+    const oid = nextObjId++;
+    objLines.push(`  <object id="${oid}" type="model" pid="1" pindex="${pindex}">`,
+      `   <mesh>`, `    <vertices>`, verts.join('\n'), `    </vertices>`,
+      `    <triangles>`, tris.join('\n'), `    </triangles>`, `   </mesh>`, `  </object>`);
+    buildLines.push(`  <item objectid="${oid}"/>`);
+    geo.dispose();
+  }
+
+  const model = `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+ <resources>
+  <basematerials id="1">
+${matLines.join('\n')}
+  </basematerials>
+${objLines.join('\n')}
+ </resources>
+ <build>
+${buildLines.join('\n')}
+ </build>
+</model>`;
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+ <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+ <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+</Types>`;
+  const rels = `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+ <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>`;
+  const enc = s => fflate.strToU8(s);
+  const zipped = fflate.zipSync({
+    '[Content_Types].xml': enc(contentTypes),
+    '_rels/.rels': enc(rels),
+    '3D/3dmodel.model': enc(model),
+  }, { level: 6 });
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = _designFilename('obj');
+  a.href = URL.createObjectURL(new Blob([zipped], { type: 'model/3mf' }));
+  a.download = _designFilename('3mf');
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  notify('OBJ exportiert ✓', 'ok');
+  notify(`3MF exportiert (${meshes.length} Körper, ${colorIndex.size} Farbe/n) ✓`, 'ok');
 }
 
 function exportSTEP() {
