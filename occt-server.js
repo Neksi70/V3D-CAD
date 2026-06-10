@@ -284,8 +284,10 @@ function cleanContour(pts) {
 
 // ── SVG-Pfad → OCCT Prism ────────────────────────────────────────────────────
 // normF=1: Koordinaten direkt in mm (scale bereits px→mm).
-// matrixWorld enthält den vollständigen World-Transform inkl. Scale.
-function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, depthMM) {
+// Prisma reicht lokal von yStart bis yEnd entlang +Y (= in den Solid hinein).
+//   Vertieft (Cut):   yStart = -OVERLAP,  yEnd = depth   (ragt außen raus, schneidet rein)
+//   Erhaben (Fuse):   yStart = -height,   yEnd = +bond   (steht außen raus, bondet innen)
+function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, yStart, yEnd) {
   const outerXZ = cleanContour(pathInfo.pts).map(p => [
     (p[0] - cx) * scale,
     (p[1] - cy) * scale
@@ -308,16 +310,16 @@ function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, depthMM) {
   }
 
   let   face       = mkFace.Face(); mkFace.delete();
-  // Face um -OVERLAP entlang lokaler Y verschieben → Prisma startet außerhalb
-  // der Fläche und ragt für JEDES Glyph gleich weit heraus.
-  if (SVG_OVERLAP_MM > 0) {
+  // Face an den Start (yStart) verschieben, dann (yEnd - yStart) extrudieren.
+  if (yStart !== 0) {
     const t = new oc.gp_Trsf_1();
-    t.SetTranslation_1(new oc.gp_Vec_4(0, -SVG_OVERLAP_MM, 0));
+    t.SetTranslation_1(new oc.gp_Vec_4(0, yStart, 0));
     const xf = new oc.BRepBuilderAPI_Transform_2(face, t, false); t.delete();
     if (xf.IsDone()) face = xf.Shape();
     xf.delete();
   }
-  const depthLocal = depthMM + SVG_OVERLAP_MM;  // normF=1, direkt in mm
+  const depthLocal = yEnd - yStart;
+  if (depthLocal <= 0) return null;
   const vec        = new oc.gp_Vec_4(0, depthLocal, 0);
   let   prism;
   try   { prism = new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true); }
@@ -545,15 +547,16 @@ app.post('/api/occt-subtract', async (req, res) => {
     // 2. SVG-Extrusion(en) aufbauen und Boolean Cut durchführen
     const { scale, cx, cy } = svgTransformM;
     let depthMM = svgTransformM.depthMM;
-    console.log('[debug] depthMM:', depthMM, 'svgSize:', svgTransformM.svgSize, 'scale:', scale, 'cx:', cx?.toFixed(2), 'cy:', cy?.toFixed(2));
+    const emboss = depthMM < 0;            // negativ = erhaben (Schrift steht raus)
+    const EMBOSS_BOND = 0.6;               // mm, wie tief die erhabene Schrift ins Teil bondet
+    console.log('[debug] depthMM:', depthMM, emboss ? '(ERHABEN)' : '(vertieft)', 'svgSize:', svgTransformM.svgSize, 'scale:', scale, 'cx:', cx?.toFixed(2), 'cy:', cy?.toFixed(2));
     const normF = 2 / (svgTransformM.svgSize || 50);  // unused: normF=1 in buildSvgSolid
 
     // Material immer ≥ FLOOR_MM stehen lassen → immer eine Prägung, nie ein
-    // Durchbruch. Es wird über die GANZE Gravurfläche gemessen (nicht nur am
-    // Klickpunkt), damit auch schräge/unebene Wände korrekt erfasst werden.
+    // Durchbruch (nur bei VERTIEFT relevant; erhaben fügt Material hinzu).
     const FLOOR_MM = 0.7;  // Restboden: dünner (0.3) → OCCT vernetzt den Boden mit
                            // Splittern (degenerierter Boolean). 0.7 mm bleibt sauber.
-    if (snapNormal && snapPoint) {
+    if (!emboss && snapNormal && snapPoint) {
       const wallAtClick = measureWallThickness(tris, snapPoint, snapNormal);
       const fp = computeMaxBlindDepth(tris, svgHoleMatrixElements, svgPathData, scale, cx, cy, FLOOR_MM);
       if (fp) {
@@ -572,14 +575,18 @@ app.post('/api/occt-subtract', async (req, res) => {
     const solidBBoxNum = getBBoxNum(oc, solidOCCT);
     console.log('[cut-debug] solidBBox:', getBBox(oc, solidOCCT));
 
-    // Transformation mit optionalem Y-Versatz (Welt-Y) um Compound-Exit sicherzustellen
-    function buildAndTransform(pathInfo, depth, yShift = 0) {
-      const s = buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, depth);
+    // Prisma-Bereich (lokal Y) je nach Modus:
+    //   vertieft: -OVERLAP … depth   (ragt außen raus, schneidet rein)
+    //   erhaben:  depth(<0) … +BOND  (steht außen raus, bondet innen ins Teil)
+    function buildAndTransform(pathInfo) {
+      const yStart = emboss ? depthMM : -SVG_OVERLAP_MM;
+      const yEnd   = emboss ? EMBOSS_BOND : depthMM;
+      const s = buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, yStart, yEnd);
       if (!s) return null;
       if (!(svgHoleMatrixElements?.length === 16)) return s;
       const e = svgHoleMatrixElements;
       const trsf = new oc.gp_Trsf_1();
-      trsf.SetValues(e[0],e[4],e[8],e[12], e[1],e[5],e[9],e[13]+yShift, e[2],e[6],e[10],e[14]);
+      trsf.SetValues(e[0],e[4],e[8],e[12], e[1],e[5],e[9],e[13], e[2],e[6],e[10],e[14]);
       const xf = new oc.BRepBuilderAPI_Transform_2(s, trsf, false); trsf.delete();
       const result = xf.IsDone() ? xf.Shape() : s;
       xf.delete();
@@ -591,7 +598,7 @@ app.post('/api/occt-subtract', async (req, res) => {
     // anschließende Cut bleibt manifold (statt non-manifold beim Compound-Cut).
     const tools = [];
     for (let i = 0; i < svgPathData.length; i++) {
-      const s = buildAndTransform(svgPathData[i], depthMM);
+      const s = buildAndTransform(svgPathData[i]);
       if (s) tools.push({i, s});
       else   console.log(`[path-${i}] kein Shape`);
     }
@@ -608,46 +615,54 @@ app.post('/api/occt-subtract', async (req, res) => {
     }
     console.log(`[cut] ${tools.length} Prismen gefust → 1 Werkzeug`);
 
-    const cut = new oc.BRepAlgoAPI_Cut_3(solidOCCT, tool); cut.Build();
-    console.log('[cut] IsDone:', cut.IsDone());
-    if (!cut.IsDone()) { cut.delete(); return res.json({ error: 'Boolean Cut fehlgeschlagen' }); }
-    const result = cut.Shape();
+    let result, inlayB64 = null, cut = null;
+    if (emboss) {
+      // ERHABEN: Teil bleibt unverändert; die erhabene Schrift (Werkzeug) ist der
+      // farbige Körper, der außen auf der Wand steht und innen ins Teil bondet.
+      result = solidOCCT;
+      try {
+        const inlayBuf = solidToSTLBuffer(oc, tool);
+        inlayB64 = inlayBuf.toString('base64');
+        console.log(`[emboss] erhabene Schrift ${inlayBuf.length} Bytes`);
+      } catch(e) { console.log('[emboss] fehlgeschlagen:', e.message); }
+    } else {
+      // VERTIEFT: Teil = solid − Werkzeug; farbiger Boden-Slab als Inlay.
+      cut = new oc.BRepAlgoAPI_Cut_3(solidOCCT, tool); cut.Build();
+      console.log('[cut] IsDone:', cut.IsDone());
+      if (!cut.IsDone()) { cut.delete(); return res.json({ error: 'Boolean Cut fehlgeschlagen' }); }
+      result = cut.Shape();
+      try {
+        const com = new oc.BRepAlgoAPI_Common_3(solidOCCT, tool); com.Build();
+        if (com.IsDone()) {
+          let inlayShape = com.Shape();
+          if (svgHoleMatrixElements?.length === 16) {
+            const ft = Math.max(0.2, depthMM * 0.5);  // Boden-Dicke, Rest bleibt offen
+            const box = new oc.BRepPrimAPI_MakeBox_2(
+              new oc.gp_Pnt_3(-300, depthMM - ft, -300), 600, ft + 1.0, 600).Shape();
+            const e = svgHoleMatrixElements;
+            const trsf = new oc.gp_Trsf_1();
+            trsf.SetValues(e[0],e[4],e[8],e[12], e[1],e[5],e[9],e[13], e[2],e[6],e[10],e[14]);
+            const xf = new oc.BRepBuilderAPI_Transform_2(box, trsf, false); trsf.delete();
+            const slab = xf.IsDone() ? xf.Shape() : null; xf.delete();
+            if (slab) {
+              const com2 = new oc.BRepAlgoAPI_Common_3(inlayShape, slab); com2.Build();
+              if (com2.IsDone()) inlayShape = com2.Shape();
+              com2.delete();
+            }
+          }
+          const inlayBuf = solidToSTLBuffer(oc, inlayShape);
+          inlayB64 = inlayBuf.toString('base64');
+          console.log(`[inlay] Boden-Slab ${inlayBuf.length} Bytes`);
+        } else console.log('[inlay] Common nicht fertig');
+        com.delete();
+      } catch(e) { console.log('[inlay] fehlgeschlagen:', e.message); }
+    }
 
     // 3. Ergebnis → STL
     const outBuf = solidToSTLBuffer(oc, result);
-
-    // Farbiger Boden-Körper für „vertiefte farbige Gravur": Die Vertiefung
-    // (Teil) bleibt offen; nur der untere Slab der Gravur wird der farbige
-    // Körper. = (Werkzeug ∩ Teil) ∩ Slab[lokal Y in depth-floorThick..depth].
-    let inlayB64 = null;
-    try {
-      const com = new oc.BRepAlgoAPI_Common_3(solidOCCT, tool); com.Build();
-      if (com.IsDone()) {
-        let inlayShape = com.Shape();
-        if (svgHoleMatrixElements?.length === 16) {
-          const ft = Math.max(0.2, depthMM * 0.5);  // Boden-Dicke, Rest bleibt offen
-          const box = new oc.BRepPrimAPI_MakeBox_2(
-            new oc.gp_Pnt_3(-300, depthMM - ft, -300), 600, ft + 1.0, 600).Shape();
-          const e = svgHoleMatrixElements;
-          const trsf = new oc.gp_Trsf_1();
-          trsf.SetValues(e[0],e[4],e[8],e[12], e[1],e[5],e[9],e[13], e[2],e[6],e[10],e[14]);
-          const xf = new oc.BRepBuilderAPI_Transform_2(box, trsf, false); trsf.delete();
-          const slab = xf.IsDone() ? xf.Shape() : null; xf.delete();
-          if (slab) {
-            const com2 = new oc.BRepAlgoAPI_Common_3(inlayShape, slab); com2.Build();
-            if (com2.IsDone()) inlayShape = com2.Shape();
-            com2.delete();
-          }
-        }
-        const inlayBuf = solidToSTLBuffer(oc, inlayShape);
-        inlayB64 = inlayBuf.toString('base64');
-        console.log(`[inlay] Boden-Slab ${inlayBuf.length} Bytes`);
-      } else console.log('[inlay] Common nicht fertig');
-      com.delete();
-    } catch(e) { console.log('[inlay] fehlgeschlagen:', e.message); }
-
-    cut.delete(); for (const f of keep) { try { f.delete(); } catch(_) {} }
-    console.log(`[occt-subtract] OK — ${tools.length} Pfade, ${outBuf.length} Bytes`);
+    if (cut) cut.delete();
+    for (const f of keep) { try { f.delete(); } catch(_) {} }
+    console.log(`[occt-subtract] OK — ${tools.length} Pfade, ${emboss ? 'ERHABEN' : 'vertieft'}, ${outBuf.length} Bytes`);
     res.json({ resultStlBase64: outBuf.toString('base64'), inlayStlBase64: inlayB64 });
 
   } catch (e) {

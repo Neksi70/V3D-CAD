@@ -6871,6 +6871,7 @@ function _meshToStlBuf(mesh) {
   mesh.updateMatrixWorld(true);
   geo.applyMatrix4(mesh.matrixWorld);
   geo.scale(10, 10, 10);
+  geo.rotateX(Math.PI / 2);                       // Y-up (Editor) → Z-up (Slicer)
   if (!geo.attributes.normal) geo.computeVertexNormals();
   const pos = geo.attributes.position;
   const idx = geo.index?.array;
@@ -7164,7 +7165,7 @@ function _occtBuildWire3D(oc, pts3d) {
 }
 
 // ═══ BOHRUNG ABZIEHEN ═══════════════════════════════════════════════════════
-function subtractHoles() {
+async function subtractHoles() {
   const solids = selectedObjs.filter(o => !o.userData.isHole);
   const holes  = selectedObjs.filter(o => o.userData.isHole);
 
@@ -7183,12 +7184,11 @@ function subtractHoles() {
 
   if (hasSvg) {
     const svgHoles = holes.filter(h => h.userData.type === 'svg');
-    const currentDepth = svgHoles[0].userData.svgDepth || 3;
-    const input = prompt('Gravur-Tiefe (mm):\n(Hinweis: dünne Wände können durchgeschnitten werden)', currentDepth);
-    if (input === null) return;
-    const depth = parseFloat(input.replace(',', '.'));
-    if (isNaN(depth) || depth <= 0) { notify('Ungültige Tiefe', 'w'); return; }
-    svgHoles.forEach(h => { h.userData.svgDepth = depth; });
+    const currentDepth = svgHoles[0].userData.svgDepth || 1;
+    const depth = await _engraveDepthDialog(currentDepth);
+    if (depth === null) return;                          // Abbruch
+    if (Math.abs(depth) < 0.05) { notify('0 mm — nichts zu tun', 'w'); return; }
+    svgHoles.forEach(h => { h.userData.svgDepth = depth; });  // negativ = erhaben
   }
 
   _progressShow(hasSvg ? 'Gravur wird abgezogen…' : 'Abziehen läuft…');
@@ -8531,6 +8531,7 @@ function _buildStlBlob(objs) {
     const geo = mesh.geometry.clone();
     mesh.updateMatrixWorld(true);
     geo.applyMatrix4(mesh.matrixWorld);
+    geo.rotateX(Math.PI / 2);                     // Y-up (Editor) → Z-up (Slicer)
     if (!geo.attributes.normal) geo.computeVertexNormals();
     const pos = geo.attributes.position;
     const norm = geo.attributes.normal;
@@ -8622,6 +8623,7 @@ function exportOBJ() {
     const geo = mesh.geometry.clone().toNonIndexed();
     mesh.updateMatrixWorld(true);
     geo.applyMatrix4(mesh.matrixWorld);
+    geo.rotateX(Math.PI / 2);                     // Y-up (Editor) → Z-up (Slicer)
     if (!geo.attributes.normal) geo.computeVertexNormals();
     const pos = geo.attributes.position, norm = geo.attributes.normal, count = pos.count;
     const name = (mesh.userData?.name || 'Objekt').replace(/\s+/g, '_') + '_' + (objIdx++);
@@ -8702,39 +8704,58 @@ function export3MF() {
     }); })(objects);
     if (!meshes.length) { notify('Keine Flächen', 'w'); return; }
 
-    // EIN Objekt: alle Körper (Teil + Gravur-Inlay) in eine Mesh zusammenfassen,
-    // damit Bambu sie NICHT als getrennte Objekte auseinanderzieht. Jeder Körper
-    // bleibt eine geschlossene Schale (kein Verschweißen über Körper hinweg).
+    // EIN Objekt (Assembly) mit mehreren TEILEN (components) → Bambu zieht es
+    // nicht auseinander (ein <item>) UND model_settings.config weist jedem Teil
+    // pro Farbe einen Extruder zu → Teil = Filament 1, Gravur = Filament 2.
     const IDENT = '1 0 0 0 1 0 0 0 1 0 0 0';
-    let allV = '', allT = '', vOff = 0;
-    meshes.forEach((m) => {
+    const colorIndex = new Map();
+    const objXml = [], compXml = [], partXml = [];
+    meshes.forEach((m, i) => {
+      const id = i + 1;
+      const hex = (m.material?.color || new THREE.Color(0xcccccc)).getHexString().toUpperCase();
+      if (!colorIndex.has(hex)) colorIndex.set(hex, colorIndex.size);
+      const extruder = colorIndex.get(hex) + 1;
       let geo = m.geometry.clone().toNonIndexed();
       m.updateMatrixWorld(true);
       geo.applyMatrix4(m.matrixWorld);
       geo.scale(10, 10, 10);                                  // App-Einheiten → mm
+      geo.rotateX(Math.PI / 2);                               // Y-up (Editor) → Z-up (Slicer)
       for (const n in geo.attributes) if (n !== 'position') geo.deleteAttribute(n);
-      geo = THREE.BufferGeometryUtils.mergeVertices(geo, 1e-4); // pro Körper wasserdicht
+      geo = THREE.BufferGeometryUtils.mergeVertices(geo, 1e-4); // pro Teil wasserdicht
       const pos = geo.attributes.position, idx = geo.index ? geo.index.array : null;
+      let v = '', t = '';
       for (let k = 0; k < pos.count; k++)
-        allV += `<vertex x="${pos.getX(k).toFixed(5)}" y="${pos.getY(k).toFixed(5)}" z="${pos.getZ(k).toFixed(5)}"/>`;
+        v += `<vertex x="${pos.getX(k).toFixed(5)}" y="${pos.getY(k).toFixed(5)}" z="${pos.getZ(k).toFixed(5)}"/>`;
       const triN = idx ? idx.length / 3 : pos.count / 3;
       for (let k = 0; k < triN; k++) {
-        const a = (idx ? idx[k*3] : k*3) + vOff, b = (idx ? idx[k*3+1] : k*3+1) + vOff, c = (idx ? idx[k*3+2] : k*3+2) + vOff;
-        allT += `<triangle v1="${a}" v2="${b}" v3="${c}"/>`;
+        const a = idx ? idx[k*3] : k*3, b = idx ? idx[k*3+1] : k*3+1, c = idx ? idx[k*3+2] : k*3+2;
+        t += `<triangle v1="${a}" v2="${b}" v3="${c}"/>`;
       }
-      vOff += pos.count;
+      objXml.push(`  <object id="${id}" type="model"><mesh><vertices>${v}</vertices><triangles>${t}</triangles></mesh></object>`);
+      compXml.push(`<component objectid="${id}" transform="${IDENT}"/>`);
+      const pname = (m.userData?.name || ('Teil ' + id)).replace(/[<>&"]/g, '');
+      partXml.push(`  <part id="${id}" subtype="normal_part"><metadata key="name" value="${pname}"/><metadata key="extruder" value="${extruder}"/></part>`);
       geo.dispose();
     });
+    const asmId = meshes.length + 1;
     const modelName = _designFilename('3mf').replace(/\.3mf$/i, '');
     const model = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
  <resources>
-  <object id="1" type="model"><mesh><vertices>${allV}</vertices><triangles>${allT}</triangles></mesh></object>
+${objXml.join('\n')}
+  <object id="${asmId}" type="model"><components>${compXml.join('')}</components></object>
  </resources>
- <build><item objectid="1" transform="${IDENT}"/></build>
+ <build><item objectid="${asmId}" transform="${IDENT}"/></build>
 </model>`;
+    const cfg = `<?xml version="1.0" encoding="UTF-8"?>
+<config>
+ <object id="${asmId}">
+  <metadata key="name" value="${modelName}"/>
+${partXml.join('\n')}
+ </object>
+</config>`;
     const ct = `<?xml version="1.0" encoding="UTF-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>`;
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/xml"/></Types>`;
     const rels = `<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`;
     const u8 = s => fflate.strToU8(s);
@@ -8742,13 +8763,14 @@ function export3MF() {
       '[Content_Types].xml': u8(ct),
       '_rels/.rels': u8(rels),
       '3D/3dmodel.model': u8(model),
+      'Metadata/model_settings.config': u8(cfg),
     }, { level: 6 });
     const fname = _designFilename('3mf');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([zipped], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' }));
     a.download = fname;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    notify(`3MF „${fname}" exportiert (ein Objekt) ✓`, 'ok');
+    notify(`3MF „${fname}" — ${meshes.length} Teile, ${colorIndex.size} Farbe/n ✓`, 'ok');
   } catch(e) {
     console.error('3MF Export Fehler:', e);
     notify('3MF Fehler: ' + (e.message || e), 'w');
@@ -9159,6 +9181,44 @@ function _progressCreep(target, step) {
 function _progressStopCreep() { if (_progTimer) { clearInterval(_progTimer); _progTimer = null; } }
 function _progressDone() { _progressStopCreep(); _progressSet(100); setTimeout(_progressHide, 550); }
 function _progressHide() { _progressStopCreep(); if (_progEl) { _progEl.remove(); _progEl = null; } }
+
+// ── Gravur-Regler-Dialog (erhaben ↔ vertieft) → Promise<number|null> ─────────
+// Rückgabe: negativ = erhaben (Schrift steht raus), positiv = vertieft (Cut), null = Abbruch.
+function _engraveDepthDialog(current) {
+  return new Promise(resolve => {
+    const v0 = (typeof current === 'number' && !isNaN(current)) ? current : 1;
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.4);'
+      + 'display:flex;align-items:center;justify-content:center;font:14px system-ui,-apple-system,sans-serif';
+    ov.innerHTML =
+      '<div style="background:#fff;color:#222;padding:22px 24px;border-radius:14px;width:min(400px,90vw);'
+      + 'box-shadow:0 12px 44px rgba(0,0,0,.32)">'
+      + '<div style="font-weight:600;font-size:16px;margin-bottom:2px">Gravur einstellen</div>'
+      + '<div class="_em-lbl" style="color:#777;margin-bottom:16px;min-height:18px"></div>'
+      + '<input class="_em-rng" type="range" min="-2" max="5" step="0.1" value="' + v0 + '" style="width:100%">'
+      + '<div style="display:flex;justify-content:space-between;color:#aaa;font-size:11px;margin-top:4px">'
+      + '<span>◀ erhaben</span><span>bündig</span><span>vertieft ▶</span></div>'
+      + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">'
+      + '<button class="_em-cancel" style="padding:9px 16px;border:1px solid #ccc;background:#f4f4f4;'
+      + 'border-radius:9px;cursor:pointer">Abbrechen</button>'
+      + '<button class="_em-ok" style="padding:9px 20px;border:none;background:#ff5e00;color:#fff;'
+      + 'border-radius:9px;cursor:pointer;font-weight:600">OK</button></div></div>';
+    document.body.appendChild(ov);
+    const rng = ov.querySelector('._em-rng'), lbl = ov.querySelector('._em-lbl');
+    const upd = () => {
+      const v = parseFloat(rng.value);
+      lbl.textContent = v > 0.05 ? `Vertieft ${v.toFixed(1)} mm — wird in die Wand graviert`
+        : v < -0.05 ? `Erhaben ${(-v).toFixed(1)} mm — Schrift steht raus`
+        : 'Bündig (0 mm)';
+    };
+    rng.oninput = upd; upd();
+    const done = val => { ov.remove(); resolve(val); };
+    ov.querySelector('._em-ok').onclick = () => done(parseFloat(rng.value));
+    ov.querySelector('._em-cancel').onclick = () => done(null);
+    ov.onclick = e => { if (e.target === ov) done(null); };
+    setTimeout(() => rng.focus(), 50);
+  });
+}
 
 // ═══ ROTATION RING HANDLES ═════════════════════════════════════════════════
 // State
