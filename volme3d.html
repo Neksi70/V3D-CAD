@@ -7191,12 +7191,17 @@ function subtractHoles() {
     svgHoles.forEach(h => { h.userData.svgDepth = depth; });
   }
 
-  notify(hasSvg ? 'OCCT SVG-Abzug läuft…' : 'CSG läuft…', 'ok');
+  _progressShow(hasSvg ? 'Gravur wird abgezogen…' : 'Abziehen läuft…');
+  _progressSet(8);
+  _progressCreep(93);   // kriecht während OCCT rechnet; springt am Ende auf 100%
 
-  _doSubtractHoles(solids, holes).catch(err => {
-    console.error('CSG Fehler:', err);
-    notify('CSG Fehler: ' + err.message, 'w');
-  });
+  _doSubtractHoles(solids, holes)
+    .then(() => _progressDone())
+    .catch(err => {
+      _progressHide();
+      console.error('CSG Fehler:', err);
+      notify('CSG Fehler: ' + err.message, 'w');
+    });
 }
 
 async function _doSubtractHoles(solids, holes) {
@@ -8697,56 +8702,39 @@ function export3MF() {
     }); })(objects);
     if (!meshes.length) { notify('Keine Flächen', 'w'); return; }
 
-    // Bambu/Orca-Struktur: EIN Objekt mit mehreren „Teilen" (components); pro
-    // Farbe ein Extruder → Bambu legt die Teile automatisch auf Filament 1/2/…
+    // EIN Objekt: alle Körper (Teil + Gravur-Inlay) in eine Mesh zusammenfassen,
+    // damit Bambu sie NICHT als getrennte Objekte auseinanderzieht. Jeder Körper
+    // bleibt eine geschlossene Schale (kein Verschweißen über Körper hinweg).
     const IDENT = '1 0 0 0 1 0 0 0 1 0 0 0';
-    const colorIndex = new Map();           // hex → extruder-1
-    const objXml = [], compXml = [], partXml = [];
-    meshes.forEach((m, i) => {
-      const id = i + 1;
-      const hex = (m.material?.color || new THREE.Color(0xcccccc)).getHexString().toUpperCase();
-      if (!colorIndex.has(hex)) colorIndex.set(hex, colorIndex.size);
-      const extruder = colorIndex.get(hex) + 1;
+    let allV = '', allT = '', vOff = 0;
+    meshes.forEach((m) => {
       let geo = m.geometry.clone().toNonIndexed();
       m.updateMatrixWorld(true);
       geo.applyMatrix4(m.matrixWorld);
       geo.scale(10, 10, 10);                                  // App-Einheiten → mm
       for (const n in geo.attributes) if (n !== 'position') geo.deleteAttribute(n);
-      geo = THREE.BufferGeometryUtils.mergeVertices(geo, 1e-4); // verschweißen → wasserdicht
+      geo = THREE.BufferGeometryUtils.mergeVertices(geo, 1e-4); // pro Körper wasserdicht
       const pos = geo.attributes.position, idx = geo.index ? geo.index.array : null;
-      let v = '', t = '';
       for (let k = 0; k < pos.count; k++)
-        v += `<vertex x="${pos.getX(k).toFixed(5)}" y="${pos.getY(k).toFixed(5)}" z="${pos.getZ(k).toFixed(5)}"/>`;
+        allV += `<vertex x="${pos.getX(k).toFixed(5)}" y="${pos.getY(k).toFixed(5)}" z="${pos.getZ(k).toFixed(5)}"/>`;
       const triN = idx ? idx.length / 3 : pos.count / 3;
       for (let k = 0; k < triN; k++) {
-        const a = idx ? idx[k*3] : k*3, b = idx ? idx[k*3+1] : k*3+1, c = idx ? idx[k*3+2] : k*3+2;
-        t += `<triangle v1="${a}" v2="${b}" v3="${c}"/>`;
+        const a = (idx ? idx[k*3] : k*3) + vOff, b = (idx ? idx[k*3+1] : k*3+1) + vOff, c = (idx ? idx[k*3+2] : k*3+2) + vOff;
+        allT += `<triangle v1="${a}" v2="${b}" v3="${c}"/>`;
       }
-      objXml.push(`  <object id="${id}" type="model"><mesh><vertices>${v}</vertices><triangles>${t}</triangles></mesh></object>`);
-      compXml.push(`<component objectid="${id}" transform="${IDENT}"/>`);
-      const pname = (m.userData?.name || ('Teil ' + id)).replace(/[<>&"]/g, '');
-      partXml.push(`  <part id="${id}" subtype="normal_part"><metadata key="name" value="${pname}"/><metadata key="extruder" value="${extruder}"/></part>`);
+      vOff += pos.count;
       geo.dispose();
     });
-    const asmId = meshes.length + 1;
     const modelName = _designFilename('3mf').replace(/\.3mf$/i, '');
     const model = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
  <resources>
-${objXml.join('\n')}
-  <object id="${asmId}" type="model"><components>${compXml.join('')}</components></object>
+  <object id="1" type="model"><mesh><vertices>${allV}</vertices><triangles>${allT}</triangles></mesh></object>
  </resources>
- <build><item objectid="${asmId}" transform="${IDENT}"/></build>
+ <build><item objectid="1" transform="${IDENT}"/></build>
 </model>`;
-    const cfg = `<?xml version="1.0" encoding="UTF-8"?>
-<config>
- <object id="${asmId}">
-  <metadata key="name" value="${modelName}"/>
-${partXml.join('\n')}
- </object>
-</config>`;
     const ct = `<?xml version="1.0" encoding="UTF-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/xml"/></Types>`;
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>`;
     const rels = `<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`;
     const u8 = s => fflate.strToU8(s);
@@ -8754,14 +8742,13 @@ ${partXml.join('\n')}
       '[Content_Types].xml': u8(ct),
       '_rels/.rels': u8(rels),
       '3D/3dmodel.model': u8(model),
-      'Metadata/model_settings.config': u8(cfg),
     }, { level: 6 });
     const fname = _designFilename('3mf');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([zipped], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' }));
     a.download = fname;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    notify(`3MF „${fname}" — ${meshes.length} Teile, ${colorIndex.size} Farbe/n ✓`, 'ok');
+    notify(`3MF „${fname}" exportiert (ein Objekt) ✓`, 'ok');
   } catch(e) {
     console.error('3MF Export Fehler:', e);
     notify('3MF Fehler: ' + (e.message || e), 'w');
@@ -8942,6 +8929,19 @@ function handleImport(e) {
       mesh.castShadow = true;
       // STL-Koordinaten sind in mm; App-Einheit = 10mm → Faktor 0.1
       mesh.scale.setScalar(0.1);
+      // STL ist Z-up (Slicer/CAD-Konvention), Editor ist Y-up → −90° um X, damit
+      // das Teil sofort aufrecht (druckbar) statt liegend importiert wird.
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.updateMatrixWorld(true);
+      // Auf Platten-Mitte zentrieren (X/Z) und auf den Boden setzen (Y=0)
+      {
+        const bb = new THREE.Box3().setFromObject(mesh);
+        const c  = bb.getCenter(new THREE.Vector3());
+        mesh.position.x -= c.x;
+        mesh.position.z -= c.z;
+        mesh.position.y -= bb.min.y;
+        mesh.updateMatrixWorld(true);
+      }
       mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import', name: file.name.replace(/\.stl$/i, ''), color: currentColor, isHole: false, _origGeo: geo, _origStlBuf: ev.target.result,
         _stlCx: (geo.boundingBox ? (geo.boundingBox.min.x + geo.boundingBox.max.x) / 2 : 12.8),
         _stlCy: (geo.boundingBox ? (geo.boundingBox.min.y + geo.boundingBox.max.y) / 2 : 12.8),
@@ -9120,6 +9120,45 @@ function notify(msg, type) {
   document.getElementById('notif').appendChild(el);
   setTimeout(() => el.remove(), 2200);
 }
+
+// ── Fortschrittsbalken (z.B. für Abziehen/OCCT-Schnitt) ─────────────────────
+let _progEl = null, _progTimer = null, _progVal = 0;
+function _progressShow(label) {
+  _progressHide();
+  _progEl = document.createElement('div');
+  _progEl.style.cssText = 'position:fixed;left:50%;top:20px;transform:translateX(-50%);z-index:99999;'
+    + 'background:rgba(22,22,30,.94);color:#fff;padding:13px 18px;border-radius:11px;'
+    + 'box-shadow:0 6px 24px rgba(0,0,0,.45);width:min(360px,80vw);'
+    + 'font:13px system-ui,-apple-system,sans-serif;';
+  _progEl.innerHTML =
+    '<div style="display:flex;justify-content:space-between;margin-bottom:9px">'
+    + '<span class="_pl"></span><span class="_pp">0%</span></div>'
+    + '<div style="height:9px;background:rgba(255,255,255,.15);border-radius:5px;overflow:hidden">'
+    + '<div class="_pf" style="height:100%;width:0%;border-radius:5px;'
+    + 'background:linear-gradient(90deg,#ff9a2e,#ff5e00);transition:width .3s ease"></div></div>';
+  document.body.appendChild(_progEl);
+  _progVal = 0;
+  _progEl.querySelector('._pl').textContent = label || 'Bitte warten…';
+}
+function _progressSet(pct, label) {
+  if (!_progEl) return;
+  _progVal = Math.max(0, Math.min(100, pct));
+  _progEl.querySelector('._pf').style.width = _progVal + '%';
+  _progEl.querySelector('._pp').textContent = Math.round(_progVal) + '%';
+  if (label) _progEl.querySelector('._pl').textContent = label;
+}
+// Gleichmäßig (linear) Richtung target kriechen — gleichbleibendes Tempo,
+// kein schneller Sprung am Anfang. step ≈ %/Tick (350ms).
+function _progressCreep(target, step) {
+  _progressStopCreep();
+  step = step || 0.55;
+  _progTimer = setInterval(() => {
+    if (_progVal < target) _progressSet(Math.min(target, _progVal + step));
+  }, 350);
+}
+function _progressStopCreep() { if (_progTimer) { clearInterval(_progTimer); _progTimer = null; } }
+function _progressDone() { _progressStopCreep(); _progressSet(100); setTimeout(_progressHide, 550); }
+function _progressHide() { _progressStopCreep(); if (_progEl) { _progEl.remove(); _progEl = null; } }
 
 // ═══ ROTATION RING HANDLES ═════════════════════════════════════════════════
 // State
