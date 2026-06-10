@@ -707,7 +707,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.4.6<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.4.7<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -2020,7 +2020,7 @@ function buildGrid() {
   const gw = buildplateW / 10;
   const gh = buildplateH / 10;
   const size = Math.max(gw, gh);
-  const cellMm = snapGrid > 0 ? snapGrid * 10 : 10;  // major grid = 10mm
+  const cellMm = 10;  // sichtbares Raster fest 10 mm pro Quadrat (unabhängig vom Snap)
   const divs   = Math.min(500, Math.max(4, Math.round(size * 10 / cellMm)));
   const cellU  = size / divs;
 
@@ -2037,15 +2037,10 @@ function buildGrid() {
   groundMesh.userData.isGround = true;
   scene.add(groundMesh);
 
-  // Build-plate subdivision grid (5mm cells, very light) — rendered first
-  const divsSub = Math.min(800, divs * 2);
-  gridMeshSub = new THREE.GridHelper(size, divsSub, 0xccd8e4, 0xccd8e4);
-  gridMeshSub.scale.set(gw / size, 1, gh / size);
-  gridMeshSub.frustumCulled = false;
-  gridMeshSub.renderOrder = -1;
-  scene.add(gridMeshSub);
+  // Unterraster (5mm) entfernt — es sollen nur 10-mm-Quadrate sichtbar sein
+  gridMeshSub = null;
 
-  // Build-plate major grid (10mm cells, normal color) — on top of subdivision
+  // Build-plate major grid (10mm cells, normal color)
   gridMesh = new THREE.GridHelper(size, divs, 0x9ab0c8, 0xb8ccd8);
   gridMesh.scale.set(gw / size, 1, gh / size);
   gridMesh.frustumCulled = false;
@@ -2060,6 +2055,19 @@ function buildGrid() {
   window._bpBorder.position.y = 0.01;
   window._bpBorder.renderOrder = 2;
   scene.add(window._bpBorder);
+
+  // Mittellinienkreuz durch den Plattenmittelpunkt (X- und Z-Achse)
+  if (window._bpCross) { scene.remove(window._bpCross); window._bpCross.geometry.dispose(); window._bpCross.material.dispose(); }
+  const crossGeo = new THREE.BufferGeometry();
+  crossGeo.setAttribute('position', new THREE.Float32BufferAttribute([
+    -gw / 2, 0, 0,   gw / 2, 0, 0,   // Linie entlang X
+    0, 0, -gh / 2,   0, 0,  gh / 2,  // Linie entlang Z
+  ], 3));
+  window._bpCross = new THREE.LineSegments(crossGeo, new THREE.LineBasicMaterial({ color: 0x4a90c4 }));
+  window._bpCross.position.y = 0.012;
+  window._bpCross.renderOrder = 2;
+  window._bpCross.visible = gridOn;
+  scene.add(window._bpCross);
 
   // HUD-Labels aktualisieren
   _updateBuildplateHUD();
@@ -2145,6 +2153,7 @@ function toggleGrid(force) {
   gridOn = (force !== undefined) ? !!force : !gridOn;
   gridMesh.visible   = gridOn;
   if (gridMeshSub) gridMeshSub.visible = gridOn;
+  if (window._bpCross) window._bpCross.visible = gridOn;
   if (_farGrid)   _farGrid.visible   = gridOn;
   if (_farGround) _farGround.visible = gridOn;
   document.getElementById('lt-grid').classList.toggle('on', gridOn);
@@ -4601,10 +4610,13 @@ function addThreadShape() {
     transparent: !!isHole, opacity: isHole ? 0.52 : 1.0, side: THREE.DoubleSide
   });
   const geo = _buildThreadGeo(12, 1.75, 5, 32);
+  geo.computeBoundingBox();
+  const bb = geo.boundingBox;
+  const halfH = bb ? Math.max(0, -bb.min.y) : 1;  // bounding-box-korrekt → sitzt auf der Buildplate
   const mesh = new THREE.Mesh(geo, mat);
   mesh.castShadow = true; mesh.receiveShadow = true;
   _updateObjEdgeLines(mesh);
-  _wpSpawnMesh(mesh, 1);
+  _wpSpawnMesh(mesh, halfH);
   typeCounts['thread'] = (typeCounts['thread'] || 0) + 1;
   mesh.userData = {
     id: idCtr++, type: 'thread', shapeType: 'thread',
@@ -5277,23 +5289,31 @@ function applyDimChange(axis, val) {
     if (axis==='sh') o.scale.y = Math.max(0.01, val/20);
     if (axis==='sd') o.scale.z = Math.max(0.01, val/20);
   }
-  // Adjust position if not scaling from center
+  // Position anpassen
+  // Höhe (Y): Unterkante bleibt IMMER fixiert → Objekt wächst nach oben und
+  // bleibt auf der Buildplate, statt um die Mitte durch y=0 nach unten zu wachsen.
+  if (axis === 'sh' || (axis === 'uniform' && scaleLocked)) {
+    const oldSizeY = oldScales.y * 2;
+    const newSizeY = o.scale.y * 2;
+    o.position.y += (newSizeY - oldSizeY) / 2;
+  }
+  // Breite/Tiefe (X/Z): nur verschieben, wenn nicht aus der Mitte skaliert wird
   if (!scaleFromCenter) {
     if (axis === 'sw' || (axis === 'uniform' && scaleLocked)) {
       const oldSizeX = oldScales.x * 2;
       const newSizeX = o.scale.x * 2;
       o.position.x -= (newSizeX - oldSizeX) / 2;
     }
-    if (axis === 'sh' || (axis === 'uniform' && scaleLocked)) {
-      const oldSizeY = oldScales.y * 2;
-      const newSizeY = o.scale.y * 2;
-      o.position.y += (newSizeY - oldSizeY) / 2;
-    }
     if (axis === 'sd' || (axis === 'uniform' && scaleLocked)) {
       const oldSizeZ = oldScales.z * 2;
       const newSizeZ = o.scale.z * 2;
       o.position.z -= (newSizeZ - oldSizeZ) / 2;
     }
+  }
+  // Sicherheitsnetz: Unterkante nie unter die Buildplate (y = 0)
+  {
+    const _b0 = getMeshBox(o);
+    if (_b0.min.y < -1e-4) o.position.y -= _b0.min.y;
   }
   // Always sync all sliders from actual bbox
   const bx = getMeshBox(o); const bsz = bx.getSize(new THREE.Vector3());
@@ -5868,11 +5888,28 @@ function updateDimHandles() {
         }
         if (axis === 'sh') {
           const startBottom = _dragHandle.startPosY - oldSc;
-          o2.scale.y = newSc;
-          o2.position.y = Math.max(newSc, startBottom + newSc);
+          if (o2.userData.shapeType === 'thread') {
+            // Gewinde: Steigung halten, Gangzahl anpassen + Geometrie neu bauen
+            // (statt Y-Skalierung, die die Steigung stauchen/strecken würde)
+            const pitchMM  = o2.userData.threadPitch || 1.75;
+            const newTurns = Math.max(1, Math.round(nv / pitchMM));
+            if (newTurns !== o2.userData.threadTurns) {
+              o2.userData.threadTurns = newTurns;
+              _fpRebuildThread(o2);
+            }
+            const halfH = (newTurns * pitchMM / 10) / 2;   // halbe Höhe in cm
+            o2.scale.y = 1;
+            o2.position.y = Math.max(halfH, startBottom + halfH);
+            _dragHandle.tip.textContent = `Höhe: ${r2(newTurns * pitchMM)} mm (${newTurns} Gänge)`;
+          } else {
+            o2.scale.y = newSc;
+            o2.position.y = Math.max(newSc, startBottom + newSc);
+          }
         }
-        const lbl = axis==='sw'?'Breite':axis==='sh'?'Höhe':'Tiefe';
-        _dragHandle.tip.textContent = `${lbl}: ${r2(nv)} mm`;
+        if (!(axis === 'sh' && o2.userData.shapeType === 'thread')) {
+          const lbl = axis==='sw'?'Breite':axis==='sh'?'Höhe':'Tiefe';
+          _dragHandle.tip.textContent = `${lbl}: ${r2(nv)} mm`;
+        }
       }
       updateTFInputs();
     });
@@ -5886,6 +5923,7 @@ function updateDimHandles() {
       _dragHandle = null;
       document.body.style.cursor = '';
       updateTFInputs();
+      if (typeof _fpSyncValues === 'function') _fpSyncValues();
       if (_edgeMode && _edgeObj) {
         const savedEdgeObj = _edgeObj;
         if (savedEdgeObj.userData._occtParams) {
@@ -10885,8 +10923,15 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.4.6';
+const VOLME3D_VERSION = '1.4.7';
 const VOLME3D_CHANGELOG = [
+  { version:'1.4.7', date:'2026-06-10', changes:[
+    ['✨','Buildplate: Mittellinienkreuz (X-/Z-Achse) durch den Plattenmittelpunkt'],
+    ['🔧','Gewinde sitzt beim Einfügen auf der Buildplate statt in der Luft zu schweben'],
+    ['🔧','Raster fest auf 10 mm pro Quadrat, unabhängig vom Snap (feines 5-mm-Unterraster entfernt)'],
+    ['🔧','Box bleibt beim Höher-/Kleinerskalieren auf der Buildplate (wächst nicht mehr durch y=0 nach unten)'],
+    ['🔧','Gewinde-Höhenanfasser hält die Steigung konstant (ändert die Gangzahl, statt das Gewinde zu stauchen/strecken) — wie im Gewindemenü'],
+  ]},
   { version:'1.4.6', date:'2026-06-10', changes:[
     ['🔧','Arbeitsbereich-Dialog: Bestätigung jetzt als klarer „OK"-Button unten (statt missverständlichem ✓ neben den Maßen)'],
   ]},
@@ -12258,11 +12303,14 @@ function _fpSyncValues() {
       set('fp-r', r2(sz.x/2*10)); break;
     case 'spring': case 'bentpipe':
       set('fpw', w); set('fph', h); break;
-    case 'thread':
+    case 'thread': {
+      const _tp = o.userData.threadPitch||1.75;
+      const _tt = o.userData.threadTurns||5;
       set('fp-th-d', o.userData.threadDiameter||12);
-      set('fp-th-p', o.userData.threadPitch||1.75);
-      set('fp-th-t', o.userData.threadTurns||5);
+      set('fp-th-p', _tp);
+      set('fp-th-h', r2(_tp * _tt));   // Höhe = Steigung × Drehungen
       set('fp-seg',  o.userData.segments||32); break;
+    }
     case 'revolve':
       set('fpw', w); set('fph', h); set('fpd', d);
       set('fp-twist',   Math.round((o.userData.revolveTwist||0) / DEG));
