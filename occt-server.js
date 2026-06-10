@@ -615,9 +615,40 @@ app.post('/api/occt-subtract', async (req, res) => {
 
     // 3. Ergebnis → STL
     const outBuf = solidToSTLBuffer(oc, result);
+
+    // Farbiger Boden-Körper für „vertiefte farbige Gravur": Die Vertiefung
+    // (Teil) bleibt offen; nur der untere Slab der Gravur wird der farbige
+    // Körper. = (Werkzeug ∩ Teil) ∩ Slab[lokal Y in depth-floorThick..depth].
+    let inlayB64 = null;
+    try {
+      const com = new oc.BRepAlgoAPI_Common_3(solidOCCT, tool); com.Build();
+      if (com.IsDone()) {
+        let inlayShape = com.Shape();
+        if (svgHoleMatrixElements?.length === 16) {
+          const ft = Math.max(0.2, depthMM * 0.5);  // Boden-Dicke, Rest bleibt offen
+          const box = new oc.BRepPrimAPI_MakeBox_2(
+            new oc.gp_Pnt_3(-300, depthMM - ft, -300), 600, ft + 1.0, 600).Shape();
+          const e = svgHoleMatrixElements;
+          const trsf = new oc.gp_Trsf_1();
+          trsf.SetValues(e[0],e[4],e[8],e[12], e[1],e[5],e[9],e[13], e[2],e[6],e[10],e[14]);
+          const xf = new oc.BRepBuilderAPI_Transform_2(box, trsf, false); trsf.delete();
+          const slab = xf.IsDone() ? xf.Shape() : null; xf.delete();
+          if (slab) {
+            const com2 = new oc.BRepAlgoAPI_Common_3(inlayShape, slab); com2.Build();
+            if (com2.IsDone()) inlayShape = com2.Shape();
+            com2.delete();
+          }
+        }
+        const inlayBuf = solidToSTLBuffer(oc, inlayShape);
+        inlayB64 = inlayBuf.toString('base64');
+        console.log(`[inlay] Boden-Slab ${inlayBuf.length} Bytes`);
+      } else console.log('[inlay] Common nicht fertig');
+      com.delete();
+    } catch(e) { console.log('[inlay] fehlgeschlagen:', e.message); }
+
     cut.delete(); for (const f of keep) { try { f.delete(); } catch(_) {} }
     console.log(`[occt-subtract] OK — ${tools.length} Pfade, ${outBuf.length} Bytes`);
-    res.json({ resultStlBase64: outBuf.toString('base64') });
+    res.json({ resultStlBase64: outBuf.toString('base64'), inlayStlBase64: inlayB64 });
 
   } catch (e) {
     console.error('[occt-subtract] Fehler:', e);

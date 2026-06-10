@@ -751,7 +751,7 @@ const firebaseConfig = {
         <button class="btn pri spl" onclick="toggleStlMenu(event)" title="An Slicer senden">▾</button>
         <div id="stl-menu">
           <div class="sli-item" onclick="exportSTL()">⬇ STL</div>
-          <div class="sli-item" onclick="export3MF()">⬇ 3MF (Mehrfarbe, Bambu/Orca)</div>
+          <div class="sli-item" onclick="export3MF()">⬇ 3MF (zum Einfärben)</div>
           <div class="sli-item" onclick="exportPartsSTL()">⬇ STL pro Körper</div>
           <div class="sli-item" onclick="exportOBJ()">⬇ OBJ</div>
           <div class="sli-item" onclick="exportSTEP()">⬇ STEP (extern)</div>
@@ -8689,81 +8689,83 @@ function export3MF() {
   document.getElementById('stl-menu').classList.remove('show');
   if (typeof fflate === 'undefined') { notify('Zip-Bibliothek lädt noch — kurz warten, erneut versuchen', 'w'); return; }
   if (!objects.length) { notify('Keine Objekte', 'w'); return; }
-  const meshes = [];
-  (function traverse(list){ list.forEach(o => {
-    if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false) meshes.push(o);
-    if (o.children) traverse(o.children);
-  }); })(objects);
-  if (!meshes.length) { notify('Keine Flächen', 'w'); return; }
+  try {
+    const meshes = [];
+    (function tr(list){ list.forEach(o => {
+      if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false) meshes.push(o);
+      if (o.children) tr(o.children);
+    }); })(objects);
+    if (!meshes.length) { notify('Keine Flächen', 'w'); return; }
 
-  const matLines = [], objLines = [], buildLines = [];
-  const colorIndex = new Map();
-  let nextObjId = 2;  // id 1 = basematerials
-  for (const m of meshes) {
-    const col = m.material?.color || new THREE.Color(0xcccccc);
-    const hex = col.getHexString().toUpperCase();
-    if (!colorIndex.has(hex)) {
-      colorIndex.set(hex, matLines.length);
-      const nm = (m.userData?.name || 'Material').replace(/[<>&"]/g, '');
-      matLines.push(`   <base name="${nm}" displaycolor="#${hex}FF"/>`);
-    }
-    const pindex = colorIndex.get(hex);
-    let geo = m.geometry.clone().toNonIndexed();
-    m.updateMatrixWorld(true);
-    geo.applyMatrix4(m.matrixWorld);
-    geo.scale(10, 10, 10);                                  // App-Einheiten → mm
-    for (const name in geo.attributes) if (name !== 'position') geo.deleteAttribute(name);
-    geo = THREE.BufferGeometryUtils.mergeVertices(geo, 1e-4); // rein nach Position → wasserdicht
-    const pos = geo.attributes.position, idx = geo.index ? geo.index.array : null;
-    const verts = [];
-    for (let i = 0; i < pos.count; i++)
-      verts.push(`    <vertex x="${pos.getX(i).toFixed(5)}" y="${pos.getY(i).toFixed(5)}" z="${pos.getZ(i).toFixed(5)}"/>`);
-    const tris = [];
-    const triN = idx ? idx.length / 3 : pos.count / 3;
-    for (let i = 0; i < triN; i++) {
-      const a = idx ? idx[i*3] : i*3, b = idx ? idx[i*3+1] : i*3+1, c = idx ? idx[i*3+2] : i*3+2;
-      tris.push(`    <triangle v1="${a}" v2="${b}" v3="${c}"/>`);
-    }
-    const oid = nextObjId++;
-    objLines.push(`  <object id="${oid}" type="model" pid="1" pindex="${pindex}">`,
-      `   <mesh>`, `    <vertices>`, verts.join('\n'), `    </vertices>`,
-      `    <triangles>`, tris.join('\n'), `    </triangles>`, `   </mesh>`, `  </object>`);
-    buildLines.push(`  <item objectid="${oid}"/>`);
-    geo.dispose();
-  }
-
-  const model = `<?xml version="1.0" encoding="UTF-8"?>
+    // Bambu/Orca-Struktur: EIN Objekt mit mehreren „Teilen" (components); pro
+    // Farbe ein Extruder → Bambu legt die Teile automatisch auf Filament 1/2/…
+    const IDENT = '1 0 0 0 1 0 0 0 1 0 0 0';
+    const colorIndex = new Map();           // hex → extruder-1
+    const objXml = [], compXml = [], partXml = [];
+    meshes.forEach((m, i) => {
+      const id = i + 1;
+      const hex = (m.material?.color || new THREE.Color(0xcccccc)).getHexString().toUpperCase();
+      if (!colorIndex.has(hex)) colorIndex.set(hex, colorIndex.size);
+      const extruder = colorIndex.get(hex) + 1;
+      let geo = m.geometry.clone().toNonIndexed();
+      m.updateMatrixWorld(true);
+      geo.applyMatrix4(m.matrixWorld);
+      geo.scale(10, 10, 10);                                  // App-Einheiten → mm
+      for (const n in geo.attributes) if (n !== 'position') geo.deleteAttribute(n);
+      geo = THREE.BufferGeometryUtils.mergeVertices(geo, 1e-4); // verschweißen → wasserdicht
+      const pos = geo.attributes.position, idx = geo.index ? geo.index.array : null;
+      let v = '', t = '';
+      for (let k = 0; k < pos.count; k++)
+        v += `<vertex x="${pos.getX(k).toFixed(5)}" y="${pos.getY(k).toFixed(5)}" z="${pos.getZ(k).toFixed(5)}"/>`;
+      const triN = idx ? idx.length / 3 : pos.count / 3;
+      for (let k = 0; k < triN; k++) {
+        const a = idx ? idx[k*3] : k*3, b = idx ? idx[k*3+1] : k*3+1, c = idx ? idx[k*3+2] : k*3+2;
+        t += `<triangle v1="${a}" v2="${b}" v3="${c}"/>`;
+      }
+      objXml.push(`  <object id="${id}" type="model"><mesh><vertices>${v}</vertices><triangles>${t}</triangles></mesh></object>`);
+      compXml.push(`<component objectid="${id}" transform="${IDENT}"/>`);
+      const pname = (m.userData?.name || ('Teil ' + id)).replace(/[<>&"]/g, '');
+      partXml.push(`  <part id="${id}" subtype="normal_part"><metadata key="name" value="${pname}"/><metadata key="extruder" value="${extruder}"/></part>`);
+      geo.dispose();
+    });
+    const asmId = meshes.length + 1;
+    const modelName = _designFilename('3mf').replace(/\.3mf$/i, '');
+    const model = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
  <resources>
-  <basematerials id="1">
-${matLines.join('\n')}
-  </basematerials>
-${objLines.join('\n')}
+${objXml.join('\n')}
+  <object id="${asmId}" type="model"><components>${compXml.join('')}</components></object>
  </resources>
- <build>
-${buildLines.join('\n')}
- </build>
+ <build><item objectid="${asmId}" transform="${IDENT}"/></build>
 </model>`;
-  const contentTypes = `<?xml version="1.0" encoding="UTF-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
- <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
- <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
-</Types>`;
-  const rels = `<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
- <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
-</Relationships>`;
-  const enc = s => fflate.strToU8(s);
-  const zipped = fflate.zipSync({
-    '[Content_Types].xml': enc(contentTypes),
-    '_rels/.rels': enc(rels),
-    '3D/3dmodel.model': enc(model),
-  }, { level: 6 });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([zipped], { type: 'model/3mf' }));
-  a.download = _designFilename('3mf');
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  notify(`3MF exportiert (${meshes.length} Körper, ${colorIndex.size} Farbe/n) ✓`, 'ok');
+    const cfg = `<?xml version="1.0" encoding="UTF-8"?>
+<config>
+ <object id="${asmId}">
+  <metadata key="name" value="${modelName}"/>
+${partXml.join('\n')}
+ </object>
+</config>`;
+    const ct = `<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/xml"/></Types>`;
+    const rels = `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`;
+    const u8 = s => fflate.strToU8(s);
+    const zipped = fflate.zipSync({
+      '[Content_Types].xml': u8(ct),
+      '_rels/.rels': u8(rels),
+      '3D/3dmodel.model': u8(model),
+      'Metadata/model_settings.config': u8(cfg),
+    }, { level: 6 });
+    const fname = _designFilename('3mf');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([zipped], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' }));
+    a.download = fname;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    notify(`3MF „${fname}" — ${meshes.length} Teile, ${colorIndex.size} Farbe/n ✓`, 'ok');
+  } catch(e) {
+    console.error('3MF Export Fehler:', e);
+    notify('3MF Fehler: ' + (e.message || e), 'w');
+  }
 }
 
 function exportSTEP() {
