@@ -713,7 +713,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.5.0<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.0<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -731,6 +731,9 @@ const firebaseConfig = {
     <button class="btn" onclick="mirrorTool()" title="M — Objekt auswählen dann X/Y/Z">⊿ Spiegeln</button>
     <button class="btn" onclick="linearPatternTool()" title="Lineares Muster — Objekt mehrfach in einer Richtung kopieren">⋮ Linear</button>
     <button class="btn" onclick="circularPatternTool()" title="Kreismuster — Objekt kreisförmig anordnen">⊙ Kreis</button>
+    <button class="btn" onclick="openCutTool()" title="Zerteilen — großes Objekt mit einer Schnittebene in zwei druckbare Teile teilen">✂ Zerteilen</button>
+    <button class="btn" onclick="openEraserTool()" title="Radierer — mit dem Pinsel über das Modell fahren, um Flächen/Geometrie zu entfernen (Radius per Mausrad)">🧽 Radierer</button>
+    <button class="btn" onclick="repairSelected()" title="Reparieren — offene Löcher im ausgewählten Objekt schließen (wieder wasserdicht/druckbar machen)">🩹 Reparieren</button>
     <div class="sep"></div>
     <button class="btn" id="btn-lock" onclick="toggleLockSelected()" title="Strg+L — Objekt gegen Verschieben sichern">🔒 Sperren</button>
     <button class="btn" id="btn-hide" onclick="toggleHideSelected()" title="Strg+H — Objekt ausblenden  |  Strg+Shift+H alle einblenden">👁 Ausblenden</button>
@@ -1047,6 +1050,9 @@ const firebaseConfig = {
         </div>
         <div class="shp" onclick="addShape('tube')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="12" cy="7" rx="7" ry="2.5"/><ellipse cx="12" cy="7" rx="3.5" ry="1.3" stroke-width="1"/><line x1="5" y1="7" x2="5" y2="18"/><line x1="19" y1="7" x2="19" y2="18"/><ellipse cx="12" cy="18" rx="7" ry="2.5"/></svg>Rohr
+        </div>
+        <div class="shp" onclick="addPolyTube(4)" title="Kantrohr — eckiges Hohlprofil, Eckenzahl über „Seiten" einstellbar (3, 4, 5, …)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M5 6h14v12H5z"/><path d="M8.5 9h7v6h-7z" stroke-width="1"/></svg>Kantrohr
         </div>
         <div class="shp" onclick="addShape('star')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><polygon points="12,2 14.4,9 22,9 16,14 18,21 12,17 6,21 8,14 2,9 9.6,9"/></svg>Stern
@@ -1455,6 +1461,7 @@ const firebaseConfig = {
         <span class="vsec">Größe</span>
         <div class="vrow"><label>Höhe</label>  <input type="range" id="vp-h"   min="30" max="400" value="150" step="5" oninput="document.getElementById('vv-h').textContent=this.value;_vaseUpd('height',this.value)"><span class="vv" id="vv-h">150</span><span class="vu">mm</span></div>
         <div class="vrow"><label>Breite</label><input type="range" id="vp-w"   min="20" max="300" value="80"  step="5" oninput="document.getElementById('vv-w').textContent=this.value;_vaseUpd('width',this.value)"><span class="vv" id="vv-w">80</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Wandstärke</label><input type="range" id="vp-wall" min="0" max="15" value="2" step="0.5" oninput="document.getElementById('vv-wall').textContent=this.value;_vaseUpd('wall',this.value)"><span class="vv" id="vv-wall">2</span><span class="vu">mm</span></div>
         <!-- Querschnitt -->
         <span class="vsec">Querschnitt</span>
         <div class="vbg" id="vbg-cross">
@@ -2706,178 +2713,344 @@ function _buildHighResGeo(type) {
   }
 }
 
-function _applyVertexDisplacement(geo, pattern, amp, freq, invert, symmetric) {
-  const g = geo.toNonIndexed();
-  // Preserve the geometry's own smooth normals (e.g. Cylinder/Cone taper normals).
-  // Computing flat face normals here causes the cone tip to explode because each
-  // thin triangle there has a different face normal direction.
-  if (!g.attributes.normal) g.computeVertexNormals();
-  const pos  = g.attributes.position;
-  const norm = g.attributes.normal;
-  const uvAttr = g.attributes.uv;   // present on Cylinder/Cone/Sphere/Torus
-  const count = pos.count;
+// ─── Displacement-Kern (welded · Welt-Raum · triplanar → BumpMesh-Qualität) ──
+const _MM_PER_UNIT = 10;   // 1 Scene-Unit = 10 mm
+// Absolute Textur-Skala: Muster-Koordinaten werden auf diese FESTE Referenzlänge
+// (Welt-Units) normiert statt auf die Objektgröße → gleiche „Skalierung" ergibt
+// dieselbe physische Mustergröße, egal wie groß/hoch das Objekt ist. 40 U = 400 mm
+// ist so getarnt, dass ein ~800 mm-Objekt bei gegebener Skalierung gleich aussieht
+// wie zuvor (objHalf≈REF), kleinere/größere jetzt konsistent dazu.
+const _TEX_REF_U = 40;
+
+// Höhe (0..1) eines Musters an einer UV-Stelle. Aus dem alten Switch extrahiert,
+// damit wir triplanar 3× samplen und weich überblenden können.
+function _patternHeight(pattern, u, v, freq) {
   const PI = Math.PI;
-
-  // For triplanar fallback (no UV): normalise coords to ±1 so that pattern
-  // frequency and amplitude are scale-independent. Without this, imported STL
-  // meshes (vertices in raw mm units, e.g. 0–50) produce 40+ invisible cycles.
-  let _triN = 1;
-  if (!uvAttr) {
-    let _mx = 0;
-    for (let i = 0; i < count; i++) {
-      _mx = Math.max(_mx, Math.abs(pos.getX(i)), Math.abs(pos.getY(i)), Math.abs(pos.getZ(i)));
-    }
-    _triN = _mx > 0 ? _mx : 1;
+  let t = 0;
+  switch (pattern) {
+    case 'riffel':  t = 0.5 + 0.5 * Math.sin(u * freq * PI); break;
+    case 'diamant': t = (0.5 + 0.5 * Math.sin(u * freq * PI)) * (0.5 + 0.5 * Math.sin(v * freq * PI)); break;
+    case 'waben': { const f = freq * PI; const a = Math.cos(u * f), b = Math.cos((u * 0.5 + v * 0.866) * f), c = Math.cos((u * 0.5 - v * 0.866) * f); t = Math.max(0, (a + b + c) / 3); break; }
+    case 'ziegel': { const row = Math.floor(v * freq + 100); const offset = (row % 2) * 0.5; const col = Math.floor((u + offset) * freq * 0.5 + 100); const fu = ((u + offset) * freq * 0.5 + 100) - col; const fv = (v * freq + 100) - Math.floor(v * freq + 100); const gap = 0.1; t = (fu > gap && fu < 1 - gap && fv > gap && fv < 1 - gap) ? 1 : 0; break; }
+    case 'punkte': { const gu = (u * freq + 100) - Math.floor(u * freq + 100) - 0.5; const gv = (v * freq + 100) - Math.floor(v * freq + 100) - 0.5; const dist = Math.sqrt(gu * gu + gv * gv) * 2; t = Math.max(0, 1 - dist * dist * 4); break; }
+    case 'rauschen': { const iu = Math.floor(u * freq + 100), iv = Math.floor(v * freq + 100); const fu2 = (u * freq + 100) - iu, fv2 = (v * freq + 100) - iv; const hsh = (a, b) => { let n = a * 127 + b * 311; n = ((n >> 5) ^ n) * 1540483477 | 0; return ((n >> 15) ^ n) & 0xffff; }; const r00 = hsh(iu, iv) / 65535, r10 = hsh(iu + 1, iv) / 65535, r01 = hsh(iu, iv + 1) / 65535, r11 = hsh(iu + 1, iv + 1) / 65535; const wu = fu2 * fu2 * (3 - 2 * fu2), wv = fv2 * fv2 * (3 - 2 * fv2); t = r00 * (1 - wu) * (1 - wv) + r10 * wu * (1 - wv) + r01 * (1 - wu) * wv + r11 * wu * wv; break; }
+    case 'gitter': { const gu = (u * freq + 100) % 1, gv = (v * freq + 100) % 1; const gap = 0.08; t = (gu < gap || gu > 1 - gap || gv < gap || gv > 1 - gap) ? 0 : 1; break; }
+    case 'streifen': { const s = 0.5 + 0.5 * Math.sin(u * freq * PI); t = s > 0.5 ? 1 : 0; break; }
+    case 'wellen': t = 0.5 + 0.5 * Math.sin((u + v) * freq * PI); break;
+    case 'pyramide': { const gu = ((u * freq + 100) % 1) - 0.5; const gv = ((v * freq + 100) % 1) - 0.5; t = Math.max(0, 1 - (Math.abs(gu) + Math.abs(gv)) * 2); break; }
+    case 'holz': t = 0.5 + 0.5 * Math.sin(Math.sqrt(u * u + v * v) * freq * PI * 2); break;
+    case 'moos': { const fu2 = u * freq, fv2 = v * freq; const iu2 = Math.floor(fu2), iv2 = Math.floor(fv2); let minD = 99; for (let di = -1; di <= 1; di++) { for (let dj = -1; dj <= 1; dj++) { const pu = iu2 + di, pv = iv2 + dj; const h1 = ((pu * 127 + pv * 311) * 1540483477) & 0xffff; const h2 = ((pu * 311 + pv * 127) * 1540483477) & 0xffff; const ou = h1 / 65535 * 0.8 + 0.1, ov = h2 / 65535 * 0.8 + 0.1; const du = fu2 - pu - ou, dv = fv2 - pv - ov; minD = Math.min(minD, Math.sqrt(du * du + dv * dv)); } } t = Math.max(0, 1 - minD * 2); break; }
+    case 'holzmaserung': { const hsh3 = (a, b) => { let n = a * 127 + b * 311; n = ((n >> 5) ^ n) * 1540483477 | 0; return ((n >> 15) ^ n) & 0xffff; }; const fq = freq * 0.6; const iq = Math.floor(u * fq + 100), ir = Math.floor(v * fq + 100); const fu3 = (u * fq + 100) - iq, fv3 = (v * fq + 100) - ir; const q00 = hsh3(iq, ir) / 65535, q10 = hsh3(iq + 1, ir) / 65535, q01 = hsh3(iq, ir + 1) / 65535, q11 = hsh3(iq + 1, ir + 1) / 65535; const wq = fu3 * fu3 * (3 - 2 * fu3), wr = fv3 * fv3 * (3 - 2 * fv3); const perturb = (q00 * (1 - wq) * (1 - wr) + q10 * wq * (1 - wr) + q01 * (1 - wq) * wr + q11 * wq * wr) * 2 - 1; t = 0.5 + 0.5 * Math.sin((v * freq * 3.5 + perturb * 2.0 + u * 0.3) * PI); t = t * t; break; }
+    case 'custom': t = _sampleCustomTex(u, v, freq); break;
   }
+  return t;
+}
 
-  for (let i = 0; i < count; i++) {
-    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-    const nx = norm.getX(i), ny = norm.getY(i), nz = norm.getZ(i);
-    let u, v;
-    if (uvAttr) {
-      // Use geometry's built-in UVs (Cylinder, Cone, Sphere, Torus) — correct wrapping on all faces
-      u = uvAttr.getX(i);
-      v = uvAttr.getY(i);
-    } else {
-      // Triplanar fallback for custom/imported geometry — normalised to ±1
-      const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
-      if (ay >= ax && ay >= az) { u = x / _triN; v = z / _triN; }
-      else if (ax >= ay && ax >= az) { u = z / _triN; v = y / _triN; }
-      else { u = x / _triN; v = y / _triN; }
-    }
-    let t = 0;
-    switch (pattern) {
-      case 'riffel':
-        t = 0.5 + 0.5 * Math.sin(u * freq * PI);
-        break;
-      case 'diamant':
-        t = (0.5 + 0.5 * Math.sin(u * freq * PI)) * (0.5 + 0.5 * Math.sin(v * freq * PI));
-        break;
-      case 'waben': {
-        const f = freq * PI;
-        const a = Math.cos(u * f), b = Math.cos((u * 0.5 + v * 0.866) * f), c = Math.cos((u * 0.5 - v * 0.866) * f);
-        t = Math.max(0, (a + b + c) / 3);
-        break;
-      }
-      case 'ziegel': {
-        const row = Math.floor(v * freq + 100);
-        const offset = (row % 2) * 0.5;
-        const col = Math.floor((u + offset) * freq * 0.5 + 100);
-        const fu = ((u + offset) * freq * 0.5 + 100) - col;
-        const fv = (v * freq + 100) - Math.floor(v * freq + 100);
-        const gap = 0.1;
-        t = (fu > gap && fu < 1 - gap && fv > gap && fv < 1 - gap) ? 1 : 0;
-        break;
-      }
-      case 'punkte': {
-        const gu = (u * freq + 100) - Math.floor(u * freq + 100) - 0.5;
-        const gv = (v * freq + 100) - Math.floor(v * freq + 100) - 0.5;
-        const dist = Math.sqrt(gu * gu + gv * gv) * 2;
-        t = Math.max(0, 1 - dist * dist * 4);
-        break;
-      }
-      case 'rauschen': {
-        const iu = Math.floor(u * freq + 100), iv = Math.floor(v * freq + 100);
-        const fu2 = (u * freq + 100) - iu, fv2 = (v * freq + 100) - iv;
-        const hsh = (a, b) => { let n = a * 127 + b * 311; n = ((n >> 5) ^ n) * 1540483477 | 0; return ((n >> 15) ^ n) & 0xffff; };
-        const r00 = hsh(iu,iv)/65535, r10 = hsh(iu+1,iv)/65535, r01 = hsh(iu,iv+1)/65535, r11 = hsh(iu+1,iv+1)/65535;
-        const wu = fu2*fu2*(3-2*fu2), wv = fv2*fv2*(3-2*fv2);
-        t = r00*(1-wu)*(1-wv) + r10*wu*(1-wv) + r01*(1-wu)*wv + r11*wu*wv;
-        break;
-      }
-      case 'gitter': {
-        const gu = (u * freq + 100) % 1, gv = (v * freq + 100) % 1;
-        const gap = 0.08;
-        t = (gu < gap || gu > 1 - gap || gv < gap || gv > 1 - gap) ? 0 : 1;
-        break;
-      }
-      case 'streifen': {
-        const s = 0.5 + 0.5 * Math.sin(u * freq * PI);
-        t = s > 0.5 ? 1 : 0;
-        break;
-      }
-      case 'wellen':
-        t = 0.5 + 0.5 * Math.sin((u + v) * freq * PI);
-        break;
-      case 'pyramide': {
-        const gu = ((u * freq + 100) % 1) - 0.5;
-        const gv = ((v * freq + 100) % 1) - 0.5;
-        t = Math.max(0, 1 - (Math.abs(gu) + Math.abs(gv)) * 2);
-        break;
-      }
-      case 'holz':
-        t = 0.5 + 0.5 * Math.sin(Math.sqrt(u * u + v * v) * freq * PI * 2);
-        break;
-      case 'moos': {
-        const fu2 = u * freq, fv2 = v * freq;
-        const iu2 = Math.floor(fu2), iv2 = Math.floor(fv2);
-        let minD = 99;
-        for (let di = -1; di <= 1; di++) {
-          for (let dj = -1; dj <= 1; dj++) {
-            const pu = iu2 + di, pv = iv2 + dj;
-            const h1 = ((pu * 127 + pv * 311) * 1540483477) & 0xffff;
-            const h2 = ((pu * 311 + pv * 127) * 1540483477) & 0xffff;
-            const ou = h1 / 65535 * 0.8 + 0.1, ov = h2 / 65535 * 0.8 + 0.1;
-            const du = fu2 - pu - ou, dv = fv2 - pv - ov;
-            minD = Math.min(minD, Math.sqrt(du * du + dv * dv));
-          }
-        }
-        t = Math.max(0, 1 - minD * 2);
-        break;
-      }
-      case 'holzmaserung': {
-        const hsh3 = (a, b) => { let n = a * 127 + b * 311; n = ((n >> 5) ^ n) * 1540483477 | 0; return ((n >> 15) ^ n) & 0xffff; };
-        const fq = freq * 0.6;
-        const iq = Math.floor(u * fq + 100), ir = Math.floor(v * fq + 100);
-        const fu3 = (u * fq + 100) - iq, fv3 = (v * fq + 100) - ir;
-        const q00=hsh3(iq,ir)/65535,q10=hsh3(iq+1,ir)/65535,q01=hsh3(iq,ir+1)/65535,q11=hsh3(iq+1,ir+1)/65535;
-        const wq=fu3*fu3*(3-2*fu3),wr=fv3*fv3*(3-2*fv3);
-        const perturb = (q00*(1-wq)*(1-wr)+q10*wq*(1-wr)+q01*(1-wq)*wr+q11*wq*wr) * 2 - 1;
-        t = 0.5 + 0.5 * Math.sin((v * freq * 3.5 + perturb * 2.0 + u * 0.3) * PI);
-        t = t * t;
-        break;
-      }
-      case 'custom':
-        t = _sampleCustomTex(u, v, freq);
-        break;
-    }
-    if (invert) t = 1 - t;
-    if (symmetric) t = Math.abs(t * 2 - 1);
-    // For cap faces (normal nearly vertical): keep vertical bump so the cap
-    // surface is visibly textured from above, AND add outward radial component
-    // at the rim so the pattern is also visible from the side.
-    let dnx = nx, dny = ny, dnz = nz;
-    const capness = Math.abs(ny) - Math.max(Math.abs(nx), Math.abs(nz));
-    if (capness > 0.3) {
-      const r = Math.sqrt(x * x + z * z) + 1e-9;
-      const edgeW = Math.min(r, 1.0);  // 0 at centre, 1 at rim
-      dnx = nx + (x / r) * edgeW * capness;
-      // dny stays as-is → vertical bumps visible from above
-      dnz = nz + (z / r) * edgeW * capness;
-    }
-    pos.setXYZ(i, x + dnx * t * amp, y + dny * t * amp, z + dnz * t * amp);
-  }
-  g.computeVertexNormals();
+// Triplanar-Höhe mit weicher Überblendung der 3 Projektionen (kein harter
+// Achsen-Wechsel → keine Kanten-Spikes; entspricht BumpMeshs „Übergangsglättung").
+function _triplanarHeight(pattern, px, py, pz, nx, ny, nz, freq, orient) {
+  const k = 4;   // Blend-Schärfe
+  let wx = Math.pow(Math.abs(nx), k), wy = Math.pow(Math.abs(ny), k), wz = Math.pow(Math.abs(nz), k);
+  const s = wx + wy + wz + 1e-9; wx /= s; wy /= s; wz /= s;
+  const P = (a, b) => orient === 'quer' ? _patternHeight(pattern, b, a, freq) : _patternHeight(pattern, a, b, freq);
+  return wx * P(pz, py) + wy * P(px, pz) + wz * P(px, py);
+}
+
+// Welded, indexierte, positions-only Basis (Voraussetzung für glatte Normalen
+// + saubere Tessellierung; verschweißt STL-Dreiecksuppen zu echter Topologie).
+function _prepWarpBase(baseGeo) {
+  const src = baseGeo.index ? baseGeo.toNonIndexed() : baseGeo;
+  const p = new THREE.BufferGeometry();
+  p.setAttribute('position', new THREE.Float32BufferAttribute(Array.from(src.attributes.position.array), 3));
+  if (src !== baseGeo && src.dispose) src.dispose();
+  p.computeBoundingBox();
+  const sz = p.boundingBox.getSize(new THREE.Vector3());
+  const md = Math.max(sz.x, sz.y, sz.z) || 1;
+  let g;
+  try { g = THREE.BufferGeometryUtils.mergeVertices(p, Math.max(md * 1e-5, 1e-5)); }
+  catch (e) { g = p; }
+  if (!g.index) { const n = g.attributes.position.count, ix = new Array(n); for (let i = 0; i < n; i++) ix[i] = i; g.setIndex(ix); }
   return g;
 }
 
+// Adaptive, wasserdichte Unterteilung (rot/grün mit geteilten Kanten-Mittel-
+// punkten → keine T-Stöße/Risse). pos/idx als flache Arrays, target = max. Kante.
+function _subdivideAdaptive(pos, idx, target) {
+  const t2 = target * target;
+  const ek = (a, b) => a < b ? a + '_' + b : b + '_' + a;
+  const e2 = (p, q) => { const dx = pos[p * 3] - pos[q * 3], dy = pos[p * 3 + 1] - pos[q * 3 + 1], dz = pos[p * 3 + 2] - pos[q * 3 + 2]; return dx * dx + dy * dy + dz * dz; };
+  for (let iter = 0; iter < 9; iter++) {
+    if (pos.length / 3 > 150000) break;
+    const marked = new Set(); let any = false;
+    for (let i = 0; i < idx.length; i += 3) {
+      const a = idx[i], b = idx[i + 1], c = idx[i + 2];
+      if (Math.max(e2(a, b), e2(b, c), e2(c, a)) > t2) { marked.add(ek(a, b)); marked.add(ek(b, c)); marked.add(ek(c, a)); any = true; }
+    }
+    if (!any) break;
+    const mid = new Map();
+    const getMid = (a, b) => { const k = ek(a, b); let m = mid.get(k); if (m === undefined) { m = pos.length / 3; pos.push((pos[a * 3] + pos[b * 3]) / 2, (pos[a * 3 + 1] + pos[b * 3 + 1]) / 2, (pos[a * 3 + 2] + pos[b * 3 + 2]) / 2); mid.set(k, m); } return m; };
+    const nIdx = [];
+    for (let i = 0; i < idx.length; i += 3) {
+      const a = idx[i], b = idx[i + 1], c = idx[i + 2];
+      const m0 = marked.has(ek(a, b)), m1 = marked.has(ek(b, c)), m2 = marked.has(ek(c, a));
+      const n = (m0 ? 1 : 0) + (m1 ? 1 : 0) + (m2 ? 1 : 0);
+      if (n === 0) { nIdx.push(a, b, c); continue; }
+      const M0 = m0 ? getMid(a, b) : -1, M1 = m1 ? getMid(b, c) : -1, M2 = m2 ? getMid(c, a) : -1;
+      if (n === 3) { nIdx.push(a, M0, M2, M0, b, M1, M2, M1, c, M0, M1, M2); }
+      else if (n === 1) {
+        if (m0) nIdx.push(a, M0, c, M0, b, c);
+        else if (m1) nIdx.push(b, M1, a, M1, c, a);
+        else nIdx.push(c, M2, b, M2, a, b);
+      } else { // n === 2
+        if (m0 && m1) nIdx.push(M0, b, M1, a, M0, M1, a, M1, c);
+        else if (m1 && m2) nIdx.push(c, M2, M1, a, b, M1, a, M1, M2);
+        else nIdx.push(a, M0, M2, M0, b, c, M0, c, M2);
+      }
+    }
+    idx = nIdx;
+  }
+  return { pos, idx };
+}
+
+// Ort-Filter als Menge orthogonaler Flächenkategorien (multi-select):
+//   aussen = senkrechte Außenwände · innen = senkrechte Innenwände
+//   oben   = waagerechte Oberseiten (Dach) · unten = waagerechte Unterseiten (Boden)
+// Gespeichert als Komma-String; 'alle' = alles, 'nichts' = nichts. Legacy-Werte
+// ('aussen'/'oben'/'seiten' als Einzelauswahl) werden weiterhin verstanden.
+function _sstep(e0, e1, x) { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); }
+const _WHERE_CATS = ['aussen', 'oben', 'innen', 'unten'];
+function _parseWhere(w) {
+  if (w == null || w === 'alle') return { aussen: 1, oben: 1, innen: 1, unten: 1 };
+  if (w === 'nichts') return { aussen: 0, oben: 0, innen: 0, unten: 0 };
+  if (w === 'seiten') return { aussen: 1, oben: 0, innen: 1, unten: 0 };   // Legacy: alle senkrechten Wände
+  const s = String(w).split(',');
+  return { aussen: s.includes('aussen') ? 1 : 0, oben: s.includes('oben') ? 1 : 0,
+           innen: s.includes('innen') ? 1 : 0, unten: s.includes('unten') ? 1 : 0 };
+}
+function _toggleWhere(cur, cat) {
+  if (cat === 'alle')   return 'alle';
+  if (cat === 'nichts') return 'nichts';
+  const W = _parseWhere(cur); W[cat] = W[cat] ? 0 : 1;
+  const arr = _WHERE_CATS.filter(k => W[k]);
+  return arr.length === 4 ? 'alle' : (arr.length === 0 ? 'nichts' : arr.join(','));
+}
+
+// Zentrale Displacement-Pipeline: weld → 3D-Tessellierung → glatte Welt-Normalen
+// → triplanar-Höhe → Verschiebung im WELT-Raum mit ABSOLUTER mm-Höhe → zurück in
+// Local-Space. ampMm = Texturhöhe in mm, unabhängig von Modellgröße/-skalierung.
+// Cached auf Mesh (sig = Muster|Skalierung|Richtung|Ort|Basis-Matrix), sodass
+// reine Höhen-Änderungen (Slider) nicht neu tessellieren müssen.
+function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric, orient, where) {
+  if (!baseGeo || !pattern || pattern === 'keine') return null;
+  mesh.updateWorldMatrix(true, false);
+  const M = mesh.matrixWorld;
+  const Minv = new THREE.Matrix4().copy(M).invert();
+  const ampU = (ampMm || 0) / _MM_PER_UNIT;
+  // Basis-Anteil der Welt-Matrix (Rotation·Skalierung, ohne Translation) → Cache-Key
+  const basis = M.elements.slice(0, 12).map(e => Math.round(e * 1e4)).join(',');
+  const sig = pattern + '|' + freq + '|' + orient + '|' + where + '|' + basis;
+
+  let C = mesh.userData._warpCache;
+  if (!C || C.sig !== sig) {
+    // 1. verschweißte, indexierte Basis (Local-Space)
+    const wb = _prepWarpBase(baseGeo);
+    let pos = Array.from(wb.attributes.position.array);
+    let idx = Array.from(wb.index.array);
+    wb.dispose && wb.dispose();
+    // 2. Local → Welt + Welt-Ausdehnung messen
+    const v = new THREE.Vector3(); const bb = new THREE.Box3();
+    for (let i = 0; i < pos.length; i += 3) {
+      v.set(pos[i], pos[i + 1], pos[i + 2]).applyMatrix4(M);
+      pos[i] = v.x; pos[i + 1] = v.y; pos[i + 2] = v.z; bb.expandByPoint(v);
+    }
+    const wsz = bb.getSize(new THREE.Vector3());
+    const worldMax = Math.max(wsz.x, wsz.y, wsz.z) || 1;
+    const ctr = bb.getCenter(new THREE.Vector3());
+    const ref = _TEX_REF_U;   // feste Referenzlänge → absolute Mustergröße
+    // 3. adaptive Unterteilung im Welt-Raum (affin → lineare Mittelpunkte korrekt).
+    //    Ziel-Kantenlänge an der ABSOLUTEN Muster-Wellenlänge ausrichten (ref/freq),
+    //    damit auch große Objekte mit vielen Zyklen sauber aufgelöst werden – nicht
+    //    an der Objektgröße. Untergrenze worldMax/200 deckelt die Dreieckszahl (FPS).
+    const target = Math.max(worldMax / 200, (ref / Math.max(0.5, freq)) / 3);
+    const r = _subdivideAdaptive(pos, idx, target);
+    pos = r.pos; idx = r.idx;
+    // 4. glatte Welt-Normalen
+    const wg = new THREE.BufferGeometry();
+    wg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    wg.setIndex(idx);
+    wg.computeVertexNormals();
+    const nrm = wg.attributes.normal;
+    const count = pos.length / 3;
+    // 5. Basis-Höhe pro Vertex (vor invert/sym) + Maske (where-Filter)
+    const baseT = new Float32Array(count);
+    const mask = new Uint8Array(count);
+    const wpos = Float32Array.from(pos);
+    const wnor = Float32Array.from(nrm.array);
+    const W = _parseWhere(where);   // aktive Flächenkategorien (multi-select)
+    for (let i = 0; i < count; i++) {
+      const x = wpos[i * 3], y = wpos[i * 3 + 1], z = wpos[i * 3 + 2];
+      const nx = wnor[i * 3], ny = wnor[i * 3 + 1], nz = wnor[i * 3 + 2];
+      const outward = (nx * (x - ctr.x) + ny * (y - ctr.y) + nz * (z - ctr.z)) > 1e-6;   // nach außen zeigend
+      // Flächenkategorie bestimmen → texturieren nur, wenn diese Kategorie aktiv ist
+      const a = Math.abs(ny);
+      let on, fade = 1;
+      if (ny > 0.6) {                                     // waagerecht, oben → Dach
+        on = W.oben;
+        if (on && !(outward ? W.aussen : W.innen)) fade = _sstep(0.6, 0.78, a);          // → Wand-Grenze weich ausblenden
+      } else if (ny < -0.6) {                             // waagerecht, unten → Boden
+        on = W.unten;
+        if (on && !(outward ? W.aussen : W.innen)) fade = _sstep(0.6, 0.78, a);
+      } else {                                            // senkrechte Wand → außen/innen
+        on = outward ? W.aussen : W.innen;
+        if (on && !(ny >= 0 ? W.oben : W.unten)) fade = 1 - _sstep(0.42, 0.6, a);         // → Dach/Boden-Grenze weich ausblenden
+      }
+      if (!on) { mask[i] = 0; continue; }
+      mask[i] = 1;
+      // Amplitude an Grenzen zu AUSGESCHLOSSENEN Flächen weich gegen 0 → kein
+      // ausgefranstes Band an der Wand-Boden-/Wand-Dach-Kante (Triplanar-Misch-
+      // zone + harte Maskenkante). Innerhalb einer Fläche bleibt fade = 1.
+      baseT[i] = _triplanarHeight(pattern, (x - ctr.x) / ref, (y - ctr.y) / ref, (z - ctr.z) / ref, nx, ny, nz, freq, orient) * fade;
+    }
+    wg.dispose();
+    C = mesh.userData._warpCache = { sig, wpos, wnor, baseT, mask, idx, count };
+  }
+
+  // 6. invert/sym anwenden + absolute mm-Verschiebung im Welt-Raum → Local-Space
+  const { wpos, wnor, baseT, mask, idx, count } = C;
+  const out = new Float32Array(count * 3);
+  const v = new THREE.Vector3();
+  for (let i = 0; i < count; i++) {
+    let t = baseT[i];
+    if (invert) t = 1 - t;
+    if (symmetric) t = Math.abs(t * 2 - 1);
+    let x = wpos[i * 3], y = wpos[i * 3 + 1], z = wpos[i * 3 + 2];
+    if (mask[i]) { const d = t * ampU; x += wnor[i * 3] * d; y += wnor[i * 3 + 1] * d; z += wnor[i * 3 + 2] * d; }
+    v.set(x, y, z).applyMatrix4(Minv);
+    out[i * 3] = v.x; out[i * 3 + 1] = v.y; out[i * 3 + 2] = v.z;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+  geo.setIndex(idx.slice());
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Generische Textur (Displacement) auf die AKTUELLE Geometrie eines Mesh —
+// für Custom-/Union-Kinder (Aushöhlung bleibt erhalten). Größenabhängige
+// Unterteilung + Amplitude, damit es bei jeder Skalierung/Einheit funktioniert.
+function _dispMesh(m, pat, amp, freq, inv, sym, orient, where) {
+  if (!m.geometry) return;
+  if (!m.userData._dispBase) m.userData._dispBase = m.geometry.clone();   // ungestörte Basis merken
+  if (pat === 'keine') {
+    m.userData._warpCache = null;
+    m.geometry.dispose(); m.geometry = m.userData._dispBase.clone(); m.geometry.computeVertexNormals();
+    m.userData.displacementPattern = 'keine';
+    _updateObjEdgeLines(m); return;
+  }
+  const geo = _displaceForMesh(m, m.userData._dispBase, pat, amp, freq, inv, sym, orient, where);
+  if (!geo) return;
+  m.geometry.dispose(); m.geometry = geo;
+  // Parameter am Kind merken (für Speichern der Geometrie)
+  m.userData.displacementPattern = pat; m.userData.displacementAmp = amp;
+  m.userData.displacementFreq = freq; m.userData.displacementInvert = inv; m.userData.displacementSymmetric = sym;
+  _updateObjEdgeLines(m);
+}
+
+// Hochauflösende Textur-Basis für ein Rohr in seiner ECHTEN Form (Poly/Boden/Twist),
+// mit Höhenschnitten + Unterteilung der Flächen, damit das Muster sichtbar ist.
+function _tubeDispBase(o) {
+  const poly  = !!o.userData.tubePoly;
+  const sides = poly ? Math.max(3, o.userData.segments || 4) : (o.userData.segments || 64);
+  const ri    = poly ? _tubeRiFor(o, sides) : _tubeRi(o);
+  const twDeg = o.userData.tubeTwist || 0;
+  const floorY = o.userData.tubeFloor ? _tubeFloorY(o) : null;
+  const hSegs = Math.max(10, twDeg ? Math.round(Math.abs(twDeg) / 4) : 10);
+  const off   = poly ? _polyTubeOffset(sides) : 0;
+  let geo = buildTubeGeoEx(ri, sides, twDeg * Math.PI / 180, hSegs, off, floorY, false);   // indexiert
+  geo.computeBoundingBox();
+  const sz = geo.boundingBox.getSize(new THREE.Vector3());
+  const maxDim = Math.max(sz.x, sz.y, sz.z) || 2;
+  if (geo.index) geo = _tessellateForWarp(geo, maxDim / 18, maxDim / 18);
+  return geo;
+}
+
+// Throttle für Live-Slider (Texturhöhe/Skalierung): der Geometrie-Rebuild ist
+// teuer (Tessellierung/Normalen), deshalb max. ~9×/s statt bei jedem oninput-
+// Tick. Leading+trailing, damit es live wirkt und der Endwert sicher ankommt.
+const _dispThr = {};
 function applyDisplacement(param, val) {
-  const o = getFirst(); if (!o || !o.isMesh) return;
+  if (param === 'amp' || param === 'freq') {
+    const o = getFirst(); if (!o) return;
+    if (param === 'amp')  o.userData.displacementAmp  = parseFloat(val) || 0.5;
+    if (param === 'freq') o.userData.displacementFreq = parseFloat(val) || 4;
+    const id = o.userData.id;
+    const st = _dispThr[id] || (_dispThr[id] = {});
+    st.param = param; st.val = val;
+    if (st.timer) return;
+    const run = () => { st.timer = null; st.last = performance.now(); _applyDisplacementNow(st.param, st.val); };
+    const since = performance.now() - (st.last || 0);
+    if (since > 110) run(); else st.timer = setTimeout(run, 110 - since);
+    return;
+  }
+  _applyDisplacementNow(param, val);
+}
+
+function _applyDisplacementNow(param, val) {
+  const o = getFirst(); if (!o) return;
+
+  // Gruppe / Union: Textur auf alle Mesh-Kinder anwenden
+  if (!o.isMesh) {
+    if (!o.children || !o.children.length) return;
+    saveUndoDebounced();
+    if (param === 'pattern')   o.userData.displacementPattern   = val;
+    if (param === 'amp')       o.userData.displacementAmp       = parseFloat(val) || 0.5;
+    if (param === 'freq')      o.userData.displacementFreq      = parseFloat(val) || 4;
+    if (param === 'invert')    o.userData.displacementInvert    = !!val;
+    if (param === 'symmetric') o.userData.displacementSymmetric = !!val;
+    if (param === 'orient')    o.userData.texOrient = val;
+    if (param === 'where')     o.userData.texWhere  = _toggleWhere(o.userData.texWhere, val);
+    const gp = o.userData.displacementPattern || 'keine', ga = o.userData.displacementAmp || 0.5,
+          gf = o.userData.displacementFreq || 4, gi = !!o.userData.displacementInvert, gs = !!o.userData.displacementSymmetric,
+          go = o.userData.texOrient || 'laengs', gw = o.userData.texWhere || 'alle';
+    o.traverse(m => { if (m.isMesh && !m.userData.isEdgeLines && !m.userData.isHole) _dispMesh(m, gp, ga, gf, gi, gs, go, gw); });
+    _fpCurType = null; updateFP();
+    if (param === 'pattern' && gp !== 'keine') o.traverse(m => { if (m.isMesh && m.material) _startTexPreview(m); });
+    return;
+  }
+
+  if (!o.isMesh) return;
   saveUndoDebounced();
   if (param === 'pattern')   o.userData.displacementPattern   = val;
-  if (param === 'amp')       o.userData.displacementAmp       = parseFloat(val) || 0.05;
+  if (param === 'amp')       o.userData.displacementAmp       = parseFloat(val) || 0.5;
   if (param === 'freq')      o.userData.displacementFreq      = parseFloat(val) || 4;
   if (param === 'invert')    o.userData.displacementInvert    = !!val;
   if (param === 'symmetric') o.userData.displacementSymmetric = !!val;
+  if (param === 'orient')    o.userData.texOrient = val;
+  if (param === 'where')     o.userData.texWhere  = _toggleWhere(o.userData.texWhere, val);
 
   const pat  = o.userData.displacementPattern  || 'keine';
-  const amp  = o.userData.displacementAmp      || 0.05;
+  const amp  = o.userData.displacementAmp      || 0.5;
   const freq = o.userData.displacementFreq     || 4;
   const inv  = !!o.userData.displacementInvert;
   const sym  = !!o.userData.displacementSymmetric;
+  const ori  = o.userData.texOrient || 'laengs';
+  const whr  = o.userData.texWhere  || 'alle';
+
+  // Rohr/Kantrohr: echte (Poly-/Boden-/Twist-)Form als Basis, nicht das runde Standard-Rohr
+  if (o.userData.shapeType === 'tube') {
+    if (pat === 'keine') { o.userData._warpCache = null; _fpRebuildGeo(o); _fpCurType = null; updateFP(); return; }
+    const base = _tubeDispBase(o);
+    const geoT = _displaceForMesh(o, base, pat, amp, freq, inv, sym, ori, whr);
+    base.dispose && base.dispose();
+    if (geoT) { o.geometry.dispose(); o.geometry = geoT; }
+    _updateObjEdgeLines(o); _fpCurType = null; updateFP();
+    if (param === 'pattern') _startTexPreview(o);
+    return;
+  }
 
   let geo;
   if (pat === 'keine') {
+    o.userData._warpCache = null;
     if (o.userData._origGeo) {
       geo = o.userData._origGeo.clone();
       geo.computeVertexNormals();
@@ -2885,26 +3058,17 @@ function applyDisplacement(param, val) {
       geo = buildGeo(o.userData.shapeType || 'box');
     }
   } else {
+    // Absolute mm-Höhe via Welt-Raum-Pipeline (Größe/Skalierung wird intern
+    // berücksichtigt) — kein größenabhängiges amp-Scaling mehr nötig.
     let base;
     if (o.userData._origGeo) {
       base = o.userData._origGeo.clone();
     } else {
       base = _buildHighResGeo(o.userData.shapeType || 'box');
     }
-    // Shapes whose _origGeo lives in world-space coordinates (revolve created
-    // before normalisation, STL imports) need amp scaled by the geometry radius
-    // so the visual displacement is consistent with normalised primitives.
-    let effectiveAmp = amp;
-    const _sType = o.userData.shapeType;
-    if (_sType === 'revolve' || _sType === 'import') {
-      const _bb = new THREE.Box3();
-      _bb.setFromBufferAttribute(base.attributes.position);
-      const _bs = _bb.getSize(new THREE.Vector3());
-      const _geoR = Math.max(_bs.x, _bs.z) / 2;
-      if (_geoR > 1.5) effectiveAmp = amp * _geoR;
-    }
-    geo = _applyVertexDisplacement(base, pat, effectiveAmp, freq, inv, sym);
+    geo = _displaceForMesh(o, base, pat, amp, freq, inv, sym, ori, whr);
     base.dispose();
+    if (!geo) return;
   }
   o.geometry.dispose();
   o.geometry = geo;
@@ -4758,6 +4922,71 @@ function buildTubeGeo(ri, segs) {
   return g;
 }
 
+// Verallgemeinertes Hohlrohr: n-eckiger Querschnitt + optionaler Twist + optionaler Boden.
+// ri=Innen/Außen, sides=Ecken, twistRad=Gesamtverdrehung, hSegs=Höhenschnitte,
+// offsetRad=Start-Drehung, floorY=null→offenes Rohr / Zahl(-1..1)→Becher mit Boden bis floorY,
+// flat=true→scharfe Kanten (Kantrohr), false→glatt (rundes Rohr).
+function buildTubeGeoEx(ri, sides, twistRad, hSegs, offsetRad, floorY, flat) {
+  sides = Math.max(3, Math.round(sides));
+  ri = Math.max(0.05, Math.min(0.95, ri));
+  hSegs = Math.max(1, Math.round(hSegs));
+  twistRad = twistRad || 0; offsetRad = offsetRad || 0;
+  const hasFloor = (floorY != null && floorY > -0.999 && floorY < 0.95);
+  const pos = [], idx = [];
+  const push = (x, y, z) => { pos.push(x, y, z); return pos.length / 3 - 1; };
+  const ang = (i, y) => offsetRad + i * (2 * Math.PI / sides) + twistRad * (y + 1) / 2;
+  const ringOut = (y) => { const a = []; for (let i = 0; i < sides; i++) { const g = ang(i, y); a.push(push(Math.cos(g), y, Math.sin(g))); } return a; };
+  const ringIn  = (y) => { const a = []; for (let i = 0; i < sides; i++) { const g = ang(i, y); a.push(push(Math.cos(g) * ri, y, Math.sin(g) * ri)); } return a; };
+  const wall = (lo, hi, inner) => { for (let i = 0; i < sides; i++) { const j = (i + 1) % sides;
+    if (inner) idx.push(lo[i], hi[j], hi[i], lo[i], lo[j], hi[j]);
+    else       idx.push(lo[i], hi[i], hi[j], lo[i], hi[j], lo[j]); } };
+  // Außenwand (volle Höhe)
+  let prevO = ringOut(-1); const outerBottom = prevO;
+  for (let k = 1; k <= hSegs; k++) { const cur = ringOut(-1 + 2 * k / hSegs); wall(prevO, cur, false); prevO = cur; }
+  const outerTop = prevO, innTop = ringIn(1);
+  for (let i = 0; i < sides; i++) { const j = (i + 1) % sides;   // Deckelring +y
+    idx.push(outerTop[i], outerTop[j], innTop[j], outerTop[i], innTop[j], innTop[i]); }
+  if (!hasFloor) {
+    let prevI = ringIn(-1); const innBottom = prevI;
+    for (let k = 1; k <= hSegs; k++) { const cur = ringIn(-1 + 2 * k / hSegs); wall(prevI, cur, true); prevI = cur; }
+    for (let i = 0; i < sides; i++) { const j = (i + 1) % sides;   // Bodenring −y (offenes Rohr)
+      idx.push(outerBottom[i], innBottom[j], outerBottom[j], outerBottom[i], innBottom[i], innBottom[j]); }
+  } else {
+    // Becher: Innenwand nur floorY..1, Innen-Bodenscheibe bei floorY, Vollboden bei −1
+    const m = Math.max(1, Math.round(hSegs * (1 - floorY) / 2));
+    let prevI = ringIn(floorY); const floorRing = prevI;
+    for (let k = 1; k <= m; k++) { const cur = ringIn(floorY + (1 - floorY) * k / m); wall(prevI, cur, true); prevI = cur; }
+    const cf = push(0, floorY, 0);            // Innenboden (nach oben)
+    for (let i = 0; i < sides; i++) { const j = (i + 1) % sides; idx.push(cf, floorRing[j], floorRing[i]); }
+    const cb = push(0, -1, 0);                // Vollboden (nach unten)
+    for (let i = 0; i < sides; i++) { const j = (i + 1) % sides; idx.push(cb, outerBottom[i], outerBottom[j]); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  if (flat === false) { g.computeVertexNormals(); return g; }   // glatt (rundes Rohr)
+  const fl = g.toNonIndexed(); fl.computeVertexNormals(); g.dispose();   // Flat-Shading (Kantrohr)
+  return fl;
+}
+// Boden-y (Becher) aus Wandstärke + Höhen-Skalierung
+function _tubeFloorY(o) {
+  const wall = (o.userData.tubeWall != null) ? o.userData.tubeWall : 2;
+  const sy = o.scale.y || 1;
+  return Math.max(-0.95, Math.min(0.8, -1 + wall / (sy * 10)));
+}
+function _polyTubeOffset(sides) {
+  if (sides === 4) return Math.PI / 4;   // achsen-paralleles Quadrat
+  if (sides === 3) return Math.PI / 2;   // Dreieck, Spitze nach +z
+  return 0;
+}
+// Innenradius-Verhältnis für n-Eck: Wandstärke senkrecht konstant (Apothem-Korrektur)
+function _tubeRiFor(o, sides) {
+  const wall  = (o.userData.tubeWall != null) ? o.userData.tubeWall : 2;
+  const radMm = (o.scale.x || 1) * 10;
+  const apo   = Math.cos(Math.PI / Math.max(3, sides || 64));
+  return Math.max(0.05, Math.min(0.95, 1 - wall / (radMm * apo)));
+}
+
 // Innenradius-Verhältnis aus Wandstärke (mm) + aktuellem Außenradius (Skalierung)
 function _tubeRi(o) {
   const wall  = (o.userData.tubeWall != null) ? o.userData.tubeWall : 2;  // mm
@@ -4879,6 +5108,10 @@ function buildGeo(type) {
 function _updateObjEdgeLines(mesh) {
   mesh.children.filter(c => c.userData.isEdgeLines)
     .forEach(c => { c.geometry.dispose(); mesh.remove(c); });
+  // Bei aktiver Textur: keine Kantenlinien — auf der verbeulten Oberfläche
+  // überschreiten tausende Bump-Kanten die 30°-Schwelle → teuer zu bauen und zu
+  // rendern (Ruckeln), und optisch nur Rauschen. Saubere Flächen wie BumpMesh.
+  if (mesh.userData && mesh.userData.displacementPattern && mesh.userData.displacementPattern !== 'keine') return;
   const wf = new THREE.LineSegments(
     new THREE.EdgesGeometry(mesh.geometry, 30),
     new THREE.LineBasicMaterial({ color: 0x000000, depthTest: true })
@@ -4916,7 +5149,7 @@ function addShape(type) {
     color: color, isHole: isHole,
     fillet: 0, chamfer: 0,
     tubeWall: 2,
-    displacementPattern: 'keine', displacementAmp: 0.05, displacementFreq: 4,
+    displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
     displacementInvert: false, displacementSymmetric: false
   };
   scene.add(mesh);
@@ -4925,6 +5158,36 @@ function addShape(type) {
   updateTree();
   fitToObjects([mesh]);
   notify((typeNames[type] || type) + ' hinzugefügt', 'ok');
+}
+
+// ═══ ADD POLY-TUBE (4-/3-Kantrohr) ═══════════════════════════════════════
+// Wie das Rohr (shapeType 'tube'), aber n-eckiger Querschnitt + Twist.
+function addPolyTube(sides) {
+  saveUndo();
+  sides = Math.max(3, Math.round(sides));
+  const isHole = shapeMode === 'hole';
+  const color  = isHole ? '#f03030' : currentColor;
+  const mat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color), roughness: 0.38, metalness: 0.05,
+    transparent: !!isHole, opacity: isHole ? 0.52 : 1.0, side: THREE.DoubleSide });
+  const ri  = Math.max(0.05, Math.min(0.95, 1 - 2 / (10 * Math.cos(Math.PI / sides))));  // Wand 2mm @ r10mm
+  const geo = buildTubeGeoEx(ri, sides, 0, 1, _polyTubeOffset(sides));
+  geo.computeBoundingBox();
+  const halfH = Math.max(0, -geo.boundingBox.min.y);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true; mesh.receiveShadow = true; mesh.scale.setScalar(1.0);
+  _updateObjEdgeLines(mesh);
+  _wpSpawnMesh(mesh, halfH);
+  const key = 'tube' + sides, label = sides === 4 ? '4-Kantrohr' : sides === 3 ? '3-Kantrohr' : sides + '-Kantrohr';
+  typeCounts[key] = (typeCounts[key] || 0) + 1;
+  mesh.userData = {
+    id: idCtr++, type: 'tube', shapeType: 'tube', tubePoly: true, tubeTwist: 0, segments: sides,
+    name: label + ' ' + typeCounts[key], color, isHole, fillet: 0, chamfer: 0, tubeWall: 2,
+    displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
+    displacementInvert: false, displacementSymmetric: false
+  };
+  scene.add(mesh); objects.push(mesh); selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
+  notify(label + ' hinzugefügt', 'ok');
 }
 
 // ═══ ADD THREAD SHAPE ════════════════════════════════════════════════════
@@ -4951,7 +5214,7 @@ function addThreadShape() {
     color, isHole,
     fillet: 0, chamfer: 0,
     threadDiameter: 12, threadPitch: 1.75, threadTurns: 5, segments: 32,
-    displacementPattern: 'keine', displacementAmp: 0.05, displacementFreq: 4,
+    displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
     displacementInvert: false, displacementSymmetric: false
   };
   scene.add(mesh); objects.push(mesh); selectObjs([mesh]); updateTree();
@@ -5463,7 +5726,7 @@ function _importSvgConfirm(override) {
     _svgShapeGeosFinal,   // Einzelne Formen in mesh-local space (Fallback-CSG)
     _svgPathData,         // Rohe SVG-Pfadpunkte für OCCT-Extrusion (primärer Weg)
     _svgTransformM,       // Transform-Parameter: scale, cx, cy, depthMM
-    displacementPattern: 'keine', displacementAmp: 0.05, displacementFreq: 4,
+    displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
     displacementInvert: false, displacementSymmetric: false
   };
 
@@ -6656,9 +6919,18 @@ function buildObjectFromData(data) {
   obj.position.set(data.px || 0, data.py || 0, data.pz || 0);
   obj.rotation.set(data.rx || 0, data.ry || 0, data.rz || 0);
   obj.scale.set(data.sx || 1, data.sy || 1, data.sz || 1);
-  obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, opacity: data.opacity || 1.0, type: data.type, shapeType: data.shapeType || data.type, isGroup: !!data.isGroup, textStr: data.textStr || '', fillet: data.fillet || 0, chamfer: data.chamfer || 0, segments: data.segments, tubeRatio: data.tubeRatio, tubeWall: (data.tubeWall != null ? data.tubeWall : (data.shapeType==='tube'||data.type==='tube' ? 2 : undefined)), edgeBevels: data.edgeBevels, occtShape: data.occtShape || (data.wasBox ? 'box' : null), _occtParams: data._occtParams || null, displacementPattern: data.displacementPattern || 'keine', displacementAmp: data.displacementAmp || 0.05, displacementFreq: data.displacementFreq || 4, displacementInvert: !!data.displacementInvert, displacementSymmetric: !!data.displacementSymmetric, locked: !!data.locked, hidden: !!data.hidden, threadDiameter: data.threadDiameter, threadPitch: data.threadPitch, threadTurns: data.threadTurns };
+  obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, opacity: data.opacity || 1.0, type: data.type, shapeType: data.shapeType || data.type, isGroup: !!data.isGroup, textStr: data.textStr || '', fillet: data.fillet || 0, chamfer: data.chamfer || 0, segments: data.segments, tubeRatio: data.tubeRatio, tubeWall: (data.tubeWall != null ? data.tubeWall : (data.shapeType==='tube'||data.type==='tube' ? 2 : undefined)), edgeBevels: data.edgeBevels, occtShape: data.occtShape || (data.wasBox ? 'box' : null), _occtParams: data._occtParams || null, displacementPattern: data.displacementPattern || 'keine', displacementAmp: data.displacementAmp || 0.5, displacementFreq: data.displacementFreq || 4, displacementInvert: !!data.displacementInvert, displacementSymmetric: !!data.displacementSymmetric, locked: !!data.locked, hidden: !!data.hidden, threadDiameter: data.threadDiameter, threadPitch: data.threadPitch, threadTurns: data.threadTurns };
+  if (data.tubePoly)  obj.userData.tubePoly  = true;
+  if (data.tubeTwist) obj.userData.tubeTwist = data.tubeTwist;
+  if (data.tubeFloor) obj.userData.tubeFloor = true;
+  if (data.polyMeasure) obj.userData.polyMeasure = data.polyMeasure;
+  if (data.texOrient) obj.userData.texOrient = data.texOrient;
+  if (data.texWhere)  obj.userData.texWhere  = data.texWhere;
   if (data.hidden) obj.visible = false;
   if (data._origGeoData) obj.userData._origGeo = new THREE.BufferGeometryLoader().parse(data._origGeoData);
+  // Poly-/Twist-/Boden-Rohr aus Parametern neu bauen (Geometrie nicht als JSON gespeichert)
+  if (obj.isMesh && obj.userData.shapeType === 'tube' && (obj.userData.tubePoly || obj.userData.tubeTwist || obj.userData.tubeFloor) && !data.geometry)
+    _fpRebuildGeo(obj);
   return obj;
 }
 
@@ -6683,6 +6955,10 @@ function objectToData(o) {
   if (o.userData.segments)   d.segments   = o.userData.segments;
   if (o.userData.tubeRatio)  d.tubeRatio  = o.userData.tubeRatio;
   if (o.userData.tubeWall != null) d.tubeWall = o.userData.tubeWall;
+  if (o.userData.tubePoly)   d.tubePoly  = true;
+  if (o.userData.tubeTwist)  d.tubeTwist = o.userData.tubeTwist;
+  if (o.userData.tubeFloor)  d.tubeFloor = true;
+  if (o.userData.polyMeasure) d.polyMeasure = o.userData.polyMeasure;
   if (o.userData.edgeBevels) d.edgeBevels = o.userData.edgeBevels;
   if (o.userData.occtShape)    d.occtShape   = o.userData.occtShape;
   if (o.userData._occtParams)  d._occtParams = o.userData._occtParams;
@@ -6692,7 +6968,9 @@ function objectToData(o) {
     d.displacementFreq      = o.userData.displacementFreq;
     if (o.userData.displacementInvert)    d.displacementInvert    = true;
     if (o.userData.displacementSymmetric) d.displacementSymmetric = true;
-    d.geometry = o.geometry.toJSON();
+    if (o.userData.texOrient && o.userData.texOrient !== 'laengs') d.texOrient = o.userData.texOrient;
+    if (o.userData.texWhere && o.userData.texWhere !== 'alle')     d.texWhere  = o.userData.texWhere;
+    if (o.isMesh && o.geometry) d.geometry = o.geometry.toJSON();   // Gruppen haben keine eigene Geometrie
   } else if (o.isMesh && (!o.userData.type || ['custom','text','import','revolve','flower',
       'sphericalshell','spring','bentpipe','thread','svg','lantern',
       'gfbin','gfplate','gfcut'].includes(o.userData.type))) {
@@ -8373,6 +8651,7 @@ window.addEventListener('mousedown', e => {
 canvas.addEventListener('mousedown', e => {
   mouseDownPos = { x: e.clientX, y: e.clientY };
   if (e.button !== 0) return;
+  if (typeof _eraser !== 'undefined' && _eraser.active) return;  // Radierer: keine Auswahl/kein Rechteck
   e.preventDefault(); // Verhindert Browser-nativen Drag (Verbots-Cursor)
   if (_revolveMode) { _revolveAddPoint(e); return; }
   if (!_edgeMode && _edgeBevelDragging) { _edgeBevelDragging = false; _edgeBevelDragStart = null; }
@@ -10075,8 +10354,41 @@ function animate() {
   }
   // Always keep floating panel in sync (position + values) — cheap per frame
   if (selectedObjs.length === 1) { _fpPositionPanel(); _fpSyncValues(); }
+  _detectResizeForTexture();
   _updateEdgeBevelHandleDOM();
   renderer.render(scene, camera);
+}
+
+// Texturierte Objekte bei Größenänderung automatisch neu texturieren: die
+// gebackene Displacement-Geometrie würde sich sonst mit der Skalierung mitstrecken
+// (→ unterschiedlich große Objekte sähen unterschiedlich texturiert aus). Wir
+// erkennen Scale-Änderungen zentral und backen nach Abschluss (debounced) neu,
+// sodass die Textur absolut bleibt. Deckt alle Resize-Wege ab (Handles/Panel/Dialog).
+let _lastScaleObj = null, _lastScaleSig = null, _texReapplyTimer = null;
+function _texActive(o) {
+  if (o.userData && o.userData.displacementPattern && o.userData.displacementPattern !== 'keine') return true;
+  let a = false; if (o.traverse) o.traverse(m => { if (m.isMesh && m.userData && m.userData.displacementPattern && m.userData.displacementPattern !== 'keine') a = true; });
+  return a;
+}
+function _reapplyTexture(o) {
+  if (!o || getFirst() !== o) return;
+  let pat = o.userData.displacementPattern;
+  if (!pat || pat === 'keine') { o.traverse && o.traverse(m => { if (m.isMesh && m.userData.displacementPattern && m.userData.displacementPattern !== 'keine') pat = m.userData.displacementPattern; }); }
+  if (!pat || pat === 'keine') return;
+  o.userData._warpCache = null; o.traverse && o.traverse(m => { if (m.userData) m.userData._warpCache = null; });
+  o.userData.displacementPattern = pat;
+  _applyDisplacementNow('pattern', pat);   // bäckt mit aktueller (neuer) Größe → absolut
+}
+function _detectResizeForTexture() {
+  if (selectedObjs.length !== 1) { _lastScaleObj = null; return; }
+  const o = selectedObjs[0];
+  const sig = o.scale.x.toFixed(4) + ',' + o.scale.y.toFixed(4) + ',' + o.scale.z.toFixed(4);
+  if (o !== _lastScaleObj) { _lastScaleObj = o; _lastScaleSig = sig; return; }
+  if (sig === _lastScaleSig) return;
+  _lastScaleSig = sig;
+  if (!_texActive(o)) return;
+  clearTimeout(_texReapplyTimer);
+  _texReapplyTimer = setTimeout(() => _reapplyTexture(o), 250);   // erst wenn Ziehen ruht
 }
 animate();
 
@@ -10568,7 +10880,7 @@ function _deleteDesign(id) {
 // ═══ VASE DESIGNER ════════════════════════════════════════════════════════
 let _vaseP = {
   top:55, neck:30, bellyH:42, neckH:72, bottom:40,
-  height:150, width:80,
+  height:150, width:80, wall:2,
   cross:'circle', polyN:6, waveN:8, waveAmp:20,
   surface:'none', stripsN:16, stripsD:20,
   twist:0
@@ -11049,7 +11361,7 @@ function _createFlower() {
     flowerDepth: p.depth, flowerSharpness: p.sharpness, flowerTwist: p.twist, flowerTipPull: p.tipPull, flowerSmooth: p.smooth,
     flowerHeight: p.height, flowerDiameter: p.diameter, flowerThickness: p.thickness,
     flowerNeckDiam: p.neckDiam, flowerNeckHeight: p.neckHeight,
-    displacementPattern: 'keine', displacementAmp: 0.05, displacementFreq: 4,
+    displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
     displacementInvert: false, displacementSymmetric: false,
   };
   scene.add(mesh); objects.push(mesh);
@@ -11590,7 +11902,7 @@ function _createLantern(){
     lanternBody:p.body,lanternPattern:p.pattern,lanternDensity:p.density,lanternOpening:p.opening,
     lanternHeight:p.height,lanternDiameter:p.diameter,lanternWall:p.wall,
     lanternBailHeight:p.bailHeight,lanternBailWidth:p.bailWidth,
-    displacementPattern:'keine',displacementAmp:0.05,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
+    displacementPattern:'keine',displacementAmp:0.5,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
   scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
   if(p.bailHeight>0){
     const bmat=new THREE.MeshStandardMaterial({color:new THREE.Color(color),roughness:0.38,metalness:0.04,side:THREE.DoubleSide});
@@ -11612,7 +11924,7 @@ function _createLantern(){
     typeCounts['lantern']=(typeCounts['lantern']||0)+1;
     bmesh.userData={id:idCtr++,type:'lantern',shapeType:'lantern',name:'Laterne Bügel '+typeCounts['lantern'],
       color,isHole:false,fillet:0,chamfer:0,
-      displacementPattern:'keine',displacementAmp:0.05,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
+      displacementPattern:'keine',displacementAmp:0.5,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
     scene.add(bmesh); objects.push(bmesh); _updateObjEdgeLines(bmesh);
   }
   selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
@@ -11630,11 +11942,109 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.5.0';
+const VOLME3D_VERSION = '1.14.0';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.0', date:'2026-06-12', changes:[
+    ['✨','Textur komplett überarbeitet (BumpMesh-Qualität): neue Pipeline verschweißt das Mesh, unterteilt es wasserdicht in 3D, nutzt glatte Welt-Normalen und blendet das Muster triplanar über die Kanten — keine aufgerissenen Dreiecke/Spikes mehr, besonders bei importierten STLs und Booleschen Körpern'],
+    ['🔧','Texturhöhe ist jetzt eine absolute mm-Höhe (wie BumpMesh) — unabhängig von Modellgröße und Skalierung. 0,5 mm Muster bleibt 0,5 mm, egal ob auf 2 cm oder 2 m. Slider in mm (0,05–5 mm)'],
+    ['⚡','Texturieren spürbar flüssiger: keine schwarzen Kantenlinien mehr auf texturierten Flächen (auf der verbeulten Oberfläche waren das tausende Segmente — teuer zu bauen und jedes Frame zu rendern), Höhen-Slider wird gedrosselt + gecacht, Tessellierung gegen Extremfälle gedeckelt'],
+    ['✨','Textur-„Ort" jetzt mehrfach wählbar: Außenwände · Oben (Dach) · Innenwände · Unten (Boden) lassen sich frei kombinieren (z.B. Wände + Dach zusammen, Innenwände aus). „Alle" schaltet alles an. So bekommt jede Flächengruppe gezielt Textur oder bleibt glatt'],
+    ['🔧','Textur-„Skalierung" ist jetzt absolut (feste Mustergröße), nicht mehr pro Objekt normiert: unterschiedlich große/hohe Objekte (z.B. zwei verschieden hohe Türme) werden mit derselben Einstellung identisch texturiert. Slider-Bereich auf 40 erweitert, damit auch kleine Teile fein genug texturiert werden können'],
+    ['🔧','Größe eines texturierten Objekts ändern bäckt die Textur automatisch neu (nach dem Ziehen): vorher streckte sich das eingebackene Muster mit der Skalierung → unterschiedlich große Objekte sahen verschieden aus. Jetzt bleibt die Mustergröße absolut konstant, egal wie oft skaliert wird'],
+    ['🐛','Ausgefranstes Textur-Band an Wand-Boden-/Wand-Dach-Kanten beseitigt (v.a. bei Ort „Außen"): an der Grenze zu einer nicht-texturierten Fläche wird die Mustertiefe jetzt weich auf 0 ausgeblendet, statt hart/verkrümmt abzubrechen'],
+  ]},
+  { version:'1.13.0', date:'2026-06-12', changes:[
+    ['✨','Textur-Panel erweitert: „Richtung" (Längs/Quer) dreht das Muster um 90°, und „Ort" wählt, wo die Textur liegt — Alle Flächen, nur Außenflächen (Innenwand/Bohrung bleibt glatt) oder nur Seitenwände (Ober-/Unterseite bleibt glatt). Gilt auch für Gruppen/Unions'],
+  ]},
+  { version:'1.12.5', date:'2026-06-12', changes:[
+    ['✨','Vieleck-Durchmesser umschaltbar: „↔ Fläche" (Schlüsselweite, Fläche-zu-Fläche) oder „◇ Spitze" (Eckmaß, Spitze-zu-Spitze). Der eingegebene Wert entspricht genau dieser Messung — so passt das Vieleck in Schlüssel/Schlitz bzw. Bohrung'],
+  ]},
+  { version:'1.12.4', date:'2026-06-12', changes:[
+    ['🐛','Vieleck-Durchmesser wurde falsch gemessen (Bounding-Box Fläche-zu-Fläche statt Umkreis), je nach Drehung unterschiedlich, und Re-Eingabe veränderte die Größe. Jetzt wird der echte Umkreis-Durchmesser (Ecke-zu-Ecke) angezeigt — orientierungsunabhängig und stabil; das Vieleck bleibt regelmäßig'],
+  ]},
+  { version:'1.12.3', date:'2026-06-12', changes:[
+    ['🐛','Textur auf Kantrohr machte es rund (die Textur-Basis war immer ein rundes Rohr). Jetzt wird die echte Form (Eckenzahl, Boden, Verdrehen) als Basis genommen und passend unterteilt — das Kantrohr bleibt eckig. „Textur entfernen" stellt die saubere Rohrform wieder her'],
+  ]},
+  { version:'1.12.2', date:'2026-06-12', changes:[
+    ['🔧','Textur-Button bei Gruppen/Unions öffnet jetzt den Textur-Wähler (vorher nicht anwählbar). Das Auswahlfenster bleibt offen und das Muster wird auf die ganze Gruppe angewandt'],
+  ]},
+  { version:'1.12.1', date:'2026-06-12', changes:[
+    ['🔧','Textur lässt sich jetzt auch auf Gruppen/Unions anwenden — sie wird auf alle Teilkörper gelegt (auf Basis der aktuellen Geometrie, Aushöhlungen bleiben erhalten). Größenabhängige Unterteilung/Amplitude, „keine" setzt sauber zurück. Speicher-/Undo-Absturz bei texturierten Gruppen behoben'],
+  ]},
+  { version:'1.12.0', date:'2026-06-12', changes:[
+    ['✨','Rohr & Kantrohr können jetzt einen geschlossenen Boden bekommen (Häkchen „Boden (geschlossen)" im Eigenschaften-Panel) — macht aus dem offenen Rohr einen Becher/Behälter. Bodendicke = Wandstärke, bleibt beim Skalieren erhalten; bei rundem Rohr glatt, bei Kantrohr scharfkantig. Wasserdicht/druckbar'],
+  ]},
+  { version:'1.11.3', date:'2026-06-12', changes:[
+    ['🔧','Eigenschaften zeigen jetzt „Durchmesser" statt „Radius" (Zylinder, Rohr, Kantrohr, Kugel, Kegel, Vieleck, Paraboloid; Torus/Hohlkugel als „Außen-Ø"). Eingabe = Durchmesser in mm. Die Kanten-Rundung („Radius") bleibt davon unberührt'],
+  ]},
+  { version:'1.11.2', date:'2026-06-12', changes:[
+    ['🔧','Nur noch ein „Kantrohr"-Button (Standard 4 Seiten); das separate 3-Kantrohr entfällt, da sich die Eckenzahl über „Seiten" frei einstellen lässt (3, 4, 5, …)'],
+  ]},
+  { version:'1.11.1', date:'2026-06-12', changes:[
+    ['🔧','4-/3-Kantrohr: scharfe Kanten statt weichgezeichneter (runder) Optik — Flat-Shading mit eigener Normale pro Facette'],
+  ]},
+  { version:'1.11.0', date:'2026-06-12', changes:[
+    ['✨','Zwei neue Grundkörper: 4-Kantrohr und 3-Kantrohr — Hohlprofile mit quadratischem bzw. dreieckigem Querschnitt. Gleiche Features wie das Rohr (Radius, Höhe, einstellbare Wandstärke in mm, Seitenzahl). Neu zusätzlich: „Verdrehen" (Twist) — verdreht den Querschnitt über die Höhe für gedrehte Rohre. Alles wasserdicht/druckbar'],
+  ]},
+  { version:'1.10.1', date:'2026-06-12', changes:[
+    ['✨','„🩹 Reparieren" jetzt auch als eigener Toolbar-Button: schließt offene Löcher im ausgewählten Objekt (z. B. nach Import oder Radieren) und macht es wieder wasserdicht/druckbar. Der gleichnamige Button im Radierer bleibt erhalten'],
+  ]},
+  { version:'1.10.0', date:'2026-06-12', changes:[
+    ['✨','Radierer: neuer Button „🩹 Löcher schließen". Die beim Radieren entstandenen offenen Ränder werden erkannt, zu Schleifen verbunden und gefüllt — das Teil ist danach wieder geschlossen/wasserdicht (verifiziert: 0 offene Kanten)'],
+  ]},
+  { version:'1.9.4', date:'2026-06-12', changes:[
+    ['🐛','Radierer ließ die schwarzen Kantenlinien als Geisterlinien stehen, obwohl die Flächen weg waren. Am Strich-Ende werden die Kanten jetzt an die radierte Geometrie angepasst — keine schwebenden Linien mehr'],
+  ]},
+  { version:'1.9.3', date:'2026-06-12', changes:[
+    ['🐛','Radierer: zog beim Ziehen das Auswahl-Rechteck auf statt zu löschen. Im Radierer-Modus ist die Rechteck-Auswahl jetzt komplett deaktiviert — gedrückt ziehen radiert zuverlässig, auch wenn man knapp neben dem Modell startet und erst beim Drüberziehen trifft'],
+  ]},
+  { version:'1.9.2', date:'2026-06-12', changes:[
+    ['🔧','Radierer-Pinsel jetzt als HTML-Kreis direkt am Mauszeiger — immer sichtbar, unabhängig von Blickwinkel/Zoom (der 3D-Ring war je nach Ansicht kaum zu sehen). Außerdem löscht der Pinsel jetzt sauber den ganzen Bereich (vorheriger Wicklungs-Filter verursachte bei Importen zerfranste Löcher)'],
+  ]},
+  { version:'1.9.1', date:'2026-06-12', changes:[
+    ['🔧','Radierer-Pinsel jetzt klar sichtbar: dicker, zur Kamera ausgerichteter roter Ring (voller Kreis statt dünner Linie bei flachem Blickwinkel) plus immer sichtbarer Fadenkreuz-Cursor'],
+  ]},
+  { version:'1.9.0', date:'2026-06-12', changes:[
+    ['✨','Neuer Radierer (🧽 in der Toolbar): mit dem Pinsel über das Modell fahren löscht Flächen im Pinselradius — robust auf jedem Mesh, auch importierten STL. Radius per Schieberegler und Mausrad, roter Pinselring zeigt die Stelle. Radiert nur die angepinselte Fläche (schlägt nicht durch dünne Wände). Strg+Z macht rückgängig'],
+  ]},
+  { version:'1.8.8', date:'2026-06-12', changes:[
+    ['🐛','Zerteilen von importierten STL repariert: bei hochpolygonalen oder nicht-wasserdichten Importen erzeugte der bisherige CSG-Schnitt Streugeometrie (winzige Stücke + riesige Bounding-Box). Der Schnitt nutzt jetzt direktes Dreieck-gegen-Ebene-Clipping mit Deckel (auch mit Löchern, z. B. Bohrungen) — robust und schnell, egal wie sauber das Mesh ist'],
+  ]},
+  { version:'1.8.7', date:'2026-06-12', changes:[
+    ['🔧','Zerteilen-Gizmo wieder achs-gebunden: ziehst du an einem Ring, dreht sich NUR dessen Achse (X, Y oder Z) — eine Achse pro Zug, mit Gradskala und Winkel-Tooltip. Die Schnittebene wird mit voller Orientierung gezeigt, sodass auch der Y-Ring (Drehung um die Normale) sichtbar reagiert'],
+  ]},
+  { version:'1.8.6', date:'2026-06-12', changes:[
+    ['🔧','Zerteilen-Gizmo roll-frei: beim Ziehen kippt nur noch die Normalen-Richtung der Schnittebene — sie dreht sich nicht mehr um sich selbst. Damit kein „dreht in alle Richtungen"-Effekt mehr, das Kippen wirkt ruhig und vorhersehbar'],
+  ]},
+  { version:'1.8.5', date:'2026-06-12', changes:[
+    ['🔧','Zerteilen-Gizmo jetzt als Trackball: einen Ring greifen und ziehen kippt die Schnittebene frei in 3D — jeder Griff funktioniert, kein „toter" Ring mehr (auch beim waagerechten Schnitt kippbar). Tooltip zeigt die Neigung in Grad, die X/Y/Z-Felder die abgeleiteten Winkel. Ringe deutlich dünner'],
+  ]},
+  { version:'1.8.4', date:'2026-06-11', changes:[
+    ['🔧','Zerteilen-Gizmo: der Ring, dessen Achse gerade parallel zur Ebenen-Normale steht (kann nicht kippen), wird ausgegraut und ist nicht greifbar — sobald die Ebene gekippt ist, wird er wieder aktiv. Ringe und Skalenstriche deutlich dünner/dezenter'],
+  ]},
+  { version:'1.8.3', date:'2026-06-11', changes:[
+    ['✨','Zerteilen-Gizmo wie Bambu Studio: beim Ziehen eines Rings erscheint eine Gradskala (Protraktor) und ein Winkel-Tooltip am Cursor (z. B. „X: 45,0°"). Der aktive Ring wird hervorgehoben, die anderen ausgegraut, der Verschiebe-Pfeil ausgeblendet. Beim Verschieben zeigt der Tooltip die Höhe in mm'],
+  ]},
+  { version:'1.8.2', date:'2026-06-11', changes:[
+    ['🔧','Zerteilen-Gizmo: wieder alle drei Ringe sichtbar. Drehen läuft jetzt über eine inkrementelle Welt-Achsen-Quaternion statt gekoppelter Euler-Felder — das Ziehen kippt die Ebene sauber um die jeweilige Ringachse (gimbal-frei), die X/Y/Z-Felder zeigen die abgeleiteten Winkel. Hinweis: der Ring, dessen Achse gerade der Ebenen-Normale entspricht, dreht die Ebene nur in sich (kippt sie also nicht — das ist geometrisch so)'],
+  ]},
+  { version:'1.8.1', date:'2026-06-11', changes:[
+    ['🔧','Zerteilen-Gizmo: dünnere Ringe (mit unsichtbarer dicker Trefferfläche, bleibt gut greifbar). Der Ring um die aktuelle Basisachse wird ausgeblendet — er kippte die Ebene nicht (Drehung um die eigene Normale), es bleiben die zwei kipp-relevanten Ringe'],
+  ]},
+  { version:'1.8.0', date:'2026-06-11', changes:[
+    ['✨','Zerteilen mit Drag-Gizmo: drei farbige Rotationsringe (X rot, Y grün, Z blau) am Schnitt-Mittelpunkt zum Kippen der Ebene per Maus — gekoppelt an die Drehung-Felder. Oranger Pfeil entlang der Höhenachse zum Verschieben der Schnitthöhe. Im Verbinder-Modus wird der Gizmo ausgeblendet'],
+  ]},
+  { version:'1.7.0', date:'2026-06-11', changes:[
+    ['✨','Zerteilen: Schnittebene lässt sich jetzt neigen — Drehung X/Y/Z (Grad) im Panel kippt die Ebene frei (Live-Vorschau). Halbraum-Schnitt, Verbinder und „Auf den Schnitt legen" arbeiten mit der geneigten Ebene; „Auf den Schnitt legen" dreht die schräge Schnittfläche flach aufs Druckbett. ↺ setzt die Drehung zurück'],
+  ]},
+  { version:'1.6.0', date:'2026-06-11', changes:[
+    ['✨','Zerteilen (wie Bambu Studio): großes Objekt mit einer planaren Schnittebene in zwei druckbare Teile teilen. Button „✂ Zerteilen" in der Toolbar — Körper auswählen, Achse X/Y/Z + Schnitthöhe (mm) per Slider wählen (Live-Vorschau-Ebene), „Schnitt ausführen". Optional beide Teile flach auf die Platte legen (Oberteil auf die Schnittfläche gedreht)'],
+    ['✨','Verbinder/Dübel beim Zerteilen: „+ Verbinder hinzufügen" aktivieren und Punkte auf die Schnittebene klicken — an jedem Punkt entsteht ein Pin in Teil A und ein passendes Loch (mit einstellbarem Spiel) in Teil B. Ø, Länge und Spiel (mm) frei wählbar. So lassen sich die gedruckten Hälften passgenau zusammenstecken'],
+  ]},
   { version:'1.5.0', date:'2026-06-10', changes:[
+    ['✨','Vasen-Generator: einstellbare Wandstärke (mm) — erzeugt eine echte Vase mit Wand + Boden (offen oben, druckbar). Wert 0 = dünne Einzelwand für den Vasen-/Spiralmodus'],
     ['✨','Rohr hat jetzt eine echte, einstellbare Wandstärke (mm) statt einer dünnen offenen Fläche — wird zum druckbaren Hohlrohr mit Innenwand und Deckel-/Bodenring. Wandstärke bleibt beim Radius-Ändern konstant'],
-    ['✨','SpaceMouse-Unterstützung (3Dconnexion, 6DOF): automatisch über die Gamepad-API (Windows/Linux-Chrome, einfach Knauf bewegen) oder präzise per WebHID (Button in der linken Toolbar, Chrome/Edge + https). Drehen/Schwenken/Zoomen. Empfindlichkeit/Achsen über die Konsole (_smCfg) anpassbar, toggleSpaceMouseDebug() zeigt die Rohwerte'],
+    ['✨','SpaceMouse-Unterstützung (3Dconnexion, 6DOF): automatisch über die Gamepad-API (Windows/Linux-Chrome, einfach Knauf bewegen) oder präzise per WebHID (Button in der oberen Toolbar, Chrome/Edge + https). Drehen/Schwenken/Zoomen. Empfindlichkeit/Achsen über die Konsole (_smCfg) anpassbar, toggleSpaceMouseDebug() zeigt die Rohwerte'],
   ]},
   { version:'1.4.9', date:'2026-06-10', changes:[
     ['✨','Neue Gehäuse-Funktion (wie Shapr3D Shell): Form aushöhlen mit wählbarer Wandstärke. Flächen anklicken, die offen bleiben sollen (mind. eine). Button „▣ Gehäuse" bei Box, Vieleck, Keil, Zylinder'],
@@ -12177,7 +12587,7 @@ function _createGFBin(){
   mesh.userData={id:idCtr++,type:'gfbin',shapeType:'gfbin',name:'Rasterbox Bin '+typeCounts['gfbin'],
     color,isHole:false,fillet:0,chamfer:0,
     gfGridX:p.gridX,gfGridY:p.gridY,gfHeightU:p.heightU,gfWall:p.wall,
-    displacementPattern:'keine',displacementAmp:0.05,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
+    displacementPattern:'keine',displacementAmp:0.5,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
   scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
   selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
   notify('Rasterbox Bin '+p.gridX+'×'+p.gridY+' erstellt','ok');
@@ -12198,7 +12608,7 @@ function _createGFPlate(){
   mesh.userData={id:idCtr++,type:'gfplate',shapeType:'gfplate',name:'Rasterbox Platte '+typeCounts['gfplate'],
     color,isHole:false,fillet:0,chamfer:0,
     gfGridX:p.gridX,gfGridY:p.gridY,
-    displacementPattern:'keine',displacementAmp:0.05,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
+    displacementPattern:'keine',displacementAmp:0.5,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
   scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
   selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
   notify('Rasterbox Platte '+p.gridX+'×'+p.gridY+' erstellt','ok');
@@ -12383,7 +12793,7 @@ function _createGFCutout(){
   typeCounts['gfcut']=(typeCounts['gfcut']||0)+1;
   mesh.userData={id:idCtr++,type:'gfcut',shapeType:'gfcut',name:'Rasterbox Einlage '+typeCounts['gfcut'],
     color,isHole:false,fillet:0,chamfer:0,
-    displacementPattern:'keine',displacementAmp:0.05,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
+    displacementPattern:'keine',displacementAmp:0.5,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
   scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
   selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
   notify('Rasterbox Einlage erstellt','ok'); _closeGFModal();
@@ -12467,13 +12877,14 @@ function _vaseUpdateMesh() {
   const p = _vaseP;
   const rawPts = _vaseGenProfile(p);
   const normPts = rawPts.map(([r, h]) => new THREE.Vector2(r, h * 2 - 1));
+  const walled = _vaseWalledProfile(normPts, p);
   const opts = {
     twist: p.twist * DEG, cross: p.cross, polyN: p.polyN,
     waveN: p.waveN, waveAmp: p.waveAmp,
     surface: p.surface, stripsN: p.stripsN, stripsD: p.stripsD,
-    bottomCap: true,
+    bottomCap: !walled,   // bei Wand schließt das Profil sich selbst
   };
-  const geo = _buildRevolveGeo(normPts, opts);
+  const geo = _buildRevolveGeo(walled || normPts, opts);
   if (_vaseMesh) {
     _vaseMesh.geometry.dispose();
     _vaseMesh.geometry = geo;
@@ -12526,6 +12937,37 @@ function _vaseGenProfile(p) {
   return result;
 }
 
+// Baut aus der Außen-Silhouette ein GESCHLOSSENES Querschnittsprofil mit Wandstärke:
+// Achse-Boden → Außenwand hoch → Rand → Innenwand runter → Bodenkavität → Achse.
+// Beim Revolve ergibt das eine echte Vase mit Wand + Boden (offen oben).
+// Rückgabe null = keine Wand (wall<=0) → Aufrufer nutzt die Einzelfläche.
+function _vaseWalledProfile(normPts, p) {
+  const wall = p.wall || 0;
+  if (wall <= 0) return null;
+  const wallR = Math.max(0.02, 2 * wall / Math.max(1, p.width));   // radial (normiert)
+  const wallH = Math.max(0.02, 2 * wall / Math.max(1, p.height));  // Bodenstärke (normiert)
+  const outer = normPts;
+  const yBot = outer[0].y, yTop = outer[outer.length - 1].y;
+  const floorY = Math.min(yTop - 0.1, yBot + wallH);               // Kavitätsboden-Höhe
+  const loop = [];
+  loop.push(new THREE.Vector2(0, yBot));                           // Achse unten
+  for (const pt of outer) loop.push(new THREE.Vector2(pt.x, pt.y));// Außenwand unten→oben
+  // Innenwand oben→unten, nach innen versetzt, bis Bodenhöhe
+  for (let i = outer.length - 1; i >= 0; i--) {
+    if (outer[i].y <= floorY) {
+      const hi = outer[i + 1] || outer[i];                         // Punkt oberhalb des Bodens
+      const t = (floorY - outer[i].y) / ((hi.y - outer[i].y) || 1);
+      const rOuterAtFloor = outer[i].x + (hi.x - outer[i].x) * t;
+      loop.push(new THREE.Vector2(Math.max(0.03, rOuterAtFloor - wallR), floorY));
+      break;
+    }
+    loop.push(new THREE.Vector2(Math.max(0.03, outer[i].x - wallR), outer[i].y));
+  }
+  loop.push(new THREE.Vector2(0, floorY));                         // Kavitätsboden-Mitte (Achse)
+  loop.push(new THREE.Vector2(0, yBot));                           // entlang Achse schließen
+  return loop;
+}
+
 function _vaseDrawPreview() {
   const canvas = document.getElementById('vase-canvas');
   if (!canvas) return;
@@ -12573,14 +13015,16 @@ function _createVase() {
   const rawPts = _vaseGenProfile(p);
   // Normalize to Three.js revolve convention: r ∈ [0,1], y ∈ [-1,1]
   const normPts = rawPts.map(([r, h]) => new THREE.Vector2(r, h * 2 - 1));
+  const walled = _vaseWalledProfile(normPts, p);
+  const profile = walled || normPts;
   const opts = {
     twist: p.twist * DEG, cross: p.cross, polyN: p.polyN,
     waveN: p.waveN, waveAmp: p.waveAmp,
     surface: p.surface, stripsN: p.stripsN, stripsD: p.stripsD,
-    bottomCap: true,
+    bottomCap: !walled,   // bei Wand schließt das Profil sich selbst
   };
   saveUndo();
-  const geo = _buildRevolveGeo(normPts, opts);
+  const geo = _buildRevolveGeo(profile, opts);
   const color = currentColor;
   const mat = new THREE.MeshStandardMaterial({
     color: new THREE.Color(color), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide
@@ -12591,20 +13035,21 @@ function _createVase() {
   mesh.quaternion.copy(_wpMakeQuat(workplaneNormal));
   mesh.position.copy(workplanePoint).addScaledVector(workplaneNormal, p.height/2);
 
-  const hiPts = _revolveInterpolate(normPts, 48);
+  const hiPts = walled ? profile : _revolveInterpolate(normPts, 48);
   const origGeo = _buildRevolveGeo(hiPts, { ...opts, hires: true });
   typeCounts['revolve'] = (typeCounts['revolve'] || 0) + 1;
   mesh.userData = {
     id: idCtr++, type: 'revolve', shapeType: 'revolve',
     name: 'Vase ' + typeCounts['revolve'],
     color, isHole: false, fillet: 0, chamfer: 0,
-    revolveNormPts: normPts.map(pt => ({ x: pt.x, y: pt.y })),
+    revolveNormPts: profile.map(pt => ({ x: pt.x, y: pt.y })),
     revolveTwist: p.twist * DEG,
     revolveCross: p.cross, revolvePolyN: p.polyN,
     revolveWaveN: p.waveN, revolveWaveAmp: p.waveAmp,
     revolveSurface: p.surface, revolveStripsN: p.stripsN,
-    revolveStripsD: p.stripsD, revolveBottomCap: true,
-    displacementPattern: 'keine', displacementAmp: 0.05, displacementFreq: 4,
+    revolveStripsD: p.stripsD, revolveBottomCap: !walled,
+    vaseWall: p.wall,
+    displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
     displacementInvert: false, displacementSymmetric: false,
     _origGeo: origGeo,
   };
@@ -12836,17 +13281,24 @@ function _fpBuildRows(type, o) {
         ? row('Wandstärke', 'fp-tubewall', r2(o.userData.tubeWall != null ? o.userData.tubeWall : 2),
               "fpApplyTubeWall(this.value)", 'mm', 0.2, Math.max(0.2, r2(rad * 0.95)), 0.1)
         : '';
-      return row('Radius',   'fp-r',  rad, "fpApplyRadius(this.value)",  'mm', 0.1, 250) +
+      const twistRow = (type === 'tube' && o.userData.tubePoly)
+        ? row('Verdrehen', 'fp-twist', r2(o.userData.tubeTwist || 0), "fpApplyTwist(this.value)", '°', -720, 720, 5)
+        : '';
+      const floorRow = (type === 'tube')
+        ? `<label class="fp-check-lbl"><input type="checkbox" id="fp-floor" ${o.userData.tubeFloor ? 'checked' : ''} onchange="fpApplyTubeFloor(this.checked)"> Boden (geschlossen)</label>`
+        : '';
+      return row('Durchmesser', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
              row('Höhe',     'fph',   h,   "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              wallRow +
              '<div class="fp-sep"></div>' +
-             row('Seiten', 'fp-seg', segs||32, "fpApplySegs(this.value)", '', 3, 128, 1) +
+             row('Seiten', 'fp-seg', segs|| (o.userData.tubePoly?4:32), "fpApplySegs(this.value)", '', 3, 128, 1) +
+             twistRow + floorRow +
              (shellBtn ? '<div class="fp-sep"></div>' + shellBtn : '') +
              _dispRows();
     }
     case 'sphere': {
       const rad = r2(sz.x / 2 * 10);
-      return row('Radius',   'fp-r',  rad,    "fpApplyRadius(this.value)", 'mm', 0.1, 250) +
+      return row('Durchmesser', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
              row('Schritte', 'fp-seg', segs||32, "fpApplySegs(this.value)", '', 3, 128, 1) +
              _dispRows();
@@ -12854,7 +13306,7 @@ function _fpBuildRows(type, o) {
     case 'cone': case 'pyramid': {
       const rad = r2(sz.x / 2 * 10);
       const defSegs = type === 'pyramid' ? 4 : 32;
-      return row('Radius ↓', 'fp-r',  rad, "fpApplyRadius(this.value)",  'mm', 0.1, 250) +
+      return row('Durchmesser ↓', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
              row('Höhe',     'fph',   h,   "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
              row('Seiten', 'fp-seg', segs||defSegs, "fpApplySegs(this.value)", '', 3, 128, 1) +
@@ -12865,15 +13317,21 @@ function _fpBuildRows(type, o) {
       const outerR = r2(sz.x / 2 * 10);
       const tr     = o.userData.tubeRatio || 0.35;
       const tubeR  = r2(tr * (sz.x / 2) * 10);
-      return row('Außenradius', 'fp-r',  outerR, "fpApplyRadius(this.value)", 'mm', 0.1, 250) +
+      return row('Außen-Ø', 'fp-r', r2(outerR*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
              row('Rohrradius',  'fp-tr', tubeR,  "fpApplyTube(this.value)",   'mm', 0.1, 150) +
              '<div class="fp-sep"></div>' +
              row('Seiten', 'fp-seg', segs||48, "fpApplySegs(this.value)", '', 3, 128, 1) +
              _dispRows();
     }
     case 'polygon': {
-      const rad = r2(sz.x / 2 * 10);
-      return row('Radius',  'fp-r',   rad,       "fpApplyRadius(this.value)",  'mm', 0.1, 250) +
+      const mode = o.userData.polyMeasure || 'flaeche';
+      const dia  = r2(o.scale.x * 2 * 10 * _polyDiaFactor(o));   // mess-modusabhängiger Durchmesser
+      const modeRow = `<div class="fp-row" style="flex-direction:row;gap:5px">` +
+        `<button class="fp-toggle-btn${mode==='flaeche'?' on':''}" style="flex:1" onclick="fpSetPolyMode('flaeche')" title="Fläche zu Fläche (Schlüsselweite)">↔ Fläche</button>` +
+        `<button class="fp-toggle-btn${mode==='spitze'?' on':''}" style="flex:1" onclick="fpSetPolyMode('spitze')" title="Spitze zu Spitze (Eckmaß)">◇ Spitze</button>` +
+        `</div>`;
+      return modeRow +
+             row(mode==='flaeche' ? 'Ø Fläche' : 'Ø Spitze', 'fp-r', dia, "fpApplyPolyDia(this.value)", 'mm', 0.1, 500) +
              row('Höhe',    'fph',    h,          "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
              row('Seiten',  'fp-seg', segs||6,    "fpApplySegs(this.value)",   '',   3, 64, 1) +
@@ -12882,7 +13340,7 @@ function _fpBuildRows(type, o) {
     }
     case 'paraboloid': {
       const rad = r2(sz.x / 2 * 10);
-      return row('Radius',   'fp-r',   rad,       "fpApplyRadius(this.value)",  'mm', 0.1, 250) +
+      return row('Durchmesser', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
              row('Höhe',     'fph',    h,          "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
              row('Schritte', 'fp-seg', segs||24,   "fpApplySegs(this.value)",   '',   4, 96, 1) +
@@ -12890,7 +13348,7 @@ function _fpBuildRows(type, o) {
     }
     case 'sphericalshell': {
       const rad = r2(sz.x / 2 * 10);
-      return row('Außenradius', 'fp-r', rad, "fpApplyRadius(this.value)", 'mm', 0.1, 250) +
+      return row('Außen-Ø', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
              _dispRows();
     }
     case 'spring': {
@@ -13021,30 +13479,32 @@ function _fpSyncValues() {
       break;
     }
     case 'cylinder': case 'tube':
-      set('fp-r', r2(sz.x/2*10)); set('fph', h);
-      set('fp-seg', o.userData.segments||32);
+      set('fp-r', r2(sz.x*10)); set('fph', h);
+      set('fp-seg', o.userData.segments|| (o.userData.tubePoly?4:32));
       if (type === 'tube') set('fp-tubewall', r2(o.userData.tubeWall != null ? o.userData.tubeWall : 2));
+      if (type === 'tube' && o.userData.tubePoly) set('fp-twist', r2(o.userData.tubeTwist || 0));
+      if (type === 'tube') { const fc = document.getElementById('fp-floor'); if (fc) fc.checked = !!o.userData.tubeFloor; }
       break;
     case 'sphere':
-      set('fp-r', r2(sz.x/2*10));
+      set('fp-r', r2(sz.x*10));
       set('fp-seg', o.userData.segments||32); break;
     case 'cone': case 'pyramid':
-      set('fp-r', r2(sz.x/2*10)); set('fph', h);
+      set('fp-r', r2(sz.x*10)); set('fph', h);
       set('fp-seg', o.userData.segments||(type==='pyramid'?4:32)); break;
     case 'torus': {
-      set('fp-r', r2(sz.x/2*10));
+      set('fp-r', r2(sz.x*10));
       const tr = o.userData.tubeRatio||0.35;
       set('fp-tr', r2(tr*(sz.x/2)*10));
       set('fp-seg', o.userData.segments||48); break;
     }
     case 'polygon':
-      set('fp-r', r2(sz.x/2*10)); set('fph', h);
+      set('fp-r', r2(o.scale.x*2*10*_polyDiaFactor(o))); set('fph', h);   // Fläche- oder Eckmaß
       set('fp-seg', o.userData.segments||6); break;
     case 'paraboloid':
-      set('fp-r', r2(sz.x/2*10)); set('fph', h);
+      set('fp-r', r2(sz.x*10)); set('fph', h);
       set('fp-seg', o.userData.segments||24); break;
     case 'sphericalshell':
-      set('fp-r', r2(sz.x/2*10)); break;
+      set('fp-r', r2(sz.x*10)); break;
     case 'spring': case 'bentpipe':
       set('fpw', w); set('fph', h); break;
     case 'thread': {
@@ -13083,11 +13543,13 @@ function _fpPositionPanel() {
 function _buildTexPanelContent(o) {
   const body = document.getElementById('tex-body'); if (!body) return;
   const pat  = o.userData.displacementPattern  || 'keine';
-  const amp  = o.userData.displacementAmp  != null ? o.userData.displacementAmp  : 0.05;
+  const amp  = o.userData.displacementAmp  != null ? o.userData.displacementAmp  : 0.5;
   const freq = o.userData.displacementFreq != null ? o.userData.displacementFreq : 4;
   const inv  = o.userData.displacementInvert    ? 'checked' : '';
   const sym  = o.userData.displacementSymmetric ? 'checked' : '';
-  const hide = pat === 'keine' ? 'style="display:none"' : '';
+  const ori  = o.userData.texOrient || 'laengs';
+  const whr  = o.userData.texWhere  || 'alle';
+  const hide = '';   // Einstellungs-Block immer sichtbar, auch ohne gewählte Textur
   const row = (lbl, id, val, oc, u, mn, mx, st) =>
     `<div class="fp-row"><div class="fp-row-top"><span class="fp-lbl">${lbl}</span>` +
     `<div class="fp-val-box"><input class="fp-inp" id="${id}" type="number" min="${mn}" max="${mx}" step="${st}" value="${val}" oninput="var _s=document.getElementById('${id}-sl');if(_s)_s.value=this.value;${oc}"><span class="fp-unit">${u}</span></div></div>` +
@@ -13108,10 +13570,24 @@ function _buildTexPanelContent(o) {
     noBtn +
     `<div id="tex-disp-extra" ${hide}>` +
       `<div class="fp-tex-sec" style="margin-top:2px">Texturtiefe</div>` +
-      row('Texturhöhe', 'tex-disp-amp',  amp,  "applyDisplacement('amp',this.value)",  'mm', 0.01, 2, 0.01) +
-      row('Skalierung', 'tex-disp-freq', freq, "applyDisplacement('freq',this.value)", '',   0.5, 20, 0.5) +
+      row('Texturhöhe', 'tex-disp-amp',  amp,  "applyDisplacement('amp',this.value)",  'mm', 0.05, 5, 0.05) +
+      row('Skalierung', 'tex-disp-freq', freq, "applyDisplacement('freq',this.value)", '',   0.5, 40, 0.5) +
       `<label class="fp-check-lbl"><input type="checkbox" id="tex-disp-inv" ${inv} onchange="applyDisplacement('invert',this.checked)"> Invertieren</label>` +
       `<label class="fp-check-lbl"><input type="checkbox" id="tex-disp-sym" ${sym} onchange="applyDisplacement('symmetric',this.checked)"> Symmetrisch</label>` +
+      `<div class="fp-tex-sec" style="margin-top:6px">Richtung</div>` +
+      `<div class="fp-row" style="flex-direction:row;gap:5px">` +
+        `<button class="fp-toggle-btn${ori==='laengs'?' on':''}" style="flex:1" onclick="applyDisplacement('orient','laengs')">Längs</button>` +
+        `<button class="fp-toggle-btn${ori==='quer'?' on':''}" style="flex:1" onclick="applyDisplacement('orient','quer')">Quer</button>` +
+      `</div>` +
+      (() => { const _W = _parseWhere(whr); const _all = _W.aussen && _W.oben && _W.innen && _W.unten;
+        return `<div class="fp-tex-sec" style="margin-top:6px">Ort <span style="font-weight:400;color:#999">· mehrfach wählbar</span></div>` +
+        `<div class="fp-row" style="flex-direction:row;gap:4px;flex-wrap:wrap">` +
+          `<button class="fp-toggle-btn${_all?' on':''}" data-wcat="alle" style="flex:1 1 30%" onclick="applyDisplacement('where','alle')" title="Alle Flächen texturieren">Alle</button>` +
+          `<button class="fp-toggle-btn${_W.aussen?' on':''}" data-wcat="aussen" style="flex:1 1 30%" onclick="applyDisplacement('where','aussen')" title="Senkrechte Außenwände an/aus">Außen</button>` +
+          `<button class="fp-toggle-btn${_W.oben?' on':''}" data-wcat="oben" style="flex:1 1 30%" onclick="applyDisplacement('where','oben')" title="Waagerechte Oberseiten (Dach) an/aus">Oben</button>` +
+          `<button class="fp-toggle-btn${_W.innen?' on':''}" data-wcat="innen" style="flex:1 1 30%" onclick="applyDisplacement('where','innen')" title="Senkrechte Innenwände/Bohrung an/aus">Innen</button>` +
+          `<button class="fp-toggle-btn${_W.unten?' on':''}" data-wcat="unten" style="flex:1 1 30%" onclick="applyDisplacement('where','unten')" title="Waagerechte Unterseiten (Boden) an/aus">Unten</button>` +
+        `</div>`; })() +
     `</div>` +
     `<div class="fp-sep"></div>` +
     `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="exportToBumpMesh()">⬡ BumpMesh.com</button></div>`;
@@ -13121,7 +13597,7 @@ function _syncTexPanel(o) {
   const panel = document.getElementById('tex-panel');
   if (!panel || panel.style.display === 'none') return;
   if (!o) o = getFirst();
-  if (!o || !o.isMesh) { panel.style.display = 'none'; return; }
+  if (!o || (!o.isMesh && !(o.children && o.children.length))) { panel.style.display = 'none'; return; }
   const pat = o.userData.displacementPattern || 'keine';
   panel.querySelectorAll('.fp-tex-thumb').forEach(el => {
     el.classList.toggle('fp-tex-on', el.dataset.pid === pat);
@@ -13130,16 +13606,23 @@ function _syncTexPanel(o) {
     const el = document.getElementById(id); if (el && document.activeElement !== el) el.value = v;
     const sl = document.getElementById(id + '-sl'); if (sl && document.activeElement !== sl) sl.value = v;
   };
-  setV('tex-disp-amp',  o.userData.displacementAmp  != null ? o.userData.displacementAmp  : 0.05);
+  setV('tex-disp-amp',  o.userData.displacementAmp  != null ? o.userData.displacementAmp  : 0.5);
   setV('tex-disp-freq', o.userData.displacementFreq != null ? o.userData.displacementFreq : 4);
   const invEl = document.getElementById('tex-disp-inv'); if (invEl) invEl.checked = !!o.userData.displacementInvert;
   const symEl = document.getElementById('tex-disp-sym'); if (symEl) symEl.checked = !!o.userData.displacementSymmetric;
-  const extra = document.getElementById('tex-disp-extra'); if (extra) extra.style.display = pat === 'keine' ? 'none' : '';
+  const extra = document.getElementById('tex-disp-extra'); if (extra) extra.style.display = '';   // immer sichtbar
+  // Ort-Buttons (multi-select) live spiegeln
+  const W = _parseWhere(o.userData.texWhere || 'alle');
+  const allOn = W.aussen && W.oben && W.innen && W.unten;
+  panel.querySelectorAll('[data-wcat]').forEach(b => {
+    const c = b.dataset.wcat;
+    b.classList.toggle('on', c === 'alle' ? allOn : !!W[c]);
+  });
 }
 
 function toggleTexPanel() {
   const panel = document.getElementById('tex-panel'); if (!panel) return;
-  const o = getFirst(); if (!o || !o.isMesh) return;
+  const o = getFirst(); if (!o || (!o.isMesh && !(o.children && o.children.length))) return;   // Mesh ODER Gruppe/Union
   if (panel.style.display === 'none' || !panel.style.display) {
     if (!panel._userMoved) {
       const fp = document.getElementById('fp');
@@ -13232,10 +13715,39 @@ function fpApplyDim(axis, val) {
   const v = parseFloat(val); if (!(v > 0)) return;
   saveUndoDebounced();
   applyDimChange(axis === 'w' ? 'sw' : axis === 'h' ? 'sh' : 'sd', v);
+  // Boden-Rohr: Bodendicke hängt an der Höhe → bei Höhenänderung neu bauen
+  const o = getFirst();
+  if (o && o.userData.shapeType === 'tube' && o.userData.tubeFloor && axis === 'h') _fpRebuildGeo(o);
   _fpSyncValues();
 }
 
 // Apply radius (XZ uniform) for circular shapes
+// Durchmesser-Eingabe → Radius (halbieren), dann wie gehabt
+function fpApplyDiameter(val) {
+  const v = parseFloat(val); if (!(v > 0)) return;
+  fpApplyRadius(v / 2);
+}
+
+// Vieleck: Mess-Modus 'flaeche' (Schlüsselweite, Fläche↔Fläche) oder 'spitze' (Eckmaß, Spitze↔Spitze)
+function _polyDiaFactor(o) {
+  const n = Math.max(3, o.userData.segments || 6);
+  return (o.userData.polyMeasure || 'flaeche') === 'flaeche' ? Math.cos(Math.PI / n) : 1;
+}
+function fpApplyPolyDia(val) {
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'polygon') return;
+  const D = parseFloat(val); if (!(D > 0)) return;
+  saveUndoDebounced();
+  applyDimChange('sw', D / _polyDiaFactor(o));   // setzt scale.x = Umkreisradius
+  o.scale.z = o.scale.x;
+  _fpSyncValues();
+  if (selectedObjs.length > 0) _doRepositionDimHandles();
+}
+function fpSetPolyMode(mode) {
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'polygon') return;
+  o.userData.polyMeasure = mode;
+  _fpCurType = null; updateFP();   // Panel neu aufbauen (Label + Wert)
+}
+
 function fpApplyRadius(val) {
   const v = parseFloat(val); if (!(v > 0)) return;
   saveUndoDebounced();
@@ -13264,6 +13776,26 @@ function fpApplyTubeWall(val) {
   const v = Math.max(0.2, Math.min(radMm * 0.95, parseFloat(val) || 2));
   saveUndoDebounced();
   o.userData.tubeWall = v;
+  _fpRebuildGeo(o);
+  _fpSyncValues();
+  if (selectedObjs.length > 0) _doRepositionDimHandles();
+}
+
+// Rohr-Boden an/aus → geschlossener Becher bzw. offenes Rohr
+function fpApplyTubeFloor(checked) {
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'tube') return;
+  saveUndoDebounced();
+  o.userData.tubeFloor = !!checked;
+  _fpRebuildGeo(o);
+  _fpSyncValues();
+}
+
+// Poly-Rohr verdrehen (Twist in Grad) → Geometrie mit Höhenschnitten neu bauen
+function fpApplyTwist(val) {
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'tube') return;
+  saveUndoDebounced();
+  o.userData.tubePoly = true;
+  o.userData.tubeTwist = Math.max(-720, Math.min(720, parseFloat(val) || 0));
   _fpRebuildGeo(o);
   _fpSyncValues();
   if (selectedObjs.length > 0) _doRepositionDimHandles();
@@ -13348,7 +13880,19 @@ function _fpRebuildGeo(o) {
   let geo;
   switch (type) {
     case 'cylinder': geo = new THREE.CylinderGeometry(1, 1, 2, segs||32); break;
-    case 'tube':     geo = buildTubeGeo(_tubeRi(o), segs||32); break;
+    case 'tube': {
+      const floorY = o.userData.tubeFloor ? _tubeFloorY(o) : null;
+      if (o.userData.tubePoly) {
+        const sides = Math.max(3, segs || 4), twDeg = o.userData.tubeTwist || 0;
+        const hSegs = twDeg ? Math.min(200, Math.max(1, Math.round(Math.abs(twDeg) / 5))) : 1;
+        geo = buildTubeGeoEx(_tubeRiFor(o, sides), sides, twDeg * Math.PI / 180, hSegs, _polyTubeOffset(sides), floorY, true);
+      } else if (floorY != null) {
+        geo = buildTubeGeoEx(_tubeRi(o), segs || 32, 0, 1, 0, floorY, false);   // rundes Rohr mit Boden (glatt)
+      } else {
+        geo = buildTubeGeo(_tubeRi(o), segs || 32);
+      }
+      break;
+    }
     case 'sphere':   geo = new THREE.SphereGeometry(1, segs||32, Math.max(3, Math.round((segs||32)*0.75))); break;
     case 'cone':     geo = new THREE.ConeGeometry(1, 2, segs||32); break;
     case 'pyramid': {
@@ -13457,6 +14001,920 @@ window._testOCCTSequential = async function(ops) {
   const geo=_occtShapeToThreeGeo(oc,curShape,geoOff);
   return {opOk:true,opsCount:dedupOps.length,verts:geo.attributes.position.count};
 };
+
+// ═══ ZERTEILEN / CUT (Planar) ════════════════════════════════════════════════
+// Teilt das ausgewählte Mesh an einer frei orientierbaren Ebene in zwei druckbare
+// Körper. Schnitt via ThreeCSG.subtract gegen zwei Halbraum-Boxen (kappt die
+// Schnittfläche sauber, wie subtractHoles). Alles in App-Units (1 U = 10 mm);
+// die UI zeigt mm. Orientierung als Quaternion _cut.q (Drag = inkrementelle
+// Welt-Achsen-Drehung, gimbal-frei); die X/Y/Z-Felder zeigen die Euler-Ableitung.
+// Ebenen-Normale n = Basisachse · q; Pivot = bbox-Zentrum mit Basisachs-Koord = posU.
+const _cut = { active:false, axis:'y', posU:0, rot:{x:0,y:0,z:0}, q:new THREE.Quaternion(),
+  target:null, bbox:null, plane:null, panel:null,
+  connectorMode:false, connectors:[], markers:[], cParams:{ d:5, L:6, clr:0.15 },
+  gizmo:null, drag:null };
+
+function _cutBaseNormal() {
+  return _cut.axis === 'x' ? new THREE.Vector3(1,0,0)
+       : _cut.axis === 'z' ? new THREE.Vector3(0,0,1)
+       : new THREE.Vector3(0,1,0);
+}
+// Ebenen-Normale = Basisachse durch die aktuelle Orientierung gedreht
+function _cutNormal() { return _cutBaseNormal().applyQuaternion(_cut.q).normalize(); }
+// Welt-Achsen-Vektor zu 'x'|'y'|'z'
+function _cutAxisVec(k) { return k === 'x' ? new THREE.Vector3(1,0,0) : k === 'z' ? new THREE.Vector3(0,0,1) : new THREE.Vector3(0,1,0); }
+// q → Euler-Grad in die Felder schreiben (Anzeige)
+function _cutSyncRotFields() {
+  const e = new THREE.Euler().setFromQuaternion(_cut.q, 'XYZ'), R = 180 / Math.PI;
+  _cut.rot = { x: e.x*R, y: e.y*R, z: e.z*R };
+  ['x','y','z'].forEach(k => { const el = document.getElementById('cut-r'+k); if (el) el.value = (_cut.rot[k]).toFixed(1); });
+}
+// Drehpunkt: bbox-Zentrum, Basisachs-Koordinate auf posU gesetzt
+function _cutPivot() {
+  const c = _cut.bbox.getCenter(new THREE.Vector3());
+  c[_cut.axis] = _cut.posU;
+  return c;
+}
+// Quaternion, das lokales +Y auf die Normale dreht (für Boxen/Zylinder/Ebene)
+function _cutAlignQuat(n) { return new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), n); }
+// Zwei orthonormale In-Ebenen-Basisvektoren {U,V} senkrecht zur Normale
+function _cutBasis(n) {
+  const ref = Math.abs(n.y) < 0.9 ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0);
+  const U = new THREE.Vector3().crossVectors(ref, n).normalize();
+  const V = new THREE.Vector3().crossVectors(n, U).normalize();
+  return { U, V };
+}
+
+function openCutTool() {
+  if (_cut.active) { _cutClose(); return; }
+  const sel = selectedObjs.filter(o => o.isMesh && !o.userData.isHole);
+  if (sel.length !== 1) { notify('Genau 1 Körper auswählen (Gruppen vorher vereinen)', 'w'); return; }
+  const target = sel[0];
+  target.updateMatrixWorld(true);
+  const bbox = new THREE.Box3().setFromObject(target);
+  if (!isFinite(bbox.min.x)) { notify('Objekt ohne Geometrie', 'w'); return; }
+  _cut.active = true; _cut.target = target; _cut.bbox = bbox; _cut.axis = 'y';
+  _cut.rot = { x:0, y:0, z:0 }; _cut.q = new THREE.Quaternion(); _cut.connectors = [];
+  const c = bbox.getCenter(new THREE.Vector3());
+  _cut.posU = c.y;
+  _cutBuildPanel();
+  _cutUpdatePlane();
+}
+
+function _cutAxisRange() {
+  const b = _cut.bbox, a = _cut.axis;
+  if (a === 'x') return [b.min.x, b.max.x];
+  if (a === 'z') return [b.min.z, b.max.z];
+  return [b.min.y, b.max.y];
+}
+
+function _cutBuildPanel() {
+  if (_cut.panel) _cut.panel.remove();
+  const p = document.createElement('div');
+  p.id = 'cut-panel';
+  p.style.cssText = 'position:fixed;top:70px;right:14px;width:300px;z-index:6000;'+
+    'background:#1f2329;border:1px solid #3a3f47;border-radius:9px;padding:14px 16px;'+
+    'color:#e6e8eb;font:12px/1.4 system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.45)';
+  const [lo, hi] = _cutAxisRange();
+  p.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <b style="font-size:13px">✂ Zerteilen</b>
+      <span onclick="_cutClose()" style="cursor:pointer;color:#9aa0a8;font-size:16px;line-height:1">✕</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <span style="width:54px;color:#9aa0a8">Modus</span>
+      <span style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;padding:5px 8px">Planar</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <span style="width:54px;color:#9aa0a8">Achse</span>
+      <div style="display:flex;gap:5px;flex:1">
+        <button class="cut-ax" data-ax="x" onclick="_cutSetAxis('x')" style="flex:1;color:#ff5a5a">X</button>
+        <button class="cut-ax" data-ax="y" onclick="_cutSetAxis('y')" style="flex:1;color:#5ad65a">Y</button>
+        <button class="cut-ax" data-ax="z" onclick="_cutSetAxis('z')" style="flex:1;color:#5a9cff">Z</button>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <span style="width:54px;color:#9aa0a8">Drehung</span>
+      <div style="display:flex;gap:5px;flex:1">
+        <input id="cut-rx" type="number" step="1" value="0" title="X°" style="width:33%;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#ff5a5a;padding:4px 5px" oninput="_cutOnRot('x',this.value)">
+        <input id="cut-ry" type="number" step="1" value="0" title="Y°" style="width:33%;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#5ad65a;padding:4px 5px" oninput="_cutOnRot('y',this.value)">
+        <input id="cut-rz" type="number" step="1" value="0" title="Z°" style="width:33%;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#5a9cff;padding:4px 5px" oninput="_cutOnRot('z',this.value)">
+      </div>
+      <span onclick="_cutResetRot()" title="Drehung zurücksetzen" style="cursor:pointer;color:#9aa0a8;font-size:13px">↺</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      <span style="width:54px;color:#9aa0a8">Höhe</span>
+      <input id="cut-range" type="range" style="flex:1"
+        min="${(lo*10).toFixed(2)}" max="${(hi*10).toFixed(2)}" step="0.1"
+        value="${(_cut.posU*10).toFixed(2)}" oninput="_cutOnSlider(this.value)">
+      <input id="cut-num" type="number" style="width:64px;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px"
+        step="0.1" value="${(_cut.posU*10).toFixed(2)}" oninput="_cutOnSlider(this.value)">
+      <span style="color:#9aa0a8">mm</span>
+    </div>
+    <div style="border-top:1px solid #3a3f47;margin:6px 0 10px;padding-top:10px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <button id="cut-conn-btn" onclick="_cutToggleConnMode()" style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer;font-weight:700">+ Verbinder hinzufügen</button>
+        <span id="cut-conn-cnt" style="color:#9aa0a8">0</span>
+        <span onclick="_cutClearConnectors()" title="Alle Verbinder entfernen" style="cursor:pointer;color:#9aa0a8;font-size:15px">🗑</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:4px">
+        <label style="flex:1;color:#9aa0a8">Ø mm<input id="cut-cd" type="number" step="0.5" value="5" style="width:100%;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px;margin-top:2px" oninput="_cut.cParams.d=parseFloat(this.value)||5;_cutRenderMarkers()"></label>
+        <label style="flex:1;color:#9aa0a8">Länge<input id="cut-cl" type="number" step="0.5" value="6" style="width:100%;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px;margin-top:2px" oninput="_cut.cParams.L=parseFloat(this.value)||6;_cutRenderMarkers()"></label>
+        <label style="flex:1;color:#9aa0a8">Spiel<input id="cut-cc" type="number" step="0.05" value="0.15" style="width:100%;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px;margin-top:2px" oninput="_cut.cParams.clr=parseFloat(this.value)||0.15"></label>
+      </div>
+      <div id="cut-conn-hint" style="display:none;color:#F97316;font-size:11px;margin-top:4px">Auf die orange Ebene klicken, um Verbinder zu setzen</div>
+    </div>
+    <label style="display:flex;align-items:center;gap:7px;margin-bottom:8px;cursor:pointer">
+      <input id="cut-lay" type="checkbox" checked> Teile auf Platte ablegen (nebeneinander)
+    </label>
+    <label style="display:flex;align-items:center;gap:7px;margin-bottom:14px;cursor:pointer">
+      <input id="cut-flip" type="checkbox" checked> Oberteil auf Schnittfläche legen
+    </label>
+    <div style="display:flex;gap:8px">
+      <button onclick="_cutExecute()" style="flex:1;background:#F97316;border:none;color:#fff;border-radius:6px;padding:8px;font-weight:700;cursor:pointer">Schnitt ausführen</button>
+      <button onclick="_cutClose()" style="background:#2a2f37;border:1px solid #3a3f47;color:#e6e8eb;border-radius:6px;padding:8px 12px;cursor:pointer">Schließen</button>
+    </div>`;
+  document.body.appendChild(p);
+  _cut.panel = p;
+  // einfache Button-Hervorhebung
+  p.querySelectorAll('.cut-ax').forEach(b => {
+    b.style.cssText += ';background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;padding:6px 0;cursor:pointer;font-weight:700';
+  });
+  _cutHighlightAxis();
+}
+
+function _cutHighlightAxis() {
+  if (!_cut.panel) return;
+  _cut.panel.querySelectorAll('.cut-ax').forEach(b => {
+    const on = b.dataset.ax === _cut.axis;
+    b.style.outline = on ? '2px solid #F97316' : 'none';
+    b.style.background = on ? '#3a2a1a' : '#2a2f37';
+  });
+}
+
+function _cutSetAxis(ax) {
+  _cut.axis = ax;
+  _cut.connectors = [];   // In-Ebenen-Koordinaten gelten nur pro Orientierung
+  _cut.rot = { x:0, y:0, z:0 }; _cut.q = new THREE.Quaternion();
+  const c = _cut.bbox.getCenter(new THREE.Vector3());
+  _cut.posU = ax === 'x' ? c.x : ax === 'z' ? c.z : c.y;
+  const [lo, hi] = _cutAxisRange();
+  const r = document.getElementById('cut-range'), n = document.getElementById('cut-num');
+  if (r) { r.min = (lo*10).toFixed(2); r.max = (hi*10).toFixed(2); r.value = (_cut.posU*10).toFixed(2); }
+  if (n) n.value = (_cut.posU*10).toFixed(2);
+  ['x','y','z'].forEach(k => { const el = document.getElementById('cut-r'+k); if (el) el.value = '0'; });
+  _cutHighlightAxis();
+  _cutUpdatePlane();
+}
+
+function _cutOnRot(key, val) {
+  _cut.rot[key] = parseFloat(val) || 0;
+  const d = Math.PI / 180, r = _cut.rot;
+  _cut.q.setFromEuler(new THREE.Euler(r.x*d, r.y*d, r.z*d, 'XYZ'));   // Felder → Orientierung
+  _cut.connectors = [];   // Orientierung geändert → Verbinder ungültig
+  _cutUpdatePlane();
+}
+
+function _cutResetRot() {
+  _cut.rot = { x:0, y:0, z:0 }; _cut.q = new THREE.Quaternion();
+  ['x','y','z'].forEach(k => { const el = document.getElementById('cut-r'+k); if (el) el.value = '0'; });
+  _cut.connectors = [];
+  _cutUpdatePlane();
+}
+
+function _cutOnSlider(valMm) {
+  _cut.posU = parseFloat(valMm) / 10;
+  const r = document.getElementById('cut-range'), n = document.getElementById('cut-num');
+  if (r) r.value = valMm;
+  if (n) n.value = valMm;
+  _cutUpdatePlane();
+}
+
+function _cutUpdatePlane() {
+  if (_cut.plane) { scene.remove(_cut.plane); _cut.plane.geometry.dispose(); _cut.plane = null; }
+  const b = _cut.bbox, t = 0.04;
+  const diag = b.min.distanceTo(b.max);
+  const W = diag * 1.1 + 1;
+  const geo = new THREE.BoxGeometry(W, t, W);   // dünn entlang lokaler Y = Normale
+  const mat = new THREE.MeshBasicMaterial({ color: 0xF97316, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
+  _cut.plane = new THREE.Mesh(geo, mat);
+  // Volle Orientierung (inkl. Roll), damit auch die Drehung um die Normale sichtbar ist
+  _cut.plane.quaternion.copy(_cut.q.clone().multiply(_cutAlignQuat(_cutBaseNormal())));
+  _cut.plane.position.copy(_cutPivot());
+  _cut.plane.renderOrder = 999;
+  scene.add(_cut.plane);
+  _cutRenderMarkers();
+  // Beim Rotations-Drag den Gizmo NICHT neu bauen (Pivot fix) → Hervorhebung/Skala bleiben
+  if (!(_cut.drag && _cut.drag.type === 'rot')) _cutBuildGizmo();
+}
+
+// In-Ebenen-Koordinaten {u,v} (relativ zum Pivot entlang Basis) → Weltpunkt
+function _cutInPlaneToWorld(c) {
+  const n = _cutNormal(), { U, V } = _cutBasis(n);
+  return _cutPivot().add(U.multiplyScalar(c.u)).add(V.multiplyScalar(c.v));
+}
+
+function _cutConnCyl(r, len, worldPos) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 24), new THREE.MeshBasicMaterial());
+  m.position.copy(worldPos);
+  m.quaternion.copy(_cutAlignQuat(_cutNormal()));   // Zylinderachse = Normale
+  m.updateWorldMatrix(true, true);
+  return m;
+}
+
+function _cutRenderMarkers() {
+  _cut.markers.forEach(m => { scene.remove(m); m.geometry.dispose(); });
+  _cut.markers = [];
+  if (!_cut.active) return;
+  const r = (_cut.cParams.d / 10) / 2, len = _cut.cParams.L / 10;
+  _cut.connectors.forEach(c => {
+    const mk = _cutConnCyl(r, len, _cutInPlaneToWorld(c));
+    mk.material = new THREE.MeshBasicMaterial({ color: 0xffaa33, transparent: true, opacity: 0.9 });
+    mk.renderOrder = 1000;
+    scene.add(mk);
+    _cut.markers.push(mk);
+  });
+  const cnt = document.getElementById('cut-conn-cnt');
+  if (cnt) cnt.textContent = _cut.connectors.length;
+}
+
+function _cutToggleConnMode() {
+  _cut.connectorMode = !_cut.connectorMode;
+  const btn = document.getElementById('cut-conn-btn');
+  const hint = document.getElementById('cut-conn-hint');
+  if (btn) { btn.style.outline = _cut.connectorMode ? '2px solid #F97316' : 'none'; btn.style.background = _cut.connectorMode ? '#3a2a1a' : '#2a2f37'; }
+  if (hint) hint.style.display = _cut.connectorMode ? 'block' : 'none';
+  canvas.style.cursor = _cut.connectorMode ? 'crosshair' : '';
+  if (_cut.gizmo) _cut.gizmo.visible = !_cut.connectorMode;   // Gizmo im Connector-Modus ausblenden
+}
+
+function _cutClearConnectors() {
+  _cut.connectors = [];
+  _cutRenderMarkers();
+}
+
+// Klick auf die Vorschau-Ebene → Verbinder setzen (Capture-Phase, blockt Auswahl)
+function _cutPlaneClick(e) {
+  if (!_cut.active || !_cut.connectorMode || e.button !== 0) return;
+  getNorm(e);
+  raycaster.setFromCamera(mousev, camera);
+  const n = _cutNormal(), pivot = _cutPivot();
+  const mplane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, pivot);
+  const pt = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(mplane, pt)) return;
+  const { U, V } = _cutBasis(n), rel = pt.sub(pivot);
+  _cut.connectors.push({ u: rel.dot(U), v: rel.dot(V) });
+  _cutRenderMarkers();
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+// ── Drag-Gizmo: 3 Rotationsringe (Welt X/Y/Z, an Drehung-Felder gekoppelt) +
+//    Pfeil entlang der Höhenachse zum Verschieben ──────────────────────────────
+function _cutBuildGizmo() {
+  if (_cut.gizmo) { scene.remove(_cut.gizmo); _cut.gizmo.traverse(o => o.geometry && o.geometry.dispose()); _cut.gizmo = null; }
+  if (!_cut.active) return;
+  const R = _cut.bbox.min.distanceTo(_cut.bbox.max) * 0.55 + 2;
+  const visTube = R * 0.004 + 0.008;   // sehr dünner sichtbarer Ring
+  const hitTube = R * 0.05 + 0.18;     // dicker unsichtbarer Treffer-Ring (Greiffläche)
+  const g = new THREE.Group();
+  // Ring = dünn sichtbar + unsichtbarer dicker Treffer-Proxy. Loch-Achse = lokale Z.
+  // Jeder Ring dreht ausschließlich um seine eigene Welt-Achse (eine Achse pro Zug).
+  const ring = (axisKey, color, euler) => {
+    const vis = new THREE.Mesh(new THREE.TorusGeometry(R, visTube, 8, 96),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, depthTest: false }));
+    vis.rotation.copy(euler); vis.renderOrder = 1001; vis.userData._giz = { type: 'rot', axis: axisKey };
+    g.add(vis);
+    const hit = new THREE.Mesh(new THREE.TorusGeometry(R, hitTube, 6, 48),
+      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, colorWrite: false }));
+    hit.rotation.copy(euler); hit.userData._giz = { type: 'rot', axis: axisKey };
+    g.add(hit);
+  };
+  ring('x', 0xff5a5a, new THREE.Euler(0, Math.PI / 2, 0));
+  ring('y', 0x5ad65a, new THREE.Euler(Math.PI / 2, 0, 0));
+  ring('z', 0x5a9cff, new THREE.Euler(0, 0, 0));
+  // Verschiebe-Pfeil entlang der Höhen-(Basis-)Achse
+  const baseN = _cutBaseNormal();
+  const arrow = new THREE.Mesh(new THREE.ConeGeometry(R * 0.05 + 0.12, R * 0.26, 16),
+    new THREE.MeshBasicMaterial({ color: 0xF97316, depthTest: false }));
+  arrow.quaternion.copy(_cutAlignQuat(baseN));
+  arrow.position.copy(baseN.clone().multiplyScalar(R));
+  arrow.renderOrder = 1002; arrow.userData._giz = { type: 'move' };
+  g.add(arrow);
+  g.position.copy(_cutPivot());
+  g.visible = !_cut.connectorMode;
+  scene.add(g);
+  _cut.gizmo = g;
+}
+
+function _cutGizmoPick(e) {
+  if (!_cut.gizmo || !_cut.gizmo.visible) return null;
+  getNorm(e); raycaster.setFromCamera(mousev, camera);
+  const meshes = []; _cut.gizmo.traverse(o => { if (o.isMesh && o.userData._giz) meshes.push(o); });
+  const hits = raycaster.intersectObjects(meshes, false);
+  return hits.length ? hits[0].object.userData._giz : null;
+}
+
+// Gradskala (Protraktor-Striche) in der Ebene senkrecht zur Welt-Achse, lokal um den Pivot
+function _cutBuildTicks(axis) {
+  const w = _cutAxisVec(axis);
+  const e1 = (Math.abs(w.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0));
+  e1.sub(w.clone().multiplyScalar(e1.dot(w))).normalize();
+  const e2 = new THREE.Vector3().crossVectors(w, e1).normalize();
+  const R = _cut.bbox.min.distanceTo(_cut.bbox.max) * 0.55 + 2;
+  const pts = [];
+  for (let deg = 0; deg < 360; deg += 5) {
+    const a = deg * Math.PI / 180;
+    const dir = e1.clone().multiplyScalar(Math.cos(a)).add(e2.clone().multiplyScalar(Math.sin(a)));
+    const r0 = R * (deg % 30 === 0 ? 0.92 : 0.96), r1 = R * 1.0;
+    pts.push(new THREE.Vector3().addScaledVector(dir, r0), new THREE.Vector3().addScaledVector(dir, r1));
+  }
+  const lg = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.4, depthTest: false }));
+  lg.renderOrder = 1003;
+  return lg;
+}
+
+// Aktiven Ring hervorheben, andere ausgrauen, Pfeil ausblenden, Skala einblenden
+function _cutGizmoActivate(axis) {
+  if (!_cut.gizmo) return;
+  _cut.gizmo.traverse(o => {
+    if (!o.isMesh || !o.userData._giz) return;
+    if (o.userData._giz.type === 'rot') {
+      if (o.material && o.material.opacity > 0)   // nur sichtbarer Ring (nicht Treffer-Proxy)
+        o.material.opacity = o.userData._giz.axis === axis ? 1 : 0.1;
+    } else if (o.userData._giz.type === 'move') o.visible = false;
+  });
+  _cut.gizmo.add(_cutBuildTicks(axis));
+}
+
+function _cutTooltip(show, text, e) {
+  let el = document.getElementById('cut-tip');
+  if (!show) { if (el) el.style.display = 'none'; return; }
+  if (!el) {
+    el = document.createElement('div'); el.id = 'cut-tip';
+    el.style.cssText = 'position:fixed;z-index:7000;background:#1f2329;color:#fff;border:1px solid #3a3f47;' +
+      'border-radius:5px;padding:3px 8px;font:12px system-ui,sans-serif;pointer-events:none;box-shadow:0 4px 14px rgba(0,0,0,.4)';
+    document.body.appendChild(el);
+  }
+  el.textContent = text; el.style.display = 'block';
+  el.style.left = (e.clientX + 14) + 'px'; el.style.top = (e.clientY - 10) + 'px';
+}
+
+function _cutGizmoStartDrag(giz, e) {
+  const pivot = _cutPivot();
+  if (giz.type === 'rot') {
+    // Achs-gebunden: dieser Ring dreht NUR um seine eigene Welt-Achse
+    const w = _cutAxisVec(giz.axis);
+    const e1 = (Math.abs(w.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0));
+    e1.sub(w.clone().multiplyScalar(e1.dot(w))).normalize();
+    const e2 = new THREE.Vector3().crossVectors(w, e1).normalize();
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(w, pivot);
+    const ang = (ev) => { getNorm(ev); raycaster.setFromCamera(mousev, camera); const p = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(plane, p)) return null; const r = p.sub(pivot); return Math.atan2(r.dot(e2), r.dot(e1)); };
+    const a0 = ang(e); if (a0 === null) return;
+    _cut.drag = { type: 'rot', axis: giz.axis, a0, w, startQ: _cut.q.clone(), ang };
+    _cutGizmoActivate(giz.axis);   // aktiven Ring hervorheben + Gradskala
+  } else {
+    const baseN = _cutBaseNormal();
+    const camDir = camera.getWorldDirection(new THREE.Vector3());
+    let pn = camDir.clone().sub(baseN.clone().multiplyScalar(camDir.dot(baseN)));
+    if (pn.lengthSq() < 1e-6) pn.set(1, 0, 0);
+    pn.normalize();
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(pn, pivot);
+    const proj = (ev) => { getNorm(ev); raycaster.setFromCamera(mousev, camera); const p = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(plane, p)) return null; return p.dot(baseN); };
+    const p0 = proj(e); if (p0 === null) return;
+    _cut.drag = { type: 'move', p0, start: _cut.posU, proj };
+  }
+  window.addEventListener('mousemove', _cutGizmoMove, true);
+  window.addEventListener('mouseup', _cutGizmoUp, true);
+}
+
+function _cutGizmoMove(e) {
+  const d = _cut.drag; if (!d) return;
+  e.preventDefault(); e.stopPropagation();
+  if (d.type === 'rot') {
+    // Drehung NUR um die Achse dieses Rings: q = Δq(Achse, Drag-Winkel) · startQ
+    const a = d.ang(e); if (a === null) return;
+    const dq = new THREE.Quaternion().setFromAxisAngle(d.w, a - d.a0);
+    _cut.q.copy(dq.multiply(d.startQ));
+    _cutSyncRotFields();
+    _cut.connectors = [];
+    _cutUpdatePlane();
+    const dial = ((a * 180 / Math.PI) % 360 + 360) % 360;
+    _cutTooltip(true, d.axis.toUpperCase() + ': ' + dial.toFixed(1).replace('.', ',') + '°', e);
+  } else {
+    const pv = d.proj(e); if (pv === null) return;
+    const [lo, hi] = _cutAxisRange();
+    _cut.posU = Math.max(lo, Math.min(hi, d.start + (pv - d.p0)));
+    const r = document.getElementById('cut-range'), n = document.getElementById('cut-num');
+    if (r) r.value = (_cut.posU * 10).toFixed(2);
+    if (n) n.value = (_cut.posU * 10).toFixed(2);
+    _cutUpdatePlane();
+    _cutTooltip(true, 'Höhe: ' + (_cut.posU * 10).toFixed(1).replace('.', ',') + ' mm', e);
+  }
+}
+
+function _cutGizmoUp() {
+  _cut.drag = null;
+  window.removeEventListener('mousemove', _cutGizmoMove, true);
+  window.removeEventListener('mouseup', _cutGizmoUp, true);
+  _cutTooltip(false);
+  _cutBuildGizmo();   // normale Darstellung wiederherstellen (Skala weg, alle Ringe voll)
+}
+
+// Kombinierte Capture-mousedown: Connector-Platzierung ODER Gizmo-Drag
+function _cutCanvasDown(e) {
+  if (!_cut.active || e.button !== 0) return;
+  if (_cut.connectorMode) { _cutPlaneClick(e); return; }
+  const giz = _cutGizmoPick(e);
+  if (!giz) return;
+  e.preventDefault(); e.stopPropagation();
+  _cutGizmoStartDrag(giz, e);
+}
+if (!window._cutClickBound) { canvas.addEventListener('mousedown', _cutCanvasDown, true); window._cutClickBound = true; }
+
+// Robuster planarer Schnitt: Dreieck-gegen-Ebene-Clipping (numerisch stabil auch
+// für hochpolygonale / nicht wasserdichte Importe, wo BSP-CSG Streudreiecke erzeugt).
+// Liefert zwei BufferGeometrien in Welt-Koordinaten, an der Schnittebene gedeckelt.
+function _cutClipMesh(mesh, P, N) {
+  mesh.updateMatrixWorld(true);
+  const g = mesh.geometry.clone().applyMatrix4(mesh.matrixWorld);
+  const pos = g.attributes.position, index = g.index;
+  const triN = index ? index.count / 3 : pos.count / 3;
+  const EPS = 1e-4, planeC = P.dot(N);
+  const sd = (v) => v.dot(N) - planeC;
+  const vget = (i) => new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+  const above = [], below = [], segs = [];
+  const tri3 = (arr, a, b, c) => arr.push(a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z);
+  const fan = (poly, arr) => { for (let i = 2; i < poly.length; i++) tri3(arr, poly[0], poly[i-1], poly[i]); };
+  for (let t = 0; t < triN; t++) {
+    const ia = index ? index.getX(t*3) : t*3, ib = index ? index.getX(t*3+1) : t*3+1, ic = index ? index.getX(t*3+2) : t*3+2;
+    const tri = [vget(ia), vget(ib), vget(ic)], d = [sd(tri[0]), sd(tri[1]), sd(tri[2])];
+    let na = 0, nb = 0;
+    d.forEach(x => { if (x > EPS) na++; else if (x < -EPS) nb++; });
+    if (nb === 0) { fan(tri, above); continue; }
+    if (na === 0) { fan(tri, below); continue; }
+    const ap = [], bp = [], ip = [];
+    for (let e = 0; e < 3; e++) {
+      const c = tri[e], nx = tri[(e+1)%3], dc = d[e], dn = d[(e+1)%3];
+      if (dc >= -EPS) ap.push(c);
+      if (dc <= EPS) bp.push(c);
+      if ((dc > EPS && dn < -EPS) || (dc < -EPS && dn > EPS)) {
+        const q = c.clone().lerp(nx, dc / (dc - dn));
+        ap.push(q); bp.push(q); ip.push(q);
+      }
+    }
+    fan(ap, above); fan(bp, below);
+    if (ip.length === 2) segs.push([ip[0], ip[1]]);
+  }
+  for (const [a, b, c] of _cutBuildCap(segs, N)) {
+    _cutAddOriented(above, a, b, c, N.clone().negate());   // Deckel des oberen Teils zeigt nach −N
+    _cutAddOriented(below, a, b, c, N);                     // Deckel des unteren Teils zeigt nach +N
+  }
+  return { above: _cutGeoFromPos(above), below: _cutGeoFromPos(below) };
+}
+
+function _cutAddOriented(arr, a, b, c, wantN) {
+  const nrm = b.clone().sub(a).cross(c.clone().sub(a));
+  if (nrm.dot(wantN) >= 0) arr.push(a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z);
+  else arr.push(a.x,a.y,a.z, c.x,c.y,c.z, b.x,b.y,b.z);
+}
+
+function _cutGeoFromPos(flat) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Deckel aus den Schnittsegmenten: Kanten zu Schleifen verbinden, mit Löchern triangulieren
+function _cutBuildCap(segs, N) {
+  if (segs.length < 3) return [];
+  const KEY = (p) => Math.round(p.x*1e4)+'_'+Math.round(p.y*1e4)+'_'+Math.round(p.z*1e4);
+  const pt = new Map(), adj = new Map();
+  const eKey = (a,b) => a<b ? a+'#'+b : b+'#'+a;
+  const seen = new Set();
+  for (const [a,b] of segs) {
+    const ka = KEY(a), kb = KEY(b); if (ka === kb || seen.has(eKey(ka,kb))) continue;
+    seen.add(eKey(ka,kb)); pt.set(ka,a); pt.set(kb,b);
+    (adj.get(ka) || adj.set(ka,[]).get(ka)).push(kb);
+    (adj.get(kb) || adj.set(kb,[]).get(kb)).push(ka);
+  }
+  // Schleifen über unbenutzte Kanten ablaufen
+  const usedE = new Set(), loops = [];
+  for (const [a,b] of segs) {
+    const ka = KEY(a), kb = KEY(b);
+    if (ka === kb || usedE.has(eKey(ka,kb))) continue;
+    const loop = [ka]; let prev = ka, cur = kb, guard = 0;
+    usedE.add(eKey(ka,kb));
+    while (cur !== ka && guard++ < 200000) {
+      loop.push(cur);
+      const ns = adj.get(cur) || [];
+      const nxt = ns.find(k => k !== prev && !usedE.has(eKey(cur,k)));
+      if (nxt === undefined) break;
+      usedE.add(eKey(cur,nxt)); prev = cur; cur = nxt;
+    }
+    if (cur === ka && loop.length >= 3) loops.push(loop.map(k => pt.get(k)));
+  }
+  if (!loops.length) return [];
+  const { U, V } = _cutBasis(N), origin = loops[0][0];
+  const to2 = (p) => new THREE.Vector2(p.clone().sub(origin).dot(U), p.clone().sub(origin).dot(V));
+  const inside = (p, poly) => {
+    let c = false;
+    for (let i=0, j=poly.length-1; i<poly.length; j=i++)
+      if (((poly[i].y > p.y) !== (poly[j].y > p.y)) &&
+          (p.x < (poly[j].x-poly[i].x)*(p.y-poly[i].y)/(poly[j].y-poly[i].y)+poly[i].x)) c = !c;
+    return c;
+  };
+  const L = loops.map(lp => ({ v3: lp, v2: lp.map(to2), area: 0 }));
+  L.forEach(o => o.area = Math.abs(THREE.ShapeUtils.area(o.v2)));
+  L.forEach(a => { a.depth = 0; L.forEach(b => { if (a !== b && b.area > a.area && inside(a.v2[0], b.v2)) a.depth++; }); });
+  const tris = [];
+  L.filter(o => o.depth % 2 === 0).forEach(outer => {
+    let cV2 = outer.v2, cV3 = outer.v3;
+    if (THREE.ShapeUtils.isClockWise(cV2)) { cV2 = cV2.slice().reverse(); cV3 = cV3.slice().reverse(); }
+    const holes2 = [], all3 = cV3.slice();
+    L.filter(h => h.depth === outer.depth + 1 && inside(h.v2[0], outer.v2)).forEach(h => {
+      let hV2 = h.v2, hV3 = h.v3;
+      if (!THREE.ShapeUtils.isClockWise(hV2)) { hV2 = hV2.slice().reverse(); hV3 = hV3.slice().reverse(); }
+      holes2.push(hV2); hV3.forEach(p => all3.push(p));
+    });
+    THREE.ShapeUtils.triangulateShape(cV2, holes2).forEach(f => tris.push([all3[f[0]], all3[f[1]], all3[f[2]]]));
+  });
+  return tris;
+}
+
+function _cutExecute() {
+  const target = _cut.target;
+  if (!target) { _cutClose(); return; }
+  const axis = _cut.axis;
+  const layFlat = document.getElementById('cut-lay')?.checked;
+  const flipTop = document.getElementById('cut-flip')?.checked;
+  notify('Schneide…', 'ok');
+  saveUndo();
+  const cutN = _cutNormal();   // Schnittebenen-Normale (Welt) — vor Transform-Reset sichern
+  try {
+    // Robuster planarer Schnitt (Dreieck-Clipping statt BSP → stabil bei Importen)
+    const _mat = () => (target.material && target.material.clone()) || new THREE.MeshStandardMaterial();
+    const clip = _cutClipMesh(target, _cutPivot(), cutN);
+    let keepBelow = new THREE.Mesh(clip.below, _mat());  // −N-Seite
+    let keepAbove = new THREE.Mesh(clip.above, _mat());  // +N-Seite
+
+    // Verbinder: Pin (Dübel) in Teil A einfügen, passendes Loch (mit Spiel) aus Teil B
+    if (_cut.connectors.length &&
+        (keepBelow.geometry.attributes.position?.count || 0) >= 3 &&
+        (keepAbove.geometry.attributes.position?.count || 0) >= 3) {
+      const r = (_cut.cParams.d / 10) / 2;
+      const L = _cut.cParams.L / 10;
+      const clr = (_cut.cParams.clr || 0) / 10;
+      _cut.connectors.forEach(c => {
+        const wp = _cutInPlaneToWorld(c);
+        const pin  = _cutConnCyl(r, L, wp);
+        const sock = _cutConnCyl(r + clr, L + 0.4, wp);   // etwas länger → sauberer Durchstoß
+        const nb = ThreeCSG.union(keepBelow, pin);
+        const na = ThreeCSG.subtract(keepAbove, sock);
+        pin.geometry.dispose(); sock.geometry.dispose();
+        keepBelow.geometry.dispose(); keepAbove.geometry.dispose();
+        keepBelow = nb; keepAbove = na;
+      });
+    }
+
+    const baseColor = target.userData.color || (target.material && '#' + target.material.color.getHexString()) || currentColor;
+    const parts = [];
+    [['A', keepBelow, 'below'], ['B', keepAbove, 'above']].forEach(([tag, mesh, role]) => {
+      const cnt = mesh.geometry.attributes.position?.count || 0;
+      if (cnt < 3) { mesh.geometry.dispose(); return; }   // Ebene außerhalb → leeres Teil
+      mesh.position.set(0, 0, 0); mesh.quaternion.identity(); mesh.scale.set(1, 1, 1);
+      mesh.userData = { id: idCtr++, name: 'Teil ' + tag, color: baseColor, isHole: false, type: 'custom' };
+      if (mesh.material && baseColor) mesh.material.color.set(baseColor);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      parts.push({ mesh, role });
+    });
+    if (!parts.length) { notify('Schnittebene liegt außerhalb des Objekts', 'w'); return; }
+
+    if (layFlat) {
+      let cursorX = 0; const gap = 0.8;
+      parts.forEach(({ mesh, role }) => {
+        if (flipTop && role === 'above') {
+          // Schnittfläche (Außennormale -n) flach aufs Bett: drehe n → +Y
+          const q = new THREE.Quaternion().setFromUnitVectors(cutN.clone(), new THREE.Vector3(0, 1, 0));
+          mesh.geometry.applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(q));
+        }
+        mesh.geometry.computeBoundingBox();
+        const bb = mesh.geometry.boundingBox;
+        const dy = -bb.min.y;
+        const dx = cursorX - bb.min.x;
+        const dz = -(bb.min.z + bb.max.z) / 2;
+        mesh.geometry.translate(dx, dy, dz);
+        cursorX += (bb.max.x - bb.min.x) + gap;
+        mesh.geometry.computeVertexNormals();
+      });
+    }
+
+    // Original entfernen, Teile einsetzen
+    objects = objects.filter(x => x !== target);
+    scene.remove(target);
+    parts.forEach(({ mesh }) => { scene.add(mesh); objects.push(mesh); });
+    _cutClose();
+    selectObjs(parts.map(p => p.mesh));
+    updateTree();
+    notify(`In ${parts.length} Teil(e) zerteilt ✓`, 'ok');
+  } catch (e) {
+    console.error('[Cut] Fehler:', e);
+    notify('Schnitt fehlgeschlagen: ' + (e.message || e), 'w');
+  }
+}
+
+function _cutClose() {
+  if (_cut.plane) { scene.remove(_cut.plane); _cut.plane.geometry.dispose(); _cut.plane = null; }
+  if (_cut.gizmo) { scene.remove(_cut.gizmo); _cut.gizmo.traverse(o => o.geometry && o.geometry.dispose()); _cut.gizmo = null; }
+  _cut.markers.forEach(m => { scene.remove(m); m.geometry.dispose(); });
+  _cut.markers = [];
+  if (_cut.drag) { window.removeEventListener('mousemove', _cutGizmoMove, true); window.removeEventListener('mouseup', _cutGizmoUp, true); _cut.drag = null; }
+  _cutTooltip(false);
+  if (_cut.panel) { _cut.panel.remove(); _cut.panel = null; }
+  _cut.active = false; _cut.target = null; _cut.bbox = null;
+  _cut.connectorMode = false; _cut.connectors = [];
+  canvas.style.cursor = '';
+}
+
+// ═══ RADIERER (Flächen wegpinseln) ═══════════════════════════════════════════
+// Über das Modell fahren löscht Dreiecke im Pinselradius. Robust (kein CSG),
+// funktioniert auf jedem Mesh inkl. importierter STL. Radius per Slider + Mausrad.
+const _eraser = { active:false, radiusMm:8, ind:null, brushing:false, panel:null, didErase:false };
+
+function openEraserTool() {
+  if (_eraser.active) { _eraserClose(); return; }
+  if (_cut.active) _cutClose();
+  if (typeof deselect === 'function') deselect();
+  _eraser.active = true;
+  _eraser.session = new Set();   // alle in dieser Sitzung radierten Meshes (für „Loch schließen")
+  _eraserBuildPanel();
+  _eraserBuildIndicator();
+  canvas.style.cursor = 'crosshair';
+  canvas.addEventListener('mousedown', _eraserDown, true);
+  window.addEventListener('mousemove', _eraserMove, true);
+  window.addEventListener('mouseup', _eraserUp, true);
+  canvas.addEventListener('wheel', _eraserWheel, { passive:false, capture:true });
+  notify('Radierer aktiv — über das Modell fahren zum Löschen (Radius per Mausrad)', 'ok');
+}
+
+function _eraserClose() {
+  _eraser.active = false; _eraser.brushing = false;
+  if (_eraser.ind) { _eraser.ind.remove(); _eraser.ind = null; }
+  if (_eraser.panel) { _eraser.panel.remove(); _eraser.panel = null; }
+  canvas.style.cursor = '';
+  canvas.removeEventListener('mousedown', _eraserDown, true);
+  window.removeEventListener('mousemove', _eraserMove, true);
+  window.removeEventListener('mouseup', _eraserUp, true);
+  canvas.removeEventListener('wheel', _eraserWheel, { capture:true });
+}
+
+function _eraserBuildPanel() {
+  if (_eraser.panel) _eraser.panel.remove();
+  const p = document.createElement('div');
+  p.id = 'eraser-panel';
+  p.style.cssText = 'position:fixed;top:70px;right:14px;width:262px;z-index:6000;'+
+    'background:#1f2329;border:1px solid #3a3f47;border-radius:9px;padding:14px 16px;'+
+    'color:#e6e8eb;font:12px/1.4 system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.45)';
+  p.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <b style="font-size:13px">🧽 Radierer</b>
+      <span onclick="_eraserClose()" style="cursor:pointer;color:#9aa0a8;font-size:16px;line-height:1">✕</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <span style="width:48px;color:#9aa0a8">Radius</span>
+      <input id="eraser-range" type="range" min="1" max="50" step="0.5" value="${_eraser.radiusMm}" style="flex:1" oninput="_eraserSetRadius(this.value)">
+      <input id="eraser-num" type="number" min="0.5" step="0.5" value="${_eraser.radiusMm}" style="width:54px;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px" oninput="_eraserSetRadius(this.value)">
+      <span style="color:#9aa0a8">mm</span>
+    </div>
+    <div style="color:#9aa0a8;font-size:11px;margin-bottom:12px">Mit gedrückter Maus über das Modell fahren löscht Flächen im Pinsel. Radius auch per Mausrad. Strg+Z macht rückgängig.</div>
+    <button onclick="_eraserCloseHoles()" style="width:100%;background:#2a2f37;border:1px solid #3a3f47;color:#e6e8eb;border-radius:6px;padding:8px;cursor:pointer;margin-bottom:8px">🩹 Reparieren (Löcher schließen)</button>
+    <button onclick="_eraserClose()" style="width:100%;background:#F97316;border:none;color:#fff;border-radius:6px;padding:8px;font-weight:700;cursor:pointer">Fertig</button>`;
+  document.body.appendChild(p);
+  _eraser.panel = p;
+}
+
+function _eraserSetRadius(mm) {
+  _eraser.radiusMm = Math.max(0.5, Math.min(50, parseFloat(mm) || 8));
+  const r = document.getElementById('eraser-range'), n = document.getElementById('eraser-num');
+  if (r) r.value = _eraser.radiusMm;
+  if (n) n.value = _eraser.radiusMm;
+  if (_eraser.lastClient) _eraserUpdateCursor(_eraser.lastClient, false);
+}
+
+// Pinsel-Anzeige = HTML-Kreis am Mauszeiger (immer sichtbar, unabhängig vom 3D-Render)
+function _eraserBuildIndicator() {
+  if (_eraser.ind) _eraser.ind.remove();
+  const d = document.createElement('div');
+  d.id = 'eraser-cursor';
+  d.style.cssText = 'position:fixed;border:2px solid #ff3b3b;border-radius:50%;pointer-events:none;z-index:6500;' +
+    'transform:translate(-50%,-50%);box-shadow:0 0 0 1px rgba(255,255,255,.55),0 0 7px rgba(255,59,59,.7);display:none';
+  document.body.appendChild(d);
+  _eraser.ind = d;
+  _eraser.lastPoint = new THREE.Vector3();
+}
+
+// Bildschirm-Pixelradius aus Welt-Radius an der zuletzt getroffenen Tiefe
+function _eraserUpdateCursor(e, onModel) {
+  const el = _eraser.ind; if (!el) return;
+  const rw = _eraser.radiusMm / 10;
+  const c = _eraser.lastPoint;
+  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  const rect = vpEl.getBoundingClientRect();
+  const proj = (v) => { const p = v.clone().project(camera);
+    return { x: (p.x*0.5+0.5)*rect.width + rect.left, y: (-p.y*0.5+0.5)*rect.height + rect.top }; };
+  const a = proj(c), bp = proj(c.clone().addScaledVector(right, rw));
+  const pr = Math.max(4, Math.hypot(bp.x - a.x, bp.y - a.y));
+  el.style.left = e.clientX + 'px'; el.style.top = e.clientY + 'px';
+  el.style.width = el.style.height = (2 * pr) + 'px';
+  el.style.borderColor = onModel ? '#ff3b3b' : 'rgba(255,90,90,.45)';
+  el.style.display = 'block';
+}
+
+function _eraserPick(e) {
+  getNorm(e); raycaster.setFromCamera(mousev, camera);
+  const hits = raycaster.intersectObjects(objects, true)
+    .filter(h => h.object.isMesh && h.face && !h.object.userData.isEdgeLines && !h.object.userData.isHole && h.object.visible !== false);
+  return hits.length ? hits[0] : null;
+}
+
+// Pinselstrich: Undo nur einmal pro Strich (faul, beim ersten echten Löschen)
+function _eraserStroke(hit) {
+  if (!_eraser.savedUndo) { saveUndo(); _eraser.savedUndo = true; }
+  if (_eraserEraseAt(hit.object, hit.point)) _eraser.didErase = true;
+}
+
+function _eraserMove(e) {
+  if (!_eraser.active) return;
+  _eraser.lastClient = { clientX: e.clientX, clientY: e.clientY };
+  const hit = _eraserPick(e);
+  if (hit) _eraser.lastPoint.copy(hit.point);
+  _eraserUpdateCursor(e, !!hit);
+  if (_eraser.brushing) {
+    e.preventDefault(); e.stopPropagation();
+    if (hit) _eraserStroke(hit);
+  }
+}
+
+function _eraserDown(e) {
+  if (!_eraser.active || e.button !== 0) return;
+  e.preventDefault(); e.stopPropagation();   // im Radierer-Modus NIE das Auswahl-Rechteck starten
+  _eraser.brushing = true; _eraser.didErase = false; _eraser.savedUndo = false; _eraser.touched = new Set();
+  const hit = _eraserPick(e);
+  if (hit) { _eraser.lastPoint.copy(hit.point); _eraserStroke(hit); }
+}
+
+function _eraserUp() {
+  if (!_eraser.brushing) return;
+  _eraser.brushing = false;
+  if (_eraser.didErase) {
+    // Schwarze Kantenlinien an die radierte Geometrie anpassen (Geisterlinien weg)
+    if (_eraser.touched && typeof _updateObjEdgeLines === 'function')
+      _eraser.touched.forEach(m => { if (objects.includes(m)) _updateObjEdgeLines(m); });
+    updateTree(); notify('Radiert', 'ok');
+  }
+}
+
+function _eraserWheel(e) {
+  if (!_eraser.active) return;
+  e.preventDefault(); e.stopPropagation();
+  const step = e.shiftKey ? 0.5 : 2;
+  _eraserSetRadius(_eraser.radiusMm + (e.deltaY < 0 ? step : -step));
+}
+
+// Löscht alle Dreiecke, deren Schwerpunkt/Ecke im Pinselradius (Welt) liegt
+function _eraserEraseAt(mesh, pw) {
+  mesh.updateMatrixWorld(true);
+  const wasIndexed = !!mesh.geometry.index;
+  const work = wasIndexed ? mesh.geometry.toNonIndexed() : mesh.geometry;
+  const pos = work.attributes.position, triN = pos.count / 3;
+  const mw = mesh.matrixWorld, r2 = (_eraser.radiusMm / 10) ** 2;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), cen = new THREE.Vector3();
+  const keep = []; let removed = 0;
+  for (let t = 0; t < triN; t++) {
+    a.fromBufferAttribute(pos, t*3).applyMatrix4(mw);
+    b.fromBufferAttribute(pos, t*3+1).applyMatrix4(mw);
+    c.fromBufferAttribute(pos, t*3+2).applyMatrix4(mw);
+    cen.copy(a).add(b).add(c).multiplyScalar(1/3);
+    if (cen.distanceToSquared(pw) < r2 || a.distanceToSquared(pw) < r2 ||
+        b.distanceToSquared(pw) < r2 || c.distanceToSquared(pw) < r2) { removed++; continue; }
+    for (let v = 0; v < 3; v++) keep.push(pos.getX(t*3+v), pos.getY(t*3+v), pos.getZ(t*3+v));
+  }
+  if (!removed) { if (wasIndexed) work.dispose(); return false; }
+
+  // Ganzes Objekt weg, wenn nichts übrig bleibt
+  if (keep.length === 0) {
+    if (wasIndexed) work.dispose();
+    scene.remove(mesh); objects = objects.filter(o => o !== mesh);
+    if (_eraser.ind) _eraser.ind.style.display = 'none';
+    updateTree();
+    return true;
+  }
+
+  const ng = new THREE.BufferGeometry();
+  ng.setAttribute('position', new THREE.Float32BufferAttribute(keep, 3));
+  ng.computeVertexNormals();
+  mesh.geometry.dispose();
+  if (wasIndexed) work.dispose();
+  mesh.geometry = ng;
+  if (_eraser.touched) _eraser.touched.add(mesh);   // Kantenlinien am Strich-Ende neu bauen
+  if (_eraser.session) _eraser.session.add(mesh);   // für „Löcher schließen"
+  // Freiform-Mesh — parametrische Daten sind nicht mehr gültig
+  const ud = mesh.userData;
+  ud.type = 'custom';
+  delete ud.shapeType; delete ud.occtShape; delete ud._occtParams;
+  delete ud._origGeo; delete ud._origStlBuf; delete ud.edgeBevels;
+  return true;
+}
+
+// Reparieren: offene Löcher im ausgewählten Objekt (oder dessen Mesh-Kindern) schließen
+function repairSelected() {
+  const meshes = [];
+  (selectedObjs || []).forEach(o => {
+    if (o.traverse) o.traverse(c => { if (c.isMesh && !c.userData.isHole && !c.userData.isEdgeLines) meshes.push(c); });
+    else if (o.isMesh) meshes.push(o);
+  });
+  if (!meshes.length) { notify('Erst ein Objekt auswählen', 'w'); return; }
+  saveUndo();
+  let loops = 0;
+  meshes.forEach(m => { loops += _fillHoles(m); if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(m); });
+  updateTree();
+  notify(loops ? `${loops} Loch/Löcher geschlossen ✓` : 'Keine offenen Ränder gefunden', loops ? 'ok' : 'w');
+}
+
+// Schließt offene Ränder (Löcher) aller in dieser Sitzung radierten Meshes
+function _eraserCloseHoles() {
+  const meshes = _eraser.session ? [..._eraser.session].filter(m => objects.includes(m)) : [];
+  if (!meshes.length) { notify('Nichts zum Schließen — erst radieren', 'w'); return; }
+  saveUndo();
+  let loops = 0;
+  meshes.forEach(m => { loops += _fillHoles(m); if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(m); });
+  updateTree();
+  notify(loops ? `${loops} Loch/Löcher geschlossen ✓` : 'Keine offenen Ränder gefunden', loops ? 'ok' : 'w');
+}
+
+// Füllt offene Randschleifen einer Mesh-Geometrie (Fächer vom Schleifen-Mittelpunkt)
+function _fillHoles(mesh) {
+  const g = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry;
+  const pos = g.attributes.position, triN = pos.count / 3;
+  const KEY = (x, y, z) => Math.round(x*1e4)+'_'+Math.round(y*1e4)+'_'+Math.round(z*1e4);
+  const vpos = new Map();                 // Knoten-Key → {x,y,z}
+  const undir = new Map();                // ungerichtete Kante → Anzahl
+  const dir = [];                         // gerichtete Kanten {a,b} (Dreiecks-Wicklung)
+  for (let t = 0; t < triN; t++) {
+    const k = [];
+    for (let v = 0; v < 3; v++) {
+      const x = pos.getX(t*3+v), y = pos.getY(t*3+v), z = pos.getZ(t*3+v), kk = KEY(x, y, z);
+      if (!vpos.has(kk)) vpos.set(kk, { x, y, z });
+      k.push(kk);
+    }
+    for (let e = 0; e < 3; e++) {
+      const a = k[e], b = k[(e+1)%3]; if (a === b) continue;
+      const u = a < b ? a+'|'+b : b+'|'+a;
+      undir.set(u, (undir.get(u) || 0) + 1);
+      dir.push({ a, b, u });
+    }
+  }
+  // Randkanten = ungerichtete Kante kommt nur einmal vor; Richtung vom Dreieck übernehmen
+  const nextOf = new Map();
+  dir.forEach(de => { if (undir.get(de.u) === 1) nextOf.set(de.a, de.b); });
+  if (!nextOf.size) return 0;
+  // Schleifen ablaufen
+  const used = new Set(), loops = [];
+  for (const start of nextOf.keys()) {
+    if (used.has(start)) continue;
+    const loop = []; let cur = start, guard = 0;
+    while (cur !== undefined && !used.has(cur) && guard++ < 500000) {
+      used.add(cur); loop.push(cur); cur = nextOf.get(cur);
+      if (cur === start) break;
+    }
+    if (loop.length >= 3) loops.push(loop);
+  }
+  if (!loops.length) return 0;
+  // Fächer-Füllung vom Mittelpunkt (umgekehrte Kantenrichtung → konsistente Wicklung)
+  const add = [];
+  for (const loop of loops) {
+    const pts = loop.map(k => vpos.get(k));
+    const c = { x:0, y:0, z:0 };
+    pts.forEach(p => { c.x += p.x; c.y += p.y; c.z += p.z; });
+    c.x /= pts.length; c.y /= pts.length; c.z /= pts.length;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i+1) % pts.length];
+      add.push(b.x, b.y, b.z, a.x, a.y, a.z, c.x, c.y, c.z);
+    }
+  }
+  const old = pos.array;
+  const merged = new Float32Array(old.length + add.length);
+  merged.set(old, 0); merged.set(add, old.length);
+  const ng = new THREE.BufferGeometry();
+  ng.setAttribute('position', new THREE.Float32BufferAttribute(merged, 3));
+  ng.computeVertexNormals();
+  mesh.geometry.dispose(); mesh.geometry = ng;
+  return loops.length;
+}
 
 </script>
 </body>
