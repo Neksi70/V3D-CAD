@@ -713,7 +713,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.0<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.1<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -1245,13 +1245,19 @@ const firebaseConfig = {
   <!-- KEYS TAB -->
   <div class="rpn" id="pane-keys">
     <div id="ksp">
-      <div class="kg"><div class="kt">Navigation</div>
-        <div class="kr"><div class="kk"><span class="key">RMB+Drag</span></div><span class="kl">Orbit</span></div>
-        <div class="kr"><div class="kk"><span class="key">MMB+Drag</span></div><span class="kl">Pan</span></div>
-        <div class="kr"><div class="kk"><span class="key">Scroll</span></div><span class="kl">Zoom</span></div>
+      <div class="kg"><div class="kt">Navigation – Maus</div>
+        <div class="kr"><div class="kk"><span class="key">Rechte Taste+Ziehen</span></div><span class="kl">Drehen (Orbit)</span></div>
+        <div class="kr"><div class="kk"><span class="key">Mittlere Taste+Ziehen</span></div><span class="kl">Verschieben (Pan)</span></div>
+        <div class="kr"><div class="kk"><span class="key">Shift+Rechte Taste</span></div><span class="kl">Verschieben (Pan)</span></div>
+        <div class="kr"><div class="kk"><span class="key">Mausrad</span></div><span class="kl">Zoom</span></div>
         <div class="kr"><div class="kk"><span class="key">+</span><span class="key">−</span></div><span class="kl">Zoom in/out</span></div>
-        <div class="kr"><div class="kk"><span class="key">F</span></div><span class="kl">Einpassen</span></div>
         <div class="kr"><div class="kk"><span class="key">Doppelklick</span></div><span class="kl">Fokus Objekt</span></div>
+      </div>
+      <div class="kg"><div class="kt">Navigation – Touchpad</div>
+        <div class="kr"><div class="kk"><span class="key">2 Finger wischen</span></div><span class="kl">Verschieben (Pan)</span></div>
+        <div class="kr"><div class="kk"><span class="key">2 Finger auf/zu</span></div><span class="kl">Zoom (Pinch)</span></div>
+        <div class="kr"><div class="kk"><span class="key">Rechte Taste+Ziehen</span></div><span class="kl">Drehen (Orbit)</span></div>
+        <div class="kr"><div class="kk"><span class="key">F</span></div><span class="kl">Einpassen</span></div>
       </div>
       <div class="kg"><div class="kt">Werkzeuge</div>
         <div class="kr"><div class="kk"><span class="key">Q</span></div><span class="kl">Auswahl / Esc</span></div>
@@ -8932,9 +8938,36 @@ canvas.addEventListener('mouseup', e => {
   }
 });
 
+// Wheel-Navigation: unterscheidet Touchpad-Zwei-Finger-Wischen (→ Pan) von
+// klassischem Mausrad (→ Zoom) und Pinch (Ctrl+Wheel → Zoom).
+// „Sticky": sobald horizontales Wischen (deltaX) gesehen wurde, gilt das Gerät
+// kurzzeitig als Touchpad, damit auch reines Hoch/Runter-Wischen pannt.
+let _trackpadSeen = 0;
+function _wheelPan(dx, dy) {
+  const f = sph.r * 0.0016;
+  const right = new THREE.Vector3();
+  right.crossVectors(camera.getWorldDirection(new THREE.Vector3()), new THREE.Vector3(0, 1, 0)).normalize();
+  orbitTarget.addScaledVector(right, -dx * f);   // Wischen → Szene folgt den Fingern
+  orbitTarget.y += dy * f;
+  sph2cam();
+  _doRepositionDimHandles();
+}
 canvas.addEventListener('wheel', e => {
-  sph.r = Math.max(1.5, Math.min(200, sph.r + e.deltaY * 0.03));
-  sph2cam(); e.preventDefault();
+  e.preventDefault(); e.stopPropagation();
+  if (e.ctrlKey || e.metaKey) {                  // Pinch (Touchpad) / Ctrl+Rad → Zoom
+    const f = Math.max(0.5, Math.min(1.6, 1 + e.deltaY * 0.01));
+    sph.r = Math.max(1.5, Math.min(200, sph.r * f));
+    sph2cam(); return;
+  }
+  if (e.deltaMode === 0 && Math.abs(e.deltaX) > 0) _trackpadSeen = performance.now();
+  const trackpad = e.deltaMode === 0 &&
+    (Math.abs(e.deltaX) > 0 || (performance.now() - _trackpadSeen < 1500) || Math.abs(e.deltaY) < 40);
+  if (trackpad) {
+    _wheelPan(e.deltaX, e.deltaY);               // Zwei-Finger-Wischen → Pan
+  } else {
+    sph.r = Math.max(1.5, Math.min(200, sph.r + e.deltaY * 0.03));   // Mausrad → Zoom
+    sph2cam();
+  }
 }, { passive: false });
 
 // ═══ TOUCH-SUPPORT ═══════════════════════════════════════════════════
@@ -11942,8 +11975,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.0';
+const VOLME3D_VERSION = '1.14.1';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.1', date:'2026-06-12', changes:[
+    ['✨','Touchpad-Navigation: Zwei-Finger-Wischen verschiebt jetzt flüssig die Ansicht (Pan), Auf-/Zuziehen (Pinch) zoomt. Vorher wurde Wischen fälschlich als Mausrad behandelt und hat nur gezoomt. Mausrad zoomt weiter wie gewohnt; Touchpad wird automatisch erkannt'],
+  ]},
   { version:'1.14.0', date:'2026-06-12', changes:[
     ['✨','Textur komplett überarbeitet (BumpMesh-Qualität): neue Pipeline verschweißt das Mesh, unterteilt es wasserdicht in 3D, nutzt glatte Welt-Normalen und blendet das Muster triplanar über die Kanten — keine aufgerissenen Dreiecke/Spikes mehr, besonders bei importierten STLs und Booleschen Körpern'],
     ['🔧','Texturhöhe ist jetzt eine absolute mm-Höhe (wie BumpMesh) — unabhängig von Modellgröße und Skalierung. 0,5 mm Muster bleibt 0,5 mm, egal ob auf 2 cm oder 2 m. Slider in mm (0,05–5 mm)'],
