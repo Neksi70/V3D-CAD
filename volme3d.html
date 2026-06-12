@@ -8946,20 +8946,31 @@ canvas.addEventListener('mouseup', e => {
 // nur Deltas sammeln und EINMAL pro Frame in animate() ausführen (_applyNavAccum).
 // Sonst läuft sph2cam + Handle-Reposition pro Event und konkurriert mit dem Render.
 let _trackpadSeen = 0;
-let _navAccum = { panX: 0, panY: 0, zMul: 1, zAdd: 0, dirty: false };
+let _navAccum = { zMul: 1, zAdd: 0, dirty: false };
+let _panPending = { x: 0, y: 0 };   // noch nicht angewandte Pan-Strecke (geglättet abgebaut)
 function _applyNavAccum() {
   const n = _navAccum;
   if (n.zMul !== 1)  sph.r = Math.max(1.5, Math.min(200, sph.r * n.zMul));
   if (n.zAdd !== 0)  sph.r = Math.max(1.5, Math.min(200, sph.r + n.zAdd * 0.03));
-  if (n.panX !== 0 || n.panY !== 0) {
+  n.zMul = 1; n.zAdd = 0;
+  // Pan geglättet: grobe/unregelmäßige Touchpad-Wheel-Events werden über mehrere
+  // Frames per Lerp abgebaut -> fluessiges Gleiten statt Springen, leichtes Nachschwingen.
+  let panning = false;
+  if (_panPending.x * _panPending.x + _panPending.y * _panPending.y > 2.5e-3) {
+    const k = 0.34;
+    const ax = _panPending.x * k, ay = _panPending.y * k;
+    _panPending.x -= ax; _panPending.y -= ay;
+    if (Math.abs(_panPending.x) < 0.04) _panPending.x = 0;
+    if (Math.abs(_panPending.y) < 0.04) _panPending.y = 0;
     const f = sph.r * 0.0016;
     const right = new THREE.Vector3();
     right.crossVectors(camera.getWorldDirection(new THREE.Vector3()), new THREE.Vector3(0, 1, 0)).normalize();
-    orbitTarget.addScaledVector(right, -n.panX * f);   // Wischen → Szene folgt den Fingern
-    orbitTarget.y += n.panY * f;
-  }
+    orbitTarget.addScaledVector(right, -ax * f);   // Wischen -> Szene folgt den Fingern
+    orbitTarget.y += ay * f;
+    panning = true;
+  } else { _panPending.x = _panPending.y = 0; }
   sph2cam();
-  n.panX = n.panY = n.zAdd = 0; n.zMul = 1; n.dirty = false;
+  n.dirty = panning;   // weiter anwenden, solange Pan-Rest da ist (Nachgleiten)
 }
 canvas.addEventListener('wheel', e => {
   e.preventDefault(); e.stopPropagation();
@@ -8970,8 +8981,8 @@ canvas.addEventListener('wheel', e => {
   if (e.deltaMode === 0 && Math.abs(e.deltaX) > 0) _trackpadSeen = performance.now();
   const trackpad = e.deltaMode === 0 &&
     (Math.abs(e.deltaX) > 0 || (performance.now() - _trackpadSeen < 1500) || Math.abs(e.deltaY) < 40);
-  if (trackpad) { _navAccum.panX += e.deltaX; _navAccum.panY += e.deltaY; }  // Wischen → Pan
-  else          { _navAccum.zAdd += e.deltaY; }                              // Mausrad → Zoom
+  if (trackpad) { _panPending.x += e.deltaX; _panPending.y += e.deltaY; }    // Wischen -> Pan (geglättet)
+  else          { _navAccum.zAdd += e.deltaY; }                              // Mausrad -> Zoom
   _navAccum.dirty = true;
 }, { passive: false });
 
