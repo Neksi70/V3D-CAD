@@ -8942,32 +8942,37 @@ canvas.addEventListener('mouseup', e => {
 // klassischem Mausrad (→ Zoom) und Pinch (Ctrl+Wheel → Zoom).
 // „Sticky": sobald horizontales Wischen (deltaX) gesehen wurde, gilt das Gerät
 // kurzzeitig als Touchpad, damit auch reines Hoch/Runter-Wischen pannt.
+// WICHTIG für Flüssigkeit: Wheel-Events (60–120/s) NICHT direkt anwenden, sondern
+// nur Deltas sammeln und EINMAL pro Frame in animate() ausführen (_applyNavAccum).
+// Sonst läuft sph2cam + Handle-Reposition pro Event und konkurriert mit dem Render.
 let _trackpadSeen = 0;
-function _wheelPan(dx, dy) {
-  const f = sph.r * 0.0016;
-  const right = new THREE.Vector3();
-  right.crossVectors(camera.getWorldDirection(new THREE.Vector3()), new THREE.Vector3(0, 1, 0)).normalize();
-  orbitTarget.addScaledVector(right, -dx * f);   // Wischen → Szene folgt den Fingern
-  orbitTarget.y += dy * f;
+let _navAccum = { panX: 0, panY: 0, zMul: 1, zAdd: 0, dirty: false };
+function _applyNavAccum() {
+  const n = _navAccum;
+  if (n.zMul !== 1)  sph.r = Math.max(1.5, Math.min(200, sph.r * n.zMul));
+  if (n.zAdd !== 0)  sph.r = Math.max(1.5, Math.min(200, sph.r + n.zAdd * 0.03));
+  if (n.panX !== 0 || n.panY !== 0) {
+    const f = sph.r * 0.0016;
+    const right = new THREE.Vector3();
+    right.crossVectors(camera.getWorldDirection(new THREE.Vector3()), new THREE.Vector3(0, 1, 0)).normalize();
+    orbitTarget.addScaledVector(right, -n.panX * f);   // Wischen → Szene folgt den Fingern
+    orbitTarget.y += n.panY * f;
+  }
   sph2cam();
-  _doRepositionDimHandles();
+  n.panX = n.panY = n.zAdd = 0; n.zMul = 1; n.dirty = false;
 }
 canvas.addEventListener('wheel', e => {
   e.preventDefault(); e.stopPropagation();
   if (e.ctrlKey || e.metaKey) {                  // Pinch (Touchpad) / Ctrl+Rad → Zoom
-    const f = Math.max(0.5, Math.min(1.6, 1 + e.deltaY * 0.01));
-    sph.r = Math.max(1.5, Math.min(200, sph.r * f));
-    sph2cam(); return;
+    _navAccum.zMul *= Math.max(0.5, Math.min(1.6, 1 + e.deltaY * 0.01));
+    _navAccum.dirty = true; return;
   }
   if (e.deltaMode === 0 && Math.abs(e.deltaX) > 0) _trackpadSeen = performance.now();
   const trackpad = e.deltaMode === 0 &&
     (Math.abs(e.deltaX) > 0 || (performance.now() - _trackpadSeen < 1500) || Math.abs(e.deltaY) < 40);
-  if (trackpad) {
-    _wheelPan(e.deltaX, e.deltaY);               // Zwei-Finger-Wischen → Pan
-  } else {
-    sph.r = Math.max(1.5, Math.min(200, sph.r + e.deltaY * 0.03));   // Mausrad → Zoom
-    sph2cam();
-  }
+  if (trackpad) { _navAccum.panX += e.deltaX; _navAccum.panY += e.deltaY; }  // Wischen → Pan
+  else          { _navAccum.zAdd += e.deltaY; }                              // Mausrad → Zoom
+  _navAccum.dirty = true;
 }, { passive: false });
 
 // ═══ TOUCH-SUPPORT ═══════════════════════════════════════════════════
@@ -10385,6 +10390,7 @@ function animate() {
   } else if (selectedObjs.length === 0 && _lastSelLen !== 0) {
     _lastSelLen = 0; clearDimHandles(); updateRotHandles();
   }
+  if (_navAccum.dirty) _applyNavAccum();   // gesammelte Wheel-Navigation 1×/Frame anwenden
   // Always keep floating panel in sync (position + values) — cheap per frame
   if (selectedObjs.length === 1) { _fpPositionPanel(); _fpSyncValues(); }
   _detectResizeForTexture();
