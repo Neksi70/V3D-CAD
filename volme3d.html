@@ -466,6 +466,16 @@ body.devmode .dev-only{display:flex!important}
 .ds-acts .btn{flex:1;justify-content:center;font-size:11px;padding:4px 4px}
 .ds-acts .btn-del{background:var(--red);color:#fff;border-color:var(--red);flex:0 0 auto;padding:4px 10px}
 .ds-acts .btn-del:hover{opacity:.85}
+#stllib-modal{position:fixed;inset:0;background:rgba(10,12,20,.52);z-index:2000;display:none;align-items:center;justify-content:center}
+#stllib-modal.show{display:flex}
+#stllib-box{background:#fff;border-radius:14px;width:900px;max-width:96vw;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.30)}
+#stllib-hdr{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0;background:#fafbfd}
+#stllib-hdr-title{font-size:16px;font-weight:800;color:var(--text);display:flex;align-items:center;gap:7px}
+#stllib-helper-dot{width:9px;height:9px;border-radius:50%;background:var(--dim);flex-shrink:0}
+#stllib-helper-dot.on{background:var(--grn)}
+#stllib-helper-dot.off{background:var(--red)}
+.stl-empty{grid-column:1/-1;padding:38px 20px;text-align:center;color:var(--mid);font-size:13px;line-height:1.7}
+.stl-empty .btn{margin-top:10px}
 /* Toolbar design label */
 #cur-design-wrap{display:flex;align-items:center;gap:3px;padding:0 4px;max-width:140px;border-left:1px solid var(--border);margin-left:2px;padding-left:10px;flex-shrink:0}
 #cur-design-lbl{font-size:11px;font-weight:700;color:var(--mid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;max-width:120px}
@@ -752,7 +762,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.19<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.20<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -785,6 +795,7 @@ const firebaseConfig = {
   <!-- Zeile 2: Design-Verwaltung + Steuerung -->
   <div id="tb-r2">
     <button class="btn" onclick="showDesigns()" style="font-weight:800" title="Design-Galerie öffnen">📁 Meine Designs</button>
+    <button class="btn" onclick="_stlLibOpen()" title="STL-Bibliothek: heruntergeladene STLs durchsuchen, ansehen, drucken">📚 STL-Bibliothek</button>
     <div id="cur-design-wrap">
       <div id="as-dot" title="Auto-Save aktiv"></div>
       <span id="cur-design-lbl" onclick="_renameCurrentDesign()" title="Klicken zum Umbenennen">Unbenannt</span>
@@ -1929,6 +1940,22 @@ const firebaseConfig = {
       <button class="btn" onclick="hideDesigns()" style="padding:4px 10px;font-size:15px;line-height:1;margin-left:4px">✕</button>
     </div>
     <div id="ds-grid"></div>
+  </div>
+</div>
+
+<div id="stllib-modal" onclick="if(event.target===this)_stlLibClose()">
+  <div id="stllib-box">
+    <div id="stllib-hdr">
+      <div id="stllib-hdr-title">📚 STL-Bibliothek</div>
+      <span id="stllib-helper-dot" title="Druck-Helfer-Status"></span>
+      <select id="stllib-slicer" title="Slicer für „Drucken"" style="display:none;padding:4px 6px;border:1.5px solid var(--border);border-radius:6px;font-size:11px;font-family:var(--font)"></select>
+      <input id="stllib-search" placeholder="Suchen…" oninput="_stlRenderGrid()" style="margin-left:6px;padding:5px 9px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;font-family:var(--font);width:160px">
+      <div style="flex:1"></div>
+      <button class="btn" onclick="_stlLibPickFolder()" title="Anderen Ordner wählen">📂 Ordner wählen</button>
+      <button class="btn" onclick="_stlLibScanRender()" title="Neu einlesen">↻</button>
+      <button class="btn" onclick="_stlLibClose()" style="padding:4px 10px;font-size:15px;line-height:1;margin-left:4px">✕</button>
+    </div>
+    <div id="stllib-grid" style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(188px,1fr));gap:12px;overflow-y:auto;flex:1;min-height:220px;align-content:start"></div>
   </div>
 </div>
 
@@ -9929,37 +9956,35 @@ function doImport() { document.getElementById('fimport').click(); }
 function handleImport(e) {
   const file = e.target.files[0]; if (!file) return;
   const reader = new FileReader();
-  reader.onload = ev => {
-    try {
-      saveUndo();
-      const geo = parseSTL(ev.target.result); geo.computeVertexNormals();
-      const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(currentColor), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.castShadow = true;
-      // STL-Koordinaten sind in mm; App-Einheit = 10mm → Faktor 0.1
-      mesh.scale.setScalar(0.1);
-      // STL ist Z-up (Slicer/CAD-Konvention), Editor ist Y-up → −90° um X, damit
-      // das Teil sofort aufrecht (druckbar) statt liegend importiert wird.
-      mesh.rotation.x = -Math.PI / 2;
-      mesh.updateMatrixWorld(true);
-      // Auf Platten-Mitte zentrieren (X/Z) und auf den Boden setzen (Y=0)
-      {
-        const bb = new THREE.Box3().setFromObject(mesh);
-        const c  = bb.getCenter(new THREE.Vector3());
-        mesh.position.x -= c.x;
-        mesh.position.z -= c.z;
-        mesh.position.y -= bb.min.y;
-        mesh.updateMatrixWorld(true);
-      }
-      mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import', name: file.name.replace(/\.stl$/i, ''), color: currentColor, isHole: false, _origGeo: geo, _origStlBuf: ev.target.result,
-        _stlCx: (geo.boundingBox ? (geo.boundingBox.min.x + geo.boundingBox.max.x) / 2 : 12.8),
-        _stlCy: (geo.boundingBox ? (geo.boundingBox.min.y + geo.boundingBox.max.y) / 2 : 12.8),
-        _stlCz: (geo.boundingBox ? (geo.boundingBox.min.z + geo.boundingBox.max.z) / 2 : 10.1) };
-      scene.add(mesh); objects.push(mesh); selectObjs([mesh]); updateTree();
-      _showSizeDialog(() => notify('"' + file.name + '" importiert & positioniert ✓', 'ok'));
-    } catch(err) { notify('Import Fehler: ' + err.message, 'e'); }
-  };
+  reader.onload = ev => { _addImportedStl(ev.target.result, file.name, true); };
   reader.readAsArrayBuffer(file); e.target.value = '';
+}
+
+// Gemeinsamer STL-Import (Datei-Dialog + STL-Bibliothek). showDialog=true → Größendialog.
+function _addImportedStl(buffer, filename, showDialog) {
+  try {
+    saveUndo();
+    const geo = parseSTL(buffer); geo.computeVertexNormals();
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(currentColor), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    mesh.scale.setScalar(0.1);                 // STL mm → App-Einheit (10mm)
+    mesh.rotation.x = -Math.PI / 2;            // STL Z-up → Editor Y-up
+    mesh.updateMatrixWorld(true);
+    {
+      const bb = new THREE.Box3().setFromObject(mesh);
+      const c  = bb.getCenter(new THREE.Vector3());
+      mesh.position.x -= c.x; mesh.position.z -= c.z; mesh.position.y -= bb.min.y;
+      mesh.updateMatrixWorld(true);
+    }
+    mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import', name: (filename||'modell').replace(/\.(stl|3mf|obj)$/i, ''), color: currentColor, isHole: false, _origGeo: geo, _origStlBuf: buffer,
+      _stlCx: (geo.boundingBox ? (geo.boundingBox.min.x + geo.boundingBox.max.x) / 2 : 12.8),
+      _stlCy: (geo.boundingBox ? (geo.boundingBox.min.y + geo.boundingBox.max.y) / 2 : 12.8),
+      _stlCz: (geo.boundingBox ? (geo.boundingBox.min.z + geo.boundingBox.max.z) / 2 : 10.1) };
+    scene.add(mesh); objects.push(mesh); selectObjs([mesh]); updateTree();
+    if (showDialog) _showSizeDialog(() => notify('"' + filename + '" importiert & positioniert ✓', 'ok'));
+    else { fitToObjects([mesh]); notify('"' + filename + '" geladen ✓', 'ok'); }
+  } catch(err) { notify('Import Fehler: ' + err.message, 'e'); }
 }
 
 function parseSTL(buf) {
@@ -12506,6 +12531,150 @@ function _fpScrewSet(key,val){
 }
 // ===== END SCHRAUBEN / MUTTERN GENERATOR =====
 
+// ===== STL-BIBLIOTHEK =====
+const STLLIB_HELPER = 'http://127.0.0.1:7777';
+let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[];
+
+function _stlIdb(){return new Promise((res,rej)=>{const r=indexedDB.open('volme3d-stllib',1);r.onupgradeneeded=()=>{const db=r.result;if(!db.objectStoreNames.contains('kv'))db.createObjectStore('kv');if(!db.objectStoreNames.contains('thumbs'))db.createObjectStore('thumbs');};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+function _stlIdbGet(store,key){return _stlIdb().then(db=>new Promise((res,rej)=>{const t=db.transaction(store,'readonly').objectStore(store).get(key);t.onsuccess=()=>res(t.result);t.onerror=()=>rej(t.error);}));}
+function _stlIdbSet(store,key,val){return _stlIdb().then(db=>new Promise((res,rej)=>{const tx=db.transaction(store,'readwrite');tx.objectStore(store).put(val,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);}));}
+
+function _stlLibClose(){ document.getElementById('stllib-modal').classList.remove('show'); }
+async function _stlLibOpen(){
+  document.getElementById('stllib-modal').classList.add('show');
+  _stlPingHelper();
+  if(!_stlDirHandle){ try{ _stlDirHandle=await _stlIdbGet('kv','dir'); }catch(e){ _stlDirHandle=null; } }
+  if(_stlDirHandle){
+    let perm='prompt';
+    try{ perm=await _stlDirHandle.queryPermission({mode:'read'}); }catch(e){}
+    if(perm==='granted'){ _stlLibScanRender(); return; }
+    if(perm==='prompt'){ _stlLibEmpty('Zugriff auf den gemerkten Ordner erneut bestätigen.', 'Zugriff erlauben', '_stlLibRegrant()'); return; }
+  }
+  _stlLibEmpty('Wähle den Ordner mit deinen heruntergeladenen STL-Dateien.<br>Die App merkt ihn sich für nächstes Mal.', '📂 Ordner wählen', '_stlLibPickFolder()');
+}
+async function _stlLibRegrant(){
+  try{ const p=await _stlDirHandle.requestPermission({mode:'read'}); if(p==='granted'){ _stlLibScanRender(); return; } }catch(e){}
+  notify('Zugriff nicht erteilt','w');
+}
+function _stlLibEmpty(msg, btnLabel, btnAction){
+  const dl = !_stlHelperOk ? `<div style="margin-top:16px;font-size:11px;color:var(--dim);line-height:1.6">Für Ein-Klick-„Drucken" einmalig den Druck-Helfer einrichten:<br><a href="/volme3d-print-helper.py" download style="color:var(--acc);font-weight:700">Helfer (.py)</a> · <a href="/volme3d-print-helper.bat" download style="color:var(--acc);font-weight:700">Start .bat</a> · <a href="/volme3d-print-helper-autostart.vbs" download style="color:var(--acc);font-weight:700">Autostart .vbs</a> · <a href="/volme3d-print-helper-LIESMICH.txt" target="_blank" style="color:var(--acc);font-weight:700">Anleitung</a></div>` : '';
+  document.getElementById('stllib-grid').innerHTML = `<div class="stl-empty">${msg}${btnLabel?`<br><button class="btn pri" style="margin-top:12px" onclick="${btnAction}">${btnLabel}</button>`:''}${dl}</div>`;
+}
+async function _stlLibPickFolder(){
+  if(!window.showDirectoryPicker){ notify('Ordnerauswahl nur in Chrome/Edge möglich','w'); return; }
+  try{ _stlDirHandle=await window.showDirectoryPicker({id:'volme3d-stl',mode:'read'}); }
+  catch(e){ if(e.name!=='AbortError') notify('Ordner: '+e.message,'w'); return; }
+  try{ await _stlIdbSet('kv','dir',_stlDirHandle); }catch(e){}
+  _stlLibScanRender();
+}
+async function _stlLibScanRender(){
+  if(!_stlDirHandle){ _stlLibEmpty('Kein Ordner gewählt.', '📂 Ordner wählen', '_stlLibPickFolder()'); return; }
+  document.getElementById('stllib-grid').innerHTML='<div class="stl-empty">Ordner wird gescannt…</div>';
+  _stlFiles=[];
+  try{ await _stlScanDir(_stlDirHandle,'',0); }
+  catch(e){ _stlLibEmpty('Fehler beim Lesen: '+_stlEsc(e.message),'',''); return; }
+  _stlFiles.sort((a,b)=>b.mtime-a.mtime);
+  _stlRenderGrid();
+}
+async function _stlScanDir(dir,prefix,depth){
+  if(depth>6 || _stlFiles.length>1500) return;
+  for await (const entry of dir.values()){
+    if(entry.kind==='directory'){ await _stlScanDir(entry, prefix+entry.name+'/', depth+1); }
+    else if(/\.(stl|3mf|obj)$/i.test(entry.name)){
+      try{ const f=await entry.getFile(); _stlFiles.push({name:entry.name,path:prefix+entry.name,handle:entry,size:f.size,mtime:f.lastModified}); }catch(e){}
+    }
+    if(_stlFiles.length>1500) return;
+  }
+}
+function _stlFmtSize(n){ return n>=1048576?(n/1048576).toFixed(1)+' MB':(n/1024).toFixed(0)+' KB'; }
+function _stlEsc(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function _stlRenderGrid(){
+  const grid=document.getElementById('stllib-grid'); if(!grid) return;
+  if(!_stlFiles.length){ _stlLibEmpty('Keine STL/3MF/OBJ-Dateien im Ordner gefunden.', '📂 Anderer Ordner', '_stlLibPickFolder()'); return; }
+  const q=(document.getElementById('stllib-search')?.value||'').trim().toLowerCase();
+  const list=q?_stlFiles.filter(f=>f.name.toLowerCase().includes(q)):_stlFiles;
+  grid.innerHTML='';
+  if(!list.length){ grid.innerHTML='<div class="stl-empty">Nichts gefunden für „'+_stlEsc(q)+'".</div>'; return; }
+  list.forEach(f=>{
+    const idx=_stlFiles.indexOf(f);
+    const card=document.createElement('div'); card.className='ds-card';
+    card.innerHTML=`<div class="ds-thumb-wrap"><div class="ds-nothumb">⏳</div></div>`+
+      `<div class="ds-info"><div class="ds-name" title="${_stlEsc(f.path)}">${_stlEsc(f.name)}</div><div class="ds-date">${_stlFmtSize(f.size)} · ${new Date(f.mtime).toLocaleDateString()}</div></div>`+
+      `<div class="ds-acts"><button class="btn" onclick="_stlOpenInScene(${idx})">📥 Öffnen</button><button class="btn pri" onclick="_stlPrint(${idx})" title="Im Slicer öffnen">🖨 Drucken</button></div>`;
+    grid.appendChild(card);
+    f._thumbEl=card.querySelector('.ds-thumb-wrap');
+  });
+  _stlThumbQueue(list);
+}
+async function _stlThumbQueue(list){
+  for(const f of list){
+    if(f._thumbUrl){ if(f._thumbEl) f._thumbEl.innerHTML=`<img class="ds-thumb" src="${f._thumbUrl}">`; continue; }
+    const key=f.path+'|'+f.size+'|'+f.mtime;
+    let url=null; try{ url=await _stlIdbGet('thumbs',key); }catch(e){}
+    if(!url){ try{ url=await _stlMakeThumb(f); }catch(e){ url=null; } if(url){ try{ await _stlIdbSet('thumbs',key,url); }catch(e){} } }
+    f._thumbUrl=url;
+    if(f._thumbEl) f._thumbEl.innerHTML = url?`<img class="ds-thumb" src="${url}">`:'<div class="ds-nothumb">📦</div>';
+    await new Promise(r=>setTimeout(r,0));
+  }
+}
+async function _stlMakeThumb(f){
+  if(!/\.stl$/i.test(f.name)) return null;   // Thumbnail nur für STL (parseSTL)
+  const file=await f.handle.getFile(); const buf=await file.arrayBuffer();
+  const geo=parseSTL(buf); geo.rotateX(-Math.PI/2); geo.computeVertexNormals(); geo.computeBoundingBox();
+  if(!_stlThumbRenderer){ _stlThumbRenderer=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true}); _stlThumbRenderer.setSize(256,192); _stlThumbRenderer.setClearColor(0x000000,0); }
+  const sc=new THREE.Scene();
+  const mat=new THREE.MeshStandardMaterial({color:0x5b8def,roughness:0.55,metalness:0.12,side:THREE.DoubleSide});
+  const mesh=new THREE.Mesh(geo,mat);
+  const bb=geo.boundingBox, ctr=bb.getCenter(new THREE.Vector3()), size=bb.getSize(new THREE.Vector3());
+  mesh.position.sub(ctr); sc.add(mesh);
+  sc.add(new THREE.AmbientLight(0xffffff,0.75)); const dl=new THREE.DirectionalLight(0xffffff,0.9); dl.position.set(2,3,4); sc.add(dl);
+  const maxd=Math.max(size.x,size.y,size.z)||1;
+  const cam=new THREE.PerspectiveCamera(38,256/192,Math.max(0.01,maxd*0.01),maxd*20);
+  const d=maxd*1.7; cam.position.set(d*0.75,d*0.65,d); cam.lookAt(0,0,0);
+  _stlThumbRenderer.render(sc,cam);
+  const url=_stlThumbRenderer.domElement.toDataURL('image/png');
+  geo.dispose(); mat.dispose();
+  return url;
+}
+async function _stlOpenInScene(idx){
+  const f=_stlFiles[idx]; if(!f) return;
+  if(!/\.stl$/i.test(f.name)){ notify('Direkt laden geht nur mit STL (3MF/OBJ bitte „Drucken")','w'); return; }
+  try{ const file=await f.handle.getFile(); const buf=await file.arrayBuffer(); _addImportedStl(buf, f.name, false); _stlLibClose(); }
+  catch(e){ notify('Laden fehlgeschlagen: '+e.message,'w'); }
+}
+async function _stlPrint(idx){
+  const f=_stlFiles[idx]; if(!f) return;
+  if(!_stlHelperOk){ _stlHelperMissing(); return; }
+  try{
+    const file=await f.handle.getFile(); const buf=await file.arrayBuffer();
+    const slicer=document.getElementById('stllib-slicer')?.value||'';
+    const res=await fetch(STLLIB_HELPER+'/print',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Filename':f.name,'X-Slicer':slicer},body:buf});
+    const j=await res.json().catch(()=>({}));
+    if(res.ok&&j.ok) notify(`🖨 In ${j.slicer||'Slicer'} geöffnet: ${f.name}`,'ok');
+    else notify('Drucken: '+(j.error||('HTTP '+res.status)),'w');
+  }catch(e){ _stlHelperOk=false; _stlUpdateHelperUI(); _stlHelperMissing(); }
+}
+function _stlHelperMissing(){ notify('Druck-Helfer nicht erreichbar — einmalig einrichten (Links in der Ordner-Ansicht / LIESMICH)','w'); }
+async function _stlPingHelper(){
+  _stlHelperOk=false; _stlHelperSlicers=[];
+  try{
+    const res=await fetch(STLLIB_HELPER+'/ping',{cache:'no-store'});
+    const j=await res.json();
+    _stlHelperOk=!!j.ok; _stlHelperSlicers=j.slicers||[];
+  }catch(e){ _stlHelperOk=false; }
+  _stlUpdateHelperUI();
+}
+function _stlUpdateHelperUI(){
+  const dot=document.getElementById('stllib-helper-dot');
+  if(dot){ dot.className=_stlHelperOk?'on':'off'; dot.title=_stlHelperOk?('Druck-Helfer verbunden ('+_stlHelperSlicers.join(', ')+')'):'Druck-Helfer nicht erreichbar'; }
+  const sel=document.getElementById('stllib-slicer');
+  if(sel){
+    sel.style.display=(_stlHelperOk&&_stlHelperSlicers.length>1)?'':'none';
+    if(_stlHelperOk){ const names={bambu:'Bambu Studio',orca:'Orca Slicer',prusa:'PrusaSlicer'}; sel.innerHTML=_stlHelperSlicers.map(s=>`<option value="${s}">${names[s]||s}</option>`).join(''); }
+  }
+}
+// ===== END STL-BIBLIOTHEK =====
+
 // ===== ARBEITSBEREICH-EINSTELLUNGEN =====
 function _openSceneSettings(){
   document.getElementById('scene-settings-modal').classList.add('show');
@@ -12519,8 +12688,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.19';
+const VOLME3D_VERSION = '1.14.20';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.20', date:'2026-06-13', changes:[
+    ['✨','Neue STL-Bibliothek (📚 in der Toolbar): Wähle einen Ordner mit deinen heruntergeladenen STL-Dateien — die App zeigt alle (auch in Unterordnern) als Vorschau-Galerie mit Suche, merkt sich den Ordner und lädt Modelle per Klick in die Szene. Mit dem kleinen Druck-Helfer öffnet „Drucken" die Datei direkt im Slicer (Bambu/Orca, Ein-Klick)'],
+  ]},
   { version:'1.14.19', date:'2026-06-13', changes:[
     ['✨','Schrauben haben jetzt einen Anschnitt am Gewindeende — die Spitze ist leicht angeschrägt (45°-Fase bis ~Kerndurchmesser), damit die Schraube leichter in Mutter oder Gewindeloch fädelt'],
   ]},

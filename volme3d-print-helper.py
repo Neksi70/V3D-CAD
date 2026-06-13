@@ -109,6 +109,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Slicer, X-Filename")
+        # Private Network Access: HTTPS-Seite -> localhost braucht diese Freigabe (Chrome)
+        self.send_header("Access-Control-Allow-Private-Network", "true")
 
     def _json(self, code, obj, origin=""):
         body = json.dumps(obj).encode("utf-8")
