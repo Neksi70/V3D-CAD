@@ -752,7 +752,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.11<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.12<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -7018,7 +7018,7 @@ function buildObjectFromData(data) {
   obj.position.set(data.px || 0, data.py || 0, data.pz || 0);
   obj.rotation.set(data.rx || 0, data.ry || 0, data.rz || 0);
   obj.scale.set(data.sx || 1, data.sy || 1, data.sz || 1);
-  obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, opacity: data.opacity || 1.0, type: data.type, shapeType: data.shapeType || data.type, isGroup: !!data.isGroup, textStr: data.textStr || '', fillet: data.fillet || 0, chamfer: data.chamfer || 0, segments: data.segments, tubeRatio: data.tubeRatio, tubeWall: (data.tubeWall != null ? data.tubeWall : (data.shapeType==='tube'||data.type==='tube' ? 2 : undefined)), edgeBevels: data.edgeBevels, occtShape: data.occtShape || (data.wasBox ? 'box' : null), _occtParams: data._occtParams || null, displacementPattern: data.displacementPattern || 'keine', displacementAmp: data.displacementAmp || 0.5, displacementFreq: data.displacementFreq || 4, displacementInvert: !!data.displacementInvert, displacementSymmetric: !!data.displacementSymmetric, locked: !!data.locked, hidden: !!data.hidden, threadDiameter: data.threadDiameter, threadPitch: data.threadPitch, threadTurns: data.threadTurns };
+  obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, opacity: data.opacity || 1.0, type: data.type, shapeType: data.shapeType || data.type, isGroup: !!data.isGroup, textStr: data.textStr || '', fillet: data.fillet || 0, chamfer: data.chamfer || 0, segments: data.segments, tubeRatio: data.tubeRatio, tubeWall: (data.tubeWall != null ? data.tubeWall : (data.shapeType==='tube'||data.type==='tube' ? 2 : undefined)), edgeBevels: data.edgeBevels, occtShape: data.occtShape || (data.wasBox ? 'box' : null), _occtParams: data._occtParams || null, displacementPattern: data.displacementPattern || 'keine', displacementAmp: data.displacementAmp || 0.5, displacementFreq: data.displacementFreq || 4, displacementInvert: !!data.displacementInvert, displacementSymmetric: !!data.displacementSymmetric, locked: !!data.locked, hidden: !!data.hidden, threadDiameter: data.threadDiameter, threadPitch: data.threadPitch, threadTurns: data.threadTurns, screwType: data.screwType, screwSize: data.screwSize, screwLength: data.screwLength, screwClearance: data.screwClearance };
   if (data.tubePoly)  obj.userData.tubePoly  = true;
   if (data.tubeTwist) obj.userData.tubeTwist = data.tubeTwist;
   if (data.tubeFloor) obj.userData.tubeFloor = true;
@@ -7048,6 +7048,7 @@ function objectToData(o) {
   if (o.userData.threadDiameter) d.threadDiameter = o.userData.threadDiameter;
   if (o.userData.threadPitch)    d.threadPitch    = o.userData.threadPitch;
   if (o.userData.threadTurns)    d.threadTurns    = o.userData.threadTurns;
+  if (o.userData.screwType) { d.screwType = o.userData.screwType; d.screwSize = o.userData.screwSize; d.screwLength = o.userData.screwLength; d.screwClearance = o.userData.screwClearance; }
   if (o.userData.textStr)    d.textStr    = o.userData.textStr;
   if (o.userData.fillet)     d.fillet     = o.userData.fillet;
   if (o.userData.chamfer)    d.chamfer    = o.userData.chamfer;
@@ -7071,7 +7072,7 @@ function objectToData(o) {
     if (o.userData.texWhere && o.userData.texWhere !== 'alle')     d.texWhere  = o.userData.texWhere;
     if (o.isMesh && o.geometry) d.geometry = o.geometry.toJSON();   // Gruppen haben keine eigene Geometrie
   } else if (o.isMesh && (!o.userData.type || ['custom','text','import','revolve','flower',
-      'sphericalshell','spring','bentpipe','thread','svg','lantern',
+      'sphericalshell','spring','bentpipe','thread','svg','lantern','screw',
       'gfbin','gfplate','gfcut'].includes(o.userData.type))) {
     d.geometry = o.geometry.toJSON();
   }
@@ -12171,22 +12172,23 @@ function _buildNutGeometry(s, clearance){
 function _buildScrewGeometry(p){
   const s = SCREW_SPECS[p.size];
   if (p.type==='mutter') return _buildNutGeometry(s, p.clearance);
-  const shaft = _threadShaft(s, p.length);
+  // Kopf unten (auf der Platte, druckoptimal), Gewinde nach oben — Kopf bei y=0 als fester Anker
   let parts;
   if (p.type==='aussen'){
     const R=(s.hexSW/Math.sqrt(3))/10, h=s.hexH/10;
-    const head=new THREE.CylinderGeometry(R,R,h,6); head.translate(0, p.length/10 + h/2 - 0.05, 0);
-    parts=[shaft, head];
-  } else { // innen — Zylinderkopf mit Innensechskant
+    const head=new THREE.CylinderGeometry(R,R,h,6); head.translate(0, h/2, 0);
+    const shaft=_threadShaft(s, p.length); shaft.translate(0, h-0.05, 0);
+    parts=[head, shaft];
+  } else { // innen — Zylinderkopf mit Innensechskant (Kopf unten, Schlitz zeigt zur Platte)
     const r=(s.sockD/10)/2, h=s.sockH/10;
-    const head=new THREE.CylinderGeometry(r,r,h,48); head.translate(0, p.length/10 + h/2 - 0.05, 0);
+    const head=new THREE.CylinderGeometry(r,r,h,48); head.translate(0, h/2, 0);
     const kR=(s.key/Math.sqrt(3))/10, depth=(s.sockH*0.6)/10;
-    const sock=new THREE.CylinderGeometry(kR,kR,depth+0.4,6);
-    const topY=p.length/10 + h; sock.translate(0, topY - depth/2 + 0.2, 0);
+    const sock=new THREE.CylinderGeometry(kR,kR,depth+0.4,6); sock.translate(0, depth/2 - 0.2, 0);
     const hm=new THREE.Mesh(_posOnly(head)); hm.updateMatrixWorld(true);
     const sm=new THREE.Mesh(_posOnly(sock)); sm.updateMatrixWorld(true);
     const cut=ThreeCSG.subtract(hm, sm, new THREE.MeshBasicMaterial());
-    parts=[shaft, cut.geometry];
+    const shaft=_threadShaft(s, p.length); shaft.translate(0, h-0.05, 0);
+    parts=[cut.geometry, shaft];
   }
   const g = _mergePos(parts.map(_posOnly)); g.computeVertexNormals(); return g;
 }
@@ -12295,8 +12297,12 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.11';
+const VOLME3D_VERSION = '1.14.12';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.12', date:'2026-06-13', changes:[
+    ['🐛','Schrauben-Generator: Beim Duplizieren (und Speichern/Laden) wurde aus der Schraube eine Box — die Geometrie war nicht in der Whitelist zum Mitspeichern. Behoben, Duplikate und gespeicherte Designs behalten jetzt die Schraube'],
+    ['✨','Schrauben liegen jetzt mit dem Kopf auf der Druckplatte (Gewinde zeigt nach oben, druckoptimal). Der Kopf ist der feste Anker: eine andere Länge wächst nach oben weg, während Kopf und Gewindesteigung gleich bleiben und auf der Platte sitzen'],
+  ]},
   { version:'1.14.11', date:'2026-06-13', changes:[
     ['✨','Neuer Schrauben &amp; Muttern Generator: Sechskantmuttern sowie Außensechskant- und Innensechskant-Schrauben (Zylinderkopf) mit echtem metrischem Gewinde in den Größen M4, M5, M6, M8 und M10. Schraubenlänge per Regler (6–60 mm), einstellbares Spiel, damit Schraube und Mutter zusammenpassen. Normmaße nach DIN 933/912/934'],
   ]},
