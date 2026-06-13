@@ -762,7 +762,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.21<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.22<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -1953,7 +1953,7 @@ const firebaseConfig = {
       <div style="flex:1"></div>
       <button class="btn pri" onclick="_stlCollect()" title="Im Downloads-Ordner einen Unterordner STL anlegen und alle STL/3MF/OBJ dorthin kopieren">🧹 Aus Downloads einsammeln</button>
       <button class="btn" onclick="_stlLibPickFolder()" title="Anderen Ordner wählen">📂 Ordner wählen</button>
-      <button class="btn" onclick="_stlLibScanRender()" title="Neu einlesen">↻</button>
+      <button class="btn" onclick="_stlLibRefresh()" title="Neu einlesen">↻</button>
       <button class="btn" onclick="_stlLibClose()" style="padding:4px 10px;font-size:15px;line-height:1;margin-left:4px">✕</button>
     </div>
     <div id="stllib-grid" style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(188px,1fr));gap:12px;overflow-y:auto;flex:1;min-height:220px;align-content:start"></div>
@@ -12534,24 +12534,30 @@ function _fpScrewSet(key,val){
 
 // ===== STL-BIBLIOTHEK =====
 const STLLIB_HELPER = 'http://127.0.0.1:7777';
-let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[];
+let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0;
 
 function _stlIdb(){return new Promise((res,rej)=>{const r=indexedDB.open('volme3d-stllib',1);r.onupgradeneeded=()=>{const db=r.result;if(!db.objectStoreNames.contains('kv'))db.createObjectStore('kv');if(!db.objectStoreNames.contains('thumbs'))db.createObjectStore('thumbs');};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
 function _stlIdbGet(store,key){return _stlIdb().then(db=>new Promise((res,rej)=>{const t=db.transaction(store,'readonly').objectStore(store).get(key);t.onsuccess=()=>res(t.result);t.onerror=()=>rej(t.error);}));}
 function _stlIdbSet(store,key,val){return _stlIdb().then(db=>new Promise((res,rej)=>{const tx=db.transaction(store,'readwrite');tx.objectStore(store).put(val,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);}));}
 
 function _stlLibClose(){ document.getElementById('stllib-modal').classList.remove('show'); }
+function _stlLibRefresh(){ if(_stlSource==='helper') _stlLoadFromHelper(); else _stlLibScanRender(); }
 async function _stlLibOpen(){
   document.getElementById('stllib-modal').classList.add('show');
-  _stlPingHelper();
+  await _stlPingHelper();
+  let pref=''; try{ pref=await _stlIdbGet('kv','source'); }catch(e){}
+  // Bevorzugt: Helfer-Bibliothek (kann Downloads), wenn so eingestellt und erreichbar
+  if(pref==='helper' && _stlHelperOk){ _stlLoadFromHelper(); return; }
+  // Sonst: gemerkter Ordner (File System Access)
   if(!_stlDirHandle){ try{ _stlDirHandle=await _stlIdbGet('kv','dir'); }catch(e){ _stlDirHandle=null; } }
   if(_stlDirHandle){
     let perm='prompt';
     try{ perm=await _stlDirHandle.queryPermission({mode:'read'}); }catch(e){}
-    if(perm==='granted'){ _stlLibScanRender(); return; }
+    if(perm==='granted'){ _stlSource='handle'; _stlLibScanRender(); return; }
     if(perm==='prompt'){ _stlLibEmpty('Zugriff auf den gemerkten Ordner erneut bestätigen.', 'Zugriff erlauben', '_stlLibRegrant()'); return; }
   }
-  _stlLibEmpty('Wähle den Ordner mit deinen heruntergeladenen STL-Dateien.<br>Die App merkt ihn sich für nächstes Mal.', '📂 Ordner wählen', '_stlLibPickFolder()');
+  if(_stlHelperOk){ _stlLoadFromHelper(); return; }
+  _stlLibEmpty('Sammle deine heruntergeladenen STLs automatisch ein (über den Druck-Helfer) oder wähle einen Ordner.', '📂 Ordner wählen', '_stlLibPickFolder()');
 }
 async function _stlLibRegrant(){
   try{ const p=await _stlDirHandle.requestPermission({mode:'read'}); if(p==='granted'){ _stlLibScanRender(); return; } }catch(e){}
@@ -12565,7 +12571,8 @@ async function _stlLibPickFolder(){
   if(!window.showDirectoryPicker){ notify('Ordnerauswahl nur in Chrome/Edge möglich','w'); return; }
   try{ _stlDirHandle=await window.showDirectoryPicker({id:'volme3d-stl',mode:'read'}); }
   catch(e){ if(e.name!=='AbortError') notify('Ordner: '+e.message,'w'); return; }
-  try{ await _stlIdbSet('kv','dir',_stlDirHandle); }catch(e){}
+  _stlSource='handle';
+  try{ await _stlIdbSet('kv','dir',_stlDirHandle); await _stlIdbSet('kv','source','handle'); }catch(e){}
   _stlLibScanRender();
 }
 async function _stlLibScanRender(){
@@ -12620,7 +12627,7 @@ async function _stlThumbQueue(list){
 }
 async function _stlMakeThumb(f){
   if(!/\.stl$/i.test(f.name)) return null;   // Thumbnail nur für STL (parseSTL)
-  const file=await f.handle.getFile(); const buf=await file.arrayBuffer();
+  const buf=await _stlReadBytes(f);
   const geo=parseSTL(buf); geo.rotateX(-Math.PI/2); geo.computeVertexNormals(); geo.computeBoundingBox();
   if(!_stlThumbRenderer){ _stlThumbRenderer=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true}); _stlThumbRenderer.setSize(256,192); _stlThumbRenderer.setClearColor(0x000000,0); }
   const sc=new THREE.Scene();
@@ -12640,16 +12647,22 @@ async function _stlMakeThumb(f){
 async function _stlOpenInScene(idx){
   const f=_stlFiles[idx]; if(!f) return;
   if(!/\.stl$/i.test(f.name)){ notify('Direkt laden geht nur mit STL (3MF/OBJ bitte „Drucken")','w'); return; }
-  try{ const file=await f.handle.getFile(); const buf=await file.arrayBuffer(); _addImportedStl(buf, f.name, false); _stlLibClose(); }
+  try{ const buf=await _stlReadBytes(f); _addImportedStl(buf, f.name, false); _stlLibClose(); }
   catch(e){ notify('Laden fehlgeschlagen: '+e.message,'w'); }
 }
 async function _stlPrint(idx){
   const f=_stlFiles[idx]; if(!f) return;
   if(!_stlHelperOk){ _stlHelperMissing(); return; }
   try{
-    const file=await f.handle.getFile(); const buf=await file.arrayBuffer();
     const slicer=document.getElementById('stllib-slicer')?.value||'';
-    const res=await fetch(STLLIB_HELPER+'/print',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Filename':f.name,'X-Slicer':slicer},body:buf});
+    let res;
+    if(f.lib){
+      // Datei liegt schon im Helfer-Ordner → nur Referenz schicken, kein Upload
+      res=await fetch(STLLIB_HELPER+'/print',{method:'POST',headers:{'X-LibFile':f.name,'X-Slicer':slicer},body:''});
+    }else{
+      const buf=await _stlReadBytes(f);
+      res=await fetch(STLLIB_HELPER+'/print',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Filename':f.name,'X-Slicer':slicer},body:buf});
+    }
     const j=await res.json().catch(()=>({}));
     if(res.ok&&j.ok) notify(`🖨 In ${j.slicer||'Slicer'} geöffnet: ${f.name}`,'ok');
     else notify('Drucken: '+(j.error||('HTTP '+res.status)),'w');
@@ -12661,7 +12674,7 @@ async function _stlPingHelper(){
   try{
     const res=await fetch(STLLIB_HELPER+'/ping',{cache:'no-store'});
     const j=await res.json();
-    _stlHelperOk=!!j.ok; _stlHelperSlicers=j.slicers||[];
+    _stlHelperOk=!!j.ok; _stlHelperSlicers=j.slicers||[]; _stlHelperVer=j.version||1;
   }catch(e){ _stlHelperOk=false; }
   _stlUpdateHelperUI();
 }
@@ -12674,57 +12687,49 @@ function _stlUpdateHelperUI(){
     if(_stlHelperOk){ const names={bambu:'Bambu Studio',orca:'Orca Slicer',prusa:'PrusaSlicer'}; sel.innerHTML=_stlHelperSlicers.map(s=>`<option value="${s}">${names[s]||s}</option>`).join(''); }
   }
 }
-// Aus dem Downloads-Ordner alle STL/3MF/OBJ in einen Unterordner "STL" kopieren.
-async function _stlUniqueName(dir, name){
-  let exists=false; try{ await dir.getFileHandle(name); exists=true; }catch(_){}
-  if(!exists) return name;
-  const dot=name.lastIndexOf('.'); const base=dot>0?name.slice(0,dot):name; const ext=dot>0?name.slice(dot):'';
-  for(let i=2;i<9999;i++){ const cand=`${base}_${i}${ext}`; let e=false; try{ await dir.getFileHandle(cand); e=true; }catch(_){}; if(!e) return cand; }
-  return `${base}_${Date.now()}${ext}`;
+// Bytes einer Datei lesen — aus FS-Handle (Ordnerwahl) ODER vom Helfer (/file)
+async function _stlReadBytes(f){
+  if(f.handle){ const file=await f.handle.getFile(); return await file.arrayBuffer(); }
+  const res=await fetch(STLLIB_HELPER+'/file?name='+encodeURIComponent(f.name),{cache:'no-store'});
+  if(!res.ok) throw new Error('Helfer /file '+res.status);
+  return await res.arrayBuffer();
 }
+// Bibliothek aus dem Helfer-verwalteten Ordner (Dokumente\Volme3D-STL) laden
+async function _stlLoadFromHelper(){
+  const grid=document.getElementById('stllib-grid'); if(grid) grid.innerHTML='<div class="stl-empty">Bibliothek wird geladen…</div>';
+  try{
+    const res=await fetch(STLLIB_HELPER+'/list',{cache:'no-store'});
+    const j=await res.json();
+    _stlSource='helper'; _stlDirHandle=null;
+    _stlFiles=(j.files||[]).map(f=>({name:f.name, path:f.name, size:f.size, mtime:f.mtime, lib:true}));
+    _stlFiles.sort((a,b)=>b.mtime-a.mtime);
+    try{ await _stlIdbSet('kv','source','helper'); }catch(e){}
+    _stlRenderGrid();
+  }catch(e){ _stlLibEmpty('Bibliothek konnte nicht geladen werden: '+_stlEsc(e.message),'',''); }
+}
+// „Aus Downloads einsammeln" — der lokale Helfer macht die Dateiarbeit
+// (Chrome verbietet Web-Apps den Zugriff auf den Downloads-Ordner selbst).
 async function _stlCollect(){
-  if(!window.showDirectoryPicker){ notify('Nur in Chrome/Edge möglich','w'); return; }
-  let dl;
-  try{ dl=await window.showDirectoryPicker({mode:'readwrite', id:'volme3d-downloads', startIn:'downloads'}); }
-  catch(e){ if(e.name!=='AbortError') notify('Ordner: '+e.message,'w'); return; }
   document.getElementById('stllib-modal').classList.add('show');
-  const grid=document.getElementById('stllib-grid');
-  grid.innerHTML='<div class="stl-empty">Lege Ordner „STL" an…</div>';
-  let stlDir;
-  try{ stlDir=await dl.getDirectoryHandle('STL',{create:true}); }
-  catch(e){ _stlLibEmpty('Konnte Ordner „STL" nicht anlegen (Schreibrechte?): '+_stlEsc(e.message),'',''); return; }
-  // Quelldateien sammeln (Zielordner STL auf oberster Ebene überspringen)
-  const srcs=[];
-  async function scan(dir,depth){
-    if(depth>6) return;
-    for await(const entry of dir.values()){
-      if(entry.kind==='directory'){ if(depth===0 && entry.name==='STL') continue; await scan(entry,depth+1); }
-      else if(/\.(stl|3mf|obj)$/i.test(entry.name)){ srcs.push(entry); }
-    }
+  if(!_stlHelperOk){ await _stlPingHelper(); }
+  if(!_stlHelperOk){
+    _stlLibEmpty('Zum automatischen Einsammeln muss der Druck-Helfer auf deinem PC laufen — Chrome darf den Downloads-Ordner selbst nicht öffnen.','📂 Stattdessen Ordner wählen','_stlLibPickFolder()');
+    return;
   }
-  try{ await scan(dl,0); }catch(e){}
-  if(!srcs.length){ _stlLibEmpty('Keine STL/3MF/OBJ im gewählten Ordner gefunden.','',''); return; }
-  let copied=0, skipped=0, n=0;
-  for(const sh of srcs){
-    n++;
-    grid.innerHTML=`<div class="stl-empty">Kopiere ${n}/${srcs.length}…<br><span style="font-size:11px;color:var(--dim)">${_stlEsc(sh.name)}</span></div>`;
-    try{
-      const src=await sh.getFile();
-      // schon vorhanden (gleicher Name + Größe)? → überspringen (idempotent)
-      let dup=false;
-      try{ const ex=await stlDir.getFileHandle(sh.name); const exf=await ex.getFile(); if(exf.size===src.size) dup=true; }catch(_){}
-      if(dup){ skipped++; continue; }
-      const destName=await _stlUniqueName(stlDir, sh.name);
-      const buf=await src.arrayBuffer();
-      const fh=await stlDir.getFileHandle(destName,{create:true});
-      const w=await fh.createWritable(); await w.write(buf); await w.close();
-      copied++;
-    }catch(e){ /* einzelne Datei überspringen */ }
+  if(_stlHelperVer<2){
+    _stlHelperOk=false;  // damit die Download-Links erscheinen
+    _stlLibEmpty('Dein Druck-Helfer ist veraltet — bitte die neue Version laden (sie kann Downloads einsammeln).','📂 Stattdessen Ordner wählen','_stlLibPickFolder()');
+    _stlHelperOk=true;
+    return;
   }
-  _stlDirHandle=stlDir;
-  try{ await _stlIdbSet('kv','dir',stlDir); }catch(e){}
-  notify(`✓ ${copied} kopiert${skipped?`, ${skipped} schon vorhanden`:''} → Ordner „STL"`, 'ok');
-  _stlLibScanRender();
+  const grid=document.getElementById('stllib-grid'); grid.innerHTML='<div class="stl-empty">Sammle STL-Dateien aus Downloads…</div>';
+  try{
+    const res=await fetch(STLLIB_HELPER+'/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const j=await res.json();
+    if(!j.ok) throw new Error(j.error||'Fehler');
+    notify(`✓ ${j.copied} kopiert${j.skipped?`, ${j.skipped} schon vorhanden`:''} → ${j.dir}`,'ok');
+    _stlLoadFromHelper();
+  }catch(e){ _stlLibEmpty('Einsammeln fehlgeschlagen: '+_stlEsc(e.message),'',''); }
 }
 // ===== END STL-BIBLIOTHEK =====
 
@@ -12741,8 +12746,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.21';
+const VOLME3D_VERSION = '1.14.22';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.22', date:'2026-06-14', changes:[
+    ['🔧','„Aus Downloads einsammeln" funktioniert jetzt wirklich: Chrome verbietet Web-Apps den Zugriff auf den Downloads-Ordner, daher übernimmt das jetzt der lokale Druck-Helfer. Er kopiert alle STL/3MF/OBJ aus Downloads nach „Dokumente\\Volme3D-STL", und die Galerie (Vorschau, Öffnen, Drucken) wird direkt aus dem Helfer geladen — keine Ordnerauswahl nötig. Voraussetzung: aktueller Druck-Helfer läuft (Datei neu laden, falls schon eingerichtet)'],
+  ]},
   { version:'1.14.21', date:'2026-06-14', changes:[
     ['✨','STL-Bibliothek: neuer Knopf „🧹 Aus Downloads einsammeln" — legt im gewählten (Downloads-)Ordner einen Unterordner „STL" an und kopiert alle gefundenen STL/3MF/OBJ (auch aus Unterordnern) dorthin. Mehrfach klickbar ohne Duplikate; danach zeigt die Bibliothek direkt den aufgeräumten STL-Ordner'],
   ]},
