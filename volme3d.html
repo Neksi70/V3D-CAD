@@ -762,7 +762,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.20<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.21<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -1951,6 +1951,7 @@ const firebaseConfig = {
       <select id="stllib-slicer" title="Slicer für „Drucken"" style="display:none;padding:4px 6px;border:1.5px solid var(--border);border-radius:6px;font-size:11px;font-family:var(--font)"></select>
       <input id="stllib-search" placeholder="Suchen…" oninput="_stlRenderGrid()" style="margin-left:6px;padding:5px 9px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;font-family:var(--font);width:160px">
       <div style="flex:1"></div>
+      <button class="btn pri" onclick="_stlCollect()" title="Im Downloads-Ordner einen Unterordner STL anlegen und alle STL/3MF/OBJ dorthin kopieren">🧹 Aus Downloads einsammeln</button>
       <button class="btn" onclick="_stlLibPickFolder()" title="Anderen Ordner wählen">📂 Ordner wählen</button>
       <button class="btn" onclick="_stlLibScanRender()" title="Neu einlesen">↻</button>
       <button class="btn" onclick="_stlLibClose()" style="padding:4px 10px;font-size:15px;line-height:1;margin-left:4px">✕</button>
@@ -12673,6 +12674,58 @@ function _stlUpdateHelperUI(){
     if(_stlHelperOk){ const names={bambu:'Bambu Studio',orca:'Orca Slicer',prusa:'PrusaSlicer'}; sel.innerHTML=_stlHelperSlicers.map(s=>`<option value="${s}">${names[s]||s}</option>`).join(''); }
   }
 }
+// Aus dem Downloads-Ordner alle STL/3MF/OBJ in einen Unterordner "STL" kopieren.
+async function _stlUniqueName(dir, name){
+  let exists=false; try{ await dir.getFileHandle(name); exists=true; }catch(_){}
+  if(!exists) return name;
+  const dot=name.lastIndexOf('.'); const base=dot>0?name.slice(0,dot):name; const ext=dot>0?name.slice(dot):'';
+  for(let i=2;i<9999;i++){ const cand=`${base}_${i}${ext}`; let e=false; try{ await dir.getFileHandle(cand); e=true; }catch(_){}; if(!e) return cand; }
+  return `${base}_${Date.now()}${ext}`;
+}
+async function _stlCollect(){
+  if(!window.showDirectoryPicker){ notify('Nur in Chrome/Edge möglich','w'); return; }
+  let dl;
+  try{ dl=await window.showDirectoryPicker({mode:'readwrite', id:'volme3d-downloads', startIn:'downloads'}); }
+  catch(e){ if(e.name!=='AbortError') notify('Ordner: '+e.message,'w'); return; }
+  document.getElementById('stllib-modal').classList.add('show');
+  const grid=document.getElementById('stllib-grid');
+  grid.innerHTML='<div class="stl-empty">Lege Ordner „STL" an…</div>';
+  let stlDir;
+  try{ stlDir=await dl.getDirectoryHandle('STL',{create:true}); }
+  catch(e){ _stlLibEmpty('Konnte Ordner „STL" nicht anlegen (Schreibrechte?): '+_stlEsc(e.message),'',''); return; }
+  // Quelldateien sammeln (Zielordner STL auf oberster Ebene überspringen)
+  const srcs=[];
+  async function scan(dir,depth){
+    if(depth>6) return;
+    for await(const entry of dir.values()){
+      if(entry.kind==='directory'){ if(depth===0 && entry.name==='STL') continue; await scan(entry,depth+1); }
+      else if(/\.(stl|3mf|obj)$/i.test(entry.name)){ srcs.push(entry); }
+    }
+  }
+  try{ await scan(dl,0); }catch(e){}
+  if(!srcs.length){ _stlLibEmpty('Keine STL/3MF/OBJ im gewählten Ordner gefunden.','',''); return; }
+  let copied=0, skipped=0, n=0;
+  for(const sh of srcs){
+    n++;
+    grid.innerHTML=`<div class="stl-empty">Kopiere ${n}/${srcs.length}…<br><span style="font-size:11px;color:var(--dim)">${_stlEsc(sh.name)}</span></div>`;
+    try{
+      const src=await sh.getFile();
+      // schon vorhanden (gleicher Name + Größe)? → überspringen (idempotent)
+      let dup=false;
+      try{ const ex=await stlDir.getFileHandle(sh.name); const exf=await ex.getFile(); if(exf.size===src.size) dup=true; }catch(_){}
+      if(dup){ skipped++; continue; }
+      const destName=await _stlUniqueName(stlDir, sh.name);
+      const buf=await src.arrayBuffer();
+      const fh=await stlDir.getFileHandle(destName,{create:true});
+      const w=await fh.createWritable(); await w.write(buf); await w.close();
+      copied++;
+    }catch(e){ /* einzelne Datei überspringen */ }
+  }
+  _stlDirHandle=stlDir;
+  try{ await _stlIdbSet('kv','dir',stlDir); }catch(e){}
+  notify(`✓ ${copied} kopiert${skipped?`, ${skipped} schon vorhanden`:''} → Ordner „STL"`, 'ok');
+  _stlLibScanRender();
+}
 // ===== END STL-BIBLIOTHEK =====
 
 // ===== ARBEITSBEREICH-EINSTELLUNGEN =====
@@ -12688,8 +12741,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.20';
+const VOLME3D_VERSION = '1.14.21';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.21', date:'2026-06-14', changes:[
+    ['✨','STL-Bibliothek: neuer Knopf „🧹 Aus Downloads einsammeln" — legt im gewählten (Downloads-)Ordner einen Unterordner „STL" an und kopiert alle gefundenen STL/3MF/OBJ (auch aus Unterordnern) dorthin. Mehrfach klickbar ohne Duplikate; danach zeigt die Bibliothek direkt den aufgeräumten STL-Ordner'],
+  ]},
   { version:'1.14.20', date:'2026-06-13', changes:[
     ['✨','Neue STL-Bibliothek (📚 in der Toolbar): Wähle einen Ordner mit deinen heruntergeladenen STL-Dateien — die App zeigt alle (auch in Unterordnern) als Vorschau-Galerie mit Suche, merkt sich den Ordner und lädt Modelle per Klick in die Szene. Mit dem kleinen Druck-Helfer öffnet „Drucken" die Datei direkt im Slicer (Bambu/Orca, Ein-Klick)'],
   ]},
