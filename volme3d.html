@@ -752,7 +752,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.15<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.16<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -12225,20 +12225,17 @@ function _buildDomeGeo(Rmm, kMm){
   }
   const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(V,3)); g.setIndex(I); g.computeVertexNormals(); return g;
 }
-// Flache Unterlegscheibe (Ringscheibe), Basis bei y=0
+// Flache Unterlegscheibe (Ringscheibe), Basis bei y=0 — jede Fläche eigene Vertices,
+// damit computeVertexNormals nicht über die 90°-Kanten mittelt (flach statt rund/Donut)
 function _buildWasherGeometry(innerDmm, outerDmm, thickMm){
-  const ri=(innerDmm/10)/2, ro=(outerDmm/10)/2, h=thickMm/10, nA=48, V=[], I=[];
-  for(let i=0;i<nA;i++){ const a=(i/nA)*2*Math.PI,c=Math.cos(a),sn=Math.sin(a);
-    V.push(ri*c,0,ri*sn); V.push(ri*c,h,ri*sn); V.push(ro*c,0,ro*sn); V.push(ro*c,h,ro*sn); }
-  const ix=(i,k)=>((i%nA)*4+k);
-  for(let i=0;i<nA;i++){ const i1=(i+1)%nA;
-    const ib0=ix(i,0),it0=ix(i,1),ob0=ix(i,2),ot0=ix(i,3);
-    const ib1=ix(i1,0),it1=ix(i1,1),ob1=ix(i1,2),ot1=ix(i1,3);
-    I.push(ib0,ib1,it0); I.push(it0,ib1,it1);   // Innenwand
-    I.push(ob0,ot0,ob1); I.push(ob1,ot0,ot1);   // Außenwand
-    I.push(it0,it1,ot0); I.push(ot0,it1,ot1);   // Oberseite (Ring)
-    I.push(ib0,ob0,ib1); I.push(ib1,ob0,ob1);   // Unterseite (Ring)
-  }
+  const ri=(innerDmm/10)/2, ro=(outerDmm/10)/2, h=thickMm/10, nA=64, V=[], I=[];
+  const ring=(r,y)=>{ const base=V.length/3; for(let i=0;i<nA;i++){const a=(i/nA)*2*Math.PI; V.push(r*Math.cos(a),y,r*Math.sin(a));} return base; };
+  const strip=(b0,b1,flip)=>{ for(let i=0;i<nA;i++){ const i1=(i+1)%nA, a=b0+i,b=b0+i1,c=b1+i,d=b1+i1;
+    if(flip){ I.push(a,c,b); I.push(b,c,d); } else { I.push(a,b,c); I.push(b,d,c); } } };
+  const owB=ring(ro,0), owT=ring(ro,h); strip(owB,owT,false);   // Außenwand (rund)
+  const iwB=ring(ri,0), iwT=ring(ri,h); strip(iwB,iwT,true);    // Innenwand (rund)
+  const tcI=ring(ri,h), tcO=ring(ro,h); strip(tcI,tcO,false);   // Oberseite (flach)
+  const bcI=ring(ri,0), bcO=ring(ro,0); strip(bcI,bcO,true);    // Unterseite (flach)
   const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(V,3)); g.setIndex(I); g.computeVertexNormals(); return g;
 }
 // Komplette Schrauben/Mutter-Geometrie (Achse Y, 1 Unit = 10mm, Basis bei y=0)
@@ -12451,8 +12448,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.15';
+const VOLME3D_VERSION = '1.14.16';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.16', date:'2026-06-13', changes:[
+    ['🐛','Unterlegscheibe wurde rund/abgerundet dargestellt (wie ein Torus) statt flach. Jetzt eine flache Scheibe mit scharfen Kanten (Flächen-Normalen werden nicht mehr über die Kanten verrundet)'],
+  ]},
   { version:'1.14.15', date:'2026-06-13', changes:[
     ['✨','Zwei neue Typen im Schrauben-Generator: Schlossschraube (Flachrundkopf mit Vierkantansatz, DIN 603) und Unterlegscheibe (DIN 125). Bei der Scheibe ist der Außendurchmesser frei einstellbar, der Innendurchmesser bleibt passend zur Größe fest. Beide auch live nachbearbeitbar (M4–M10)'],
   ]},
