@@ -752,7 +752,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.18<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.19<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -12266,6 +12266,20 @@ function _screwShaftParts(s, totalLenMM, threadLenMM, yBaseUnits){
 }
 // Norm-Kopfhöhe je Typ (mm)
 function _screwHeadDefault(s,type){ return type==='aussen'?s.hexH : type==='innen'?s.sockH : type==='schloss'?s.ckH : 0; }
+// Anschnitt/Fase am Gewinde-Ende (oberste Spitze): Vertices konisch nach innen (45°)
+function _chamferTip(geo, Rmaj, cUnits){
+  const pos=geo.attributes.position; let tipY=-1e9;
+  for(let i=0;i<pos.count;i++){ const y=pos.getY(i); if(y>tipY)tipY=y; }
+  const inner=Math.max(0.02, Rmaj-cUnits);
+  for(let i=0;i<pos.count;i++){
+    const y=pos.getY(i), d=tipY-y;
+    if(d>=0 && d<=cUnits){
+      const x=pos.getX(i), z=pos.getZ(i), r=Math.sqrt(x*x+z*z), maxR=inner+d;
+      if(r>maxR && r>1e-6){ const f=maxR/r; pos.setX(i,x*f); pos.setZ(i,z*f); }
+    }
+  }
+  pos.needsUpdate=true;
+}
 // Komplette Schrauben/Mutter-Geometrie (Achse Y, 1 Unit = 10mm, Basis bei y=0)
 function _buildScrewGeometry(p){
   const s = SCREW_SPECS[p.size];
@@ -12293,7 +12307,10 @@ function _buildScrewGeometry(p){
     const cut=ThreeCSG.subtract(hm, sm, new THREE.MeshBasicMaterial());
     parts=[cut.geometry, ..._screwShaftParts(s, p.length, p.threadLen, h-0.05)];
   }
-  const g = _mergePos(parts.map(_posOnly)); g.computeVertexNormals(); return g;
+  const g = _mergePos(parts.map(_posOnly));
+  const chamfer = Math.max((s.pitch*0.6495)/10, 0.045);   // Anschnitt ~1 Gewindetiefe (45°)
+  _chamferTip(g, (s.d/10)/2, chamfer);
+  g.computeVertexNormals(); return g;
 }
 function _openScrewModal(){
   document.getElementById('screw-modal').classList.add('show');
@@ -12502,8 +12519,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.18';
+const VOLME3D_VERSION = '1.14.19';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.19', date:'2026-06-13', changes:[
+    ['✨','Schrauben haben jetzt einen Anschnitt am Gewindeende — die Spitze ist leicht angeschrägt (45°-Fase bis ~Kerndurchmesser), damit die Schraube leichter in Mutter oder Gewindeloch fädelt'],
+  ]},
   { version:'1.14.18', date:'2026-06-13', changes:[
     ['✨','Die Kopfhöhe der Schrauben (Außensechskant, Innensechskant, Schloss) ist jetzt per Regler einstellbar — der Kopf bleibt dabei auf der Druckplatte, der Schaft wächst nach oben. Auch live nachbearbeitbar'],
   ]},
