@@ -713,7 +713,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.1<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.2<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -1757,6 +1757,20 @@ const firebaseConfig = {
       <div class="ss-row">
         <div class="ss-lbl">Raster anzeigen</div>
         <input type="checkbox" id="grid-toggle" checked onchange="toggleGrid(this.checked)" style="width:16px;height:16px;accent-color:var(--acc);cursor:pointer">
+      </div>
+      <div class="ss-row">
+        <div><div class="ss-lbl">Maus-Geschwindigkeit</div><div class="ss-sub">Drehen · Verschieben · Zoom (auch Touchpad)</div></div>
+        <div class="ss-dim" style="gap:8px">
+          <input type="range" id="nav-mouse-sl" min="0.2" max="3" step="0.05" value="1" oninput="setNavSpeed('mouse',this.value)" style="width:120px;accent-color:var(--acc)">
+          <span id="nav-mouse-val" style="font-size:11px;font-weight:700;font-family:monospace;min-width:34px;text-align:right">1.00×</span>
+        </div>
+      </div>
+      <div class="ss-row">
+        <div><div class="ss-lbl">SpaceMouse-Geschwindigkeit</div><div class="ss-sub">Drehen · Schwenken · Zoom am Knauf</div></div>
+        <div class="ss-dim" style="gap:8px">
+          <input type="range" id="nav-sm-sl" min="0.2" max="3" step="0.05" value="1" oninput="setNavSpeed('sm',this.value)" style="width:120px;accent-color:var(--acc)">
+          <span id="nav-sm-val" style="font-size:11px;font-weight:700;font-family:monospace;min-width:34px;text-align:right">1.00×</span>
+        </div>
       </div>
       <div style="display:flex;justify-content:flex-end;padding-top:14px;margin-top:10px;border-top:1px solid var(--border)">
         <button class="btn pri" onclick="applySceneSettings();_closeSceneSettings()" style="padding:9px 26px;font-size:13px">OK</button>
@@ -8619,6 +8633,17 @@ function setMode(m) {
   updateRotHandles();  // show/hide rings based on new mode
 }
 
+// ═══ NAVIGATIONS-EMPFINDLICHKEIT (einstellbar, persistiert) ══════════════
+// Skaliert die Navigationsgeschwindigkeit pro Geräteklasse. 1.0 = Standard.
+let _navMouse = parseFloat(localStorage.getItem('volme3d_navMouse')) || 1.0;  // Maus + Touchpad-Wischen
+let _navSM    = parseFloat(localStorage.getItem('volme3d_navSM'))    || 1.0;  // SpaceMouse
+function setNavSpeed(which, val) {
+  val = Math.max(0.2, Math.min(3, parseFloat(val) || 1));
+  if (which === 'mouse') { _navMouse = val; localStorage.setItem('volme3d_navMouse', val); }
+  else                   { _navSM = val;    localStorage.setItem('volme3d_navSM', val); }
+  const lbl = document.getElementById('nav-' + which + '-val'); if (lbl) lbl.textContent = val.toFixed(2) + '×';
+}
+
 // ═══ MOUSE / DRAG ══════════════════════════════════════════════════════
 const raycaster = new THREE.Raycaster();
 const mousev    = new THREE.Vector2();
@@ -8784,15 +8809,15 @@ window.addEventListener('mousemove', e => {
   }
   // Orbit (right-click drag) — gleiche Richtung wie Touch/Viewcube
   if (isOrbit && !isPan && !ttOn) {
-    sph.theta -= (e.clientX - orbitStart.x) * 0.006;
-    sph.phi   += (e.clientY - orbitStart.y) * 0.006;
+    sph.theta -= (e.clientX - orbitStart.x) * 0.006 * _navMouse;
+    sph.phi   += (e.clientY - orbitStart.y) * 0.006 * _navMouse;
     sph2cam();
     orbitStart = { x: e.clientX, y: e.clientY };
   }
   // Pan (middle-click drag)
   if (isOrbit && isPan) {
-    const dx = (e.clientX - orbitStart.x) * 0.018;
-    const dy = (e.clientY - orbitStart.y) * 0.018;
+    const dx = (e.clientX - orbitStart.x) * 0.018 * _navMouse;
+    const dy = (e.clientY - orbitStart.y) * 0.018 * _navMouse;
     const right = new THREE.Vector3();
     right.crossVectors(camera.getWorldDirection(new THREE.Vector3()), new THREE.Vector3(0, 1, 0)).normalize();
     orbitTarget.addScaledVector(right, -dx);
@@ -8947,43 +8972,49 @@ canvas.addEventListener('mouseup', e => {
 // Sonst läuft sph2cam + Handle-Reposition pro Event und konkurriert mit dem Render.
 let _trackpadSeen = 0;
 let _navAccum = { zMul: 1, zAdd: 0, dirty: false };
-let _panPending = { x: 0, y: 0 };   // noch nicht angewandte Pan-Strecke (geglättet abgebaut)
+// _panPending hält noch nicht angewandte Pan-Strecke in WELT-Einheiten, zerlegt
+// in Bildschirm-rechts (right) und Welt-hoch (up). Jede Eingabequelle (Touchpad-
+// Wheel, Touchscreen) schiebt ihren bereits skalierten Beitrag hier rein; animate
+// baut ihn pro Frame per Lerp ab -> ein gemeinsamer, flüssiger Glättungspfad.
+let _panPending = { right: 0, up: 0 };
 function _applyNavAccum() {
   const n = _navAccum;
   if (n.zMul !== 1)  sph.r = Math.max(1.5, Math.min(200, sph.r * n.zMul));
-  if (n.zAdd !== 0)  sph.r = Math.max(1.5, Math.min(200, sph.r + n.zAdd * 0.03));
+  if (n.zAdd !== 0)  sph.r = Math.max(1.5, Math.min(200, sph.r + n.zAdd * 0.03 * _navMouse));
   n.zMul = 1; n.zAdd = 0;
-  // Pan geglättet: grobe/unregelmäßige Touchpad-Wheel-Events werden über mehrere
-  // Frames per Lerp abgebaut -> fluessiges Gleiten statt Springen, leichtes Nachschwingen.
   let panning = false;
-  if (_panPending.x * _panPending.x + _panPending.y * _panPending.y > 2.5e-3) {
-    const k = 0.34;
-    const ax = _panPending.x * k, ay = _panPending.y * k;
-    _panPending.x -= ax; _panPending.y -= ay;
-    if (Math.abs(_panPending.x) < 0.04) _panPending.x = 0;
-    if (Math.abs(_panPending.y) < 0.04) _panPending.y = 0;
-    const f = sph.r * 0.0016;
+  if (Math.abs(_panPending.right) > 1e-4 || Math.abs(_panPending.up) > 1e-4) {
+    const k = 0.34;                                  // Lerp pro Frame (kleiner = mehr Glättung)
+    const ar = _panPending.right * k, au = _panPending.up * k;
+    _panPending.right -= ar; _panPending.up -= au;
+    if (Math.abs(_panPending.right) < 1e-4) _panPending.right = 0;
+    if (Math.abs(_panPending.up)    < 1e-4) _panPending.up = 0;
     const right = new THREE.Vector3();
     right.crossVectors(camera.getWorldDirection(new THREE.Vector3()), new THREE.Vector3(0, 1, 0)).normalize();
-    orbitTarget.addScaledVector(right, -ax * f);   // Wischen -> Szene folgt den Fingern
-    orbitTarget.y += ay * f;
+    orbitTarget.addScaledVector(right, ar);
+    orbitTarget.y += au;
     panning = true;
-  } else { _panPending.x = _panPending.y = 0; }
+  } else { _panPending.right = _panPending.up = 0; }
   sph2cam();
   n.dirty = panning;   // weiter anwenden, solange Pan-Rest da ist (Nachgleiten)
 }
+// Hilfsfunktion: Pan-Beitrag (in Welt-Einheiten) gepuffert hinzufügen
+function _queuePan(right, up) { _panPending.right += right; _panPending.up += up; _navAccum.dirty = true; }
 canvas.addEventListener('wheel', e => {
   e.preventDefault(); e.stopPropagation();
   if (e.ctrlKey || e.metaKey) {                  // Pinch (Touchpad) / Ctrl+Rad → Zoom
-    _navAccum.zMul *= Math.max(0.5, Math.min(1.6, 1 + e.deltaY * 0.01));
+    _navAccum.zMul *= Math.max(0.5, Math.min(1.6, 1 + e.deltaY * 0.01 * _navMouse));
     _navAccum.dirty = true; return;
   }
   if (e.deltaMode === 0 && Math.abs(e.deltaX) > 0) _trackpadSeen = performance.now();
   const trackpad = e.deltaMode === 0 &&
     (Math.abs(e.deltaX) > 0 || (performance.now() - _trackpadSeen < 1500) || Math.abs(e.deltaY) < 40);
-  if (trackpad) { _panPending.x += e.deltaX; _panPending.y += e.deltaY; }    // Wischen -> Pan (geglättet)
-  else          { _navAccum.zAdd += e.deltaY; }                              // Mausrad -> Zoom
-  _navAccum.dirty = true;
+  if (trackpad) {                                // Touchpad-Wischen -> Pan (geglättet)
+    const f = sph.r * 0.0016 * _navMouse;
+    _queuePan(-e.deltaX * f, e.deltaY * f);
+  } else {                                       // Mausrad -> Zoom
+    _navAccum.zAdd += e.deltaY; _navAccum.dirty = true;
+  }
 }, { passive: false });
 
 // ═══ TOUCH-SUPPORT ═══════════════════════════════════════════════════
@@ -9106,24 +9137,19 @@ canvas.addEventListener('touchmove', e => {
     _doRepositionDimHandles();
 
   } else if (n === 2) {
-    // Pinch-Zoom
+    // Pinch-Zoom (direkt — kontinuierlich genug)
     const dist = _pinchDist(_touches);
     if (_pinchDist0 > 0) {
       sph.r = Math.max(1.5, Math.min(200, sph.r * (_pinchDist0 / dist)));
       sph2cam();
     }
     _pinchDist0 = dist;
-    // 2-Finger-Pan
+    // 2-Finger-Pan: über denselben geglätteten Frame-Pfad wie der Touchpad-Pan
+    // (kein teures Pro-Event-Reposition mehr → flüssig auf Touchscreens).
     const mid = _midpoint(_touches);
-    const dx  = (mid.x - orbitStart.x) * 0.018;
-    const dy  = (mid.y - orbitStart.y) * 0.018;
-    const right = new THREE.Vector3();
-    right.crossVectors(camera.getWorldDirection(new THREE.Vector3()), new THREE.Vector3(0,1,0)).normalize();
-    orbitTarget.addScaledVector(right, -dx);
-    orbitTarget.y += dy;
-    sph2cam();
+    const s = 0.018;
+    _queuePan(-(mid.x - orbitStart.x) * s, (mid.y - orbitStart.y) * s);
     orbitStart = mid;
-    _doRepositionDimHandles();
   }
 }, { passive: false });
 
@@ -10302,16 +10328,17 @@ function _smTick() {
   for (const k in _smS) { _smS[k] += (target[k] - _smS[k]) * a; if (Math.abs(_smS[k]) > 1e-4) any = true; }
   if (!any) return;
   const { tx, ty, tz, rx, rz } = _smS;
+  const smR = _smCfg.rot * _navSM, smZ = _smCfg.zoom * _navSM, smP = _smCfg.pan * _navSM;  // Empfindlichkeit
   // Drehen: Twist → Azimut (theta), Kippen → Polarwinkel (phi)
-  sph.theta -= rz * _smCfg.rot * 0.05;
-  sph.phi    = Math.max(0.05, Math.min(Math.PI - 0.05, sph.phi - rx * _smCfg.rot * 0.05));
+  sph.theta -= rz * smR * 0.05;
+  sph.phi    = Math.max(0.05, Math.min(Math.PI - 0.05, sph.phi - rx * smR * 0.05));
   // Zoom: Knauf vor/zurück → Abstand
-  sph.r = Math.max(1, sph.r * (1 - ty * _smCfg.zoom * 0.03));
+  sph.r = Math.max(1, sph.r * (1 - ty * smZ * 0.03));
   // Schwenken: seitlich → Kamera-Rechts, heben → Höhe
   const dir = camera.getWorldDirection(new THREE.Vector3());
   const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0,1,0)).normalize();
-  orbitTarget.addScaledVector(right, -tx * sph.r * _smCfg.pan * 0.02);
-  orbitTarget.y += tz * sph.r * _smCfg.pan * 0.02;
+  orbitTarget.addScaledVector(right, -tx * sph.r * smP * 0.02);
+  orbitTarget.y += tz * sph.r * smP * 0.02;
   sph2cam();
 }
 
@@ -11985,6 +12012,9 @@ function _createLantern(){
 // ===== ARBEITSBEREICH-EINSTELLUNGEN =====
 function _openSceneSettings(){
   document.getElementById('scene-settings-modal').classList.add('show');
+  // Navigations-Regler mit gespeicherten Werten füllen
+  const ms = document.getElementById('nav-mouse-sl'); if (ms) { ms.value = _navMouse; document.getElementById('nav-mouse-val').textContent = (+_navMouse).toFixed(2) + '×'; }
+  const ss = document.getElementById('nav-sm-sl');    if (ss) { ss.value = _navSM;    document.getElementById('nav-sm-val').textContent    = (+_navSM).toFixed(2) + '×'; }
 }
 function _closeSceneSettings(){
   document.getElementById('scene-settings-modal').classList.remove('show');
@@ -11992,8 +12022,12 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.1';
+const VOLME3D_VERSION = '1.14.2';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.2', date:'2026-06-13', changes:[
+    ['✨','Touchscreen-Navigation: Zwei-Finger-Verschieben läuft jetzt flüssig (geglättet über Frames, kein teures Pro-Event-Neupositionieren der Anfasser mehr) — derselbe Pfad wie der Touchpad-Pan'],
+    ['🔧','Navigationsgeschwindigkeit einstellbar: In den Einstellungen zwei neue Regler — „Maus-Geschwindigkeit" (Drehen/Verschieben/Zoom, auch Touchpad) und „SpaceMouse-Geschwindigkeit". Werte werden gespeichert'],
+  ]},
   { version:'1.14.1', date:'2026-06-12', changes:[
     ['✨','Touchpad-Navigation: Zwei-Finger-Wischen verschiebt jetzt flüssig die Ansicht (Pan), Auf-/Zuziehen (Pinch) zoomt. Vorher wurde Wischen fälschlich als Mausrad behandelt und hat nur gezoomt. Mausrad zoomt weiter wie gewohnt; Touchpad wird automatisch erkannt'],
   ]},
