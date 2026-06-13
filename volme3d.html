@@ -752,7 +752,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.13<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.14<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -12351,6 +12351,19 @@ function _screwEditRebuild(o){
   const bx=getMeshBox(o), sz=bx.getSize(new THREE.Vector3());
   setSliderVal('sl-w','dn-w', r2(sz.x*10)); setSliderVal('sl-h','dn-h', r2(sz.y*10)); setSliderVal('sl-d','dn-d', r2(sz.z*10));
 }
+// dasselbe für das schwebende Eigenschaften-Panel (#fp)
+function _fpScrewSet(key,val){
+  const o=getFirst(); if(!o||o.userData.shapeType!=='screw')return;
+  saveUndoDebounced();
+  let rebuildRows=false;
+  if(key==='type'){o.userData.screwType=val; rebuildRows=true;}
+  else if(key==='size'){o.userData.screwSize=val; rebuildRows=true;}
+  else if(key==='length')o.userData.screwLength=parseFloat(val);
+  else if(key==='clearance')o.userData.screwClearance=parseFloat(val);
+  if(rebuildRows){ _fpCurType=null; updateFP(); }   // aktive Buttons + Längenzeile aktualisieren
+  if(_screwEditT)clearTimeout(_screwEditT);
+  _screwEditT=setTimeout(()=>{_screwEditT=null;_screwEditRebuild(o);},60);
+}
 // ===== END SCHRAUBEN / MUTTERN GENERATOR =====
 
 // ===== ARBEITSBEREICH-EINSTELLUNGEN =====
@@ -12366,8 +12379,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.13';
+const VOLME3D_VERSION = '1.14.14';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.14', date:'2026-06-13', changes:[
+    ['🔧','Die Live-Bearbeitung von Schrauben &amp; Muttern (Typ, Größe, Länge, Spiel) gibt es jetzt auch im schwebenden Objekt-Panel direkt am Modell — vorher war sie nur im Eigenschaften-Tab der rechten Seitenleiste. Kopf bleibt beim Ändern auf der Druckplatte'],
+  ]},
   { version:'1.14.13', date:'2026-06-13', changes:[
     ['✨','Schrauben &amp; Muttern lassen sich jetzt nachträglich live bearbeiten: Objekt auswählen und im Eigenschaften-Tab Typ, Größe, Länge und Spiel ändern — die Geometrie baut sich sofort neu auf. Der Kopf (bzw. die Mutter) bleibt dabei auf der Druckplatte sitzen, die Gewindesteigung passt sich der Größe an'],
   ]},
@@ -13730,6 +13746,18 @@ function _fpBuildRows(type, o) {
   }
 
   switch (type) {
+    case 'screw': {
+      const st=o.userData.screwType||'aussen', ssz=o.userData.screwSize||'M6';
+      const len=o.userData.screwLength||20, clr=(o.userData.screwClearance!=null?o.userData.screwClearance:0.4);
+      const aOn='background:var(--acc);color:#fff;border-color:var(--acc)';
+      const tbtn=(v,l)=>`<button class="fp-btn" style="flex:1;margin:0;${st===v?aOn:''}" onclick="_fpScrewSet('type','${v}')">${l}</button>`;
+      const zbtn=(v)=>`<button class="fp-btn" style="flex:1;margin:0;padding:4px 2px;${ssz===v?aOn:''}" onclick="_fpScrewSet('size','${v}')">${v}</button>`;
+      const lenRow = st==='mutter' ? '' : row('Länge','fp-screw-len',len,"_fpScrewSet('length',this.value)",'mm',6,60,1);
+      return `<div style="display:flex;gap:4px;margin:4px 0 6px">${tbtn('aussen','Außen')}${tbtn('innen','Innen')}${tbtn('mutter','Mutter')}</div>` +
+             `<div style="display:flex;gap:3px;margin-bottom:8px">${zbtn('M4')}${zbtn('M5')}${zbtn('M6')}${zbtn('M8')}${zbtn('M10')}</div>` +
+             lenRow +
+             row('Spiel','fp-screw-clr',clr,"_fpScrewSet('clearance',this.value)",'mm',0.1,0.8,0.05);
+    }
     case 'box': {
       const fpMaxMm = Math.round(Math.min(o.scale.x, o.scale.y, o.scale.z) * 10 * 10) / 10;
       return row('Länge X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
