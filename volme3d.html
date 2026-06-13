@@ -752,7 +752,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.12<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.13<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -1229,6 +1229,33 @@ const firebaseConfig = {
           <label>Twist (°)</label>
           <input type="range" id="sl-revolve-twist" min="-720" max="720" step="5" value="0" oninput="applyRevolveTwist(parseFloat(this.value));document.getElementById('dn-revolve-twist').value=this.value">
           <input class="dim-num" id="dn-revolve-twist" type="number" min="-720" max="720" step="5" value="0" onchange="applyRevolveTwist(parseFloat(this.value));document.getElementById('sl-revolve-twist').value=this.value">
+        </div>
+      </div>
+
+      <!-- Schraube / Mutter — nur für screw -->
+      <div class="ps" id="ps-screw" style="display:none">
+        <div class="pt">Schraube / Mutter</div>
+        <div class="vbg" id="esbg-type">
+          <button class="vtb" onclick="_screwEditSet('type','aussen')">Außen-6kt</button>
+          <button class="vtb" onclick="_screwEditSet('type','innen')">Innen-6kt</button>
+          <button class="vtb" onclick="_screwEditSet('type','mutter')">Mutter</button>
+        </div>
+        <div class="vbg" id="esbg-size">
+          <button class="vtb" onclick="_screwEditSet('size','M4')">M4</button>
+          <button class="vtb" onclick="_screwEditSet('size','M5')">M5</button>
+          <button class="vtb" onclick="_screwEditSet('size','M6')">M6</button>
+          <button class="vtb" onclick="_screwEditSet('size','M8')">M8</button>
+          <button class="vtb" onclick="_screwEditSet('size','M10')">M10</button>
+        </div>
+        <div class="dim-row" id="es-len-row">
+          <label>Länge</label>
+          <input type="range" id="es-len" min="6" max="60" step="1" oninput="_screwEditSet('length',this.value)">
+          <input class="dim-num" id="es-len-n" type="number" min="6" max="60" step="1" onchange="_screwEditSet('length',this.value)">
+        </div>
+        <div class="dim-row" id="es-clr-row">
+          <label>Spiel</label>
+          <input type="range" id="es-clr" min="0.1" max="0.8" step="0.05" oninput="_screwEditSet('clearance',this.value)">
+          <input class="dim-num" id="es-clr-n" type="number" min="0.1" max="0.8" step="0.05" onchange="_screwEditSet('clearance',this.value)">
         </div>
       </div>
 
@@ -5908,6 +5935,13 @@ function updateTFInputs() {
       document.getElementById('sl-revolve-twist').value = twistDeg;
       document.getElementById('dn-revolve-twist').value = twistDeg;
     }
+  }
+  // Show screw/nut panel only for screw
+  const psS = document.getElementById('ps-screw');
+  if (psS) {
+    const isScrew = o.userData.shapeType === 'screw';
+    psS.style.display = isScrew ? 'block' : 'none';
+    if (isScrew) _screwEditSyncUI(o);
   }
   const _box = getMeshBox(o);
   const _sz  = _box.getSize(new THREE.Vector3());
@@ -12282,6 +12316,41 @@ function _createScrew(){
   selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
   notify(label+' erstellt','ok'); _closeScrewModal();
 }
+// --- Live-Nachbearbeitung einer platzierten Schraube/Mutter (Eigenschaften-Tab) ---
+let _screwEditT=null;
+function _screwEditSyncUI(o){
+  const t=o.userData.screwType||'aussen', sz=o.userData.screwSize||'M6';
+  ['aussen','innen','mutter'].forEach((m,i)=>{const b=document.querySelector(`#esbg-type .vtb:nth-child(${i+1})`); if(b)b.classList.toggle('on',m===t);});
+  ['M4','M5','M6','M8','M10'].forEach((m,i)=>{const b=document.querySelector(`#esbg-size .vtb:nth-child(${i+1})`); if(b)b.classList.toggle('on',m===sz);});
+  const len=o.userData.screwLength||20, clr=(o.userData.screwClearance!=null?o.userData.screwClearance:0.4);
+  const sl=document.getElementById('es-len'), sln=document.getElementById('es-len-n');
+  if(sl){sl.value=len;} if(sln){sln.value=len;}
+  const sc=document.getElementById('es-clr'), scn=document.getElementById('es-clr-n');
+  if(sc){sc.value=clr;} if(scn){scn.value=clr;}
+  const lr=document.getElementById('es-len-row'); if(lr) lr.style.display=(t==='mutter')?'none':'flex';
+}
+function _screwEditSet(key,val){
+  const o=getFirst(); if(!o||o.userData.shapeType!=='screw')return;
+  saveUndoDebounced();
+  if(key==='type') o.userData.screwType=val;
+  else if(key==='size') o.userData.screwSize=val;
+  else if(key==='length') o.userData.screwLength=parseFloat(val);
+  else if(key==='clearance') o.userData.screwClearance=parseFloat(val);
+  _screwEditSyncUI(o);
+  if(_screwEditT)clearTimeout(_screwEditT);
+  _screwEditT=setTimeout(()=>{_screwEditT=null;_screwEditRebuild(o);},60);
+}
+function _screwEditRebuild(o){
+  const p={type:o.userData.screwType,size:o.userData.screwSize,length:o.userData.screwLength,clearance:o.userData.screwClearance};
+  let geo; try{ geo=_buildScrewGeometry(p); }catch(e){ console.warn('Schraube neu bauen:',e); notify('Fehler beim Neubau','w'); return; }
+  if(o.geometry) o.geometry.dispose();
+  o.geometry=geo;                       // Position/Quaternion bleiben → Kopf bleibt auf der Platte
+  _updateObjEdgeLines(o);
+  updateDimHandles();
+  // Abmessungs-Anzeige (Breite/Höhe/Tiefe) aktualisieren
+  const bx=getMeshBox(o), sz=bx.getSize(new THREE.Vector3());
+  setSliderVal('sl-w','dn-w', r2(sz.x*10)); setSliderVal('sl-h','dn-h', r2(sz.y*10)); setSliderVal('sl-d','dn-d', r2(sz.z*10));
+}
 // ===== END SCHRAUBEN / MUTTERN GENERATOR =====
 
 // ===== ARBEITSBEREICH-EINSTELLUNGEN =====
@@ -12297,8 +12366,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.12';
+const VOLME3D_VERSION = '1.14.13';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.13', date:'2026-06-13', changes:[
+    ['✨','Schrauben &amp; Muttern lassen sich jetzt nachträglich live bearbeiten: Objekt auswählen und im Eigenschaften-Tab Typ, Größe, Länge und Spiel ändern — die Geometrie baut sich sofort neu auf. Der Kopf (bzw. die Mutter) bleibt dabei auf der Druckplatte sitzen, die Gewindesteigung passt sich der Größe an'],
+  ]},
   { version:'1.14.12', date:'2026-06-13', changes:[
     ['🐛','Schrauben-Generator: Beim Duplizieren (und Speichern/Laden) wurde aus der Schraube eine Box — die Geometrie war nicht in der Whitelist zum Mitspeichern. Behoben, Duplikate und gespeicherte Designs behalten jetzt die Schraube'],
     ['✨','Schrauben liegen jetzt mit dem Kopf auf der Druckplatte (Gewinde zeigt nach oben, druckoptimal). Der Kopf ist der feste Anker: eine andere Länge wächst nach oben weg, während Kopf und Gewindesteigung gleich bleiben und auf der Platte sitzen'],
