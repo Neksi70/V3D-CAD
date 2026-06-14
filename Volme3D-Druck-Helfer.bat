@@ -6,8 +6,9 @@ echo ============================================
 echo   Volme3D Druck-Helfer wird gestartet...
 echo ============================================
 echo.
-rem --- versteckt im Hintergrund starten ---
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:VOLME3D_SELF -ArgumentList '/server' -WindowStyle Hidden" 2>nul
+echo Beende evtl. laufenden alten Helfer und starte neu...
+rem --- alten Helfer auf Port 7777 beenden (Update), dann versteckt neu starten ---
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try{ Get-NetTCPConnection -LocalPort 7777 -State Listen -ErrorAction Stop | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 900 }catch{}; Start-Process -FilePath $env:VOLME3D_SELF -ArgumentList '/server' -WindowStyle Hidden" 2>nul
 rem --- kurz warten + Status anzeigen (exit 1 = nicht erreichbar -> Fallback) ---
 powershell -NoProfile -Command "Start-Sleep -Milliseconds 2200; try{$r=Invoke-RestMethod 'http://127.0.0.1:7777/ping' -TimeoutSec 3; Write-Host ('Helfer laeuft. Gefundene Slicer: ' + (($r.slicers) -join ', ')); exit 0}catch{exit 1}"
 if errorlevel 1 goto runhere
