@@ -775,7 +775,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.36<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.37<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -6115,6 +6115,26 @@ function numChanged(axis, val) {
 
 function applyDimChange(axis, val) {
   const o = getFirst(); if (!o) return;
+  // Schrauben (mit Gewinde): Höhen-Anfasser ändert die LÄNGE (Geometrie neu bauen,
+  // Steigung konstant) statt das Mesh zu strecken → kein Verzerren des Gewindes.
+  if (o.userData.shapeType === 'screw' && axis === 'sh' &&
+      (o.userData.screwType === 'aussen' || o.userData.screwType === 'innen' || o.userData.screwType === 'schloss')) {
+    o.geometry.computeBoundingBox();
+    const geoH = (o.geometry.boundingBox.max.y - o.geometry.boundingBox.min.y) * 10;  // mm, unskaliert
+    const curLen = o.userData.screwLength || 20;
+    const headPart = Math.max(0, geoH - curLen);
+    let newLen = Math.max(4, Math.min(300, Math.round(val - headPart)));
+    if (newLen !== curLen) {
+      o.userData.screwLength = newLen;
+      o.scale.set(1, 1, 1);
+      _screwEditRebuild(o);
+      const b = getMeshBox(o); if (b.min.y < -1e-4) o.position.y -= b.min.y;
+    }
+    const bx = getMeshBox(o), bsz = bx.getSize(new THREE.Vector3());
+    setSliderVal('sl-w','dn-w', r2(bsz.x*10)); setSliderVal('sl-h','dn-h', r2(bsz.y*10)); setSliderVal('sl-d','dn-d', r2(bsz.z*10));
+    updateTFInputs(); _svgDirty = true; _doRepositionDimHandles();
+    return;
+  }
   // val is in display-mm. BoxGeometry(2,2,2) → size=2 → display=20mm at scale=1
   // so scale = val / (baseSize * 10) = val / 20
   const oldScales = { x: o.scale.x, y: o.scale.y, z: o.scale.z };
@@ -12945,8 +12965,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.36';
+const VOLME3D_VERSION = '1.14.37';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.37', date:'2026-06-14', changes:[
+    ['🐛','Schrauben: Beim Längermachen mit dem Höhen-Anfasser wurde das Gewinde mitgestreckt (Steigung änderte sich). Jetzt passt der Anfasser stattdessen die Länge an und baut die Schraube mit konstanter Steigung neu — Kopf bleibt auf der Druckplatte'],
+  ]},
   { version:'1.14.36', date:'2026-06-14', changes:[
     ['✨','Neue „⚖ Lizenzen & Hinweise"-Seite (im „Was ist neu?"-Dialog oben): nennt alle Open-Source-Komponenten (Three.js, OpenCASCADE, fflate, Firebase, Inter) mit Lizenz und Quelle, plus Markenhinweis zu den Slicern. Erfüllt u.a. die LGPL-Hinweispflicht von OpenCASCADE — wichtig für kommerzielle Nutzung'],
   ]},
