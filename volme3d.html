@@ -762,7 +762,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.34<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.35<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -12535,7 +12535,7 @@ function _fpScrewSet(key,val){
 
 // ===== STL-BIBLIOTHEK =====
 const STLLIB_HELPER = 'http://127.0.0.1:7777';
-const STLLIB_HELPER_LATEST = 3;   // aktuelle Helfer-Version; ältere -> Update-Knopf
+const STLLIB_HELPER_LATEST = 4;   // aktuelle Helfer-Version; ältere -> Update-Knopf
 let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0, _stlThumbObs=null, _stlThumbPending=[], _stlThumbBusy=false, _stlPollTimer=null, _stlListSig='';
 function _stlStopPoll(){ if(_stlPollTimer){ clearInterval(_stlPollTimer); _stlPollTimer=null; } }
 function _stlStartPoll(){ _stlStopPoll(); _stlPollTimer=setInterval(_stlPoll,15000); }   // Galerie automatisch nachladen
@@ -12627,9 +12627,12 @@ function _stlRenderGrid(){
     const idx=_stlFiles.indexOf(f);
     const card=document.createElement('div'); card.className='ds-card';
     const inner = f._thumbUrl ? `<img class="ds-thumb" src="${f._thumbUrl}">` : (f._thumbDone ? '<div class="ds-nothumb">📦</div>' : '<div class="ds-nothumb">⏳</div>');
+    const canEdit = f.lib && _stlHelperVer>=4;
+    const ren = canEdit ? `<span onclick="_stlRenameStart(${idx})" title="Umbenennen" style="cursor:pointer;color:var(--dim);font-size:12px;flex-shrink:0;padding:0 2px">✎</span>` : '';
+    const del = canEdit ? `<button class="btn btn-del" onclick="_stlDelete(${idx})" title="Aus Bibliothek löschen">🗑</button>` : '';
     card.innerHTML=`<div class="ds-thumb-wrap">${inner}</div>`+
-      `<div class="ds-info"><div class="ds-name" title="${_stlEsc(f.path)}">${_stlEsc(f.name)}</div><div class="ds-date">${_stlFmtSize(f.size)} · ${new Date(f.mtime).toLocaleDateString()}</div></div>`+
-      `<div class="ds-acts"><button class="btn" onclick="_stlOpenInScene(${idx})">📥 Öffnen</button><button class="btn pri" onclick="_stlPrint(${idx})" title="Im Slicer öffnen">🖨 Drucken</button></div>`;
+      `<div class="ds-info"><div style="display:flex;align-items:center;gap:2px"><div class="ds-name" id="stlnm-${idx}" title="${_stlEsc(f.path)}"${canEdit?` ondblclick="_stlRenameStart(${idx})"`:''} style="flex:1;min-width:0">${_stlEsc(f.name)}</div>${ren}</div><div class="ds-date">${_stlFmtSize(f.size)} · ${new Date(f.mtime).toLocaleDateString()}</div></div>`+
+      `<div class="ds-acts"><button class="btn" onclick="_stlOpenInScene(${idx})">📥 Öffnen</button><button class="btn pri" onclick="_stlPrint(${idx})" title="Im Slicer öffnen">🖨 Drucken</button>${del}</div>`;
     grid.appendChild(card);
     const tw=card.querySelector('.ds-thumb-wrap'); f._thumbEl=tw;
     if(!f._thumbUrl && !f._thumbDone){ tw._stlF=f; _stlThumbObs.observe(tw); }
@@ -12721,10 +12724,10 @@ async function _stlPrint(idx){
     let res;
     if(f.lib){
       // Datei liegt schon im Helfer-Ordner → nur Referenz schicken, kein Upload
-      res=await fetch(STLLIB_HELPER+'/print',{method:'POST',headers:{'X-LibFile':f.name,'X-Slicer':slicer},body:''});
+      res=await fetch(STLLIB_HELPER+'/print',{method:'POST',headers:{'X-LibFile':encodeURIComponent(f.name),'X-Slicer':slicer},body:''});
     }else{
       const buf=await _stlReadBytes(f);
-      res=await fetch(STLLIB_HELPER+'/print',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Filename':f.name,'X-Slicer':slicer},body:buf});
+      res=await fetch(STLLIB_HELPER+'/print',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Filename':encodeURIComponent(f.name),'X-Slicer':slicer},body:buf});
     }
     const j=await res.json().catch(()=>({}));
     if(res.ok&&j.ok) notify(`🖨 In ${j.slicer||'Slicer'} geöffnet: ${f.name}`,'ok');
@@ -12732,6 +12735,39 @@ async function _stlPrint(idx){
   }catch(e){ _stlHelperOk=false; _stlUpdateHelperUI(); _stlHelperMissing(); }
 }
 function _stlHelperMissing(){ notify('Druck-Helfer nicht erreichbar — einmalig einrichten (Links in der Ordner-Ansicht / LIESMICH)','w'); }
+async function _stlDelete(idx){
+  const f=_stlFiles[idx]; if(!f||!f.lib) return;
+  if(!confirm('„'+f.name+'" aus der Bibliothek löschen?\n(Die Datei wird endgültig entfernt.)')) return;
+  try{
+    const res=await fetch(STLLIB_HELPER+'/delete',{method:'POST',headers:{'X-LibFile':encodeURIComponent(f.name)}});
+    const j=await res.json().catch(()=>({}));
+    if(res.ok&&j.ok){ notify('Gelöscht: '+f.name,'w'); _stlFiles.splice(idx,1); _stlListSig=''; _stlRenderGrid(); }
+    else notify('Löschen: '+(j.error||('HTTP '+res.status)),'w');
+  }catch(e){ notify('Löschen fehlgeschlagen','w'); }
+}
+function _stlRenameStart(idx){
+  const f=_stlFiles[idx]; if(!f||!f.lib) return;
+  const el=document.getElementById('stlnm-'+idx); if(!el) return;
+  const dot=f.name.lastIndexOf('.'); const base=dot>0?f.name.slice(0,dot):f.name, ext=dot>0?f.name.slice(dot):'';
+  el.innerHTML='';
+  const inp=document.createElement('input'); inp.type='text'; inp.value=base;
+  inp.style.cssText='width:100%;font-size:12px;padding:2px 4px;box-sizing:border-box;border:1.5px solid var(--acc);border-radius:4px;font-family:var(--font)';
+  el.appendChild(inp); inp.focus(); inp.select();
+  let done=false;
+  const finish=async(save)=>{ if(done)return; done=true; const nb=inp.value.trim();
+    if(save && nb && nb!==base){ await _stlRenameCommit(idx, nb+ext); } else { _stlRenderGrid(); } };
+  inp.addEventListener('keydown',e=>{ if(e.key==='Enter'){e.preventDefault();inp.blur();} else if(e.key==='Escape'){done=true;_stlRenderGrid();} });
+  inp.addEventListener('blur',()=>finish(true));
+}
+async function _stlRenameCommit(idx,newName){
+  const f=_stlFiles[idx]; if(!f) return;
+  try{
+    const res=await fetch(STLLIB_HELPER+'/rename',{method:'POST',headers:{'X-LibFile':encodeURIComponent(f.name),'X-NewName':encodeURIComponent(newName)}});
+    const j=await res.json().catch(()=>({}));
+    if(res.ok&&j.ok){ f.name=j.name||newName; f.path=f.name; f._thumbUrl=null; f._thumbDone=false; f._thumbQueued=false; _stlListSig=''; notify('Umbenannt','ok'); _stlRenderGrid(); }
+    else { notify('Umbenennen: '+(j.error||('HTTP '+res.status)),'w'); _stlRenderGrid(); }
+  }catch(e){ notify('Umbenennen fehlgeschlagen','w'); _stlRenderGrid(); }
+}
 async function _stlPingHelper(){
   _stlHelperOk=false; _stlHelperSlicers=[];
   try{
@@ -12837,8 +12873,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.34';
+const VOLME3D_VERSION = '1.14.35';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.35', date:'2026-06-14', changes:[
+    ['✨','STL-Bibliothek: Dateien direkt umbenennen (✎ am Namen oder Doppelklick) und löschen (🗑) — praktisch für Duplikate oder unschöne Namen. Erfordert aktuellen Druck-Helfer (oben „⬇ Helfer aktualisieren")'],
+  ]},
   { version:'1.14.34', date:'2026-06-14', changes:[
     ['🔧','Druck-Helfer-Update läuft jetzt automatisch: Die neue Helfer-.bat beendet beim Doppelklick einen evtl. laufenden alten Helfer (Port 7777) selbst und startet sich frisch — kein Task-Manager und kein Windows-Neustart mehr nötig'],
   ]},

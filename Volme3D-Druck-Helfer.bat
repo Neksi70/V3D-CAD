@@ -117,6 +117,7 @@ function Get-LibList {
     }
     return $items
 }
+function Hdr($h, $n) { if ($h.ContainsKey($n) -and $h[$n]) { try { return [System.Uri]::UnescapeDataString($h[$n]) } catch { return $h[$n] } } return '' }
 function Get-LibFilePath($name) {
     if (-not $name) { return $null }
     $p = Join-Path (Get-LibDir) (Split-Path -Leaf $name)
@@ -154,7 +155,7 @@ function New-Cors($origin) {
     $h = [ordered]@{}
     if (Test-Origin $origin) { $h['Access-Control-Allow-Origin'] = $origin }
     $h['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    $h['Access-Control-Allow-Headers'] = 'Content-Type, X-Slicer, X-Filename, X-LibFile'
+    $h['Access-Control-Allow-Headers'] = 'Content-Type, X-Slicer, X-Filename, X-LibFile, X-NewName'
     $h['Access-Control-Allow-Private-Network'] = 'true'
     return $h
 }
@@ -199,7 +200,7 @@ function Handle-Client($client) {
     for ($i = 1; $i -lt $lines.Count; $i++) { $ln = $lines[$i]; $idx = $ln.IndexOf(':'); if ($idx -gt 0) { $headers[$ln.Substring(0, $idx).Trim().ToLower()] = $ln.Substring($idx + 1).Trim() } }
     $origin = $headers['origin']; $cors = New-Cors $origin
     if ($method -eq 'OPTIONS') { Send-Bytes $stream '204 No Content' $cors 'text/plain' (New-Object byte[] 0); return }
-    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 3; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir) }) $origin; return }
+    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 4; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir) }) $origin; return }
     if ($method -eq 'GET' -and $path -eq '/list') {
         if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = 'origin not allowed' }) $origin; return }
         Send-Json $stream '200 OK' ([ordered]@{ ok = $true; dir = (Get-LibDir); files = @(Get-LibList) }) $origin; return
@@ -210,6 +211,23 @@ function Handle-Client($client) {
         $fp = Get-LibFilePath $name
         if (-not $fp) { Send-Json $stream '404 Not Found' (@{ ok = $false; error = 'Datei nicht gefunden' }) $origin; return }
         Send-Bytes $stream '200 OK' (New-Cors $origin) 'model/stl' ([System.IO.File]::ReadAllBytes($fp)); return
+    }
+    if ($method -eq 'POST' -and ($path -eq '/delete' -or $path -eq '/rename')) {
+        if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = 'origin not allowed' }) $origin; return }
+        $fp = Get-LibFilePath (Hdr $headers 'x-libfile')
+        if (-not $fp) { Send-Json $stream '404 Not Found' (@{ ok = $false; error = 'Datei nicht gefunden' }) $origin; return }
+        if ($path -eq '/delete') {
+            try { Remove-Item -LiteralPath $fp -Force; Send-Json $stream '200 OK' (@{ ok = $true }) $origin }
+            catch { Send-Json $stream '500 Error' (@{ ok = $false; error = "$_" }) $origin }
+            return
+        }
+        $new = Split-Path -Leaf (Hdr $headers 'x-newname')
+        if (-not $new) { Send-Json $stream '400 Bad Request' (@{ ok = $false; error = 'kein Name' }) $origin; return }
+        $dst = Join-Path (Get-LibDir) $new
+        if (Test-Path -LiteralPath $dst) { Send-Json $stream '409 Conflict' (@{ ok = $false; error = 'Name existiert bereits' }) $origin; return }
+        try { Rename-Item -LiteralPath $fp -NewName $new; Send-Json $stream '200 OK' (@{ ok = $true; name = $new }) $origin }
+        catch { Send-Json $stream '500 Error' (@{ ok = $false; error = "$_" }) $origin }
+        return
     }
     if ($method -eq 'POST' -and ($path -eq '/collect' -or $path -eq '/print')) {
         if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = "origin not allowed: $origin" }) $origin; return }
@@ -226,12 +244,13 @@ function Handle-Client($client) {
         if ($slicers.Count -eq 0) { Send-Json $stream '500 Error' (@{ ok = $false; error = 'Kein Slicer gefunden' }) $origin; return }
         $key = if ($slicers.Contains($want)) { $want } else { @($slicers.Keys)[0] }
         $exe = $slicers[$key]; $toOpen = $null
-        if ($headers.ContainsKey('x-libfile') -and $headers['x-libfile']) {
-            $toOpen = Get-LibFilePath $headers['x-libfile']
+        $lib = Hdr $headers 'x-libfile'
+        if ($lib) {
+            $toOpen = Get-LibFilePath $lib
             if (-not $toOpen) { Send-Json $stream '404 Not Found' (@{ ok = $false; error = 'Bibliotheksdatei nicht gefunden' }) $origin; return }
         } else {
             if ($body.Length -eq 0) { Send-Json $stream '400 Bad Request' (@{ ok = $false; error = 'leere Datei' }) $origin; return }
-            $fname = 'modell.stl'; if ($headers.ContainsKey('x-filename') -and $headers['x-filename']) { $fname = Split-Path -Leaf $headers['x-filename'] }
+            $fname = 'modell.stl'; $hf = Hdr $headers 'x-filename'; if ($hf) { $fname = Split-Path -Leaf $hf }
             $outdir = Join-Path $env:TEMP 'volme3d-print'; if (-not (Test-Path -LiteralPath $outdir)) { New-Item -ItemType Directory -Path $outdir -Force | Out-Null }
             $toOpen = Join-Path $outdir $fname; [System.IO.File]::WriteAllBytes($toOpen, $body)
         }
