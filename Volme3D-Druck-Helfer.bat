@@ -32,17 +32,30 @@ function Test-Origin($o) {
     if ($ALLOWED -contains $o) { return $true }
     return ($o -like 'http://localhost*') -or ($o -like 'http://127.0.0.1*')
 }
+function Find-SlicerExe($folders, $exes) {
+    foreach ($folder in $folders) {
+        if (-not $folder -or -not (Test-Path -LiteralPath $folder)) { continue }
+        foreach ($n in $exes) { $p = Join-Path $folder $n; if (Test-Path -LiteralPath $p) { return $p } }
+        # Fallback: erste sinnvolle .exe im Ordner (keine Deinstaller/Updater/Crashpad)
+        $e = Get-ChildItem -LiteralPath $folder -Filter *.exe -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '(?i)unins|setup|redist|crashpad|update|bsa' } | Sort-Object Length -Descending | Select-Object -First 1
+        if ($e) { return $e.FullName }
+    }
+    return $null
+}
 function Get-Slicers {
     $ov = $env:VOLME3D_SLICER_CMD
     if ($ov) { return [ordered]@{ bambu = $ov; orca = $ov } }
     $pf = $env:ProgramFiles; $pf86 = ${env:ProgramFiles(x86)}; $lad = $env:LOCALAPPDATA
-    $cand = [ordered]@{
-        bambu = @("$pf\Bambu Studio\bambu-studio.exe", "$pf86\Bambu Studio\bambu-studio.exe", "$lad\Programs\Bambu Studio\bambu-studio.exe")
-        orca  = @("$pf\OrcaSlicer\orca-slicer.exe", "$pf\OrcaSlicer\OrcaSlicer.exe", "$lad\Programs\OrcaSlicer\orca-slicer.exe", "$lad\Programs\OrcaSlicer\OrcaSlicer.exe")
-        prusa = @("$pf\Prusa3D\PrusaSlicer\prusa-slicer.exe")
+    $defs = [ordered]@{
+        bambu     = @{ f = @("$pf\Bambu Studio", "$pf86\Bambu Studio", "$lad\Programs\Bambu Studio");                         e = @('bambu-studio.exe') }
+        orca      = @{ f = @("$pf\OrcaSlicer", "$lad\Programs\OrcaSlicer");                                                    e = @('orca-slicer.exe', 'OrcaSlicer.exe') }
+        anycubic  = @{ f = @("$pf\Anycubic Slicer Next", "$pf\AnycubicSlicerNext", "$lad\Programs\Anycubic Slicer Next", "$lad\Programs\AnycubicSlicerNext"); e = @('AnycubicSlicerNext.exe', 'AnycubicSlicer.exe', 'anycubic-slicer.exe') }
+        elegoo    = @{ f = @("$pf\ElegooSlicer", "$pf\Elegoo Slicer", "$lad\Programs\ElegooSlicer", "$lad\Programs\Elegoo Slicer"); e = @('ElegooSlicer.exe', 'elegoo-slicer.exe') }
+        snapmaker = @{ f = @("$pf\Snapmaker Orca", "$pf\SnapmakerOrca", "$lad\Programs\Snapmaker Orca", "$lad\Programs\SnapmakerOrca"); e = @('SnapmakerOrca.exe', 'Snapmaker Orca.exe', 'snapmaker-orca.exe', 'orca-slicer.exe') }
+        prusa     = @{ f = @("$pf\Prusa3D\PrusaSlicer");                                                                       e = @('prusa-slicer.exe') }
     }
     $found = [ordered]@{}
-    foreach ($key in $cand.Keys) { foreach ($p in $cand[$key]) { if ($p -and (Test-Path -LiteralPath $p)) { $found[$key] = $p; break } } }
+    foreach ($key in $defs.Keys) { $p = Find-SlicerExe $defs[$key].f $defs[$key].e; if ($p) { $found[$key] = $p } }
     return $found
 }
 function Get-DownloadCandidates {
