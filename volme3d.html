@@ -762,7 +762,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.29<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.30<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -12648,10 +12648,27 @@ async function _stlThumbOne(f){
   f._thumbUrl=url;
   if(f._thumbEl) f._thumbEl.innerHTML = url?`<img class="ds-thumb" src="${url}">`:'<div class="ds-nothumb">📦</div>';
 }
-async function _stlMakeThumb(f){
-  if(!/\.stl$/i.test(f.name)) return null;   // Thumbnail nur für STL (parseSTL)
-  const buf=await _stlReadBytes(f);
-  const geo=parseSTL(buf); geo.rotateX(-Math.PI/2); geo.computeVertexNormals(); geo.computeBoundingBox();
+function _u8ToB64(u8){ let s=''; const C=0x8000; for(let i=0;i<u8.length;i+=C){ s+=String.fromCharCode.apply(null,u8.subarray(i,i+C)); } return btoa(s); }
+function _parseOBJ(text){
+  const verts=[], idx=[], lines=text.split('\n');
+  for(let li=0;li<lines.length;li++){ const l=lines[li].trim();
+    if(l.startsWith('v ')){ const p=l.split(/\s+/); verts.push(+p[1],+p[2],+p[3]); }
+    else if(l.startsWith('f ')){ const p=l.split(/\s+/), fv=[]; for(let i=1;i<p.length;i++){ const v=parseInt(p[i],10); if(!isNaN(v)) fv.push(v-1); }
+      for(let i=1;i<fv.length-1;i++){ idx.push(fv[0],fv[i],fv[i+1]); } }
+  }
+  const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(verts,3)); if(idx.length) g.setIndex(idx); g.computeVertexNormals(); g.computeBoundingBox(); return g;
+}
+function _parse3MFGeo(xmlText){
+  const doc=new DOMParser().parseFromString(xmlText,'application/xml');
+  const verts=[], idx=[], vEls=doc.getElementsByTagName('vertex'), tEls=doc.getElementsByTagName('triangle');
+  for(let i=0;i<vEls.length;i++){ const v=vEls[i]; verts.push(+v.getAttribute('x'),+v.getAttribute('y'),+v.getAttribute('z')); }
+  for(let i=0;i<tEls.length;i++){ const t=tEls[i]; idx.push(+t.getAttribute('v1'),+t.getAttribute('v2'),+t.getAttribute('v3')); }
+  const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(verts,3)); if(idx.length) g.setIndex(idx); g.computeVertexNormals(); g.computeBoundingBox(); return g;
+}
+function _renderGeoThumb(geo, zUp){
+  if(!geo || !geo.attributes.position || !geo.attributes.position.count) return null;
+  if(zUp) geo.rotateX(-Math.PI/2);
+  geo.computeBoundingBox();
   if(!_stlThumbRenderer){ _stlThumbRenderer=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true}); _stlThumbRenderer.setSize(256,192); _stlThumbRenderer.setClearColor(0x000000,0); }
   const sc=new THREE.Scene();
   const mat=new THREE.MeshStandardMaterial({color:0x5b8def,roughness:0.55,metalness:0.12,side:THREE.DoubleSide});
@@ -12666,6 +12683,27 @@ async function _stlMakeThumb(f){
   const url=_stlThumbRenderer.domElement.toDataURL('image/png');
   geo.dispose(); mat.dispose();
   return url;
+}
+async function _stlMakeThumb(f){
+  const ext=(f.name.split('.').pop()||'').toLowerCase();
+  const buf=await _stlReadBytes(f);
+  if(ext==='stl') return _renderGeoThumb(parseSTL(buf), true);
+  if(ext==='obj') return _renderGeoThumb(_parseOBJ(new TextDecoder().decode(buf)), false);
+  if(ext==='3mf'){
+    if(typeof fflate==='undefined') return null;
+    const u8=new Uint8Array(buf);
+    // 1) eingebettete Vorschau-PNG (Bambu/Orca) — nur PNGs entpacken (schnell)
+    let pngs={}; try{ pngs=fflate.unzipSync(u8,{filter:fl=>/\.png$/i.test(fl.name)}); }catch(e){ pngs={}; }
+    const pn=Object.keys(pngs);
+    const pick = pn.find(n=>/plate[_-]?1[^/]*\.png$/i.test(n)) || pn.find(n=>/metadata\/.*\.png$/i.test(n)) || pn.find(n=>/thumbnail/i.test(n)) || pn[0];
+    if(pick && pngs[pick] && pngs[pick].length) return 'data:image/png;base64,'+_u8ToB64(pngs[pick]);
+    // 2) sonst Modell-XML rendern
+    let models={}; try{ models=fflate.unzipSync(u8,{filter:fl=>/\.model$/i.test(fl.name)}); }catch(e){ models={}; }
+    const mn=Object.keys(models)[0];
+    if(mn) return _renderGeoThumb(_parse3MFGeo(fflate.strFromU8(models[mn])), true);
+    return null;
+  }
+  return null;
 }
 async function _stlOpenInScene(idx){
   const f=_stlFiles[idx]; if(!f) return;
@@ -12795,8 +12833,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.29';
+const VOLME3D_VERSION = '1.14.30';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.30', date:'2026-06-14', changes:[
+    ['✨','STL-Bibliothek: Vorschaubilder jetzt auch für OBJ und 3MF. Bei 3MF (z.B. von Bambu/Orca) wird die eingebettete Vorschau-PNG verwendet, sonst das Modell gerendert; OBJ wird direkt gerendert'],
+  ]},
   { version:'1.14.29', date:'2026-06-14', changes:[
     ['🔧','Druck-Helfer läuft jetzt unsichtbar im Hintergrund: Beim Doppelklick auf die .bat startet er versteckt, zeigt kurz den Status, und das Fenster schließt sich von selbst — kein Dauerfenster mehr. (Helfer-Datei neu laden)'],
   ]},
