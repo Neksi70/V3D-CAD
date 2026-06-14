@@ -34,7 +34,27 @@ function Get-Slicers {
     foreach ($key in $cand.Keys) { foreach ($p in $cand[$key]) { if ($p -and (Test-Path -LiteralPath $p)) { $found[$key] = $p; break } } }
     return $found
 }
-function Get-DownloadsDir { return (Join-Path $env:USERPROFILE 'Downloads') }
+function Get-DownloadCandidates {
+    $cands = New-Object System.Collections.Generic.List[string]
+    try {
+        $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
+        $g = '{374DE290-123F-4565-9164-39C4925E467B}'
+        $v = (Get-ItemProperty -Path $key -Name $g -ErrorAction SilentlyContinue).$g
+        if ($v) { $cands.Add([Environment]::ExpandEnvironmentVariables($v)) }
+    } catch {}
+    if ($env:USERPROFILE)        { $cands.Add((Join-Path $env:USERPROFILE 'Downloads')) }
+    if ($env:OneDrive)           { $cands.Add((Join-Path $env:OneDrive 'Downloads')) }
+    if ($env:OneDriveConsumer)   { $cands.Add((Join-Path $env:OneDriveConsumer 'Downloads')) }
+    if ($env:OneDriveCommercial) { $cands.Add((Join-Path $env:OneDriveCommercial 'Downloads')) }
+    $seen = @{}; $out = @()
+    foreach ($d in $cands) {
+        if ($d -and (Test-Path -LiteralPath $d)) {
+            try { $full = (Resolve-Path -LiteralPath $d).Path } catch { $full = $d }
+            if (-not $seen.ContainsKey($full.ToLower())) { $seen[$full.ToLower()] = $true; $out += $full }
+        }
+    }
+    return $out
+}
 function Get-LibDir {
     $docs = [Environment]::GetFolderPath('MyDocuments'); if (-not $docs) { $docs = $env:USERPROFILE }
     $d = Join-Path $docs 'Volme3D-STL'
@@ -49,8 +69,8 @@ function Get-UniquePath($dir, $name) {
     return (Join-Path $dir ("{0}_{1}{2}" -f $base, $i, $ext))
 }
 function Invoke-Collect($move) {
-    $src = Get-DownloadsDir; $dst = Get-LibDir; $copied = 0; $skipped = 0
-    if (Test-Path -LiteralPath $src) {
+    $srcs = Get-DownloadCandidates; $dst = Get-LibDir; $copied = 0; $skipped = 0
+    foreach ($src in $srcs) {
         $files = Get-ChildItem -LiteralPath $src -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() -and $_.DirectoryName -ne $dst }
         foreach ($f in $files) {
             $tp = Join-Path $dst $f.Name
@@ -63,7 +83,7 @@ function Invoke-Collect($move) {
         }
     }
     $count = (Get-ChildItem -LiteralPath $dst -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() }).Count
-    return [ordered]@{ ok = $true; copied = $copied; skipped = $skipped; dir = $dst; source = $src; count = $count }
+    return [ordered]@{ ok = $true; copied = $copied; skipped = $skipped; dir = $dst; source = ($srcs -join '; '); count = $count }
 }
 function Get-LibList {
     $d = Get-LibDir; $items = @()

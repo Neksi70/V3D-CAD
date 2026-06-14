@@ -33,7 +33,30 @@ function Get-Slicers {
     return $found
 }
 
-function Get-DownloadsDir { return (Join-Path $env:USERPROFILE 'Downloads') }
+function Get-DownloadCandidates {
+    $cands = New-Object System.Collections.Generic.List[string]
+    # 1) Echter Downloads-Pfad aus der Registry (handhabt OneDrive-Umleitung)
+    try {
+        $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
+        $g = '{374DE290-123F-4565-9164-39C4925E467B}'
+        $v = (Get-ItemProperty -Path $key -Name $g -ErrorAction SilentlyContinue).$g
+        if ($v) { $cands.Add([Environment]::ExpandEnvironmentVariables($v)) }
+    } catch {}
+    # 2) Standard + OneDrive-Varianten
+    if ($env:USERPROFILE)        { $cands.Add((Join-Path $env:USERPROFILE 'Downloads')) }
+    if ($env:OneDrive)           { $cands.Add((Join-Path $env:OneDrive 'Downloads')) }
+    if ($env:OneDriveConsumer)   { $cands.Add((Join-Path $env:OneDriveConsumer 'Downloads')) }
+    if ($env:OneDriveCommercial) { $cands.Add((Join-Path $env:OneDriveCommercial 'Downloads')) }
+    $seen = @{}; $out = @()
+    foreach ($d in $cands) {
+        if ($d -and (Test-Path -LiteralPath $d)) {
+            try { $full = (Resolve-Path -LiteralPath $d).Path } catch { $full = $d }
+            $lk = $full.ToLower()
+            if (-not $seen.ContainsKey($lk)) { $seen[$lk] = $true; $out += $full }
+        }
+    }
+    return $out
+}
 function Get-LibDir {
     $docs = [Environment]::GetFolderPath('MyDocuments')
     if (-not $docs) { $docs = $env:USERPROFILE }
@@ -51,10 +74,10 @@ function Get-UniquePath($dir, $name) {
     return (Join-Path $dir ("{0}_{1}{2}" -f $base, $i, $ext))
 }
 function Invoke-Collect($move) {
-    $src = Get-DownloadsDir
+    $srcs = Get-DownloadCandidates
     $dst = Get-LibDir
     $copied = 0; $skipped = 0
-    if (Test-Path -LiteralPath $src) {
+    foreach ($src in $srcs) {
         $files = Get-ChildItem -LiteralPath $src -Recurse -File -ErrorAction SilentlyContinue |
                  Where-Object { $EXTS -contains $_.Extension.ToLower() -and $_.DirectoryName -ne $dst }
         foreach ($f in $files) {
@@ -69,7 +92,7 @@ function Invoke-Collect($move) {
         }
     }
     $count = (Get-ChildItem -LiteralPath $dst -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() }).Count
-    return [ordered]@{ ok = $true; copied = $copied; skipped = $skipped; dir = $dst; source = $src; count = $count }
+    return [ordered]@{ ok = $true; copied = $copied; skipped = $skipped; dir = $dst; source = ($srcs -join '; '); count = $count }
 }
 function Get-LibList {
     $d = Get-LibDir
