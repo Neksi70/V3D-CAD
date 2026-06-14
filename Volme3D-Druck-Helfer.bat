@@ -1,14 +1,25 @@
 @echo off
-title Volme3D Druck-Helfer
 set "VOLME3D_SELF=%~f0"
+if /i "%~1"=="/server" goto server
+title Volme3D Druck-Helfer
 echo ============================================
 echo   Volme3D Druck-Helfer wird gestartet...
 echo ============================================
 echo.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$c=Get-Content -LiteralPath $env:VOLME3D_SELF -Raw; $m=[char]35+'__'+'PS__'; Invoke-Expression $c.Substring($c.IndexOf($m)+$m.Length)"
+rem --- versteckt im Hintergrund starten ---
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:VOLME3D_SELF -ArgumentList '/server' -WindowStyle Hidden" 2>nul
+rem --- kurz warten + Status anzeigen (exit 1 = nicht erreichbar -> Fallback) ---
+powershell -NoProfile -Command "Start-Sleep -Milliseconds 2200; try{$r=Invoke-RestMethod 'http://127.0.0.1:7777/ping' -TimeoutSec 3; Write-Host ('Helfer laeuft. Gefundene Slicer: ' + (($r.slicers) -join ', ')); exit 0}catch{exit 1}"
+if errorlevel 1 goto runhere
 echo.
-echo Helfer beendet. Taste druecken zum Schliessen.
-pause >nul
+echo Laeuft jetzt UNSICHTBAR im Hintergrund - dieses Fenster kann zu.
+timeout /t 6 >nul
+exit /b
+:runhere
+echo Konnte nicht versteckt starten - Helfer laeuft in DIESEM Fenster (offen lassen).
+echo.
+:server
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$c=Get-Content -LiteralPath $env:VOLME3D_SELF -Raw; $m=[char]35+'__'+'PS__'; Invoke-Expression $c.Substring($c.IndexOf($m)+$m.Length)"
 exit /b
 #__PS__
 # ===== Volme3D Druck-Helfer (eingebettetes PowerShell) =====
