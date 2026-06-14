@@ -762,7 +762,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.25<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.26<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -12722,18 +12722,37 @@ async function _stlCollect(){
     _stlHelperOk=true;
     return;
   }
-  const grid=document.getElementById('stllib-grid'); grid.innerHTML='<div class="stl-empty">Sammle STL-Dateien aus Downloads…</div>';
+  const grid=document.getElementById('stllib-grid');
+  grid.innerHTML='<div class="stl-empty">Sammle Dateien aus Downloads… <b id="stlp-txt"></b>'+
+    '<div style="margin:14px auto 0;max-width:380px;height:9px;background:var(--bg);border-radius:6px;overflow:hidden"><div id="stlp-bar" style="height:100%;width:0;background:var(--acc);transition:width .12s"></div></div>'+
+    '<div id="stlp-name" style="margin:7px auto 0;max-width:380px;font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div></div>';
   try{
     const res=await fetch(STLLIB_HELPER+'/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
-    const j=await res.json();
-    if(!j.ok) throw new Error(j.error||'Fehler');
-    notify(`✓ ${j.copied} kopiert${j.skipped?`, ${j.skipped} schon vorhanden`:''} → ${j.dir}`,'ok');
-    if((j.count||0)===0){
-      _stlLibEmpty('Es wurden keine STL/3MF/OBJ-Dateien gefunden.<br><span style="font-size:11px">Durchsucht: '+_stlEsc(j.source||'Downloads')+'</span>','📂 Anderen Ordner wählen','_stlLibPickFolder()');
+    if(!res.ok || !res.body) throw new Error('HTTP '+res.status);
+    const reader=res.body.getReader(), dec=new TextDecoder(); let buf='', final=null;
+    while(true){
+      const {done,value}=await reader.read(); if(done) break;
+      buf+=dec.decode(value,{stream:true});
+      const lines=buf.split('\n'); buf=lines.pop();
+      for(const ln of lines){ const t=ln.trim(); if(!t) continue; let o; try{ o=JSON.parse(t); }catch(e){ continue; }
+        if(o.done || o.dir!==undefined) final=o; else _stlProg(o.i,o.n,o.name);   // o.dir = altes (nicht-streamendes) /collect
+      }
+    }
+    if(buf.trim()){ try{ const o=JSON.parse(buf.trim()); if(o.done) final=o; }catch(e){} }
+    final=final||{copied:0,count:0};
+    notify(`✓ ${final.copied||0} kopiert${final.skipped?`, ${final.skipped} schon vorhanden`:''}`,'ok');
+    if((final.count||0)===0){
+      _stlLibEmpty('Es wurden keine STL/3MF/OBJ-Dateien gefunden.<br><span style="font-size:11px">Durchsucht: '+_stlEsc(final.source||'Downloads')+'</span>','📂 Anderen Ordner wählen','_stlLibPickFolder()');
       return;
     }
     _stlLoadFromHelper();
   }catch(e){ _stlLibEmpty('Einsammeln fehlgeschlagen: '+_stlEsc(e.message),'',''); }
+}
+function _stlProg(i,n,name){
+  const bar=document.getElementById('stlp-bar'), txt=document.getElementById('stlp-txt'), nm=document.getElementById('stlp-name');
+  if(bar) bar.style.width=(n?Math.round(i/n*100):0)+'%';
+  if(txt) txt.textContent=i+' / '+n;
+  if(nm) nm.textContent=name||'';
 }
 // ===== END STL-BIBLIOTHEK =====
 
@@ -12750,8 +12769,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.25';
+const VOLME3D_VERSION = '1.14.26';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.26', date:'2026-06-14', changes:[
+    ['✨','„Aus Downloads einsammeln" zeigt jetzt einen echten Fortschrittsbalken (X / Y + aktueller Dateiname). Der Druck-Helfer streamt den Fortschritt Datei für Datei. (Helfer-Datei neu laden)'],
+  ]},
   { version:'1.14.25', date:'2026-06-14', changes:[
     ['🐛','„Aus Downloads einsammeln" fand nichts, wenn der Downloads-Ordner nach OneDrive umgeleitet ist. Der Druck-Helfer liest jetzt den echten Downloads-Pfad aus der Windows-Registry und durchsucht mehrere Kandidaten (Standard + OneDrive). Findet er nichts, zeigt die App die durchsuchten Ordner an. (Helfer-Datei neu laden)'],
   ]},

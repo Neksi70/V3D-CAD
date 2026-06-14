@@ -165,6 +165,40 @@ function Send-Json($stream, $status, $obj, $origin) {
     Send-Bytes $stream $status (New-Cors $origin) 'application/json' $bytes
 }
 
+function Write-Line($stream, $text) {
+    $b = [System.Text.Encoding]::UTF8.GetBytes($text + "`n")
+    $stream.Write($b, 0, $b.Length); $stream.Flush()
+}
+# /collect mit Fortschritt: streamt eine NDJSON-Zeile pro Datei, am Ende eine done-Zeile.
+function Stream-Collect($stream, $origin, $move) {
+    $cors = New-Cors $origin
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append("HTTP/1.1 200 OK`r`n"); [void]$sb.Append("Content-Type: application/x-ndjson`r`n"); [void]$sb.Append("Connection: close`r`n")
+    foreach ($k in $cors.Keys) { [void]$sb.Append("$k`: $($cors[$k])`r`n") }
+    [void]$sb.Append("`r`n")
+    $h = [System.Text.Encoding]::ASCII.GetBytes($sb.ToString()); $stream.Write($h, 0, $h.Length); $stream.Flush()
+
+    $srcs = Get-DownloadCandidates; $dst = Get-LibDir
+    $all = @()
+    foreach ($src in $srcs) { $all += Get-ChildItem -LiteralPath $src -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() -and $_.DirectoryName -ne $dst } }
+    $total = $all.Count; $copied = 0; $skipped = 0; $i = 0
+    foreach ($f in $all) {
+        $i++
+        $tp = Join-Path $dst $f.Name
+        try {
+            if ((Test-Path -LiteralPath $tp) -and ((Get-Item -LiteralPath $tp).Length -eq $f.Length)) { $skipped++ }
+            else {
+                if (Test-Path -LiteralPath $tp) { $tp = Get-UniquePath $dst $f.Name }
+                if ($move) { Move-Item -LiteralPath $f.FullName -Destination $tp -Force } else { Copy-Item -LiteralPath $f.FullName -Destination $tp -Force }
+                $copied++
+            }
+        } catch {}
+        Write-Line $stream (@{ i = $i; n = $total; name = $f.Name } | ConvertTo-Json -Compress)
+    }
+    $count = (Get-ChildItem -LiteralPath $dst -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() }).Count
+    Write-Line $stream (([ordered]@{ done = $true; ok = $true; copied = $copied; skipped = $skipped; dir = $dst; source = ($srcs -join '; '); count = $count }) | ConvertTo-Json -Compress)
+}
+
 function Handle-Client($client) {
     $stream = $client.GetStream()
     $headerText = Read-Headers $stream
@@ -218,7 +252,7 @@ function Handle-Client($client) {
         if ($path -eq '/collect') {
             $move = $false
             try { if ($body.Length -gt 0) { $j = [System.Text.Encoding]::UTF8.GetString($body) | ConvertFrom-Json; if ($j.move) { $move = $true } } } catch {}
-            try { Send-Json $stream '200 OK' (Invoke-Collect $move) $origin } catch { Send-Json $stream '500 Error' (@{ ok = $false; error = "$_" }) $origin }
+            try { Stream-Collect $stream $origin $move } catch {}
             return
         }
         # /print
