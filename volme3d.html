@@ -762,7 +762,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.26<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.27<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -1956,7 +1956,7 @@ const firebaseConfig = {
       <button class="btn" onclick="_stlLibRefresh()" title="Neu einlesen">↻</button>
       <button class="btn" onclick="_stlLibClose()" style="padding:4px 10px;font-size:15px;line-height:1;margin-left:4px">✕</button>
     </div>
-    <div id="stllib-grid" style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(188px,1fr));gap:12px;overflow-y:auto;flex:1;min-height:220px;align-content:start"></div>
+    <div id="stllib-grid" style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(188px,1fr));gap:12px;overflow-y:auto;flex:1;min-height:220px;align-content:start;grid-auto-rows:max-content"></div>
   </div>
 </div>
 
@@ -12534,7 +12534,7 @@ function _fpScrewSet(key,val){
 
 // ===== STL-BIBLIOTHEK =====
 const STLLIB_HELPER = 'http://127.0.0.1:7777';
-let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0;
+let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0, _stlThumbObs=null, _stlThumbPending=[], _stlThumbBusy=false;
 
 function _stlIdb(){return new Promise((res,rej)=>{const r=indexedDB.open('volme3d-stllib',1);r.onupgradeneeded=()=>{const db=r.result;if(!db.objectStoreNames.contains('kv'))db.createObjectStore('kv');if(!db.objectStoreNames.contains('thumbs'))db.createObjectStore('thumbs');};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
 function _stlIdbGet(store,key){return _stlIdb().then(db=>new Promise((res,rej)=>{const t=db.transaction(store,'readonly').objectStore(store).get(key);t.onsuccess=()=>res(t.result);t.onerror=()=>rej(t.error);}));}
@@ -12603,27 +12603,34 @@ function _stlRenderGrid(){
   const list=q?_stlFiles.filter(f=>f.name.toLowerCase().includes(q)):_stlFiles;
   grid.innerHTML='';
   if(!list.length){ grid.innerHTML='<div class="stl-empty">Nichts gefunden für „'+_stlEsc(q)+'".</div>'; return; }
+  if(_stlThumbObs) _stlThumbObs.disconnect();
+  _stlThumbObs=new IntersectionObserver(es=>{ for(const e of es){ if(e.isIntersecting){ const f=e.target._stlF; _stlThumbObs.unobserve(e.target); if(f) _stlThumbEnqueue(f); } } },{root:grid,rootMargin:'300px'});
   list.forEach(f=>{
     const idx=_stlFiles.indexOf(f);
     const card=document.createElement('div'); card.className='ds-card';
-    card.innerHTML=`<div class="ds-thumb-wrap"><div class="ds-nothumb">⏳</div></div>`+
+    const inner = f._thumbUrl ? `<img class="ds-thumb" src="${f._thumbUrl}">` : (f._thumbDone ? '<div class="ds-nothumb">📦</div>' : '<div class="ds-nothumb">⏳</div>');
+    card.innerHTML=`<div class="ds-thumb-wrap">${inner}</div>`+
       `<div class="ds-info"><div class="ds-name" title="${_stlEsc(f.path)}">${_stlEsc(f.name)}</div><div class="ds-date">${_stlFmtSize(f.size)} · ${new Date(f.mtime).toLocaleDateString()}</div></div>`+
       `<div class="ds-acts"><button class="btn" onclick="_stlOpenInScene(${idx})">📥 Öffnen</button><button class="btn pri" onclick="_stlPrint(${idx})" title="Im Slicer öffnen">🖨 Drucken</button></div>`;
     grid.appendChild(card);
-    f._thumbEl=card.querySelector('.ds-thumb-wrap');
+    const tw=card.querySelector('.ds-thumb-wrap'); f._thumbEl=tw;
+    if(!f._thumbUrl && !f._thumbDone){ tw._stlF=f; _stlThumbObs.observe(tw); }
   });
-  _stlThumbQueue(list);
 }
-async function _stlThumbQueue(list){
-  for(const f of list){
-    if(f._thumbUrl){ if(f._thumbEl) f._thumbEl.innerHTML=`<img class="ds-thumb" src="${f._thumbUrl}">`; continue; }
-    const key=f.path+'|'+f.size+'|'+f.mtime;
-    let url=null; try{ url=await _stlIdbGet('thumbs',key); }catch(e){}
-    if(!url){ try{ url=await _stlMakeThumb(f); }catch(e){ url=null; } if(url){ try{ await _stlIdbSet('thumbs',key,url); }catch(e){} } }
-    f._thumbUrl=url;
-    if(f._thumbEl) f._thumbEl.innerHTML = url?`<img class="ds-thumb" src="${url}">`:'<div class="ds-nothumb">📦</div>';
-    await new Promise(r=>setTimeout(r,0));
-  }
+// Thumbnails nur für sichtbare Karten, sequenziell (ein Renderer, kein Ansturm bei hunderten Dateien)
+function _stlThumbEnqueue(f){ if(f._thumbDone||f._thumbQueued) return; f._thumbQueued=true; _stlThumbPending.push(f); _stlThumbPump(); }
+async function _stlThumbPump(){
+  if(_stlThumbBusy) return; _stlThumbBusy=true;
+  while(_stlThumbPending.length){ const f=_stlThumbPending.shift(); try{ await _stlThumbOne(f); }catch(e){} }
+  _stlThumbBusy=false;
+}
+async function _stlThumbOne(f){
+  if(f._thumbDone) return; f._thumbDone=true;
+  const key=f.path+'|'+f.size+'|'+f.mtime;
+  let url=null; try{ url=await _stlIdbGet('thumbs',key); }catch(e){}
+  if(!url){ try{ url=await _stlMakeThumb(f); }catch(e){ url=null; } if(url){ try{ await _stlIdbSet('thumbs',key,url); }catch(e){} } }
+  f._thumbUrl=url;
+  if(f._thumbEl) f._thumbEl.innerHTML = url?`<img class="ds-thumb" src="${url}">`:'<div class="ds-nothumb">📦</div>';
 }
 async function _stlMakeThumb(f){
   if(!/\.stl$/i.test(f.name)) return null;   // Thumbnail nur für STL (parseSTL)
@@ -12769,8 +12776,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.26';
+const VOLME3D_VERSION = '1.14.27';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.27', date:'2026-06-14', changes:[
+    ['🐛','STL-Bibliothek bei vielen Dateien: Kacheln wurden zu dünnen Strichen zusammengedrückt (Grid-Höhenproblem) und alle Vorschaubilder auf einmal gerendert. Behoben — korrekte Kachelhöhe und Thumbnails werden faul nur für sichtbare Kacheln erzeugt; läuft jetzt flüssig auch bei hunderten STLs'],
+  ]},
   { version:'1.14.26', date:'2026-06-14', changes:[
     ['✨','„Aus Downloads einsammeln" zeigt jetzt einen echten Fortschrittsbalken (X / Y + aktueller Dateiname). Der Druck-Helfer streamt den Fortschritt Datei für Datei. (Helfer-Datei neu laden)'],
   ]},
