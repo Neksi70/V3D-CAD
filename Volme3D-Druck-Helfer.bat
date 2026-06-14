@@ -75,7 +75,7 @@ function Invoke-Collect($move) {
         foreach ($f in $files) {
             $tp = Join-Path $dst $f.Name
             try {
-                if ((Test-Path -LiteralPath $tp) -and ((Get-Item -LiteralPath $tp).Length -eq $f.Length)) { $skipped++; continue }
+                if ((Test-Path -LiteralPath $tp) -and ((Get-Item -LiteralPath $tp).Length -eq $f.Length)) { if ($move) { try { Remove-Item -LiteralPath $f.FullName -Force } catch {} }; $skipped++; continue }
                 if (Test-Path -LiteralPath $tp) { $tp = Get-UniquePath $dst $f.Name }
                 if ($move) { Move-Item -LiteralPath $f.FullName -Destination $tp -Force } else { Copy-Item -LiteralPath $f.FullName -Destination $tp -Force }
                 $copied++
@@ -154,7 +154,7 @@ function Stream-Collect($stream, $origin, $move) {
     foreach ($f in $all) {
         $i++; $tp = Join-Path $dst $f.Name
         try {
-            if ((Test-Path -LiteralPath $tp) -and ((Get-Item -LiteralPath $tp).Length -eq $f.Length)) { $skipped++ }
+            if ((Test-Path -LiteralPath $tp) -and ((Get-Item -LiteralPath $tp).Length -eq $f.Length)) { if ($move) { try { Remove-Item -LiteralPath $f.FullName -Force } catch {} }; $skipped++ }
             else { if (Test-Path -LiteralPath $tp) { $tp = Get-UniquePath $dst $f.Name }; if ($move) { Move-Item -LiteralPath $f.FullName -Destination $tp -Force } else { Copy-Item -LiteralPath $f.FullName -Destination $tp -Force }; $copied++ }
         } catch {}
         Write-Line $stream (@{ i = $i; n = $total; name = $f.Name } | ConvertTo-Json -Compress)
@@ -233,5 +233,19 @@ catch { Write-Host "Konnte Port $PORT nicht oeffnen (laeuft der Helfer schon?): 
 $sl = Get-Slicers
 Write-Host "Volme3D Druck-Helfer laeuft auf http://127.0.0.1:$PORT"
 if ($sl.Count -gt 0) { Write-Host ("Gefundene Slicer: " + (($sl.Keys | ForEach-Object { "$_ -> $($sl[$_])" }) -join ', ')) } else { Write-Host "Gefundene Slicer: KEINE (Pfad in der Datei pruefen)" }
-Write-Host "Autostart eingerichtet. Fenster kann offen bleiben (oder schliessen - Autostart startet neu)."
-while ($true) { $client = $listener.AcceptTcpClient(); try { Handle-Client $client } catch {} finally { try { $client.Close() } catch {} } }
+$autoSec = 30; if ($env:VOLME3D_AUTO_SEC) { try { $autoSec = [int]$env:VOLME3D_AUTO_SEC } catch {} }
+Write-Host "Autostart eingerichtet. Neue Downloads werden automatisch alle $autoSec s in die Bibliothek verschoben."
+Write-Host "Fenster kann offen bleiben (oder schliessen - Autostart startet neu)."
+$lastAuto = Get-Date   # erstes Auto-Verschieben nach $autoSec (Server antwortet sofort)
+while ($true) {
+    if ($listener.Pending()) {
+        $client = $listener.AcceptTcpClient()
+        try { Handle-Client $client } catch {} finally { try { $client.Close() } catch {} }
+    } else {
+        Start-Sleep -Milliseconds 250
+    }
+    if (((Get-Date) - $lastAuto).TotalSeconds -ge $autoSec) {
+        $lastAuto = Get-Date
+        try { Invoke-Collect $true | Out-Null } catch {}   # automatisch: VERSCHIEBEN
+    }
+}

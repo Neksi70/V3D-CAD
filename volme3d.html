@@ -762,7 +762,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.27<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.28<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -12534,13 +12534,29 @@ function _fpScrewSet(key,val){
 
 // ===== STL-BIBLIOTHEK =====
 const STLLIB_HELPER = 'http://127.0.0.1:7777';
-let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0, _stlThumbObs=null, _stlThumbPending=[], _stlThumbBusy=false;
+let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0, _stlThumbObs=null, _stlThumbPending=[], _stlThumbBusy=false, _stlPollTimer=null, _stlListSig='';
+function _stlStopPoll(){ if(_stlPollTimer){ clearInterval(_stlPollTimer); _stlPollTimer=null; } }
+function _stlStartPoll(){ _stlStopPoll(); _stlPollTimer=setInterval(_stlPoll,15000); }   // Galerie automatisch nachladen
+async function _stlPoll(){
+  if(!document.getElementById('stllib-modal').classList.contains('show')){ _stlStopPoll(); return; }
+  if(_stlSource!=='helper' || !_stlHelperOk) return;
+  try{
+    const res=await fetch(STLLIB_HELPER+'/list',{cache:'no-store'}); const j=await res.json();
+    const files=j.files||[];
+    const sig=files.length+'|'+(files[0]?files[0].name+files[0].mtime:'');
+    if(sig!==_stlListSig){
+      _stlListSig=sig;
+      _stlFiles=files.map(f=>({name:f.name,path:f.name,size:f.size,mtime:f.mtime,lib:true})).sort((a,b)=>b.mtime-a.mtime);
+      _stlRenderGrid();
+    }
+  }catch(e){}
+}
 
 function _stlIdb(){return new Promise((res,rej)=>{const r=indexedDB.open('volme3d-stllib',1);r.onupgradeneeded=()=>{const db=r.result;if(!db.objectStoreNames.contains('kv'))db.createObjectStore('kv');if(!db.objectStoreNames.contains('thumbs'))db.createObjectStore('thumbs');};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
 function _stlIdbGet(store,key){return _stlIdb().then(db=>new Promise((res,rej)=>{const t=db.transaction(store,'readonly').objectStore(store).get(key);t.onsuccess=()=>res(t.result);t.onerror=()=>rej(t.error);}));}
 function _stlIdbSet(store,key,val){return _stlIdb().then(db=>new Promise((res,rej)=>{const tx=db.transaction(store,'readwrite');tx.objectStore(store).put(val,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);}));}
 
-function _stlLibClose(){ document.getElementById('stllib-modal').classList.remove('show'); }
+function _stlLibClose(){ document.getElementById('stllib-modal').classList.remove('show'); _stlStopPoll(); }
 function _stlLibRefresh(){ if(_stlSource==='helper') _stlLoadFromHelper(); else _stlLibScanRender(); }
 async function _stlLibOpen(){
   document.getElementById('stllib-modal').classList.add('show');
@@ -12708,10 +12724,13 @@ async function _stlLoadFromHelper(){
     const res=await fetch(STLLIB_HELPER+'/list',{cache:'no-store'});
     const j=await res.json();
     _stlSource='helper'; _stlDirHandle=null;
-    _stlFiles=(j.files||[]).map(f=>({name:f.name, path:f.name, size:f.size, mtime:f.mtime, lib:true}));
+    const files=(j.files||[]);
+    _stlFiles=files.map(f=>({name:f.name, path:f.name, size:f.size, mtime:f.mtime, lib:true}));
     _stlFiles.sort((a,b)=>b.mtime-a.mtime);
+    _stlListSig=files.length+'|'+(files[0]?files[0].name+files[0].mtime:'');
     try{ await _stlIdbSet('kv','source','helper'); }catch(e){}
     _stlRenderGrid();
+    _stlStartPoll();   // neue Downloads, die der Helfer automatisch verschiebt, erscheinen von selbst
   }catch(e){ _stlLibEmpty('Bibliothek konnte nicht geladen werden: '+_stlEsc(e.message),'',''); }
 }
 // „Aus Downloads einsammeln" — der lokale Helfer macht die Dateiarbeit
@@ -12734,7 +12753,7 @@ async function _stlCollect(){
     '<div style="margin:14px auto 0;max-width:380px;height:9px;background:var(--bg);border-radius:6px;overflow:hidden"><div id="stlp-bar" style="height:100%;width:0;background:var(--acc);transition:width .12s"></div></div>'+
     '<div id="stlp-name" style="margin:7px auto 0;max-width:380px;font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div></div>';
   try{
-    const res=await fetch(STLLIB_HELPER+'/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const res=await fetch(STLLIB_HELPER+'/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"move":true}'});
     if(!res.ok || !res.body) throw new Error('HTTP '+res.status);
     const reader=res.body.getReader(), dec=new TextDecoder(); let buf='', final=null;
     while(true){
@@ -12776,8 +12795,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.27';
+const VOLME3D_VERSION = '1.14.28';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.28', date:'2026-06-14', changes:[
+    ['✨','STL-Bibliothek vollautomatisch: Der Druck-Helfer verschiebt neue Downloads (STL/3MF/OBJ) jetzt von selbst (~alle 30 s) in die Bibliothek und räumt Downloads dabei auf — kein Knopfdruck mehr nötig. Die Galerie aktualisiert sich automatisch. (Helfer-Datei neu laden)'],
+  ]},
   { version:'1.14.27', date:'2026-06-14', changes:[
     ['🐛','STL-Bibliothek bei vielen Dateien: Kacheln wurden zu dünnen Strichen zusammengedrückt (Grid-Höhenproblem) und alle Vorschaubilder auf einmal gerendert. Behoben — korrekte Kachelhöhe und Thumbnails werden faul nur für sichtbare Kacheln erzeugt; läuft jetzt flüssig auch bei hunderten STLs'],
   ]},
