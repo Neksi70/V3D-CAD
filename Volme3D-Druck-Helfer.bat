@@ -221,7 +221,7 @@ function Handle-Client($client) {
             $outdir = Join-Path $env:TEMP 'volme3d-print'; if (-not (Test-Path -LiteralPath $outdir)) { New-Item -ItemType Directory -Path $outdir -Force | Out-Null }
             $toOpen = Join-Path $outdir $fname; [System.IO.File]::WriteAllBytes($toOpen, $body)
         }
-        try { Start-Process -FilePath $exe -ArgumentList $toOpen | Out-Null }
+        try { Start-Process -FilePath $exe -ArgumentList ('"' + $toOpen + '"') | Out-Null }
         catch { Send-Json $stream '500 Error' (@{ ok = $false; error = "Slicer-Start fehlgeschlagen: $_" }) $origin; return }
         Send-Json $stream '200 OK' ([ordered]@{ ok = $true; slicer = $key; file = (Split-Path -Leaf $toOpen) }) $origin; return
     }
