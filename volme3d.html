@@ -2227,7 +2227,7 @@ const firebaseConfig = {
       <input id="stllib-search" placeholder="Suchen…" oninput="_stlRenderGrid()" style="margin-left:6px;padding:5px 9px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;font-family:var(--font);width:160px">
       <div style="flex:1"></div>
       <button class="btn pri" onclick="_stlCollect()" title="Im Downloads-Ordner einen Unterordner STL anlegen und alle STL/3MF/OBJ dorthin kopieren">🧹 Aus Downloads einsammeln</button>
-      <button class="btn" onclick="_stlLibPickFolder()" title="Anderen Ordner wählen">📂 Ordner wählen</button>
+      <button class="btn" id="stllib-pickbtn" onclick="_stlLibPickFolder()" title="Anderen Ordner wählen">📂 Ordner wählen</button>
       <button class="btn" onclick="_stlLibRefresh()" title="Neu einlesen">↻</button>
       <button class="btn" onclick="_stlLibClose()" style="padding:4px 10px;font-size:15px;line-height:1;margin-left:4px">✕</button>
     </div>
@@ -13523,6 +13523,7 @@ const STLLIB_HELPER = 'http://127.0.0.1:7777';
 const STLLIB_HELPER_LATEST = 5;   // aktuelle Helfer-Version; ältere -> Update-Knopf
 let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0, _stlThumbObs=null, _stlThumbPending=[], _stlThumbBusy=false, _stlPollTimer=null, _stlListSig='';
 let _stlSort='date_desc', _stlFavOnly=false, _stlFav=new Set(), _stlSel=new Set();
+const _stlCanPickDir = !!window.showDirectoryPicker;   // File System Access API: nur Chrome/Edge (nicht Firefox/Safari)
 function _stlStopPoll(){ if(_stlPollTimer){ clearInterval(_stlPollTimer); _stlPollTimer=null; } }
 function _stlStartPoll(){ _stlStopPoll(); _stlPollTimer=setInterval(_stlPoll,15000); }   // Galerie automatisch nachladen
 async function _stlPoll(){
@@ -13556,6 +13557,7 @@ async function _stlLibOpen(){
   try{ _stlFav=new Set(await _stlIdbGet('kv','favorites')||[]); }catch(e){ _stlFav=new Set(); }
   try{ const sv=await _stlIdbGet('kv','sort'); if(sv) _stlSort=sv; }catch(e){}
   const ss=document.getElementById('stllib-sort'); if(ss) ss.value=_stlSort;
+  const pb=document.getElementById('stllib-pickbtn'); if(pb) pb.style.display=_stlCanPickDir?'':'none';   // Ordnerwahl nur Chrome/Edge
   _stlSel.clear(); _stlFavOnly=false; _stlUpdateFavBtn(); _stlUpdateSelBar();
   await _stlPingHelper();
   let pref=''; try{ pref=await _stlIdbGet('kv','source'); }catch(e){}
@@ -13570,15 +13572,22 @@ async function _stlLibOpen(){
     if(perm==='prompt'){ _stlLibEmpty('Zugriff auf den gemerkten Ordner erneut bestätigen.', 'Zugriff erlauben', '_stlLibRegrant()'); return; }
   }
   if(_stlHelperOk){ _stlLoadFromHelper(); return; }
-  _stlLibEmpty('Sammle deine heruntergeladenen STLs automatisch ein (über den Druck-Helfer) oder wähle einen Ordner.', '📂 Ordner wählen', '_stlLibPickFolder()');
+  _stlLibEmpty(_stlCanPickDir
+    ? 'Sammle deine heruntergeladenen STLs automatisch ein (über den Druck-Helfer) oder wähle einen Ordner.'
+    : 'Richte einmal den Druck-Helfer ein — dann sammelt er deine STLs automatisch aus dem Downloads-Ordner ein.',
+    '📂 Ordner wählen', '_stlLibPickFolder()');
 }
 async function _stlLibRegrant(){
   try{ const p=await _stlDirHandle.requestPermission({mode:'read'}); if(p==='granted'){ _stlLibScanRender(); return; } }catch(e){}
   notify('Zugriff nicht erteilt','w');
 }
 function _stlLibEmpty(msg, btnLabel, btnAction){
+  // Ordnerauswahl (showDirectoryPicker) gibt es nur in Chrome/Edge — in Firefox/Safari
+  // den nutzlosen Knopf weglassen; dort läuft die Bibliothek über den Druck-Helfer.
+  if(btnAction && btnAction.indexOf('_stlLibPickFolder')>=0 && !_stlCanPickDir){ btnLabel=''; btnAction=''; }
+  const ffNote = (!_stlCanPickDir && !_stlHelperOk) ? `<div style="margin-top:10px;font-size:11px;color:var(--dim)">In Firefox/Safari läuft die Bibliothek über den Druck-Helfer (die direkte Ordnerauswahl gibt es nur in Chrome/Edge).</div>` : '';
   const dl = !_stlHelperOk ? `<div style="margin-top:16px;font-size:11px;color:var(--dim);line-height:1.7">Druck-Helfer einmalig einrichten — eine Datei, keine Installation:<br><a href="/Volme3D-Druck-Helfer.bat" download style="color:var(--acc);font-weight:800">⬇ Druck-Helfer.bat herunterladen</a> · <a href="/volme3d-print-helper-LIESMICH.txt" target="_blank" style="color:var(--acc);font-weight:700">Anleitung</a><br><span>Datei doppelklicken — fertig (richtet sich selbst in den Autostart ein).</span></div>` : '';
-  document.getElementById('stllib-grid').innerHTML = `<div class="stl-empty">${msg}${btnLabel?`<br><button class="btn pri" style="margin-top:12px" onclick="${btnAction}">${btnLabel}</button>`:''}${dl}</div>`;
+  document.getElementById('stllib-grid').innerHTML = `<div class="stl-empty">${msg}${btnLabel?`<br><button class="btn pri" style="margin-top:12px" onclick="${btnAction}">${btnLabel}</button>`:''}${ffNote}${dl}</div>`;
 }
 async function _stlLibPickFolder(){
   if(!window.showDirectoryPicker){ notify('Ordnerauswahl nur in Chrome/Edge möglich','w'); return; }
@@ -13964,6 +13973,9 @@ const VOLME3D_CHANGELOG = [
   ]},
   { version:'1.14.45', date:'2026-06-15', changes:[
     ['🪵','Neuer Laser-Box-Generator (Fingerzinken): parametrische Steckkiste für Laser-Cutter — Breite/Tiefe/Höhe, Materialstärke, Kerf-Ausgleich für strammen Pressfit, automatische oder manuelle Zinkenbreite, geschlossen oder oben offen. 3D-Vorschau + SVG-Export mit getrennten Ebenen „cut" (rote Haarlinie) und „engrave" (Panel-Beschriftung) für LightBurn/xTool'],
+  ]},
+  { version:'1.14.45', date:'2026-06-15', changes:[
+    ['🦊','STL-Bibliothek läuft jetzt auch in Firefox & Safari — komplett über den Druck-Helfer (laden, drucken, einsammeln, sortieren, Favoriten, Mehrfachauswahl). Die nur in Chrome/Edge mögliche „Ordner wählen"-Direktwahl wird dort ausgeblendet und stattdessen klar der Helfer-Weg angeboten'],
   ]},
   { version:'1.14.44', date:'2026-06-15', changes:[
     ['🧪','Beta-Hinweis beim Anmelden: Eingeloggte Nutzer sehen einmal einen kurzen Willkommens-Hinweis als Beta-Tester. Neuer „💬 Feedback"-Knopf oben rechts — Fehler & Ideen jederzeit per E-Mail melden'],
