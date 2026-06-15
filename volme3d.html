@@ -807,7 +807,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.47<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.48<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -13235,6 +13235,21 @@ function _lbPanelOutline(w, h, edges, t, kerf){
   if (out.length>1){ const a=out[0], b=out[out.length-1]; if(Math.abs(a[0]-b[0])<1e-5 && Math.abs(a[1]-b[1])<1e-5) out.pop(); }
   return out;
 }
+// Oben-offene Vorder-/Rückwand: obere Ecken auf volle Außenbreite ziehen, damit die
+// Oberkante eine durchgehende glatte Kante auf voller Breite bildet. Die Seitenwände
+// bleiben oben eingerückt und sitzen dazwischen -> sauberer Rand ohne Überstand/Überlapp.
+// Ersetzt die eingerückte Top-Kante [(w-t,h),(t,h)] durch [(w,h-t),(w,h),(0,h),(0,h-t)].
+function _lbFillTopCorners(outline, w, h, t){
+  const eq=(a,b)=>Math.abs(a-b)<1e-3;
+  for(let i=0;i<outline.length;i++){
+    const p=outline[i], q=outline[(i+1)%outline.length];
+    if(eq(p[1],h)&&eq(q[1],h)&&eq(p[0],w-t)&&eq(q[0],t)){
+      outline.splice(i,2,[w,h-t],[w,h],[0,h],[0,h-t]);
+      return outline;
+    }
+  }
+  return outline;
+}
 // Hauptberechnung: alle Panels der Kiste. p={B,T,H,t,kerf,finger,open}
 function computeLaserBoxPanels(p){
   const B=p.B, T=p.T, H=p.H, t=p.t, kerf=p.kerf||0, open=!!p.open;
@@ -13256,13 +13271,16 @@ function computeLaserBoxPanels(p){
     }, t, kerf) });
   panels.push(plate('Boden','boden'));
   if (!open) panels.push(plate('Deckel','deckel'));
-  const wallFB = (name, place) => ({ name, place, w:B, h:H,
-    outline: _lbPanelOutline(B, H, {
+  const wallFB = (name, place) => {
+    const outline = _lbPanelOutline(B, H, {
       bottom:{type:'tab', n:nB, featOnOdd:true, span:HSB},
       right: {type:'tab', n:nH, featOnOdd:true, span:VSP},
       top:   open ? {type:'plain', n:1, featOnOdd:true, span:HSB} : {type:'tab', n:nB, featOnOdd:true, span:HSB},
       left:  {type:'tab', n:nH, featOnOdd:true, span:VSP},
-    }, t, kerf) });
+    }, t, kerf);
+    if (open) _lbFillTopCorners(outline, B, H, t);   // glatte Oberkante auf voller Breite
+    return { name, place, w:B, h:H, outline };
+  };
   panels.push(wallFB('Front','front'));
   panels.push(wallFB('Hinten','back'));
   const wallLR = (name, place) => ({ name, place, w:T, h:H,
@@ -13899,8 +13917,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.47';
+const VOLME3D_VERSION = '1.14.48';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.48', date:'2026-06-15', changes:[
+    ['🪵','Laser-Box „oben offen": die Oberkante ist jetzt eine durchgehend glatte, gerade Kante ohne Zähne/Ausklinkungen. Vorder- und Rückwand schließen über die volle Breite bündig auf Außenhöhe ab, die Seitenwände sitzen sauber dazwischen — kein Überstand, keine Stufe. Gezahnt werden nur noch Boden- und Vertikalkanten. Geschlossene Box (gezahnte Oberkante für den Deckel) unverändert'],
+  ]},
   { version:'1.14.47', date:'2026-06-15', changes:[
     ['🪵','Laser-Box „oben offen": Wände sitzen jetzt höhenbündig — die Zinken der vier Seiten werden symmetrisch nur über die Innenhöhe verteilt, die Oberkante bildet eine glatte, bündige Kante auf voller Außenhöhe (vorher entstand auf einer Seite eine eingezogene Stufe). Geschlossene Box unverändert'],
   ]},
