@@ -811,7 +811,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.52<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.53<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -2217,6 +2217,7 @@ const firebaseConfig = {
     <div id="ds-hdr">
       <div id="ds-hdr-title">📁 Meine Designs</div>
       <div style="flex:1"></div>
+      <button class="btn" id="ds-regen-btn" onclick="_regenAllThumbs()" title="Alle Vorschaubilder sauber neu rendern">🔄 Vorschau neu</button>
       <button class="btn" onclick="document.getElementById('ds-import-file').click()" title="Design als JSON importieren">⬆ Importieren</button>
       <input type="file" id="ds-import-file" accept=".v3d,.json" style="display:none" onchange="_handleDesignImport(event)">
       <button class="btn pri" onclick="newDesignFromGallery()" style="font-weight:800">+ Neues Design</button>
@@ -11467,6 +11468,62 @@ function captureThumbnail() {
   }
 }
 
+// ── Bestehende Vorschaubilder neu erzeugen (offscreen, ohne die aktuelle Szene anzufassen) ──
+let _regenBusy = false;
+async function _dsUpdateThumb(id, thumb) {
+  try { _lsSetWithEvict(_dsThumbKey(id), thumb, id); } catch(e) {}
+  try {
+    const ref = _fsDesignsRef();
+    if (ref) { const small = await _resizeThumb(thumb, 200, 150); await ref.doc(id).update({ thumb: small }); }
+  } catch(e) { console.warn('[Firestore] thumb-update:', e); }
+}
+async function _regenAllThumbs() {
+  if (_regenBusy) return;
+  const all = dsGetAll();
+  if (!all.length) { notify('Keine Designs vorhanden', 'w'); return; }
+  if (!confirm(all.length + ' Vorschaubilder neu erzeugen?\nJedes Design wird einmal sauber gerendert (deine aktuelle Szene bleibt unangetastet).')) return;
+  _regenBusy = true;
+  const btn = document.getElementById('ds-regen-btn');
+  const orig = btn ? btn.innerHTML : '';
+  const W = 512, H = 360;
+  const rnd = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+  rnd.setSize(W, H); rnd.setClearColor(0xffffff, 1);
+  let done = 0, ok = 0, fail = 0;
+  for (const meta of all) {
+    done++;
+    if (btn) btn.innerHTML = '⏳ ' + done + '/' + all.length;
+    let built = [];
+    try {
+      const snap = dsLoadData(meta.id);
+      if (!snap || !Array.isArray(snap.objects) || !snap.objects.length) { fail++; continue; }
+      const sc = new THREE.Scene();
+      sc.add(new THREE.AmbientLight(0xffffff, 0.85));
+      const dl = new THREE.DirectionalLight(0xffffff, 0.9); dl.position.set(3, 5, 4); sc.add(dl);
+      const dl2 = new THREE.DirectionalLight(0x88aaff, 0.35); dl2.position.set(-3, -2, -3); sc.add(dl2);
+      for (const od of snap.objects) { try { const o = buildObjectFromData(od); if (o && o.visible !== false) { sc.add(o); built.push(o); } } catch(_) {} }
+      if (!built.length) { fail++; continue; }
+      const box = new THREE.Box3(); built.forEach(o => { try { box.expandByObject(o); } catch(_) {} });
+      if (box.isEmpty()) { fail++; continue; }
+      const ctr = box.getCenter(new THREE.Vector3()), sz = box.getSize(new THREE.Vector3());
+      const maxd = Math.max(sz.x, sz.y, sz.z) || 1;
+      const cam = new THREE.PerspectiveCamera(45, W / H, Math.max(0.01, maxd * 0.01), maxd * 60 + 200);
+      const d = maxd * 1.9;
+      cam.position.set(ctr.x + d * 0.8, ctr.y + d * 0.7, ctr.z + d * 0.8); cam.lookAt(ctr);
+      rnd.render(sc, cam);
+      const url = rnd.domElement.toDataURL('image/jpeg', 0.72);
+      if (url && url.length > 200) { await _dsUpdateThumb(meta.id, url); ok++; } else fail++;
+    } catch(e) { console.warn('regen', meta.id, e); fail++; }
+    finally { built.forEach(o => o.traverse(n => { if (n.geometry) n.geometry.dispose(); if (n.material) (Array.isArray(n.material) ? n.material : [n.material]).forEach(m => m.dispose && m.dispose()); })); }
+    await new Promise(r => setTimeout(r, 0));   // UI atmen lassen
+  }
+  try { rnd.forceContextLoss(); } catch(_) {}
+  rnd.dispose();
+  if (btn) btn.innerHTML = orig;
+  _regenBusy = false;
+  if (typeof _renderGallery === 'function') _renderGallery();   // Galerie-Raster aktualisieren (ohne Auto-Save/Reopen)
+  notify(ok + ' Vorschaubilder erneuert' + (fail ? ', ' + fail + ' übersprungen' : ''), ok ? 'ok' : 'w');
+}
+
 // ── Toolbar label + auto-save dot ──────────────────────────────────────────
 function _updateDesignLabel(name) {
   const el = document.getElementById('cur-design-lbl');
@@ -14075,8 +14132,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.52';
+const VOLME3D_VERSION = '1.14.53';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.53', date:'2026-06-15', changes:[
+    ['🔄','„Meine Designs": Neuer Knopf „Vorschau neu" oben rechts — rendert alle bereits gespeicherten Designs einmal sauber neu (mittig eingerahmt, offscreen). Damit verschwinden auch die alten, schlecht gerahmten Vorschaubilder; deine aktuelle Szene bleibt dabei unangetastet'],
+  ]},
   { version:'1.14.52', date:'2026-06-15', changes:[
     ['🖼️','„Meine Designs": Die Vorschaubilder werden jetzt aus einer einheitlichen Kamera gerendert, die das Modell sauber mittig einrahmt. Vorher wurde einfach die zufällige Arbeitsansicht abfotografiert (gekippte Bauplatte, Ausschnitt oder leer). Neue bzw. erneut gespeicherte Designs bekommen automatisch das saubere Bild'],
   ]},
