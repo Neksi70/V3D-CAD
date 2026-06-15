@@ -8659,6 +8659,7 @@ async function _doSubtractHoles(solids, holes) {
     name: 'Subtract ' + idCtr,
     color: _origUD.color || currentColor,
     isHole: false,
+    isSubtract: true,   // Boolean-Abzug im State erkennbar (analog isUnion); u.a. für den Kurs-Modus
     type: _origUD.type || 'custom',
     // STL-Buffer + Snap-Daten für mögliche weitere Gravuren erhalten
     _origStlBuf: solidMesh.userData._origStlBuf || _origUD._origStlBuf || null,
@@ -10093,6 +10094,7 @@ async function _refreshOutDirMenu() {
 
 function exportSTL() {
   const r = _buildStlBlob(); if (!r) return;
+  if (typeof _tutorExported !== 'undefined') _tutorExported = true;   // Kurs-Modus: STL-Export erkannt
   _saveExport(r.blob, _designFilename('stl')).then(res =>
     notify(`STL ${res.wrote ? '→ ' + res.dir : 'exportiert'} ✓ (${r.count} Dreiecke)`, 'ok'));
 }
@@ -13451,15 +13453,17 @@ const TUTOR_LESSONS = {
   }
 };
 
-let _tutor = null;   // { lessonId, lesson, idx, done:Set }
+let _tutor = null;   // { lessonId, lesson, idx, done:Set, poll }
 function tutorStart(lessonId){
   const lesson = TUTOR_LESSONS[lessonId]; if(!lesson) return;
-  _tutor = { lessonId, lesson, idx:0, done:new Set() };
+  _tutorExported = false;   // frischer Start
+  _tutor = { lessonId, lesson, idx:0, done:new Set(), poll:null };
   document.getElementById('tutor-title').textContent = lesson.title;
   document.getElementById('tutor-panel').classList.add('show');
   _tutorGo(0);
 }
 function tutorClose(){
+  _tutorStopPoll();
   _tutor = null;
   document.getElementById('tutor-panel').classList.remove('show');
   const sp=document.getElementById('tutor-spot'); if(sp) sp.classList.remove('show');
@@ -13482,20 +13486,58 @@ function tutorFinish(){
   notify('Kurs abgeschlossen 🎉','ok');
   tutorClose();
 }
-function tutorCheckNow(){ /* Teilschritt 2 */ }
+// check() liest direkt aus dem Szenengraph; Fehler = nicht erfüllt
+function _tutorSatisfied(s){ try{ return !!(s && s.check && s.check()); }catch(e){ return false; } }
+function _tutorStopPoll(){ if(_tutor && _tutor.poll){ clearInterval(_tutor.poll); _tutor.poll=null; } }
+function _tutorStartPoll(){
+  _tutorStopPoll();
+  _tutor.poll = setInterval(()=>{
+    if(!_tutor){ _tutorStopPoll(); return; }
+    const s=_tutor.lesson.steps[_tutor.idx];
+    if(!s || !s.check){ _tutorStopPoll(); return; }
+    if(_tutorSatisfied(s)){
+      _tutorStopPoll();
+      _tutor.done.add(_tutor.idx);
+      if(s.type==='action') tutorNext();   // Aktion erkannt → automatisch weiter
+      else _tutorRender();                  // Checkpoint erfüllt → Erfolg anzeigen, Nutzer klickt Weiter
+    }
+  }, 500);
+}
+function tutorCheckNow(){
+  if(!_tutor) return;
+  const s=_tutor.lesson.steps[_tutor.idx];
+  if(_tutorSatisfied(s)){ _tutor.done.add(_tutor.idx); _tutorRender(); }
+  else { const st=document.getElementById('tutor-status'); if(st){ st.className='tt-status wait'; st.textContent='Noch nicht erfüllt — schau dir den Schritt nochmal an.'; } }
+}
+function _tutorHighlight(sel){ /* Teilschritt 3 */ }
 function _tutorRender(){
   if(!_tutor) return;
-  const steps=_tutor.lesson.steps, s=steps[_tutor.idx];
-  const icon = s.type==='info' ? 'ℹ️' : (s.type==='checkpoint' ? '✅' : '🎯');
+  _tutorStopPoll();
+  const steps=_tutor.lesson.steps, idx=_tutor.idx, s=steps[idx];
+  const isInfo = s.type==='info';
+  const gated  = !isInfo && !!s.check;
+  const ok     = gated ? _tutorSatisfied(s) : true;
+  if(ok && gated) _tutor.done.add(idx);
+  const icon = isInfo ? 'ℹ️' : (s.type==='checkpoint' ? '✅' : '🎯');
   document.getElementById('tutor-body').innerHTML =
     `<div class="tt-step-title">${icon} ${s.title||''}</div><div>${s.text||''}</div>`+
     `<div class="tt-status" id="tutor-status"></div>`;
+  const status=document.getElementById('tutor-status');
+  if(gated){
+    if(ok){ status.className='tt-status ok'; status.textContent='✓ Erledigt — weiter geht’s!'; }
+    else { status.className='tt-status wait'; status.textContent = s.type==='action'
+      ? '⏳ Wird automatisch erkannt, sobald du die Aktion ausführst…'
+      : '⏳ Noch nicht erfüllt — führe den Schritt aus oder klick „Prüfen".'; }
+  }
   document.getElementById('tutor-dots').innerHTML =
-    steps.map((st,i)=>`<div class="td ${_tutor.done.has(i)?'done':''} ${i===_tutor.idx?'cur':''}"></div>`).join('');
-  document.getElementById('tutor-back').disabled = _tutor.idx===0;
+    steps.map((st,i)=>`<div class="td ${_tutor.done.has(i)?'done':''} ${i===idx?'cur':''}"></div>`).join('');
+  document.getElementById('tutor-back').disabled = idx===0;
   const next=document.getElementById('tutor-next');
-  next.textContent = (_tutor.idx>=steps.length-1) ? 'Fertig ✓' : 'Weiter ›';
-  document.getElementById('tutor-check').style.display = 'none';   // Teilschritt 2
+  next.textContent = (idx>=steps.length-1) ? 'Fertig ✓' : 'Weiter ›';
+  next.disabled = !ok;
+  document.getElementById('tutor-check').style.display = (gated && s.type==='checkpoint' && !ok) ? '' : 'none';
+  if(gated && !ok) _tutorStartPoll();
+  _tutorHighlight(s.highlight);
 }
 // ===== END TUTORIAL / KURS-MODUS =====
 
