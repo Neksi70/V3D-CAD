@@ -803,7 +803,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.44<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.45<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -1148,6 +1148,7 @@ const firebaseConfig = {
           <button class="gen-btn" onclick="_openScrewModal()"><span class="gi">🔩</span><span class="gl">Schrauben &amp; Muttern</span></button>
           <button class="gen-btn" onclick="_openGearModal()"><span class="gi">⚙️</span><span class="gl">Zahnräder</span></button>
           <button class="gen-btn" onclick="_openEncModal()"><span class="gi">📦</span><span class="gl">Gehäuse / Box</span></button>
+          <button class="gen-btn" onclick="_openLBModal()"><span class="gi">🪵</span><span class="gl">Laser-Box (Zinken)</span></button>
           <button class="gen-btn dev-only" onclick="_openGFModal()"><span class="gi">🧪</span><span class="gl">Rasterbox Generator</span></button>
         </div>
       </div>
@@ -1883,6 +1884,41 @@ const firebaseConfig = {
     <div class="g3foot">
       <button class="btn" onclick="_closeEncModal()">Abbrechen</button>
       <button class="btn pri" onclick="_createEnc()">✓ Erstellen</button>
+    </div>
+  </div>
+</div>
+
+<div id="lb-modal" class="g3dm" onclick="if(event.target===this)_closeLBModal()">
+  <div class="g3box">
+    <div class="g3hdr">🪵 Laser-Box (Fingerzinken)<span class="vx" onclick="_closeLBModal()">✕</span></div>
+    <div class="g3body">
+      <canvas id="lb-canvas" width="200" height="300"></canvas>
+      <div class="g3ctrl">
+        <span class="vsec">Maße (außen)</span>
+        <div class="vrow"><label>Breite B</label> <input type="range" id="lb-b" min="20" max="400" value="120" step="1" oninput="document.getElementById('lb-bv').textContent=this.value;_lbSet('B',this.value)"><span class="vv" id="lb-bv">120</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Tiefe T</label> <input type="range" id="lb-t" min="20" max="400" value="80" step="1" oninput="document.getElementById('lb-tv').textContent=this.value;_lbSet('T',this.value)"><span class="vv" id="lb-tv">80</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Höhe H</label> <input type="range" id="lb-h" min="15" max="300" value="50" step="1" oninput="document.getElementById('lb-hv').textContent=this.value;_lbSet('H',this.value)"><span class="vv" id="lb-hv">50</span><span class="vu">mm</span></div>
+        <span class="vsec">Material &amp; Schnitt</span>
+        <div class="vrow"><label title="Materialstärke / Plattendicke">Materialstärke</label> <input type="range" id="lb-mat" min="1" max="10" value="3" step="0.1" oninput="document.getElementById('lb-matv').textContent=this.value;_lbSet('t',this.value)"><span class="vv" id="lb-matv">3</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Schnittfugen-Ausgleich für strammen Pressfit">Kerf-Ausgleich</label> <input type="range" id="lb-kerf" min="0" max="0.5" value="0.1" step="0.01" oninput="document.getElementById('lb-kerfv').textContent=this.value;_lbSet('kerf',this.value)"><span class="vv" id="lb-kerfv">0.1</span><span class="vu">mm</span></div>
+        <span class="vsec">Zinkenbreite</span>
+        <div class="vbg" id="lb-fbg">
+          <button class="vtb on" onclick="_lbSetFingerMode('auto')">Auto</button>
+          <button class="vtb"    onclick="_lbSetFingerMode('manuell')">Manuell</button>
+        </div>
+        <div class="vrow" id="lb-frow" style="display:none"><label>Zinkenbreite</label> <input type="range" id="lb-fw" min="6" max="40" value="12" step="1" oninput="document.getElementById('lb-fwv').textContent=this.value;_lbSet('finger',this.value)"><span class="vv" id="lb-fwv">12</span><span class="vu">mm</span></div>
+        <span class="vsec">Kistentyp</span>
+        <div class="vbg" id="lb-obg">
+          <button class="vtb on" onclick="_lbSetOpen(false)">Geschlossen</button>
+          <button class="vtb"    onclick="_lbSetOpen(true)">Oben offen</button>
+        </div>
+        <div class="g3info" id="lb-info"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_closeLBModal()">Abbrechen</button>
+      <button class="btn" onclick="_lbExportSVG()">⬇ SVG-Export</button>
+      <button class="btn pri" onclick="_createLaserBox()">✓ In Szene</button>
     </div>
   </div>
 </div>
@@ -7468,7 +7504,7 @@ function objectToData(o) {
     if (o.isMesh && o.geometry) d.geometry = o.geometry.toJSON();   // Gruppen haben keine eigene Geometrie
   } else if (o.isMesh && (!o.userData.type || ['custom','text','import','revolve','flower',
       'sphericalshell','spring','bentpipe','thread','svg','lantern','screw','gear','enclosure',
-      'gfbin','gfplate','gfcut'].includes(o.userData.type))) {
+      'laserbox','gfbin','gfplate','gfcut'].includes(o.userData.type))) {
     d.geometry = o.geometry.toJSON();
   }
   if (o.userData._origGeo) d._origGeoData = o.userData._origGeo.toJSON();
@@ -13123,6 +13159,263 @@ function _fpEncSet(k,v){
 }
 // ===== END ZAHNRAD- + GEHÄUSE-GENERATOR =====
 
+// ===== LASER-BOX (FINGERZINKEN) GENERATOR =====
+// Komplett client-seitig, reines 2D-Mathe (kein OCCT, kein Server).
+// Flush-Box: Boden/Deckel = volle Platten mit Rand-Schlitzen ('slot'),
+// Wände = Rechtecke mit Zinken ('tab'). Alle Außenflächen bündig.
+// Zinken-Konvention (alle Maße in mm; 3D-Bau teilt durch 10):
+//  - Jede gefingerte Kante teilt die eingerückte Spanne [t, L-t] in n (UNGERADE) Finger.
+//    Ungerade n + Feature-an-ungeraden-Indizes => Ecken automatisch korrekt:
+//    Platten (slot) an Ecken massiv, Wände (tab) an Ecken zurückgesetzt.
+//  - tab:  Basislinie eingerückt (y=t); Zinken ragen zur Außenlinie (y=0).
+//  - slot: Basislinie an Außenlinie (y=0); Kerben ragen nach innen (y=t).
+//  - Vertikale Wand-Wand-Kanten: beide 'tab', GEGENPHASE.
+//  - Kerf: Zinken seitlich +kerf breiter, Kerben -kerf schmaler (Außen-Offset kerf/2
+//    pro Seite) => nach dem Schnitt strammer Pressfit.
+function _lbFingerCount(L, t, nominal){
+  const inner = Math.max(0.001, L - 2*t);
+  let n = Math.round(inner / Math.max(1, nominal));
+  if (n < 1) n = 1;
+  if (n % 2 === 0) n += 1;
+  return n;
+}
+function _lbEdgePoints(L, type, n, featOnOdd, t, kerf, span){
+  const s0 = span ? span[0] : t;
+  const s1 = span ? span[1] : (L - t);
+  if (type === 'plain') return [[s0,0],[s1,0]];
+  const base = (type === 'tab') ? t : 0;
+  const feat = (type === 'tab') ? 0 : t;
+  const isTab = (type === 'tab');
+  const fw = (s1 - s0) / n;
+  const k2 = kerf / 2;
+  const widen = isTab ? +k2 : -k2;     // Zinken breiter, Kerben schmaler
+  const pts = [];
+  if (type === 'slot'){ pts.push([0,0]); pts.push([s0,0]); }
+  else { pts.push([s0, base]); }
+  let curY = base;
+  for (let i = 0; i < n; i++){
+    const x0 = s0 + i*fw, x1 = s0 + (i+1)*fw;
+    const isFeat = ((i % 2 === 1) === featOnOdd);
+    const y = isFeat ? feat : base;
+    let a = isFeat ? (x0 - widen) : x0;
+    let b = isFeat ? (x1 + widen) : x1;
+    a = Math.max(s0, Math.min(s1, a));
+    b = Math.max(s0, Math.min(s1, b));
+    if (y !== curY){ pts.push([a, curY]); pts.push([a, y]); curY = y; }
+    pts.push([b, y]); curY = y;
+  }
+  if (curY !== base){ pts.push([s1, base]); curY = base; }
+  if (type === 'slot'){ pts.push([s1,0]); pts.push([L,0]); }
+  else if (pts[pts.length-1][0] !== s1) pts.push([s1, base]);
+  return pts;
+}
+function _lbPanelOutline(w, h, edges, t, kerf){
+  const eb = _lbEdgePoints(w, edges.bottom.type, edges.bottom.n, edges.bottom.featOnOdd, t, kerf, edges.bottom.span);
+  const er = _lbEdgePoints(h, edges.right.type,  edges.right.n,  edges.right.featOnOdd,  t, kerf, edges.right.span);
+  const et = _lbEdgePoints(w, edges.top.type,    edges.top.n,    edges.top.featOnOdd,    t, kerf, edges.top.span);
+  const el = _lbEdgePoints(h, edges.left.type,   edges.left.n,   edges.left.featOnOdd,   t, kerf, edges.left.span);
+  const out = [];
+  const push = (x,y) => { const p=out[out.length-1]; if(!p || Math.abs(p[0]-x)>1e-6 || Math.abs(p[1]-y)>1e-6) out.push([+x.toFixed(4), +y.toFixed(4)]); };
+  for (const [x,y] of eb) push(x, y);              // bottom: (x,y)
+  for (const [x,y] of er) push(w - y, x);          // right
+  for (const [x,y] of et) push(w - x, h - y);      // top
+  for (const [x,y] of el) push(y, h - x);          // left
+  if (out.length>1){ const a=out[0], b=out[out.length-1]; if(Math.abs(a[0]-b[0])<1e-5 && Math.abs(a[1]-b[1])<1e-5) out.pop(); }
+  return out;
+}
+// Hauptberechnung: alle Panels der Kiste. p={B,T,H,t,kerf,finger,open}
+function computeLaserBoxPanels(p){
+  const B=p.B, T=p.T, H=p.H, t=p.t, kerf=p.kerf||0, open=!!p.open;
+  const fNom = (p.finger && p.finger>0) ? p.finger : Math.max(8, Math.min(B,T,H)/4);
+  const nB = _lbFingerCount(B, t, fNom);
+  const nT = _lbFingerCount(T, t, fNom);
+  const vTop = open ? H : (H - t);
+  const nH = _lbFingerCount(open ? (H - t) : H, t, fNom);
+  const HSB = [t, B - t], HST = [t, T - t], VSP = [t, vTop];
+  const panels = [];
+  const plate = (name, place) => ({ name, place, w:B, h:T,
+    outline: _lbPanelOutline(B, T, {
+      bottom:{type:'slot', n:nB, featOnOdd:true, span:HSB},
+      right: {type:'slot', n:nT, featOnOdd:true, span:HST},
+      top:   {type:'slot', n:nB, featOnOdd:true, span:HSB},
+      left:  {type:'slot', n:nT, featOnOdd:true, span:HST},
+    }, t, kerf) });
+  panels.push(plate('Boden','boden'));
+  if (!open) panels.push(plate('Deckel','deckel'));
+  const wallFB = (name, place) => ({ name, place, w:B, h:H,
+    outline: _lbPanelOutline(B, H, {
+      bottom:{type:'tab', n:nB, featOnOdd:true, span:HSB},
+      right: {type:'tab', n:nH, featOnOdd:true, span:VSP},
+      top:   open ? {type:'plain', n:1, featOnOdd:true, span:HSB} : {type:'tab', n:nB, featOnOdd:true, span:HSB},
+      left:  {type:'tab', n:nH, featOnOdd:true, span:VSP},
+    }, t, kerf) });
+  panels.push(wallFB('Front','front'));
+  panels.push(wallFB('Hinten','back'));
+  const wallLR = (name, place) => ({ name, place, w:T, h:H,
+    outline: _lbPanelOutline(T, H, {
+      bottom:{type:'tab', n:nT, featOnOdd:true,  span:HST},
+      right: {type:'tab', n:nH, featOnOdd:false, span:VSP},   // gegenphasig zu Front/Back
+      top:   open ? {type:'plain', n:1, featOnOdd:true, span:HST} : {type:'tab', n:nT, featOnOdd:true, span:HST},
+      left:  {type:'tab', n:nH, featOnOdd:false, span:VSP},
+    }, t, kerf) });
+  panels.push(wallLR('Links','links'));
+  panels.push(wallLR('Rechts','rechts'));
+  return { panels, meta:{B,T,H,t,kerf,open,nB,nT,nH,finger:fNom} };
+}
+// Panel-Geometrie in die Box-Position transformieren (Einheiten, Reflexionen ok -> DoubleSide)
+function _lbPlace(g, place, B,T,H,t){
+  const a = g.attributes.position.array;
+  for (let i=0;i<a.length;i+=3){
+    const lx=a[i], ly=a[i+1], lz=a[i+2];
+    let gx,gy,gz;
+    switch(place){
+      case 'boden':  gx=lx; gy=lz;       gz=ly; break;
+      case 'deckel': gx=lx; gy=(H-t)+lz; gz=ly; break;
+      case 'front':  gx=lx; gy=ly;       gz=lz; break;
+      case 'back':   gx=lx; gy=ly;       gz=(T-t)+lz; break;
+      case 'links':  gx=lz; gy=ly;       gz=lx; break;
+      case 'rechts': gx=(B-t)+lz; gy=ly; gz=lx; break;
+    }
+    a[i]=gx; a[i+1]=gy; a[i+2]=gz;
+  }
+  g.attributes.position.needsUpdate = true;
+  return g;
+}
+// 3D-Geometrie der zusammengesetzten Kiste (jedes Panel um Materialstärke extrudiert)
+function _buildLaserBoxGeometry(p){
+  const r = computeLaserBoxPanels(p);
+  const U = 1/10;                          // 1 Unit = 10 mm
+  const B=p.B*U, T=p.T*U, H=p.H*U, t=p.t*U;
+  const parts = [];
+  for (const pan of r.panels){
+    const sh = new THREE.Shape();
+    pan.outline.forEach(([x,y],i)=>{ const X=x*U, Y=y*U; if(i) sh.lineTo(X,Y); else sh.moveTo(X,Y); });
+    sh.closePath();
+    let g = new THREE.ExtrudeGeometry(sh, {depth:t, bevelEnabled:false, steps:1, curveSegments:1});
+    _lbPlace(g, pan.place, B,T,H,t);
+    parts.push(_posOnly(g));
+    g.dispose();
+  }
+  const merged = _mergePos(parts);
+  merged.translate(-B/2, 0, -T/2);          // zentriert, Basis y=0
+  merged.computeVertexNormals();
+  return merged;
+}
+// ── Flach-Layout (Nesting) der Panels für SVG/Vorschau ──
+function _lbLayout(panels, gap){
+  gap = gap || 5;
+  const pad = gap;
+  // einfaches Regal-Packing: nach Höhe sortiert, zeilenweise
+  const items = panels.map(pan=>{
+    const xs=pan.outline.map(q=>q[0]), ys=pan.outline.map(q=>q[1]);
+    return { pan, w:Math.max(...xs)-Math.min(...xs), h:Math.max(...ys)-Math.min(...ys),
+             ox:Math.min(...xs), oy:Math.min(...ys) };
+  });
+  const maxRowW = 600;
+  let x=pad, y=pad, rowH=0, totW=0;
+  const placed=[];
+  for (const it of items){
+    if (x>pad && x+it.w > maxRowW){ x=pad; y+=rowH+gap; rowH=0; }
+    placed.push({ pan:it.pan, dx:x-it.ox, dy:y-it.oy, w:it.w, h:it.h });
+    x += it.w + gap; rowH = Math.max(rowH, it.h); totW = Math.max(totW, x-gap+pad);
+  }
+  const totH = y + rowH + pad;
+  return { placed, W:totW, H:totH };
+}
+// ── SVG-Export (cut = rote Haarlinie 0.01mm, engrave = Panel-Beschriftung) ──
+function _lbBuildSVG(p){
+  const r = computeLaserBoxPanels(p);
+  const lay = _lbLayout(r.panels, 6);
+  const W = +lay.W.toFixed(2), H = +lay.H.toFixed(2);
+  const cut = [], eng = [];
+  for (const it of lay.placed){
+    const pts = it.pan.outline.map(([x,y])=>[+(x+it.dx).toFixed(3), +(H-(y+it.dy)).toFixed(3)]); // SVG y-down
+    let d = 'M' + pts.map(q=>q[0]+','+q[1]).join(' L') + ' Z';
+    cut.push(`    <path d="${d}"/>`);
+    // Beschriftung mittig
+    const cx = (it.dx + it.w/2).toFixed(2);
+    const cy = (H - (it.dy + it.h/2)).toFixed(2);
+    const fs = Math.max(4, Math.min(12, Math.min(it.w, it.h)/6)).toFixed(1);
+    eng.push(`    <text x="${cx}" y="${cy}" font-size="${fs}" text-anchor="middle" dominant-baseline="central">${it.pan.name}</text>`);
+  }
+  const m = r.meta;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1"
+     width="${W}mm" height="${H}mm" viewBox="0 0 ${W} ${H}">
+  <!-- Volme3D Laser-Box ${m.B}x${m.T}x${m.H}mm, Material ${m.t}mm, Kerf ${m.kerf}mm, ${m.open?'oben offen':'geschlossen'} -->
+  <g id="cut" inkscape:label="cut" inkscape:groupmode="layer"
+     fill="none" stroke="#ff0000" stroke-width="0.01">
+${cut.join('\n')}
+  </g>
+  <g id="engrave" inkscape:label="engrave" inkscape:groupmode="layer"
+     fill="#0000ff" stroke="none" font-family="sans-serif">
+${eng.join('\n')}
+  </g>
+</svg>`;
+}
+function _lbExportSVG(){
+  let svg; try{ svg=_lbBuildSVG(_lbP); }catch(e){ console.error('Laser-Box SVG:',e); notify('SVG-Export fehlgeschlagen','w'); return; }
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([svg],{type:'image/svg+xml'}));
+  a.download=`laserbox_${_lbP.B}x${_lbP.T}x${_lbP.H}_${_lbP.t}mm.svg`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+  notify('SVG exportiert (cut + engrave)','ok');
+}
+
+// ---------- Laser-Box: Dialog ----------
+let _lbP={B:120,T:80,H:50,t:3,kerf:0.1,fingerMode:'auto',finger:12,open:false}, _lbRT=null;
+function _lbEffFinger(){ return _lbP.fingerMode==='manuell' ? _lbP.finger : 0; }
+function _lbParams(){ return {B:_lbP.B,T:_lbP.T,H:_lbP.H,t:_lbP.t,kerf:_lbP.kerf,finger:_lbEffFinger(),open:_lbP.open}; }
+function _openLBModal(){
+  document.getElementById('lb-modal').classList.add('show');
+  _lbSyncUI();
+  requestAnimationFrame(()=>{ if(!_gpv['lb']) _gpvInit('lb',()=>_buildLaserBoxGeometry(_lbParams())); else { _gpvUpdate('lb'); if(!_gpv['lb'].anim) _gpvLoop('lb'); } });
+}
+function _closeLBModal(){ document.getElementById('lb-modal').classList.remove('show'); _gpvStop('lb'); }
+function _lbRefresh(){ if(_lbRT)clearTimeout(_lbRT); _lbRT=setTimeout(()=>{_lbRT=null;_gpvUpdate('lb');},80); }
+function _lbSet(k,v){ _lbP[k]=parseFloat(v); _lbInfo(); _lbRefresh(); }
+function _lbSetFingerMode(m){ _lbP.fingerMode=m;
+  ['auto','manuell'].forEach((x,i)=>{const b=document.querySelector(`#lb-fbg .vtb:nth-child(${i+1})`); if(b)b.classList.toggle('on',x===m);});
+  document.getElementById('lb-frow').style.display = (m==='manuell')?'flex':'none';
+  _lbInfo(); _lbRefresh();
+}
+function _lbSetOpen(open){ _lbP.open=open;
+  ['false','true'].forEach((x,i)=>{const b=document.querySelector(`#lb-obg .vtb:nth-child(${i+1})`); if(b)b.classList.toggle('on',(x==='true')===open);});
+  _lbInfo(); _lbRefresh();
+}
+function _lbSyncUI(){
+  const set=(id,vid,v)=>{const s=document.getElementById(id),x=document.getElementById(vid); if(s)s.value=v; if(x)x.textContent=v;};
+  set('lb-b','lb-bv',_lbP.B); set('lb-t','lb-tv',_lbP.T); set('lb-h','lb-hv',_lbP.H);
+  set('lb-mat','lb-matv',_lbP.t); set('lb-kerf','lb-kerfv',_lbP.kerf); set('lb-fw','lb-fwv',_lbP.finger);
+  _lbSetFingerMode(_lbP.fingerMode); _lbSetOpen(_lbP.open); _lbInfo();
+}
+function _lbInfo(){
+  const el=document.getElementById('lb-info'); if(!el) return;
+  let m; try{ m=computeLaserBoxPanels(_lbParams()).meta; }catch(e){ el.textContent=''; return; }
+  const inner=`${(m.B-2*m.t).toFixed(0)} × ${(m.T-2*m.t).toFixed(0)} × ${(m.H-(m.open?m.t:2*m.t)).toFixed(0)} mm`;
+  el.innerHTML=`Außen ${m.B} × ${m.T} × ${m.H} mm · ${m.open?'oben offen':'geschlossen'}<br>`+
+    `Innenraum ${inner} · Material ${m.t} mm · Kerf ${m.kerf} mm<br>`+
+    `Zinken ${m.nB}/${m.nT}/${m.nH} (B/T/H) · ${m.open?5:6} Platten`;
+}
+function _createLaserBox(){
+  saveUndo();
+  let geo; try{ geo=_buildLaserBoxGeometry(_lbParams()); }catch(e){ console.error('Laser-Box:',e); notify('Fehler beim Erstellen','w'); return; }
+  const color=currentColor;
+  const mat=new THREE.MeshStandardMaterial({color:new THREE.Color(color),roughness:0.6,metalness:0.1,side:THREE.DoubleSide});
+  const mesh=new THREE.Mesh(geo,mat); mesh.castShadow=true; mesh.receiveShadow=true;
+  mesh.quaternion.copy(_wpMakeQuat(workplaneNormal)); mesh.position.copy(workplanePoint);
+  typeCounts['laserbox']=(typeCounts['laserbox']||0)+1;
+  const lbl='Laser-Box '+_lbP.B+'×'+_lbP.T+'×'+_lbP.H;
+  mesh.userData={id:idCtr++,type:'laserbox',shapeType:'laserbox',name:lbl+' #'+typeCounts['laserbox'],
+    color,isHole:false,fillet:0,chamfer:0,
+    displacementPattern:'keine',displacementAmp:0.5,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
+  scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
+  selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
+  notify(lbl+' erstellt','ok'); _closeLBModal();
+}
+// ===== END LASER-BOX GENERATOR =====
+
 // ===== STL-BIBLIOTHEK =====
 const STLLIB_HELPER = 'http://127.0.0.1:7777';
 const STLLIB_HELPER_LATEST = 5;   // aktuelle Helfer-Version; ältere -> Update-Knopf
@@ -13553,8 +13846,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.44';
+const VOLME3D_VERSION = '1.14.45';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.45', date:'2026-06-15', changes:[
+    ['🪵','Neuer Laser-Box-Generator (Fingerzinken): parametrische Steckkiste für Laser-Cutter — Breite/Tiefe/Höhe, Materialstärke, Kerf-Ausgleich für strammen Pressfit, automatische oder manuelle Zinkenbreite, geschlossen oder oben offen. 3D-Vorschau + SVG-Export mit getrennten Ebenen „cut" (rote Haarlinie) und „engrave" (Panel-Beschriftung) für LightBurn/xTool'],
+  ]},
   { version:'1.14.44', date:'2026-06-15', changes:[
     ['🧪','Beta-Hinweis beim Anmelden: Eingeloggte Nutzer sehen einmal einen kurzen Willkommens-Hinweis als Beta-Tester. Neuer „💬 Feedback"-Knopf oben rechts — Fehler & Ideen jederzeit per E-Mail melden'],
   ]},
