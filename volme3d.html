@@ -811,7 +811,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.55<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.56<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -2217,7 +2217,7 @@ const firebaseConfig = {
     <div id="ds-hdr">
       <div id="ds-hdr-title">📁 Meine Designs</div>
       <div style="flex:1"></div>
-      <button class="btn" id="ds-regen-btn" onclick="_regenAllThumbs()" title="Alle Vorschaubilder sauber neu rendern">🔄 Vorschau neu</button>
+      <button class="btn" id="ds-regen-btn" onclick="_dsRefreshThumbs()" title="Vorschauen neu rendern">🔄 Vorschau neu</button>
       <button class="btn" onclick="document.getElementById('ds-import-file').click()" title="Design als JSON importieren">⬆ Importieren</button>
       <input type="file" id="ds-import-file" accept=".v3d,.json" style="display:none" onchange="_handleDesignImport(event)">
       <button class="btn pri" onclick="newDesignFromGallery()" style="font-weight:800">+ Neues Design</button>
@@ -11468,68 +11468,59 @@ function captureThumbnail() {
   }
 }
 
-// ── Bestehende Vorschaubilder neu erzeugen (offscreen, ohne die aktuelle Szene anzufassen) ──
-let _regenBusy = false;
-async function _dsUpdateThumb(id, thumb) {
-  try { if (thumb) _lsSetWithEvict(_dsThumbKey(id), thumb, id); else localStorage.removeItem(_dsThumbKey(id)); } catch(e) {}
-  try {
-    const ref = _fsDesignsRef();
-    if (ref) { const small = thumb ? await _resizeThumb(thumb, 200, 150) : ''; await ref.doc(id).update({ thumb: small }); }
-  } catch(e) { console.warn('[Firestore] thumb-update:', e); }
-}
-async function _regenAllThumbs() {
-  if (_regenBusy) return;
-  const all = dsGetAll();
-  if (!all.length) { notify('Keine Designs vorhanden', 'w'); return; }
-  if (!confirm(all.length + ' Vorschaubilder neu erzeugen?\nJedes Design wird einmal sauber gerendert (deine aktuelle Szene bleibt unangetastet).')) return;
-  _regenBusy = true;
-  const btn = document.getElementById('ds-regen-btn');
-  const orig = btn ? btn.innerHTML : '';
-  if (btn) btn.innerHTML = '⏳ lädt…';
-  // Autoritative Daten aus Firestore holen: localStorage kann durch Platzmangel
-  // verdrängt/leer sein, dann steht das volle Design nur in der Cloud.
-  let fsData = null;
-  try { const ref = _fsDesignsRef(); if (ref) { fsData = {}; const sn = await ref.get(); sn.docs.forEach(d => { const dd = d.data(); if (dd && dd.data) fsData[d.id] = dd.data; }); } } catch(_) {}
-  const W = 512, H = 360;
-  const rnd = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
-  rnd.setSize(W, H); rnd.setClearColor(0xffffff, 1);
-  let done = 0, ok = 0, fail = 0, empty = 0;
-  for (const meta of all) {
-    done++;
-    if (btn) btn.innerHTML = '⏳ ' + done + '/' + all.length;
-    let built = [];
-    try {
-      let snap = null;
-      if (fsData && fsData[meta.id]) { try { snap = JSON.parse(_dsDecompress(fsData[meta.id])); } catch(_) {} }  // Cloud zuerst (autoritativ)
-      if (!snap) snap = dsLoadData(meta.id);                                                                     // sonst lokal
-      if (!snap) { fail++; continue; }
-      if (!Array.isArray(snap.objects) || !snap.objects.length) { empty++; continue; }   // wirklich leer → altes Bild unverändert lassen
-      const sc = new THREE.Scene();
-      sc.add(new THREE.AmbientLight(0xffffff, 0.85));
-      const dl = new THREE.DirectionalLight(0xffffff, 0.9); dl.position.set(3, 5, 4); sc.add(dl);
-      const dl2 = new THREE.DirectionalLight(0x88aaff, 0.35); dl2.position.set(-3, -2, -3); sc.add(dl2);
-      for (const od of snap.objects) { try { const o = buildObjectFromData(od); if (o && o.visible !== false) { sc.add(o); built.push(o); } } catch(_) {} }
-      if (!built.length) { fail++; continue; }
-      const box = new THREE.Box3(); built.forEach(o => { try { box.expandByObject(o); } catch(_) {} });
-      if (box.isEmpty()) { fail++; continue; }
-      const ctr = box.getCenter(new THREE.Vector3()), sz = box.getSize(new THREE.Vector3());
-      const maxd = Math.max(sz.x, sz.y, sz.z) || 1;
-      const cam = new THREE.PerspectiveCamera(45, W / H, Math.max(0.01, maxd * 0.01), maxd * 60 + 200);
-      const d = maxd * 1.9;
-      cam.position.set(ctr.x + d * 0.8, ctr.y + d * 0.7, ctr.z + d * 0.8); cam.lookAt(ctr);
-      rnd.render(sc, cam);
-      const url = rnd.domElement.toDataURL('image/jpeg', 0.72);
-      if (url && url.length > 200) { await _dsUpdateThumb(meta.id, url); ok++; } else fail++;
-    } catch(e) { console.warn('regen', meta.id, e); fail++; }
-    finally { built.forEach(o => o.traverse(n => { if (n.geometry) n.geometry.dispose(); if (n.material) (Array.isArray(n.material) ? n.material : [n.material]).forEach(m => m.dispose && m.dispose()); })); }
-    await new Promise(r => setTimeout(r, 0));   // UI atmen lassen
+// ── Design-Vorschau wie in der STL-Bibliothek: live aus der Geometrie gerendert ──
+// (zentriertes Modell, weißer Hintergrund, lazy + in IndexedDB gecacht).
+let _dsThumbRenderer = null;
+function _renderDesignSnapThumb(snap) {
+  if (!snap || !Array.isArray(snap.objects) || !snap.objects.length) return null;
+  if (!_dsThumbRenderer) {
+    try { _dsThumbRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true }); _dsThumbRenderer.setSize(320, 240); }
+    catch(e) { return null; }
   }
-  try { rnd.forceContextLoss(); } catch(_) {}
-  rnd.dispose();
+  const r = _dsThumbRenderer; r.setClearColor(0xffffff, 1);
+  const sc = new THREE.Scene();
+  sc.add(new THREE.AmbientLight(0xffffff, 0.85));
+  const dl = new THREE.DirectionalLight(0xffffff, 0.9); dl.position.set(3, 5, 4); sc.add(dl);
+  const dl2 = new THREE.DirectionalLight(0x88aaff, 0.35); dl2.position.set(-3, -2, -3); sc.add(dl2);
+  const built = [];
+  for (const od of snap.objects) { try { const o = buildObjectFromData(od); if (o && o.visible !== false) { sc.add(o); built.push(o); } } catch(_) {} }
+  let url = null;
+  try {
+    if (built.length) {
+      const box = new THREE.Box3(); built.forEach(o => { try { box.expandByObject(o); } catch(_) {} });
+      if (!box.isEmpty()) {
+        const ctr = box.getCenter(new THREE.Vector3()), sz = box.getSize(new THREE.Vector3()), maxd = Math.max(sz.x, sz.y, sz.z) || 1;
+        const cam = new THREE.PerspectiveCamera(45, 320 / 240, Math.max(0.01, maxd * 0.01), maxd * 60 + 200);
+        const d = maxd * 1.9;
+        cam.position.set(ctr.x + d * 0.8, ctr.y + d * 0.7, ctr.z + d * 0.8); cam.lookAt(ctr);
+        r.render(sc, cam);
+        url = r.domElement.toDataURL('image/jpeg', 0.72);
+        if (url && url.length < 200) url = null;
+      }
+    }
+  } catch(e) { url = null; }
+  built.forEach(o => o.traverse(n => { if (n.geometry) n.geometry.dispose(); if (n.material) (Array.isArray(n.material) ? n.material : [n.material]).forEach(m => m.dispose && m.dispose()); }));
+  return url;
+}
+// Snapshot eines Designs holen: lokal zuerst, sonst autoritativ aus Firestore
+// (localStorage kann durch Platzmangel verdrängt/leer sein).
+async function _dsGetSnap(id) {
+  let snap = dsLoadData(id);
+  if (snap && Array.isArray(snap.objects) && snap.objects.length) return snap;
+  try { const ref = _fsDesignsRef(); if (ref) { const doc = await ref.doc(id).get(); const dd = doc && doc.exists ? doc.data() : null; if (dd && dd.data) { const s = JSON.parse(_dsDecompress(dd.data)); if (s && Array.isArray(s.objects) && s.objects.length) return s; } } } catch(_) {}
+  return snap;
+}
+// "Vorschau neu": gecachte Live-Vorschauen verwerfen und neu rendern lassen
+async function _dsClearThumbCache() {
+  try { const db = await _stlIdb(); await new Promise(res => { const tx = db.transaction('thumbs', 'readwrite'); const st = tx.objectStore('thumbs'); const cur = st.openCursor(); cur.onsuccess = e => { const c = e.target.result; if (c) { if (typeof c.key === 'string' && c.key.indexOf('dsr1|') === 0) st.delete(c.key); c.continue(); } }; tx.oncomplete = () => res(); tx.onerror = () => res(); }); } catch(_) {}
+}
+async function _dsRefreshThumbs() {
+  const btn = document.getElementById('ds-regen-btn'); const orig = btn ? btn.innerHTML : '';
+  if (btn) btn.innerHTML = '⏳…';
+  await _dsClearThumbCache();
   if (btn) btn.innerHTML = orig;
-  _regenBusy = false;
-  if (typeof _renderGallery === 'function') _renderGallery();   // Galerie-Raster aktualisieren (ohne Auto-Save/Reopen)
-  notify(ok + ' Vorschaubilder erneuert' + (empty ? ', ' + empty + ' leer (unverändert)' : '') + (fail ? ', ' + fail + ' übersprungen' : ''), ok ? 'ok' : 'w');
+  _renderGallery();
+  notify('Vorschauen werden neu gerendert', 'ok');
 }
 
 // ── Toolbar label + auto-save dot ──────────────────────────────────────────
@@ -11582,19 +11573,21 @@ function _fmtDate(ts) {
   return new Date(ts).toLocaleString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
 }
 
+let _dsThumbObs = null, _dsThumbQueue = [], _dsThumbBusy = false;
 function _renderGallery() {
   const grid = document.getElementById('ds-grid');
   const all = dsGetAll();
+  if (_dsThumbObs) { _dsThumbObs.disconnect(); _dsThumbObs = null; }
+  _dsThumbQueue = [];
   if (all.length === 0) {
     grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--dim);padding:48px 0;font-size:14px;font-weight:600">Noch keine gespeicherten Designs<br><span style="font-weight:400;font-size:12px">Auto-Save läuft alle 30 Sek. — oder klick "Neues Design"</span></div>';
     return;
   }
   grid.innerHTML = all.map(d => {
-    const thumb = dsThumb(d.id);
-    return `<div class="ds-card ${d.id === currentDesignId ? 'ds-active' : ''}" onclick="loadDesign('${d.id}')">
-      <div class="ds-thumb-wrap">
-        ${thumb ? `<img class="ds-thumb" src="${thumb}" alt="">` : '<div class="ds-nothumb">🗂</div>'}
-        ${d.id === currentDesignId ? '<div class="ds-cur-badge">Aktuell</div>' : ''}
+    const cur = d.id === currentDesignId;
+    return `<div class="ds-card ${cur ? 'ds-active' : ''}" onclick="loadDesign('${d.id}')">
+      <div class="ds-thumb-wrap" data-id="${d.id}" data-up="${d.updated || 0}" data-cur="${cur ? 1 : 0}">
+        <div class="ds-nothumb">⏳</div>${cur ? '<div class="ds-cur-badge">Aktuell</div>' : ''}
       </div>
       <div class="ds-info">
         <div class="ds-name" title="${d.name}">${d.name}</div>
@@ -11607,6 +11600,30 @@ function _renderGallery() {
       </div>
     </div>`;
   }).join('');
+  // Vorschauen lazy live rendern (wie die STL-Bibliothek)
+  _dsThumbObs = new IntersectionObserver(es => { for (const e of es) { if (e.isIntersecting) { const el = e.target; _dsThumbObs.unobserve(el); _dsThumbQueue.push(el); _dsThumbPump(); } } }, { root: grid, rootMargin: '320px' });
+  grid.querySelectorAll('.ds-thumb-wrap').forEach(el => _dsThumbObs.observe(el));
+}
+async function _dsThumbPump() {
+  if (_dsThumbBusy) return; _dsThumbBusy = true;
+  while (_dsThumbQueue.length) { const el = _dsThumbQueue.shift(); try { await _dsThumbOne(el); } catch(_) {} }
+  _dsThumbBusy = false;
+}
+async function _dsThumbOne(el) {
+  if (!el || !el.isConnected) return;
+  const id = el.dataset.id, up = el.dataset.up, cur = el.dataset.cur === '1';
+  const key = 'dsr1|' + id + '|' + up;
+  let url = null; try { url = await _stlIdbGet('thumbs', key); } catch(_) {}
+  let hadObjs = false;
+  if (!url) {
+    const snap = await _dsGetSnap(id);
+    hadObjs = !!(snap && Array.isArray(snap.objects) && snap.objects.length);
+    if (hadObjs) { url = _renderDesignSnapThumb(snap); if (url) { try { await _stlIdbSet('thumbs', key, url); } catch(_) {} } }
+  }
+  if (!url && hadObjs) url = dsThumb(id);   // hat Inhalt, Render fehlgeschlagen → altes gespeichertes Bild
+  if (!el.isConnected) return;
+  const badge = cur ? '<div class="ds-cur-badge">Aktuell</div>' : '';
+  el.innerHTML = (url ? `<img class="ds-thumb" src="${url}" alt="">` : '<div class="ds-nothumb">🗂</div>') + badge;
 }
 
 // ── Design operations ──────────────────────────────────────────────────────
@@ -14140,8 +14157,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.55';
+const VOLME3D_VERSION = '1.14.56';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.56', date:'2026-06-15', changes:[
+    ['🖼️','„Meine Designs" sieht jetzt aus wie die STL-Bibliothek: Die Vorschauen werden live aus der Geometrie gerendert (zentriertes Modell auf weißem Grund, lazy geladen + zwischengespeichert) statt als zufälliger Bildschirm-Schnappschuss. Fehlt ein Modell lokal, wird es aus der Cloud nachgeladen; wirklich leere Designs zeigen einen neutralen Platzhalter. „Vorschau neu" rendert alles frisch'],
+  ]},
   { version:'1.14.55', date:'2026-06-15', changes:[
     ['🔄','„Vorschau neu" deutlich verbessert: Die Design-Daten werden jetzt direkt aus der Cloud geholt (autoritativ). Vorher wurden Designs, deren lokaler Speicher voll/verdrängt war, faelschlich als „leer" behandelt und bekamen einen grauen Platzhalter — die sind jetzt wieder sauber gerahmt. Wirklich leere Designs behalten ihr bisheriges Bild (kein Platzhalter mehr)'],
   ]},
