@@ -807,7 +807,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.48<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.49<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -12894,7 +12894,7 @@ function _fpScrewSet(key,val){
 // ===== ZAHNRAD- + GEHÄUSE-GENERATOR =====
 // Gemeinsamer 3D-Vorschau-Manager (kleines rotierendes Canvas im Dialog)
 const _gpv={};
-function _gpvInit(id, buildFn){
+function _gpvInit(id, buildFn, edgesFn){
   const canvas=document.getElementById(id+'-canvas');
   const r=new THREE.WebGLRenderer({canvas,antialias:true});
   r.setSize(200,300); r.setPixelRatio(Math.min(devicePixelRatio,2)); r.setClearColor(0x10141c);
@@ -12903,7 +12903,7 @@ function _gpvInit(id, buildFn){
   sc.add(new THREE.AmbientLight(0xffffff,0.6));
   const dl=new THREE.DirectionalLight(0xffffff,1.1); dl.position.set(4,6,6); sc.add(dl);
   const dl2=new THREE.DirectionalLight(0x88aaff,0.4); dl2.position.set(-4,-2,-3); sc.add(dl2);
-  _gpv[id]={r,sc,cam,buildFn,group:null,anim:null};
+  _gpv[id]={r,sc,cam,buildFn,edgesFn:edgesFn||null,group:null,anim:null};
   _gpvUpdate(id); _gpvLoop(id);
 }
 function _gpvUpdate(id){
@@ -12916,6 +12916,8 @@ function _gpvUpdate(id){
   const size=new THREE.Vector3(); bb.getSize(size);
   mesh.position.sub(ctr);
   const grp=new THREE.Group(); grp.add(mesh); s.sc.add(grp); s.group=grp;
+  // optionale Naht-/Kantenlinien (z.B. Laser-Box: macht die Fingerzinken sichtbar)
+  if(s.edgesFn){ try{ const eg=s.edgesFn(); if(eg){ const ls=new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:0x141a24})); ls.position.sub(ctr); grp.add(ls); } }catch(e){ console.warn(id+' Kanten:',e); } }
   const d=Math.max(3, Math.max(size.x,size.y,size.z)*1.7+1.5);
   s.cam.position.set(0, d*0.34, d*0.94); s.cam.lookAt(0,0,0);
 }
@@ -13333,6 +13335,35 @@ function _buildLaserBoxGeometry(p){
   merged.computeVertexNormals();
   return merged;
 }
+// Naht-/Kantenlinien je Panel (gleiche Konturen wie SVG/3D) — macht die Fingerzinken
+// in der Vorschau sichtbar, auch an flächenbündigen (koplanaren) Vertikalecken.
+function _buildLaserBoxLines(p){
+  const r = computeLaserBoxPanels(p);
+  const U = 1/10;
+  const B=p.B*U, T=p.T*U, H=p.H*U, t=p.t*U;
+  const pos = [];
+  for (const pan of r.panels){
+    const o = pan.outline, n = o.length;
+    const local = [];
+    for (let i=0;i<n;i++){
+      const a=o[i], b=o[(i+1)%n];
+      const ax=a[0]*U, ay=a[1]*U, bx=b[0]*U, by=b[1]*U;
+      local.push(ax,ay,0, bx,by,0);   // Kontur an Innenfläche (z=0)
+      local.push(ax,ay,t, bx,by,t);   // Kontur an Außenfläche (z=t)
+      local.push(ax,ay,0, ax,ay,t);   // Kante durch die Materialstärke (an jedem Konturpunkt)
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(local), 3));
+    _lbPlace(g, pan.place, B,T,H,t);
+    const arr = g.attributes.position.array;
+    for (let i=0;i<arr.length;i++) pos.push(arr[i]);
+    g.dispose();
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+  geo.translate(-B/2, 0, -T/2);
+  return geo;
+}
 // ── Flach-Layout (Nesting) der Panels für SVG/Vorschau ──
 function _lbLayout(panels, gap){
   gap = gap || 5;
@@ -13425,7 +13456,7 @@ function _lbValidate(){
 function _openLBModal(){
   document.getElementById('lb-modal').classList.add('show');
   _lbSyncUI();
-  requestAnimationFrame(()=>{ if(!_gpv['lb']) _gpvInit('lb',()=>_buildLaserBoxGeometry(_lbParams())); else { _gpvUpdate('lb'); if(!_gpv['lb'].anim) _gpvLoop('lb'); } });
+  requestAnimationFrame(()=>{ if(!_gpv['lb']) _gpvInit('lb',()=>_buildLaserBoxGeometry(_lbParams()),()=>_buildLaserBoxLines(_lbParams())); else { _gpvUpdate('lb'); if(!_gpv['lb'].anim) _gpvLoop('lb'); } });
 }
 function _closeLBModal(){ document.getElementById('lb-modal').classList.remove('show'); _gpvStop('lb'); }
 function _lbRefresh(){ if(_lbRT)clearTimeout(_lbRT); _lbRT=setTimeout(()=>{_lbRT=null;_gpvUpdate('lb');},80); }
@@ -13917,8 +13948,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.48';
+const VOLME3D_VERSION = '1.14.49';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.49', date:'2026-06-15', changes:[
+    ['🪵','Laser-Box 3D-Vorschau: die Fingerzinken sind jetzt sichtbar. An den Ecken und Kanten werden Nahtlinien aus denselben Zinken-Konturen gezeichnet, sodass man sieht, wie die Zinken ineinandergreifen (vorher wirkten die bündig verzahnten Wände wie glatte Platten). „Oben offen" behält oben eine glatte Kante. Außenmaße und SVG-Export unverändert'],
+  ]},
   { version:'1.14.48', date:'2026-06-15', changes:[
     ['🪵','Laser-Box „oben offen": die Oberkante ist jetzt eine durchgehend glatte, gerade Kante ohne Zähne/Ausklinkungen. Vorder- und Rückwand schließen über die volle Breite bündig auf Außenhöhe ab, die Seitenwände sitzen sauber dazwischen — kein Überstand, keine Stufe. Gezahnt werden nur noch Boden- und Vertikalkanten. Geschlossene Box (gezahnte Oberkante für den Deckel) unverändert'],
   ]},
