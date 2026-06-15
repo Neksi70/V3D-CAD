@@ -828,7 +828,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.57<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.58<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -13453,14 +13453,44 @@ const TUTOR_LESSONS = {
   }
 };
 
+// ── Fortschritt: Firestore (users/{uid}/progress/tutorials) + localStorage-Spiegel ──
+function _fsProgressRef(){
+  const uid=window._fbUser?.uid;
+  if(!uid || !window._fbDb) return null;
+  return window._fbDb.collection('users').doc(uid).collection('progress').doc('tutorials');
+}
+function _tutorLoadLocal(){ try{ return JSON.parse(localStorage.getItem('volme3d_tutor')||'{}')||{}; }catch(e){ return {}; } }
+function _tutorSaveLocal(all){ try{ localStorage.setItem('volme3d_tutor', JSON.stringify(all)); }catch(e){} }
+function _tutorSaveProgress(){
+  if(!_tutor) return;
+  const entry={ step:_tutor.idx, done:_tutor.done.has(_tutor.lesson.steps.length-1), completed:[..._tutor.done], updated:Date.now() };
+  const all=_tutorLoadLocal(); all[_tutor.lessonId]=entry; _tutorSaveLocal(all);
+  try{ const ref=_fsProgressRef(); if(ref) ref.set({ [_tutor.lessonId]: entry }, { merge:true }).catch(e=>console.warn('[Firestore] tutor:', e)); }catch(e){}
+}
+async function _tutorLoadProgress(lessonId){
+  let prog=null;
+  try{
+    const ref=_fsProgressRef();
+    if(ref){ const doc=await ref.get(); if(doc && doc.exists){ const d=doc.data()||{}; if(d[lessonId]) prog=d[lessonId];
+      const all=_tutorLoadLocal(); if(d[lessonId]) all[lessonId]=d[lessonId]; _tutorSaveLocal(all); } }
+  }catch(e){}
+  if(!prog) prog=_tutorLoadLocal()[lessonId]||null;
+  return prog;
+}
+
 let _tutor = null;   // { lessonId, lesson, idx, done:Set, poll }
-function tutorStart(lessonId){
+async function tutorStart(lessonId){
   const lesson = TUTOR_LESSONS[lessonId]; if(!lesson) return;
   _tutorExported = false;   // frischer Start
   _tutor = { lessonId, lesson, idx:0, done:new Set(), poll:null };
   document.getElementById('tutor-title').textContent = lesson.title;
   document.getElementById('tutor-panel').classList.add('show');
-  _tutorGo(0);
+  const prog = await _tutorLoadProgress(lessonId);   // gespeicherten Stand fortsetzen
+  if(_tutor && prog){
+    if(Array.isArray(prog.completed)) _tutor.done=new Set(prog.completed.filter(i=>i>=0 && i<lesson.steps.length));
+    _tutor.idx = Math.max(0, Math.min(lesson.steps.length-1, prog.step||0));
+  }
+  if(_tutor) _tutorGo(_tutor.idx);
 }
 function tutorClose(){
   _tutorStopPoll();
@@ -13473,6 +13503,7 @@ function _tutorGo(idx){
   const n=_tutor.lesson.steps.length;
   _tutor.idx = Math.max(0, Math.min(n-1, idx));
   _tutorRender();
+  _tutorSaveProgress();
 }
 function tutorNext(){
   if(!_tutor) return;
@@ -13482,7 +13513,7 @@ function tutorNext(){
 }
 function tutorBack(){ if(_tutor) _tutorGo(_tutor.idx-1); }
 function tutorFinish(){
-  if(_tutor) _tutor.done.add(_tutor.idx);
+  if(_tutor){ _tutor.done.add(_tutor.idx); _tutorSaveProgress(); }
   notify('Kurs abgeschlossen 🎉','ok');
   tutorClose();
 }
@@ -13499,7 +13530,7 @@ function _tutorStartPoll(){
       _tutorStopPoll();
       _tutor.done.add(_tutor.idx);
       if(s.type==='action') tutorNext();   // Aktion erkannt → automatisch weiter
-      else _tutorRender();                  // Checkpoint erfüllt → Erfolg anzeigen, Nutzer klickt Weiter
+      else { _tutorRender(); _tutorSaveProgress(); }   // Checkpoint erfüllt → anzeigen + speichern
     }
   }, 500);
 }
@@ -14346,8 +14377,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.57';
+const VOLME3D_VERSION = '1.14.58';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.58', date:'2026-06-15', changes:[
+    ['🎓','Neuer Kurs-/Tutorial-Modus (Knopf „Kurs" oben): geführtes Coach-Panel mit Schritt-für-Schritt-Anleitung, Fortschrittspunkten und Zurück/Weiter. Checkpoints prüfen den Szenenzustand (z.B. „Box ~40×40×20 mm vorhanden", „Abziehen ausgeführt"), Aktions-Schritte erkennen automatisch, wenn du sie ausführst. Ein Spotlight hebt den passenden Knopf hervor. Erste Lektion: „Box → Loch hineinbohren → als STL exportieren". Der Fortschritt wird pro angemeldetem Nutzer gespeichert'],
+  ]},
   { version:'1.14.57', date:'2026-06-15', changes:[
     ['🖼️','„Meine Designs" sieht jetzt wirklich aus wie die STL-Bibliothek: Dem Karten-Raster fehlte eine Layout-Regel, wodurch die Zeilen kollabierten und die Vorschauen flach + abgeschnitten waren (ohne Name/Buttons). Behoben — saubere 4:3-Vorschau mit mittig gerahmtem Modell (gleiche Kamera wie die STL-Bibliothek), darunter Name, Datum und Aktions-Buttons'],
   ]},
