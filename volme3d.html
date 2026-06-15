@@ -459,6 +459,23 @@ body.devmode .dev-only{display:flex!important}
 .g3dm .g3ctrl{flex:1;overflow-y:auto;padding:10px 14px;font-size:12px}
 .g3dm .g3foot{display:flex;justify-content:flex-end;gap:8px;padding:11px 18px;border-top:1px solid var(--border);flex-shrink:0}
 .g3dm .g3info{font-size:10.5px;color:#888;line-height:1.5;margin-top:8px;padding-top:8px;border-top:1px solid #eee}
+/* Tutorial-/Kurs-Coach-Panel + Spotlight */
+#tutor-panel{position:fixed;right:18px;bottom:18px;width:340px;max-width:calc(100vw - 36px);background:#fff;border:1.5px solid var(--border);border-radius:14px;box-shadow:0 14px 46px rgba(0,0,0,.24);z-index:4000;font-family:var(--font);display:none;flex-direction:column;overflow:hidden}
+#tutor-panel.show{display:flex}
+#tutor-hd{display:flex;align-items:center;gap:8px;padding:12px 14px 10px;border-bottom:1px solid var(--border);font-size:14px;font-weight:800;color:var(--text);background:linear-gradient(180deg,#fff,#f6f3fc)}
+#tutor-hd .tx{margin-left:auto;cursor:pointer;color:#aaa;font-size:14px;line-height:1;padding:0 2px}
+#tutor-body{padding:13px 15px;font-size:13px;line-height:1.55;color:var(--mid)}
+#tutor-body .tt-step-title{font-size:13.5px;font-weight:800;color:var(--text);margin-bottom:6px;display:flex;align-items:center;gap:6px}
+#tutor-body .tt-status{margin-top:10px;font-size:12px;font-weight:700;border-radius:8px;padding:7px 10px;display:none}
+#tutor-body .tt-status.wait{display:block;background:#fff7ed;color:#b45309;border:1px solid #fed7aa}
+#tutor-body .tt-status.ok{display:block;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0}
+#tutor-dots{display:flex;gap:6px;justify-content:center;padding:2px 14px 10px;flex-wrap:wrap}
+#tutor-dots .td{width:8px;height:8px;border-radius:50%;background:var(--border);transition:background .15s,transform .15s}
+#tutor-dots .td.done{background:#34d399}
+#tutor-dots .td.cur{background:var(--acc);transform:scale(1.35)}
+#tutor-foot{display:flex;align-items:center;gap:7px;padding:10px 14px 13px;border-top:1px solid var(--border)}
+#tutor-spot{position:fixed;border-radius:10px;box-shadow:0 0 0 9999px rgba(15,18,30,.46),0 0 0 3px var(--acc);z-index:3900;pointer-events:none;display:none;transition:top .18s,left .18s,width .18s,height .18s}
+#tutor-spot.show{display:block}
 .g3dm .lb-warn{display:none;font-size:11px;color:#fff;background:#d33;line-height:1.45;margin-top:8px;padding:7px 9px;border-radius:6px;font-weight:600}
 .g3dm .lb-warn.show{display:block}
 .g3dm select.lb-sel{width:100%;box-sizing:border-box;padding:5px 8px;margin:2px 0 4px;border:1.5px solid var(--border);border-radius:6px;font-size:11px;font-weight:700;color:var(--text);font-family:var(--font);background:#fff;cursor:pointer}
@@ -845,6 +862,7 @@ const firebaseConfig = {
   <div id="tb-r2">
     <button class="btn" onclick="showDesigns()" style="font-weight:800" title="Design-Galerie öffnen">📁 Meine Designs</button>
     <button class="btn" onclick="_stlLibOpen()" title="STL-Bibliothek: heruntergeladene STLs durchsuchen, ansehen, drucken">📚 STL-Bibliothek</button>
+    <button class="btn" onclick="tutorStart('erste-box')" title="Geführter Kurs: Schritt für Schritt ein Teil bauen">🎓 Kurs</button>
     <div id="cur-design-wrap">
       <div id="as-dot" title="Auto-Save aktiv"></div>
       <span id="cur-design-lbl" onclick="_renameCurrentDesign()" title="Klicken zum Umbenennen">Unbenannt</span>
@@ -905,6 +923,20 @@ const firebaseConfig = {
     window.location.href='mailto:v.c.isken@gmail.com?subject='+subj+'&body='+body;
   }
 </script>
+
+<!-- TUTORIAL / KURS-MODUS -->
+<div id="tutor-spot"></div>
+<div id="tutor-panel">
+  <div id="tutor-hd">🎓 <span id="tutor-title">Kurs</span><span class="tx" onclick="tutorClose()" title="Kurs beenden">✕</span></div>
+  <div id="tutor-body"></div>
+  <div id="tutor-dots"></div>
+  <div id="tutor-foot">
+    <button class="btn" id="tutor-back" onclick="tutorBack()">‹ Zurück</button>
+    <div style="flex:1"></div>
+    <button class="btn" id="tutor-check" onclick="tutorCheckNow()" style="display:none">Prüfen</button>
+    <button class="btn pri" id="tutor-next" onclick="tutorNext()">Weiter ›</button>
+  </div>
+</div>
 
 <div id="main">
 
@@ -13372,6 +13404,100 @@ function _fpEncSet(k,v){
   if(_encEditT)clearTimeout(_encEditT); _encEditT=setTimeout(()=>{_encEditT=null;_encEditRebuild(o);},60);
 }
 // ===== END ZAHNRAD- + GEHÄUSE-GENERATOR =====
+
+// ===== TUTORIAL / KURS-MODUS =====
+// Eine Lektion = { id, title, steps:[ {type,title,text,highlight?,check?} ] }.
+// Schritttypen: 'info' (nur Weiter), 'action' (erkennt automatisch die ausgeführte
+// Aktion), 'checkpoint' (prüft den Szenenzustand). check() liest direkt aus dem
+// Szenengraph und gibt true zurück, wenn der Schritt erfüllt ist.
+let _tutorExported = false;   // wird beim STL-Export gesetzt (Hook in exportSTL)
+function _tutorMM(o){ const s=getMeshBox(o).getSize(new THREE.Vector3()); return { w:s.x*10, h:s.y*10, d:s.z*10 }; }
+function _tutorFindBoxApprox(wMM,hMM,dMM,tol){
+  return objects.some(o=>{
+    if(o.userData.isHole) return false;
+    const st=o.userData.shapeType;
+    if(st!=='box' && st!=='custom' && st!=='subtract') return false;   // Box bzw. bearbeitete Box
+    const m=_tutorMM(o);
+    return Math.abs(m.w-wMM)<=tol && Math.abs(m.h-hMM)<=tol && Math.abs(m.d-dMM)<=tol;
+  });
+}
+function _tutorOnWorkplane(o){ const b=getMeshBox(o); return Math.abs(b.min.y - workplanePoint.y) < 0.15; }
+
+const TUTOR_LESSONS = {
+  'erste-box': {
+    id: 'erste-box',
+    title: 'Erste Box → Loch → STL',
+    steps: [
+      { type:'info', title:'Willkommen! 👋',
+        text:'In diesem kurzen Kurs baust du eine <b>Box</b>, bohrst ein <b>Loch</b> hinein und exportierst das Ergebnis als <b>STL</b>. Klick unten auf <b>Weiter</b>.' },
+      { type:'checkpoint', title:'Box hinzufügen', highlight:'[onclick="addShape(\'box\')"]',
+        text:'Klick links unter <b>Grundkörper</b> auf <b>Box</b>.',
+        check:()=> objects.some(o=>o.userData.shapeType==='box' && !o.userData.isHole) },
+      { type:'checkpoint', title:'Box auf ca. 40 × 40 × 20 mm', highlight:'#props',
+        text:'Wähle die Box aus und stelle die Maße rechts auf etwa <b>40 mm</b> breit, <b>40 mm</b> tief, <b>20 mm</b> hoch (±7 mm sind ok).',
+        check:()=> _tutorFindBoxApprox(40,20,40,7) },
+      { type:'checkpoint', title:'Bohrung erstellen', highlight:'#mb-h',
+        text:'Schalte oben links auf <b>○ Bohrung</b> und füge dann einen <b>Zylinder</b> hinzu — er erscheint rot als Bohrung.',
+        check:()=> objects.some(o=>o.userData.isHole) },
+      { type:'action', title:'Loch abziehen', highlight:'[onclick="subtractHoles()"]',
+        text:'Wähle die <b>Box</b> und die <b>Bohrung</b> aus (Auswahlrechteck oder Shift+Klick) und klick <b>⊖ Abziehen</b>.',
+        check:()=> objects.some(o=>o.userData.isSubtract) },
+      { type:'action', title:'Als STL exportieren', highlight:'.main-stl',
+        text:'Klick oben rechts auf <b>⬇ Export</b> und speichere das Teil als STL.',
+        check:()=> _tutorExported },
+      { type:'info', title:'Geschafft! 🎉',
+        text:'Du hast eine Box gebaut, ein Loch hineingebohrt und als STL exportiert — so entstehen die meisten Teile in Volme3D. Viel Spaß beim Weiterbauen!' },
+    ]
+  }
+};
+
+let _tutor = null;   // { lessonId, lesson, idx, done:Set }
+function tutorStart(lessonId){
+  const lesson = TUTOR_LESSONS[lessonId]; if(!lesson) return;
+  _tutor = { lessonId, lesson, idx:0, done:new Set() };
+  document.getElementById('tutor-title').textContent = lesson.title;
+  document.getElementById('tutor-panel').classList.add('show');
+  _tutorGo(0);
+}
+function tutorClose(){
+  _tutor = null;
+  document.getElementById('tutor-panel').classList.remove('show');
+  const sp=document.getElementById('tutor-spot'); if(sp) sp.classList.remove('show');
+}
+function _tutorGo(idx){
+  if(!_tutor) return;
+  const n=_tutor.lesson.steps.length;
+  _tutor.idx = Math.max(0, Math.min(n-1, idx));
+  _tutorRender();
+}
+function tutorNext(){
+  if(!_tutor) return;
+  if(_tutor.idx >= _tutor.lesson.steps.length-1){ tutorFinish(); return; }
+  _tutor.done.add(_tutor.idx);
+  _tutorGo(_tutor.idx+1);
+}
+function tutorBack(){ if(_tutor) _tutorGo(_tutor.idx-1); }
+function tutorFinish(){
+  if(_tutor) _tutor.done.add(_tutor.idx);
+  notify('Kurs abgeschlossen 🎉','ok');
+  tutorClose();
+}
+function tutorCheckNow(){ /* Teilschritt 2 */ }
+function _tutorRender(){
+  if(!_tutor) return;
+  const steps=_tutor.lesson.steps, s=steps[_tutor.idx];
+  const icon = s.type==='info' ? 'ℹ️' : (s.type==='checkpoint' ? '✅' : '🎯');
+  document.getElementById('tutor-body').innerHTML =
+    `<div class="tt-step-title">${icon} ${s.title||''}</div><div>${s.text||''}</div>`+
+    `<div class="tt-status" id="tutor-status"></div>`;
+  document.getElementById('tutor-dots').innerHTML =
+    steps.map((st,i)=>`<div class="td ${_tutor.done.has(i)?'done':''} ${i===_tutor.idx?'cur':''}"></div>`).join('');
+  document.getElementById('tutor-back').disabled = _tutor.idx===0;
+  const next=document.getElementById('tutor-next');
+  next.textContent = (_tutor.idx>=steps.length-1) ? 'Fertig ✓' : 'Weiter ›';
+  document.getElementById('tutor-check').style.display = 'none';   // Teilschritt 2
+}
+// ===== END TUTORIAL / KURS-MODUS =====
 
 // ===== LASER-BOX (FINGERZINKEN) GENERATOR =====
 // Komplett client-seitig, reines 2D-Mathe (kein OCCT, kein Server).
