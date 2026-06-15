@@ -200,7 +200,7 @@ function Handle-Client($client) {
     for ($i = 1; $i -lt $lines.Count; $i++) { $ln = $lines[$i]; $idx = $ln.IndexOf(':'); if ($idx -gt 0) { $headers[$ln.Substring(0, $idx).Trim().ToLower()] = $ln.Substring($idx + 1).Trim() } }
     $origin = $headers['origin']; $cors = New-Cors $origin
     if ($method -eq 'OPTIONS') { Send-Bytes $stream '204 No Content' $cors 'text/plain' (New-Object byte[] 0); return }
-    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 4; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir) }) $origin; return }
+    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 5; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir) }) $origin; return }
     if ($method -eq 'GET' -and $path -eq '/list') {
         if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = 'origin not allowed' }) $origin; return }
         Send-Json $stream '200 OK' ([ordered]@{ ok = $true; dir = (Get-LibDir); files = @(Get-LibList) }) $origin; return
@@ -228,6 +228,23 @@ function Handle-Client($client) {
         try { Rename-Item -LiteralPath $fp -NewName $new; Send-Json $stream '200 OK' (@{ ok = $true; name = $new }) $origin }
         catch { Send-Json $stream '500 Error' (@{ ok = $false; error = "$_" }) $origin }
         return
+    }
+    if ($method -eq 'POST' -and $path -eq '/printmulti') {
+        if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = "origin not allowed: $origin" }) $origin; return }
+        $len = 0; if ($headers.ContainsKey('content-length')) { [void][int]::TryParse($headers['content-length'], [ref]$len) }
+        $body = if ($len -gt 0) { Read-Body $stream $len } else { New-Object byte[] 0 }
+        $names = @(); $want = ''
+        try { $j = [System.Text.Encoding]::UTF8.GetString($body) | ConvertFrom-Json; if ($j.files) { $names = @($j.files) }; if ($j.slicer) { $want = ([string]$j.slicer).ToLower() } } catch {}
+        if ($names.Count -eq 0) { Send-Json $stream '400 Bad Request' (@{ ok = $false; error = 'keine Dateien' }) $origin; return }
+        $slicers = Get-Slicers
+        if ($slicers.Count -eq 0) { Send-Json $stream '500 Error' (@{ ok = $false; error = 'Kein Slicer gefunden' }) $origin; return }
+        $key = if ($slicers.Contains($want)) { $want } else { @($slicers.Keys)[0] }
+        $exe = $slicers[$key]; $argList = @(); $okFiles = @()
+        foreach ($n in $names) { $fp = Get-LibFilePath ([string]$n); if ($fp) { $argList += ('"' + $fp + '"'); $okFiles += (Split-Path -Leaf $fp) } }
+        if ($argList.Count -eq 0) { Send-Json $stream '404 Not Found' (@{ ok = $false; error = 'keine Datei gefunden' }) $origin; return }
+        try { Start-Process -FilePath $exe -ArgumentList $argList | Out-Null }
+        catch { Send-Json $stream '500 Error' (@{ ok = $false; error = "Slicer-Start fehlgeschlagen: $_" }) $origin; return }
+        Send-Json $stream '200 OK' ([ordered]@{ ok = $true; slicer = $key; count = $argList.Count; files = $okFiles }) $origin; return
     }
     if ($method -eq 'POST' -and ($path -eq '/collect' -or $path -eq '/print')) {
         if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = "origin not allowed: $origin" }) $origin; return }

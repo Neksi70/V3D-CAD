@@ -482,6 +482,13 @@ body.devmode .dev-only{display:flex!important}
 .ds-thumb-wrap{position:relative;width:100%;aspect-ratio:4/3;background:var(--bg);overflow:hidden;display:flex;align-items:center;justify-content:center}
 .ds-thumb{width:100%;height:100%;object-fit:cover;display:block}
 .ds-nothumb{font-size:40px;color:var(--dim)}
+.ds-card.sel{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc)}
+.ds-chk{position:absolute;top:6px;left:6px;width:21px;height:21px;border-radius:5px;background:rgba(255,255,255,.93);border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:var(--acc);cursor:pointer;z-index:2;line-height:1}
+.ds-chk:hover{border-color:var(--acc)}
+.ds-chk.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+.ds-star{position:absolute;top:5px;right:6px;font-size:18px;line-height:1;color:#f5b301;cursor:pointer;z-index:2;text-shadow:0 1px 3px rgba(0,0,0,.4);opacity:.85}
+.ds-star:hover{opacity:1;transform:scale(1.12)}
+.ds-star.on{opacity:1}
 .ds-cur-badge{position:absolute;top:5px;right:5px;background:var(--acc);color:#fff;font-size:9px;font-weight:800;padding:2px 7px;border-radius:10px;letter-spacing:.2px}
 .ds-info{padding:9px 10px 4px}
 .ds-name{font-weight:700;font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -786,7 +793,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.41<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.42<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -2139,6 +2146,25 @@ const firebaseConfig = {
       <button class="btn" onclick="_stlLibPickFolder()" title="Anderen Ordner wählen">📂 Ordner wählen</button>
       <button class="btn" onclick="_stlLibRefresh()" title="Neu einlesen">↻</button>
       <button class="btn" onclick="_stlLibClose()" style="padding:4px 10px;font-size:15px;line-height:1;margin-left:4px">✕</button>
+    </div>
+    <div id="stllib-bar" style="display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--border);background:#fff;flex-shrink:0;font-size:12px;flex-wrap:wrap">
+      <label style="color:var(--dim)">Sortieren</label>
+      <select id="stllib-sort" onchange="_stlSetSort(this.value)" style="padding:4px 6px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;font-family:var(--font)">
+        <option value="date_desc">Datum (neu → alt)</option>
+        <option value="date_asc">Datum (alt → neu)</option>
+        <option value="name_asc">Name (A → Z)</option>
+        <option value="name_desc">Name (Z → A)</option>
+        <option value="size_desc">Größe (groß → klein)</option>
+        <option value="size_asc">Größe (klein → groß)</option>
+      </select>
+      <button id="stllib-favfilter" class="btn" onclick="_stlToggleFavFilter()" title="Nur Favoriten anzeigen">☆ Favoriten</button>
+      <div style="flex:1"></div>
+      <div id="stllib-selbar" style="display:none;align-items:center;gap:7px">
+        <span id="stllib-selcount" style="color:var(--dim);font-weight:700"></span>
+        <button class="btn pri" onclick="_stlPrintSelected()" title="Alle Markierten zusammen auf eine Druckplatte öffnen">🖨 Zusammen drucken</button>
+        <button class="btn btn-del" onclick="_stlDeleteSelected()" style="background:var(--red);color:#fff;border-color:var(--red)">🗑 Löschen</button>
+        <button class="btn" onclick="_stlClearSel()">Aufheben</button>
+      </div>
     </div>
     <div id="stllib-grid" style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(188px,1fr));gap:12px;overflow-y:auto;flex:1;min-height:220px;align-content:start;grid-auto-rows:max-content"></div>
   </div>
@@ -13063,8 +13089,9 @@ function _fpEncSet(k,v){
 
 // ===== STL-BIBLIOTHEK =====
 const STLLIB_HELPER = 'http://127.0.0.1:7777';
-const STLLIB_HELPER_LATEST = 4;   // aktuelle Helfer-Version; ältere -> Update-Knopf
+const STLLIB_HELPER_LATEST = 5;   // aktuelle Helfer-Version; ältere -> Update-Knopf
 let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0, _stlThumbObs=null, _stlThumbPending=[], _stlThumbBusy=false, _stlPollTimer=null, _stlListSig='';
+let _stlSort='date_desc', _stlFavOnly=false, _stlFav=new Set(), _stlSel=new Set();
 function _stlStopPoll(){ if(_stlPollTimer){ clearInterval(_stlPollTimer); _stlPollTimer=null; } }
 function _stlStartPoll(){ _stlStopPoll(); _stlPollTimer=setInterval(_stlPoll,15000); }   // Galerie automatisch nachladen
 async function _stlPoll(){
@@ -13086,10 +13113,15 @@ function _stlIdb(){return new Promise((res,rej)=>{const r=indexedDB.open('volme3
 function _stlIdbGet(store,key){return _stlIdb().then(db=>new Promise((res,rej)=>{const t=db.transaction(store,'readonly').objectStore(store).get(key);t.onsuccess=()=>res(t.result);t.onerror=()=>rej(t.error);}));}
 function _stlIdbSet(store,key,val){return _stlIdb().then(db=>new Promise((res,rej)=>{const tx=db.transaction(store,'readwrite');tx.objectStore(store).put(val,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);}));}
 
-function _stlLibClose(){ document.getElementById('stllib-modal').classList.remove('show'); _stlStopPoll(); }
+function _stlLibClose(){ document.getElementById('stllib-modal').classList.remove('show'); _stlStopPoll(); _stlSel.clear(); _stlUpdateSelBar(); }
 function _stlLibRefresh(){ if(_stlSource==='helper') _stlLoadFromHelper(); else _stlLibScanRender(); }
 async function _stlLibOpen(){
   document.getElementById('stllib-modal').classList.add('show');
+  // Favoriten + Sortierung aus dem lokalen Speicher laden
+  try{ _stlFav=new Set(await _stlIdbGet('kv','favorites')||[]); }catch(e){ _stlFav=new Set(); }
+  try{ const sv=await _stlIdbGet('kv','sort'); if(sv) _stlSort=sv; }catch(e){}
+  const ss=document.getElementById('stllib-sort'); if(ss) ss.value=_stlSort;
+  _stlSel.clear(); _stlFavOnly=false; _stlUpdateFavBtn(); _stlUpdateSelBar();
   await _stlPingHelper();
   let pref=''; try{ pref=await _stlIdbGet('kv','source'); }catch(e){}
   // Bevorzugt: Helfer-Bibliothek (kann Downloads), wenn so eingestellt und erreichbar
@@ -13142,23 +13174,65 @@ async function _stlScanDir(dir,prefix,depth){
 }
 function _stlFmtSize(n){ return n>=1048576?(n/1048576).toFixed(1)+' MB':(n/1024).toFixed(0)+' KB'; }
 function _stlEsc(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function _stlSortApply(){
+  const cmp={
+    date_desc:(a,b)=>b.mtime-a.mtime, date_asc:(a,b)=>a.mtime-b.mtime,
+    name_asc:(a,b)=>a.name.localeCompare(b.name,'de'), name_desc:(a,b)=>b.name.localeCompare(a.name,'de'),
+    size_desc:(a,b)=>b.size-a.size, size_asc:(a,b)=>a.size-b.size
+  }[_stlSort]||((a,b)=>b.mtime-a.mtime);
+  _stlFiles.sort(cmp);
+}
+function _stlSetSort(v){ _stlSort=v; _stlIdbSet('kv','sort',v).catch(()=>{}); _stlRenderGrid(); }
+function _stlUpdateFavBtn(){
+  const b=document.getElementById('stllib-favfilter'); if(!b) return;
+  b.classList.toggle('pri',_stlFavOnly);
+  b.textContent=(_stlFavOnly?'★ Favoriten':'☆ Favoriten');
+}
+function _stlToggleFavFilter(){ _stlFavOnly=!_stlFavOnly; _stlUpdateFavBtn(); _stlRenderGrid(); }
+function _stlToggleFav(idx){
+  const f=_stlFiles[idx]; if(!f) return;
+  if(_stlFav.has(f.name)) _stlFav.delete(f.name); else _stlFav.add(f.name);
+  _stlIdbSet('kv','favorites',[..._stlFav]).catch(()=>{});
+  if(_stlFavOnly){ _stlRenderGrid(); return; }
+  const card=document.getElementById('stlcard-'+idx); if(card){ const st=card.querySelector('.ds-star'); const on=_stlFav.has(f.name); if(st){ st.classList.toggle('on',on); st.textContent=on?'★':'☆'; } }
+}
+function _stlToggleSel(idx){
+  const f=_stlFiles[idx]; if(!f) return;
+  if(_stlSel.has(f.name)) _stlSel.delete(f.name); else _stlSel.add(f.name);
+  const card=document.getElementById('stlcard-'+idx);
+  if(card){ const on=_stlSel.has(f.name); card.classList.toggle('sel',on); const ck=card.querySelector('.ds-chk'); if(ck){ ck.classList.toggle('on',on); ck.textContent=on?'✓':''; } }
+  _stlUpdateSelBar();
+}
+function _stlClearSel(){ _stlSel.clear(); _stlUpdateSelBar(); _stlRenderGrid(); }
+function _stlUpdateSelBar(){
+  const bar=document.getElementById('stllib-selbar'), cnt=document.getElementById('stllib-selcount');
+  const n=_stlSel.size;
+  if(bar) bar.style.display=n>0?'flex':'none';
+  if(cnt) cnt.textContent=n+(n===1?' markiert':' markiert');
+}
 function _stlRenderGrid(){
   const grid=document.getElementById('stllib-grid'); if(!grid) return;
   if(!_stlFiles.length){ _stlLibEmpty('Keine STL/3MF/OBJ-Dateien im Ordner gefunden.', '📂 Anderer Ordner', '_stlLibPickFolder()'); return; }
+  _stlSortApply();
   const q=(document.getElementById('stllib-search')?.value||'').trim().toLowerCase();
-  const list=q?_stlFiles.filter(f=>f.name.toLowerCase().includes(q)):_stlFiles;
+  let list=q?_stlFiles.filter(f=>f.name.toLowerCase().includes(q)):_stlFiles.slice();
+  if(_stlFavOnly) list=list.filter(f=>_stlFav.has(f.name));
   grid.innerHTML='';
-  if(!list.length){ grid.innerHTML='<div class="stl-empty">Nichts gefunden für „'+_stlEsc(q)+'".</div>'; return; }
+  if(!list.length){ grid.innerHTML='<div class="stl-empty">'+(_stlFavOnly?'Noch keine Favoriten — tippe auf den ☆ Stern einer Karte.':'Nichts gefunden für „'+_stlEsc(q)+'".')+'</div>'; return; }
   if(_stlThumbObs) _stlThumbObs.disconnect();
   _stlThumbObs=new IntersectionObserver(es=>{ for(const e of es){ if(e.isIntersecting){ const f=e.target._stlF; _stlThumbObs.unobserve(e.target); if(f) _stlThumbEnqueue(f); } } },{root:grid,rootMargin:'300px'});
   list.forEach(f=>{
     const idx=_stlFiles.indexOf(f);
-    const card=document.createElement('div'); card.className='ds-card';
+    const card=document.createElement('div'); card.className='ds-card'; card.id='stlcard-'+idx;
+    const isFav=_stlFav.has(f.name), isSel=_stlSel.has(f.name);
+    if(isSel) card.classList.add('sel');
     const inner = f._thumbUrl ? `<img class="ds-thumb" src="${f._thumbUrl}">` : (f._thumbDone ? '<div class="ds-nothumb">📦</div>' : '<div class="ds-nothumb">⏳</div>');
     const canEdit = f.lib && _stlHelperVer>=4;
     const ren = canEdit ? `<span onclick="_stlRenameStart(${idx})" title="Umbenennen" style="cursor:pointer;color:var(--dim);font-size:12px;flex-shrink:0;padding:0 2px">✎</span>` : '';
     const del = canEdit ? `<button class="btn btn-del" onclick="_stlDelete(${idx})" title="Aus Bibliothek löschen">🗑</button>` : '';
-    card.innerHTML=`<div class="ds-thumb-wrap">${inner}</div>`+
+    const chk = `<span class="ds-chk${isSel?' on':''}" onclick="event.stopPropagation();_stlToggleSel(${idx})" title="Markieren (Mehrfachauswahl)">${isSel?'✓':''}</span>`;
+    const star = `<span class="ds-star${isFav?' on':''}" onclick="event.stopPropagation();_stlToggleFav(${idx})" title="Favorit">${isFav?'★':'☆'}</span>`;
+    card.innerHTML=`<div class="ds-thumb-wrap">${inner}${chk}${star}</div>`+
       `<div class="ds-info"><div style="display:flex;align-items:center;gap:2px"><div class="ds-name" id="stlnm-${idx}" title="${_stlEsc(f.path)}"${canEdit?` ondblclick="_stlRenameStart(${idx})"`:''} style="flex:1;min-width:0">${_stlEsc(f.name)}</div>${ren}</div><div class="ds-date">${_stlFmtSize(f.size)} · ${new Date(f.mtime).toLocaleDateString()}</div></div>`+
       `<div class="ds-acts"><button class="btn" onclick="_stlOpenInScene(${idx})">📥 Öffnen</button><button class="btn pri" onclick="_stlPrint(${idx})" title="Im Slicer öffnen">🖨 Drucken</button>${del}</div>`;
     grid.appendChild(card);
@@ -13263,6 +13337,33 @@ async function _stlPrint(idx){
   }catch(e){ _stlHelperOk=false; _stlUpdateHelperUI(); _stlHelperMissing(); }
 }
 function _stlHelperMissing(){ notify('Druck-Helfer nicht erreichbar — einmalig einrichten (Links in der Ordner-Ansicht / LIESMICH)','w'); }
+async function _stlPrintSelected(){
+  const names=[..._stlSel].filter(n=>{ const f=_stlFiles.find(x=>x.name===n); return f&&f.lib; });
+  if(!names.length){ notify('Keine Bibliotheksdateien markiert — gemeinsames Drucken geht nur mit der Helfer-Bibliothek','w'); return; }
+  if(!_stlHelperOk){ _stlHelperMissing(); return; }
+  if(_stlHelperVer<5){ notify('Bitte Druck-Helfer aktualisieren (⬇ oben) — gemeinsames Drucken braucht die neue Version','w'); return; }
+  const slicer=document.getElementById('stllib-slicer')?.value||'';
+  try{
+    const res=await fetch(STLLIB_HELPER+'/printmulti',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({files:names,slicer})});
+    const j=await res.json().catch(()=>({}));
+    if(res.ok&&j.ok){ notify(`🖨 ${j.count||names.length} Teile in ${j.slicer||'Slicer'} geöffnet`,'ok'); _stlClearSel(); }
+    else notify('Drucken: '+(j.error||('HTTP '+res.status)),'w');
+  }catch(e){ _stlHelperOk=false; _stlUpdateHelperUI(); _stlHelperMissing(); }
+}
+async function _stlDeleteSelected(){
+  const names=[..._stlSel].filter(n=>{ const f=_stlFiles.find(x=>x.name===n); return f&&f.lib; });
+  if(!names.length){ notify('Keine löschbaren Dateien markiert (nur Helfer-Bibliothek)','w'); return; }
+  if(!confirm(names.length+' Datei(en) endgültig aus der Bibliothek löschen?')) return;
+  const deleted=[]; let fail=0;
+  for(const n of names){
+    try{ const res=await fetch(STLLIB_HELPER+'/delete',{method:'POST',headers:{'X-LibFile':encodeURIComponent(n)}}); const j=await res.json().catch(()=>({}));
+      if(res.ok&&j.ok){ deleted.push(n); _stlFav.delete(n); } else fail++; }
+    catch(e){ fail++; }
+  }
+  if(deleted.length){ _stlIdbSet('kv','favorites',[..._stlFav]).catch(()=>{}); _stlFiles=_stlFiles.filter(f=>!deleted.includes(f.name)); }
+  _stlSel.clear(); _stlListSig=''; _stlUpdateSelBar(); _stlRenderGrid();
+  notify(deleted.length+' gelöscht'+(fail?', '+fail+' fehlgeschlagen':''),'w');
+}
 async function _stlDelete(idx){
   const f=_stlFiles[idx]; if(!f||!f.lib) return;
   if(!confirm('„'+f.name+'" aus der Bibliothek löschen?\n(Die Datei wird endgültig entfernt.)')) return;
@@ -13401,8 +13502,12 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.41';
+const VOLME3D_VERSION = '1.14.42';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.42', date:'2026-06-15', changes:[
+    ['⭐','STL-Bibliothek: Favoriten (Stern oben rechts), Sortieren (Datum / Name / Größe) und ein Favoriten-Filter — Ordnung auch bei vielen Dateien'],
+    ['🖨','STL-Bibliothek: Mehrfachauswahl — mehrere Modelle markieren (Häkchen oben links) und gemeinsam auf EINE Druckplatte schicken oder zusammen löschen. Braucht den aktualisierten Druck-Helfer (oben auf „Helfer aktualisieren")'],
+  ]},
   { version:'1.14.41', date:'2026-06-15', changes:[
     ['⚙️','Neuer Zahnrad-Generator: echte Evolventen-Stirnräder mit einstellbarem Modul, Zähnezahl, Breite und Mittenbohrung — sofort druckbar'],
     ['📦','Neuer Gehäuse-/Box-Generator: parametrische Box als Unterteil (oben offen) oder passender Deckel — mit Wandstärke, Schraubdomen (M3/M4) und umlaufender Lippe'],
