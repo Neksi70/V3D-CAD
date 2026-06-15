@@ -108,6 +108,10 @@ body.devmode .dev-only{display:flex!important}
 .sli-item:first-child{border-radius:var(--rs) var(--rs) 0 0}
 .sli-hint{padding:4px 12px 7px;font-size:10px;color:var(--dim);border-top:1px solid var(--border)}
 .sli-sep{height:1px;background:var(--border);margin:3px 0}
+.outdir-status{font-size:10px;font-weight:700;color:var(--acc);padding:7px 12px 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:230px}
+.outdir-status:empty{display:none}
+.outdir-clear{font-size:11px;color:var(--mid)}
+.outdir-note{font-size:10.5px;color:var(--dim);padding:9px 12px;line-height:1.5;white-space:normal;max-width:220px}
 #lt-workplane.pick-mode{color:var(--acc);background:var(--alit)}
 #lt-workplane.wp-set{color:#f97316}
 #btn-spacemouse.on{color:var(--acc);border-color:var(--acc);background:var(--alit)}
@@ -807,7 +811,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.50<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.51<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -856,6 +860,12 @@ const firebaseConfig = {
         <button class="btn pri main-stl" onclick="exportSTL()" title="STL herunterladen">⬇ Export</button>
         <button class="btn pri spl" onclick="toggleStlMenu(event)" title="An Slicer senden">▾</button>
         <div id="stl-menu">
+          <div id="outdir-sec">
+            <div class="outdir-status" id="outdir-status"></div>
+            <div class="sli-item" onclick="_pickOutputFolder()"><span id="outdir-btn-lbl">📁 Ausgabeordner wählen</span></div>
+            <div class="sli-item outdir-clear" id="outdir-clear" style="display:none" onclick="_clearOutputFolder()">↺ Wieder herunterladen</div>
+            <div class="sli-sep"></div>
+          </div>
           <div class="sli-item" onclick="exportSTL()">⬇ STL</div>
           <div class="sli-item" onclick="export3MF()">⬇ 3MF (zum Einfärben)</div>
           <div class="sli-item" onclick="exportPartsSTL()">⬇ STL pro Körper</div>
@@ -9955,13 +9965,103 @@ function _designFilename(ext) {
   return safe.replace(/[^a-zA-Z0-9_\-äöüÄÖÜß ]/g, '').trim().replace(/\s+/g, '_') + '.' + ext;
 }
 
+// ===== AUSGABEORDNER: Exporte direkt in einen gewählten Ordner schreiben =====
+// File System Access API (showDirectoryPicker mode:'readwrite') — Schreibzugriff gibt
+// es nur in Chromium (Chrome/Edge). In Firefox/Safari bleibt der Standard-Download.
+// Der Verzeichnis-Handle wird in IndexedDB (Store 'kv', Key 'outdir') gemerkt und über
+// Sitzungen hinweg per query-/requestPermission wieder freigeschaltet. Muster wie die
+// bestehende Eingabe-Ordnerauswahl der STL-Bibliothek.
+const _canWriteDir = !!window.showDirectoryPicker;
+let _outDirHandle = null, _outDirLoaded = false;
+
+async function _outDirLoad() {
+  if (_outDirLoaded) return _outDirHandle;
+  _outDirLoaded = true;
+  try { _outDirHandle = (await _stlIdbGet('kv', 'outdir')) || null; } catch(e) { _outDirHandle = null; }
+  _updateOutDirBtn();
+  return _outDirHandle;
+}
+async function _outDirPerm(handle, request) {     // -> 'granted' | 'prompt' | 'denied'
+  if (!handle || !handle.queryPermission) return 'denied';
+  try {
+    let p = await handle.queryPermission({ mode: 'readwrite' });
+    if (p !== 'granted' && request) p = await handle.requestPermission({ mode: 'readwrite' });
+    return p;
+  } catch(e) { return 'denied'; }
+}
+async function _pickOutputFolder() {
+  document.getElementById('stl-menu')?.classList.remove('show');
+  if (!_canWriteDir) { notify('Direktes Speichern in einen Ordner benötigt Chrome/Edge — in Firefox wird heruntergeladen', 'w'); return; }
+  let h;
+  try { h = await window.showDirectoryPicker({ id: 'volme3d-out', mode: 'readwrite' }); }
+  catch(e) { if (e.name !== 'AbortError') notify('Ordner: ' + e.message, 'w'); return; }
+  _outDirHandle = h; _outDirLoaded = true;
+  try { await _stlIdbSet('kv', 'outdir', h); } catch(e) {}
+  _updateOutDirBtn();
+  notify('📁 Ausgabeordner: ' + h.name + ' — Exporte landen jetzt dort', 'ok');
+}
+async function _clearOutputFolder() {
+  document.getElementById('stl-menu')?.classList.remove('show');
+  _outDirHandle = null; _outDirLoaded = true;
+  try { await _stlIdbSet('kv', 'outdir', null); } catch(e) {}
+  _updateOutDirBtn();
+  notify('Exporte werden wieder heruntergeladen', 'ok');
+}
+// Zentral: mehrere Blobs speichern. In den Ausgabeordner schreiben (Chromium, mit
+// Schreibrecht), sonst Standard-Download (gestaffelt). files = [{blob, name}].
+// Rückgabe: { wrote:bool, ok:int, err:int, dir:string }
+async function _saveExportMany(files) {
+  await _outDirLoad();
+  if (_canWriteDir && _outDirHandle) {
+    const perm = await _outDirPerm(_outDirHandle, true);
+    if (perm === 'granted') {
+      let ok = 0, err = 0;
+      for (const f of files) {
+        try {
+          const fh = await _outDirHandle.getFileHandle(f.name, { create: true });
+          const w = await fh.createWritable();
+          await w.write(f.blob); await w.close();
+          ok++;
+        } catch(e) { console.warn('Ordner-Schreiben ' + f.name + ' fehlgeschlagen:', e); err++; }
+      }
+      if (ok > 0) return { wrote: true, ok, err, dir: _outDirHandle.name };
+      notify('Ordner-Schreiben fehlgeschlagen — wird heruntergeladen', 'w');   // alles fehlgeschlagen → Fallback
+    } else {
+      notify('Ordner-Zugriff nicht erteilt — wird heruntergeladen', 'w');
+    }
+  }
+  // Fallback: Standard-Download (Firefox/Safari, kein Ordner, oder Schreibfehler)
+  files.forEach((f, i) => setTimeout(() => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(f.blob); a.download = f.name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }, i * 200));
+  return { wrote: false, ok: files.length, err: 0 };
+}
+async function _saveExport(blob, filename) { return _saveExportMany([{ blob, name: filename }]); }
+function _updateOutDirBtn() {
+  const status = document.getElementById('outdir-status');
+  if (status) status.textContent = _outDirHandle ? ('Speichert in: ' + _outDirHandle.name) : '';
+  const lbl = document.getElementById('outdir-btn-lbl');
+  if (lbl) lbl.textContent = _outDirHandle ? '📁 Ordner ändern' : '📁 Ausgabeordner wählen';
+  const clr = document.getElementById('outdir-clear');
+  if (clr) clr.style.display = _outDirHandle ? '' : 'none';
+}
+// Menü-Bereich beim Öffnen aktualisieren (Firefox: Hinweis statt Button)
+async function _refreshOutDirMenu() {
+  const sec = document.getElementById('outdir-sec'); if (!sec) return;
+  if (!_canWriteDir) {
+    sec.innerHTML = '<div class="outdir-note">Direktes Speichern in einen Ordner gibt es nur in Chrome/Edge — hier werden Exporte heruntergeladen.</div><div class="sli-sep"></div>';
+    return;
+  }
+  await _outDirLoad();
+}
+
 function exportSTL() {
   const r = _buildStlBlob(); if (!r) return;
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(r.blob);
-  a.download = _designFilename('stl');
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  notify(`STL exportiert ✓ (${r.count} Dreiecke)`, 'ok');
+  _saveExport(r.blob, _designFilename('stl')).then(res =>
+    notify(`STL ${res.wrote ? '→ ' + res.dir : 'exportiert'} ✓ (${r.count} Dreiecke)`, 'ok'));
 }
 
 function exportToBumpMesh() {
@@ -10025,14 +10125,10 @@ function exportOBJ() {
     const r = parseInt(hex.slice(0,2),16)/255, g = parseInt(hex.slice(2,4),16)/255, b = parseInt(hex.slice(4,6),16)/255;
     mtl.push(`newmtl ${name}`, `Kd ${r.toFixed(4)} ${g.toFixed(4)} ${b.toFixed(4)}`, 'Ka 0.0000 0.0000 0.0000', 'd 1.0', 'illum 1');
   }
-  const dl = (text, fname) => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
-    a.download = fname; document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  };
-  dl(lines.join('\n'), base + '.obj');
-  setTimeout(() => dl(mtl.join('\n'), mtlName), 150);
-  notify(`OBJ + MTL exportiert (${mats.size} Material/Farbe) ✓`, 'ok');
+  const objBlob = new Blob([lines.join('\n')], { type: 'text/plain' });
+  const mtlBlob = new Blob([mtl.join('\n')], { type: 'text/plain' });
+  _saveExportMany([{ blob: objBlob, name: base + '.obj' }, { blob: mtlBlob, name: mtlName }]).then(res =>
+    notify(`OBJ + MTL ${res.wrote ? '→ ' + res.dir : 'exportiert'} (${mats.size} Material/Farbe) ✓`, 'ok'));
 }
 
 // Jeden Körper (Teil + Gravur-Inlay) als EIGENE STL-Datei → in Bambu/Prusa beide
@@ -10049,18 +10145,14 @@ function exportPartsSTL() {
   objects.forEach(traverse);
   if (!meshes.length) { notify('Keine Flächen', 'w'); return; }
   const used = {};
-  meshes.forEach((m, i) => {
+  const files = meshes.map((m, i) => {
     const buf = _meshToStlBuf(m);
     let nm = (m.userData?.name || ('Koerper' + i)).replace(/[\\/\s]+/g, '_');
     used[nm] = (used[nm] || 0) + 1; if (used[nm] > 1) nm += '_' + used[nm];
-    setTimeout(() => {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([buf], { type: 'application/octet-stream' }));
-      a.download = `${base}_${nm}.stl`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    }, i * 250);
+    return { blob: new Blob([buf], { type: 'application/octet-stream' }), name: `${base}_${nm}.stl` };
   });
-  notify(`${meshes.length} STL-Dateien (pro Körper) exportiert ✓`, 'ok');
+  _saveExportMany(files).then(res =>
+    notify(`${res.ok} STL-Dateien (pro Körper) ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓`, 'ok'));
 }
 
 // 3MF mit getrennten, farbigen Körpern → Bambu/Orca öffnet sie deckungsgleich
@@ -10140,11 +10232,9 @@ ${partXml.join('\n')}
       'Metadata/model_settings.config': u8(cfg),
     }, { level: 6 });
     const fname = _designFilename('3mf');
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([zipped], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' }));
-    a.download = fname;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    notify(`3MF „${fname}" — ${meshes.length} Teile, ${colorIndex.size} Farbe/n ✓`, 'ok');
+    const blob3mf = new Blob([zipped], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
+    _saveExport(blob3mf, fname).then(res =>
+      notify(`3MF „${fname}" ${res.wrote ? '→ ' + res.dir : ''} — ${meshes.length} Teile, ${colorIndex.size} Farbe/n ✓`, 'ok'));
   } catch(e) {
     console.error('3MF Export Fehler:', e);
     notify('3MF Fehler: ' + (e.message || e), 'w');
@@ -10164,7 +10254,9 @@ function exportSTEP() {
 
 function toggleStlMenu(e) {
   e.stopPropagation();
-  document.getElementById('stl-menu').classList.toggle('show');
+  const m = document.getElementById('stl-menu');
+  m.classList.toggle('show');
+  if (m.classList.contains('show')) _refreshOutDirMenu();   // Ausgabeordner-Status/Hinweis aktualisieren
 }
 
 async function sendToSlicer(type) {
@@ -10991,6 +11083,7 @@ function _detectResizeForTexture() {
   _texReapplyTimer = setTimeout(() => _reapplyTexture(o), 250);   // erst wenn Ziehen ruht
 }
 animate();
+_outDirLoad();   // gemerkten Ausgabeordner früh laden (Status im Export-Menü zeigen)
 
 const _ebh = document.getElementById('edge-bevel-handle');
 _ebh.style.touchAction = 'none';
@@ -13957,8 +14050,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.50';
+const VOLME3D_VERSION = '1.14.51';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.51', date:'2026-06-15', changes:[
+    ['📁','Export-Menü: „Ausgabeordner wählen" — STL, 3MF, OBJ und STL-pro-Körper werden auf Wunsch direkt in einen festen Ordner gespeichert (auch externe Festplatte) statt heruntergeladen. Der Ordner wird gemerkt und beim nächsten Start automatisch wieder verwendet. Nur in Chrome/Edge; in Firefox/Safari wird wie gewohnt heruntergeladen (mit kurzem Hinweis im Menü)'],
+  ]},
   { version:'1.14.50', date:'2026-06-15', changes:[
     ['🦊','STL-Bibliothek läuft jetzt auch in Firefox & Safari — komplett über den Druck-Helfer (laden, drucken, einsammeln, sortieren, Favoriten, Mehrfachauswahl). Die nur in Chrome/Edge mögliche „Ordner wählen"-Direktwahl wird dort ausgeblendet und stattdessen klar der Helfer-Weg angeboten'],
   ]},
