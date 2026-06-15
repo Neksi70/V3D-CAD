@@ -793,7 +793,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.42<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.43<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -13096,7 +13096,11 @@ function _stlStopPoll(){ if(_stlPollTimer){ clearInterval(_stlPollTimer); _stlPo
 function _stlStartPoll(){ _stlStopPoll(); _stlPollTimer=setInterval(_stlPoll,15000); }   // Galerie automatisch nachladen
 async function _stlPoll(){
   if(!document.getElementById('stllib-modal').classList.contains('show')){ _stlStopPoll(); return; }
-  if(_stlSource!=='helper' || !_stlHelperOk) return;
+  if(_stlSource!=='helper') return;
+  // Helfer-Status + Version mitführen → der „Helfer aktualisieren"-Knopf
+  // verschwindet von selbst, sobald der neue Helfer läuft.
+  await _stlPingHelper();
+  if(!_stlHelperOk) return;
   try{
     const res=await fetch(STLLIB_HELPER+'/list',{cache:'no-store'}); const j=await res.json();
     const files=j.files||[];
@@ -13414,9 +13418,20 @@ function _stlUpdateHelperUI(){
   const sel=document.getElementById('stllib-slicer');
   if(sel){
     sel.style.display=(_stlHelperOk&&_stlHelperSlicers.length>1)?'':'none';
-    if(_stlHelperOk){ const names={bambu:'Bambu Studio',orca:'OrcaSlicer',anycubic:'Anycubic Slicer Next',elegoo:'ElegooSlicer',snapmaker:'Snapmaker Orca',prusa:'PrusaSlicer'}; sel.innerHTML=_stlHelperSlicers.map(s=>`<option value="${s}">${names[s]||s}</option>`).join(''); }
+    if(_stlHelperOk){ const names={bambu:'Bambu Studio',orca:'OrcaSlicer',anycubic:'Anycubic Slicer Next',elegoo:'ElegooSlicer',snapmaker:'Snapmaker Orca',prusa:'PrusaSlicer'};
+      const want=sel.value; const html=_stlHelperSlicers.map(s=>`<option value="${s}">${names[s]||s}</option>`).join('');
+      if(sel.innerHTML!==html) sel.innerHTML=html;                     // nur neu aufbauen, wenn nötig
+      if(want && _stlHelperSlicers.includes(want)) sel.value=want;     // Slicer-Auswahl behalten
+    }
   }
 }
+// Wenn man nach dem Helfer-Update zurück zum Browser wechselt: Version sofort neu prüfen
+function _stlMaybeRefreshHelper(){
+  const m=document.getElementById('stllib-modal');
+  if(m && m.classList.contains('show') && _stlSource==='helper') return _stlPingHelper();
+}
+window.addEventListener('focus', _stlMaybeRefreshHelper);
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) _stlMaybeRefreshHelper(); });
 // Bytes einer Datei lesen — aus FS-Handle (Ordnerwahl) ODER vom Helfer (/file)
 async function _stlReadBytes(f){
   if(f.handle){ const file=await f.handle.getFile(); return await file.arrayBuffer(); }
@@ -13502,8 +13517,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.42';
+const VOLME3D_VERSION = '1.14.43';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.43', date:'2026-06-15', changes:[
+    ['🔧','„Helfer aktualisieren" verschwindet jetzt von selbst, sobald der neue Helfer läuft — die Helfer-Version wird automatisch nachgeprüft (im Hintergrund und beim Zurückwechseln zum Browser). Vorher blieb der Knopf bis zum Neuladen sichtbar'],
+  ]},
   { version:'1.14.42', date:'2026-06-15', changes:[
     ['⭐','STL-Bibliothek: Favoriten (Stern oben rechts), Sortieren (Datum / Name / Größe) und ein Favoriten-Filter — Ordnung auch bei vielen Dateien'],
     ['🖨','STL-Bibliothek: Mehrfachauswahl — mehrere Modelle markieren (Häkchen oben links) und gemeinsam auf EINE Druckplatte schicken oder zusammen löschen. Braucht den aktualisierten Druck-Helfer (oben auf „Helfer aktualisieren")'],
