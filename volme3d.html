@@ -811,7 +811,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.54<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.55<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -11485,24 +11485,25 @@ async function _regenAllThumbs() {
   _regenBusy = true;
   const btn = document.getElementById('ds-regen-btn');
   const orig = btn ? btn.innerHTML : '';
+  if (btn) btn.innerHTML = '⏳ lädt…';
+  // Autoritative Daten aus Firestore holen: localStorage kann durch Platzmangel
+  // verdrängt/leer sein, dann steht das volle Design nur in der Cloud.
+  let fsData = null;
+  try { const ref = _fsDesignsRef(); if (ref) { fsData = {}; const sn = await ref.get(); sn.docs.forEach(d => { const dd = d.data(); if (dd && dd.data) fsData[d.id] = dd.data; }); } } catch(_) {}
   const W = 512, H = 360;
   const rnd = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
   rnd.setSize(W, H); rnd.setClearColor(0xffffff, 1);
-  let done = 0, ok = 0, fail = 0, emptied = 0;
+  let done = 0, ok = 0, fail = 0, empty = 0;
   for (const meta of all) {
     done++;
     if (btn) btn.innerHTML = '⏳ ' + done + '/' + all.length;
     let built = [];
     try {
-      let snap = dsLoadData(meta.id);
-      if (!snap) {   // Daten evtl. nur in Firestore (localStorage war voll) → nachladen
-        try { const ref = _fsDesignsRef(); if (ref) { const doc = await ref.doc(meta.id).get(); const dd = doc.exists ? doc.data() : null; if (dd && dd.data) snap = JSON.parse(_dsDecompress(dd.data)); } } catch(_) {}
-      }
+      let snap = null;
+      if (fsData && fsData[meta.id]) { try { snap = JSON.parse(_dsDecompress(fsData[meta.id])); } catch(_) {} }  // Cloud zuerst (autoritativ)
+      if (!snap) snap = dsLoadData(meta.id);                                                                     // sonst lokal
       if (!snap) { fail++; continue; }
-      if (!Array.isArray(snap.objects) || !snap.objects.length) {
-        await _dsUpdateThumb(meta.id, '');   // leeres Design → irreführendes Altbild durch Platzhalter ersetzen
-        emptied++; continue;
-      }
+      if (!Array.isArray(snap.objects) || !snap.objects.length) { empty++; continue; }   // wirklich leer → altes Bild unverändert lassen
       const sc = new THREE.Scene();
       sc.add(new THREE.AmbientLight(0xffffff, 0.85));
       const dl = new THREE.DirectionalLight(0xffffff, 0.9); dl.position.set(3, 5, 4); sc.add(dl);
@@ -11528,7 +11529,7 @@ async function _regenAllThumbs() {
   if (btn) btn.innerHTML = orig;
   _regenBusy = false;
   if (typeof _renderGallery === 'function') _renderGallery();   // Galerie-Raster aktualisieren (ohne Auto-Save/Reopen)
-  notify(ok + ' Vorschaubilder erneuert' + (emptied ? ', ' + emptied + ' leer' : '') + (fail ? ', ' + fail + ' übersprungen' : ''), (ok || emptied) ? 'ok' : 'w');
+  notify(ok + ' Vorschaubilder erneuert' + (empty ? ', ' + empty + ' leer (unverändert)' : '') + (fail ? ', ' + fail + ' übersprungen' : ''), ok ? 'ok' : 'w');
 }
 
 // ── Toolbar label + auto-save dot ──────────────────────────────────────────
@@ -14139,8 +14140,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.54';
+const VOLME3D_VERSION = '1.14.55';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.55', date:'2026-06-15', changes:[
+    ['🔄','„Vorschau neu" deutlich verbessert: Die Design-Daten werden jetzt direkt aus der Cloud geholt (autoritativ). Vorher wurden Designs, deren lokaler Speicher voll/verdrängt war, faelschlich als „leer" behandelt und bekamen einen grauen Platzhalter — die sind jetzt wieder sauber gerahmt. Wirklich leere Designs behalten ihr bisheriges Bild (kein Platzhalter mehr)'],
+  ]},
   { version:'1.14.54', date:'2026-06-15', changes:[
     ['🔄','„Vorschau neu" repariert jetzt auch die letzten Ausreißer: Designs, deren Daten nur in der Cloud lagen (weil der lokale Speicher voll war), werden aus Firestore nachgeladen und ebenfalls sauber gerendert. Wirklich leere Designs bekommen einen neutralen Platzhalter statt des alten, irreführenden Bauplatten-Bildes'],
   ]},
