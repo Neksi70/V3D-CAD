@@ -905,7 +905,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.71<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.72<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -928,6 +928,7 @@ const firebaseConfig = {
     <button class="btn" onclick="repairSelected()" title="Reparieren — offene Löcher im ausgewählten Objekt schließen (wieder wasserdicht/druckbar machen)">🩹 Reparieren</button>
     <button class="btn" onclick="_printCheckOpen()" title="Druck-Check — prüft vor dem Export: wasserdicht, passt aufs Bett, auf der Platte, Überhänge">🖨 Druck-Check</button>
     <button class="btn" id="btn-measure" onclick="measureTool()" title="Messen — zwei Punkte anklicken, Abstand in mm ablesen (Esc beendet)">📐 Messen</button>
+    <button class="btn" onclick="openSimplifyModal()" title="Vereinfachen — Dreiecke eines (importierten) Modells reduzieren, fürs schnellere Slicen">🔻 Vereinfachen</button>
     <div class="sep"></div>
     <button class="btn" id="btn-lock" onclick="toggleLockSelected()" title="Strg+L — Objekt gegen Verschieben sichern">🔒 Sperren</button>
     <button class="btn" id="btn-hide" onclick="toggleHideSelected()" title="Strg+H — Objekt ausblenden  |  Strg+Shift+H alle einblenden">👁 Ausblenden</button>
@@ -1012,6 +1013,23 @@ const firebaseConfig = {
     <input id="cmdk-inp" placeholder="Befehl suchen … (z.B. Box, Abziehen, Export, Druck-Check)" oninput="_cmdkFilter()" onkeydown="_cmdkKey(event)" autocomplete="off">
     <div id="cmdk-list"></div>
     <div id="cmdk-hint"><span><b>↑↓</b> wählen</span><span><b>↵</b> ausführen</span><span><b>Esc</b> schließen</span></div>
+  </div>
+</div>
+
+<!-- VEREINFACHEN -->
+<div id="simplify-modal" class="g3dm" onclick="if(event.target===this)_closeSimplify()">
+  <div class="g3box" style="width:390px">
+    <div class="g3hdr">🔻 Vereinfachen<span class="vx" onclick="_closeSimplify()">✕</span></div>
+    <div style="padding:16px 18px">
+      <div id="simplify-info" style="font-size:13px;color:var(--mid);margin-bottom:14px"></div>
+      <div class="vrow"><label>Reduzieren</label> <input type="range" id="simplify-pct" min="10" max="90" value="50" step="5" oninput="_simplifyEst()"><span class="vv" id="simplify-pctv">50</span><span class="vu">%</span></div>
+      <div id="simplify-est" style="font-size:12px;color:var(--dim);margin-top:8px"></div>
+      <div style="font-size:11px;color:var(--dim);margin-top:10px;line-height:1.5">Gut für schwere importierte STLs — schnelleres Slicen. Danach ggf. „Druck-Check" / „Reparieren".</div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_closeSimplify()">Abbrechen</button>
+      <button class="btn pri" id="simplify-apply" onclick="_applySimplify()">✓ Anwenden</button>
+    </div>
   </div>
 </div>
 
@@ -6261,6 +6279,7 @@ function _importSvgConfirm(override) {
   }
   const svgW = maxX - minX;
   const svgH = maxY - minY;
+  console.log('[SVG-Import] svgW=', svgW, 'svgH=', svgH, 'targetMM=', targetMM, '→ scale=', targetMM / Math.max(svgW, svgH));
   if (svgW < 1e-6 && svgH < 1e-6) { notify('SVG hat keine Ausdehnung', 'w'); return; }
 
   // Scale: fit largest dim to targetMM
@@ -13752,6 +13771,55 @@ window.addEventListener('mousedown', _measureDown, true);   // Capture: vor Sele
 window.addEventListener('keydown', e=>{ if(e.key==='Escape' && _measureMode){ _measureExit(); } });
 // ===== END BEMASSUNG =====
 
+// ===== VEREINFACHEN (Dreiecke reduzieren) =====
+function _simplifyMeshes(){ const ms=[]; (selectedObjs||[]).forEach(o=>{ if(o.traverse) o.traverse(c=>{ if(c.isMesh && !c.userData.isEdgeLines && !c.userData.isHole) ms.push(c); }); else if(o.isMesh) ms.push(o); }); return ms; }
+function _simplifyTris(ms){ let t=0; ms.forEach(m=>{ const g=m.geometry; if(g&&g.attributes&&g.attributes.position) t+=(g.index?g.index.count:g.attributes.position.count)/3; }); return Math.round(t); }
+function openSimplifyModal(){
+  const ms=_simplifyMeshes();
+  if(!ms.length){ notify('Erst ein Objekt auswählen','w'); return; }
+  document.getElementById('simplify-modal').classList.add('show');
+  document.getElementById('simplify-info').textContent='Aktuell: '+_simplifyTris(ms).toLocaleString('de')+' Dreiecke'+(ms.length>1?' ('+ms.length+' Meshes)':'');
+  _simplifyEst();
+}
+function _closeSimplify(){ document.getElementById('simplify-modal').classList.remove('show'); }
+function _simplifyEst(){
+  const pct=+document.getElementById('simplify-pct').value;
+  document.getElementById('simplify-pctv').textContent=pct;
+  const cur=_simplifyTris(_simplifyMeshes());
+  document.getElementById('simplify-est').textContent='→ ungefähr '+Math.round(cur*(1-pct/100)).toLocaleString('de')+' Dreiecke';
+}
+function _applySimplify(){
+  const ms=_simplifyMeshes(); if(!ms.length) return;
+  const pct=+document.getElementById('simplify-pct').value;
+  const btn=document.getElementById('simplify-apply'); btn.disabled=true; btn.textContent='…';
+  saveUndo();
+  setTimeout(()=>{
+    let ok=0;
+    try{
+      const mod=new THREE.SimplifyModifier();
+      ms.forEach(m=>{
+        const g=m.geometry; if(!g||!g.attributes||!g.attributes.position) return;
+        let base=g;
+        try{ if(THREE.BufferGeometryUtils&&THREE.BufferGeometryUtils.mergeVertices) base=THREE.BufferGeometryUtils.mergeVertices(g.index?g:g.toNonIndexed()); }catch(e){}
+        const vCount=base.attributes.position.count;
+        const remove=Math.min(vCount-4, Math.floor(vCount*pct/100));
+        if(remove<=0) return;
+        let simp; try{ simp=mod.modify(base, remove); }catch(e){ console.warn('simplify',e); return; }
+        if(!simp || !simp.attributes.position || simp.attributes.position.count<9) return;
+        simp.computeVertexNormals();
+        if(m.geometry) m.geometry.dispose(); m.geometry=simp;
+        if(typeof _updateObjEdgeLines==='function' && !(m.userData.displacementPattern&&m.userData.displacementPattern!=='keine')) _updateObjEdgeLines(m);
+        ok++;
+      });
+    }catch(e){ console.warn(e); }
+    btn.disabled=false; btn.textContent='✓ Anwenden';
+    _closeSimplify();
+    if(ok){ if(typeof updateTree==='function') updateTree(); notify('Vereinfacht → '+_simplifyTris(ms).toLocaleString('de')+' Dreiecke','ok'); }
+    else notify('Konnte nicht vereinfacht werden','w');
+  }, 40);
+}
+// ===== END VEREINFACHEN =====
+
 // ===== TUTORIAL / KURS-MODUS =====
 // Eine Lektion = { id, title, steps:[ {type,title,text,highlight?,check?} ] }.
 // Schritttypen: 'info' (nur Weiter), 'action' (erkennt automatisch die ausgeführte
@@ -14723,8 +14791,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.71';
+const VOLME3D_VERSION = '1.14.72';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.72', date:'2026-06-16', spots:[{id:'vereinfachen',sel:'[onclick="openSimplifyModal()"]'}], changes:[
+    ['🔻','Neu: Vereinfachen reduziert die Dreiecke eines (oft importierten) Modells per Schieber — schlanke Dateien und schnelleres Slicen. Mit Vorher/Nachher-Anzahl; danach am besten kurz Druck-Check oder Reparieren'],
+  ]},
   { version:'1.14.71', date:'2026-06-16', spots:[{id:'messen',sel:'[onclick="measureTool()"]'}], changes:[
     ['📐','Neues Mess-Werkzeug: Auf „Messen" klicken, dann zwei Punkte am Modell wählen — der Abstand erscheint live in mm als Linie mit Label. Ecken rasten automatisch ein (Vertex-Snap). Esc beendet das Messen'],
   ]},
@@ -18042,6 +18113,7 @@ const CMDK = [
   {i:'🖨',g:'Druck',t:'Druck-Check',k:'print check druckbar',run:()=>_printCheckOpen()},
   {i:'↻',g:'Druck',t:'Für Druck ausrichten',k:'orient',run:()=>autoOrientForPrint()},
   {i:'📐',g:'Bearbeiten',t:'Messen (Abstand)',k:'measure distance bemaszung',run:()=>measureTool()},
+  {i:'🔻',g:'Bearbeiten',t:'Vereinfachen (Dreiecke)',k:'simplify decimate reduzieren',run:()=>openSimplifyModal()},
   {i:'⬇',g:'Export',t:'STL exportieren',k:'export stl',run:()=>exportSTL()},
   {i:'⬇',g:'Export',t:'STL pro Körper',k:'parts stl',run:()=>exportPartsSTL()},
   {i:'⬇',g:'Export',t:'OBJ exportieren',k:'export obj',run:()=>exportOBJ()},
