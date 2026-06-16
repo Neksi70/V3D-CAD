@@ -17,6 +17,13 @@ ALLOW = {
     '/favicon.svg':                       ('favicon.svg', 'image/svg+xml'),
     '/logo.svg':                          ('logo.svg', 'image/svg+xml'),
     '/volme3d-occt.js':                   ('volme3d-occt.js', 'text/javascript; charset=utf-8'),
+    '/lib/three.min.js':                  ('lib/three.min.js', 'text/javascript; charset=utf-8'),
+    '/lib/RoundedBoxGeometry.js':         ('lib/RoundedBoxGeometry.js', 'text/javascript; charset=utf-8'),
+    '/lib/GLTFLoader.js':                 ('lib/GLTFLoader.js', 'text/javascript; charset=utf-8'),
+    '/lib/SVGLoader.js':                  ('lib/SVGLoader.js', 'text/javascript; charset=utf-8'),
+    '/lib/BufferGeometryUtils.js':        ('lib/BufferGeometryUtils.js', 'text/javascript; charset=utf-8'),
+    '/lib/fflate.min.js':                 ('lib/fflate.min.js', 'text/javascript; charset=utf-8'),
+    '/lib/SimplifyModifier.js':           ('lib/SimplifyModifier.js', 'text/javascript; charset=utf-8'),
     '/Volme3D-Druck-Helfer.bat':          ('Volme3D-Druck-Helfer.bat', 'application/octet-stream'),
     '/volme3d-print-helper-LIESMICH.txt': ('volme3d-print-helper-LIESMICH.txt', 'text/plain; charset=utf-8'),
 }
