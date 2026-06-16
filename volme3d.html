@@ -167,6 +167,9 @@ body.devmode .dev-only{display:flex!important}
 .sli-item:first-child{border-radius:var(--rs) var(--rs) 0 0}
 .sli-hint{padding:4px 12px 7px;font-size:10px;color:var(--dim);border-top:1px solid var(--border)}
 .sli-sep{height:1px;background:var(--border);margin:3px 0}
+/* Viewport-Kontextmenü (Rechtsklick) */
+#vp-ctxmenu{display:none;position:fixed;background:var(--white);border:1px solid var(--border);border-radius:var(--rs);box-shadow:var(--shm);z-index:400;min-width:170px;padding:3px 0}
+#vp-ctxmenu.show{display:block}
 .outdir-status{font-size:10px;font-weight:700;color:var(--acc);padding:7px 12px 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:230px}
 .outdir-status:empty{display:none}
 .outdir-clear{font-size:11px;color:var(--mid)}
@@ -905,7 +908,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.72<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.73<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -1154,6 +1157,9 @@ const firebaseConfig = {
   <svg id="rov" class="dim-line-svg"></svg>
   <div id="sel-box"></div>
   <div id="text-snap-hint"></div>
+  <div id="vp-ctxmenu">
+    <div class="sli-item" id="ctx-measure">📐 Messen (Abstand)</div>
+  </div>
   <div id="dim-handles"></div>
   <div id="edge-bevel-handle" style="position:fixed;display:none;width:12px;height:12px;background:#F97316;border:2px solid #888;border-radius:50%;cursor:ew-resize;transform:translate(-50%,-50%);pointer-events:all;z-index:9000"></div>
   <div id="edge-bevel-label" style="position:fixed;display:none;background:white;border:1px solid #ccc;border-radius:4px;padding:2px 6px;font-size:11px;pointer-events:none;z-index:9001;font-family:monospace"></div>
@@ -9477,7 +9483,8 @@ function pickObjects(e) {
   return raycaster.intersectObjects(objects, true);
 }
 
-canvas.addEventListener('contextmenu', e => e.preventDefault());
+// preventDefault auf vpEl-Ebene, damit auch Rechtsklick auf Overlays (rov/sel-box/dim-handles) kein natives Menü zeigt
+vpEl.addEventListener('contextmenu', e => e.preventDefault());
 
 let isRubber = false;
 let rubberStart = { x: 0, y: 0 };
@@ -9738,6 +9745,33 @@ window.addEventListener('mouseup', e => {
     if (_centerSnapTarget) { _centerSnapTarget = null; repositionDimHandles(); }
   }
 });
+
+// Viewport-Kontextmenü (Rechtsklick ohne Drag öffnet Menü; Ziehen = Orbit)
+const _vpCtx = document.getElementById('vp-ctxmenu');
+function _hideVpCtx(){ if(_vpCtx) _vpCtx.classList.remove('show'); }
+function _showVpCtx(x, y){
+  if(!_vpCtx) return;
+  _vpCtx.classList.add('show');
+  // innerhalb des Fensters halten
+  const mw = _vpCtx.offsetWidth, mh = _vpCtx.offsetHeight;
+  const px = Math.min(x, window.innerWidth  - mw - 6);
+  const py = Math.min(y, window.innerHeight - mh - 6);
+  _vpCtx.style.left = px + 'px';
+  _vpCtx.style.top  = py + 'px';
+}
+window.addEventListener('mouseup', e => {
+  if (e.button === 2 && !e.shiftKey) {
+    const rect = vpEl.getBoundingClientRect();
+    const inVp = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom;
+    const moved = Math.hypot(e.clientX - mouseDownPos.x, e.clientY - mouseDownPos.y);
+    if (inVp && moved < 5) _showVpCtx(e.clientX, e.clientY);
+  }
+}, true);
+// Schließen bei Linksklick / Escape / Scroll
+window.addEventListener('mousedown', e => { if(e.button !== 2 && _vpCtx && _vpCtx.classList.contains('show') && !_vpCtx.contains(e.target)) _hideVpCtx(); }, true);
+window.addEventListener('wheel', _hideVpCtx, true);
+window.addEventListener('keydown', e => { if(e.key==='Escape') _hideVpCtx(); });
+document.getElementById('ctx-measure').addEventListener('click', () => { _hideVpCtx(); if(typeof measureTool!=='function') return; if(_measureMode) _measureExit(); /* aktiven Modus zurücksetzen, damit der Klick immer (neu) startet statt zu togglen */ measureTool(); });
 
 canvas.addEventListener('mouseup', e => {
   const moved = Math.hypot(e.clientX - mouseDownPos.x, e.clientY - mouseDownPos.y);
@@ -14791,7 +14825,7 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.72';
+const VOLME3D_VERSION = '1.14.73';
 const VOLME3D_CHANGELOG = [
   { version:'1.14.72', date:'2026-06-16', spots:[{id:'vereinfachen',sel:'[onclick="openSimplifyModal()"]'}], changes:[
     ['🔻','Neu: Vereinfachen reduziert die Dreiecke eines (oft importierten) Modells per Schieber — schlanke Dateien und schnelleres Slicen. Mit Vorher/Nachher-Anzahl; danach am besten kurz Druck-Check oder Reparieren'],
