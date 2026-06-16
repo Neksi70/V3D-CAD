@@ -109,6 +109,8 @@ body.mview #mview-bar,body.mview #mview-info{display:flex}
 #share-hd .sx{margin-left:auto;cursor:pointer;color:#aaa;font-size:16px;line-height:1;padding:0 2px}
 #share-body{padding:16px 18px;overflow-y:auto;font-size:13px}
 #share-body .sp-btn{display:inline-flex;align-items:center;gap:6px}
+/* Bemaßung */
+#measure-label{position:absolute;transform:translate(-50%,-150%);background:var(--acc);color:#fff;font-family:var(--font);font-size:12px;font-weight:800;padding:3px 9px;border-radius:8px;pointer-events:none;z-index:60;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.22);display:none}
 #changelog-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:4000;display:none;align-items:center;justify-content:center}
 #changelog-modal.show{display:flex}
 #changelog-box{background:#fff;border-radius:14px;width:540px;max-width:96vw;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 16px 50px rgba(0,0,0,.22)}
@@ -144,6 +146,7 @@ body.mview #mview-bar,body.mview #mview-info{display:flex}
 body.devmode .dev-only{display:flex!important}
 .sep{width:1px;height:22px;background:var(--border2);flex-shrink:0;margin:0 6px}
 .btn{display:flex;align-items:center;gap:4px;padding:5px 9px;background:linear-gradient(180deg,#fff,#eceef3);border:1.5px solid var(--border);border-radius:var(--rs);font-family:var(--font);font-size:11px;font-weight:700;color:var(--mid);cursor:pointer;transition:all .12s;white-space:nowrap;box-shadow:0 1px 1.5px rgba(16,24,40,.10),inset 0 1px 0 rgba(255,255,255,.85)}
+.btn.active{background:var(--acc);color:#fff;border-color:var(--acc)}
 .btn:hover{border-color:var(--acc);color:var(--acc);background:linear-gradient(180deg,#fffaf4,var(--alit));transform:translateY(-1px);box-shadow:0 2px 5px rgba(16,24,40,.13),inset 0 1px 0 rgba(255,255,255,.9)}
 .btn:active{transform:translateY(1px);box-shadow:inset 0 2px 3px rgba(16,24,40,.15)}
 .btn.pri{background:linear-gradient(180deg,#fb8a3c,var(--acc));border-color:var(--acc);color:#fff;box-shadow:0 1px 2px rgba(234,108,16,.45),inset 0 1px 0 rgba(255,255,255,.35)}
@@ -902,7 +905,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.70<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.71<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -924,6 +927,7 @@ const firebaseConfig = {
     <button class="btn" onclick="openEraserTool()" title="Radierer — mit dem Pinsel über das Modell fahren, um Flächen/Geometrie zu entfernen (Radius per Mausrad)">🧽 Radierer</button>
     <button class="btn" onclick="repairSelected()" title="Reparieren — offene Löcher im ausgewählten Objekt schließen (wieder wasserdicht/druckbar machen)">🩹 Reparieren</button>
     <button class="btn" onclick="_printCheckOpen()" title="Druck-Check — prüft vor dem Export: wasserdicht, passt aufs Bett, auf der Platte, Überhänge">🖨 Druck-Check</button>
+    <button class="btn" id="btn-measure" onclick="measureTool()" title="Messen — zwei Punkte anklicken, Abstand in mm ablesen (Esc beendet)">📐 Messen</button>
     <div class="sep"></div>
     <button class="btn" id="btn-lock" onclick="toggleLockSelected()" title="Strg+L — Objekt gegen Verschieben sichern">🔒 Sperren</button>
     <button class="btn" id="btn-hide" onclick="toggleHideSelected()" title="Strg+H — Objekt ausblenden  |  Strg+Shift+H alle einblenden">👁 Ausblenden</button>
@@ -1272,6 +1276,7 @@ const firebaseConfig = {
     <div class="cb" onclick="setMode('scale')" title="R">⤢</div>
     <div class="cb" onclick="smartDuplicate()" title="Strg+D">⧉</div>
     <div class="cb" onclick="dropToGround()" title="D">▽</div>
+    <div class="cb" onclick="addBohrung()" title="Bohrung setzen (vertikal, durchgehend)" style="color:var(--red)">⊙</div>
     <div class="cb" onclick="deleteSelected()" title="Del" style="color:var(--red)">🗑</div>
   </div>
 
@@ -7773,6 +7778,47 @@ function smartDuplicate() {
   selectObjs(newOs); updateTree(); notify('Dupliziert', 'ok');
 }
 
+// ═══ BOHRUNG-WERKZEUG (Kontextmenü) ══════════════════════════════════
+// Setzt eine vertikale Zylinder-Bohrung mittig & durchgehend in das
+// ausgewählte Objekt. Markiert sie als Hole und selektiert Ziel + Bohrung,
+// damit direkt "⊖ Abziehen" (subtractHoles) ausgeführt werden kann.
+function addBohrung() {
+  const target = getFirst();
+  if (!target) { notify('Erst ein Objekt auswählen', 'w'); return; }
+  if (target.userData.isHole) { notify('Auswahl ist schon eine Bohrung', 'w'); return; }
+  saveUndo();
+  // Welt-Bounding-Box des Ziels → Lage und Maße der Bohrung ableiten
+  const box  = new THREE.Box3().setFromObject(target);
+  const ctr  = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const R = Math.max(0.15, Math.min(size.x, size.z) * 0.18); // Radius ~18% der schmalen Seite
+  const H = Math.max(size.y * 1.4, size.y + 0.6);            // durchgehend + Überstand oben/unten
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color('#f03030'),
+    roughness: 0.38, metalness: 0.05,
+    transparent: true, opacity: 0.52, side: THREE.DoubleSide
+  });
+  const geo  = buildGeo('cylinder');           // CylinderGeometry(1,1,2,…) → r1, h2, Achse Y
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  mesh.scale.set(R, H / 2, R);                 // h2 * (H/2)/1 = H
+  mesh.position.copy(ctr);
+  _updateObjEdgeLines(mesh);
+  typeCounts['cylinder'] = (typeCounts['cylinder'] || 0) + 1;
+  mesh.userData = {
+    id: idCtr++, type: 'cylinder', shapeType: 'cylinder',
+    name: 'Bohrung ' + typeCounts['cylinder'],
+    color: '#f03030', isHole: true,
+    fillet: 0, chamfer: 0, tubeWall: 2,
+    displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
+    displacementInvert: false, displacementSymmetric: false
+  };
+  scene.add(mesh); objects.push(mesh);
+  selectObjs([target, mesh]); updateTree();
+  notify('Bohrung gesetzt — Maße anpassen, dann ⊖ Abziehen', 'ok');
+}
+
 function copySelected() {
   if (!selectedObjs.length) return;
   clipboard = selectedObjs.map(objectToData);
@@ -11250,9 +11296,11 @@ if ('hid' in navigator) {
 window._smCfg = _smCfg;
 window.toggleSpaceMouseDebug = () => { _smDebug = !_smDebug; if (!_smDebug) document.getElementById('sm-debug')?.remove(); notify('SpaceMouse-Debug ' + (_smDebug ? 'an' : 'aus'), 'ok'); };
 
+let _measureMode=false, _measureA=null, _measureB=null, _measureGroup=null, _measureLabel=null;  // Bemaßung (vor animate)
 function animate() {
   requestAnimationFrame(animate);
   _smTick();
+  if (_measureMode && _measureA && _measureB) _measureUpdateLabel();   // Maßlabel der Kamera folgen lassen
   if (ttOn) { sph.theta += 0.005; sph2cam(); }
   if (window._updateVcube) window._updateVcube();
   if (selectedObjs.length > 0) {
@@ -13646,6 +13694,64 @@ function _createQR(){
 }
 // ===== END QR-CODE-GENERATOR =====
 
+// ===== BEMASSUNG (Abstand messen) — Variablen früh deklariert (animate liest sie) =====
+function measureTool(){
+  _measureMode=!_measureMode;
+  const btn=document.getElementById('btn-measure'); if(btn) btn.classList.toggle('active',_measureMode);
+  if(_measureMode){ _measureA=_measureB=null; _measureRemoveGroup(); if(_measureLabel)_measureLabel.style.display='none'; document.body.style.cursor='crosshair'; notify('Messen: zwei Punkte anklicken (Esc beendet)','ok'); }
+  else _measureExit();
+}
+function _measureExit(){ _measureMode=false; document.body.style.cursor=''; const btn=document.getElementById('btn-measure'); if(btn) btn.classList.remove('active'); _measureRemoveGroup(); if(_measureLabel)_measureLabel.style.display='none'; }
+function _measureRemoveGroup(){ if(_measureGroup){ scene.remove(_measureGroup); _measureGroup.traverse(o=>{if(o.geometry)o.geometry.dispose(); if(o.material)o.material.dispose&&o.material.dispose();}); _measureGroup=null; } }
+function _measureSnap(hit, pt){
+  try{
+    const f=hit.face, o=hit.object; if(!f||!o.geometry||!o.geometry.attributes.position) return pt;
+    const pos=o.geometry.attributes.position;
+    let best=pt, bd=Infinity;
+    [f.a,f.b,f.c].forEach(i=>{ const v=new THREE.Vector3().fromBufferAttribute(pos,i).applyMatrix4(o.matrixWorld); const d=v.distanceTo(pt); if(d<bd){bd=d;best=v;} });
+    const sz=getMeshBox(o).getSize(new THREE.Vector3()); const thr=Math.max(0.06, Math.min(sz.x,sz.y,sz.z)*0.2);
+    return bd<thr ? best.clone() : pt;
+  }catch(e){ return pt; }
+}
+function _measureDown(e){
+  if(!_measureMode || e.button!==0) return;
+  const rect=vpEl.getBoundingClientRect();
+  if(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom) return;
+  e.stopImmediatePropagation(); e.preventDefault();
+  const hits=pickObjects(e);
+  if(!hits.length){ notify('Daneben — auf ein Objekt klicken','w'); return; }
+  const pt=_measureSnap(hits[0], hits[0].point.clone());
+  if(!_measureA || (_measureA && _measureB)){ _measureA=pt; _measureB=null; }
+  else _measureB=pt;
+  _measureDraw();
+}
+function _measureDraw(){
+  _measureRemoveGroup();
+  _measureGroup=new THREE.Group();
+  const dot=p=>{ const s=new THREE.Mesh(new THREE.SphereGeometry(0.11,12,12), new THREE.MeshBasicMaterial({color:0xF97316,depthTest:false})); s.position.copy(p); s.renderOrder=999; return s; };
+  if(_measureA) _measureGroup.add(dot(_measureA));
+  if(_measureB){
+    _measureGroup.add(dot(_measureB));
+    const g=new THREE.BufferGeometry().setFromPoints([_measureA,_measureB]);
+    const ln=new THREE.Line(g, new THREE.LineBasicMaterial({color:0xF97316,depthTest:false})); ln.renderOrder=999;
+    _measureGroup.add(ln);
+  }
+  scene.add(_measureGroup);
+  _measureUpdateLabel();
+}
+function _measureUpdateLabel(){
+  if(!_measureLabel){ _measureLabel=document.createElement('div'); _measureLabel.id='measure-label'; vpEl.appendChild(_measureLabel); }
+  if(_measureA && _measureB){
+    const mid=_measureA.clone().add(_measureB).multiplyScalar(0.5);
+    const sc=_worldToScreen(mid.x,mid.y,mid.z);
+    if(sc){ _measureLabel.textContent=(_measureA.distanceTo(_measureB)*10).toFixed(1)+' mm'; _measureLabel.style.display='block'; _measureLabel.style.left=sc.x+'px'; _measureLabel.style.top=sc.y+'px'; }
+    else _measureLabel.style.display='none';
+  } else _measureLabel.style.display='none';
+}
+window.addEventListener('mousedown', _measureDown, true);   // Capture: vor Selektion/Orbit
+window.addEventListener('keydown', e=>{ if(e.key==='Escape' && _measureMode){ _measureExit(); } });
+// ===== END BEMASSUNG =====
+
 // ===== TUTORIAL / KURS-MODUS =====
 // Eine Lektion = { id, title, steps:[ {type,title,text,highlight?,check?} ] }.
 // Schritttypen: 'info' (nur Weiter), 'action' (erkennt automatisch die ausgeführte
@@ -14617,8 +14723,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.70';
+const VOLME3D_VERSION = '1.14.71';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.71', date:'2026-06-16', spots:[{id:'messen',sel:'[onclick="measureTool()"]'}], changes:[
+    ['📐','Neues Mess-Werkzeug: Auf „Messen" klicken, dann zwei Punkte am Modell wählen — der Abstand erscheint live in mm als Linie mit Label. Ecken rasten automatisch ein (Vertex-Snap). Esc beendet das Messen'],
+  ]},
   { version:'1.14.70', date:'2026-06-16', spots:[{id:'qr',sel:'[onclick="_openQRModal()"]'}], changes:[
     ['📇','Neuer QR-Code-Generator: Link/Text/WLAN eingeben → scannbarer QR-Code als druckbares 3D-Teil (helle Platte + erhabene Module, am besten 2-farbig drucken). Mit Live-Vorschau und einstellbarer Größe/Höhe. Stark in Kombi mit dem Teilen-Knopf: QR auf den Druck, der zum 3D-Link führt'],
   ]},
@@ -17932,6 +18041,7 @@ const CMDK = [
   {i:'🩹',g:'Druck',t:'Reparieren',k:'repair loch wasserdicht',run:()=>repairSelected()},
   {i:'🖨',g:'Druck',t:'Druck-Check',k:'print check druckbar',run:()=>_printCheckOpen()},
   {i:'↻',g:'Druck',t:'Für Druck ausrichten',k:'orient',run:()=>autoOrientForPrint()},
+  {i:'📐',g:'Bearbeiten',t:'Messen (Abstand)',k:'measure distance bemaszung',run:()=>measureTool()},
   {i:'⬇',g:'Export',t:'STL exportieren',k:'export stl',run:()=>exportSTL()},
   {i:'⬇',g:'Export',t:'STL pro Körper',k:'parts stl',run:()=>exportPartsSTL()},
   {i:'⬇',g:'Export',t:'OBJ exportieren',k:'export obj',run:()=>exportOBJ()},
