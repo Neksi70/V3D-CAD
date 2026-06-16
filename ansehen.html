@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F97316">
+<title>3D-Modell ansehen · Volme3D</title>
+<link rel="icon" href="favicon.svg">
+<style>
+  :root{ --acc:#F97316; --acc2:#7c3aed; --text:#1f2430; --mid:#444b59; --dim:#8a91a3; --border:#e3e6ef; --font:'Inter',system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:#eef0f7;color:var(--text);font-family:var(--font);-webkit-font-smoothing:antialiased}
+  #c{display:block;width:100vw;height:100vh;touch-action:none}
+  #bar{position:fixed;top:0;left:0;right:0;height:54px;display:flex;align-items:center;gap:10px;padding:env(safe-area-inset-top) 14px 0;background:rgba(255,255,255,.9);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);border-bottom:1px solid var(--border);z-index:10}
+  #bar .logo{font-weight:800;font-size:16px}
+  #bar .logo b{color:var(--acc)}
+  #bar .name{flex:1;min-width:0;font-size:13px;color:var(--mid);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #foot{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;align-items:center;padding:10px 14px calc(10px + env(safe-area-inset-bottom));background:rgba(255,255,255,.9);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);border-top:1px solid var(--border);z-index:10}
+  #foot .dim{flex:1;min-width:0;font-size:12px;font-weight:700;color:var(--mid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .btn{display:inline-flex;align-items:center;gap:6px;font-family:var(--font);font-size:13px;font-weight:700;color:var(--text);background:#fff;border:1.5px solid var(--border);border-radius:11px;padding:9px 13px;cursor:pointer;white-space:nowrap}
+  .btn:active{transform:translateY(1px)}
+  .btn.pri{background:var(--acc);color:#fff;border-color:var(--acc)}
+  #msg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;z-index:20}
+  #msg .card{max-width:440px;background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:0 14px 50px rgba(0,0,0,.12);padding:26px 24px}
+  #msg h1{font-size:20px;margin:0 0 8px}
+  #msg p{font-size:14px;color:var(--mid);line-height:1.55;margin:0 0 16px}
+  .spin{display:inline-block;width:26px;height:26px;border:3px solid var(--border);border-top-color:var(--acc);border-radius:50%;animation:sp .7s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .hidden{display:none!important}
+  .hint{position:fixed;left:50%;top:64px;transform:translateX(-50%);background:rgba(31,36,48,.85);color:#fff;font-size:12px;font-weight:600;padding:7px 13px;border-radius:999px;z-index:11;opacity:0;transition:opacity .4s;pointer-events:none}
+  .hint.show{opacity:1}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="bar" class="hidden"><span class="logo">Volme<b>3D</b></span><span class="name" id="name"></span></div>
+<div class="hint" id="hint">🖐 Ziehen zum Drehen · 2 Finger / Rad zum Zoomen</div>
+<div id="foot" class="hidden">
+  <span class="dim" id="dim"></span>
+  <button class="btn" id="stlBtn">⬇ STL</button>
+  <button class="btn pri" onclick="location.href='./'">✏️ Selbst gestalten</button>
+</div>
+<div id="msg"><div class="card"><div class="spin"></div><p style="margin-top:14px">Modell wird geladen…</p></div></div>
+
+<script src="lib/three.min.js"></script>
+<script src="lib/fflate.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<script>
+const firebaseConfig = { apiKey:"AIzaSyB1TC58k0AmuU6pclev-WLr1-VGIgu98Q4", authDomain:"volme3d.firebaseapp.com", projectId:"volme3d", storageBucket:"volme3d.firebasestorage.app", messagingSenderId:"287060944142", appId:"1:287060944142:web:4e9175ff4f769e9310235f" };
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+function msg(html){ document.getElementById('msg').innerHTML = '<div class="card">'+html+'</div>'; }
+function hideMsg(){ document.getElementById('msg').classList.add('hidden'); }
+function b64ToU8(b64){ const bin=atob(b64); const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i); return u; }
+function dsDecompress(s){ if(typeof s!=='string'||s.slice(0,4)!=='GZ1:') return s; try{ return fflate.strFromU8(fflate.gunzipSync(b64ToU8(s.slice(4)))); }catch(e){ return s; } }
+
+// ── Three.js Szene ──
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0xeef0f7);
+const camera=new THREE.PerspectiveCamera(45,1,0.01,100000);
+scene.add(new THREE.AmbientLight(0xffffff,0.78));
+const dl=new THREE.DirectionalLight(0xffffff,0.85); dl.position.set(40,80,50); scene.add(dl);
+const dl2=new THREE.DirectionalLight(0x88aaff,0.32); dl2.position.set(-40,-20,-30); scene.add(dl2);
+let group=null, target=new THREE.Vector3(), radius=50, theta=0.7, phi=1.05, _bakedParts=null, _modelName='Modell';
+
+function fit(box){
+  box.getCenter(target);
+  const s=box.getSize(new THREE.Vector3()); const maxd=Math.max(s.x,s.y,s.z)||1;
+  radius=maxd*2.0; camera.near=Math.max(0.01,maxd*0.01); camera.far=maxd*60+500; camera.updateProjectionMatrix();
+  updateCam();
+}
+function updateCam(){
+  phi=Math.max(0.06,Math.min(Math.PI-0.06,phi));
+  camera.position.set(
+    target.x+radius*Math.sin(phi)*Math.sin(theta),
+    target.y+radius*Math.cos(phi),
+    target.z+radius*Math.sin(phi)*Math.cos(theta));
+  camera.lookAt(target);
+}
+function resize(){ const w=innerWidth,h=innerHeight; renderer.setSize(w,h); camera.aspect=w/h; camera.updateProjectionMatrix(); }
+addEventListener('resize',resize); resize();
+(function loop(){ requestAnimationFrame(loop); renderer.render(scene,camera); })();
+
+// ── Orbit (Maus + Touch) ──
+let drag=false, lx=0, ly=0, pinch=0;
+canvas.addEventListener('pointerdown',e=>{ if(e.pointerType==='touch')return; drag=true; lx=e.clientX; ly=e.clientY; });
+addEventListener('pointermove',e=>{ if(!drag||e.pointerType==='touch')return; theta-=(e.clientX-lx)*0.01; phi-=(e.clientY-ly)*0.01; lx=e.clientX; ly=e.clientY; updateCam(); });
+addEventListener('pointerup',()=>drag=false);
+canvas.addEventListener('wheel',e=>{ e.preventDefault(); radius*=(1+Math.sign(e.deltaY)*0.1); radius=Math.max(0.5,radius); updateCam(); },{passive:false});
+canvas.addEventListener('touchstart',e=>{ if(e.touches.length===1){ drag=true; lx=e.touches[0].clientX; ly=e.touches[0].clientY; } else if(e.touches.length===2){ drag=false; pinch=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY); } },{passive:false});
+canvas.addEventListener('touchmove',e=>{ e.preventDefault();
+  if(e.touches.length===1&&drag){ const x=e.touches[0].clientX,y=e.touches[0].clientY; theta-=(x-lx)*0.01; phi-=(y-ly)*0.01; lx=x; ly=y; updateCam(); }
+  else if(e.touches.length===2){ const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY); if(pinch){ radius*=pinch/d; radius=Math.max(0.5,radius); updateCam(); } pinch=d; }
+},{passive:false});
+canvas.addEventListener('touchend',e=>{ if(e.touches.length===0){ drag=false; pinch=0; } });
+
+// ── Modell bauen ──
+function buildModel(parts){
+  group=new THREE.Group();
+  const box=new THREE.Box3();
+  parts.forEach(pt=>{
+    const u8=b64ToU8(pt.p); const pos=new Float32Array(u8.buffer, u8.byteOffset, Math.floor(u8.byteLength/4));
+    const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(pos,3)); g.computeVertexNormals();
+    const m=new THREE.Mesh(g,new THREE.MeshStandardMaterial({color:new THREE.Color(pt.c||'#8aa0b8'),roughness:0.55,metalness:0.08,side:THREE.DoubleSide}));
+    group.add(m); g.computeBoundingBox(); box.union(g.boundingBox);
+  });
+  scene.add(group); fit(box);
+  const s=box.getSize(new THREE.Vector3());
+  document.getElementById('dim').textContent=Math.round(s.x*10)+' × '+Math.round(s.z*10)+' × '+Math.round(s.y*10)+' mm';
+}
+
+// ── STL-Export ──
+function downloadSTL(){
+  if(!_bakedParts) return;
+  let nTri=0; _bakedParts.forEach(p=>nTri+=Math.floor(p.n/3));
+  const buf=new ArrayBuffer(84+nTri*50), dv=new DataView(buf); dv.setUint32(80,nTri,true); let off=84;
+  const ax=new THREE.Vector3(),bx=new THREE.Vector3(),cx=new THREE.Vector3(),ab=new THREE.Vector3(),ac=new THREE.Vector3(),nr=new THREE.Vector3();
+  _bakedParts.forEach(p=>{ const u8=b64ToU8(p.p); const pos=new Float32Array(u8.buffer,u8.byteOffset,Math.floor(u8.byteLength/4));
+    for(let i=0;i<pos.length;i+=9){
+      ax.set(pos[i],pos[i+1],pos[i+2]); bx.set(pos[i+3],pos[i+4],pos[i+5]); cx.set(pos[i+6],pos[i+7],pos[i+8]);
+      ab.subVectors(bx,ax); ac.subVectors(cx,ax); nr.crossVectors(ab,ac).normalize();
+      dv.setFloat32(off,nr.x,true); dv.setFloat32(off+4,nr.y,true); dv.setFloat32(off+8,nr.z,true); off+=12;
+      [ax,bx,cx].forEach(vv=>{ dv.setFloat32(off,vv.x*10,true); dv.setFloat32(off+4,vv.z*10,true); dv.setFloat32(off+8,vv.y*10,true); off+=12; }); // Z-up, mm
+      off+=2;
+    }
+  });
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([buf],{type:'model/stl'}));
+  a.download=(_modelName||'modell').replace(/[^a-z0-9_-]/gi,'_')+'.stl'; document.body.appendChild(a); a.click(); a.remove();
+}
+
+// ── Laden ──
+(async function(){
+  const id=new URLSearchParams(location.search).get('m');
+  if(!id){ msg('<h1>Kein Modell</h1><p>Dieser Link enthält keine Modell-Kennung.</p><a class="btn pri" href="./">Eigenes Modell gestalten</a>'); return; }
+  let d;
+  try{ const doc=await db.collection('shared').doc(id).get(); if(!doc.exists){ msg('<h1>Nicht gefunden</h1><p>Dieses Modell gibt es nicht (mehr).</p><a class="btn pri" href="./">Eigenes Modell gestalten</a>'); return; } d=doc.data(); }
+  catch(e){ console.warn(e); msg('<h1>Hoppla</h1><p>Konnte nicht geladen werden.</p><a class="btn pri" href="./">Zur App</a>'); return; }
+  let payload; try{ payload=JSON.parse(dsDecompress(d.data)); }catch(e){ msg('<h1>Fehler</h1><p>Modell-Daten beschädigt.</p>'); return; }
+  _modelName=payload.name||d.name||'Modell'; _bakedParts=payload.parts||[];
+  if(!_bakedParts.length){ msg('<h1>Leeres Modell</h1><p>Hier ist nichts zu sehen.</p><a class="btn pri" href="./">Zur App</a>'); return; }
+  document.getElementById('name').textContent=_modelName;
+  try{ buildModel(_bakedParts); }catch(e){ console.warn(e); msg('<h1>Fehler</h1><p>Modell konnte nicht aufgebaut werden.</p>'); return; }
+  hideMsg();
+  document.getElementById('bar').classList.remove('hidden');
+  document.getElementById('foot').classList.remove('hidden');
+  document.getElementById('stlBtn').onclick=downloadSTL;
+  const h=document.getElementById('hint'); h.classList.add('show'); setTimeout(()=>h.classList.remove('show'),3200);
+})();
+</script>
+</body>
+</html>

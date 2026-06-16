@@ -14,6 +14,7 @@ ALLOW = {
     '/':                                  ('volme3d.html', 'text/html; charset=utf-8'),
     '/volme3d.html':                      ('volme3d.html', 'text/html; charset=utf-8'),
     '/abstimmung.html':                   ('abstimmung.html', 'text/html; charset=utf-8'),
+    '/ansehen.html':                      ('ansehen.html', 'text/html; charset=utf-8'),
     '/favicon.svg':                       ('favicon.svg', 'image/svg+xml'),
     '/logo.svg':                          ('logo.svg', 'image/svg+xml'),
     '/volme3d-occt.js':                   ('volme3d-occt.js', 'text/javascript; charset=utf-8'),
