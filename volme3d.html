@@ -57,6 +57,21 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);width:100vw;
 .nf-host{position:relative}
 .nf-dot{position:absolute;top:-3px;right:-3px;width:9px;height:9px;border-radius:50%;background:var(--acc);box-shadow:0 0 0 2px #fff;z-index:6;pointer-events:none;animation:nfpulse 1.8s ease-out 3}
 @keyframes nfpulse{0%{box-shadow:0 0 0 2px #fff,0 0 0 0 rgba(249,115,22,.45)}70%{box-shadow:0 0 0 2px #fff,0 0 0 8px rgba(249,115,22,0)}100%{box-shadow:0 0 0 2px #fff}}
+/* Druck-Check */
+#printcheck-modal{position:fixed;inset:0;background:rgba(10,12,20,.5);z-index:3300;display:none;align-items:center;justify-content:center;font-family:var(--font)}
+#printcheck-modal.show{display:flex}
+#printcheck-box{background:#fff;border-radius:14px;width:470px;max-width:96vw;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.30)}
+#printcheck-hd{display:flex;align-items:center;gap:8px;padding:14px 18px;border-bottom:1px solid var(--border);font-size:16px;font-weight:800;color:var(--text);background:#fafbfd}
+#printcheck-hd .px{margin-left:auto;cursor:pointer;color:#aaa;font-size:16px;line-height:1;padding:0 2px}
+#printcheck-body{padding:6px 16px 12px;overflow-y:auto}
+.pc-summary{padding:12px 4px 8px;font-size:14px;font-weight:800}
+.pc-row{display:flex;gap:11px;align-items:flex-start;padding:11px 4px;border-top:1px solid var(--border)}
+.pc-ic{flex:0 0 auto;font-size:17px;line-height:1.35}
+.pc-tx{flex:1;min-width:0}
+.pc-tt{font-weight:800;font-size:13.5px;color:var(--text)}
+.pc-ms{font-size:12px;color:var(--mid);line-height:1.45;margin-top:1px}
+.pc-row .btn{flex:0 0 auto;align-self:center;font-size:12px;padding:6px 10px;white-space:nowrap}
+#printcheck-foot{display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid var(--border)}
 #changelog-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:4000;display:none;align-items:center;justify-content:center}
 #changelog-modal.show{display:flex}
 #changelog-box{background:#fff;border-radius:14px;width:540px;max-width:96vw;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 16px 50px rgba(0,0,0,.22)}
@@ -849,7 +864,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.63<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.64<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -870,6 +885,7 @@ const firebaseConfig = {
     <button class="btn" onclick="openCutTool()" title="Zerteilen — großes Objekt mit einer Schnittebene in zwei druckbare Teile teilen">✂ Zerteilen</button>
     <button class="btn" onclick="openEraserTool()" title="Radierer — mit dem Pinsel über das Modell fahren, um Flächen/Geometrie zu entfernen (Radius per Mausrad)">🧽 Radierer</button>
     <button class="btn" onclick="repairSelected()" title="Reparieren — offene Löcher im ausgewählten Objekt schließen (wieder wasserdicht/druckbar machen)">🩹 Reparieren</button>
+    <button class="btn" onclick="_printCheckOpen()" title="Druck-Check — prüft vor dem Export: wasserdicht, passt aufs Bett, auf der Platte, Überhänge">🖨 Druck-Check</button>
     <div class="sep"></div>
     <button class="btn" id="btn-lock" onclick="toggleLockSelected()" title="Strg+L — Objekt gegen Verschieben sichern">🔒 Sperren</button>
     <button class="btn" id="btn-hide" onclick="toggleHideSelected()" title="Strg+H — Objekt ausblenden  |  Strg+Shift+H alle einblenden">👁 Ausblenden</button>
@@ -945,6 +961,20 @@ const firebaseConfig = {
     window.location.href='mailto:v.c.isken@gmail.com?subject='+subj+'&body='+body;
   }
 </script>
+
+<!-- DRUCK-CHECK -->
+<div id="printcheck-modal" onclick="if(event.target===this)_printCheckClose()">
+  <div id="printcheck-box">
+    <div id="printcheck-hd">🖨 Druck-Check<span class="px" onclick="_printCheckClose()">✕</span></div>
+    <div id="printcheck-body"></div>
+    <div id="printcheck-foot">
+      <button class="btn" onclick="_printCheckOpen()">↻ Erneut prüfen</button>
+      <div style="flex:1"></div>
+      <button class="btn" onclick="_printCheckClose()">Schließen</button>
+      <button class="btn pri" onclick="_printCheckClose();exportSTL()">⬇ STL exportieren</button>
+    </div>
+  </div>
+</div>
 
 <!-- TUTORIAL / KURS-MODUS -->
 <div id="tutor-spot"></div>
@@ -14410,8 +14440,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.63';
+const VOLME3D_VERSION = '1.14.64';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.64', date:'2026-06-16', spots:[{id:'druck-check',sel:'[onclick="_printCheckOpen()"]'}], changes:[
+    ['🖨','Neuer Druck-Check (Knopf „Druck-Check"): prüft vor dem Export per Ampel, ob dein Teil sauber druckbar ist — wasserdicht/geschlossen, passt aufs Druckbett, liegt auf der Platte, Überhänge (>45°), sehr filigrane Stellen. Mit Ein-Klick-Fixes: Reparieren, Auf Platte legen, Für Druck ausrichten'],
+  ]},
   { version:'1.14.63', date:'2026-06-16', changes:[
     ['⚡','Schneller & sparsamer beim Bearbeiten: „Rückgängig" serialisiert unveränderte Objekte nicht mehr bei jedem Schritt neu — die aufwendige Geometrie wird pro Objekt zwischengespeichert und über alle Undo-Schritte geteilt. Spürbar bei Szenen mit importierten oder verschnittenen Modellen'],
   ]},
@@ -17569,6 +17602,105 @@ function _eraserEraseAt(mesh, pw) {
 }
 
 // Reparieren: offene Löcher im ausgewählten Objekt (oder dessen Mesh-Kindern) schließen
+// ===== DRUCK-CHECK =====
+// Analysiert die sichtbaren Körper (was exportiert würde): wasserdicht/manifold,
+// passt aufs Bett, liegt auf der Platte, Überhänge, sehr dünn.
+function _printCheckAnalyze(){
+  const meshes=[];
+  objects.forEach(o=>o.traverse(n=>{ if(n.isMesh && n.visible && !n.userData.isEdgeLines && !n.userData.isHole) meshes.push(n); }));
+  if(!meshes.length) return null;
+  const box=new THREE.Box3();
+  let boundaryEdges=0, nonManifold=0, overhangArea=0, totalArea=0, tris=0, capped=false;
+  const DOWN=Math.cos(45*Math.PI/180);   // 0.707
+  for(const m of meshes){
+    m.updateWorldMatrix(true,true);
+    box.expandByObject(m);
+    const g=m.geometry, pos=g && g.attributes.position; if(!pos) continue;
+    const idx=g.index, triCount=(idx?idx.count:pos.count)/3;
+    tris+=triCount;
+  }
+  const heavy = tris>250000;   // sehr große Szene → Detail-Analyse überspringen (kein Einfrieren)
+  const minY = box.min.y;      // Unterkante: nach unten zeigende Flächen hier sind die Basis (kein Überhang)
+  if(!heavy){
+    const vA=new THREE.Vector3(), vB=new THREE.Vector3(), vC=new THREE.Vector3(), ab=new THREE.Vector3(), ac=new THREE.Vector3(), nrm=new THREE.Vector3();
+    for(const m of meshes){
+      const g=m.geometry, pos=g && g.attributes.position; if(!pos) continue;
+      const idx=g.index, triCount=(idx?idx.count:pos.count)/3;
+      const edges=new Map();
+      const key=v=>Math.round(v.x*1000)+'_'+Math.round(v.y*1000)+'_'+Math.round(v.z*1000);
+      const addEdge=(a,c)=>{ const k=a<c?a+'|'+c:c+'|'+a; edges.set(k,(edges.get(k)||0)+1); };
+      for(let t=0;t<triCount;t++){
+        const i0=idx?idx.getX(t*3):t*3, i1=idx?idx.getX(t*3+1):t*3+1, i2=idx?idx.getX(t*3+2):t*3+2;
+        vA.fromBufferAttribute(pos,i0).applyMatrix4(m.matrixWorld);
+        vB.fromBufferAttribute(pos,i1).applyMatrix4(m.matrixWorld);
+        vC.fromBufferAttribute(pos,i2).applyMatrix4(m.matrixWorld);
+        const ka=key(vA),kb=key(vB),kc=key(vC);
+        addEdge(ka,kb); addEdge(kb,kc); addEdge(kc,ka);
+        ab.subVectors(vB,vA); ac.subVectors(vC,vA); nrm.crossVectors(ab,ac);
+        const area=nrm.length()/2; totalArea+=area;
+        if(area>1e-9){ nrm.multiplyScalar(1/(area*2));
+          if(nrm.y < -DOWN){ const cy=(vA.y+vB.y+vC.y)/3; if(cy > minY+0.05) overhangArea+=area; } }   // Basis (auf der Platte) zählt nicht als Überhang
+      }
+      edges.forEach(c=>{ if(c===1) boundaryEdges++; else if(c>2) nonManifold++; });
+    }
+  } else capped=true;
+  const size=box.getSize(new THREE.Vector3());
+  return { bodies:meshes.length, tris, capped, boundaryEdges, nonManifold,
+    overhangPct: totalArea?Math.round(overhangArea/totalArea*100):0,
+    wMM:size.x*10, hMM:size.y*10, dMM:size.z*10, minYmm: box.min.y*10 };
+}
+function _printCheckOpen(){
+  document.getElementById('printcheck-modal').classList.add('show');
+  const body=document.getElementById('printcheck-body');
+  let r; try{ r=_printCheckAnalyze(); }catch(e){ console.warn('Druck-Check:',e); body.innerHTML='<div class="pc-summary">Analyse fehlgeschlagen.</div>'; return; }
+  if(!r){ body.innerHTML='<div class="pc-summary" style="color:var(--dim)">Keine druckbaren Körper in der Szene.</div>'; return; }
+  const items=[];
+  const row=(lvl,ic,tt,ms,btn,act)=>items.push({lvl,ic,tt,ms,btn,act});
+  // Wasserdicht / Manifold
+  if(r.capped) row('info','⏭','Sehr große Szene', r.tris.toLocaleString('de')+' Dreiecke — Detailprüfung (wasserdicht/Überhänge) übersprungen, um nicht einzufrieren.');
+  else if(r.boundaryEdges===0 && r.nonManifold===0) row('ok','✅','Wasserdicht','Geschlossenes Volumen — sauber druckbar.');
+  else { const parts=[]; if(r.boundaryEdges) parts.push(r.boundaryEdges+' offene Kante(n)'); if(r.nonManifold) parts.push(r.nonManifold+' nicht-manifolde Kante(n)');
+    row('warn','⚠️','Nicht wasserdicht', parts.join(', ')+' — der Slicer kann das falsch interpretieren.','🩹 Reparieren','_printCheckRepair()'); }
+  // Passt aufs Bett
+  const sz=Math.round(r.wMM)+' × '+Math.round(r.dMM)+' × '+Math.round(r.hMM)+' mm';
+  if(r.wMM<=buildplateW+0.5 && r.dMM<=buildplateH+0.5) row('ok','✅','Passt aufs Bett', sz+' — passt auf '+buildplateW+' × '+buildplateH+' mm.');
+  else row('err','❌','Zu groß fürs Bett', sz+' — passt nicht auf '+buildplateW+' × '+buildplateH+' mm. (Skalieren oder Bett anpassen.)');
+  // Auf der Platte
+  if(Math.abs(r.minYmm)<0.5) row('ok','✅','Auf der Platte','Liegt sauber auf der Druckplatte.');
+  else if(r.minYmm>0.5) row('warn','⚠️','Schwebt','Unterkante '+r.minYmm.toFixed(1)+' mm über der Platte.','⬇ Auf Platte','_printDropToPlate()');
+  else row('warn','⚠️','Unter der Platte','Ragt '+(-r.minYmm).toFixed(1)+' mm unter die Platte.','⬇ Auf Platte','_printDropToPlate()');
+  // Überhänge
+  if(!r.capped){
+    if(r.overhangPct<10) row('ok','✅','Kaum Überhänge', r.overhangPct+'% steile Unterseiten — wenig/kein Stützmaterial nötig.');
+    else row('info','ℹ️','Überhänge', r.overhangPct+'% der Fläche zeigt steil nach unten (>45°) — evtl. Stützen nötig.','↻ Ausrichten','_printCheckOrient()');
+  }
+  // Sehr dünn (Heuristik auf Außenmaße)
+  const minDim=Math.min(r.wMM,r.dMM,r.hMM);
+  if(minDim<0.8) row('warn','⚠️','Sehr filigran','Dünnste Außenabmessung ~'+minDim.toFixed(1)+' mm — könnte zu dünn zum Drucken sein.');
+  // Render
+  const worst=items.some(i=>i.lvl==='err')?'err':(items.some(i=>i.lvl==='warn')?'warn':'ok');
+  const head = worst==='ok'?'<span style="color:#059669">✓ Sieht gut aus — druckbereit.</span>'
+    : worst==='warn'?'<span style="color:#b45309">⚠ Druckbar, aber prüf die Hinweise.</span>'
+    : '<span style="color:#dc2626">✕ Vor dem Druck beheben.</span>';
+  body.innerHTML='<div class="pc-summary">'+head+'</div>'+items.map(i=>
+    '<div class="pc-row lvl-'+i.lvl+'"><div class="pc-ic">'+i.ic+'</div>'+
+    '<div class="pc-tx"><div class="pc-tt">'+i.tt+'</div><div class="pc-ms">'+i.ms+'</div></div>'+
+    (i.btn?'<button class="btn" onclick="'+i.act+'">'+i.btn+'</button>':'')+'</div>').join('');
+}
+function _printCheckClose(){ document.getElementById('printcheck-modal').classList.remove('show'); }
+function _printCheckRepair(){ selectObjs(objects.slice()); repairSelected(); setTimeout(_printCheckOpen,30); }
+function _printCheckOrient(){ if(typeof autoOrientForPrint==='function') autoOrientForPrint(); setTimeout(_printCheckOpen,30); }
+function _printDropToPlate(){
+  if(!objects.length) return;
+  saveUndo();
+  const box=new THREE.Box3(); objects.forEach(o=>{ try{ box.expandByObject(o); }catch(e){} });
+  if(box.isEmpty()) return;
+  const dy=-box.min.y + (typeof workplanePoint!=='undefined'?workplanePoint.y:0);
+  objects.forEach(o=>{ o.position.y += dy; });
+  notify('Auf die Platte gelegt','ok');
+  setTimeout(_printCheckOpen,30);
+}
+// ===== END DRUCK-CHECK =====
 function repairSelected() {
   const meshes = [];
   (selectedObjs || []).forEach(o => {
