@@ -902,7 +902,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.69<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.70<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -1317,6 +1317,7 @@ const firebaseConfig = {
           <button class="gen-btn" onclick="_openGearModal()"><span class="gi">⚙️</span><span class="gl">Zahnräder</span></button>
           <button class="gen-btn" onclick="_openEncModal()"><span class="gi">📦</span><span class="gl">Gehäuse / Box</span></button>
           <button class="gen-btn" onclick="_openLBModal()"><span class="gi">🪵</span><span class="gl">Laser-Box (Zinken)</span></button>
+          <button class="gen-btn" onclick="_openQRModal()"><span class="gi">📇</span><span class="gl">QR-Code</span></button>
           <button class="gen-btn dev-only" onclick="_openGFModal()"><span class="gi">🧪</span><span class="gl">Rasterbox Generator</span></button>
         </div>
       </div>
@@ -2021,6 +2022,27 @@ const firebaseConfig = {
   </div>
 </div>
 
+<div id="qr-modal" class="g3dm" onclick="if(event.target===this)_closeQRModal()">
+  <div class="g3box">
+    <div class="g3hdr">📇 QR-Code-Generator<span class="vx" onclick="_closeQRModal()">✕</span></div>
+    <div class="g3body">
+      <canvas id="qr-canvas" width="200" height="200" style="background:#fff;align-self:flex-start"></canvas>
+      <div class="g3ctrl">
+        <span class="vsec">Inhalt (Link, Text, WLAN …)</span>
+        <textarea id="qr-text" maxlength="900" oninput="_qrPreview()" placeholder="https://…" style="width:100%;box-sizing:border-box;min-height:54px;font-family:var(--font);font-size:13px;border:1.5px solid var(--border);border-radius:9px;padding:8px 10px;resize:vertical">https://v3da.tailf05fe9.ts.net/</textarea>
+        <div class="vrow"><label>Größe</label> <input type="range" id="qr-size" min="20" max="150" value="50" step="1" oninput="document.getElementById('qr-sizev').textContent=this.value;_qrInfo()"><span class="vv" id="qr-sizev">50</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Höhe der erhabenen Module">Modul-Höhe</label> <input type="range" id="qr-mod" min="0.4" max="3" value="1.2" step="0.1" oninput="document.getElementById('qr-modv').textContent=this.value"><span class="vv" id="qr-modv">1.2</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Platte</label> <input type="range" id="qr-plate" min="0.6" max="4" value="1.6" step="0.1" oninput="document.getElementById('qr-platev').textContent=this.value"><span class="vv" id="qr-platev">1.6</span><span class="vu">mm</span></div>
+        <div class="g3info" id="qr-info"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_closeQRModal()">Abbrechen</button>
+      <button class="btn pri" onclick="_createQR()">✓ Erstellen</button>
+    </div>
+  </div>
+</div>
+
 <div id="enc-modal" class="g3dm" onclick="if(event.target===this)_closeEncModal()">
   <div class="g3box">
     <div class="g3hdr">📦 Gehäuse / Box-Generator<span class="vx" onclick="_closeEncModal()">✕</span></div>
@@ -2428,6 +2450,7 @@ const firebaseConfig = {
 <script src="lib/BufferGeometryUtils.js"></script>
 <script src="lib/fflate.min.js"></script>
 <script src="lib/SimplifyModifier.js"></script>
+<script src="lib/qrcode.min.js"></script>
 <script type="module">
 import initOCCT from './volme3d-occt.js';
 window._occtReady = (async () => {
@@ -13565,6 +13588,64 @@ function _fpEncSet(k,v){
 }
 // ===== END ZAHNRAD- + GEHÄUSE-GENERATOR =====
 
+// ===== QR-CODE-GENERATOR =====
+const _qrBorder = 2;   // Ruhezone (helle Module rundum), nötig zum Scannen
+let _qrMat=null, _qrN=0;
+function _openQRModal(){ document.getElementById('qr-modal').classList.add('show'); _qrPreview(); }
+function _closeQRModal(){ document.getElementById('qr-modal').classList.remove('show'); }
+function _qrGen(text){
+  const qr=qrcode(0,'M'); qr.addData(text&&text.length?text:' '); qr.make();
+  const n=qr.getModuleCount(), mat=[];
+  for(let r=0;r<n;r++){ const row=[]; for(let c=0;c<n;c++) row.push(qr.isDark(r,c)?1:0); mat.push(row); }
+  return {n,mat};
+}
+function _qrPreview(){
+  const text=document.getElementById('qr-text').value.trim();
+  const info=document.getElementById('qr-info');
+  let g; try{ g=_qrGen(text); }catch(e){ _qrMat=null; info.textContent='⚠ Inhalt zu lang für einen QR-Code.'; return; }
+  _qrMat=g.mat; _qrN=g.n;
+  const cv=document.getElementById('qr-canvas'), ctx=cv.getContext('2d');
+  const grid=g.n+2*_qrBorder, px=cv.width/grid;
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.fillStyle='#111';
+  for(let r=0;r<g.n;r++) for(let c=0;c<g.n;c++) if(g.mat[r][c]) ctx.fillRect((c+_qrBorder)*px,(r+_qrBorder)*px,Math.ceil(px),Math.ceil(px));
+  _qrInfo();
+}
+function _qrInfo(){
+  const sz=document.getElementById('qr-size').value;
+  document.getElementById('qr-info').innerHTML = _qrMat ? (_qrN+'×'+_qrN+' Module · '+sz+' mm<br>Zum Drucken am besten 2-farbig: Platte hell, Module dunkel (z.B. Filamentwechsel auf Modulhöhe).') : '';
+}
+function _createQR(){
+  const text=document.getElementById('qr-text').value.trim();
+  if(!text){ notify('Bitte Inhalt eingeben','w'); return; }
+  let g; try{ g=_qrGen(text); }catch(e){ notify('Inhalt zu lang für einen QR-Code','w'); return; }
+  saveUndo();
+  const sizeMM=+document.getElementById('qr-size').value, modMM=+document.getElementById('qr-mod').value, plateMM=+document.getElementById('qr-plate').value;
+  const sizeU=sizeMM/10, plateU=plateMM/10, modU=modMM/10, grid=g.n+2*_qrBorder, ms=sizeU/grid, half=sizeU/2;
+  const _pb=new THREE.BoxGeometry(sizeU,plateU,sizeU); _pb.translate(0,plateU/2,0);
+  const plateGeo=_toPlainGeo(_pb);   // BoxGeometry.toJSON() ist parametrisch → in schlichte BufferGeometry wandeln
+  const boxes=[];
+  for(let r=0;r<g.n;r++) for(let c=0;c<g.n;c++){ if(!g.mat[r][c]) continue;
+    const bx=new THREE.BoxGeometry(ms,modU,ms); bx.translate((c+_qrBorder+0.5)*ms-half, plateU+modU/2, (r+_qrBorder+0.5)*ms-half); boxes.push(bx); }
+  const modGeo = boxes.length ? _mergePos(boxes.map(_posOnly)) : new THREE.BufferGeometry(); modGeo.computeVertexNormals();
+  const colPlate='#eeeeee', colMod='#1a1a1a';
+  const plateMesh=new THREE.Mesh(plateGeo,new THREE.MeshStandardMaterial({color:new THREE.Color(colPlate),roughness:0.7,metalness:0,side:THREE.DoubleSide}));
+  plateMesh.castShadow=true; plateMesh.receiveShadow=true;
+  plateMesh.userData={id:idCtr++,type:'custom',shapeType:'custom',name:'QR-Platte',color:colPlate,isHole:false,fillet:0,chamfer:0};
+  const modMesh=new THREE.Mesh(modGeo,new THREE.MeshStandardMaterial({color:new THREE.Color(colMod),roughness:0.6,metalness:0,side:THREE.DoubleSide}));
+  modMesh.castShadow=true; modMesh.receiveShadow=true;
+  modMesh.userData={id:idCtr++,type:'custom',shapeType:'custom',name:'QR-Module',color:colMod,isHole:false,fillet:0,chamfer:0};
+  const grp=new THREE.Group();
+  typeCounts['qr']=(typeCounts['qr']||0)+1;
+  grp.userData={id:idCtr++,name:'QR-Code #'+typeCounts['qr'],isGroup:true};
+  grp.add(plateMesh); grp.add(modMesh);
+  grp.quaternion.copy(_wpMakeQuat(workplaneNormal)); grp.position.copy(workplanePoint);
+  scene.add(grp); objects.push(grp);
+  selectObjs([grp]); updateTree(); fitToObjects([grp]);
+  notify('QR-Code erstellt — am besten 2-farbig drucken','ok'); _closeQRModal();
+}
+// ===== END QR-CODE-GENERATOR =====
+
 // ===== TUTORIAL / KURS-MODUS =====
 // Eine Lektion = { id, title, steps:[ {type,title,text,highlight?,check?} ] }.
 // Schritttypen: 'info' (nur Weiter), 'action' (erkennt automatisch die ausgeführte
@@ -14536,8 +14617,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.69';
+const VOLME3D_VERSION = '1.14.70';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.70', date:'2026-06-16', spots:[{id:'qr',sel:'[onclick="_openQRModal()"]'}], changes:[
+    ['📇','Neuer QR-Code-Generator: Link/Text/WLAN eingeben → scannbarer QR-Code als druckbares 3D-Teil (helle Platte + erhabene Module, am besten 2-farbig drucken). Mit Live-Vorschau und einstellbarer Größe/Höhe. Stark in Kombi mit dem Teilen-Knopf: QR auf den Druck, der zum 3D-Link führt'],
+  ]},
   { version:'1.14.69', date:'2026-06-16', spots:[{id:'teilen',sel:'[onclick="openShareModal()"]'}], changes:[
     ['🔗','Modell teilen: Über den Teilen-Knopf bekommst du einen Link zu deinem Modell — wer ihn öffnet, dreht und zoomt es live im Browser (ohne Anmeldung, auch am Handy), kann es als STL laden oder selbst loslegen. Teilen per WhatsApp oder Link'],
   ]},
@@ -17833,6 +17917,7 @@ const CMDK = [
   {i:'⚙️',g:'Generator',t:'Zahnräder',k:'gear',run:()=>_openGearModal()},
   {i:'📦',g:'Generator',t:'Gehäuse / Box',k:'enclosure case',run:()=>_openEncModal()},
   {i:'🪵',g:'Generator',t:'Laser-Box',k:'laser fingerzinken',run:()=>_openLBModal()},
+  {i:'📇',g:'Generator',t:'QR-Code',k:'qr code link',run:()=>_openQRModal()},
   {i:'🧪',g:'Generator',t:'Rasterbox',k:'gridfinity raster',run:()=>_openGFModal()},
   {i:'∪',g:'Bearbeiten',t:'Vereinen',k:'union merge',run:()=>unionSelected()},
   {i:'⊖',g:'Bearbeiten',t:'Abziehen',k:'subtract bohrung loch',run:()=>subtractHoles()},
