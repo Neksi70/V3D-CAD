@@ -849,7 +849,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.62<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.63<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -7539,6 +7539,16 @@ function buildObjectFromData(data) {
   return obj;
 }
 
+// Teures geometry.toJSON() pro Geometrie-Objekt cachen: unveränderte Objekte
+// teilen sich dieselbe Serialisierung über alle Undo-Snapshots (spart CPU + RAM).
+// Geometrien werden beim Bearbeiten ersetzt (neues Objekt → Cache-Miss), nicht
+// in-place mutiert; die 2 Ausnahmen (Zerteilen) leeren ihren Cache-Eintrag selbst.
+const _geoJsonCache = new WeakMap();
+function _cachedGeoJSON(geo){
+  let j = _geoJsonCache.get(geo);
+  if (!j) { j = geo.toJSON(); _geoJsonCache.set(geo, j); }
+  return j;
+}
 function objectToData(o) {
   const d = {
     id: o.userData.id, name: o.userData.name, color: o.userData.color,
@@ -7578,11 +7588,11 @@ function objectToData(o) {
     if (o.userData.displacementSymmetric) d.displacementSymmetric = true;
     if (o.userData.texOrient && o.userData.texOrient !== 'laengs') d.texOrient = o.userData.texOrient;
     if (o.userData.texWhere && o.userData.texWhere !== 'alle')     d.texWhere  = o.userData.texWhere;
-    if (o.isMesh && o.geometry) d.geometry = o.geometry.toJSON();   // Gruppen haben keine eigene Geometrie
+    if (o.isMesh && o.geometry) d.geometry = _cachedGeoJSON(o.geometry);   // Gruppen haben keine eigene Geometrie
   } else if (o.isMesh && (!o.userData.type || ['custom','text','import','revolve','flower',
       'sphericalshell','spring','bentpipe','thread','svg','lantern','screw','gear','enclosure',
       'laserbox','gfbin','gfplate','gfcut'].includes(o.userData.type))) {
-    d.geometry = o.geometry.toJSON();
+    d.geometry = _cachedGeoJSON(o.geometry);
   }
   if (o.userData._origGeo) d._origGeoData = o.userData._origGeo.toJSON();
   if (o.isGroup || o.userData.isGroup) {
@@ -14400,8 +14410,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.62';
+const VOLME3D_VERSION = '1.14.63';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.63', date:'2026-06-16', changes:[
+    ['⚡','Schneller & sparsamer beim Bearbeiten: „Rückgängig" serialisiert unveränderte Objekte nicht mehr bei jedem Schritt neu — die aufwendige Geometrie wird pro Objekt zwischengespeichert und über alle Undo-Schritte geteilt. Spürbar bei Szenen mit importierten oder verschnittenen Modellen'],
+  ]},
   { version:'1.14.62', date:'2026-06-16', changes:[
     ['🛡️','Stabiler: Ein globaler Fehler-Fang verhindert, dass ein unerwarteter Fehler die App lautlos lahmlegt — dein Stand wird in dem Fall automatisch gesichert und du bekommst einen kurzen Hinweis (statt einer eingefrorenen Oberfläche)'],
   ]},
@@ -17334,6 +17347,7 @@ function _cutExecute() {
         mesh.geometry.translate(dx, dy, dz);
         cursorX += (bb.max.x - bb.min.x) + gap;
         mesh.geometry.computeVertexNormals();
+        _geoJsonCache.delete(mesh.geometry);   // in-place mutiert → Cache-Eintrag verwerfen
       });
     }
 
