@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Volme 3D</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="lib/leaflet.css">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 :root{
@@ -521,6 +522,14 @@ body.devmode .dev-only{display:flex!important}
 .g3dm .g3ctrl{flex:1;overflow-y:auto;padding:10px 14px;font-size:12px}
 .g3dm .g3foot{display:flex;justify-content:flex-end;gap:8px;padding:11px 18px;border-top:1px solid var(--border);flex-shrink:0}
 .g3dm .g3info{font-size:10.5px;color:#888;line-height:1.5;margin-top:8px;padding-top:8px;border-top:1px solid #eee}
+.map-spin{width:34px;height:34px;border:4px solid #ddd;border-top-color:#F97316;border-radius:50%;animation:mapspin .8s linear infinite}
+@keyframes mapspin{to{transform:rotate(360deg)}}
+.map-bm,.map-sm{font-family:var(--font);font-size:13px;font-weight:600;background:#fff;border:none;padding:7px 11px;cursor:pointer;color:#555;border-left:1.5px solid var(--border)}
+.map-bm:first-child,.map-sm:first-child{border-left:none}
+.map-sm{padding:6px 12px;font-size:16px;line-height:1}
+.map-bm.active,.map-sm.active{background:#F97316;color:#fff}
+.map-bm:hover:not(.active),.map-sm:hover:not(.active){background:#f3f4f6}
+#map-leaflet .leaflet-control-attribution{font-size:9px}
 /* Tutorial-/Kurs-Coach-Panel + Spotlight */
 #tutor-panel{position:fixed;right:18px;bottom:18px;width:340px;max-width:calc(100vw - 36px);background:#fff;border:1.5px solid var(--border);border-radius:14px;box-shadow:0 14px 46px rgba(0,0,0,.24);z-index:4000;font-family:var(--font);display:none;flex-direction:column;overflow:hidden}
 #tutor-panel.show{display:flex}
@@ -908,7 +917,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.74<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.75<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -1347,6 +1356,7 @@ const firebaseConfig = {
           <button class="gen-btn" onclick="_openEncModal()"><span class="gi">📦</span><span class="gl">Gehäuse / Box</span></button>
           <button class="gen-btn" onclick="_openLBModal()"><span class="gi">🪵</span><span class="gl">Laser-Box (Zinken)</span></button>
           <button class="gen-btn" onclick="_openQRModal()"><span class="gi">📇</span><span class="gl">QR-Code</span></button>
+          <button class="gen-btn" onclick="_openMapModal()"><span class="gi">🗺️</span><span class="gl">Karte → 3D</span></button>
           <button class="gen-btn dev-only" onclick="_openGFModal()"><span class="gi">🧪</span><span class="gl">Rasterbox Generator</span></button>
         </div>
       </div>
@@ -2072,6 +2082,71 @@ const firebaseConfig = {
   </div>
 </div>
 
+<div id="map-modal" class="g3dm" onclick="if(event.target===this)_closeMapModal()">
+  <div class="g3box" style="width:760px">
+    <div class="g3hdr">🗺️ Karte → 3D (OpenStreetMap-Stadtmodell)<span class="vx" onclick="_closeMapModal()">✕</span></div>
+    <div class="g3body" style="flex-direction:column">
+      <div style="display:flex;gap:6px;padding:10px 14px 6px">
+        <input id="map-search" type="text" placeholder="Ort suchen (z.B. Hamburg Rathaus)…" style="flex:1;font-family:var(--font);font-size:13px;border:1.5px solid var(--border);border-radius:9px;padding:8px 10px" onkeydown="if(event.key==='Enter'){event.preventDefault();_mapSearch();}">
+        <button class="btn" onclick="_mapSearch()">🔍 Suchen</button>
+        <div style="display:flex;border:1.5px solid var(--border);border-radius:9px;overflow:hidden">
+          <button class="map-bm active" id="map-base-osm" onclick="_mapSetBase('osm')" title="Standard-Karte (OpenStreetMap)">🗺️ Karte</button>
+          <button class="map-bm" id="map-base-sat" onclick="_mapSetBase('sat')" title="Satellitenbild (Esri World Imagery)">🛰️ Satellit</button>
+        </div>
+      </div>
+      <div style="position:relative;margin:0 14px">
+        <div id="map-leaflet" style="width:100%;height:330px;border:1.5px solid var(--border);border-radius:9px;overflow:hidden;background:#dde"></div>
+        <div id="map-spinner" style="display:none;position:absolute;inset:0;background:rgba(255,255,255,.78);align-items:center;justify-content:center;flex-direction:column;gap:8px;font-size:13px;font-weight:700;color:#333;border-radius:9px">
+          <div class="map-spin"></div><span id="map-spinner-txt">Lade Gebäude…</span>
+        </div>
+      </div>
+      <div class="g3ctrl" style="overflow:visible;padding-top:8px">
+        <div class="vrow" style="gap:6px"><label title="Form des Kartenausschnitts (Sockel + Beschnitt folgen dieser Form)">Form</label>
+          <div style="display:flex;border:1.5px solid var(--border);border-radius:9px;overflow:hidden">
+            <button class="map-sm active" data-shape="square" onclick="_mapSetShape('square')" title="Quadrat">▢</button>
+            <button class="map-sm" data-shape="rect" onclick="_mapSetShape('rect')" title="Rechteck">▭</button>
+            <button class="map-sm" data-shape="circle" onclick="_mapSetShape('circle')" title="Kreis">◯</button>
+            <button class="map-sm" data-shape="hexagon" onclick="_mapSetShape('hexagon')" title="Sechseck">⬡</button>
+          </div>
+        </div>
+        <div class="vrow" id="map-aspect-row" style="display:none"><label title="Seitenverhältnis (Breite : Höhe) des Rechtecks">Verhältnis</label> <input type="range" id="map-aspect" min="0.4" max="2.5" value="1.5" step="0.05" oninput="document.getElementById('map-aspectv').textContent=(+this.value).toFixed(2);_mapUpdateRect()"><span class="vv" id="map-aspectv">1.50</span><span class="vu">:1</span></div>
+        <div class="vrow"><label title="Kantenlänge bzw. Durchmesser des Ausschnitts auf der Karte">Ausschnitt</label> <input type="range" id="map-extent" min="100" max="2000" value="400" step="50" oninput="_mapUpdateRect()"><span class="vv" id="map-extentv">400</span><span class="vu">m</span></div>
+        <div class="vrow"><label title="Breite des gedruckten Modells">Modellbreite</label> <input type="range" id="map-width" min="40" max="250" value="120" step="5" oninput="document.getElementById('map-widthv').textContent=this.value;_mapInfo()"><span class="vv" id="map-widthv">120</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Maximale Gebäudehöhe im Modell (skaliert)">Max. Höhe</label> <input type="range" id="map-maxh" min="5" max="60" value="22" step="1" oninput="document.getElementById('map-maxhv').textContent=this.value;_mapInfo()"><span class="vv" id="map-maxhv">22</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Dicke der Grundplatte unter den Gebäuden (mit angefastem Rand)">Grundplatte</label> <input type="range" id="map-plate" min="0.6" max="6" value="2" step="0.2" oninput="document.getElementById('map-platev').textContent=this.value"><span class="vv" id="map-platev">2</span><span class="vu">mm</span></div>
+        <div class="vrow" style="gap:16px"><label title="Was ins Modell soll">Inhalt</label>
+          <label style="display:flex;align-items:center;gap:5px;font-weight:600;cursor:pointer"><input type="checkbox" id="map-green" checked> Grünflächen</label>
+          <label style="display:flex;align-items:center;gap:5px;font-weight:600;cursor:pointer"><input type="checkbox" id="map-water" checked> Wasser</label>
+          <label style="display:flex;align-items:center;gap:5px;font-weight:600;cursor:pointer"><input type="checkbox" id="map-roads" checked> Straßen</label>
+        </div>
+        <div class="vrow" style="gap:12px;flex-wrap:wrap"><label title="Farbe je Sektion frei wählbar (für Mehrfarb-Druck / Materialzuordnung)">Farben</label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="color" id="map-col-bld" value="#8a949e"> Gebäude</label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="color" id="map-col-green" value="#5aa45a"> Grün</label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="color" id="map-col-water" value="#5b8fc7"> Wasser</label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="color" id="map-col-road" value="#6b6f76"> Straße</label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="color" id="map-col-frame" value="#b8a07a"> Rahmen</label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="color" id="map-col-plate" value="#cfd6e0"> Sockel</label>
+        </div>
+        <div class="vrow" style="gap:16px"><label title="Erhöhter Rand rund ums Modell (wie ein Bilderrahmen), folgt der Auswahlform">Rahmen</label>
+          <label style="display:flex;align-items:center;gap:5px;font-weight:600;cursor:pointer"><input type="checkbox" id="map-frame" onchange="document.getElementById('map-frame-rows').style.display=this.checked?'':'none'"> Rahmen aktiv</label>
+        </div>
+        <div id="map-frame-rows" style="display:none">
+          <div class="vrow"><label title="Breite des Rahmenrands">Rahmenbreite</label> <input type="range" id="map-framew" min="1" max="15" value="4" step="0.5" oninput="document.getElementById('map-framewv').textContent=this.value"><span class="vv" id="map-framewv">4</span><span class="vu">mm</span></div>
+          <div class="vrow"><label title="Höhe, um die der Rahmen über die Grundplatte herausragt">Rahmenhöhe</label> <input type="range" id="map-frameh" min="1" max="30" value="6" step="0.5" oninput="document.getElementById('map-framehv').textContent=this.value"><span class="vv" id="map-framehv">6</span><span class="vu">mm</span></div>
+        </div>
+        <div class="vrow" style="gap:16px"><label title="Sockel/Gebäude/Grün/Straßen als getrennte Objekte (für Mehrfarbdruck) statt als Gruppe">Aufteilung</label>
+          <label style="display:flex;align-items:center;gap:5px;font-weight:600;cursor:pointer"><input type="checkbox" id="map-separate"> Teile getrennt einfügen</label>
+        </div>
+        <div class="g3info" id="map-info">© OpenStreetMap-Mitwirkende. Tipp: kleiner Ausschnitt = schnellere Erzeugung, weniger Objekte. Gebäude grau, Grün grün, Wasser blau, Straßen als eigene Ebene (für Mehrfarb-Druck getrennt).</div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_closeMapModal()">Abbrechen</button>
+      <button class="btn pri" id="map-create-btn" onclick="_mapCreate()">✓ Modell erzeugen</button>
+    </div>
+  </div>
+</div>
+
 <div id="enc-modal" class="g3dm" onclick="if(event.target===this)_closeEncModal()">
   <div class="g3box">
     <div class="g3hdr">📦 Gehäuse / Box-Generator<span class="vx" onclick="_closeEncModal()">✕</span></div>
@@ -2480,6 +2555,7 @@ const firebaseConfig = {
 <script src="lib/fflate.min.js"></script>
 <script src="lib/SimplifyModifier.js"></script>
 <script src="lib/qrcode.min.js"></script>
+<script src="lib/leaflet.js"></script>
 <script type="module">
 import initOCCT from './volme3d-occt.js';
 window._occtReady = (async () => {
@@ -13747,6 +13823,564 @@ function _createQR(){
 }
 // ===== END QR-CODE-GENERATOR =====
 
+// ===== KARTE → 3D (OpenStreetMap-Gebäude) =====
+let _mapObj=null;        // Leaflet-Map-Instanz
+let _mapMarker=null;     // Such-Marker
+let _mapBusy=false;      // läuft gerade ein Overpass-Request?
+let _mapSearchLast=0;    // Throttle für Nominatim
+let _mapBaseLayer=null;  // aktiver Tile-Layer (OSM oder Satellit)
+let _mapShape='square';  // 'square'|'rect'|'circle'|'hexagon'
+let _mapShapeLayer=null; // Leaflet-Polygon-Vorschau der Auswahlform
+const _MAP_TILES={
+  osm:{url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png', opts:{maxZoom:19, attribution:'© OpenStreetMap-Mitwirkende'}},
+  sat:{url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', opts:{maxZoom:19, attribution:'© Esri, Maxar, Earthstar Geographics'}}
+};
+
+// Setzt den Basis-Tile-Layer (Default-Karte oder Satellit). Tauscht den aktiven Layer aus.
+function _mapSetBase(which){
+  if(!_mapObj) return;
+  const t=_MAP_TILES[which]||_MAP_TILES.osm;
+  if(_mapBaseLayer) _mapObj.removeLayer(_mapBaseLayer);
+  _mapBaseLayer=L.tileLayer(t.url, t.opts).addTo(_mapObj);
+  _mapBaseLayer.bringToBack&&_mapBaseLayer.bringToBack();
+  document.getElementById('map-base-osm').classList.toggle('active',which==='osm');
+  document.getElementById('map-base-sat').classList.toggle('active',which==='sat');
+}
+
+// Wählt die Auswahlform. Blendet die Rechteck-Verhältniszeile passend ein.
+function _mapSetShape(shape){
+  _mapShape=shape;
+  document.querySelectorAll('#map-modal .map-sm').forEach(b=>b.classList.toggle('active',b.dataset.shape===shape));
+  const ar=document.getElementById('map-aspect-row'); if(ar) ar.style.display=(shape==='rect')?'':'none';
+  _mapUpdateRect();
+}
+
+function _openMapModal(){
+  if(typeof L==='undefined'){ notify('Karten-Bibliothek (Leaflet) nicht geladen','e'); return; }
+  document.getElementById('map-modal').classList.add('show');
+  // Leaflet erst nach dem Sichtbarwerden initialisieren (Größe muss bekannt sein)
+  setTimeout(()=>{
+    if(!_mapObj){
+      // Marker-Icons auf selbst gehostete PNGs zeigen lassen (kein CDN-Default)
+      try{
+        const ic=L.Icon.Default.prototype; if(ic.options){ ic.options.imagePath=''; }
+        L.Icon.Default.mergeOptions({
+          iconUrl:'lib/leaflet-marker-icon.png',
+          iconRetinaUrl:'lib/leaflet-marker-icon-2x.png',
+          shadowUrl:'lib/leaflet-marker-shadow.png'
+        });
+      }catch(e){}
+      _mapObj=L.map('map-leaflet',{zoomControl:true,attributionControl:true}).setView([53.5511,9.9937],15); // Hamburg
+      _mapSetBase('osm');
+      _mapObj.on('move zoom moveend zoomend resize',_mapUpdateRect);
+    }
+    _mapObj.invalidateSize();
+    _mapUpdateRect(); _mapInfo();
+  },90);
+}
+function _closeMapModal(){ document.getElementById('map-modal').classList.remove('show'); }
+
+// Liefert die Eckpunkte der aktuellen Auswahlform als Lat/Lon-Polygon (konvex, gegen Uhrzeiger).
+// extent = Breite (Ost-West) in Metern; das Polygon ist mittig auf der Kartenmitte.
+// Rückgabe: { latlngs:[[lat,lon],…], aspect }  (aspect = Höhe/Breite-Faktor)
+function _mapSelectionPolyLL(){
+  const extent=+document.getElementById('map-extent').value;
+  const c=_mapObj.getCenter();
+  const mPerLat=110540, mPerLon=111320*Math.cos(c.lat*Math.PI/180);
+  const halfW=extent/2;                          // halbe Breite (m, Ost-West)
+  let aspect=1;                                   // Höhe/Breite
+  if(_mapShape==='rect'){ const a=+document.getElementById('map-aspect').value; aspect=(a>0?1/a:1); }
+  const halfH=halfW*aspect;                       // halbe Höhe (m, Nord-Süd)
+  // lokale Meter-Offsets (x=Ost, y=Nord) → Lat/Lon
+  const off=(mx,my)=>[ c.lat + my/mPerLat, c.lng + mx/mPerLon ];
+  let local=[];                                   // [mx,my]
+  if(_mapShape==='circle'){
+    const N=48; for(let i=0;i<N;i++){ const a=i/N*Math.PI*2; local.push([Math.cos(a)*halfW, Math.sin(a)*halfH]); }
+  } else if(_mapShape==='hexagon'){
+    for(let i=0;i<6;i++){ const a=Math.PI/6 + i/6*Math.PI*2; local.push([Math.cos(a)*halfW, Math.sin(a)*halfH]); }
+  } else { // square & rect
+    local=[[-halfW,-halfH],[halfW,-halfH],[halfW,halfH],[-halfW,halfH]];
+  }
+  return { latlngs: local.map(([mx,my])=>off(mx,my)), aspect, local, halfW, halfH };
+}
+
+// Zeichnet die zentrierte Auswahlform als Leaflet-Polygon-Vorschau.
+function _mapUpdateRect(){
+  if(!_mapObj) return;
+  const extent=+document.getElementById('map-extent').value;
+  document.getElementById('map-extentv').textContent=extent;
+  const sel=_mapSelectionPolyLL();
+  if(_mapShapeLayer) _mapObj.removeLayer(_mapShapeLayer);
+  _mapShapeLayer=L.polygon(sel.latlngs,{color:'#F97316',weight:2,fillColor:'#F97316',fillOpacity:0.10,interactive:false}).addTo(_mapObj);
+}
+function _mapInfo(){
+  const ext=+document.getElementById('map-extent').value;
+  const w=+document.getElementById('map-width').value;
+  const mh=+document.getElementById('map-maxh').value;
+  document.getElementById('map-info').innerHTML=
+    'Ausschnitt '+ext+'×'+ext+' m → Modell '+w+' mm breit, max. '+mh+' mm hoch.<br>Gebäude grau, Grün grün, Wasser blau, Straßen als eigene Ebene (Mehrfarb-Druck). © OpenStreetMap-Mitwirkende. Großer Ausschnitt = viele Objekte = langsamer.';
+}
+function _mapSpinner(on,txt){
+  const sp=document.getElementById('map-spinner');
+  if(on){ document.getElementById('map-spinner-txt').textContent=txt||'Lade Gebäude…'; sp.style.display='flex'; }
+  else sp.style.display='none';
+}
+
+// Ortssuche via Nominatim (sparsam: nur auf Klick/Enter, ~1/s)
+async function _mapSearch(){
+  const q=document.getElementById('map-search').value.trim();
+  if(!q){ return; }
+  const now=Date.now();
+  if(now-_mapSearchLast<1000){ notify('Bitte kurz warten (Suche gedrosselt)','w'); return; }
+  _mapSearchLast=now;
+  _mapSpinner(true,'Suche Ort…');
+  try{
+    const url='https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(q);
+    const res=await fetch(url,{headers:{'Accept':'application/json'}});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    if(!data.length){ notify('Kein Treffer für „'+q+'"','w'); _mapSpinner(false); return; }
+    const lat=+data[0].lat, lon=+data[0].lon;
+    _mapObj.setView([lat,lon],16);
+    if(_mapMarker) _mapObj.removeLayer(_mapMarker);
+    // CircleMarker statt L.marker: gezeichneter Punkt ohne Bild-Abhängigkeit (kein broken-image-Icon)
+    try{ _mapMarker=L.circleMarker([lat,lon],{radius:7,color:'#F97316',weight:2,fillColor:'#F97316',fillOpacity:0.5}).addTo(_mapObj); }catch(e){}
+    _mapUpdateRect();
+  }catch(e){
+    notify('Ortssuche fehlgeschlagen: '+e.message,'e');
+  }
+  _mapSpinner(false);
+}
+
+// Aktuelle BBOX (south, west, north, east) = umschließendes Rechteck der Auswahlform.
+function _mapBBox(){
+  const c=_mapObj.getCenter();
+  const sel=_mapSelectionPolyLL();
+  let s=Infinity,w=Infinity,n=-Infinity,e=-Infinity;
+  for(const [lat,lon] of sel.latlngs){ if(lat<s)s=lat; if(lat>n)n=lat; if(lon<w)w=lon; if(lon>e)e=lon; }
+  return { lat0:c.lat, lon0:c.lng, s, w, n, e, shape:_mapShape };
+}
+
+// Overpass abfragen + Modell bauen
+async function _mapCreate(){
+  if(typeof L==='undefined' || !_mapObj){ notify('Karte nicht bereit','e'); return; }
+  if(_mapBusy){ return; }
+  const bb=_mapBBox();
+  const wantGreen=!document.getElementById('map-green')||document.getElementById('map-green').checked;
+  const wantWater=!document.getElementById('map-water')||document.getElementById('map-water').checked;
+  const wantRoads=!document.getElementById('map-roads')||document.getElementById('map-roads').checked;
+  _mapBusy=true; _mapSpinner(true,'Lade Kartendaten…');
+  const btn=document.getElementById('map-create-btn'); if(btn) btn.disabled=true;
+  try{
+    const bbox=bb.s.toFixed(6)+','+bb.w.toFixed(6)+','+bb.n.toFixed(6)+','+bb.e.toFixed(6);
+    let q='way["building"]('+bbox+');relation["building"]('+bbox+');';
+    if(wantGreen){
+      q+='way["leisure"~"park|garden|pitch|playground|recreation_ground"]('+bbox+');'+
+         'way["landuse"~"grass|forest|meadow|village_green|recreation_ground|cemetery"]('+bbox+');'+
+         'way["natural"~"wood|grassland|scrub"]('+bbox+');';
+    }
+    if(wantWater){
+      q+='way["natural"="water"]('+bbox+');relation["natural"="water"]('+bbox+');'+
+         'way["water"]('+bbox+');way["waterway"~"riverbank|dock|canal"]('+bbox+');'+
+         'way["landuse"~"reservoir|basin"]('+bbox+');relation["waterway"="riverbank"]('+bbox+');';
+    }
+    if(wantRoads){
+      q+='way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|motorway_link|trunk_link|primary_link|secondary_link"]('+bbox+');';
+    }
+    const query='[out:json][timeout:30];('+q+');out geom;';
+    // Mehrere Overpass-Server nacheinander probieren (der Haupt-Server ist oft überlastet → 504/429)
+    const endpoints=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.private.coffee/api/interpreter'];
+    let data=null, lastErr='';
+    for(let i=0;i<endpoints.length;i++){
+      try{
+        if(i>0) _mapSpinner(true,'Server überlastet — versuche Ausweich-Server…');
+        const res=await fetch(endpoints[i],{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(query)});
+        if(!res.ok){ lastErr='HTTP '+res.status; continue; }
+        data=await res.json(); break;
+      }catch(e){ lastErr=e.message||'Netzwerkfehler'; }
+    }
+    if(!data) throw new Error('Overpass-Server nicht erreichbar ('+lastErr+')');
+    const parsed=_mapParseOverpass(data);
+    const buildings=parsed.buildings, greens=parsed.greens, waters=parsed.waters, roads=parsed.roads;
+    if(!buildings.length && !greens.length && !waters.length && !roads.length){ notify('Keine Kartendaten in diesem Ausschnitt gefunden','w'); _mapBusy=false; _mapSpinner(false); if(btn)btn.disabled=false; return; }
+    if(buildings.length>4000){ notify('Sehr viele Gebäude ('+buildings.length+') — Ausschnitt verkleinern','w'); _mapBusy=false; _mapSpinner(false); if(btn)btn.disabled=false; return; }
+    _mapSpinner(true,'Baue Modell ('+buildings.length+' Gebäude, '+greens.length+' Grün, '+waters.length+' Wasser, '+roads.length+' Straßen)…');
+    await new Promise(r=>setTimeout(r,30)); // UI-Repaint
+    _mapBuildModel(parsed, bb);
+    notify(buildings.length+' Gebäude'+(greens.length?', '+greens.length+' Grün':'')+(waters.length?', '+waters.length+' Wasser':'')+(roads.length?', '+roads.length+' Straßen':'')+' erzeugt','ok');
+    _closeMapModal();
+  }catch(e){
+    notify('Gebäude laden fehlgeschlagen: '+e.message+' (Overpass evtl. überlastet — später nochmal)','e');
+  }
+  _mapBusy=false; _mapSpinner(false); if(btn) btn.disabled=false;
+}
+
+// Overpass-JSON → { buildings:[{ring,height}], greens:[{ring}], waters:[{ring}], roads:[{line,width}] }
+function _mapParseOverpass(data){
+  const buildings=[], greens=[], waters=[], waterLines=[], roads=[];
+  const waterWidth=(t)=>{ const w=t.waterway; if(w==='river') return 22; if(w==='canal') return 11; if(w==='dock'||w==='harbour') return 16; return 7; };
+  const elems=(data&&data.elements)||[];
+  const heightOf=(tags)=>{
+    if(!tags) return 6;
+    if(tags.height){ const h=parseFloat(String(tags.height).replace(',','.')); if(isFinite(h)&&h>0) return h; }
+    if(tags['building:levels']){ const lv=parseFloat(tags['building:levels']); if(isFinite(lv)&&lv>0) return lv*3; }
+    return 6;
+  };
+  // Straßenbreite (m) grob nach highway-Typ
+  const roadWidth=(hw)=>{
+    if(hw==='motorway'||hw==='trunk') return 16;
+    if(hw==='primary') return 12;
+    if(hw==='secondary') return 10;
+    if(hw==='tertiary') return 8;
+    if(hw==='residential'||hw==='unclassified') return 6;
+    if(hw==='living_street') return 5;
+    if(/_link$/.test(hw)) return 7;
+    return 5;
+  };
+  const isWater=(t)=> t && (
+    t.natural==='water' || !!t.water ||
+    /^(riverbank|dock|canal)$/.test(t.waterway||'') ||
+    /^(reservoir|basin)$/.test(t.landuse||''));
+  const isGreen=(t)=> t && !isWater(t) && (
+    /^(park|garden|pitch|playground|recreation_ground)$/.test(t.leisure||'') ||
+    /^(grass|forest|meadow|village_green|recreation_ground|cemetery)$/.test(t.landuse||'') ||
+    /^(wood|grassland|scrub)$/.test(t.natural||''));
+  // Multipolygon-outer-Segmente zu geschlossenen Ringen verketten (große Wasser-/Grünflächen sind segmentiert)
+  const _ptEq=(a,b)=>a[0]===b[0]&&a[1]===b[1];
+  const _assembleRings=(segs)=>{
+    const rings=[]; const s=segs.map(x=>x.slice());
+    while(s.length){
+      let ring=s.shift(), ext=true;
+      while(ext && !(ring.length>3 && _ptEq(ring[0],ring[ring.length-1]))){
+        ext=false;
+        for(let i=0;i<s.length;i++){
+          const seg=s[i], rs=ring[0], re=ring[ring.length-1];
+          if(_ptEq(re,seg[0])){ ring=ring.concat(seg.slice(1)); s.splice(i,1); ext=true; break; }
+          else if(_ptEq(re,seg[seg.length-1])){ ring=ring.concat(seg.slice().reverse().slice(1)); s.splice(i,1); ext=true; break; }
+          else if(_ptEq(rs,seg[seg.length-1])){ ring=seg.slice(0,-1).concat(ring); s.splice(i,1); ext=true; break; }
+          else if(_ptEq(rs,seg[0])){ ring=seg.slice().reverse().slice(0,-1).concat(ring); s.splice(i,1); ext=true; break; }
+        }
+      }
+      if(ring.length>=4) rings.push(ring);
+    }
+    return rings;
+  };
+  for(const el of elems){
+    const t=el.tags||{};
+    if(el.type==='way' && el.geometry){
+      const coords=el.geometry.map(p=>[p.lon,p.lat]);
+      if(t.building && coords.length>=4){
+        buildings.push({ring:coords, height:heightOf(t)});
+      } else if(t.highway && coords.length>=2){
+        roads.push({line:coords, width:roadWidth(t.highway)});
+      } else if(isWater(t)){
+        const closed = coords.length>=4 && coords[0][0]===coords[coords.length-1][0] && coords[0][1]===coords[coords.length-1][1];
+        if(closed) waters.push({ring:coords});
+        else if(coords.length>=2 && t.waterway) waterLines.push({line:coords, width:waterWidth(t)});
+      } else if(isGreen(t) && coords.length>=4){
+        greens.push({ring:coords});
+      }
+    } else if(el.type==='relation' && el.members){
+      // Multipolygon: outer-Segmente zu geschlossenen Ringen verketten
+      const water=isWater(t), green=isGreen(t);
+      if(t.building || water || green){
+        const h=heightOf(t);
+        const segs=el.members.filter(m=>m.type==='way'&&m.role==='outer'&&m.geometry&&m.geometry.length>=2)
+                             .map(m=>m.geometry.map(p=>[p.lon,p.lat]));
+        for(const ring of _assembleRings(segs)){
+          if(ring.length<4) continue;
+          if(t.building) buildings.push({ring, height:h});
+          else if(water) waters.push({ring});
+          else if(green) greens.push({ring});
+        }
+      }
+    }
+  }
+  return {buildings, greens, waters, waterLines, roads};
+}
+
+// Linienzug → Polygon-Band (Rechteck-Streifen je Segment) als Array von Ringen [[x,z],…] in Units.
+// pts: Array [x,z] (bereits in Units), halfW: halbe Breite in Units.
+function _mapRoadStrips(pts, halfW){
+  const strips=[];
+  for(let i=0;i<pts.length-1;i++){
+    const a=pts[i], b=pts[i+1];
+    let dx=b[0]-a[0], dz=b[1]-a[1];
+    const len=Math.hypot(dx,dz); if(len<1e-6) continue;
+    dx/=len; dz/=len;
+    const nx=-dz*halfW, nz=dx*halfW;            // Normale
+    // leichte Verlängerung an den Enden, damit Segmente sich überlappen (keine Lücken)
+    const ex=dx*halfW, ez=dz*halfW;
+    strips.push([
+      [a[0]-ex+nx, a[1]-ez+nz],
+      [b[0]+ex+nx, b[1]+ez+nz],
+      [b[0]+ex-nx, b[1]+ez-nz],
+      [a[0]-ex-nx, a[1]-ez-nz]
+    ]);
+  }
+  return strips;
+}
+
+// Polygon [[x,z],…] an der achsenparallelen Box [-h,h]² clippen (Sutherland-Hodgman).
+// Liefert das geclippte Polygon (ggf. []). Umschließt das Polygon die Box, kommt die Box-Fläche zurück.
+function _clipPolyBox(pts, h){
+  if(!pts || pts.length<3) return [];
+  const clip=(poly, inside, isect)=>{
+    const out=[]; const n=poly.length;
+    for(let i=0;i<n;i++){
+      const cur=poly[i], prev=poly[(i+n-1)%n];
+      const ci=inside(cur), pi=inside(prev);
+      if(ci){ if(!pi) out.push(isect(prev,cur)); out.push(cur); }
+      else if(pi){ out.push(isect(prev,cur)); }
+    }
+    return out;
+  };
+  let p=pts;
+  p=clip(p, c=>c[0]>=-h, (a,b)=>{const t=(-h-a[0])/(b[0]-a[0]); return [-h, a[1]+t*(b[1]-a[1])];}); if(p.length<3) return [];
+  p=clip(p, c=>c[0]<= h, (a,b)=>{const t=( h-a[0])/(b[0]-a[0]); return [ h, a[1]+t*(b[1]-a[1])];}); if(p.length<3) return [];
+  p=clip(p, c=>c[1]>=-h, (a,b)=>{const t=(-h-a[1])/(b[1]-a[1]); return [a[0]+t*(b[0]-a[0]), -h];}); if(p.length<3) return [];
+  p=clip(p, c=>c[1]<= h, (a,b)=>{const t=( h-a[1])/(b[1]-a[1]); return [a[0]+t*(b[0]-a[0]),  h];});
+  return p.length>=3 ? p : [];
+}
+
+// Polygon [[x,z],…] gegen ein beliebiges KONVEXES Clip-Polygon clippen (Sutherland-Hodgman).
+// clipPoly: Array [[x,z],…], gegen den Uhrzeigersinn (CCW) orientiert. Liefert geclipptes Polygon ([] wenn leer).
+function _clipPolyConvex(pts, clipPoly){
+  if(!pts || pts.length<3 || !clipPoly || clipPoly.length<3) return [];
+  // Für jede Clip-Kante (a→b) ist "innen" die linke Seite (CCW).
+  const cross=(ax,az,bx,bz,px,pz)=>(bx-ax)*(pz-az)-(bz-az)*(px-ax);
+  let out=pts;
+  const m=clipPoly.length;
+  for(let k=0;k<m;k++){
+    const ca=clipPoly[k], cb=clipPoly[(k+1)%m];
+    const inside=(p)=>cross(ca[0],ca[1],cb[0],cb[1],p[0],p[1])>=-1e-9;
+    const isect=(s,e)=>{
+      // Schnitt von Segment s→e mit der unendlichen Clip-Kante ca→cb
+      const d1=cross(ca[0],ca[1],cb[0],cb[1],s[0],s[1]);
+      const d2=cross(ca[0],ca[1],cb[0],cb[1],e[0],e[1]);
+      const den=(d1-d2); const t=Math.abs(den)<1e-12?0:d1/den;
+      return [ s[0]+t*(e[0]-s[0]), s[1]+t*(e[1]-s[1]) ];
+    };
+    const poly=out; out=[]; const n=poly.length;
+    for(let i=0;i<n;i++){
+      const cur=poly[i], prev=poly[(i+n-1)%n];
+      const ci=inside(cur), pi=inside(prev);
+      if(ci){ if(!pi) out.push(isect(prev,cur)); out.push(cur); }
+      else if(pi){ out.push(isect(prev,cur)); }
+    }
+    if(out.length<3) return [];
+  }
+  return out.length>=3 ? out : [];
+}
+
+// Baut aus Karten-Daten eine Gruppe (gefaster Sockel + Gebäude + Grün + Straßen) und fügt sie in die Szene.
+function _mapBuildModel(parsed, bb){
+  const buildings=parsed.buildings||[], greens=parsed.greens||[], waters=parsed.waters||[], waterLines=parsed.waterLines||[], roads=parsed.roads||[];
+  saveUndo();
+  const lat0=bb.lat0, lon0=bb.lon0;
+  const mPerDegLon=111320*Math.cos(lat0*Math.PI/180), mPerDegLat=110540;
+  // Lat/Lon → lokale Meter (x=Ost, z=(lat0-lat) damit Nord oben bleibt)
+  const toMeter=(lon,lat)=>[ (lon-lon0)*mPerDegLon, (lat0-lat)*mPerDegLat ];
+
+  const extent=+document.getElementById('map-extent').value;       // Meter Kante
+  const widthMM=+document.getElementById('map-width').value;        // Ziel-Modellbreite mm
+  const maxHmm=+document.getElementById('map-maxh').value;          // max Gebäudehöhe mm
+  const plateMM=+document.getElementById('map-plate').value;        // Plattendicke mm
+
+  // 1 Unit = 10 mm (Projektkonvention). Meter→Unit so, dass extent (=Ost-West-Breite) → widthMM passt.
+  const scale = (widthMM/10) / extent;        // Units pro Meter
+  const halfU = (widthMM/10)/2;
+  const plateU = plateMM/10;
+  const bevel = Math.min(plateU*0.5, halfU*0.04);
+  const topU = plateU + bevel;                // tatsächliche Sockel-Oberkante (inkl. Fase) — flache Layer MÜSSEN darüber liegen, sonst im Sockel versteckt
+
+  // Auswahl-Polygon (Form) in lokalen Units [x,z] aufbauen — dient als Clip-Poly, Sockel- und Rahmenform.
+  // CCW-Orientierung für _clipPolyConvex sicherstellen (x=Ost, z=(lat0-lat) → Bildschirm-Down ist +z).
+  const sel=_mapSelectionPolyLL();             // local: [mx(Ost), my(Nord)] in Metern, mittig
+  let clipU=sel.local.map(([mx,my])=>[ mx*scale, -my*scale ]); // y(Nord) → -z, damit Nord oben
+  // Signierte Fläche prüfen; bei CW umdrehen → CCW
+  let area2=0; for(let i=0;i<clipU.length;i++){ const a=clipU[i], b=clipU[(i+1)%clipU.length]; area2+=a[0]*b[1]-b[0]*a[1]; }
+  if(area2<0) clipU=clipU.slice().reverse();
+  const isBox=(_mapShape==='square'||_mapShape==='rect');
+
+  // Lat/Lon-Ring → [x,z]-Punkte in Units (geschlossener Endpunkt entfernt)
+  const ringToPts=(ring)=>{
+    const pts=ring.map(([lon,lat])=>{ const [mx,mz]=toMeter(lon,lat); return [mx*scale, mz*scale]; });
+    if(pts.length>2){ const a=pts[0],z=pts[pts.length-1]; if(Math.abs(a[0]-z[0])<1e-9&&Math.abs(a[1]-z[1])<1e-9) pts.pop(); }
+    return pts;
+  };
+  // Polygon (XZ, Units) → flach extrudierte Geometrie, Oberseite bei yTop, Dicke d
+  const flatPolyGeo=(pts, yTop, d)=>{
+    if(pts.length<3) return null;
+    const shape=new THREE.Shape();
+    shape.moveTo(pts[0][0], pts[0][1]);
+    for(let i=1;i<pts.length;i++) shape.lineTo(pts[i][0], pts[i][1]);
+    let geo; try{ geo=new THREE.ExtrudeGeometry(shape,{depth:d,bevelEnabled:false,steps:1}); }catch(e){ return null; }
+    geo.rotateX(-Math.PI/2);
+    geo.computeBoundingBox();
+    geo.translate(0, yTop-geo.boundingBox.max.y, 0);
+    return _posOnly(geo);
+  };
+
+  // höchstes Gebäude für Höhen-Skalierung
+  let maxRealH=0; for(const b of buildings) if(b.height>maxRealH) maxRealH=b.height;
+  if(maxRealH<=0) maxRealH=6;
+  const hScale = (maxHmm/10) / maxRealH;       // Units pro Meter (Höhe)
+
+  // --- Gebäude ---
+  const bldGeos=[];
+  for(const b of buildings){
+    const pts=isBox?_clipPolyBox(ringToPts(b.ring), halfU):_clipPolyConvex(ringToPts(b.ring), clipU);
+    if(pts.length<3) continue;
+    const shape=new THREE.Shape();
+    shape.moveTo(pts[0][0], pts[0][1]);
+    for(let i=1;i<pts.length;i++) shape.lineTo(pts[i][0], pts[i][1]);
+    const depth=Math.max(b.height*hScale, 0.05);
+    let geo; try{ geo=new THREE.ExtrudeGeometry(shape,{depth,bevelEnabled:false,steps:1}); }catch(e){ continue; }
+    geo.rotateX(-Math.PI/2);
+    geo.computeBoundingBox();
+    geo.translate(0, topU-geo.boundingBox.min.y, 0); // Unterkante auf Sockel-Oberkante
+    bldGeos.push(_posOnly(geo));
+  }
+
+  // --- Grünflächen (flach, knapp über der Platte) ---
+  const greenThk=0.09;               // Units (~0.9 mm) — sichtbar erhaben, eigenes Material
+  const greenGeos=[];
+  for(const g of greens){
+    const pts=isBox?_clipPolyBox(ringToPts(g.ring), halfU):_clipPolyConvex(ringToPts(g.ring), clipU);
+    if(pts.length<3) continue;
+    const geo=flatPolyGeo(pts, topU+greenThk, greenThk);
+    if(geo) greenGeos.push(geo);
+  }
+
+  // --- Wasserflächen (flach, knapp über der Platte, eigene blaue Ebene) ---
+  const waterThk=0.09;               // Units (~0.9 mm) — sichtbar erhaben
+  const waterGeos=[];
+  for(const w of waters){
+    const pts=isBox?_clipPolyBox(ringToPts(w.ring), halfU):_clipPolyConvex(ringToPts(w.ring), clipU);
+    if(pts.length<3) continue;
+    const geo=flatPolyGeo(pts, topU+waterThk, waterThk);
+    if(geo) waterGeos.push(geo);
+  }
+  // Wasser-Linien (Flüsse/Kanäle/Fleete) als blaue Bänder (wie Straßen)
+  for(const wl of waterLines){
+    const pts=wl.line.map(([lon,lat])=>{ const [mx,mz]=toMeter(lon,lat); return [mx*scale, mz*scale]; });
+    if(pts.length<2) continue;
+    const halfW=Math.max((wl.width*scale)/2, 0.03);
+    const strips=_mapRoadStrips(pts, halfW);
+    for(const s of strips){ const cs=isBox?_clipPolyBox(s, halfU):_clipPolyConvex(s, clipU); if(cs.length<3) continue; const geo=flatPolyGeo(cs, topU+waterThk, waterThk); if(geo) waterGeos.push(geo); }
+  }
+
+  // --- Straßen (dünn erhaben, eigene Ebene zwischen Platte und Gebäuden) ---
+  const roadThk=0.03;                // Units (~0.3 mm)
+  const roadGeos=[];
+  for(const r of roads){
+    const pts=r.line.map(([lon,lat])=>{ const [mx,mz]=toMeter(lon,lat); return [mx*scale, mz*scale]; });
+    if(pts.length<2) continue;
+    const halfW=Math.max((r.width*scale)/2, 0.02);
+    const strips=_mapRoadStrips(pts, halfW);
+    for(const s of strips){ const cs=isBox?_clipPolyBox(s, halfU):_clipPolyConvex(s, clipU); if(cs.length<3) continue; const geo=flatPolyGeo(cs, topU+roadThk, roadThk); if(geo) roadGeos.push(geo); }
+  }
+
+  if(!bldGeos.length && !greenGeos.length && !waterGeos.length && !roadGeos.length){ notify('Karten-Daten konnten nicht in Geometrie umgesetzt werden','w'); return; }
+
+  // Konvexes Polygon zum Zentroid einrücken (Offset d nach innen). Liefert neues Poly [[x,z],…].
+  // Annäherung: jede Kante parallel um d nach innen schieben (Schnitt benachbarter versetzter Kanten).
+  const insetPoly=(poly,d)=>{
+    const n=poly.length; if(n<3) return poly;
+    // versetzte Kanten (Innen-Normale = links bei CCW)
+    const lines=[];
+    for(let i=0;i<n;i++){
+      const a=poly[i], b=poly[(i+1)%n];
+      let dx=b[0]-a[0], dz=b[1]-a[1]; const L=Math.hypot(dx,dz)||1; dx/=L; dz/=L;
+      const nx=-dz, nz=dx; // bei CCW zeigt (-dz,dx) nach innen
+      lines.push({px:a[0]+nx*d, pz:a[1]+nz*d, dx, dz});
+    }
+    const out=[];
+    for(let i=0;i<n;i++){
+      const l1=lines[(i+n-1)%n], l2=lines[i];
+      // Schnitt l1 ∩ l2
+      const den=l1.dx*(-l2.dz)-l1.dz*(-l2.dx);
+      if(Math.abs(den)<1e-9){ out.push([l2.px,l2.pz]); continue; }
+      const bx=l2.px-l1.px, bz=l2.pz-l1.pz;
+      const t=(bx*(-l2.dz)-bz*(-l2.dx))/den;
+      out.push([ l1.px+l1.dx*t, l1.pz+l1.dz*t ]);
+    }
+    return out;
+  };
+
+  // --- Gefaster Sockel: Form-Shape (clipU) mit angefaster Oberkante (Bevel oben) ---
+  // Shape um die Fase einrücken, damit die Außenkante exakt die Zielform/-breite behält. (bevel ist oben definiert)
+  const baseIn=insetPoly(clipU, bevel);
+  const ps=new THREE.Shape();
+  ps.moveTo(baseIn[0][0],baseIn[0][1]); for(let i=1;i<baseIn.length;i++) ps.lineTo(baseIn[i][0],baseIn[i][1]); ps.closePath();
+  let plateGeo;
+  try{
+    plateGeo=new THREE.ExtrudeGeometry(ps,{depth:plateU-bevel,bevelEnabled:true,bevelThickness:bevel,bevelSize:bevel,bevelSegments:1,steps:1});
+  }catch(e){ plateGeo=new THREE.BoxGeometry(halfU*2,plateU,halfU*2); plateGeo.translate(0,plateU/2,0); }
+  plateGeo.rotateX(-Math.PI/2);
+  plateGeo.computeBoundingBox();
+  plateGeo.translate(0,-plateGeo.boundingBox.min.y,0); // Unterkante auf y=0, Fase oben
+  plateGeo=_posOnly(plateGeo); plateGeo.computeVertexNormals();
+
+  // --- Optionaler Rahmen (erhöhter Rand, folgt der Auswahlform) ---
+  const wantFrame=document.getElementById('map-frame')&&document.getElementById('map-frame').checked;
+  let frameGeo=null;
+  if(wantFrame){
+    const fwU=Math.max((+document.getElementById('map-framew').value)/10, 0.05);  // Rahmenbreite Units
+    const fhU=Math.max((+document.getElementById('map-frameh').value)/10, 0.05);  // Höhe über Platte
+    const inner=insetPoly(clipU, fwU);
+    // Ring-Shape: Außenkontur = clipU (CCW), Loch = inner (CW als Hole)
+    try{
+      const rs=new THREE.Shape();
+      rs.moveTo(clipU[0][0],clipU[0][1]); for(let i=1;i<clipU.length;i++) rs.lineTo(clipU[i][0],clipU[i][1]); rs.closePath();
+      const hole=new THREE.Path();
+      hole.moveTo(inner[0][0],inner[0][1]); for(let i=inner.length-1;i>=1;i--) hole.lineTo(inner[i][0],inner[i][1]); hole.closePath();
+      rs.holes.push(hole);
+      let g=new THREE.ExtrudeGeometry(rs,{depth:fhU,bevelEnabled:false,steps:1});
+      g.rotateX(-Math.PI/2);
+      g.computeBoundingBox();
+      g.translate(0, (plateU+fhU)-g.boundingBox.max.y, 0); // sitzt auf der Platte, ragt fhU hoch
+      frameGeo=_posOnly(g);
+    }catch(e){ frameGeo=null; }
+  }
+
+  const cv=(id,def)=>{ const el=document.getElementById(id); return (el&&el.value)?el.value:def; };
+  const colPlate=cv('map-col-plate','#cfd6e0'), colBld=cv('map-col-bld','#8a949e'), colGreen=cv('map-col-green','#5aa45a'), colWater=cv('map-col-water','#5b8fc7'), colRoad=cv('map-col-road','#6b6f76'), colFrame=cv('map-col-frame','#b8a07a');
+  const meshOf=(geo,col,name,rough)=>{
+    geo.computeVertexNormals();
+    const m=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color:new THREE.Color(col),roughness:rough,metalness:0,side:THREE.DoubleSide}));
+    m.castShadow=true; m.receiveShadow=true;
+    m.userData={id:idCtr++,type:'custom',shapeType:'custom',name,color:col,isHole:false,fillet:0,chamfer:0};
+    return m;
+  };
+
+  // Teile sammeln (Reihenfolge: Platte, Rahmen, Straßen, Grün, Gebäude)
+  const parts=[ meshOf(plateGeo,colPlate,'Karte-Platte',0.85) ];
+  if(frameGeo)         parts.push(meshOf(frameGeo, colFrame,'Karte-Rahmen',0.8));
+  if(waterGeos.length) parts.push(meshOf(_mergePos(waterGeos), colWater,'Karte-Wasser', 0.5));
+  if(roadGeos.length)  parts.push(meshOf(_mergePos(roadGeos),  colRoad, 'Karte-Straßen', 0.9));
+  if(greenGeos.length) parts.push(meshOf(_mergePos(greenGeos), colGreen,'Karte-Grün',   0.9));
+  if(bldGeos.length)   parts.push(meshOf(_mergePos(bldGeos),   colBld,  'Karte-Gebäude',0.75));
+
+  const separate=document.getElementById('map-separate')&&document.getElementById('map-separate').checked;
+  typeCounts['map']=(typeCounts['map']||0)+1;
+  const wq=_wpMakeQuat(workplaneNormal);
+  if(separate){
+    // Teile als eigenständige Objekte einfügen (für getrennten Mehrfarbdruck/Export)
+    for(const m of parts){ m.quaternion.copy(wq); m.position.copy(workplanePoint); scene.add(m); objects.push(m); }
+    selectObjs(parts); updateTree(); fitToObjects(parts);
+  } else {
+    const grp=new THREE.Group();
+    grp.userData={id:idCtr++,name:'Karte #'+typeCounts['map'],isGroup:true};
+    for(const m of parts) grp.add(m);
+    grp.quaternion.copy(wq); grp.position.copy(workplanePoint);
+    scene.add(grp); objects.push(grp);
+    selectObjs([grp]); updateTree(); fitToObjects([grp]);
+  }
+}
+// ===== END KARTE → 3D =====
+
 // ===== BEMASSUNG (Abstand messen) — Variablen früh deklariert (animate liest sie) =====
 function measureTool(){
   _measureMode=!_measureMode;
@@ -14935,8 +15569,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.74';
+const VOLME3D_VERSION = '1.14.75';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.75', date:'2026-06-17', spots:[{id:'karte',sel:'[onclick="_openMapModal()"]'}], changes:[
+    ['🗺️','Neu: Karte → 3D — aus einem OpenStreetMap-Ausschnitt ein druckbares Stadtmodell erzeugen. Ort suchen, Ausschnitt als Quadrat/Rechteck/Kreis/Sechseck wählen (Standard- oder Satellitenkarte), dann werden Gebäude (höhenskaliert), Grünflächen, Wasser (Seen, Flüsse, Fleete) und Straßen als farblich getrennte Teile auf einen gefasten Sockel gebaut. Farben je Sektion frei wählbar, optionaler Rahmen, Teile auf Wunsch getrennt für Mehrfarb-Druck'],
+  ]},
   { version:'1.14.74', date:'2026-06-16', spots:[{id:'kurs',sel:'[onclick="tutorMenu()"]'}], changes:[
     ['🎓','Kurs-Modus erweitert: Neben „Erste Box" gibt es jetzt vier weitere geführte Lektionen — Kanten verrunden & abschrägen, Text & QR-Code, Profil drehen (Revolve) sowie Messen & Bemaßung. Der Kurs-Knopf öffnet eine Übersicht aller Lektionen mit Fortschrittsanzeige; einfach eine auswählen und Schritt für Schritt mitmachen'],
   ]},
@@ -17279,6 +17916,15 @@ window._getSph       = () => ({ theta: sph.theta, phi: sph.phi, r: sph.r });
 Object.defineProperty(window, '_edgeSel', { get: () => _edgeSel, configurable: true });
 Object.defineProperty(window, '_edgeMode', { get: () => _edgeMode, configurable: true });
 Object.defineProperty(window, '_edgeObj', { get: () => _edgeObj, configurable: true });
+// Map test hooks
+window._getScene = () => scene;
+window._mapTestBuild = (parsed, bb) => _mapBuildModel(parsed, bb);
+window._mapTestSelLL = () => _mapSelectionPolyLL();
+window._mapTestBBox = () => _mapBBox();
+Object.defineProperty(window, '_mapShape', { get: () => _mapShape, set: v => { _mapShape = v; }, configurable: true });
+Object.defineProperty(window, '_mapObjRef', { get: () => _mapObj, configurable: true });
+Object.defineProperty(window, '_mapBaseLayerRef', { get: () => _mapBaseLayer, configurable: true });
+Object.defineProperty(window, '_mapShapeLayerRef', { get: () => _mapShapeLayer, configurable: true });
 // OCCT module access for test helpers
 window._getOC = () => _oc;
 window.EDGE_ENDPOINTS_exposed = EDGE_ENDPOINTS;
