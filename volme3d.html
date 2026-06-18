@@ -917,7 +917,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.76<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.77<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -2072,6 +2072,10 @@ const firebaseConfig = {
         <div class="vrow"><label>Größe</label> <input type="range" id="qr-size" min="20" max="150" value="50" step="1" oninput="document.getElementById('qr-sizev').textContent=this.value;_qrInfo()"><span class="vv" id="qr-sizev">50</span><span class="vu">mm</span></div>
         <div class="vrow"><label title="Höhe der erhabenen Module">Modul-Höhe</label> <input type="range" id="qr-mod" min="0.4" max="3" value="1.2" step="0.1" oninput="document.getElementById('qr-modv').textContent=this.value"><span class="vv" id="qr-modv">1.2</span><span class="vu">mm</span></div>
         <div class="vrow"><label>Platte</label> <input type="range" id="qr-plate" min="0.6" max="4" value="1.6" step="0.1" oninput="document.getElementById('qr-platev').textContent=this.value"><span class="vv" id="qr-platev">1.6</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Abrundung der vier Plattenecken (0 = scharfe Ecken)">Eckenradius</label> <input type="range" id="qr-round" min="0" max="30" value="0" step="0.5" oninput="document.getElementById('qr-roundv').textContent=this.value;_qrPreview()"><span class="vv" id="qr-roundv">0</span><span class="vu">mm</span></div>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:2px"><input type="checkbox" id="qr-eyelet" onchange="_qrPreview()"> Öse für Schlüsselanhänger</label>
+        <div class="vrow" id="qr-eyelet-d-row" style="display:none"><label title="Durchmesser der Bohrung">Loch-Ø</label> <input type="range" id="qr-eyelet-d" min="2" max="10" value="4" step="0.5" oninput="document.getElementById('qr-eyelet-dv').textContent=this.value;_qrPreview()"><span class="vv" id="qr-eyelet-dv">4</span><span class="vu">mm</span></div>
+        <div class="vrow" id="qr-eyelet-p-row" style="display:none"><label title="Position der Öse an der Plattenkante">Position</label> <select id="qr-eyelet-pos" onchange="_qrPreview()" style="flex:1;font-family:var(--font);font-size:13px;border:1.5px solid var(--border);border-radius:9px;padding:5px 8px"><option value="tab-top">Lasche oben</option><option value="tab-left">Lasche links</option><option value="corner">Ecke (oben links)</option></select></div>
         <div class="g3info" id="qr-info"></div>
       </div>
     </div>
@@ -6704,46 +6708,37 @@ function applyDimChange(axis, val) {
     _doRepositionDimHandles();
     return;
   }
-  // val is in display-mm. BoxGeometry(2,2,2) → size=2 → display=20mm at scale=1
-  // so scale = val / (baseSize * 10) = val / 20
+  // val ist Ziel-Größe in Display-mm. Relativ zur AKTUELLEN Objektgröße skalieren (statt fester 2-Unit/20mm-Basis):
+  // für Standard-Boxen (Basis 2 Units) mathematisch identisch zu val/20, für Generator-Objekte mit echten Maßen
+  // (Karte, QR …) korrekt — sonst verzerrt das Ziehen die Proportionen (Modell wird flach/riesig).
   const oldScales = { x: o.scale.x, y: o.scale.y, z: o.scale.z };
+  const _csz = getMeshBox(o).getSize(new THREE.Vector3());          // aktuelle (skalierte) Größe in Units
+  const curMM = { sw: _csz.x*10, sh: _csz.y*10, sd: _csz.z*10 };    // in mm
   if (axis === 'uniform') {
-    o.scale.x = Math.max(0.01, val/20);
-    o.scale.y = Math.max(0.01, val/20);
-    o.scale.z = Math.max(0.01, val/20);
+    const r = val / (Math.max(curMM.sw, curMM.sh, curMM.sd) || 0.1);
+    o.scale.x = Math.max(0.01, o.scale.x*r); o.scale.y = Math.max(0.01, o.scale.y*r); o.scale.z = Math.max(0.01, o.scale.z*r);
   } else if (scaleLocked) {
-    const cur = { sw: o.scale.x*20, sh: o.scale.y*20, sd: o.scale.z*20 };
-    const ratio = val / (cur[axis] || 0.1);
-    if (axis==='sw') o.scale.x = Math.max(0.01, val/20);
-    else o.scale.x = Math.max(0.01, o.scale.x * ratio);
-    if (axis==='sh') o.scale.y = Math.max(0.01, val/20);
-    else o.scale.y = Math.max(0.01, o.scale.y * ratio);
-    if (axis==='sd') o.scale.z = Math.max(0.01, val/20);
-    else o.scale.z = Math.max(0.01, o.scale.z * ratio);
+    const r = val / (curMM[axis] || 0.1);
+    o.scale.x = Math.max(0.01, o.scale.x*r); o.scale.y = Math.max(0.01, o.scale.y*r); o.scale.z = Math.max(0.01, o.scale.z*r);
   } else {
-    if (axis==='sw') o.scale.x = Math.max(0.01, val/20);
-    if (axis==='sh') o.scale.y = Math.max(0.01, val/20);
-    if (axis==='sd') o.scale.z = Math.max(0.01, val/20);
+    if (axis==='sw') o.scale.x = Math.max(0.01, o.scale.x * val / (curMM.sw||0.1));
+    if (axis==='sh') o.scale.y = Math.max(0.01, o.scale.y * val / (curMM.sh||0.1));
+    if (axis==='sd') o.scale.z = Math.max(0.01, o.scale.z * val / (curMM.sd||0.1));
   }
-  // Position anpassen
-  // Höhe (Y): Unterkante bleibt IMMER fixiert → Objekt wächst nach oben und
-  // bleibt auf der Buildplate, statt um die Mitte durch y=0 nach unten zu wachsen.
+  // Position anpassen — echte Basis-Größe pro Achse (Units pro scale=1), nicht fixe 2 Units.
+  // Für Box(2,2,2) ist _bU=2 → identisch zum alten Verhalten; für Generator-Objekte korrekt.
+  const _bU = { x: _csz.x/(oldScales.x||1), y: _csz.y/(oldScales.y||1), z: _csz.z/(oldScales.z||1) };
+  // Höhe (Y): Unterkante bleibt IMMER fixiert → Objekt wächst nach oben, bleibt auf der Buildplate.
   if (axis === 'sh' || (axis === 'uniform' && scaleLocked)) {
-    const oldSizeY = oldScales.y * 2;
-    const newSizeY = o.scale.y * 2;
-    o.position.y += (newSizeY - oldSizeY) / 2;
+    o.position.y += ((o.scale.y - oldScales.y) * _bU.y) / 2;
   }
   // Breite/Tiefe (X/Z): nur verschieben, wenn nicht aus der Mitte skaliert wird
   if (!scaleFromCenter) {
     if (axis === 'sw' || (axis === 'uniform' && scaleLocked)) {
-      const oldSizeX = oldScales.x * 2;
-      const newSizeX = o.scale.x * 2;
-      o.position.x -= (newSizeX - oldSizeX) / 2;
+      o.position.x -= ((o.scale.x - oldScales.x) * _bU.x) / 2;
     }
     if (axis === 'sd' || (axis === 'uniform' && scaleLocked)) {
-      const oldSizeZ = oldScales.z * 2;
-      const newSizeZ = o.scale.z * 2;
-      o.position.z -= (newSizeZ - oldSizeZ) / 2;
+      o.position.z -= ((o.scale.z - oldScales.z) * _bU.z) / 2;
     }
   }
   // Sicherheitsnetz: Unterkante nie unter die Buildplate (y = 0)
@@ -7309,6 +7304,10 @@ function updateDimHandles() {
         screenDirX, screenDirY,   // fest gespeichert – ändert sich nicht mehr
         startVals: {
           sw:r2(cs.x*10), sh:r2(cs.y*10), sd:r2(cs.z*10),
+          // Korrekturfaktor scale↔Größe pro Achse: für Box(2 Units)=1, für Generator-Objekte mit echten Maßen ≠1
+          _fx: (cs.x*10)>0 ? curO.scale.x*20/(cs.x*10) : 1,
+          _fy: (cs.y*10)>0 ? curO.scale.y*20/(cs.y*10) : 1,
+          _fz: (cs.z*10)>0 ? curO.scale.z*20/(cs.z*10) : 1,
           _px: curO.position.x, _pz: curO.position.z
         },
         startPosY: curO.position.y, tip, el,
@@ -7370,7 +7369,7 @@ function updateDimHandles() {
         const nh = Math.max(0.5, sv.sh + delta);
         const nd = Math.max(0.5, sv.sd + delta);
         const startBottom = _dragHandle.startPosY - sv.sh/20;
-        o2.scale.x = nw/20; o2.scale.z = nd/20; o2.scale.y = nh/20;
+        o2.scale.x = (nw/20)*sv._fx; o2.scale.z = (nd/20)*sv._fz; o2.scale.y = (nh/20)*sv._fy;
         o2.position.y = Math.max(nh/20, startBottom + nh/20);
         _dragHandle.tip.textContent = `B:${r2(nw)}  H:${r2(nh)}  T:${r2(nd)} mm`;
 
@@ -7386,11 +7385,11 @@ function updateDimHandles() {
         const shift = (newSc - oldSc) * _dragHandle.side * 0.5;
 
         if (axis === 'sw') {
-          o2.scale.x = newSc;
+          o2.scale.x = newSc * sv._fx;
           o2.position.x = _dragHandle.startVals._px + shift;
         }
         if (axis === 'sd') {
-          o2.scale.z = newSc;
+          o2.scale.z = newSc * sv._fz;
           o2.position.z = _dragHandle.startVals._pz + shift;
         }
         if (axis === 'sh') {
@@ -7409,7 +7408,7 @@ function updateDimHandles() {
             o2.position.y = Math.max(halfH, startBottom + halfH);
             _dragHandle.tip.textContent = `Höhe: ${r2(newTurns * pitchMM)} mm (${newTurns} Gänge)`;
           } else {
-            o2.scale.y = newSc;
+            o2.scale.y = newSc * sv._fy;
             o2.position.y = Math.max(newSc, startBottom + newSc);
           }
         }
@@ -13774,6 +13773,72 @@ function _fpEncSet(k,v){
 // ===== QR-CODE-GENERATOR =====
 const _qrBorder = 2;   // Ruhezone (helle Module rundum), nötig zum Scannen
 let _qrMat=null, _qrN=0;
+
+// Liest die aktuellen Plattenoptionen (Eckenradius, Öse) aus dem UI. Werte in mm.
+function _qrPlateOpts(sizeMM){
+  const round = Math.max(0, +document.getElementById('qr-round').value || 0);
+  const eyelet = document.getElementById('qr-eyelet').checked;
+  const eyeD   = Math.max(1, +document.getElementById('qr-eyelet-d').value || 4);
+  const eyePos = document.getElementById('qr-eyelet-pos').value;
+  // Eckenradius nie größer als halbe Kante
+  const cr = Math.min(round, sizeMM/2 - 0.01);
+  return { cr: Math.max(0, cr), eyelet, eyeD, eyePos, sizeMM };
+}
+
+// Baut die Plattengeometrie als abgerundetes Rechteck (THREE.Shape + ExtrudeGeometry),
+// mit optionaler ausgestellter Öse + Durchgangsloch. Achse Y, Unterseite bei y=0.
+// Alle Maße in Units (1 Unit = 10 mm). Liefert {geo, off:{x,z}} — off = Mittelpunktversatz
+// der Platte gegenüber dem QR-Raster (bei Lasche verschiebt sich die Plattenmitte nicht,
+// die Lasche steht über den Rand hinaus → Raster bleibt zentriert).
+function _qrPlateGeo(sizeU, plateU, opt){
+  const half = sizeU/2;
+  const cr = Math.min(opt.cr/10, half - 0.001);   // Eckenradius in Units
+  const sh = new THREE.Shape();
+  // Abgerundetes Rechteck (gegen Uhrzeiger), Ecken via quadraticCurveTo
+  if(cr <= 0.0005){
+    sh.moveTo(-half,-half); sh.lineTo(half,-half); sh.lineTo(half,half); sh.lineTo(-half,half); sh.closePath();
+  } else {
+    sh.moveTo(-half+cr,-half);
+    sh.lineTo(half-cr,-half);  sh.quadraticCurveTo(half,-half, half,-half+cr);
+    sh.lineTo(half,half-cr);   sh.quadraticCurveTo(half,half, half-cr,half);
+    sh.lineTo(-half+cr,half);  sh.quadraticCurveTo(-half,half, -half,half-cr);
+    sh.lineTo(-half,-half+cr); sh.quadraticCurveTo(-half,-half, -half+cr,-half);
+    sh.closePath();
+  }
+  const parts = [];
+  const extrude = s => {
+    const gg = new THREE.ExtrudeGeometry(s, {depth:plateU, bevelEnabled:false, steps:1, curveSegments:48});
+    gg.rotateX(-Math.PI/2);                       // Extrusion lief +Z → Achse Y
+    gg.computeBoundingBox(); gg.translate(0, -gg.boundingBox.min.y, 0);  // Unterseite auf y=0
+    return _posOnly(gg);
+  };
+
+  if(opt.eyelet){
+    const rEye = (opt.eyeD/2)/10;
+    const wall = Math.max(0.12, rEye*0.6);          // Materialstärke ums Loch
+    const tabR = rEye + wall;                        // Radius der ausgestellten Lasche
+    if(opt.eyePos==='corner'){
+      // Loch nahe oberer linker Ecke, komplett innerhalb der Platte (keine Lasche)
+      const inset = tabR + Math.max(cr, 0.05);
+      const hx = -half + inset, hz = -half + inset;
+      const hp = new THREE.Path(); hp.absarc(hx, hz, rEye, 0, Math.PI*2, true); sh.holes.push(hp);
+      parts.push(extrude(sh));
+    } else {
+      // Ausgestellte Halbkreis-Lasche an einer Kante; sie überlappt die Platte um ~wall.
+      // Lasche als eigenes Shape (Vollkreis, in die Platte hineinragend) + Loch, dann mergen.
+      let cx, cz;
+      if(opt.eyePos==='tab-left'){ cx = -half - tabR + wall; cz = 0; }
+      else                       { cx = 0; cz = -half - tabR + wall; }   // tab-top (Default)
+      parts.push(extrude(sh));
+      const tab = new THREE.Shape(); tab.absarc(cx, cz, tabR, 0, Math.PI*2, false);
+      const tabHole = new THREE.Path(); tabHole.absarc(cx, cz, rEye, 0, Math.PI*2, true); tab.holes.push(tabHole);
+      parts.push(extrude(tab));
+    }
+  } else {
+    parts.push(extrude(sh));
+  }
+  return parts.length>1 ? _mergePos(parts) : parts[0];
+}
 function _openQRModal(){ document.getElementById('qr-modal').classList.add('show'); _qrPreview(); }
 function _closeQRModal(){ document.getElementById('qr-modal').classList.remove('show'); }
 function _qrGen(text){
@@ -13787,16 +13852,45 @@ function _qrPreview(){
   const info=document.getElementById('qr-info');
   let g; try{ g=_qrGen(text); }catch(e){ _qrMat=null; info.textContent='⚠ Inhalt zu lang für einen QR-Code.'; return; }
   _qrMat=g.mat; _qrN=g.n;
+  // Öse-Regler ein-/ausblenden + Eckenradius-Max an Plattengröße koppeln
+  const sizeMM=+document.getElementById('qr-size').value;
+  const eyeOn=document.getElementById('qr-eyelet').checked;
+  document.getElementById('qr-eyelet-d-row').style.display=eyeOn?'':'none';
+  document.getElementById('qr-eyelet-p-row').style.display=eyeOn?'':'none';
+  const rSl=document.getElementById('qr-round'), rMax=Math.max(1,Math.floor(sizeMM/2));
+  rSl.max=rMax; if(+rSl.value>rMax){ rSl.value=rMax; document.getElementById('qr-roundv').textContent=rMax; }
+
   const cv=document.getElementById('qr-canvas'), ctx=cv.getContext('2d');
   const grid=g.n+2*_qrBorder, px=cv.width/grid;
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height);
+  // Plattenkontur (abgerundet) als grauer Rahmen andeuten
+  const opt=_qrPlateOpts(sizeMM), pxPerMM=cv.width/sizeMM, crPx=Math.min(opt.cr*pxPerMM, cv.width/2);
+  ctx.strokeStyle='#bbb'; ctx.lineWidth=1.5;
+  ctx.beginPath();
+  if(ctx.roundRect) ctx.roundRect(0.75,0.75,cv.width-1.5,cv.height-1.5,crPx);
+  else ctx.rect(0.75,0.75,cv.width-1.5,cv.height-1.5);
+  ctx.stroke();
   ctx.fillStyle='#111';
   for(let r=0;r<g.n;r++) for(let c=0;c<g.n;c++) if(g.mat[r][c]) ctx.fillRect((c+_qrBorder)*px,(r+_qrBorder)*px,Math.ceil(px),Math.ceil(px));
+  // Loch/Öse andeuten
+  if(opt.eyelet){
+    const rEye=(opt.eyeD/2)*pxPerMM;
+    let hx,hz;
+    if(opt.eyePos==='corner'){ hx=rEye+crPx*0.5+2; hz=rEye+crPx*0.5+2; }
+    else if(opt.eyePos==='tab-left'){ hx=rEye*0.4; hz=cv.height/2; }
+    else { hx=cv.width/2; hz=rEye*0.4; }
+    ctx.strokeStyle='#888'; ctx.beginPath(); ctx.arc(hx,hz,rEye,0,Math.PI*2); ctx.stroke();
+  }
   _qrInfo();
 }
 function _qrInfo(){
   const sz=document.getElementById('qr-size').value;
-  document.getElementById('qr-info').innerHTML = _qrMat ? (_qrN+'×'+_qrN+' Module · '+sz+' mm<br>Zum Drucken am besten 2-farbig: Platte hell, Module dunkel (z.B. Filamentwechsel auf Modulhöhe).') : '';
+  const round=+document.getElementById('qr-round').value||0;
+  const eye=document.getElementById('qr-eyelet').checked;
+  let extra='';
+  if(round>0) extra+='<br>Eckenradius '+round+' mm.';
+  if(eye) extra+='<br>Öse: Durchgangsloch Ø '+document.getElementById('qr-eyelet-d').value+' mm.';
+  document.getElementById('qr-info').innerHTML = _qrMat ? (_qrN+'×'+_qrN+' Module · '+sz+' mm<br>Zum Drucken am besten 2-farbig: Platte hell, Module dunkel (z.B. Filamentwechsel auf Modulhöhe).'+extra) : '';
 }
 function _createQR(){
   const text=document.getElementById('qr-text').value.trim();
@@ -13805,8 +13899,9 @@ function _createQR(){
   saveUndo();
   const sizeMM=+document.getElementById('qr-size').value, modMM=+document.getElementById('qr-mod').value, plateMM=+document.getElementById('qr-plate').value;
   const sizeU=sizeMM/10, plateU=plateMM/10, modU=modMM/10, grid=g.n+2*_qrBorder, ms=sizeU/grid, half=sizeU/2;
-  const _pb=new THREE.BoxGeometry(sizeU,plateU,sizeU); _pb.translate(0,plateU/2,0);
-  const plateGeo=_toPlainGeo(_pb);   // BoxGeometry.toJSON() ist parametrisch → in schlichte BufferGeometry wandeln
+  const plateOpt=_qrPlateOpts(sizeMM);
+  const plateGeoRaw=_qrPlateGeo(sizeU, plateU, plateOpt);   // abgerundetes Rechteck + ggf. Öse/Loch
+  const plateGeo=_toPlainGeo(plateGeoRaw); plateGeo.computeVertexNormals();
   const boxes=[];
   for(let r=0;r<g.n;r++) for(let c=0;c<g.n;c++){ if(!g.mat[r][c]) continue;
     const bx=new THREE.BoxGeometry(ms,modU,ms); bx.translate((c+_qrBorder+0.5)*ms-half, plateU+modU/2, (r+_qrBorder+0.5)*ms-half); boxes.push(bx); }
@@ -15638,8 +15733,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.76';
+const VOLME3D_VERSION = '1.14.77';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.77', date:'2026-06-18', spots:[{id:'qr',sel:'[onclick="_openQRModal()"]'}], changes:[
+    ['🔑','QR-Platte: zwei neue Optionen im QR-Generator. Mit „Eckenradius" lassen sich die vier Ecken der Platte stufenlos abrunden (0 = scharf wie bisher, bis zur halben Plattenkante). Und „Öse für Schlüsselanhänger" fügt ein echtes Durchgangsloch hinzu — wahlweise als ausgestellte Lasche oben oder links bzw. als Bohrung in der oberen linken Ecke; Lochdurchmesser frei wählbar. Vorschau im Bild deutet Rundung und Loch an'],
+  ]},
   { version:'1.14.76', date:'2026-06-18', spots:[{id:'karte',sel:'[onclick="_openMapModal()"]'}], changes:[
     ['🏔️','Karte → 3D: optionales Höhenrelief — das Gelände wird aus echten Höhendaten (Open-Meteo) als reliefierte Sockel-Oberfläche modelliert, Gebäude/Wasser/Grün/Straßen sitzen auf dem Gelände. Mit Überhöhungs-Regler. Außerdem realistischere Gebäudehöhen: robuste Skalierung (90.-Perzentil statt Maximum) verhindert, dass einzelne Ausreißer wie Funktürme das Modell verzerren'],
   ]},
