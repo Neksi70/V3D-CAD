@@ -107,12 +107,28 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # App-Auslieferung: dist bevorzugen, sonst Arbeitskopie (Fallback).
-        # Im Dev-Modus immer die rohe Arbeitskopie (Vorschau ohne Build).
         if path in APP_PATHS:
             if DEV_MODE:
-                fname = 'volme3d.html'
-            else:
-                fname = DIST_HTML if os.path.isfile(DIST_HTML) else 'volme3d.html'
+                # Dev: rohe Arbeitskopie ausliefern und das Firebase-Login-Gate
+                # ausschalten (USE_FIREBASE=false -> Editor startet ohne Login).
+                # Nur die ausgelieferten Bytes werden veraendert; Datei auf
+                # Platte und die dist bleiben unberuehrt.
+                try:
+                    with open('volme3d.html', 'rb') as f:
+                        data = f.read()
+                except OSError:
+                    self.send_error(404)
+                    return
+                data = data.replace(b'const USE_FIREBASE = true;',
+                                    b'const USE_FIREBASE = false;')
+                self.send_response(200)
+                self._cors()
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            fname = DIST_HTML if os.path.isfile(DIST_HTML) else 'volme3d.html'
             self._send_file(fname, 'text/html; charset=utf-8')
             return
 
@@ -134,6 +150,7 @@ if __name__ == '__main__':
     ports = [int(a) for a in args if a.isdigit()]
     port = ports[0] if ports else 8080
     if DEV_MODE:
-        print(f'[DEV] Vorschau: rohe Arbeitskopie volme3d.html auf Port {port} '
-              f'(nicht oeffentlich, nur localhost)', file=sys.stderr)
+        print(f'[DEV] Vorschau: rohe Arbeitskopie volme3d.html auf Port {port}, '
+              f'ohne Login (USE_FIREBASE=false). Nur lokal, nicht im Funnel.',
+              file=sys.stderr)
     HTTPServer(('', port), Handler).serve_forever()
