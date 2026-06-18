@@ -8,6 +8,10 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 TMP_STL = '/tmp/volme3d-export.stl'
 WASM_GZ = 'volme3d-occt.wasm.gz'
+# Gehaertete Auslieferungs-Version (von build.js erzeugt). Liegt sie vor,
+# wird sie statt der Arbeitskopie volme3d.html ausgeliefert.
+DIST_HTML = 'volme3d.dist.html'
+APP_PATHS = ('/', '/volme3d.html')
 
 # Erlaubte oeffentliche Pfade -> (Datei, Content-Type). Alles andere: 404.
 ALLOW = {
@@ -96,6 +100,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Length', str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            return
+
+        # App-Auslieferung: dist bevorzugen, sonst Arbeitskopie (Fallback).
+        if path in APP_PATHS:
+            fname = DIST_HTML if os.path.isfile(DIST_HTML) else 'volme3d.html'
+            self._send_file(fname, 'text/html; charset=utf-8')
             return
 
         entry = ALLOW.get(path)
