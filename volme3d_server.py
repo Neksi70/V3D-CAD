@@ -12,6 +12,10 @@ WASM_GZ = 'volme3d-occt.wasm.gz'
 # wird sie statt der Arbeitskopie volme3d.html ausgeliefert.
 DIST_HTML = 'volme3d.dist.html'
 APP_PATHS = ('/', '/volme3d.html')
+# Dev-Modus (--dev): liefert IMMER die rohe Arbeitskopie volme3d.html aus,
+# nie die dist. Fuer lokale Vorschau der WIP-Aenderungen, ohne Testern
+# (die ueber 8765/Funnel die dist sehen) etwas Halbfertiges zu schicken.
+DEV_MODE = False
 
 # Erlaubte oeffentliche Pfade -> (Datei, Content-Type). Alles andere: 404.
 ALLOW = {
@@ -103,8 +107,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # App-Auslieferung: dist bevorzugen, sonst Arbeitskopie (Fallback).
+        # Im Dev-Modus immer die rohe Arbeitskopie (Vorschau ohne Build).
         if path in APP_PATHS:
-            fname = DIST_HTML if os.path.isfile(DIST_HTML) else 'volme3d.html'
+            if DEV_MODE:
+                fname = 'volme3d.html'
+            else:
+                fname = DIST_HTML if os.path.isfile(DIST_HTML) else 'volme3d.html'
             self._send_file(fname, 'text/html; charset=utf-8')
             return
 
@@ -121,5 +129,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+    args = sys.argv[1:]
+    DEV_MODE = '--dev' in args
+    ports = [int(a) for a in args if a.isdigit()]
+    port = ports[0] if ports else 8080
+    if DEV_MODE:
+        print(f'[DEV] Vorschau: rohe Arbeitskopie volme3d.html auf Port {port} '
+              f'(nicht oeffentlich, nur localhost)', file=sys.stderr)
     HTTPServer(('', port), Handler).serve_forever()

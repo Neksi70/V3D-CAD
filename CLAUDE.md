@@ -18,6 +18,8 @@
   gegen "Quelltext anzeigen"/1:1-Kopie, nicht gegen Reverse Engineering.
 - Workflow nach Code-Änderung: `npm run build` → `npm run smoke` (headless Lade-Check)
   → volme3d.service neu starten.
+- Lokale Vorschau der WIP (ohne Auslieferung): `npm run dev` → rohe volme3d.html
+  auf Port 8766 (nur localhost, nicht im Funnel). Tester sehen weiter 8765/dist.
 
 ## Konventionen
 - Vanilla JS / Three.js, keine neuen Abhängigkeiten ohne Rückfrage
