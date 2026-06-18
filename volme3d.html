@@ -917,7 +917,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.75<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.76<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -2114,6 +2114,12 @@ const firebaseConfig = {
         <div class="vrow"><label title="Breite des gedruckten Modells">Modellbreite</label> <input type="range" id="map-width" min="40" max="250" value="120" step="5" oninput="document.getElementById('map-widthv').textContent=this.value;_mapInfo()"><span class="vv" id="map-widthv">120</span><span class="vu">mm</span></div>
         <div class="vrow"><label title="Maximale Gebäudehöhe im Modell (skaliert)">Max. Höhe</label> <input type="range" id="map-maxh" min="5" max="60" value="22" step="1" oninput="document.getElementById('map-maxhv').textContent=this.value;_mapInfo()"><span class="vv" id="map-maxhv">22</span><span class="vu">mm</span></div>
         <div class="vrow"><label title="Dicke der Grundplatte unter den Gebäuden (mit angefastem Rand)">Grundplatte</label> <input type="range" id="map-plate" min="0.6" max="6" value="2" step="0.2" oninput="document.getElementById('map-platev').textContent=this.value"><span class="vv" id="map-platev">2</span><span class="vu">mm</span></div>
+        <div class="vrow" style="gap:16px"><label title="Echtes Geländerelief (Höhendaten von Open-Meteo) als Sockel-Oberfläche">Gelände</label>
+          <label style="display:flex;align-items:center;gap:5px;font-weight:600;cursor:pointer"><input type="checkbox" id="map-terrain" onchange="document.getElementById('map-terrain-rows').style.display=this.checked?'':'none'"> Höhenrelief</label>
+        </div>
+        <div id="map-terrain-rows" style="display:none">
+          <div class="vrow"><label title="Überhöhung des Reliefs — flaches Gelände wird betont (1× = realer Maßstab)">Überhöhung</label> <input type="range" id="map-terrainex" min="1" max="10" value="3" step="0.5" oninput="document.getElementById('map-terrainexv').textContent=this.value"><span class="vv" id="map-terrainexv">3</span><span class="vu">×</span></div>
+        </div>
         <div class="vrow" style="gap:16px"><label title="Was ins Modell soll">Inhalt</label>
           <label style="display:flex;align-items:center;gap:5px;font-weight:600;cursor:pointer"><input type="checkbox" id="map-green" checked> Grünflächen</label>
           <label style="display:flex;align-items:center;gap:5px;font-weight:600;cursor:pointer"><input type="checkbox" id="map-water" checked> Wasser</label>
@@ -14004,9 +14010,15 @@ async function _mapCreate(){
     const buildings=parsed.buildings, greens=parsed.greens, waters=parsed.waters, roads=parsed.roads;
     if(!buildings.length && !greens.length && !waters.length && !roads.length){ notify('Keine Kartendaten in diesem Ausschnitt gefunden','w'); _mapBusy=false; _mapSpinner(false); if(btn)btn.disabled=false; return; }
     if(buildings.length>4000){ notify('Sehr viele Gebäude ('+buildings.length+') — Ausschnitt verkleinern','w'); _mapBusy=false; _mapSpinner(false); if(btn)btn.disabled=false; return; }
+    let terrain=null;
+    if(document.getElementById('map-terrain') && document.getElementById('map-terrain').checked){
+      _mapSpinner(true,'Lade Höhendaten…');
+      try{ terrain=await _mapFetchTerrain(bb, 20); }
+      catch(e){ notify('Höhendaten nicht verfügbar ('+e.message+') — Modell ohne Relief','w'); terrain=null; }
+    }
     _mapSpinner(true,'Baue Modell ('+buildings.length+' Gebäude, '+greens.length+' Grün, '+waters.length+' Wasser, '+roads.length+' Straßen)…');
     await new Promise(r=>setTimeout(r,30)); // UI-Repaint
-    _mapBuildModel(parsed, bb);
+    _mapBuildModel(parsed, bb, terrain);
     notify(buildings.length+' Gebäude'+(greens.length?', '+greens.length+' Grün':'')+(waters.length?', '+waters.length+' Wasser':'')+(roads.length?', '+roads.length+' Straßen':'')+' erzeugt','ok');
     _closeMapModal();
   }catch(e){
@@ -14173,8 +14185,28 @@ function _clipPolyConvex(pts, clipPoly){
   return out.length>=3 ? out : [];
 }
 
-// Baut aus Karten-Daten eine Gruppe (gefaster Sockel + Gebäude + Grün + Straßen) und fügt sie in die Szene.
-function _mapBuildModel(parsed, bb){
+// Höhen-Grid (N×N) über die Ausschnitts-bbox von Open-Meteo holen → {N, heights[], bb}
+async function _mapFetchTerrain(bb, N){
+  const lats=[], lons=[];
+  for(let j=0;j<N;j++) for(let i=0;i<N;i++){
+    lats.push(bb.s + (bb.n-bb.s)*j/(N-1));
+    lons.push(bb.w + (bb.e-bb.w)*i/(N-1));
+  }
+  const heights=new Array(lats.length); const BATCH=100;
+  for(let off=0; off<lats.length; off+=BATCH){
+    const la=lats.slice(off,off+BATCH), lo=lons.slice(off,off+BATCH);
+    const url='https://api.open-meteo.com/v1/elevation?latitude='+la.map(v=>v.toFixed(5)).join(',')+'&longitude='+lo.map(v=>v.toFixed(5)).join(',');
+    const res=await fetch(url);
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const d=await res.json(); const e=d.elevation||[];
+    if(!e.length) throw new Error('leer');
+    for(let k=0;k<e.length;k++) heights[off+k]=e[k];
+  }
+  return { N, heights, bb };
+}
+
+// Baut aus Karten-Daten eine Gruppe (Sockel/Gelände + Gebäude + Grün + Wasser + Straßen) und fügt sie in die Szene.
+function _mapBuildModel(parsed, bb, terrain){
   const buildings=parsed.buildings||[], greens=parsed.greens||[], waters=parsed.waters||[], waterLines=parsed.waterLines||[], roads=parsed.roads||[];
   saveUndo();
   const lat0=bb.lat0, lon0=bb.lon0;
@@ -14192,7 +14224,27 @@ function _mapBuildModel(parsed, bb){
   const halfU = (widthMM/10)/2;
   const plateU = plateMM/10;
   const bevel = Math.min(plateU*0.5, halfU*0.04);
-  const topU = plateU + bevel;                // tatsächliche Sockel-Oberkante (inkl. Fase) — flache Layer MÜSSEN darüber liegen, sonst im Sockel versteckt
+  const hasTerrain = !!(terrain && terrain.heights && terrain.heights.length);
+  // Ohne Gelände: gefaster Sockel (Oberkante plateU+bevel). Mit Gelände: Heightmap-Block ohne Fase (Oberkante plateU).
+  const topU = hasTerrain ? plateU : plateU + bevel;
+  const exEl=document.getElementById('map-terrainex');
+  const exag = (exEl && +exEl.value) || 3;
+  let _hMin=0; if(hasTerrain){ const fin=terrain.heights.filter(h=>isFinite(h)); _hMin=fin.length?Math.min.apply(null,fin):0; }
+  // Geländehöhe in Units an Position (x,z) [Units], bilinear aus dem Höhen-Grid (0 ohne Terrain)
+  const terrainH = (x,z)=>{
+    if(!hasTerrain) return 0;
+    const N=terrain.N;
+    const lon = lon0 + x/(mPerDegLon*scale);
+    const lat = lat0 - z/(mPerDegLat*scale);
+    let u=(lon-bb.w)/(bb.e-bb.w)*(N-1), v=(lat-bb.s)/(bb.n-bb.s)*(N-1);
+    u=Math.max(0,Math.min(N-1,u)); v=Math.max(0,Math.min(N-1,v));
+    const i0=Math.floor(u), j0=Math.floor(v), i1=Math.min(N-1,i0+1), j1=Math.min(N-1,j0+1), fu=u-i0, fv=v-j0;
+    const H=(i,j)=>{ const h=terrain.heights[j*N+i]; return isFinite(h)?h:_hMin; };
+    const h = H(i0,j0)*(1-fu)*(1-fv) + H(i1,j0)*fu*(1-fv) + H(i0,j1)*(1-fu)*fv + H(i1,j1)*fu*fv;
+    return (h-_hMin)*scale*exag;
+  };
+  // Zentroid eines [x,z]-Polygons (für die Geländehöhe, auf die ein Layer-Element gehoben wird)
+  const _centroid=(pts)=>{ let sx=0,sz=0; for(const p of pts){sx+=p[0];sz+=p[1];} return [sx/pts.length, sz/pts.length]; };
 
   // Auswahl-Polygon (Form) in lokalen Units [x,z] aufbauen — dient als Clip-Poly, Sockel- und Rahmenform.
   // CCW-Orientierung für _clipPolyConvex sicherstellen (x=Ost, z=(lat0-lat) → Bildschirm-Down ist +z).
@@ -14201,7 +14253,7 @@ function _mapBuildModel(parsed, bb){
   // Signierte Fläche prüfen; bei CW umdrehen → CCW
   let area2=0; for(let i=0;i<clipU.length;i++){ const a=clipU[i], b=clipU[(i+1)%clipU.length]; area2+=a[0]*b[1]-b[0]*a[1]; }
   if(area2<0) clipU=clipU.slice().reverse();
-  const isBox=(_mapShape==='square'||_mapShape==='rect');
+  const isBox=(_mapShape==='square'||_mapShape==='rect') || hasTerrain; // Gelände nutzt rechteckigen Heightmap-Block → Box-Clipping
 
   // Lat/Lon-Ring → [x,z]-Punkte in Units (geschlossener Endpunkt entfernt)
   const ringToPts=(ring)=>{
@@ -14222,10 +14274,12 @@ function _mapBuildModel(parsed, bb){
     return _posOnly(geo);
   };
 
-  // höchstes Gebäude für Höhen-Skalierung
-  let maxRealH=0; for(const b of buildings) if(b.height>maxRealH) maxRealH=b.height;
-  if(maxRealH<=0) maxRealH=6;
-  const hScale = (maxHmm/10) / maxRealH;       // Units pro Meter (Höhe)
+  // Höhen-Skalierung: robust gegen Ausreißer (Funktürme, fehlerhafte height-Tags).
+  // Referenz = 90.-Perzentil statt Maximum → typische Gebäude füllen die Skala, einzelne Riesen werden gecappt.
+  const _hs=buildings.map(b=>b.height).filter(h=>h>0).sort((a,b)=>a-b);
+  const refH = _hs.length ? _hs[Math.min(_hs.length-1, Math.floor(_hs.length*0.9))] : 12;
+  const hScale = (maxHmm/10) / Math.max(refH, 6);    // Units pro Meter (Höhe)
+  const hCap = (maxHmm/10)*1.4;                       // Cap für Ausreißer (max. 1,4× „Max. Höhe")
 
   // --- Gebäude ---
   const bldGeos=[];
@@ -14235,11 +14289,11 @@ function _mapBuildModel(parsed, bb){
     const shape=new THREE.Shape();
     shape.moveTo(pts[0][0], pts[0][1]);
     for(let i=1;i<pts.length;i++) shape.lineTo(pts[i][0], pts[i][1]);
-    const depth=Math.max(b.height*hScale, 0.05);
+    const depth=Math.min(Math.max(b.height*hScale, 0.05), hCap);
     let geo; try{ geo=new THREE.ExtrudeGeometry(shape,{depth,bevelEnabled:false,steps:1}); }catch(e){ continue; }
     geo.rotateX(-Math.PI/2);
     geo.computeBoundingBox();
-    geo.translate(0, topU-geo.boundingBox.min.y, 0); // Unterkante auf Sockel-Oberkante
+    const c=_centroid(pts); geo.translate(0, topU+terrainH(c[0],c[1])-geo.boundingBox.min.y, 0); // Unterkante auf Gelände/Sockel-Oberkante
     bldGeos.push(_posOnly(geo));
   }
 
@@ -14249,7 +14303,7 @@ function _mapBuildModel(parsed, bb){
   for(const g of greens){
     const pts=isBox?_clipPolyBox(ringToPts(g.ring), halfU):_clipPolyConvex(ringToPts(g.ring), clipU);
     if(pts.length<3) continue;
-    const geo=flatPolyGeo(pts, topU+greenThk, greenThk);
+    const c=_centroid(pts); const geo=flatPolyGeo(pts, topU+terrainH(c[0],c[1])+greenThk, greenThk);
     if(geo) greenGeos.push(geo);
   }
 
@@ -14259,7 +14313,7 @@ function _mapBuildModel(parsed, bb){
   for(const w of waters){
     const pts=isBox?_clipPolyBox(ringToPts(w.ring), halfU):_clipPolyConvex(ringToPts(w.ring), clipU);
     if(pts.length<3) continue;
-    const geo=flatPolyGeo(pts, topU+waterThk, waterThk);
+    const c=_centroid(pts); const geo=flatPolyGeo(pts, topU+terrainH(c[0],c[1])+waterThk, waterThk);
     if(geo) waterGeos.push(geo);
   }
   // Wasser-Linien (Flüsse/Kanäle/Fleete) als blaue Bänder (wie Straßen)
@@ -14268,7 +14322,7 @@ function _mapBuildModel(parsed, bb){
     if(pts.length<2) continue;
     const halfW=Math.max((wl.width*scale)/2, 0.03);
     const strips=_mapRoadStrips(pts, halfW);
-    for(const s of strips){ const cs=isBox?_clipPolyBox(s, halfU):_clipPolyConvex(s, clipU); if(cs.length<3) continue; const geo=flatPolyGeo(cs, topU+waterThk, waterThk); if(geo) waterGeos.push(geo); }
+    for(const s of strips){ const cs=isBox?_clipPolyBox(s, halfU):_clipPolyConvex(s, clipU); if(cs.length<3) continue; const c=_centroid(cs); const geo=flatPolyGeo(cs, topU+terrainH(c[0],c[1])+waterThk, waterThk); if(geo) waterGeos.push(geo); }
   }
 
   // --- Straßen (dünn erhaben, eigene Ebene zwischen Platte und Gebäuden) ---
@@ -14279,7 +14333,7 @@ function _mapBuildModel(parsed, bb){
     if(pts.length<2) continue;
     const halfW=Math.max((r.width*scale)/2, 0.02);
     const strips=_mapRoadStrips(pts, halfW);
-    for(const s of strips){ const cs=isBox?_clipPolyBox(s, halfU):_clipPolyConvex(s, clipU); if(cs.length<3) continue; const geo=flatPolyGeo(cs, topU+roadThk, roadThk); if(geo) roadGeos.push(geo); }
+    for(const s of strips){ const cs=isBox?_clipPolyBox(s, halfU):_clipPolyConvex(s, clipU); if(cs.length<3) continue; const c=_centroid(cs); const geo=flatPolyGeo(cs, topU+terrainH(c[0],c[1])+roadThk, roadThk); if(geo) roadGeos.push(geo); }
   }
 
   if(!bldGeos.length && !greenGeos.length && !waterGeos.length && !roadGeos.length){ notify('Karten-Daten konnten nicht in Geometrie umgesetzt werden','w'); return; }
@@ -14309,18 +14363,33 @@ function _mapBuildModel(parsed, bb){
     return out;
   };
 
-  // --- Gefaster Sockel: Form-Shape (clipU) mit angefaster Oberkante (Bevel oben) ---
-  // Shape um die Fase einrücken, damit die Außenkante exakt die Zielform/-breite behält. (bevel ist oben definiert)
-  const baseIn=insetPoly(clipU, bevel);
-  const ps=new THREE.Shape();
-  ps.moveTo(baseIn[0][0],baseIn[0][1]); for(let i=1;i<baseIn.length;i++) ps.lineTo(baseIn[i][0],baseIn[i][1]); ps.closePath();
+  // --- Basis: gefaster Sockel (flach) ODER Heightmap-Geländeblock ---
   let plateGeo;
-  try{
-    plateGeo=new THREE.ExtrudeGeometry(ps,{depth:plateU-bevel,bevelEnabled:true,bevelThickness:bevel,bevelSize:bevel,bevelSegments:1,steps:1});
-  }catch(e){ plateGeo=new THREE.BoxGeometry(halfU*2,plateU,halfU*2); plateGeo.translate(0,plateU/2,0); }
-  plateGeo.rotateX(-Math.PI/2);
-  plateGeo.computeBoundingBox();
-  plateGeo.translate(0,-plateGeo.boundingBox.min.y,0); // Unterkante auf y=0, Fase oben
+  if(hasTerrain){
+    // Geschlossener Heightmap-Block über ±halfU: Oberseite folgt dem Relief (plateU+terrainH), Seiten + Boden bei y=0
+    const M=32, v=[];
+    const X=i=>-halfU+(2*halfU)*i/M, Z=j=>-halfU+(2*halfU)*j/M, TY=(i,j)=>plateU+terrainH(X(i),Z(j));
+    const p=(x,y,z)=>v.push(x,y,z);
+    for(let j=0;j<M;j++)for(let i=0;i<M;i++){ const x0=X(i),x1=X(i+1),z0=Z(j),z1=Z(j+1),a=TY(i,j),b=TY(i+1,j),c=TY(i+1,j+1),d=TY(i,j+1);
+      p(x0,a,z0);p(x1,b,z0);p(x1,c,z1); p(x0,a,z0);p(x1,c,z1);p(x0,d,z1); }
+    p(-halfU,0,-halfU);p(halfU,0,halfU);p(halfU,0,-halfU); p(-halfU,0,-halfU);p(-halfU,0,halfU);p(halfU,0,halfU); // Boden
+    for(let i=0;i<M;i++){const x0=X(i),x1=X(i+1);p(x0,TY(i,0),-halfU);p(x0,0,-halfU);p(x1,TY(i+1,0),-halfU);p(x1,TY(i+1,0),-halfU);p(x0,0,-halfU);p(x1,0,-halfU);}
+    for(let i=0;i<M;i++){const x0=X(i),x1=X(i+1);p(x0,TY(i,M),halfU);p(x1,TY(i+1,M),halfU);p(x0,0,halfU);p(x1,TY(i+1,M),halfU);p(x1,0,halfU);p(x0,0,halfU);}
+    for(let j=0;j<M;j++){const z0=Z(j),z1=Z(j+1);p(-halfU,TY(0,j),z0);p(-halfU,TY(0,j+1),z1);p(-halfU,0,z0);p(-halfU,TY(0,j+1),z1);p(-halfU,0,z1);p(-halfU,0,z0);}
+    for(let j=0;j<M;j++){const z0=Z(j),z1=Z(j+1);p(halfU,TY(M,j),z0);p(halfU,0,z0);p(halfU,TY(M,j+1),z1);p(halfU,TY(M,j+1),z1);p(halfU,0,z0);p(halfU,0,z1);}
+    plateGeo=new THREE.BufferGeometry(); plateGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(v),3));
+  } else {
+    // Form-Shape (clipU) mit angefaster Oberkante (Bevel oben); Shape um die Fase einrücken → Außenkante exakt
+    const baseIn=insetPoly(clipU, bevel);
+    const ps=new THREE.Shape();
+    ps.moveTo(baseIn[0][0],baseIn[0][1]); for(let i=1;i<baseIn.length;i++) ps.lineTo(baseIn[i][0],baseIn[i][1]); ps.closePath();
+    try{
+      plateGeo=new THREE.ExtrudeGeometry(ps,{depth:plateU-bevel,bevelEnabled:true,bevelThickness:bevel,bevelSize:bevel,bevelSegments:1,steps:1});
+    }catch(e){ plateGeo=new THREE.BoxGeometry(halfU*2,plateU,halfU*2); plateGeo.translate(0,plateU/2,0); }
+    plateGeo.rotateX(-Math.PI/2);
+    plateGeo.computeBoundingBox();
+    plateGeo.translate(0,-plateGeo.boundingBox.min.y,0); // Unterkante auf y=0, Fase oben
+  }
   plateGeo=_posOnly(plateGeo); plateGeo.computeVertexNormals();
 
   // --- Optionaler Rahmen (erhöhter Rand, folgt der Auswahlform) ---
@@ -15569,8 +15638,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.75';
+const VOLME3D_VERSION = '1.14.76';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.76', date:'2026-06-18', spots:[{id:'karte',sel:'[onclick="_openMapModal()"]'}], changes:[
+    ['🏔️','Karte → 3D: optionales Höhenrelief — das Gelände wird aus echten Höhendaten (Open-Meteo) als reliefierte Sockel-Oberfläche modelliert, Gebäude/Wasser/Grün/Straßen sitzen auf dem Gelände. Mit Überhöhungs-Regler. Außerdem realistischere Gebäudehöhen: robuste Skalierung (90.-Perzentil statt Maximum) verhindert, dass einzelne Ausreißer wie Funktürme das Modell verzerren'],
+  ]},
   { version:'1.14.75', date:'2026-06-17', spots:[{id:'karte',sel:'[onclick="_openMapModal()"]'}], changes:[
     ['🗺️','Neu: Karte → 3D — aus einem OpenStreetMap-Ausschnitt ein druckbares Stadtmodell erzeugen. Ort suchen, Ausschnitt als Quadrat/Rechteck/Kreis/Sechseck wählen (Standard- oder Satellitenkarte), dann werden Gebäude (höhenskaliert), Grünflächen, Wasser (Seen, Flüsse, Fleete) und Straßen als farblich getrennte Teile auf einen gefasten Sockel gebaut. Farben je Sektion frei wählbar, optionaler Rahmen, Teile auf Wunsch getrennt für Mehrfarb-Druck'],
   ]},
