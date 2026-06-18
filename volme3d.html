@@ -917,7 +917,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.81<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.82<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -13929,20 +13929,28 @@ function _buildSlotBodyGeometry(p){
   inPath.closePath();
   outShape.holes.push(inPath);
   const shell=new THREE.ExtrudeGeometry(outShape,{depth:W/10,bevelEnabled:false,steps:1,curveSegments:6});
-  shell.rotateY(0); // Extrusion läuft entlang +Z (Breite) – passt
   shell.translate(0,0,-W/20);   // mittig in Z → symmetrisch
+  // --- Geschlossene Seitenwände: volle Silhouette (mit Radkästen, OHNE Innenloch),
+  //     Dicke = Wandstärke, an beiden Z-Enden. Schließt die zuvor offenen Flanken. ---
+  const sideShape=_slotShapeFrom(outPts.map(q=>[q[0]/10,q[1]/10]), archR/10, wbFront/10, wbRear/10, archDepth/10);
+  const sideL=new THREE.ExtrudeGeometry(sideShape,{depth:t,bevelEnabled:false,steps:1,curveSegments:6});
+  sideL.translate(0,0,-W/20);          // linke Wand: z ∈ [-W/2, -W/2+wall]
+  const sideR=new THREE.ExtrudeGeometry(sideShape,{depth:t,bevelEnabled:false,steps:1,curveSegments:6});
+  sideR.translate(0,0,W/20-t);         // rechte Wand: z ∈ [W/2-wall, W/2]
+  let body=_mergePos([_posOnly(shell),_posOnly(sideL),_posOnly(sideR)]);
   // --- Top-View-Taper: aus dem Plattenkasten einen gerundeten Körper formen ---
   // Z (Breite) jedes Vertex mit planF(x) (Nase/Heck schmaler) * tumble(y)
   // (Dach schmaler als Boden) skalieren. x in Units (0..L/10), y in Units.
+  // Wird auf Schale UND Seitenwände angewandt, damit die Flanken der Rundung folgen.
   const Lu=L/10, Hu=H/10, pl=ps.plan, tum=ps.tumble;
   const planF=(xu)=>{ const f=xu/Lu;                 // 0=Nase .. 1=Heck
     if(f<=0.5){ const t=f/0.5; return pl.nose+(pl.mid-pl.nose)*Math.sin(t*Math.PI/2); }
     const t=(f-0.5)/0.5; return pl.mid+(pl.tail-pl.mid)*(1-Math.cos(t*Math.PI/2)); };
   const tumbleF=(yu)=>{ const f=Math.min(1,Math.max(0,yu/Hu)); return 1-(1-tum)*f*f; };
-  { const pos=shell.attributes.position, a=pos.array;
+  { const pos=body.attributes.position, a=pos.array;
     for(let i=0;i<a.length;i+=3){ const x=a[i], y=a[i+1]; a[i+2]*=planF(x)*tumbleF(y); }
-    pos.needsUpdate=true; shell.computeVertexNormals(); }
-  parts.push(_posOnly(shell));
+    pos.needsUpdate=true; body.computeVertexNormals(); }
+  parts.push(_posOnly(body));
   // --- Dach/Schließflächen vorne & hinten (Stirnwände der Schale) ---
   // Die Stirnseiten der Extrusion sind bereits durch das Ring-Shape geschlossen.
   // --- Montage-Pins innen (am Radstand, mit Durchgangsloch) ---
@@ -14057,39 +14065,66 @@ function _qrPlateOpts(sizeMM){
   return { cr: Math.max(0, cr), eyelet, eyeD, eyePos, sizeMM };
 }
 
-// Liefert die zusätzliche Randbreite (in Units), um die die Platte auf der Öse-Seite
-// wächst, damit das Durchgangsloch komplett im neuen unbedruckten Rand Platz findet:
-// Loch-Ø + Wandsteg außen + Abstand zum QR-Feld. Das QR-Raster bleibt unberührt.
-function _qrEyeletExt(opt){
-  if(!opt.eyelet) return 0;
+// Gemeinsame Maße der Öse (in Units): Lochradius und Materialsteg ringsum.
+function _qrEyeletDims(opt){
   const rEye = (opt.eyeD/2)/10;                  // Lochradius in Units
   const wall = Math.max(0.15, rEye*0.6);         // Materialsteg ringsum (≥1.5 mm)
-  // Rand = Loch-Ø + Steg zur Außenkante + Steg zum QR-Feld
-  return 2*rEye + 2*wall;
+  return { rEye, wall };
+}
+// Abstand der Lochmitte von der jeweiligen Außenkante (in Units), damit Lochrand + Steg
+// garantiert außerhalb der abgerundeten Ecke liegen.
+//  • tab-top / tab-left: Loch sitzt mittig an einer langen Kante, weit weg von den Ecken
+//    → es genügt der reine Außensteg rEye+wall.
+//  • corner: Loch sitzt diagonal in der gerundeten Ecke. Damit der Lochkreis (Radius rEye)
+//    samt Steg den Viertelkreis-Bogen (Zentrum (x0+cr,z0+cr), Radius cr) nie berührt, muss
+//    der Abstand Lochmitte↔Rundungszentrum ≥ cr+rEye+wall sein. Bei diagonaler Lage
+//    (Lochmitte = Rundungszentrum + (d,d)) gilt dist = d·√2, also d ≥ (cr+rEye+wall)/√2,
+//    und inset = cr + d.
+function _qrEyeletInset(opt, crU){
+  const { rEye, wall } = _qrEyeletDims(opt);
+  const base = rEye + wall;                       // Steg Lochrand → Außenkante
+  if(opt.eyePos==='corner'){
+    const cr = crU||0;
+    return cr + Math.max(base, (cr + rEye + wall)/Math.SQRT2);
+  }
+  return base;
+}
+// Liefert die zusätzliche Randbreite (in Units), um die die Platte auf der Öse-Seite
+// wächst, damit das Durchgangsloch komplett im neuen unbedruckten Rand Platz findet:
+// Loch-Inset (inkl. evtl. Eckenradius) + Steg zum QR-Feld. Das QR-Raster bleibt unberührt.
+function _qrEyeletExt(opt, crU){
+  if(!opt.eyelet) return 0;
+  const { rEye, wall } = _qrEyeletDims(opt);
+  const inset = _qrEyeletInset(opt, crU);        // Lochmitte ↔ Außenkante
+  // Rand = Abstand Außenkante↔Lochmitte + Lochradius + Steg zum QR-Feld
+  return inset + rEye + wall;
 }
 
 // Baut die Plattengeometrie als abgerundetes Rechteck (THREE.Shape + ExtrudeGeometry),
-// mit optionaler Öse. Statt einer überstehenden Lasche wächst bei aktiver Öse die Platte
-// selbst auf der gewählten Seite (oben / links / Ecke), sodass dort ein breiterer
-// unbedruckter Rand entsteht, in dem das Durchgangsloch komplett innerhalb der Platte
-// liegt — kein Überhang, keine Kollision mit dem QR-Muster. Achse Y, Unterseite bei y=0.
-// Alle Maße in Units (1 Unit = 10 mm). Das QR-Raster bleibt am ursprünglichen Quadrat
-// [-half,+half] zentriert; die Platte wird nur asymmetrisch nach außen erweitert.
-// Liefert {geo, off:{x,z}} — off = Versatz der QR-Module relativ zur neuen Plattenmitte
-// (nötig, damit die fertige Gruppe um ihren Schwerpunkt sitzt).
+// mit optionaler Öse. Bei aktiver Öse wächst die Platte SYMMETRISCH auf der gewählten
+// Achse (oben→auch unten, links→auch rechts, Ecke→beide Achsen beidseitig), sodass das
+// QR-Raster immer exakt im Plattenmittelpunkt sitzt. Das Durchgangsloch sitzt nur auf der
+// gewählten Öse-Seite im verbreiterten Rand — kein Überhang, keine Kollision mit dem
+// QR-Muster und garantiert außerhalb der abgerundeten Ecken. Achse Y, Unterseite bei y=0.
+// Alle Maße in Units (1 Unit = 10 mm). Das QR-Raster bleibt am Quadrat [-half,+half]
+// zentriert; da die Erweiterung symmetrisch ist, fällt die Plattenmitte damit zusammen.
+// Liefert {geo, off:{x,z}} — off bleibt für Kompatibilität, ist hier stets {0,0}.
 function _qrPlateGeo(sizeU, plateU, opt){
   const half = sizeU/2;
-  // Erweiterung der Platte je Seite (nur dort, wo die Öse sitzt)
-  const ext = _qrEyeletExt(opt);
-  let extTop=0, extLeft=0;                        // -Z = oben, -X = links
+  // Eckenradius bezieht sich auf die ursprüngliche Plattenkante (in Units), begrenzt
+  // auf die halbe Original-Kante. Mit diesem cr wird die Öse-Erweiterung dimensioniert.
+  const crU = Math.min(opt.cr/10, half - 0.001);
+  // Symmetrische Erweiterung je betroffener Achse (beidseitig gleich)
+  const ext = _qrEyeletExt(opt, crU);
+  let extX=0, extZ=0;                             // Erweiterung je Seite in X- bzw. Z-Achse
   if(opt.eyelet){
-    if(opt.eyePos==='tab-left'){ extLeft=ext; }
-    else if(opt.eyePos==='corner'){ extLeft=ext; extTop=ext; }
-    else { extTop=ext; }                          // tab-top (Default)
+    if(opt.eyePos==='tab-left'){ extX=ext; }
+    else if(opt.eyePos==='corner'){ extX=ext; extZ=ext; }
+    else { extZ=ext; }                            // tab-top (Default)
   }
-  // Neue Plattengrenzen
-  const x0=-half-extLeft, x1=half, z0=-half-extTop, z1=half;
-  const cr = Math.min(opt.cr/10, Math.min(x1-x0, z1-z0)/2 - 0.001);   // Eckenradius in Units
+  // Neue, symmetrische Plattengrenzen — Mittelpunkt bleibt der Ursprung
+  const x0=-half-extX, x1=half+extX, z0=-half-extZ, z1=half+extZ;
+  const cr = Math.min(crU, Math.min(x1-x0, z1-z0)/2 - 0.001);         // Eckenradius in Units
   const sh = new THREE.Shape();
   // Abgerundetes Rechteck (gegen Uhrzeiger), Ecken via quadraticCurveTo
   if(cr <= 0.0005){
@@ -14103,18 +14138,17 @@ function _qrPlateGeo(sizeU, plateU, opt){
     sh.closePath();
   }
 
-  // Durchgangsloch zentriert im neu gewonnenen Rand
+  // Durchgangsloch nur auf der gewählten Öse-Seite, garantiert außerhalb der Rundung
   if(opt.eyelet){
-    const rEye=(opt.eyeD/2)/10, wall=Math.max(0.15, rEye*0.6);
+    const { rEye } = _qrEyeletDims(opt);
+    const inset = _qrEyeletInset(opt, cr);        // Abstand Lochmitte ↔ Außenkante (inkl. cr)
     let cx, cz;
-    // Lochmitte: rEye+wall von der Außenkante entfernt → klarer Steg nach außen,
-    // und der Rest des Rands (rEye+wall) bleibt als Abstand zum QR-Feld.
-    if(opt.eyePos==='tab-left'){            // linker Rand
-      cx = x0 + rEye + wall; cz = 0;
-    } else if(opt.eyePos==='corner'){       // obere linke Ecke
-      cx = x0 + rEye + wall; cz = z0 + rEye + wall;
-    } else {                                // tab-top (Default): oberer Rand
-      cx = 0; cz = z0 + rEye + wall;
+    if(opt.eyePos==='tab-left'){            // linker Rand, vertikal mittig
+      cx = x0 + inset; cz = 0;
+    } else if(opt.eyePos==='corner'){       // obere linke Ecke, beide Achsen nach innen
+      cx = x0 + inset; cz = z0 + inset;
+    } else {                                // tab-top (Default): oberer Rand, horizontal mittig
+      cx = 0; cz = z0 + inset;
     }
     const hole = new THREE.Path(); hole.absarc(cx, cz, rEye, 0, Math.PI*2, true);
     sh.holes.push(hole);
@@ -14123,8 +14157,8 @@ function _qrPlateGeo(sizeU, plateU, opt){
   const gg = new THREE.ExtrudeGeometry(sh, {depth:plateU, bevelEnabled:false, steps:1, curveSegments:48});
   gg.rotateX(-Math.PI/2);                         // Extrusion lief +Z → Achse Y
   gg.computeBoundingBox(); gg.translate(0, -gg.boundingBox.min.y, 0);  // Unterseite auf y=0
-  // Versatz der QR-Module relativ zur neuen Plattenmitte
-  const off = { x:(x0+x1)/2, z:(z0+z1)/2 };
+  // Plattenmitte = QR-Mitte (symmetrische Erweiterung) → kein Versatz
+  const off = { x:0, z:0 };
   return { geo:_posOnly(gg), off };
 }
 function _openQRModal(){ document.getElementById('qr-modal').classList.add('show'); _qrPreview(); }
@@ -14150,38 +14184,41 @@ function _qrPreview(){
 
   const cv=document.getElementById('qr-canvas'), ctx=cv.getContext('2d');
   const opt=_qrPlateOpts(sizeMM);
-  // Vergrößerung der Platte (in mm) je Seite, falls Öse aktiv
-  const extMM = eyeOn ? _qrEyeletExt(opt)*10 : 0;
-  let extTopMM=0, extLeftMM=0;
+  // Eckenradius (mm), begrenzt auf halbe Original-Kante — wie in der Geometrie
+  const crMM=Math.min(opt.cr, sizeMM/2-0.001);
+  const crU=crMM/10;
+  // Symmetrische Vergrößerung (in mm) je Seite, falls Öse aktiv
+  const extMM = eyeOn ? _qrEyeletExt(opt, crU)*10 : 0;
+  let extXMM=0, extZMM=0;
   if(eyeOn){
-    if(opt.eyePos==='tab-left'){ extLeftMM=extMM; }
-    else if(opt.eyePos==='corner'){ extLeftMM=extMM; extTopMM=extMM; }
-    else { extTopMM=extMM; }
+    if(opt.eyePos==='tab-left'){ extXMM=extMM; }
+    else if(opt.eyePos==='corner'){ extXMM=extMM; extZMM=extMM; }
+    else { extZMM=extMM; }
   }
-  // Gesamtmaße der (ggf. vergrößerten) Platte in mm
-  const plateWmm=sizeMM+extLeftMM, plateHmm=sizeMM+extTopMM;
+  // Gesamtmaße der (symmetrisch vergrößerten) Platte in mm
+  const plateWmm=sizeMM+2*extXMM, plateHmm=sizeMM+2*extZMM;
   // Maßstab so wählen, dass die ganze Platte mit kleinem Außenabstand ins Canvas passt
   const pad=4, scale=Math.min((cv.width-2*pad)/plateWmm,(cv.height-2*pad)/plateHmm);
   const plateWpx=plateWmm*scale, plateHpx=plateHmm*scale;
   const ox=(cv.width-plateWpx)/2, oy=(cv.height-plateHpx)/2;   // Platten-Ursprung (oben-links) im Canvas
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height);
   // Plattenkontur (abgerundet) als grauer Rahmen
-  const crPx=Math.min(opt.cr*scale, Math.min(plateWpx,plateHpx)/2);
+  const crPx=Math.min(crMM*scale, Math.min(plateWpx,plateHpx)/2);
   ctx.strokeStyle='#bbb'; ctx.lineWidth=1.5;
   ctx.beginPath();
   if(ctx.roundRect) ctx.roundRect(ox,oy,plateWpx,plateHpx,crPx);
   else ctx.rect(ox,oy,plateWpx,plateHpx);
   ctx.stroke();
-  // QR-Feld liegt am ursprünglichen Quadrat: links um extLeft, oben um extTop versetzt
-  const qx=ox+extLeftMM*scale, qy=oy+extTopMM*scale;
+  // QR-Feld immer in der Plattenmitte zentriert
+  const qx=ox+extXMM*scale, qy=oy+extZMM*scale;
   const grid=g.n+2*_qrBorder, px=sizeMM*scale/grid;
   ctx.fillStyle='#111';
   for(let r=0;r<g.n;r++) for(let c=0;c<g.n;c++) if(g.mat[r][c]) ctx.fillRect(qx+(c+_qrBorder)*px,qy+(r+_qrBorder)*px,Math.ceil(px),Math.ceil(px));
-  // Loch/Öse andeuten — zentriert im neuen Rand, innerhalb der Platte
+  // Loch/Öse andeuten — nur auf der gewählten Seite, außerhalb der Rundung
   if(eyeOn){
-    const rEyeU=(opt.eyeD/2)/10, wallU=Math.max(0.15, rEyeU*0.6);  // gleiche Stege wie in der Geometrie
-    const rEye=rEyeU*10*scale;
-    const inset=(rEyeU+wallU)*10*scale;        // (rEye+wall) von der Außenkante
+    const rEye=(opt.eyeD/2)/10*10*scale;
+    const insetU=_qrEyeletInset(opt, crU);     // gleiche Logik wie in der Geometrie (inkl. cr)
+    const inset=insetU*10*scale;               // Abstand Lochmitte ↔ Außenkante
     let hx,hz;
     if(opt.eyePos==='corner'){ hx=ox+inset; hz=oy+inset; }
     else if(opt.eyePos==='tab-left'){ hx=ox+inset; hz=oy+plateHpx/2; }
@@ -14196,7 +14233,7 @@ function _qrInfo(){
   const eye=document.getElementById('qr-eyelet').checked;
   let extra='';
   if(round>0) extra+='<br>Eckenradius '+round+' mm.';
-  if(eye){ const pos=document.getElementById('qr-eyelet-pos').value; const lbl=pos==='tab-left'?'links':(pos==='corner'?'Ecke oben-links':'oben'); extra+='<br>Öse '+lbl+': Platte vergrößert, Durchgangsloch Ø '+document.getElementById('qr-eyelet-d').value+' mm im verbreiterten Rand.'; }
+  if(eye){ const pos=document.getElementById('qr-eyelet-pos').value; const lbl=pos==='tab-left'?'links':(pos==='corner'?'Ecke oben-links':'oben'); extra+='<br>Öse '+lbl+': Platte symmetrisch vergrößert (QR bleibt mittig), Durchgangsloch Ø '+document.getElementById('qr-eyelet-d').value+' mm im verbreiterten Rand.'; }
   document.getElementById('qr-info').innerHTML = _qrMat ? (_qrN+'×'+_qrN+' Module · '+sz+' mm<br>Zum Drucken am besten 2-farbig: Platte hell, Module dunkel (z.B. Filamentwechsel auf Modulhöhe).'+extra) : '';
 }
 function _createQR(){
@@ -16042,8 +16079,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.81';
+const VOLME3D_VERSION = '1.14.82';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.82', date:'2026-06-18', spots:[{id:'qr',sel:'[onclick="_openQRModal()"]'}], changes:[
+    ['🔑','QR-Platte mit Öse: Das QR-Muster sitzt jetzt immer exakt mittig. Die Platte wird für die Öse nicht mehr einseitig, sondern symmetrisch vergrößert — bei „oben" wächst sie oben und unten gleich, bei „links" links und rechts, bei „Ecke" in beiden Achsen beidseitig. So bleibt der QR-Code zentriert, während das Durchgangsloch weiterhin nur auf der gewählten Öse-Seite im verbreiterten Rand liegt. Außerdem überschneidet sich das Loch samt Materialsteg jetzt garantiert nie mehr mit einer abgerundeten Plattenecke: bei der Eckposition rückt das Loch passend zum Eckenradius nach innen, sodass Lochrand und Steg über den gesamten Wertebereich von Eckenradius- und Loch-Ø-Regler in der geraden Kantenzone bleiben'],
+  ]},
   { version:'1.14.81', date:'2026-06-18', spots:[{id:'qr',sel:'[onclick="_openQRModal()"]'}], changes:[
     ['🔑','QR-Platte: Die Schlüsselanhänger-Öse hängt nicht mehr als ausgestellte Lasche außen an der Platte über. Stattdessen wird bei aktiver Öse die Platte selbst auf der gewählten Seite (oben / links / Ecke oben-links) vergrößert, sodass dort ein breiterer unbedruckter Rand entsteht. Das Durchgangsloch sitzt zentriert in diesem Rand — komplett innerhalb der Plattenfläche, mit klarem Materialsteg zur Außenkante und ohne Kollision mit dem QR-Muster. Das QR-Raster bleibt unverändert an seiner Position; die abgerundeten Ecken wirken weiter auf die vergrößerte Kontur. Optionen umbenannt in „Öse oben / links / Ecke"'],
   ]},
