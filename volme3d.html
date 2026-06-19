@@ -497,7 +497,9 @@ body.devmode .dev-only{display:flex!important}
 #start-grid{padding:18px 26px;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px;overflow-y:auto;flex:1;align-content:start}
 .st-card{display:flex;flex-direction:column;align-items:center;text-align:center;gap:7px;padding:18px 12px 15px;background:linear-gradient(180deg,#fff,#f6f2ff);border:1.6px solid #e6dcfb;border-radius:13px;cursor:pointer;transition:all .13s;box-shadow:0 1px 3px rgba(124,58,237,.08)}
 .st-card:hover{border-color:#8b5cf6;transform:translateY(-3px);box-shadow:0 8px 22px rgba(124,58,237,.2)}
-.st-card .si{font-size:38px;line-height:1}
+.st-card .si{font-size:38px;line-height:1;height:66px;display:flex;align-items:center;justify-content:center}
+.st-card.has-thumb .si{font-size:0}
+.st-thumb{width:100%;height:66px;object-fit:contain;border-radius:7px}
 .st-card .stt{font-size:13px;font-weight:800;color:#2a2440}
 .st-card .sd{font-size:11px;font-weight:500;color:#888;line-height:1.35}
 .st-card.blank{background:linear-gradient(180deg,#fff,#f1f4f8);border-color:#dce0ea}
@@ -938,7 +940,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.85<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.86<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -12198,14 +12200,16 @@ function _deleteDesign(id) {
 
 // ── Start / Vorlagen-Galerie (Onboarding wie ParamaCraft) ──────────────────
 // Reine Präsentationsschicht: jede Karte startet einen vorhandenen Generator.
+// gk = Geometrie-Schlüssel: Karten mit gk bekommen ein echtes 3D-Vorschaubild
+// (aus den freistehenden Generator-Buildern mit Default-Parametern gerendert).
 const _STARTERS = [
   {i:'📦',t:'Leeres Design',d:'Frei mit Grundkörpern bauen',blank:true,run:()=>{}},
-  {i:'🏺',t:'Vase',d:'Bauchige Vasen & Übertöpfe',run:()=>_openVaseModal()},
-  {i:'🌸',t:'Blume',d:'Blüten & Deko-Formen',run:()=>_openFlowerModal()},
-  {i:'🏮',t:'Laterne',d:'Leuchten mit Lichtmuster',run:()=>_openLanternModal()},
-  {i:'🔩',t:'Schraube / Mutter',d:'Gewinde nach Norm',run:()=>_openScrewModal()},
-  {i:'⚙️',t:'Zahnrad',d:'Zahnräder & Ritzel',run:()=>_openGearModal()},
-  {i:'📦',t:'Gehäuse / Box',d:'Boxen mit Deckel',run:()=>_openEncModal()},
+  {i:'🏺',t:'Vase',d:'Bauchige Vasen & Übertöpfe',gk:'vase',run:()=>_openVaseModal()},
+  {i:'🌸',t:'Blume',d:'Blüten & Deko-Formen',gk:'flower',run:()=>_openFlowerModal()},
+  {i:'🏮',t:'Laterne',d:'Leuchten mit Lichtmuster',gk:'lantern',run:()=>_openLanternModal()},
+  {i:'🔩',t:'Schraube / Mutter',d:'Gewinde nach Norm',gk:'screw',run:()=>_openScrewModal()},
+  {i:'⚙️',t:'Zahnrad',d:'Zahnräder & Ritzel',gk:'gear',run:()=>_openGearModal()},
+  {i:'📦',t:'Gehäuse / Box',d:'Boxen mit Deckel',gk:'enc',run:()=>_openEncModal()},
   {i:'📇',t:'QR-Code',d:'Schilder mit QR-Code',run:()=>_openQRModal()},
   {i:'🗺️',t:'Karte → 3D',d:'Reliefs aus Landkarten',run:()=>_openMapModal()},
   {i:'✨',t:'KI-Modell',d:'Aus Text erzeugen',run:()=>kiTogglePanel()},
@@ -12213,13 +12217,79 @@ const _STARTERS = [
 function _renderStarter(){
   const g = document.getElementById('start-grid'); if(!g) return;
   g.innerHTML = _STARTERS.map((s,i) =>
-    '<div class="st-card'+(s.blank?' blank':'')+'" onclick="_runStarter('+i+')">'+
+    '<div class="st-card'+(s.blank?' blank':'')+'"'+(s.gk?' data-key="'+s.gk+'" data-ver="1"':'')+' onclick="_runStarter('+i+')">'+
     '<span class="si">'+s.i+'</span><span class="stt">'+s.t+'</span><span class="sd">'+s.d+'</span></div>').join('');
 }
 function showStarter(){
   _renderStarter();
   const cb = document.getElementById('start-hide'); if(cb) cb.checked = localStorage.getItem('volme3d_hide_start')==='1';
   document.getElementById('start-modal').classList.add('show');
+  requestAnimationFrame(() => { _starterFillThumbs().catch(()=>{}); });   // echte Vorschauen nachladen
+}
+
+// ── Echte Vorschau-Thumbnails für die Vorlagen-Karten ──────────────────────
+// Baut die Default-Geometrie jedes Generators und rendert sie offscreen (geteilt
+// mit der Design-Galerie); Ergebnis wird je Vorlage in IndexedDB gecacht.
+const _STARTER_COLOR = { vase:0xd8c3a5, flower:0xe36ab0, lantern:0xd24b3a, screw:0x9aa3ad, gear:0x8a93a0, enc:0x4a90d9 };
+function _starterGeo(key){
+  try{
+    switch(key){
+      case 'vase': {
+        const p=_vaseP;
+        const norm=_vaseGenProfile(p).map(([r,h])=>new THREE.Vector2(r,h*2-1));
+        const walled=_vaseWalledProfile(norm,p);
+        const opts={twist:p.twist*DEG,cross:p.cross,polyN:p.polyN,waveN:p.waveN,waveAmp:p.waveAmp,surface:p.surface,stripsN:p.stripsN,stripsD:p.stripsD,bottomCap:!walled};
+        const g=_buildRevolveGeo(walled||norm,opts);
+        g.scale(1, Math.max(0.1, p.height/Math.max(1,p.width)), 1);   // echte Proportion wie im Modal
+        return g;
+      }
+      case 'flower':  return _buildFlowerGeo(_flowerP);
+      case 'lantern': return _buildLanternGeo(_lanternP);
+      case 'screw':   return _buildScrewGeometry(_screwP);
+      case 'gear':    return _buildGearGeometry(_gearP);
+      case 'enc':     return _buildEnclosureGeometry(_encP);
+    }
+  }catch(e){ console.warn('starterGeo', key, e); }
+  return null;
+}
+function _renderStarterThumb(key){
+  const geo=_starterGeo(key); if(!geo) return null;
+  if(!_dsThumbRenderer){
+    try{ _dsThumbRenderer=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true}); _dsThumbRenderer.setSize(320,240); }
+    catch(e){ try{geo.dispose();}catch(_){} return null; }
+  }
+  const r=_dsThumbRenderer; r.setClearColor(0xffffff,1);
+  const sc=new THREE.Scene();
+  sc.add(new THREE.AmbientLight(0xffffff,0.85));
+  const dl=new THREE.DirectionalLight(0xffffff,0.9); dl.position.set(3,5,4); sc.add(dl);
+  const dl2=new THREE.DirectionalLight(0x88aaff,0.35); dl2.position.set(-3,-2,-3); sc.add(dl2);
+  const mat=new THREE.MeshStandardMaterial({color:new THREE.Color(_STARTER_COLOR[key]||0x9aa3ad),roughness:0.42,metalness:0.06,side:THREE.DoubleSide});
+  const mesh=new THREE.Mesh(geo,mat); sc.add(mesh);
+  let url=null;
+  try{
+    const box=new THREE.Box3().setFromObject(mesh);
+    if(!box.isEmpty()){
+      const ctr=box.getCenter(new THREE.Vector3()), sz=box.getSize(new THREE.Vector3()), maxd=Math.max(sz.x,sz.y,sz.z)||1;
+      const cam=new THREE.PerspectiveCamera(38, 320/240, Math.max(0.01,maxd*0.01), maxd*60+200);
+      const d=maxd*1.7;
+      cam.position.set(ctr.x+d*0.7, ctr.y+d*0.6, ctr.z+d); cam.lookAt(ctr);
+      r.render(sc,cam);
+      url=r.domElement.toDataURL('image/jpeg',0.74);
+      if(url && url.length<200) url=null;
+    }
+  }catch(e){ url=null; }
+  try{ geo.dispose(); mat.dispose(); }catch(_){}
+  return url;
+}
+async function _starterFillThumbs(){
+  const cards=document.querySelectorAll('#start-grid .st-card[data-key]');
+  for(const el of cards){
+    const key=el.dataset.key, ver=el.dataset.ver||'1', ck='starter|'+key+'|'+ver;
+    let url=null; try{ url=await _stlIdbGet('thumbs',ck); }catch(_){}
+    if(!url){ url=_renderStarterThumb(key); if(url){ try{ await _stlIdbSet('thumbs',ck,url); }catch(_){} } }
+    if(url && el.isConnected){ const ic=el.querySelector('.si'); if(ic) ic.innerHTML='<img class="st-thumb" src="'+url+'" alt="">'; el.classList.add('has-thumb'); }
+    await new Promise(res=>requestAnimationFrame(res));   // UI zwischen Renders atmen lassen
+  }
 }
 function hideStarter(){ document.getElementById('start-modal').classList.remove('show'); }
 function _runStarter(i){ const s=_STARTERS[i]; hideStarter(); if(s&&s.run){ try{ s.run(); }catch(e){ console.warn('starter',e); } } }
@@ -16485,8 +16555,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.85';
+const VOLME3D_VERSION = '1.14.86';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.86', date:'2026-06-19', spots:[{id:'starter',sel:'.gen-more[onclick="showStarter()"]'}], changes:[
+    ['🖼️','Vorlagen-Startscreen zeigt jetzt echte 3D-Vorschauen statt Emojis: Vase, Blume, Laterne, Schraube, Zahnrad und Gehäuse/Box werden live aus der Default-Geometrie des jeweiligen Generators gerendert (offscreen, geteilt mit der Design-Galerie) und je Vorlage in IndexedDB zwischengespeichert — beim zweiten Öffnen sofort da. Die übrigen Karten behalten ihr Symbol'],
+  ]},
   { version:'1.14.85', date:'2026-06-19', spots:[{id:'starter',sel:'.gen-more[onclick="showStarter()"]'}], changes:[
     ['🎨','Neuer Vorlagen-Startscreen: Beim ersten Öffnen (leere Szene, kein offenes Design) erscheint jetzt eine Galerie großer Vorlagen-Karten — Leeres Design, Vase, Blume, Laterne, Schraube/Mutter, Zahnrad, Gehäuse/Box, QR-Code, Karte→3D und KI-Modell. Ein Klick startet direkt den passenden Generator, statt vor einer leeren Bühne zu stehen. Mit „Beim Start nicht mehr zeigen"-Häkchen. Jederzeit wieder erreichbar über den neuen „Galerie"-Button in der Generatoren-Box oder die Befehls-Palette (Strg+K → „Vorlagen")'],
   ]},
