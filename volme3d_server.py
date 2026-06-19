@@ -4,7 +4,7 @@
 
 import os
 import sys
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 TMP_STL = '/tmp/volme3d-export.stl'
 WASM_GZ = 'volme3d-occt.wasm.gz'
@@ -153,4 +153,7 @@ if __name__ == '__main__':
         print(f'[DEV] Vorschau: rohe Arbeitskopie volme3d.html auf Port {port}, '
               f'ohne Login (USE_FIREBASE=false). Nur lokal, nicht im Funnel.',
               file=sys.stderr)
-    HTTPServer(('', port), Handler).serve_forever()
+    # ThreadingHTTPServer: jede Verbindung in eigenem Thread, damit eine
+    # haengende/Keep-Alive-Verbindung nicht den ganzen Server blockiert
+    # (daemon_threads=True ist Default in 3.7+).
+    ThreadingHTTPServer(('', port), Handler).serve_forever()
