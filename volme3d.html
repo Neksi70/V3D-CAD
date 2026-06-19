@@ -945,7 +945,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.89<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.90<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -2135,7 +2135,8 @@ const firebaseConfig = {
         </select></div>
         <div class="vrow"><label title="Höhe der Buchstaben">Texthöhe</label> <input type="range" id="name-size" min="5" max="40" value="14" step="0.5" oninput="document.getElementById('name-sizev').textContent=this.value;_namePreview()"><span class="vv" id="name-sizev">14</span><span class="vu">mm</span></div>
         <div class="vrow" id="name-row-raise"><label title="Wie weit die Buchstaben aus der Platte ragen">Erhebung</label> <input type="range" id="name-raise" min="0.4" max="4" value="1.5" step="0.1" oninput="document.getElementById('name-raisev').textContent=this.value"><span class="vv" id="name-raisev">1.5</span><span class="vu">mm</span></div>
-        <div class="vrow"><label id="name-plate-label" title="Platte = Dicke der Trägerplatte · Freistehend = Gesamtdicke des Schilds">Platte</label> <input type="range" id="name-plate" min="0.6" max="6" value="2" step="0.1" oninput="document.getElementById('name-platev').textContent=this.value"><span class="vv" id="name-platev">2</span><span class="vu">mm</span></div>
+        <div class="vrow"><label id="name-plate-label" title="Platte = Dicke der Trägerplatte · Freistehend = Gesamtdicke des Schilds (3D-Effekt)">Platte</label> <input type="range" id="name-plate" min="0.6" max="12" value="2" step="0.1" oninput="document.getElementById('name-platev').textContent=this.value"><span class="vv" id="name-platev">2</span><span class="vu">mm</span></div>
+        <div class="vrow" id="name-row-overlap" style="display:none"><label title="Wie weit benachbarte Buchstaben ineinandergreifen — höher = robuster verbunden, klobiger">Überlappung</label> <input type="range" id="name-overlap" min="0" max="40" value="15" step="1" oninput="document.getElementById('name-overlapv').textContent=this.value;_namePreview()"><span class="vv" id="name-overlapv">15</span><span class="vu">%</span></div>
         <div class="vrow" id="name-row-margin"><label title="Rand zwischen Text und Plattenkante">Rand</label> <input type="range" id="name-margin" min="1" max="15" value="4" step="0.5" oninput="document.getElementById('name-marginv').textContent=this.value;_namePreview()"><span class="vv" id="name-marginv">4</span><span class="vu">mm</span></div>
         <div class="vrow" id="name-row-round"><label title="Abrundung der vier Plattenecken (0 = scharfe Ecken)">Eckenradius</label> <input type="range" id="name-round" min="0" max="20" value="3" step="0.5" oninput="document.getElementById('name-roundv').textContent=this.value;_namePreview()"><span class="vv" id="name-roundv">3</span><span class="vu">mm</span></div>
         <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:2px"><input type="checkbox" id="name-eyelet" checked onchange="_namePreview()"> Öse für Schlüsselanhänger</label>
@@ -14535,12 +14536,18 @@ function _npLoadFont(fontKey, cb){
 // für freistehend automatisch die verbundene Schreibschrift wählen.
 function _npStyleChange(){
   const free = document.getElementById('name-style').value === 'free';
-  document.getElementById('name-row-raise').style.display  = free ? 'none' : '';
-  document.getElementById('name-row-margin').style.display = free ? 'none' : '';
-  document.getElementById('name-row-round').style.display  = free ? 'none' : '';
-  document.getElementById('name-plate-label').textContent  = free ? 'Dicke' : 'Platte';
-  if(free && document.getElementById('name-font').value !== 'pacifico_local')
-    document.getElementById('name-font').value = 'pacifico_local';
+  document.getElementById('name-row-raise').style.display   = free ? 'none' : '';
+  document.getElementById('name-row-margin').style.display  = free ? 'none' : '';
+  document.getElementById('name-row-round').style.display   = free ? 'none' : '';
+  document.getElementById('name-row-overlap').style.display = free ? '' : 'none';
+  document.getElementById('name-plate-label').textContent   = free ? 'Dicke' : 'Platte';
+  if(free){
+    if(document.getElementById('name-font').value !== 'pacifico_local')
+      document.getElementById('name-font').value = 'pacifico_local';
+    // Freistehend braucht für den 3D-Effekt mehr Dicke als die dünne Platte
+    const pl = document.getElementById('name-plate');
+    if(+pl.value < 3){ pl.value = 4; document.getElementById('name-platev').textContent = '4'; }
+  }
   _namePreview();
 }
 
@@ -14553,28 +14560,59 @@ function _createNameplate(){
   const raiseMM = +document.getElementById('name-raise').value;
   const plateMM = +document.getElementById('name-plate').value;   // = Gesamtdicke bei 'free'
   const marginMM= +document.getElementById('name-margin').value;
+  const overlapPct = +document.getElementById('name-overlap').value;
   const opt = _nameplateOpts();
   _npLoadFont(fontKey, font=>{
-    if(style === 'free') _nameplateBuildFree(font, txt, sizeMM, plateMM, opt);
+    if(style === 'free') _nameplateBuildFree(font, txt, sizeMM, plateMM, overlapPct, opt);
     else _nameplateBuild(font, txt, sizeMM, raiseMM, plateMM, marginMM, opt);
   });
 }
 
-// Variante A — freistehende, verbundene Buchstaben (kein Träger), Gesamtdicke = thickMM.
-// Optionale Ring-Öse links, über einen kurzen Steg an den Text geschweißt, damit alles
-// EIN druckbares Volumen bleibt. Einfarbig (aktive Farbe).
-function _nameplateBuildFree(font, txt, sizeMM, thickMM, opt){
+// Baut den Schriftzug als EINEN Körper: jeder Buchstabe wird einzeln extrudiert und
+// mit negativem Vorschub (overlap, 0..~0.45) platziert, sodass benachbarte Buchstaben
+// ineinandergreifen — so wie bei den gedruckten Namensanhängern und garantiert als ein
+// zusammenhängendes, druckbares Volumen (überlappende geschlossene Körper = Slicer-Union).
+// Liefert flach gelegt (Achse Y, Unterseite y=0), mittig im Ursprung + halbe Maße.
+function _freeTextGeo(font, txt, sizeU, thickU, overlap){
+  const res = (font.data && font.data.resolution) || 1000;
+  const scale = sizeU / res;
+  let cursor = 0;
+  const parts = [];
+  for(const ch of txt){
+    const g = font.data && font.data.glyphs && (font.data.glyphs[ch] || font.data.glyphs['?']);
+    const adv = (g ? g.ha : res*0.5) * scale;
+    if(ch === ' '){ cursor += adv; continue; }
+    let shapes = [];
+    try{ shapes = font.generateShapes(ch, sizeU); }catch(e){}
+    if(shapes && shapes.length){
+      const gg = new THREE.ExtrudeGeometry(shapes, {depth:thickU, bevelEnabled:false, steps:1, curveSegments:12});
+      gg.translate(cursor, 0, 0);
+      parts.push(_posOnly(gg));
+    }
+    cursor += adv * (1 - overlap);
+  }
+  if(!parts.length) return null;
+  const merged = _mergePos(parts);
+  merged.rotateX(-Math.PI/2);
+  merged.computeBoundingBox();
+  const bb = merged.boundingBox;
+  merged.translate(-(bb.max.x+bb.min.x)/2, -bb.min.y, -(bb.max.z+bb.min.z)/2);
+  merged.computeBoundingBox();
+  const b2 = merged.boundingBox;
+  return { geo: merged, halfW:(b2.max.x-b2.min.x)/2, halfH:(b2.max.z-b2.min.z)/2 };
+}
+
+// Variante A — freistehende, ineinandergreifende Buchstaben (kein Träger), Gesamtdicke
+// = thickMM (3D-Effekt). Optionale Ring-Öse links, über einen kurzen Steg an den ersten
+// Buchstaben geschweißt, damit alles EIN druckbares Volumen bleibt. Einfarbig.
+function _nameplateBuildFree(font, txt, sizeMM, thickMM, overlapPct, opt){
   const sizeU  = sizeMM/10;
   const thickU = Math.max(0.06, thickMM/10);
-  const tg = new THREE.TextGeometry(txt, { font, size:sizeU, height:thickU, curveSegments:14, bevelEnabled:false });
-  tg.rotateX(-Math.PI/2);
-  tg.computeBoundingBox();
-  const bb = tg.boundingBox;
-  if(!isFinite(bb.max.x-bb.min.x) || bb.max.x-bb.min.x<=0){ notify('Text ohne Kontur','w'); return; }
-  // mittig in X/Z, Unterseite auf y=0
-  tg.translate(-(bb.max.x+bb.min.x)/2, -bb.min.y, -(bb.max.z+bb.min.z)/2);
-  const parts = [_posOnly(tg)];
-  const halfW = (bb.max.x-bb.min.x)/2;
+  const overlap = Math.min(0.45, Math.max(0, (overlapPct||0)/100));
+  const t = _freeTextGeo(font, txt, sizeU, thickU, overlap);
+  if(!t){ notify('Text ohne Kontur','w'); return; }
+  const parts = [t.geo];
+  const halfW = t.halfW;
   if(opt.eyelet){
     const rIn  = Math.max(0.08, (opt.eyeD/2)/10);
     const wall = Math.max(0.16, rIn*0.7);
@@ -16540,8 +16578,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.89';
+const VOLME3D_VERSION = '1.14.90';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.90', date:'2026-06-19', spots:[{id:'nameplate',sel:'[onclick="_openNameModal()"]'}], changes:[
+    ['🏷️','Freistehendes Namensschild jetzt richtig druckbar wie die gekauften Anhänger: Die Buchstaben werden einzeln gesetzt und greifen über den neuen Regler „Überlappung" ineinander (Standard 15 %), sodass der Schriftzug garantiert ein zusammenhängendes Volumen bildet — keine lose hängenden Buchstaben mehr. Außerdem deutlich mehr „3D-Effekt": Der Dicke-Regler reicht jetzt bis 12 mm und steht im Freistehend-Modus standardmäßig auf 4 mm (vorher dünne 2 mm). Überlappende Buchstaben + Ring werden vom Slicer sauber zu einem Körper verschmolzen'],
+  ]},
   { version:'1.14.89', date:'2026-06-19', changes:[
     ['🧱','„Grundkörper" und „Erweiterte Körper" sind zu einem einzigen Abschnitt „Körper" zusammengefasst — alle Formen (Box bis Gewinde) liegen jetzt in einem gemeinsamen Raster statt in zwei getrennten Blöcken. Weniger Überschriften, kürzere Wege'],
   ]},
