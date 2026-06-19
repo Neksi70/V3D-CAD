@@ -945,7 +945,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.97<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.98<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -2121,8 +2121,8 @@ const firebaseConfig = {
           <option value="free">Freistehend (Schreibschrift)</option>
         </select></div>
         <div class="vrow"><label>Schrift</label> <select id="name-font" onchange="_namePreview()" style="flex:1;font-family:var(--font);font-size:12px;border:1.5px solid var(--border);border-radius:9px;padding:5px 8px;background:#fff;cursor:pointer">
-          <option value="baloo_local">Baloo (fett &amp; rund, empfohlen)</option>
-          <option value="sniglet_local">Sniglet (extra fett, bubbly)</option>
+          <option value="sniglet_local">Sniglet (extra fett, bubbly, empfohlen)</option>
+          <option value="baloo_local">Baloo (fett &amp; rund)</option>
           <option value="lobster_local">Lobster (fette Schreibschrift)</option>
           <option value="pacifico_local">Pacifico (Schreibschrift, dünner)</option>
           <option value="helvetiker_bold">Helvetiker Bold (Standard)</option>
@@ -2511,6 +2511,17 @@ const firebaseConfig = {
           <option value="1">1 mm</option>
           <option value="2">2 mm</option>
           <option value="5">5 mm</option>
+        </select>
+      </div>
+      <div class="ss-row">
+        <div class="ss-lbl">Rastergröße</div>
+        <select class="ss-sel" id="gc-sel" onchange="setGridCell(this.value)">
+          <option value="1">1 mm</option>
+          <option value="2">2 mm</option>
+          <option value="5">5 mm</option>
+          <option value="10" selected>10 mm (1 cm)</option>
+          <option value="20">20 mm (2 cm)</option>
+          <option value="50">50 mm (5 cm)</option>
         </select>
       </div>
       <div class="ss-row">
@@ -2955,6 +2966,7 @@ let _farGrid = null, _farGround = null;
 let buildplateW = parseFloat(localStorage.getItem('buildplateW') ?? '800') || 800;
 let buildplateH = parseFloat(localStorage.getItem('buildplateH') ?? '800') || 800;
 let snapGrid = parseFloat(localStorage.getItem('snapGrid') ?? '1') || 0;
+let gridCellMm = parseFloat(localStorage.getItem('gridCellMm') ?? '10') || 10;  // sichtbare Rastergröße (mm pro Quadrat), einstellbar
 function buildGrid() {
   if (gridMesh)    { scene.remove(gridMesh); }
   if (gridMeshSub) { scene.remove(gridMeshSub); }
@@ -2965,8 +2977,9 @@ function buildGrid() {
   const gw = buildplateW / 10;
   const gh = buildplateH / 10;
   const size = Math.max(gw, gh);
-  const cellMm = 10;  // sichtbares Raster fest 10 mm pro Quadrat (unabhängig vom Snap)
-  const divs   = Math.min(500, Math.max(4, Math.round(size * 10 / cellMm)));
+  const cellMm = gridCellMm > 0 ? gridCellMm : 10;  // sichtbare Rastergröße (mm pro Quadrat), einstellbar; unabhängig vom Snap
+  // Cap höher als früher, damit feine Raster (z.B. 1 mm) auf großen Platten exakt passen
+  const divs   = Math.min(1600, Math.max(4, Math.round(size * 10 / cellMm)));
   const cellU  = size / divs;
 
   // Far-Grid deaktiviert — Raster nur auf Buildplate sichtbar
@@ -3199,6 +3212,13 @@ function setSnapGrid(val) {
   _syncSnapBtn();
   buildGrid();
 }
+function setGridCell(val) {
+  gridCellMm = parseFloat(val) || 10;
+  localStorage.setItem('gridCellMm', gridCellMm);
+  const sel = document.getElementById('gc-sel');
+  if (sel) sel.value = String(gridCellMm);
+  buildGrid();
+}
 function _syncSnapBtn() {
   const lbl = snapGrid > 0 ? snapGrid + 'mm' : 'AUS';
   document.getElementById('slbl').textContent = 'SNAP ' + lbl;
@@ -3261,6 +3281,8 @@ function applySceneSettings() {
   const bph = document.getElementById('bp-h');
   if (bpw) bpw.value = buildplateW;
   if (bph) bph.value = buildplateH;
+  const gcSel = document.getElementById('gc-sel');
+  if (gcSel) gcSel.value = String(gridCellMm);
   _syncSnapBtn();
   // Gespeicherten Drucker wiederherstellen
   const saved = localStorage.getItem('printerPreset');
@@ -14571,8 +14593,8 @@ function _npStyleChange(){
     // typischen Namensanhänger-Look am besten. Nur auf eine CDN-Standardschrift
     // umstellen; eine bereits gewählte Schreibschrift (Pacifico) respektieren.
     const fsel = document.getElementById('name-font');
-    const scriptFonts = ['baloo_local','sniglet_local','lobster_local','pacifico_local'];
-    if(scriptFonts.indexOf(fsel.value) < 0) fsel.value = 'baloo_local';
+    const scriptFonts = ['sniglet_local','baloo_local','lobster_local','pacifico_local'];
+    if(scriptFonts.indexOf(fsel.value) < 0) fsel.value = 'sniglet_local';
     // Freistehend braucht für den 3D-Effekt mehr Dicke als die dünne Platte
     const pl = document.getElementById('name-plate');
     if(+pl.value < 3){ pl.value = 4; document.getElementById('name-platev').textContent = '4'; }
@@ -16659,8 +16681,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.97';
+const VOLME3D_VERSION = '1.14.98';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.98', date:'2026-06-20', spots:[{id:'nameplate',sel:'[onclick="_openNameModal()"]'}], changes:[
+    ['🏷️','Freistehendes Namensschild: die extra-bubblige Schrift „Sniglet“ ist jetzt der Standard (vorher Baloo) — der dicke, runde Look mit den kleinen Punkt-Innenräumen wie gewünscht. Baloo bleibt als etwas schlankere runde Alternative wählbar'],
+  ]},
   { version:'1.14.97', date:'2026-06-20', spots:[{id:'nameplate',sel:'[onclick="_openNameModal()"]'}], changes:[
     ['🏷️','Freistehendes Namensschild: neuer Regler „Neigung" gibt der Schrift eine schräge/kursive Neigung nach rechts (Standard 10°) — wie bei den gekauften Anhängern. Zusammen mit der fetten runden Schrift, dem engen Buchstabenabstand und der Öse oben-links ist der Look jetzt komplett. Neigung 0 = wieder gerade'],
   ]},
