@@ -945,7 +945,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.96<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.97<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -2141,6 +2141,7 @@ const firebaseConfig = {
         <div class="vrow"><label id="name-plate-label" title="Platte = Dicke der Trägerplatte · Freistehend = Gesamtdicke des Schilds (3D-Effekt)">Platte</label> <input type="range" id="name-plate" min="0.6" max="12" value="2" step="0.1" oninput="document.getElementById('name-platev').textContent=this.value"><span class="vv" id="name-platev">2</span><span class="vu">mm</span></div>
         <div class="vrow" id="name-row-overlap" style="display:none"><label title="Wie weit benachbarte Buchstaben seitlich ineinandergreifen. Mit Höhenversatz bleibt die Schrift trotz Überlappung lesbar und verbindet sich satt.">Überlappung</label> <input type="range" id="name-overlap" min="0" max="40" value="18" step="1" oninput="document.getElementById('name-overlapv').textContent=this.value;_namePreview()"><span class="vv" id="name-overlapv">18</span><span class="vu">%</span></div>
         <div class="vrow" id="name-row-stagger" style="display:none"><label title="Buchstaben abwechselnd hoch/tief versetzen, sodass sie ineinandergreifen — wie bei den gekauften Namensanhängern. 0 = alle auf einer Linie.">Versatz hoch/tief</label> <input type="range" id="name-stagger" min="0" max="60" value="0" step="1" oninput="document.getElementById('name-staggerv').textContent=this.value;_namePreview()"><span class="vv" id="name-staggerv">0</span><span class="vu">%</span></div>
+        <div class="vrow" id="name-row-slant" style="display:none"><label title="Schräge/kursive Neigung der Schrift nach rechts — wie bei den gekauften Anhängern. 0 = gerade.">Neigung</label> <input type="range" id="name-slant" min="0" max="25" value="10" step="1" oninput="document.getElementById('name-slantv').textContent=this.value;_namePreview()"><span class="vv" id="name-slantv">10</span><span class="vu">°</span></div>
         <label id="name-row-baseweb" style="display:none;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:2px" title="Dünner Steg an der Grundlinie, der alle Buchstaben sicher zu EINEM druckbaren Stück verbindet. Nur ohne Höhenversatz nötig — beim Versatz greifen die Buchstaben von selbst ineinander."><input type="checkbox" id="name-baseweb" checked onchange="_namePreview()"> Verbindungssteg unten (nur ohne Versatz)</label>
         <div class="vrow" id="name-row-margin"><label title="Rand zwischen Text und Plattenkante">Rand</label> <input type="range" id="name-margin" min="1" max="15" value="4" step="0.5" oninput="document.getElementById('name-marginv').textContent=this.value;_namePreview()"><span class="vv" id="name-marginv">4</span><span class="vu">mm</span></div>
         <div class="vrow" id="name-row-round"><label title="Abrundung der vier Plattenecken (0 = scharfe Ecken)">Eckenradius</label> <input type="range" id="name-round" min="0" max="20" value="3" step="0.5" oninput="document.getElementById('name-roundv').textContent=this.value;_namePreview()"><span class="vv" id="name-roundv">3</span><span class="vu">mm</span></div>
@@ -14562,6 +14563,7 @@ function _npStyleChange(){
   document.getElementById('name-row-round').style.display   = free ? 'none' : '';
   document.getElementById('name-row-overlap').style.display = free ? '' : 'none';
   document.getElementById('name-row-stagger').style.display = free ? '' : 'none';
+  document.getElementById('name-row-slant').style.display   = free ? '' : 'none';
   document.getElementById('name-row-baseweb').style.display = free ? 'flex' : 'none';
   document.getElementById('name-plate-label').textContent   = free ? 'Dicke' : 'Platte';
   if(free){
@@ -14590,9 +14592,10 @@ function _createNameplate(){
   const overlapPct = +document.getElementById('name-overlap').value;
   const baseWeb = document.getElementById('name-baseweb').checked;
   const staggerPct = +document.getElementById('name-stagger').value;
+  const slantDeg = +document.getElementById('name-slant').value;
   const opt = _nameplateOpts();
   _npLoadFont(fontKey, font=>{
-    if(style === 'free') _nameplateBuildFree(font, txt, sizeMM, plateMM, overlapPct, baseWeb, staggerPct, opt);
+    if(style === 'free') _nameplateBuildFree(font, txt, sizeMM, plateMM, overlapPct, baseWeb, staggerPct, slantDeg, opt);
     else _nameplateBuild(font, txt, sizeMM, raiseMM, plateMM, marginMM, opt);
   });
 }
@@ -14602,7 +14605,7 @@ function _createNameplate(){
 // ineinandergreifen — so wie bei den gedruckten Namensanhängern und garantiert als ein
 // zusammenhängendes, druckbares Volumen (überlappende geschlossene Körper = Slicer-Union).
 // Liefert flach gelegt (Achse Y, Unterseite y=0), mittig im Ursprung + halbe Maße.
-function _freeTextGeo(font, txt, sizeU, thickU, overlap, baseWeb, stagger){
+function _freeTextGeo(font, txt, sizeU, thickU, overlap, baseWeb, stagger, slantDeg){
   const res = (font.data && font.data.resolution) || 1000;
   const scale = sizeU / res;
   const stagU = Math.max(0, stagger||0) * sizeU;   // Höhenversatz in Units
@@ -14638,6 +14641,13 @@ function _freeTextGeo(font, txt, sizeU, thickU, overlap, baseWeb, stagger){
     bar.translate((bb0.min.x+bb0.max.x)/2, barH*0.5, thickU/2);  // sitzt auf der Grundlinie
     merged = _mergePos([merged, _posOnly(bar)]);
   }
+  // Schräglage (Kursiv-Neigung): x += tan(α)·y, Grundlinie (y=0) bleibt stehen,
+  // Oberlängen kippen nach rechts — wie bei den gekauften Anhängern.
+  const k = Math.tan(Math.max(0, Math.min(30, slantDeg||0)) * Math.PI/180);
+  if(k > 0.0001){
+    const m = new THREE.Matrix4().set(1,k,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1);
+    merged.applyMatrix4(m);
+  }
   merged.rotateX(-Math.PI/2);
   merged.computeBoundingBox();
   const bb = merged.boundingBox;
@@ -14650,12 +14660,12 @@ function _freeTextGeo(font, txt, sizeU, thickU, overlap, baseWeb, stagger){
 // Variante A — freistehende, ineinandergreifende Buchstaben (kein Träger), Gesamtdicke
 // = thickMM (3D-Effekt). Optionale Ring-Öse links, über einen kurzen Steg an den ersten
 // Buchstaben geschweißt, damit alles EIN druckbares Volumen bleibt. Einfarbig.
-function _nameplateBuildFree(font, txt, sizeMM, thickMM, overlapPct, baseWeb, staggerPct, opt){
+function _nameplateBuildFree(font, txt, sizeMM, thickMM, overlapPct, baseWeb, staggerPct, slantDeg, opt){
   const sizeU  = sizeMM/10;
   const thickU = Math.max(0.06, thickMM/10);
   const overlap = Math.min(0.45, Math.max(0, (overlapPct||0)/100));
   const stagger = Math.max(0, (staggerPct||0)/100);
-  const t = _freeTextGeo(font, txt, sizeU, thickU, overlap, baseWeb, stagger);
+  const t = _freeTextGeo(font, txt, sizeU, thickU, overlap, baseWeb, stagger, slantDeg);
   if(!t){ notify('Text ohne Kontur','w'); return; }
   const parts = [t.geo];
   const halfW = t.halfW, halfH = t.halfH;
@@ -14811,9 +14821,12 @@ function _namePreviewFree(ctx, cv, txt, sizeMM, eyeOn, opt){
   // Schriftzug — buchstabenweise mit Höhenversatz + Überlappung (wie die Geometrie)
   const stag = (+(document.getElementById('name-stagger')||{}).value || 0)/100;
   const ovl  = (+(document.getElementById('name-overlap')||{}).value || 0)/100;
+  const slt  = (+(document.getElementById('name-slant')||{}).value || 0);
   const fpx = Math.max(10, txtHmm*scale);
   ctx.fillStyle='#2b7cff'; ctx.textAlign='left'; ctx.textBaseline='middle';
   ctx.font='bold '+fpx+'px Arial Rounded MT Bold, Arial, sans-serif';
+  ctx.save();
+  if(slt>0.01){ const t=Math.tan(slt*Math.PI/180), yb=midY+fpx*0.35; ctx.transform(1,0,-t,1,t*yb,0); }
   let cx = ox + ringW*scale;
   let gi = 0;
   for(const ch of txt){
@@ -14824,6 +14837,7 @@ function _namePreviewFree(ctx, cv, txt, sizeMM, eyeOn, opt){
     cx += w*(1-ovl);
     gi++;
   }
+  ctx.restore();
   // Verbindungssteg nur ohne Versatz
   const web = document.getElementById('name-baseweb') && document.getElementById('name-baseweb').checked && stag<=0.0001;
   if(web){
@@ -16645,8 +16659,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.96';
+const VOLME3D_VERSION = '1.14.97';
 const VOLME3D_CHANGELOG = [
+  { version:'1.14.97', date:'2026-06-20', spots:[{id:'nameplate',sel:'[onclick="_openNameModal()"]'}], changes:[
+    ['🏷️','Freistehendes Namensschild: neuer Regler „Neigung" gibt der Schrift eine schräge/kursive Neigung nach rechts (Standard 10°) — wie bei den gekauften Anhängern. Zusammen mit der fetten runden Schrift, dem engen Buchstabenabstand und der Öse oben-links ist der Look jetzt komplett. Neigung 0 = wieder gerade'],
+  ]},
   { version:'1.14.96', date:'2026-06-20', spots:[{id:'nameplate',sel:'[onclick="_openNameModal()"]'}], changes:[
     ['🏷️','Freistehendes Namensschild trifft jetzt den Look der gekauften Anhänger: neue fette, runde Schriften „Baloo" (Standard) und „Sniglet" (extra fett) — das dünne Lobster passte nicht. Buchstaben stehen enger zusammen (mehr Überlappung) und verbinden sich sicher (Bodensteg). Die Öse sitzt jetzt als kleine Schlaufe oben-links am ersten Buchstaben statt als Ring mittig daneben. Lobster/Pacifico bleiben als Schreibschrift-Alternativen wählbar'],
   ]},
