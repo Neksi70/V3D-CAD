@@ -453,7 +453,7 @@ const app = express();
 // CORS: nur localhost + Tailscale erlauben
 app.use((req, res, next) => {
   const origin = req.headers.origin || '';
-  if (!origin || /^https?:\/\/(localhost|127\.0\.0\.1|.*\.ts\.net)(:\d+)?$/.test(origin))
+  if (!origin || /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|.*\.ts\.net)(:\d+)?$/.test(origin))
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');

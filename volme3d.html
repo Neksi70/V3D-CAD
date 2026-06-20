@@ -9081,6 +9081,7 @@ async function _doSubtractHoles(solids, holes) {
 
       // Pfad 2: Face-Only OCCT (für STL-Imports, Custom-Meshes, alles andere)
       // Kein Sewing, kein ThreeCSG — direkt OCCT auf der extrahierten Fläche
+      let newGeo = null;
       if (!newGeo && hole.userData._svgPathData?.length) {
         try { newGeo = await _occtFaceOnlyCut(solidMesh, hole); }
         catch(e) { console.warn('Face-Only Fehler:', e); }
@@ -11438,7 +11439,7 @@ function _rhInit() {
 let _lastCamX = -9999, _lastCamY = -9999, _lastCamZ = -9999, _lastSelLen = -1;
 // ═══ SpaceMouse (3Dconnexion, 6DOF) ══════════════════════════════════
 // Zwei Quellen: WebHID (per Button, präzise) ODER Gamepad-API (automatisch, Windows/Linux-Chrome).
-let _smDevice = null, _smActive = false, _smDebug = false, _smLast = 0;
+let _smDevice = null, _smActive = false, _smDebug = false, _smLast = 0, _smPrevT = 0;
 const _sm  = { tx:0, ty:0, tz:0, rx:0, ry:0, rz:0 };  // Rohwerte
 const _smS = { tx:0, ty:0, tz:0, rx:0, ry:0, rz:0 };  // geglättet (Tiefpass gegen Ruckeln)
 // Empfindlichkeiten / Invertierung / Gamepad-Achsen-Zuordnung (zur Laufzeit über window._smCfg anpassbar)
@@ -11476,10 +11477,16 @@ function _smOnReport(e) {
 }
 
 function _smTick() {
+  // Frame-Zeit als Vielfaches eines 60-fps-Frames — Bewegung unabhängig von der Bildrate machen,
+  // sonst ruckelt v.a. der multiplikative Zoom bei schwankendem fps. Jeden Frame aktualisieren.
+  const _now = performance.now();
+  const dt = _smPrevT ? Math.min(2, Math.max(0.4, (_now - _smPrevT) / 16.667)) : 1;
+  _smPrevT = _now;
   // Quelle wählen: WebHID (falls verbunden) sonst Gamepad-API
   let v = null;
   if (_smActive && _smDevice) {
-    if (performance.now() - _smLast > 90) { _sm.tx=_sm.ty=_sm.tz=_sm.rx=_sm.ry=_sm.rz=0; }
+    // Report-Pause (Knauf losgelassen): Rohwerte sanft auslaufen lassen statt hart auf 0 zu schnappen
+    if (_now - _smLast > 90) { for (const _k in _sm) _sm[_k] *= 0.5; }
     const k = 1/350;  // WebHID-Rohwerte (int16) normalisieren
     v = { tx:_sm.tx*k, ty:_sm.ty*k, tz:_sm.tz*k, rx:_sm.rx*k, ry:_sm.ry*k, rz:_sm.rz*k };
   } else {
@@ -11495,22 +11502,22 @@ function _smTick() {
     tx:f(v.tx,_smCfg.inv.tx), ty:f(v.ty,_smCfg.inv.ty), tz:f(v.tz,_smCfg.inv.tz),
     rx:f(v.rx,_smCfg.inv.rx), ry:f(v.ry,_smCfg.inv.ry), rz:f(v.rz,_smCfg.inv.rz)
   };
-  // Tiefpass-Glättung gegen sprunghafte Achswerte
-  const a = _smCfg.smooth; let any = false;
+  // Tiefpass-Glättung gegen sprunghafte Achswerte — Zeitkonstante ebenfalls bildraten-unabhängig
+  const a = 1 - Math.pow(1 - _smCfg.smooth, dt); let any = false;
   for (const k in _smS) { _smS[k] += (target[k] - _smS[k]) * a; if (Math.abs(_smS[k]) > 1e-4) any = true; }
   if (!any) return;
   const { tx, ty, tz, rx, rz } = _smS;
   const smR = _smCfg.rot * _navSM, smZ = _smCfg.zoom * _navSM, smP = _smCfg.pan * _navSM;  // Empfindlichkeit
   // Drehen: Twist → Azimut (theta), Kippen → Polarwinkel (phi)
-  sph.theta -= rz * smR * 0.05;
-  sph.phi    = Math.max(0.05, Math.min(Math.PI - 0.05, sph.phi - rx * smR * 0.05));
-  // Zoom: Knauf vor/zurück → Abstand
-  sph.r = Math.max(1, sph.r * (1 - ty * smZ * 0.03));
+  sph.theta -= rz * smR * 0.05 * dt;
+  sph.phi    = Math.max(0.05, Math.min(Math.PI - 0.05, sph.phi - rx * smR * 0.05 * dt));
+  // Zoom: Knauf vor/zurück → Abstand (dt-skaliert → gleichmäßig, kein Ruckeln beim Raus-/Reinzoomen)
+  sph.r = Math.max(1, sph.r * (1 - ty * smZ * 0.03 * dt));
   // Schwenken: seitlich → Kamera-Rechts, heben → Höhe
   const dir = camera.getWorldDirection(new THREE.Vector3());
   const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0,1,0)).normalize();
-  orbitTarget.addScaledVector(right, -tx * sph.r * smP * 0.02);
-  orbitTarget.y += tz * sph.r * smP * 0.02;
+  orbitTarget.addScaledVector(right, -tx * sph.r * smP * 0.02 * dt);
+  orbitTarget.y += tz * sph.r * smP * 0.02 * dt;
   sph2cam();
 }
 
@@ -16727,8 +16734,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.10';
+const VOLME3D_VERSION = '1.15.11';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.11', date:'2026-06-20', changes:[
+    ['🩹','SVG-Abzug vom STL ging im lokalen Netz (192.168.*) nicht mehr: Der OCCT-Server hat Anfragen aus dem LAN per CORS abgewiesen, und beim Fehlschlag stürzte der Fallback mit „newGeo is not defined" ab. Beides behoben — der Abzug funktioniert jetzt auch aus der lokalen Vorschau.'],
+  ]},
   { version:'1.15.10', date:'2026-06-20', changes:[
     ['🫙','Trichter-Knopf: Die Tülle unten ist jetzt wirklich offen. Vorher war das Loch mit fester Stumpf-Größe (¼) bei normaler Wandstärke fast zu (~0,7 mm) — die Wand fraß das Loch auf. Jetzt wird der untere Durchmesser passend zur Wandstärke berechnet, sodass ein echtes offenes Loch (~3–6 mm je nach Größe) bleibt. Ein bereits gesetzter größerer oberer Durchmesser wird beibehalten.'],
   ]},
