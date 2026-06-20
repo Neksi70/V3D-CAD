@@ -330,9 +330,13 @@ function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, yStart, yEnd) {
   return shape;
 }
 
+// Vernetzungs-Auflösung des Ergebnis-STL (mm). 0.2 statt 0.1: ~halb so viele
+// Dreiecke/Bytes (passt wieder in die Firestore-Cloud), schneller zu vernetzen,
+// fürs FDM-Drucken (Düse/Schicht 0.2–0.4 mm) praktisch unsichtbar.
+const MESH_DEFLECTION_MM = 0.2;
 // ── OCCT Shape → binäres STL (manuell aus Triangulierung) ────────────────────
 function solidToSTLBuffer(oc, shape) {
-  new oc.BRepMesh_IncrementalMesh_2(shape, 0.1, false, 0.5, false);
+  new oc.BRepMesh_IncrementalMesh_2(shape, MESH_DEFLECTION_MM, false, 0.5, false);
   const FACE  = oc.TopAbs_ShapeEnum.TopAbs_FACE;
   const SHAPE = oc.TopAbs_ShapeEnum.TopAbs_SHAPE;
   const REV   = oc.TopAbs_Orientation.TopAbs_REVERSED;
@@ -516,6 +520,33 @@ function buildMatrixFromSnapNormal(stlBuf, snapNormal, snapPoint, svgSize) {
   ];
 }
 
+// Solid vor dem Boolean-Cut vereinfachen: koplanare Flächen (eine flache Wand aus
+// hunderten STL-Dreiecken) zu großen Flächen zusammenfassen → Cut massiv schneller
+// (Bench bench_unify.js: 3888→6 Flächen, Cut 6.2s→1.2s) bei identischem Volumen.
+// Bei Fehler oder unplausiblem Ergebnis: Original-Solid zurückgeben.
+function unifySolid(oc, solid) {
+  const vol = s => { try { const p=new oc.GProp_GProps_1();
+    oc.BRepGProp.VolumeProperties_1(s,p,false,false,false); const v=Math.abs(p.Mass()); p.delete(); return v;
+  } catch(_) { return NaN; } };
+  try {
+    const t0 = Date.now();
+    const up = new oc.ShapeUpgrade_UnifySameDomain_1();
+    (up.Initialize_1 || up.Initialize).call(up, solid, true, true, false);
+    up.Build();
+    const out = up.Shape();
+    const v0 = vol(solid), v1 = vol(out);
+    if (!out || !isFinite(v1) || v1 < 1e-6 || Math.abs(v1 - v0) / Math.max(v0, 1) > 0.01) {
+      console.log('[unify] verworfen (Volumen/Validität) → Original');
+      return solid;
+    }
+    console.log(`[unify] OK in ${Date.now()-t0} ms, Volumen-Δ ${(Math.abs(v1-v0)/Math.max(v0,1)*100).toFixed(3)}%`);
+    return out;
+  } catch (e) {
+    console.log('[unify] Ausnahme:', e.message, '→ Original');
+    return solid;
+  }
+}
+
 app.post('/api/occt-subtract', async (req, res) => {
   const { stlBase64, svgPathData, svgTransformM, snapNormal, snapPoint } = req.body;
   // Inlay (farbiger Boden-Slab für Zweifarb-Druck) ist opt-in: kostet einen
@@ -543,10 +574,11 @@ app.post('/api/occt-subtract', async (req, res) => {
       else console.log('[snapNormal] Matrix-Berechnung fehlgeschlagen, kein Fallback');
     }
 
-    const solidOCCT = stlToOCCTSolid(oc, stlBuf);
+    let solidOCCT = stlToOCCTSolid(oc, stlBuf);
     console.log('[debug] solidOCCT:', solidOCCT ? 'vorhanden' : 'NULL');
     if (!solidOCCT) return res.json({ error: 'STL → OCCT Solid fehlgeschlagen' });
     console.log('[stl2occt] ShapeType value:', solidOCCT.ShapeType().value);
+    solidOCCT = unifySolid(oc, solidOCCT);   // Hebel 1: Flächen vereinfachen → schnellerer Cut
 
     // 2. SVG-Extrusion(en) aufbauen und Boolean Cut durchführen
     const { scale, cx, cy } = svgTransformM;
