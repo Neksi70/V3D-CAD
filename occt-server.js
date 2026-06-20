@@ -282,16 +282,40 @@ function cleanContour(pts) {
   return p;
 }
 
+// Douglas-Peucker auf offener Punktliste (eps in mm). Reduziert die Stützpunkte
+// dicht tessellierter Font-Konturen drastisch → der Gravur-Boden/-Rand wird mit
+// weit weniger Dreiecken vernetzt (kleinere Ergebnis-Datei). eps<=0 = aus.
+function simplifyDP(pts, eps) {
+  if (eps <= 0 || pts.length < 3) return pts;
+  const e2 = eps * eps;
+  const d2 = (p, a, b) => {
+    const dx = b[0]-a[0], dy = b[1]-a[1], L = dx*dx + dy*dy;
+    if (L < 1e-12) { const ex=p[0]-a[0], ey=p[1]-a[1]; return ex*ex+ey*ey; }
+    let t = ((p[0]-a[0])*dx + (p[1]-a[1])*dy) / L; t = t<0?0:t>1?1:t;
+    const cx = a[0]+t*dx, cy = a[1]+t*dy, ex = p[0]-cx, ey = p[1]-cy; return ex*ex+ey*ey;
+  };
+  const keep = new Array(pts.length).fill(false);
+  keep[0] = keep[pts.length-1] = true;
+  const stack = [[0, pts.length-1]];
+  while (stack.length) {
+    const [i, j] = stack.pop(); let max = -1, idx = -1;
+    for (let k = i+1; k < j; k++) { const dd = d2(pts[k], pts[i], pts[j]); if (dd > max) { max = dd; idx = k; } }
+    if (max > e2 && idx > 0) { keep[idx] = true; stack.push([i, idx], [idx, j]); }
+  }
+  const out = pts.filter((_, i) => keep[i]);
+  return out.length >= 3 ? out : pts;
+}
+
 // ── SVG-Pfad → OCCT Prism ────────────────────────────────────────────────────
 // normF=1: Koordinaten direkt in mm (scale bereits px→mm).
 // Prisma reicht lokal von yStart bis yEnd entlang +Y (= in den Solid hinein).
 //   Vertieft (Cut):   yStart = -OVERLAP,  yEnd = depth   (ragt außen raus, schneidet rein)
 //   Erhaben (Fuse):   yStart = -height,   yEnd = +bond   (steht außen raus, bondet innen)
-function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, yStart, yEnd) {
-  const outerXZ = cleanContour(pathInfo.pts).map(p => [
+function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, yStart, yEnd, simplifyMM = 0) {
+  const outerXZ = simplifyDP(cleanContour(pathInfo.pts).map(p => [
     (p[0] - cx) * scale,
     (p[1] - cy) * scale
-  ]);
+  ]), simplifyMM);
   const outerWire = buildWireXZ(oc, outerXZ);
   if (!outerWire) return null;
 
@@ -300,10 +324,10 @@ function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, yStart, yEnd) {
 
   if (pathInfo.holes?.length) {
     for (const holePts of pathInfo.holes) {
-      const hXZ = cleanContour(holePts).map(p => [
+      const hXZ = simplifyDP(cleanContour(holePts).map(p => [
         (p[0] - cx) * scale,
         (p[1] - cy) * scale
-      ]);
+      ]), simplifyMM);
       const hWire = buildWireXZ(oc, hXZ);
       if (hWire) try { mkFace.Add(hWire); } catch(_) {}
     }
@@ -587,6 +611,9 @@ app.post('/api/occt-subtract', async (req, res) => {
     const EMBOSS_BOND = 0.6;               // mm, wie tief die erhabene Schrift ins Teil bondet
     console.log('[debug] depthMM:', depthMM, emboss ? '(ERHABEN)' : '(vertieft)', 'svgSize:', svgTransformM.svgSize, 'scale:', scale, 'cx:', cx?.toFixed(2), 'cy:', cy?.toFixed(2));
     const normF = 2 / (svgTransformM.svgSize || 50);  // unused: normF=1 in buildSvgSolid
+    // Hebel: Glyph-Konturen vereinfachen (mm). Standard 0.12 (unter Druckauflösung);
+    // per Request überschreibbar, 0 = aus (für A/B-Messung).
+    const simplifyMM = (typeof req.body.simplifyMM === 'number') ? req.body.simplifyMM : 0.12;
 
     // Material immer ≥ FLOOR_MM stehen lassen → immer eine Prägung, nie ein
     // Durchbruch (nur bei VERTIEFT relevant; erhaben fügt Material hinzu).
@@ -617,7 +644,7 @@ app.post('/api/occt-subtract', async (req, res) => {
     function buildAndTransform(pathInfo) {
       const yStart = emboss ? depthMM : -SVG_OVERLAP_MM;
       const yEnd   = emboss ? EMBOSS_BOND : depthMM;
-      const s = buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, yStart, yEnd);
+      const s = buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, yStart, yEnd, simplifyMM);
       if (!s) return null;
       if (!(svgHoleMatrixElements?.length === 16)) return s;
       const e = svgHoleMatrixElements;
@@ -831,4 +858,5 @@ if (require.main === module) {
 }
 
 module.exports = { getOC, buildSvgSolid, stlToOCCTSolid, solidToSTLBuffer,
-                   buildMatrixFromSnapNormal, parseSTLBinary, SVG_OVERLAP_MM };
+                   buildMatrixFromSnapNormal, parseSTLBinary, simplifyDP,
+                   unifySolid, SVG_OVERLAP_MM };
