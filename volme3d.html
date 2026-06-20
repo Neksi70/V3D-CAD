@@ -7948,6 +7948,7 @@ function buildObjectFromData(data) {
   if (data.texWhere)  obj.userData.texWhere  = data.texWhere;
   if (data.hidden) obj.visible = false;
   if (data._origGeoData) obj.userData._origGeo = new THREE.BufferGeometryLoader().parse(data._origGeoData);
+  else if (data._origSameAsGeo && obj.isMesh && obj.geometry) obj.userData._origGeo = obj.geometry;
   // Poly-/Twist-/Boden-Rohr aus Parametern neu bauen (Geometrie nicht als JSON gespeichert)
   if (obj.isMesh && obj.userData.shapeType === 'tube' && (obj.userData.tubePoly || obj.userData.tubeTwist || obj.userData.tubeFloor) && !data.geometry)
     _fpRebuildGeo(obj);
@@ -7959,9 +7960,23 @@ function buildObjectFromData(data) {
 // Geometrien werden beim Bearbeiten ersetzt (neues Objekt → Cache-Miss), nicht
 // in-place mutiert; die 2 Ausnahmen (Zerteilen) leeren ihren Cache-Eintrag selbst.
 const _geoJsonCache = new WeakMap();
+// Float-Arrays der Geometrie auf wenige Nachkommastellen runden → die JSON-Zahlen
+// werden kurz und komprimieren ~2× besser, ohne sichtbaren Unterschied (Position
+// 0.001, Normalen/UV 0.001). Spart bei großen Meshes massiv Speicher (Cloud-Limit).
+function _roundGeoJSON(j){
+  const at = j && j.data && j.data.attributes;
+  if (!at) return j;
+  const round = (a, dp) => { if (!a) return; const m = Math.pow(10, dp);
+    for (let i = 0; i < a.length; i++) a[i] = Math.round(a[i] * m) / m; };
+  if (at.position) round(at.position.array, 3);
+  if (at.normal)   round(at.normal.array, 3);
+  if (at.uv)       round(at.uv.array, 3);
+  if (j.data.boundingSphere) delete j.data.boundingSphere; // wird beim Laden neu berechnet
+  return j;
+}
 function _cachedGeoJSON(geo){
   let j = _geoJsonCache.get(geo);
-  if (!j) { j = geo.toJSON(); _geoJsonCache.set(geo, j); }
+  if (!j) { j = _roundGeoJSON(geo.toJSON()); _geoJsonCache.set(geo, j); }
   return j;
 }
 function objectToData(o) {
@@ -8012,7 +8027,10 @@ function objectToData(o) {
       'laserbox','gfbin','gfplate','gfcut'].includes(o.userData.type))) {
     d.geometry = _cachedGeoJSON(o.geometry);
   }
-  if (o.userData._origGeo) d._origGeoData = o.userData._origGeo.toJSON();
+  if (o.userData._origGeo) {
+    if (o.userData._origGeo === o.geometry) d._origSameAsGeo = true;  // Doppelspeicherung vermeiden
+    else d._origGeoData = _cachedGeoJSON(o.userData._origGeo);        // gerundet wie d.geometry
+  }
   if (o.isGroup || o.userData.isGroup) {
     d.children = o.children.map(objectToData);
   }
@@ -16789,8 +16807,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.15';
+const VOLME3D_VERSION = '1.15.16';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.16', date:'2026-06-20', changes:[
+    ['💾','Designs werden kompakter gespeichert: Geometrie-Koordinaten werden beim Speichern auf 0,001 mm gerundet (unsichtbar, aber die Datei komprimiert ~2× besser) und doppelt gehaltene Geometrie wird vermieden. Hilft gegen „Design zu groß — nur lokal" und beschleunigt Speichern/Laden. Alte Designs laden unverändert weiter.'],
+  ]},
   { version:'1.15.15', date:'2026-06-20', changes:[
     ['🪄','SVG-Gravur: Buchstaben-/Logo-Konturen werden vor dem Schnitt leicht geglättet (Stützpunkte unter 0,12 mm Abweichung zusammengefasst). Effekt an dichten Logos: ~88 % weniger Dreiecke, Ergebnis-Datei ~10× kleiner (passt wieder in die Cloud) UND der Schnitt selbst ~4–5× schneller. Fürs Drucken ist der Unterschied an den Konturen nicht sichtbar.'],
   ]},
