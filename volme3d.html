@@ -8773,6 +8773,40 @@ function _buildSnapMatrix(facePoint, normal, svgSize, depthMM) {
 }
 
 
+// Fallback: SVG wurde NICHT per Magnet auf eine Fläche geheftet (_snapNormal fehlt).
+// Leitet snapNormal + Oberflächenpunkt aus der aktuellen SVG-Lage ab, indem von außen
+// auf das Solid gestrahlt wird (Richtung Solid-Mitte + entlang der SVG-Normalen). Der
+// nächstgelegene Treffer bestimmt die Gravur-Fläche → speist den bewährten Server-Pfad.
+function _autoSnapSvgToSolid(svgHole, solid) {
+  svgHole.updateMatrixWorld(true);
+  solid.updateMatrixWorld(true);
+  const svgCenter = new THREE.Box3().setFromObject(svgHole).getCenter(new THREE.Vector3());
+  const solidBB   = new THREE.Box3().setFromObject(solid);
+  const span      = solidBB.getSize(new THREE.Vector3()).length() + 100;
+  const wq        = svgHole.getWorldQuaternion(new THREE.Quaternion());
+  const svgN      = new THREE.Vector3(0, 1, 0).applyQuaternion(wq).normalize();
+  const toCenter  = solidBB.getCenter(new THREE.Vector3()).sub(svgCenter);
+  const dirs = [];
+  if (toCenter.lengthSq() > 1e-9) dirs.push(toCenter.normalize());
+  dirs.push(svgN.clone(), svgN.clone().negate());
+  const rc = new THREE.Raycaster();
+  let best = null, bestD = Infinity;
+  for (const dir of dirs) {
+    rc.set(svgCenter.clone().addScaledVector(dir, -span), dir);
+    for (const h of rc.intersectObject(solid, true)) {
+      if (!h.face) continue;
+      const d = h.point.distanceTo(svgCenter);
+      if (d < bestD) { bestD = d; best = h; }
+    }
+  }
+  if (!best) return false;
+  // Normale im Geometrie-lokalen (STL-mm) Frame des Solids — exakt wie _applySvgSnap
+  svgHole.userData._snapNormal = best.face.normal.clone();
+  // Oberflächenpunkt im SVG-lokalen Frame (wandert mit der SVG)
+  svgHole.userData._snapSurfaceLocal = svgHole.worldToLocal(best.point.clone());
+  return true;
+}
+
 async function _occtFullBooleanCut(solid, svgHole) {
   const oc = await _loadOCCT().catch(() => null);
   if (!oc) return null;
@@ -8802,6 +8836,14 @@ async function _occtFullBooleanCut(solid, svgHole) {
       // ein und war die Ursache des Frame-Mismatch.
       const stlBuf    = solid.userData._origStlBuf || _meshGeoToStlBufLocal(solid);
       const stlBase64 = _bufToBase64(stlBuf);
+      // Fallback: kein Magnet-Snap → Normale/Punkt aus aktueller SVG-Lage ableiten,
+      // sonst landet der Schnitt am Ursprung (= nichts abgezogen).
+      if (!svgHole.userData._snapNormal) {
+        if (_autoSnapSvgToSolid(svgHole, solid))
+          console.log('[auto-snap] Normale/Punkt aus SVG-Lage abgeleitet');
+        else
+          console.warn('[auto-snap] SVG trifft das Solid nicht — bitte SVG auf die Fläche ziehen');
+      }
       const _sn = svgHole.userData._snapNormal;
       // snapPoint: zentrierte SVG-Position (nach BBox-Korrektur) → Oberfläche
       // OVERLAP: Prisma startet außerhalb der Oberfläche. Gesamthöhe mind. 4mm,
@@ -16734,8 +16776,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.11';
+const VOLME3D_VERSION = '1.15.12';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.12', date:'2026-06-20', changes:[
+    ['🎯','SVG-Abzug bei STL-Importen funktioniert jetzt auch ohne vorheriges Magnet-Heften: Wenn die SVG nicht ausdrücklich auf eine Fläche gezogen wurde, ermittelt Volme3D die Gravur-Fläche automatisch aus der aktuellen SVG-Lage (nächstgelegene Solid-Fläche). Vorher landete der Schnitt am Ursprung → es wurde sichtbar nichts abgezogen.'],
+  ]},
   { version:'1.15.11', date:'2026-06-20', changes:[
     ['🩹','SVG-Abzug vom STL ging im lokalen Netz (192.168.*) nicht mehr: Der OCCT-Server hat Anfragen aus dem LAN per CORS abgewiesen, und beim Fehlschlag stürzte der Fallback mit „newGeo is not defined" ab. Beides behoben — der Abzug funktioniert jetzt auch aus der lokalen Vorschau.'],
   ]},
