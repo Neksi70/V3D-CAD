@@ -30,7 +30,9 @@ def _origin_ok(origin):
         return False
     if origin in ALLOWED_ORIGINS:
         return True
-    return origin.startswith("http://localhost") or origin.startswith("http://127.0.0.1")
+    return (origin.startswith("http://localhost")
+            or origin.startswith("http://127.0.0.1")
+            or origin.startswith("http://192.168."))
 
 # --- Slicer-Erkennung ---------------------------------------------------------
 def _expand(p):
