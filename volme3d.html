@@ -7910,6 +7910,63 @@ function removeById(id) {
   updateTree();
 }
 
+// SVG-Mesh aus gespeicherten Pfaddaten neu bauen — statt das fette gebackene
+// Extrusions-Mesh zu speichern. MUSS die Transform-Kette aus _importSvgConfirm
+// 1:1 spiegeln (scale/Y-Flip/Zentrierung → -90°X → Boden → normF → Bohrung-Shift);
+// bei Änderungen dort hier mitziehen.
+function _svgRebuildGeo(data) {
+  const pd = data._svgPathData || [];
+  const tm = data._svgTransformM || {};
+  const scale = tm.scale, cx = tm.cx || 0, cy = tm.cy || 0;
+  const depthMM  = (data.svgDepth != null ? data.svgDepth : tm.depthMM) || 3;
+  const targetMM = data.svgSize || 50;
+  const mode = data.svgMode || 'extrude';
+  const isHole = !!data.isHole;
+  const V2 = p => new THREE.Vector2(p[0], p[1]);
+  const allShapes = pd.map(p => {
+    const s = new THREE.Shape((p.pts || []).map(V2));
+    for (const h of (p.holes || [])) s.holes.push(new THREE.Path(h.map(V2)));
+    return s;
+  });
+  if (!allShapes.length || !scale) return buildGeo('box');   // Fallback (sollte nie passieren)
+
+  const allPositions = [], allNormals = [], allUVs = [], allIndices = [];
+  let vOff = 0;
+  for (const shape of allShapes) {
+    const g = (mode === 'extrude')
+      ? new THREE.ExtrudeGeometry(shape, { depth: depthMM / scale, bevelEnabled: false, curveSegments: 12, steps: 1 })
+      : new THREE.ShapeGeometry(shape, 12);
+    g.computeVertexNormals();
+    const pos = g.attributes.position, nor = g.attributes.normal, uv = g.attributes.uv, idx = g.index;
+    for (let i = 0; i < pos.count; i++) {
+      allPositions.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+      if (nor) allNormals.push(nor.getX(i), nor.getY(i), nor.getZ(i));
+      if (uv)  allUVs.push(uv.getX(i), uv.getY(i));
+    }
+    if (idx) { for (let i = 0; i < idx.count; i++) allIndices.push(idx.getX(i) + vOff); }
+    else     { for (let i = 0; i < pos.count; i++) allIndices.push(i + vOff); }
+    vOff += pos.count; g.dispose();
+  }
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.Float32BufferAttribute(allPositions, 3));
+  if (allNormals.length) merged.setAttribute('normal', new THREE.Float32BufferAttribute(allNormals, 3));
+  if (allUVs.length)     merged.setAttribute('uv',     new THREE.Float32BufferAttribute(allUVs, 2));
+  merged.setIndex(allIndices);
+  merged.applyMatrix4(new THREE.Matrix4().set(
+    scale, 0, 0, -cx * scale,  0, -scale, 0, cy * scale,  0, 0, scale, 0,  0, 0, 0, 1));
+  merged.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+  merged.computeVertexNormals(); merged.computeBoundingBox();
+  if (mode === 'extrude') merged.translate(0, -merged.boundingBox.min.y, 0);
+  merged.applyMatrix4(new THREE.Matrix4().makeScale(2 / targetMM, 2 / targetMM, 2 / targetMM));
+  merged.computeBoundingBox();
+  if (isHole && mode === 'extrude') {
+    const dgeo = merged.boundingBox.max.y - merged.boundingBox.min.y;
+    merged.translate(0, -dgeo / 2, 0);
+  }
+  merged.computeBoundingBox(); merged.computeBoundingSphere();
+  return merged;
+}
+
 // ═══ BUILD OBJECT FROM DATA (no clone!) ════════════════════════════════
 function buildObjectFromData(data) {
   let obj;
@@ -7928,6 +7985,8 @@ function buildObjectFromData(data) {
     let geo;
     if (data.geometry) {
       geo = new THREE.BufferGeometryLoader().parse(data.geometry);
+    } else if (data.type === 'svg' && data._svgPathData) {
+      geo = _svgRebuildGeo(data);   // SVG-Mesh aus Pfaddaten neu bauen (statt fettes Mesh zu speichern)
     } else {
       geo = buildGeo(data.type || 'box');
     }
@@ -7947,6 +8006,13 @@ function buildObjectFromData(data) {
   if (data.texOrient) obj.userData.texOrient = data.texOrient;
   if (data.texWhere)  obj.userData.texWhere  = data.texWhere;
   if (data.hidden) obj.visible = false;
+  if (data._svgPathData) {   // SVG: Pfaddaten/Parameter zurück in userData (für Folge-Gravuren/erneutes Speichern)
+    obj.userData._svgPathData   = data._svgPathData;
+    obj.userData._svgTransformM = data._svgTransformM;
+    obj.userData.svgMode        = data.svgMode;
+    obj.userData.svgDepth       = data.svgDepth;
+    obj.userData.svgSize        = data.svgSize;
+  }
   if (data._origGeoData) obj.userData._origGeo = new THREE.BufferGeometryLoader().parse(data._origGeoData);
   else if (data._origSameAsGeo && obj.isMesh && obj.geometry) obj.userData._origGeo = obj.geometry;
   // Poly-/Twist-/Boden-Rohr aus Parametern neu bauen (Geometrie nicht als JSON gespeichert)
@@ -8022,6 +8088,15 @@ function objectToData(o) {
     if (o.userData.texOrient && o.userData.texOrient !== 'laengs') d.texOrient = o.userData.texOrient;
     if (o.userData.texWhere && o.userData.texWhere !== 'alle')     d.texWhere  = o.userData.texWhere;
     if (o.isMesh && o.geometry) d.geometry = _cachedGeoJSON(o.geometry);   // Gruppen haben keine eigene Geometrie
+  } else if (o.userData.type === 'svg' && o.userData._svgPathData &&
+             (!o.userData.displacementPattern || o.userData.displacementPattern === 'keine')) {
+    // SVG: nur Pfaddaten + Parameter speichern (KEINE Geometrie) → beim Laden neu
+    // gebaut. Spart das fette gebackene Extrusions-Mesh (oft viele MB).
+    d._svgPathData   = o.userData._svgPathData;
+    d._svgTransformM = o.userData._svgTransformM;
+    d.svgMode        = o.userData.svgMode;
+    d.svgDepth       = o.userData.svgDepth;
+    d.svgSize        = o.userData.svgSize;
   } else if (o.isMesh && (!o.userData.type || ['custom','text','import','revolve','flower',
       'sphericalshell','spring','bentpipe','thread','svg','lantern','screw','gear','enclosure',
       'laserbox','gfbin','gfplate','gfcut'].includes(o.userData.type))) {
@@ -16807,8 +16882,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.16';
+const VOLME3D_VERSION = '1.15.17';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.17', date:'2026-06-20', changes:[
+    ['🧩','SVG-Logos blähen das Design nicht mehr auf: Statt das fette gebackene Extrusions-Mesh zu speichern (oft viele MB), werden nur noch die Pfaddaten + Parameter abgelegt und das Mesh beim Laden identisch neu gebaut. Ein Logo, das vorher ~11 MB im Design belegte, kostet jetzt nur noch wenige KB — das Design passt damit wieder in die Cloud. Geometrie beim Laden bit-genau (Round-Trip-Test).'],
+  ]},
   { version:'1.15.16', date:'2026-06-20', changes:[
     ['💾','Designs werden kompakter gespeichert: Geometrie-Koordinaten werden beim Speichern auf 0,001 mm gerundet (unsichtbar, aber die Datei komprimiert ~2× besser) und doppelt gehaltene Geometrie wird vermieden. Hilft gegen „Design zu groß — nur lokal" und beschleunigt Speichern/Laden. Alte Designs laden unverändert weiter.'],
   ]},
