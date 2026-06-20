@@ -36,6 +36,8 @@ const res = await page.evaluate(async () => {
   const hintShown = document.getElementById('text-snap-hint').style.display === 'block';
   if (!hintShown) return { err:'kein Snap erkannt (Cursor nicht auf Pyramide?)', clientX:+clientX.toFixed(0), clientY:+clientY.toFixed(0) };
 
+  // Raycaster bewusst verfälschen (simuliert veralteten Zustand beim Loslassen)
+  raycaster.set(new THREE.Vector3(0,-100,0), new THREE.Vector3(0,1,0));
   // Apply
   _applySolidConform(box);
   box.updateMatrixWorld(true);
