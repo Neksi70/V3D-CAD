@@ -7026,8 +7026,9 @@ function _doRepositionDimHandles() {
   const ns2 = 'http://www.w3.org/2000/svg';
 
   function proj0(x,y,z) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;  // NaN-Geometrie → keine Linie (verhindert <line>-NaN-Flut)
     const v = new THREE.Vector3(x,y,z).project(camera);
-    if (v.z > 1) return null;
+    if (v.z > 1 || !Number.isFinite(v.x) || !Number.isFinite(v.y)) return null;
     return {x: ox + (v.x+1)/2*W0, y: oy + (-v.y+1)/2*H0};
   }
   function svgLine0(ax,ay,az,bx,by,bz,color) {
@@ -11147,7 +11148,22 @@ function parseSTL(buf) {
     const t = new TextDecoder().decode(buf), re = /vertex\s+([\d.e+\-]+)\s+([\d.e+\-]+)\s+([\d.e+\-]+)/g; let m;
     while ((m = re.exec(t)) !== null) verts.push(+m[1], +m[2], +m[3]);
   }
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  // NaN/Inf-Dreiecke verwerfen (degenerierte OCCT-Faces erzeugten sonst NaN-Geometrie
+  // → computeBoundingSphere=NaN + NaN-Kantenlinien-Flut). Pro Dreieck (9 Werte) prüfen.
+  let clean = verts, dropped = 0;
+  for (let i = 0; i + 8 < verts.length; i += 9) {
+    for (let k = 0; k < 9; k++) if (!Number.isFinite(verts[i+k])) { dropped++; break; }
+  }
+  if (dropped) {
+    clean = [];
+    for (let i = 0; i + 8 < verts.length; i += 9) {
+      let ok = true;
+      for (let k = 0; k < 9; k++) if (!Number.isFinite(verts[i+k])) { ok = false; break; }
+      if (ok) for (let k = 0; k < 9; k++) clean.push(verts[i+k]);
+    }
+    console.warn('[parseSTL] ' + dropped + ' NaN/Inf-Dreieck(e) verworfen');
+  }
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(clean, 3));
   geo.computeVertexNormals();   // ohne Normalen rendert MeshStandardMaterial in Firefox komplett schwarz
   return geo;
 }
@@ -11405,8 +11421,9 @@ const RH_SNAP = 22.5 * Math.PI / 180;   // 22.5 ° snapping
 
 // ── Project world→screen (vp-relative) ────────────────────────────────
 function _rhPrj(x, y, z) {
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
   const v = new THREE.Vector3(x, y, z).project(camera);
-  if (v.z > 1) return null;
+  if (v.z > 1 || !Number.isFinite(v.x) || !Number.isFinite(v.y)) return null;
   const vr = vpEl.getBoundingClientRect();
   return { x: (v.x + 1) / 2 * vr.width, y: (-v.y + 1) / 2 * vr.height };
 }
@@ -16882,8 +16899,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.17';
+const VOLME3D_VERSION = '1.15.18';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.18', date:'2026-06-20', changes:[
+    ['🐞','NaN-Kantenlinien-Bug behoben: Bei manchen Objekten flutete die Konsole mit tausenden „<line> … NaN"-Fehlern und bremste den Browser. Ursache waren vereinzelte degenerierte Dreiecke (NaN-Koordinaten) im Mesh. Jetzt werden solche Dreiecke beim Laden/Schneiden verworfen, und die Bildschirm-Hilfslinien (Auswahl-Rahmen, Dreh-Ring) überspringen ungültige Punkte sauber.'],
+  ]},
   { version:'1.15.17', date:'2026-06-20', changes:[
     ['🧩','SVG-Logos blähen das Design nicht mehr auf: Statt das fette gebackene Extrusions-Mesh zu speichern (oft viele MB), werden nur noch die Pfaddaten + Parameter abgelegt und das Mesh beim Laden identisch neu gebaut. Ein Logo, das vorher ~11 MB im Design belegte, kostet jetzt nur noch wenige KB — das Design passt damit wieder in die Cloud. Geometrie beim Laden bit-genau (Round-Trip-Test).'],
   ]},
