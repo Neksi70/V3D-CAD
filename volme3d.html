@@ -11147,12 +11147,12 @@ function parseSTL(buf) {
 })();
 
 // ═══ NOTIFICATIONS ═════════════════════════════════════════════════════
-function notify(msg, type) {
+function notify(msg, type, ms) {
   const el = document.createElement('div');
   el.className = 'ni ' + (type || 'ok');
   el.textContent = msg;
   document.getElementById('notif').appendChild(el);
-  setTimeout(() => el.remove(), 2200);
+  setTimeout(() => el.remove(), ms || 2200);
 }
 
 // ── Fortschrittsbalken (z.B. für Abziehen/OCCT-Schnitt) ─────────────────────
@@ -11448,7 +11448,8 @@ function _smReadGamepad() {
     if (!gp || !gp.connected || !gp.axes || gp.axes.length < 6) continue;
     if (/space\s?mouse|space\s?navigator|3dconnexion|256f|046d|multi.?axis/i.test(gp.id) || gp.axes.length >= 6) {
       const a = gp.axes, m = _smCfg.gpAxes;
-      return { tx:a[m[0]]||0, ty:a[m[1]]||0, tz:a[m[2]]||0, rx:a[m[3]]||0, ry:a[m[4]]||0, rz:a[m[5]]||0 };
+      const c = x => Math.max(-1, Math.min(1, x || 0));  // gegen Müll-Achsen (z.B. Hat-Schalter > 1)
+      return { tx:c(a[m[0]]), ty:c(a[m[1]]), tz:c(a[m[2]]), rx:c(a[m[3]]), ry:c(a[m[4]]), rz:c(a[m[5]]) };
     }
   }
   return null;
@@ -11562,7 +11563,11 @@ function _smShowDebug(v) {
 // Gamepad-API: SpaceMouse wird unter Windows/Linux-Chrome automatisch als Gamepad erkannt
 window.addEventListener('gamepadconnected', e => {
   if (/space\s?mouse|space\s?navigator|3dconnexion|256f|046d|multi.?axis/i.test(e.gamepad.id) || (e.gamepad.axes && e.gamepad.axes.length >= 6)) {
-    if (!_smActive) notify('SpaceMouse erkannt (Gamepad) — Knauf bewegen zum Navigieren', 'ok');
+    // >6 Achsen = Chrome würfelt die Achsen-Reihenfolge → Gamepad-Mapping unzuverlässig (oft geht nur Zoom).
+    // Dann zum präzisen WebHID-Pfad raten (fester 3Dconnexion-Report, alle 6 Achsen korrekt).
+    if (!_smActive && 'hid' in navigator && e.gamepad.axes && e.gamepad.axes.length > 6)
+      notify('SpaceMouse erkannt — für alle 6 Achsen einmal auf den „SpaceMouse"-Button klicken (WebHID)', 'w', 7000);
+    else if (!_smActive) notify('SpaceMouse erkannt (Gamepad) — Knauf bewegen zum Navigieren', 'ok');
     _smUpdateBtn();
   }
 });
