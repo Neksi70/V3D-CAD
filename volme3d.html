@@ -7939,6 +7939,7 @@ function buildObjectFromData(data) {
   obj.rotation.set(data.rx || 0, data.ry || 0, data.rz || 0);
   obj.scale.set(data.sx || 1, data.sy || 1, data.sz || 1);
   obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, opacity: data.opacity || 1.0, type: data.type, shapeType: data.shapeType || data.type, isGroup: !!data.isGroup, textStr: data.textStr || '', fillet: data.fillet || 0, chamfer: data.chamfer || 0, segments: data.segments, tubeRatio: data.tubeRatio, coneTop: data.coneTop, coneFlip: !!data.coneFlip, tubeWall: (data.tubeWall != null ? data.tubeWall : (data.shapeType==='tube'||data.type==='tube' ? 2 : undefined)), edgeBevels: data.edgeBevels, occtShape: data.occtShape || (data.wasBox ? 'box' : null), _occtParams: data._occtParams || null, displacementPattern: data.displacementPattern || 'keine', displacementAmp: data.displacementAmp || 0.5, displacementFreq: data.displacementFreq || 4, displacementInvert: !!data.displacementInvert, displacementSymmetric: !!data.displacementSymmetric, locked: !!data.locked, hidden: !!data.hidden, threadDiameter: data.threadDiameter, threadPitch: data.threadPitch, threadTurns: data.threadTurns, screwType: data.screwType, screwSize: data.screwSize, screwLength: data.screwLength, screwClearance: data.screwClearance, screwOuter: data.screwOuter, screwThread: data.screwThread, screwHead: data.screwHead, gearModule: data.gearModule, gearTeeth: data.gearTeeth, gearWidth: data.gearWidth, gearBore: data.gearBore, encType: data.encType, encW: data.encW, encD: data.encD, encH: data.encH, encWall: data.encWall, encBosses: data.encBosses, encBossSize: data.encBossSize };
+  if (data._hollowFlip) obj.userData._hollowFlip = true;
   if (data.tubePoly)  obj.userData.tubePoly  = true;
   if (data.tubeTwist) obj.userData.tubeTwist = data.tubeTwist;
   if (data.tubeFloor) obj.userData.tubeFloor = true;
@@ -7996,6 +7997,7 @@ function objectToData(o) {
   if (o.userData.edgeBevels) d.edgeBevels = o.userData.edgeBevels;
   if (o.userData.occtShape)    d.occtShape   = o.userData.occtShape;
   if (o.userData._occtParams)  d._occtParams = o.userData._occtParams;
+  if (o.userData._hollowFlip)  d._hollowFlip = true;
   if (o.userData.displacementPattern && o.userData.displacementPattern !== 'keine') {
     d.displacementPattern   = o.userData.displacementPattern;
     d.displacementAmp       = o.userData.displacementAmp;
@@ -16725,8 +16727,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.7';
+const VOLME3D_VERSION = '1.15.8';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.8', date:'2026-06-20', changes:[
+    ['🔄','Ausgehöhlter Kegel/Kegelstumpf lässt sich jetzt auch NACH dem Gehäuse umdrehen: neuer Schalter „Umgedreht (Öffnung oben/unten)" im Eigenschaften-Panel kippt den hohlen Körper 180° → die Gehäuse-Öffnung wandert von unten nach oben (z. B. Öffnung oben am Kegelstumpf, Becher-Look). Vorher war der Kegel nach dem Aushöhlen ein generischer Körper ohne Umdreh-Option. Der Flip bleibt nach Speichern/Laden und Skalieren erhalten.'],
+  ]},
   { version:'1.15.7', date:'2026-06-20', changes:[
     ['🎚️','Größen-Regler (Durchmesser, Höhe, Länge …) lassen sich jetzt fein/smooth verstellen statt in groben 0,5-mm-Sprüngen: Standard-Schrittweite der mm-Slider von 0,5 auf 0,1 mm gesenkt — passt zur 0,1-mm-Anzeige. Gilt für alle Formen (Kegel, Zylinder, Box, Vieleck …). Slider mit eigener Schrittweite (Gewinde, Schrauben) bleiben unverändert.'],
   ]},
@@ -18399,10 +18404,16 @@ function _fpBuildRows(type, o) {
   const _ownPanelTypes = ['box','cylinder','tube','cone','pyramid','torus','sphere','wedge','star','import',
                           'polygon','paraboloid','sphericalshell','spring','bentpipe','thread'];
   if (isBoxGeom && !_ownPanelTypes.includes(type)) {
+    // Ausgehöhlter Kegel (occtShape 'cone') → Umdreh-Schalter, damit die Gehäuse-
+    // Öffnung nach oben/unten kann (z. B. Öffnung oben am Kegelstumpf)
+    const flipHollowRow = o.userData.occtShape === 'cone'
+      ? `<label class="fp-check-lbl"><input type="checkbox" id="fp-hollowflip" ${o.userData._hollowFlip?'checked':''} onchange="fpFlipHollow(this.checked)"> Umgedreht (Öffnung oben/unten)</label>`
+      : '';
     return row('Länge X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
            propLock() +
            row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
            row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+           flipHollowRow +
            '<div class="fp-sep"></div>' + edgeBtn + shellBtn;
   }
 
@@ -18947,6 +18958,29 @@ function fpApplyConeFlip(on) {
   o.userData.coneFlip = !!on;
   _fpRebuildGeo(o);
   _fpCurType = null; updateFP();   // Panel neu aufbauen → Pfeil-Labels (↑/↓) tauschen
+  if (selectedObjs.length > 0) _doRepositionDimHandles();
+}
+
+// Ausgehöhlten Kegel/Kegelstumpf umdrehen: nach dem Gehäuse ist das Objekt ein
+// generischer OCCT-Körper (shapeType 'custom'), das Kegel-Panel mit „Auf die Spitze"
+// ist weg. Hier kippen wir den FERTIGEN hohlen Körper 180° um seine Mitte (achsparallel)
+// → die Gehäuse-Öffnung wandert von unten nach oben (bzw. zurück), z. B. Öffnung oben
+// am Kegelstumpf. Flip wird in die Geometrie gebacken (custom-Geo wird als JSON
+// gespeichert → bleibt nach Speichern/Laden und Skalieren erhalten).
+function fpFlipHollow(on) {
+  const o = getFirst(); if (!o || !o.isMesh || !o.geometry) return;
+  saveUndoDebounced();
+  const g = o.geometry;
+  g.computeBoundingBox();
+  const c = g.boundingBox.getCenter(new THREE.Vector3());
+  g.translate(-c.x, -c.y, -c.z);
+  g.rotateX(Math.PI);            // 180° → oben/unten getauscht, bbox bleibt gleich → Objekt bleibt am Platz
+  g.translate(c.x, c.y, c.z);
+  g.computeVertexNormals();
+  _geoJsonCache.delete(g);          // in-place mutiert → Cache-Eintrag verwerfen (sonst speichert toJSON die alte Lage)
+  o.userData._hollowFlip = !!on;
+  _updateObjEdgeLines(o);
+  _fpCurType = null; updateFP();
   if (selectedObjs.length > 0) _doRepositionDimHandles();
 }
 
