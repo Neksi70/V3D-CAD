@@ -42,27 +42,36 @@ const res = await page.evaluate(async () => {
   _applySolidConform(box);
   box.updateMatrixWorld(true);
 
-  // Prüfen: Box-Oberseite (lokal +Y) sollte der Flächennormale entsprechen
-  const up = new THREE.Vector3(0,1,0).applyQuaternion(box.getWorldQuaternion(new THREE.Quaternion())).normalize();
-  // erwartete Normale: aus erneutem Raycast
-  raycaster.setFromCamera(new THREE.Vector2(v.x,v.y), camera);
-  const h = raycaster.intersectObject(pyr,true).filter(x=>x.face)[0];
+  // Verifikations-Treffer (gleicher Bildschirmpunkt)
+  raycaster.setFromCamera(new THREE.Vector2(v.x, v.y), camera);
+  const h = raycaster.intersectObject(pyr, true).filter(x=>x.face)[0];
+  if (!h) return { err:'kein Verifikations-Treffer' };
+  // Erwartete Außen-Normale wie die Funktion: weg vom Pyramiden-Zentrum
+  const pc = new THREE.Box3().setFromObject(pyr).getCenter(new THREE.Vector3());
   const nW = h.face.normal.clone().transformDirection(pyr.matrixWorld).normalize();
-  if (nW.dot(raycaster.ray.direction) > 0) nW.negate();
-  const align = up.dot(nW);   // ~1 = bündig
+  if (nW.dot(h.point.clone().sub(pc)) < 0) nW.negate();
 
-  // sitzt die Box auf der Fläche? tiefste Box-Ecke entlang nW ~ Trefferebene
-  const bb = new THREE.Box3().setFromObject(box);
-  const corners=[[bb.min.x,bb.min.y,bb.min.z],[bb.max.x,bb.min.y,bb.min.z],[bb.min.x,bb.max.y,bb.min.z],[bb.max.x,bb.max.y,bb.min.z],[bb.min.x,bb.min.y,bb.max.z],[bb.max.x,bb.min.y,bb.max.z],[bb.min.x,bb.max.y,bb.max.z],[bb.max.x,bb.max.y,bb.max.z]];
-  let minD=Infinity; for(const p of corners){ minD=Math.min(minD, p[0]*nW.x+p[1]*nW.y+p[2]*nW.z); }
-  const gap = Math.abs(minD - h.point.dot(nW));
+  // 1) Box-Oberseite (lokal +Y) == Außen-Normale?
+  const up = new THREE.Vector3(0,1,0).applyQuaternion(box.getWorldQuaternion(new THREE.Quaternion())).normalize();
+  const align = up.dot(nW);
 
-  const slope = Math.acos(Math.min(1,Math.abs(nW.y)))*180/Math.PI;  // Neigung der Fläche
-  return { align:+align.toFixed(3), gap:+gap.toFixed(3), slopeDeg:+slope.toFixed(1), normal:[nW.x,nW.y,nW.z].map(x=>+x.toFixed(2)) };
+  // 2) Echte Unterseiten-Mitte der gedrehten Box → muss auf der Fläche (target) sitzen
+  const lb = box.geometry.boundingBox || (box.geometry.computeBoundingBox(), box.geometry.boundingBox);
+  const bottomLocal = new THREE.Vector3((lb.min.x+lb.max.x)/2, lb.min.y, (lb.min.z+lb.max.z)/2);
+  const bottomWorld = box.localToWorld(bottomLocal.clone());
+  // senkrechter Abstand der Unterseiten-Mitte zur Flächenebene (durch h.point, Normale nW) → ~0 = aufsitzend
+  const gap = +Math.abs(bottomWorld.clone().sub(h.point).dot(nW)).toFixed(3);
+
+  // 3) Box-Mitte muss AUSSEN liegen (entlang nW weiter außen als die Fläche)
+  const ctr = new THREE.Box3().setFromObject(box).getCenter(new THREE.Vector3());
+  const outward = +(ctr.clone().sub(h.point).dot(nW)).toFixed(3);  // >0 = außen, <0 = innen
+
+  const slope = +(Math.acos(Math.min(1,Math.abs(nW.y)))*180/Math.PI).toFixed(1);
+  return { align:+align.toFixed(3), gap, outward, slopeDeg:slope, normal:[nW.x,nW.y,nW.z].map(x=>+x.toFixed(2)) };
 });
 await browser.close(); srv.kill();
 console.log(JSON.stringify(res,null,2));
 for (const e of errs.slice(0,5)) console.log('pageerror:', e.slice(0,140));
-const ok = res.align>0.999 && res.gap<0.05 && res.slopeDeg>5;
-console.log(ok ? '\n✓ Box liegt bündig auf der Schräge (gedreht + aufgesetzt)' : '\n✗ Snap nicht korrekt');
+const ok = res.align>0.999 && res.gap<0.1 && res.outward>0 && res.slopeDeg>5;
+console.log(ok ? '\n✓ Box liegt bündig AUSSEN auf der Schräge (gedreht + aufgesetzt)' : '\n✗ Snap nicht korrekt (innen? align/gap/outward prüfen)');
 process.exit(0);

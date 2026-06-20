@@ -16914,8 +16914,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.22';
+const VOLME3D_VERSION = '1.15.23';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.23', date:'2026-06-21', changes:[
+    ['🧲','Flächen-Snap saß weiter teils innen: Jetzt wird die Außenrichtung anhand des Zielkörper-Zentrums bestimmt (zuverlässig konvex), und die Box wird exakt mit ihrer echten Unterseiten-Mitte auf die Fläche gesetzt (statt über die Hüllbox). Der Körper liegt nun sauber AUSSEN auf — auch auf steilen Schrägen.'],
+  ]},
   { version:'1.15.22', date:'2026-06-21', changes:[
     ['🧲','Flächen-Snap saß manchmal INNEN im Zielkörper statt obendrauf. Die „nach außen"-Richtung wird jetzt kamera-relativ bestimmt (zuverlässig beim Loslassen) — der Körper liegt nun korrekt auf der Außenseite der Fläche auf.'],
   ]},
@@ -17694,10 +17697,11 @@ function _applySolidConform(mesh) {
   const hit = _solidSnapHit;
   if (!hit || !hit.face) return;
   let n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
-  // „Außen" kamera-relativ bestimmen (robust, unabhängig vom Raycaster-Zustand beim
-  // Loslassen): die sichtbare Seite zeigt zur Kamera → Box sitzt obendrauf, nicht innen.
-  const _camP = new THREE.Vector3(); camera.getWorldPosition(_camP);
-  if (n.dot(_camP.clone().sub(hit.point)) < 0) n.negate();
+  // „Außen" = weg vom Zentrum des Zielkörpers (robust für konvexe Körper wie
+  // Pyramide/Box, unabhängig von Kamera/Cursor/Raycaster). So sitzt der Körper
+  // garantiert AUF der Außenseite, nicht innen.
+  const objCenter = new THREE.Box3().setFromObject(hit.object).getCenter(new THREE.Vector3());
+  if (n.dot(hit.point.clone().sub(objCenter)) < 0) n.negate();
   // Orientierung: lokal +Y → n, Referenz-Oben in der Fläche projiziert
   const up = Math.abs(n.y) > 0.85 ? new THREE.Vector3(0,0,-1) : new THREE.Vector3(0,1,0);
   const colZ = up.clone().sub(n.clone().multiplyScalar(up.dot(n))).normalize();
@@ -17705,22 +17709,17 @@ function _applySolidConform(mesh) {
   const colX = new THREE.Vector3().crossVectors(colY, colZ).normalize();
   colZ.crossVectors(colX, colY).normalize();
   mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(colX, colY, colZ));
-  mesh.updateMatrixWorld(true);
   // Zielpunkt: Flächenmitte (in-plane), Normalabstand vom Trefferpunkt
   const fc = _faceCenterWorld(hit.object, hit.face);
   const target = hit.point.clone();
   if (fc) { const d = fc.clone().sub(hit.point); target.add(d).addScaledVector(n, -d.dot(n)); }
-  // grob auf Ziel, dann in-plane zentrieren
-  mesh.position.copy(target); mesh.updateMatrixWorld(true);
-  let bb = new THREE.Box3().setFromObject(mesh);
-  const off = bb.getCenter(new THREE.Vector3()).sub(target);
-  off.addScaledVector(n, -off.dot(n));      // nur Anteil in der Fläche
-  mesh.position.sub(off); mesh.updateMatrixWorld(true);
-  // entlang n aufsetzen: tiefste Ecke auf die Ebene durch target heben
-  bb = new THREE.Box3().setFromObject(mesh);
-  let minD = Infinity;
-  for (const cnr of _bbCornersList(bb)) minD = Math.min(minD, cnr.dot(n));
-  mesh.position.addScaledVector(n, target.dot(n) - minD);
+  // EXAKT aufsetzen: die lokale Unterseiten-Mitte der (gedrehten) Box auf target legen.
+  // local -Y ist unten; nach der Rotation zeigt +Y nach n → Körper ragt nach außen.
+  mesh.geometry.computeBoundingBox();
+  const lb = mesh.geometry.boundingBox;
+  const bottomLocal = new THREE.Vector3((lb.min.x+lb.max.x)/2, lb.min.y, (lb.min.z+lb.max.z)/2);
+  const off = bottomLocal.clone().multiply(mesh.scale).applyQuaternion(mesh.quaternion);
+  mesh.position.copy(target).sub(off);
   mesh.updateMatrixWorld(true);
   _updateObjEdgeLines(mesh);
   updateTFInputs(); updateTree(); _doRepositionDimHandles();
