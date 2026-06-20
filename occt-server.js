@@ -605,13 +605,37 @@ app.post('/api/occt-subtract', async (req, res) => {
     if (!tools.length) return res.json({ error: 'Keine SVG-Formen aufgebaut' });
 
     const keep = [];
-    let tool = tools[0].s;
-    for (let k = 1; k < tools.length; k++) {
+    let tool;
+    if (tools.length === 1) {
+      tool = tools[0].s;
+    } else {
+      // Einmal-Fuse: alle Prismen in EINEM BOP verschmelzen statt 18× sequenziell.
+      // ~20× schneller bei identischem Ergebnis (verifiziert in bench_fuse.js).
+      // Bei Fehler Fallback auf das alte sequenzielle Verfahren.
       try {
-        const f = new oc.BRepAlgoAPI_Fuse_3(tool, tools[k].s); f.Build();
-        if (f.IsDone()) { tool = f.Shape(); keep.push(f); }
-        else { f.delete(); console.log(`[fuse path-${tools[k].i}] FAIL — Glyph fällt raus`); }
-      } catch(e) { console.log(`[fuse path-${tools[k].i}] EXCEPTION ${e.message}`); }
+        const fuse = new oc.BRepAlgoAPI_Fuse_1();
+        const args = new oc.TopTools_ListOfShape_1();
+        const tl   = new oc.TopTools_ListOfShape_1();
+        args.Append_1(tools[0].s);
+        for (let k = 1; k < tools.length; k++) tl.Append_1(tools[k].s);
+        fuse.SetArguments(args);
+        fuse.SetTools(tl);
+        fuse.Build();
+        if (!fuse.IsDone()) throw new Error('Fuse nicht IsDone');
+        tool = fuse.Shape();
+        keep.push(fuse);
+        console.log(`[cut] ${tools.length} Prismen in 1 BOP gefust`);
+      } catch (e) {
+        console.log(`[fuse] Einmal-Fuse fehlgeschlagen (${e.message}) → sequenzieller Fallback`);
+        tool = tools[0].s;
+        for (let k = 1; k < tools.length; k++) {
+          try {
+            const f = new oc.BRepAlgoAPI_Fuse_3(tool, tools[k].s); f.Build();
+            if (f.IsDone()) { tool = f.Shape(); keep.push(f); }
+            else { f.delete(); console.log(`[fuse path-${tools[k].i}] FAIL — Glyph fällt raus`); }
+          } catch(e2) { console.log(`[fuse path-${tools[k].i}] EXCEPTION ${e2.message}`); }
+        }
+      }
     }
     console.log(`[cut] ${tools.length} Prismen gefust → 1 Werkzeug`);
 
@@ -759,9 +783,16 @@ const creds = {
   cert: fs2.readFileSync('/home/v3da/v3da.tailf05fe9.ts.net.crt'),
   key:  fs2.readFileSync('/home/v3da/v3da.tailf05fe9.ts.net.key')
 };
-https.createServer(creds, app).listen(PORT, '0.0.0.0', () => {
-  console.log(`OCCT-Server läuft auf https://v3da.tailf05fe9.ts.net:${PORT}`);
-  getOC()
-    .then(() => console.log('OCCT bereit'))
-    .catch(e  => console.error('OCCT Init Fehler:', e.message));
-});
+// Nur als eigenständiger Prozess den Server starten. Beim `require()` (z. B. aus
+// dem Bench-/Test-Skript) bleibt der Listener aus, damit Port 3001 frei bleibt.
+if (require.main === module) {
+  https.createServer(creds, app).listen(PORT, '0.0.0.0', () => {
+    console.log(`OCCT-Server läuft auf https://v3da.tailf05fe9.ts.net:${PORT}`);
+    getOC()
+      .then(() => console.log('OCCT bereit'))
+      .catch(e  => console.error('OCCT Init Fehler:', e.message));
+  });
+}
+
+module.exports = { getOC, buildSvgSolid, stlToOCCTSolid, solidToSTLBuffer,
+                   buildMatrixFromSnapNormal, parseSTLBinary, SVG_OVERLAP_MM };
