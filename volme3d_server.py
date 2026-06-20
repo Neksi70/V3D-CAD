@@ -78,6 +78,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self._cors()
         self.send_header('Content-Type', ctype)
+        # HTML nie cachen: sonst zeigt der Browser nach einem Deploy weiter alten
+        # Code (war Ursache fuer den wiederkehrenden newGeo-Crash aus dem Cache).
+        if ctype.startswith('text/html'):
+            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         if disposition:
             self.send_header('Content-Disposition', disposition)
         self.send_header('Content-Length', str(len(data)))
@@ -124,6 +128,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self._cors()
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
                 self.send_header('Content-Length', str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
