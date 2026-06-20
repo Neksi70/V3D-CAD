@@ -10116,6 +10116,7 @@ window.addEventListener('mousemove', e => {
       const _sType = selectedObjs[0].userData.shapeType;
       if (_sType === 'text') _textSnapDetect(selectedObjs[0], e);
       else if (_sType === 'svg') _svgSnapDetect(selectedObjs[0], e);
+      else if (selectedObjs[0].isMesh && !selectedObjs[0].userData.isGroup) _solidSnapDetect(selectedObjs[0], e);
     }
   }
 });
@@ -10130,6 +10131,7 @@ window.addEventListener('mouseup', e => {
       const _st = selectedObjs[0].userData.shapeType;
       if (_st === 'text') _applyTextConform(selectedObjs[0], _textSnapTarget);
       else if (_st === 'svg') _applySvgSnap(selectedObjs[0], _textSnapTarget);
+      else if (_textSnapTarget.type === 'solidface') _applySolidConform(selectedObjs[0]);
     }
     _textSnapTarget = null;
     document.getElementById('text-snap-hint').style.display='none';
@@ -16912,8 +16914,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.20';
+const VOLME3D_VERSION = '1.15.21';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.21', date:'2026-06-21', changes:[
+    ['🧲','Körper snappen jetzt bündig auf Flächen — auch auf Schrägen: Zieht man eine Box (oder anderen Körper) über eine Fläche eines anderen Objekts, erscheint „📌 Bündig auf Fläche"; beim Loslassen dreht sich der Körper so, dass seine Unterseite flach auf der (auch geneigten) Fläche aufliegt. Bisher gab es das nur für Text/SVG.'],
+  ]},
   { version:'1.15.20', date:'2026-06-21', changes:[
     ['🔲','Auswahl-Rahmen bei Mehrfach-Auswahl (z. B. nach Strg+A) wird wieder gezeichnet, auch wenn ein einzelnes Objekt eine degenerierte Geometrie hat: nicht-endliche Objekt-Boxen werden bei der kombinierten Box übersprungen, statt den ganzen Rahmen verschwinden zu lassen.'],
   ]},
@@ -17648,6 +17653,73 @@ function _applySvgSnap(svgMesh, {obj}) {
   _updateObjEdgeLines(svgMesh);
   updateTFInputs(); updateTree();
   notify('📌 SVG auf Fläche geheftet', 'ok');
+}
+// ===== KÖRPER-FLÄCHEN-SNAP (bündig auf Fläche, auch Schrägen) =====
+let _solidSnapHit = null;
+
+// Während des Ziehens eines Körpers: Ziel-Fläche unter dem Cursor ermitteln + Hinweis.
+function _solidSnapDetect(mesh, mouseEvent) {
+  const hint = document.getElementById('text-snap-hint');
+  getNorm(mouseEvent);
+  raycaster.setFromCamera(mousev, camera);
+  const targets = objects.filter(o => o !== mesh && !o.userData.isEdgeLines && o.isMesh);
+  const hits = raycaster.intersectObjects(targets, true);
+  const hit = hits.find(h => h.face && h.object.isMesh && h.object !== mesh && !h.object.userData.isEdgeLines);
+  if (hit) {
+    _solidSnapHit = hit;
+    let obj = hit.object; while (obj && !objects.includes(obj)) obj = obj.parent;
+    _textSnapTarget = { obj: obj || hit.object, type: 'solidface' };
+    hint.textContent = '📌 Bündig auf Fläche';
+    hint.style.display = 'block';
+    hint.style.left = (mouseEvent.clientX + 14) + 'px';
+    hint.style.top  = (mouseEvent.clientY - 24) + 'px';
+  } else {
+    _solidSnapHit = null; _textSnapTarget = null; hint.style.display = 'none';
+  }
+}
+
+function _bbCornersList(b) {
+  const a = b.min, c = b.max;
+  return [[a.x,a.y,a.z],[c.x,a.y,a.z],[a.x,c.y,a.z],[c.x,c.y,a.z],
+          [a.x,a.y,c.z],[c.x,a.y,c.z],[a.x,c.y,c.z],[c.x,c.y,c.z]].map(p => new THREE.Vector3(p[0],p[1],p[2]));
+}
+
+// Körper bündig auf die getroffene Fläche legen: lokal +Y (oben) → Flächennormale,
+// in-plane zur Flächenmitte, dann entlang der Normalen so anheben, dass die
+// Unterseite exakt auf der Fläche aufsitzt (funktioniert auch auf Schrägen).
+function _applySolidConform(mesh) {
+  const hit = _solidSnapHit;
+  if (!hit || !hit.face) return;
+  let n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+  if (n.dot(raycaster.ray.direction) > 0) n.negate();   // nach außen zeigend
+  // Orientierung: lokal +Y → n, Referenz-Oben in der Fläche projiziert
+  const up = Math.abs(n.y) > 0.85 ? new THREE.Vector3(0,0,-1) : new THREE.Vector3(0,1,0);
+  const colZ = up.clone().sub(n.clone().multiplyScalar(up.dot(n))).normalize();
+  const colY = n.clone();
+  const colX = new THREE.Vector3().crossVectors(colY, colZ).normalize();
+  colZ.crossVectors(colX, colY).normalize();
+  mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(colX, colY, colZ));
+  mesh.updateMatrixWorld(true);
+  // Zielpunkt: Flächenmitte (in-plane), Normalabstand vom Trefferpunkt
+  const fc = _faceCenterWorld(hit.object, hit.face);
+  const target = hit.point.clone();
+  if (fc) { const d = fc.clone().sub(hit.point); target.add(d).addScaledVector(n, -d.dot(n)); }
+  // grob auf Ziel, dann in-plane zentrieren
+  mesh.position.copy(target); mesh.updateMatrixWorld(true);
+  let bb = new THREE.Box3().setFromObject(mesh);
+  const off = bb.getCenter(new THREE.Vector3()).sub(target);
+  off.addScaledVector(n, -off.dot(n));      // nur Anteil in der Fläche
+  mesh.position.sub(off); mesh.updateMatrixWorld(true);
+  // entlang n aufsetzen: tiefste Ecke auf die Ebene durch target heben
+  bb = new THREE.Box3().setFromObject(mesh);
+  let minD = Infinity;
+  for (const cnr of _bbCornersList(bb)) minD = Math.min(minD, cnr.dot(n));
+  mesh.position.addScaledVector(n, target.dot(n) - minD);
+  mesh.updateMatrixWorld(true);
+  _updateObjEdgeLines(mesh);
+  updateTFInputs(); updateTree(); _doRepositionDimHandles();
+  notify('📌 Bündig auf Fläche', 'ok');
+  _solidSnapHit = null;
 }
 // ===== END SVG MAGNET-SNAP =====
 
