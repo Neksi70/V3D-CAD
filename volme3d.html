@@ -3639,13 +3639,14 @@ function _buildHighResWedge(S) {
   return g;
 }
 
-function _buildHighResGeo(type) {
+function _buildHighResGeo(type, topRatio, flip) {
   const S = 24;
   switch (type) {
     case 'box':      return new THREE.BoxGeometry(2, 2, 2, S, S, S);
     case 'sphere':   return new THREE.SphereGeometry(1, 64, 48);
     case 'cylinder': return new THREE.CylinderGeometry(1, 1, 2, 64, S);
-    case 'cone':     return new THREE.ConeGeometry(1, 2, 64, S);
+    case 'cone':     return flip ? new THREE.CylinderGeometry(1, (topRatio||0), 2, 64, S)
+                                 : new THREE.CylinderGeometry((topRatio||0), 1, 2, 64, S);
     case 'torus':    return new THREE.TorusGeometry(1, 0.35, 32, 96);
     case 'tube':     return buildTubeGeo(0.8, 64);
     // Pyramid = 4-sided cone: corners at (±1,−1,±1), apex at (0,1,0)
@@ -3664,13 +3665,6 @@ function _buildHighResGeo(type) {
 
 // ─── Displacement-Kern (welded · Welt-Raum · triplanar → BumpMesh-Qualität) ──
 const _MM_PER_UNIT = 10;   // 1 Scene-Unit = 10 mm
-// Absolute Textur-Skala: Muster-Koordinaten werden auf diese FESTE Referenzlänge
-// (Welt-Units) normiert statt auf die Objektgröße → gleiche „Skalierung" ergibt
-// dieselbe physische Mustergröße, egal wie groß/hoch das Objekt ist. 40 U = 400 mm
-// ist so getarnt, dass ein ~800 mm-Objekt bei gegebener Skalierung gleich aussieht
-// wie zuvor (objHalf≈REF), kleinere/größere jetzt konsistent dazu.
-const _TEX_REF_U = 40;
-
 // Höhe (0..1) eines Musters an einer UV-Stelle. Aus dem alten Switch extrahiert,
 // damit wir triplanar 3× samplen und weich überblenden können.
 function _patternHeight(pattern, u, v, freq) {
@@ -3815,7 +3809,12 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
     const wsz = bb.getSize(new THREE.Vector3());
     const worldMax = Math.max(wsz.x, wsz.y, wsz.z) || 1;
     const ctr = bb.getCenter(new THREE.Vector3());
-    const ref = _TEX_REF_U;   // feste Referenzlänge → absolute Mustergröße
+    // OBJEKTRELATIV: Referenz = halbe Objektausdehnung → Muster-Koordinaten
+    // landen in ±1, „Skalierung" (freq) ≈ Zyklen über das ganze Teil. Damit ist
+    // die Textur auf jedem Teil sichtbar (egal 2 cm oder 2 m), wie vor dem Rewrite.
+    // (Vorher: feste 400-mm-Referenz → auf normalen 2–6 cm-Teilen passte keine
+    //  ganze Periode aufs Teil, das Muster verschwand und blies das Teil nur glatt auf.)
+    const ref = worldMax / 2;
     // 3. adaptive Unterteilung im Welt-Raum (affin → lineare Mittelpunkte korrekt).
     //    Ziel-Kantenlänge an der ABSOLUTEN Muster-Wellenlänge ausrichten (ref/freq),
     //    damit auch große Objekte mit vielen Zyklen sauber aufgelöst werden – nicht
@@ -4013,7 +4012,7 @@ function _applyDisplacementNow(param, val) {
     if (o.userData._origGeo) {
       base = o.userData._origGeo.clone();
     } else {
-      base = _buildHighResGeo(o.userData.shapeType || 'box');
+      base = _buildHighResGeo(o.userData.shapeType || 'box', o.userData.coneTop || 0, o.userData.coneFlip);
     }
     geo = _displaceForMesh(o, base, pat, amp, freq, inv, sym, ori, whr);
     base.dispose();
@@ -5158,7 +5157,7 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz) {
   return { shape: curShape, opOk };
 }
 
-function _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, sides) {
+function _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, sides, topRatio, flip) {
   if (occtShape === 'polygon') {
     // Vieleck-Prisma: regelmäßiges N-Eck (wie THREE.CylinderGeometry(1,1,2,N)),
     // Querschnitt bei y=0, Extrusion +Y um 2*sy. Vertex-Winkel wie Three: x=r·sin, z=r·cos.
@@ -5183,9 +5182,14 @@ function _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, sides) {
     const orig = new oc.gp_Pnt_1();
     const dir  = new oc.gp_Dir_4(0, 1, 0);
     const ax2  = new oc.gp_Ax2_3(orig, dir);
+    // Kegel: schmaler Radius = sx · topRatio (0 → Spitze, >0 → Kegelstumpf).
+    // coneFlip → schmale Seite unten (Boden), breite Seite oben.
+    const rNarrow = Math.max(0.001, sx * (topRatio || 0));
+    const rBot = flip ? rNarrow : sx;
+    const rTop = flip ? sx : rNarrow;
     const bm   = (occtShape === 'cylinder' || occtShape === 'tube')
       ? new oc.BRepPrimAPI_MakeCylinder_3(ax2, sx, 2*sy)
-      : new oc.BRepPrimAPI_MakeCone_3(ax2, sx, 0.001, 2*sy);
+      : new oc.BRepPrimAPI_MakeCone_3(ax2, rBot, rTop, 2*sy);
     const s = bm.Shape(); bm.delete(); ax2.delete(); dir.delete(); orig.delete();
     return s;
   }
@@ -5226,7 +5230,7 @@ async function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
     }
     const wa = toOcct(dynEdge.worldA), wb = toOcct(dynEdge.worldB);
     const allOps = _mergeOCCTOps(prevOps, [{ idx: edgeIndex, dist: chamferDist, type: 'chamfer', wa, wb }]);
-    const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz);
+    const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, null, obj.userData.coneTop||0, obj.userData.coneFlip);
     const { shape: finalShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
     if (!opOk) return null;
     const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
@@ -5272,7 +5276,7 @@ async function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
     }
     const wa = toOcct(dynEdge.worldA), wb = toOcct(dynEdge.worldB);
     const allOps = _mergeOCCTOps(prevOps, [{ idx: edgeIndex, dist: filletR, type: 'fillet', wa, wb }]);
-    const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz);
+    const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, null, obj.userData.coneTop||0, obj.userData.coneFlip);
     const { shape: finalShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
     if (!opOk) return null;
     const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
@@ -5341,8 +5345,8 @@ function enterShellMode() {
   const o = selectedObjs.length === 1 ? selectedObjs[0] : null;
   if (!o) { notify('Bitte genau ein Objekt wählen', 'w'); return; }
   const occtShape = o.userData.occtShape || o.userData.shapeType;
-  const occtOk = ['box','wedge','polygon','cylinder'].includes(occtShape) || o.userData._occtParams;
-  if (!occtOk) { notify('Gehäuse nur für Box, Vieleck, Keil, Zylinder', 'w'); return; }
+  const occtOk = ['box','wedge','polygon','cylinder','cone'].includes(occtShape) || o.userData._occtParams;
+  if (!occtOk) { notify('Gehäuse nur für Box, Vieleck, Keil, Zylinder, Kegel', 'w'); return; }
   const qOk = o.userData._occtParams ||
     Math.abs(o.quaternion.x) + Math.abs(o.quaternion.y) + Math.abs(o.quaternion.z) < 0.01;
   if (!qOk) { notify('Objekt erst auf 0° drehen (Gehäuse braucht ungedrehte Form)', 'w'); return; }
@@ -5446,7 +5450,7 @@ async function _applyCSGShell(obj, faces, thickness) {
       faces: faces.map(f => ({ p: toOcct(f.worldP), n: f.worldN }))
     };
     const allOps = _mergeOCCTOps(prevOps, [shellOp]);
-    const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, polySides);
+    const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, polySides, obj.userData.coneTop||0, obj.userData.coneFlip);
     const { shape: finalShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
     if (!opOk) return null;
     const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
@@ -5519,7 +5523,7 @@ async function _applyEdgeHandleValue(chamferDist) {
         }));
         const allOps = _mergeOCCTOps(prevOps, newOps);
 
-        const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz);
+        const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, null, o.userData.coneTop||0, o.userData.coneFlip);
         const { shape: curShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
 
         if (opOk) {
@@ -7934,7 +7938,7 @@ function buildObjectFromData(data) {
   obj.position.set(data.px || 0, data.py || 0, data.pz || 0);
   obj.rotation.set(data.rx || 0, data.ry || 0, data.rz || 0);
   obj.scale.set(data.sx || 1, data.sy || 1, data.sz || 1);
-  obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, opacity: data.opacity || 1.0, type: data.type, shapeType: data.shapeType || data.type, isGroup: !!data.isGroup, textStr: data.textStr || '', fillet: data.fillet || 0, chamfer: data.chamfer || 0, segments: data.segments, tubeRatio: data.tubeRatio, tubeWall: (data.tubeWall != null ? data.tubeWall : (data.shapeType==='tube'||data.type==='tube' ? 2 : undefined)), edgeBevels: data.edgeBevels, occtShape: data.occtShape || (data.wasBox ? 'box' : null), _occtParams: data._occtParams || null, displacementPattern: data.displacementPattern || 'keine', displacementAmp: data.displacementAmp || 0.5, displacementFreq: data.displacementFreq || 4, displacementInvert: !!data.displacementInvert, displacementSymmetric: !!data.displacementSymmetric, locked: !!data.locked, hidden: !!data.hidden, threadDiameter: data.threadDiameter, threadPitch: data.threadPitch, threadTurns: data.threadTurns, screwType: data.screwType, screwSize: data.screwSize, screwLength: data.screwLength, screwClearance: data.screwClearance, screwOuter: data.screwOuter, screwThread: data.screwThread, screwHead: data.screwHead, gearModule: data.gearModule, gearTeeth: data.gearTeeth, gearWidth: data.gearWidth, gearBore: data.gearBore, encType: data.encType, encW: data.encW, encD: data.encD, encH: data.encH, encWall: data.encWall, encBosses: data.encBosses, encBossSize: data.encBossSize };
+  obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, opacity: data.opacity || 1.0, type: data.type, shapeType: data.shapeType || data.type, isGroup: !!data.isGroup, textStr: data.textStr || '', fillet: data.fillet || 0, chamfer: data.chamfer || 0, segments: data.segments, tubeRatio: data.tubeRatio, coneTop: data.coneTop, coneFlip: !!data.coneFlip, tubeWall: (data.tubeWall != null ? data.tubeWall : (data.shapeType==='tube'||data.type==='tube' ? 2 : undefined)), edgeBevels: data.edgeBevels, occtShape: data.occtShape || (data.wasBox ? 'box' : null), _occtParams: data._occtParams || null, displacementPattern: data.displacementPattern || 'keine', displacementAmp: data.displacementAmp || 0.5, displacementFreq: data.displacementFreq || 4, displacementInvert: !!data.displacementInvert, displacementSymmetric: !!data.displacementSymmetric, locked: !!data.locked, hidden: !!data.hidden, threadDiameter: data.threadDiameter, threadPitch: data.threadPitch, threadTurns: data.threadTurns, screwType: data.screwType, screwSize: data.screwSize, screwLength: data.screwLength, screwClearance: data.screwClearance, screwOuter: data.screwOuter, screwThread: data.screwThread, screwHead: data.screwHead, gearModule: data.gearModule, gearTeeth: data.gearTeeth, gearWidth: data.gearWidth, gearBore: data.gearBore, encType: data.encType, encW: data.encW, encD: data.encD, encH: data.encH, encWall: data.encWall, encBosses: data.encBosses, encBossSize: data.encBossSize };
   if (data.tubePoly)  obj.userData.tubePoly  = true;
   if (data.tubeTwist) obj.userData.tubeTwist = data.tubeTwist;
   if (data.tubeFloor) obj.userData.tubeFloor = true;
@@ -7982,6 +7986,8 @@ function objectToData(o) {
   if (o.userData.chamfer)    d.chamfer    = o.userData.chamfer;
   if (o.userData.segments)   d.segments   = o.userData.segments;
   if (o.userData.tubeRatio)  d.tubeRatio  = o.userData.tubeRatio;
+  if (o.userData.coneTop)    d.coneTop    = o.userData.coneTop;
+  if (o.userData.coneFlip)   d.coneFlip   = true;
   if (o.userData.tubeWall != null) d.tubeWall = o.userData.tubeWall;
   if (o.userData.tubePoly)   d.tubePoly  = true;
   if (o.userData.tubeTwist)  d.tubeTwist = o.userData.tubeTwist;
@@ -8779,7 +8785,7 @@ async function _occtFullBooleanCut(solid, svgHole) {
     else geoOff = ['cylinder','tube','cone'].includes(occtShape)
       ? {x:solid.position.x, y:solid.position.y-sy, z:solid.position.z}
       : {x:solid.position.x-sx, y:solid.position.y-sy, z:solid.position.z-sz};
-    const base = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz);
+    const base = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, null, ud.coneTop||0, ud.coneFlip);
     const { shape: shaped } = _replayOCCTOps(oc, base, ops||[], sx, sy, sz);
     const tv = new oc.gp_Vec_4(geoOff.x, geoOff.y, geoOff.z);
     const trsf = new oc.gp_Trsf_1(); trsf.SetTranslation_1(tv); tv.delete();
@@ -16719,8 +16725,23 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.2';
+const VOLME3D_VERSION = '1.15.7';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.7', date:'2026-06-20', changes:[
+    ['🎚️','Größen-Regler (Durchmesser, Höhe, Länge …) lassen sich jetzt fein/smooth verstellen statt in groben 0,5-mm-Sprüngen: Standard-Schrittweite der mm-Slider von 0,5 auf 0,1 mm gesenkt — passt zur 0,1-mm-Anzeige. Gilt für alle Formen (Kegel, Zylinder, Box, Vieleck …). Slider mit eigener Schrittweite (Gewinde, Schrauben) bleiben unverändert.'],
+  ]},
+  { version:'1.15.6', date:'2026-06-20', changes:[
+    ['🐛','Textur war auf normalen Teilen unsichtbar: seit der Pipeline-Neufassung lief die „Skalierung" gegen eine feste 400-mm-Referenz. Auf typischen 2–6 cm-Druckteilen passte damit nicht mal eine ganze Musterperiode aufs Teil → das Muster verschwand und das Displacement blies das Objekt nur glatt/rund auf. Die Skalierung ist jetzt wieder objektrelativ (wie vor der Neufassung): „Skalierung" = Zyklen über das ganze Teil, das Muster ist auf jedem Objekt sichtbar — egal ob 2 cm oder 2 m.'],
+  ]},
+  { version:'1.15.5', date:'2026-06-20', changes:[
+    ['🔄','Kegel/Kegelstumpf lässt sich umdrehen: neue Option „Auf die Spitze (umgedreht)" im Kegel-Panel stellt die schmale Seite (bzw. die Spitze) nach unten — ideal für Trichter oder umgekehrt konische Becher. Die Drehung steckt in der Geometrie (Modell bleibt achsparallel), daher funktionieren Abrunden, Abschrägen und Gehäuse weiterhin. Die „↑/↓"-Pfeile an den Durchmessern werden mitgeführt.'],
+  ]},
+  { version:'1.15.4', date:'2026-06-20', changes:[
+    ['✨','Kegelstumpf: Der Kegel hat jetzt einen Regler „Durchmesser ↑" (oberer Durchmesser). 0 = spitzer Kegel wie bisher, >0 = abgeschnittener Kegel (Kegelstumpf). Wirkt auf Anzeige UND OCCT-Form, lässt sich also abrunden, abschrägen und mit der Gehäuse-Funktion aushöhlen (z. B. konischer Becher/Trichter).'],
+  ]},
+  { version:'1.15.3', date:'2026-06-20', changes:[
+    ['✨','Gehäuse-Funktion (Aushöhlen) jetzt auch für den Kegel: „▣ Gehäuse (aushöhlen)" erscheint im Eigenschaften-Panel des Kegels. Fläche(n) anklicken, die offen bleiben sollen (typisch der Boden), Wandstärke wählen — fertig ist die hohle Kegelschale. Funktioniert wie bei Box, Vieleck, Keil und Zylinder.'],
+  ]},
   { version:'1.15.2', date:'2026-06-20', spots:[{id:'nameplate',sel:'[onclick="_openNameModal()"]'}], changes:[
     ['🎈','Ballon-Namensschild verfeinert: (1) Der flache Verbindungssteg unten ist standardmäßig AUS — er bildete eine „verschobene“ Leiste unter den runden Buchstaben. Durch Überlappung + Rundung greifen die Buchstaben ohnehin satt ineinander (1,6–3,1 mm), also bleibt es ein druckbares Stück; bei Bedarf lässt sich der Steg wieder zuschalten. (2) Die Rundung ist praller/glatter — stärker gewölbt statt nur abgeschrägt (mehr Bevel-Segmente, vertikal betonte Wölbung), also echter Ballon-/Bubble-Look.'],
   ]},
@@ -18311,7 +18332,7 @@ function _fpBuildRows(type, o) {
     const u = unit != null ? unit : 'mm';
     const mn = min != null ? min : 0.1;
     const mx = max != null ? max : (u === '%' ? 100 : u === '' ? 128 : 300);
-    const st = step || (u === '' ? 1 : 0.5);
+    const st = step || (u === '' ? 1 : 0.1);   // mm-Slider fein (0,1 mm) statt grob (0,5) → smooth, passt zur 0,1-mm-Anzeige
     return `<div class="fp-row">` +
       `<div class="fp-row-top">` +
         `<span class="fp-lbl">${lbl}</span>` +
@@ -18366,7 +18387,7 @@ function _fpBuildRows(type, o) {
       `<button class="fp-btn" onclick="_resetAllEdges()">Zurücksetzen</button></div>`;
   }
 
-  const _shellEligible = ['box','wedge','polygon','cylinder'].includes(o.userData.occtShape || type) || !!o.userData._occtParams;
+  const _shellEligible = ['box','wedge','polygon','cylinder','cone'].includes(o.userData.occtShape || type) || !!o.userData._occtParams;
   const edgeBtn = isBoxGeom
     ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="enterEdgeMode()">⬡ Kanten bearbeiten</button></div>`
     : '';
@@ -18446,7 +18467,18 @@ function _fpBuildRows(type, o) {
     case 'cone': case 'pyramid': {
       const rad = r2(sz.x / 2 * 10);
       const defSegs = type === 'pyramid' ? 4 : 32;
-      return row('Durchmesser ↓', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
+      const flip = !!o.userData.coneFlip;   // true = schmale Seite/Spitze unten
+      // Kegel: oberer Durchmesser (0 = spitzer Kegel, >0 = Kegelstumpf).
+      // „Umgedreht" kippt die schmale Seite nach unten → Pfeile in den Labels mitführen.
+      const topRow = type === 'cone'
+        ? row(flip ? 'Durchmesser ↓' : 'Durchmesser ↑', 'fp-ctop', r2(rad*2*(o.userData.coneTop||0)), "fpApplyConeTop(this.value)", 'mm', 0, 500)
+        : '';
+      const flipRow = type === 'cone'
+        ? `<label class="fp-check-lbl"><input type="checkbox" id="fp-coneflip" ${flip?'checked':''} onchange="fpApplyConeFlip(this.checked)"> Auf die Spitze (umgedreht)</label>`
+        : '';
+      return row(flip ? 'Durchmesser ↑' : 'Durchmesser ↓', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
+             topRow +
+             flipRow +
              row('Höhe',     'fph',   h,   "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
              row('Seiten', 'fp-seg', segs||defSegs, "fpApplySegs(this.value)", '', 3, 128, 1) +
@@ -18654,6 +18686,7 @@ function _fpSyncValues() {
       set('fp-seg', o.userData.segments||32); break;
     case 'cone': case 'pyramid':
       set('fp-r', r2(sz.x*10)); set('fph', h);
+      if (type === 'cone') set('fp-ctop', r2(sz.x*10*(o.userData.coneTop||0)));
       set('fp-seg', o.userData.segments||(type==='pyramid'?4:32)); break;
     case 'torus': {
       set('fp-r', r2(sz.x*10));
@@ -18892,6 +18925,31 @@ function fpApplyDiameter(val) {
   fpApplyRadius(v / 2);
 }
 
+// Kegel: oberer Durchmesser (mm) → Verhältnis zum unteren Ø (0 = spitzer Kegel, >0 = Kegelstumpf)
+function fpApplyConeTop(val) {
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'cone') return;
+  const topMm = parseFloat(val); if (!(topMm >= 0)) return;
+  const botMm = o.scale.x * 2 * 10;   // unterer Durchmesser in mm
+  let ratio = botMm > 0 ? topMm / botMm : 0;
+  ratio = Math.max(0, Math.min(0.98, ratio));   // <1, sonst Zylinder/ungültig
+  saveUndoDebounced();
+  o.userData.coneTop = ratio;
+  _fpRebuildGeo(o);
+  _fpSyncValues();
+  if (selectedObjs.length > 0) _doRepositionDimHandles();
+}
+
+// Kegel umdrehen: schmale Seite/Spitze nach unten (Orientierung in der Geometrie
+// gebacken → bleibt achsparallel, Gehäuse/Abrunden funktionieren weiter)
+function fpApplyConeFlip(on) {
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'cone') return;
+  saveUndoDebounced();
+  o.userData.coneFlip = !!on;
+  _fpRebuildGeo(o);
+  _fpCurType = null; updateFP();   // Panel neu aufbauen → Pfeil-Labels (↑/↓) tauschen
+  if (selectedObjs.length > 0) _doRepositionDimHandles();
+}
+
 // Vieleck: Mess-Modus 'flaeche' (Schlüsselweite, Fläche↔Fläche) oder 'spitze' (Eckmaß, Spitze↔Spitze)
 function _polyDiaFactor(o) {
   const n = Math.max(3, o.userData.segments || 6);
@@ -19058,7 +19116,13 @@ function _fpRebuildGeo(o) {
       break;
     }
     case 'sphere':   geo = new THREE.SphereGeometry(1, segs||32, Math.max(3, Math.round((segs||32)*0.75))); break;
-    case 'cone':     geo = new THREE.ConeGeometry(1, 2, segs||32); break;
+    case 'cone': {  // coneTop=0 → Spitze (Kegel), >0 → Kegelstumpf; coneFlip → schmale Seite unten
+      const ct = o.userData.coneTop || 0;
+      geo = o.userData.coneFlip
+        ? new THREE.CylinderGeometry(1, ct, 2, segs||32)   // breit oben, Spitze/schmal unten
+        : new THREE.CylinderGeometry(ct, 1, 2, segs||32);  // breit unten (Standard)
+      break;
+    }
     case 'pyramid': {
       geo = new THREE.BufferGeometry();
       const pv = new Float32Array([-1,-1,-1, 1,-1,-1, 1,-1,1, -1,-1,1, 0,1,0]);
