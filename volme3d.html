@@ -945,7 +945,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.14.99<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.0<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -2140,7 +2140,7 @@ const firebaseConfig = {
         <div class="vrow" id="name-row-raise"><label title="Wie weit die Buchstaben aus der Platte ragen">Erhebung</label> <input type="range" id="name-raise" min="0.4" max="4" value="1.5" step="0.1" oninput="document.getElementById('name-raisev').textContent=this.value"><span class="vv" id="name-raisev">1.5</span><span class="vu">mm</span></div>
         <div class="vrow"><label id="name-plate-label" title="Platte = Dicke der Trägerplatte · Freistehend = Gesamtdicke des Schilds (3D-Effekt)">Platte</label> <input type="range" id="name-plate" min="0.6" max="12" value="2" step="0.1" oninput="document.getElementById('name-platev').textContent=this.value"><span class="vv" id="name-platev">2</span><span class="vu">mm</span></div>
         <div class="vrow" id="name-row-overlap" style="display:none"><label title="Wie weit benachbarte Buchstaben seitlich ineinandergreifen. Mit Höhenversatz bleibt die Schrift trotz Überlappung lesbar und verbindet sich satt.">Überlappung</label> <input type="range" id="name-overlap" min="0" max="40" value="30" step="1" oninput="document.getElementById('name-overlapv').textContent=this.value;_namePreview()"><span class="vv" id="name-overlapv">30</span><span class="vu">%</span></div>
-        <div class="vrow" id="name-row-stagger" style="display:none"><label title="Buchstaben abwechselnd hoch/tief versetzen, sodass sie ineinandergreifen — wie bei den gekauften Namensanhängern. 0 = alle auf einer Linie.">Versatz hoch/tief</label> <input type="range" id="name-stagger" min="0" max="60" value="0" step="1" oninput="document.getElementById('name-staggerv').textContent=this.value;_namePreview()"><span class="vv" id="name-staggerv">0</span><span class="vu">%</span></div>
+        <div class="vrow" id="name-row-stagger" style="display:none"><label title="Jeder zweite Buchstabe wird dicker (erhaben), die dazwischen bleiben flacher (tiefer) — im Wechsel. Erzeugt den 3D-Relief-Effekt der gekauften Anhänger. 0 = alle gleich dick.">Relief erhaben/tief</label> <input type="range" id="name-stagger" min="0" max="100" value="50" step="1" oninput="document.getElementById('name-staggerv').textContent=this.value;_namePreview()"><span class="vv" id="name-staggerv">50</span><span class="vu">%</span></div>
         <div class="vrow" id="name-row-slant" style="display:none"><label title="Schräge/kursive Neigung der Schrift nach rechts — wie bei den gekauften Anhängern. 0 = gerade.">Neigung</label> <input type="range" id="name-slant" min="0" max="25" value="10" step="1" oninput="document.getElementById('name-slantv').textContent=this.value;_namePreview()"><span class="vv" id="name-slantv">10</span><span class="vu">°</span></div>
         <label id="name-row-baseweb" style="display:none;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:2px" title="Dünner Steg an der Grundlinie, der alle Buchstaben sicher zu EINEM druckbaren Stück verbindet. Nur ohne Höhenversatz nötig — beim Versatz greifen die Buchstaben von selbst ineinander."><input type="checkbox" id="name-baseweb" checked onchange="_namePreview()"> Verbindungssteg unten (nur ohne Versatz)</label>
         <div class="vrow" id="name-row-margin"><label title="Rand zwischen Text und Plattenkante">Rand</label> <input type="range" id="name-margin" min="1" max="15" value="4" step="0.5" oninput="document.getElementById('name-marginv').textContent=this.value;_namePreview()"><span class="vv" id="name-marginv">4</span><span class="vu">mm</span></div>
@@ -14627,10 +14627,12 @@ function _createNameplate(){
 // ineinandergreifen — so wie bei den gedruckten Namensanhängern und garantiert als ein
 // zusammenhängendes, druckbares Volumen (überlappende geschlossene Körper = Slicer-Union).
 // Liefert flach gelegt (Achse Y, Unterseite y=0), mittig im Ursprung + halbe Maße.
-function _freeTextGeo(font, txt, sizeU, thickU, overlap, baseWeb, stagger, slantDeg){
+function _freeTextGeo(font, txt, sizeU, thickU, overlap, baseWeb, relief, slantDeg){
   const res = (font.data && font.data.resolution) || 1000;
   const scale = sizeU / res;
-  const stagU = Math.max(0, stagger||0) * sizeU;   // Höhenversatz in Units
+  // Relief: jeder zweite Buchstabe wird DICKER extrudiert (ragt höher → „erhaben"),
+  // dazwischen die Basisdicke („tiefer") — im Wechsel. relief = Anteil der Dicke (0..1).
+  const reliefU = Math.max(0, Math.min(1.5, relief||0)) * thickU;
   let cursor = 0;
   const parts = [];
   let gi = 0;                                       // Index nur der gezeichneten Buchstaben
@@ -14641,10 +14643,9 @@ function _freeTextGeo(font, txt, sizeU, thickU, overlap, baseWeb, stagger, slant
     let shapes = [];
     try{ shapes = font.generateShapes(ch, sizeU); }catch(e){}
     if(shapes && shapes.length){
-      const gg = new THREE.ExtrudeGeometry(shapes, {depth:thickU, bevelEnabled:false, steps:1, curveSegments:12});
-      // Treppe hoch/tief: gerade Buchstaben runter, ungerade hoch (um die Mittellinie)
-      const yoff = (gi % 2 === 0) ? -stagU*0.5 : stagU*0.5;
-      gg.translate(cursor, yoff, 0);
+      const dep = thickU + ((gi % 2 === 0) ? reliefU : 0);   // gerade = erhaben, ungerade = Basis
+      const gg = new THREE.ExtrudeGeometry(shapes, {depth:dep, bevelEnabled:false, steps:1, curveSegments:12});
+      gg.translate(cursor, 0, 0);                            // Unterseite bleibt auf z=0 (Druckbett)
       parts.push(_posOnly(gg));
     }
     cursor += adv * (1 - overlap);
@@ -14652,9 +14653,8 @@ function _freeTextGeo(font, txt, sizeU, thickU, overlap, baseWeb, stagger, slant
   }
   if(!parts.length) return null;
   let merged = _mergePos(parts);
-  // Verbindungssteg an der Grundlinie — nur sinnvoll/nötig OHNE Höhenversatz.
-  // Beim Versatz verbinden sich die Buchstaben durch das Ineinandergreifen selbst.
-  if(baseWeb && stagU <= 0.0001){
+  // Verbindungssteg an der Grundlinie (Basisdicke) hält alle Buchstaben sicher zusammen.
+  if(baseWeb){
     merged.computeBoundingBox();
     const bb0 = merged.boundingBox;
     const barH = Math.max(0.12, sizeU*0.13);            // ~1.2–1.8 mm Steghöhe
@@ -14697,23 +14697,23 @@ function _freeMeshGeo(font, txt, sizeMM, thickMM, overlapPct, baseWeb, staggerPc
     const rIn  = Math.max(0.08, (opt.eyeD/2)/10);
     const wall = Math.max(0.14, rIn*0.55);
     const rOut = rIn + wall;
-    // Kleine Öse DIREKT oben am ersten Buchstaben: der untere Ringbogen überlappt die
-    // Oberkante, das Loch bleibt frei darüber, ein kurzer breiter Steg fixiert sie fest.
-    // top = -z (Schrift-Oberkante), links = -x.
-    const cx = -halfW + rOut*0.9;          // über dem ersten Buchstaben
-    const cz = -halfH - rOut*0.7;          // Loch knapp über der Oberkante, Ringfuß überlappt
+    // Kleine Öse LINKS MITTIG am ersten Buchstaben: Loch sitzt links neben der Schrift
+    // (frei), der rechte Ringbogen überlappt die linke Buchstabenkante, kurzer breiter
+    // Steg fixiert sie. links = -x, vertikale Mitte = z≈0.
+    const cx = -halfW - rIn - 0.03;        // Loch knapp links der Schrift → bleibt frei
+    const cz = 0;                          // vertikale Mitte
     const sh = new THREE.Shape(); sh.absarc(0,0,rOut,0,Math.PI*2,false);
     const hole = new THREE.Path(); hole.absarc(0,0,rIn,0,Math.PI*2,true); sh.holes.push(hole);
     const rg = new THREE.ExtrudeGeometry(sh, {depth:thickU, bevelEnabled:false, steps:1, curveSegments:40});
     rg.rotateX(-Math.PI/2); rg.computeBoundingBox(); rg.translate(cx, -rg.boundingBox.min.y, cz);
     parts.push(_posOnly(rg));
-    // Kurzer, breiter Steg vom Ringfuß (unter dem Loch) in die Oberkante des Buchstabens
-    const nz0 = cz + rIn;                   // direkt unter dem Loch beginnen
-    const nz1 = -halfH + 0.22;              // bis knapp in den Buchstaben hinein
-    const neckLen = Math.max(0.04, nz1 - nz0);
+    // Kurzer, breiter Steg vom Ringfuß (rechts des Lochs) in die linke Buchstabenkante
+    const nx0 = cx + rIn;                   // direkt rechts des Lochs beginnen
+    const nx1 = -halfW + 0.22;              // bis knapp in den Buchstaben hinein
+    const neckLen = Math.max(0.04, nx1 - nx0);
     const neckW   = Math.max(rOut*0.9, 0.2);
-    const nk = new THREE.BoxGeometry(neckW, thickU, neckLen);
-    nk.translate(cx, thickU/2, nz0 + neckLen/2);
+    const nk = new THREE.BoxGeometry(neckLen, thickU, neckW);
+    nk.translate(nx0 + neckLen/2, thickU/2, cz);
     parts.push(_posOnly(nk));
   }
   const geo = _mergePos(parts); geo.computeVertexNormals();
@@ -14848,7 +14848,7 @@ function _namePreviewFree(ctx, cv, txt, sizeMM, eyeOn, opt){
     if(geo) _npPrevRender(ctx, cv, geo);
   });
   const info=document.getElementById('name-info');
-  if(info) info.textContent='Echte 3D-Vorschau (Draufsicht), einfarbig'+(eyeOn?' · Öse oben am ersten Buchstaben':'')+'.';
+  if(info) info.textContent='Echte 3D-Vorschau (Schrägansicht), einfarbig'+(eyeOn?' · Öse links mittig':'')+'.';
 }
 
 // Rendert eine fertige Freistehend-Geometrie als Draufsicht in das 2D-Vorschau-Canvas.
@@ -14861,7 +14861,8 @@ function _npPrevRender(ctx, cv, geo){
     const scene=new THREE.Scene();
     scene.add(new THREE.AmbientLight(0xffffff, 0.85));
     const d=new THREE.DirectionalLight(0xffffff, 0.55); d.position.set(-0.4,1,0.5); scene.add(d);
-    const cam=new THREE.OrthographicCamera(-1,1,1,-1,0.01,100);
+    // leicht schräge Perspektive, damit das Höhen-Relief (erhaben/tief) sichtbar ist
+    const cam=new THREE.PerspectiveCamera(32, cv.width/cv.height, 0.1, 200);
     P = window._npPrev = { gl, r, scene, cam, mesh:null };
   }
   if(P.mesh){ P.scene.remove(P.mesh); P.mesh.geometry.dispose(); P.mesh.material.dispose(); }
@@ -14869,14 +14870,16 @@ function _npPrevRender(ctx, cv, geo){
   const mat = new THREE.MeshStandardMaterial({color:new THREE.Color(col), roughness:0.5, metalness:0, side:THREE.DoubleSide});
   const mesh = new THREE.Mesh(geo, mat); P.mesh=mesh; P.scene.add(mesh);
   geo.computeBoundingBox(); const b=geo.boundingBox;
-  const ccx=(b.min.x+b.max.x)/2, ccz=(b.min.z+b.max.z)/2;
-  const sx=Math.max(0.01, b.max.x-b.min.x), sz=Math.max(0.01, b.max.z-b.min.z);
-  const aspect=cv.width/cv.height;
-  let halfX=sx/2*1.18, halfZ=sz/2*1.18;
-  if(halfX/halfZ < aspect) halfX=halfZ*aspect; else halfZ=halfX/aspect;
+  const ccx=(b.min.x+b.max.x)/2, ccy=(b.min.y+b.max.y)/2, ccz=(b.min.z+b.max.z)/2;
+  const sx=Math.max(0.01, b.max.x-b.min.x), sy=Math.max(0.01,b.max.y-b.min.y), sz=Math.max(0.01, b.max.z-b.min.z);
   const cam=P.cam;
-  cam.left=-halfX; cam.right=halfX; cam.top=halfZ; cam.bottom=-halfZ; cam.near=0.01; cam.far=100;
-  cam.position.set(ccx,10,ccz); cam.up.set(0,0,-1); cam.lookAt(ccx,0,ccz); cam.updateProjectionMatrix();
+  const radius = 0.5*Math.sqrt(sx*sx + sz*sz + sy*sy);
+  const dist = radius/Math.sin(cam.fov*Math.PI/360) * 1.15;
+  // Blickrichtung: vorwiegend von oben, etwas von vorne → Oberseite + Reliefkanten sichtbar
+  const dir = new THREE.Vector3(0.0, 0.9, 0.42).normalize();
+  cam.aspect = cv.width/cv.height;
+  cam.position.set(ccx + dir.x*dist, ccy + dir.y*dist, ccz + dir.z*dist);
+  cam.up.set(0,0,-1); cam.lookAt(ccx, ccy, ccz); cam.updateProjectionMatrix();
   P.r.render(P.scene, P.cam);
   ctx.clearRect(0,0,cv.width,cv.height);
   ctx.drawImage(P.gl, 0, 0);
@@ -16692,8 +16695,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.14.99';
+const VOLME3D_VERSION = '1.15.0';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.0', date:'2026-06-20', spots:[{id:'nameplate',sel:'[onclick="_openNameModal()"]'}], changes:[
+    ['🏷️','Freistehendes Namensschild — der 3D-Relief-Effekt der gekauften Anhänger: Mit dem neuen Regler „Relief erhaben/tief“ (Standard 50 %) wird jeder zweite Buchstabe dicker (ragt höher = erhaben), die dazwischen bleiben flacher (tiefer) — im Wechsel. Alle Unterseiten bleiben auf dem Druckbett, also weiterhin als ein Stück druckbar. Außerdem sitzt die Öse jetzt links MITTIG am ersten Buchstaben (statt oben). (Der frühere „Versatz hoch/tief“ in der Ebene war der falsche Ansatz und ist durch das Relief ersetzt.)'],
+  ]},
   { version:'1.14.99', date:'2026-06-20', spots:[{id:'nameplate',sel:'[onclick="_openNameModal()"]'}], changes:[
     ['🏷️','Freistehendes Namensschild deutlich näher an den gekauften Anhängern: (1) Die Öse sitzt jetzt als kleine Schlaufe DIREKT oben am ersten Buchstaben (vorher hing sie an einem langen Steg „in der Luft“). (2) Buchstaben stehen enger – Überlappung-Standard 30 %, sie greifen dicht ineinander („auf/untereinander“). (3) Die Dialog-Vorschau ist jetzt eine ECHTE 3D-Draufsicht der tatsächlichen Geometrie (gleiche Schrift/Überlappung/Öse) statt einer irreführenden 2D-Nachzeichnung.'],
   ]},
