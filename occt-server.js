@@ -518,6 +518,10 @@ function buildMatrixFromSnapNormal(stlBuf, snapNormal, snapPoint, svgSize) {
 
 app.post('/api/occt-subtract', async (req, res) => {
   const { stlBase64, svgPathData, svgTransformM, snapNormal, snapPoint } = req.body;
+  // Inlay (farbiger Boden-Slab für Zweifarb-Druck) ist opt-in: kostet einen
+  // zweiten Boolean + große Vernetzung (~2,5 Min). Standard aus → schneller.
+  // Gilt nur für VERTIEFT; bei ERHABEN ist das "Inlay" die Schrift selbst (immer).
+  const wantInlay = req.body.wantInlay === true;
   let svgHoleMatrixElements = req.body.svgHoleMatrixElements || null;
   if (!stlBase64)          return res.json({ error: 'stlBase64 fehlt' });
   if (!svgPathData?.length) return res.json({ error: 'svgPathData fehlt' });
@@ -655,7 +659,7 @@ app.post('/api/occt-subtract', async (req, res) => {
       console.log('[cut] IsDone:', cut.IsDone());
       if (!cut.IsDone()) { cut.delete(); return res.json({ error: 'Boolean Cut fehlgeschlagen' }); }
       result = cut.Shape();
-      try {
+      if (wantInlay) try {
         const com = new oc.BRepAlgoAPI_Common_3(solidOCCT, tool); com.Build();
         if (com.IsDone()) {
           let inlayShape = com.Shape();

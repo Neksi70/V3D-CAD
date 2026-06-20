@@ -49,37 +49,43 @@ function countTris(b64) {
   return buf.length >= 84 ? buf.readUInt32LE(80) : 0;
 }
 
-(async () => {
+function runCut(wantInlay) {
   const W=140, H=120, D=8;                 // dünne Platte, Wand 8mm
   const stl = boxSTL(W, H, D);
-  const paths = makePaths(19);
-  // SVG auf die Oberseite (+Z, Normal (0,0,1)), mittig
   const body = JSON.stringify({
     stlBase64: stl.toString('base64'),
-    svgPathData: paths,
+    svgPathData: makePaths(19),
     svgTransformM: { scale: 1.0, cx: 42, cy: 28, svgSize: 50, depthMM: 3 },
-    snapNormal: { x: 0, y: 0, z: 1 },
+    snapNormal: { x: 0, y: 0, z: 1 },      // SVG auf Oberseite (+Z)
     snapPoint:  { x: W/2, y: H/2, z: D },
+    wantInlay,
   });
-
   const opts = { method: 'POST', host: '127.0.0.1', port: 3001,
     path: '/api/occt-subtract', rejectUnauthorized: false,
     headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } };
-
   const t = Date.now();
-  const data = await new Promise((resolve, reject) => {
-    const req = https.request(opts, res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>resolve(d)); });
+  return new Promise((resolve, reject) => {
+    const req = https.request(opts, res => { let d=''; res.on('data',c=>d+=c);
+      res.on('end',()=>resolve({ ms: Date.now()-t, data: d })); });
     req.on('error', reject); req.write(body); req.end();
   });
-  const ms = Date.now() - t;
-  let j; try { j = JSON.parse(data); } catch { console.log('Antwort kein JSON:', data.slice(0,200)); process.exit(1); }
+}
 
-  console.log(`Antwortzeit: ${ms} ms`);
-  if (j.error) { console.log('✗ Server-Fehler:', j.error); process.exit(2); }
-  const nt = countTris(j.resultStlBase64);
-  console.log(`Ergebnis-STL: ${nt} Dreiecke, ${Buffer.from(j.resultStlBase64,'base64').length} Bytes`);
-  console.log(`Inlay: ${j.inlayStlBase64 ? countTris(j.inlayStlBase64)+' Dreiecke' : 'keins'}`);
-  if (nt < 12) { console.log('✗ Ergebnis zu klein — Cut hat nichts erzeugt'); process.exit(3); }
-  console.log('✓ Cut liefert gültiges Ergebnis');
-  process.exit(0);
+(async () => {
+  let fail = false;
+  for (const wantInlay of [false, true]) {
+    const { ms, data } = await runCut(wantInlay);
+    let j; try { j = JSON.parse(data); } catch { console.log('Antwort kein JSON:', data.slice(0,200)); process.exit(1); }
+    const tag = wantInlay ? 'mit Inlay ' : 'ohne Inlay';
+    if (j.error) { console.log(`✗ [${tag}] Server-Fehler:`, j.error); fail = true; continue; }
+    const nt = countTris(j.resultStlBase64);
+    const inlay = j.inlayStlBase64 ? countTris(j.inlayStlBase64) : 0;
+    console.log(`[${tag}] ${ms} ms — Ergebnis ${nt} Dreiecke, Inlay ${inlay ? inlay+' Dreiecke' : 'keins'}`);
+    if (nt < 12) { console.log(`  ✗ Ergebnis zu klein`); fail = true; }
+    // Erwartung: ohne Inlay -> keins; mit Inlay -> vorhanden
+    if (!wantInlay && inlay) { console.log('  ✗ Inlay trotz opt-out erzeugt'); fail = true; }
+    if (wantInlay && !inlay) { console.log('  ✗ Inlay angefordert aber nicht erzeugt'); fail = true; }
+  }
+  console.log(fail ? '\n✗ Test fehlgeschlagen' : '\n✓ Cut korrekt: Inlay ist opt-in, Ergebnis gültig');
+  process.exit(fail ? 1 : 0);
 })().catch(e => { console.error('FATAL', e); process.exit(1); });

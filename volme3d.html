@@ -8883,7 +8883,8 @@ async function _occtFullBooleanCut(solid, svgHole) {
                           svgSize:  svgHole.userData.svgSize  || 50,
                           depthMM:  _userDepth },
         snapNormal: _sn ? { x: _sn.x, y: _sn.y, z: _sn.z } : null,
-        snapPoint:  _snapPoint
+        snapPoint:  _snapPoint,
+        wantInlay:  svgHole.userData.svgWantInlay === true   // opt-in: Zweifarb-Inlay
       });
       console.log('>>> FETCH STARTET body.length:', _body.length);
       const resp = await fetch('https://v3da.tailf05fe9.ts.net:18790/api/occt-subtract', {
@@ -9024,10 +9025,12 @@ async function subtractHoles() {
   if (hasSvg) {
     const svgHoles = holes.filter(h => h.userData.type === 'svg');
     const currentDepth = svgHoles[0].userData.svgDepth || 1;
-    const depth = await _engraveDepthDialog(currentDepth);
-    if (depth === null) return;                          // Abbruch
+    const res = await _engraveDepthDialog(currentDepth);
+    if (res === null) return;                             // Abbruch
+    const { depth, wantInlay } = res;
     if (Math.abs(depth) < 0.05) { notify('0 mm — nichts zu tun', 'w'); return; }
-    svgHoles.forEach(h => { h.userData.svgDepth = depth; });  // negativ = erhaben
+    svgHoles.forEach(h => { h.userData.svgDepth = depth;     // negativ = erhaben
+                            h.userData.svgWantInlay = wantInlay; });
   }
 
   _progressShow(hasSvg ? 'Gravur wird abgezogen…' : 'Abziehen läuft…');
@@ -11261,6 +11264,10 @@ function _engraveDepthDialog(current) {
       + '<input class="_em-rng" type="range" min="-2" max="5" step="0.1" value="' + v0 + '" style="width:100%">'
       + '<div style="display:flex;justify-content:space-between;color:#aaa;font-size:11px;margin-top:4px">'
       + '<span>◀ erhaben</span><span>bündig</span><span>vertieft ▶</span></div>'
+      + '<label class="_em-inlay-row" style="display:flex;align-items:center;gap:8px;margin-top:16px;'
+      + 'cursor:pointer;color:#555;font-size:13px">'
+      + '<input class="_em-inlay" type="checkbox" style="width:16px;height:16px;cursor:pointer">'
+      + '<span>Zweifarb-Inlay erzeugen <span style="color:#aaa">(für 2-Farb-Druck, deutlich langsamer)</span></span></label>'
       + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">'
       + '<button class="_em-cancel" style="padding:9px 16px;border:1px solid #ccc;background:#f4f4f4;'
       + 'border-radius:9px;cursor:pointer">Abbrechen</button>'
@@ -11268,15 +11275,21 @@ function _engraveDepthDialog(current) {
       + 'border-radius:9px;cursor:pointer;font-weight:600">OK</button></div></div>';
     document.body.appendChild(ov);
     const rng = ov.querySelector('._em-rng'), lbl = ov.querySelector('._em-lbl');
+    const inlayCb = ov.querySelector('._em-inlay'), inlayRow = ov.querySelector('._em-inlay-row');
     const upd = () => {
       const v = parseFloat(rng.value);
       lbl.textContent = v > 0.05 ? `Vertieft ${v.toFixed(1)} mm — wird in die Wand graviert`
         : v < -0.05 ? `Erhaben ${(-v).toFixed(1)} mm — Schrift steht raus`
         : 'Bündig (0 mm)';
+      // Inlay-Schalter nur bei VERTIEFT relevant (bei erhaben ist die Schrift selbst der Körper)
+      const recessed = v > 0.05;
+      inlayRow.style.opacity = recessed ? '1' : '.4';
+      inlayCb.disabled = !recessed;
     };
     rng.oninput = upd; upd();
     const done = val => { ov.remove(); resolve(val); };
-    ov.querySelector('._em-ok').onclick = () => done(parseFloat(rng.value));
+    ov.querySelector('._em-ok').onclick = () =>
+      done({ depth: parseFloat(rng.value), wantInlay: inlayCb.checked && !inlayCb.disabled });
     ov.querySelector('._em-cancel').onclick = () => done(null);
     ov.onclick = e => { if (e.target === ov) done(null); };
     setTimeout(() => rng.focus(), 50);
@@ -16776,8 +16789,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.12';
+const VOLME3D_VERSION = '1.15.13';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.13', date:'2026-06-20', changes:[
+    ['⚡','SVG-Gravur auf STL-Importen deutlich schneller: Die Glyphen werden jetzt in einem Schritt verschmolzen statt einzeln nacheinander (~20× schneller bei diesem Schritt). Das farbige Zweifarb-Inlay (Boden-Slab) ist jetzt opt-in — ein Häkchen „Zweifarb-Inlay erzeugen" im Gravur-Dialog. Standardmäßig aus, dadurch ist eine normale (einfarbige) Gravur nochmal deutlich schneller fertig.'],
+  ]},
   { version:'1.15.12', date:'2026-06-20', changes:[
     ['🎯','SVG-Abzug bei STL-Importen funktioniert jetzt auch ohne vorheriges Magnet-Heften: Wenn die SVG nicht ausdrücklich auf eine Fläche gezogen wurde, ermittelt Volme3D die Gravur-Fläche automatisch aus der aktuellen SVG-Lage (nächstgelegene Solid-Fläche). Vorher landete der Schnitt am Ursprung → es wurde sichtbar nichts abgezogen.'],
   ]},
