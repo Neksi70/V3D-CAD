@@ -12072,18 +12072,40 @@ _ebh.addEventListener('pointerup', e => {
 let _szOrigSz = null;   // original {w,d,h} in mm before user edits
 let _szOnDone = null;   // callback after dialog is dismissed
 
+// Setzt kaputte (NaN/Infinity) Positionen auf 0 zurück. Verhindert, dass ein
+// einzelnes defektes Objekt ganze Sammel-Operationen (Bounding-Box, "Auf die
+// Platte legen") vergiftet und damit ALLE Objekte unsichtbar macht — und heilt
+// bereits zerschossene Szenen beim nächsten Aufruf.
+function _sanitizeObjPositions() {
+  let fixed = 0;
+  objects.forEach(o => {
+    if (!isFinite(o.position.x)) { o.position.x = 0; fixed++; }
+    if (!isFinite(o.position.y)) { o.position.y = 0; fixed++; }
+    if (!isFinite(o.position.z)) { o.position.z = 0; fixed++; }
+    if (fixed) o.updateMatrixWorld(true);
+  });
+  return fixed;
+}
+
+function _boxFinite(b) {
+  return b && isFinite(b.min.x) && isFinite(b.min.y) && isFinite(b.min.z)
+           && isFinite(b.max.x) && isFinite(b.max.y) && isFinite(b.max.z);
+}
+
 function _szCombinedBox() {
   const box = new THREE.Box3();
-  objects.forEach(o => { o.updateMatrixWorld(true); box.union(getMeshBox(o)); });
+  // Defekte Objekte überspringen, sonst macht ein NaN-Objekt die ganze Box NaN.
+  objects.forEach(o => { o.updateMatrixWorld(true); const b = getMeshBox(o); if (_boxFinite(b)) box.union(b); });
   return box;
 }
 
 function _dropAllToGround() {
   if (!objects.length) return;
+  _sanitizeObjPositions();
   const box = _szCombinedBox();
   if (box.isEmpty()) return;
   const dy = box.min.y;
-  if (Math.abs(dy) < 0.001) return;
+  if (!isFinite(dy) || Math.abs(dy) < 0.001) return;
   objects.forEach(o => { o.position.y -= dy; });
 }
 
@@ -12127,6 +12149,7 @@ function _applyNewSize() {
   const sx = w / _szOrigSz.w, sy = h / _szOrigSz.h, sz = d / _szOrigSz.d;
   if (Math.abs(sx - 1) < 0.0002 && Math.abs(sy - 1) < 0.0002 && Math.abs(sz - 1) < 0.0002) return;
   // Scale all objects about the group centre
+  _sanitizeObjPositions();
   const box = _szCombinedBox();
   const cx  = (box.min.x + box.max.x) / 2;
   const cy  = (box.min.y + box.max.y) / 2;
@@ -20877,9 +20900,11 @@ function _printCheckOrient(){ if(typeof autoOrientForPrint==='function') autoOri
 function _printDropToPlate(){
   if(!objects.length) return;
   saveUndo();
-  const box=new THREE.Box3(); objects.forEach(o=>{ try{ box.expandByObject(o); }catch(e){} });
+  _sanitizeObjPositions();   // defekte Positionen heilen, bevor die Sammelbox gebildet wird
+  const box=new THREE.Box3(); objects.forEach(o=>{ try{ o.updateMatrixWorld(true); const b=getMeshBox(o); if(_boxFinite(b)) box.union(b); }catch(e){} });
   if(box.isEmpty()) return;
   const dy=-box.min.y + (typeof workplanePoint!=='undefined'?workplanePoint.y:0);
+  if(!isFinite(dy)) return;
   objects.forEach(o=>{ o.position.y += dy; });
   notify('Auf die Platte gelegt','ok');
   setTimeout(_printCheckOpen,30);
