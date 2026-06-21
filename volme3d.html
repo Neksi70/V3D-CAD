@@ -13753,32 +13753,44 @@ function _chamferTip(geo, Rmaj, cUnits){
   }
   pos.needsUpdate=true;
 }
-// Torx-Mitnahme (6-Lappen-Stern, ISO 10664), Achse Y, Basis bei y=0 — als Negativ
-// zum Aussparen im Kopf. Amm = Spitzen-Ø (Maß A), depthMm = Tiefe (mm).
-function _buildTorxGeo(Amm, depthMm){
-  // Echtes Torx-Profil: Vereinigung aus 6 Lappenkreisen + Kernkreis (ISO-10664-nah).
-  // Ergibt breite, runde Lappen mit schmalen scharfen Tälern (nicht der weiche Sinus).
+// Torx-Lappenprofil (ISO 10664): Vereinigung aus 6 Lappenkreisen + Kernkreis.
+// Liefert prof(theta)→Radius (Units). Amm = Spitzen-Ø (Maß A).
+function _torxProfile(Amm){
   const R=(Amm/10)/2;                 // Spitzenradius (Lappen außen)
   const rl=R*0.30, e=R-rl;            // Lappenkreis-Radius + Mittenabstand (Spitze = e+rl = R)
   const rc=R*0.75;                    // Kern-/Talradius (B ≈ 0.75·A)
-  const prof=th=>{                    // Radius zur Vereinigungs-Grenze
-    let r=rc;
+  return th=>{ let r=rc;
     for(let k=0;k<6;k++){ const a=th-k*Math.PI/3, s=e*Math.sin(a);
       if(Math.abs(s)<=rl){ const rr=e*Math.cos(a)+Math.sqrt(rl*rl-s*s); if(rr>r) r=rr; } }
-    return r;
-  };
-  const nA=120, h=depthMm/10, V=[], I=[];
-  for(let i=0;i<nA;i++){ const th=(i/nA)*2*Math.PI, r=prof(th), c=Math.cos(th), sn=Math.sin(th);
-    V.push(r*c,0,r*sn); V.push(r*c,h,r*sn); }
-  for(let i=0;i<nA;i++){ const i1=(i+1)%nA, a=2*i,b=2*i+1,cc=2*i1,d=2*i1+1;
-    I.push(a,cc,b); I.push(b,cc,d); }                 // Mantel
-  const ctrB=V.length/3; V.push(0,0,0);
-  const ctrT=V.length/3; V.push(0,h,0);
-  for(let i=0;i<nA;i++){ const i1=(i+1)%nA;
-    I.push(ctrB, 2*i1, 2*i);            // Boden
-    I.push(ctrT, 2*i+1, 2*i1+1);        // Deckel
+    return r; };
+}
+// Innensechskant-Profil: apo = halbe Schlüsselweite (key/2). prof(theta)→Radius (Units).
+function _hexProfile(keyMM){
+  const apo=(keyMM/10)/2;
+  return th=>{ const a=((th%(Math.PI/3))+(Math.PI/3))%(Math.PI/3)-Math.PI/6; return apo/Math.cos(a); };
+}
+// Zylinderkopf mit Sackloch-Mitnahme als EIN wasserdichtes Mesh (Achse Y, Basis y=0).
+// Direkt gebaut statt via CSG — BSP frisst sonst den Kopf oberhalb des Sacklochs weg
+// (→ Gewinde schwebt). headRmm = Kopfradius, headHmm = Kopfhöhe, prof = Mitnahme-Profil,
+// recessDepthMm = Tiefe der Mitnahme ab der Unterseite (y=0). Mitnahme öffnet nach unten.
+function _buildHeadRecess(headRmm, headHmm, prof, recessDepthMm){
+  const Rh=headRmm/10, h=headHmm/10, dz=recessDepthMm/10, nA=120;
+  const V=[], I=[];
+  const oB=[], oT=[], sB=[], sF=[];   // Ringe: Außen-unten/oben, Stern-unten/Boden
+  const P=(x,y,z)=>{ V.push(x,y,z); return V.length/3-1; };
+  for(let i=0;i<nA;i++){ const th=(i/nA)*2*Math.PI, c=Math.cos(th), sn=Math.sin(th), rs=prof(th);
+    oB.push(P(Rh*c,0,Rh*sn)); oT.push(P(Rh*c,h,Rh*sn));
+    sB.push(P(rs*c,0,rs*sn)); sF.push(P(rs*c,dz,rs*sn)); }
+  const cT=P(0,h,0), cF=P(0,dz,0);    // Zentrum Oberseite + Recess-Boden
+  for(let i=0;i<nA;i++){ const j=(i+1)%nA;
+    I.push(oB[i],oT[i],oB[j]); I.push(oB[j],oT[i],oT[j]);             // Außenwand (Normalen außen)
+    I.push(cT,oT[i],oT[j]);                                          // Oberseite (voller Deckel y=h)
+    I.push(sB[i],oB[j],oB[i]); I.push(sB[i],sB[j],oB[j]);            // Unterseite-Annulus (y=0, Normalen unten)
+    I.push(sB[i],sB[j],sF[i]); I.push(sB[j],sF[j],sF[i]);            // Mitnahme-Innenwand (0..dz)
+    I.push(cF,sF[i],sF[j]);                                          // Mitnahme-Boden (y=dz)
   }
-  const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(V,3));
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(V,3));
   g.setIndex(I); g.computeVertexNormals(); return g;
 }
 // Komplette Schrauben/Mutter-Geometrie (Achse Y, 1 Unit = 10mm, Basis bei y=0)
@@ -13800,22 +13812,11 @@ function _buildScrewGeometry(p){
     const sq=new THREE.CylinderGeometry(sqR,sqR,s.sqH/10,4); sq.translate(0, (hMM + s.sqH/2)/10 - 0.05, 0);
     parts=[dome, sq, ..._screwShaftParts(s, p.length, p.threadLen, (hMM+s.sqH)/10 - 0.1, lh)];
   } else if (p.type==='torx'){ // Zylinderkopf mit Torx-Mitnahme (ISO 14579), Kopf unten
-    const r=(s.sockD/10)/2, h=hMM/10;
-    const head=new THREE.CylinderGeometry(r,r,h,48); head.translate(0, h/2, 0);
-    const torx=_buildTorxGeo(s.torxA, hMM*0.6+2); torx.translate(0, -0.2, 0);  // Aussparung von y=-0.2 nach oben
-    const hm=new THREE.Mesh(_posOnly(head)); hm.updateMatrixWorld(true);
-    const sm=new THREE.Mesh(_posOnly(torx)); sm.updateMatrixWorld(true);
-    const cut=ThreeCSG.subtract(hm, sm, new THREE.MeshBasicMaterial());
-    parts=[cut.geometry, ..._screwShaftParts(s, p.length, p.threadLen, h-0.05, lh)];
+    const head=_buildHeadRecess(s.sockD/2, hMM, _torxProfile(s.torxA), hMM*0.6);
+    parts=[head, ..._screwShaftParts(s, p.length, p.threadLen, hMM/10-0.05, lh)];
   } else { // innen — Zylinderkopf mit Innensechskant (Kopf unten, Schlitz zeigt zur Platte)
-    const r=(s.sockD/10)/2, h=hMM/10;
-    const head=new THREE.CylinderGeometry(r,r,h,48); head.translate(0, h/2, 0);
-    const kR=(s.key/Math.sqrt(3))/10, depth=(hMM*0.6)/10;
-    const sock=new THREE.CylinderGeometry(kR,kR,depth+0.4,6); sock.translate(0, depth/2 - 0.2, 0);
-    const hm=new THREE.Mesh(_posOnly(head)); hm.updateMatrixWorld(true);
-    const sm=new THREE.Mesh(_posOnly(sock)); sm.updateMatrixWorld(true);
-    const cut=ThreeCSG.subtract(hm, sm, new THREE.MeshBasicMaterial());
-    parts=[cut.geometry, ..._screwShaftParts(s, p.length, p.threadLen, h-0.05, lh)];
+    const head=_buildHeadRecess(s.sockD/2, hMM, _hexProfile(s.key), hMM*0.6);
+    parts=[head, ..._screwShaftParts(s, p.length, p.threadLen, hMM/10-0.05, lh)];
   }
   const g = _mergePos(parts.map(_posOnly));
   const chamfer = Math.max((s.pitch*0.6495)/10, 0.045);   // Anschnitt ~1 Gewindetiefe (45°)
