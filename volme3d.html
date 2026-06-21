@@ -8944,11 +8944,18 @@ function _openHollowLidModal() {
 }
 function _closeHollowLidModal() { document.getElementById('hollowlid-modal').classList.remove('show'); }
 
-// Beliebiges Objekt → binäres STL für den Server. Einzel-Import: eingebackener
-// Original-Buffer (mm, lokal) bevorzugt. Gruppe/Union/ohne _origStlBuf: alle
-// Kind-Meshes in EIN Welt-STL (mm, Z-up) zusammenführen.
+// Dreiecke über alle Kind-Meshes eines Objekts zählen
+function _countObjTris(o) {
+  let t = 0;
+  o.traverse(c => { if (c.isMesh && c.geometry?.attributes?.position) {
+    const g = c.geometry; t += (g.index ? g.index.count : g.attributes.position.count) / 3;
+  }});
+  return Math.round(t);
+}
+
+// Beliebiges Objekt → binäres STL für den Server: alle Kind-Meshes in EIN
+// Welt-STL (mm, Z-up) zusammenführen (Mesh wie Gruppe/Union/vereinfachtes Mesh).
 function _objToHollowStl(o) {
-  if (o.isMesh && o.geometry && o.userData._origStlBuf) return o.userData._origStlBuf;
   o.updateMatrixWorld(true);
   const v = [];
   o.traverse(ch => {
@@ -8985,12 +8992,29 @@ async function _createHollowLid() {
       lipDepth: num('hl-lip'),   clear:   num('hl-clear'),
       boreDia:  num('hl-bore'),  ringLip: document.getElementById('hl-ring').checked
     };
-    const stlBuf = _objToHollowStl(o);
-    if (!stlBuf) { notify('STL des Modells nicht verfügbar (keine Geometrie)', 'e'); return; }
-    console.log('[hollow-lid] STL', stlBuf.byteLength, 'B →', _OCCT_BASE, params);
+
+    // OCCT-Booleans auf Mesh-Solids skalieren ~quadratisch mit der Face-Zahl.
+    // Dichte (KI-)Meshes daher VORHER per QEM auf wenige tausend Dreiecke kürzen,
+    // sonst rechnet der Server minutenlang / hängt. Hartes Limit darüber.
+    const HARD_CAP = 60000, TARGET = 1500;
+    const nTri = _countObjTris(o);
+    console.log('[hollow-lid] Dreiecke:', nTri);
+    if (nTri > HARD_CAP) {
+      notify('Modell hat ' + nTri.toLocaleString('de') + ' Dreiecke — bitte erst mit 🔻 Vereinfachen auf ~5 000 reduzieren, dann erneut.', 'e');
+      return;
+    }
     _closeHollowLidModal();
-    _progressShow('Hohlkörper + Deckel wird berechnet…');
-    _progressSet(8);
+    let src = o;
+    if (o.isMesh && nTri > TARGET) {
+      _progressShow('Modell wird vereinfacht…'); _progressSet(5);
+      try { src = _simplifyMesh(o, TARGET); console.log('[hollow-lid] vereinfacht', nTri, '→', _countObjTris(src)); }
+      catch (e) { console.warn('[hollow-lid] Vereinfachen fehlgeschlagen, sende Original', e); src = o; }
+    }
+    const stlBuf = _objToHollowStl(src);
+    if (!stlBuf) { _progressHide(); notify('STL des Modells nicht verfügbar (keine Geometrie)', 'e'); return; }
+    console.log('[hollow-lid] STL', stlBuf.byteLength, 'B →', _OCCT_BASE, params);
+    if (!_progEl) _progressShow('Hohlkörper + Deckel wird berechnet…');
+    _progressSet(8, 'Hohlkörper + Deckel wird berechnet…');
     _progressCreep(85, 0.5);   // kriecht, solange der Server rechnet (unbekannte Dauer)
 
     const resp = await fetch(_OCCT_BASE + '/api/occt-hollow-lid', {
