@@ -3647,6 +3647,45 @@ function buildChamferBox(sx, sy, sz, chamfer) {
   return geo;
 }
 
+// Zylinder mit gerundeter (Radius) bzw. gefaster (Abschrägung) oberer/unterer
+// Kreiskante — analog zu buildRoundedBox/buildChamferBox, aber als Rotationskörper
+// (LatheGeometry). Normalisiert: Radius 1, Höhe 2 (y −1..1).
+// Die mm-Bevelgröße wird über die aktuelle Weltskalierung in Geometrie-Einheiten
+// umgerechnet (radial via scaleX, axial via scaleY), damit die Kante in echten mm
+// rund bleibt — auch bei ungleichem Durchmesser/Höhe-Verhältnis.
+function buildRoundedCylinder(segs, filletMm, chamferMm, scaleX, scaleY) {
+  segs = Math.max(3, Math.round(segs || 32));
+  const bevMm = filletMm > 0 ? filletMm : (chamferMm > 0 ? chamferMm : 0);
+  if (bevMm <= 0) return new THREE.CylinderGeometry(1, 1, 2, segs);
+  const rMm   = Math.max(0.01, (scaleX || 1) * 10);   // Radius   in mm
+  const hhMm  = Math.max(0.01, (scaleY || 1) * 10);   // halbe Höhe in mm
+  const fr = Math.min(bevMm / rMm,  0.98);            // radialer Anteil (Geometrie-Einheiten)
+  const fy = Math.min(bevMm / hhMm, 0.98);            // axialer  Anteil (Geometrie-Einheiten)
+  const pts = [];
+  pts.push(new THREE.Vector2(0, -1));        // Boden-Mitte → schließt die Kappe
+  pts.push(new THREE.Vector2(1 - fr, -1));
+  if (filletMm > 0) {
+    const steps = Math.max(3, Math.min(12, Math.round(segs / 3)));
+    for (let i = 1; i <= steps; i++) {       // untere Rundung
+      const a = -Math.PI / 2 + (i / steps) * (Math.PI / 2);
+      pts.push(new THREE.Vector2((1 - fr) + fr * Math.cos(a), (-1 + fy) + fy * Math.sin(a)));
+    }
+    pts.push(new THREE.Vector2(1, 1 - fy));
+    for (let i = 1; i <= steps; i++) {       // obere Rundung
+      const a = (i / steps) * (Math.PI / 2);
+      pts.push(new THREE.Vector2((1 - fr) + fr * Math.cos(a), (1 - fy) + fy * Math.sin(a)));
+    }
+  } else {                                    // Abschrägung (gerade Fase)
+    pts.push(new THREE.Vector2(1, -1 + fy));
+    pts.push(new THREE.Vector2(1,  1 - fy));
+    pts.push(new THREE.Vector2(1 - fr, 1));
+  }
+  pts.push(new THREE.Vector2(0, 1));         // Deckel-Mitte → schließt die Kappe
+  const geo = new THREE.LatheGeometry(pts, segs);
+  geo.computeVertexNormals();
+  return geo;
+}
+
 // ─── Apply fillet/chamfer to selected box ────────────────────────────
 function applyFillet(filletVal, chamferVal) {
   const o = getFirst(); if (!o || o.userData.shapeType !== 'box') return;
@@ -8119,8 +8158,11 @@ function buildObjectFromData(data) {
   }
   if (data._origGeoData) obj.userData._origGeo = new THREE.BufferGeometryLoader().parse(data._origGeoData);
   else if (data._origSameAsGeo && obj.isMesh && obj.geometry) obj.userData._origGeo = obj.geometry;
-  // Poly-/Twist-/Boden-Rohr aus Parametern neu bauen (Geometrie nicht als JSON gespeichert)
-  if (obj.isMesh && obj.userData.shapeType === 'tube' && (obj.userData.tubePoly || obj.userData.tubeTwist || obj.userData.tubeFloor) && !data.geometry)
+  // Rohr aus Parametern neu bauen (Geometrie nicht als JSON gespeichert):
+  // buildGeo('tube') liefert nur ein Default-Rohr (ri=0.8, 32 Seiten) — der echte
+  // Innenradius ergibt sich erst aus tubeWall + Skalierung, die Seitenzahl aus segments.
+  // Ohne diesen Rebuild bekäme ein Duplikat falsche Maße (Default-Wandstärke).
+  if (obj.isMesh && obj.userData.shapeType === 'tube' && !data.geometry)
     _fpRebuildGeo(obj);
   return obj;
 }
@@ -19162,12 +19204,22 @@ function _fpBuildRows(type, o) {
         ? `<label class="fp-check-lbl"><input type="checkbox" id="fp-floor" ${o.userData.tubeFloor ? 'checked' : ''} onchange="fpApplyTubeFloor(this.checked)"> Boden (geschlossen)</label>`
         : '';
       const cylEdgeBtn = type === 'cylinder' ? edgeBtn : '';
+      // Radius/Abschrägung der oberen & unteren Kreiskante — genau wie bei der Box
+      const cylBevelRows = type === 'cylinder'
+        ? (() => {
+            const maxMm = Math.round(Math.min(o.scale.x, o.scale.y) * 10 * 0.98 * 10) / 10;
+            return '<div class="fp-sep"></div>' +
+              row('Radius',      'fp-fil', o.userData.fillet||0,  "fpApplyCylBevel(this.value,0)", 'mm', 0, maxMm, 0.1) +
+              row('Abschrägung', 'fp-cha', o.userData.chamfer||0, "fpApplyCylBevel(0,this.value)", 'mm', 0, maxMm, 0.1);
+          })()
+        : '';
       return row('Durchmesser', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
              row('Höhe',     'fph',   h,   "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              wallRow +
              '<div class="fp-sep"></div>' +
              row('Seiten', 'fp-seg', segs|| (o.userData.tubePoly?4:32), "fpApplySegs(this.value)", '', 3, 128, 1) +
              twistRow + floorRow +
+             cylBevelRows +
              ((cylEdgeBtn || shellBtn) ? '<div class="fp-sep"></div>' + cylEdgeBtn + shellBtn : '') +
              _dispRows();
     }
@@ -19404,6 +19456,15 @@ function _fpSyncValues() {
       if (type === 'tube') set('fp-tubewall', r2(o.userData.tubeWall != null ? o.userData.tubeWall : 2));
       if (type === 'tube' && o.userData.tubePoly) set('fp-twist', r2(o.userData.tubeTwist || 0));
       if (type === 'tube') { const fc = document.getElementById('fp-floor'); if (fc) fc.checked = !!o.userData.tubeFloor; }
+      if (type === 'cylinder') {
+        set('fp-fil', o.userData.fillet||0);
+        set('fp-cha', o.userData.chamfer||0);
+        const mx = Math.round(Math.min(o.scale.x, o.scale.y) * 10 * 0.98 * 10) / 10;
+        ['fp-fil', 'fp-cha'].forEach(id => {
+          const el = document.getElementById(id); if (el) el.max = mx;
+          const sl = document.getElementById(id + '-sl'); if (sl) sl.max = mx;
+        });
+      }
       break;
     case 'sphere':
       set('fp-r', r2(sz.x*10));
@@ -19779,6 +19840,20 @@ function fpApplySegs(val) {
   if (selectedObjs.length > 0) _doRepositionDimHandles();
 }
 
+// Zylinder: obere/untere Kreiskante runden (Radius) bzw. fasen (Abschrägung).
+// Wie bei der Box schließt das eine Maß das andere aus (fillet ⊻ chamfer).
+function fpApplyCylBevel(filletVal, chamferVal) {
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'cylinder') return;
+  filletVal  = parseFloat(filletVal)  || 0;
+  chamferVal = parseFloat(chamferVal) || 0;
+  saveUndoDebounced();
+  o.userData.fillet  = filletVal;
+  o.userData.chamfer = chamferVal;
+  _fpRebuildGeo(o);
+  _fpSyncValues();
+  if (selectedObjs.length > 0) _doRepositionDimHandles();
+}
+
 // Rohr-Wandstärke (mm) setzen → Geometrie mit passendem Innenradius neu bauen
 function fpApplyTubeWall(val) {
   const o = getFirst(); if (!o || o.userData.shapeType !== 'tube') return;
@@ -19898,7 +19973,13 @@ function _fpRebuildGeo(o) {
   const segs = o.userData.segments;
   let geo;
   switch (type) {
-    case 'cylinder': geo = new THREE.CylinderGeometry(1, 1, 2, segs||32); break;
+    case 'cylinder': {
+      const fil = o.userData.fillet || 0, cha = o.userData.chamfer || 0;
+      geo = (fil > 0 || cha > 0)
+        ? buildRoundedCylinder(segs || 32, fil, cha, o.scale.x, o.scale.y)
+        : new THREE.CylinderGeometry(1, 1, 2, segs || 32);
+      break;
+    }
     case 'tube': {
       const floorY = o.userData.tubeFloor ? _tubeFloorY(o) : null;
       if (o.userData.tubePoly) {
