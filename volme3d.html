@@ -8388,23 +8388,99 @@ function ungroupSelected() {
   selectObjs(freed); updateTree(); notify('Aufgelöst', 'ok');
 }
 
-function unionSelected() {
-  if (selectedObjs.length < 2) { notify('Mind. 2 Objekte', 'w'); return; }
+// Jedes sichtbare Blatt-Mesh der gewählten Objekte als EIGENES binäres STL
+// (mm, Z-up — gleiche Konvention wie _objToHollowStl). Getrennt halten, damit
+// der Server-Fuse die Durchdringungen sauber auflöst.
+function _objsToUnionStls(objs) {
+  const out = [];
+  objs.forEach(o => {
+    o.updateMatrixWorld(true);
+    o.traverse(ch => {
+      if (!ch.isMesh || !ch.geometry || ch.userData.isHole || ch.userData.isEdgeLines || ch.visible === false) return;
+      const g = ch.geometry.clone();
+      g.applyMatrix4(ch.matrixWorld);
+      g.scale(10, 10, 10); g.rotateX(Math.PI / 2);   // App-Units → mm, Y-up → Z-up
+      const pos = g.attributes.position, idx = g.index?.array;
+      const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
+      if (nTri > 0) {
+        const buf = new ArrayBuffer(84 + nTri * 50), dv = new DataView(buf);
+        dv.setUint32(80, nTri, true); let off = 84;
+        for (let i = 0; i < nTri; i++) {
+          const a = idx ? idx[i*3] : i*3, b = idx ? idx[i*3+1] : i*3+1, c = idx ? idx[i*3+2] : i*3+2;
+          off += 12;   // Normale (0) überspringen — der Slicer/OCCT berechnet sie neu
+          dv.setFloat32(off,    pos.getX(a), true); dv.setFloat32(off+4,  pos.getY(a), true); dv.setFloat32(off+8,  pos.getZ(a), true);
+          dv.setFloat32(off+12, pos.getX(b), true); dv.setFloat32(off+16, pos.getY(b), true); dv.setFloat32(off+20, pos.getZ(b), true);
+          dv.setFloat32(off+24, pos.getX(c), true); dv.setFloat32(off+28, pos.getY(c), true); dv.setFloat32(off+32, pos.getZ(c), true);
+          off += 36; dv.setUint16(off, 0, true); off += 2;
+        }
+        out.push(buf);
+      }
+      g.dispose();
+    });
+  });
+  return out;
+}
+
+// Fallback: nur optisch GRUPPIEREN (kein echtes Solid) — wenn das OCCT-Backend
+// nicht erreichbar ist. Geometrisch bleiben es getrennte, durchdringende Hüllen
+// (im Slicer evtl. "schwebende Regionen"). Entspricht dem alten Verhalten.
+function _unionGroupFallback(sel) {
   saveUndo();
   const grp = new THREE.Group();
   const center = new THREE.Vector3();
-  selectedObjs.forEach(o => center.add(o.position));
-  center.divideScalar(selectedObjs.length);
+  sel.forEach(o => center.add(o.position));
+  center.divideScalar(sel.length);
   grp.position.set(center.x, center.y, center.z);
   grp.userData = { id: idCtr++, name: 'Union ' + idCtr, isGroup: true, isUnion: true, color: currentColor };
-  selectedObjs.forEach(o => {
+  sel.forEach(o => {
     objects = objects.filter(x => x !== o);
     scene.remove(o);
     o.position.x -= center.x; o.position.y -= center.y; o.position.z -= center.z;
     if (o.isMesh) o.material.color.set(currentColor);
     grp.add(o);
   });
-  scene.add(grp); objects.push(grp); selectObjs([grp]); updateTree(); notify('Union', 'ok');
+  scene.add(grp); objects.push(grp); selectObjs([grp]); updateTree(); notify('Gruppiert (nicht verschmolzen)', 'ok');
+}
+
+// Echter, wasserdichter Boolean-Union via OCCT-Backend → EIN manifoltes Mesh
+// (druckbar, keine durchdringenden Hüllen). Fällt auf Gruppierung zurück, falls
+// das Backend tot ist oder das Fuse scheitert.
+async function unionSelected() {
+  if (selectedObjs.length < 2) { notify('Mind. 2 Objekte', 'w'); return; }
+  const sel = selectedObjs.slice();
+
+  const stls = _objsToUnionStls(sel);
+  const nTri = stls.reduce((s, b) => s + (b.byteLength - 84) / 50, 0);
+  const HARD_CAP = 120000;   // OCCT-Booleans skalieren ~quadratisch mit Face-Zahl
+  if (!stls.length) { notify('Keine druckbaren Flächen in der Auswahl', 'w'); return; }
+  if (nTri > HARD_CAP) {
+    notify('Zu viele Dreiecke (' + Math.round(nTri).toLocaleString('de') + ') zum Verschmelzen — erst 🔻 Vereinfachen. Gruppiere stattdessen.', 'w');
+    return _unionGroupFallback(sel);
+  }
+
+  _progressShow('Körper werden verschmolzen…'); _progressSet(8);
+  _progressCreep(85, 0.5);   // kriecht, solange der Server rechnet
+  try {
+    const resp = await fetch(_OCCT_BASE + '/api/occt-union', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stlsBase64: stls.map(_bufToBase64) })
+    });
+    _progressStopCreep(); _progressSet(90, 'Ergebnis wird geladen…');
+    const data = await resp.json();
+    if (data.error || !data.stlBase64) throw new Error(data.error || 'kein Ergebnis');
+    saveUndo();
+    const mesh = _meshFromStlB64(data.stlBase64, 'Verschmolzen ' + idCtr);
+    if (!mesh) throw new Error('Ergebnis-STL nicht ladbar');
+    sel.forEach(o => { objects = objects.filter(x => x !== o); scene.remove(o); });
+    selectObjs([mesh]); updateTree();
+    _progressDone();
+    notify('Verschmolzen (wasserdicht) ✓', 'ok');
+  } catch (e) {
+    _progressHide();
+    console.warn('[union] Backend fehlgeschlagen → Gruppierung:', e.message || e);
+    notify('Verschmelzen nicht möglich (' + (e.message || e) + ') — gruppiere stattdessen', 'w');
+    _unionGroupFallback(sel);
+  }
 }
 
 // ═══ OCCT SVG-ABZUG HILFSFUNKTIONEN ════════════════════════════════════════
@@ -8997,9 +9073,51 @@ function _countObjTris(o) {
 
 // Beliebiges Objekt → binäres STL für den Server: alle Kind-Meshes in EIN
 // Welt-STL (mm, Z-up) zusammenführen (Mesh wie Gruppe/Union/vereinfachtes Mesh).
-function _objToHollowStl(o) {
+// Schnelle, NICHT blockierende Vertex-Cluster-Decimation (Rossignac–Borrel) auf
+// einer flachen Dreiecksliste (9 Floats/Dreieck). O(n) — anders als der QEM-
+// SimplifyModifier friert es den Browser nicht 60 s lang ein. Rastert Vertices
+// auf ein Gitter, verschmilzt sie auf den Zell-Mittelpunkt, verwirft kollabierte
+// Dreiecke; vergröbert das Gitter iterativ, bis ~target Dreiecke übrig sind.
+function _clusterDecimateFlat(v, target) {
+  if (v.length / 9 <= target) return v;
+  let minx=Infinity,miny=Infinity,minz=Infinity,maxx=-Infinity,maxy=-Infinity,maxz=-Infinity;
+  for (let i = 0; i < v.length; i += 3) {
+    if (v[i]<minx)minx=v[i]; if (v[i]>maxx)maxx=v[i];
+    if (v[i+1]<miny)miny=v[i+1]; if (v[i+1]>maxy)maxy=v[i+1];
+    if (v[i+2]<minz)minz=v[i+2]; if (v[i+2]>maxz)maxz=v[i+2];
+  }
+  const ext = Math.max(maxx-minx, maxy-miny, maxz-minz) || 1;
+  let gridN = 64, out = v;
+  for (let iter = 0; iter < 7; iter++) {
+    const inv = gridN / ext;
+    const key = (x,y,z) => Math.floor((x-minx)*inv)+'|'+Math.floor((y-miny)*inv)+'|'+Math.floor((z-minz)*inv);
+    const rep = new Map();
+    for (let i = 0; i < v.length; i += 3) {
+      const k = key(v[i],v[i+1],v[i+2]);
+      let r = rep.get(k); if (!r) { r = [0,0,0,0]; rep.set(k,r); }
+      r[0]+=v[i]; r[1]+=v[i+1]; r[2]+=v[i+2]; r[3]++;
+    }
+    rep.forEach(r => { r[0]/=r[3]; r[1]/=r[3]; r[2]/=r[3]; });
+    const o2 = [];
+    for (let i = 0; i < v.length; i += 9) {
+      const ka=key(v[i],v[i+1],v[i+2]), kb=key(v[i+3],v[i+4],v[i+5]), kc=key(v[i+6],v[i+7],v[i+8]);
+      if (ka===kb||kb===kc||ka===kc) continue;        // kollabiert → weg
+      const a=rep.get(ka), b=rep.get(kb), c=rep.get(kc);
+      o2.push(a[0],a[1],a[2], b[0],b[1],b[2], c[0],c[1],c[2]);
+    }
+    out = o2;
+    if (o2.length/9 <= target || gridN <= 12) break;
+    gridN = Math.max(12, Math.round(gridN * 0.7));     // gröber → weniger Dreiecke
+  }
+  return out;
+}
+
+// Beliebiges Objekt → binäres STL (mm, Z-up) für den Server. Alle Kind-Meshes
+// werden zusammengeführt; bei > maxTris Dreiecken vorab schnell cluster-decimiert
+// (hält die OCCT-Booleans bezahlbar, ohne den Browser einzufrieren).
+function _objToHollowStl(o, maxTris) {
   o.updateMatrixWorld(true);
-  const v = [];
+  let v = [];
   o.traverse(ch => {
     if (!ch.isMesh || !ch.geometry) return;
     const g = ch.geometry.clone();
@@ -9014,6 +9132,11 @@ function _objToHollowStl(o) {
     g.dispose();
   });
   if (!v.length) return null;
+  if (maxTris && v.length/9 > maxTris) {
+    const before = v.length/9;
+    v = _clusterDecimateFlat(v, maxTris);
+    console.log('[hollow-lid] cluster-decimate', before, '→', v.length/9, 'Dreiecke');
+  }
   const nTri = v.length / 9, buf = new ArrayBuffer(84 + nTri*50), dv = new DataView(buf);
   dv.setUint32(80, nTri, true); let off = 84;
   for (let i = 0; i < nTri; i++) { off += 12; for (let k = 0; k < 9; k++) { dv.setFloat32(off, v[i*9+k], true); off += 4; } dv.setUint16(off, 0, true); off += 2; }
@@ -9036,23 +9159,15 @@ async function _createHollowLid() {
     };
 
     // OCCT-Booleans auf Mesh-Solids skalieren ~quadratisch mit der Face-Zahl.
-    // Dichte (KI-)Meshes daher VORHER per QEM auf wenige tausend Dreiecke kürzen,
-    // sonst rechnet der Server minutenlang / hängt. Hartes Limit darüber.
-    const HARD_CAP = 60000, TARGET = 1500;
+    // Dichte (KI-)Meshes daher VORHER auf wenige tausend Dreiecke kürzen — per
+    // schneller Cluster-Decimation IN _objToHollowStl (O(n), kein Browser-Freeze
+    // wie beim QEM-SimplifyModifier auf 500k). TARGET hält den Server bei ~30s.
+    const TARGET = 1500;
     const nTri = _countObjTris(o);
     console.log('[hollow-lid] Dreiecke:', nTri);
-    if (nTri > HARD_CAP) {
-      notify('Modell hat ' + nTri.toLocaleString('de') + ' Dreiecke — bitte erst mit 🔻 Vereinfachen auf ~5 000 reduzieren, dann erneut.', 'e');
-      return;
-    }
     _closeHollowLidModal();
-    let src = o;
-    if (o.isMesh && nTri > TARGET) {
-      _progressShow('Modell wird vereinfacht…'); _progressSet(5);
-      try { src = _simplifyMesh(o, TARGET); console.log('[hollow-lid] vereinfacht', nTri, '→', _countObjTris(src)); }
-      catch (e) { console.warn('[hollow-lid] Vereinfachen fehlgeschlagen, sende Original', e); src = o; }
-    }
-    const stlBuf = _objToHollowStl(src);
+    if (nTri > TARGET) { _progressShow('Modell wird vorbereitet…'); _progressSet(5); await new Promise(r => setTimeout(r, 0)); }
+    const stlBuf = _objToHollowStl(o, TARGET);
     if (!stlBuf) { _progressHide(); notify('STL des Modells nicht verfügbar (keine Geometrie)', 'e'); return; }
     console.log('[hollow-lid] STL', stlBuf.byteLength, 'B →', _OCCT_BASE, params);
     if (!_progEl) _progressShow('Hohlkörper + Deckel wird berechnet…');
