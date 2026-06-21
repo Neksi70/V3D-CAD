@@ -977,7 +977,7 @@ const firebaseConfig = {
     <button class="btn" onclick="mirrorTool()" title="M — Objekt auswählen dann X/Y/Z">⊿ Spiegeln</button>
     <button class="btn" onclick="linearPatternTool()" title="Lineares Muster — Objekt mehrfach in einer Richtung kopieren">⋮ Linear</button>
     <button class="btn" onclick="circularPatternTool()" title="Kreismuster — Objekt kreisförmig anordnen">⊙ Kreis</button>
-    <button class="btn" onclick="openCutTool()" title="Zerteilen — großes Objekt mit einer Schnittebene in zwei druckbare Teile teilen">✂ Zerteilen</button>
+    <button class="btn" onclick="openCutTool()" title="Schneiden — großes Objekt mit einer Schnittebene in zwei druckbare Teile teilen">✂ Schneiden</button>
     <button class="btn" onclick="openEraserTool()" title="Radierer — mit dem Pinsel über das Modell fahren, um Flächen/Geometrie zu entfernen (Radius per Mausrad)">🧽 Radierer</button>
     <button class="btn" onclick="repairSelected()" title="Reparieren — offene Löcher im ausgewählten Objekt schließen (wieder wasserdicht/druckbar machen)">🩹 Reparieren</button>
     <button class="btn" onclick="_printCheckOpen()" title="Druck-Check — prüft vor dem Export: wasserdicht, passt aufs Bett, auf der Platte, Überhänge">🖨 Druck-Check</button>
@@ -1402,6 +1402,9 @@ const firebaseConfig = {
         </div>
         <div class="shp" onclick="addShape('cone')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M12 3L20.5 19H3.5z"/><ellipse cx="12" cy="19" rx="8.5" ry="2.5" stroke-width="1" stroke-dasharray="3,2"/></svg>Kegel
+        </div>
+        <div class="shp" onclick="addFunnel()" title="Trichter — große Öffnung oben, Tülle unten, durchgehend offen (wasserdicht druckbar)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M4 4h16l-5 8v9h-6v-9z"/><ellipse cx="12" cy="4" rx="8" ry="1.6" stroke-width="1" stroke-dasharray="3,2"/></svg>Trichter
         </div>
         <div class="shp" onclick="addShape('torus')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="12" cy="12" rx="8" ry="4"/><ellipse cx="12" cy="12" rx="4" ry="2"/></svg>Torus
@@ -3468,7 +3471,7 @@ function switchTab(name) {
 }
 
 // ═══ GEOMETRY BUILDERS ═══════════════════════════════════════════════
-const typeNames = { box:'Box', sphere:'Kugel', cylinder:'Zylinder', cone:'Kegel',
+const typeNames = { box:'Box', sphere:'Kugel', cylinder:'Zylinder', cone:'Kegel', funnel:'Trichter',
                     torus:'Torus', pyramid:'Pyramide', tube:'Rohr', star:'Stern', wedge:'Keil', text:'Text', revolve:'Drehen', flower:'Blume',
                     polygon:'Vieleck', paraboloid:'Paraboloid', sphericalshell:'Hohlkugel', spring:'Feder', bentpipe:'Rohrbogen', thread:'Gewinde',
                     svg:'SVG' };
@@ -6270,6 +6273,125 @@ function addPolyTube(sides) {
   notify(label + ' hinzugefügt', 'ok');
 }
 
+// Signiertes Volumen einer indexierten Geometrie (Σ v0·(v1×v2)/6).
+// <0 ⇒ Dreiecks-Wicklung zeigt nach innen.
+function _geoSignedVolume(geo) {
+  const p = geo.attributes.position, ix = geo.index ? geo.index.array : null;
+  const n = ix ? ix.length : p.count;
+  let vol = 0;
+  for (let i = 0; i < n; i += 3) {
+    const a = ix ? ix[i] : i, b = ix ? ix[i+1] : i+1, c = ix ? ix[i+2] : i+2;
+    const ax=p.getX(a),ay=p.getY(a),az=p.getZ(a);
+    const bx=p.getX(b),by=p.getY(b),bz=p.getZ(b);
+    const cx=p.getX(c),cy=p.getY(c),cz=p.getZ(c);
+    vol += ax*(by*cz - bz*cy) - ay*(bx*cz - bz*cx) + az*(bx*cy - by*cx);
+  }
+  return vol / 6;
+}
+
+// ═══ TRICHTER (FUNNEL) ════════════════════════════════════════════════════
+// Eigenständige Form: ein GESCHLOSSENES Wandprofil (r,y) wird um die Y-Achse
+// rotiert → große Öffnung oben, konischer Übergang, zylindrische Tülle unten,
+// durchgehendes Loch. Manuell in BÄNDERN gebaut (ein Vertex-Ring je Profil-
+// segment): glatt rund um die Drehung, aber SCHARFE Kanten an Rand/Tülle
+// (kein verschmierter „Dom" durch geteilte Normalen). Geschlossenes Profil +
+// volle 2π-Drehung ⇒ keine offenen Ränder ⇒ wasserdicht/druckbar. Maße in mm,
+// Geometrie in Scene-Units (1 Unit = 10 mm).
+function buildFunnelGeo(topDiaMM, spoutDiaMM, heightMM, spoutLenMM, wallMM, segs) {
+  const U = 0.1;                                   // mm → Units
+  segs = Math.max(8, Math.round(segs || 48));
+  const H       = Math.max(0.2, (heightMM || 40) * U);
+  const rTopO   = Math.max(0.05, (topDiaMM || 40) / 2 * U);
+  let   rSpoutO = Math.max(0.05, (spoutDiaMM || 12) / 2 * U);
+  if (rSpoutO >= rTopO) rSpoutO = rTopO * 0.95;    // Tülle schmaler als Öffnung
+  const sL      = Math.max(0.05, Math.min((spoutLenMM != null ? spoutLenMM : 12) * U, H * 0.9));
+  let   w       = Math.max(0.02, (wallMM || 2) * U);
+  w = Math.min(w, rSpoutO - 0.05);                 // Wand frisst die Tülle nicht zu (≥0,5 mm Loch)
+  const rTopI   = Math.max(0.02, rTopO   - w);
+  const rSpoutI = Math.max(0.02, rSpoutO - w);
+  const y0 = -H / 2, y1 = H / 2, ys = y0 + sL;     // unten · oben · Tüllen-Oberkante
+  // Geschlossenes Profil: Außenwand hoch (Tülle→Konus→Rand), Innenwand runter,
+  // Rand- und Boden-Ring schließen die Kontur.
+  const prof = [
+    [rSpoutO, y0], [rSpoutO, ys], [rTopO, y1],
+    [rTopI,  y1], [rSpoutI, ys], [rSpoutI, y0], [rSpoutO, y0]
+  ];
+  const pos = [], idx = [], TAU = Math.PI * 2;
+  for (let s = 0; s < prof.length - 1; s++) {
+    const [rA, yA] = prof[s], [rB, yB] = prof[s + 1];
+    if (Math.abs(rA - rB) < 1e-9 && Math.abs(yA - yB) < 1e-9) continue;   // degeneriert
+    const base = pos.length / 3;
+    for (let j = 0; j < segs; j++) {                // EIGENER Ring je Band → harte Kante
+      const th = j / segs * TAU, c = Math.cos(th), sn = Math.sin(th);
+      pos.push(rA * c, yA, rA * sn);               // Ring A (Profil s)
+      pos.push(rB * c, yB, rB * sn);               // Ring B (Profil s+1)
+    }
+    for (let j = 0; j < segs; j++) {
+      const jn = (j + 1) % segs;                    // sauberer Naht-Wrap (keine Seam-Linie)
+      const a0 = base + j*2, b0 = a0 + 1, a1 = base + jn*2, b1 = a1 + 1;
+      idx.push(a0, b0, b1, a0, b1, a1);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  if (_geoSignedVolume(geo) < 0) {                  // einheitlich nach außen wickeln
+    const a = geo.index.array;
+    for (let i = 0; i < a.length; i += 3) { const t = a[i+1]; a[i+1] = a[i+2]; a[i+2] = t; }
+    geo.index.needsUpdate = true;
+  }
+  geo.computeVertexNormals();
+  geo.computeBoundingBox();
+  return geo;
+}
+
+function addFunnel() {
+  saveUndo();
+  const isHole = shapeMode === 'hole';
+  const color  = isHole ? '#f03030' : currentColor;
+  const mat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color), roughness: 0.38, metalness: 0.05,
+    transparent: !!isHole, opacity: isHole ? 0.52 : 1.0, side: THREE.DoubleSide });
+  const p = { topDia: 40, spoutDia: 12, height: 40, spoutLen: 12, wall: 2 };
+  const geo = buildFunnelGeo(p.topDia, p.spoutDia, p.height, p.spoutLen, p.wall, 48);
+  geo.computeBoundingBox();
+  const halfH = Math.max(0, -geo.boundingBox.min.y);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true; mesh.receiveShadow = true; mesh.scale.setScalar(1.0);
+  _updateObjEdgeLines(mesh);
+  _wpSpawnMesh(mesh, halfH);
+  typeCounts['funnel'] = (typeCounts['funnel'] || 0) + 1;
+  mesh.userData = {
+    id: idCtr++, type: 'funnel', shapeType: 'funnel',
+    name: (typeNames['funnel'] || 'Trichter') + ' ' + typeCounts['funnel'],
+    color, isHole, segments: 48,
+    funnelTopDia: p.topDia, funnelSpoutDia: p.spoutDia, funnelHeight: p.height,
+    funnelSpoutLen: p.spoutLen, funnelWall: p.wall,
+    displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
+    displacementInvert: false, displacementSymmetric: false
+  };
+  scene.add(mesh); objects.push(mesh); selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
+  notify((typeNames['funnel'] || 'Trichter') + ' hinzugefügt', 'ok');
+}
+
+// Trichter-Parameter (mm) ändern → Geometrie neu bauen. Maße sind die einzige
+// Wahrheit: Scale wird auf 1 zurückgesetzt (kein Vermischen mit Handle-Ziehen),
+// danach bleibt der Trichter auf der Druckplatte.
+function fpFunnelSet(key, val) {
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'funnel') return;
+  const v = parseFloat(val); if (!(v >= 0)) return;
+  const prop = { top:'funnelTopDia', spout:'funnelSpoutDia', height:'funnelHeight',
+                 spoutlen:'funnelSpoutLen', wall:'funnelWall' }[key];
+  if (!prop) return;
+  saveUndoDebounced();
+  o.userData[prop] = v;
+  o.scale.set(1, 1, 1);
+  _fpRebuildGeo(o);
+  const b = getMeshBox(o); if (Math.abs(b.min.y) > 1e-4) o.position.y -= b.min.y;
+  _fpSyncValues();
+  if (selectedObjs.length > 0) _doRepositionDimHandles();
+}
+
 // ═══ ADD THREAD SHAPE ════════════════════════════════════════════════════
 function addThreadShape() {
   saveUndo();
@@ -7295,11 +7417,25 @@ function _doRepositionDimHandles() {
           _doRepositionDimHandles();
         };
 
-        const onUp = () => {
+        const onUp = (ev) => {
           el.style.background = '';
           window.removeEventListener('pointermove', onMove);
           window.removeEventListener('pointerup', onUp);
           updateTFInputs();
+          // Klick (kein Ziehen) auf einen Griff, der ein anderes Objekt verdeckt
+          // → Auswahl dorthin durchreichen statt den Klick zu schlucken.
+          const moved = ev ? Math.hypot(ev.clientX - startX, ev.clientY - startY) : 99;
+          if (moved < 4) {
+            const hits = pickObjects(ev);
+            let p = hits.length ? hits[0].object : null;
+            while (p && !objects.includes(p)) p = p.parent;
+            const hitObj = (p && objects.includes(p)) ? p : null;
+            if (hitObj && !selectedObjs.includes(hitObj)) {
+              if (ev && ev.shiftKey) selectObjs([...selectedObjs, hitObj]);
+              else selectObjs([hitObj]);
+              return;
+            }
+          }
           if (_edgeMode && _edgeObj && startStates.some(st => st.obj === _edgeObj)) {
             const savedEdgeObj = _edgeObj;
             if (savedEdgeObj.userData._occtParams) {
@@ -7554,19 +7690,34 @@ function updateDimHandles() {
     el.addEventListener('pointerenter', () => { if (!_dragHandle) tip.style.display = 'block'; });
     el.addEventListener('pointerleave', () => { if (!_dragHandle) tip.style.display = 'none'; });
 
-    if (def.cls === 'h-white') {
-      el.addEventListener('click', e => {
-        if (Math.abs(e.clientX - _dragStartX) < 4 && Math.abs(e.clientY - _dragStartY) < 4) {
-          e.stopPropagation(); tip.style.display = 'none';
-          const item = _dimHandleData.find(d => d.key === def.key);
-          const curO = getFirst(); if (!curO) return;
-          const bx = getMeshBox(curO); const bsz = bx.getSize(new THREE.Vector3());
-          openDimPanel(item ? item.sx : s.x, item ? item.sy : s.y, bsz);
-        }
-      });
-    }
-
     let _dragStartX=0, _dragStartY=0;
+    // Echter Klick (kein Ziehen) auf einen Griff: verdeckt der Griff ein ANDERES
+    // Objekt, wird die Auswahl dorthin durchgereicht (sonst „frisst" der Griff den
+    // Klick → man muss mehrfach klicken). Klick aufs eigene Objekt: weiße Ecke
+    // öffnet wie bisher das Maß-Panel.
+    el.addEventListener('click', e => {
+      if (Math.abs(e.clientX - _dragStartX) >= 4 || Math.abs(e.clientY - _dragStartY) >= 4) return;
+      const curO = getFirst();
+      const hits = pickObjects(e);
+      let p = hits.length ? hits[0].object : null;
+      while (p && !objects.includes(p)) p = p.parent;
+      const hitObj = (p && objects.includes(p)) ? p : null;
+      if (hitObj && hitObj !== curO) {        // anderes Objekt unter dem Cursor → durchreichen
+        e.stopPropagation(); tip.style.display = 'none';
+        if (e.shiftKey) {
+          if (selectedObjs.includes(hitObj)) selectObjs(selectedObjs.filter(x => x !== hitObj));
+          else selectObjs([...selectedObjs, hitObj]);
+        } else selectObjs([hitObj]);
+        return;
+      }
+      if (def.cls === 'h-white') {             // eigenes Objekt: Maß-Panel (wie bisher)
+        e.stopPropagation(); tip.style.display = 'none';
+        const item = _dimHandleData.find(d => d.key === def.key);
+        if (!curO) return;
+        const bsz = getMeshBox(curO).getSize(new THREE.Vector3());
+        openDimPanel(item ? item.sx : s.x, item ? item.sy : s.y, bsz);
+      }
+    });
     el.addEventListener('pointerdown', e => {
       // Only intercept left-click for mouse; touch/pen always allowed
       if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -19261,7 +19412,7 @@ function _fpBuildRows(type, o) {
 
   // Early return only for generic/OCCT types that have no dedicated switch case and no texture support
   const _ownPanelTypes = ['box','cylinder','tube','cone','pyramid','torus','sphere','wedge','star','import',
-                          'polygon','paraboloid','sphericalshell','spring','bentpipe','thread'];
+                          'polygon','paraboloid','sphericalshell','spring','bentpipe','thread','funnel'];
   if (isBoxGeom && !_ownPanelTypes.includes(type)) {
     // Ausgehöhlter Kegel (occtShape 'cone') → Umdreh-Schalter, damit die Gehäuse-
     // Öffnung nach oben/unten kann (z. B. Öffnung oben am Kegelstumpf)
@@ -19346,6 +19497,17 @@ function _fpBuildRows(type, o) {
              row('Schritte', 'fp-seg', segs||32, "fpApplySegs(this.value)", '', 3, 128, 1) +
              _dispRows();
     }
+    case 'funnel': {
+      const u = o.userData;
+      return row('Öffnung Ø (oben)', 'fp-fn-top',   r2(u.funnelTopDia||40),   "fpFunnelSet('top',this.value)",      'mm', 1, 500) +
+             row('Tülle Ø (unten)',  'fp-fn-spout', r2(u.funnelSpoutDia||12), "fpFunnelSet('spout',this.value)",    'mm', 1, 500) +
+             row('Höhe',             'fp-fn-h',     r2(u.funnelHeight||40),   "fpFunnelSet('height',this.value)",   'mm', 1, 500) +
+             row('Tüllenlänge',      'fp-fn-sl',    r2(u.funnelSpoutLen||12), "fpFunnelSet('spoutlen',this.value)", 'mm', 0, 500) +
+             row('Wandstärke',       'fp-fn-wall',  r2(u.funnelWall||2),      "fpFunnelSet('wall',this.value)",     'mm', 0.2, 20, 0.1) +
+             '<div class="fp-sep"></div>' +
+             row('Seiten', 'fp-seg', segs||48, "fpApplySegs(this.value)", '', 8, 256, 1) +
+             _dispRows();
+    }
     case 'cone': case 'pyramid': {
       const rad = r2(sz.x / 2 * 10);
       const defSegs = type === 'pyramid' ? 4 : 32;
@@ -19366,9 +19528,6 @@ function _fpBuildRows(type, o) {
              '<div class="fp-sep"></div>' +
              row('Seiten', 'fp-seg', segs||defSegs, "fpApplySegs(this.value)", '', 3, 128, 1) +
              (shellBtn ? '<div class="fp-sep"></div>' + shellBtn : '') +
-             (type === 'cone'
-               ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="fpMakeFunnel()" title="Kegel automatisch aushöhlen — oben große Öffnung, unten kleine Tülle">🫙 Trichter (oben + unten offen)</button></div>`
-               : '') +
              _dispRows();
     }
     case 'torus': {
@@ -19586,6 +19745,13 @@ function _fpSyncValues() {
     case 'sphere':
       set('fp-r', r2(sz.x*10));
       set('fp-seg', o.userData.segments||32); break;
+    case 'funnel':
+      set('fp-fn-top',   r2(o.userData.funnelTopDia||40));
+      set('fp-fn-spout', r2(o.userData.funnelSpoutDia||12));
+      set('fp-fn-h',     r2(o.userData.funnelHeight||40));
+      set('fp-fn-sl',    r2(o.userData.funnelSpoutLen||12));
+      set('fp-fn-wall',  r2(o.userData.funnelWall||2));
+      set('fp-seg',      o.userData.segments||48); break;
     case 'cone': case 'pyramid':
       set('fp-r', r2(sz.x*10)); set('fph', h);
       if (type === 'cone') set('fp-ctop', r2(sz.x*10*(o.userData.coneTop||0)));
@@ -19852,47 +20018,6 @@ function fpApplyConeFlip(on) {
   if (selectedObjs.length > 0) _doRepositionDimHandles();
 }
 
-// 1-Klick-Trichter: Kegel(stumpf) automatisch aushöhlen, oben + unten offen
-// → durchgängiger konischer Kanal (große Öffnung oben, schmale Tülle unten).
-// Spitzer Kegel hat oben nur einen Punkt (keine Fläche) → kleinen oberen Durchmesser
-// (Tülle) erzwingen; breite Seite nach oben drehen, damit oben die große Öffnung sitzt.
-async function fpMakeFunnel() {
-  const o = getFirst();
-  if (!o || o.userData.shapeType !== 'cone') { notify('Trichter nur für Kegel', 'w'); return; }
-  const qOk = Math.abs(o.quaternion.x) + Math.abs(o.quaternion.y) + Math.abs(o.quaternion.z) < 0.01;
-  if (!qOk) { notify('Kegel erst auf 0° drehen (Trichter braucht ungedrehte Form)', 'w'); return; }
-  saveUndo();
-  // Default-Wandstärke wie im Gehäuse-Modus (kleinste Kante in mm)
-  const _ssz = getMeshBox(o).getSize(new THREE.Vector3());
-  const t = o.userData._shellThickness || Math.min(2, Math.max(0.4, Math.min(_ssz.x, _ssz.y, _ssz.z) * 10 * 0.12));
-  // Spitze → Kegelstumpf mit Tülle; breite Seite nach oben (große Öffnung oben).
-  // Tülle wandstärken-bewusst dimensionieren: der schmale Außen-Ø (coneTop·breiterØ)
-  // muss > 2·Wand sein, sonst frisst die Wand das Loch auf (Tülle wirkt zu).
-  // Ziel: ~3–6 mm offenes Loch je nach Größe → Außen-Ø = Ziel-Loch + 2·Wand.
-  let rebuilt = false;
-  const wideDiaMm = o.scale.x * 20;                                  // breiter Außen-Ø (Öffnung) in mm
-  const targetHoleMm = Math.max(3, Math.min(6, wideDiaMm * 0.25));   // gewünschtes offenes Tüllen-Loch
-  const wantConeTop = Math.max(0.05, Math.min(0.85, (targetHoleMm + 2 * t) / wideDiaMm));
-  if (!(o.userData.coneTop >= wantConeTop)) { o.userData.coneTop = wantConeTop; rebuilt = true; }
-  if (!o.userData.coneFlip)                 { o.userData.coneFlip = true;       rebuilt = true; }
-  if (rebuilt) _fpRebuildGeo(o);
-  // Achszentrierter Kegel: Mitte bei pos.x/z, Boden bei pos.y - sy, Deckel bei pos.y + sy
-  const sy = o.scale.y, cx = o.position.x, cz = o.position.z;
-  const faces = [
-    { worldP: [cx, o.position.y - sy, cz], worldN: [0, -1, 0] },  // unten = Tülle
-    { worldP: [cx, o.position.y + sy, cz], worldN: [0,  1, 0] }   // oben = große Öffnung
-  ];
-  if (!_oc && !_ocLoadPromise) notify('OCCT wird geladen…', 'ok');
-  const res = await _applyCSGShell(o, faces, t);
-  if (res) {
-    res.userData._shellThickness = t;
-    selectObjs([res]);
-    notify(`Trichter erstellt — Wandstärke ${t} mm`, 'ok');
-  } else {
-    notify('Trichter fehlgeschlagen (Wandstärke/Tülle zu eng?)', 'w');
-  }
-}
-
 // Ausgehöhlten Kegel/Kegelstumpf umdrehen: nach dem Gehäuse ist das Objekt ein
 // generischer OCCT-Körper (shapeType 'custom'), das Kegel-Panel mit „Auf die Spitze"
 // ist weg. Hier kippen wir den FERTIGEN hohlen Körper 180° um seine Mitte (achsparallel)
@@ -20126,6 +20251,10 @@ function _fpRebuildGeo(o) {
       geo.computeVertexNormals();
       break;
     }
+    case 'funnel':
+      geo = buildFunnelGeo(o.userData.funnelTopDia, o.userData.funnelSpoutDia,
+        o.userData.funnelHeight, o.userData.funnelSpoutLen, o.userData.funnelWall, segs || 48);
+      break;
     case 'torus': {
       const tr = o.userData.tubeRatio || 0.35;
       const ts = Math.max(3, Math.round((segs||48)/3));
@@ -20310,7 +20439,7 @@ function _cutBuildPanel() {
   const [lo, hi] = _cutAxisRange();
   p.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <b style="font-size:13px">✂ Zerteilen</b>
+      <b style="font-size:13px">✂ Schneiden</b>
       <span onclick="_cutClose()" style="cursor:pointer;color:#9aa0a8;font-size:16px;line-height:1">✕</span>
     </div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
@@ -21198,7 +21327,7 @@ const CMDK = [
   {i:'⊜',g:'Bearbeiten',t:'Ausrichten',k:'align',run:()=>alignTool()},
   {i:'⋮',g:'Bearbeiten',t:'Lineares Muster',k:'array pattern',run:()=>linearPatternTool()},
   {i:'⊙',g:'Bearbeiten',t:'Kreismuster',k:'circular array',run:()=>circularPatternTool()},
-  {i:'✂',g:'Bearbeiten',t:'Zerteilen',k:'cut split',run:()=>openCutTool()},
+  {i:'✂',g:'Bearbeiten',t:'Schneiden',k:'cut split zerteilen',run:()=>openCutTool()},
   {i:'🧽',g:'Bearbeiten',t:'Radierer',k:'eraser',run:()=>openEraserTool()},
   {i:'🩹',g:'Druck',t:'Reparieren',k:'repair loch wasserdicht',run:()=>repairSelected()},
   {i:'🖨',g:'Druck',t:'Druck-Check',k:'print check druckbar',run:()=>_printCheckOpen()},
