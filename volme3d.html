@@ -13310,14 +13310,17 @@ function _objectPlanarFaces(o) {
     }
   });
   let maxA=0; for (const e of map.values()) if (e.area>maxA) maxA=e.area;
+  // Objekt-Zentrum, um Normalen nach AUSSEN zu orientieren (Winding ist nicht
+  // garantiert konsistent → Schrägen-Normalen zeigten teils nach innen/unten,
+  // wodurch das Snap Körper INNEN andockte).
+  const _oc = new THREE.Box3().setFromObject(o).getCenter(new THREE.Vector3());
   const faces=[];
   for (const e of map.values()) {
     if (e.area < maxA*0.12) continue;          // nur die größeren Flächen
-    faces.push({
-      cx:e.cx/e.area, cy:e.cy/e.area, cz:e.cz/e.area,
-      nx:e.nx, ny:e.ny, nz:e.nz,
-      r: Math.max(0.15, Math.sqrt(e.area/Math.PI)*0.8)
-    });
+    const cx=e.cx/e.area, cy=e.cy/e.area, cz=e.cz/e.area;
+    let nx=e.nx, ny=e.ny, nz=e.nz;
+    if (nx*(cx-_oc.x) + ny*(cy-_oc.y) + nz*(cz-_oc.z) < 0) { nx=-nx; ny=-ny; nz=-nz; }  // nach außen
+    faces.push({ cx, cy, cz, nx, ny, nz, r: Math.max(0.15, Math.sqrt(e.area/Math.PI)*0.8) });
   }
   o.userData._pfCache = { sig, faces };
   return faces;
@@ -13616,13 +13619,13 @@ function _createLantern(){
 // Normmaße (mm) — DIN 933 (Außen-6kt), DIN 912 (Innen-6kt), DIN 934 (Mutter),
 // DIN 603 (Schloss/Flachrund), DIN 125 (Unterlegscheibe), metrisches Regelgewinde
 const SCREW_SPECS = {
-  M2:  { d:2,  pitch:0.4,  nutSW:4,  nutH:1.6, hexSW:4,  hexH:1.4, sockD:3.8, sockH:2,  key:1.5, minor:1.6, ckD:3.8,  ckH:1.2, sqW:2.3,  sqH:1.4, washID:2.2,  washOD:5,  washH:0.3 },
-  M3:  { d:3,  pitch:0.5,  nutSW:5.5, nutH:2.4, hexSW:5.5, hexH:2.0, sockD:5.5, sockH:3,  key:2.5, minor:2.5, ckD:6.0,  ckH:1.7, sqW:3.5,  sqH:2.0, washID:3.2,  washOD:7,  washH:0.5 },
-  M4:  { d:4,  pitch:0.7,  nutSW:7,  nutH:3.2, hexSW:7,  hexH:2.8, sockD:7,   sockH:4,  key:3, minor:3.3, ckD:9.4,  ckH:2.4, sqW:4.6,  sqH:2.8, washID:4.3,  washOD:9,  washH:0.8 },
-  M5:  { d:5,  pitch:0.8,  nutSW:8,  nutH:4.7, hexSW:8,  hexH:3.5, sockD:8.5, sockH:5,  key:4, minor:4.2, ckD:11.2, ckH:3.0, sqW:5.6,  sqH:3.5, washID:5.3,  washOD:10, washH:1.0 },
-  M6:  { d:6,  pitch:1.0,  nutSW:10, nutH:5.2, hexSW:10, hexH:4.0, sockD:10,  sockH:6,  key:5, minor:5.0, ckD:13.5, ckH:3.6, sqW:6.6,  sqH:4.2, washID:6.4,  washOD:12, washH:1.6 },
-  M8:  { d:8,  pitch:1.25, nutSW:13, nutH:6.8, hexSW:13, hexH:5.3, sockD:13,  sockH:8,  key:6, minor:6.8, ckD:17.7, ckH:4.8, sqW:8.6,  sqH:5.4, washID:8.4,  washOD:16, washH:1.6 },
-  M10: { d:10, pitch:1.5,  nutSW:17, nutH:8.4, hexSW:16, hexH:6.4, sockD:16,  sockH:10, key:8, minor:8.5, ckD:21.5, ckH:6.0, sqW:10.6, sqH:6.6, washID:10.5, washOD:20, washH:2.0 },
+  M2:  { d:2,  pitch:0.4,  nutSW:4,  nutH:1.6, hexSW:4,  hexH:1.4, sockD:3.8, sockH:2,  key:1.5, minor:1.6, ckD:3.8,  ckH:1.2, sqW:2.3,  sqH:1.4, washID:2.2,  washOD:5,  washH:0.3, torx:'T6',  torxA:1.75 },
+  M3:  { d:3,  pitch:0.5,  nutSW:5.5, nutH:2.4, hexSW:5.5, hexH:2.0, sockD:5.5, sockH:3,  key:2.5, minor:2.5, ckD:6.0,  ckH:1.7, sqW:3.5,  sqH:2.0, washID:3.2,  washOD:7,  washH:0.5, torx:'T10', torxA:2.80 },
+  M4:  { d:4,  pitch:0.7,  nutSW:7,  nutH:3.2, hexSW:7,  hexH:2.8, sockD:7,   sockH:4,  key:3, minor:3.3, ckD:9.4,  ckH:2.4, sqW:4.6,  sqH:2.8, washID:4.3,  washOD:9,  washH:0.8, torx:'T20', torxA:3.95 },
+  M5:  { d:5,  pitch:0.8,  nutSW:8,  nutH:4.7, hexSW:8,  hexH:3.5, sockD:8.5, sockH:5,  key:4, minor:4.2, ckD:11.2, ckH:3.0, sqW:5.6,  sqH:3.5, washID:5.3,  washOD:10, washH:1.0, torx:'T25', torxA:4.50 },
+  M6:  { d:6,  pitch:1.0,  nutSW:10, nutH:5.2, hexSW:10, hexH:4.0, sockD:10,  sockH:6,  key:5, minor:5.0, ckD:13.5, ckH:3.6, sqW:6.6,  sqH:4.2, washID:6.4,  washOD:12, washH:1.6, torx:'T30', torxA:5.60 },
+  M8:  { d:8,  pitch:1.25, nutSW:13, nutH:6.8, hexSW:13, hexH:5.3, sockD:13,  sockH:8,  key:6, minor:6.8, ckD:17.7, ckH:4.8, sqW:8.6,  sqH:5.4, washID:8.4,  washOD:16, washH:1.6, torx:'T45', torxA:7.93 },
+  M10: { d:10, pitch:1.5,  nutSW:17, nutH:8.4, hexSW:16, hexH:6.4, sockD:16,  sockH:10, key:8, minor:8.5, ckD:21.5, ckH:6.0, sqW:10.6, sqH:6.6, washID:10.5, washOD:20, washH:2.0, torx:'T50', torxA:8.95 },
 };
 let _screwP = { type:'aussen', size:'M6', length:20, clearance:0.4, outer:0, threadLen:0, headH:0, leftHand:false };
 let _screwRenderer=null,_screwScene=null,_screwCamera=null,_screwGroup=null,_screwAnimId=null,_screwRebuildT=null;
@@ -16949,8 +16952,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.28';
+const VOLME3D_VERSION = '1.15.29';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.29', date:'2026-06-21', changes:[
+    ['🧲','Flächen-Snap legt Körper nicht mehr INNEN ins Zielobjekt: Schräg-Flächen (z. B. Pyramidenseiten) hatten teils nach innen zeigende Normalen, wodurch das eingebaute Snap nach innen andockte. Flächen-Normalen werden jetzt konsequent nach außen orientiert → der Körper sitzt auf der Außenseite der (auch schrägen) Fläche.'],
+  ]},
   { version:'1.15.28', date:'2026-06-21', changes:[
     ['🧹','Experimentellen Körper-Flächen-Snap wieder entfernt (er kollidierte mit dem eingebauten Snap und drehte Objekte fehlerhaft → versetzte Anfasser/„innen"). Der wichtige Fix bleibt: versetzte Auswahl-Griffe bei Layout-Änderungen sind behoben (Canvas==Viewport).'],
   ]},
