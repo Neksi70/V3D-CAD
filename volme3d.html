@@ -2129,6 +2129,31 @@ const firebaseConfig = {
   </div>
 </div>
 
+<!-- Ein-Klick: Hohlkörper mit abnehmbarem Deckel (beliebige/KI-Meshes) -->
+<div id="hollowlid-modal" class="g3dm" onclick="if(event.target===this)_closeHollowLidModal()">
+  <div class="g3box">
+    <div class="g3hdr">🥡 Hohlkörper + Deckel<span class="vx" onclick="_closeHollowLidModal()">✕</span></div>
+    <div class="g3body">
+      <div class="g3ctrl" style="min-width:300px">
+        <span class="vsec">Wand &amp; Schnitt</span>
+        <div class="vrow"><label title="Wandstärke des Hohlkörpers">Wandstärke</label> <input type="range" id="hl-wall" min="0.8" max="8" value="2" step="0.1" oninput="document.getElementById('hlv-wall').textContent=this.value"><span class="vv" id="hlv-wall">2</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Höhe der Trennebene (0 = unten, 1 = oben)">Schnitthöhe</label> <input type="range" id="hl-cut" min="0.1" max="0.9" value="0.5" step="0.05" oninput="document.getElementById('hlv-cut').textContent=Math.round(this.value*100)+'%'"><span class="vv" id="hlv-cut">50%</span><span class="vu"></span></div>
+        <span class="vsec">Zentrier-Falz</span>
+        <div class="vrow"><label title="Tiefe des Zentrier-Falz (wie weit der Deckel einrastet)">Falz-Tiefe</label> <input type="range" id="hl-lip" min="1" max="15" value="5" step="0.5" oninput="document.getElementById('hlv-lip').textContent=this.value"><span class="vv" id="hlv-lip">5</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Spaltmaß Falz ↔ Innenwand (Passung; größer = leichtgängiger)">Spaltmaß</label> <input type="range" id="hl-clear" min="0" max="0.6" value="0.25" step="0.05" oninput="document.getElementById('hlv-clear').textContent=this.value"><span class="vv" id="hlv-clear">0.25</span><span class="vu">mm</span></div>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:4px"><input type="checkbox" id="hl-ring" checked> Ring-Falz (Material/Druckzeit sparen)</label>
+        <span class="vsec">Bohrung</span>
+        <div class="vrow"><label title="Bohrung durch den Boden (0 = keine)">Bohrung Ø</label> <input type="range" id="hl-bore" min="0" max="30" value="0" step="0.5" oninput="document.getElementById('hlv-bore').textContent=(this.value>0?this.value:'keine')"><span class="vv" id="hlv-bore">keine</span><span class="vu">mm</span></div>
+        <div class="g3info" id="hollowlid-info">Erzeugt aus dem gewählten Modell zwei druckbare Teile: Hohlkörper (Body) + abnehmbaren, selbstzentrierenden Deckel.</div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_closeHollowLidModal()">Abbrechen</button>
+      <button class="btn pri" id="hl-go" onclick="_createHollowLid()">✓ Erzeugen</button>
+    </div>
+  </div>
+</div>
+
 <div id="qr-modal" class="g3dm" onclick="if(event.target===this)_closeQRModal()">
   <div class="g3box">
     <div class="g3hdr">📇 QR-Code-Generator<span class="vx" onclick="_closeQRModal()">✕</span></div>
@@ -8900,6 +8925,81 @@ function _bufToBase64(buf) {
   return btoa(s);
 }
 
+// ═══ EIN-KLICK: HOHLKÖRPER MIT ABNEHMBAREM DECKEL ════════════════════════════
+// Schickt das gewählte (importierte/KI-)Modell an /api/occt-hollow-lid und legt
+// die zwei Ergebnis-Teile (Body + Deckel) als import-artige Meshes in die Szene.
+const _OCCT_BASE = 'https://v3da.tailf05fe9.ts.net:18790';
+let _hollowLidBusy = false;
+
+function _openHollowLidModal() {
+  const o = getFirst();
+  if (!o || o.userData.shapeType !== 'import') { notify('Bitte zuerst ein importiertes / KI-Modell wählen', 'w'); return; }
+  document.getElementById('hollowlid-modal').classList.add('show');
+}
+function _closeHollowLidModal() { document.getElementById('hollowlid-modal').classList.remove('show'); }
+
+async function _createHollowLid() {
+  if (_hollowLidBusy) return;
+  const o = getFirst();
+  if (!o || o.userData.shapeType !== 'import') { notify('Kein gültiges Modell gewählt', 'w'); return; }
+  const num = id => parseFloat(document.getElementById(id).value);
+  const params = {
+    wall:     num('hl-wall'),  cutAt:   num('hl-cut'),
+    lipDepth: num('hl-lip'),   clear:   num('hl-clear'),
+    boreDia:  num('hl-bore'),  ringLip: document.getElementById('hl-ring').checked
+  };
+  const stlBuf = o.userData._origStlBuf || _meshGeoToStlBufLocal(o);
+  if (!stlBuf) { notify('STL des Modells nicht verfügbar', 'e'); return; }
+
+  const btn = document.getElementById('hl-go');
+  _hollowLidBusy = true; if (btn) { btn.disabled = true; btn.textContent = '… rechnet'; }
+  notify('Hohlkörper + Deckel wird berechnet…', 'ok');
+  try {
+    const resp = await fetch(_OCCT_BASE + '/api/occt-hollow-lid', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stlBase64: _bufToBase64(stlBuf), ...params })
+    });
+    const data = await resp.json();
+    if (data.error) { notify('Fehler: ' + data.error, 'e'); return; }
+    saveUndo();
+    const base = o.userData.name || 'Modell';
+    const bodyMesh = _meshFromStlB64(data.bodyStlBase64, base + ' — Body');
+    const lidMesh  = _meshFromStlB64(data.lidStlBase64,  base + ' — Deckel');
+    if (!bodyMesh || !lidMesh) { notify('Ergebnis konnte nicht geladen werden', 'e'); return; }
+    // Deckel rechts neben den Body legen (beide stehen flach auf der Platte)
+    const wBody = new THREE.Box3().setFromObject(bodyMesh).getSize(new THREE.Vector3()).x;
+    lidMesh.position.x += wBody * 0.6 + 1; lidMesh.updateMatrixWorld(true);
+    o.visible = false;   // Original ausblenden (nicht löschen → Undo/Vergleich bleibt)
+    selectObjs([bodyMesh, lidMesh]); updateTree(); fitToObjects([bodyMesh, lidMesh]);
+    _closeHollowLidModal();
+    notify('Hohlkörper + Deckel erzeugt ✓', 'ok');
+  } catch (e) {
+    console.error('hollow-lid:', e); notify('Server nicht erreichbar: ' + e.message, 'e');
+  } finally {
+    _hollowLidBusy = false; if (btn) { btn.disabled = false; btn.textContent = '✓ Erzeugen'; }
+  }
+}
+
+// STL-base64 → import-artiges Mesh (gleiche Ausrichtung/Skalierung wie ein Import)
+function _meshFromStlB64(b64, name) {
+  try {
+    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const geo = parseSTL(bytes.buffer); geo.computeVertexNormals();
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(currentColor), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    mesh.scale.setScalar(0.1);          // STL mm → App-Einheit
+    mesh.rotation.x = -Math.PI / 2;     // STL Z-up → Editor Y-up
+    mesh.updateMatrixWorld(true);
+    { const bb = new THREE.Box3().setFromObject(mesh); const c = bb.getCenter(new THREE.Vector3());
+      mesh.position.x -= c.x; mesh.position.z -= c.z; mesh.position.y -= bb.min.y; mesh.updateMatrixWorld(true); }
+    mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import', name, color: currentColor,
+      isHole: false, _origGeo: geo, _origStlBuf: bytes.buffer };
+    scene.add(mesh); objects.push(mesh);
+    return mesh;
+  } catch (e) { console.error('parse result STL:', e); return null; }
+}
+
 function _matrixToOCCTTrsf(oc, m4) {
   // Three.js Matrix4 (column-major) → gp_Trsf (SetValues row-major 3x4)
   const e = m4.elements;
@@ -9847,6 +9947,11 @@ function saveUndo() {
   undoStack.push(objects.map(objectToData));
   if (undoStack.length > 50) undoStack.shift();
   redoStack = [];
+  // Laufende Debounce-Geste beenden: ein expliziter Checkpoint (Add/Delete/
+  // Handle-Drag …) ist eine eigene Aktion. Sonst würde die NÄCHSTE debounced-
+  // Änderung (Slider/Zahlenfeld) verschluckt und ein Undo spränge mehrere
+  // Schritte zurück (alte/gelöschte Objekte tauchen wieder auf).
+  if (_undoDebTimer !== null) { clearTimeout(_undoDebTimer); _undoDebTimer = null; }
   updateUndoRedoButtons();
 }
 
@@ -9880,6 +9985,7 @@ function restoreState(stateArr) {
 
 function undo() {
   if (!undoStack.length) { notify('Nichts mehr', 'w'); return; }
+  if (_undoDebTimer !== null) { clearTimeout(_undoDebTimer); _undoDebTimer = null; }
   redoStack.push(objects.map(objectToData));
   restoreState(undoStack.pop());
   notify('Undo', 'ok');
@@ -9887,6 +9993,7 @@ function undo() {
 
 function redo() {
   if (!redoStack.length) { notify('Nichts', 'w'); return; }
+  if (_undoDebTimer !== null) { clearTimeout(_undoDebTimer); _undoDebTimer = null; }
   undoStack.push(objects.map(objectToData));
   restoreState(redoStack.pop());
   notify('Redo', 'ok');
@@ -18904,6 +19011,10 @@ function _fpBuildRows(type, o) {
   const shellBtn = _shellEligible
     ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="enterShellMode()">▣ Gehäuse (aushöhlen)</button></div>`
     : '';
+  // Ein-Klick-Hohlkörper mit abnehmbarem Deckel — für beliebige (auch KI-)Meshes
+  const hollowLidBtn = (type === 'import')
+    ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_openHollowLidModal()">🥡 Hohlkörper + Deckel</button></div>`
+    : '';
 
   // Early return only for generic/OCCT types that have no dedicated switch case and no texture support
   const _ownPanelTypes = ['box','cylinder','tube','cone','pyramid','torus','sphere','wedge','star','import',
@@ -19168,7 +19279,7 @@ function _fpBuildRows(type, o) {
              propLock() +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
-             (shellBtn ? '<div class="fp-sep"></div>' + shellBtn : '') +
+             ((shellBtn||hollowLidBtn) ? '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn : '') +
              _dispRows();
   }
 }
