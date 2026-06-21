@@ -571,6 +571,40 @@ function unifySolid(oc, solid) {
   }
 }
 
+// ── Skalierung um einen MITTELPUNKT (nicht den Ursprung!) ───────────────────
+// gp_Trsf.SetScale(center, factor) + BRepBuilderAPI_Transform. Gibt das Shape
+// zurück (oder null, falls Transform fehlschlägt). Transform-Ergebnis sofort
+// freizugeben ist hier sicher (gleiches Muster wie buildAndTransform).
+function scaleAbout(oc, shape, factor, cx, cy, cz) {
+  const trsf = new oc.gp_Trsf_1();
+  const c    = new oc.gp_Pnt_3(cx, cy, cz);
+  trsf.SetScale(c, factor);
+  const xf   = new oc.BRepBuilderAPI_Transform_2(shape, trsf, false);
+  const out  = xf.IsDone() ? xf.Shape() : null;
+  c.delete(); trsf.delete(); xf.delete();
+  return out;
+}
+
+// ── Achsparallele Box aus Eckpunkt (x,y,z) + Größen (dx,dy,dz) ──────────────
+function makeBox(oc, x, y, z, dx, dy, dz) {
+  const p  = new oc.gp_Pnt_3(x, y, z);
+  const mk = new oc.BRepPrimAPI_MakeBox_2(p, dx, dy, dz);
+  const s  = mk.Shape();
+  p.delete(); mk.delete();
+  return s;
+}
+
+// ── Boolean-Op (Cut_3/Common_3/Fuse_3). Das BOP-Objekt besitzt das Ergebnis-
+// Shape, darf also erst NACH der Vernetzung gelöscht werden → in `keep` sammeln
+// (gleiches Muster wie der Subtract-Endpoint). Wirft bei !IsDone.
+function bop(oc, ctorName, a, b, keep, label) {
+  const op = new oc[ctorName](a, b);
+  op.Build();
+  keep.push(op);
+  if (!op.IsDone()) throw new Error((label || ctorName) + ' nicht IsDone');
+  return op.Shape();
+}
+
 app.post('/api/occt-subtract', async (req, res) => {
   const { stlBase64, svgPathData, svgTransformM, snapNormal, snapPoint } = req.body;
   // Inlay (farbiger Boden-Slab für Zweifarb-Druck) ist opt-in: kostet einen
@@ -760,6 +794,110 @@ app.post('/api/occt-subtract', async (req, res) => {
 
 app.get('/health', (_, res) => res.json({ status: 'ok', occtReady: !!_oc }));
 
+// ── Ein-Klick: Hohlkörper mit abnehmbarem, selbstzentrierendem Deckel ───────
+// In:  { stlBase64, wall=2, cutAt=0.5, lipDepth=5, clear=0.25, boreDia=0,
+//        ringLip=true }
+// Out: { bodyStlBase64, lidStlBase64 } | { error }
+app.post('/api/occt-hollow-lid', async (req, res) => {
+  const b = req.body || {};
+  if (!b.stlBase64) return res.json({ error: 'stlBase64 fehlt' });
+  const num      = (v, d) => (typeof v === 'number' && isFinite(v)) ? v : d;
+  const wall     = num(b.wall, 2);
+  const cutAt    = num(b.cutAt, 0.5);
+  const lipDepth = num(b.lipDepth, 5);
+  const clear    = num(b.clear, 0.25);
+  const boreDia  = num(b.boreDia, 0);
+  const ringLip  = b.ringLip !== false;   // Default: Ring (Material/Druckzeit sparen)
+
+  const keep = [];   // BOP-Objekte am Leben halten bis nach der Vernetzung
+  try {
+    const oc = await getOC();
+    const stlBuf = Buffer.from(b.stlBase64, 'base64');
+    console.log(`[hollow-lid] STL ${stlBuf.length} B, wall=${wall} cutAt=${cutAt} ` +
+                `lip=${lipDepth} clear=${clear} bore=${boreDia} ring=${ringLip}`);
+
+    // Schritt 0 — Repair (Sew → MakeSolid → ShapeFix, in stlToOCCTSolid gekapselt)
+    let original = stlToOCCTSolid(oc, stlBuf);
+    if (!original) return res.json({ error: 'Repair fehlgeschlagen: STL → OCCT Solid nicht möglich' });
+    if (original.ShapeType().value !== 2)   // 2 = TopAbs_SOLID
+      return res.json({ error: 'Kein gültiger Solid nach Repair — Mesh nicht wasserdicht (Self-Intersections/Löcher)' });
+    original = unifySolid(oc, original);     // koplanare Faces vereinen → schnellere Booleans
+
+    // Schritt 1 — Bounding Box + Skalierfaktor
+    const bb = getBBoxNum(oc, original);
+    if (!bb) return res.json({ error: 'Bounding Box leer' });
+    const dx = bb.xMax - bb.xMin, dy = bb.yMax - bb.yMin, dz = bb.zMax - bb.zMin;
+    const cx = (bb.xMin + bb.xMax) / 2, cy = (bb.yMin + bb.yMax) / 2, cz = (bb.zMin + bb.zMax) / 2;
+    const minDim = Math.min(dx, dy, dz);
+    const EPS = 1e-4;
+    if (minDim <= 2 * wall + EPS)
+      return res.json({ error: `Modell zu klein/flach: kleinste Abmessung ${minDim.toFixed(2)}mm ≤ 2×Wandstärke ${(2*wall).toFixed(2)}mm` });
+    const s = (minDim - 2 * wall) / minDim;
+    console.log(`[hollow-lid] bbox dx=${dx.toFixed(1)} dy=${dy.toFixed(1)} dz=${dz.toFixed(1)} minDim=${minDim.toFixed(1)} s=${s.toFixed(4)}`);
+
+    // großzügige X/Y-Ausdehnung + Z-Padding für die Schnitt-/Falz-Boxen
+    const bigXY = 4 * Math.max(dx, dy) + 10;
+    const x0 = cx - bigXY / 2, y0 = cy - bigXY / 2;
+    const pad = Math.max(dx, dy, dz) + 10;
+    const zCut = bb.zMin + cutAt * dz;
+
+    // Schritt 2 — Aushöhlen: inner um den MITTELPUNKT skaliert, dann original − inner
+    const inner = scaleAbout(oc, original, s, cx, cy, cz);
+    if (!inner) return res.json({ error: 'Aushöhlen: Innenkörper-Skalierung fehlgeschlagen' });
+    const hollow = bop(oc, 'BRepAlgoAPI_Cut_3', original, inner, keep, 'Aushöhlen-Cut');
+
+    // Schritt 3 — Deckel abtrennen (öffnet zugleich den Hohlraum)
+    const boxBody = makeBox(oc, x0, y0, bb.zMin - pad, bigXY, bigXY, (zCut - (bb.zMin - pad)));
+    const boxLid  = makeBox(oc, x0, y0, zCut,          bigXY, bigXY, (bb.zMax + pad - zCut));
+    const body0   = bop(oc, 'BRepAlgoAPI_Common_3', hollow, boxBody, keep, 'Body-Common');
+    const lidCap  = bop(oc, 'BRepAlgoAPI_Common_3', hollow, boxLid,  keep, 'Lid-Common');
+
+    // Schritt 4 — Selbstzentrierender Innen-Falz
+    const minDimS = minDim * s;                       // Innenmaß
+    const sClear  = (minDimS - 2 * clear) / minDimS;  // Falz minimal kleiner als Hohlraum
+    const plug    = scaleAbout(oc, inner, sClear, cx, cy, cz);
+    if (!plug) return res.json({ error: 'Falz: Plug-Skalierung fehlgeschlagen' });
+    // Box von zCut-lipDepth bis zCut+0.5 (0.5mm Überlapp mit lidCap = sauberer Fuse)
+    const lipBox  = makeBox(oc, x0, y0, zCut - lipDepth, bigXY, bigXY, lipDepth + 0.5);
+    let lip = bop(oc, 'BRepAlgoAPI_Common_3', plug, lipBox, keep, 'Falz-Common');
+    if (ringLip) {
+      // Vollpfropfen vermeiden: Ring = lipSolid − (innerer 85%-Plug ∩ gleiche Box)
+      const plugHollow = scaleAbout(oc, plug, 0.85, cx, cy, cz);
+      if (plugHollow) {
+        const lipBox2 = makeBox(oc, x0, y0, zCut - lipDepth, bigXY, bigXY, lipDepth + 0.5);
+        const innerCore = bop(oc, 'BRepAlgoAPI_Common_3', plugHollow, lipBox2, keep, 'Ring-Innen-Common');
+        lip = bop(oc, 'BRepAlgoAPI_Cut_3', lip, innerCore, keep, 'Ring-Cut');
+      } else {
+        console.log('[hollow-lid] Ring-Innenskalierung fehlgeschlagen → Vollpfropfen-Falz');
+      }
+    }
+    const lid = bop(oc, 'BRepAlgoAPI_Fuse_3', lidCap, lip, keep, 'Lid-Fuse');
+
+    // Schritt 5 — Bohrung (nur body, nur wenn boreDia > 0)
+    let body = body0;
+    if (boreDia > 0) {
+      const ap  = new oc.gp_Pnt_3(cx, cy, bb.zMin - pad);
+      const ad  = new oc.gp_Dir_4(0, 0, 1);
+      const ax  = new oc.gp_Ax2_3(ap, ad);
+      const cyl = new oc.BRepPrimAPI_MakeCylinder_3(ax, boreDia / 2, dz + 2 * pad);
+      const bore = cyl.Shape();
+      ap.delete(); ad.delete(); ax.delete(); cyl.delete();
+      body = bop(oc, 'BRepAlgoAPI_Cut_3', body0, bore, keep, 'Bohrung-Cut');
+    }
+
+    // Output: zwei binäre STL → base64
+    const bodyBuf = solidToSTLBuffer(oc, body);
+    const lidBuf  = solidToSTLBuffer(oc, lid);
+    console.log(`[hollow-lid] OK — body ${bodyBuf.length} B, lid ${lidBuf.length} B`);
+    res.json({ bodyStlBase64: bodyBuf.toString('base64'), lidStlBase64: lidBuf.toString('base64') });
+  } catch (e) {
+    console.error('[hollow-lid] Fehler:', e);
+    res.json({ error: e.message || String(e) });
+  } finally {
+    for (const op of keep) { try { op.delete(); } catch (_) {} }
+  }
+});
+
 // Debug: Schneidet einen OCCT-Box (kein STL) mit einem SVG-Prism
 app.get('/debug-box-cut', async (_, res) => {
   try {
@@ -859,4 +997,5 @@ if (require.main === module) {
 
 module.exports = { getOC, buildSvgSolid, stlToOCCTSolid, solidToSTLBuffer,
                    buildMatrixFromSnapNormal, parseSTLBinary, simplifyDP,
-                   unifySolid, SVG_OVERLAP_MM };
+                   unifySolid, getBBoxNum, scaleAbout, makeBox, bop,
+                   app, SVG_OVERLAP_MM };
