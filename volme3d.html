@@ -8944,43 +8944,78 @@ function _openHollowLidModal() {
 }
 function _closeHollowLidModal() { document.getElementById('hollowlid-modal').classList.remove('show'); }
 
-async function _createHollowLid() {
-  if (_hollowLidBusy) return;
-  const o = getFirst();
-  if (!o || o.userData.shapeType !== 'import') { notify('Kein gültiges Modell gewählt', 'w'); return; }
-  const num = id => parseFloat(document.getElementById(id).value);
-  const params = {
-    wall:     num('hl-wall'),  cutAt:   num('hl-cut'),
-    lipDepth: num('hl-lip'),   clear:   num('hl-clear'),
-    boreDia:  num('hl-bore'),  ringLip: document.getElementById('hl-ring').checked
-  };
-  const stlBuf = o.userData._origStlBuf || _meshGeoToStlBufLocal(o);
-  if (!stlBuf) { notify('STL des Modells nicht verfügbar', 'e'); return; }
+// Beliebiges Objekt → binäres STL für den Server. Einzel-Import: eingebackener
+// Original-Buffer (mm, lokal) bevorzugt. Gruppe/Union/ohne _origStlBuf: alle
+// Kind-Meshes in EIN Welt-STL (mm, Z-up) zusammenführen.
+function _objToHollowStl(o) {
+  if (o.isMesh && o.geometry && o.userData._origStlBuf) return o.userData._origStlBuf;
+  o.updateMatrixWorld(true);
+  const v = [];
+  o.traverse(ch => {
+    if (!ch.isMesh || !ch.geometry) return;
+    const g = ch.geometry.clone();
+    g.applyMatrix4(ch.matrixWorld);
+    g.scale(10, 10, 10); g.rotateX(Math.PI / 2);   // App-Units → mm, Y-up → Z-up
+    const pos = g.attributes.position, idx = g.index?.array;
+    const n = Math.floor((idx ? idx.length : pos.count) / 3);
+    for (let i = 0; i < n; i++) {
+      const a = idx ? idx[i*3] : i*3, b = idx ? idx[i*3+1] : i*3+1, c = idx ? idx[i*3+2] : i*3+2;
+      v.push(pos.getX(a),pos.getY(a),pos.getZ(a), pos.getX(b),pos.getY(b),pos.getZ(b), pos.getX(c),pos.getY(c),pos.getZ(c));
+    }
+    g.dispose();
+  });
+  if (!v.length) return null;
+  const nTri = v.length / 9, buf = new ArrayBuffer(84 + nTri*50), dv = new DataView(buf);
+  dv.setUint32(80, nTri, true); let off = 84;
+  for (let i = 0; i < nTri; i++) { off += 12; for (let k = 0; k < 9; k++) { dv.setFloat32(off, v[i*9+k], true); off += 4; } dv.setUint16(off, 0, true); off += 2; }
+  return buf;
+}
 
+async function _createHollowLid() {
+  if (_hollowLidBusy) { console.warn('[hollow-lid] bereits aktiv (busy) — Klick ignoriert'); return; }
   const btn = document.getElementById('hl-go');
   _hollowLidBusy = true; if (btn) { btn.disabled = true; btn.textContent = '… rechnet'; }
-  notify('Hohlkörper + Deckel wird berechnet…', 'ok');
   try {
+    const o = getFirst();
+    console.log('[hollow-lid] Start, Objekt:', o?.userData?.name, 'shapeType:', o?.userData?.shapeType, 'isMesh:', o?.isMesh);
+    if (!o) { notify('Kein Objekt gewählt', 'w'); return; }
+    const num = id => { const el = document.getElementById(id); if (!el) throw new Error('UI-Feld fehlt: ' + id); return parseFloat(el.value); };
+    const params = {
+      wall:     num('hl-wall'),  cutAt:   num('hl-cut'),
+      lipDepth: num('hl-lip'),   clear:   num('hl-clear'),
+      boreDia:  num('hl-bore'),  ringLip: document.getElementById('hl-ring').checked
+    };
+    const stlBuf = _objToHollowStl(o);
+    if (!stlBuf) { notify('STL des Modells nicht verfügbar (keine Geometrie)', 'e'); return; }
+    console.log('[hollow-lid] STL', stlBuf.byteLength, 'B →', _OCCT_BASE, params);
+    _closeHollowLidModal();
+    _progressShow('Hohlkörper + Deckel wird berechnet…');
+    _progressSet(8);
+    _progressCreep(85, 0.5);   // kriecht, solange der Server rechnet (unbekannte Dauer)
+
     const resp = await fetch(_OCCT_BASE + '/api/occt-hollow-lid', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ stlBase64: _bufToBase64(stlBuf), ...params })
     });
+    console.log('[hollow-lid] HTTP', resp.status);
+    _progressStopCreep(); _progressSet(90, 'Ergebnis wird geladen…');
     const data = await resp.json();
-    if (data.error) { notify('Fehler: ' + data.error, 'e'); return; }
+    if (data.error) { _progressHide(); notify('Fehler: ' + data.error, 'e'); return; }
     saveUndo();
     const base = o.userData.name || 'Modell';
     const bodyMesh = _meshFromStlB64(data.bodyStlBase64, base + ' — Body');
     const lidMesh  = _meshFromStlB64(data.lidStlBase64,  base + ' — Deckel');
-    if (!bodyMesh || !lidMesh) { notify('Ergebnis konnte nicht geladen werden', 'e'); return; }
+    if (!bodyMesh || !lidMesh) { _progressHide(); notify('Ergebnis konnte nicht geladen werden', 'e'); return; }
     // Deckel rechts neben den Body legen (beide stehen flach auf der Platte)
     const wBody = new THREE.Box3().setFromObject(bodyMesh).getSize(new THREE.Vector3()).x;
     lidMesh.position.x += wBody * 0.6 + 1; lidMesh.updateMatrixWorld(true);
     o.visible = false;   // Original ausblenden (nicht löschen → Undo/Vergleich bleibt)
     selectObjs([bodyMesh, lidMesh]); updateTree(); fitToObjects([bodyMesh, lidMesh]);
-    _closeHollowLidModal();
+    _progressDone();
     notify('Hohlkörper + Deckel erzeugt ✓', 'ok');
   } catch (e) {
-    console.error('hollow-lid:', e); notify('Server nicht erreichbar: ' + e.message, 'e');
+    _progressHide();
+    console.error('[hollow-lid]', e); notify('Hohlkörper fehlgeschlagen: ' + (e.message || e), 'e');
   } finally {
     _hollowLidBusy = false; if (btn) { btn.disabled = false; btn.textContent = '✓ Erzeugen'; }
   }
