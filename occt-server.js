@@ -849,9 +849,14 @@ app.get('/health', (_, res) => res.json({ status: 'ok', occtReady: !!_oc }));
 // In:  { stlBase64, wall=2, cutAt=0.5, lipDepth=5, clear=0.25, boreDia=0,
 //        ringLip=true }
 // Out: { bodyStlBase64, lidStlBase64 } | { error }
-app.post('/api/occt-hollow-lid', async (req, res) => {
-  const b = req.body || {};
-  if (!b.stlBase64) return res.json({ error: 'stlBase64 fehlt' });
+// Reine Hohlkörper-Pipeline (ohne HTTP). Gibt { bodyStlBase64, lidStlBase64 }
+// oder { error } zurück. Wird vom Worker-Prozess (occt-hollow-worker.js)
+// aufgerufen, damit ein hängender Boolean (z. B. bei konkaven/mehrteiligen
+// Meshes wie einem Auto) per Timeout killbar ist und NICHT den Hauptserver
+// blockiert (der sonst auch den SVG-Abzug für alle lahmlegt).
+async function computeHollowLid(oc, opts) {
+  const b = opts || {};
+  if (!b.stlBase64) return { error: 'stlBase64 fehlt' };
   const num      = (v, d) => (typeof v === 'number' && isFinite(v)) ? v : d;
   const wall     = num(b.wall, 2);
   const cutAt    = num(b.cutAt, 0.5);
@@ -862,7 +867,6 @@ app.post('/api/occt-hollow-lid', async (req, res) => {
 
   const keep = [];   // BOP-Objekte am Leben halten bis nach der Vernetzung
   try {
-    const oc = await getOC();
     const rawBuf = Buffer.from(b.stlBase64, 'base64');
     console.log(`[hollow-lid] STL ${rawBuf.length} B, wall=${wall} cutAt=${cutAt} ` +
                 `lip=${lipDepth} clear=${clear} bore=${boreDia} ring=${ringLip}`);
@@ -888,20 +892,20 @@ app.post('/api/occt-hollow-lid', async (req, res) => {
       console.log('[hollow-lid] Decimat-Solid ungültig → Fallback auf Originalmesh');
       original = stlToOCCTSolid(oc, rawBuf);
     }
-    if (!original) return res.json({ error: 'Repair fehlgeschlagen: STL → OCCT Solid nicht möglich' });
+    if (!original) return { error: 'Repair fehlgeschlagen: STL → OCCT Solid nicht möglich' };
     if (original.ShapeType().value !== 2)   // 2 = TopAbs_SOLID
-      return res.json({ error: 'Kein gültiger Solid nach Repair — Mesh nicht wasserdicht (Self-Intersections/Löcher)' });
+      return { error: 'Kein gültiger Solid nach Repair — Mesh nicht wasserdicht (Self-Intersections/Löcher)' };
     original = unifySolid(oc, original);     // koplanare Faces vereinen → schnellere Booleans
 
     // Schritt 1 — Bounding Box + Skalierfaktor
     const bb = getBBoxNum(oc, original);
-    if (!bb) return res.json({ error: 'Bounding Box leer' });
+    if (!bb) return { error: 'Bounding Box leer' };
     const dx = bb.xMax - bb.xMin, dy = bb.yMax - bb.yMin, dz = bb.zMax - bb.zMin;
     const cx = (bb.xMin + bb.xMax) / 2, cy = (bb.yMin + bb.yMax) / 2, cz = (bb.zMin + bb.zMax) / 2;
     const minDim = Math.min(dx, dy, dz);
     const EPS = 1e-4;
     if (minDim <= 2 * wall + EPS)
-      return res.json({ error: `Modell zu klein/flach: kleinste Abmessung ${minDim.toFixed(2)}mm ≤ 2×Wandstärke ${(2*wall).toFixed(2)}mm` });
+      return { error: `Modell zu klein/flach: kleinste Abmessung ${minDim.toFixed(2)}mm ≤ 2×Wandstärke ${(2*wall).toFixed(2)}mm` };
     const s = (minDim - 2 * wall) / minDim;
     console.log(`[hollow-lid] bbox dx=${dx.toFixed(1)} dy=${dy.toFixed(1)} dz=${dz.toFixed(1)} minDim=${minDim.toFixed(1)} s=${s.toFixed(4)}`);
 
@@ -913,7 +917,7 @@ app.post('/api/occt-hollow-lid', async (req, res) => {
 
     // Schritt 2 — Aushöhlen: inner um den MITTELPUNKT skaliert, dann original − inner
     const inner = scaleAbout(oc, original, s, cx, cy, cz);
-    if (!inner) return res.json({ error: 'Aushöhlen: Innenkörper-Skalierung fehlgeschlagen' });
+    if (!inner) return { error: 'Aushöhlen: Innenkörper-Skalierung fehlgeschlagen' };
     const hollow = bop(oc, 'BRepAlgoAPI_Cut_3', original, inner, keep, 'Aushöhlen-Cut');
 
     // Schritt 3 — Deckel abtrennen (öffnet zugleich den Hohlraum)
@@ -926,7 +930,7 @@ app.post('/api/occt-hollow-lid', async (req, res) => {
     const minDimS = minDim * s;                       // Innenmaß
     const sClear  = (minDimS - 2 * clear) / minDimS;  // Falz minimal kleiner als Hohlraum
     const plug    = scaleAbout(oc, inner, sClear, cx, cy, cz);
-    if (!plug) return res.json({ error: 'Falz: Plug-Skalierung fehlgeschlagen' });
+    if (!plug) return { error: 'Falz: Plug-Skalierung fehlgeschlagen' };
     // Box von zCut-lipDepth bis zCut+0.5 (0.5mm Überlapp mit lidCap = sauberer Fuse)
     const lipBox  = makeBox(oc, x0, y0, zCut - lipDepth, bigXY, bigXY, lipDepth + 0.5);
     let lip = bop(oc, 'BRepAlgoAPI_Common_3', plug, lipBox, keep, 'Falz-Common');
@@ -959,9 +963,93 @@ app.post('/api/occt-hollow-lid', async (req, res) => {
     const bodyBuf = solidToSTLBuffer(oc, body);
     const lidBuf  = solidToSTLBuffer(oc, lid);
     console.log(`[hollow-lid] OK — body ${bodyBuf.length} B, lid ${lidBuf.length} B`);
-    res.json({ bodyStlBase64: bodyBuf.toString('base64'), lidStlBase64: lidBuf.toString('base64') });
+    return { bodyStlBase64: bodyBuf.toString('base64'), lidStlBase64: lidBuf.toString('base64') };
   } catch (e) {
     console.error('[hollow-lid] Fehler:', e);
+    return { error: e.message || String(e) };
+  } finally {
+    for (const op of keep) { try { op.delete(); } catch (_) {} }
+  }
+}
+
+// Endpoint: Berechnung in EINEM Worker-Prozess mit hartem Timeout. Ein hängender
+// Boolean kann so gekillt werden (synchroner WASM-Code ist im selben Prozess
+// nicht unterbrechbar) und blockiert den Hauptserver nicht.
+const HOLLOW_TIMEOUT_MS = parseInt(process.env.HOLLOW_TIMEOUT_MS, 10) || 75000;
+app.post('/api/occt-hollow-lid', (req, res) => {
+  const b = req.body || {};
+  if (!b.stlBase64) return res.json({ error: 'stlBase64 fehlt' });
+  const { spawn } = require('child_process');
+  const os = require('os');
+  const stamp   = Date.now() + '-' + Math.random().toString(36).slice(2);
+  const inFile  = path.join(os.tmpdir(), `hl-in-${stamp}.json`);
+  const outFile = path.join(os.tmpdir(), `hl-out-${stamp}.json`);
+  try { fs.writeFileSync(inFile, JSON.stringify(b)); }
+  catch (e) { return res.json({ error: 'Tempdatei: ' + e.message }); }
+
+  const worker = spawn(process.execPath,
+    [path.join(__dirname, 'occt-hollow-worker.js'), inFile, outFile],
+    { stdio: ['ignore', 'inherit', 'inherit'] });
+
+  let done = false;
+  const cleanup = () => { for (const f of [inFile, outFile]) { try { fs.unlinkSync(f); } catch (_) {} } };
+  const finish  = (obj) => { if (done) return; done = true; clearTimeout(timer); cleanup(); res.json(obj); };
+
+  const timer = setTimeout(() => {
+    if (done) return;
+    console.log('[hollow-lid] Timeout — Worker gekillt');
+    try { worker.kill('SIGKILL'); } catch (_) {}
+    finish({ error: 'Berechnung nach 75 s abgebrochen — Modell ungeeignet (zu komplex, konkav oder mehrteilig). Für den Hohlkörper eine geschlossene, container-artige Form verwenden.' });
+  }, HOLLOW_TIMEOUT_MS);
+
+  worker.on('exit', (code) => {
+    if (done) return;
+    let result;
+    try { result = JSON.parse(fs.readFileSync(outFile, 'utf8')); }
+    catch (e) { result = { error: code === 0 ? ('Ergebnis nicht lesbar: ' + e.message) : ('Worker-Absturz (Code ' + code + ')') }; }
+    finish(result);
+  });
+  worker.on('error', (e) => finish({ error: 'Worker-Start fehlgeschlagen: ' + e.message }));
+});
+
+// ── Echter Boolean-Union: mehrere Körper (je STL) → EIN wasserdichtes Solid ──
+// Behebt das "schwebende Regionen"-Problem im Slicer: getrennte, sich
+// durchdringende Hüllen (wie sie die reine Gruppierung ∪ erzeugt) werden per
+// BRepAlgoAPI_Fuse zu einem manifolden Volumen verschmolzen.
+// Ablauf je Körper: Sew → MakeSolid (in stlToOCCTSolid), dann sequenzielles
+// Fuse aller Körper, dann UnifySameDomain (koplanare Flächen verschmelzen).
+app.post('/api/occt-union', async (req, res) => {
+  const b = req.body || {};
+  const list = Array.isArray(b.stlsBase64) ? b.stlsBase64 : null;
+  if (!list || !list.length) return res.json({ error: 'stlsBase64 (Array) fehlt' });
+
+  const keep = [];   // BOP-Objekte am Leben halten bis nach der Vernetzung
+  try {
+    const oc = await getOC();
+
+    // Jeder Körper → eigenes Solid. Durchdringungen löst erst das Fuse, daher
+    // bewusst NICHT vorher zu einer einzigen Triangle-Soup zusammenführen.
+    const solids = [];
+    for (let i = 0; i < list.length; i++) {
+      try {
+        const buf = Buffer.from(list[i], 'base64');
+        const s = stlToOCCTSolid(oc, buf);
+        if (!s) { console.log(`[union] Körper ${i}: STL → Solid fehlgeschlagen, übersprungen`); continue; }
+        solids.push(s);
+      } catch (e) { console.log(`[union] Körper ${i}: ${e.message}`); }
+    }
+    if (!solids.length) return res.json({ error: 'Kein Körper ergab ein gültiges Solid' });
+
+    let result = solids[0];
+    for (let i = 1; i < solids.length; i++)
+      result = bop(oc, 'BRepAlgoAPI_Fuse_3', result, solids[i], keep, `Union-Fuse ${i}`);
+
+    result = unifySolid(oc, result);   // koplanare Flächen verschmelzen → sauberes Mesh
+    const outBuf = solidToSTLBuffer(oc, result);
+    console.log(`[union] OK — ${solids.length}/${list.length} Körper → ${outBuf.length} B STL`);
+    res.json({ stlBase64: outBuf.toString('base64'), bodies: solids.length });
+  } catch (e) {
+    console.error('[union] Fehler:', e);
     res.json({ error: e.message || String(e) });
   } finally {
     for (const op of keep) { try { op.delete(); } catch (_) {} }
@@ -1068,5 +1156,5 @@ if (require.main === module) {
 module.exports = { getOC, buildSvgSolid, stlToOCCTSolid, solidToSTLBuffer,
                    buildMatrixFromSnapNormal, parseSTLBinary, simplifyDP,
                    unifySolid, getBBoxNum, scaleAbout, makeBox, bop,
-                   decimateTrianglesGrid, trisToStlBuffer,
+                   decimateTrianglesGrid, trisToStlBuffer, computeHollowLid,
                    app, SVG_OVERLAP_MM };
