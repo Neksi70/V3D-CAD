@@ -65,6 +65,24 @@ const triCount = b64 => { const buf = Buffer.from(b64, 'base64'); return (buf.le
   check(!!r3.error && /klein|flach/.test(r3.error), `sauberer Abbruch: "${r3.error || 'KEIN Fehler!'}"`);
   check(!r3.bodyStlBase64, 'kein Müll-Output (kein body)');
 
+  // ── Test 4: Decimate-Vorschritt bei dichtem Mesh (feine Kugel) ──────────
+  console.log('\n[Test 4] Dichtes Mesh (feinvernetzte Kugel) → Decimate + body+lid');
+  const sph = new oc.BRepPrimAPI_MakeSphere_5(new oc.gp_Pnt_3(0,0,0), 20).Shape();
+  // sehr fein vernetzen → >20000 Dreiecke (löst den Decimate-Vorschritt aus)
+  new oc.BRepMesh_IncrementalMesh_2(sph, 0.008, false, 0.05, false);
+  const sphStl = solidToSTLBuffer(oc, sph);
+  const denseTris = (sphStl.length-84)/50;
+  console.log(`  dichtes STL: ${denseTris} Dreiecke`);
+  check(denseTris > 20000, `Mesh dicht genug für Decimate (${denseTris} > 20000)`);
+  const r4 = await post(server, { stlBase64: sphStl.toString('base64'), wall: 2, decimateGrid: 64 });
+  if (r4.error) { console.log('  ✗ Fehler:', r4.error); fail++; }
+  else {
+    check(!!r4.bodyStlBase64 && !!r4.lidStlBase64, 'body+lid trotz dichtem Mesh');
+    check(triCount(r4.bodyStlBase64) > 12, `body Dreiecke=${triCount(r4.bodyStlBase64)}`);
+    const bodyS = stlToOCCTSolid(oc, Buffer.from(r4.bodyStlBase64, 'base64'));
+    check(bodyS && bodyS.ShapeType().value === 2, 'decimierter body = valider Solid');
+  }
+
   server.close();
   console.log(fail === 0 ? '\n✅ ALLE TESTS BESTANDEN' : `\n❌ ${fail} FEHLER`);
   process.exit(fail === 0 ? 0 : 1);

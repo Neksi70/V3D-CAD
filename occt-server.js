@@ -56,6 +56,57 @@ function parseSTLBinary(buf) {
   return tris;
 }
 
+// ── Mesh-Decimate (Vertex-Clustering, Rossignac–Borrel) ────────────────────
+// Dichte Meshes (KI-Modelle, zehntausende Dreiecke) machen das Vernähen + die
+// Booleans inhärent langsam (jedes Dreieck wird eine Face). Dieser Vorschritt
+// rastert die Vertices auf ein Gitter (gridN Zellen entlang der längsten Achse)
+// und verschmilzt sie auf den Zell-Mittelpunkt. Dreiecke, deren Ecken in
+// dieselbe Zelle fallen, kollabieren und werden verworfen. Reduziert die
+// Dreieckszahl deutlich bei akzeptablem Form-Verlust. Gibt die neue Liste zurück.
+function decimateTrianglesGrid(tris, gridN) {
+  if (!tris.length) return tris;
+  let minx=Infinity,miny=Infinity,minz=Infinity,maxx=-Infinity,maxy=-Infinity,maxz=-Infinity;
+  for (const t of tris) for (const p of t) {
+    if (p[0]<minx)minx=p[0]; if (p[1]<miny)miny=p[1]; if (p[2]<minz)minz=p[2];
+    if (p[0]>maxx)maxx=p[0]; if (p[1]>maxy)maxy=p[1]; if (p[2]>maxz)maxz=p[2];
+  }
+  const ext = Math.max(maxx-minx, maxy-miny, maxz-minz) || 1;
+  const inv = gridN / ext;                       // 1/Zellgröße
+  const key = p => Math.floor((p[0]-minx)*inv) + '|' +
+                   Math.floor((p[1]-miny)*inv) + '|' +
+                   Math.floor((p[2]-minz)*inv);
+  // Repräsentant je Zelle = Mittel aller einfallenden Vertices (glättet leicht)
+  const rep = new Map();
+  for (const t of tris) for (const p of t) {
+    let r = rep.get(key(p));
+    if (!r) { r = {x:0,y:0,z:0,n:0}; rep.set(key(p), r); }
+    r.x+=p[0]; r.y+=p[1]; r.z+=p[2]; r.n++;
+  }
+  for (const r of rep.values()) { r.x/=r.n; r.y/=r.n; r.z/=r.n; }
+  const out = [];
+  for (const t of tris) {
+    const ka=key(t[0]), kb=key(t[1]), kc=key(t[2]);
+    if (ka===kb || kb===kc || ka===kc) continue;   // kollabiertes Dreieck → weg
+    const a=rep.get(ka), b=rep.get(kb), c=rep.get(kc);
+    out.push([[a.x,a.y,a.z],[b.x,b.y,b.z],[c.x,c.y,c.z]]);
+  }
+  return out;
+}
+
+// Dreiecksliste → binäres STL (Normale = 0, StlAPI_Reader ignoriert sie)
+function trisToStlBuffer(tris) {
+  const buf = Buffer.alloc(84 + tris.length*50);
+  buf.write('decimated', 0, 'ascii');
+  buf.writeUInt32LE(tris.length, 80);
+  let off = 84;
+  for (const [a,b,c] of tris) {
+    off += 12;
+    for (const v of [a,b,c]) { buf.writeFloatLE(v[0],off); buf.writeFloatLE(v[1],off+4); buf.writeFloatLE(v[2],off+8); off+=12; }
+    buf.writeUInt16LE(0,off); off+=2;
+  }
+  return buf;
+}
+
 // Ray durch alle STL-Dreiecke (Möller–Trumbore) → sortierte, entduplizierte
 // Liste positiver Treffer-Distanzen t entlang (dx,dy,dz) ab (ox,oy,oz).
 function rayTriHits(tris, ox, oy, oz, dx, dy, dz) {
@@ -812,12 +863,31 @@ app.post('/api/occt-hollow-lid', async (req, res) => {
   const keep = [];   // BOP-Objekte am Leben halten bis nach der Vernetzung
   try {
     const oc = await getOC();
-    const stlBuf = Buffer.from(b.stlBase64, 'base64');
-    console.log(`[hollow-lid] STL ${stlBuf.length} B, wall=${wall} cutAt=${cutAt} ` +
+    const rawBuf = Buffer.from(b.stlBase64, 'base64');
+    console.log(`[hollow-lid] STL ${rawBuf.length} B, wall=${wall} cutAt=${cutAt} ` +
                 `lip=${lipDepth} clear=${clear} bore=${boreDia} ring=${ringLip}`);
+
+    // Vorschritt — Mesh-Decimate für dichte Meshes (KI-Modelle). Über DENSE
+    // Dreiecken werden die Vertices geclustert → Vernähen + Booleans deutlich
+    // schneller. Opt-out via decimate:false, Gitterauflösung via decimateGrid.
+    const DENSE = 20000;
+    const allTris = parseSTLBinary(rawBuf);
+    let stlBuf = rawBuf, decimated = false;
+    if (b.decimate !== false && allTris.length > DENSE) {
+      const gridN = num(b.decimateGrid, 96);
+      const dec = decimateTrianglesGrid(allTris, gridN);
+      console.log(`[hollow-lid] decimate ${allTris.length} → ${dec.length} Dreiecke (grid ${gridN})`);
+      if (dec.length >= 100 && dec.length < allTris.length) { stlBuf = trisToStlBuffer(dec); decimated = true; }
+    }
 
     // Schritt 0 — Repair (Sew → MakeSolid → ShapeFix, in stlToOCCTSolid gekapselt)
     let original = stlToOCCTSolid(oc, stlBuf);
+    // Decimation kann ein dünnwandiges/nicht-mehr-wasserdichtes Mesh erzeugen →
+    // wenn dann kein gültiger Solid: einmal mit dem Originalmesh wiederholen.
+    if (decimated && (!original || original.ShapeType().value !== 2)) {
+      console.log('[hollow-lid] Decimat-Solid ungültig → Fallback auf Originalmesh');
+      original = stlToOCCTSolid(oc, rawBuf);
+    }
     if (!original) return res.json({ error: 'Repair fehlgeschlagen: STL → OCCT Solid nicht möglich' });
     if (original.ShapeType().value !== 2)   // 2 = TopAbs_SOLID
       return res.json({ error: 'Kein gültiger Solid nach Repair — Mesh nicht wasserdicht (Self-Intersections/Löcher)' });
@@ -998,4 +1068,5 @@ if (require.main === module) {
 module.exports = { getOC, buildSvgSolid, stlToOCCTSolid, solidToSTLBuffer,
                    buildMatrixFromSnapNormal, parseSTLBinary, simplifyDP,
                    unifySolid, getBBoxNum, scaleAbout, makeBox, bop,
+                   decimateTrianglesGrid, trisToStlBuffer,
                    app, SVG_OVERLAP_MM };
