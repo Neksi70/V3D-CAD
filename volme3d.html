@@ -1531,6 +1531,7 @@ const firebaseConfig = {
         <div class="vbg" id="esbg-type" style="flex-wrap:wrap">
           <button class="vtb" onclick="_screwEditSet('type','aussen')">Außen</button>
           <button class="vtb" onclick="_screwEditSet('type','innen')">Innen</button>
+          <button class="vtb" onclick="_screwEditSet('type','torx')">Torx</button>
           <button class="vtb" onclick="_screwEditSet('type','schloss')">Schloss</button>
           <button class="vtb" onclick="_screwEditSet('type','mutter')">Mutter</button>
           <button class="vtb" onclick="_screwEditSet('type','scheibe')">Scheibe</button>
@@ -2041,6 +2042,7 @@ const firebaseConfig = {
         <div class="vbg" id="sbg-type" style="flex-wrap:wrap">
           <button class="vtb on" onclick="_screwSetType('aussen')">Außen</button>
           <button class="vtb"    onclick="_screwSetType('innen')">Innen</button>
+          <button class="vtb"    onclick="_screwSetType('torx')">Torx</button>
           <button class="vtb"    onclick="_screwSetType('schloss')">Schloss</button>
           <button class="vtb"    onclick="_screwSetType('mutter')">Mutter</button>
           <button class="vtb"    onclick="_screwSetType('scheibe')">Scheibe</button>
@@ -6862,7 +6864,7 @@ function applyDimChange(axis, val) {
   // Schrauben (mit Gewinde): Höhen-Anfasser ändert die LÄNGE (Geometrie neu bauen,
   // Steigung konstant) statt das Mesh zu strecken → kein Verzerren des Gewindes.
   if (o.userData.shapeType === 'screw' && axis === 'sh' &&
-      (o.userData.screwType === 'aussen' || o.userData.screwType === 'innen' || o.userData.screwType === 'schloss')) {
+      (o.userData.screwType === 'aussen' || o.userData.screwType === 'innen' || o.userData.screwType === 'torx' || o.userData.screwType === 'schloss')) {
     o.geometry.computeBoundingBox();
     const geoH = (o.geometry.boundingBox.max.y - o.geometry.boundingBox.min.y) * 10;  // mm, unskaliert
     const curLen = o.userData.screwLength || 20;
@@ -7529,7 +7531,7 @@ function updateDimHandles() {
       // Steigung neu bauen; Seiten + Höhe(Mutter/Scheibe) + uniform gesperrt. „lift" erlaubt.
       if (o2.userData.shapeType === 'screw' && axis !== 'lift') {
         const st = o2.userData.screwType;
-        if (axis === 'sh' && (st === 'aussen' || st === 'innen' || st === 'schloss')) {
+        if (axis === 'sh' && (st === 'aussen' || st === 'innen' || st === 'torx' || st === 'schloss')) {
           const dot = dx * _dragHandle.screenDirX + dy * _dragHandle.screenDirY;
           const nv = Math.max(4, sv.sh + dot * sensitivity);
           o2.geometry.computeBoundingBox();
@@ -13736,7 +13738,7 @@ function _screwShaftParts(s, totalLenMM, threadLenMM, yBaseUnits, leftHand){
   return out;
 }
 // Norm-Kopfhöhe je Typ (mm)
-function _screwHeadDefault(s,type){ return type==='aussen'?s.hexH : type==='innen'?s.sockH : type==='schloss'?s.ckH : 0; }
+function _screwHeadDefault(s,type){ return type==='aussen'?s.hexH : (type==='innen'||type==='torx')?s.sockH : type==='schloss'?s.ckH : 0; }
 // Anschnitt/Fase am Gewinde-Ende (oberste Spitze): Vertices konisch nach innen (45°)
 function _chamferTip(geo, Rmaj, cUnits){
   const pos=geo.attributes.position; let tipY=-1e9;
@@ -13750,6 +13752,27 @@ function _chamferTip(geo, Rmaj, cUnits){
     }
   }
   pos.needsUpdate=true;
+}
+// Torx-Mitnahme (6-Lappen-Stern, ISO 10664), Achse Y, Basis bei y=0 — als Negativ
+// zum Aussparen im Kopf. Amm = Spitzen-Ø (Maß A), depthMm = Tiefe (mm).
+function _buildTorxGeo(Amm, depthMm){
+  const R=(Amm/10)/2;                 // Spitzenradius (Lappen außen)
+  const rIn=R*0.78;                   // Talradius (zwischen den Lappen)
+  const rMean=(R+rIn)/2, amp=(R-rIn)/2;
+  const prof=th=> rMean+amp*Math.cos(6*th);   // 6 Lappen
+  const nA=72, h=depthMm/10, V=[], I=[];
+  for(let i=0;i<nA;i++){ const th=(i/nA)*2*Math.PI, r=prof(th), c=Math.cos(th), sn=Math.sin(th);
+    V.push(r*c,0,r*sn); V.push(r*c,h,r*sn); }
+  for(let i=0;i<nA;i++){ const i1=(i+1)%nA, a=2*i,b=2*i+1,cc=2*i1,d=2*i1+1;
+    I.push(a,cc,b); I.push(b,cc,d); }                 // Mantel
+  const ctrB=V.length/3; V.push(0,0,0);
+  const ctrT=V.length/3; V.push(0,h,0);
+  for(let i=0;i<nA;i++){ const i1=(i+1)%nA;
+    I.push(ctrB, 2*i1, 2*i);            // Boden
+    I.push(ctrT, 2*i+1, 2*i1+1);        // Deckel
+  }
+  const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(V,3));
+  g.setIndex(I); g.computeVertexNormals(); return g;
 }
 // Komplette Schrauben/Mutter-Geometrie (Achse Y, 1 Unit = 10mm, Basis bei y=0)
 function _buildScrewGeometry(p){
@@ -13769,6 +13792,14 @@ function _buildScrewGeometry(p){
     const sqR=(s.sqW/Math.SQRT2)/10;
     const sq=new THREE.CylinderGeometry(sqR,sqR,s.sqH/10,4); sq.translate(0, (hMM + s.sqH/2)/10 - 0.05, 0);
     parts=[dome, sq, ..._screwShaftParts(s, p.length, p.threadLen, (hMM+s.sqH)/10 - 0.1, lh)];
+  } else if (p.type==='torx'){ // Zylinderkopf mit Torx-Mitnahme (ISO 14579), Kopf unten
+    const r=(s.sockD/10)/2, h=hMM/10;
+    const head=new THREE.CylinderGeometry(r,r,h,48); head.translate(0, h/2, 0);
+    const torx=_buildTorxGeo(s.torxA, hMM*0.6+2); torx.translate(0, -0.2, 0);  // Aussparung von y=-0.2 nach oben
+    const hm=new THREE.Mesh(_posOnly(head)); hm.updateMatrixWorld(true);
+    const sm=new THREE.Mesh(_posOnly(torx)); sm.updateMatrixWorld(true);
+    const cut=ThreeCSG.subtract(hm, sm, new THREE.MeshBasicMaterial());
+    parts=[cut.geometry, ..._screwShaftParts(s, p.length, p.threadLen, h-0.05, lh)];
   } else { // innen — Zylinderkopf mit Innensechskant (Kopf unten, Schlitz zeigt zur Platte)
     const r=(s.sockD/10)/2, h=hMM/10;
     const head=new THREE.CylinderGeometry(r,r,h,48); head.translate(0, h/2, 0);
@@ -13795,7 +13826,7 @@ function _closeScrewModal(){
 }
 function _screwRowVis(t){
   const set=(id,show)=>{const e=document.getElementById(id); if(e)e.style.display=show?'flex':'none';};
-  const isScrew = t==='aussen'||t==='innen'||t==='schloss';
+  const isScrew = t==='aussen'||t==='innen'||t==='torx'||t==='schloss';
   set('screw-len-row',    isScrew);
   set('screw-thread-row', isScrew);
   set('screw-head-row',   isScrew);
@@ -13806,7 +13837,7 @@ function _screwRowVis(t){
 function _screwSetType(t){
   _screwP.type=t;
   const btns=document.querySelectorAll('#sbg-type .vtb');
-  ['aussen','innen','schloss','mutter','scheibe'].forEach((m,i)=>{ if(btns[i]) btns[i].classList.toggle('on',m===t); });
+  ['aussen','innen','torx','schloss','mutter','scheibe'].forEach((m,i)=>{ if(btns[i]) btns[i].classList.toggle('on',m===t); });
   _screwP.headH=0;  // Kopfhöhe auf Normwert des neuen Typs zurück
   const hd=_screwHeadDefault(SCREW_SPECS[_screwP.size],t);
   const sh=document.getElementById('sp-head'), shv=document.getElementById('sv-head');
@@ -13829,7 +13860,7 @@ function _screwSetSize(sz){
 function _screwUpd(key,val){ _screwP[key]=parseFloat(val); if(_screwRebuildT)clearTimeout(_screwRebuildT); _screwRebuildT=setTimeout(()=>{_screwRebuildT=null;_screwUpdateMesh();},90); }
 function _screwSyncUI(){
   const btns=document.querySelectorAll('#sbg-type .vtb');
-  ['aussen','innen','schloss','mutter','scheibe'].forEach((m,i)=>{ if(btns[i]) btns[i].classList.toggle('on',m===_screwP.type); });
+  ['aussen','innen','torx','schloss','mutter','scheibe'].forEach((m,i)=>{ if(btns[i]) btns[i].classList.toggle('on',m===_screwP.type); });
   ['M2','M3','M4','M5','M6','M8','M10'].forEach((m,i)=>{const b=document.querySelector(`#sbg-size .vtb:nth-child(${i+1})`); if(b)b.classList.toggle('on',m===_screwP.size);});
   _screwRowVis(_screwP.type);
   const ov=(_screwP.outer>0?_screwP.outer:SCREW_SPECS[_screwP.size].washOD);
@@ -13887,6 +13918,7 @@ function _screwSyncInfo(){
   if(p.type==='mutter') t += `Sechskantmutter · SW ${s.nutSW} · Höhe ${s.nutH} mm<br>Innengewinde mit ${p.clearance} mm Spiel`;
   else if(p.type==='aussen') t += `Außensechskant · SW ${s.hexSW} · Kopf ${hMM} mm<br>Länge ${p.length} mm · ${thrTxt}`;
   else if(p.type==='innen') t += `Zylinderkopf · Ø ${s.sockD} · Kopf ${hMM} mm<br>Länge ${p.length} mm · ${thrTxt}`;
+  else if(p.type==='torx') t += `Zylinderkopf Torx ${s.torx} · Ø ${s.sockD} · Kopf ${hMM} mm<br>Länge ${p.length} mm · ${thrTxt}`;
   else if(p.type==='schloss') t += `Schlossschraube · Kopf Ø ${s.ckD} · Höhe ${hMM} mm<br>Länge ${p.length} mm · ${thrTxt}`;
   else t += `Unterlegscheibe · Innen-Ø ${s.washID} (fest) · Dicke ${s.washH} mm<br>Außen-Ø ${(p.outer>0?p.outer:s.washOD)} mm`;
   _screwInfo(t);
@@ -13907,6 +13939,7 @@ function _createScrew(){
     : p.type==='scheibe' ? `Scheibe ${p.size}`
     : p.type==='aussen' ? `Schraube ${p.size}×${p.length}`
     : p.type==='schloss' ? `Schlossschraube ${p.size}×${p.length}`
+    : p.type==='torx' ? `Torx-Schraube ${p.size}×${p.length}`
     : `Zylinderschraube ${p.size}×${p.length}`) + _lh;
   typeCounts['screw']=(typeCounts['screw']||0)+1;
   mesh.userData={id:idCtr++,type:'screw',shapeType:'screw',name:label+' #'+typeCounts['screw'],
@@ -13922,7 +13955,7 @@ let _screwEditT=null;
 function _screwEditSyncUI(o){
   const t=o.userData.screwType||'aussen', sz=o.userData.screwSize||'M6', sp=SCREW_SPECS[sz];
   const tb=document.querySelectorAll('#esbg-type .vtb');
-  ['aussen','innen','schloss','mutter','scheibe'].forEach((m,i)=>{ if(tb[i]) tb[i].classList.toggle('on',m===t); });
+  ['aussen','innen','torx','schloss','mutter','scheibe'].forEach((m,i)=>{ if(tb[i]) tb[i].classList.toggle('on',m===t); });
   ['M2','M3','M4','M5','M6','M8','M10'].forEach((m,i)=>{const b=document.querySelector(`#esbg-size .vtb:nth-child(${i+1})`); if(b)b.classList.toggle('on',m===sz);});
   const len=o.userData.screwLength||20, clr=(o.userData.screwClearance!=null?o.userData.screwClearance:0.4);
   const outer=(o.userData.screwOuter>0?o.userData.screwOuter:sp.washOD);
@@ -13932,7 +13965,7 @@ function _screwEditSyncUI(o){
   setv('es-len','es-len-n',len); setv('es-clr','es-clr-n',clr); setv('es-out','es-out-n',outer); setv('es-thr','es-thr-n',thr); setv('es-hd','es-hd-n',hd);
   const elf=document.getElementById('es-left'); if(elf) elf.checked=!!o.userData.screwLeft;
   const vis=(id,show)=>{const e=document.getElementById(id); if(e)e.style.display=show?'flex':'none';};
-  const isScrew = t==='aussen'||t==='innen'||t==='schloss';
+  const isScrew = t==='aussen'||t==='innen'||t==='torx'||t==='schloss';
   vis('es-len-row', isScrew);
   vis('es-thr-row', isScrew);
   vis('es-hd-row',  isScrew);
@@ -18717,13 +18750,13 @@ function _fpBuildRows(type, o) {
       const tbtn=(v,l)=>`<button class="fp-btn" style="flex:1 1 30%;margin:0;${st===v?aOn:''}" onclick="_fpScrewSet('type','${v}')">${l}</button>`;
       const zbtn=(v)=>`<button class="fp-btn" style="flex:1;margin:0;padding:4px 2px;${ssz===v?aOn:''}" onclick="_fpScrewSet('size','${v}')">${v}</button>`;
       let ctrl='';
-      if(st==='aussen'||st==='innen'||st==='schloss') ctrl=row('Länge','fp-screw-len',len,"_fpScrewSet('length',this.value)",'mm',6,60,1)
+      if(st==='aussen'||st==='innen'||st==='torx'||st==='schloss') ctrl=row('Länge','fp-screw-len',len,"_fpScrewSet('length',this.value)",'mm',6,60,1)
         + row('Gewinde','fp-screw-thr',(o.userData.screwThread||0),"_fpScrewSet('thread',this.value)",'mm',0,60,1)
         + row('Kopfhöhe','fp-screw-hd',(o.userData.screwHead>0?o.userData.screwHead:_screwHeadDefault(sp,st)),"_fpScrewSet('head',this.value)",'mm',1,15,0.5);
       else if(st==='mutter') ctrl=row('Spiel','fp-screw-clr',clr,"_fpScrewSet('clearance',this.value)",'mm',0.1,0.8,0.05);
       else if(st==='scheibe') ctrl=row('Außen-Ø','fp-screw-out',outer,"_fpScrewSet('outer',this.value)",'mm',Math.ceil(sp.washID+1),40,0.5);
       if(st!=='scheibe') ctrl += `<label style="display:flex;align-items:center;gap:6px;margin:6px 0 2px;font-size:11px;cursor:pointer"><input type="checkbox" ${o.userData.screwLeft?'checked':''} onchange="_fpScrewSet('leftHand',this.checked?1:0)">Linksgewinde</label>`;
-      return `<div style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 6px">${tbtn('aussen','Außen')}${tbtn('innen','Innen')}${tbtn('schloss','Schloss')}${tbtn('mutter','Mutter')}${tbtn('scheibe','Scheibe')}</div>` +
+      return `<div style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 6px">${tbtn('aussen','Außen')}${tbtn('innen','Innen')}${tbtn('torx','Torx')}${tbtn('schloss','Schloss')}${tbtn('mutter','Mutter')}${tbtn('scheibe','Scheibe')}</div>` +
              `<div style="display:flex;gap:3px;margin-bottom:8px">${zbtn('M2')}${zbtn('M3')}${zbtn('M4')}${zbtn('M5')}${zbtn('M6')}${zbtn('M8')}${zbtn('M10')}</div>` +
              ctrl;
     }
