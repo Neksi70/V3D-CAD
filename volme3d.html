@@ -16914,8 +16914,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.23';
+const VOLME3D_VERSION = '1.15.24';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.24', date:'2026-06-21', changes:[
+    ['🎯','Flächen-Snap rastet jetzt zuverlässig ein (vorher „Zufall"): Der Snap orientiert sich an der Lage der BOX selbst (Strahl durch die Box-Mitte) statt am oft daneben liegenden Greifpunkt des Cursors — und nur, wenn die Fläche nah an der Box ist. Drag-und-Loslassen über einer Fläche/Schräge klappt damit verlässlich.'],
+  ]},
   { version:'1.15.23', date:'2026-06-21', changes:[
     ['🧲','Flächen-Snap saß weiter teils innen: Jetzt wird die Außenrichtung anhand des Zielkörper-Zentrums bestimmt (zuverlässig konvex), und die Box wird exakt mit ihrer echten Unterseiten-Mitte auf die Fläche gesetzt (statt über die Hüllbox). Der Körper liegt nun sauber AUSSEN auf — auch auf steilen Schrägen.'],
   ]},
@@ -17666,12 +17669,19 @@ let _solidSnapHit = null;
 // Während des Ziehens eines Körpers: Ziel-Fläche unter dem Cursor ermitteln + Hinweis.
 function _solidSnapDetect(mesh, mouseEvent) {
   const hint = document.getElementById('text-snap-hint');
-  getNorm(mouseEvent);
-  raycaster.setFromCamera(mousev, camera);
   const targets = objects.filter(o => o !== mesh && !o.userData.isEdgeLines && o.isMesh);
+  // Strahl durch die BOX-MITTE (nicht den Cursor) → snappt zuverlässig dort, wo die
+  // Box liegt, statt vom oft daneben liegenden Greifpunkt. Das Solid selbst ist aus
+  // den Targets ausgeschlossen, der Strahl trifft also das Objekt dahinter/darunter.
+  const bb = new THREE.Box3().setFromObject(mesh);
+  const c  = bb.getCenter(new THREE.Vector3());
+  const r  = bb.getBoundingSphere(new THREE.Sphere()).radius || 1;
+  const ndc = c.clone().project(camera);
+  raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), camera);
   const hits = raycaster.intersectObjects(targets, true);
   const hit = hits.find(h => h.face && h.object.isMesh && h.object !== mesh && !h.object.userData.isEdgeLines);
-  if (hit) {
+  // Nur snappen, wenn die Fläche NAH an der Box ist → kein zufälliges Fern-Überlappen.
+  if (hit && hit.point.distanceTo(c) < r * 2.5) {
     _solidSnapHit = hit;
     let obj = hit.object; while (obj && !objects.includes(obj)) obj = obj.parent;
     _textSnapTarget = { obj: obj || hit.object, type: 'solidface' };
