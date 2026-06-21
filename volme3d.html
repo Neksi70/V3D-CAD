@@ -945,7 +945,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.2<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.28<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <button class="btn" onclick="newScene()">📄 Neu</button>
@@ -1567,6 +1567,10 @@ const firebaseConfig = {
           <input type="range" id="es-clr" min="0.1" max="0.8" step="0.05" oninput="_screwEditSet('clearance',this.value)">
           <input class="dim-num" id="es-clr-n" type="number" min="0.1" max="0.8" step="0.05" onchange="_screwEditSet('clearance',this.value)">
         </div>
+        <div class="dim-row" id="es-left-row">
+          <label title="Linksgewinde">Linksgewinde</label>
+          <input type="checkbox" id="es-left" onchange="_screwEditSet('leftHand',this.checked?1:0)">
+        </div>
       </div>
 
       <!-- Zahnrad — nur für gear -->
@@ -2052,6 +2056,7 @@ const firebaseConfig = {
         <div class="vrow" id="screw-head-row"><label title="Höhe des Schraubenkopfs">Kopfhöhe</label> <input type="range" id="sp-head" min="1" max="15" value="4" step="0.5" oninput="document.getElementById('sv-head').textContent=this.value;_screwUpd('headH',this.value)"><span class="vv" id="sv-head">4</span><span class="vu">mm</span></div>
         <div class="vrow" id="screw-outer-row" style="display:none"><label title="Außendurchmesser — Innen-Ø bleibt passend zur Größe">Außen-Ø</label> <input type="range" id="sp-outer" min="8" max="40" value="12" step="0.5" oninput="document.getElementById('sv-outer').textContent=this.value;_screwUpd('outer',this.value)"><span class="vv" id="sv-outer">12</span><span class="vu">mm</span></div>
         <div class="vrow" id="screw-clear-row"><label title="Spiel zwischen Schraube und Muttergewinde">Spiel</label> <input type="range" id="sp-clear" min="0.1" max="0.8" value="0.4" step="0.05" oninput="document.getElementById('sv-clear').textContent=this.value;_screwUpd('clearance',this.value)"><span class="vv" id="sv-clear">0.4</span><span class="vu">mm</span></div>
+        <div class="vrow" id="screw-left-row"><label title="Linksgewinde (gegen den Uhrzeigersinn anziehen)">Linksgewinde</label> <input type="checkbox" id="sp-left" onchange="_screwUpd('leftHand',this.checked?1:0)"><span style="margin-left:6px;font-size:11px;color:var(--mid)">gegenläufig (DIN ↔ links)</span></div>
         <div id="screw-info" style="font-size:10.5px;color:#888;line-height:1.5;margin-top:8px;padding-top:8px;border-top:1px solid #eee"></div>
       </div>
     </div>
@@ -5722,9 +5727,11 @@ function _resetAllEdges() {
 }
 
 // ═══ ISO METRIC THREAD GEOMETRY ══════════════════════════════════════
-function _buildThreadGeo(diamMM, pitchMM, turns, segsPerTurn) {
+function _buildThreadGeo(diamMM, pitchMM, turns, segsPerTurn, leftHand) {
   // Vollsolides Gitter-Gewinde: wasserdicht, BSP-CSG-kompatibel
   // Jeder Vertex hat einen Radius der vom Helix-Profil bestimmt wird.
+  // leftHand=true → Linksgewinde (Helix dreht andersrum)
+  const hand   = leftHand ? -1 : 1;
   const rOuter = (diamMM / 10) / 2;
   const pitch  = pitchMM / 10;
   const depth  = pitch * 0.6495;              // ISO 60° Tiefe
@@ -5746,8 +5753,8 @@ function _buildThreadGeo(diamMM, pitchMM, turns, segsPerTurn) {
     // Kappen-Zone: voller Außendurchmesser → kein Deckel nach CSG-Abziehen
     if (y < yBot + guard || y > yTop - guard) return rOuter;
     let d = Infinity;
-    for (let t = 0; t < turns; t++) {
-      const yg = yBot + (theta / (Math.PI * 2) + t) * pitch; // Helix-Mitte
+    for (let t = -1; t <= turns; t++) {
+      const yg = yBot + (hand * theta / (Math.PI * 2) + t) * pitch; // Helix-Mitte
       const di = Math.abs(y - yg);
       if (di < d) d = di;
     }
@@ -5801,7 +5808,8 @@ function _buildThreadGeo(diamMM, pitchMM, turns, segsPerTurn) {
 // ── Gewinde-Mantelfläche für visuellen Overlay in Bohrung ────────────────────
 // Nur Lateralfläche (keine Deckel) – nicht für BSP-CSG, nur zur Darstellung.
 // yClipMin/yClipMax: Y-Grenzen in Thread-Lokal-Raum (verhindert Rausragen aus Solid)
-function _buildThreadVisualGeo(diamMM, pitchMM, turns, segsPerTurn, yClipMin, yClipMax) {
+function _buildThreadVisualGeo(diamMM, pitchMM, turns, segsPerTurn, yClipMin, yClipMax, leftHand) {
+  const hand    = leftHand ? -1 : 1;
   const rOuter  = (diamMM / 10) / 2 * 0.9985; // 0.15 % kleiner → kein Z-Fighting
   const pitch   = pitchMM / 10;
   const depth   = pitch * 0.6495;
@@ -5823,8 +5831,8 @@ function _buildThreadVisualGeo(diamMM, pitchMM, turns, segsPerTurn, yClipMin, yC
   function profR(y, theta) {
     if (y < origBot + guard || y > origTop - guard) return rOuter;
     let d = Infinity;
-    for (let t = 0; t < turns; t++) {
-      const yg = origBot + (theta / (Math.PI * 2) + t) * pitch;
+    for (let t = -1; t <= turns; t++) {
+      const yg = origBot + (hand * theta / (Math.PI * 2) + t) * pitch;
       const di = Math.abs(y - yg); if (di < d) d = di;
     }
     if (d <= ht) return rOuter;
@@ -6179,7 +6187,7 @@ function addThreadShape() {
     name: 'Gewinde ' + typeCounts['thread'],
     color, isHole,
     fillet: 0, chamfer: 0,
-    threadDiameter: 12, threadPitch: 1.75, threadTurns: 5, segments: 32,
+    threadDiameter: 12, threadPitch: 1.75, threadTurns: 5, segments: 32, threadLeft: false,
     displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
     displacementInvert: false, displacementSymmetric: false
   };
@@ -8019,7 +8027,7 @@ function buildObjectFromData(data) {
   obj.position.set(data.px || 0, data.py || 0, data.pz || 0);
   obj.rotation.set(data.rx || 0, data.ry || 0, data.rz || 0);
   obj.scale.set(data.sx || 1, data.sy || 1, data.sz || 1);
-  obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, opacity: data.opacity || 1.0, type: data.type, shapeType: data.shapeType || data.type, isGroup: !!data.isGroup, textStr: data.textStr || '', fillet: data.fillet || 0, chamfer: data.chamfer || 0, segments: data.segments, tubeRatio: data.tubeRatio, coneTop: data.coneTop, coneFlip: !!data.coneFlip, tubeWall: (data.tubeWall != null ? data.tubeWall : (data.shapeType==='tube'||data.type==='tube' ? 2 : undefined)), edgeBevels: data.edgeBevels, occtShape: data.occtShape || (data.wasBox ? 'box' : null), _occtParams: data._occtParams || null, displacementPattern: data.displacementPattern || 'keine', displacementAmp: data.displacementAmp || 0.5, displacementFreq: data.displacementFreq || 4, displacementInvert: !!data.displacementInvert, displacementSymmetric: !!data.displacementSymmetric, locked: !!data.locked, hidden: !!data.hidden, threadDiameter: data.threadDiameter, threadPitch: data.threadPitch, threadTurns: data.threadTurns, screwType: data.screwType, screwSize: data.screwSize, screwLength: data.screwLength, screwClearance: data.screwClearance, screwOuter: data.screwOuter, screwThread: data.screwThread, screwHead: data.screwHead, gearModule: data.gearModule, gearTeeth: data.gearTeeth, gearWidth: data.gearWidth, gearBore: data.gearBore, encType: data.encType, encW: data.encW, encD: data.encD, encH: data.encH, encWall: data.encWall, encBosses: data.encBosses, encBossSize: data.encBossSize };
+  obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, opacity: data.opacity || 1.0, type: data.type, shapeType: data.shapeType || data.type, isGroup: !!data.isGroup, textStr: data.textStr || '', fillet: data.fillet || 0, chamfer: data.chamfer || 0, segments: data.segments, tubeRatio: data.tubeRatio, coneTop: data.coneTop, coneFlip: !!data.coneFlip, tubeWall: (data.tubeWall != null ? data.tubeWall : (data.shapeType==='tube'||data.type==='tube' ? 2 : undefined)), edgeBevels: data.edgeBevels, occtShape: data.occtShape || (data.wasBox ? 'box' : null), _occtParams: data._occtParams || null, displacementPattern: data.displacementPattern || 'keine', displacementAmp: data.displacementAmp || 0.5, displacementFreq: data.displacementFreq || 4, displacementInvert: !!data.displacementInvert, displacementSymmetric: !!data.displacementSymmetric, locked: !!data.locked, hidden: !!data.hidden, threadDiameter: data.threadDiameter, threadPitch: data.threadPitch, threadTurns: data.threadTurns, threadLeft: !!data.threadLeft, screwType: data.screwType, screwSize: data.screwSize, screwLength: data.screwLength, screwClearance: data.screwClearance, screwOuter: data.screwOuter, screwThread: data.screwThread, screwHead: data.screwHead, screwLeft: !!data.screwLeft, gearModule: data.gearModule, gearTeeth: data.gearTeeth, gearWidth: data.gearWidth, gearBore: data.gearBore, encType: data.encType, encW: data.encW, encD: data.encD, encH: data.encH, encWall: data.encWall, encBosses: data.encBosses, encBossSize: data.encBossSize };
   if (data._hollowFlip) obj.userData._hollowFlip = true;
   if (data.tubePoly)  obj.userData.tubePoly  = true;
   if (data.tubeTwist) obj.userData.tubeTwist = data.tubeTwist;
@@ -8082,7 +8090,8 @@ function objectToData(o) {
   if (o.userData.threadDiameter) d.threadDiameter = o.userData.threadDiameter;
   if (o.userData.threadPitch)    d.threadPitch    = o.userData.threadPitch;
   if (o.userData.threadTurns)    d.threadTurns    = o.userData.threadTurns;
-  if (o.userData.screwType) { d.screwType = o.userData.screwType; d.screwSize = o.userData.screwSize; d.screwLength = o.userData.screwLength; d.screwClearance = o.userData.screwClearance; d.screwOuter = o.userData.screwOuter; d.screwThread = o.userData.screwThread; d.screwHead = o.userData.screwHead; }
+  if (o.userData.threadLeft)     d.threadLeft     = true;
+  if (o.userData.screwType) { d.screwType = o.userData.screwType; d.screwSize = o.userData.screwSize; d.screwLength = o.userData.screwLength; d.screwClearance = o.userData.screwClearance; d.screwOuter = o.userData.screwOuter; d.screwThread = o.userData.screwThread; d.screwHead = o.userData.screwHead; if (o.userData.screwLeft) d.screwLeft = true; }
   if (o.userData.gearModule) { d.gearModule = o.userData.gearModule; d.gearTeeth = o.userData.gearTeeth; d.gearWidth = o.userData.gearWidth; d.gearBore = o.userData.gearBore; }
   if (o.userData.encType) { d.encType = o.userData.encType; d.encW = o.userData.encW; d.encD = o.userData.encD; d.encH = o.userData.encH; d.encWall = o.userData.encWall; d.encBosses = o.userData.encBosses; d.encBossSize = o.userData.encBossSize; }
   if (o.userData.textStr)    d.textStr    = o.userData.textStr;
@@ -9344,7 +9353,7 @@ async function _doSubtractHoles(solids, holes) {
     const visGeo = _buildThreadVisualGeo(
       td.ud.threadDiameter || 12, td.ud.threadPitch || 1.75,
       td.ud.threadTurns || 5, td.ud.segments || 32,
-      yClipMin, yClipMax
+      yClipMin, yClipMax, !!td.ud.threadLeft
     );
     const visMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(0x1c1c1c),
@@ -10129,10 +10138,6 @@ window.addEventListener('mousemove', e => {
       const _sType = selectedObjs[0].userData.shapeType;
       if (_sType === 'text') _textSnapDetect(selectedObjs[0], e);
       else if (_sType === 'svg') _svgSnapDetect(selectedObjs[0], e);
-      else if (selectedObjs[0].isMesh && !selectedObjs[0].userData.isGroup) {
-        if (e.altKey) _solidSnapDetect(selectedObjs[0], e);   // Flächen-Snap nur mit Alt (deliberat)
-        else _solidSnapClear();
-      }
     }
   }
 });
@@ -10147,7 +10152,6 @@ window.addEventListener('mouseup', e => {
       const _st = selectedObjs[0].userData.shapeType;
       if (_st === 'text') _applyTextConform(selectedObjs[0], _textSnapTarget);
       else if (_st === 'svg') _applySvgSnap(selectedObjs[0], _textSnapTarget);
-      else if (_textSnapTarget.type === 'solidface') _applySolidConform(selectedObjs[0]);
     }
     _textSnapTarget = null;
     document.getElementById('text-snap-hint').style.display='none';
@@ -13614,7 +13618,7 @@ const SCREW_SPECS = {
   M8:  { d:8,  pitch:1.25, nutSW:13, nutH:6.8, hexSW:13, hexH:5.3, sockD:13,  sockH:8,  key:6, minor:6.8, ckD:17.7, ckH:4.8, sqW:8.6,  sqH:5.4, washID:8.4,  washOD:16, washH:1.6 },
   M10: { d:10, pitch:1.5,  nutSW:17, nutH:8.4, hexSW:16, hexH:6.4, sockD:16,  sockH:10, key:8, minor:8.5, ckD:21.5, ckH:6.0, sqW:10.6, sqH:6.6, washID:10.5, washOD:20, washH:2.0 },
 };
-let _screwP = { type:'aussen', size:'M6', length:20, clearance:0.4, outer:0, threadLen:0, headH:0 };
+let _screwP = { type:'aussen', size:'M6', length:20, clearance:0.4, outer:0, threadLen:0, headH:0, leftHand:false };
 let _screwRenderer=null,_screwScene=null,_screwCamera=null,_screwGroup=null,_screwAnimId=null,_screwRebuildT=null;
 
 // nur Positions-Attribut, nicht-indiziert → problemloses Mergen verschiedener Geo-Quellen
@@ -13633,15 +13637,16 @@ function _mergePos(geos){
   return ng;
 }
 // Gewindestab (Außengewinde, Achse Y, Basis bei y=0)
-function _threadShaft(s, lengthMM){
+function _threadShaft(s, lengthMM, leftHand){
   const turns = Math.max(2, lengthMM / s.pitch);
-  const g = _buildThreadGeo(s.d, s.pitch, turns, 36);  // totalH = lengthMM (in Units)
+  const g = _buildThreadGeo(s.d, s.pitch, turns, 36, leftHand);  // totalH = lengthMM (in Units)
   g.translate(0, (lengthMM/10)/2, 0);
   return g;
 }
 // Sechskantmutter mit Innengewinde — direkt gebaut (kein BSP-CSG → schlank & wasserdicht).
 // Innenfläche = Negativ eines Gewindestabs Ø(d+Spiel); Außen = Sechskant; oben/unten Ringdeckel.
-function _buildNutGeometry(s, clearance){
+function _buildNutGeometry(s, clearance, leftHand){
+  const hand  = leftHand ? -1 : 1;
   const nutH  = s.nutH/10;
   const pitchU= s.pitch/10;
   const rOut  = ((s.d+clearance)/10)/2;            // Gewinde-Außenradius (= Bohrung weit)
@@ -13652,7 +13657,7 @@ function _buildNutGeometry(s, clearance){
   const nturns= Math.ceil(nutH/pitchU)+2;
   function innerR(y,th){
     let d=Infinity;
-    for(let t=-1;t<=nturns;t++){ const yg=(th/(2*Math.PI)+t)*pitchU; const di=Math.abs(y-yg); if(di<d)d=di; }
+    for(let t=-1;t<=nturns;t++){ const yg=(hand*th/(2*Math.PI)+t)*pitchU; const di=Math.abs(y-yg); if(di<d)d=di; }
     if(d<=ht) return rOut;
     if(d<=hp) return rOut-(rOut-rMin)*(d-ht)/(hp-ht);
     return rMin;
@@ -13709,7 +13714,7 @@ function _buildWasherGeometry(innerDmm, outerDmm, thickMm){
 }
 // Schaft: optional glatter Teil (direkt unterm Kopf) + Gewinde an der Spitze.
 // threadLenMM: Länge des Gewindes; 0 oder >= totalLen ⇒ ganzes Gewinde (Vollgewinde).
-function _screwShaftParts(s, totalLenMM, threadLenMM, yBaseUnits){
+function _screwShaftParts(s, totalLenMM, threadLenMM, yBaseUnits, leftHand){
   const thr = (threadLenMM>0 && threadLenMM<totalLenMM) ? threadLenMM : totalLenMM;
   const shankLen = totalLenMM - thr, out=[];
   let y = yBaseUnits;
@@ -13718,7 +13723,7 @@ function _screwShaftParts(s, totalLenMM, threadLenMM, yBaseUnits){
     const shank=new THREE.CylinderGeometry(r,r,shankLen/10,32); shank.translate(0, y + shankLen/20, 0);
     out.push(shank); y += shankLen/10;
   }
-  const th=_threadShaft(s, thr); th.translate(0, y - 0.02, 0); out.push(th);
+  const th=_threadShaft(s, thr, leftHand); th.translate(0, y - 0.02, 0); out.push(th);
   return out;
 }
 // Norm-Kopfhöhe je Typ (mm)
@@ -13740,7 +13745,8 @@ function _chamferTip(geo, Rmaj, cUnits){
 // Komplette Schrauben/Mutter-Geometrie (Achse Y, 1 Unit = 10mm, Basis bei y=0)
 function _buildScrewGeometry(p){
   const s = SCREW_SPECS[p.size];
-  if (p.type==='mutter')  return _buildNutGeometry(s, p.clearance);
+  const lh = !!p.leftHand;
+  if (p.type==='mutter')  return _buildNutGeometry(s, p.clearance, lh);
   if (p.type==='scheibe') return _buildWasherGeometry(s.washID, (p.outer>0?p.outer:s.washOD), s.washH);
   // Kopf unten (auf der Platte, druckoptimal), Gewinde nach oben — Kopf bei y=0 als fester Anker
   const hMM = (p.headH>0 ? p.headH : _screwHeadDefault(s,p.type));   // Kopfhöhe (einstellbar)
@@ -13748,12 +13754,12 @@ function _buildScrewGeometry(p){
   if (p.type==='aussen'){
     const R=(s.hexSW/Math.sqrt(3))/10, h=hMM/10;
     const head=new THREE.CylinderGeometry(R,R,h,6); head.translate(0, h/2, 0);
-    parts=[head, ..._screwShaftParts(s, p.length, p.threadLen, h-0.05)];
+    parts=[head, ..._screwShaftParts(s, p.length, p.threadLen, h-0.05, lh)];
   } else if (p.type==='schloss'){ // Schlossschraube: Flachrundkopf + Vierkantansatz
     const dome=_buildDomeGeo(s.ckD/2, hMM);
     const sqR=(s.sqW/Math.SQRT2)/10;
     const sq=new THREE.CylinderGeometry(sqR,sqR,s.sqH/10,4); sq.translate(0, (hMM + s.sqH/2)/10 - 0.05, 0);
-    parts=[dome, sq, ..._screwShaftParts(s, p.length, p.threadLen, (hMM+s.sqH)/10 - 0.1)];
+    parts=[dome, sq, ..._screwShaftParts(s, p.length, p.threadLen, (hMM+s.sqH)/10 - 0.1, lh)];
   } else { // innen — Zylinderkopf mit Innensechskant (Kopf unten, Schlitz zeigt zur Platte)
     const r=(s.sockD/10)/2, h=hMM/10;
     const head=new THREE.CylinderGeometry(r,r,h,48); head.translate(0, h/2, 0);
@@ -13762,7 +13768,7 @@ function _buildScrewGeometry(p){
     const hm=new THREE.Mesh(_posOnly(head)); hm.updateMatrixWorld(true);
     const sm=new THREE.Mesh(_posOnly(sock)); sm.updateMatrixWorld(true);
     const cut=ThreeCSG.subtract(hm, sm, new THREE.MeshBasicMaterial());
-    parts=[cut.geometry, ..._screwShaftParts(s, p.length, p.threadLen, h-0.05)];
+    parts=[cut.geometry, ..._screwShaftParts(s, p.length, p.threadLen, h-0.05, lh)];
   }
   const g = _mergePos(parts.map(_posOnly));
   const chamfer = Math.max((s.pitch*0.6495)/10, 0.045);   // Anschnitt ~1 Gewindetiefe (45°)
@@ -13786,6 +13792,7 @@ function _screwRowVis(t){
   set('screw-head-row',   isScrew);
   set('screw-outer-row', t==='scheibe');
   set('screw-clear-row', t==='mutter');
+  set('screw-left-row',  t!=='scheibe');   // Linksgewinde: alle mit Gewinde
 }
 function _screwSetType(t){
   _screwP.type=t;
@@ -13825,6 +13832,7 @@ function _screwSyncUI(){
   const hv=(_screwP.headH>0?_screwP.headH:_screwHeadDefault(SCREW_SPECS[_screwP.size],_screwP.type));
   const sh=document.getElementById('sp-head'), shv=document.getElementById('sv-head');
   if(hv>0){ if(sh) sh.value=hv; if(shv) shv.textContent=hv; }
+  const sl=document.getElementById('sp-left'); if(sl) sl.checked=!!_screwP.leftHand;
 }
 function _screwInit3D(){
   const canvas=document.getElementById('screw-canvas');
@@ -13864,7 +13872,7 @@ function _screwUpdateMesh(){
 function _screwInfo(html){ const el=document.getElementById('screw-info'); if(el) el.innerHTML=html; }
 function _screwSyncInfo(){
   const p=_screwP, s=SCREW_SPECS[p.size];
-  let t = `<b>${p.size}</b> · Steigung ${s.pitch} mm<br>`;
+  let t = `<b>${p.size}</b> · Steigung ${s.pitch} mm${(p.leftHand&&p.type!=='scheibe')?' · <b>Linksgewinde</b>':''}<br>`;
   const thrTxt = (p.threadLen>0 && p.threadLen<p.length) ? `${p.threadLen} mm Gewinde` : 'Vollgewinde';
   const hMM = (p.headH>0 ? p.headH : _screwHeadDefault(s,p.type));
   if(p.type==='mutter') t += `Sechskantmutter · SW ${s.nutSW} · Höhe ${s.nutH} mm<br>Innengewinde mit ${p.clearance} mm Spiel`;
@@ -13885,15 +13893,16 @@ function _createScrew(){
   mesh.quaternion.copy(_wpMakeQuat(workplaneNormal));
   mesh.position.copy(workplanePoint);
   const _ow=(p.outer>0?p.outer:s.washOD);
-  const label = p.type==='mutter' ? `Mutter ${p.size}`
+  const _lh = (p.leftHand && p.type!=='scheibe') ? ' LH' : '';
+  const label = (p.type==='mutter' ? `Mutter ${p.size}`
     : p.type==='scheibe' ? `Scheibe ${p.size}`
     : p.type==='aussen' ? `Schraube ${p.size}×${p.length}`
     : p.type==='schloss' ? `Schlossschraube ${p.size}×${p.length}`
-    : `Zylinderschraube ${p.size}×${p.length}`;
+    : `Zylinderschraube ${p.size}×${p.length}`) + _lh;
   typeCounts['screw']=(typeCounts['screw']||0)+1;
   mesh.userData={id:idCtr++,type:'screw',shapeType:'screw',name:label+' #'+typeCounts['screw'],
     color,isHole:false,fillet:0,chamfer:0,
-    screwType:p.type,screwSize:p.size,screwLength:p.length,screwClearance:p.clearance,screwOuter:_ow,screwThread:p.threadLen||0,screwHead:p.headH||0,
+    screwType:p.type,screwSize:p.size,screwLength:p.length,screwClearance:p.clearance,screwOuter:_ow,screwThread:p.threadLen||0,screwHead:p.headH||0,screwLeft:!!p.leftHand,
     displacementPattern:'keine',displacementAmp:0.5,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
   scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
   selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
@@ -13912,6 +13921,7 @@ function _screwEditSyncUI(o){
   const hd=(o.userData.screwHead>0?o.userData.screwHead:_screwHeadDefault(sp,t));
   const setv=(a,b,v)=>{const x=document.getElementById(a),y=document.getElementById(b); if(x)x.value=v; if(y)y.value=v;};
   setv('es-len','es-len-n',len); setv('es-clr','es-clr-n',clr); setv('es-out','es-out-n',outer); setv('es-thr','es-thr-n',thr); setv('es-hd','es-hd-n',hd);
+  const elf=document.getElementById('es-left'); if(elf) elf.checked=!!o.userData.screwLeft;
   const vis=(id,show)=>{const e=document.getElementById(id); if(e)e.style.display=show?'flex':'none';};
   const isScrew = t==='aussen'||t==='innen'||t==='schloss';
   vis('es-len-row', isScrew);
@@ -13919,6 +13929,7 @@ function _screwEditSyncUI(o){
   vis('es-hd-row',  isScrew);
   vis('es-out-row', t==='scheibe');
   vis('es-clr-row', t==='mutter');
+  vis('es-left-row', t!=='scheibe');
 }
 function _screwEditSet(key,val){
   const o=getFirst(); if(!o||o.userData.shapeType!=='screw')return;
@@ -13930,12 +13941,13 @@ function _screwEditSet(key,val){
   else if(key==='outer') o.userData.screwOuter=parseFloat(val);
   else if(key==='thread') o.userData.screwThread=parseFloat(val);
   else if(key==='head') o.userData.screwHead=parseFloat(val);
+  else if(key==='leftHand') o.userData.screwLeft=!!parseFloat(val);
   _screwEditSyncUI(o);
   if(_screwEditT)clearTimeout(_screwEditT);
   _screwEditT=setTimeout(()=>{_screwEditT=null;_screwEditRebuild(o);},60);
 }
 function _screwEditRebuild(o){
-  const p={type:o.userData.screwType,size:o.userData.screwSize,length:o.userData.screwLength,clearance:o.userData.screwClearance,outer:o.userData.screwOuter||0,threadLen:o.userData.screwThread||0,headH:o.userData.screwHead||0};
+  const p={type:o.userData.screwType,size:o.userData.screwSize,length:o.userData.screwLength,clearance:o.userData.screwClearance,outer:o.userData.screwOuter||0,threadLen:o.userData.screwThread||0,headH:o.userData.screwHead||0,leftHand:!!o.userData.screwLeft};
   let geo; try{ geo=_buildScrewGeometry(p); }catch(e){ console.warn('Schraube neu bauen:',e); notify('Fehler beim Neubau','w'); return; }
   if(o.geometry) o.geometry.dispose();
   o.geometry=geo;                       // Position/Quaternion bleiben → Kopf bleibt auf der Platte
@@ -13957,6 +13969,7 @@ function _fpScrewSet(key,val){
   else if(key==='outer')o.userData.screwOuter=parseFloat(val);
   else if(key==='thread')o.userData.screwThread=parseFloat(val);
   else if(key==='head')o.userData.screwHead=parseFloat(val);
+  else if(key==='leftHand')o.userData.screwLeft=!!parseFloat(val);
   if(rebuildRows){ _fpCurType=null; updateFP(); }   // aktive Buttons + passende Zeile aktualisieren
   if(_screwEditT)clearTimeout(_screwEditT);
   _screwEditT=setTimeout(()=>{_screwEditT=null;_screwEditRebuild(o);},60);
@@ -16930,8 +16943,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.27';
+const VOLME3D_VERSION = '1.15.28';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.28', date:'2026-06-21', changes:[
+    ['🔩','Linksgewinde: Schrauben, Muttern und das Gewinde-Werkzeug lassen sich jetzt als Linksgewinde (gegenläufige Helix) erzeugen. Im Schrauben-Generator und im Eigenschaften-Panel gibt es dazu die neue Option „Linksgewinde". Wird mitgespeichert.'],
+  ]},
   { version:'1.15.27', date:'2026-06-21', changes:[
     ['🩹','Versetzte Auswahl-Rahmen/Anfasser behoben: Bei Layout-Änderungen ohne Fenster-Resize (z. B. DevTools andocken, Panels) blieb der 3D-Canvas auf alter Größe, während der Viewport schrumpfte — dadurch saßen Rahmen/Griffe verschoben (nach oben). Ein ResizeObserver hält Canvas und Viewport jetzt immer gleich groß.'],
   ]},
@@ -17687,79 +17703,6 @@ function _applySvgSnap(svgMesh, {obj}) {
   _updateObjEdgeLines(svgMesh);
   updateTFInputs(); updateTree();
   notify('📌 SVG auf Fläche geheftet', 'ok');
-}
-// ===== KÖRPER-FLÄCHEN-SNAP (bündig auf Fläche, auch Schrägen) =====
-let _solidSnapHit = null;
-
-// Während des Ziehens eines Körpers: Ziel-Fläche unter dem Cursor ermitteln + Hinweis.
-// Aktiv nur bei gedrückter Alt-Taste: Strahl vom CURSOR → du zeigst auf die
-// gewünschte Fläche; die Box landet genau dort (kein Sprung, keine „vordere" Fläche).
-function _solidSnapDetect(mesh, mouseEvent) {
-  const hint = document.getElementById('text-snap-hint');
-  getNorm(mouseEvent);
-  raycaster.setFromCamera(mousev, camera);
-  const targets = objects.filter(o => o !== mesh && !o.userData.isEdgeLines && o.isMesh);
-  const hits = raycaster.intersectObjects(targets, true);
-  const hit = hits.find(h => h.face && h.object.isMesh && h.object !== mesh && !h.object.userData.isEdgeLines);
-  if (hit) {
-    _solidSnapHit = hit;
-    let obj = hit.object; while (obj && !objects.includes(obj)) obj = obj.parent;
-    _textSnapTarget = { obj: obj || hit.object, type: 'solidface' };
-    hint.textContent = '📌 Bündig auf Fläche';
-    hint.style.display = 'block';
-    hint.style.left = (mouseEvent.clientX + 14) + 'px';
-    hint.style.top  = (mouseEvent.clientY - 24) + 'px';
-  } else {
-    _solidSnapClear();
-  }
-}
-// Snap-Zustand löschen (Alt nicht gedrückt / kein Treffer)
-function _solidSnapClear() {
-  _solidSnapHit = null;
-  if (_textSnapTarget && _textSnapTarget.type === 'solidface') _textSnapTarget = null;
-  const h = document.getElementById('text-snap-hint'); if (h) h.style.display = 'none';
-}
-
-function _bbCornersList(b) {
-  const a = b.min, c = b.max;
-  return [[a.x,a.y,a.z],[c.x,a.y,a.z],[a.x,c.y,a.z],[c.x,c.y,a.z],
-          [a.x,a.y,c.z],[c.x,a.y,c.z],[a.x,c.y,c.z],[c.x,c.y,c.z]].map(p => new THREE.Vector3(p[0],p[1],p[2]));
-}
-
-// Körper bündig auf die getroffene Fläche legen: lokal +Y (oben) → Flächennormale,
-// in-plane zur Flächenmitte, dann entlang der Normalen so anheben, dass die
-// Unterseite exakt auf der Fläche aufsitzt (funktioniert auch auf Schrägen).
-function _applySolidConform(mesh) {
-  const hit = _solidSnapHit;
-  if (!hit || !hit.face) return;
-  let n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
-  // „Außen" = weg vom Zentrum des Zielkörpers (robust für konvexe Körper wie
-  // Pyramide/Box, unabhängig von Kamera/Cursor/Raycaster). So sitzt der Körper
-  // garantiert AUF der Außenseite, nicht innen.
-  const objCenter = new THREE.Box3().setFromObject(hit.object).getCenter(new THREE.Vector3());
-  if (n.dot(hit.point.clone().sub(objCenter)) < 0) n.negate();
-  // Orientierung: lokal +Y → n, Referenz-Oben in der Fläche projiziert
-  const up = Math.abs(n.y) > 0.85 ? new THREE.Vector3(0,0,-1) : new THREE.Vector3(0,1,0);
-  const colZ = up.clone().sub(n.clone().multiplyScalar(up.dot(n))).normalize();
-  const colY = n.clone();
-  const colX = new THREE.Vector3().crossVectors(colY, colZ).normalize();
-  colZ.crossVectors(colX, colY).normalize();
-  mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(colX, colY, colZ));
-  // Zielpunkt = Trefferpunkt unter der Box (Box bleibt, wo sie abgelegt wurde —
-  // NICHT auf die Flächenmitte springen). hit stammt aus dem Strahl durch die Box-Mitte.
-  const target = hit.point.clone();
-  // EXAKT aufsetzen: die lokale Unterseiten-Mitte der (gedrehten) Box auf target legen.
-  // local -Y ist unten; nach der Rotation zeigt +Y nach n → Körper ragt nach außen.
-  mesh.geometry.computeBoundingBox();
-  const lb = mesh.geometry.boundingBox;
-  const bottomLocal = new THREE.Vector3((lb.min.x+lb.max.x)/2, lb.min.y, (lb.min.z+lb.max.z)/2);
-  const off = bottomLocal.clone().multiply(mesh.scale).applyQuaternion(mesh.quaternion);
-  mesh.position.copy(target).sub(off);
-  mesh.updateMatrixWorld(true);
-  _updateObjEdgeLines(mesh);
-  updateTFInputs(); updateTree(); _doRepositionDimHandles();
-  notify('📌 Bündig auf Fläche', 'ok');
-  _solidSnapHit = null;
 }
 // ===== END SVG MAGNET-SNAP =====
 
@@ -18764,6 +18707,7 @@ function _fpBuildRows(type, o) {
         + row('Kopfhöhe','fp-screw-hd',(o.userData.screwHead>0?o.userData.screwHead:_screwHeadDefault(sp,st)),"_fpScrewSet('head',this.value)",'mm',1,15,0.5);
       else if(st==='mutter') ctrl=row('Spiel','fp-screw-clr',clr,"_fpScrewSet('clearance',this.value)",'mm',0.1,0.8,0.05);
       else if(st==='scheibe') ctrl=row('Außen-Ø','fp-screw-out',outer,"_fpScrewSet('outer',this.value)",'mm',Math.ceil(sp.washID+1),40,0.5);
+      if(st!=='scheibe') ctrl += `<label style="display:flex;align-items:center;gap:6px;margin:6px 0 2px;font-size:11px;cursor:pointer"><input type="checkbox" ${o.userData.screwLeft?'checked':''} onchange="_fpScrewSet('leftHand',this.checked?1:0)">Linksgewinde</label>`;
       return `<div style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 6px">${tbtn('aussen','Außen')}${tbtn('innen','Innen')}${tbtn('schloss','Schloss')}${tbtn('mutter','Mutter')}${tbtn('scheibe','Scheibe')}</div>` +
              `<div style="display:flex;gap:3px;margin-bottom:8px">${zbtn('M4')}${zbtn('M5')}${zbtn('M6')}${zbtn('M8')}${zbtn('M10')}</div>` +
              ctrl;
@@ -18908,6 +18852,7 @@ function _fpBuildRows(type, o) {
              `<div style="font-size:10px;color:var(--dim);margin-bottom:4px">↳ ${tt} Drehungen bei Steigung ${tp}mm</div>` +
              '<div class="fp-sep"></div>' +
              row('Segmente',    'fp-seg',  segs||32, "fpApplyThread('s',this.value)", '', 8, 64, 4) +
+             `<label style="display:flex;align-items:center;gap:6px;margin:6px 0 2px;font-size:11px;cursor:pointer"><input type="checkbox" ${o.userData.threadLeft?'checked':''} onchange="fpThreadLeft(this.checked)">Linksgewinde</label>` +
              _dispRows();
     }
     case 'revolve': {
@@ -19473,6 +19418,14 @@ function fpThreadPreset(diam, pitch) {
   o.userData.threadTurns = Math.max(1, Math.round(curH / pitch));
   _fpRebuildThread(o); _threadKeepBottom(o, bottomBefore); _fpSyncValues();
 }
+function fpThreadLeft(checked) {
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'thread') return;
+  saveUndoDebounced();
+  o.updateMatrixWorld(true);
+  const bottomBefore = getMeshBox(o).min.y;
+  o.userData.threadLeft = !!checked;
+  _fpRebuildThread(o); _threadKeepBottom(o, bottomBefore);
+}
 function fpApplyThread(param, val) {
   const o = getFirst(); if (!o || o.userData.shapeType !== 'thread') return;
   const v = parseFloat(val); if (isNaN(v)) return;
@@ -19501,7 +19454,8 @@ function _fpRebuildThread(o) {
     o.userData.threadDiameter || 12,
     o.userData.threadPitch    || 1.75,
     o.userData.threadTurns    || 5,
-    o.userData.segments       || 32
+    o.userData.segments       || 32,
+    !!o.userData.threadLeft
   );
   o.geometry.dispose(); o.geometry = geo; _updateObjEdgeLines(o);
 }
