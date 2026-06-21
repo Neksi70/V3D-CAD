@@ -10116,7 +10116,10 @@ window.addEventListener('mousemove', e => {
       const _sType = selectedObjs[0].userData.shapeType;
       if (_sType === 'text') _textSnapDetect(selectedObjs[0], e);
       else if (_sType === 'svg') _svgSnapDetect(selectedObjs[0], e);
-      else if (selectedObjs[0].isMesh && !selectedObjs[0].userData.isGroup) _solidSnapDetect(selectedObjs[0], e);
+      else if (selectedObjs[0].isMesh && !selectedObjs[0].userData.isGroup) {
+        if (e.altKey) _solidSnapDetect(selectedObjs[0], e);   // Flächen-Snap nur mit Alt (deliberat)
+        else _solidSnapClear();
+      }
     }
   }
 });
@@ -16914,8 +16917,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.25';
+const VOLME3D_VERSION = '1.15.26';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.26', date:'2026-06-21', changes:[
+    ['⌥','Flächen-Snap ist jetzt gezielt: nur bei gedrückter Alt-Taste, und du zeigst mit dem Cursor auf die gewünschte Fläche — die Box landet genau dort (kein Zufall, keine falsche/vordere Fläche mehr). Ohne Alt ganz normal verschieben.'],
+  ]},
   { version:'1.15.25', date:'2026-06-21', changes:[
     ['🎯','Flächen-Snap: Der Körper bleibt jetzt da, wo du ihn ablegst, statt auf die Flächenmitte zu springen.'],
   ]},
@@ -17670,21 +17676,16 @@ function _applySvgSnap(svgMesh, {obj}) {
 let _solidSnapHit = null;
 
 // Während des Ziehens eines Körpers: Ziel-Fläche unter dem Cursor ermitteln + Hinweis.
+// Aktiv nur bei gedrückter Alt-Taste: Strahl vom CURSOR → du zeigst auf die
+// gewünschte Fläche; die Box landet genau dort (kein Sprung, keine „vordere" Fläche).
 function _solidSnapDetect(mesh, mouseEvent) {
   const hint = document.getElementById('text-snap-hint');
+  getNorm(mouseEvent);
+  raycaster.setFromCamera(mousev, camera);
   const targets = objects.filter(o => o !== mesh && !o.userData.isEdgeLines && o.isMesh);
-  // Strahl durch die BOX-MITTE (nicht den Cursor) → snappt zuverlässig dort, wo die
-  // Box liegt, statt vom oft daneben liegenden Greifpunkt. Das Solid selbst ist aus
-  // den Targets ausgeschlossen, der Strahl trifft also das Objekt dahinter/darunter.
-  const bb = new THREE.Box3().setFromObject(mesh);
-  const c  = bb.getCenter(new THREE.Vector3());
-  const r  = bb.getBoundingSphere(new THREE.Sphere()).radius || 1;
-  const ndc = c.clone().project(camera);
-  raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), camera);
   const hits = raycaster.intersectObjects(targets, true);
   const hit = hits.find(h => h.face && h.object.isMesh && h.object !== mesh && !h.object.userData.isEdgeLines);
-  // Nur snappen, wenn die Fläche NAH an der Box ist → kein zufälliges Fern-Überlappen.
-  if (hit && hit.point.distanceTo(c) < r * 2.5) {
+  if (hit) {
     _solidSnapHit = hit;
     let obj = hit.object; while (obj && !objects.includes(obj)) obj = obj.parent;
     _textSnapTarget = { obj: obj || hit.object, type: 'solidface' };
@@ -17693,8 +17694,14 @@ function _solidSnapDetect(mesh, mouseEvent) {
     hint.style.left = (mouseEvent.clientX + 14) + 'px';
     hint.style.top  = (mouseEvent.clientY - 24) + 'px';
   } else {
-    _solidSnapHit = null; _textSnapTarget = null; hint.style.display = 'none';
+    _solidSnapClear();
   }
+}
+// Snap-Zustand löschen (Alt nicht gedrückt / kein Treffer)
+function _solidSnapClear() {
+  _solidSnapHit = null;
+  if (_textSnapTarget && _textSnapTarget.type === 'solidface') _textSnapTarget = null;
+  const h = document.getElementById('text-snap-hint'); if (h) h.style.display = 'none';
 }
 
 function _bbCornersList(b) {
