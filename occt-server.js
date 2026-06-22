@@ -1056,6 +1056,64 @@ app.post('/api/occt-union', async (req, res) => {
   }
 });
 
+// Mesh−Mesh Boolean-Subtract: Solid(s) minus Werkzeug(e), wasserdicht via OCCT.
+// Gegenstück zu /api/occt-union — robust auf komplexen Meshes (Gewinde etc.),
+// wo der BSP-Subtract im Frontend Müll/inverted Normals erzeugt.
+// In:  { solidStls:[b64,…], toolStls:[b64,…] }  (mm, Z-up; wie occt-union)
+// Out: { stlBase64 }
+app.post('/api/occt-subtract-mesh', async (req, res) => {
+  const b = req.body || {};
+  const solidList = Array.isArray(b.solidStls) ? b.solidStls : null;
+  const toolList  = Array.isArray(b.toolStls)  ? b.toolStls  : null;
+  if (!solidList || !solidList.length) return res.json({ error: 'solidStls (Array) fehlt' });
+  if (!toolList  || !toolList.length)  return res.json({ error: 'toolStls (Array) fehlt' });
+
+  const keep = [];
+  try {
+    const oc = await getOC();
+
+    // Solid(s) → ein Solid (mehrere zuerst fusen, falls Gruppe)
+    const solids = [];
+    for (let i = 0; i < solidList.length; i++) {
+      try {
+        const s = stlToOCCTSolid(oc, Buffer.from(solidList[i], 'base64'));
+        if (s) solids.push(s);
+        else console.log(`[subtract-mesh] Solid ${i}: STL → Solid fehlgeschlagen`);
+      } catch (e) { console.log(`[subtract-mesh] Solid ${i}: ${e.message}`); }
+    }
+    if (!solids.length) return res.json({ error: 'Kein gültiges Solid' });
+    let result = solids[0];
+    for (let i = 1; i < solids.length; i++)
+      result = bop(oc, 'BRepAlgoAPI_Fuse_3', result, solids[i], keep, `Solid-Fuse ${i}`);
+
+    // Werkzeug(e) → ein Tool (mehrere zuerst fusen → ein sauberer Cut)
+    const tools = [];
+    for (let i = 0; i < toolList.length; i++) {
+      try {
+        const t = stlToOCCTSolid(oc, Buffer.from(toolList[i], 'base64'));
+        if (t) tools.push(t);
+        else console.log(`[subtract-mesh] Tool ${i}: STL → Solid fehlgeschlagen`);
+      } catch (e) { console.log(`[subtract-mesh] Tool ${i}: ${e.message}`); }
+    }
+    if (!tools.length) return res.json({ error: 'Kein gültiges Werkzeug' });
+    let tool = tools[0];
+    for (let i = 1; i < tools.length; i++)
+      tool = bop(oc, 'BRepAlgoAPI_Fuse_3', tool, tools[i], keep, `Tool-Fuse ${i}`);
+
+    result = bop(oc, 'BRepAlgoAPI_Cut_3', result, tool, keep, 'Subtract-Cut');
+    result = unifySolid(oc, result);   // koplanare Flächen verschmelzen → sauberes Mesh
+
+    const outBuf = solidToSTLBuffer(oc, result);
+    console.log(`[subtract-mesh] OK — ${solids.length} Solid − ${tools.length} Tool → ${outBuf.length} B STL`);
+    res.json({ stlBase64: outBuf.toString('base64') });
+  } catch (e) {
+    console.error('[subtract-mesh] Fehler:', e);
+    res.json({ error: e.message || String(e) });
+  } finally {
+    for (const op of keep) { try { op.delete(); } catch (_) {} }
+  }
+});
+
 // Debug: Schneidet einen OCCT-Box (kein STL) mit einem SVG-Prism
 app.get('/debug-box-cut', async (_, res) => {
   try {

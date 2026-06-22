@@ -8699,6 +8699,36 @@ function _objsToUnionStls(objs) {
   return out;
 }
 
+// Wie _objsToUnionStls, aber OHNE isHole-Skip — für Boolean-Werkzeuge (Bohrungen
+// sind als isHole markiert, müssen aber als Schneid-Solid exportiert werden).
+function _meshWorldToStls(obj) {
+  const out = [];
+  obj.updateMatrixWorld(true);
+  obj.traverse(ch => {
+    if (!ch.isMesh || !ch.geometry || ch.userData.isEdgeLines || ch.visible === false) return;
+    const g = ch.geometry.clone();
+    g.applyMatrix4(ch.matrixWorld);
+    g.scale(10, 10, 10); g.rotateX(Math.PI / 2);   // App-Units → mm, Y-up → Z-up
+    const pos = g.attributes.position, idx = g.index?.array;
+    const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
+    if (nTri > 0) {
+      const buf = new ArrayBuffer(84 + nTri * 50), dv = new DataView(buf);
+      dv.setUint32(80, nTri, true); let off = 84;
+      for (let i = 0; i < nTri; i++) {
+        const a = idx ? idx[i*3] : i*3, b = idx ? idx[i*3+1] : i*3+1, c = idx ? idx[i*3+2] : i*3+2;
+        off += 12;
+        dv.setFloat32(off,    pos.getX(a), true); dv.setFloat32(off+4,  pos.getY(a), true); dv.setFloat32(off+8,  pos.getZ(a), true);
+        dv.setFloat32(off+12, pos.getX(b), true); dv.setFloat32(off+16, pos.getY(b), true); dv.setFloat32(off+20, pos.getZ(b), true);
+        dv.setFloat32(off+24, pos.getX(c), true); dv.setFloat32(off+28, pos.getY(c), true); dv.setFloat32(off+32, pos.getZ(c), true);
+        off += 36; dv.setUint16(off, 0, true); off += 2;
+      }
+      out.push(buf);
+    }
+    g.dispose();
+  });
+  return out;
+}
+
 // Fallback: nur optisch GRUPPIEREN (kein echtes Solid) — wenn das OCCT-Backend
 // nicht erreichbar ist. Geometrisch bleiben es getrennte, durchdringende Hüllen
 // (im Slicer evtl. "schwebende Regionen"). Entspricht dem alten Verhalten.
@@ -9850,6 +9880,7 @@ async function _doSubtractHoles(solids, holes) {
   };
 
   const _pendingInlays = [];  // bündige farbige Gravur-Körper (Zweifarb-Druck)
+  const _genericTools = [];   // nicht-SVG-Bohrungen (Zylinder, Gewinde-Proxy…) → OCCT-Cut
 
   for (const hole of holes) {
 
@@ -9952,8 +9983,45 @@ async function _doSubtractHoles(solids, holes) {
       }
     }
 
-    solidMesh = ThreeCSG.subtract(solidMesh, csgProxy, mat);
-    // Geometrie liegt bereits in Weltkoordinaten → Transform auf Identity lassen,
+    _genericTools.push(csgProxy);   // erst sammeln → EIN OCCT-Cut (BSP nur Fallback)
+  }
+
+  // ── Generische Bohrungen wasserdicht via OCCT abziehen ─────────────────────
+  // (ThreeCSG/BSP frisst auf komplexen Meshes – z.B. Gewinde – den Körper weg
+  //  oder liefert inverted Normals. OCCT-Mesh-Cut ist robust; BSP nur Fallback.)
+  if (_genericTools.length) {
+    let occtOk = false;
+    try {
+      const solidStls = _meshWorldToStls(solidMesh);
+      const toolStls  = _genericTools.flatMap(t => _meshWorldToStls(t));
+      if (solidStls.length && toolStls.length) {
+        const resp = await fetch(_OCCT_BASE + '/api/occt-subtract-mesh', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            solidStls: solidStls.map(_bufToBase64),
+            toolStls:  toolStls.map(_bufToBase64)
+          })
+        });
+        const data = await resp.json();
+        if (data.error || !data.stlBase64) throw new Error(data.error || 'kein Ergebnis');
+        // Ergebnis-STL (mm, Z-up) → Geometrie in Welt-Koordinaten backen
+        const bytes = Uint8Array.from(atob(data.stlBase64), c => c.charCodeAt(0));
+        const geo = parseSTL(bytes.buffer);
+        geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);   // Inverse zu _objsToUnionStls
+        geo.computeVertexNormals();
+        solidMesh = new THREE.Mesh(geo, mat);
+        solidMesh.userData._origStlBuf = bytes.buffer;   // für Folge-Schnitte
+        occtOk = true;
+      }
+    } catch (e) {
+      console.warn('[subtract-mesh] OCCT fehlgeschlagen → BSP-Fallback:', e.message || e);
+    }
+    if (!occtOk) {
+      // Fallback: ThreeCSG/BSP sequenziell (altes Verhalten)
+      for (const tool of _genericTools)
+        solidMesh = ThreeCSG.subtract(solidMesh, tool, mat);
+    }
+    // Geometrie liegt in Welt-Koordinaten → Transform auf Identity lassen,
     // damit matrixWorld==Identity und keine doppelte Transform in Folge-Ops.
     solidMesh.position.set(0, 0, 0);
     solidMesh.quaternion.identity();
