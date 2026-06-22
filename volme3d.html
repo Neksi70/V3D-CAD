@@ -424,13 +424,13 @@ body.devmode .dev-only{display:flex!important}
 /* TinkerCAD-style ALIGN dots (interaktive Ausricht-Griffe) */
 #align-handles{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:27}
 .al-dot{
-  position:absolute; width:13px; height:13px; border-radius:50%;
-  background:#1a1d26; border:2px solid #fff;
+  position:absolute; width:14px; height:14px; border-radius:50%;
+  background:#1a1d26; border:1px solid #1a1d26;
   cursor:pointer; pointer-events:all; touch-action:none; z-index:28;
   transform:translate(-50%,-50%);
-  box-shadow:0 1px 4px rgba(0,0,0,.45); transition:background .1s,transform .1s;
+  box-shadow:0 1px 2px rgba(0,0,0,.3); transition:background .1s,transform .1s;
 }
-.al-dot:hover{ background:var(--acc); border-color:var(--acc); transform:translate(-50%,-50%) scale(1.25); }
+.al-dot:hover{ background:var(--acc); border-color:var(--acc); transform:translate(-50%,-50%) scale(1.3); }
 .al-tip{
   position:absolute; background:#1a1d26; color:#fff;
   font-size:11px; font-weight:700; font-family:var(--font);
@@ -4164,7 +4164,7 @@ function _applyDisplacementNow(param, val) {
   if (o.userData.shapeType === 'funnel') {
     if (pat === 'keine') { o.userData._warpCache = null; _fpRebuildGeo(o); _fpCurType = null; updateFP(); return; }
     const base = buildFunnelGeo(o.userData.funnelTopDia, o.userData.funnelSpoutDia,
-      o.userData.funnelHeight, o.userData.funnelSpoutLen, o.userData.funnelWall, o.userData.segments || 48);
+      o.userData.funnelHeight, o.userData.funnelSpoutLen, o.userData.funnelWall, o.userData.segments || 48, o.userData.funnelBevel);
     const geoT = _displaceForMesh(o, base, pat, amp, freq, inv, sym, ori, whr);
     base.dispose && base.dispose();
     if (geoT) { o.geometry.dispose(); o.geometry = geoT; }
@@ -6347,7 +6347,42 @@ function _geoSignedVolume(geo) {
 // (kein verschmierter „Dom" durch geteilte Normalen). Geschlossenes Profil +
 // volle 2π-Drehung ⇒ keine offenen Ränder ⇒ wasserdicht/druckbar. Maße in mm,
 // Geometrie in Scene-Units (1 Unit = 10 mm).
-function buildFunnelGeo(topDiaMM, spoutDiaMM, heightMM, spoutLenMM, wallMM, segs) {
+// Beveln einer Profil-Ecke P (2D [r,y]) zwischen den Kanten P→A (zurück) und
+// P→B (vor): ersetzt die scharfe Ecke durch eine Fase (chamfer, gerader Schnitt)
+// oder eine Rundung (fillet, Tangentenbogen). Rückgabe {pts, hard}: hard=true ⇒
+// scharfe Kante (Ring später verdoppelt → Normalenbruch), hard=false ⇒ glatte
+// Naht (Ring geteilt → weiche Schattierung). Maße in Units.
+function _bevelCorner(P, A, B, filletU, chamferU, segs) {
+  const dAx = A[0]-P[0], dAy = A[1]-P[1], lenA = Math.hypot(dAx, dAy);
+  const dBx = B[0]-P[0], dBy = B[1]-P[1], lenB = Math.hypot(dBx, dBy);
+  if (lenA < 1e-9 || lenB < 1e-9) return { pts:[[P[0],P[1]]], hard:[true] };
+  const uAx = dAx/lenA, uAy = dAy/lenA, uBx = dBx/lenB, uBy = dBy/lenB;
+  if (filletU > 0) {
+    let dot = uAx*uBx + uAy*uBy; dot = Math.max(-1, Math.min(1, dot));
+    const phi = Math.acos(dot);                              // Innenwinkel
+    if (phi < 1e-3 || Math.PI - phi < 1e-3) return { pts:[[P[0],P[1]]], hard:[true] };
+    const halfTan = Math.tan(phi/2);
+    let t = Math.min(filletU / halfTan, lenA*0.49, lenB*0.49);
+    const rEff = t * halfTan;
+    const Tax = P[0]+uAx*t, Tay = P[1]+uAy*t, Tbx = P[0]+uBx*t, Tby = P[1]+uBy*t;
+    let bx = uAx+uBx, by = uAy+uBy; const bl = Math.hypot(bx, by) || 1; bx/=bl; by/=bl;
+    const cx = P[0] + bx*(rEff/Math.sin(phi/2)), cy = P[1] + by*(rEff/Math.sin(phi/2));
+    const a0 = Math.atan2(Tay-cy, Tax-cx); let a1 = Math.atan2(Tby-cy, Tbx-cx);
+    let d = a1 - a0; while (d > Math.PI) d -= Math.PI*2; while (d < -Math.PI) d += Math.PI*2;
+    const steps = Math.max(3, Math.min(16, Math.round(segs/4)));
+    const pts = [], hard = [];
+    for (let i = 0; i <= steps; i++) { const a = a0 + d*(i/steps);
+      pts.push([cx + rEff*Math.cos(a), cy + rEff*Math.sin(a)]); hard.push(false); }
+    return { pts, hard };
+  }
+  if (chamferU > 0) {
+    const c = Math.min(chamferU, lenA*0.49, lenB*0.49);
+    return { pts:[[P[0]+uAx*c, P[1]+uAy*c], [P[0]+uBx*c, P[1]+uBy*c]], hard:[true, true] };
+  }
+  return { pts:[[P[0],P[1]]], hard:[true] };
+}
+
+function buildFunnelGeo(topDiaMM, spoutDiaMM, heightMM, spoutLenMM, wallMM, segs, bevel) {
   const U = 0.1;                                   // mm → Units
   segs = Math.max(8, Math.round(segs || 48));
   const H       = Math.max(0.2, (heightMM || 40) * U);
@@ -6360,25 +6395,46 @@ function buildFunnelGeo(topDiaMM, spoutDiaMM, heightMM, spoutLenMM, wallMM, segs
   const rTopI   = Math.max(0.02, rTopO   - w);
   const rSpoutI = Math.max(0.02, rSpoutO - w);
   const y0 = -H / 2, y1 = H / 2, ys = y0 + sL;     // unten · oben · Tüllen-Oberkante
-  // Geschlossenes Profil: Außenwand hoch (Tülle→Konus→Rand), Innenwand runter,
-  // Rand- und Boden-Ring schließen die Kontur.
-  const prof = [
-    [rSpoutO, y0], [rSpoutO, ys], [rTopO, y1],
-    [rTopI,  y1], [rSpoutI, ys], [rSpoutI, y0], [rSpoutO, y0]
+  const b    = bevel || {};
+  const topF = Math.max(0, b.topRound  || 0) * U, topC = Math.max(0, b.topChamfer || 0) * U;
+  const botF = Math.max(0, b.botRound  || 0) * U, botC = Math.max(0, b.botChamfer || 0) * U;
+  // Geschlossene Kontur (Außenwand hoch: Tülle→Konus→Rand, Innenwand runter,
+  // Rand- und Boden-Ring schließen sie). Rand (oben) und Tülle (unten) je außen
+  // UND innen bevelbar; die Konus/Tüllen-Knicke bleiben immer scharf.
+  const corners = [
+    { p:[rSpoutO, y0], f:botF, c:botC },           // außen unten (Tülle)
+    { p:[rSpoutO, ys], f:0,    c:0    },           // Knick Tülle→Konus außen
+    { p:[rTopO,  y1],  f:topF, c:topC },           // Rand außen (Öffnung)
+    { p:[rTopI,  y1],  f:topF, c:topC },           // Rand innen
+    { p:[rSpoutI, ys], f:0,    c:0    },           // Knick innen
+    { p:[rSpoutI, y0], f:botF, c:botC },           // innen unten
   ];
+  // Eckenbevel → flacher Profil-Punktstrom mit Härteflags
+  const Pr = [], hard = [], N = corners.length;
+  for (let i = 0; i < N; i++) {
+    const A = corners[(i-1+N)%N].p, B = corners[(i+1)%N].p;
+    const r = _bevelCorner(corners[i].p, A, B, corners[i].f, corners[i].c, segs);
+    for (let k = 0; k < r.pts.length; k++) { Pr.push(r.pts[k]); hard.push(r.hard[k]); }
+  }
+  // Revolve: harte Punkte verdoppeln (eigener Ring je Band → scharfe Kante),
+  // glatte Punkte teilen sich einen Ring (computeVertexNormals → weiche Rundung).
+  const M = Pr.length, rows = [], ptStart = new Array(M), ptEnd = new Array(M);
+  for (let i = 0; i < M; i++) {
+    if (hard[i]) { ptEnd[i] = rows.length; rows.push(Pr[i]); ptStart[i] = rows.length; rows.push(Pr[i]); }
+    else         { ptStart[i] = ptEnd[i] = rows.length; rows.push(Pr[i]); }
+  }
   const pos = [], idx = [], TAU = Math.PI * 2;
-  for (let s = 0; s < prof.length - 1; s++) {
-    const [rA, yA] = prof[s], [rB, yB] = prof[s + 1];
-    if (Math.abs(rA - rB) < 1e-9 && Math.abs(yA - yB) < 1e-9) continue;   // degeneriert
-    const base = pos.length / 3;
-    for (let j = 0; j < segs; j++) {                // EIGENER Ring je Band → harte Kante
-      const th = j / segs * TAU, c = Math.cos(th), sn = Math.sin(th);
-      pos.push(rA * c, yA, rA * sn);               // Ring A (Profil s)
-      pos.push(rB * c, yB, rB * sn);               // Ring B (Profil s+1)
-    }
+  for (let ri = 0; ri < rows.length; ri++) {
+    const rr = rows[ri][0], yy = rows[ri][1];
+    for (let j = 0; j < segs; j++) { const th = j / segs * TAU; pos.push(rr*Math.cos(th), yy, rr*Math.sin(th)); }
+  }
+  for (let i = 0; i < M; i++) {
+    const s = ptStart[i], e = ptEnd[(i+1)%M], ra = rows[s], rb = rows[e];
+    if (Math.abs(ra[0]-rb[0]) < 1e-9 && Math.abs(ra[1]-rb[1]) < 1e-9) continue;  // degeneriert
+    const baseA = s*segs, baseB = e*segs;
     for (let j = 0; j < segs; j++) {
       const jn = (j + 1) % segs;                    // sauberer Naht-Wrap (keine Seam-Linie)
-      const a0 = base + j*2, b0 = a0 + 1, a1 = base + jn*2, b1 = a1 + 1;
+      const a0 = baseA+j, a1 = baseA+jn, b0 = baseB+j, b1 = baseB+jn;
       idx.push(a0, b0, b1, a0, b1, a1);
     }
   }
@@ -6417,6 +6473,7 @@ function addFunnel() {
     color, isHole, segments: 48,
     funnelTopDia: p.topDia, funnelSpoutDia: p.spoutDia, funnelHeight: p.height,
     funnelSpoutLen: p.spoutLen, funnelWall: p.wall,
+    funnelBevel: { topRound: 0, topChamfer: 0, botRound: 0, botChamfer: 0 },
     displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
     displacementInvert: false, displacementSymmetric: false
   };
@@ -6430,11 +6487,24 @@ function addFunnel() {
 function fpFunnelSet(key, val) {
   const o = getFirst(); if (!o || o.userData.shapeType !== 'funnel') return;
   const v = parseFloat(val); if (!(v >= 0)) return;
+  const bevKey = { topround:'topRound', topchamfer:'topChamfer',
+                   botround:'botRound', botchamfer:'botChamfer' }[key];
   const prop = { top:'funnelTopDia', spout:'funnelSpoutDia', height:'funnelHeight',
                  spoutlen:'funnelSpoutLen', wall:'funnelWall' }[key];
-  if (!prop) return;
+  if (!bevKey && !prop) return;
   saveUndoDebounced();
-  o.userData[prop] = v;
+  if (bevKey) {
+    const bv = o.userData.funnelBevel ||
+      (o.userData.funnelBevel = { topRound:0, topChamfer:0, botRound:0, botChamfer:0 });
+    bv[bevKey] = v;
+    // Fase und Rundung schließen sich je Seite aus (wie bei der Box)
+    if (key === 'topround'   && v > 0) bv.topChamfer = 0;
+    if (key === 'topchamfer' && v > 0) bv.topRound   = 0;
+    if (key === 'botround'   && v > 0) bv.botChamfer = 0;
+    if (key === 'botchamfer' && v > 0) bv.botRound   = 0;
+  } else {
+    o.userData[prop] = v;
+  }
   o.scale.set(1, 1, 1);
   _fpRebuildGeo(o);
   const b = getMeshBox(o); if (Math.abs(b.min.y) > 1e-4) o.position.y -= b.min.y;
@@ -7311,6 +7381,9 @@ function repositionDimHandles() {
   _svgDirty = true; // will be drawn in next animate() frame
 }
 function _doRepositionDimHandles() {
+  // Ausricht-Modus (Tinkercad-Stil): Resize-Griffe + Multiselect-Box komplett
+  // unterdrücken — der Align-Overlay besitzt rov/dim-handles dann allein.
+  if (specialMode === 'align') { document.getElementById('dim-handles').innerHTML=''; repositionAlignHandles(); return; }
   const o = getFirst();
   if (!o) { clearDimHandles(); return; }
   if (_shellMode) { clearDimHandles(); return; }  // Handles im Gehäuse-Modus aus (verdecken sonst Flächen)
@@ -7652,6 +7725,7 @@ function getHandlePos3D(key, mn, mx, cx, cy, cz) {
 }
 
 function updateDimHandles() {
+  if (specialMode === 'align') { return; }   // Ausricht-Modus: keine Resize-Griffe bauen
   const o = getFirst();
   if (!o) { clearDimHandles(); return; }
   if (_shellMode) { clearDimHandles(); return; }  // Handles im Gehäuse-Modus aus (verdecken sonst Flächen)
@@ -10207,15 +10281,13 @@ function _alignSelBox() {
   return box;
 }
 
-// 3D-Position eines Ausricht-Punkts für aktuelle Box
+// 3D-Position eines Ausricht-Punkts für aktuelle Box (Tinkercad-Schiene)
+// X-Schiene: vorne unten · Z-Schiene: links unten · Y-Schiene: rechts vertikal
 function _alignHandlePos3D(key, mn, mx, cx, cy, cz, g) {
   const map = {
-    // X-Reihe (Breite) — vorne unten, nach vorn versetzt
     xmin:[mn.x, mn.y, mx.z + g], xcenter:[cx, mn.y, mx.z + g], xmax:[mx.x, mn.y, mx.z + g],
-    // Z-Reihe (Tiefe) — rechts unten, nach rechts versetzt
-    zmin:[mx.x + g, mn.y, mn.z], zcenter:[mx.x + g, mn.y, cz], zmax:[mx.x + g, mn.y, mx.z],
-    // Y-Reihe (Höhe) — Pfeiler an vorderer rechter Ecke
-    ymin:[mx.x + g, mn.y, mx.z + g], ycenter:[mx.x + g, cy, mx.z + g], ymax:[mx.x + g, mx.y, mx.z + g],
+    zmin:[mn.x - g, mn.y, mn.z], zcenter:[mn.x - g, mn.y, cz], zmax:[mn.x - g, mn.y, mx.z],
+    ymin:[mx.x + g, mn.y, mn.z], ycenter:[mx.x + g, cy, mn.z], ymax:[mx.x + g, mx.y, mn.z],
   };
   return map[key] || [cx, cy, cz];
 }
@@ -10280,27 +10352,24 @@ function repositionAlignHandles() {
   const cx=(mn.x+mx.x)/2, cy=(mn.y+mx.y)/2, cz=(mn.z+mx.z)/2;
   const g = Math.max(0.25, Math.max(mx.x-mn.x, mx.y-mn.y, mx.z-mn.z) * 0.1);
 
-  // Gestrichelte Auswahl-Box ins rov-SVG zeichnen (eigene, mit data-align markiert)
+  // Tinkercad-Stil: 3 dünne, durchgezogene schwarze Schienen (je Achse eine)
+  // verbinden die 3 Punkte — KEINE volle Bounding-Box.
   const svg = document.getElementById('rov');
   [...svg.querySelectorAll('[data-align]')].forEach(n => n.remove());
   const ns2 = 'http://www.w3.org/2000/svg';
-  function aline(ax,ay,az,bx,by,bz) {
-    const a = proj(ax,ay,az), b = proj(bx,by,bz); if (!a || !b) return;
+  function rail(p0, p1) {
+    const a = proj(...p0), b = proj(...p1); if (!a || !b) return;
     const el = document.createElementNS(ns2,'line');
     el.setAttribute('x1',a.x); el.setAttribute('y1',a.y);
     el.setAttribute('x2',b.x); el.setAttribute('y2',b.y);
-    el.setAttribute('stroke','#1a1d26'); el.setAttribute('stroke-width','1.4');
-    el.setAttribute('stroke-dasharray','6 5'); el.setAttribute('opacity','0.6');
-    el.setAttribute('data-align','1');
+    el.setAttribute('stroke','#1a1d26'); el.setAttribute('stroke-width','1.5');
+    el.setAttribute('opacity','0.85'); el.setAttribute('data-align','1');
     svg.appendChild(el);
   }
-  const X0=mn.x,X1=mx.x,Y0=mn.y,Y1=mx.y,Z0=mn.z,Z1=mx.z;
-  aline(X0,Y0,Z0,X1,Y0,Z0); aline(X0,Y0,Z1,X1,Y0,Z1);
-  aline(X0,Y0,Z0,X0,Y0,Z1); aline(X1,Y0,Z0,X1,Y0,Z1);
-  aline(X0,Y1,Z0,X1,Y1,Z0); aline(X0,Y1,Z1,X1,Y1,Z1);
-  aline(X0,Y1,Z0,X0,Y1,Z1); aline(X1,Y1,Z0,X1,Y1,Z1);
-  aline(X0,Y0,Z0,X0,Y1,Z0); aline(X1,Y0,Z0,X1,Y1,Z0);
-  aline(X0,Y0,Z1,X0,Y1,Z1); aline(X1,Y0,Z1,X1,Y1,Z1);
+  // X-Schiene (vorne), Z-Schiene (links), Y-Schiene (rechts vertikal)
+  rail(_alignHandlePos3D('xmin',mn,mx,cx,cy,cz,g), _alignHandlePos3D('xmax',mn,mx,cx,cy,cz,g));
+  rail(_alignHandlePos3D('zmin',mn,mx,cx,cy,cz,g), _alignHandlePos3D('zmax',mn,mx,cx,cy,cz,g));
+  rail(_alignHandlePos3D('ymin',mn,mx,cx,cy,cz,g), _alignHandlePos3D('ymax',mn,mx,cx,cy,cz,g));
 
   _alignHandleData.forEach(item => {
     const pos = _alignHandlePos3D(item.key, mn, mx, cx, cy, cz, g);
@@ -19690,6 +19759,11 @@ function _fpBuildRows(type, o) {
              row('Tüllenlänge',      'fp-fn-sl',    r2(u.funnelSpoutLen||12), "fpFunnelSet('spoutlen',this.value)", 'mm', 0, 500) +
              row('Wandstärke',       'fp-fn-wall',  r2(u.funnelWall||2),      "fpFunnelSet('wall',this.value)",     'mm', 0.2, 20, 0.1) +
              '<div class="fp-sep"></div>' +
+             row('Rand oben abrunden',   'fp-fn-tr', r2((u.funnelBevel&&u.funnelBevel.topRound)||0),   "fpFunnelSet('topround',this.value)",   'mm', 0, 20, 0.5) +
+             row('Rand oben abschrägen', 'fp-fn-tc', r2((u.funnelBevel&&u.funnelBevel.topChamfer)||0), "fpFunnelSet('topchamfer',this.value)", 'mm', 0, 20, 0.5) +
+             row('Tülle unten abrunden', 'fp-fn-br', r2((u.funnelBevel&&u.funnelBevel.botRound)||0),   "fpFunnelSet('botround',this.value)",   'mm', 0, 20, 0.5) +
+             row('Tülle unten abschräg.','fp-fn-bc', r2((u.funnelBevel&&u.funnelBevel.botChamfer)||0), "fpFunnelSet('botchamfer',this.value)", 'mm', 0, 20, 0.5) +
+             '<div class="fp-sep"></div>' +
              row('Seiten', 'fp-seg', segs||48, "fpApplySegs(this.value)", '', 8, 256, 1) +
              _dispRows();
     }
@@ -19936,6 +20010,9 @@ function _fpSyncValues() {
       set('fp-fn-h',     r2(o.userData.funnelHeight||40));
       set('fp-fn-sl',    r2(o.userData.funnelSpoutLen||12));
       set('fp-fn-wall',  r2(o.userData.funnelWall||2));
+      { const bv = o.userData.funnelBevel || {};
+        set('fp-fn-tr', r2(bv.topRound||0));   set('fp-fn-tc', r2(bv.topChamfer||0));
+        set('fp-fn-br', r2(bv.botRound||0));   set('fp-fn-bc', r2(bv.botChamfer||0)); }
       set('fp-seg',      o.userData.segments||48); break;
     case 'cone': case 'pyramid':
       set('fp-r', r2(sz.x*10)); set('fph', h);
@@ -20438,7 +20515,7 @@ function _fpRebuildGeo(o) {
     }
     case 'funnel':
       geo = buildFunnelGeo(o.userData.funnelTopDia, o.userData.funnelSpoutDia,
-        o.userData.funnelHeight, o.userData.funnelSpoutLen, o.userData.funnelWall, segs || 48);
+        o.userData.funnelHeight, o.userData.funnelSpoutLen, o.userData.funnelWall, segs || 48, o.userData.funnelBevel);
       break;
     case 'torus': {
       const tr = o.userData.tubeRatio || 0.35;
