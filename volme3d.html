@@ -1046,7 +1046,7 @@ const firebaseConfig = {
       <button class="btn" id="btn-redo" onclick="redo()" title="Strg+Y">↪ Wiederholen</button>
       <button class="btn red" onclick="deleteSelected()" title="Del">🗑</button>
       <div id="stl-wrap">
-        <button class="btn pri main-stl" onclick="exportSTL()" title="STL herunterladen">⬇ Export</button>
+        <button class="btn pri main-stl" onclick="exportSTL()" title="STL herunterladen — bei Auswahl nur die markierten Objekte, sonst alle">⬇ Export</button>
         <button class="btn pri spl" onclick="toggleStlMenu(event)" title="An Slicer senden">▾</button>
         <div id="stl-menu">
           <div id="outdir-sec">
@@ -11528,6 +11528,16 @@ window.addEventListener('keydown', e => {
 });
 
 // ═══ STL EXPORT (Binary) ══════════════════════════════════════════════
+// Export-Quelle: ist etwas markiert, exportiere NUR die Auswahl (wie Tinkercad),
+// sonst die ganze Platte. selectedObjs sind die Top-Level-Objekte/Gruppen.
+function _exportSrc() {
+  return (typeof selectedObjs !== 'undefined' && selectedObjs.length) ? selectedObjs.slice() : objects;
+}
+// true, wenn gerade nur eine Teilmenge (Auswahl) exportiert wird → für Hinweis im Toast
+function _exportIsSel() {
+  return (typeof selectedObjs !== 'undefined' && selectedObjs.length > 0 && selectedObjs.length < objects.length);
+}
+
 function _buildStlBlob(objs) {
   const src = objs || objects;
   if (!src.length) { notify('Keine Objekte', 'w'); return null; }
@@ -11680,10 +11690,11 @@ async function _refreshOutDirMenu() {
 }
 
 function exportSTL() {
-  const r = _buildStlBlob(); if (!r) return;
+  const r = _buildStlBlob(_exportSrc()); if (!r) return;
   if (typeof _tutorExported !== 'undefined') _tutorExported = true;   // Kurs-Modus: STL-Export erkannt
+  const sel = _exportIsSel() ? ' [nur Auswahl]' : '';
   _saveExport(r.blob, _designFilename('stl')).then(res =>
-    notify(`STL ${res.wrote ? '→ ' + res.dir : 'exportiert'} ✓ (${r.count} Dreiecke)`, 'ok'));
+    notify(`STL ${res.wrote ? '→ ' + res.dir : 'exportiert'} ✓ (${r.count} Dreiecke)${sel}`, 'ok'));
 }
 
 function exportToBumpMesh() {
@@ -11701,7 +11712,8 @@ function exportToBumpMesh() {
 
 function exportOBJ() {
   document.getElementById('stl-menu').classList.remove('show');
-  if (!objects.length) { notify('Keine Objekte', 'w'); return; }
+  const expSrc = _exportSrc();
+  if (!expSrc.length) { notify('Keine Objekte', 'w'); return; }
   const base = _designFilename('obj').replace(/\.obj$/i, '');
   const mtlName = base + '.mtl';
   // Jeder Körper als eigenes 'o'-Objekt + 'usemtl' → der Slicer kann pro Objekt
@@ -11739,7 +11751,7 @@ function exportOBJ() {
     if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false) collectMesh(o);
     if (o.children) o.children.forEach(traverse);
   }
-  objects.forEach(traverse);
+  expSrc.forEach(traverse);
   if (vOffset === 1) { notify('Keine sichtbaren Flächen', 'w'); return; }
   // MTL aus den gesammelten Farben
   const mtl = ['# Volme3D MTL'];
@@ -11750,21 +11762,22 @@ function exportOBJ() {
   const objBlob = new Blob([lines.join('\n')], { type: 'text/plain' });
   const mtlBlob = new Blob([mtl.join('\n')], { type: 'text/plain' });
   _saveExportMany([{ blob: objBlob, name: base + '.obj' }, { blob: mtlBlob, name: mtlName }]).then(res =>
-    notify(`OBJ + MTL ${res.wrote ? '→ ' + res.dir : 'exportiert'} (${mats.size} Material/Farbe) ✓`, 'ok'));
+    notify(`OBJ + MTL ${res.wrote ? '→ ' + res.dir : 'exportiert'} (${mats.size} Material/Farbe) ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok'));
 }
 
 // Jeden Körper (Teil + Gravur-Inlay) als EIGENE STL-Datei → in Bambu/Prusa beide
 // laden (gleicher Ursprung = deckungsgleich), pro Objekt ein Filament zuweisen.
 function exportPartsSTL() {
   document.getElementById('stl-menu').classList.remove('show');
-  if (!objects.length) { notify('Keine Objekte', 'w'); return; }
+  const expSrc = _exportSrc();
+  if (!expSrc.length) { notify('Keine Objekte', 'w'); return; }
   const base = _designFilename('stl').replace(/\.stl$/i, '');
   const meshes = [];
   function traverse(o) {
     if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false) meshes.push(o);
     if (o.children) o.children.forEach(traverse);
   }
-  objects.forEach(traverse);
+  expSrc.forEach(traverse);
   if (!meshes.length) { notify('Keine Flächen', 'w'); return; }
   const used = {};
   const files = meshes.map((m, i) => {
@@ -11774,7 +11787,7 @@ function exportPartsSTL() {
     return { blob: new Blob([buf], { type: 'application/octet-stream' }), name: `${base}_${nm}.stl` };
   });
   _saveExportMany(files).then(res =>
-    notify(`${res.ok} STL-Dateien (pro Körper) ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓`, 'ok'));
+    notify(`${res.ok} STL-Dateien (pro Körper) ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok'));
 }
 
 // 3MF mit getrennten, farbigen Körpern → Bambu/Orca öffnet sie deckungsgleich
@@ -11783,13 +11796,14 @@ function exportPartsSTL() {
 function export3MF() {
   document.getElementById('stl-menu').classList.remove('show');
   if (typeof fflate === 'undefined') { notify('Zip-Bibliothek lädt noch — kurz warten, erneut versuchen', 'w'); return; }
-  if (!objects.length) { notify('Keine Objekte', 'w'); return; }
+  const expSrc = _exportSrc();
+  if (!expSrc.length) { notify('Keine Objekte', 'w'); return; }
   try {
     const meshes = [];
     (function tr(list){ list.forEach(o => {
       if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false) meshes.push(o);
       if (o.children) tr(o.children);
-    }); })(objects);
+    }); })(expSrc);
     if (!meshes.length) { notify('Keine Flächen', 'w'); return; }
 
     // EIN Objekt (Assembly) mit mehreren TEILEN (components) → Bambu zieht es
@@ -11856,7 +11870,7 @@ ${partXml.join('\n')}
     const fname = _designFilename('3mf');
     const blob3mf = new Blob([zipped], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
     _saveExport(blob3mf, fname).then(res =>
-      notify(`3MF „${fname}" ${res.wrote ? '→ ' + res.dir : ''} — ${meshes.length} Teile, ${colorIndex.size} Farbe/n ✓`, 'ok'));
+      notify(`3MF „${fname}" ${res.wrote ? '→ ' + res.dir : ''} — ${meshes.length} Teile, ${colorIndex.size} Farbe/n ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok'));
   } catch(e) {
     console.error('3MF Export Fehler:', e);
     notify('3MF Fehler: ' + (e.message || e), 'w');
@@ -11865,7 +11879,7 @@ ${partXml.join('\n')}
 
 function exportSTEP() {
   document.getElementById('stl-menu').classList.remove('show');
-  const r = _buildStlBlob(); if (!r) return;
+  const r = _buildStlBlob(_exportSrc()); if (!r) return;
   const a = document.createElement('a');
   a.href = URL.createObjectURL(r.blob);
   a.download = _designFilename('stl');
