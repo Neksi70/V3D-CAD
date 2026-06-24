@@ -667,6 +667,12 @@ body.devmode .dev-only{display:flex!important}
 #stllib-helper-dot.off{background:var(--red)}
 .stl-empty{grid-column:1/-1;padding:38px 20px;text-align:center;color:var(--mid);font-size:13px;line-height:1.7}
 .stl-empty .btn{margin-top:10px}
+.stl-folder-hdr{grid-column:1/-1;display:flex;align-items:center;gap:7px;margin:6px 0 -2px;padding:5px 4px 6px;border-bottom:1.5px solid var(--border);font-size:12px;font-weight:800;color:var(--mid);cursor:pointer;user-select:none}
+.stl-folder-hdr:first-child{margin-top:0}
+.stl-folder-hdr .stl-folder-arr{transition:transform .12s;font-size:10px;color:var(--dim)}
+.stl-folder-hdr.collapsed .stl-folder-arr{transform:rotate(-90deg)}
+.stl-folder-hdr .stl-folder-cnt{font-weight:600;color:var(--dim);font-size:11px}
+.ds-folder-badge{position:absolute;left:6px;bottom:6px;max-width:80%;background:rgba(30,41,59,.78);color:#fff;font-size:9px;font-weight:700;padding:2px 6px;border-radius:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
 /* Toolbar design label */
 #cur-design-wrap{display:flex;align-items:center;gap:3px;padding:0 4px;max-width:140px;border-left:1px solid var(--border);margin-left:2px;padding-left:10px;flex-shrink:0}
 #cur-design-lbl{font-size:11px;font-weight:700;color:var(--mid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;max-width:120px}
@@ -984,7 +990,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.29<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.30<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <div class="tbg"><span class="tbg-l">Datei</span><div class="tbg-row">
@@ -1003,6 +1009,9 @@ const firebaseConfig = {
     <div class="tbg"><span class="tbg-l">Anordnen</span><div class="tbg-row">
       <button class="btn" onclick="alignTool()" title="L — Mind. 2 Objekte auswählen">⊜ Ausrichten</button>
       <button class="btn" onclick="mirrorTool()" title="M — Objekt auswählen dann X/Y/Z">⊿ Spiegeln</button>
+      <button class="btn" onclick="centerOnPlate()" title="Objekt mittig auf die Bauplatte legen">⊕ Mitte</button>
+      <button class="btn" onclick="rotate225('y',1)" title="Drehen — 22,5° im Uhrzeigersinn (steht aufrecht, bleibt am Boden)">↻ Drehen</button>
+      <button class="btn" onclick="rotate225('x',1)" title="Kippen — 22,5° um die Querachse (bleibt am Boden)">⤵ Kippen</button>
       <button class="btn" onclick="linearPatternTool()" title="Lineares Muster — Objekt mehrfach in einer Richtung kopieren">⋮ Linear</button>
       <button class="btn" onclick="circularPatternTool()" title="Kreismuster — Objekt kreisförmig anordnen">⊙ Kreis</button>
     </div></div>
@@ -1727,6 +1736,13 @@ const firebaseConfig = {
           <button class="btn" style="font-size:9px;padding:2px 5px" onclick="rotate90('y', 1)" title="Y +90°">Y+</button>
           <button class="btn" style="font-size:9px;padding:2px 5px" onclick="rotate90('z',-1)" title="Z -90°">Z-</button>
           <button class="btn" style="font-size:9px;padding:2px 5px" onclick="rotate90('z', 1)" title="Z +90°">Z+</button>
+        </div>
+        <div style="display:flex;gap:3px;margin-top:5px;flex-wrap:wrap">
+          <span style="font-size:9px;font-weight:700;color:var(--dim);align-self:center;margin-right:2px">22,5°:</span>
+          <button class="btn" style="font-size:9px;padding:2px 5px" onclick="rotate225('y',-1)" title="Drehen 22,5° gegen Uhrzeigersinn (Y, bleibt am Boden)">↺ Y</button>
+          <button class="btn" style="font-size:9px;padding:2px 5px" onclick="rotate225('y', 1)" title="Drehen 22,5° im Uhrzeigersinn (Y, bleibt am Boden)">↻ Y</button>
+          <button class="btn" style="font-size:9px;padding:2px 5px" onclick="rotate225('x',-1)" title="Kippen 22,5° um X (bleibt am Boden)">↺ X</button>
+          <button class="btn" style="font-size:9px;padding:2px 5px" onclick="rotate225('x', 1)" title="Kippen 22,5° um X (bleibt am Boden)">↻ X</button>
         </div>
       </div>
 
@@ -8235,9 +8251,9 @@ function autoOrientForPrint() {
 }
 
 // Called every frame — repositions handles + redraws bbox
-function dropToGround() {
-  if (!selectedObjs.length) return;
-  saveUndo();
+// Kern ohne Undo/Notify — auch von Dreh-Funktionen genutzt, damit Objekte
+// nach dem Drehen auf der Platte bleiben.
+function _dropSelectedToGround() {
   const n = workplaneNormal;
   selectedObjs.forEach(o => {
     const box = getMeshBox(o);
@@ -8249,8 +8265,30 @@ function dropToGround() {
     const dist = lo.clone().sub(workplanePoint).dot(n);
     o.position.addScaledVector(n, -dist);
   });
+}
+
+function dropToGround() {
+  if (!selectedObjs.length) return;
+  saveUndo();
+  _dropSelectedToGround();
   updateTFInputs();
   notify('Auf Boden', 'ok');
+}
+
+// Auswahl mittig auf die Bauplatte (X/Z = Plattenmitte 0,0) schieben.
+function centerOnPlate() {
+  if (!selectedObjs.length) { notify('Objekt wählen', 'w'); return; }
+  saveUndo();
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  selectedObjs.forEach(o => {
+    const b = getMeshBox(o);
+    minX = Math.min(minX, b.min.x); maxX = Math.max(maxX, b.max.x);
+    minZ = Math.min(minZ, b.min.z); maxZ = Math.max(maxZ, b.max.z);
+  });
+  const cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2;
+  selectedObjs.forEach(o => { o.position.x -= cx; o.position.z -= cz; });
+  updateTFInputs();
+  notify('Auf Plattenmitte', 'ok');
 }
 
 // ═══ RULER TOGGLE (now controls dim handle visibility) ════════════════
@@ -10507,6 +10545,30 @@ function rotate90(axis, dir) {
   updateTFInputs();
 }
 
+// 22,5°-Schritte, gerastert. axis: 'y' = Drehen (Teller, von oben), 'x' = Kippen.
+// dir=1 → Uhrzeigersinn / vorwärts, dir=-1 → andersrum. Objekt bleibt danach am Boden.
+function rotate225(axis, dir) {
+  if (!selectedObjs.length) { notify('Objekt wählen', 'w'); return; }
+  saveUndo();
+  const step = Math.PI / 8;            // 22,5°
+  const angle = -dir * step;           // Uhrzeigersinn / vorwärts = negative Drehung
+  selectedObjs.forEach(o => {
+    // Horizontale Mitte vor dem Drehen merken, damit das Objekt an Ort und Stelle
+    // bleibt (sonst wandert es beim Kippen seitlich weg).
+    const b0 = getMeshBox(o);
+    const cx0 = (b0.min.x + b0.max.x) / 2, cz0 = (b0.min.z + b0.max.z) / 2;
+    o.rotation[axis] = Math.round((o.rotation[axis] + angle) / step) * step;
+    o.updateMatrixWorld(true);
+    const b1 = getMeshBox(o);
+    o.position.x += cx0 - (b1.min.x + b1.max.x) / 2;
+    o.position.z += cz0 - (b1.min.z + b1.max.z) / 2;
+  });
+  _dropSelectedToGround();             // nach dem Drehen wieder auf die Platte setzen
+  updateTFInputs();
+}
+// Rückwärtskompatibler Alias (Y-Achse)
+function rotate225cw(dir) { rotate225('y', dir); }
+
 function mirrorObj(axis) {
   if (!selectedObjs.length) { notify('Nichts ausgewählt', 'w'); return; }
   saveUndo();
@@ -11426,6 +11488,69 @@ function _wpSpawnMesh(mesh, halfHeight) {
   mesh.quaternion.copy(_wpMakeQuat(n));
   // Place it sitting on the workplane: point + normal * halfHeight
   mesh.position.copy(workplanePoint).addScaledVector(n, halfHeight);
+  // Neues Objekt landet mittig — vorhandene überlappende Objekte zur Seite rücken
+  _pushAsideForNew(mesh);
+}
+
+// XZ-Grundfläche (Welt) eines Objekts als Rechteck.
+function _objFootprintXZ(obj) {
+  obj.updateMatrixWorld(true);
+  const b = new THREE.Box3().setFromObject(obj);
+  return { minX: b.min.x, maxX: b.max.x, minZ: b.min.z, maxZ: b.max.z };
+}
+function _rectsOverlapXZ(a, b, gap) {
+  gap = gap || 0;
+  return a.minX < b.maxX + gap && a.maxX > b.minX - gap &&
+         a.minZ < b.maxZ + gap && a.maxZ > b.minZ - gap;
+}
+
+// Neues, mittig platziertes Objekt: vorhandene Objekte, die damit überlappen,
+// auf den nächsten freien Platz der Bauplatte schieben (Spiralsuche).
+// Nur auf der Standard-Bodenplatte (Workplane = Boden) und nicht bei Bohrungen
+// (Löcher sollen die Körper ja schneiden, also überlappen).
+function _pushAsideForNew(newMesh) {
+  if (shapeMode === 'hole') return;
+  if (workplaneNormal.y < 0.99 || Math.abs(workplanePoint.y) > 0.01) return;
+  newMesh.updateMatrixWorld(true);
+  const newRect = _objFootprintXZ(newMesh);
+  const others = objects.filter(o => o !== newMesh && o.visible !== false && !(o.userData && o.userData.isHole));
+  if (!others.length) return;
+  const rects = others.map(o => ({ obj: o, rect: _objFootprintXZ(o) }));
+  const toMove = rects.filter(r => _rectsOverlapXZ(r.rect, newRect, 0));
+  if (!toMove.length) return;
+
+  const gap = 0.2;                       // 2 mm Abstand zwischen Objekten
+  const halfPW = (buildplateW / 10) / 2; // Plattenrand in Szenen-Einheiten
+  const halfPH = (buildplateH / 10) / 2;
+
+  for (const m of toMove) {
+    const r = m.rect;
+    const w = r.maxX - r.minX, d = r.maxZ - r.minZ;
+    const cx0 = (r.minX + r.maxX) / 2, cz0 = (r.minZ + r.maxZ) / 2;
+    const step = Math.max(w, d) + gap;
+    let placed = false;
+    for (let ring = 1; ring <= 60 && !placed; ring++) {
+      const slots = ring * 8;
+      for (let a = 0; a < slots && !placed; a++) {
+        const ang = a / slots * Math.PI * 2;
+        const cx = cx0 + Math.cos(ang) * step * ring;
+        const cz = cz0 + Math.sin(ang) * step * ring;
+        // innerhalb der Bauplatte bleiben
+        if (cx - w / 2 < -halfPW || cx + w / 2 > halfPW ||
+            cz - d / 2 < -halfPH || cz + d / 2 > halfPH) continue;
+        const cand = { minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 };
+        if (_rectsOverlapXZ(cand, newRect, gap)) continue;
+        let bad = false;
+        for (const rr of rects) { if (rr === m) continue; if (_rectsOverlapXZ(cand, rr.rect, gap)) { bad = true; break; } }
+        if (bad) continue;
+        m.obj.position.x += (cx - cx0);
+        m.obj.position.z += (cz - cz0);
+        m.obj.updateMatrixWorld(true);
+        m.rect = cand;
+        placed = true;
+      }
+    }
+  }
 }
 
 function setWorkplaneFromFace(hit) {
@@ -12046,21 +12171,41 @@ function handleLoad(e) {
 function doImport() { document.getElementById('fimport').click(); }
 function handleImport(e) {
   const file = e.target.files[0]; if (!file) return;
+  const big = file.size > 8 * 1024 * 1024;   // >8 MB → spürbar; Rückmeldung geben
   const reader = new FileReader();
-  reader.onload = ev => { _addImportedStl(ev.target.result, file.name, true); };
+  reader.onload = ev => {
+    const buf = ev.target.result;
+    if (big) {
+      // Großes Modell: Toast zeigen und das (synchrone, evtl. sekundenlange)
+      // Parsen einen Frame verzögern, damit die Seite nicht "tot" wirkt.
+      notify('Großes Modell wird importiert … (' + (file.size / 1048576).toFixed(0) + ' MB)', 'i');
+      setTimeout(() => _addImportedStl(buf, file.name, true), 50);
+    } else {
+      _addImportedStl(buf, file.name, true);
+    }
+  };
   reader.readAsArrayBuffer(file); e.target.value = '';
 }
 
 // Gemeinsamer STL-Import (Datei-Dialog + STL-Bibliothek). showDialog=true → Größendialog.
 function _addImportedStl(buffer, filename, showDialog) {
+  let geo; try { geo = parseSTL(buffer); }   // parseSTL berechnet bereits Normalen
+  catch(err){ notify('Import Fehler: ' + err.message, 'e'); return; }
+  _addImportedGeo(geo, filename, true, buffer, showDialog);
+}
+
+// Gemeinsamer Kern: nimmt eine fertige Geometrie (STL/OBJ/3MF) und setzt sie als
+// Import-Mesh in die Szene. zUp=true → Z-up-Quelle (STL/3MF) um -90° um X kippen.
+// stlBuf = rohe STL-Bytes für die OCCT-Cut-Pipeline (nur bei STL sinnvoll, sonst null).
+function _addImportedGeo(geo, filename, zUp, stlBuf, showDialog) {
   try {
+    if (!geo || !geo.attributes.position || !geo.attributes.position.count) { notify('Datei enthält keine Geometrie', 'w'); return; }
     saveUndo();
-    const geo = parseSTL(buffer); geo.computeVertexNormals();
     const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(currentColor), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.castShadow = true;
-    mesh.scale.setScalar(0.1);                 // STL mm → App-Einheit (10mm)
-    mesh.rotation.x = -Math.PI / 2;            // STL Z-up → Editor Y-up
+    mesh.scale.setScalar(0.1);                 // mm → App-Einheit (10mm)
+    if (zUp) mesh.rotation.x = -Math.PI / 2;   // Z-up Quelle → Editor Y-up
     mesh.updateMatrixWorld(true);
     {
       const bb = new THREE.Box3().setFromObject(mesh);
@@ -12068,7 +12213,7 @@ function _addImportedStl(buffer, filename, showDialog) {
       mesh.position.x -= c.x; mesh.position.z -= c.z; mesh.position.y -= bb.min.y;
       mesh.updateMatrixWorld(true);
     }
-    mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import', name: (filename||'modell').replace(/\.(stl|3mf|obj)$/i, ''), color: currentColor, isHole: false, _origGeo: geo, _origStlBuf: buffer,
+    mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import', name: (filename||'modell').replace(/\.(stl|3mf|obj)$/i, ''), color: currentColor, isHole: false, _origGeo: geo, _origStlBuf: stlBuf || null,
       _stlCx: (geo.boundingBox ? (geo.boundingBox.min.x + geo.boundingBox.max.x) / 2 : 12.8),
       _stlCy: (geo.boundingBox ? (geo.boundingBox.min.y + geo.boundingBox.max.y) / 2 : 12.8),
       _stlCz: (geo.boundingBox ? (geo.boundingBox.min.z + geo.boundingBox.max.z) / 2 : 10.1) };
@@ -12083,32 +12228,41 @@ function parseSTL(buf) {
   const view = new DataView(buf);
   const nTri = view.getUint32(80, true);
   const isBin = buf.byteLength === 84 + nTri * 50;
-  const verts = [];
+  let pos, dropped = 0;
   if (isBin) {
+    // Direkt in ein vorab-allokiertes Float32Array lesen (Single-Pass). Kein
+    // verts.push() millionenfach + kein zweiter NaN-Scan → friert bei großen
+    // STLs nicht mehr ein. NaN/Inf-Dreiecke werden in-place verworfen, indem
+    // der Schreibzeiger nur bei sauberen Dreiecken vorrückt.
+    const arr = new Float32Array(nTri * 9);
+    let p = 0;
     for (let i = 0; i < nTri; i++) {
-      const off = 84 + i * 50 + 12;
-      for (let j = 0; j < 3; j++) verts.push(view.getFloat32(off+j*12,true), view.getFloat32(off+j*12+4,true), view.getFloat32(off+j*12+8,true));
+      const off = 84 + i * 50 + 12;   // 12 = Normalen-Vektor überspringen
+      let ok = true;
+      for (let k = 0; k < 9; k++) {
+        const val = view.getFloat32(off + k * 4, true);
+        arr[p + k] = val;
+        if (!Number.isFinite(val)) ok = false;
+      }
+      if (ok) p += 9; else dropped++;
     }
+    pos = p === arr.length ? arr : arr.subarray(0, p);
   } else {
     const t = new TextDecoder().decode(buf), re = /vertex\s+([\d.e+\-]+)\s+([\d.e+\-]+)\s+([\d.e+\-]+)/g; let m;
+    const verts = [];
     while ((m = re.exec(t)) !== null) verts.push(+m[1], +m[2], +m[3]);
-  }
-  // NaN/Inf-Dreiecke verwerfen (degenerierte OCCT-Faces erzeugten sonst NaN-Geometrie
-  // → computeBoundingSphere=NaN + NaN-Kantenlinien-Flut). Pro Dreieck (9 Werte) prüfen.
-  let clean = verts, dropped = 0;
-  for (let i = 0; i + 8 < verts.length; i += 9) {
-    for (let k = 0; k < 9; k++) if (!Number.isFinite(verts[i+k])) { dropped++; break; }
-  }
-  if (dropped) {
-    clean = [];
+    // NaN/Inf-Dreiecke verwerfen (degenerierte OCCT-Faces erzeugten sonst NaN-Geometrie
+    // → computeBoundingSphere=NaN + NaN-Kantenlinien-Flut). Pro Dreieck (9 Werte) prüfen.
+    const clean = [];
     for (let i = 0; i + 8 < verts.length; i += 9) {
       let ok = true;
       for (let k = 0; k < 9; k++) if (!Number.isFinite(verts[i+k])) { ok = false; break; }
-      if (ok) for (let k = 0; k < 9; k++) clean.push(verts[i+k]);
+      if (ok) for (let k = 0; k < 9; k++) clean.push(verts[i+k]); else dropped++;
     }
-    console.warn('[parseSTL] ' + dropped + ' NaN/Inf-Dreieck(e) verworfen');
+    pos = new Float32Array(clean);
   }
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(clean, 3));
+  if (dropped) console.warn('[parseSTL] ' + dropped + ' NaN/Inf-Dreieck(e) verworfen');
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.computeVertexNormals();   // ohne Normalen rendert MeshStandardMaterial in Firefox komplett schwarz
   return geo;
 }
@@ -17592,9 +17746,9 @@ function _createLaserBox(){
 
 // ===== STL-BIBLIOTHEK =====
 const STLLIB_HELPER = 'http://127.0.0.1:7777';
-const STLLIB_HELPER_LATEST = 6;   // aktuelle Helfer-Version; ältere -> Update-Knopf
+const STLLIB_HELPER_LATEST = 7;   // aktuelle Helfer-Version; ältere -> Update-Knopf
 let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0, _stlThumbObs=null, _stlThumbPending=[], _stlThumbBusy=false, _stlPollTimer=null, _stlListSig='';
-let _stlSort='date_desc', _stlFavOnly=false, _stlFav=new Set(), _stlSel=new Set();
+let _stlSort='date_desc', _stlFavOnly=false, _stlFav=new Set(), _stlSel=new Set(), _stlCollapsed=new Set();
 const _stlCanPickDir = !!window.showDirectoryPicker;   // File System Access API: nur Chrome/Edge (nicht Firefox/Safari)
 function _stlStopPoll(){ if(_stlPollTimer){ clearInterval(_stlPollTimer); _stlPollTimer=null; } }
 function _stlStartPoll(){ _stlStopPoll(); _stlPollTimer=setInterval(_stlPoll,15000); }   // Galerie automatisch nachladen
@@ -17611,7 +17765,7 @@ async function _stlPoll(){
     const sig=files.length+'|'+(files[0]?files[0].name+files[0].mtime:'');
     if(sig!==_stlListSig){
       _stlListSig=sig;
-      _stlFiles=files.map(f=>({name:f.name,path:f.name,size:f.size,mtime:f.mtime,lib:true})).sort((a,b)=>b.mtime-a.mtime);
+      _stlFiles=files.map(f=>({name:_stlBase(f.name),path:f.name,size:f.size,mtime:f.mtime,lib:true})).sort((a,b)=>b.mtime-a.mtime);
       _stlRenderGrid();
     }
   }catch(e){}
@@ -17690,6 +17844,9 @@ async function _stlScanDir(dir,prefix,depth){
 }
 function _stlFmtSize(n){ return n>=1048576?(n/1048576).toFixed(1)+' MB':(n/1024).toFixed(0)+' KB'; }
 function _stlEsc(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+// Pfad-Helfer: f.path ist relativ (mit „/"). name=Basisname (Anzeige), folder=Unterordner ('' = Wurzel).
+function _stlBase(p){ p=(p||'').replace(/\\/g,'/'); const i=p.lastIndexOf('/'); return i>=0?p.slice(i+1):p; }
+function _stlFolder(p){ p=(p||'').replace(/\\/g,'/'); const i=p.lastIndexOf('/'); return i>=0?p.slice(0,i):''; }
 function _stlSortApply(){
   const cmp={
     date_desc:(a,b)=>b.mtime-a.mtime, date_asc:(a,b)=>a.mtime-b.mtime,
@@ -17707,16 +17864,16 @@ function _stlUpdateFavBtn(){
 function _stlToggleFavFilter(){ _stlFavOnly=!_stlFavOnly; _stlUpdateFavBtn(); _stlRenderGrid(); }
 function _stlToggleFav(idx){
   const f=_stlFiles[idx]; if(!f) return;
-  if(_stlFav.has(f.name)) _stlFav.delete(f.name); else _stlFav.add(f.name);
+  if(_stlFav.has(f.path)) _stlFav.delete(f.path); else _stlFav.add(f.path);
   _stlIdbSet('kv','favorites',[..._stlFav]).catch(()=>{});
   if(_stlFavOnly){ _stlRenderGrid(); return; }
-  const card=document.getElementById('stlcard-'+idx); if(card){ const st=card.querySelector('.ds-star'); const on=_stlFav.has(f.name); if(st){ st.classList.toggle('on',on); st.textContent=on?'★':'☆'; } }
+  const card=document.getElementById('stlcard-'+idx); if(card){ const st=card.querySelector('.ds-star'); const on=_stlFav.has(f.path); if(st){ st.classList.toggle('on',on); st.textContent=on?'★':'☆'; } }
 }
 function _stlToggleSel(idx){
   const f=_stlFiles[idx]; if(!f) return;
-  if(_stlSel.has(f.name)) _stlSel.delete(f.name); else _stlSel.add(f.name);
+  if(_stlSel.has(f.path)) _stlSel.delete(f.path); else _stlSel.add(f.path);
   const card=document.getElementById('stlcard-'+idx);
-  if(card){ const on=_stlSel.has(f.name); card.classList.toggle('sel',on); const ck=card.querySelector('.ds-chk'); if(ck){ ck.classList.toggle('on',on); ck.textContent=on?'✓':''; } }
+  if(card){ const on=_stlSel.has(f.path); card.classList.toggle('sel',on); const ck=card.querySelector('.ds-chk'); if(ck){ ck.classList.toggle('on',on); ck.textContent=on?'✓':''; } }
   _stlUpdateSelBar();
 }
 function _stlClearSel(){ _stlSel.clear(); _stlUpdateSelBar(); _stlRenderGrid(); }
@@ -17726,34 +17883,56 @@ function _stlUpdateSelBar(){
   if(bar) bar.style.display=n>0?'flex':'none';
   if(cnt) cnt.textContent=n+(n===1?' markiert':' markiert');
 }
+function _stlToggleFolder(folder){ if(_stlCollapsed.has(folder)) _stlCollapsed.delete(folder); else _stlCollapsed.add(folder); _stlRenderGrid(); }
+function _stlMakeCard(f, grid){
+  const idx=_stlFiles.indexOf(f);
+  const card=document.createElement('div'); card.className='ds-card'; card.id='stlcard-'+idx;
+  const isFav=_stlFav.has(f.path), isSel=_stlSel.has(f.path);
+  if(isSel) card.classList.add('sel');
+  const inner = f._thumbUrl ? `<img class="ds-thumb" src="${f._thumbUrl}">` : (f._thumbDone ? '<div class="ds-nothumb">📦</div>' : '<div class="ds-nothumb">⏳</div>');
+  const folder=_stlFolder(f.path);
+  const badge = folder ? `<div class="ds-folder-badge" title="${_stlEsc(folder)}">📁 ${_stlEsc(folder.split('/').pop())}</div>` : '';
+  const canEdit = f.lib && _stlHelperVer>=4;
+  const ren = canEdit ? `<span onclick="_stlRenameStart(${idx})" title="Umbenennen" style="cursor:pointer;color:var(--dim);font-size:12px;flex-shrink:0;padding:0 2px">✎</span>` : '';
+  const del = canEdit ? `<button class="btn btn-del" onclick="_stlDelete(${idx})" title="Aus Bibliothek löschen">🗑</button>` : '';
+  const chk = `<span class="ds-chk${isSel?' on':''}" onclick="event.stopPropagation();_stlToggleSel(${idx})" title="Markieren (Mehrfachauswahl)">${isSel?'✓':''}</span>`;
+  const star = `<span class="ds-star${isFav?' on':''}" onclick="event.stopPropagation();_stlToggleFav(${idx})" title="Favorit">${isFav?'★':'☆'}</span>`;
+  card.innerHTML=`<div class="ds-thumb-wrap">${inner}${chk}${star}${badge}</div>`+
+    `<div class="ds-info"><div style="display:flex;align-items:center;gap:2px"><div class="ds-name" id="stlnm-${idx}" title="${_stlEsc(f.path)}"${canEdit?` ondblclick="_stlRenameStart(${idx})"`:''} style="flex:1;min-width:0">${_stlEsc(f.name)}</div>${ren}</div><div class="ds-date">${_stlFmtSize(f.size)} · ${new Date(f.mtime).toLocaleDateString()}</div></div>`+
+    `<div class="ds-acts"><button class="btn" onclick="_stlOpenInScene(${idx})">📥 Öffnen</button><button class="btn pri" onclick="_stlPrint(${idx})" title="Im Slicer öffnen">🖨 Drucken</button>${del}</div>`;
+  grid.appendChild(card);
+  const tw=card.querySelector('.ds-thumb-wrap'); f._thumbEl=tw;
+  if(!f._thumbUrl && !f._thumbDone){ tw._stlF=f; _stlThumbObs.observe(tw); }
+}
 function _stlRenderGrid(){
   const grid=document.getElementById('stllib-grid'); if(!grid) return;
   if(!_stlFiles.length){ _stlLibEmpty('Keine STL/3MF/OBJ-Dateien im Ordner gefunden.', '📂 Anderer Ordner', '_stlLibPickFolder()'); return; }
   _stlSortApply();
   const q=(document.getElementById('stllib-search')?.value||'').trim().toLowerCase();
-  let list=q?_stlFiles.filter(f=>f.name.toLowerCase().includes(q)):_stlFiles.slice();
-  if(_stlFavOnly) list=list.filter(f=>_stlFav.has(f.name));
+  let list=q?_stlFiles.filter(f=>f.path.toLowerCase().includes(q)):_stlFiles.slice();
+  if(_stlFavOnly) list=list.filter(f=>_stlFav.has(f.path));
   grid.innerHTML='';
   if(!list.length){ grid.innerHTML='<div class="stl-empty">'+(_stlFavOnly?'Noch keine Favoriten — tippe auf den ☆ Stern einer Karte.':'Nichts gefunden für „'+_stlEsc(q)+'".')+'</div>'; return; }
   if(_stlThumbObs) _stlThumbObs.disconnect();
   _stlThumbObs=new IntersectionObserver(es=>{ for(const e of es){ if(e.isIntersecting){ const f=e.target._stlF; _stlThumbObs.unobserve(e.target); if(f) _stlThumbEnqueue(f); } } },{root:grid,rootMargin:'300px'});
-  list.forEach(f=>{
-    const idx=_stlFiles.indexOf(f);
-    const card=document.createElement('div'); card.className='ds-card'; card.id='stlcard-'+idx;
-    const isFav=_stlFav.has(f.name), isSel=_stlSel.has(f.name);
-    if(isSel) card.classList.add('sel');
-    const inner = f._thumbUrl ? `<img class="ds-thumb" src="${f._thumbUrl}">` : (f._thumbDone ? '<div class="ds-nothumb">📦</div>' : '<div class="ds-nothumb">⏳</div>');
-    const canEdit = f.lib && _stlHelperVer>=4;
-    const ren = canEdit ? `<span onclick="_stlRenameStart(${idx})" title="Umbenennen" style="cursor:pointer;color:var(--dim);font-size:12px;flex-shrink:0;padding:0 2px">✎</span>` : '';
-    const del = canEdit ? `<button class="btn btn-del" onclick="_stlDelete(${idx})" title="Aus Bibliothek löschen">🗑</button>` : '';
-    const chk = `<span class="ds-chk${isSel?' on':''}" onclick="event.stopPropagation();_stlToggleSel(${idx})" title="Markieren (Mehrfachauswahl)">${isSel?'✓':''}</span>`;
-    const star = `<span class="ds-star${isFav?' on':''}" onclick="event.stopPropagation();_stlToggleFav(${idx})" title="Favorit">${isFav?'★':'☆'}</span>`;
-    card.innerHTML=`<div class="ds-thumb-wrap">${inner}${chk}${star}</div>`+
-      `<div class="ds-info"><div style="display:flex;align-items:center;gap:2px"><div class="ds-name" id="stlnm-${idx}" title="${_stlEsc(f.path)}"${canEdit?` ondblclick="_stlRenameStart(${idx})"`:''} style="flex:1;min-width:0">${_stlEsc(f.name)}</div>${ren}</div><div class="ds-date">${_stlFmtSize(f.size)} · ${new Date(f.mtime).toLocaleDateString()}</div></div>`+
-      `<div class="ds-acts"><button class="btn" onclick="_stlOpenInScene(${idx})">📥 Öffnen</button><button class="btn pri" onclick="_stlPrint(${idx})" title="Im Slicer öffnen">🖨 Drucken</button>${del}</div>`;
-    grid.appendChild(card);
-    const tw=card.querySelector('.ds-thumb-wrap'); f._thumbEl=tw;
-    if(!f._thumbUrl && !f._thumbDone){ tw._stlF=f; _stlThumbObs.observe(tw); }
+  // Nach Unterordner gruppieren (Wurzel zuerst, dann Ordner alphabetisch). Sortier-Reihenfolge je Gruppe bleibt erhalten.
+  const groups=new Map();
+  list.forEach(f=>{ const fo=_stlFolder(f.path); if(!groups.has(fo)) groups.set(fo,[]); groups.get(fo).push(f); });
+  const hasFolders=[...groups.keys()].some(k=>k!=='');
+  const order=[...groups.keys()].sort((a,b)=> a===''?-1 : b===''?1 : a.localeCompare(b,'de'));
+  order.forEach(folder=>{
+    const items=groups.get(folder);
+    if(hasFolders){
+      const collapsed=_stlCollapsed.has(folder);
+      const hdr=document.createElement('div');
+      hdr.className='stl-folder-hdr'+(collapsed?' collapsed':'');
+      hdr.onclick=()=>_stlToggleFolder(folder);
+      const label = folder==='' ? '📄 Einzeldateien' : '📁 '+_stlEsc(folder);
+      hdr.innerHTML=`<span class="stl-folder-arr">▼</span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</span><span class="stl-folder-cnt">${items.length}</span>`;
+      grid.appendChild(hdr);
+      if(collapsed) return;
+    }
+    items.forEach(f=>_stlMakeCard(f, grid));
   });
 }
 // Thumbnails nur für sichtbare Karten, sequenziell (ein Renderer, kein Ansturm bei hunderten Dateien)
@@ -17830,8 +18009,22 @@ async function _stlMakeThumb(f){
 }
 async function _stlOpenInScene(idx){
   const f=_stlFiles[idx]; if(!f) return;
-  if(!/\.stl$/i.test(f.name)){ notify('Direkt laden geht nur mit STL (3MF/OBJ bitte „Drucken")','w'); return; }
-  try{ const buf=await _stlReadBytes(f); _addImportedStl(buf, f.name, false); _stlLibClose(); }
+  const ext=(f.name.split('.').pop()||'').toLowerCase();
+  try{
+    const buf=await _stlReadBytes(f);
+    if(ext==='stl'){
+      _addImportedStl(buf, f.name, false);
+    } else if(ext==='obj'){
+      _addImportedGeo(_parseOBJ(new TextDecoder().decode(buf)), f.name, false, null, false);
+    } else if(ext==='3mf'){
+      if(typeof fflate==='undefined'){ notify('3MF-Unterstützung nicht geladen','w'); return; }
+      let models={}; try{ models=fflate.unzipSync(new Uint8Array(buf),{filter:fl=>/\.model$/i.test(fl.name)}); }catch(e){ models={}; }
+      const mn=Object.keys(models)[0];
+      if(!mn){ notify('3MF enthält kein 3D-Modell (nur Vorschau) — bitte „Drucken"','w'); return; }
+      _addImportedGeo(_parse3MFGeo(fflate.strFromU8(models[mn])), f.name, true, null, false);
+    } else { notify('Format nicht unterstützt','w'); return; }
+    _stlLibClose();
+  }
   catch(e){ notify('Laden fehlgeschlagen: '+e.message,'w'); }
 }
 async function _stlPrint(idx){
@@ -17841,8 +18034,8 @@ async function _stlPrint(idx){
     const slicer=document.getElementById('stllib-slicer')?.value||'';
     let res;
     if(f.lib){
-      // Datei liegt schon im Helfer-Ordner → nur Referenz schicken, kein Upload
-      res=await fetch(STLLIB_HELPER+'/print',{method:'POST',headers:{'X-LibFile':encodeURIComponent(f.name),'X-Slicer':slicer},body:''});
+      // Datei liegt schon im Helfer-Ordner → nur Referenz (rel. Pfad) schicken, kein Upload
+      res=await fetch(STLLIB_HELPER+'/print',{method:'POST',headers:{'X-LibFile':encodeURIComponent(f.path),'X-Slicer':slicer},body:''});
     }else{
       const buf=await _stlReadBytes(f);
       res=await fetch(STLLIB_HELPER+'/print',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Filename':encodeURIComponent(f.name),'X-Slicer':slicer},body:buf});
@@ -17854,7 +18047,7 @@ async function _stlPrint(idx){
 }
 function _stlHelperMissing(){ notify('Druck-Helfer nicht erreichbar — einmalig einrichten (Links in der Ordner-Ansicht / LIESMICH)','w'); }
 async function _stlPrintSelected(){
-  const names=[..._stlSel].filter(n=>{ const f=_stlFiles.find(x=>x.name===n); return f&&f.lib; });
+  const names=[..._stlSel].filter(n=>{ const f=_stlFiles.find(x=>x.path===n); return f&&f.lib; });
   if(!names.length){ notify('Keine Bibliotheksdateien markiert — gemeinsames Drucken geht nur mit der Helfer-Bibliothek','w'); return; }
   if(!_stlHelperOk){ _stlHelperMissing(); return; }
   if(_stlHelperVer<5){ notify('Bitte Druck-Helfer aktualisieren (⬇ oben) — gemeinsames Drucken braucht die neue Version','w'); return; }
@@ -17867,7 +18060,7 @@ async function _stlPrintSelected(){
   }catch(e){ _stlHelperOk=false; _stlUpdateHelperUI(); _stlHelperMissing(); }
 }
 async function _stlDeleteSelected(){
-  const names=[..._stlSel].filter(n=>{ const f=_stlFiles.find(x=>x.name===n); return f&&f.lib; });
+  const names=[..._stlSel].filter(n=>{ const f=_stlFiles.find(x=>x.path===n); return f&&f.lib; });
   if(!names.length){ notify('Keine löschbaren Dateien markiert (nur Helfer-Bibliothek)','w'); return; }
   if(!confirm(names.length+' Datei(en) endgültig aus der Bibliothek löschen?')) return;
   const deleted=[]; let fail=0;
@@ -17876,7 +18069,7 @@ async function _stlDeleteSelected(){
       if(res.ok&&j.ok){ deleted.push(n); _stlFav.delete(n); } else fail++; }
     catch(e){ fail++; }
   }
-  if(deleted.length){ _stlIdbSet('kv','favorites',[..._stlFav]).catch(()=>{}); _stlFiles=_stlFiles.filter(f=>!deleted.includes(f.name)); }
+  if(deleted.length){ _stlIdbSet('kv','favorites',[..._stlFav]).catch(()=>{}); _stlFiles=_stlFiles.filter(f=>!deleted.includes(f.path)); }
   _stlSel.clear(); _stlListSig=''; _stlUpdateSelBar(); _stlRenderGrid();
   notify(deleted.length+' gelöscht'+(fail?', '+fail+' fehlgeschlagen':''),'w');
 }
@@ -17884,7 +18077,7 @@ async function _stlDelete(idx){
   const f=_stlFiles[idx]; if(!f||!f.lib) return;
   if(!confirm('„'+f.name+'" aus der Bibliothek löschen?\n(Die Datei wird endgültig entfernt.)')) return;
   try{
-    const res=await fetch(STLLIB_HELPER+'/delete',{method:'POST',headers:{'X-LibFile':encodeURIComponent(f.name)}});
+    const res=await fetch(STLLIB_HELPER+'/delete',{method:'POST',headers:{'X-LibFile':encodeURIComponent(f.path)}});
     const j=await res.json().catch(()=>({}));
     if(res.ok&&j.ok){ notify('Gelöscht: '+f.name,'w'); _stlFiles.splice(idx,1); _stlListSig=''; _stlRenderGrid(); }
     else notify('Löschen: '+(j.error||('HTTP '+res.status)),'w');
@@ -17907,9 +18100,9 @@ function _stlRenameStart(idx){
 async function _stlRenameCommit(idx,newName){
   const f=_stlFiles[idx]; if(!f) return;
   try{
-    const res=await fetch(STLLIB_HELPER+'/rename',{method:'POST',headers:{'X-LibFile':encodeURIComponent(f.name),'X-NewName':encodeURIComponent(newName)}});
+    const res=await fetch(STLLIB_HELPER+'/rename',{method:'POST',headers:{'X-LibFile':encodeURIComponent(f.path),'X-NewName':encodeURIComponent(newName)}});
     const j=await res.json().catch(()=>({}));
-    if(res.ok&&j.ok){ f.name=j.name||newName; f.path=f.name; f._thumbUrl=null; f._thumbDone=false; f._thumbQueued=false; _stlListSig=''; notify('Umbenannt','ok'); _stlRenderGrid(); }
+    if(res.ok&&j.ok){ const np=j.name||newName; const fo=_stlFolder(f.path); f.path = np.includes('/') ? np : (fo?fo+'/'+np:np); f.name=_stlBase(f.path); f._thumbUrl=null; f._thumbDone=false; f._thumbQueued=false; _stlListSig=''; notify('Umbenannt','ok'); _stlRenderGrid(); }
     else { notify('Umbenennen: '+(j.error||('HTTP '+res.status)),'w'); _stlRenderGrid(); }
   }catch(e){ notify('Umbenennen fehlgeschlagen','w'); _stlRenderGrid(); }
 }
@@ -17947,7 +18140,7 @@ document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) _stlMay
 // Bytes einer Datei lesen — aus FS-Handle (Ordnerwahl) ODER vom Helfer (/file)
 async function _stlReadBytes(f){
   if(f.handle){ const file=await f.handle.getFile(); return await file.arrayBuffer(); }
-  const res=await fetch(STLLIB_HELPER+'/file?name='+encodeURIComponent(f.name),{cache:'no-store'});
+  const res=await fetch(STLLIB_HELPER+'/file?name='+encodeURIComponent(f.path),{cache:'no-store'});
   if(!res.ok) throw new Error('Helfer /file '+res.status);
   return await res.arrayBuffer();
 }
@@ -17959,7 +18152,7 @@ async function _stlLoadFromHelper(){
     const j=await res.json();
     _stlSource='helper'; _stlDirHandle=null;
     const files=(j.files||[]);
-    _stlFiles=files.map(f=>({name:f.name, path:f.name, size:f.size, mtime:f.mtime, lib:true}));
+    _stlFiles=files.map(f=>({name:_stlBase(f.name), path:f.name, size:f.size, mtime:f.mtime, lib:true}));
     _stlFiles.sort((a,b)=>b.mtime-a.mtime);
     _stlListSig=files.length+'|'+(files[0]?files[0].name+files[0].mtime:'');
     try{ await _stlIdbSet('kv','source','helper'); }catch(e){}
@@ -18029,8 +18222,14 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.29';
+const VOLME3D_VERSION = '1.15.30';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.30', date:'2026-06-24', changes:[
+    ['🔄','Neue Dreh-Knöpfe in der Leiste (ANORDNEN): „↻ Drehen" dreht das Objekt in 22,5°-Schritten im Uhrzeigersinn (Y-Achse), „⤵ Kippen" kippt es in 22,5°-Schritten um die Querachse. Das Objekt bleibt dabei am Boden UND an seiner Stelle stehen (kein seitliches Wegwandern mehr). Im Eigenschaften-Panel gibt es die 22,5°-Schritte zusätzlich für beide Richtungen (↺/↻) und beide Achsen.'],
+    ['⊕','Neuer Knopf „⊕ Mitte" legt das ausgewählte Objekt mittig auf die Bauplatte (Höhe bleibt). Bei mehreren Objekten wird die gemeinsame Mitte verschoben, die Anordnung bleibt erhalten.'],
+    ['📥','STL-Bibliothek: OBJ- und 3MF-Dateien lassen sich jetzt per „Öffnen" direkt in die Szene laden (vorher nur STL). Reine Slicer-3MF ohne 3D-Modell verweisen weiter auf „Drucken".'],
+    ['📁','STL-Bibliothek behält Unterordner: Der Sammler spiegelt jetzt die Ordnerstruktur aus den Downloads, statt alles flach zu machen — zusammengehörige Teile bleiben zusammen. Die Bibliothek gruppiert nach Ordner (auf-/zuklappbar) und zeigt auf jeder Karte ein Ordner-Etikett. Erfordert das Helfer-Update (Knopf ⬇ in der Bibliothek).'],
+  ]},
   { version:'1.15.29', date:'2026-06-21', changes:[
     ['🧲','Flächen-Snap legt Körper nicht mehr INNEN ins Zielobjekt: Schräg-Flächen (z. B. Pyramidenseiten) hatten teils nach innen zeigende Normalen, wodurch das eingebaute Snap nach innen andockte. Flächen-Normalen werden jetzt konsequent nach außen orientiert → der Körper sitzt auf der Außenseite der (auch schrägen) Fläche.'],
   ]},

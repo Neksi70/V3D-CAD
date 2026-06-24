@@ -93,34 +93,49 @@ function Get-UniquePath($dir, $name) {
     while (Test-Path -LiteralPath (Join-Path $dir ("{0}_{1}{2}" -f $base, $i, $ext))) { $i++ }
     return (Join-Path $dir ("{0}_{1}{2}" -f $base, $i, $ext))
 }
+# Ziel-Pfad im Lib-Ordner, der die Unterordner-Struktur unterhalb des Quell-Roots spiegelt.
+function Get-CollectTarget($dst, $srcRoot, $f) {
+    $srcRoot = $srcRoot.TrimEnd('\')
+    $sub = ''
+    if ($f.DirectoryName.Length -gt $srcRoot.Length -and $f.DirectoryName.Substring(0, $srcRoot.Length).ToLower() -eq $srcRoot.ToLower()) {
+        $sub = $f.DirectoryName.Substring($srcRoot.Length).TrimStart('\')
+    }
+    $tdir = if ($sub) { Join-Path $dst $sub } else { $dst }
+    if (-not (Test-Path -LiteralPath $tdir)) { New-Item -ItemType Directory -Path $tdir -Force | Out-Null }
+    return (Join-Path $tdir $f.Name)
+}
 function Invoke-Collect($move) {
-    $srcs = Get-DownloadCandidates; $dst = Get-LibDir; $copied = 0; $skipped = 0
+    $srcs = Get-DownloadCandidates; $dst = Get-LibDir; $dstLow = $dst.TrimEnd('\').ToLower(); $copied = 0; $skipped = 0
     foreach ($src in $srcs) {
-        $files = Get-ChildItem -LiteralPath $src -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() -and $_.DirectoryName -ne $dst }
+        $files = Get-ChildItem -LiteralPath $src -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() -and -not $_.FullName.ToLower().StartsWith($dstLow) }
         foreach ($f in $files) {
-            $tp = Join-Path $dst $f.Name
             try {
+                $tp = Get-CollectTarget $dst $src $f
                 if ((Test-Path -LiteralPath $tp) -and ((Get-Item -LiteralPath $tp).Length -eq $f.Length)) { if ($move) { try { Remove-Item -LiteralPath $f.FullName -Force } catch {} }; $skipped++; continue }
-                if (Test-Path -LiteralPath $tp) { $tp = Get-UniquePath $dst $f.Name }
+                if (Test-Path -LiteralPath $tp) { $tp = Get-UniquePath (Split-Path -Parent $tp) $f.Name }
                 if ($move) { Move-Item -LiteralPath $f.FullName -Destination $tp -Force } else { Copy-Item -LiteralPath $f.FullName -Destination $tp -Force }
                 $copied++
             } catch {}
         }
     }
-    $count = (Get-ChildItem -LiteralPath $dst -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() }).Count
+    $count = (Get-ChildItem -LiteralPath $dst -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() }).Count
     return [ordered]@{ ok = $true; copied = $copied; skipped = $skipped; dir = $dst; source = ($srcs -join '; '); count = $count }
 }
 function Get-LibList {
-    $d = Get-LibDir; $items = @()
-    Get-ChildItem -LiteralPath $d -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() } | Sort-Object LastWriteTime -Descending | ForEach-Object {
-        $items += [ordered]@{ name = $_.Name; size = $_.Length; mtime = [int64]([DateTimeOffset]$_.LastWriteTime).ToUnixTimeMilliseconds() }
+    $d = Get-LibDir; $items = @(); $baseLen = $d.TrimEnd('\').Length
+    Get-ChildItem -LiteralPath $d -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() } | Sort-Object LastWriteTime -Descending | ForEach-Object {
+        $rel = ($_.FullName.Substring($baseLen).TrimStart('\')) -replace '\\', '/'
+        $items += [ordered]@{ name = $rel; size = $_.Length; mtime = [int64]([DateTimeOffset]$_.LastWriteTime).ToUnixTimeMilliseconds() }
     }
     return $items
 }
 function Hdr($h, $n) { if ($h.ContainsKey($n) -and $h[$n]) { try { return [System.Uri]::UnescapeDataString($h[$n]) } catch { return $h[$n] } } return '' }
+# Nimmt einen relativen Pfad (mit / oder \) und loest ihn sicher unterhalb des Lib-Ordners auf (kein '..').
 function Get-LibFilePath($name) {
     if (-not $name) { return $null }
-    $p = Join-Path (Get-LibDir) (Split-Path -Leaf $name)
+    $parts = ($name -replace '/', '\') -split '\\' | Where-Object { $_ -ne '' -and $_ -ne '.' -and $_ -ne '..' }
+    if ($parts.Count -eq 0) { return $null }
+    $p = Join-Path (Get-LibDir) ($parts -join '\')
     if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
     return $null
 }
@@ -173,19 +188,20 @@ function Stream-Collect($stream, $origin, $move) {
     foreach ($k in $cors.Keys) { [void]$sb.Append("$k`: $($cors[$k])`r`n") }
     [void]$sb.Append("`r`n")
     $h = [System.Text.Encoding]::ASCII.GetBytes($sb.ToString()); $stream.Write($h, 0, $h.Length); $stream.Flush()
-    $srcs = Get-DownloadCandidates; $dst = Get-LibDir
-    $all = @()
-    foreach ($src in $srcs) { $all += Get-ChildItem -LiteralPath $src -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() -and $_.DirectoryName -ne $dst } }
-    $total = $all.Count; $copied = 0; $skipped = 0; $i = 0
-    foreach ($f in $all) {
-        $i++; $tp = Join-Path $dst $f.Name
+    $srcs = Get-DownloadCandidates; $dst = Get-LibDir; $dstLow = $dst.TrimEnd('\').ToLower()
+    $pairs = @()
+    foreach ($src in $srcs) { Get-ChildItem -LiteralPath $src -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() -and -not $_.FullName.ToLower().StartsWith($dstLow) } | ForEach-Object { $pairs += [pscustomobject]@{ f = $_; src = $src } } }
+    $total = $pairs.Count; $copied = 0; $skipped = 0; $i = 0
+    foreach ($pair in $pairs) {
+        $f = $pair.f; $i++
         try {
+            $tp = Get-CollectTarget $dst $pair.src $f
             if ((Test-Path -LiteralPath $tp) -and ((Get-Item -LiteralPath $tp).Length -eq $f.Length)) { if ($move) { try { Remove-Item -LiteralPath $f.FullName -Force } catch {} }; $skipped++ }
-            else { if (Test-Path -LiteralPath $tp) { $tp = Get-UniquePath $dst $f.Name }; if ($move) { Move-Item -LiteralPath $f.FullName -Destination $tp -Force } else { Copy-Item -LiteralPath $f.FullName -Destination $tp -Force }; $copied++ }
+            else { if (Test-Path -LiteralPath $tp) { $tp = Get-UniquePath (Split-Path -Parent $tp) $f.Name }; if ($move) { Move-Item -LiteralPath $f.FullName -Destination $tp -Force } else { Copy-Item -LiteralPath $f.FullName -Destination $tp -Force }; $copied++ }
         } catch {}
         Write-Line $stream (@{ i = $i; n = $total; name = $f.Name } | ConvertTo-Json -Compress)
     }
-    $count = (Get-ChildItem -LiteralPath $dst -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() }).Count
+    $count = (Get-ChildItem -LiteralPath $dst -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() }).Count
     Write-Line $stream (([ordered]@{ done = $true; ok = $true; copied = $copied; skipped = $skipped; dir = $dst; source = ($srcs -join '; '); count = $count }) | ConvertTo-Json -Compress)
 }
 function Handle-Client($client) {
@@ -200,7 +216,7 @@ function Handle-Client($client) {
     for ($i = 1; $i -lt $lines.Count; $i++) { $ln = $lines[$i]; $idx = $ln.IndexOf(':'); if ($idx -gt 0) { $headers[$ln.Substring(0, $idx).Trim().ToLower()] = $ln.Substring($idx + 1).Trim() } }
     $origin = $headers['origin']; $cors = New-Cors $origin
     if ($method -eq 'OPTIONS') { Send-Bytes $stream '204 No Content' $cors 'text/plain' (New-Object byte[] 0); return }
-    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 6; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir) }) $origin; return }
+    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 7; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir) }) $origin; return }
     if ($method -eq 'GET' -and $path -eq '/list') {
         if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = 'origin not allowed' }) $origin; return }
         Send-Json $stream '200 OK' ([ordered]@{ ok = $true; dir = (Get-LibDir); files = @(Get-LibList) }) $origin; return
@@ -223,9 +239,15 @@ function Handle-Client($client) {
         }
         $new = Split-Path -Leaf (Hdr $headers 'x-newname')
         if (-not $new) { Send-Json $stream '400 Bad Request' (@{ ok = $false; error = 'kein Name' }) $origin; return }
-        $dst = Join-Path (Get-LibDir) $new
+        $parent = Split-Path -Parent $fp
+        $dst = Join-Path $parent $new
         if (Test-Path -LiteralPath $dst) { Send-Json $stream '409 Conflict' (@{ ok = $false; error = 'Name existiert bereits' }) $origin; return }
-        try { Rename-Item -LiteralPath $fp -NewName $new; Send-Json $stream '200 OK' (@{ ok = $true; name = $new }) $origin }
+        try {
+            Rename-Item -LiteralPath $fp -NewName $new
+            $baseLen = (Get-LibDir).TrimEnd('\').Length
+            $rel = ($dst.Substring($baseLen).TrimStart('\')) -replace '\\', '/'
+            Send-Json $stream '200 OK' (@{ ok = $true; name = $rel }) $origin
+        }
         catch { Send-Json $stream '500 Error' (@{ ok = $false; error = "$_" }) $origin }
         return
     }
