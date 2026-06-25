@@ -15377,6 +15377,32 @@ function _gardenaPlugProfile(tol){
   const pts=_GARD_PLUG.map(p=>({ y:p.y, r:p.grip ? p.r+tol : p.r }));
   return { pts, topY:_GARD_PLUG[_GARD_PLUG.length-1].y };
 }
+// Volle Original-Silhouette aus gardena.stl (z0..36.8, 0,8 mm). Gewindebasis Ø20,6 →
+// Ø9,6-Hals → Flansch → Konus → Ringe → Klick-Kopf. Für getreues 1:1-Hahnstück.
+const _GARD_ORIG=[
+  {y:0.0,r:10.30},{y:0.8,r:10.31},{y:1.6,r:10.30},{y:2.4,r:10.31},{y:3.2,r:10.31},
+  {y:4.0,r:10.31},{y:4.8,r:10.30},{y:5.6,r:10.30},{y:6.4,r:10.31},{y:7.2,r:10.30},
+  {y:8.0,r:10.31},{y:8.8,r:10.30},{y:9.6,r:10.31},{y:10.4,r:10.43},{y:11.2,r:5.69},
+  {y:12.0,r:4.81},{y:12.8,r:4.81},{y:13.6,r:4.81},{y:14.4,r:4.81},{y:15.2,r:4.81},
+  {y:16.0,r:4.81},{y:16.8,r:4.81},{y:17.6,r:10.45},{y:18.4,r:8.11},{y:19.2,r:7.42},
+  {y:20.0,r:7.08},{y:20.8,r:4.81},{y:21.6,r:4.81},{y:22.4,r:4.81},{y:23.2,r:4.81},
+  {y:24.0,r:4.81},{y:24.8,r:4.81},{y:25.6,r:7.10},{y:26.4,r:7.75},{y:27.2,r:8.56},
+  {y:28.0,r:8.56},{y:28.8,r:7.91},{y:29.6,r:4.81},{y:30.4,r:4.81},{y:31.2,r:7.33},
+  {y:32.0,r:5.78},{y:32.8,r:5.76},{y:33.6,r:6.17},{y:34.4,r:7.96},{y:35.2,r:7.94},
+  {y:36.0,r:7.61},{y:36.8,r:6.83},
+];
+// Getreue Revolution der Original-Kontur + gerade Bohrung Ø7,9 (Innengewinde verborgen,
+// kommt optional später). Achsensymmetrisch → Riffel/Stützrippen noch nicht abgebildet.
+function _buildGardenaOriginal(){
+  const P=_GARD_ORIG, topY=P[P.length-1].y, rb=(7.9/10)/2;
+  const outerR=(yU)=>{ const y=yU*10;
+    if(y<=P[0].y) return P[0].r/10;
+    if(y>=topY) return P[P.length-1].r/10;
+    for(let i=1;i<P.length;i++){ if(P[i].y>=y){ const a=P[i-1],b=P[i],t=(y-a.y)/(b.y-a.y); return (a.r+(b.r-a.r)*t)/10; } }
+    return P[P.length-1].r/10;
+  };
+  return _threadBodyGeo(outerR, ()=>rb, topY/10, 96, 260);
+}
 // Schlauch-Tülle mit Widerhaken (steile Schulter zeigt zur Spitze → hält gegen Abziehen).
 function _gardenaBarbProfile(hoseID, lengthMM){
   const maxR=(hoseID+1.6)/2, minR=Math.max(1.0,(hoseID-0.6)/2), bundR=maxR+1.6;
@@ -15437,16 +15463,14 @@ function _buildGardenaGeometry(p){
     const tB=_gardenaThreadTail(B,'aussen',p.tailLen,p.clearance); tB.geo.translate(0,tA.h+(flH/10)-0.05,0); parts.push(tB.geo);
     const g=_mergePos(parts.map(_posOnly)); g.computeVertexNormals(); return g;
   }
-  // Sonst: Tail unten + Kopf oben (Kopf = Stecker oder Buchse)
-  let tailH, tailOutMM;
+  // HAHNSTÜCK: getreue 1:1-Original-Silhouette (vermessen aus gardena.stl)
   if(p.type==='hahn'){
-    const t=_gardenaThreadTail(G_THREAD[p.thread], p.threadMode, p.tailLen, p.clearance);
-    parts.push(t.geo); tailH=t.h; tailOutMM=t.outMM;
-  } else { // schlauch ODER buchse → Widerhaken-Tülle
-    const bp=_gardenaBarbProfile(parseFloat(p.hose), p.tailLen);
-    parts.push(_gardenaRevolve(bp.pts, bore));
-    tailH=bp.topY/10; tailOutMM=(parseFloat(p.hose)+1.6)+3.2;
+    const g=_buildGardenaOriginal(); g.computeVertexNormals(); return g;
   }
+  // Sonst (schlauch/buchse): Widerhaken-Tülle unten + Kopf oben (Stecker oder Buchse)
+  const bp=_gardenaBarbProfile(parseFloat(p.hose), p.tailLen);
+  parts.push(_gardenaRevolve(bp.pts, bore));
+  const tailH=bp.topY/10, tailOutMM=(parseFloat(p.hose)+1.6)+3.2;
   const headBaseR = p.type==='buchse' ? GARDENA.sockOuterD/2 : _GARD_PLUG[0].r;   // mm
   const bodyR = tailOutMM/2;
   const shHm = Math.min(10, Math.max(3, bodyR-headBaseR));   // konischer Übergang Körper→Kopf
