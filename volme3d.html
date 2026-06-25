@@ -2177,12 +2177,21 @@ const firebaseConfig = {
           <button class="vtb on" data-v="hahn"     onclick="_gardSetType('hahn')">Hahnstück</button>
           <button class="vtb"    data-v="schlauch" onclick="_gardSetType('schlauch')">Schlauchstück</button>
           <button class="vtb"    data-v="kupplung" onclick="_gardSetType('kupplung')">Kupplung</button>
+          <button class="vtb"    data-v="buchse"   onclick="_gardSetType('buchse')">Klick-Buchse</button>
+          <button class="vtb"    data-v="adapter"  onclick="_gardSetType('adapter')">Adapter (Reduzierung)</button>
         </div>
-        <div id="gard-thread-row"><span class="vsec">Gewindegröße</span>
+        <div id="gard-thread-row"><span class="vsec" id="gard-thread-lbl">Gewindegröße</span>
           <div class="vbg" id="gbg-thread">
             <button class="vtb"    data-v="G1/2" onclick="_gardSet('thread','G1/2');_gardSyncUI()">G½"</button>
             <button class="vtb on" data-v="G3/4" onclick="_gardSet('thread','G3/4');_gardSyncUI()">G¾"</button>
             <button class="vtb"    data-v="G1"   onclick="_gardSet('thread','G1');_gardSyncUI()">G1"</button>
+          </div>
+        </div>
+        <div id="gard-thread2-row" style="display:none"><span class="vsec">Auf Gewinde (Außen)</span>
+          <div class="vbg" id="gbg-thread2">
+            <button class="vtb"    data-v="G1/2" onclick="_gardSet('thread2','G1/2');_gardSyncUI()">G½"</button>
+            <button class="vtb"    data-v="G3/4" onclick="_gardSet('thread2','G3/4');_gardSyncUI()">G¾"</button>
+            <button class="vtb on" data-v="G1"   onclick="_gardSet('thread2','G1');_gardSyncUI()">G1"</button>
           </div>
         </div>
         <div id="gard-mode-row"><span class="vsec">Gewinde-Art</span>
@@ -15271,19 +15280,25 @@ function _createScrew(){
 // Alle Teile: Achse Y, 1 Unit = 10 mm, wasserdicht, OHNE CSG (reine Mesh-Gitter).
 // Maße sind dokumentierte START-Werte zum Kalibrieren — Toleranz-Slider feinjustiert
 // den Klick-Stecker am gedruckten Teil. Gardena-Klick-Profil + BSPP-(G-)Gewinde.
+// Maße abgeglichen mit vermessenen Open-Source-Umsetzungen:
+//   UB.scad Gardena() (UBaer21) — Buchse: Bohrung ir=4.5→Ø9, Dichtsitz R8→Ø16,
+//   Mündung Ø19.8, O-Ring-Nut bei 20.5; RocketFins gardena.scad — G¾"/G1"-Düse.
 const GARDENA = {
-  boreD:9.0,                 // durchgehender Wasserkanal
+  boreD:9.0,                 // durchgehender Wasserkanal (UB.scad ir=4.5) — bestätigt
+  // Stecker (male) — passt in die Ø16-Buchse mit O-Ring:
   collarD:15.4, collarH:2.6, // Bund/Schulter (Verriegelung hält dahinter)
-  sealD:12.2, sealLen:6.0,   // Dichtfläche (O-Ring der Kupplung dichtet hier)
-  grooveD:10.4, grooveLen:2.6, grooveLand:3.0,  // Rastnut
-  tipD:11.0, leadLen:2.2,    // Spitze + Einführschräge
+  sealD:13.4, sealLen:6.0,   // Dichtnase (dichtet am Buchsen-O-Ring, Sitz Ø16)
+  grooveD:11.0, grooveLen:2.6, grooveLand:2.6,  // Rastnut (Buchsen-Wulst greift ein)
+  tipD:12.0, leadLen:2.5,    // Spitze + Einführschräge
+  // Buchse (female) — Profil aus UB.scad Gardena():
+  sockH:19.0, sockOuterD:22.0, sockSealD:16.0, sockMouthD:19.8, sockRidgeD:12.6,
 };
 const G_THREAD = {  // BSPP (G), Außen-Ø + Steigung
   'G1/2':{ major:20.955, pitch:1.814, label:'G½"' },
   'G3/4':{ major:26.441, pitch:1.814, label:'G¾"' },
   'G1':  { major:33.249, pitch:2.309, label:'G1"'  },
 };
-let _gardP = { type:'hahn', thread:'G3/4', threadMode:'innen', hose:'13', tol:0.0, clearance:0.4, tailLen:16 };
+let _gardP = { type:'hahn', thread:'G3/4', threadMode:'innen', thread2:'G1', hose:'13', tol:0.0, clearance:0.4, tailLen:16 };
 let _gardRenderer=null,_gardScene=null,_gardCamera=null,_gardGroup=null,_gardAnimId=null,_gardRebuildT=null;
 
 // Wasserdichter Rotationskörper aus Außenprofil {y,r}[] (mm, unten→oben) + gerader Bohrung.
@@ -15356,43 +15371,70 @@ function _gardenaBarbProfile(hoseID, lengthMM){
   const yt=y+n*barbH; pts.push({y:yt,r:minR}); pts.push({y:yt+1.4,r:Math.max(0.9,(hoseID-1.4)/2)}); // Einführspitze
   return { pts, topY:yt+1.4 };
 }
-// Komplette Gardena-Geometrie zusammensetzen (Tülle/Gewinde unten, Klick-Stecker oben).
+// Klick-Buchse (female): Tube mit variabler Innenwand — Profil aus UB.scad Gardena().
+// Mündung(Ø19.8)→Dichtsitz(Ø16, O-Ring-Nut)→Schnapp-Wulst→Trichter→Bohrung(Ø9). Basis y=0.
+// Hinweis: echtes Gardena hat eine Schiebehülse mit Feder — diese gedruckte Variante
+// rastet über den toleranzbaren Innen-Wulst + Materialflex (am besten PETG/TPU drucken).
+function _gardenaSocketInnerR(y){ // y in mm ab Basis
+  const G=GARDENA, top=G.sockH, rSeal=G.sockSealD/2, rMouth=G.sockMouthD/2, rRidge=G.sockRidgeD/2, rb=G.boreD/2;
+  if(y<=3) return rb;                                              // Bohrung Ø9
+  if(y<=5) return rb+(rSeal-rb)*(y-3)/2;                           // Trichter → Ø16
+  if(y<=8){ let r=rSeal; const d=Math.abs(y-6.5); if(d<0.9) r=rSeal-(rSeal-rRidge)*(1-d/0.9); return r; } // Schnapp-Wulst
+  if(y<=top-3){ let r=rSeal; const d=Math.abs(y-12); if(d<1.2) r=rSeal+0.6*(1-d/1.2); return r; }          // Dichtsitz + O-Ring-Nut
+  return rSeal+(rMouth-rSeal)*(y-(top-3))/3;                       // Mündungs-Fase Ø19.8
+}
+function _buildGardenaSocket(){
+  const hU=GARDENA.sockH/10, oR=(GARDENA.sockOuterD/10)/2;
+  return _threadBodyGeo(()=>oR, (yU)=>Math.max(0.3,_gardenaSocketInnerR(yU*10)/10), hU, 72, 130);
+}
+// Gewinde-Tail (Hahn/Adapter): {geo, h:Unit-Höhe, outMM}. mode='innen'|'aussen'.
+function _gardenaThreadTail(th, mode, lenMM, clearance){
+  const hU=lenMM/10, turns=hU/(th.pitch/10), nH=Math.max(28,Math.ceil(turns*8)+1), rbU=(GARDENA.boreD/10)/2;
+  if(mode==='aussen'){
+    const outer=_gThreadProfile(th.major,th.pitch,hU,false);
+    return { geo:_threadBodyGeo(outer,()=>rbU,hU,48,nH), h:hU, outMM:th.major };
+  }
+  const wall=3.0, outR=((th.major+2*wall)/10)/2;
+  const inner=_gThreadProfile(th.major+clearance,th.pitch,hU,false);
+  return { geo:_threadBodyGeo(()=>outR,inner,hU,48,nH), h:hU, outMM:th.major+2*wall };
+}
+// Komplette Gardena-Geometrie zusammensetzen.
 function _buildGardenaGeometry(p){
-  const bore=GARDENA.boreD, rbU=(bore/10)/2, parts=[], shH=3.0;
+  const bore=GARDENA.boreD, parts=[], shH=3.0;
+  // KUPPLUNG: Stecker ↔ Stecker
   if(p.type==='kupplung'){
     const gripR=(GARDENA.collarD+4)/2, gripH=8.0;
     parts.push(_gardenaRevolve([{y:0,r:gripR},{y:gripH,r:gripR}], bore));   // Greifkörper
     const pl=_gardenaPlugProfile(p.tol);
-    const up=_gardenaRevolve(pl.pts, bore);   up.translate(0,(gripH/10)-0.05,0);            // Stecker oben
-    const dn=_gardenaRevolve(pl.pts, bore);   dn.scale(1,-1,1); dn.translate(0,0.05,0);     // Stecker unten (gespiegelt)
+    const up=_gardenaRevolve(pl.pts, bore);   up.translate(0,(gripH/10)-0.05,0);
+    const dn=_gardenaRevolve(pl.pts, bore);   dn.scale(1,-1,1); dn.translate(0,0.05,0);
     parts.push(up, dn);
-  } else {
-    let tailH, tailOutMM;
-    if(p.type==='hahn'){
-      const th=G_THREAD[p.thread], hU=p.tailLen/10, turns=hU/(th.pitch/10);
-      const nH=Math.max(28,Math.ceil(turns*8)+1);
-      if(p.threadMode==='aussen'){
-        const outer=_gThreadProfile(th.major,th.pitch,hU,false);
-        parts.push(_threadBodyGeo(outer,()=>rbU,hU,48,nH));
-        tailOutMM=th.major;
-      } else {
-        const wall=3.0, outR=((th.major+2*wall)/10)/2;
-        const inner=_gThreadProfile(th.major+p.clearance,th.pitch,hU,false);
-        parts.push(_threadBodyGeo(()=>outR,inner,hU,48,nH));
-        tailOutMM=th.major+2*wall;
-      }
-      tailH=hU;
-    } else { // schlauch
-      const bp=_gardenaBarbProfile(parseFloat(p.hose), p.tailLen);
-      parts.push(_gardenaRevolve(bp.pts, bore));
-      tailH=bp.topY/10; tailOutMM=(parseFloat(p.hose)+1.6)+3.2;
-    }
-    const shOutMM=Math.max(tailOutMM/2, GARDENA.collarD/2+2);
-    const sh=_gardenaRevolve([{y:0,r:shOutMM},{y:shH,r:shOutMM}], bore); sh.translate(0,tailH-0.05,0);  // Schulter
-    const pl=_gardenaPlugProfile(p.tol);
-    const plug=_gardenaRevolve(pl.pts, bore); plug.translate(0,tailH+(shH/10)-0.05,0);                   // Stecker
-    parts.push(sh, plug);
+    const g=_mergePos(parts.map(_posOnly)); g.computeVertexNormals(); return g;
   }
+  // ADAPTER / REDUZIERSTÜCK: unten Innengewinde (thread) ↔ oben Außengewinde (thread2)
+  if(p.type==='adapter'){
+    const A=G_THREAD[p.thread], B=G_THREAD[p.thread2];
+    const tA=_gardenaThreadTail(A,'innen',p.tailLen,p.clearance); parts.push(tA.geo);
+    const flR=Math.max(tA.outMM,B.major)/2+2, flH=4.0;
+    const fl=_gardenaRevolve([{y:0,r:flR},{y:flH,r:flR}], bore); fl.translate(0,tA.h-0.05,0); parts.push(fl);
+    const tB=_gardenaThreadTail(B,'aussen',p.tailLen,p.clearance); tB.geo.translate(0,tA.h+(flH/10)-0.05,0); parts.push(tB.geo);
+    const g=_mergePos(parts.map(_posOnly)); g.computeVertexNormals(); return g;
+  }
+  // Sonst: Tail unten + Kopf oben (Kopf = Stecker oder Buchse)
+  let tailH, tailOutMM;
+  if(p.type==='hahn'){
+    const t=_gardenaThreadTail(G_THREAD[p.thread], p.threadMode, p.tailLen, p.clearance);
+    parts.push(t.geo); tailH=t.h; tailOutMM=t.outMM;
+  } else { // schlauch ODER buchse → Widerhaken-Tülle
+    const bp=_gardenaBarbProfile(parseFloat(p.hose), p.tailLen);
+    parts.push(_gardenaRevolve(bp.pts, bore));
+    tailH=bp.topY/10; tailOutMM=(parseFloat(p.hose)+1.6)+3.2;
+  }
+  const headOutMM = p.type==='buchse' ? GARDENA.sockOuterD : GARDENA.collarD;
+  const shOutMM=Math.max(tailOutMM/2, headOutMM/2);
+  const sh=_gardenaRevolve([{y:0,r:shOutMM},{y:shH,r:shOutMM}], bore); sh.translate(0,tailH-0.05,0);  // Schulter
+  const head = p.type==='buchse' ? _buildGardenaSocket() : _gardenaRevolve(_gardenaPlugProfile(p.tol).pts, bore);
+  head.translate(0,tailH+(shH/10)-0.05,0); parts.push(sh, head);
   const g=_mergePos(parts.map(_posOnly)); g.computeVertexNormals(); return g;
 }
 function _openGardenaModal(){
@@ -15406,26 +15448,29 @@ function _closeGardenaModal(){
 }
 function _gardRowVis(t){
   const set=(id,show)=>{const e=document.getElementById(id); if(e)e.style.display=show?'flex':'none';};
-  set('gard-thread-row', t==='hahn');
-  set('gard-mode-row',   t==='hahn');
-  set('gard-hose-row',   t==='schlauch');
-  set('gard-clear-row',  t==='hahn' && _gardP.threadMode==='innen');
-  set('gard-tail-row',   t!=='kupplung');
+  const hasThread = t==='hahn'||t==='adapter';
+  set('gard-thread-row',  hasThread);
+  set('gard-thread2-row', t==='adapter');
+  set('gard-mode-row',    t==='hahn');
+  set('gard-hose-row',    t==='schlauch'||t==='buchse');
+  set('gard-clear-row',   t==='adapter' || (t==='hahn' && _gardP.threadMode==='innen'));
+  set('gard-tail-row',    t!=='kupplung');
+  set('gard-tol-row',     t!=='adapter');  // Adapter hat keinen Klick-Stecker
+  const lbl=document.getElementById('gard-thread-lbl'); if(lbl) lbl.textContent = t==='adapter' ? 'Von Gewinde (Innen)' : 'Gewindegröße';
 }
 function _gardSetType(t){ _gardP.type=t;
   document.querySelectorAll('#gbg-type .vtb').forEach(b=>b.classList.toggle('on', b.getAttribute('data-v')===t));
   _gardRowVis(t); _gardUpdateMesh();
 }
 function _gardSet(key,val){
-  if(key==='thread'||key==='hose'||key==='threadMode') _gardP[key]=val; else _gardP[key]=parseFloat(val);
+  if(key==='thread'||key==='thread2'||key==='hose'||key==='threadMode') _gardP[key]=val; else _gardP[key]=parseFloat(val);
   if(key==='threadMode') _gardRowVis(_gardP.type);
   if(_gardRebuildT)clearTimeout(_gardRebuildT); _gardRebuildT=setTimeout(()=>{_gardRebuildT=null;_gardUpdateMesh();},90);
 }
 function _gardSyncUI(){
-  document.querySelectorAll('#gbg-type .vtb').forEach(b=>b.classList.toggle('on', b.getAttribute('data-v')===_gardP.type));
-  document.querySelectorAll('#gbg-thread .vtb').forEach(b=>b.classList.toggle('on', b.getAttribute('data-v')===_gardP.thread));
-  document.querySelectorAll('#gbg-mode .vtb').forEach(b=>b.classList.toggle('on', b.getAttribute('data-v')===_gardP.threadMode));
-  document.querySelectorAll('#gbg-hose .vtb').forEach(b=>b.classList.toggle('on', b.getAttribute('data-v')===_gardP.hose));
+  const tog=(sel,v)=>document.querySelectorAll(sel).forEach(b=>b.classList.toggle('on', b.getAttribute('data-v')===v));
+  tog('#gbg-type .vtb',_gardP.type); tog('#gbg-thread .vtb',_gardP.thread); tog('#gbg-thread2 .vtb',_gardP.thread2);
+  tog('#gbg-mode .vtb',_gardP.threadMode); tog('#gbg-hose .vtb',_gardP.hose);
   const setv=(id,vid,v)=>{const x=document.getElementById(id),y=document.getElementById(vid); if(x)x.value=v; if(y)y.textContent=v;};
   setv('gp-tol','gv-tol',_gardP.tol); setv('gp-clear','gv-clear',_gardP.clearance); setv('gp-tail','gv-tail',_gardP.tailLen);
   _gardRowVis(_gardP.type);
@@ -15465,10 +15510,14 @@ function _gardSyncInfo(){
       + (p.threadMode==='innen'?` · Spiel ${p.clearance} mm`:'');
   } else if(p.type==='schlauch'){
     t=`<b>Schlauchstück</b> · Tülle für ${p.hose} mm Schlauch<br>Klick-Stecker · Tülle ${p.tailLen} mm`;
-  } else {
+  } else if(p.type==='kupplung'){
     t=`<b>Schlauchkupplung</b> · Klick ↔ Klick<br>verbindet zwei Geräte/Schläuche`;
+  } else if(p.type==='buchse'){
+    t=`<b>Klick-Buchse</b> (Kupplungs-Gegenstück) · für ${p.hose} mm Schlauch<br>Dichtsitz Ø16 · Mündung Ø19,8 · Bohrung Ø9 (UB.scad)<br><b>Hinweis:</b> O-Ring einlegen, am besten PETG/TPU drucken`;
+  } else { // adapter
+    t=`<b>Adapter / Reduzierstück</b><br>${G_THREAD[p.thread].label} Innengewinde → ${G_THREAD[p.thread2].label} Außengewinde<br>je ${p.tailLen} mm · Spiel ${p.clearance} mm`;
   }
-  t+=`<br>Toleranz Stecker ${p.tol>0?'+':''}${p.tol} mm — am Druck kalibrieren`;
+  if(p.type!=='adapter') t+=`<br>Toleranz Stecker ${p.tol>0?'+':''}${p.tol} mm — am Druck kalibrieren`;
   _gardInfo(t);
 }
 function _createGardena(){
@@ -15483,11 +15532,13 @@ function _createGardena(){
   mesh.position.copy(workplanePoint);
   const label = p.type==='hahn' ? `Hahnstück ${G_THREAD[p.thread].label} ${p.threadMode==='innen'?'IG':'AG'}`
     : p.type==='schlauch' ? `Schlauchstück ${p.hose}mm`
+    : p.type==='buchse' ? `Klick-Buchse ${p.hose}mm`
+    : p.type==='adapter' ? `Adapter ${G_THREAD[p.thread].label}→${G_THREAD[p.thread2].label}`
     : `Schlauchkupplung`;
   typeCounts['gardena']=(typeCounts['gardena']||0)+1;
   mesh.userData={id:idCtr++,type:'gardena',shapeType:'gardena',name:label+' #'+typeCounts['gardena'],
     color,isHole:false,fillet:0,chamfer:0,
-    gardType:p.type,gardThread:p.thread,gardMode:p.threadMode,gardHose:p.hose,gardTol:p.tol,gardClear:p.clearance,gardTail:p.tailLen,
+    gardType:p.type,gardThread:p.thread,gardThread2:p.thread2,gardMode:p.threadMode,gardHose:p.hose,gardTol:p.tol,gardClear:p.clearance,gardTail:p.tailLen,
     displacementPattern:'keine',displacementAmp:0.5,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
   scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
   selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
@@ -18196,7 +18247,7 @@ function _createLaserBox(){
 
 // ===== STL-BIBLIOTHEK =====
 const STLLIB_HELPER = 'http://127.0.0.1:7777';
-const STLLIB_HELPER_LATEST = 7;   // aktuelle Helfer-Version; ältere -> Update-Knopf
+const STLLIB_HELPER_LATEST = 8;   // aktuelle Helfer-Version; ältere -> Update-Knopf
 let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0, _stlThumbObs=null, _stlThumbPending=[], _stlThumbBusy=false, _stlPollTimer=null, _stlListSig='';
 let _stlSort='date_desc', _stlFavOnly=false, _stlFav=new Set(), _stlSel=new Set(), _stlCollapsed=new Set();
 const _stlCanPickDir = !!window.showDirectoryPicker;   // File System Access API: nur Chrome/Edge (nicht Firefox/Safari)
@@ -18672,8 +18723,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.30';
+const VOLME3D_VERSION = '1.15.31';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.31', date:'2026-06-25', changes:[
+    ['🖨️','STL-Bibliothek erkennt „Snapmaker Orca" jetzt zuverlässig: Der Druck-Helfer findet den Slicer auch, wenn er in einem abweichend benannten Ordner (Version/Suffix) installiert ist — die Ordnersuche versteht jetzt Platzhalter. Erfordert das Helfer-Update (Knopf ⬇ in der Bibliothek).'],
+  ]},
   { version:'1.15.30', date:'2026-06-24', changes:[
     ['🔄','Neue Dreh-Knöpfe in der Leiste (ANORDNEN): „↻ Drehen" dreht das Objekt in 22,5°-Schritten im Uhrzeigersinn (Y-Achse), „⤵ Kippen" kippt es in 22,5°-Schritten um die Querachse. Das Objekt bleibt dabei am Boden UND an seiner Stelle stehen (kein seitliches Wegwandern mehr). Im Eigenschaften-Panel gibt es die 22,5°-Schritte zusätzlich für beide Richtungen (↺/↻) und beide Achsen.'],
     ['⊕','Neuer Knopf „⊕ Mitte" legt das ausgewählte Objekt mittig auf die Bauplatte (Höhe bleibt). Bei mehreren Objekten wird die gemeinsame Mitte verschoben, die Anordnung bleibt erhalten.'],
