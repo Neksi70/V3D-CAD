@@ -6071,12 +6071,53 @@ function buildTubeGeo(ri, segs) {
   return g;
 }
 
+// Rotationskörper aus geschlossenem r/y-Profil mit AUTOMATISCHER Kantenerkennung:
+// Profil-Ecken mit Knickwinkel über der Schwelle werden HART (Vertices verdoppelt →
+// scharfe Kante/echte Fase), tangentiale Übergänge (Rundungen) bleiben GLATT. Rundum
+// (Umfang) wird der Naht-Übergang geschweißt → keine sichtbare Naht. r=0-Punkte bilden
+// Mittel-/Bodenkappen. prof = Array<THREE.Vector2(r,y)> als geschlossene Schleife
+// (letzter Punkt verbindet zum ersten; KEIN Duplikat des Startpunkts anhängen).
+function _revolveProfileSharp(prof, segs, threshDeg) {
+  segs = Math.max(3, Math.round(segs) || 32);
+  const M = prof.length;
+  const cosT = Math.cos((threshDeg != null ? threshDeg : 30) * Math.PI / 180);
+  const dir = (a, b) => { const dx = prof[b].x - prof[a].x, dy = prof[b].y - prof[a].y;
+    const l = Math.hypot(dx, dy) || 1; return [dx / l, dy / l]; };
+  // Pro Profilpunkt eine eingehende + ausgehende Zeile; bei hartem Knick verdoppeln.
+  const incRow = new Array(M), outRow = new Array(M), rows = [];
+  for (let i = 0; i < M; i++) {
+    const di = dir((i - 1 + M) % M, i), dou = dir(i, (i + 1) % M);
+    const hard = (di[0] * dou[0] + di[1] * dou[1]) < cosT;
+    incRow[i] = rows.push(prof[i]) - 1;
+    outRow[i] = hard ? (rows.push(prof[i]) - 1) : incRow[i];
+  }
+  // Vertices: rows × segs (Naht geschweißt: Spalte segs == Spalte 0)
+  const pos = [];
+  for (const rw of rows) for (let j = 0; j < segs; j++) {
+    const a = (j / segs) * Math.PI * 2;
+    pos.push(rw.x * Math.cos(a), rw.y, rw.x * Math.sin(a));
+  }
+  const idx = [], vid = (row, j) => row * segs + j;
+  for (let i = 0; i < M; i++) {
+    const rA = outRow[i], rB = incRow[(i + 1) % M];   // Segment i → i+1
+    for (let j = 0; j < segs; j++) {
+      const j1 = (j + 1) % segs;
+      const a0 = vid(rA, j), a1 = vid(rA, j1), b0 = vid(rB, j), b1 = vid(rB, j1);
+      idx.push(a0, b0, b1, a0, b1, a1);   // CCW-Profil → Normalen nach außen
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
 // Rundes Rohr mit pro Kante (oben/unten) frei wählbarer gerundeter (Radius) bzw. gefaster
-// (Abschrägung) AUßEN-Kante. Profil (r,y) wird per LatheGeometry um die y-Achse rotiert
-// (wie buildRoundedCylinder, aber hohl). bev = {topRound,topChamfer,botRound,botChamfer} in mm.
+// (Abschrägung) AUßEN-Kante. bev = {topRound,topChamfer,botRound,botChamfer} in mm.
 // floorY=null → offenes Rohr, sonst Becher mit Boden bei floorY. Die mm-Bevelgröße wird über
 // die Weltskalierung in Geometrie-Einheiten umgerechnet und auf Wandstärke und halbe Höhe
-// begrenzt, damit die Kante rund bleibt und die Wand nicht durchschnitten wird.
+// begrenzt. Der Profil-Revolve setzt scharfe Kanten an Fasen/Innenring, glatte an Rundungen.
 function buildTubeGeoRounded(ri, segs, bev, scaleX, scaleY, floorY) {
   segs = Math.max(3, Math.round(segs) || 32);
   ri = Math.max(0.05, Math.min(0.95, ri));
@@ -6094,35 +6135,37 @@ function buildTubeGeoRounded(ri, segs, bev, scaleX, scaleY, floorY) {
   if (T.m <= 0 && B.m <= 0)   // keine Fase → normale Rohr-Bauweise
     return (floorY != null) ? buildTubeGeoEx(ri, segs, 0, 1, 0, floorY, false)
                             : buildTubeGeo(ri, segs);
-  const steps = Math.max(2, Math.min(12, Math.round(segs / 6)));
-  const pts = [];
-  const V = (r, y) => pts.push(new THREE.Vector2(r, y));
-  // Außenwand unten → oben (CCW im r/y-Profil → Normalen nach außen)
-  V(1, -1 + B.fy);
-  V(1,  1 - T.fy);
-  if (T.m > 0) {              // obere Außenkante
+  const steps = Math.max(3, Math.min(16, Math.round(segs / 4)));   // Bögen-Auflösung
+  const prof = [];
+  const P = (r, y) => prof.push(new THREE.Vector2(r, y));
+  P(1, -1 + B.fy);            // Außenwand unten (= Schließpunkt) → oben (CCW → Normale außen)
+  P(1,  1 - T.fy);
+  if (T.m > 0) {             // obere Außenkante: Rundung (Bogen) oder Fase (gerade)
     if (T.fil) { for (let i = 1; i <= steps; i++) { const a = (i / steps) * (Math.PI / 2);
-      V(1 - T.fr + T.fr * Math.cos(a), 1 - T.fy + T.fy * Math.sin(a)); } }
-    else V(1 - T.fr, 1);
+      P(1 - T.fr + T.fr * Math.cos(a), 1 - T.fy + T.fy * Math.sin(a)); } }
+    else P(1 - T.fr, 1);
   }
-  V(ri, 1);                  // Deckelring nach innen
+  P(ri, 1);                  // Deckelring nach innen
   if (floorY != null) {
-    V(ri, floorY);           // Innenwand bis Boden
-    V(0, floorY);            // Innenboden (Becher)
-    V(0, -1);                // Achse → Vollboden
-    V(1 - B.fr, -1);         // Vollboden nach außen bis Fasenbeginn
+    P(ri, floorY);           // Innenwand bis Boden
+    P(0, floorY);            // Innenboden (Becher)
+    P(0, -1);                // Achse → Vollboden
+    P(1 - B.fr, -1);         // Vollboden nach außen bis Fasenbeginn
   } else {
-    V(ri, -1);               // Innenwand bis unten
-    V(1 - B.fr, -1);         // Bodenring nach außen
+    P(ri, -1);               // Innenwand bis unten
+    P(1 - B.fr, -1);         // Bodenring nach außen
   }
-  if (B.m > 0) {             // untere Außenkante
-    if (B.fil) { for (let i = 1; i <= steps; i++) { const a = -Math.PI / 2 + (i / steps) * (Math.PI / 2);
-      V(1 - B.fr + B.fr * Math.cos(a), -1 + B.fy + B.fy * Math.sin(a)); } }
-    else V(1, -1 + B.fy);
-  }
-  const geo = new THREE.LatheGeometry(pts, segs);
-  geo.computeVertexNormals();
-  return geo;
+  if (B.m > 0 && B.fil)      // untere Rundung (Bogen); letzten Bogenpunkt = Schließpunkt weglassen
+    for (let i = 1; i < steps; i++) { const a = -Math.PI / 2 + (i / steps) * (Math.PI / 2);
+      P(1 - B.fr + B.fr * Math.cos(a), -1 + B.fy + B.fy * Math.sin(a)); }
+  // untere Fase (gerade) braucht keinen eigenen Punkt: die Schließkante (1-B.fr,-1)→Start erledigt sie.
+  // Aufeinanderfolgende/Start==End-Duplikate entfernen (z. B. wenn eine Kante scharf bleibt).
+  const eps = 1e-6, clean = [];
+  for (const p of prof) { const q = clean[clean.length - 1];
+    if (!q || Math.abs(q.x - p.x) > eps || Math.abs(q.y - p.y) > eps) clean.push(p); }
+  while (clean.length > 2) { const a = clean[0], b = clean[clean.length - 1];
+    if (Math.abs(a.x - b.x) < eps && Math.abs(a.y - b.y) < eps) clean.pop(); else break; }
+  return _revolveProfileSharp(clean, segs, 30);
 }
 // Bevel-Spec eines Rohrs (oben/unten · rund/schräg), mit Rückfall auf altes fillet/chamfer
 // (galt für beide Kanten) für vor diesem Feature gespeicherte Objekte.
