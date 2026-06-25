@@ -15285,11 +15285,7 @@ function _createScrew(){
 //   Mündung Ø19.8, O-Ring-Nut bei 20.5; RocketFins gardena.scad — G¾"/G1"-Düse.
 const GARDENA = {
   boreD:9.0,                 // durchgehender Wasserkanal (UB.scad ir=4.5) — bestätigt
-  // Stecker (male) — passt in die Ø16-Buchse mit O-Ring:
-  collarD:15.4, collarH:2.6, // Bund/Schulter (Verriegelung hält dahinter)
-  sealD:13.4, sealLen:6.0,   // Dichtnase (dichtet am Buchsen-O-Ring, Sitz Ø16)
-  grooveD:11.0, grooveLen:2.6, grooveLand:2.6,  // Rastnut (Buchsen-Wulst greift ein)
-  tipD:12.0, leadLen:2.5,    // Spitze + Einführschräge
+  collarD:15.4,              // Greifkörper-Bezug (Kupplung); Stecker-Kontur: _GARD_PLUG
   // Buchse (female) — Profil aus UB.scad Gardena():
   sockH:19.0, sockOuterD:22.0, sockSealD:16.0, sockMouthD:19.8, sockRidgeD:12.6,
 };
@@ -15344,21 +15340,31 @@ function _gThreadProfile(majorMM, pitchMM, heightU, leftHand){
     for(let t=-1;t<=turns+1;t++){ const yg=(hand*th/(2*Math.PI)+t)*pitch; const di=Math.abs(y-yg); if(di<d)d=di; }
     if(d<=ht) return rO; if(d<=hp) return rO-(rO-rMin)*(d-ht)/(hp-ht); return rMin; };
 }
-// Universeller Gardena-Klick-Stecker, Bund-Basis bei y=0, Spitze oben. tol mm auf Außenradien.
+// Universeller Gardena-Klick-Stecker, Bund-Basis bei y=0, Pilz-Kuppe oben.
+// Kontur 1:1 aus echtem Gardena-STL vermessen (gardena.stl): Pilzkrone Ø15.9 +
+// tiefer Rast-Hals Ø9.6 + Zwischenring + 2. Hals + Schulter. tol mm = Klick-Toleranz
+// auf die Greif-Durchmesser (Krone/Ringe/Schulter); der Hals-Grund bleibt fest.
+const _GARD_PLUG = [   // {y:Höhe ab Basis mm, r:Radius mm, grip:greift in Klick?}
+  {y:0.0, r:8.2, grip:true},   // Schulter unten (Übergang zum Körper)
+  {y:0.9, r:8.2, grip:true},   // Schulter oben
+  {y:1.1, r:4.8, grip:false},  // → 1. Hals (Nut)
+  {y:1.7, r:4.8, grip:false},
+  {y:1.9, r:7.55,grip:true},   // Zwischenring Ø15.1
+  {y:2.6, r:7.55,grip:true},
+  {y:3.0, r:6.0, grip:true},
+  {y:3.5, r:4.8, grip:false},  // → Haupt-Rasthals Ø9.6 (tief)
+  {y:4.2, r:4.8, grip:false},
+  {y:4.7, r:6.0, grip:true},
+  {y:5.2, r:7.65,grip:true},   // Krone Anstieg
+  {y:5.8, r:7.95,grip:true},   // Pilzkrone Ø15.9 (max)
+  {y:6.5, r:7.85,grip:true},
+  {y:7.1, r:7.1, grip:true},   // Kuppe abrundend
+  {y:7.6, r:5.5, grip:true},
+  {y:8.0, r:4.0, grip:false},  // gewölbte Kuppe-Spitze
+];
 function _gardenaPlugProfile(tol){
-  const G=GARDENA, t=tol;
-  const cr=G.collarD/2+t, sr=G.sealD/2+t, gr=G.grooveD/2+t, tr=G.tipD/2+t;
-  const pts=[]; let y=0;
-  pts.push({y:0,r:cr});                         // Bund unten
-  y+=G.collarH; pts.push({y,r:cr});             // Bund oben
-  pts.push({y,r:sr});                            // Stufe → Dichtfläche
-  y+=G.grooveLand; pts.push({y,r:sr});          // Dichtfläche unter Nut
-  pts.push({y,r:gr});                            // Nut Eintritt
-  y+=G.grooveLen; pts.push({y,r:gr});           // Nut-Grund
-  pts.push({y,r:sr});                            // Nut Austritt
-  y+=G.sealLen; pts.push({y,r:sr});             // Dichtfläche oben
-  y+=G.leadLen; pts.push({y,r:tr});             // Einführschräge zur Spitze
-  return { pts, topY:y };
+  const pts=_GARD_PLUG.map(p=>({ y:p.y, r:p.grip ? p.r+tol : p.r }));
+  return { pts, topY:_GARD_PLUG[_GARD_PLUG.length-1].y };
 }
 // Schlauch-Tülle mit Widerhaken (steile Schulter zeigt zur Spitze → hält gegen Abziehen).
 function _gardenaBarbProfile(hoseID, lengthMM){
@@ -15400,14 +15406,14 @@ function _gardenaThreadTail(th, mode, lenMM, clearance){
 }
 // Komplette Gardena-Geometrie zusammensetzen.
 function _buildGardenaGeometry(p){
-  const bore=GARDENA.boreD, parts=[], shH=3.0;
+  const bore=GARDENA.boreD, plugBore=7.5, parts=[], shH=3.0;   // Stecker hat engere Bohrung (Hals Ø9.6)
   // KUPPLUNG: Stecker ↔ Stecker
   if(p.type==='kupplung'){
     const gripR=(GARDENA.collarD+4)/2, gripH=8.0;
     parts.push(_gardenaRevolve([{y:0,r:gripR},{y:gripH,r:gripR}], bore));   // Greifkörper
     const pl=_gardenaPlugProfile(p.tol);
-    const up=_gardenaRevolve(pl.pts, bore);   up.translate(0,(gripH/10)-0.05,0);
-    const dn=_gardenaRevolve(pl.pts, bore);   dn.scale(1,-1,1); dn.translate(0,0.05,0);
+    const up=_gardenaRevolve(pl.pts, plugBore);   up.translate(0,(gripH/10)-0.05,0);
+    const dn=_gardenaRevolve(pl.pts, plugBore);   dn.scale(1,-1,1); dn.translate(0,0.05,0);
     parts.push(up, dn);
     const g=_mergePos(parts.map(_posOnly)); g.computeVertexNormals(); return g;
   }
@@ -15430,10 +15436,10 @@ function _buildGardenaGeometry(p){
     parts.push(_gardenaRevolve(bp.pts, bore));
     tailH=bp.topY/10; tailOutMM=(parseFloat(p.hose)+1.6)+3.2;
   }
-  const headOutMM = p.type==='buchse' ? GARDENA.sockOuterD : GARDENA.collarD;
+  const headOutMM = p.type==='buchse' ? GARDENA.sockOuterD : 16.8;
   const shOutMM=Math.max(tailOutMM/2, headOutMM/2);
   const sh=_gardenaRevolve([{y:0,r:shOutMM},{y:shH,r:shOutMM}], bore); sh.translate(0,tailH-0.05,0);  // Schulter
-  const head = p.type==='buchse' ? _buildGardenaSocket() : _gardenaRevolve(_gardenaPlugProfile(p.tol).pts, bore);
+  const head = p.type==='buchse' ? _buildGardenaSocket() : _gardenaRevolve(_gardenaPlugProfile(p.tol).pts, plugBore);
   head.translate(0,tailH+(shH/10)-0.05,0); parts.push(sh, head);
   const g=_mergePos(parts.map(_posOnly)); g.computeVertexNormals(); return g;
 }
