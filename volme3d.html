@@ -6071,25 +6071,21 @@ function buildTubeGeo(ri, segs) {
   return g;
 }
 
-// Rotationskörper aus geschlossenem r/y-Profil mit AUTOMATISCHER Kantenerkennung:
-// Profil-Ecken mit Knickwinkel über der Schwelle werden HART (Vertices verdoppelt →
-// scharfe Kante/echte Fase), tangentiale Übergänge (Rundungen) bleiben GLATT. Rundum
-// (Umfang) wird der Naht-Übergang geschweißt → keine sichtbare Naht. r=0-Punkte bilden
-// Mittel-/Bodenkappen. prof = Array<THREE.Vector2(r,y)> als geschlossene Schleife
-// (letzter Punkt verbindet zum ersten; KEIN Duplikat des Startpunkts anhängen).
-function _revolveProfileSharp(prof, segs, threshDeg) {
+// Rotationskörper aus geschlossenem r/y-Profil mit EXPLIZITER Kantenmarkierung:
+// prof = Array<{x,y,hard}> als geschlossene Schleife (letzter Punkt verbindet zum ersten,
+// KEIN Duplikat des Startpunkts). hard=true → scharfe Kante (Vertices verdoppelt → Fase/
+// Innenring bleiben kantig), hard=false → glatter (tangentialer) Übergang (Rundung). Eine
+// feste Winkel-Schwelle versagt hier, weil flache, breite Rohre sehr kleine Fasenwinkel
+// haben — daher markieren wir die Kantenart beim Bauen direkt. Rundum (Umfang) wird die
+// Naht geschweißt → keine sichtbare Naht. r=0-Punkte bilden Mittel-/Bodenkappen.
+function _revolveProfileSharp(prof, segs) {
   segs = Math.max(3, Math.round(segs) || 32);
   const M = prof.length;
-  const cosT = Math.cos((threshDeg != null ? threshDeg : 30) * Math.PI / 180);
-  const dir = (a, b) => { const dx = prof[b].x - prof[a].x, dy = prof[b].y - prof[a].y;
-    const l = Math.hypot(dx, dy) || 1; return [dx / l, dy / l]; };
-  // Pro Profilpunkt eine eingehende + ausgehende Zeile; bei hartem Knick verdoppeln.
+  // Pro Profilpunkt eine eingehende + ausgehende Zeile; bei harter Kante verdoppeln.
   const incRow = new Array(M), outRow = new Array(M), rows = [];
   for (let i = 0; i < M; i++) {
-    const di = dir((i - 1 + M) % M, i), dou = dir(i, (i + 1) % M);
-    const hard = (di[0] * dou[0] + di[1] * dou[1]) < cosT;
     incRow[i] = rows.push(prof[i]) - 1;
-    outRow[i] = hard ? (rows.push(prof[i]) - 1) : incRow[i];
+    outRow[i] = prof[i].hard ? (rows.push(prof[i]) - 1) : incRow[i];
   }
   // Vertices: rows × segs (Naht geschweißt: Spalte segs == Spalte 0)
   const pos = [];
@@ -6137,27 +6133,29 @@ function buildTubeGeoRounded(ri, segs, bev, scaleX, scaleY, floorY) {
                             : buildTubeGeo(ri, segs);
   const steps = Math.max(3, Math.min(16, Math.round(segs / 4)));   // Bögen-Auflösung
   const prof = [];
-  const P = (r, y) => prof.push(new THREE.Vector2(r, y));
-  P(1, -1 + B.fy);            // Außenwand unten (= Schließpunkt) → oben (CCW → Normale außen)
-  P(1,  1 - T.fy);
-  if (T.m > 0) {             // obere Außenkante: Rundung (Bogen) oder Fase (gerade)
+  const P = (r, y, hard) => prof.push({ x: r, y, hard: !!hard });
+  // Wand-Endpunkte: bei Rundung glatt (tangential in den Bogen), bei Fase/scharf hart.
+  const topSmooth = T.m > 0 && T.fil, botSmooth = B.m > 0 && B.fil;
+  P(1, -1 + B.fy, !botSmooth);   // Außenwand unten (= Schließpunkt) → oben (CCW → Normale außen)
+  P(1,  1 - T.fy, !topSmooth);
+  if (T.m > 0) {             // obere Außenkante: Rundung (Bogen, glatt) oder Fase (gerade, hart)
     if (T.fil) { for (let i = 1; i <= steps; i++) { const a = (i / steps) * (Math.PI / 2);
-      P(1 - T.fr + T.fr * Math.cos(a), 1 - T.fy + T.fy * Math.sin(a)); } }
-    else P(1 - T.fr, 1);
+      P(1 - T.fr + T.fr * Math.cos(a), 1 - T.fy + T.fy * Math.sin(a), false); } }
+    else P(1 - T.fr, 1, true);
   }
-  P(ri, 1);                  // Deckelring nach innen
+  P(ri, 1, true);            // Deckelring → Innenwand: immer scharfe Innenkante
   if (floorY != null) {
-    P(ri, floorY);           // Innenwand bis Boden
-    P(0, floorY);            // Innenboden (Becher)
-    P(0, -1);                // Achse → Vollboden
-    P(1 - B.fr, -1);         // Vollboden nach außen bis Fasenbeginn
+    P(ri, floorY, true);     // Innenwand → Innenboden: scharf
+    P(0, floorY, true);      // Innenboden (Becher), Achse
+    P(0, -1, true);          // Achse → Vollboden
+    P(1 - B.fr, -1, !botSmooth);   // Vollboden → untere Außenkante
   } else {
-    P(ri, -1);               // Innenwand bis unten
-    P(1 - B.fr, -1);         // Bodenring nach außen
+    P(ri, -1, true);         // Innenwand → Bodenring: scharfe Innenkante
+    P(1 - B.fr, -1, !botSmooth);   // Bodenring → untere Außenkante
   }
   if (B.m > 0 && B.fil)      // untere Rundung (Bogen); letzten Bogenpunkt = Schließpunkt weglassen
     for (let i = 1; i < steps; i++) { const a = -Math.PI / 2 + (i / steps) * (Math.PI / 2);
-      P(1 - B.fr + B.fr * Math.cos(a), -1 + B.fy + B.fy * Math.sin(a)); }
+      P(1 - B.fr + B.fr * Math.cos(a), -1 + B.fy + B.fy * Math.sin(a), false); }
   // untere Fase (gerade) braucht keinen eigenen Punkt: die Schließkante (1-B.fr,-1)→Start erledigt sie.
   // Aufeinanderfolgende/Start==End-Duplikate entfernen (z. B. wenn eine Kante scharf bleibt).
   const eps = 1e-6, clean = [];
@@ -6165,7 +6163,7 @@ function buildTubeGeoRounded(ri, segs, bev, scaleX, scaleY, floorY) {
     if (!q || Math.abs(q.x - p.x) > eps || Math.abs(q.y - p.y) > eps) clean.push(p); }
   while (clean.length > 2) { const a = clean[0], b = clean[clean.length - 1];
     if (Math.abs(a.x - b.x) < eps && Math.abs(a.y - b.y) < eps) clean.pop(); else break; }
-  return _revolveProfileSharp(clean, segs, 30);
+  return _revolveProfileSharp(clean, segs);
 }
 // Bevel-Spec eines Rohrs (oben/unten · rund/schräg), mit Rückfall auf altes fillet/chamfer
 // (galt für beide Kanten) für vor diesem Feature gespeicherte Objekte.
@@ -22136,6 +22134,22 @@ function _mviewUpdate(){
   else setTimeout(maybe, 0);
 })();
 // ===== END MOBILE-ANSEHEN-MODUS =====
+
+// ===== AUTO-SELECT IN EINGABEFELDERN =====
+// Beim Reinklicken in ein Zahlen-/Textfeld wird der Inhalt sofort markiert,
+// damit man direkt eine neue Zahl tippen kann (ohne erst löschen zu müssen).
+(function(){
+  document.addEventListener('focusin', function(e){
+    const el = e.target;
+    if(!el || el.tagName !== 'INPUT') return;
+    const t = (el.type||'').toLowerCase();
+    if(t!=='number' && t!=='text') return;
+    if(el.readOnly || el.disabled) return;
+    // erst im nächsten Frame markieren (manche Browser setzen sonst den Cursor)
+    setTimeout(()=>{ try{ el.select(); }catch(_){ } }, 0);
+  });
+})();
+// ===== END AUTO-SELECT =====
 
 // ===== MODELL TEILEN (read-only 3D-Link) =====
 // Publiziert die sichtbaren Meshes (Punkte in Weltkoordinaten + Farbe) nach
