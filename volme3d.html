@@ -6071,50 +6071,69 @@ function buildTubeGeo(ri, segs) {
   return g;
 }
 
-// Rundes Rohr mit gerundeter (Radius) bzw. gefaster (Abschrägung) AUßEN-Kante oben+unten.
-// Profil (r,y) wird per LatheGeometry um die y-Achse rotiert (wie buildRoundedCylinder,
-// aber hohl). floorY=null → offenes Rohr, sonst Becher mit Boden bei floorY. Die mm-Bevel-
-// größe wird über die Weltskalierung in Geometrie-Einheiten umgerechnet und auf Wandstärke
-// und halbe Höhe begrenzt, damit die Kante rund bleibt und die Wand nicht durchschnitten wird.
-function buildTubeGeoRounded(ri, segs, filletMm, chamferMm, scaleX, scaleY, floorY) {
+// Rundes Rohr mit pro Kante (oben/unten) frei wählbarer gerundeter (Radius) bzw. gefaster
+// (Abschrägung) AUßEN-Kante. Profil (r,y) wird per LatheGeometry um die y-Achse rotiert
+// (wie buildRoundedCylinder, aber hohl). bev = {topRound,topChamfer,botRound,botChamfer} in mm.
+// floorY=null → offenes Rohr, sonst Becher mit Boden bei floorY. Die mm-Bevelgröße wird über
+// die Weltskalierung in Geometrie-Einheiten umgerechnet und auf Wandstärke und halbe Höhe
+// begrenzt, damit die Kante rund bleibt und die Wand nicht durchschnitten wird.
+function buildTubeGeoRounded(ri, segs, bev, scaleX, scaleY, floorY) {
   segs = Math.max(3, Math.round(segs) || 32);
   ri = Math.max(0.05, Math.min(0.95, ri));
   const rMm   = Math.max(0.01, (scaleX || 1) * 10);   // Außenradius mm
   const hhMm  = Math.max(0.01, (scaleY || 1) * 10);   // halbe Höhe mm
-  const wallMm = (1 - ri) * rMm;                        // Wandstärke mm
-  let bevMm = filletMm > 0 ? filletMm : (chamferMm > 0 ? chamferMm : 0);
-  bevMm = Math.min(bevMm, wallMm * 0.98, hhMm * 0.98);
-  if (bevMm <= 0)   // keine Fase → normale Rohr-Bauweise
+  const wallMm = (1 - ri) * rMm;                       // Wandstärke mm
+  // Eine Kante normalisieren: Radius hat Vorrang vor Abschrägung; auf Wand/Höhe begrenzen.
+  const edge = (round, cham) => {
+    let m = round > 0 ? round : (cham > 0 ? cham : 0);
+    m = Math.min(m, wallMm * 0.98, hhMm * 0.49);       // *0.49 → oben+unten überlappen nie axial
+    return { m, fil: round > 0, fr: m / rMm, fy: m / hhMm };
+  };
+  const T = edge((bev && bev.topRound) || 0, (bev && bev.topChamfer) || 0);
+  const B = edge((bev && bev.botRound) || 0, (bev && bev.botChamfer) || 0);
+  if (T.m <= 0 && B.m <= 0)   // keine Fase → normale Rohr-Bauweise
     return (floorY != null) ? buildTubeGeoEx(ri, segs, 0, 1, 0, floorY, false)
                             : buildTubeGeo(ri, segs);
-  const fr = bevMm / rMm;    // radialer Anteil (Geometrie-Einheiten)
-  const fy = bevMm / hhMm;   // axialer  Anteil (Geometrie-Einheiten)
-  const isFil = filletMm > 0;
   const steps = Math.max(2, Math.min(12, Math.round(segs / 6)));
   const pts = [];
   const V = (r, y) => pts.push(new THREE.Vector2(r, y));
   // Außenwand unten → oben (CCW im r/y-Profil → Normalen nach außen)
-  V(1, -1 + fy);
-  V(1,  1 - fy);
-  if (isFil) { for (let i = 1; i <= steps; i++) { const a = (i / steps) * (Math.PI / 2);   // obere Außen-Fase
-    V(1 - fr + fr * Math.cos(a), 1 - fy + fy * Math.sin(a)); } }
-  else V(1 - fr, 1);
+  V(1, -1 + B.fy);
+  V(1,  1 - T.fy);
+  if (T.m > 0) {              // obere Außenkante
+    if (T.fil) { for (let i = 1; i <= steps; i++) { const a = (i / steps) * (Math.PI / 2);
+      V(1 - T.fr + T.fr * Math.cos(a), 1 - T.fy + T.fy * Math.sin(a)); } }
+    else V(1 - T.fr, 1);
+  }
   V(ri, 1);                  // Deckelring nach innen
   if (floorY != null) {
     V(ri, floorY);           // Innenwand bis Boden
     V(0, floorY);            // Innenboden (Becher)
     V(0, -1);                // Achse → Vollboden
-    V(1 - fr, -1);           // Vollboden nach außen bis Fasenbeginn
+    V(1 - B.fr, -1);         // Vollboden nach außen bis Fasenbeginn
   } else {
     V(ri, -1);               // Innenwand bis unten
-    V(1 - fr, -1);           // Bodenring nach außen
+    V(1 - B.fr, -1);         // Bodenring nach außen
   }
-  if (isFil) { for (let i = 1; i <= steps; i++) { const a = -Math.PI / 2 + (i / steps) * (Math.PI / 2);   // untere Außen-Fase
-    V(1 - fr + fr * Math.cos(a), -1 + fy + fy * Math.sin(a)); } }
-  else V(1, -1 + fy);
+  if (B.m > 0) {             // untere Außenkante
+    if (B.fil) { for (let i = 1; i <= steps; i++) { const a = -Math.PI / 2 + (i / steps) * (Math.PI / 2);
+      V(1 - B.fr + B.fr * Math.cos(a), -1 + B.fy + B.fy * Math.sin(a)); } }
+    else V(1, -1 + B.fy);
+  }
   const geo = new THREE.LatheGeometry(pts, segs);
   geo.computeVertexNormals();
   return geo;
+}
+// Bevel-Spec eines Rohrs (oben/unten · rund/schräg), mit Rückfall auf altes fillet/chamfer
+// (galt für beide Kanten) für vor diesem Feature gespeicherte Objekte.
+function _tubeBevelOf(o) {
+  if (o.userData.tubeBevel) return o.userData.tubeBevel;
+  const f = o.userData.fillet || 0, c = o.userData.chamfer || 0;
+  return { topRound: f, topChamfer: c, botRound: f, botChamfer: c };
+}
+function _tubeHasBevel(o) {
+  const b = _tubeBevelOf(o);
+  return (b.topRound || b.topChamfer || b.botRound || b.botChamfer) > 0;
 }
 
 // Verallgemeinertes Hohlrohr: n-eckiger Querschnitt + optionaler Twist + optionaler Boden.
@@ -8516,6 +8535,7 @@ function buildObjectFromData(data) {
   if (data.tubePoly)  obj.userData.tubePoly  = true;
   if (data.tubeTwist) obj.userData.tubeTwist = data.tubeTwist;
   if (data.tubeFloor) obj.userData.tubeFloor = true;
+  if (data.tubeBevel) obj.userData.tubeBevel = { ...data.tubeBevel };
   if (data.polyMeasure) obj.userData.polyMeasure = data.polyMeasure;
   if (data.texOrient) obj.userData.texOrient = data.texOrient;
   if (data.texWhere)  obj.userData.texWhere  = data.texWhere;
@@ -8596,6 +8616,7 @@ function objectToData(o) {
   if (o.userData.tubePoly)   d.tubePoly  = true;
   if (o.userData.tubeTwist)  d.tubeTwist = o.userData.tubeTwist;
   if (o.userData.tubeFloor)  d.tubeFloor = true;
+  if (o.userData.tubeBevel)  d.tubeBevel = { ...o.userData.tubeBevel };
   if (o.userData.polyMeasure) d.polyMeasure = o.userData.polyMeasure;
   if (o.userData.shapeType === 'funnel') {   // Trichter: Maße sind die Quelle (Geometrie wird neu gebaut)
     d.funnelTopDia   = o.userData.funnelTopDia;
@@ -20077,19 +20098,24 @@ function _fpBuildRows(type, o) {
         ? `<label class="fp-check-lbl"><input type="checkbox" id="fp-floor" ${o.userData.tubeFloor ? 'checked' : ''} onchange="fpApplyTubeFloor(this.checked)"> Boden (geschlossen)</label>`
         : '';
       const cylEdgeBtn = type === 'cylinder' ? edgeBtn : '';
-      // Radius/Abschrägung der oberen & unteren Kreiskante — beim Zylinder die ganze Kante,
-      // beim runden Rohr die AUßEN-Kante (Außendurchmesser). Kantrohr (Poly) bleibt außen vor.
-      const showBevel = type === 'cylinder' || (type === 'tube' && !o.userData.tubePoly);
-      const cylBevelRows = showBevel
+      // Zylinder: Radius/Abschrägung beider Kreiskanten gemeinsam.
+      // Rundes Rohr: AUßEN-Kante oben/unten getrennt wählbar (rund ODER schräg je Kante).
+      const cylBevelRows = type === 'cylinder'
         ? (() => {
-            const maxMm = type === 'tube'
-              ? Math.round(Math.min((o.userData.tubeWall != null ? o.userData.tubeWall : 2), o.scale.y * 10) * 0.98 * 10) / 10
-              : Math.round(Math.min(o.scale.x, o.scale.y) * 10 * 0.98 * 10) / 10;
-            const labFil = type === 'tube' ? 'Außenkante rund'  : 'Radius';
-            const labCha = type === 'tube' ? 'Außenkante schräg' : 'Abschrägung';
+            const maxMm = Math.round(Math.min(o.scale.x, o.scale.y) * 10 * 0.98 * 10) / 10;
             return '<div class="fp-sep"></div>' +
-              row(labFil, 'fp-fil', o.userData.fillet||0,  "fpApplyCylBevel(this.value,0)", 'mm', 0, maxMm, 0.1) +
-              row(labCha, 'fp-cha', o.userData.chamfer||0, "fpApplyCylBevel(0,this.value)", 'mm', 0, maxMm, 0.1);
+              row('Radius',      'fp-fil', o.userData.fillet||0,  "fpApplyCylBevel(this.value,0)", 'mm', 0, maxMm, 0.1) +
+              row('Abschrägung', 'fp-cha', o.userData.chamfer||0, "fpApplyCylBevel(0,this.value)", 'mm', 0, maxMm, 0.1);
+          })()
+        : (type === 'tube' && !o.userData.tubePoly)
+        ? (() => {
+            const tb = _tubeBevelOf(o);
+            const maxMm = Math.round(Math.min((o.userData.tubeWall != null ? o.userData.tubeWall : 2), o.scale.y * 10) * 0.98 * 10) / 10;
+            return '<div class="fp-sep"></div>' +
+              row('Außen oben abrunden',   'fp-tbtr', r2(tb.topRound),   "fpTubeBevelSet('topround',this.value)",   'mm', 0, maxMm, 0.1) +
+              row('Außen oben abschrägen', 'fp-tbtc', r2(tb.topChamfer), "fpTubeBevelSet('topchamfer',this.value)", 'mm', 0, maxMm, 0.1) +
+              row('Außen unten abrunden',  'fp-tbbr', r2(tb.botRound),   "fpTubeBevelSet('botround',this.value)",   'mm', 0, maxMm, 0.1) +
+              row('Außen unten abschräg.', 'fp-tbbc', r2(tb.botChamfer), "fpTubeBevelSet('botchamfer',this.value)", 'mm', 0, maxMm, 0.1);
           })()
         : '';
       return row('Durchmesser', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
@@ -20708,12 +20734,34 @@ function fpApplySegs(val) {
 // Zylinder: obere/untere Kreiskante runden (Radius) bzw. fasen (Abschrägung).
 // Wie bei der Box schließt das eine Maß das andere aus (fillet ⊻ chamfer).
 function fpApplyCylBevel(filletVal, chamferVal) {
-  const o = getFirst(); if (!o || (o.userData.shapeType !== 'cylinder' && o.userData.shapeType !== 'tube')) return;
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'cylinder') return;
   filletVal  = parseFloat(filletVal)  || 0;
   chamferVal = parseFloat(chamferVal) || 0;
   saveUndoDebounced();
   o.userData.fillet  = filletVal;
   o.userData.chamfer = chamferVal;
+  _fpRebuildGeo(o);
+  _fpSyncValues();
+  if (selectedObjs.length > 0) _doRepositionDimHandles();
+}
+
+// Rohr-Außenkante pro Kante (oben/unten · rund/schräg) setzen — analog zum Trichter.
+function fpTubeBevelSet(key, val) {
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'tube') return;
+  const v = parseFloat(val); if (!(v >= 0)) return;
+  const bevKey = { topround:'topRound', topchamfer:'topChamfer',
+                   botround:'botRound', botchamfer:'botChamfer' }[key];
+  if (!bevKey) return;
+  saveUndoDebounced();
+  const bv = o.userData.tubeBevel ||
+    (o.userData.tubeBevel = { ..._tubeBevelOf(o) });   // ggf. aus altem fillet/chamfer migrieren
+  bv[bevKey] = v;
+  // Rundung und Abschrägung schließen sich je Kante aus (wie bei Box/Trichter)
+  if (key === 'topround'   && v > 0) bv.topChamfer = 0;
+  if (key === 'topchamfer' && v > 0) bv.topRound   = 0;
+  if (key === 'botround'   && v > 0) bv.botChamfer = 0;
+  if (key === 'botchamfer' && v > 0) bv.botRound   = 0;
+  o.userData.fillet = 0; o.userData.chamfer = 0;   // alte Sammelwerte stilllegen
   _fpRebuildGeo(o);
   _fpSyncValues();
   if (selectedObjs.length > 0) _doRepositionDimHandles();
@@ -20847,13 +20895,12 @@ function _fpRebuildGeo(o) {
     }
     case 'tube': {
       const floorY = o.userData.tubeFloor ? _tubeFloorY(o) : null;
-      const fil = o.userData.fillet || 0, cha = o.userData.chamfer || 0;
       if (o.userData.tubePoly) {
         const sides = Math.max(3, segs || 4), twDeg = o.userData.tubeTwist || 0;
         const hSegs = twDeg ? Math.min(200, Math.max(1, Math.round(Math.abs(twDeg) / 5))) : 1;
         geo = buildTubeGeoEx(_tubeRiFor(o, sides), sides, twDeg * Math.PI / 180, hSegs, _polyTubeOffset(sides), floorY, true);
-      } else if (fil > 0 || cha > 0) {   // rundes Rohr mit gerundeter/gefaster Außenkante
-        geo = buildTubeGeoRounded(_tubeRi(o), segs || 32, fil, cha, o.scale.x, o.scale.y, floorY);
+      } else if (_tubeHasBevel(o)) {   // rundes Rohr mit pro Kante gewählter Außenkante
+        geo = buildTubeGeoRounded(_tubeRi(o), segs || 32, _tubeBevelOf(o), o.scale.x, o.scale.y, floorY);
       } else if (floorY != null) {
         geo = buildTubeGeoEx(_tubeRi(o), segs || 32, 0, 1, 0, floorY, false);   // rundes Rohr mit Boden (glatt)
       } else {
