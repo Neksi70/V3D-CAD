@@ -8707,7 +8707,8 @@ function buildObjectFromData(data) {
   // die Form verlieren (Kegelstumpf→Spitze, Trichter/Polygon→Box). _fpRebuildGeo baut
   // aus userData neu; für unbekannte Typen ist es ein No-op (default: return).
   if (obj.isMesh && !data.geometry &&
-      ['tube','funnel','cone','torus','polygon','paraboloid'].includes(obj.userData.shapeType))
+      (['tube','funnel','cone','torus','polygon','paraboloid'].includes(obj.userData.shapeType) ||
+       (obj.userData.shapeType === 'pyramid' && obj.userData.capBevel)))
     _fpRebuildGeo(obj);
   return obj;
 }
@@ -13808,6 +13809,7 @@ function _starterGeo(key){
       case 'flower':  return _buildFlowerGeo(_flowerP);
       case 'lantern': return _buildLanternGeo(_lanternP);
       case 'screw':   return _buildScrewGeometry(_screwP);
+      case 'gardena': return _buildGardenaGeometry(_gardP);
       case 'gear':    return _buildGearGeometry(_gearP);
       case 'enc':     return _buildEnclosureGeometry(_encP);
     }
@@ -20548,6 +20550,13 @@ function _fpBuildRows(type, o) {
       // Mantelkanten abrunden/abschrägen (Kegel): untere bzw. obere Kreiskante, sofern dort
       // ein Ring existiert (am spitzen Ende gibt es keine Kante).
       let capBevelRows = '';
+      if (type === 'pyramid') {   // nur Grundkante (Spitze hat keine Kante)
+        const cbv = o.userData.capBevel || {};
+        const cmax = Math.round(Math.min(o.scale.x, o.scale.y) * 10 * 0.49 * 10) / 10;
+        capBevelRows = '<div class="fp-sep"></div>' +
+          row('Grundkante abrunden',  'fp-cb-br', r2(cbv.botRound||0),   "fpCapBevelSet('botround',this.value)",   'mm', 0, cmax, 0.1) +
+          row('Grundkante abschräg.', 'fp-cb-bc', r2(cbv.botChamfer||0), "fpCapBevelSet('botchamfer',this.value)", 'mm', 0, cmax, 0.1);
+      }
       if (type === 'cone') {
         const cbv = o.userData.capBevel || {};
         const ctop = o.userData.coneTop || 0;
@@ -21357,11 +21366,17 @@ function _fpRebuildGeo(o) {
       break;
     }
     case 'pyramid': {
-      geo = new THREE.BufferGeometry();
-      const pv = new Float32Array([-1,-1,-1, 1,-1,-1, 1,-1,1, -1,-1,1, 0,1,0]);
-      geo.setIndex([0,2,1, 0,3,2, 0,1,4, 1,2,4, 2,3,4, 3,0,4]);
-      geo.setAttribute('position', new THREE.BufferAttribute(pv,3));
-      geo.computeVertexNormals();
+      const cb = o.userData.capBevel;
+      if (cb && (cb.botRound || cb.botChamfer) > 0) {
+        // Pyramide = 4-seitiger spitzer Kegel (Umkreis √2, offset π/4 → Ecken bei ±1).
+        geo = buildConeGeoRounded(Math.SQRT2, 0, 4, cb, o.scale.x, o.scale.y, { flat: true, offset: Math.PI / 4 });
+      } else {
+        geo = new THREE.BufferGeometry();
+        const pv = new Float32Array([-1,-1,-1, 1,-1,-1, 1,-1,1, -1,-1,1, 0,1,0]);
+        geo.setIndex([0,2,1, 0,3,2, 0,1,4, 1,2,4, 2,3,4, 3,0,4]);
+        geo.setAttribute('position', new THREE.BufferAttribute(pv,3));
+        geo.computeVertexNormals();
+      }
       break;
     }
     case 'funnel':
@@ -22432,6 +22447,7 @@ const CMDK = [
   {i:'🌸',g:'Generator',t:'Blumen',k:'flower',run:()=>_openFlowerModal()},
   {i:'🏮',g:'Generator',t:'Laternen',k:'lantern',run:()=>_openLanternModal()},
   {i:'🔩',g:'Generator',t:'Schrauben & Muttern',k:'screw bolt nut',run:()=>_openScrewModal()},
+  {i:'🚿',g:'Generator',t:'Gardena-Anschluss',k:'gardena schlauch hahn kupplung garten',run:()=>_openGardenaModal()},
   {i:'⚙️',g:'Generator',t:'Zahnräder',k:'gear',run:()=>_openGearModal()},
   {i:'📦',g:'Generator',t:'Gehäuse / Box',k:'enclosure case',run:()=>_openEncModal()},
   {i:'🪵',g:'Generator',t:'Laser-Box',k:'laser fingerzinken',run:()=>_openLBModal()},
