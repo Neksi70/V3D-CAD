@@ -1282,6 +1282,27 @@ const firebaseConfig = {
     <button onclick="exitRevolveMode()" style="background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:3px 8px;cursor:pointer;font-size:11px">✕ ESC</button>
   </div>
 
+  <!-- Skizzen-Werkzeugleiste -->
+  <div id="sketch-bar" style="display:none;position:fixed;bottom:56px;left:50%;transform:translateX(-50%);background:rgba(24,24,32,0.94);border:1px solid #444;border-radius:9px;padding:7px 10px;align-items:center;gap:6px;z-index:8500;font-size:12px;color:#ccc;white-space:nowrap;box-shadow:0 6px 20px rgba(0,0,0,.4)">
+    <button class="skt" data-tool="line"    onclick="_skSetTool('line')"    title="Linie / Polylinie (L)">╱ Linie</button>
+    <button class="skt" data-tool="rect"    onclick="_skSetTool('rect')"    title="Rechteck (R)">▭ Rechteck</button>
+    <button class="skt" data-tool="circle"  onclick="_skSetTool('circle')"  title="Kreis (C)">◯ Kreis</button>
+    <button class="skt" data-tool="arc"     onclick="_skSetTool('arc')"     title="Bogen: Mitte → Start → Ende (A)">⌒ Bogen</button>
+    <button class="skt" data-tool="ellipse" onclick="_skSetTool('ellipse')" title="Ellipse (E)">⬭ Ellipse</button>
+    <button class="skt" data-tool="spline"  onclick="_skSetTool('spline')"  title="Spline durch Punkte (I)">∿ Spline</button>
+    <button class="skt" data-tool="trim"    onclick="_skSetTool('trim')"    title="Beschneiden / Löschen (T)">✂ Trim</button>
+    <span style="width:1px;height:20px;background:#555;margin:0 3px"></span>
+    <button onclick="_skUndo()" style="background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:4px 8px;cursor:pointer;font-size:11px" title="Letztes Element zurück (Strg+Z)">← Zurück</button>
+    <label style="display:flex;align-items:center;gap:4px;color:#aaa">Höhe <input id="sketch-h" type="number" value="10" min="0.2" step="0.5" style="width:52px;background:#222;border:1px solid #555;color:#eee;border-radius:4px;padding:3px 5px;font-size:11px"> mm</label>
+    <button onclick="_skExtrude()" style="background:#F97316;border:none;color:#fff;border-radius:5px;padding:4px 11px;cursor:pointer;font-size:11px;font-weight:700" title="Geschlossene Profile extrudieren">✓ Extrudieren</button>
+    <button onclick="exitSketchMode()" style="background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:4px 8px;cursor:pointer;font-size:11px">✕ ESC</button>
+  </div>
+  <style>
+    #sketch-bar .skt{background:#2a2a36;border:1px solid #555;color:#cfd6e0;border-radius:5px;padding:4px 8px;cursor:pointer;font-size:11px;transition:background .12s}
+    #sketch-bar .skt:hover{background:#39394a}
+    #sketch-bar .skt.on{background:#2563eb;border-color:#3b82f6;color:#fff;font-weight:700}
+  </style>
+
   <!-- Rotation ring handles (shown in rotate mode) -->
   <svg id="rot-svg">
     <!-- Filled sector showing rotation amount -->
@@ -1493,6 +1514,14 @@ const firebaseConfig = {
             <path d="M7 15c-2.5 1-2.5 4 0 5" stroke-dasharray="2,2" stroke-width="1"/>
           </svg>
           Drehen
+        </div>
+        <div class="shp" onclick="enterSketchMode()" title="2D-Skizze auf der Bodenebene zeichnen und zu einem Körper extrudieren">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">
+            <path d="M3 17.5 L13 7.5 L16.5 11 L6.5 21 L3 21 Z"/>
+            <path d="M13 7.5 L16 4.5 L19.5 8 L16.5 11"/>
+            <path d="M18 18 h3 M19.5 16.5 v3"/>
+          </svg>
+          Skizze
         </div>
         <div class="shp" onclick="addTextShape()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><text x="3" y="18" font-size="16" font-weight="bold" stroke="currentColor" fill="none" font-family="serif">A</text></svg>Text
@@ -3326,7 +3355,7 @@ function _ovClearHover() {
 }
 canvas.addEventListener('mousemove', e => {
   if (!_ovFaces.visible || isOrbit || isPan || isDrag || isRubber ||
-      workplaneMode || _shellMode || _edgeMode || _revolveMode) { _ovClearHover(); return; }
+      workplaneMode || _shellMode || _edgeMode || _revolveMode || _sk.active) { _ovClearHover(); return; }
   getNorm(e); raycaster.setFromCamera(mousev, camera);
   const hit = raycaster.intersectObjects(_ovFaces.children, false)[0];
   const m = hit ? hit.object : null;
@@ -3335,6 +3364,13 @@ canvas.addEventListener('mousemove', e => {
     if (m) { m.material.opacity = 0.45; _ovHover = m; }
     canvas.style.cursor = m ? 'pointer' : '';
   }
+});
+// Skizzen-Modus: Cursor auf die Bodenebene projizieren + Live-Vorschau
+canvas.addEventListener('mousemove', e => {
+  if (!_sk.active || isOrbit || isPan) return;
+  const raw = _skPlanePoint(e); if (!raw) return;
+  const sp = _skSnap(raw); _sk.cursor = { u: sp.u, v: sp.v };
+  _skRender();
 });
 
 let _edgeMode            = false;
@@ -4897,6 +4933,299 @@ function exitRevolveMode() {
     orbitTarget.copy(_revolveSavedCam.target); sph2cam(); _revolveSavedCam = null;
   }
   document.getElementById('revolve-bar').style.display = 'none';
+}
+
+// ═══ SKIZZE (2D-Sketch auf Bodenebene XZ → Extrudieren zu Solid) ═════════
+// Lokales 2D-System: u = Welt-X, v = Welt-Z, Extrusion entlang +Y (oben).
+const _sk = { active:false, tool:'line', ents:[], pending:[], group:null,
+              cursor:{u:0,v:0}, savedCam:null };
+const _SK_Y = 0.02;
+
+function enterSketchMode() {
+  if (_sk.active) { exitSketchMode(); return; }
+  if (_edgeMode)    exitEdgeMode();
+  if (_revolveMode) exitRevolveMode();
+  _sk.active = true; _sk.tool = 'line'; _sk.ents = []; _sk.pending = [];
+  _sk.savedCam = { theta: sph.theta, phi: sph.phi, r: sph.r, target: orbitTarget.clone() };
+  setView('top');
+  _sk.group = new THREE.Group(); _sk.group.renderOrder = 996; scene.add(_sk.group);
+  canvas.style.cursor = 'crosshair';
+  document.getElementById('sketch-bar').style.display = 'flex';
+  _skSetTool('line');
+  notify('Skizze: Werkzeug wählen, klicken zum Zeichnen · Doppelklick/Enter beendet Linie/Spline · „Extrudieren" erzeugt den Körper', 'ok');
+}
+
+function exitSketchMode() {
+  if (!_sk.active) return;
+  _sk.active = false; canvas.style.cursor = '';
+  if (_sk.group) { scene.remove(_sk.group); _skDisposeGroup(); _sk.group = null; }
+  _sk.ents = []; _sk.pending = [];
+  document.getElementById('sketch-bar').style.display = 'none';
+  if (_sk.savedCam) {
+    sph.theta=_sk.savedCam.theta; sph.phi=_sk.savedCam.phi; sph.r=_sk.savedCam.r;
+    orbitTarget.copy(_sk.savedCam.target); sph2cam(); _sk.savedCam=null;
+  }
+}
+
+function _skDisposeGroup() {
+  _sk.group.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material && o.material.dispose) o.material.dispose(); });
+  _sk.group.clear();
+}
+
+function _skSetTool(t) {
+  _sk.pending = []; _sk.tool = t;
+  document.querySelectorAll('#sketch-bar .skt').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
+  canvas.style.cursor = (t === 'trim') ? 'pointer' : 'crosshair';
+  _skRender();
+}
+
+// ── Koordinaten / Snap ───────────────────────────────────────────────────
+function _skWorld(u,v){ return new THREE.Vector3(u, _SK_Y, v); }
+function _skPlanePoint(e){
+  getNorm(e); raycaster.setFromCamera(mousev, camera);
+  const hit = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0), 0), hit)) return null;
+  return { u: hit.x, v: hit.z };
+}
+function _skSnap(p){
+  const tol = Math.max(0.06, sph.r*0.012);
+  let best=null, bd=tol;
+  for (const ep of _skAllVertices()){ const d=Math.hypot(ep.u-p.u, ep.v-p.v); if (d<bd){ bd=d; best=ep; } }
+  if (best) return { u:best.u, v:best.v };
+  return { u: snapV(p.u), v: snapV(p.v) };
+}
+function _skAllVertices(){
+  const out=[];
+  for (const en of _sk.ents){
+    if (en.type==='line'){ out.push(en.a, en.b); }
+    else if (en.type==='arc'){ out.push(_skArcPt(en,en.a0), _skArcPt(en,en.a1)); }
+    else if (en.type==='spline'){ out.push(en.pts[0], en.pts[en.pts.length-1]); }
+    else if (en.type==='poly'){ out.push(en.pts[0], en.pts[en.pts.length-1]); }
+    else if (en.type==='circle'||en.type==='ellipse'){ out.push(en.c); }
+  }
+  return out;
+}
+function _skArcPt(en,a){ return { u: en.c.u + en.r*Math.cos(a), v: en.c.v + en.r*Math.sin(a) }; }
+function _skArcEnd(a0,a1){ let d=a1-a0; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI; return a0+d; }
+
+// ── Tessellierung der Elemente in (u,v)-Polylinien ───────────────────────
+function _skTess(en){
+  if (en.type==='line')   return { pts:[en.a,en.b], closed:false };
+  if (en.type==='poly')   return { pts:en.pts, closed:!!en.closed };
+  if (en.type==='spline') return { pts:_skSampleSpline(en.pts), closed:false };
+  if (en.type==='circle') return { pts:_skCirclePts(en.c,en.r), closed:true };
+  if (en.type==='ellipse')return { pts:_skEllipsePts(en.c,en.rx,en.ry), closed:true };
+  if (en.type==='arc'){
+    const N=Math.max(6, Math.ceil(Math.abs(en.a1-en.a0)/(Math.PI/24)));
+    const p=[]; for(let i=0;i<=N;i++){ const a=en.a0+(en.a1-en.a0)*i/N; p.push(_skArcPt(en,a)); }
+    return { pts:p, closed:false };
+  }
+  return { pts:[], closed:false };
+}
+function _skSampleSpline(pts){
+  if (pts.length<2) return pts.slice();
+  const curve = new THREE.SplineCurve(pts.map(p=>new THREE.Vector2(p.u,p.v)));
+  return curve.getPoints(Math.max(16, pts.length*12)).map(q=>({u:q.x, v:q.y}));
+}
+function _skCirclePts(c,r){ const p=[]; for(let i=0;i<=48;i++){ const a=i/48*Math.PI*2; p.push({u:c.u+r*Math.cos(a),v:c.v+r*Math.sin(a)}); } return p; }
+function _skEllipsePts(c,rx,ry){ const p=[]; for(let i=0;i<=64;i++){ const a=i/64*Math.PI*2; p.push({u:c.u+rx*Math.cos(a),v:c.v+ry*Math.sin(a)}); } return p; }
+function _skRectPts(a,b){ return [{u:a.u,v:a.v},{u:b.u,v:a.v},{u:b.u,v:b.v},{u:a.u,v:b.v},{u:a.u,v:a.v}]; }
+
+// ── Rendering ────────────────────────────────────────────────────────────
+function _skRender(){
+  if (!_sk.group) return;
+  _skDisposeGroup();
+  const matSolid = new THREE.LineBasicMaterial({color:0x2563eb, depthTest:false});
+  const matPrev  = new THREE.LineBasicMaterial({color:0x60a5fa, depthTest:false, transparent:true, opacity:0.95});
+  const addPoly = (pts, mat, ro)=>{
+    if (pts.length<2) return;
+    const g=new THREE.BufferGeometry().setFromPoints(pts.map(p=>_skWorld(p.u,p.v)));
+    const ln=new THREE.Line(g, mat); ln.renderOrder=ro||996; _sk.group.add(ln);
+  };
+  for (const en of _sk.ents) addPoly(_skTess(en).pts, matSolid, 996);
+  // Vertex-Dots
+  const dGeo=new THREE.SphereGeometry(0.07,6,6), dMat=new THREE.MeshBasicMaterial({color:0x1d4ed8, depthTest:false});
+  for (const vtx of _skAllVertices()){ const d=new THREE.Mesh(dGeo,dMat); d.position.copy(_skWorld(vtx.u,vtx.v)); d.renderOrder=998; _sk.group.add(d); }
+  // laufende Eingabe
+  const cur=_sk.cursor, P=_sk.pending, T=_sk.tool;
+  if (T==='line'   && P.length) addPoly([...P, cur], matPrev, 997);
+  if (T==='spline' && P.length) addPoly(_skSampleSpline([...P, cur]), matPrev, 997);
+  if (T==='rect'   && P.length===1) addPoly(_skRectPts(P[0],cur), matPrev, 997);
+  if (T==='circle' && P.length===1) addPoly(_skCirclePts(P[0], Math.hypot(cur.u-P[0].u,cur.v-P[0].v)), matPrev, 997);
+  if (T==='ellipse'&& P.length===1) addPoly(_skEllipsePts(P[0], Math.abs(cur.u-P[0].u), Math.abs(cur.v-P[0].v)), matPrev, 997);
+  if (T==='arc'    && P.length===1) addPoly([P[0],cur], matPrev, 997);
+  if (T==='arc'    && P.length===2){
+    const c=P[0],s=P[1], r=Math.hypot(s.u-c.u,s.v-c.v);
+    const a0=Math.atan2(s.v-c.v,s.u-c.u), a1=_skArcEnd(a0, Math.atan2(cur.v-c.v,cur.u-c.u));
+    addPoly(_skTess({type:'arc',c,r,a0,a1}).pts, matPrev, 997);
+  }
+  // Cursor
+  const cg=new THREE.SphereGeometry(0.09,8,8), cm=new THREE.MeshBasicMaterial({color:0xf97316, depthTest:false});
+  const cd=new THREE.Mesh(cg,cm); cd.position.copy(_skWorld(cur.u,cur.v)); cd.renderOrder=999; _sk.group.add(cd);
+}
+
+// ── Klick / Werkzeuglogik ────────────────────────────────────────────────
+function _skClick(e){
+  const raw=_skPlanePoint(e); if(!raw) return;
+  const sp=_skSnap(raw), cur={u:sp.u, v:sp.v};
+  const T=_sk.tool, P=_sk.pending;
+  if (T==='trim'){ _skTrimAt(cur); _skRender(); return; }
+  if (T==='line'){
+    P.push(cur);
+    if (P.length>=2){ const a=P[P.length-2], b=P[P.length-1];
+      if (Math.hypot(a.u-b.u,a.v-b.v)>1e-5) _sk.ents.push({type:'line', a:{u:a.u,v:a.v}, b:{u:b.u,v:b.v}});
+      _sk.pending=[b]; }
+  } else if (T==='rect'){
+    P.push(cur);
+    if (P.length===2){ const r=_skRectPts(P[0],P[1]);
+      for (let i=0;i<4;i++) if (Math.hypot(r[i].u-r[i+1].u,r[i].v-r[i+1].v)>1e-5)
+        _sk.ents.push({type:'line', a:{u:r[i].u,v:r[i].v}, b:{u:r[i+1].u,v:r[i+1].v}});
+      _sk.pending=[]; }
+  } else if (T==='circle'){
+    P.push(cur);
+    if (P.length===2){ const c=P[0], rr=Math.hypot(P[1].u-c.u,P[1].v-c.v);
+      if (rr>1e-4) _sk.ents.push({type:'circle', c:{u:c.u,v:c.v}, r:rr}); _sk.pending=[]; }
+  } else if (T==='ellipse'){
+    P.push(cur);
+    if (P.length===2){ const c=P[0], rx=Math.abs(P[1].u-c.u), ry=Math.abs(P[1].v-c.v);
+      if (rx>1e-4&&ry>1e-4) _sk.ents.push({type:'ellipse', c:{u:c.u,v:c.v}, rx,ry}); _sk.pending=[]; }
+  } else if (T==='arc'){
+    P.push(cur);
+    if (P.length===3){ const c=P[0],s=P[1],en2=P[2], r=Math.hypot(s.u-c.u,s.v-c.v);
+      const a0=Math.atan2(s.v-c.v,s.u-c.u), a1=_skArcEnd(a0, Math.atan2(en2.v-c.v,en2.u-c.u));
+      if (r>1e-4) _sk.ents.push({type:'arc', c:{u:c.u,v:c.v}, r, a0, a1}); _sk.pending=[]; }
+  } else if (T==='spline'){
+    P.push(cur);
+  }
+  _skRender();
+}
+function _skFinishCurrent(){
+  if (_sk.tool==='spline' && _sk.pending.length>=2)
+    _sk.ents.push({type:'spline', pts:_sk.pending.map(p=>({u:p.u,v:p.v}))});
+  _sk.pending=[]; _skRender();
+}
+function _skUndo(){ if (_sk.pending.length) _sk.pending.pop(); else _sk.ents.pop(); _skRender(); }
+
+// ── Beschneiden (Trim) ───────────────────────────────────────────────────
+function _segInt(p1,p2,p3,p4){
+  const d=(p1.u-p2.u)*(p3.v-p4.v)-(p1.v-p2.v)*(p3.u-p4.u);
+  if (Math.abs(d)<1e-9) return null;
+  const t=((p1.u-p3.u)*(p3.v-p4.v)-(p1.v-p3.v)*(p3.u-p4.u))/d;
+  const s=((p1.u-p3.u)*(p1.v-p2.v)-(p1.v-p3.v)*(p1.u-p2.u))/d;
+  if (t<1e-6||t>1-1e-6||s<-1e-6||s>1+1e-6) return null;
+  return { u:p1.u+t*(p2.u-p1.u), v:p1.v+t*(p2.v-p1.v) };
+}
+function _segPtDist(a,b,p){
+  const vx=b.u-a.u, vy=b.v-a.v, L=vx*vx+vy*vy;
+  let t=L>0?((p.u-a.u)*vx+(p.v-a.v)*vy)/L:0; t=Math.max(0,Math.min(1,t));
+  return Math.hypot(p.u-(a.u+t*vx), p.v-(a.v+t*vy));
+}
+function _skDistToEnt(en,p){ const pts=_skTess(en).pts; let d=Infinity; for(let i=0;i<pts.length-1;i++) d=Math.min(d,_segPtDist(pts[i],pts[i+1],p)); return d; }
+function _skTrimAt(p){
+  let bi=-1, bd=Math.max(0.15, sph.r*0.025);
+  for (let i=0;i<_sk.ents.length;i++){ const d=_skDistToEnt(_sk.ents[i],p); if(d<bd){bd=d;bi=i;} }
+  if (bi<0) return;
+  const tess=_skTess(_sk.ents[bi]); const pts=tess.pts; const closed=!!tess.closed;
+  // angereicherte Punktliste mit eingefügten Schnittpunkten
+  const en=[], cut=[];
+  for (let i=0;i<pts.length-1;i++){
+    en.push(pts[i]); cut.push(false);
+    const onSeg=[];
+    for (let j=0;j<_sk.ents.length;j++){ if(j===bi) continue;
+      const o=_skTess(_sk.ents[j]).pts;
+      for (let b=0;b<o.length-1;b++){ const X=_segInt(pts[i],pts[i+1],o[b],o[b+1]);
+        if (X){ const vx=pts[i+1].u-pts[i].u, vy=pts[i+1].v-pts[i].v, L=vx*vx+vy*vy;
+          onSeg.push({ t:L>0?((X.u-pts[i].u)*vx+(X.v-pts[i].v)*vy)/L:0, pt:X }); } }
+    }
+    onSeg.sort((a,b)=>a.t-b.t);
+    for (const c of onSeg){ en.push(c.pt); cut.push(true); }
+  }
+  en.push(pts[pts.length-1]); cut.push(false);
+  const cutIdx=[]; for (let i=0;i<cut.length;i++) if(cut[i]) cutIdx.push(i);
+  if (cutIdx.length===0){ _sk.ents.splice(bi,1); return; }  // kein Schnitt → ganz löschen
+  let cs=0,cdMin=Infinity; for (let i=0;i<en.length-1;i++){ const d=_segPtDist(en[i],en[i+1],p); if(d<cdMin){cdMin=d;cs=i;} }
+  let lo=0; for (const ci of cutIdx) if (ci<=cs) lo=ci;
+  let hi=en.length-1; for (let k=cutIdx.length-1;k>=0;k--) if (cutIdx[k]>cs) hi=cutIdx[k];
+  const rem=[];
+  if (closed){
+    const ring=en.slice(0,en.length-1); const n=ring.length; const path=[];
+    for (let k=0;k<=n;k++){ const idx=((hi%n)+k)%n; path.push(ring[idx]); if(idx===lo) break; }
+    if (path.length>=2) rem.push({type:'poly', pts:path, closed:false});
+  } else {
+    const left=en.slice(0,lo+1), right=en.slice(hi);
+    if (left.length>=2)  rem.push({type:'poly', pts:left,  closed:false});
+    if (right.length>=2) rem.push({type:'poly', pts:right, closed:false});
+  }
+  _sk.ents.splice(bi,1, ...rem);
+}
+
+// ── Extrudieren: geschlossene Konturen → Solid ───────────────────────────
+function _polyArea(lp){ let a=0; for(let i=0;i<lp.length;i++){ const p=lp[i], q=lp[(i+1)%lp.length]; a+=p.u*q.v-q.u*p.v; } return a/2; }
+function _polyContains(lp, pt){ let inside=false; for(let i=0,j=lp.length-1;i<lp.length;j=i++){
+  const xi=lp[i].u,yi=lp[i].v,xj=lp[j].u,yj=lp[j].v;
+  if (((yi>pt.v)!==(yj>pt.v)) && (pt.u<(xj-xi)*(pt.v-yi)/((yj-yi)||1e-12)+xi)) inside=!inside; } return inside; }
+function _skNear(a,b,t){ return Math.hypot(a.u-b.u,a.v-b.v)<=t; }
+function _skDedupe(pts){ const out=[]; for(const p of pts){ if(!out.length||Math.hypot(out[out.length-1].u-p.u,out[out.length-1].v-p.v)>1e-5) out.push(p); }
+  if (out.length>1 && _skNear(out[0],out[out.length-1],1e-4)) out.pop(); return out; }
+function _skBuildLoops(){
+  const loops=[], chains=[];
+  for (const en of _sk.ents){ const t=_skTess(en); if(t.pts.length<2) continue;
+    if (t.closed) loops.push(_skDedupe(t.pts)); else chains.push(t.pts.slice()); }
+  const tol=0.09, used=new Array(chains.length).fill(false);
+  for (let i=0;i<chains.length;i++){ if(used[i]) continue;
+    let chain=chains[i].slice(); used[i]=true; let ext=true;
+    while (ext){ ext=false; const head=chain[0], tail=chain[chain.length-1];
+      for (let j=0;j<chains.length;j++){ if(used[j]) continue; const s=chains[j], a=s[0], b=s[s.length-1];
+        if (_skNear(tail,a,tol)){ chain=chain.concat(s.slice(1)); used[j]=ext=true; }
+        else if (_skNear(tail,b,tol)){ chain=chain.concat(s.slice().reverse().slice(1)); used[j]=ext=true; }
+        else if (_skNear(head,a,tol)){ chain=s.slice().reverse().slice(0,-1).concat(chain); used[j]=ext=true; }
+        else if (_skNear(head,b,tol)){ chain=s.slice(0,-1).concat(chain); used[j]=ext=true; }
+        if (ext) break; } }
+    if (chain.length>=4 && _skNear(chain[0],chain[chain.length-1],Math.max(tol,0.1))) loops.push(_skDedupe(chain));
+  }
+  return loops.filter(lp=>lp.length>=3);
+}
+function _mergeGeos(geos){
+  if (geos.length===1) return geos[0];
+  const pos=[], idx=[]; let off=0;
+  for (const g of geos){ const gp=g.attributes.position;
+    for (let i=0;i<gp.count;i++) pos.push(gp.getX(i),gp.getY(i),gp.getZ(i));
+    const gi=g.index; if (gi){ for(let i=0;i<gi.count;i++) idx.push(gi.getX(i)+off); } else { for(let i=0;i<gp.count;i++) idx.push(i+off); }
+    off+=gp.count; g.dispose(); }
+  const m=new THREE.BufferGeometry(); m.setAttribute('position', new THREE.Float32BufferAttribute(pos,3)); m.setIndex(idx); return m;
+}
+function _skExtrude(){
+  if (!_sk.active) return;
+  const loops=_skBuildLoops();
+  if (loops.length===0){ notify('Keine geschlossene Kontur — Profil schließen (Endpunkte aneinander) oder Kreis/Ellipse nutzen','w'); return; }
+  const hmm=parseFloat(document.getElementById('sketch-h').value)||10;
+  const hU=Math.max(0.02, hmm/10);   // 1 Unit = 10 mm
+  const info=loops.map(lp=>({lp, area:Math.abs(_polyArea(lp))})).sort((a,b)=>b.area-a.area);
+  const used=new Array(info.length).fill(false), shapes=[];
+  for (let i=0;i<info.length;i++){ if(used[i]) continue; used[i]=true;
+    const sh=new THREE.Shape(info[i].lp.map(p=>new THREE.Vector2(p.u, -p.v)));
+    for (let j=i+1;j<info.length;j++){ if(used[j]) continue;
+      if (_polyContains(info[i].lp, info[j].lp[0])){ used[j]=true;
+        sh.holes.push(new THREE.Path(info[j].lp.map(p=>new THREE.Vector2(p.u, -p.v)))); } }
+    shapes.push(sh);
+  }
+  if (shapes.length===0){ notify('Profil ungültig','w'); return; }
+  const geos=shapes.map(sh=>new THREE.ExtrudeGeometry(sh,{depth:hU, bevelEnabled:false, steps:1, curveSegments:8}));
+  const merged=_mergeGeos(geos);
+  merged.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI/2));  // XY→XZ, Extrusion → +Y
+  merged.computeVertexNormals(); merged.computeBoundingBox();
+  saveUndo();
+  const color=currentColor;
+  const mesh=new THREE.Mesh(merged, new THREE.MeshStandardMaterial({
+    color:new THREE.Color(color), roughness:0.38, metalness:0.05, side:THREE.DoubleSide }));
+  mesh.castShadow=mesh.receiveShadow=true;
+  typeCounts['sketch']=(typeCounts['sketch']||0)+1;
+  mesh.userData={ id:idCtr++, type:'sketch', shapeType:'sketch', name:'Skizze '+typeCounts['sketch'],
+                  color, isHole:false, fillet:0, chamfer:0 };
+  objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
+  selectObjs([mesh]); updateTree();
+  exitSketchMode();
+  notify('Körper aus Skizze erzeugt ('+shapes.length+' Profil'+(shapes.length>1?'e':'')+')','ok');
 }
 
 function _revolveAddPoint(e) {
@@ -11183,6 +11512,7 @@ canvas.addEventListener('mousedown', e => {
   if (typeof _eraser !== 'undefined' && _eraser.active) return;  // Radierer: keine Auswahl/kein Rechteck
   e.preventDefault(); // Verhindert Browser-nativen Drag (Verbots-Cursor)
   if (_revolveMode) { _revolveAddPoint(e); return; }
+  if (_sk.active) { _skClick(e); return; }
   if (!_edgeMode && _edgeBevelDragging) { _edgeBevelDragging = false; _edgeBevelDragStart = null; }
   if (_edgeMode) {
     if (!_edgeGlobal) {
@@ -11754,6 +12084,7 @@ document.addEventListener('wheel', e => {
 }, { passive: false });
 
 canvas.addEventListener('dblclick', e => {
+  if (_sk.active) { _skFinishCurrent(); return; }
   if (_revolveMode) { finishRevolve(); return; }
   const hits = pickObjects(e);
   if (hits.length > 0) {
@@ -11896,11 +12227,21 @@ window.addEventListener('keydown', e => {
     if (document.getElementById('new-modal').classList.contains('show')) { _newCancel(); return; }
     if (document.getElementById('sz-modal').classList.contains('show')) { _cancelSize(); return; }
     if (document.getElementById('ds-modal').classList.contains('show')) { hideDesigns(); return; }
+    if (_sk.active) { exitSketchMode(); return; }
     if (_revolveMode) { exitRevolveMode(); return; }
     if (_shellMode) { exitShellMode(); return; }
     if (_edgeMode) { exitEdgeMode(); return; }
     if (workplaneMode) { toggleWorkplane(); return; }
     if (specialMode) exitSpecialMode(); else deselect(); return;
+  }
+
+  // Skizzen-Modus: Werkzeug-Shortcuts + Enter/Undo
+  if (_sk.active) {
+    if (ctrl && k.toLowerCase() === 'z') { _skUndo(); e.preventDefault(); return; }
+    if (k === 'Enter') { _skFinishCurrent(); return; }
+    const map = { l:'line', r:'rect', c:'circle', a:'arc', e:'ellipse', i:'spline', t:'trim' };
+    const t = map[k.toLowerCase()];
+    if (t) { _skSetTool(t); return; }
   }
 
   // mirror special mode
