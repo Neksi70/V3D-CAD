@@ -1303,6 +1303,15 @@ const firebaseConfig = {
     #sketch-bar .skt.on{background:#2563eb;border-color:#3b82f6;color:#fff;font-weight:700}
   </style>
 
+  <!-- Maß-Eingabe beim Zeichnen (folgt dem Cursor) -->
+  <div id="sk-dim" style="display:none;position:fixed;z-index:8600;background:rgba(20,22,30,0.96);border:1px solid #3b82f6;border-radius:6px;padding:3px 6px;gap:4px;align-items:center;font-size:11px;color:#cfe2ff;box-shadow:0 3px 12px rgba(0,0,0,.45)">
+    <span id="sk-dim-l1" style="color:#86a">L</span>
+    <input id="sk-dim-1" type="text" inputmode="decimal" autocomplete="off" style="width:48px;background:#11141c;border:1px solid #345;color:#fff;border-radius:3px;padding:2px 4px;font-size:11px">
+    <span id="sk-dim-l2" style="color:#86a;display:none">×</span>
+    <input id="sk-dim-2" type="text" inputmode="decimal" autocomplete="off" style="width:48px;background:#11141c;border:1px solid #345;color:#fff;border-radius:3px;padding:2px 4px;font-size:11px;display:none">
+    <span style="color:#789">mm</span>
+  </div>
+
   <!-- Rotation ring handles (shown in rotate mode) -->
   <svg id="rot-svg">
     <!-- Filled sector showing rotation amount -->
@@ -3370,7 +3379,7 @@ canvas.addEventListener('mousemove', e => {
   if (!_sk.active || isOrbit || isPan) return;
   const raw = _skPlanePoint(e); if (!raw) return;
   const sp = _skSnap(raw); _sk.cursor = { u: sp.u, v: sp.v };
-  _skRender();
+  _skRender(); _skDimUpdate();
 });
 
 let _edgeMode            = false;
@@ -4938,8 +4947,21 @@ function exitRevolveMode() {
 // ═══ SKIZZE (2D-Sketch auf Bodenebene XZ → Extrudieren zu Solid) ═════════
 // Lokales 2D-System: u = Welt-X, v = Welt-Z, Extrusion entlang +Y (oben).
 const _sk = { active:false, tool:'line', ents:[], pending:[], group:null,
-              cursor:{u:0,v:0}, savedCam:null };
+              cursor:{u:0,v:0}, savedCam:null, dimLock:false, _wired:false };
 const _SK_Y = 0.02;
+
+function _skWireDim(){
+  if (_sk._wired) return; _sk._wired = true;
+  ['sk-dim-1','sk-dim-2'].forEach(id => {
+    const el = document.getElementById(id);
+    el.addEventListener('input', () => { _sk.dimLock = true; _skRender(); });
+    el.addEventListener('keydown', ev => {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') { ev.preventDefault(); _skCommitTyped(); el.blur(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); _sk.dimLock = false; el.blur(); _skRender(); _skDimUpdate(); }
+    });
+  });
+}
 
 function enterSketchMode() {
   if (_sk.active) { exitSketchMode(); return; }
@@ -4951,6 +4973,7 @@ function enterSketchMode() {
   _sk.group = new THREE.Group(); _sk.group.renderOrder = 996; scene.add(_sk.group);
   canvas.style.cursor = 'crosshair';
   document.getElementById('sketch-bar').style.display = 'flex';
+  _skWireDim();
   _skSetTool('line');
   notify('Skizze: Werkzeug wählen, klicken zum Zeichnen · Doppelklick/Enter beendet Linie/Spline · „Extrudieren" erzeugt den Körper', 'ok');
 }
@@ -4959,8 +4982,9 @@ function exitSketchMode() {
   if (!_sk.active) return;
   _sk.active = false; canvas.style.cursor = '';
   if (_sk.group) { scene.remove(_sk.group); _skDisposeGroup(); _sk.group = null; }
-  _sk.ents = []; _sk.pending = [];
+  _sk.ents = []; _sk.pending = []; _sk.dimLock = false;
   document.getElementById('sketch-bar').style.display = 'none';
+  document.getElementById('sk-dim').style.display = 'none';
   if (_sk.savedCam) {
     sph.theta=_sk.savedCam.theta; sph.phi=_sk.savedCam.phi; sph.r=_sk.savedCam.r;
     orbitTarget.copy(_sk.savedCam.target); sph2cam(); _sk.savedCam=null;
@@ -4973,10 +4997,53 @@ function _skDisposeGroup() {
 }
 
 function _skSetTool(t) {
-  _sk.pending = []; _sk.tool = t;
+  _sk.pending = []; _sk.tool = t; _sk.dimLock = false;
   document.querySelectorAll('#sketch-bar .skt').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
   canvas.style.cursor = (t === 'trim') ? 'pointer' : 'crosshair';
-  _skRender();
+  _skRender(); _skDimUpdate();
+}
+
+// ── Maß-Eingabe beim Zeichnen (Live-Anzeige + getippte Sollgröße) ────────
+function _skMM(u){ return Math.round(u*10*100)/100; }           // Units → mm
+function _skScreen(u,v){
+  const p=_skWorld(u,v).project(camera); const r=vpEl.getBoundingClientRect();
+  return { x: r.left+(p.x*0.5+0.5)*r.width, y: r.top+(-p.y*0.5+0.5)*r.height };
+}
+function _skDimSpec(){
+  const T=_sk.tool, P=_sk.pending, c=_sk.cursor;
+  if (T==='line'    && P.length>=1){ const a=P[P.length-1]; return {n:1,l1:'Länge',v1:_skMM(Math.hypot(c.u-a.u,c.v-a.v))}; }
+  if (T==='rect'    && P.length===1){ return {n:2,l1:'B',v1:_skMM(Math.abs(c.u-P[0].u)),l2:'H',v2:_skMM(Math.abs(c.v-P[0].v))}; }
+  if (T==='circle'  && P.length===1){ return {n:1,l1:'⌀',v1:_skMM(2*Math.hypot(c.u-P[0].u,c.v-P[0].v))}; }
+  if (T==='ellipse' && P.length===1){ return {n:2,l1:'Rx',v1:_skMM(Math.abs(c.u-P[0].u)),l2:'Ry',v2:_skMM(Math.abs(c.v-P[0].v))}; }
+  return null;
+}
+function _skDimUpdate(){
+  const box=document.getElementById('sk-dim'); if(!box) return;
+  const sp=_skDimSpec();
+  if (!sp || !_sk.active){ box.style.display='none'; if(!_sk.active) _sk.dimLock=false; return; }
+  const i1=document.getElementById('sk-dim-1'), i2=document.getElementById('sk-dim-2');
+  const l1=document.getElementById('sk-dim-l1'), l2=document.getElementById('sk-dim-l2');
+  l1.textContent=sp.l1;
+  if (sp.n===2){ l2.style.display=''; i2.style.display=''; l2.textContent=sp.l2; }
+  else { l2.style.display='none'; i2.style.display='none'; }
+  if (!_sk.dimLock){ i1.value=sp.v1; if(sp.n===2) i2.value=sp.v2; }
+  const s=_skScreen(_sk.cursor.u,_sk.cursor.v);
+  box.style.display='flex'; box.style.left=(s.x+16)+'px'; box.style.top=(s.y-12)+'px';
+}
+function _skCommitTyped(){
+  const T=_sk.tool, P=_sk.pending, c=_sk.cursor;
+  const d1=parseFloat(document.getElementById('sk-dim-1').value)/10;   // mm → Units
+  const d2=parseFloat(document.getElementById('sk-dim-2').value)/10;
+  if (T==='line' && P.length>=1 && d1>0){ const a=P[P.length-1];
+    const dx=c.u-a.u, dy=c.v-a.v, L=Math.hypot(dx,dy)||1; const end={u:a.u+dx/L*d1, v:a.v+dy/L*d1};
+    _sk.ents.push({type:'line', a:{u:a.u,v:a.v}, b:end}); _sk.pending=[end]; }
+  else if (T==='rect' && P.length===1 && d1>0 && d2>0){
+    const b={u:P[0].u+Math.sign((c.u-P[0].u)||1)*d1, v:P[0].v+Math.sign((c.v-P[0].v)||1)*d2};
+    const r=_skRectPts(P[0],b); for(let i=0;i<4;i++) _sk.ents.push({type:'line',a:{u:r[i].u,v:r[i].v},b:{u:r[i+1].u,v:r[i+1].v}}); _sk.pending=[]; }
+  else if (T==='circle' && P.length===1 && d1>0){ _sk.ents.push({type:'circle', c:{u:P[0].u,v:P[0].v}, r:d1/2}); _sk.pending=[]; }
+  else if (T==='ellipse' && P.length===1 && d1>0 && d2>0){ _sk.ents.push({type:'ellipse', c:{u:P[0].u,v:P[0].v}, rx:d1, ry:d2}); _sk.pending=[]; }
+  else return;
+  _sk.dimLock=false; _skRender(); _skDimUpdate();
 }
 
 // ── Koordinaten / Snap ───────────────────────────────────────────────────
@@ -5046,13 +5113,20 @@ function _skRender(){
   // Vertex-Dots
   const dGeo=new THREE.SphereGeometry(0.07,6,6), dMat=new THREE.MeshBasicMaterial({color:0x1d4ed8, depthTest:false});
   for (const vtx of _skAllVertices()){ const d=new THREE.Mesh(dGeo,dMat); d.position.copy(_skWorld(vtx.u,vtx.v)); d.renderOrder=998; _sk.group.add(d); }
-  // laufende Eingabe
+  // laufende Eingabe (mit getippten Maßen, falls dimLock)
   const cur=_sk.cursor, P=_sk.pending, T=_sk.tool;
-  if (T==='line'   && P.length) addPoly([...P, cur], matPrev, 997);
+  const lock=_sk.dimLock;
+  const d1=lock?parseFloat(document.getElementById('sk-dim-1').value)/10:NaN;
+  const d2=lock?parseFloat(document.getElementById('sk-dim-2').value)/10:NaN;
+  if (T==='line' && P.length){ const a=P[P.length-1]; let end=cur;
+    if (lock && d1>0){ const dx=cur.u-a.u, dy=cur.v-a.v, L=Math.hypot(dx,dy)||1; end={u:a.u+dx/L*d1, v:a.v+dy/L*d1}; }
+    addPoly([...P.slice(0,-1), a, end], matPrev, 997); }
   if (T==='spline' && P.length) addPoly(_skSampleSpline([...P, cur]), matPrev, 997);
-  if (T==='rect'   && P.length===1) addPoly(_skRectPts(P[0],cur), matPrev, 997);
-  if (T==='circle' && P.length===1) addPoly(_skCirclePts(P[0], Math.hypot(cur.u-P[0].u,cur.v-P[0].v)), matPrev, 997);
-  if (T==='ellipse'&& P.length===1) addPoly(_skEllipsePts(P[0], Math.abs(cur.u-P[0].u), Math.abs(cur.v-P[0].v)), matPrev, 997);
+  if (T==='rect' && P.length===1){ let b=cur;
+    if (lock){ b={u:P[0].u+Math.sign((cur.u-P[0].u)||1)*(d1>0?d1:0), v:P[0].v+Math.sign((cur.v-P[0].v)||1)*(d2>0?d2:0)}; }
+    addPoly(_skRectPts(P[0],b), matPrev, 997); }
+  if (T==='circle' && P.length===1){ let r=Math.hypot(cur.u-P[0].u,cur.v-P[0].v); if(lock&&d1>0) r=d1/2; addPoly(_skCirclePts(P[0],r), matPrev, 997); }
+  if (T==='ellipse'&& P.length===1){ let rx=Math.abs(cur.u-P[0].u), ry=Math.abs(cur.v-P[0].v); if(lock){ if(d1>0)rx=d1; if(d2>0)ry=d2; } addPoly(_skEllipsePts(P[0],rx,ry), matPrev, 997); }
   if (T==='arc'    && P.length===1) addPoly([P[0],cur], matPrev, 997);
   if (T==='arc'    && P.length===2){
     const c=P[0],s=P[1], r=Math.hypot(s.u-c.u,s.v-c.v);
@@ -5068,6 +5142,7 @@ function _skRender(){
 function _skClick(e){
   const raw=_skPlanePoint(e); if(!raw) return;
   const sp=_skSnap(raw), cur={u:sp.u, v:sp.v};
+  _sk.dimLock=false;
   const T=_sk.tool, P=_sk.pending;
   if (T==='trim'){ _skTrimAt(cur); _skRender(); return; }
   if (T==='line'){
@@ -5097,7 +5172,7 @@ function _skClick(e){
   } else if (T==='spline'){
     P.push(cur);
   }
-  _skRender();
+  _skRender(); _skDimUpdate();
 }
 function _skFinishCurrent(){
   if (_sk.tool==='spline' && _sk.pending.length>=2)
@@ -12235,9 +12310,15 @@ window.addEventListener('keydown', e => {
     if (specialMode) exitSpecialMode(); else deselect(); return;
   }
 
-  // Skizzen-Modus: Werkzeug-Shortcuts + Enter/Undo
+  // Skizzen-Modus: Maß-Eingabe, Werkzeug-Shortcuts, Enter/Undo
   if (_sk.active) {
     if (ctrl && k.toLowerCase() === 'z') { _skUndo(); e.preventDefault(); return; }
+    // Ziffer/Komma tippen → direkt ins Maßfeld
+    if (/^[0-9.,]$/.test(k) && _skDimSpec()) {
+      const el = document.getElementById('sk-dim-1');
+      el.focus(); el.value = (k === ',' ? '.' : k); _sk.dimLock = true;
+      _skRender(); _skDimUpdate(); e.preventDefault(); return;
+    }
     if (k === 'Enter') { _skFinishCurrent(); return; }
     const map = { l:'line', r:'rect', c:'circle', a:'arc', e:'ellipse', i:'spline', t:'trim' };
     const t = map[k.toLowerCase()];
