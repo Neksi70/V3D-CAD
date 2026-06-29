@@ -2566,6 +2566,34 @@ const firebaseConfig = {
   </div>
 </div>
 
+<div id="skadis-modal" class="g3dm" onclick="if(event.target===this)_closeSkadisModal()">
+  <div class="g3box">
+    <div class="g3hdr">🪝 Skadis-Haken (IKEA-Lochwand)<span class="vx" onclick="_closeSkadisModal()">✕</span></div>
+    <div class="g3body">
+      <canvas id="skadis-canvas" width="200" height="300"></canvas>
+      <div class="g3ctrl">
+        <span class="vsec">Variante</span>
+        <div class="vbg" id="skbg-variant">
+          <button class="vtb on" onclick="_skadisSet('variant','j')">J-Haken</button>
+          <button class="vtb"    onclick="_skadisSet('variant','peg')">Gerader Zapfen</button>
+        </div>
+        <span class="vsec">Haken</span>
+        <div class="vrow"><label>Tiefe</label> <input type="range" id="kp-depth" min="12" max="80" value="35" step="1" oninput="document.getElementById('kv-depth').textContent=this.value;_skadisSet('depth',this.value)"><span class="vv" id="kv-depth">35</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Stab-Ø</label> <input type="range" id="kp-rod" min="3" max="12" value="6" step="0.5" oninput="document.getElementById('kv-rod').textContent=this.value;_skadisSet('rod',this.value)"><span class="vv" id="kv-rod">6</span><span class="vu">mm</span></div>
+        <div class="vrow" id="kp-curl-row"><label>Bogen hoch</label> <input type="range" id="kp-curl" min="0" max="40" value="15" step="1" oninput="document.getElementById('kv-curl').textContent=this.value;_skadisSet('curl',this.value)"><span class="vv" id="kv-curl">15</span><span class="vu">mm</span></div>
+        <span class="vsec">Befestigung</span>
+        <div class="vrow"><label>Breite</label> <input type="range" id="kp-width" min="8" max="30" value="12" step="1" oninput="document.getElementById('kv-width').textContent=this.value;_skadisSet('width',this.value)"><span class="vv" id="kv-width">12</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Vertikaler Abstand der beiden genutzten Löcher (Skadis-Standard 40)">Lochabstand</label> <input type="range" id="kp-pitch" min="20" max="60" value="40" step="20" oninput="document.getElementById('kv-pitch').textContent=this.value;_skadisSet('pitch',this.value)"><span class="vv" id="kv-pitch">40</span><span class="vu">mm</span></div>
+        <div class="g3info" id="skadis-info"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_closeSkadisModal()">Abbrechen</button>
+      <button class="btn pri" onclick="_createSkadis()">✓ Erstellen</button>
+    </div>
+  </div>
+</div>
+
 <div id="litho-modal" class="g3dm" onclick="if(event.target===this)_closeLithoModal()">
   <div class="g3box">
     <div class="g3hdr">🖼️ Lithophane (Foto → Relief)<span class="vx" onclick="_closeLithoModal()">✕</span></div>
@@ -14713,6 +14741,7 @@ const _STARTERS = [
   {i:'🗺️',t:'Karte → 3D',d:'Reliefs aus Landkarten',run:()=>_openMapModal()},
   {i:'🖼️',t:'Lithophane',d:'Foto als Leuchtrelief',run:()=>_openLithoModal()},
   {i:'🔋',t:'Batteriehalter',d:'Für AA/AAA/18650 …',run:()=>_openBattModal()},
+  {i:'🪝',t:'Skadis-Haken',d:'Für IKEA-Lochwand',run:()=>_openSkadisModal()},
   {i:'✨',t:'KI-Modell',d:'Aus Text erzeugen',run:()=>kiTogglePanel()},
   {i:'🧪',t:'Rasterbox',d:'Gridfinity-Raster',dev:true,run:()=>_openGFModal()},
 ];
@@ -16970,6 +16999,91 @@ function _fpEncSet(k,v){
   if(k==='type'||k==='bosses'){ _fpCurType=null; updateFP(); }
   if(_encEditT)clearTimeout(_encEditT); _encEditT=setTimeout(()=>{_encEditT=null;_encEditRebuild(o);},60);
 }
+// ═══ SKADIS-HAKEN-GENERATOR (IKEA-Lochwand) ═══════════════════════════════
+// Konstruktiver Haken (kein OCCT): Rückplatte vor dem Board, zwei Zapfen durch
+// die Ø5-Löcher (oberer mit Fang-Lasche hinter dem Board = tragend, unterer als
+// Verdrehsicherung) und ein vorderer J-Haken. „Mounted"-Orientierung: Board =
+// senkrechte XY-Ebene (z = Tiefe). Zum Drucken auf die Seite legen → stützenfrei.
+const _skadisP = { variant:'j', depth:35, rod:6, curl:15, width:12, pitch:40 };
+let _skadisRT=null;
+function _buildSkadisHookGeo(p){
+  const U=0.1;
+  const T=5*U;                                  // Board-Dicke 5 mm
+  const pitch=Math.max(20,p.pitch)*U;           // Lochabstand vertikal
+  const holeR=2.5*U;                            // Ø5-Loch
+  const pegR=holeR-0.2*U;                       // Ø4,6-Zapfen (Spiel)
+  const W=Math.max(8,p.width)*U;
+  const Tb=3*U;                                 // Rückplatten-Dicke
+  const Hb=pitch+12*U;                          // Rückplatten-Höhe
+  const rodR=Math.max(3,p.rod)/2*U;
+  const depth=Math.max(12,p.depth)*U;
+  const curl=Math.max(0,p.curl)*U;
+  const yU=pitch/2, yL=-pitch/2;
+  const parts=[];
+  const box=(sx,sy,sz,cx,cy,cz)=>{const g=new THREE.BoxGeometry(Math.max(.02,sx),Math.max(.02,sy),Math.max(.02,sz));g.translate(cx,cy,cz);return g;};
+  const cylZ=(r,z0,z1,cx,cy)=>{const g=new THREE.CylinderGeometry(r,r,Math.abs(z1-z0),20);g.rotateX(Math.PI/2);g.translate(cx,cy,(z0+z1)/2);return g;};
+  const cylY=(r,y0,y1,cx,cz)=>{const g=new THREE.CylinderGeometry(r,r,Math.abs(y1-y0),20);g.translate(cx,(y0+y1)/2,cz);return g;};
+  // Rückplatte (vorne am Board, z∈[-Tb,0])
+  parts.push(box(W,Hb,Tb,0,0,-Tb/2));
+  // Oberer Zapfen durchs Loch + Fang-Lasche dahinter (greift über Loch-Oberkante)
+  parts.push(cylZ(pegR,-Tb,T+2.5*U,0,yU));
+  parts.push(box(pegR*2,pegR+5*U,2.5*U,0,yU+(5*U)/2,T+1.25*U));
+  // Unterer Zapfen (Verdrehsicherung, nur durchs Loch)
+  parts.push(cylZ(pegR,-Tb,T,0,yL));
+  // Vorderer Haken: horizontaler Arm + (bei J) Bogen nach oben
+  const hy=yL;
+  parts.push(cylZ(rodR,-depth,0,0,hy));
+  if(p.variant==='j' && curl>0){
+    parts.push(cylY(rodR,hy,hy+curl,0,-depth));
+    const tip=new THREE.SphereGeometry(rodR,14,10); tip.translate(0,hy+curl,-depth); parts.push(tip);
+  } else {
+    const tip=new THREE.SphereGeometry(rodR,14,10); tip.translate(0,hy,-depth); parts.push(tip);
+  }
+  const geo=_mergeGeos(parts);
+  geo.computeVertexNormals(); geo.computeBoundingBox();
+  return geo;
+}
+function _openSkadisModal(){
+  document.getElementById('skadis-modal').classList.add('show');
+  _skadisSyncUI();
+  requestAnimationFrame(()=>{ if(!_gpv['skadis']) _gpvInit('skadis',()=>_buildSkadisHookGeo(_skadisP)); else { _gpvUpdate('skadis'); if(!_gpv['skadis'].anim) _gpvLoop('skadis'); } });
+}
+function _closeSkadisModal(){ document.getElementById('skadis-modal').classList.remove('show'); _gpvStop('skadis'); }
+function _skadisSet(k,v){
+  _skadisP[k]=(k==='variant')?v:parseFloat(v);
+  _skadisSyncUI();
+  if(_skadisRT)clearTimeout(_skadisRT); _skadisRT=setTimeout(()=>{_skadisRT=null;_gpvUpdate('skadis');},80);
+}
+function _skadisSyncUI(){
+  const set=(id,vid,v)=>{const s=document.getElementById(id),x=document.getElementById(vid); if(s)s.value=v; if(x)x.textContent=v;};
+  set('kp-depth','kv-depth',_skadisP.depth); set('kp-rod','kv-rod',_skadisP.rod);
+  set('kp-curl','kv-curl',_skadisP.curl); set('kp-width','kv-width',_skadisP.width); set('kp-pitch','kv-pitch',_skadisP.pitch);
+  ['j','peg'].forEach((m,i)=>{const b=document.querySelector(`#skbg-variant .vtb:nth-child(${i+1})`); if(b)b.classList.toggle('on',m===_skadisP.variant);});
+  const cr=document.getElementById('kp-curl-row'); if(cr) cr.style.display=(_skadisP.variant==='j')?'':'none';
+  _skadisInfo();
+}
+function _skadisInfo(){
+  const el=document.getElementById('skadis-info'); if(!el) return;
+  el.innerHTML=`Für IKEA Skadis (Ø5-Löcher, ${_skadisP.pitch} mm Abstand)<br>${_skadisP.variant==='j'?'J-Haken':'Gerader Zapfen'} · Tiefe ${_skadisP.depth} mm · Stab Ø${_skadisP.rod} mm<br><span style="color:var(--dim)">Tipp: zum Drucken auf die Seite legen (Auto-Ausrichten) → ohne Stützen</span>`;
+}
+function _createSkadis(){
+  saveUndo();
+  let geo; try{ geo=_buildSkadisHookGeo(_skadisP); }catch(e){ console.error('Skadis:',e); notify('Fehler beim Erstellen','w'); return; }
+  const color=currentColor;
+  const mat=new THREE.MeshStandardMaterial({color:new THREE.Color(color),roughness:0.5,metalness:0.1,side:THREE.DoubleSide});
+  const mesh=new THREE.Mesh(geo,mat); mesh.castShadow=true; mesh.receiveShadow=true;
+  mesh.quaternion.copy(_wpMakeQuat(workplaneNormal)); mesh.position.copy(workplanePoint);
+  typeCounts['skadis']=(typeCounts['skadis']||0)+1;
+  const lbl='Skadis-Haken '+(_skadisP.variant==='j'?'J':'Zapfen');
+  mesh.userData={id:idCtr++,type:'skadis',shapeType:'skadis',name:lbl+' #'+typeCounts['skadis'],
+    color,isHole:false,fillet:0,chamfer:0,
+    skVariant:_skadisP.variant,skDepth:_skadisP.depth,skRod:_skadisP.rod,skCurl:_skadisP.curl,skWidth:_skadisP.width,skPitch:_skadisP.pitch,
+    displacementPattern:'keine',displacementAmp:0.5,displacementFreq:4,displacementInvert:false,displacementSymmetric:false};
+  scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
+  selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
+  notify(lbl+' erstellt — auf die Seite legen zum Drucken','ok'); _closeSkadisModal();
+}
+
 // ═══ BATTERIEHALTER-GENERATOR ═════════════════════════════════════════════
 // Konstruktiver Halter (kein OCCT): Bodenplatte + Trennwände bilden offene
 // Mulden, in denen Rundzellen liegen. Alle Teile sind überlappende Boxen, die
@@ -23709,6 +23823,7 @@ const CMDK = [
   {i:'🧪',g:'Generator',t:'Rasterbox',k:'gridfinity raster',run:()=>_openGFModal()},
   {i:'🔋',g:'Generator',t:'Batteriehalter',k:'battery akku aa aaa 18650 zelle halter',run:()=>_openBattModal()},
   {i:'🖼️',g:'Generator',t:'Lithophane',k:'lithophane foto bild relief licht',run:()=>_openLithoModal()},
+  {i:'🪝',g:'Generator',t:'Skadis-Haken',k:'skadis ikea lochwand haken pegboard wand',run:()=>_openSkadisModal()},
   {i:'∪',g:'Bearbeiten',t:'Vereinen',k:'union merge',run:()=>unionSelected()},
   {i:'⊖',g:'Bearbeiten',t:'Abziehen',k:'subtract bohrung loch',run:()=>subtractHoles()},
   {i:'⊞',g:'Bearbeiten',t:'Gruppieren',k:'group',run:()=>groupSelected()},
