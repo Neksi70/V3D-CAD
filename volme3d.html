@@ -1299,6 +1299,7 @@ const firebaseConfig = {
     <button class="skt" data-tool="ellipse" onclick="_skSetTool('ellipse')" title="Ellipse"><span class="ski">⬭</span><span class="skl">Ellipse</span><span class="skk">E</span></button>
     <button class="skt" data-tool="spline"  onclick="_skSetTool('spline')"  title="Spline durch Punkte"><span class="ski">∿</span><span class="skl">Spline</span><span class="skk">I</span></button>
     <button class="skt" data-tool="trim"    onclick="_skSetTool('trim')"    title="Beschneiden / Löschen"><span class="ski">✂</span><span class="skl">Trim</span><span class="skk">T</span></button>
+    <button class="skt" data-tool="pull"    onclick="_skSetTool('pull')"    title="Fläche anklicken → mit der Höhe (unten) zum Körper extrudieren"><span class="ski">⬆</span><span class="skl">Ziehen</span><span class="skk">P</span></button>
     <div class="sksep"></div>
     <button class="skt on" id="sk-ortho-btn" onclick="_skToggleOrtho()" title="Ortho-Fang: rastet auf waagerecht / senkrecht / 45° und an vorhandenen Punkten (O)"><span class="ski">⊾</span><span class="skl">Ortho-Fang</span><span class="skk">O</span></button>
     <button class="skbtn" onclick="_skUndo()" title="Letztes Element zurück (Strg+Z)">↶ Zurück</button>
@@ -3404,7 +3405,10 @@ canvas.addEventListener('mousemove', e => {
 canvas.addEventListener('mousemove', e => {
   if (!_sk.active || isOrbit || isPan) return;
   const raw = _skPlanePoint(e); if (!raw) return;
-  const sp = _skSnapFull(raw); _sk.cursor = { u: sp.u, v: sp.v };
+  let sp;
+  if (_sk.tool === 'pull') { sp = raw; _sk.hint = ''; }   // Ziehen: kein Vertex-Snap, freier Hover
+  else sp = _skSnapFull(raw);
+  _sk.cursor = { u: sp.u, v: sp.v };
   _skRender(); _skDimUpdate(); _skUpdateBadge();
 });
 
@@ -5002,7 +5006,7 @@ function enterSketchMode() {
   document.getElementById('sketch-bar').style.display = 'flex';
   _skWireDim();
   _skSetTool('line');
-  notify('Skizze: Werkzeug wählen, klicken zum Zeichnen · Doppelklick/Enter beendet Linie/Spline · „Extrudieren" erzeugt den Körper', 'ok');
+  notify('Skizze: zeichnen · dann „⬆ Ziehen" (P) und auf eine Fläche klicken, um sie zur Höhe zu extrudieren (oder „✓ Extrudieren" für alles)', 'ok');
 }
 
 function exitSketchMode() {
@@ -5026,7 +5030,7 @@ function _skDisposeGroup() {
 function _skSetTool(t) {
   _sk.pending = []; _sk.tool = t; _sk.dimLock = false;
   document.querySelectorAll('#sketch-bar .skt[data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
-  canvas.style.cursor = (t === 'trim') ? 'pointer' : 'crosshair';
+  canvas.style.cursor = (t === 'trim' || t === 'pull') ? 'pointer' : 'crosshair';
   _skRender(); _skDimUpdate();
 }
 
@@ -5212,6 +5216,18 @@ function _skRender(){
     const a0=Math.atan2(s.v-c.v,s.u-c.u), a1=_skArcEnd(a0, Math.atan2(cur.v-c.v,cur.u-c.u));
     addPoly(_skTess({type:'arc',c,r,a0,a1}).pts, matPrev, 997);
   }
+  // Ziehen-Modus: geschlossene Flächen füllen, die unter dem Cursor hervorheben
+  if (T==='pull'){
+    const shapes=_skBuildShapes();
+    const rotX=new THREE.Matrix4().makeRotationX(-Math.PI/2);
+    for (const s of shapes){
+      const hov = _polyContains(s.outer,cur) && !s.holes.some(h=>_polyContains(h,cur));
+      const g=new THREE.ShapeGeometry(s.shape); g.applyMatrix4(rotX);
+      const m=new THREE.MeshBasicMaterial({ color:hov?0xf97316:0x2563eb, transparent:true,
+        opacity:hov?0.42:0.16, side:THREE.DoubleSide, depthTest:false, depthWrite:false });
+      const fm=new THREE.Mesh(g,m); fm.position.y=0.008; fm.renderOrder=995; _sk.group.add(fm);
+    }
+  }
   // Cursor
   const cg=new THREE.SphereGeometry(0.09,8,8), cm=new THREE.MeshBasicMaterial({color:0xf97316, depthTest:false});
   const cd=new THREE.Mesh(cg,cm); cd.position.copy(_skWorld(cur.u,cur.v)); cd.renderOrder=999; _sk.group.add(cd);
@@ -5220,6 +5236,7 @@ function _skRender(){
 // ── Klick / Werkzeuglogik ────────────────────────────────────────────────
 function _skClick(e){
   const raw=_skPlanePoint(e); if(!raw) return;
+  if (_sk.tool==='pull'){ _skPullAt(raw); return; }   // Fläche ziehen: roher Klickpunkt, kein Snap
   const sp=_skSnapFull(raw), cur={u:sp.u, v:sp.v};
   _sk.dimLock=false;
   const T=_sk.tool, P=_sk.pending;
@@ -5447,27 +5464,30 @@ function _mergeGeos(geos){
     off+=gp.count; g.dispose(); }
   const m=new THREE.BufferGeometry(); m.setAttribute('position', new THREE.Float32BufferAttribute(pos,3)); m.setIndex(idx); return m;
 }
-function _skExtrude(){
-  if (!_sk.active) return;
+// Geschlossene Konturen → Liste von Flächen {shape, outer, holes}. Größere Loops
+// sind Außenkonturen, darin enthaltene kleinere werden zu Löchern.
+function _skBuildShapes(){
   const loops=_skBuildLoops();
-  if (loops.length===0){ notify('Keine geschlossene Kontur — Profil schließen (Endpunkte aneinander) oder Kreis/Ellipse nutzen','w'); return; }
-  const hmm=parseFloat(document.getElementById('sketch-h').value)||10;
-  const hU=Math.max(0.02, hmm/10);   // 1 Unit = 10 mm
   const info=loops.map(lp=>({lp, area:Math.abs(_polyArea(lp))})).sort((a,b)=>b.area-a.area);
-  const used=new Array(info.length).fill(false), shapes=[];
+  const used=new Array(info.length).fill(false), out=[];
   for (let i=0;i<info.length;i++){ if(used[i]) continue; used[i]=true;
     const sh=new THREE.Shape(info[i].lp.map(p=>new THREE.Vector2(p.u, -p.v)));
+    const holes=[];
     for (let j=i+1;j<info.length;j++){ if(used[j]) continue;
       if (_polyContains(info[i].lp, info[j].lp[0])){ used[j]=true;
-        sh.holes.push(new THREE.Path(info[j].lp.map(p=>new THREE.Vector2(p.u, -p.v)))); } }
-    shapes.push(sh);
+        sh.holes.push(new THREE.Path(info[j].lp.map(p=>new THREE.Vector2(p.u, -p.v))));
+        holes.push(info[j].lp); } }
+    out.push({ shape:sh, outer:info[i].lp, holes });
   }
-  if (shapes.length===0){ notify('Profil ungültig','w'); return; }
-  const geos=shapes.map(sh=>new THREE.ExtrudeGeometry(sh,{depth:hU, bevelEnabled:false, steps:1, curveSegments:8}));
+  return out;
+}
+// Flächen (mit Löchern) um hmm mm nach +Y extrudieren → fertiges Mesh in der Szene.
+function _skMakeBodyFromShapes(shapes, hmm){
+  const hU=Math.max(0.02, hmm/10);   // 1 Unit = 10 mm
+  const geos=shapes.map(s=>new THREE.ExtrudeGeometry(s.shape,{depth:hU, bevelEnabled:false, steps:1, curveSegments:8}));
   const merged=_mergeGeos(geos);
   merged.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI/2));  // XY→XZ, Extrusion → +Y
   merged.computeVertexNormals(); merged.computeBoundingBox();
-  saveUndo();
   const color=currentColor;
   const mesh=new THREE.Mesh(merged, new THREE.MeshStandardMaterial({
     color:new THREE.Color(color), roughness:0.38, metalness:0.05, side:THREE.DoubleSide }));
@@ -5476,9 +5496,39 @@ function _skExtrude(){
   mesh.userData={ id:idCtr++, type:'sketch', shapeType:'sketch', name:'Skizze '+typeCounts['sketch'],
                   color, isHole:false, fillet:0, chamfer:0 };
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
+  return mesh;
+}
+function _skExtrude(){
+  if (!_sk.active) return;
+  const shapes=_skBuildShapes();
+  if (shapes.length===0){ notify('Keine geschlossene Kontur — Profil schließen (Endpunkte aneinander) oder Kreis/Ellipse nutzen','w'); return; }
+  const hmm=parseFloat(document.getElementById('sketch-h').value)||10;
+  saveUndo();
+  const mesh=_skMakeBodyFromShapes(shapes, hmm);
   selectObjs([mesh]); updateTree();
   exitSketchMode();
   notify('Körper aus Skizze erzeugt ('+shapes.length+' Profil'+(shapes.length>1?'e':'')+')','ok');
+}
+// „Ziehen": die angeklickte Fläche (Außenkontur, in der p liegt, ohne Loch)
+// einzeln extrudieren → Körper. Schließt danach den Skizzen-Modus, damit man
+// das Ergebnis in der Iso-Ansicht sieht.
+function _skPullAt(p){
+  const shapes=_skBuildShapes();
+  if (shapes.length===0){ notify('Keine geschlossene Fläche — Profil erst schließen (Linien aneinander, oder Kreis/Rechteck)','w'); return; }
+  let pick=null, pa=Infinity;
+  for (const s of shapes){
+    if (!_polyContains(s.outer, p)) continue;
+    if (s.holes.some(h=>_polyContains(h, p))) continue;   // in ein Loch geklickt → ignorieren
+    const a=Math.abs(_polyArea(s.outer));
+    if (a<pa){ pa=a; pick=s; }                              // kleinste passende Fläche
+  }
+  if (!pick){ notify('In eine geschlossene Fläche klicken, um sie zu extrudieren','w'); return; }
+  const hmm=parseFloat(document.getElementById('sketch-h').value)||10;
+  saveUndo();
+  const mesh=_skMakeBodyFromShapes([pick], hmm);
+  selectObjs([mesh]); updateTree();
+  exitSketchMode();
+  notify('Fläche extrudiert — '+hmm+' mm','ok');
 }
 
 function _revolveAddPoint(e) {
@@ -12628,7 +12678,7 @@ window.addEventListener('keydown', e => {
     }
     if (k === 'Enter') { _skFinishCurrent(); return; }
     if (k.toLowerCase() === 'o') { _skToggleOrtho(); return; }
-    const map = { l:'line', r:'rect', c:'circle', a:'arc', e:'ellipse', i:'spline', t:'trim' };
+    const map = { l:'line', r:'rect', c:'circle', a:'arc', e:'ellipse', i:'spline', t:'trim', p:'pull' };
     const t = map[k.toLowerCase()];
     if (t) { _skSetTool(t); return; }
   }
