@@ -1270,6 +1270,13 @@ const firebaseConfig = {
   <div id="text-snap-hint"></div>
   <div id="vp-ctxmenu">
     <div class="sli-item" id="ctx-measure">📐 Messen (Abstand)</div>
+    <div class="sli-item" id="ctx-pushpull">↕ Fläche ziehen (Push/Pull)</div>
+  </div>
+  <div id="pp-bar" style="display:none;position:fixed;bottom:56px;left:50%;transform:translateX(-50%);background:rgba(24,24,32,0.93);border:1px solid #444;border-radius:8px;padding:7px 12px;align-items:center;gap:10px;z-index:8500;font-size:12px;color:#ccc;white-space:nowrap">
+    <span id="pp-status" style="font-weight:700;color:#aaa">Fläche anklicken</span>
+    <label id="pp-input-wrap" style="display:none;align-items:center;gap:5px">Versatz <input id="pp-mm" type="number" value="5" step="0.5" oninput="_ppPreview(parseFloat(this.value)||0)" onkeydown="event.stopPropagation(); if(event.key==='Enter'){event.preventDefault();_ppApply();}" style="width:64px;background:#11141c;border:1px solid #455;color:#fff;border-radius:4px;padding:3px 5px;font-size:12px"> mm</label>
+    <button id="pp-apply" onclick="_ppApply()" style="display:none;background:#F97316;border:none;color:#fff;border-radius:5px;padding:3px 10px;cursor:pointer;font-size:11px;font-weight:700">✓ Anwenden</button>
+    <button onclick="exitPushPull()" style="background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:3px 8px;cursor:pointer;font-size:11px">✕ ESC</button>
   </div>
   <div id="dim-handles"></div>
   <div id="align-handles"></div>
@@ -1293,9 +1300,14 @@ const firebaseConfig = {
     <button class="skt" data-tool="spline"  onclick="_skSetTool('spline')"  title="Spline durch Punkte"><span class="ski">∿</span><span class="skl">Spline</span><span class="skk">I</span></button>
     <button class="skt" data-tool="trim"    onclick="_skSetTool('trim')"    title="Beschneiden / Löschen"><span class="ski">✂</span><span class="skl">Trim</span><span class="skk">T</span></button>
     <div class="sksep"></div>
+    <button class="skt on" id="sk-ortho-btn" onclick="_skToggleOrtho()" title="Ortho-Fang: rastet auf waagerecht / senkrecht / 45° und an vorhandenen Punkten (O)"><span class="ski">⊾</span><span class="skl">Ortho-Fang</span><span class="skk">O</span></button>
     <button class="skbtn" onclick="_skUndo()" title="Letztes Element zurück (Strg+Z)">↶ Zurück</button>
     <label class="skh">Höhe <input id="sketch-h" type="number" value="10" min="0.2" step="0.5"> mm</label>
     <button class="skbtn skbtn-go" onclick="_skExtrude()" title="Geschlossene Profile extrudieren">✓ Extrudieren</button>
+    <div class="sksep"></div>
+    <button class="skbtn" onclick="document.getElementById('sk-dxf-file').click()" title="DXF-Datei (Linien/Kreise/Bögen) als Skizze laden">⬆ DXF laden</button>
+    <button class="skbtn" onclick="_skExportDXF()" title="Skizze als DXF speichern (für Lasercutter/Plotter)">⬇ DXF speichern</button>
+    <input type="file" id="sk-dxf-file" accept=".dxf" style="display:none" onchange="_skDxfFileSelected(event)">
     <button class="skbtn" onclick="exitSketchMode()" title="Skizze schließen (ESC)">✕ Schließen</button>
   </div>
   <style>
@@ -3392,8 +3404,8 @@ canvas.addEventListener('mousemove', e => {
 canvas.addEventListener('mousemove', e => {
   if (!_sk.active || isOrbit || isPan) return;
   const raw = _skPlanePoint(e); if (!raw) return;
-  const sp = _skSnap(raw); _sk.cursor = { u: sp.u, v: sp.v };
-  _skRender(); _skDimUpdate();
+  const sp = _skSnapFull(raw); _sk.cursor = { u: sp.u, v: sp.v };
+  _skRender(); _skDimUpdate(); _skUpdateBadge();
 });
 
 let _edgeMode            = false;
@@ -4961,7 +4973,8 @@ function exitRevolveMode() {
 // ═══ SKIZZE (2D-Sketch auf Bodenebene XZ → Extrudieren zu Solid) ═════════
 // Lokales 2D-System: u = Welt-X, v = Welt-Z, Extrusion entlang +Y (oben).
 const _sk = { active:false, tool:'line', ents:[], pending:[], group:null,
-              cursor:{u:0,v:0}, savedCam:null, dimLock:false, _wired:false };
+              cursor:{u:0,v:0}, savedCam:null, dimLock:false, _wired:false,
+              ortho:true, hint:'' };
 const _SK_Y = 0.02;
 
 function _skWireDim(){
@@ -4994,7 +5007,7 @@ function enterSketchMode() {
 
 function exitSketchMode() {
   if (!_sk.active) return;
-  _sk.active = false; canvas.style.cursor = '';
+  _sk.active = false; canvas.style.cursor = ''; _sk.hint=''; _skUpdateBadge();
   if (_sk.group) { scene.remove(_sk.group); _skDisposeGroup(); _sk.group = null; }
   _sk.ents = []; _sk.pending = []; _sk.dimLock = false;
   document.getElementById('sketch-bar').style.display = 'none';
@@ -5012,7 +5025,7 @@ function _skDisposeGroup() {
 
 function _skSetTool(t) {
   _sk.pending = []; _sk.tool = t; _sk.dimLock = false;
-  document.querySelectorAll('#sketch-bar .skt').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
+  document.querySelectorAll('#sketch-bar .skt[data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
   canvas.style.cursor = (t === 'trim') ? 'pointer' : 'crosshair';
   _skRender(); _skDimUpdate();
 }
@@ -5074,6 +5087,58 @@ function _skSnap(p){
   for (const ep of _skAllVertices()){ const d=Math.hypot(ep.u-p.u, ep.v-p.v); if (d<bd){ bd=d; best=ep; } }
   if (best) return { u:best.u, v:best.v };
   return { u: snapV(p.u), v: snapV(p.v) };
+}
+// Erweiterter Fang mit „Constraints": Endpunkt-Fang › Ortho (H/V/45° rel. zum
+// letzten Punkt) › Achs-Ausrichtung an vorhandenen Punkten › Raster. Setzt
+// _sk.hint (für Badge: • Punkt, H waagerecht, V senkrecht, 45°, ⋮/⋯ Ausrichtung).
+function _skSnapFull(p){
+  const tol = Math.max(0.06, sph.r*0.012);
+  // 1) Endpunkt-Fang (höchste Priorität)
+  let best=null, bd=tol;
+  for (const ep of _skAllVertices()){ const d=Math.hypot(ep.u-p.u, ep.v-p.v); if (d<bd){ bd=d; best=ep; } }
+  if (best){ _sk.hint='•'; return { u:best.u, v:best.v }; }
+  let u=p.u, v=p.v, hint='';
+  if (_sk.ortho){
+    // 2) Ortho relativ zum letzten gesetzten Punkt (Linie/Spline)
+    const ref = ((_sk.tool==='line'||_sk.tool==='spline') && _sk.pending.length) ? _sk.pending[_sk.pending.length-1] : null;
+    if (ref){
+      const dx=u-ref.u, dy=v-ref.v, L=Math.hypot(dx,dy);
+      if (L>1e-4){
+        const step=Math.PI/4, ang=Math.atan2(dy,dx); let sn=Math.round(ang/step)*step;
+        let dA=ang-sn; while(dA>Math.PI)dA-=2*Math.PI; while(dA<-Math.PI)dA+=2*Math.PI;
+        if (Math.abs(dA) < 0.14){   // ~8° Fangkegel
+          u=ref.u+Math.cos(sn)*L; v=ref.v+Math.sin(sn)*L;
+          const ch=Math.abs(Math.cos(sn)), sh=Math.abs(Math.sin(sn));
+          hint = sh<1e-6?'H' : ch<1e-6?'V' : '45°';
+        }
+      }
+    }
+    // 3) Achs-Ausrichtung an vorhandenen Punkten (gleiches u → senkrechte Hilfslinie, gleiches v → waagerechte)
+    const at=tol*0.7;
+    if (hint!=='V' && hint!=='45°'){ for (const ep of _skAllVertices()){ if (Math.abs(ep.u-u)<at){ u=ep.u; hint=hint?hint+'⋮':'⋮'; break; } } }
+    if (hint!=='H' && hint!=='45°'){ for (const ep of _skAllVertices()){ if (Math.abs(ep.v-v)<at){ v=ep.v; hint=(hint&&hint!=='⋮')?hint+'⋯':(hint==='⋮'?'⋮⋯':'⋯'); break; } } }
+  }
+  // 4) Raster-Fallback für noch freie Achsen
+  if (!hint){ u=snapV(u); v=snapV(v); }
+  _sk.hint=hint;
+  return { u, v };
+}
+function _skToggleOrtho(){
+  _sk.ortho=!_sk.ortho;
+  const b=document.getElementById('sk-ortho-btn'); if(b) b.classList.toggle('on',_sk.ortho);
+  notify(_sk.ortho?'Ortho-Fang an (H/V/45° + Ausrichten)':'Ortho-Fang aus (nur Raster + Punkte)','ok');
+}
+// Snap-Badge (kleines Label am Cursor, zeigt aktiven Fang)
+function _skUpdateBadge(){
+  let b=document.getElementById('sk-snap-badge');
+  if (!_sk.active || !_sk.hint){ if(b) b.style.display='none'; return; }
+  if (!b){ b=document.createElement('div'); b.id='sk-snap-badge';
+    b.style.cssText='position:fixed;z-index:9000;pointer-events:none;background:#f97316;color:#fff;font:700 10px system-ui;padding:1px 5px;border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,.4)';
+    document.body.appendChild(b); }
+  const m={'•':'Punkt','H':'— waagerecht','V':'| senkrecht','45°':'45°','⋮':'| ausrichten','⋯':'— ausrichten','⋮⋯':'+ ausrichten'};
+  b.textContent=m[_sk.hint]||_sk.hint;
+  const s=_skScreen(_sk.cursor.u,_sk.cursor.v);
+  b.style.left=(s.x+14)+'px'; b.style.top=(s.y+14)+'px'; b.style.display='block';
 }
 function _skAllVertices(){
   const out=[];
@@ -5155,7 +5220,7 @@ function _skRender(){
 // ── Klick / Werkzeuglogik ────────────────────────────────────────────────
 function _skClick(e){
   const raw=_skPlanePoint(e); if(!raw) return;
-  const sp=_skSnap(raw), cur={u:sp.u, v:sp.v};
+  const sp=_skSnapFull(raw), cur={u:sp.u, v:sp.v};
   _sk.dimLock=false;
   const T=_sk.tool, P=_sk.pending;
   if (T==='trim'){ _skTrimAt(cur); _skRender(); return; }
@@ -5194,6 +5259,105 @@ function _skFinishCurrent(){
   _sk.pending=[]; _skRender();
 }
 function _skUndo(){ if (_sk.pending.length) _sk.pending.pop(); else _sk.ents.pop(); _skRender(); }
+
+// ── DXF Im-/Export (2D, R12-ASCII; für Lasercutter/Plotter) ───────────────
+// Skizze (u,v) ↔ DXF (mm). v wird gespiegelt (Y=-v*10), damit die DXF wie die
+// Draufsicht im Editor aussieht. Unterstützt LINE, CIRCLE, ARC, LWPOLYLINE,
+// POLYLINE/VERTEX.
+function _skExportDXF(){
+  if (!_sk.active){ notify('Nur im Skizzen-Modus','w'); return; }
+  if (!_sk.ents.length){ notify('Skizze ist leer — nichts zu exportieren','w'); return; }
+  const L=[], g=(c,v)=>{ L.push(c,v); };
+  const X=u=>(u*10).toFixed(4), Y=v=>(-v*10).toFixed(4);
+  const deg=a=>{ let d=a*180/Math.PI; d=((d%360)+360)%360; return d.toFixed(4); };
+  g(0,'SECTION'); g(2,'ENTITIES');
+  for (const en of _sk.ents){
+    if (en.type==='line'){
+      g(0,'LINE'); g(8,'0'); g(10,X(en.a.u)); g(20,Y(en.a.v)); g(30,'0.0'); g(11,X(en.b.u)); g(21,Y(en.b.v)); g(31,'0.0');
+    } else if (en.type==='circle'){
+      g(0,'CIRCLE'); g(8,'0'); g(10,X(en.c.u)); g(20,Y(en.c.v)); g(30,'0.0'); g(40,(en.r*10).toFixed(4));
+    } else if (en.type==='arc'){
+      // Y-Spiegelung kehrt den Drehsinn um → Start/Ende tauschen und negieren
+      g(0,'ARC'); g(8,'0'); g(10,X(en.c.u)); g(20,Y(en.c.v)); g(30,'0.0'); g(40,(en.r*10).toFixed(4)); g(50,deg(-en.a1)); g(51,deg(-en.a0));
+    } else {
+      const t=_skTess(en); if (t.pts.length<2) continue;
+      g(0,'LWPOLYLINE'); g(8,'0'); g(90,t.pts.length); g(70,t.closed?1:0);
+      for (const p of t.pts){ g(10,X(p.u)); g(20,Y(p.v)); }
+    }
+  }
+  g(0,'ENDSEC'); g(0,'EOF');
+  const blob=new Blob([L.join('\r\n')+'\r\n'],{type:'application/dxf'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download=(document.getElementById('cur-design-lbl')?.textContent||'Skizze').replace(/[^a-zA-Z0-9_\- ]/g,'_')+'.dxf';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+  notify('⬇ DXF gespeichert ('+_sk.ents.length+' Elemente)','ok');
+}
+function _skDxfFileSelected(e){
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=ev=>{ try{ _skImportDXF(ev.target.result); }catch(err){ console.warn('DXF:',err); notify('DXF-Import fehlgeschlagen: '+err.message,'e'); } };
+  r.readAsText(f); e.target.value='';
+}
+function _skImportDXF(text){
+  const raw=text.split(/\r\n|\r|\n/);
+  const pairs=[];
+  for (let i=0;i+1<raw.length;i+=2){ const code=parseInt(raw[i].trim(),10); if(isNaN(code)) continue; pairs.push([code, raw[i+1]]); }
+  const x2u=mm=>parseFloat(mm)/10, y2v=mm=>-parseFloat(mm)/10;   // mm→Units, Y zurück-spiegeln
+  const out=[]; let cur=null, type=null;
+  const flush=()=>{
+    if (!cur||!type) { cur=null; return; }
+    const t=type.toUpperCase();
+    try{
+      if (t==='LINE' && cur[10]!=null && cur[11]!=null){
+        out.push({type:'line', a:{u:x2u(cur[10]),v:y2v(cur[20])}, b:{u:x2u(cur[11]),v:y2v(cur[21])}});
+      } else if (t==='CIRCLE' && cur[40]!=null){
+        out.push({type:'circle', c:{u:x2u(cur[10]),v:y2v(cur[20])}, r:parseFloat(cur[40])/10});
+      } else if (t==='ARC' && cur[40]!=null){
+        // DXF-Bogen (CCW, Grad) → in u,v-Punkte abtasten (Y-Spiegelung → Winkel negieren)
+        const cu=x2u(cur[10]), cv=y2v(cur[20]), r=parseFloat(cur[40])/10;
+        let s=parseFloat(cur[50])*Math.PI/180, en=parseFloat(cur[51])*Math.PI/180;
+        let span=en-s; while(span<0)span+=2*Math.PI; while(span>2*Math.PI)span-=2*Math.PI;
+        const N=Math.max(6,Math.ceil(span/(Math.PI/24))), pts=[];
+        for(let k=0;k<=N;k++){ const a=s+span*k/N; pts.push({u:cu+r*Math.cos(a), v:cv-r*Math.sin(a)}); }
+        out.push({type:'poly', pts, closed:false});
+      } else if ((t==='LWPOLYLINE'||t==='POLYLINE') && cur._pts && cur._pts.length>=2){
+        out.push({type:'poly', pts:cur._pts, closed:(parseInt(cur[70]||'0',10)&1)===1});
+      }
+    }catch(_){}
+    cur=null;
+  };
+  let inVertex=false, vtx=null;
+  for (const [code,val] of pairs){
+    if (code===0){
+      // vorheriges VERTEX an Polyline anhängen
+      if (inVertex && vtx && cur){ (cur._pts=cur._pts||[]).push(vtx); vtx=null; }
+      const v=(val||'').trim().toUpperCase();
+      if (v==='VERTEX'){ inVertex=true; vtx={u:0,v:0}; continue; }
+      if (v==='SEQEND'){ inVertex=false; continue; }
+      flush();
+      type=v; cur={}; inVertex=false;
+      if (v==='POLYLINE') cur._pts=[];
+      continue;
+    }
+    if (!cur) continue;
+    if (inVertex){
+      if (code===10) vtx.u=x2u(val); else if (code===20) vtx.v=y2v(val);
+      continue;
+    }
+    if (type && type.toUpperCase()==='LWPOLYLINE' && code===10){ cur._pts=cur._pts||[]; cur._pts.push({u:x2u(val), v:0, _ay:true}); }
+    else if (type && type.toUpperCase()==='LWPOLYLINE' && code===20 && cur._pts && cur._pts.length){ cur._pts[cur._pts.length-1].v=y2v(val); }
+    else cur[code]=val;
+  }
+  flush();
+  const ents=out.filter(e=>e && (e.type!=='poly' || e.pts.length>=2));
+  if (!ents.length){ notify('Keine unterstützten DXF-Elemente gefunden (LINE/CIRCLE/ARC/POLYLINE)','w'); return; }
+  if (!_sk.active) enterSketchMode();
+  for (const e of ents) _sk.ents.push(e);
+  _skRender();
+  // Auf importierte Geometrie zoomen
+  notify('⬆ DXF geladen: '+ents.length+' Elemente — „Extrudieren" macht daraus einen Körper','ok');
+}
 
 // ── Beschneiden (Trim) ───────────────────────────────────────────────────
 function _segInt(p1,p2,p3,p4){
@@ -11442,6 +11606,122 @@ function _applyCircularPattern(count, radius, axis) {
   notify(`${count} × Kreismuster ✓`, 'ok');
 }
 
+// ═══ PUSH / PULL (Fläche ziehen) ═══════════════════════════════════════
+// Eine ebene Fläche anklicken und entlang ihrer Normalen versetzen. Alle
+// Vertices, die auf der Flächen-Ebene liegen, wandern mit — bei prismatischen
+// Körpern (Box, Vieleck, extrudierte Skizze) verlängern/verkürzen sich so die
+// Seitenwände. Ergebnis ist ein Freiform-Mesh (parametrische Daten entfallen).
+const _pp = { active:false, obj:null, locked:false, idxs:null, base:null,
+              localDir:null, didUndo:false };
+
+function enterPushPull(){
+  if (_pp.active){ exitPushPull(); return; }
+  if (_sk.active) exitSketchMode();
+  if (_shellMode) exitShellMode();
+  if (_edgeMode) exitEdgeMode();
+  if (_revolveMode) exitRevolveMode();
+  const o = selectedObjs.length === 1 ? selectedObjs[0] : null;
+  if (!o){ notify('Bitte genau ein Objekt wählen','w'); return; }
+  const mesh = o.isMesh ? o : o.getObjectByProperty('isMesh', true);
+  if (!mesh || !mesh.geometry || !mesh.geometry.attributes.position){ notify('Objekt hat keine bearbeitbare Geometrie','w'); return; }
+  _pp.active = true; _pp.obj = mesh; _pp.locked = false; _pp.didUndo = false;
+  clearDimHandles();
+  canvas.style.cursor = 'crosshair';
+  document.getElementById('pp-bar').style.display = 'flex';
+  document.getElementById('pp-status').textContent = 'Ebene Fläche anklicken';
+  document.getElementById('pp-input-wrap').style.display = 'none';
+  document.getElementById('pp-apply').style.display = 'none';
+  notify('Push/Pull: ebene Fläche anklicken, dann Versatz eingeben (Esc bricht ab)','ok');
+}
+
+function exitPushPull(){
+  if (!_pp.active) return;
+  if (_pp.locked && _pp.didUndo){ _ppRestore(); undoStack.pop(); updateUndoRedoButtons(); }  // abgebrochen → zurücksetzen
+  _pp.active = false; _pp.obj = null; _pp.locked = false; _pp.idxs = null; _pp.base = null; _pp.didUndo = false;
+  canvas.style.cursor = '';
+  document.getElementById('pp-bar').style.display = 'none';
+  _doRepositionDimHandles();
+}
+
+function _ppRestore(){
+  if (!_pp.obj || !_pp.idxs || !_pp.base) return;
+  const pos = _pp.obj.geometry.attributes.position;
+  for (let k = 0; k < _pp.idxs.length; k++){
+    const i = _pp.idxs[k];
+    pos.setXYZ(i, _pp.base[k*3], _pp.base[k*3+1], _pp.base[k*3+2]);
+  }
+  pos.needsUpdate = true;
+  _pp.obj.geometry.computeVertexNormals();
+  _pp.obj.geometry.computeBoundingSphere();
+}
+
+function _ppPickFace(hit){
+  const mesh = _pp.obj;
+  mesh.updateMatrixWorld(true);
+  // Flächen-Normale in Welt (zur Kamera hin orientiert = nach außen)
+  let n = hit.face.normal.clone().transformDirection(mesh.matrixWorld).normalize();
+  if (n.dot(raycaster.ray.direction) > 0) n.negate();
+  const wp = hit.point.clone();
+  // Bounding-Diagonale für Ebenen-Toleranz
+  mesh.geometry.computeBoundingBox();
+  const diag = mesh.geometry.boundingBox.getSize(new THREE.Vector3()).length() * mesh.scale.x;
+  const eps = Math.max(0.004, diag * 0.0025);
+  // alle Vertices auf der Flächen-Ebene sammeln (Welt-Koordinaten)
+  const pos = mesh.geometry.attributes.position;
+  const v = new THREE.Vector3();
+  const idxs = [], base = [];
+  for (let i = 0; i < pos.count; i++){
+    v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+    if (Math.abs(n.dot(v.clone().sub(wp))) < eps){
+      idxs.push(i);
+      base.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+    }
+  }
+  if (idxs.length < 3){ notify('Keine ebene Fläche getroffen — auf eine flache Seite klicken','w'); return; }
+  // lokale Versatzrichtung (skalierungs-korrekt) per Zwei-Punkt-Transform
+  const inv = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
+  const l0 = wp.clone().applyMatrix4(inv);
+  const l1 = wp.clone().add(n).applyMatrix4(inv);
+  _pp.localDir = l1.sub(l0);   // Länge = 1 Welt-Unit in lokal
+  _pp.idxs = idxs; _pp.base = base;
+  saveUndo(); _pp.didUndo = true; _pp.locked = true;
+  document.getElementById('pp-status').textContent = idxs.length + ' Punkte auf der Fläche';
+  document.getElementById('pp-input-wrap').style.display = 'flex';
+  document.getElementById('pp-apply').style.display = '';
+  const mmEl = document.getElementById('pp-mm'); mmEl.value = 5;
+  _ppPreview(5); mmEl.focus(); mmEl.select();
+}
+
+function _ppPreview(mm){
+  if (!_pp.locked || !_pp.idxs) return;
+  const d = (mm || 0) / 10;   // mm → Units
+  const pos = _pp.obj.geometry.attributes.position, dir = _pp.localDir;
+  for (let k = 0; k < _pp.idxs.length; k++){
+    const i = _pp.idxs[k];
+    pos.setXYZ(i, _pp.base[k*3] + dir.x*d, _pp.base[k*3+1] + dir.y*d, _pp.base[k*3+2] + dir.z*d);
+  }
+  pos.needsUpdate = true;
+  _pp.obj.geometry.computeVertexNormals();
+  _pp.obj.geometry.computeBoundingSphere();
+}
+
+function _ppApply(){
+  if (!_pp.locked){ exitPushPull(); return; }
+  _ppPreview(parseFloat(document.getElementById('pp-mm').value) || 0);
+  const mesh = _pp.obj;
+  // Parametrische Daten entfallen → Freiform-Mesh
+  const ud = mesh.userData;
+  ud.type = 'custom'; ud.shapeType = 'custom';
+  delete ud.occtShape; delete ud._occtParams; delete ud.edgeBevels;
+  delete ud._dynamicEdges; delete ud._origGeo; delete ud._origStlBuf; delete ud.wasBox;
+  mesh.geometry.computeBoundingBox();
+  const target = _pp.obj;
+  _pp.didUndo = false;   // Änderung wird übernommen (kein Restore)
+  if (typeof _updateObjEdgeLines === 'function'){ try{ _updateObjEdgeLines(target); }catch(_){} }
+  exitPushPull();
+  notify('Fläche verschoben ✓ (jetzt Freiform-Körper)','ok');
+}
+
 // ═══ UNDO / REDO ══════════════════════════════════════════════════════
 function saveUndo() {
   undoStack.push(objects.map(objectToData));
@@ -11642,6 +11922,14 @@ canvas.addEventListener('mousedown', e => {
     const hits = pickObjects(e);
     const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines && h.object === _shellObj);
     if (hit) _shellToggleFace(hit);
+    return;
+  }
+  if (_pp.active) {
+    if (!_pp.locked) {
+      const hits = pickObjects(e);
+      const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines && h.object === _pp.obj);
+      if (hit) _ppPickFace(hit);
+    }
     return;
   }
   if (e.button === 0) {
@@ -11854,6 +12142,9 @@ const _vpCtx = document.getElementById('vp-ctxmenu');
 function _hideVpCtx(){ if(_vpCtx) _vpCtx.classList.remove('show'); }
 function _showVpCtx(x, y){
   if(!_vpCtx) return;
+  // Push/Pull nur bei genau einem ausgewählten Objekt anbieten
+  const ppItem = document.getElementById('ctx-pushpull');
+  if (ppItem) ppItem.style.display = (selectedObjs && selectedObjs.length === 1) ? '' : 'none';
   _vpCtx.classList.add('show');
   // innerhalb des Fensters halten
   const mw = _vpCtx.offsetWidth, mh = _vpCtx.offsetHeight;
@@ -11875,6 +12166,7 @@ window.addEventListener('mousedown', e => { if(e.button !== 2 && _vpCtx && _vpCt
 window.addEventListener('wheel', _hideVpCtx, true);
 window.addEventListener('keydown', e => { if(e.key==='Escape') _hideVpCtx(); });
 document.getElementById('ctx-measure').addEventListener('click', () => { _hideVpCtx(); if(typeof measureTool!=='function') return; if(_measureMode) _measureExit(); /* aktiven Modus zurücksetzen, damit der Klick immer (neu) startet statt zu togglen */ measureTool(); });
+document.getElementById('ctx-pushpull').addEventListener('click', () => { _hideVpCtx(); enterPushPull(); });
 
 canvas.addEventListener('mouseup', e => {
   const moved = Math.hypot(e.clientX - mouseDownPos.x, e.clientY - mouseDownPos.y);
@@ -12316,6 +12608,7 @@ window.addEventListener('keydown', e => {
     if (document.getElementById('new-modal').classList.contains('show')) { _newCancel(); return; }
     if (document.getElementById('sz-modal').classList.contains('show')) { _cancelSize(); return; }
     if (document.getElementById('ds-modal').classList.contains('show')) { hideDesigns(); return; }
+    if (_pp.active) { exitPushPull(); return; }
     if (_sk.active) { exitSketchMode(); return; }
     if (_revolveMode) { exitRevolveMode(); return; }
     if (_shellMode) { exitShellMode(); return; }
@@ -12334,6 +12627,7 @@ window.addEventListener('keydown', e => {
       _skRender(); _skDimUpdate(); e.preventDefault(); return;
     }
     if (k === 'Enter') { _skFinishCurrent(); return; }
+    if (k.toLowerCase() === 'o') { _skToggleOrtho(); return; }
     const map = { l:'line', r:'rect', c:'circle', a:'arc', e:'ellipse', i:'spline', t:'trim' };
     const t = map[k.toLowerCase()];
     if (t) { _skSetTool(t); return; }
@@ -22951,14 +23245,26 @@ function _printCheckAnalyze(){
   if(!meshes.length) return null;
   const box=new THREE.Box3();
   let boundaryEdges=0, nonManifold=0, overhangArea=0, totalArea=0, tris=0, capped=false;
+  let volUnits=0;   // signiertes Volumen aller Körper in Welt-Units³ (1 Unit³ = 1 cm³)
   const DOWN=Math.cos(45*Math.PI/180);   // 0.707
+  const _va=new THREE.Vector3(), _vb=new THREE.Vector3(), _vc=new THREE.Vector3();
   for(const m of meshes){
     m.updateWorldMatrix(true,true);
     box.expandByObject(m);
     const g=m.geometry, pos=g && g.attributes.position; if(!pos) continue;
     const idx=g.index, triCount=(idx?idx.count:pos.count)/3;
     tris+=triCount;
+    // Volumen im Welt-Koordinatensystem (Σ a·(b×c)/6), berücksichtigt Skalierung/Transform
+    const mw=m.matrixWorld;
+    for(let t=0;t<triCount;t++){
+      const i0=idx?idx.getX(t*3):t*3, i1=idx?idx.getX(t*3+1):t*3+1, i2=idx?idx.getX(t*3+2):t*3+2;
+      _va.fromBufferAttribute(pos,i0).applyMatrix4(mw);
+      _vb.fromBufferAttribute(pos,i1).applyMatrix4(mw);
+      _vc.fromBufferAttribute(pos,i2).applyMatrix4(mw);
+      volUnits += _va.x*(_vb.y*_vc.z - _vb.z*_vc.y) - _va.y*(_vb.x*_vc.z - _vb.z*_vc.x) + _va.z*(_vb.x*_vc.y - _vb.y*_vc.x);
+    }
   }
+  volUnits=Math.abs(volUnits/6);
   const heavy = tris>250000;   // sehr große Szene → Detail-Analyse überspringen (kein Einfrieren)
   const minY = box.min.y;      // Unterkante: nach unten zeigende Flächen hier sind die Basis (kein Überhang)
   if(!heavy){
@@ -22987,7 +23293,8 @@ function _printCheckAnalyze(){
   const size=box.getSize(new THREE.Vector3());
   return { bodies:meshes.length, tris, capped, boundaryEdges, nonManifold,
     overhangPct: totalArea?Math.round(overhangArea/totalArea*100):0,
-    wMM:size.x*10, hMM:size.y*10, dMM:size.z*10, minYmm: box.min.y*10 };
+    wMM:size.x*10, hMM:size.y*10, dMM:size.z*10, minYmm: box.min.y*10,
+    volCm3: volUnits };   // 1 Unit³ = (10mm)³ = 1000 mm³ = 1 cm³
 }
 function _printCheckOpen(){
   document.getElementById('printcheck-modal').classList.add('show');
@@ -23017,6 +23324,12 @@ function _printCheckOpen(){
   // Sehr dünn (Heuristik auf Außenmaße)
   const minDim=Math.min(r.wMM,r.dMM,r.hMM);
   if(minDim<0.8) row('warn','⚠️','Sehr filigran','Dünnste Außenabmessung ~'+minDim.toFixed(1)+' mm — könnte zu dünn zum Drucken sein.');
+  // Volumen & Materialgewicht (massiv = 100% Infill). Dichten in g/cm³.
+  if(r.volCm3>0){
+    const cm3=r.volCm3, g=d=>Math.round(cm3*d);
+    const vTxt = cm3>=1 ? cm3.toFixed(cm3>=10?0:1)+' cm³' : Math.round(cm3*1000)+' mm³';
+    row('info','⚖️','Volumen & Gewicht', vTxt+' — massiv ca. <b>'+g(1.24)+' g</b> PLA · '+g(1.27)+' g PETG · '+g(1.04)+' g ABS. (Bei z.B. 20% Infill grob ⅓ davon.)');
+  }
   // Render
   const worst=items.some(i=>i.lvl==='err')?'err':(items.some(i=>i.lvl==='warn')?'warn':'ok');
   const head = worst==='ok'?'<span style="color:#059669">✓ Sieht gut aus — druckbereit.</span>'
@@ -23083,7 +23396,10 @@ const CMDK = [
   {i:'🖨',g:'Druck',t:'Druck-Check',k:'print check druckbar',run:()=>_printCheckOpen()},
   {i:'↻',g:'Druck',t:'Für Druck ausrichten',k:'orient',run:()=>autoOrientForPrint()},
   {i:'📐',g:'Bearbeiten',t:'Messen (Abstand)',k:'measure distance bemaszung',run:()=>measureTool()},
+  {i:'↕',g:'Bearbeiten',t:'Fläche ziehen (Push/Pull)',k:'push pull fläche offset extrudieren',run:()=>enterPushPull()},
   {i:'🔻',g:'Bearbeiten',t:'Vereinfachen (Dreiecke)',k:'simplify decimate reduzieren',run:()=>openSimplifyModal()},
+  {i:'⬇',g:'Export',t:'Skizze als DXF',k:'dxf laser export skizze',run:()=>{ if(_sk.active) _skExportDXF(); else notify('Erst Skizzen-Modus öffnen','w'); }},
+  {i:'⬆',g:'Datei',t:'DXF in Skizze laden',k:'dxf laser import skizze',run:()=>{ if(!_sk.active) enterSketchMode(); document.getElementById('sk-dxf-file').click(); }},
   {i:'⬇',g:'Export',t:'STL exportieren',k:'export stl',run:()=>exportSTL()},
   {i:'⬇',g:'Export',t:'STL pro Körper',k:'parts stl',run:()=>exportPartsSTL()},
   {i:'⬇',g:'Export',t:'OBJ exportieren',k:'export obj',run:()=>exportOBJ()},
