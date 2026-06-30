@@ -5659,13 +5659,122 @@ function _skBuildShapes(){
   }
   return out;
 }
+// Profile (Außenkontur + Löcher in u,v) → extrudierte Geometrie. filMM>0 rundet,
+// chaMM>0 fast die OBERE UND UNTERE Kante nach INNEN (Wand bleibt voller Querschnitt,
+// Deckel zieht sich ein). Radius hat Vorrang vor Fase. Gesamthöhe bleibt hmm.
+function _skBuildGeoFromProfiles(profiles, hmm, filMM, chaMM){
+  const hU=Math.max(0.02, hmm/10);
+  const useFil=(filMM||0)>1e-3, bevMM=useFil?(filMM||0):(chaMM||0);
+  let bev=Math.max(0, bevMM/10);
+  // Bevel begrenzen: nicht über halbe Höhe und nicht über kleinste Profilausdehnung
+  let minU=Infinity,maxU=-Infinity,minV=Infinity,maxV=-Infinity;
+  for(const pr of profiles) for(const p of pr.outer){ if(p.u<minU)minU=p.u; if(p.u>maxU)maxU=p.u; if(p.v<minV)minV=p.v; if(p.v>maxV)maxV=p.v; }
+  const minHalf=Math.min(maxU-minU, maxV-minV)/2;
+  bev=Math.min(bev, (hU/2)*0.96, minHalf*0.6);
+  if (bev<1e-3){
+    const geos=profiles.map(pr=>new THREE.ExtrudeGeometry(_skProfileToShape(pr),{depth:hU, bevelEnabled:false, steps:1, curveSegments:24}));
+    return _skFinishGeo(_mergeGeos(geos));
+  }
+  return _skRoundExtrude(profiles, hU, bev, useFil);
+}
+function _skProfileToShape(pr){
+  const sh=new THREE.Shape(pr.outer.map(p=>new THREE.Vector2(p.u,-p.v)));
+  (pr.holes||[]).forEach(h=>sh.holes.push(new THREE.Path(h.map(p=>new THREE.Vector2(p.u,-p.v)))));
+  return sh;
+}
+function _skFinishGeo(geo){
+  geo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI/2));  // XY→XZ, Extrusion → +Y
+  geo.computeVertexNormals(); geo.computeBoundingBox(); return geo;
+}
+// Versatz-Normalen pro Schleifen-Vertex (Miter), zeigen in Richtung „Solid schrumpfen"
+// (Außenkontur nach innen, Loch nach außen) → echtes Inset um Distanz d.
+function _loopOffsetNormals(pts, isHole){
+  const n=pts.length, out=[];
+  let area=0; for(let i=0;i<n;i++){const a=pts[i],b=pts[(i+1)%n];area+=a.u*b.v-b.u*a.v;}
+  const sgn=area>=0?1:-1;
+  for(let i=0;i<n;i++){
+    const p0=pts[(i-1+n)%n], p1=pts[i], p2=pts[(i+1)%n];
+    let e1u=p1.u-p0.u,e1v=p1.v-p0.v, e2u=p2.u-p1.u,e2v=p2.v-p1.v;
+    let n1u=-e1v,n1v=e1u, n2u=-e2v,n2v=e2u;
+    const l1=Math.hypot(n1u,n1v)||1,l2=Math.hypot(n2u,n2v)||1; n1u/=l1;n1v/=l1;n2u/=l2;n2v/=l2;
+    let nu=n1u+n2u,nv=n1v+n2v; const l=Math.hypot(nu,nv);
+    if(l<1e-6){nu=n1u;nv=n1v;} else {nu/=l;nv/=l;}
+    const cos=Math.max(0.25, nu*n1u+nv*n1v), m=1/cos, dir=(isHole?-1:1)*sgn;
+    out.push({u:nu*dir*m, v:nv*dir*m});
+  }
+  return out;
+}
+// Extrusion mit nach innen gerundeter (useFil) bzw. gefaster Ober-/Unterkante.
+// Eigener Ring-Builder: Seitenwände + Viertelkreis-Ringe + earcut-Deckel, alles in
+// EIN Vertex-Array, Dreiecks-Orientierung gegen Referenznormale erzwungen, dann
+// Vertices verschweißt → wasserdicht & korrekte Normalen (verifiziert: Kreis/
+// Rechteck/Washer, 0 offene Kanten, 0 non-manifold).
+function _skRoundExtrude(profiles, hU, bevU, useFil){
+  const K=useFil?6:1, rings=[];
+  if (useFil){
+    for(let k=K;k>=0;k--){ const a=(k/K)*(Math.PI/2); rings.push({ins:bevU*(1-Math.cos(a)), y:bevU*(1-Math.sin(a))}); }
+    for(let k=0;k<=K;k++){ const a=(k/K)*(Math.PI/2); rings.push({ins:bevU*(1-Math.cos(a)), y:hU-bevU*(1-Math.sin(a))}); }
+  } else { rings.push({ins:bevU,y:0},{ins:0,y:bevU},{ins:0,y:hU-bevU},{ins:bevU,y:hU}); }
+  const P=[], I=[];
+  const addV=(x,y,z)=>{ P.push(x,y,z); return P.length/3-1; };
+  const get=i=>[P[i*3],P[i*3+1],P[i*3+2]];
+  const pushTri=(a,b,c,ref)=>{ const A=get(a),B=get(b),C=get(c);
+    const ux=B[0]-A[0],uy=B[1]-A[1],uz=B[2]-A[2], vx=C[0]-A[0],vy=C[1]-A[1],vz=C[2]-A[2];
+    const nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx;
+    if(nx*ref[0]+ny*ref[1]+nz*ref[2]>=0) I.push(a,b,c); else I.push(a,c,b); };
+  const loops=[];
+  for(const pr of profiles){
+    loops.push({pts:pr.outer, norms:_loopOffsetNormals(pr.outer,false), isHole:false});
+    (pr.holes||[]).forEach(h=>loops.push({pts:h, norms:_loopOffsetNormals(h,true), isHole:true}));
+  }
+  for(const L of loops){
+    const n=L.pts.length;
+    const ringIdx=rings.map(r=> L.pts.map((p,i)=> addV(p.u+L.norms[i].u*r.ins, r.y, p.v+L.norms[i].v*r.ins)) );
+    for(let r=0;r<rings.length-1;r++) for(let i=0;i<n;i++){
+      const i2=(i+1)%n, a=ringIdx[r][i], b=ringIdx[r][i2], c=ringIdx[r+1][i], d=ringIdx[r+1][i2];
+      const ref=[-L.norms[i].u,0,-L.norms[i].v];
+      pushTri(a,b,d,ref); pushTri(a,d,c,ref);
+    }
+  }
+  const outerL=loops.find(l=>!l.isHole), holeLs=loops.filter(l=>l.isHole);
+  const mkCap=(y,ref)=>{
+    const contour=outerL.pts.map((p,i)=>new THREE.Vector2(p.u+outerL.norms[i].u*bevU, p.v+outerL.norms[i].v*bevU));
+    const holes=holeLs.map(h=>h.pts.map((p,i)=>new THREE.Vector2(p.u+h.norms[i].u*bevU, p.v+h.norms[i].v*bevU)));
+    const all=contour.concat(...holes);
+    const tris=THREE.ShapeUtils.triangulateShape(contour, holes);
+    const vidx=all.map(pt=>addV(pt.x, y, pt.y));
+    for(const t of tris) pushTri(vidx[t[0]],vidx[t[1]],vidx[t[2]], ref);
+  };
+  mkCap(hU,[0,1,0]); mkCap(0,[0,-1,0]);
+  // Vertices verschweißen (Naht Wand↔Deckel schließen)
+  const map=new Map(), remap=new Array(P.length/3), NP=[];
+  for(let i=0;i<P.length/3;i++){ const k=Math.round(P[i*3]*1e4)+'_'+Math.round(P[i*3+1]*1e4)+'_'+Math.round(P[i*3+2]*1e4);
+    if(map.has(k)) remap[i]=map.get(k); else { const ni=NP.length/3; NP.push(P[i*3],P[i*3+1],P[i*3+2]); map.set(k,ni); remap[i]=ni; } }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(NP,3)); g.setIndex(I.map(i=>remap[i]));
+  g.computeVertexNormals(); g.computeBoundingBox();
+  return g;
+}
+// Live-Rebuild der Kantenrundung/-fase eines Skizzen-Körpers (Slider im Panel).
+function _skApplyBevel(filMM, chaMM){
+  const o=getFirst(); if(!o||o.userData.shapeType!=='sketch'||!o.userData._skProfiles) return;
+  let fil=parseFloat(filMM)||0, cha=parseFloat(chaMM)||0;
+  if (fil>0) cha=0;   // Radius hat Vorrang
+  saveUndoDebounced();
+  o.userData.fillet=fil; o.userData.chamfer=cha;
+  const geo=_skBuildGeoFromProfiles(o.userData._skProfiles, o.userData._skHeightMM||10, fil, cha);
+  o.geometry.dispose(); o.geometry=geo;
+  o.userData._origGeo=geo;                                   // neue saubere Textur-Basis
+  if (o.userData.displacementPattern && o.userData.displacementPattern!=='keine'){
+    o.userData._dispBase=null; o.userData.displacementPattern='keine'; // Textur bei Geometrieänderung zurücksetzen
+  }
+  _updateObjEdgeLines(o);
+}
 // Flächen (mit Löchern) um hmm mm nach +Y extrudieren → fertiges Mesh in der Szene.
 function _skMakeBodyFromShapes(shapes, hmm){
-  const hU=Math.max(0.02, hmm/10);   // 1 Unit = 10 mm
-  const geos=shapes.map(s=>new THREE.ExtrudeGeometry(s.shape,{depth:hU, bevelEnabled:false, steps:1, curveSegments:8}));
-  const merged=_mergeGeos(geos);
-  merged.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI/2));  // XY→XZ, Extrusion → +Y
-  merged.computeVertexNormals(); merged.computeBoundingBox();
+  const profiles=shapes.map(s=>({ outer:s.outer.map(p=>({u:p.u,v:p.v})),
+                                  holes:(s.holes||[]).map(h=>h.map(p=>({u:p.u,v:p.v}))) }));
+  const merged=_skBuildGeoFromProfiles(profiles, hmm, 0, 0);
   const color=currentColor;
   const mesh=new THREE.Mesh(merged, new THREE.MeshStandardMaterial({
     color:new THREE.Color(color), roughness:0.38, metalness:0.05, side:THREE.DoubleSide }));
@@ -5673,7 +5782,9 @@ function _skMakeBodyFromShapes(shapes, hmm){
   typeCounts['sketch']=(typeCounts['sketch']||0)+1;
   mesh.userData={ id:idCtr++, type:'sketch', shapeType:'sketch', name:'Skizze '+typeCounts['sketch'],
                   color, isHole:false, fillet:0, chamfer:0 };
-  mesh.userData._origGeo = merged.clone();   // saubere Basis für Textur/Displacement (sonst Box-Fallback)
+  mesh.userData._origGeo = merged;             // === geometry → kein Doppel-Speichern (_origSameAsGeo)
+  mesh.userData._skProfiles = profiles;        // 2D-Profil für Live-Rebuild (Kantenrundung)
+  mesh.userData._skHeightMM = hmm;
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
   return mesh;
 }
@@ -22838,6 +22949,19 @@ function _fpBuildRows(type, o) {
              `<div class="fp-lbl" style="display:block;margin-bottom:5px">Schraubdome</div>` +
              `<div style="display:flex;gap:4px;margin-bottom:6px">${bb(true,'Mit Domen')}${bb(false,'Ohne')}</div>` +
              (eb ? `<div style="display:flex;gap:4px">${zb('M3')}${zb('M4')}</div>` : '');
+    }
+    case 'sketch': {
+      const skMax = Math.round(Math.min(w, d, h) / 2 * 10) / 10;   // Radius/Fase ≤ halbe kleinste Ausdehnung
+      return row('Breite X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
+             propLock() +
+             row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
+             row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+             '<div class="fp-sep"></div>' +
+             `<div class="fp-lbl" style="display:block;margin-bottom:3px;color:var(--dim);font-size:10px">Ober-/Unterkante</div>` +
+             row('Radius',      'fp-sk-fil', o.userData.fillet||0,  "_skApplyBevel(this.value, 0)", 'mm', 0, skMax, 0.1) +
+             row('Abschrägung', 'fp-sk-cha', o.userData.chamfer||0, "_skApplyBevel(0, this.value)", 'mm', 0, skMax, 0.1) +
+             ((shellBtn||hollowLidBtn) ? '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn : '') +
+             _dispRows();
     }
     default:
       return row('Breite X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
