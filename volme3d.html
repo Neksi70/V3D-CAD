@@ -1305,6 +1305,7 @@ const firebaseConfig = {
     <button class="skbtn" onclick="_skUndo()" title="Letztes Element zurück (Strg+Z)">↶ Zurück</button>
     <label class="skh">Höhe <input id="sketch-h" type="number" value="10" min="0.2" step="0.5"> mm</label>
     <button class="skbtn skbtn-go" onclick="_skExtrude()" title="Geschlossene Profile extrudieren">✓ Extrudieren</button>
+    <button class="skbtn" onclick="_skLoft()" title="≥2 geschlossene Profile (Zeichenreihenfolge: 1=unten, letztes=oben auf Höhe) zu Übergangskörper verbinden">⤧ Loft</button>
     <div class="sksep"></div>
     <button class="skbtn" onclick="document.getElementById('sk-dxf-file').click()" title="DXF-Datei (Linien/Kreise/Bögen) als Skizze laden">⬆ DXF laden</button>
     <button class="skbtn" onclick="_skExportDXF()" title="Skizze als DXF speichern (für Lasercutter/Plotter)">⬇ DXF speichern</button>
@@ -5704,6 +5705,88 @@ function _skPullAt(p){
   selectObjs([mesh]); updateTree();
   exitSketchMode();
   notify('Fläche extrudiert — '+hmm+' mm','ok');
+}
+
+// ═══ LOFT: mehrere geschlossene Profile → Übergangskörper ══════════════════
+// Profile werden in Zeichenreihenfolge gestapelt (1. = unten y=0, letztes =
+// oben auf Höhe H). Jedes Profil wird per Bogenlänge auf dieselbe Punktzahl
+// gebracht, am Startpunkt von Profil 1 ausgerichtet (Twist-Minimierung) und
+// die Ringe zu Quads vernäht; Deckel oben/unten als Dreiecksfächer.
+function _loopCentroid(lp){ let cu=0,cv=0; for(const p of lp){ cu+=p.u; cv+=p.v; } return {u:cu/lp.length, v:cv/lp.length}; }
+function _resampleLoop(lp, N){
+  const M=lp.length, seg=new Array(M); let total=0;
+  for(let i=0;i<M;i++){ const a=lp[i], b=lp[(i+1)%M]; seg[i]=Math.hypot(b.u-a.u,b.v-a.v); total+=seg[i]; }
+  if(total<1e-9) return lp.slice();
+  const out=[], step=total/N; let si=0, acc=0;
+  for(let k=0;k<N;k++){
+    const target=k*step;
+    while(si<M-1 && acc+seg[si]<target){ acc+=seg[si]; si++; }
+    const a=lp[si], b=lp[(si+1)%M], L=seg[si]||1e-9, f=Math.min(1,Math.max(0,(target-acc)/L));
+    out.push({u:a.u+(b.u-a.u)*f, v:a.v+(b.v-a.v)*f});
+  }
+  return out;
+}
+function _alignLoopToAngle(samp, targetAng){
+  const c=_loopCentroid(samp); let best=0, bd=1e9;
+  for(let i=0;i<samp.length;i++){
+    const a=Math.atan2(samp[i].v-c.v, samp[i].u-c.u);
+    let d=a-targetAng; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI;
+    if(Math.abs(d)<bd){ bd=Math.abs(d); best=i; }
+  }
+  return samp.slice(best).concat(samp.slice(0,best));
+}
+function _buildLoftGeo(loops, hmm, N){
+  N = N || 96;
+  const H = Math.max(0.02, hmm/10);   // 1 Unit = 10 mm
+  const K = loops.length;
+  // Einheitliche Wicklung (CCW), Resampling, Ausrichtung an Profil 0
+  const prof = loops.map(lp=>{ const l=lp.slice(); if(_polyArea(l)<0) l.reverse(); return _resampleLoop(l, N); });
+  const c0=_loopCentroid(prof[0]);
+  const a0=Math.atan2(prof[0][0].v-c0.v, prof[0][0].u-c0.u);
+  for(let k=1;k<K;k++) prof[k]=_alignLoopToAngle(prof[k], a0);
+
+  const pos=[], idx=[];
+  for(let k=0;k<K;k++){
+    const y=(K===1?0:k/(K-1))*H;
+    for(let i=0;i<N;i++){ const p=prof[k][i]; pos.push(p.u, y, p.v); }
+  }
+  for(let k=0;k<K-1;k++){
+    for(let i=0;i<N;i++){
+      const a=k*N+i, b=k*N+(i+1)%N, c=(k+1)*N+(i+1)%N, d=(k+1)*N+i;
+      idx.push(a,b,d, b,c,d);
+    }
+  }
+  function addCap(ringStart, y, p2, up){
+    const cen=_loopCentroid(p2), ci=pos.length/3; pos.push(cen.u, y, cen.v);
+    for(let i=0;i<N;i++){ const a=ringStart+i, b=ringStart+(i+1)%N; if(up) idx.push(ci,a,b); else idx.push(ci,b,a); }
+  }
+  addCap(0, 0, prof[0], false);
+  addCap((K-1)*N, H, prof[K-1], true);
+
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals(); geo.computeBoundingBox();
+  return geo;
+}
+function _skLoft(){
+  if(!_sk.active) return;
+  const loops=_skBuildLoops();
+  if(loops.length<2){ notify('Loft braucht ≥2 geschlossene Profile (z.B. zwei Kreise) — Zeichenreihenfolge: 1.=unten','w'); return; }
+  const hmm=parseFloat(document.getElementById('sketch-h').value)||10;
+  saveUndo();
+  const geo=_buildLoftGeo(loops, hmm);
+  const color=currentColor;
+  const mesh=new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+    color:new THREE.Color(color), roughness:0.38, metalness:0.05, side:THREE.DoubleSide }));
+  mesh.castShadow=mesh.receiveShadow=true;
+  typeCounts['loft']=(typeCounts['loft']||0)+1;
+  mesh.userData={ id:idCtr++, type:'loft', shapeType:'loft', name:'Loft '+typeCounts['loft'],
+                  color, isHole:false, fillet:0, chamfer:0 };
+  objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
+  selectObjs([mesh]); updateTree();
+  exitSketchMode();
+  notify('Loft aus '+loops.length+' Profilen erzeugt','ok');
 }
 
 function _revolveAddPoint(e) {
