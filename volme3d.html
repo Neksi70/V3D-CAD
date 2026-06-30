@@ -1299,7 +1299,7 @@ const firebaseConfig = {
     <button class="skt" data-tool="ellipse" onclick="_skSetTool('ellipse')" title="Ellipse"><span class="ski">⬭</span><span class="skl">Ellipse</span><span class="skk">E</span></button>
     <button class="skt" data-tool="spline"  onclick="_skSetTool('spline')"  title="Spline durch Punkte"><span class="ski">∿</span><span class="skl">Spline</span><span class="skk">I</span></button>
     <button class="skt" data-tool="trim"    onclick="_skSetTool('trim')"    title="Beschneiden / Löschen"><span class="ski">✂</span><span class="skl">Trim</span><span class="skk">T</span></button>
-    <button class="skt" data-tool="pull"    onclick="_skSetTool('pull')"    title="Fläche anklicken → mit der Höhe (unten) zum Körper extrudieren"><span class="ski">⬆</span><span class="skl">Ziehen</span><span class="skk">P</span></button>
+    <button class="skt" data-tool="pull"    onclick="_skSetTool('pull')"    title="Fläche andrücken und nach oben ziehen — Höhe live (Zahl tippen = exakt, Enter bestätigt, Esc bricht ab)"><span class="ski">⬆</span><span class="skl">Ziehen</span><span class="skk">P</span></button>
     <div class="sksep"></div>
     <button class="skt on" id="sk-ortho-btn" onclick="_skToggleOrtho()" title="Ortho-Fang: rastet auf waagerecht / senkrecht / 45° und an vorhandenen Punkten (O)"><span class="ski">⊾</span><span class="skl">Ortho-Fang</span><span class="skk">O</span></button>
     <button class="skbtn" onclick="_skUndo()" title="Letztes Element zurück (Strg+Z)">↶ Zurück</button>
@@ -3579,7 +3579,7 @@ canvas.addEventListener('mousemove', e => {
 });
 // Skizzen-Modus: Cursor auf die Bodenebene projizieren + Live-Vorschau
 canvas.addEventListener('mousemove', e => {
-  if (!_sk.active || isOrbit || isPan) return;
+  if (!_sk.active || isOrbit || isPan || _skPull.editing) return;
   const raw = _skPlanePoint(e); if (!raw) return;
   let sp;
   if (_sk.tool === 'pull') { sp = raw; _sk.hint = ''; }   // Ziehen: kein Vertex-Snap, freier Hover
@@ -5182,11 +5182,12 @@ function enterSketchMode() {
   document.getElementById('sketch-bar').style.display = 'flex';
   _skWireDim();
   _skSetTool('line');
-  notify('Skizze: zeichnen · dann „⬆ Ziehen" (P) und auf eine Fläche klicken, um sie zur Höhe zu extrudieren (oder „✓ Extrudieren" für alles)', 'ok');
+  notify('Skizze: zeichnen · dann „⬆ Ziehen" (P), Fläche andrücken und hochziehen (Zahl tippen = exakt) — oder „✓ Extrudieren" für alles', 'ok');
 }
 
 function exitSketchMode() {
   if (!_sk.active) return;
+  if (_skPull.editing) _skPullCleanup();
   _sk.active = false; canvas.style.cursor = ''; _sk.hint=''; _skUpdateBadge();
   if (_sk.group) { scene.remove(_sk.group); _skDisposeGroup(); _sk.group = null; }
   _sk.ents = []; _sk.pending = []; _sk.dimLock = false;
@@ -5204,6 +5205,7 @@ function _skDisposeGroup() {
 }
 
 function _skSetTool(t) {
+  if (_skPull.editing) _skPullCancel();
   _sk.pending = []; _sk.tool = t; _sk.dimLock = false;
   document.querySelectorAll('#sketch-bar .skt[data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
   canvas.style.cursor = (t === 'trim' || t === 'pull') ? 'pointer' : 'crosshair';
@@ -5412,7 +5414,7 @@ function _skRender(){
 // ── Klick / Werkzeuglogik ────────────────────────────────────────────────
 function _skClick(e){
   const raw=_skPlanePoint(e); if(!raw) return;
-  if (_sk.tool==='pull'){ _skPullAt(raw); return; }   // Fläche ziehen: roher Klickpunkt, kein Snap
+  if (_sk.tool==='pull'){ if(!_skPull.editing) _skPullStart(raw); return; }   // Fläche andrücken → interaktiv hochziehen
   const sp=_skSnapFull(raw), cur={u:sp.u, v:sp.v};
   _sk.dimLock=false;
   const T=_sk.tool, P=_sk.pending;
@@ -5702,6 +5704,151 @@ function _skPullAt(p){
   const hmm=parseFloat(document.getElementById('sketch-h').value)||10;
   saveUndo();
   const mesh=_skMakeBodyFromShapes([pick], hmm);
+  selectObjs([mesh]); updateTree();
+  exitSketchMode();
+  notify('Fläche extrudiert — '+hmm+' mm','ok');
+}
+
+// ── Interaktives Zieh-Extrude (Shapr3D-Stil) ──────────────────────────────
+// Fläche andrücken → Ansicht kippt → ↕-Griff hochziehen → Live-Höhe + mm-Label.
+// Loslassen erzeugt den Körper. Während des Ziehens Zahl tippen = exakte Höhe.
+const _skPull = { editing:false, dragging:false, shape:null, cu:0, cv:0,
+                  h:0, grabOff:null, group:null, preview:null, handle:null,
+                  label:null, savedSk:null, typed:'' };
+
+function _skPullHandleGeo(){
+  // Doppelpfeil entlang +Y, Einheitsgröße (wird per scale angepasst).
+  const g=new THREE.Group();
+  const mat=new THREE.MeshBasicMaterial({color:0x2563eb, depthTest:false});
+  const shaft=new THREE.Mesh(new THREE.CylinderGeometry(0.16,0.16,4.6,12), mat);
+  shaft.position.y=2.3; g.add(shaft);
+  const top=new THREE.Mesh(new THREE.ConeGeometry(0.5,1.2,16), mat); top.position.y=5.2; g.add(top);
+  const bot=new THREE.Mesh(new THREE.ConeGeometry(0.5,1.2,16), mat); bot.position.y=0.6; bot.rotation.z=Math.PI; g.add(bot);
+  g.traverse(o=>{ o.renderOrder=1002; });
+  return g;
+}
+function _skPullPreviewGeo(hU){
+  const geo=new THREE.ExtrudeGeometry(_skPull.shape.shape,
+    {depth:Math.max(0.002,hU), bevelEnabled:false, steps:1, curveSegments:12});
+  geo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI/2));  // XY→XZ, Extrusion → +Y
+  geo.computeVertexNormals();
+  return geo;
+}
+function _skPullScreen(x,y,z){
+  const p=new THREE.Vector3(x,y,z).project(camera); const r=vpEl.getBoundingClientRect();
+  return { x:r.left+(p.x*0.5+0.5)*r.width, y:r.top+(-p.y*0.5+0.5)*r.height };
+}
+function _skPullHeightFromMouse(e){
+  getNorm(e); raycaster.setFromCamera(mousev, camera);
+  const O=new THREE.Vector3(_skPull.cu,0,_skPull.cv), A=new THREE.Vector3(0,1,0);
+  const view=camera.position.clone().sub(O);
+  const n=view.clone().sub(A.clone().multiplyScalar(view.dot(A)));   // Ebene enthält Achse, zur Kamera gedreht
+  if (n.lengthSq()<1e-6) return null; n.normalize();
+  const plane=new THREE.Plane(n, -n.dot(O)), hit=new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(plane, hit)) return null;
+  return hit.sub(O).dot(A);   // rohe Höhe in Units
+}
+function _skPullSetHeight(hU){
+  _skPull.h=Math.max(0, hU);
+  // mm auf SNAP-Raster runden (default 0,1 mm)
+  const step=(typeof snapGrid==='number' && snapGrid>0)?snapGrid:0.1;
+  let mm=Math.round(_skPull.h*10/step)*step; mm=Math.round(mm*100)/100;
+  _skPull.h=mm/10;
+  // Vorschau-Geometrie tauschen
+  if (_skPull.preview){ _skPull.preview.geometry.dispose(); _skPull.preview.geometry=_skPullPreviewGeo(_skPull.h); }
+  // Griff positionieren + Skalieren (konstante Bildschirmgröße)
+  const s=Math.max(0.04, sph.r*0.011);
+  if (_skPull.handle){ _skPull.handle.scale.setScalar(s); _skPull.handle.position.set(_skPull.cu, _skPull.h, _skPull.cv); }
+  // Label
+  if (_skPull.label){
+    _skPull.label.textContent=(_skPull.typed!=='' ? _skPull.typed : mm.toFixed(mm%1?1:0))+' mm';
+    const sc=_skPullScreen(_skPull.cu, _skPull.h+s*5.2, _skPull.cv);
+    _skPull.label.style.left=(sc.x+14)+'px'; _skPull.label.style.top=(sc.y-10)+'px';
+  }
+}
+function _skPullStart(p){
+  const shapes=_skBuildShapes();
+  if (shapes.length===0){ notify('Keine geschlossene Fläche — Profil erst schließen (Linien aneinander, oder Kreis/Rechteck)','w'); return; }
+  let pick=null, pa=Infinity;
+  for (const s of shapes){
+    if (!_polyContains(s.outer, p)) continue;
+    if (s.holes.some(h=>_polyContains(h, p))) continue;
+    const a=Math.abs(_polyArea(s.outer));
+    if (a<pa){ pa=a; pick=s; }
+  }
+  if (!pick){ notify('In eine geschlossene Fläche klicken und hochziehen','w'); return; }
+  const c=_loopCentroid(pick.outer);
+  _skPull.editing=true; _skPull.dragging=true; _skPull.shape=pick;
+  _skPull.cu=c.u; _skPull.cv=c.v; _skPull.h=0; _skPull.grabOff=null; _skPull.typed='';
+  _skPull.savedSk={ theta:sph.theta, phi:sph.phi, r:sph.r };
+  // Szenen-Objekte
+  _skPull.group=new THREE.Group(); _skPull.group.renderOrder=1001; scene.add(_skPull.group);
+  _skPull.preview=new THREE.Mesh(_skPullPreviewGeo(0.002),
+    new THREE.MeshStandardMaterial({ color:new THREE.Color(currentColor), roughness:0.4, metalness:0.05,
+      transparent:true, opacity:0.85, side:THREE.DoubleSide }));
+  _skPull.group.add(_skPull.preview);
+  _skPull.handle=_skPullHandleGeo(); _skPull.group.add(_skPull.handle);
+  // Label
+  _skPull.label=document.createElement('div');
+  _skPull.label.style.cssText='position:fixed;z-index:9000;pointer-events:none;background:#2563eb;color:#fff;font:700 12px system-ui;padding:2px 7px;border-radius:5px;box-shadow:0 1px 5px rgba(0,0,0,.45)';
+  document.body.appendChild(_skPull.label);
+  _skPullSetHeight(0);
+  document.addEventListener('mousemove', _skPullMove, true);
+  document.addEventListener('mouseup',   _skPullUp,   true);
+  document.addEventListener('keydown',   _skPullKey,  true);
+}
+function _skPullMove(e){
+  if (!_skPull.dragging) return;
+  if (_skPull.grabOff===null){
+    // erste Bewegung: jetzt erst die Ansicht kippen (kein Flackern bei reinem Klick)
+    sph.theta=0.6; sph.phi=0.88; sph2cam();
+  }
+  const raw=_skPullHeightFromMouse(e); if (raw===null) return;
+  if (_skPull.grabOff===null) _skPull.grabOff=-raw;   // Höhe startet bei 0
+  if (_skPull.typed==='') _skPullSetHeight(raw+_skPull.grabOff);
+}
+function _skPullUp(e){
+  if (!_skPull.dragging) return;
+  _skPull.dragging=false;
+  if (_skPull.h*10 >= 0.5) _skPullCommit(); else _skPullCancel();
+}
+function _skPullKey(e){
+  if (!_skPull.editing) return;
+  if (e.key==='Escape'){ e.preventDefault(); e.stopPropagation(); _skPullCancel(); return; }
+  if (e.key==='Enter'){ e.preventDefault(); e.stopPropagation();
+    if (_skPull.typed!==''){ const v=parseFloat(_skPull.typed); if(v>0){ _skPull.typed=''; _skPullSetHeight(v/10); } }
+    if (_skPull.h*10>=0.5) _skPullCommit(); return; }
+  if (/^[0-9]$/.test(e.key) || e.key==='.' || e.key===','){
+    e.preventDefault(); e.stopPropagation();
+    const ch=e.key===','?'.':e.key;
+    if (ch==='.' && _skPull.typed.includes('.')) return;
+    _skPull.typed+=ch; const v=parseFloat(_skPull.typed); if(v>0) _skPullSetHeight(v/10); else { _skPull.h=0; _skPullSetHeight(0); }
+    return; }
+  if (e.key==='Backspace'){ e.preventDefault(); e.stopPropagation();
+    _skPull.typed=_skPull.typed.slice(0,-1); const v=parseFloat(_skPull.typed);
+    _skPullSetHeight(v>0?v/10:0); return; }
+}
+function _skPullCleanup(){
+  document.removeEventListener('mousemove', _skPullMove, true);
+  document.removeEventListener('mouseup',   _skPullUp,   true);
+  document.removeEventListener('keydown',   _skPullKey,  true);
+  if (_skPull.group){ _skPull.group.traverse(o=>{ if(o.geometry)o.geometry.dispose(); if(o.material&&o.material.dispose)o.material.dispose(); });
+    scene.remove(_skPull.group); }
+  if (_skPull.label) _skPull.label.remove();
+  _skPull.group=_skPull.preview=_skPull.handle=_skPull.label=null;
+  _skPull.editing=_skPull.dragging=false; _skPull.shape=null; _skPull.grabOff=null; _skPull.typed='';
+}
+function _skPullCancel(){
+  const sv=_skPull.savedSk; _skPullCleanup();
+  if (sv){ sph.theta=sv.theta; sph.phi=sv.phi; sph.r=sv.r; sph2cam(); }
+  _skRender();
+}
+function _skPullCommit(){
+  const shape=_skPull.shape, hmm=Math.round(_skPull.h*10*100)/100;
+  _skPullCleanup();
+  if (!shape || hmm<0.05){ return; }
+  saveUndo();
+  const mesh=_skMakeBodyFromShapes([shape], hmm);
   selectObjs([mesh]); updateTree();
   exitSketchMode();
   notify('Fläche extrudiert — '+hmm+' mm','ok');
