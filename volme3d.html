@@ -1306,6 +1306,7 @@ const firebaseConfig = {
     <label class="skh">Höhe <input id="sketch-h" type="number" value="10" min="0.2" step="0.5"> mm</label>
     <button class="skbtn skbtn-go" onclick="_skExtrude()" title="Geschlossene Profile extrudieren">✓ Extrudieren</button>
     <button class="skbtn" onclick="_skLoft()" title="≥2 geschlossene Profile (Zeichenreihenfolge: 1=unten, letztes=oben auf Höhe) zu Übergangskörper verbinden">⤧ Loft</button>
+    <button class="skbtn" onclick="_skSweep()" title="Geschlossenes Profil entlang offenem Pfad (Linie/Spline) ziehen → Rohr/Profil folgt der Kurve">↝ Sweep</button>
     <div class="sksep"></div>
     <button class="skbtn" onclick="document.getElementById('sk-dxf-file').click()" title="DXF-Datei (Linien/Kreise/Bögen) als Skizze laden">⬆ DXF laden</button>
     <button class="skbtn" onclick="_skExportDXF()" title="Skizze als DXF speichern (für Lasercutter/Plotter)">⬇ DXF speichern</button>
@@ -5787,6 +5788,82 @@ function _skLoft(){
   selectObjs([mesh]); updateTree();
   exitSketchMode();
   notify('Loft aus '+loops.length+' Profilen erzeugt','ok');
+}
+
+// ═══ SWEEP: geschlossenes Profil entlang offenem Pfad ══════════════════════
+// Profil = geschlossene Skizzen-Schleife (Querschnitt), Pfad = offene Kette
+// (Linie/Spline) in der Bodenebene. Das Profil wird mit fester Hoch-Achse (Y)
+// entlang des Pfads getragen (S = Up × Tangente) → robust, ohne Frenet-Roll.
+function _skBuildOpenPaths(){
+  const chains=[];
+  for(const en of _sk.ents){ const t=_skTess(en); if(t.pts.length<2) continue; if(!t.closed) chains.push(t.pts.slice()); }
+  const tol=0.09, used=new Array(chains.length).fill(false), out=[];
+  for(let i=0;i<chains.length;i++){ if(used[i]) continue;
+    let chain=chains[i].slice(); used[i]=true; let ext=true;
+    while(ext){ ext=false; const head=chain[0], tail=chain[chain.length-1];
+      for(let j=0;j<chains.length;j++){ if(used[j]) continue; const s=chains[j], a=s[0], b=s[s.length-1];
+        if(_skNear(tail,a,tol)){ chain=chain.concat(s.slice(1)); used[j]=ext=true; }
+        else if(_skNear(tail,b,tol)){ chain=chain.concat(s.slice().reverse().slice(1)); used[j]=ext=true; }
+        else if(_skNear(head,a,tol)){ chain=s.slice().reverse().slice(0,-1).concat(chain); used[j]=ext=true; }
+        else if(_skNear(head,b,tol)){ chain=s.slice(0,-1).concat(chain); used[j]=ext=true; }
+        if(ext) break; } }
+    out.push(chain);
+  }
+  return out.filter(c=>c.length>=2 && !_skNear(c[0],c[c.length-1],Math.max(tol,0.1)));
+}
+function _cleanPath(pts){ const out=[pts[0]]; for(let i=1;i<pts.length;i++){ if(Math.hypot(pts[i].u-out[out.length-1].u, pts[i].v-out[out.length-1].v)>1e-4) out.push(pts[i]); } return out; }
+function _buildSweepGeo(profileLoop, path, N){
+  N = N || 64;
+  let prof=profileLoop.slice(); if(_polyArea(prof)<0) prof.reverse();
+  prof=_resampleLoop(prof, N);
+  const pc=_loopCentroid(prof);
+  const loc=prof.map(p=>({u:p.u-pc.u, v:p.v-pc.v}));   // Profil-Lokalkoordinaten
+  const P=path.map(p=>({x:p.u, y:0, z:p.v}));           // Pfad in Welt (XZ-Boden)
+  const M=P.length, pos=[], idx=[], Up={x:0,y:1,z:0};
+  for(let j=0;j<M;j++){
+    const a=P[Math.max(0,j-1)], b=P[Math.min(M-1,j+1)];
+    let t={x:b.x-a.x, z:b.z-a.z}; const tl=Math.hypot(t.x,t.z)||1; t.x/=tl; t.z/=tl;
+    // S = Up × T (horizontal, senkrecht zum Pfad)
+    let S={x: Up.y*t.z - 0, y: 0 - Up.x*t.z, z: Up.x*0 - Up.y*t.x};   // = (t.z, 0, -t.x)
+    const sl=Math.hypot(S.x,S.y,S.z)||1; S.x/=sl; S.y/=sl; S.z/=sl;
+    for(let i=0;i<N;i++){ const l=loc[i];
+      pos.push(P[j].x + l.u*S.x + l.v*Up.x,
+               P[j].y + l.u*S.y + l.v*Up.y,
+               P[j].z + l.u*S.z + l.v*Up.z); }
+  }
+  for(let j=0;j<M-1;j++) for(let i=0;i<N;i++){ const a=j*N+i, b=j*N+(i+1)%N, c=(j+1)*N+(i+1)%N, d=(j+1)*N+i; idx.push(a,b,d, b,c,d); }
+  function cap(ringStart, center, up){ const ci=pos.length/3; pos.push(center.x,center.y,center.z);
+    for(let i=0;i<N;i++){ const a=ringStart+i, b=ringStart+(i+1)%N; if(up) idx.push(ci,a,b); else idx.push(ci,b,a); } }
+  cap(0, P[0], false);
+  cap((M-1)*N, P[M-1], true);
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  geo.setIndex(idx); geo.computeVertexNormals(); geo.computeBoundingBox();
+  return geo;
+}
+function _skSweep(){
+  if(!_sk.active) return;
+  const loops=_skBuildLoops();
+  if(loops.length===0){ notify('Sweep braucht ein geschlossenes Profil (z.B. Kreis) + einen offenen Pfad (Linie/Spline)','w'); return; }
+  const paths=_skBuildOpenPaths();
+  if(paths.length===0){ notify('Kein offener Pfad gefunden — eine offene Linie/Spline als Pfad zeichnen','w'); return; }
+  // Profil = kleinste geschlossene Schleife (Querschnitt), Pfad = längste offene Kette
+  const profile=loops.slice().sort((a,b)=>Math.abs(_polyArea(a))-Math.abs(_polyArea(b)))[0];
+  const path=_cleanPath(paths.slice().sort((a,b)=>b.length-a.length)[0]);
+  if(path.length<2){ notify('Pfad zu kurz','w'); return; }
+  saveUndo();
+  const geo=_buildSweepGeo(profile, path);
+  const color=currentColor;
+  const mesh=new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+    color:new THREE.Color(color), roughness:0.38, metalness:0.05, side:THREE.DoubleSide }));
+  mesh.castShadow=mesh.receiveShadow=true;
+  typeCounts['sweep']=(typeCounts['sweep']||0)+1;
+  mesh.userData={ id:idCtr++, type:'sweep', shapeType:'sweep', name:'Sweep '+typeCounts['sweep'],
+                  color, isHole:false, fillet:0, chamfer:0 };
+  objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
+  selectObjs([mesh]); updateTree();
+  exitSketchMode();
+  notify('Sweep erzeugt — Profil entlang Pfad ('+path.length+' Punkte)','ok');
 }
 
 function _revolveAddPoint(e) {
