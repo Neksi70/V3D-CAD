@@ -5822,6 +5822,41 @@ function _skApplyBevel(filMM, chaMM){
   }
   _updateObjEdgeLines(o);
 }
+// „Seiten"-Regler für Skizzen-Körper: runde Konturen (Kreis/Ellipse/Spline) auf
+// N gleichmäßige Punkte resamplen → regelmäßiges N-Eck-Prisma. Eckige Konturen
+// (≥3 harte Ecken, z.B. Rechteck) bleiben unverändert, damit nichts verzerrt.
+function _skCountCorners(loop){
+  const M=loop.length; let c=0; const thr=Math.cos(Math.PI*30/180); // Ecke bei Richtungswechsel >30° (dot < cos30°)
+  for(let i=0;i<M;i++){ const p0=loop[(i-1+M)%M],p1=loop[i],p2=loop[(i+1)%M];
+    const ax=p1.u-p0.u,ay=p1.v-p0.v,bx=p2.u-p1.u,by=p2.v-p1.v;
+    const la=Math.hypot(ax,ay)||1,lb=Math.hypot(bx,by)||1;
+    if((ax*bx+ay*by)/(la*lb)<thr) c++; }
+  return c;
+}
+function _skResampleSides(loop, N){
+  if(_skCountCorners(loop)>=3) return loop.map(p=>({u:p.u,v:p.v}));  // eckig → unverändert
+  return _resampleLoop(loop, N);                                      // rund → N-Eck
+}
+function _skProfileIsRound(o){
+  const full=o.userData._skProfilesFull||o.userData._skProfiles;
+  return !!(full && full[0] && _skCountCorners(full[0].outer)<3);
+}
+function _skApplySides(nSides){
+  const o=getFirst(); if(!o||o.userData.shapeType!=='sketch') return;
+  const full=o.userData._skProfilesFull||o.userData._skProfiles; if(!full) return;
+  const n=Math.max(3, Math.round(parseFloat(nSides)||3));
+  saveUndoDebounced();
+  o.userData._skSides=n;
+  const prof=full.map(pr=>({ outer:_skResampleSides(pr.outer, n),
+                             holes:(pr.holes||[]).map(h=>_skResampleSides(h, n)) }));
+  o.userData._skProfiles=prof;                                        // Basis für Fasen-Rebuild
+  const geo=_skBuildGeoFromProfiles(prof, o.userData._skHeightMM||10, o.userData.fillet||0, o.userData.chamfer||0);
+  o.geometry.dispose(); o.geometry=geo; o.userData._origGeo=geo;
+  if (o.userData.displacementPattern && o.userData.displacementPattern!=='keine'){
+    o.userData._dispBase=null; o.userData.displacementPattern='keine';
+  }
+  _updateObjEdgeLines(o);
+}
 // Flächen (mit Löchern) um hmm mm nach +Y extrudieren → fertiges Mesh in der Szene.
 function _skMakeBodyFromShapes(shapes, hmm){
   const profiles=shapes.map(s=>({ outer:s.outer.map(p=>({u:p.u,v:p.v})),
@@ -5836,6 +5871,8 @@ function _skMakeBodyFromShapes(shapes, hmm){
                   color, isHole:false, fillet:0, chamfer:0 };
   mesh.userData._origGeo = merged;             // === geometry → kein Doppel-Speichern (_origSameAsGeo)
   mesh.userData._skProfiles = profiles;        // 2D-Profil für Live-Rebuild (Kantenrundung)
+  mesh.userData._skProfilesFull = profiles.map(pr=>({ outer:pr.outer.map(p=>({u:p.u,v:p.v})),
+                                                      holes:(pr.holes||[]).map(h=>h.map(p=>({u:p.u,v:p.v}))) }));  // pristine Basis für „Seiten"
   mesh.userData._skHeightMM = hmm;
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
   return mesh;
@@ -6098,6 +6135,10 @@ function _skLoft(){
   typeCounts['loft']=(typeCounts['loft']||0)+1;
   mesh.userData={ id:idCtr++, type:'loft', shapeType:'loft', name:'Loft '+typeCounts['loft'],
                   color, isHole:false, fillet:0, chamfer:0 };
+  mesh.userData._loftLoops = loops.map(lp=>lp.map(p=>({u:p.u,v:p.v})));  // für „Seiten"-Rebuild
+  mesh.userData._loftHmm = hmm;
+  mesh.userData._loftSides = 96;
+  mesh.userData._origGeo = geo;
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
   selectObjs([mesh]); updateTree();
   exitSketchMode();
@@ -6177,10 +6218,35 @@ function _skSweep(){
   typeCounts['sweep']=(typeCounts['sweep']||0)+1;
   mesh.userData={ id:idCtr++, type:'sweep', shapeType:'sweep', name:'Sweep '+typeCounts['sweep'],
                   color, isHole:false, fillet:0, chamfer:0 };
+  mesh.userData._sweepProfile = profile.map(p=>({u:p.u,v:p.v}));  // für „Seiten"-Rebuild
+  mesh.userData._sweepPath = path.map(p=>({u:p.u,v:p.v}));
+  mesh.userData._sweepSides = 64;
+  mesh.userData._origGeo = geo;
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
   selectObjs([mesh]); updateTree();
   exitSketchMode();
   notify('Sweep erzeugt — Profil entlang Pfad ('+path.length+' Punkte)','ok');
+}
+// „Seiten"-Regler: Umfangs-Segmentzahl von Loft/Sweep live neu aufbauen.
+function _loftApplySides(nSides){
+  const o=getFirst(); if(!o||o.userData.shapeType!=='loft'||!o.userData._loftLoops) return;
+  const n=Math.max(6, Math.round(parseFloat(nSides)||6));
+  saveUndoDebounced();
+  o.userData._loftSides=n;
+  const geo=_buildLoftGeo(o.userData._loftLoops, o.userData._loftHmm||10, n);
+  o.geometry.dispose(); o.geometry=geo; o.userData._origGeo=geo;
+  if (o.userData.displacementPattern && o.userData.displacementPattern!=='keine'){ o.userData._dispBase=null; o.userData.displacementPattern='keine'; }
+  _updateObjEdgeLines(o);
+}
+function _sweepApplySides(nSides){
+  const o=getFirst(); if(!o||o.userData.shapeType!=='sweep'||!o.userData._sweepProfile) return;
+  const n=Math.max(6, Math.round(parseFloat(nSides)||6));
+  saveUndoDebounced();
+  o.userData._sweepSides=n;
+  const geo=_buildSweepGeo(o.userData._sweepProfile, o.userData._sweepPath, n);
+  o.geometry.dispose(); o.geometry=geo; o.userData._origGeo=geo;
+  if (o.userData.displacementPattern && o.userData.displacementPattern!=='keine'){ o.userData._dispBase=null; o.userData.displacementPattern='keine'; }
+  _updateObjEdgeLines(o);
 }
 
 function _revolveAddPoint(e) {
@@ -23019,10 +23085,14 @@ function _fpBuildRows(type, o) {
     }
     case 'sketch': {
       const skMax = Math.round(Math.min(w, d, h) / 2 * 10) / 10;   // Radius/Fase ≤ halbe kleinste Ausdehnung
+      const _skRound = o.userData._skProfilesFull && _skProfileIsRound(o);
+      const _skNative = _skRound ? o.userData._skProfilesFull[0].outer.length : 0;
       return row('Breite X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
              propLock() +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+             (_skRound ? '<div class="fp-sep"></div>' +
+               row('Seiten', 'fp-sk-sides', o.userData._skSides || _skNative, "_skApplySides(this.value)", '', 3, Math.max(6, _skNative), 1) : '') +
              '<div class="fp-sep"></div>' +
              `<div class="fp-lbl" style="display:block;margin-bottom:3px;color:var(--dim);font-size:10px">Ober-/Unterkante</div>` +
              row('Radius',      'fp-sk-fil', o.userData.fillet||0,  "_skApplyBevel(this.value, 0)", 'mm', 0, skMax, 0.1) +
@@ -23030,6 +23100,22 @@ function _fpBuildRows(type, o) {
              ((shellBtn||hollowLidBtn) ? '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn : '') +
              _dispRows();
     }
+    case 'loft':
+      return row('Breite X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
+             propLock() +
+             row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
+             row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+             (o.userData._loftLoops ? '<div class="fp-sep"></div>' +
+               row('Seiten', 'fp-loft-sides', o.userData._loftSides || 96, "_loftApplySides(this.value)", '', 6, 160, 1) : '') +
+             _dispRows();
+    case 'sweep':
+      return row('Breite X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
+             propLock() +
+             row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
+             row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+             (o.userData._sweepProfile ? '<div class="fp-sep"></div>' +
+               row('Seiten', 'fp-sweep-sides', o.userData._sweepSides || 64, "_sweepApplySides(this.value)", '', 6, 160, 1) : '') +
+             _dispRows();
     default:
       return row('Breite X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
              propLock() +
