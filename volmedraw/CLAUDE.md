@@ -11,6 +11,20 @@
 ## Architektur
 - **Single-HTML-App:** `volmedraw.html` (Vanilla JS, Fabric.js 5.3.0). Alles in einer
   Datei, analog zu `volme3d.html`. Kein Framework, kein Bundler-Zwang.
+- **Oberfläche an Paint.NET orientiert, Kern bleibt VEKTOR:** Menüleiste
+  (Datei/Bearbeiten/Ansicht/Anordnen/Ebenen/Fenster/Hilfe), Werkzeug-Optionsleiste,
+  schwebende + verschiebbare Panels (Werkzeuge, Farben, Eigenschaften, Verlauf, Ebenen).
+  Bewusst NICHT raster/pixel — sonst bräche der laser-taugliche SVG-Export. Bei
+  Layout-Arbeit prüfen: Panels dürfen sich per Default nicht überlappen (Smoke fand das).
+- **Zwei Masken-Begriffe, nicht verwechseln:** (1) **Auswahl-Maske** (Paint.NET-Prinzip)
+  — `sel-rect`/`sel-ellipse` setzen `selRegion`; neue Pinselstriche/Formen bekommen
+  `clipPath` = Auswahl (absolutePositioned), malen also nur im Bereich. `Esc` = aufheben.
+  (2) **Clipping-Maske** (Illustrator-Prinzip) — oberste Vektorform maskiert die
+  Objekte darunter (Menü Ebenen → Clipping-Maske).
+- **Verlauf ist index-basiert** (`history[]` + `hIndex`), nicht zwei Stacks → der
+  Verlauf-Panel kann per Klick zu jedem Schritt springen (`restoreIndex`).
+- **Farben:** Primär/Sekundär (Paint.NET). Linksklick zeichnet Primär, Rechtsklick
+  Sekundär. Formen: Primär = Füllung, Sekundär = Kontur. Palette per Rechtsklick = Sekundär.
 - **Fabric.Canvas = Source of Truth** für alle Objekte (Formen, Pfade, Text, Bilder).
   Custom-Feld `vName` je Objekt = Ebenen-Label, wird mit-serialisiert.
 - **UI-Zustand** in Modul-Globals: `currentTool`, `isDrawingShape`, `tempShape`,
