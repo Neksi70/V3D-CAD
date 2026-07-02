@@ -22892,14 +22892,17 @@ function _fpBuildRows(type, o) {
         ? `<label class="fp-check-lbl"><input type="checkbox" id="fp-floor" ${o.userData.tubeFloor ? 'checked' : ''} onchange="fpApplyTubeFloor(this.checked)"> Boden (geschlossen)</label>`
         : '';
       const cylEdgeBtn = (type === 'cylinder' || type === 'tube') ? edgeBtn : '';
-      // Zylinder: Radius/Abschrägung beider Kreiskanten gemeinsam.
+      // Zylinder: untere/obere Kreiskante getrennt wählbar (rund ODER schräg je Kante).
       // Rundes Rohr: AUßEN-Kante oben/unten getrennt wählbar (rund ODER schräg je Kante).
       const cylBevelRows = type === 'cylinder'
         ? (() => {
+            const cbv = o.userData.capBevel || _cylBevelOf(o) || {};
             const maxMm = Math.round(Math.min(o.scale.x, o.scale.y) * 10 * 0.98 * 10) / 10;
             return '<div class="fp-sep"></div>' +
-              row('Radius',      'fp-fil', o.userData.fillet||0,  "fpApplyCylBevel(this.value,0)", 'mm', 0, maxMm, 0.1) +
-              row('Abschrägung', 'fp-cha', o.userData.chamfer||0, "fpApplyCylBevel(0,this.value)", 'mm', 0, maxMm, 0.1);
+              row('Untere Kante abrunden',  'fp-cb-br', r2(cbv.botRound||0),   "fpCapBevelSet('botround',this.value)",   'mm', 0, maxMm, 0.1) +
+              row('Untere Kante abschräg.', 'fp-cb-bc', r2(cbv.botChamfer||0), "fpCapBevelSet('botchamfer',this.value)", 'mm', 0, maxMm, 0.1) +
+              row('Obere Kante abrunden',   'fp-cb-tr', r2(cbv.topRound||0),   "fpCapBevelSet('topround',this.value)",   'mm', 0, maxMm, 0.1) +
+              row('Obere Kante abschräg.',  'fp-cb-tc', r2(cbv.topChamfer||0), "fpCapBevelSet('topchamfer',this.value)", 'mm', 0, maxMm, 0.1);
           })()
         : (type === 'tube' && !o.userData.tubeTwist)
         ? (() => {   // rundes Rohr ODER Kantrohr (nur ohne Verdrehen)
@@ -23238,10 +23241,11 @@ function _fpSyncValues() {
       if (type === 'tube' && o.userData.tubePoly) set('fp-twist', r2(o.userData.tubeTwist || 0));
       if (type === 'tube') { const fc = document.getElementById('fp-floor'); if (fc) fc.checked = !!o.userData.tubeFloor; }
       if (type === 'cylinder') {
-        set('fp-fil', o.userData.fillet||0);
-        set('fp-cha', o.userData.chamfer||0);
+        const cbv = o.userData.capBevel || _cylBevelOf(o) || {};
+        set('fp-cb-br', r2(cbv.botRound||0));   set('fp-cb-bc', r2(cbv.botChamfer||0));
+        set('fp-cb-tr', r2(cbv.topRound||0));   set('fp-cb-tc', r2(cbv.topChamfer||0));
         const mx = Math.round(Math.min(o.scale.x, o.scale.y) * 10 * 0.98 * 10) / 10;
-        ['fp-fil', 'fp-cha'].forEach(id => {
+        ['fp-cb-br', 'fp-cb-bc', 'fp-cb-tr', 'fp-cb-tc'].forEach(id => {
           const el = document.getElementById(id); if (el) el.max = mx;
           const sl = document.getElementById(id + '-sl'); if (sl) sl.max = mx;
         });
@@ -23520,14 +23524,16 @@ function fpApplyConeTop(val) {
 // Kanten-Bevel (untere/obere Mantelkante · rund/schräg) für massive Rotations-/Prismenkörper:
 // Kegel, Vieleck-Prisma, Pyramide. Speichert in userData.capBevel.
 function fpCapBevelSet(key, val) {
-  const o = getFirst(); if (!o || !['cone', 'polygon', 'pyramid'].includes(o.userData.shapeType)) return;
+  const o = getFirst(); if (!o || !['cylinder', 'cone', 'polygon', 'pyramid'].includes(o.userData.shapeType)) return;
   const v = parseFloat(val); if (!(v >= 0)) return;
   const bevKey = { botround:'botRound', botchamfer:'botChamfer',
                    topround:'topRound', topchamfer:'topChamfer' }[key];
   if (!bevKey) return;
   saveUndoDebounced();
+  // capBevel initialisieren; ggf. aus altem Zylinder-Sammelwert (fillet/chamfer) migrieren.
   const bv = o.userData.capBevel ||
-    (o.userData.capBevel = { botRound:0, botChamfer:0, topRound:0, topChamfer:0 });
+    (o.userData.capBevel = { botRound: o.userData.fillet||0, botChamfer: o.userData.chamfer||0,
+                             topRound: o.userData.fillet||0, topChamfer: o.userData.chamfer||0 });
   bv[bevKey] = v;
   if (key === 'botround'   && v > 0) bv.botChamfer = 0;   // rund/schräg je Kante exklusiv
   if (key === 'botchamfer' && v > 0) bv.botRound   = 0;
@@ -23774,8 +23780,10 @@ function _fpRebuildGeo(o) {
   switch (type) {
     case 'cylinder': {
       const bev = _cylBevelOf(o);
+      // Zylinder = Kegel mit rB=rT=1. buildConeGeoRounded setzt SCHARFE Normalen an
+      // Fasen (kein verschmierter Wulst) und rundet/fast pro Kante (oben/unten getrennt).
       geo = bev
-        ? buildRoundedCylinder(segs || 32, bev, o.scale.x, o.scale.y)
+        ? buildConeGeoRounded(1, 1, segs || 32, bev, o.scale.x, o.scale.y)
         : new THREE.CylinderGeometry(1, 1, 2, segs || 32);
       break;
     }
