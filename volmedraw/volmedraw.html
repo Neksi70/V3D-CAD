@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Volme Draw – Zeichenprogramm</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
+<style>
+  :root {
+    --bg: #0d0d0f;
+    --panel: #17171a;
+    --panel2: #1e1e22;
+    --border: #2b2b30;
+    --text: #e8e8ea;
+    --muted: #8a8a92;
+    --orange: #ff7a1a;
+    --cyan: #00d4e0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ---------- Kopfleiste ---------- */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 14px;
+    background: var(--panel);
+    border-bottom: 2px solid var(--orange);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+  .logo { font-weight: 800; letter-spacing: 1px; font-size: 15px; white-space: nowrap; }
+  .logo .slash { color: var(--cyan); }
+  .logo .draw { color: var(--orange); }
+  header .spacer { flex: 1; }
+  .btn {
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 12px;
+    cursor: pointer;
+    font: inherit;
+    transition: border-color .12s, color .12s;
+  }
+  .btn:hover { border-color: var(--cyan); color: var(--cyan); }
+  .btn:disabled { opacity: .35; cursor: default; }
+  .btn:disabled:hover { border-color: var(--border); color: var(--text); }
+  .btn.primary { border-color: var(--orange); color: var(--orange); }
+  .btn.primary:hover { background: var(--orange); color: #000; }
+  .btn:focus-visible, .tool:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+
+  main { flex: 1; display: flex; min-height: 0; }
+
+  /* ---------- Werkzeugleiste ---------- */
+  #toolbar {
+    width: 64px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 10px 0;
+    gap: 6px;
+    flex-shrink: 0;
+    overflow-y: auto;
+  }
+  .tool {
+    width: 48px;
+    height: 48px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    font: inherit;
+    font-size: 17px;
+  }
+  .tool small { font-size: 8px; color: var(--muted); letter-spacing: .5px; }
+  .tool:hover { border-color: var(--cyan); }
+  .tool.active { background: var(--orange); border-color: var(--orange); color: #000; }
+  .tool.active small { color: #000; }
+  .tool-sep { width: 36px; border-top: 1px solid var(--border); margin: 4px 0; }
+
+  /* ---------- Zeichenfläche ---------- */
+  #canvas-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background:
+      repeating-linear-gradient(45deg, #121215 0 12px, #0f0f12 12px 24px);
+    overflow: auto;
+    padding: 20px;
+    min-width: 0;
+  }
+  #canvas-holder { box-shadow: 0 0 0 1px var(--border), 0 12px 40px rgba(0,0,0,.6); }
+
+  /* ---------- Rechtes Panel ---------- */
+  #sidebar {
+    width: 230px;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow-y: auto;
+  }
+  .panel { border-bottom: 1px solid var(--border); padding: 12px; }
+  .panel h3 {
+    font-size: 10px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--cyan);
+    margin-bottom: 10px;
+  }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .row label { flex: 1; color: var(--muted); font-size: 11px; }
+  input[type="color"] {
+    width: 34px; height: 26px;
+    border: 1px solid var(--border);
+    background: none;
+    cursor: pointer;
+    padding: 0;
+  }
+  input[type="range"] { flex: 1; accent-color: var(--orange); }
+  .val { width: 32px; text-align: right; font-size: 11px; color: var(--text); }
+
+  /* Ebenenliste */
+  #layers { list-style: none; display: flex; flex-direction: column; gap: 4px; }
+  #layers li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    padding: 5px 8px;
+    cursor: pointer;
+    font-size: 11px;
+  }
+  #layers li.selected { border-color: var(--orange); }
+  #layers li .lname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #layers li button {
+    background: none; border: none; color: var(--muted);
+    cursor: pointer; font-size: 12px; padding: 1px 3px; font: inherit;
+  }
+  #layers li button:hover { color: var(--cyan); }
+  #layers li.hidden-layer .lname { opacity: .35; text-decoration: line-through; }
+  .empty-hint { color: var(--muted); font-size: 11px; line-height: 1.5; }
+
+  /* Statuszeile */
+  footer {
+    padding: 5px 14px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  footer .key { color: var(--cyan); }
+
+  @media (max-width: 760px) {
+    #sidebar { width: 180px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">VOLME<span class="slash">/</span><span class="draw">DRAW</span></div>
+  <button class="btn" id="btn-undo" title="Rückgängig (Strg+Z)">↩ Rückgängig</button>
+  <button class="btn" id="btn-redo" title="Wiederholen (Strg+Y)">↪ Wiederholen</button>
+  <div class="spacer"></div>
+  <button class="btn" id="btn-import">Bild laden</button>
+  <button class="btn" id="btn-clear">Leeren</button>
+  <button class="btn primary" id="btn-png">PNG</button>
+  <button class="btn primary" id="btn-jpg">JPG</button>
+  <button class="btn primary" id="btn-svg">SVG</button>
+  <input type="file" id="file-input" accept="image/*" hidden>
+</header>
+
+<main>
+  <!-- Werkzeuge -->
+  <nav id="toolbar">
+    <button class="tool active" data-tool="select" title="Auswählen (V)">⬚<small>WAHL</small></button>
+    <button class="tool" data-tool="brush" title="Pinsel (B)">✎<small>PINSEL</small></button>
+    <button class="tool" data-tool="eraser" title="Radierer: Objekt anklicken zum Löschen (E)">⌫<small>RADIER</small></button>
+    <div class="tool-sep"></div>
+    <button class="tool" data-tool="rect" title="Rechteck (R)">▭<small>RECHT</small></button>
+    <button class="tool" data-tool="circle" title="Ellipse (C)">◯<small>KREIS</small></button>
+    <button class="tool" data-tool="line" title="Linie (L)">╱<small>LINIE</small></button>
+    <button class="tool" data-tool="text" title="Text (T)">T<small>TEXT</small></button>
+  </nav>
+
+  <!-- Zeichenfläche -->
+  <div id="canvas-wrap">
+    <div id="canvas-holder"><canvas id="c" width="900" height="600"></canvas></div>
+  </div>
+
+  <!-- Eigenschaften + Ebenen -->
+  <aside id="sidebar">
+    <div class="panel">
+      <h3>Farbe &amp; Pinsel</h3>
+      <div class="row">
+        <label for="fill-color">Füllung</label>
+        <input type="color" id="fill-color" value="#ff7a1a">
+      </div>
+      <div class="row">
+        <label for="stroke-color">Kontur</label>
+        <input type="color" id="stroke-color" value="#00d4e0">
+      </div>
+      <div class="row">
+        <label for="brush-size">Stärke</label>
+        <input type="range" id="brush-size" min="1" max="60" value="6">
+        <span class="val" id="brush-size-val">6</span>
+      </div>
+      <div class="row">
+        <label for="opacity">Deckkraft</label>
+        <input type="range" id="opacity" min="10" max="100" value="100">
+        <span class="val" id="opacity-val">100</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Ebenen</h3>
+      <ul id="layers"></ul>
+      <p class="empty-hint" id="layers-empty">Noch keine Objekte. Wähl links ein Werkzeug und leg los.</p>
+    </div>
+
+    <div class="panel">
+      <h3>Leinwand</h3>
+      <div class="row">
+        <label for="bg-color">Hintergrund</label>
+        <input type="color" id="bg-color" value="#ffffff">
+      </div>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  Tasten: <span class="key">V</span> Wahl · <span class="key">B</span> Pinsel · <span class="key">E</span> Radierer · <span class="key">R/C/L/T</span> Formen/Text · <span class="key">Entf</span> löschen · <span class="key">Strg+Z</span> zurück
+</footer>
+
+<script>
+// ============================================================
+// Volme Draw – Hybrid: Fabric.js Objektmodell,
+// Pinselstriche werden zu Pfad-Objekten (bearbeitbar + SVG-Export)
+// ============================================================
+
+const canvas = new fabric.Canvas('c', {
+  backgroundColor: '#ffffff',
+  preserveObjectStacking: true,
+  selection: true
+});
+
+// ---------- Zustand ----------
+let currentTool = 'select';
+let isDrawingShape = false;
+let shapeStart = null;
+let tempShape = null;
+let objCounter = 0;
+
+const toolNames = {
+  path: 'Pinselstrich', rect: 'Rechteck',
+  ellipse: 'Ellipse', line: 'Linie',
+  'i-text': 'Text', image: 'Bild'
+};
+
+// ---------- DOM ----------
+const $ = id => document.getElementById(id);
+const fillColor = $('fill-color'), strokeColor = $('stroke-color');
+const brushSize = $('brush-size'), opacity = $('opacity');
+
+function getFill()   { return fillColor.value; }
+function getStroke() { return strokeColor.value; }
+function getSize()   { return parseInt(brushSize.value, 10); }
+function getOpacity(){ return parseInt(opacity.value, 10) / 100; }
+
+// ---------- Undo / Redo ----------
+let undoStack = [], redoStack = [], restoring = false;
+
+function snapshot() {
+  if (restoring) return;
+  undoStack.push(JSON.stringify(canvas.toJSON(['vName', 'selectable'])));
+  if (undoStack.length > 60) undoStack.shift();
+  redoStack = [];
+  updateHistoryButtons();
+}
+function restore(json) {
+  restoring = true;
+  canvas.loadFromJSON(json, () => {
+    canvas.renderAll();
+    restoring = false;
+    refreshLayers();
+    updateHistoryButtons();
+  });
+}
+function undo() {
+  if (undoStack.length < 2) return;
+  redoStack.push(undoStack.pop());
+  restore(undoStack[undoStack.length - 1]);
+}
+function redo() {
+  if (!redoStack.length) return;
+  const s = redoStack.pop();
+  undoStack.push(s);
+  restore(s);
+}
+function updateHistoryButtons() {
+  $('btn-undo').disabled = undoStack.length < 2;
+  $('btn-redo').disabled = !redoStack.length;
+}
+
+canvas.on('object:added',   () => { tagObject(); snapshot(); refreshLayers(); });
+canvas.on('object:modified',() => { snapshot(); refreshLayers(); });
+canvas.on('object:removed', () => { if (!restoring) { snapshot(); refreshLayers(); } });
+canvas.on('selection:created', refreshLayers);
+canvas.on('selection:updated', refreshLayers);
+canvas.on('selection:cleared', refreshLayers);
+
+function tagObject() {
+  canvas.getObjects().forEach(o => {
+    if (!o.vName) {
+      objCounter++;
+      o.vName = (toolNames[o.type] || 'Objekt') + ' ' + objCounter;
+    }
+  });
+}
+
+// ---------- Werkzeugwechsel ----------
+function setTool(tool) {
+  currentTool = tool;
+  document.querySelectorAll('.tool').forEach(b =>
+    b.classList.toggle('active', b.dataset.tool === tool));
+
+  canvas.isDrawingMode = (tool === 'brush');
+  canvas.selection = (tool === 'select');
+  canvas.defaultCursor = (tool === 'select') ? 'default' : 'crosshair';
+  canvas.forEachObject(o => o.selectable = (tool === 'select'));
+  if (tool !== 'select') canvas.discardActiveObject();
+
+  if (tool === 'brush') {
+    canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
+    canvas.freeDrawingBrush.color = getStroke();
+    canvas.freeDrawingBrush.width = getSize();
+  }
+  canvas.renderAll();
+}
+
+document.querySelectorAll('.tool').forEach(btn =>
+  btn.addEventListener('click', () => setTool(btn.dataset.tool)));
+
+// ---------- Formen aufziehen ----------
+canvas.on('mouse:down', opt => {
+  const p = canvas.getPointer(opt.e);
+
+  if (currentTool === 'eraser') {
+    if (opt.target) canvas.remove(opt.target);
+    return;
+  }
+  if (currentTool === 'text') {
+    const t = new fabric.IText('Text', {
+      left: p.x, top: p.y,
+      fill: getFill(),
+      fontFamily: 'Arial',
+      fontSize: Math.max(getSize() * 4, 20),
+      opacity: getOpacity()
+    });
+    canvas.add(t);
+    setTool('select');
+    canvas.setActiveObject(t);
+    t.enterEditing();
+    t.selectAll();
+    return;
+  }
+  if (!['rect', 'circle', 'line'].includes(currentTool)) return;
+
+  isDrawingShape = true;
+  shapeStart = p;
+  const common = {
+    fill: currentTool === 'line' ? undefined : getFill(),
+    stroke: getStroke(),
+    strokeWidth: currentTool === 'line' ? getSize() : 2,
+    opacity: getOpacity(),
+    selectable: false
+  };
+  if (currentTool === 'rect') {
+    tempShape = new fabric.Rect({ left: p.x, top: p.y, width: 1, height: 1, ...common });
+  } else if (currentTool === 'circle') {
+    tempShape = new fabric.Ellipse({ left: p.x, top: p.y, rx: 1, ry: 1, ...common });
+  } else {
+    tempShape = new fabric.Line([p.x, p.y, p.x, p.y], common);
+  }
+  restoring = true;          // temporär: kein Snapshot beim Aufziehen
+  canvas.add(tempShape);
+  restoring = false;
+});
+
+canvas.on('mouse:move', opt => {
+  if (!isDrawingShape || !tempShape) return;
+  const p = canvas.getPointer(opt.e);
+  if (tempShape.type === 'rect') {
+    tempShape.set({
+      left: Math.min(p.x, shapeStart.x),
+      top: Math.min(p.y, shapeStart.y),
+      width: Math.abs(p.x - shapeStart.x),
+      height: Math.abs(p.y - shapeStart.y)
+    });
+  } else if (tempShape.type === 'ellipse') {
+    tempShape.set({
+      left: Math.min(p.x, shapeStart.x),
+      top: Math.min(p.y, shapeStart.y),
+      rx: Math.abs(p.x - shapeStart.x) / 2,
+      ry: Math.abs(p.y - shapeStart.y) / 2
+    });
+  } else if (tempShape.type === 'line') {
+    tempShape.set({ x2: p.x, y2: p.y });
+  }
+  canvas.renderAll();
+});
+
+canvas.on('mouse:up', () => {
+  if (!isDrawingShape) return;
+  isDrawingShape = false;
+  if (tempShape) {
+    // Mini-Formen (versehentlicher Klick) verwerfen
+    const tooSmall =
+      (tempShape.type === 'rect' && (tempShape.width < 3 || tempShape.height < 3)) ||
+      (tempShape.type === 'ellipse' && (tempShape.rx < 2 || tempShape.ry < 2)) ||
+      (tempShape.type === 'line' &&
+        Math.hypot(tempShape.x2 - tempShape.x1, tempShape.y2 - tempShape.y1) < 3);
+    if (tooSmall) {
+      restoring = true; canvas.remove(tempShape); restoring = false;
+    } else {
+      tempShape.set({ selectable: true });
+      tagObject(); snapshot(); refreshLayers();
+    }
+    tempShape = null;
+  }
+});
+
+// Pinselstrich fertig → mit Deckkraft versehen (bleibt Pfad-Objekt!)
+canvas.on('path:created', e => {
+  e.path.set({ opacity: getOpacity() });
+});
+
+// ---------- Eigenschaften live anwenden ----------
+brushSize.addEventListener('input', () => {
+  $('brush-size-val').textContent = brushSize.value;
+  if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.width = getSize();
+  applyToSelection(o => {
+    if (o.type === 'line' || o.type === 'path') o.set('strokeWidth', getSize());
+  });
+});
+opacity.addEventListener('input', () => {
+  $('opacity-val').textContent = opacity.value;
+  applyToSelection(o => o.set('opacity', getOpacity()));
+});
+fillColor.addEventListener('input', () =>
+  applyToSelection(o => { if (o.type !== 'line' && o.type !== 'path') o.set('fill', getFill()); }));
+strokeColor.addEventListener('input', () => {
+  if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.color = getStroke();
+  applyToSelection(o => o.set('stroke', getStroke()));
+});
+$('bg-color').addEventListener('input', e => {
+  canvas.setBackgroundColor(e.target.value, () => canvas.renderAll());
+});
+
+function applyToSelection(fn) {
+  const sel = canvas.getActiveObjects();
+  if (!sel.length) return;
+  sel.forEach(fn);
+  canvas.renderAll();
+}
+
+// ---------- Ebenen-Panel ----------
+function refreshLayers() {
+  const list = $('layers');
+  const objs = canvas.getObjects();
+  $('layers-empty').style.display = objs.length ? 'none' : 'block';
+  list.innerHTML = '';
+  const active = canvas.getActiveObjects();
+
+  // oberste Ebene zuerst anzeigen
+  [...objs].reverse().forEach(obj => {
+    const li = document.createElement('li');
+    li.className = (active.includes(obj) ? 'selected ' : '') + (obj.visible ? '' : 'hidden-layer');
+
+    const eye = mkBtn(obj.visible ? '👁' : '·', 'Ein-/Ausblenden', ev => {
+      ev.stopPropagation();
+      obj.visible = !obj.visible;
+      canvas.discardActiveObject();
+      canvas.renderAll(); refreshLayers();
+    });
+
+    const name = document.createElement('span');
+    name.className = 'lname';
+    name.textContent = obj.vName || obj.type;
+
+    const up = mkBtn('▲', 'Nach oben', ev => { ev.stopPropagation(); obj.bringForward(); canvas.renderAll(); refreshLayers(); });
+    const dn = mkBtn('▼', 'Nach unten', ev => { ev.stopPropagation(); obj.sendBackwards(); canvas.renderAll(); refreshLayers(); });
+    const del = mkBtn('✕', 'Löschen', ev => { ev.stopPropagation(); canvas.remove(obj); });
+
+    li.append(eye, name, up, dn, del);
+    li.addEventListener('click', () => {
+      setTool('select');
+      canvas.setActiveObject(obj);
+      canvas.renderAll();
+    });
+    list.appendChild(li);
+  });
+}
+function mkBtn(txt, title, fn) {
+  const b = document.createElement('button');
+  b.textContent = txt; b.title = title;
+  b.addEventListener('click', fn);
+  return b;
+}
+
+// ---------- Bild-Import ----------
+$('btn-import').addEventListener('click', () => $('file-input').click());
+$('file-input').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    fabric.Image.fromURL(ev.target.result, img => {
+      const scale = Math.min(1, (canvas.width * 0.8) / img.width, (canvas.height * 0.8) / img.height);
+      img.set({ left: 40, top: 40, scaleX: scale, scaleY: scale });
+      canvas.add(img);
+      setTool('select');
+      canvas.setActiveObject(img);
+    });
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+});
+
+// ---------- Export ----------
+function download(dataUrl, filename) {
+  const a = document.createElement('a');
+  a.href = dataUrl; a.download = filename; a.click();
+}
+$('btn-png').addEventListener('click', () =>
+  download(canvas.toDataURL({ format: 'png', multiplier: 2 }), 'volmedraw.png'));
+$('btn-jpg').addEventListener('click', () =>
+  download(canvas.toDataURL({ format: 'jpeg', quality: 0.92, multiplier: 2 }), 'volmedraw.jpg'));
+$('btn-svg').addEventListener('click', () => {
+  const blob = new Blob([canvas.toSVG()], { type: 'image/svg+xml' });
+  download(URL.createObjectURL(blob), 'volmedraw.svg');
+});
+
+// ---------- Leeren ----------
+$('btn-clear').addEventListener('click', () => {
+  if (!canvas.getObjects().length) return;
+  if (!confirm('Alle Objekte löschen?')) return;
+  canvas.getObjects().slice().forEach(o => { restoring = true; canvas.remove(o); });
+  restoring = false;
+  snapshot(); refreshLayers(); canvas.renderAll();
+});
+
+// ---------- Undo/Redo Buttons + Tastatur ----------
+$('btn-undo').addEventListener('click', undo);
+$('btn-redo').addEventListener('click', redo);
+
+document.addEventListener('keydown', e => {
+  const editingText = canvas.getActiveObject()?.isEditing;
+  if (editingText) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+  if (e.ctrlKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
+  if (e.ctrlKey && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    const sel = canvas.getActiveObjects();
+    if (sel.length) {
+      e.preventDefault();
+      canvas.discardActiveObject();
+      sel.forEach(o => canvas.remove(o));
+    }
+    return;
+  }
+  const map = { v: 'select', b: 'brush', e: 'eraser', r: 'rect', c: 'circle', l: 'line', t: 'text' };
+  if (map[e.key.toLowerCase()] && !e.ctrlKey && !e.metaKey) setTool(map[e.key.toLowerCase()]);
+});
+
+// ---------- Start ----------
+snapshot();            // Ausgangszustand für Undo
+refreshLayers();
+setTool('select');
+</script>
+</body>
+</html>
