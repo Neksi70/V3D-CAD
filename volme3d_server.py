@@ -11,7 +11,7 @@ WASM_GZ = 'volme3d-occt.wasm.gz'
 # Gehaertete Auslieferungs-Version (von build.js erzeugt). Liegt sie vor,
 # wird sie statt der Arbeitskopie volme3d.html ausgeliefert.
 DIST_HTML = 'volme3d.dist.html'
-APP_PATHS = ('/', '/volme3d.html')
+APP_PATHS = ('/volme3d.html',)
 # Dev-Modus (--dev): liefert IMMER die rohe Arbeitskopie volme3d.html aus,
 # nie die dist. Fuer lokale Vorschau der WIP-Aenderungen, ohne Testern
 # (die ueber 8765/Funnel die dist sehen) etwas Halbfertiges zu schicken.
@@ -19,8 +19,10 @@ DEV_MODE = False
 
 # Erlaubte oeffentliche Pfade -> (Datei, Content-Type). Alles andere: 404.
 ALLOW = {
-    '/':                                  ('volme3d.html', 'text/html; charset=utf-8'),
+    '/':                                  ('start.html', 'text/html; charset=utf-8'),
     '/volme3d.html':                      ('volme3d.html', 'text/html; charset=utf-8'),
+    '/start.html':                        ('start.html', 'text/html; charset=utf-8'),
+    '/volmedraw/volmedraw.html':          ('volmedraw/volmedraw.html', 'text/html; charset=utf-8'),
     '/abstimmung.html':                   ('abstimmung.html', 'text/html; charset=utf-8'),
     '/ansehen.html':                      ('ansehen.html', 'text/html; charset=utf-8'),
     '/favicon.svg':                       ('favicon.svg', 'image/svg+xml'),
