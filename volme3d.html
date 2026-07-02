@@ -4093,43 +4093,72 @@ function buildChamferBox(sx, sy, sz, chamfer) {
   return geo;
 }
 
-// Zylinder mit gerundeter (Radius) bzw. gefaster (Abschrägung) oberer/unterer
-// Kreiskante — analog zu buildRoundedBox/buildChamferBox, aber als Rotationskörper
-// (LatheGeometry). Normalisiert: Radius 1, Höhe 2 (y −1..1).
-// Die mm-Bevelgröße wird über die aktuelle Weltskalierung in Geometrie-Einheiten
-// umgerechnet (radial via scaleX, axial via scaleY), damit die Kante in echten mm
-// rund bleibt — auch bei ungleichem Durchmesser/Höhe-Verhältnis.
-function buildRoundedCylinder(segs, filletMm, chamferMm, scaleX, scaleY) {
+// Zylinder mit pro Kante (oben/unten) gerundeter (Round) bzw. gefaster (Chamfer)
+// Kreiskante — als Rotationskörper (LatheGeometry). Normalisiert: Radius 1,
+// Höhe 2 (y −1..1). bev = {topRound, topChamfer, botRound, botChamfer} in mm.
+// Rundung und Fase schließen sich je Kante aus (Round hat Vorrang vor Chamfer).
+// Die mm-Bevelgröße wird über die Weltskalierung in Geometrie-Einheiten umgerechnet
+// (radial via scaleX, axial via scaleY), damit die Kante in echten mm bleibt —
+// auch bei ungleichem Durchmesser/Höhe-Verhältnis.
+function buildRoundedCylinder(segs, bev, scaleX, scaleY) {
   segs = Math.max(3, Math.round(segs || 32));
-  const bevMm = filletMm > 0 ? filletMm : (chamferMm > 0 ? chamferMm : 0);
-  if (bevMm <= 0) return new THREE.CylinderGeometry(1, 1, 2, segs);
-  const rMm   = Math.max(0.01, (scaleX || 1) * 10);   // Radius   in mm
-  const hhMm  = Math.max(0.01, (scaleY || 1) * 10);   // halbe Höhe in mm
-  const fr = Math.min(bevMm / rMm,  0.98);            // radialer Anteil (Geometrie-Einheiten)
-  const fy = Math.min(bevMm / hhMm, 0.98);            // axialer  Anteil (Geometrie-Einheiten)
+  bev = bev || {};
+  const rMm  = Math.max(0.01, (scaleX || 1) * 10);   // Radius    in mm
+  const hhMm = Math.max(0.01, (scaleY || 1) * 10);   // halbe Höhe in mm
+  // Pro Kante normalisieren: Round hat Vorrang; Betrag in Geometrie-Einheiten.
+  const mkEdge = (roundMm, chamMm) => {
+    const rnd = roundMm > 0;
+    const bevMm = rnd ? roundMm : (chamMm > 0 ? chamMm : 0);
+    return { on: bevMm > 0, round: rnd,
+             fr: Math.min(bevMm / rMm, 0.98), fy: Math.min(bevMm / hhMm, 0.98) };
+  };
+  const B = mkEdge(bev.botRound || 0, bev.botChamfer || 0);
+  const T = mkEdge(bev.topRound || 0, bev.topChamfer || 0);
+  if (!B.on && !T.on) return new THREE.CylinderGeometry(1, 1, 2, segs);
+  const steps = Math.max(3, Math.min(12, Math.round(segs / 3)));
   const pts = [];
-  pts.push(new THREE.Vector2(0, -1));        // Boden-Mitte → schließt die Kappe
-  pts.push(new THREE.Vector2(1 - fr, -1));
-  if (filletMm > 0) {
-    const steps = Math.max(3, Math.min(12, Math.round(segs / 3)));
-    for (let i = 1; i <= steps; i++) {       // untere Rundung
-      const a = -Math.PI / 2 + (i / steps) * (Math.PI / 2);
-      pts.push(new THREE.Vector2((1 - fr) + fr * Math.cos(a), (-1 + fy) + fy * Math.sin(a)));
+  pts.push(new THREE.Vector2(0, -1));                  // Boden-Mitte → schließt die Kappe
+  if (B.on) {                                          // untere Kante
+    pts.push(new THREE.Vector2(1 - B.fr, -1));
+    if (B.round) {
+      for (let i = 1; i <= steps; i++) {
+        const a = -Math.PI / 2 + (i / steps) * (Math.PI / 2);
+        pts.push(new THREE.Vector2((1 - B.fr) + B.fr * Math.cos(a), (-1 + B.fy) + B.fy * Math.sin(a)));
+      }
+    } else {
+      pts.push(new THREE.Vector2(1, -1 + B.fy));       // gerade Fase
     }
-    pts.push(new THREE.Vector2(1, 1 - fy));
-    for (let i = 1; i <= steps; i++) {       // obere Rundung
-      const a = (i / steps) * (Math.PI / 2);
-      pts.push(new THREE.Vector2((1 - fr) + fr * Math.cos(a), (1 - fy) + fy * Math.sin(a)));
-    }
-  } else {                                    // Abschrägung (gerade Fase)
-    pts.push(new THREE.Vector2(1, -1 + fy));
-    pts.push(new THREE.Vector2(1,  1 - fy));
-    pts.push(new THREE.Vector2(1 - fr, 1));
+  } else {
+    pts.push(new THREE.Vector2(1, -1));                // scharfe Kante
   }
-  pts.push(new THREE.Vector2(0, 1));         // Deckel-Mitte → schließt die Kappe
+  if (T.on) {                                          // obere Kante
+    if (T.round) {
+      pts.push(new THREE.Vector2(1, 1 - T.fy));
+      for (let i = 1; i <= steps; i++) {
+        const a = (i / steps) * (Math.PI / 2);
+        pts.push(new THREE.Vector2((1 - T.fr) + T.fr * Math.cos(a), (1 - T.fy) + T.fy * Math.sin(a)));
+      }
+    } else {
+      pts.push(new THREE.Vector2(1, 1 - T.fy));
+      pts.push(new THREE.Vector2(1 - T.fr, 1));        // gerade Fase
+    }
+  } else {
+    pts.push(new THREE.Vector2(1, 1));                 // scharfe Kante
+  }
+  pts.push(new THREE.Vector2(0, 1));                   // Deckel-Mitte → schließt die Kappe
   const geo = new THREE.LatheGeometry(pts, segs);
   geo.computeVertexNormals();
   return geo;
+}
+
+// capBevel/legacy fillet+chamfer eines Zylinders → normalisiertes Kanten-Objekt
+// {topRound, topChamfer, botRound, botChamfer} in mm (oder null, wenn keine Fase).
+function _cylBevelOf(o) {
+  const cb = o.userData.capBevel;
+  if (cb && (cb.topRound || cb.topChamfer || cb.botRound || cb.botChamfer) > 0) return cb;
+  const fil = o.userData.fillet || 0, cha = o.userData.chamfer || 0;   // Regler = beide Kanten
+  if (fil > 0 || cha > 0) return { topRound: fil, botRound: fil, topChamfer: cha, botChamfer: cha };
+  return null;
 }
 
 // ─── Apply fillet/chamfer to selected box ────────────────────────────
@@ -7165,6 +7194,47 @@ async function _applyEdgeHandleValue(chamferDist) {
   if (!_edgeObj.userData._dynamicEdges || _edgeSel.size === 0) return;
   saveUndo();
   const o = _edgeObj;
+
+  // Zylinder / Kegel / Rohr: Kreiskanten parametrisch runden/fasen (robuster als der
+  // OCCT-B-Rep-Pfad, der hier nur einen entarteten Deckel-/Ringpunkt bekäme). Nutzt
+  // dieselben Lathe-/Revolve-Builder wie die Regler — pro Kante (oben=0 / unten=1,
+  // s. enterEdgeMode; der Kegel bietet nur die untere Kante an).
+  // Hinweis-Konvention: nach rechts ziehen = Rundung, nach links = Fase.
+  if (o.userData.shapeType === 'cylinder' || o.userData.shapeType === 'cone' || o.userData.shapeType === 'tube') {
+    const isChamfer = chamferDist < 0;              // ← Chamfer | Fillet →
+    const mm = Math.abs(chamferDist) * 10;          // Szene-Einheiten → mm
+    const n = _edgeSel.size;
+    const setEdge = (bv, top) => {                  // rund/schräg je Kante exklusiv
+      if (isChamfer) {
+        if (top) { bv.topChamfer = mm; bv.topRound = 0; }
+        else     { bv.botChamfer = mm; bv.botRound = 0; }
+      } else {
+        if (top) { bv.topRound = mm; bv.topChamfer = 0; }
+        else     { bv.botRound = mm; bv.botChamfer = 0; }
+      }
+    };
+    if (o.userData.shapeType === 'tube') {
+      const bv = o.userData.tubeBevel || (o.userData.tubeBevel = { ..._tubeBevelOf(o) });
+      o.userData.fillet = 0; o.userData.chamfer = 0;      // alte Sammelwerte stilllegen
+      _edgeSel.forEach(i => setEdge(bv, i === 0));        // 0=oben, 1=unten
+    } else {
+      // Zylinder & Kegel teilen capBevel. Zylinder-Kanten 0=oben/1=unten;
+      // der Kegel bietet nur die untere Kante (Index 0 → bot).
+      const cb = o.userData.capBevel || (o.userData.capBevel = {
+        topRound: o.userData.fillet || 0, botRound: o.userData.fillet || 0,
+        topChamfer: o.userData.chamfer || 0, botChamfer: o.userData.chamfer || 0
+      });
+      _edgeSel.forEach(i => setEdge(cb, o.userData.shapeType === 'cylinder' ? (i === 0) : false));
+      // Regler-Anzeige grob mitziehen (Regler = beide Kanten gemeinsam)
+      o.userData.fillet  = Math.max(cb.topRound,   cb.botRound);
+      o.userData.chamfer = Math.max(cb.topChamfer, cb.botChamfer);
+    }
+    _fpRebuildGeo(o);
+    _updateObjEdgeLines(o);
+    exitEdgeMode(); enterEdgeMode();
+    notify(n + ' Kante(n) ' + (isChamfer ? 'abgeschrägt' : 'abgerundet'), 'ok');
+    return;
+  }
 
   // 'sketch' ist kein OCCT-Primitiv (lässt sich nicht aus Parametern neu bauen) →
   // nicht über den OCCT/ThreeCSG-Pfad, sondern über den lokalen BufferGeometry-
@@ -22821,7 +22891,7 @@ function _fpBuildRows(type, o) {
       const floorRow = (type === 'tube')
         ? `<label class="fp-check-lbl"><input type="checkbox" id="fp-floor" ${o.userData.tubeFloor ? 'checked' : ''} onchange="fpApplyTubeFloor(this.checked)"> Boden (geschlossen)</label>`
         : '';
-      const cylEdgeBtn = type === 'cylinder' ? edgeBtn : '';
+      const cylEdgeBtn = (type === 'cylinder' || type === 'tube') ? edgeBtn : '';
       // Zylinder: Radius/Abschrägung beider Kreiskanten gemeinsam.
       // Rundes Rohr: AUßEN-Kante oben/unten getrennt wählbar (rund ODER schräg je Kante).
       const cylBevelRows = type === 'cylinder'
@@ -22912,6 +22982,7 @@ function _fpBuildRows(type, o) {
           row('Obere Kante abschräg.',  'fp-cb-tc', r2(cbv.topChamfer||0), "fpCapBevelSet('topchamfer',this.value)", 'mm', 0, cmax, 0.1);
         if (capBevelRows) capBevelRows = '<div class="fp-sep"></div>' + capBevelRows;
       }
+      const coneEdgeBtn = type === 'cone' ? edgeBtn : '';   // interaktive Kanten-Fase (untere Kreiskante)
       return row(flip ? 'Durchmesser ↑' : 'Durchmesser ↓', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
              topRow +
              (type === 'cone' ? propLock() : '') +
@@ -22920,7 +22991,7 @@ function _fpBuildRows(type, o) {
              '<div class="fp-sep"></div>' +
              row('Seiten', 'fp-seg', segs||defSegs, "fpApplySegs(this.value)", '', 3, 128, 1) +
              capBevelRows +
-             (shellBtn ? '<div class="fp-sep"></div>' + shellBtn : '') +
+             ((coneEdgeBtn || shellBtn) ? '<div class="fp-sep"></div>' + coneEdgeBtn + shellBtn : '') +
              _dispRows();
     }
     case 'torus': {
@@ -23551,6 +23622,10 @@ function fpApplyCylBevel(filletVal, chamferVal) {
   saveUndoDebounced();
   o.userData.fillet  = filletVal;
   o.userData.chamfer = chamferVal;
+  // Regler wirkt auf BEIDE Kreiskanten gemeinsam → capBevel synchron halten,
+  // damit Regler und Kanten-Modus dieselbe Quelle nutzen.
+  o.userData.capBevel = { topRound: filletVal, botRound: filletVal,
+                          topChamfer: chamferVal, botChamfer: chamferVal };
   _fpRebuildGeo(o);
   _fpSyncValues();
   if (selectedObjs.length > 0) _doRepositionDimHandles();
@@ -23698,9 +23773,9 @@ function _fpRebuildGeo(o) {
   let geo;
   switch (type) {
     case 'cylinder': {
-      const fil = o.userData.fillet || 0, cha = o.userData.chamfer || 0;
-      geo = (fil > 0 || cha > 0)
-        ? buildRoundedCylinder(segs || 32, fil, cha, o.scale.x, o.scale.y)
+      const bev = _cylBevelOf(o);
+      geo = bev
+        ? buildRoundedCylinder(segs || 32, bev, o.scale.x, o.scale.y)
         : new THREE.CylinderGeometry(1, 1, 2, segs || 32);
       break;
     }
