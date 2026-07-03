@@ -49,6 +49,10 @@
 - **Laser-Schriften** (`volmedraw/lib/*.ttf`, OFL/Apache): **Poppins** (Sans),
   **Great Vibes** (Schreibschrift). Nur diese sind vektorisierbar (Text→Pfade);
   die web-safe Fonts im Dropdown sind nur für Bildschirm/`<text>`-Export.
+- **imagetracer.js 1.2.6** (`volmedraw/lib/imagetracer.js`, Public Domain) — **Foto →
+  Vektor** (Nachzeichnen). Bild-Filter (Graustufen/Helligkeit/Kontrast/Invertieren/
+  Schwellwert) laufen über Fabric-Filter + eigenen `Threshold`-Filter; getracet wird das
+  gefilterte `o._element` (auf max 1000 px runterskaliert), weiße Flächen werden verworfen.
 - Deployment: `volme3d_server.py` ALLOW-Routen für `/volmedraw/lib/opentype.min.js`
   und die beiden `.ttf` (Content-Type `font/ttf`) sind ergänzt.
 

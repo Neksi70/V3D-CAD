@@ -6,6 +6,7 @@
 <title>Volme Draw – Zeichenprogramm</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
 <script src="./lib/opentype.min.js"></script>
+<script src="./lib/imagetracer.js"></script>
 <style>
   @font-face { font-family: 'Poppins'; src: url('./lib/Poppins-Regular.ttf'); font-display: swap; }
   @font-face { font-family: 'Great Vibes'; src: url('./lib/GreatVibes-Regular.ttf'); font-display: swap; }
@@ -165,6 +166,7 @@
   .prow input[type="number"] { width: 66px; background: var(--panel2); border: 1px solid var(--border); color: var(--text); font: inherit; font-size: 11px; padding: 3px 4px; }
   .prow input[type="color"] { width: 32px; height: 24px; border: 1px solid var(--border); background: none; padding: 0; cursor: pointer; }
   .prow input[type="checkbox"] { accent-color: var(--orange); }
+  .prow input[type="range"] { flex: 1; accent-color: var(--orange); }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 7px; }
   .field { display: flex; align-items: center; gap: 4px; }
   .field span { color: var(--muted); font-size: 10px; width: 12px; }
@@ -289,6 +291,17 @@
         <div class="prow"><label for="m-angle">Winkel °</label><input type="number" id="m-angle" value="0"></div>
       </div>
       <p class="empty-hint" id="measures-hint">Objekt auswählen, um Maße zu bearbeiten.</p>
+      <div id="props-image" style="display:none">
+        <div class="psub">Bild (Laser)</div>
+        <div class="prow"><label for="fx-gray">Graustufen</label><input type="checkbox" id="fx-gray"></div>
+        <div class="prow"><label for="fx-bright">Helligkeit</label><input type="range" id="fx-bright" min="-100" max="100" value="0"></div>
+        <div class="prow"><label for="fx-contrast">Kontrast</label><input type="range" id="fx-contrast" min="-100" max="100" value="0"></div>
+        <div class="prow"><label for="fx-invert">Invertieren</label><input type="checkbox" id="fx-invert"></div>
+        <div class="prow"><label for="fx-thresh-on">Schwarz/Weiß</label><input type="checkbox" id="fx-thresh-on"></div>
+        <div class="prow"><label for="fx-thresh">Schwelle</label><input type="range" id="fx-thresh" min="1" max="254" value="128"></div>
+        <div class="prow"><button class="qbtn primary" id="fx-trace" style="width:100%">✎ Nachzeichnen → Vektor</button></div>
+        <div class="prow"><button class="qbtn" id="fx-reset" style="width:100%">Filter zurücksetzen</button></div>
+      </div>
       <div class="psub">Leinwand (mm)</div>
       <div class="prow"><label for="canvas-preset">Format</label>
         <select id="canvas-preset">
@@ -666,6 +679,9 @@ function applyToSelection(fn) { const s = canvas.getActiveObjects(); if (!s.leng
 function onSelect() { refreshLayers(); refreshMeasures(); }
 function refreshMeasures() {
   const o = canvas.getActiveObject(), box = $('props-measures'), hint = $('measures-hint');
+  const isImg = !!o && o.type === 'image';
+  $('props-image').style.display = isImg ? 'block' : 'none';
+  if (isImg) fillFxUI(o);
   if (!o) { box.classList.add('disabled'); hint.style.display = 'block'; return; }
   box.classList.remove('disabled'); hint.style.display = 'none';
   const b = o.getBoundingRect(true, true);
@@ -859,6 +875,76 @@ function textToPath() {
   });
   if (missing) alert('Für „' + missing + '" ist keine vektorisierbare Schrift geladen.\nWähle eine Laser-Schrift (Poppins oder Great Vibes) und wandle dann um.');
   if (converted) { canvas.requestRenderAll(); snapshot('Text→Pfade'); refreshLayers(); }
+}
+
+// ---------- Bild-Filter (Gravur) + Nachzeichnen (Vektor) ----------
+fabric.Image.filters.Threshold = fabric.util.createClass(fabric.Image.filters.BaseFilter, {
+  type: 'Threshold', threshold: 128,
+  applyTo2d: function (o) {
+    const d = o.imageData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      const v = l >= this.threshold ? 255 : 0; d[i] = d[i + 1] = d[i + 2] = v;
+    }
+  }
+});
+fabric.Image.filters.Threshold.fromObject = fabric.Image.filters.BaseFilter.fromObject;
+
+function activeImage() { const o = canvas.getActiveObject(); return (o && o.type === 'image') ? o : null; }
+function rebuildFilters(o) {
+  const fx = o.vFx || {}, F = fabric.Image.filters, arr = [];
+  if (fx.gray) arr.push(new F.Grayscale());
+  if (fx.brightness) arr.push(new F.Brightness({ brightness: fx.brightness / 100 }));
+  if (fx.contrast) arr.push(new F.Contrast({ contrast: fx.contrast / 100 }));
+  if (fx.invert) arr.push(new F.Invert());
+  if (fx.thresholdOn) arr.push(new F.Threshold({ threshold: fx.threshold || 128 }));
+  o.filters = arr; o.applyFilters(); canvas.requestRenderAll();
+}
+function readFxUI() {
+  const o = activeImage(); if (!o) return;
+  o.vFx = { gray: $('fx-gray').checked, brightness: +$('fx-bright').value, contrast: +$('fx-contrast').value, invert: $('fx-invert').checked, thresholdOn: $('fx-thresh-on').checked, threshold: +$('fx-thresh').value };
+  rebuildFilters(o);
+}
+function fillFxUI(o) {
+  const fx = o.vFx || {};
+  $('fx-gray').checked = !!fx.gray; $('fx-bright').value = fx.brightness || 0; $('fx-contrast').value = fx.contrast || 0;
+  $('fx-invert').checked = !!fx.invert; $('fx-thresh-on').checked = !!fx.thresholdOn; $('fx-thresh').value = fx.threshold || 128;
+}
+['fx-gray', 'fx-bright', 'fx-contrast', 'fx-invert', 'fx-thresh-on', 'fx-thresh'].forEach(id => {
+  $(id).addEventListener('input', readFxUI);
+  $(id).addEventListener('change', () => snapshot('Bildfilter'));
+});
+$('fx-reset').addEventListener('click', () => { const o = activeImage(); if (!o) return; o.vFx = {}; fillFxUI(o); rebuildFilters(o); snapshot('Filter zurückgesetzt'); });
+$('fx-trace').addEventListener('click', tracePhoto);
+
+function tracePhoto() {
+  const o = activeImage();
+  if (!o) { alert('Erst ein Bild auswählen (Werkzeug WAHL).'); return; }
+  if (typeof ImageTracer === 'undefined') { alert('Nachzeichnen-Modul nicht geladen.'); return; }
+  const src = o._element;
+  const w = src.naturalWidth || src.width, h = src.naturalHeight || src.height;
+  const maxDim = 1000, sc = Math.min(1, maxDim / Math.max(w, h));
+  const tw = Math.max(1, Math.round(w * sc)), th = Math.max(1, Math.round(h * sc));
+  const tmp = document.createElement('canvas'); tmp.width = tw; tmp.height = th;
+  tmp.getContext('2d').drawImage(src, 0, 0, tw, th);
+  let svgstr;
+  try {
+    const idata = tmp.getContext('2d').getImageData(0, 0, tw, th);
+    svgstr = ImageTracer.imagedataToSVG(idata, { numberofcolors: 2, colorsampling: 0, pathomit: 8, ltres: 1, qtres: 1, rightangleenhance: true, linefilter: true, strokewidth: 0, scale: 1 });
+  } catch (e) { alert('Nachzeichnen fehlgeschlagen: ' + e.message); return; }
+  fabric.loadSVGFromString(svgstr, (objects) => {
+    // weisse Hintergrundflächen wegwerfen (Laser: nur die Motiv-Konturen)
+    const isWhite = f => { f = ('' + f).toLowerCase().replace(/\s/g, ''); return f === '#ffffff' || f === 'white' || f === 'rgb(255,255,255)'; };
+    let kept = (objects || []).filter(p => !isWhite(p.fill));
+    if (!kept.length) kept = objects || [];
+    if (!kept.length) { alert('Keine Konturen gefunden – stell erst Kontrast/Schwellwert ein.'); return; }
+    const grp = fabric.util.groupSVGElements(kept, {});
+    const tW = o.getScaledWidth(), tH = o.getScaledHeight();
+    grp.set({ left: o.left, top: o.top, angle: o.angle, originX: 'left', originY: 'top', scaleX: tW / (grp.width || 1), scaleY: tH / (grp.height || 1) });
+    grp.vType = 'trace'; grp.vName = (o.vName || 'Bild') + ' (Vektor)';
+    canvas.add(grp); canvas.setActiveObject(grp);
+    canvas.requestRenderAll(); snapshot('Nachgezeichnet'); refreshLayers();
+  });
 }
 
 // ---------- Projekt speichern / laden ----------

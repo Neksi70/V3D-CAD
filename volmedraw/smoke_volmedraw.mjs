@@ -82,6 +82,19 @@ for (let i = 0; i < 8 && !t2pOk; i++) {
   if (!t2pOk) await page.waitForTimeout(500);
 }
 
+// Foto -> Vektor (ImageTracer) + Bildfilter
+const itLoaded = await page.evaluate(() => typeof window.ImageTracer);
+const traceOk = await page.evaluate(() => new Promise(res => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="140" height="140"><rect width="140" height="140" fill="white"/><circle cx="70" cy="70" r="45" fill="black"/></svg>';
+  const url = 'data:image/svg+xml;base64,' + btoa(svg);
+  fabric.Image.fromURL(url, img => {
+    img.set({ left: 60, top: 60 }); canvas.add(img); canvas.setActiveObject(img);
+    img.vFx = { thresholdOn: true, threshold: 128 }; rebuildFilters(img);
+    try { tracePhoto(); } catch (e) { return res(false); }
+    setTimeout(() => res(!!canvas.getObjects().find(o => o.vType === 'trace')), 1000);
+  });
+}));
+
 // Projekt speichern (Strg+S -> Download .vdraw)
 let saveOk = false;
 try {
@@ -115,12 +128,14 @@ console.log('Globals fehlen:', Object.entries(globals).filter(([, t]) => t !== '
 console.log('Ebenen:', layerCount, ' Verlauf:', histCount);
 console.log('mm-Doc ok:', docOk, ' Zuschnitt ok:', clipOk, ' Schrift ok:', fontOk);
 console.log('opentype:', otLoaded, ' Text→Pfade ok:', t2pOk);
+console.log('ImageTracer:', itLoaded, ' Foto→Vektor ok:', traceOk);
 console.log('Speichern ok:', saveOk, ' Laden-Roundtrip ok:', loadOk, ' SVG ok:', svgOk);
 console.log('Fehler:', errors.length);
 for (const e of errors) console.log('   •', e.slice(0, 180));
 
 const allFns = Object.values(globals).every(t => t === 'function');
 const ok = allFns && fabricLoaded === 'object' && menuCount >= 6 && paletteCount >= 8 && layerCount >= 2 &&
-  histCount >= 2 && docOk && clipOk && fontOk && otLoaded === 'object' && t2pOk && saveOk && loadOk && svgOk && errors.length === 0;
+  histCount >= 2 && docOk && clipOk && fontOk && otLoaded === 'object' && t2pOk &&
+  itLoaded === 'object' && traceOk && saveOk && loadOk && svgOk && errors.length === 0;
 console.log('\n=> Smoke:', ok ? 'BESTANDEN ✓' : 'FEHLGESCHLAGEN ✗');
 process.exit(ok ? 0 : 1);
