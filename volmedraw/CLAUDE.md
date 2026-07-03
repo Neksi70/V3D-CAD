@@ -66,6 +66,15 @@
 - `vLaser` steht in `SNAP_PROPS` → bleibt in Undo + .vdraw erhalten; Ebenen-Panel zeigt
   je Objekt einen Farbpunkt.
 
+## Rückmeldung & Onboarding
+- **`toast(msg, type)`** für nicht-blockierende Rückmeldung (`success`/`error`/`info`) —
+  positive Bestätigungen (Export/Speichern/Maske/Laser…) und sanfte Fehlerhinweise
+  ("erst Objekt wählen"). `alert()`/`confirm()` NUR für echte Blocker (Leeren,
+  Autosave-Wiederherstellen, Lade-Fehler).
+- **Onboarding-Overlay** (`#onboarding`) zeigt beim ersten Besuch 5 Schritte;
+  „Nicht mehr anzeigen" setzt `localStorage['volmedraw:onboarded']`. Wieder öffnen
+  über Menü **Hilfe → Erste Schritte**.
+
 ## Coding-Regeln
 - **Vanilla JS, kein Framework.** Keine neuen Abhängigkeiten ohne Rückfrage.
 - **Deutsche UI-Texte** (Buttons, Labels, Tooltips, Hinweise).

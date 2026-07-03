@@ -183,6 +183,29 @@
     color: var(--muted); font-size: 11px; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   footer .key { color: var(--cyan); }
+
+  /* ---------- Toasts ---------- */
+  #toast-wrap { position: fixed; bottom: 42px; left: 50%; transform: translateX(-50%); z-index: 200; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+  .toast { background: var(--panel2); border: 1px solid var(--border); border-left: 3px solid var(--cyan); color: var(--text); padding: 9px 16px; font-size: 12px; box-shadow: 0 6px 20px rgba(0,0,0,.55); opacity: 0; transform: translateY(8px); transition: opacity .2s, transform .2s; max-width: 80vw; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { border-left-color: #2ecc71; }
+  .toast.error { border-left-color: var(--orange); }
+  .toast.info { border-left-color: var(--cyan); }
+
+  /* ---------- Onboarding ---------- */
+  #onboarding { position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,.74); display: flex; align-items: center; justify-content: center; }
+  #onboarding.hidden { display: none; }
+  .ob-card { background: var(--panel); border: 1px solid var(--border); border-top: 3px solid var(--orange); width: 540px; max-width: 92vw; padding: 22px 24px; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  .ob-card h2 { font-size: 18px; letter-spacing: 1px; margin-bottom: 4px; font-weight: 800; }
+  .ob-card h2 .s { color: var(--cyan); } .ob-card h2 .d { color: var(--orange); }
+  .ob-card .sub { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
+  .ob-steps { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
+  .ob-step { display: flex; gap: 12px; align-items: flex-start; }
+  .ob-step .n { width: 26px; height: 26px; flex-shrink: 0; background: var(--panel2); border: 1px solid var(--orange); color: var(--orange); display: flex; align-items: center; justify-content: center; font-weight: 700; }
+  .ob-step .tx { font-size: 12.5px; line-height: 1.5; padding-top: 3px; } .ob-step .tx b { color: var(--cyan); }
+  .ob-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .ob-actions label { color: var(--muted); font-size: 11px; display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  .ob-actions label input { accent-color: var(--orange); }
 </style>
 </head>
 <body>
@@ -354,6 +377,26 @@
     <div class="fp-body">
       <ul id="layers"></ul>
       <p class="empty-hint" id="layers-empty">Noch keine Objekte.</p>
+    </div>
+  </div>
+</div>
+
+<div id="toast-wrap"></div>
+
+<div id="onboarding" class="hidden">
+  <div class="ob-card">
+    <h2>Willkommen bei VOLME<span class="s">/</span><span class="d">DRAW</span></h2>
+    <div class="sub">Zeichnen fürs Lasern – so kommst du in 5 Schritten zur fertigen Datei:</div>
+    <div class="ob-steps">
+      <div class="ob-step"><div class="n">1</div><div class="tx"><b>Werkzeuge links</b> – Formen, Pinsel, Text. Oder oben <b>Datei → Bild laden</b> für ein Foto.</div></div>
+      <div class="ob-step"><div class="n">2</div><div class="tx"><b>Farbe</b> unten links (Primär = Füllung, Sekundär = Kontur).</div></div>
+      <div class="ob-step"><div class="n">3</div><div class="tx"><b>Größe in mm</b> rechts einstellen – z. B. Format <b>xTool F1/F2 Ultra</b>.</div></div>
+      <div class="ob-step"><div class="n">4</div><div class="tx"><b>Laser-Aufgabe</b> rechts: Objekt als <b>Schnitt</b> (rot), <b>Gravur</b> (schwarz) oder <b>Linie</b> (blau) markieren. Foto? → „Nachzeichnen".</div></div>
+      <div class="ob-step"><div class="n">5</div><div class="tx"><b>SVG exportieren</b> (oben rechts) und in <b>LightBurn</b> öffnen – die Farben sind fertige Ebenen.</div></div>
+    </div>
+    <div class="ob-actions">
+      <label><input type="checkbox" id="ob-dont"> Nicht mehr anzeigen</label>
+      <button class="qbtn primary" id="ob-start" style="padding:8px 20px">Los geht's</button>
     </div>
   </div>
 </div>
@@ -789,26 +832,26 @@ function distribute(axis) {
 // ---------- Clipping-Maske (Vektor-Form maskiert Objekt) ----------
 function makeMask() {
   const objs = canvas.getActiveObjects();
-  if (objs.length < 2) { alert('Clipping-Maske: mind. 2 Objekte wählen — die oberste Form wird zur Maske.'); return; }
+  if (objs.length < 2) { toast('Clipping-Maske: mind. 2 Objekte wählen (oberste Form = Maske)', 'error'); return; }
   const byStack = objs.slice().sort((a, b) => canvas.getObjects().indexOf(a) - canvas.getObjects().indexOf(b));
   const maskShape = byStack[byStack.length - 1], targets = byStack.slice(0, -1); let done = 0;
-  targets.forEach(t => maskShape.clone(clip => { clip.absolutePositioned = true; t.clipPath = clip; t.vMasked = true; if (++done === targets.length) { canvas.remove(maskShape); canvas.discardActiveObject(); canvas.requestRenderAll(); snapshot('Maske'); refreshLayers(); } }));
+  targets.forEach(t => maskShape.clone(clip => { clip.absolutePositioned = true; t.clipPath = clip; t.vMasked = true; if (++done === targets.length) { canvas.remove(maskShape); canvas.discardActiveObject(); canvas.requestRenderAll(); snapshot('Maske'); refreshLayers(); toast('Maske erstellt ✓'); } }));
 }
 // Auf die aktive Auswahl zuschneiden (Paint.NET "Crop to Selection"):
 // das ausgewählte Objekt (z. B. ein Bild) bekommt die Auswahl-Form als Maske.
 function clipToSelection() {
-  if (!selRegion) { alert('Erst mit AUSW ▭ oder AUSW ◯ einen Bereich aufziehen, dann hier zuschneiden.'); return; }
+  if (!selRegion) { toast('Erst mit AUSW ▭ / ◯ einen Bereich aufziehen', 'error'); return; }
   let targets = canvas.getActiveObjects();
   if (!targets.length) { const objs = canvas.getObjects(); if (objs.length) targets = [objs[objs.length - 1]]; }
-  if (!targets.length) { alert('Kein Objekt zum Zuschneiden vorhanden.'); return; }
+  if (!targets.length) { toast('Kein Objekt zum Zuschneiden', 'error'); return; }
   targets.forEach(o => { o.clipPath = selClip(); o.vMasked = true; });
   clearSelection();
-  canvas.requestRenderAll(); snapshot('Auf Auswahl zugeschnitten'); refreshLayers(); refreshMeasures();
+  canvas.requestRenderAll(); snapshot('Auf Auswahl zugeschnitten'); refreshLayers(); refreshMeasures(); toast('Zugeschnitten ✓');
 }
 function unmask() {
   const objs = canvas.getActiveObjects(), list = objs.length ? objs : canvas.getObjects(); let changed = false, pending = 0;
-  list.forEach(t => { if (t.clipPath) { changed = true; pending++; t.clipPath.clone(shape => { shape.absolutePositioned = false; shape.set({ selectable: true, evented: true }); canvas.add(shape); t.clipPath = null; t.vMasked = false; if (--pending === 0) { canvas.requestRenderAll(); snapshot('Maske gelöst'); refreshLayers(); } }); } });
-  if (!changed) alert('Keine Maske gefunden.');
+  list.forEach(t => { if (t.clipPath) { changed = true; pending++; t.clipPath.clone(shape => { shape.absolutePositioned = false; shape.set({ selectable: true, evented: true }); canvas.add(shape); t.clipPath = null; t.vMasked = false; if (--pending === 0) { canvas.requestRenderAll(); snapshot('Maske gelöst'); refreshLayers(); toast('Maske gelöst ✓'); } }); } });
+  if (!changed) toast('Keine Maske gefunden', 'error');
 }
 
 // ---------- Bild-Import ----------
@@ -821,8 +864,8 @@ $('file-input').addEventListener('change', e => {
 // ---------- Export ----------
 function download(url, name) { const a = document.createElement('a'); a.href = url; a.download = name; a.click(); }
 function withResetView(fn) { const v = canvas.viewportTransform.slice(); canvas.setViewportTransform([1, 0, 0, 1, 0, 0]); const r = fn(); canvas.setViewportTransform(v); return r; }
-function exportPNG() { withResetView(() => download(canvas.toDataURL({ format: 'png', multiplier: 2 }), 'volmedraw.png')); }
-function exportJPG() { withResetView(() => download(canvas.toDataURL({ format: 'jpeg', quality: 0.92, multiplier: 2 }), 'volmedraw.jpg')); }
+function exportPNG() { withResetView(() => download(canvas.toDataURL({ format: 'png', multiplier: 2 }), 'volmedraw.png')); toast('Als PNG exportiert ✓'); }
+function exportJPG() { withResetView(() => download(canvas.toDataURL({ format: 'jpeg', quality: 0.92, multiplier: 2 }), 'volmedraw.jpg')); toast('Als JPG exportiert ✓'); }
 function exportSVG() {
   withResetView(() => {
     const prevBg = canvas.backgroundColor; canvas.backgroundColor = ''; const stripped = [];
@@ -831,6 +874,7 @@ function exportSVG() {
     stripped.forEach(([o, f]) => { o.set('fill', f); if (o._tmpS) { o.set('stroke', null); delete o._tmpS; } });
     canvas.backgroundColor = prevBg; canvas.requestRenderAll();
     download(URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' })), 'volmedraw.svg');
+    toast('Als SVG exportiert ✓ – in LightBurn öffnen');
   });
 }
 function clearAll() { if (!canvas.getObjects().length) return; if (!confirm('Alle Objekte löschen?')) return; canvas.getObjects().slice().forEach(o => { restoring = true; canvas.remove(o); }); restoring = false; snapshot('Geleert'); refreshLayers(); canvas.requestRenderAll(); }
@@ -877,7 +921,7 @@ function loadLaserFonts() {
 }
 function textToPath() {
   const objs = canvas.getActiveObjects().filter(o => o.type === 'i-text' || o.type === 'text' || o.type === 'textbox');
-  if (!objs.length) { alert('Erst ein Text-Objekt auswählen (Werkzeug WAHL).'); return; }
+  if (!objs.length) { toast('Erst ein Text-Objekt auswählen', 'error'); return; }
   let converted = 0, missing = null;
   objs.forEach(o => {
     const font = LOADED_FONTS[o.fontFamily];
@@ -891,8 +935,8 @@ function textToPath() {
     if (o.clipPath) path.clipPath = o.clipPath;
     canvas.remove(o); canvas.add(path); canvas.setActiveObject(path); converted++;
   });
-  if (missing) alert('Für „' + missing + '" ist keine vektorisierbare Schrift geladen.\nWähle eine Laser-Schrift (Poppins oder Great Vibes) und wandle dann um.');
-  if (converted) { canvas.requestRenderAll(); snapshot('Text→Pfade'); refreshLayers(); }
+  if (missing) toast('„' + missing + '" ist nicht vektorisierbar – Poppins oder Great Vibes wählen', 'error');
+  if (converted) { canvas.requestRenderAll(); snapshot('Text→Pfade'); refreshLayers(); toast('Text in Pfade umgewandelt ✓'); }
 }
 
 // ---------- Laser-Aufgabe (Schnitt/Gravur/Linie) = LightBurn-Ebene nach Farbe ----------
@@ -904,11 +948,13 @@ function applyLaser(o, mode) {
   if (mode === 'engrave') { o.set({ fill: col }); if (o.type === 'line' || o.type === 'path') o.set({ stroke: col }); }
   else { if (o.type !== 'line' && o.type !== 'path') o.set({ fill: null }); o.set({ stroke: col, strokeWidth: Math.max(1, o.strokeWidth || 1) }); }
 }
+const LASER_LABEL = { cut: 'Schnitt (rot)', engrave: 'Gravur (schwarz)', score: 'Linie (blau)' };
 function setLaserMode(mode) {
   const objs = canvas.getActiveObjects();
-  if (!objs.length) { alert('Erst Objekt(e) auswählen.'); return; }
+  if (!objs.length) { toast('Erst Objekt(e) auswählen', 'error'); return; }
   objs.forEach(o => { if (o.type !== 'image') { o.vLaser = mode; applyLaser(o, mode); } });
   canvas.requestRenderAll(); snapshot('Laser: ' + mode); refreshLayers(); refreshLaserUI();
+  toast('Als ' + LASER_LABEL[mode] + ' markiert');
 }
 function refreshLaserUI() {
   const o = canvas.getActiveObject();
@@ -958,8 +1004,8 @@ $('fx-trace').addEventListener('click', tracePhoto);
 
 function tracePhoto() {
   const o = activeImage();
-  if (!o) { alert('Erst ein Bild auswählen (Werkzeug WAHL).'); return; }
-  if (typeof ImageTracer === 'undefined') { alert('Nachzeichnen-Modul nicht geladen.'); return; }
+  if (!o) { toast('Erst ein Bild auswählen', 'error'); return; }
+  if (typeof ImageTracer === 'undefined') { toast('Nachzeichnen-Modul nicht geladen', 'error'); return; }
   const src = o._element;
   const w = src.naturalWidth || src.width, h = src.naturalHeight || src.height;
   const maxDim = 1000, sc = Math.min(1, maxDim / Math.max(w, h));
@@ -976,13 +1022,13 @@ function tracePhoto() {
     const isWhite = f => { f = ('' + f).toLowerCase().replace(/\s/g, ''); return f === '#ffffff' || f === 'white' || f === 'rgb(255,255,255)'; };
     let kept = (objects || []).filter(p => !isWhite(p.fill));
     if (!kept.length) kept = objects || [];
-    if (!kept.length) { alert('Keine Konturen gefunden – stell erst Kontrast/Schwellwert ein.'); return; }
+    if (!kept.length) { toast('Keine Konturen gefunden – Kontrast/Schwellwert erhöhen', 'error'); return; }
     const grp = fabric.util.groupSVGElements(kept, {});
     const tW = o.getScaledWidth(), tH = o.getScaledHeight();
     grp.set({ left: o.left, top: o.top, angle: o.angle, originX: 'left', originY: 'top', scaleX: tW / (grp.width || 1), scaleY: tH / (grp.height || 1) });
     grp.vType = 'trace'; grp.vName = (o.vName || 'Bild') + ' (Vektor)';
     canvas.add(grp); canvas.setActiveObject(grp);
-    canvas.requestRenderAll(); snapshot('Nachgezeichnet'); refreshLayers();
+    canvas.requestRenderAll(); snapshot('Nachgezeichnet'); refreshLayers(); toast('Foto nachgezeichnet ✓');
   });
 }
 
@@ -990,7 +1036,7 @@ function tracePhoto() {
 function saveProject() {
   const data = { app: 'volmedraw', v: 1, docWmm, docHmm, bg: canvas.backgroundColor, objects: canvas.toJSON(SNAP_PROPS) };
   download(URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' })), 'volmedraw-projekt.vdraw');
-  dirty = false;
+  dirty = false; toast('Projekt gespeichert ✓');
 }
 $('project-input').addEventListener('change', e => {
   const f = e.target.files[0]; if (!f) return;
@@ -1005,7 +1051,7 @@ function applyProjectData(d, label) {
   canvas.loadFromJSON(d.objects, () => {
     canvas.renderAll(); restoring = false;
     history = []; hIndex = -1; snapshot(label || 'Geladen');
-    dirty = false; refreshLayers(); refreshMeasures();
+    dirty = false; refreshLayers(); refreshMeasures(); toast((label || 'Geladen') + ' ✓');
   });
 }
 
@@ -1039,7 +1085,7 @@ const MENUS = () => ([
   ['Anordnen', [['Links ausrichten', '', () => align('left')], ['Horizontal zentrieren', '', () => align('cx')], ['Rechts ausrichten', '', () => align('right')], ['Oben ausrichten', '', () => align('top')], ['Vertikal zentrieren', '', () => align('cy')], ['Unten ausrichten', '', () => align('bottom')], 'sep', ['Horizontal verteilen', '', () => distribute('h')], ['Vertikal verteilen', '', () => distribute('v')], 'sep', ['Spiegeln horizontal', '', () => flip('h')], ['Spiegeln vertikal', '', () => flip('v')]]],
   ['Ebenen', [['Nach oben', '', () => { const a = canvas.getActiveObject(); if (a) { a.bringForward(); canvas.requestRenderAll(); snapshot('Reihenfolge'); refreshLayers(); } }], ['Nach unten', '', () => { const a = canvas.getActiveObject(); if (a) { a.sendBackwards(); canvas.requestRenderAll(); snapshot('Reihenfolge'); refreshLayers(); } }], 'sep', ['Gruppieren', 'Strg+G', groupSel], ['Gruppierung aufheben', 'Strg+Shift+G', ungroupSel], 'sep', ['Text in Pfade umwandeln (Laser)', '', textToPath], 'sep', ['Auf Auswahl zuschneiden (runde Maske)', '', clipToSelection], ['Clipping-Maske erstellen', '', makeMask], ['Maske lösen', '', unmask]]],
   ['Fenster', [['Werkzeuge', '', () => togglePanel('panel-tools'), () => panelVisible('panel-tools')], ['Farben', '', () => togglePanel('panel-colors'), () => panelVisible('panel-colors')], ['Eigenschaften', '', () => togglePanel('panel-props'), () => panelVisible('panel-props')], ['Verlauf', '', () => togglePanel('panel-history'), () => panelVisible('panel-history')], ['Ebenen', '', () => togglePanel('panel-layers'), () => panelVisible('panel-layers')]]],
-  ['Hilfe', [['Tastenkürzel', '', () => alert('V Wahl · Q Auswahl-Maske · B Pinsel · E Radierer · I Pipette\\nR/C/L/T Formen · P/S/A Polygon/Stern/Pfeil\\nLeertaste+Ziehen = Pan · Mausrad = Zoom\\nStrg+Z/Y · Strg+C/V/D · Strg+G · Entf · Esc')]]]
+  ['Hilfe', [['Erste Schritte', '', showOnboarding], ['Tastenkürzel', '', () => alert('V Wahl · Q Auswahl-Maske · B Pinsel · E Radierer · I Pipette\\nR/C/L/T Formen · P/S/A Polygon/Stern/Pfeil\\nLeertaste+Ziehen = Pan · Mausrad = Zoom\\nStrg+Z/Y · Strg+C/V/D · Strg+G · Entf · Esc')]]]
 ]);
 function buildMenus() {
   const host = $('menus'); host.innerHTML = '';
@@ -1114,12 +1160,30 @@ document.addEventListener('keydown', e => {
 });
 document.addEventListener('keyup', e => { if (e.code === 'Space') { spaceDown = false; isPanning = false; canvas.setCursor(canvas.defaultCursor); } });
 
+// ---------- Toasts + Onboarding ----------
+function toast(msg, type) {
+  const t = document.createElement('div');
+  t.className = 'toast ' + (type || 'success'); t.textContent = msg;
+  $('toast-wrap').appendChild(t);
+  requestAnimationFrame(() => t.classList.add('show'));
+  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 250); }, 2600);
+}
+function showOnboarding() { $('onboarding').classList.remove('hidden'); }
+function closeOnboarding() {
+  $('onboarding').classList.add('hidden');
+  if ($('ob-dont').checked) { try { localStorage.setItem('volmedraw:onboarded', '1'); } catch (e) {} }
+}
+$('ob-start').addEventListener('click', closeOnboarding);
+$('onboarding').addEventListener('click', e => { if (e.target.id === 'onboarding') closeOnboarding(); });
+
 // ---------- Start ----------
 buildMenus(); buildPalette(); renderSwatches(); loadLaserFonts();
 setDocSize(docWmm, docHmm);
 snapshot('Neues Bild'); refreshLayers(); refreshMeasures(); setTool('select'); updateZoomLabel();
 dirty = false;
 tryRestoreAutosave();
+let onboarded = false; try { onboarded = localStorage.getItem('volmedraw:onboarded') === '1'; } catch (e) {}
+if (!onboarded) showOnboarding();
 </script>
 </body>
 </html>

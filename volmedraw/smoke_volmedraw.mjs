@@ -12,6 +12,8 @@ const page = await browser.newPage();
 page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
 page.on('console', m => { if (m.type() === 'error') errors.push('CONSOLE: ' + m.text()); });
 page.on('dialog', d => d.dismiss().catch(() => {}));
+// Onboarding-Overlay vorab abschalten, damit es die Klicks nicht blockiert
+await page.addInitScript(() => { try { localStorage.setItem('volmedraw:onboarded', '1'); } catch (e) {} });
 
 let served = '?';
 try {
@@ -28,6 +30,14 @@ const globals = await page.evaluate(() => {
   const out = {}; for (const n of names) out[n] = typeof window[n]; return out;
 });
 const fabricLoaded = await page.evaluate(() => typeof window.fabric);
+const uxOk = await page.evaluate(() => {
+  const obHidden = document.getElementById('onboarding').classList.contains('hidden');
+  toast('Test ✓');
+  const hasToast = document.querySelectorAll('#toast-wrap .toast').length >= 1;
+  showOnboarding(); const shown = !document.getElementById('onboarding').classList.contains('hidden');
+  document.getElementById('onboarding').classList.add('hidden');
+  return obHidden && hasToast && shown;
+});
 const menuCount = await page.evaluate(() => document.querySelectorAll('#menus .menu-title').length);
 const paletteCount = await page.evaluate(() => document.querySelectorAll('#palette .pc').length);
 
@@ -132,7 +142,7 @@ try {
 await browser.close(); srv.kill();
 
 console.log('HTTP:          ', served, ' fabric:', fabricLoaded);
-console.log('Menues:        ', menuCount, ' Palette:', paletteCount);
+console.log('Menues:        ', menuCount, ' Palette:', paletteCount, ' Onboarding/Toast ok:', uxOk);
 console.log('Globals fehlen:', Object.entries(globals).filter(([, t]) => t !== 'function').map(([n]) => n).join(', ') || '(keine)');
 console.log('Ebenen:', layerCount, ' Verlauf:', histCount);
 console.log('mm-Doc ok:', docOk, ' Zuschnitt ok:', clipOk, ' Schrift ok:', fontOk);
@@ -143,7 +153,7 @@ console.log('Fehler:', errors.length);
 for (const e of errors) console.log('   •', e.slice(0, 180));
 
 const allFns = Object.values(globals).every(t => t === 'function');
-const ok = allFns && fabricLoaded === 'object' && menuCount >= 6 && paletteCount >= 8 && layerCount >= 2 &&
+const ok = allFns && uxOk && fabricLoaded === 'object' && menuCount >= 6 && paletteCount >= 8 && layerCount >= 2 &&
   histCount >= 2 && docOk && clipOk && fontOk && otLoaded === 'object' && t2pOk &&
   itLoaded === 'object' && traceOk && laserOk && saveOk && loadOk && svgOk && errors.length === 0;
 console.log('\n=> Smoke:', ok ? 'BESTANDEN ✓' : 'FEHLGESCHLAGEN ✗');
