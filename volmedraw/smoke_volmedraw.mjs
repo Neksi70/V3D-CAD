@@ -114,6 +114,21 @@ const laserOk = await page.evaluate(() => {
   return cutOk && engOk;
 });
 
+// Pinch-Zoom (zwei synthetische Touch-Punkte auseinanderziehen -> Zoom rein)
+const pinchOk = await page.evaluate(() => {
+  if (typeof TouchEvent === 'undefined' || typeof Touch === 'undefined') return 'skip';
+  const el = canvas.upperCanvasEl, r = el.getBoundingClientRect();
+  const mk = (id, x, y) => new Touch({ identifier: id, target: el, clientX: x, clientY: y });
+  const opt = ts => ({ touches: ts, targetTouches: ts, changedTouches: ts, bubbles: true, cancelable: true });
+  const z0 = canvas.getZoom();
+  el.dispatchEvent(new TouchEvent('touchstart', opt([mk(1, r.left + 120, r.top + 120), mk(2, r.left + 200, r.top + 120)])));
+  el.dispatchEvent(new TouchEvent('touchmove', opt([mk(1, r.left + 80, r.top + 120), mk(2, r.left + 260, r.top + 120)])));
+  const z1 = canvas.getZoom();
+  el.dispatchEvent(new TouchEvent('touchend', { touches: [], targetTouches: [], changedTouches: [], bubbles: true, cancelable: true }));
+  canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+  return z1 > z0 * 1.5;
+});
+
 // Projekt speichern (Strg+S -> Download .vdraw)
 let saveOk = false;
 try {
@@ -148,6 +163,7 @@ console.log('Ebenen:', layerCount, ' Verlauf:', histCount);
 console.log('mm-Doc ok:', docOk, ' Zuschnitt ok:', clipOk, ' Schrift ok:', fontOk);
 console.log('opentype:', otLoaded, ' Text→Pfade ok:', t2pOk);
 console.log('ImageTracer:', itLoaded, ' Foto→Vektor ok:', traceOk, ' Laser-Aufgabe ok:', laserOk);
+console.log('Pinch-Zoom ok:', pinchOk);
 console.log('Speichern ok:', saveOk, ' Laden-Roundtrip ok:', loadOk, ' SVG ok:', svgOk);
 console.log('Fehler:', errors.length);
 for (const e of errors) console.log('   •', e.slice(0, 180));
@@ -155,6 +171,6 @@ for (const e of errors) console.log('   •', e.slice(0, 180));
 const allFns = Object.values(globals).every(t => t === 'function');
 const ok = allFns && uxOk && fabricLoaded === 'object' && menuCount >= 6 && paletteCount >= 8 && layerCount >= 2 &&
   histCount >= 2 && docOk && clipOk && fontOk && otLoaded === 'object' && t2pOk &&
-  itLoaded === 'object' && traceOk && laserOk && saveOk && loadOk && svgOk && errors.length === 0;
+  itLoaded === 'object' && traceOk && laserOk && (pinchOk === true || pinchOk === 'skip') && saveOk && loadOk && svgOk && errors.length === 0;
 console.log('\n=> Smoke:', ok ? 'BESTANDEN ✓' : 'FEHLGESCHLAGEN ✗');
 process.exit(ok ? 0 : 1);

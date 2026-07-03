@@ -713,6 +713,42 @@ $('z-out').addEventListener('click', () => zoomBy(1 / 1.2));
 $('z-fit').addEventListener('click', zoomFit);
 $('z-reset').addEventListener('click', zoomReset);
 
+// ---------- Pinch-Zoom + Zwei-Finger-Schieben (Touch/Tablet) ----------
+(function () {
+  const upper = canvas.upperCanvasEl;
+  let g = null, wasDraw = false, wasSel = false;
+  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const mid = t => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+  function cancelDraw() {
+    if (previewRect) { restoring = true; canvas.remove(previewRect); restoring = false; previewRect = null; }
+    if (tempShape) { restoring = true; canvas.remove(tempShape); restoring = false; tempShape = null; }
+    isDrawingShape = false; isSelecting = false; selRegion = null;
+  }
+  upper.addEventListener('touchstart', e => {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      wasDraw = canvas.isDrawingMode; wasSel = canvas.selection;
+      canvas.isDrawingMode = false; canvas.selection = false; cancelDraw();
+      const r = upper.getBoundingClientRect(), m = mid(e.touches), vpt = canvas.viewportTransform, z = canvas.getZoom();
+      const mx = m.x - r.left, my = m.y - r.top;
+      g = { d0: dist(e.touches) || 1, z0: z, ax: (mx - vpt[4]) / z, ay: (my - vpt[5]) / z };
+    }
+  }, { passive: false });
+  upper.addEventListener('touchmove', e => {
+    if (g && e.touches.length === 2) {
+      e.preventDefault(); e.stopPropagation();
+      const r = upper.getBoundingClientRect(), m = mid(e.touches);
+      const mx = m.x - r.left, my = m.y - r.top;
+      let z = g.z0 * (dist(e.touches) / g.d0); z = Math.min(8, Math.max(0.1, z));
+      canvas.setViewportTransform([z, 0, 0, z, mx - g.ax * z, my - g.ay * z]);
+      updateZoomLabel();
+    }
+  }, { passive: false });
+  const end = e => { if (g && e.touches.length < 2) { g = null; canvas.isDrawingMode = wasDraw; canvas.selection = wasSel; } };
+  upper.addEventListener('touchend', end, { passive: false });
+  upper.addEventListener('touchcancel', end, { passive: false });
+})();
+
 // ---------- Pipette ----------
 function pickColor(e) {
   const ctx = canvas.getContext(), dpr = canvas.getRetinaScaling ? canvas.getRetinaScaling() : 1;
