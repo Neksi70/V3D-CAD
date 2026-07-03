@@ -42,6 +42,16 @@
   `/start.html` und `/volmedraw/volmedraw.html` ergänzen. Fabric.js dann **lokal
   vendoren** statt CDN (Offline/Funnel + Reproduzierbarkeit, ggf. SRI-Hash).
 
+## Abhängigkeiten (bewusst, mit Freigabe)
+- **Fabric.js 5.3.0** (CDN) — Objektmodell/Canvas.
+- **opentype.js 1.3.4** (`volmedraw/lib/opentype.min.js`, lokal) — für **Text → Pfade**
+  (LightBurn-sicher, Schrift muss nicht installiert sein).
+- **Laser-Schriften** (`volmedraw/lib/*.ttf`, OFL/Apache): **Poppins** (Sans),
+  **Great Vibes** (Schreibschrift). Nur diese sind vektorisierbar (Text→Pfade);
+  die web-safe Fonts im Dropdown sind nur für Bildschirm/`<text>`-Export.
+- Deployment: `volme3d_server.py` ALLOW-Routen für `/volmedraw/lib/opentype.min.js`
+  und die beiden `.ttf` (Content-Type `font/ttf`) sind ergänzt.
+
 ## Coding-Regeln
 - **Vanilla JS, kein Framework.** Keine neuen Abhängigkeiten ohne Rückfrage.
 - **Deutsche UI-Texte** (Buttons, Labels, Tooltips, Hinweise).
