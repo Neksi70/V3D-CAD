@@ -173,6 +173,10 @@
   .field input { width: 100%; background: var(--panel2); border: 1px solid var(--border); color: var(--text); font: inherit; font-size: 11px; padding: 3px 4px; }
   .psub { font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin: 4px 0 6px; border-top: 1px solid var(--border); padding-top: 8px; }
   #props-measures.disabled { opacity: .35; pointer-events: none; }
+  .qbtn.lz { flex: 1; font-size: 11px; padding: 5px 3px; }
+  .qbtn.lz.on { border-color: var(--orange); color: var(--orange); }
+  #lz-cut { border-left: 3px solid #ff3b30; } #lz-engrave { border-left: 3px solid #cfcfcf; } #lz-score { border-left: 3px solid #3b6bff; }
+  #layers li .ldot { width: 9px; height: 9px; border: 1px solid var(--border); flex-shrink: 0; }
 
   footer {
     padding: 4px 12px; background: var(--panel); border-top: 1px solid var(--border);
@@ -291,6 +295,15 @@
         <div class="prow"><label for="m-angle">Winkel °</label><input type="number" id="m-angle" value="0"></div>
       </div>
       <p class="empty-hint" id="measures-hint">Objekt auswählen, um Maße zu bearbeiten.</p>
+      <div id="props-laser" style="display:none">
+        <div class="psub">Laser-Aufgabe</div>
+        <div class="prow" style="gap:5px">
+          <button class="qbtn lz" id="lz-cut" title="Nur Kontur, rot = LightBurn-Schnittebene">✂ Schnitt</button>
+          <button class="qbtn lz" id="lz-engrave" title="Gefüllt, schwarz = LightBurn-Gravurebene">▦ Gravur</button>
+          <button class="qbtn lz" id="lz-score" title="Kontur, blau = LightBurn-Linien/Markieren">— Linie</button>
+        </div>
+        <div class="pc-hint" style="margin-top:2px">Farbe = LightBurn-Ebene: <b style="color:#ff6b60">Schnitt rot</b> · <b style="color:#e8e8ea">Gravur schwarz</b> · <b style="color:#6b8bff">Linie blau</b></div>
+      </div>
       <div id="props-image" style="display:none">
         <div class="psub">Bild (Laser)</div>
         <div class="prow"><label for="fx-gray">Graustufen</label><input type="checkbox" id="fx-gray"></div>
@@ -437,7 +450,7 @@ function applyColorToSelection() {
 
 // ---------- Verlauf / Undo (index-basiert für klickbaren Verlauf) ----------
 let history = [], hIndex = -1, restoring = false;
-const SNAP_PROPS = ['vName', 'selectable', 'vType', 'vLocked', 'lockMovementX', 'lockMovementY', 'evented'];
+const SNAP_PROPS = ['vName', 'selectable', 'vType', 'vLocked', 'vLaser', 'lockMovementX', 'lockMovementY', 'evented'];
 
 function snapshot(label) {
   if (restoring) return;
@@ -681,6 +694,8 @@ function refreshMeasures() {
   const o = canvas.getActiveObject(), box = $('props-measures'), hint = $('measures-hint');
   const isImg = !!o && o.type === 'image';
   $('props-image').style.display = isImg ? 'block' : 'none';
+  $('props-laser').style.display = (o && !isImg) ? 'block' : 'none';
+  refreshLaserUI();
   if (isImg) fillFxUI(o);
   if (!o) { box.classList.add('disabled'); hint.style.display = 'block'; return; }
   box.classList.remove('disabled'); hint.style.display = 'none';
@@ -724,7 +739,10 @@ function refreshLayers() {
     const up = mkBtn('▲', 'Nach oben', ev => { ev.stopPropagation(); obj.bringForward(); canvas.requestRenderAll(); snapshot('Reihenfolge'); refreshLayers(); });
     const dn = mkBtn('▼', 'Nach unten', ev => { ev.stopPropagation(); obj.sendBackwards(); canvas.requestRenderAll(); snapshot('Reihenfolge'); refreshLayers(); });
     const del = mkBtn('✕', 'Löschen', ev => { ev.stopPropagation(); canvas.remove(obj); });
-    li.append(eye, lock, name, up, dn, del);
+    const kids = [eye, lock];
+    if (obj.vLaser) { const dot = document.createElement('span'); dot.className = 'ldot'; dot.style.background = LASER_MODES[obj.vLaser]; dot.title = 'Laser: ' + obj.vLaser; kids.push(dot); }
+    kids.push(name, up, dn, del);
+    li.append(...kids);
     li.addEventListener('click', () => { if (obj.vLocked) return; setTool('select'); canvas.setActiveObject(obj); canvas.requestRenderAll(); });
     list.appendChild(li);
   });
@@ -876,6 +894,27 @@ function textToPath() {
   if (missing) alert('Für „' + missing + '" ist keine vektorisierbare Schrift geladen.\nWähle eine Laser-Schrift (Poppins oder Great Vibes) und wandle dann um.');
   if (converted) { canvas.requestRenderAll(); snapshot('Text→Pfade'); refreshLayers(); }
 }
+
+// ---------- Laser-Aufgabe (Schnitt/Gravur/Linie) = LightBurn-Ebene nach Farbe ----------
+const LASER_MODES = { cut: '#ff0000', engrave: '#000000', score: '#0000ff' };
+function applyLaser(o, mode) {
+  const col = LASER_MODES[mode];
+  if (o.type === 'group' && o._objects) { o._objects.forEach(c => applyLaser(c, mode)); o.dirty = true; return; }
+  if (o.type === 'image') return;
+  if (mode === 'engrave') { o.set({ fill: col }); if (o.type === 'line' || o.type === 'path') o.set({ stroke: col }); }
+  else { if (o.type !== 'line' && o.type !== 'path') o.set({ fill: null }); o.set({ stroke: col, strokeWidth: Math.max(1, o.strokeWidth || 1) }); }
+}
+function setLaserMode(mode) {
+  const objs = canvas.getActiveObjects();
+  if (!objs.length) { alert('Erst Objekt(e) auswählen.'); return; }
+  objs.forEach(o => { if (o.type !== 'image') { o.vLaser = mode; applyLaser(o, mode); } });
+  canvas.requestRenderAll(); snapshot('Laser: ' + mode); refreshLayers(); refreshLaserUI();
+}
+function refreshLaserUI() {
+  const o = canvas.getActiveObject();
+  ['cut', 'engrave', 'score'].forEach(m => $('lz-' + m).classList.toggle('on', !!o && o.vLaser === m));
+}
+['cut', 'engrave', 'score'].forEach(m => $('lz-' + m).addEventListener('click', () => setLaserMode(m)));
 
 // ---------- Bild-Filter (Gravur) + Nachzeichnen (Vektor) ----------
 fabric.Image.filters.Threshold = fabric.util.createClass(fabric.Image.filters.BaseFilter, {

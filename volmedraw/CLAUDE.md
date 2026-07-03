@@ -56,6 +56,16 @@
 - Deployment: `volme3d_server.py` ALLOW-Routen für `/volmedraw/lib/opentype.min.js`
   und die beiden `.ttf` (Content-Type `font/ttf`) sind ergänzt.
 
+## LightBurn-Laser-Konvention
+- **Farbe = LightBurn-Ebene.** Jedes Objekt trägt `vLaser` ∈ {cut, engrave, score}:
+  - **cut** → Kontur, Füllung raus, Stroke `#ff0000` (rot)
+  - **engrave** → gefüllt, `#000000` (schwarz)
+  - **score** → Kontur, `#0000ff` (blau)
+- `setLaserMode()` färbt entsprechend (Gruppen rekursiv, Bilder ausgenommen = Raster).
+  Beim SVG-Export trennt LightBurn die drei Farben in eigene Ebenen (Schnitt/Füllen/Linie).
+- `vLaser` steht in `SNAP_PROPS` → bleibt in Undo + .vdraw erhalten; Ebenen-Panel zeigt
+  je Objekt einen Farbpunkt.
+
 ## Coding-Regeln
 - **Vanilla JS, kein Framework.** Keine neuen Abhängigkeiten ohne Rückfrage.
 - **Deutsche UI-Texte** (Buttons, Labels, Tooltips, Hinweise).

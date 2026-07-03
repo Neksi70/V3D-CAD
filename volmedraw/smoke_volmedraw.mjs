@@ -95,6 +95,15 @@ const traceOk = await page.evaluate(() => new Promise(res => {
   });
 }));
 
+// Laser-Aufgabe (Schnitt/Gravur = Farbe fuer LightBurn-Ebenen)
+const laserOk = await page.evaluate(() => {
+  const r = new fabric.Rect({ left: 30, top: 30, width: 40, height: 40, fill: '#00ff00' });
+  canvas.add(r); canvas.setActiveObject(r);
+  setLaserMode('cut'); const cutOk = r.stroke === '#ff0000' && !r.fill && r.vLaser === 'cut';
+  setLaserMode('engrave'); const engOk = r.fill === '#000000' && r.vLaser === 'engrave';
+  return cutOk && engOk;
+});
+
 // Projekt speichern (Strg+S -> Download .vdraw)
 let saveOk = false;
 try {
@@ -128,7 +137,7 @@ console.log('Globals fehlen:', Object.entries(globals).filter(([, t]) => t !== '
 console.log('Ebenen:', layerCount, ' Verlauf:', histCount);
 console.log('mm-Doc ok:', docOk, ' Zuschnitt ok:', clipOk, ' Schrift ok:', fontOk);
 console.log('opentype:', otLoaded, ' Text→Pfade ok:', t2pOk);
-console.log('ImageTracer:', itLoaded, ' Foto→Vektor ok:', traceOk);
+console.log('ImageTracer:', itLoaded, ' Foto→Vektor ok:', traceOk, ' Laser-Aufgabe ok:', laserOk);
 console.log('Speichern ok:', saveOk, ' Laden-Roundtrip ok:', loadOk, ' SVG ok:', svgOk);
 console.log('Fehler:', errors.length);
 for (const e of errors) console.log('   •', e.slice(0, 180));
@@ -136,6 +145,6 @@ for (const e of errors) console.log('   •', e.slice(0, 180));
 const allFns = Object.values(globals).every(t => t === 'function');
 const ok = allFns && fabricLoaded === 'object' && menuCount >= 6 && paletteCount >= 8 && layerCount >= 2 &&
   histCount >= 2 && docOk && clipOk && fontOk && otLoaded === 'object' && t2pOk &&
-  itLoaded === 'object' && traceOk && saveOk && loadOk && svgOk && errors.length === 0;
+  itLoaded === 'object' && traceOk && laserOk && saveOk && loadOk && svgOk && errors.length === 0;
 console.log('\n=> Smoke:', ok ? 'BESTANDEN ✓' : 'FEHLGESCHLAGEN ✗');
 process.exit(ok ? 0 : 1);
