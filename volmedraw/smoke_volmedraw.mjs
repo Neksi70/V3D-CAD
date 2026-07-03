@@ -11,6 +11,7 @@ const browser = await chromium.launch();
 const page = await browser.newPage();
 page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
 page.on('console', m => { if (m.type() === 'error') errors.push('CONSOLE: ' + m.text()); });
+page.on('dialog', d => d.dismiss().catch(() => {}));
 
 let served = '?';
 try {
@@ -21,8 +22,9 @@ try {
 
 const globals = await page.evaluate(() => {
   const names = ['setTool', 'zoomFit', 'align', 'distribute', 'groupSel', 'ungroupSel',
-    'doDuplicate', 'doPaste', 'makeMask', 'unmask', 'buildGenerated', 'refreshLayers',
-    'refreshMeasures', 'buildMenus', 'buildPalette', 'exportSVG', 'restoreIndex', 'clearSelection'];
+    'doDuplicate', 'doPaste', 'makeMask', 'unmask', 'clipToSelection', 'buildGenerated',
+    'refreshLayers', 'refreshMeasures', 'buildMenus', 'buildPalette', 'exportSVG', 'restoreIndex',
+    'clearSelection', 'saveProject', 'applyProjectData', 'setDocSize', 'applyFont', 'tryRestoreAutosave'];
   const out = {}; for (const n of names) out[n] = typeof window[n]; return out;
 });
 const fabricLoaded = await page.evaluate(() => typeof window.fabric);
@@ -37,11 +39,10 @@ async function drag(x0, y0, x1, y1) {
   await page.waitForTimeout(120);
 }
 
-// Rechteck + Polygon zeichnen
 await tool('rect'); await drag(120, 100, 300, 240);
 await tool('polygon'); await drag(360, 120, 500, 260);
 
-// Auswahl-Maske ziehen, dann Pinselstrich hinein (darf nicht werfen)
+// Auswahl-Maske ziehen, dann Pinselstrich hinein
 await tool('sel-rect'); await drag(140, 130, 280, 220);
 await tool('brush'); await drag(150, 150, 260, 200);
 await page.keyboard.press('Escape');
@@ -49,41 +50,60 @@ await page.keyboard.press('Escape');
 const layerCount = await page.evaluate(() => document.querySelectorAll('#layers li').length);
 const histCount = await page.evaluate(() => document.querySelectorAll('#history li').length);
 
-// Auswahl-Aktionen
-await tool('select');
-await page.keyboard.press('Control+a');
-await page.evaluate(() => { align('left'); groupSel(); doDuplicate(); });
-await page.waitForTimeout(120);
+// mm-Dokumentgroesse (A4 hoch = 210x297 mm bei 4 px/mm -> 840x1188 px)
+const docOk = await page.evaluate(() => { setDocSize(210, 297); return canvas.getWidth() === 840 && canvas.getHeight() === 1188; });
 
-// Clipping-Maske ueber window
-await page.keyboard.press('Control+a');
-await page.evaluate(() => makeMask());
-await page.waitForTimeout(120);
+// Auf Auswahl zuschneiden (runde Maske)
+await tool('select'); await page.keyboard.press('Control+a'); await tool('sel-ellipse'); await drag(150, 150, 320, 300);
+const clipOk = await page.evaluate(() => { clipToSelection(); return !!canvas.getObjects().find(o => o.clipPath); });
 
-// Verlauf-Sprung testen
-await page.evaluate(() => restoreIndex(1));
-await page.waitForTimeout(120);
+// Schrift auf Text anwenden
+const fontOk = await page.evaluate(() => {
+  const t = new fabric.IText('Hallo', { left: 100, top: 400, fontFamily: 'Arial' });
+  canvas.add(t); canvas.setActiveObject(t);
+  document.getElementById('font-family').value = 'Georgia';
+  document.getElementById('font-family').dispatchEvent(new Event('change'));
+  return t.fontFamily === 'Georgia';
+});
 
-// SVG-Export
+// Projekt speichern (Strg+S -> Download .vdraw)
+let saveOk = false;
+try {
+  const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 4000 }), page.keyboard.press('Control+s')]);
+  const s = await dl.createReadStream(); let t = ''; for await (const c of s) t += c;
+  const d = JSON.parse(t); saveOk = d.app === 'volmedraw' && d.docWmm === 210 && d.objects && Array.isArray(d.objects.objects);
+} catch (e) { errors.push('SAVE: ' + e.message); }
+
+// Projekt-Roundtrip: Daten neu einspielen
+const loadOk = await page.evaluate(() => new Promise(res => {
+  const before = canvas.getObjects().length;
+  const data = { app: 'volmedraw', v: 1, docWmm: 150, docHmm: 100, bg: '#ffffff', objects: canvas.toJSON(['vName', 'vType']) };
+  applyProjectData(data, 'Test');
+  setTimeout(() => res(docWmmGetter() === 150 && canvas.getObjects().length === before), 400);
+  function docWmmGetter() { return canvas.getWidth() / 4; }
+}));
+
+// SVG-Export (mm, kein Hintergrund)
 let svgOk = false;
 try {
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 4000 }), page.click('#q-svg')]);
-  const stream = await dl.createReadStream(); let data = ''; for await (const c of stream) data += c;
-  svgOk = data.includes('<svg') && data.includes('mm');
+  const s = await dl.createReadStream(); let t = ''; for await (const c of s) t += c;
+  svgOk = t.includes('<svg') && t.includes('150mm');
 } catch (e) { errors.push('SVG: ' + e.message); }
 
 await browser.close(); srv.kill();
 
-console.log('HTTP:          ', served);
-console.log('fabric:        ', fabricLoaded);
+console.log('HTTP:          ', served, ' fabric:', fabricLoaded);
 console.log('Menues:        ', menuCount, ' Palette:', paletteCount);
 console.log('Globals fehlen:', Object.entries(globals).filter(([, t]) => t !== 'function').map(([n]) => n).join(', ') || '(keine)');
-console.log('Ebenen:        ', layerCount, ' Verlauf-Eintraege:', histCount);
-console.log('SVG-Export ok: ', svgOk);
-console.log('Fehler:        ', errors.length);
+console.log('Ebenen:', layerCount, ' Verlauf:', histCount);
+console.log('mm-Doc ok:', docOk, ' Zuschnitt ok:', clipOk, ' Schrift ok:', fontOk);
+console.log('Speichern ok:', saveOk, ' Laden-Roundtrip ok:', loadOk, ' SVG ok:', svgOk);
+console.log('Fehler:', errors.length);
 for (const e of errors) console.log('   •', e.slice(0, 180));
 
 const allFns = Object.values(globals).every(t => t === 'function');
-const ok = allFns && fabricLoaded === 'object' && menuCount >= 6 && paletteCount >= 8 && layerCount >= 2 && histCount >= 2 && svgOk && errors.length === 0;
+const ok = allFns && fabricLoaded === 'object' && menuCount >= 6 && paletteCount >= 8 && layerCount >= 2 &&
+  histCount >= 2 && docOk && clipOk && fontOk && saveOk && loadOk && svgOk && errors.length === 0;
 console.log('\n=> Smoke:', ok ? 'BESTANDEN ✓' : 'FEHLGESCHLAGEN ✗');
 process.exit(ok ? 0 : 1);

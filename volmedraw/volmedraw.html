@@ -71,6 +71,12 @@
     color: var(--text); font: inherit; font-size: 11px; padding: 3px 4px;
   }
   #optbar input[type="checkbox"] { accent-color: var(--orange); }
+  #optbar select, .prow select {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    font: inherit; font-size: 11px; padding: 2px 4px; cursor: pointer;
+  }
+  #font-bold.on, #font-italic.on { border-color: var(--orange); color: var(--orange); }
+  #font-bold { font-weight: 800; } #font-italic { font-style: italic; }
   #optbar .osep { width: 1px; align-self: stretch; background: var(--border); margin: 2px 2px; }
   #optbar .val { color: var(--cyan); min-width: 26px; }
   #optbar .spacer { flex: 1; }
@@ -184,6 +190,7 @@
     <button class="qbtn primary" id="q-svg">SVG</button>
   </div>
   <input type="file" id="file-input" accept="image/*" hidden>
+  <input type="file" id="project-input" accept=".vdraw,.json,application/json" hidden>
 </div>
 
 <!-- ===== Werkzeug-Optionsleiste ===== -->
@@ -197,6 +204,16 @@
   <div class="ogrp"><label>Ecken (Poly/Stern)</label><input type="number" id="poly-points" min="3" max="20" value="6"></div>
   <div class="osep"></div>
   <div class="ogrp"><label>Raster</label><input type="number" id="grid-size" min="2" max="200" value="20"></div>
+  <div class="osep"></div>
+  <div class="ogrp"><label>Schrift</label>
+    <select id="font-family">
+      <option>Arial</option><option>Helvetica</option><option>Verdana</option><option>Tahoma</option>
+      <option>Trebuchet MS</option><option>Times New Roman</option><option>Georgia</option>
+      <option>Courier New</option><option>Impact</option><option>Comic Sans MS</option>
+    </select>
+    <button class="qbtn" id="font-bold" title="Fett">B</button>
+    <button class="qbtn" id="font-italic" title="Kursiv">I</button>
+  </div>
   <div class="spacer"></div>
   <div class="ogrp">
     <button class="qbtn" id="z-out" title="Verkleinern">−</button>
@@ -257,19 +274,38 @@
   <div class="float" id="panel-props">
     <div class="fp-head"><span class="t">Eigenschaften</span><span class="x" data-close="panel-props">✕</span></div>
     <div class="fp-body">
+      <div class="psub" style="border-top:none;padding-top:0;margin-top:0">Maße (mm)</div>
       <div id="props-measures" class="disabled">
         <div class="grid2">
           <div class="field"><span>X</span><input type="number" id="m-x"></div>
           <div class="field"><span>Y</span><input type="number" id="m-y"></div>
-          <div class="field"><span>B</span><input type="number" id="m-w" min="1"></div>
-          <div class="field"><span>H</span><input type="number" id="m-h" min="1"></div>
+          <div class="field"><span>B</span><input type="number" id="m-w" min="0.1" step="0.1"></div>
+          <div class="field"><span>H</span><input type="number" id="m-h" min="0.1" step="0.1"></div>
         </div>
         <div class="prow"><label for="m-angle">Winkel °</label><input type="number" id="m-angle" value="0"></div>
       </div>
       <p class="empty-hint" id="measures-hint">Objekt auswählen, um Maße zu bearbeiten.</p>
-      <div class="psub">Leinwand &amp; Export</div>
+      <div class="psub">Leinwand (mm)</div>
+      <div class="prow"><label for="canvas-preset">Format</label>
+        <select id="canvas-preset">
+          <option value="200x150">Standard 200×150</option>
+          <option value="210x297">A4 hoch (210×297)</option>
+          <option value="297x210">A4 quer (297×210)</option>
+          <option value="148x210">A5 (148×210)</option>
+          <option value="105x148">A6 (105×148)</option>
+          <option value="100x100">Quadrat 100×100</option>
+          <option value="200x200">Quadrat 200×200</option>
+          <option value="300x200">300×200</option>
+          <option value="custom">Benutzerdefiniert…</option>
+        </select>
+      </div>
+      <div class="grid2">
+        <div class="field"><span>B</span><input type="number" id="doc-w-mm" min="10" max="2000" value="200"></div>
+        <div class="field"><span>H</span><input type="number" id="doc-h-mm" min="10" max="2000" value="150"></div>
+      </div>
+      <div class="prow"><label>Fläche</label><span id="doc-info" style="color:var(--cyan)">200 × 150 mm</span></div>
+      <div class="psub">Export</div>
       <div class="prow"><label for="bg-color">Hintergrund</label><input type="color" id="bg-color" value="#ffffff"></div>
-      <div class="prow"><label for="export-mm">SVG-Breite (mm)</label><input type="number" id="export-mm" min="1" max="2000" value="900"></div>
       <div class="prow"><label for="only-contours" title="Nur Konturen exportieren (Laserschnitt)">Nur Konturen (Laser)</label><input type="checkbox" id="only-contours"></div>
     </div>
   </div>
@@ -312,6 +348,13 @@ let usingSecondary = false;
 let selRegion = null;      // aktive Auswahl-Maske {type,left,top,w,h}
 let isSelecting = false;
 let primaryColor = '#ff7a1a', secondaryColor = '#00d4e0';
+
+const PPMM = 4;            // Pixel pro Millimeter (Auflösung des Dokuments)
+let docWmm = 200, docHmm = 150;
+let curFont = 'Arial', curBold = false, curItalic = false;
+let dirty = false;         // ungespeicherte Änderungen
+const px2mm = px => Math.round(px / PPMM * 10) / 10;
+const mm2px = mm => mm * PPMM;
 
 const GENERATED = ['triangle', 'polygon', 'star', 'arrow'];
 const toolLabels = {
@@ -385,6 +428,8 @@ function snapshot(label) {
   if (history.length > 80) history.shift();
   hIndex = history.length - 1;
   updateHistoryUI();
+  dirty = true;
+  scheduleAutosave();
 }
 function restoreIndex(i) {
   if (i < 0 || i >= history.length) return;
@@ -476,7 +521,7 @@ canvas.on('mouse:down', opt => {
   if (currentTool === 'eyedropper') { pickColor(opt.e); return; }
   if (currentTool === 'eraser') { if (opt.target) canvas.remove(opt.target); return; }
   if (currentTool === 'text') {
-    const t = new fabric.IText('Text', { left: p.x, top: p.y, fill: fillColorFor(), fontFamily: 'Arial', fontSize: Math.max(getSize() * 4, 20), opacity: getOpacity() });
+    const t = new fabric.IText('Text', { left: p.x, top: p.y, fill: fillColorFor(), fontFamily: curFont, fontWeight: curBold ? 'bold' : 'normal', fontStyle: curItalic ? 'italic' : 'normal', fontSize: Math.max(getSize() * 4, 20), opacity: getOpacity() });
     applySelClip(t); canvas.add(t); setTool('select'); canvas.setActiveObject(t); t.enterEditing(); t.selectAll(); return;
   }
   const live = ['rect', 'roundrect', 'circle', 'line'].includes(currentTool);
@@ -618,15 +663,22 @@ function refreshMeasures() {
   if (!o) { box.classList.add('disabled'); hint.style.display = 'block'; return; }
   box.classList.remove('disabled'); hint.style.display = 'none';
   const b = o.getBoundingRect(true, true);
-  $('m-x').value = Math.round(b.left); $('m-y').value = Math.round(b.top);
-  $('m-w').value = Math.round(b.width); $('m-h').value = Math.round(b.height); $('m-angle').value = Math.round(o.angle || 0);
+  $('m-x').value = px2mm(b.left); $('m-y').value = px2mm(b.top);
+  $('m-w').value = px2mm(b.width); $('m-h').value = px2mm(b.height); $('m-angle').value = Math.round(o.angle || 0);
+  // Schrift-Steuerung mit Auswahl synchronisieren
+  if (o.type === 'i-text' || o.type === 'text' || o.type === 'textbox') {
+    $('font-family').value = o.fontFamily || 'Arial';
+    curBold = (o.fontWeight === 'bold'); curItalic = (o.fontStyle === 'italic');
+    $('font-bold').classList.toggle('on', curBold); $('font-italic').classList.toggle('on', curItalic);
+  }
 }
 canvas.on('object:moving', refreshMeasures); canvas.on('object:scaling', refreshMeasures); canvas.on('object:rotating', refreshMeasures);
 ['m-x', 'm-y', 'm-w', 'm-h', 'm-angle'].forEach(id => $(id).addEventListener('change', applyMeasures));
 function applyMeasures() {
   const o = canvas.getActiveObject(); if (!o) return;
   const b = o.getBoundingRect(true, true);
-  const nx = parseFloat($('m-x').value), ny = parseFloat($('m-y').value), nw = Math.max(1, parseFloat($('m-w').value)), nh = Math.max(1, parseFloat($('m-h').value)), na = parseFloat($('m-angle').value);
+  const nx = mm2px(parseFloat($('m-x').value)), ny = mm2px(parseFloat($('m-y').value));
+  const nw = mm2px(parseFloat($('m-w').value)), nh = mm2px(parseFloat($('m-h').value)), na = parseFloat($('m-angle').value);
   if (!isNaN(na)) o.rotate(na);
   if (!isNaN(nw) && b.width) o.scaleX = (o.scaleX || 1) * (nw / b.width);
   if (!isNaN(nh) && b.height) o.scaleY = (o.scaleY || 1) * (nh / b.height);
@@ -735,8 +787,7 @@ function exportSVG() {
   withResetView(() => {
     const prevBg = canvas.backgroundColor; canvas.backgroundColor = ''; const stripped = [];
     if ($('only-contours').checked) canvas.getObjects().forEach(o => { if (o.type === 'image') return; if (o.fill && o.fill !== 'transparent') { stripped.push([o, o.fill]); o.set('fill', null); } if (!o.stroke) { o.set('stroke', '#000000'); o._tmpS = true; } });
-    const wmm = Math.max(1, parseFloat($('export-mm').value) || canvas.width), hmm = wmm * canvas.height / canvas.width;
-    const svg = canvas.toSVG({ width: wmm + 'mm', height: hmm + 'mm', viewBox: { x: 0, y: 0, width: canvas.width, height: canvas.height } });
+    const svg = canvas.toSVG({ width: docWmm + 'mm', height: docHmm + 'mm', viewBox: { x: 0, y: 0, width: canvas.width, height: canvas.height } });
     stripped.forEach(([o, f]) => { o.set('fill', f); if (o._tmpS) { o.set('stroke', null); delete o._tmpS; } });
     canvas.backgroundColor = prevBg; canvas.requestRenderAll();
     download(URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' })), 'volmedraw.svg');
@@ -747,13 +798,83 @@ function clearAll() { if (!canvas.getObjects().length) return; if (!confirm('All
 $('q-undo').addEventListener('click', undo); $('q-redo').addEventListener('click', redo);
 $('q-png').addEventListener('click', exportPNG); $('q-svg').addEventListener('click', exportSVG);
 
+// ---------- Leinwand in mm + Presets ----------
+function setDocSize(wmm, hmm) {
+  docWmm = Math.max(10, Math.round(wmm)); docHmm = Math.max(10, Math.round(hmm));
+  canvas.setDimensions({ width: Math.round(docWmm * PPMM), height: Math.round(docHmm * PPMM) });
+  $('doc-w-mm').value = docWmm; $('doc-h-mm').value = docHmm; updateDocInfo();
+  canvas.requestRenderAll();
+}
+function updateDocInfo() { $('doc-info').textContent = docWmm + ' × ' + docHmm + ' mm'; }
+$('canvas-preset').addEventListener('change', () => {
+  const v = $('canvas-preset').value; if (v === 'custom') { $('doc-w-mm').focus(); return; }
+  const [w, h] = v.split('x').map(Number); setDocSize(w, h); snapshot('Leinwand');
+});
+['doc-w-mm', 'doc-h-mm'].forEach(id => $(id).addEventListener('change', () => {
+  $('canvas-preset').value = 'custom';
+  setDocSize(parseFloat($('doc-w-mm').value) || docWmm, parseFloat($('doc-h-mm').value) || docHmm);
+  snapshot('Leinwand');
+}));
+
+// ---------- Schrift ----------
+$('font-family').addEventListener('change', () => { curFont = $('font-family').value; applyFont(); });
+$('font-bold').addEventListener('click', () => { curBold = !curBold; $('font-bold').classList.toggle('on', curBold); applyFont(); });
+$('font-italic').addEventListener('click', () => { curItalic = !curItalic; $('font-italic').classList.toggle('on', curItalic); applyFont(); });
+function applyFont() {
+  const objs = canvas.getActiveObjects().filter(o => o.type === 'i-text' || o.type === 'text' || o.type === 'textbox');
+  if (!objs.length) return;
+  objs.forEach(o => o.set({ fontFamily: curFont, fontWeight: curBold ? 'bold' : 'normal', fontStyle: curItalic ? 'italic' : 'normal' }));
+  canvas.requestRenderAll(); snapshot('Schrift');
+}
+
+// ---------- Projekt speichern / laden ----------
+function saveProject() {
+  const data = { app: 'volmedraw', v: 1, docWmm, docHmm, bg: canvas.backgroundColor, objects: canvas.toJSON(SNAP_PROPS) };
+  download(URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' })), 'volmedraw-projekt.vdraw');
+  dirty = false;
+}
+$('project-input').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = ev => { try { const d = JSON.parse(ev.target.result); if (d.app !== 'volmedraw') { alert('Das ist keine Volme-Draw-Projektdatei (.vdraw).'); return; } applyProjectData(d, 'Projekt geladen'); } catch (_) { alert('Datei konnte nicht gelesen werden.'); } };
+  r.readAsText(f); e.target.value = '';
+});
+function applyProjectData(d, label) {
+  if (d.docWmm && d.docHmm) setDocSize(d.docWmm, d.docHmm);
+  if (d.bg) { canvas.backgroundColor = d.bg; $('bg-color').value = d.bg; }
+  restoring = true;
+  canvas.loadFromJSON(d.objects, () => {
+    canvas.renderAll(); restoring = false;
+    history = []; hIndex = -1; snapshot(label || 'Geladen');
+    dirty = false; refreshLayers(); refreshMeasures();
+  });
+}
+
+// ---------- Autosave (localStorage) + Verlassen-Warnung ----------
+let _autoT;
+function scheduleAutosave() { clearTimeout(_autoT); _autoT = setTimeout(doAutosave, 800); }
+function doAutosave() {
+  try { localStorage.setItem('volmedraw:auto', JSON.stringify({ ts: Date.now(), docWmm, docHmm, bg: canvas.backgroundColor, objects: canvas.toJSON(SNAP_PROPS) })); }
+  catch (e) { /* Quota (z. B. grosse Bilder) – dann nur ueber Projekt-Datei speichern */ }
+}
+function tryRestoreAutosave() {
+  let raw; try { raw = localStorage.getItem('volmedraw:auto'); } catch (e) { return; }
+  if (!raw) return;
+  let d; try { d = JSON.parse(raw); } catch (e) { return; }
+  if (!d.objects || !d.objects.objects || !d.objects.objects.length) return;
+  let when = ''; try { when = ' von ' + new Date(d.ts).toLocaleString('de-DE'); } catch (_) {}
+  if (!confirm('Es gibt einen automatisch gespeicherten Stand' + when + '.\nWiederherstellen?')) return;
+  applyProjectData(d, 'Wiederhergestellt');
+}
+window.addEventListener('beforeunload', e => { if (dirty && canvas.getObjects().length) { e.preventDefault(); e.returnValue = ''; } });
+
 // ---------- Menüs ----------
 function toggleGrid() { gridShow = !gridShow; canvas.requestRenderAll(); buildMenus(); }
 function toggleSnap() { gridSnap = !gridSnap; buildMenus(); }
 function togglePanel(id) { const p = $(id); p.style.display = (p.style.display === 'none') ? 'flex' : 'none'; buildMenus(); }
 function panelVisible(id) { return $(id).style.display !== 'none'; }
 const MENUS = () => ([
-  ['Datei', [['Bild laden…', 'Strg+O', () => $('file-input').click()], ['Leeren', '', clearAll], 'sep', ['Export PNG', '', exportPNG], ['Export JPG', '', exportJPG], ['Export SVG (Laser)', '', exportSVG]]],
+  ['Datei', [['Projekt speichern', 'Strg+S', saveProject], ['Projekt laden…', '', () => $('project-input').click()], 'sep', ['Bild laden…', 'Strg+O', () => $('file-input').click()], ['Leeren', '', clearAll], 'sep', ['Export PNG', '', exportPNG], ['Export JPG', '', exportJPG], ['Export SVG (Laser)', '', exportSVG]]],
   ['Bearbeiten', [['Rückgängig', 'Strg+Z', undo], ['Wiederholen', 'Strg+Y', redo], 'sep', ['Kopieren', 'Strg+C', doCopy], ['Einfügen', 'Strg+V', doPaste], ['Duplizieren', 'Strg+D', doDuplicate], ['Löschen', 'Entf', deleteSel], 'sep', ['Alles auswählen', 'Strg+A', selectAll], ['Auswahl-Maske aufheben', 'Esc', clearSelection]]],
   ['Ansicht', [['Vergrößern', '+', () => zoomBy(1.2)], ['Verkleinern', '−', () => zoomBy(1 / 1.2)], ['Auf Fenster einpassen', '', zoomFit], ['100 %', '', zoomReset], 'sep', ['Raster anzeigen', '', toggleGrid, () => gridShow], ['Am Raster fangen', '', toggleSnap, () => gridSnap]]],
   ['Anordnen', [['Links ausrichten', '', () => align('left')], ['Horizontal zentrieren', '', () => align('cx')], ['Rechts ausrichten', '', () => align('right')], ['Oben ausrichten', '', () => align('top')], ['Vertikal zentrieren', '', () => align('cy')], ['Unten ausrichten', '', () => align('bottom')], 'sep', ['Horizontal verteilen', '', () => distribute('h')], ['Vertikal verteilen', '', () => distribute('v')], 'sep', ['Spiegeln horizontal', '', () => flip('h')], ['Spiegeln vertikal', '', () => flip('v')]]],
@@ -824,6 +945,7 @@ document.addEventListener('keydown', e => {
   if (ctrl && e.key.toLowerCase() === 'g') { e.preventDefault(); e.shiftKey ? ungroupSel() : groupSel(); return; }
   if (ctrl && e.key.toLowerCase() === 'a') { e.preventDefault(); selectAll(); return; }
   if (ctrl && e.key.toLowerCase() === 'o') { e.preventDefault(); $('file-input').click(); return; }
+  if (ctrl && e.key.toLowerCase() === 's') { e.preventDefault(); saveProject(); return; }
   if (e.key === 'Delete' || e.key === 'Backspace') { const s = canvas.getActiveObjects(); if (s.length) { e.preventDefault(); deleteSel(); } return; }
   const nudge = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
   if (nudge) { const s = canvas.getActiveObjects(); if (s.length) { e.preventDefault(); const step = e.shiftKey ? 10 : 1; s.forEach(o => { o.left += nudge[0] * step; o.top += nudge[1] * step; o.setCoords(); }); canvas.requestRenderAll(); refreshMeasures(); clearTimeout(window._ns); window._ns = setTimeout(() => snapshot('Verschoben'), 350); } return; }
@@ -835,7 +957,10 @@ document.addEventListener('keyup', e => { if (e.code === 'Space') { spaceDown = 
 
 // ---------- Start ----------
 buildMenus(); buildPalette(); renderSwatches();
+setDocSize(docWmm, docHmm);
 snapshot('Neues Bild'); refreshLayers(); refreshMeasures(); setTool('select'); updateZoomLabel();
+dirty = false;
+tryRestoreAutosave();
 </script>
 </body>
 </html>
