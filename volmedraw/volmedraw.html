@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Volme Draw – Zeichenprogramm</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
+<script src="./lib/opentype.min.js"></script>
 <style>
+  @font-face { font-family: 'Poppins'; src: url('./lib/Poppins-Regular.ttf'); font-display: swap; }
+  @font-face { font-family: 'Great Vibes'; src: url('./lib/GreatVibes-Regular.ttf'); font-display: swap; }
   :root {
     --bg: #0d0d0f; --panel: #17171a; --panel2: #1e1e22; --border: #2b2b30;
     --text: #e8e8ea; --muted: #8a8a92; --orange: #ff7a1a; --cyan: #00d4e0;
@@ -207,6 +210,7 @@
   <div class="osep"></div>
   <div class="ogrp"><label>Schrift</label>
     <select id="font-family">
+      <option value="Poppins">Poppins ✎Laser</option><option value="Great Vibes">Great Vibes ✎Laser</option>
       <option>Arial</option><option>Helvetica</option><option>Verdana</option><option>Tahoma</option>
       <option>Trebuchet MS</option><option>Times New Roman</option><option>Georgia</option>
       <option>Courier New</option><option>Impact</option><option>Comic Sans MS</option>
@@ -827,6 +831,34 @@ function applyFont() {
   canvas.requestRenderAll(); snapshot('Schrift');
 }
 
+// ---------- Text → Pfade (opentype.js, für LightBurn) ----------
+const LOADED_FONTS = {};
+const LASER_FONTS = { 'Poppins': './lib/Poppins-Regular.ttf', 'Great Vibes': './lib/GreatVibes-Regular.ttf' };
+function loadLaserFonts() {
+  if (typeof opentype === 'undefined') return;
+  for (const [name, url] of Object.entries(LASER_FONTS))
+    opentype.load(url, (err, font) => { if (!err) LOADED_FONTS[name] = font; });
+}
+function textToPath() {
+  const objs = canvas.getActiveObjects().filter(o => o.type === 'i-text' || o.type === 'text' || o.type === 'textbox');
+  if (!objs.length) { alert('Erst ein Text-Objekt auswählen (Werkzeug WAHL).'); return; }
+  let converted = 0, missing = null;
+  objs.forEach(o => {
+    const font = LOADED_FONTS[o.fontFamily];
+    if (!font) { missing = o.fontFamily; return; }
+    const size = o.fontSize || 40, lh = size * (o.lineHeight || 1.16);
+    const asc = font.ascender / font.unitsPerEm * size;
+    let d = '';
+    String(o.text).split('\n').forEach((ln, i) => { d += ' ' + font.getPath(ln, 0, asc + i * lh, size).toPathData(2); });
+    const path = new fabric.Path(d.trim(), { left: o.left, top: o.top, angle: o.angle, scaleX: o.scaleX, scaleY: o.scaleY, fill: o.fill, opacity: o.opacity });
+    path.vType = 'textpath'; path.vName = (o.vName || 'Text') + ' (Pfad)';
+    if (o.clipPath) path.clipPath = o.clipPath;
+    canvas.remove(o); canvas.add(path); canvas.setActiveObject(path); converted++;
+  });
+  if (missing) alert('Für „' + missing + '" ist keine vektorisierbare Schrift geladen.\nWähle eine Laser-Schrift (Poppins oder Great Vibes) und wandle dann um.');
+  if (converted) { canvas.requestRenderAll(); snapshot('Text→Pfade'); refreshLayers(); }
+}
+
 // ---------- Projekt speichern / laden ----------
 function saveProject() {
   const data = { app: 'volmedraw', v: 1, docWmm, docHmm, bg: canvas.backgroundColor, objects: canvas.toJSON(SNAP_PROPS) };
@@ -878,7 +910,7 @@ const MENUS = () => ([
   ['Bearbeiten', [['Rückgängig', 'Strg+Z', undo], ['Wiederholen', 'Strg+Y', redo], 'sep', ['Kopieren', 'Strg+C', doCopy], ['Einfügen', 'Strg+V', doPaste], ['Duplizieren', 'Strg+D', doDuplicate], ['Löschen', 'Entf', deleteSel], 'sep', ['Alles auswählen', 'Strg+A', selectAll], ['Auswahl-Maske aufheben', 'Esc', clearSelection]]],
   ['Ansicht', [['Vergrößern', '+', () => zoomBy(1.2)], ['Verkleinern', '−', () => zoomBy(1 / 1.2)], ['Auf Fenster einpassen', '', zoomFit], ['100 %', '', zoomReset], 'sep', ['Raster anzeigen', '', toggleGrid, () => gridShow], ['Am Raster fangen', '', toggleSnap, () => gridSnap]]],
   ['Anordnen', [['Links ausrichten', '', () => align('left')], ['Horizontal zentrieren', '', () => align('cx')], ['Rechts ausrichten', '', () => align('right')], ['Oben ausrichten', '', () => align('top')], ['Vertikal zentrieren', '', () => align('cy')], ['Unten ausrichten', '', () => align('bottom')], 'sep', ['Horizontal verteilen', '', () => distribute('h')], ['Vertikal verteilen', '', () => distribute('v')], 'sep', ['Spiegeln horizontal', '', () => flip('h')], ['Spiegeln vertikal', '', () => flip('v')]]],
-  ['Ebenen', [['Nach oben', '', () => { const a = canvas.getActiveObject(); if (a) { a.bringForward(); canvas.requestRenderAll(); snapshot('Reihenfolge'); refreshLayers(); } }], ['Nach unten', '', () => { const a = canvas.getActiveObject(); if (a) { a.sendBackwards(); canvas.requestRenderAll(); snapshot('Reihenfolge'); refreshLayers(); } }], 'sep', ['Gruppieren', 'Strg+G', groupSel], ['Gruppierung aufheben', 'Strg+Shift+G', ungroupSel], 'sep', ['Auf Auswahl zuschneiden (runde Maske)', '', clipToSelection], ['Clipping-Maske erstellen', '', makeMask], ['Maske lösen', '', unmask]]],
+  ['Ebenen', [['Nach oben', '', () => { const a = canvas.getActiveObject(); if (a) { a.bringForward(); canvas.requestRenderAll(); snapshot('Reihenfolge'); refreshLayers(); } }], ['Nach unten', '', () => { const a = canvas.getActiveObject(); if (a) { a.sendBackwards(); canvas.requestRenderAll(); snapshot('Reihenfolge'); refreshLayers(); } }], 'sep', ['Gruppieren', 'Strg+G', groupSel], ['Gruppierung aufheben', 'Strg+Shift+G', ungroupSel], 'sep', ['Text in Pfade umwandeln (Laser)', '', textToPath], 'sep', ['Auf Auswahl zuschneiden (runde Maske)', '', clipToSelection], ['Clipping-Maske erstellen', '', makeMask], ['Maske lösen', '', unmask]]],
   ['Fenster', [['Werkzeuge', '', () => togglePanel('panel-tools'), () => panelVisible('panel-tools')], ['Farben', '', () => togglePanel('panel-colors'), () => panelVisible('panel-colors')], ['Eigenschaften', '', () => togglePanel('panel-props'), () => panelVisible('panel-props')], ['Verlauf', '', () => togglePanel('panel-history'), () => panelVisible('panel-history')], ['Ebenen', '', () => togglePanel('panel-layers'), () => panelVisible('panel-layers')]]],
   ['Hilfe', [['Tastenkürzel', '', () => alert('V Wahl · Q Auswahl-Maske · B Pinsel · E Radierer · I Pipette\\nR/C/L/T Formen · P/S/A Polygon/Stern/Pfeil\\nLeertaste+Ziehen = Pan · Mausrad = Zoom\\nStrg+Z/Y · Strg+C/V/D · Strg+G · Entf · Esc')]]]
 ]);
@@ -956,7 +988,7 @@ document.addEventListener('keydown', e => {
 document.addEventListener('keyup', e => { if (e.code === 'Space') { spaceDown = false; isPanning = false; canvas.setCursor(canvas.defaultCursor); } });
 
 // ---------- Start ----------
-buildMenus(); buildPalette(); renderSwatches();
+buildMenus(); buildPalette(); renderSwatches(); loadLaserFonts();
 setDocSize(docWmm, docHmm);
 snapshot('Neues Bild'); refreshLayers(); refreshMeasures(); setTool('select'); updateZoomLabel();
 dirty = false;

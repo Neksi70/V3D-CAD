@@ -66,6 +66,22 @@ const fontOk = await page.evaluate(() => {
   return t.fontFamily === 'Georgia';
 });
 
+// opentype + Text -> Pfade (Laser-Schrift, async geladen -> pollen)
+const otLoaded = await page.evaluate(() => typeof window.opentype);
+let t2pOk = false;
+for (let i = 0; i < 8 && !t2pOk; i++) {
+  t2pOk = await page.evaluate(() => {
+    if (typeof opentype === 'undefined') return false;
+    const t = new fabric.IText('Volme', { left: 120, top: 500, fontFamily: 'Poppins', fontSize: 60 });
+    canvas.add(t); canvas.setActiveObject(t);
+    textToPath();
+    const ok = !!canvas.getObjects().find(o => o.type === 'path' && o.vType === 'textpath');
+    if (!ok) canvas.remove(t);
+    return ok;
+  });
+  if (!t2pOk) await page.waitForTimeout(500);
+}
+
 // Projekt speichern (Strg+S -> Download .vdraw)
 let saveOk = false;
 try {
@@ -98,12 +114,13 @@ console.log('Menues:        ', menuCount, ' Palette:', paletteCount);
 console.log('Globals fehlen:', Object.entries(globals).filter(([, t]) => t !== 'function').map(([n]) => n).join(', ') || '(keine)');
 console.log('Ebenen:', layerCount, ' Verlauf:', histCount);
 console.log('mm-Doc ok:', docOk, ' Zuschnitt ok:', clipOk, ' Schrift ok:', fontOk);
+console.log('opentype:', otLoaded, ' Text→Pfade ok:', t2pOk);
 console.log('Speichern ok:', saveOk, ' Laden-Roundtrip ok:', loadOk, ' SVG ok:', svgOk);
 console.log('Fehler:', errors.length);
 for (const e of errors) console.log('   •', e.slice(0, 180));
 
 const allFns = Object.values(globals).every(t => t === 'function');
 const ok = allFns && fabricLoaded === 'object' && menuCount >= 6 && paletteCount >= 8 && layerCount >= 2 &&
-  histCount >= 2 && docOk && clipOk && fontOk && saveOk && loadOk && svgOk && errors.length === 0;
+  histCount >= 2 && docOk && clipOk && fontOk && otLoaded === 'object' && t2pOk && saveOk && loadOk && svgOk && errors.length === 0;
 console.log('\n=> Smoke:', ok ? 'BESTANDEN ✓' : 'FEHLGESCHLAGEN ✗');
 process.exit(ok ? 0 : 1);
