@@ -193,6 +193,19 @@
   .toast.error { border-left-color: var(--orange); }
   .toast.info { border-left-color: var(--cyan); }
 
+  /* ---------- Modale Dialoge (Offset / Replizieren) ---------- */
+  .modal { position: fixed; inset: 0; z-index: 280; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; }
+  .modal.hidden { display: none; }
+  .modal-card { background: var(--panel); border: 1px solid var(--border); border-top: 3px solid var(--orange); width: 340px; max-width: 92vw; padding: 18px 20px; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  .modal-card h3 { font-size: 14px; letter-spacing: 1px; margin-bottom: 4px; font-weight: 800; text-transform: uppercase; }
+  .modal-card h3 .d { color: var(--orange); }
+  .modal-card .msub { color: var(--muted); font-size: 11px; margin-bottom: 16px; line-height: 1.5; }
+  .mrow { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .mrow label { flex: 1; color: var(--muted); font-size: 12px; }
+  .mrow input[type="number"], .mrow select { width: 110px; background: var(--panel2); border: 1px solid var(--border); color: var(--text); font: inherit; font-size: 12px; padding: 4px 6px; }
+  .mrow select { cursor: pointer; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
   /* ---------- Onboarding ---------- */
   #onboarding { position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,.74); display: flex; align-items: center; justify-content: center; }
   #onboarding.hidden { display: none; }
@@ -385,6 +398,30 @@
 
 <div id="toast-wrap"></div>
 
+<div id="offset-modal" class="modal hidden">
+  <div class="modal-card">
+    <h3>Offset <span class="d">/ Kontur</span></h3>
+    <div class="msub">Legt eine Linie im gewählten Abstand um die Form – ideal als Sticker-Rand / Schnittlinie.</div>
+    <div class="mrow"><label for="off-dist">Abstand (mm)</label><input type="number" id="off-dist" min="0.1" max="100" step="0.5" value="3"></div>
+    <div class="mrow"><label for="off-dir">Richtung</label><select id="off-dir"><option value="out">Außen (größer)</option><option value="in">Innen (kleiner)</option></select></div>
+    <div class="mrow"><label for="off-join">Ecken</label><select id="off-join"><option value="round">Rund</option><option value="miter">Spitz</option></select></div>
+    <div class="modal-actions"><button class="qbtn" id="off-cancel">Abbrechen</button><button class="qbtn primary" id="off-ok">Kontur erstellen</button></div>
+  </div>
+</div>
+
+<div id="rep-modal" class="modal hidden">
+  <div class="modal-card">
+    <h3>Replizieren</h3>
+    <div class="msub">Klont die Auswahl in ein Raster – nutzt die Lasermatte optimal aus.</div>
+    <div class="mrow"><label for="rep-cols">Spalten</label><input type="number" id="rep-cols" min="1" max="30" value="3"></div>
+    <div class="mrow"><label for="rep-rows">Zeilen</label><input type="number" id="rep-rows" min="1" max="30" value="2"></div>
+    <div class="mrow"><label for="rep-gx">Abstand X (mm)</label><input type="number" id="rep-gx" min="0" max="200" step="0.5" value="5"></div>
+    <div class="mrow"><label for="rep-gy">Abstand Y (mm)</label><input type="number" id="rep-gy" min="0" max="200" step="0.5" value="5"></div>
+    <div class="mrow"><label for="rep-mirror">Spiegeln</label><select id="rep-mirror"><option value="none">Kein</option><option value="h">Horizontal (Spalten)</option><option value="v">Vertikal (Zeilen)</option><option value="both">Beide</option></select></div>
+    <div class="modal-actions"><button class="qbtn" id="rep-cancel">Abbrechen</button><button class="qbtn primary" id="rep-ok">Raster erstellen</button></div>
+  </div>
+</div>
+
 <div id="onboarding" class="hidden">
   <div class="ob-card">
     <h2>Willkommen bei VOLME<span class="s">/</span><span class="d">DRAW</span></h2>
@@ -531,7 +568,7 @@ function updateHistoryUI() {
   ul.parentElement.scrollTop = ul.parentElement.scrollHeight;
 }
 
-canvas.on('object:added', e => { tagObject(); snapshot(labelFor(e.target, 'hinzugefügt')); refreshLayers(); });
+canvas.on('object:added', e => { if (restoring) return; tagObject(); snapshot(labelFor(e.target, 'hinzugefügt')); refreshLayers(); });
 canvas.on('object:modified', () => { snapshot('Bearbeitet'); refreshLayers(); });
 canvas.on('object:removed', () => { if (!restoring) { snapshot('Gelöscht'); refreshLayers(); } });
 canvas.on('selection:created', onSelect);
@@ -1070,6 +1107,173 @@ function tracePhoto() {
   });
 }
 
+// ============================================================
+// Geometrie: Offset / Boolean / Replizieren (clipper-lib)
+// objToPolys → Fabric-Objekt in absolute px-Polygone; polysToPath → zurück.
+// Clipper rechnet ganzzahlig → alles * CLIP_SCALE, am Ende / CLIP_SCALE.
+// ============================================================
+const CLIP_SCALE = 100;
+const r2 = n => Math.round(n * 100) / 100;
+function clipReady() { if (typeof ClipperLib === 'undefined') { toast('Geometrie-Modul (clipper) nicht geladen', 'error'); return false; } return true; }
+
+// Lokale Umriss-Punkte (auf Objektmitte zentriert), pro Kontur ein Array.
+function localOutline(obj) {
+  const t = obj.type;
+  if (t === 'rect') {
+    const w = obj.width, h = obj.height, rx = Math.min(obj.rx || 0, w / 2), ry = Math.min(obj.ry || 0, h / 2);
+    if (rx > 0.1 && ry > 0.1) {
+      const p = [], seg = 6, x0 = -w / 2, y0 = -h / 2, x1 = w / 2, y1 = h / 2;
+      const arc = (cx, cy, a0, a1) => { for (let i = 0; i <= seg; i++) { const a = a0 + (a1 - a0) * i / seg; p.push({ x: cx + rx * Math.cos(a), y: cy + ry * Math.sin(a) }); } };
+      arc(x1 - rx, y0 + ry, -Math.PI / 2, 0); arc(x1 - rx, y1 - ry, 0, Math.PI / 2);
+      arc(x0 + rx, y1 - ry, Math.PI / 2, Math.PI); arc(x0 + rx, y0 + ry, Math.PI, 1.5 * Math.PI);
+      return [p];
+    }
+    return [[{ x: -w / 2, y: -h / 2 }, { x: w / 2, y: -h / 2 }, { x: w / 2, y: h / 2 }, { x: -w / 2, y: h / 2 }]];
+  }
+  if (t === 'ellipse') { const rx = obj.rx, ry = obj.ry, N = Math.max(24, Math.round((rx + ry) * 0.7)); const p = []; for (let i = 0; i < N; i++) { const a = i / N * 2 * Math.PI; p.push({ x: rx * Math.cos(a), y: ry * Math.sin(a) }); } return [p]; }
+  if (t === 'circle') { const r = obj.radius, N = Math.max(24, Math.round(r * 1.4)); const p = []; for (let i = 0; i < N; i++) { const a = i / N * 2 * Math.PI; p.push({ x: r * Math.cos(a), y: r * Math.sin(a) }); } return [p]; }
+  if (t === 'triangle') { const w = obj.width, h = obj.height; return [[{ x: 0, y: -h / 2 }, { x: w / 2, y: h / 2 }, { x: -w / 2, y: h / 2 }]]; }
+  if (t === 'polygon' || t === 'polyline') { const o = obj.pathOffset; return [obj.points.map(pt => ({ x: pt.x - o.x, y: pt.y - o.y }))]; }
+  if (t === 'path') return flattenPath(obj);
+  return [];
+}
+// Pfad in Polylinien wandeln (nach Bogenlänge gesampelt); Subpfade an 'M' = eigene Konturen (Löcher).
+function flattenPath(obj) {
+  const o = obj.pathOffset, subs = []; let cur = [];
+  obj.path.forEach(s => { if (s[0] === 'M' && cur.length) { subs.push(cur); cur = []; } cur.push(s); });
+  if (cur.length) subs.push(cur);
+  const out = [];
+  subs.forEach(sp => {
+    let info; try { info = fabric.util.getPathSegmentsInfo(sp); } catch (e) { return; }
+    const total = info[info.length - 1].length; if (!total) return;
+    const step = Math.max(1.5, total / 400), pts = [];
+    for (let d = 0; d <= total; d += step) { const pt = fabric.util.getPointOnPath(sp, d, info); if (pt) pts.push({ x: pt.x - o.x, y: pt.y - o.y }); }
+    if (pts.length > 2) out.push(pts);
+  });
+  return out;
+}
+// Objekt → absolute px-Konturen [{X,Y}…]; Gruppen rekursiv (Matrizen komponiert).
+function objToPolys(obj, parentM) {
+  const m = parentM ? fabric.util.multiplyTransformMatrices(parentM, obj.calcTransformMatrix()) : obj.calcTransformMatrix();
+  if ((obj.type === 'group' || obj.type === 'activeSelection') && obj._objects) {
+    let out = []; obj._objects.forEach(c => { out = out.concat(objToPolys(c, m)); }); return out;
+  }
+  return localOutline(obj).map(c => c.map(p => { const t = fabric.util.transformPoint({ x: p.x, y: p.y }, m); return { X: t.x, Y: t.y }; }));
+}
+// Absolute px-Konturen → ganzzahlige Clipper-Pfade (nur geschlossene mit ≥3 Punkten).
+function toClipPaths(obj) {
+  return objToPolys(obj).filter(c => c.length >= 3).map(c => c.map(p => ({ X: Math.round(p.X * CLIP_SCALE), Y: Math.round(p.Y * CLIP_SCALE) })));
+}
+// Clipper-Ergebnis (ganzzahlig) → fabric.Path in absoluten px. Löcher via fillRule evenodd.
+function polysToPath(sol, style) {
+  let d = '';
+  sol.forEach(poly => { if (poly.length < 2) return; poly.forEach((pt, i) => { d += (i ? 'L ' : 'M ') + r2(pt.X / CLIP_SCALE) + ' ' + r2(pt.Y / CLIP_SCALE) + ' '; }); d += 'Z '; });
+  if (!d) return null;
+  return new fabric.Path(d.trim(), Object.assign({ fillRule: 'evenodd', strokeWidth: 2, opacity: 1 }, style));
+}
+// Prüft Auswahl auf nicht-geometrische Objekte, gibt sanften Hinweis.
+function hasNonGeo(objs) {
+  if (objs.some(o => o.type === 'image')) { toast('Bilder lassen sich nicht kombinieren – erst „Nachzeichnen"', 'error'); return true; }
+  if (objs.some(o => o.type === 'i-text' || o.type === 'text' || o.type === 'textbox')) { toast('Text erst in Pfade umwandeln (Menü Ebenen)', 'error'); return true; }
+  return false;
+}
+
+// ---------- Offset / Kontur ----------
+function openOffsetModal() {
+  if (!clipReady()) return;
+  const objs = canvas.getActiveObjects();
+  if (!objs.length) { toast('Erst eine Form auswählen', 'error'); return; }
+  if (hasNonGeo(objs)) return;
+  $('offset-modal').classList.remove('hidden'); $('off-dist').focus();
+}
+function applyOffset() {
+  const objs = canvas.getActiveObjects(); if (!objs.length) { $('offset-modal').classList.add('hidden'); return; }
+  const distMM = parseFloat($('off-dist').value) || 0;
+  const dir = $('off-dir').value === 'in' ? -1 : 1;
+  const round = $('off-join').value === 'round';
+  let paths = []; objs.forEach(o => { paths = paths.concat(toClipPaths(o)); });
+  if (!paths.length) { toast('Diese Form lässt sich nicht offsetten', 'error'); return; }
+  const simp = ClipperLib.Clipper.SimplifyPolygons(paths, ClipperLib.PolyFillType.pftNonZero);
+  const co = new ClipperLib.ClipperOffset(2, 0.25 * CLIP_SCALE);
+  co.AddPaths(simp, round ? ClipperLib.JoinType.jtRound : ClipperLib.JoinType.jtMiter, ClipperLib.EndType.etClosedPolygon);
+  const sol = new ClipperLib.Paths();
+  co.Execute(sol, dir * distMM * PPMM * CLIP_SCALE);
+  $('offset-modal').classList.add('hidden');
+  if (!sol.length) { toast(dir < 0 ? 'Innen-Abstand zu groß – Form verschwindet' : 'Offset ergab keine Kontur', 'error'); return; }
+  const path = polysToPath(sol, { fill: null, stroke: null });
+  if (!path) return;
+  path.vType = 'offset'; path.vName = 'Kontur'; path.vLaser = 'cut'; applyLaser(path, 'cut');
+  path.selectable = true; canvas.add(path); canvas.setActiveObject(path);
+  canvas.requestRenderAll(); refreshLayers(); refreshMeasures();
+  toast('Kontur mit ' + distMM + ' mm ' + (dir < 0 ? 'innen' : 'außen') + ' erstellt ✓');
+}
+
+// ---------- Formen kombinieren (Boolean) ----------
+function clipExec(subj, clip, ct) {
+  const c = new ClipperLib.Clipper();
+  if (subj.length) c.AddPaths(subj, ClipperLib.PolyType.ptSubject, true);
+  if (clip && clip.length) c.AddPaths(clip, ClipperLib.PolyType.ptClip, true);
+  const sol = new ClipperLib.Paths();
+  c.Execute(ct, sol, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+  return sol;
+}
+const BOOL_LABEL = { union: 'Verschweißt', diff: 'Abgezogen', intersect: 'Überschnitten', xor: 'Ausgeschlossen' };
+function combineShapes(op) {
+  if (!clipReady()) return;
+  const active = canvas.getActiveObjects();
+  if (active.length < 2) { toast('Mind. 2 Formen auswählen (Shift-Klick / Rahmen ziehen)', 'error'); return; }
+  if (hasNonGeo(active)) return;
+  const all = canvas.getObjects();
+  const objs = active.slice().sort((a, b) => all.indexOf(a) - all.indexOf(b)); // unten → oben
+  canvas.discardActiveObject();
+  const CT = ClipperLib.ClipType;
+  let sol;
+  if (op === 'union') { let s = []; objs.forEach(o => { s = s.concat(toClipPaths(o)); }); sol = clipExec(s, [], CT.ctUnion); }
+  else if (op === 'diff') { const top = objs[objs.length - 1], rest = objs.slice(0, -1); let s = []; rest.forEach(o => { s = s.concat(toClipPaths(o)); }); sol = clipExec(s, toClipPaths(top), CT.ctDifference); }
+  else { const ct = op === 'intersect' ? CT.ctIntersection : CT.ctXor; sol = toClipPaths(objs[0]); for (let i = 1; i < objs.length; i++) sol = clipExec(sol, toClipPaths(objs[i]), ct); }
+  if (!sol || !sol.length) { toast(BOOL_LABEL[op] + ': kein Ergebnis (überlappen die Formen?)', 'error'); canvas.setActiveObject(new fabric.ActiveSelection(objs, { canvas })); return; }
+  const base = objs[0];
+  const style = { fill: base.fill, stroke: base.stroke, strokeWidth: base.strokeWidth || 2, opacity: base.opacity != null ? base.opacity : 1 };
+  const path = polysToPath(sol, style);
+  if (!path) return;
+  path.vType = 'bool'; path.vName = BOOL_LABEL[op];
+  restoring = true; objs.forEach(o => canvas.remove(o)); restoring = false;
+  path.selectable = true; canvas.add(path);
+  if (base.vLaser) { path.vLaser = base.vLaser; applyLaser(path, base.vLaser); }
+  canvas.setActiveObject(path); canvas.requestRenderAll(); snapshot(BOOL_LABEL[op]); refreshLayers(); refreshMeasures();
+  toast(BOOL_LABEL[op] + ' ✓');
+}
+
+// ---------- Replizieren (Klon-Raster) ----------
+function openRepModal() {
+  const objs = canvas.getActiveObjects();
+  if (!objs.length) { toast('Erst Objekt(e) auswählen', 'error'); return; }
+  $('rep-modal').classList.remove('hidden'); $('rep-cols').focus();
+}
+function applyReplicate() {
+  const active = canvas.getActiveObjects(); if (!active.length) { $('rep-modal').classList.add('hidden'); return; }
+  const cols = Math.max(1, parseInt($('rep-cols').value, 10) || 1), rows = Math.max(1, parseInt($('rep-rows').value, 10) || 1);
+  const mirror = $('rep-mirror').value;
+  $('rep-modal').classList.add('hidden');
+  if (cols * rows <= 1) { toast('Spalten × Zeilen muss größer als 1 sein', 'error'); return; }
+  if (cols * rows * active.length > 600) { toast('Zu viele Kopien (max. 600) – Anzahl reduzieren', 'error'); return; }
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+  active.forEach(o => { const bb = o.getBoundingRect(true, true); l = Math.min(l, bb.left); t = Math.min(t, bb.top); r = Math.max(r, bb.left + bb.width); b = Math.max(b, bb.top + bb.height); });
+  const stepX = (r - l) + mm2px(parseFloat($('rep-gx').value) || 0), stepY = (b - t) + mm2px(parseFloat($('rep-gy').value) || 0);
+  canvas.discardActiveObject();
+  const jobs = [];
+  for (let cy = 0; cy < rows; cy++) for (let cx = 0; cx < cols; cx++) { if (!cx && !cy) continue; active.forEach(src => jobs.push({ src, cx, cy })); }
+  if (!jobs.length) return;
+  restoring = true; let done = 0;
+  jobs.forEach(job => job.src.clone(cl => {
+    cl.set({ left: cl.left + job.cx * stepX, top: cl.top + job.cy * stepY, evented: true });
+    if ((mirror === 'h' || mirror === 'both') && job.cx % 2) cl.set('flipX', !cl.flipX);
+    if ((mirror === 'v' || mirror === 'both') && job.cy % 2) cl.set('flipY', !cl.flipY);
+    cl.vName = undefined; cl.setCoords(); canvas.add(cl);
+    if (++done === jobs.length) { restoring = false; tagObject(); canvas.requestRenderAll(); snapshot('Repliziert ' + cols + '×' + rows); refreshLayers(); toast(cols + '×' + rows + ' repliziert ✓'); }
+  }, SNAP_PROPS));
+}
+
 // ---------- Projekt speichern / laden ----------
 function saveProject() {
   const data = { app: 'volmedraw', v: 1, docWmm, docHmm, bg: canvas.backgroundColor, objects: canvas.toJSON(SNAP_PROPS) };
@@ -1121,6 +1325,7 @@ const MENUS = () => ([
   ['Bearbeiten', [['Rückgängig', 'Strg+Z', undo], ['Wiederholen', 'Strg+Y', redo], 'sep', ['Kopieren', 'Strg+C', doCopy], ['Einfügen', 'Strg+V', doPaste], ['Duplizieren', 'Strg+D', doDuplicate], ['Löschen', 'Entf', deleteSel], 'sep', ['Alles auswählen', 'Strg+A', selectAll], ['Auswahl-Maske aufheben', 'Esc', clearSelection]]],
   ['Ansicht', [['Vergrößern', '+', () => zoomBy(1.2)], ['Verkleinern', '−', () => zoomBy(1 / 1.2)], ['Auf Fenster einpassen', '', zoomFit], ['100 %', '', zoomReset], 'sep', ['Raster anzeigen', '', toggleGrid, () => gridShow], ['Am Raster fangen', '', toggleSnap, () => gridSnap]]],
   ['Anordnen', [['Links ausrichten', '', () => align('left')], ['Horizontal zentrieren', '', () => align('cx')], ['Rechts ausrichten', '', () => align('right')], ['Oben ausrichten', '', () => align('top')], ['Vertikal zentrieren', '', () => align('cy')], ['Unten ausrichten', '', () => align('bottom')], 'sep', ['Horizontal verteilen', '', () => distribute('h')], ['Vertikal verteilen', '', () => distribute('v')], 'sep', ['Spiegeln horizontal', '', () => flip('h')], ['Spiegeln vertikal', '', () => flip('v')]]],
+  ['Formen', [['Offset / Kontur…', '', openOffsetModal], 'sep', ['Verschweißen (vereinen)', '', () => combineShapes('union')], ['Abziehen (oberste weg)', '', () => combineShapes('diff')], ['Überschneiden', '', () => combineShapes('intersect')], ['Ausschließen', '', () => combineShapes('xor')], 'sep', ['Replizieren…', '', openRepModal]]],
   ['Ebenen', [['Nach oben', '', () => { const a = canvas.getActiveObject(); if (a) { a.bringForward(); canvas.requestRenderAll(); snapshot('Reihenfolge'); refreshLayers(); } }], ['Nach unten', '', () => { const a = canvas.getActiveObject(); if (a) { a.sendBackwards(); canvas.requestRenderAll(); snapshot('Reihenfolge'); refreshLayers(); } }], 'sep', ['Gruppieren', 'Strg+G', groupSel], ['Gruppierung aufheben', 'Strg+Shift+G', ungroupSel], 'sep', ['Text in Pfade umwandeln (Laser)', '', textToPath], 'sep', ['Auf Auswahl zuschneiden (runde Maske)', '', clipToSelection], ['Clipping-Maske erstellen', '', makeMask], ['Maske lösen', '', unmask]]],
   ['Fenster', [['Werkzeuge', '', () => togglePanel('panel-tools'), () => panelVisible('panel-tools')], ['Farben', '', () => togglePanel('panel-colors'), () => panelVisible('panel-colors')], ['Eigenschaften', '', () => togglePanel('panel-props'), () => panelVisible('panel-props')], ['Verlauf', '', () => togglePanel('panel-history'), () => panelVisible('panel-history')], ['Ebenen', '', () => togglePanel('panel-layers'), () => panelVisible('panel-layers')]]],
   ['Hilfe', [['Erste Schritte', '', showOnboarding], ['Tastenkürzel', '', () => alert('V Wahl · Q Auswahl-Maske · B Pinsel · E Radierer · I Pipette\\nR/C/L/T Formen · P/S/A Polygon/Stern/Pfeil\\nLeertaste+Ziehen = Pan · Mausrad = Zoom\\nStrg+Z/Y · Strg+C/V/D · Strg+G · Entf · Esc')]]]
@@ -1178,7 +1383,7 @@ document.addEventListener('keydown', e => {
   if (canvas.getActiveObject()?.isEditing) return;
   const tag = document.activeElement?.tagName; if (tag === 'INPUT' || tag === 'TEXTAREA') return;
   if (e.code === 'Space' && !spaceDown) { spaceDown = true; canvas.setCursor('grab'); e.preventDefault(); return; }
-  if (e.key === 'Escape') { clearSelection(); return; }
+  if (e.key === 'Escape') { const om = document.querySelector('.modal:not(.hidden)'); if (om) { om.classList.add('hidden'); return; } clearSelection(); return; }
   const ctrl = e.ctrlKey || e.metaKey;
   if (ctrl && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   if (ctrl && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
@@ -1213,6 +1418,14 @@ function closeOnboarding() {
 }
 $('ob-start').addEventListener('click', closeOnboarding);
 $('onboarding').addEventListener('click', e => { if (e.target.id === 'onboarding') closeOnboarding(); });
+
+// ---------- Modal-Verdrahtung (Offset / Replizieren) ----------
+$('off-ok').addEventListener('click', applyOffset);
+$('off-cancel').addEventListener('click', () => $('offset-modal').classList.add('hidden'));
+$('offset-modal').addEventListener('click', e => { if (e.target.id === 'offset-modal') $('offset-modal').classList.add('hidden'); });
+$('rep-ok').addEventListener('click', applyReplicate);
+$('rep-cancel').addEventListener('click', () => $('rep-modal').classList.add('hidden'));
+$('rep-modal').addEventListener('click', e => { if (e.target.id === 'rep-modal') $('rep-modal').classList.add('hidden'); });
 
 // ---------- Start ----------
 buildMenus(); buildPalette(); renderSwatches(); loadLaserFonts();

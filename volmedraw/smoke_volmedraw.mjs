@@ -26,7 +26,8 @@ const globals = await page.evaluate(() => {
   const names = ['setTool', 'zoomFit', 'align', 'distribute', 'groupSel', 'ungroupSel',
     'doDuplicate', 'doPaste', 'makeMask', 'unmask', 'clipToSelection', 'buildGenerated',
     'refreshLayers', 'refreshMeasures', 'buildMenus', 'buildPalette', 'exportSVG', 'restoreIndex',
-    'clearSelection', 'saveProject', 'applyProjectData', 'setDocSize', 'applyFont', 'tryRestoreAutosave'];
+    'clearSelection', 'saveProject', 'applyProjectData', 'setDocSize', 'applyFont', 'tryRestoreAutosave',
+    'objToPolys', 'polysToPath', 'applyOffset', 'openOffsetModal', 'combineShapes', 'applyReplicate', 'openRepModal'];
   const out = {}; for (const n of names) out[n] = typeof window[n]; return out;
 });
 const fabricLoaded = await page.evaluate(() => typeof window.fabric);
@@ -114,6 +115,56 @@ const laserOk = await page.evaluate(() => {
   return cutOk && engOk;
 });
 
+// clipper-lib + Offset/Kontur (Rechteck 80x60 um 4mm nach aussen -> groesser, vLaser=cut)
+const clipperLoaded = await page.evaluate(() => typeof window.ClipperLib);
+const offsetOk = await page.evaluate(() => {
+  const r = new fabric.Rect({ left: 60, top: 60, width: 80, height: 60, fill: '#ff0000' });
+  canvas.add(r); canvas.setActiveObject(r);
+  document.getElementById('off-dist').value = '4';
+  document.getElementById('off-dir').value = 'out';
+  document.getElementById('off-join').value = 'round';
+  const before = canvas.getObjects().length;
+  applyOffset();
+  const c = canvas.getObjects().find(o => o.vType === 'offset');
+  return !!c && canvas.getObjects().length === before + 1 && c.vLaser === 'cut' && c.getScaledWidth() > 80;
+});
+
+// Boolean: zwei ueberlappende Rechtecke verschweissen -> ein 'bool'-Pfad, Anzahl -1
+const boolOk = await page.evaluate(() => {
+  const a = new fabric.Rect({ left: 300, top: 300, width: 80, height: 80, fill: '#00aa00' });
+  const b = new fabric.Rect({ left: 340, top: 340, width: 80, height: 80, fill: '#00aa00' });
+  canvas.add(a); canvas.add(b);
+  canvas.setActiveObject(new fabric.ActiveSelection([a, b], { canvas }));
+  const before = canvas.getObjects().length;
+  combineShapes('union');
+  const res = canvas.getObjects().find(o => o.vType === 'bool');
+  return !!res && canvas.getObjects().length === before - 1;
+});
+
+// Boolean: Abziehen (oberste weg) ergibt Ergebnis-Pfad
+const diffOk = await page.evaluate(() => {
+  const a = new fabric.Rect({ left: 500, top: 60, width: 90, height: 90, fill: '#883399' });
+  const b = new fabric.Ellipse({ left: 540, top: 100, rx: 30, ry: 30, fill: '#883399' });
+  canvas.add(a); canvas.add(b);
+  canvas.setActiveObject(new fabric.ActiveSelection([a, b], { canvas }));
+  combineShapes('diff');
+  return !!canvas.getObjects().find(o => o.vType === 'bool');
+});
+
+// Replizieren: 2x2-Raster aus 1 Rechteck -> +3 Klone (async clone)
+const repOk = await page.evaluate(() => new Promise(res => {
+  const r = new fabric.Rect({ left: 650, top: 400, width: 30, height: 30, fill: '#0000aa' });
+  canvas.add(r); canvas.setActiveObject(r);
+  document.getElementById('rep-cols').value = '2';
+  document.getElementById('rep-rows').value = '2';
+  document.getElementById('rep-gx').value = '2';
+  document.getElementById('rep-gy').value = '2';
+  document.getElementById('rep-mirror').value = 'none';
+  const before = canvas.getObjects().length;
+  applyReplicate();
+  setTimeout(() => res(canvas.getObjects().length === before + 3), 500);
+}));
+
 // Pinch-Zoom (zwei synthetische Touch-Punkte auseinanderziehen -> Zoom rein)
 const pinchOk = await page.evaluate(() => {
   if (typeof TouchEvent === 'undefined' || typeof Touch === 'undefined') return 'skip';
@@ -163,6 +214,7 @@ console.log('Ebenen:', layerCount, ' Verlauf:', histCount);
 console.log('mm-Doc ok:', docOk, ' Zuschnitt ok:', clipOk, ' Schrift ok:', fontOk);
 console.log('opentype:', otLoaded, ' Text→Pfade ok:', t2pOk);
 console.log('ImageTracer:', itLoaded, ' Foto→Vektor ok:', traceOk, ' Laser-Aufgabe ok:', laserOk);
+console.log('ClipperLib:', clipperLoaded, ' Offset ok:', offsetOk, ' Boolean ok:', boolOk, ' Abziehen ok:', diffOk, ' Replizieren ok:', repOk);
 console.log('Pinch-Zoom ok:', pinchOk);
 console.log('Speichern ok:', saveOk, ' Laden-Roundtrip ok:', loadOk, ' SVG ok:', svgOk);
 console.log('Fehler:', errors.length);
@@ -171,6 +223,7 @@ for (const e of errors) console.log('   •', e.slice(0, 180));
 const allFns = Object.values(globals).every(t => t === 'function');
 const ok = allFns && uxOk && fabricLoaded === 'object' && menuCount >= 6 && paletteCount >= 8 && layerCount >= 2 &&
   histCount >= 2 && docOk && clipOk && fontOk && otLoaded === 'object' && t2pOk &&
-  itLoaded === 'object' && traceOk && laserOk && (pinchOk === true || pinchOk === 'skip') && saveOk && loadOk && svgOk && errors.length === 0;
+  itLoaded === 'object' && traceOk && laserOk && (pinchOk === true || pinchOk === 'skip') && saveOk && loadOk && svgOk &&
+  clipperLoaded === 'object' && offsetOk && boolOk && diffOk && repOk && errors.length === 0;
 console.log('\n=> Smoke:', ok ? 'BESTANDEN ✓' : 'FEHLGESCHLAGEN ✗');
 process.exit(ok ? 0 : 1);
