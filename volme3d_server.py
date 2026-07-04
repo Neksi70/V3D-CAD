@@ -4,7 +4,19 @@
 
 import os
 import sys
+import ssl
+import http.client
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+
+# OCCT-Backend (occt-server.js) laeuft lokal auf HTTPS:3001 (self-signed).
+# Wir reichen /api/occt* + /occt-health dorthin durch, damit die Server-CAD-
+# Funktionen ueber den oeffentlichen Funnel-Origin (443) erreichbar sind — der
+# Port 3001/18790 ist NICHT im Funnel, nur im Tailnet (war Ursache fuer den
+# "haengt bei 85%"-Bug bei externen Testern).
+OCCT_HOST = '127.0.0.1'
+OCCT_PORT = 3001
+OCCT_TIMEOUT = 120
+_OCCT_CTX = ssl._create_unverified_context()
 
 TMP_STL = '/tmp/volme3d-export.stl'
 WASM_GZ = 'volme3d-occt.wasm.gz'
@@ -61,7 +73,46 @@ class Handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
+    def _proxy_occt(self, method):
+        """Reicht die Anfrage an das lokale OCCT-Backend (HTTPS:3001) durch."""
+        path = self.path.split('?', 1)[0]
+        backend_path = '/health' if path == '/occt-health' else self.path
+        body = None
+        if method == 'POST':
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length) if length else b''
+        try:
+            conn = http.client.HTTPSConnection(
+                OCCT_HOST, OCCT_PORT, timeout=OCCT_TIMEOUT, context=_OCCT_CTX)
+            headers = {}
+            ct = self.headers.get('Content-Type')
+            if ct:
+                headers['Content-Type'] = ct
+            conn.request(method, backend_path, body=body, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+            self.send_response(resp.status)
+            self._cors()
+            self.send_header('Content-Type',
+                             resp.getheader('Content-Type', 'application/json'))
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            conn.close()
+        except Exception as e:
+            msg = ('{"error":"OCCT-Backend nicht erreichbar: '
+                   + str(e).replace('"', "'") + '"}').encode()
+            self.send_response(502)
+            self._cors()
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(msg)))
+            self.end_headers()
+            self.wfile.write(msg)
+
     def do_POST(self):
+        if self.path.startswith('/api/occt'):
+            self._proxy_occt('POST')
+            return
         if self.path != '/volme3d-export.stl':
             self.send_error(404)
             return
@@ -96,6 +147,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split('?', 1)[0]
+
+        if path == '/occt-health':
+            self._proxy_occt('GET')
+            return
 
         if path == '/volme3d-export.stl':
             if not os.path.exists(TMP_STL):
