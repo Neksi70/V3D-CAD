@@ -37,6 +37,7 @@ ALLOW = {
     '/volmedraw/volmedraw.html':          ('volmedraw/volmedraw.html', 'text/html; charset=utf-8'),
     '/volmedraw/lib/opentype.min.js':     ('volmedraw/lib/opentype.min.js', 'text/javascript; charset=utf-8'),
     '/volmedraw/lib/imagetracer.js':      ('volmedraw/lib/imagetracer.js', 'text/javascript; charset=utf-8'),
+    '/volmedraw/lib/clipper.js':          ('volmedraw/lib/clipper.js', 'text/javascript; charset=utf-8'),
     '/volmedraw/lib/Poppins-Regular.ttf': ('volmedraw/lib/Poppins-Regular.ttf', 'font/ttf'),
     '/volmedraw/lib/GreatVibes-Regular.ttf': ('volmedraw/lib/GreatVibes-Regular.ttf', 'font/ttf'),
     '/abstimmung.html':                   ('abstimmung.html', 'text/html; charset=utf-8'),
@@ -59,6 +60,7 @@ ALLOW = {
     '/lib/leaflet-marker-shadow.png':     ('lib/leaflet-marker-shadow.png', 'image/png'),
     '/Volme3D-Druck-Helfer.bat':          ('Volme3D-Druck-Helfer.bat', 'application/octet-stream'),
     '/volme3d-print-helper-LIESMICH.txt': ('volme3d-print-helper-LIESMICH.txt', 'text/plain; charset=utf-8'),
+    '/V3D-Remote.exe':                    ('V3D-Remote.exe', 'application/octet-stream'),
 }
 
 
