@@ -341,6 +341,15 @@
           <button class="qbtn lz" id="lz-score" title="Kontur, blau = LightBurn-Linien/Markieren">— Linie</button>
         </div>
         <div class="pc-hint" style="margin-top:2px">Farbe = LightBurn-Ebene: <b style="color:#ff6b60">Schnitt rot</b> · <b style="color:#e8e8ea">Gravur schwarz</b> · <b style="color:#6b8bff">Linie blau</b></div>
+        <div class="prow" style="margin-top:8px"><label for="line-style" title="Strichmuster der Kontur (Perf-Cut / Falt-/Rilllinie)">Linienstil</label>
+          <select id="line-style">
+            <option value="solid">Durchgezogen</option>
+            <option value="dash">Gestrichelt</option>
+            <option value="perf">Perforiert (Perf-Cut)</option>
+            <option value="dashdot">Strich-Punkt</option>
+            <option value="dot">Gepunktet</option>
+          </select>
+        </div>
       </div>
       <div id="props-image" style="display:none">
         <div class="psub">Bild (Laser)</div>
@@ -419,6 +428,26 @@
     <div class="mrow"><label for="rep-gy">Abstand Y (mm)</label><input type="number" id="rep-gy" min="0" max="200" step="0.5" value="5"></div>
     <div class="mrow"><label for="rep-mirror">Spiegeln</label><select id="rep-mirror"><option value="none">Kein</option><option value="h">Horizontal (Spalten)</option><option value="v">Vertikal (Zeilen)</option><option value="both">Beide</option></select></div>
     <div class="modal-actions"><button class="qbtn" id="rep-cancel">Abbrechen</button><button class="qbtn primary" id="rep-ok">Raster erstellen</button></div>
+  </div>
+</div>
+
+<div id="reg-modal" class="modal hidden">
+  <div class="modal-card">
+    <h3>Passermarken <span class="d">Print &amp; Cut</span></h3>
+    <div class="msub">Setzt gedruckte Marken in drei Ecken. Zuerst DRUCKEN, dann schneidet der Plotter/Laser exakt nach den Marken aus.</div>
+    <div class="mrow"><label for="reg-margin">Rand (mm)</label><input type="number" id="reg-margin" min="0" max="50" step="0.5" value="5"></div>
+    <div class="mrow"><label for="reg-size">Markengröße (mm)</label><input type="number" id="reg-size" min="2" max="30" step="0.5" value="8"></div>
+    <div class="mrow"><label for="reg-thick">Strichstärke (mm)</label><input type="number" id="reg-thick" min="0.3" max="5" step="0.1" value="1.2"></div>
+    <div class="modal-actions"><button class="qbtn" id="reg-cancel">Abbrechen</button><button class="qbtn primary" id="reg-ok">Marken setzen</button></div>
+  </div>
+</div>
+
+<div id="curve-modal" class="modal hidden">
+  <div class="modal-card">
+    <h3>Text auf <span class="d">Kurve</span></h3>
+    <div class="msub">Textobjekt UND einen Kreis/Ellipse auswählen – der Text legt sich um den Kreis (runde Badges). Nur Laser-Schriften (Poppins / Great Vibes).</div>
+    <div class="mrow"><label for="curve-side">Position</label><select id="curve-side"><option value="top">Oberer Bogen</option><option value="bottom">Unterer Bogen</option></select></div>
+    <div class="modal-actions"><button class="qbtn" id="curve-cancel">Abbrechen</button><button class="qbtn primary" id="curve-ok">Auf Kurve legen</button></div>
   </div>
 </div>
 
@@ -532,7 +561,7 @@ function applyColorToSelection() {
 
 // ---------- Verlauf / Undo (index-basiert für klickbaren Verlauf) ----------
 let history = [], hIndex = -1, restoring = false;
-const SNAP_PROPS = ['vName', 'selectable', 'vType', 'vLocked', 'vLaser', 'lockMovementX', 'lockMovementY', 'evented'];
+const SNAP_PROPS = ['vName', 'selectable', 'vType', 'vLocked', 'vLaser', 'vDash', 'lockMovementX', 'lockMovementY', 'evented'];
 
 function snapshot(label) {
   if (restoring) return;
@@ -1034,8 +1063,26 @@ function setLaserMode(mode) {
 function refreshLaserUI() {
   const o = canvas.getActiveObject();
   ['cut', 'engrave', 'score'].forEach(m => $('lz-' + m).classList.toggle('on', !!o && o.vLaser === m));
+  $('line-style').value = (o && o.vDash) || 'solid';
 }
 ['cut', 'engrave', 'score'].forEach(m => $('lz-' + m).addEventListener('click', () => setLaserMode(m)));
+
+// ---------- Linienstil (Strichmuster / Perf-Cut / Falt-/Rilllinie) ----------
+const DASH_PATTERNS = { solid: null, dash: [12, 8], perf: [4, 4], dashdot: [12, 6, 2, 6], dot: [2, 6] };
+function setLineStyle(style) {
+  const objs = canvas.getActiveObjects();
+  if (!objs.length) { toast('Erst Objekt(e) auswählen', 'error'); return; }
+  const pat = DASH_PATTERNS[style] || null;
+  objs.forEach(o => {
+    if (o.type === 'image') return;
+    o.vDash = (style === 'solid') ? null : style;
+    o.set('strokeDashArray', pat);
+    // Strichmuster braucht eine sichtbare Kontur – falls fehlend, dünne schwarze setzen
+    if (pat && (!o.stroke || o.stroke === 'transparent')) o.set({ stroke: '#000000', strokeWidth: Math.max(1, o.strokeWidth || 1) });
+  });
+  canvas.requestRenderAll(); snapshot('Linienstil'); refreshLayers();
+}
+$('line-style').addEventListener('change', () => setLineStyle($('line-style').value));
 
 // ---------- Bild-Filter (Gravur) + Nachzeichnen (Vektor) ----------
 fabric.Image.filters.Threshold = fabric.util.createClass(fabric.Image.filters.BaseFilter, {
@@ -1274,6 +1321,94 @@ function applyReplicate() {
   }, SNAP_PROPS));
 }
 
+// ---------- Passermarken (Print & Cut) ----------
+function openRegModal() { $('reg-modal').classList.remove('hidden'); $('reg-margin').focus(); }
+function removeRegMarks() {
+  const marks = canvas.getObjects().filter(o => o.vType === 'regmark');
+  if (marks.length) { restoring = true; marks.forEach(o => canvas.remove(o)); restoring = false; }
+  return marks.length;
+}
+function applyRegMarks() {
+  $('reg-modal').classList.add('hidden');
+  removeRegMarks();
+  const m = mm2px(parseFloat($('reg-margin').value) || 0), a = mm2px(parseFloat($('reg-size').value) || 8), th = mm2px(parseFloat($('reg-thick').value) || 1.2);
+  const W = canvas.width, H = canvas.height;
+  const R = (l, t, w, h) => new fabric.Rect({ left: l, top: t, width: w, height: h, fill: '#000000', stroke: null, strokeWidth: 0 });
+  const parts = [
+    R(m, m, a, a),                              // oben-links: gefülltes Quadrat = Orientierungsanker
+    R(W - m - a, m, a, th), R(W - m - th, m, th, a),   // oben-rechts: L-Winkel
+    R(m, H - m - th, a, th), R(m, H - m - a, th, a)    // unten-links: L-Winkel
+  ];
+  const grp = new fabric.Group(parts, {});
+  grp.vType = 'regmark'; grp.vName = 'Passermarken'; grp.vLaser = 'engrave';
+  grp.vLocked = true; grp.selectable = false; grp.evented = false; grp.lockMovementX = grp.lockMovementY = true;
+  restoring = true; canvas.add(grp); restoring = false;
+  canvas.requestRenderAll(); snapshot('Passermarken'); refreshLayers();
+  toast('Passermarken gesetzt (Print & Cut) ✓');
+}
+function clearRegMarks() {
+  if (removeRegMarks()) { snapshot('Passermarken entfernt'); refreshLayers(); canvas.requestRenderAll(); toast('Passermarken entfernt ✓'); }
+  else toast('Keine Passermarken vorhanden', 'info');
+}
+
+// ---------- Text auf Kurve (runde Badges, opentype → laser-fertige Pfade) ----------
+function openCurveModal() {
+  const objs = canvas.getActiveObjects();
+  const txt = objs.find(o => o.type === 'i-text' || o.type === 'text' || o.type === 'textbox');
+  const shape = objs.find(o => o !== txt && (o.type === 'ellipse' || o.type === 'circle'));
+  if (!txt || !shape) { toast('Textobjekt UND einen Kreis/Ellipse auswählen', 'error'); return; }
+  $('curve-modal').classList.remove('hidden');
+}
+// Eine opentype-Glyphe (Baseline y=0) → Pfad-'d', horizontal zentriert, gedreht, positioniert.
+function glyphToD(gp, adv, rot, px, py) {
+  const c = Math.cos(rot), s = Math.sin(rot);
+  const T = (x, y) => { const x1 = x - adv / 2; return [r2(px + c * x1 - s * y), r2(py + s * x1 + c * y)]; };
+  let d = '';
+  gp.commands.forEach(cmd => {
+    if (cmd.type === 'M') { const p = T(cmd.x, cmd.y); d += 'M ' + p[0] + ' ' + p[1] + ' '; }
+    else if (cmd.type === 'L') { const p = T(cmd.x, cmd.y); d += 'L ' + p[0] + ' ' + p[1] + ' '; }
+    else if (cmd.type === 'C') { const a = T(cmd.x1, cmd.y1), b = T(cmd.x2, cmd.y2), p = T(cmd.x, cmd.y); d += 'C ' + a[0] + ' ' + a[1] + ' ' + b[0] + ' ' + b[1] + ' ' + p[0] + ' ' + p[1] + ' '; }
+    else if (cmd.type === 'Q') { const a = T(cmd.x1, cmd.y1), p = T(cmd.x, cmd.y); d += 'Q ' + a[0] + ' ' + a[1] + ' ' + p[0] + ' ' + p[1] + ' '; }
+    else if (cmd.type === 'Z') { d += 'Z '; }
+  });
+  return d;
+}
+function applyTextOnCurve() {
+  const objs = canvas.getActiveObjects();
+  const txt = objs.find(o => o.type === 'i-text' || o.type === 'text' || o.type === 'textbox');
+  const shape = objs.find(o => o !== txt && (o.type === 'ellipse' || o.type === 'circle'));
+  $('curve-modal').classList.add('hidden');
+  if (!txt || !shape) { toast('Textobjekt UND einen Kreis auswählen', 'error'); return; }
+  const font = LOADED_FONTS[txt.fontFamily];
+  if (!font) { toast('„' + txt.fontFamily + '" ist nicht vektorisierbar – Poppins oder Great Vibes wählen', 'error'); return; }
+  const side = $('curve-side').value;
+  canvas.discardActiveObject();           // sonst liefert getBoundingRect selektions-relative Koordinaten
+  const bb = shape.getBoundingRect(true, true);
+  const cx = bb.left + bb.width / 2, cy = bb.top + bb.height / 2, R = (bb.width + bb.height) / 4;
+  const size = (txt.fontSize || 40) * (txt.scaleY || 1);
+  const chars = [...String(txt.text).replace(/\n/g, ' ')];
+  const advs = chars.map(ch => font.getAdvanceWidth(ch, size));
+  const totalW = advs.reduce((a, b) => a + b, 0);
+  if (!totalW) { toast('Kein Text vorhanden', 'error'); return; }
+  const span = totalW / R;
+  let cum = 0, d = '';
+  chars.forEach((ch, i) => {
+    const centerArc = cum + advs[i] / 2; cum += advs[i];
+    let theta, rot;
+    if (side === 'top') { theta = -Math.PI / 2 - span / 2 + centerArc / R; rot = theta + Math.PI / 2; }
+    else { theta = Math.PI / 2 + span / 2 - centerArc / R; rot = theta - Math.PI / 2; }
+    const px = cx + R * Math.cos(theta), py = cy + R * Math.sin(theta);
+    d += glyphToD(font.getPath(ch, 0, 0, size), advs[i], rot, px, py);
+  });
+  if (!d.trim()) { toast('Konnte keinen Bogen erzeugen', 'error'); return; }
+  const path = new fabric.Path(d.trim(), { fill: txt.fill || '#000000', stroke: null });
+  path.vType = 'curvetext'; path.vName = 'Text (Bogen)'; path.vLaser = txt.vLaser || 'engrave';
+  restoring = true; canvas.remove(txt); restoring = false;
+  path.selectable = true; canvas.add(path); canvas.setActiveObject(path);
+  canvas.requestRenderAll(); snapshot('Text auf Kurve'); refreshLayers(); refreshMeasures();
+  toast('Text auf Kreis gelegt ✓');
+}
+
 // ---------- Projekt speichern / laden ----------
 function saveProject() {
   const data = { app: 'volmedraw', v: 1, docWmm, docHmm, bg: canvas.backgroundColor, objects: canvas.toJSON(SNAP_PROPS) };
@@ -1325,7 +1460,7 @@ const MENUS = () => ([
   ['Bearbeiten', [['Rückgängig', 'Strg+Z', undo], ['Wiederholen', 'Strg+Y', redo], 'sep', ['Kopieren', 'Strg+C', doCopy], ['Einfügen', 'Strg+V', doPaste], ['Duplizieren', 'Strg+D', doDuplicate], ['Löschen', 'Entf', deleteSel], 'sep', ['Alles auswählen', 'Strg+A', selectAll], ['Auswahl-Maske aufheben', 'Esc', clearSelection]]],
   ['Ansicht', [['Vergrößern', '+', () => zoomBy(1.2)], ['Verkleinern', '−', () => zoomBy(1 / 1.2)], ['Auf Fenster einpassen', '', zoomFit], ['100 %', '', zoomReset], 'sep', ['Raster anzeigen', '', toggleGrid, () => gridShow], ['Am Raster fangen', '', toggleSnap, () => gridSnap]]],
   ['Anordnen', [['Links ausrichten', '', () => align('left')], ['Horizontal zentrieren', '', () => align('cx')], ['Rechts ausrichten', '', () => align('right')], ['Oben ausrichten', '', () => align('top')], ['Vertikal zentrieren', '', () => align('cy')], ['Unten ausrichten', '', () => align('bottom')], 'sep', ['Horizontal verteilen', '', () => distribute('h')], ['Vertikal verteilen', '', () => distribute('v')], 'sep', ['Spiegeln horizontal', '', () => flip('h')], ['Spiegeln vertikal', '', () => flip('v')]]],
-  ['Formen', [['Offset / Kontur…', '', openOffsetModal], 'sep', ['Verschweißen (vereinen)', '', () => combineShapes('union')], ['Abziehen (oberste weg)', '', () => combineShapes('diff')], ['Überschneiden', '', () => combineShapes('intersect')], ['Ausschließen', '', () => combineShapes('xor')], 'sep', ['Replizieren…', '', openRepModal]]],
+  ['Formen', [['Offset / Kontur…', '', openOffsetModal], 'sep', ['Verschweißen (vereinen)', '', () => combineShapes('union')], ['Abziehen (oberste weg)', '', () => combineShapes('diff')], ['Überschneiden', '', () => combineShapes('intersect')], ['Ausschließen', '', () => combineShapes('xor')], 'sep', ['Replizieren…', '', openRepModal], ['Text auf Kurve…', '', openCurveModal], 'sep', ['Passermarken setzen (Print & Cut)…', '', openRegModal], ['Passermarken entfernen', '', clearRegMarks]]],
   ['Ebenen', [['Nach oben', '', () => { const a = canvas.getActiveObject(); if (a) { a.bringForward(); canvas.requestRenderAll(); snapshot('Reihenfolge'); refreshLayers(); } }], ['Nach unten', '', () => { const a = canvas.getActiveObject(); if (a) { a.sendBackwards(); canvas.requestRenderAll(); snapshot('Reihenfolge'); refreshLayers(); } }], 'sep', ['Gruppieren', 'Strg+G', groupSel], ['Gruppierung aufheben', 'Strg+Shift+G', ungroupSel], 'sep', ['Text in Pfade umwandeln (Laser)', '', textToPath], 'sep', ['Auf Auswahl zuschneiden (runde Maske)', '', clipToSelection], ['Clipping-Maske erstellen', '', makeMask], ['Maske lösen', '', unmask]]],
   ['Fenster', [['Werkzeuge', '', () => togglePanel('panel-tools'), () => panelVisible('panel-tools')], ['Farben', '', () => togglePanel('panel-colors'), () => panelVisible('panel-colors')], ['Eigenschaften', '', () => togglePanel('panel-props'), () => panelVisible('panel-props')], ['Verlauf', '', () => togglePanel('panel-history'), () => panelVisible('panel-history')], ['Ebenen', '', () => togglePanel('panel-layers'), () => panelVisible('panel-layers')]]],
   ['Hilfe', [['Erste Schritte', '', showOnboarding], ['Tastenkürzel', '', () => alert('V Wahl · Q Auswahl-Maske · B Pinsel · E Radierer · I Pipette\\nR/C/L/T Formen · P/S/A Polygon/Stern/Pfeil\\nLeertaste+Ziehen = Pan · Mausrad = Zoom\\nStrg+Z/Y · Strg+C/V/D · Strg+G · Entf · Esc')]]]
@@ -1426,6 +1561,12 @@ $('offset-modal').addEventListener('click', e => { if (e.target.id === 'offset-m
 $('rep-ok').addEventListener('click', applyReplicate);
 $('rep-cancel').addEventListener('click', () => $('rep-modal').classList.add('hidden'));
 $('rep-modal').addEventListener('click', e => { if (e.target.id === 'rep-modal') $('rep-modal').classList.add('hidden'); });
+$('reg-ok').addEventListener('click', applyRegMarks);
+$('reg-cancel').addEventListener('click', () => $('reg-modal').classList.add('hidden'));
+$('reg-modal').addEventListener('click', e => { if (e.target.id === 'reg-modal') $('reg-modal').classList.add('hidden'); });
+$('curve-ok').addEventListener('click', applyTextOnCurve);
+$('curve-cancel').addEventListener('click', () => $('curve-modal').classList.add('hidden'));
+$('curve-modal').addEventListener('click', e => { if (e.target.id === 'curve-modal') $('curve-modal').classList.add('hidden'); });
 
 // ---------- Start ----------
 buildMenus(); buildPalette(); renderSwatches(); loadLaserFonts();

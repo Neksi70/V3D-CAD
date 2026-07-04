@@ -27,7 +27,8 @@ const globals = await page.evaluate(() => {
     'doDuplicate', 'doPaste', 'makeMask', 'unmask', 'clipToSelection', 'buildGenerated',
     'refreshLayers', 'refreshMeasures', 'buildMenus', 'buildPalette', 'exportSVG', 'restoreIndex',
     'clearSelection', 'saveProject', 'applyProjectData', 'setDocSize', 'applyFont', 'tryRestoreAutosave',
-    'objToPolys', 'polysToPath', 'applyOffset', 'openOffsetModal', 'combineShapes', 'applyReplicate', 'openRepModal'];
+    'objToPolys', 'polysToPath', 'applyOffset', 'openOffsetModal', 'combineShapes', 'applyReplicate', 'openRepModal',
+    'setLineStyle', 'applyRegMarks', 'clearRegMarks', 'applyTextOnCurve', 'openCurveModal', 'openRegModal'];
   const out = {}; for (const n of names) out[n] = typeof window[n]; return out;
 });
 const fabricLoaded = await page.evaluate(() => typeof window.fabric);
@@ -165,6 +166,42 @@ const repOk = await page.evaluate(() => new Promise(res => {
   setTimeout(() => res(canvas.getObjects().length === before + 3), 500);
 }));
 
+// Linienstil (Perf-Cut) -> strokeDashArray + vDash
+const lineStyleOk = await page.evaluate(() => {
+  const r = new fabric.Rect({ left: 60, top: 460, width: 60, height: 40, fill: null, stroke: '#f00', strokeWidth: 2 });
+  canvas.add(r); canvas.setActiveObject(r);
+  setLineStyle('perf');
+  return Array.isArray(r.strokeDashArray) && r.strokeDashArray.length === 2 && r.vDash === 'perf';
+});
+
+// Passermarken (Print & Cut) setzen + entfernen
+const regOk = await page.evaluate(() => {
+  document.getElementById('reg-margin').value = '5'; document.getElementById('reg-size').value = '8'; document.getElementById('reg-thick').value = '1.2';
+  applyRegMarks();
+  const has = canvas.getObjects().some(o => o.vType === 'regmark');
+  clearRegMarks();
+  const gone = !canvas.getObjects().some(o => o.vType === 'regmark');
+  return has && gone;
+});
+
+// Text auf Kurve (opentype Laser-Schrift -> curvetext-Pfad); Font async -> pollen
+let curveOk = false;
+for (let i = 0; i < 8 && !curveOk; i++) {
+  curveOk = await page.evaluate(() => {
+    if (typeof LOADED_FONTS === 'undefined' || !LOADED_FONTS['Poppins']) return false;
+    const t = new fabric.IText('BADGE', { left: 250, top: 150, fontFamily: 'Poppins', fontSize: 40, fill: '#000' });
+    const c = new fabric.Ellipse({ left: 200, top: 150, rx: 80, ry: 80, fill: '#eeeeee' });
+    canvas.add(c); canvas.add(t);
+    canvas.setActiveObject(new fabric.ActiveSelection([t, c], { canvas }));
+    document.getElementById('curve-side').value = 'top';
+    applyTextOnCurve();
+    const p = canvas.getObjects().find(o => o.vType === 'curvetext');
+    if (!p) { canvas.remove(t); canvas.remove(c); }
+    return !!p && p.type === 'path';
+  });
+  if (!curveOk) await page.waitForTimeout(500);
+}
+
 // Pinch-Zoom (zwei synthetische Touch-Punkte auseinanderziehen -> Zoom rein)
 const pinchOk = await page.evaluate(() => {
   if (typeof TouchEvent === 'undefined' || typeof Touch === 'undefined') return 'skip';
@@ -215,6 +252,7 @@ console.log('mm-Doc ok:', docOk, ' Zuschnitt ok:', clipOk, ' Schrift ok:', fontO
 console.log('opentype:', otLoaded, ' Text→Pfade ok:', t2pOk);
 console.log('ImageTracer:', itLoaded, ' Foto→Vektor ok:', traceOk, ' Laser-Aufgabe ok:', laserOk);
 console.log('ClipperLib:', clipperLoaded, ' Offset ok:', offsetOk, ' Boolean ok:', boolOk, ' Abziehen ok:', diffOk, ' Replizieren ok:', repOk);
+console.log('Linienstil ok:', lineStyleOk, ' Passermarken ok:', regOk, ' Text auf Kurve ok:', curveOk);
 console.log('Pinch-Zoom ok:', pinchOk);
 console.log('Speichern ok:', saveOk, ' Laden-Roundtrip ok:', loadOk, ' SVG ok:', svgOk);
 console.log('Fehler:', errors.length);
@@ -224,6 +262,7 @@ const allFns = Object.values(globals).every(t => t === 'function');
 const ok = allFns && uxOk && fabricLoaded === 'object' && menuCount >= 6 && paletteCount >= 8 && layerCount >= 2 &&
   histCount >= 2 && docOk && clipOk && fontOk && otLoaded === 'object' && t2pOk &&
   itLoaded === 'object' && traceOk && laserOk && (pinchOk === true || pinchOk === 'skip') && saveOk && loadOk && svgOk &&
-  clipperLoaded === 'object' && offsetOk && boolOk && diffOk && repOk && errors.length === 0;
+  clipperLoaded === 'object' && offsetOk && boolOk && diffOk && repOk &&
+  lineStyleOk && regOk && curveOk && errors.length === 0;
 console.log('\n=> Smoke:', ok ? 'BESTANDEN ✓' : 'FEHLGESCHLAGEN ✗');
 process.exit(ok ? 0 : 1);

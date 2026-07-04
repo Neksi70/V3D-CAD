@@ -62,6 +62,23 @@
 - Deployment: `volme3d_server.py` ALLOW-Routen für `/volmedraw/lib/opentype.min.js`
   und die beiden `.ttf` (Content-Type `font/ttf`) sind ergänzt.
 
+## Formen-Menü (Silhouette-Studio-Werkzeuge)
+- **Offset/Kontur, Boolean (Verschweißen/Abziehen/Überschneiden/Ausschließen),
+  Replizieren** – über clipper-lib (siehe Abhängigkeiten). Ergebnisse sind fabric.Path
+  mit `fillRule evenodd`. Bei ActiveSelection VOR der Geometrie-Extraktion
+  `canvas.discardActiveObject()`, sonst liefern `getBoundingRect`/Matrizen
+  selektions-relative Koordinaten (Bug-Falle, per Sicht-Check gefunden).
+- **Linienstil** (`vDash` in SNAP_PROPS): `strokeDashArray`-Presets (solid/dash/perf/
+  dashdot/dot) im Eigenschaften-Panel; für Perf-Cut/Falt-/Rilllinien. Exportiert als
+  `stroke-dasharray`.
+- **Passermarken (Print & Cut)**: `vType='regmark'`-Gruppe (gefülltes Quadrat oben-links
+  = Orientierungsanker + 2 L-Winkel), gesperrt; gedruckt (schwarz), Kamera richtet Schnitt aus.
+- **Text auf Kurve** (`vType='curvetext'`): opentype-Glyphen einzeln um einen
+  Kreis/Ellipse gelegt (`glyphToD` = Glyphe→Pfad-'d', zentriert+gedreht+positioniert),
+  oberer Bogen aufrecht außen / unterer Bogen aufrecht innen. Erzeugt DIREKT laser-fertige
+  Pfade (keine separate Text→Pfade-Wandlung nötig). Nur Laser-Schriften (Poppins/Great Vibes).
+- Alle Features im Menü **„Formen"** + zwei bzw. vier Modals (`.modal`-Klasse, Escape schließt).
+
 ## LightBurn-Laser-Konvention
 - **Farbe = LightBurn-Ebene.** Jedes Objekt trägt `vLaser` ∈ {cut, engrave, score}:
   - **cut** → Kontur, Füllung raus, Stroke `#ff0000` (rot)
