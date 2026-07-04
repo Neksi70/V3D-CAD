@@ -53,6 +53,12 @@
   Vektor** (Nachzeichnen). Bild-Filter (Graustufen/Helligkeit/Kontrast/Invertieren/
   Schwellwert) laufen über Fabric-Filter + eigenen `Threshold`-Filter; getracet wird das
   gefilterte `o._element` (auf max 1000 px runterskaliert), weiße Flächen werden verworfen.
+- **clipper-lib 6.4.2** (`volmedraw/lib/clipper.js`, Boost License, Angus Johnson) —
+  Polygon-**Offset** (Kontur/Sticker-Rand) und **Boolean** (Verschweißen/Abziehen/
+  Überschneiden/Ausschließen). Global `window.ClipperLib`. Geometrie-Brücke:
+  `objToPolys(obj)` flattet ein Fabric-Objekt in absolute px-Polygone (Pfade nach
+  Bogenlänge gesampelt, Subpfade an `M` getrennt = Löcher), `polysToPath(...)` baut ein
+  `fabric.Path` zurück. Integer-Skalierung `CLIP_SCALE` (Clipper rechnet ganzzahlig).
 - Deployment: `volme3d_server.py` ALLOW-Routen für `/volmedraw/lib/opentype.min.js`
   und die beiden `.ttf` (Content-Type `font/ttf`) sind ergänzt.
 
