@@ -14,7 +14,9 @@ page.on('pageerror', e => pageErrors.push(String(e)));
 
 let served = '?';
 try {
-  const resp = await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'load', timeout: 20000 });
+  // App liegt unter /volme3d.html (liefert dist, falls vorhanden). '/' ist seit
+  // Einführung der Startseite der Launcher (start.html) und enthält die App-Globals nicht.
+  const resp = await page.goto(`http://localhost:${PORT}/volme3d.html`, { waitUntil: 'load', timeout: 20000 });
   served = `${resp.status()} ${resp.headers()['content-length'] || '?'}B`;
   await page.waitForTimeout(3500); // Init/Module laufen lassen
 } catch (e) {
@@ -31,7 +33,7 @@ const globals = await page.evaluate(() => {
 await browser.close();
 srv.kill();
 
-console.log('HTTP /:        ', served);
+console.log('HTTP /volme3d.html:', served);
 console.log('Globals:       ', JSON.stringify(globals));
 console.log('pageErrors:    ', pageErrors.length);
 // Nur echte Skript-Fehler zeigen (Firebase/Netzwerk separat bewerten)

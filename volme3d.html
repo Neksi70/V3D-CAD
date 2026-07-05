@@ -1068,6 +1068,7 @@ const firebaseConfig = {
         <button class="btn pri main-stl" onclick="exportSTL()" title="STL herunterladen — bei Auswahl nur die markierten Objekte, sonst alle">⬇ Export</button>
         <button class="btn pri spl" onclick="toggleStlMenu(event)" title="An Slicer senden">▾</button>
         <div id="stl-menu">
+          <div id="send-slicer-sec"></div>
           <div id="outdir-sec">
             <div class="outdir-status" id="outdir-status"></div>
             <div class="sli-item" onclick="_pickOutputFolder()"><span id="outdir-btn-lbl">📁 Ausgabeordner wählen</span></div>
@@ -13913,27 +13914,50 @@ function toggleStlMenu(e) {
   e.stopPropagation();
   const m = document.getElementById('stl-menu');
   m.classList.toggle('show');
-  if (m.classList.contains('show')) _refreshOutDirMenu();   // Ausgabeordner-Status/Hinweis aktualisieren
+  if (m.classList.contains('show')) { _refreshOutDirMenu(); _refreshSendSlicerItem(); }   // Ausgabeordner + Slicer-Übergabe aktualisieren
 }
 
-async function sendToSlicer(type) {
-  document.getElementById('stl-menu').classList.remove('show');
+const _SLICER_NAMES = { bambu:'Bambu Studio', orca:'OrcaSlicer', anycubic:'Anycubic Slicer Next', elegoo:'ElegooSlicer', snapmaker:'Snapmaker Orca', prusa:'PrusaSlicer' };
+
+// Kopf des STL-Menüs: ist der Druck-Helfer verbunden, gibt es je erkanntem Slicer
+// einen „In … öffnen"-Eintrag (1-Klick-Übergabe des aktuellen Modells). Ohne Helfer
+// bleibt ein „An Slicer senden"-Eintrag, der die STL herunterlädt.
+async function _refreshSendSlicerItem() {
+  const sec = document.getElementById('send-slicer-sec'); if (!sec) return;
+  await _stlPingHelper();
+  let html;
+  if (_stlHelperOk && _stlHelperSlicers.length) {
+    html = _stlHelperSlicers.map(s =>
+      `<div class="sli-item" onclick="_sendCurrentToSlicer('${s}')" title="Aktuelles Modell direkt in ${_SLICER_NAMES[s]||s} öffnen">🖨 In ${_SLICER_NAMES[s]||s} öffnen</div>`
+    ).join('');
+  } else {
+    html = `<div class="sli-item" onclick="_sendCurrentToSlicer('')" title="STL herunterladen — mit Druck-Helfer öffnet sie sich per 1 Klick direkt im Slicer">🖨 An Slicer senden</div>`;
+  }
+  sec.innerHTML = html + '<div class="sli-sep"></div>';
+}
+
+// Aktuelles Modell an den Slicer übergeben: bei laufendem Druck-Helfer POST an /print
+// (Helfer schreibt Temp-Datei + startet den Slicer). Sonst Fallback = STL-Download.
+async function _sendCurrentToSlicer(preferSlicer) {
+  document.getElementById('stl-menu')?.classList.remove('show');
   const r = _buildStlBlob(); if (!r) return;
-  const names = {
-    bambu: 'Bambu Studio',
-    prusa: 'PrusaSlicer',
-    orca:  'Orca Slicer',
-  };
-  const appName = names[type];
-
-  // STL herunterladen — Doppelklick im Browser-Download öffnet sie im Slicer
-  const dl = document.createElement('a');
-  dl.href = URL.createObjectURL(r.blob);
-  dl.download = _designFilename('stl');
-  document.body.appendChild(dl); dl.click(); document.body.removeChild(dl);
-
   const fname = _designFilename('stl');
-  notify(`STL heruntergeladen → Doppelklick auf "${fname}" im Browser öffnet sie in ${appName}`, 'ok');
+  await _stlPingHelper();
+  if (_stlHelperOk && _stlHelperSlicers.length) {
+    const slicer = (preferSlicer && _stlHelperSlicers.includes(preferSlicer)) ? preferSlicer : (_stlHelperSlicers[0] || '');
+    try {
+      const buf = await r.blob.arrayBuffer();
+      const res = await fetch(STLLIB_HELPER + '/print', { method:'POST', headers:{ 'Content-Type':'application/octet-stream', 'X-Filename':encodeURIComponent(fname), 'X-Slicer':slicer }, body: buf });
+      const j = await res.json().catch(() => ({}));
+      if (res.ok && j.ok) { notify('🖨 In ' + (_SLICER_NAMES[j.slicer || slicer] || 'Slicer') + ' geöffnet ✓', 'ok'); return; }
+      notify('Slicer-Start fehlgeschlagen (' + (j.error || res.status) + ') — lade STL herunter', 'w');
+    } catch (e) { notify('Druck-Helfer nicht erreichbar — lade STL herunter', 'w'); }
+  }
+  // Fallback: Download (Doppelklick öffnet sie im Slicer)
+  const dl = document.createElement('a');
+  dl.href = URL.createObjectURL(r.blob); dl.download = fname;
+  document.body.appendChild(dl); dl.click(); document.body.removeChild(dl);
+  notify(_stlHelperOk ? 'STL heruntergeladen' : 'STL heruntergeladen — für 1-Klick-Öffnen den Druck-Helfer einrichten (in „STL-Bibliothek")', 'ok');
 }
 
 document.addEventListener('click', () => {
