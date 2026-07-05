@@ -283,6 +283,7 @@
     <div class="fp-body">
       <div class="tool-grid" id="tool-grid">
         <button class="tool active" data-tool="select" title="Auswählen/Verschieben (V)">⬚<small>WAHL</small></button>
+        <button class="tool" data-tool="node" title="Knoten bearbeiten: Pfad anklicken, Punkte ziehen (N)">⬖<small>KNOTEN</small></button>
         <button class="tool" data-tool="sel-rect" title="Rechteck-Auswahl = Maske (Q)">▭<small>AUSW ▭</small></button>
         <button class="tool" data-tool="sel-ellipse" title="Ellipsen-Auswahl = Maske">◯<small>AUSW ◯</small></button>
         <button class="tool" data-tool="brush" title="Pinsel (B)">✎<small>PINSEL</small></button>
@@ -471,7 +472,7 @@
 </div>
 
 <footer>
-  <span class="key">V</span> Wahl · <span class="key">Q</span> Auswahl-Maske · <span class="key">B</span> Pinsel · <span class="key">R/C/L/T</span> Formen · <span class="key">P/S/A</span> Polygon/Stern/Pfeil · <span class="key">Leertaste</span> schieben · <span class="key">Mausrad</span> Zoom · <span class="key">Shift</span> beim Ziehen = Kreis/Quadrat · <span class="key">Strg+C/V/D</span> · <span class="key">Esc</span> Auswahl weg
+  <span class="key">V</span> Wahl · <span class="key">N</span> Knoten · <span class="key">Q</span> Auswahl-Maske · <span class="key">B</span> Pinsel · <span class="key">R/C/L/T</span> Formen · <span class="key">P/S/A</span> Polygon/Stern/Pfeil · <span class="key">Leertaste</span> schieben · <span class="key">Mausrad</span> Zoom · <span class="key">Shift</span> beim Ziehen = Kreis/Quadrat · <span class="key">Strg+C/V/D</span> · <span class="key">Esc</span> Auswahl weg
 </footer>
 
 <script>
@@ -502,7 +503,7 @@ const mm2px = mm => mm * PPMM;
 
 const GENERATED = ['triangle', 'polygon', 'star', 'arrow'];
 const toolLabels = {
-  select: 'Auswahl', 'sel-rect': 'Rechteck-Auswahl', 'sel-ellipse': 'Ellipsen-Auswahl',
+  select: 'Auswahl', node: 'Knoten bearbeiten', 'sel-rect': 'Rechteck-Auswahl', 'sel-ellipse': 'Ellipsen-Auswahl',
   brush: 'Pinsel', eraser: 'Radierer', eyedropper: 'Pipette', rect: 'Rechteck',
   roundrect: 'Rundrechteck', circle: 'Ellipse', triangle: 'Dreieck', polygon: 'Polygon',
   star: 'Stern', arrow: 'Pfeil', line: 'Linie', text: 'Text'
@@ -619,6 +620,8 @@ function setTool(tool) {
   canvas.defaultCursor = (tool === 'select') ? 'default' : 'crosshair';
   canvas.forEachObject(o => { if (!o.vLocked) o.selectable = (tool === 'select'); });
   if (tool !== 'select') canvas.discardActiveObject();
+  if (tool !== 'node' && typeof _exitNodeEdit === 'function') _exitNodeEdit();
+  if (tool === 'node') canvas.defaultCursor = 'pointer';
   if (tool === 'brush') { canvas.freeDrawingBrush = new fabric.PencilBrush(canvas); canvas.freeDrawingBrush.color = drawColor(); canvas.freeDrawingBrush.width = getSize(); }
   canvas.requestRenderAll();
 }
@@ -734,6 +737,126 @@ canvas.on('path:created', e => { e.path.set({ opacity: getOpacity() }); applySel
 
 // Rechtsklick-Kontextmenü auf der Leinwand unterdrücken (für Sekundärfarbe-Zeichnen)
 $('stage').addEventListener('contextmenu', e => e.preventDefault());
+
+// ═══ Knoten-/Bezier-Editor ═════════════════════════════════════════════════
+// Bearbeitet die Ankerpunkte (und Bezier-Griffe) eines fabric.Path direkt.
+// Ideal für Nachgezeichnetes, Kontur/Boolean-Ergebnisse, Text→Pfade, Pinsel.
+let editPath = null, nodePts = [], nodeDrag = null, _nodeCtrlMax = 30;
+function _cmdAnchor(c) { const t = c[0]; return (t === 'M' || t === 'L') ? [1, 2] : t === 'Q' ? [3, 4] : t === 'C' ? [5, 6] : null; }
+function _cmdCtrls(c) { const t = c[0]; return t === 'Q' ? [[1, 2]] : t === 'C' ? [[1, 2], [3, 4]] : []; }
+function _nodeToScene(path, x, y) { return fabric.util.transformPoint(new fabric.Point(x - path.pathOffset.x, y - path.pathOffset.y), path.calcTransformMatrix()); }
+function _sceneToNode(path, sx, sy) { const l = fabric.util.transformPoint(new fabric.Point(sx, sy), fabric.util.invertTransform(path.calcTransformMatrix())); return { x: l.x + path.pathOffset.x, y: l.y + path.pathOffset.y }; }
+// Bounding-Box nach Array-Mutation neu berechnen, Position stabil halten (rotationssicher).
+function _nodeRecompute(path) {
+  const ref = path.path.find(c => _cmdAnchor(c)); if (!ref) return;
+  const a = _cmdAnchor(ref), S0 = _nodeToScene(path, ref[a[0]], ref[a[1]]);
+  path._setPath(path.path);
+  const S1 = _nodeToScene(path, ref[a[0]], ref[a[1]]);
+  path.left += S0.x - S1.x; path.top += S0.y - S1.y; path.dirty = true; path.setCoords();
+}
+function _buildNodes(path) {
+  const arr = path.path, pts = [], anchorCount = arr.filter(c => _cmdAnchor(c)).length;
+  const showCtrl = anchorCount <= _nodeCtrlMax;   // dichte Pfade (Pinsel/Trace): nur Anker, keine Griffe
+  for (let i = 0; i < arr.length; i++) {
+    const a = _cmdAnchor(arr[i]);
+    if (a) {
+      const link = [], own = _cmdCtrls(arr[i]);            // eingehender Griff dieses Kommandos
+      if (own.length) { const c = own[own.length - 1]; link.push({ ci: i, xi: c[0], yi: c[1] }); }
+      const nx = arr[i + 1];                                 // ausgehender Griff = 1. Griff des Folgekommandos
+      if (nx) { const nc = _cmdCtrls(nx); if (nc.length) link.push({ ci: i + 1, xi: nc[0][0], yi: nc[0][1] }); }
+      pts.push({ kind: 'anchor', ci: i, xi: a[0], yi: a[1], link });
+    }
+    if (showCtrl) _cmdCtrls(arr[i]).forEach((c, k) => {
+      // Griff [1,2] gehört optisch zum vorherigen Anker, [3,4]/Q zum Anker dieses Kommandos
+      const isFirst = k === 0 && arr[i][0] !== 'Q';
+      pts.push({ kind: 'ctrl', ci: i, xi: c[0], yi: c[1], attach: isFirst ? i - 1 : i });
+    });
+  }
+  return pts;
+}
+function _enterNodeEdit(path) {
+  if (!path || path.type !== 'path') {
+    toast(path && path.type === 'group' ? 'Gruppe zuerst auflösen (Ebenen-Menü)' : 'Knoten-Editor braucht einen Pfad – z. B. Pinselstrich, Text→Pfade, Kontur/Boolean oder Nachgezeichnetes', 'info');
+    return;
+  }
+  editPath = path; path.objectCaching = false; nodePts = _buildNodes(path);
+  canvas.requestRenderAll();
+  toast('Punkte ziehen zum Formen · Doppelklick auf einen Punkt löscht ihn', 'info');
+}
+function _exitNodeEdit() { if (editPath) { editPath = null; nodePts = []; nodeDrag = null; canvas.requestRenderAll(); } }
+function _nodeHit(pt) {                                    // Treffer-Test in Szenen-Koords → Punkt-Index oder -1
+  if (!editPath) return -1;
+  const tol = 8 / canvas.getZoom();
+  let best = -1, bestD = tol;
+  nodePts.forEach((n, idx) => {
+    const s = _nodeToScene(editPath, editPath.path[n.ci][n.xi], editPath.path[n.ci][n.yi]);
+    const d = Math.hypot(s.x - pt.x, s.y - pt.y);
+    // Anker vor Griffen bevorzugen bei Gleichstand
+    if (d < bestD || (d <= tol && best >= 0 && n.kind === 'anchor' && nodePts[best].kind === 'ctrl')) { bestD = Math.min(bestD, d); best = idx; }
+  });
+  return best;
+}
+function _nodeSetScene(n, sx, sy) {
+  if (gridSnap) { const g = gridSize(); sx = Math.round(sx / g) * g; sy = Math.round(sy / g) * g; }
+  const loc = _sceneToNode(editPath, sx, sy), cmd = editPath.path[n.ci];
+  if (n.kind === 'anchor') {
+    const dx = loc.x - cmd[n.xi], dy = loc.y - cmd[n.yi];
+    cmd[n.xi] = loc.x; cmd[n.yi] = loc.y;
+    n.link.forEach(l => { editPath.path[l.ci][l.xi] += dx; editPath.path[l.ci][l.yi] += dy; }); // Griffe mitziehen
+  } else { cmd[n.xi] = loc.x; cmd[n.yi] = loc.y; }
+  editPath.dirty = true; canvas.requestRenderAll();
+}
+function _nodeDelete(idx) {
+  const n = nodePts[idx]; if (!n || n.kind !== 'anchor') return;
+  const arr = editPath.path;
+  if (arr.filter(c => _cmdAnchor(c)).length <= 2) { toast('Mindestens 2 Punkte nötig', 'error'); return; }
+  if (n.ci === 0) { const a = _cmdAnchor(arr[1]); arr.splice(0, 1); if (a) arr[0] = ['M', arr[0][a[0]], arr[0][a[1]]]; }
+  else arr.splice(n.ci, 1);
+  _nodeRecompute(editPath); nodePts = _buildNodes(editPath);
+  snapshot('Knoten gelöscht'); refreshLayers(); canvas.requestRenderAll();
+}
+// Maus-Events (nur wenn Knoten-Werkzeug aktiv). Registriert nach dem Zeichnen-Handler,
+// der für 'node' ohnehin nichts tut.
+canvas.on('mouse:down', opt => {
+  if (currentTool !== 'node' || spaceDown) return;
+  const p = canvas.getPointer(opt.e);
+  if (editPath) { const hit = _nodeHit(p); if (hit >= 0) { nodeDrag = hit; return; } }
+  if (opt.target && opt.target.type === 'path') { _enterNodeEdit(opt.target); return; }
+  if (opt.target && opt.target.type === 'group') _enterNodeEdit(opt.target);
+});
+canvas.on('mouse:move', opt => {
+  if (currentTool !== 'node' || nodeDrag == null) return;
+  _nodeSetScene(nodePts[nodeDrag], ...(pp => [pp.x, pp.y])(canvas.getPointer(opt.e)));
+});
+canvas.on('mouse:up', () => {
+  if (currentTool !== 'node' || nodeDrag == null) return;
+  nodeDrag = null; _nodeRecompute(editPath); nodePts = _buildNodes(editPath);
+  snapshot('Knoten bearbeitet'); refreshLayers();
+});
+canvas.on('mouse:dblclick', opt => {
+  if (currentTool !== 'node' || !editPath) return;
+  const hit = _nodeHit(canvas.getPointer(opt.e)); if (hit >= 0) _nodeDelete(hit);
+});
+// Overlay: Anker (Quadrate) + Bezier-Griffe (Kreise mit Verbindungslinie)
+canvas.on('after:render', () => {
+  if (!editPath || currentTool !== 'node') return;
+  const ctx = canvas.getContext(), zoom = canvas.getZoom(), vpt = canvas.viewportTransform;
+  const toScreen = (sx, sy) => ({ x: sx * zoom + vpt[4], y: sy * zoom + vpt[5] });
+  ctx.save();
+  nodePts.filter(n => n.kind === 'ctrl').forEach(n => {                 // erst Verbindungslinien
+    const anchor = nodePts.find(a => a.kind === 'anchor' && a.ci === n.attach);
+    if (!anchor) return;
+    const c = toScreen(...Object.values(_nodeToScene(editPath, editPath.path[n.ci][n.xi], editPath.path[n.ci][n.yi])));
+    const a = toScreen(...Object.values(_nodeToScene(editPath, editPath.path[anchor.ci][anchor.xi], editPath.path[anchor.ci][anchor.yi])));
+    ctx.strokeStyle = 'rgba(0,212,224,0.5)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(c.x, c.y); ctx.stroke();
+  });
+  nodePts.forEach(n => {
+    const s = toScreen(...Object.values(_nodeToScene(editPath, editPath.path[n.ci][n.xi], editPath.path[n.ci][n.yi])));
+    if (n.kind === 'anchor') { ctx.fillStyle = '#ff7a1a'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.rect(s.x - 4, s.y - 4, 8, 8); ctx.fill(); ctx.stroke(); }
+    else { ctx.fillStyle = '#00d4e0'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(s.x, s.y, 3.5, 0, 2 * Math.PI); ctx.fill(); ctx.stroke(); }
+  });
+  ctx.restore();
+});
 
 // ---------- Raster fangen ----------
 canvas.on('object:moving', opt => { if (!gridSnap) return; const g = gridSize(), o = opt.target; o.set({ left: Math.round(o.left / g) * g, top: Math.round(o.top / g) * g }); });
@@ -1577,7 +1700,7 @@ document.addEventListener('keydown', e => {
   if (canvas.getActiveObject()?.isEditing) return;
   const tag = document.activeElement?.tagName; if (tag === 'INPUT' || tag === 'TEXTAREA') return;
   if (e.code === 'Space' && !spaceDown) { spaceDown = true; canvas.setCursor('grab'); e.preventDefault(); return; }
-  if (e.key === 'Escape') { const om = document.querySelector('.modal:not(.hidden)'); if (om) { om.classList.add('hidden'); return; } clearSelection(); return; }
+  if (e.key === 'Escape') { const om = document.querySelector('.modal:not(.hidden)'); if (om) { om.classList.add('hidden'); return; } if (editPath) { _exitNodeEdit(); return; } clearSelection(); return; }
   const ctrl = e.ctrlKey || e.metaKey;
   if (ctrl && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   if (ctrl && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
@@ -1592,7 +1715,7 @@ document.addEventListener('keydown', e => {
   const nudge = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
   if (nudge) { const s = canvas.getActiveObjects(); if (s.length) { e.preventDefault(); const step = e.shiftKey ? 10 : 1; s.forEach(o => { o.left += nudge[0] * step; o.top += nudge[1] * step; o.setCoords(); }); canvas.requestRenderAll(); refreshMeasures(); clearTimeout(window._ns); window._ns = setTimeout(() => snapshot('Verschoben'), 350); } return; }
   if (ctrl) return;
-  const map = { v: 'select', q: 'sel-rect', b: 'brush', e: 'eraser', i: 'eyedropper', r: 'rect', c: 'circle', l: 'line', t: 'text', p: 'polygon', s: 'star', a: 'arrow' };
+  const map = { v: 'select', n: 'node', q: 'sel-rect', b: 'brush', e: 'eraser', i: 'eyedropper', r: 'rect', c: 'circle', l: 'line', t: 'text', p: 'polygon', s: 'star', a: 'arrow' };
   if (map[e.key.toLowerCase()]) setTool(map[e.key.toLowerCase()]);
 });
 document.addEventListener('keyup', e => { if (e.code === 'Space') { spaceDown = false; isPanning = false; canvas.setCursor(canvas.defaultCursor); } });
