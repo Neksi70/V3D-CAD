@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Volme Draw – Zeichenprogramm</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
 <script src="./lib/opentype.min.js"></script>
@@ -92,7 +92,8 @@
     background: repeating-linear-gradient(45deg, #121215 0 12px, #0f0f12 12px 24px); }
   #canvas-wrap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
   #canvas-holder { box-shadow: 0 0 0 1px var(--border), 0 12px 40px rgba(0,0,0,.6); }
-  canvas { touch-action: none; }
+  #stage, canvas { touch-action: none; }
+  button, .tool, .menu-title, .qbtn, .palette .pc, #layers li { touch-action: manipulation; }
 
   .float {
     position: absolute; background: var(--panel); border: 1px solid var(--border);
@@ -742,6 +743,7 @@ $('stage').addEventListener('contextmenu', e => e.preventDefault());
 // Bearbeitet die Ankerpunkte (und Bezier-Griffe) eines fabric.Path direkt.
 // Ideal für Nachgezeichnetes, Kontur/Boolean-Ergebnisse, Text→Pfade, Pinsel.
 let editPath = null, nodePts = [], nodeDrag = null, _nodeCtrlMax = 30;
+const _coarse = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches); // Touch/Stift → größere Ziele
 function _cmdAnchor(c) { const t = c[0]; return (t === 'M' || t === 'L') ? [1, 2] : t === 'Q' ? [3, 4] : t === 'C' ? [5, 6] : null; }
 function _cmdCtrls(c) { const t = c[0]; return t === 'Q' ? [[1, 2]] : t === 'C' ? [[1, 2], [3, 4]] : []; }
 function _nodeToScene(path, x, y) { return fabric.util.transformPoint(new fabric.Point(x - path.pathOffset.x, y - path.pathOffset.y), path.calcTransformMatrix()); }
@@ -786,7 +788,7 @@ function _enterNodeEdit(path) {
 function _exitNodeEdit() { if (editPath) { editPath = null; nodePts = []; nodeDrag = null; canvas.requestRenderAll(); } }
 function _nodeHit(pt) {                                    // Treffer-Test in Szenen-Koords → Punkt-Index oder -1
   if (!editPath) return -1;
-  const tol = 8 / canvas.getZoom();
+  const tol = (_coarse ? 16 : 8) / canvas.getZoom();
   let best = -1, bestD = tol;
   nodePts.forEach((n, idx) => {
     const s = _nodeToScene(editPath, editPath.path[n.ci][n.xi], editPath.path[n.ci][n.yi]);
@@ -852,8 +854,9 @@ canvas.on('after:render', () => {
   });
   nodePts.forEach(n => {
     const s = toScreen(...Object.values(_nodeToScene(editPath, editPath.path[n.ci][n.xi], editPath.path[n.ci][n.yi])));
-    if (n.kind === 'anchor') { ctx.fillStyle = '#ff7a1a'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.rect(s.x - 4, s.y - 4, 8, 8); ctx.fill(); ctx.stroke(); }
-    else { ctx.fillStyle = '#00d4e0'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(s.x, s.y, 3.5, 0, 2 * Math.PI); ctx.fill(); ctx.stroke(); }
+    const hs = _coarse ? 6 : 4, cr = _coarse ? 5.5 : 3.5;
+    if (n.kind === 'anchor') { ctx.fillStyle = '#ff7a1a'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.rect(s.x - hs, s.y - hs, hs * 2, hs * 2); ctx.fill(); ctx.stroke(); }
+    else { ctx.fillStyle = '#00d4e0'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(s.x, s.y, cr, 0, 2 * Math.PI); ctx.fill(); ctx.stroke(); }
   });
   ctx.restore();
 });
@@ -914,7 +917,7 @@ $('z-reset').addEventListener('click', zoomReset);
   function cancelDraw() {
     if (previewRect) { restoring = true; canvas.remove(previewRect); restoring = false; previewRect = null; }
     if (tempShape) { restoring = true; canvas.remove(tempShape); restoring = false; tempShape = null; }
-    isDrawingShape = false; isSelecting = false; selRegion = null;
+    isDrawingShape = false; isSelecting = false; selRegion = null; nodeDrag = null;
   }
   upper.addEventListener('touchstart', e => {
     if (e.touches.length === 2) {
@@ -939,6 +942,23 @@ $('z-reset').addEventListener('click', zoomReset);
   const end = e => { if (g && e.touches.length < 2) { g = null; canvas.isDrawingMode = wasDraw; canvas.selection = wasSel; } };
   upper.addEventListener('touchend', end, { passive: false });
   upper.addEventListener('touchcancel', end, { passive: false });
+
+  // Long-Press im Knoten-Werkzeug = Knoten löschen (Doppelklick gibt's auf Touch nicht)
+  let lpTimer = null, lpXY = null;
+  const lpScene = t => { const r = upper.getBoundingClientRect(), vpt = canvas.viewportTransform, z = canvas.getZoom(); return { x: (t.clientX - r.left - vpt[4]) / z, y: (t.clientY - r.top - vpt[5]) / z }; };
+  upper.addEventListener('touchstart', e => {
+    if (currentTool !== 'node' || !editPath || e.touches.length !== 1) return;
+    const t = e.touches[0]; lpXY = { x: t.clientX, y: t.clientY };
+    lpTimer = setTimeout(() => {
+      const hit = _nodeHit(lpScene(t));
+      if (hit >= 0) { nodeDrag = null; _nodeDelete(hit); if (navigator.vibrate) navigator.vibrate(15); }
+    }, 550);
+  }, { passive: true });
+  const lpCancel = e => {
+    if (lpTimer && lpXY && e.touches && e.touches[0]) { const t = e.touches[0]; if (Math.hypot(t.clientX - lpXY.x, t.clientY - lpXY.y) > 10) { clearTimeout(lpTimer); lpTimer = null; } }
+  };
+  upper.addEventListener('touchmove', lpCancel, { passive: true });
+  upper.addEventListener('touchend', () => { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } }, { passive: true });
 })();
 
 // ---------- Pipette ----------
