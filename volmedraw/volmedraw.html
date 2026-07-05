@@ -1185,6 +1185,61 @@ function exportSVG() {
     toast('Als SVG exportiert ✓ – in LightBurn öffnen');
   });
 }
+
+// ---------- DXF-Export (Plotter/Schneideplotter: Silhouette, Cricut, LibreCAD) ----------
+// Vektor-Konturen (DXF R12, POLYLINE — maximal kompatibel) in mm, Y-Achse nach oben.
+// Nutzt dieselbe Geometrie-Brücke wie Boolean/Offset (localOutline), Linien separat.
+// vLaser → DXF-Layer + AutoCAD-Farbe (Schnitt=rot, Gravur=weiß, Linie=blau).
+const _DXF_LAYERS = { cut: { name: 'Schnitt', col: 1 }, engrave: { name: 'Gravur', col: 7 }, score: { name: 'Linie', col: 5 } };
+function _buildDXF(contours) {
+  const S = PPMM, H = canvas.height, L = [];
+  const mmX = px => +(px / S).toFixed(3), mmY = px => +((H - px) / S).toFixed(3);   // Y hoch (DXF)
+  const g = (code, val) => { L.push(code); L.push(val); };
+  g(0, 'SECTION'); g(2, 'HEADER'); g(9, '$ACADVER'); g(1, 'AC1009'); g(9, '$INSUNITS'); g(70, 4); g(0, 'ENDSEC');
+  g(0, 'SECTION'); g(2, 'TABLES'); g(0, 'TABLE'); g(2, 'LAYER'); g(70, Object.keys(_DXF_LAYERS).length + 1);
+  const layDef = (name, col) => { g(0, 'LAYER'); g(2, name); g(70, 0); g(62, col); g(6, 'CONTINUOUS'); };
+  layDef('0', 7); Object.values(_DXF_LAYERS).forEach(l => layDef(l.name, l.col));
+  g(0, 'ENDTAB'); g(0, 'ENDSEC');
+  g(0, 'SECTION'); g(2, 'ENTITIES');
+  contours.forEach(c => {
+    const lay = (_DXF_LAYERS[c.laser] || _DXF_LAYERS.cut).name;
+    g(0, 'POLYLINE'); g(8, lay); g(66, 1); g(70, c.closed ? 1 : 0);
+    c.pts.forEach(pt => { g(0, 'VERTEX'); g(8, lay); g(10, mmX(pt.x)); g(20, mmY(pt.y)); });
+    g(0, 'SEQEND');
+  });
+  g(0, 'ENDSEC'); g(0, 'EOF');
+  return L.join('\n') + '\n';
+}
+function exportDXF() {
+  const objs = canvas.getObjects().filter(o => o.visible !== false && o.vType !== 'regmark');
+  if (!objs.length) { toast('Nichts zum Exportieren', 'error'); return; }
+  let hasImg = false, hasText = false; const contours = [];
+  const collect = (o, pm, groupLaser) => {
+    if (o.type === 'image') { hasImg = true; return; }
+    if (o.type === 'i-text' || o.type === 'text' || o.type === 'textbox') { hasText = true; return; }
+    const laser = o.vLaser || groupLaser || 'cut';
+    const m = pm ? fabric.util.multiplyTransformMatrices(pm, o.calcTransformMatrix()) : o.calcTransformMatrix();
+    if ((o.type === 'group' || o.type === 'activeSelection') && o._objects) { o._objects.forEach(c => collect(c, m, laser)); return; }
+    if (o.type === 'line') {
+      const cx = (o.x1 + o.x2) / 2, cy = (o.y1 + o.y2) / 2;
+      const a = fabric.util.transformPoint({ x: o.x1 - cx, y: o.y1 - cy }, m);
+      const b = fabric.util.transformPoint({ x: o.x2 - cx, y: o.y2 - cy }, m);
+      contours.push({ pts: [a, b], closed: false, laser }); return;
+    }
+    localOutline(o).forEach(c => {
+      const pts = c.map(p => fabric.util.transformPoint({ x: p.x, y: p.y }, m));
+      if (pts.length < 2) return;
+      // Pfad: geschlossen, wenn er ein Z trägt (Boolean/Offset/Trace/Text→Pfade);
+      // Pinselstriche haben kein Z → bleiben offen. Formen sind immer geschlossen.
+      const closed = o.type === 'path' ? o.path.some(s => s[0] === 'z' || s[0] === 'Z') : true;
+      contours.push({ pts, closed, laser });
+    });
+  };
+  objs.forEach(o => collect(o, null, null));
+  if (!contours.length) { toast(hasText ? 'Text erst in Pfade wandeln (Ebenen-Menü)' : hasImg ? 'Bilder erst „Nachzeichnen"' : 'Keine Vektor-Geometrie zum Exportieren', 'error'); return; }
+  download(URL.createObjectURL(new Blob([_buildDXF(contours)], { type: 'application/dxf' })), 'volmedraw.dxf');
+  toast((hasImg || hasText) ? ('Als DXF exportiert ✓ – ' + (hasImg ? 'Bilder' : 'Text') + ' übersprungen') : 'Als DXF exportiert ✓', (hasImg || hasText) ? 'info' : 'success');
+}
 function clearAll() { if (!canvas.getObjects().length) return; if (!confirm('Alle Objekte löschen?')) return; canvas.getObjects().slice().forEach(o => { restoring = true; canvas.remove(o); }); restoring = false; snapshot('Geleert'); refreshLayers(); canvas.requestRenderAll(); }
 
 $('q-undo').addEventListener('click', undo); $('q-redo').addEventListener('click', redo);
@@ -1660,7 +1715,7 @@ function toggleSnap() { gridSnap = !gridSnap; buildMenus(); }
 function togglePanel(id) { const p = $(id); p.style.display = (p.style.display === 'none') ? 'flex' : 'none'; buildMenus(); }
 function panelVisible(id) { return $(id).style.display !== 'none'; }
 const MENUS = () => ([
-  ['Datei', [['Projekt speichern', 'Strg+S', saveProject], ['Projekt laden…', '', () => $('project-input').click()], 'sep', ['Bild laden…', 'Strg+O', () => $('file-input').click()], ['SVG importieren…', '', () => $('svg-input').click()], ['Leeren', '', clearAll], 'sep', ['Export PNG', '', exportPNG], ['Export JPG', '', exportJPG], ['Export SVG (Laser)', '', exportSVG]]],
+  ['Datei', [['Projekt speichern', 'Strg+S', saveProject], ['Projekt laden…', '', () => $('project-input').click()], 'sep', ['Bild laden…', 'Strg+O', () => $('file-input').click()], ['SVG importieren…', '', () => $('svg-input').click()], ['Leeren', '', clearAll], 'sep', ['Export PNG', '', exportPNG], ['Export JPG', '', exportJPG], ['Export SVG (Laser)', '', exportSVG], ['Export DXF (Plotter)', '', exportDXF]]],
   ['Bearbeiten', [['Rückgängig', 'Strg+Z', undo], ['Wiederholen', 'Strg+Y', redo], 'sep', ['Kopieren', 'Strg+C', doCopy], ['Einfügen', 'Strg+V', doPaste], ['Duplizieren', 'Strg+D', doDuplicate], ['Löschen', 'Entf', deleteSel], 'sep', ['Alles auswählen', 'Strg+A', selectAll], ['Auswahl-Maske aufheben', 'Esc', clearSelection]]],
   ['Ansicht', [['Vergrößern', '+', () => zoomBy(1.2)], ['Verkleinern', '−', () => zoomBy(1 / 1.2)], ['Auf Fenster einpassen', '', zoomFit], ['100 %', '', zoomReset], 'sep', ['Raster anzeigen', '', toggleGrid, () => gridShow], ['Am Raster fangen', '', toggleSnap, () => gridSnap]]],
   ['Anordnen', [['Links ausrichten', '', () => align('left')], ['Horizontal zentrieren', '', () => align('cx')], ['Rechts ausrichten', '', () => align('right')], ['Oben ausrichten', '', () => align('top')], ['Vertikal zentrieren', '', () => align('cy')], ['Unten ausrichten', '', () => align('bottom')], 'sep', ['Horizontal verteilen', '', () => distribute('h')], ['Vertikal verteilen', '', () => distribute('v')], 'sep', ['Spiegeln horizontal', '', () => flip('h')], ['Spiegeln vertikal', '', () => flip('v')]]],
