@@ -237,6 +237,7 @@
     <button class="qbtn" title="Fernwartung – lädt V3D Remote herunter, damit dein Betreuer dir per Fernzugriff helfen kann" onclick="var a=document.createElement('a');a.href='/V3D-Remote.zip';a.download='V3D-Remote.zip';document.body.appendChild(a);a.click();a.remove();try{toast('V3D-Remote.zip wird geladen. Entpacken, dann V3D-Remote.exe starten und deinem Betreuer die ID durchgeben.','info')}catch(e){}">🛟 Fernwartung</button>
   </div>
   <input type="file" id="file-input" accept="image/*" hidden>
+  <input type="file" id="svg-input" accept=".svg,image/svg+xml" hidden>
   <input type="file" id="project-input" accept=".vdraw,.json,application/json" hidden>
 </div>
 
@@ -965,6 +966,64 @@ $('file-input').addEventListener('change', e => {
   reader.readAsDataURL(file); e.target.value = '';
 });
 
+// ---------- SVG-Import (Vektor, laser-tauglich) ----------
+// Liest die reale mm-Größe aus width/height (+ viewBox) des SVG, damit ein
+// Schnittmotiv in der echten Zielgröße auf der Leinwand landet. Trägt die Datei
+// keine Einheiten, wird auf 80 % der Leinwand eingepasst (mit Größen-Hinweis).
+function _svgLenToMm(str) {
+  if (!str) return null;
+  const m = ('' + str).trim().match(/^([\d.]+)\s*(mm|cm|in|pt|px)?$/);
+  if (!m) return null;
+  const v = parseFloat(m[1]); if (!isFinite(v)) return null;
+  switch (m[2]) {
+    case 'mm': return v;
+    case 'cm': return v * 10;
+    case 'in': return v * 25.4;
+    case 'pt': return v / 72 * 25.4;
+    case 'px': case undefined: case '': return null; // px/unitless: reale Größe unbekannt
+    default: return null;
+  }
+}
+function _svgTargetMm(text) {
+  try {
+    const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+    const svg = doc.querySelector('svg'); if (!svg) return null;
+    const wMm = _svgLenToMm(svg.getAttribute('width'));
+    const hMm = _svgLenToMm(svg.getAttribute('height'));
+    if (wMm && hMm) return { w: wMm, h: hMm };
+  } catch (e) {}
+  return null;
+}
+$('svg-input').addEventListener('change', e => {
+  const file = e.target.files[0]; if (!file) return; const reader = new FileReader();
+  reader.onload = ev => {
+    const text = ev.target.result;
+    fabric.loadSVGFromString(text, (objects, opts) => {
+      objects = (objects || []).filter(Boolean);
+      if (!objects.length) { toast('Kein Vektor-Inhalt im SVG gefunden', 'error'); return; }
+      const grp = fabric.util.groupSVGElements(objects, opts);
+      const gW = grp.width || 1, gH = grp.height || 1;
+      const targ = _svgTargetMm(text);
+      let sc;
+      if (targ) {                       // reale mm-Größe bekannt → maßtreu
+        sc = Math.min((targ.w * PPMM) / gW, (targ.h * PPMM) / gH);
+      } else {                          // keine Einheiten → auf 80 % einpassen
+        sc = Math.min(1, (canvas.width * 0.8) / gW, (canvas.height * 0.8) / gH);
+      }
+      grp.set({
+        left: (canvas.width - gW * sc) / 2, top: (canvas.height - gH * sc) / 2,
+        scaleX: sc, scaleY: sc, originX: 'left', originY: 'top'
+      });
+      grp.vType = 'svg'; grp.vName = (file.name || 'SVG').replace(/\.svg$/i, '');
+      canvas.add(grp); setTool('select'); canvas.setActiveObject(grp);
+      canvas.requestRenderAll(); snapshot('SVG importiert'); refreshLayers();
+      toast(targ ? ('SVG importiert ✓ (' + Math.round(targ.w) + '×' + Math.round(targ.h) + ' mm)')
+                 : 'SVG importiert ✓ – Größe bitte im Eigenschaften-Panel prüfen', targ ? 'success' : 'info');
+    });
+  };
+  reader.readAsText(file); e.target.value = '';
+});
+
 // ---------- Export ----------
 function download(url, name) { const a = document.createElement('a'); a.href = url; a.download = name; a.click(); }
 function withResetView(fn) { const v = canvas.viewportTransform.slice(); canvas.setViewportTransform([1, 0, 0, 1, 0, 0]); const r = fn(); canvas.setViewportTransform(v); return r; }
@@ -1456,7 +1515,7 @@ function toggleSnap() { gridSnap = !gridSnap; buildMenus(); }
 function togglePanel(id) { const p = $(id); p.style.display = (p.style.display === 'none') ? 'flex' : 'none'; buildMenus(); }
 function panelVisible(id) { return $(id).style.display !== 'none'; }
 const MENUS = () => ([
-  ['Datei', [['Projekt speichern', 'Strg+S', saveProject], ['Projekt laden…', '', () => $('project-input').click()], 'sep', ['Bild laden…', 'Strg+O', () => $('file-input').click()], ['Leeren', '', clearAll], 'sep', ['Export PNG', '', exportPNG], ['Export JPG', '', exportJPG], ['Export SVG (Laser)', '', exportSVG]]],
+  ['Datei', [['Projekt speichern', 'Strg+S', saveProject], ['Projekt laden…', '', () => $('project-input').click()], 'sep', ['Bild laden…', 'Strg+O', () => $('file-input').click()], ['SVG importieren…', '', () => $('svg-input').click()], ['Leeren', '', clearAll], 'sep', ['Export PNG', '', exportPNG], ['Export JPG', '', exportJPG], ['Export SVG (Laser)', '', exportSVG]]],
   ['Bearbeiten', [['Rückgängig', 'Strg+Z', undo], ['Wiederholen', 'Strg+Y', redo], 'sep', ['Kopieren', 'Strg+C', doCopy], ['Einfügen', 'Strg+V', doPaste], ['Duplizieren', 'Strg+D', doDuplicate], ['Löschen', 'Entf', deleteSel], 'sep', ['Alles auswählen', 'Strg+A', selectAll], ['Auswahl-Maske aufheben', 'Esc', clearSelection]]],
   ['Ansicht', [['Vergrößern', '+', () => zoomBy(1.2)], ['Verkleinern', '−', () => zoomBy(1 / 1.2)], ['Auf Fenster einpassen', '', zoomFit], ['100 %', '', zoomReset], 'sep', ['Raster anzeigen', '', toggleGrid, () => gridShow], ['Am Raster fangen', '', toggleSnap, () => gridSnap]]],
   ['Anordnen', [['Links ausrichten', '', () => align('left')], ['Horizontal zentrieren', '', () => align('cx')], ['Rechts ausrichten', '', () => align('right')], ['Oben ausrichten', '', () => align('top')], ['Vertikal zentrieren', '', () => align('cy')], ['Unten ausrichten', '', () => align('bottom')], 'sep', ['Horizontal verteilen', '', () => distribute('h')], ['Vertikal verteilen', '', () => distribute('v')], 'sep', ['Spiegeln horizontal', '', () => flip('h')], ['Spiegeln vertikal', '', () => flip('v')]]],
