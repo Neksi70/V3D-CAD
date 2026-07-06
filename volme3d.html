@@ -1572,6 +1572,12 @@ const firebaseConfig = {
             <path d="M7 12 Q10 7 12 12 Q14 17 17 12" stroke-linecap="round"/>
           </svg>SVG
         </div>
+        <div class="shp" onclick="document.getElementById('dxf-import-file').click()" title="DXF importieren (Plotter/CAD) und extrudieren oder flach einfügen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <path d="M6 9 L10 9 M8 9 L8 16 M12 9 L12 16 L15 16 Q17 16 17 12.5 Q17 9 15 9 L12 9" stroke-linecap="round"/>
+          </svg>DXF
+        </div>
         <div class="shp" onclick="addShape('polygon')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><polygon points="12,3 20.5,7.5 20.5,16.5 12,21 3.5,16.5 3.5,7.5"/></svg>Vieleck
         </div>
@@ -1591,6 +1597,7 @@ const firebaseConfig = {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="12" cy="6" rx="6" ry="2.2"/><ellipse cx="12" cy="10" rx="6" ry="2.2"/><ellipse cx="12" cy="14" rx="6" ry="2.2"/><ellipse cx="12" cy="18" rx="6" ry="2.2"/><line x1="6" y1="6" x2="6" y2="18"/><line x1="18" y1="6" x2="18" y2="18"/></svg>Gewinde
         </div>
         <input type="file" id="svg-import-file" accept=".svg" style="display:none" onchange="_svgFileSelected(event)">
+        <input type="file" id="dxf-import-file" accept=".dxf" style="display:none" onchange="_dxfFileSelected(event)">
       </div>
     </div>
     <div class="ps">
@@ -8579,6 +8586,104 @@ function _svgFileSelected(e) {
     document.getElementById('svg-depth-row').style.display = 'flex';
     // Open modal
     document.getElementById('svg-modal').style.display = 'flex';
+  };
+  reader.readAsText(file);
+}
+
+// ═══ DXF IMPORT ═══════════════════════════════════════════════════════════
+// DXF (Plotter/CAD-Austausch) → SVG-String → gleiche Vorschau + Extrude-Pipeline
+// wie der SVG-Import. Minimaler Vanilla-Parser (keine neue Abhängigkeit) für die
+// gängigen 2D-Entitäten: LINE, LWPOLYLINE, POLYLINE, CIRCLE, ARC, ELLIPSE, SPLINE.
+function _dxfArcPts(cx, cy, r, a0, a1, full) {
+  let s = a0, e = a1; if (!full && e <= s) e += 360;
+  const span = full ? 360 : (e - s), n = Math.max(8, Math.ceil(Math.abs(span) / 6)), pts = [];
+  for (let i = 0; i <= n; i++) { const a = (s + span * i / n) * Math.PI / 180; pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); }
+  if (full) pts.pop();
+  return { pts, closed: full };
+}
+function _dxfEllipsePts(cx, cy, mx, my, ratio, p0, p1) {
+  const major = Math.hypot(mx, my), rot = Math.atan2(my, mx), minor = major * ratio;
+  let s = p0, e = p1; if (e <= s) e += 2 * Math.PI; const span = e - s, full = Math.abs(span - 2 * Math.PI) < 1e-6;
+  const n = Math.max(16, Math.ceil(span / (Math.PI / 30))), pts = [];
+  for (let i = 0; i <= n; i++) { const t = s + span * i / n, ex = major * Math.cos(t), ey = minor * Math.sin(t);
+    pts.push([cx + ex * Math.cos(rot) - ey * Math.sin(rot), cy + ex * Math.sin(rot) + ey * Math.cos(rot)]); }
+  if (full) pts.pop();
+  return { pts, closed: full };
+}
+function _dxfToSvg(text) {
+  const raw = text.split(/\r\n|\r|\n/), pairs = [];
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    const code = parseInt(raw[i].trim(), 10); if (Number.isNaN(code)) { i -= 1; continue; }
+    pairs.push([code, raw[i + 1].trim()]);
+  }
+  const ents = []; let cur = null;
+  for (const [code, val] of pairs) {
+    if (code === 0) { if (cur) ents.push(cur); cur = { type: val.toUpperCase(), codes: [] }; }
+    else if (cur) cur.codes.push([code, val]);
+  }
+  if (cur) ents.push(cur);
+  const paths = []; let ellipseW = false, splineW = false, bulgeW = false;
+  for (let k = 0; k < ents.length; k++) {
+    const e = ents[k], t = e.type;
+    const num = (c, d) => { for (const [cc, v] of e.codes) if (cc === c) return parseFloat(v); return d; };
+    const all = (c) => e.codes.filter(([cc]) => cc === c).map(([, v]) => parseFloat(v));
+    if (t === 'LINE') { const x1 = num(10), y1 = num(20), x2 = num(11), y2 = num(21); if ([x1, y1, x2, y2].every(isFinite)) paths.push({ pts: [[x1, y1], [x2, y2]], closed: false }); }
+    else if (t === 'LWPOLYLINE') {
+      const xs = all(10), ys = all(20), flag = (num(70, 0) | 0), pts = [];
+      for (let j = 0; j < Math.min(xs.length, ys.length); j++) pts.push([xs[j], ys[j]]);
+      if (e.codes.some(([c]) => c === 42)) bulgeW = true;
+      if (pts.length >= 2) paths.push({ pts, closed: (flag & 1) === 1 });
+    } else if (t === 'POLYLINE') {
+      const flag = (num(70, 0) | 0), pts = []; let m = k + 1;
+      for (; m < ents.length && ents[m].type === 'VERTEX'; m++) {
+        const ve = ents[m]; const vg = (c) => { for (const [cc, v] of ve.codes) if (cc === c) return parseFloat(v); return NaN; };
+        const vx = vg(10), vy = vg(20); if (isFinite(vx) && isFinite(vy)) pts.push([vx, vy]);
+      }
+      k = (ents[m] && ents[m].type === 'SEQEND') ? m : m - 1;
+      if (pts.length >= 2) paths.push({ pts, closed: (flag & 1) === 1 });
+    } else if (t === 'CIRCLE') { const cx = num(10), cy = num(20), r = num(40); if ([cx, cy, r].every(isFinite) && r > 0) paths.push(_dxfArcPts(cx, cy, r, 0, 360, true)); }
+    else if (t === 'ARC') { const cx = num(10), cy = num(20), r = num(40), a0 = num(50, 0), a1 = num(51, 360); if ([cx, cy, r].every(isFinite) && r > 0) paths.push(_dxfArcPts(cx, cy, r, a0, a1, false)); }
+    else if (t === 'ELLIPSE') { ellipseW = true; const cx = num(10), cy = num(20), mx = num(11), my = num(21), ratio = num(40, 1), p0 = num(41, 0), p1 = num(42, 2 * Math.PI); if ([cx, cy, mx, my].every(isFinite)) paths.push(_dxfEllipsePts(cx, cy, mx, my, ratio, p0, p1)); }
+    else if (t === 'SPLINE') {
+      splineW = true; let px = all(11), py = all(21); if (!px.length) { px = all(10); py = all(20); }
+      const flag = (num(70, 0) | 0), pts = []; for (let j = 0; j < Math.min(px.length, py.length); j++) pts.push([px[j], py[j]]);
+      if (pts.length >= 2) paths.push({ pts, closed: (flag & 1) === 1 });
+    }
+  }
+  if (!paths.length) return { count: 0 };
+  // BBox auf Y-gespiegelten Koordinaten (DXF Y-hoch → SVG Y-runter), damit nicht gespiegelt
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  const fy = y => -y;
+  for (const p of paths) for (const [x, y] of p.pts) { const yy = fy(y); if (x < minX) minX = x; if (x > maxX) maxX = x; if (yy < minY) minY = yy; if (yy > maxY) maxY = yy; }
+  const W = Math.max(maxX - minX, 1e-3), H = Math.max(maxY - minY, 1e-3), r2 = n => Math.round(n * 1000) / 1000;
+  let els = '';
+  for (const p of paths) {
+    let d = ''; p.pts.forEach(([x, y], i) => { d += (i ? 'L' : 'M') + r2(x) + ' ' + r2(fy(y)) + ' '; }); if (p.closed) d += 'Z';
+    els += `<path d="${d.trim()}" fill="${p.closed ? '#000' : 'none'}" stroke="#000" stroke-width="0.2"/>`;
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${r2(W)}mm" height="${r2(H)}mm" viewBox="${r2(minX)} ${r2(minY)} ${r2(W)} ${r2(H)}">${els}</svg>`;
+  const notes = []; if (ellipseW || splineW) notes.push('Ellipsen/Splines angenähert'); if (bulgeW) notes.push('Bogen-Bulges als Gerade');
+  return { svg, count: paths.length, note: notes.join(' · ') };
+}
+function _dxfFileSelected(e) {
+  const file = e.target.files[0]; if (!file) return;
+  const inp = document.getElementById('dxf-import-file');
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    let res; try { res = _dxfToSvg(ev.target.result); } catch(err) { notify('DXF Fehler: ' + err.message, 'w'); inp.value = ''; return; }
+    if (!res || !res.count) { notify('Keine unterstützte Geometrie im DXF (LINE/POLYLINE/CIRCLE/ARC/ELLIPSE/SPLINE)', 'w'); inp.value = ''; return; }
+    _svgParsedData = { svgText: res.svg, fileName: file.name };
+    const preview = document.getElementById('svg-preview'); preview.innerHTML = '';
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'width:100%;height:160px;border:none;display:block;border-radius:4px;background:transparent';
+    iframe.sandbox = 'allow-same-origin';
+    iframe.srcdoc = `<!DOCTYPE html><html><head><style>html,body{margin:0;padding:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:transparent;overflow:hidden}svg{max-width:100%;max-height:155px;width:auto;height:auto}path{vector-effect:non-scaling-stroke}</style></head><body>${res.svg}</body></html>`;
+    preview.appendChild(iframe);
+    document.getElementById('svg-filename').textContent = file.name + (res.note ? ('  · ' + res.note) : '');
+    const modeEl = document.querySelector('input[name="svg-mode"][value="extrude"]'); if (modeEl) modeEl.checked = true;
+    document.getElementById('svg-depth-row').style.display = 'flex';
+    document.getElementById('svg-modal').style.display = 'flex';
+    inp.value = '';
   };
   reader.readAsText(file);
 }
