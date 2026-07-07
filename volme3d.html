@@ -11712,8 +11712,11 @@ function _occtBuildWire3D(oc, pts3d) {
 
 // ═══ BOHRUNG ABZIEHEN ═══════════════════════════════════════════════════════
 async function subtractHoles() {
-  const solids = selectedObjs.filter(o => !o.userData.isHole);
-  const holes  = selectedObjs.filter(o => o.userData.isHole);
+  // Nur SICHTBARE Objekte: das Auswahlrechteck erwischt auch ausgeblendete oder
+  // weit hinten liegende Körper — die dürfen weder Schnittbasis werden noch
+  // stillschweigend mitgelöscht werden.
+  const solids = selectedObjs.filter(o => !o.userData.isHole && o.visible !== false);
+  const holes  = selectedObjs.filter(o => o.userData.isHole && o.visible !== false);
 
   if (selectedObjs.length < 2) {
     notify('Beide Objekte auswählen (Auswahlrechteck oder Shift+Klick)', 'w'); return;
@@ -11892,10 +11895,18 @@ async function _doSubtractHoles(solids, holes) {
   // ── Generische Bohrungen wasserdicht via OCCT abziehen ─────────────────────
   // (ThreeCSG/BSP frisst auf komplexen Meshes – z.B. Gewinde – den Körper weg
   //  oder liefert inverted Normals. OCCT-Mesh-Cut ist robust; BSP nur Fallback.)
+  // solids[0] wird immer zur Ergebnis-Basis; weitere ausgewählte Solids werden
+  // nur konsumiert, wenn sie auch wirklich in den Schnitt eingeflossen sind.
+  const consumedSolids = new Set([solids[0]]);
+
   if (_genericTools.length) {
     let occtOk = false;
     try {
-      const solidStls = _meshWorldToStls(solidMesh);
+      // ALLE ausgewählten Volumenkörper mitschicken — der Server fust sie zu
+      // EINEM Körper (dafür ist solidStls ein Array). Vorher wurde nur solids[0]
+      // geschnitten und der Rest stillschweigend gelöscht.
+      const cutSolids = [solidMesh, ...solids.slice(1)];
+      const solidStls = cutSolids.flatMap(s => _meshWorldToStls(s));
       const toolStls  = _genericTools.flatMap(t => _meshWorldToStls(t));
       if (solidStls.length && toolStls.length) {
         const resp = await fetch(_OCCT_BASE + '/api/occt-subtract-mesh', {
@@ -11915,6 +11926,7 @@ async function _doSubtractHoles(solids, holes) {
         solidMesh = new THREE.Mesh(geo, mat);
         solidMesh.userData._origStlBuf = bytes.buffer;   // für Folge-Schnitte
         occtOk = true;
+        solids.slice(1).forEach(s => consumedSolids.add(s));   // alle eingeflossen
       }
     } catch (e) {
       console.warn('[subtract-mesh] OCCT fehlgeschlagen → BSP-Fallback:', e.message || e);
@@ -11947,9 +11959,10 @@ async function _doSubtractHoles(solids, holes) {
     edgeBevels: Array.from({length:12}, () => ({fillet:0, chamfer:0}))
   };
 
-  // Originale entfernen
+  // Originale entfernen — aber nur Solids, die wirklich im Ergebnis stecken
+  // (BSP-Fallback/SVG-Pfad schneiden nur solids[0]; der Rest bleibt erhalten).
   deselect();
-  [...solids, ...holes].forEach(o => {
+  [...solids.filter(s => consumedSolids.has(s)), ...holes].forEach(o => {
     objects = objects.filter(x => x !== o);
     scene.remove(o);
   });
