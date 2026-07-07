@@ -191,7 +191,7 @@ function computeMaxBlindDepth(tris, matrixE, svgPathData, scale, cx, cy, margin)
 }
 
 // ── STL via OCCT-FS lesen → Solid (mit Sewing, Tolerance 1mm) ────────────────
-function stlToOCCTSolid(oc, stlBuf) {
+function stlToOCCTSolid(oc, stlBuf, keep) {
   try {
     const tmpPath = '/s.stl';
     oc.FS.writeFile(tmpPath, new Uint8Array(stlBuf));
@@ -217,24 +217,62 @@ function stlToOCCTSolid(oc, stlBuf) {
     sew.delete();
     console.log('[stl2occt] Sewing done in', Date.now()-t0, 'ms');
 
-    // Versuch 1: BRepBuilderAPI_MakeSolid aus Shells
+    // Shells einsammeln
+    const shells = [];
+    {
+      const exp = new oc.TopExp_Explorer_2(sewn, oc.TopAbs_ShapeEnum.TopAbs_SHELL, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+      while (exp.More()) { shells.push(oc.TopoDS.Shell_1(exp.Current())); exp.Next(); }
+      exp.delete();
+    }
+
+    // Mehrteiliges Mesh (Import aus mehreren Hüllen, z.B. Modell aus Einzelteilen)
+    // oder zerrissenes Mesh: ALLE Shells in EIN MakeSolid zu stopfen erzeugt ein
+    // Pseudo-Solid mit undefinierter Innen/Außen-Klassifikation → Boolean-Cut
+    // liefert Müll (Löcher fehlen, invertierte Reste). Stattdessen: je
+    // geschlossener Hülle ein korrekt orientiertes Einzel-Solid, dann Fuse.
+    if (shells.length > 1) {
+      const signedVol = s => { try { const p = new oc.GProp_GProps_1();
+        oc.BRepGProp.VolumeProperties_1(s, p, false, false, false);
+        const v = p.Mass(); p.delete(); return v; } catch(_) { return NaN; } };
+      const solids = [];
+      let dropped = 0;
+      for (const shell of shells) {
+        try {
+          const sfs = new oc.ShapeFix_Solid_1();
+          let so = sfs.SolidFromShell(shell);
+          sfs.delete();
+          if (!so || so.ShapeType().value !== 2) { dropped++; continue; }   // 2 = SOLID
+          const v = signedVol(so);
+          if (!isFinite(v) || Math.abs(v) < 1e-3) { dropped++; continue; }  // offene Hülle/Sliver
+          if (v < 0) { try { so = so.Reversed(); } catch(_) {} }            // invertierte Hülle
+          solids.push(so);
+        } catch(_) { dropped++; }
+      }
+      if (solids.length) {
+        try {
+          const localKeep = keep || [];
+          let result = solids[0];
+          for (let i = 1; i < solids.length; i++)
+            result = bop(oc, 'BRepAlgoAPI_Fuse_3', result, solids[i], localKeep, `Shell-Fuse ${i}`);
+          console.log(`[stl2occt] ${shells.length} Shells → ${solids.length} geschlossene Solids gefust` +
+                      (dropped ? `, ${dropped} offene/degenerierte übersprungen` : ''));
+          return result;
+        } catch(eF) { console.log('[stl2occt] Shell-Fuse failed:', eF.message); }
+      } else {
+        console.log(`[stl2occt] ${shells.length} Shells, keine geschlossene Hülle → Fallback`);
+      }
+    }
+
+    // Versuch 1: BRepBuilderAPI_MakeSolid (Normalfall: genau 1 Shell)
     try {
       const mkSolid = new oc.BRepBuilderAPI_MakeSolid_1();
-      const exp = new oc.TopExp_Explorer_2(sewn, oc.TopAbs_ShapeEnum.TopAbs_SHELL, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
-      let shellCount = 0;
-      while (exp.More()) {
-        const shell = oc.TopoDS.Shell_1(exp.Current());
-        mkSolid.Add(shell);
-        shellCount++;
-        exp.Next();
-      }
-      exp.delete();
-      if (shellCount > 0 && mkSolid.IsDone()) {
+      for (const shell of shells) mkSolid.Add(shell);
+      if (shells.length > 0 && mkSolid.IsDone()) {
         const solid = mkSolid.Solid(); mkSolid.delete();
-        console.log('[stl2occt] Solid aus', shellCount, 'Shells (MakeSolid)');
+        console.log('[stl2occt] Solid aus', shells.length, 'Shells (MakeSolid)');
         return solid;
       }
-      console.log('[stl2occt] MakeSolid IsDone=false, shellCount=', shellCount);
+      console.log('[stl2occt] MakeSolid IsDone=false, shellCount=', shells.length);
       mkSolid.delete();
     } catch(e1) { console.log('[stl2occt] MakeSolid failed:', e1.message); }
 
@@ -683,7 +721,8 @@ app.post('/api/occt-subtract', async (req, res) => {
       else console.log('[snapNormal] Matrix-Berechnung fehlgeschlagen, kein Fallback');
     }
 
-    let solidOCCT = stlToOCCTSolid(oc, stlBuf);
+    const keep = [];
+    let solidOCCT = stlToOCCTSolid(oc, stlBuf, keep);
     console.log('[debug] solidOCCT:', solidOCCT ? 'vorhanden' : 'NULL');
     if (!solidOCCT) return res.json({ error: 'STL → OCCT Solid fehlgeschlagen' });
     console.log('[stl2occt] ShapeType value:', solidOCCT.ShapeType().value);
@@ -752,7 +791,6 @@ app.post('/api/occt-subtract', async (req, res) => {
     }
     if (!tools.length) return res.json({ error: 'Keine SVG-Formen aufgebaut' });
 
-    const keep = [];
     let tool;
     if (tools.length === 1) {
       tool = tools[0].s;
@@ -885,12 +923,12 @@ async function computeHollowLid(oc, opts) {
     }
 
     // Schritt 0 — Repair (Sew → MakeSolid → ShapeFix, in stlToOCCTSolid gekapselt)
-    let original = stlToOCCTSolid(oc, stlBuf);
+    let original = stlToOCCTSolid(oc, stlBuf, keep);
     // Decimation kann ein dünnwandiges/nicht-mehr-wasserdichtes Mesh erzeugen →
     // wenn dann kein gültiger Solid: einmal mit dem Originalmesh wiederholen.
     if (decimated && (!original || original.ShapeType().value !== 2)) {
       console.log('[hollow-lid] Decimat-Solid ungültig → Fallback auf Originalmesh');
-      original = stlToOCCTSolid(oc, rawBuf);
+      original = stlToOCCTSolid(oc, rawBuf, keep);
     }
     if (!original) return { error: 'Repair fehlgeschlagen: STL → OCCT Solid nicht möglich' };
     if (original.ShapeType().value !== 2)   // 2 = TopAbs_SOLID
@@ -1033,7 +1071,7 @@ app.post('/api/occt-union', async (req, res) => {
     for (let i = 0; i < list.length; i++) {
       try {
         const buf = Buffer.from(list[i], 'base64');
-        const s = stlToOCCTSolid(oc, buf);
+        const s = stlToOCCTSolid(oc, buf, keep);
         if (!s) { console.log(`[union] Körper ${i}: STL → Solid fehlgeschlagen, übersprungen`); continue; }
         solids.push(s);
       } catch (e) { console.log(`[union] Körper ${i}: ${e.message}`); }
@@ -1076,7 +1114,7 @@ app.post('/api/occt-subtract-mesh', async (req, res) => {
     const solids = [];
     for (let i = 0; i < solidList.length; i++) {
       try {
-        const s = stlToOCCTSolid(oc, Buffer.from(solidList[i], 'base64'));
+        const s = stlToOCCTSolid(oc, Buffer.from(solidList[i], 'base64'), keep);
         if (s) solids.push(s);
         else console.log(`[subtract-mesh] Solid ${i}: STL → Solid fehlgeschlagen`);
       } catch (e) { console.log(`[subtract-mesh] Solid ${i}: ${e.message}`); }
@@ -1090,7 +1128,7 @@ app.post('/api/occt-subtract-mesh', async (req, res) => {
     const tools = [];
     for (let i = 0; i < toolList.length; i++) {
       try {
-        const t = stlToOCCTSolid(oc, Buffer.from(toolList[i], 'base64'));
+        const t = stlToOCCTSolid(oc, Buffer.from(toolList[i], 'base64'), keep);
         if (t) tools.push(t);
         else console.log(`[subtract-mesh] Tool ${i}: STL → Solid fehlgeschlagen`);
       } catch (e) { console.log(`[subtract-mesh] Tool ${i}: ${e.message}`); }
