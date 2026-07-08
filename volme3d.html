@@ -246,6 +246,20 @@ body.devmode .dev-only{display:flex!important}
 #wp-panel .wp-btns{display:flex;gap:6px;padding:7px 2px 0}
 #wp-panel .wp-btns button{flex:1;background:#38383d;border:none;color:#e9e9ec;border-radius:6px;padding:6px 8px;cursor:pointer;font-size:11.5px;font-family:var(--font)}
 #wp-panel .wp-btns button:hover{background:#3b82f6;color:#fff}
+#vars-panel{display:none;position:fixed;top:200px;left:64px;z-index:120;background:#2b2b2e;border:1px solid #3c3c41;border-radius:10px;padding:6px 8px 8px;box-shadow:0 12px 36px rgba(0,0,0,.42);min-width:270px}
+#vars-panel.show{display:block}
+#vars-panel .ap-title{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:10.5px;color:#9a9aa1;letter-spacing:.07em;text-transform:uppercase;padding:5px 2px 8px}
+#vars-panel .wp-btns{display:flex;gap:6px;padding:0 2px}
+#vars-panel .wp-btns button{flex:1;background:#38383d;border:none;color:#e9e9ec;border-radius:6px;padding:6px 8px;cursor:pointer;font-size:11.5px;font-family:var(--font)}
+#vars-panel .wp-btns button:hover{background:#3b82f6;color:#fff}
+.var-row{display:flex;align-items:center;gap:5px;padding:2px 0}
+.var-row input{background:#1f1f22;border:1px solid #3c3c41;border-radius:5px;color:#e9e9ec;font-size:11.5px;padding:3px 5px;font-family:var(--font)}
+.var-row .var-name{width:74px}
+.var-row .var-expr{flex:1;min-width:70px}
+.var-row .var-eq{color:#9a9aa1;font-size:11px}
+.var-row .var-val{color:#7dd87d;font-size:10.5px;white-space:nowrap;min-width:44px}
+.var-row .var-del{color:#9a9aa1;cursor:pointer;font-size:12px;padding:0 2px}
+.var-row .var-del:hover{color:#ef4444}
 /* KI-Panel */
 #ki-panel{display:none;position:fixed;top:90px;right:12px;z-index:120;background:var(--white);border:1px solid var(--border);border-radius:10px;padding:14px;box-shadow:0 4px 20px rgba(0,0,0,.18);width:290px;max-height:calc(100vh - 110px);overflow-y:auto}
 #ki-panel.show{display:block}
@@ -1241,6 +1255,10 @@ const firebaseConfig = {
     </svg>
     <span class="tip">Arbeitsebene setzen (P)</span>
   </div>
+  <div class="lt" id="lt-vars" onclick="toggleVarsPanel()">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 3l6 10M9 3L3 13"/><path d="M11 6.5c.6-.9 2-.9 2.4.2l.8 2.6c.4 1.1 1.8 1.1 2.4.2" transform="scale(0.78) translate(1.5,1.5)"/></svg>
+    <span class="tip">Variablen (Formeln in Maß-Feldern)</span>
+  </div>
   <div class="lsep"></div>
   <div class="lt" id="lt-ruler" onclick="toggleRuler()">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="5" width="14" height="6" rx="1"/><line x1="4" y1="5" x2="4" y2="11"/><line x1="8" y1="5" x2="8" y2="11"/><line x1="12" y1="5" x2="12" y2="11"/></svg>
@@ -1465,6 +1483,19 @@ const firebaseConfig = {
       <button onclick="_wpAdjustReset()">↺ Zurücksetzen</button>
       <button onclick="document.getElementById('wp-panel').classList.remove('show')">Fertig</button>
     </div>
+  </div>
+
+  <!-- Variablen: benannte Maße + Formeln fürs ganze Design -->
+  <div id="vars-panel">
+    <div class="ap-title">
+      <span>𝑥 Variablen</span>
+      <span onclick="toggleVarsPanel()" title="Schließen" style="cursor:pointer;font-size:13px;line-height:1;padding:0 2px">✕</span>
+    </div>
+    <div id="vars-list"></div>
+    <div class="wp-btns" style="padding-top:7px">
+      <button onclick="_varsAdd()">＋ Variable</button>
+    </div>
+    <div style="color:#9a9aa1;font-size:10px;padding:6px 2px 0;line-height:1.5">In Maß-Feldern Formeln nutzen: <b>wand*2</b>, <b>breite/2+1</b> … Enter übernimmt &amp; verknüpft.</div>
   </div>
 
   <!-- KI-Generierungs-Panel (Tripo AI) -->
@@ -10668,6 +10699,7 @@ function buildObjectFromData(data) {
                                   : { topRound:0, topChamfer:0, botRound:0, botChamfer:0 };
   }
   if (data._hollowFlip) obj.userData._hollowFlip = true;
+  if (data.varExprs) obj.userData.varExprs = { ...data.varExprs };
   if (data.tubePoly)  obj.userData.tubePoly  = true;
   if (data.tubeTwist) obj.userData.tubeTwist = data.tubeTwist;
   if (data.tubeFloor) obj.userData.tubeFloor = true;
@@ -10748,6 +10780,7 @@ function objectToData(o) {
     sx: o.scale.x,    sy: o.scale.y,    sz: o.scale.z
   };
   if (o.userData.locked) d.locked = true;
+  if (o.userData.varExprs && Object.keys(o.userData.varExprs).length) d.varExprs = o.userData.varExprs;
   if (o.userData.hidden || !o.visible) d.hidden = true;
   if (o.userData.opacity && o.userData.opacity < 0.99) d.opacity = o.userData.opacity;
   if (o.userData.threadDiameter) d.threadDiameter = o.userData.threadDiameter;
@@ -13574,6 +13607,8 @@ function _newCreate(save) {
   localStorage.setItem('volme3d_cur', currentDesignId);
   deselect(); objects.forEach(o => scene.remove(o)); objects = [];
   undoStack = []; redoStack = [];
+  designVars = [];
+  if (document.getElementById('vars-panel').classList.contains('show')) _varsRender();
   updateUndoRedoButtons(); updateTree();
   const name = _randomDesignName();
   dsSaveDesign(currentDesignId, _sceneSnapshot(), '', name);
@@ -14973,12 +15008,149 @@ document.addEventListener('click', () => {
   document.getElementById('stl-menu')?.classList.remove('show');
 });
 
+// ═══ VARIABLEN (benannte Maße + Formeln) ═════════════════════════════════════
+// designVars: [{name, expr}] — expr ist Zahl oder Formel, darf andere Variablen
+// referenzieren. Eigenschafts-Felder akzeptieren Formeln ("wand*2"); die Bindung
+// wird pro Objekt in userData.varExprs[inputId] gespeichert. Ändert sich eine
+// Variable, werden alle Bindungen über die normalen Panel-Handler neu angewendet
+// → "ein Maß ändern, das Modell passt sich an".
+let designVars = [];
+
+// Alle Variablen zu Zahlen auflösen (Mehrpass für Abhängigkeiten, max 8 Ebenen)
+function _varsValues() {
+  const vals = {};
+  for (let pass = 0; pass < 8; pass++) {
+    let progress = false;
+    for (const v of designVars) {
+      if (!v.name || vals[v.name] != null) continue;
+      const num = _varEvalExpr(v.expr, vals);
+      if (num != null) { vals[v.name] = num; progress = true; }
+    }
+    if (!progress) break;
+  }
+  return vals;
+}
+
+// Formel → Zahl (oder null). Nur Ziffern, + - * / ( ) . und bekannte Variablen.
+function _varEvalExpr(expr, vals) {
+  if (expr == null) return null;
+  let s = String(expr).trim().replace(/,/g, '.');
+  if (!s) return null;
+  const v = vals || _varsValues();
+  s = s.replace(/[A-Za-zÄÖÜäöüß_][A-Za-z0-9ÄÖÜäöüß_]*/g, m => (v[m] != null ? '(' + v[m] + ')' : m));
+  if (!/^[0-9+\-*/(). ]+$/.test(s)) return null;   // unbekannter Name/verbotene Zeichen
+  try {
+    const num = Function('"use strict";return(' + s + ')')();
+    return (typeof num === 'number' && isFinite(num)) ? num : null;
+  } catch (_) { return null; }
+}
+
+// Eigenschafts-Feld committen (Enter/Blur): Formel auswerten, als Bindung am
+// Objekt speichern und über den normalen oninput-Handler anwenden.
+function _varCommitInput(el, id) {
+  const raw = String(el.value).trim();
+  if (!raw || /^[0-9.,\- ]+$/.test(raw)) { _varUnbind(id); return; }   // reine Zahl → keine Bindung
+  const num = _varEvalExpr(raw);
+  if (num == null) { notify('Formel nicht auflösbar: „' + raw + '" — Variablen im 𝑥-Panel anlegen', 'w'); return; }
+  const o = getFirst();
+  if (o) (o.userData.varExprs = o.userData.varExprs || {})[id] = raw;
+  el.value = Math.round(num * 1000) / 1000;
+  el.dispatchEvent(new Event('input'));   // Original-Handler (fpApplyDim etc.) anwenden
+  el.value = raw;                          // Formel im Feld sichtbar lassen
+}
+
+function _varUnbind(id) {
+  const o = getFirst();
+  if (o && o.userData.varExprs && o.userData.varExprs[id] != null) delete o.userData.varExprs[id];
+}
+
+// Nach Variablen-Änderung: alle Bindungen aller Objekte neu anwenden. Nutzt die
+// vorhandenen Panel-Handler (arbeiten auf der Auswahl) → Auswahl kurz wechseln.
+function _varsReapplyAll() {
+  const bound = objects.filter(o => o.userData && o.userData.varExprs && Object.keys(o.userData.varExprs).length);
+  if (!bound.length) return 0;
+  const prevSel = selectedObjs.slice();
+  let applied = 0;
+  for (const o of bound) {
+    selectObjs([o]);
+    for (const [id, expr] of Object.entries(o.userData.varExprs)) {
+      const num = _varEvalExpr(expr);
+      const el = document.getElementById(id);
+      if (num == null || !el) continue;   // Variable gelöscht / Zeile für Shape nicht (mehr) da
+      el.value = Math.round(num * 1000) / 1000;
+      el.dispatchEvent(new Event('input'));
+      el.value = expr;
+      applied++;
+    }
+  }
+  selectObjs(prevSel);
+  return applied;
+}
+
+// ── Panel ────────────────────────────────────────────────────────────────────
+function toggleVarsPanel() {
+  const p = document.getElementById('vars-panel');
+  if (p.classList.contains('show')) p.classList.remove('show');
+  else { _varsRender(); p.classList.add('show'); }
+}
+
+function _varsRender() {
+  const list = document.getElementById('vars-list');
+  const vals = _varsValues();
+  list.innerHTML = designVars.map((v, i) =>
+    `<div class="var-row">` +
+    `<input type="text" class="var-name" value="${v.name}" placeholder="name" onchange="_varsEdit(${i},'name',this.value)">` +
+    `<span class="var-eq">=</span>` +
+    `<input type="text" class="var-expr" value="${v.expr}" placeholder="Wert/Formel" onchange="_varsEdit(${i},'expr',this.value)">` +
+    `<span class="var-val">${vals[v.name] != null ? '→ ' + (Math.round(vals[v.name] * 100) / 100) : '⚠'}</span>` +
+    `<span class="var-del" onclick="_varsDelete(${i})" title="Variable löschen">✕</span>` +
+    `</div>`
+  ).join('') || `<div style="color:#9a9aa1;font-size:11.5px;padding:4px 2px">Noch keine Variablen — „＋" klicken.<br>Dann im Eigenschafts-Panel z.B. <b>wand*2</b> als Maß eintippen.</div>`;
+}
+
+function _varsAdd() {
+  let n = 1; while (designVars.some(v => v.name === 'var' + n)) n++;
+  designVars.push({ name: 'var' + n, expr: '10' });
+  _varsRender();
+  const rows = document.querySelectorAll('#vars-list .var-name');
+  const last = rows[rows.length - 1]; if (last) { last.focus(); last.select(); }
+}
+
+function _varsEdit(i, key, val) {
+  if (!designVars[i]) return;
+  val = String(val).trim();
+  if (key === 'name') {
+    val = val.replace(/[^A-Za-z0-9ÄÖÜäöüß_]/g, '');
+    if (!val) { _varsRender(); return; }
+    const old = designVars[i].name;
+    if (designVars.some((v, j) => j !== i && v.name === val)) { notify('Name „' + val + '" existiert schon', 'w'); _varsRender(); return; }
+    designVars[i].name = val;
+    // Umbenennen: Bindungen in allen Objekten mitziehen (Wortgrenzen)
+    if (old && old !== val) {
+      const re = new RegExp('\\b' + old.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g');
+      objects.forEach(o => { const b = o.userData && o.userData.varExprs; if (!b) return;
+        for (const k in b) b[k] = b[k].replace(re, val); });
+      designVars.forEach((v, j) => { if (j !== i) v.expr = String(v.expr).replace(re, val); });
+    }
+  } else {
+    designVars[i].expr = val;
+  }
+  _varsRender();
+  const n = _varsReapplyAll();
+  if (n) notify(n + ' Maß(e) aktualisiert ✓', 'ok');
+}
+
+function _varsDelete(i) {
+  designVars.splice(i, 1);
+  _varsRender();
+}
+
 // ═══ SZENE SPEICHERN / LADEN ═════════════════════════════════════════
 // ─── Lokales Speichern / Öffnen (File System Access API) ──────────────────
 let _localFileHandle = null;  // Datei-Handle für direktes Ctrl+S
 
 function _sceneJson() {
-  return JSON.stringify({ version:1, objects:objects.map(objectToData), idCtr, currentColor, shapeMode }, null, 2);
+  return JSON.stringify({ version:1, objects:objects.map(objectToData), idCtr, currentColor, shapeMode, vars: designVars }, null, 2);
 }
 
 async function _localSave() {
@@ -15080,6 +15252,8 @@ function _loadSceneFromJSON(text, designName) {
     objects.forEach(o => scene.remove(o)); objects = []; deselect();
     if (data.idCtr) idCtr = data.idCtr;
     if (data.currentColor) currentColor = data.currentColor;
+    designVars = Array.isArray(data.vars) ? data.vars : [];
+    if (document.getElementById('vars-panel').classList.contains('show')) _varsRender();
     (data.objects || []).forEach(d => { const obj = buildObjectFromData(d); scene.add(obj); objects.push(obj); });
     updateTree();
     if (designName) { const lbl = document.getElementById('cur-design-lbl'); if(lbl) lbl.textContent = designName; }
@@ -16237,7 +16411,7 @@ function dsRenameDesign(id, name) {
 
 // ── Scene serialization helpers ────────────────────────────────────────────
 function _sceneSnapshot() {
-  return { version: 1, objects: objects.map(objectToData), idCtr, currentColor, shapeMode };
+  return { version: 1, objects: objects.map(objectToData), idCtr, currentColor, shapeMode, vars: designVars };
 }
 
 function _applySnapshot(data) {
@@ -16245,6 +16419,8 @@ function _applySnapshot(data) {
   objects = []; deselect();
   if (data.idCtr)        idCtr = data.idCtr;
   if (data.currentColor) { currentColor = data.currentColor; }
+  designVars = Array.isArray(data.vars) ? data.vars : [];
+  if (document.getElementById('vars-panel').classList.contains('show')) _varsRender();
   (data.objects || []).forEach(d => {
     const obj = buildObjectFromData(d);
     scene.add(obj); objects.push(obj);
@@ -23874,12 +24050,17 @@ function _fpBuildRows(type, o) {
     const mn = min != null ? min : 0.1;
     const mx = max != null ? max : (u === '%' ? 100 : u === '' ? 128 : 300);
     const st = step || (u === '' ? 1 : 0.1);   // mm-Slider fein (0,1 mm) statt grob (0,5) → smooth, passt zur 0,1-mm-Anzeige
+    // Variablen-Bindung: Feld zeigt die Formel (z.B. "wand*2") statt der Zahl;
+    // type=text statt number, damit Formeln eingebbar sind. Enter/Blur committet
+    // die Formel (_varCommitInput), reine Zahlen wirken wie bisher live (oninput).
+    const bound = o.userData.varExprs && o.userData.varExprs[id];
+    const shown = bound != null ? bound : val;
     return `<div class="fp-row">` +
       `<div class="fp-row-top">` +
         `<span class="fp-lbl">${lbl}</span>` +
-        `<div class="fp-val-box"><input class="fp-inp" id="${id}" type="number" min="${mn}" max="${mx}" step="${st}" value="${val}" oninput="var _s=document.getElementById('${id}-sl');if(_s)_s.value=this.value;${onchange}"><span class="fp-unit">${u}</span></div>` +
+        `<div class="fp-val-box"><input class="fp-inp" id="${id}" type="text" inputmode="decimal" value="${shown}" oninput="var _s=document.getElementById('${id}-sl');if(_s)_s.value=this.value;${onchange}" onchange="_varCommitInput(this,'${id}')"><span class="fp-unit">${u}</span></div>` +
       `</div>` +
-      `<input class="fp-slider" id="${id}-sl" type="range" min="${mn}" max="${mx}" step="${st}" value="${val}" oninput="document.getElementById('${id}').value=this.value;${onchange}">` +
+      `<input class="fp-slider" id="${id}-sl" type="range" min="${mn}" max="${mx}" step="${st}" value="${val}" oninput="document.getElementById('${id}').value=this.value;_varUnbind('${id}');${onchange}">` +
     `</div>`;
   };
   const segs = o.userData.segments;
@@ -24336,7 +24517,9 @@ function _fpSyncValues() {
   const sz   = box.getSize(new THREE.Vector3());
   const set  = (id, v) => {
     const el = document.getElementById(id);
-    if (el && document.activeElement !== el) el.value = v;
+    // Variablen-gebundene Felder zeigen ihre Formel — nicht mit Zahlen überschreiben
+    const bound = o.userData.varExprs && o.userData.varExprs[id] != null;
+    if (el && document.activeElement !== el && !bound) el.value = v;
     const sl = document.getElementById(id + '-sl');
     if (sl && document.activeElement !== sl) sl.value = v;
   };
