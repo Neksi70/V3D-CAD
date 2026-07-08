@@ -1163,6 +1163,73 @@ app.post('/api/occt-subtract-mesh', async (req, res) => {
   }
 });
 
+// ── STEP-Import: STEP-Datei (Base64) → tesselliertes Binär-STL ───────────────
+// STEP speichert mm; der Reader konvertiert in den OCCT-Modellraum (mm) —
+// gleiche Einheit wie die restliche Pipeline, daher kein Umrechnen nötig.
+// In:  { stepBase64 }   Out: { stlBase64, roots }
+app.post('/api/step2stl', async (req, res) => {
+  const b = req.body || {};
+  if (!b.stepBase64) return res.json({ error: 'stepBase64 fehlt' });
+  try {
+    const oc = await getOC();
+    const t0 = Date.now();
+    oc.FS.writeFile('/in.step', new Uint8Array(Buffer.from(b.stepBase64, 'base64')));
+    const reader = new oc.STEPControl_Reader_1();
+    const rst = reader.ReadFile('/in.step');
+    try { oc.FS.unlink('/in.step'); } catch (_) {}
+    if ((rst.value !== undefined ? rst.value : rst) !== 1) {   // 1 = IFSelect_RetDone
+      reader.delete();
+      return res.json({ error: 'STEP-Datei nicht lesbar (Status ' + (rst.value ?? rst) + ')' });
+    }
+    const nRoots = reader.TransferRoots();
+    if (!nRoots) { reader.delete(); return res.json({ error: 'STEP enthält keine übertragbaren Körper' }); }
+    const shape = reader.OneShape();   // mehrere Roots → Compound
+    reader.delete();
+    console.log('[step2stl] roots:', nRoots, 'bbox:', getBBox(oc, shape));
+    const outBuf = solidToSTLBuffer(oc, shape);
+    console.log(`[step2stl] OK — ${outBuf.length} B STL in ${Date.now()-t0} ms`);
+    res.json({ stlBase64: outBuf.toString('base64'), roots: nRoots });
+  } catch (e) {
+    console.error('[step2stl] Fehler:', e);
+    res.json({ error: e.message || String(e) });
+  }
+});
+
+// ── STEP-Export: Binär-STL (Base64) → vernähtes Solid → STEP-Datei ───────────
+// Ergebnis ist ein facettiertes BRep (jede Dreiecksfläche eine planare Face) —
+// für Weiterbearbeitung in Fusion/FreeCAD brauchbar, keine analytischen Flächen.
+// In:  { stlBase64 }   Out: { stepBase64 }
+app.post('/api/stl2step', async (req, res) => {
+  const b = req.body || {};
+  if (!b.stlBase64) return res.json({ error: 'stlBase64 fehlt' });
+  const keep = [];
+  try {
+    const oc = await getOC();
+    const t0 = Date.now();
+    const solid = stlToOCCTSolid(oc, Buffer.from(b.stlBase64, 'base64'), keep);
+    if (!solid) return res.json({ error: 'STL → Solid fehlgeschlagen' });
+    const writer = new oc.STEPControl_Writer_1();
+    const st = writer.Transfer(solid, oc.STEPControl_StepModelType.STEPControl_AsIs, true);
+    if ((st.value !== undefined ? st.value : st) !== 1) {
+      writer.delete();
+      return res.json({ error: 'STEP-Transfer fehlgeschlagen (Status ' + (st.value ?? st) + ')' });
+    }
+    const wst = writer.Write('/out.step');
+    writer.delete();
+    if ((wst.value !== undefined ? wst.value : wst) !== 1)
+      return res.json({ error: 'STEP-Write fehlgeschlagen (Status ' + (wst.value ?? wst) + ')' });
+    const stepBuf = oc.FS.readFile('/out.step');
+    try { oc.FS.unlink('/out.step'); } catch (_) {}
+    console.log(`[stl2step] OK — ${stepBuf.length} B STEP in ${Date.now()-t0} ms`);
+    res.json({ stepBase64: Buffer.from(stepBuf).toString('base64') });
+  } catch (e) {
+    console.error('[stl2step] Fehler:', e);
+    res.json({ error: e.message || String(e) });
+  } finally {
+    for (const op of keep) { try { op.delete(); } catch (_) {} }
+  }
+});
+
 // Debug: Schneidet einen OCCT-Box (kein STL) mit einem SVG-Prism
 app.get('/debug-box-cut', async (_, res) => {
   try {

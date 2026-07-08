@@ -1006,8 +1006,8 @@ const firebaseConfig = {
       <button class="btn" onclick="newScene()">📄 Neu</button>
       <button class="btn" onclick="_localOpen()" title="Design-Datei öffnen (Strg+O)">📂 Öffnen</button>
       <button class="btn" onclick="_localSave()" title="Design lokal speichern (Strg+S)" id="btn-local-save">💾 Speichern</button>
-      <button class="btn" onclick="doImport()">⬆ STL</button>
-      <input type="file" id="fimport" accept=".stl" style="display:none" onchange="handleImport(event)">
+      <button class="btn" onclick="doImport()" title="STL- oder STEP-Datei importieren">⬆ STL/STEP</button>
+      <input type="file" id="fimport" accept=".stl,.step,.stp" style="display:none" onchange="handleImport(event)">
     </div></div>
     <div class="tbg hot"><span class="tbg-l">Kombinieren</span><div class="tbg-row">
       <button class="btn add" onclick="unionSelected()" title="Vereinen: Beide auswählen → Vereinen">∪ Vereinen</button>
@@ -1079,7 +1079,7 @@ const firebaseConfig = {
           <div class="sli-item" onclick="export3MF()">⬇ 3MF (zum Einfärben)</div>
           <div class="sli-item" onclick="exportPartsSTL()">⬇ STL pro Körper</div>
           <div class="sli-item" onclick="exportOBJ()">⬇ OBJ</div>
-          <div class="sli-item" onclick="exportSTEP()">⬇ STEP (extern)</div>
+          <div class="sli-item" onclick="exportSTEP()" title="STEP-Datei fürs CAD (Fusion, FreeCAD, …)">⬇ STEP</div>
         </div>
       </div>
       <div class="sep" id="auth-sep" style="display:none"></div>
@@ -14360,15 +14360,30 @@ ${partXml.join('\n')}
   }
 }
 
-function exportSTEP() {
+// Echter STEP-Export übers OCCT-Backend (/api/stl2step): Szene als STL bauen,
+// Server vernäht zum Solid und schreibt STEP (facettiertes BRep). Ersetzt den
+// alten Umweg über imagetostl.com.
+async function exportSTEP() {
   document.getElementById('stl-menu').classList.remove('show');
   const r = _buildStlBlob(_exportSrc()); if (!r) return;
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(r.blob);
-  a.download = _designFilename('stl');
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  notify('STL heruntergeladen — lade sie auf imagetostl.com hoch um STEP zu erhalten', 'ok');
-  setTimeout(() => window.open('https://www.imagetostl.com/convert/file/stl/to/step', '_blank'), 500);
+  notify('STEP wird erzeugt … (Vernähen kann bei großen Modellen dauern)', 'i');
+  try {
+    const buf = await r.blob.arrayBuffer();
+    const resp = await fetch(_OCCT_BASE + '/api/stl2step', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stlBase64: _bufToBase64(buf) })
+    });
+    const j = await resp.json();
+    if (j.error) throw new Error(j.error);
+    const bin = atob(j.stepBase64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const blob = new Blob([u8], { type: 'application/octet-stream' });
+    const res = await _saveExport(blob, _designFilename('step'));
+    notify(`STEP ${res.wrote ? '→ ' + res.dir : 'exportiert'} ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok');
+  } catch (err) {
+    notify('STEP-Export fehlgeschlagen: ' + err.message, 'e');
+  }
 }
 
 function toggleStlMenu(e) {
@@ -14549,6 +14564,7 @@ function handleLoad(e) {
 function doImport() { document.getElementById('fimport').click(); }
 function handleImport(e) {
   const file = e.target.files[0]; if (!file) return;
+  if (/\.(step|stp)$/i.test(file.name)) { _importStepFile(file); e.target.value = ''; return; }
   const big = file.size > 8 * 1024 * 1024;   // >8 MB → spürbar; Rückmeldung geben
   const reader = new FileReader();
   reader.onload = ev => {
@@ -14563,6 +14579,28 @@ function handleImport(e) {
     }
   };
   reader.readAsArrayBuffer(file); e.target.value = '';
+}
+
+// STEP-Import: Datei ans OCCT-Backend (/api/step2stl), tesselliertes STL zurück,
+// dann durch den normalen STL-Import-Pfad (Größendialog, Positionierung, _origStlBuf
+// für die Boolean-Pipeline). STEP rechnet in mm — wie unsere STL-Kette.
+async function _importStepFile(file) {
+  notify('STEP wird umgewandelt … (' + (file.size / 1024).toFixed(0) + ' KB)', 'i');
+  try {
+    const buf = await file.arrayBuffer();
+    const resp = await fetch(_OCCT_BASE + '/api/step2stl', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stepBase64: _bufToBase64(buf) })
+    });
+    const j = await resp.json();
+    if (j.error) throw new Error(j.error);
+    const bin = atob(j.stlBase64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    _addImportedStl(u8.buffer, file.name.replace(/\.(step|stp)$/i, '.stl'), true);
+  } catch (err) {
+    notify('STEP-Import fehlgeschlagen: ' + err.message, 'e');
+  }
 }
 
 // Gemeinsamer STL-Import (Datei-Dialog + STL-Bibliothek). showDialog=true → Größendialog.
