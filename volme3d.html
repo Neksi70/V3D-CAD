@@ -4944,30 +4944,44 @@ function _ensureOutwardGeo(geo) {
   return g;
 }
 
-// Drehkörper-Schneider für EINE Kreiskante (Welt-Koords). useFil: Viertelkreis-
-// Profil tangential an Deckfläche und Lochwand; sonst 45°-Fase. bevU in Units.
-function _rimBevelCutter(rim, bevU, useFil) {
-  const R = rim.rW;
-  const bev = Math.min(bevU, R * 0.9);
-  const ov = 0.1, ovIn = Math.min(0.08, R * 0.5);
-  const pts = [new THREE.Vector2(R - ovIn, ov)];
+// Drehkörper-Schneider für EINE Kreiskante. Wird im LOKALEN Raum des Körpers
+// gebaut und dessen Welt-Transform in die Geometrie GEBACKEN — so passt der
+// Schneider auch auf nicht-uniform skalierte Körper (Loch = Ellipse in Welt)
+// exakt auf die Kante. bevU = gewünschte Stärke in WELT-Units; das Profil wird
+// radial/axial mit den lokalen Skalierungsfaktoren kompensiert.
+function _rimBevelCutter(o, rim, bevU, useFil) {
+  o.updateMatrixWorld(true);
+  const mw = o.matrixWorld;
+  // Skalierungsfaktoren: in der Kreisebene (rW/r) und entlang der Achse
+  const sIn = Math.max(1e-6, rim.rW / rim.r);
+  const sAx = Math.max(1e-6, rim.axis.clone().applyMatrix3(new THREE.Matrix3().setFromMatrix4(mw)).length());
+  const R = rim.r;
+  const bevR = Math.min(bevU / sIn, R * 0.9);
+  const bevY = (bevR * sIn) / sAx;                           // Welt-gleiche Stärke axial
+  const ovY = 0.1 / sAx, ovIn = Math.min(0.08 / sIn, R * 0.5);
+  const pts = [new THREE.Vector2(R - ovIn, ovY)];
   if (useFil) {
-    pts.push(new THREE.Vector2(R + bev, ov));
-    const K = 12;   // Viertelkreis, Zentrum (R+bev, -bev)
+    pts.push(new THREE.Vector2(R + bevR, ovY));
+    const K = 12;   // Viertelkreis (in Welt), Zentrum (R+bevR, -bevY)
     for (let k = 0; k <= K; k++) {
       const a = Math.PI / 2 + (Math.PI / 2) * k / K;
-      pts.push(new THREE.Vector2(R + bev + bev * Math.cos(a), -bev + bev * Math.sin(a)));
+      pts.push(new THREE.Vector2(R + bevR + bevR * Math.cos(a), -bevY + bevY * Math.sin(a)));
     }
   } else {
-    pts.push(new THREE.Vector2(R + bev + ov, ov));   // 45° bis (R, -bev)
-    pts.push(new THREE.Vector2(R, -bev));
+    pts.push(new THREE.Vector2(R + bevR + 0.1 / sIn, ovY));  // 45° (Welt) bis (R, -bevY)
+    pts.push(new THREE.Vector2(R, -bevY));
   }
-  pts.push(new THREE.Vector2(R - ovIn, -bev));
+  pts.push(new THREE.Vector2(R - ovIn, -bevY));
   pts.push(pts[0].clone());
-  const geo = _ensureOutwardGeo(new THREE.LatheGeometry(pts, 64));
-  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial());
-  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...rim.axisW));
-  m.position.set(...rim.cW);
+  const geo = new THREE.LatheGeometry(pts, 64);
+  // Lokale Platzierung (Achse ausrichten, ins Zentrum) + Welt-Transform backen
+  const place = new THREE.Matrix4().compose(
+    rim.c.clone(),
+    new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), rim.axis),
+    new THREE.Vector3(1, 1, 1));
+  geo.applyMatrix4(place);
+  geo.applyMatrix4(mw);
+  const m = new THREE.Mesh(_ensureOutwardGeo(geo), new THREE.MeshStandardMaterial());
   m.updateWorldMatrix(true, true);
   return m;
 }
@@ -4978,7 +4992,7 @@ async function _applyRimBevel(o, rims, chamferDist) {
   const useFil = chamferDist > 0;              // Konvention wie Zylinder: → Rundung, ← Fase
   const mm = Math.abs(chamferDist) * 10;
   if (mm < 0.05) return;
-  const cutters = rims.map(rim => _rimBevelCutter(rim, mm / 10, useFil));
+  const cutters = rims.map(rim => _rimBevelCutter(o, rim, mm / 10, useFil));
   _progressShow(useFil ? 'Lochkante wird abgerundet…' : 'Lochkante wird angefast…');
   _progressSet(8); _progressCreep(93);
   try {
@@ -5053,11 +5067,18 @@ function _rimBuildVisuals(o, rims, baseIdx) {
   const bsz = getMeshBox(o).getSize(new THREE.Vector3());
   const hitR = Math.max(0.15, Math.max(bsz.x, bsz.y, bsz.z) * 0.02);
   const hitMat = new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide });
+  o.updateMatrixWorld(true);
   rims.forEach((rim, k) => {
-    const tg = new THREE.TorusGeometry(rim.rW, hitR, 6, 48);
+    // Torus im LOKALEN Kreisraum bauen und die Welt-Transform in die Geometrie
+    // backen → trifft auch elliptisch verzerrte Löcher (nicht-uniforme Skalierung).
+    const sIn = Math.max(1e-6, rim.rW / rim.r);
+    const tg = new THREE.TorusGeometry(rim.r, hitR / sIn, 6, 48);
+    tg.applyMatrix4(new THREE.Matrix4().compose(
+      rim.c.clone(),
+      new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), rim.axis),
+      new THREE.Vector3(1, 1, 1)));
+    tg.applyMatrix4(o.matrixWorld);
     const tm = new THREE.Mesh(tg, hitMat);
-    tm.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...rim.axisW));
-    tm.position.set(...rim.cW);
     tm.userData.edgeIndex = baseIdx + k;
     scene.add(tm);
     _edgeMeshes.push(tm);
@@ -23660,7 +23681,7 @@ function _fpBuildRows(type, o) {
              propLock() +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
-             ((shellBtn||hollowLidBtn) ? '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn : '') +
+             ((edgeBtn||shellBtn||hollowLidBtn) ? '<div class="fp-sep"></div>' + edgeBtn + shellBtn + hollowLidBtn : '') +
              _dispRows();
   }
 }
