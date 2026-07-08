@@ -1014,6 +1014,7 @@ const firebaseConfig = {
       <button class="btn sub" onclick="subtractHoles()" title="Abziehen: 1. Objekt als Bohrung ○ markieren  2. Beide auswählen  3. Abziehen">⊖ Abziehen</button>
       <button class="btn" onclick="groupSelected()" title="Strg+G">⊞ Gruppe</button>
       <button class="btn" onclick="ungroupSelected()" title="Strg+Shift+G">⊟ Aufheben</button>
+      <button class="btn" onclick="fitCheckTool()" title="Passung prüfen: 2 Objekte auswählen → zeigt Überschneidung (rot) oder kleinsten Abstand">⧉ Passung</button>
     </div></div>
     <div class="tbg"><span class="tbg-l">Anordnen</span><div class="tbg-row">
       <button class="btn" onclick="alignTool()" title="L — Mind. 2 Objekte auswählen">⊜ Ausrichten</button>
@@ -1273,12 +1274,20 @@ const firebaseConfig = {
   <div id="vp-ctxmenu">
     <div class="sli-item" id="ctx-measure">📐 Messen (Abstand)</div>
     <div class="sli-item" id="ctx-pushpull">↕ Fläche ziehen (Push/Pull)</div>
+    <div class="sli-item" id="ctx-loft">⤧ Loft (Flächen verbinden)</div>
   </div>
   <div id="pp-bar" style="display:none;position:fixed;bottom:56px;left:50%;transform:translateX(-50%);background:rgba(24,24,32,0.93);border:1px solid #444;border-radius:8px;padding:7px 12px;align-items:center;gap:10px;z-index:8500;font-size:12px;color:#ccc;white-space:nowrap">
     <span id="pp-status" style="font-weight:700;color:#aaa">Fläche anklicken</span>
     <label id="pp-input-wrap" style="display:none;align-items:center;gap:5px">Versatz <input id="pp-mm" type="number" value="5" step="0.5" oninput="_ppPreview(parseFloat(this.value)||0)" onkeydown="event.stopPropagation(); if(event.key==='Enter'){event.preventDefault();_ppApply();}" style="width:64px;background:#11141c;border:1px solid #455;color:#fff;border-radius:4px;padding:3px 5px;font-size:12px"> mm</label>
     <button id="pp-apply" onclick="_ppApply()" style="display:none;background:#F97316;border:none;color:#fff;border-radius:5px;padding:3px 10px;cursor:pointer;font-size:11px;font-weight:700">✓ Anwenden</button>
     <button onclick="exitPushPull()" style="background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:3px 8px;cursor:pointer;font-size:11px">✕ ESC</button>
+  </div>
+  <div id="lf-bar" style="display:none;position:fixed;bottom:56px;left:50%;transform:translateX(-50%);background:rgba(24,24,32,0.93);border:1px solid #444;border-radius:8px;padding:7px 12px;align-items:center;gap:10px;z-index:8500;font-size:12px;color:#ccc;white-space:nowrap">
+    <span id="lf-status" style="font-weight:700;color:#aaa">Ebene Flächen anklicken (mind. 2)</span>
+    <label style="display:flex;align-items:center;gap:5px;cursor:pointer" title="≥3 Profile: weicher Spline-Verlauf statt gerader Segmente"><input id="lf-smooth" type="checkbox" checked onchange="_lfPreviewUpdate()" style="accent-color:#F97316">glatt</label>
+    <button id="lf-undo" onclick="_lfUndo()" style="display:none;background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px">← Zurück</button>
+    <button id="lf-apply" onclick="_lfApply()" style="display:none;background:#F97316;border:none;color:#fff;border-radius:5px;padding:3px 10px;cursor:pointer;font-size:11px;font-weight:700">✓ Erstellen</button>
+    <button onclick="exitLoftMode()" style="background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:3px 8px;cursor:pointer;font-size:11px">✕ ESC</button>
   </div>
   <div id="dim-handles"></div>
   <div id="align-handles"></div>
@@ -1554,6 +1563,15 @@ const firebaseConfig = {
             <path d="M7 15c-2.5 1-2.5 4 0 5" stroke-dasharray="2,2" stroke-width="1"/>
           </svg>
           Drehen
+        </div>
+        <div class="shp" onclick="enterLoftMode()" title="Loft (wie Shapr3D): 2 oder mehr ebene Flächen nacheinander anklicken (Reihenfolge = Verlauf) → weicher Übergangskörper">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">
+            <ellipse cx="12" cy="19" rx="8" ry="2.6"/>
+            <ellipse cx="12" cy="5" rx="3.5" ry="1.5"/>
+            <path d="M4 19 C5.5 11 7.5 8 8.5 5"/>
+            <path d="M20 19 C18.5 11 16.5 8 15.5 5"/>
+          </svg>
+          Loft
         </div>
         <div class="shp" onclick="enterSketchMode()" title="2D-Skizze auf der Bodenebene zeichnen und zu einem Körper extrudieren">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">
@@ -5185,6 +5203,7 @@ function _applyBufferGeometryChamfer(mesh, edgeIndex, chamferDist) {
 function enterEdgeMode(quiet = false) {
   const o = getFirst();
   if (!o || !o.userData) return;
+  if (_lf.active) exitLoftMode();
   if (o.userData._occtParams && !o.userData.occtShape) {
     const b = getMeshBox(o);
     const s = b.getSize(new THREE.Vector3());
@@ -5452,6 +5471,7 @@ function exitEdgeMode() {
 // ═══ REVOLVE / SKETCH-DREHEN ════════════════════════════════════════════
 function enterRevolveMode() {
   if (_edgeMode) exitEdgeMode();
+  if (_lf.active) exitLoftMode();
   _revolveSavedCam = { theta: sph.theta, phi: sph.phi, r: sph.r, target: orbitTarget.clone() };
   setView('front');
   const hDir = new THREE.Vector3(camera.position.x, 0, camera.position.z);
@@ -5525,6 +5545,7 @@ function enterSketchMode() {
   if (_sk.active) { exitSketchMode(); return; }
   if (_edgeMode)    exitEdgeMode();
   if (_revolveMode) exitRevolveMode();
+  if (_lf.active)   exitLoftMode();
   _sk.active = true; _sk.tool = 'line'; _sk.ents = []; _sk.pending = [];
   _sk.savedCam = { theta: sph.theta, phi: sph.phi, r: sph.r, target: orbitTarget.clone() };
   setView('top');
@@ -7375,6 +7396,7 @@ function enterShellMode() {
     Math.abs(o.quaternion.x) + Math.abs(o.quaternion.y) + Math.abs(o.quaternion.z) < 0.01;
   if (!qOk) { notify('Objekt erst auf 0° drehen (Gehäuse braucht ungedrehte Form)', 'w'); return; }
   if (_edgeMode) exitEdgeMode();
+  if (_lf.active) exitLoftMode();
   _shellMode = true; _shellObj = o; _shellFaces = [];
   // Default-Wandstärke an Objektgröße anpassen (kleinste Kante in mm)
   const _ssz = getMeshBox(o).getSize(new THREE.Vector3());
@@ -11026,6 +11048,78 @@ async function unionSelected() {
   }
 }
 
+// ═══ PASSUNGSPRÜFUNG ═════════════════════════════════════════════════════════
+// Zwei Körper auswählen → OCCT-Backend prüft Boolean-Common-Volumen.
+// Überlapp: Durchdringung als rotes Highlight-Mesh + Volumen in mm³.
+// Kein Überlapp: kleinster Abstand als orange Messlinie zwischen den nächsten Punkten.
+let _fitVis = [];   // temporäre Anzeige-Objekte (Highlight/Messlinie), nicht in `objects`
+let _fitVisTimer = null;
+
+function _fitClear() {
+  _fitVis.forEach(o => { scene.remove(o); o.geometry && o.geometry.dispose(); o.material && o.material.dispose(); });
+  _fitVis = [];
+  if (_fitVisTimer) { clearTimeout(_fitVisTimer); _fitVisTimer = null; }
+}
+
+async function fitCheckTool() {
+  _fitClear();
+  if (selectedObjs.length !== 2) { notify('Genau 2 Objekte auswählen (Strg+Klick), dann ⧉ Passung', 'w'); return; }
+  const [a, b] = selectedObjs;
+  const aStls = _objsToUnionStls([a]), bStls = _objsToUnionStls([b]);
+  if (!aStls.length || !bStls.length) { notify('Auswahl enthält keine prüfbaren Flächen', 'w'); return; }
+  const nTri = [...aStls, ...bStls].reduce((s, x) => s + (x.byteLength - 84) / 50, 0);
+  if (nTri > 120000) {
+    notify('Zu viele Dreiecke (' + Math.round(nTri).toLocaleString('de') + ') für die Prüfung — erst 🔻 Vereinfachen', 'w');
+    return;
+  }
+  _progressShow('Passung wird geprüft…'); _progressSet(10);
+  _progressCreep(85, 0.6);
+  try {
+    const resp = await fetch(_OCCT_BASE + '/api/occt-fit-check', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aStls: aStls.map(_bufToBase64), bStls: bStls.map(_bufToBase64) })
+    });
+    _progressStopCreep(); _progressSet(92, 'Ergebnis…');
+    const d = await resp.json();
+    if (d.error) throw new Error(d.error);
+    _progressDone();
+    // Backend-Frame (mm, Z-up) → Editor-Frame (Units, Y-up): Inverse von
+    // _objsToUnionStls (scale ×10, rotateX +90°) → e = (sx/10, sz/10, −sy/10)
+    const toEd = p => new THREE.Vector3(p[0] / 10, p[2] / 10, -p[1] / 10);
+    if (d.overlap) {
+      const bytes = Uint8Array.from(atob(d.commonStlBase64), c => c.charCodeAt(0));
+      const geo = parseSTL(bytes.buffer);
+      const mat = new THREE.MeshBasicMaterial({ color: 0xff2244, transparent: true, opacity: 0.55, depthTest: false });
+      const hl = new THREE.Mesh(geo, mat);
+      hl.scale.setScalar(0.1); hl.rotation.x = -Math.PI / 2;   // wie _meshFromStlB64, aber OHNE Neuzentrierung (Welt-Frame!)
+      hl.renderOrder = 999;
+      scene.add(hl); _fitVis.push(hl);
+      const v = d.volumeMm3;
+      notify('⚠ Überschneidung: ' + (v >= 100 ? v.toFixed(0) : v.toFixed(2)) + ' mm³ — rot markiert', 'e');
+    } else if (d.clearanceMm != null && d.clearanceMm > 0.001 && d.pA && d.pB) {
+      const pA = toEd(d.pA), pB = toEd(d.pB);
+      const lineGeo = new THREE.BufferGeometry().setFromPoints([pA, pB]);
+      const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0xff8800, depthTest: false }));
+      line.renderOrder = 999;
+      scene.add(line); _fitVis.push(line);
+      for (const p of [pA, pB]) {
+        const dot = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 8),
+          new THREE.MeshBasicMaterial({ color: 0xff8800, depthTest: false }));
+        dot.position.copy(p); dot.renderOrder = 999;
+        scene.add(dot); _fitVis.push(dot);
+      }
+      const mm = d.clearanceMm;
+      notify('✓ Kein Kontakt — kleinster Abstand ' + (mm < 1 ? mm.toFixed(2) : mm.toFixed(1)) + ' mm (orange Linie)', 'ok');
+    } else {
+      notify('✓ Berührung ohne Durchdringung — passgenau (Abstand ≈ 0)', 'ok');
+    }
+    if (_fitVis.length) _fitVisTimer = setTimeout(_fitClear, 15000);   // Anzeige nach 15 s aufräumen
+  } catch (e) {
+    _progressHide();
+    notify('Passungsprüfung fehlgeschlagen: ' + (e.message || e), 'e');
+  }
+}
+
 // ═══ OCCT SVG-ABZUG HILFSFUNKTIONEN ════════════════════════════════════════
 // Baut saubere OCCT-Extrusionen aus SVG-Pfaddaten für robustes ThreeCSG.
 // OCCT-Geometrie ist immer wasserdicht + korrekte Wicklung → kein BSP-Fehler.
@@ -12925,6 +13019,7 @@ function enterPushPull(){
   if (_shellMode) exitShellMode();
   if (_edgeMode) exitEdgeMode();
   if (_revolveMode) exitRevolveMode();
+  if (_lf.active) exitLoftMode();
   const o = selectedObjs.length === 1 ? selectedObjs[0] : null;
   if (!o){ notify('Bitte genau ein Objekt wählen','w'); return; }
   const mesh = o.isMesh ? o : o.getObjectByProperty('isMesh', true);
@@ -13025,6 +13120,344 @@ function _ppApply(){
   if (typeof _updateObjEdgeLines === 'function'){ try{ _updateObjEdgeLines(target); }catch(_){} }
   exitPushPull();
   notify('Fläche verschoben ✓ (jetzt Freiform-Körper)','ok');
+}
+
+// ═══ LOFT 3D: 2+ ebene Flächen → Übergangskörper (Shapr3D-Stil) ═══════════
+// Anders als der Skizzen-Loft (Profile in EINER Ebene, gestapelt) verbindet
+// dieses Werkzeug frei im Raum liegende ebene Flächen beliebiger Körper:
+// Flächen in Reihenfolge anklicken → Randkonturen werden extrahiert und zu
+// einem Übergangskörper vernäht (2 Profile = linear, ≥3 = glatt/Catmull-Rom).
+const _lf = { active:false, picks:[], group:null, preview:null };
+
+function enterLoftMode(){
+  if (_lf.active){ exitLoftMode(); return; }
+  if (_sk.active)   exitSketchMode();
+  if (_pp.active)   exitPushPull();
+  if (_shellMode)   exitShellMode();
+  if (_edgeMode)    exitEdgeMode();
+  if (_revolveMode) exitRevolveMode();
+  if (workplaneMode) toggleWorkplane();
+  _lf.active = true; _lf.picks = []; _lf.preview = null;
+  _lf.group = new THREE.Group(); _lf.group.renderOrder = 995; scene.add(_lf.group);
+  canvas.style.cursor = 'crosshair';
+  document.getElementById('lf-bar').style.display = 'flex';
+  _lfStatus();
+  notify('Loft: ebene Flächen nacheinander anklicken (Reihenfolge = Verlauf), dann „✓ Erstellen" — Enter bestätigt, Esc bricht ab','ok');
+}
+function exitLoftMode(){
+  if (!_lf.active) return;
+  _lf.active = false; _lf.picks = []; _lf.preview = null;
+  if (_lf.group){
+    scene.remove(_lf.group);
+    _lf.group.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material && o.material.dispose) o.material.dispose(); });
+    _lf.group = null;
+  }
+  canvas.style.cursor = '';
+  document.getElementById('lf-bar').style.display = 'none';
+}
+function _lfStatus(){
+  const n = _lf.picks.length;
+  document.getElementById('lf-status').textContent =
+    n === 0 ? 'Ebene Flächen anklicken (mind. 2)' :
+    n === 1 ? '1 Profil — noch mindestens eine Fläche anklicken' :
+              n + ' Profile gewählt';
+  document.getElementById('lf-apply').style.display = n >= 2 ? '' : 'none';
+  document.getElementById('lf-undo').style.display  = n >= 1 ? '' : 'none';
+}
+
+// Randkontur der angeklickten ebenen Teilfläche: Flood-Fill über koplanare,
+// kantenverbundene Dreiecke ab dem getroffenen Dreieck. Kanten, die nur von
+// EINEM Dreieck der Region benutzt werden, bilden den Rand; bei Flächen mit
+// Loch zählt die äußere (größte) Schleife. Alles in Welt-Koordinaten.
+function _lfFaceRing(mesh, hit){
+  mesh.updateMatrixWorld(true);
+  let n = hit.face.normal.clone().transformDirection(mesh.matrixWorld).normalize();
+  if (n.dot(raycaster.ray.direction) > 0) n.negate();
+  const wp = hit.point;
+  const g = mesh.geometry, posA = g.attributes.position;
+  g.computeBoundingBox();
+  const sMax = Math.max(Math.abs(mesh.scale.x), Math.abs(mesh.scale.y), Math.abs(mesh.scale.z)) || 1;
+  const diag = g.boundingBox.getSize(new THREE.Vector3()).length() * sMax;
+  const eps = Math.max(0.004, diag * 0.0025);
+  const idxA = g.index ? g.index.array : null;
+  const vtx = i => idxA ? idxA[i] : i;
+  const triCount = (idxA ? idxA.length : posA.count) / 3;
+  if (hit.faceIndex == null || hit.faceIndex >= triCount) return null;
+  // Welt-Positionen + Ebenen-Test pro Vertex
+  const W = new Float64Array(posA.count * 3), onP = new Uint8Array(posA.count);
+  const v = new THREE.Vector3();
+  for (let i = 0; i < posA.count; i++){
+    v.fromBufferAttribute(posA, i).applyMatrix4(mesh.matrixWorld);
+    W[i*3] = v.x; W[i*3+1] = v.y; W[i*3+2] = v.z;
+    onP[i] = Math.abs(n.x*(v.x-wp.x) + n.y*(v.y-wp.y) + n.z*(v.z-wp.z)) < eps ? 1 : 0;
+  }
+  // Vertex-Schlüssel nach Position quantisieren (doppelte Vertices verschmelzen)
+  const q = 1e-3;
+  const keyOf = i => Math.round(W[i*3]/q) + ',' + Math.round(W[i*3+1]/q) + ',' + Math.round(W[i*3+2]/q);
+  // Koplanare, gleich orientierte Dreiecke sammeln
+  const inSet = new Uint8Array(triCount);
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(), tn = new THREE.Vector3();
+  for (let t = 0; t < triCount; t++){
+    const a = vtx(t*3), b = vtx(t*3+1), c = vtx(t*3+2);
+    if (!(onP[a] && onP[b] && onP[c])) continue;
+    A.set(W[a*3],W[a*3+1],W[a*3+2]); B.set(W[b*3],W[b*3+1],W[b*3+2]); C.set(W[c*3],W[c*3+1],W[c*3+2]);
+    tn.subVectors(B,A).cross(C.clone().sub(A));
+    if (tn.lengthSq() < 1e-14) continue;                    // degeneriert
+    if (tn.normalize().dot(n) > 0.5) inSet[t] = 1;          // gleiche Blickrichtung wie Klick-Normale
+  }
+  if (!inSet[hit.faceIndex]) return null;
+  // Kanten-Adjazenz nur über die koplanare Menge → Flood-Fill ab Klick-Dreieck
+  const edgeTris = new Map();
+  const ekey = (i,j) => { const a = keyOf(i), b = keyOf(j); return a < b ? a+'|'+b : b+'|'+a; };
+  for (let t = 0; t < triCount; t++){
+    if (!inSet[t]) continue;
+    for (let e = 0; e < 3; e++){
+      const k = ekey(vtx(t*3+e), vtx(t*3+(e+1)%3));
+      let arr = edgeTris.get(k); if (!arr){ arr = []; edgeTris.set(k, arr); }
+      arr.push(t);
+    }
+  }
+  const region = new Uint8Array(triCount), stack = [hit.faceIndex];
+  region[hit.faceIndex] = 1;
+  while (stack.length){
+    const t = stack.pop();
+    for (let e = 0; e < 3; e++){
+      const arr = edgeTris.get(ekey(vtx(t*3+e), vtx(t*3+(e+1)%3)));
+      for (const t2 of arr) if (!region[t2]){ region[t2] = 1; stack.push(t2); }
+    }
+  }
+  // Rand: gerichtete Kanten der Region, deren Gegenkante fehlt → Schleifen laufen
+  const dirSeen = new Set();
+  for (let t = 0; t < triCount; t++){
+    if (!region[t]) continue;
+    for (let e = 0; e < 3; e++) dirSeen.add(keyOf(vtx(t*3+e)) + '>' + keyOf(vtx(t*3+(e+1)%3)));
+  }
+  const bnd = new Map();        // vertexKey → {next:vertexKey, pos:[x,y,z]}
+  for (let t = 0; t < triCount; t++){
+    if (!region[t]) continue;
+    for (let e = 0; e < 3; e++){
+      const i = vtx(t*3+e), j = vtx(t*3+(e+1)%3), ki = keyOf(i), kj = keyOf(j);
+      if (!dirSeen.has(kj + '>' + ki))          // keine Gegenkante → Randkante
+        bnd.set(ki, { next: kj, pos: [W[i*3],W[i*3+1],W[i*3+2]] });
+    }
+  }
+  // Schleifen ablaufen, größte (äußere) nehmen
+  const loops = [], used = new Set();
+  for (const start of bnd.keys()){
+    if (used.has(start)) continue;
+    const loop = []; let k = start, guard = 0;
+    while (k && !used.has(k) && guard++ < 100000){
+      used.add(k);
+      const e = bnd.get(k); if (!e) break;
+      loop.push(new THREE.Vector3(e.pos[0], e.pos[1], e.pos[2]));
+      k = e.next;
+    }
+    if (loop.length >= 3 && k === start) loops.push(loop);
+  }
+  if (!loops.length) return null;
+  const area3 = lp => { const s = new THREE.Vector3(), t1 = new THREE.Vector3(), t2 = new THREE.Vector3();
+    for (let i = 1; i < lp.length-1; i++){ t1.subVectors(lp[i], lp[0]); t2.subVectors(lp[i+1], lp[0]); s.add(t1.clone().cross(t2)); }
+    return s.length() / 2; };
+  loops.sort((a,b) => area3(b) - area3(a));
+  const ring = loops[0];
+  const cen = new THREE.Vector3(); ring.forEach(p => cen.add(p)); cen.multiplyScalar(1/ring.length);
+  return { ring, normal: n, center: cen };
+}
+
+function _lfPickFace(hit){
+  const mesh = hit.object;
+  const r = _lfFaceRing(mesh, hit);
+  if (!r){ notify('Keine ebene Fläche getroffen — auf eine flache Seite klicken','w'); return; }
+  // Gleiche Fläche nochmal angeklickt → abwählen
+  for (let i = 0; i < _lf.picks.length; i++){
+    const p = _lf.picks[i];
+    if (p.center.distanceTo(r.center) < 0.02 && Math.abs(p.normal.dot(r.normal)) > 0.999){
+      _lf.group.remove(p.hl); p.hl.geometry.dispose(); p.hl.material.dispose();
+      _lf.picks.splice(i, 1);
+      _lfStatus(); _lfPreviewUpdate();
+      return;
+    }
+  }
+  // Highlight-Ring (minimal aus der Fläche gehoben, damit er nicht flackert)
+  const pts = r.ring.map(p => p.clone().addScaledVector(r.normal, 0.01));
+  const hl = new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: 0xF97316, depthTest: false, transparent: true }));
+  hl.renderOrder = 997;
+  _lf.group.add(hl);
+  _lf.picks.push({ ring: r.ring, normal: r.normal, center: r.center, hl });
+  _lfStatus(); _lfPreviewUpdate();
+}
+function _lfUndo(){
+  const p = _lf.picks.pop();
+  if (!p) return;
+  _lf.group.remove(p.hl); p.hl.geometry.dispose(); p.hl.material.dispose();
+  _lfStatus(); _lfPreviewUpdate();
+}
+function _lfPreviewUpdate(){
+  if (!_lf.active) return;
+  if (_lf.preview){
+    _lf.group.remove(_lf.preview); _lf.preview.geometry.dispose(); _lf.preview.material.dispose();
+    _lf.preview = null;
+  }
+  if (_lf.picks.length < 2) return;
+  const smooth = document.getElementById('lf-smooth').checked;
+  const geo = _buildLoft3DGeo(_lf.picks.map(p => p.ring), 64, smooth);
+  _lf.preview = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+    color: 0xF97316, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide }));
+  _lf.group.add(_lf.preview);
+}
+
+// ── Loft-Geometrie: Ringe resampeln, Twist-minimiert ausrichten, vernähen ──
+function _lfResample3D(ring, N){
+  const M = ring.length, seg = new Array(M); let total = 0;
+  for (let i = 0; i < M; i++){ seg[i] = ring[i].distanceTo(ring[(i+1)%M]); total += seg[i]; }
+  if (total < 1e-9) return Array.from({ length: N }, () => ring[0].clone());
+  const out = [], step = total / N; let si = 0, acc = 0;
+  for (let k = 0; k < N; k++){
+    const t = k * step;
+    while (si < M-1 && acc + seg[si] < t){ acc += seg[si]; si++; }
+    const f = Math.min(1, Math.max(0, (t - acc) / (seg[si] || 1e-9)));
+    out.push(new THREE.Vector3().lerpVectors(ring[si], ring[(si+1)%M], f));
+  }
+  return out;
+}
+function _ringNormal3(ring){          // Newell-Normale (auch für leicht unebene Ringe)
+  const n = new THREE.Vector3();
+  for (let i = 0; i < ring.length; i++){
+    const a = ring[i], b = ring[(i+1)%ring.length];
+    n.x += (a.y-b.y)*(a.z+b.z); n.y += (a.z-b.z)*(a.x+b.x); n.z += (a.x-b.x)*(a.y+b.y);
+  }
+  return n.normalize();
+}
+function _catmull3(p0,p1,p2,p3,t){
+  const t2 = t*t, t3 = t2*t;
+  const f = (a,b,c,d) => 0.5*((2*b) + (-a+c)*t + (2*a-5*b+4*c-d)*t2 + (-a+3*b-3*c+d)*t3);
+  return new THREE.Vector3(f(p0.x,p1.x,p2.x,p3.x), f(p0.y,p1.y,p2.y,p3.y), f(p0.z,p1.z,p2.z,p3.z));
+}
+function _buildLoft3DGeo(ringsIn, N, smooth){
+  N = N || 96;
+  const K = ringsIn.length;
+  const cents = ringsIn.map(r => { const c = new THREE.Vector3(); r.forEach(p => c.add(p)); return c.multiplyScalar(1/r.length); });
+  // Verlaufsrichtung je Profil (zentraler Differenzenquotient über die Zentren)
+  const tang = cents.map((c,k) => {
+    const t = new THREE.Vector3().subVectors(cents[Math.min(K-1,k+1)], cents[Math.max(0,k-1)]);
+    return t.lengthSq() < 1e-12 ? new THREE.Vector3(0,1,0) : t.normalize();
+  });
+  // Wicklung vereinheitlichen: Newell-Normale aller Ringe gegen die Verlaufsrichtung
+  const rings = ringsIn.map((r,k) => {
+    const rr = r.map(p => p.clone());
+    if (_ringNormal3(rr).dot(tang[k]) > 0) rr.reverse();
+    return _lfResample3D(rr, N);
+  });
+  // Twist minimieren: Start-Offset je Ring gegen den vorherigen wählen
+  for (let k = 1; k < K; k++){
+    const prev = rings[k-1], cur = rings[k];
+    let best = 0, bd = Infinity;
+    for (let s = 0; s < N; s++){
+      let d = 0;
+      for (let i = 0; i < N; i += 2){ d += cur[(i+s)%N].distanceToSquared(prev[i]); if (d >= bd) break; }
+      if (d < bd){ bd = d; best = s; }
+    }
+    if (best) rings[k] = cur.slice(best).concat(cur.slice(0, best));
+  }
+  // Zwischenreihen: 2 Profile = linear; ≥3 + glatt = Catmull-Rom durch alle
+  let rows = rings;
+  if (smooth && K >= 3){
+    const S = 8; rows = [];
+    for (let k = 0; k < K-1; k++){
+      const r0 = rings[Math.max(0,k-1)], r1 = rings[k], r2 = rings[k+1], r3 = rings[Math.min(K-1,k+2)];
+      for (let s = 0; s < S; s++){
+        const t = s / S, row = new Array(N);
+        for (let i = 0; i < N; i++) row[i] = _catmull3(r0[i], r1[i], r2[i], r3[i], t);
+        rows.push(row);
+      }
+    }
+    rows.push(rings[K-1]);
+  }
+  // Mantel
+  const pos = [], idx = [], R = rows.length;
+  for (let r = 0; r < R; r++) for (let i = 0; i < N; i++){ const p = rows[r][i]; pos.push(p.x, p.y, p.z); }
+  for (let r = 0; r < R-1; r++) for (let i = 0; i < N; i++){
+    const a = r*N+i, b = r*N+(i+1)%N, c = (r+1)*N+(i+1)%N, d = (r+1)*N+i;
+    idx.push(a,b,d, b,c,d);
+  }
+  // Deckel mit eigenen Vertices (scharfe Kanten, wie beim Skizzen-Loft)
+  function cap(row, up){
+    const cen = new THREE.Vector3(); row.forEach(p => cen.add(p)); cen.multiplyScalar(1/N);
+    const ci = pos.length/3; pos.push(cen.x, cen.y, cen.z);
+    const start = pos.length/3;
+    for (let i = 0; i < N; i++) pos.push(row[i].x, row[i].y, row[i].z);
+    for (let i = 0; i < N; i++){ const a = start+i, b = start+(i+1)%N; if (up) idx.push(ci,a,b); else idx.push(ci,b,a); }
+  }
+  cap(rows[0], false);
+  cap(rows[R-1], true);
+  // Sicherheitsnetz: negatives Gesamtvolumen = Normalen zeigen nach innen
+  // (z.B. Verlauf „von oben nach unten" geklickt) → alle Dreiecke umdrehen
+  let vol = 0;
+  for (let t = 0; t < idx.length; t += 3){
+    const a = idx[t]*3, b = idx[t+1]*3, c = idx[t+2]*3;
+    vol += pos[a]*(pos[b+1]*pos[c+2]-pos[b+2]*pos[c+1])
+         - pos[a+1]*(pos[b]*pos[c+2]-pos[b+2]*pos[c])
+         + pos[a+2]*(pos[b]*pos[c+1]-pos[b+1]*pos[c]);
+  }
+  if (vol < 0) for (let t = 0; t < idx.length; t += 3){ const tmp = idx[t+1]; idx[t+1] = idx[t+2]; idx[t+2] = tmp; }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals(); geo.computeBoundingBox();
+  return geo;
+}
+
+function _lfApply(){
+  if (!_lf.active || _lf.picks.length < 2){ notify('Mindestens 2 Flächen anklicken','w'); return; }
+  const smooth = document.getElementById('lf-smooth').checked;
+  saveUndo();
+  const rings = _lf.picks.map(p => p.ring);
+  const geo = _buildLoft3DGeo(rings, 96, smooth);
+  // Geometrie um die Bounding-Box-Mitte zentrieren, Mesh dorthin setzen
+  geo.computeBoundingBox();
+  const c = geo.boundingBox.getCenter(new THREE.Vector3());
+  geo.translate(-c.x, -c.y, -c.z); geo.computeBoundingBox();
+  const color = currentColor;
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide }));
+  mesh.position.copy(c);
+  mesh.castShadow = mesh.receiveShadow = true;
+  typeCounts['loft3d'] = (typeCounts['loft3d']||0) + 1;
+  mesh.userData = { id: idCtr++, type: 'loft3d', shapeType: 'loft3d', name: 'Loft '+typeCounts['loft3d'],
+                    color, isHole: false, fillet: 0, chamfer: 0 };
+  // Ringe LOKAL (relativ zur Mesh-Position) ablegen → Rebuild (Seiten/Glatt)
+  // funktioniert auch, nachdem der Körper verschoben wurde
+  mesh.userData._l3Rings = rings.map(r => r.map(p => [
+    Math.round((p.x-c.x)*1e4)/1e4, Math.round((p.y-c.y)*1e4)/1e4, Math.round((p.z-c.z)*1e4)/1e4 ]));
+  mesh.userData._l3Sides = 96;
+  mesh.userData._l3Smooth = smooth;
+  mesh.userData._origGeo = geo;
+  objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
+  selectObjs([mesh]); updateTree();
+  exitLoftMode();
+  notify('Loft aus '+rings.length+' Flächen erzeugt','ok');
+}
+// „Seiten"-/„Glatt"-Regler im Eigenschaften-Panel
+function _l3Rebuild(o){
+  const rings = o.userData._l3Rings.map(r => r.map(a => new THREE.Vector3(a[0], a[1], a[2])));
+  const geo = _buildLoft3DGeo(rings, o.userData._l3Sides || 96, !!o.userData._l3Smooth);
+  o.geometry.dispose(); o.geometry = geo; o.userData._origGeo = geo;
+  if (o.userData.displacementPattern && o.userData.displacementPattern !== 'keine'){ o.userData._dispBase = null; o.userData.displacementPattern = 'keine'; }
+  _updateObjEdgeLines(o);
+}
+function _l3ApplySides(nSides){
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'loft3d' || !o.userData._l3Rings) return;
+  saveUndoDebounced();
+  o.userData._l3Sides = Math.max(6, Math.round(parseFloat(nSides)||6));
+  _l3Rebuild(o);
+}
+function _l3ApplySmooth(on){
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'loft3d' || !o.userData._l3Rings) return;
+  saveUndoDebounced();
+  o.userData._l3Smooth = !!on;
+  _l3Rebuild(o);
 }
 
 // ═══ UNDO / REDO ══════════════════════════════════════════════════════
@@ -13243,6 +13676,12 @@ canvas.addEventListener('mousedown', e => {
       const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines && h.object === _pp.obj);
       if (hit) _ppPickFace(hit);
     }
+    return;
+  }
+  if (_lf.active) {
+    const hits = pickObjects(e);
+    const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines);
+    if (hit) _lfPickFace(hit);
     return;
   }
   if (e.button === 0) {
@@ -13480,6 +13919,7 @@ window.addEventListener('wheel', _hideVpCtx, true);
 window.addEventListener('keydown', e => { if(e.key==='Escape') _hideVpCtx(); });
 document.getElementById('ctx-measure').addEventListener('click', () => { _hideVpCtx(); if(typeof measureTool!=='function') return; if(_measureMode) _measureExit(); /* aktiven Modus zurücksetzen, damit der Klick immer (neu) startet statt zu togglen */ measureTool(); });
 document.getElementById('ctx-pushpull').addEventListener('click', () => { _hideVpCtx(); enterPushPull(); });
+document.getElementById('ctx-loft').addEventListener('click', () => { _hideVpCtx(); if (!_lf.active) enterLoftMode(); });
 
 canvas.addEventListener('mouseup', e => {
   const moved = Math.hypot(e.clientX - mouseDownPos.x, e.clientY - mouseDownPos.y);
@@ -13796,6 +14236,7 @@ function toggleWorkplane() {
     canvas.style.cursor = ''; btn.classList.remove('pick-mode');
   } else {
     // Pick-Modus starten (immer — egal ob Ebene gesetzt oder nicht)
+    if (_lf.active) exitLoftMode();
     workplaneMode = true;
     btn.classList.add('pick-mode');
     canvas.style.cursor = 'crosshair';
@@ -13922,6 +14363,7 @@ window.addEventListener('keydown', e => {
     if (document.getElementById('sz-modal').classList.contains('show')) { _cancelSize(); return; }
     if (document.getElementById('ds-modal').classList.contains('show')) { hideDesigns(); return; }
     if (_pp.active) { exitPushPull(); return; }
+    if (_lf.active) { exitLoftMode(); return; }
     if (_sk.active) { exitSketchMode(); return; }
     if (_revolveMode) { exitRevolveMode(); return; }
     if (_shellMode) { exitShellMode(); return; }
@@ -13929,6 +14371,9 @@ window.addEventListener('keydown', e => {
     if (workplaneMode) { toggleWorkplane(); return; }
     if (specialMode) exitSpecialMode(); else deselect(); return;
   }
+
+  // Loft-Modus: Enter bestätigt
+  if (_lf.active && k === 'Enter') { _lfApply(); return; }
 
   // Skizzen-Modus: Maß-Eingabe, Werkzeug-Shortcuts, Enter/Undo
   if (_sk.active) {
@@ -14360,7 +14805,7 @@ ${partXml.join('\n')}
   }
 }
 
-// Echter STEP-Export übers OCCT-Backend (/api/stl2step): Szene als STL bauen,
+// Echter STEP-Export übers OCCT-Backend (/api/occt-stl2step): Szene als STL bauen,
 // Server vernäht zum Solid und schreibt STEP (facettiertes BRep). Ersetzt den
 // alten Umweg über imagetostl.com.
 async function exportSTEP() {
@@ -14369,7 +14814,7 @@ async function exportSTEP() {
   notify('STEP wird erzeugt … (Vernähen kann bei großen Modellen dauern)', 'i');
   try {
     const buf = await r.blob.arrayBuffer();
-    const resp = await fetch(_OCCT_BASE + '/api/stl2step', {
+    const resp = await fetch(_OCCT_BASE + '/api/occt-stl2step', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ stlBase64: _bufToBase64(buf) })
     });
@@ -14581,14 +15026,14 @@ function handleImport(e) {
   reader.readAsArrayBuffer(file); e.target.value = '';
 }
 
-// STEP-Import: Datei ans OCCT-Backend (/api/step2stl), tesselliertes STL zurück,
+// STEP-Import: Datei ans OCCT-Backend (/api/occt-step2stl), tesselliertes STL zurück,
 // dann durch den normalen STL-Import-Pfad (Größendialog, Positionierung, _origStlBuf
 // für die Boolean-Pipeline). STEP rechnet in mm — wie unsere STL-Kette.
 async function _importStepFile(file) {
   notify('STEP wird umgewandelt … (' + (file.size / 1024).toFixed(0) + ' KB)', 'i');
   try {
     const buf = await file.arrayBuffer();
-    const resp = await fetch(_OCCT_BASE + '/api/step2stl', {
+    const resp = await fetch(_OCCT_BASE + '/api/occt-step2stl', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ stepBase64: _bufToBase64(buf) })
     });
@@ -23772,6 +24217,16 @@ function _fpBuildRows(type, o) {
              (o.userData._sweepProfile ? '<div class="fp-sep"></div>' +
                row('Seiten', 'fp-sweep-sides', o.userData._sweepSides || 64, "_sweepApplySides(this.value)", '', 6, 160, 1) : '') +
              _dispRows();
+    case 'loft3d':
+      return row('Breite X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
+             propLock() +
+             row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
+             row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+             (o.userData._l3Rings ? '<div class="fp-sep"></div>' +
+               row('Seiten', 'fp-l3-sides', o.userData._l3Sides || 96, "_l3ApplySides(this.value)", '', 6, 160, 1) +
+               (o.userData._l3Rings.length >= 3 ?
+                 `<div class="fp-row"><span class="fp-lbl">Glatt</span><label style="display:flex;align-items:center;cursor:pointer"><input type="checkbox" ${o.userData._l3Smooth?'checked':''} onchange="_l3ApplySmooth(this.checked)" style="accent-color:#F97316"></label></div>` : '') : '') +
+             _dispRows();
     default:
       return row('Breite X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
              propLock() +
@@ -25526,6 +25981,7 @@ const CMDK = [
   {i:'↻',g:'Druck',t:'Für Druck ausrichten',k:'orient',run:()=>autoOrientForPrint()},
   {i:'📐',g:'Bearbeiten',t:'Messen (Abstand)',k:'measure distance bemaszung',run:()=>measureTool()},
   {i:'↕',g:'Bearbeiten',t:'Fläche ziehen (Push/Pull)',k:'push pull fläche offset extrudieren',run:()=>enterPushPull()},
+  {i:'⤧',g:'Bearbeiten',t:'Loft (Flächen verbinden)',k:'loft übergang flächen verbinden shapr',run:()=>{ if(!_lf.active) enterLoftMode(); }},
   {i:'🔻',g:'Bearbeiten',t:'Vereinfachen (Dreiecke)',k:'simplify decimate reduzieren',run:()=>openSimplifyModal()},
   {i:'⬇',g:'Export',t:'Skizze als DXF',k:'dxf laser export skizze',run:()=>{ if(_sk.active) _skExportDXF(); else notify('Erst Skizzen-Modus öffnen','w'); }},
   {i:'⬆',g:'Datei',t:'DXF in Skizze laden',k:'dxf laser import skizze',run:()=>{ if(!_sk.active) enterSketchMode(); document.getElementById('sk-dxf-file').click(); }},

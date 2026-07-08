@@ -193,6 +193,12 @@ function computeMaxBlindDepth(tris, matrixE, svgPathData, scale, cx, cy, margin)
 // ── STL via OCCT-FS lesen → Solid (mit Sewing, Tolerance 1mm) ────────────────
 function stlToOCCTSolid(oc, stlBuf, keep) {
   try {
+    // OCCTs ASCII/Binär-Heuristik scannt auf Non-ASCII-Bytes. Ein Binär-STL aus
+    // lauter "glatten" Koordinaten (z.B. 10.0 → 00 00 20 41) besteht komplett aus
+    // druckbaren Bytes → wird fälschlich als ASCII geparst ("unexpected format of
+    // facet"). Fix: Non-ASCII-Marker in den (vom Binär-Parser ignorierten) Header.
+    if (Buffer.isBuffer(stlBuf) && stlBuf.length >= 84 &&
+        stlBuf.length === 84 + 50 * stlBuf.readUInt32LE(80)) stlBuf[0] = 0xFF;
     const tmpPath = '/s.stl';
     oc.FS.writeFile(tmpPath, new Uint8Array(stlBuf));
     const written = oc.FS.stat(tmpPath).size;
@@ -1167,7 +1173,7 @@ app.post('/api/occt-subtract-mesh', async (req, res) => {
 // STEP speichert mm; der Reader konvertiert in den OCCT-Modellraum (mm) —
 // gleiche Einheit wie die restliche Pipeline, daher kein Umrechnen nötig.
 // In:  { stepBase64 }   Out: { stlBase64, roots }
-app.post('/api/step2stl', async (req, res) => {
+app.post('/api/occt-step2stl', async (req, res) => {
   const b = req.body || {};
   if (!b.stepBase64) return res.json({ error: 'stepBase64 fehlt' });
   try {
@@ -1199,7 +1205,7 @@ app.post('/api/step2stl', async (req, res) => {
 // Ergebnis ist ein facettiertes BRep (jede Dreiecksfläche eine planare Face) —
 // für Weiterbearbeitung in Fusion/FreeCAD brauchbar, keine analytischen Flächen.
 // In:  { stlBase64 }   Out: { stepBase64 }
-app.post('/api/stl2step', async (req, res) => {
+app.post('/api/occt-stl2step', async (req, res) => {
   const b = req.body || {};
   if (!b.stlBase64) return res.json({ error: 'stlBase64 fehlt' });
   const keep = [];
@@ -1224,6 +1230,86 @@ app.post('/api/stl2step', async (req, res) => {
     res.json({ stepBase64: Buffer.from(stepBuf).toString('base64') });
   } catch (e) {
     console.error('[stl2step] Fehler:', e);
+    res.json({ error: e.message || String(e) });
+  } finally {
+    for (const op of keep) { try { op.delete(); } catch (_) {} }
+  }
+});
+
+// ── Passungsprüfung: Überschneidung/Abstand zweier Körper ────────────────────
+// Boolean-Common → Volumen > 0 = Kollision (Common-Mesh fürs Highlight zurück).
+// Sonst BRepExtrema_DistShapeShape → minimaler Abstand + nächste Punkte.
+// In:  { aStls:[b64,…], bStls:[b64,…] }  (mm, Z-up, Welt-Frame)
+// Out: { overlap, volumeMm3, commonStlBase64? } | { overlap:false, clearanceMm, pA:[x,y,z], pB:[x,y,z] }
+app.post('/api/occt-fit-check', async (req, res) => {
+  const b = req.body || {};
+  const aList = Array.isArray(b.aStls) ? b.aStls : null;
+  const bList = Array.isArray(b.bStls) ? b.bStls : null;
+  if (!aList || !aList.length || !bList || !bList.length)
+    return res.json({ error: 'aStls/bStls (Arrays) fehlen' });
+
+  const keep = [];
+  try {
+    const oc = await getOC();
+    const t0 = Date.now();
+    const buildSide = (list, label) => {
+      const solids = [];
+      for (let i = 0; i < list.length; i++) {
+        try {
+          const s = stlToOCCTSolid(oc, Buffer.from(list[i], 'base64'), keep);
+          if (s) solids.push(s);
+        } catch (e) { console.log(`[fit-check] ${label} ${i}: ${e.message}`); }
+      }
+      if (!solids.length) return null;
+      let r = solids[0];
+      for (let i = 1; i < solids.length; i++)
+        r = bop(oc, 'BRepAlgoAPI_Fuse_3', r, solids[i], keep, `${label}-Fuse ${i}`);
+      return r;
+    };
+    const solidA = buildSide(aList, 'A');
+    const solidB = buildSide(bList, 'B');
+    if (!solidA || !solidB) return res.json({ error: 'Körper nicht in Solid wandelbar' });
+
+    // 1) Überschneidungsvolumen via Boolean-Common
+    const common = bop(oc, 'BRepAlgoAPI_Common_3', solidA, solidB, keep, 'Fit-Common');
+    let vol = 0;
+    try {
+      const p = new oc.GProp_GProps_1();
+      oc.BRepGProp.VolumeProperties_1(common, p, false, false, false);
+      vol = Math.abs(p.Mass()); p.delete();
+    } catch (_) {}
+
+    if (vol > 1e-4) {   // > 0,0001 mm³ = echte Durchdringung
+      const outBuf = solidToSTLBuffer(oc, common);
+      console.log(`[fit-check] ÜBERSCHNEIDUNG ${vol.toFixed(3)} mm³ in ${Date.now()-t0} ms`);
+      return res.json({ overlap: true, volumeMm3: vol,
+                        commonStlBase64: outBuf.toString('base64') });
+    }
+
+    // 2) Kein Volumen → minimaler Abstand
+    let dist = null, pA = null, pB = null;
+    try {
+      let ext;
+      try {
+        ext = new oc.BRepExtrema_DistShapeShape_2(solidA, solidB,
+          oc.Extrema_ExtFlag.Extrema_ExtFlag_MIN, oc.Extrema_ExtAlgo.Extrema_ExtAlgo_Tree);
+      } catch (_) {
+        ext = new oc.BRepExtrema_DistShapeShape_1();
+        ext.LoadS1(solidA); ext.LoadS2(solidB); ext.Perform();
+      }
+      if (ext.IsDone() && ext.NbSolution() > 0) {
+        dist = ext.Value();
+        const a = ext.PointOnShape1(1), c = ext.PointOnShape2(1);
+        pA = [a.X(), a.Y(), a.Z()]; pB = [c.X(), c.Y(), c.Z()];
+        a.delete(); c.delete();
+      }
+      ext.delete();
+    } catch (e) { console.log('[fit-check] DistShapeShape:', e.message); }
+
+    console.log(`[fit-check] kein Überlapp, Abstand ${dist == null ? '?' : dist.toFixed(3)} mm in ${Date.now()-t0} ms`);
+    res.json({ overlap: false, volumeMm3: 0, clearanceMm: dist, pA, pB });
+  } catch (e) {
+    console.error('[fit-check] Fehler:', e);
     res.json({ error: e.message || String(e) });
   } finally {
     for (const op of keep) { try { op.delete(); } catch (_) {} }
