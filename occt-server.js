@@ -268,18 +268,7 @@ function stlToOCCTSolid(oc, stlBuf, keep) {
       const mkSolid = new oc.BRepBuilderAPI_MakeSolid_1();
       for (const shell of shells) mkSolid.Add(shell);
       if (shells.length > 0 && mkSolid.IsDone()) {
-        let solid = mkSolid.Solid(); mkSolid.delete();
-        // Inside-out-Mesh (Winding zeigt nach innen) → Solid umdrehen,
-        // sonst kippt die Innen/Außen-Klassifikation im Boolean.
-        try {
-          const p = new oc.GProp_GProps_1();
-          oc.BRepGProp.VolumeProperties_1(solid, p, false, false, false);
-          const v = p.Mass(); p.delete();
-          if (isFinite(v) && v < 0) {
-            solid = solid.Reversed();
-            console.log('[stl2occt] negatives Volumen → Orientierung invertiert');
-          }
-        } catch(_) {}
+        const solid = mkSolid.Solid(); mkSolid.delete();
         console.log('[stl2occt] Solid aus', shells.length, 'Shells (MakeSolid)');
         return solid;
       }
