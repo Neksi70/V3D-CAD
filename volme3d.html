@@ -10630,6 +10630,14 @@ function buildObjectFromData(data) {
     obj.userData.svgDepth       = data.svgDepth;
     obj.userData.svgSize        = data.svgSize;
   }
+  // Skizzen-/Loft-/Sweep-Rebuild-Parameter zurück (Regler nach Undo/Laden)
+  if (data._skProfiles)     obj.userData._skProfiles     = data._skProfiles;
+  if (data._skProfilesFull) obj.userData._skProfilesFull = data._skProfilesFull;
+  if (data._skHeightMM != null) obj.userData._skHeightMM = data._skHeightMM;
+  if (data._skSides)        obj.userData._skSides        = data._skSides;
+  if (data._loftLoops)   { obj.userData._loftLoops = data._loftLoops; obj.userData._loftHmm = data._loftHmm; obj.userData._loftSides = data._loftSides; }
+  if (data._sweepProfile){ obj.userData._sweepProfile = data._sweepProfile; obj.userData._sweepPath = data._sweepPath; obj.userData._sweepSides = data._sweepSides; }
+  if (data._l3Rings)     { obj.userData._l3Rings = data._l3Rings; obj.userData._l3Sides = data._l3Sides; obj.userData._l3Smooth = !!data._l3Smooth; }
   if (data._origGeoData) obj.userData._origGeo = new THREE.BufferGeometryLoader().parse(data._origGeoData);
   else if (data._origSameAsGeo && obj.isMesh && obj.geometry) obj.userData._origGeo = obj.geometry;
   // Rohr aus Parametern neu bauen (Geometrie nicht als JSON gespeichert):
@@ -10666,7 +10674,14 @@ function _roundGeoJSON(j){
 }
 function _cachedGeoJSON(geo){
   let j = _geoJsonCache.get(geo);
-  if (!j) { j = _roundGeoJSON(geo.toJSON()); _geoJsonCache.set(geo, j); }
+  if (!j) {
+    // Parametrische Geometrien (Extrude/Lathe/…) serialisieren sich als
+    // {shapes,options} — das kann der BufferGeometryLoader beim Laden NICHT
+    // parsen (Körper würde zur Box). Deshalb vorher in eine plane
+    // BufferGeometry kopieren, die sich als reine Attribut-Daten speichert.
+    const src = geo.type === 'BufferGeometry' ? geo : new THREE.BufferGeometry().copy(geo);
+    j = _roundGeoJSON(src.toJSON()); _geoJsonCache.set(geo, j);
+  }
   return j;
 }
 function objectToData(o) {
@@ -10712,6 +10727,16 @@ function objectToData(o) {
     if (o.userData.funnelBevel) d.funnelBevel = { ...o.userData.funnelBevel };
   }
   if (o.userData.edgeBevels) d.edgeBevels = o.userData.edgeBevels;
+  // Skizzen-/Loft-/Sweep-Körper: Rebuild-Parameter mitspeichern, sonst sind die
+  // Regler (Seiten/Fase/Rundung) nach Undo/Laden tot (Geometrie selbst wird unten
+  // wie bei 'custom' als JSON gesichert).
+  if (o.userData._skProfiles)     d._skProfiles     = o.userData._skProfiles;
+  if (o.userData._skProfilesFull) d._skProfilesFull = o.userData._skProfilesFull;
+  if (o.userData._skHeightMM != null) d._skHeightMM = o.userData._skHeightMM;
+  if (o.userData._skSides)        d._skSides        = o.userData._skSides;
+  if (o.userData._loftLoops)   { d._loftLoops = o.userData._loftLoops; d._loftHmm = o.userData._loftHmm; d._loftSides = o.userData._loftSides; }
+  if (o.userData._sweepProfile){ d._sweepProfile = o.userData._sweepProfile; d._sweepPath = o.userData._sweepPath; d._sweepSides = o.userData._sweepSides; }
+  if (o.userData._l3Rings)     { d._l3Rings = o.userData._l3Rings; d._l3Sides = o.userData._l3Sides; if (o.userData._l3Smooth) d._l3Smooth = true; }
   if (o.userData.occtShape)    d.occtShape   = o.userData.occtShape;
   if (o.userData._occtParams)  d._occtParams = o.userData._occtParams;
   if (o.userData._hollowFlip)  d._hollowFlip = true;
@@ -10735,7 +10760,7 @@ function objectToData(o) {
     d.svgSize        = o.userData.svgSize;
   } else if (o.isMesh && (!o.userData.type || ['custom','text','import','revolve','flower',
       'sphericalshell','spring','bentpipe','thread','svg','lantern','screw','gear','rack','enclosure',
-      'laserbox','gfbin','gfplate','gfcut','gardena'].includes(o.userData.type))) {
+      'laserbox','gfbin','gfplate','gfcut','gardena','sketch','loft','sweep','loft3d'].includes(o.userData.type))) {
     d.geometry = _cachedGeoJSON(o.geometry);
   }
   if (o.userData._origGeo) {
