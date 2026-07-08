@@ -999,7 +999,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.30<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.32<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <div class="tbg"><span class="tbg-l">Datei</span><div class="tbg-row">
@@ -4808,6 +4808,262 @@ function _buildEdgesFromGeometry(mesh) {
   return edges;
 }
 
+// ═══ KREISKANTEN (LOCHRÄNDER) AN MESH-KÖRPERN ═══════════════════════════════
+// Erkennt geschlossene, kreisförmige scharfe Kantenzüge (z.B. Bohrungsränder
+// nach ⊖ Abziehen) und macht sie im Kanten-Modus anklickbar. Rundung/Fase wird
+// dann als Drehkörper-Schneider um die Kreisachse per OCCT-Cut abgezogen —
+// Bedienung wie in Shapr3D: Kante anklicken, Handle ziehen (→ Rundung, ← Fase).
+
+// Zusammenhängende scharfe Kantenzüge → Kreise fitten. Alles in LOKALEN Koords,
+// Rückgabe zusätzlich in Welt (cW/axisW/rW) für Picking und Schneider-Bau.
+function _rimDetectCircles(o) {
+  const geo = o.geometry;
+  if (!geo || !geo.attributes.position) return [];
+  const pos = geo.attributes.position, idx = geo.index;
+  const nT = Math.floor((idx ? idx.count : pos.count) / 3);
+  if (nT < 4 || nT > 80000) return [];
+  const vid = i => idx ? idx.getX(i) : i;
+  const key = i => Math.round(pos.getX(i)*1e4)+'_'+Math.round(pos.getY(i)*1e4)+'_'+Math.round(pos.getZ(i)*1e4);
+  const vId = new Map(), vPos = [];
+  const getV = i => {
+    const k = key(i); let id = vId.get(k);
+    if (id === undefined) { id = vPos.length; vId.set(k, id);
+      vPos.push(new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i))); }
+    return id;
+  };
+  const _va = new THREE.Vector3(), _vb = new THREE.Vector3(), _vc = new THREE.Vector3();
+  const edges = new Map();   // 'a_b' → { a, b, n:[faceNormals], cen:[faceCentroids] }
+  for (let t = 0; t < nT; t++) {
+    const i0 = vid(t*3), i1 = vid(t*3+1), i2 = vid(t*3+2);
+    _va.set(pos.getX(i0), pos.getY(i0), pos.getZ(i0));
+    _vb.set(pos.getX(i1), pos.getY(i1), pos.getZ(i1));
+    _vc.set(pos.getX(i2), pos.getY(i2), pos.getZ(i2));
+    const n = _vb.clone().sub(_va).cross(_vc.clone().sub(_va));
+    if (n.lengthSq() < 1e-14) continue;
+    n.normalize();
+    const cen = _va.clone().add(_vb).add(_vc).multiplyScalar(1/3);
+    const ids = [getV(i0), getV(i1), getV(i2)];
+    for (let e = 0; e < 3; e++) {
+      const a = ids[e], b = ids[(e+1)%3];
+      if (a === b) continue;
+      const k = a < b ? a+'_'+b : b+'_'+a;
+      let rec = edges.get(k);
+      if (!rec) { rec = { a: Math.min(a,b), b: Math.max(a,b), n: [], cen: [] }; edges.set(k, rec); }
+      rec.n.push(n); rec.cen.push(cen);
+    }
+  }
+  // scharfe, konvexe Manifold-Kanten (Winkel > 30°, Materialkante nach außen)
+  const COS30 = Math.cos(30 * Math.PI / 180);
+  const adj = new Map();   // vertexId → [sharpEdge...]
+  const sharp = [];
+  edges.forEach(rec => {
+    if (rec.n.length !== 2) return;
+    if (rec.n[0].dot(rec.n[1]) >= COS30) return;
+    // konvex: Nachbar-Zentroid liegt UNTER der Ebene der anderen Fläche
+    const d = rec.cen[1].clone().sub(rec.cen[0]);
+    if (rec.n[0].dot(d) >= 0) return;   // konkav (z.B. Sackloch-Boden) → keine Rundung möglich
+    sharp.push(rec);
+    for (const v of [rec.a, rec.b]) { let l = adj.get(v); if (!l) { l = []; adj.set(v, l); } l.push(rec); }
+  });
+  // Loops laufen (nur Vertices mit genau 2 scharfen Kanten → saubere Züge)
+  const used = new Set(), rims = [];
+  o.updateMatrixWorld(true);
+  const nMat = new THREE.Matrix3().getNormalMatrix(o.matrixWorld);
+  for (const start of sharp) {
+    if (used.has(start)) continue;
+    const loop = [start.a, start.b];
+    used.add(start);
+    let prev = start, cur = start.b, closed = false;
+    for (let guard = 0; guard < 4096; guard++) {
+      const l = adj.get(cur);
+      if (!l || l.length !== 2) break;
+      const next = l[0] === prev ? l[1] : l[0];
+      if (used.has(next) && next !== start) break;
+      const nv = next.a === cur ? next.b : next.a;
+      if (next === start || nv === loop[0]) { closed = true; used.add(next); break; }
+      used.add(next);
+      loop.push(nv); prev = next; cur = nv;
+    }
+    if (!closed || loop.length < 8) continue;
+    const pts = loop.map(v => vPos[v]);
+    // Kreis-Fit: Zentrum, Radius, Ebene
+    const c = pts.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(1 / pts.length);
+    const dists = pts.map(p => p.distanceTo(c));
+    const R = dists.reduce((s, d) => s + d, 0) / dists.length;
+    if (R < 0.03) continue;
+    if (dists.some(d => Math.abs(d - R) > Math.max(0.04 * R, 0.02))) continue;
+    const axis = new THREE.Vector3();   // Newell-Normale
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i], q = pts[(i+1) % pts.length];
+      axis.x += (p.y - q.y) * (p.z + q.z);
+      axis.y += (p.z - q.z) * (p.x + q.x);
+      axis.z += (p.x - q.x) * (p.y + q.y);
+    }
+    if (axis.lengthSq() < 1e-12) continue;
+    axis.normalize();
+    if (pts.some(p => Math.abs(p.clone().sub(c).dot(axis)) > Math.max(0.03 * R, 0.02))) continue;
+    // Achse nach AUßEN (aus dem Material heraus): Summe der Flächennormalen einer
+    // konvexen Kante zeigt vom Material weg → Vorzeichen übernehmen
+    let vote = 0;
+    adjLoop: for (const v of loop) {
+      const l = adj.get(v); if (!l) continue adjLoop;
+      for (const rec of l) for (const n of rec.n) vote += n.dot(axis);
+    }
+    if (vote < 0) axis.negate();
+    // Welt-Koordinaten
+    const cW = c.clone().applyMatrix4(o.matrixWorld);
+    const axisW = axis.clone().applyMatrix3(nMat).normalize();
+    const rW = pts[0].clone().applyMatrix4(o.matrixWorld).distanceTo(cW);
+    rims.push({ c, axis, r: R, pts, cW: cW.toArray(), axisW: axisW.toArray(), rW });
+  }
+  return rims;
+}
+
+// Dreiecks-Orientierung nach außen erzwingen (signiertes Volumen > 0) —
+// LatheGeometry-Winding hängt von der Profilrichtung ab, ein inside-out-
+// Werkzeug würde den Boolean kippen.
+function _ensureOutwardGeo(geo) {
+  const g = geo.index ? geo.toNonIndexed() : geo;
+  const p = g.attributes.position;
+  let vol = 0;
+  for (let i = 0; i < p.count; i += 3) {
+    const ax = p.getX(i),   ay = p.getY(i),   az = p.getZ(i);
+    const bx = p.getX(i+1), by = p.getY(i+1), bz = p.getZ(i+1);
+    const cx = p.getX(i+2), cy = p.getY(i+2), cz = p.getZ(i+2);
+    vol += (ax*(by*cz - cy*bz) - bx*(ay*cz - cy*az) + cx*(ay*bz - by*az)) / 6;
+  }
+  if (vol < 0) {
+    for (let i = 0; i < p.count; i += 3) {
+      const bx = p.getX(i+1), by = p.getY(i+1), bz = p.getZ(i+1);
+      p.setXYZ(i+1, p.getX(i+2), p.getY(i+2), p.getZ(i+2));
+      p.setXYZ(i+2, bx, by, bz);
+    }
+    p.needsUpdate = true;
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
+// Drehkörper-Schneider für EINE Kreiskante (Welt-Koords). useFil: Viertelkreis-
+// Profil tangential an Deckfläche und Lochwand; sonst 45°-Fase. bevU in Units.
+function _rimBevelCutter(rim, bevU, useFil) {
+  const R = rim.rW;
+  const bev = Math.min(bevU, R * 0.9);
+  const ov = 0.1, ovIn = Math.min(0.08, R * 0.5);
+  const pts = [new THREE.Vector2(R - ovIn, ov)];
+  if (useFil) {
+    pts.push(new THREE.Vector2(R + bev, ov));
+    const K = 12;   // Viertelkreis, Zentrum (R+bev, -bev)
+    for (let k = 0; k <= K; k++) {
+      const a = Math.PI / 2 + (Math.PI / 2) * k / K;
+      pts.push(new THREE.Vector2(R + bev + bev * Math.cos(a), -bev + bev * Math.sin(a)));
+    }
+  } else {
+    pts.push(new THREE.Vector2(R + bev + ov, ov));   // 45° bis (R, -bev)
+    pts.push(new THREE.Vector2(R, -bev));
+  }
+  pts.push(new THREE.Vector2(R - ovIn, -bev));
+  pts.push(pts[0].clone());
+  const geo = _ensureOutwardGeo(new THREE.LatheGeometry(pts, 64));
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial());
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...rim.axisW));
+  m.position.set(...rim.cW);
+  m.updateWorldMatrix(true, true);
+  return m;
+}
+
+// Rundung/Fase auf gewählte Kreiskanten anwenden: Schneider bauen → EIN OCCT-Cut
+// → Ergebnis-Mesh ersetzt den Körper (wie _doSubtractHoles), Kanten-Modus bleibt an.
+async function _applyRimBevel(o, rims, chamferDist) {
+  const useFil = chamferDist > 0;              // Konvention wie Zylinder: → Rundung, ← Fase
+  const mm = Math.abs(chamferDist) * 10;
+  if (mm < 0.05) return;
+  const cutters = rims.map(rim => _rimBevelCutter(rim, mm / 10, useFil));
+  _progressShow(useFil ? 'Lochkante wird abgerundet…' : 'Lochkante wird angefast…');
+  _progressSet(8); _progressCreep(93);
+  try {
+    const solidStls = _meshWorldToStls(o);
+    const toolStls  = cutters.flatMap(c => _meshWorldToStls(c));
+    if (!solidStls.length || !toolStls.length) throw new Error('keine Geometrie');
+    const resp = await fetch(_OCCT_BASE + '/api/occt-subtract-mesh', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ solidStls: solidStls.map(_bufToBase64), toolStls: toolStls.map(_bufToBase64) })
+    });
+    const data = await resp.json();
+    if (data.error || !data.stlBase64) throw new Error(data.error || 'kein Ergebnis');
+    const bytes = Uint8Array.from(atob(data.stlBase64), ch => ch.charCodeAt(0));
+    const geo = parseSTL(bytes.buffer);
+    geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);
+    geo.computeVertexNormals();
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(o.userData.color || currentColor),
+      roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide
+    });
+    const nm = new THREE.Mesh(geo, mat);
+    nm.castShadow = true; nm.receiveShadow = true;
+    nm.userData = { ...o.userData, _origStlBuf: bytes.buffer };
+    delete nm.userData._dynamicEdges;
+    exitEdgeMode();
+    // Kinder (z.B. Gravur-Inlays) mit Welt-Transform übernehmen; Kantenlinien neu
+    [...o.children].forEach(ch => { if (!ch.userData || !ch.userData.isEdgeLines) nm.attach(ch); });
+    const i = objects.indexOf(o);
+    if (i >= 0) objects[i] = nm; else objects.push(nm);
+    scene.remove(o); scene.add(nm);
+    _updateObjEdgeLines(nm);
+    selectObjs([nm]);
+    enterEdgeMode(true);   // direkt weiterbearbeiten (nächste Kante anklicken)
+    _progressDone();
+    notify(rims.length + ' Lochkante(n) ' + (useFil ? 'abgerundet' : 'angefast') + ' (' + mm.toFixed(1) + ' mm)', 'ok');
+  } catch (e) {
+    _progressHide();
+    console.warn('[rim-bevel]', e);
+    notify('Kantenbearbeitung fehlgeschlagen: ' + (e.message || e), 'w');
+  }
+}
+
+// Sichtbare Kreislinien + unsichtbare Klick-Tori für erkannte Kreiskanten.
+// baseIdx = Kanten-Index der ersten Kreiskante in _dynamicEdges.
+function _rimBuildVisuals(o, rims, baseIdx) {
+  const SEG = 48;
+  const verts = [], edgeMap = [];
+  rims.forEach((rim, k) => {
+    const start = verts.length / 3;
+    // Orthonormalbasis in der Kreisebene (lokal)
+    const u = Math.abs(rim.axis.y) < 0.99 ? new THREE.Vector3(0, 1, 0).cross(rim.axis).normalize()
+                                          : new THREE.Vector3(1, 0, 0).cross(rim.axis).normalize();
+    const v = rim.axis.clone().cross(u);
+    for (let i = 0; i < SEG; i++) {
+      for (const a of [(i / SEG) * 2 * Math.PI, ((i + 1) / SEG) * 2 * Math.PI]) {
+        const p = rim.c.clone()
+          .addScaledVector(u, Math.cos(a) * rim.r)
+          .addScaledVector(v, Math.sin(a) * rim.r);
+        verts.push(p.x, p.y, p.z);
+      }
+    }
+    edgeMap.push({ start, end: verts.length / 3, edgeIndex: baseIdx + k });
+  });
+  const circGeo = new THREE.BufferGeometry();
+  circGeo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  circGeo.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(verts.length).fill(0.55), 3));
+  _edgeCircles = new THREE.LineSegments(circGeo, new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false }));
+  _edgeCircles.renderOrder = 999;
+  _edgeCircles.userData._edgeMap = edgeMap;
+  o.add(_edgeCircles);
+  // Klick-Tori (Welt-Koords, wie die Klick-Cylinder in _edgeMeshes)
+  const bsz = getMeshBox(o).getSize(new THREE.Vector3());
+  const hitR = Math.max(0.15, Math.max(bsz.x, bsz.y, bsz.z) * 0.02);
+  const hitMat = new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide });
+  rims.forEach((rim, k) => {
+    const tg = new THREE.TorusGeometry(rim.rW, hitR, 6, 48);
+    const tm = new THREE.Mesh(tg, hitMat);
+    tm.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...rim.axisW));
+    tm.position.set(...rim.cW);
+    tm.userData.edgeIndex = baseIdx + k;
+    scene.add(tm);
+    _edgeMeshes.push(tm);
+  });
+}
+
 function _applyBufferGeometryChamfer(mesh, edgeIndex, chamferDist) {
   const dynEdge = mesh.userData._dynamicEdges[edgeIndex];
   if (!dynEdge || !dynEdge.worldA || !dynEdge.worldB) {
@@ -5061,6 +5317,23 @@ function enterEdgeMode(quiet = false) {
     _edgeCircles.userData._edgeMap = circEdgeMap;
     o.add(_edgeCircles);
   } else {
+    // Kreiskanten (Lochränder) erkennen → als wählbare Kanten anbieten (Shapr3D-artig).
+    let _rims = [];
+    try { _rims = _rimDetectCircles(o); } catch (e) { console.warn('[rim-detect]', e); }
+    if (_rims.length) {
+      // Gerade Stör-Segmente, die AUF einem erkannten Kreis liegen, aussortieren
+      const onRim = (x, y, z) => _rims.some(rim => {
+        const p = new THREE.Vector3(x, y, z).sub(rim.c);
+        const h = p.dot(rim.axis);
+        const rad = p.addScaledVector(rim.axis, -h).length();
+        return Math.abs(h) < 0.03 && Math.abs(rad - rim.r) < Math.max(0.04 * rim.r, 0.03);
+      });
+      edges = edges.filter(ed => !(onRim(...ed.worldA) && onRim(...ed.worldB)));
+      const base = edges.length;
+      _rims.forEach(rim => edges.push({ worldA: rim.cW, worldB: rim.cW, rim }));
+      o.userData._rimList = _rims;
+      o.userData._rimBase = base;
+    }
     o.userData._dynamicEdges = edges;
   }
   if (!o.userData.edgeBevels || o.userData.edgeBevels.length !== edges.length)
@@ -5119,6 +5392,9 @@ function enterEdgeMode(quiet = false) {
       _edgeMeshes.push(hmesh);
     });
   }
+  // Kreiskanten: sichtbare Kreise + Klick-Tori (nach _edgeMeshes-Initialisierung)
+  if (o.userData._rimList && o.userData._rimList.length)
+    _rimBuildVisuals(o, o.userData._rimList, o.userData._rimBase);
   _fpCurType = null; updateFP();
   canvas.style.cursor = 'crosshair';
   if (!quiet) {
@@ -5141,6 +5417,8 @@ function exitEdgeMode() {
   if (_edgeObj) {
     delete _edgeObj.userData._dynamicEdges;
     delete _edgeObj.userData._globalChamferOrigGeo;
+    delete _edgeObj.userData._rimList;
+    delete _edgeObj.userData._rimBase;
   }
   _edgeBevelHandlePos = null; _edgeBevelDragging = false;
   _edgeBevelDragStart = null; _edgeBevelDragVal = 0;
@@ -6626,7 +6904,9 @@ function _updateEdgeColors() {
   col.needsUpdate = true;
   if (_edgeCircles) {
     const cc = _edgeCircles.geometry.attributes.color;
-    _edgeCircles.userData._edgeMap.forEach(({ start, end }, edgeIdx) => {
+    _edgeCircles.userData._edgeMap.forEach((entry, i) => {
+      const { start, end } = entry;
+      const edgeIdx = entry.edgeIndex != null ? entry.edgeIndex : i;
       const isS = _edgeSel.has(edgeIdx), isH = edgeIdx === _edgeHover && !isS;
       const [rv, gv, bv] = isS ? [1, 0.4, 0] : isH ? [1, 0.85, 0.2] : [0.55, 0.55, 0.55];
       for (let v = start; v < end; v++) cc.setXYZ(v, rv, gv, bv);
@@ -7203,6 +7483,14 @@ async function _applyEdgeHandleValue(chamferDist) {
   if (!_edgeObj.userData._dynamicEdges || _edgeSel.size === 0) return;
   saveUndo();
   const o = _edgeObj;
+
+  // Lochrand-Kreiskanten (erkannt in _rimDetectCircles): Drehkörper-Schneider
+  // via OCCT — Konvention wie beim Zylinder: nach rechts = Rundung, links = Fase.
+  {
+    const dyn = o.userData._dynamicEdges;
+    const rimSel = [..._edgeSel].map(i => dyn[i]).filter(d => d && d.rim).map(d => d.rim);
+    if (rimSel.length) { await _applyRimBevel(o, rimSel, chamferDist); return; }
+  }
 
   // Zylinder / Kegel / Rohr: Kreiskanten parametrisch runden/fasen (robuster als der
   // OCCT-B-Rep-Pfad, der hier nur einen entarteten Deckel-/Ringpunkt bekäme). Nutzt
@@ -12867,11 +13155,19 @@ canvas.addEventListener('mousedown', e => {
           getNorm(e); raycaster.setFromCamera(mousev, camera);
           const edgeMid = _getClosestPointOnEdge(raycaster.ray, wa, wb);
           if (wa.distanceTo(wb) < 0.001) {
-            // Kreiskante (cylinder/cone): Handle an sichtbaren Kreisrand verschieben
-            const radius = _edgeObj.userData._occtParams?.sx ?? _edgeObj.scale.x;
-            const toCamera = camera.position.clone().sub(edgeMid).normalize();
-            const circleDir = new THREE.Vector3(toCamera.x, 0, toCamera.z);
-            if (circleDir.lengthSq() > 0.01) edgeMid.addScaledVector(circleDir.normalize(), radius);
+            if (edge.rim) {
+              // Lochrand-Kreiskante: Handle an den kameranahen Rand des Kreises (in der Kreisebene)
+              const ax = new THREE.Vector3(...edge.rim.axisW);
+              const toCam = camera.position.clone().sub(edgeMid);
+              const inPlane = toCam.addScaledVector(ax, -toCam.dot(ax));
+              if (inPlane.lengthSq() > 1e-6) edgeMid.addScaledVector(inPlane.normalize(), edge.rim.rW);
+            } else {
+              // Kreiskante (cylinder/cone): Handle an sichtbaren Kreisrand verschieben
+              const radius = _edgeObj.userData._occtParams?.sx ?? _edgeObj.scale.x;
+              const toCamera = camera.position.clone().sub(edgeMid).normalize();
+              const circleDir = new THREE.Vector3(toCamera.x, 0, toCamera.z);
+              if (circleDir.lengthSq() > 0.01) edgeMid.addScaledVector(circleDir.normalize(), radius);
+            }
           }
           _edgeBevelHandlePos = edgeMid;
           _edgeBevelDragVal = 0;
@@ -21238,8 +21534,12 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.31';
+const VOLME3D_VERSION = '1.15.32';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.32', date:'2026-07-08', changes:[
+    ['⭕','Lochkanten anfasen/abrunden wie in Shapr3D: Nach dem ⊖ Abziehen den Körper auswählen → „⬡ Kanten bearbeiten" → die Lochränder werden als Kreise angeboten. Kreis anklicken und den Handle ziehen — nach rechts = Rundung, nach links = Fase (45°), die Stärke bestimmst du mit der Zieh-Distanz. Funktioniert an jeder kreisrunden Kante von Abzieh-Ergebnissen und Importen, oben wie unten, und mit Shift auch für mehrere Kanten auf einmal.'],
+    ['🩹','⊖ Abziehen repariert: Bei mehreren markierten Volumenkörpern wurde nur der erste geschnitten und der Rest stillschweigend gelöscht (das Auswahlrechteck erwischt auch verdeckte/ausgeblendete Objekte dahinter). Jetzt fließen alle sichtbaren Körper in den Schnitt ein; ausgeblendete werden ignoriert. Außerdem klappt das Abziehen jetzt auch auf importierten Modellen, die aus mehreren Einzelteilen bestehen (z. B. Modell mit Rädern/Anbauteilen) — vorher blieb dabei nur ein schwarzer Rest übrig.'],
+  ]},
   { version:'1.15.31', date:'2026-06-25', changes:[
     ['🖨️','STL-Bibliothek erkennt „Snapmaker Orca" jetzt zuverlässig: Der Druck-Helfer findet den Slicer auch, wenn er in einem abweichend benannten Ordner (Version/Suffix) installiert ist — die Ordnersuche versteht jetzt Platzhalter. Erfordert das Helfer-Update (Knopf ⬇ in der Bibliothek).'],
   ]},
@@ -22962,7 +23262,7 @@ function _fpBuildRows(type, o) {
     const selCount = _edgeSel.size;
     return `<div class="fp-row"><span class="fp-lbl">${selCount} Kante${selCount!==1?'n':''} ausgewählt</span></div>` +
       (selCount > 0
-        ? `<div class="fp-row"><span class="fp-lbl" style="color:#aaa;font-size:11px">&#8592; Chamfer &nbsp;|&nbsp; Fillet &#8594;</span></div>`
+        ? `<div class="fp-row"><span class="fp-lbl" style="color:#aaa;font-size:11px">Handle ziehen: &#8592; Fase &nbsp;|&nbsp; Rundung &#8594;</span></div>`
         : '') +
       `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="exitEdgeMode()">Fertig</button></div>`;
   }
