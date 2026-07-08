@@ -3111,6 +3111,7 @@ const firebaseConfig = {
       <div style="flex:1"></div>
       <button class="btn pri" onclick="_stlCollect()" title="Im Downloads-Ordner einen Unterordner STL anlegen und alle STL/3MF/OBJ dorthin kopieren">🧹 Aus Downloads einsammeln</button>
       <button class="btn" id="stllib-pickbtn" onclick="_stlLibPickFolder()" title="Anderen Ordner wählen">📂 Ordner wählen</button>
+      <button class="btn" id="stllib-homebtn" onclick="_stlLibPickViaHelper(true)" title="Zurück zur Volme3D-Bibliothek" style="display:none">🏠 Bibliothek</button>
       <button class="btn" onclick="_stlLibRefresh()" title="Neu einlesen">↻</button>
       <button class="btn" onclick="_stlLibClose()" style="padding:4px 10px;font-size:15px;line-height:1;margin-left:4px">✕</button>
     </div>
@@ -21079,8 +21080,8 @@ function _createLaserBox(){
 
 // ===== STL-BIBLIOTHEK =====
 const STLLIB_HELPER = 'http://127.0.0.1:7777';
-const STLLIB_HELPER_LATEST = 8;   // aktuelle Helfer-Version; ältere -> Update-Knopf
-let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0, _stlThumbObs=null, _stlThumbPending=[], _stlThumbBusy=false, _stlPollTimer=null, _stlListSig='';
+const STLLIB_HELPER_LATEST = 9;   // aktuelle Helfer-Version; ältere -> Update-Knopf
+let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0, _stlHelperCustom=false, _stlHelperDir='', _stlThumbObs=null, _stlThumbPending=[], _stlThumbBusy=false, _stlPollTimer=null, _stlListSig='';
 let _stlSort='date_desc', _stlFavOnly=false, _stlFav=new Set(), _stlSel=new Set(), _stlCollapsed=new Set();
 const _stlCanPickDir = !!window.showDirectoryPicker;   // File System Access API: nur Chrome/Edge (nicht Firefox/Safari)
 function _stlStopPoll(){ if(_stlPollTimer){ clearInterval(_stlPollTimer); _stlPollTimer=null; } }
@@ -21116,7 +21117,7 @@ async function _stlLibOpen(){
   try{ _stlFav=new Set(await _stlIdbGet('kv','favorites')||[]); }catch(e){ _stlFav=new Set(); }
   try{ const sv=await _stlIdbGet('kv','sort'); if(sv) _stlSort=sv; }catch(e){}
   const ss=document.getElementById('stllib-sort'); if(ss) ss.value=_stlSort;
-  const pb=document.getElementById('stllib-pickbtn'); if(pb) pb.style.display=_stlCanPickDir?'':'none';   // Ordnerwahl nur Chrome/Edge
+  const pb=document.getElementById('stllib-pickbtn'); if(pb) pb.style.display=_stlCanPickDir?'':'none';   // Vorbelegung; _stlUpdateHelperUI blendet ihn in Firefox/Safari ein, sobald der Helfer (v9) antwortet
   _stlSel.clear(); _stlFavOnly=false; _stlUpdateFavBtn(); _stlUpdateSelBar();
   await _stlPingHelper();
   let pref=''; try{ pref=await _stlIdbGet('kv','source'); }catch(e){}
@@ -21141,20 +21142,38 @@ async function _stlLibRegrant(){
   notify('Zugriff nicht erteilt','w');
 }
 function _stlLibEmpty(msg, btnLabel, btnAction){
-  // Ordnerauswahl (showDirectoryPicker) gibt es nur in Chrome/Edge — in Firefox/Safari
-  // den nutzlosen Knopf weglassen; dort läuft die Bibliothek über den Druck-Helfer.
-  if(btnAction && btnAction.indexOf('_stlLibPickFolder')>=0 && !_stlCanPickDir){ btnLabel=''; btnAction=''; }
-  const ffNote = (!_stlCanPickDir && !_stlHelperOk) ? `<div style="margin-top:10px;font-size:11px;color:var(--dim)">In Firefox/Safari läuft die Bibliothek über den Druck-Helfer (die direkte Ordnerauswahl gibt es nur in Chrome/Edge).</div>` : '';
+  // Ordnerauswahl: in Chrome/Edge direkt (showDirectoryPicker), in Firefox/Safari über den
+  // Druck-Helfer (ab v9). Geht beides nicht, den nutzlosen Knopf weglassen.
+  if(btnAction && btnAction.indexOf('_stlLibPickFolder')>=0 && !_stlCanPickDir && !(_stlHelperOk && _stlHelperVer>=9)){ btnLabel=''; btnAction=''; }
+  const ffNote = (!_stlCanPickDir && !_stlHelperOk) ? `<div style="margin-top:10px;font-size:11px;color:var(--dim)">In Firefox/Safari läuft die Bibliothek über den Druck-Helfer — er übernimmt dort auch die Ordnerauswahl.</div>` : '';
   const dl = !_stlHelperOk ? `<div style="margin-top:16px;font-size:11px;color:var(--dim);line-height:1.7">Druck-Helfer einmalig einrichten — eine Datei, keine Installation:<br><a href="/Volme3D-Druck-Helfer.bat" download style="color:var(--acc);font-weight:800">⬇ Druck-Helfer.bat herunterladen</a> · <a href="/volme3d-print-helper-LIESMICH.txt" target="_blank" style="color:var(--acc);font-weight:700">Anleitung</a><br><span>Datei doppelklicken — fertig (richtet sich selbst in den Autostart ein).</span></div>` : '';
   document.getElementById('stllib-grid').innerHTML = `<div class="stl-empty">${msg}${btnLabel?`<br><button class="btn pri" style="margin-top:12px" onclick="${btnAction}">${btnLabel}</button>`:''}${ffNote}${dl}</div>`;
 }
 async function _stlLibPickFolder(){
-  if(!window.showDirectoryPicker){ notify('Ordnerauswahl nur in Chrome/Edge möglich','w'); return; }
+  if(!window.showDirectoryPicker){
+    // Firefox/Safari: der Druck-Helfer öffnet den Ordnerdialog direkt auf dem PC
+    if(_stlHelperOk && _stlHelperVer>=9) return _stlLibPickViaHelper(false);
+    notify(_stlHelperOk ? 'Bitte Druck-Helfer aktualisieren (⬇ oben) — die Ordnerwahl braucht die neue Version' : 'Ordnerauswahl braucht hier den laufenden Druck-Helfer (oder Chrome/Edge)','w');
+    return;
+  }
   try{ _stlDirHandle=await window.showDirectoryPicker({id:'volme3d-stl',mode:'read'}); }
   catch(e){ if(e.name!=='AbortError') notify('Ordner: '+e.message,'w'); return; }
   _stlSource='handle';
   try{ await _stlIdbSet('kv','dir',_stlDirHandle); await _stlIdbSet('kv','source','handle'); }catch(e){}
   _stlLibScanRender();
+}
+// Ordnerwahl über den Druck-Helfer: er zeigt den Windows-Ordnerdialog und liefert
+// /list dann aus dem gewählten Ordner. reset=true → zurück zur Volme3D-Bibliothek.
+async function _stlLibPickViaHelper(reset){
+  try{
+    const res=await fetch(STLLIB_HELPER+'/pickdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(reset?{reset:true}:{})});
+    const j=await res.json();
+    if(!j.ok){ if(!j.cancelled) notify('Ordnerwahl fehlgeschlagen: '+_stlEsc(j.error||''),'w'); return; }
+    _stlHelperCustom=!!j.custom; _stlHelperDir=j.dir||'';
+    _stlUpdateHelperUI();
+    notify(j.custom ? ('Zeige Ordner: '+j.dir) : 'Zurück zur Volme3D-Bibliothek','ok');
+    _stlLoadFromHelper();
+  }catch(e){ notify('Druck-Helfer nicht erreichbar — Ordnerdialog konnte nicht geöffnet werden','w'); }
 }
 async function _stlLibScanRender(){
   if(!_stlDirHandle){ _stlLibEmpty('Kein Ordner gewählt.', '📂 Ordner wählen', '_stlLibPickFolder()'); return; }
@@ -21445,6 +21464,7 @@ async function _stlPingHelper(){
     const res=await fetch(STLLIB_HELPER+'/ping',{cache:'no-store'});
     const j=await res.json();
     _stlHelperOk=!!j.ok; _stlHelperSlicers=j.slicers||[]; _stlHelperVer=j.version||1;
+    _stlHelperCustom=!!j.custom; _stlHelperDir=j.dir||j.libDir||'';
   }catch(e){ _stlHelperOk=false; }
   _stlUpdateHelperUI();
 }
@@ -21453,6 +21473,11 @@ function _stlUpdateHelperUI(){
   if(dot){ dot.className=_stlHelperOk?'on':'off'; dot.title=_stlHelperOk?('Druck-Helfer verbunden ('+_stlHelperSlicers.join(', ')+')'):'Druck-Helfer nicht erreichbar'; }
   const upd=document.getElementById('stllib-update');
   if(upd) upd.style.display=(_stlHelperOk && _stlHelperVer < STLLIB_HELPER_LATEST)?'':'none';
+  // Ordnerwahl: direkt (Chrome/Edge) oder via Helfer-Dialog (Firefox/Safari, ab Helfer v9)
+  const pb=document.getElementById('stllib-pickbtn');
+  if(pb) pb.style.display=(_stlCanPickDir || (_stlHelperOk && _stlHelperVer>=9))?'':'none';
+  const hb=document.getElementById('stllib-homebtn');
+  if(hb){ hb.style.display=(_stlHelperOk && _stlHelperCustom)?'':'none'; hb.title='Zurück zur Volme3D-Bibliothek (zeigt gerade: '+_stlHelperDir+')'; }
   const sel=document.getElementById('stllib-slicer');
   if(sel){
     sel.style.display=(_stlHelperOk&&_stlHelperSlicers.length>1)?'':'none';
@@ -21508,6 +21533,11 @@ async function _stlCollect(){
     _stlHelperOk=true;
     return;
   }
+  // Eingesammelt wird immer in die Volme3D-Bibliothek — zeigt der Helfer gerade einen
+  // eigenen Ordner, vorher stillschweigend zurückschalten, sonst sieht man nichts davon.
+  if(_stlHelperCustom && _stlHelperVer>=9){
+    try{ await fetch(STLLIB_HELPER+'/pickdir',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"reset":true}'}); _stlHelperCustom=false; _stlUpdateHelperUI(); }catch(e){}
+  }
   const grid=document.getElementById('stllib-grid');
   grid.innerHTML='<div class="stl-empty">Sammle Dateien aus Downloads… <b id="stlp-txt"></b>'+
     '<div style="margin:14px auto 0;max-width:380px;height:9px;background:var(--bg);border-radius:6px;overflow:hidden"><div id="stlp-bar" style="height:100%;width:0;background:var(--acc);transition:width .12s"></div></div>'+
@@ -21555,8 +21585,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.32';
+const VOLME3D_VERSION = '1.15.33';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.33', date:'2026-07-08', changes:[
+    ['📂','STL-Bibliothek: „Ordner wählen" gibt es jetzt auch in Firefox & Safari — der Druck-Helfer öffnet dafür den Windows-Ordnerdialog direkt auf deinem PC und die Bibliothek zeigt dann diesen Ordner (öffnen, drucken, umbenennen, löschen inklusive). Ein neuer „🏠 Bibliothek"-Knopf bringt dich zurück zur Volme3D-Bibliothek; „Aus Downloads einsammeln" wechselt automatisch dorthin. Erfordert das Helfer-Update (Knopf ⬇ oben in der Bibliothek).'],
+  ]},
   { version:'1.15.32', date:'2026-07-08', changes:[
     ['⭕','Lochkanten anfasen/abrunden wie in Shapr3D: Nach dem ⊖ Abziehen den Körper auswählen → „⬡ Kanten bearbeiten" → die Lochränder werden als Kreise angeboten. Kreis anklicken und den Handle ziehen — nach rechts = Rundung, nach links = Fase (45°), die Stärke bestimmst du mit der Zieh-Distanz. Funktioniert an jeder kreisrunden Kante von Abzieh-Ergebnissen und Importen, oben wie unten, und mit Shift auch für mehrere Kanten auf einmal.'],
     ['🩹','⊖ Abziehen repariert: Bei mehreren markierten Volumenkörpern wurde nur der erste geschnitten und der Rest stillschweigend gelöscht (das Auswahlrechteck erwischt auch verdeckte/ausgeblendete Objekte dahinter). Jetzt fließen alle sichtbaren Körper in den Schnitt ein; ausgeblendete werden ignoriert. Außerdem klappt das Abziehen jetzt auch auf importierten Modellen, die aus mehreren Einzelteilen bestehen (z. B. Modell mit Rädern/Anbauteilen) — vorher blieb dabei nur ein schwarzer Rest übrig.'],

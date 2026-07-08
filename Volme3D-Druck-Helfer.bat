@@ -34,12 +34,19 @@ function Test-Origin($o) {
     return ($o -like 'http://localhost*') -or ($o -like 'http://127.0.0.1*') -or ($o -like 'http://192.168.*')
 }
 function Find-SlicerExe($folders, $exes) {
-    foreach ($folder in $folders) {
-        if (-not $folder -or -not (Test-Path -LiteralPath $folder)) { continue }
-        foreach ($n in $exes) { $p = Join-Path $folder $n; if (Test-Path -LiteralPath $p) { return $p } }
-        # Fallback: erste sinnvolle .exe im Ordner (keine Deinstaller/Updater/Crashpad)
-        $e = Get-ChildItem -LiteralPath $folder -Filter *.exe -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '(?i)unins|setup|redist|crashpad|update|bsa' } | Sort-Object Length -Descending | Select-Object -First 1
-        if ($e) { return $e.FullName }
+    foreach ($pattern in $folders) {
+        if (-not $pattern) { continue }
+        # Wildcard-Ordner (z.B. "...\Snapmaker*Orca*") gegen abweichende Versions-/Namensvarianten aufloesen
+        $dirs = if ($pattern -match '[*?]') {
+            @(Get-ChildItem -Path (Split-Path -Parent $pattern) -Directory -Filter (Split-Path -Leaf $pattern) -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Sort-Object -Descending)
+        } else { @($pattern) }
+        foreach ($folder in $dirs) {
+            if (-not $folder -or -not (Test-Path -LiteralPath $folder)) { continue }
+            foreach ($n in $exes) { $p = Join-Path $folder $n; if (Test-Path -LiteralPath $p) { return $p } }
+            # Fallback: erste sinnvolle .exe im Ordner (keine Deinstaller/Updater/Crashpad)
+            $e = Get-ChildItem -LiteralPath $folder -Filter *.exe -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '(?i)unins|setup|redist|crashpad|update|bsa' } | Sort-Object Length -Descending | Select-Object -First 1
+            if ($e) { return $e.FullName }
+        }
     }
     return $null
 }
@@ -52,7 +59,7 @@ function Get-Slicers {
         orca      = @{ f = @("$pf\OrcaSlicer", "$lad\Programs\OrcaSlicer");                                                    e = @('orca-slicer.exe', 'OrcaSlicer.exe') }
         anycubic  = @{ f = @("$pf\Anycubic Slicer Next", "$pf\AnycubicSlicerNext", "$lad\Programs\Anycubic Slicer Next", "$lad\Programs\AnycubicSlicerNext"); e = @('AnycubicSlicerNext.exe', 'AnycubicSlicer.exe', 'anycubic-slicer.exe') }
         elegoo    = @{ f = @("$pf\ElegooSlicer", "$pf\Elegoo Slicer", "$lad\Programs\ElegooSlicer", "$lad\Programs\Elegoo Slicer"); e = @('ElegooSlicer.exe', 'elegoo-slicer.exe') }
-        snapmaker = @{ f = @("$pf\Snapmaker Orca", "$pf\SnapmakerOrca", "$lad\Programs\Snapmaker Orca", "$lad\Programs\SnapmakerOrca"); e = @('SnapmakerOrca.exe', 'Snapmaker Orca.exe', 'snapmaker-orca.exe', 'orca-slicer.exe') }
+        snapmaker = @{ f = @("$pf\Snapmaker Orca", "$pf\SnapmakerOrca", "$lad\Programs\Snapmaker Orca", "$lad\Programs\SnapmakerOrca", "$pf\Snapmaker*Orca*", "$pf86\Snapmaker*Orca*", "$lad\Programs\Snapmaker*Orca*"); e = @('SnapmakerOrca.exe', 'Snapmaker Orca.exe', 'snapmaker-orca.exe', 'orca-slicer.exe') }
         prusa     = @{ f = @("$pf\Prusa3D\PrusaSlicer");                                                                       e = @('prusa-slicer.exe') }
     }
     $found = [ordered]@{}
@@ -86,6 +93,46 @@ function Get-LibDir {
     if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
     return $d
 }
+# --- Benutzerdefinierter Ordner ("Ordner waehlen" aus Firefox/Safari): der Helfer
+# oeffnet den Windows-Ordnerdialog und bedient /list,/file,/print dann aus diesem
+# Ordner statt aus der Bibliothek. Merkt sich die Wahl in %APPDATA%\Volme3D. ---
+$CFGDIR = Join-Path $env:APPDATA 'Volme3D'
+$CFGFILE = Join-Path $CFGDIR 'helper-dir.txt'
+function Get-CustomDir {
+    try {
+        if (Test-Path -LiteralPath $CFGFILE) {
+            $p = (Get-Content -LiteralPath $CFGFILE -Raw -ErrorAction Stop).Trim()
+            if ($p -and (Test-Path -LiteralPath $p -PathType Container)) { return $p }
+        }
+    } catch {}
+    return $null
+}
+function Set-CustomDir($p) {
+    try {
+        if ($p) {
+            if (-not (Test-Path -LiteralPath $CFGDIR)) { New-Item -ItemType Directory -Path $CFGDIR -Force | Out-Null }
+            Set-Content -LiteralPath $CFGFILE -Value $p -Encoding UTF8
+        } elseif (Test-Path -LiteralPath $CFGFILE) { Remove-Item -LiteralPath $CFGFILE -Force }
+    } catch {}
+}
+function Get-RootDir { $c = Get-CustomDir; if ($c) { return $c } return (Get-LibDir) }
+function Show-FolderDialog($initial) {
+    try {
+        Add-Type -AssemblyName System.Windows.Forms | Out-Null
+        $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dlg.Description = 'Volme3D: Ordner mit STL/3MF/OBJ-Dateien waehlen'
+        $dlg.ShowNewFolderButton = $false
+        if ($initial -and (Test-Path -LiteralPath $initial)) { $dlg.SelectedPath = $initial }
+        # unsichtbares TopMost-Fenster als Besitzer, sonst landet der Dialog hinter anderen Fenstern
+        $owner = New-Object System.Windows.Forms.Form
+        $owner.TopMost = $true
+        $r = $dlg.ShowDialog($owner)
+        $sel = $dlg.SelectedPath
+        $owner.Dispose(); $dlg.Dispose()
+        if ($r -eq [System.Windows.Forms.DialogResult]::OK -and $sel) { return $sel }
+    } catch {}
+    return $null
+}
 function Get-UniquePath($dir, $name) {
     $tp = Join-Path $dir $name
     if (-not (Test-Path -LiteralPath $tp)) { return $tp }
@@ -106,8 +153,10 @@ function Get-CollectTarget($dst, $srcRoot, $f) {
 }
 function Invoke-Collect($move) {
     $srcs = Get-DownloadCandidates; $dst = Get-LibDir; $dstLow = $dst.TrimEnd('\').ToLower(); $copied = 0; $skipped = 0
+    # gewaehlten Anzeige-Ordner nie leerraeumen (falls er in den Downloads liegt)
+    $cust = Get-CustomDir; $custLow = if ($cust) { $cust.TrimEnd('\').ToLower() } else { $null }
     foreach ($src in $srcs) {
-        $files = Get-ChildItem -LiteralPath $src -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() -and -not $_.FullName.ToLower().StartsWith($dstLow) }
+        $files = Get-ChildItem -LiteralPath $src -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() -and -not $_.FullName.ToLower().StartsWith($dstLow) -and (-not $custLow -or -not $_.FullName.ToLower().StartsWith($custLow)) }
         foreach ($f in $files) {
             try {
                 $tp = Get-CollectTarget $dst $src $f
@@ -122,7 +171,7 @@ function Invoke-Collect($move) {
     return [ordered]@{ ok = $true; copied = $copied; skipped = $skipped; dir = $dst; source = ($srcs -join '; '); count = $count }
 }
 function Get-LibList {
-    $d = Get-LibDir; $items = @(); $baseLen = $d.TrimEnd('\').Length
+    $d = Get-RootDir; $items = @(); $baseLen = $d.TrimEnd('\').Length
     Get-ChildItem -LiteralPath $d -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() } | Sort-Object LastWriteTime -Descending | ForEach-Object {
         $rel = ($_.FullName.Substring($baseLen).TrimStart('\')) -replace '\\', '/'
         $items += [ordered]@{ name = $rel; size = $_.Length; mtime = [int64]([DateTimeOffset]$_.LastWriteTime).ToUnixTimeMilliseconds() }
@@ -130,12 +179,12 @@ function Get-LibList {
     return $items
 }
 function Hdr($h, $n) { if ($h.ContainsKey($n) -and $h[$n]) { try { return [System.Uri]::UnescapeDataString($h[$n]) } catch { return $h[$n] } } return '' }
-# Nimmt einen relativen Pfad (mit / oder \) und loest ihn sicher unterhalb des Lib-Ordners auf (kein '..').
+# Nimmt einen relativen Pfad (mit / oder \) und loest ihn sicher unterhalb des aktiven Ordners auf (kein '..').
 function Get-LibFilePath($name) {
     if (-not $name) { return $null }
     $parts = ($name -replace '/', '\') -split '\\' | Where-Object { $_ -ne '' -and $_ -ne '.' -and $_ -ne '..' }
     if ($parts.Count -eq 0) { return $null }
-    $p = Join-Path (Get-LibDir) ($parts -join '\')
+    $p = Join-Path (Get-RootDir) ($parts -join '\')
     if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
     return $null
 }
@@ -189,8 +238,9 @@ function Stream-Collect($stream, $origin, $move) {
     [void]$sb.Append("`r`n")
     $h = [System.Text.Encoding]::ASCII.GetBytes($sb.ToString()); $stream.Write($h, 0, $h.Length); $stream.Flush()
     $srcs = Get-DownloadCandidates; $dst = Get-LibDir; $dstLow = $dst.TrimEnd('\').ToLower()
+    $cust = Get-CustomDir; $custLow = if ($cust) { $cust.TrimEnd('\').ToLower() } else { $null }
     $pairs = @()
-    foreach ($src in $srcs) { Get-ChildItem -LiteralPath $src -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() -and -not $_.FullName.ToLower().StartsWith($dstLow) } | ForEach-Object { $pairs += [pscustomobject]@{ f = $_; src = $src } } }
+    foreach ($src in $srcs) { Get-ChildItem -LiteralPath $src -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $EXTS -contains $_.Extension.ToLower() -and -not $_.FullName.ToLower().StartsWith($dstLow) -and (-not $custLow -or -not $_.FullName.ToLower().StartsWith($custLow)) } | ForEach-Object { $pairs += [pscustomobject]@{ f = $_; src = $src } } }
     $total = $pairs.Count; $copied = 0; $skipped = 0; $i = 0
     foreach ($pair in $pairs) {
         $f = $pair.f; $i++
@@ -216,10 +266,24 @@ function Handle-Client($client) {
     for ($i = 1; $i -lt $lines.Count; $i++) { $ln = $lines[$i]; $idx = $ln.IndexOf(':'); if ($idx -gt 0) { $headers[$ln.Substring(0, $idx).Trim().ToLower()] = $ln.Substring($idx + 1).Trim() } }
     $origin = $headers['origin']; $cors = New-Cors $origin
     if ($method -eq 'OPTIONS') { Send-Bytes $stream '204 No Content' $cors 'text/plain' (New-Object byte[] 0); return }
-    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 7; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir) }) $origin; return }
+    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 9; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir); dir = (Get-RootDir); custom = [bool](Get-CustomDir) }) $origin; return }
     if ($method -eq 'GET' -and $path -eq '/list') {
         if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = 'origin not allowed' }) $origin; return }
-        Send-Json $stream '200 OK' ([ordered]@{ ok = $true; dir = (Get-LibDir); files = @(Get-LibList) }) $origin; return
+        Send-Json $stream '200 OK' ([ordered]@{ ok = $true; dir = (Get-RootDir); custom = [bool](Get-CustomDir); files = @(Get-LibList) }) $origin; return
+    }
+    if ($method -eq 'POST' -and $path -eq '/pickdir') {
+        # Ordnerdialog auf dem PC oeffnen (Firefox/Safari haben keinen showDirectoryPicker);
+        # Body {reset:true} = zurueck zur Volme3D-Bibliothek
+        if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = 'origin not allowed' }) $origin; return }
+        $len = 0; if ($headers.ContainsKey('content-length')) { [void][int]::TryParse($headers['content-length'], [ref]$len) }
+        $body = if ($len -gt 0) { Read-Body $stream $len } else { New-Object byte[] 0 }
+        $reset = $false
+        try { if ($body.Length -gt 0) { $j = [System.Text.Encoding]::UTF8.GetString($body) | ConvertFrom-Json; if ($j.reset) { $reset = $true } } } catch {}
+        if ($reset) { Set-CustomDir $null; Send-Json $stream '200 OK' ([ordered]@{ ok = $true; dir = (Get-LibDir); custom = $false }) $origin; return }
+        $sel = Show-FolderDialog (Get-RootDir)
+        if (-not $sel) { Send-Json $stream '200 OK' (@{ ok = $false; cancelled = $true }) $origin; return }
+        Set-CustomDir $sel
+        Send-Json $stream '200 OK' ([ordered]@{ ok = $true; dir = $sel; custom = $true }) $origin; return
     }
     if ($method -eq 'GET' -and $path -eq '/file') {
         if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = 'origin not allowed' }) $origin; return }
@@ -244,7 +308,7 @@ function Handle-Client($client) {
         if (Test-Path -LiteralPath $dst) { Send-Json $stream '409 Conflict' (@{ ok = $false; error = 'Name existiert bereits' }) $origin; return }
         try {
             Rename-Item -LiteralPath $fp -NewName $new
-            $baseLen = (Get-LibDir).TrimEnd('\').Length
+            $baseLen = (Get-RootDir).TrimEnd('\').Length
             $rel = ($dst.Substring($baseLen).TrimStart('\')) -replace '\\', '/'
             Send-Json $stream '200 OK' (@{ ok = $true; name = $rel }) $origin
         }
