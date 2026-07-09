@@ -2635,6 +2635,34 @@ const firebaseConfig = {
   </div>
 </div>
 
+<div id="pip-modal" class="g3dm" onclick="if(event.target===this)_closePipModal()">
+  <div class="g3box">
+    <div class="g3hdr">🚪 Scharnier-Generator (Print-in-Place)<span class="vx" onclick="_closePipModal()">✕</span></div>
+    <div class="g3body">
+      <canvas id="pip-canvas" width="200" height="300"></canvas>
+      <div class="g3ctrl">
+        <span class="vsec">Maße</span>
+        <div class="vrow"><label>Länge</label> <input type="range" id="pp-len" min="20" max="120" value="40" step="1" oninput="_pipSet('len',this.value)"><span class="vv" id="pv-len">40</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Blattbreite</label> <input type="range" id="pp-leaf" min="8" max="40" value="15" step="1" oninput="_pipSet('leaf',this.value)"><span class="vv" id="pv-leaf">15</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Blattdicke</label> <input type="range" id="pp-thick" min="2" max="6" value="3" step="0.5" oninput="_pipSet('thick',this.value)"><span class="vv" id="pv-thick">3</span><span class="vu">mm</span></div>
+        <span class="vsec">Gelenk</span>
+        <div class="vrow"><label>Stift-Ø</label> <input type="range" id="pp-pin" min="3" max="8" value="4" step="0.5" oninput="_pipSet('pin',this.value)"><span class="vv" id="pv-pin">4</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Spiel</label> <input type="range" id="pp-clr" min="0.25" max="0.6" value="0.4" step="0.05" oninput="_pipSet('clr',this.value)"><span class="vv" id="pv-clr">0.4</span><span class="vu">mm</span></div>
+        <span class="vsec">Schraublöcher</span>
+        <div class="vbg" id="pbg-holes">
+          <button class="vtb on" onclick="_pipSet('holes',1)">Ja (Ø 3,4)</button>
+          <button class="vtb" onclick="_pipSet('holes',0)">Ohne</button>
+        </div>
+        <div class="g3info" id="pip-info"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_closePipModal()">Abbrechen</button>
+      <button class="btn pri" onclick="_createPip()">✓ Scharnier erzeugen</button>
+    </div>
+  </div>
+</div>
+
 <div id="jar-modal" class="g3dm" onclick="if(event.target===this)_closeJarModal()">
   <div class="g3box">
     <div class="g3hdr">🫙 Schraubdosen-Generator<span class="vx" onclick="_closeJarModal()">✕</span></div>
@@ -16912,6 +16940,7 @@ const _STARTERS = [
   {i:'🗺️',t:'Karte → 3D',d:'Reliefs aus Landkarten',run:()=>_openMapModal()},
   {i:'🖼️',t:'Lithophane',d:'Foto als Leuchtrelief',run:()=>_openLithoModal()},
   {i:'🫙',t:'Schraubdose',d:'Dose mit Schraubdeckel',run:()=>_openJarModal()},
+  {i:'🚪',t:'Scharnier',d:'Gelenk, Druck am Stück',run:()=>_openPipModal()},
   {i:'🔋',t:'Batteriehalter',d:'Für AA/AAA/18650 …',run:()=>_openBattModal()},
   {i:'🪝',t:'Skadis-Haken',d:'Für IKEA-Lochwand',run:()=>_openSkadisModal()},
   {i:'📦',t:'Scharnier-Box',d:'Klappbox, Druck am Stück',run:()=>_openHingeModal()},
@@ -19662,6 +19691,131 @@ function _buildBatteryHolderGeo(p){
   geo.computeVertexNormals(); geo.computeBoundingBox();
   return geo;
 }
+// ═══ SCHARNIER-GENERATOR (Print-in-Place, eigenständig) ══════════════════════
+// Zwei flache Blätter + Gelenk-Barrel, am Stück druckbar: durchgehender Stift,
+// abwechselnd verschweißte Knöchel (Blatt A) und frei drehende Hülsen mit
+// Spiel (Blatt B) — gleiche bewährte Bauweise wie die Scharnier-Box.
+// Druck-Lage: Blätter flach auf der Platte, Barrel tangential aufliegend.
+const _pipP = { len: 40, leaf: 15, thick: 3, pin: 4, clr: 0.4, holes: 1 };
+let _pipRT = null;
+
+function _buildPipHingeGeo(p) {
+  const U = 0.1;
+  const L = p.len * U, lw = p.leaf * U, tk = p.thick * U;
+  const pinR = p.pin / 2 * U, clr = p.clr * U;
+  const R = pinR + 1.6 * U;                       // Knöchel-Außenradius
+  const sg = R + 0.4 * U;                         // Luft Blattkante ↔ Gegen-Knöchel
+  const parts = [];
+  const box = (sx, sy, sz, cx, cy, cz) => { const g = new THREE.BoxGeometry(Math.max(.01, sx), Math.max(.01, sy), Math.max(.01, sz)); g.translate(cx, cy, cz); return g; };
+  const cylX = (r, x0, x1, cy, cz) => { const g = new THREE.CylinderGeometry(r, r, Math.max(.01, Math.abs(x1 - x0)), 24); g.rotateZ(Math.PI / 2); g.translate((x0 + x1) / 2, cy, cz); return g; };
+  // Ring (Hülse) als geschlossenes Rotationsprofil — ExtrudeGeometry mit
+  // absarc-Loch lässt an der Bogen-Naht 4 offene Kanten (Duplikat-Punkt).
+  const tubeX = (rO, rI, len, cx, cy, cz) => {
+    const prof = [{ a: -len / 2, r: rO }, { a: len / 2, r: rO }, { a: len / 2, r: rI }, { a: -len / 2, r: rI }];
+    const nA = 24, nR = prof.length, verts = [], idx = [];
+    for (let i = 0; i < nA; i++) {
+      const th = i / nA * Math.PI * 2, c = Math.cos(th), s = Math.sin(th);
+      for (const q of prof) verts.push(q.r * c, q.a, q.r * s);
+    }
+    const iv = (i, j) => (i % nA) * nR + (j % nR);
+    for (let i = 0; i < nA; i++) for (let j = 0; j < nR; j++) {
+      const a = iv(i, j), b = iv(i, j + 1), c2 = iv(i + 1, j), d = iv(i + 1, j + 1);
+      idx.push(a, b, c2, b, d, c2);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    g.setIndex(idx); g.computeVertexNormals();
+    g.rotateZ(Math.PI / 2); g.translate(cx, cy, cz);
+    return g;
+  };
+  // Blatt als Extrude-Shape mit optionalen Schraublöchern (wasserdicht, echte Löcher)
+  const leaf = sgn => {
+    // Direkt bei positiven/negativen y bauen (kein scale(1,−1,1) — das würde
+    // die Dreiecks-Windung invertieren und die Hülle inside-out drehen)
+    const y0 = sgn > 0 ? sg : -(sg + lw), y1 = sgn > 0 ? sg + lw : -sg;
+    const sh = new THREE.Shape();
+    sh.moveTo(-L / 2, y0); sh.lineTo(L / 2, y0); sh.lineTo(L / 2, y1); sh.lineTo(-L / 2, y1); sh.closePath();
+    if (p.holes) {
+      const nH = Math.max(2, Math.round(p.len / 25));
+      const hr = 0.17;                            // Ø 3,4 mm für M3
+      for (let i = 0; i < nH; i++) {
+        const x = -L / 2 + (i + 0.5) * (L / nH);
+        const hp = new THREE.Path();
+        hp.absarc(x, sgn * (sg + lw / 2), hr, 0, Math.PI * 2, true);
+        sh.holes.push(hp);
+      }
+    }
+    return new THREE.ExtrudeGeometry(sh, { depth: tk, bevelEnabled: false, curveSegments: 20 });
+  };
+  parts.push(leaf(+1));
+  parts.push(leaf(-1));
+  // Barrel: Stift + alternierende Knöchel/Hülsen (ungerade Zahl → Enden = Blatt A)
+  let n = Math.round(L / (12 * U)); n = Math.max(3, Math.min(15, n)); if (n % 2 === 0) n++;
+  const seg = L / n, gap = Math.max(0.35 * U, clr);
+  const zAx = R;                                  // Achse: Barrel liegt tangential auf der Platte
+  parts.push(cylX(pinR, -L / 2, L / 2, 0, zAx));  // durchgehender Stift (Teil von A)
+  for (let i = 0; i < n; i++) {
+    const xc = -L / 2 + (i + 0.5) * seg, kl = seg - gap;
+    if (i % 2 === 0) {                            // A-Knöchel: umschließt den Stift (verschweißt)
+      parts.push(cylX(R, xc - kl / 2, xc + kl / 2, 0, zAx));
+      parts.push(box(kl, sg + 0.2 - R * 0.5, tk, xc, (R * 0.5 + sg + 0.2) / 2, tk / 2));   // Steg → Blatt A
+    } else {                                      // B-Hülse: dreht mit Spiel um den Stift
+      parts.push(tubeX(R, pinR + clr, kl, xc, 0, zAx));
+      parts.push(box(kl, sg + 0.2 - R * 0.5, tk, xc, -(R * 0.5 + sg + 0.2) / 2, tk / 2));  // Steg → Blatt B
+    }
+  }
+  const geo = _mergeGeos(parts);
+  geo.computeVertexNormals(); geo.computeBoundingBox();
+  return geo;
+}
+
+function _openPipModal(){
+  document.getElementById('pip-modal').classList.add('show');
+  _pipSyncUI();
+  requestAnimationFrame(()=>{ if(!_gpv['pip']) _gpvInit('pip',()=>_buildPipHingeGeo(_pipP)); else { _gpvUpdate('pip'); if(!_gpv['pip'].anim) _gpvLoop('pip'); } });
+}
+function _closePipModal(){ document.getElementById('pip-modal').classList.remove('show'); _gpvStop('pip'); }
+
+function _pipSet(k, v){
+  _pipP[k] = parseFloat(v);
+  _pipSyncUI();
+  if(_pipRT) clearTimeout(_pipRT);
+  _pipRT = setTimeout(()=>{ _pipRT = null; _gpvUpdate('pip'); }, 90);
+}
+
+function _pipSyncUI(){
+  for (const k of ['len','leaf','thick','pin','clr']) {
+    const s = document.getElementById('pp-' + k), t = document.getElementById('pv-' + k);
+    if (s) s.value = _pipP[k]; if (t) t.textContent = _pipP[k];
+  }
+  const btns = document.querySelectorAll('#pbg-holes .vtb');
+  if (btns.length === 2) { btns[0].classList.toggle('on', !!_pipP.holes); btns[1].classList.toggle('on', !_pipP.holes); }
+  const el = document.getElementById('pip-info');
+  if (el) {
+    const R = _pipP.pin / 2 + 1.6;
+    el.innerHTML = 'Gesamt ' + _pipP.len + ' × ' + Math.round(2 * (R + 0.4 + _pipP.leaf)) + ' mm · Barrel Ø ' + (2 * R).toFixed(1) + ' mm' +
+      '<br>Flach drucken, Gelenk NICHT stützen — nach dem Druck vorsichtig brechen/bewegen.';
+  }
+}
+
+function _createPip(){
+  saveUndo();
+  let geo; try { geo = _buildPipHingeGeo(_pipP); }
+  catch(e){ console.error('Scharnier:', e); notify('Fehler beim Erstellen', 'w'); return; }
+  typeCounts['pip'] = (typeCounts['pip'] || 0) + 1;
+  const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(currentColor), roughness: 0.5, metalness: 0.08, side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Scharnier #' + typeCounts['pip'],
+    color: currentColor, isHole: false, fillet: 0, chamfer: 0,
+    displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
+    displacementInvert: false, displacementSymmetric: false, pipParams: { ..._pipP } };
+  scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
+  selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
+  notify('Scharnier erstellt ✓ (flach drucken, Gelenk ohne Stützen)', 'ok');
+  _closePipModal();
+}
+
 // ═══ SCHRAUBDOSEN-GENERATOR (Dose mit Schraubdeckel) ═════════════════════════
 // Beide Teile als Grid-Revolve mit θ-abhängigem Radius (wie _buildThreadGeo):
 // eine Profilkette außen hoch → über den Rand → innen runter, dazu Deckel-Fächer
@@ -26896,6 +27050,7 @@ const CMDK = [
   {i:'🏮',g:'Generator',t:'Laternen',k:'lantern',run:()=>_openLanternModal()},
   {i:'🔩',g:'Generator',t:'Schrauben & Muttern',k:'screw bolt nut',run:()=>_openScrewModal()},
   {i:'🫙',g:'Generator',t:'Schraubdose',k:'jar dose deckel behälter gewinde container',run:()=>_openJarModal()},
+  {i:'🚪',g:'Generator',t:'Scharnier',k:'hinge gelenk klappe print in place',run:()=>_openPipModal()},
   {i:'🚿',g:'Generator',t:'Gardena-Anschluss',k:'gardena schlauch hahn kupplung garten',run:()=>_openGardenaModal()},
   {i:'⚙️',g:'Generator',t:'Zahnräder',k:'gear',run:()=>_openGearModal()},
   {i:'📦',g:'Generator',t:'Gehäuse / Box',k:'enclosure case',run:()=>_openEncModal()},
