@@ -19410,7 +19410,27 @@ function _buildHingeBoxGeo(p){
   const parts=[];
   const box=(sx,sy,sz,cx,cy,cz)=>{const g=new THREE.BoxGeometry(Math.max(.01,sx),Math.max(.01,sy),Math.max(.01,sz));g.translate(cx,cy,cz);return g;};
   const cylX=(r,x0,x1,cy,cz)=>{const g=new THREE.CylinderGeometry(r,r,Math.max(.01,Math.abs(x1-x0)),24);g.rotateZ(Math.PI/2);g.translate((x0+x1)/2,cy,cz);return g;};
-  const tubeX=(rO,rI,len,cx,cy,cz)=>{const sh=new THREE.Shape();sh.absarc(0,0,rO,0,Math.PI*2,false);const h=new THREE.Path();h.absarc(0,0,Math.max(.01,rI),0,Math.PI*2,true);sh.holes.push(h);const g=new THREE.ExtrudeGeometry(sh,{depth:Math.max(.01,len),bevelEnabled:false,curveSegments:24});g.translate(0,0,-len/2);g.rotateY(Math.PI/2);g.translate(cx,cy,cz);return g;};
+  // Ring (Hülse) als geschlossenes Rotationsprofil — ExtrudeGeometry mit
+  // absarc-Loch lässt an der Bogen-Naht 4 offene Kanten (Duplikat-Punkt).
+  const tubeX=(rO,rI,len,cx,cy,cz)=>{
+    const hl=Math.max(.01,len)/2, ri=Math.max(.01,rI);
+    const prof=[{a:-hl,r:rO},{a:hl,r:rO},{a:hl,r:ri},{a:-hl,r:ri}];
+    const nA=24, nR=prof.length, verts=[], idx=[];
+    for(let i=0;i<nA;i++){
+      const th=i/nA*Math.PI*2, c=Math.cos(th), s=Math.sin(th);
+      for(const q of prof) verts.push(q.r*c, q.a, q.r*s);
+    }
+    const iv=(i,j)=>(i%nA)*nR+(j%nR);
+    for(let i=0;i<nA;i++) for(let j=0;j<nR;j++){
+      const a=iv(i,j), b=iv(i,j+1), c2=iv(i+1,j), d=iv(i+1,j+1);
+      idx.push(a,b,c2, b,d,c2);
+    }
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(verts,3));
+    g.setIndex(idx); g.computeVertexNormals();
+    g.rotateZ(Math.PI/2); g.translate(cx,cy,cz);
+    return g;
+  };
   // ── eine Halbschale: Boden + 4 Wände, Öffnung nach oben, Rückwand (Scharnier) bei y=sg·sgn
   const tray=(sgn)=>{
     const cyMid=sgn*(sg+D/2);
