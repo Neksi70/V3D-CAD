@@ -40,6 +40,7 @@ ALLOW = {
     '/volmedraw/lib/clipper.js':          ('volmedraw/lib/clipper.js', 'text/javascript; charset=utf-8'),
     '/volmedraw/lib/Poppins-Regular.ttf': ('volmedraw/lib/Poppins-Regular.ttf', 'font/ttf'),
     '/volmedraw/lib/GreatVibes-Regular.ttf': ('volmedraw/lib/GreatVibes-Regular.ttf', 'font/ttf'),
+    '/volmeslice/volmeslice.html':        ('volmeslice/volmeslice.html', 'text/html; charset=utf-8'),
     '/abstimmung.html':                   ('abstimmung.html', 'text/html; charset=utf-8'),
     '/ansehen.html':                      ('ansehen.html', 'text/html; charset=utf-8'),
     '/favicon.svg':                       ('favicon.svg', 'image/svg+xml'),
