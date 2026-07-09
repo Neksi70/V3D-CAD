@@ -26533,6 +26533,72 @@ function _printCheckAnalyze(){
     wMM:size.x*10, hMM:size.y*10, dMM:size.z*10, minYmm: box.min.y*10,
     volCm3: volUnits };   // 1 Unit³ = (10mm)³ = 1000 mm³ = 1 cm³
 }
+// ── Wandstärken-Analyse (Stichprobe) ─────────────────────────────────────────
+// Von Dreiecks-Mittelpunkten knapp unter der Oberfläche nach INNEN schießen;
+// erster Treffer = lokale Wandstärke. Unter der Schwelle → dünne Stelle.
+// Stichprobe (max ~350 Dreiecke/Objekt, flächenverteilt) hält es schnell.
+let _pcThinSpots = [];
+let _pcThinVis = [], _pcThinTimer = null;
+
+function _pcWallAnalysis(thresholdMm, totalTris){
+  const thr = (thresholdMm || 0.8) / 10;
+  const maxSamples = totalTris > 60000 ? 120 : 350;
+  const meshes = [];
+  objects.forEach(o => { if (o.visible === false) return;
+    o.traverse(ch => { if (ch.isMesh && ch.geometry && !ch.userData.isHole && !ch.userData.isEdgeLines && ch.visible !== false) meshes.push(ch); }); });
+  const ray = new THREE.Raycaster();
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const ctr = new THREE.Vector3(), n = new THREE.Vector3(), e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+  const spots = []; let minT = Infinity;
+  for (const mesh of meshes) {
+    mesh.updateMatrixWorld(true);
+    const pos = mesh.geometry.attributes.position; if (!pos) continue;
+    const idx = mesh.geometry.index && mesh.geometry.index.array;
+    const triCount = Math.floor((idx ? idx.length : pos.count) / 3);
+    if (!triCount) continue;
+    const step = Math.max(1, Math.floor(triCount / maxSamples));
+    for (let t = 0; t < triCount; t += step) {
+      const ia = idx ? idx[t*3] : t*3, ib = idx ? idx[t*3+1] : t*3+1, ic = idx ? idx[t*3+2] : t*3+2;
+      a.fromBufferAttribute(pos, ia).applyMatrix4(mesh.matrixWorld);
+      b.fromBufferAttribute(pos, ib).applyMatrix4(mesh.matrixWorld);
+      c.fromBufferAttribute(pos, ic).applyMatrix4(mesh.matrixWorld);
+      ctr.copy(a).add(b).add(c).multiplyScalar(1/3);
+      e1.subVectors(b, a); e2.subVectors(c, a);
+      n.crossVectors(e1, e2);
+      if (n.lengthSq() < 1e-14) continue;
+      n.normalize();
+      const eps = 0.002;   // 0,02 mm unter die Oberfläche, dann nach innen
+      ray.set(ctr.clone().addScaledVector(n, -eps), n.clone().negate());
+      ray.far = thr * 4;
+      const hits = ray.intersectObject(mesh, false).filter(h => h.distance > 1e-4 && h.face);
+      if (hits.length) {
+        const d = hits[0].distance + eps;
+        if (d < thr) { spots.push({ p: ctr.clone(), mm: d * 10 }); if (d < minT) minT = d; }
+      }
+    }
+  }
+  return { spots, minMm: isFinite(minT) ? minT * 10 : null };
+}
+
+function _pcClearThinVis(){
+  _pcThinVis.forEach(m => { scene.remove(m); m.geometry && m.geometry.dispose(); m.material && m.material.dispose(); });
+  _pcThinVis = [];
+  if (_pcThinTimer) { clearTimeout(_pcThinTimer); _pcThinTimer = null; }
+}
+
+function _pcShowThinSpots(){
+  _pcClearThinVis();
+  _printCheckClose();
+  const geoS = new THREE.SphereGeometry(0.06, 10, 7);
+  _pcThinSpots.slice(0, 200).forEach(s => {
+    const m = new THREE.Mesh(geoS.clone(), new THREE.MeshBasicMaterial({ color: 0xff2244, depthTest: false }));
+    m.position.copy(s.p); m.renderOrder = 999;
+    scene.add(m); _pcThinVis.push(m);
+  });
+  notify(_pcThinSpots.length + ' dünne Stelle(n) rot markiert (unter 0,8 mm) — Anzeige verschwindet nach 15 s', 'w');
+  _pcThinTimer = setTimeout(_pcClearThinVis, 15000);
+}
+
 function _printCheckOpen(){
   document.getElementById('printcheck-modal').classList.add('show');
   const body=document.getElementById('printcheck-body');
@@ -26561,6 +26627,15 @@ function _printCheckOpen(){
   // Sehr dünn (Heuristik auf Außenmaße)
   const minDim=Math.min(r.wMM,r.dMM,r.hMM);
   if(minDim<0.8) row('warn','⚠️','Sehr filigran','Dünnste Außenabmessung ~'+minDim.toFixed(1)+' mm — könnte zu dünn zum Drucken sein.');
+  // Wandstärken (Stichproben-Raycast nach innen; bei sehr großen Szenen übersprungen)
+  if(!r.capped){
+    try{
+      const w=_pcWallAnalysis(0.8, r.tris);
+      _pcThinSpots=w.spots;
+      if(w.spots.length) row('warn','⚠️','Dünne Wände', w.spots.length+' Stelle(n) unter 0,8 mm (dünnste ~'+w.minMm.toFixed(2)+' mm) — Gefahr von Löchern oder Bruch. Wand ≥ 0,8 mm = 2 Bahnen bei 0,4er Düse.','👁 Zeigen','_pcShowThinSpots()');
+      else row('ok','✅','Wandstärken','Keine Stellen unter 0,8 mm gefunden (Stichprobe).');
+    }catch(e){ console.warn('Wandstärken-Check:',e); }
+  }
   // Volumen & Materialgewicht (massiv = 100% Infill). Dichten in g/cm³.
   if(r.volCm3>0){
     const cm3=r.volCm3, g=d=>Math.round(cm3*d);
