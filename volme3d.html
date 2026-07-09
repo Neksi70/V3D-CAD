@@ -10700,6 +10700,7 @@ function buildObjectFromData(data) {
   }
   if (data._hollowFlip) obj.userData._hollowFlip = true;
   if (data.varExprs) obj.userData.varExprs = { ...data.varExprs };
+  if (data.opJournal) obj.userData.opJournal = data.opJournal;
   if (data.tubePoly)  obj.userData.tubePoly  = true;
   if (data.tubeTwist) obj.userData.tubeTwist = data.tubeTwist;
   if (data.tubeFloor) obj.userData.tubeFloor = true;
@@ -10781,6 +10782,7 @@ function objectToData(o) {
   };
   if (o.userData.locked) d.locked = true;
   if (o.userData.varExprs && Object.keys(o.userData.varExprs).length) d.varExprs = o.userData.varExprs;
+  if (o.userData.opJournal) d.opJournal = o.userData.opJournal;
   if (o.userData.hidden || !o.visible) d.hidden = true;
   if (o.userData.opacity && o.userData.opacity < 0.99) d.opacity = o.userData.opacity;
   if (o.userData.threadDiameter) d.threadDiameter = o.userData.threadDiameter;
@@ -11099,8 +11101,11 @@ async function unionSelected() {
     const data = await resp.json();
     if (data.error || !data.stlBase64) throw new Error(data.error || 'kein Ergebnis');
     saveUndo();
+    // Operations-Journal VOR dem Entfernen der Teile sichern → „✎ Operation bearbeiten"
+    const _opJournal = { op: 'union', parts: sel.map(objectToData) };
     const mesh = _meshFromStlB64(data.stlBase64, 'Verschmolzen ' + idCtr);
     if (!mesh) throw new Error('Ergebnis-STL nicht ladbar');
+    mesh.userData.opJournal = _opJournal;
     sel.forEach(o => { objects = objects.filter(x => x !== o); scene.remove(o); });
     selectObjs([mesh]); updateTree();
     _progressDone();
@@ -12251,6 +12256,10 @@ async function subtractHoles() {
 
 async function _doSubtractHoles(solids, holes) {
   await new Promise(r => setTimeout(r, 30)); // Kurze Pause damit Notify sichtbar wird
+  // Operations-Journal: Ausgangsteile VOR der Mutation sichern (inkl. Geometrie).
+  // Wird bei Erfolg ans Ergebnis gehängt → „✎ Operation bearbeiten" stellt die
+  // Teile wieder her (Parametrik-Stufe 1: Bohrung nachträglich ändern).
+  const _opJournal = { op: 'subtract', parts: [...solids, ...holes].map(objectToData) };
 
   let solidMesh = solids[0];
   solidMesh.updateWorldMatrix(true, true);
@@ -12495,6 +12504,7 @@ async function _doSubtractHoles(solids, holes) {
     solidMesh.attach(visMesh);
   }
 
+  solidMesh.userData.opJournal = _opJournal;
   selectObjs([solidMesh]);
   updateTree();
   notify('✓ Abzug fertig!', 'ok');
@@ -15007,6 +15017,30 @@ async function _sendCurrentToSlicer(preferSlicer) {
 document.addEventListener('click', () => {
   document.getElementById('stl-menu')?.classList.remove('show');
 });
+
+// ═══ PARAMETRIK STUFE 1: OPERATIONEN NACHTRÄGLICH BEARBEITEN ═════════════════
+// Vereinen/Abziehen hängen ein opJournal {op, parts:[objectToData…]} ans Ergebnis.
+// „✎ Operation bearbeiten" löst das Ergebnis wieder in die Ausgangsteile auf
+// (voll editierbar, inkl. Bohrungs-Markierung) — anpassen, erneut kombinieren.
+function editOpJournal() {
+  const o = getFirst();
+  if (!o || !o.userData.opJournal) return;
+  const j = o.userData.opJournal;
+  saveUndo();
+  deselect();
+  scene.remove(o); objects = objects.filter(x => x !== o);
+  const restored = [];
+  for (const d of j.parts) {
+    try {
+      const r = buildObjectFromData(d);
+      scene.add(r); objects.push(r); restored.push(r);
+    } catch (e) { console.warn('[opJournal] Teil nicht wiederherstellbar:', e); }
+  }
+  if (!restored.length) { notify('Teile nicht wiederherstellbar', 'e'); return; }
+  selectObjs(restored); updateTree();
+  notify('Operation aufgelöst (' + restored.length + ' Teile) — anpassen, dann erneut ' +
+         (j.op === 'union' ? '∪ Vereinen' : '⊖ Abziehen'), 'ok');
+}
 
 // ═══ VARIABLEN (benannte Maße + Formeln) ═════════════════════════════════════
 // designVars: [{name, expr}] — expr ist Zahl oder Formel, darf andere Variablen
@@ -24740,10 +24774,16 @@ function updateFP() {
   document.getElementById('fp-s').className = 'fp-mode-btn' + (!isHole ? ' fp-son' : '');
   document.getElementById('fp-h').className = 'fp-mode-btn' + ( isHole ? ' fp-hon' : '');
 
-  // Rebuild property rows only if shape type changed
-  if (_fpCurType !== type) {
-    _fpCurType = type;
-    document.getElementById('fp-body').innerHTML = _fpBuildRows(type, o);
+  // Rebuild property rows only if shape type changed. Objekt-ID im Key: Journal-
+  // Button und Variablen-Formeln sind pro Objekt — Wechsel zwischen zwei Objekten
+  // gleichen Typs muss die Zeilen neu bauen, sonst zeigt das Panel stale Werte.
+  const typeKey = type + '#' + (o.userData.id || 0);
+  if (_fpCurType !== typeKey) {
+    _fpCurType = typeKey;
+    let rows = _fpBuildRows(type, o);
+    if (o.userData.opJournal && !_shellMode && !_edgeMode)
+      rows += `<div class="fp-sep"></div><div class="fp-row fp-edge-row"><button class="fp-btn" onclick="editOpJournal()" title="Ergebnis wieder in die Ausgangsteile auflösen — anpassen und erneut kombinieren">✎ Operation bearbeiten</button></div>`;
+    document.getElementById('fp-body').innerHTML = rows;
   } else {
     _fpSyncValues();
   }
