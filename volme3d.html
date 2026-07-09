@@ -2635,6 +2635,35 @@ const firebaseConfig = {
   </div>
 </div>
 
+<div id="jar-modal" class="g3dm" onclick="if(event.target===this)_closeJarModal()">
+  <div class="g3box">
+    <div class="g3hdr">🫙 Schraubdosen-Generator<span class="vx" onclick="_closeJarModal()">✕</span></div>
+    <div class="g3body">
+      <canvas id="jar-canvas" width="200" height="300"></canvas>
+      <div class="g3ctrl">
+        <span class="vsec">Maße</span>
+        <div class="vrow"><label>Durchmesser</label> <input type="range" id="jp-dia" min="30" max="140" value="60" step="1" oninput="_jarSet('dia',this.value)"><span class="vv" id="jv-dia">60</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Höhe</label> <input type="range" id="jp-height" min="25" max="160" value="60" step="1" oninput="_jarSet('height',this.value)"><span class="vv" id="jv-height">60</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Wandstärke</label> <input type="range" id="jp-wall" min="1.2" max="3.5" value="2" step="0.1" oninput="_jarSet('wall',this.value)"><span class="vv" id="jv-wall">2</span><span class="vu">mm</span></div>
+        <span class="vsec">Gewinde</span>
+        <div class="vrow"><label>Steigung</label> <input type="range" id="jp-pitch" min="2" max="5" value="3" step="0.25" oninput="_jarSet('pitch',this.value)"><span class="vv" id="jv-pitch">3</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Gewindehöhe</label> <input type="range" id="jp-threadH" min="5" max="16" value="8" step="0.5" oninput="_jarSet('threadH',this.value)"><span class="vv" id="jv-threadH">8</span><span class="vu">mm</span></div>
+        <div class="vrow"><label>Spiel</label> <input type="range" id="jp-clr" min="0.1" max="0.5" value="0.25" step="0.05" oninput="_jarSet('clr',this.value)"><span class="vv" id="jv-clr">0.25</span><span class="vu">mm</span></div>
+        <span class="vsec">Deckel</span>
+        <div class="vbg" id="jbg-knurl">
+          <button class="vtb on" onclick="_jarSet('knurl',1)">Riffelung</button>
+          <button class="vtb" onclick="_jarSet('knurl',0)">Glatt</button>
+        </div>
+        <div class="g3info" id="jar-info"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_closeJarModal()">Abbrechen</button>
+      <button class="btn pri" onclick="_createJar()">✓ Dose + Deckel erzeugen</button>
+    </div>
+  </div>
+</div>
+
 <div id="batt-modal" class="g3dm" onclick="if(event.target===this)_closeBattModal()">
   <div class="g3box">
     <div class="g3hdr">🔋 Batteriehalter-Generator<span class="vx" onclick="_closeBattModal()">✕</span></div>
@@ -16882,6 +16911,7 @@ const _STARTERS = [
   {i:'🏷️',t:'Namensschild',d:'Schild mit erhabenem Text',run:()=>_openNameModal()},
   {i:'🗺️',t:'Karte → 3D',d:'Reliefs aus Landkarten',run:()=>_openMapModal()},
   {i:'🖼️',t:'Lithophane',d:'Foto als Leuchtrelief',run:()=>_openLithoModal()},
+  {i:'🫙',t:'Schraubdose',d:'Dose mit Schraubdeckel',run:()=>_openJarModal()},
   {i:'🔋',t:'Batteriehalter',d:'Für AA/AAA/18650 …',run:()=>_openBattModal()},
   {i:'🪝',t:'Skadis-Haken',d:'Für IKEA-Lochwand',run:()=>_openSkadisModal()},
   {i:'📦',t:'Scharnier-Box',d:'Klappbox, Druck am Stück',run:()=>_openHingeModal()},
@@ -19632,6 +19662,184 @@ function _buildBatteryHolderGeo(p){
   geo.computeVertexNormals(); geo.computeBoundingBox();
   return geo;
 }
+// ═══ SCHRAUBDOSEN-GENERATOR (Dose mit Schraubdeckel) ═════════════════════════
+// Beide Teile als Grid-Revolve mit θ-abhängigem Radius (wie _buildThreadGeo):
+// eine Profilkette außen hoch → über den Rand → innen runter, dazu Deckel-Fächer
+// an beiden Enden → wasserdicht. Deckel wird in Druck-Lage (Öffnung oben)
+// erzeugt. Beim Umdrehen (Flip um X) negieren sich θ UND y — die doppelte
+// Spiegelung hebt sich auf, daher braucht das Innengewinde die GLEICHE
+// Händigkeit (hand=+1) wie das Außengewinde des Halses.
+const _jarP = { dia: 60, height: 60, wall: 2, pitch: 3, threadH: 8, clr: 0.25, knurl: 1 };
+let _jarRT = null;
+
+// Trapez-Gewindeprofil (Radius bei Höhe y, Winkel θ); Enden laufen auf rCore aus
+function _jarThreadR(y, theta, yBot, yTop, rCore, rOut, pitch, hand) {
+  const ht = pitch * 0.06, hp = pitch * 0.44, guard = pitch - hp;
+  if (y < yBot + guard || y > yTop - guard) return rCore;
+  const turns = (yTop - yBot) / pitch;
+  let d = Infinity;
+  for (let t = -1; t <= turns + 1; t++) {
+    const yg = yBot + (hand * theta / (Math.PI * 2) + t) * pitch;
+    const di = Math.abs(y - yg);
+    if (di < d) d = di;
+  }
+  if (d <= ht) return rOut;
+  if (d <= hp) return rOut - (rOut - rCore) * (d - ht) / (hp - ht);
+  return rCore;
+}
+
+// Rotations-Gitter: rows = Profilkette [{y, r(θ)}], capStart/-End = Mittelpunkt-Fächer
+function _jarGrid(rows, nA, capStart, capEnd) {
+  const verts = [], idx = [];
+  const nR = rows.length;
+  for (let i = 0; i < nA; i++) {
+    const th = i / nA * Math.PI * 2, c = Math.cos(th), s = Math.sin(th);
+    for (let j = 0; j < nR; j++) {
+      const r = rows[j].r(th);
+      verts.push(r * c, rows[j].y, r * s);
+    }
+  }
+  const iv = (i, j) => (i % nA) * nR + j;
+  for (let i = 0; i < nA; i++) for (let j = 0; j < nR - 1; j++) {
+    const a = iv(i, j), b = iv(i, j + 1), c2 = iv(i + 1, j), d = iv(i + 1, j + 1);
+    idx.push(a, b, c2, b, d, c2);
+  }
+  let base = nA * nR;
+  if (capStart) { verts.push(0, rows[0].y, 0); for (let i = 0; i < nA; i++) idx.push(base, iv(i, 0), iv(i + 1, 0)); base++; }
+  if (capEnd) { verts.push(0, rows[nR - 1].y, 0); for (let i = 0; i < nA; i++) idx.push(base, iv(i + 1, nR - 1), iv(i, nR - 1)); }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Abgeleitete Radien (alle in Units = mm/10)
+function _jarDims(p) {
+  const R = p.dia / 20, W = p.wall / 10, P = p.pitch / 10, clr = p.clr / 10;
+  const rThreadOut = R - W - clr;                       // Deckel außen bündig mit Dose
+  const depth = Math.min(0.6495 * P, 0.16);             // Gewindetiefe, max 1,6 mm
+  const rCore = rThreadOut - depth;
+  const rInner = rCore - W;                             // Innenraum (durchgehend)
+  return { R, W, P, clr, rThreadOut, depth, rCore, rInner };
+}
+
+function _buildJarBodyGeo(p) {
+  const { R, W, P, rThreadOut, rCore, rInner } = _jarDims(p);
+  const H = p.height / 10, Ht = p.threadH / 10;
+  const yNeck = H - Ht;
+  const nA = 96;
+  const rows = [];
+  const fix = r => () => r;
+  rows.push({ y: 0, r: fix(R) });
+  rows.push({ y: yNeck, r: fix(R) });                             // Außenwand
+  const thread = th => y => _jarThreadR(y, th, yNeck, H, rCore, rThreadOut, P, 1);
+  // Schulter → Gewindezone (feine Zeilen für saubere Helix)
+  const nT = Math.max(24, Math.round((Ht / P) * 24));
+  rows.push({ y: yNeck + 0.001, r: th => _jarThreadR(yNeck + 0.001, th, yNeck, H, rCore, rThreadOut, P, 1) });
+  for (let j = 1; j <= nT; j++) {
+    const y = yNeck + (j / nT) * Ht;
+    rows.push({ y, r: th => _jarThreadR(y, th, yNeck, H, rCore, rThreadOut, P, 1) });
+  }
+  rows.push({ y: H, r: fix(rInner) });                            // oberer Rand → innen
+  rows.push({ y: W, r: fix(rInner) });                            // Innenwand runter
+  return _jarGrid(rows, nA, true, true);                          // Boden außen + Boden innen
+}
+
+function _buildJarLidGeo(p) {
+  const { R, W, P, clr, rThreadOut, rCore } = _jarDims(p);
+  const Ht = p.threadH / 10;
+  const seat = 0.04;                                              // 0,4 mm Luft überm Rand
+  const lidH = W + Ht + seat;
+  const nA = 96;
+  const knurlR = th => R + (p.knurl ? 0.025 * (1 + Math.cos(th * 24)) : 0);   // Riffelung ≤ 0,5 mm
+  const rows = [];
+  rows.push({ y: 0, r: knurlR });
+  rows.push({ y: lidH, r: knurlR });                              // Außenwand hoch
+  // Innengewinde (weiblich): männliches Profil + Spiel, gleiche Händigkeit (s. Kopfkommentar)
+  const yB = W + seat, yT = lidH;
+  const fem = y => th => _jarThreadR(y, th, yB, yT, rCore, rThreadOut, P, 1) + clr;
+  rows.push({ y: lidH, r: fem(lidH) });                           // Rand-Ring → innen
+  const nT = Math.max(24, Math.round((Ht / P) * 24));
+  for (let j = 1; j <= nT; j++) {
+    const y = lidH - (j / nT) * (Ht + seat);
+    rows.push({ y, r: fem(y) });
+  }
+  return _jarGrid(rows, nA, true, true);                          // Boden + Innendecke
+}
+
+function _jarPreviewGeo() {
+  const body = _buildJarBodyGeo(_jarP).toNonIndexed();
+  const lid = _buildJarLidGeo(_jarP).toNonIndexed();
+  const off = _jarP.dia / 10 * 0.62;
+  lid.translate(off, 0, 0);
+  const n1 = body.attributes.position.array, n2 = lid.attributes.position.array;
+  const all = new Float32Array(n1.length + n2.length);
+  all.set(n1, 0); all.set(n2, n1.length);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(all, 3));
+  geo.computeVertexNormals();
+  body.dispose(); lid.dispose();
+  return geo;
+}
+
+function _openJarModal(){
+  document.getElementById('jar-modal').classList.add('show');
+  _jarSyncUI();
+  requestAnimationFrame(()=>{ if(!_gpv['jar']) _gpvInit('jar',()=>_jarPreviewGeo()); else { _gpvUpdate('jar'); if(!_gpv['jar'].anim) _gpvLoop('jar'); } });
+}
+function _closeJarModal(){ document.getElementById('jar-modal').classList.remove('show'); _gpvStop('jar'); }
+
+function _jarSet(k, v){
+  _jarP[k] = parseFloat(v);
+  _jarSyncUI();
+  if(_jarRT) clearTimeout(_jarRT);
+  _jarRT = setTimeout(()=>{ _jarRT = null; _gpvUpdate('jar'); }, 90);
+}
+
+function _jarSyncUI(){
+  for (const k of ['dia','height','wall','pitch','threadH','clr']) {
+    const s = document.getElementById('jp-' + k), t = document.getElementById('jv-' + k);
+    if (s) s.value = _jarP[k]; if (t) t.textContent = _jarP[k];
+  }
+  const btns = document.querySelectorAll('#jbg-knurl .vtb');
+  if (btns.length === 2) { btns[0].classList.toggle('on', !!_jarP.knurl); btns[1].classList.toggle('on', !_jarP.knurl); }
+  const el = document.getElementById('jar-info');
+  if (el) {
+    const d = _jarDims(_jarP);
+    const openMm = Math.max(0, d.rInner * 20);
+    const volCm3 = Math.PI * Math.pow(d.rInner, 2) * Math.max(0, _jarP.height / 10 - d.W) * 1000 / 1000;
+    el.innerHTML = 'Öffnung Ø ' + openMm.toFixed(1) + ' mm · Innenvolumen ≈ ' + volCm3.toFixed(0) + ' cm³' +
+      '<br>Deckel zum Zudrehen umdrehen — Spiel ' + _jarP.clr + ' mm (bei klemmendem Deckel erhöhen)';
+  }
+}
+
+function _createJar(){
+  saveUndo();
+  let bodyGeo, lidGeo;
+  try { bodyGeo = _buildJarBodyGeo(_jarP); lidGeo = _buildJarLidGeo(_jarP); }
+  catch(e){ console.error('Schraubdose:', e); notify('Fehler beim Erstellen', 'w'); return; }
+  typeCounts['jar'] = (typeCounts['jar'] || 0) + 1;
+  const mk = (geo, name, dx) => {
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(currentColor), roughness: 0.5, metalness: 0.08, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    mesh.position.set(dx, 0, 0);
+    mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name, color: currentColor, isHole: false,
+      fillet: 0, chamfer: 0, displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
+      displacementInvert: false, displacementSymmetric: false,
+      jarParams: { ..._jarP } };
+    scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
+    return mesh;
+  };
+  const n = typeCounts['jar'];
+  const body = mk(bodyGeo, 'Dose #' + n, 0);
+  const lid = mk(lidGeo, 'Deckel #' + n, _jarP.dia / 10 * 0.62 + 0.6);
+  selectObjs([body, lid]); updateTree(); fitToObjects([body, lid]);
+  notify('Dose + Deckel erstellt ✓ (Deckel liegt in Druck-Lage, zum Zudrehen umdrehen)', 'ok');
+  _closeJarModal();
+}
+
 function _openBattModal(){
   document.getElementById('batt-modal').classList.add('show');
   _battSyncUI();
@@ -26687,6 +26895,7 @@ const CMDK = [
   {i:'🌸',g:'Generator',t:'Blumen',k:'flower',run:()=>_openFlowerModal()},
   {i:'🏮',g:'Generator',t:'Laternen',k:'lantern',run:()=>_openLanternModal()},
   {i:'🔩',g:'Generator',t:'Schrauben & Muttern',k:'screw bolt nut',run:()=>_openScrewModal()},
+  {i:'🫙',g:'Generator',t:'Schraubdose',k:'jar dose deckel behälter gewinde container',run:()=>_openJarModal()},
   {i:'🚿',g:'Generator',t:'Gardena-Anschluss',k:'gardena schlauch hahn kupplung garten',run:()=>_openGardenaModal()},
   {i:'⚙️',g:'Generator',t:'Zahnräder',k:'gear',run:()=>_openGearModal()},
   {i:'📦',g:'Generator',t:'Gehäuse / Box',k:'enclosure case',run:()=>_openEncModal()},
