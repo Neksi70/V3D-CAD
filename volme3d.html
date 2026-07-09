@@ -1077,6 +1077,7 @@ const firebaseConfig = {
       <button class="btn" onclick="openEraserTool()" title="Radierer — mit dem Pinsel über das Modell fahren, um Flächen/Geometrie zu entfernen (Radius per Mausrad)">🧽 Radierer</button>
       <button class="btn" onclick="repairSelected()" title="Reparieren — offene Löcher im ausgewählten Objekt schließen (wieder wasserdicht/druckbar machen)">🩹 Reparieren</button>
       <button class="btn" onclick="openSimplifyModal()" title="Vereinfachen — Dreiecke eines (importierten) Modells reduzieren, fürs schnellere Slicen">🔻 Vereinfachen</button>
+      <button class="btn" onclick="openOffsetTool()" title="Spielraum — Körper um ±mm aufblasen/schrumpfen (Toleranz für Passungen, z.B. −0,2 mm für klemmende Deckel)">⧈ Spielraum</button>
     </div></div>
     <div class="tbg"><span class="tbg-l">Prüfen</span><div class="tbg-row">
       <button class="btn" id="btn-measure" onclick="measureTool()" title="Messen — zwei Punkte anklicken, Abstand in mm ablesen (Esc beendet)">📐 Messen</button>
@@ -11204,6 +11205,137 @@ async function fitCheckTool() {
     _progressHide();
     notify('Passungsprüfung fehlgeschlagen: ' + (e.message || e), 'e');
   }
+}
+
+// ═══ SPIELRAUM / OFFSET (Körper aufblasen/schrumpfen) ═════════════════════════
+// Vertex-Normalen-Offset im Welt-Raum: jede Ecke wandert um ±d entlang ihrer
+// flächengewichteten Durchschnittsnormale. Für Passungs-Toleranzen (±0,05–0,5 mm)
+// robust und sofort; bei großen Beträgen/dünnen Stegen können Selbstschnitte
+// entstehen — dafür gibt es den Hinweis im Panel.
+let _offsetPanel = null;
+
+function openOffsetTool() {
+  if (_offsetPanel) { _offsetClose(); return; }
+  const o = getFirst();
+  if (!o || !o.isMesh || !o.geometry) { notify('Einen Körper auswählen', 'w'); return; }
+  const p = document.createElement('div');
+  p.id = 'offset-panel';
+  p.style.cssText = 'position:fixed;top:70px;right:14px;width:280px;z-index:6000;' +
+    'background:#1f2329;border:1px solid #3a3f47;border-radius:9px;padding:14px 16px;' +
+    'color:#e6e8eb;font:12px/1.4 system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.45)';
+  p.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <b style="font-size:13px">⧈ Spielraum</b>
+      <span onclick="_offsetClose()" style="cursor:pointer;color:#9aa0a8;font-size:16px;line-height:1">✕</span>
+    </div>
+    <div style="color:#9aa0a8;margin-bottom:10px">Körper gleichmäßig aufblasen (+) oder schrumpfen (−). Für Presspassungen z.B. −0,2 mm.</div>
+    <div style="display:flex;gap:5px;margin-bottom:10px">
+      <button onclick="_offsetApply(-0.2)" style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">−0,2</button>
+      <button onclick="_offsetApply(-0.1)" style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">−0,1</button>
+      <button onclick="_offsetApply(0.1)"  style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">+0,1</button>
+      <button onclick="_offsetApply(0.2)"  style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">+0,2</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <input id="offset-val" type="number" step="0.05" value="0.2" style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:5px 7px">
+      <span style="color:#9aa0a8">mm</span>
+      <button onclick="_offsetApply(parseFloat(document.getElementById('offset-val').value)||0)" style="background:#F97316;border:none;color:#fff;border-radius:6px;padding:6px 12px;font-weight:700;cursor:pointer">Anwenden</button>
+    </div>
+    <div style="display:flex;justify-content:space-between;color:#9aa0a8">
+      <span>Bisher: <b id="offset-sum" style="color:#e6e8eb">0 mm</b></span>
+      <span onclick="undo()" style="cursor:pointer;text-decoration:underline">rückgängig</span>
+    </div>`;
+  document.body.appendChild(p);
+  _offsetPanel = p;
+}
+
+function _offsetClose() {
+  if (_offsetPanel) { _offsetPanel.remove(); _offsetPanel = null; }
+}
+
+function _offsetApply(offMm) {
+  const o = getFirst();
+  if (!o || !o.isMesh || !o.geometry) { notify('Einen Körper auswählen', 'w'); return; }
+  if (!offMm || !isFinite(offMm)) return;
+  if (Math.abs(offMm) > 5) { notify('Maximal ±5 mm pro Schritt', 'w'); return; }
+  saveUndo();
+  const d = offMm / 10;   // mm → Units (Welt)
+  o.updateMatrixWorld(true);
+  const geo = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry;
+  const pos = geo.attributes.position;
+  const world = new THREE.Matrix4().copy(o.matrixWorld);
+  const inv = world.clone().invert();
+  // 1. Pass: pro (gerundeter) Welt-Position die anliegenden Flächennormalen
+  // sammeln — als Normalgleichung M·v = s·d (M = Σ w·n·nᵀ, s = Σ w·n). Die
+  // Lösung verschiebt JEDE anliegende Ebene um d (Ebenen-erhaltend), statt nur
+  // entlang der Durchschnittsnormale (die unterschätzt an Ecken um 1/cos θ).
+  const acc = new Map();   // key → {m:[xx,xy,xz,yy,yz,zz], s:Vector3}
+  const key = v => (Math.round(v.x * 1e4) + ',' + Math.round(v.y * 1e4) + ',' + Math.round(v.z * 1e4));
+  const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), fn = new THREE.Vector3();
+  const nTri = Math.floor(pos.count / 3);
+  const keys = new Array(pos.count);
+  for (let t = 0; t < nTri; t++) {
+    va.fromBufferAttribute(pos, t*3).applyMatrix4(world);
+    vb.fromBufferAttribute(pos, t*3+1).applyMatrix4(world);
+    vc.fromBufferAttribute(pos, t*3+2).applyMatrix4(world);
+    e1.subVectors(vb, va); e2.subVectors(vc, va);
+    fn.crossVectors(e1, e2);            // Länge = 2×Fläche
+    const w = fn.length();
+    if (w < 1e-12) { for (const i of [t*3, t*3+1, t*3+2]) keys[i] = null; continue; }
+    const nx = fn.x / w, ny = fn.y / w, nz = fn.z / w;
+    for (const [i, v] of [[t*3, va], [t*3+1, vb], [t*3+2, vc]]) {
+      const k = key(v); keys[i] = k;
+      let a = acc.get(k);
+      if (!a) { a = { m: [0,0,0,0,0,0], s: new THREE.Vector3() }; acc.set(k, a); }
+      a.m[0] += w*nx*nx; a.m[1] += w*nx*ny; a.m[2] += w*nx*nz;
+      a.m[3] += w*ny*ny; a.m[4] += w*ny*nz; a.m[5] += w*nz*nz;
+      a.s.x += w*nx; a.s.y += w*ny; a.s.z += w*nz;
+    }
+  }
+  // Verschiebung pro Position lösen (3×3 symmetrisch, Tikhonov-regularisiert)
+  const disp = new Map();
+  for (const [k, a] of acc) {
+    const tr = a.m[0] + a.m[3] + a.m[5];
+    const eps = Math.max(tr, 1e-12) * 1e-3;
+    const m00 = a.m[0] + eps, m01 = a.m[1], m02 = a.m[2],
+          m11 = a.m[3] + eps, m12 = a.m[4], m22 = a.m[5] + eps;
+    const det = m00*(m11*m22 - m12*m12) - m01*(m01*m22 - m12*m02) + m02*(m01*m12 - m11*m02);
+    const bx = a.s.x * d, by = a.s.y * d, bz = a.s.z * d;
+    let v;
+    if (Math.abs(det) > 1e-18) {
+      v = new THREE.Vector3(
+        (bx*(m11*m22 - m12*m12) - m01*(by*m22 - m12*bz) + m02*(by*m12 - m11*bz)) / det,
+        (m00*(by*m22 - m12*bz) - bx*(m01*m22 - m12*m02) + m02*(m01*bz - by*m02)) / det,
+        (m00*(m11*bz - by*m12) - m01*(m01*bz - by*m02) + bx*(m01*m12 - m11*m02)) / det
+      );
+      // Ausreißer klemmen (spitze Kerben → riesige 1/cos-Faktoren)
+      if (v.length() > Math.abs(d) * 3) v.setLength(Math.abs(d) * 3);
+    } else {
+      v = a.s.clone().normalize().multiplyScalar(d);
+    }
+    disp.set(k, v);
+  }
+  // 2. Pass: Ecken verschieben
+  const pw = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    pw.fromBufferAttribute(pos, i).applyMatrix4(world);
+    const v = keys[i] && disp.get(keys[i]);
+    if (v) pw.add(v);
+    pw.applyMatrix4(inv);
+    pos.setXYZ(i, pw.x, pw.y, pw.z);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  geo.computeBoundingBox(); geo.computeBoundingSphere();
+  if (geo !== o.geometry) { o.geometry.dispose(); o.geometry = geo; }
+  if (typeof _geoJsonCache !== 'undefined') _geoJsonCache.delete(o.geometry);
+  o.userData._origStlBuf = null;   // gebackene STL passt nicht mehr
+  o.userData._offsetSumMm = Math.round(((o.userData._offsetSumMm || 0) + offMm) * 100) / 100;
+  const sumEl = document.getElementById('offset-sum');
+  if (sumEl) sumEl.textContent = o.userData._offsetSumMm + ' mm';
+  if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(o);
+  updateFP();
+  notify('Spielraum ' + (offMm > 0 ? '+' : '') + offMm + ' mm angewendet ✓', 'ok');
 }
 
 // ═══ OCCT SVG-ABZUG HILFSFUNKTIONEN ════════════════════════════════════════
