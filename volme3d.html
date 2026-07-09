@@ -2963,6 +2963,7 @@ const firebaseConfig = {
       <button class="vtb on" onclick="_text3dSetMode('free')">Frei</button>
       <button class="vtb"    onclick="_text3dSetMode('surface')">Auf Fläche</button>
       <button class="vtb"    onclick="_text3dSetMode('cylinder')">Um Zylinder</button>
+      <button class="vtb"    onclick="_text3dSetMode('arc')">⌒ Bogen</button>
     </div>
     <div class="vrow"><label>Größe</label><input type="range" id="text3d-size" min="1" max="30" value="8" step="0.5" oninput="document.getElementById('text3d-sv').textContent=this.value"><span class="vv" id="text3d-sv">8</span><span class="vu">mm</span></div>
     <!-- Auf Fläche -->
@@ -2981,6 +2982,14 @@ const firebaseConfig = {
       <div class="vrow"><label>Startwinkel</label><input type="range" id="text3d-ang" min="0" max="360" value="0" step="5" oninput="document.getElementById('text3d-ang-v').textContent=this.value+'°'"><span class="vv" id="text3d-ang-v">0°</span></div>
       <div class="vrow"><label>Höhe %</label><input type="range" id="text3d-yp" min="-90" max="90" value="0" step="5" oninput="document.getElementById('text3d-yp-v').textContent=this.value+'%'"><span class="vv" id="text3d-yp-v">0%</span></div>
       <div class="vrow"><label>Abstand</label><input type="range" id="text3d-cdep" min="-5" max="5" value="0" step="0.1" oninput="document.getElementById('text3d-cdep-v').textContent=this.value"><span class="vv" id="text3d-cdep-v">0</span><span class="vu">mm</span></div>
+    </div>
+    <!-- Bogen (gebogene Grundlinie, z.B. Ring/Schild) -->
+    <div id="text3d-arc-opts" style="display:none">
+      <div class="vrow"><label>Radius</label><input type="range" id="text3d-arcr" min="10" max="150" value="40" step="1" oninput="document.getElementById('text3d-arcr-v').textContent=this.value"><span class="vv" id="text3d-arcr-v">40</span><span class="vu">mm</span></div>
+      <div class="vbg" id="text3d-arc-dir">
+        <button class="vtb on" onclick="_text3dSetArcDir('up')">⌒ nach oben</button>
+        <button class="vtb"    onclick="_text3dSetArcDir('down')">⌄ nach unten</button>
+      </div>
     </div>
     <div id="text3d-footer">
       <button class="btn" onclick="_closeText3d()">Abbrechen</button>
@@ -8782,11 +8791,22 @@ function _closeText3d() { document.getElementById('text3d-modal').classList.remo
 
 function _text3dSetMode(m) {
   _text3dMode = m;
-  ['free','surface','cylinder'].forEach((x,i) => {
-    document.querySelector(`#text3d-mode-bg .vtb:nth-child(${i+1})`).classList.toggle('on', x===m);
+  ['free','surface','cylinder','arc'].forEach((x,i) => {
+    const b = document.querySelector(`#text3d-mode-bg .vtb:nth-child(${i+1})`);
+    if (b) b.classList.toggle('on', x===m);
   });
   document.getElementById('text3d-surf-opts').style.display = m==='surface' ? '' : 'none';
   document.getElementById('text3d-cyl-opts').style.display  = m==='cylinder' ? '' : 'none';
+  document.getElementById('text3d-arc-opts').style.display  = m==='arc' ? '' : 'none';
+}
+
+let _text3dArcDir = 'up';
+function _text3dSetArcDir(d) {
+  _text3dArcDir = d;
+  ['up','down'].forEach((x,i) => {
+    const b = document.querySelector(`#text3d-arc-dir .vtb:nth-child(${i+1})`);
+    if (b) b.classList.toggle('on', x===d);
+  });
 }
 function _text3dSetFace(f) {
   _text3dFace = f;
@@ -8809,6 +8829,57 @@ function _textToSvg(font, txt, size) {
       for (let i = 1; i < pts.length; i++) d += `L ${pts[i].x.toFixed(3)} ${(-pts[i].y).toFixed(3)} `;
       d += 'Z ';
       for (const p of pts) { if (p.x<minX)minX=p.x; if (p.x>maxX)maxX=p.x; if (p.y<minY)minY=p.y; if (p.y>maxY)maxY=p.y; }
+    }
+    if (d) paths += `<path d="${d}"/>`;
+  }
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg">${paths}</svg>`, w: maxX - minX, h: maxY - minY };
+}
+
+// Bogen-Text → SVG: Buchstaben-Konturen einzeln entlang eines Kreisbogens
+// platziert (Grundlinie auf dem Bogen, Buchstaben stehen radial). Ergebnis
+// läuft durch die normale SVG-Pipeline (Snap, erhaben/vertieft, Inlay).
+// dir 'up' = Bogen nach oben (Schild-Kopf), 'down' = nach unten (Schild-Fuß).
+function _textArcSvg(font, txt, sizeU, radiusU, dir) {
+  const data = font.data;
+  const fScale = sizeU / data.resolution;
+  const advOf = ch => {
+    const g = data.glyphs[ch] || data.glyphs['?'];
+    return (g && g.ha ? g.ha : data.resolution * 0.5) * fScale;
+  };
+  const chars = [...txt];
+  const advs = chars.map(advOf);
+  const total = advs.reduce((a, b) => a + b, 0);
+  const R = Math.max(radiusU, total / Math.PI);   // Bogen ≤ 180°, sonst Überlappung
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, paths = '';
+  let s = -total / 2;
+  for (let ci = 0; ci < chars.length; ci++) {
+    const ch = chars[ci], adv = advs[ci];
+    const sc = s + adv / 2;   // Bogenlänge der Buchstaben-Mitte
+    s += adv;
+    if (ch === ' ') continue;
+    const phi = dir === 'up' ? Math.PI / 2 - sc / R : -Math.PI / 2 + sc / R;
+    const u = [Math.cos(phi), Math.sin(phi)];                          // radial
+    const t = dir === 'up' ? [Math.sin(phi), -Math.cos(phi)] : [-Math.sin(phi), Math.cos(phi)];   // Leserichtung
+    const up = dir === 'up' ? u : [-u[0], -u[1]];                      // Buchstaben-Hochachse
+    const base = [R * u[0], R * u[1]];   // Punkt auf dem Bogen
+    const shapes = font.generateShapes(ch, sizeU);
+    let d = '';
+    for (const sh of shapes) {
+      const subs = [sh.getPoints(12), ...((sh.holes || []).map(h => h.getPoints(12)))];
+      for (const pts of subs) {
+        if (!pts || pts.length < 2) continue;
+        const tp = pts.map(p => {
+          const lx = p.x - adv / 2, ly = p.y;   // Glyph um seine Mitte zentrieren
+          const wx = base[0] + lx * t[0] + ly * up[0];
+          const wy = base[1] + lx * t[1] + ly * up[1];
+          if (wx < minX) minX = wx; if (wx > maxX) maxX = wx;
+          if (wy < minY) minY = wy; if (wy > maxY) maxY = wy;
+          return [wx, -wy];   // SVG: Y nach unten
+        });
+        d += `M ${tp[0][0].toFixed(3)} ${tp[0][1].toFixed(3)} `;
+        for (let i = 1; i < tp.length; i++) d += `L ${tp[i][0].toFixed(3)} ${tp[i][1].toFixed(3)} `;
+        d += 'Z ';
+      }
     }
     if (d) paths += `<path d="${d}"/>`;
   }
@@ -8845,6 +8916,15 @@ function _confirmText3d() {
       scene.add(mesh); objects.push(mesh);
       _updateObjEdgeLines(mesh); selectObjs([mesh]); updateTree();
       notify('Text "' + txt + '" hinzugefügt', 'ok');
+      return;
+    }
+    // Bogen-Text: gebogene Konturen als SVG → gleiche Pipeline wie 'free'
+    if (mode === 'arc') {
+      const radiusU = (parseFloat(document.getElementById('text3d-arcr').value) || 40) / 10;
+      const ts2 = _textArcSvg(font, txt, sizeU, radiusU, _text3dArcDir);
+      if (!ts2.w || !ts2.h) { notify('Text ohne Kontur', 'w'); return; }
+      _importSvgConfirm({ svgText: ts2.svg, mode: 'extrude', depthMM: Math.max(1, sizeMm * 0.25),
+                          targetMM: Math.max(ts2.w, ts2.h) * 10, name: txt + ' (Bogen)' });
       return;
     }
     // Sonst: Text aus Font-Konturen als SVG-Objekt bauen → erbt die komplette
