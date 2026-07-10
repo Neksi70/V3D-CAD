@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Orca-WASM Browser-Test</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #1a1a2e; color: #e0e0e0; }
+  header { padding: 1rem 2rem 0; }
+  h1 { color: #4fc3f7; margin: 0 0 .5rem; }
+  #status { margin: .5rem 0; min-height: 1.4em; }
+  .ok { color: #66bb6a; } .err { color: #ef5350; }
+  button { background: #4fc3f7; color: #000; border: 0; padding: .6rem 1.4rem;
+           border-radius: 6px; font-size: 1rem; cursor: pointer; }
+  button:disabled { opacity: .4; }
+  #controls { display: flex; align-items: center; gap: 1rem; padding: .6rem 2rem; }
+  #layerSlider { flex: 1; max-width: 480px; }
+  #view { width: 100vw; height: calc(100vh - 130px); display: block; }
+  #legend { display: flex; gap: 1rem; font-size: .85rem; flex-wrap: wrap; }
+  .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🥨 Orca-WASM Browser-Test</h1>
+  <div id="status">Lade WASM-Modul …</div>
+</header>
+<div id="controls">
+  <button id="btn" disabled>20mm-Würfel slicen</button>
+  <button id="btnProfile" disabled>X1C + PLA-Profil slicen</button>
+  <input type="range" id="layerSlider" min="1" max="1" value="1" disabled>
+  <span id="layerLabel"></span>
+  <span id="legend"></span>
+</div>
+<canvas id="view"></canvas>
+
+<script src="./three.min.js"></script>
+<script type="module">
+const status = document.getElementById('status');
+const btn    = document.getElementById('btn');
+const btnProfile = document.getElementById('btnProfile');
+const slider = document.getElementById('layerSlider');
+const layerLabel = document.getElementById('layerLabel');
+
+if (!crossOriginIsolated) {
+  status.innerHTML = '<span class="err">FEHLER: nicht crossOriginIsolated — COOP/COEP-Header fehlen</span>';
+  throw new Error('no COI');
+}
+
+// ---- Feature-Farben (an Orca angelehnt)
+const FEATURE_COLORS = {
+  'Outer wall':      0xff4d4d,
+  'Inner wall':      0xffc14d,
+  'Sparse infill':   0xb04dff,
+  'Internal solid infill': 0xff984d,
+  'Top surface':     0x4dc3ff,
+  'Bottom surface':  0x4dff88,
+  'Skirt':           0x9e9e9e,
+  'Brim':            0x9e9e9e,
+  'Support':         0x66bb6a,
+  'Bridge':          0x4dd0e1,
+  'Gap infill':      0xff80ab,
+};
+const DEFAULT_COLOR = 0x8899aa;
+
+// ---- Three.js-Szene
+const canvas = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a2e);
+const camera = new THREE.PerspectiveCamera(45, 2, 0.1, 2000);
+scene.add(new THREE.GridHelper(240, 24, 0x335, 0x223));
+scene.up = camera.up = new THREE.Vector3(0, 0, 1);
+
+// Bett 240×240 mit Ursprung in der Ecke → Mitte (120,120)
+const CENTER = new THREE.Vector3(120, 120, 10);
+const grid = scene.children[0];
+grid.rotation.x = Math.PI / 2; grid.position.set(120, 120, 0);
+
+let camTheta = -Math.PI / 4, camPhi = 1.0, camDist = 120;
+function updateCam() {
+  camera.position.set(
+    CENTER.x + camDist * Math.sin(camPhi) * Math.cos(camTheta),
+    CENTER.y + camDist * Math.sin(camPhi) * Math.sin(camTheta),
+    CENTER.z + camDist * Math.cos(camPhi));
+  camera.lookAt(CENTER);
+}
+canvas.addEventListener('pointerdown', e => {
+  const move = ev => {
+    camTheta -= ev.movementX * 0.008;
+    camPhi = Math.min(Math.PI - 0.05, Math.max(0.05, camPhi - ev.movementY * 0.008));
+    updateCam();
+  };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  camDist = Math.min(600, Math.max(20, camDist * (e.deltaY > 0 ? 1.1 : 0.9)));
+  updateCam();
+}, { passive: false });
+
+function resize() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+
+const toolpathGroup = new THREE.Group();
+scene.add(toolpathGroup);
+let layerGroups = [];
+
+(function loop() { requestAnimationFrame(loop); resize(); renderer.render(scene, camera); })();
+updateCam();
+
+// ---- G-Code-Parser: G1-Extrusionszüge → Liniensegmente pro Layer+Feature
+function parseGcode(gcode) {
+  const layers = [];           // [{ z, features: Map<feature, number[]> }]
+  let cur = null;
+  let x = 0, y = 0, z = 0, e = 0, feature = 'unbekannt';
+  let absE = true;
+  for (const line of gcode.split('\n')) {
+    if (line.startsWith('; CHANGE_LAYER')) { cur = { z, features: new Map() }; layers.push(cur); continue; }
+    if (line.startsWith('; FEATURE: ')) { feature = line.slice(11).trim(); continue; }
+    if (line.startsWith('M82')) { absE = true; continue; }
+    if (line.startsWith('M83')) { absE = false; continue; }
+    if (!(line.startsWith('G1') || line.startsWith('G0') || line.startsWith('G2') || line.startsWith('G3'))) continue;
+    let nx = x, ny = y, nz = z, ne = absE ? e : 0;
+    for (const tok of line.split(' ')) {
+      const v = parseFloat(tok.slice(1));
+      if (Number.isNaN(v)) continue;
+      switch (tok[0]) {
+        case 'X': nx = v; break; case 'Y': ny = v; break;
+        case 'Z': nz = v; break; case 'E': ne = v; break;
+      }
+    }
+    const de = absE ? ne - e : ne;
+    if (cur && de > 0 && (nx !== x || ny !== y)) {
+      cur.z = nz;
+      if (!cur.features.has(feature)) cur.features.set(feature, []);
+      cur.features.get(feature).push(x, y, z, nx, ny, nz);
+    }
+    x = nx; y = ny; z = nz; e = absE ? ne : e + Math.max(0, ne);
+  }
+  return layers;
+}
+
+function showToolpaths(layers) {
+  toolpathGroup.clear(); layerGroups = [];
+  const seen = new Set();
+  for (const layer of layers) {
+    const g = new THREE.Group();
+    for (const [feature, coords] of layer.features) {
+      seen.add(feature);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(coords, 3));
+      const mat = new THREE.LineBasicMaterial({ color: FEATURE_COLORS[feature] ?? DEFAULT_COLOR });
+      g.add(new THREE.LineSegments(geo, mat));
+    }
+    toolpathGroup.add(g); layerGroups.push(g);
+  }
+  // Legende
+  document.getElementById('legend').innerHTML = [...seen].map(f =>
+    `<span><span class="sw" style="background:#${(FEATURE_COLORS[f] ?? DEFAULT_COLOR).toString(16).padStart(6,'0')}"></span>${f}</span>`).join(' ');
+  slider.max = layers.length; slider.value = layers.length; slider.disabled = false;
+  setVisibleLayers(layers.length);
+}
+
+function setVisibleLayers(n) {
+  layerGroups.forEach((g, i) => g.visible = i < n);
+  layerLabel.textContent = `Layer ${n}/${layerGroups.length}`;
+}
+slider.oninput = () => setVisibleLayers(+slider.value);
+
+// ---- Orca-Profildatenbank: inherits-Kette auflösen (Basis zuerst)
+const vendorCache = new Map();
+async function vendorIndex(vendor) {
+  if (!vendorCache.has(vendor))
+    vendorCache.set(vendor, await (await fetch(`/profiles/${vendor}.json`)).json());
+  return vendorCache.get(vendor);
+}
+async function profileChain(vendor, listKey, presetName) {
+  const idx = await vendorIndex(vendor);
+  const byName = new Map(idx[listKey].map(e => [e.name, e.sub_path]));
+  const chain = [];
+  let name = presetName;
+  while (name) {
+    const sub = byName.get(name);
+    if (!sub) throw new Error(`Preset nicht gefunden: ${name}`);
+    const json = await (await fetch(`/profiles/${vendor}/${encodeURIComponent(sub).replaceAll('%2F','/')}`)).json();
+    chain.unshift(json);
+    name = json.inherits;
+  }
+  return chain.map(j => JSON.stringify(j));
+}
+
+// ---- WASM laden + slicen
+import createOrcaSlicer from './orca-slicer.js';
+const t0 = performance.now();
+const orca = await createOrcaSlicer();
+status.innerHTML = `<span class="ok">Orca-Kern geladen in ${((performance.now()-t0)/1000).toFixed(1)}s — Version ${orca.version()}</span>`;
+btn.disabled = false;
+btnProfile.disabled = false;
+
+async function runSlice(profiles, overrides) {
+  btn.disabled = btnProfile.disabled = true;
+  status.textContent = 'Slice läuft …';
+  const stl = new Uint8Array(await (await fetch('./cube20.stl')).arrayBuffer());
+  await new Promise(r => setTimeout(r, 30));
+  const t1 = performance.now();
+  const gcode = profiles.length
+    ? orca.sliceSTLWithProfiles(stl, profiles, overrides)
+    : orca.sliceSTL(stl, overrides);
+  const dt = ((performance.now()-t1)/1000).toFixed(1);
+  if (!gcode) {
+    status.innerHTML = `<span class="err">FEHLER: ${orca.lastError()}</span>`;
+  } else {
+    const layers = parseGcode(gcode);
+    showToolpaths(layers);
+    status.innerHTML = `<span class="ok" id="done">OK: ${layers.length} Layer in ${dt}s — Slider zum Durchblättern, Maus zum Drehen</span>`;
+  }
+  btn.disabled = btnProfile.disabled = false;
+  return gcode;
+}
+
+btn.onclick = () => runSlice([], `layer_height = 0.2
+initial_layer_print_height = 0.2
+nozzle_diameter = 0.4
+filament_diameter = 1.75
+printable_area = 0x0,240x0,240x240,0x240
+printable_height = 250
+sparse_infill_density = 15%
+enable_support = 0
+enable_arc_fitting = 0`);
+
+btnProfile.onclick = async () => {
+  try {
+    status.textContent = 'Lade Profile …';
+    const profiles = [
+      ...await profileChain('BBL', 'machine_list',  'Bambu Lab X1 Carbon 0.4 nozzle'),
+      ...await profileChain('BBL', 'process_list',  '0.20mm Standard @BBL X1C'),
+      ...await profileChain('BBL', 'filament_list', 'Bambu PLA Basic @BBL X1C'),
+    ];
+    // Arc-Fitting aus: der Vorschau-Parser zeichnet G2/G3 nur als Sehnen.
+    // settings_id: rein kosmetisch für den G-Code-Header (sonst leer, weil
+    // wir am PresetBundle vorbei laden)
+    const gcode = await runSlice(profiles, `enable_arc_fitting = 0
+printer_settings_id = Bambu Lab X1 Carbon 0.4 nozzle
+print_settings_id = 0.20mm Standard @BBL X1C
+filament_settings_id = "Bambu PLA Basic @BBL X1C"`);
+    if (gcode) window._lastGcode = gcode;
+  } catch (e) {
+    status.innerHTML = `<span class="err">FEHLER: ${e.message}</span>`;
+    btn.disabled = btnProfile.disabled = false;
+  }
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VolmeSlice Pro — Orca im Browser</title>
+<style>
+  :root { --bg: #1a1a2e; --panel: #16213e; --accent: #4fc3f7; --text: #e0e0e0; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--text);
+         display: grid; grid-template-columns: 320px 1fr; grid-template-rows: auto 1fr; height: 100vh; }
+  header { grid-column: 1/3; padding: .7rem 1.2rem; background: var(--panel);
+           display: flex; align-items: center; gap: 1rem; }
+  h1 { font-size: 1.15rem; color: var(--accent); margin: 0; white-space: nowrap; }
+  #status { flex: 1; font-size: .9rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ok { color: #66bb6a; } .err { color: #ef5350; }
+  aside { padding: 1rem; background: var(--panel); overflow-y: auto; display: flex; flex-direction: column; gap: .9rem; }
+  aside label { display: block; font-size: .78rem; opacity: .75; margin-bottom: .2rem; }
+  aside input, aside select, aside textarea {
+    width: 100%; background: var(--bg); color: var(--text); border: 1px solid #334;
+    border-radius: 6px; padding: .45rem .6rem; font-size: .88rem; }
+  aside textarea { font-family: monospace; font-size: .78rem; min-height: 4.5rem; }
+  button { background: var(--accent); color: #000; border: 0; padding: .6rem 1rem;
+           border-radius: 6px; font-size: .95rem; cursor: pointer; font-weight: 600; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.secondary { background: #334; color: var(--text); }
+  #drop { border: 2px dashed #446; border-radius: 10px; padding: 1.2rem .8rem; text-align: center;
+          font-size: .85rem; cursor: pointer; }
+  #drop.armed { border-color: var(--accent); color: var(--accent); }
+  main { position: relative; }
+  #view { width: 100%; height: 100%; display: block; }
+  #overlay { position: absolute; left: 1rem; right: 1rem; bottom: 1rem; display: flex;
+             align-items: center; gap: 1rem; background: rgba(22,33,62,.85); border-radius: 10px;
+             padding: .6rem 1rem; }
+  #layerSlider { flex: 1; }
+  #legend { position: absolute; top: .8rem; left: 1rem; display: flex; flex-direction: column;
+            gap: .25rem; font-size: .78rem; background: rgba(22,33,62,.7); padding: .5rem .7rem;
+            border-radius: 8px; }
+  .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  #stats { font-size: .85rem; line-height: 1.5; background: var(--bg); border-radius: 8px; padding: .6rem .8rem; }
+  .row2 { display: flex; gap: .5rem; } .row2 > * { flex: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🥨 VolmeSlice Pro</h1>
+  <div id="status">Lade Orca-Kern …</div>
+</header>
+
+<aside>
+  <div id="drop">📂 Modell hierher ziehen<br><small>STL · STEP · SVG · OBJ · 3MF</small>
+    <input type="file" id="file" accept=".stl,.step,.stp,.svg,.obj,.3mf" hidden>
+  </div>
+
+  <div>
+    <label>Hersteller</label>
+    <select id="vendor"></select>
+  </div>
+  <div>
+    <label>Drucker</label>
+    <input id="machine" list="machineList" placeholder="Drucker wählen …">
+    <datalist id="machineList"></datalist>
+  </div>
+  <div>
+    <label>Druckprofil</label>
+    <input id="process" list="processList" placeholder="Profil wählen …">
+    <datalist id="processList"></datalist>
+  </div>
+  <div>
+    <label>Filament</label>
+    <input id="filament" list="filamentList" placeholder="Filament wählen …">
+    <datalist id="filamentList"></datalist>
+  </div>
+
+  <div class="row2">
+    <label style="display:flex;align-items:center;gap:.4rem;font-size:.85rem;opacity:1">
+      <input type="checkbox" id="support" style="width:auto"> Stützen</label>
+    <label style="display:flex;align-items:center;gap:.4rem;font-size:.85rem;opacity:1">
+      <input type="checkbox" id="brim" style="width:auto"> Brim</label>
+  </div>
+
+  <div>
+    <label>Erweiterte Overrides (key = value)</label>
+    <textarea id="overrides" placeholder="z. B. sparse_infill_density = 20%"></textarea>
+  </div>
+
+  <button id="btnSlice" disabled>Slicen</button>
+  <button id="btnDownload" class="secondary" disabled>G-Code herunterladen</button>
+  <div id="stats"></div>
+</aside>
+
+<main>
+  <canvas id="view"></canvas>
+  <div id="legend" hidden></div>
+  <div id="overlay" hidden>
+    <input type="range" id="layerSlider" min="1" max="1" value="1">
+    <span id="layerLabel"></span>
+  </div>
+</main>
+
+<script src="./three.min.js"></script>
+<script type="module">
+const $ = id => document.getElementById(id);
+const status = $('status');
+
+if (!crossOriginIsolated) {
+  status.innerHTML = '<span class="err">FEHLER: COOP/COEP-Header fehlen (kein SharedArrayBuffer)</span>';
+  throw new Error('no COI');
+}
+
+// ---------- Profil-Datenbank ----------
+const vendorCache = new Map();
+async function vendorIndex(v) {
+  if (!vendorCache.has(v)) vendorCache.set(v, await (await fetch(`/profiles/${v}.json`)).json());
+  return vendorCache.get(v);
+}
+async function profileChain(vendor, listKey, presetName) {
+  const idx = await vendorIndex(vendor);
+  const byName = new Map(idx[listKey].map(e => [e.name, e.sub_path]));
+  const chain = []; let name = presetName;
+  while (name) {
+    const sub = byName.get(name);
+    if (!sub) throw new Error(`Preset nicht gefunden: ${name}`);
+    const json = await (await fetch(`/profiles/${vendor}/${sub.split('/').map(encodeURIComponent).join('/')}`)).json();
+    chain.unshift(json); name = json.inherits;
+  }
+  return chain.map(j => JSON.stringify(j));
+}
+
+async function fillVendor() {
+  const vendors = await (await fetch('/profiles/index.json')).json();
+  $('vendor').innerHTML = vendors.map(v => `<option${v === 'BBL' ? ' selected' : ''}>${v}</option>`).join('');
+  await fillPresets();
+}
+async function fillPresets() {
+  const idx = await vendorIndex($('vendor').value);
+  const fill = (listId, entries) => $(listId).innerHTML =
+    entries.map(e => `<option value="${e.name.replaceAll('"','&quot;')}">`).join('');
+  fill('machineList', idx.machine_list);
+  fill('processList', idx.process_list);
+  fill('filamentList', idx.filament_list);
+  if ($('vendor').value === 'BBL') {
+    $('machine').value  = 'Bambu Lab X1 Carbon 0.4 nozzle';
+    $('process').value  = '0.20mm Standard @BBL X1C';
+    $('filament').value = 'Bambu PLA Basic @BBL X1C';
+  } else {
+    $('machine').value = $('process').value = $('filament').value = '';
+  }
+}
+$('vendor').onchange = fillPresets;
+
+// ---------- Datei-Handling ----------
+let modelBytes = null, modelName = '';
+function acceptFile(f) {
+  const r = new FileReader();
+  r.onload = () => {
+    modelBytes = new Uint8Array(r.result);
+    modelName = f.name;
+    $('drop').innerHTML = `✅ <b>${f.name}</b><br><small>${(f.size/1024).toFixed(0)} KB — klicken zum Ändern</small>`;
+    updateSliceable();
+  };
+  r.readAsArrayBuffer(f);
+}
+$('drop').onclick = () => $('file').click();
+$('file').onchange = () => $('file').files[0] && acceptFile($('file').files[0]);
+addEventListener('dragover', e => { e.preventDefault(); $('drop').classList.add('armed'); });
+addEventListener('dragleave', () => $('drop').classList.remove('armed'));
+addEventListener('drop', e => {
+  e.preventDefault(); $('drop').classList.remove('armed');
+  if (e.dataTransfer.files[0]) acceptFile(e.dataTransfer.files[0]);
+});
+
+// ---------- Three.js-Viewer (aus dem M3-Test) ----------
+const canvas = $('view');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a2e);
+const camera = new THREE.PerspectiveCamera(45, 2, 0.1, 2000);
+scene.up = camera.up = new THREE.Vector3(0, 0, 1);
+const grid = new THREE.GridHelper(256, 16, 0x334466, 0x223); // Platte kommt aus Profil, 256 = BBL
+grid.rotation.x = Math.PI / 2; grid.position.set(128, 128, 0);
+scene.add(grid);
+let CENTER = new THREE.Vector3(128, 128, 10);
+let camTheta = -Math.PI / 4, camPhi = 1.05, camDist = 260;
+function updateCam() {
+  camera.position.set(
+    CENTER.x + camDist * Math.sin(camPhi) * Math.cos(camTheta),
+    CENTER.y + camDist * Math.sin(camPhi) * Math.sin(camTheta),
+    CENTER.z + camDist * Math.cos(camPhi));
+  camera.lookAt(CENTER);
+}
+canvas.addEventListener('pointerdown', () => {
+  const move = ev => {
+    camTheta -= ev.movementX * 0.008;
+    camPhi = Math.min(Math.PI - .05, Math.max(.05, camPhi - ev.movementY * 0.008));
+    updateCam();
+  };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  camDist = Math.min(900, Math.max(20, camDist * (e.deltaY > 0 ? 1.1 : .9)));
+  updateCam();
+}, { passive: false });
+function resize() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w || canvas.height !== h) {
+    renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+  }
+}
+(function loop() { requestAnimationFrame(loop); resize(); renderer.render(scene, camera); })();
+updateCam();
+
+const FEATURE_COLORS = {
+  'Outer wall': 0xff4d4d, 'Inner wall': 0xffc14d, 'Sparse infill': 0xb04dff,
+  'Internal solid infill': 0xff984d, 'Top surface': 0x4dc3ff, 'Bottom surface': 0x4dff88,
+  'Skirt': 0x9e9e9e, 'Brim': 0x9e9e9e, 'Support': 0x66bb6a, 'Support interface': 0x338855,
+  'Bridge': 0x4dd0e1, 'Internal Bridge': 0x80deea, 'Gap infill': 0xff80ab,
+};
+const DEFAULT_COLOR = 0x8899aa;
+const toolpathGroup = new THREE.Group();
+scene.add(toolpathGroup);
+let layerGroups = [];
+
+function parseGcode(gcode) {
+  const layers = []; let cur = null;
+  let x = 0, y = 0, z = 0, e = 0, feature = 'unbekannt', absE = true;
+  for (const line of gcode.split('\n')) {
+    if (line.startsWith('; CHANGE_LAYER')) { cur = { features: new Map() }; layers.push(cur); continue; }
+    if (line.startsWith('; FEATURE: ')) { feature = line.slice(11).trim(); continue; }
+    if (line.startsWith('M82')) { absE = true; continue; }
+    if (line.startsWith('M83')) { absE = false; continue; }
+    if (!/^G[0123] /.test(line)) continue;
+    let nx = x, ny = y, nz = z, ne = absE ? e : 0;
+    for (const tok of line.split(' ')) {
+      const v = parseFloat(tok.slice(1));
+      if (Number.isNaN(v)) continue;
+      if (tok[0] === 'X') nx = v; else if (tok[0] === 'Y') ny = v;
+      else if (tok[0] === 'Z') nz = v; else if (tok[0] === 'E') ne = v;
+    }
+    const de = absE ? ne - e : ne;
+    if (cur && de > 0 && (nx !== x || ny !== y)) {
+      if (!cur.features.has(feature)) cur.features.set(feature, []);
+      cur.features.get(feature).push(x, y, z, nx, ny, nz);
+    }
+    x = nx; y = ny; z = nz; e = absE ? ne : e + Math.max(0, ne);
+  }
+  return layers.filter(l => l.features.size);
+}
+
+function showToolpaths(layers) {
+  toolpathGroup.clear(); layerGroups = [];
+  const seen = new Set();
+  for (const layer of layers) {
+    const g = new THREE.Group();
+    for (const [feature, coords] of layer.features) {
+      seen.add(feature);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(coords, 3));
+      g.add(new THREE.LineSegments(geo,
+        new THREE.LineBasicMaterial({ color: FEATURE_COLORS[feature] ?? DEFAULT_COLOR })));
+    }
+    toolpathGroup.add(g); layerGroups.push(g);
+  }
+  $('legend').innerHTML = [...seen].map(f =>
+    `<span><span class="sw" style="background:#${(FEATURE_COLORS[f] ?? DEFAULT_COLOR).toString(16).padStart(6,'0')}"></span>${f}</span>`).join('');
+  $('legend').hidden = false;
+  const s = $('layerSlider');
+  s.max = layers.length; s.value = layers.length;
+  $('overlay').hidden = false;
+  setVisibleLayers(layers.length);
+}
+function setVisibleLayers(n) {
+  layerGroups.forEach((g, i) => g.visible = i < n);
+  $('layerLabel').textContent = `${n}/${layerGroups.length}`;
+}
+$('layerSlider').oninput = () => setVisibleLayers(+$('layerSlider').value);
+
+// ---------- Slicen ----------
+import createOrcaSlicer from '/orca-slicer.js';
+const t0 = performance.now();
+const orca = await createOrcaSlicer();
+status.innerHTML = `<span class="ok">Orca ${orca.version()} bereit (geladen in ${((performance.now()-t0)/1000).toFixed(1)}s)</span>`;
+await fillVendor();
+updateSliceable();
+
+let lastGcode = '';
+function updateSliceable() { $('btnSlice').disabled = !modelBytes; }
+
+$('btnSlice').onclick = async () => {
+  try {
+    $('btnSlice').disabled = true;
+    status.textContent = 'Lade Profile …';
+    const v = $('vendor').value;
+    const profiles = [
+      ...await profileChain(v, 'machine_list',  $('machine').value),
+      ...await profileChain(v, 'process_list',  $('process').value),
+      ...await profileChain(v, 'filament_list', $('filament').value),
+    ];
+    const overrides = [
+      'enable_arc_fitting = 0',
+      `enable_support = ${$('support').checked ? 1 : 0}`,
+      `brim_type = ${$('brim').checked ? 'outer_only' : 'no_brim'}`,
+      `printer_settings_id = ${$('machine').value}`,
+      `print_settings_id = ${$('process').value}`,
+      `filament_settings_id = "${$('filament').value}"`,
+      $('overrides').value,
+    ].join('\n');
+    status.textContent = 'Slice läuft …';
+    await new Promise(r => setTimeout(r, 30));
+    const t1 = performance.now();
+    const gcode = orca.sliceModel(modelBytes, modelName, profiles, overrides);
+    const dt = ((performance.now()-t1)/1000).toFixed(1);
+    if (!gcode) {
+      status.innerHTML = `<span class="err">FEHLER: ${orca.lastError().slice(0, 300)}</span>`;
+    } else {
+      lastGcode = gcode;
+      const layers = parseGcode(gcode);
+      showToolpaths(layers);
+      $('btnDownload').disabled = false;
+      const grab = re => (gcode.match(re) || [,''])[1];
+      $('stats').innerHTML = [
+        `<b>${layers.length}</b> Layer in <b>${dt}s</b>`,
+        `Druckzeit: <b>${grab(/; total estimated time: (.*)/) || '–'}</b>`,
+        `Filament: <b>${grab(/; filament used \[g\] = ([\d.]+)/) || grab(/; total filament used \[g\] = ([\d.]+)/) || '–'} g</b>`,
+      ].join('<br>');
+      status.innerHTML = `<span class="ok" id="done">Fertig: ${modelName} → ${layers.length} Layer in ${dt}s</span>`;
+    }
+  } catch (e) {
+    status.innerHTML = `<span class="err">FEHLER: ${e.message}</span>`;
+  } finally {
+    $('btnSlice').disabled = !modelBytes;
+  }
+};
+
+$('btnDownload').onclick = () => {
+  const blob = new Blob([lastGcode], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = modelName.replace(/\.[^.]+$/, '') + '.gcode';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+</script>
+</body>
+</html>
