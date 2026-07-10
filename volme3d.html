@@ -15146,12 +15146,26 @@ function export3MF() {
   const expSrc = _exportSrc();
   if (!expSrc.length) { notify('Keine Objekte', 'w'); return; }
   try {
+    const r = _build3mfBlob(expSrc);
+    if (!r) { notify('Keine Flächen', 'w'); return; }
+    const fname = _designFilename('3mf');
+    _saveExport(r.blob, fname).then(res =>
+      notify(`3MF „${fname}" ${res.wrote ? '→ ' + res.dir : ''} — ${r.parts} Teile, ${r.colors} Farbe/n ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok'));
+  } catch(e) {
+    console.error('3MF Export Fehler:', e);
+    notify('3MF Fehler: ' + (e.message || e), 'w');
+  }
+}
+
+// Baut das 3MF-Paket (Assembly + Extruder-Zuordnung pro Farbe) aus einer Objektliste.
+// Liefert {blob, parts, colors} oder null (keine Flächen). Wirft bei Zip-Fehlern.
+function _build3mfBlob(expSrc) {
     const meshes = [];
     (function tr(list){ list.forEach(o => {
       if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false) meshes.push(o);
       if (o.children) tr(o.children);
     }); })(expSrc);
-    if (!meshes.length) { notify('Keine Flächen', 'w'); return; }
+    if (!meshes.length) return null;
 
     // EIN Objekt (Assembly) mit mehreren TEILEN (components) → Bambu zieht es
     // nicht auseinander (ein <item>) UND model_settings.config weist jedem Teil
@@ -15214,14 +15228,8 @@ ${partXml.join('\n')}
       '3D/3dmodel.model': u8(model),
       'Metadata/model_settings.config': u8(cfg),
     }, { level: 6 });
-    const fname = _designFilename('3mf');
     const blob3mf = new Blob([zipped], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
-    _saveExport(blob3mf, fname).then(res =>
-      notify(`3MF „${fname}" ${res.wrote ? '→ ' + res.dir : ''} — ${meshes.length} Teile, ${colorIndex.size} Farbe/n ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok'));
-  } catch(e) {
-    console.error('3MF Export Fehler:', e);
-    notify('3MF Fehler: ' + (e.message || e), 'w');
-  }
+    return { blob: blob3mf, parts: meshes.length, colors: colorIndex.size };
 }
 
 // Echter STEP-Export übers OCCT-Backend (/api/occt-stl2step): Szene als STL bauen,
@@ -15277,27 +15285,43 @@ async function _refreshSendSlicerItem() {
 }
 
 // Aktuelles Modell an den Slicer übergeben: bei laufendem Druck-Helfer POST an /print
-// (Helfer schreibt Temp-Datei + startet den Slicer). Sonst Fallback = STL-Download.
+// (Helfer schreibt Temp-Datei + startet den Slicer). Sonst Fallback = Download.
+// Mehrfarbige Szenen (≥2 Materialfarben) gehen automatisch als 3MF (Teile + Extruder-
+// Zuordnung bleiben erhalten), einfarbige weiter als STL.
 async function _sendCurrentToSlicer(preferSlicer) {
   document.getElementById('stl-menu')?.classList.remove('show');
-  const r = _buildStlBlob(); if (!r) return;
-  const fname = _designFilename('stl');
+  const colors = new Set();
+  (function tr(list){ list.forEach(o => {
+    if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false && o.material?.color) colors.add(o.material.color.getHexString());
+    if (o.children) tr(o.children);
+  }); })(objects);
+  let blob = null, fname, fmt = 'STL';
+  if (colors.size > 1 && typeof fflate !== 'undefined') {
+    try {
+      const r3 = _build3mfBlob(objects);
+      if (r3) { blob = r3.blob; fname = _designFilename('3mf'); fmt = '3MF (' + r3.colors + ' Farben)'; }
+    } catch (e) { console.error('3MF für Slicer fehlgeschlagen, nehme STL:', e); }
+  }
+  if (!blob) {
+    const r = _buildStlBlob(); if (!r) return;
+    blob = r.blob; fname = _designFilename('stl');
+  }
   await _stlPingHelper();
   if (_stlHelperOk && _stlHelperSlicers.length) {
     const slicer = (preferSlicer && _stlHelperSlicers.includes(preferSlicer)) ? preferSlicer : (_stlHelperSlicers[0] || '');
     try {
-      const buf = await r.blob.arrayBuffer();
+      const buf = await blob.arrayBuffer();
       const res = await fetch(STLLIB_HELPER + '/print', { method:'POST', headers:{ 'Content-Type':'application/octet-stream', 'X-Filename':encodeURIComponent(fname), 'X-Slicer':slicer }, body: buf });
       const j = await res.json().catch(() => ({}));
-      if (res.ok && j.ok) { notify('🖨 In ' + (_SLICER_NAMES[j.slicer || slicer] || 'Slicer') + ' geöffnet ✓', 'ok'); return; }
-      notify('Slicer-Start fehlgeschlagen (' + (j.error || res.status) + ') — lade STL herunter', 'w');
-    } catch (e) { notify('Druck-Helfer nicht erreichbar — lade STL herunter', 'w'); }
+      if (res.ok && j.ok) { notify('🖨 Als ' + fmt + ' in ' + (_SLICER_NAMES[j.slicer || slicer] || 'Slicer') + ' geöffnet ✓', 'ok'); return; }
+      notify('Slicer-Start fehlgeschlagen (' + (j.error || res.status) + ') — lade ' + fmt + ' herunter', 'w');
+    } catch (e) { notify('Druck-Helfer nicht erreichbar — lade ' + fmt + ' herunter', 'w'); }
   }
   // Fallback: Download (Doppelklick öffnet sie im Slicer)
   const dl = document.createElement('a');
-  dl.href = URL.createObjectURL(r.blob); dl.download = fname;
+  dl.href = URL.createObjectURL(blob); dl.download = fname;
   document.body.appendChild(dl); dl.click(); document.body.removeChild(dl);
-  notify(_stlHelperOk ? 'STL heruntergeladen' : 'STL heruntergeladen — für 1-Klick-Öffnen den Druck-Helfer einrichten (in „STL-Bibliothek")', 'ok');
+  notify(fmt.replace(/ \(.*/,'') + ' heruntergeladen' + (_stlHelperOk ? '' : ' — für 1-Klick-Öffnen den Druck-Helfer einrichten (in „STL-Bibliothek")'), 'ok');
 }
 
 document.addEventListener('click', () => {
@@ -23186,6 +23210,9 @@ function _closeSceneSettings(){
 // ===== CHANGELOG / VERSIONIERUNG =====
 const VOLME3D_VERSION = '1.15.33';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.36', date:'2026-07-10', changes:[
+    ['🖨️','Mehrfarbige Modelle landen jetzt automatisch als 3MF im Slicer: „An Slicer senden" prüft die Szene — gibt es mindestens zwei Farben, wird statt der (farblosen) STL eine 3MF mit getrennten Teilen und Extruder-Zuordnung pro Farbe übergeben (Bambu/Orca zeigen die Teile direkt zuweisbar an). Einfarbige Modelle gehen unverändert als STL. Gilt auch für den Download-Fallback ohne Druck-Helfer.'],
+  ]},
   { version:'1.15.35', date:'2026-07-10', spots:[{id:'nameplate-dims',sel:'[onclick="_openNameModal()"]'}], changes:[
     ['📏','Namensschild: Wunschgröße direkt im Dialog — das neue Feld „Maße B × T" zeigt live die echten Gesamtmaße (inkl. Öse) und ist editierbar: Breite oder Tiefe eintippen, die Texthöhe wird automatisch proportional angepasst (Buchstaben bleiben unverzerrt). Texthöhe-Regler jetzt bis 60 mm und in 0,1-mm-Schritten.'],
     ['🕳️','Namensschild: Innenlöcher der Buchstaben (a, R, O …) setzen sich beim Drucken nicht mehr zu. Die Ballon-Rundung wuchs bisher nach innen und verengte die kleinen Löcher zusätzlich; jetzt werden die Löcher um die Rundungsbreite kompensiert und auf ein druckbares Minimum (~1,6 mm Ø) aufgeweitet.'],
