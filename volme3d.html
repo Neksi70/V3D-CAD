@@ -2504,7 +2504,8 @@ const firebaseConfig = {
           <option value="droid/droid_serif_bold">Droid Serif Bold</option>
           <option value="droid/droid_serif_regular">Droid Serif Regular</option>
         </select></div>
-        <div class="vrow"><label title="Höhe der Buchstaben">Texthöhe</label> <input type="range" id="name-size" min="5" max="40" value="14" step="0.5" oninput="document.getElementById('name-sizev').textContent=this.value;_namePreview()"><span class="vv" id="name-sizev">14</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Höhe der Buchstaben">Texthöhe</label> <input type="range" id="name-size" min="5" max="60" value="14" step="0.1" oninput="document.getElementById('name-sizev').textContent=this.value;_namePreview()"><span class="vv" id="name-sizev">14</span><span class="vu">mm</span></div>
+        <div class="vrow" id="name-row-dims" style="display:none"><label title="Echte Gesamtmaße des Schilds (Breite × Tiefe, inkl. Öse). Editierbar: Wunschmaß eintippen — die Texthöhe wird automatisch proportional angepasst, die Buchstaben bleiben unverzerrt.">Maße B × T</label> <input type="number" id="name-dim-w" min="10" max="500" step="0.5" onchange="_npDimSolve('w')" style="width:62px;font-family:var(--font);font-size:13px;border:1.5px solid var(--border);border-radius:9px;padding:5px 6px;text-align:right"> <span style="font-size:12px;color:#888">×</span> <input type="number" id="name-dim-d" min="5" max="300" step="0.5" onchange="_npDimSolve('d')" style="width:62px;font-family:var(--font);font-size:13px;border:1.5px solid var(--border);border-radius:9px;padding:5px 6px;text-align:right"> <span class="vu">mm</span></div>
         <div class="vrow" id="name-row-raise"><label title="Wie weit die Buchstaben aus der Platte ragen">Erhebung</label> <input type="range" id="name-raise" min="0.4" max="4" value="1.5" step="0.1" oninput="document.getElementById('name-raisev').textContent=this.value"><span class="vv" id="name-raisev">1.5</span><span class="vu">mm</span></div>
         <div class="vrow"><label id="name-plate-label" title="Platte = Dicke der Trägerplatte · Freistehend = Gesamtdicke des Schilds (3D-Effekt)">Platte</label> <input type="range" id="name-plate" min="0.6" max="12" value="2" step="0.1" oninput="document.getElementById('name-platev').textContent=this.value"><span class="vv" id="name-platev">2</span><span class="vu">mm</span></div>
         <div class="vrow" id="name-row-overlap" style="display:none"><label title="Wie weit benachbarte Buchstaben seitlich ineinandergreifen. Mit Höhenversatz bleibt die Schrift trotz Überlappung lesbar und verbindet sich satt.">Überlappung</label> <input type="range" id="name-overlap" min="0" max="40" value="30" step="1" oninput="document.getElementById('name-overlapv').textContent=this.value;_namePreview()"><span class="vv" id="name-overlapv">30</span><span class="vu">%</span></div>
@@ -20817,6 +20818,7 @@ function _npStyleChange(){
   document.getElementById('name-row-round2').style.display  = free ? '' : 'none';
   document.getElementById('name-row-baseweb').style.display = free ? 'flex' : 'none';
   document.getElementById('name-row-multicol').style.display= free ? 'flex' : 'none';
+  document.getElementById('name-row-dims').style.display    = free ? '' : 'none';
   document.getElementById('name-plate-label').textContent   = free ? 'Dicke' : 'Platte';
   if(free){
     // Freistehend braucht eine fette, verbundene Schrift — Lobster trifft den
@@ -20892,6 +20894,28 @@ function _createNameplate(){
 // Liefert flach gelegt (Achse Y, Unterseite y=0), mittig im Ursprung + halbe Maße.
 // split=true: statt einem verschmolzenen Körper werden die Einzelteile geliefert
 // ({geo, ch} je Buchstabe, Steg mit ch:null) — für mehrfarbige, einzeln färbbare Buchstaben.
+// Innenlöcher der Buchstaben (Punzen: a, R, O …) offen halten: der Ballon-Bevel wächst
+// nach innen und würde die ohnehin kleinen Löcher zusetzen. Das Loch wird um die
+// Bevel-Breite nach außen versetzt (wie beim Ösenloch) und zusätzlich auf ein druckbares
+// Minimum (~1,6 mm Ø nach Bevel) aufgeweitet — gekappt, damit es nicht die Kontur sprengt.
+function _npGrowHole(hole, bevU){
+  const MIN_R = 0.08;                                  // 0.8 mm Radius nach Bevel
+  const pts = hole.getPoints(28);
+  if(pts.length < 3) return hole;
+  let cx=0, cy=0;
+  for(const p of pts){ cx+=p.x; cy+=p.y; } cx/=pts.length; cy/=pts.length;
+  let rAvg=0;
+  for(const p of pts){ rAvg += Math.hypot(p.x-cx, p.y-cy); } rAvg/=pts.length;
+  let grow = bevU + Math.max(0, MIN_R - Math.max(0, rAvg - bevU));
+  grow = Math.min(grow, bevU + rAvg*0.35);             // Sicherheitskappe gegen Konturbruch
+  if(grow < 0.001) return hole;
+  const out = pts.map(p=>{
+    const dx=p.x-cx, dy=p.y-cy, L=Math.hypot(dx,dy)||1, f=(L+grow)/L;
+    return new THREE.Vector2(cx+dx*f, cy+dy*f);
+  });
+  return new THREE.Path(out);
+}
+
 function _freeTextGeo(font, txt, sizeU, thickU, overlap, baseWeb, relief, slantDeg, round, split){
   const res = (font.data && font.data.resolution) || 1000;
   const scale = sizeU / res;
@@ -20910,6 +20934,7 @@ function _freeTextGeo(font, txt, sizeU, thickU, overlap, baseWeb, relief, slantD
     let shapes = [];
     try{ shapes = font.generateShapes(ch, sizeU); }catch(e){}
     if(shapes && shapes.length){
+      for(const s of shapes){ if(s.holes && s.holes.length) s.holes = s.holes.map(h=>_npGrowHole(h, bevU)); }
       const dep = thickU + ((gi % 2 === 0) ? reliefU : 0);   // gerade = erhaben, ungerade = Basis
       let opts;
       if(bevU > 0.003){
@@ -21187,10 +21212,58 @@ function _namePreviewFree(ctx, cv, txt, sizeMM, eyeOn, opt){
         if(geo) items=[{geo, color:(typeof currentColor!=='undefined')?currentColor:'#2b7cff'}];
       }
     }catch(e){ items=null; }
-    if(items) _npPrevRender(ctx, cv, items);
+    if(items){
+      _npPrevRender(ctx, cv, items);
+      // Echte Gesamtmaße (inkl. Öse) live in die B×T-Felder — außer der Nutzer tippt gerade
+      const bb=new THREE.Box3();
+      for(const it of items){ it.geo.computeBoundingBox(); bb.union(it.geo.boundingBox); }
+      const wi=document.getElementById('name-dim-w'), di=document.getElementById('name-dim-d');
+      if(wi && document.activeElement!==wi) wi.value=((bb.max.x-bb.min.x)*10).toFixed(1);
+      if(di && document.activeElement!==di) di.value=((bb.max.z-bb.min.z)*10).toFixed(1);
+    }
   });
   const info=document.getElementById('name-info');
   if(info) info.textContent='Echte 3D-Vorschau (Schrägansicht), '+(multi?'mehrfarbig':'einfarbig')+(eyeOn?' · Öse links mittig':'')+'.';
+}
+
+// Wunschmaß (Breite oder Tiefe, mm) → Texthöhe proportional anpassen. Iterativ, weil die
+// Öse einen festen (nicht mitskalierenden) Breitenanteil hat; 4 Runden reichen für <0.5%.
+function _npDimSolve(which){
+  const inp = document.getElementById(which==='w' ? 'name-dim-w' : 'name-dim-d');
+  const target = +inp.value;
+  if(!(target > 0)){ _namePreview(); return; }
+  const fontKey   = document.getElementById('name-font').value;
+  const txt       = document.getElementById('name-text').value.trim() || 'Name';
+  const thickMM   = +document.getElementById('name-plate').value;
+  const overlapPct= +document.getElementById('name-overlap').value;
+  const staggerPct= +document.getElementById('name-stagger').value;
+  const slantDeg  = +document.getElementById('name-slant').value;
+  const roundPct  = +document.getElementById('name-round2').value;
+  const baseWeb   = document.getElementById('name-baseweb').checked;
+  const opt = _nameplateOpts();
+  _npLoadFont(fontKey, font=>{
+    let size = +document.getElementById('name-size').value;
+    let clamped = false;
+    for(let i=0; i<4; i++){
+      let geo=null;
+      try{ geo=_freeMeshGeo(font, txt, size, thickMM, overlapPct, baseWeb, staggerPct, slantDeg, roundPct, opt); }catch(e){}
+      if(!geo) break;
+      geo.computeBoundingBox();
+      const bb=geo.boundingBox;
+      const cur = (which==='w' ? (bb.max.x-bb.min.x) : (bb.max.z-bb.min.z)) * 10;
+      geo.dispose();
+      if(!(cur>0) || Math.abs(cur-target) <= Math.max(0.2, target*0.005)) break;
+      const next = Math.max(5, Math.min(60, size * target/cur));
+      clamped = (next===5 || next===60) && Math.abs(next-size*target/cur) > 0.01;
+      size = next;
+      if(clamped) break;
+    }
+    const s = Math.round(size*10)/10;
+    document.getElementById('name-size').value = s;
+    document.getElementById('name-sizev').textContent = s;
+    if(clamped) notify('Wunschmaß außerhalb des Texthöhen-Bereichs (5–60 mm) — bestmöglich angenähert','w');
+    _namePreview();
+  });
 }
 
 // Rendert fertige Freistehend-Geometrie(n) als Draufsicht in das 2D-Vorschau-Canvas.
@@ -23113,6 +23186,10 @@ function _closeSceneSettings(){
 // ===== CHANGELOG / VERSIONIERUNG =====
 const VOLME3D_VERSION = '1.15.33';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.35', date:'2026-07-10', spots:[{id:'nameplate-dims',sel:'[onclick="_openNameModal()"]'}], changes:[
+    ['📏','Namensschild: Wunschgröße direkt im Dialog — das neue Feld „Maße B × T" zeigt live die echten Gesamtmaße (inkl. Öse) und ist editierbar: Breite oder Tiefe eintippen, die Texthöhe wird automatisch proportional angepasst (Buchstaben bleiben unverzerrt). Texthöhe-Regler jetzt bis 60 mm und in 0,1-mm-Schritten.'],
+    ['🕳️','Namensschild: Innenlöcher der Buchstaben (a, R, O …) setzen sich beim Drucken nicht mehr zu. Die Ballon-Rundung wuchs bisher nach innen und verengte die kleinen Löcher zusätzlich; jetzt werden die Löcher um die Rundungsbreite kompensiert und auf ein druckbares Minimum (~1,6 mm Ø) aufgeweitet.'],
+  ]},
   { version:'1.15.34', date:'2026-07-09', spots:[{id:'nameplate-multicolor',sel:'[onclick="_openNameModal()"]'}], changes:[
     ['🌈','Namensschild mehrfarbig: Neue Option „Mehrfarbig — Buchstaben einzeln färben" im freistehenden Namensschild. Unter dem Namen erscheint ein Farbfeld pro Buchstabe (bunte Palette vorbelegt, frei änderbar), die 3D-Vorschau zeigt die Farben live. Beim Erstellen wird jeder Buchstabe ein eigenes, einzeln anwähl- und umfärbbares Teil in einer Gruppe — Öse und Steg erben die Farbe des ersten Buchstabens. Die Buchstaben überlappen weiter satt und drucken als ein Stück; im Slicer einfach jedem Teil seine Farbe zuweisen.'],
   ]},
