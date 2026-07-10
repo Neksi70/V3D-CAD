@@ -277,16 +277,45 @@ function setVisibleLayers(n) {
 }
 $('layerSlider').oninput = () => setVisibleLayers(+$('layerSlider').value);
 
-// ---------- Slicen ----------
-import createOrcaSlicer from '/orca-slicer.js';
-const t0 = performance.now();
-const orca = await createOrcaSlicer();
-status.innerHTML = `<span class="ok">Orca ${orca.version()} bereit (geladen in ${((performance.now()-t0)/1000).toFixed(1)}s)</span>`;
-await fillVendor();
-updateSliceable();
-
+// ---------- Slicen (im Web-Worker — UI bleibt bedienbar) ----------
+const worker = new Worker('./slicer-worker.js', { type: 'module' });
+let sliceStart = 0;
 let lastGcode = '';
 function updateSliceable() { $('btnSlice').disabled = !modelBytes; }
+
+worker.onmessage = (e) => {
+  const msg = e.data;
+  if (msg.type === 'ready') {
+    status.innerHTML = `<span class="ok">Orca ${msg.version} bereit</span>`;
+    updateSliceable();
+  } else if (msg.type === 'progress') {
+    if (msg.percent >= 0)
+      status.innerHTML = `⚙️ <b>${msg.percent}%</b> — ${msg.text}`;
+  } else if (msg.type === 'error') {
+    status.innerHTML = `<span class="err">FEHLER: ${msg.message.slice(0, 300)}</span>`;
+    updateSliceable();
+  } else if (msg.type === 'done') {
+    const dt = ((performance.now() - sliceStart) / 1000).toFixed(1);
+    lastGcode = msg.gcode;
+    const layers = parseGcode(lastGcode);
+    showToolpaths(layers);
+    $('btnDownload').disabled = false;
+    const grab = re => (lastGcode.match(re) || [,''])[1];
+    $('stats').innerHTML = [
+      `<b>${layers.length}</b> Layer in <b>${dt}s</b>`,
+      `Druckzeit: <b>${grab(/; total estimated time: (.*)/) || '–'}</b>`,
+      `Filament: <b>${grab(/; filament used \[g\] = ([\d.]+)/) || grab(/; total filament used \[g\] = ([\d.]+)/) || '–'} g</b>`,
+    ].join('<br>');
+    status.innerHTML = `<span class="ok" id="done">Fertig: ${modelName} → ${layers.length} Layer in ${dt}s</span>`;
+    updateSliceable();
+  }
+};
+worker.onerror = (e) => {
+  status.innerHTML = `<span class="err">Worker-FEHLER: ${e.message}</span>`;
+  updateSliceable();
+};
+
+await fillVendor();
 
 $('btnSlice').onclick = async () => {
   try {
@@ -308,29 +337,11 @@ $('btnSlice').onclick = async () => {
       $('overrides').value,
     ].join('\n');
     status.textContent = 'Slice läuft …';
-    await new Promise(r => setTimeout(r, 30));
-    const t1 = performance.now();
-    const gcode = orca.sliceModel(modelBytes, modelName, profiles, overrides);
-    const dt = ((performance.now()-t1)/1000).toFixed(1);
-    if (!gcode) {
-      status.innerHTML = `<span class="err">FEHLER: ${orca.lastError().slice(0, 300)}</span>`;
-    } else {
-      lastGcode = gcode;
-      const layers = parseGcode(gcode);
-      showToolpaths(layers);
-      $('btnDownload').disabled = false;
-      const grab = re => (gcode.match(re) || [,''])[1];
-      $('stats').innerHTML = [
-        `<b>${layers.length}</b> Layer in <b>${dt}s</b>`,
-        `Druckzeit: <b>${grab(/; total estimated time: (.*)/) || '–'}</b>`,
-        `Filament: <b>${grab(/; filament used \[g\] = ([\d.]+)/) || grab(/; total filament used \[g\] = ([\d.]+)/) || '–'} g</b>`,
-      ].join('<br>');
-      status.innerHTML = `<span class="ok" id="done">Fertig: ${modelName} → ${layers.length} Layer in ${dt}s</span>`;
-    }
+    sliceStart = performance.now();
+    worker.postMessage({ bytes: modelBytes, filename: modelName, profiles, overrides });
   } catch (e) {
     status.innerHTML = `<span class="err">FEHLER: ${e.message}</span>`;
-  } finally {
-    $('btnSlice').disabled = !modelBytes;
+    updateSliceable();
   }
 };
 
