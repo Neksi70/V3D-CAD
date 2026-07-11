@@ -21,7 +21,12 @@ const PHOTOS_DIR = path.join(ROOT, 'photos');
 const DATA_DIR = path.join(ROOT, 'data');
 const CACHE_DIR = path.join(ROOT, 'cache');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const BOOKINGS_FILE = path.join(DATA_DIR, 'bookings.json');
 const DL_LOG = path.join(DATA_DIR, 'downloads.jsonl');
+const PACKAGES = {
+  basis: { label: 'Fotobox — Tagesmiete', price: 89 },
+  flat: { label: 'Fotobox + Fotodrucker & Fotoflatrate', price: 169 },
+};
 const IMG_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 
 for (const d of [PHOTOS_DIR, DATA_DIR, CACHE_DIR]) fs.mkdirSync(d, { recursive: true });
@@ -48,6 +53,20 @@ function upsertUser(email, name, consent, via) {
   }
   saveUsers();
   return u;
+}
+
+// --- Buchungen ---------------------------------------------------------------
+let bookings = [];
+try { bookings = JSON.parse(fs.readFileSync(BOOKINGS_FILE, 'utf8')); } catch (e) { bookings = []; }
+function saveBookings() {
+  const tmp = BOOKINGS_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(bookings, null, 1));
+  fs.renameSync(tmp, BOOKINGS_FILE);
+}
+function bookedDates() { return bookings.map(b => b.date); }
+function todayStr() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
 // --- Session (signierter Cookie, kein Server-State) -------------------------
@@ -158,6 +177,32 @@ th{color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.6px}
 .pill.y{background:rgba(249,115,22,.18);color:var(--acc)}
 .pill.n{background:var(--card2);color:var(--mut)}
 .err{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.4);color:#fca5a5;border-radius:12px;padding:11px 14px;font-size:14px;margin:0 0 14px}
+.ok{background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.4);color:#86efac;border-radius:12px;padding:11px 14px;font-size:14px;margin:0 0 14px}
+.pill.g{background:rgba(34,197,94,.15);color:#86efac}
+.bwrap{display:grid;grid-template-columns:minmax(300px,440px) minmax(300px,440px);gap:22px;align-items:start;justify-content:center}
+@media(max-width:780px){.bwrap{grid-template-columns:1fr}}
+.cal{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px}
+.cal .ch{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.cal .ch b{font-size:17px}
+.cal .ch button{background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:5px 14px;cursor:pointer;font-size:17px}
+.cal .ch button:disabled{opacity:.3;cursor:default}
+.cgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+.cgrid .dh{text-align:center;font-size:11px;color:var(--mut);font-weight:700;padding:4px 0;text-transform:uppercase}
+.day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;border-radius:9px;font-size:14px;font-weight:600}
+.day.past{color:#4a5160}
+.day.free{background:var(--card2);cursor:pointer;border:1.5px solid transparent}
+.day.free:hover{border-color:var(--acc)}
+.day.bk{background:rgba(239,68,68,.28);color:#fca5a5;text-decoration:line-through;cursor:not-allowed}
+.day.sel{background:var(--acc);color:#fff;border-color:var(--acc)}
+.legend{display:flex;gap:16px;margin:14px 2px 0;font-size:12px;color:var(--mut);flex-wrap:wrap}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:4px;margin-right:6px;vertical-align:-1px}
+.pkg{display:flex;flex-direction:column;gap:10px;margin:6px 0 2px}
+.pkg label{display:flex;gap:10px;align-items:center;background:var(--card2);border:1.5px solid var(--border);border-radius:12px;padding:13px 14px;margin:0;cursor:pointer;font-weight:600;color:var(--text);font-size:14.5px}
+.pkg label:has(input:checked){border-color:var(--acc);background:rgba(249,115,22,.08)}
+.pkg input{accent-color:var(--acc);width:17px;height:17px;flex:none}
+.pkg .pr{margin-left:auto;font-weight:800;color:var(--acc);font-size:16px;white-space:nowrap}
+textarea{width:100%;font-family:var(--font);font-size:15px;color:var(--text);background:var(--card2);border:1.5px solid var(--border);border-radius:12px;padding:12px 14px;outline:none;resize:vertical;min-height:70px}
+textarea:focus{border-color:var(--acc)}
 .gicon{width:19px;height:19px;background:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;color:#4285F4;font-size:13px}
 footer{max-width:1060px;margin:0 auto;padding:10px 18px 30px;color:var(--mut);font-size:12px}
 footer a{color:var(--mut);text-decoration:underline}
@@ -171,7 +216,7 @@ function page(title, body, user) {
 <div class="hb">${esc(CFG.brand)}<small>Fotobox</small></div><div class="sp"></div>
 ${user ? `<div class="who">${esc(user.name || user.email)}<a href="${BASE}/logout">Abmelden</a></div>` : ''}
 </header><main>${body}</main>
-<footer>${esc(CFG.brand)} · Die Fotos sind nur für registrierte Gäste der jeweiligen Veranstaltung bestimmt. · <a href="${BASE}/datenschutz">Datenschutz</a></footer>
+<footer>${esc(CFG.brand)} · Die Fotos sind nur für registrierte Gäste der jeweiligen Veranstaltung bestimmt. · <a href="${BASE}/buchen">Fotobox mieten</a> · <a href="${BASE}/datenschutz">Datenschutz</a></footer>
 </body></html>`;
 }
 
@@ -193,7 +238,9 @@ ${err ? `<p class="err">${esc(err)}</p>` : ''}
 <label for="c1" style="margin:0;font-weight:400">Ja, ${esc(CFG.brand)} darf mir per E-Mail Neuigkeiten und Angebote schicken (z.&nbsp;B. Foto-Produkte &amp; Aktionen). Abmeldung jederzeit möglich.</label></div>
 <button class="btn" type="submit">Zu den Fotos &rarr;</button>
 </form>${googleBtn}
-</div>`);
+</div>
+<p style="text-align:center;color:var(--mut);font-size:14px">Die Fotobox für deine eigene Feier?
+<a href="${BASE}/buchen"><b>Jetzt buchen — ab 89 € pro Tag</b></a></p>`);
 }
 function codePage(ev, err) {
   return page(ev.title, `
@@ -270,6 +317,81 @@ dl.onclick=()=>{const zf=document.getElementById('zf');zf.innerHTML='';
  for(const f of sel){const i=document.createElement('input');i.type='hidden';i.name='f';i.value=f;zf.appendChild(i);}
  zf.submit();};
 upd();
+</script>`, user);
+}
+
+function bookingPage(user, opts) {
+  opts = opts || {};
+  const pkgs = Object.entries(PACKAGES).map(([id, p], i) => `
+<label><input type="radio" name="pkg" value="${id}" ${i === 0 ? 'checked' : ''} required>
+${esc(p.label)}<span class="pr">${p.price} € / Tag</span></label>`).join('');
+  return page('Fotobox buchen', `
+<h1>Fotobox <em>buchen</em></h1>
+<p class="sub">Wähle im Kalender deinen Wunschtag — rot markierte Tage sind bereits vergeben.</p>
+${opts.ok ? `<p class="ok">Deine Anfrage für den <b>${esc(opts.ok)}</b> ist eingegangen! Wir melden uns schnellstmöglich per E-Mail bei dir.</p>` : ''}
+${opts.err ? `<p class="err">${esc(opts.err)}</p>` : ''}
+<div class="bwrap">
+<div class="cal">
+  <div class="ch"><button type="button" id="pv">&lsaquo;</button><b id="mt"></b><button type="button" id="nx">&rsaquo;</button></div>
+  <div class="cgrid" id="cg"></div>
+  <div class="legend">
+    <span><i style="background:var(--card2)"></i>frei</span>
+    <span><i style="background:rgba(239,68,68,.6)"></i>belegt</span>
+    <span><i style="background:var(--acc)"></i>dein Wunschtag</span>
+  </div>
+</div>
+<form class="card" style="margin:0;max-width:none" method="post" action="${BASE}/buchen">
+  <label>Wunschtag</label>
+  <input type="text" id="dsel" value="" placeholder="Tag im Kalender antippen" readonly>
+  <input type="hidden" name="date" id="dhid" required>
+  <label>Paket</label>
+  <div class="pkg">${pkgs}</div>
+  <label>Name</label><input type="text" name="name" required maxlength="80" autocomplete="name">
+  <label>E-Mail-Adresse</label><input type="email" name="email" required maxlength="120" autocomplete="email">
+  <label>Telefon (optional)</label><input type="text" name="phone" maxlength="40" autocomplete="tel">
+  <label>Anlass / Nachricht (optional)</label><textarea name="msg" maxlength="500" placeholder="z. B. Geburtstag, Hochzeit, Sommerfest …"></textarea>
+  <div style="height:14px"></div>
+  <button class="btn" type="submit" id="go" disabled>Unverbindlich anfragen</button>
+</form>
+</div>
+<script>
+const BOOKED=${JSON.stringify(bookedDates())};
+const MN=['Januar','Februar','M\\u00e4rz','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'];
+const today=new Date();today.setHours(0,0,0,0);
+let y=today.getFullYear(),m=today.getMonth(),sel='';
+const cg=document.getElementById('cg'),mt=document.getElementById('mt'),pv=document.getElementById('pv');
+function pad(n){return String(n).padStart(2,'0')}
+function render(){
+ mt.textContent=MN[m]+' '+y;
+ pv.disabled=(y===today.getFullYear()&&m===today.getMonth());
+ let h=['Mo','Di','Mi','Do','Fr','Sa','So'].map(d=>'<div class="dh">'+d+'</div>').join('');
+ const off=(new Date(y,m,1).getDay()+6)%7;
+ h+='<div></div>'.repeat(off);
+ const days=new Date(y,m+1,0).getDate();
+ for(let d=1;d<=days;d++){
+  const ds=y+'-'+pad(m+1)+'-'+pad(d);
+  let c='day';
+  if(new Date(y,m,d)<today)c+=' past';
+  else if(BOOKED.includes(ds))c+=' bk';
+  else c+=' free';
+  if(ds===sel)c+=' sel';
+  h+='<div class="'+c+'" data-d="'+ds+'">'+d+'</div>';
+ }
+ cg.innerHTML=h;
+}
+cg.addEventListener('click',e=>{
+ const el=e.target.closest('.day.free,.day.sel');if(!el)return;
+ sel=el.dataset.d;
+ document.getElementById('dhid').value=sel;
+ const[yy,mm,dd]=sel.split('-');
+ const wd=['So','Mo','Di','Mi','Do','Fr','Sa'][new Date(+yy,mm-1,+dd).getDay()];
+ document.getElementById('dsel').value=wd+', '+dd+'.'+mm+'.'+yy;
+ document.getElementById('go').disabled=false;
+ render();
+});
+pv.onclick=()=>{if(--m<0){m=11;y--}render()};
+document.getElementById('nx').onclick=()=>{if(++m>11){m=0;y++}render()};
+render();
 </script>`, user);
 }
 
@@ -387,6 +509,30 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
       redirect(res, BASE + (String(b.next || '') || '/galerie'));
     });
   }
+  if (p === '/buchen' && req.method === 'GET') {
+    return html(res, bookingPage(user, { ok: q.ok, err: q.err === 'belegt' ? 'Dieser Tag ist leider schon vergeben — such dir bitte einen anderen aus.' : (q.err ? 'Bitte fülle alle Pflichtfelder aus.' : null) }));
+  }
+  if (p === '/buchen' && req.method === 'POST') {
+    return readBody(req, b => {
+      const date = String(b.date || '');
+      const pkg = PACKAGES[b.pkg];
+      const name = String(b.name || '').trim();
+      const email = String(b.email || '').trim().toLowerCase();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !pkg || !name || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email))
+        return redirect(res, BASE + '/buchen?err=1');
+      if (date < todayStr() || bookedDates().includes(date))
+        return redirect(res, BASE + '/buchen?err=belegt');
+      bookings.push({
+        id: crypto.randomBytes(6).toString('hex'), date, pkg: b.pkg, price: pkg.price,
+        name, email, phone: String(b.phone || '').trim().slice(0, 40),
+        msg: String(b.msg || '').trim().slice(0, 500),
+        status: 'angefragt', createdAt: new Date().toISOString(),
+      });
+      saveBookings();
+      const [yy, mm, dd] = date.split('-');
+      redirect(res, BASE + '/buchen?ok=' + encodeURIComponent(`${dd}.${mm}.${yy}`));
+    });
+  }
   if (p === '/auth/google') {
     if (!CFG.googleClientId) return redirect(res, BASE + '/');
     return googleRedirect(res, q.next);
@@ -398,6 +544,18 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
   }
 
   // -- Admin --
+  if (p === '/admin/booking' && req.method === 'POST') {
+    if (q.key !== CFG.adminKey) { res.writeHead(403); return res.end('403'); }
+    return readBody(req, b => {
+      const i = bookings.findIndex(x => x.id === b.id);
+      if (i >= 0) {
+        if (b.action === 'confirm') bookings[i].status = 'bestätigt';
+        if (b.action === 'delete') bookings.splice(i, 1);
+        saveBookings();
+      }
+      redirect(res, BASE + '/admin?key=' + encodeURIComponent(q.key) + '#buchungen');
+    });
+  }
   if (p === '/admin' || p === '/admin.csv') {
     if (q.key !== CFG.adminKey) { res.writeHead(403); return res.end('403'); }
     if (p === '/admin.csv') {
@@ -411,11 +569,25 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
     const rows = users.slice().reverse().map(x => `<tr><td>${esc(x.email)}</td><td>${esc(x.name)}</td>
 <td>${x.consent ? '<span class="pill y">Werbung ok</span>' : '<span class="pill n">keine Einwilligung</span>'}</td>
 <td>${esc((x.createdAt || '').slice(0, 10))}</td><td>${esc(x.via || '')}</td></tr>`).join('');
+    const brows = bookings.slice().sort((a, b) => a.date < b.date ? -1 : 1).map(x => {
+      const [yy, mm, dd] = x.date.split('-');
+      return `<tr><td><b>${dd}.${mm}.${yy}</b></td><td>${esc(PACKAGES[x.pkg] ? PACKAGES[x.pkg].label : x.pkg)}<br><span style="color:var(--acc);font-weight:700">${x.price} €</span></td>
+<td>${esc(x.name)}<br><a href="mailto:${esc(x.email)}">${esc(x.email)}</a>${x.phone ? '<br>' + esc(x.phone) : ''}</td>
+<td>${esc(x.msg || '')}</td>
+<td>${x.status === 'bestätigt' ? '<span class="pill g">bestätigt</span>' : '<span class="pill y">angefragt</span>'}</td>
+<td style="white-space:nowrap">
+<form method="post" action="${BASE}/admin/booking?key=${encodeURIComponent(q.key)}" style="display:inline"><input type="hidden" name="id" value="${x.id}"><input type="hidden" name="action" value="confirm"><button class="btn" style="width:auto;padding:7px 12px;font-size:12.5px" ${x.status === 'bestätigt' ? 'disabled' : ''}>Bestätigen</button></form>
+<form method="post" action="${BASE}/admin/booking?key=${encodeURIComponent(q.key)}" style="display:inline" onsubmit="return confirm('Buchung ${dd}.${mm}.${yy} wirklich stornieren? Der Tag wird wieder frei.')"><input type="hidden" name="id" value="${x.id}"><input type="hidden" name="action" value="delete"><button class="btn ghost" style="width:auto;padding:7px 12px;font-size:12.5px">Stornieren</button></form>
+</td></tr>`;
+    }).join('');
     return html(res, page('Admin', `
 <h1>Registrierungen <em>· ${users.length}</em></h1>
 <p class="sub">${users.filter(x => x.consent).length} mit Werbe-Einwilligung · ${dls} ZIP-Downloads ·
 <a href="${BASE}/admin.csv?key=${encodeURIComponent(q.key)}">CSV herunterladen</a></p>
-<div style="overflow-x:auto"><table><tr><th>E-Mail</th><th>Name</th><th>Werbung</th><th>Datum</th><th>Via</th></tr>${rows}</table></div>`));
+<div style="overflow-x:auto"><table><tr><th>E-Mail</th><th>Name</th><th>Werbung</th><th>Datum</th><th>Via</th></tr>${rows}</table></div>
+<h1 id="buchungen" style="margin-top:40px">Buchungen <em>· ${bookings.length}</em></h1>
+<p class="sub">Angefragte und bestätigte Tage sind im Kalender rot markiert. Stornieren gibt den Tag wieder frei.</p>
+<div style="overflow-x:auto"><table><tr><th>Datum</th><th>Paket</th><th>Kontakt</th><th>Nachricht</th><th>Status</th><th></th></tr>${brows}</table></div>`));
   }
 
   // -- ab hier: Anmeldung nötig --
