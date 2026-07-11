@@ -145,7 +145,7 @@ h1 em{color:var(--acc);font-style:normal}
 .sub{color:var(--mut);margin:0 0 22px;font-size:15px}
 .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:24px;max-width:460px;margin:30px auto}
 label{display:block;font-size:13px;font-weight:700;color:var(--mut);margin:14px 0 6px}
-input[type=text],input[type=email]{width:100%;font-family:var(--font);font-size:16px;color:var(--text);background:var(--card2);border:1.5px solid var(--border);border-radius:12px;padding:12px 14px;outline:none}
+input[type=text],input[type=email],input[type=password]{width:100%;font-family:var(--font);font-size:16px;color:var(--text);background:var(--card2);border:1.5px solid var(--border);border-radius:12px;padding:12px 14px;outline:none}
 input:focus{border-color:var(--acc)}
 .chk{display:flex;gap:10px;align-items:flex-start;margin:16px 0;font-size:13.5px;color:var(--mut);line-height:1.45}
 .chk input{margin-top:2px;accent-color:var(--acc);width:17px;height:17px;flex:none}
@@ -404,17 +404,28 @@ render();
 </script>`, user);
 }
 
-function adminGalleryPage(ev, key) {
-  const k = encodeURIComponent(key);
+function adminLoginPage(err) {
+  return page('Admin', `
+<div class="card">
+<h1>Admin<em>-Bereich</em></h1>
+<p class="sub">Bitte gib deinen Admin-Schlüssel ein (steht als <code>adminKey</code> in der config.json auf dem Server).</p>
+${err ? '<p class="err">Falscher Schlüssel.</p>' : ''}
+<form method="post" action="${BASE}/admin/login">
+<label>Admin-Schlüssel</label><input type="password" name="key" required autocomplete="current-password">
+<div style="height:14px"></div><button class="btn" type="submit">Anmelden</button>
+</form></div>`);
+}
+
+function adminGalleryPage(ev) {
   const tiles = ev.files.map(f => `
 <div class="ph" style="cursor:default">
-<img loading="lazy" src="${BASE}/thumb/${encodeURIComponent(ev.slug)}/${encodeURIComponent(f)}?key=${k}" alt="">
-<form method="post" action="${BASE}/admin/photo?key=${k}" onsubmit="return confirm('${esc(f)} löschen?')">
+<img loading="lazy" src="${BASE}/thumb/${encodeURIComponent(ev.slug)}/${encodeURIComponent(f)}" alt="">
+<form method="post" action="${BASE}/admin/photo" onsubmit="return confirm('${esc(f)} löschen?')">
 <input type="hidden" name="event" value="${esc(ev.slug)}"><input type="hidden" name="file" value="${esc(f)}">
 <button class="del" title="Löschen">×</button></form>
 <div class="fn">${esc(f)}</div></div>`).join('');
   return page('Galerie verwalten', `
-<p style="margin:0 0 4px"><a href="${BASE}/admin?key=${k}#galerien">&larr; Admin-Übersicht</a></p>
+<p style="margin:0 0 4px"><a href="${BASE}/admin#galerien">&larr; Admin-Übersicht</a></p>
 <h1>${esc(ev.title)} <em>· ${ev.files.length} Fotos</em></h1>
 <p class="sub">Ordner <code>photos/${esc(ev.slug)}/</code> · Zugangscode: ${ev.code ? `<b style="color:var(--acc)">${esc(ev.code)}</b>` : '<b style="color:#fca5a5">keiner — jeder Registrierte sieht die Galerie!</b>'}
 · <a href="${BASE}/galerie/${encodeURIComponent(ev.slug)}" target="_blank">Galerie ansehen</a></p>
@@ -424,12 +435,12 @@ function adminGalleryPage(ev, key) {
 <div id="ust" class="sub" style="margin:10px 0 0"></div>
 </div>
 <div class="grid">${tiles}</div>
-<form method="post" action="${BASE}/admin/gallery-delete?key=${k}" style="margin-top:30px"
+<form method="post" action="${BASE}/admin/gallery-delete" style="margin-top:30px"
  onsubmit="return confirm('Galerie „${esc(ev.title)}“ mit allen ${ev.files.length} Fotos endgültig löschen?')">
 <input type="hidden" name="event" value="${esc(ev.slug)}">
 <button class="btn ghost" style="width:auto;padding:10px 18px;font-size:14px;color:#fca5a5">Galerie komplett löschen</button></form>
 <script>
-const KEY=${JSON.stringify(key)},EV=${JSON.stringify(ev.slug)},BASE=${JSON.stringify(BASE)};
+const EV=${JSON.stringify(ev.slug)},BASE=${JSON.stringify(BASE)};
 const up=document.getElementById('up'),st=document.getElementById('ust'),dz=document.getElementById('dz');
 async function send(files){
  const fl=[...files].filter(f=>/\\.(jpe?g|png|webp)$/i.test(f.name));
@@ -438,7 +449,7 @@ async function send(files){
  for(const f of fl){
   st.textContent='Lade hoch '+(ok+err+1)+'/'+fl.length+' — '+f.name;
   try{
-   const r=await fetch(BASE+'/admin/upload?key='+encodeURIComponent(KEY)+'&event='+encodeURIComponent(EV)+'&name='+encodeURIComponent(f.name),{method:'POST',body:f});
+   const r=await fetch(BASE+'/admin/upload?event='+encodeURIComponent(EV)+'&name='+encodeURIComponent(f.name),{method:'POST',body:f});
    r.ok?ok++:err++;
   }catch(e){err++;}
  }
@@ -484,7 +495,7 @@ function googleCallback(req, res, q) {
           const claims = JSON.parse(Buffer.from(tok.id_token.split('.')[1], 'base64url').toString('utf8'));
           if (!claims.email) throw new Error('no email');
           const u = upsertUser(claims.email, claims.name || '', false, 'google');
-          setSession(res, { e: u.email, n: u.name, u: [] });
+          setSession(res, { e: u.email, n: u.name, u: [], a: (sess && sess.a) || undefined });
           res.writeHead(302, { Location: BASE + (q.state || '/galerie') });
           res.end();
         } catch (e) {
@@ -542,6 +553,7 @@ const server = http.createServer((req, res) => {
   const q = Object.fromEntries(u.searchParams);
   const sess = readSession(req);
   const user = sess && sess.e ? { email: sess.e, name: sess.n || '' } : null;
+  const isAdmin = (sess && sess.a === true) || q.key === CFG.adminKey;
   const unlocked = (sess && sess.u) || [];
 
   // -- öffentlich --
@@ -562,7 +574,7 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
       const name = String(b.name || '').trim();
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return html(res, loginPage('Bitte gib eine gültige E-Mail-Adresse ein.', b.next), 400);
       const usr = upsertUser(email, name, b.consent === '1', 'email');
-      setSession(res, { e: usr.email, n: usr.name, u: [] });
+      setSession(res, { e: usr.email, n: usr.name, u: [], a: (sess && sess.a) || undefined });
       redirect(res, BASE + (String(b.next || '') || '/galerie'));
     });
   }
@@ -602,17 +614,27 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
 
   // -- Admin --
   let m;
-  const isAdmin = q.key === CFG.adminKey;
+  if (p === '/admin/login' && req.method === 'POST') {
+    return readBody(req, b => {
+      if (String(b.key || '') === CFG.adminKey) {
+        setSession(res, Object.assign({}, sess || {}, { a: true }));
+        redirect(res, BASE + '/admin');
+      } else html(res, adminLoginPage(true), 403);
+    });
+  }
+  if (p === '/admin' && !isAdmin) return html(res, adminLoginPage(false));
   if (p.startsWith('/admin') && !isAdmin) { res.writeHead(403); return res.end('403'); }
+  // Schluessel aus der URL in den Cookie uebernehmen, damit Folge-Seiten ohne ?key= laufen
+  if (q.key === CFG.adminKey && !(sess && sess.a)) setSession(res, Object.assign({}, sess || {}, { a: true }));
   if (p === '/admin/gallery' && req.method === 'POST') {
     return readBody(req, b => {
       let slug = slugify(b.title || '');
-      if (!slug) return redirect(res, BASE + '/admin?key=' + encodeURIComponent(q.key) + '#galerien');
+      if (!slug) return redirect(res, BASE + '/admin#galerien');
       while (fs.existsSync(path.join(PHOTOS_DIR, slug))) slug += '-2';
       fs.mkdirSync(path.join(PHOTOS_DIR, slug), { recursive: true });
       fs.writeFileSync(path.join(PHOTOS_DIR, slug, 'event.json'),
         JSON.stringify({ title: String(b.title).trim(), code: String(b.code || '').trim() || undefined }, null, 1));
-      redirect(res, BASE + '/admin/galerie/' + encodeURIComponent(slug) + '?key=' + encodeURIComponent(q.key));
+      redirect(res, BASE + '/admin/galerie/' + encodeURIComponent(slug));
     });
   }
   if (p === '/admin/upload' && req.method === 'POST') {
@@ -640,7 +662,7 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
         fs.unlinkSync(f);
         fs.unlink(path.join(CACHE_DIR, String(b.event), String(b.file).replace(/\.\w+$/, '') + '.jpg'), () => {});
       }
-      redirect(res, BASE + '/admin/galerie/' + encodeURIComponent(String(b.event)) + '?key=' + encodeURIComponent(q.key));
+      redirect(res, BASE + '/admin/galerie/' + encodeURIComponent(String(b.event)));
     });
   }
   if (p === '/admin/gallery-delete' && req.method === 'POST') {
@@ -650,16 +672,15 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
         fs.rmSync(path.join(PHOTOS_DIR, ev.slug), { recursive: true, force: true });
         fs.rmSync(path.join(CACHE_DIR, ev.slug), { recursive: true, force: true });
       }
-      redirect(res, BASE + '/admin?key=' + encodeURIComponent(q.key) + '#galerien');
+      redirect(res, BASE + '/admin#galerien');
     });
   }
   if ((m = /^\/admin\/galerie\/([^\/]+)$/.exec(p))) {
     const ev = getEvent(m[1], true);
     if (!ev) { res.writeHead(404); return res.end('404'); }
-    return html(res, adminGalleryPage(ev, q.key));
+    return html(res, adminGalleryPage(ev));
   }
   if (p === '/admin/booking' && req.method === 'POST') {
-    if (q.key !== CFG.adminKey) { res.writeHead(403); return res.end('403'); }
     return readBody(req, b => {
       const i = bookings.findIndex(x => x.id === b.id);
       if (i >= 0) {
@@ -667,11 +688,10 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
         if (b.action === 'delete') bookings.splice(i, 1);
         saveBookings();
       }
-      redirect(res, BASE + '/admin?key=' + encodeURIComponent(q.key) + '#buchungen');
+      redirect(res, BASE + '/admin#buchungen');
     });
   }
   if (p === '/admin' || p === '/admin.csv') {
-    if (q.key !== CFG.adminKey) { res.writeHead(403); return res.end('403'); }
     if (p === '/admin.csv') {
       const csv = 'email;name;werbung_ok;einwilligung_am;registriert_am;via\n' + users.map(x =>
         [x.email, x.name, x.consent ? 'ja' : 'nein', x.consentAt || '', x.createdAt, x.via].map(v => String(v).replace(/;/g, ',')).join(';')).join('\n');
@@ -690,28 +710,27 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
 <td>${esc(x.msg || '')}</td>
 <td>${x.status === 'bestätigt' ? '<span class="pill g">bestätigt</span>' : '<span class="pill y">angefragt</span>'}</td>
 <td style="white-space:nowrap">
-<form method="post" action="${BASE}/admin/booking?key=${encodeURIComponent(q.key)}" style="display:inline"><input type="hidden" name="id" value="${x.id}"><input type="hidden" name="action" value="confirm"><button class="btn" style="width:auto;padding:7px 12px;font-size:12.5px" ${x.status === 'bestätigt' ? 'disabled' : ''}>Bestätigen</button></form>
-<form method="post" action="${BASE}/admin/booking?key=${encodeURIComponent(q.key)}" style="display:inline" onsubmit="return confirm('Buchung ${dd}.${mm}.${yy} wirklich stornieren? Der Tag wird wieder frei.')"><input type="hidden" name="id" value="${x.id}"><input type="hidden" name="action" value="delete"><button class="btn ghost" style="width:auto;padding:7px 12px;font-size:12.5px">Stornieren</button></form>
+<form method="post" action="${BASE}/admin/booking" style="display:inline"><input type="hidden" name="id" value="${x.id}"><input type="hidden" name="action" value="confirm"><button class="btn" style="width:auto;padding:7px 12px;font-size:12.5px" ${x.status === 'bestätigt' ? 'disabled' : ''}>Bestätigen</button></form>
+<form method="post" action="${BASE}/admin/booking" style="display:inline" onsubmit="return confirm('Buchung ${dd}.${mm}.${yy} wirklich stornieren? Der Tag wird wieder frei.')"><input type="hidden" name="id" value="${x.id}"><input type="hidden" name="action" value="delete"><button class="btn ghost" style="width:auto;padding:7px 12px;font-size:12.5px">Stornieren</button></form>
 </td></tr>`;
     }).join('');
-    const k = encodeURIComponent(q.key);
     const grows = listEvents(true).map(ev => `<tr>
 <td><b>${esc(ev.title)}</b><br><span style="color:var(--mut);font-size:12px">photos/${esc(ev.slug)}/</span></td>
 <td>${ev.files.length} Fotos</td>
 <td>${ev.code ? `<code>${esc(ev.code)}</code>` : '<span class="pill n">ohne Code</span>'}</td>
-<td style="white-space:nowrap"><a class="btn" style="display:inline-flex;width:auto;padding:7px 14px;font-size:12.5px" href="${BASE}/admin/galerie/${encodeURIComponent(ev.slug)}?key=${k}">Verwalten &amp; Hochladen</a>
-<a class="btn ghost" style="display:inline-flex;width:auto;padding:7px 14px;font-size:12.5px" href="${BASE}/galerie/${encodeURIComponent(ev.slug)}?key=${k}" target="_blank">Ansehen</a></td></tr>`).join('');
+<td style="white-space:nowrap"><a class="btn" style="display:inline-flex;width:auto;padding:7px 14px;font-size:12.5px" href="${BASE}/admin/galerie/${encodeURIComponent(ev.slug)}">Verwalten &amp; Hochladen</a>
+<a class="btn ghost" style="display:inline-flex;width:auto;padding:7px 14px;font-size:12.5px" href="${BASE}/galerie/${encodeURIComponent(ev.slug)}" target="_blank">Ansehen</a></td></tr>`).join('');
     return html(res, page('Admin', `
 <h1 id="galerien">Galerien <em>· ${listEvents(true).length}</em></h1>
 <p class="sub">Jede Galerie = ein Ordner unter <code>photos/</code>. Zugangscode mit auf die Fotobox-Karte drucken.</p>
 <div style="overflow-x:auto"><table><tr><th>Galerie</th><th>Fotos</th><th>Code</th><th></th></tr>${grows}</table></div>
-<form method="post" action="${BASE}/admin/gallery?key=${k}" class="card" style="margin:18px 0 0;max-width:none;display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;padding:18px">
+<form method="post" action="${BASE}/admin/gallery" class="card" style="margin:18px 0 0;max-width:none;display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;padding:18px">
 <div style="flex:2;min-width:200px"><label style="margin-top:0">Neue Galerie — Titel</label><input type="text" name="title" required maxlength="80" placeholder="z. B. Kita-Sommerfest 2026"></div>
 <div style="flex:1;min-width:130px"><label style="margin-top:0">Zugangscode (empfohlen)</label><input type="text" name="code" maxlength="20" placeholder="z. B. 7777"></div>
 <button class="btn" style="width:auto;padding:12px 20px;font-size:14px">Anlegen</button></form>
 <h1 style="margin-top:40px">Registrierungen <em>· ${users.length}</em></h1>
 <p class="sub">${users.filter(x => x.consent).length} mit Werbe-Einwilligung · ${dls} ZIP-Downloads ·
-<a href="${BASE}/admin.csv?key=${encodeURIComponent(q.key)}">CSV herunterladen</a></p>
+<a href="${BASE}/admin.csv">CSV herunterladen</a></p>
 <div style="overflow-x:auto"><table><tr><th>E-Mail</th><th>Name</th><th>Werbung</th><th>Datum</th><th>Via</th></tr>${rows}</table></div>
 <h1 id="buchungen" style="margin-top:40px">Buchungen <em>· ${bookings.length}</em></h1>
 <p class="sub">Angefragte und bestätigte Tage sind im Kalender rot markiert. Stornieren gibt den Tag wieder frei.</p>
@@ -735,7 +754,7 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
     if (!ev) { res.writeHead(404); return res.end('404'); }
     return readBody(req, b => {
       if (String(b.code || '').trim() !== String(ev.code)) return html(res, codePage(ev, 'Falscher Code — probier es nochmal.'), 403);
-      setSession(res, { e: viewer.email, n: viewer.name, u: [...new Set([...unlocked, ev.slug])] });
+      setSession(res, { e: viewer.email, n: viewer.name, u: [...new Set([...unlocked, ev.slug])], a: (sess && sess.a) || undefined });
       redirect(res, BASE + '/galerie/' + encodeURIComponent(ev.slug));
     });
   }
