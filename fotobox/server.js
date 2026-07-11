@@ -224,7 +224,7 @@ footer a{color:var(--mut);text-decoration:underline}
 .promo .pgo{margin-left:auto;flex:none;background:var(--acc);color:#fff;font-weight:700;font-size:13.5px;border-radius:10px;padding:9px 16px;white-space:nowrap}
 @media(max-width:560px){.promo{flex-wrap:wrap}.promo .pgo{margin-left:0}}
 `;
-const AKADEMIE_URL = 'https://volme3d-akademie.de';
+const AKADEMIE_URL = 'https://volme3dakademie.de';
 function akademiePromo() {
   return `<a class="promo" href="${AKADEMIE_URL}" target="_blank" rel="noopener">
 <span class="pi">🖨️</span>
