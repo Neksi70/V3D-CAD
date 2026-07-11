@@ -22,6 +22,16 @@ Schwarz/Orange im Volme-3D-Look.
 
 Der Ordner `2026-07-05-kita-sommerfest` ist eine Test-Galerie (Code 7777) — löschen, wenn nicht mehr gebraucht.
 
+## Buchungskalender
+
+- Öffentlich (kein Login nötig): https://v3da.tailf05fe9.ts.net/fotos/buchen
+- Belegte Tage (angefragt oder bestätigt) sind rot markiert und nicht wählbar.
+- Pakete/Preise stehen in `server.js` in der `PACKAGES`-Konstante:
+  Fotobox 89 €/Tag · mit Fotodrucker & Fotoflatrate 169 €/Tag.
+- Neue Anfragen erscheinen im Admin unter „Buchungen“ (Status **angefragt**) —
+  dort **Bestätigen** oder **Stornieren** (Storno gibt den Tag wieder frei).
+  Der Kunde bekommt keine automatische Mail — melde dich per E-Mail (mailto-Link in der Liste).
+
 ## E-Mail-Adressen abrufen (Admin)
 
 - Übersicht: `https://v3da.tailf05fe9.ts.net/fotos/admin?key=<adminKey aus config.json>`
