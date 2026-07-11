@@ -131,6 +131,7 @@ const CSS = `
 --acc:#F97316;--acc2:#EA6000;--font:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--font);-webkit-font-smoothing:antialiased}
+body{background:var(--bg) url('${BASE}/bg.svg') top left/900px auto repeat}
 a{color:var(--acc);text-decoration:none}
 header{display:flex;align-items:center;gap:14px;padding:14px 20px;background:#000;border-bottom:3px solid var(--acc)}
 header img{height:44px;filter:invert(1)}
@@ -594,6 +595,7 @@ const server = http.createServer((req, res) => {
 
   // -- öffentlich --
   if (p === '/logo.svg') return sendFile(res, path.join(ROOT, 'logo.svg'), 'image/svg+xml');
+  if (p === '/bg.svg') return sendFile(res, path.join(ROOT, 'bg.svg'), 'image/svg+xml');
   if (p === '/datenschutz') return html(res, page('Datenschutz', `
 <h1>Datenschutz</h1>
 <p class="sub" style="max-width:640px">Wir speichern deinen Namen und deine E-Mail-Adresse, um dir Zugang zu den Fotos deiner Veranstaltung zu geben.
