@@ -215,20 +215,36 @@ input[type=file]{width:100%}
 .gicon{width:19px;height:19px;background:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;color:#4285F4;font-size:13px}
 footer{max-width:1060px;margin:0 auto;padding:10px 18px 30px;color:var(--mut);font-size:12px}
 footer a{color:var(--mut);text-decoration:underline}
-.promo{display:flex;gap:16px;align-items:center;background:linear-gradient(135deg,rgba(249,115,22,.14),rgba(249,115,22,.04));border:1.5px solid rgba(249,115,22,.45);border-radius:16px;padding:16px 18px;margin:26px 0 6px;text-decoration:none;color:var(--text)}
-.promo:hover{border-color:var(--acc)}
-.promo .pi{font-size:34px;flex:none}
+.promo{position:relative;overflow:hidden;display:flex;gap:18px;align-items:center;background:linear-gradient(120deg,#171a21,#221a10) padding-box;border:1px solid rgba(249,115,22,.5);border-radius:18px;padding:20px 22px;margin:28px 0 6px;text-decoration:none;color:var(--text);box-shadow:0 10px 34px rgba(249,115,22,.09),inset 0 1px 0 rgba(255,255,255,.05);transition:box-shadow .25s,border-color .25s}
+.promo::before{content:'';position:absolute;top:-70px;left:-40px;width:260px;height:200px;background:radial-gradient(closest-side,rgba(249,115,22,.22),transparent);pointer-events:none}
+.promo:hover{border-color:var(--acc);box-shadow:0 12px 40px rgba(249,115,22,.18),inset 0 1px 0 rgba(255,255,255,.07)}
+.promo .picons{display:flex;gap:10px;flex:none;position:relative}
+.promo .picons i{display:flex;background:rgba(249,115,22,.09);border:1px solid rgba(249,115,22,.35);border-radius:13px;padding:9px}
 .promo b{color:var(--acc)}
-.promo .pt{font-size:14.5px;line-height:1.5}
-.promo .pt small{display:block;color:var(--mut);font-size:12.5px;margin-top:2px}
-.promo .pgo{margin-left:auto;flex:none;background:var(--acc);color:#fff;font-weight:700;font-size:13.5px;border-radius:10px;padding:9px 16px;white-space:nowrap}
-@media(max-width:560px){.promo{flex-wrap:wrap}.promo .pgo{margin-left:0}}
+.promo .pt{font-size:14.5px;line-height:1.55;position:relative}
+.promo .pt .pey{display:block;font-size:10.5px;letter-spacing:2.4px;text-transform:uppercase;color:var(--acc);font-weight:800;margin-bottom:4px}
+.promo .pt small{display:block;color:var(--mut);font-size:12.5px;margin-top:3px}
+.promo .pgo{margin-left:auto;flex:none;background:var(--acc);color:#fff;font-weight:700;font-size:13.5px;border-radius:11px;padding:10px 18px;white-space:nowrap;box-shadow:0 4px 16px rgba(249,115,22,.35);position:relative}
+@keyframes pbeam{0%,100%{opacity:.3}50%{opacity:1}}
+.promo .beam{animation:pbeam 1.7s ease-in-out infinite}
+@media(max-width:640px){.promo{flex-wrap:wrap}.promo .pgo{margin-left:0}}
 `;
 const AKADEMIE_URL = 'https://volme3dakademie.de';
 function akademiePromo() {
+  const svgPrinter = `<svg viewBox="0 0 48 48" width="42" height="42" fill="none" stroke="#e8e6e3" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M8 6h32v10H8z"/><path d="M8 16v26M40 16v26M8 42h32"/>
+<path d="M19 16h10l-3 5h-4z"/><path d="M24 21v5" stroke="#f97316"/>
+<rect x="18" y="30" width="12" height="7" rx="1" stroke="#f97316"/><path d="M13 37h22"/></svg>`;
+  const svgLaser = `<svg viewBox="0 0 48 48" width="42" height="42" fill="none" stroke="#e8e6e3" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M14 6h20v9H14z"/><path d="M20 15h8v6h-8z"/>
+<path class="beam" d="M24 21v13" stroke="#f97316"/>
+<circle class="beam" cx="24" cy="36" r="2.6" fill="#f97316" stroke="none"/>
+<path class="beam" d="M18 32l-3.5-2.5M30 32l3.5-2.5" stroke="#f97316" stroke-width="1.8"/>
+<path d="M9 42h30"/></svg>`;
   return `<a class="promo" href="${AKADEMIE_URL}" target="_blank" rel="noopener">
-<span class="pi">🖨️</span>
-<span class="pt"><b>Volme3D Akademie</b> — 3D-Druck-Kurse für jede Altersklasse, vom Kinderkurs bis zum Profi-Workshop.
+<span class="picons"><i>${svgPrinter}</i><i>${svgLaser}</i></span>
+<span class="pt"><span class="pey">Volme3D Akademie</span>
+<b>3D-Druck-, Laser- &amp; Plotterkurse</b> für jede Altersklasse — vom Kinderkurs bis zum Profi-Workshop.
 <small>Es sind noch Plätze frei — jetzt Wunschtermin sichern!</small></span>
 <span class="pgo">Kurse ansehen &rarr;</span></a>`;
 }
@@ -241,7 +257,7 @@ function page(title, body, user) {
 <div class="hb">${esc(CFG.brand)}<small>Fotobox</small></div><div class="sp"></div>
 ${user ? `<div class="who">${esc(user.name || user.email)}<a href="${BASE}/logout">Abmelden</a></div>` : ''}
 </header><main>${body}</main>
-<footer>${esc(CFG.brand)} · Die Fotos sind nur für registrierte Gäste der jeweiligen Veranstaltung bestimmt. · <a href="${BASE}/buchen">Fotobox mieten</a> · <a href="${AKADEMIE_URL}" target="_blank" rel="noopener">3D-Druck-Kurse: Volme3D Akademie</a> · <a href="${BASE}/datenschutz">Datenschutz</a></footer>
+<footer>${esc(CFG.brand)} · Die Fotos sind nur für registrierte Gäste der jeweiligen Veranstaltung bestimmt. · <a href="${BASE}/buchen">Fotobox mieten</a> · <a href="${AKADEMIE_URL}" target="_blank" rel="noopener">3D-Druck-, Laser- &amp; Plotterkurse: Volme3D Akademie</a> · <a href="${BASE}/datenschutz">Datenschutz</a></footer>
 </body></html>`;
 }
 
