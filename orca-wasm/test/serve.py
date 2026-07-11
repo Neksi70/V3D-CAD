@@ -33,6 +33,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
+    def do_POST(self):
+        # Debug-Upload: Modell, das im WASM crasht, zur lokalen Analyse ablegen
+        if self.path.split('?')[0] == '/debug-upload':
+            from urllib.parse import urlparse, parse_qs, unquote
+            name = parse_qs(urlparse(self.path).query).get('name', ['modell.bin'])[0]
+            name = os.path.basename(unquote(name)) or 'modell.bin'
+            length = int(self.headers.get('Content-Length', 0))
+            if 0 < length <= 200 * 1024 * 1024:
+                updir = os.path.join(DIR, 'debug-uploads')
+                os.makedirs(updir, exist_ok=True)
+                with open(os.path.join(updir, name), 'wb') as f:
+                    remaining = length
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        remaining -= len(chunk)
+                self.send_response(200)
+            else:
+                self.send_response(400)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        self.send_response(404)
+        self.end_headers()
+
     def translate_path(self, path):
         clean = path.split('?')[0]
         # orca-slicer.js/.wasm/.worker.js direkt aus dem Build-Verzeichnis

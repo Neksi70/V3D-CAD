@@ -370,12 +370,26 @@ function setVisibleLayers(n) {
 $('layerSlider').oninput = () => setVisibleLayers(+$('layerSlider').value);
 
 // ---------- Slicen (im Web-Worker — UI bleibt bedienbar) ----------
-const worker = new Worker('./slicer-worker.js', { type: 'module' });
+let worker = null;
 let sliceStart = 0;
 let lastGcode = '';
 function updateSliceable() { $('btnSlice').disabled = !modelBytes; }
 
-worker.onmessage = (e) => {
+function crashRecovery(message) {
+  // Nach einem WASM-Trap ist die Instanz tot → Worker neu starten,
+  // und das Modell zur Fehleranalyse anbieten (bleibt im Tailnet)
+  workerReady = false;
+  try { worker.terminate(); } catch {}
+  initWorker();
+  status.innerHTML = `<span class="err">CRASH: ${message.slice(0, 160)}</span> — Kern neu gestartet. ` +
+    `<button id="dbgUp" style="padding:.15rem .5rem;font-size:.8rem">Modell zur Fehleranalyse ablegen</button>`;
+  $('dbgUp').onclick = async () => {
+    await fetch(`/debug-upload?name=${encodeURIComponent(modelName)}`, { method: 'POST', body: modelBytes });
+    status.innerHTML = '<span class="ok">Debug-Kopie gespeichert — danke!</span>';
+  };
+}
+
+function handleMessage(e) {
   const msg = e.data;
   if (msg.type === 'ready') {
     status.innerHTML = `<span class="ok">Orca ${msg.version} bereit</span>`;
@@ -389,7 +403,11 @@ worker.onmessage = (e) => {
     if (msg.percent >= 0)
       status.innerHTML = `⚙️ <b>${msg.percent}%</b> — ${msg.text}`;
   } else if (msg.type === 'error') {
-    status.innerHTML = `<span class="err">FEHLER: ${msg.message.slice(0, 300)}</span>`;
+    if (/RuntimeError|out of bounds|unreachable|Aborted/.test(msg.message)) {
+      crashRecovery(msg.message);
+    } else {
+      status.innerHTML = `<span class="err">FEHLER: ${msg.message.slice(0, 300)}</span>`;
+    }
     updateSliceable();
   } else if (msg.type === 'done') {
     const dt = ((performance.now() - sliceStart) / 1000).toFixed(1);
@@ -408,11 +426,14 @@ worker.onmessage = (e) => {
     showTab('preview');
     updateSliceable();
   }
-};
-worker.onerror = (e) => {
-  status.innerHTML = `<span class="err">Worker-FEHLER: ${e.message}</span>`;
-  updateSliceable();
-};
+}
+
+function initWorker() {
+  worker = new Worker('./slicer-worker.js', { type: 'module' });
+  worker.onmessage = handleMessage;
+  worker.onerror = (e) => { crashRecovery(e.message || 'Worker-Fehler'); };
+}
+initWorker();
 
 await fillVendor();
 setBed(256, 256);
