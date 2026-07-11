@@ -93,7 +93,7 @@ function setSession(res, obj) {
 }
 
 // --- Events / Galerien ------------------------------------------------------
-function listEvents() {
+function listEvents(includeEmpty) {
   const out = [];
   for (const name of fs.readdirSync(PHOTOS_DIR)) {
     const dir = path.join(PHOTOS_DIR, name);
@@ -101,15 +101,20 @@ function listEvents() {
     let meta = {};
     try { meta = JSON.parse(fs.readFileSync(path.join(dir, 'event.json'), 'utf8')); } catch (e) {}
     const files = fs.readdirSync(dir).filter(f => IMG_EXT.has(path.extname(f).toLowerCase())).sort();
-    if (!files.length) continue;
+    if (!files.length && !includeEmpty) continue;
     out.push({ slug: name, title: meta.title || name.replace(/[-_]+/g, ' '), code: meta.code || null, files });
   }
   out.sort((a, b) => a.slug < b.slug ? 1 : -1); // neueste (Namenskonvention mit Datum) zuerst
   return out;
 }
-function getEvent(slug) {
+function getEvent(slug, includeEmpty) {
   if (!/^[\w][\w .\-]*$/.test(slug)) return null;
-  return listEvents().find(e => e.slug === slug) || null;
+  return listEvents(includeEmpty).find(e => e.slug === slug) || null;
+}
+function slugify(s) {
+  return String(s).toLowerCase()
+    .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
 }
 function safePhotoPath(slug, file) {
   const ev = getEvent(slug);
@@ -203,6 +208,10 @@ th{color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.6px}
 .pkg .pr{margin-left:auto;font-weight:800;color:var(--acc);font-size:16px;white-space:nowrap}
 textarea{width:100%;font-family:var(--font);font-size:15px;color:var(--text);background:var(--card2);border:1.5px solid var(--border);border-radius:12px;padding:12px 14px;outline:none;resize:vertical;min-height:70px}
 textarea:focus{border-color:var(--acc)}
+.del{position:absolute;top:7px;right:7px;width:26px;height:26px;border-radius:50%;background:rgba(239,68,68,.85);border:none;color:#fff;font-weight:900;font-size:16px;line-height:1;cursor:pointer}
+.fn{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);color:#fff;font-size:10px;padding:3px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+code{background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:1px 6px;font-size:13px}
+input[type=file]{width:100%}
 .gicon{width:19px;height:19px;background:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;color:#4285F4;font-size:13px}
 footer{max-width:1060px;margin:0 auto;padding:10px 18px 30px;color:var(--mut);font-size:12px}
 footer a{color:var(--mut);text-decoration:underline}
@@ -395,6 +404,54 @@ render();
 </script>`, user);
 }
 
+function adminGalleryPage(ev, key) {
+  const k = encodeURIComponent(key);
+  const tiles = ev.files.map(f => `
+<div class="ph" style="cursor:default">
+<img loading="lazy" src="${BASE}/thumb/${encodeURIComponent(ev.slug)}/${encodeURIComponent(f)}?key=${k}" alt="">
+<form method="post" action="${BASE}/admin/photo?key=${k}" onsubmit="return confirm('${esc(f)} löschen?')">
+<input type="hidden" name="event" value="${esc(ev.slug)}"><input type="hidden" name="file" value="${esc(f)}">
+<button class="del" title="Löschen">×</button></form>
+<div class="fn">${esc(f)}</div></div>`).join('');
+  return page('Galerie verwalten', `
+<p style="margin:0 0 4px"><a href="${BASE}/admin?key=${k}#galerien">&larr; Admin-Übersicht</a></p>
+<h1>${esc(ev.title)} <em>· ${ev.files.length} Fotos</em></h1>
+<p class="sub">Ordner <code>photos/${esc(ev.slug)}/</code> · Zugangscode: ${ev.code ? `<b style="color:var(--acc)">${esc(ev.code)}</b>` : '<b style="color:#fca5a5">keiner — jeder Registrierte sieht die Galerie!</b>'}
+· <a href="${BASE}/galerie/${encodeURIComponent(ev.slug)}" target="_blank">Galerie ansehen</a></p>
+<div class="card" style="max-width:none;margin:0 0 22px" id="dz">
+<label style="margin-top:0">Fotos hochladen (JPG/PNG/WebP — auch mehrere auf einmal, oder einfach hier reinziehen)</label>
+<input type="file" id="up" multiple accept=".jpg,.jpeg,.png,.webp,image/*" style="color:var(--mut)">
+<div id="ust" class="sub" style="margin:10px 0 0"></div>
+</div>
+<div class="grid">${tiles}</div>
+<form method="post" action="${BASE}/admin/gallery-delete?key=${k}" style="margin-top:30px"
+ onsubmit="return confirm('Galerie „${esc(ev.title)}“ mit allen ${ev.files.length} Fotos endgültig löschen?')">
+<input type="hidden" name="event" value="${esc(ev.slug)}">
+<button class="btn ghost" style="width:auto;padding:10px 18px;font-size:14px;color:#fca5a5">Galerie komplett löschen</button></form>
+<script>
+const KEY=${JSON.stringify(key)},EV=${JSON.stringify(ev.slug)},BASE=${JSON.stringify(BASE)};
+const up=document.getElementById('up'),st=document.getElementById('ust'),dz=document.getElementById('dz');
+async function send(files){
+ const fl=[...files].filter(f=>/\\.(jpe?g|png|webp)$/i.test(f.name));
+ if(!fl.length)return;
+ let ok=0,err=0;
+ for(const f of fl){
+  st.textContent='Lade hoch '+(ok+err+1)+'/'+fl.length+' — '+f.name;
+  try{
+   const r=await fetch(BASE+'/admin/upload?key='+encodeURIComponent(KEY)+'&event='+encodeURIComponent(EV)+'&name='+encodeURIComponent(f.name),{method:'POST',body:f});
+   r.ok?ok++:err++;
+  }catch(e){err++;}
+ }
+ st.textContent='Fertig: '+ok+' hochgeladen'+(err?' — '+err+' fehlgeschlagen!':'')+' … Seite wird aktualisiert';
+ setTimeout(()=>location.reload(),900);
+}
+up.onchange=()=>send(up.files);
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.style.borderColor='var(--acc)';});
+dz.addEventListener('dragleave',()=>dz.style.borderColor='');
+dz.addEventListener('drop',e=>{e.preventDefault();dz.style.borderColor='';send(e.dataTransfer.files);});
+</script>`);
+}
+
 // --- Google OAuth ------------------------------------------------------------
 function googleRedirect(res, next) {
   const p = querystring.stringify({
@@ -544,6 +601,63 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
   }
 
   // -- Admin --
+  let m;
+  const isAdmin = q.key === CFG.adminKey;
+  if (p.startsWith('/admin') && !isAdmin) { res.writeHead(403); return res.end('403'); }
+  if (p === '/admin/gallery' && req.method === 'POST') {
+    return readBody(req, b => {
+      let slug = slugify(b.title || '');
+      if (!slug) return redirect(res, BASE + '/admin?key=' + encodeURIComponent(q.key) + '#galerien');
+      while (fs.existsSync(path.join(PHOTOS_DIR, slug))) slug += '-2';
+      fs.mkdirSync(path.join(PHOTOS_DIR, slug), { recursive: true });
+      fs.writeFileSync(path.join(PHOTOS_DIR, slug, 'event.json'),
+        JSON.stringify({ title: String(b.title).trim(), code: String(b.code || '').trim() || undefined }, null, 1));
+      redirect(res, BASE + '/admin/galerie/' + encodeURIComponent(slug) + '?key=' + encodeURIComponent(q.key));
+    });
+  }
+  if (p === '/admin/upload' && req.method === 'POST') {
+    const ev = getEvent(String(q.event || ''), true);
+    const name = path.basename(String(q.name || '')).replace(/[^\w.\- ()]/g, '_');
+    if (!ev || !IMG_EXT.has(path.extname(name).toLowerCase())) { res.writeHead(400); return res.end('{"ok":false}'); }
+    const dst = path.join(PHOTOS_DIR, ev.slug, name);
+    const ws = fs.createWriteStream(dst);
+    let size = 0, aborted = false;
+    req.on('data', c => { size += c.length; if (size > 60e6 && !aborted) { aborted = true; req.destroy(); ws.destroy(); fs.unlink(dst, () => {}); } });
+    req.pipe(ws);
+    ws.on('finish', () => {
+      // evtl. veralteten Thumbnail-Cache für diesen Namen wegräumen
+      fs.unlink(path.join(CACHE_DIR, ev.slug, name.replace(/\.\w+$/, '') + '.jpg'), () => {});
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    ws.on('error', () => { res.writeHead(500); res.end('{"ok":false}'); });
+    return;
+  }
+  if (p === '/admin/photo' && req.method === 'POST') {
+    return readBody(req, b => {
+      const f = safePhotoPath(String(b.event || ''), String(b.file || ''));
+      if (f) {
+        fs.unlinkSync(f);
+        fs.unlink(path.join(CACHE_DIR, String(b.event), String(b.file).replace(/\.\w+$/, '') + '.jpg'), () => {});
+      }
+      redirect(res, BASE + '/admin/galerie/' + encodeURIComponent(String(b.event)) + '?key=' + encodeURIComponent(q.key));
+    });
+  }
+  if (p === '/admin/gallery-delete' && req.method === 'POST') {
+    return readBody(req, b => {
+      const ev = getEvent(String(b.event || ''), true);
+      if (ev) {
+        fs.rmSync(path.join(PHOTOS_DIR, ev.slug), { recursive: true, force: true });
+        fs.rmSync(path.join(CACHE_DIR, ev.slug), { recursive: true, force: true });
+      }
+      redirect(res, BASE + '/admin?key=' + encodeURIComponent(q.key) + '#galerien');
+    });
+  }
+  if ((m = /^\/admin\/galerie\/([^\/]+)$/.exec(p))) {
+    const ev = getEvent(m[1], true);
+    if (!ev) { res.writeHead(404); return res.end('404'); }
+    return html(res, adminGalleryPage(ev, q.key));
+  }
   if (p === '/admin/booking' && req.method === 'POST') {
     if (q.key !== CFG.adminKey) { res.writeHead(403); return res.end('403'); }
     return readBody(req, b => {
@@ -580,8 +694,22 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
 <form method="post" action="${BASE}/admin/booking?key=${encodeURIComponent(q.key)}" style="display:inline" onsubmit="return confirm('Buchung ${dd}.${mm}.${yy} wirklich stornieren? Der Tag wird wieder frei.')"><input type="hidden" name="id" value="${x.id}"><input type="hidden" name="action" value="delete"><button class="btn ghost" style="width:auto;padding:7px 12px;font-size:12.5px">Stornieren</button></form>
 </td></tr>`;
     }).join('');
+    const k = encodeURIComponent(q.key);
+    const grows = listEvents(true).map(ev => `<tr>
+<td><b>${esc(ev.title)}</b><br><span style="color:var(--mut);font-size:12px">photos/${esc(ev.slug)}/</span></td>
+<td>${ev.files.length} Fotos</td>
+<td>${ev.code ? `<code>${esc(ev.code)}</code>` : '<span class="pill n">ohne Code</span>'}</td>
+<td style="white-space:nowrap"><a class="btn" style="display:inline-flex;width:auto;padding:7px 14px;font-size:12.5px" href="${BASE}/admin/galerie/${encodeURIComponent(ev.slug)}?key=${k}">Verwalten &amp; Hochladen</a>
+<a class="btn ghost" style="display:inline-flex;width:auto;padding:7px 14px;font-size:12.5px" href="${BASE}/galerie/${encodeURIComponent(ev.slug)}?key=${k}" target="_blank">Ansehen</a></td></tr>`).join('');
     return html(res, page('Admin', `
-<h1>Registrierungen <em>· ${users.length}</em></h1>
+<h1 id="galerien">Galerien <em>· ${listEvents(true).length}</em></h1>
+<p class="sub">Jede Galerie = ein Ordner unter <code>photos/</code>. Zugangscode mit auf die Fotobox-Karte drucken.</p>
+<div style="overflow-x:auto"><table><tr><th>Galerie</th><th>Fotos</th><th>Code</th><th></th></tr>${grows}</table></div>
+<form method="post" action="${BASE}/admin/gallery?key=${k}" class="card" style="margin:18px 0 0;max-width:none;display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;padding:18px">
+<div style="flex:2;min-width:200px"><label style="margin-top:0">Neue Galerie — Titel</label><input type="text" name="title" required maxlength="80" placeholder="z. B. Kita-Sommerfest 2026"></div>
+<div style="flex:1;min-width:130px"><label style="margin-top:0">Zugangscode (empfohlen)</label><input type="text" name="code" maxlength="20" placeholder="z. B. 7777"></div>
+<button class="btn" style="width:auto;padding:12px 20px;font-size:14px">Anlegen</button></form>
+<h1 style="margin-top:40px">Registrierungen <em>· ${users.length}</em></h1>
 <p class="sub">${users.filter(x => x.consent).length} mit Werbe-Einwilligung · ${dls} ZIP-Downloads ·
 <a href="${BASE}/admin.csv?key=${encodeURIComponent(q.key)}">CSV herunterladen</a></p>
 <div style="overflow-x:auto"><table><tr><th>E-Mail</th><th>Name</th><th>Werbung</th><th>Datum</th><th>Via</th></tr>${rows}</table></div>
@@ -590,29 +718,29 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
 <div style="overflow-x:auto"><table><tr><th>Datum</th><th>Paket</th><th>Kontakt</th><th>Nachricht</th><th>Status</th><th></th></tr>${brows}</table></div>`));
   }
 
-  // -- ab hier: Anmeldung nötig --
-  if (!user) return redirect(res, BASE + '/?next=' + encodeURIComponent(p));
+  // -- ab hier: Anmeldung nötig (Admin-Key zählt auch) --
+  const viewer = user || (isAdmin ? { email: 'admin', name: 'Admin' } : null);
+  if (!viewer) return redirect(res, BASE + '/?next=' + encodeURIComponent(p));
 
-  if (p === '/galerie') return html(res, albumsPage(user, listEvents(), unlocked));
+  if (p === '/galerie') return html(res, albumsPage(viewer, listEvents(), unlocked));
 
-  let m;
   if ((m = /^\/galerie\/([^\/]+)$/.exec(p))) {
     const ev = getEvent(m[1]);
     if (!ev) { res.writeHead(404); return res.end('404'); }
-    if (ev.code && !unlocked.includes(ev.slug)) return html(res, codePage(ev));
-    return html(res, galleryPage(user, ev));
+    if (ev.code && !unlocked.includes(ev.slug) && !isAdmin) return html(res, codePage(ev));
+    return html(res, galleryPage(viewer, ev));
   }
   if ((m = /^\/galerie\/([^\/]+)\/code$/.exec(p)) && req.method === 'POST') {
     const ev = getEvent(m[1]);
     if (!ev) { res.writeHead(404); return res.end('404'); }
     return readBody(req, b => {
       if (String(b.code || '').trim() !== String(ev.code)) return html(res, codePage(ev, 'Falscher Code — probier es nochmal.'), 403);
-      setSession(res, { e: user.email, n: user.name, u: [...new Set([...unlocked, ev.slug])] });
+      setSession(res, { e: viewer.email, n: viewer.name, u: [...new Set([...unlocked, ev.slug])] });
       redirect(res, BASE + '/galerie/' + encodeURIComponent(ev.slug));
     });
   }
   // Zugriff auf Bilder nur, wenn Galerie offen (kein Code) oder freigeschaltet
-  function allowed(ev) { return ev && (!ev.code || unlocked.includes(ev.slug)); }
+  function allowed(ev) { return ev && (!ev.code || unlocked.includes(ev.slug) || isAdmin); }
 
   if ((m = /^\/thumb\/([^\/]+)\/([^\/]+)$/.exec(p))) {
     const ev = getEvent(m[1]);
@@ -638,7 +766,7 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
       const z = spawn('zip', ['-q', '-j', '-0', tmp, ...files.map(f => path.join(PHOTOS_DIR, ev.slug, f))]);
       z.on('close', code => {
         if (code !== 0) { res.writeHead(500); return res.end('ZIP-Fehler'); }
-        fs.appendFile(DL_LOG, JSON.stringify({ email: user.email, event: ev.slug, files: files.length, at: new Date().toISOString() }) + '\n', () => {});
+        fs.appendFile(DL_LOG, JSON.stringify({ email: viewer.email, event: ev.slug, files: files.length, at: new Date().toISOString() }) + '\n', () => {});
         res.writeHead(200, {
           'Content-Type': 'application/zip',
           'Content-Length': fs.statSync(tmp).size,

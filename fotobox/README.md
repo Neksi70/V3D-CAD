@@ -8,6 +8,13 @@ Schwarz/Orange im Volme-3D-Look.
 
 ## Fotos online stellen
 
+**Am einfachsten über den Browser:** Im Admin (`/fotos/admin?key=…`) unter „Galerien“
+eine neue Galerie anlegen (Titel + Zugangscode), dann „Verwalten & Hochladen“ —
+Fotos auswählen oder einfach ins Upload-Feld ziehen. Dort lassen sich auch
+einzelne Fotos oder ganze Galerien wieder löschen.
+
+**Oder direkt per Ordner auf dem Server:**
+
 1. Ordner anlegen: `~/fotobox/photos/<datum-veranstaltung>/` (z. B. `2026-07-05-kita-sommerfest`)
 2. JPGs reinkopieren — fertig, kein Neustart nötig.
 3. Optional `event.json` in den Ordner legen:
