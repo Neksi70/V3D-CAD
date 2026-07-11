@@ -278,19 +278,21 @@ ${err ? `<p class="err">${esc(err)}</p>` : ''}
 <div style="height:14px"></div><button class="btn" type="submit">Galerie öffnen</button>
 </form></div>`, true);
 }
-function albumsPage(user, events, unlocked) {
-  const items = events.map(ev => {
-    const locked = ev.code && !unlocked.includes(ev.slug);
-    const cover = locked
-      ? `<div style="width:100%;aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;font-size:44px;background:var(--card2)">🔒</div>`
-      : `<img loading="lazy" src="${BASE}/thumb/${encodeURIComponent(ev.slug)}/${encodeURIComponent(ev.files[0])}" alt="">`;
-    return `<a class="album" href="${BASE}/galerie/${encodeURIComponent(ev.slug)}">${cover}
-<div class="ai"><b>${esc(ev.title)}</b><span>${ev.files.length} Fotos${locked ? ' · Code nötig' : ''}</span></div></a>`;
-  }).join('');
-  return page('Galerien', `
-<h1>Hallo ${esc((user.name || '').split(' ')[0] || 'du')}! <em>Deine Galerien</em></h1>
-<p class="sub">Wähle eine Veranstaltung aus.</p>
-${events.length ? `<div class="albums">${items}</div>` : `<p class="sub">Im Moment sind noch keine Fotos online — schau später nochmal vorbei!</p>`}
+function albumsPage(user, events, unlocked, isAdmin, err) {
+  const visible = events.filter(ev => !ev.code || unlocked.includes(ev.slug) || isAdmin);
+  const items = visible.map(ev => `<a class="album" href="${BASE}/galerie/${encodeURIComponent(ev.slug)}">
+<img loading="lazy" src="${BASE}/thumb/${encodeURIComponent(ev.slug)}/${encodeURIComponent(ev.files[0])}" alt="">
+<div class="ai"><b>${esc(ev.title)}</b><span>${ev.files.length} Fotos</span></div></a>`).join('');
+  return page('Fotos', `
+<div class="card">
+<h1>Hallo ${esc((user.name || '').split(' ')[0] || 'du')}!</h1>
+<p class="sub">Gib den Zugangscode von deiner Fotobox-Karte ein — dann siehst du die Fotos deiner Veranstaltung.</p>
+${err ? `<p class="err">${esc(err)}</p>` : ''}
+<form method="post" action="${BASE}/galerie/code">
+<label>Zugangscode</label><input type="text" name="code" required autocomplete="off">
+<div style="height:14px"></div><button class="btn" type="submit">Zu den Fotos &rarr;</button>
+</form></div>
+${visible.length ? `<h1 style="margin-top:36px">Freigeschaltet <em>· ${visible.length}</em></h1><div class="albums">${items}</div>` : ''}
 ${akademiePromo()}`, user);
 }
 function galleryPage(user, ev) {
@@ -299,7 +301,7 @@ function galleryPage(user, ev) {
 <img loading="lazy" src="${BASE}/thumb/${encodeURIComponent(ev.slug)}/${encodeURIComponent(f)}" alt="">
 <div class="tick">✓</div></div>`).join('');
   return page(ev.title, `
-<p style="margin:0 0 4px"><a href="${BASE}/galerie">&larr; Alle Galerien</a></p>
+<p style="margin:0 0 4px"><a href="${BASE}/galerie">&larr; Zur Übersicht</a></p>
 <h1>${esc(ev.title)} <em>· ${ev.files.length} Fotos</em></h1>
 <p class="sub">Zum Vergrößern tippen, mit dem Haken auswählen — unten als ZIP herunterladen.</p>
 <div class="grid" id="grid">${tiles}</div>
@@ -759,8 +761,17 @@ Verantwortlich: ${esc(CFG.brand)} · Kontakt: siehe Impressum der Hauptseite.</p
   const viewer = user || (isAdmin ? { email: 'admin', name: 'Admin' } : null);
   if (!viewer) return redirect(res, BASE + '/?next=' + encodeURIComponent(p));
 
-  if (p === '/galerie') return html(res, albumsPage(viewer, listEvents(), unlocked));
+  if (p === '/galerie') return html(res, albumsPage(viewer, listEvents(), unlocked, isAdmin));
 
+  if (p === '/galerie/code' && req.method === 'POST') {
+    return readBody(req, b => {
+      const code = String(b.code || '').trim();
+      const ev = code && listEvents().find(e => e.code && String(e.code).toLowerCase() === code.toLowerCase());
+      if (!ev) return html(res, albumsPage(viewer, listEvents(), unlocked, isAdmin, 'Diesen Zugangscode kennen wir nicht — schau nochmal auf deine Fotobox-Karte.'), 403);
+      setSession(res, { e: viewer.email, n: viewer.name, u: [...new Set([...unlocked, ev.slug])], a: (sess && sess.a) || undefined });
+      redirect(res, BASE + '/galerie/' + encodeURIComponent(ev.slug));
+    });
+  }
   if ((m = /^\/galerie\/([^\/]+)$/.exec(p))) {
     const ev = getEvent(m[1]);
     if (!ev) { res.writeHead(404); return res.end('404'); }
