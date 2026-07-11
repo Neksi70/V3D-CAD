@@ -215,7 +215,23 @@ input[type=file]{width:100%}
 .gicon{width:19px;height:19px;background:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;color:#4285F4;font-size:13px}
 footer{max-width:1060px;margin:0 auto;padding:10px 18px 30px;color:var(--mut);font-size:12px}
 footer a{color:var(--mut);text-decoration:underline}
+.promo{display:flex;gap:16px;align-items:center;background:linear-gradient(135deg,rgba(249,115,22,.14),rgba(249,115,22,.04));border:1.5px solid rgba(249,115,22,.45);border-radius:16px;padding:16px 18px;margin:26px 0 6px;text-decoration:none;color:var(--text)}
+.promo:hover{border-color:var(--acc)}
+.promo .pi{font-size:34px;flex:none}
+.promo b{color:var(--acc)}
+.promo .pt{font-size:14.5px;line-height:1.5}
+.promo .pt small{display:block;color:var(--mut);font-size:12.5px;margin-top:2px}
+.promo .pgo{margin-left:auto;flex:none;background:var(--acc);color:#fff;font-weight:700;font-size:13.5px;border-radius:10px;padding:9px 16px;white-space:nowrap}
+@media(max-width:560px){.promo{flex-wrap:wrap}.promo .pgo{margin-left:0}}
 `;
+const AKADEMIE_URL = 'https://volme3d-akademie.de';
+function akademiePromo() {
+  return `<a class="promo" href="${AKADEMIE_URL}" target="_blank" rel="noopener">
+<span class="pi">🖨️</span>
+<span class="pt"><b>Volme3D Akademie</b> — 3D-Druck-Kurse für jede Altersklasse, vom Kinderkurs bis zum Profi-Workshop.
+<small>Es sind noch Plätze frei — jetzt Wunschtermin sichern!</small></span>
+<span class="pgo">Kurse ansehen &rarr;</span></a>`;
+}
 function page(title, body, user) {
   return `<!DOCTYPE html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
@@ -225,7 +241,7 @@ function page(title, body, user) {
 <div class="hb">${esc(CFG.brand)}<small>Fotobox</small></div><div class="sp"></div>
 ${user ? `<div class="who">${esc(user.name || user.email)}<a href="${BASE}/logout">Abmelden</a></div>` : ''}
 </header><main>${body}</main>
-<footer>${esc(CFG.brand)} · Die Fotos sind nur für registrierte Gäste der jeweiligen Veranstaltung bestimmt. · <a href="${BASE}/buchen">Fotobox mieten</a> · <a href="${BASE}/datenschutz">Datenschutz</a></footer>
+<footer>${esc(CFG.brand)} · Die Fotos sind nur für registrierte Gäste der jeweiligen Veranstaltung bestimmt. · <a href="${BASE}/buchen">Fotobox mieten</a> · <a href="${AKADEMIE_URL}" target="_blank" rel="noopener">3D-Druck-Kurse: Volme3D Akademie</a> · <a href="${BASE}/datenschutz">Datenschutz</a></footer>
 </body></html>`;
 }
 
@@ -274,7 +290,8 @@ function albumsPage(user, events, unlocked) {
   return page('Galerien', `
 <h1>Hallo ${esc((user.name || '').split(' ')[0] || 'du')}! <em>Deine Galerien</em></h1>
 <p class="sub">Wähle eine Veranstaltung aus.</p>
-${events.length ? `<div class="albums">${items}</div>` : `<p class="sub">Im Moment sind noch keine Fotos online — schau später nochmal vorbei!</p>`}`, user);
+${events.length ? `<div class="albums">${items}</div>` : `<p class="sub">Im Moment sind noch keine Fotos online — schau später nochmal vorbei!</p>`}
+${akademiePromo()}`, user);
 }
 function galleryPage(user, ev) {
   const tiles = ev.files.map((f, i) => `
@@ -291,6 +308,7 @@ function galleryPage(user, ev) {
   <button class="btn ghost" id="all" type="button">Alle auswählen</button>
   <button class="btn" id="dl" type="button" disabled>⬇ Auswahl herunterladen</button>
 </div>
+${akademiePromo()}
 <dialog id="lb"><img id="lbi" alt="">
 <div class="db">
   <button class="btn ghost" id="lbPrev" type="button">&larr;</button>
