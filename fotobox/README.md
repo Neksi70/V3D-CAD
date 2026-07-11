@@ -8,7 +8,8 @@ Schwarz/Orange im Volme-3D-Look.
 
 ## Fotos online stellen
 
-**Am einfachsten über den Browser:** Im Admin (`/fotos/admin?key=…`) unter „Galerien“
+**Am einfachsten über den Browser:** Im Admin (https://v3da.tailf05fe9.ts.net/fotos/admin —
+beim ersten Mal den `adminKey` aus `config.json` eingeben, danach merkt sich der Browser das) unter „Galerien“
 eine neue Galerie anlegen (Titel + Zugangscode), dann „Verwalten & Hochladen“ —
 Fotos auswählen oder einfach ins Upload-Feld ziehen. Dort lassen sich auch
 einzelne Fotos oder ganze Galerien wieder löschen.
