@@ -16,11 +16,23 @@ const orca = await createOrcaSlicer({
 postMessage({ type: 'ready', version: orca.version() });
 
 onmessage = (e) => {
-  const { bytes, filename, profiles, overrides } = e.data;
+  const { cmd, bytes, filename, profiles, overrides, bedCenter } = e.data;
   try {
-    const gcode = orca.sliceModel(bytes, filename, profiles, overrides);
-    if (!gcode) postMessage({ type: 'error', message: orca.lastError() });
-    else        postMessage({ type: 'done', gcode });
+    if (cmd === 'preview') {
+      const res = orca.previewModel(bytes, filename, bedCenter[0], bedCenter[1]);
+      // Views zeigen in den WASM-Heap → sofort kopieren, dann transferieren
+      const objects = res.objects.map(o => ({
+        name: o.name,
+        verts: new Float32Array(o.verts),
+        tris: new Uint32Array(o.tris),
+      }));
+      postMessage({ type: 'preview', objects },
+                  objects.flatMap(o => [o.verts.buffer, o.tris.buffer]));
+    } else {
+      const gcode = orca.sliceModel(bytes, filename, profiles, overrides);
+      if (!gcode) postMessage({ type: 'error', message: orca.lastError() });
+      else        postMessage({ type: 'done', gcode });
+    }
   } catch (err) {
     postMessage({ type: 'error', message: String(err && err.message || err) });
   }

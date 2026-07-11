@@ -24,6 +24,10 @@
            border-radius: 6px; font-size: .95rem; cursor: pointer; font-weight: 600; }
   button:disabled { opacity: .4; cursor: default; }
   button.secondary { background: #334; color: var(--text); }
+  #tabs { display: flex; gap: .3rem; }
+  .tab { background: transparent; color: var(--text); font-weight: 400; padding: .4rem .9rem;
+         border: 1px solid #334; border-radius: 6px; }
+  .tab.active { background: var(--accent); color: #000; font-weight: 600; }
   #drop { border: 2px dashed #446; border-radius: 10px; padding: 1.2rem .8rem; text-align: center;
           font-size: .85rem; cursor: pointer; }
   #drop.armed { border-color: var(--accent); color: var(--accent); }
@@ -44,6 +48,10 @@
 <body>
 <header>
   <h1>🥨 VolmeSlice Pro</h1>
+  <nav id="tabs">
+    <button class="tab active" data-tab="prepare">Vorbereiten</button>
+    <button class="tab" data-tab="preview">Vorschau</button>
+  </nav>
   <div id="status">Lade Orca-Kern …</div>
 </header>
 
@@ -147,7 +155,26 @@ async function fillPresets() {
     $('machine').value = $('process').value = $('filament').value = '';
   }
 }
-$('vendor').onchange = fillPresets;
+$('vendor').onchange = async () => { await fillPresets(); await applyMachineBed(); };
+
+// Bettgröße aus der printable_area des gewählten Druckers (letzter Wert der Kette)
+async function applyMachineBed() {
+  try {
+    const chain = await profileChain($('vendor').value, 'machine_list', $('machine').value);
+    let area = null;
+    for (const s of chain) {
+      const j = JSON.parse(s);
+      if (j.printable_area) area = j.printable_area;
+    }
+    if (area) {
+      const pts = (Array.isArray(area) ? area : [area]).map(p => p.split('x').map(Number));
+      const w = Math.max(...pts.map(p => p[0])), h = Math.max(...pts.map(p => p[1]));
+      if (w > 0 && h > 0) setBed(w, h);
+    }
+  } catch { /* unbekannter Drucker → Bett unverändert */ }
+  requestPreview();
+}
+$('machine').onchange = applyMachineBed;
 
 // ---------- Datei-Handling ----------
 let modelBytes = null, modelName = '';
@@ -158,8 +185,18 @@ function acceptFile(f) {
     modelName = f.name;
     $('drop').innerHTML = `✅ <b>${f.name}</b><br><small>${(f.size/1024).toFixed(0)} KB — klicken zum Ändern</small>`;
     updateSliceable();
+    requestPreview();
   };
   r.readAsArrayBuffer(f);
+}
+
+let workerReady = false;
+function requestPreview() {
+  if (!modelBytes || !workerReady) return;
+  status.textContent = 'Lade Modell-Vorschau …';
+  // Kopie schicken — modelBytes bleibt für den Slice erhalten
+  worker.postMessage({ cmd: 'preview', bytes: modelBytes.slice(),
+                       filename: modelName, bedCenter: [bedSize[0] / 2, bedSize[1] / 2] });
 }
 $('drop').onclick = () => $('file').click();
 $('file').onchange = () => $('file').files[0] && acceptFile($('file').files[0]);
@@ -177,10 +214,34 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1a2e);
 const camera = new THREE.PerspectiveCamera(45, 2, 0.1, 2000);
 scene.up = camera.up = new THREE.Vector3(0, 0, 1);
-const grid = new THREE.GridHelper(256, 16, 0x334466, 0x223); // Platte kommt aus Profil, 256 = BBL
-grid.rotation.x = Math.PI / 2; grid.position.set(128, 128, 0);
-scene.add(grid);
+
+// Licht für die schattierte Modell-Ansicht
+scene.add(new THREE.HemisphereLight(0xa0b0ff, 0x303040, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+sun.position.set(150, -200, 400);
+scene.add(sun);
+
+// Druckbett — Größe kommt aus dem gewählten Druckerprofil (printable_area)
 let CENTER = new THREE.Vector3(128, 128, 10);
+let bedGroup = new THREE.Group();
+scene.add(bedGroup);
+let bedSize = [256, 256];
+function setBed(w, h) {
+  bedSize = [w, h];
+  bedGroup.clear();
+  const grid = new THREE.GridHelper(Math.max(w, h), Math.round(Math.max(w, h) / 16), 0x334466, 0x223);
+  grid.rotation.x = Math.PI / 2;
+  grid.position.set(w / 2, h / 2, 0);
+  bedGroup.add(grid);
+  const outline = new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, .05), new THREE.Vector3(w, 0, .05),
+      new THREE.Vector3(w, h, .05), new THREE.Vector3(0, h, .05)]),
+    new THREE.LineBasicMaterial({ color: 0x4fc3f7 }));
+  bedGroup.add(outline);
+  CENTER = new THREE.Vector3(w / 2, h / 2, 10);
+  updateCam();
+}
 let camTheta = -Math.PI / 4, camPhi = 1.05, camDist = 260;
 function updateCam() {
   camera.position.set(
@@ -221,7 +282,37 @@ const FEATURE_COLORS = {
 const DEFAULT_COLOR = 0x8899aa;
 const toolpathGroup = new THREE.Group();
 scene.add(toolpathGroup);
+const modelGroup = new THREE.Group();
+scene.add(modelGroup);
 let layerGroups = [];
+
+// ---------- Tabs (Vorbereiten = Modell, Vorschau = Bahnen) ----------
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  modelGroup.visible = name === 'prepare';
+  toolpathGroup.visible = name === 'preview';
+  $('overlay').hidden = name !== 'preview' || !layerGroups.length;
+  $('legend').hidden = name !== 'preview' || !layerGroups.length;
+}
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+
+function showModelMeshes(objects) {
+  modelGroup.clear();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x2ea2d8, metalness: .05, roughness: .65 });
+  let maxZ = 10;
+  for (const o of objects) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(o.verts, 3));
+    geo.setIndex(new THREE.BufferAttribute(o.tris, 1));
+    geo.computeVertexNormals();
+    geo.computeBoundingBox();
+    maxZ = Math.max(maxZ, geo.boundingBox.max.z);
+    modelGroup.add(new THREE.Mesh(geo, mat));
+  }
+  CENTER = new THREE.Vector3(bedSize[0] / 2, bedSize[1] / 2, maxZ / 2);
+  updateCam();
+  showTab('prepare');
+}
 
 function parseGcode(gcode) {
   const layers = []; let cur = null;
@@ -287,7 +378,12 @@ worker.onmessage = (e) => {
   const msg = e.data;
   if (msg.type === 'ready') {
     status.innerHTML = `<span class="ok">Orca ${msg.version} bereit</span>`;
+    workerReady = true;
     updateSliceable();
+    requestPreview();
+  } else if (msg.type === 'preview') {
+    showModelMeshes(msg.objects);
+    status.innerHTML = `<span class="ok">${msg.objects.length} Objekt(e) geladen — bereit zum Slicen</span>`;
   } else if (msg.type === 'progress') {
     if (msg.percent >= 0)
       status.innerHTML = `⚙️ <b>${msg.percent}%</b> — ${msg.text}`;
@@ -297,6 +393,7 @@ worker.onmessage = (e) => {
   } else if (msg.type === 'done') {
     const dt = ((performance.now() - sliceStart) / 1000).toFixed(1);
     lastGcode = msg.gcode;
+    window._lastGcode = lastGcode; // Debug-Zugriff (Konsole/Headless-Tests)
     const layers = parseGcode(lastGcode);
     showToolpaths(layers);
     $('btnDownload').disabled = false;
@@ -307,6 +404,7 @@ worker.onmessage = (e) => {
       `Filament: <b>${grab(/; filament used \[g\] = ([\d.]+)/) || grab(/; total filament used \[g\] = ([\d.]+)/) || '–'} g</b>`,
     ].join('<br>');
     status.innerHTML = `<span class="ok" id="done">Fertig: ${modelName} → ${layers.length} Layer in ${dt}s</span>`;
+    showTab('preview');
     updateSliceable();
   }
 };
@@ -316,6 +414,8 @@ worker.onerror = (e) => {
 };
 
 await fillVendor();
+setBed(256, 256);
+await applyMachineBed();
 
 $('btnSlice').onclick = async () => {
   try {
