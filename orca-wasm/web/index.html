@@ -253,6 +253,7 @@ async function loadPrinters() {
       || '<option disabled>Keine Drucker im Konto</option>';
     $('sendPanel').hidden = false;
     updateSend();
+    if (bridgePrinters.length) startStatusPolling();
     return true;
   } catch { return false; }
 }
@@ -318,10 +319,37 @@ $('lgPass').addEventListener('keydown', e => { if (e.key === 'Enter') $('lgBtn')
 $('lgCode').addEventListener('keydown', e => { if (e.key === 'Enter') $('lgBtn').click(); });
 
 function selectedPrinter() { return bridgePrinters.find(p => p.serial === $('sendPrinter').value); }
-$('sendPrinter').onchange = () => {
+
+// Live-Status des gewählten Druckers über die Cloud (alle 12 s, solange Panel offen)
+let statusTimer = null;
+const STATE_DE = { IDLE: 'bereit', RUNNING: 'druckt', PAUSE: 'pausiert', FINISH: 'fertig',
+                   FAILED: 'Fehler', PREPARE: 'bereitet vor', SLICING: 'sliced' };
+async function refreshStatus() {
   const p = selectedPrinter();
-  $('sendConn').textContent = p ? `${p.model || 'Drucker'} · ${p.online ? 'online' : 'offline'} · Cloud` : '';
-};
+  if (!p) { $('sendConn').textContent = ''; return; }
+  $('sendConn').textContent = `${p.model || 'Drucker'} · lade Status …`;
+  try {
+    const { status, json } = await bridge('/api/status/' + encodeURIComponent(p.serial));
+    if (status !== 200 || !json.online) {
+      $('sendConn').textContent = `${p.model || 'Drucker'} · offline`;
+      return;
+    }
+    const st = STATE_DE[json.gcode_state] || json.gcode_state || '–';
+    const bits = [`${p.model || 'Drucker'}`, st];
+    if (json.nozzle_temper != null) bits.push(`Düse ${Math.round(json.nozzle_temper)}°`);
+    if (json.bed_temper != null) bits.push(`Bett ${Math.round(json.bed_temper)}°`);
+    if (json.gcode_state === 'RUNNING' && json.percent != null) bits.push(`${json.percent}%`);
+    $('sendConn').innerHTML = `<span class="ok">●</span> ` + bits.join(' · ');
+  } catch {
+    $('sendConn').textContent = `${p.model || 'Drucker'} · Status nicht abrufbar`;
+  }
+}
+function startStatusPolling() {
+  clearInterval(statusTimer);
+  refreshStatus();
+  statusTimer = setInterval(refreshStatus, 12000);
+}
+$('sendPrinter').onchange = startStatusPolling;
 function updateSend() {
   $('btnSend').disabled = $('btnDownload').disabled || !bridgePrinters.length;
 }
