@@ -23525,12 +23525,97 @@ function _parseOBJ(text){
   }
   const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(verts,3)); if(idx.length) g.setIndex(idx); g.computeVertexNormals(); g.computeBoundingBox(); return g;
 }
-function _parse3MFGeo(xmlText){
+// ── 3MF-Parser ──
+// Echte Slicer-/Makerworld-3MFs sind mehr als "alle <vertex>/<triangle> einsammeln":
+// Bambu/Orca legen die Geometrie in 3D/Objects/*.model ab (3D/3dmodel.model enthält nur
+// Komponenten-Verweise via p:path), Dreiecks-Indizes zählen pro Objekt ab 0, und die
+// Platzierung kommt aus den transform-Attributen von <item>/<component>.
+// 3MF-Transform: 12 Zahlen, Zeilenvektor-Konvention v' = v·M + t (Zeile 4 = Translation).
+function _p3mfMat(str){
+  if(!str) return null;
+  const m=str.trim().split(/\s+/).map(Number);
+  return (m.length===12 && m.every(Number.isFinite)) ? m : null;
+}
+function _p3mfMul(a,b){ // erst a anwenden, dann b → kombinierte 12er-Matrix
+  if(!a) return b; if(!b) return a;
+  const r=new Array(12);
+  for(let i=0;i<4;i++){
+    const x=a[i*3], y=a[i*3+1], z=a[i*3+2];
+    r[i*3]  =x*b[0]+y*b[3]+z*b[6]+(i===3?b[9] :0);
+    r[i*3+1]=x*b[1]+y*b[4]+z*b[7]+(i===3?b[10]:0);
+    r[i*3+2]=x*b[2]+y*b[5]+z*b[8]+(i===3?b[11]:0);
+  }
+  return r;
+}
+function _p3mfModel(xmlText){
   const doc=new DOMParser().parseFromString(xmlText,'application/xml');
-  const verts=[], idx=[], vEls=doc.getElementsByTagName('vertex'), tEls=doc.getElementsByTagName('triangle');
-  for(let i=0;i<vEls.length;i++){ const v=vEls[i]; verts.push(+v.getAttribute('x'),+v.getAttribute('y'),+v.getAttribute('z')); }
-  for(let i=0;i<tEls.length;i++){ const t=tEls[i]; idx.push(+t.getAttribute('v1'),+t.getAttribute('v2'),+t.getAttribute('v3')); }
-  const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(verts,3)); if(idx.length) g.setIndex(idx); g.computeVertexNormals(); g.computeBoundingBox(); return g;
+  const unit=(doc.documentElement.getAttribute('unit')||'millimeter').toLowerCase();
+  const scale={micron:0.001,millimeter:1,centimeter:10,inch:25.4,foot:304.8,meter:1000}[unit]||1;
+  const objs={}, objEls=doc.getElementsByTagName('object');
+  for(let i=0;i<objEls.length;i++){
+    const o=objEls[i], id=o.getAttribute('id'); if(!id) continue;
+    const entry={mesh:null,comps:[]};
+    const meshEl=o.getElementsByTagName('mesh')[0];
+    if(meshEl){
+      const vEls=meshEl.getElementsByTagName('vertex'), tEls=meshEl.getElementsByTagName('triangle');
+      const verts=new Float32Array(vEls.length*3);
+      for(let k=0;k<vEls.length;k++){ const v=vEls[k]; verts[k*3]=+v.getAttribute('x'); verts[k*3+1]=+v.getAttribute('y'); verts[k*3+2]=+v.getAttribute('z'); }
+      const tris=new Uint32Array(tEls.length*3);
+      for(let k=0;k<tEls.length;k++){ const t=tEls[k]; tris[k*3]=+t.getAttribute('v1'); tris[k*3+1]=+t.getAttribute('v2'); tris[k*3+2]=+t.getAttribute('v3'); }
+      entry.mesh={verts,tris};
+    }
+    const compEls=o.getElementsByTagName('component');
+    for(let k=0;k<compEls.length;k++){ const c=compEls[k];
+      entry.comps.push({id:c.getAttribute('objectid'), path:c.getAttribute('p:path')||c.getAttribute('path')||'', m:_p3mfMat(c.getAttribute('transform'))});
+    }
+    objs[id]=entry;
+  }
+  const items=[], itemEls=doc.getElementsByTagName('item');
+  for(let i=0;i<itemEls.length;i++){ const it=itemEls[i];
+    items.push({id:it.getAttribute('objectid'), path:it.getAttribute('p:path')||it.getAttribute('path')||'', m:_p3mfMat(it.getAttribute('transform'))});
+  }
+  return {objs,items,scale};
+}
+// models = {zipPfad→Uint8Array} aller .model-Dateien (fflate). Liefert eine gemergte,
+// nicht-indizierte BufferGeometry in mm oder null, wenn keine Geometrie gefunden wurde.
+function _parse3MFGeo(models){
+  const norm=p=>String(p||'').replace(/^\//,'');
+  const parsed={};
+  for(const name of Object.keys(models)){
+    try{ parsed[norm(name)]=_p3mfModel(fflate.strFromU8(models[name])); }catch(e){ console.warn('3MF: Modell-Datei unlesbar:',name,e); }
+  }
+  const keys=Object.keys(parsed); if(!keys.length) return null;
+  const rootKey=keys.find(k=>/(^|\/)3dmodel\.model$/i.test(k)) || keys.find(k=>parsed[k].items.length) || keys[0];
+  const root=parsed[rootKey];
+  const out=[];
+  function emit(pathKey,id,m,depth){
+    if(depth>8) return;
+    const mod=parsed[pathKey]; if(!mod) return;
+    const o=mod.objs[id]; if(!o) return;
+    if(o.mesh && o.mesh.tris.length){
+      const {verts,tris}=o.mesh;
+      for(let i=0;i<tris.length;i+=3){
+        const tri=[]; let ok=true;
+        for(let j=0;j<3;j++){
+          const vi=tris[i+j]*3;
+          let x=verts[vi], y=verts[vi+1], z=verts[vi+2];
+          if(m){ const nx=x*m[0]+y*m[3]+z*m[6]+m[9], ny=x*m[1]+y*m[4]+z*m[7]+m[10], nz=x*m[2]+y*m[5]+z*m[8]+m[11]; x=nx; y=ny; z=nz; }
+          if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(z)){ ok=false; break; }
+          tri.push(x,y,z);
+        }
+        if(ok) out.push(...tri);
+      }
+    }
+    for(const c of o.comps) emit(c.path?norm(c.path):pathKey, c.id, _p3mfMul(c.m,m), depth+1);
+  }
+  if(root.items.length){ for(const it of root.items) emit(it.path?norm(it.path):rootKey, it.id, it.m, 0); }
+  else { for(const id of Object.keys(root.objs)) emit(rootKey, id, null, 0); }
+  if(!out.length) return null;
+  const pos=new Float32Array(out);
+  if(root.scale!==1){ for(let i=0;i<pos.length;i++) pos[i]*=root.scale; }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  g.computeVertexNormals(); g.computeBoundingBox(); return g;
 }
 function _renderGeoThumb(geo, zUp){
   if(!geo || !geo.attributes.position || !geo.attributes.position.count) return null;
@@ -23566,8 +23651,8 @@ async function _stlMakeThumb(f){
     if(pick && pngs[pick] && pngs[pick].length) return 'data:image/png;base64,'+_u8ToB64(pngs[pick]);
     // 2) sonst Modell-XML rendern
     let models={}; try{ models=fflate.unzipSync(u8,{filter:fl=>/\.model$/i.test(fl.name)}); }catch(e){ models={}; }
-    const mn=Object.keys(models)[0];
-    if(mn) return _renderGeoThumb(_parse3MFGeo(fflate.strFromU8(models[mn])), true);
+    const g3=_parse3MFGeo(models);
+    if(g3) return _renderGeoThumb(g3, true);
     return null;
   }
   return null;
@@ -23584,9 +23669,9 @@ async function _stlOpenInScene(idx){
     } else if(ext==='3mf'){
       if(typeof fflate==='undefined'){ notify('3MF-Unterstützung nicht geladen','w'); return; }
       let models={}; try{ models=fflate.unzipSync(new Uint8Array(buf),{filter:fl=>/\.model$/i.test(fl.name)}); }catch(e){ models={}; }
-      const mn=Object.keys(models)[0];
-      if(!mn){ notify('3MF enthält kein 3D-Modell (nur Vorschau) — bitte „Drucken"','w'); return; }
-      _addImportedGeo(_parse3MFGeo(fflate.strFromU8(models[mn])), f.name, true, null, false);
+      const g3=_parse3MFGeo(models);
+      if(!g3){ notify('3MF enthält kein 3D-Modell (nur Vorschau) — bitte „Drucken"','w'); return; }
+      _addImportedGeo(g3, f.name, true, null, false);
     } else { notify('Format nicht unterstützt','w'); return; }
     _stlLibClose();
   }
