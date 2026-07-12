@@ -70,9 +70,41 @@
             padding: .25rem .55rem; font-size: .78rem; font-weight: 400; }
   .setTab.active { background: var(--accent); color: #fff; font-weight: 600; border-color: var(--accent); }
   #settings .field input[type="text"] { width: 7.5rem; }
+  #loginGate { position: fixed; inset: 0; z-index: 100; background: var(--header-bg);
+               display: flex; align-items: center; justify-content: center; }
+  #loginGate[hidden] { display: none; }
+  .loginCard { background: var(--panel); border-radius: 14px; padding: 2rem 2.2rem; width: 340px;
+               max-width: 90vw; box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+  .loginCard h2 { color: var(--accent); margin: 0 0 .3rem; }
+  .loginCard .sub { margin: 0 0 1.2rem; font-size: .88rem; opacity: .8; }
+  .loginCard input, .loginCard select { width: 100%; margin-bottom: .6rem; padding: .6rem .7rem;
+               border: 1px solid var(--border); border-radius: 8px; font-size: .95rem; background: #fff; color: var(--text); }
+  .loginCard > button#lgBtn { width: 100%; padding: .7rem; font-size: 1rem; margin-top: .2rem; }
+  .loginCard .link { background: none; border: 0; color: var(--accent); font-weight: 400; font-size: .85rem;
+               cursor: pointer; padding: .8rem 0 0; width: 100%; }
+  .loginCard .hint { font-size: .72rem; opacity: .6; margin: 1rem 0 0; line-height: 1.4; }
+  #lgStatus { font-size: .82rem; min-height: 1.1em; margin-top: .3rem; }
+  #userBadge { font-size: .82rem; color: #cfd3dc; }
+  #userBadge button { background: none; border: 0; color: var(--accent); cursor: pointer; font-size: .82rem; padding: 0 0 0 .5rem; }
 </style>
 </head>
 <body>
+<div id="loginGate">
+  <div class="loginCard">
+    <h2>🥨 VolmeSlice Pro</h2>
+    <p class="sub">Mit Bambu-Konto anmelden, um an deine Drucker zu senden.</p>
+    <input id="lgEmail" type="email" placeholder="Bambu E-Mail" autocomplete="username">
+    <input id="lgPass" type="password" placeholder="Passwort" autocomplete="current-password">
+    <select id="lgRegion"><option value="global">Global / Europa</option><option value="china">China</option></select>
+    <div id="lgCodeRow" hidden>
+      <input id="lgCode" placeholder="Code aus der Bambu-E-Mail" inputmode="numeric">
+    </div>
+    <button id="lgBtn">Anmelden</button>
+    <div id="lgStatus"></div>
+    <button id="lgSkip" class="link">Ohne Konto fortfahren (nur slicen)</button>
+    <p class="hint">Dein Passwort bleibt auf diesem Server, wird nur gegen ein Bambu-Token getauscht und nicht gespeichert.</p>
+  </div>
+</div>
 <header>
   <h1>🥨 VolmeSlice Pro</h1>
   <nav id="tabs">
@@ -80,6 +112,7 @@
     <button class="tab" data-tab="preview">Vorschau</button>
   </nav>
   <div id="status">Lade Orca-Kern …</div>
+  <div id="userBadge"></div>
 </header>
 
 <aside>
@@ -146,20 +179,12 @@
     <select id="sendPrinter" style="margin:.3rem 0"></select>
     <div id="sendConn" style="font-size:.78rem;opacity:.75;margin-bottom:.3rem"></div>
 
-    <div id="cloudLogin" hidden style="border-top:1px solid var(--border);padding-top:.4rem;margin-bottom:.3rem">
-      <label style="font-size:.8rem;opacity:1">☁️ Bambu-Cloud-Login <small>(bleibt auf deinem Server)</small></label>
-      <input id="clEmail" type="email" placeholder="E-Mail" style="margin:.2rem 0">
-      <input id="clPass" type="password" placeholder="Passwort" style="margin:.2rem 0">
-      <div class="row2" style="margin:.2rem 0">
-        <select id="clRegion"><option value="global">Global/EU</option><option value="china">China</option></select>
-        <button id="btnCloudLogin" class="secondary" style="padding:.4rem">Anmelden</button>
-      </div>
-      <div id="clCodeRow" hidden>
-        <input id="clCode" placeholder="Code aus der E-Mail" style="margin:.2rem 0">
-        <button id="btnCloudVerify" class="secondary" style="width:100%;padding:.4rem">Code bestätigen</button>
-      </div>
-      <div id="clStatus" style="font-size:.78rem;margin-top:.2rem"></div>
-    </div>
+    <details style="margin-bottom:.4rem">
+      <summary style="font-size:.8rem;cursor:pointer">🔌 LAN-Direktverbindung (optional, schneller)</summary>
+      <input id="lanIp" placeholder="Drucker-IP (z. B. 192.168.1.50)" style="margin:.25rem 0">
+      <input id="lanCode" placeholder="Zugangscode (LAN-Modus)" style="margin:.25rem 0">
+      <small style="opacity:.6">Nur wenn der Drucker im selben Netz steht — dann geht der Dateiversand robust per LAN statt Cloud.</small>
+    </details>
 
     <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;opacity:1;margin:.2rem 0">
       <input type="checkbox" id="sendStart" style="width:auto" checked> Druck sofort starten</label>
@@ -902,83 +927,117 @@ $('btnDownload').onclick = () => {
   URL.revokeObjectURL(a.href);
 };
 
-// ---------- An Drucker senden (über die Bridge) ----------
-// Bridge auf demselben Host, Port 7781 (HTTP oder HTTPS wie die Seite)
+// ---------- Login-Gate + Multi-User-Cloud (über die Bridge) ----------
 const BRIDGE = `${location.protocol}//${location.hostname}:7781`;
+let sid = sessionStorage.getItem('vs-sid') || null;
 let bridgePrinters = [];
-async function initBridge() {
+
+async function bridge(pathname, { method = 'GET', body } = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (sid) headers.Authorization = 'Bearer ' + sid;
+  const r = await fetch(BRIDGE + pathname, { method, headers, body: body && JSON.stringify(body),
+                                             signal: AbortSignal.timeout(20000) });
+  return { status: r.status, json: await r.json().catch(() => ({})) };
+}
+
+async function loadPrinters() {
   try {
-    bridgePrinters = await (await fetch(`${BRIDGE}/api/printers`, { signal: AbortSignal.timeout(3000) })).json();
-    if (!bridgePrinters.length) return;   // Brücke da, aber keine Drucker konfiguriert
-    $('sendPrinter').innerHTML = bridgePrinters.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
-    $('sendPrinter').onchange = reflectPrinter;
+    const { status, json } = await bridge('/api/printers');
+    if (status === 401) return false;
+    bridgePrinters = Array.isArray(json) ? json : [];
+    $('sendPrinter').innerHTML = bridgePrinters.map(p =>
+      `<option value="${p.serial}">${p.name}${p.online ? '' : ' (offline)'}</option>`).join('')
+      || '<option disabled>Keine Drucker im Konto</option>';
     $('sendPanel').hidden = false;
-    reflectPrinter();
-  } catch { /* keine Bridge erreichbar → Panel bleibt versteckt */ }
+    updateSend();
+    return true;
+  } catch { return false; }
 }
-function selectedPrinter() { return bridgePrinters.find(p => p.id === $('sendPrinter').value); }
-function reflectPrinter() {
-  const p = selectedPrinter();
-  const bits = [];
-  if (p?.lan) bits.push('LAN');
-  if (p?.cloud) bits.push(p.cloudReady ? 'Cloud ✓' : 'Cloud (nicht angemeldet)');
-  $('sendConn').textContent = bits.length ? 'Verbindung: ' + bits.join(' · ') : 'Keine Verbindung konfiguriert';
-  // Cloud-Login-Feld zeigen, wenn Cloud gewünscht aber nicht angemeldet
-  $('cloudLogin').hidden = !(p?.cloud && !p.cloudReady);
+
+function enterApp(email) {
+  $('loginGate').hidden = true;
+  if (email) $('userBadge').innerHTML = `${email} <button id="btnLogout">abmelden</button>`;
+  const lo = $('btnLogout'); if (lo) lo.onclick = doLogout;
 }
-$('btnCloudLogin').onclick = async () => {
-  const p = selectedPrinter();
-  $('clStatus').textContent = 'Melde an …';
+async function doLogout() {
+  try { await bridge('/api/logout', { method: 'POST' }); } catch {}
+  sid = null; sessionStorage.removeItem('vs-sid');
+  location.reload();
+}
+
+// Login-Gate-Aktionen
+$('lgBtn').onclick = async () => {
+  const code = $('lgCodeRow').hidden ? null : $('lgCode').value.trim();
+  $('lgStatus').textContent = code ? 'Prüfe Code …' : 'Melde an …';
   try {
-    const r = await (await fetch(`${BRIDGE}/api/cloud/login`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: p.id, email: $('clEmail').value, password: $('clPass').value, region: $('clRegion').value }),
-    })).json();
-    if (r.ok) { $('clStatus').innerHTML = '<span class="ok">✅ Angemeldet</span>'; $('clPass').value = ''; await initBridge(); }
-    else if (r.needCode) { $('clCodeRow').hidden = false; $('clStatus').textContent = '📧 Code aus der Bambu-Mail eingeben.'; }
-    else $('clStatus').innerHTML = `<span class="err">${r.error || 'Fehlgeschlagen'}</span>`;
-  } catch { $('clStatus').innerHTML = '<span class="err">Bridge-Fehler</span>'; }
+    const ep = code ? '/api/verify' : '/api/login';
+    const body = code
+      ? { email: $('lgEmail').value, code, region: $('lgRegion').value }
+      : { email: $('lgEmail').value, password: $('lgPass').value, region: $('lgRegion').value };
+    const { json } = await bridge(ep, { method: 'POST', body });
+    if (json.ok && json.sid) {
+      sid = json.sid; sessionStorage.setItem('vs-sid', sid);
+      $('lgPass').value = '';
+      enterApp($('lgEmail').value);
+      await loadPrinters();
+    } else if (json.needCode) {
+      $('lgCodeRow').hidden = false; $('lgPass').disabled = true;
+      $('lgBtn').textContent = 'Code bestätigen';
+      $('lgStatus').innerHTML = '<span class="ok">📧 Code aus der Bambu-E-Mail eingeben.</span>';
+    } else {
+      $('lgStatus').innerHTML = `<span class="err">${json.error || 'Anmeldung fehlgeschlagen'}</span>`;
+    }
+  } catch {
+    $('lgStatus').innerHTML = '<span class="err">Brücke nicht erreichbar (läuft der Bridge-Dienst?)</span>';
+  }
 };
-$('btnCloudVerify').onclick = async () => {
+$('lgSkip').onclick = () => { $('loginGate').hidden = true; };
+$('lgPass').addEventListener('keydown', e => { if (e.key === 'Enter') $('lgBtn').click(); });
+$('lgCode').addEventListener('keydown', e => { if (e.key === 'Enter') $('lgBtn').click(); });
+
+function selectedPrinter() { return bridgePrinters.find(p => p.serial === $('sendPrinter').value); }
+$('sendPrinter').onchange = () => {
   const p = selectedPrinter();
-  $('clStatus').textContent = 'Prüfe Code …';
-  try {
-    const r = await (await fetch(`${BRIDGE}/api/cloud/verify`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: p.id, email: $('clEmail').value, code: $('clCode').value, region: $('clRegion').value }),
-    })).json();
-    if (r.ok) { $('clStatus').innerHTML = '<span class="ok">✅ Angemeldet</span>'; $('clPass').value = ''; await initBridge(); }
-    else $('clStatus').innerHTML = `<span class="err">${r.error || 'Code ungültig'}</span>`;
-  } catch { $('clStatus').innerHTML = '<span class="err">Bridge-Fehler</span>'; }
+  $('sendConn').textContent = p ? `${p.model || 'Drucker'} · ${p.online ? 'online' : 'offline'} · Cloud` : '';
 };
 function updateSend() {
-  const has = !$('btnDownload').disabled && $('sendPrinter').options.length;
-  $('btnSend').disabled = !has;
+  $('btnSend').disabled = $('btnDownload').disabled || !bridgePrinters.length;
 }
 $('btnSend').onclick = async () => {
   $('btnSend').disabled = true;
   $('sendStatus').textContent = 'Sende …';
   try {
-    const r = await fetch(`${BRIDGE}/api/send`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        printerId: $('sendPrinter').value,
-        filename: modelName.replace(/\.[^.]+$/, '') + '.gcode',
-        gcode: lastGcode, start: $('sendStart').checked,
-      }),
-    });
-    const j = await r.json();
-    if (r.ok) {
-      $('sendStatus').innerHTML = `<span class="ok">✅ Gesendet (${j.path}${j.print?.acked ? ', Druck bestätigt' : ''})</span>`;
+    const { status, json } = await bridge('/api/send', { method: 'POST', body: {
+      serial: $('sendPrinter').value,
+      filename: modelName.replace(/\.[^.]+$/, '') + '.gcode',
+      gcode: lastGcode, start: $('sendStart').checked,
+      lanIp: $('lanIp').value.trim() || undefined,
+      lanCode: $('lanCode').value.trim() || undefined,
+    } });
+    if (status === 200 && json.ok) {
+      const via = json.path === 'lan' ? 'LAN' : 'Cloud';
+      $('sendStatus').innerHTML = `<span class="ok">✅ Gesendet (${via}${json.print?.acked ? ', Druck bestätigt' : ''})</span>`
+        + (json.experimental ? `<br><small style="opacity:.7">${json.note}</small>` : '');
     } else {
-      $('sendStatus').innerHTML = `<span class="err">${j.error || 'Fehler'}</span>`;
+      $('sendStatus').innerHTML = `<span class="err">${json.error || 'Fehler'}</span>`;
     }
-  } catch (e) {
-    $('sendStatus').innerHTML = `<span class="err">Bridge nicht erreichbar</span>`;
+  } catch {
+    $('sendStatus').innerHTML = '<span class="err">Brücke nicht erreichbar</span>';
   }
   $('btnSend').disabled = false;
 };
-initBridge();
+
+// Beim Start: bestehende Session prüfen, sonst Login-Gate zeigen
+(async () => {
+  if (sid) {
+    try {
+      const { status, json } = await bridge('/api/me');
+      if (status === 200) { enterApp(json.email); await loadPrinters(); return; }
+    } catch {}
+    sid = null; sessionStorage.removeItem('vs-sid');
+  }
+  // Gate bleibt sichtbar; wenn keine Bridge läuft, kann man trotzdem "nur slicen"
+})();
 </script>
 </body>
 </html>

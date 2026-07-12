@@ -1,6 +1,8 @@
-// Bambu-Cloud-Anbindung: Login (inkl. 2FA-Mailcode), Geräteliste, MQTT für
-// Status/Steuerung. Inoffizielle API (wie Home-Assistant-Integration).
-// Passwort wird NUR gegen ein Token getauscht und nicht gespeichert.
+// Bambu-Cloud-Anbindung, SESSION-basiert (Multi-User): jeder Browser meldet sich
+// mit seinem eigenen Bambu-Konto an und bekommt eine Session-ID (sid). Tokens
+// liegen nur im Speicher der Brücke, je Session getrennt. Passwörter werden nur
+// gegen ein Token getauscht und nie gespeichert. Inoffizielle API.
+const crypto = require('crypto');
 const mqtt = require('mqtt');
 
 const HOSTS = {
@@ -9,112 +11,107 @@ const HOSTS = {
 };
 const host = (region) => HOSTS[region === 'china' ? 'china' : 'global'];
 
-// In-Memory-Token-Cache je Drucker-ID (überlebt Prozessneustart nicht → Re-Login)
-const tokens = new Map();   // id -> { access, uid, region }
+// sid -> { access, uid, region, email, created }
+const sessions = new Map();
+const SESSION_TTL = 12 * 3600 * 1000;   // 12 h
+
+function gc() {
+  const now = Date.now();
+  for (const [sid, s] of sessions) if (now - s.created > SESSION_TTL) sessions.delete(sid);
+}
+setInterval(gc, 3600 * 1000).unref?.();
 
 async function api(region, pathname, body) {
   const r = await fetch(host(region).api + pathname, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const text = await r.text();
-  let j = {}; try { j = JSON.parse(text); } catch {}
+  let j = {}; try { j = JSON.parse(await r.text()); } catch {}
   return { status: r.status, json: j };
 }
 
-// uid aus dem JWT (mittleres Segment, base64url) für den MQTT-Nutzernamen
 function uidFromToken(access) {
   try {
-    const payload = JSON.parse(Buffer.from(access.split('.')[1], 'base64').toString());
-    return payload.username || ('u_' + (payload.uid || payload.sub || ''));
+    const p = JSON.parse(Buffer.from(access.split('.')[1], 'base64').toString());
+    return p.username || ('u_' + (p.uid || p.sub || ''));
   } catch { return null; }
 }
 
-// Schritt 1: Login mit E-Mail+Passwort. Ergebnis entweder Token oder
-// { needCode:true } — dann Mailcode anfordern und mit verifyCode() abschließen.
-async function login(id, { email, password, region }) {
+function newSession(access, region, email) {
+  const sid = crypto.randomBytes(24).toString('hex');
+  sessions.set(sid, { access, uid: uidFromToken(access), region, email, created: Date.now() });
+  return sid;
+}
+
+// Login → { ok, sid } | { needCode:true } | { error }
+async function login({ email, password, region }) {
   const { json } = await api(region, '/v1/user-service/user/login', { account: email, password });
-  if (json.accessToken) {
-    tokens.set(id, { access: json.accessToken, uid: uidFromToken(json.accessToken), region });
-    return { ok: true };
-  }
+  if (json.accessToken) return { ok: true, sid: newSession(json.accessToken, region, email) };
   if (json.loginType === 'verifyCode' || json.tfaKey || json.loginType === 'tfa') {
-    // Mailcode anfordern
     await api(region, '/v1/user-service/user/sendemail/code', { email, type: 'codeLogin' });
-    return { ok: false, needCode: true, tfaKey: json.tfaKey || null };
+    return { ok: false, needCode: true };
   }
   return { ok: false, error: json.error || json.message || 'Login fehlgeschlagen' };
 }
 
-// Schritt 2 (nur wenn needCode): Mailcode einlösen
-async function verifyCode(id, { email, code, region }) {
+// 2FA-Mailcode einlösen → { ok, sid }
+async function verifyCode({ email, code, region }) {
   const { json } = await api(region, '/v1/user-service/user/login', { account: email, code });
-  if (json.accessToken) {
-    tokens.set(id, { access: json.accessToken, uid: uidFromToken(json.accessToken), region });
-    return { ok: true };
-  }
+  if (json.accessToken) return { ok: true, sid: newSession(json.accessToken, region, email) };
   return { ok: false, error: json.error || json.message || 'Code ungültig' };
 }
 
-function isLoggedIn(id) { return tokens.has(id); }
+function session(sid) { return sessions.get(sid); }
+function logout(sid) { sessions.delete(sid); }
 
-async function listDevices(id) {
-  const t = tokens.get(id);
-  if (!t) return { error: 'nicht angemeldet' };
-  const r = await fetch(host(t.region).api + '/v1/iot-service/api/user/bind', {
-    headers: { Authorization: 'Bearer ' + t.access },
+async function listDevices(sid) {
+  const s = sessions.get(sid); if (!s) return { error: 'nicht angemeldet' };
+  const r = await fetch(host(s.region).api + '/v1/iot-service/api/user/bind', {
+    headers: { Authorization: 'Bearer ' + s.access },
   });
   const j = await r.json().catch(() => ({}));
   return { devices: (j.devices || []).map(d => ({
     serial: d.dev_id, name: d.name, model: d.dev_model_name, online: d.online })) };
 }
 
-function cloudMqtt(id) {
-  const t = tokens.get(id);
-  if (!t) throw new Error('nicht angemeldet');
-  return mqtt.connect(host(t.region).mqtt, {
-    username: t.uid, password: t.access,
-    rejectUnauthorized: true, connectTimeout: 8000, reconnectPeriod: 0,
+function cloudMqtt(sid) {
+  const s = sessions.get(sid); if (!s) throw new Error('nicht angemeldet');
+  return mqtt.connect(host(s.region).mqtt, {
+    username: s.uid, password: s.access, rejectUnauthorized: true,
+    connectTimeout: 8000, reconnectPeriod: 0,
   });
 }
 
-// Vollstatus (pushall) über die Cloud
-function getStatus(id, serial, timeoutMs = 8000) {
+function getStatus(sid, serial, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
-    let c; try { c = cloudMqtt(id); } catch (e) { return reject(e); }
-    let settled = false;
-    const finish = (fn, arg) => { if (settled) return; settled = true; try { c.end(true); } catch {} fn(arg); };
+    let c; try { c = cloudMqtt(sid); } catch (e) { return reject(e); }
+    let done = false; const fin = (fn, a) => { if (done) return; done = true; try { c.end(true); } catch {} fn(a); };
     c.on('connect', () => {
       c.subscribe(`device/${serial}/report`);
-      c.publish(`device/${serial}/request`,
-        JSON.stringify({ pushing: { sequence_id: '0', command: 'pushall' } }), { qos: 1 });
+      c.publish(`device/${serial}/request`, JSON.stringify({ pushing: { sequence_id: '0', command: 'pushall' } }), { qos: 1 });
     });
-    c.on('message', (_t, msg) => { let j; try { j = JSON.parse(msg.toString()); } catch { return; }
-      if (j.print) finish(resolve, j.print); });
-    c.on('error', (e) => finish(reject, e));
-    setTimeout(() => finish(reject, new Error('Cloud-Status Timeout')), timeoutMs);
+    c.on('message', (_t, m) => { let j; try { j = JSON.parse(m.toString()); } catch { return; } if (j.print) fin(resolve, j.print); });
+    c.on('error', (e) => fin(reject, e));
+    setTimeout(() => fin(reject, new Error('Cloud-Status Timeout')), timeoutMs);
   });
 }
 
-// Steuerbefehl über die Cloud senden
-function sendCommand(id, serial, payload, { waitMs = 0 } = {}) {
+function sendCommand(sid, serial, payload, { waitMs = 0 } = {}) {
   return new Promise((resolve, reject) => {
-    let c; try { c = cloudMqtt(id); } catch (e) { return reject(e); }
-    let settled = false;
-    const finish = (fn, arg) => { if (settled) return; settled = true; try { c.end(true); } catch {} fn(arg); };
+    let c; try { c = cloudMqtt(sid); } catch (e) { return reject(e); }
+    let done = false; const fin = (fn, a) => { if (done) return; done = true; try { c.end(true); } catch {} fn(a); };
     c.on('connect', () => {
       if (waitMs > 0) c.subscribe(`device/${serial}/report`);
       c.publish(`device/${serial}/request`, JSON.stringify(payload), { qos: 1 }, (err) => {
-        if (err) return finish(reject, err);
-        if (waitMs === 0) return finish(resolve, { sent: true });
+        if (err) return fin(reject, err);
+        if (waitMs === 0) return fin(resolve, { sent: true });
       });
     });
-    c.on('message', (_t, msg) => { let j; try { j = JSON.parse(msg.toString()); } catch { return; }
-      if (j.print && (j.print.command || j.print.gcode_state !== undefined))
-        finish(resolve, { sent: true, acked: true, report: j.print }); });
-    c.on('error', (e) => finish(reject, e));
-    setTimeout(() => finish(resolve, { sent: true, timeout: true }), (waitMs || 6000) + 6000);
+    c.on('message', (_t, m) => { let j; try { j = JSON.parse(m.toString()); } catch { return; }
+      if (j.print && (j.print.command || j.print.gcode_state !== undefined)) fin(resolve, { sent: true, acked: true, report: j.print }); });
+    c.on('error', (e) => fin(reject, e));
+    setTimeout(() => fin(resolve, { sent: true, timeout: true }), (waitMs || 6000) + 6000);
   });
 }
 
-module.exports = { login, verifyCode, isLoggedIn, listDevices, getStatus, sendCommand };
+module.exports = { login, verifyCode, session, logout, listDevices, getStatus, sendCommand };
