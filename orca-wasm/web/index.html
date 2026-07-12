@@ -88,6 +88,18 @@
       <input type="checkbox" id="brim" style="width:auto"> Brim</label>
   </div>
 
+  <div id="objPanel" hidden style="background:var(--bg);border-radius:8px;padding:.6rem .8rem">
+    <label style="opacity:1;font-size:.85rem">🧊 <b id="objName"></b> <small>(ziehen = verschieben)</small></label>
+    <div class="row2" style="margin-top:.4rem">
+      <div><label>X (mm)</label><input type="number" id="tDx" step="1" value="0"></div>
+      <div><label>Y (mm)</label><input type="number" id="tDy" step="1" value="0"></div>
+    </div>
+    <div class="row2" style="margin-top:.4rem">
+      <div><label>Drehung (°)</label><input type="number" id="tRz" step="15" value="0"></div>
+      <div><label>Größe (%)</label><input type="number" id="tScale" step="10" value="100" min="1"></div>
+    </div>
+  </div>
+
   <div>
     <label>Erweiterte Overrides (key = value)</label>
     <textarea id="overrides" placeholder="z. B. sparse_infill_density = 20%"></textarea>
@@ -251,7 +263,46 @@ function updateCam() {
     CENTER.z + camDist * Math.cos(camPhi));
   camera.lookAt(CENTER);
 }
-canvas.addEventListener('pointerdown', () => {
+const raycaster = new THREE.Raycaster();
+const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0); // Bettebene z=0
+function pickObject(ev) {
+  const r = canvas.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((ev.clientX - r.left) / r.width) * 2 - 1,
+    -((ev.clientY - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  const hit = raycaster.intersectObjects(modelGroup.children, true)[0];
+  return hit ? { idx: hit.object.userData.objIndex, ray: raycaster } : null;
+}
+function planePoint(ev) {
+  const r = canvas.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((ev.clientX - r.left) / r.width) * 2 - 1,
+    -((ev.clientY - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  const p = new THREE.Vector3();
+  return raycaster.ray.intersectPlane(dragPlane, p) ? p : null;
+}
+canvas.addEventListener('pointerdown', (e) => {
+  // Im Vorbereiten-Tab: Klick auf Objekt = auswählen + ziehen; sonst Orbit
+  const hit = modelGroup.visible ? pickObject(e) : null;
+  if (hit && hit.idx !== undefined) {
+    selectObject(hit.idx);
+    const st = objectStates[hit.idx];
+    const start = planePoint(e);
+    const startDx = st.dx, startDy = st.dy;
+    const move = ev => {
+      const p = planePoint(ev);
+      if (!p || !start) return;
+      st.dx = startDx + (p.x - start.x);
+      st.dy = startDy + (p.y - start.y);
+      applyStateToGroup(st);
+      $('tDx').value = Math.round(st.dx); $('tDy').value = Math.round(st.dy);
+    };
+    const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+    addEventListener('pointermove', move); addEventListener('pointerup', up);
+    return;
+  }
   const move = ev => {
     camTheta -= ev.movementX * 0.008;
     camPhi = Math.min(Math.PI - .05, Math.max(.05, camPhi - ev.movementY * 0.008));
@@ -297,11 +348,16 @@ function showTab(name) {
 }
 document.querySelectorAll('.tab').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
+// Pro (Objekt,Instanz): Pivot-Gruppe (Drehpunkt = XY-Mitte auf z=0) + Zustand.
+// Reihenfolge entspricht previewModel — der Slicer wendet dieselben
+// Transformationen mit identischem Pivot an.
+let objectStates = [];
 function showModelMeshes(objects) {
   modelGroup.clear();
+  objectStates = [];
+  selectObject(-1);
   // flatShading: Normalen pro Fläche (im Shader) — Smooth Shading würde über
   // harte Kanten mitteln und CAD-Teile "geschmolzen" aussehen lassen
-  const mat = new THREE.MeshStandardMaterial({ color: 0x2ea2d8, metalness: .05, roughness: .65, flatShading: true });
   let maxZ = 10;
   for (const o of objects) {
     const geo = new THREE.BufferGeometry();
@@ -309,12 +365,71 @@ function showModelMeshes(objects) {
     geo.setIndex(new THREE.BufferAttribute(o.tris, 1));
     geo.computeBoundingBox();
     maxZ = Math.max(maxZ, geo.boundingBox.max.z);
-    modelGroup.add(new THREE.Mesh(geo, mat));
+    const c = new THREE.Vector3();
+    geo.boundingBox.getCenter(c);
+    const pivot = new THREE.Vector3(c.x, c.y, 0);
+    geo.translate(-pivot.x, -pivot.y, 0);   // Geometrie um Pivot zentrieren
+    const mat = new THREE.MeshStandardMaterial({ color: 0x2ea2d8, metalness: .05, roughness: .65, flatShading: true });
+    const mesh = new THREE.Mesh(geo, mat);
+    const group = new THREE.Group();
+    group.position.copy(pivot);
+    group.add(mesh);
+    mesh.userData.objIndex = objectStates.length;
+    modelGroup.add(group);
+    objectStates.push({ name: o.name, pivot, group, mesh, dx: 0, dy: 0, rz: 0, scale: 1 });
   }
   CENTER = new THREE.Vector3(bedSize[0] / 2, bedSize[1] / 2, maxZ / 2);
   updateCam();
   showTab('prepare');
 }
+
+// ---------- Objekt-Auswahl + Transformation ----------
+let selectedIdx = -1;
+function applyStateToGroup(st) {
+  st.group.position.set(st.pivot.x + st.dx, st.pivot.y + st.dy, 0);
+  st.group.rotation.z = st.rz * Math.PI / 180;
+  st.group.scale.setScalar(st.scale);
+}
+function selectObject(i) {
+  if (selectedIdx >= 0 && objectStates[selectedIdx])
+    objectStates[selectedIdx].mesh.material.emissive?.setHex(0x000000);
+  selectedIdx = i;
+  const st = objectStates[i];
+  $('objPanel').hidden = !st;
+  if (!st) return;
+  st.mesh.material.emissive?.setHex(0x14532d);
+  $('objName').textContent = st.name;
+  $('tDx').value = Math.round(st.dx);   $('tDy').value = Math.round(st.dy);
+  $('tRz').value = Math.round(st.rz);   $('tScale').value = Math.round(st.scale * 100);
+}
+for (const [id, apply] of [
+  ['tDx',    (st, v) => st.dx = v],
+  ['tDy',    (st, v) => st.dy = v],
+  ['tRz',    (st, v) => st.rz = v],
+  ['tScale', (st, v) => st.scale = Math.max(0.01, v / 100)],
+]) {
+  $(id).oninput = () => {
+    const st = objectStates[selectedIdx];
+    if (!st) return;
+    apply(st, +$(id).value || 0);
+    applyStateToGroup(st);
+  };
+}
+function currentTransforms() {
+  return objectStates.map(st => ({ dx: st.dx, dy: st.dy, rz: st.rz, scale: st.scale }));
+}
+// Test-/Debug-Handle (Playwright & Konsole)
+window._vs = {
+  get states() { return objectStates; },
+  selectObject, currentTransforms,
+  pick(clientX, clientY) { return pickObject({ clientX, clientY }); },
+  project(i) {  // Bildschirmkoordinaten des Objekt-Pivots
+    const st = objectStates[i]; if (!st) return null;
+    const v = st.group.position.clone().project(camera);
+    const r = canvas.getBoundingClientRect();
+    return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height };
+  },
+};
 
 function parseGcode(gcode) {
   const layers = []; let cur = null;
@@ -461,7 +576,8 @@ $('btnSlice').onclick = async () => {
     ].join('\n');
     status.textContent = 'Slice läuft …';
     sliceStart = performance.now();
-    worker.postMessage({ bytes: modelBytes, filename: modelName, profiles, overrides });
+    worker.postMessage({ bytes: modelBytes, filename: modelName, profiles, overrides,
+                         transforms: currentTransforms() });
   } catch (e) {
     status.innerHTML = `<span class="err">FEHLER: ${e.message}</span>`;
     updateSliceable();
