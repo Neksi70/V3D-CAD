@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const modPath = process.argv[2] ??
-  join(here, '../OrcaSlicer/build-wasm/src/wasm/orca-slicer.js');
+  join(here, '../OrcaSlicer/build-wasm-main/src/wasm/orca-slicer.js');
 
 const createOrcaSlicer = (await import(modPath)).default;
 console.log('Lade WASM-Modul …');

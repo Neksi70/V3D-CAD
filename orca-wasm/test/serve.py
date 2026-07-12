@@ -9,8 +9,8 @@ import os
 
 PORT = 8778
 DIR = os.path.dirname(os.path.abspath(__file__))
-WASM_BUILD = os.path.join(DIR, '..', 'OrcaSlicer', 'build-wasm', 'src', 'wasm')
-PROFILES = os.path.join(DIR, '..', 'OrcaSlicer', 'resources', 'profiles')
+WASM_BUILD = os.path.join(DIR, '..', 'OrcaSlicer', 'build-wasm-main', 'src', 'wasm')
+PROFILES = os.path.join(DIR, '..', 'profiles-merged')  # Orca-main + BambuStudio-BBL (H2C/H2D/H2S)
 WEB = os.path.join(DIR, '..', 'web')
 
 

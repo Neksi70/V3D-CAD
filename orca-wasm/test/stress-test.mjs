@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
-const createOrcaSlicer = (await import(join(here, '../OrcaSlicer/build-wasm/src/wasm/orca-slicer.js'))).default;
+const createOrcaSlicer = (await import(join(here, '../OrcaSlicer/build-wasm-main/src/wasm/orca-slicer.js'))).default;
 const orca = await createOrcaSlicer();
 const overrides = `layer_height = 0.2
 initial_layer_print_height = 0.2
