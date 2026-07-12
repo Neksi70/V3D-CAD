@@ -50,6 +50,11 @@
   #settings .field label { flex: 1; margin: 0; font-size: .8rem; }
   #settings .field input, #settings .field select { width: 7.5rem; padding: .3rem .45rem; font-size: .85rem; }
   #settings .field.changed label { color: var(--accent); }
+  #setTabs { display: flex; flex-wrap: wrap; gap: .25rem; margin-bottom: .5rem; }
+  .setTab { background: transparent; color: var(--text); border: 1px solid #334; border-radius: 6px;
+            padding: .25rem .55rem; font-size: .78rem; font-weight: 400; }
+  .setTab.active { background: var(--accent); color: #000; font-weight: 600; }
+  #settings .field input[type="text"] { width: 7.5rem; }
 </style>
 </head>
 <body>
@@ -156,27 +161,15 @@ async function profileChain(vendor, listKey, presetName) {
   return chain.map(j => JSON.stringify(j));
 }
 
-// ---------- Settings-Panel: effektive Profilwerte, Abweichung = Override ----------
-const SETTINGS = [
-  { group: '🎚️ Qualität', key: 'layer_height', label: 'Schichthöhe (mm)', type: 'number', step: .04 },
-  { group: '🎚️ Qualität', key: 'initial_layer_print_height', label: 'Erste Schicht (mm)', type: 'number', step: .04 },
-  { group: '🧱 Wände & Schalen', key: 'wall_loops', label: 'Wandlinien', type: 'number', step: 1 },
-  { group: '🧱 Wände & Schalen', key: 'top_shell_layers', label: 'Deckschichten', type: 'number', step: 1 },
-  { group: '🧱 Wände & Schalen', key: 'bottom_shell_layers', label: 'Bodenschichten', type: 'number', step: 1 },
-  { group: '🕸️ Infill', key: 'sparse_infill_density', label: 'Dichte (%)', type: 'percent', step: 5 },
-  { group: '🕸️ Infill', key: 'sparse_infill_pattern', label: 'Muster', type: 'select',
-    options: ['grid','gyroid','cubic','triangles','honeycomb','adaptivecubic','crosshatch','line','zig-zag'] },
-  { group: '🌡️ Temperatur', key: 'nozzle_temperature', label: 'Düse (°C)', type: 'number', step: 5, vector: true },
-  { group: '🌡️ Temperatur', key: 'nozzle_temperature_initial_layer', label: 'Düse 1. Schicht (°C)', type: 'number', step: 5, vector: true },
-  { group: '🚀 Geschwindigkeit', key: 'outer_wall_speed', label: 'Außenwand (mm/s)', type: 'number', step: 10 },
-  { group: '🚀 Geschwindigkeit', key: 'inner_wall_speed', label: 'Innenwand (mm/s)', type: 'number', step: 10 },
-  { group: '🚀 Geschwindigkeit', key: 'sparse_infill_speed', label: 'Infill (mm/s)', type: 'number', step: 10 },
-  { group: '🦺 Stützen', key: 'support_type', label: 'Typ', type: 'select',
-    options: ['normal(auto)','tree(auto)','normal(manual)','tree(manual)'] },
-  { group: '🦺 Stützen', key: 'support_threshold_angle', label: 'Schwellwinkel (°)', type: 'number', step: 5 },
-];
-let effectiveConfig = {};   // gemergte Profilkette (Basis → speziell)
+// ---------- Settings-Panel: echte Orca-Struktur (params.json aus Tab.cpp/
+// PrintConfig.cpp/de.po generiert), Abweichung vom Profil = Override ----------
+let PARAMS = { pages: [], options: {} };
+fetch('./params.json').then(r => r.json()).then(p => { PARAMS = p; renderSettings(); });
+
+let effectiveConfig = {};   // gemergte Profilkette (Basis -> speziell)
 let chainsCache = null;     // { machine, process, filament } als JSON-Strings
+let activePage = 0;
+const changedValues = new Map();   // key -> UI-Wert (nur Abweichungen)
 
 async function loadChains() {
   const v = $('vendor').value;
@@ -188,63 +181,71 @@ async function loadChains() {
   return chainsCache;
 }
 
+function effVal(key) {
+  const raw = effectiveConfig[key];
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  return v === undefined || v === null ? '' : String(v);
+}
+
 async function refreshSettings() {
   try {
     const c = await loadChains();
     effectiveConfig = {};
     for (const s of [...c.machine, ...c.process, ...c.filament])
       Object.assign(effectiveConfig, JSON.parse(s));
-  } catch { return; }   // unvollständige Auswahl → Panel unverändert
-  const groups = new Map();
-  for (const s of SETTINGS) {
-    if (!groups.has(s.group)) groups.set(s.group, []);
-    groups.get(s.group).push(s);
+    changedValues.clear();
+  } catch { return; }   // unvollstaendige Auswahl -> Panel unveraendert
+  renderSettings();
+}
+
+function fieldHtml(key) {
+  const def = PARAMS.options[key] || {};
+  const val = changedValues.has(key) ? changedValues.get(key) : effVal(key);
+  const unit = def.sidetext ? `<small style="opacity:.6"> ${def.sidetext}</small>` : '';
+  let input;
+  if (def.enums) {
+    const opts = [...def.enums];
+    if (val && !opts.some(([v]) => v === val)) opts.unshift([val, val]);
+    input = `<select data-key="${key}">${opts.map(([v, l]) =>
+      `<option value="${v.replaceAll('"', '&quot;')}"${v === val ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+  } else if (def.type === 'coBool' || def.type === 'coBools') {
+    input = `<input type="checkbox" data-key="${key}" style="width:auto"${val === '1' || val === 'true' ? ' checked' : ''}>`;
+  } else {
+    input = `<input type="text" data-key="${key}" value="${String(val).replaceAll('"', '&quot;')}">`;
   }
-  $('settings').innerHTML = [...groups].map(([name, items]) => `
-    <details${name.includes('Qualität') || name.includes('Infill') ? ' open' : ''}>
-      <summary>${name}</summary>
-      ${items.map(s => {
-        const raw = effectiveConfig[s.key];
-        let val = Array.isArray(raw) ? raw[0] : raw;
-        if (val === undefined) val = '';
-        if (s.type === 'percent') val = String(val).replace('%', '');
-        const input = s.type === 'select'
-          ? `<select data-key="${s.key}">${[...new Set([String(val), ...s.options])].map(o =>
-              `<option${o === String(val) ? ' selected' : ''}>${o}</option>`).join('')}</select>`
-          : `<input type="number" data-key="${s.key}" value="${val}" step="${s.step}">`;
-        return `<div class="field" data-key="${s.key}"><label>${s.label}</label>${input}</div>`;
-      }).join('')}
-    </details>`).join('');
-  // Änderungs-Markierung
-  $('settings').querySelectorAll('[data-key]').forEach(el => {
-    if (el.tagName !== 'INPUT' && el.tagName !== 'SELECT') return;
-    el.oninput = () => {
-      const field = el.closest('.field');
-      const changed = settingOverrides().some(([k]) => k === el.dataset.key);
-      field.classList.toggle('changed', changed);
+  const chg = changedValues.has(key) ? ' changed' : '';
+  return `<div class="field${chg}" data-key="${key}"><label title="${key}">${def.label || key}${unit}</label>${input}</div>`;
+}
+
+function renderSettings() {
+  if (!PARAMS.pages.length) return;
+  const page = PARAMS.pages[Math.min(activePage, PARAMS.pages.length - 1)];
+  $('settings').innerHTML = `
+    <div id="setTabs">${PARAMS.pages.map((p, i) =>
+      `<button class="setTab${i === activePage ? ' active' : ''}" data-page="${i}">${p.name}</button>`).join('')}</div>
+    ${page.groups.map((g, gi) => `
+      <details${gi === 0 ? ' open' : ''}><summary>${g.name}</summary>
+        ${g.options.map(fieldHtml).join('')}
+      </details>`).join('')}`;
+  $('settings').querySelectorAll('.setTab').forEach(b =>
+    b.onclick = () => { activePage = +b.dataset.page; renderSettings(); });
+  $('settings').querySelectorAll('input[data-key], select[data-key]').forEach(el => {
+    el.onchange = () => {
+      const key = el.dataset.key;
+      const uiVal = el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value;
+      const profRaw = effVal(key);
+      const prof = (PARAMS.options[key]?.type || '').startsWith('coBool')
+        ? (profRaw === '1' || profRaw === 'true' ? '1' : '0') : profRaw;
+      if (uiVal === prof) changedValues.delete(key);
+      else changedValues.set(key, uiVal);
+      el.closest('.field').classList.toggle('changed', changedValues.has(key));
     };
   });
 }
 
 // Abweichungen vom Profil als [key, value]-Liste
 function settingOverrides() {
-  const out = [];
-  for (const s of SETTINGS) {
-    const el = $('settings').querySelector(`input[data-key="${s.key}"], select[data-key="${s.key}"]`);
-    if (!el || el.value === '') continue;
-    const raw = effectiveConfig[s.key];
-    let profileVal = Array.isArray(raw) ? raw[0] : raw;
-    if (profileVal === undefined) profileVal = '';
-    let uiVal = el.value;
-    if (s.type === 'percent') {
-      profileVal = String(profileVal).replace('%', '');
-      if (String(uiVal) !== String(profileVal)) out.push([s.key, uiVal + '%']);
-      continue;
-    }
-    if (String(uiVal) !== String(profileVal))
-      out.push([s.key, uiVal]);   // Vektor-Optionen (coInts) akzeptieren Einzelwert
-  }
-  return out;
+  return [...changedValues.entries()];
 }
 
 async function fillVendor() {
