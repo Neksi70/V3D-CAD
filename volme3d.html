@@ -222,6 +222,8 @@ body.devmode .dev-only{display:flex!important}
 
 /* CTX POPUP */
 #ctx{position:absolute;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:4px;display:none;gap:3px;z-index:30}
+#nudge-pop{position:absolute;left:14px;bottom:96px;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:10px 12px;display:none;z-index:31}
+#nudge-pop .btn{width:30px;height:30px;padding:0;display:flex;align-items:center;justify-content:center;font-size:14px}
 .cb{width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:var(--bg);border:1.5px solid var(--border);border-radius:4px;cursor:pointer;font-size:14px;transition:all .12s}
 .cb:hover{background:var(--alit);border-color:var(--acc)}
 
@@ -1028,7 +1030,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.39<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.40<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <div id="burger-wrap">
@@ -1561,7 +1563,29 @@ const firebaseConfig = {
     <div class="cb" onclick="smartDuplicate()" title="Strg+D">⧉</div>
     <div class="cb" onclick="dropToGround()" title="D">▽</div>
     <div class="cb" onclick="addBohrung()" title="Bohrung setzen (vertikal, durchgehend)" style="color:var(--red)">⊙</div>
+    <div class="cb" id="nudge-btn" onclick="toggleNudge()" title="Exakt versetzen — Auswahl um X mm in eine Richtung schieben">✥</div>
     <div class="cb" onclick="deleteSelected()" title="Del" style="color:var(--red)">🗑</div>
+  </div>
+
+  <div id="nudge-pop">
+    <div style="font-size:10px;font-weight:800;letter-spacing:.05em;color:var(--dim);margin-bottom:6px">EXAKT VERSETZEN</div>
+    <div style="display:flex;align-items:center;gap:5px;margin-bottom:8px">
+      <input id="nudge-mm" type="text" inputmode="decimal" value="3,5" title="Schrittweite in mm (z. B. 3,5)" style="width:54px;padding:4px 6px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;font-weight:700;text-align:right;font-family:var(--font)">
+      <span style="font-size:11px;color:var(--mid)">mm pro Klick</span>
+    </div>
+    <div style="display:flex;gap:14px;align-items:center">
+      <div style="display:grid;grid-template-columns:repeat(3,30px);grid-auto-rows:30px;gap:3px">
+        <span></span><button class="btn" onclick="_nudgeMove('z',-1)" title="Nach hinten (Z−)">↑</button><span></span>
+        <button class="btn" onclick="_nudgeMove('x',-1)" title="Nach links (X−)">←</button><span style="display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:var(--dim)">XZ</span><button class="btn" onclick="_nudgeMove('x',1)" title="Nach rechts (X+)">→</button>
+        <span></span><button class="btn" onclick="_nudgeMove('z',1)" title="Nach vorne (Z+)">↓</button><span></span>
+      </div>
+      <div style="display:grid;grid-auto-rows:30px;gap:3px;width:34px">
+        <button class="btn" onclick="_nudgeMove('y',1)" title="Nach oben (Y+)">▲</button>
+        <span style="display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:var(--dim)">HÖHE</span>
+        <button class="btn" onclick="_nudgeMove('y',-1)" title="Nach unten (Y−)">▼</button>
+      </div>
+    </div>
+    <div style="font-size:10px;color:var(--dim);margin-top:7px;max-width:190px">Tipp: Pfeiltasten nutzen dieselbe Schrittweite, solange dieses Panel offen ist (Strg+↑/↓ = Höhe).</div>
   </div>
 
   <div id="vcs">
@@ -10755,7 +10779,7 @@ const ctxEl = document.getElementById('ctx');
 
 function updateCtxPopup() {
   const o = getFirst();
-  if (!o) { ctxEl.style.display = 'none'; return; }
+  if (!o) { ctxEl.style.display = 'none'; _nudgeHide(); return; }
   ctxEl.style.display = 'flex';
   // Always fixed at bottom-left of viewport, never floating on object
   ctxEl.style.left   = '14px';
@@ -10763,7 +10787,42 @@ function updateCtxPopup() {
   ctxEl.style.top    = 'auto';
 }
 
-function hideCtxPopup() { ctxEl.style.display = 'none'; }
+function hideCtxPopup() { ctxEl.style.display = 'none'; _nudgeHide(); }
+
+// ── Exakt versetzen (Nudge): Auswahl um festen mm-Betrag je Klick schieben ──
+function _nudgeHide() {
+  const p = document.getElementById('nudge-pop');
+  if (p) p.style.display = 'none';
+  const b = document.getElementById('nudge-btn');
+  if (b) b.style.background = '';
+}
+function toggleNudge() {
+  const p = document.getElementById('nudge-pop');
+  const show = p.style.display !== 'block';
+  if (!show) { _nudgeHide(); return; }
+  if (!selectedObjs.length) { notify('Erst ein Objekt auswählen', 'w'); return; }
+  p.style.display = 'block';
+  const b = document.getElementById('nudge-btn');
+  if (b) b.style.background = 'var(--alit)';
+  const inp = document.getElementById('nudge-mm');
+  if (inp) inp.select();
+}
+// Schrittweite in Einheiten, wenn das Panel offen ist — sonst null (Pfeiltasten-Fallback)
+function _nudgeStep() {
+  const p = document.getElementById('nudge-pop');
+  if (!p || p.style.display !== 'block') return null;
+  const v = parseFloat((document.getElementById('nudge-mm').value || '').replace(',', '.'));
+  return (isFinite(v) && v > 0) ? v / 10 : null;
+}
+function _nudgeMove(ax, sign) {
+  const objs = selectedObjs.filter(o => !o.userData.locked);
+  if (!objs.length) { notify('Erst ein Objekt auswählen', 'w'); return; }
+  const v = parseFloat((document.getElementById('nudge-mm').value || '').replace(',', '.'));
+  if (!isFinite(v) || v <= 0) { notify('Bitte gültige Schrittweite in mm eingeben (z. B. 3,5)', 'w'); return; }
+  objs.forEach(o => { o.position[ax] += v / 10 * sign; });
+  updateTFInputs(); _doRepositionDimHandles();
+  if (selectedObjs.length === 1) _fpPositionPanel();
+}
 
 // ═══ SCENE TREE ══════════════════════════════════════════════════════
 function updateTree() {
@@ -14920,13 +14979,13 @@ window.addEventListener('keydown', e => {
     // Ctrl++ / Ctrl+= → rein, Ctrl+- → raus (verhindert Browser-Zoom)
     if (k === '+' || k === '=') { e.preventDefault(); sph.r = Math.max(1.5, sph.r * 0.85); sph2cam(); return; }
     if (k === '-')              { e.preventDefault(); sph.r = Math.min(200, sph.r * 1.18); sph2cam(); return; }
-    // Arrow up/down = move on Y axis
-    if (k === 'ArrowUp')   { e.preventDefault(); selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.y += (snapGrid || 1)); updateTFInputs(); _doRepositionDimHandles(); return; }
-    if (k === 'ArrowDown') { e.preventDefault(); selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.y -= (snapGrid || 1)); updateTFInputs(); _doRepositionDimHandles(); return; }
+    // Arrow up/down = move on Y axis (offenes Versetzen-Panel liefert die Schrittweite)
+    if (k === 'ArrowUp')   { e.preventDefault(); const s=_nudgeStep() ?? (snapGrid || 1); selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.y += s); updateTFInputs(); _doRepositionDimHandles(); return; }
+    if (k === 'ArrowDown') { e.preventDefault(); const s=_nudgeStep() ?? (snapGrid || 1); selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.y -= s); updateTFInputs(); _doRepositionDimHandles(); return; }
     return;
   }
 
-  const mv = e.shiftKey ? 0.1 : (snapGrid || 1);
+  const mv = _nudgeStep() ?? (e.shiftKey ? 0.1 : (snapGrid || 1));
   if (k === 'ArrowLeft')  { selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.x -= mv); updateTFInputs(); _doRepositionDimHandles(); return; }
   if (k === 'ArrowRight') { selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.x += mv); updateTFInputs(); _doRepositionDimHandles(); return; }
   if (k === 'ArrowUp')    { selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.z -= mv); updateTFInputs(); _doRepositionDimHandles(); return; }
@@ -24160,8 +24219,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.39';
+const VOLME3D_VERSION = '1.15.40';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.40', date:'2026-07-12', changes:[
+    ['✥','Exakt versetzen: Neuer ✥-Knopf im Auswahl-Popup (unten links) öffnet ein kleines Panel — Schrittweite in mm eintippen (z. B. 3,5) und die Auswahl per Richtungs-Knöpfen in ±X/±Z (Draufsicht) oder ▲▼ (Höhe) präzise schieben. Solange das Panel offen ist, springen auch die Pfeiltasten in genau dieser Schrittweite (Strg+↑/↓ = Höhe). Ideal, um eine gesnappte Bohrung kontrolliert um Millimeterbeträge zu versetzen.'],
+  ]},
   { version:'1.15.39', date:'2026-07-12', changes:[
     ['🧲','Loch- und Kanten-Snap beim Verschieben: Die App erkennt an anderen Körpern (auch STL/3MF-Importen) automatisch Bohrungs-Ränder und lange gerade Kanten. Ein gezogenes Objekt — z. B. ein Bohrungs-Zylinder — rastet magnetisch auf die Loch-Achse (gestrichelter Kreis zeigt das Ziel, die Höhe bleibt wie gezogen) oder auf die Kantenlinie (gestrichelte Linie). Bei schrägen Löchern dreht sich ein Zylinder automatisch in die Loch-Achse. Ideal, um Bohrungen exakt auf vorhandene Löcher oder Kanten zu setzen.'],
   ]},
@@ -28258,6 +28320,7 @@ const CMDK = [
   {i:'📂',g:'Datei',t:'Design öffnen',k:'open laden',run:()=>_localOpen()},
   {i:'💾',g:'Datei',t:'Design speichern',k:'save',run:()=>_localSave()},
   {i:'⬆',g:'Datei',t:'Importieren (STL/STEP/3MF/OBJ)',k:'import stl step 3mf obj',run:()=>doImport()},
+  {i:'✥',g:'Bearbeiten',t:'Exakt versetzen (mm-Schritte)',k:'nudge versetzen verschieben offset schieben',run:()=>toggleNudge()},
   {i:'📁',g:'Seite',t:'Meine Designs',k:'gallery galerie',run:()=>showDesigns()},
   {i:'📚',g:'Seite',t:'STL-Bibliothek',k:'library drucken',run:()=>_stlLibOpen()},
   {i:'🎓',g:'Seite',t:'Kurse',k:'tutorial kurs lektion lernen',run:()=>tutorMenu()},
