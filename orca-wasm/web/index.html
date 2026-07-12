@@ -34,13 +34,21 @@
           font-size: .85rem; cursor: pointer; }
   #drop.armed { border-color: var(--accent); color: var(--accent); }
   main { position: relative; }
+  #toolbar { position: absolute; top: 0; left: 0; right: 0; display: flex; gap: .15rem;
+             align-items: center; padding: .3rem .6rem; background: rgba(255,255,255,.92);
+             border-bottom: 1px solid var(--border); z-index: 5; }
+  #toolbar button { background: transparent; color: var(--text); font-size: 1.05rem; font-weight: 400;
+                    padding: .3rem .5rem; border-radius: 6px; line-height: 1; }
+  #toolbar button:hover { background: #e8ecf2; }
+  #toolbar button:disabled { opacity: .35; }
+  #toolbar .sep { width: 1px; height: 1.4rem; background: var(--border); margin: 0 .35rem; }
   #view { width: 100%; height: 100%; display: block; }
   #overlay[hidden], #legend[hidden] { display: none; }
   #overlay { position: absolute; left: 1rem; right: 1rem; bottom: 1rem; display: flex;
              align-items: center; gap: 1rem; background: rgba(255,255,255,.9); border: 1px solid var(--border); border-radius: 10px;
              padding: .6rem 1rem; }
   #layerSlider { flex: 1; }
-  #legend { position: absolute; top: .8rem; left: 1rem; display: flex; flex-direction: column;
+  #legend { position: absolute; top: 3.2rem; left: 1rem; display: flex; flex-direction: column;
             gap: .25rem; font-size: .78rem; background: rgba(255,255,255,.88); border: 1px solid var(--border); padding: .5rem .7rem;
             border-radius: 8px; }
   .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
@@ -125,6 +133,18 @@
 </aside>
 
 <main>
+  <div id="toolbar">
+    <button id="tbOpen" title="Modell öffnen">📂</button>
+    <button id="tbDownload" title="G-Code herunterladen" disabled>⬇️</button>
+    <span class="sep"></span>
+    <button id="tbFit" title="Ansicht einpassen">🎯</button>
+    <button id="tbArrange" title="Automatisch anordnen">🧲</button>
+    <span class="sep"></span>
+    <button id="tbMove" title="Verschieben (Objekt wählen)" disabled>✥</button>
+    <button id="tbRotate" title="Drehen" disabled>⟳</button>
+    <button id="tbScale" title="Skalieren" disabled>⤢</button>
+    <button id="tbDelete" title="Objekt löschen" disabled>🗑️</button>
+  </div>
   <canvas id="view"></canvas>
   <div id="legend" hidden></div>
   <div id="overlay" hidden>
@@ -417,7 +437,8 @@ function pickObject(ev) {
     ((ev.clientX - r.left) / r.width) * 2 - 1,
     -((ev.clientY - r.top) / r.height) * 2 + 1);
   raycaster.setFromCamera(ndc, camera);
-  const hit = raycaster.intersectObjects(modelGroup.children, true)[0];
+  const hit = raycaster.intersectObjects(modelGroup.children, true)
+    .filter(h => h.object.visible && h.object.parent?.visible)[0];
   return hit ? { idx: hit.object.userData.objIndex, ray: raycaster } : null;
 }
 function planePoint(ev) {
@@ -541,10 +562,11 @@ function selectObject(i) {
     objectStates[selectedIdx].mesh.material.emissive?.setHex(0x000000);
   selectedIdx = i;
   const st = objectStates[i];
-  $('objPanel').hidden = !st;
-  if (!st) return;
+  $('objPanel').hidden = !st || st.deleted;
+  if (!st) { updateToolbar(); return; }
   st.mesh.material.emissive?.setHex(0x14532d);
   $('objName').textContent = st.name;
+  updateToolbar();
   $('tDx').value = Math.round(st.dx);   $('tDy').value = Math.round(st.dy);
   $('tRz').value = Math.round(st.rz);   $('tScale').value = Math.round(st.scale * 100);
 }
@@ -562,8 +584,83 @@ for (const [id, apply] of [
   };
 }
 function currentTransforms() {
-  return objectStates.map(st => ({ dx: st.dx, dy: st.dy, rz: st.rz, scale: st.scale }));
+  return objectStates.map(st => st.deleted
+    ? { del: true }
+    : { dx: st.dx, dy: st.dy, rz: st.rz, scale: st.scale });
 }
+
+function updateToolbar() {
+  const st = objectStates[selectedIdx];
+  const has = !!st && !st.deleted;
+  for (const id of ['tbMove', 'tbRotate', 'tbScale', 'tbDelete'])
+    $(id).disabled = !has;
+  $('tbDownload').disabled = $('btnDownload').disabled;
+}
+
+$('tbOpen').onclick = () => $('file').click();
+$('tbDownload').onclick = () => $('btnDownload').click();
+$('tbFit').onclick = () => {
+  const box = new THREE.Box3();
+  let any = false;
+  for (const st of objectStates)
+    if (!st.deleted) { box.expandByObject(st.group); any = true; }
+  if (!any) return;
+  const c = new THREE.Vector3(), size = new THREE.Vector3();
+  box.getCenter(c); box.getSize(size);
+  CENTER = c;
+  camDist = Math.max(60, size.length() * 1.4);
+  updateCam();
+};
+$('tbArrange').onclick = () => {
+  // simple Reihen-Packung mit 10 mm Abstand, zentriert auf dem Bett
+  const alive = objectStates.filter(st => !st.deleted);
+  if (!alive.length) return;
+  const dims = alive.map(st => {
+    const b = st.mesh.geometry.boundingBox;
+    const s2 = st.scale;
+    // Drehung: sichere Zelle = gedrehte AABB
+    const w = (b.max.x - b.min.x) * s2, h = (b.max.y - b.min.y) * s2;
+    const a = Math.abs(st.rz * Math.PI / 180);
+    return { w: Math.abs(w * Math.cos(a)) + Math.abs(h * Math.sin(a)),
+             h: Math.abs(w * Math.sin(a)) + Math.abs(h * Math.cos(a)) };
+  });
+  const gap = 10, maxW = bedSize[0] - 20;
+  const rows = [[]]; let rowW = 0;
+  dims.forEach((d, i) => {
+    if (rowW + d.w > maxW && rows[rows.length - 1].length) { rows.push([]); rowW = 0; }
+    rows[rows.length - 1].push(i); rowW += d.w + gap;
+  });
+  const rowH = rows.map(r => Math.max(...r.map(i => dims[i].h)));
+  const totalH = rowH.reduce((a, b) => a + b, 0) + gap * (rows.length - 1);
+  let y = bedSize[1] / 2 - totalH / 2;
+  rows.forEach((r, ri) => {
+    const w = r.reduce((a, i) => a + dims[i].w, 0) + gap * (r.length - 1);
+    let x = bedSize[0] / 2 - w / 2;
+    for (const i of r) {
+      const st = alive[i];
+      st.dx = x + dims[i].w / 2 - st.pivot.x;
+      st.dy = y + rowH[ri] / 2 - st.pivot.y;
+      applyStateToGroup(st);
+      x += dims[i].w + gap;
+    }
+    y += rowH[ri] + gap;
+  });
+  if (objectStates[selectedIdx]) {
+    $('tDx').value = Math.round(objectStates[selectedIdx].dx);
+    $('tDy').value = Math.round(objectStates[selectedIdx].dy);
+  }
+};
+$('tbDelete').onclick = () => {
+  const st = objectStates[selectedIdx];
+  if (!st) return;
+  st.deleted = true;
+  st.group.visible = false;
+  selectObject(-1);
+  updateToolbar();
+};
+$('tbMove').onclick = () => $('tDx').focus();
+$('tbRotate').onclick = () => $('tRz').focus();
+$('tbScale').onclick = () => $('tScale').focus();
 // Test-/Debug-Handle (Playwright & Konsole)
 window._vs = {
   get states() { return objectStates; },
@@ -678,6 +775,7 @@ function handleMessage(e) {
     const layers = parseGcode(lastGcode);
     showToolpaths(layers);
     $('btnDownload').disabled = false;
+    updateToolbar();
     const grab = re => (lastGcode.match(re) || [,''])[1];
     $('stats').innerHTML = [
       `<b>${layers.length}</b> Layer in <b>${dt}s</b>`,
