@@ -44,6 +44,12 @@
   .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
   #stats { font-size: .85rem; line-height: 1.5; background: var(--bg); border-radius: 8px; padding: .6rem .8rem; }
   .row2 { display: flex; gap: .5rem; } .row2 > * { flex: 1; }
+  #settings details { background: var(--bg); border-radius: 8px; padding: .35rem .6rem; margin-bottom: .5rem; }
+  #settings summary { cursor: pointer; font-size: .85rem; font-weight: 600; padding: .25rem 0; }
+  #settings .field { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin: .35rem 0; }
+  #settings .field label { flex: 1; margin: 0; font-size: .8rem; }
+  #settings .field input, #settings .field select { width: 7.5rem; padding: .3rem .45rem; font-size: .85rem; }
+  #settings .field.changed label { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -87,6 +93,8 @@
     <label style="display:flex;align-items:center;gap:.4rem;font-size:.85rem;opacity:1">
       <input type="checkbox" id="brim" style="width:auto"> Brim</label>
   </div>
+
+  <div id="settings"></div>
 
   <div id="objPanel" hidden style="background:var(--bg);border-radius:8px;padding:.6rem .8rem">
     <label style="opacity:1;font-size:.85rem">🧊 <b id="objName"></b> <small>(ziehen = verschieben)</small></label>
@@ -148,6 +156,97 @@ async function profileChain(vendor, listKey, presetName) {
   return chain.map(j => JSON.stringify(j));
 }
 
+// ---------- Settings-Panel: effektive Profilwerte, Abweichung = Override ----------
+const SETTINGS = [
+  { group: '🎚️ Qualität', key: 'layer_height', label: 'Schichthöhe (mm)', type: 'number', step: .04 },
+  { group: '🎚️ Qualität', key: 'initial_layer_print_height', label: 'Erste Schicht (mm)', type: 'number', step: .04 },
+  { group: '🧱 Wände & Schalen', key: 'wall_loops', label: 'Wandlinien', type: 'number', step: 1 },
+  { group: '🧱 Wände & Schalen', key: 'top_shell_layers', label: 'Deckschichten', type: 'number', step: 1 },
+  { group: '🧱 Wände & Schalen', key: 'bottom_shell_layers', label: 'Bodenschichten', type: 'number', step: 1 },
+  { group: '🕸️ Infill', key: 'sparse_infill_density', label: 'Dichte (%)', type: 'percent', step: 5 },
+  { group: '🕸️ Infill', key: 'sparse_infill_pattern', label: 'Muster', type: 'select',
+    options: ['grid','gyroid','cubic','triangles','honeycomb','adaptivecubic','crosshatch','line','zig-zag'] },
+  { group: '🌡️ Temperatur', key: 'nozzle_temperature', label: 'Düse (°C)', type: 'number', step: 5, vector: true },
+  { group: '🌡️ Temperatur', key: 'nozzle_temperature_initial_layer', label: 'Düse 1. Schicht (°C)', type: 'number', step: 5, vector: true },
+  { group: '🚀 Geschwindigkeit', key: 'outer_wall_speed', label: 'Außenwand (mm/s)', type: 'number', step: 10 },
+  { group: '🚀 Geschwindigkeit', key: 'inner_wall_speed', label: 'Innenwand (mm/s)', type: 'number', step: 10 },
+  { group: '🚀 Geschwindigkeit', key: 'sparse_infill_speed', label: 'Infill (mm/s)', type: 'number', step: 10 },
+  { group: '🦺 Stützen', key: 'support_type', label: 'Typ', type: 'select',
+    options: ['normal(auto)','tree(auto)','normal(manual)','tree(manual)'] },
+  { group: '🦺 Stützen', key: 'support_threshold_angle', label: 'Schwellwinkel (°)', type: 'number', step: 5 },
+];
+let effectiveConfig = {};   // gemergte Profilkette (Basis → speziell)
+let chainsCache = null;     // { machine, process, filament } als JSON-Strings
+
+async function loadChains() {
+  const v = $('vendor').value;
+  chainsCache = {
+    machine:  await profileChain(v, 'machine_list',  $('machine').value),
+    process:  await profileChain(v, 'process_list',  $('process').value),
+    filament: await profileChain(v, 'filament_list', $('filament').value),
+  };
+  return chainsCache;
+}
+
+async function refreshSettings() {
+  try {
+    const c = await loadChains();
+    effectiveConfig = {};
+    for (const s of [...c.machine, ...c.process, ...c.filament])
+      Object.assign(effectiveConfig, JSON.parse(s));
+  } catch { return; }   // unvollständige Auswahl → Panel unverändert
+  const groups = new Map();
+  for (const s of SETTINGS) {
+    if (!groups.has(s.group)) groups.set(s.group, []);
+    groups.get(s.group).push(s);
+  }
+  $('settings').innerHTML = [...groups].map(([name, items]) => `
+    <details${name.includes('Qualität') || name.includes('Infill') ? ' open' : ''}>
+      <summary>${name}</summary>
+      ${items.map(s => {
+        const raw = effectiveConfig[s.key];
+        let val = Array.isArray(raw) ? raw[0] : raw;
+        if (val === undefined) val = '';
+        if (s.type === 'percent') val = String(val).replace('%', '');
+        const input = s.type === 'select'
+          ? `<select data-key="${s.key}">${[...new Set([String(val), ...s.options])].map(o =>
+              `<option${o === String(val) ? ' selected' : ''}>${o}</option>`).join('')}</select>`
+          : `<input type="number" data-key="${s.key}" value="${val}" step="${s.step}">`;
+        return `<div class="field" data-key="${s.key}"><label>${s.label}</label>${input}</div>`;
+      }).join('')}
+    </details>`).join('');
+  // Änderungs-Markierung
+  $('settings').querySelectorAll('[data-key]').forEach(el => {
+    if (el.tagName !== 'INPUT' && el.tagName !== 'SELECT') return;
+    el.oninput = () => {
+      const field = el.closest('.field');
+      const changed = settingOverrides().some(([k]) => k === el.dataset.key);
+      field.classList.toggle('changed', changed);
+    };
+  });
+}
+
+// Abweichungen vom Profil als [key, value]-Liste
+function settingOverrides() {
+  const out = [];
+  for (const s of SETTINGS) {
+    const el = $('settings').querySelector(`input[data-key="${s.key}"], select[data-key="${s.key}"]`);
+    if (!el || el.value === '') continue;
+    const raw = effectiveConfig[s.key];
+    let profileVal = Array.isArray(raw) ? raw[0] : raw;
+    if (profileVal === undefined) profileVal = '';
+    let uiVal = el.value;
+    if (s.type === 'percent') {
+      profileVal = String(profileVal).replace('%', '');
+      if (String(uiVal) !== String(profileVal)) out.push([s.key, uiVal + '%']);
+      continue;
+    }
+    if (String(uiVal) !== String(profileVal))
+      out.push([s.key, uiVal]);   // Vektor-Optionen (coInts) akzeptieren Einzelwert
+  }
+  return out;
+}
+
 async function fillVendor() {
   const vendors = await (await fetch('/profiles/index.json')).json();
   $('vendor').innerHTML = vendors.map(v => `<option${v === 'BBL' ? ' selected' : ''}>${v}</option>`).join('');
@@ -168,7 +267,8 @@ async function fillPresets() {
     $('machine').value = $('process').value = $('filament').value = '';
   }
 }
-$('vendor').onchange = async () => { await fillPresets(); await applyMachineBed(); };
+$('vendor').onchange = async () => { await fillPresets(); await applyMachineBed(); await refreshSettings(); };
+$('process').onchange = $('filament').onchange = refreshSettings;
 
 // Bettgröße aus der printable_area des gewählten Druckers (letzter Wert der Kette)
 async function applyMachineBed() {
@@ -187,7 +287,7 @@ async function applyMachineBed() {
   } catch { /* unbekannter Drucker → Bett unverändert */ }
   requestPreview();
 }
-$('machine').onchange = applyMachineBed;
+$('machine').onchange = async () => { await applyMachineBed(); await refreshSettings(); };
 
 // ---------- Datei-Handling ----------
 let modelBytes = null, modelName = '';
@@ -554,17 +654,14 @@ initWorker();
 await fillVendor();
 setBed(256, 256);
 await applyMachineBed();
+await refreshSettings();
 
 $('btnSlice').onclick = async () => {
   try {
     $('btnSlice').disabled = true;
     status.textContent = 'Lade Profile …';
-    const v = $('vendor').value;
-    const profiles = [
-      ...await profileChain(v, 'machine_list',  $('machine').value),
-      ...await profileChain(v, 'process_list',  $('process').value),
-      ...await profileChain(v, 'filament_list', $('filament').value),
-    ];
+    const c = chainsCache ?? await loadChains();
+    const profiles = [...c.machine, ...c.process, ...c.filament];
     const overrides = [
       'enable_arc_fitting = 0',
       `enable_support = ${$('support').checked ? 1 : 0}`,
@@ -572,6 +669,8 @@ $('btnSlice').onclick = async () => {
       `printer_settings_id = ${$('machine').value}`,
       `print_settings_id = ${$('process').value}`,
       `filament_settings_id = "${$('filament').value}"`,
+      // Settings-Panel: nur Abweichungen vom Profil
+      ...settingOverrides().map(([k, v2]) => `${k} = ${v2}`),
       $('overrides').value,
     ].join('\n');
     status.textContent = 'Slice läuft …';
