@@ -1030,7 +1030,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.41<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.42<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <div id="burger-wrap">
@@ -1587,6 +1587,15 @@ const firebaseConfig = {
       </div>
     </div>
     <div style="font-size:10px;color:var(--dim);margin-top:7px;max-width:190px">Tipp: Pfeiltasten nutzen dieselbe Schrittweite, solange dieses Panel offen ist (Strg+↑/↓ = Höhe).</div>
+  </div>
+
+  <div id="plug-hud" style="display:none;position:absolute;left:50%;bottom:52px;transform:translateX(-50%);align-items:center;gap:8px;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:8px 12px;z-index:31;font-size:12px">
+    <span style="font-weight:800">🩹 Löcher wählen:</span>
+    <span id="plug-hud-count" style="color:var(--mid);font-weight:700">0 markiert</span>
+    <button class="btn" onclick="_plugAll(true)">Alle</button>
+    <button class="btn" onclick="_plugAll(false)">Keine</button>
+    <button class="btn pri" onclick="_plugApply()" title="Enter">✓ Verschließen</button>
+    <button class="btn" onclick="_plugCancel()" title="Esc">✕</button>
   </div>
 
   <div id="vcs">
@@ -11204,14 +11213,13 @@ function addBohrung() {
   notify('Bohrung gesetzt — Maße anpassen, dann ⊖ Abziehen', 'ok');
 }
 
-// ── Löcher verschließen: erkennt Durchgangslöcher (Paare koaxialer Kreis-Ränder
-// aus _objectFeatures) und setzt in jedes einen bündigen Stopfen-Zylinder mit
-// 0,05 mm Übermaß pro Seite. Stopfen sind eigene Objekte — einzeln löschbar,
-// wenn ein Loch doch offen bleiben soll.
-function plugHoles() {
-  const target = getFirst();
-  if (!target) { notify('Erst das Objekt mit den Löchern auswählen', 'w'); return; }
-  if (target.userData.isHole) { notify('Auswahl ist eine Bohrung — bitte den Körper auswählen', 'w'); return; }
+// ── Löcher verschließen (Auswahl-Modus): erkennt Durchgangslöcher (Paare
+// koaxialer Kreis-Ränder aus _objectFeatures) und zeigt Geister-Stopfen —
+// anklicken markiert (grün), „Alle"/„Keine" im HUD, Enter setzt für die
+// markierten Löcher bündige Stopfen-Zylinder (+0,05 mm Übermaß), Esc bricht ab.
+let _plugMode = false, _plugGhosts = [], _plugTarget = null;
+
+function _detectThroughHoles(target) {
   const circles = _objectFeatures(target).circles;
   // Paare: gleicher Radius (±5 %), parallele Achsen, Zentrum B auf Achse A
   const used = new Set(), holes = [];
@@ -11234,20 +11242,74 @@ function plugHoles() {
       break;
     }
   }
+  return holes;
+}
+
+function _plugOrient(mesh, p, rExtra, hExtra) {
+  mesh.scale.set(p.r + rExtra, p.h / 2 + hExtra, p.r + rExtra);
+  const n = new THREE.Vector3(p.nx, p.ny, p.nz).normalize();
+  if (n.y < 0) n.negate();
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), n);
+  mesh.position.set(p.cx, p.cy, p.cz);
+}
+
+function plugHoles() {
+  if (_plugMode) { _plugCancel(); return; }
+  const target = getFirst();
+  if (!target) { notify('Erst das Objekt mit den Löchern auswählen', 'w'); return; }
+  if (target.userData.isHole) { notify('Auswahl ist eine Bohrung — bitte den Körper auswählen', 'w'); return; }
+  const holes = _detectThroughHoles(target);
   if (!holes.length) { notify('Keine durchgehenden Löcher erkannt (nur Durchgangslöcher mit rundem Rand werden gefunden)', 'w'); return; }
-  saveUndo();
-  const col = target.userData.color || currentColor;
-  const madeObjs = [];
+  _plugMode = true; _plugTarget = target; _plugGhosts = [];
+  deselect();
   for (const p of holes) {
-    const R = p.r + 0.005;   // +0,05 mm Übermaß → überlappt sicher mit der Lochwand
+    const mesh = new THREE.Mesh(buildGeo('cylinder'),
+      new THREE.MeshStandardMaterial({ color: 0x9aa7b4, transparent: true, opacity: 0.35, roughness: 0.5 }));
+    _plugOrient(mesh, p, 0.005, 0.05);   // Geist ragt 0,5 mm je Seite raus → sicht-/klickbar
+    mesh.userData._plugHole = p; mesh.userData._plugOn = false;
+    mesh.renderOrder = 5;
+    scene.add(mesh); _plugGhosts.push(mesh);
+  }
+  const hud = document.getElementById('plug-hud');
+  if (hud) hud.style.display = 'flex';
+  _plugHudCount();
+  notify('Löcher anklicken, die verschlossen werden sollen — Enter übernimmt, Esc bricht ab', 'i');
+}
+function _plugHudCount() {
+  const el = document.getElementById('plug-hud-count');
+  if (el) el.textContent = _plugGhosts.filter(g => g.userData._plugOn).length + ' von ' + _plugGhosts.length + ' markiert';
+}
+function _plugSetGhost(g, on) {
+  g.userData._plugOn = on;
+  g.material.opacity = on ? 0.9 : 0.35;
+  g.material.color.set(on ? 0x22c55e : 0x9aa7b4);
+  _plugHudCount();
+}
+function _plugClick(e) {
+  getNorm(e); raycaster.setFromCamera(mousev, camera);
+  const hit = raycaster.intersectObjects(_plugGhosts, false)[0];
+  if (hit) _plugSetGhost(hit.object, !hit.object.userData._plugOn);
+}
+function _plugAll(on) { _plugGhosts.forEach(g => _plugSetGhost(g, on)); }
+function _plugCleanup() {
+  _plugGhosts.forEach(g => { scene.remove(g); g.material.dispose(); });
+  _plugGhosts = []; _plugMode = false; _plugTarget = null;
+  const hud = document.getElementById('plug-hud');
+  if (hud) hud.style.display = 'none';
+}
+function _plugCancel() { _plugCleanup(); notify('Löcher verschließen abgebrochen', 'i'); }
+function _plugApply() {
+  const sel = _plugGhosts.filter(g => g.userData._plugOn);
+  if (!sel.length) { notify('Kein Loch markiert — Löcher anklicken oder „Alle"', 'w'); return; }
+  saveUndo();
+  const col = (_plugTarget && _plugTarget.userData.color) || currentColor;
+  const madeObjs = [];
+  for (const g of sel) {
+    const p = g.userData._plugHole;
     const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(col), roughness: 0.38, metalness: 0.05 });
     const mesh = new THREE.Mesh(buildGeo('cylinder'), mat);   // r1, h2, Achse Y
     mesh.castShadow = true; mesh.receiveShadow = true;
-    mesh.scale.set(R, p.h / 2, R);
-    const n = new THREE.Vector3(p.nx, p.ny, p.nz).normalize();
-    if (n.y < 0) n.negate();
-    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), n);
-    mesh.position.set(p.cx, p.cy, p.cz);
+    _plugOrient(mesh, p, 0.005, 0);   // +0,05 mm Übermaß → überlappt sicher mit der Lochwand
     _updateObjEdgeLines(mesh);
     typeCounts['cylinder'] = (typeCounts['cylinder'] || 0) + 1;
     mesh.userData = {
@@ -11260,6 +11322,7 @@ function plugHoles() {
     };
     scene.add(mesh); objects.push(mesh); madeObjs.push(mesh);
   }
+  _plugCleanup();
   selectObjs(madeObjs); updateTree();
   notify(madeObjs.length + ' Loch/Löcher verschlossen — Stopfen sind eigene Objekte (einzeln löschbar). Fürs Bohren danach alles zusammen auswählen → ⊖ Abziehen', 'ok');
 }
@@ -14164,6 +14227,7 @@ canvas.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
   if (typeof _eraser !== 'undefined' && _eraser.active) return;  // Radierer: keine Auswahl/kein Rechteck
   e.preventDefault(); // Verhindert Browser-nativen Drag (Verbots-Cursor)
+  if (_plugMode) { _plugClick(e); return; }
   if (_revolveMode) { _revolveAddPoint(e); return; }
   if (_sk.active) { _skClick(e); return; }
   if (!_edgeMode && _edgeBevelDragging) { _edgeBevelDragging = false; _edgeBevelDragStart = null; }
@@ -14984,6 +15048,7 @@ window.addEventListener('keydown', e => {
     if (document.getElementById('new-modal').classList.contains('show')) { _newCancel(); return; }
     if (document.getElementById('sz-modal').classList.contains('show')) { _cancelSize(); return; }
     if (document.getElementById('ds-modal').classList.contains('show')) { hideDesigns(); return; }
+    if (_plugMode) { _plugCancel(); return; }
     if (_pp.active) { exitPushPull(); return; }
     if (_lf.active) { exitLoftMode(); return; }
     if (_sk.active) { exitSketchMode(); return; }
@@ -14996,6 +15061,9 @@ window.addEventListener('keydown', e => {
 
   // Loft-Modus: Enter bestätigt
   if (_lf.active && k === 'Enter') { _lfApply(); return; }
+
+  // Löcher-verschließen-Modus: Enter übernimmt die markierten Löcher
+  if (_plugMode && k === 'Enter') { _plugApply(); return; }
 
   // Skizzen-Modus: Maß-Eingabe, Werkzeug-Shortcuts, Enter/Undo
   if (_sk.active) {
@@ -24280,8 +24348,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.41';
+const VOLME3D_VERSION = '1.15.42';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.42', date:'2026-07-12', changes:[
+    ['🩹','Löcher verschließen jetzt mit Auswahl: Nach dem Klick auf 🩹 zeigen alle erkannten Durchgangslöcher einen grauen Geister-Stopfen — anklicken markiert (grün), was verschlossen werden soll; „Alle"/„Keine" in der Leiste unten, Enter (oder „✓ Verschließen") setzt die Stopfen, Esc bricht ab.'],
+  ]},
   { version:'1.15.41', date:'2026-07-12', changes:[
     ['🩹','Löcher verschließen mit einem Klick: Objekt auswählen → 🩹 im Auswahl-Popup. Alle Durchgangslöcher (runde Ränder, auch in STL/3MF-Importen) werden erkannt und mit bündigen Stopfen-Zylindern gefüllt (0,05 mm Übermaß pro Seite, gleiche Farbe). Die Stopfen sind normale Einzel-Objekte: Loch soll offen bleiben? Einfach dessen Stopfen löschen. Danach fürs Neu-Bohren alles zusammen auswählen → ⊖ Abziehen.'],
   ]},
