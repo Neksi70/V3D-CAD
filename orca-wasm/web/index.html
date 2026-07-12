@@ -70,6 +70,30 @@
             padding: .25rem .55rem; font-size: .78rem; font-weight: 400; }
   .setTab.active { background: var(--accent); color: #fff; font-weight: 600; border-color: var(--accent); }
   #settings .field input[type="text"] { width: 7.5rem; }
+  #devicePanel { position: absolute; inset: 0; overflow-y: auto; padding: 1.2rem;
+                 background: var(--bg); display: flex; flex-direction: column; gap: 1rem; }
+  #devicePanel[hidden] { display: none; }
+  .devHead { display: flex; align-items: center; gap: 1rem; }
+  #devPrinter { max-width: 320px; }
+  .devBadge { font-size: .9rem; font-weight: 600; padding: .3rem .7rem; border-radius: 999px;
+              background: #e3e7ee; color: var(--text); }
+  .devBadge.run { background: #d6f0d8; color: #1e7d32; }
+  .devBadge.pause { background: #ffe8c2; color: #9a5b00; }
+  .devBadge.off { background: #eceef2; color: #888; }
+  .devCard { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.2rem; max-width: 720px; }
+  .devJobTop { display: flex; justify-content: space-between; font-size: 1rem; margin-bottom: .5rem; }
+  .devBar { height: 12px; background: #e3e7ee; border-radius: 999px; overflow: hidden; }
+  #devBarFill { height: 100%; width: 0; background: var(--accent); transition: width .4s; }
+  .devMeta { font-size: .85rem; opacity: .75; margin-top: .5rem; }
+  .devTiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: .8rem; max-width: 720px; }
+  .devTile { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: .8rem 1rem; text-align: center; }
+  .devTile span { font-size: .78rem; opacity: .7; display: block; }
+  .devTile b { font-size: 1.4rem; }
+  .devAms { display: flex; gap: .6rem; flex-wrap: wrap; margin-top: .5rem; }
+  .amsSlot { display: flex; flex-direction: column; align-items: center; gap: .25rem; font-size: .72rem; }
+  .amsChip { width: 34px; height: 44px; border-radius: 6px; border: 1px solid #0002; }
+  .devControls { display: flex; gap: .6rem; flex-wrap: wrap; }
+  .devControls button { flex: 1; min-width: 120px; }
   #loginGate { position: fixed; inset: 0; z-index: 100; background: var(--header-bg);
                display: flex; align-items: center; justify-content: center; }
   #loginGate[hidden] { display: none; }
@@ -111,6 +135,7 @@
   <nav id="tabs">
     <button class="tab active" data-tab="prepare">Vorbereiten</button>
     <button class="tab" data-tab="preview">Vorschau</button>
+    <button class="tab" data-tab="device" id="tabDevice" hidden>Gerät</button>
   </nav>
   <div id="status">Lade Orca-Kern …</div>
   <div id="userBadge"></div>
@@ -210,6 +235,36 @@
     <button id="tbDelete" title="Objekt löschen" disabled>🗑️</button>
   </div>
   <canvas id="view"></canvas>
+
+  <div id="devicePanel" hidden>
+    <div class="devHead">
+      <select id="devPrinter"></select>
+      <span id="devState" class="devBadge"></span>
+    </div>
+    <div id="devJob" class="devCard">
+      <div class="devJobTop"><b id="devJobName">–</b><span id="devJobEta"></span></div>
+      <div class="devBar"><div id="devBarFill"></div></div>
+      <div id="devJobMeta" class="devMeta"></div>
+    </div>
+    <div class="devTiles">
+      <div class="devTile"><span>Düse</span><b id="devNozzle">–</b></div>
+      <div class="devTile"><span>Bett</span><b id="devBed">–</b></div>
+      <div class="devTile"><span>Kammer</span><b id="devCham">–</b></div>
+      <div class="devTile"><span>Lüfter</span><b id="devFan">–</b></div>
+    </div>
+    <div class="devCard">
+      <label style="opacity:1">AMS / Filament</label>
+      <div id="devAms" class="devAms"></div>
+    </div>
+    <div class="devCard devControls">
+      <button id="devPause" class="secondary">⏸ Pause</button>
+      <button id="devResume" class="secondary">▶ Weiter</button>
+      <button id="devStop" class="secondary">⏹ Stop</button>
+      <button id="devLight" class="secondary">💡 Licht</button>
+    </div>
+    <div id="devHint" style="font-size:.78rem;opacity:.6"></div>
+  </div>
+
   <div id="legend" hidden></div>
   <div id="overlay" hidden>
     <input type="range" id="layerSlider" min="1" max="1" value="1">
@@ -253,10 +308,83 @@ async function loadPrinters() {
       || '<option disabled>Keine Drucker im Konto</option>';
     $('sendPanel').hidden = false;
     updateSend();
-    if (bridgePrinters.length) startStatusPolling();
+    if (bridgePrinters.length) {
+      startStatusPolling();
+      // Geräte-Tab freischalten + eigenes Dropdown spiegeln
+      $('tabDevice').hidden = false;
+      $('devPrinter').innerHTML = $('sendPrinter').innerHTML;
+    }
     return true;
   } catch { return false; }
 }
+
+// ---------- Geräte-Dashboard ----------
+const DEV_STATE = { IDLE: ['bereit','off'], RUNNING: ['druckt','run'], PAUSE: ['pausiert','pause'],
+                    FINISH: ['fertig','off'], FAILED: ['Fehler','pause'], PREPARE: ['bereitet vor','run'],
+                    SLICING: ['sliced','run'] };
+let deviceTimer = null;
+function stopDevicePolling() { clearInterval(deviceTimer); deviceTimer = null; }
+function startDevicePolling() {
+  stopDevicePolling();
+  if ($('devPrinter').value !== $('sendPrinter').value && $('sendPrinter').value)
+    $('devPrinter').value = $('sendPrinter').value;
+  refreshDevice();
+  deviceTimer = setInterval(refreshDevice, 8000);
+}
+$('devPrinter').onchange = () => { $('sendPrinter').value = $('devPrinter').value; refreshDevice(); };
+
+function fmtTemp(v, t) { return v == null ? '–' : `${Math.round(v)}°${t != null && t > 0 ? ' / ' + Math.round(t) + '°' : ''}`; }
+function fmtEta(min) { if (min == null) return ''; const h = Math.floor(min/60), m = min%60; return h ? `noch ${h} h ${m} min` : `noch ${m} min`; }
+
+async function refreshDevice() {
+  const serial = $('devPrinter').value;
+  if (!serial) return;
+  try {
+    const { status, json: d } = await bridge('/api/device/' + encodeURIComponent(serial));
+    if (status !== 200 || !d.online) {
+      $('devState').textContent = 'offline'; $('devState').className = 'devBadge off';
+      $('devJobName').textContent = '–'; $('devBarFill').style.width = '0';
+      $('devJobMeta').textContent = ''; $('devJobEta').textContent = '';
+      return;
+    }
+    const [label, cls] = DEV_STATE[d.state] || [d.state || '–', ''];
+    $('devState').textContent = label; $('devState').className = 'devBadge ' + cls;
+    $('devJobName').textContent = d.subtask || (d.state === 'IDLE' ? 'Kein Druck aktiv' : '–');
+    $('devJobEta').textContent = d.state === 'RUNNING' ? fmtEta(d.remaining) : '';
+    $('devBarFill').style.width = (d.percent || 0) + '%';
+    const meta = [];
+    if (d.percent != null && d.state === 'RUNNING') meta.push(`${d.percent}%`);
+    if (d.layer != null && d.total) meta.push(`Schicht ${d.layer}/${d.total}`);
+    $('devJobMeta').textContent = meta.join(' · ');
+    $('devNozzle').textContent = fmtTemp(d.nozzle, d.nozzle_target);
+    $('devBed').textContent = fmtTemp(d.bed, d.bed_target);
+    $('devCham').textContent = d.chamber == null ? '–' : Math.round(d.chamber) + '°';
+    $('devFan').textContent = d.fan_part == null ? '–' : d.fan_part + '%';
+    // AMS-Slots
+    $('devAms').innerHTML = (d.trays || []).length
+      ? d.trays.map(t => `<div class="amsSlot"><div class="amsChip" style="background:#${t.color || 'ccc'}"></div>${t.external ? 'Ext' : (t.type || '–')}</div>`).join('')
+      : '<span style="opacity:.6;font-size:.82rem">keine AMS-Daten</span>';
+    $('devLight').textContent = d.light === 'on' ? '💡 Licht aus' : '💡 Licht an';
+    $('devLight').dataset.next = d.light === 'on' ? 'light_off' : 'light_on';
+    $('devHint').textContent = '';
+  } catch {
+    $('devHint').textContent = 'Status nicht abrufbar';
+  }
+}
+async function control(command, extra = {}) {
+  const serial = $('devPrinter').value;
+  $('devHint').textContent = 'Befehl gesendet …';
+  try {
+    const { status, json } = await bridge('/api/control/' + encodeURIComponent(serial),
+      { method: 'POST', body: { command, ...extra } });
+    $('devHint').textContent = status === 200 && json.ok ? '✅ Befehl gesendet' : (json.error || 'Fehler');
+    setTimeout(refreshDevice, 1500);
+  } catch { $('devHint').textContent = 'Brücke nicht erreichbar'; }
+}
+$('devPause').onclick = () => control('pause');
+$('devResume').onclick = () => control('resume');
+$('devStop').onclick = () => { if (confirm('Druck wirklich abbrechen?')) control('stop'); };
+$('devLight').onclick = () => control($('devLight').dataset.next || 'light_on');
 
 function enterApp(email) {
   $('loginGate').hidden = true;
@@ -742,6 +870,8 @@ function showTab(name) {
   toolpathGroup.visible = name === 'preview';
   $('overlay').hidden = name !== 'preview' || !layerGroups.length;
   $('legend').hidden = name !== 'preview' || !layerGroups.length;
+  $('devicePanel').hidden = name !== 'device';
+  if (name === 'device') startDevicePolling(); else stopDevicePolling();
 }
 document.querySelectorAll('.tab').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 

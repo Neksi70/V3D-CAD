@@ -66,7 +66,7 @@ app.get('/api/printers', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Status eines Druckers (per Seriennummer)
+// Kurzstatus (für das Sende-Panel)
 app.get('/api/status/:serial', async (req, res) => {
   const sid = sidOf(req);
   if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
@@ -75,6 +75,57 @@ app.get('/api/status/:serial', async (req, res) => {
     res.json({ online: Boolean(st), gcode_state: st?.gcode_state,
       nozzle_temper: st?.nozzle_temper, bed_temper: st?.bed_temper,
       percent: st?.mc_percent, layer: st?.layer_num });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Voll-Dashboard: alle Kennwerte + AMS für die Geräte-Übersicht
+function fanPct(v) { const n = Number(v); return Number.isFinite(n) ? (n <= 15 ? Math.round(n / 15 * 100) : n) : null; }
+app.get('/api/device/:serial', async (req, res) => {
+  const sid = sidOf(req);
+  if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
+  try {
+    const st = await cloud.getStatus(sid, req.params.serial).catch(() => null);
+    if (!st) return res.json({ online: false });
+    // AMS-Slots einsammeln (Farbe hex RRGGBBAA, Typ)
+    const trays = [];
+    for (const unit of (st.ams?.ams || [])) for (const t of (unit.tray || [])) {
+      if (t.tray_type || t.tray_color)
+        trays.push({ id: t.id, type: t.tray_type || '', color: (t.tray_color || '').slice(0, 6) });
+    }
+    if (st.vt_tray && (st.vt_tray.tray_type || st.vt_tray.tray_color))
+      trays.push({ id: 'ext', type: st.vt_tray.tray_type || '', color: (st.vt_tray.tray_color || '').slice(0, 6), external: true });
+    const light = (st.lights_report || []).find(l => l.node === 'chamber_light')?.mode;
+    res.json({
+      online: true, state: st.gcode_state, subtask: st.subtask_name,
+      percent: st.mc_percent, remaining: st.mc_remaining_time,
+      layer: st.layer_num, total: st.total_layer_num,
+      nozzle: st.nozzle_temper, nozzle_target: st.nozzle_target_temper,
+      bed: st.bed_temper, bed_target: st.bed_target_temper,
+      chamber: st.chamber_temper,
+      fan_part: fanPct(st.cooling_fan_speed), fan_aux: fanPct(st.big_fan1_speed), fan_cham: fanPct(st.big_fan2_speed),
+      speed_lvl: st.spd_lvl, light, trays,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Steuerbefehle: pause/resume/stop/light_on/light_off/speed
+app.post('/api/control/:serial', async (req, res) => {
+  const sid = sidOf(req);
+  if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
+  const { command, level } = req.body || {};
+  const map = {
+    pause:  { print: { sequence_id: '0', command: 'pause' } },
+    resume: { print: { sequence_id: '0', command: 'resume' } },
+    stop:   { print: { sequence_id: '0', command: 'stop' } },
+    light_on:  { system: { sequence_id: '0', command: 'ledctrl', led_node: 'chamber_light', led_mode: 'on' } },
+    light_off: { system: { sequence_id: '0', command: 'ledctrl', led_node: 'chamber_light', led_mode: 'off' } },
+    speed:  { print: { sequence_id: '0', command: 'print_speed', param: String(level || 2) } },
+  };
+  const payload = map[command];
+  if (!payload) return res.status(400).json({ error: 'unbekannter Befehl' });
+  try {
+    const r = await cloud.sendCommand(sid, req.params.serial, payload, { waitMs: 0 });
+    res.json({ ok: true, sent: r.sent });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
