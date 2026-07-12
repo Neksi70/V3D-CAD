@@ -144,6 +144,23 @@
   <div id="sendPanel" hidden style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.6rem .8rem">
     <label style="opacity:1;font-size:.85rem">🖨️ An Drucker senden</label>
     <select id="sendPrinter" style="margin:.3rem 0"></select>
+    <div id="sendConn" style="font-size:.78rem;opacity:.75;margin-bottom:.3rem"></div>
+
+    <div id="cloudLogin" hidden style="border-top:1px solid var(--border);padding-top:.4rem;margin-bottom:.3rem">
+      <label style="font-size:.8rem;opacity:1">☁️ Bambu-Cloud-Login <small>(bleibt auf deinem Server)</small></label>
+      <input id="clEmail" type="email" placeholder="E-Mail" style="margin:.2rem 0">
+      <input id="clPass" type="password" placeholder="Passwort" style="margin:.2rem 0">
+      <div class="row2" style="margin:.2rem 0">
+        <select id="clRegion"><option value="global">Global/EU</option><option value="china">China</option></select>
+        <button id="btnCloudLogin" class="secondary" style="padding:.4rem">Anmelden</button>
+      </div>
+      <div id="clCodeRow" hidden>
+        <input id="clCode" placeholder="Code aus der E-Mail" style="margin:.2rem 0">
+        <button id="btnCloudVerify" class="secondary" style="width:100%;padding:.4rem">Code bestätigen</button>
+      </div>
+      <div id="clStatus" style="font-size:.78rem;margin-top:.2rem"></div>
+    </div>
+
     <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;opacity:1;margin:.2rem 0">
       <input type="checkbox" id="sendStart" style="width:auto" checked> Druck sofort starten</label>
     <button id="btnSend" class="secondary" disabled style="width:100%">Senden</button>
@@ -888,15 +905,52 @@ $('btnDownload').onclick = () => {
 // ---------- An Drucker senden (über die Bridge) ----------
 // Bridge auf demselben Host, Port 7781 (HTTP oder HTTPS wie die Seite)
 const BRIDGE = `${location.protocol}//${location.hostname}:7781`;
+let bridgePrinters = [];
 async function initBridge() {
   try {
-    const printers = await (await fetch(`${BRIDGE}/api/printers`, { signal: AbortSignal.timeout(3000) })).json();
-    if (!printers.length) return;   // Brücke da, aber keine Drucker konfiguriert
-    $('sendPrinter').innerHTML = printers.map(p =>
-      `<option value="${p.id}">${p.name}${p.lan ? '' : ' (Cloud)'}</option>`).join('');
+    bridgePrinters = await (await fetch(`${BRIDGE}/api/printers`, { signal: AbortSignal.timeout(3000) })).json();
+    if (!bridgePrinters.length) return;   // Brücke da, aber keine Drucker konfiguriert
+    $('sendPrinter').innerHTML = bridgePrinters.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+    $('sendPrinter').onchange = reflectPrinter;
     $('sendPanel').hidden = false;
+    reflectPrinter();
   } catch { /* keine Bridge erreichbar → Panel bleibt versteckt */ }
 }
+function selectedPrinter() { return bridgePrinters.find(p => p.id === $('sendPrinter').value); }
+function reflectPrinter() {
+  const p = selectedPrinter();
+  const bits = [];
+  if (p?.lan) bits.push('LAN');
+  if (p?.cloud) bits.push(p.cloudReady ? 'Cloud ✓' : 'Cloud (nicht angemeldet)');
+  $('sendConn').textContent = bits.length ? 'Verbindung: ' + bits.join(' · ') : 'Keine Verbindung konfiguriert';
+  // Cloud-Login-Feld zeigen, wenn Cloud gewünscht aber nicht angemeldet
+  $('cloudLogin').hidden = !(p?.cloud && !p.cloudReady);
+}
+$('btnCloudLogin').onclick = async () => {
+  const p = selectedPrinter();
+  $('clStatus').textContent = 'Melde an …';
+  try {
+    const r = await (await fetch(`${BRIDGE}/api/cloud/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: p.id, email: $('clEmail').value, password: $('clPass').value, region: $('clRegion').value }),
+    })).json();
+    if (r.ok) { $('clStatus').innerHTML = '<span class="ok">✅ Angemeldet</span>'; $('clPass').value = ''; await initBridge(); }
+    else if (r.needCode) { $('clCodeRow').hidden = false; $('clStatus').textContent = '📧 Code aus der Bambu-Mail eingeben.'; }
+    else $('clStatus').innerHTML = `<span class="err">${r.error || 'Fehlgeschlagen'}</span>`;
+  } catch { $('clStatus').innerHTML = '<span class="err">Bridge-Fehler</span>'; }
+};
+$('btnCloudVerify').onclick = async () => {
+  const p = selectedPrinter();
+  $('clStatus').textContent = 'Prüfe Code …';
+  try {
+    const r = await (await fetch(`${BRIDGE}/api/cloud/verify`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: p.id, email: $('clEmail').value, code: $('clCode').value, region: $('clRegion').value }),
+    })).json();
+    if (r.ok) { $('clStatus').innerHTML = '<span class="ok">✅ Angemeldet</span>'; $('clPass').value = ''; await initBridge(); }
+    else $('clStatus').innerHTML = `<span class="err">${r.error || 'Code ungültig'}</span>`;
+  } catch { $('clStatus').innerHTML = '<span class="err">Bridge-Fehler</span>'; }
+};
 function updateSend() {
   const has = !$('btnDownload').disabled && $('sendPrinter').options.length;
   $('btnSend').disabled = !has;

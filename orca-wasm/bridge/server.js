@@ -7,6 +7,7 @@ const https = require('https');
 const http = require('http');
 const express = require('express');
 const lan = require('./lan');
+const cloud = require('./cloud');
 
 const PORT = process.env.BRIDGE_PORT ? Number(process.env.BRIDGE_PORT) : 7781;
 const CFG = path.join(__dirname, 'printers.json');
@@ -39,19 +40,43 @@ app.get('/api/printers', (req, res) => {
     id: p.id, name: p.name, model: p.model,
     lan: Boolean(p.ip && p.access_code && p.serial),
     cloud: Boolean(p.cloud && p.cloud.enabled),
+    cloudReady: cloud.isLoggedIn(p.id),
   })));
+});
+
+// --- Cloud-Login (Passwort nur durchreichen, nie speichern) ---
+// { id, email, password, region }  → { ok } | { needCode }
+app.post('/api/cloud/login', async (req, res) => {
+  const { id, email, password, region } = req.body || {};
+  if (!id || !email || !password) return res.status(400).json({ error: 'id/email/password nötig' });
+  try { res.json(await cloud.login(id, { email, password, region })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+// { id, email, code, region }  → { ok }
+app.post('/api/cloud/verify', async (req, res) => {
+  const { id, email, code, region } = req.body || {};
+  try { res.json(await cloud.verifyCode(id, { email, code, region })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+// Geräteliste aus der Cloud (zum Abgleich der Seriennummer)
+app.get('/api/cloud/devices/:id', async (req, res) => {
+  try { res.json(await cloud.listDevices(req.params.id)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Erreichbarkeit + Kurzstatus eines Druckers
 app.get('/api/status/:id', async (req, res) => {
   const p = loadPrinters().find(x => x.id === req.params.id);
   if (!p) return res.status(404).json({ error: 'Drucker unbekannt' });
+  const fmt = (path, st) => ({ path, online: true,
+    gcode_state: st?.gcode_state, nozzle_temper: st?.nozzle_temper,
+    bed_temper: st?.bed_temper, percent: st?.mc_percent, layer: st?.layer_num });
   try {
     if (p.ip && await lan.reachable(p)) {
-      const st = await lan.getStatus(p).catch(() => null);
-      return res.json({ path: 'lan', online: true,
-        gcode_state: st?.gcode_state, nozzle_temper: st?.nozzle_temper,
-        bed_temper: st?.bed_temper, percent: st?.mc_percent, layer: st?.layer_num });
+      return res.json(fmt('lan', await lan.getStatus(p).catch(() => null)));
+    }
+    if (cloud.isLoggedIn(p.id) && p.serial) {
+      return res.json(fmt('cloud', await cloud.getStatus(p.id, p.serial).catch(() => null)));
     }
     return res.json({ path: p.cloud?.enabled ? 'cloud' : 'none', online: false });
   } catch (e) {
@@ -87,9 +112,23 @@ app.post('/api/send', async (req, res) => {
       }
       return res.json({ ok: true, path: 'lan', uploaded: name, print: printResult });
     }
+    // Cloud-Fallback: Steuerung/Start geht, Dateiübertragung an ENTFERNTE
+    // Drucker ist experimentell (Bambu-Cloudspeicher, inoffiziell)
+    if (cloud.isLoggedIn(p.id) && p.serial) {
+      if (start) {
+        const r = await cloud.sendCommand(p.id, p.serial, {
+          print: { sequence_id: '0', command: 'project_file', param: name,
+            subtask_name: name.replace(/\.[^.]+$/, ''), use_ams: false },
+        }, { waitMs: 3000 }).catch(e => ({ error: e.message }));
+        return res.json({ ok: !r.error, path: 'cloud', experimental: true,
+          note: 'Cloud-Dateiversand ist experimentell — Datei muss ggf. schon auf dem Drucker/SD liegen.',
+          print: r });
+      }
+      return res.status(501).json({ error: 'Cloud-Upload frischer Dateien noch nicht unterstützt — Drucker per LAN verbinden zum Übertragen.' });
+    }
     if (p.cloud?.enabled)
-      return res.status(501).json({ error: 'Cloud-Versand noch nicht aktiv (Drucker per LAN nicht erreichbar)' });
-    return res.status(502).json({ error: 'Drucker per LAN nicht erreichbar und keine Cloud konfiguriert' });
+      return res.status(401).json({ error: 'Cloud konfiguriert, aber nicht angemeldet — bitte in der App einloggen.' });
+    return res.status(502).json({ error: 'Drucker per LAN nicht erreichbar und keine Cloud verfügbar' });
   } catch (e) {
     res.status(500).json({ error: 'LAN-Fehler: ' + e.message });
   }
