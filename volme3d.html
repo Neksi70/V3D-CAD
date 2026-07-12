@@ -5263,7 +5263,7 @@ async function _applyRimBevel(o, rims, chamferDist) {
     const bytes = Uint8Array.from(atob(data.stlBase64), ch => ch.charCodeAt(0));
     const geo = parseSTL(bytes.buffer);
     geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);
-    geo.computeVertexNormals();
+    _creaseNormals(geo);
     const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(o.userData.color || currentColor),
       roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide
@@ -12658,7 +12658,7 @@ async function _createHollowLid() {
 function _meshFromStlB64(b64, name) {
   try {
     const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-    const geo = parseSTL(bytes.buffer); geo.computeVertexNormals();
+    const geo = parseSTL(bytes.buffer); _creaseNormals(geo);
     const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(currentColor), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.castShadow = true;
@@ -12848,7 +12848,7 @@ async function _occtFullBooleanCut(solid, svgHole) {
       const resultGeo = parseSTL(bytes.buffer);
       console.log('parseSTL Dreiecke:', resultGeo?.attributes?.position?.count / 3);
       // Geometrie bleibt in mm — Mesh bekommt scale=0.1 wie beim STL-Import
-      resultGeo.computeVertexNormals();
+      _creaseNormals(resultGeo);
       // Inlay-Körper (bündiges Gravur-Volumen) für Zweifarb-Druck
       let inlayGeo = null, inlayBytes = null;
       if (data.inlayStlBase64) {
@@ -13168,7 +13168,7 @@ async function _doSubtractHoles(solids, holes) {
         const bytes = Uint8Array.from(atob(data.stlBase64), c => c.charCodeAt(0));
         const geo = parseSTL(bytes.buffer);
         geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);   // Inverse zu _objsToUnionStls
-        geo.computeVertexNormals();
+        _creaseNormals(geo);   // statt flat: Rundungen wieder glatt shaden, Kanten scharf
         solidMesh = new THREE.Mesh(geo, mat);
         solidMesh.userData._origStlBuf = bytes.buffer;   // für Folge-Schnitte
         occtOk = true;
@@ -16271,6 +16271,54 @@ function parseSTL(buf) {
   if (dropped) console.warn('[parseSTL] ' + dropped + ' NaN/Inf-Dreieck(e) verworfen');
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.computeVertexNormals();   // ohne Normalen rendert MeshStandardMaterial in Firefox komplett schwarz
+  return geo;
+}
+
+// Weiche Normalen mit Knick-Erhalt für Triangle-Soup (non-indexed) aus OCCT-STLs.
+// Nach einem Boolean kommt das Mesh ohne Normalen zurück → computeVertexNormals
+// shaded FLAT und die Segment-Facetten eines Zylinders (11°-Knicke) werden als
+// dunkle "fehlende Seiten" sichtbar, obwohl die Geometrie stimmt. Hier: Normalen
+// benachbarter Flächen am selben Punkt mitteln, wenn ihr Winkel < angleDeg —
+// Rundungen werden wieder glatt, echte Kanten (Box, Topfrand, 90°) bleiben scharf.
+// Nur auf Boolean-/Server-Ergebnisse anwenden (klein, ≤120k Tris) — nicht auf
+// Riesen-Importe (Map über alle Vertices).
+function _creaseNormals(geo, angleDeg) {
+  const pos = geo.attributes.position;
+  if (!pos || geo.index) return geo;
+  const nTri = Math.floor(pos.count / 3);
+  if (!nTri) return geo;
+  const cosLimit = Math.cos((angleDeg || 35) * Math.PI / 180);
+  const fn = new Float32Array(nTri * 3);
+  const pA = new THREE.Vector3(), pB = new THREE.Vector3(), pC = new THREE.Vector3();
+  const cb = new THREE.Vector3(), ab = new THREE.Vector3();
+  const key = i => Math.round(pos.getX(i) * 1e4) + ',' + Math.round(pos.getY(i) * 1e4) + ',' + Math.round(pos.getZ(i) * 1e4);
+  const map = new Map();
+  for (let f = 0; f < nTri; f++) {
+    pA.fromBufferAttribute(pos, f * 3); pB.fromBufferAttribute(pos, f * 3 + 1); pC.fromBufferAttribute(pos, f * 3 + 2);
+    cb.subVectors(pC, pB); ab.subVectors(pA, pB); cb.cross(ab).normalize();
+    fn[f * 3] = cb.x; fn[f * 3 + 1] = cb.y; fn[f * 3 + 2] = cb.z;
+    for (let j = 0; j < 3; j++) {
+      const k = key(f * 3 + j);
+      let l = map.get(k); if (!l) map.set(k, l = []);
+      l.push(f);
+    }
+  }
+  const nrm = new Float32Array(pos.count * 3);
+  for (let f = 0; f < nTri; f++) {
+    for (let j = 0; j < 3; j++) {
+      const vi = f * 3 + j;
+      let nx = 0, ny = 0, nz = 0;
+      const faces = map.get(key(vi));
+      for (let m = 0; m < faces.length; m++) {
+        const g = faces[m];
+        const dot = fn[f*3]*fn[g*3] + fn[f*3+1]*fn[g*3+1] + fn[f*3+2]*fn[g*3+2];
+        if (dot > cosLimit) { nx += fn[g*3]; ny += fn[g*3+1]; nz += fn[g*3+2]; }
+      }
+      const len = Math.hypot(nx, ny, nz) || 1;
+      nrm[vi*3] = nx/len; nrm[vi*3+1] = ny/len; nrm[vi*3+2] = nz/len;
+    }
+  }
+  geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
   return geo;
 }
 

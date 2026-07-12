@@ -44,6 +44,23 @@ async function getOC() {
   return _oc;
 }
 
+// ── Debug-Mitschnitt: Boolean-Eingaben auf Platte (Reproduktion von Müll-Cuts) ──
+// Schreibt die STLs jeder Union-/Subtract-Anfrage nach occt-debug/ und behält
+// die letzten ~60 Dateien. Booleans sind klein (Client-Cap 120k Dreiecke).
+const DUMP_DIR = path.join(__dirname, 'occt-debug');
+function dumpStls(route, groups) {
+  try {
+    fs.mkdirSync(DUMP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    for (const tag of Object.keys(groups))
+      (groups[tag] || []).forEach((b64, i) =>
+        fs.writeFileSync(path.join(DUMP_DIR, `${stamp}-${route}-${tag}${i}.stl`), Buffer.from(b64, 'base64')));
+    const files = fs.readdirSync(DUMP_DIR).sort();
+    for (const f of files.slice(0, Math.max(0, files.length - 60)))
+      fs.unlinkSync(path.join(DUMP_DIR, f));
+  } catch (e) { console.log('[dump]', e.message); }
+}
+
 // Nach einem WASM-Trap (RuntimeError) ist die Instanz nicht mehr vertrauenswürdig:
 // weitere Booleans darauf können STILL falsche Geometrie liefern (Cut "OK", aber
 // Müll). Instanz verwerfen → der nächste Aufruf lädt frisch. In jedem Routen-catch
@@ -1106,6 +1123,7 @@ app.post('/api/occt-union', async (req, res) => {
   const b = req.body || {};
   const list = Array.isArray(b.stlsBase64) ? b.stlsBase64 : null;
   if (!list || !list.length) return res.json({ error: 'stlsBase64 (Array) fehlt' });
+  dumpStls('union', { in: list });
 
   const keep = [];   // BOP-Objekte am Leben halten bis nach der Vernetzung
   try {
@@ -1154,6 +1172,7 @@ app.post('/api/occt-subtract-mesh', async (req, res) => {
   const toolList  = Array.isArray(b.toolStls)  ? b.toolStls  : null;
   if (!solidList || !solidList.length) return res.json({ error: 'solidStls (Array) fehlt' });
   if (!toolList  || !toolList.length)  return res.json({ error: 'toolStls (Array) fehlt' });
+  dumpStls('sub', { solid: solidList, tool: toolList });
 
   const keep = [];
   try {
