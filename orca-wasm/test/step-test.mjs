@@ -16,10 +16,11 @@ filament_diameter = 1.75
 printable_area = 0x0,240x0,240x240,0x240
 printable_height = 250
 enable_support = 0
-enable_arc_fitting = 0`;
+enable_arc_fitting = 0
+use_relative_e_distances = 0`;
 
 const t0 = Date.now();
 const gcode = orca.sliceModel(new Uint8Array(step), 'cube20.step', [], overrides);
 if (!gcode) { console.error('FEHLER:', orca.lastError()); process.exit(1); }
-const layers = (gcode.match(/^; CHANGE_LAYER/gm) || []).length;
+const layers = (gcode.match(/^;( CHANGE_LAYER|LAYER_CHANGE)/gm) || []).length;
 console.log(`STEP-Slice OK: ${layers} Layer, ${gcode.length} Zeichen in ${((Date.now()-t0)/1000).toFixed(1)}s`);

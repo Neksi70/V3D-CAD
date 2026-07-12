@@ -12,9 +12,10 @@ filament_diameter = 1.75
 printable_area = 0x0,240x0,240x240,0x240
 printable_height = 250
 enable_support = 0
-enable_arc_fitting = 0`;
+enable_arc_fitting = 0
+use_relative_e_distances = 0`;
 const modelFile = process.env.MODEL || 'stress.stl';
 const t0 = Date.now();
 const gcode = orca.sliceModel(new Uint8Array(readFileSync(join(here, modelFile))), modelFile, [], overrides);
 if (!gcode) { console.error('STRESS-FEHLER:', orca.lastError()); process.exit(1); }
-console.log(`STRESS OK: ${(gcode.match(/^; CHANGE_LAYER/gm) || []).length} Layer, ${(gcode.length/1e6).toFixed(1)} MB G-Code in ${((Date.now()-t0)/1000).toFixed(1)}s`);
+console.log(`STRESS OK: ${(gcode.match(/^;( CHANGE_LAYER|LAYER_CHANGE)/gm) || []).length} Layer, ${(gcode.length/1e6).toFixed(1)} MB G-Code in ${((Date.now()-t0)/1000).toFixed(1)}s`);

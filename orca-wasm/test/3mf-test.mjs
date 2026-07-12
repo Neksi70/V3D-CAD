@@ -12,7 +12,8 @@ filament_diameter = 1.75
 printable_area = 0x0,240x0,240x240,0x240
 printable_height = 250
 enable_support = 0
-enable_arc_fitting = 0`;
+enable_arc_fitting = 0
+use_relative_e_distances = 0`;
 const gcode = orca.sliceModel(new Uint8Array(readFileSync(join(here, 'cube20.3mf'))), 'cube20.3mf', [], overrides);
 if (!gcode) { console.error('3MF-FEHLER:', orca.lastError()); process.exit(1); }
-console.log(`3MF-Slice OK: ${(gcode.match(/^; CHANGE_LAYER/gm) || []).length} Layer, ${gcode.length} Zeichen`);
+console.log(`3MF-Slice OK: ${(gcode.match(/^;( CHANGE_LAYER|LAYER_CHANGE)/gm) || []).length} Layer, ${gcode.length} Zeichen`);

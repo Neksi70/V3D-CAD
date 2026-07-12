@@ -25,6 +25,7 @@ printable_area = 0x0,240x0,240x240,0x240
 printable_height = 250
 sparse_infill_density = 15%
 enable_support = 0
+use_relative_e_distances = 0
 `;
 
 console.log('Slice startet …');
@@ -37,6 +38,6 @@ if (!gcode || gcode.length === 0) {
   process.exit(1);
 }
 
-const layers = (gcode.match(/^; CHANGE_LAYER/gm) || []).length;
+const layers = (gcode.match(/^;( CHANGE_LAYER|LAYER_CHANGE)/gm) || []).length;
 writeFileSync(join(here, 'cube20.gcode'), gcode);
 console.log(`OK: ${gcode.length} Zeichen G-Code, ${layers} Layer in ${dt}s → cube20.gcode`);
