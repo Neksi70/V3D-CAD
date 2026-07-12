@@ -14,7 +14,8 @@ const PORT = process.env.BRIDGE_PORT ? Number(process.env.BRIDGE_PORT) : 7781;
 const app = express();
 app.use(express.json({ limit: '256mb' }));
 
-const OK_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|[\w-]+\.ts\.net)(:\d+)?$/;
+// [\w.-]+\.ts\.net: erlaubt mehrteilige MagicDNS-Namen (v3da.tailf05fe9.ts.net)
+const OK_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|[\w.-]+\.ts\.net)(:\d+)?$/;
 app.use((req, res, next) => {
   const o = req.headers.origin;
   if (o && OK_ORIGIN.test(o)) {
