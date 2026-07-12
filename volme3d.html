@@ -1661,6 +1661,9 @@ const firebaseConfig = {
         <div class="shp" onclick="addPolyTube(4)" title="Kantrohr — eckiges Hohlprofil, Eckenzahl über „Seiten" einstellbar (3, 4, 5, …)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M5 6h14v12H5z"/><path d="M8.5 9h7v6h-7z" stroke-width="1"/></svg>Kantrohr
         </div>
+        <div class="shp" onclick="addConeTube()" title="Konisches Rohr — Außen- und Innendurchmesser oben und unten getrennt wählbar (Adapter/Reduzierstück)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="12" cy="6" rx="5" ry="1.8"/><ellipse cx="12" cy="6" rx="2.5" ry="0.9" stroke-width="1"/><line x1="7" y1="6" x2="4" y2="19"/><line x1="17" y1="6" x2="20" y2="19"/><ellipse cx="12" cy="19" rx="8" ry="2.5"/></svg>Kon. Rohr
+        </div>
         <div class="shp" onclick="addShape('star')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><polygon points="12,2 14.4,9 22,9 16,14 18,21 12,17 6,21 8,14 2,9 9.6,9"/></svg>Stern
         </div>
@@ -4172,7 +4175,7 @@ function switchTab(name) {
 }
 
 // ═══ GEOMETRY BUILDERS ═══════════════════════════════════════════════
-const typeNames = { box:'Box', sphere:'Kugel', cylinder:'Zylinder', cone:'Kegel', funnel:'Trichter',
+const typeNames = { box:'Box', sphere:'Kugel', cylinder:'Zylinder', cone:'Kegel', funnel:'Trichter', conetube:'Konisches Rohr',
                     torus:'Torus', pyramid:'Pyramide', tube:'Rohr', star:'Stern', wedge:'Keil', text:'Text', revolve:'Drehen', flower:'Blume',
                     polygon:'Vieleck', paraboloid:'Paraboloid', sphericalshell:'Hohlkugel', spring:'Feder', bentpipe:'Rohrbogen', thread:'Gewinde',
                     svg:'SVG' };
@@ -4853,13 +4856,16 @@ function _applyDisplacementNow(param, val) {
     return;
   }
 
-  // Trichter: echte Trichterform aus den mm-Parametern als Basis (Maße sind in
+  // Trichter/Konisches Rohr: echte Form aus den mm-Parametern als Basis (Maße sind in
   // der Geometrie gebacken, Scale=1) — sonst würde der Standard-Pfad mangels
-  // _origGeo auf buildGeo('funnel') → BoxGeometry zurückfallen (Trichter→Box).
-  if (o.userData.shapeType === 'funnel') {
+  // _origGeo auf buildGeo() → BoxGeometry zurückfallen (Trichter→Box).
+  if (o.userData.shapeType === 'funnel' || o.userData.shapeType === 'conetube') {
     if (pat === 'keine') { o.userData._warpCache = null; _fpRebuildGeo(o); _fpCurType = null; updateFP(); return; }
-    const base = buildFunnelGeo(o.userData.funnelTopDia, o.userData.funnelSpoutDia,
-      o.userData.funnelHeight, o.userData.funnelSpoutLen, o.userData.funnelWall, o.userData.segments || 48, o.userData.funnelBevel);
+    const base = o.userData.shapeType === 'funnel'
+      ? buildFunnelGeo(o.userData.funnelTopDia, o.userData.funnelSpoutDia,
+          o.userData.funnelHeight, o.userData.funnelSpoutLen, o.userData.funnelWall, o.userData.segments || 48, o.userData.funnelBevel)
+      : buildConeTubeGeo(o.userData.ctTopDia, o.userData.ctBotDia, o.userData.ctTopIn,
+          o.userData.ctBotIn, o.userData.ctHeight, o.userData.segments || 48, o.userData.ctBevel, !!o.userData.ctFloor);
     const geoT = _displaceForMesh(o, base, pat, amp, freq, inv, sym, ori, whr);
     base.dispose && base.dispose();
     if (geoT) { o.geometry.dispose(); o.geometry = geoT; }
@@ -8726,6 +8732,14 @@ function buildFunnelGeo(topDiaMM, spoutDiaMM, heightMM, spoutLenMM, wallMM, segs
     { p:[rSpoutI, ys], f:0,    c:0    },           // Knick innen
     { p:[rSpoutI, y0], f:botF, c:botC },           // innen unten
   ];
+  return _revolveCorners(corners, segs);
+}
+
+// Geschlossene Eckenliste (corners = [{p:[r,y], f:filletUnits, c:chamferUnits}, …]) um die
+// Y-Achse rotieren: Ecken via _bevelCorner runden/fasen, harte Punkte verdoppeln (scharfe
+// Kante), Wicklung einheitlich nach außen. Reine Achs-Segmente (r=0 → r=0) werden über-
+// sprungen (nur Null-Flächen). Genutzt von Trichter und Konischem Rohr. Maße in Units.
+function _revolveCorners(corners, segs) {
   // Eckenbevel → flacher Profil-Punktstrom mit Härteflags
   const Pr = [], hard = [], N = corners.length;
   for (let i = 0; i < N; i++) {
@@ -8748,6 +8762,7 @@ function buildFunnelGeo(topDiaMM, spoutDiaMM, heightMM, spoutLenMM, wallMM, segs
   for (let i = 0; i < M; i++) {
     const s = ptStart[i], e = ptEnd[(i+1)%M], ra = rows[s], rb = rows[e];
     if (Math.abs(ra[0]-rb[0]) < 1e-9 && Math.abs(ra[1]-rb[1]) < 1e-9) continue;  // degeneriert
+    if (ra[0] < 1e-9 && rb[0] < 1e-9) continue;   // Achs-Segment: erzeugt nur Null-Flächen
     const baseA = s*segs, baseB = e*segs;
     for (let j = 0; j < segs; j++) {
       const jn = (j + 1) % segs;                    // sauberer Naht-Wrap (keine Seam-Linie)
@@ -8821,6 +8836,116 @@ function fpFunnelSet(key, val) {
     if (key === 'botchamfer' && v > 0) bv.botRound   = 0;
   } else {
     o.userData[prop] = v;
+  }
+  o.scale.set(1, 1, 1);
+  _fpRebuildGeo(o);
+  const b = getMeshBox(o); if (Math.abs(b.min.y) > 1e-4) o.position.y -= b.min.y;
+  _fpSyncValues();
+  if (selectedObjs.length > 0) _doRepositionDimHandles();
+}
+
+// ═══ KONISCHES ROHR ═══════════════════════════════════════════════════════
+// Rohr mit getrennt wählbarem Außen- UND Innendurchmesser oben und unten →
+// konische Außen- und Innenwand (Adapter, Reduzierstück, Düse, Standfuß).
+// Gleiche Machart wie der Trichter: geschlossenes Wandprofil um die Y-Achse
+// rotiert, die mm-Maße sind die Quelle (Geometrie wird bei Änderung neu gebaut,
+// Scale bleibt 1). Ansonsten wie das Rohr: optionaler Boden (geschlossen →
+// Becher, Bodendicke = untere Wandstärke) und Außenkanten oben/unten wahlweise
+// gerundet oder gefast. Wasserdicht/druckbar.
+function buildConeTubeGeo(topDiaMM, botDiaMM, topInDiaMM, botInDiaMM, heightMM, segs, bevel, withFloor) {
+  const U = 0.1;                                   // mm → Units
+  segs = Math.max(8, Math.round(segs || 48));
+  const H   = Math.max(0.2, (heightMM || 30) * U);
+  const rTO = Math.max(0.05, (topDiaMM || 16) / 2 * U);
+  const rBO = Math.max(0.05, (botDiaMM || 24) / 2 * U);
+  // Innen: mindestens 0,4 mm Loch und 0,4 mm Wand zur Außenseite
+  const rTI = Math.max(0.02, Math.min((topInDiaMM || 12) / 2 * U, rTO - 0.04));
+  const rBI = Math.max(0.02, Math.min((botInDiaMM || 20) / 2 * U, rBO - 0.04));
+  const y0 = -H / 2, y1 = H / 2;
+  const b = bevel || {};
+  const topF = Math.max(0, b.topRound || 0) * U, topC = Math.max(0, b.topChamfer || 0) * U;
+  const botF = Math.max(0, b.botRound || 0) * U, botC = Math.max(0, b.botChamfer || 0) * U;
+  let corners;
+  if (withFloor) {
+    // Boden: Dicke = untere Wandstärke (wie beim Rohr), Innenwand bleibt konisch
+    const yf  = y0 + Math.max(0.04, Math.min(rBO - rBI, H * 0.8));
+    const rIF = rBI + (rTI - rBI) * (yf - y0) / H;   // Innenradius auf Bodenhöhe
+    corners = [
+      { p:[rBO, y0], f:botF, c:botC },   // außen unten
+      { p:[rTO, y1], f:topF, c:topC },   // außen oben
+      { p:[rTI, y1], f:0, c:0 },         // Deckelring → Innenwand (scharf)
+      { p:[rIF, yf], f:0, c:0 },         // Innenwand → Innenboden
+      { p:[0,   yf], f:0, c:0 },         // Innenboden (Achse)
+      { p:[0,   y0], f:0, c:0 },         // Vollboden (Achse)
+    ];
+  } else {
+    corners = [
+      { p:[rBO, y0], f:botF, c:botC },   // außen unten
+      { p:[rTO, y1], f:topF, c:topC },   // außen oben
+      { p:[rTI, y1], f:0, c:0 },         // innen oben
+      { p:[rBI, y0], f:0, c:0 },         // innen unten
+    ];
+  }
+  return _revolveCorners(corners, segs);
+}
+
+function addConeTube() {
+  saveUndo();
+  const isHole = shapeMode === 'hole';
+  const color  = isHole ? '#f03030' : currentColor;
+  const mat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color), roughness: 0.38, metalness: 0.05,
+    transparent: !!isHole, opacity: isHole ? 0.52 : 1.0, side: THREE.DoubleSide });
+  const p = { topDia: 16, botDia: 24, topIn: 12, botIn: 20, height: 30 };
+  const geo = buildConeTubeGeo(p.topDia, p.botDia, p.topIn, p.botIn, p.height, 48);
+  geo.computeBoundingBox();
+  const halfH = Math.max(0, -geo.boundingBox.min.y);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true; mesh.receiveShadow = true; mesh.scale.setScalar(1.0);
+  _updateObjEdgeLines(mesh);
+  _wpSpawnMesh(mesh, halfH);
+  typeCounts['conetube'] = (typeCounts['conetube'] || 0) + 1;
+  mesh.userData = {
+    id: idCtr++, type: 'conetube', shapeType: 'conetube',
+    name: (typeNames['conetube'] || 'Konisches Rohr') + ' ' + typeCounts['conetube'],
+    color, isHole, segments: 48,
+    ctTopDia: p.topDia, ctBotDia: p.botDia, ctTopIn: p.topIn, ctBotIn: p.botIn,
+    ctHeight: p.height, ctFloor: false,
+    ctBevel: { topRound: 0, topChamfer: 0, botRound: 0, botChamfer: 0 },
+    displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
+    displacementInvert: false, displacementSymmetric: false
+  };
+  scene.add(mesh); objects.push(mesh); selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
+  notify((typeNames['conetube'] || 'Konisches Rohr') + ' hinzugefügt', 'ok');
+}
+
+// Konisches-Rohr-Parameter (mm) ändern → Geometrie neu bauen. Wie beim Trichter:
+// Maße sind die einzige Wahrheit, Scale wird zurückgesetzt, Boden bleibt auf der Platte.
+function fpConeTubeSet(key, val) {
+  const o = getFirst(); if (!o || o.userData.shapeType !== 'conetube') return;
+  if (key === 'floor') {
+    saveUndoDebounced();
+    o.userData.ctFloor = !!val;
+  } else {
+    const v = parseFloat(val); if (!(v >= 0)) return;
+    const bevKey = { topround:'topRound', topchamfer:'topChamfer',
+                     botround:'botRound', botchamfer:'botChamfer' }[key];
+    const prop = { topdia:'ctTopDia', botdia:'ctBotDia', topin:'ctTopIn',
+                   botin:'ctBotIn', height:'ctHeight' }[key];
+    if (!bevKey && !prop) return;
+    saveUndoDebounced();
+    if (bevKey) {
+      const bv = o.userData.ctBevel ||
+        (o.userData.ctBevel = { topRound:0, topChamfer:0, botRound:0, botChamfer:0 });
+      bv[bevKey] = v;
+      // Fase und Rundung schließen sich je Kante aus (wie bei Box/Trichter/Rohr)
+      if (key === 'topround'   && v > 0) bv.topChamfer = 0;
+      if (key === 'topchamfer' && v > 0) bv.topRound   = 0;
+      if (key === 'botround'   && v > 0) bv.botChamfer = 0;
+      if (key === 'botchamfer' && v > 0) bv.botRound   = 0;
+    } else {
+      o.userData[prop] = v;
+    }
   }
   o.scale.set(1, 1, 1);
   _fpRebuildGeo(o);
@@ -10985,6 +11110,16 @@ function buildObjectFromData(data) {
     obj.userData.funnelBevel    = data.funnelBevel ? { ...data.funnelBevel }
                                   : { topRound:0, topChamfer:0, botRound:0, botChamfer:0 };
   }
+  if (data.shapeType === 'conetube' || data.type === 'conetube') {   // Konisches Rohr: Maße zurück
+    obj.userData.ctTopDia = data.ctTopDia != null ? data.ctTopDia : 16;
+    obj.userData.ctBotDia = data.ctBotDia != null ? data.ctBotDia : 24;
+    obj.userData.ctTopIn  = data.ctTopIn  != null ? data.ctTopIn  : 12;
+    obj.userData.ctBotIn  = data.ctBotIn  != null ? data.ctBotIn  : 20;
+    obj.userData.ctHeight = data.ctHeight != null ? data.ctHeight : 30;
+    obj.userData.ctFloor  = !!data.ctFloor;
+    obj.userData.ctBevel  = data.ctBevel ? { ...data.ctBevel }
+                            : { topRound:0, topChamfer:0, botRound:0, botChamfer:0 };
+  }
   if (data._hollowFlip) obj.userData._hollowFlip = true;
   if (data.varExprs) obj.userData.varExprs = { ...data.varExprs };
   if (data.opJournal) obj.userData.opJournal = data.opJournal;
@@ -11021,7 +11156,7 @@ function buildObjectFromData(data) {
   // die Form verlieren (Kegelstumpf→Spitze, Trichter/Polygon→Box). _fpRebuildGeo baut
   // aus userData neu; für unbekannte Typen ist es ein No-op (default: return).
   if (obj.isMesh && !data.geometry &&
-      (['tube','funnel','cone','torus','polygon','paraboloid'].includes(obj.userData.shapeType) ||
+      (['tube','funnel','conetube','cone','torus','polygon','paraboloid'].includes(obj.userData.shapeType) ||
        (obj.userData.shapeType === 'pyramid' && obj.userData.capBevel)))
     _fpRebuildGeo(obj);
   return obj;
@@ -11101,6 +11236,13 @@ function objectToData(o) {
     d.funnelSpoutLen = o.userData.funnelSpoutLen;
     d.funnelWall     = o.userData.funnelWall;
     if (o.userData.funnelBevel) d.funnelBevel = { ...o.userData.funnelBevel };
+  }
+  if (o.userData.shapeType === 'conetube') {   // Konisches Rohr: Maße sind die Quelle
+    d.ctTopDia = o.userData.ctTopDia; d.ctBotDia = o.userData.ctBotDia;
+    d.ctTopIn  = o.userData.ctTopIn;  d.ctBotIn  = o.userData.ctBotIn;
+    d.ctHeight = o.userData.ctHeight;
+    if (o.userData.ctFloor) d.ctFloor = true;
+    if (o.userData.ctBevel) d.ctBevel = { ...o.userData.ctBevel };
   }
   if (o.userData.edgeBevels) d.edgeBevels = o.userData.edgeBevels;
   // Skizzen-/Loft-/Sweep-Körper: Rebuild-Parameter mitspeichern, sonst sind die
@@ -11220,7 +11362,30 @@ function addBohrung() {
 let _plugMode = false, _plugGhosts = [], _plugTarget = null;
 
 function _detectThroughHoles(target) {
-  const circles = _objectFeatures(target).circles;
+  // Kreise vom Ziel UND von berührenden Solids einsammeln: nach dem Bohren mit
+  // Überlappung liegt der Rand eines Lochs teils auf der Platte, teils auf dem
+  // Stopfen — zusammen ergeben die Bögen wieder das volle Loch.
+  target.updateMatrixWorld(true);
+  const tbb = new THREE.Box3().setFromObject(target).expandByScalar(0.5);
+  let circles = [];
+  const pt = new THREE.Vector3();
+  for (const o of objects) {
+    if (o.userData.isHole || o.visible === false) continue;
+    for (const c of _objectFeatures(o).circles) {
+      if (tbb.containsPoint(pt.set(c.cx, c.cy, c.cz))) circles.push(c);
+    }
+  }
+  // Gleiche Kreise aus zwei Körpern (Platte + Stopfen) zusammenlegen
+  {
+    const uniq = [];
+    for (const c of circles) {
+      const dup = uniq.find(u => Math.abs(u.r-c.r) <= Math.max(0.02, u.r*0.05)
+        && Math.abs(u.nx*c.nx + u.ny*c.ny + u.nz*c.nz) > 0.98
+        && Math.hypot(u.cx-c.cx, u.cy-c.cy, u.cz-c.cz) <= Math.max(0.03, u.r*0.15));
+      if (!dup) uniq.push(c);
+    }
+    circles = uniq;
+  }
   // Paare: gleicher Radius (±5 %), parallele Achsen, Zentrum B auf Achse A
   const used = new Set(), holes = [];
   for (let i = 0; i < circles.length; i++) {
@@ -18313,45 +18478,114 @@ function _objectFeatures(o) {
     if (sharp) feat.push(e);
   }
   if (!feat.length || feat.length > 60000) return res;
-  // 3) Geschlossene Schleifen laufen → Kreis-Fit (Bohrungsränder)
+  // 3) Feature-Kanten zu Ketten verbinden (an Verzweigungen und scharfen Knicken
+  //    trennen) → Kreis-Fit auch für TEIL-Bögen: überlappt ein neues Loch ein
+  //    altes (oder deckt ein Stopfen einen Teil des Rands ab), ist der Lochrand
+  //    kein geschlossener Kreis mehr — ein Bogen ab ~126° reicht zur Erkennung.
   const adj = new Map();
-  feat.forEach((e, i) => { (adj.get(e.a) || adj.set(e.a, []).get(e.a)).push(i); (adj.get(e.b) || adj.set(e.b, []).get(e.b)).push(i); });
+  feat.forEach((e, i) => {
+    if (!adj.has(e.a)) adj.set(e.a, []);
+    adj.get(e.a).push(i);
+    if (!adj.has(e.b)) adj.set(e.b, []);
+    adj.get(e.b).push(i);
+  });
   const used = new Uint8Array(feat.length);
-  const inLoop = new Uint8Array(feat.length);
+  const inCircle = new Uint8Array(feat.length);
+  const dirTo = (from, to) => {
+    const p = vpos[from], q = vpos[to];
+    const dx = q[0]-p[0], dy = q[1]-p[1], dz = q[2]-p[2];
+    const l = Math.hypot(dx, dy, dz) || 1;
+    return [dx/l, dy/l, dz/l];
+  };
+  function extendChain(chainV, chainE, closedRef) {
+    for (;;) {
+      const cur = chainV[chainV.length-1], prev = chainV[chainV.length-2];
+      const all = adj.get(cur) || [];
+      if (all.length !== 2) return;                       // Verzweigung oder loses Ende
+      const cand = all.filter(i => !used[i]);
+      if (cand.length !== 1) return;
+      const e = cand[0], nxt = feat[e].a === cur ? feat[e].b : feat[e].a;
+      const d1 = dirTo(prev, cur), d2 = dirTo(cur, nxt);
+      if (d1[0]*d2[0] + d1[1]*d2[1] + d1[2]*d2[2] < 0.75) return;   // scharfer Knick (>~41°), z. B. Bogen-auf-Bogen-Schnitt
+      used[e] = 1; chainE.push(e);
+      if (nxt === chainV[0]) { closedRef.c = true; return; }
+      chainV.push(nxt);
+    }
+  }
+  const chains = [];
   for (let s = 0; s < feat.length; s++) {
     if (used[s]) continue;
-    const start = feat[s].a; let cur = feat[s].b, prevE = s;
-    used[s] = 1; const chain = [s];
-    while (cur !== start) {
-      const cand = (adj.get(cur) || []).filter(i => i !== prevE && !used[i]);
-      if (cand.length !== 1) { chain.length = 0; break; }   // Verzweigung/Ende → keine saubere Schleife
-      prevE = cand[0]; used[prevE] = 1; chain.push(prevE);
-      cur = feat[prevE].a === cur ? feat[prevE].b : feat[prevE].a;
-    }
-    if (chain.length < 8) continue;
-    // Punktfolge der Schleife einsammeln
-    const ptIds = new Set(); chain.forEach(i => { ptIds.add(feat[i].a); ptIds.add(feat[i].b); });
-    const pts = [...ptIds].map(i => vpos[i]);
-    let cx=0, cy=0, cz=0; pts.forEach(p => { cx+=p[0]; cy+=p[1]; cz+=p[2]; });
-    cx/=pts.length; cy/=pts.length; cz/=pts.length;
-    let r=0; const rr = pts.map(p => { const d=Math.hypot(p[0]-cx,p[1]-cy,p[2]-cz); r+=d; return d; });
-    r/=pts.length;
-    if (r < 0.05 || r > 50) continue;
-    if (rr.some(d => Math.abs(d-r) > Math.max(0.08*r, 0.025))) continue;   // nicht rund
-    // Newell-Normale + Planarität
+    used[s] = 1;
+    const chainV = [feat[s].a, feat[s].b], chainE = [s];
+    const closedRef = { c: false };
+    extendChain(chainV, chainE, closedRef);
+    if (!closedRef.c) { chainV.reverse(); extendChain(chainV, chainE, closedRef); }
+    chains.push({ v: chainV, e: chainE, closed: closedRef.c });
+  }
+  for (const ch of chains) {
+    if (ch.v.length < 6) continue;
+    const pts = ch.v.map(i => vpos[i]);
+    let mx=0, my=0, mz=0;
+    pts.forEach(p => { mx+=p[0]; my+=p[1]; mz+=p[2]; });
+    mx/=pts.length; my/=pts.length; mz/=pts.length;
+    // Ebenen-Normale: gemittelte Kreuzprodukte aufeinanderfolgender Sehnen um den Zentroid
     let nx=0, ny=0, nz=0;
-    for (let i=0; i<pts.length; i++) { const p=pts[i], q=pts[(i+1)%pts.length];
-      nx += (p[1]-q[1])*(p[2]+q[2]); ny += (p[2]-q[2])*(p[0]+q[0]); nz += (p[0]-q[0])*(p[1]+q[1]); }
-    const nl = Math.hypot(nx,ny,nz); if (nl < 1e-9) continue;
+    for (let i=0; i+1<pts.length; i++) {
+      const ax=pts[i][0]-mx, ay=pts[i][1]-my, az=pts[i][2]-mz;
+      const bx=pts[i+1][0]-mx, by=pts[i+1][1]-my, bz=pts[i+1][2]-mz;
+      nx += ay*bz-az*by; ny += az*bx-ax*bz; nz += ax*by-ay*bx;
+    }
+    const nl = Math.hypot(nx, ny, nz); if (nl < 1e-9) continue;   // gerade Kette
     nx/=nl; ny/=nl; nz/=nl;
-    if (pts.some(p => Math.abs((p[0]-cx)*nx + (p[1]-cy)*ny + (p[2]-cz)*nz) > Math.max(0.05*r, 0.03))) continue;
-    chain.forEach(i => inLoop[i] = 1);
-    res.circles.push({ cx, cy, cz, nx, ny, nz, r });
+    // In-Ebenen-Basis: u = h × n (h nicht parallel zu n), v = n × u
+    const hx = Math.abs(ny) > 0.9 ? 1 : 0, hy = Math.abs(ny) > 0.9 ? 0 : 1;
+    let ux = hy*nz, uy = -hx*nz, uz = hx*ny - hy*nx;
+    const ul = Math.hypot(ux, uy, uz) || 1; ux/=ul; uy/=ul; uz/=ul;
+    const vx = ny*uz-nz*uy, vy = nz*ux-nx*uz, vz = nx*uy-ny*ux;
+    // Kasa-Kreis-Fit (kleinste Quadrate) in 2D: x²+y² = 2Ax + 2By + C
+    let Sx=0, Sy=0, Sxx=0, Syy=0, Sxy=0, Sq=0, Sqx=0, Sqy=0;
+    const p2 = pts.map(p => {
+      const dx=p[0]-mx, dy=p[1]-my, dz=p[2]-mz;
+      const x = dx*ux + dy*uy + dz*uz, y = dx*vx + dy*vy + dz*vz;
+      const q = x*x + y*y;
+      Sx+=x; Sy+=y; Sxx+=x*x; Syy+=y*y; Sxy+=x*y; Sq+=q; Sqx+=q*x; Sqy+=q*y;
+      return [x, y];
+    });
+    const N = pts.length;
+    const a11=Sxx, a12=Sxy, a13=Sx, a22=Syy, a23=Sy, a33=N;
+    const det = a11*(a22*a33-a23*a23) - a12*(a12*a33-a23*a13) + a13*(a12*a23-a22*a13);
+    if (Math.abs(det) < 1e-12) continue;
+    const A2 = (Sqx*(a22*a33-a23*a23) - a12*(Sqy*a33-a23*Sq) + a13*(Sqy*a23-a22*Sq)) / det;
+    const B2 = (a11*(Sqy*a33-a23*Sq) - Sqx*(a12*a33-a23*a13) + a13*(a12*Sq-Sqy*a13)) / det;
+    const C  = (a11*(a22*Sq-Sqy*a23) - a12*(a12*Sq-Sqy*a13) + Sqx*(a12*a23-a22*a13)) / det;
+    const A = A2/2, B = B2/2;
+    const r = Math.sqrt(Math.max(0, C + A*A + B*B));
+    if (!isFinite(r) || r < 0.05 || r > 50) continue;
+    if (p2.some(([x,y]) => Math.abs(Math.hypot(x-A, y-B) - r) > Math.max(0.06*r, 0.02))) continue;   // nicht rund
+    if (pts.some(p => Math.abs((p[0]-mx)*nx + (p[1]-my)*ny + (p[2]-mz)*nz) > Math.max(0.05*r, 0.03))) continue;   // nicht eben
+    // Bogen-Abdeckung: 2π minus größte Winkellücke um das Zentrum
+    const angs = p2.map(([x,y]) => Math.atan2(y-B, x-A)).sort((a,b)=>a-b);
+    let maxGap = angs[0] + 2*Math.PI - angs[angs.length-1];
+    for (let i = 1; i < angs.length; i++) maxGap = Math.max(maxGap, angs[i]-angs[i-1]);
+    if (!ch.closed && (2*Math.PI - maxGap) < 2.2) continue;       // offener Bogen: mind. ~126°
+    ch.e.forEach(i => inCircle[i] = 1);
+    res.circles.push({ cx: mx + ux*A + vx*B, cy: my + uy*A + vy*B, cz: mz + uz*A + vz*B, nx, ny, nz, r });
+  }
+  // Doppelt erkannte Kreise (z. B. zwei Bögen desselben Lochrands) zusammenlegen
+  {
+    const uniq = [];
+    for (const c of res.circles) {
+      const dup = uniq.find(u => Math.abs(u.r-c.r) <= Math.max(0.02, u.r*0.05)
+        && Math.abs(u.nx*c.nx + u.ny*c.ny + u.nz*c.nz) > 0.98
+        && Math.hypot(u.cx-c.cx, u.cy-c.cy, u.cz-c.cz) <= Math.max(0.03, u.r*0.15));
+      if (!dup) uniq.push(c);
+    }
+    res.circles = uniq;
   }
   // 4) Gerade Kanten: kollineare Feature-Kanten zu langen Segmenten bündeln
   const lines = new Map();
   for (let i = 0; i < feat.length; i++) {
-    if (inLoop[i]) continue;
+    if (inCircle[i]) continue;
     const a = vpos[feat[i].a], b = vpos[feat[i].b];
     let dx=b[0]-a[0], dy=b[1]-a[1], dz=b[2]-a[2];
     const len = Math.hypot(dx,dy,dz); if (len < 1e-4) continue;
@@ -26174,7 +26408,7 @@ function _fpBuildRows(type, o) {
 
   // Early return only for generic/OCCT types that have no dedicated switch case and no texture support
   const _ownPanelTypes = ['box','cylinder','tube','cone','pyramid','torus','sphere','wedge','star','import',
-                          'polygon','paraboloid','sphericalshell','spring','bentpipe','thread','funnel'];
+                          'polygon','paraboloid','sphericalshell','spring','bentpipe','thread','funnel','conetube'];
   if (isBoxGeom && !_ownPanelTypes.includes(type)) {
     // Ausgehöhlter Kegel (occtShape 'cone') → Umdreh-Schalter, damit die Gehäuse-
     // Öffnung nach oben/unten kann (z. B. Öffnung oben am Kegelstumpf)
@@ -26286,6 +26520,27 @@ function _fpBuildRows(type, o) {
              row('Rand oben abschrägen', 'fp-fn-tc', r2((u.funnelBevel&&u.funnelBevel.topChamfer)||0), "fpFunnelSet('topchamfer',this.value)", 'mm', 0, 20, 0.5) +
              row('Tülle unten abrunden', 'fp-fn-br', r2((u.funnelBevel&&u.funnelBevel.botRound)||0),   "fpFunnelSet('botround',this.value)",   'mm', 0, 20, 0.5) +
              row('Tülle unten abschräg.','fp-fn-bc', r2((u.funnelBevel&&u.funnelBevel.botChamfer)||0), "fpFunnelSet('botchamfer',this.value)", 'mm', 0, 20, 0.5) +
+             '<div class="fp-sep"></div>' +
+             row('Seiten', 'fp-seg', segs||48, "fpApplySegs(this.value)", '', 8, 256, 1) +
+             _dispRows();
+    }
+    case 'conetube': {
+      const u = o.userData;
+      // Bevel-Maximum: kleinste Wandstärke (oben/unten) bzw. halbe Höhe
+      const wallMin = Math.min((u.ctTopDia||16) - (u.ctTopIn||12), (u.ctBotDia||24) - (u.ctBotIn||20)) / 2;
+      const maxMm = Math.max(0.1, r2(Math.min(wallMin, (u.ctHeight||30) / 2) * 0.98));
+      const bv = u.ctBevel || {};
+      return row('Außen-Ø oben',  'fp-ct-to', r2(u.ctTopDia||16), "fpConeTubeSet('topdia',this.value)", 'mm', 1, 500) +
+             row('Außen-Ø unten', 'fp-ct-bo', r2(u.ctBotDia||24), "fpConeTubeSet('botdia',this.value)", 'mm', 1, 500) +
+             row('Innen-Ø oben',  'fp-ct-ti', r2(u.ctTopIn||12),  "fpConeTubeSet('topin',this.value)",  'mm', 0.4, 500) +
+             row('Innen-Ø unten', 'fp-ct-bi', r2(u.ctBotIn||20),  "fpConeTubeSet('botin',this.value)",  'mm', 0.4, 500) +
+             row('Höhe',          'fp-ct-h',  r2(u.ctHeight||30), "fpConeTubeSet('height',this.value)", 'mm', 1, 500) +
+             `<label class="fp-check-lbl"><input type="checkbox" id="fp-ct-floor" ${u.ctFloor ? 'checked' : ''} onchange="fpConeTubeSet('floor',this.checked)"> Boden (geschlossen)</label>` +
+             '<div class="fp-sep"></div>' +
+             row('Außen oben abrunden',   'fp-ct-tr', r2(bv.topRound||0),   "fpConeTubeSet('topround',this.value)",   'mm', 0, maxMm, 0.1) +
+             row('Außen oben abschrägen', 'fp-ct-tc', r2(bv.topChamfer||0), "fpConeTubeSet('topchamfer',this.value)", 'mm', 0, maxMm, 0.1) +
+             row('Außen unten abrunden',  'fp-ct-br', r2(bv.botRound||0),   "fpConeTubeSet('botround',this.value)",   'mm', 0, maxMm, 0.1) +
+             row('Außen unten abschräg.', 'fp-ct-bc', r2(bv.botChamfer||0), "fpConeTubeSet('botchamfer',this.value)", 'mm', 0, maxMm, 0.1) +
              '<div class="fp-sep"></div>' +
              row('Seiten', 'fp-seg', segs||48, "fpApplySegs(this.value)", '', 8, 256, 1) +
              _dispRows();
@@ -26617,6 +26872,18 @@ function _fpSyncValues() {
         set('fp-fn-tr', r2(bv.topRound||0));   set('fp-fn-tc', r2(bv.topChamfer||0));
         set('fp-fn-br', r2(bv.botRound||0));   set('fp-fn-bc', r2(bv.botChamfer||0)); }
       set('fp-seg',      o.userData.segments||48); break;
+    case 'conetube': {
+      set('fp-ct-to', r2(o.userData.ctTopDia||16));
+      set('fp-ct-bo', r2(o.userData.ctBotDia||24));
+      set('fp-ct-ti', r2(o.userData.ctTopIn||12));
+      set('fp-ct-bi', r2(o.userData.ctBotIn||20));
+      set('fp-ct-h',  r2(o.userData.ctHeight||30));
+      const fc = document.getElementById('fp-ct-floor'); if (fc) fc.checked = !!o.userData.ctFloor;
+      const bv = o.userData.ctBevel || {};
+      set('fp-ct-tr', r2(bv.topRound||0)); set('fp-ct-tc', r2(bv.topChamfer||0));
+      set('fp-ct-br', r2(bv.botRound||0)); set('fp-ct-bc', r2(bv.botChamfer||0));
+      set('fp-seg', o.userData.segments||48); break;
+    }
     case 'cone': case 'pyramid':
       set('fp-r', r2(sz.x*10)); set('fph', h);
       if (type === 'cone') set('fp-ctop', r2(sz.x*10*(o.userData.coneTop||0)));
@@ -27198,6 +27465,11 @@ function _fpRebuildGeo(o) {
     case 'funnel':
       geo = buildFunnelGeo(o.userData.funnelTopDia, o.userData.funnelSpoutDia,
         o.userData.funnelHeight, o.userData.funnelSpoutLen, o.userData.funnelWall, segs || 48, o.userData.funnelBevel);
+      break;
+    case 'conetube':
+      geo = buildConeTubeGeo(o.userData.ctTopDia, o.userData.ctBotDia,
+        o.userData.ctTopIn, o.userData.ctBotIn, o.userData.ctHeight,
+        segs || 48, o.userData.ctBevel, !!o.userData.ctFloor);
       break;
     case 'torus': {
       const tr = o.userData.tubeRatio || 0.35;
@@ -28434,6 +28706,7 @@ const CMDK = [
   {i:'🍩',g:'Form',t:'Torus',k:'ring donut',run:()=>addShape('torus')},
   {i:'🔻',g:'Form',t:'Pyramide',k:'pyramid',run:()=>addShape('pyramid')},
   {i:'🫙',g:'Form',t:'Rohr',k:'tube',run:()=>addShape('tube')},
+  {i:'🥤',g:'Form',t:'Konisches Rohr',k:'conetube konisch rohr adapter reduzierstueck',run:()=>addConeTube()},
   {i:'⭐',g:'Form',t:'Stern',k:'star',run:()=>addShape('star')},
   {i:'🔶',g:'Form',t:'Keil',k:'wedge',run:()=>addShape('wedge')},
   {i:'⬡',g:'Form',t:'Polygon',k:'n-eck',run:()=>addShape('polygon')},
