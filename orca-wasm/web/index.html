@@ -140,6 +140,16 @@
 
   <button id="btnSlice" disabled>Slicen</button>
   <button id="btnDownload" class="secondary" disabled>G-Code herunterladen</button>
+
+  <div id="sendPanel" hidden style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.6rem .8rem">
+    <label style="opacity:1;font-size:.85rem">🖨️ An Drucker senden</label>
+    <select id="sendPrinter" style="margin:.3rem 0"></select>
+    <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;opacity:1;margin:.2rem 0">
+      <input type="checkbox" id="sendStart" style="width:auto" checked> Druck sofort starten</label>
+    <button id="btnSend" class="secondary" disabled style="width:100%">Senden</button>
+    <div id="sendStatus" style="font-size:.8rem;margin-top:.35rem"></div>
+  </div>
+
   <div id="stats"></div>
 </aside>
 
@@ -813,6 +823,7 @@ function handleMessage(e) {
     const layers = parseGcode(lastGcode);
     showToolpaths(layers);
     $('btnDownload').disabled = false;
+    updateSend();
     updateToolbar();
     const grab = re => (lastGcode.match(re) || [,''])[1];
     $('stats').innerHTML = [
@@ -873,6 +884,47 @@ $('btnDownload').onclick = () => {
   a.click();
   URL.revokeObjectURL(a.href);
 };
+
+// ---------- An Drucker senden (über die Bridge) ----------
+// Bridge auf demselben Host, Port 7781 (HTTP oder HTTPS wie die Seite)
+const BRIDGE = `${location.protocol}//${location.hostname}:7781`;
+async function initBridge() {
+  try {
+    const printers = await (await fetch(`${BRIDGE}/api/printers`, { signal: AbortSignal.timeout(3000) })).json();
+    if (!printers.length) return;   // Brücke da, aber keine Drucker konfiguriert
+    $('sendPrinter').innerHTML = printers.map(p =>
+      `<option value="${p.id}">${p.name}${p.lan ? '' : ' (Cloud)'}</option>`).join('');
+    $('sendPanel').hidden = false;
+  } catch { /* keine Bridge erreichbar → Panel bleibt versteckt */ }
+}
+function updateSend() {
+  const has = !$('btnDownload').disabled && $('sendPrinter').options.length;
+  $('btnSend').disabled = !has;
+}
+$('btnSend').onclick = async () => {
+  $('btnSend').disabled = true;
+  $('sendStatus').textContent = 'Sende …';
+  try {
+    const r = await fetch(`${BRIDGE}/api/send`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        printerId: $('sendPrinter').value,
+        filename: modelName.replace(/\.[^.]+$/, '') + '.gcode',
+        gcode: lastGcode, start: $('sendStart').checked,
+      }),
+    });
+    const j = await r.json();
+    if (r.ok) {
+      $('sendStatus').innerHTML = `<span class="ok">✅ Gesendet (${j.path}${j.print?.acked ? ', Druck bestätigt' : ''})</span>`;
+    } else {
+      $('sendStatus').innerHTML = `<span class="err">${j.error || 'Fehler'}</span>`;
+    }
+  } catch (e) {
+    $('sendStatus').innerHTML = `<span class="err">Bridge nicht erreichbar</span>`;
+  }
+  $('btnSend').disabled = false;
+};
+initBridge();
 </script>
 </body>
 </html>
