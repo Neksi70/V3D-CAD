@@ -241,6 +241,17 @@
       <select id="devPrinter"></select>
       <span id="devState" class="devBadge"></span>
     </div>
+    <div class="devCard" id="devCamCard">
+      <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+        <label style="opacity:1;margin:0">📷 Kamera</label>
+        <input id="camIp" placeholder="Drucker-IP" style="width:9rem">
+        <input id="camCode" placeholder="Zugangscode" style="width:8rem">
+        <button id="camBtn" class="secondary" style="padding:.4rem .8rem">Starten</button>
+        <small id="camHint" style="opacity:.6"></small>
+      </div>
+      <img id="camImg" hidden style="width:100%;max-width:640px;border-radius:10px;margin-top:.6rem;background:#000">
+    </div>
+
     <div id="devJob" class="devCard">
       <div class="devJobTop"><b id="devJobName">–</b><span id="devJobEta"></span></div>
       <div class="devBar"><div id="devBarFill"></div></div>
@@ -323,7 +334,7 @@ const DEV_STATE = { IDLE: ['bereit','off'], RUNNING: ['druckt','run'], PAUSE: ['
                     FINISH: ['fertig','off'], FAILED: ['Fehler','pause'], PREPARE: ['bereitet vor','run'],
                     SLICING: ['sliced','run'] };
 let deviceTimer = null;
-function stopDevicePolling() { clearInterval(deviceTimer); deviceTimer = null; }
+function stopDevicePolling() { clearInterval(deviceTimer); deviceTimer = null; if (typeof stopCam === 'function') stopCam(); }
 function startDevicePolling() {
   stopDevicePolling();
   if ($('devPrinter').value !== $('sendPrinter').value && $('sendPrinter').value)
@@ -385,6 +396,30 @@ $('devPause').onclick = () => control('pause');
 $('devResume').onclick = () => control('resume');
 $('devStop').onclick = () => { if (confirm('Druck wirklich abbrechen?')) control('stop'); };
 $('devLight').onclick = () => control($('devLight').dataset.next || 'light_on');
+
+// ---------- Live-Kamera (LAN, RTSP→MJPEG über die Brücke) ----------
+$('camIp').value = localStorage.getItem('vs-cam-ip') || '';
+$('camCode').value = localStorage.getItem('vs-cam-code') || '';
+let camOn = false;
+function stopCam() {
+  camOn = false;
+  $('camImg').hidden = true; $('camImg').src = '';   // Request abbrechen → ffmpeg beendet sich
+  $('camBtn').textContent = 'Starten';
+}
+$('camBtn').onclick = () => {
+  if (camOn) { stopCam(); $('camHint').textContent = ''; return; }
+  const ip = $('camIp').value.trim(), code = $('camCode').value.trim();
+  if (!ip || !code) { $('camHint').textContent = 'IP und Zugangscode nötig (Drucker-Display → Nur-LAN-Bereich)'; return; }
+  localStorage.setItem('vs-cam-ip', ip); localStorage.setItem('vs-cam-code', code);
+  camOn = true;
+  $('camBtn').textContent = 'Stoppen';
+  $('camHint').textContent = 'Verbinde …';
+  const img = $('camImg');
+  img.hidden = false;
+  img.onload = () => { $('camHint').textContent = 'Live'; };
+  img.onerror = () => { if (camOn) $('camHint').textContent = 'Kein Bild — „Liveansicht im LAN-Modus" am Drucker aktiv?'; };
+  img.src = `${BRIDGE}/api/camera?sid=${encodeURIComponent(sid)}&ip=${encodeURIComponent(ip)}&code=${encodeURIComponent(code)}&t=${Date.now()}`;
+};
 
 function enterApp(email) {
   $('loginGate').hidden = true;

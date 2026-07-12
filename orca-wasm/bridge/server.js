@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const http = require('http');
+const { spawn } = require('child_process');
 const express = require('express');
 const lan = require('./lan');
 const cloud = require('./cloud');
@@ -164,6 +165,26 @@ app.post('/api/send', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Live-Kamera: RTSP-over-TLS (Port 322, X1-Protokoll) → MJPEG für den Browser.
+// ffmpeg transkodiert; <img src> mit multipart/x-mixed-replace zeigt es an.
+// sid im Query (img kann keine Header setzen); ip/code streng validiert
+// (kein Shell — spawn mit Args-Array, verhindert Injection).
+app.get('/api/camera', (req, res) => {
+  if (!cloud.session(req.query.sid)) return res.status(401).end();
+  const ip = String(req.query.ip || '');
+  const code = String(req.query.code || '');
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) || !/^[A-Za-z0-9]{4,16}$/.test(code))
+    return res.status(400).end('ungültige IP/Code');
+  const url = `rtsps://bblp:${code}@${ip}:322/streaming/live/1`;
+  const ff = spawn('ffmpeg', ['-rtsp_transport', 'tcp', '-i', url,
+    '-an', '-f', 'mpjpeg', '-q:v', '6', '-r', '10', '-loglevel', 'error', 'pipe:1']);
+  res.setHeader('Content-Type', 'multipart/x-mixed-replace; boundary=ffmpeg');
+  ff.stdout.pipe(res);
+  ff.stderr.on('data', d => { const s = d.toString(); if (s.trim()) console.log('[cam]', s.trim().slice(0, 120)); });
+  const kill = () => { try { ff.kill('SIGKILL'); } catch {} };
+  req.on('close', kill); res.on('close', kill); ff.on('exit', () => { try { res.end(); } catch {} });
 });
 
 function start() {
