@@ -1030,7 +1030,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.42<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.43<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <div id="burger-wrap">
@@ -1563,7 +1563,7 @@ const firebaseConfig = {
     <div class="cb" onclick="smartDuplicate()" title="Strg+D">⧉</div>
     <div class="cb" onclick="dropToGround()" title="D">▽</div>
     <div class="cb" onclick="addBohrung()" title="Bohrung setzen (vertikal, durchgehend)" style="color:var(--red)">⊙</div>
-    <div class="cb" onclick="plugHoles()" title="Löcher verschließen — erkennt Durchgangslöcher und setzt passende Stopfen ein">🩹</div>
+    <div class="cb" onclick="plugHoles()" title="Löcher verschließen — vorhandene Durchgangslöcher bekommen Stopfen, markierte geplante Bohrungen werden entfernt">🩹</div>
     <div class="cb" id="nudge-btn" onclick="toggleNudge()" title="Exakt versetzen — Auswahl um X mm in eine Richtung schieben">✥</div>
     <div class="cb" onclick="deleteSelected()" title="Del" style="color:var(--red)">🗑</div>
   </div>
@@ -11259,14 +11259,29 @@ function plugHoles() {
   if (!target) { notify('Erst das Objekt mit den Löchern auswählen', 'w'); return; }
   if (target.userData.isHole) { notify('Auswahl ist eine Bohrung — bitte den Körper auswählen', 'w'); return; }
   const holes = _detectThroughHoles(target);
-  if (!holes.length) { notify('Keine durchgehenden Löcher erkannt (nur Durchgangslöcher mit rundem Rand werden gefunden)', 'w'); return; }
+  // Geplante (noch nicht abgezogene) Bohrungen — rote Hole-Objekte — zählen auch
+  // als „Löcher": Verschließen entfernt dann einfach die Bohrung.
+  const drills = objects.filter(o => o.userData.isHole && o.visible !== false && o !== target);
+  if (!holes.length && !drills.length) { notify('Keine Löcher erkannt (Durchgangslöcher mit rundem Rand oder geplante Bohrungen)', 'w'); return; }
   _plugMode = true; _plugTarget = target; _plugGhosts = [];
   deselect();
+  const ghostMat = () => new THREE.MeshStandardMaterial({ color: 0x9aa7b4, transparent: true, opacity: 0.35, roughness: 0.5 });
   for (const p of holes) {
-    const mesh = new THREE.Mesh(buildGeo('cylinder'),
-      new THREE.MeshStandardMaterial({ color: 0x9aa7b4, transparent: true, opacity: 0.35, roughness: 0.5 }));
+    const mesh = new THREE.Mesh(buildGeo('cylinder'), ghostMat());
     _plugOrient(mesh, p, 0.005, 0.05);   // Geist ragt 0,5 mm je Seite raus → sicht-/klickbar
-    mesh.userData._plugHole = p; mesh.userData._plugOn = false;
+    mesh.userData._plugHole = p; mesh.userData._plugOn = false; mesh.userData._ownGeo = true;
+    mesh.renderOrder = 5;
+    scene.add(mesh); _plugGhosts.push(mesh);
+  }
+  for (const d of drills) {
+    d.updateMatrixWorld(true);
+    let gm = null;
+    d.traverse(ch => { if (!gm && ch.isMesh && ch.geometry && !ch.userData.isEdgeLines) gm = ch; });
+    if (!gm) continue;
+    const mesh = new THREE.Mesh(gm.geometry, ghostMat());   // Geometrie geteilt — nicht disposen
+    gm.matrixWorld.decompose(mesh.position, mesh.quaternion, mesh.scale);
+    mesh.scale.multiplyScalar(1.03);
+    mesh.userData._plugDrill = d; mesh.userData._plugOn = false;
     mesh.renderOrder = 5;
     scene.add(mesh); _plugGhosts.push(mesh);
   }
@@ -11292,7 +11307,7 @@ function _plugClick(e) {
 }
 function _plugAll(on) { _plugGhosts.forEach(g => _plugSetGhost(g, on)); }
 function _plugCleanup() {
-  _plugGhosts.forEach(g => { scene.remove(g); g.material.dispose(); });
+  _plugGhosts.forEach(g => { scene.remove(g); g.material.dispose(); if (g.userData._ownGeo) g.geometry.dispose(); });
   _plugGhosts = []; _plugMode = false; _plugTarget = null;
   const hud = document.getElementById('plug-hud');
   if (hud) hud.style.display = 'none';
@@ -11304,7 +11319,15 @@ function _plugApply() {
   saveUndo();
   const col = (_plugTarget && _plugTarget.userData.color) || currentColor;
   const madeObjs = [];
+  let removedDrills = 0;
   for (const g of sel) {
+    // Geplante Bohrung „verschließen" = das rote Hole-Objekt entfernen
+    if (g.userData._plugDrill) {
+      const d = g.userData._plugDrill;
+      const i = objects.indexOf(d);
+      if (i >= 0) { scene.remove(d); objects.splice(i, 1); removedDrills++; }
+      continue;
+    }
     const p = g.userData._plugHole;
     const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(col), roughness: 0.38, metalness: 0.05 });
     const mesh = new THREE.Mesh(buildGeo('cylinder'), mat);   // r1, h2, Achse Y
@@ -11323,8 +11346,12 @@ function _plugApply() {
     scene.add(mesh); objects.push(mesh); madeObjs.push(mesh);
   }
   _plugCleanup();
-  selectObjs(madeObjs); updateTree();
-  notify(madeObjs.length + ' Loch/Löcher verschlossen — Stopfen sind eigene Objekte (einzeln löschbar). Fürs Bohren danach alles zusammen auswählen → ⊖ Abziehen', 'ok');
+  if (madeObjs.length) selectObjs(madeObjs);
+  updateTree();
+  const parts = [];
+  if (madeObjs.length) parts.push(madeObjs.length + ' Loch/Löcher mit Stopfen verschlossen (einzeln löschbar)');
+  if (removedDrills) parts.push(removedDrills + ' geplante Bohrung(en) entfernt');
+  notify(parts.join(' · ') + (madeObjs.length ? '. Fürs Bohren danach alles zusammen auswählen → ⊖ Abziehen' : ''), 'ok');
 }
 
 function copySelected() {
@@ -24348,8 +24375,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.42';
+const VOLME3D_VERSION = '1.15.43';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.43', date:'2026-07-12', changes:[
+    ['🩹','Löcher verschließen kennt jetzt auch die NEUEN Löcher: Noch nicht abgezogene (rote) Bohrungen erscheinen im 🩹-Modus ebenfalls als anklickbare Geister — markieren und „Verschließen" entfernt die geplante Bohrung wieder. Und nach dem ⊖ Abziehen werden frisch gebohrte Löcher genauso erkannt wie die aus dem Import.'],
+  ]},
   { version:'1.15.42', date:'2026-07-12', changes:[
     ['🩹','Löcher verschließen jetzt mit Auswahl: Nach dem Klick auf 🩹 zeigen alle erkannten Durchgangslöcher einen grauen Geister-Stopfen — anklicken markiert (grün), was verschlossen werden soll; „Alle"/„Keine" in der Leiste unten, Enter (oder „✓ Verschließen") setzt die Stopfen, Esc bricht ab.'],
   ]},
