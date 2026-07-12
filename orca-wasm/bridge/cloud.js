@@ -31,22 +31,44 @@ async function api(region, pathname, body) {
 }
 
 function uidFromToken(access) {
-  try {
-    const p = JSON.parse(Buffer.from(access.split('.')[1], 'base64').toString());
-    return p.username || ('u_' + (p.uid || p.sub || ''));
-  } catch { return null; }
+  // Falls doch ein JWT: username-Claim direkt nehmen
+  if (typeof access === 'string' && access.split('.').length === 3) {
+    try {
+      const p = JSON.parse(Buffer.from(access.split('.')[1], 'base64url').toString());
+      if (p.username) return p.username;
+      if (p.uid) return 'u_' + p.uid;
+    } catch {}
+  }
+  return null;
 }
 
-function newSession(access, region, email) {
+// User-ID über einen Profil-Endpunkt holen (Bambu-Token ist opak, kein JWT).
+// MQTT-Nutzername ist dann "u_<uid>". design-user-service/my/profile liefert
+// uid zuverlässig; die anderen als Fallback.
+async function fetchUid(access, region) {
+  for (const ep of ['/v1/design-user-service/my/profile', '/v1/user-service/my/preference']) {
+    try {
+      const r = await fetch(host(region).api + ep, { headers: { Authorization: 'Bearer ' + access } });
+      const j = await r.json().catch(() => ({}));
+      const uid = j.uid || j.userId || j.user_id || j.uidStr;
+      if (uid) return 'u_' + uid;
+    } catch {}
+  }
+  return null;
+}
+
+async function newSession(access, region, email) {
   const sid = crypto.randomBytes(24).toString('hex');
-  sessions.set(sid, { access, uid: uidFromToken(access), region, email, created: Date.now() });
+  const uid = uidFromToken(access) || await fetchUid(access, region);
+  if (!uid) console.warn('[login] Warnung: keine uid ermittelt — Cloud-MQTT wird scheitern');
+  sessions.set(sid, { access, uid, region, email, created: Date.now() });
   return sid;
 }
 
 // Login → { ok, sid } | { needCode:true } | { error }
 async function login({ email, password, region }) {
   const { json } = await api(region, '/v1/user-service/user/login', { account: email, password });
-  if (json.accessToken) return { ok: true, sid: newSession(json.accessToken, region, email) };
+  if (json.accessToken) return { ok: true, sid: await newSession(json.accessToken, region, email) };
   if (json.loginType === 'verifyCode' || json.tfaKey || json.loginType === 'tfa') {
     await api(region, '/v1/user-service/user/sendemail/code', { email, type: 'codeLogin' });
     return { ok: false, needCode: true };
@@ -65,7 +87,7 @@ async function requestCode({ email, region }) {
 // 2FA-/Login-Mailcode einlösen → { ok, sid }
 async function verifyCode({ email, code, region }) {
   const { json } = await api(region, '/v1/user-service/user/login', { account: email, code });
-  if (json.accessToken) return { ok: true, sid: newSession(json.accessToken, region, email) };
+  if (json.accessToken) return { ok: true, sid: await newSession(json.accessToken, region, email) };
   return { ok: false, error: json.error || json.message || 'Code ungültig' };
 }
 
