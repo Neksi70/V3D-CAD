@@ -33,8 +33,30 @@ function loadOpenCascade() {
 
 let _oc = null;
 async function getOC() {
+  // Vorsorge-Recycle: Die WASM-Instanz leckt pro Operation (OCCT-Shapes werden
+  // nicht freigegeben) — nach Tagen Dauerbetrieb wächst der Heap bis zum Trap
+  // ("memory access out of bounds"). Bevor es so weit kommt: frisch laden.
+  if (_oc && _oc.HEAPU8 && _oc.HEAPU8.length > 1400 * 1024 * 1024) {
+    console.warn('[OCCT] Heap bei', Math.round(_oc.HEAPU8.length / 1048576), 'MB — Instanz wird vorsorglich neu geladen');
+    _oc = null;
+  }
   if (!_oc) _oc = await loadOpenCascade();
   return _oc;
+}
+
+// Nach einem WASM-Trap (RuntimeError) ist die Instanz nicht mehr vertrauenswürdig:
+// weitere Booleans darauf können STILL falsche Geometrie liefern (Cut "OK", aber
+// Müll). Instanz verwerfen → der nächste Aufruf lädt frisch. In jedem Routen-catch
+// aufrufen. Gibt true zurück, wenn es ein fataler WASM-Fehler war.
+function ocFatal(e) {
+  const msg = String((e && e.message) || e);
+  const fatal = e instanceof WebAssembly.RuntimeError ||
+    /memory access out of bounds|unreachable|table index is out of bounds|null function or function signature|Aborted\(/i.test(msg);
+  if (fatal && _oc) {
+    console.error('[OCCT] WASM-Trap (' + msg + ') — Instanz wird verworfen, nächster Aufruf lädt neu');
+    _oc = null;
+  }
+  return fatal;
 }
 
 // ── STL Binary Parser ─────────────────────────────────────────────────────────
@@ -191,7 +213,9 @@ function computeMaxBlindDepth(tris, matrixE, svgPathData, scale, cx, cy, margin)
 }
 
 // ── STL via OCCT-FS lesen → Solid (mit Sewing, Tolerance 1mm) ────────────────
-function stlToOCCTSolid(oc, stlBuf, keep) {
+// warn: optionales Array — sammelt Hinweise (z.B. verworfene offene Hüllen),
+// die die Route ans Frontend durchreicht, statt Geometrie STILL zu verlieren.
+function stlToOCCTSolid(oc, stlBuf, keep, warn) {
   try {
     // OCCTs ASCII/Binär-Heuristik scannt auf Non-ASCII-Bytes. Ein Binär-STL aus
     // lauter "glatten" Koordinaten (z.B. 10.0 → 00 00 20 41) besteht komplett aus
@@ -262,10 +286,14 @@ function stlToOCCTSolid(oc, stlBuf, keep) {
             result = bop(oc, 'BRepAlgoAPI_Fuse_3', result, solids[i], localKeep, `Shell-Fuse ${i}`);
           console.log(`[stl2occt] ${shells.length} Shells → ${solids.length} geschlossene Solids gefust` +
                       (dropped ? `, ${dropped} offene/degenerierte übersprungen` : ''));
+          if (dropped && Array.isArray(warn))
+            warn.push(`${dropped} von ${shells.length} Hüllen war(en) nicht geschlossen und wurden verworfen — dem Ergebnis kann Geometrie fehlen`);
           return result;
         } catch(eF) { console.log('[stl2occt] Shell-Fuse failed:', eF.message); }
       } else {
         console.log(`[stl2occt] ${shells.length} Shells, keine geschlossene Hülle → Fallback`);
+        if (Array.isArray(warn))
+          warn.push(`Mesh besteht aus ${shells.length} nicht geschlossenen Hüllen — Boolean-Ergebnis kann fehlerhaft sein`);
       }
     }
 
@@ -893,6 +921,7 @@ app.post('/api/occt-subtract', async (req, res) => {
     res.json({ resultStlBase64: outBuf.toString('base64'), inlayStlBase64: inlayB64 });
 
   } catch (e) {
+    ocFatal(e);
     console.error('[occt-subtract] Fehler:', e);
     res.json({ error: e.message || String(e) });
   }
@@ -1085,13 +1114,14 @@ app.post('/api/occt-union', async (req, res) => {
     // Jeder Körper → eigenes Solid. Durchdringungen löst erst das Fuse, daher
     // bewusst NICHT vorher zu einer einzigen Triangle-Soup zusammenführen.
     const solids = [];
+    const warn = [];
     for (let i = 0; i < list.length; i++) {
       try {
         const buf = Buffer.from(list[i], 'base64');
-        const s = stlToOCCTSolid(oc, buf, keep);
+        const s = stlToOCCTSolid(oc, buf, keep, warn);
         if (!s) { console.log(`[union] Körper ${i}: STL → Solid fehlgeschlagen, übersprungen`); continue; }
         solids.push(s);
-      } catch (e) { console.log(`[union] Körper ${i}: ${e.message}`); }
+      } catch (e) { ocFatal(e); console.log(`[union] Körper ${i}: ${e.message}`); }
     }
     if (!solids.length) return res.json({ error: 'Kein Körper ergab ein gültiges Solid' });
 
@@ -1102,8 +1132,10 @@ app.post('/api/occt-union', async (req, res) => {
     result = unifySolid(oc, result);   // koplanare Flächen verschmelzen → sauberes Mesh
     const outBuf = solidToSTLBuffer(oc, result);
     console.log(`[union] OK — ${solids.length}/${list.length} Körper → ${outBuf.length} B STL`);
-    res.json({ stlBase64: outBuf.toString('base64'), bodies: solids.length });
+    res.json({ stlBase64: outBuf.toString('base64'), bodies: solids.length,
+               warning: warn.length ? warn.join(' · ') : undefined });
   } catch (e) {
+    ocFatal(e);
     console.error('[union] Fehler:', e);
     res.json({ error: e.message || String(e) });
   } finally {
@@ -1129,12 +1161,13 @@ app.post('/api/occt-subtract-mesh', async (req, res) => {
 
     // Solid(s) → ein Solid (mehrere zuerst fusen, falls Gruppe)
     const solids = [];
+    const warn = [];
     for (let i = 0; i < solidList.length; i++) {
       try {
-        const s = stlToOCCTSolid(oc, Buffer.from(solidList[i], 'base64'), keep);
+        const s = stlToOCCTSolid(oc, Buffer.from(solidList[i], 'base64'), keep, warn);
         if (s) solids.push(s);
         else console.log(`[subtract-mesh] Solid ${i}: STL → Solid fehlgeschlagen`);
-      } catch (e) { console.log(`[subtract-mesh] Solid ${i}: ${e.message}`); }
+      } catch (e) { ocFatal(e); console.log(`[subtract-mesh] Solid ${i}: ${e.message}`); }
     }
     if (!solids.length) return res.json({ error: 'Kein gültiges Solid' });
     let result = solids[0];
@@ -1145,10 +1178,10 @@ app.post('/api/occt-subtract-mesh', async (req, res) => {
     const tools = [];
     for (let i = 0; i < toolList.length; i++) {
       try {
-        const t = stlToOCCTSolid(oc, Buffer.from(toolList[i], 'base64'), keep);
+        const t = stlToOCCTSolid(oc, Buffer.from(toolList[i], 'base64'), keep, warn);
         if (t) tools.push(t);
         else console.log(`[subtract-mesh] Tool ${i}: STL → Solid fehlgeschlagen`);
-      } catch (e) { console.log(`[subtract-mesh] Tool ${i}: ${e.message}`); }
+      } catch (e) { ocFatal(e); console.log(`[subtract-mesh] Tool ${i}: ${e.message}`); }
     }
     if (!tools.length) return res.json({ error: 'Kein gültiges Werkzeug' });
     let tool = tools[0];
@@ -1160,8 +1193,10 @@ app.post('/api/occt-subtract-mesh', async (req, res) => {
 
     const outBuf = solidToSTLBuffer(oc, result);
     console.log(`[subtract-mesh] OK — ${solids.length} Solid − ${tools.length} Tool → ${outBuf.length} B STL`);
-    res.json({ stlBase64: outBuf.toString('base64') });
+    res.json({ stlBase64: outBuf.toString('base64'),
+               warning: warn.length ? warn.join(' · ') : undefined });
   } catch (e) {
+    ocFatal(e);
     console.error('[subtract-mesh] Fehler:', e);
     res.json({ error: e.message || String(e) });
   } finally {
@@ -1196,6 +1231,7 @@ app.post('/api/occt-step2stl', async (req, res) => {
     console.log(`[step2stl] OK — ${outBuf.length} B STL in ${Date.now()-t0} ms`);
     res.json({ stlBase64: outBuf.toString('base64'), roots: nRoots });
   } catch (e) {
+    ocFatal(e);
     console.error('[step2stl] Fehler:', e);
     res.json({ error: e.message || String(e) });
   }
@@ -1229,6 +1265,7 @@ app.post('/api/occt-stl2step', async (req, res) => {
     console.log(`[stl2step] OK — ${stepBuf.length} B STEP in ${Date.now()-t0} ms`);
     res.json({ stepBase64: Buffer.from(stepBuf).toString('base64') });
   } catch (e) {
+    ocFatal(e);
     console.error('[stl2step] Fehler:', e);
     res.json({ error: e.message || String(e) });
   } finally {
@@ -1309,6 +1346,7 @@ app.post('/api/occt-fit-check', async (req, res) => {
     console.log(`[fit-check] kein Überlapp, Abstand ${dist == null ? '?' : dist.toFixed(3)} mm in ${Date.now()-t0} ms`);
     res.json({ overlap: false, volumeMm3: 0, clearanceMm: dist, pA, pB });
   } catch (e) {
+    ocFatal(e);
     console.error('[fit-check] Fehler:', e);
     res.json({ error: e.message || String(e) });
   } finally {
