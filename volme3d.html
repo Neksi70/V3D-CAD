@@ -1030,7 +1030,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.40<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.41<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <div id="burger-wrap">
@@ -1563,6 +1563,7 @@ const firebaseConfig = {
     <div class="cb" onclick="smartDuplicate()" title="Strg+D">⧉</div>
     <div class="cb" onclick="dropToGround()" title="D">▽</div>
     <div class="cb" onclick="addBohrung()" title="Bohrung setzen (vertikal, durchgehend)" style="color:var(--red)">⊙</div>
+    <div class="cb" onclick="plugHoles()" title="Löcher verschließen — erkennt Durchgangslöcher und setzt passende Stopfen ein">🩹</div>
     <div class="cb" id="nudge-btn" onclick="toggleNudge()" title="Exakt versetzen — Auswahl um X mm in eine Richtung schieben">✥</div>
     <div class="cb" onclick="deleteSelected()" title="Del" style="color:var(--red)">🗑</div>
   </div>
@@ -11201,6 +11202,66 @@ function addBohrung() {
   scene.add(mesh); objects.push(mesh);
   selectObjs([target, mesh]); updateTree();
   notify('Bohrung gesetzt — Maße anpassen, dann ⊖ Abziehen', 'ok');
+}
+
+// ── Löcher verschließen: erkennt Durchgangslöcher (Paare koaxialer Kreis-Ränder
+// aus _objectFeatures) und setzt in jedes einen bündigen Stopfen-Zylinder mit
+// 0,05 mm Übermaß pro Seite. Stopfen sind eigene Objekte — einzeln löschbar,
+// wenn ein Loch doch offen bleiben soll.
+function plugHoles() {
+  const target = getFirst();
+  if (!target) { notify('Erst das Objekt mit den Löchern auswählen', 'w'); return; }
+  if (target.userData.isHole) { notify('Auswahl ist eine Bohrung — bitte den Körper auswählen', 'w'); return; }
+  const circles = _objectFeatures(target).circles;
+  // Paare: gleicher Radius (±5 %), parallele Achsen, Zentrum B auf Achse A
+  const used = new Set(), holes = [];
+  for (let i = 0; i < circles.length; i++) {
+    if (used.has(i)) continue;
+    for (let j = i + 1; j < circles.length; j++) {
+      if (used.has(j)) continue;
+      const a = circles[i], b = circles[j];
+      if (Math.abs(a.r - b.r) > Math.max(0.02, a.r * 0.05)) continue;
+      if (Math.abs(a.nx*b.nx + a.ny*b.ny + a.nz*b.nz) < 0.995) continue;
+      const dx = b.cx - a.cx, dy = b.cy - a.cy, dz = b.cz - a.cz;
+      const t = dx*a.nx + dy*a.ny + dz*a.nz;
+      const off2 = (dx - t*a.nx)**2 + (dy - t*a.ny)**2 + (dz - t*a.nz)**2;
+      if (off2 > Math.pow(Math.max(0.03, a.r * 0.1), 2)) continue;
+      const len = Math.abs(t);
+      if (len < 0.02 || len > 100) continue;
+      used.add(i); used.add(j);
+      holes.push({ cx: (a.cx+b.cx)/2, cy: (a.cy+b.cy)/2, cz: (a.cz+b.cz)/2,
+                   nx: a.nx, ny: a.ny, nz: a.nz, r: Math.max(a.r, b.r), h: len });
+      break;
+    }
+  }
+  if (!holes.length) { notify('Keine durchgehenden Löcher erkannt (nur Durchgangslöcher mit rundem Rand werden gefunden)', 'w'); return; }
+  saveUndo();
+  const col = target.userData.color || currentColor;
+  const madeObjs = [];
+  for (const p of holes) {
+    const R = p.r + 0.005;   // +0,05 mm Übermaß → überlappt sicher mit der Lochwand
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(col), roughness: 0.38, metalness: 0.05 });
+    const mesh = new THREE.Mesh(buildGeo('cylinder'), mat);   // r1, h2, Achse Y
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    mesh.scale.set(R, p.h / 2, R);
+    const n = new THREE.Vector3(p.nx, p.ny, p.nz).normalize();
+    if (n.y < 0) n.negate();
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), n);
+    mesh.position.set(p.cx, p.cy, p.cz);
+    _updateObjEdgeLines(mesh);
+    typeCounts['cylinder'] = (typeCounts['cylinder'] || 0) + 1;
+    mesh.userData = {
+      id: idCtr++, type: 'cylinder', shapeType: 'cylinder',
+      name: 'Stopfen Ø' + (p.r * 20).toFixed(1).replace('.', ','),
+      color: col, isHole: false,
+      fillet: 0, chamfer: 0, tubeWall: 2,
+      displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
+      displacementInvert: false, displacementSymmetric: false
+    };
+    scene.add(mesh); objects.push(mesh); madeObjs.push(mesh);
+  }
+  selectObjs(madeObjs); updateTree();
+  notify(madeObjs.length + ' Loch/Löcher verschlossen — Stopfen sind eigene Objekte (einzeln löschbar). Fürs Bohren danach alles zusammen auswählen → ⊖ Abziehen', 'ok');
 }
 
 function copySelected() {
@@ -24219,8 +24280,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.40';
+const VOLME3D_VERSION = '1.15.41';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.41', date:'2026-07-12', changes:[
+    ['🩹','Löcher verschließen mit einem Klick: Objekt auswählen → 🩹 im Auswahl-Popup. Alle Durchgangslöcher (runde Ränder, auch in STL/3MF-Importen) werden erkannt und mit bündigen Stopfen-Zylindern gefüllt (0,05 mm Übermaß pro Seite, gleiche Farbe). Die Stopfen sind normale Einzel-Objekte: Loch soll offen bleiben? Einfach dessen Stopfen löschen. Danach fürs Neu-Bohren alles zusammen auswählen → ⊖ Abziehen.'],
+  ]},
   { version:'1.15.40', date:'2026-07-12', changes:[
     ['✥','Exakt versetzen: Neuer ✥-Knopf im Auswahl-Popup (unten links) öffnet ein kleines Panel — Schrittweite in mm eintippen (z. B. 3,5) und die Auswahl per Richtungs-Knöpfen in ±X/±Z (Draufsicht) oder ▲▼ (Höhe) präzise schieben. Solange das Panel offen ist, springen auch die Pfeiltasten in genau dieser Schrittweite (Strg+↑/↓ = Höhe). Ideal, um eine gesnappte Bohrung kontrolliert um Millimeterbeträge zu versetzen.'],
   ]},
@@ -28321,6 +28385,7 @@ const CMDK = [
   {i:'💾',g:'Datei',t:'Design speichern',k:'save',run:()=>_localSave()},
   {i:'⬆',g:'Datei',t:'Importieren (STL/STEP/3MF/OBJ)',k:'import stl step 3mf obj',run:()=>doImport()},
   {i:'✥',g:'Bearbeiten',t:'Exakt versetzen (mm-Schritte)',k:'nudge versetzen verschieben offset schieben',run:()=>toggleNudge()},
+  {i:'🩹',g:'Bearbeiten',t:'Löcher verschließen (Stopfen)',k:'loch schliessen fuellen stopfen plug',run:()=>plugHoles()},
   {i:'📁',g:'Seite',t:'Meine Designs',k:'gallery galerie',run:()=>showDesigns()},
   {i:'📚',g:'Seite',t:'STL-Bibliothek',k:'library drucken',run:()=>_stlLibOpen()},
   {i:'🎓',g:'Seite',t:'Kurse',k:'tutorial kurs lektion lernen',run:()=>tutorMenu()},
