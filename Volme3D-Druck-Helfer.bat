@@ -26,7 +26,7 @@ exit /b
 # ===== Volme3D Druck-Helfer (eingebettetes PowerShell) =====
 $PORT = 7777
 $ALLOWED = @('https://v3da.tailf05fe9.ts.net')   # erlaubte Web-Adressen (+ localhost)
-$EXTS = @('.stl', '.3mf', '.obj')
+$EXTS = @('.stl', '.3mf', '.obj', '.step', '.stp')
 
 function Test-Origin($o) {
     if (-not $o) { return $false }
@@ -266,7 +266,7 @@ function Handle-Client($client) {
     for ($i = 1; $i -lt $lines.Count; $i++) { $ln = $lines[$i]; $idx = $ln.IndexOf(':'); if ($idx -gt 0) { $headers[$ln.Substring(0, $idx).Trim().ToLower()] = $ln.Substring($idx + 1).Trim() } }
     $origin = $headers['origin']; $cors = New-Cors $origin
     if ($method -eq 'OPTIONS') { Send-Bytes $stream '204 No Content' $cors 'text/plain' (New-Object byte[] 0); return }
-    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 9; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir); dir = (Get-RootDir); custom = [bool](Get-CustomDir) }) $origin; return }
+    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 10; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir); dir = (Get-RootDir); custom = [bool](Get-CustomDir) }) $origin; return }
     if ($method -eq 'GET' -and $path -eq '/list') {
         if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = 'origin not allowed' }) $origin; return }
         Send-Json $stream '200 OK' ([ordered]@{ ok = $true; dir = (Get-RootDir); custom = [bool](Get-CustomDir); files = @(Get-LibList) }) $origin; return
