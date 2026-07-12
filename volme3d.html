@@ -1028,7 +1028,7 @@ const firebaseConfig = {
   <!-- Zeile 1: Editier-Werkzeuge -->
   <div id="tb-r1">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>Volme<span style="color:#F97316">3D</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.38<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.39<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="sep"></div>
     <div id="burger-wrap">
@@ -10109,7 +10109,21 @@ function _doRepositionDimHandles() {
   });
 
   // ─── Snap-Kreis: Mitten-Snap auf anderes Objekt (Tinkercad-Stil) ──────
-  if (_centerSnapTarget) {
+  if (_centerSnapTarget && _centerSnapTarget.kind === 'edge') {
+    // Kanten-Snap: die getroffene Kante als gestrichelte Linie zeigen
+    const t = _centerSnapTarget;
+    const p1 = proj0(t.ax, t.ay, t.az), p2 = proj0(t.bx, t.by, t.bz);
+    if (p1 && p2) {
+      const ln = document.createElementNS(ns2, 'line');
+      ln.setAttribute('x1', p1.x.toFixed(1)); ln.setAttribute('y1', p1.y.toFixed(1));
+      ln.setAttribute('x2', p2.x.toFixed(1)); ln.setAttribute('y2', p2.y.toFixed(1));
+      ln.setAttribute('stroke', '#00c8ff');
+      ln.setAttribute('stroke-width', '2.5');
+      ln.setAttribute('stroke-dasharray', '6 4');
+      ln.setAttribute('opacity', '0.95');
+      svg.appendChild(ln);
+    }
+  } else if (_centerSnapTarget) {
     const t = _centerSnapTarget, N = 48, pts = [];
     // In-Ebenen-Basis u,v senkrecht zur Flächennormale → Kreis liegt in der Fläche
     const n = new THREE.Vector3(t.nx, t.ny, t.nz);
@@ -14250,7 +14264,27 @@ window.addEventListener('mousemove', e => {
       if (d1) o1.rotation.set(d1.rx, d1.ry, d1.rz); // Ausgangsdrehung wiederherstellen
       o1.updateMatrixWorld(true);
       const tgt = _centerSnapDetect(o1);
-      if (tgt) {
+      if (tgt && tgt.kind === 'circle') {
+        // Bohrungs-Snap: Achse ausrichten (bei schrägem Loch + Zylinder/Rohr) und
+        // Zentrum auf die Loch-Achse projizieren — die Zieh-Höhe bleibt erhalten.
+        const n = new THREE.Vector3(tgt.nx, tgt.ny, tgt.nz);
+        const st = o1.userData.shapeType;
+        if (Math.abs(n.y) < 0.999 && (st === 'cylinder' || st === 'tube')) {
+          if (n.y < 0) n.negate();
+          o1.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), n);
+          o1.updateMatrixWorld(true);
+        }
+        const wc = getMeshBox(o1).getCenter(new THREE.Vector3());
+        const t = (wc.x - tgt.cx)*n.x + (wc.y - tgt.cy)*n.y + (wc.z - tgt.cz)*n.z;
+        o1.position.x += (tgt.cx + n.x*t) - wc.x;
+        o1.position.y += (tgt.cy + n.y*t) - wc.y;
+        o1.position.z += (tgt.cz + n.z*t) - wc.z;
+      } else if (tgt && tgt.kind === 'edge') {
+        // Kanten-Snap: Zentrum (nur XZ) auf die Kantenlinie ziehen
+        const wc = getMeshBox(o1).getCenter(new THREE.Vector3());
+        o1.position.x += tgt.px - wc.x;
+        o1.position.z += tgt.pz - wc.z;
+      } else if (tgt) {
         const n = new THREE.Vector3(tgt.nx, tgt.ny, tgt.nz);
         const tilted = Math.max(Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)) < 0.999;
         if (tilted) {
@@ -18013,6 +18047,119 @@ function _objectPlanarFaces(o) {
   return faces;
 }
 
+// ── Merkmals-Erkennung fürs Snap: Bohrungs-Kreise + gerade Kanten ──────────
+// Findet im Mesh (auch STL/3MF-Import) Feature-Kanten (Knick > ~25° oder offener
+// Rand), daraus: geschlossene Kreis-Schleifen = Bohrungs-/Zylinder-Ränder
+// (Mittelpunkt, Radius, Achse) und lange gerade Kanten (Segmente). Welt-
+// Koordinaten, pro Objekt gecacht (Matrix-Signatur wie _pfCache).
+function _objectFeatures(o) {
+  o.updateMatrixWorld(true);
+  const sig = o.matrixWorld.elements.map(v => v.toFixed(3)).join(',');
+  if (o.userData._featCache && o.userData._featCache.sig === sig) return o.userData._featCache;
+  const res = { sig, circles: [], edges: [] };
+  o.userData._featCache = res;
+  let triTotal = 0;
+  o.traverse(ch => { if (ch.isMesh && ch.geometry && !ch.userData.isEdgeLines) { const p = ch.geometry.attributes.position; if (p) triTotal += (ch.geometry.index ? ch.geometry.index.count : p.count) / 3; } });
+  if (!triTotal || triTotal > 150000) return res;   // zu groß → nur Flächen-Snap
+  // 1) Vertices verschweißen + Kanten mit Nachbar-Normalen sammeln
+  const vid = new Map(), vpos = [];
+  const edges = new Map();   // "i_j" (i<j) → {a,b,n1,n2,len}
+  const va=new THREE.Vector3(), vb=new THREE.Vector3(), vc=new THREE.Vector3();
+  const e1=new THREE.Vector3(), e2=new THREE.Vector3(), nn=new THREE.Vector3();
+  const wid = p => { const k = Math.round(p.x*1000)+','+Math.round(p.y*1000)+','+Math.round(p.z*1000);
+    let id = vid.get(k); if (id === undefined) { id = vpos.length; vpos.push([p.x,p.y,p.z]); vid.set(k,id); } return id; };
+  o.traverse(ch => {
+    if (!ch.isMesh || !ch.geometry || ch.userData.isEdgeLines) return;
+    const g = ch.geometry, pos = g.attributes.position; if (!pos) return;
+    const index = g.index, mw = ch.matrixWorld, triN = index ? index.count/3 : pos.count/3;
+    for (let t = 0; t < triN; t++) {
+      const i0=index?index.getX(t*3):t*3, i1=index?index.getX(t*3+1):t*3+1, i2=index?index.getX(t*3+2):t*3+2;
+      va.fromBufferAttribute(pos,i0).applyMatrix4(mw);
+      vb.fromBufferAttribute(pos,i1).applyMatrix4(mw);
+      vc.fromBufferAttribute(pos,i2).applyMatrix4(mw);
+      e1.subVectors(vb,va); e2.subVectors(vc,va); nn.crossVectors(e1,e2);
+      const l = nn.length(); if (l < 1e-9) continue;
+      const n = [nn.x/l, nn.y/l, nn.z/l];
+      const ids = [wid(va), wid(vb), wid(vc)];
+      for (let k = 0; k < 3; k++) {
+        let a = ids[k], b = ids[(k+1)%3]; if (a === b) continue;
+        if (a > b) { const tmp=a; a=b; b=tmp; }
+        const key = a+'_'+b;
+        let e = edges.get(key);
+        if (!e) { e = { a, b, n1: n, n2: null }; edges.set(key, e); }
+        else if (!e.n2) e.n2 = n;
+      }
+    }
+  });
+  // 2) Feature-Kanten: offener Rand oder Knick > ~25°
+  const feat = [];
+  for (const e of edges.values()) {
+    const sharp = !e.n2 || (e.n1[0]*e.n2[0] + e.n1[1]*e.n2[1] + e.n1[2]*e.n2[2]) < 0.906;
+    if (sharp) feat.push(e);
+  }
+  if (!feat.length || feat.length > 60000) return res;
+  // 3) Geschlossene Schleifen laufen → Kreis-Fit (Bohrungsränder)
+  const adj = new Map();
+  feat.forEach((e, i) => { (adj.get(e.a) || adj.set(e.a, []).get(e.a)).push(i); (adj.get(e.b) || adj.set(e.b, []).get(e.b)).push(i); });
+  const used = new Uint8Array(feat.length);
+  const inLoop = new Uint8Array(feat.length);
+  for (let s = 0; s < feat.length; s++) {
+    if (used[s]) continue;
+    const start = feat[s].a; let cur = feat[s].b, prevE = s;
+    used[s] = 1; const chain = [s];
+    while (cur !== start) {
+      const cand = (adj.get(cur) || []).filter(i => i !== prevE && !used[i]);
+      if (cand.length !== 1) { chain.length = 0; break; }   // Verzweigung/Ende → keine saubere Schleife
+      prevE = cand[0]; used[prevE] = 1; chain.push(prevE);
+      cur = feat[prevE].a === cur ? feat[prevE].b : feat[prevE].a;
+    }
+    if (chain.length < 8) continue;
+    // Punktfolge der Schleife einsammeln
+    const ptIds = new Set(); chain.forEach(i => { ptIds.add(feat[i].a); ptIds.add(feat[i].b); });
+    const pts = [...ptIds].map(i => vpos[i]);
+    let cx=0, cy=0, cz=0; pts.forEach(p => { cx+=p[0]; cy+=p[1]; cz+=p[2]; });
+    cx/=pts.length; cy/=pts.length; cz/=pts.length;
+    let r=0; const rr = pts.map(p => { const d=Math.hypot(p[0]-cx,p[1]-cy,p[2]-cz); r+=d; return d; });
+    r/=pts.length;
+    if (r < 0.05 || r > 50) continue;
+    if (rr.some(d => Math.abs(d-r) > Math.max(0.08*r, 0.025))) continue;   // nicht rund
+    // Newell-Normale + Planarität
+    let nx=0, ny=0, nz=0;
+    for (let i=0; i<pts.length; i++) { const p=pts[i], q=pts[(i+1)%pts.length];
+      nx += (p[1]-q[1])*(p[2]+q[2]); ny += (p[2]-q[2])*(p[0]+q[0]); nz += (p[0]-q[0])*(p[1]+q[1]); }
+    const nl = Math.hypot(nx,ny,nz); if (nl < 1e-9) continue;
+    nx/=nl; ny/=nl; nz/=nl;
+    if (pts.some(p => Math.abs((p[0]-cx)*nx + (p[1]-cy)*ny + (p[2]-cz)*nz) > Math.max(0.05*r, 0.03))) continue;
+    chain.forEach(i => inLoop[i] = 1);
+    res.circles.push({ cx, cy, cz, nx, ny, nz, r });
+  }
+  // 4) Gerade Kanten: kollineare Feature-Kanten zu langen Segmenten bündeln
+  const lines = new Map();
+  for (let i = 0; i < feat.length; i++) {
+    if (inLoop[i]) continue;
+    const a = vpos[feat[i].a], b = vpos[feat[i].b];
+    let dx=b[0]-a[0], dy=b[1]-a[1], dz=b[2]-a[2];
+    const len = Math.hypot(dx,dy,dz); if (len < 1e-4) continue;
+    dx/=len; dy/=len; dz/=len;
+    if (dx < -1e-6 || (Math.abs(dx)<1e-6 && (dy < -1e-6 || (Math.abs(dy)<1e-6 && dz < 0)))) { dx=-dx; dy=-dy; dz=-dz; }
+    const t0 = a[0]*dx + a[1]*dy + a[2]*dz;
+    const ox = a[0]-t0*dx, oy = a[1]-t0*dy, oz = a[2]-t0*dz;   // Fußpunkt der Linie
+    const key = Math.round(dx*30)+','+Math.round(dy*30)+','+Math.round(dz*30)+'|'+Math.round(ox*8)+','+Math.round(oy*8)+','+Math.round(oz*8);
+    const t1 = b[0]*dx + b[1]*dy + b[2]*dz;
+    let L = lines.get(key);
+    if (!L) { L = { dx, dy, dz, ox, oy, oz, tmin: Math.min(t0,t1), tmax: Math.max(t0,t1), cov: 0 }; lines.set(key, L); }
+    L.tmin = Math.min(L.tmin, t0, t1); L.tmax = Math.max(L.tmax, t0, t1); L.cov += len;
+  }
+  for (const L of lines.values()) {
+    const span = L.tmax - L.tmin;
+    if (span < 1.2 || L.cov < span*0.5) continue;   // nur lange, weitgehend durchgehende Kanten
+    res.edges.push({ ax: L.ox+L.dx*L.tmin, ay: L.oy+L.dy*L.tmin, az: L.oz+L.dz*L.tmin,
+                     bx: L.ox+L.dx*L.tmax, by: L.oy+L.dy*L.tmax, bz: L.oz+L.dz*L.tmax });
+  }
+  if (res.edges.length > 400) res.edges.length = 400;
+  return res;
+}
+
 // Bounding-Box eines Objekts in seinem lokalen Frame (ohne eigene Welt-Drehung/
 // -Skalierung) → liefert die wahre Höhe entlang der lokalen Y-Achse.
 function _objectLocalBox(o) {
@@ -18050,6 +18197,41 @@ function _centerSnapDetect(draggedObj) {
   const myS = _worldToScreen(myCtr.x, myCtr.y, myCtr.z);
   if (!myS) return null;
   const camP = new THREE.Vector3(); camera.getWorldPosition(camP);
+  // 1) Bohrungs-/Kreis-Ränder — stärkstes Ziel: Zentrum rastet auf die Loch-Achse
+  //    (Projektion des Objektzentrums auf die Achse → Höhe bleibt beim Nutzer).
+  let bestC = null, bestCPx = 45;
+  for (const o of objects) {
+    if (o === draggedObj || o.userData.isEdgeLines || selectedObjs.includes(o)) continue;
+    for (const c of _objectFeatures(o).circles) {
+      const s = _worldToScreen(c.cx, c.cy, c.cz);
+      if (!s) continue;
+      const px = Math.hypot(s.x - myS.x, s.y - myS.y);
+      if (px < bestCPx) { bestCPx = px; bestC = { kind: 'circle', obj: o, cx: c.cx, cy: c.cy, cz: c.cz, nx: c.nx, ny: c.ny, nz: c.nz, r: c.r }; }
+    }
+  }
+  if (bestC) { _centerSnapTarget = bestC; return bestC; }
+  // 2) Gerade Feature-Kanten — Zentrum rastet (nur XZ) auf die Kantenlinie
+  let bestE = null, bestEPx = 28;
+  for (const o of objects) {
+    if (o === draggedObj || o.userData.isEdgeLines || selectedObjs.includes(o)) continue;
+    for (const eg of _objectFeatures(o).edges) {
+      const s1 = _worldToScreen(eg.ax, eg.ay, eg.az), s2 = _worldToScreen(eg.bx, eg.by, eg.bz);
+      if (!s1 || !s2) continue;
+      const ddx = s2.x - s1.x, ddy = s2.y - s1.y, ll = ddx*ddx + ddy*ddy;
+      let t = ll > 1e-6 ? ((myS.x - s1.x)*ddx + (myS.y - s1.y)*ddy) / ll : 0;
+      t = Math.max(0, Math.min(1, t));
+      const px = Math.hypot(s1.x + ddx*t - myS.x, s1.y + ddy*t - myS.y);
+      if (px < bestEPx) {
+        bestEPx = px;
+        bestE = { kind: 'edge', obj: o,
+          px: eg.ax + (eg.bx - eg.ax)*t, py: eg.ay + (eg.by - eg.ay)*t, pz: eg.az + (eg.bz - eg.az)*t,
+          ax: eg.ax, ay: eg.ay, az: eg.az, bx: eg.bx, by: eg.by, bz: eg.bz,
+          cx: 0, cy: 0, cz: 0, nx: 0, ny: 1, nz: 0, r: 0 };
+      }
+    }
+  }
+  if (bestE) { _centerSnapTarget = bestE; return bestE; }
+  // 3) Flächen-Mitten (bisheriges Verhalten)
   let best = null, bestPx = 55; // Snap-Fang-Radius in Pixeln
   for (const o of objects) {
     if (o === draggedObj || o.userData.isEdgeLines || selectedObjs.includes(o)) continue;
@@ -23978,8 +24160,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.38';
+const VOLME3D_VERSION = '1.15.39';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.39', date:'2026-07-12', changes:[
+    ['🧲','Loch- und Kanten-Snap beim Verschieben: Die App erkennt an anderen Körpern (auch STL/3MF-Importen) automatisch Bohrungs-Ränder und lange gerade Kanten. Ein gezogenes Objekt — z. B. ein Bohrungs-Zylinder — rastet magnetisch auf die Loch-Achse (gestrichelter Kreis zeigt das Ziel, die Höhe bleibt wie gezogen) oder auf die Kantenlinie (gestrichelte Linie). Bei schrägen Löchern dreht sich ein Zylinder automatisch in die Loch-Achse. Ideal, um Bohrungen exakt auf vorhandene Löcher oder Kanten zu setzen.'],
+  ]},
   { version:'1.15.38', date:'2026-07-12', changes:[
     ['📚','Die Bibliothek (vorher „STL-Bibliothek") ist jetzt direkt in der Toolbar unter „Datei" — dafür ist der Import-Knopf ins ☰-Menü gewandert und versteht neben STL/STEP jetzt auch 3MF und OBJ. Neue Format-Reiter (Alle/STL/3MF/OBJ/STEP) filtern die Bibliothek per Klick.'],
     ['🧩','3MF richtig öffnen: Auch Bambu-/Orca-Projekt-3MFs (Geometrie in Unterdateien) und mehrteilige 3MFs laden jetzt sauber — mehrere Teile kommen automatisch als EINZELNE Objekte in die Szene (Original-Namen und Lage zueinander bleiben erhalten), einzeln verschieb-, färb- und boolebar.'],
