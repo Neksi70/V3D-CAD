@@ -54,6 +54,11 @@
   .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
   #stats { font-size: .85rem; line-height: 1.5; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: .6rem .8rem; }
   .row2 { display: flex; gap: .5rem; } .row2 > * { flex: 1; }
+  .axis { display: flex; align-items: center; gap: .4rem; margin: .25rem 0; }
+  .axis .ax { width: 1rem; font-size: .75rem; font-weight: 700; opacity: .7; text-align: center; }
+  .axis .ax.x { color: #d33; } .axis .ax.y { color: #2a2; } .axis .ax.z { color: #23c; }
+  .axis input[type="range"] { flex: 1; padding: 0; border: 0; background: transparent; }
+  .axis input[type="number"] { width: 4.6rem; padding: .25rem .4rem; font-size: .82rem; }
   #settings details { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: .35rem .6rem; margin-bottom: .5rem; }
   #settings summary { cursor: pointer; font-size: .85rem; font-weight: 600; padding: .25rem 0; }
   #settings .field { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin: .35rem 0; }
@@ -111,15 +116,21 @@
   <div id="settings"></div>
 
   <div id="objPanel" hidden style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.6rem .8rem">
-    <label style="opacity:1;font-size:.85rem">🧊 <b id="objName"></b> <small>(ziehen = verschieben)</small></label>
-    <div class="row2" style="margin-top:.4rem">
-      <div><label>X (mm)</label><input type="number" id="tDx" step="1" value="0"></div>
-      <div><label>Y (mm)</label><input type="number" id="tDy" step="1" value="0"></div>
+    <label style="opacity:1;font-size:.85rem">🧊 <b id="objName"></b> <small id="objSize"></small></label>
+
+    <label style="margin-top:.4rem">✥ Position (mm) <small>— oder Objekt ziehen</small></label>
+    <div class="row2">
+      <div><input type="number" id="pX" step="1"></div>
+      <div><input type="number" id="pY" step="1"></div>
     </div>
-    <div class="row2" style="margin-top:.4rem">
-      <div><label>Drehung (°)</label><input type="number" id="tRz" step="15" value="0"></div>
-      <div><label>Größe (%)</label><input type="number" id="tScale" step="10" value="100" min="1"></div>
-    </div>
+
+    <label style="margin-top:.5rem">⟳ Drehen (°)</label>
+    <div class="axis"><span class="ax x">X</span><input type="range" id="sRx" min="-180" max="180" step="5" value="0"><input type="number" id="nRx" step="5" value="0"></div>
+    <div class="axis"><span class="ax y">Y</span><input type="range" id="sRy" min="-180" max="180" step="5" value="0"><input type="number" id="nRy" step="5" value="0"></div>
+    <div class="axis"><span class="ax z">Z</span><input type="range" id="sRz" min="-180" max="180" step="5" value="0"><input type="number" id="nRz" step="5" value="0"></div>
+
+    <label style="margin-top:.5rem">⤢ Größe (%)</label>
+    <div class="axis"><span class="ax">%</span><input type="range" id="sSc" min="10" max="400" step="5" value="100"><input type="number" id="nSc" step="5" value="100" min="1"></div>
   </div>
 
   <div>
@@ -464,7 +475,8 @@ canvas.addEventListener('pointerdown', (e) => {
       st.dx = startDx + (p.x - start.x);
       st.dy = startDy + (p.y - start.y);
       applyStateToGroup(st);
-      $('tDx').value = Math.round(st.dx); $('tDy').value = Math.round(st.dy);
+      $('pX').value = Math.round(st.pivot.x + st.dx);
+      $('pY').value = Math.round(st.pivot.y + st.dy);
     };
     const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
     addEventListener('pointermove', move); addEventListener('pointerup', up);
@@ -543,7 +555,7 @@ function showModelMeshes(objects) {
     group.add(mesh);
     mesh.userData.objIndex = objectStates.length;
     modelGroup.add(group);
-    objectStates.push({ name: o.name, pivot, group, mesh, dx: 0, dy: 0, rz: 0, scale: 1 });
+    objectStates.push({ name: o.name, pivot, group, mesh, dx: 0, dy: 0, rx: 0, ry: 0, rz: 0, scale: 1 });
   }
   CENTER = new THREE.Vector3(bedSize[0] / 2, bedSize[1] / 2, maxZ / 2);
   updateCam();
@@ -554,8 +566,26 @@ function showModelMeshes(objects) {
 let selectedIdx = -1;
 function applyStateToGroup(st) {
   st.group.position.set(st.pivot.x + st.dx, st.pivot.y + st.dy, 0);
-  st.group.rotation.z = st.rz * Math.PI / 180;
+  st.group.rotation.set(st.rx * Math.PI / 180, st.ry * Math.PI / 180, st.rz * Math.PI / 180);
   st.group.scale.setScalar(st.scale);
+  // Nach Kippung wieder auf die Platte absetzen (Kern macht dasselbe)
+  st.group.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(st.group);
+  if (isFinite(box.min.z)) st.group.position.z -= box.min.z;
+}
+function stDims(st) {
+  const b = st.mesh.geometry.boundingBox;
+  return [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z].map(v => v * st.scale);
+}
+function syncPanel(st) {
+  $('objName').textContent = st.name;
+  $('objSize').textContent = stDims(st).map(v => v.toFixed(1)).join(' × ') + ' mm';
+  $('pX').value = Math.round(st.pivot.x + st.dx);
+  $('pY').value = Math.round(st.pivot.y + st.dy);
+  for (const [a, v] of [['Rx', st.rx], ['Ry', st.ry], ['Rz', st.rz]]) {
+    $('s' + a).value = v; $('n' + a).value = v;
+  }
+  $('sSc').value = $('nSc').value = Math.round(st.scale * 100);
 }
 function selectObject(i) {
   if (selectedIdx >= 0 && objectStates[selectedIdx])
@@ -565,28 +595,39 @@ function selectObject(i) {
   $('objPanel').hidden = !st || st.deleted;
   if (!st) { updateToolbar(); return; }
   st.mesh.material.emissive?.setHex(0x14532d);
-  $('objName').textContent = st.name;
+  syncPanel(st);
   updateToolbar();
-  $('tDx').value = Math.round(st.dx);   $('tDy').value = Math.round(st.dy);
-  $('tRz').value = Math.round(st.rz);   $('tScale').value = Math.round(st.scale * 100);
 }
-for (const [id, apply] of [
-  ['tDx',    (st, v) => st.dx = v],
-  ['tDy',    (st, v) => st.dy = v],
-  ['tRz',    (st, v) => st.rz = v],
-  ['tScale', (st, v) => st.scale = Math.max(0.01, v / 100)],
-]) {
+// Slider <-> Zahlenfeld synchron, beide schreiben in den Zustand
+function bindAxis(slider, num, write) {
+  const apply = v => {
+    const st = objectStates[selectedIdx];
+    if (!st) return;
+    write(st, +v || 0);
+    applyStateToGroup(st);
+    $('objSize').textContent = stDims(st).map(x => x.toFixed(1)).join(' × ') + ' mm';
+  };
+  $(slider).oninput = () => { $(num).value = $(slider).value; apply($(slider).value); };
+  $(num).oninput    = () => { $(slider).value = $(num).value; apply($(num).value); };
+}
+bindAxis('sRx', 'nRx', (st, v) => st.rx = v);
+bindAxis('sRy', 'nRy', (st, v) => st.ry = v);
+bindAxis('sRz', 'nRz', (st, v) => st.rz = v);
+bindAxis('sSc', 'nSc', (st, v) => st.scale = Math.max(0.01, v / 100));
+for (const [id, axis] of [['pX', 'x'], ['pY', 'y']]) {
   $(id).oninput = () => {
     const st = objectStates[selectedIdx];
     if (!st) return;
-    apply(st, +$(id).value || 0);
+    if (axis === 'x') st.dx = (+$(id).value || 0) - st.pivot.x;
+    else              st.dy = (+$(id).value || 0) - st.pivot.y;
     applyStateToGroup(st);
   };
 }
+
 function currentTransforms() {
   return objectStates.map(st => st.deleted
     ? { del: true }
-    : { dx: st.dx, dy: st.dy, rz: st.rz, scale: st.scale });
+    : { dx: st.dx, dy: st.dy, rx: st.rx, ry: st.ry, rz: st.rz, scale: st.scale });
 }
 
 function updateToolbar() {
@@ -645,10 +686,7 @@ $('tbArrange').onclick = () => {
     }
     y += rowH[ri] + gap;
   });
-  if (objectStates[selectedIdx]) {
-    $('tDx').value = Math.round(objectStates[selectedIdx].dx);
-    $('tDy').value = Math.round(objectStates[selectedIdx].dy);
-  }
+  if (objectStates[selectedIdx]) syncPanel(objectStates[selectedIdx]);
 };
 $('tbDelete').onclick = () => {
   const st = objectStates[selectedIdx];
@@ -658,9 +696,9 @@ $('tbDelete').onclick = () => {
   selectObject(-1);
   updateToolbar();
 };
-$('tbMove').onclick = () => $('tDx').focus();
-$('tbRotate').onclick = () => $('tRz').focus();
-$('tbScale').onclick = () => $('tScale').focus();
+$('tbMove').onclick = () => $('pX').focus();
+$('tbRotate').onclick = () => $('sRz').focus();
+$('tbScale').onclick = () => $('sSc').focus();
 // Test-/Debug-Handle (Playwright & Konsole)
 window._vs = {
   get states() { return objectStates; },
