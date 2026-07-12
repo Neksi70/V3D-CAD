@@ -36,6 +36,11 @@ app.post('/api/login', async (req, res) => {
   try { res.json(await cloud.login({ email, password, region })); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
+app.post('/api/request-code', async (req, res) => {
+  const { email, region } = req.body || {};
+  try { res.json(await cloud.requestCode({ email, region })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
 app.post('/api/verify', async (req, res) => {
   const { email, code, region } = req.body || {};
   try { res.json(await cloud.verifyCode({ email, code, region })); }

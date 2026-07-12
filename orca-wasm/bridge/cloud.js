@@ -54,7 +54,15 @@ async function login({ email, password, region }) {
   return { ok: false, error: json.error || json.message || 'Login fehlgeschlagen' };
 }
 
-// 2FA-Mailcode einlösen → { ok, sid }
+// Passwortlos: nur einen Login-Code per E-Mail anfordern (für Google-/Apple-
+// Konten ohne Bambu-Passwort). Danach mit verifyCode() abschließen.
+async function requestCode({ email, region }) {
+  if (!email) return { ok: false, error: 'E-Mail nötig' };
+  const { status } = await api(region, '/v1/user-service/user/sendemail/code', { email, type: 'codeLogin' });
+  return { ok: status >= 200 && status < 300, needCode: true };
+}
+
+// 2FA-/Login-Mailcode einlösen → { ok, sid }
 async function verifyCode({ email, code, region }) {
   const { json } = await api(region, '/v1/user-service/user/login', { account: email, code });
   if (json.accessToken) return { ok: true, sid: newSession(json.accessToken, region, email) };
@@ -114,4 +122,4 @@ function sendCommand(sid, serial, payload, { waitMs = 0 } = {}) {
   });
 }
 
-module.exports = { login, verifyCode, session, logout, listDevices, getStatus, sendCommand };
+module.exports = { login, requestCode, verifyCode, session, logout, listDevices, getStatus, sendCommand };

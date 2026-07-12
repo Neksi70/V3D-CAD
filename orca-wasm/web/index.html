@@ -101,6 +101,7 @@
     </div>
     <button id="lgBtn">Anmelden</button>
     <div id="lgStatus"></div>
+    <button id="lgCodeLogin" class="link">Per E-Mail-Code anmelden (Google-/Apple-Konto)</button>
     <button id="lgSkip" class="link">Ohne Konto fortfahren (nur slicen)</button>
     <p class="hint">Dein Passwort bleibt auf diesem Server, wird nur gegen ein Bambu-Token getauscht und nicht gespeichert.</p>
   </div>
@@ -928,7 +929,10 @@ $('btnDownload').onclick = () => {
 };
 
 // ---------- Login-Gate + Multi-User-Cloud (über die Bridge) ----------
-const BRIDGE = `${location.protocol}//${location.hostname}:7781`;
+// Über Tailscale läuft die Brücke als eigener HTTPS-Port (:10001), lokal als HTTP :7781
+const BRIDGE = location.hostname.endsWith('.ts.net')
+  ? `https://${location.hostname}:10001`
+  : `${location.protocol}//${location.hostname}:7781`;
 let sid = sessionStorage.getItem('vs-sid') || null;
 let bridgePrinters = [];
 
@@ -989,6 +993,25 @@ $('lgBtn').onclick = async () => {
     }
   } catch {
     $('lgStatus').innerHTML = '<span class="err">Brücke nicht erreichbar (läuft der Bridge-Dienst?)</span>';
+  }
+};
+// Passwortloser Login per E-Mail-Code (Google-/Apple-Konten)
+$('lgCodeLogin').onclick = async () => {
+  const email = $('lgEmail').value.trim();
+  if (!email) { $('lgStatus').innerHTML = '<span class="err">Bitte zuerst die E-Mail eintragen.</span>'; return; }
+  $('lgStatus').textContent = 'Fordere Code an …';
+  try {
+    const { json } = await bridge('/api/request-code', { method: 'POST', body: { email, region: $('lgRegion').value } });
+    if (json.needCode) {
+      $('lgPass').hidden = true; $('lgPass').disabled = true;
+      $('lgCodeRow').hidden = false;
+      $('lgBtn').textContent = 'Code bestätigen';
+      $('lgStatus').innerHTML = '<span class="ok">📧 Code aus der Bambu-E-Mail eingeben.</span>';
+    } else {
+      $('lgStatus').innerHTML = `<span class="err">${json.error || 'Code-Versand fehlgeschlagen'}</span>`;
+    }
+  } catch {
+    $('lgStatus').innerHTML = '<span class="err">Brücke nicht erreichbar</span>';
   }
 };
 $('lgSkip').onclick = () => { $('loginGate').hidden = true; };
