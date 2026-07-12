@@ -80,8 +80,7 @@
   </div>
   <div>
     <label>Drucker</label>
-    <input id="machine" list="machineList" placeholder="Drucker wählen …">
-    <datalist id="machineList"></datalist>
+    <select id="machine"></select>
   </div>
   <div>
     <label>Druckprofil</label>
@@ -252,26 +251,70 @@ function settingOverrides() {
 
 async function fillVendor() {
   const vendors = await (await fetch('/profiles/index.json')).json();
-  $('vendor').innerHTML = vendors.map(v => `<option${v === 'BBL' ? ' selected' : ''}>${v}</option>`).join('');
-  await fillPresets();
+  const saved = JSON.parse(localStorage.getItem('vs-presets') || '{}');
+  const sel = saved.vendor && vendors.includes(saved.vendor) ? saved.vendor : 'BBL';
+  $('vendor').innerHTML = vendors.map(v => `<option${v === sel ? ' selected' : ''}>${v}</option>`).join('');
+  await fillPresets(saved);
 }
-async function fillPresets() {
-  const idx = await vendorIndex($('vendor').value);
+
+// Alle echten Drucker eines Herstellers (instantiation != false), mit
+// Modell-Gruppierung und Standard-Profilen aus dem Druckerprofil
+const machineCache = new Map();
+async function loadMachines(v) {
+  if (machineCache.has(v)) return machineCache.get(v);
+  const idx = await vendorIndex(v);
+  const list = (await Promise.all(idx.machine_list.map(async e => {
+    try {
+      const j = await (await fetch(`/profiles/${v}/${e.sub_path.split('/').map(encodeURIComponent).join('/')}`)).json();
+      if (String(j.instantiation) === 'false') return null;
+      return { name: e.name, model: j.printer_model || e.name,
+               defProcess:  [].concat(j.default_print_profile || [])[0] || '',
+               defFilament: [].concat(j.default_filament_profile || [])[0] || '' };
+    } catch { return null; }
+  }))).filter(Boolean);
+  machineCache.set(v, list);
+  return list;
+}
+
+let machines = [];
+async function fillPresets(saved = {}) {
+  const v = $('vendor').value;
+  const idx = await vendorIndex(v);
+  machines = await loadMachines(v);
+  // Drucker-Dropdown, gruppiert nach Modell
+  const byModel = new Map();
+  for (const m of machines) {
+    if (!byModel.has(m.model)) byModel.set(m.model, []);
+    byModel.get(m.model).push(m);
+  }
+  const selMachine = saved.machine && machines.some(m => m.name === saved.machine)
+    ? saved.machine : (machines[0]?.name || '');
+  $('machine').innerHTML = [...byModel].map(([model, list]) =>
+    `<optgroup label="${model}">${list.map(m =>
+      `<option${m.name === selMachine ? ' selected' : ''}>${m.name}</option>`).join('')}</optgroup>`).join('');
   const fill = (listId, entries) => $(listId).innerHTML =
-    entries.map(e => `<option value="${e.name.replaceAll('"','&quot;')}">`).join('');
-  fill('machineList', idx.machine_list);
+    entries.map(e => `<option value="${e.name.replaceAll('"', '&quot;')}">`).join('');
   fill('processList', idx.process_list);
   fill('filamentList', idx.filament_list);
-  if ($('vendor').value === 'BBL') {
-    $('machine').value  = 'Bambu Lab X1 Carbon 0.4 nozzle';
-    $('process').value  = '0.20mm Standard @BBL X1C';
-    $('filament').value = 'Bambu PLA Basic @BBL X1C';
-  } else {
-    $('machine').value = $('process').value = $('filament').value = '';
-  }
+  applyMachineDefaults(saved);
 }
-$('vendor').onchange = async () => { await fillPresets(); await applyMachineBed(); await refreshSettings(); };
-$('process').onchange = $('filament').onchange = refreshSettings;
+
+// Beim Druckerwechsel: Standard-Druckprofil + -Filament aus dem Druckerprofil
+function applyMachineDefaults(saved = {}) {
+  const m = machines.find(x => x.name === $('machine').value);
+  $('process').value  = saved.process  || m?.defProcess  || $('process').value;
+  $('filament').value = saved.filament || m?.defFilament || $('filament').value;
+}
+
+function savePresets() {
+  localStorage.setItem('vs-presets', JSON.stringify({
+    vendor: $('vendor').value, machine: $('machine').value,
+    process: $('process').value, filament: $('filament').value,
+  }));
+}
+
+$('vendor').onchange = async () => { await fillPresets(); await applyMachineBed(); await refreshSettings(); savePresets(); };
+$('process').onchange = $('filament').onchange = async () => { await refreshSettings(); savePresets(); };
 
 // Bettgröße aus der printable_area des gewählten Druckers (letzter Wert der Kette)
 async function applyMachineBed() {
@@ -290,7 +333,7 @@ async function applyMachineBed() {
   } catch { /* unbekannter Drucker → Bett unverändert */ }
   requestPreview();
 }
-$('machine').onchange = async () => { await applyMachineBed(); await refreshSettings(); };
+$('machine').onchange = async () => { applyMachineDefaults(); await applyMachineBed(); await refreshSettings(); savePresets(); };
 
 // ---------- Datei-Handling ----------
 let modelBytes = null, modelName = '';
