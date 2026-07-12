@@ -3,6 +3,8 @@
 // liegen nur im Speicher der Brücke, je Session getrennt. Passwörter werden nur
 // gegen ein Token getauscht und nie gespeichert. Inoffizielle API.
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const mqtt = require('mqtt');
 
 const HOSTS = {
@@ -13,11 +15,29 @@ const host = (region) => HOSTS[region === 'china' ? 'china' : 'global'];
 
 // sid -> { access, uid, region, email, created }
 const sessions = new Map();
-const SESSION_TTL = 12 * 3600 * 1000;   // 12 h
+const SESSION_TTL = 7 * 24 * 3600 * 1000;   // 7 Tage
+// Persistenz: Sessions überleben Bridge-Neustarts (sonst nach jedem Restart
+// neu einloggen). Datei liegt lokal auf dem Server, ist in .gitignore.
+const STORE = path.join(__dirname, 'sessions.json');
+
+function persist() {
+  try { fs.writeFileSync(STORE, JSON.stringify([...sessions]), { mode: 0o600 }); } catch {}
+}
+function load() {
+  try {
+    const now = Date.now();
+    for (const [sid, s] of JSON.parse(fs.readFileSync(STORE, 'utf8')))
+      if (now - s.created < SESSION_TTL) sessions.set(sid, s);
+    console.log('[session]', sessions.size, 'Sessions geladen');
+  } catch {}
+}
+load();
 
 function gc() {
   const now = Date.now();
-  for (const [sid, s] of sessions) if (now - s.created > SESSION_TTL) sessions.delete(sid);
+  let changed = false;
+  for (const [sid, s] of sessions) if (now - s.created > SESSION_TTL) { sessions.delete(sid); changed = true; }
+  if (changed) persist();
 }
 setInterval(gc, 3600 * 1000).unref?.();
 
@@ -62,6 +82,7 @@ async function newSession(access, region, email) {
   const uid = uidFromToken(access) || await fetchUid(access, region);
   if (!uid) console.warn('[login] Warnung: keine uid ermittelt — Cloud-MQTT wird scheitern');
   sessions.set(sid, { access, uid, region, email, created: Date.now() });
+  persist();
   return sid;
 }
 
@@ -92,7 +113,7 @@ async function verifyCode({ email, code, region }) {
 }
 
 function session(sid) { return sessions.get(sid); }
-function logout(sid) { sessions.delete(sid); }
+function logout(sid) { sessions.delete(sid); persist(); }
 
 async function listDevices(sid) {
   const s = sessions.get(sid); if (!s) return { error: 'nicht angemeldet' };

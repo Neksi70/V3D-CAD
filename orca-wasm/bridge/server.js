@@ -177,6 +177,7 @@ app.get('/api/camera/snapshot', (req, res) => {
   if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) || !/^[A-Za-z0-9]{4,16}$/.test(code))
     return res.status(400).end('ungültige IP/Code');
   const jpg = camera.snapshot(ip, code);
+  console.log(`[cam-http] ${ip} → ${jpg ? jpg.length + 'B' : '503 (kein Bild)'}`);
   if (!jpg) return res.status(503).end();   // Verbindung startet gerade — Browser pollt weiter
   res.setHeader('Content-Type', 'image/jpeg');
   res.setHeader('Cache-Control', 'no-store');
