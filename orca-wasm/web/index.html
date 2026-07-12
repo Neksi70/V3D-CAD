@@ -400,25 +400,33 @@ $('devLight').onclick = () => control($('devLight').dataset.next || 'light_on');
 // ---------- Live-Kamera (LAN, RTSP→MJPEG über die Brücke) ----------
 $('camIp').value = localStorage.getItem('vs-cam-ip') || '';
 $('camCode').value = localStorage.getItem('vs-cam-code') || '';
-let camOn = false;
+let camTimer = null, camFails = 0;
 function stopCam() {
-  camOn = false;
-  $('camImg').hidden = true; $('camImg').src = '';   // Request abbrechen → ffmpeg beendet sich
+  clearTimeout(camTimer); camTimer = null;
+  $('camImg').hidden = true; $('camImg').removeAttribute('src');
   $('camBtn').textContent = 'Starten';
 }
+function pollCam(ip, code) {
+  const img = new Image();
+  img.onload = () => {
+    camFails = 0;
+    $('camImg').src = img.src; $('camImg').hidden = false; $('camHint').textContent = 'Live';
+    if (camTimer !== null) camTimer = setTimeout(() => pollCam(ip, code), 200);
+  };
+  img.onerror = () => {
+    // 503 = Verbindung baut noch auf → weiter pollen; erst nach vielen Fehlversuchen meckern
+    if (++camFails === 15) $('camHint').textContent = 'Kein Bild — „Liveansicht im LAN-Modus" am Drucker aktiv?';
+    if (camTimer !== null) camTimer = setTimeout(() => pollCam(ip, code), 700);
+  };
+  img.src = `${BRIDGE}/api/camera/snapshot?sid=${encodeURIComponent(sid)}&ip=${encodeURIComponent(ip)}&code=${encodeURIComponent(code)}&t=${Date.now()}`;
+}
 $('camBtn').onclick = () => {
-  if (camOn) { stopCam(); $('camHint').textContent = ''; return; }
+  if (camTimer !== null) { stopCam(); $('camHint').textContent = ''; return; }
   const ip = $('camIp').value.trim(), code = $('camCode').value.trim();
   if (!ip || !code) { $('camHint').textContent = 'IP und Zugangscode nötig (Drucker-Display → Nur-LAN-Bereich)'; return; }
   localStorage.setItem('vs-cam-ip', ip); localStorage.setItem('vs-cam-code', code);
-  camOn = true;
-  $('camBtn').textContent = 'Stoppen';
-  $('camHint').textContent = 'Verbinde …';
-  const img = $('camImg');
-  img.hidden = false;
-  img.onload = () => { $('camHint').textContent = 'Live'; };
-  img.onerror = () => { if (camOn) $('camHint').textContent = 'Kein Bild — „Liveansicht im LAN-Modus" am Drucker aktiv?'; };
-  img.src = `${BRIDGE}/api/camera?sid=${encodeURIComponent(sid)}&ip=${encodeURIComponent(ip)}&code=${encodeURIComponent(code)}&t=${Date.now()}`;
+  camFails = 0; camTimer = 0; $('camBtn').textContent = 'Stoppen'; $('camHint').textContent = 'Verbinde …';
+  pollCam(ip, code);
 };
 
 function enterApp(email) {
