@@ -1,6 +1,9 @@
 // VolmeSlice Drucker-Brücke (Multi-User): Nutzer melden sich aus der Web-App mit
 // ihrem eigenen Bambu-Konto an, sehen ihre eigenen Drucker und senden G-Code.
 // Cloud-first (Session je Nutzer); LAN optional, wenn ein Drucker per IP erreichbar.
+// Zusätzlich: lokale Flotte aus printers.json (Snapmaker U1 / Elegoo Giga via
+// Moonraker, Anycubic Kobra X via LAN-Modus) — ohne Bambu-Login nutzbar, weil
+// die Brücke nur im LAN/Tailnet erreichbar ist.
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
@@ -9,6 +12,10 @@ const express = require('express');
 const lan = require('./lan');
 const cloud = require('./cloud');
 const camera = require('./camera');
+const adapters = {
+  moonraker: require('./adapters/moonraker'),
+  anycubic:  require('./adapters/anycubic'),
+};
 
 const PORT = process.env.BRIDGE_PORT ? Number(process.env.BRIDGE_PORT) : 7781;
 
@@ -34,6 +41,31 @@ app.use((req, res, next) => {
 
 // Session-ID aus dem Authorization-Header (Bearer <sid>)
 const sidOf = (req) => (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || null;
+
+// ---- Lokale Flotte (printers.json): Nicht-Bambu-Drucker im eigenen LAN ----
+// IDs bekommen das Präfix "fleet:", damit sie in denselben Endpunkten wie die
+// Bambu-Seriennummern laufen. Kein Bambu-Login nötig — wer die Brücke erreicht
+// (LAN/Tailnet), darf die Flotte sehen und steuern.
+const FLEET_FILE = path.join(__dirname, 'printers.json');
+let fleet = [];
+function loadFleet() {
+  try {
+    fleet = (JSON.parse(fs.readFileSync(FLEET_FILE, 'utf8')).printers || [])
+      .filter(p => p.id && p.ip && adapters[p.type]);
+    console.log('[fleet]', fleet.length, 'Drucker aus printers.json');
+  } catch (e) { fleet = []; if (e.code !== 'ENOENT') console.warn('[fleet] printers.json fehlerhaft:', e.message); }
+}
+loadFleet();
+try { fs.watch(FLEET_FILE, () => setTimeout(loadFleet, 300)); } catch {}
+
+const fleetOf = (id) => typeof id === 'string' && id.startsWith('fleet:')
+  ? fleet.find(p => 'fleet:' + p.id === id) : null;
+const adapterOf = (p) => adapters[p.type];
+const caps = (p) => ({
+  camera: p.cam !== false,                    // false in printers.json = keine Kamera
+  light: p.type === 'anycubic',               // Moonraker-Geräte: (noch) kein Licht-Befehl
+  ams: true,
+});
 
 // ---- Bambu-Cloud-Login (Passwort nur durchreichen, nie speichern) ----
 app.post('/api/login', async (req, res) => {
@@ -61,18 +93,40 @@ app.get('/api/me', (req, res) => {
   res.json({ email: s.email, region: s.region });
 });
 
-// Drucker des angemeldeten Nutzers (aus der Bambu-Cloud)
+// Drucker-Liste: lokale Flotte (immer) + Bambu-Cloud-Drucker des angemeldeten
+// Nutzers. Ohne Login und ohne Flotte → 401, damit die App das Login-Gate zeigt.
 app.get('/api/printers', async (req, res) => {
   const sid = sidOf(req);
-  if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
-  try {
-    const r = await cloud.listDevices(sid);
-    res.json((r.devices || []).map(d => ({ serial: d.serial, name: d.name, model: d.model, online: d.online })));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  const list = await Promise.all(fleet.map(async p => ({
+    serial: 'fleet:' + p.id, name: p.name || p.id, model: p.model || p.type,
+    online: await adapterOf(p).online(p).catch(() => false),
+    type: p.type, caps: caps(p),
+  })));
+  if (cloud.session(sid)) {
+    try {
+      const r = await cloud.listDevices(sid);
+      list.push(...(r.devices || []).map(d => ({
+        serial: d.serial, name: d.name, model: d.model, online: d.online, type: 'bambu',
+        caps: { camera: true, light: true, ams: true },
+      })));
+    } catch (e) { return res.status(500).json({ error: e.message }); }
+  } else if (!list.length) {
+    return res.status(401).json({ error: 'nicht angemeldet' });
+  }
+  res.json(list);
 });
 
 // Kurzstatus (für das Sende-Panel)
 app.get('/api/status/:serial', async (req, res) => {
+  const fp = fleetOf(req.params.serial);
+  if (fp) {
+    try {
+      const st = await adapterOf(fp).status(fp);
+      return res.json({ online: st.online, gcode_state: st.state,
+        nozzle_temper: st.nozzle, bed_temper: st.bed,
+        percent: st.percent, layer: st.layer });
+    } catch { return res.json({ online: false }); }
+  }
   const sid = sidOf(req);
   if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
   try {
@@ -86,6 +140,13 @@ app.get('/api/status/:serial', async (req, res) => {
 // Voll-Dashboard: alle Kennwerte + AMS für die Geräte-Übersicht
 function fanPct(v) { const n = Number(v); return Number.isFinite(n) ? (n <= 15 ? Math.round(n / 15 * 100) : n) : null; }
 app.get('/api/device/:serial', async (req, res) => {
+  const fp = fleetOf(req.params.serial);
+  if (fp) {
+    try {
+      const st = await adapterOf(fp).status(fp);
+      return res.json({ ...st, caps: caps(fp) });
+    } catch { return res.json({ online: false }); }
+  }
   const sid = sidOf(req);
   if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
   try {
@@ -117,6 +178,12 @@ app.get('/api/device/:serial', async (req, res) => {
 
 // Steuerbefehle: pause/resume/stop/light_on/light_off/speed
 app.post('/api/control/:serial', async (req, res) => {
+  const fp = fleetOf(req.params.serial);
+  if (fp) {
+    const { command, level } = req.body || {};
+    try { return res.json({ ok: true, ...(await adapterOf(fp).control(fp, command, { level })) }); }
+    catch (e) { return res.status(500).json({ error: e.message }); }
+  }
   const sid = sidOf(req);
   if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
   const { command, level } = req.body || {};
@@ -138,12 +205,19 @@ app.post('/api/control/:serial', async (req, res) => {
 
 // G-Code senden: { serial, filename, gcode, start }
 app.post('/api/send', async (req, res) => {
-  const sid = sidOf(req);
-  if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
   const { serial, filename, gcode, start, lanIp, lanCode } = req.body || {};
   if (!serial || !gcode) return res.status(400).json({ error: 'serial/gcode nötig' });
   const name = (filename || 'volmeslice.gcode').replace(/[^\w.\-]/g, '_');
   const buf = Buffer.from(gcode, 'utf8');
+  const fp = fleetOf(serial);
+  if (fp) {
+    try {
+      const r = await adapterOf(fp).send(fp, name, buf, Boolean(start));
+      return res.json({ ok: true, path: fp.type, ...r });
+    } catch (e) { return res.status(500).json({ error: e.message }); }
+  }
+  const sid = sidOf(req);
+  if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
   try {
     // Wenn der Nutzer LAN-Zugangsdaten mitschickt und der Drucker erreichbar
     // ist: Dateiversand robust über LAN-FTP.
@@ -177,7 +251,18 @@ app.post('/api/send', async (req, res) => {
 // die Brücke offen (camera.js); der Browser holt hier das neueste JPEG.
 // Robust durch Proxys, weil jede Anfrage eine normale kurze Antwort ist.
 // sid im Query (img kann keine Header setzen); ip/code streng validiert.
-app.get('/api/camera/snapshot', (req, res) => {
+app.get('/api/camera/snapshot', async (req, res) => {
+  // Flotten-Drucker: die Brücke kennt IP/Protokoll selbst (?id=fleet:<id>)
+  const fp = fleetOf(String(req.query.id || ''));
+  if (fp) {
+    try {
+      const jpg = await adapterOf(fp).snapshot(fp);
+      if (!jpg) return res.status(503).end();
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.end(jpg);
+    } catch { return res.status(503).end(); }
+  }
   if (!cloud.session(req.query.sid)) return res.status(401).end();
   const ip = String(req.query.ip || ''), code = String(req.query.code || '');
   if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) || !/^[A-Za-z0-9]{4,16}$/.test(code))

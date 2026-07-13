@@ -211,7 +211,7 @@
     <select id="sendPrinter" style="margin:.3rem 0"></select>
     <div id="sendConn" style="font-size:.78rem;opacity:.75;margin-bottom:.3rem"></div>
 
-    <details style="margin-bottom:.4rem">
+    <details id="lanDetails" style="margin-bottom:.4rem">
       <summary style="font-size:.8rem;cursor:pointer">🔌 LAN-Direktverbindung (optional, schneller)</summary>
       <input id="lanIp" placeholder="Drucker-IP (z. B. 192.168.1.50)" style="margin:.25rem 0">
       <input id="lanCode" placeholder="Zugangscode (LAN-Modus)" style="margin:.25rem 0">
@@ -315,14 +315,21 @@ async function bridge(pathname, { method = 'GET', body } = {}) {
   return { status: r.status, json: await r.json().catch(() => ({})) };
 }
 
+// Drucker-Typen: "fleet:"-IDs sind lokale Drucker aus printers.json der Brücke
+// (Snapmaker U1, Elegoo Giga, Anycubic Kobra — kein Bambu-Login nötig).
+const isFleet = (p) => p && String(p.serial).startsWith('fleet:');
+
 async function loadPrinters() {
   try {
     const { status, json } = await bridge('/api/printers');
     if (status === 401) return false;
     bridgePrinters = Array.isArray(json) ? json : [];
-    $('sendPrinter').innerHTML = bridgePrinters.map(p =>
-      `<option value="${p.serial}">${p.name}${p.online ? '' : ' (offline)'}</option>`).join('')
-      || '<option disabled>Keine Drucker im Konto</option>';
+    const opt = (p) => `<option value="${p.serial}">${p.name}${p.online ? '' : ' (offline)'}</option>`;
+    const fleetOpts = bridgePrinters.filter(isFleet).map(opt).join('');
+    const cloudOpts = bridgePrinters.filter(p => !isFleet(p)).map(opt).join('');
+    $('sendPrinter').innerHTML = (fleetOpts && cloudOpts)
+      ? `<optgroup label="Werkstatt (LAN)">${fleetOpts}</optgroup><optgroup label="Bambu Cloud">${cloudOpts}</optgroup>`
+      : (fleetOpts + cloudOpts) || '<option disabled>Keine Drucker im Konto</option>';
     $('sendPanel').hidden = false;
     updateSend();
     if (bridgePrinters.length) {
@@ -346,10 +353,22 @@ function startDevicePolling() {
   stopDevicePolling();
   if ($('devPrinter').value !== $('sendPrinter').value && $('sendPrinter').value)
     $('devPrinter').value = $('sendPrinter').value;
+  syncCamUi();
   refreshDevice();
   deviceTimer = setInterval(refreshDevice, 8000);
 }
-$('devPrinter').onchange = () => { $('sendPrinter').value = $('devPrinter').value; refreshDevice(); };
+$('devPrinter').onchange = () => { $('sendPrinter').value = $('devPrinter').value; stopCam(); syncCamUi(); refreshDevice(); };
+
+// Flotten-Drucker: die Brücke kennt IP/Protokoll selbst — IP-/Code-Felder
+// braucht nur die Bambu-Kamera (RTSP mit Zugangscode).
+function devFleetId() {
+  const p = bridgePrinters.find(x => x.serial === $('devPrinter').value);
+  return isFleet(p) ? p.serial : null;
+}
+function syncCamUi() {
+  const f = Boolean(devFleetId());
+  $('camIp').hidden = f; $('camCode').hidden = f;
+}
 
 function fmtTemp(v, t) { return v == null ? '–' : `${Math.round(v)}°${t != null && t > 0 ? ' / ' + Math.round(t) + '°' : ''}`; }
 function fmtEta(min) { if (min == null) return ''; const h = Math.floor(min/60), m = min%60; return h ? `noch ${h} h ${m} min` : `noch ${m} min`; }
@@ -367,6 +386,10 @@ async function refreshDevice() {
     }
     const [label, cls] = DEV_STATE[d.state] || [d.state || '–', ''];
     $('devState').textContent = label; $('devState').className = 'devBadge ' + cls;
+    // Fähigkeiten des Druckertyps (Flotte liefert caps mit; Bambu = alles)
+    const cp = d.caps || { camera: true, light: true, ams: true };
+    $('devLight').hidden = !cp.light;
+    $('devCamCard').hidden = !cp.camera;
     $('devJobName').textContent = d.subtask || (d.state === 'IDLE' ? 'Kein Druck aktiv' : '–');
     $('devJobEta').textContent = d.state === 'RUNNING' ? fmtEta(d.remaining) : '';
     $('devBarFill').style.width = (d.percent || 0) + '%';
@@ -430,21 +453,33 @@ function pollCam(ip, code) {
     if (++camFails === 15) $('camHint').textContent = 'Kein Bild — „Liveansicht im LAN-Modus" am Drucker aktiv?';
     if (camTimer !== null) camTimer = setTimeout(() => pollCam(ip, code), 700);
   };
-  img.src = `${BRIDGE}/api/camera/snapshot?sid=${encodeURIComponent(sid)}&ip=${encodeURIComponent(ip)}&code=${encodeURIComponent(code)}&t=${Date.now()}`;
+  const fleetId = devFleetId();
+  img.src = fleetId
+    ? `${BRIDGE}/api/camera/snapshot?id=${encodeURIComponent(fleetId)}&t=${Date.now()}`
+    : `${BRIDGE}/api/camera/snapshot?sid=${encodeURIComponent(sid)}&ip=${encodeURIComponent(ip)}&code=${encodeURIComponent(code)}&t=${Date.now()}`;
 }
 $('camBtn').onclick = () => {
   if (camTimer !== null) { stopCam(); $('camHint').textContent = ''; return; }
-  const ip = $('camIp').value.trim(), code = $('camCode').value.trim();
-  if (!ip || !code) { $('camHint').textContent = 'IP und Zugangscode nötig (Drucker-Display → Nur-LAN-Bereich)'; return; }
-  localStorage.setItem('vs-cam-ip', ip); localStorage.setItem('vs-cam-code', code);
+  let ip = '', code = '';
+  if (!devFleetId()) {
+    ip = $('camIp').value.trim(); code = $('camCode').value.trim();
+    if (!ip || !code) { $('camHint').textContent = 'IP und Zugangscode nötig (Drucker-Display → Nur-LAN-Bereich)'; return; }
+    localStorage.setItem('vs-cam-ip', ip); localStorage.setItem('vs-cam-code', code);
+  }
   camFails = 0; camTimer = 0; $('camBtn').textContent = 'Stoppen'; $('camHint').textContent = 'Verbinde …';
   pollCam(ip, code);
 };
 
 function enterApp(email) {
   $('loginGate').hidden = true;
-  if (email) $('userBadge').innerHTML = `${email} <button id="btnLogout">abmelden</button>`;
-  const lo = $('btnLogout'); if (lo) lo.onclick = doLogout;
+  if (email) {
+    $('userBadge').innerHTML = `${email} <button id="btnLogout">abmelden</button>`;
+    const lo = $('btnLogout'); if (lo) lo.onclick = doLogout;
+  } else {
+    // Nur lokale Flotte (kein Bambu-Konto): Login jederzeit nachholbar
+    $('userBadge').innerHTML = `<button id="btnBambu">Bambu anmelden</button>`;
+    $('btnBambu').onclick = () => { $('loginGate').hidden = false; };
+  }
 }
 async function doLogout() {
   try { await bridge('/api/logout', { method: 'POST' }); } catch {}
@@ -510,6 +545,7 @@ const STATE_DE = { IDLE: 'bereit', RUNNING: 'druckt', PAUSE: 'pausiert', FINISH:
 async function refreshStatus() {
   const p = selectedPrinter();
   if (!p) { $('sendConn').textContent = ''; return; }
+  $('lanDetails').hidden = isFleet(p);   // Bambu-spezifisch (FTPS-Zugangscode)
   $('sendConn').textContent = `${p.model || 'Drucker'} · lade Status …`;
   const label = p.name || p.model || 'Drucker';
   try {
@@ -562,16 +598,20 @@ $('btnSend').onclick = async () => {
   $('btnSend').disabled = false;
 };
 
-// Beim Start: bestehende Session prüfen, sonst Login-Gate zeigen
+// Beim Start: bestehende Session prüfen; lokale Flotte kommt auch ohne Login
 (async () => {
+  let email = null;
   if (sid) {
     try {
       const { status, json } = await bridge('/api/me');
-      if (status === 200) { enterApp(json.email); await loadPrinters(); return; }
+      if (status === 200) email = json.email;
     } catch {}
-    sid = null; sessionStorage.removeItem('vs-sid');
+    if (!email) { sid = null; sessionStorage.removeItem('vs-sid'); }
   }
-  // Gate bleibt sichtbar; wenn keine Bridge läuft, kann man trotzdem "nur slicen"
+  const ok = await loadPrinters();
+  if (email) enterApp(email);
+  else if (ok && bridgePrinters.length) enterApp(null);   // Werkstatt-Drucker da → kein Gate
+  // sonst: Gate bleibt sichtbar; ohne Bridge kann man trotzdem "nur slicen"
 })();
 
 
@@ -709,10 +749,17 @@ async function loadMachines(v) {
 }
 
 let machines = [];
+// Läufe überlappen sich (Startup-Lauf + schneller Herstellerwechsel): nur der
+// jeweils letzte darf die Dropdowns füllen, sonst gewinnt der langsamste.
+let presetRun = 0;
 async function fillPresets(saved = {}) {
+  const run = ++presetRun;
   const v = $('vendor').value;
+  $('machine').innerHTML = '<option disabled selected>lade Drucker …</option>';
   const idx = await vendorIndex(v);
-  machines = await loadMachines(v);
+  const list = await loadMachines(v);
+  if (run !== presetRun) return;   // veralteter Lauf — es wurde erneut gewechselt
+  machines = list;
   // Drucker-Dropdown, gruppiert nach Modell
   const byModel = new Map();
   for (const m of machines) {
