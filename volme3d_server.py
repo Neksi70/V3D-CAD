@@ -15,7 +15,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 # "haengt bei 85%"-Bug bei externen Testern).
 OCCT_HOST = '127.0.0.1'
 OCCT_PORT = 3001
-OCCT_TIMEOUT = 120
+OCCT_TIMEOUT = 600   # Booleans mit vielen Tools (Wabenmuster) brauchen Minuten
 _OCCT_CTX = ssl._create_unverified_context()
 
 TMP_STL = '/tmp/volme3d-export.stl'

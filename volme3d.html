@@ -13212,6 +13212,10 @@ async function _doSubtractHoles(solids, holes) {
       console.warn('[subtract-mesh] OCCT fehlgeschlagen → BSP-Fallback:', e.message || e);
     }
     if (!occtOk) {
+      // Werkzeuge mit vielen getrennten Körpern (Wabenmuster): BSP liefert hier
+      // garantiert Müll (invertierte Flächen, Membranen) → sauber abbrechen.
+      if (_genericTools.some(t => t.userData && t.userData._noBspFallback))
+        throw new Error('OCCT-Backend antwortet nicht — Vorgang abgebrochen (der schnelle Fallback kann so viele Löcher nicht). Bitte nochmal versuchen.');
       // Fallback: ThreeCSG/BSP sequenziell (altes Verhalten)
       for (const tool of _genericTools)
         solidMesh = ThreeCSG.subtract(solidMesh, tool, mat);
@@ -13988,7 +13992,8 @@ async function _applyHexPattern(cellMm, wallMm, marginMm, depthMm) {
 
   saveUndo();
   const holeMesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ color: 0xff5544 }));
-  holeMesh.userData = { id: idCtr++, name: 'Wabenmuster', color: '#ff5544', isHole: true, type: 'custom' };
+  holeMesh.userData = { id: idCtr++, name: 'Wabenmuster', color: '#ff5544', isHole: true, type: 'custom',
+                        _noBspFallback: true };   // BSP kann hunderte Prismen nicht (Müll-Mesh)
   holeMesh.updateWorldMatrix(true, true);
 
   _progressShow('⬡ Wabenmuster wird gestanzt…');
