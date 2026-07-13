@@ -16,7 +16,7 @@ const orca = await createOrcaSlicer({
 postMessage({ type: 'ready', version: orca.version() });
 
 onmessage = (e) => {
-  const { cmd, bytes, filename, profiles, overrides, bedCenter, transforms } = e.data;
+  const { cmd, bytes, filename, profiles, overrides, bedCenter, transforms, filamentChains } = e.data;
   try {
     if (cmd === 'preview') {
       const res = orca.previewModel(bytes, filename, bedCenter[0], bedCenter[1]);
@@ -29,7 +29,10 @@ onmessage = (e) => {
       postMessage({ type: 'preview', objects },
                   objects.flatMap(o => [o.verts.buffer, o.tris.buffer]));
     } else {
-      const gcode = orca.sliceModelTransformed(bytes, filename, profiles, overrides, transforms);
+      // Mehrfarbdruck: Filament-Ketten separat — der Kern kombiniert sie
+      const gcode = filamentChains
+        ? orca.sliceModelMulti(bytes, filename, profiles, overrides, transforms, filamentChains)
+        : orca.sliceModelTransformed(bytes, filename, profiles, overrides, transforms);
       if (!gcode) postMessage({ type: 'error', message: orca.lastError() });
       else        postMessage({ type: 'done', gcode });
     }

@@ -162,6 +162,13 @@ app.get('/api/device/:serial', async (req, res) => {
     if (st.vt_tray && (st.vt_tray.tray_type || st.vt_tray.tray_color))
       trays.push({ id: 'ext', type: st.vt_tray.tray_type || '', color: (st.vt_tray.tray_color || '').slice(0, 6),
                    sub: st.vt_tray.tray_sub_brands || '', idx: st.vt_tray.tray_info_idx || '', external: true });
+    // H2-Serie (Dual-Düse): externe Spulen kommen als vir_slot-Array (id 254/255)
+    for (const v of (st.vir_slot || [])) {
+      if (!v.tray_type) continue;   // leerer virtueller Slot
+      trays.push({ id: 'ext' + (v.id === '255' ? '2' : ''), type: v.tray_type || '',
+                   color: (v.tray_color || '').slice(0, 6),
+                   sub: v.tray_sub_brands || '', idx: v.tray_info_idx || '', external: true });
+    }
     const light = (st.lights_report || []).find(l => l.node === 'chamber_light')?.mode;
     res.json({
       online: true, state: st.gcode_state, subtask: st.subtask_name,
@@ -205,7 +212,7 @@ app.post('/api/control/:serial', async (req, res) => {
 
 // G-Code senden: { serial, filename, gcode, start }
 app.post('/api/send', async (req, res) => {
-  const { serial, filename, gcode, start, lanIp, lanCode } = req.body || {};
+  const { serial, filename, gcode, start, lanIp, lanCode, useAms } = req.body || {};
   if (!serial || !gcode) return res.status(400).json({ error: 'serial/gcode nötig' });
   const name = (filename || 'volmeslice.gcode').replace(/[^\w.\-]/g, '_');
   const buf = Buffer.from(gcode, 'utf8');
@@ -228,7 +235,7 @@ app.post('/api/send', async (req, res) => {
         let pr = null;
         if (start) pr = await lan.sendCommand(p, { print: { sequence_id: '0', command: 'project_file',
           param: name, subtask_name: name.replace(/\.[^.]+$/, ''), url: `ftp://${name}`,
-          bed_type: 'auto', use_ams: false, timelapse: false, bed_leveling: true } }, { waitMs: 3000 });
+          bed_type: 'auto', use_ams: Boolean(useAms), timelapse: false, bed_leveling: true } }, { waitMs: 3000 });
         return res.json({ ok: true, path: 'lan', uploaded: name, print: pr });
       }
     }
@@ -237,7 +244,7 @@ app.post('/api/send', async (req, res) => {
     if (start) {
       const r = await cloud.sendCommand(sid, serial, { print: { sequence_id: '0',
         command: 'project_file', param: name, subtask_name: name.replace(/\.[^.]+$/, ''),
-        use_ams: false } }, { waitMs: 3000 }).catch(e => ({ error: e.message }));
+        use_ams: Boolean(useAms) } }, { waitMs: 3000 }).catch(e => ({ error: e.message }));
       return res.json({ ok: !r.error, path: 'cloud', experimental: true,
         note: 'Cloud-Dateiversand ist experimentell — Datei muss ggf. schon auf dem Drucker liegen.', print: r });
     }

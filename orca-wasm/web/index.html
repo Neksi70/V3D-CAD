@@ -168,6 +168,7 @@
     </div>
     <datalist id="filamentList"></datalist>
     <div id="amsPick" style="display:none;gap:.5rem;flex-wrap:wrap;margin-top:.4rem"></div>
+    <div id="filChips" style="display:none;gap:.4rem;flex-wrap:wrap;margin-top:.4rem"></div>
     <small id="amsHint" style="opacity:.65"></small>
   </div>
 
@@ -582,6 +583,7 @@ $('btnSend').onclick = async () => {
       serial: $('sendPrinter').value,
       filename: modelName.replace(/\.[^.]+$/, '') + '.gcode',
       gcode: lastGcode, start: $('sendStart').checked,
+      useAms: projectFilaments.length > 1,   // Mehrfarbdruck braucht das AMS
       lanIp: $('lanIp').value.trim() || undefined,
       lanCode: $('lanCode').value.trim() || undefined,
     } });
@@ -863,6 +865,7 @@ async function amsFindPreset(t) {
 }
 
 async function amsApplyTray(t) {
+  projectFilaments = []; renderFilChips();   // Einzel-Slot = zurück in den Einfarb-Modus
   const name = await amsFindPreset(t);
   $('amsPick').style.display = 'none';
   if (!name) {
@@ -877,6 +880,67 @@ async function amsApplyTray(t) {
   return name;
 }
 
+// ---------- Projekt-Filamente (Mehrfarbdruck) ----------
+// >1 Eintrag aktiviert Multi-Filament-Slicing: Objekte bekommen per Taste
+// 1–9 (oder Chip-Klick) ein Filament zugewiesen, der Kern sliced mit
+// Werkzeugwechseln + Prime Tower (wie Orca/BambuStudio).
+let projectFilaments = [];   // [{ name: Preset, color: '#hex', type, label }]
+
+function renderFilChips() {
+  const div = $('filChips');
+  if (projectFilaments.length <= 1) { div.style.display = 'none'; div.innerHTML = ''; return; }
+  div.style.display = 'flex';
+  div.innerHTML = projectFilaments.map((f, i) =>
+    `<button class="secondary" data-i="${i}" title="${f.name} — Taste ${i + 1} weist dem markierten Objekt zu"
+             style="display:flex;align-items:center;gap:.35rem;padding:.25rem .55rem">
+       <b>${i + 1}</b><span style="width:13px;height:13px;border-radius:4px;background:${f.color};border:1px solid #0003"></span>
+       ${f.label || f.type || ''}</button>`).join('');
+  div.querySelectorAll('button').forEach(b => b.onclick = () => assignFilament(+b.dataset.i + 1));
+}
+
+function assignFilament(fi) {
+  const f = projectFilaments[fi - 1];
+  if (!f) return;
+  const targets = selectedSet.size ? [...selectedSet] : [];
+  if (!targets.length) {
+    $('amsHint').textContent = 'Erst Objekt(e) markieren — Klick, Strg+Klick = mehrere, Strg+A = alle';
+    return;
+  }
+  let n = 0;
+  for (const j of targets) {
+    const st = objectStates[j];
+    if (!st || st.deleted) continue;
+    st.filament = fi;
+    st.mesh.material.color.set(f.color || '#2ea2d8');
+    n++;
+  }
+  $('amsHint').textContent = `Filament ${fi} (${f.type || f.name}) → ${n} Objekt${n > 1 ? 'e' : ''}`;
+}
+
+// Alle AMS-Slots (+ externe Spule) als Projekt-Filamente übernehmen
+async function adoptProjectFilaments(trays) {
+  $('amsHint').textContent = 'Übernehme Filamente …';
+  const fils = [];
+  for (const t of trays) {
+    const name = await amsFindPreset(t) || $('filament').value;   // Fallback: aktuelles Preset
+    fils.push({ name, color: '#' + (t.color || '2ea2d8'), type: t.type || '?',
+                label: (t.external ? 'Ext' : '') + (t.type || '') });
+  }
+  projectFilaments = fils;
+  $('filament').value = fils[0].name;
+  renderFilChips();
+  // Alle Objekte starten auf Filament 1 (Farbe von Slot 1)
+  for (const st of objectStates) {
+    if (st.deleted) continue;
+    st.filament = st.filament || 1;
+    const f = fils[st.filament - 1] || fils[0];
+    st.mesh.material.color.set(f.color);
+  }
+  await refreshSettings();
+  $('amsPick').style.display = 'none';
+  $('amsHint').textContent = `Mehrfarbdruck aktiv: Objekt markieren, Taste 1–${fils.length} weist das Filament zu`;
+}
+
 $('amsSync').onclick = async () => {
   const serial = $('sendPrinter').value;
   if (!serial) { $('amsHint').textContent = 'Kein Drucker im Konto'; return; }
@@ -889,13 +953,15 @@ $('amsSync').onclick = async () => {
   if (!trays.length) { $('amsHint').textContent = 'Kein Filament gemeldet (AMS leer / Drucker offline?)'; return; }
   if (trays.length === 1) return amsApplyTray(trays[0]);
   // Mehrere Slots: kleine Auswahl unter dem Feld (mit aufgelöstem Produktnamen)
-  $('amsHint').textContent = 'Slot wählen:';
+  $('amsHint').textContent = 'Slot wählen — oder alle für Mehrfarbdruck:';
   const prods = await Promise.all(trays.map(amsProductName));
   const pick = $('amsPick');
-  pick.innerHTML = trays.map((t, i) =>
+  pick.innerHTML = `<button class="secondary" data-all style="padding:.3rem .6rem">🎨 Alle übernehmen (Mehrfarbdruck)</button>`
+    + trays.map((t, i) =>
     `<button class="secondary" data-i="${i}" style="display:flex;align-items:center;gap:.4rem;padding:.3rem .6rem">
        <span style="width:14px;height:14px;border-radius:4px;background:#${t.color || 'ccc'};border:1px solid #0003"></span>
        ${t.external ? 'Ext' : 'Slot ' + (i + 1)} · ${prods[i] || t.type}</button>`).join('');
+  pick.querySelector('[data-all]').onclick = () => adoptProjectFilaments(trays);
   pick.style.display = 'flex';
   pick.querySelectorAll('button[data-i]').forEach(b => b.onclick = () => amsApplyTray(trays[+b.dataset.i]));
 };
@@ -999,7 +1065,8 @@ canvas.addEventListener('pointerdown', (e) => {
   // Im Vorbereiten-Tab: Klick auf Objekt = auswählen + ziehen; sonst Orbit
   const hit = modelGroup.visible ? pickObject(e) : null;
   if (hit && hit.idx !== undefined) {
-    selectObject(hit.idx);
+    selectObject(hit.idx, e.ctrlKey || e.metaKey);
+    if (e.ctrlKey || e.metaKey) return;   // beim Sammeln nicht gleichzeitig ziehen
     const st = objectStates[hit.idx];
     const start = planePoint(e);
     const startDx = st.dx, startDy = st.dy;
@@ -1087,14 +1154,15 @@ function showModelMeshes(objects) {
     geo.boundingBox.getCenter(c);
     const pivot = new THREE.Vector3(c.x, c.y, 0);
     geo.translate(-pivot.x, -pivot.y, 0);   // Geometrie um Pivot zentrieren
-    const mat = new THREE.MeshStandardMaterial({ color: 0x2ea2d8, metalness: .05, roughness: .65, flatShading: true });
+    const baseColor = projectFilaments.length > 1 ? projectFilaments[0].color : 0x2ea2d8;
+    const mat = new THREE.MeshStandardMaterial({ color: baseColor, metalness: .05, roughness: .65, flatShading: true });
     const mesh = new THREE.Mesh(geo, mat);
     const group = new THREE.Group();
     group.position.copy(pivot);
     group.add(mesh);
     mesh.userData.objIndex = objectStates.length;
     modelGroup.add(group);
-    objectStates.push({ name: o.name, pivot, group, mesh, dx: 0, dy: 0, rx: 0, ry: 0, rz: 0, scale: 1 });
+    objectStates.push({ name: o.name, pivot, group, mesh, dx: 0, dy: 0, rx: 0, ry: 0, rz: 0, scale: 1, filament: 1 });
   }
   CENTER = new THREE.Vector3(bedSize[0] / 2, bedSize[1] / 2, maxZ / 2);
   updateCam();
@@ -1103,6 +1171,7 @@ function showModelMeshes(objects) {
 
 // ---------- Objekt-Auswahl + Transformation ----------
 let selectedIdx = -1;
+let selectedSet = new Set();   // Mehrfachauswahl (Strg+Klick / Strg+A)
 function applyStateToGroup(st) {
   st.group.position.set(st.pivot.x + st.dx, st.pivot.y + st.dy, 0);
   st.group.rotation.set(st.rx * Math.PI / 180, st.ry * Math.PI / 180, st.rz * Math.PI / 180);
@@ -1126,15 +1195,36 @@ function syncPanel(st) {
   }
   $('sSc').value = $('nSc').value = Math.round(st.scale * 100);
 }
-function selectObject(i) {
-  if (selectedIdx >= 0 && objectStates[selectedIdx])
-    objectStates[selectedIdx].mesh.material.emissive?.setHex(0x000000);
+function selectObject(i, add = false) {
+  if (!add) {
+    for (const j of selectedSet) objectStates[j]?.mesh.material.emissive?.setHex(0x000000);
+    selectedSet.clear();
+  }
+  if (i >= 0 && objectStates[i] && !objectStates[i].deleted) {
+    if (add && selectedSet.has(i)) {   // Strg+Klick auf Markiertes = abwählen
+      selectedSet.delete(i);
+      objectStates[i].mesh.material.emissive?.setHex(0x000000);
+      i = selectedSet.size ? [...selectedSet].pop() : -1;
+    } else {
+      selectedSet.add(i);
+    }
+  }
   selectedIdx = i;
+  for (const j of selectedSet) objectStates[j].mesh.material.emissive?.setHex(0x14532d);
   const st = objectStates[i];
   $('objPanel').hidden = !st || st.deleted;
   if (!st) { updateToolbar(); return; }
-  st.mesh.material.emissive?.setHex(0x14532d);
   syncPanel(st);
+  updateToolbar();
+}
+// Alles auswählen (nur nicht-gelöschte Objekte)
+function selectAll() {
+  selectedSet = new Set(objectStates.map((s, i) => s.deleted ? -1 : i).filter(i => i >= 0));
+  for (const j of selectedSet) objectStates[j].mesh.material.emissive?.setHex(0x14532d);
+  selectedIdx = selectedSet.size ? [...selectedSet][0] : -1;
+  const st = objectStates[selectedIdx];
+  $('objPanel').hidden = !st;
+  if (st) syncPanel(st);
   updateToolbar();
 }
 // Slider <-> Zahlenfeld synchron, beide schreiben in den Zustand
@@ -1166,8 +1256,22 @@ for (const [id, axis] of [['pX', 'x'], ['pY', 'y']]) {
 function currentTransforms() {
   return objectStates.map(st => st.deleted
     ? { del: true }
-    : { dx: st.dx, dy: st.dy, rx: st.rx, ry: st.ry, rz: st.rz, scale: st.scale });
+    : { dx: st.dx, dy: st.dy, rx: st.rx, ry: st.ry, rz: st.rz, scale: st.scale,
+        filament: st.filament || 1 });
 }
+
+// Tasten: 1–9 = Filament dem markierten Objekt zuweisen, Strg+A = alle markieren
+document.addEventListener('keydown', (e) => {
+  if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+  if (!modelGroup.visible || !objectStates.length) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+    e.preventDefault();
+    selectAll();
+    return;
+  }
+  if (e.key >= '1' && e.key <= '9' && projectFilaments.length > 1)
+    assignFilament(+e.key);
+});
 
 function updateToolbar() {
   const st = objectStates[selectedIdx];
@@ -1383,22 +1487,36 @@ $('btnSlice').onclick = async () => {
     $('btnSlice').disabled = true;
     status.textContent = 'Lade Profile …';
     const c = chainsCache ?? await loadChains();
-    const profiles = [...c.machine, ...c.process, ...c.filament];
+    // Mehrfarbdruck: Filament-Ketten getrennt übergeben, der Kern kombiniert
+    // sie zu Vektor-Optionen (ein Eintrag je Filament) + Prime Tower
+    const multi = projectFilaments.length > 1;
+    let filamentChains;
+    if (multi) {
+      filamentChains = [];
+      for (const f of projectFilaments) {
+        const chain = await profileChain($('vendor').value, 'filament_list', f.name);
+        chain.push(JSON.stringify({ filament_colour: [f.color] }));   // Slot-Farbe je Filament
+        filamentChains.push(chain);
+      }
+    }
+    const profiles = multi ? [...c.machine, ...c.process] : [...c.machine, ...c.process, ...c.filament];
     const overrides = [
       'enable_arc_fitting = 0',
       `enable_support = ${$('support').checked ? 1 : 0}`,
       `brim_type = ${$('brim').checked ? 'outer_only' : 'no_brim'}`,
       `printer_settings_id = ${$('machine').value}`,
       `print_settings_id = ${$('process').value}`,
-      `filament_settings_id = "${$('filament').value}"`,
-      // Settings-Panel: nur Abweichungen vom Profil
-      ...settingOverrides().map(([k, v2]) => `${k} = ${v2}`),
+      multi ? '' : `filament_settings_id = "${$('filament').value}"`,
+      // Settings-Panel: nur Abweichungen vom Profil; im Mehrfarbmodus darf die
+      // Einzelfarbe (filament_colour vom Einzel-AMS-Sync) nicht alles übersteuern
+      ...settingOverrides().filter(([k]) => !(multi && k === 'filament_colour'))
+        .map(([k, v2]) => `${k} = ${v2}`),
       $('overrides').value,
     ].join('\n');
     status.textContent = 'Slice läuft …';
     sliceStart = performance.now();
     worker.postMessage({ bytes: modelBytes, filename: modelName, profiles, overrides,
-                         transforms: currentTransforms() });
+                         transforms: currentTransforms(), filamentChains });
   } catch (e) {
     status.innerHTML = `<span class="err">FEHLER: ${e.message}</span>`;
     updateSliceable();
