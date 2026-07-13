@@ -16,6 +16,7 @@ const adapters = {
   moonraker: require('./adapters/moonraker'),
   anycubic:  require('./adapters/anycubic'),
 };
+const nativeSlicer = require('./native-slicer');
 
 const PORT = process.env.BRIDGE_PORT ? Number(process.env.BRIDGE_PORT) : 7781;
 
@@ -252,6 +253,38 @@ app.post('/api/send', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ---- Nativer Slice-Dienst (2–3× schneller als Browser-WASM) ----
+// Kein Login nötig — Brücke ist tailnet-only, gleiche Policy wie die Flotte.
+app.get('/api/slice/health', (req, res) => res.json({ available: nativeSlicer.available() }));
+
+// Job einreichen: { filename, model (base64), profiles, overrides, transforms, filamentChains }
+app.post('/api/slice', (req, res) => {
+  if (!nativeSlicer.available())
+    return res.status(503).json({ error: 'nativer Slicer nicht gebaut' });
+  const { filename, model, profiles, overrides, transforms, filamentChains } = req.body || {};
+  if (!model) return res.status(400).json({ error: 'model (base64) nötig' });
+  try {
+    const id = nativeSlicer.submit({
+      filename, bytes: Buffer.from(model, 'base64'),
+      profiles, overrides, transforms, filamentChains,
+    });
+    res.json({ ok: true, id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/slice/:id/status', (req, res) => {
+  const s = nativeSlicer.status(req.params.id);
+  if (!s) return res.status(404).json({ error: 'unbekannter Job' });
+  res.json({ state: s.state, percent: s.percent, text: s.text, error: s.error, warnings: s.warnings });
+});
+
+app.get('/api/slice/:id/gcode', (req, res) => {
+  const p = nativeSlicer.takeGcode(req.params.id);
+  if (!p) return res.status(404).json({ error: 'kein G-Code (Job nicht fertig?)' });
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  fs.createReadStream(p).pipe(res);
 });
 
 // Live-Kamera: Einzelbild-Polling. RTSP-over-TLS (Port 322, X1-Protokoll) hält
