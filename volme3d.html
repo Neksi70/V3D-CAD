@@ -13924,14 +13924,19 @@ async function _applyHexPattern(cellMm, wallMm, marginMm, depthMm) {
   const ray = new THREE.Raycaster();
   ray.far = size.y + 1;
   const y0 = bb.min.y - 0.3;
-  // Dicke des ersten Material-Intervalls von unten; null = kein Material.
+  // Erstes Material-Intervall von unten: {t: Dicke, y0: Eintritt, y1: Austritt};
+  // null = kein Material. y0/y1 sagen, WO die Platte liegt — bei gekippten
+  // Körpern (Deckel: Boden oben) ist das NICHT die Unterkante des Objekts!
   const thicknessAt = (px, pz) => {
     ray.ray.origin.set(px, y0, pz);
     ray.ray.direction.set(0, 1, 0);
-    const raw = ray.intersectObject(target, true);
+    // NUR Mesh-Treffer: die Kantenlinien-Overlays (LineSegments) treffen mit
+    // Line.threshold=1 (=10mm!) weit neben der Kante und vergiften die Messung
+    // (Fake-Eintritt an der Randlinie → Plattendicke = fast volle Objekthöhe).
+    const raw = ray.intersectObject(target, true).filter(h => h.object.isMesh);
     const ys = [];                                   // Doppel-Treffer an Kanten mergen
     for (const h of raw) if (!ys.length || h.point.y - ys[ys.length - 1] > 1e-3) ys.push(h.point.y);
-    return ys.length >= 2 ? ys[1] - ys[0] : null;
+    return ys.length >= 2 ? { t: ys[1] - ys[0], y0: ys[0], y1: ys[1] } : null;
   };
   // Testpunkte: Ecken bei R+margin (Winkel 30°+k·60°), Kantenmitten bei SW/2+margin
   // (Winkel k·60°) — CylinderGeometry(…,6) hat die Flanken genau in Gitterrichtung.
@@ -13942,19 +13947,21 @@ async function _applyHexPattern(cellMm, wallMm, marginMm, depthMm) {
     testOffsets.push([Math.cos(aF) * (SW / 2 + margin), Math.sin(aF) * (SW / 2 + margin)]);
   }
 
-  const cells = [];                                  // {x, z, t: max. Dicke der Zelle}
+  const cells = [];                                  // {x, z, t: max. Dicke, yIn/yOut: Plattenlage}
   for (let j = -nRows; j <= nRows; j++) {
     const cz = ctrZ + j * rowP;
     const xOff = (j & 1) ? pitch / 2 : 0;
     for (let i = -nCols; i <= nCols; i++) {
       const cx = ctrX + i * pitch + xOff;
-      let tMax = 0, ok = true;
+      let tMax = 0, yIn = Infinity, yOut = -Infinity, ok = true;
       for (const [ox, oz] of testOffsets) {
-        const t = thicknessAt(cx + ox, cz + oz);
-        if (t === null) { ok = false; break; }       // Punkt liegt neben dem Teil / im Loch
-        if (t > tMax) tMax = t;
+        const m = thicknessAt(cx + ox, cz + oz);
+        if (m === null) { ok = false; break; }       // Punkt liegt neben dem Teil / im Loch
+        if (m.t > tMax) tMax = m.t;
+        if (m.y0 < yIn)  yIn  = m.y0;
+        if (m.y1 > yOut) yOut = m.y1;
       }
-      if (ok) cells.push({ x: cx, z: cz, t: tMax });
+      if (ok) cells.push({ x: cx, z: cz, t: tMax, yIn, yOut });
     }
   }
   sideBak.forEach(([mt, s]) => mt.side = s);
@@ -13967,22 +13974,25 @@ async function _applyHexPattern(cellMm, wallMm, marginMm, depthMm) {
   const accepted = cells.filter(c => c.t <= wallCut);
   if (!accepted.length) { notify('Kein freier Boden gefunden', 'w'); return; }
 
-  const depthU = depthMm > 0 ? depthMm / 10
-               : Math.max(...accepted.map(c => c.t)) + 0.1;   // auto: durch den Boden (+1 mm)
-
   // ── Alle Sechskant-Stempel zu EINEM Werkzeug-Mesh mergen ─────────────────
-  const eps = 0.05, h = depthU + eps;
-  const proto = new THREE.CylinderGeometry(R, R, h, 6).toNonIndexed();
+  // Jeder Stempel sitzt an der GEMESSENEN Plattenlage seiner Zelle (yIn..yOut),
+  // nicht an der Objekt-Unterkante — sonst stanzt er bei gekippten Körpern
+  // (Deckel: Boden oben) ins Leere bzw. in den offenen Rand.
+  // eps=0.1 (1mm Überstand beidseitig) hält den Koplanar-Fix in
+  // _doSubtractHoles inaktiv (f≤1), der um den Welt-Ursprung skalieren würde.
+  const eps = 0.1;
+  const proto = new THREE.CylinderGeometry(R, R, 1, 6).toNonIndexed();   // Höhe 1, y ∈ [−0.5..0.5]
   const pPos = proto.attributes.position.array, pNrm = proto.attributes.normal.array;
   const n = pPos.length;
   const pos = new Float32Array(n * accepted.length);
   const nrm = new Float32Array(n * accepted.length);
   accepted.forEach((c, k) => {
-    const cy = bb.min.y - eps + h / 2;
+    const h  = (depthMm > 0 ? depthMm / 10 : c.yOut - c.yIn) + 2 * eps;
+    const cy = c.yIn - eps + h / 2;
     for (let v = 0; v < n; v += 3) {
-      pos[k * n + v]     = pPos[v]     + c.x;
-      pos[k * n + v + 1] = pPos[v + 1] + cy;
-      pos[k * n + v + 2] = pPos[v + 2] + c.z;
+      pos[k * n + v]     = pPos[v]         + c.x;
+      pos[k * n + v + 1] = pPos[v + 1] * h + cy;
+      pos[k * n + v + 2] = pPos[v + 2]     + c.z;
     }
     nrm.set(pNrm, k * n);
   });
