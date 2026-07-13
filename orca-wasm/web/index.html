@@ -590,7 +590,8 @@ $('btnSend').onclick = async () => {
       lanCode: $('lanCode').value.trim() || undefined,
     } });
     if (status === 200 && json.ok) {
-      const via = json.path === 'lan' ? 'LAN' : 'Cloud';
+      const via = json.path === 'lan' ? 'LAN'
+        : (json.path === 'moonraker' || json.path === 'anycubic') ? 'LAN direkt' : 'Cloud';
       $('sendStatus').innerHTML = `<span class="ok">✅ Gesendet (${via}${json.print?.acked ? ', Druck bestätigt' : ''})</span>`
         + (json.experimental ? `<br><small style="opacity:.7">${json.note}</small>` : '');
     } else {
@@ -666,6 +667,7 @@ function effVal(key) {
 
 async function refreshSettings() {
   try {
+    await ensureCompatiblePresets();
     const c = await loadChains();
     effectiveConfig = {};
     for (const s of [...c.machine, ...c.process, ...c.filament])
@@ -795,6 +797,53 @@ function applyMachineDefaults(saved = {}) {
   const m = machines.find(x => x.name === $('machine').value);
   $('process').value  = saved.process  || m?.defProcess  || $('process').value;
   $('filament').value = saved.filament || m?.defFilament || $('filament').value;
+}
+
+// Passt das Preset zum gewählten Drucker? compatible_printers aus der Kette
+// (letzter definierter Wert gewinnt); leer/nicht definiert = überall nutzbar.
+async function presetCompatible(listKey, name, machine) {
+  if (!name) return false;
+  try {
+    const chain = await profileChain($('vendor').value, listKey, name);
+    if (String(JSON.parse(chain[chain.length - 1]).instantiation) === 'false') return false;
+    let compat = null;
+    for (const s of chain) {
+      const j = JSON.parse(s);
+      if (j.compatible_printers) compat = j.compatible_printers;
+    }
+    return !compat || !compat.length || compat.includes(machine);
+  } catch { return false; }   // unauflösbare Kette = unbrauchbar
+}
+
+// Inkompatible Druck-/Filamentprofile beim Maschinenwechsel ersetzen — sonst
+// klebt z.B. ein J1-Druckprofil auf der U1 fest und der Druck läuft mit
+// falschen Temperaturen/Limits (Orca-Desktop blendet solche Presets ganz aus).
+async function ensureCompatiblePresets() {
+  const machine = $('machine').value;
+  if (!machine) return;
+  const m = machines.find(x => x.name === machine);
+  const idx = await vendorIndex($('vendor').value);
+  const swapped = [];
+  for (const [field, listKey, def] of [['process', 'process_list', m?.defProcess],
+                                       ['filament', 'filament_list', m?.defFilament]]) {
+    if (await presetCompatible(listKey, $(field).value, machine)) continue;
+    let repl = def && await presetCompatible(listKey, def, machine) ? def : null;
+    if (!repl) {
+      // bestes kompatibles Preset: Maschinenbezug + "Standard" (Prozess) bzw.
+      // PLA (Filament) bevorzugen, Sonder-/Basisvarianten ans Ende
+      const short = machine.replace(/\s*\([^)]*\)\s*$/, '');   // "… (0.4 nozzle)" weg
+      const score = (n) => (n.includes(short) ? 4 : 0)
+        + (field === 'process' ? (/standard/i.test(n) ? 2 : 0) : (/\bPLA\b/.test(n) ? 2 : 0))
+        + (/base\s*$/i.test(n) || /benchy|draft|extra/i.test(n) ? -3 : 0);
+      const names = idx[listKey].map(e => e.name).sort((a, b) => score(b) - score(a));
+      for (const n of names) {
+        if (await presetCompatible(listKey, n, machine)) { repl = n; break; }
+      }
+    }
+    if (repl && repl !== $(field).value) { swapped.push(`${$(field).value} → ${repl}`); $(field).value = repl; }
+  }
+  if (swapped.length)
+    status.innerHTML = `<span class="ok">Profil an Drucker angepasst: ${swapped.join(' · ')}</span>`;
 }
 
 function savePresets() {
