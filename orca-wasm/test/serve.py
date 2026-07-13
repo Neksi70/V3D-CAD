@@ -6,6 +6,7 @@ Port 8778 ist NICHT im Funnel — nur für Tests vom Desktop aus).
 """
 import http.server
 import os
+import re
 
 PORT = 8778
 DIR = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +35,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                              if f.endswith('.json') and not f.startswith('OrcaFilamentLibrary'))
             body = json.dumps(vendors).encode()
             self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        # Aggregierte Druckerliste eines Herstellers: EIN Request statt ~150
+        # Einzel-Fetches der machine-Unterprofile (Herstellerwechsel/Seitenstart
+        # dauerte sonst zweistellige Sekunden über den Tailscale-Proxy).
+        m = re.match(r'^/profiles/([^/]+)\.machines\.json$', self.path.split('?')[0])
+        if m:
+            import json
+            from urllib.parse import unquote
+            vendor = os.path.basename(unquote(m.group(1)))
+            body, ok = b'[]', False
+            try:
+                with open(os.path.join(PROFILES, vendor + '.json')) as f:
+                    idx = json.load(f)
+                out = []
+                for e in idx.get('machine_list', []):
+                    p = os.path.normpath(os.path.join(PROFILES, vendor, e.get('sub_path', '')))
+                    if not p.startswith(os.path.normpath(PROFILES)):
+                        continue
+                    try:
+                        with open(p) as f:
+                            j = json.load(f)
+                    except (OSError, ValueError):
+                        continue
+                    if str(j.get('instantiation')) == 'false':
+                        continue
+                    first = lambda v: (v[0] if isinstance(v, list) and v else v) or ''
+                    out.append({'name': e['name'], 'model': j.get('printer_model') or e['name'],
+                                'defProcess': first(j.get('default_print_profile')),
+                                'defFilament': first(j.get('default_filament_profile'))})
+                body, ok = json.dumps(out).encode(), True
+            except (OSError, ValueError):
+                pass
+            self.send_response(200 if ok else 404)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
@@ -92,7 +130,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
         self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
-        self.send_header('Cache-Control', 'no-store')
+        # no-cache statt no-store: Browser darf cachen, muss aber revalidieren.
+        # SimpleHTTPRequestHandler beantwortet If-Modified-Since mit 304 —
+        # das 37-MB-WASM und die Profile kommen so nur nach Änderungen neu.
+        self.send_header('Cache-Control', 'no-cache')
         super().end_headers()
 
 
