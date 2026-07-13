@@ -19,6 +19,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*a, directory=DIR, **kw)
 
     def do_GET(self):
+        # /app ohne Slash → relative Pfade (slicer-worker.js, params.json …)
+        # zeigen sonst auf die Root und laufen ins 404
+        if self.path.split('?')[0] == '/app':
+            self.send_response(301)
+            self.send_header('Location', '/app/')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
         # Vendor-Liste dynamisch (kein echtes Verzeichnis-Listing nötig)
         if self.path.split('?')[0] == '/profiles/index.json':
             import json
