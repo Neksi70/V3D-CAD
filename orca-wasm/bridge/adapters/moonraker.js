@@ -86,16 +86,24 @@ async function send(p, filename, gcodeBuffer, start) {
 // Generische Klipper-Drucker: konfigurierbare Snapshot-URL (p.cam) oder
 // Moonraker-Webcam-Liste.
 const wakes = new Map();   // Drucker-id -> ts des letzten Keepalive
+function wakeCamera(p) {
+  // camera.start_monitor gibt es (je nach U1-Firmware) nur als WebSocket-
+  // JSON-RPC; eine Antwort kommt teils nicht — Feuern und Schließen reicht.
+  try {
+    const ws = new WebSocket(`ws://${p.ip}:${p.port || PORT_DEFAULT}/websocket`);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'camera.start_monitor',
+                               params: { domain: 'lan', interval: 0 }, id: 1 }));
+      setTimeout(() => { try { ws.close(); } catch {} }, 2000);
+    };
+    ws.onerror = () => {};
+  } catch {}
+}
 async function snapshot(p) {
   const now = Date.now();
   if ((wakes.get(p.id) || 0) < now - 5000) {
     wakes.set(p.id, now);
-    // U1-Fork-Endpunkt; auf generischem Moonraker existiert er nicht -> Fehler egal
-    fetch(base(p) + '/camera/start_monitor', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ domain: 'lan', interval: 0 }),
-      signal: AbortSignal.timeout(4000),
-    }).catch(() => {});
+    wakeCamera(p);
   }
   const urls = p.cam ? [p.cam] : [
     base(p) + '/server/files/camera/monitor.jpg',   // Snapmaker U1
