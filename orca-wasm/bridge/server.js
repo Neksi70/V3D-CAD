@@ -95,10 +95,12 @@ app.get('/api/device/:serial', async (req, res) => {
     const trays = [];
     for (const unit of (st.ams?.ams || [])) for (const t of (unit.tray || [])) {
       if (t.tray_type || t.tray_color)
-        trays.push({ id: t.id, type: t.tray_type || '', color: (t.tray_color || '').slice(0, 6) });
+        trays.push({ id: t.id, type: t.tray_type || '', color: (t.tray_color || '').slice(0, 6),
+                     sub: t.tray_sub_brands || '', idx: t.tray_info_idx || '' });
     }
     if (st.vt_tray && (st.vt_tray.tray_type || st.vt_tray.tray_color))
-      trays.push({ id: 'ext', type: st.vt_tray.tray_type || '', color: (st.vt_tray.tray_color || '').slice(0, 6), external: true });
+      trays.push({ id: 'ext', type: st.vt_tray.tray_type || '', color: (st.vt_tray.tray_color || '').slice(0, 6),
+                   sub: st.vt_tray.tray_sub_brands || '', idx: st.vt_tray.tray_info_idx || '', external: true });
     const light = (st.lights_report || []).find(l => l.node === 'chamber_light')?.mode;
     res.json({
       online: true, state: st.gcode_state, subtask: st.subtask_name,

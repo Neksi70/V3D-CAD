@@ -161,8 +161,14 @@
   </div>
   <div>
     <label>Filament</label>
-    <input id="filament" list="filamentList" placeholder="Filament wählen …">
+    <div style="display:flex;gap:.4rem">
+      <input id="filament" list="filamentList" placeholder="Filament wählen …" style="flex:1;min-width:0">
+      <button id="amsSync" class="secondary" hidden style="padding:.4rem .6rem;white-space:nowrap"
+              title="Geladenes Filament vom AMS des gewählten Druckers übernehmen">🔄 AMS</button>
+    </div>
     <datalist id="filamentList"></datalist>
+    <div id="amsPick" style="display:none;gap:.5rem;flex-wrap:wrap;margin-top:.4rem"></div>
+    <small id="amsHint" style="opacity:.65"></small>
   </div>
 
   <div class="row2">
@@ -324,6 +330,7 @@ async function loadPrinters() {
       // Geräte-Tab freischalten + eigenes Dropdown spiegeln
       $('tabDevice').hidden = false;
       $('devPrinter').innerHTML = $('sendPrinter').innerHTML;
+      $('amsSync').hidden = false;
     }
     return true;
   } catch { return false; }
@@ -371,10 +378,15 @@ async function refreshDevice() {
     $('devBed').textContent = fmtTemp(d.bed, d.bed_target);
     $('devCham').textContent = d.chamber == null ? '–' : Math.round(d.chamber) + '°';
     $('devFan').textContent = d.fan_part == null ? '–' : d.fan_part + '%';
-    // AMS-Slots
-    $('devAms').innerHTML = (d.trays || []).length
-      ? d.trays.map(t => `<div class="amsSlot"><div class="amsChip" style="background:#${t.color || 'ccc'}"></div>${t.external ? 'Ext' : (t.type || '–')}</div>`).join('')
+    // AMS-Slots (Klick = Filament in den Slicer übernehmen)
+    devTrays = d.trays || [];
+    $('devAms').innerHTML = devTrays.length
+      ? devTrays.map((t, i) => `<div class="amsSlot" data-i="${i}" style="cursor:pointer" title="${(t.sub || t.type || '') && 'Klick: als Slice-Filament übernehmen'}"><div class="amsChip" style="background:#${t.color || 'ccc'}"></div>${t.external ? 'Ext' : (t.type || '–')}</div>`).join('')
       : '<span style="opacity:.6;font-size:.82rem">keine AMS-Daten</span>';
+    $('devAms').querySelectorAll('.amsSlot').forEach(el => el.onclick = async () => {
+      const name = await amsApplyTray(devTrays[+el.dataset.i]);
+      $('devHint').textContent = name ? `✅ Slice-Filament: ${name}` : 'Kein passendes Filamentprofil gefunden';
+    });
     $('devLight').textContent = d.light === 'on' ? '💡 Licht aus' : '💡 Licht an';
     $('devLight').dataset.next = d.light === 'on' ? 'light_off' : 'light_on';
     $('devHint').textContent = '';
@@ -754,6 +766,92 @@ async function applyMachineBed() {
   requestPreview();
 }
 $('machine').onchange = async () => { applyMachineDefaults(); await applyMachineBed(); await refreshSettings(); savePresets(); };
+
+// ---------- AMS → Filament-Sync ----------
+// Tray-Daten (Typ, Bambu-Produktname, Filament-ID, Farbe) kommen über die Brücke;
+// gemappt wird auf die Profilnamen des gewählten Herstellers/Druckers.
+let devTrays = [];
+let amsCodePromise = null;   // Filament-ID (z. B. GFA00) -> Produktname (z. B. "PLA Basic")
+function amsCodes() {
+  // Promise cachen (nicht die Map), sonst sehen parallele Aufrufe eine leere Tabelle
+  return amsCodePromise ??= (async () => {
+    const map = new Map();
+    try {
+      const j = await (await fetch('/profiles/BBL/filament/filaments_color_codes.json')).json();
+      for (const e of j.data || []) if (e.fila_id && e.fila_type) map.set(e.fila_id, e.fila_type);
+    } catch { /* ohne Farbcode-Tabelle bleibt der Typ-Fallback */ }
+    return map;
+  })();
+}
+async function amsProductName(t) {
+  if (t.sub) return t.sub;
+  if (!t.idx) return '';
+  return (await amsCodes()).get(t.idx) || '';
+}
+
+// Drucker-Suffix der Filamentnamen (z. B. "@BBL H2D") aus dem Standard-Filament des Druckers
+function amsSuffix() {
+  const def = machines.find(m => m.name === $('machine').value)?.defFilament || '';
+  const at = def.indexOf('@');
+  return at >= 0 ? def.slice(at) : '';
+}
+
+async function amsFindPreset(t) {
+  const idx = await vendorIndex($('vendor').value);
+  const names = idx.filament_list.map(e => e.name);
+  const set = new Set(names);
+  const sfx = amsSuffix();
+  const prod = await amsProductName(t);
+  const cands = [];
+  if (prod) {
+    cands.push(`Bambu ${prod} ${sfx}`.trim(),
+               ...names.filter(n => n.includes(prod) && (!sfx || n.endsWith(sfx))),
+               ...names.filter(n => n.includes(prod)));
+  }
+  if (t.type) {
+    cands.push(`Generic ${t.type} ${sfx}`.trim(),
+               ...names.filter(n => n.includes(t.type) && (!sfx || n.endsWith(sfx))));
+  }
+  return cands.find(n => set.has(n)) || null;
+}
+
+async function amsApplyTray(t) {
+  const name = await amsFindPreset(t);
+  $('amsPick').style.display = 'none';
+  if (!name) {
+    $('amsHint').textContent = `Kein passendes Profil für „${t.sub || t.type || 'Slot ' + t.id}" gefunden`;
+    return null;
+  }
+  $('filament').value = name;
+  await refreshSettings();   // leert die Overrides, Farbe danach setzen
+  if (t.color) changedValues.set('filament_colour', '#' + t.color);
+  savePresets();
+  $('amsHint').textContent = `✅ ${name}${t.color ? ' · Farbe übernommen' : ''}`;
+  return name;
+}
+
+$('amsSync').onclick = async () => {
+  const serial = $('sendPrinter').value;
+  if (!serial) { $('amsHint').textContent = 'Kein Drucker im Konto'; return; }
+  $('amsHint').textContent = 'Frage AMS ab …';
+  let trays = [];
+  try {
+    const { json: d } = await bridge('/api/device/' + encodeURIComponent(serial));
+    trays = (d.trays || []).filter(t => t.type || t.sub || t.idx);
+  } catch { $('amsHint').textContent = 'Brücke nicht erreichbar'; return; }
+  if (!trays.length) { $('amsHint').textContent = 'Kein Filament gemeldet (AMS leer / Drucker offline?)'; return; }
+  if (trays.length === 1) return amsApplyTray(trays[0]);
+  // Mehrere Slots: kleine Auswahl unter dem Feld (mit aufgelöstem Produktnamen)
+  $('amsHint').textContent = 'Slot wählen:';
+  const prods = await Promise.all(trays.map(amsProductName));
+  const pick = $('amsPick');
+  pick.innerHTML = trays.map((t, i) =>
+    `<button class="secondary" data-i="${i}" style="display:flex;align-items:center;gap:.4rem;padding:.3rem .6rem">
+       <span style="width:14px;height:14px;border-radius:4px;background:#${t.color || 'ccc'};border:1px solid #0003"></span>
+       ${t.external ? 'Ext' : 'Slot ' + (i + 1)} · ${prods[i] || t.type}</button>`).join('');
+  pick.style.display = 'flex';
+  pick.querySelectorAll('button[data-i]').forEach(b => b.onclick = () => amsApplyTray(trays[+b.dataset.i]));
+};
 
 // ---------- Datei-Handling ----------
 let modelBytes = null, modelName = '';
