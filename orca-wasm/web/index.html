@@ -869,9 +869,22 @@ async function amsFindPreset(t) {
   }
   if (t.type) {
     cands.push(`Generic ${t.type} ${sfx}`.trim(),
-               ...names.filter(n => n.includes(t.type) && (!sfx || n.endsWith(sfx))));
+               ...names.filter(n => n.includes(t.type) && (!sfx || n.endsWith(sfx))),
+               ...names.filter(n => n.includes(t.type)));
   }
-  return cands.find(n => set.has(n)) || null;
+  // Ersten Kandidaten nehmen, dessen Profilkette sich wirklich auflösen lässt
+  // UND der instanziierbar ist — abstrakte Vorlagen ("… @base") stehen mit im
+  // Index, brechen aber beim Slicen (z.B. "Preset nicht gefunden: PolyTerra
+  // PLA @base" beim Snapmaker U1).
+  for (const n of [...new Set(cands)]) {
+    if (!set.has(n)) continue;
+    try {
+      const chain = await profileChain($('vendor').value, 'filament_list', n);
+      if (String(JSON.parse(chain[chain.length - 1]).instantiation) === 'false') continue;
+      return n;
+    } catch { /* Kette kaputt (fehlende Basis) → nächster Kandidat */ }
+  }
+  return null;
 }
 
 async function amsApplyTray(t) {
@@ -1542,8 +1555,10 @@ $('btnSlice').onclick = async () => {
     let filamentChains;
     if (multi) {
       filamentChains = [];
-      for (const f of projectFilaments) {
-        const chain = await profileChain($('vendor').value, 'filament_list', f.name);
+      for (const [i, f] of projectFilaments.entries()) {
+        let chain;
+        try { chain = await profileChain($('vendor').value, 'filament_list', f.name); }
+        catch (e) { throw new Error(`Filament ${i + 1} („${f.name}"): ${e.message}`); }
         chain.push(JSON.stringify({ filament_colour: [f.color] }));   // Slot-Farbe je Filament
         filamentChains.push(chain);
       }
