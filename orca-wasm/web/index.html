@@ -49,6 +49,9 @@
   #toolbar button:disabled:hover { background: transparent; color: #3a4450; }
   #toolbar .sep { width: 1px; height: 30px; background: var(--border); margin: 0 8px; }
   #view { width: 100%; height: 100%; display: block; }
+  /* Ansichtswürfel (Studio-Look): klickbare Flächen für Standard-Ansichten */
+  #navCube { position: absolute; left: 14px; bottom: 14px; width: 110px; height: 110px;
+             cursor: pointer; z-index: 4; }
   #overlay[hidden], #legend[hidden] { display: none; }
   #overlay { position: absolute; left: 1rem; right: 1rem; bottom: 1rem; display: flex;
              align-items: center; gap: 1rem; background: rgba(255,255,255,.9); border: 1px solid var(--border); border-radius: 10px;
@@ -250,6 +253,7 @@
     <button id="tbDelete" title="Objekt löschen" disabled><svg viewBox="0 0 40 40" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 11h24"/><path d="M15 11V8a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><path d="M11 11l1.5 21a2 2 0 0 0 2 1.9h11a2 2 0 0 0 2-1.9L29 11"/><path d="M17 17v11M23 17v11"/></g></svg></button>
   </div>
   <canvas id="view"></canvas>
+  <canvas id="navCube" width="220" height="220" title="Ansicht wählen"></canvas>
 
   <div id="devicePanel" hidden>
     <div class="devHead">
@@ -1094,19 +1098,69 @@ let CENTER = new THREE.Vector3(128, 128, 10);
 let bedGroup = new THREE.Group();
 scene.add(bedGroup);
 let bedSize = [256, 256];
+// Dezente PEI-Körnung als Canvas-Textur (selbst erzeugt, kein Asset nötig)
+let plateTexture = null;
+function makePlateTexture() {
+  if (plateTexture) return plateTexture;
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#3a3e45';
+  g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 22000; i++) {
+    const v = 52 + Math.random() * 26;
+    g.fillStyle = `rgba(${v + 8},${v + 10},${v + 14},${0.5 + Math.random() * 0.5})`;
+    g.fillRect(Math.random() * 512, Math.random() * 512, 1.4, 1.4);
+  }
+  plateTexture = new THREE.CanvasTexture(c);
+  plateTexture.wrapS = plateTexture.wrapT = THREE.RepeatWrapping;
+  return plateTexture;
+}
+
 function setBed(w, h) {
   bedSize = [w, h];
   bedGroup.clear();
-  const grid = new THREE.GridHelper(Math.max(w, h), Math.round(Math.max(w, h) / 16), 0xaeb9c8, 0xcbd4e0);
-  grid.rotation.x = Math.PI / 2;
-  grid.position.set(w / 2, h / 2, 0);
-  bedGroup.add(grid);
-  const outline = new THREE.LineLoop(
+  // Dunkle Druckplatte im Studio-Look: abgerundete Platte, etwas größer als
+  // der Druckbereich, mit PEI-Körnung und zwei Grifflaschen vorn
+  const m = 9, r = 8, d = 2.6;                       // Rand, Eckenradius, Dicke
+  const shape = new THREE.Shape();
+  shape.moveTo(-m + r, -m);
+  shape.lineTo(w + m - r, -m); shape.absarc(w + m - r, -m + r, r, -Math.PI / 2, 0);
+  shape.lineTo(w + m, h + m - r); shape.absarc(w + m - r, h + m - r, r, 0, Math.PI / 2);
+  shape.lineTo(-m + r, h + m); shape.absarc(-m + r, h + m - r, r, Math.PI / 2, Math.PI);
+  shape.lineTo(-m, -m + r); shape.absarc(-m + r, -m + r, r, Math.PI, Math.PI * 1.5);
+  const plateGeo = new THREE.ExtrudeGeometry(shape, { depth: d, bevelEnabled: false });
+  plateGeo.translate(0, 0, -d - 0.15);               // Oberseite knapp unter z=0
+  const tex = makePlateTexture();
+  tex.repeat.set(w / 128, h / 128);
+  const plate = new THREE.Mesh(plateGeo,
+    new THREE.MeshStandardMaterial({ color: 0xffffff, map: tex, roughness: .92, metalness: .05 }));
+  bedGroup.add(plate);
+  // Grifflaschen an der Vorderkante
+  for (const cx of [w * 0.16, w * 0.84]) {
+    const tab = new THREE.Mesh(new THREE.BoxGeometry(w * 0.14, 7, d * 0.8),
+      new THREE.MeshStandardMaterial({ color: 0x2e3238, roughness: .9 }));
+    tab.position.set(cx, -m - 2.5, -d / 2 - 0.15);
+    bedGroup.add(tab);
+  }
+  // Druckbereichs-Gitter direkt auf der Platte (helle Linien auf dunkel)
+  const pts = [];
+  const step = 16;
+  for (let x = 0; x <= w + 0.01; x += step) pts.push(new THREE.Vector3(x, 0, 0), new THREE.Vector3(x, h, 0));
+  for (let y = 0; y <= h + 0.01; y += step) pts.push(new THREE.Vector3(0, y, 0), new THREE.Vector3(w, y, 0));
+  bedGroup.add(new THREE.LineSegments(
+    new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: 0x585e68, transparent: true, opacity: .8 })));
+  // Druckbereichs-Kante (hell, statt Orange)
+  bedGroup.add(new THREE.LineLoop(
     new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(0, 0, .05), new THREE.Vector3(w, 0, .05),
-      new THREE.Vector3(w, h, .05), new THREE.Vector3(0, h, .05)]),
-    new THREE.LineBasicMaterial({ color: 0xf07c1e }));
-  bedGroup.add(outline);
+      new THREE.Vector3(0, 0, .06), new THREE.Vector3(w, 0, .06),
+      new THREE.Vector3(w, h, .06), new THREE.Vector3(0, h, .06)]),
+    new THREE.LineBasicMaterial({ color: 0x9aa3af })));
+  // Achsen am Plattenursprung (wie im Studio: X rot, Y grün, Z blau)
+  bedGroup.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, .1), 24, 0xd23f31, 6, 3));
+  bedGroup.add(new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, .1), 24, 0x2e9e44, 6, 3));
+  bedGroup.add(new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, .1), 18, 0x2f6fd8, 6, 3));
   CENTER = new THREE.Vector3(w / 2, h / 2, 10);
   updateCam();
 }
@@ -1118,6 +1172,72 @@ function updateCam() {
     CENTER.z + camDist * Math.cos(camPhi));
   camera.lookAt(CENTER);
 }
+
+// ---------- Ansichtswürfel (unten links, dreht mit, Flächen klickbar) ----------
+const navCanvas = $('navCube');
+const navRenderer = new THREE.WebGLRenderer({ canvas: navCanvas, alpha: true, antialias: true });
+navRenderer.setPixelRatio(1);   // Canvas ist bereits 2× (220px auf 110px CSS)
+const navScene = new THREE.Scene();
+const navCam = new THREE.PerspectiveCamera(38, 1, 0.1, 20);
+navCam.up.set(0, 0, 1);
+navScene.add(new THREE.HemisphereLight(0xffffff, 0xb8bcc4, 1.15));
+function cubeFaceTexture(label, rot) {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#f2f4f7'; g.fillRect(0, 0, 128, 128);
+  g.strokeStyle = '#c9cfd8'; g.lineWidth = 5; g.strokeRect(2.5, 2.5, 123, 123);
+  g.translate(64, 64); g.rotate(rot);
+  g.fillStyle = '#3a4450'; g.font = '600 26px system-ui, sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(label, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.anisotropy = 4;
+  return t;
+}
+// BoxGeometry-Seiten (±x,±y) haben ihre Textur-V-Achse entlang Welt-Y —
+// bei Z-hoch müssen die Beschriftungen deshalb je Fläche gedreht werden
+const NAV_FACES = [
+  ['Rechts', -Math.PI / 2], ['Links', Math.PI / 2],
+  ['Hinten', Math.PI], ['Vorne', 0],
+  ['Oben', 0], ['Unten', 0],
+];
+const navCube = new THREE.Mesh(new THREE.BoxGeometry(1.75, 1.75, 1.75),
+  NAV_FACES.map(([l, r]) => new THREE.MeshStandardMaterial({ map: cubeFaceTexture(l, r), roughness: .85 })));
+navScene.add(navCube);
+navScene.add(new THREE.LineSegments(new THREE.EdgesGeometry(navCube.geometry),
+  new THREE.LineBasicMaterial({ color: 0x9aa3af })));
+function renderNavCube() {
+  navCam.position.set(
+    Math.sin(camPhi) * Math.cos(camTheta),
+    Math.sin(camPhi) * Math.sin(camTheta),
+    Math.cos(camPhi)).multiplyScalar(4.6);
+  navCam.lookAt(0, 0, 0);
+  navRenderer.render(navScene, navCam);
+}
+// Klick auf eine Fläche = Standard-Ansicht (theta/phi wie updateCam-Konvention)
+const NAV_VIEWS = [
+  [Math.PI / 2, 0],            // Rechts  (+x)
+  [Math.PI / 2, Math.PI],      // Links   (-x)
+  [Math.PI / 2, Math.PI / 2],  // Hinten  (+y)
+  [Math.PI / 2, -Math.PI / 2], // Vorne   (-y)
+  [0.06, null],                // Oben    (+z, Blickrichtung behalten)
+  [Math.PI - 0.06, null],      // Unten   (-z)
+];
+navCanvas.addEventListener('pointerdown', (e) => {
+  const r = navCanvas.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1,
+                                -((e.clientY - r.top) / r.height) * 2 + 1);
+  const rc = new THREE.Raycaster();
+  rc.setFromCamera(ndc, navCam);
+  const hit = rc.intersectObject(navCube)[0];
+  if (!hit) return;
+  const [phi, theta] = NAV_VIEWS[Math.floor(hit.faceIndex / 2)] || [];
+  if (phi === undefined) return;
+  camPhi = phi;
+  if (theta !== null) camTheta = theta;
+  updateCam();
+  e.stopPropagation();
+});
 const raycaster = new THREE.Raycaster();
 const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0); // Bettebene z=0
 function pickObject(ev) {
@@ -1180,7 +1300,7 @@ function resize() {
     renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
   }
 }
-(function loop() { requestAnimationFrame(loop); resize(); renderer.render(scene, camera); })();
+(function loop() { requestAnimationFrame(loop); resize(); renderer.render(scene, camera); renderNavCube(); })();
 updateCam();
 
 const FEATURE_COLORS = {
@@ -1207,6 +1327,7 @@ function showTab(name) {
   // Werkzeugleiste (Slicer/Plater) auf der Geräteseite ausblenden — sonst
   // überdeckt sie oben die Drucker-Auswahl
   $('toolbar').style.display = name === 'device' ? 'none' : '';
+  $('navCube').style.display = name === 'device' ? 'none' : '';
   if (name === 'device') startDevicePolling(); else stopDevicePolling();
 }
 document.querySelectorAll('.tab').forEach(b => b.onclick = () => showTab(b.dataset.tab));
