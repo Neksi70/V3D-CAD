@@ -1303,7 +1303,8 @@ function resize() {
     renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
   }
 }
-(function loop() { requestAnimationFrame(loop); resize(); renderer.render(scene, camera); renderNavCube(); })();
+let gizmoSizer = null;   // wird nach dem Werkzeug-Setup gesetzt (Deklaration folgt später im Modul)
+(function loop() { requestAnimationFrame(loop); resize(); if (gizmoSizer) gizmoSizer(); renderer.render(scene, camera); renderNavCube(); })();
 updateCam();
 
 const FEATURE_COLORS = {
@@ -1421,8 +1422,20 @@ let activeTool = null;            // 'move' | 'rotate' | 'scale'
 let uniformScale = true;          // „einheitliche Skalierung"
 let tctrlDragging = false;
 const tctrl = new THREE.TransformControls(camera, canvas);
-tctrl.setSize(0.85);
 scene.add(tctrl);
+// Gizmo an die Objektgröße koppeln: TransformControls hält die Griffe sonst
+// bildschirmkonstant klein. Weltgröße der Griffe = dist·min(1.9·tan(fov/2),7)·size/7
+// (transform-controls.js:991) → size so wählen, dass die Ringe das Objekt umschließen.
+function updateGizmoSize() {
+  const st = objectStates[selectedIdx];
+  if (!tctrl.object || !st || st.deleted) return;
+  const [w, h, d] = stDims(st);
+  const target = Math.max(Math.hypot(w, h) * 0.62, d * 0.7, 18);   // Zielradius in mm
+  const dist = camera.position.distanceTo(tctrl.object.position);
+  const factor = dist * Math.min(1.9 * Math.tan(Math.PI * camera.fov / 360), 7);
+  if (factor > 1) tctrl.setSize(target * 7 / factor);
+}
+gizmoSizer = updateGizmoSize;
 tctrl.addEventListener('dragging-changed', (e) => { tctrlDragging = e.value; });
 tctrl.addEventListener('objectChange', () => {
   const st = objectStates[selectedIdx];
