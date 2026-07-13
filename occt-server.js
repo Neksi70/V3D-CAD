@@ -232,7 +232,11 @@ function computeMaxBlindDepth(tris, matrixE, svgPathData, scale, cx, cy, margin)
 // ── STL via OCCT-FS lesen → Solid (mit Sewing, Tolerance 1mm) ────────────────
 // warn: optionales Array — sammelt Hinweise (z.B. verworfene offene Hüllen),
 // die die Route ans Frontend durchreicht, statt Geometrie STILL zu verlieren.
-function stlToOCCTSolid(oc, stlBuf, keep, warn) {
+// opts.toolCompound: Mehr-Hüllen-Mesh als COMPOUND der Einzel-Solids zurückgeben
+// statt sie zu fusen. Für Cut-WERKZEUGE korrekt und dramatisch schneller — der
+// sequenzielle Shell-Fuse braucht bei z.B. 100 Wabenstempeln Minuten, das
+// Compound ist gratis (Boolean-Cut akzeptiert Compounds als Tool).
+function stlToOCCTSolid(oc, stlBuf, keep, warn, opts) {
   try {
     // OCCTs ASCII/Binär-Heuristik scannt auf Non-ASCII-Bytes. Ein Binär-STL aus
     // lauter "glatten" Koordinaten (z.B. 10.0 → 00 00 20 41) besteht komplett aus
@@ -297,6 +301,18 @@ function stlToOCCTSolid(oc, stlBuf, keep, warn) {
       }
       if (solids.length) {
         try {
+          if (opts && opts.toolCompound && solids.length > 1) {
+            const comp = new oc.TopoDS_Compound();
+            const bld  = new oc.BRep_Builder();
+            bld.MakeCompound(comp);
+            for (const s of solids) bld.Add(comp, s);
+            bld.delete();
+            console.log(`[stl2occt] ${shells.length} Shells → Compound aus ${solids.length} Solids (Tool)` +
+                        (dropped ? `, ${dropped} offene/degenerierte übersprungen` : ''));
+            if (dropped && Array.isArray(warn))
+              warn.push(`${dropped} von ${shells.length} Hüllen war(en) nicht geschlossen und wurden verworfen — dem Ergebnis kann Geometrie fehlen`);
+            return comp;
+          }
           const localKeep = keep || [];
           let result = solids[0];
           for (let i = 1; i < solids.length; i++)
@@ -1193,19 +1209,27 @@ app.post('/api/occt-subtract-mesh', async (req, res) => {
     for (let i = 1; i < solids.length; i++)
       result = bop(oc, 'BRepAlgoAPI_Fuse_3', result, solids[i], keep, `Solid-Fuse ${i}`);
 
-    // Werkzeug(e) → ein Tool (mehrere zuerst fusen → ein sauberer Cut)
+    // Werkzeug(e) → ein Tool. Kein Fuse nötig: der Boolean-Cut akzeptiert ein
+    // COMPOUND als Werkzeug (auch bei sich schneidenden Tools) — das spart bei
+    // vielen Stempeln (Wabenmuster!) Minuten gegenüber sequenziellem Fuse.
     const tools = [];
     for (let i = 0; i < toolList.length; i++) {
       try {
-        const t = stlToOCCTSolid(oc, Buffer.from(toolList[i], 'base64'), keep, warn);
+        const t = stlToOCCTSolid(oc, Buffer.from(toolList[i], 'base64'), keep, warn, { toolCompound: true });
         if (t) tools.push(t);
         else console.log(`[subtract-mesh] Tool ${i}: STL → Solid fehlgeschlagen`);
       } catch (e) { ocFatal(e); console.log(`[subtract-mesh] Tool ${i}: ${e.message}`); }
     }
     if (!tools.length) return res.json({ error: 'Kein gültiges Werkzeug' });
     let tool = tools[0];
-    for (let i = 1; i < tools.length; i++)
-      tool = bop(oc, 'BRepAlgoAPI_Fuse_3', tool, tools[i], keep, `Tool-Fuse ${i}`);
+    if (tools.length > 1) {
+      const comp = new oc.TopoDS_Compound();
+      const bld  = new oc.BRep_Builder();
+      bld.MakeCompound(comp);
+      for (const t of tools) bld.Add(comp, t);
+      bld.delete();
+      tool = comp;
+    }
 
     result = bop(oc, 'BRepAlgoAPI_Cut_3', result, tool, keep, 'Subtract-Cut');
     result = unifySolid(oc, result);   // koplanare Flächen verschmelzen → sauberes Mesh

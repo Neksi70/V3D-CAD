@@ -1073,6 +1073,7 @@ const firebaseConfig = {
       <button class="btn" onclick="rotate225('x',1)" title="Kippen — 22,5° um die Querachse (bleibt am Boden)">⤵ Kippen</button>
       <button class="btn" onclick="linearPatternTool()" title="Lineares Muster — Objekt mehrfach in einer Richtung kopieren">⋮ Linear</button>
       <button class="btn" onclick="circularPatternTool()" title="Kreismuster — Objekt kreisförmig anordnen">⊙ Kreis</button>
+      <button class="btn" onclick="hexPatternTool()" title="Wabenmuster — Sechskant-Löcher in den Boden des gewählten Körpers stanzen">⬡ Waben</button>
     </div></div>
     <div class="tbg"><span class="tbg-l">Form ändern</span><div class="tbg-row">
       <button class="btn" onclick="openCutTool()" title="Schneiden — großes Objekt mit einer Schnittebene in zwei druckbare Teile teilen">✂ Schneiden</button>
@@ -2164,6 +2165,29 @@ const firebaseConfig = {
             <option value="x">X-Achse</option>
             <option value="z">Z-Achse</option>
           </select>
+        </div>
+      </div>
+      <!-- Hex / Waben Pattern -->
+      <div id="pat-hex" style="display:none">
+        <div class="pat-row">
+          <label class="pat-lbl">Zellgröße — Schlüsselweite (mm)</label>
+          <input id="pat-hex-cell" class="pat-inp" type="number" min="2" max="60" value="8" step="0.5">
+        </div>
+        <div class="pat-row">
+          <label class="pat-lbl">Stegbreite (mm)</label>
+          <input id="pat-hex-wall" class="pat-inp" type="number" min="0.8" max="20" value="2.5" step="0.1">
+        </div>
+        <div class="pat-row">
+          <label class="pat-lbl">Randabstand (mm)</label>
+          <input id="pat-hex-margin" class="pat-inp" type="number" min="0" max="50" value="2" step="0.5">
+        </div>
+        <div class="pat-row">
+          <label class="pat-lbl">Tiefe (mm) — 0 = automatisch durch den Boden</label>
+          <input id="pat-hex-depth" class="pat-inp" type="number" min="0" max="200" value="0" step="0.5">
+        </div>
+        <div style="font-size:11px;color:var(--dim);margin-top:6px">
+          Stanzt Sechskant-Löcher in den Boden des gewählten Körpers. Zellen werden nur
+          platziert, wo der Boden frei liegt — Wände und Randabstand bleiben stehen.
         </div>
       </div>
     </div>
@@ -13753,6 +13777,7 @@ function linearPatternTool() {
   _patternType = 'linear';
   document.getElementById('pat-lin').style.display = '';
   document.getElementById('pat-cir').style.display = 'none';
+  document.getElementById('pat-hex').style.display = 'none';
   document.getElementById('pat-title').textContent = '⋮ Lineares Muster';
   document.getElementById('pat-modal').classList.add('show');
 }
@@ -13762,7 +13787,19 @@ function circularPatternTool() {
   _patternType = 'circular';
   document.getElementById('pat-lin').style.display = 'none';
   document.getElementById('pat-cir').style.display = '';
+  document.getElementById('pat-hex').style.display = 'none';
   document.getElementById('pat-title').textContent = '⊙ Kreismuster';
+  document.getElementById('pat-modal').classList.add('show');
+}
+
+function hexPatternTool() {
+  if (selectedObjs.length !== 1) { notify('Bitte genau ein Objekt wählen', 'w'); return; }
+  if (selectedObjs[0].userData.isHole) { notify('Objekt ist als Bohrung markiert — Volumenkörper wählen', 'w'); return; }
+  _patternType = 'hex';
+  document.getElementById('pat-lin').style.display = 'none';
+  document.getElementById('pat-cir').style.display = 'none';
+  document.getElementById('pat-hex').style.display = '';
+  document.getElementById('pat-title').textContent = '⬡ Wabenmuster';
   document.getElementById('pat-modal').classList.add('show');
 }
 
@@ -13777,6 +13814,14 @@ function _applyPat() {
     const dy    = parseFloat(document.getElementById('pat-lin-dy').value) || 0;
     const dz    = parseFloat(document.getElementById('pat-lin-dz').value) || 0;
     _applyLinearPattern(count, dx / 10, dy / 10, dz / 10);
+  } else if (_patternType === 'hex') {
+    const cell   = Math.max(2,   parseFloat(document.getElementById('pat-hex-cell').value)   || 8);
+    const wall   = Math.max(0.8, parseFloat(document.getElementById('pat-hex-wall').value)   || 2.5);
+    const margin = Math.max(0,   parseFloat(document.getElementById('pat-hex-margin').value) || 0);
+    const depth  = Math.max(0,   parseFloat(document.getElementById('pat-hex-depth').value)  || 0);
+    _closePat();
+    _applyHexPattern(cell, wall, margin, depth);   // async — schließt Modal vorab
+    return;
   } else {
     const count  = Math.max(2, parseInt(document.getElementById('pat-cir-count').value) || 6);
     const radius = parseFloat(document.getElementById('pat-cir-rad').value) || 30;
@@ -13831,6 +13876,133 @@ function _applyCircularPattern(count, radius, axis) {
   selectObjs(allNew);
   updateTree();
   notify(`${count} × Kreismuster ✓`, 'ok');
+}
+
+// ═══ WABENMUSTER (Boden perforieren) ════════════════════════════════════
+// Stanzt ein Wabengitter aus Sechskant-Löchern in den Boden des gewählten
+// Körpers. Zell-Platzierung per Raycast von unten: an 13 Testpunkten je Zelle
+// (Zentrum + 6 Ecken + 6 Kantenmitten, jeweils um den Randabstand nach außen
+// versetzt) wird die Materialdicke gemessen. Nur Zellen, deren Dicke überall
+// ≈ Bodendicke ist, werden gestanzt — unter Wänden ist die Dicke viel größer,
+// die Zelle fällt raus. Funktioniert dadurch für jede Grundform (rund/eckig).
+// Alle Stempel werden zu EINEM Mesh gemergt und über die bestehende
+// Subtract-Pipeline abgezogen (ein OCCT-Cut, ThreeCSG nur Fallback).
+async function _applyHexPattern(cellMm, wallMm, marginMm, depthMm) {
+  const target = selectedObjs[0];
+  if (!target) { notify('Objekt wählen', 'w'); return; }
+  const mesh = target.isMesh ? target : target.getObjectByProperty('isMesh', true);
+  if (!mesh || !mesh.geometry) { notify('Objekt hat keine Geometrie', 'w'); return; }
+  target.updateWorldMatrix(true, true);
+
+  const bb   = new THREE.Box3().setFromObject(target);
+  const size = bb.getSize(new THREE.Vector3());
+  const SW     = cellMm   / 10;                     // Schlüsselweite (1 Unit = 10 mm)
+  const wall   = wallMm   / 10;
+  const margin = marginMm / 10;
+  const R      = SW / Math.sqrt(3);                 // Umkreisradius des Sechsecks
+  const pitch  = SW + wall;                         // Mittenabstand Flanke-zu-Flanke
+  const rowP   = pitch * Math.sqrt(3) / 2;          // Reihenabstand des Hex-Gitters
+  const ctrX   = (bb.min.x + bb.max.x) / 2;
+  const ctrZ   = (bb.min.z + bb.max.z) / 2;
+  const nCols  = Math.ceil((size.x / 2) / pitch) + 1;
+  const nRows  = Math.ceil((size.z / 2) / rowP)  + 1;
+  if ((2 * nCols + 1) * (2 * nRows + 1) > 20000) { notify('Zellgröße zu klein für dieses Objekt', 'w'); return; }
+
+  // ── Raycast-Scan von unten (Materialdicke je Testpunkt) ──────────────────
+  // DoubleSide erzwingen, sonst fehlen die Austritts-Treffer (Rückseiten).
+  const sideBak = [];
+  target.traverse(m => {
+    if (m.isMesh && m.material && !Array.isArray(m.material)) {
+      sideBak.push([m.material, m.material.side]);
+      m.material.side = THREE.DoubleSide;
+    }
+  });
+  const ray = new THREE.Raycaster();
+  ray.far = size.y + 1;
+  const y0 = bb.min.y - 0.3;
+  // Dicke des ersten Material-Intervalls von unten; null = kein Material.
+  const thicknessAt = (px, pz) => {
+    ray.ray.origin.set(px, y0, pz);
+    ray.ray.direction.set(0, 1, 0);
+    const raw = ray.intersectObject(target, true);
+    const ys = [];                                   // Doppel-Treffer an Kanten mergen
+    for (const h of raw) if (!ys.length || h.point.y - ys[ys.length - 1] > 1e-3) ys.push(h.point.y);
+    return ys.length >= 2 ? ys[1] - ys[0] : null;
+  };
+  // Testpunkte: Ecken bei R+margin (Winkel 30°+k·60°), Kantenmitten bei SW/2+margin
+  // (Winkel k·60°) — CylinderGeometry(…,6) hat die Flanken genau in Gitterrichtung.
+  const testOffsets = [[0, 0]];
+  for (let k = 0; k < 6; k++) {
+    const aC = (30 + k * 60) * Math.PI / 180, aF = (k * 60) * Math.PI / 180;
+    testOffsets.push([Math.cos(aC) * (R + margin),      Math.sin(aC) * (R + margin)]);
+    testOffsets.push([Math.cos(aF) * (SW / 2 + margin), Math.sin(aF) * (SW / 2 + margin)]);
+  }
+
+  const cells = [];                                  // {x, z, t: max. Dicke der Zelle}
+  for (let j = -nRows; j <= nRows; j++) {
+    const cz = ctrZ + j * rowP;
+    const xOff = (j & 1) ? pitch / 2 : 0;
+    for (let i = -nCols; i <= nCols; i++) {
+      const cx = ctrX + i * pitch + xOff;
+      let tMax = 0, ok = true;
+      for (const [ox, oz] of testOffsets) {
+        const t = thicknessAt(cx + ox, cz + oz);
+        if (t === null) { ok = false; break; }       // Punkt liegt neben dem Teil / im Loch
+        if (t > tMax) tMax = t;
+      }
+      if (ok) cells.push({ x: cx, z: cz, t: tMax });
+    }
+  }
+  sideBak.forEach(([mt, s]) => mt.side = s);
+
+  if (!cells.length) { notify('Keine Zelle passt — Zellgröße/Randabstand verkleinern', 'w'); return; }
+
+  // ── Boden von Wand trennen: dünnste Zelle = Bodendicke ───────────────────
+  const floorT   = Math.min(...cells.map(c => c.t));
+  const wallCut  = floorT * 1.75 + 0.15;             // darüber = Zelle steht unter der Wand
+  const accepted = cells.filter(c => c.t <= wallCut);
+  if (!accepted.length) { notify('Kein freier Boden gefunden', 'w'); return; }
+
+  const depthU = depthMm > 0 ? depthMm / 10
+               : Math.max(...accepted.map(c => c.t)) + 0.1;   // auto: durch den Boden (+1 mm)
+
+  // ── Alle Sechskant-Stempel zu EINEM Werkzeug-Mesh mergen ─────────────────
+  const eps = 0.05, h = depthU + eps;
+  const proto = new THREE.CylinderGeometry(R, R, h, 6).toNonIndexed();
+  const pPos = proto.attributes.position.array, pNrm = proto.attributes.normal.array;
+  const n = pPos.length;
+  const pos = new Float32Array(n * accepted.length);
+  const nrm = new Float32Array(n * accepted.length);
+  accepted.forEach((c, k) => {
+    const cy = bb.min.y - eps + h / 2;
+    for (let v = 0; v < n; v += 3) {
+      pos[k * n + v]     = pPos[v]     + c.x;
+      pos[k * n + v + 1] = pPos[v + 1] + cy;
+      pos[k * n + v + 2] = pPos[v + 2] + c.z;
+    }
+    nrm.set(pNrm, k * n);
+  });
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  merged.setAttribute('normal',   new THREE.BufferAttribute(nrm, 3));
+
+  saveUndo();
+  const holeMesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ color: 0xff5544 }));
+  holeMesh.userData = { id: idCtr++, name: 'Wabenmuster', color: '#ff5544', isHole: true, type: 'custom' };
+  holeMesh.updateWorldMatrix(true, true);
+
+  _progressShow('⬡ Wabenmuster wird gestanzt…');
+  _progressSet(8);
+  _progressCreep(93);
+  try {
+    await _doSubtractHoles([target], [holeMesh]);
+    _progressDone();
+    notify(`⬡ ${accepted.length} Waben-Löcher gestanzt ✓`, 'ok');
+  } catch (err) {
+    _progressHide();
+    console.error('Wabenmuster CSG Fehler:', err);
+    notify('CSG Fehler: ' + err.message, 'w');
+  }
 }
 
 // ═══ PUSH / PULL (Fläche ziehen) ═══════════════════════════════════════
