@@ -8806,6 +8806,10 @@ function _updateObjEdgeLines(mesh) {
   // überschreiten tausende Bump-Kanten die 30°-Schwelle → teuer zu bauen und zu
   // rendern (Ruckeln), und optisch nur Rauschen. Saubere Flächen wie BumpMesh.
   if (mesh.userData && mesh.userData.displacementPattern && mesh.userData.displacementPattern !== 'keine') return;
+  // Riesen-Netze (Scans): EdgesGeometry baut Hash-Maps über jede Kante →
+  // sekundenlanger Freeze + Render-Last, optisch eh nur Rauschen. Überspringen.
+  { const g = mesh.geometry, nTri = g?.attributes?.position ? (g.index ? g.index.count : g.attributes.position.count) / 3 : 0;
+    if (nTri > 200000) return; }
   const wf = new THREE.LineSegments(
     new THREE.EdgesGeometry(mesh.geometry, 30),
     new THREE.LineBasicMaterial({ color: 0x000000, depthTest: true })
@@ -12775,7 +12779,7 @@ function _countObjTris(o) {
 // SimplifyModifier friert es den Browser nicht 60 s lang ein. Rastert Vertices
 // auf ein Gitter, verschmilzt sie auf den Zell-Mittelpunkt, verwirft kollabierte
 // Dreiecke; vergröbert das Gitter iterativ, bis ~target Dreiecke übrig sind.
-function _clusterDecimateFlat(v, target) {
+function _clusterDecimateFlat(v, target, gridN0) {
   if (v.length / 9 <= target) return v;
   let minx=Infinity,miny=Infinity,minz=Infinity,maxx=-Infinity,maxy=-Infinity,maxz=-Infinity;
   for (let i = 0; i < v.length; i += 3) {
@@ -12784,7 +12788,9 @@ function _clusterDecimateFlat(v, target) {
     if (v[i+2]<minz)minz=v[i+2]; if (v[i+2]>maxz)maxz=v[i+2];
   }
   const ext = Math.max(maxx-minx, maxy-miny, maxz-minz) || 1;
-  let gridN = 64, out = v;
+  // gridN0: feineres Startgitter für sanfte Reduktionen (z. B. Vereinfachen 30%);
+  // ohne Angabe wie bisher 64 (grobes Ziel für Server-Uploads).
+  let gridN = gridN0 || 64, out = v;
   for (let iter = 0; iter < 7; iter++) {
     const inv = gridN / ext;
     const key = (x,y,z) => Math.floor((x-minx)*inv)+'|'+Math.floor((y-miny)*inv)+'|'+Math.floor((z-minz)*inv);
@@ -24521,6 +24527,34 @@ function _applySimplify(){
       const mod=new THREE.SimplifyModifier();
       ms.forEach(m=>{
         const g=m.geometry; if(!g||!g.attributes||!g.attributes.position) return;
+        const nTri=(g.index?g.index.count:g.attributes.position.count)/3;
+        if(nTri>150000){
+          // Scan-Netze: QEM-SimplifyModifier + mergeVertices frieren den Browser
+          // bei Millionen Dreiecken ein (String-Maps, O(n·m)-Kollaps). Stattdessen
+          // O(n)-Cluster-Decimation mit feinem Startgitter (Qualität reicht für Scans).
+          const pos=g.attributes.position, idx=g.index?g.index.array:null;
+          const flat=new Float32Array(nTri*9);
+          for(let i=0,w2=0;i<nTri;i++){
+            const a=idx?idx[i*3]:i*3, b=idx?idx[i*3+1]:i*3+1, c=idx?idx[i*3+2]:i*3+2;
+            flat[w2++]=pos.getX(a);flat[w2++]=pos.getY(a);flat[w2++]=pos.getZ(a);
+            flat[w2++]=pos.getX(b);flat[w2++]=pos.getY(b);flat[w2++]=pos.getZ(b);
+            flat[w2++]=pos.getX(c);flat[w2++]=pos.getY(c);flat[w2++]=pos.getZ(c);
+          }
+          const target=Math.max(500,Math.round(nTri*(1-pct/100)));
+          // Startgitter flächenbasiert: ein Netz belegt ~π·g² Zellen (Oberfläche,
+          // nicht Volumen). Zu fein ist unkritisch — die Schleife vergröbert
+          // selbst, bis das Ziel erreicht ist.
+          const gridN0=Math.min(512,Math.max(64,Math.ceil(Math.sqrt(target*0.6))));
+          const out=_clusterDecimateFlat(flat,target,gridN0);
+          if(!out||out.length<27) return;
+          const ng=new THREE.BufferGeometry();
+          ng.setAttribute('position',new THREE.BufferAttribute(out instanceof Float32Array?out:Float32Array.from(out),3));
+          ng.computeVertexNormals();
+          m.geometry.dispose(); m.geometry=ng;
+          console.log('[simplify] Cluster',nTri,'→',ng.attributes.position.count/3,'Dreiecke (Gitter',gridN0+')');
+          ok++;
+          return;
+        }
         let base=g;
         try{ if(THREE.BufferGeometryUtils&&THREE.BufferGeometryUtils.mergeVertices) base=THREE.BufferGeometryUtils.mergeVertices(g.index?g:g.toNonIndexed()); }catch(e){}
         const vCount=base.attributes.position.count;
