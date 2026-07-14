@@ -1605,7 +1605,8 @@ window.addEventListener('pointerdown', (e) => {
 let paintFil = 2;                 // aktives Malfilament (1-basiert)
 let paintToolType = 'circle';     // circle | sphere | tri | fill | height
 let paintRadius = 2;              // Pinselradius in mm (Welt)
-let paintFillAngle = 30;          // Füllen: max. Kantenknick in Grad
+let paintFillAngle = 0;           // Intelligenter Füllwinkel: max. Kantenknick in Grad (0 = nur ebene Fläche)
+let paintFillMode = 'edge';       // 'edge' = Kantenerkennung | 'color' = gleiche Farbe verbunden
 let paintBandH = 1.0;             // Höhenbereich: Bandhöhe in mm
 let paintClip = { t: 0, vert: false, horiz: false, rot: 0 };
 let paintClipPlane = null;
@@ -1854,8 +1855,26 @@ function paintGather(st, hit) {
   const stack = [seed];
   out.push(seed);
   if (paintToolType === 'fill') {
-    // schlaues Füllen: über Kanten laufen, solange der Knick klein bleibt
-    const cosT = Math.cos(paintFillAngle * Math.PI / 180);
+    if (paintFillMode === 'color') {
+      // Gleiche Farbe verbunden: zusammenhängende Region desselben Zustands,
+      // Kantenwinkel egal (wie im Studio)
+      const s0 = P.states[seed];
+      while (stack.length) {
+        const t = stack.pop();
+        for (let e = 0; e < 3; e++) {
+          const nb = adj[t * 3 + e];
+          if (nb < 0 || seen.has(nb)) continue;
+          seen.add(nb);
+          if (P.states[nb] !== s0) continue;
+          out.push(nb);
+          stack.push(nb);
+        }
+      }
+      return out;
+    }
+    // Kantenerkennung: über Kanten laufen, solange der Knick ≤ Füllwinkel bleibt
+    // (kleines Epsilon, damit 0° koplanare Dreiecke trotz Float-Rauschen füllt)
+    const cosT = Math.cos(Math.min(paintFillAngle, 89.9) * Math.PI / 180) - 1e-4;
     while (stack.length) {
       const t = stack.pop();
       for (let e = 0; e < 3; e++) {
@@ -2077,8 +2096,9 @@ function paintPanelInput(el) {
     if (st && st.paint) { paintSnapshot(st); st.paint.states.fill(0); paintRefreshColors(st); }
     return;
   }
+  if (k === 'fmodeE' || k === 'fmodeC') { paintFillMode = k === 'fmodeE' ? 'edge' : 'color'; renderToolPanel(); return; }
   if (k === 'rad' || k === 'radn') paintRadius = Math.max(0.1, v || paintRadius);
-  else if (k === 'ang' || k === 'angn') paintFillAngle = Math.min(90, Math.max(1, v || paintFillAngle));
+  else if (k === 'ang' || k === 'angn') paintFillAngle = Math.min(90, Math.max(0, isNaN(v) ? paintFillAngle : v));
   else if (k === 'band' || k === 'bandn') paintBandH = Math.max(0.1, v || paintBandH);
   else if (k === 'clip' || k === 'clipn') { paintClip.t = Math.min(1, Math.max(0, v || 0)); paintUpdateClip(); }
   else if (k === 'cvert') { paintClip.vert = el.checked; if (el.checked) paintClip.horiz = false; paintUpdateClip(); renderToolPanel(); return; }
@@ -2301,9 +2321,12 @@ function renderToolPanel() {
         <input type="range" data-pt="rad" min="0.4" max="12" step="0.1" value="${paintRadius}">
         <input type="number" data-pt="radn" min="0.4" max="12" step="0.1" value="${paintRadius}"><span>mm</span></div>` : ''}
       ${paintToolType === 'fill' ? `
-      <div class="prow"><label>Glättungswinkel</label>
-        <input type="range" data-pt="ang" min="1" max="90" step="1" value="${paintFillAngle}">
-        <input type="number" data-pt="angn" min="1" max="90" step="1" value="${paintFillAngle}"><span>°</span></div>` : ''}
+      <div class="prow" style="gap:.8rem">
+        <label style="display:flex;align-items:center;gap:.3rem;min-width:0"><input type="radio" name="pfMode" data-pt="fmodeE" style="width:auto"${paintFillMode === 'edge' ? ' checked' : ''}> Kantenerkennung</label>
+        <label style="display:flex;align-items:center;gap:.3rem"><input type="radio" name="pfMode" data-pt="fmodeC" style="width:auto"${paintFillMode === 'color' ? ' checked' : ''}> Gleiche Farbe verbunden</label></div>
+      <div class="prow"><label class="${paintFillMode === 'edge' ? '' : 'tpDim'}">Intelligenter Füllwinkel</label>
+        <input type="range" data-pt="ang" min="0" max="90" step="0.5" value="${paintFillAngle}"${paintFillMode === 'edge' ? '' : ' disabled'}>
+        <input type="number" data-pt="angn" min="0" max="90" step="0.5" value="${paintFillAngle}"${paintFillMode === 'edge' ? '' : ' disabled'}><span>°</span></div>` : ''}
       ${paintToolType === 'height' ? `
       <div class="prow"><label>Bandhöhe</label>
         <input type="range" data-pt="band" min="0.2" max="20" step="0.2" value="${paintBandH}">
@@ -2325,7 +2348,7 @@ function renderToolPanel() {
     p.querySelectorAll('[data-pt]').forEach(el => {
       const h = () => paintPanelInput(el);
       if (el.tagName === 'BUTTON') el.onclick = h;
-      else if (el.type === 'checkbox') el.onchange = h;
+      else if (el.type === 'checkbox' || el.type === 'radio') el.onchange = h;
       else el.oninput = h;
     });
     return;
