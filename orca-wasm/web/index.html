@@ -1309,12 +1309,19 @@ canvas.addEventListener('pointerdown', (e) => {
     addEventListener('pointermove', move); addEventListener('pointerup', up);
     return;
   }
+  // Leerraum: Ziehen = Orbit, bloßer Klick (ohne Bewegung) = Abwahl (Studio-Verhalten)
+  const sx0 = e.clientX, sy0 = e.clientY;
+  let orbited = false;
   const move = ev => {
+    if (Math.hypot(ev.clientX - sx0, ev.clientY - sy0) > 4) orbited = true;
     camTheta -= ev.movementX * 0.008;
     camPhi = Math.min(Math.PI - .05, Math.max(.05, camPhi - ev.movementY * 0.008));
     updateCam();
   };
-  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+  const up = () => {
+    removeEventListener('pointermove', move); removeEventListener('pointerup', up);
+    if (!orbited && modelGroup.visible && e.button === 0) selectObject(-1);
+  };
   addEventListener('pointermove', move); addEventListener('pointerup', up);
 });
 canvas.addEventListener('wheel', e => {
@@ -1411,37 +1418,110 @@ function applyStateToGroup(st) {
   st.group.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(st.group);
   if (isFinite(box.min.z)) st.group.position.z -= box.min.z;
+  selectionFxSync();   // Auswahl-Klammern folgen der Standfläche
 }
 function stDims(st) {
   const b = st.mesh.geometry.boundingBox;
   return [(b.max.x - b.min.x) * st.sx, (b.max.y - b.min.y) * st.sy, (b.max.z - b.min.z) * st.sz];
 }
 function selectObject(i, add = false) {
-  if (!add) {
-    for (const j of selectedSet) objectStates[j]?.mesh.material.emissive?.setHex(0x000000);
-    selectedSet.clear();
-  }
+  if (!add) selectedSet.clear();
   if (i >= 0 && objectStates[i] && !objectStates[i].deleted) {
     if (add && selectedSet.has(i)) {   // Strg+Klick auf Markiertes = abwählen
       selectedSet.delete(i);
-      objectStates[i].mesh.material.emissive?.setHex(0x000000);
       i = selectedSet.size ? [...selectedSet].pop() : -1;
     } else {
       selectedSet.add(i);
     }
   }
   selectedIdx = i;
-  for (const j of selectedSet) objectStates[j].mesh.material.emissive?.setHex(0x14532d);
+  updateSelectionFx();
   updateToolbar();
   refreshToolAttach();
 }
 // Alles auswählen (nur nicht-gelöschte Objekte)
 function selectAll() {
   selectedSet = new Set(objectStates.map((s, i) => s.deleted ? -1 : i).filter(i => i >= 0));
-  for (const j of selectedSet) objectStates[j].mesh.material.emissive?.setHex(0x14532d);
   selectedIdx = selectedSet.size ? [...selectedSet][0] : -1;
+  updateSelectionFx();
   updateToolbar();
   refreshToolAttach();
+}
+
+// ---------- Auswahl-Markierung im Studio-Look ----------
+// Weiße Silhouette (invertierte Hülle: gleiche Geometrie, leicht skaliert,
+// nur Rückseiten) + weiße Eck-Klammern auf der Platte um die Standfläche.
+// Kein grünes Einfärben mehr — die Objektfarben bleiben echt.
+const selFxGroup = new THREE.Group();
+scene.add(selFxGroup);
+const selHullMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.BackSide });
+const selArmMat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthWrite: false });
+const selBrackets = new Map();   // objIndex → [8 Arm-Meshes]
+
+function updateSelectionFx() {
+  // verwaiste Klammern (Neuladen/Abwahl/Löschen) zuerst wegräumen
+  for (const idx of [...selBrackets.keys()])
+    if (!selectedSet.has(idx) || !objectStates[idx] || objectStates[idx].deleted) {
+      for (const m of selBrackets.get(idx)) selFxGroup.remove(m);
+      selBrackets.delete(idx);
+    }
+  for (const [i, st] of objectStates.entries()) {
+    const want = selectedSet.has(i) && !st.deleted;
+    if (want && !st.selHull) {
+      const geo = st.mesh.geometry;
+      geo.computeBoundingBox();
+      const c = geo.boundingBox.getCenter(new THREE.Vector3());
+      const size = Math.max(1, ...geo.boundingBox.getSize(new THREE.Vector3()).toArray());
+      const s = 1 + 1.4 / size;              // ~0,7 mm sichtbarer Rand
+      const hull = new THREE.Mesh(geo, selHullMat);
+      hull.scale.setScalar(s);
+      hull.position.copy(c).multiplyScalar(1 - s);   // um die BBox-Mitte skalieren
+      hull.raycast = () => {};               // nie anklickbar (Picking/Malen)
+      st.selHull = hull;
+      st.group.add(hull);
+    } else if (!want && st.selHull) {
+      st.group.remove(st.selHull);
+      st.selHull = null;
+    }
+    if (want && !selBrackets.has(i)) {
+      const arms = [];
+      for (let k = 0; k < 8; k++) {
+        const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), selArmMat);
+        m.raycast = () => {};
+        m.renderOrder = 5;
+        arms.push(m);
+        selFxGroup.add(m);
+      }
+      selBrackets.set(i, arms);
+    } else if (!want && selBrackets.has(i)) {
+      for (const m of selBrackets.get(i)) selFxGroup.remove(m);
+      selBrackets.delete(i);
+    }
+  }
+  selectionFxSync();
+}
+
+// Klammern jeden Frame an die (bewegte/gedrehte) Standfläche heften
+function selectionFxSync() {
+  for (const [i, arms] of selBrackets) {
+    const st = objectStates[i];
+    if (!st || st.deleted) { arms.forEach(m => m.visible = false); continue; }
+    const box = new THREE.Box3().setFromObject(st.group);
+    const w = box.max.x - box.min.x, h = box.max.y - box.min.y;
+    const L = Math.max(8, Math.min(26, Math.max(w, h) * 0.16)), th = 1.4, mrg = 4;
+    let k = 0;
+    for (const sx of [-1, 1])
+      for (const sy of [-1, 1]) {
+        const cx = sx < 0 ? box.min.x - mrg : box.max.x + mrg;
+        const cy = sy < 0 ? box.min.y - mrg : box.max.y + mrg;
+        const a1 = arms[k++], a2 = arms[k++];   // Arm längs X, Arm längs Y
+        a1.visible = a2.visible = true;
+        a1.scale.set(L, th, 1);
+        a1.position.set(cx - sx * L / 2, cy - sy * th / 2, 0.12);
+        a2.scale.set(th, L, 1);
+        a2.position.set(cx - sx * th / 2, cy - sy * L / 2, 0.12);
+      }
+  }
 }
 
 // ---------- Studio-Werkzeuge: Gizmo am Objekt + Zahlen-Panel ----------
@@ -1732,6 +1812,7 @@ function paintEnsureSession(st) {
   rgeo.computeBoundingSphere();
   st.mesh.geometry.dispose();
   st.mesh.geometry = rgeo;
+  if (st.selHull) st.selHull.geometry = rgeo;   // Auswahl-Hülle zeigt sonst auf die alte Geometrie
   st.mesh.material.vertexColors = true;
   st.mesh.material.color.set('#ffffff');   // Farbe kommt jetzt aus den Vertexfarben
   st.mesh.material.needsUpdate = true;
@@ -2035,10 +2116,6 @@ function paintOnToolChange() {
     paintEnsureSession(st);
     paintFil = Math.min(Math.max(paintFil, 1), projectFilaments.length);
   }
-  // Auswahl-Grün (emissive) verfälscht die Malfarben — im Malmodus echte
-  // Farben zeigen, beim Verlassen die Markierung wiederherstellen
-  for (const j of selectedSet)
-    objectStates[j]?.mesh.material.emissive?.setHex(activeTool === 'paint' ? 0x000000 : 0x14532d);
   if (activeTool !== 'paint') paintCursor.visible = false;
   paintUpdateClip();
 }
