@@ -1486,10 +1486,10 @@ function updateSelectionFx() {
       st.selHull = null;
     }
     if (want && !selBrackets.has(i)) {
-      // 4 Ecken × 2 Arme + 4 Mittelstriche = 12 Marken (Studio-Rahmen)
+      // Studio-Markierung: 8 Ecken der 3D-Bounding-Box × 3 Kantenstriche
       const arms = [];
-      for (let k = 0; k < 12; k++) {
-        const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), selArmMat);
+      for (let k = 0; k < 24; k++) {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), selArmMat);
         m.raycast = () => {};
         m.renderOrder = 5;
         arms.push(m);
@@ -1504,39 +1504,39 @@ function updateSelectionFx() {
   selectionFxSync();
 }
 
-// Klammern jeden Frame an die (bewegte/gedrehte) Standfläche heften —
-// Studio-Rahmen: enge Eck-Winkel + kurzer Mittelstrich je Kante
+// Marken jeden Frame an die (bewegte/gedrehte) Box heften — Studio-Look:
+// an jeder der 8 Ecken der 3D-Bounding-Box drei kurze Striche entlang der
+// Boxkanten (öffnet sich räumlich ums Objekt, wie im Studio)
 function selectionFxSync() {
   for (const [i, arms] of selBrackets) {
     const st = objectStates[i];
     if (!st || st.deleted) { arms.forEach(m => m.visible = false); continue; }
     const box = new THREE.Box3().setFromObject(st.group);
-    const w = box.max.x - box.min.x, h = box.max.y - box.min.y;
-    const side = Math.max(w, h);
-    const L = Math.max(9, Math.min(38, side * 0.2));   // Eckarm-Länge
-    const D = L * 0.55, th = Math.max(1.4, Math.min(2.4, side * 0.014)), mrg = 5;
-    const x0 = box.min.x - mrg, x1 = box.max.x + mrg;
-    const y0 = box.min.y - mrg, y1 = box.max.y + mrg;
-    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+    const mrg = 2;                        // Box liegt knapp ums Objekt
+    box.min.x -= mrg; box.min.y -= mrg;
+    box.max.x += mrg; box.max.y += mrg; box.max.z += mrg;
+    const dims = [box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z];
+    const side = Math.max(dims[0], dims[1]);
+    const th = Math.max(1.2, Math.min(2.2, side * 0.012));
+    // Armlänge je Achse: Anteil der Kante, gedeckelt (kurze Kanten: nicht überlappen)
+    const L = dims.map(d => Math.max(4, Math.min(24, d * 0.22)));
     let k = 0;
-    for (const sx of [-1, 1])
-      for (const sy of [-1, 1]) {
-        const cx = sx < 0 ? x0 : x1, cy = sy < 0 ? y0 : y1;
-        const a1 = arms[k++], a2 = arms[k++];   // Arm längs X, Arm längs Y
-        a1.visible = a2.visible = true;
-        a1.scale.set(L, th, 1);
-        a1.position.set(cx - sx * L / 2, cy - sy * th / 2, 0.12);
-        a2.scale.set(th, L, 1);
-        a2.position.set(cx - sx * th / 2, cy - sy * L / 2, 0.12);
-      }
-    // Mittelstriche auf der Rahmenlinie: unten/oben längs X, links/rechts längs Y
-    for (const [px, py, horiz] of [[mx, y0 + th / 2, 1], [mx, y1 - th / 2, 1],
-                                   [x0 + th / 2, my, 0], [x1 - th / 2, my, 0]]) {
-      const m = arms[k++];
-      m.visible = true;
-      m.scale.set(horiz ? D : th, horiz ? th : D, 1);
-      m.position.set(px, py, 0.12);
-    }
+    for (const sx of [0, 1])
+      for (const sy of [0, 1])
+        for (const sz of [0, 1]) {
+          const c = [sx ? box.max.x : box.min.x, sy ? box.max.y : box.min.y,
+                     sz ? box.max.z : box.min.z];
+          const dir = [sx ? -1 : 1, sy ? -1 : 1, sz ? -1 : 1];   // zeigt ins Box-Innere
+          for (let a = 0; a < 3; a++) {
+            const m = arms[k++];
+            m.visible = true;
+            m.scale.set(a === 0 ? L[0] : th, a === 1 ? L[1] : th, a === 2 ? L[2] : th);
+            m.position.set(
+              c[0] + (a === 0 ? dir[0] * L[0] / 2 : 0),
+              c[1] + (a === 1 ? dir[1] * L[1] / 2 : 0),
+              Math.max(c[2] + (a === 2 ? dir[2] * L[2] / 2 : 0), th / 2 + 0.05));
+          }
+        }
   }
 }
 
