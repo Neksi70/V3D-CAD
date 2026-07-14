@@ -6901,9 +6901,19 @@ function _revolvePickPoint(e) {
     const visW = 2 * sph.r * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
     if (rawR < visW * 0.05) rawR = 0;
   }
-  const r = snapV(rawR);
-  const h = snapV(hit.y);
-  return { r, h, world: new THREE.Vector3(r * _revolveRight.x, h, r * _revolveRight.z) };
+  let r = snapV(rawR);
+  let h = snapV(hit.y);
+  // Ortho-Hilfe: fast waagerecht/senkrecht zum letzten Punkt → einrasten
+  let ortho = null;
+  if (_revolvePoints.length > 0) {
+    const last = _revolvePoints[_revolvePoints.length - 1];
+    const visW = 2 * sph.r * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    const tol = visW * 0.015;
+    const dh = Math.abs(h - last.h), dr = Math.abs(r - last.r);
+    if (dh < tol && dr > dh)      { h = last.h; ortho = 'h'; }
+    else if (dr < tol && dh > dr) { r = last.r; ortho = 'v'; }
+  }
+  return { r, h, ortho, world: new THREE.Vector3(r * _revolveRight.x, h, r * _revolveRight.z) };
 }
 
 // Gummiband-Vorschau: gestrichelte Linie vom letzten Punkt zum Cursor
@@ -6916,12 +6926,19 @@ function _revolveGhostMove(e) {
     if (_revolveGhostDot)  _revolveGhostDot.visible  = false;
     return;
   }
-  if (_revolveGhostDot) { _revolveGhostDot.position.copy(p.world); _revolveGhostDot.visible = true; }
+  const snapCol = p.ortho ? 0xff7a1a : 0x0088ff;   // orange = waagerecht/senkrecht eingerastet
+  if (_revolveGhostDot) {
+    _revolveGhostDot.position.copy(p.world);
+    _revolveGhostDot.material.color.setHex(snapCol);
+    _revolveGhostDot.visible = true;
+  }
   if (_revolveGhostLine && _revolvePoints.length > 0) {
     const a = _revolvePoints[_revolvePoints.length - 1].world;
     _revolveGhostLine.geometry.setFromPoints([a, p.world]);
     _revolveGhostLine.computeLineDistances();
     _revolveGhostLine.geometry.computeBoundingSphere();
+    _revolveGhostLine.material.color.setHex(snapCol);
+    _revolveGhostLine.material.opacity = p.ortho ? 1 : 0.65;
     _revolveGhostLine.visible = true;
   } else if (_revolveGhostLine) {
     _revolveGhostLine.visible = false;
@@ -7184,15 +7201,61 @@ function _revolveOptsFromObj(o) {
   };
 }
 
+// Gezeichnetes Drehen-Profil aushöhlen: Außenkontur nach innen versetzen →
+// geschlossene Schleife (Wand + Boden), analog _vaseWalledProfile.
+// wallR/wallH = Wandstärke radial/vertikal in normierten Einheiten.
+function _revolveWalledProfile(normPts, wallR, wallH) {
+  if (wallR <= 0) return null;
+  // Achsenpunkte an den Enden abstreifen → reine Außenkontur
+  let a = 0, b = normPts.length - 1;
+  while (a < b && normPts[a].x < 0.001) a++;
+  while (b > a && normPts[b].x < 0.001) b--;
+  let outer = normPts.slice(a, b + 1);
+  if (outer.length < 2) return null;
+  if (outer[0].y > outer[outer.length - 1].y) outer = [...outer].reverse(); // unten→oben
+  wallR = Math.max(0.02, wallR);
+  wallH = Math.max(0.02, wallH);
+  const yBot = outer[0].y, yTop = outer[outer.length - 1].y;
+  if (yTop - yBot < wallH * 1.5) return null;                      // zu flach zum Aushöhlen
+  const floorY = Math.min(yTop - 0.1, yBot + wallH);               // Kavitätsboden-Höhe
+  const loop = [];
+  loop.push(new THREE.Vector2(0, yBot));                           // Achse unten
+  for (const pt of outer) loop.push(new THREE.Vector2(pt.x, pt.y));// Außenwand unten→oben
+  // Innenwand oben→unten, nach innen versetzt, bis Bodenhöhe
+  for (let i = outer.length - 1; i >= 0; i--) {
+    if (outer[i].y <= floorY) {
+      const hi = outer[i + 1] || outer[i];
+      const t = (floorY - outer[i].y) / ((hi.y - outer[i].y) || 1);
+      const rOuterAtFloor = outer[i].x + (hi.x - outer[i].x) * t;
+      loop.push(new THREE.Vector2(Math.max(0.03, rOuterAtFloor - wallR), floorY));
+      break;
+    }
+    loop.push(new THREE.Vector2(Math.max(0.03, outer[i].x - wallR), outer[i].y));
+  }
+  loop.push(new THREE.Vector2(0, floorY));                         // Kavitätsboden-Mitte
+  loop.push(new THREE.Vector2(0, yBot));                           // entlang Achse schließen
+  return loop;
+}
+
 function _rebuildRevolveGeo(o) {
   if (!o || o.userData.shapeType !== 'revolve') return;
   const normPts = (o.userData.revolveNormPts || []).map(p => new THREE.Vector2(p.x, p.y));
   if (normPts.length < 2) return;
   const opts = _revolveOptsFromObj(o);
-  const newGeo = _buildRevolveGeo(normPts, opts);
+  // Wandstärke (mm) → normierte Einheiten über die aktuelle Objektgröße
+  // (1 Welt-Einheit = 10 mm; scale stellt die Weltgröße der normierten Geometrie her)
+  const wallMM = o.userData.revolveWall || 0;
+  let profile = normPts, walled = null;
+  if (wallMM > 0) {
+    const sxz = (Math.abs(o.scale.x) + Math.abs(o.scale.z)) / 2 || 1;
+    const sy  = Math.abs(o.scale.y) || 1;
+    walled = _revolveWalledProfile(normPts, wallMM / 10 / sxz, wallMM / 10 / sy);
+    if (walled) { profile = walled; opts.bottomCap = false; opts.topCap = false; }
+  }
+  const newGeo = _buildRevolveGeo(profile, opts);
   o.geometry.dispose();
   o.geometry = newGeo;
-  const hiPts  = _revolveInterpolate(normPts, 48);
+  const hiPts  = walled ? profile : _revolveInterpolate(normPts, 48);
   const hiGeo  = _buildRevolveGeo(hiPts, { ...opts, hires: true });
   if (o.userData._origGeo) o.userData._origGeo.dispose();
   o.userData._origGeo = hiGeo;
@@ -7227,6 +7290,16 @@ function _applyRevolveParam(key, val) {
   const o = getFirst(); if (!o || o.userData.shapeType !== 'revolve') return;
   saveUndoDebounced();
   o.userData[key] = parseFloat(val) || 0;
+  _rebuildRevolveGeo(o);
+}
+
+// Wandstärke (mm) für gezeichnete Drehen-Körper: 0 = massiv, >0 = ausgehöhlt.
+// Nicht für Vasen (deren Profil ist bereits gewandet, s. vaseWall).
+function applyRevolveWall(mm) {
+  const o = getFirst();
+  if (!o || o.userData.shapeType !== 'revolve' || o.userData.vaseWall != null) return;
+  saveUndoDebounced();
+  o.userData.revolveWall = Math.max(0, parseFloat(mm) || 0);
   _rebuildRevolveGeo(o);
 }
 
@@ -7275,7 +7348,7 @@ function finishRevolve() {
     id: idCtr++, type: 'revolve', shapeType: 'revolve',
     name: 'Drehen ' + typeCounts['revolve'], color, isHole, fillet: 0, chamfer: 0,
     revolveNormPts: normPts.map(p => ({ x: p.x, y: p.y })),
-    revolveTwist: 0,
+    revolveTwist: 0, revolveWall: 0,
     revolveCross: 'circle', revolvePolyN: 6, revolveWaveN: 8, revolveWaveAmp: 20,
     revolveSurface: 'none', revolveStripsN: 16, revolveStripsD: 20,
     _origGeo: origGeo
@@ -27073,6 +27146,9 @@ function _fpBuildRows(type, o) {
              row('Höhe Z',    'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
              row('Verdrehen', 'fp-twist', twDeg, "applyRevolveTwist(parseFloat(this.value))", '°', -720, 720, 5) +
+             (o.userData.vaseWall == null
+               ? row('Wandstärke', 'fp-rev-wall', o.userData.revolveWall || 0, "applyRevolveWall(parseFloat(this.value))", 'mm', 0, 20, 0.5)
+               : '') +
              '<div class="fp-sep"></div>' +
              `<div class="fp-lbl" style="display:block;margin-bottom:5px">Querschnitt</div>` +
              `<div class="fp-btn-group">` +
