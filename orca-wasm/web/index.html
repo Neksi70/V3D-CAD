@@ -1436,7 +1436,7 @@ function updateGizmoSize() {
   const factor = dist * Math.min(1.9 * Math.tan(Math.PI * camera.fov / 360), 7);
   if (factor > 1) tctrl.setSize(target * 7 / factor);
 }
-gizmoSizer = updateGizmoSize;
+gizmoSizer = () => { updateGizmoSize(); updateRotGizmo(); };
 tctrl.addEventListener('dragging-changed', (e) => { tctrlDragging = e.value; });
 tctrl.addEventListener('objectChange', () => {
   const st = objectStates[selectedIdx];
@@ -1462,6 +1462,112 @@ tctrl.addEventListener('objectChange', () => {
   syncToolPanel();
 });
 
+// ---- Dreh-Gizmo im Studio-Look: volle Ringe + Doppelpfeil-Griffe ----
+// (TransformControls zeigt beim Drehen nur Bögen; das Studio-Gizmo hat je
+// Achse einen vollen Ring mit einem tangentialen Doppelkegel-Griff:
+// X-Ring rot (Griff unten), Y-Ring grün (Griff oben am Scheitel),
+// Z-Ring blau (Griff rechts) — plus Radiuslinie vom Zentrum zum Griff.)
+const rotGizmo = new THREE.Group();
+rotGizmo.visible = false;
+scene.add(rotGizmo);
+const ROT_AXES = [
+  { axis: 'rx', color: 0xd23f31, normal: new THREE.Vector3(1, 0, 0), grabAt: new THREE.Vector3(0, -1, 0), tangent: new THREE.Vector3(0, 0, 1) },
+  { axis: 'ry', color: 0x2e9e44, normal: new THREE.Vector3(0, 1, 0), grabAt: new THREE.Vector3(0, 0, 1),  tangent: new THREE.Vector3(1, 0, 0) },
+  { axis: 'rz', color: 0x2f6fd8, normal: new THREE.Vector3(0, 0, 1), grabAt: new THREE.Vector3(1, 0, 0),  tangent: new THREE.Vector3(0, 1, 0) },
+];
+const rotHitProxies = [];
+const gizmoMat = (color) => {
+  // immer im Vordergrund, wie die Studio-Gizmos
+  const m = new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true });
+  return m;
+};
+for (const a of ROT_AXES) {
+  // Ring als dünne Röhre (WebGL kann keine dicken Linien)
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(1, 0.007, 8, 96), gizmoMat(a.color));
+  ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), a.normal);
+  ring.renderOrder = 998;
+  rotGizmo.add(ring);
+  // Radiuslinie Zentrum → Griff (dünner Zylinder)
+  const spoke = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 1, 6), gizmoMat(a.color));
+  spoke.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), a.grabAt);
+  spoke.position.copy(a.grabAt).multiplyScalar(0.5);
+  spoke.renderOrder = 998;
+  rotGizmo.add(spoke);
+  // Doppelkegel-Griff, tangential zum Ring (die "Pfeile")
+  const grab = new THREE.Group();
+  const coneGeo = new THREE.ConeGeometry(0.055, 0.16, 20);
+  for (const sgn of [1, -1]) {
+    const cone = new THREE.Mesh(coneGeo, gizmoMat(a.color));
+    cone.position.copy(a.tangent).multiplyScalar(sgn * 0.10);
+    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), a.tangent.clone().multiplyScalar(sgn));
+    cone.renderOrder = 999;
+    grab.add(cone);
+  }
+  grab.position.copy(a.grabAt);
+  rotGizmo.add(grab);
+  // Unsichtbarer Treffer-Torus für bequemes Anfassen des Rings
+  const hit = new THREE.Mesh(new THREE.TorusGeometry(1, 0.07, 8, 48),
+    new THREE.MeshBasicMaterial({ visible: false }));
+  hit.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), a.normal);
+  hit.userData.rotAxis = a;
+  rotGizmo.add(hit);
+  rotHitProxies.push(hit);
+}
+
+// Zentrum/Radius je Frame ans Objekt anpassen (Zentrum = BBox-Mitte)
+function updateRotGizmo() {
+  const st = objectStates[selectedIdx];
+  if (!rotGizmo.visible || !st || st.deleted) return;
+  const box = new THREE.Box3().setFromObject(st.group);
+  const c = new THREE.Vector3(); box.getCenter(c);
+  rotGizmo.position.copy(c);
+  const [w, h, d] = stDims(st);
+  rotGizmo.scale.setScalar(Math.max(Math.max(w, h) * 0.58, d * 0.65, 18));
+}
+
+// Drag auf Ring/Griff: Winkel in der Achsebene verfolgen
+// window+capture: läuft garantiert VOR den canvas-Handlern (Auswahl/Orbit)
+window.addEventListener('pointerdown', (e) => {
+  if (!rotGizmo.visible || e.target !== canvas) return;
+  const st = objectStates[selectedIdx];
+  if (!st || st.deleted) return;
+  const r = canvas.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1,
+                                -((e.clientY - r.top) / r.height) * 2 + 1);
+  const rc = new THREE.Raycaster();
+  rc.setFromCamera(ndc, camera);
+  const hit = rc.intersectObjects(rotHitProxies)[0];
+  if (!hit) return;
+  e.stopImmediatePropagation();   // Auswahl-/Orbit-Handler nicht anfassen
+  const a = hit.object.userData.rotAxis;
+  const plane = new THREE.Plane(a.normal.clone(), -a.normal.clone().dot(rotGizmo.position));
+  const angleAt = (ev) => {
+    const rr = canvas.getBoundingClientRect();
+    const n2 = new THREE.Vector2(((ev.clientX - rr.left) / rr.width) * 2 - 1,
+                                 -((ev.clientY - rr.top) / rr.height) * 2 + 1);
+    rc.setFromCamera(n2, camera);
+    const p = new THREE.Vector3();
+    if (!rc.ray.intersectPlane(plane, p)) return null;
+    p.sub(rotGizmo.position);
+    const u = a.grabAt, v = a.tangent;
+    return Math.atan2(p.dot(v), p.dot(u));
+  };
+  const startAngle = angleAt(e);
+  const startVal = st[a.axis];
+  if (startAngle === null) return;
+  const move = (ev) => {
+    const ang = angleAt(ev);
+    if (ang === null) return;
+    let deg = THREE.MathUtils.radToDeg(ang - startAngle);
+    if (ev.shiftKey) deg = Math.round(deg / 15) * 15;   // Shift = 15°-Raster
+    st[a.axis] = Math.round((startVal + deg) * 10) / 10;
+    applyStateToGroup(st);
+    syncToolPanel();
+  };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+}, true);
+
 function setTool(tool) {
   activeTool = activeTool === tool ? null : tool;
   for (const [id, t] of [['tbMove', 'move'], ['tbRotate', 'rotate'], ['tbScale', 'scale']])
@@ -1473,7 +1579,8 @@ function setTool(tool) {
 function refreshToolAttach() {
   const st = objectStates[selectedIdx];
   const ok = activeTool && st && !st.deleted && modelGroup.visible;
-  if (ok) {
+  rotGizmo.visible = Boolean(ok && activeTool === 'rotate');
+  if (ok && activeTool !== 'rotate') {
     tctrl.setMode(activeTool === 'move' ? 'translate' : activeTool);
     // Objekte liegen auf der Platte: Verschieben nur in X/Y
     tctrl.showZ = activeTool !== 'move';
