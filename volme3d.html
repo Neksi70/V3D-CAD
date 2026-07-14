@@ -2512,6 +2512,35 @@ const firebaseConfig = {
   </div>
 </div>
 
+<!-- Silikon-Gießform: druckbarer Gießrahmen um ein gewähltes Modell (client-seitig, Manifold-WASM) -->
+<div id="mold-modal" class="g3dm" onclick="if(event.target===this)_closeMoldModal()">
+  <div class="g3box">
+    <div class="g3hdr">🫗 Silikon-Gießform<span class="vx" onclick="_closeMoldModal()">✕</span></div>
+    <div class="g3body">
+      <div class="g3ctrl" style="min-width:300px">
+        <span class="vsec">Rahmenform</span>
+        <div class="vbg" id="mold-shape-bg">
+          <button class="vtb on" onclick="_moldSetShape('adaptive')" title="Wand folgt der Silhouette des Modells">Adaptiv</button>
+          <button class="vtb" onclick="_moldSetShape('rect')">Rechteckig</button>
+          <button class="vtb" onclick="_moldSetShape('round')">Rund</button>
+        </div>
+        <span class="vsec">Silikon</span>
+        <div class="vrow"><label title="Silikonstärke rings um das Modell">Stärke seitlich</label> <input type="range" id="mold-gap" min="3" max="20" value="6" step="0.5" oninput="document.getElementById('moldv-gap').textContent=this.value"><span class="vv" id="moldv-gap">6</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Silikonstärke über der höchsten Stelle des Modells (= Boden der fertigen Form)">Stärke oben</label> <input type="range" id="mold-top" min="4" max="30" value="12" step="0.5" oninput="document.getElementById('moldv-top').textContent=this.value"><span class="vv" id="moldv-top">12</span><span class="vu">mm</span></div>
+        <span class="vsec">Gedruckter Rahmen</span>
+        <div class="vrow"><label title="Wandstärke des gedruckten Gießrahmens">Wandstärke</label> <input type="range" id="mold-wall" min="1.6" max="6" value="3" step="0.2" oninput="document.getElementById('moldv-wall').textContent=this.value"><span class="vv" id="moldv-wall">3</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Dicke der Bodenplatte, auf der das Modell steht">Bodenplatte</label> <input type="range" id="mold-floor" min="2" max="8" value="3" step="0.5" oninput="document.getElementById('moldv-floor').textContent=this.value"><span class="vv" id="moldv-floor">3</span><span class="vu">mm</span></div>
+        <div class="vrow" id="mold-smooth-row"><label title="Glättung der adaptiven Silhouetten-Wand">Glättung</label> <input type="range" id="mold-smooth" min="0" max="5" value="2" step="1" oninput="document.getElementById('moldv-smooth').textContent=this.value"><span class="vv" id="moldv-smooth">2</span><span class="vu"></span></div>
+        <div class="g3info" id="mold-info">Erzeugt EIN Druckteil: Gießrahmen mit dem Modell fest auf der Bodenplatte. Silikon einfüllen, aushärten lassen, abziehen — fertig ist die Silikon-Negativform. Die Standfläche des Modells wird zur Einfüllöffnung der fertigen Form.</div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_closeMoldModal()">Abbrechen</button>
+      <button class="btn pri" id="mold-go" onclick="_createMold()">✓ Erzeugen</button>
+    </div>
+  </div>
+</div>
+
 <div id="qr-modal" class="g3dm" onclick="if(event.target===this)_closeQRModal()">
   <div class="g3box">
     <div class="g3hdr">📇 QR-Code-Generator<span class="vx" onclick="_closeQRModal()">✕</span></div>
@@ -12872,6 +12901,340 @@ function _meshFromStlB64(b64, name) {
   } catch (e) { console.error('parse result STL:', e); return null; }
 }
 
+// ═══ SILIKON-GIESSFORM (Manifold-WASM, komplett client-seitig) ═══════════════
+// Erzeugt aus dem gewählten Modell EINEN druckbaren Gießrahmen: Bodenplatte +
+// Wand (adaptiv = Silhouette-folgend / rechteckig / rund), Modell fest auf der
+// Platte. Silikon einfüllen → Negativform. Kein Server, keine BSP: Booleans
+// laufen über die Manifold-Bibliothek (lib/manifold.js + .wasm, lazy geladen).
+// Rechnet durchgehend in mm, Z-up (gleiche Konvention wie der Server-STL-Pfad).
+
+let _mfWasm = null, _mfLoading = null;
+function _mfInit() {
+  if (_mfWasm) return Promise.resolve(_mfWasm);
+  if (!_mfLoading) {
+    _mfLoading = import('./lib/manifold.js')
+      .then(m => m.default())
+      .then(w => { w.setup(); _mfWasm = w; return w; })
+      .catch(e => { _mfLoading = null; throw e; });
+  }
+  return _mfLoading;
+}
+
+// Flache Dreiecksliste (9 Floats/Dreieck) → Manifold-Objekt. merge() verschweißt
+// doppelte Vertices; wirft, wenn das Netz danach nicht wasserdicht/manifold ist.
+function _mfFromSoup(w, tris) {
+  const soup = new w.Mesh({
+    numProp: 3,
+    vertProperties: tris instanceof Float32Array ? tris : new Float32Array(tris),
+    triVerts: Uint32Array.from({ length: tris.length / 3 }, (_, i) => i)
+  });
+  soup.merge();
+  return new w.Manifold(soup);
+}
+
+function _mfToGeo(mf) {
+  const m = mf.getMesh();
+  const geo = new THREE.BufferGeometry();
+  let pos = m.vertProperties;
+  if (m.numProp > 3) {                       // Interleaved → nur x,y,z ziehen
+    const n = pos.length / m.numProp, p2 = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { p2[i*3] = pos[i*m.numProp]; p2[i*3+1] = pos[i*m.numProp+1]; p2[i*3+2] = pos[i*m.numProp+2]; }
+    pos = p2;
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+  geo.setIndex(new THREE.BufferAttribute(new Uint32Array(m.triVerts), 1));
+  return geo;
+}
+
+// Gewähltes Objekt (alle Kind-Meshes) → flache Welt-Dreiecksliste in mm, Z-up.
+function _moldCollectTris(o) {
+  o.updateMatrixWorld(true);
+  const v = [];
+  o.traverse(ch => {
+    if (!ch.isMesh || !ch.geometry?.attributes?.position) return;
+    const g = ch.geometry.clone();
+    g.applyMatrix4(ch.matrixWorld);
+    g.scale(10, 10, 10); g.rotateX(Math.PI / 2);   // App-Units → mm, Y-up → Z-up
+    const pos = g.attributes.position, idx = g.index?.array;
+    const n = Math.floor((idx ? idx.length : pos.count) / 3);
+    for (let i = 0; i < n; i++) {
+      const a = idx ? idx[i*3] : i*3, b = idx ? idx[i*3+1] : i*3+1, c = idx ? idx[i*3+2] : i*3+2;
+      v.push(pos.getX(a),pos.getY(a),pos.getZ(a), pos.getX(b),pos.getY(b),pos.getZ(b), pos.getX(c),pos.getY(c),pos.getZ(c));
+    }
+    g.dispose();
+  });
+  return v;
+}
+
+// 1D-Pass der exakten quadrierten Distanztransformation (Felzenszwalb).
+function _moldEdt1d(f, n, d, v, z) {
+  let k = 0; v[0] = 0; z[0] = -1e20; z[1] = 1e20;
+  for (let q = 1; q < n; q++) {
+    let s = ((f[q] + q*q) - (f[v[k]] + v[k]*v[k])) / (2*q - 2*v[k]);
+    while (s <= z[k]) { k--; s = ((f[q] + q*q) - (f[v[k]] + v[k]*v[k])) / (2*q - 2*v[k]); }
+    k++; v[k] = q; z[k] = s; z[k+1] = 1e20;
+  }
+  k = 0;
+  for (let q = 0; q < n; q++) { while (z[k+1] < q) k++; const dq = q - v[k]; d[q] = dq*dq + f[v[k]]; }
+}
+
+// Silhouetten-Distanzfeld: Dreiecke auf XY projizieren, in Pixelmaske rastern,
+// dann exakte euklidische Distanz (mm) zu dieser Silhouette für jede Zelle.
+function _moldDistField(tris, ox, oy, W, H, cell) {
+  const INF = 1e20;
+  const f = new Float32Array(W * H).fill(INF);
+  const px = x => (x - ox) / cell - 0.5, py = y => (y - oy) / cell - 0.5;  // Pixel-ZENTREN bei ox+(i+0.5)*cell
+  for (let t = 0; t < tris.length; t += 9) {
+    const ax = px(tris[t]),   ay = py(tris[t+1]);
+    const bx = px(tris[t+3]), by = py(tris[t+4]);
+    const cx = px(tris[t+6]), cy = py(tris[t+7]);
+    // Eckpunkte immer stempeln (fängt degenerierte/senkrechte Dreiecke)
+    for (const [qx,qy] of [[ax,ay],[bx,by],[cx,cy]]) {
+      const ix = Math.round(qx), iy = Math.round(qy);
+      if (ix >= 0 && iy >= 0 && ix < W && iy < H) f[iy*W+ix] = 0;
+    }
+    const area = (bx-ax)*(cy-ay) - (by-ay)*(cx-ax);
+    if (Math.abs(area) < 1e-9) continue;
+    const x0 = Math.max(0, Math.floor(Math.min(ax,bx,cx))), x1 = Math.min(W-1, Math.ceil(Math.max(ax,bx,cx)));
+    const y0 = Math.max(0, Math.floor(Math.min(ay,by,cy))), y1 = Math.min(H-1, Math.ceil(Math.max(ay,by,cy)));
+    const s = area > 0 ? 1 : -1;
+    for (let iy = y0; iy <= y1; iy++) for (let ix = x0; ix <= x1; ix++) {
+      const e0 = ((bx-ax)*(iy-ay) - (by-ay)*(ix-ax)) * s;
+      const e1 = ((cx-bx)*(iy-by) - (cy-by)*(ix-bx)) * s;
+      const e2 = ((ax-cx)*(iy-cy) - (ay-cy)*(ix-cx)) * s;
+      if (e0 >= -1e-6 && e1 >= -1e-6 && e2 >= -1e-6) f[iy*W+ix] = 0;
+    }
+  }
+  // 2D-EDT: erst Spalten, dann Zeilen (quadriert), Ergebnis in mm
+  const n = Math.max(W, H);
+  const d1 = new Float32Array(n), f1 = new Float32Array(n), v1 = new Int32Array(n), z1 = new Float32Array(n + 1);
+  for (let x = 0; x < W; x++) {
+    for (let y = 0; y < H; y++) f1[y] = f[y*W+x];
+    _moldEdt1d(f1, H, d1, v1, z1);
+    for (let y = 0; y < H; y++) f[y*W+x] = d1[y];
+  }
+  const dist = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) f1[x] = f[y*W+x];
+    _moldEdt1d(f1, W, d1, v1, z1);
+    for (let x = 0; x < W; x++) dist[y*W+x] = Math.sqrt(d1[x]) * cell;
+  }
+  return dist;
+}
+
+// Konturen der Fläche { dist <= iso } als geschlossene Polygone (mm, CCW).
+// Moore-Nachbar-Verfolgung der Außenränder; Löcher werden bewusst ignoriert
+// (eine Gießform braucht nur die äußere Silhouette).
+function _moldContoursAt(dist, W, H, ox, oy, cell, iso, smoothIters) {
+  const bin = new Uint8Array(W * H);
+  for (let i = 0; i < bin.length; i++) bin[i] = dist[i] <= iso ? 1 : 0;
+  const done = new Uint8Array(W * H);
+  const dx = [1,1,0,-1,-1,-1,0,1], dy = [0,-1,-1,-1,0,1,1,1];   // im Uhrzeigersinn (y-up)
+  const out = [];
+  const stack = [];
+  for (let sy = 0; sy < H; sy++) for (let sx = 0; sx < W; sx++) {
+    const si = sy*W+sx;
+    if (!bin[si] || done[si]) continue;
+    // Rand verfolgen (Start ist scanbedingt ein Außenrand-Pixel, links frei)
+    const pts = [];
+    let cx2 = sx, cy2 = sy, dir = 4, guard = W * H * 4;
+    do {
+      pts.push(cx2, cy2);
+      let found = -1;
+      for (let k = 0; k < 8; k++) {
+        const j = (dir + 1 + k) % 8, nx = cx2 + dx[j], ny = cy2 + dy[j];
+        if (nx >= 0 && ny >= 0 && nx < W && ny < H && bin[ny*W+nx]) { found = j; break; }
+      }
+      if (found < 0) break;                    // isolierter Pixel
+      cx2 += dx[found]; cy2 += dy[found];
+      dir = (found + 4) % 8;                   // Herkunftsrichtung
+    } while ((cx2 !== sx || cy2 !== sy) && --guard > 0);
+    // Komponente fluten → wird beim Scan übersprungen (verhindert Loch-Konturen)
+    stack.length = 0; stack.push(si); done[si] = 1;
+    while (stack.length) {
+      const i = stack.pop(), x = i % W, y = (i / W) | 0;
+      for (let k = 0; k < 8; k++) {
+        const nx = x + dx[k], ny = y + dy[k];
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const ni = ny*W+nx;
+        if (bin[ni] && !done[ni]) { done[ni] = 1; stack.push(ni); }
+      }
+    }
+    if (pts.length < 16) continue;             // Mini-Fragmente verwerfen
+    // Pixel → mm
+    let poly = [];
+    for (let i = 0; i < pts.length; i += 2) poly.push([ox + (pts[i] + 0.5) * cell, oy + (pts[i+1] + 0.5) * cell]);
+    // Glätten (gleitender Mittelwert, geschlossen) — nimmt die Pixel-Treppen raus
+    for (let it = 0; it < smoothIters + 1; it++) {
+      const n = poly.length, sm = new Array(n);
+      for (let i = 0; i < n; i++) {
+        const p = poly[(i+n-1)%n], c = poly[i], q = poly[(i+1)%n];
+        sm[i] = [(p[0]+2*c[0]+q[0])/4, (p[1]+2*c[1]+q[1])/4];
+      }
+      poly = sm;
+    }
+    // Ausdünnen: Punkte dichter als ~1 Zelle zusammenfassen
+    const dec = [poly[0]];
+    for (let i = 1; i < poly.length; i++) {
+      const l = dec[dec.length-1], p = poly[i];
+      if ((p[0]-l[0])**2 + (p[1]-l[1])**2 >= (cell*0.81)**2) dec.push(p);
+    }
+    if (dec.length < 3) continue;
+    // CCW erzwingen (Manifold: CCW = Material)
+    let a2 = 0;
+    for (let i = 0; i < dec.length; i++) { const p = dec[i], q = dec[(i+1)%dec.length]; a2 += p[0]*q[1] - q[0]*p[1]; }
+    if (a2 < 0) dec.reverse();
+    out.push(dec);
+  }
+  return out;
+}
+
+// Rechteck-Kontur mit runden Ecken (CCW, mm)
+function _moldRectContour(x0, y0, x1, y1, r) {
+  r = Math.max(0.2, Math.min(r, (x1-x0)/2 - 0.01, (y1-y0)/2 - 0.01));
+  const pts = [], SEG = 8;
+  const corners = [[x1-r, y0+r, -Math.PI/2], [x1-r, y1-r, 0], [x0+r, y1-r, Math.PI/2], [x0+r, y0+r, Math.PI]];
+  for (const [cx, cy, a0] of corners)
+    for (let i = 0; i <= SEG; i++) { const a = a0 + (i/SEG) * Math.PI/2; pts.push([cx + r*Math.cos(a), cy + r*Math.sin(a)]); }
+  return pts;
+}
+
+function _moldCircleContour(cx, cy, R) {
+  const pts = [], SEG = 96;
+  for (let i = 0; i < SEG; i++) { const a = (i/SEG) * 2*Math.PI; pts.push([cx + R*Math.cos(a), cy + R*Math.sin(a)]); }
+  return pts;
+}
+
+const _moldP = { shape: 'adaptive' };
+function _moldSetShape(s) {
+  _moldP.shape = s;
+  const idx = { adaptive: 0, rect: 1, round: 2 }[s] ?? 0;
+  document.querySelectorAll('#mold-shape-bg .vtb').forEach((b, i) => b.classList.toggle('on', i === idx));
+  const row = document.getElementById('mold-smooth-row');
+  if (row) row.style.display = s === 'adaptive' ? '' : 'none';
+}
+function _openMoldModal() {
+  const o = getFirst();
+  if (!o) { notify('Bitte zuerst das Modell auswählen, von dem eine Gießform entstehen soll', 'w'); return; }
+  document.getElementById('mold-modal').classList.add('show');
+}
+function _closeMoldModal() { document.getElementById('mold-modal').classList.remove('show'); }
+
+let _moldBusy = false;
+const _moldTick = () => new Promise(r => setTimeout(r, 0));
+
+async function _createMold() {
+  if (_moldBusy) return;
+  const btn = document.getElementById('mold-go');
+  _moldBusy = true; if (btn) { btn.disabled = true; btn.textContent = '… rechnet'; }
+  const mfTemp = [];
+  try {
+    const o = getFirst();
+    if (!o) { notify('Kein Objekt gewählt', 'w'); return; }
+    const num = id => parseFloat(document.getElementById(id).value);
+    const p = { shape: _moldP.shape, gap: num('mold-gap'), top: num('mold-top'),
+                wall: num('mold-wall'), floor: num('mold-floor'), smooth: Math.round(num('mold-smooth')) };
+    _closeMoldModal();
+    _progressShow('Gießform wird berechnet…'); _progressSet(4); await _moldTick();
+
+    const tris = _moldCollectTris(o);
+    if (!tris.length) { _progressHide(); notify('Keine Geometrie im gewählten Objekt', 'e'); return; }
+    let minX=Infinity,minY=Infinity,minZ=Infinity,maxX=-Infinity,maxY=-Infinity,maxZ=-Infinity;
+    for (let i = 0; i < tris.length; i += 3) {
+      if (tris[i]<minX)minX=tris[i]; if (tris[i]>maxX)maxX=tris[i];
+      if (tris[i+1]<minY)minY=tris[i+1]; if (tris[i+1]>maxY)maxY=tris[i+1];
+      if (tris[i+2]<minZ)minZ=tris[i+2]; if (tris[i+2]>maxZ)maxZ=tris[i+2];
+    }
+    const Htot = p.floor + (maxZ - minZ) + p.top;    // Rahmenhöhe gesamt
+    console.log('[mold]', (tris.length/9)|0, 'Dreiecke, BBox',
+      (maxX-minX).toFixed(1)+'×'+(maxY-minY).toFixed(1)+'×'+(maxZ-minZ).toFixed(1), 'mm, Form:', p.shape);
+
+    _progressSet(15, 'Silhouette wird analysiert…'); await _moldTick();
+    let outer, inner;                                // Konturlisten [[x,y],…] mm, CCW
+    if (p.shape === 'rect') {
+      outer = [_moldRectContour(minX-p.gap-p.wall, minY-p.gap-p.wall, maxX+p.gap+p.wall, maxY+p.gap+p.wall, 2 + p.wall)];
+      inner = [_moldRectContour(minX-p.gap, minY-p.gap, maxX+p.gap, maxY+p.gap, 2)];
+    } else if (p.shape === 'round') {
+      const cx = (minX+maxX)/2, cy = (minY+maxY)/2;
+      let R = 0;
+      for (let i = 0; i < tris.length; i += 3) { const r2 = (tris[i]-cx)**2 + (tris[i+1]-cy)**2; if (r2 > R) R = r2; }
+      R = Math.sqrt(R);
+      outer = [_moldCircleContour(cx, cy, R + p.gap + p.wall)];
+      inner = [_moldCircleContour(cx, cy, R + p.gap)];
+    } else {
+      const pad = p.gap + p.wall + 3;
+      const spanX = (maxX-minX) + 2*pad, spanY = (maxY-minY) + 2*pad;
+      const cell = Math.max(0.5, spanX/1400, spanY/1400);
+      const W = Math.ceil(spanX/cell), H = Math.ceil(spanY/cell);
+      const ox = minX - pad, oy = minY - pad;
+      console.log('[mold] Distanzfeld', W+'×'+H, '@', cell.toFixed(2), 'mm');
+      const dist = _moldDistField(tris, ox, oy, W, H, cell);
+      _progressSet(35, 'Konturen werden verfolgt…'); await _moldTick();
+      outer = _moldContoursAt(dist, W, H, ox, oy, cell, p.gap + p.wall, p.smooth);
+      inner = _moldContoursAt(dist, W, H, ox, oy, cell, p.gap, p.smooth);
+      if (!outer.length || !inner.length) { _progressHide(); notify('Silhouette konnte nicht ermittelt werden', 'e'); return; }
+    }
+
+    _progressSet(50, 'Rahmen wird aufgebaut…'); await _moldTick();
+    const w = await _mfInit();
+    const M = w.Manifold;
+    const frame = M.extrude(outer, Htot);                         mfTemp.push(frame);
+    const cav   = M.extrude(inner, Htot).translate([0, 0, p.floor]); mfTemp.push(cav);
+    const shell = frame.subtract(cav);                            mfTemp.push(shell);
+
+    _progressSet(65, 'Modell wird mit dem Rahmen verbunden…'); await _moldTick();
+    let result = shell, unionOk = true;
+    try {
+      const model = _mfFromSoup(w, tris).translate([0, 0, p.floor - minZ]); mfTemp.push(model);
+      result = shell.add(model); mfTemp.push(result);
+    } catch (e) {
+      unionOk = false;
+      console.warn('[mold] Modell nicht wasserdicht — Rahmen und Modell werden überlappend kombiniert', e);
+    }
+
+    _progressSet(85, 'Netz wird erzeugt…'); await _moldTick();
+    let outGeo = _mfToGeo(result).toNonIndexed();
+    if (!unionOk) {
+      // Fallback: Modell-Dreiecke (auf die Bodenplatte gehoben) einfach anhängen —
+      // überlappende Shells, der Slicer vereinigt sie beim Drucken.
+      const shellPos = outGeo.attributes.position.array;
+      const merged = new Float32Array(shellPos.length + tris.length);
+      merged.set(shellPos, 0);
+      const lift = p.floor - minZ;
+      for (let i = 0; i < tris.length; i += 3) {
+        merged[shellPos.length + i]     = tris[i];
+        merged[shellPos.length + i + 1] = tris[i+1];
+        merged[shellPos.length + i + 2] = tris[i+2] + lift;
+      }
+      outGeo = new THREE.BufferGeometry();
+      outGeo.setAttribute('position', new THREE.BufferAttribute(merged, 3));
+    }
+    _creaseNormals(outGeo);
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(currentColor), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(outGeo, mat);
+    mesh.castShadow = true;
+    mesh.scale.setScalar(0.1);          // mm → App-Einheit
+    mesh.rotation.x = -Math.PI / 2;     // Z-up → Editor Y-up (landet exakt um das Original)
+    mesh.updateMatrixWorld(true);
+    mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import',
+      name: (o.userData.name || 'Modell') + ' — Gießform', color: currentColor,
+      isHole: false, _origGeo: outGeo };
+    saveUndo();
+    scene.add(mesh); objects.push(mesh);
+    o.visible = false;                  // Original ausblenden (nicht löschen → Undo/Vergleich)
+    selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
+    _progressDone();
+    notify(unionOk ? 'Gießform erzeugt ✓ — Silikon einfüllen, fertig ist die Negativform'
+                   : 'Gießform erzeugt (Modell nicht wasserdicht — Teile überlappend kombiniert)', unionOk ? 'ok' : 'w');
+  } catch (e) {
+    _progressHide();
+    console.error('[mold]', e); notify('Gießform fehlgeschlagen: ' + (e.message || e), 'e');
+  } finally {
+    for (const m of mfTemp) { try { m && m.delete && m.delete(); } catch (_) {} }
+    _moldBusy = false; if (btn) { btn.disabled = false; btn.textContent = '✓ Erzeugen'; }
+  }
+}
+
 function _matrixToOCCTTrsf(oc, m4) {
   // Three.js Matrix4 (column-major) → gp_Trsf (SetValues row-major 3x4)
   const e = m4.elements;
@@ -17993,6 +18356,7 @@ const _STARTERS = [
   {i:'📦',t:'Scharnier-Box',d:'Klappbox, Druck am Stück',run:()=>_openHingeModal()},
   {i:'🎁',t:'Bild-Box',d:'Bild → Klappbox mit Motiv',run:()=>_openIbxModal()},
   {i:'💡',t:'Lampe',d:'Lampenschirm (Pop-Lamp-Stil)',run:()=>_openLampModal()},
+  {i:'🫗',t:'Silikon-Gießform',d:'Gießrahmen um dein Modell',run:()=>_openMoldModal()},
   {i:'✨',t:'KI-Modell',d:'Aus Text erzeugen',run:()=>kiTogglePanel()},
   {i:'🧪',t:'Rasterbox',d:'Gridfinity-Raster',dev:true,run:()=>_openGFModal()},
 ];
@@ -26840,6 +27204,8 @@ function _fpBuildRows(type, o) {
   const hollowLidBtn = (type === 'import')
     ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_openHollowLidModal()">🥡 Hohlkörper + Deckel</button></div>`
     : '';
+  // Silikon-Gießform: druckbarer Gießrahmen um das gewählte Modell (jeder Typ)
+  const moldBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_openMoldModal()">🫗 Silikon-Gießform</button></div>`;
 
   // Early return only for generic/OCCT types that have no dedicated switch case and no texture support
   const _ownPanelTypes = ['box','cylinder','tube','cone','pyramid','torus','sphere','wedge','star','import',
@@ -27211,7 +27577,7 @@ function _fpBuildRows(type, o) {
              `<div class="fp-lbl" style="display:block;margin-bottom:3px;color:var(--dim);font-size:10px">Ober-/Unterkante</div>` +
              row('Radius',      'fp-sk-fil', o.userData.fillet||0,  "_skApplyBevel(this.value, 0)", 'mm', 0, skMax, 0.1) +
              row('Abschrägung', 'fp-sk-cha', o.userData.chamfer||0, "_skApplyBevel(0, this.value)", 'mm', 0, skMax, 0.1) +
-             ((shellBtn||hollowLidBtn) ? '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn : '') +
+             '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn + moldBtn +
              _dispRows();
     }
     case 'loft':
@@ -27245,7 +27611,7 @@ function _fpBuildRows(type, o) {
              propLock() +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
-             ((edgeBtn||shellBtn||hollowLidBtn) ? '<div class="fp-sep"></div>' + edgeBtn + shellBtn + hollowLidBtn : '') +
+             '<div class="fp-sep"></div>' + edgeBtn + shellBtn + hollowLidBtn + moldBtn +
              _dispRows();
   }
 }
@@ -29169,6 +29535,7 @@ const CMDK = [
   {i:'📦',g:'Generator',t:'Scharnier-Box',k:'scharnier box dose deckel klappbox print in place hinge gelenk',run:()=>_openHingeModal()},
   {i:'🎁',g:'Generator',t:'Bild-Box',k:'bild box hingebox klappbox motiv silhouette mehrfarbig image geschenk',run:()=>_openIbxModal()},
   {i:'💡',g:'Generator',t:'Lampe',k:'lampe lampenschirm leuchte licht led pop lamp shade schirm bambu',run:()=>_openLampModal()},
+  {i:'🫗',g:'Generator',t:'Silikon-Gießform',k:'silikon gießform gussform mold form casting negativform silikonform',run:()=>_openMoldModal()},
   {i:'∪',g:'Bearbeiten',t:'Vereinen',k:'union merge',run:()=>unionSelected()},
   {i:'⊖',g:'Bearbeiten',t:'Abziehen',k:'subtract bohrung loch',run:()=>subtractHoles()},
   {i:'⊞',g:'Bearbeiten',t:'Gruppieren',k:'group',run:()=>groupSelected()},

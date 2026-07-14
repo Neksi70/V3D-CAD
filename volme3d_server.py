@@ -55,6 +55,8 @@ ALLOW = {
     '/lib/SimplifyModifier.js':           ('lib/SimplifyModifier.js', 'text/javascript; charset=utf-8'),
     '/lib/qrcode.min.js':                 ('lib/qrcode.min.js', 'text/javascript; charset=utf-8'),
     '/lib/leaflet.js':                    ('lib/leaflet.js', 'text/javascript; charset=utf-8'),
+    '/lib/manifold.js':                   ('lib/manifold.js', 'text/javascript; charset=utf-8'),
+    '/lib/manifold.wasm':                 ('lib/manifold.wasm', 'application/wasm'),
     '/lib/leaflet.css':                   ('lib/leaflet.css', 'text/css; charset=utf-8'),
     '/lib/leaflet-marker-icon.png':       ('lib/leaflet-marker-icon.png', 'image/png'),
     '/lib/leaflet-marker-icon-2x.png':    ('lib/leaflet-marker-icon-2x.png', 'image/png'),
