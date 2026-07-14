@@ -2518,6 +2518,7 @@ const firebaseConfig = {
     <div class="g3hdr">🫗 Silikon-Gießform<span class="vx" onclick="_closeMoldModal()">✕</span></div>
     <div class="g3body">
       <div class="g3ctrl" style="min-width:300px">
+        <div class="g3info" id="mold-dim" style="margin-bottom:2px"></div>
         <div class="vbg" id="mold-mode-bg">
           <button class="vtb on" onclick="_moldSetMode('frame')" title="Ein Druckteil: Becher mit Modell — Silikon einfüllen ergibt die Negativform">Gießrahmen (Silikon)</button>
           <button class="vtb" onclick="_moldSetMode('two')" title="Zwei Druckteile mit Modell-Hohlraum, Passstiften und Gießkanal — direkt hineingießen">2-teilige Form</button>
@@ -12977,9 +12978,15 @@ function _mfToGeo(mf) {
 }
 
 // Gewähltes Objekt (alle Kind-Meshes) → flache Welt-Dreiecksliste in mm, Z-up.
+// Vorallokiertes Float32Array statt JS-Array-push: bei Scan-Netzen mit Millionen
+// Dreiecken sonst >4× Spitzenspeicher (war Mitursache für Tab-Abstürze).
 function _moldCollectTris(o) {
   o.updateMatrixWorld(true);
-  const v = [];
+  let total = 0;
+  o.traverse(ch => { if (ch.isMesh && ch.geometry?.attributes?.position) {
+    const g = ch.geometry; total += Math.floor((g.index ? g.index.count : g.attributes.position.count) / 3); } });
+  const v = new Float32Array(total * 9);
+  let w = 0;
   o.traverse(ch => {
     if (!ch.isMesh || !ch.geometry?.attributes?.position) return;
     const g = ch.geometry.clone();
@@ -12994,11 +13001,23 @@ function _moldCollectTris(o) {
     for (let i = 0; i < n; i++) {
       let a = idx ? idx[i*3] : i*3, b = idx ? idx[i*3+1] : i*3+1, c = idx ? idx[i*3+2] : i*3+2;
       if (flip) { const t = b; b = c; c = t; }
-      v.push(pos.getX(a),pos.getY(a),pos.getZ(a), pos.getX(b),pos.getY(b),pos.getZ(b), pos.getX(c),pos.getY(c),pos.getZ(c));
+      v[w++]=pos.getX(a); v[w++]=pos.getY(a); v[w++]=pos.getZ(a);
+      v[w++]=pos.getX(b); v[w++]=pos.getY(b); v[w++]=pos.getZ(b);
+      v[w++]=pos.getX(c); v[w++]=pos.getY(c); v[w++]=pos.getZ(c);
     }
     g.dispose();
   });
-  return v;
+  return w === v.length ? v : v.subarray(0, w);
+}
+
+// Normalen fürs Gießform-Ergebnis: _creaseNormals baut eine String-Map über
+// JEDEN Vertex — bei Millionen Dreiecken (Scan-Netze) Gigabytes → Tab-Absturz.
+// Ab ~800k Dreiecken schlichte Flächen-Normalen rechnen.
+function _moldNormals(geo) {
+  const nTri = geo.attributes.position.count / 3;
+  if (nTri > 800000) geo.computeVertexNormals();
+  else _creaseNormals(geo);
+  return geo;
 }
 
 // 1D-Pass der exakten quadrierten Distanztransformation (Felzenszwalb).
@@ -13157,6 +13176,17 @@ function _moldSetShape(s) {
 function _openMoldModal() {
   const o = getFirst();
   if (!o) { notify('Bitte zuerst das Modell auswählen, von dem eine Gießform entstehen soll', 'w'); return; }
+  // Modellgröße anzeigen — fängt den Klassiker "Import in falscher Einheit"
+  // (Zoll-/Meter-STL → Mini-Modell), bevor eine sinnlose Form entsteht.
+  o.updateMatrixWorld(true);
+  const s = new THREE.Box3().setFromObject(o).getSize(new THREE.Vector3()).multiplyScalar(10);  // → mm
+  const el = document.getElementById('mold-dim');
+  if (el) {
+    const f = v => Math.round(v * 10) / 10;
+    const maxDim = Math.max(s.x, s.y, s.z);
+    el.innerHTML = 'Modell: <b>' + f(s.x) + ' × ' + f(s.z) + ' × ' + f(s.y) + ' mm</b> (B × T × H)' +
+      (maxDim < 5 ? '<br><span style="color:#d33;font-weight:700">⚠️ Winzig — vermutlich falsche Import-Einheit (Zoll/Meter). Erst im Eigenschaften-Panel auf die echte Größe skalieren!</span>' : '');
+  }
   document.getElementById('mold-modal').classList.add('show');
 }
 function _closeMoldModal() { document.getElementById('mold-modal').classList.remove('show'); }
@@ -13190,6 +13220,8 @@ async function _createMold() {
     const Htot = p.floor + (maxZ - minZ) + p.top;    // Rahmenhöhe gesamt
     console.log('[mold]', (tris.length/9)|0, 'Dreiecke, BBox',
       (maxX-minX).toFixed(1)+'×'+(maxY-minY).toFixed(1)+'×'+(maxZ-minZ).toFixed(1), 'mm, Form:', p.shape);
+    if (Math.max(maxX-minX, maxY-minY, maxZ-minZ) < 5)
+      notify('⚠️ Modell ist nur ' + (Math.max(maxX-minX, maxY-minY, maxZ-minZ)).toFixed(1) + ' mm groß — vermutlich falsche Import-Einheit. Erst im Eigenschaften-Panel skalieren!', 'w', 8000);
 
     _progressSet(15, 'Silhouette wird analysiert…'); await _moldTick();
     let outer, inner;                                // Konturlisten [[x,y],…] mm, CCW
@@ -13226,7 +13258,12 @@ async function _createMold() {
 
     _progressSet(65, 'Modell wird mit dem Rahmen verbunden…'); await _moldTick();
     let result = shell, unionOk = true;
-    try {
+    if (tris.length > 1.2e6 * 9) {
+      // Speicherschutz: Riesen-Netze nicht durch die Boolean-Union jagen —
+      // überlappende Shells reichen, der Slicer vereinigt beim Drucken.
+      unionOk = false;
+      console.warn('[mold] Sehr großes Netz (' + ((tris.length/9)|0) + ' Dreiecke) — Union übersprungen, Teile überlappend');
+    } else try {
       const model = _mfFromSoup(w, tris).translate([0, 0, p.floor - minZ]); mfTemp.push(model);
       result = shell.add(model); mfTemp.push(result);
     } catch (e) {
@@ -13251,7 +13288,7 @@ async function _createMold() {
       outGeo = new THREE.BufferGeometry();
       outGeo.setAttribute('position', new THREE.BufferAttribute(merged, 3));
     }
-    _creaseNormals(outGeo);
+    _moldNormals(outGeo);
     saveUndo();
     const mesh = _moldSceneMesh(outGeo, (o.userData.name || 'Modell') + ' — Gießform');
     o.visible = false;                  // Original ausblenden (nicht löschen → Undo/Vergleich)
@@ -13532,13 +13569,20 @@ async function _moldCreateTwoPart(o, mfTemp) {
     if (tris[i+1]<minY)minY=tris[i+1]; if (tris[i+1]>maxY)maxY=tris[i+1];
     if (tris[i+2]<minZ)minZ=tris[i+2]; if (tris[i+2]>maxZ)maxZ=tris[i+2];
   }
+  if (Math.max(maxX-minX, maxY-minY, maxZ-minZ) < 5)
+    notify('⚠️ Modell ist nur ' + (Math.max(maxX-minX, maxY-minY, maxZ-minZ)).toFixed(1) + ' mm groß — vermutlich falsche Import-Einheit. Erst im Eigenschaften-Panel skalieren!', 'w', 8000);
   const w = await _mfInit(); const M = w.Manifold;
   const dilProg = f => _progressSet(8 + Math.round(42*f), '3D-Offset wird berechnet…');
 
-  // Hohlraum: Modell direkt (gap 0) oder per 3D-Offset aufgeblasen (gap > 0)
+  // Hohlraum: Modell direkt (gap 0) oder per 3D-Offset aufgeblasen (gap > 0).
+  // Riesen-Netze gehen immer über das Distanzfeld — dessen Speicher ist durch
+  // das Gitter-Budget gedeckelt, die direkte Manifold-Union nicht.
   let cavity, repaired = false;
   if (p.gap > 0) {
     cavity = keep(await _moldDilate3D(w, tris, p.gap, dilProg));
+  } else if (tris.length > 1.2e6 * 9) {
+    console.warn('[mold2] Sehr großes Netz (' + ((tris.length/9)|0) + ' Dreiecke) → Hohlraum über 3D-Distanzfeld');
+    cavity = keep(await _moldDilate3D(w, tris, 0.01, dilProg));
   } else {
     try { cavity = keep(_mfFromSoup(w, tris)); }
     catch (e) {
@@ -13590,8 +13634,8 @@ async function _moldCreateTwoPart(o, mfTemp) {
   const topOut    = keep(top.rotate([180, 0, 0]).translate([(gx1-gx0) + 15, gy0+gy1, gz1]));
 
   _progressSet(90, 'Netze werden erzeugt…'); await _moldTick();
-  const geoB = _mfToGeo(bottomOut).toNonIndexed(); _creaseNormals(geoB);
-  const geoT = _mfToGeo(topOut).toNonIndexed();    _creaseNormals(geoT);
+  const geoB = _moldNormals(_mfToGeo(bottomOut).toNonIndexed());
+  const geoT = _moldNormals(_mfToGeo(topOut).toNonIndexed());
   saveUndo();
   const base = o.userData.name || 'Modell';
   const meshB = _moldSceneMesh(geoB, base + ' — Form Unterteil');
