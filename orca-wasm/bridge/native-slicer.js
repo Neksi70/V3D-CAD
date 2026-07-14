@@ -68,8 +68,9 @@ function pump() {
   ensureProc().stdin.write(JSON.stringify(current.payload) + '\n');
 }
 
-// Job einreihen: bytes = Buffer der Modelldatei
-function submit({ filename, bytes, profiles, overrides, transforms, filamentChains }) {
+// Job einreihen: bytes = Buffer der Modelldatei; paints (Mal-Werkzeug):
+// je (Objekt,Instanz) null oder { verts, tris, states } als base64
+function submit({ filename, bytes, profiles, overrides, transforms, filamentChains, paints, ops }) {
   const id = crypto.randomBytes(8).toString('hex');
   const modelPath = path.join(TMP, id + '_' + String(filename || 'model').replace(/[^\w.\-]/g, '_'));
   fs.mkdirSync(TMP, { recursive: true });
@@ -79,6 +80,8 @@ function submit({ filename, bytes, profiles, overrides, transforms, filamentChai
     id, model: modelPath, filename,
     profiles: profiles || [], overrides: overrides || '',
     transforms: transforms || null, filament_chains: filamentChains || [],
+    paints: paints || null,
+    cuts: (ops && ops.cuts) || [], adaptive: (ops && ops.adaptive) || null,
   } });
   pump();
   return id;

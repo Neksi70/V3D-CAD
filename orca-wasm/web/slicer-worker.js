@@ -16,10 +16,13 @@ const orca = await createOrcaSlicer({
 postMessage({ type: 'ready', version: orca.version() });
 
 onmessage = (e) => {
-  const { cmd, bytes, filename, profiles, overrides, bedCenter, transforms, filamentChains } = e.data;
+  const { cmd, bytes, filename, profiles, overrides, bedCenter, transforms, filamentChains, ops } = e.data;
   try {
     if (cmd === 'preview') {
-      const res = orca.previewModel(bytes, filename, bedCenter[0], bedCenter[1]);
+      // ops (Schnitte) fließen in die Vorschau ein, damit sie = Realität ist
+      const res = ops
+        ? orca.previewModelOps(bytes, filename, bedCenter[0], bedCenter[1], JSON.stringify(ops))
+        : orca.previewModel(bytes, filename, bedCenter[0], bedCenter[1]);
       // Views zeigen in den WASM-Heap → sofort kopieren, dann transferieren
       const objects = res.objects.map(o => ({
         name: o.name,
@@ -29,10 +32,12 @@ onmessage = (e) => {
       postMessage({ type: 'preview', objects },
                   objects.flatMap(o => [o.verts.buffer, o.tris.buffer]));
     } else {
-      // Mehrfarbdruck: Filament-Ketten separat — der Kern kombiniert sie
-      const gcode = filamentChains
-        ? orca.sliceModelMulti(bytes, filename, profiles, overrides, transforms, filamentChains)
-        : orca.sliceModelTransformed(bytes, filename, profiles, overrides, transforms);
+      // ops = { cuts, adaptive } → sliceModelOps; sonst der schlankere Pfad
+      const gcode = ops
+        ? orca.sliceModelOps(bytes, filename, profiles, overrides, transforms, filamentChains, JSON.stringify(ops))
+        : (filamentChains
+          ? orca.sliceModelMulti(bytes, filename, profiles, overrides, transforms, filamentChains)
+          : orca.sliceModelTransformed(bytes, filename, profiles, overrides, transforms));
       if (!gcode) postMessage({ type: 'error', message: orca.lastError() });
       else        postMessage({ type: 'done', gcode });
     }

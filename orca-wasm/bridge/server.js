@@ -259,16 +259,18 @@ app.post('/api/send', async (req, res) => {
 // Kein Login nötig — Brücke ist tailnet-only, gleiche Policy wie die Flotte.
 app.get('/api/slice/health', (req, res) => res.json({ available: nativeSlicer.available() }));
 
-// Job einreichen: { filename, model (base64), profiles, overrides, transforms, filamentChains }
+// Job einreichen: { filename, model (base64), profiles, overrides, transforms,
+//                   filamentChains, paints } — paints (Mal-Werkzeug): je
+//                   (Objekt,Instanz) null oder { verts, tris, states } als base64
 app.post('/api/slice', (req, res) => {
   if (!nativeSlicer.available())
     return res.status(503).json({ error: 'nativer Slicer nicht gebaut' });
-  const { filename, model, profiles, overrides, transforms, filamentChains } = req.body || {};
+  const { filename, model, profiles, overrides, transforms, filamentChains, paints, ops } = req.body || {};
   if (!model) return res.status(400).json({ error: 'model (base64) nötig' });
   try {
     const id = nativeSlicer.submit({
       filename, bytes: Buffer.from(model, 'base64'),
-      profiles, overrides, transforms, filamentChains,
+      profiles, overrides, transforms, filamentChains, paints, ops,
     });
     res.json({ ok: true, id });
   } catch (e) { res.status(500).json({ error: e.message }); }
