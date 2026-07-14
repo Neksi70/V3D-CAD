@@ -1472,7 +1472,7 @@ function updateSelectionFx() {
       geo.computeBoundingBox();
       const c = geo.boundingBox.getCenter(new THREE.Vector3());
       const size = Math.max(1, ...geo.boundingBox.getSize(new THREE.Vector3()).toArray());
-      const s = 1 + 1.4 / size;              // ~0,7 mm sichtbarer Rand
+      const s = 1 + 2.2 / size;              // ~1,1 mm sichtbarer Rand (Studio-Stärke)
       const hull = new THREE.Mesh(geo, selHullMat);
       hull.scale.setScalar(s);
       hull.position.copy(c).multiplyScalar(1 - s);   // um die BBox-Mitte skalieren
@@ -1484,8 +1484,9 @@ function updateSelectionFx() {
       st.selHull = null;
     }
     if (want && !selBrackets.has(i)) {
+      // 4 Ecken × 2 Arme + 4 Mittelstriche = 12 Marken (Studio-Rahmen)
       const arms = [];
-      for (let k = 0; k < 8; k++) {
+      for (let k = 0; k < 12; k++) {
         const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), selArmMat);
         m.raycast = () => {};
         m.renderOrder = 5;
@@ -1501,19 +1502,24 @@ function updateSelectionFx() {
   selectionFxSync();
 }
 
-// Klammern jeden Frame an die (bewegte/gedrehte) Standfläche heften
+// Klammern jeden Frame an die (bewegte/gedrehte) Standfläche heften —
+// Studio-Rahmen: enge Eck-Winkel + kurzer Mittelstrich je Kante
 function selectionFxSync() {
   for (const [i, arms] of selBrackets) {
     const st = objectStates[i];
     if (!st || st.deleted) { arms.forEach(m => m.visible = false); continue; }
     const box = new THREE.Box3().setFromObject(st.group);
     const w = box.max.x - box.min.x, h = box.max.y - box.min.y;
-    const L = Math.max(8, Math.min(26, Math.max(w, h) * 0.16)), th = 1.4, mrg = 4;
+    const side = Math.max(w, h);
+    const L = Math.max(9, Math.min(38, side * 0.2));   // Eckarm-Länge
+    const D = L * 0.55, th = Math.max(1.4, Math.min(2.4, side * 0.014)), mrg = 5;
+    const x0 = box.min.x - mrg, x1 = box.max.x + mrg;
+    const y0 = box.min.y - mrg, y1 = box.max.y + mrg;
+    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
     let k = 0;
     for (const sx of [-1, 1])
       for (const sy of [-1, 1]) {
-        const cx = sx < 0 ? box.min.x - mrg : box.max.x + mrg;
-        const cy = sy < 0 ? box.min.y - mrg : box.max.y + mrg;
+        const cx = sx < 0 ? x0 : x1, cy = sy < 0 ? y0 : y1;
         const a1 = arms[k++], a2 = arms[k++];   // Arm längs X, Arm längs Y
         a1.visible = a2.visible = true;
         a1.scale.set(L, th, 1);
@@ -1521,6 +1527,14 @@ function selectionFxSync() {
         a2.scale.set(th, L, 1);
         a2.position.set(cx - sx * th / 2, cy - sy * L / 2, 0.12);
       }
+    // Mittelstriche auf der Rahmenlinie: unten/oben längs X, links/rechts längs Y
+    for (const [px, py, horiz] of [[mx, y0 + th / 2, 1], [mx, y1 - th / 2, 1],
+                                   [x0 + th / 2, my, 0], [x1 - th / 2, my, 0]]) {
+      const m = arms[k++];
+      m.visible = true;
+      m.scale.set(horiz ? D : th, horiz ? th : D, 1);
+      m.position.set(px, py, 0.12);
+    }
   }
 }
 
