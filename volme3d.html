@@ -12939,11 +12939,24 @@ function _mfInit() {
 
 // Flache Dreiecksliste (9 Floats/Dreieck) → Manifold-Objekt. merge() verschweißt
 // doppelte Vertices; wirft, wenn das Netz danach nicht wasserdicht/manifold ist.
+// Sicherheitsnetz: Bei negativem Gesamtvolumen (invertierte Wicklung — Manifold
+// akzeptiert das stillschweigend als Negativ-Körper, der bei Union AUSSTANZT
+// statt hinzuzufügen!) wird die Wicklung global umgedreht.
 function _mfFromSoup(w, tris) {
+  let vol = 0;
+  for (let i = 0; i < tris.length; i += 9) {
+    const ax=tris[i],ay=tris[i+1],az=tris[i+2], bx=tris[i+3],by=tris[i+4],bz=tris[i+5], cx=tris[i+6],cy=tris[i+7],cz=tris[i+8];
+    vol += ax*(by*cz - bz*cy) - ay*(bx*cz - bz*cx) + az*(bx*cy - by*cx);
+  }
+  const nVert = tris.length / 3;
+  const idx = new Uint32Array(nVert);
+  if (vol < 0) { console.warn('[mold] Netz invertiert (Volumen ' + (vol/6).toFixed(0) + ') — Wicklung wird umgedreht');
+    for (let t = 0; t < nVert; t += 3) { idx[t] = t; idx[t+1] = t+2; idx[t+2] = t+1; } }
+  else for (let t = 0; t < nVert; t++) idx[t] = t;
   const soup = new w.Mesh({
     numProp: 3,
     vertProperties: tris instanceof Float32Array ? tris : new Float32Array(tris),
-    triVerts: Uint32Array.from({ length: tris.length / 3 }, (_, i) => i)
+    triVerts: idx
   });
   soup.merge();
   return new w.Manifold(soup);
@@ -12972,10 +12985,15 @@ function _moldCollectTris(o) {
     const g = ch.geometry.clone();
     g.applyMatrix4(ch.matrixWorld);
     g.scale(10, 10, 10); g.rotateX(Math.PI / 2);   // App-Units → mm, Y-up → Z-up
+    // Gespiegelte Objekte (negative Determinante, z. B. via „Spiegeln") drehen
+    // die Dreieckswicklung um → Manifold sähe einen Negativ-Körper. Hier je
+    // Kind-Mesh korrigieren, damit auch Gruppen mit gemischter Spiegelung passen.
+    const flip = ch.matrixWorld.determinant() < 0;
     const pos = g.attributes.position, idx = g.index?.array;
     const n = Math.floor((idx ? idx.length : pos.count) / 3);
     for (let i = 0; i < n; i++) {
-      const a = idx ? idx[i*3] : i*3, b = idx ? idx[i*3+1] : i*3+1, c = idx ? idx[i*3+2] : i*3+2;
+      let a = idx ? idx[i*3] : i*3, b = idx ? idx[i*3+1] : i*3+1, c = idx ? idx[i*3+2] : i*3+2;
+      if (flip) { const t = b; b = c; c = t; }
       v.push(pos.getX(a),pos.getY(a),pos.getZ(a), pos.getX(b),pos.getY(b),pos.getZ(b), pos.getX(c),pos.getY(c),pos.getZ(c));
     }
     g.dispose();
