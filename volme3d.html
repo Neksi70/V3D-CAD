@@ -3904,6 +3904,8 @@ let _revolvePlaneN      = null;
 let _revolveRight       = null;
 let _revolveSavedCam    = null;
 let _revolvePreviewMesh = null;
+let _revolveGhostLine   = null;
+let _revolveGhostDot    = null;
 const EDGE_ENDPOINTS = [
   [[ 1, 1,-1],[ 1, 1, 1]],
   [[-1, 1,-1],[-1, 1, 1]],
@@ -5758,6 +5760,22 @@ function enterRevolveMode() {
   _revolvePreview.renderOrder = 999;
   scene.add(_revolvePreview);
 
+  // Gummiband-Vorschau: Linie zum Cursor + Geister-Punkt (gesnappte Klickposition)
+  _revolveGhostLine = new THREE.Line(
+    new THREE.BufferGeometry(),
+    new THREE.LineDashedMaterial({ color: 0x0088ff, dashSize: 0.35, gapSize: 0.2, transparent: true, opacity: 0.65, depthTest: false })
+  );
+  _revolveGhostLine.renderOrder = 999;
+  _revolveGhostLine.visible = false;
+  scene.add(_revolveGhostLine);
+  _revolveGhostDot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.12, 7, 7),
+    new THREE.MeshBasicMaterial({ color: 0x0088ff, transparent: true, opacity: 0.5, depthTest: false })
+  );
+  _revolveGhostDot.renderOrder = 1000;
+  _revolveGhostDot.visible = false;
+  scene.add(_revolveGhostDot);
+
   const bar = document.getElementById('revolve-bar');
   bar.style.display = 'flex';
   _revolveUpdateBar();
@@ -5770,6 +5788,8 @@ function exitRevolveMode() {
   if (_revolveAxisLine)    { scene.remove(_revolveAxisLine);    _revolveAxisLine.geometry.dispose(); _revolveAxisLine.material.dispose(); _revolveAxisLine = null; }
   if (_revolvePreview)     { scene.remove(_revolvePreview);     _revolvePreview.geometry.dispose();  _revolvePreview  = null; }
   if (_revolvePreviewMesh) { scene.remove(_revolvePreviewMesh); _revolvePreviewMesh.geometry.dispose(); _revolvePreviewMesh.material.dispose(); _revolvePreviewMesh = null; }
+  if (_revolveGhostLine)   { scene.remove(_revolveGhostLine);   _revolveGhostLine.geometry.dispose();  _revolveGhostLine.material.dispose();  _revolveGhostLine = null; }
+  if (_revolveGhostDot)    { scene.remove(_revolveGhostDot);    _revolveGhostDot.geometry.dispose();   _revolveGhostDot.material.dispose();   _revolveGhostDot = null; }
   _revolveDots.forEach(d => { scene.remove(d); d.geometry.dispose(); d.material.dispose(); });
   _revolveDots = [];
   _revolvePoints = [];
@@ -6869,13 +6889,13 @@ function _sweepApplySides(nSides){
   _updateObjEdgeLines(o);
 }
 
-function _revolveAddPoint(e) {
-  if (!_revolvePlaneN) return;
+// Mausposition → gesnappter Profilpunkt (gemeinsame Logik für Klick & Vorschau)
+function _revolvePickPoint(e) {
   getNorm(e);
   raycaster.setFromCamera(mousev, camera);
   const plane = new THREE.Plane(_revolvePlaneN, 0);
   const hit = new THREE.Vector3();
-  if (!raycaster.ray.intersectPlane(plane, hit)) return;
+  if (!raycaster.ray.intersectPlane(plane, hit)) return null;
   let rawR = Math.abs(hit.dot(_revolveRight));
   if (_revolvePoints.length === 0) {
     const visW = 2 * sph.r * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
@@ -6883,7 +6903,36 @@ function _revolveAddPoint(e) {
   }
   const r = snapV(rawR);
   const h = snapV(hit.y);
-  const world = new THREE.Vector3(r * _revolveRight.x, h, r * _revolveRight.z);
+  return { r, h, world: new THREE.Vector3(r * _revolveRight.x, h, r * _revolveRight.z) };
+}
+
+// Gummiband-Vorschau: gestrichelte Linie vom letzten Punkt zum Cursor
+// + Geister-Punkt an der gesnappten Position des nächsten Klicks
+function _revolveGhostMove(e) {
+  if (!_revolveMode || !_revolvePlaneN) return;
+  const p = e.target === canvas ? _revolvePickPoint(e) : null;
+  if (!p) {
+    if (_revolveGhostLine) _revolveGhostLine.visible = false;
+    if (_revolveGhostDot)  _revolveGhostDot.visible  = false;
+    return;
+  }
+  if (_revolveGhostDot) { _revolveGhostDot.position.copy(p.world); _revolveGhostDot.visible = true; }
+  if (_revolveGhostLine && _revolvePoints.length > 0) {
+    const a = _revolvePoints[_revolvePoints.length - 1].world;
+    _revolveGhostLine.geometry.setFromPoints([a, p.world]);
+    _revolveGhostLine.computeLineDistances();
+    _revolveGhostLine.geometry.computeBoundingSphere();
+    _revolveGhostLine.visible = true;
+  } else if (_revolveGhostLine) {
+    _revolveGhostLine.visible = false;
+  }
+}
+
+function _revolveAddPoint(e) {
+  if (!_revolvePlaneN) return;
+  const p = _revolvePickPoint(e);
+  if (!p) return;
+  const { r, h, world } = p;
   _revolvePoints.push({ r, h, world });
 
   const dot = new THREE.Mesh(
@@ -14795,6 +14844,7 @@ canvas.addEventListener('mousedown', e => {
 
 // All drag/orbit/pan: window-level so mouse-over-handle divs doesn't break anything
 window.addEventListener('mousemove', e => {
+  if (_revolveMode) _revolveGhostMove(e);
   if (workplaneMode) {
     const hits = pickObjects(e);
     const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines);
