@@ -16,7 +16,7 @@ const orca = await createOrcaSlicer({
 postMessage({ type: 'ready', version: orca.version() });
 
 onmessage = (e) => {
-  const { cmd, bytes, filename, profiles, overrides, bedCenter, transforms, filamentChains, ops } = e.data;
+  const { cmd, bytes, filename, profiles, overrides, bedCenter, transforms, filamentChains, ops, paints } = e.data;
   try {
     if (cmd === 'preview') {
       // ops (Schnitte) fließen in die Vorschau ein, damit sie = Realität ist
@@ -32,8 +32,12 @@ onmessage = (e) => {
       postMessage({ type: 'preview', objects },
                   objects.flatMap(o => [o.verts.buffer, o.tris.buffer]));
     } else {
-      // ops = { cuts, adaptive } → sliceModelOps; sonst der schlankere Pfad
-      const gcode = ops
+      // paints (Mal-Werkzeug) → sliceModelPainted; ops = { cuts, adaptive }
+      // → sliceModelOps; sonst der schlankere Pfad
+      const gcode = paints
+        ? orca.sliceModelPainted(bytes, filename, profiles, overrides, transforms, filamentChains,
+                                 JSON.stringify(ops || {}), paints)
+        : ops
         ? orca.sliceModelOps(bytes, filename, profiles, overrides, transforms, filamentChains, JSON.stringify(ops))
         : (filamentChains
           ? orca.sliceModelMulti(bytes, filename, profiles, overrides, transforms, filamentChains)

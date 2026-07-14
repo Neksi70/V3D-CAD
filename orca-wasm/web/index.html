@@ -63,6 +63,21 @@
   #toolPanel .axZ { color: #2f6fd8; font-weight: 600; }
   #toolPanel .tpHead { font-weight: 600; margin-bottom: .3rem; color: #3a4450; }
   #toolPanel .tpDim { opacity: .65; }
+  /* Mal-Werkzeug (Bemalen): Filament-Chips + Werkzeugtyp-Buttons */
+  #toolPanel .pfChips { display: flex; gap: .35rem; flex-wrap: wrap; margin: .3rem 0 .4rem; }
+  #toolPanel .pfChip { min-width: 27px; height: 27px; border-radius: 6px; border: 2px solid #0002;
+                       color: #fff; font-weight: 700; font-size: .8rem; cursor: pointer;
+                       text-shadow: 0 1px 2px #0009; }
+  #toolPanel .pfChip.sel { border-color: #16a34a; box-shadow: 0 0 0 2px #16a34a44; }
+  #toolPanel .ptools { display: flex; gap: .3rem; margin: .15rem 0 .35rem; }
+  #toolPanel .ptools button { width: 36px; height: 31px; border-radius: 7px; cursor: pointer;
+                              border: 1px solid var(--border); background: #fff; color: #3a4450;
+                              display: flex; align-items: center; justify-content: center; }
+  #toolPanel .ptools button.sel { border-color: #16a34a; background: #eafaf0; color: #14532d; }
+  #toolPanel .prow { display: flex; align-items: center; gap: .5rem; margin: .24rem 0; }
+  #toolPanel .prow input[type=range] { width: 8.2rem; }
+  #toolPanel .prow input[type=number] { width: 4.3rem; padding: .2rem .3rem; }
+  #toolPanel .prow label:first-child { min-width: 7.2rem; }
   #view { width: 100%; height: 100%; display: block; }
   /* Ansichtswürfel (Studio-Look): klickbare Flächen für Standard-Ansichten */
   #navCube { position: absolute; left: 14px; bottom: 14px; width: 110px; height: 110px;
@@ -254,6 +269,7 @@
     <span class="sep"></span>
     <button id="tbCut" title="Schneiden [C]" disabled><svg viewBox="0 0 40 40" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 20h28"/><path d="M11 20l7-11 4 6 3-4 4 9"/><path d="M9 26l3 6M31 26l-3 6"/></g></svg></button>
     <button id="tbAdapt" title="Adaptive Schichthöhe [A]" disabled><svg viewBox="0 0 40 40" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12h24"/><path d="M8 17h24"/><path d="M8 23h24"/><path d="M8 31h24"/></g></svg></button>
+    <button id="tbPaint" title="Bemalen [B]" disabled><svg viewBox="0 0 40 40" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 5C11.7 5 5 11 5 18.5S11.7 32 20 32c1.9 0 3.1-1.1 3.1-2.6 0-.8-.4-1.4-.9-2-.5-.6-.9-1.2-.9-2 0-1.5 1.3-2.7 3-2.7h3.4c4.1 0 7.3-3 7.3-6.9C35 9.4 28.3 5 20 5z"/><circle cx="12.5" cy="14.5" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="11" r="1.6" fill="currentColor" stroke="none"/><circle cx="27.5" cy="14.5" r="1.6" fill="currentColor" stroke="none"/><circle cx="11" cy="21.5" r="1.6" fill="currentColor" stroke="none"/></g></svg></button>
   </div>
   <div id="toolPanel" hidden></div>
   <canvas id="view"></canvas>
@@ -998,7 +1014,9 @@ function assignFilament(fi) {
     const st = objectStates[j];
     if (!st || st.deleted) continue;
     st.filament = fi;
-    st.mesh.material.color.set(f.color || '#2ea2d8');
+    // bemalte Objekte färben über Vertexfarben (Material bleibt weiß)
+    if (st.paint) paintRefreshColors(st);
+    else st.mesh.material.color.set(f.color || '#2ea2d8');
     n++;
   }
   $('amsHint').textContent = `Filament ${fi} (${f.type || f.name}) → ${n} Objekt${n > 1 ? 'e' : ''}`;
@@ -1349,6 +1367,7 @@ let objectStates = [];
 function showModelMeshes(objects) {
   modelGroup.clear();
   objectStates = [];
+  paintUndoStack = [];   // Undo-Einträge zeigen auf die alten Objekte
   selectObject(-1);
   // flatShading: Normalen pro Fläche (im Shader) — Smooth Shading würde über
   // harte Kanten mitteln und CAD-Teile "geschmolzen" aussehen lassen
@@ -1376,6 +1395,7 @@ function showModelMeshes(objects) {
   CENTER = new THREE.Vector3(bedSize[0] / 2, bedSize[1] / 2, maxZ / 2);
   updateCam();
   showTab('prepare');
+  updateToolbar();   // objektabhängige Buttons (Schneiden/Adaptiv/Bemalen) freischalten
 }
 
 // ---------- Objekt-Auswahl + Transformation ----------
@@ -1573,6 +1593,539 @@ window.addEventListener('pointerdown', (e) => {
   addEventListener('pointermove', move); addEventListener('pointerup', up);
 }, true);
 
+// ---------- Mal-Werkzeug (Bemalen) — Mehrfarbdruck wie im Studio ----------
+// Malen weist einzelnen Dreiecken ein Filament zu (Zustand 0 = Objektfarbe,
+// 1..N = Filament N). Fürs feine Malen wird das Mesh beim ersten Aktivieren
+// konform unterteilt (globale Kanten-Splits, keine T-Stöße — bleibt wasser-
+// dicht, der Kern sliced später GENAU dieses Mesh). Beim Slicen gehen
+// Geometrie + Zustände als paints an den Kern → mmu_segmentation_facets,
+// ab da läuft Orcas echte Multi-Material-Segmentierung.
+let paintFil = 2;                 // aktives Malfilament (1-basiert)
+let paintToolType = 'circle';     // circle | sphere | tri | fill | height
+let paintRadius = 2;              // Pinselradius in mm (Welt)
+let paintFillAngle = 30;          // Füllen: max. Kantenknick in Grad
+let paintBandH = 1.0;             // Höhenbereich: Bandhöhe in mm
+let paintClip = { t: 0, vert: false, horiz: false, rot: 0 };
+let paintClipPlane = null;
+let paintUndoStack = [];          // [{ st, states: Kopie }] — Strg+Z
+let paintStroke = null;
+const PAINT_MAX_TRIS = 150000;
+const PAINT_DEF_COLORS = ['#f2cf46', '#e64a4a', '#42b04c', '#8a5bd6', '#f08a3c', '#ffffff', '#222222'];
+renderer.localClippingEnabled = true;   // Schnittansicht clippt nur Objekt-Material
+
+function paintHex(c) {
+  const n = parseInt(String(c).replace('#', ''), 16) || 0;
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+// Konforme Unterteilung: je Runde werden ALLE zu langen Kanten global halbiert
+// (beide Anrainer teilen mit) — keine hängenden Knoten, Form bleibt identisch.
+function paintSubdivide(pos, idx, targetEdge, maxTris) {
+  let verts = Array.from(pos);
+  let tris = Array.from(idx);
+  const t2 = targetEdge * targetEdge;
+  const key = (a, b) => a < b ? a * 4294967296 + b : b * 4294967296 + a;
+  const el2 = (a, b) => {
+    const dx = verts[a * 3] - verts[b * 3], dy = verts[a * 3 + 1] - verts[b * 3 + 1],
+          dz = verts[a * 3 + 2] - verts[b * 3 + 2];
+    return dx * dx + dy * dy + dz * dz;
+  };
+  for (let pass = 0; pass < 10; pass++) {
+    const nt = tris.length / 3;
+    if (nt >= maxTris) break;
+    const mids = new Map();
+    for (let t = 0; t < nt; t++)
+      for (let e = 0; e < 3; e++) {
+        const a = tris[t * 3 + e], b = tris[t * 3 + (e + 1) % 3];
+        if (el2(a, b) > t2) mids.set(key(a, b), -1);
+      }
+    if (!mids.size) break;
+    for (const k of mids.keys()) {
+      const a = Math.floor(k / 4294967296), b = k % 4294967296;
+      mids.set(k, verts.length / 3);
+      verts.push((verts[a * 3] + verts[b * 3]) / 2, (verts[a * 3 + 1] + verts[b * 3 + 1]) / 2,
+                 (verts[a * 3 + 2] + verts[b * 3 + 2]) / 2);
+    }
+    const out = [];
+    for (let t = 0; t < nt; t++) {
+      const v = [tris[t * 3], tris[t * 3 + 1], tris[t * 3 + 2]];
+      const m = [mids.get(key(v[0], v[1])) ?? -1, mids.get(key(v[1], v[2])) ?? -1, mids.get(key(v[2], v[0])) ?? -1];
+      const n = (m[0] >= 0) + (m[1] >= 0) + (m[2] >= 0);
+      const rot = () => { v.push(v.shift()); m.push(m.shift()); };
+      if (n === 0) out.push(v[0], v[1], v[2]);
+      else if (n === 1) {
+        while (m[0] < 0) rot();
+        out.push(v[0], m[0], v[2], m[0], v[1], v[2]);
+      } else if (n === 2) {
+        while (!(m[0] >= 0 && m[1] >= 0)) rot();
+        // Quad (v0,m0,m1,v2) über die kürzere Diagonale teilen
+        if (el2(v[0], m[1]) <= el2(m[0], v[2]))
+          out.push(v[0], m[0], m[1], v[0], m[1], v[2], m[0], v[1], m[1]);
+        else
+          out.push(v[0], m[0], v[2], m[0], m[1], v[2], m[0], v[1], m[1]);
+      } else out.push(v[0], m[0], m[2], m[0], v[1], m[1], m[2], m[1], v[2], m[0], m[1], m[2]);
+    }
+    tris = out;
+  }
+  return { verts: new Float32Array(verts), tris: new Uint32Array(tris) };
+}
+
+// Dreiecks-Nachbarschaft über gemeinsame Kanten (für Kreis-BFS + Füllen)
+function paintAdjacency(tris) {
+  const nt = tris.length / 3;
+  const adj = new Int32Array(nt * 3).fill(-1);
+  const map = new Map();
+  const key = (a, b) => a < b ? a * 4294967296 + b : b * 4294967296 + a;
+  for (let t = 0; t < nt; t++)
+    for (let e = 0; e < 3; e++) {
+      const k = key(tris[t * 3 + e], tris[t * 3 + (e + 1) % 3]);
+      const prev = map.get(k);
+      if (prev === undefined) map.set(k, t * 3 + e);
+      else if (prev >= 0) { adj[t * 3 + e] = (prev / 3) | 0; adj[prev] = t; map.set(k, -1); }
+    }
+  return adj;
+}
+
+// Mal-Session fürs Objekt starten: unterteilen, non-indexed Geometrie mit
+// Vertexfarben aufbauen (nur so ist jedes Dreieck einzeln einfärbbar)
+function paintEnsureSession(st) {
+  if (st.paint || st.deleted) return;
+  const geo = st.mesh.geometry;
+  const pos = geo.getAttribute('position').array;
+  let srcIdx = geo.getIndex() && geo.getIndex().array;
+  if (!srcIdx) {
+    srcIdx = new Uint32Array(pos.length / 3);
+    for (let i = 0; i < srcIdx.length; i++) srcIdx[i] = i;
+  }
+  geo.computeBoundingBox();
+  const diag = geo.boundingBox.min.distanceTo(geo.boundingBox.max);
+  const target = Math.min(3, Math.max(0.6, diag / 110));
+  const { verts, tris } = paintSubdivide(pos, srcIdx, target, PAINT_MAX_TRIS);
+  const nt = tris.length / 3;
+  const adj = paintAdjacency(tris);
+  // Schwerpunkte + Flächennormalen (lokal) einmalig vorrechnen
+  const cent = new Float32Array(nt * 3), norm = new Float32Array(nt * 3);
+  for (let t = 0; t < nt; t++) {
+    const a = tris[t * 3] * 3, b = tris[t * 3 + 1] * 3, c = tris[t * 3 + 2] * 3;
+    cent[t * 3]     = (verts[a] + verts[b] + verts[c]) / 3;
+    cent[t * 3 + 1] = (verts[a + 1] + verts[b + 1] + verts[c + 1]) / 3;
+    cent[t * 3 + 2] = (verts[a + 2] + verts[b + 2] + verts[c + 2]) / 3;
+    const ux = verts[b] - verts[a], uy = verts[b + 1] - verts[a + 1], uz = verts[b + 2] - verts[a + 2];
+    const vx = verts[c] - verts[a], vy = verts[c + 1] - verts[a + 1], vz = verts[c + 2] - verts[a + 2];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const l = Math.hypot(nx, ny, nz) || 1;
+    norm[t * 3] = nx / l; norm[t * 3 + 1] = ny / l; norm[t * 3 + 2] = nz / l;
+  }
+  const rpos = new Float32Array(nt * 9);
+  for (let t = 0; t < nt; t++)
+    for (let v = 0; v < 3; v++) {
+      const s = tris[t * 3 + v] * 3;
+      rpos[t * 9 + v * 3] = verts[s]; rpos[t * 9 + v * 3 + 1] = verts[s + 1]; rpos[t * 9 + v * 3 + 2] = verts[s + 2];
+    }
+  const rgeo = new THREE.BufferGeometry();
+  rgeo.setAttribute('position', new THREE.BufferAttribute(rpos, 3));
+  rgeo.setAttribute('color', new THREE.BufferAttribute(new Uint8Array(nt * 9), 3, true));
+  rgeo.computeBoundingBox();
+  rgeo.computeBoundingSphere();
+  st.mesh.geometry.dispose();
+  st.mesh.geometry = rgeo;
+  st.mesh.material.vertexColors = true;
+  st.mesh.material.color.set('#ffffff');   // Farbe kommt jetzt aus den Vertexfarben
+  st.mesh.material.needsUpdate = true;
+  st.paint = { nt, verts, tris, states: new Uint8Array(nt), adj, cent, norm,
+               colAttr: rgeo.getAttribute('color') };
+  paintRefreshColors(st);
+  status.textContent = `Bemalen aktiv: ${nt.toLocaleString('de-DE')} Dreiecke — links malt, rechts radiert`;
+}
+
+function paintBaseColor(st) {
+  const f = projectFilaments[(st.filament || 1) - 1];
+  return paintHex(f ? f.color : '#2ea2d8');
+}
+function paintTriColor(st, state) {
+  if (state > 0 && projectFilaments[state - 1]) return paintHex(projectFilaments[state - 1].color);
+  return paintBaseColor(st);
+}
+
+// kompletten Farb-Puffer neu schreiben (Basisfarbe/Filamentfarben geändert)
+function paintRefreshColors(st) {
+  const P = st.paint;
+  if (!P) return;
+  const arr = P.colAttr.array;
+  const cache = [paintBaseColor(st)];
+  for (let i = 1; i <= 16; i++) cache[i] = paintTriColor(st, i);
+  for (let t = 0; t < P.nt; t++) {
+    const c = cache[P.states[t]] || cache[0];
+    for (let v = 0; v < 3; v++) {
+      arr[t * 9 + v * 3] = c[0]; arr[t * 9 + v * 3 + 1] = c[1]; arr[t * 9 + v * 3 + 2] = c[2];
+    }
+  }
+  P.colAttr.updateRange = { offset: 0, count: -1 };
+  P.colAttr.needsUpdate = true;
+}
+
+// alle Objekte einfärben (nach Filament-Zuweisung/Farbwechsel/Entfernen)
+function paintAllRefresh() {
+  for (const st of objectStates) {
+    if (st.deleted) continue;
+    if (st.paint) paintRefreshColors(st);
+    else {
+      const f = projectFilaments[(st.filament || 1) - 1];
+      st.mesh.material.color.set(f ? f.color : '#2ea2d8');
+    }
+  }
+}
+
+// Dreiecksliste auf einen Zustand setzen (nur GPU-Teilbereich hochladen;
+// updateRange wird vereinigt, weil mehrere Strokes vor einem Frame landen können)
+function paintSetTris(st, list, state) {
+  const P = st.paint;
+  const c = paintTriColor(st, state);
+  const arr = P.colAttr.array;
+  let lo = Infinity, hi = -1;
+  for (const t of list) {
+    if (P.states[t] === state) continue;
+    P.states[t] = state;
+    for (let v = 0; v < 3; v++) {
+      arr[t * 9 + v * 3] = c[0]; arr[t * 9 + v * 3 + 1] = c[1]; arr[t * 9 + v * 3 + 2] = c[2];
+    }
+    if (t < lo) lo = t;
+    if (t > hi) hi = t;
+  }
+  if (hi < 0) return;
+  const ur = P.colAttr.updateRange;
+  if (ur.count === -1 && !P.colAttr.needsUpdate) { ur.offset = lo * 9; ur.count = (hi - lo + 1) * 9; }
+  else if (ur.count !== -1) {
+    const end = Math.max(ur.offset + ur.count, (hi + 1) * 9);
+    ur.offset = Math.min(ur.offset, lo * 9);
+    ur.count = end - ur.offset;
+  }
+  P.colAttr.needsUpdate = true;
+}
+
+// Raycast nur aufs gewählte Objekt; weggeschnittene Treffer (Schnittansicht)
+// werden übersprungen — so lässt sich im Inneren malen
+function paintRaycast(ev, st) {
+  const r = canvas.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1,
+                                -((ev.clientY - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  for (const h of raycaster.intersectObject(st.mesh, false))
+    if (!paintClipPlane || paintClipPlane.distanceToPoint(h.point) >= 0) return h;
+  return null;
+}
+
+// Dreiecke unterm Pinsel einsammeln (nach Werkzeugtyp)
+function paintGather(st, hit) {
+  const P = st.paint;
+  const seed = hit.faceIndex;
+  if (paintToolType === 'tri') return [seed];
+  const inv = new THREE.Matrix4().copy(st.mesh.matrixWorld).invert();
+  const pLoc = hit.point.clone().applyMatrix4(inv);
+  const scl = new THREE.Vector3();
+  st.mesh.getWorldScale(scl);
+  const mean = (Math.abs(scl.x) + Math.abs(scl.y) + Math.abs(scl.z)) / 3 || 1;
+  const r = paintRadius / mean, r2 = r * r;
+  const { cent, norm, adj, nt } = P;
+  const out = [];
+  if (paintToolType === 'sphere') {
+    // 3D-Abstand — malt bewusst durch dünne Wände (wie im Studio)
+    for (let t = 0; t < nt; t++) {
+      const dx = cent[t * 3] - pLoc.x, dy = cent[t * 3 + 1] - pLoc.y, dz = cent[t * 3 + 2] - pLoc.z;
+      if (dx * dx + dy * dy + dz * dz <= r2) out.push(t);
+    }
+    if (!out.length) out.push(seed);
+    return out;
+  }
+  if (paintToolType === 'height') {
+    // horizontales Welt-Z-Band um die Klickhöhe, übers ganze Objekt
+    const m = st.mesh.matrixWorld.elements;
+    const z0 = hit.point.z, h2 = paintBandH / 2;
+    for (let t = 0; t < nt; t++) {
+      const wz = m[2] * cent[t * 3] + m[6] * cent[t * 3 + 1] + m[10] * cent[t * 3 + 2] + m[14];
+      if (wz >= z0 - h2 && wz <= z0 + h2) out.push(t);
+    }
+    if (!out.length) out.push(seed);
+    return out;
+  }
+  const seen = new Set([seed]);
+  const stack = [seed];
+  out.push(seed);
+  if (paintToolType === 'fill') {
+    // schlaues Füllen: über Kanten laufen, solange der Knick klein bleibt
+    const cosT = Math.cos(paintFillAngle * Math.PI / 180);
+    while (stack.length) {
+      const t = stack.pop();
+      for (let e = 0; e < 3; e++) {
+        const nb = adj[t * 3 + e];
+        if (nb < 0 || seen.has(nb)) continue;
+        seen.add(nb);
+        if (norm[t * 3] * norm[nb * 3] + norm[t * 3 + 1] * norm[nb * 3 + 1] + norm[t * 3 + 2] * norm[nb * 3 + 2] < cosT) continue;
+        out.push(nb);
+        stack.push(nb);
+      }
+    }
+    return out;
+  }
+  // Kreis: Zylinder um die Blickgerade, nur zugewandte + zusammenhängende Flächen
+  const dirLoc = raycaster.ray.direction.clone().transformDirection(inv).normalize();
+  const inside = (t) => {
+    const px = cent[t * 3] - pLoc.x, py = cent[t * 3 + 1] - pLoc.y, pz = cent[t * 3 + 2] - pLoc.z;
+    const d = px * dirLoc.x + py * dirLoc.y + pz * dirLoc.z;
+    const qx = px - d * dirLoc.x, qy = py - d * dirLoc.y, qz = pz - d * dirLoc.z;
+    return qx * qx + qy * qy + qz * qz <= r2;
+  };
+  while (stack.length) {
+    const t = stack.pop();
+    for (let e = 0; e < 3; e++) {
+      const nb = adj[t * 3 + e];
+      if (nb < 0 || seen.has(nb)) continue;
+      seen.add(nb);
+      if (!inside(nb)) continue;
+      if (norm[nb * 3] * dirLoc.x + norm[nb * 3 + 1] * dirLoc.y + norm[nb * 3 + 2] * dirLoc.z >= 0) continue;
+      out.push(nb);
+      stack.push(nb);
+    }
+  }
+  return out;
+}
+
+function paintSnapshot(st) {
+  paintUndoStack.push({ st, states: st.paint.states.slice() });
+  if (paintUndoStack.length > 25) paintUndoStack.shift();
+}
+function paintUndo() {
+  const u = paintUndoStack.pop();
+  if (!u || !u.st.paint || u.st.deleted) return;
+  u.st.paint.states.set(u.states);
+  paintRefreshColors(u.st);
+}
+
+// Schnittansicht: Ebene je nach Modus (Blick / vertikal+Drehwinkel / horizontal),
+// t=0 = aus, t=1 = alles weggeschnitten. Clippt nur das gewählte Objekt.
+function paintUpdateClip() {
+  for (const s of objectStates)
+    if (s.mesh && s.mesh.material.clippingPlanes) s.mesh.material.clippingPlanes = null;
+  paintClipPlane = null;
+  const st = objectStates[selectedIdx];
+  if (activeTool !== 'paint' || !st || st.deleted || paintClip.t <= 0.001) return;
+  let n;
+  if (paintClip.horiz) n = new THREE.Vector3(0, 0, 1);
+  else if (paintClip.vert) {
+    const a = paintClip.rot * Math.PI / 180;
+    n = new THREE.Vector3(Math.cos(a), Math.sin(a), 0);
+  } else n = camera.position.clone().sub(CENTER).normalize();
+  const box = new THREE.Box3().setFromObject(st.group);
+  let lo = Infinity, hi = -Infinity;
+  for (const cx of [box.min.x, box.max.x])
+    for (const cy of [box.min.y, box.max.y])
+      for (const cz of [box.min.z, box.max.z]) {
+        const d = n.x * cx + n.y * cy + n.z * cz;
+        lo = Math.min(lo, d);
+        hi = Math.max(hi, d);
+      }
+  const c = hi + 0.05 - (hi - lo + 0.1) * paintClip.t;
+  paintClipPlane = new THREE.Plane(n.clone().negate(), c);
+  st.mesh.material.clippingPlanes = [paintClipPlane];
+}
+
+// Pinsel-Vorschau: grüner Ring (Kreis) bzw. transparente Kugel am Treffpunkt
+const paintCursor = new THREE.Group();
+paintCursor.visible = false;
+scene.add(paintCursor);
+const pcRing = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 48),
+  new THREE.MeshBasicMaterial({ color: 0x16a34a, side: THREE.DoubleSide, transparent: true, opacity: .9, depthTest: false }));
+pcRing.renderOrder = 997;
+const pcSphere = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16),
+  new THREE.MeshBasicMaterial({ color: 0x16a34a, transparent: true, opacity: .22, depthTest: false }));
+pcSphere.renderOrder = 996;
+paintCursor.add(pcRing, pcSphere);
+
+function paintMoveCursor(hit) {
+  const st = objectStates[selectedIdx];
+  const show = hit && st && !st.deleted && (paintToolType === 'circle' || paintToolType === 'sphere');
+  paintCursor.visible = Boolean(show);
+  if (!show) return;
+  pcRing.visible = paintToolType === 'circle';
+  pcSphere.visible = paintToolType === 'sphere';
+  paintCursor.scale.setScalar(Math.max(paintRadius, 0.01));
+  if (paintToolType === 'circle') {
+    const n = hit.face.normal.clone().transformDirection(st.mesh.matrixWorld).normalize();
+    paintCursor.position.copy(hit.point).addScaledVector(n, 0.08);
+    pcRing.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+  } else {
+    paintCursor.position.copy(hit.point);
+  }
+}
+
+// Mal-Stroke: Capture-Phase VOR Auswahl/Orbit (Muster wie das Dreh-Gizmo).
+// Links malt mit dem aktiven Filament, rechts radiert (Zustand 0).
+window.addEventListener('pointerdown', (e) => {
+  if (activeTool !== 'paint' || e.target !== canvas) return;
+  if (e.button !== 0 && e.button !== 2) return;
+  const st = objectStates[selectedIdx];
+  if (!st || st.deleted || !st.paint || projectFilaments.length < 2) return;
+  const hit = paintRaycast(e, st);
+  if (!hit) return;                          // daneben → Orbit/Auswahl wie sonst
+  e.stopImmediatePropagation();
+  e.preventDefault();
+  paintSnapshot(st);
+  const state = e.button === 2 ? 0 : Math.min(paintFil, projectFilaments.length);
+  paintStroke = { st, state };
+  paintSetTris(st, paintGather(st, hit), state);
+  paintMoveCursor(hit);
+  let pending = null, raf = 0;
+  const move = (ev) => {
+    pending = ev;
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      const h = pending && paintRaycast(pending, st);
+      if (h) { paintSetTris(st, paintGather(st, h), state); paintMoveCursor(h); }
+    });
+  };
+  const up = () => {
+    removeEventListener('pointermove', move);
+    removeEventListener('pointerup', up);
+    paintStroke = null;
+  };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+}, true);
+canvas.addEventListener('contextmenu', (e) => { if (activeTool === 'paint') e.preventDefault(); });
+
+// Hover-Vorschau (rAF-gedrosselt — Raycast auf 150k Dreiecke ist nicht gratis)
+let paintHoverRaf = 0;
+canvas.addEventListener('pointermove', (e) => {
+  if (activeTool !== 'paint' || paintStroke || paintHoverRaf) return;
+  paintHoverRaf = requestAnimationFrame(() => {
+    paintHoverRaf = 0;
+    const st = objectStates[selectedIdx];
+    if (activeTool !== 'paint' || !st || st.deleted || !st.paint) { paintCursor.visible = false; return; }
+    paintMoveCursor(paintRaycast(e, st));
+  });
+});
+canvas.addEventListener('pointerleave', () => { paintCursor.visible = false; });
+
+// Werkzeug-/Auswahlwechsel: Session fürs gewählte Objekt starten, Clip pflegen
+function paintOnToolChange() {
+  const st = objectStates[selectedIdx];
+  if (activeTool === 'paint' && st && !st.deleted && projectFilaments.length >= 2) {
+    paintEnsureSession(st);
+    paintFil = Math.min(Math.max(paintFil, 1), projectFilaments.length);
+  }
+  if (activeTool !== 'paint') paintCursor.visible = false;
+  paintUpdateClip();
+}
+
+// Filamente im Panel verwalten (+/−/Farbe) — nutzt projectFilaments,
+// damit Chips oben und Multi-Slicing dieselbe Liste sehen
+function paintCurrentColor() {
+  const v = changedValues.get('filament_colour');
+  return (typeof v === 'string' && v.startsWith('#')) ? v : '#2ea2d8';
+}
+function paintAddFilament() {
+  if (projectFilaments.length >= 8) return;
+  if (!projectFilaments.length)
+    projectFilaments.push({ name: $('filament').value, color: paintCurrentColor(), type: '', label: '' });
+  if (projectFilaments.length < 8)
+    projectFilaments.push({ name: $('filament').value,
+      color: PAINT_DEF_COLORS[(projectFilaments.length - 1) % PAINT_DEF_COLORS.length], type: '', label: '' });
+  paintFil = projectFilaments.length;
+  renderFilChips();
+  paintOnToolChange();
+  paintAllRefresh();
+  renderToolPanel();
+}
+function paintRemoveFilament() {
+  if (!projectFilaments.length) return;
+  if (projectFilaments.length <= 2) projectFilaments = [];   // <2 = Einfarbmodus
+  else projectFilaments.pop();
+  const n = projectFilaments.length;
+  for (const st of objectStates) {
+    if ((st.filament || 1) > Math.max(n, 1)) st.filament = 1;
+    if (st.paint) {
+      const s = st.paint.states;
+      for (let i = 0; i < s.length; i++) if (s[i] > n) s[i] = 0;
+    }
+  }
+  paintFil = Math.min(paintFil, Math.max(n, 1));
+  renderFilChips();
+  paintAllRefresh();
+  renderToolPanel();
+}
+
+function paintPanelInput(el) {
+  const k = el.dataset.pt, v = parseFloat(el.value);
+  if (k === 'add') return paintAddFilament();
+  if (k === 'del') return paintRemoveFilament();
+  if (k === 'col') {
+    const f = projectFilaments[paintFil - 1];
+    if (f) { f.color = el.value; renderFilChips(); paintAllRefresh(); }
+    const chip = $('toolPanel').querySelector(`[data-pf="${paintFil}"]`);
+    if (chip) chip.style.background = el.value;
+    return;
+  }
+  if (k === 'clear') {
+    const st = objectStates[selectedIdx];
+    if (st && st.paint) { paintSnapshot(st); st.paint.states.fill(0); paintRefreshColors(st); }
+    return;
+  }
+  if (k === 'rad' || k === 'radn') paintRadius = Math.max(0.1, v || paintRadius);
+  else if (k === 'ang' || k === 'angn') paintFillAngle = Math.min(90, Math.max(1, v || paintFillAngle));
+  else if (k === 'band' || k === 'bandn') paintBandH = Math.max(0.1, v || paintBandH);
+  else if (k === 'clip' || k === 'clipn') { paintClip.t = Math.min(1, Math.max(0, v || 0)); paintUpdateClip(); }
+  else if (k === 'cvert') { paintClip.vert = el.checked; if (el.checked) paintClip.horiz = false; paintUpdateClip(); renderToolPanel(); return; }
+  else if (k === 'choriz') { paintClip.horiz = el.checked; if (el.checked) paintClip.vert = false; paintUpdateClip(); renderToolPanel(); return; }
+  else if (k === 'crot' || k === 'crotn') { paintClip.rot = v || 0; paintUpdateClip(); }
+  // Slider ↔ Zahlenfeld synchron halten, ohne das Panel neu zu bauen
+  const twin = { rad: 'radn', radn: 'rad', ang: 'angn', angn: 'ang', band: 'bandn', bandn: 'band',
+                 clip: 'clipn', clipn: 'clip', crot: 'crotn', crotn: 'crot' }[k];
+  if (twin) {
+    const t = $('toolPanel').querySelector(`[data-pt="${twin}"]`);
+    if (t && t !== document.activeElement) t.value = el.value;
+  }
+}
+
+// Bemalung fürs Slicen einsammeln: je (Objekt,Instanz) null oder
+// { verts, tris, states } — verts zurück in den Vorschau-Frame des Kerns
+// (Pivot wieder draufrechnen, siehe showModelMeshes)
+function currentPaints() {
+  if (projectFilaments.length < 2) return null;
+  let any = false;
+  const out = objectStates.map(st => {
+    if (st.deleted || !st.paint) return null;
+    const P = st.paint;
+    if (!P.states.some(s => s > 0)) return null;
+    any = true;
+    const v = new Float32Array(P.verts.length);
+    for (let i = 0; i < v.length; i += 3) {
+      v[i] = P.verts[i] + st.pivot.x;
+      v[i + 1] = P.verts[i + 1] + st.pivot.y;
+      v[i + 2] = P.verts[i + 2];
+    }
+    return { verts: v, tris: P.tris, states: P.states };
+  });
+  return any ? out : null;
+}
+
+// Headless-Debug: Mal-Zustand aus Tests abfragbar (Muster wie _dsGetSnap)
+window._paintDebug = () => {
+  const st = objectStates[selectedIdx];
+  return { tool: activeTool, fil: paintFil, filaments: projectFilaments.length,
+           session: Boolean(st && st.paint), nt: st?.paint?.nt || 0,
+           painted: st?.paint ? st.paint.states.reduce((a, s) => a + (s > 0 ? 1 : 0), 0) : 0 };
+};
+
+// TypedArray → base64 (für den Server-Weg; stückweise wegen btoa-Argumentlimit)
+function paintB64(ta) {
+  const u8 = new Uint8Array(ta.buffer, ta.byteOffset, ta.byteLength);
+  let s = '';
+  for (let i = 0; i < u8.length; i += 32768)
+    s += String.fromCharCode.apply(null, u8.subarray(i, i + 32768));
+  return btoa(s);
+}
+
 // ---- Schnitte & adaptive Schichthöhe (an den Kern via ops) ----
 let cutOps = [];            // angewandte Schnitte (Reihenfolge = Kern-Reihenfolge)
 let adaptiveParams = null;  // { quality, radius, keepMin } oder null
@@ -1609,7 +2162,7 @@ function updateCutPlane() {
 function setTool(tool) {
   activeTool = activeTool === tool ? null : tool;
   for (const [id, t] of [['tbMove', 'move'], ['tbRotate', 'rotate'], ['tbScale', 'scale'],
-                         ['tbCut', 'cut'], ['tbAdapt', 'adapt']])
+                         ['tbCut', 'cut'], ['tbAdapt', 'adapt'], ['tbPaint', 'paint']])
     $(id).classList.toggle('active', activeTool === t);
   // Schnitt-Entwurf: bei Auswahl eines Objekts auf halber Höhe starten
   if (activeTool === 'cut') {
@@ -1645,6 +2198,7 @@ function refreshToolAttach() {
                  keepA: true, keepB: true, placeA: false, placeB: true };
   }
   updateCutPlane();
+  paintOnToolChange();
   renderToolPanel();
 }
 
@@ -1704,6 +2258,69 @@ function renderToolPanel() {
     p.querySelectorAll('input[data-tp],button[data-tp]').forEach(el => {
       const h = () => applyCutInput(el);
       if (el.tagName === 'BUTTON') el.onclick = h; else el.oninput = h;
+    });
+    return;
+  }
+
+  // Bemalen: Filament-Chips, Werkzeugtyp, Pinsel/Füll/Band-Parameter, Schnittansicht
+  if (activeTool === 'paint') {
+    p.hidden = false;
+    const stp = objectStates[selectedIdx];
+    const nf = projectFilaments.length;
+    const chips = projectFilaments.map((f, i) =>
+      `<button class="pfChip${i + 1 === paintFil ? ' sel' : ''}" data-pf="${i + 1}"
+               title="${f.name || ''} — Taste ${i + 1}" style="background:${f.color}">${i + 1}</button>`).join('');
+    const tb = (id, title, svg) =>
+      `<button data-ptool="${id}" class="${paintToolType === id ? 'sel' : ''}" title="${title}">${svg}</button>`;
+    const SVGC = '<svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
+    const SVGS = '<svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/><ellipse cx="12" cy="12" rx="8" ry="3.2" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>';
+    const SVGT = '<svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 4l9 16H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
+    const SVGF = '<svg viewBox="0 0 24 24" width="20" height="20"><path d="M8 3l9 9-7 7-7-7 5-5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M19.5 14s2 2.5 2 4a2 2 0 0 1-4 0c0-1.5 2-4 2-4z" fill="currentColor"/></svg>';
+    const SVGH = '<svg viewBox="0 0 24 24" width="20" height="20"><g stroke="currentColor" fill="none" stroke-linecap="round"><path stroke-width="2" d="M4 5h16M4 19h16"/><path stroke-width="5" opacity=".45" d="M4 12h16"/></g></svg>';
+    p.innerHTML = `<div class="tpHead">Bemalen [B]</div>
+      <div class="prow"><label><b>Filamente</b></label>
+        <button data-pt="add" class="secondary" style="padding:.05rem .6rem;font-size:1rem" title="Filament hinzufügen">+</button>
+        <button data-pt="del" class="secondary" style="padding:.05rem .6rem;font-size:1rem" title="Letztes Filament entfernen">−</button>
+        ${nf ? `<input type="color" data-pt="col" value="${(projectFilaments[paintFil - 1] || {}).color || '#2ea2d8'}"
+                 title="Farbe von Filament ${paintFil} ändern" style="width:2.3rem;height:1.8rem;padding:1px;border:1px solid var(--border);border-radius:6px;background:#fff">` : ''}</div>
+      <div class="pfChips">${chips || '<span class="tpDim">Mit + Filamente anlegen</span>'}</div>` +
+      (nf < 2 ? '<div class="tpDim">Mehrfarbdruck braucht mindestens 2 Filamente — mit + hinzufügen.</div>'
+       : (!stp || stp.deleted) ? '<div class="tpDim">Objekt anklicken, um es zu bemalen.</div>' : `
+      <div class="prow"><label>Werkzeugtyp</label></div>
+      <div class="ptools">
+        ${tb('circle', 'Kreis', SVGC)}${tb('sphere', 'Kugel', SVGS)}${tb('tri', 'Dreieck', SVGT)}${tb('fill', 'Schlaues Füllen', SVGF)}${tb('height', 'Höhenbereich', SVGH)}
+      </div>
+      ${(paintToolType === 'circle' || paintToolType === 'sphere') ? `
+      <div class="prow"><label>Pinselgröße</label>
+        <input type="range" data-pt="rad" min="0.4" max="12" step="0.1" value="${paintRadius}">
+        <input type="number" data-pt="radn" min="0.4" max="12" step="0.1" value="${paintRadius}"><span>mm</span></div>` : ''}
+      ${paintToolType === 'fill' ? `
+      <div class="prow"><label>Glättungswinkel</label>
+        <input type="range" data-pt="ang" min="1" max="90" step="1" value="${paintFillAngle}">
+        <input type="number" data-pt="angn" min="1" max="90" step="1" value="${paintFillAngle}"><span>°</span></div>` : ''}
+      ${paintToolType === 'height' ? `
+      <div class="prow"><label>Bandhöhe</label>
+        <input type="range" data-pt="band" min="0.2" max="20" step="0.2" value="${paintBandH}">
+        <input type="number" data-pt="bandn" min="0.2" max="20" step="0.2" value="${paintBandH}"><span>mm</span></div>` : ''}
+      <div class="prow"><label>Schnittansicht</label>
+        <input type="range" data-pt="clip" min="0" max="1" step="0.01" value="${paintClip.t}">
+        <input type="number" data-pt="clipn" min="0" max="1" step="0.05" value="${paintClip.t.toFixed(2)}"></div>
+      <div class="prow" style="gap:1rem">
+        <label style="display:flex;align-items:center;gap:.3rem;min-width:0"><input type="checkbox" data-pt="cvert" style="width:auto"${paintClip.vert ? ' checked' : ''}> Vertikal</label>
+        <label style="display:flex;align-items:center;gap:.3rem"><input type="checkbox" data-pt="choriz" style="width:auto"${paintClip.horiz ? ' checked' : ''}> Horizontal</label></div>
+      <div class="prow"><label class="${paintClip.vert ? '' : 'tpDim'}">Horizontal drehen</label>
+        <input type="range" data-pt="crot" min="0" max="360" step="1" value="${paintClip.rot}"${paintClip.vert ? '' : ' disabled'}>
+        <input type="number" data-pt="crotn" min="0" max="360" step="5" value="${paintClip.rot}"${paintClip.vert ? '' : ' disabled'}><span>°</span></div>
+      <div class="prow" style="margin-top:.35rem">
+        <button data-pt="clear" class="secondary" style="padding:.3rem .7rem">Alles Gemalte löschen</button></div>
+      <div class="tpDim" style="font-size:.75rem;max-width:20rem">Links malt · rechts radiert · Tasten 1–${nf} wählen das Filament · Strg+Z rückgängig</div>`);
+    p.querySelectorAll('[data-pf]').forEach(b => b.onclick = () => { paintFil = +b.dataset.pf; renderToolPanel(); });
+    p.querySelectorAll('[data-ptool]').forEach(b => b.onclick = () => { paintToolType = b.dataset.ptool; renderToolPanel(); });
+    p.querySelectorAll('[data-pt]').forEach(el => {
+      const h = () => paintPanelInput(el);
+      if (el.tagName === 'BUTTON') el.onclick = h;
+      else if (el.type === 'checkbox') el.onchange = h;
+      else el.oninput = h;
     });
     return;
   }
@@ -1864,10 +2481,16 @@ document.addEventListener('keydown', (e) => {
     selectAll();
     return;
   }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && activeTool === 'paint') {
+    e.preventDefault();
+    paintUndo();
+    return;
+  }
   const key = e.key.toLowerCase();
   if (key === 'm') return setTool('move');
   if (key === 'r') return setTool('rotate');
   if (key === 's') return setTool('scale');
+  if (key === 'b') return setTool('paint');
   if (key === 'c') return setTool('cut');
   if (key === 'a' && !(e.ctrlKey || e.metaKey)) return setTool('adapt');
   if (key === 'escape') {
@@ -1875,8 +2498,15 @@ document.addEventListener('keydown', (e) => {
     else selectObject(-1);
     return;
   }
-  if (e.key >= '1' && e.key <= '9' && projectFilaments.length > 1)
-    assignFilament(+e.key);
+  if (e.key >= '1' && e.key <= '9') {
+    // im Malmodus wählen die Zifferntasten das MALfilament, sonst weisen sie
+    // dem markierten Objekt sein Grundfilament zu
+    if (activeTool === 'paint') {
+      if (+e.key <= projectFilaments.length) { paintFil = +e.key; renderToolPanel(); }
+      return;
+    }
+    if (projectFilaments.length > 1) assignFilament(+e.key);
+  }
 });
 
 function updateToolbar() {
@@ -1886,11 +2516,13 @@ function updateToolbar() {
   const anyObj = objectStates.some(s => !s.deleted);
   $('tbCut').disabled = !has;
   $('tbAdapt').disabled = !anyObj;
+  $('tbPaint').disabled = !anyObj;   // Panel erklärt selbst, dass ein Objekt/Filamente fehlen
   $('tbDownload').disabled = $('btnDownload').disabled;
 }
 $('tbMove').onclick = () => setTool('move');
 $('tbRotate').onclick = () => setTool('rotate');
 $('tbScale').onclick = () => setTool('scale');
+$('tbPaint').onclick = () => setTool('paint');
 $('tbCut').onclick = () => setTool('cut');
 $('tbAdapt').onclick = () => setTool('adapt');
 
@@ -2103,7 +2735,7 @@ $('srvSlice').onchange = () => localStorage.setItem('vs-srv-slice', $('srvSlice'
   } catch {}
 })();
 
-async function sliceOnServer({ profiles, overrides, filamentChains }) {
+async function sliceOnServer({ profiles, overrides, filamentChains, paints }) {
   // Modell als base64 (FileReader vermeidet Stack-Limits bei großen Dateien)
   const b64 = await new Promise((resolve, reject) => {
     const fr = new FileReader();
@@ -2114,6 +2746,8 @@ async function sliceOnServer({ profiles, overrides, filamentChains }) {
   const { status: st, json } = await bridge('/api/slice', { method: 'POST', body: {
     filename: modelName, model: b64, profiles, overrides,
     transforms: currentTransforms(), filamentChains, ops: currentOps(),
+    paints: paints ? paints.map(p => p && {
+      verts: paintB64(p.verts), tris: paintB64(p.tris), states: paintB64(p.states) }) : undefined,
   } });
   if (st !== 200 || !json.ok) throw new Error(json.error || 'Server-Slice fehlgeschlagen');
   for (;;) {
@@ -2165,15 +2799,16 @@ $('btnSlice').onclick = async () => {
     ].join('\n');
     status.textContent = 'Slice läuft …';
     sliceStart = performance.now();
+    const paints = currentPaints();   // Mal-Werkzeug: bemalte Objekte je (Objekt,Instanz)
     if (!$('srvSliceRow').hidden && $('srvSlice').checked) {
-      try { await sliceOnServer({ profiles, overrides, filamentChains }); return; }
+      try { await sliceOnServer({ profiles, overrides, filamentChains, paints }); return; }
       catch (e) {
         console.warn('Server-Slice fehlgeschlagen, lokal weiter:', e);
         status.textContent = `Server-Slice fehlgeschlagen (${String(e.message || e).slice(0, 60)}) — slice lokal …`;
       }
     }
     worker.postMessage({ bytes: modelBytes, filename: modelName, profiles, overrides,
-                         transforms: currentTransforms(), filamentChains, ops: currentOps() });
+                         transforms: currentTransforms(), filamentChains, ops: currentOps(), paints });
   } catch (e) {
     status.innerHTML = `<span class="err">FEHLER: ${e.message}</span>`;
     updateSliceable();
