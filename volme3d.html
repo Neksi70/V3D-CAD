@@ -2079,6 +2079,10 @@ const firebaseConfig = {
         <input type="checkbox" id="sz-prop-chk" checked>
         Proportional skalieren
       </label>
+      <label class="sz-prop-row" id="sz-decim-row" style="display:none" title="Scan-Netze mit Millionen Dreiecken machen Undo, Auto-Speichern und alle Werkzeuge zäh — die Reduktion ist optisch kaum sichtbar">
+        <input type="checkbox" id="sz-decim-chk" checked>
+        <span id="sz-decim-txt">Netz reduzieren (empfohlen)</span>
+      </label>
       <div class="sz-hint">Design wird automatisch flach auf der Druckplatte positioniert.</div>
     </div>
     <div id="sz-foot">
@@ -11437,7 +11441,28 @@ function _cachedGeoJSON(geo){
     // {shapes,options} — das kann der BufferGeometryLoader beim Laden NICHT
     // parsen (Körper würde zur Box). Deshalb vorher in eine plane
     // BufferGeometry kopieren, die sich als reine Attribut-Daten speichert.
-    const src = geo.type === 'BufferGeometry' ? geo : new THREE.BufferGeometry().copy(geo);
+    let src = geo.type === 'BufferGeometry' ? geo : new THREE.BufferGeometry().copy(geo);
+    // Riesen-Netze (Scans, die der Nutzer unreduziert behalten hat): volle
+    // JSON-Serialisierung = hunderte MB → Undo + Auto-Speichern (alle 30 s!)
+    // frieren die Seite ein. Undo/Design-Speicherung bekommen eine reduzierte
+    // Kopie; das Live-Mesh in der Szene behält die volle Auflösung.
+    const nTri = (src.index ? src.index.count : src.attributes.position.count) / 3;
+    if (nTri > 400000) {
+      const pos = src.attributes.position, idx = src.index ? src.index.array : null;
+      const flat = new Float32Array(nTri * 9);
+      for (let i = 0, w2 = 0; i < nTri; i++) {
+        const a = idx ? idx[i*3] : i*3, b = idx ? idx[i*3+1] : i*3+1, c = idx ? idx[i*3+2] : i*3+2;
+        flat[w2++]=pos.getX(a); flat[w2++]=pos.getY(a); flat[w2++]=pos.getZ(a);
+        flat[w2++]=pos.getX(b); flat[w2++]=pos.getY(b); flat[w2++]=pos.getZ(b);
+        flat[w2++]=pos.getX(c); flat[w2++]=pos.getY(c); flat[w2++]=pos.getZ(c);
+      }
+      const out = _clusterDecimateFlat(flat, 150000, 300);
+      const dec = new THREE.BufferGeometry();
+      dec.setAttribute('position', new THREE.BufferAttribute(out instanceof Float32Array ? out : Float32Array.from(out), 3));
+      dec.computeVertexNormals();
+      console.warn('[geoJSON] Riesen-Netz (' + nTri + ' Dreiecke) → Undo/Speichern nutzen reduzierte Kopie (' + dec.attributes.position.count/3 + ')');
+      src = dec;
+    }
     j = _roundGeoJSON(src.toJSON()); _geoJsonCache.set(geo, j);
   }
   return j;
@@ -18201,6 +18226,30 @@ function _dropAllToGround() {
   objects.forEach(o => { o.position.y -= dy; });
 }
 
+// Szene-Meshes über der Riesen-Netz-Schwelle (Scan-Importe)
+function _szBigMeshes() {
+  const out = [];
+  objects.forEach(o => o.traverse?.(c => {
+    if (!c.isMesh || !c.geometry?.attributes?.position || c.userData?.isEdgeLines) return;
+    const g = c.geometry, n = (g.index ? g.index.count : g.attributes.position.count) / 3;
+    if (n > 300000) out.push(c);
+  }));
+  return out;
+}
+// Angebotene Import-Reduktion anwenden (Checkbox im Größendialog)
+function _szApplyDecim() {
+  const row = document.getElementById('sz-decim-row');
+  if (!row || row.style.display === 'none' || !document.getElementById('sz-decim-chk').checked) return;
+  row.style.display = 'none';
+  let before = 0, after = 0;
+  _szBigMeshes().forEach(m => {
+    const g = m.geometry, n = (g.index ? g.index.count : g.attributes.position.count) / 3;
+    before += n;
+    after += _clusterDecimateMesh(m, 250000);
+  });
+  if (before) notify('Netz reduziert: ' + Math.round(before/1000) + 'k → ' + Math.round(after/1000) + 'k Dreiecke ✓', 'ok');
+}
+
 function _showSizeDialog(onDone) {
   const box = _szCombinedBox();
   if (box.isEmpty()) { _dropAllToGround(); if (onDone) onDone(); return; }
@@ -18209,6 +18258,21 @@ function _showSizeDialog(onDone) {
   const w   = r1(sz.x * 10), d = r1(sz.z * 10), h = r1(sz.y * 10);
   _szOrigSz = { w, d, h };
   _szOnDone = onDone || null;
+  // Scan-Netz? Reduktion anbieten (vorausgewählt) — verhindert, dass Millionen-
+  // Dreiecke-Meshes Undo/Auto-Speichern/Werkzeuge lahmlegen.
+  {
+    const big = _szBigMeshes();
+    const row = document.getElementById('sz-decim-row');
+    if (row) {
+      if (big.length) {
+        const total = big.reduce((s, m) => s + (m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count) / 3, 0);
+        document.getElementById('sz-decim-txt').textContent =
+          'Netz reduzieren: ' + (total >= 1e6 ? (total/1e6).toFixed(1) + ' Mio' : Math.round(total/1000) + 'k') + ' → ~250k Dreiecke (empfohlen)';
+        document.getElementById('sz-decim-chk').checked = true;
+        row.style.display = '';
+      } else row.style.display = 'none';
+    }
+  }
   document.getElementById('sz-cur-txt').textContent = `${w} × ${d} × ${h} mm`;
   document.getElementById('sz-w').value = w;
   document.getElementById('sz-d').value = d;
@@ -18256,21 +18320,36 @@ function _applyNewSize() {
   });
 }
 
-function _confirmSize() {
-  saveUndo();
-  _applyNewSize();
+function _szDecimPending() {
+  const row = document.getElementById('sz-decim-row');
+  return !!(row && row.style.display !== 'none' && document.getElementById('sz-decim-chk').checked);
+}
+function _szFinish() {
   _dropAllToGround();
   _hideSizeDialog();
   updateTree(); updateTFInputs();
   if (_szOnDone) { _szOnDone(); _szOnDone = null; }
 }
+function _confirmSize() {
+  _hideSizeDialog();
+  const run = () => { saveUndo(); _applyNewSize(); _szApplyDecim(); _szFinish(); };
+  if (_szDecimPending()) {
+    // Reduktion + Undo-Snapshot eines Scan-Netzes blockieren mehrere Sekunden —
+    // erst Overlay zeichnen lassen, dann rechnen (sonst wirkt es eingefroren).
+    _progressShow('Netz wird reduziert…'); _progressSet(30);
+    setTimeout(() => { try { run(); } finally { _progressDone(); } }, 60);
+  } else run();
+}
 
 function _cancelSize() {
   // Keep original size, still drop to ground (printability always wins)
-  _dropAllToGround();
   _hideSizeDialog();
-  updateTree(); updateTFInputs();
-  if (_szOnDone) { _szOnDone(); _szOnDone = null; }
+  const pend = _szDecimPending();
+  const run = () => { if (pend) saveUndo(); _szApplyDecim(); _szFinish(); };
+  if (pend) {
+    _progressShow('Netz wird reduziert…'); _progressSet(30);
+    setTimeout(() => { try { run(); } finally { _progressDone(); } }, 60);
+  } else run();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -24500,6 +24579,38 @@ window.addEventListener('keydown', e=>{ if(e.key==='Escape' && _measureMode){ _m
 // ===== END BEMASSUNG =====
 
 // ===== VEREINFACHEN (Dreiecke reduzieren) =====
+// Mesh per Cluster-Decimation (O(n)) auf ~targetTris reduzieren. Ersetzt die
+// Geometrie UND die Altlasten: _origGeo zeigt danach auf die neue Geometrie,
+// _origStlBuf (rohe STL-Bytes, bei Scans ~100 MB!) wird verworfen — sonst
+// bleibt das Riesen-Netz für immer im Speicher und macht die Seite zäh.
+function _clusterDecimateMesh(m, targetTris) {
+  const g = m.geometry; if (!g?.attributes?.position) return 0;
+  const nTri = (g.index ? g.index.count : g.attributes.position.count) / 3;
+  if (nTri <= targetTris) return nTri;
+  const pos = g.attributes.position, idx = g.index ? g.index.array : null;
+  const flat = new Float32Array(nTri * 9);
+  for (let i = 0, w2 = 0; i < nTri; i++) {
+    const a = idx ? idx[i*3] : i*3, b = idx ? idx[i*3+1] : i*3+1, c = idx ? idx[i*3+2] : i*3+2;
+    flat[w2++]=pos.getX(a); flat[w2++]=pos.getY(a); flat[w2++]=pos.getZ(a);
+    flat[w2++]=pos.getX(b); flat[w2++]=pos.getY(b); flat[w2++]=pos.getZ(b);
+    flat[w2++]=pos.getX(c); flat[w2++]=pos.getY(c); flat[w2++]=pos.getZ(c);
+  }
+  // Startgitter flächenbasiert (Netz belegt ~π·g² Zellen); Schleife vergröbert selbst
+  const gridN0 = Math.min(512, Math.max(64, Math.ceil(Math.sqrt(targetTris * 0.6))));
+  const out = _clusterDecimateFlat(flat, targetTris, gridN0);
+  if (!out || out.length < 27) return nTri;
+  const ng = new THREE.BufferGeometry();
+  ng.setAttribute('position', new THREE.BufferAttribute(out instanceof Float32Array ? out : Float32Array.from(out), 3));
+  ng.computeVertexNormals();
+  g.dispose(); m.geometry = ng;
+  if (m.userData) {
+    if (m.userData._origGeo) m.userData._origGeo = ng;
+    m.userData._origStlBuf = null;   // gebackene STL passt nicht mehr
+  }
+  console.log('[decimate]', nTri, '→', ng.attributes.position.count/3, 'Dreiecke (Gitter', gridN0 + ')');
+  return ng.attributes.position.count / 3;
+}
+
 function _simplifyMeshes(){ const ms=[]; (selectedObjs||[]).forEach(o=>{ if(o.traverse) o.traverse(c=>{ if(c.isMesh && !c.userData.isEdgeLines && !c.userData.isHole) ms.push(c); }); else if(o.isMesh) ms.push(o); }); return ms; }
 function _simplifyTris(ms){ let t=0; ms.forEach(m=>{ const g=m.geometry; if(g&&g.attributes&&g.attributes.position) t+=(g.index?g.index.count:g.attributes.position.count)/3; }); return Math.round(t); }
 function openSimplifyModal(){
@@ -24520,8 +24631,9 @@ function _applySimplify(){
   const ms=_simplifyMeshes(); if(!ms.length) return;
   const pct=+document.getElementById('simplify-pct').value;
   const btn=document.getElementById('simplify-apply'); btn.disabled=true; btn.textContent='…';
-  saveUndo();
+  _progressShow('Netz wird vereinfacht…'); _progressSet(30);
   setTimeout(()=>{
+    saveUndo();
     let ok=0;
     try{
       const mod=new THREE.SimplifyModifier();
@@ -24531,28 +24643,9 @@ function _applySimplify(){
         if(nTri>150000){
           // Scan-Netze: QEM-SimplifyModifier + mergeVertices frieren den Browser
           // bei Millionen Dreiecken ein (String-Maps, O(n·m)-Kollaps). Stattdessen
-          // O(n)-Cluster-Decimation mit feinem Startgitter (Qualität reicht für Scans).
-          const pos=g.attributes.position, idx=g.index?g.index.array:null;
-          const flat=new Float32Array(nTri*9);
-          for(let i=0,w2=0;i<nTri;i++){
-            const a=idx?idx[i*3]:i*3, b=idx?idx[i*3+1]:i*3+1, c=idx?idx[i*3+2]:i*3+2;
-            flat[w2++]=pos.getX(a);flat[w2++]=pos.getY(a);flat[w2++]=pos.getZ(a);
-            flat[w2++]=pos.getX(b);flat[w2++]=pos.getY(b);flat[w2++]=pos.getZ(b);
-            flat[w2++]=pos.getX(c);flat[w2++]=pos.getY(c);flat[w2++]=pos.getZ(c);
-          }
+          // O(n)-Cluster-Decimation; räumt auch _origGeo/_origStlBuf-Altlasten weg.
           const target=Math.max(500,Math.round(nTri*(1-pct/100)));
-          // Startgitter flächenbasiert: ein Netz belegt ~π·g² Zellen (Oberfläche,
-          // nicht Volumen). Zu fein ist unkritisch — die Schleife vergröbert
-          // selbst, bis das Ziel erreicht ist.
-          const gridN0=Math.min(512,Math.max(64,Math.ceil(Math.sqrt(target*0.6))));
-          const out=_clusterDecimateFlat(flat,target,gridN0);
-          if(!out||out.length<27) return;
-          const ng=new THREE.BufferGeometry();
-          ng.setAttribute('position',new THREE.BufferAttribute(out instanceof Float32Array?out:Float32Array.from(out),3));
-          ng.computeVertexNormals();
-          m.geometry.dispose(); m.geometry=ng;
-          console.log('[simplify] Cluster',nTri,'→',ng.attributes.position.count/3,'Dreiecke (Gitter',gridN0+')');
-          ok++;
+          if(_clusterDecimateMesh(m, target) < nTri) ok++;
           return;
         }
         let base=g;
@@ -24568,6 +24661,7 @@ function _applySimplify(){
         ok++;
       });
     }catch(e){ console.warn(e); }
+    _progressDone();
     btn.disabled=false; btn.textContent='✓ Anwenden';
     _closeSimplify();
     if(ok){ if(typeof updateTree==='function') updateTree(); notify('Vereinfacht → '+_simplifyTris(ms).toLocaleString('de')+' Dreiecke','ok'); }
