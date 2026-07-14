@@ -6940,17 +6940,26 @@ function _revolveUpdateBar() {
 }
 
 function _revolveInterpolate(pts, targetN) {
-  // Linearly interpolate a lathe profile to targetN evenly-spaced points
+  // Profil auf ~targetN Punkte verfeinern. Originalpunkte bleiben dabei
+  // erhalten, sonst werden harte Knicke (Deckel/Boden) leicht abgerundet.
   if (pts.length >= targetN) return pts;
-  const out = [];
-  for (let i = 0; i < targetN; i++) {
-    const t = i / (targetN - 1) * (pts.length - 1);
-    const lo = Math.min(Math.floor(t), pts.length - 2);
-    const f  = t - lo;
-    out.push(new THREE.Vector2(
-      pts[lo].x + (pts[lo + 1].x - pts[lo].x) * f,
-      pts[lo].y + (pts[lo + 1].y - pts[lo].y) * f
-    ));
+  const segs = [];
+  let total = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const l = pts[i].distanceTo(pts[i + 1]); segs.push(l); total += l;
+  }
+  const extra = targetN - pts.length;
+  const out = [pts[0]];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const k = total > 0 ? Math.round(extra * segs[i] / total) : 0;
+    for (let j = 1; j <= k; j++) {
+      const f = j / (k + 1);
+      out.push(new THREE.Vector2(
+        pts[i].x + (pts[i + 1].x - pts[i].x) * f,
+        pts[i].y + (pts[i + 1].y - pts[i].y) * f
+      ));
+    }
+    out.push(pts[i + 1]);
   }
   return out;
 }
@@ -6993,12 +7002,32 @@ function _buildRevolveGeo(normPts, opts) {
 
   const pos = [], nor = [], uv = [], idx = [];
 
+  // Harte Profil-Knicke (z.B. Deckel→Wand) auftrennen: Punkt doppelt einfügen
+  // und die beiden Ringe nicht verbinden. Sonst mittelt computeVertexNormals()
+  // die Normalen über die Kante und flache Deckel/Böden wirken gewölbt.
+  const CREASE = Math.cos(35 * Math.PI / 180);
+  const rows = [], rowV = [], link = [];
+  for (let i = 0; i < N; i++) {
+    const v = i / (N - 1);
+    if (i > 0) link.push(true);
+    if (i > 0 && i < N - 1) {
+      const ax = normPts[i].x - normPts[i - 1].x, ay = normPts[i].y - normPts[i - 1].y;
+      const bx = normPts[i + 1].x - normPts[i].x, by = normPts[i + 1].y - normPts[i].y;
+      const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by);
+      if (la > 1e-9 && lb > 1e-9 && (ax * bx + ay * by) / (la * lb) < CREASE) {
+        rows.push(normPts[i]); rowV.push(v); link.push(false);
+      }
+    }
+    rows.push(normPts[i]); rowV.push(v);
+  }
+  const M = rows.length;
+
   for (let s = 0; s <= S; s++) {
     const phiBase = (s / S) * Math.PI * 2;
     const u = s / S;
-    for (let i = 0; i < N; i++) {
-      const r = normPts[i].x;
-      const h = normPts[i].y;
+    for (let i = 0; i < M; i++) {
+      const r = rows[i].x;
+      const h = rows[i].y;
       const phi = phiBase + twist * (h - minH) / hRange;
 
       // Cross-section shape
@@ -7020,12 +7049,13 @@ function _buildRevolveGeo(normPts, opts) {
 
       pos.push(rEff * Math.cos(phi), h, rEff * Math.sin(phi));
       nor.push(0, 0, 0);
-      uv.push(u, i / (N - 1));
+      uv.push(u, rowV[i]);
     }
   }
   for (let s = 0; s < S; s++) {
-    for (let i = 0; i < N - 1; i++) {
-      const a=s*N+i, b=(s+1)*N+i, c=(s+1)*N+i+1, d=s*N+i+1;
+    for (let i = 0; i < M - 1; i++) {
+      if (!link[i]) continue;   // Knick-Doppelpunkt: keine Quads über die Kante
+      const a=s*M+i, b=(s+1)*M+i, c=(s+1)*M+i+1, d=s*M+i+1;
       idx.push(a, b, d, b, c, d);
     }
   }
@@ -7076,6 +7106,18 @@ function _buildRevolveGeo(normPts, opts) {
   geo.setIndex(idx);
   if (surface === 'lowpoly') geo = geo.toNonIndexed();
   geo.computeVertexNormals();
+  if (surface !== 'lowpoly') {
+    // Pol-Vertices auf der Achse an der Rotations-Naht hängen nur an
+    // degenerierten Dreiecken → Normale (0,0,0). Vom Naht-Partner übernehmen.
+    const na = geo.attributes.normal;
+    for (let i = 0; i < M; i++) {
+      const a = i, b = S * M + i;
+      if (!na.getX(a) && !na.getY(a) && !na.getZ(a))
+        na.setXYZ(a, na.getX(b), na.getY(b), na.getZ(b));
+      else if (!na.getX(b) && !na.getY(b) && !na.getZ(b))
+        na.setXYZ(b, na.getX(a), na.getY(a), na.getZ(a));
+    }
+  }
   return geo;
 }
 
