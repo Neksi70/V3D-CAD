@@ -1802,8 +1802,11 @@ function paintEnsureSession(st) {
   const { verts, tris } = paintSubdivide(pos, srcIdx, target, PAINT_MAX_TRIS);
   const nt = tris.length / 3;
   const adj = paintAdjacency(tris);
-  // Schwerpunkte + Flächennormalen (lokal) einmalig vorrechnen
-  const cent = new Float32Array(nt * 3), norm = new Float32Array(nt * 3);
+  // Schwerpunkte + Flächennormalen (lokal) einmalig vorrechnen.
+  // Normalen in float64: die Kantenerkennung vergleicht cos-Winkel bis ~1e-9 —
+  // float32-Normalen rauschen um ~1e-7 und ließen 0°-Füllungen über fein
+  // tessellierte Rundungen (OCCT-Winkel-Deflection < 1°) hinwegkriechen
+  const cent = new Float32Array(nt * 3), norm = new Float64Array(nt * 3);
   for (let t = 0; t < nt; t++) {
     const a = tris[t * 3] * 3, b = tris[t * 3 + 1] * 3, c = tris[t * 3 + 2] * 3;
     cent[t * 3]     = (verts[a] + verts[b] + verts[c]) / 3;
@@ -1969,9 +1972,10 @@ function paintGather(st, hit) {
       }
       return out;
     }
-    // Kantenerkennung: über Kanten laufen, solange der Knick ≤ Füllwinkel bleibt
-    // (kleines Epsilon, damit 0° koplanare Dreiecke trotz Float-Rauschen füllt)
-    const cosT = Math.cos(Math.min(paintFillAngle, 89.9) * Math.PI / 180) - 1e-4;
+    // Kantenerkennung: über Kanten laufen, solange der Knick ≤ Füllwinkel bleibt.
+    // Epsilon nur gegen numerisches Rauschen (~0,003°) — ein größeres Epsilon
+    // (früher 1e-4 ≈ 0,8°) ließ 0° über fein tessellierte Rundungen kriechen
+    const cosT = Math.cos(Math.min(paintFillAngle, 89.9) * Math.PI / 180) - 1e-9;
     while (stack.length) {
       const t = stack.pop();
       for (let e = 0; e < 3; e++) {
@@ -2008,6 +2012,57 @@ function paintGather(st, hit) {
   return out;
 }
 
+// Dreiecke nur EINFÄRBEN (Zustände unangetastet): tintFil > 0 = Vorschau-Ton
+// (Mischung Richtung Zielfarbe), 0 = Zustandsfarben wiederherstellen
+function paintRecolorTris(st, list, tintFil) {
+  const P = st.paint;
+  const arr = P.colAttr.array;
+  const fil = tintFil > 0 ? paintTriColor(st, tintFil) : null;
+  const cache = {};
+  let lo = Infinity, hi = -1;
+  for (const t of list) {
+    const s = P.states[t];
+    let c = cache[s];
+    if (!c) {
+      const base = paintTriColor(st, s);
+      c = cache[s] = fil
+        ? [(base[0] * 2 + fil[0] * 3) / 5, (base[1] * 2 + fil[1] * 3) / 5, (base[2] * 2 + fil[2] * 3) / 5]
+        : base;
+    }
+    for (let v = 0; v < 3; v++) {
+      arr[t * 9 + v * 3] = c[0]; arr[t * 9 + v * 3 + 1] = c[1]; arr[t * 9 + v * 3 + 2] = c[2];
+    }
+    if (t < lo) lo = t;
+    if (t > hi) hi = t;
+  }
+  if (hi < 0) return;
+  const ur = P.colAttr.updateRange;
+  if (ur.count === -1 && !P.colAttr.needsUpdate) { ur.offset = lo * 9; ur.count = (hi - lo + 1) * 9; }
+  else if (ur.count !== -1) {
+    const end = Math.max(ur.offset + ur.count, (hi + 1) * 9);
+    ur.offset = Math.min(ur.offset, lo * 9);
+    ur.count = end - ur.offset;
+  }
+  P.colAttr.needsUpdate = true;
+}
+
+// Füll-Vorschau (wie im Studio): Region unterm Cursor vorab einfärben
+let paintPreview = null;   // { st, tris, seed }
+function paintClearPreview() {
+  if (!paintPreview) return;
+  const { st, tris } = paintPreview;
+  paintPreview = null;
+  if (st.paint && !st.deleted) paintRecolorTris(st, tris, 0);
+}
+function paintHoverPreview(st, hit) {
+  if (!hit) { paintClearPreview(); return; }
+  if (paintPreview && paintPreview.st === st && paintPreview.seed === hit.faceIndex) return;
+  paintClearPreview();
+  const tris = paintGather(st, hit);
+  paintRecolorTris(st, tris, Math.min(paintFil, projectFilaments.length));
+  paintPreview = { st, tris, seed: hit.faceIndex };
+}
+
 function paintSnapshot(st) {
   paintUndoStack.push({ st, states: st.paint.states.slice() });
   if (paintUndoStack.length > 25) paintUndoStack.shift();
@@ -2015,6 +2070,7 @@ function paintSnapshot(st) {
 function paintUndo() {
   const u = paintUndoStack.pop();
   if (!u || !u.st.paint || u.st.deleted) return;
+  paintPreview = null;   // Farben werden komplett neu geschrieben
   u.st.paint.states.set(u.states);
   paintRefreshColors(u.st);
 }
@@ -2087,6 +2143,7 @@ window.addEventListener('pointerdown', (e) => {
   if (!hit) return;                          // daneben → Orbit/Auswahl wie sonst
   e.stopImmediatePropagation();
   e.preventDefault();
+  paintClearPreview();                       // Vorschau-Töne vor dem echten Malen zurücksetzen
   paintSnapshot(st);
   const state = e.button === 2 ? 0 : Math.min(paintFil, projectFilaments.length);
   paintStroke = { st, state };
@@ -2120,10 +2177,13 @@ canvas.addEventListener('pointermove', (e) => {
     paintHoverRaf = 0;
     const st = objectStates[selectedIdx];
     if (activeTool !== 'paint' || !st || st.deleted || !st.paint) { paintCursor.visible = false; return; }
-    paintMoveCursor(paintRaycast(e, st));
+    const hit = paintRaycast(e, st);
+    paintMoveCursor(hit);
+    if (paintToolType === 'fill') paintHoverPreview(st, hit);
+    else paintClearPreview();
   });
 });
-canvas.addEventListener('pointerleave', () => { paintCursor.visible = false; });
+canvas.addEventListener('pointerleave', () => { paintCursor.visible = false; paintClearPreview(); });
 
 // Werkzeug-/Auswahlwechsel: Session fürs gewählte Objekt starten, Clip pflegen
 function paintOnToolChange() {
@@ -2133,6 +2193,7 @@ function paintOnToolChange() {
     paintFil = Math.min(Math.max(paintFil, 1), projectFilaments.length);
   }
   if (activeTool !== 'paint') paintCursor.visible = false;
+  paintClearPreview();
   paintUpdateClip();
 }
 
@@ -2186,12 +2247,13 @@ function paintPanelInput(el) {
   }
   if (k === 'clear') {
     const st = objectStates[selectedIdx];
+    paintPreview = null;   // Farben werden gleich komplett neu geschrieben
     if (st && st.paint) { paintSnapshot(st); st.paint.states.fill(0); paintRefreshColors(st); }
     return;
   }
-  if (k === 'fmodeE' || k === 'fmodeC') { paintFillMode = k === 'fmodeE' ? 'edge' : 'color'; renderToolPanel(); return; }
+  if (k === 'fmodeE' || k === 'fmodeC') { paintFillMode = k === 'fmodeE' ? 'edge' : 'color'; paintClearPreview(); renderToolPanel(); return; }
   if (k === 'rad' || k === 'radn') paintRadius = Math.max(0.1, v || paintRadius);
-  else if (k === 'ang' || k === 'angn') paintFillAngle = Math.min(90, Math.max(0, isNaN(v) ? paintFillAngle : v));
+  else if (k === 'ang' || k === 'angn') { paintFillAngle = Math.min(45, Math.max(0, isNaN(v) ? paintFillAngle : v)); paintClearPreview(); }
   else if (k === 'band' || k === 'bandn') paintBandH = Math.max(0.1, v || paintBandH);
   else if (k === 'clip' || k === 'clipn') { paintClip.t = Math.min(1, Math.max(0, v || 0)); paintUpdateClip(); }
   else if (k === 'cvert') { paintClip.vert = el.checked; if (el.checked) paintClip.horiz = false; paintUpdateClip(); renderToolPanel(); return; }
@@ -2418,8 +2480,8 @@ function renderToolPanel() {
         <label style="display:flex;align-items:center;gap:.3rem;min-width:0"><input type="radio" name="pfMode" data-pt="fmodeE" style="width:auto"${paintFillMode === 'edge' ? ' checked' : ''}> Kantenerkennung</label>
         <label style="display:flex;align-items:center;gap:.3rem"><input type="radio" name="pfMode" data-pt="fmodeC" style="width:auto"${paintFillMode === 'color' ? ' checked' : ''}> Gleiche Farbe verbunden</label></div>
       <div class="prow"><label class="${paintFillMode === 'edge' ? '' : 'tpDim'}">Intelligenter Füllwinkel</label>
-        <input type="range" data-pt="ang" min="0" max="90" step="0.5" value="${paintFillAngle}"${paintFillMode === 'edge' ? '' : ' disabled'}>
-        <input type="number" data-pt="angn" min="0" max="90" step="0.5" value="${paintFillAngle}"${paintFillMode === 'edge' ? '' : ' disabled'}><span>°</span></div>` : ''}
+        <input type="range" data-pt="ang" min="0" max="45" step="0.25" value="${paintFillAngle}"${paintFillMode === 'edge' ? '' : ' disabled'}>
+        <input type="number" data-pt="angn" min="0" max="45" step="0.25" value="${paintFillAngle}"${paintFillMode === 'edge' ? '' : ' disabled'}><span>°</span></div>` : ''}
       ${paintToolType === 'height' ? `
       <div class="prow"><label>Bandhöhe</label>
         <input type="range" data-pt="band" min="0.2" max="20" step="0.2" value="${paintBandH}">
@@ -2436,8 +2498,8 @@ function renderToolPanel() {
       <div class="prow" style="margin-top:.35rem">
         <button data-pt="clear" class="secondary" style="padding:.3rem .7rem">Alles Gemalte löschen</button></div>
       <div class="tpDim" style="font-size:.75rem;max-width:20rem">Links malt · rechts radiert · Tasten 1–${nf} wählen das Filament · Strg+Z rückgängig</div>`);
-    p.querySelectorAll('[data-pf]').forEach(b => b.onclick = () => { paintFil = +b.dataset.pf; renderToolPanel(); });
-    p.querySelectorAll('[data-ptool]').forEach(b => b.onclick = () => { paintToolType = b.dataset.ptool; renderToolPanel(); });
+    p.querySelectorAll('[data-pf]').forEach(b => b.onclick = () => { paintFil = +b.dataset.pf; paintClearPreview(); renderToolPanel(); });
+    p.querySelectorAll('[data-ptool]').forEach(b => b.onclick = () => { paintToolType = b.dataset.ptool; paintClearPreview(); renderToolPanel(); });
     p.querySelectorAll('[data-pt]').forEach(el => {
       const h = () => paintPanelInput(el);
       if (el.tagName === 'BUTTON') el.onclick = h;
@@ -2624,7 +2686,7 @@ document.addEventListener('keydown', (e) => {
     // im Malmodus wählen die Zifferntasten das MALfilament, sonst weisen sie
     // dem markierten Objekt sein Grundfilament zu
     if (activeTool === 'paint') {
-      if (+e.key <= projectFilaments.length) { paintFil = +e.key; renderToolPanel(); }
+      if (+e.key <= projectFilaments.length) { paintFil = +e.key; paintClearPreview(); renderToolPanel(); }
       return;
     }
     if (projectFilaments.length > 1) assignFilament(+e.key);
