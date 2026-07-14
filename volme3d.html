@@ -13304,6 +13304,38 @@ function _moldTriDistSq(px, py, pz, ax, ay, az, bx, by, bz, cx, cy, cz) {
   return dx*dx+dy*dy+dz*dz;
 }
 
+// Große Dreiecke iterativ halbieren (längste Kante), bis alle Kanten ≤ maxEdge.
+// Begrenzt die Band-Arbeit pro Dreieck: statt riesiger Voxel-Bounding-Boxen
+// entsteht eine dünne Platte kleiner Dreiecke entlang der Fläche.
+function _moldSplitBigTris(tris, maxEdge) {
+  const max2 = maxEdge*maxEdge;
+  let needs = false;
+  for (let i = 0; i < tris.length && !needs; i += 9) {
+    if ((tris[i]-tris[i+3])**2+(tris[i+1]-tris[i+4])**2+(tris[i+2]-tris[i+5])**2 > max2 ||
+        (tris[i+3]-tris[i+6])**2+(tris[i+4]-tris[i+7])**2+(tris[i+5]-tris[i+8])**2 > max2 ||
+        (tris[i+6]-tris[i])**2+(tris[i+7]-tris[i+1])**2+(tris[i+8]-tris[i+2])**2 > max2) needs = true;
+  }
+  if (!needs) return tris;                 // Schnellpfad: nichts zu teilen
+  const out = [], stack = [];
+  for (let i = 0; i < tris.length; i += 9) stack.push([tris[i],tris[i+1],tris[i+2],tris[i+3],tris[i+4],tris[i+5],tris[i+6],tris[i+7],tris[i+8]]);
+  let guard = tris.length/9 * 4096 + 1e6;  // Sicherheitsnetz gegen degenerierte Dreiecke
+  while (stack.length && guard-- > 0) {
+    const t = stack.pop();
+    const e0 = (t[0]-t[3])**2+(t[1]-t[4])**2+(t[2]-t[5])**2;
+    const e1 = (t[3]-t[6])**2+(t[4]-t[7])**2+(t[5]-t[8])**2;
+    const e2 = (t[6]-t[0])**2+(t[7]-t[1])**2+(t[8]-t[2])**2;
+    const m = Math.max(e0,e1,e2);
+    if (m <= max2) { out.push(t[0],t[1],t[2],t[3],t[4],t[5],t[6],t[7],t[8]); continue; }
+    let a, b, c;                            // (a,b) = längste Kante
+    if (m === e0) { a=0; b=3; c=6; } else if (m === e1) { a=3; b=6; c=0; } else { a=6; b=0; c=3; }
+    const mx=(t[a]+t[b])/2, my=(t[a+1]+t[b+1])/2, mz=(t[a+2]+t[b+2])/2;
+    stack.push([t[a],t[a+1],t[a+2], mx,my,mz, t[c],t[c+1],t[c+2]]);
+    stack.push([mx,my,mz, t[b],t[b+1],t[b+2], t[c],t[c+1],t[c+2]]);
+  }
+  while (stack.length) { const t = stack.pop(); out.push(t[0],t[1],t[2],t[3],t[4],t[5],t[6],t[7],t[8]); }
+  return out;
+}
+
 async function _moldDilate3D(w, tris, off, prog) {
   const P = f => { if (prog) prog(f); };
   let minX=Infinity,minY=Infinity,minZ=Infinity,maxX=-Infinity,maxY=-Infinity,maxZ=-Infinity;
@@ -13321,28 +13353,58 @@ async function _moldDilate3D(w, tris, off, prog) {
     if (cells <= 12e6) break;
     vox *= Math.cbrt(cells/12e6) * 1.02;
   }
+  // Band-Arbeitsbudget: große Dreiecke teilen, Gesamtarbeit schätzen; wäre die
+  // Band-Phase zu teuer (Minuten-"Hänger"), Gitter automatisch vergröbern.
+  let work = 0, band = 2*vox, split = tris;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    band = 2*vox;
+    split = _moldSplitBigTris(tris, 3*vox);
+    work = 0;
+    for (let i = 0; i < split.length; i += 9) {
+      const wx=(Math.max(split[i],split[i+3],split[i+6])-Math.min(split[i],split[i+3],split[i+6])+2*band)/vox+1;
+      const wy=(Math.max(split[i+1],split[i+4],split[i+7])-Math.min(split[i+1],split[i+4],split[i+7])+2*band)/vox+1;
+      const wz=(Math.max(split[i+2],split[i+5],split[i+8])-Math.min(split[i+2],split[i+5],split[i+8])+2*band)/vox+1;
+      work += wx*wy*wz;
+    }
+    if (work <= 120e6) break;
+    vox *= Math.cbrt(work/120e6) * 1.05;
+    console.log('[mold-sdf] Band-Arbeit', (work/1e6).toFixed(0)+'M zu hoch → Voxel', vox.toFixed(2), 'mm');
+  }
+  tris = split;
   const pad = off + 3*vox;
   const ox=minX-pad, oy=minY-pad, oz=minZ-pad;
   const nx=Math.ceil((dxb+2*pad)/vox)+1, ny=Math.ceil((dyb+2*pad)/vox)+1, nz=Math.ceil((dzb+2*pad)/vox)+1;
   const N = nx*ny*nz;
-  console.log('[mold-sdf] Gitter', nx+'×'+ny+'×'+nz, '('+(N/1e6).toFixed(1)+'M) @', vox.toFixed(2), 'mm, Offset', off, 'mm');
+  console.log('[mold-sdf] Gitter', nx+'×'+ny+'×'+nz, '('+(N/1e6).toFixed(1)+'M) @', vox.toFixed(2), 'mm, Offset', off, 'mm,',
+    (tris.length/9|0), 'Dreiecke (nach Teilung), ~'+(work/1e6).toFixed(0)+'M Band-Ops');
   const d = new Float32Array(N).fill(1e10);          // quadrierte Distanz (Band-Phase)
 
-  // 1) Schmales Band: exakte Distanz nahe der Oberfläche
-  const band = 2*vox;
+  // 1) Schmales Band: exakte Distanz nahe der Oberfläche.
+  //    Yields nach geleisteter ARBEIT (nicht Dreieckszahl) → UI bleibt flüssig,
+  //    Fortschritt läuft ehrlich. Ebenen-Abstand als billiger Vorfilter.
   const nTri = tris.length/9;
+  const bandSlab = band + 0.87*vox;
+  let done = 0, chunk = 0;
   for (let t = 0; t < nTri; t++) {
     const o9 = t*9;
     const ax=tris[o9],ay=tris[o9+1],az=tris[o9+2], bx=tris[o9+3],by=tris[o9+4],bz=tris[o9+5], cx=tris[o9+6],cy=tris[o9+7],cz=tris[o9+8];
+    // Ebenen-Normale (unnormiert → normieren) für den Slab-Vorfilter
+    let nxp=(by-ay)*(cz-az)-(bz-az)*(cy-ay), nyp=(bz-az)*(cx-ax)-(bx-ax)*(cz-az), nzp=(bx-ax)*(cy-ay)-(by-ay)*(cx-ax);
+    const nl = Math.sqrt(nxp*nxp+nyp*nyp+nzp*nzp);
+    const hasPlane = nl > 1e-12;
+    if (hasPlane) { nxp/=nl; nyp/=nl; nzp/=nl; }
     const x0=Math.max(0,Math.floor((Math.min(ax,bx,cx)-band-ox)/vox)), x1=Math.min(nx-1,Math.ceil((Math.max(ax,bx,cx)+band-ox)/vox));
     const y0=Math.max(0,Math.floor((Math.min(ay,by,cy)-band-oy)/vox)), y1=Math.min(ny-1,Math.ceil((Math.max(ay,by,cy)+band-oy)/vox));
     const z0=Math.max(0,Math.floor((Math.min(az,bz,cz)-band-oz)/vox)), z1=Math.min(nz-1,Math.ceil((Math.max(az,bz,cz)+band-oz)/vox));
     for (let iz=z0; iz<=z1; iz++) for (let iy=y0; iy<=y1; iy++) for (let ix=x0; ix<=x1; ix++) {
+      const px=ox+(ix+0.5)*vox, py=oy+(iy+0.5)*vox, pz=oz+(iz+0.5)*vox;
+      if (hasPlane && Math.abs(nxp*(px-ax)+nyp*(py-ay)+nzp*(pz-az)) > bandSlab) continue;
       const i = (iz*ny+iy)*nx+ix;
-      const q = _moldTriDistSq(ox+(ix+0.5)*vox, oy+(iy+0.5)*vox, oz+(iz+0.5)*vox, ax,ay,az,bx,by,bz,cx,cy,cz);
+      const q = _moldTriDistSq(px, py, pz, ax,ay,az,bx,by,bz,cx,cy,cz);
       if (q < d[i]) d[i] = q;
     }
-    if ((t & 16383) === 16383) { P(0.05 + 0.35*(t/nTri)); await _moldTick(); }
+    chunk += (x1-x0+1)*(y1-y0+1)*(z1-z0+1);
+    if (chunk >= 3e6) { done += chunk; chunk = 0; P(0.05 + 0.35*Math.min(1, done/work)); await _moldTick(); }
   }
   for (let i = 0; i < N; i++) d[i] = d[i] >= 1e10 ? 1e10 : Math.sqrt(d[i]);   // → Distanz in mm
   P(0.42); await _moldTick();
@@ -13351,6 +13413,7 @@ async function _moldDilate3D(w, tris, off, prog) {
   //    damit sie keine Dreieckskanten exakt treffen)
   const epsY = vox*1e-4, epsZ = vox*2.3e-4;
   const rows = new Array(ny*nz);
+  let parWork = 0;
   for (let t = 0; t < nTri; t++) {
     const o9 = t*9;
     const ax=tris[o9],ay=tris[o9+1],az=tris[o9+2], bx=tris[o9+3],by=tris[o9+4],bz=tris[o9+5], cx=tris[o9+6],cy=tris[o9+7],cz=tris[o9+8];
@@ -13358,6 +13421,8 @@ async function _moldDilate3D(w, tris, off, prog) {
     if (Math.abs(det) < 1e-12) continue;
     const y0=Math.max(0,Math.floor((Math.min(ay,by,cy)-oy)/vox-0.5)), y1=Math.min(ny-1,Math.ceil((Math.max(ay,by,cy)-oy)/vox-0.5));
     const z0=Math.max(0,Math.floor((Math.min(az,bz,cz)-oz)/vox-0.5)), z1=Math.min(nz-1,Math.ceil((Math.max(az,bz,cz)-oz)/vox-0.5));
+    parWork += (y1-y0+1)*(z1-z0+1);
+    if (parWork >= 4e6) { parWork = 0; P(0.47); await _moldTick(); }
     for (let iz=z0; iz<=z1; iz++) for (let iy=y0; iy<=y1; iy++) {
       const yc = oy+(iy+0.5)*vox+epsY, zc = oz+(iz+0.5)*vox+epsZ;
       const u = ((yc-ay)*(cz-az)-(zc-az)*(cy-ay))/det;
@@ -13386,17 +13451,23 @@ async function _moldDilate3D(w, tris, off, prog) {
     offs.push(dx2 + dy2*nx + dz2*nx*ny); wts.push(vox*Math.sqrt(dx2*dx2+dy2*dy2+dz2*dz2));
   }
   // Vorwärts
-  for (let iz=1; iz<nz; iz++) for (let iy=1; iy<ny-1; iy++) {
-    const base=(iz*ny+iy)*nx;
-    for (let ix=1; ix<nx-1; ix++) { const i=base+ix; let m=d[i];
-      for (let k=0;k<offs.length;k++){ const c=d[i+offs[k]]+wts[k]; if (c<m) m=c; } if (m<d[i]) d[i]=m; }
+  for (let iz=1; iz<nz; iz++) {
+    for (let iy=1; iy<ny-1; iy++) {
+      const base=(iz*ny+iy)*nx;
+      for (let ix=1; ix<nx-1; ix++) { const i=base+ix; let m=d[i];
+        for (let k=0;k<offs.length;k++){ const c=d[i+offs[k]]+wts[k]; if (c<m) m=c; } if (m<d[i]) d[i]=m; }
+    }
+    if ((iz & 31) === 31) { P(0.56 + 0.06*(iz/nz)); await _moldTick(); }
   }
   P(0.62); await _moldTick();
   // Rückwärts (gespiegelt)
-  for (let iz=nz-2; iz>=0; iz--) for (let iy=ny-2; iy>=1; iy--) {
-    const base=(iz*ny+iy)*nx;
-    for (let ix=nx-2; ix>=1; ix--) { const i=base+ix; let m=d[i];
-      for (let k=0;k<offs.length;k++){ const c=d[i-offs[k]]+wts[k]; if (c<m) m=c; } if (m<d[i]) d[i]=m; }
+  for (let iz=nz-2; iz>=0; iz--) {
+    for (let iy=ny-2; iy>=1; iy--) {
+      const base=(iz*ny+iy)*nx;
+      for (let ix=nx-2; ix>=1; ix--) { const i=base+ix; let m=d[i];
+        for (let k=0;k<offs.length;k++){ const c=d[i-offs[k]]+wts[k]; if (c<m) m=c; } if (m<d[i]) d[i]=m; }
+    }
+    if ((iz & 31) === 31) { P(0.62 + 0.06*(1-iz/nz)); await _moldTick(); }
   }
   P(0.7); await _moldTick();
 
@@ -13419,7 +13490,9 @@ async function _moldDilate3D(w, tris, off, prog) {
   P(0.75); await _moldTick();
   const bounds = { min: [ox+vox*0.51, oy+vox*0.51, oz+vox*0.51],
                    max: [ox+(nx-0.51)*vox, oy+(ny-0.51)*vox, oz+(nz-0.51)*vox] };
-  const mf = w.Manifold.levelSet(sdf, bounds, vox, 0);
+  // Bei sehr großen Gittern gröber samplen — levelSet ist EIN blockierender
+  // Aufruf mit JS-Callback je Gitterpunkt, das Feld ist ohnehin trilinear.
+  const mf = w.Manifold.levelSet(sdf, bounds, N > 6e6 ? vox*1.4 : vox, 0);
   P(1);
   return mf;
 }
