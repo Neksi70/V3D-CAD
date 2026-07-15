@@ -2516,6 +2516,33 @@ const firebaseConfig = {
   </div>
 </div>
 
+<!-- Keksausstecher: Bild → Kontur → Schneidenring + Flansch (client-seitig, Manifold-WASM) -->
+<div id="cookie-modal" class="g3dm" onclick="if(event.target===this)_ckClose()">
+  <div class="g3box">
+    <div class="g3hdr">🍪 Keksausstecher<span class="vx" onclick="_ckClose()">✕</span></div>
+    <div class="g3body">
+      <canvas id="ck-canvas" width="200" height="200" style="background:#fff;align-self:flex-start;border-radius:8px"></canvas>
+      <div class="g3ctrl" style="min-width:290px">
+        <input type="file" id="ck-file" accept="image/png,image/jpeg,image/webp,image/svg+xml" style="display:none" onchange="_ckFile(event)">
+        <button class="btn" style="width:100%" onclick="document.getElementById('ck-file').click()">🖼️ Bild wählen (Silhouette)</button>
+        <span class="vsec">Maße</span>
+        <div class="vrow"><label title="Längste Seite des Ausstechers">Größe</label> <input type="range" id="ck-size" min="30" max="150" value="70" step="1" oninput="document.getElementById('ckv-size').textContent=this.value"><span class="vv" id="ckv-size">70</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Höhe der Schneide">Höhe</label> <input type="range" id="ck-h" min="10" max="30" value="16" step="1" oninput="document.getElementById('ckv-h').textContent=this.value"><span class="vv" id="ckv-h">16</span><span class="vu">mm</span></div>
+        <span class="vsec">Schneide &amp; Rand</span>
+        <div class="vrow"><label title="Wandstärke der Schneide">Schneide</label> <input type="range" id="ck-wall" min="0.6" max="1.6" value="0.8" step="0.1" oninput="document.getElementById('ckv-wall').textContent=this.value"><span class="vv" id="ckv-wall">0.8</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Breite der Griffleiste am Boden (zum Drücken)">Rand</label> <input type="range" id="ck-flange" min="2" max="8" value="4" step="0.5" oninput="document.getElementById('ckv-flange').textContent=this.value"><span class="vv" id="ckv-flange">4</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Höhe der Griffleiste">Rand-Höhe</label> <input type="range" id="ck-flangeh" min="1.5" max="4" value="2" step="0.5" oninput="document.getElementById('ckv-flangeh').textContent=this.value"><span class="vv" id="ckv-flangeh">2</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Konturglättung (0 = pixelgenau)">Glättung</label> <input type="range" id="ck-smooth" min="0" max="5" value="2" step="1" oninput="document.getElementById('ckv-smooth').textContent=this.value"><span class="vv" id="ckv-smooth">2</span><span class="vu"></span></div>
+        <div class="g3info" id="ck-info">Bild mit klarer Silhouette wählen (dunkles Motiv auf hellem Grund oder PNG mit Transparenz). Löcher im Motiv werden ignoriert — es zählt der Außenumriss. Gedruckt wird mit dem Rand nach unten; die dünne Schneide zeigt nach oben.</div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_ckClose()">Abbrechen</button>
+      <button class="btn pri" id="ck-go" onclick="_ckCreate()" disabled>✓ Erzeugen</button>
+    </div>
+  </div>
+</div>
+
 <!-- Silikon-Gießform: druckbarer Gießrahmen um ein gewähltes Modell (client-seitig, Manifold-WASM) -->
 <div id="mold-modal" class="g3dm" onclick="if(event.target===this)_closeMoldModal()">
   <div class="g3box">
@@ -13845,6 +13872,145 @@ async function _moldCreateTwoPart(o, mfTemp) {
          (repaired ? ' — Modell war undicht und wurde über das Distanzfeld repariert' : ''), repaired ? 'w' : 'ok');
 }
 
+// ═══ KEKSAUSSTECHER (Bild → Kontur → Schneidenring + Flansch) ═══════════════
+// Nutzt die Gießform-Maschinerie wieder: _moldEdt1d (exakte 2D-Distanz) und
+// _moldContoursAt (Moore-Konturverfolgung + Glättung). Alles client-seitig.
+let _ckMask = null;   // { m: Uint8Array (1 = Motiv, Zeile 0 = unten), W, H }
+let _ckBusy = false;
+
+function _ckOpen() { document.getElementById('cookie-modal').classList.add('show'); }
+function _ckClose() { document.getElementById('cookie-modal').classList.remove('show'); }
+
+function _ckFile(ev) {
+  const f = ev.target.files[0]; if (!f) return;
+  const img = new Image();
+  img.onload = () => { _ckSetImage(img); URL.revokeObjectURL(img.src); };
+  img.onerror = () => notify('Bild konnte nicht geladen werden', 'e');
+  img.src = URL.createObjectURL(f);
+  ev.target.value = '';
+}
+
+// Bild → Binärmaske (Analyse ~280 px): PNG-Transparenz bevorzugt, sonst dunkle
+// Pixel auf hellem Grund.
+function _ckSetImage(img) {
+  const RES = 280;
+  const sc = Math.min(RES / (img.width || RES), RES / (img.height || RES));
+  const W = Math.max(2, Math.round(img.width * sc)), H = Math.max(2, Math.round(img.height * sc));
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const cx = cv.getContext('2d', { willReadFrequently: true });
+  cx.drawImage(img, 0, 0, W, H);
+  const d = cx.getImageData(0, 0, W, H).data;
+  let nAlpha = 0;
+  for (let i = 3; i < d.length; i += 4) if (d[i] < 128) nAlpha++;
+  const useAlpha = nAlpha > W * H * 0.02;   // >2 % transparente Pixel → Alpha zählt
+  const m = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    const a = d[i*4+3], lum = 0.299*d[i*4] + 0.587*d[i*4+1] + 0.114*d[i*4+2];
+    m[i] = useAlpha ? (a >= 128 ? 1 : 0) : (a >= 128 && lum < 200 ? 1 : 0);
+  }
+  _ckSetMask(m, W, H, true);
+}
+
+// Maske übernehmen. flipY: Bildzeile 0 = oben → für mm-Koordinaten spiegeln,
+// sonst käme der Ausstecher seitenverkehrt aus dem Drucker.
+function _ckSetMask(m, W, H, flipY) {
+  let mm = m;
+  if (flipY) { mm = new Uint8Array(W * H); for (let y = 0; y < H; y++) mm.set(m.subarray(y*W, y*W+W), (H-1-y)*W); }
+  let n = 0; for (let i = 0; i < mm.length; i++) n += mm[i];
+  if (n < 30) { notify('Keine Silhouette erkannt — Bild mit klarem, dunklem Motiv (oder PNG mit Transparenz) wählen', 'w'); return; }
+  // Auf die Silhouette zuschneiden → "Größe" bezieht sich exakt aufs Motiv
+  let x0 = W, x1 = 0, y0 = H, y1 = 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++)
+    if (mm[y*W+x]) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  const CW = x1-x0+1, CH = y1-y0+1;
+  if (CW < W || CH < H) {
+    const c = new Uint8Array(CW * CH);
+    for (let y = 0; y < CH; y++) c.set(mm.subarray((y0+y)*W + x0, (y0+y)*W + x0 + CW), y*CW);
+    mm = c; W = CW; H = CH;
+  }
+  _ckMask = { m: mm, W, H };
+  const btn = document.getElementById('ck-go'); if (btn) btn.disabled = false;
+  _ckPreview();
+}
+
+function _ckPreview() {
+  const cv = document.getElementById('ck-canvas'); if (!cv || !_ckMask) return;
+  const { m, W, H } = _ckMask;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+  const sc = Math.min(cv.width / W, cv.height / H);
+  const ox = (cv.width - W*sc) / 2, oy = (cv.height - H*sc) / 2;
+  ctx.fillStyle = '#333';
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++)
+    if (m[(H-1-y)*W + x]) ctx.fillRect(ox + x*sc, oy + y*sc, sc + 0.5, sc + 0.5);
+}
+
+// Maske → euklidische Distanz (mm) zur Silhouette (innen 0, außen wachsend)
+function _ckDistField(mask, W, H, cell, padCells) {
+  const W2 = W + 2*padCells, H2 = H + 2*padCells;
+  const f = new Float32Array(W2 * H2).fill(1e20);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++)
+    if (mask[y*W+x]) f[(y+padCells)*W2 + (x+padCells)] = 0;
+  const n = Math.max(W2, H2);
+  const d1 = new Float32Array(n), f1 = new Float32Array(n), v1 = new Int32Array(n), z1 = new Float32Array(n+1);
+  for (let x = 0; x < W2; x++) {
+    for (let y = 0; y < H2; y++) f1[y] = f[y*W2+x];
+    _moldEdt1d(f1, H2, d1, v1, z1);
+    for (let y = 0; y < H2; y++) f[y*W2+x] = d1[y];
+  }
+  const dist = new Float32Array(W2 * H2);
+  for (let y = 0; y < H2; y++) {
+    for (let x = 0; x < W2; x++) f1[x] = f[y*W2+x];
+    _moldEdt1d(f1, W2, d1, v1, z1);
+    for (let x = 0; x < W2; x++) dist[y*W2+x] = Math.sqrt(d1[x]) * cell;
+  }
+  return { dist, W: W2, H: H2 };
+}
+
+async function _ckCreate() {
+  if (_ckBusy || !_ckMask) return;
+  const btn = document.getElementById('ck-go');
+  _ckBusy = true; if (btn) { btn.disabled = true; btn.textContent = '… rechnet'; }
+  const mfTemp = [];
+  try {
+    const num = id => parseFloat(document.getElementById(id).value);
+    const p = { size: num('ck-size'), h: num('ck-h'), wall: num('ck-wall'),
+                flange: num('ck-flange'), flangeH: num('ck-flangeh'), smooth: Math.round(num('ck-smooth')) };
+    _ckClose();
+    _progressShow('Ausstecher wird berechnet…'); _progressSet(15); await _moldTick();
+    const { m, W, H } = _ckMask;
+    const cell = p.size / Math.max(W, H);
+    const padCells = Math.ceil((p.wall + p.flange + 2) / cell) + 2;
+    const fld = _ckDistField(m, W, H, cell, padCells);
+    _progressSet(40, 'Konturen werden verfolgt…'); await _moldTick();
+    const iso0 = cell * 0.7;   // Schneiden-Innenseite schmiegt sich an die Silhouette
+    const inner  = _moldContoursAt(fld.dist, fld.W, fld.H, 0, 0, cell, iso0, p.smooth);
+    const blade  = _moldContoursAt(fld.dist, fld.W, fld.H, 0, 0, cell, iso0 + p.wall, p.smooth);
+    const outerF = _moldContoursAt(fld.dist, fld.W, fld.H, 0, 0, cell, iso0 + p.wall + p.flange, p.smooth);
+    if (!inner.length || !blade.length || !outerF.length) { _progressHide(); notify('Kontur konnte nicht ermittelt werden — Bild mit klarerer Silhouette versuchen', 'e'); return; }
+    if (inner.length > 1) notify('Hinweis: ' + inner.length + ' getrennte Konturen — die Teile hängen nur über den Rand zusammen', 'w', 6000);
+    _progressSet(60, 'Körper wird aufgebaut…'); await _moldTick();
+    const w = await _mfInit(); const M = w.Manifold;
+    const keep = x => { mfTemp.push(x); return x; };
+    const cav    = keep(M.extrude(inner, p.h + 2).translate([0, 0, -1]));   // Innenraum, beidseitig überstehend
+    const ring   = keep(keep(M.extrude(blade, p.h)).subtract(cav));         // Schneidenring, volle Höhe
+    const flan   = keep(keep(M.extrude(outerF, p.flangeH)).subtract(cav));  // Griffleiste am Boden
+    const cutter = keep(ring.add(flan));
+    _progressSet(85, 'Netz wird erzeugt…'); await _moldTick();
+    const geo = _moldNormals(_mfToGeo(cutter).toNonIndexed());
+    saveUndo();
+    const mesh = _moldSceneMesh(geo, 'Ausstecher');
+    selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
+    _progressDone();
+    notify('Keksausstecher erzeugt ✓ (' + Math.round(p.size) + ' mm, Schneide oben — so drucken!)', 'ok');
+  } catch (e) {
+    _progressHide(); console.error('[cookie]', e); notify('Ausstecher fehlgeschlagen: ' + (e.message || e), 'e');
+  } finally {
+    for (const x of mfTemp) { try { x && x.delete && x.delete(); } catch (_) {} }
+    _ckBusy = false; if (btn) { btn.disabled = !_ckMask; btn.textContent = '✓ Erzeugen'; }
+  }
+}
+
 function _matrixToOCCTTrsf(oc, m4) {
   // Three.js Matrix4 (column-major) → gp_Trsf (SetValues row-major 3x4)
   const e = m4.elements;
@@ -19021,6 +19187,7 @@ const _STARTERS = [
   {i:'🎁',t:'Bild-Box',d:'Bild → Klappbox mit Motiv',run:()=>_openIbxModal()},
   {i:'💡',t:'Lampe',d:'Lampenschirm (Pop-Lamp-Stil)',run:()=>_openLampModal()},
   {i:'🫗',t:'Silikon-Gießform',d:'Gießrahmen um dein Modell',run:()=>_openMoldModal()},
+  {i:'🍪',t:'Keksausstecher',d:'Bild → Ausstecher mit Schneide',run:()=>_ckOpen()},
   {i:'✨',t:'KI-Modell',d:'Aus Text erzeugen',run:()=>kiTogglePanel()},
   {i:'🧪',t:'Rasterbox',d:'Gridfinity-Raster',dev:true,run:()=>_openGFModal()},
 ];
@@ -30242,7 +30409,8 @@ const CMDK = [
   {i:'📦',g:'Generator',t:'Scharnier-Box',k:'scharnier box dose deckel klappbox print in place hinge gelenk',run:()=>_openHingeModal()},
   {i:'🎁',g:'Generator',t:'Bild-Box',k:'bild box hingebox klappbox motiv silhouette mehrfarbig image geschenk',run:()=>_openIbxModal()},
   {i:'💡',g:'Generator',t:'Lampe',k:'lampe lampenschirm leuchte licht led pop lamp shade schirm bambu',run:()=>_openLampModal()},
-  {i:'🫗',g:'Generator',t:'Silikon-Gießform',k:'silikon gießform gussform mold form casting negativform silikonform',run:()=>_openMoldModal()},
+  {i:'🫗',g:'Generator',t:'Silikon-Gießform',k:'silikon gießform gussform mold form casting negativform silikonform tray eiswürfel schokolade',run:()=>_openMoldModal()},
+  {i:'🍪',g:'Generator',t:'Keksausstecher',k:'keks ausstecher plätzchen cookie cutter backen förmchen',run:()=>_ckOpen()},
   {i:'∪',g:'Bearbeiten',t:'Vereinen',k:'union merge',run:()=>unionSelected()},
   {i:'⊖',g:'Bearbeiten',t:'Abziehen',k:'subtract bohrung loch',run:()=>subtractHoles()},
   {i:'⊞',g:'Bearbeiten',t:'Gruppieren',k:'group',run:()=>groupSelected()},
