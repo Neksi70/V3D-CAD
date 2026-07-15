@@ -25,6 +25,8 @@ function loadConfig() {
     phone: '+49 1512 0164288',
     adminKey: crypto.randomBytes(16).toString('base64url'),
     maxUploadMb: 25,
+    // V3D Slicer (orca-wasm) — "Im Slicer öffnen" im Admin; tailnet-only Proxy
+    slicerUrl: 'https://v3da.tailf05fe9.ts.net:10000/app/',
     colors: [
       { name: 'Schwarz', hex: '#1a1a1a' },
       { name: 'Weiß', hex: '#f5f5f5' },
@@ -178,12 +180,21 @@ function cfgSummary(o) {
   return parts.join(' · ');
 }
 
+const SLICEABLE = new Set(['.stl', '.3mf', '.step', '.stp', '.obj', '.svg']);
+
 function adminPage(q) {
-  const key = esc(q.get('key'));
+  const rawKey = q.get('key') || '';
+  const key = esc(rawKey);
   const rows = orders.slice().reverse().map(o => {
-    const files = o.files.map(f =>
-      `<a href="${BASE}/file?key=${key}&amp;id=${esc(o.id)}&amp;f=${encodeURIComponent(f.name)}">${esc(f.name)}</a> <span class="dim">(${Math.round(f.size / 1024)} kB)</span>`
-    ).join('<br>');
+    const files = o.files.map(f => {
+      let row = `<a href="${BASE}/file?key=${key}&amp;id=${esc(o.id)}&amp;f=${encodeURIComponent(f.name)}">${esc(f.name)}</a> <span class="dim">(${Math.round(f.size / 1024)} kB)</span>`;
+      if (CFG.slicerUrl && SLICEABLE.has(path.extname(f.name).toLowerCase())) {
+        const abs = `${CFG.publicUrl}/file?key=${encodeURIComponent(rawKey)}&id=${encodeURIComponent(o.id)}&f=${encodeURIComponent(f.name)}`;
+        const href = `${CFG.slicerUrl}?load=${encodeURIComponent(abs)}&name=${encodeURIComponent(f.name)}`;
+        row += ` <a class="slice" href="${esc(href)}" target="_blank" title="Im V3D Slicer öffnen und drucken">🖨 Slicen</a>`;
+      }
+      return row;
+    }).join('<br>');
     const btns = STATUS.map(s =>
       `<button class="st ${o.status === s ? 'on' : ''}" onclick="setStatus('${esc(o.id)}','${s}')">${s}</button>`).join('');
     return `<tr class="s-${esc(o.status).replace(/ /g, '_')}">
@@ -209,6 +220,7 @@ td{padding:10px 12px;border-bottom:1px solid #e3e6ef;vertical-align:top;font-siz
 .dim{color:#8a90a3;font-size:12px}.ok{color:#16a34a;font-weight:600;font-size:12px}
 .st{border:1px solid #d5d9e4;background:#fff;border-radius:6px;padding:3px 8px;margin:1px;cursor:pointer;font-size:12px}
 .st.on{background:#F97316;color:#fff;border-color:#EA6000}
+.slice{display:inline-block;background:#1c2030;color:#fff!important;border-radius:6px;padding:2px 8px;font-size:12px;text-decoration:none;margin-left:6px}
 .stc{white-space:nowrap;max-width:140px}
 tr.s-fertig td,tr.s-abgeholt td{opacity:.55}
 tr.s-abgelehnt td{opacity:.4;text-decoration:line-through}
@@ -279,6 +291,10 @@ const server = http.createServer((req, res) => {
         'Content-Type': 'application/octet-stream',
         'Content-Length': data.length,
         'Content-Disposition': 'attachment; filename="' + encodeURIComponent(f) + '"',
+        // Der Slicer (anderer Origin, crossOriginIsolated) holt STLs per fetch —
+        // ohne CORS+CORP blockt dessen COEP. Zugriff bleibt Key-geschützt.
+        'Access-Control-Allow-Origin': '*',
+        'Cross-Origin-Resource-Policy': 'cross-origin',
       });
       return res.end(data);
     } catch (e) { return send(res, 404, 'nicht gefunden', 'text/plain'); }

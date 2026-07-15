@@ -1106,6 +1106,30 @@ addEventListener('drop', e => {
   if (e.dataTransfer.files[0]) acceptFile(e.dataTransfer.files[0]);
 });
 
+// ?load=<URL>&name=<Datei> — Modell beim Start automatisch holen
+// (z. B. „Im Slicer öffnen“ aus dem VolmeShop-Admin). Die Quelle muss CORS
+// erlauben, sonst blockt COEP (crossOriginIsolated) den Fetch.
+(function () {
+  const q = new URLSearchParams(location.search);
+  const src = q.get('load');
+  if (!src) return;
+  const esc = s => String(s).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+  const name = q.get('name') || (src.split('/').pop() || 'modell.stl').split('?')[0];
+  $('drop').innerHTML = `⏳ Lade <b>${esc(name)}</b> …`;
+  fetch(src)
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); })
+    .then(buf => {
+      modelBytes = new Uint8Array(buf);
+      modelName = name;
+      $('drop').innerHTML = `✅ <b>${esc(name)}</b><br><small>${(buf.byteLength / 1024).toFixed(0)} KB — klicken zum Ändern</small>`;
+      updateSliceable();
+      requestPreview();
+    })
+    .catch(err => {
+      $('drop').innerHTML = `⚠️ <b>${esc(name)}</b> konnte nicht geladen werden (${esc(err.message)})<br><small>Datei stattdessen hier ablegen</small>`;
+    });
+})();
+
 // ---------- Three.js-Viewer (aus dem M3-Test) ----------
 const canvas = $('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
