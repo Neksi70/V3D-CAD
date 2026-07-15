@@ -1,0 +1,1264 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VolmeCut</title>
+<style>
+  :root {
+    --bg: #e8eaed;
+    --bar: #ffffff;
+    --border: #d0d3d8;
+    --accent: #2563eb;
+    --accent-soft: #dbeafe;
+    --text: #1f2328;
+    --cut: #16181d;
+    --draw: #2563eb;
+    --score: #d97706;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ---------- Kopfzeile ---------- */
+  header {
+    background: var(--bar);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 14px;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .logo { font-weight: 700; font-size: 15px; color: var(--accent); user-select: none; white-space: nowrap; }
+  header .spacer { flex: 1; }
+  header button, .panel button {
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    color: var(--text);
+  }
+  header button:hover, .panel button:hover { background: var(--accent-soft); border-color: var(--accent); }
+  header button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  header button.primary:hover { background: #1d4ed8; }
+
+  /* ---------- Hauptbereich ---------- */
+  main { flex: 1 1 auto; display: flex; min-height: 0; }
+  .panel {
+    background: var(--bar);
+    border-right: 1px solid var(--border);
+    width: 230px;
+    flex: 0 0 auto;
+    overflow-y: auto;
+    padding: 10px;
+    font-size: 13px;
+  }
+  .panel.right { border-right: none; border-left: 1px solid var(--border); width: 250px; }
+  .panel h3 {
+    margin: 14px 0 6px 0;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #6b7280;
+  }
+  .panel h3:first-child { margin-top: 0; }
+  .panel select, .panel input[type=number], .panel input[type=text] {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: 13px;
+    background: #fff;
+    margin-bottom: 6px;
+  }
+  .panel label { display: block; font-size: 12px; color: #4b5563; margin-bottom: 2px; }
+  .proprow { display: flex; gap: 6px; }
+  .proprow > div { flex: 1; }
+
+  /* Objektliste */
+  #objList { display: flex; flex-direction: column; gap: 3px; }
+  .objItem {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 7px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .objItem:hover { background: #f3f4f6; }
+  .objItem.sel { background: var(--accent-soft); border-color: var(--accent); }
+  .objItem .dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+  .objItem .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .objItem .sz { color: #9ca3af; font-size: 11px; }
+
+  /* Canvas */
+  #canvasWrap { flex: 1 1 auto; position: relative; min-width: 0; }
+  #cv { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: default; }
+  #dropHint {
+    position: absolute; inset: 20px;
+    border: 3px dashed var(--accent);
+    border-radius: 14px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    color: var(--accent);
+    background: rgba(219,234,254,0.7);
+    pointer-events: none;
+    z-index: 5;
+  }
+  #canvasWrap.dragover #dropHint { display: flex; }
+
+  /* Fußzeile */
+  footer {
+    background: var(--bar);
+    border-top: 1px solid var(--border);
+    padding: 4px 14px;
+    font-size: 12px;
+    color: #6b7280;
+    flex: 0 0 auto;
+    display: flex;
+    gap: 16px;
+  }
+  footer .spacer { flex: 1; }
+
+  .badge {
+    display: inline-block;
+    font-size: 10px;
+    background: #fef3c7;
+    color: #92400e;
+    border-radius: 4px;
+    padding: 1px 5px;
+    vertical-align: 1px;
+  }
+  .hint { font-size: 11px; color: #6b7280; line-height: 1.4; margin: 4px 0 8px 0; }
+  .oprow { display: flex; gap: 4px; margin-bottom: 6px; }
+  .oprow button { flex: 1; padding: 4px 2px; font-size: 12px; }
+  .oprow button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+
+  /* Hilfe-Dialog */
+  #helpDlg {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    max-width: 560px;
+    padding: 20px 24px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  #helpDlg::backdrop { background: rgba(0,0,0,0.3); }
+  #helpDlg h2 { margin-top: 0; font-size: 16px; }
+  #helpDlg h4 { margin: 12px 0 4px 0; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">✂ VolmeCut</span>
+  <button onclick="vcOpenFile()">SVG laden…</button>
+  <button onclick="vcNewProject()">Neu</button>
+  <span class="spacer"></span>
+  <button onclick="vcExportGpglFile()" title="GPGL-Kommandodatei für Silhouette (experimentell)">GPGL-Datei</button>
+  <button class="primary" onclick="vcExportDesignSpace()" title="SVG-Export, optimiert für Cricut Design Space">Design-Space-Export</button>
+  <button onclick="document.getElementById('helpDlg').showModal()">?</button>
+</header>
+
+<main>
+  <!-- Linkes Panel: Gerät + Objekte -->
+  <div class="panel">
+    <h3>Gerät / Matte</h3>
+    <select id="deviceSel" onchange="vcDeviceChanged()"></select>
+    <select id="matSel" onchange="vcMatChanged()"></select>
+
+    <h3>Objekte</h3>
+    <div id="objList"></div>
+    <div class="hint" id="objEmptyHint">Noch keine Objekte. SVG-Datei laden oder aufs Blatt ziehen.</div>
+  </div>
+
+  <!-- Canvas -->
+  <div id="canvasWrap">
+    <canvas id="cv"></canvas>
+    <div id="dropHint">SVG hier ablegen</div>
+  </div>
+
+  <!-- Rechtes Panel: Eigenschaften + Cameo -->
+  <div class="panel right">
+    <h3>Auswahl</h3>
+    <div id="selProps" style="display:none">
+      <label>Name</label>
+      <input type="text" id="pName" onchange="vcPropChanged()">
+      <div class="proprow">
+        <div><label>X (mm)</label><input type="number" id="pX" step="0.1" onchange="vcPropChanged()"></div>
+        <div><label>Y (mm)</label><input type="number" id="pY" step="0.1" onchange="vcPropChanged()"></div>
+      </div>
+      <div class="proprow">
+        <div><label>Breite (mm)</label><input type="number" id="pW" step="0.1" min="0.1" onchange="vcPropChanged('w')"></div>
+        <div><label>Höhe (mm)</label><input type="number" id="pH" step="0.1" min="0.1" onchange="vcPropChanged('h')"></div>
+      </div>
+      <label>Drehung (°)</label>
+      <input type="number" id="pRot" step="1" onchange="vcPropChanged()">
+      <label>Vorgang</label>
+      <div class="oprow" id="opBtns">
+        <button data-op="cut" onclick="vcSetOp('cut')">Schneiden</button>
+        <button data-op="draw" onclick="vcSetOp('draw')">Zeichnen</button>
+        <button data-op="score" onclick="vcSetOp('score')">Rillen</button>
+      </div>
+      <div class="proprow">
+        <button onclick="vcDuplicateSel()">Duplizieren</button>
+        <button onclick="vcDeleteSel()">Löschen</button>
+      </div>
+    </div>
+    <div class="hint" id="selEmptyHint">Kein Objekt ausgewählt.</div>
+
+    <h3>Silhouette Cameo <span class="badge">experimentell</span></h3>
+    <div class="hint">Direktbetrieb via WebUSB — Feinabstimmung folgt, sobald der Cameo hier liegt. Für Maker&nbsp;3/Venture den Design-Space-Export nutzen.</div>
+    <div class="proprow">
+      <div><label>Andruck (1–33)</label><input type="number" id="camForce" min="1" max="33" value="12"></div>
+      <div><label>Tempo (1–10)</label><input type="number" id="camSpeed" min="1" max="10" value="8"></div>
+    </div>
+    <label>Durchgänge</label>
+    <input type="number" id="camPasses" min="1" max="10" value="1">
+    <button id="camConnectBtn" onclick="vcCameoConnect()" style="width:100%">Cameo verbinden (USB)</button>
+    <button id="camSendBtn" onclick="vcCameoSend()" style="width:100%; margin-top:6px" disabled>Schneiden starten</button>
+  </div>
+</main>
+
+<footer>
+  <span id="statusMsg">Bereit.</span>
+  <span class="spacer"></span>
+  <span id="zoomInfo"></span>
+  <span>Zoom: Mausrad · Verschieben: leere Fläche ziehen · Entf löscht Auswahl</span>
+</footer>
+
+<dialog id="helpDlg">
+  <h2>VolmeCut – Kurzanleitung</h2>
+  <h4>Workflow Cricut (Maker 3 / Venture)</h4>
+  <p>SVG laden → auf der Matte anordnen → <b>Design-Space-Export</b>. Die Datei in Design Space hochladen
+  (Neues Projekt → Hochladen → Bild). Die Größe stimmt dann exakt (72-dpi-Kompensation eingebaut).
+  Jeder Vorgang (Schneiden/Zeichnen/Rillen) bekommt eine eigene Farbe — in Design Space der jeweiligen
+  Ebene den passenden Vorgang zuweisen.</p>
+  <h4>Workflow Silhouette Cameo</h4>
+  <p>Direktbetrieb über USB (Chrome/Edge, WebUSB). Noch experimentell — wird gegen echte Hardware
+  kalibriert. Alternativ: GPGL-Datei exportieren.</p>
+  <h4>Grenzen des SVG-Imports</h4>
+  <p>Texte bitte vorher im Grafikprogramm in Pfade wandeln. <code>&lt;use&gt;</code>, Clip-Pfade und
+  eingebettete Bilder werden ignoriert — es zählen nur Pfade und Grundformen.</p>
+  <form method="dialog" style="text-align:right"><button>Schließen</button></form>
+</dialog>
+
+<script>
+'use strict';
+
+/* ============================================================
+   VolmeCut — eigene Plot-Software
+   Geräte: Cricut Maker 3 / Venture (via Design-Space-Export),
+           Silhouette Cameo (direkt via GPGL/WebUSB, experimentell)
+   ============================================================ */
+
+// ---------- Geräteprofile (alle Maße in mm) ----------
+const DEVICES = {
+  maker3: { name: 'Cricut Maker 3', mats: [
+    { id: 'm30', w: 305, h: 305, label: 'Matte 30,5 × 30,5 cm' },
+    { id: 'm61', w: 305, h: 610, label: 'Matte 30,5 × 61 cm' },
+    { id: 'smart', w: 305, h: 1219, label: 'Smart Material 30,5 cm × 1,2 m' },
+  ]},
+  venture: { name: 'Cricut Venture', mats: [
+    { id: 'v71', w: 610, h: 711, label: 'Matte 61 × 71 cm' },
+    { id: 'vsmart', w: 610, h: 1219, label: 'Smart Material 61 cm × 1,2 m' },
+  ]},
+  cameo: { name: 'Silhouette Cameo', mats: [
+    { id: 'c30', w: 305, h: 305, label: 'Matte 30,5 × 30,5 cm' },
+    { id: 'c61', w: 305, h: 610, label: 'Matte 30,5 × 61 cm' },
+  ]},
+};
+
+const OPS = {
+  cut:   { label: 'Schneiden', color: '#16181d', dsColor: '#000000' },
+  draw:  { label: 'Zeichnen',  color: '#2563eb', dsColor: '#0000ff' },
+  score: { label: 'Rillen',    color: '#d97706', dsColor: '#ff0000' },
+};
+
+// ---------- Zustand ----------
+let state = {
+  device: 'maker3',
+  mat: 'm30',
+  objects: [],     // siehe vcImportSvgText für die Struktur
+};
+let selId = null;
+let nextId = 1;
+let view = { scale: 2, ox: 40, oy: 40 };   // px pro mm, Offset in px
+let dirty = true;
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+// ============================================================
+// Matrix-Helfer (2D affine: [a b c d e f] wie SVG-matrix)
+// ============================================================
+function matMul(m, n) {
+  return [
+    m[0]*n[0]+m[2]*n[1], m[1]*n[0]+m[3]*n[1],
+    m[0]*n[2]+m[2]*n[3], m[1]*n[2]+m[3]*n[3],
+    m[0]*n[4]+m[2]*n[5]+m[4], m[1]*n[4]+m[3]*n[5]+m[5],
+  ];
+}
+function matApply(m, p) { return { x: m[0]*p.x+m[2]*p.y+m[4], y: m[1]*p.x+m[3]*p.y+m[5] }; }
+function matTranslate(tx, ty) { return [1,0,0,1,tx,ty]; }
+function matScale(s) { return [s,0,0,s,0,0]; }
+function matRotate(deg) {
+  const r = deg*Math.PI/180, c = Math.cos(r), s = Math.sin(r);
+  return [c,s,-s,c,0,0];
+}
+const MAT_ID = [1,0,0,1,0,0];
+
+// Objekt-Transform: Welt = T(tx,ty) · R(rot) · S(s) · Lokal
+function objMatrix(o) {
+  return matMul(matTranslate(o.tx, o.ty), matMul(matRotate(o.rot), matScale(o.s)));
+}
+
+// ============================================================
+// SVG-Import
+// ============================================================
+function vcOpenFile() {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.svg,image/svg+xml';
+  inp.multiple = true;
+  inp.onchange = () => { for (const f of inp.files) vcImportFile(f); };
+  inp.click();
+}
+
+function vcImportFile(file) {
+  const rd = new FileReader();
+  rd.onload = () => {
+    try {
+      const n = vcImportSvgText(rd.result, file.name.replace(/\.svg$/i, ''));
+      setStatus(n + ' Objekt(e) aus „' + file.name + '“ importiert.');
+    } catch (e) {
+      setStatus('Import fehlgeschlagen: ' + e.message);
+      console.error(e);
+    }
+  };
+  rd.readAsText(file);
+}
+
+// Längenangabe wie "210mm" / "8.5in" → mm; ohne Einheit/px → CSS-px (96 dpi)
+function lenToMm(str) {
+  const m = /^\s*([\d.eE+-]+)\s*(mm|cm|in|pt|pc|px)?\s*$/.exec(str || '');
+  if (!m) return null;
+  const v = parseFloat(m[1]);
+  const f = { mm: 1, cm: 10, in: 25.4, pt: 25.4/72, pc: 25.4/6, px: 25.4/96 }[m[2] || 'px'];
+  return v * f;
+}
+
+// --- Pfad-Tokenizer: 'd' → Liste [{c:'M', a:[...]}, ...], implizite
+//     Wiederholungen aufgelöst (M→L bzw. gleicher Befehl erneut) ---
+const PATH_ARGC = { M:2, L:2, H:1, V:1, C:6, S:4, Q:4, T:2, A:7, Z:0 };
+function parsePathD(d) {
+  const out = [];
+  const re = /([MmLlHhVvCcSsQqTtAaZz])|(-?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?)/g;
+  let m, cmd = null, args = [];
+  const flush = () => {
+    if (cmd === null) return;
+    const C = cmd.toUpperCase(), n = PATH_ARGC[C];
+    if (n === 0) { out.push({ c: cmd, a: [] }); args = []; return; }
+    let first = true;
+    while (args.length >= n) {
+      let c = cmd;
+      if (!first) c = (C === 'M') ? (cmd === 'M' ? 'L' : 'l') : cmd;  // implizite Wiederholung
+      out.push({ c, a: args.splice(0, n) });
+      first = false;
+    }
+    args = [];
+  };
+  while ((m = re.exec(d))) {
+    if (m[1]) { flush(); cmd = m[1]; if (PATH_ARGC[cmd.toUpperCase()] === 0) { out.push({c: cmd, a: []}); cmd = null; } }
+    else if (cmd) args.push(parseFloat(m[2]));
+  }
+  flush();
+  return out;
+}
+
+// 'd' in Unterpfade zerlegen, jeder mit ABSOLUTEM Startpunkt.
+// Nötig, weil getPointAtLength() über M-Sprünge hinweg „zeichnen“ würde
+// (Buchstaben mit Löchern bekämen sonst Verbindungslinien).
+function splitSubpaths(d) {
+  const cmds = parsePathD(d);
+  const subs = [];
+  let cur = { x: 0, y: 0 }, start = { x: 0, y: 0 }, sub = null, afterZ = false;
+  const endpoint = (c) => {
+    const rel = c.c >= 'a';
+    const a = c.a, C = c.c.toUpperCase();
+    switch (C) {
+      case 'M': case 'L': case 'T': cur = rel ? { x: cur.x+a[0], y: cur.y+a[1] } : { x: a[0], y: a[1] }; break;
+      case 'H': cur = { x: rel ? cur.x+a[0] : a[0], y: cur.y }; break;
+      case 'V': cur = { x: cur.x, y: rel ? cur.y+a[0] : a[0] }; break;
+      case 'C': cur = rel ? { x: cur.x+a[4], y: cur.y+a[5] } : { x: a[4], y: a[5] }; break;
+      case 'S': case 'Q': cur = rel ? { x: cur.x+a[2], y: cur.y+a[3] } : { x: a[2], y: a[3] }; break;
+      case 'A': cur = rel ? { x: cur.x+a[5], y: cur.y+a[6] } : { x: a[5], y: a[6] }; break;
+      case 'Z': cur = { ...start }; break;
+    }
+  };
+  for (const c of cmds) {
+    const C = c.c.toUpperCase();
+    if (C === 'M') {
+      endpoint(c);
+      start = { ...cur };
+      sub = { sx: cur.x, sy: cur.y, cmds: [], closed: false };
+      subs.push(sub);
+      afterZ = false;
+      continue;
+    }
+    if (!sub || afterZ) {  // Zeichnen ohne neues M (nach Z): neuer Unterpfad ab Startpunkt
+      sub = { sx: cur.x, sy: cur.y, cmds: [], closed: false };
+      subs.push(sub);
+      afterZ = false;
+    }
+    sub.cmds.push(c);
+    if (C === 'Z') { sub.closed = true; afterZ = true; }
+    endpoint(c);
+  }
+  return subs.filter(s => s.cmds.length)
+    .map(s => ({ d: 'M' + s.sx + ' ' + s.sy + ' ' + s.cmds.map(c => c.c + c.a.join(' ')).join(''), closed: s.closed }));
+}
+
+// Ramer-Douglas-Peucker — hält Ecken scharf, dünnt Kurven-Sampling aus
+function rdp(pts, eps) {
+  if (pts.length < 3) return pts;
+  const keep = new Uint8Array(pts.length);
+  keep[0] = keep[pts.length-1] = 1;
+  const stack = [[0, pts.length-1]];
+  while (stack.length) {
+    const [i0, i1] = stack.pop();
+    const p0 = pts[i0], p1 = pts[i1];
+    const dx = p1.x-p0.x, dy = p1.y-p0.y;
+    const len2 = dx*dx+dy*dy || 1e-12;
+    let maxD = -1, maxI = -1;
+    for (let i = i0+1; i < i1; i++) {
+      const t = Math.max(0, Math.min(1, ((pts[i].x-p0.x)*dx + (pts[i].y-p0.y)*dy) / len2));
+      const ex = p0.x+t*dx-pts[i].x, ey = p0.y+t*dy-pts[i].y;
+      const d = ex*ex+ey*ey;
+      if (d > maxD) { maxD = d; maxI = i; }
+    }
+    if (maxD > eps*eps) { keep[maxI] = 1; stack.push([i0, maxI], [maxI, i1]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
+// Geometrie-Element (bereits im DOM) abtasten → Punkte in Wurzel-Koordinaten
+function sampleGeometry(el, ctm, mmPerUnit) {
+  let total;
+  try { total = el.getTotalLength(); } catch (e) { return null; }
+  if (!isFinite(total) || total <= 0) return null;
+  // Schrittweite so, dass in mm gemessen ~0,25 mm; RDP räumt danach auf.
+  // Ecken landen dadurch max. ~0,12 mm daneben — für Vorschau + Plotter ok,
+  // der Design-Space-Export nutzt ohnehin die Originalkurven.
+  const scaleEst = Math.hypot(ctm[0], ctm[1]) * mmPerUnit || mmPerUnit;
+  const stepUnits = Math.min(Math.max(0.25 / scaleEst, total / 4000), total / 2);
+  const pts = [];
+  for (let s = 0; s <= total + stepUnits/2; s += stepUnits) {
+    const p = el.getPointAtLength(Math.min(s, total));
+    const q = matApply(ctm, p);
+    pts.push({ x: q.x * mmPerUnit, y: q.y * mmPerUnit });
+  }
+  return rdp(pts, 0.04);
+}
+
+// Haupt-Import: SVG-Text → Objekte im Zustand. Gibt Anzahl neuer Objekte zurück.
+function vcImportSvgText(text, name) {
+  const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+  const perr = doc.querySelector('parsererror');
+  if (perr) throw new Error('SVG nicht lesbar (Parser-Fehler)');
+  const src = doc.documentElement;
+  if (src.nodeName.toLowerCase() !== 'svg') throw new Error('Keine SVG-Datei');
+
+  // viewBox + mm-Maßstab bestimmen
+  let vb = null;
+  if (src.hasAttribute('viewBox')) {
+    const v = src.getAttribute('viewBox').trim().split(/[\s,]+/).map(Number);
+    if (v.length === 4 && v[2] > 0 && v[3] > 0) vb = { x: v[0], y: v[1], w: v[2], h: v[3] };
+  }
+  const wMm = lenToMm(src.getAttribute('width'));
+  const hMm = lenToMm(src.getAttribute('height'));
+  if (!vb) {
+    const wU = parseFloat(src.getAttribute('width')) || 100;
+    const hU = parseFloat(src.getAttribute('height')) || 100;
+    vb = { x: 0, y: 0, w: wU, h: hU };
+  }
+  // mm pro SVG-Einheit: aus width-Attribut, sonst CSS-96dpi-Annahme
+  const mmPerUnit = (wMm && vb.w) ? wMm / vb.w : 25.4 / 96;
+
+  // Verstecktes Live-SVG: nötig für getTotalLength/getPointAtLength/getCTM.
+  // Breite/Höhe = viewBox-Einheiten in px → getCTM() der Kinder enthält nur
+  // deren eigene Transform-Kette, keine viewBox-Skalierung.
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed; left:-10000px; top:0; width:0; height:0; overflow:hidden; visibility:hidden;';
+  const svg = document.importNode(src, true);
+  svg.setAttribute('width', vb.w + 'px');
+  svg.setAttribute('height', vb.h + 'px');
+  svg.setAttribute('viewBox', (vb.x) + ' ' + (vb.y) + ' ' + vb.w + ' ' + vb.h);
+  svg.removeAttribute('style');
+  host.appendChild(svg);
+  document.body.appendChild(host);
+
+  const created = [];
+  try {
+    // Effektive Wurzel: durch einsame Wrapper-<g> OHNE transform absteigen,
+    // damit z. B. Inkscape-Exporte mehrere greifbare Objekte ergeben.
+    let effRoot = svg;
+    for (;;) {
+      const kids = [...effRoot.children].filter(el =>
+        !/^(defs|metadata|title|desc|style|sodipodi:namedview)$/i.test(el.nodeName));
+      if (kids.length === 1 && kids[0].nodeName.toLowerCase() === 'g' && !kids[0].hasAttribute('transform')) {
+        effRoot = kids[0];
+      } else break;
+    }
+
+    const GEO = 'path,rect,circle,ellipse,line,polyline,polygon';
+    const topKids = [...effRoot.children].filter(el => el.matches(GEO) || el.querySelector(GEO));
+
+    let idx = 0;
+    for (const top of topKids) {
+      const leafs = top.matches(GEO) ? [top] : [...top.querySelectorAll(GEO)];
+      const polys = [];
+      for (const leaf of leafs) {
+        const ctm = leaf.getCTM();
+        const M = ctm ? [ctm.a, ctm.b, ctm.c, ctm.d, ctm.e, ctm.f] : MAT_ID;
+        if (leaf.nodeName.toLowerCase() === 'path') {
+          for (const sp of splitSubpaths(leaf.getAttribute('d') || '')) {
+            const tmp = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            tmp.setAttribute('d', sp.d);
+            svg.appendChild(tmp);
+            const pts = sampleGeometry(tmp, M, mmPerUnit);
+            svg.removeChild(tmp);
+            if (pts && pts.length > 1) polys.push({ pts, closed: sp.closed });
+          }
+        } else {
+          const pts = sampleGeometry(leaf, M, mmPerUnit);
+          const closed = /^(rect|circle|ellipse|polygon)$/i.test(leaf.nodeName);
+          if (pts && pts.length > 1) polys.push({ pts, closed });
+        }
+      }
+      if (!polys.length) continue;
+
+      // Bounding Box (mm) → Objekt-Ursprung auf bbox-Min normieren
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const pl of polys) for (const p of pl.pts) {
+        if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+      }
+      for (const pl of polys) for (const p of pl.pts) { p.x -= minX; p.y -= minY; }
+
+      // Für den Design-Space-Export: Originalmarkup + Elternmatrix + bbox-Versatz
+      const parent = top.parentNode;
+      const pctm = (parent && parent.getCTM) ? parent.getCTM() : null;
+      const parentCTM = pctm ? [pctm.a, pctm.b, pctm.c, pctm.d, pctm.e, pctm.f] : MAT_ID;
+
+      const o = {
+        id: nextId++,
+        name: name + (topKids.length > 1 ? ' ' + (++idx) : ''),
+        op: 'cut',
+        polys,
+        baseW: Math.max(maxX - minX, 0.01),
+        baseH: Math.max(maxY - minY, 0.01),
+        tx: 10 + (state.objects.length % 8) * 6,
+        ty: 10 + (state.objects.length % 8) * 6,
+        s: 1, rot: 0,
+        src: top.outerHTML,
+        parentCTM,
+        mmPerUnit,
+        bx: minX, by: minY,
+      };
+      state.objects.push(o);
+      created.push(o);
+    }
+  } finally {
+    document.body.removeChild(host);
+  }
+
+  if (!created.length) throw new Error('Keine nutzbaren Pfade gefunden (Text in Pfade wandeln?)');
+  selId = created[created.length-1].id;
+  refreshObjList(); refreshProps(); requestRender(); saveSoon();
+  return created.length;
+}
+
+// ============================================================
+// Design-Space-Export
+// Design Space interpretiert SVG-Einheiten mit 72 px pro Zoll —
+// wir exportieren also px = mm / 25.4 * 72, dann stimmen die Maße exakt.
+// ============================================================
+const DS_PX_PER_MM = 72 / 25.4;
+
+function stripPresentation(el) {
+  el.removeAttribute('style');
+  el.removeAttribute('class');
+  el.removeAttribute('fill'); el.removeAttribute('stroke');
+  el.removeAttribute('stroke-width'); el.removeAttribute('fill-opacity');
+  el.removeAttribute('stroke-opacity'); el.removeAttribute('opacity');
+  for (const c of el.children) stripPresentation(c);
+}
+
+function vcBuildDesignSpaceSvg() {
+  const mat = currentMat();
+  const W = mat.w * DS_PX_PER_MM, H = mat.h * DS_PX_PER_MM;
+  const NS = 'http://www.w3.org/2000/svg';
+  const out = document.createElementNS(NS, 'svg');
+  out.setAttribute('xmlns', NS);
+  out.setAttribute('width', W.toFixed(3));
+  out.setAttribute('height', H.toFixed(3));
+  out.setAttribute('viewBox', '0 0 ' + W.toFixed(3) + ' ' + H.toFixed(3));
+  out.setAttribute('data-generator', 'VolmeCut');
+
+  const parser = new DOMParser();
+  for (const opKey of Object.keys(OPS)) {
+    const objs = state.objects.filter(o => o.op === opKey);
+    if (!objs.length) continue;
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('id', 'op-' + opKey);
+    for (const o of objs) {
+      // G = pxProMm · T(tx,ty) · R · S · T(-bbox) · S(mmPerUnit) · parentCTM
+      let G = matScale(DS_PX_PER_MM);
+      G = matMul(G, objMatrix(o));
+      G = matMul(G, matTranslate(-o.bx, -o.by));
+      G = matMul(G, matScale(o.mmPerUnit));
+      G = matMul(G, o.parentCTM);
+      const wrap = document.createElementNS(NS, 'g');
+      wrap.setAttribute('transform', 'matrix(' + G.map(v => +v.toFixed(6)).join(' ') + ')');
+      const frag = parser.parseFromString(
+        '<svg xmlns="' + NS + '">' + o.src + '</svg>', 'image/svg+xml');
+      const el = document.importNode(frag.documentElement.firstElementChild, true);
+      stripPresentation(el);
+      wrap.appendChild(el);
+      // Schneiden: gefüllte Fläche (DS-üblich); Zeichnen/Rillen: nur Kontur
+      if (opKey === 'cut') {
+        wrap.setAttribute('fill', OPS[opKey].dsColor);
+        wrap.setAttribute('fill-rule', 'evenodd');
+        wrap.setAttribute('stroke', 'none');
+      } else {
+        wrap.setAttribute('fill', 'none');
+        wrap.setAttribute('stroke', OPS[opKey].dsColor);
+        wrap.setAttribute('stroke-width', String(1 / (Math.hypot(G[0], G[1]) || 1)));
+      }
+      g.appendChild(wrap);
+    }
+    out.appendChild(g);
+  }
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(out);
+}
+
+function vcExportDesignSpace() {
+  if (!state.objects.length) { setStatus('Nichts zu exportieren.'); return; }
+  const svg = vcBuildDesignSpaceSvg();
+  downloadText(svg, 'volmecut-designspace.svg', 'image/svg+xml');
+  setStatus('Design-Space-SVG exportiert — in Design Space hochladen, Ebenen nach Farbe den Vorgängen zuweisen.');
+}
+
+// ============================================================
+// GPGL (Silhouette Cameo) — EXPERIMENTELL
+// Einheiten: 1/20 mm (Graphtec-Standard, 508 dpi).
+// ACHTUNG: Achsreihenfolge/Nullpunkt sind gegen echte Hardware zu
+// verifizieren, sobald der Cameo da ist (inkscape-silhouette als Referenz).
+// ============================================================
+const GPGL_UNITS_PER_MM = 20;
+const GPGL_XY_SWAP = true;   // Silhouette erwartet lt. Doku (y,x) — verifizieren!
+
+function gpglCoord(xMm, yMm) {
+  const x = Math.round(xMm * GPGL_UNITS_PER_MM);
+  const y = Math.round(yMm * GPGL_UNITS_PER_MM);
+  return GPGL_XY_SWAP ? (y + ',' + x) : (x + ',' + y);
+}
+
+function vcBuildGpgl() {
+  const force = clampInt('camForce', 1, 33);
+  const speed = clampInt('camSpeed', 1, 10);
+  const passes = clampInt('camPasses', 1, 10);
+  const mat = currentMat();
+
+  let s = '';
+  s += '\x1b\x04';                       // Initialisieren
+  s += 'FN0\x03';                        // Ausrichtung Standard
+  s += 'TB50,0\x03';                     // (lt. Doku: Landscape-Modus aus)
+  s += '!' + speed + '\x03';             // Geschwindigkeit 1–10
+  s += 'FX' + force + '\x03';            // Andruck 1–33
+  s += 'FC18\x03';                       // Messer-Offset (18 = Standardklinge; 0 = Stift)
+  s += 'FE0,0\x03';
+  s += 'FF0,0,0\x03';
+  // Arbeitsfenster (unten-links / oben-rechts)
+  s += '\\0,0\x03';
+  s += 'Z' + gpglCoord(mat.w, mat.h) + '\x03';
+
+  // Reihenfolge: pro Objekt innen vor außen (kleine Flächen zuerst)
+  for (const o of state.objects) {
+    const M = objMatrix(o);
+    const worldPolys = o.polys.map(pl => ({
+      pts: pl.pts.map(p => matApply(M, p)),
+    }));
+    worldPolys.sort((a, b) => polyBboxArea(a.pts) - polyBboxArea(b.pts));
+    for (const pl of worldPolys) {
+      for (let pass = 0; pass < passes; pass++) {
+        s += 'M' + gpglCoord(pl.pts[0].x, pl.pts[0].y) + '\x03';
+        for (let i = 1; i < pl.pts.length; i++) {
+          s += 'D' + gpglCoord(pl.pts[i].x, pl.pts[i].y) + '\x03';
+        }
+      }
+    }
+  }
+  s += 'M0,0\x03';                       // zurück zum Nullpunkt
+  return s;
+}
+
+function polyBboxArea(pts) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+  }
+  return (maxX-minX) * (maxY-minY);
+}
+
+function vcExportGpglFile() {
+  if (!state.objects.length) { setStatus('Nichts zu exportieren.'); return; }
+  downloadText(vcBuildGpgl(), 'volmecut.gpgl', 'application/octet-stream');
+  setStatus('GPGL-Datei exportiert (experimentell — Achsen ggf. noch verkehrt).');
+}
+
+// ---------- WebUSB (Graphtec/Silhouette, Vendor-ID 0x0B4D) ----------
+let camDevice = null, camEpOut = null;
+
+async function vcCameoConnect() {
+  if (!navigator.usb) { setStatus('WebUSB nicht verfügbar — Chrome/Edge über HTTPS oder localhost nötig.'); return; }
+  try {
+    camDevice = await navigator.usb.requestDevice({ filters: [{ vendorId: 0x0b4d }] });
+    await camDevice.open();
+    if (!camDevice.configuration) await camDevice.selectConfiguration(1);
+    // Bulk-OUT-Endpunkt suchen
+    camEpOut = null;
+    for (const iface of camDevice.configuration.interfaces) {
+      const alt = iface.alternates[0];
+      const ep = alt.endpoints.find(e => e.direction === 'out' && e.type === 'bulk');
+      if (ep) {
+        await camDevice.claimInterface(iface.interfaceNumber);
+        camEpOut = ep.endpointNumber;
+        break;
+      }
+    }
+    if (camEpOut === null) throw new Error('Kein Bulk-OUT-Endpunkt gefunden');
+    document.getElementById('camSendBtn').disabled = false;
+    document.getElementById('camConnectBtn').textContent = 'Verbunden: ' + (camDevice.productName || 'Silhouette');
+    setStatus('Cameo verbunden.');
+  } catch (e) {
+    camDevice = null;
+    setStatus('Cameo-Verbindung fehlgeschlagen: ' + e.message);
+  }
+}
+
+async function vcCameoSend() {
+  if (!camDevice || camEpOut === null) { setStatus('Erst verbinden.'); return; }
+  if (!state.objects.length) { setStatus('Nichts zu schneiden.'); return; }
+  try {
+    const data = new TextEncoder().encode(vcBuildGpgl());
+    const CHUNK = 4096;
+    for (let i = 0; i < data.length; i += CHUNK) {
+      await camDevice.transferOut(camEpOut, data.slice(i, i + CHUNK));
+      setStatus('Sende… ' + Math.round(100 * Math.min(i + CHUNK, data.length) / data.length) + ' %');
+    }
+    setStatus('Job gesendet (' + data.length + ' Bytes).');
+  } catch (e) {
+    setStatus('Senden fehlgeschlagen: ' + e.message);
+  }
+}
+
+// ============================================================
+// Rendering
+// ============================================================
+function currentMat() {
+  const dev = DEVICES[state.device];
+  return dev.mats.find(m => m.id === state.mat) || dev.mats[0];
+}
+
+function requestRender() { dirty = true; }
+
+function renderLoop() {
+  if (dirty) { dirty = false; render(); }
+  requestAnimationFrame(renderLoop);
+}
+
+function resizeCanvas() {
+  const r = cv.parentNode.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.max(1, Math.round(r.width * dpr));
+  cv.height = Math.max(1, Math.round(r.height * dpr));
+  requestRender();
+}
+
+function render() {
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.width / dpr, H = cv.height / dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const mat = currentMat();
+  const mm2px = (p) => ({ x: p.x * view.scale + view.ox, y: p.y * view.scale + view.oy });
+
+  // Matte
+  const tl = mm2px({ x: 0, y: 0 }), br = mm2px({ x: mat.w, y: mat.h });
+  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = '#b8bcc4';
+  ctx.lineWidth = 1;
+  ctx.shadowColor = 'rgba(0,0,0,0.12)'; ctx.shadowBlur = 10;
+  ctx.fillRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+  ctx.shadowBlur = 0;
+  ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+
+  // Raster: 10 mm fein, 50 mm kräftiger
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+  ctx.clip();
+  for (let g = 10; g <= Math.max(mat.w, mat.h); g += 10) {
+    const strong = g % 50 === 0;
+    ctx.strokeStyle = strong ? '#dfe2e7' : '#eef0f3';
+    ctx.beginPath();
+    if (g <= mat.w) { const x = tl.x + g*view.scale; ctx.moveTo(x, tl.y); ctx.lineTo(x, br.y); }
+    if (g <= mat.h) { const y = tl.y + g*view.scale; ctx.moveTo(tl.x, y); ctx.lineTo(br.x, y); }
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // cm-Beschriftung
+  ctx.fillStyle = '#9ca3af';
+  ctx.font = '10px system-ui';
+  ctx.textAlign = 'center';
+  for (let g = 50; g < mat.w; g += 50) ctx.fillText(String(g/10), tl.x + g*view.scale, tl.y - 4);
+  ctx.textAlign = 'right';
+  for (let g = 50; g < mat.h; g += 50) ctx.fillText(String(g/10), tl.x - 4, tl.y + g*view.scale + 3);
+  ctx.textAlign = 'left';
+
+  // Objekte
+  for (const o of state.objects) {
+    const M = objMatrix(o);
+    ctx.save();
+    ctx.transform(view.scale, 0, 0, view.scale, view.ox, view.oy);
+    ctx.transform(M[0], M[1], M[2], M[3], M[4], M[5]);
+    ctx.strokeStyle = OPS[o.op].color;
+    ctx.lineWidth = 1.4 / (view.scale * o.s);
+    ctx.setLineDash(o.op === 'score' ? [4/(view.scale*o.s), 3/(view.scale*o.s)] : []);
+    if (!o._path) {
+      o._path = new Path2D();
+      for (const pl of o.polys) {
+        o._path.moveTo(pl.pts[0].x, pl.pts[0].y);
+        for (let i = 1; i < pl.pts.length; i++) o._path.lineTo(pl.pts[i].x, pl.pts[i].y);
+        if (pl.closed) o._path.closePath();
+      }
+    }
+    ctx.stroke(o._path);
+    ctx.restore();
+
+    // Auswahlrahmen + Griffe
+    if (o.id === selId) drawSelection(o);
+  }
+
+  document.getElementById('zoomInfo').textContent = Math.round(view.scale * 100 / 3.7795) + ' %';
+}
+
+function objWorldCorners(o) {
+  const M = objMatrix(o);
+  return [
+    matApply(M, { x: 0, y: 0 }),
+    matApply(M, { x: o.baseW, y: 0 }),
+    matApply(M, { x: o.baseW, y: o.baseH }),
+    matApply(M, { x: 0, y: o.baseH }),
+  ];
+}
+
+function drawSelection(o) {
+  const cs = objWorldCorners(o).map(p => ({ x: p.x*view.scale+view.ox, y: p.y*view.scale+view.oy }));
+  ctx.save();
+  ctx.strokeStyle = 'var(--accent)';
+  ctx.strokeStyle = '#2563eb';
+  ctx.lineWidth = 1.2;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  ctx.moveTo(cs[0].x, cs[0].y);
+  for (let i = 1; i < 4; i++) ctx.lineTo(cs[i].x, cs[i].y);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // Eckgriffe (Skalieren)
+  ctx.fillStyle = '#fff';
+  for (const c of cs) {
+    ctx.beginPath(); ctx.arc(c.x, c.y, 5, 0, 7); ctx.fill(); ctx.stroke();
+  }
+  // Drehgriff über der Oberkante
+  const mid = { x: (cs[0].x+cs[1].x)/2, y: (cs[0].y+cs[1].y)/2 };
+  const up = rotHandlePos(o);
+  ctx.beginPath(); ctx.moveTo(mid.x, mid.y); ctx.lineTo(up.x, up.y); ctx.stroke();
+  ctx.beginPath(); ctx.arc(up.x, up.y, 5.5, 0, 7);
+  ctx.fillStyle = '#2563eb'; ctx.fill();
+  ctx.restore();
+}
+
+function rotHandlePos(o) {
+  const cs = objWorldCorners(o).map(p => ({ x: p.x*view.scale+view.ox, y: p.y*view.scale+view.oy }));
+  const mid = { x: (cs[0].x+cs[1].x)/2, y: (cs[0].y+cs[1].y)/2 };
+  const cen = { x: (cs[0].x+cs[2].x)/2, y: (cs[0].y+cs[2].y)/2 };
+  const d = Math.hypot(mid.x-cen.x, mid.y-cen.y) || 1;
+  return { x: mid.x + (mid.x-cen.x)/d*24, y: mid.y + (mid.y-cen.y)/d*24 };
+}
+
+// ============================================================
+// Interaktion (Maus/Pointer)
+// ============================================================
+let drag = null;   // {mode:'move'|'pan'|'scale'|'rotate', ...}
+
+function evtPos(e) {
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+function px2mm(p) { return { x: (p.x - view.ox) / view.scale, y: (p.y - view.oy) / view.scale }; }
+
+function hitObject(mm) {
+  // von oben nach unten (zuletzt gezeichnet = zuerst getroffen)
+  for (let i = state.objects.length - 1; i >= 0; i--) {
+    const o = state.objects[i];
+    const M = objMatrix(o);
+    // in Lokalkoordinaten prüfen
+    const c = Math.cos(-o.rot*Math.PI/180), sn = Math.sin(-o.rot*Math.PI/180);
+    const dx = mm.x - o.tx, dy = mm.y - o.ty;
+    const lx = (dx*c - dy*sn) / o.s, ly = (dx*sn + dy*c) / o.s;
+    const pad = 2 / (view.scale * o.s) * 3;
+    if (lx >= -pad && ly >= -pad && lx <= o.baseW + pad && ly <= o.baseH + pad) return o;
+  }
+  return null;
+}
+
+cv.addEventListener('pointerdown', (e) => {
+  cv.setPointerCapture(e.pointerId);
+  const px = evtPos(e);
+  const mm = px2mm(px);
+  const sel = state.objects.find(o => o.id === selId);
+
+  if (sel) {
+    // Griffe zuerst prüfen
+    const rp = rotHandlePos(sel);
+    if (Math.hypot(px.x-rp.x, px.y-rp.y) < 10) {
+      const cen = objCenterWorld(sel);
+      drag = { mode: 'rotate', o: sel, cen,
+               rot0: sel.rot,
+               a0: Math.atan2(mm.y-cen.y, mm.x-cen.x) };
+      return;
+    }
+    const cs = objWorldCorners(sel).map(p => ({ x: p.x*view.scale+view.ox, y: p.y*view.scale+view.oy }));
+    for (const c of cs) {
+      if (Math.hypot(px.x-c.x, px.y-c.y) < 9) {
+        const cen = objCenterWorld(sel);
+        drag = { mode: 'scale', o: sel, cen, s0: sel.s,
+                 d0: Math.max(Math.hypot(mm.x-cen.x, mm.y-cen.y), 0.01) };
+        return;
+      }
+    }
+  }
+
+  const hit = hitObject(mm);
+  if (hit) {
+    selId = hit.id;
+    drag = { mode: 'move', o: hit, start: mm, tx0: hit.tx, ty0: hit.ty };
+    refreshObjList(); refreshProps(); requestRender();
+  } else {
+    if (selId !== null) { selId = null; refreshObjList(); refreshProps(); requestRender(); }
+    drag = { mode: 'pan', start: px, ox0: view.ox, oy0: view.oy };
+  }
+});
+
+cv.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  const px = evtPos(e);
+  const mm = px2mm(px);
+  if (drag.mode === 'pan') {
+    view.ox = drag.ox0 + (px.x - drag.start.x);
+    view.oy = drag.oy0 + (px.y - drag.start.y);
+  } else if (drag.mode === 'move') {
+    drag.o.tx = drag.tx0 + (mm.x - drag.start.x);
+    drag.o.ty = drag.ty0 + (mm.y - drag.start.y);
+  } else if (drag.mode === 'scale') {
+    const d = Math.max(Math.hypot(mm.x-drag.cen.x, mm.y-drag.cen.y), 0.01);
+    setScaleKeepCenter(drag.o, Math.min(Math.max(drag.s0 * d / drag.d0, 0.01), 200), drag.cen);
+  } else if (drag.mode === 'rotate') {
+    const a = Math.atan2(mm.y-drag.cen.y, mm.x-drag.cen.x);
+    let deg = drag.rot0 + (a - drag.a0) * 180/Math.PI;
+    if (e.shiftKey) deg = Math.round(deg / 15) * 15;
+    setRotKeepCenter(drag.o, deg, drag.cen);
+  }
+  refreshProps(); requestRender();
+});
+
+cv.addEventListener('pointerup', () => { if (drag && drag.mode !== 'pan') saveSoon(); drag = null; });
+
+cv.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const px = evtPos(e);
+  const f = e.deltaY < 0 ? 1.15 : 1/1.15;
+  const ns = Math.min(Math.max(view.scale * f, 0.05), 60);
+  view.ox = px.x - (px.x - view.ox) * ns / view.scale;
+  view.oy = px.y - (px.y - view.oy) * ns / view.scale;
+  view.scale = ns;
+  requestRender();
+}, { passive: false });
+
+document.addEventListener('keydown', (e) => {
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.nodeName)) return;
+  const sel = state.objects.find(o => o.id === selId);
+  if (e.key === 'Delete' || e.key === 'Backspace') { vcDeleteSel(); e.preventDefault(); }
+  else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { vcDuplicateSel(); e.preventDefault(); }
+  else if (sel && /^Arrow/.test(e.key)) {
+    const step = e.shiftKey ? 10 : 1;
+    if (e.key === 'ArrowLeft') sel.tx -= step;
+    if (e.key === 'ArrowRight') sel.tx += step;
+    if (e.key === 'ArrowUp') sel.ty -= step;
+    if (e.key === 'ArrowDown') sel.ty += step;
+    refreshProps(); requestRender(); saveSoon(); e.preventDefault();
+  }
+});
+
+function objCenterWorld(o) {
+  return matApply(objMatrix(o), { x: o.baseW/2, y: o.baseH/2 });
+}
+function setScaleKeepCenter(o, s, cen) {
+  o.s = s;
+  const c2 = matApply(objMatrix(o), { x: o.baseW/2, y: o.baseH/2 });
+  o.tx += cen.x - c2.x; o.ty += cen.y - c2.y;
+}
+function setRotKeepCenter(o, deg, cen) {
+  o.rot = deg;
+  const c2 = matApply(objMatrix(o), { x: o.baseW/2, y: o.baseH/2 });
+  o.tx += cen.x - c2.x; o.ty += cen.y - c2.y;
+}
+
+// ---------- Drag & Drop ----------
+const wrap = document.getElementById('canvasWrap');
+['dragenter','dragover'].forEach(ev => wrap.addEventListener(ev, (e) => {
+  e.preventDefault(); wrap.classList.add('dragover');
+}));
+['dragleave','drop'].forEach(ev => wrap.addEventListener(ev, (e) => {
+  e.preventDefault(); wrap.classList.remove('dragover');
+}));
+wrap.addEventListener('drop', (e) => {
+  for (const f of e.dataTransfer.files) {
+    if (/\.svg$/i.test(f.name) || f.type === 'image/svg+xml') vcImportFile(f);
+  }
+});
+
+// ============================================================
+// UI-Verdrahtung
+// ============================================================
+function setStatus(msg) { document.getElementById('statusMsg').textContent = msg; }
+function clampInt(id, lo, hi) {
+  const v = Math.round(parseFloat(document.getElementById(id).value) || lo);
+  return Math.min(Math.max(v, lo), hi);
+}
+function downloadText(text, filename, mime) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: mime }));
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+function initDeviceSelect() {
+  const ds = document.getElementById('deviceSel');
+  ds.innerHTML = Object.entries(DEVICES)
+    .map(([k, d]) => '<option value="' + k + '">' + d.name + '</option>').join('');
+  ds.value = state.device;
+  refreshMatSelect();
+}
+function refreshMatSelect() {
+  const ms = document.getElementById('matSel');
+  ms.innerHTML = DEVICES[state.device].mats
+    .map(m => '<option value="' + m.id + '">' + m.label + '</option>').join('');
+  if (!DEVICES[state.device].mats.some(m => m.id === state.mat)) {
+    state.mat = DEVICES[state.device].mats[0].id;
+  }
+  ms.value = state.mat;
+}
+function vcDeviceChanged() {
+  state.device = document.getElementById('deviceSel').value;
+  refreshMatSelect(); fitView(); saveSoon();
+}
+function vcMatChanged() {
+  state.mat = document.getElementById('matSel').value;
+  fitView(); saveSoon();
+}
+
+function refreshObjList() {
+  const list = document.getElementById('objList');
+  document.getElementById('objEmptyHint').style.display = state.objects.length ? 'none' : 'block';
+  list.innerHTML = '';
+  for (const o of state.objects) {
+    const div = document.createElement('div');
+    div.className = 'objItem' + (o.id === selId ? ' sel' : '');
+    div.innerHTML = '<span class="dot" style="background:' + OPS[o.op].color + '"></span>' +
+      '<span class="nm"></span><span class="sz"></span>';
+    div.querySelector('.nm').textContent = o.name;
+    div.querySelector('.sz').textContent = (o.baseW*o.s).toFixed(0) + '×' + (o.baseH*o.s).toFixed(0);
+    div.onclick = () => { selId = o.id; refreshObjList(); refreshProps(); requestRender(); };
+    list.appendChild(div);
+  }
+}
+
+function worldBbox(o) {
+  const cs = objWorldCorners(o);
+  return {
+    x: Math.min(...cs.map(c => c.x)), y: Math.min(...cs.map(c => c.y)),
+    w: Math.max(...cs.map(c => c.x)) - Math.min(...cs.map(c => c.x)),
+    h: Math.max(...cs.map(c => c.y)) - Math.min(...cs.map(c => c.y)),
+  };
+}
+
+function refreshProps() {
+  const o = state.objects.find(x => x.id === selId);
+  document.getElementById('selProps').style.display = o ? 'block' : 'none';
+  document.getElementById('selEmptyHint').style.display = o ? 'none' : 'block';
+  if (!o) return;
+  const bb = worldBbox(o);
+  document.getElementById('pName').value = o.name;
+  document.getElementById('pX').value = +bb.x.toFixed(1);
+  document.getElementById('pY').value = +bb.y.toFixed(1);
+  document.getElementById('pW').value = +(o.baseW*o.s).toFixed(1);
+  document.getElementById('pH').value = +(o.baseH*o.s).toFixed(1);
+  document.getElementById('pRot').value = +o.rot.toFixed(1);
+  for (const b of document.querySelectorAll('#opBtns button')) {
+    b.classList.toggle('on', b.dataset.op === o.op);
+  }
+}
+
+function vcPropChanged(which) {
+  const o = state.objects.find(x => x.id === selId);
+  if (!o) return;
+  o.name = document.getElementById('pName').value || o.name;
+  const cen = objCenterWorld(o);
+  // Größe: einheitlich skalieren (Seitenverhältnis bleibt)
+  if (which === 'w') {
+    const w = parseFloat(document.getElementById('pW').value);
+    if (w > 0) setScaleKeepCenter(o, w / o.baseW, cen);
+  } else if (which === 'h') {
+    const h = parseFloat(document.getElementById('pH').value);
+    if (h > 0) setScaleKeepCenter(o, h / o.baseH, cen);
+  }
+  const rot = parseFloat(document.getElementById('pRot').value);
+  if (isFinite(rot) && rot !== o.rot) setRotKeepCenter(o, rot, objCenterWorld(o));
+  // Position: Welt-bbox-Min auf Eingabe schieben
+  const bb = worldBbox(o);
+  const nx = parseFloat(document.getElementById('pX').value);
+  const ny = parseFloat(document.getElementById('pY').value);
+  if (isFinite(nx)) o.tx += nx - bb.x;
+  if (isFinite(ny)) o.ty += ny - bb.y;
+  refreshObjList(); refreshProps(); requestRender(); saveSoon();
+}
+
+function vcSetOp(op) {
+  const o = state.objects.find(x => x.id === selId);
+  if (!o) return;
+  o.op = op;
+  refreshObjList(); refreshProps(); requestRender(); saveSoon();
+}
+
+function vcDeleteSel() {
+  const i = state.objects.findIndex(x => x.id === selId);
+  if (i < 0) return;
+  state.objects.splice(i, 1);
+  selId = state.objects.length ? state.objects[Math.min(i, state.objects.length-1)].id : null;
+  refreshObjList(); refreshProps(); requestRender(); saveSoon();
+}
+
+function vcDuplicateSel() {
+  const o = state.objects.find(x => x.id === selId);
+  if (!o) return;
+  const c = JSON.parse(JSON.stringify({ ...o, _path: undefined }));
+  c.id = nextId++;
+  c.tx += 5; c.ty += 5;
+  c.name = o.name + ' (Kopie)';
+  delete c._path;
+  state.objects.push(c);
+  selId = c.id;
+  refreshObjList(); refreshProps(); requestRender(); saveSoon();
+}
+
+function vcNewProject() {
+  if (state.objects.length && !confirm('Alle Objekte verwerfen?')) return;
+  state.objects = [];
+  selId = null;
+  refreshObjList(); refreshProps(); requestRender(); saveSoon();
+  setStatus('Neues Projekt.');
+}
+
+function fitView() {
+  const mat = currentMat();
+  const r = cv.parentNode.getBoundingClientRect();
+  const s = Math.min((r.width - 60) / mat.w, (r.height - 60) / mat.h);
+  view.scale = Math.min(Math.max(s, 0.05), 60);
+  view.ox = (r.width - mat.w * view.scale) / 2;
+  view.oy = (r.height - mat.h * view.scale) / 2;
+  requestRender();
+}
+
+// ============================================================
+// Autosave (localStorage)
+// ============================================================
+const STORE_KEY = 'volmecut_project_v1';
+let saveTimer = null;
+function saveSoon() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveNow, 800);
+}
+function saveNow() {
+  try {
+    const data = {
+      device: state.device, mat: state.mat, nextId,
+      objects: state.objects.map(o => ({ ...o, _path: undefined })),
+    };
+    localStorage.setItem(STORE_KEY, JSON.stringify(data));
+  } catch (e) { /* Quota voll → Autosave still aussetzen */ }
+}
+function loadStored() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.objects)) return;
+    state.device = DEVICES[data.device] ? data.device : 'maker3';
+    state.mat = data.mat;
+    state.objects = data.objects;
+    for (const o of state.objects) delete o._path;
+    nextId = data.nextId || (Math.max(0, ...state.objects.map(o => o.id)) + 1);
+  } catch (e) { /* defekter Speicherstand → frisch starten */ }
+}
+
+// ---------- Test-Hooks (Headless-Checks) ----------
+window._vcState = state;
+window._vcImportSvgText = vcImportSvgText;
+window._vcBuildDesignSpaceSvg = vcBuildDesignSpaceSvg;
+window._vcBuildGpgl = vcBuildGpgl;
+
+// ---------- Start ----------
+loadStored();
+initDeviceSelect();
+refreshObjList();
+refreshProps();
+window.addEventListener('resize', () => { resizeCanvas(); });
+resizeCanvas();
+fitView();
+renderLoop();
+</script>
+</body>
+</html>
