@@ -13225,6 +13225,20 @@ function _closeMoldModal() { document.getElementById('mold-modal').classList.rem
 let _moldBusy = false;
 const _moldTick = () => new Promise(r => setTimeout(r, 0));
 
+// Blockierende Größen-Rückfrage: Mini-Modelle (falsche Import-Einheit) erzeugen
+// sonst "leere" Formen — die Mulde ist da, aber unsichtbar klein. Warn-Toasts
+// wurden in der Praxis übersehen, deshalb hart nachfragen.
+function _moldSizeGate(dx, dy, dz) {
+  const maxDim = Math.max(dx, dy, dz);
+  if (maxDim >= 5) return true;
+  return confirm(
+    'Das Modell ist nur ' + maxDim.toFixed(1) + ' mm groß — vermutlich eine falsche Import-Einheit (Zoll/Meter).\n\n' +
+    'Eine Gießform dafür wäre praktisch leer.\n\n' +
+    'Abbrechen = zurück (empfohlen): Modell auswählen und im Eigenschaften-Panel ' +
+    'mit „Proportional" auf die echte Größe skalieren (z. B. Breite 50 mm), dann erneut versuchen.\n\n' +
+    'OK = trotzdem fortfahren.');
+}
+
 async function _createMold() {
   if (_moldBusy) return;
   const btn = document.getElementById('mold-go');
@@ -13251,8 +13265,7 @@ async function _createMold() {
     const Htot = p.floor + (maxZ - minZ) + p.top;    // Rahmenhöhe gesamt
     console.log('[mold]', (tris.length/9)|0, 'Dreiecke, BBox',
       (maxX-minX).toFixed(1)+'×'+(maxY-minY).toFixed(1)+'×'+(maxZ-minZ).toFixed(1), 'mm, Form:', p.shape);
-    if (Math.max(maxX-minX, maxY-minY, maxZ-minZ) < 5)
-      notify('⚠️ Modell ist nur ' + (Math.max(maxX-minX, maxY-minY, maxZ-minZ)).toFixed(1) + ' mm groß — vermutlich falsche Import-Einheit. Erst im Eigenschaften-Panel skalieren!', 'w', 8000);
+    if (!_moldSizeGate(maxX-minX, maxY-minY, maxZ-minZ)) { _progressHide(); return; }
 
     _progressSet(15, 'Silhouette wird analysiert…'); await _moldTick();
     let outer, inner;                                // Konturlisten [[x,y],…] mm, CCW
@@ -13600,8 +13613,7 @@ async function _moldCreateTwoPart(o, mfTemp) {
     if (tris[i+1]<minY)minY=tris[i+1]; if (tris[i+1]>maxY)maxY=tris[i+1];
     if (tris[i+2]<minZ)minZ=tris[i+2]; if (tris[i+2]>maxZ)maxZ=tris[i+2];
   }
-  if (Math.max(maxX-minX, maxY-minY, maxZ-minZ) < 5)
-    notify('⚠️ Modell ist nur ' + (Math.max(maxX-minX, maxY-minY, maxZ-minZ)).toFixed(1) + ' mm groß — vermutlich falsche Import-Einheit. Erst im Eigenschaften-Panel skalieren!', 'w', 8000);
+  if (!_moldSizeGate(maxX-minX, maxY-minY, maxZ-minZ)) { _progressHide(); return; }
   const w = await _mfInit(); const M = w.Manifold;
   const dilProg = f => _progressSet(8 + Math.round(42*f), '3D-Offset wird berechnet…');
 
