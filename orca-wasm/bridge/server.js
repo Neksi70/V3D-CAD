@@ -72,6 +72,26 @@ try { fs.watch(FLEET_FILE, () => setTimeout(loadFleet, 300)); } catch {}
 const fleetOf = (id) => typeof id === 'string' && id.startsWith('fleet:')
   ? fleet.find(p => 'fleet:' + p.id === id) : null;
 
+// ---- LAN-Autodiscovery: Bambu-Drucker senden SSDP-Ankündigungen auf UDP 2021
+// (USN = Seriennummer, Location = IP). Passiv lauschen genügt — der Datei-
+// versand kann dann automatisch den robusten LAN-Weg nehmen (Zugangscode
+// kommt aus der Bambu-Cloud), ohne dass der Nutzer IP/Code eintippt.
+const dgram = require('dgram');
+const ssdpSeen = new Map();   // serial -> { ip, ts }
+(function startSsdp() {
+  try {
+    const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    sock.on('message', (msg, rinfo) => {
+      const t = msg.toString();
+      const usn = (t.match(/^USN:\s*(\S+)/mi) || [])[1];
+      if (usn) ssdpSeen.set(usn, {
+        ip: (t.match(/^Location:\s*(\S+)/mi) || [])[1] || rinfo.address, ts: Date.now() });
+    });
+    sock.on('error', (e) => console.warn('[ssdp]', e.message));
+    sock.bind(2021, () => console.log('[ssdp] LAN-Discovery auf UDP 2021'));
+  } catch (e) { console.warn('[ssdp]', e.message); }
+})();
+
 // ---- Druckcode-Gate: Flotte/Kamera/nativer Slicer nur für LAN/Tailnet ODER
 // mit Code (Header X-Fleet-Code bzw. ?fc=). Über den Funnel setzt tailscaled
 // X-Forwarded-For auf die öffentliche Client-IP; LAN-Direktzugriffe haben kein
@@ -312,17 +332,25 @@ app.post('/api/send', async (req, res) => {
   const sid = sidOf(req);
   if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
   try {
-    // Wenn der Nutzer LAN-Zugangsdaten mitschickt und der Drucker erreichbar
-    // ist: Dateiversand robust über LAN-FTP.
-    if (lanIp && lanCode) {
-      const p = { ip: lanIp, access_code: lanCode, serial };
+    // LAN-Zugang auflösen: explizit vom Nutzer, sonst automatisch (IP aus der
+    // SSDP-Ankündigung, Zugangscode aus der Bambu-Cloud). Nur über LAN lässt
+    // sich eine frische Datei zuverlässig auf den Drucker bringen.
+    let ip = lanIp, code = lanCode, auto = false;
+    if (!ip || !code) {
+      const hit = ssdpSeen.get(serial);
+      if (!ip && hit && Date.now() - hit.ts < 30 * 60e3) ip = hit.ip;
+      if (ip && !code) code = await cloud.accessCode(sid, serial).catch(() => null);
+      auto = Boolean(ip && code && !(lanIp && lanCode));
+    }
+    if (ip && code) {
+      const p = { ip, access_code: code, serial };
       if (await lan.reachable(p)) {
         await lan.uploadGcode(p, name, buf);
         let pr = null;
         if (start) pr = await lan.sendCommand(p, { print: { sequence_id: '0', command: 'project_file',
           param: name, subtask_name: name.replace(/\.[^.]+$/, ''), url: `ftp://${name}`,
           ...printOpts } }, { waitMs: 3000 });
-        return res.json({ ok: true, path: 'lan', uploaded: name, print: pr });
+        return res.json({ ok: true, path: 'lan', auto, uploaded: name, print: pr });
       }
     }
     // Cloud-Fallback: Steuerung/Start geht; Dateiversand an entfernte Drucker

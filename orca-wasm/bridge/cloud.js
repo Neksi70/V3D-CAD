@@ -125,6 +125,18 @@ async function listDevices(sid) {
     serial: d.dev_id, name: d.name, model: d.dev_model_name, online: d.online })) };
 }
 
+// Zugangscode eines eigenen Druckers (bind-API liefert dev_access_code).
+// Bleibt serverseitig — wird nur für den automatischen LAN-Dateiversand
+// genutzt und nie an den Browser gegeben.
+async function accessCode(sid, serial) {
+  const s = sessions.get(sid); if (!s) return null;
+  const r = await fetch(host(s.region).api + '/v1/iot-service/api/user/bind', {
+    headers: { Authorization: 'Bearer ' + s.access },
+  });
+  const j = await r.json().catch(() => ({}));
+  return (j.devices || []).find(d => d.dev_id === serial)?.dev_access_code || null;
+}
+
 function cloudMqtt(sid) {
   const s = sessions.get(sid); if (!s) throw new Error('nicht angemeldet');
   return mqtt.connect(host(s.region).mqtt, {
@@ -165,4 +177,4 @@ function sendCommand(sid, serial, payload, { waitMs = 0 } = {}) {
   });
 }
 
-module.exports = { login, requestCode, verifyCode, session, logout, listDevices, getStatus, sendCommand };
+module.exports = { login, requestCode, verifyCode, session, logout, listDevices, accessCode, getStatus, sendCommand };
