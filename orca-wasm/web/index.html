@@ -167,6 +167,10 @@
     <button id="lgBtn">Anmelden</button>
     <div id="lgStatus"></div>
     <button id="lgCodeLogin" class="link">Per E-Mail-Code anmelden (Google-/Apple-Konto)</button>
+    <div id="lgFleetRow" hidden>
+      <input id="lgFleet" placeholder="Druckcode von Volme 3D" autocomplete="off">
+      <button id="lgFleetBtn">Werkstatt-Drucker freischalten</button>
+    </div>
     <button id="lgSkip" class="link">Ohne Konto fortfahren (nur slicen)</button>
     <p class="hint">Dein Passwort bleibt auf diesem Server, wird nur gegen ein Bambu-Token getauscht und nicht gespeichert.</p>
   </div>
@@ -336,16 +340,23 @@ if (!crossOriginIsolated) {
 }
 
 // ---------- Login-Gate + Multi-User-Cloud (über die Bridge) ----------
-// Über Tailscale läuft die Brücke als eigener HTTPS-Port (:10001), lokal als HTTP :7781
-const BRIDGE = location.hostname.endsWith('.ts.net')
-  ? `https://${location.hostname}:10001`
-  : `${location.protocol}//${location.hostname}:7781`;
+// :10000 (Funnel + Tailnet): Brücke läuft als Pfad /bridge auf demselben Origin.
+// Sonst wie gehabt — Tailnet-Port :10001, lokal HTTP :7781.
+const BRIDGE = location.port === '10000'
+  ? location.origin + '/bridge'
+  : location.hostname.endsWith('.ts.net')
+    ? `https://${location.hostname}:10001`
+    : `${location.protocol}//${location.hostname}:7781`;
 let sid = sessionStorage.getItem('vs-sid') || null;
+// Druckcode: schaltet Flotte/Druckstart frei, wenn die App öffentlich
+// (über den Funnel) läuft. Wird von der Brücke geprüft.
+let fleetCode = localStorage.getItem('vs-fleet-code') || '';
 let bridgePrinters = [];
 
 async function bridge(pathname, { method = 'GET', body } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (sid) headers.Authorization = 'Bearer ' + sid;
+  if (fleetCode) headers['X-Fleet-Code'] = fleetCode;
   const r = await fetch(BRIDGE + pathname, { method, headers, body: body && JSON.stringify(body),
                                              signal: AbortSignal.timeout(20000) });
   return { status: r.status, json: await r.json().catch(() => ({})) };
@@ -358,7 +369,11 @@ const isFleet = (p) => p && String(p.serial).startsWith('fleet:');
 async function loadPrinters() {
   try {
     const { status, json } = await bridge('/api/printers');
-    if (status === 401) return false;
+    if (status === 401) {
+      // Flotte existiert, aber wir sind öffentlich unterwegs → Druckcode anbieten
+      if (json.needCode) $('lgFleetRow').hidden = false;
+      return false;
+    }
     bridgePrinters = Array.isArray(json) ? json : [];
     const opt = (p) => `<option value="${p.serial}">${p.name}${p.online ? '' : ' (offline)'}</option>`;
     const fleetOpts = bridgePrinters.filter(isFleet).map(opt).join('');
@@ -491,7 +506,7 @@ function pollCam(ip, code) {
   };
   const fleetId = devFleetId();
   img.src = fleetId
-    ? `${BRIDGE}/api/camera/snapshot?id=${encodeURIComponent(fleetId)}&t=${Date.now()}`
+    ? `${BRIDGE}/api/camera/snapshot?id=${encodeURIComponent(fleetId)}${fleetCode ? '&fc=' + encodeURIComponent(fleetCode) : ''}&t=${Date.now()}`
     : `${BRIDGE}/api/camera/snapshot?sid=${encodeURIComponent(sid)}&ip=${encodeURIComponent(ip)}&code=${encodeURIComponent(code)}&t=${Date.now()}`;
 }
 $('camBtn').onclick = () => {
@@ -569,6 +584,22 @@ $('lgCodeLogin').onclick = async () => {
   }
 };
 $('lgSkip').onclick = () => { $('loginGate').hidden = true; };
+// Druckcode einlösen: merken, Drucker neu laden, bei Erfolg rein in die App
+$('lgFleetBtn').onclick = async () => {
+  const code = $('lgFleet').value.trim();
+  if (!code) return;
+  fleetCode = code;
+  $('lgStatus').textContent = 'Prüfe Druckcode …';
+  if (await loadPrinters() && bridgePrinters.length) {
+    localStorage.setItem('vs-fleet-code', code);
+    $('lgStatus').innerHTML = '<span class="ok">✅ Drucker freigeschaltet</span>';
+    enterApp(null);
+  } else {
+    fleetCode = localStorage.getItem('vs-fleet-code') || '';
+    $('lgStatus').innerHTML = '<span class="err">Code stimmt nicht — frag bei Volme 3D nach.</span>';
+  }
+};
+$('lgFleet').addEventListener('keydown', e => { if (e.key === 'Enter') $('lgFleetBtn').click(); });
 $('lgPass').addEventListener('keydown', e => { if (e.key === 'Enter') $('lgBtn').click(); });
 $('lgCode').addEventListener('keydown', e => { if (e.key === 'Enter') $('lgBtn').click(); });
 
@@ -627,6 +658,16 @@ $('btnSend').onclick = async () => {
         : (json.path === 'moonraker' || json.path === 'anycubic') ? 'LAN direkt' : 'Cloud';
       $('sendStatus').innerHTML = `<span class="ok">✅ Gesendet (${via}${json.print?.acked ? ', Druck bestätigt' : ''})</span>`
         + (json.experimental ? `<br><small style="opacity:.7">${json.note}</small>` : '');
+    } else if (json.needCode) {
+      // Öffentlicher Zugriff ohne (gültigen) Druckcode — direkt nachfragen
+      const c = prompt('Druckcode von Volme 3D eingeben:');
+      if (c && c.trim()) {
+        fleetCode = c.trim();
+        localStorage.setItem('vs-fleet-code', fleetCode);
+        $('btnSend').disabled = false;
+        return $('btnSend').onclick();
+      }
+      $('sendStatus').innerHTML = '<span class="err">Ohne Druckcode kein Druckstart</span>';
     } else {
       $('sendStatus').innerHTML = `<span class="err">${json.error || 'Fehler'}</span>`;
     }

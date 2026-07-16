@@ -80,16 +80,17 @@ const STATIC = {
   '/lib/three.min.js': ['lib/three.min.js', 'application/javascript; charset=utf-8'],
 };
 
-function send(res, code, body, type) {
+function send(res, code, body, type, extra) {
   res.writeHead(code, {
     'Content-Type': type || 'text/html; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-cache',
     'X-Content-Type-Options': 'nosniff',
+    ...(extra || {}),
   });
   res.end(body);
 }
-function sendJson(res, code, obj) { send(res, code, JSON.stringify(obj), 'application/json; charset=utf-8'); }
+function sendJson(res, code, obj, extra) { send(res, code, JSON.stringify(obj), 'application/json; charset=utf-8', extra); }
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
@@ -157,6 +158,56 @@ function handleOrder(req, res) {
     console.log('[order]', id, product, name, files.map(f => f.name).join(','));
     sendJson(res, 200, { ok: true, id });
   });
+}
+
+// --- Handoff: STL anonym für den Slicer bereitstellen --------------------------
+// POST /api/handoff {name, dataB64} → {url}. Die zufällige ID ist das Geheimnis;
+// Dateien verfallen nach 48 h. Nur Slicer-taugliche Endungen.
+const HANDOFF_DIR = path.join(DATA_DIR, 'handoff');
+fs.mkdirSync(HANDOFF_DIR, { recursive: true });
+const HANDOFF_EXT = new Set(['.stl', '.3mf', '.step', '.stp', '.obj', '.svg']);
+const CORS = { 'Access-Control-Allow-Origin': '*' };
+
+function cleanHandoff() {
+  const cutoff = Date.now() - 48 * 3600 * 1000;
+  for (const d of fs.readdirSync(HANDOFF_DIR)) {
+    const full = path.join(HANDOFF_DIR, d);
+    try { if (fs.statSync(full).mtimeMs < cutoff) fs.rmSync(full, { recursive: true }); } catch (e) {}
+  }
+}
+
+function handleHandoff(req, res) {
+  readBody(req, res, buf => {
+    let o;
+    try { o = JSON.parse(buf.toString('utf8')); } catch (e) { return sendJson(res, 400, { error: 'Ungültige Anfrage' }, CORS); }
+    const fname = String(o.name || 'modell.stl').replace(/[^\w.\-äöüÄÖÜß ]/g, '_').slice(0, 80);
+    if (!HANDOFF_EXT.has(path.extname(fname).toLowerCase())) return sendJson(res, 400, { error: 'Dateityp nicht erlaubt' }, CORS);
+    let data;
+    try { data = Buffer.from(String(o.dataB64 || ''), 'base64'); } catch (e) { data = Buffer.alloc(0); }
+    if (!data.length) return sendJson(res, 400, { error: 'Keine Daten' }, CORS);
+    if (data.length > CFG.maxUploadMb * 1024 * 1024) return sendJson(res, 413, { error: 'Zu groß' }, CORS);
+    cleanHandoff();
+    const id = crypto.randomBytes(12).toString('base64url');
+    fs.mkdirSync(path.join(HANDOFF_DIR, id));
+    fs.writeFileSync(path.join(HANDOFF_DIR, id, fname), data);
+    sendJson(res, 200, { ok: true, url: `${CFG.publicUrl}/handoff/${id}/${encodeURIComponent(fname)}` }, CORS);
+  });
+}
+
+function serveHandoff(res, id, fname) {
+  const full = path.join(HANDOFF_DIR, id.replace(/[^\w-]/g, ''), path.basename(fname));
+  try {
+    const data = fs.readFileSync(full);
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': data.length,
+      // Slicer holt die Datei cross-origin und läuft unter COEP
+      'Access-Control-Allow-Origin': '*',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+      'Cache-Control': 'no-store',
+    });
+    res.end(data);
+  } catch (e) { send(res, 404, 'nicht gefunden oder abgelaufen', 'text/plain; charset=utf-8'); }
 }
 
 // --- Admin --------------------------------------------------------------------
@@ -242,7 +293,7 @@ function shopPage() {
   // Bei jedem Request frisch lesen? Nein – einmal cachen, Neustart lädt neu.
   if (!SHOP_HTML) {
     const raw = fs.readFileSync(path.join(ROOT, 'shop.html'), 'utf8');
-    const inject = JSON.stringify({ basePath: BASE, brand: CFG.brand, phone: CFG.phone, colors: CFG.colors });
+    const inject = JSON.stringify({ basePath: BASE, brand: CFG.brand, phone: CFG.phone, colors: CFG.colors, slicerUrl: CFG.slicerUrl });
     SHOP_HTML = raw.replace('"__SHOP_CFG__"', inject);
   }
   return SHOP_HTML;
@@ -265,6 +316,22 @@ const server = http.createServer((req, res) => {
     } catch (e) { return send(res, 404, 'nicht gefunden', 'text/plain'); }
   }
   if (p === '/api/order' && req.method === 'POST') return handleOrder(req, res);
+  if (p === '/api/handoff') {
+    // Preflight erlauben — Volme3D (Port 8765/8766 lokal) postet cross-origin
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      });
+      return res.end();
+    }
+    if (req.method === 'POST') return handleHandoff(req, res);
+  }
+  {
+    const m = p.match(/^\/handoff\/([\w-]+)\/(.+)$/);
+    if (m && req.method === 'GET') return serveHandoff(res, m[1], decodeURIComponent(m[2]));
+  }
   if (p === '/admin') {
     if (!isAdmin(u.searchParams)) return send(res, 403, 'Kein Zugriff', 'text/plain; charset=utf-8');
     return send(res, 200, adminPage(u.searchParams));

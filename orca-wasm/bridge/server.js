@@ -21,6 +21,14 @@ const nativeSlicer = require('./native-slicer');
 const PORT = process.env.BRIDGE_PORT ? Number(process.env.BRIDGE_PORT) : 7781;
 
 const app = express();
+
+// Funnel-Pfad: öffentlich läuft die Brücke unter https://…:10000/bridge/…
+// (tailscale serve reicht den Präfix mit durch) — hier abstreifen.
+app.use((req, res, next) => {
+  if (req.url === '/bridge' || req.url.startsWith('/bridge/')) req.url = req.url.slice(7) || '/';
+  next();
+});
+
 app.use(express.json({ limit: '256mb' }));
 
 // [\w.-]+\.ts\.net: erlaubt mehrteilige MagicDNS-Namen (v3da.tailf05fe9.ts.net)
@@ -29,7 +37,7 @@ app.use((req, res, next) => {
   const o = req.headers.origin;
   if (o && OK_ORIGIN.test(o)) {
     res.setHeader('Access-Control-Allow-Origin', o);
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Fleet-Code');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   }
   // Die App läuft unter COEP require-corp (WASM-Threads). Cross-Origin-
@@ -49,18 +57,40 @@ const sidOf = (req) => (req.headers.authorization || '').replace(/^Bearer\s+/i, 
 // (LAN/Tailnet), darf die Flotte sehen und steuern.
 const FLEET_FILE = path.join(__dirname, 'printers.json');
 let fleet = [];
+let fleetCode = null;   // printers.json "fleetCode": Druckcode für Funnel-Zugriff
 function loadFleet() {
   try {
-    fleet = (JSON.parse(fs.readFileSync(FLEET_FILE, 'utf8')).printers || [])
-      .filter(p => p.id && p.ip && adapters[p.type]);
-    console.log('[fleet]', fleet.length, 'Drucker aus printers.json');
-  } catch (e) { fleet = []; if (e.code !== 'ENOENT') console.warn('[fleet] printers.json fehlerhaft:', e.message); }
+    const parsed = JSON.parse(fs.readFileSync(FLEET_FILE, 'utf8'));
+    fleet = (parsed.printers || []).filter(p => p.id && p.ip && adapters[p.type]);
+    fleetCode = typeof parsed.fleetCode === 'string' && parsed.fleetCode.trim() ? parsed.fleetCode.trim() : null;
+    console.log('[fleet]', fleet.length, 'Drucker aus printers.json' + (fleetCode ? ' (Druckcode aktiv)' : ''));
+  } catch (e) { fleet = []; fleetCode = null; if (e.code !== 'ENOENT') console.warn('[fleet] printers.json fehlerhaft:', e.message); }
 }
 loadFleet();
 try { fs.watch(FLEET_FILE, () => setTimeout(loadFleet, 300)); } catch {}
 
 const fleetOf = (id) => typeof id === 'string' && id.startsWith('fleet:')
   ? fleet.find(p => 'fleet:' + p.id === id) : null;
+
+// ---- Druckcode-Gate: Flotte/Kamera/nativer Slicer nur für LAN/Tailnet ODER
+// mit Code (Header X-Fleet-Code bzw. ?fc=). Über den Funnel setzt tailscaled
+// X-Forwarded-For auf die öffentliche Client-IP; LAN-Direktzugriffe haben kein
+// XFF, Tailnet-Proxys eine CGNAT-/private IP. Letzten Hop prüfen (der stammt
+// von tailscaled, nicht vom Client).
+const PRIV_IP = /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|fd7a:115c:|::1$|::ffff:127\.|fe80:)/i;
+function isTrusted(req) {
+  const xff = String(req.headers['x-forwarded-for'] || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (!xff.length) return true;
+  return PRIV_IP.test(xff[xff.length - 1]);
+}
+function fleetOk(req) {
+  if (isTrusted(req)) return true;
+  if (!fleetCode) return false;   // ohne konfigurierten Code bleibt öffentlich alles zu
+  const got = String(req.headers['x-fleet-code'] || req.query.fc || '');
+  return got.length === fleetCode.length &&
+    require('crypto').timingSafeEqual(Buffer.from(got), Buffer.from(fleetCode));
+}
+const needCode = (res) => res.status(403).json({ error: 'Druckcode nötig', needCode: true });
 const adapterOf = (p) => adapters[p.type];
 const caps = (p) => ({
   camera: p.cam !== false,                    // false in printers.json = keine Kamera
@@ -98,7 +128,7 @@ app.get('/api/me', (req, res) => {
 // Nutzers. Ohne Login und ohne Flotte → 401, damit die App das Login-Gate zeigt.
 app.get('/api/printers', async (req, res) => {
   const sid = sidOf(req);
-  const list = await Promise.all(fleet.map(async p => ({
+  const list = await Promise.all((fleetOk(req) ? fleet : []).map(async p => ({
     serial: 'fleet:' + p.id, name: p.name || p.id, model: p.model || p.type,
     online: await adapterOf(p).online(p).catch(() => false),
     type: p.type, caps: caps(p),
@@ -112,7 +142,8 @@ app.get('/api/printers', async (req, res) => {
       })));
     } catch (e) { return res.status(500).json({ error: e.message }); }
   } else if (!list.length) {
-    return res.status(401).json({ error: 'nicht angemeldet' });
+    // needCode: es gäbe eine Flotte, aber der (öffentliche) Client hat keinen Code
+    return res.status(401).json({ error: 'nicht angemeldet', needCode: fleet.length > 0 && !fleetOk(req) });
   }
   res.json(list);
 });
@@ -121,6 +152,7 @@ app.get('/api/printers', async (req, res) => {
 app.get('/api/status/:serial', async (req, res) => {
   const fp = fleetOf(req.params.serial);
   if (fp) {
+    if (!fleetOk(req)) return needCode(res);
     try {
       const st = await adapterOf(fp).status(fp);
       return res.json({ online: st.online, gcode_state: st.state,
@@ -143,6 +175,7 @@ function fanPct(v) { const n = Number(v); return Number.isFinite(n) ? (n <= 15 ?
 app.get('/api/device/:serial', async (req, res) => {
   const fp = fleetOf(req.params.serial);
   if (fp) {
+    if (!fleetOk(req)) return needCode(res);
     try {
       const st = await adapterOf(fp).status(fp);
       return res.json({ ...st, caps: caps(fp) });
@@ -188,6 +221,7 @@ app.get('/api/device/:serial', async (req, res) => {
 app.post('/api/control/:serial', async (req, res) => {
   const fp = fleetOf(req.params.serial);
   if (fp) {
+    if (!fleetOk(req)) return needCode(res);
     const { command, level } = req.body || {};
     try { return res.json({ ok: true, ...(await adapterOf(fp).control(fp, command, { level })) }); }
     catch (e) { return res.status(500).json({ error: e.message }); }
@@ -219,6 +253,7 @@ app.post('/api/send', async (req, res) => {
   const buf = Buffer.from(gcode, 'utf8');
   const fp = fleetOf(serial);
   if (fp) {
+    if (!fleetOk(req)) return needCode(res);
     try {
       const r = await adapterOf(fp).send(fp, name, buf, Boolean(start));
       return res.json({ ok: true, path: fp.type, ...r });
@@ -256,13 +291,15 @@ app.post('/api/send', async (req, res) => {
 });
 
 // ---- Nativer Slice-Dienst (2–3× schneller als Browser-WASM) ----
-// Kein Login nötig — Brücke ist tailnet-only, gleiche Policy wie die Flotte.
-app.get('/api/slice/health', (req, res) => res.json({ available: nativeSlicer.available() }));
+// Gleiche Policy wie die Flotte: LAN/Tailnet frei, öffentlich nur mit Druckcode
+// (ohne Code meldet health "nicht verfügbar" → App sliced im Browser weiter).
+app.get('/api/slice/health', (req, res) => res.json({ available: nativeSlicer.available() && fleetOk(req) }));
 
 // Job einreichen: { filename, model (base64), profiles, overrides, transforms,
 //                   filamentChains, paints } — paints (Mal-Werkzeug): je
 //                   (Objekt,Instanz) null oder { verts, tris, states } als base64
 app.post('/api/slice', (req, res) => {
+  if (!fleetOk(req)) return needCode(res);
   if (!nativeSlicer.available())
     return res.status(503).json({ error: 'nativer Slicer nicht gebaut' });
   const { filename, model, profiles, overrides, transforms, filamentChains, paints, ops } = req.body || {};
@@ -277,12 +314,14 @@ app.post('/api/slice', (req, res) => {
 });
 
 app.get('/api/slice/:id/status', (req, res) => {
+  if (!fleetOk(req)) return needCode(res);
   const s = nativeSlicer.status(req.params.id);
   if (!s) return res.status(404).json({ error: 'unbekannter Job' });
   res.json({ state: s.state, percent: s.percent, text: s.text, error: s.error, warnings: s.warnings });
 });
 
 app.get('/api/slice/:id/gcode', (req, res) => {
+  if (!fleetOk(req)) return needCode(res);
   const p = nativeSlicer.takeGcode(req.params.id);
   if (!p) return res.status(404).json({ error: 'kein G-Code (Job nicht fertig?)' });
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -297,6 +336,7 @@ app.get('/api/camera/snapshot', async (req, res) => {
   // Flotten-Drucker: die Brücke kennt IP/Protokoll selbst (?id=fleet:<id>)
   const fp = fleetOf(String(req.query.id || ''));
   if (fp) {
+    if (!fleetOk(req)) return res.status(403).end();   // Code via ?fc= (img kann keine Header)
     try {
       const jpg = await adapterOf(fp).snapshot(fp);
       if (!jpg) return res.status(503).end();
