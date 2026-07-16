@@ -7538,8 +7538,8 @@ function _loadOCCT() {
   return _ocLoadPromise;
 }
 
-function _occtShapeToThreeGeo(oc, shape, offset) {
-  const mesher = new oc.BRepMesh_IncrementalMesh_2(shape, 0.05, false, 0.3, false);
+function _occtShapeToThreeGeo(oc, shape, offset, linDeflect) {
+  const mesher = new oc.BRepMesh_IncrementalMesh_2(shape, linDeflect || 0.05, false, 0.3, false);
   const positions = [], indices = [];
   let vOff = 0;
   const fExp = new oc.TopExp_Explorer_2(shape, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
@@ -17281,24 +17281,168 @@ ${partXml.join('\n')}
     return { blob: blob3mf, parts: meshes.length, colors: colorIndex.size };
 }
 
-// Echter STEP-Export übers OCCT-Backend (/api/occt-stl2step): Szene als STL bauen,
-// Server vernäht zum Solid und schreibt STEP (facettiertes BRep). Ersetzt den
-// alten Umweg über imagetostl.com.
+// ═══ STEP LOKAL IM BROWSER ═══════════════════════════════════════════════════
+// STEP-Import/-Export laufen zuerst über das Browser-OCCT (volme3d-occt.wasm hat
+// STEPControl/Sewing/ShapeFix an Bord) — das :3001-Backend ist für externe
+// Tester nicht erreichbar (nur /api/occt* wird durchgereicht, und auch das nur,
+// solange der Server läuft). Backend bleibt als Fallback für Fehlerfälle.
+// Pipeline-Portierung von stlToOCCTSolid aus occt-server.js (gleiche
+// opencascade.js-Bindings, gleiche Overload-Namen).
+
+// STL-Bytes → OCCT-Solid: Header-Fix → StlAPI_Reader → Sewing (0.1) →
+// Shell-weise Solids (Volumen-Check, Orientierung) → Fuse | MakeSolid | ShapeFix.
+function _stlToOCCTSolidLocal(oc, u8) {
+  // OCCTs ASCII/Binär-Heuristik: Binär-STL aus lauter druckbaren Bytes wird
+  // fälschlich als ASCII geparst → Non-ASCII-Marker in den Header (s. Backend).
+  const stl = new Uint8Array(u8);   // Kopie — Original nicht anfassen
+  if (stl.length >= 84) {
+    const nT = new DataView(stl.buffer, stl.byteOffset).getUint32(80, true);
+    if (stl.length === 84 + 50 * nT) stl[0] = 0xFF;
+  }
+  const tmpPath = '/s.stl';
+  oc.FS.writeFile(tmpPath, stl);
+  const shape  = new oc.TopoDS_Shape();
+  const reader = new oc.StlAPI_Reader();
+  const ok = reader.Read(shape, tmpPath);
+  try { oc.FS.unlink(tmpPath); } catch (_) {}
+  if (!ok) throw new Error('STL nicht lesbar');
+
+  const sew = new oc.BRepBuilderAPI_Sewing(0.1, true, true, true, false);
+  sew.Add(shape);
+  const prog = new oc.Handle_Message_ProgressIndicator_1();
+  sew.Perform(prog); prog.delete();
+  const sewn = sew.SewedShape();
+  sew.delete();
+
+  const shells = [];
+  {
+    const exp = new oc.TopExp_Explorer_2(sewn, oc.TopAbs_ShapeEnum.TopAbs_SHELL, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+    while (exp.More()) { shells.push(oc.TopoDS.Shell_1(exp.Current())); exp.Next(); }
+    exp.delete();
+  }
+  const signedVol = s => { try { const p = new oc.GProp_GProps_1();
+    oc.BRepGProp.VolumeProperties_1(s, p, false, false, false);
+    const v = p.Mass(); p.delete(); return v; } catch (_) { return NaN; } };
+
+  // Mehrere Hüllen: je geschlossener Hülle ein orientiertes Einzel-Solid, dann
+  // Fuse — ein Sammel-MakeSolid hätte undefinierte Innen/Außen-Klassifikation.
+  if (shells.length > 1) {
+    const solids = [];
+    for (const shell of shells) {
+      try {
+        const sfs = new oc.ShapeFix_Solid_1();
+        let so = sfs.SolidFromShell(shell);
+        sfs.delete();
+        if (!so || so.ShapeType().value !== 2) continue;   // 2 = SOLID
+        const v = signedVol(so);
+        if (!isFinite(v) || Math.abs(v) < 1e-3) continue;  // offene Hülle/Sliver
+        if (v < 0) { try { so = so.Reversed(); } catch (_) {} }
+        solids.push(so);
+      } catch (_) {}
+    }
+    if (solids.length) {
+      let result = solids[0];
+      for (let i = 1; i < solids.length; i++) {
+        const fu = new oc.BRepAlgoAPI_Fuse_3(result, solids[i]);
+        fu.Build();
+        if (fu.IsDone()) result = fu.Shape();
+        fu.delete();
+      }
+      return result;
+    }
+  }
+  // Normalfall: 1 Shell → MakeSolid (+ Orientierungs-Check)
+  try {
+    const mkSolid = new oc.BRepBuilderAPI_MakeSolid_1();
+    for (const shell of shells) mkSolid.Add(shell);
+    if (shells.length > 0 && mkSolid.IsDone()) {
+      let solid = mkSolid.Solid(); mkSolid.delete();
+      const v = signedVol(solid);
+      if (isFinite(v) && v < 0) solid = solid.Reversed();
+      return solid;
+    }
+    mkSolid.delete();
+  } catch (_) {}
+  // Reparatur-Versuch: ShapeFix_Solid
+  try {
+    if (shells.length) {
+      const sfs = new oc.ShapeFix_Solid_1();
+      const solid = sfs.SolidFromShell(shells[0]);
+      sfs.delete();
+      if (solid && solid.ShapeType().value === 2) return solid;
+    }
+  } catch (_) {}
+  return sewn;   // Fallback: genähtes Compound (STEP-Writer kommt damit klar)
+}
+
+// BufferGeometry → Binär-STL-Bytes (Koordinaten unverändert übernommen).
+function _geoToBinaryStl(geo) {
+  const pos = geo.attributes.position, idx = geo.index ? geo.index.array : null;
+  const nT = Math.floor((idx ? idx.length : pos.count) / 3);
+  const buf = new ArrayBuffer(84 + nT * 50);
+  const view = new DataView(buf);
+  const header = 'Volme3D STEP-Import (lokal tesselliert)';
+  for (let i = 0; i < 80; i++) view.setUint8(i, header.charCodeAt(i) || 32);
+  view.setUint32(80, nT, true);
+  let off = 84;
+  for (let t = 0; t < nT; t++) {
+    const a = idx ? idx[t*3] : t*3, b = idx ? idx[t*3+1] : t*3+1, c = idx ? idx[t*3+2] : t*3+2;
+    const ax = pos.getX(a), ay = pos.getY(a), az = pos.getZ(a);
+    const bx = pos.getX(b), by = pos.getY(b), bz = pos.getZ(b);
+    const cx = pos.getX(c), cy = pos.getY(c), cz = pos.getZ(c);
+    let nx = (by-ay)*(cz-az)-(bz-az)*(cy-ay),
+        ny = (bz-az)*(cx-ax)-(bx-ax)*(cz-az),
+        nz = (bx-ax)*(cy-ay)-(by-ay)*(cx-ax);
+    const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+    view.setFloat32(off,    nx, true); view.setFloat32(off+4,  ny, true); view.setFloat32(off+8,  nz, true);
+    view.setFloat32(off+12, ax, true); view.setFloat32(off+16, ay, true); view.setFloat32(off+20, az, true);
+    view.setFloat32(off+24, bx, true); view.setFloat32(off+28, by, true); view.setFloat32(off+32, bz, true);
+    view.setFloat32(off+36, cx, true); view.setFloat32(off+40, cy, true); view.setFloat32(off+44, cz, true);
+    view.setUint16(off+48, 0, true);
+    off += 50;
+  }
+  return buf;
+}
+
+// Lokaler STEP-Export: STL (mm) → Solid → STEPControl_Writer → Bytes.
+async function _stepExportLocal(stlBuf) {
+  const oc = await _loadOCCT();
+  const solid = _stlToOCCTSolidLocal(oc, new Uint8Array(stlBuf));
+  const writer = new oc.STEPControl_Writer_1();
+  const st = writer.Transfer(solid, oc.STEPControl_StepModelType.STEPControl_AsIs, true);
+  if ((st.value !== undefined ? st.value : st) !== 1) { writer.delete(); throw new Error('STEP-Transfer fehlgeschlagen'); }
+  const wst = writer.Write('/out.step');
+  writer.delete();
+  if ((wst.value !== undefined ? wst.value : wst) !== 1) throw new Error('STEP-Write fehlgeschlagen');
+  const stepBuf = oc.FS.readFile('/out.step');
+  try { oc.FS.unlink('/out.step'); } catch (_) {}
+  return stepBuf;
+}
+
+// STEP-Export: erst lokal (Browser-OCCT), bei Fehlern übers Backend
+// (/api/occt-stl2step). Ergebnis ist in beiden Fällen ein facettiertes BRep.
 async function exportSTEP() {
   document.getElementById('stl-menu').classList.remove('show');
   const r = _buildStlBlob(_exportSrc()); if (!r) return;
   notify('STEP wird erzeugt … (Vernähen kann bei großen Modellen dauern)', 'i');
+  const buf = await r.blob.arrayBuffer();
   try {
-    const buf = await r.blob.arrayBuffer();
-    const resp = await fetch(_OCCT_BASE + '/api/occt-stl2step', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stlBase64: _bufToBase64(buf) })
-    });
-    const j = await resp.json();
-    if (j.error) throw new Error(j.error);
-    const bin = atob(j.stepBase64);
-    const u8 = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    let u8;
+    try {
+      if (!_oc && !_ocLoadPromise) notify('CAD-Kernel wird geladen …', 'i');
+      u8 = await _stepExportLocal(buf);
+    } catch (eLocal) {
+      console.warn('[step-export] lokal fehlgeschlagen, versuche Backend:', eLocal);
+      const resp = await fetch(_OCCT_BASE + '/api/occt-stl2step', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stlBase64: _bufToBase64(buf) })
+      });
+      const j = await resp.json();
+      if (j.error) throw new Error(j.error);
+      const bin = atob(j.stepBase64);
+      u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    }
     const blob = new Blob([u8], { type: 'application/octet-stream' });
     const res = await _saveExport(blob, _designFilename('step'));
     notify(`STEP ${res.wrote ? '→ ' + res.dir : 'exportiert'} ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok');
@@ -17834,23 +17978,54 @@ function handleImport(e) {
   reader.readAsArrayBuffer(file); e.target.value = '';
 }
 
-// STEP-Import: Datei ans OCCT-Backend (/api/occt-step2stl), tesselliertes STL zurück,
-// dann durch den normalen STL-Import-Pfad (Größendialog, Positionierung, _origStlBuf
-// für die Boolean-Pipeline). STEP rechnet in mm — wie unsere STL-Kette.
+// Lokaler STEP-Import: STEPControl_Reader → Tessellierung (0.2 mm) → Binär-STL-
+// Bytes (mm, Z-up — wie die Backend-Antwort), damit der nachgelagerte STL-Pfad
+// inkl. _origStlBuf für die Boolean-Pipeline identisch bleibt.
+async function _stepImportLocal(stepBuf) {
+  const oc = await _loadOCCT();
+  oc.FS.writeFile('/in.step', new Uint8Array(stepBuf));
+  const reader = new oc.STEPControl_Reader_1();
+  const rst = reader.ReadFile('/in.step');
+  try { oc.FS.unlink('/in.step'); } catch (_) {}
+  if ((rst.value !== undefined ? rst.value : rst) !== 1) {   // 1 = IFSelect_RetDone
+    reader.delete();
+    throw new Error('STEP-Datei nicht lesbar');
+  }
+  const nRoots = reader.TransferRoots();
+  if (!nRoots) { reader.delete(); throw new Error('STEP enthält keine übertragbaren Körper'); }
+  const shape = reader.OneShape();   // mehrere Roots → Compound
+  reader.delete();
+  const geo = _occtShapeToThreeGeo(oc, shape, { x: 0, y: 0, z: 0 }, 0.2);
+  if (!geo.attributes.position || !geo.attributes.position.count)
+    throw new Error('STEP-Körper ließ sich nicht tessellieren');
+  return _geoToBinaryStl(geo);
+}
+
+// STEP-Import: erst lokal (Browser-OCCT), bei Fehlern ans Backend
+// (/api/occt-step2stl). Danach normaler STL-Import-Pfad (Größendialog,
+// Positionierung, _origStlBuf). STEP rechnet in mm — wie unsere STL-Kette.
 async function _importStepFile(file) {
   notify('STEP wird umgewandelt … (' + (file.size / 1024).toFixed(0) + ' KB)', 'i');
   try {
     const buf = await file.arrayBuffer();
-    const resp = await fetch(_OCCT_BASE + '/api/occt-step2stl', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stepBase64: _bufToBase64(buf) })
-    });
-    const j = await resp.json();
-    if (j.error) throw new Error(j.error);
-    const bin = atob(j.stlBase64);
-    const u8 = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-    _addImportedStl(u8.buffer, file.name.replace(/\.(step|stp)$/i, '.stl'), true);
+    let stlBuf;
+    try {
+      if (!_oc && !_ocLoadPromise) notify('CAD-Kernel wird geladen …', 'i');
+      stlBuf = await _stepImportLocal(buf);
+    } catch (eLocal) {
+      console.warn('[step-import] lokal fehlgeschlagen, versuche Backend:', eLocal);
+      const resp = await fetch(_OCCT_BASE + '/api/occt-step2stl', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stepBase64: _bufToBase64(buf) })
+      });
+      const j = await resp.json();
+      if (j.error) throw new Error(j.error);
+      const bin = atob(j.stlBase64);
+      const u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      stlBuf = u8.buffer;
+    }
+    _addImportedStl(stlBuf, file.name.replace(/\.(step|stp)$/i, '.stl'), true);
   } catch (err) {
     notify('STEP-Import fehlgeschlagen: ' + err.message, 'e');
   }
