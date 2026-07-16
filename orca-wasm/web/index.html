@@ -351,6 +351,10 @@
   <div id="overlay" hidden>
     <input type="range" id="layerSlider" min="1" max="1" value="1">
     <span id="layerLabel"></span>
+    <select id="viewColor" hidden style="width:auto;flex:0 0 auto">
+      <option value="filament">Filamentfarben</option>
+      <option value="feature">Merkmale</option>
+    </select>
   </div>
 
   <div id="nozDlg" hidden>
@@ -1584,6 +1588,8 @@ const FEATURE_COLORS = {
   'Bridge': 0x4dd0e1, 'Internal Bridge': 0x80deea, 'Gap infill': 0xff80ab,
 };
 const DEFAULT_COLOR = 0x8899aa;
+// Fallback-Palette für die Filament-Ansicht, wenn ein Tool keine Projektfarbe hat
+const FIL_FALLBACK = [0x2ea2d8, 0xff4d4d, 0x4dff88, 0xfff144, 0xb04dff, 0xff984d, 0x4dc3ff, 0x9e9e9e];
 const toolpathGroup = new THREE.Group();
 scene.add(toolpathGroup);
 const modelGroup = new THREE.Group();
@@ -3018,10 +3024,16 @@ window._vs = {
 
 function parseGcode(gcode) {
   const layers = []; let cur = null;
-  let x = 0, y = 0, z = 0, e = 0, feature = 'unbekannt', absE = true;
+  let x = 0, y = 0, z = 0, e = 0, feature = 'unbekannt', tool = 0, absE = true;
   for (const line of gcode.split('\n')) {
     if ((line.startsWith('; CHANGE_LAYER') || line.startsWith(';LAYER_CHANGE'))) { cur = { features: new Map() }; layers.push(cur); continue; }
     if (line.startsWith('; FEATURE: ')) { feature = line.slice(11).trim(); continue; }
+    if (line[0] === 'T') {
+      // Werkzeugwechsel (Mehrfarbdruck). Bambu-Sonderwerte (T255/T1000 …) ignorieren.
+      const t = parseInt(line.slice(1), 10);
+      if (Number.isInteger(t) && t >= 0 && t < 64) tool = t;
+      continue;
+    }
     if (line.startsWith('M82')) { absE = true; continue; }
     if (line.startsWith('M83')) { absE = false; continue; }
     if (!/^G[0123] /.test(line)) continue;
@@ -3034,30 +3046,59 @@ function parseGcode(gcode) {
     }
     const de = absE ? ne - e : ne;
     if (cur && de > 0 && (nx !== x || ny !== y)) {
-      if (!cur.features.has(feature)) cur.features.set(feature, []);
-      cur.features.get(feature).push(x, y, z, nx, ny, nz);
+      const key = tool + '|' + feature;   // Merkmal UND Filament je Segmentgruppe
+      if (!cur.features.has(key)) cur.features.set(key, []);
+      cur.features.get(key).push(x, y, z, nx, ny, nz);
     }
     x = nx; y = ny; z = nz; e = absE ? ne : e + Math.max(0, ne);
   }
   return layers.filter(l => l.features.size);
 }
 
+let previewFeatures = [], previewTools = [];
+function filColor(t) {
+  const c = projectFilaments[t]?.color;
+  const n = c ? parseInt(String(c).replace('#', ''), 16) : NaN;
+  return Number.isFinite(n) ? n : FIL_FALLBACK[t % FIL_FALLBACK.length];
+}
+// Segmente + Legende passend zum gewählten Farbmodus einfärben (ohne Neuaufbau)
+function applyPreviewColors() {
+  const byFil = $('viewColor').value === 'filament' && previewTools.length > 1;
+  for (const g of layerGroups) for (const seg of g.children)
+    seg.material.color.set(byFil ? filColor(seg.userData.tool)
+                                 : (FEATURE_COLORS[seg.userData.feature] ?? DEFAULT_COLOR));
+  const sw = (c) => `<span class="sw" style="background:#${c.toString(16).padStart(6, '0')}"></span>`;
+  $('legend').innerHTML = byFil
+    ? previewTools.map(t => {
+        const f = projectFilaments[t];
+        return `<span>${sw(filColor(t))}Filament ${t + 1}${f ? ' · ' + (f.label || f.type || '') : ''}</span>`;
+      }).join('')
+    : previewFeatures.map(f => `<span>${sw(FEATURE_COLORS[f] ?? DEFAULT_COLOR)}${f}</span>`).join('');
+}
+$('viewColor').onchange = applyPreviewColors;
+
 function showToolpaths(layers) {
   toolpathGroup.clear(); layerGroups = [];
-  const seen = new Set();
+  const seenF = new Set(), seenT = new Set();
   for (const layer of layers) {
     const g = new THREE.Group();
-    for (const [feature, coords] of layer.features) {
-      seen.add(feature);
+    for (const [key, coords] of layer.features) {
+      const sep = key.indexOf('|');
+      const tool = +key.slice(0, sep), feature = key.slice(sep + 1);
+      seenF.add(feature); seenT.add(tool);
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(coords, 3));
-      g.add(new THREE.LineSegments(geo,
-        new THREE.LineBasicMaterial({ color: FEATURE_COLORS[feature] ?? DEFAULT_COLOR })));
+      const seg = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: DEFAULT_COLOR }));
+      seg.userData = { tool, feature };
+      g.add(seg);
     }
     toolpathGroup.add(g); layerGroups.push(g);
   }
-  $('legend').innerHTML = [...seen].map(f =>
-    `<span><span class="sw" style="background:#${(FEATURE_COLORS[f] ?? DEFAULT_COLOR).toString(16).padStart(6,'0')}"></span>${f}</span>`).join('');
+  previewFeatures = [...seenF]; previewTools = [...seenT].sort((a, b) => a - b);
+  // Umschalter nur bei Mehrfarbdruck; dann direkt in Filamentfarben starten
+  $('viewColor').hidden = previewTools.length <= 1;
+  $('viewColor').value = previewTools.length > 1 ? 'filament' : 'feature';
+  applyPreviewColors();
   $('legend').hidden = false;
   const s = $('layerSlider');
   s.max = layers.length; s.value = layers.length;
@@ -3068,6 +3109,12 @@ function setVisibleLayers(n) {
   layerGroups.forEach((g, i) => g.visible = i < n);
   $('layerLabel').textContent = `${n}/${layerGroups.length}`;
 }
+// Headless-Debug: Vorschau direkt mit G-Code füttern (Muster wie _paintDebug)
+window._previewDebug = (gcode) => {
+  showToolpaths(parseGcode(gcode));
+  return { layers: layerGroups.length, tools: previewTools, features: previewFeatures,
+           legend: $('legend').textContent, mode: $('viewColor').value };
+};
 $('layerSlider').oninput = () => setVisibleLayers(+$('layerSlider').value);
 
 // ---------- Slicen (im Web-Worker — UI bleibt bedienbar) ----------
