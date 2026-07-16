@@ -93,13 +93,15 @@
             gap: .25rem; font-size: .78rem; background: rgba(255,255,255,.88); border: 1px solid var(--border); padding: .5rem .7rem;
             border-radius: 8px; }
   .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
-  /* Düsen-Sync-Dialog (H2-Serie: Dual-Extruder + Hotend-Magazin) */
-  #nozDlg { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex;
+  /* Düsen-Sync- und Sende-Dialog (gleiche Modal-Optik) */
+  #nozDlg, #sendDlg { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex;
             align-items: center; justify-content: center; z-index: 60; }
-  #nozDlg[hidden] { display: none; }
-  #nozDlg .nozBox { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  #nozDlg[hidden], #sendDlg[hidden] { display: none; }
+  #nozDlg .nozBox, #sendDlg .nozBox { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
                     padding: 1rem 1.2rem; width: min(34rem, calc(100vw - 2rem)); max-height: 88vh; overflow: auto;
                     box-shadow: 0 12px 40px rgba(0,0,0,.25); font-size: .88rem; }
+  .sdRow { display: flex; align-items: center; gap: .6rem; margin: .35rem 0; }
+  .sdRow select { flex: 1; min-width: 0; }
   #nozDlg table { width: 100%; border-collapse: collapse; margin: .4rem 0 .2rem; }
   #nozDlg th, #nozDlg td { border-bottom: 1px solid var(--border); padding: .35rem .5rem; text-align: center; }
   #nozDlg th { font-weight: 600; background: var(--bg); }
@@ -364,6 +366,17 @@
       <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:.9rem">
         <button id="nozCancel" class="secondary">Abbrechen</button>
         <button id="nozOk">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="sendDlg" hidden>
+    <div class="nozBox">
+      <h3 style="margin:.1rem 0 .5rem">Druckauftrag senden</h3>
+      <div id="sendBody"></div>
+      <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:.9rem">
+        <button id="sendCancel" class="secondary">Abbrechen</button>
+        <button id="sendGo">Senden</button>
       </div>
     </div>
   </div>
@@ -690,7 +703,10 @@ $('sendPrinter').onchange = startStatusPolling;
 function updateSend() {
   $('btnSend').disabled = $('btnDownload').disabled || !bridgePrinters.length;
 }
-$('btnSend').onclick = async () => {
+// Eigentlicher Versand; extra = Optionen aus dem Sende-Dialog (Bambu)
+let lastSendExtra = {};
+async function doSend(extra = {}) {
+  lastSendExtra = extra;
   $('btnSend').disabled = true;
   $('sendStatus').textContent = 'Sende …';
   try {
@@ -701,6 +717,7 @@ $('btnSend').onclick = async () => {
       useAms: projectFilaments.length > 1,   // Mehrfarbdruck braucht das AMS
       lanIp: $('lanIp').value.trim() || undefined,
       lanCode: $('lanCode').value.trim() || undefined,
+      ...extra,
     } });
     if (status === 200 && json.ok) {
       const via = json.path === 'lan' ? 'LAN'
@@ -713,8 +730,7 @@ $('btnSend').onclick = async () => {
       if (c && c.trim()) {
         fleetCode = c.trim();
         localStorage.setItem('vs-fleet-code', fleetCode);
-        $('btnSend').disabled = false;
-        return $('btnSend').onclick();
+        return doSend(lastSendExtra);
       }
       $('sendStatus').innerHTML = '<span class="err">Ohne Druckcode kein Druckstart</span>';
     } else {
@@ -724,6 +740,93 @@ $('btnSend').onclick = async () => {
     $('sendStatus').innerHTML = '<span class="err">Brücke nicht erreichbar</span>';
   }
   $('btnSend').disabled = false;
+}
+
+// ---------- Sende-Dialog (wie Bambu Studio „Druckauftrag senden") ----------
+// Nur für Bambu-Drucker: Jobname, Düsen-Abgleich, Filament→AMS-Zuordnung,
+// Zeitraffer/Nivellierung/Flussdynamik. Flotten-Drucker senden direkt.
+$('btnSend').onclick = () => {
+  const p = selectedPrinter();
+  if (p && !isFleet(p)) return openSendDialog(p);
+  return doSend();
+};
+
+const amsSlotName = (g) => g >= 254 ? 'Extern' + (g === 255 ? ' 2' : '')
+  : String.fromCharCode(65 + Math.floor(g / 4)) + (g % 4 + 1);   // 0→A1, 5→B2
+// Farbabstand für die Vorbelegung Filament → Slot
+function colDist(a, b) {
+  const pa = parseInt(String(a).replace('#', ''), 16), pb = parseInt(String(b).replace('#', ''), 16);
+  if (!Number.isFinite(pa) || !Number.isFinite(pb)) return 1e9;
+  const dr = (pa >> 16 & 255) - (pb >> 16 & 255), dg = (pa >> 8 & 255) - (pb >> 8 & 255), db = (pa & 255) - (pb & 255);
+  return dr * dr + dg * dg + db * db;
+}
+
+async function openSendDialog(p) {
+  $('sendStatus').textContent = 'Frage Drucker ab …';
+  let dev = {};
+  try { dev = (await bridge('/api/device/' + encodeURIComponent(p.serial))).json || {}; } catch {}
+  $('sendStatus').textContent = '';
+  const grab = re => (lastGcode.match(re) || [, ''])[1];
+  const time = grab(/; total estimated time: (.*)/);
+  const gram = grab(/; filament used \[g\] = ([\d.]+)/) || grab(/; total filament used \[g\] = ([\d.]+)/);
+  // Düsen-Zeile + Warnung, wenn die Profil-Variante nirgends am Drucker steckt
+  let nozLine = '';
+  const nzs = dev.nozzles?.extruders?.filter(e => e.nozzle) || [];
+  if (nzs.length) {
+    nozLine = nzs.map(e => `${nzs.length > 1 ? (e.side === 'left' ? 'links ' : 'rechts ') : ''}${nozMm(e.nozzle.diameter)}`).join(' · ');
+    const want = variantDiam($('machine').value);
+    if (want && !nzs.some(e => String(e.nozzle.diameter) === want)
+             && !(dev.nozzles.magazine || []).some(m => String(m.diameter) === want))
+      nozLine += ` <span class="err">⚠ Profil ist ${nozMm(want)} — Drucker hat diese Düse nicht</span>`;
+  }
+  // Filamente des Jobs (Mehrfarbdruck oder das eine gewählte)
+  const fils = projectFilaments.length > 1 ? projectFilaments
+    : [{ name: $('filament').value, type: '', label: '',
+         color: changedValues.get('filament_colour') || effVal('filament_colour') || '#2ea2d8' }];
+  const trays = (dev.trays || []).filter(t => t.gid != null);
+  const best = (f) => {
+    let b = null, bd = Infinity;
+    for (const t of trays) {
+      let d = colDist(f.color, '#' + (t.color || ''));
+      if (f.type && t.type === f.type) d -= 1e6;   // Typ-Treffer schlägt Farbnähe
+      if (d < bd) { bd = d; b = t; }
+    }
+    return b?.gid;
+  };
+  const options = (sel) => trays.map(t =>
+    `<option value="${t.gid}"${t.gid === sel ? ' selected' : ''}>${amsSlotName(t.gid)} · ${t.type || '?'}</option>`).join('');
+  $('sendBody').innerHTML = `
+    <div class="sdRow"><label style="opacity:1;min-width:6rem;margin:0">Jobname</label>
+      <input id="sdName" style="flex:1" value="${modelName.replace(/\.[^.]+$/, '').replace(/"/g, '&quot;')}"></div>
+    <div class="sdRow" style="opacity:.85">🖨️ ${p.name}${nozLine ? ' — Düsen: ' + nozLine : ''}</div>
+    <div class="sdRow" style="opacity:.85">⏱ ${time || '–'} &nbsp;·&nbsp; 🧵 ${gram ? gram + ' g' : '–'}</div>
+    ${trays.length ? `<div style="margin-top:.5rem;font-weight:600">Filament → AMS-Slot</div>`
+      + fils.map((f, i) => `<div class="sdRow">
+          <span class="nozChip" style="width:14px;height:14px;background:${f.color || '#ccc'}"></span>
+          <span style="min-width:6rem">${i + 1} · ${f.label || f.type || f.name.slice(0, 20)}</span>
+          <select class="sdTray">${options(best(f))}</select></div>`).join('')
+      : `<div class="sdRow" style="opacity:.65">Kein AMS gemeldet — der Drucker nimmt die geladene Spule.</div>`}
+    <div style="margin-top:.5rem;font-weight:600">Optionen</div>
+    <label class="sdRow" style="opacity:1"><input type="checkbox" id="sdLevel" style="width:auto" checked> Automatische Bettnivellierung</label>
+    <label class="sdRow" style="opacity:1"><input type="checkbox" id="sdFlow" style="width:auto" checked> Kalibrierung Flussdynamik</label>
+    <label class="sdRow" style="opacity:1"><input type="checkbox" id="sdLapse" style="width:auto"> Zeitraffer aufnehmen</label>
+    ${$('sendStart').checked ? '' : '<div style="opacity:.6;font-size:.78rem">„Druck sofort starten" ist aus — die Datei wird nur hochgeladen.</div>'}`;
+  $('sendDlg').hidden = false;
+}
+$('sendCancel').onclick = () => { $('sendDlg').hidden = true; };
+$('sendDlg').onclick = (e) => { if (e.target === $('sendDlg')) $('sendDlg').hidden = true; };
+$('sendGo').onclick = () => {
+  const mapping = [...$('sendBody').querySelectorAll('select.sdTray')].map(s => +s.value);
+  const name = ($('sdName')?.value.trim() || modelName.replace(/\.[^.]+$/, '')) + '.gcode';
+  $('sendDlg').hidden = true;
+  doSend({
+    filename: name,
+    timelapse: $('sdLapse').checked,
+    bedLeveling: $('sdLevel').checked,
+    flowCali: $('sdFlow').checked,
+    // Extern-Spulen (254/255) brauchen kein AMS
+    ...(mapping.length ? { amsMapping: mapping, useAms: mapping.some(g => g < 254) } : {}),
+  });
 };
 
 // Beim Start: bestehende Session prüfen; lokale Flotte kommt auch ohne Login

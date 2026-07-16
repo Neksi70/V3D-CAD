@@ -140,7 +140,12 @@ app.get('/api/printers', async (req, res) => {
         serial: d.serial, name: d.name, model: d.model, online: d.online, type: 'bambu',
         caps: { camera: true, light: true, ams: true },
       })));
-    } catch (e) { return res.status(500).json({ error: e.message }); }
+    } catch (e) {
+      // Bambu-API-Schluckauf soll nicht die ganze Liste killen — Flotte
+      // trotzdem liefern; ganz ohne Drucker bleibt der Fehler sichtbar.
+      console.warn('[cloud] listDevices:', e.message);
+      if (!list.length) return res.status(500).json({ error: e.message });
+    }
   } else if (!list.length) {
     // needCode: es gäbe eine Flotte, aber der (öffentliche) Client hat keinen Code
     return res.status(401).json({ error: 'nicht angemeldet', needCode: fleet.length > 0 && !fleetOk(req) });
@@ -217,21 +222,23 @@ app.get('/api/device/:serial', async (req, res) => {
   try {
     const st = await cloud.getStatus(sid, req.params.serial).catch(() => null);
     if (!st) return res.json({ online: false });
-    // AMS-Slots einsammeln (Farbe hex RRGGBBAA, Typ)
+    // AMS-Slots einsammeln (Farbe hex RRGGBBAA, Typ). gid = globale Tray-Nummer
+    // (AMS-Einheit × 4 + Slot) — die braucht ams_mapping beim Druckstart.
     const trays = [];
     for (const unit of (st.ams?.ams || [])) for (const t of (unit.tray || [])) {
       if (t.tray_type || t.tray_color)
-        trays.push({ id: t.id, type: t.tray_type || '', color: (t.tray_color || '').slice(0, 6),
+        trays.push({ id: t.id, gid: Number(unit.id || 0) * 4 + Number(t.id || 0),
+                     type: t.tray_type || '', color: (t.tray_color || '').slice(0, 6),
                      sub: t.tray_sub_brands || '', idx: t.tray_info_idx || '' });
     }
     if (st.vt_tray && (st.vt_tray.tray_type || st.vt_tray.tray_color))
-      trays.push({ id: 'ext', type: st.vt_tray.tray_type || '', color: (st.vt_tray.tray_color || '').slice(0, 6),
+      trays.push({ id: 'ext', gid: 254, type: st.vt_tray.tray_type || '', color: (st.vt_tray.tray_color || '').slice(0, 6),
                    sub: st.vt_tray.tray_sub_brands || '', idx: st.vt_tray.tray_info_idx || '', external: true });
     // H2-Serie (Dual-Düse): externe Spulen kommen als vir_slot-Array (id 254/255)
     for (const v of (st.vir_slot || [])) {
       if (!v.tray_type) continue;   // leerer virtueller Slot
-      trays.push({ id: 'ext' + (v.id === '255' ? '2' : ''), type: v.tray_type || '',
-                   color: (v.tray_color || '').slice(0, 6),
+      trays.push({ id: 'ext' + (v.id === '255' ? '2' : ''), gid: Number(v.id) || 254,
+                   type: v.tray_type || '', color: (v.tray_color || '').slice(0, 6),
                    sub: v.tray_sub_brands || '', idx: v.tray_info_idx || '', external: true });
     }
     const light = (st.lights_report || []).find(l => l.node === 'chamber_light')?.mode;
@@ -276,12 +283,24 @@ app.post('/api/control/:serial', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// G-Code senden: { serial, filename, gcode, start }
+// G-Code senden: { serial, filename, gcode, start } + Druckoptionen
+// { timelapse, bedLeveling, flowCali, amsMapping } aus dem Sende-Dialog.
 app.post('/api/send', async (req, res) => {
-  const { serial, filename, gcode, start, lanIp, lanCode, useAms } = req.body || {};
+  const { serial, filename, gcode, start, lanIp, lanCode, useAms,
+          timelapse, bedLeveling, flowCali, amsMapping } = req.body || {};
   if (!serial || !gcode) return res.status(400).json({ error: 'serial/gcode nötig' });
   const name = (filename || 'volmeslice.gcode').replace(/[^\w.\-]/g, '_');
   const buf = Buffer.from(gcode, 'utf8');
+  // Druckoptionen für project_file. Achtung Schreibweise: der Drucker erwartet
+  // "bed_levelling" (britisch, wie OpenBambuAPI) — bed_leveling bleibt als
+  // Doppelgänger drin, falls ältere Firmware die US-Schreibweise liest.
+  const printOpts = {
+    bed_type: 'auto', use_ams: Boolean(useAms),
+    timelapse: Boolean(timelapse),
+    bed_levelling: bedLeveling !== false, bed_leveling: bedLeveling !== false,
+    flow_cali: Boolean(flowCali), vibration_cali: false,
+    ...(Array.isArray(amsMapping) && amsMapping.length ? { ams_mapping: amsMapping.map(Number) } : {}),
+  };
   const fp = fleetOf(serial);
   if (fp) {
     if (!fleetOk(req)) return needCode(res);
@@ -302,7 +321,7 @@ app.post('/api/send', async (req, res) => {
         let pr = null;
         if (start) pr = await lan.sendCommand(p, { print: { sequence_id: '0', command: 'project_file',
           param: name, subtask_name: name.replace(/\.[^.]+$/, ''), url: `ftp://${name}`,
-          bed_type: 'auto', use_ams: Boolean(useAms), timelapse: false, bed_leveling: true } }, { waitMs: 3000 });
+          ...printOpts } }, { waitMs: 3000 });
         return res.json({ ok: true, path: 'lan', uploaded: name, print: pr });
       }
     }
@@ -311,7 +330,7 @@ app.post('/api/send', async (req, res) => {
     if (start) {
       const r = await cloud.sendCommand(sid, serial, { print: { sequence_id: '0',
         command: 'project_file', param: name, subtask_name: name.replace(/\.[^.]+$/, ''),
-        use_ams: Boolean(useAms) } }, { waitMs: 3000 }).catch(e => ({ error: e.message }));
+        ...printOpts } }, { waitMs: 3000 }).catch(e => ({ error: e.message }));
       return res.json({ ok: !r.error, path: 'cloud', experimental: true,
         note: 'Cloud-Dateiversand ist experimentell — Datei muss ggf. schon auf dem Drucker liegen.', print: r });
     }
