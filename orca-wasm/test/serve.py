@@ -52,6 +52,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 with open(os.path.join(PROFILES, vendor + '.json')) as f:
                     idx = json.load(f)
+                # model_id (z. B. "O1C2") aus den machine_model-Profilen — die
+                # Drucker melden ihren Typ als model_id über MQTT/Cloud
+                model_ids = {}
+                for e in idx.get('machine_model_list', []):
+                    p = os.path.normpath(os.path.join(PROFILES, vendor, e.get('sub_path', '')))
+                    if not p.startswith(os.path.normpath(PROFILES)):
+                        continue
+                    try:
+                        with open(p) as f:
+                            model_ids[e['name']] = json.load(f).get('model_id', '')
+                    except (OSError, ValueError, KeyError):
+                        continue
                 out = []
                 for e in idx.get('machine_list', []):
                     p = os.path.normpath(os.path.join(PROFILES, vendor, e.get('sub_path', '')))
@@ -65,7 +77,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if str(j.get('instantiation')) == 'false':
                         continue
                     first = lambda v: (v[0] if isinstance(v, list) and v else v) or ''
-                    out.append({'name': e['name'], 'model': j.get('printer_model') or e['name'],
+                    model = j.get('printer_model') or e['name']
+                    out.append({'name': e['name'], 'model': model,
+                                'modelId': model_ids.get(model, ''),
                                 'defProcess': first(j.get('default_print_profile')),
                                 'defFilament': first(j.get('default_filament_profile'))})
                 body, ok = json.dumps(out).encode(), True

@@ -93,6 +93,26 @@
             gap: .25rem; font-size: .78rem; background: rgba(255,255,255,.88); border: 1px solid var(--border); padding: .5rem .7rem;
             border-radius: 8px; }
   .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  /* Düsen-Sync-Dialog (H2-Serie: Dual-Extruder + Hotend-Magazin) */
+  #nozDlg { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex;
+            align-items: center; justify-content: center; z-index: 60; }
+  #nozDlg[hidden] { display: none; }
+  #nozDlg .nozBox { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+                    padding: 1rem 1.2rem; width: min(34rem, calc(100vw - 2rem)); max-height: 88vh; overflow: auto;
+                    box-shadow: 0 12px 40px rgba(0,0,0,.25); font-size: .88rem; }
+  #nozDlg table { width: 100%; border-collapse: collapse; margin: .4rem 0 .2rem; }
+  #nozDlg th, #nozDlg td { border-bottom: 1px solid var(--border); padding: .35rem .5rem; text-align: center; }
+  #nozDlg th { font-weight: 600; background: var(--bg); }
+  #nozDlg td:first-child, #nozDlg th:first-child { text-align: left; }
+  #nozDlg tr.nozRow { cursor: pointer; }
+  #nozDlg tr.nozOff { opacity: .45; }
+  .nozMag { display: grid; grid-template-columns: repeat(3, 1fr); gap: .4rem; margin-top: .4rem; }
+  .nozCell { border: 1px solid var(--border); border-radius: 8px; padding: .35rem .3rem; text-align: center;
+             font-size: .76rem; line-height: 1.35; background: var(--bg); }
+  .nozCell b { font-size: .8rem; }
+  .nozChip { display: inline-block; width: 10px; height: 10px; border-radius: 3px; border: 1px solid #0003; vertical-align: -1px; margin-right: 3px; }
+  .nozExts { display: flex; gap: .4rem; margin-top: .4rem; }
+  .nozExts .nozCell { flex: 1; }
   #stats { font-size: .85rem; line-height: 1.5; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: .6rem .8rem; }
   .row2 { display: flex; gap: .5rem; } .row2 > * { flex: 1; }
   .axis { display: flex; align-items: center; gap: .4rem; margin: .25rem 0; }
@@ -198,7 +218,12 @@
   </div>
   <div>
     <label>Drucker</label>
-    <select id="machine"></select>
+    <div style="display:flex;gap:.4rem">
+      <select id="machine" style="flex:1;min-width:0"></select>
+      <button id="nozSync" class="secondary" hidden style="padding:.4rem .6rem;white-space:nowrap"
+              title="Düsenstatus vom gewählten Drucker abfragen und passende Düsen-Variante wählen">🔄 Düse</button>
+    </div>
+    <small id="nozHint" style="opacity:.65"></small>
   </div>
   <div>
     <label>Druckprofil</label>
@@ -327,6 +352,17 @@
     <input type="range" id="layerSlider" min="1" max="1" value="1">
     <span id="layerLabel"></span>
   </div>
+
+  <div id="nozDlg" hidden>
+    <div class="nozBox">
+      <h3 style="margin:.1rem 0 .5rem">Düsenstatus synchronisieren</h3>
+      <div id="nozBody"></div>
+      <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:.9rem">
+        <button id="nozCancel" class="secondary">Abbrechen</button>
+        <button id="nozOk">OK</button>
+      </div>
+    </div>
+  </div>
 </main>
 
 <script src="./three.min.js"></script>
@@ -395,6 +431,8 @@ async function loadPrinters() {
       $('tabDevice').hidden = false;
       $('devPrinter').innerHTML = $('sendPrinter').innerHTML;
       $('amsSync').hidden = false;
+      // Düsen-Sync gibt es nur bei Bambu-Druckern (Flotte meldet keine Düsen)
+      $('nozSync').hidden = !bridgePrinters.some(p => !isFleet(p));
     }
     return true;
   } catch { return false; }
@@ -1118,6 +1156,119 @@ $('amsSync').onclick = async () => {
   pick.querySelector('[data-all]').onclick = () => adoptProjectFilaments(trays);
   pick.style.display = 'flex';
   pick.querySelectorAll('button[data-i]').forEach(b => b.onclick = () => amsApplyTray(trays[+b.dataset.i]));
+};
+
+// ---------- Düsen-Sync (Studio-Dialog „Düsenstatus synchronisieren") ----------
+// H2-Serie: zwei Extruder + Induktions-Hotend-Magazin. Der Drucker meldet alle
+// physisch vorhandenen Düsen (montiert links/rechts + Magazin); hier wird die
+// passende Slicer-Variante („… 0.6 nozzle") gesetzt. Das Magazin wechselt nur
+// in den Haupt-Extruder (rechts) — zählt also zur rechten Verfügbarkeit.
+const nozFlow = (t) => /^HH/i.test(String(t)) ? 'High Flow' : 'Standard';
+const nozMm = (d) => String(d).replace('.', ',') + ' mm';
+const variantDiam = (name) => (String(name).match(/([\d.]+)\s*nozzle/i) || [])[1] || null;
+let nozDlgPrinter = null;
+
+// Passende Druckervarianten: bevorzugt übers gemeldete Druckermodell
+// (modelId "O1C2" ← Drucker meldet "O1C2-V2"), sonst das aktuell gewählte Modell
+function nozVariants(printer) {
+  const pid = String(printer?.model || '');
+  let list = machines.filter(m => m.modelId && (pid === m.modelId || pid.startsWith(m.modelId + '-')));
+  if (!list.length) {
+    const cur = machines.find(m => m.name === $('machine').value);
+    list = cur ? machines.filter(m => m.model === cur.model) : [];
+  }
+  return list.filter(m => variantDiam(m.name));
+}
+
+$('nozSync').onclick = async () => {
+  const p = selectedPrinter();
+  if (!p) { $('nozHint').textContent = 'Erst im Sende-Panel einen Drucker wählen'; return; }
+  if (isFleet(p)) { $('nozHint').textContent = `${p.name} meldet keinen Düsenstatus (nur Bambu)`; return; }
+  $('nozHint').textContent = 'Frage Düsenstatus ab …';
+  let nz = null;
+  try {
+    const { json: d } = await bridge('/api/device/' + encodeURIComponent(p.serial));
+    if (!d.online) { $('nozHint').textContent = `${p.name} ist offline`; return; }
+    nz = d.nozzles;
+  } catch { $('nozHint').textContent = 'Brücke nicht erreichbar'; return; }
+  if (!nz || !nz.extruders?.some(e => e.nozzle)) { $('nozHint').textContent = `${p.name} meldet keinen Düsenstatus`; return; }
+  $('nozHint').textContent = '';
+  nozShowDialog(nz, p);
+};
+
+function nozShowDialog(nz, printer) {
+  const variants = nozVariants(printer);
+  const hasVariant = (d) => variants.some(v => variantDiam(v.name) === String(d));
+  // Verfügbarkeit je Durchmesser: montierte Düsen links/rechts, Magazin → rechts
+  const counts = new Map();
+  const bump = (d, side) => { if (d == null) return;
+    const c = counts.get(d) || { left: 0, right: 0 }; c[side] += 1; counts.set(d, c); };
+  for (const e of nz.extruders) if (e.nozzle) bump(e.nozzle.diameter, e.side === 'left' ? 'left' : 'right');
+  for (const m of (nz.magazine || [])) bump(m.diameter, 'right');
+  const diams = [...counts.keys()].sort((a, b) => a - b);
+  // Vorauswahl: Durchmesser der aktuellen Variante, sonst montierte Düse rechts
+  const usable = diams.filter(hasVariant);
+  const curD = parseFloat(variantDiam($('machine').value));
+  const rightD = nz.extruders.find(e => e.side === 'right')?.nozzle?.diameter
+              ?? nz.extruders.find(e => e.nozzle)?.nozzle?.diameter;
+  const presel = usable.includes(curD) ? curD : (usable.includes(rightD) ? rightD : usable[0]);
+
+  const dual = nz.extruders.length > 1;
+  let html = `<div style="opacity:.8;margin-bottom:.3rem">${printer.name} meldet diese Düsen — bitte eine Größe für diesen Druck wählen.</div>
+    <table><tr><th>Düsenauswahl</th>${dual ? '<th>Links</th><th>Rechts</th>' : '<th>Verfügbar</th>'}</tr>`
+    + diams.map(d => {
+      const c = counts.get(d), ok = hasVariant(d);
+      return `<tr class="nozRow${ok ? '' : ' nozOff'}"${ok ? '' : ' title="Kein Slicer-Profil für diese Größe"'}>
+        <td><label style="display:flex;align-items:center;gap:.45rem;opacity:1;cursor:pointer;margin:0">
+          <input type="radio" name="nozDiam" value="${d}" style="width:auto"${d === presel ? ' checked' : ''}${ok ? '' : ' disabled'}>
+          ${nozMm(d)}</label></td>
+        ${dual ? `<td>${c.left}</td><td>${c.right}</td>` : `<td>${c.left + c.right}</td>`}</tr>`;
+    }).join('') + '</table>';
+
+  if (dual) {
+    html += `<div style="margin-top:.6rem;font-weight:600">Düseninfo</div><div class="nozExts">`
+      + ['left', 'right'].map(side => {
+        const n = nz.extruders.find(e => e.side === side)?.nozzle;
+        return `<div class="nozCell"><b>Extruder ${side === 'left' ? 'links' : 'rechts'}</b><br>`
+          + (n ? `${n.color ? `<span class="nozChip" style="background:#${n.color}"></span>` : ''}${nozMm(n.diameter)} ${nozFlow(n.type)}` : 'Leer') + '</div>';
+      }).join('') + '</div>';
+    if ((nz.magazine || []).length) {
+      // Magazin-ids ab 16 → Fächer 1…6; fehlende id = leeres Fach
+      const base = 16;
+      const slots = Math.max(6, ...nz.magazine.map(m => m.id - base + 1));
+      const bySlot = new Map(nz.magazine.map(m => [m.id - base + 1, m]));
+      html += `<div style="margin-top:.5rem;font-weight:600">Hotend-Magazin</div><div class="nozMag">`
+        + Array.from({ length: slots }, (_, i) => {
+          const m = bySlot.get(i + 1);
+          return `<div class="nozCell"><b>${i + 1}</b><br>` + (m
+            ? `${m.color ? `<span class="nozChip" style="background:#${m.color}"></span>` : ''}${nozMm(m.diameter)}<br><small>${nozFlow(m.type)}</small>`
+            : '<small style="opacity:.6">Leer</small>') + '</div>';
+        }).join('') + '</div>';
+    }
+    html += `<div style="margin-top:.7rem;font-size:.78rem;opacity:.65">Gemischte Düsendurchmesser in einem Druck werden nicht unterstützt. Ist die gewählte Größe nur auf einem Extruder verfügbar, druckt der Drucker mit einem einzigen Extruder.</div>`;
+  }
+  $('nozBody').innerHTML = html;
+  // Klick auf die Zeile = Radio setzen
+  $('nozBody').querySelectorAll('tr.nozRow').forEach(tr => tr.onclick = () => {
+    const r = tr.querySelector('input[name=nozDiam]');
+    if (r && !r.disabled) r.checked = true;
+  });
+  nozDlgPrinter = printer;
+  $('nozDlg').hidden = false;
+}
+
+$('nozCancel').onclick = () => { $('nozDlg').hidden = true; };
+$('nozDlg').onclick = (e) => { if (e.target === $('nozDlg')) $('nozDlg').hidden = true; };
+$('nozOk').onclick = async () => {
+  const sel = $('nozBody').querySelector('input[name=nozDiam]:checked');
+  $('nozDlg').hidden = true;
+  if (!sel) return;
+  const m = nozVariants(nozDlgPrinter).find(v => variantDiam(v.name) === sel.value);
+  if (!m) { $('nozHint').textContent = `Kein Druckerprofil für ${nozMm(sel.value)}`; return; }
+  if (m.name === $('machine').value) { $('nozHint').textContent = `✅ Düse ${nozMm(sel.value)} — Profil passt schon`; return; }
+  $('machine').value = m.name;
+  applyMachineDefaults(); await applyMachineBed(); await refreshSettings(); savePresets();
+  $('nozHint').textContent = `✅ ${m.name}`;
 };
 
 // ---------- Datei-Handling ----------

@@ -172,6 +172,37 @@ app.get('/api/status/:serial', async (req, res) => {
 
 // Voll-Dashboard: alle Kennwerte + AMS für die Geräte-Übersicht
 function fanPct(v) { const n = Number(v); return Number.isFinite(n) ? (n <= 15 ? Math.round(n / 15 * 100) : n) : null; }
+
+// Düsenstatus. H2-Serie (Dual-Extruder + Induktions-Hotend-Magazin):
+// device.extruder.info[].hnow = id der montierten Düse; Extruder id 0 = Haupt-
+// Extruder = RECHTS, id 1 = links (Bambu-Studio-Konvention). device.nozzle.info
+// listet alle physisch vorhandenen Düsen (montiert + Magazin, Magazin-ids 16+);
+// nur das Magazin des Haupt-Extruders wird automatisch gewechselt.
+// Typ-Code: "HS…" = Standard, "HH…" = High Flow. Einzeldüsen-Drucker (A1 …)
+// melden nur nozzle_diameter/nozzle_type auf oberster Ebene.
+function nozzleInfo(st) {
+  const dev = st.device;
+  const pack = (n) => n && n.diameter != null ? {
+    diameter: n.diameter, type: n.type || '', wear: n.wear ?? null,
+    color: (n.color_m && n.color_m !== '00000000') ? n.color_m.slice(0, 6) : '',
+  } : null;
+  if (Array.isArray(dev?.nozzle?.info) && dev.nozzle.info.length) {
+    const byId = new Map(dev.nozzle.info.map(n => [n.id, n]));
+    const exts = Array.isArray(dev.extruder?.info) ? dev.extruder.info : [];
+    const mounted = new Set(exts.map(e => e.hnow));
+    return {
+      multi: true,
+      extruders: exts.map(e => ({ id: e.id, side: e.id === 0 ? 'right' : 'left',
+                                  nozzle: pack(byId.get(e.hnow)) })),
+      magazine: dev.nozzle.info.filter(n => !mounted.has(n.id))
+        .map(n => ({ id: n.id, ...pack(n) })),
+    };
+  }
+  const d = parseFloat(st.nozzle_diameter);
+  if (!Number.isFinite(d)) return null;
+  return { multi: false, magazine: [],
+    extruders: [{ id: 0, side: 'right', nozzle: { diameter: d, type: String(st.nozzle_type || ''), wear: null, color: '' } }] };
+}
 app.get('/api/device/:serial', async (req, res) => {
   const fp = fleetOf(req.params.serial);
   if (fp) {
@@ -212,7 +243,7 @@ app.get('/api/device/:serial', async (req, res) => {
       bed: st.bed_temper, bed_target: st.bed_target_temper,
       chamber: st.chamber_temper,
       fan_part: fanPct(st.cooling_fan_speed), fan_aux: fanPct(st.big_fan1_speed), fan_cham: fanPct(st.big_fan2_speed),
-      speed_lvl: st.spd_lvl, light, trays,
+      speed_lvl: st.spd_lvl, light, trays, nozzles: nozzleInfo(st),
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
