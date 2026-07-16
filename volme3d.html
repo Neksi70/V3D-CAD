@@ -3975,6 +3975,7 @@ let _edgeBevelDragging  = false;
 let _edgeBevelDragStart = null;
 let _edgeBevelDragVal   = 0;
 let _edgeMeshes         = [];  // Unsichtbare Klick-Cylinder (World-Space) für präzises Raycasting
+let _edgeAngleThresh    = 55;  // Knickwinkel (°), ab dem Mesh-Kanten als „scharf" gelten
 
 // ─── Gehäuse / Shell (Shapr3D-Style Aushöhlen) ───────────────────────
 let _shellMode      = false;   // Flächen-Auswahl-Modus aktiv
@@ -5151,22 +5152,35 @@ function _getDispThumb(pattern) {
 }
 
 // ─── Edge Mode ────────────────────────────────────────────────────────
-function _buildEdgesFromGeometry(mesh) {
-  const edgesGeo = new THREE.EdgesGeometry(mesh.geometry, 55);
+function _buildEdgesFromGeometry(mesh, angleDeg) {
+  const edgesGeo = new THREE.EdgesGeometry(mesh.geometry, angleDeg ?? _edgeAngleThresh);
   const ePos = edgesGeo.attributes.position;
   const srcPos = mesh.geometry.attributes.position;
   const EPS = 1e-2;
-  const edges = [];
-  const maxEdges = 30;
+  // Vertex-Hash (Zellgröße = EPS) statt O(V)-Scan pro Endpunkt — sonst wird die
+  // Kanten-Erkennung auf großen Importen (100k+ Vertices) unbenutzbar langsam.
+  const cell = v => Math.round(v / EPS);
+  const vMap = new Map();
+  for (let i = 0; i < srcPos.count; i++) {
+    const k = cell(srcPos.getX(i)) + '_' + cell(srcPos.getY(i)) + '_' + cell(srcPos.getZ(i));
+    let l = vMap.get(k); if (!l) { l = []; vMap.set(k, l); }
+    l.push(i);
+  }
   const findAllIdx = (x, y, z) => {
     const v = new THREE.Vector3(x, y, z);
+    const cx = cell(x), cy = cell(y), cz = cell(z);
     const result = [];
-    for (let i = 0; i < srcPos.count; i++) {
-      if (v.distanceTo(new THREE.Vector3(srcPos.getX(i), srcPos.getY(i), srcPos.getZ(i))) < EPS)
-        result.push(i);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      const l = vMap.get((cx+dx) + '_' + (cy+dy) + '_' + (cz+dz));
+      if (!l) continue;
+      for (const i of l)
+        if (v.distanceTo(new THREE.Vector3(srcPos.getX(i), srcPos.getY(i), srcPos.getZ(i))) < EPS)
+          result.push(i);
     }
     return result;
   };
+  const edges = [];
+  const maxEdges = 200;
   const limit = Math.min(ePos.count / 2, maxEdges);
   for (let i = 0; i < limit * 2; i += 2) {
     const ax = ePos.getX(i),   ay = ePos.getY(i),   az = ePos.getZ(i);
@@ -8253,6 +8267,56 @@ function _findHoveredEdge(e) {
   const box = getMeshBox(_edgeObj);
   const objSize = Math.max(...box.getSize(new THREE.Vector3()).toArray());
   return minD < Math.max(0.5, objSize * 0.2) ? minI : -1;
+}
+
+// ═══ „ALLE KANTEN WÄHLEN" + WINKELSCHWELLE (SketchForge-inspiriert) ══════════
+// Wählt alle anklickbaren Kanten des aktiven Kanten-Modus-Objekts auf einmal.
+// Lochrand-Kreiskanten (rim) bleiben außen vor: sie laufen über einen eigenen
+// OCCT-Drehkörper-Pfad, der die Restauswahl verschlucken würde (early return
+// in _applyEdgeHandleValue) — daher weiterhin einzeln anklicken.
+function _edgeSelectAll() {
+  const o = _edgeObj; if (!o || !_edgeMode) return;
+  const dyn = o.userData._dynamicEdges || [];
+  const isRound = o.userData.shapeType === 'cylinder' || o.userData.shapeType === 'cone' || o.userData.shapeType === 'tube';
+  _edgeSel.clear();
+  let firstIdx = -1;
+  dyn.forEach((e, i) => {
+    if (e.rim) return;
+    const dx = e.worldA[0]-e.worldB[0], dy = e.worldA[1]-e.worldB[1], dz = e.worldA[2]-e.worldB[2];
+    const isCircle = (dx*dx + dy*dy + dz*dz) < 1e-6;   // Kreiskante: worldA ≈ worldB
+    if (isCircle && !isRound) return;
+    _edgeSel.add(i);
+    if (firstIdx < 0) firstIdx = i;
+  });
+  if (!_edgeSel.size) { notify('Keine wählbaren Kanten gefunden', 'w'); return; }
+  _updateEdgeColors();
+  // Handle an die erste Kante setzen — Ziehen wirkt auf die gesamte Auswahl
+  const e0 = dyn[firstIdx];
+  const wa = new THREE.Vector3(...e0.worldA), wb = new THREE.Vector3(...e0.worldB);
+  const mid = wa.clone().lerp(wb, 0.5);
+  if (wa.distanceTo(wb) < 0.001) {
+    // Kreiskante (Zylinder/Kegel/Rohr): Handle an den kameranahen Kreisrand
+    const radius = o.userData._occtParams?.sx ?? o.scale.x;
+    const toCamera = camera.position.clone().sub(mid).normalize();
+    const circleDir = new THREE.Vector3(toCamera.x, 0, toCamera.z);
+    if (circleDir.lengthSq() > 0.01) mid.addScaledVector(circleDir.normalize(), radius);
+  }
+  _edgeBevelHandlePos = mid;
+  _edgeBevelDragVal = 0;
+  _fpCurType = null; updateFP();
+  const nRim = dyn.filter(d => d.rim).length;
+  notify(_edgeSel.size + ' Kante(n) gewählt' + (nRim ? ' — Lochränder bitte einzeln anklicken' : ''), 'ok');
+}
+
+// Winkelschwelle ändern → Kantenliste des Mesh-Pfads neu aufbauen (Box/Zylinder/
+// OCCT-Primitive haben feste analytische Kantenlisten und ignorieren den Wert).
+function _edgeSetAngle(v) {
+  v = Math.max(10, Math.min(85, parseFloat(v) || 55));
+  if (v === _edgeAngleThresh) return;
+  _edgeAngleThresh = v;
+  if (!_edgeObj || !_edgeMode) return;
+  exitEdgeMode(); enterEdgeMode(true);
+  notify('Kanten ab ' + v + '° Knickwinkel', 'ok');
 }
 
 function applyGlobalChamfer(mesh, chamferDist) {
@@ -28205,21 +28269,31 @@ function _fpBuildRows(type, o) {
 
   if (_edgeMode && _edgeObj === o && o.userData._dynamicEdges) {
     const selCount = _edgeSel.size;
-    return `<div class="fp-row"><span class="fp-lbl">${selCount} Kante${selCount!==1?'n':''} ausgewählt</span></div>` +
+    const totalCount = o.userData._dynamicEdges.length;
+    // Winkelschwelle nur für den Mesh-Pfad zeigen (Sketch/Import) — analytische
+    // Kantenlisten (Box/Zylinder/OCCT) reagieren nicht darauf.
+    const isMeshEdges = !(o.userData.shapeType === 'box' || o.userData.shapeType === 'cylinder' ||
+      o.userData.shapeType === 'tube' || o.userData.shapeType === 'cone' ||
+      o.userData.occtShape || o.userData.wasBox);
+    return `<div class="fp-row"><span class="fp-lbl">${selCount} von ${totalCount} Kante${totalCount!==1?'n':''} ausgewählt</span></div>` +
       (selCount > 0
         ? `<div class="fp-row"><span class="fp-lbl" style="color:#aaa;font-size:11px">Handle ziehen: &#8592; Fase &nbsp;|&nbsp; Rundung &#8594;</span></div>`
         : '') +
-      `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="exitEdgeMode()">Fertig</button></div>`;
+      (isMeshEdges ? row('Scharf ab', 'fp-edge-ang', _edgeAngleThresh, '_edgeSetAngle(this.value)', '°', 10, 85, 5) : '') +
+      `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_edgeSelectAll()" title="Alle scharfen Kanten auf einmal auswählen — Handle ziehen wirkt dann auf alle">☑ Alle Kanten</button>` +
+      `<button class="fp-btn" onclick="exitEdgeMode()">Fertig</button></div>`;
   }
 
   if (isBoxGeom && _edgeMode && _edgeObj === o && o.userData.edgeBevels) {
     const selCount = _edgeSel.size;
+    const totalCount = (o.userData._dynamicEdges || o.userData.edgeBevels).length;
     const fb = selCount > 0 ? o.userData.edgeBevels[[..._edgeSel][0]] : {fillet:0,chamfer:0};
     const maxMm = Math.round(Math.min(o.scale.x, o.scale.y, o.scale.z) * 10 * 10) / 10;
-    return `<div class="fp-row"><span class="fp-lbl">${selCount} Kante${selCount!==1?'n':''} ausgewählt</span></div>` +
+    return `<div class="fp-row"><span class="fp-lbl">${selCount} von ${totalCount} Kante${totalCount!==1?'n':''} ausgewählt</span></div>` +
       row('Radius',      'fp-edge-fil', fb.fillet,  'applyEdgeBevels()', 'mm', 0, maxMm, 0.1) +
       row('Abschrägung', 'fp-edge-cha', fb.chamfer, 'applyEdgeBevels()', 'mm', 0, maxMm, 0.1) +
-      `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="exitEdgeMode()">Fertig</button>` +
+      `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_edgeSelectAll()" title="Alle Kanten auf einmal auswählen">☑ Alle Kanten</button>` +
+      `<button class="fp-btn" onclick="exitEdgeMode()">Fertig</button>` +
       `<button class="fp-btn" onclick="_resetAllEdges()">Zurücksetzen</button></div>`;
   }
 
