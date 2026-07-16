@@ -17,6 +17,7 @@ const adapters = {
   anycubic:  require('./adapters/anycubic'),
 };
 const nativeSlicer = require('./native-slicer');
+const gcode3mf = require('./gcode3mf');
 
 const PORT = process.env.BRIDGE_PORT ? Number(process.env.BRIDGE_PORT) : 7781;
 
@@ -345,12 +346,16 @@ app.post('/api/send', async (req, res) => {
     if (ip && code) {
       const p = { ip, access_code: code, serial };
       if (await lan.reachable(p)) {
-        await lan.uploadGcode(p, name, buf);
+        // Rohes .gcode startet auf neuerer Firmware (H2-Serie) nicht mehr —
+        // als .gcode.3mf verpacken und die Plate darin drucken lassen.
+        const jobName = name.replace(/\.gcode$/i, '');
+        const name3 = jobName + '.gcode.3mf';
+        await lan.uploadGcode(p, name3, gcode3mf.wrap(buf, { modelId: req.body.modelId }));
         let pr = null;
         if (start) pr = await lan.sendCommand(p, { print: { sequence_id: '0', command: 'project_file',
-          param: name, subtask_name: name.replace(/\.[^.]+$/, ''), url: `ftp://${name}`,
+          param: 'Metadata/plate_1.gcode', subtask_name: jobName, url: `ftp://${name3}`,
           ...printOpts } }, { waitMs: 3000 });
-        return res.json({ ok: true, path: 'lan', auto, uploaded: name, print: pr });
+        return res.json({ ok: true, path: 'lan', auto, uploaded: name3, print: pr });
       }
     }
     // Cloud-Fallback: Steuerung/Start geht; Dateiversand an entfernte Drucker
