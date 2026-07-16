@@ -9671,6 +9671,8 @@ function _svgFileSelected(e) {
   if (!file) return;
   const reader = new FileReader();
   reader.onload = function(ev) {
+    try { _svgPreflight(ev.target.result); }
+    catch (err) { notify(err.message, 'w'); e.target.value = ''; return; }
     _svgParsedData = { svgText: ev.target.result, fileName: file.name };
     // Vorschau via iframe srcdoc — zuverlässigste Methode für beliebige SVGs
     const preview = document.getElementById('svg-preview');
@@ -9806,12 +9808,38 @@ function _closeSvgModal() {
   _svgParsedData = null;
 }
 
+// SVG-Preflight (SketchForge-inspiriert): harte Limits GEGEN Browser-Freeze
+// durch Monster-SVGs (Millionen Pfad-Kommandos legen SVGLoader + earcut lahm).
+// Wirft mit verständlicher Meldung statt still zu hängen.
+const _SVG_MAX_BYTES = 2 * 1024 * 1024;       // 2 MB Quelltext
+const _SVG_MAX_ELEMENTS = 10000;              // XML-Elemente gesamt
+const _SVG_MAX_PATH_COMMANDS = 50000;         // Pfad-Kommandos (M/L/C/…) gesamt
+function _svgPreflight(svgText) {
+  if (!svgText || !svgText.trim()) throw new Error('SVG-Datei ist leer');
+  const bytes = new TextEncoder().encode(svgText).byteLength;
+  if (bytes > _SVG_MAX_BYTES)
+    throw new Error('SVG zu groß (' + (bytes / 1048576).toFixed(1) + ' MB, Limit 2 MB) — bitte vereinfachen');
+  const elements = (svgText.match(/<[a-zA-Z]/g) || []).length;
+  if (elements > _SVG_MAX_ELEMENTS)
+    throw new Error('SVG zu komplex (' + elements + ' Elemente, Limit ' + _SVG_MAX_ELEMENTS + ')');
+  let cmds = 0;
+  const dAttr = /\bd\s*=\s*(["'])(.*?)\1/gs;
+  let m;
+  while ((m = dAttr.exec(svgText))) {
+    cmds += (m[2].match(/[MmLlHhVvCcSsQqTtAaZz]/g) || []).length;
+    if (cmds > _SVG_MAX_PATH_COMMANDS)
+      throw new Error('SVG zu komplex (über ' + _SVG_MAX_PATH_COMMANDS + ' Pfad-Kommandos) — bitte vereinfachen');
+  }
+}
+
 function _importSvgConfirm(override) {
   const ov = (override && override.svgText) ? override : null;   // programmatisch (z.B. Text)
   if (!ov && !_svgParsedData) return;
   if (!window.THREE || !THREE.SVGLoader) {
     notify('SVGLoader nicht geladen', 'w'); return;
   }
+  try { _svgPreflight(ov ? ov.svgText : _svgParsedData.svgText); }
+  catch (err) { notify(err.message, 'w'); return; }
 
   const mode     = ov ? (ov.mode || 'extrude') : document.querySelector('input[name="svg-mode"]:checked').value;
   const depthMM  = ov ? ov.depthMM  : parseFloat(document.getElementById('svg-depth-range').value);
