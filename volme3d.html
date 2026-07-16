@@ -15857,6 +15857,7 @@ function _newDiscard() {
 
 function _newCreate(save) {
   if (save) _doAutoSave();
+  _localDetachFile();   // neue Szene darf nicht die alte Datei überschreiben
   currentDesignId = dsNewId();
   localStorage.setItem('volme3d_cur', currentDesignId);
   deselect(); objects.forEach(o => scene.remove(o)); objects = [];
@@ -17550,7 +17551,14 @@ async function _localSave() {
       await writable.write(blob);
       await writable.close();
       _updateLocalSaveBtn();
-      notify('💾 Gespeichert: ' + _localFileHandle.name, 'ok');
+      // Ab jetzt übernimmt der Autosave das Nachspeichern in diese Datei
+      _lastDiskJson = json;
+      if (!currentDesignId) {
+        currentDesignId = dsNewId();
+        localStorage.setItem('volme3d_cur', currentDesignId);
+      }
+      _fhStore(_localFileHandle, currentDesignId);
+      notify('💾 Gespeichert: ' + _localFileHandle.name + ' — speichert ab jetzt automatisch weiter', 'ok');
     } catch(e) {
       if (e.name !== 'AbortError') notify('Fehler beim Speichern: ' + e.message, 'w');
     }
@@ -17579,7 +17587,9 @@ async function _localOpen() {
       const text = await file.text();
       _loadSceneFromJSON(text, file.name.replace(/\.v3d$|\.json$/i,'').replace(/_/g,' '));
       _localFileHandle = handle;
+      _lastDiskJson = text;   // Datei ist frisch gelesen = aktueller Stand
       _updateLocalSaveBtn();
+      _fhStore(handle, currentDesignId);
     } catch(e) {
       if (e.name !== 'AbortError') notify('Fehler beim Öffnen: ' + e.message, 'w');
     }
@@ -17598,6 +17608,93 @@ function _updateLocalSaveBtn() {
     btn.textContent = '💾 Speichern';
     btn.title = 'Design lokal speichern (Strg+S)';
   }
+}
+
+// ── Disk-Autosave ───────────────────────────────────────────────────────────
+// Nach dem ersten Strg+S schreibt der 30-s-Autosave still in dieselbe Datei
+// weiter. Das Datei-Handle überlebt Reloads in IndexedDB (Handles sind
+// strukturiert klonbar). Nach einem Neustart steht die Berechtigung meist auf
+// 'prompt' — dann bleibt der Disk-Teil aus, bis einmal Strg+S gedrückt wird
+// (kein stilles Permission-Popup). Beim Designwechsel wird die Datei
+// abgekoppelt, damit das neue Design nicht die alte Datei überschreibt.
+let _lastDiskJson = null;
+let _diskAutoBusy = false;
+
+function _fhDb() {
+  return new Promise((ok, fail) => {
+    const r = indexedDB.open('volme3d-fs', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('handles');
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => fail(r.error);
+  });
+}
+async function _fhStore(handle, designId) {
+  try {
+    const db = await _fhDb();
+    await new Promise((ok, fail) => {
+      const tx = db.transaction('handles', 'readwrite');
+      tx.objectStore('handles').put({ handle, designId }, 'last');
+      tx.oncomplete = ok; tx.onerror = () => fail(tx.error);
+    });
+    db.close();
+  } catch (e) { /* Privatmodus o.ä. — Autosave läuft dann nur bis zum Reload */ }
+}
+async function _fhLoad() {
+  try {
+    const db = await _fhDb();
+    const rec = await new Promise((ok, fail) => {
+      const rq = db.transaction('handles').objectStore('handles').get('last');
+      rq.onsuccess = () => ok(rq.result); rq.onerror = () => fail(rq.error);
+    });
+    db.close();
+    return rec || null;
+  } catch (e) { return null; }
+}
+
+function _localDetachFile() {
+  if (!_localFileHandle) return;
+  _localFileHandle = null;
+  _lastDiskJson = null;
+  _updateLocalSaveBtn();
+}
+
+async function _localAutoSave() {
+  const handle = _localFileHandle;
+  if (!handle || _diskAutoBusy) return;
+  const json = _sceneJson();
+  if (json === _lastDiskJson) return;
+  _diskAutoBusy = true;
+  try {
+    if (await handle.queryPermission({ mode: 'readwrite' }) !== 'granted') return;
+    const w = await handle.createWritable();
+    await w.write(new Blob([json], { type: 'application/json' }));
+    await w.close();
+    if (_localFileHandle === handle) _lastDiskJson = json;
+    const btn = document.getElementById('btn-local-save');
+    if (btn) btn.title = 'In ' + handle.name + ' speichern (Strg+S) — zuletzt automatisch ' +
+      new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) + ' Uhr gespeichert';
+  } catch (e) {
+    console.warn('Disk-Autosave fehlgeschlagen:', e);
+  } finally { _diskAutoBusy = false; }
+}
+
+// Beim Start: Handle aus IndexedDB zurückholen, wenn noch dasselbe Design offen ist
+async function _resumeDiskAutosave() {
+  if (!window.showSaveFilePicker || _localFileHandle) return;
+  const rec = await _fhLoad();
+  if (!rec || !rec.handle) return;
+  if (rec.designId && rec.designId !== currentDesignId) return;
+  try {
+    const perm = await rec.handle.queryPermission({ mode: 'readwrite' });
+    _localFileHandle = rec.handle;
+    _lastDiskJson = null;
+    _updateLocalSaveBtn();
+    if (perm === 'granted') {
+      notify('💾 Automatisches Speichern in ' + rec.handle.name + ' läuft weiter', 'ok');
+    } else {
+      notify('💾 Einmal Strg+S drücken — dann speichert Volme3D wieder automatisch in ' + rec.handle.name, 'ok', 9000);
+    }
+  } catch (e) { /* Handle ungültig (Datei gelöscht/verschoben) — stumm ignorieren */ }
 }
 
 // Ctrl+S / Ctrl+O
@@ -19080,6 +19177,13 @@ function _doAutoSave() {
     dsSaveDesign(currentDesignId, _sceneSnapshot(), captureThumbnail(), name, true);  // still: kein Nag-Popup
     _updateDesignLabel(name);
     _flashSaveDot();
+    // Zusätzlich auf die Festplatte des Nutzers, wenn eine Datei verknüpft ist
+    _localAutoSave();
+    if (!_localFileHandle && window.showSaveFilePicker && objects.length &&
+        !localStorage.getItem('v3d-disk-tip')) {
+      localStorage.setItem('v3d-disk-tip', '1');
+      notify('Tipp: Einmal Strg+S drücken — dann speichert Volme3D dein Design automatisch auch als Datei auf deiner Festplatte.', 'ok', 10000);
+    }
   } finally { _autoSaveBusy = false; }
 }
 
@@ -19087,6 +19191,10 @@ function _startAutoSave() {
   if (_autoSaveTimer) clearInterval(_autoSaveTimer);
   _autoSaveTimer = setInterval(_doAutoSave, 30000);
 }
+// Beim Tab-Wechsel/Schließen sofort sichern (localStorage sicher, Disk best effort)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') _doAutoSave();
+});
 
 // ── Gallery UI ─────────────────────────────────────────────────────────────
 function showDesigns() {
@@ -19158,6 +19266,7 @@ async function _dsThumbOne(el) {
 // ── Design operations ──────────────────────────────────────────────────────
 function newDesignFromGallery() {
   _doAutoSave();
+  _localDetachFile();   // neue Szene darf nicht die alte Datei überschreiben
   currentDesignId = dsNewId();
   localStorage.setItem('volme3d_cur', currentDesignId);
   objects.forEach(o => scene.remove(o)); objects = [];
@@ -19174,6 +19283,7 @@ function loadDesign(id) {
   _doAutoSave();
   const data = dsLoadData(id);
   if (!data) { notify('Design nicht gefunden', 'e'); return; }
+  if (id !== currentDesignId) _localDetachFile();   // anderes Design ≠ alte Datei
   _applySnapshot(data);
   currentDesignId = id;
   localStorage.setItem('volme3d_cur', id);
@@ -27981,6 +28091,7 @@ function _initDesigns() {
     }
   }
   _startAutoSave();
+  _resumeDiskAutosave();
 }
 
 // ═══ FLOATING PROPERTY PANEL ════════════════════════════════════════════
