@@ -350,6 +350,12 @@ body.devmode .dev-only{display:flex!important}
 .sdd-list .shp img{width:38px;height:38px;flex-shrink:0;object-fit:contain}
 .sdd-list .shp:hover img{filter:drop-shadow(0 1px 2px rgba(16,24,40,.18))}
 #tool-dd-list .shp svg{padding:5px;box-sizing:border-box}
+/* Generator-Einträge: Emoji/Thumbnail + zweizeilige Beschriftung */
+.sdd-emoji{width:38px;height:38px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:23px}
+.sdd-emoji img{width:38px;height:38px;object-fit:cover;border-radius:6px;border:1px solid var(--border)}
+.sdd-list .shp .sdd-name{display:flex;flex-direction:column;gap:1px;line-height:1.25;min-width:0}
+.sdd-list .shp .sdd-name small{font-size:10px;font-weight:500;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#gen-dd-btn .sdd-caret{margin-left:auto;font-size:10px;color:var(--dim)}
 
 /* Color */
 .cg{display:grid;grid-template-columns:repeat(5,1fr);gap:3px;margin-bottom:6px}
@@ -1647,8 +1653,12 @@ const firebaseConfig = {
         <button class="shb s active" id="mb-s" onclick="setShapeMode('solid')">● Solid</button>
         <button class="shb h" id="mb-h" onclick="setShapeMode('hole')">○ Bohrung</button>
       </div>
-      <div class="gen-box">
-        <button class="gen-btn gen-open" onclick="showStarter()" title="Alle Generatoren als Galerie öffnen"><span class="gi">✨</span><span class="gl">Generatoren</span></button>
+      <div class="gen-box" id="gen-dd-wrap">
+        <button class="gen-btn gen-open" id="gen-dd-btn" onclick="_toggleGenMenu(event)" title="Generator-Katalog öffnen (Vase, Zahnrad, QR-Code, …)"><span class="gi">✨</span><span class="gl">Generatoren</span><span class="sdd-caret">▾</span></button>
+        <div id="gen-dd" class="sdd-panel">
+          <div class="sdd-hd">Generatoren</div>
+          <div id="gen-dd-list" class="sdd-list"></div>
+        </div>
       </div>
       <div class="pt">Körper</div>
       <div id="shape-dd-wrap">
@@ -4344,6 +4354,38 @@ function _ddToggle(e, btnId, ddId) {
 }
 function _toggleShapeMenu(e) { if (_ddToggle(e, 'shape-dd-btn', 'shape-dd')) _genShapeIcons(); }
 function _toggleToolMenu(e)  { _ddToggle(e, 'tool-dd-btn', 'tool-dd'); }
+function _toggleGenMenu(e)   { if (_ddToggle(e, 'gen-dd-btn', 'gen-dd')) _genGenList(); }
+
+// Generator-Katalog aus _STARTERS aufbauen (erst beim ersten Öffnen — die
+// Tabelle steht weiter unten im Skript). Vorschau-Thumbnails kommen aus dem
+// IndexedDB-Cache der Vorlagen-Galerie (starter|key|ver) und werden bei Bedarf
+// über denselben Offscreen-Renderer erzeugt; bis dahin steht das Emoji.
+let _genListBuilt = false;
+async function _genGenList() {
+  if (_genListBuilt) return;
+  _genListBuilt = true;
+  const list = document.getElementById('gen-dd-list');
+  const dev = (typeof _devMode === 'function') && _devMode();
+  const esc = s => s.replace(/"/g, '&quot;');
+  list.innerHTML =
+    `<div class="shp" onclick="showStarter()" title="Galerie mit großen Vorschau-Karten öffnen">` +
+    `<span class="sdd-emoji">🗂️</span><span class="sdd-name">Als Galerie öffnen<small>Große Vorschau-Karten</small></span></div>` +
+    _STARTERS.map((s, i) => (s.blank || (s.dev && !dev)) ? '' :
+      `<div class="shp" data-gk="${s.gk || ''}" onclick="_runStarter(${i})" title="${esc(s.d)}">` +
+      `<span class="sdd-emoji">${s.i}</span><span class="sdd-name">${s.t}<small>${s.d}</small></span></div>`).join('');
+  // Klick-schließt-Menü übernimmt der Listener aus der Startphase (#gen-dd-list trägt .sdd-list)
+  for (const el of list.querySelectorAll('[data-gk]')) {
+    const key = el.dataset.gk;
+    if (!key) continue;
+    let url = null;
+    try { url = await _stlIdbGet('thumbs', 'starter|' + key + '|1'); } catch (_) {}
+    if (!url) {
+      try { url = _renderStarterThumb(key); if (url) await _stlIdbSet('thumbs', 'starter|' + key + '|1', url); } catch (_) {}
+    }
+    if (url) { const em = el.querySelector('.sdd-emoji'); if (em) em.innerHTML = `<img src="${url}" alt="">`; }
+    await new Promise(r => requestAnimationFrame(r));
+  }
+}
 function _closeShapeMenu() {
   document.querySelectorAll('.sdd-panel.show').forEach(dd => dd.classList.remove('show'));
 }
