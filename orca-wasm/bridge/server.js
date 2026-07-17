@@ -102,9 +102,16 @@ const ssdpFresh = (serial) => {
 
 // Zugangscodes für LAN-only Bambu-Drucker (Entwicklermodus): kommen nicht mehr
 // aus der Cloud, sondern vom Drucker-Display. Die App meldet sie via
-// /api/lan-auth; hier im Speicher gehalten, damit Status/Kamera/Senden sie
-// nutzen können. { serial -> { ip, code } }
+// /api/lan-auth; persistent gehalten (überlebt Bridge-Neustarts), damit
+// Status/Kamera/Senden sie nutzen können. { serial -> { ip, code } }
+const LANAUTH_FILE = path.join(__dirname, 'lan-auth.json');
 const lanAuth = new Map();
+(function loadLanAuth() {
+  try { for (const [s, v] of JSON.parse(fs.readFileSync(LANAUTH_FILE, 'utf8'))) lanAuth.set(s, v); } catch {}
+})();
+function persistLanAuth() {
+  try { fs.writeFileSync(LANAUTH_FILE, JSON.stringify([...lanAuth]), { mode: 0o600 }); } catch {}
+}
 // IP + Code eines (evtl. LAN-only) Bambu-Druckers auflösen: explizit > gemeldet
 // > SSDP-IP + Cloud-Code. Gibt { ip, code, auto } oder { ip:null }.
 async function resolveLan(sid, serial, lanIp, lanCode) {
@@ -187,6 +194,7 @@ app.post('/api/lan-auth', async (req, res) => {
   const ok = await lan.reachable(p).catch(() => false);
   if (!ok) return res.status(502).json({ error: 'Drucker antwortet nicht — IP/Code prüfen (LAN-Modus aktiv?)' });
   lanAuth.set(serial, { ip: useIp, code: String(code) });
+  persistLanAuth();
   res.json({ ok: true, ip: useIp });
 });
 

@@ -428,20 +428,25 @@ const isFleet = (p) => p && String(p.serial).startsWith('fleet:');
 // den LAN-Zugangscode vom Drucker-Display, einmal an die Brücke gemeldet.
 const isLanBambu = (p) => p && p.type === 'bambu-lan';
 const lanAuthed = new Set();   // serials, für die der Code schon hinterlegt ist
-async function ensureLanAuth(p) {
+const lanCodeKey = (serial) => 'vs-lancode-' + serial;
+async function ensureLanAuth(p, silent = false) {
   if (!isLanBambu(p)) return true;
   if (lanAuthed.has(p.serial)) return true;
-  let code = ($('camCode').value.trim() || $('lanCode').value.trim());
-  if (!code) code = (prompt(`LAN-Zugangscode für „${p.name}"\n(am Drucker: Einstellungen → Netzwerk/WLAN → Zugangscode):`) || '').trim();
+  // Code-Quellen: Kamera-/LAN-Feld > gemerkter Code (localStorage) > Prompt.
+  // Der gemerkte Code lässt „offline" nach Reload/Bridge-Neustart verschwinden.
+  let code = ($('camCode').value.trim() || $('lanCode').value.trim()
+             || localStorage.getItem(lanCodeKey(p.serial)) || '');
+  if (!code && !silent) code = (prompt(`LAN-Zugangscode für „${p.name}"\n(am Drucker: Einstellungen → Netzwerk/WLAN → Zugangscode):`) || '').trim();
   if (!code) return false;
   const { status, json } = await bridge('/api/lan-auth', { method: 'POST', body: { serial: p.serial, ip: p.ip, code } });
   if (status === 200 && json.ok) {
     lanAuthed.add(p.serial);
+    localStorage.setItem(lanCodeKey(p.serial), code);   // merken → Auto-Login nach Reload
     if (!$('camCode').value.trim()) $('camCode').value = code;   // Kamera nutzt denselben Code
     if (!$('camIp').value.trim() && (p.ip || json.ip)) $('camIp').value = p.ip || json.ip;
     return true;
   }
-  $('sendStatus').innerHTML = `<span class="err">${json.error || 'LAN-Anmeldung fehlgeschlagen'}</span>`;
+  if (!silent) $('sendStatus').innerHTML = `<span class="err">${json.error || 'LAN-Anmeldung fehlgeschlagen'}</span>`;
   return false;
 }
 
@@ -454,6 +459,9 @@ async function loadPrinters() {
       return false;
     }
     bridgePrinters = Array.isArray(json) ? json : [];
+    // LAN-only-Bambus (Entwicklermodus) mit gemerktem Code still anmelden, damit
+    // sie nicht als „offline" erscheinen (Brücke verliert lanAuth bei Neustart)
+    await Promise.all(bridgePrinters.filter(isLanBambu).map(p => ensureLanAuth(p, true).catch(() => {})));
     const opt = (p) => `<option value="${p.serial}">${p.name}${p.online ? '' : ' (offline)'}</option>`;
     const fleetOpts = bridgePrinters.filter(isFleet).map(opt).join('');
     const cloudOpts = bridgePrinters.filter(p => !isFleet(p)).map(opt).join('');
