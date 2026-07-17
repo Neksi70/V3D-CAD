@@ -358,10 +358,12 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
         pr = await lan.sendCommand(p, { print: { ...basePrint, url: `ftp://${name3}` } },
                                    { waitMs: 8000 }).catch(() => null);
         console.log('[send] lan-start', serial, name3, 'result:', pr?.result, pr?.reason || '');
-        // Neuere Firmware verlangt über LAN signierte Befehle ("mqtt message
-        // verify failed") — Start dann über die Cloud-Verbindung (über das
-        // Konto autorisiert), Datei liegt ja schon lokal auf dem Drucker.
-        if (!isOk(pr)) {
+        // Bambu Authorization Control (Firmware 01.09+): Druckbefehle müssen
+        // signiert sein → "mqtt message verify failed", über LAN wie Cloud.
+        // Dann ist der Cloud-Versuch zwecklos (spart 2 Runden); nur bei
+        // anderen Fehlern lohnt der Cloud-Start (Datei liegt lokal).
+        const verifyBlocked = /verify failed/i.test(pr?.reason || '');
+        if (!isOk(pr) && !verifyBlocked) {
           for (const u of [`file:///sdcard/${name3}`, `file:///mnt/sdcard/${name3}`]) {
             const cr = await cloud.sendCommand(sid, serial,
               { print: { ...basePrint, url: u } }, { waitMs: 8000 }).catch(() => null);
