@@ -424,6 +424,26 @@ async function bridge(pathname, { method = 'GET', body } = {}) {
 // Drucker-Typen: "fleet:"-IDs sind lokale Drucker aus printers.json der Brücke
 // (Snapmaker U1, Elegoo Giga, Anycubic Kobra — kein Bambu-Login nötig).
 const isFleet = (p) => p && String(p.serial).startsWith('fleet:');
+// Bambu im Entwicklermodus (LAN-only, aus der Cloud raus): Steuerung braucht
+// den LAN-Zugangscode vom Drucker-Display, einmal an die Brücke gemeldet.
+const isLanBambu = (p) => p && p.type === 'bambu-lan';
+const lanAuthed = new Set();   // serials, für die der Code schon hinterlegt ist
+async function ensureLanAuth(p) {
+  if (!isLanBambu(p)) return true;
+  if (lanAuthed.has(p.serial)) return true;
+  let code = ($('camCode').value.trim() || $('lanCode').value.trim());
+  if (!code) code = (prompt(`LAN-Zugangscode für „${p.name}"\n(am Drucker: Einstellungen → Netzwerk/WLAN → Zugangscode):`) || '').trim();
+  if (!code) return false;
+  const { status, json } = await bridge('/api/lan-auth', { method: 'POST', body: { serial: p.serial, ip: p.ip, code } });
+  if (status === 200 && json.ok) {
+    lanAuthed.add(p.serial);
+    if (!$('camCode').value.trim()) $('camCode').value = code;   // Kamera nutzt denselben Code
+    if (!$('camIp').value.trim() && (p.ip || json.ip)) $('camIp').value = p.ip || json.ip;
+    return true;
+  }
+  $('sendStatus').innerHTML = `<span class="err">${json.error || 'LAN-Anmeldung fehlgeschlagen'}</span>`;
+  return false;
+}
 
 async function loadPrinters() {
   try {
@@ -699,7 +719,16 @@ function startStatusPolling() {
   refreshStatus();
   statusTimer = setInterval(refreshStatus, 12000);
 }
-$('sendPrinter').onchange = startStatusPolling;
+$('sendPrinter').onchange = async () => {
+  // LAN-only-Bambu (Entwicklermodus): erst Zugangscode hinterlegen, sonst
+  // klemmt das Status-Polling (kein Cloud-Zugriff auf den Drucker)
+  const p = selectedPrinter();
+  if (isLanBambu(p) && !lanAuthed.has(p.serial)) {
+    $('sendConn').innerHTML = `<span style="color:#c77400">● Entwicklermodus — Zugangscode nötig (beim Senden abgefragt)</span>`;
+    await ensureLanAuth(p);
+  }
+  startStatusPolling();
+};
 function updateSend() {
   $('btnSend').disabled = $('btnDownload').disabled || !bridgePrinters.length;
 }
@@ -812,8 +841,12 @@ async function doSend(extra = {}) {
 // ---------- Sende-Dialog (wie Bambu Studio „Druckauftrag senden") ----------
 // Nur für Bambu-Drucker: Jobname, Düsen-Abgleich, Filament→AMS-Zuordnung,
 // Zeitraffer/Nivellierung/Flussdynamik. Flotten-Drucker senden direkt.
-$('btnSend').onclick = () => {
+$('btnSend').onclick = async () => {
   const p = selectedPrinter();
+  if (isLanBambu(p) && !(await ensureLanAuth(p))) {
+    $('sendStatus').innerHTML = '<span class="err">LAN-Zugangscode nötig (Entwicklermodus)</span>';
+    return;
+  }
   if (p && !isFleet(p)) return openSendDialog(p);
   return doSend();
 };

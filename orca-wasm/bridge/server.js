@@ -78,7 +78,7 @@ const fleetOf = (id) => typeof id === 'string' && id.startsWith('fleet:')
 // versand kann dann automatisch den robusten LAN-Weg nehmen (Zugangscode
 // kommt aus der Bambu-Cloud), ohne dass der Nutzer IP/Code eintippt.
 const dgram = require('dgram');
-const ssdpSeen = new Map();   // serial -> { ip, ts }
+const ssdpSeen = new Map();   // serial -> { ip, name, model, ts }
 (function startSsdp() {
   try {
     const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
@@ -86,12 +86,42 @@ const ssdpSeen = new Map();   // serial -> { ip, ts }
       const t = msg.toString();
       const usn = (t.match(/^USN:\s*(\S+)/mi) || [])[1];
       if (usn) ssdpSeen.set(usn, {
-        ip: (t.match(/^Location:\s*(\S+)/mi) || [])[1] || rinfo.address, ts: Date.now() });
+        ip: (t.match(/^Location:\s*(\S+)/mi) || [])[1] || rinfo.address,
+        name: (t.match(/^DevName\.bambu\.com:\s*(.*)$/mi) || [])[1]?.trim() || '',
+        model: (t.match(/^DevModel\.bambu\.com:\s*(.*)$/mi) || [])[1]?.trim() || '',
+        ts: Date.now() });
     });
     sock.on('error', (e) => console.warn('[ssdp]', e.message));
     sock.bind(2021, () => console.log('[ssdp] LAN-Discovery auf UDP 2021'));
   } catch (e) { console.warn('[ssdp]', e.message); }
 })();
+const ssdpFresh = (serial) => {
+  const h = ssdpSeen.get(serial);
+  return h && Date.now() - h.ts < 30 * 60e3 ? h : null;
+};
+
+// Zugangscodes für LAN-only Bambu-Drucker (Entwicklermodus): kommen nicht mehr
+// aus der Cloud, sondern vom Drucker-Display. Die App meldet sie via
+// /api/lan-auth; hier im Speicher gehalten, damit Status/Kamera/Senden sie
+// nutzen können. { serial -> { ip, code } }
+const lanAuth = new Map();
+// IP + Code eines (evtl. LAN-only) Bambu-Druckers auflösen: explizit > gemeldet
+// > SSDP-IP + Cloud-Code. Gibt { ip, code, auto } oder { ip:null }.
+async function resolveLan(sid, serial, lanIp, lanCode) {
+  let ip = lanIp || lanAuth.get(serial)?.ip;
+  let code = lanCode || lanAuth.get(serial)?.code;
+  const explicit = Boolean(lanIp && lanCode);
+  if (!ip) ip = ssdpFresh(serial)?.ip || null;
+  if (ip && !code) code = await cloud.accessCode(sid, serial).catch(() => null);
+  return { ip, code, auto: Boolean(ip && code && !explicit) };
+}
+// Vollstatus (pushall-print-Objekt) holen: LAN-only Bambu (lanAuth bekannt) über
+// LAN, sonst über die Cloud. Beide liefern dieselbe Struktur.
+function printStatus(sid, serial) {
+  const la = lanAuth.get(serial);
+  if (la) return lan.getStatus({ ip: la.ip, access_code: la.code, serial }).catch(() => null);
+  return cloud.getStatus(sid, serial).catch(() => null);
+}
 
 // ---- Druckcode-Gate: Flotte/Kamera/nativer Slicer nur für LAN/Tailnet ODER
 // mit Code (Header X-Fleet-Code bzw. ?fc=). Über den Funnel setzt tailscaled
@@ -145,6 +175,21 @@ app.get('/api/me', (req, res) => {
   res.json({ email: s.email, region: s.region });
 });
 
+// LAN-Zugangscode eines Entwicklermodus-Druckers hinterlegen, damit Status/
+// Kamera/Senden ohne Cloud laufen. IP ist optional (sonst aus SSDP).
+app.post('/api/lan-auth', async (req, res) => {
+  if (!cloud.session(sidOf(req)) && !fleetOk(req)) return res.status(401).json({ error: 'nicht angemeldet' });
+  const { serial, ip, code } = req.body || {};
+  if (!serial || !code) return res.status(400).json({ error: 'serial + code nötig' });
+  const useIp = ip || ssdpFresh(serial)?.ip;
+  if (!useIp) return res.status(400).json({ error: 'Drucker-IP unbekannt (nicht im LAN gesehen) — bitte IP angeben' });
+  const p = { ip: useIp, access_code: String(code), serial };
+  const ok = await lan.reachable(p).catch(() => false);
+  if (!ok) return res.status(502).json({ error: 'Drucker antwortet nicht — IP/Code prüfen (LAN-Modus aktiv?)' });
+  lanAuth.set(serial, { ip: useIp, code: String(code) });
+  res.json({ ok: true, ip: useIp });
+});
+
 // Drucker-Liste: lokale Flotte (immer) + Bambu-Cloud-Drucker des angemeldeten
 // Nutzers. Ohne Login und ohne Flotte → 401, damit die App das Login-Gate zeigt.
 app.get('/api/printers', async (req, res) => {
@@ -154,18 +199,29 @@ app.get('/api/printers', async (req, res) => {
     online: await adapterOf(p).online(p).catch(() => false),
     type: p.type, caps: caps(p),
   })));
+  const cloudSerials = new Set();
   if (cloud.session(sid)) {
     try {
       const r = await cloud.listDevices(sid);
-      list.push(...(r.devices || []).map(d => ({
-        serial: d.serial, name: d.name, model: d.model, online: d.online, type: 'bambu',
-        caps: { camera: true, light: true, ams: true },
-      })));
+      list.push(...(r.devices || []).map(d => {
+        cloudSerials.add(d.serial);
+        return { serial: d.serial, name: d.name, model: d.model, online: d.online, type: 'bambu',
+                 caps: { camera: true, light: true, ams: true } };
+      }));
     } catch (e) {
       // Bambu-API-Schluckauf soll nicht die ganze Liste killen — Flotte
       // trotzdem liefern; ganz ohne Drucker bleibt der Fehler sichtbar.
       console.warn('[cloud] listDevices:', e.message);
       if (!list.length) return res.status(500).json({ error: e.message });
+    }
+    // Per SSDP im LAN gesehene Bambu-Drucker, die NICHT in der Cloud sind
+    // (Entwicklermodus = LAN-only). Als eigener Typ "bambu-lan": Steuerung
+    // läuft über LAN mit dem Zugangscode vom Drucker-Display (lanCode).
+    for (const [serial, h] of ssdpSeen) {
+      if (cloudSerials.has(serial) || Date.now() - h.ts > 30 * 60e3) continue;
+      list.push({ serial, name: h.name || ('Bambu ' + serial.slice(-4)),
+        model: h.model || 'Bambu (LAN)', online: true, type: 'bambu-lan', ip: h.ip,
+        caps: { camera: true, light: true, ams: true } });
     }
   } else if (!list.length) {
     // needCode: es gäbe eine Flotte, aber der (öffentliche) Client hat keinen Code
@@ -189,7 +245,7 @@ app.get('/api/status/:serial', async (req, res) => {
   const sid = sidOf(req);
   if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
   try {
-    const st = await cloud.getStatus(sid, req.params.serial).catch(() => null);
+    const st = await printStatus(sid, req.params.serial);
     res.json({ online: Boolean(st), gcode_state: st?.gcode_state,
       nozzle_temper: st?.nozzle_temper, bed_temper: st?.bed_temper,
       percent: st?.mc_percent, layer: st?.layer_num });
@@ -241,7 +297,7 @@ app.get('/api/device/:serial', async (req, res) => {
   const sid = sidOf(req);
   if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
   try {
-    const st = await cloud.getStatus(sid, req.params.serial).catch(() => null);
+    const st = await printStatus(sid, req.params.serial);
     if (!st) return res.json({ online: false });
     // AMS-Slots einsammeln (Farbe hex RRGGBBAA, Typ). gid = globale Tray-Nummer
     // (AMS-Einheit × 4 + Slot) — die braucht ams_mapping beim Druckstart.
@@ -324,16 +380,11 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       throw new Error(`${fp.name || fp.id} nicht erreichbar (${e.message})`);
     }
   }
-  // LAN-Zugang auflösen: explizit vom Nutzer, sonst automatisch (IP aus der
-  // SSDP-Ankündigung, Zugangscode aus der Bambu-Cloud). Nur über LAN lässt
-  // sich eine frische Datei zuverlässig auf den Drucker bringen.
-  let ip = lanIp, code = lanCode, auto = false;
-  if (!ip || !code) {
-    const hit = ssdpSeen.get(serial);
-    if (!ip && hit && Date.now() - hit.ts < 30 * 60e3) ip = hit.ip;
-    if (ip && !code) code = await cloud.accessCode(sid, serial).catch(() => null);
-    auto = Boolean(ip && code && !(lanIp && lanCode));
-  }
+  // LAN-Zugang auflösen: explizit vom Nutzer > hinterlegter LAN-Code
+  // (Entwicklermodus) > SSDP-IP + Cloud-Code. Nur über LAN lässt sich eine
+  // frische Datei zuverlässig auf den Drucker bringen.
+  const isLanOnly = lanAuth.has(serial);   // Entwicklermodus, nicht in der Cloud
+  const { ip, code, auto } = await resolveLan(sid, serial, lanIp, lanCode);
   if (ip && code) {
     const p = { ip, access_code: code, serial };
     if (await lan.reachable(p)) {
@@ -362,8 +413,11 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
         // signiert sein → "mqtt message verify failed", über LAN wie Cloud.
         // Dann ist der Cloud-Versuch zwecklos (spart 2 Runden); nur bei
         // anderen Fehlern lohnt der Cloud-Start (Datei liegt lokal).
+        // LAN-only (Entwicklermodus) verlangt keine Signatur → LAN-Start gilt.
+        // Sonst (Cloud-Drucker mit Signaturpflicht) Cloud-Start versuchen,
+        // außer bei "verify failed" (zwecklos, spart 2 Runden).
         const verifyBlocked = /verify failed/i.test(pr?.reason || '');
-        if (!isOk(pr) && !verifyBlocked) {
+        if (!isLanOnly && !isOk(pr) && !verifyBlocked) {
           for (const u of [`file:///sdcard/${name3}`, `file:///mnt/sdcard/${name3}`]) {
             const cr = await cloud.sendCommand(sid, serial,
               { print: { ...basePrint, url: u } }, { waitMs: 8000 }).catch(() => null);
@@ -376,6 +430,9 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       return { path: 'lan', auto, uploaded: name3, print: pr };
     }
   }
+  // LAN-only-Drucker ohne gültigen Zugang → klarer Hinweis statt Cloud-Versuch.
+  if (isLanOnly)
+    throw new Error('Drucker (Entwicklermodus) nicht erreichbar — IP + LAN-Zugangscode vom Drucker-Display prüfen.');
   // Cloud-Fallback: Steuerung/Start geht; Dateiversand an entfernte Drucker
   // ist experimentell (Bambu-Cloudspeicher, inoffiziell).
   if (start) {
