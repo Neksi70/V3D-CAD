@@ -37,7 +37,7 @@ function ensureProc() {
       if (!j) continue;
       if (m.progress != null) { j.percent = m.progress; j.text = m.text || ''; }
       if (m.error) { j.state = 'error'; j.error = m.error; finish(); }
-      if (m.done) { j.state = 'done'; j.gcodePath = m.gcode; j.warnings = m.warnings; finish(); }
+      if (m.done) { j.state = 'done'; j.gcodePath = m.gcode; j.gcode3mfPath = m.gcode3mf || null; j.warnings = m.warnings; finish(); }
     }
   });
   proc.stderr.on('data', (d) => process.stderr.write('[native] ' + d));
@@ -70,7 +70,7 @@ function pump() {
 
 // Job einreihen: bytes = Buffer der Modelldatei; paints (Mal-Werkzeug):
 // je (Objekt,Instanz) null oder { verts, tris, states } als base64
-function submit({ filename, bytes, profiles, overrides, transforms, filamentChains, paints, ops }) {
+function submit({ filename, bytes, profiles, overrides, transforms, filamentChains, paints, ops, printerModelId }) {
   const id = crypto.randomBytes(8).toString('hex');
   const modelPath = path.join(TMP, id + '_' + String(filename || 'model').replace(/[^\w.\-]/g, '_'));
   fs.mkdirSync(TMP, { recursive: true });
@@ -81,6 +81,9 @@ function submit({ filename, bytes, profiles, overrides, transforms, filamentChai
     profiles: profiles || [], overrides: overrides || '',
     transforms: transforms || null, filament_chains: filamentChains || [],
     paints: paints || null,
+    // printer_model_id landet im .gcode.3mf (slice_info) — die H2-Firmware
+    // prüft es gegen das Druckermodell, sonst „3MF ungültig"
+    printer_model_id: printerModelId || '',
     cuts: (ops && ops.cuts) || [], adaptive: (ops && ops.adaptive) || null,
   } });
   pump();
@@ -89,11 +92,20 @@ function submit({ filename, bytes, profiles, overrides, transforms, filamentChai
 
 function status(id) { return jobs.get(id) || null; }
 
-// Fertige G-Code-Datei ausliefern und aufräumen
+// Fertige G-Code-Datei ausliefern (räumt NICHT auf — das native .gcode.3mf
+// wird beim Senden noch gebraucht)
 function takeGcode(id) {
   const j = jobs.get(id);
   if (!j || j.state !== 'done') return null;
   return j.gcodePath;
+}
+
+// Pfad des nativen .gcode.3mf (vollständiges Bambu-Paket) zu einem Job, sofern
+// der Slice fertig ist und der Export klappte. Sonst null → Aufrufer baut selbst.
+function gcode3mfPath(id) {
+  const j = jobs.get(id);
+  if (!j || j.state !== 'done' || !j.gcode3mfPath) return null;
+  try { fs.accessSync(j.gcode3mfPath); return j.gcode3mfPath; } catch { return null; }
 }
 
 // Alte Jobs/G-Codes wegräumen (30 min)
@@ -101,9 +113,9 @@ setInterval(() => {
   const now = Date.now();
   for (const [id, j] of jobs) {
     if (now - j.created < 30 * 60 * 1000) continue;
-    if (j.gcodePath) { try { fs.unlinkSync(j.gcodePath); } catch {} }
+    for (const p of [j.gcodePath, j.gcode3mfPath]) if (p) { try { fs.unlinkSync(p); } catch {} }
     jobs.delete(id);
   }
 }, 5 * 60 * 1000).unref?.();
 
-module.exports = { available, submit, status, takeGcode };
+module.exports = { available, submit, status, takeGcode, gcode3mfPath };

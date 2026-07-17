@@ -819,7 +819,8 @@ async function doSend(extra = {}) {
       filename: modelName.replace(/\.[^.]+$/, '') + '.gcode',
       gcode: lastGcode, start: $('sendStart').checked,
       modelId: machines.find(m => m.name === $('machine').value)?.modelId || undefined,
-      settings: buildProjectSettings(),   // → Metadata/project_settings.config
+      settings: buildProjectSettings(),   // → Metadata/project_settings.config (Fallback)
+      sliceId: lastSliceId || undefined,  // Server-Slice: natives .gcode.3mf nutzen
       useAms: projectFilaments.length > 1,   // Mehrfarbdruck braucht das AMS
       lanIp: $('lanIp').value.trim() || undefined,
       lanCode: $('lanCode').value.trim() || undefined,
@@ -3343,6 +3344,7 @@ $('layerSlider').oninput = () => setVisibleLayers(+$('layerSlider').value);
 let worker = null;
 let sliceStart = 0;
 let lastGcode = '';
+let lastSliceId = null;   // id des Server-Slice-Jobs (für natives .gcode.3mf)
 function updateSliceable() { $('btnSlice').disabled = !modelBytes; }
 
 function crashRecovery(message) {
@@ -3382,6 +3384,9 @@ function handleMessage(e) {
   } else if (msg.type === 'done') {
     const dt = ((performance.now() - sliceStart) / 1000).toFixed(1);
     lastGcode = msg.gcode;
+    // Server-Slice liefert eine sliceId → beim Senden nimmt die Brücke das
+    // dort erzeugte vollständige .gcode.3mf. Lokaler Slice: keine id → Fallback.
+    lastSliceId = msg.sliceId || null;
     window._lastGcode = lastGcode; // Debug-Zugriff (Konsole/Headless-Tests)
     const layers = parseGcode(lastGcode);
     showToolpaths(layers);
@@ -3430,6 +3435,7 @@ async function sliceOnServer({ profiles, overrides, filamentChains, paints }) {
   const { status: st, json } = await bridge('/api/slice', { method: 'POST', body: {
     filename: modelName, model: b64, profiles, overrides,
     transforms: currentTransforms(), filamentChains, ops: currentOps(),
+    printerModelId: machines.find(m => m.name === $('machine').value)?.modelId || undefined,
     paints: paints ? paints.map(p => p && {
       verts: paintB64(p.verts), tris: paintB64(p.tris), states: paintB64(p.states) }) : undefined,
   } });
@@ -3445,7 +3451,7 @@ async function sliceOnServer({ profiles, overrides, filamentChains, paints }) {
   }
   const r = await fetch(`${BRIDGE}/api/slice/${json.id}/gcode`);
   if (!r.ok) throw new Error('G-Code-Abruf fehlgeschlagen');
-  handleMessage({ data: { type: 'done', gcode: await r.text() } });
+  handleMessage({ data: { type: 'done', gcode: await r.text(), sliceId: json.id } });
 }
 
 $('btnSlice').onclick = async () => {

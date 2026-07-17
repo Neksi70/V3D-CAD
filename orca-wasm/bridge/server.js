@@ -370,7 +370,7 @@ setInterval(() => {
   for (const [k, j] of sendJobs) if (now - j.ts > 15 * 60e3) sendJobs.delete(k);
 }, 60e3).unref?.();
 
-async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId, settings }) {
+async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId, settings, sliceId }) {
   if (fp) {
     job.phase = 'upload'; job.percent = -1;   // Adapter melden keinen Fortschritt
     try {
@@ -392,7 +392,12 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       // als .gcode.3mf verpacken und die Plate darin drucken lassen.
       const jobName = name.replace(/\.gcode$/i, '');
       const name3 = jobName + '.gcode.3mf';
-      const pack = gcode3mf.wrap(buf, { modelId, settings });
+      // Bevorzugt das vollständige, vom nativen OrcaSlicer erzeugte .gcode.3mf
+      // (gültige slice_info mit Dual-Extruder-Feldern). Fällt auf das selbst
+      // gebaute Paket zurück, wenn lokal gesliced wurde / kein natives 3MF da.
+      const nativePath = sliceId ? nativeSlicer.gcode3mfPath(sliceId) : null;
+      const pack = nativePath ? fs.readFileSync(nativePath) : gcode3mf.wrap(buf, { modelId, settings });
+      console.log('[send]', nativePath ? 'natives 3MF' : 'eigenes 3MF', name3);
       job.phase = 'upload'; job.percent = 0;
       await lan.uploadGcode(p, name3, pack,
         (sent) => { job.percent = Math.min(100, Math.round(sent / pack.length * 100)); });
@@ -448,7 +453,7 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
 
 app.post('/api/send', (req, res) => {
   const { serial, filename, gcode, start, lanIp, lanCode, useAms,
-          timelapse, bedLeveling, flowCali, amsMapping, modelId, settings } = req.body || {};
+          timelapse, bedLeveling, flowCali, amsMapping, modelId, settings, sliceId } = req.body || {};
   if (!serial || !gcode) return res.status(400).json({ error: 'serial/gcode nötig' });
   const name = (filename || 'volmeslice.gcode').replace(/[^\w.\-]/g, '_');
   const buf = Buffer.from(gcode, 'utf8');
@@ -469,7 +474,7 @@ app.post('/api/send', (req, res) => {
   const id = require('crypto').randomBytes(8).toString('hex');
   const job = { phase: 'prepare', percent: 0, ts: Date.now() };
   sendJobs.set(id, job);
-  runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId, settings })
+  runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId, settings, sliceId })
     .then((r) => { job.phase = 'done'; job.percent = 100; job.result = r; })
     .catch((e) => { job.phase = 'error'; job.error = e.message; });
   res.json({ ok: true, id });
@@ -493,12 +498,12 @@ app.post('/api/slice', (req, res) => {
   if (!fleetOk(req)) return needCode(res);
   if (!nativeSlicer.available())
     return res.status(503).json({ error: 'nativer Slicer nicht gebaut' });
-  const { filename, model, profiles, overrides, transforms, filamentChains, paints, ops } = req.body || {};
+  const { filename, model, profiles, overrides, transforms, filamentChains, paints, ops, printerModelId } = req.body || {};
   if (!model) return res.status(400).json({ error: 'model (base64) nötig' });
   try {
     const id = nativeSlicer.submit({
       filename, bytes: Buffer.from(model, 'base64'),
-      profiles, overrides, transforms, filamentChains, paints, ops,
+      profiles, overrides, transforms, filamentChains, paints, ops, printerModelId,
     });
     res.json({ ok: true, id });
   } catch (e) { res.status(500).json({ error: e.message }); }
