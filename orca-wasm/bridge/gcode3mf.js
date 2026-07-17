@@ -67,7 +67,11 @@ function estSeconds(g) {
 }
 const splitList = (s) => s.split(/[;,]/).map(x => x.trim()).filter(Boolean);
 
-// gcodeBuf → fertiges .gcode.3mf; meta: { modelId } (z. B. "O1C2", optional)
+// gcodeBuf → fertiges .gcode.3mf; meta: { modelId, settings }
+//   modelId  z. B. "O1C2" (optional)
+//   settings die vollständige, gemergte Slicer-Config (machine+process+filament)
+//            als Objekt — wird zu Metadata/project_settings.config. OHNE diese
+//            Datei lehnt die H2-Firmware das 3MF ab ("3MF-Datei ungültig").
 function wrap(gcodeBuf, meta = {}) {
   // Konfig-Zeilen stehen am Anfang, die Verbrauchsstatistik im Fußteil
   const head = gcodeBuf.slice(0, 65536).toString('utf8')
@@ -139,16 +143,44 @@ ${Array.from({ length: nFil }, (_, i) => fil(i)).join('\n')}
 </config>`;
   const md5 = crypto.createHash('md5').update(gcodeBuf).digest('hex').toUpperCase();
 
-  return zipStore([
+  // model_settings.config verweist per rels auf den G-Code (wie Studio)
+  const modelRels = `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+ <Relationship Target="/Metadata/plate_1.gcode" Id="rel-1" Type="http://schemas.bambulab.com/package/2021/gcode"/>
+</Relationships>`;
+  const cutInfo = `<?xml version="1.0" encoding="utf-8"?>
+<objects>
+ <object id="1">
+  <cut_id id="0" check_sum="1" connectors_cnt="0"/>
+ </object>
+</objects>`;
+  const filamentSeq = JSON.stringify({ plate_1: {
+    nozzle_sequence: [0],
+    optimal_assignment: Array(9).fill(0),
+    sequence: Array.from({ length: nFil }, (_, i) => i + 1),
+  } });
+
+  const files = [
     { name: '[Content_Types].xml', data: Buffer.from(contentTypes) },
     { name: '_rels/.rels', data: Buffer.from(rels) },
     { name: '3D/3dmodel.model', data: Buffer.from(model) },
     { name: 'Metadata/model_settings.config', data: Buffer.from(modelSettings) },
+    { name: 'Metadata/_rels/model_settings.config.rels', data: Buffer.from(modelRels) },
     { name: 'Metadata/plate_1.json', data: Buffer.from(plateJson) },
     { name: 'Metadata/slice_info.config', data: Buffer.from(sliceInfo) },
+    { name: 'Metadata/cut_information.xml', data: Buffer.from(cutInfo) },
+    { name: 'Metadata/filament_sequence.json', data: Buffer.from(filamentSeq) },
     { name: 'Metadata/plate_1.gcode', data: gcodeBuf },
     { name: 'Metadata/plate_1.gcode.md5', data: Buffer.from(md5) },
-  ]);
+  ];
+  // project_settings.config: die vollständige Slicer-Config. Ohne sie ist das
+  // 3MF für die H2-Firmware ungültig. Die App liefert die gemergte Config.
+  if (meta.settings && typeof meta.settings === 'object') {
+    const ps = { ...meta.settings, from: 'project', name: 'project_settings' };
+    files.push({ name: 'Metadata/project_settings.config',
+                 data: Buffer.from(JSON.stringify(ps, null, 4)) });
+  }
+  return zipStore(files);
 }
 
 module.exports = { wrap };
