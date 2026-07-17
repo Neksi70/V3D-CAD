@@ -19,11 +19,13 @@ async function reachable(printer, timeoutMs = 4000) {
   });
 }
 
-// G-Code-Datei per FTPS (implizites TLS, Port 990) in den Modell-Ordner laden
-async function uploadGcode(printer, filename, gcodeBuffer) {
+// G-Code-Datei per FTPS (implizites TLS, Port 990) in den Modell-Ordner laden.
+// onBytes(gesendeteBytes) meldet den Fortschritt für den Ladebalken.
+async function uploadGcode(printer, filename, gcodeBuffer, onBytes) {
   const client = new ftp.Client(15000);
   client.ftp.verbose = false;
   try {
+    if (onBytes) client.trackProgress((info) => onBytes(info.bytes));
     await client.access({
       host: printer.ip, port: 990, user: 'bblp', password: printer.access_code,
       secure: 'implicit', secureOptions: { rejectUnauthorized: false },
@@ -32,6 +34,7 @@ async function uploadGcode(printer, filename, gcodeBuffer) {
     await client.uploadFrom(src, filename);
     return true;
   } finally {
+    client.trackProgress();
     client.close();
   }
 }
@@ -57,9 +60,12 @@ function sendCommand(printer, payload, { waitMs = 0 } = {}) {
     });
     c.on('message', (_t, msg) => {
       let j; try { j = JSON.parse(msg.toString()); } catch { return; }
-      // print-Echo oder Fehlercode als Bestätigung werten
-      if (j.print && (j.print.command || j.print.gcode_state !== undefined))
-        finish(resolve, { sent: true, acked: true, report: j.print });
+      const pr = j.print;
+      if (!pr) return;
+      // Nur das Echo DESSELBEN Kommandos ist die echte Antwort (result/reason);
+      // ein beliebiger Status-Report ist keine Bestätigung.
+      if (pr.command && pr.command === payload.print?.command)
+        finish(resolve, { sent: true, acked: true, result: pr.result, reason: pr.reason, report: pr });
     });
     c.on('error', (e) => finish(reject, e));
     setTimeout(() => finish(resolve, { sent: true, timeout: true }), (waitMs || 6000) + 6000);

@@ -306,9 +306,90 @@ app.post('/api/control/:serial', async (req, res) => {
 
 // G-Code senden: { serial, filename, gcode, start } + Druckoptionen
 // { timelapse, bedLeveling, flowCali, amsMapping } aus dem Sende-Dialog.
-app.post('/api/send', async (req, res) => {
+// Antwort: { ok, id } — der Versand läuft als Job, die App pollt
+// /api/send/:id/status für den Übertragungs-Fortschritt (Ladebalken).
+const sendJobs = new Map();   // id -> { phase, percent, result, error, ts }
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, j] of sendJobs) if (now - j.ts > 15 * 60e3) sendJobs.delete(k);
+}, 60e3).unref?.();
+
+async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId }) {
+  if (fp) {
+    job.phase = 'upload'; job.percent = -1;   // Adapter melden keinen Fortschritt
+    try {
+      const r = await adapterOf(fp).send(fp, name, buf, Boolean(start));
+      return { path: fp.type, ...r };
+    } catch (e) {
+      throw new Error(`${fp.name || fp.id} nicht erreichbar (${e.message})`);
+    }
+  }
+  // LAN-Zugang auflösen: explizit vom Nutzer, sonst automatisch (IP aus der
+  // SSDP-Ankündigung, Zugangscode aus der Bambu-Cloud). Nur über LAN lässt
+  // sich eine frische Datei zuverlässig auf den Drucker bringen.
+  let ip = lanIp, code = lanCode, auto = false;
+  if (!ip || !code) {
+    const hit = ssdpSeen.get(serial);
+    if (!ip && hit && Date.now() - hit.ts < 30 * 60e3) ip = hit.ip;
+    if (ip && !code) code = await cloud.accessCode(sid, serial).catch(() => null);
+    auto = Boolean(ip && code && !(lanIp && lanCode));
+  }
+  if (ip && code) {
+    const p = { ip, access_code: code, serial };
+    if (await lan.reachable(p)) {
+      // Rohes .gcode startet auf neuerer Firmware (H2-Serie) nicht mehr —
+      // als .gcode.3mf verpacken und die Plate darin drucken lassen.
+      const jobName = name.replace(/\.gcode$/i, '');
+      const name3 = jobName + '.gcode.3mf';
+      const pack = gcode3mf.wrap(buf, { modelId });
+      job.phase = 'upload'; job.percent = 0;
+      await lan.uploadGcode(p, name3, pack,
+        (sent) => { job.percent = Math.min(100, Math.round(sent / pack.length * 100)); });
+      let pr = null;
+      if (start) {
+        job.phase = 'start'; job.percent = 100;
+        const isOk = (r) => r && String(r.result || '').toLowerCase() === 'success';
+        const basePrint = { sequence_id: '0', command: 'project_file',
+          param: 'Metadata/plate_1.gcode', subtask_name: jobName,
+          // Felder wie Bambu Studio: IDs + MD5 des Pakets (Firmware prüft ggf.)
+          project_id: '0', profile_id: '0', task_id: '0', subtask_id: '0', file: '',
+          md5: require('crypto').createHash('md5').update(pack).digest('hex').toUpperCase(),
+          ...printOpts };
+        pr = await lan.sendCommand(p, { print: { ...basePrint, url: `ftp://${name3}` } },
+                                   { waitMs: 8000 }).catch(() => null);
+        console.log('[send] lan-start', serial, name3, 'result:', pr?.result, pr?.reason || '');
+        // Neuere Firmware verlangt über LAN signierte Befehle ("mqtt message
+        // verify failed") — Start dann über die Cloud-Verbindung (über das
+        // Konto autorisiert), Datei liegt ja schon lokal auf dem Drucker.
+        if (!isOk(pr)) {
+          for (const u of [`file:///sdcard/${name3}`, `file:///mnt/sdcard/${name3}`]) {
+            const cr = await cloud.sendCommand(sid, serial,
+              { print: { ...basePrint, url: u } }, { waitMs: 8000 }).catch(() => null);
+            console.log('[send] cloud-start', u, 'result:', cr?.result, cr?.reason || '');
+            if (cr) pr = { ...cr, startedVia: 'cloud' };
+            if (isOk(cr)) break;
+          }
+        }
+      }
+      return { path: 'lan', auto, uploaded: name3, print: pr };
+    }
+  }
+  // Cloud-Fallback: Steuerung/Start geht; Dateiversand an entfernte Drucker
+  // ist experimentell (Bambu-Cloudspeicher, inoffiziell).
+  if (start) {
+    job.phase = 'start'; job.percent = -1;
+    const r = await cloud.sendCommand(sid, serial, { print: { sequence_id: '0',
+      command: 'project_file', param: name, subtask_name: name.replace(/\.[^.]+$/, ''),
+      ...printOpts } }, { waitMs: 3000 }).catch(e => ({ error: e.message }));
+    return { path: 'cloud', experimental: true,
+      note: 'Cloud-Dateiversand ist experimentell — Datei muss ggf. schon auf dem Drucker liegen.', print: r };
+  }
+  throw new Error('Cloud-Upload frischer Dateien noch nicht unterstützt — Drucker per LAN verbinden (IP + Code angeben).');
+}
+
+app.post('/api/send', (req, res) => {
   const { serial, filename, gcode, start, lanIp, lanCode, useAms,
-          timelapse, bedLeveling, flowCali, amsMapping } = req.body || {};
+          timelapse, bedLeveling, flowCali, amsMapping, modelId } = req.body || {};
   if (!serial || !gcode) return res.status(400).json({ error: 'serial/gcode nötig' });
   const name = (filename || 'volmeslice.gcode').replace(/[^\w.\-]/g, '_');
   const buf = Buffer.from(gcode, 'utf8');
@@ -323,54 +404,22 @@ app.post('/api/send', async (req, res) => {
     ...(Array.isArray(amsMapping) && amsMapping.length ? { ams_mapping: amsMapping.map(Number) } : {}),
   };
   const fp = fleetOf(serial);
-  if (fp) {
-    if (!fleetOk(req)) return needCode(res);
-    try {
-      const r = await adapterOf(fp).send(fp, name, buf, Boolean(start));
-      return res.json({ ok: true, path: fp.type, ...r });
-    } catch (e) { return res.status(500).json({ error: e.message }); }
-  }
+  if (fp && !fleetOk(req)) return needCode(res);
   const sid = sidOf(req);
-  if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
-  try {
-    // LAN-Zugang auflösen: explizit vom Nutzer, sonst automatisch (IP aus der
-    // SSDP-Ankündigung, Zugangscode aus der Bambu-Cloud). Nur über LAN lässt
-    // sich eine frische Datei zuverlässig auf den Drucker bringen.
-    let ip = lanIp, code = lanCode, auto = false;
-    if (!ip || !code) {
-      const hit = ssdpSeen.get(serial);
-      if (!ip && hit && Date.now() - hit.ts < 30 * 60e3) ip = hit.ip;
-      if (ip && !code) code = await cloud.accessCode(sid, serial).catch(() => null);
-      auto = Boolean(ip && code && !(lanIp && lanCode));
-    }
-    if (ip && code) {
-      const p = { ip, access_code: code, serial };
-      if (await lan.reachable(p)) {
-        // Rohes .gcode startet auf neuerer Firmware (H2-Serie) nicht mehr —
-        // als .gcode.3mf verpacken und die Plate darin drucken lassen.
-        const jobName = name.replace(/\.gcode$/i, '');
-        const name3 = jobName + '.gcode.3mf';
-        await lan.uploadGcode(p, name3, gcode3mf.wrap(buf, { modelId: req.body.modelId }));
-        let pr = null;
-        if (start) pr = await lan.sendCommand(p, { print: { sequence_id: '0', command: 'project_file',
-          param: 'Metadata/plate_1.gcode', subtask_name: jobName, url: `ftp://${name3}`,
-          ...printOpts } }, { waitMs: 3000 });
-        return res.json({ ok: true, path: 'lan', auto, uploaded: name3, print: pr });
-      }
-    }
-    // Cloud-Fallback: Steuerung/Start geht; Dateiversand an entfernte Drucker
-    // ist experimentell (Bambu-Cloudspeicher, inoffiziell).
-    if (start) {
-      const r = await cloud.sendCommand(sid, serial, { print: { sequence_id: '0',
-        command: 'project_file', param: name, subtask_name: name.replace(/\.[^.]+$/, ''),
-        ...printOpts } }, { waitMs: 3000 }).catch(e => ({ error: e.message }));
-      return res.json({ ok: !r.error, path: 'cloud', experimental: true,
-        note: 'Cloud-Dateiversand ist experimentell — Datei muss ggf. schon auf dem Drucker liegen.', print: r });
-    }
-    return res.status(501).json({ error: 'Cloud-Upload frischer Dateien noch nicht unterstützt — Drucker per LAN verbinden (IP + Code angeben).' });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  if (!fp && !cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
+  const id = require('crypto').randomBytes(8).toString('hex');
+  const job = { phase: 'prepare', percent: 0, ts: Date.now() };
+  sendJobs.set(id, job);
+  runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId })
+    .then((r) => { job.phase = 'done'; job.percent = 100; job.result = r; })
+    .catch((e) => { job.phase = 'error'; job.error = e.message; });
+  res.json({ ok: true, id });
+});
+
+app.get('/api/send/:id/status', (req, res) => {
+  const j = sendJobs.get(req.params.id);
+  if (!j) return res.status(404).json({ error: 'unbekannter Job' });
+  res.json({ phase: j.phase, percent: j.percent, result: j.result, error: j.error });
 });
 
 // ---- Nativer Slice-Dienst (2–3× schneller als Browser-WASM) ----

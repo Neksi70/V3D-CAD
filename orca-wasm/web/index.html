@@ -703,14 +703,62 @@ $('sendPrinter').onchange = startStatusPolling;
 function updateSend() {
   $('btnSend').disabled = $('btnDownload').disabled || !bridgePrinters.length;
 }
-// Eigentlicher Versand; extra = Optionen aus dem Sende-Dialog (Bambu)
+// Fortschrittsbalken unter dem Senden-Button; pct -1 = unbestimmt
+function sendProgress(pct, label) {
+  const det = pct >= 0;
+  $('sendStatus').innerHTML = `<div style="display:flex;align-items:center;gap:.5rem">
+    <div style="flex:1;height:8px;border-radius:4px;background:var(--border);overflow:hidden">
+      <div style="height:100%;width:${det ? Math.max(2, Math.min(100, pct)) : 100}%;background:var(--accent);${det ? '' : 'opacity:.45;'}transition:width .3s"></div>
+    </div>
+    <small style="white-space:nowrap">${label}${det ? ' ' + Math.round(pct) + '%' : ''}</small></div>`;
+}
+
+// POST mit Upload-Fortschritt — fetch() kann das nicht, XHR schon
+function bridgeUpload(pathname, body, onPct) {
+  return new Promise((resolve) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', BRIDGE + pathname);
+    x.setRequestHeader('Content-Type', 'application/json');
+    if (sid) x.setRequestHeader('Authorization', 'Bearer ' + sid);
+    if (fleetCode) x.setRequestHeader('X-Fleet-Code', fleetCode);
+    x.upload.onprogress = (e) => { if (e.lengthComputable && onPct) onPct(e.loaded / e.total * 100); };
+    x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch {} resolve({ status: x.status, json: j }); };
+    x.onerror = () => resolve({ status: 0, json: {} });
+    x.timeout = 600000;
+    x.ontimeout = () => resolve({ status: 0, json: {} });
+    x.send(JSON.stringify(body));
+  });
+}
+
+// Ergebnis des Sende-Jobs anzeigen (echte Drucker-Antwort, kein falsches ✅)
+function renderSendResult(r) {
+  if (r.experimental) {
+    // Cloud kann keine frische Datei übertragen — das ist KEIN Erfolg
+    $('sendStatus').innerHTML = `<span style="color:#c77400">⚠ Nur Startbefehl per Cloud — Datei konnte nicht übertragen werden.</span>`
+      + `<br><small style="opacity:.7">Druck startet nur, wenn die Datei schon auf dem Drucker liegt. Der Drucker wurde im LAN nicht gefunden — IP + Zugangscode unter „LAN-Direktverbindung" eintragen.</small>`;
+    return;
+  }
+  const via = r.path === 'lan' ? (r.auto ? 'LAN, automatisch verbunden' : 'LAN')
+    : (r.path === 'moonraker' || r.path === 'anycubic') ? 'LAN direkt' : 'Cloud';
+  const pr = r.print;
+  if (pr?.result && String(pr.result).toLowerCase() !== 'success') {
+    $('sendStatus').innerHTML = `<span class="err">❌ Drucker lehnt den Start ab: ${pr.reason || pr.result}</span>`;
+  } else {
+    $('sendStatus').innerHTML = `<span class="ok">✅ Gesendet (${via}${
+      pr?.result ? ', Druck gestartet' : pr?.acked ? ', Druck bestätigt' : ''})</span>`;
+  }
+}
+
+// Eigentlicher Versand; extra = Optionen aus dem Sende-Dialog (Bambu).
+// Ablauf: Upload Browser→Brücke (0–50 %), dann Job pollen: Brücke→Drucker
+// (50–98 %), Druckstart, Ergebnis.
 let lastSendExtra = {};
 async function doSend(extra = {}) {
   lastSendExtra = extra;
   $('btnSend').disabled = true;
-  $('sendStatus').textContent = 'Sende …';
+  sendProgress(0, 'Übertrage zur Brücke …');
   try {
-    const { status, json } = await bridge('/api/send', { method: 'POST', body: {
+    const { status, json } = await bridgeUpload('/api/send', {
       serial: $('sendPrinter').value,
       filename: modelName.replace(/\.[^.]+$/, '') + '.gcode',
       gcode: lastGcode, start: $('sendStart').checked,
@@ -719,16 +767,20 @@ async function doSend(extra = {}) {
       lanIp: $('lanIp').value.trim() || undefined,
       lanCode: $('lanCode').value.trim() || undefined,
       ...extra,
-    } });
-    if (status === 200 && json.ok) {
-      if (json.experimental) {
-        // Cloud kann keine frische Datei übertragen — das ist KEIN Erfolg
-        $('sendStatus').innerHTML = `<span style="color:#c77400">⚠ Nur Startbefehl per Cloud — Datei konnte nicht übertragen werden.</span>`
-          + `<br><small style="opacity:.7">Druck startet nur, wenn die Datei schon auf dem Drucker liegt. Der Drucker wurde im LAN nicht gefunden — IP + Zugangscode unter „LAN-Direktverbindung" eintragen.</small>`;
-      } else {
-        const via = json.path === 'lan' ? (json.auto ? 'LAN, automatisch verbunden' : 'LAN')
-          : (json.path === 'moonraker' || json.path === 'anycubic') ? 'LAN direkt' : 'Cloud';
-        $('sendStatus').innerHTML = `<span class="ok">✅ Gesendet (${via}${json.print?.acked ? ', Druck bestätigt' : ''})</span>`;
+    }, (p) => sendProgress(p * 0.5, 'Übertrage zur Brücke …'));
+    if (status === 200 && json.ok && json.id) {
+      const t0 = Date.now();
+      for (;;) {
+        await new Promise(r => setTimeout(r, 700));
+        if (Date.now() - t0 > 15 * 60e3) { $('sendStatus').innerHTML = '<span class="err">Zeitüberschreitung beim Senden</span>'; break; }
+        let s = null;
+        try { s = (await bridge(`/api/send/${json.id}/status`)).json; } catch {}
+        if (!s || s.error) { $('sendStatus').innerHTML = `<span class="err">${s?.error || 'Brücke nicht erreichbar'}</span>`; break; }
+        if (s.phase === 'error') { $('sendStatus').innerHTML = `<span class="err">${s.error || 'Fehler'}</span>`; break; }
+        if (s.phase === 'done') { renderSendResult(s.result || {}); break; }
+        if (s.phase === 'upload') sendProgress(s.percent >= 0 ? 50 + s.percent * 0.48 : -1, 'Übertrage zum Drucker …');
+        else if (s.phase === 'start') sendProgress(99, 'Starte Druck …');
+        else sendProgress(50, 'Verbinde mit Drucker …');
       }
     } else if (json.needCode) {
       // Öffentlicher Zugriff ohne (gültigen) Druckcode — direkt nachfragen
@@ -740,7 +792,7 @@ async function doSend(extra = {}) {
       }
       $('sendStatus').innerHTML = '<span class="err">Ohne Druckcode kein Druckstart</span>';
     } else {
-      $('sendStatus').innerHTML = `<span class="err">${json.error || 'Fehler'}</span>`;
+      $('sendStatus').innerHTML = `<span class="err">${json.error || 'Brücke nicht erreichbar'}</span>`;
     }
   } catch {
     $('sendStatus').innerHTML = '<span class="err">Brücke nicht erreichbar</span>';
@@ -3294,11 +3346,6 @@ function initWorker() {
 }
 initWorker();
 
-await fillVendor();
-setBed(256, 256);
-await applyMachineBed();
-await refreshSettings();
-
 // ---- Serverseitiges Slicen (nativer Kern auf der Brücke, 2–3× schneller) ----
 $('srvSlice').onchange = () => localStorage.setItem('vs-srv-slice', $('srvSlice').checked ? '1' : '0');
 (async () => {
@@ -3399,6 +3446,14 @@ $('btnDownload').onclick = () => {
   a.click();
   URL.revokeObjectURL(a.href);
 };
+
+// GANZ ANS ENDE: top-level awaits blockieren die restliche Modul-Ausführung —
+// standen sie vor den Click-Handlern, war z. B. „Slicen" schon klickbar,
+// hatte aber noch keinen Handler (Klick verpuffte still).
+await fillVendor();
+setBed(256, 256);
+await applyMachineBed();
+await refreshSettings();
 </script>
 </body>
 </html>

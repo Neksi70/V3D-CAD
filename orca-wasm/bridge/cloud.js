@@ -171,7 +171,10 @@ function sendCommand(sid, serial, payload, { waitMs = 0 } = {}) {
       });
     });
     c.on('message', (_t, m) => { let j; try { j = JSON.parse(m.toString()); } catch { return; }
-      if (j.print && (j.print.command || j.print.gcode_state !== undefined)) fin(resolve, { sent: true, acked: true, report: j.print }); });
+      const pr = j.print;
+      // Nur das Echo desselben Kommandos ist die echte Antwort (result/reason)
+      if (pr && pr.command && pr.command === payload.print?.command)
+        fin(resolve, { sent: true, acked: true, result: pr.result, reason: pr.reason, report: pr }); });
     c.on('error', (e) => fin(reject, e));
     setTimeout(() => fin(resolve, { sent: true, timeout: true }), (waitMs || 6000) + 6000);
   });
