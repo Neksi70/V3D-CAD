@@ -460,12 +460,27 @@ app.post('/api/send', (req, res) => {
   // Druckoptionen für project_file. Achtung Schreibweise: der Drucker erwartet
   // "bed_levelling" (britisch, wie OpenBambuAPI) — bed_leveling bleibt als
   // Doppelgänger drin, falls ältere Firmware die US-Schreibweise liest.
+  // Filament→AMS-Zuordnung: der Sende-Dialog liefert je Job-Filament eine
+  // globale Tray-ID (gid). Zwei Felder müssen ins project_file-Kommando:
+  //   ams_mapping   = [gid, ...]                (altes Format, alle Serien)
+  //   ams_mapping_2 = [{ams_id, slot_id}, ...]  (neues Format, H2/Dual-Düse)
+  // gid → ams_id/slot_id: normaler AMS-Slot gid<254 → ams_id=gid/4, slot_id=gid%4;
+  // externe Spule 255 (Haupt/rechts) bzw. 254 (Deputy/links) → ams_id=gid, slot_id=0.
+  // Ref: OrcaSlicer CalibUtils.cpp ~1916-1956 (ams_mapping/ams_mapping_2) und
+  // DevMapping.cpp _parse_tray_info (ext-Tray: ams_id=255/254, slot_id=0).
+  const gids = Array.isArray(amsMapping) ? amsMapping.map(Number).filter(Number.isFinite) : [];
+  const amsFields = gids.length ? {
+    ams_mapping: gids,
+    ams_mapping_2: gids.map(g => g >= 254
+      ? { ams_id: g, slot_id: 0 }
+      : { ams_id: Math.floor(g / 4), slot_id: g % 4 }),
+  } : {};
   const printOpts = {
     bed_type: 'auto', use_ams: Boolean(useAms),
     timelapse: Boolean(timelapse),
     bed_levelling: bedLeveling !== false, bed_leveling: bedLeveling !== false,
     flow_cali: Boolean(flowCali), vibration_cali: false,
-    ...(Array.isArray(amsMapping) && amsMapping.length ? { ams_mapping: amsMapping.map(Number) } : {}),
+    ...amsFields,
   };
   const fp = fleetOf(serial);
   if (fp && !fleetOk(req)) return needCode(res);
