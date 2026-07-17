@@ -521,12 +521,14 @@ app.post('/api/slice', (req, res) => {
   if (!fleetOk(req)) return needCode(res);
   if (!nativeSlicer.available())
     return res.status(503).json({ error: 'nativer Slicer nicht gebaut' });
-  const { filename, model, profiles, overrides, transforms, filamentChains, paints, ops, printerModelId } = req.body || {};
+  const { filename, model, profiles, overrides, transforms, filamentChains, paints, ops,
+          printerModelId, extruderAmsCount, filamentIds } = req.body || {};
   if (!model) return res.status(400).json({ error: 'model (base64) nötig' });
   try {
     const id = nativeSlicer.submit({
       filename, bytes: Buffer.from(model, 'base64'),
       profiles, overrides, transforms, filamentChains, paints, ops, printerModelId,
+      extruderAmsCount, filamentIds,
     });
     res.json({ ok: true, id });
   } catch (e) { res.status(500).json({ error: e.message }); }

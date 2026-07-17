@@ -3448,6 +3448,33 @@ $('srvSlice').onchange = () => localStorage.setItem('vs-srv-slice', $('srvSlice'
   } catch {}
 })();
 
+// System-Filament-ID (GFAxx) aus der Filament-Profilkette (liegt in der Basis,
+// z. B. „Bambu PLA Basic @base"). Fürs .gcode.3mf: ohne sie bleibt tray_info_idx
+// leer und der H2C findet die AMS-Zuordnung nicht.
+async function filamentIdOf(name) {
+  try {
+    const chain = await profileChain($('vendor').value, 'filament_list', name);
+    let fid = '';
+    for (const s of chain) { const j = JSON.parse(s); if (j.filament_id) fid = j.filament_id; }
+    return fid;
+  } catch { return ''; }
+}
+// AMS-Topologie des gewählten Bambu-Druckers → extruder_ams_count je Extruder
+// ("1#0|4#<ams_id>", 1#0 = externe Spule). Behebt „Filamentweiche offline",
+// weil die AMS-ids zu den echten Einheiten passen müssen.
+async function amsTopology() {
+  const p = selectedPrinter();
+  if (!p || isFleet(p)) return null;
+  let dev;
+  try { dev = (await bridge('/api/device/' + encodeURIComponent(p.serial))).json; } catch { return null; }
+  const trays = (dev?.trays || []).filter(t => t.gid != null && t.gid < 254);
+  const amsIds = [...new Set(trays.map(t => Math.floor(t.gid / 4)))].sort((a, b) => a - b);
+  if (!amsIds.length) return null;
+  const nExt = (Array.isArray(effectiveConfig.nozzle_diameter) ? effectiveConfig.nozzle_diameter.length : 1) || 1;
+  const perExt = '1#0' + amsIds.map(id => '|4#' + id).join('');
+  return Array(nExt).fill(perExt);
+}
+
 async function sliceOnServer({ profiles, overrides, filamentChains, paints }) {
   // Modell als base64 (FileReader vermeidet Stack-Limits bei großen Dateien)
   const b64 = await new Promise((resolve, reject) => {
@@ -3456,10 +3483,17 @@ async function sliceOnServer({ profiles, overrides, filamentChains, paints }) {
     fr.onerror = reject;
     fr.readAsDataURL(new Blob([modelBytes]));
   });
+  // Filament-IDs (je Job-Filament) + AMS-Topologie fürs native .gcode.3mf
+  const filNames = projectFilaments.length > 1
+    ? projectFilaments.map(f => f.name) : [$('filament').value];
+  const filamentIds = await Promise.all(filNames.map(filamentIdOf));
+  const extruderAmsCount = await amsTopology().catch(() => null);
   const { status: st, json } = await bridge('/api/slice', { method: 'POST', body: {
     filename: modelName, model: b64, profiles, overrides,
     transforms: currentTransforms(), filamentChains, ops: currentOps(),
     printerModelId: machines.find(m => m.name === $('machine').value)?.modelId || undefined,
+    filamentIds: filamentIds.some(Boolean) ? filamentIds : undefined,
+    extruderAmsCount: extruderAmsCount || undefined,
     paints: paints ? paints.map(p => p && {
       verts: paintB64(p.verts), tris: paintB64(p.tris), states: paintB64(p.states) }) : undefined,
   } });

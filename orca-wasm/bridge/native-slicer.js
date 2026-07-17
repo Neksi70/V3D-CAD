@@ -70,7 +70,7 @@ function pump() {
 
 // Job einreihen: bytes = Buffer der Modelldatei; paints (Mal-Werkzeug):
 // je (Objekt,Instanz) null oder { verts, tris, states } als base64
-function submit({ filename, bytes, profiles, overrides, transforms, filamentChains, paints, ops, printerModelId }) {
+function submit({ filename, bytes, profiles, overrides, transforms, filamentChains, paints, ops, printerModelId, extruderAmsCount, filamentIds }) {
   const id = crypto.randomBytes(8).toString('hex');
   const modelPath = path.join(TMP, id + '_' + String(filename || 'model').replace(/[^\w.\-]/g, '_'));
   fs.mkdirSync(TMP, { recursive: true });
@@ -84,6 +84,11 @@ function submit({ filename, bytes, profiles, overrides, transforms, filamentChai
     // printer_model_id landet im .gcode.3mf (slice_info) — die H2-Firmware
     // prüft es gegen das Druckermodell, sonst „3MF ungültig"
     printer_model_id: printerModelId || '',
+    // AMS-Topologie (je Extruder "1#0|4#<ams_id>") + System-Filament-IDs (GFAxx)
+    // vom verbundenen Drucker — sonst „Filamentweiche offline" bzw. leeres
+    // tray_info_idx. Leer/fehlend → nativer Default (siehe slicer_native.cpp).
+    extruder_ams_count: Array.isArray(extruderAmsCount) ? extruderAmsCount : [],
+    filament_ids: Array.isArray(filamentIds) ? filamentIds : [],
     cuts: (ops && ops.cuts) || [], adaptive: (ops && ops.adaptive) || null,
   } });
   pump();
