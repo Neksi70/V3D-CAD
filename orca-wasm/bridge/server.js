@@ -395,8 +395,23 @@ function buildAmsFieldsFromFile(nativePath, gids) {
   const fmMatch = si.match(/filament_maps"\s+value="([^"]*)"/);
   const fmap = fmMatch ? fmMatch[1].trim().split(/\s+/).map(Number).filter(Number.isFinite) : [];
   const N = fmap.length || gids.length;
+  // Filament-Elemente je Slot parsen (Farbe/Typ/Filament-ID) — der Drucker braucht die,
+  // um die "AMS-Zuordnungstabelle" zu bauen (sonst [0x7FF8012]). RRGGBB → RRGGBBAA.
+  const toRGBA = (c) => { const h = String(c || '').replace('#', '').toUpperCase(); return h.length === 6 ? h + 'FF' : (h || ''); };
+  const filBySlot = {};
+  for (const m of si.matchAll(/<filament\s+([^>]*?)\/?>/g)) {
+    const a = m[1];
+    const id = +((a.match(/\bid="(\d+)"/) || [])[1]);
+    if (!id) continue;
+    filBySlot[id] = {
+      color: toRGBA((a.match(/\bcolor="([^"]*)"/) || [])[1]),
+      type: (a.match(/\btype="([^"]*)"/) || [])[1] || 'PLA',
+      fid: (a.match(/\btray_info_idx="([^"]*)"/) || [])[1] || '',
+      used: /used_for_object="true"/.test(a),
+    };
+  }
   // benutzte Filament-Slots (1-basiert), in Datei-Reihenfolge
-  const usedIds = [...si.matchAll(/<filament\s+id="(\d+)"[^>]*used_for_object="true"/g)].map(m => +m[1]);
+  const usedIds = Object.keys(filBySlot).map(Number).filter(id => filBySlot[id].used).sort((x, y) => x - y);
   const used = usedIds.length ? usedIds : gids.map((_, i) => i + 1);
   // benutzten Slot → Tray-gid (Job-Filamente in Reihenfolge)
   const trayBySlot = {};
@@ -406,12 +421,14 @@ function buildAmsFieldsFromFile(nativePath, gids) {
   const v0 = [], v1 = [], info = [];
   for (let slot = 1; slot <= N; slot++) {
     const g = trayBySlot[slot];
+    const f = filBySlot[slot] || {};
     if (g != null) {
       v0.push(g);
       v1.push(g >= 254 ? { ams_id: g, slot_id: 0 } : { ams_id: Math.floor(g / 4), slot_id: g % 4 });
     } else { v0.push(-1); v1.push({ ams_id: 0xff, slot_id: 0xff }); }
     info.push({ ams: g != null ? g : -1, nozzleId: nozId(fmap[slot - 1] || 2),
-                sourceColor: '', targetColor: '', filamentId: '', filamentType: '' });
+                sourceColor: f.color || '', targetColor: f.color || '',
+                filamentId: f.fid || '', filamentType: f.type || 'PLA' });
   }
   return {
     ams_mapping: v0, ams_mapping_2: v1, ams_mapping_info: info,
