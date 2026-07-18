@@ -40,7 +40,6 @@ const HEADER = {
   hotend_heating_rate: '3.5,13.3',           // war 3.5,3.5,13.3,13.3
   nozzle_volume_type: 'Standard,Standard',   // war "Standard" (1 Wert)
   extruder_nozzle_stats: 'Standard#1;Standard#4', // fehlte
-  extruder_ams_count: '1#0|4#0;1#0|4#1',     // war 1#0;1#0|4#0 (AMS falsche Seite)
   machine_switch_extruder_time: '5',         // fehlte
   filament_nozzle_map: '1,0,0,0,0',          // fehlte
   // extruder_colour MUSS pro Extruder (2 Werte) stehen. Unser Slice schreibt die
@@ -48,6 +47,11 @@ const HEADER = {
   // stimmt nicht" [0500-4047]. DAS ist der eigentliche Mengen-Trigger.
   extruder_colour: '#018001;#018001',
   filament_map_mode: 'Auto For Flush',       // war Manual (Studio: Auto For Flush)
+  // WICHTIG: extruder_ams_count NICHT überschreiben! Der native Slicer berechnet die
+  // echte AMS-Topologie dieses Druckers korrekt (extern links, 1 AMS rechts →
+  // "1#0;1#0|4#0"). Poolvorfilters Wert "1#0|4#0;1#0|4#1" (AMS an beiden + Unit 1)
+  // passt NICHT zu dieser Hardware → war mit-Ursache von 0500-4047. extruder_nozzle_stats
+  // Standard#1;Standard#4 = links 1 externes Filament, rechts 4 AMS-Farben → passt.
 };
 
 // Keys, die Studios H2C-Header NICHT hat — raus (verwirren die Hotend-/Mengen-Zählung).
@@ -63,7 +67,7 @@ const PS_SET = {
   print_extruder_variant: ['Direct Drive Standard', 'Direct Drive High Flow', 'Direct Drive Standard', 'Direct Drive High Flow'],
   nozzle_volume_type: ['Standard', 'Standard'],
   extruder_nozzle_stats: ['Standard#1', 'Standard#4'],
-  extruder_ams_count: ['1#0|4#0', '1#0|4#1'],
+  // extruder_ams_count NICHT setzen — native Topologie ist korrekt (s.o.).
   extruder_colour: ['#018001', '#018001'],
   filament_nozzle_map: ['0', '0', '0', '0', '0'],
   filament_extruder_compatibility: ['0', '0', '0', '0', '0'],
