@@ -1,0 +1,67 @@
+// H2C 0500-4047-Fix — MINIMAL & GEZIELT.
+//
+// Root-Cause (per Header-Diff gegen echten Studio-Poolvorfilter-Slice bestätigt,
+// 2026-07-18): Die H2C-Firmware validiert die HOTEND-/EXTRUDER-Topologie im
+// G-Code-Header (`; key = value`-Block in Metadata/plate_1.gcode), NICHT in
+// project_settings. Unser nativer OrcaSlicer-Pfad überspringt Studios
+// update_values_to_printer_extruders-Kontraktion → er schreibt die per-VARIANTEN-
+// Arrays (4 Werte = 2 Extruder × 2 Varianten) roh in den Header. Die Firmware zählt
+// daraus 4 Hotends statt 2 → "Hotend-Modell/-Menge stimmt nicht" [0500-4047].
+// Zusätzlich fehlen/leer: extruder_nozzle_stats, nozzle_volume_type (Hotend-Typ),
+// extruder_ams_count (falsche Seite), machine_switch_extruder_time, filament_nozzle_map.
+//
+// FIX: genau diese Keys im G-Code-Header auf Studios per-Extruder-Werte setzen
+// (kontrahiert 4→2, fehlende ergänzen), md5 neu. project_settings bleibt unberührt —
+// die Firmware liest den Header. Kein 162-Key-Superset, keine Key-Löschungen, kein
+// filament_map-Umschreiben mehr (das verwirrte früher und "half nicht").
+//
+// Werte gelten für DIESEN Drucker (H2C 0.4, Standard-Hotends bds, AMS rechts) — aus
+// dem echten Studio-Slice (Poolvorfilter01) desselben Druckers. Nutzt system-zip/unzip.
+const { execFileSync } = require('child_process');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+const GCODE = 'Metadata/plate_1.gcode';
+const GMD5 = 'Metadata/plate_1.gcode.md5';
+
+// key -> exakter Wert wie in Studios H2C-0.4-G-Code-Header (per Extruder, 2 Werte).
+const HEADER = {
+  hotend_cooling_rate: '1.6,3.4',            // war 1.6,1.6,3.4,3.4 (4 = per Variante)
+  hotend_heating_rate: '3.5,13.3',           // war 3.5,3.5,13.3,13.3
+  nozzle_volume_type: 'Standard,Standard',   // war "Standard" (1 Wert)
+  extruder_nozzle_stats: 'Standard#1;Standard#4', // fehlte
+  extruder_ams_count: '1#0|4#0;1#0|4#1',     // war 1#0;1#0|4#0 (AMS falsche Seite)
+  machine_switch_extruder_time: '5',         // fehlte
+  filament_nozzle_map: '1,0,0,0,0',          // fehlte
+};
+
+// Gibt Pfad zu einer KOPIE mit korrigiertem Header zurück (oder wirft).
+function injectMissingKeys(gcode3mfPath) {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'h2c-inject-'));
+  const copy = path.join(work, path.basename(gcode3mfPath));
+  fs.copyFileSync(gcode3mfPath, copy);
+
+  execFileSync('unzip', ['-o', copy, GCODE, GMD5, '-d', work], { stdio: 'ignore' });
+  const gcodePath = path.join(work, GCODE);
+  let g = fs.readFileSync(gcodePath, 'utf8');
+
+  // Anker: die filament_map-Zeile existiert im Header (Studio-Trick setzt sie).
+  const anchor = /^; filament_map = .*$/m;
+  let gfix = 0;
+  for (const [key, val] of Object.entries(HEADER)) {
+    const re = new RegExp('^; ' + key + ' = .*$', 'm');
+    const line = '; ' + key + ' = ' + val;
+    if (re.test(g)) { g = g.replace(re, line); gfix++; }
+    else if (anchor.test(g)) { g = g.replace(anchor, m => m + '\n' + line); gfix++; }
+  }
+  fs.writeFileSync(gcodePath, g);
+  // md5 wie Bambu: Großbuchstaben-Hex
+  fs.writeFileSync(path.join(work, GMD5), crypto.createHash('md5').update(g).digest('hex').toUpperCase());
+
+  execFileSync('zip', ['-q', copy, GCODE, GMD5], { cwd: work, stdio: 'ignore' });
+  return { path: copy, added: 0, overridden: 0, gfix };
+}
+
+module.exports = { injectMissingKeys };

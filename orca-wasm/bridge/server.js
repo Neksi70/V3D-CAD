@@ -18,7 +18,7 @@ const adapters = {
 };
 const nativeSlicer = require('./native-slicer');
 const gcode3mf = require('./gcode3mf');
-// const injectConfig = require('./inject-config'); // DEAKTIVIERT: verursachte 0500-4047
+const injectConfig = require('./inject-config'); // H2C: Hotend-Topologie-Keys im G-Code-Header auf Studio-Werte (2 statt 4) → behebt 0500-4047
 
 const PORT = process.env.BRIDGE_PORT ? Number(process.env.BRIDGE_PORT) : 7781;
 
@@ -405,11 +405,15 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       // (gültige slice_info mit Dual-Extruder-Feldern). Fällt auf das selbst
       // gebaute Paket zurück, wenn lokal gesliced wurde / kein natives 3MF da.
       let nativePath = sliceId ? nativeSlicer.gcode3mfPath(sliceId) : null;
-      // HINWEIS: Die Config-Injektion (inject-config.js) ist DEAKTIVIERT. Sie sollte
-      // das [0500-4047] beheben, hat es aber VERURSACHT (Regression): die manipulierten
-      // Hotend-/Extruder-Header-Keys ließen die Firmware "Hotend-Menge stimmt nicht"
-      // melden. Ohne Injektion druckte die rechte Düse (nur zu hoch → Z-Offset-Thema).
-      // Native 3MF unverändert senden.
+      // H2C: unser nativer Pfad schreibt die per-VARIANTEN-Hotend-Arrays (4 Werte) roh
+      // in den G-Code-Header; die Firmware zählt daraus 4 Hotends → [0500-4047]. Die
+      // Injektion kontrahiert genau 7 Header-Keys auf Studios per-Extruder-Werte
+      // (2 Werte) + ergänzt fehlende (extruder_nozzle_stats etc.) + md5 neu.
+      if (nativePath) {
+        try { const r = injectConfig.injectMissingKeys(nativePath);
+          console.log('[send] header-fix: gfix=' + r.gfix + ' Keys'); nativePath = r.path; }
+        catch (e) { console.log('[send] header-fix fehlgeschlagen (sende original):', e.message); }
+      }
       const pack = nativePath ? fs.readFileSync(nativePath) : gcode3mf.wrap(buf, { modelId, settings });
       console.log('[send]', nativePath ? 'natives 3MF' : 'eigenes 3MF', name3);
       job.phase = 'upload'; job.percent = 0;
