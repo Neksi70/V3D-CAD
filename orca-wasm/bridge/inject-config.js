@@ -40,8 +40,11 @@ const HEADER = {
   hotend_heating_rate: '3.5,13.3',           // war 3.5,3.5,13.3,13.3
   nozzle_volume_type: 'Standard,Standard',   // war "Standard" (1 Wert)
   extruder_nozzle_stats: 'Standard#1;Standard#4', // fehlte
+  // Studios echte H2C-Datei (Byte-Referenz f1levelholderV2, BambuStudio 02.07.01.62)
+  // nutzt genau diese AMS-Topologie — NICHT den nativen Wert "1#0;1#0|4#0".
+  extruder_ams_count: '1#0|4#0;1#0|4#1',
   machine_switch_extruder_time: '5',         // fehlte
-  filament_nozzle_map: '1,0,0,0,0',          // fehlte
+  filament_nozzle_map: '1,0,0,0,0',          // konsistent: Filament 1 auf rechter Düse
   // extruder_colour MUSS pro Extruder (2 Werte) stehen. Unser Slice schreibt die
   // 5 FILAMENT-Farben rein → die Firmware zählt 5 "Extruder" statt 2 → "Hotend-Menge
   // stimmt nicht" [0500-4047]. DAS ist der eigentliche Mengen-Trigger.
@@ -67,7 +70,7 @@ const PS_SET = {
   print_extruder_variant: ['Direct Drive Standard', 'Direct Drive High Flow', 'Direct Drive Standard', 'Direct Drive High Flow'],
   nozzle_volume_type: ['Standard', 'Standard'],
   extruder_nozzle_stats: ['Standard#1', 'Standard#4'],
-  // extruder_ams_count NICHT setzen — native Topologie ist korrekt (s.o.).
+  extruder_ams_count: ['1#0|4#0', '1#0|4#1'], // Studios echter H2C-Wert (Byte-Referenz)
   extruder_colour: ['#018001', '#018001'],
   filament_nozzle_map: ['0', '0', '0', '0', '0'],
   filament_extruder_compatibility: ['0', '0', '0', '0', '0'],
