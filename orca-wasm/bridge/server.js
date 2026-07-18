@@ -18,6 +18,7 @@ const adapters = {
 };
 const nativeSlicer = require('./native-slicer');
 const gcode3mf = require('./gcode3mf');
+// const injectConfig = require('./inject-config'); // DEAKTIVIERT: verursachte 0500-4047
 
 const PORT = process.env.BRIDGE_PORT ? Number(process.env.BRIDGE_PORT) : 7781;
 
@@ -403,7 +404,12 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       // Bevorzugt das vollständige, vom nativen OrcaSlicer erzeugte .gcode.3mf
       // (gültige slice_info mit Dual-Extruder-Feldern). Fällt auf das selbst
       // gebaute Paket zurück, wenn lokal gesliced wurde / kein natives 3MF da.
-      const nativePath = sliceId ? nativeSlicer.gcode3mfPath(sliceId) : null;
+      let nativePath = sliceId ? nativeSlicer.gcode3mfPath(sliceId) : null;
+      // HINWEIS: Die Config-Injektion (inject-config.js) ist DEAKTIVIERT. Sie sollte
+      // das [0500-4047] beheben, hat es aber VERURSACHT (Regression): die manipulierten
+      // Hotend-/Extruder-Header-Keys ließen die Firmware "Hotend-Menge stimmt nicht"
+      // melden. Ohne Injektion druckte die rechte Düse (nur zu hoch → Z-Offset-Thema).
+      // Native 3MF unverändert senden.
       const pack = nativePath ? fs.readFileSync(nativePath) : gcode3mf.wrap(buf, { modelId, settings });
       console.log('[send]', nativePath ? 'natives 3MF' : 'eigenes 3MF', name3);
       job.phase = 'upload'; job.percent = 0;
@@ -461,7 +467,7 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
 
 app.post('/api/send', (req, res) => {
   const { serial, filename, gcode, start, lanIp, lanCode, useAms,
-          timelapse, bedLeveling, flowCali, amsMapping, modelId, settings, sliceId } = req.body || {};
+          timelapse, bedLeveling, flowCali, nozzleOffsetCali, amsMapping, modelId, settings, sliceId } = req.body || {};
   if (!serial || !gcode) return res.status(400).json({ error: 'serial/gcode nötig' });
   const name = (filename || 'volmeslice.gcode').replace(/[^\w.\-]/g, '_');
   const buf = Buffer.from(gcode, 'utf8');
@@ -488,6 +494,13 @@ app.post('/api/send', (req, res) => {
     timelapse: Boolean(timelapse),
     bed_levelling: bedLeveling !== false, bed_leveling: bedLeveling !== false,
     flow_cali: Boolean(flowCali), vibration_cali: false,
+    // Düsenversatzkalibrierung (Dual-Düse H2): true = NEU vermessen (beide Düsen
+    // berühren das Bett). Auf verschmutztem Bett scheitert die Messung → schlechter
+    // Versatz → Düse zu hoch = Spaghetti; ein Fehlversuch kann den gespeicherten
+    // Versatz sogar überschreiben. Bambu Studio erzwingt sie NIE, es nutzt den
+    // gespeicherten Wert wieder — deshalb läuft Studio durch. Default false =
+    // wiederverwenden. Feldname wie SelectMachine.cpp checkbox_list.
+    nozzle_offset_cali: Boolean(nozzleOffsetCali),
     ...amsFields,
   };
   const fp = fleetOf(serial);
