@@ -127,6 +127,9 @@ function injectMissingKeys(gcode3mfPath) {
   } catch (e) { /* slice_info optional */ }
 
   // project_settings.config: Hotend-/Extruder-Menge+Modell auf Studios Werte (JSON).
+  // HINWEIS: Experiment vom 2026-07-18 zeigte, dass ENTFERNEN von project_settings den
+  // 0500-4047 NICHT behebt → die Firmware liest die Hotend-Prüfung NICHT aus PS. Der
+  // Patch bleibt trotzdem (hält das 3MF Studio-konform), ist aber nicht die 4047-Quelle.
   let psfix = 0;
   try {
     execFileSync('unzip', ['-o', copy, PROJSET, '-d', work], { stdio: 'ignore' });
