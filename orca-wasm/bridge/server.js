@@ -5,6 +5,7 @@
 // Moonraker, Anycubic Kobra X via LAN-Modus) — ohne Bambu-Login nutzbar, weil
 // die Brücke nur im LAN/Tailnet erreichbar ist.
 const fs = require('fs');
+const { execFileSync } = require('child_process');
 const path = require('path');
 const https = require('https');
 const http = require('http');
@@ -379,6 +380,48 @@ setInterval(() => {
   for (const [k, j] of sendJobs) if (now - j.ts > 15 * 60e3) sendJobs.delete(k);
 }, 60e3).unref?.();
 
+// H2/Dual-Düse: AMS-Zuordnung im project_file-Befehl EXAKT wie Bambu Studio bauen
+// (OrcaSlicer SelectMachine.cpp get_ams_mapping_result + build_nozzles_info). Studio
+// sendet EIN Element PRO FILAMENT-SLOT (nicht nur benutzte!), unbenutzte als -1/0xff,
+// plus nozzleId je Slot (aus filament_maps: links=1→Task-1, rechts=2→Task-0) und
+// nozzles_info (2 Düsen). Unser altes 1-Element-Format ohne Polsterung/nozzleId löste
+// die Hotend-Prüfung aus → [0500-4047]. Liest die echte filament_maps + benutzten
+// Slots aus der zu sendenden Datei, damit es konsistent ist (egal was die Injektion tat).
+function buildAmsFieldsFromFile(nativePath, gids) {
+  if (!nativePath || !Array.isArray(gids) || !gids.length) return null;
+  let si;
+  try { si = execFileSync('unzip', ['-p', nativePath, 'Metadata/slice_info.config'],
+                          { maxBuffer: 1 << 24 }).toString(); } catch { return null; }
+  const fmMatch = si.match(/filament_maps"\s+value="([^"]*)"/);
+  const fmap = fmMatch ? fmMatch[1].trim().split(/\s+/).map(Number).filter(Number.isFinite) : [];
+  const N = fmap.length || gids.length;
+  // benutzte Filament-Slots (1-basiert), in Datei-Reihenfolge
+  const usedIds = [...si.matchAll(/<filament\s+id="(\d+)"[^>]*used_for_object="true"/g)].map(m => +m[1]);
+  const used = usedIds.length ? usedIds : gids.map((_, i) => i + 1);
+  // benutzten Slot → Tray-gid (Job-Filamente in Reihenfolge)
+  const trayBySlot = {};
+  used.forEach((slot, i) => { trayBySlot[slot] = gids[i] != null ? gids[i] : gids[gids.length - 1]; });
+  // filament_map-Wert (1=links,2=rechts) → CloudTaskNozzleId (links=1, rechts=0)
+  const nozId = (fmVal) => (fmVal === 1 ? 1 : 0);
+  const v0 = [], v1 = [], info = [];
+  for (let slot = 1; slot <= N; slot++) {
+    const g = trayBySlot[slot];
+    if (g != null) {
+      v0.push(g);
+      v1.push(g >= 254 ? { ams_id: g, slot_id: 0 } : { ams_id: Math.floor(g / 4), slot_id: g % 4 });
+    } else { v0.push(-1); v1.push({ ams_id: 0xff, slot_id: 0xff }); }
+    info.push({ ams: g != null ? g : -1, nozzleId: nozId(fmap[slot - 1] || 2),
+                sourceColor: '', targetColor: '', filamentId: '', filamentType: '' });
+  }
+  return {
+    ams_mapping: v0, ams_mapping_2: v1, ams_mapping_info: info,
+    nozzles_info: [
+      { id: 1, type: null, flowSize: 'standard_flow', diameter: 0.4 },
+      { id: 0, type: null, flowSize: 'standard_flow', diameter: 0.4 },
+    ],
+  };
+}
+
 async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId, settings, sliceId }) {
   if (fp) {
     job.phase = 'upload'; job.percent = -1;   // Adapter melden keinen Fortschritt
@@ -420,6 +463,14 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
         catch (e) { console.log('[send] header-fix fehlgeschlagen (sende original):', e.message); }
       }
       const pack = nativePath ? fs.readFileSync(nativePath) : gcode3mf.wrap(buf, { modelId, settings });
+      // AMS-Zuordnung aus der ECHTEN Datei per-Filament neu bauen (Studio-Format),
+      // überschreibt das simple 1-Element-amsFields aus printOpts. Behebt [0500-4047].
+      let amsOverride = null;
+      if (nativePath && Array.isArray(printOpts.ams_mapping) && printOpts.ams_mapping.length) {
+        amsOverride = buildAmsFieldsFromFile(nativePath, printOpts.ams_mapping);
+        if (amsOverride) console.log('[send] ams-fix: ' + amsOverride.ams_mapping.length +
+          ' Slots, mapping=' + JSON.stringify(amsOverride.ams_mapping));
+      }
       console.log('[send]', nativePath ? 'natives 3MF' : 'eigenes 3MF', name3);
       job.phase = 'upload'; job.percent = 0;
       await lan.uploadGcode(p, name3, pack,
@@ -433,7 +484,7 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
           // Felder wie Bambu Studio: IDs + MD5 des Pakets (Firmware prüft ggf.)
           project_id: '0', profile_id: '0', task_id: '0', subtask_id: '0', file: '',
           md5: require('crypto').createHash('md5').update(pack).digest('hex').toUpperCase(),
-          ...printOpts };
+          ...printOpts, ...(amsOverride || {}) };
         pr = await lan.sendCommand(p, { print: { ...basePrint, url: `ftp://${name3}` } },
                                    { waitMs: 8000 }).catch(() => null);
         console.log('[send] lan-start', serial, name3, 'result:', pr?.result, pr?.reason || '');
