@@ -515,19 +515,23 @@ app.post('/api/send', (req, res) => {
       { id: 0, type: null, flowSize: 'standard_flow', diameter: 0.4 },
     ],
   } : {};
+  // TEST-Schalter: TEST_NO_AMS=1 → sende OHNE AMS-Parameter (wie USB-Laden), um zu
+  // isolieren, ob die AMS-Zuordnung im Sendebefehl den 0500-4047 auslöst.
+  const testNoAms = process.env.TEST_NO_AMS === '1';
   const printOpts = {
-    bed_type: 'auto', use_ams: Boolean(useAms),
+    bed_type: 'auto', use_ams: testNoAms ? false : Boolean(useAms),
     timelapse: Boolean(timelapse),
     bed_levelling: bedLeveling !== false, bed_leveling: bedLeveling !== false,
     flow_cali: Boolean(flowCali), vibration_cali: false,
-    // Düsenversatzkalibrierung (Dual-Düse H2): true = NEU vermessen (beide Düsen
-    // berühren das Bett). Auf verschmutztem Bett scheitert die Messung → schlechter
-    // Versatz → Düse zu hoch = Spaghetti; ein Fehlversuch kann den gespeicherten
-    // Versatz sogar überschreiben. Bambu Studio erzwingt sie NIE, es nutzt den
-    // gespeicherten Wert wieder — deshalb läuft Studio durch. Default false =
-    // wiederverwenden. Feldname wie SelectMachine.cpp checkbox_list.
+    // Düsenversatzkalibrierung (Dual-Düse H2): TRI-STATE-Int wie Studio, NICHT Boolean!
+    // Werte (SelectMachine.cpp PrintOption::getValueInt): off=0, on=1, auto=2.
+    // Boolean false = 0 (off) ließ die Firmware KEINEN gespeicherten Versatz nutzen →
+    // "Nozzle Offset Cali Failure" [0300-400C]. Studios Default ist AUTO(2) = "prüft
+    // gespeicherten Versatz, überspringt wenn gültig" → deshalb läuft Studio durch.
+    // Häkchen an = neu messen; aus = gespeicherten Versatz nutzen. (Tri-State auto=2
+    // wie Studio brachte keinen 0300-400C-Fix — separat prüfen, wenn 4047 gelöst ist.)
     nozzle_offset_cali: Boolean(nozzleOffsetCali),
-    ...amsFields,
+    ...(testNoAms ? {} : amsFields),
   };
   const fp = fleetOf(serial);
   if (fp && !fleetOk(req)) return needCode(res);
