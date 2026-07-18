@@ -43,7 +43,16 @@ const HEADER = {
   extruder_ams_count: '1#0|4#0;1#0|4#1',     // war 1#0;1#0|4#0 (AMS falsche Seite)
   machine_switch_extruder_time: '5',         // fehlte
   filament_nozzle_map: '1,0,0,0,0',          // fehlte
+  // extruder_colour MUSS pro Extruder (2 Werte) stehen. Unser Slice schreibt die
+  // 5 FILAMENT-Farben rein → die Firmware zählt 5 "Extruder" statt 2 → "Hotend-Menge
+  // stimmt nicht" [0500-4047]. DAS ist der eigentliche Mengen-Trigger.
+  extruder_colour: '#018001;#018001',
+  filament_map_mode: 'Auto For Flush',       // war Manual (Studio: Auto For Flush)
 };
+
+// Keys, die Studios H2C-Header NICHT hat — raus (verwirren die Hotend-/Mengen-Zählung).
+const REMOVE = ['single_extruder_multi_material_priming', 'nozzle_hrc',
+                'wiping_volumes_extruders', 'extruder_clearance_radius'];
 
 // Gibt Pfad zu einer KOPIE mit korrigiertem Header zurück (oder wirft).
 function injectMissingKeys(gcode3mfPath) {
@@ -58,6 +67,11 @@ function injectMissingKeys(gcode3mfPath) {
   // Anker: die filament_map-Zeile existiert im Header (Studio-Trick setzt sie).
   const anchor = /^; filament_map = .*$/m;
   let gfix = 0;
+  // Extra-Keys entfernen (ganze Zeile)
+  for (const key of REMOVE) {
+    const re = new RegExp('^; ' + key + ' = .*$\\n', 'm');
+    if (re.test(g)) { g = g.replace(re, ''); gfix++; }
+  }
   for (const [key, val] of Object.entries(HEADER)) {
     const re = new RegExp('^; ' + key + ' = .*$', 'm');
     const line = '; ' + key + ' = ' + val;
