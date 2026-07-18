@@ -492,11 +492,28 @@ app.post('/api/send', (req, res) => {
   // Ref: OrcaSlicer CalibUtils.cpp ~1916-1956 (ams_mapping/ams_mapping_2) und
   // DevMapping.cpp _parse_tray_info (ext-Tray: ams_id=255/254, slot_id=0).
   const gids = Array.isArray(amsMapping) ? amsMapping.map(Number).filter(Number.isFinite) : [];
+  // nozzleId (Cloud-Task-Konvention, SelectMachine.hpp): RECHTS=0, LINKS=1.
+  // AMS + externe Haupt-Spule (255) hängen an der rechten Düse → 0; externe
+  // Deputy-Spule (254, links) → 1. Die H2-Firmware braucht diese Düsen-Zuordnung
+  // im Sendebefehl, sonst "Hotend-Menge/-Modell stimmt nicht" [0500-4047].
+  const nozzleIdOf = (g) => (g === 254 ? 1 : 0);
   const amsFields = gids.length ? {
     ams_mapping: gids,
     ams_mapping_2: gids.map(g => g >= 254
       ? { ams_id: g, slot_id: 0 }
       : { ams_id: Math.floor(g / 4), slot_id: g % 4 }),
+    // Je Filament die Düsen-Zuordnung (nozzleId) — das prüft die H2-Firmware.
+    ams_mapping_info: gids.map(g => ({
+      ams: g, nozzleId: nozzleIdOf(g), sourceColor: '', targetColor: '',
+      filamentId: '', filamentType: '',
+    })),
+    // Explizite Deklaration der physischen Düsen (Studio: "nozzles_info"). DAS ist die
+    // "Hotend-Menge/-Modell"-Angabe im Sendebefehl. H2C 0.4: 2 Standard-Düsen.
+    // id: links=1, rechts=0 (CloudTaskNozzleId); flowSize "standard_flow".
+    nozzles_info: [
+      { id: 1, type: null, flowSize: 'standard_flow', diameter: 0.4 },
+      { id: 0, type: null, flowSize: 'standard_flow', diameter: 0.4 },
+    ],
   } : {};
   const printOpts = {
     bed_type: 'auto', use_ams: Boolean(useAms),
