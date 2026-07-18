@@ -54,6 +54,27 @@ const HEADER = {
 const REMOVE = ['single_extruder_multi_material_priming', 'nozzle_hrc',
                 'wiping_volumes_extruders', 'extruder_clearance_radius'];
 
+// project_settings.config: DAS liest die Firmware für "Hotend-Menge/-Modell" [0500-4047].
+// Unser nativer Slicer erzeugt hier print_extruder_id mit 5 statt 4 Werten (Varianten-
+// Expansions-Bug) + leeres nozzle_volume_type + fehlendes extruder_nozzle_stats → die
+// Firmware zählt die falsche Hotend-Menge/-Modell. Auf Studios exakte Werte setzen.
+const PS_SET = {
+  print_extruder_id: ['1', '1', '2', '2'],
+  print_extruder_variant: ['Direct Drive Standard', 'Direct Drive High Flow', 'Direct Drive Standard', 'Direct Drive High Flow'],
+  nozzle_volume_type: ['Standard', 'Standard'],
+  extruder_nozzle_stats: ['Standard#1', 'Standard#4'],
+  extruder_ams_count: ['1#0|4#0', '1#0|4#1'],
+  extruder_colour: ['#018001', '#018001'],
+  filament_nozzle_map: ['0', '0', '0', '0', '0'],
+  filament_extruder_compatibility: ['0', '0', '0', '0', '0'],
+  machine_switch_extruder_time: '5',
+  extruder_clearance_dist_to_rod: '50',
+  extruder_clearance_max_radius: '96',
+};
+const PS_REMOVE = ['single_extruder_multi_material_priming', 'nozzle_hrc',
+                   'wiping_volumes_extruders', 'extruder_clearance_radius'];
+const PROJSET = 'Metadata/project_settings.config';
+
 // Gibt Pfad zu einer KOPIE mit korrigiertem Header zurück (oder wirft).
 function injectMissingKeys(gcode3mfPath) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'h2c-inject-'));
@@ -101,8 +122,22 @@ function injectMissingKeys(gcode3mfPath) {
     gfix++;
   } catch (e) { /* slice_info optional */ }
 
+  // project_settings.config: Hotend-/Extruder-Menge+Modell auf Studios Werte (JSON).
+  let psfix = 0;
+  try {
+    execFileSync('unzip', ['-o', copy, PROJSET, '-d', work], { stdio: 'ignore' });
+    const psPath = path.join(work, PROJSET);
+    const ps = JSON.parse(fs.readFileSync(psPath, 'utf8'));
+    for (const [k, v] of Object.entries(PS_SET)) {
+      if (JSON.stringify(ps[k]) !== JSON.stringify(v)) { ps[k] = v; psfix++; }
+    }
+    for (const k of PS_REMOVE) if (k in ps) { delete ps[k]; psfix++; }
+    fs.writeFileSync(psPath, JSON.stringify(ps));
+    execFileSync('zip', ['-q', copy, PROJSET], { cwd: work, stdio: 'ignore' });
+  } catch (e) { /* project_settings optional */ }
+
   execFileSync('zip', ['-q', copy, GCODE, GMD5], { cwd: work, stdio: 'ignore' });
-  return { path: copy, added: 0, overridden: 0, gfix };
+  return { path: copy, added: 0, overridden: 0, gfix, psfix };
 }
 
 module.exports = { injectMissingKeys };
