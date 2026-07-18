@@ -44,12 +44,16 @@ const HEADER = {
   // nutzt genau diese AMS-Topologie — NICHT den nativen Wert "1#0;1#0|4#0".
   extruder_ams_count: '1#0|4#0;1#0|4#1',
   machine_switch_extruder_time: '5',         // fehlte
-  filament_nozzle_map: '1,0,0,0,0',          // konsistent: Filament 1 auf rechter Düse
+  filament_nozzle_map: '0,1,0,0,0',          // Studio: Filament 2 (Slot 2) auf Düse 1 (rechts)
   // extruder_colour MUSS pro Extruder (2 Werte) stehen. Unser Slice schreibt die
   // 5 FILAMENT-Farben rein → die Firmware zählt 5 "Extruder" statt 2 → "Hotend-Menge
   // stimmt nicht" [0500-4047]. DAS ist der eigentliche Mengen-Trigger.
   extruder_colour: '#018001;#018001',
   filament_map_mode: 'Auto For Flush',       // war Manual (Studio: Auto For Flush)
+  // Studio legt das AMS-Filament auf SLOT 2 (rechter/AMS-Extruder-Slot): filament_map
+  // 1,2,1,1,1 + filament_nozzle_map 0,1,0,0,0. Unser Slice legt es auf Slot 1 (2,1,1,1,1)
+  // → letzter verbleibender Unterschied zu Studio → 4047-Trigger. Auf Studio angleichen.
+  filament_map: '1,2,1,1,1',
   // WICHTIG: extruder_ams_count NICHT überschreiben! Der native Slicer berechnet die
   // echte AMS-Topologie dieses Druckers korrekt (extern links, 1 AMS rechts →
   // "1#0;1#0|4#0"). Poolvorfilters Wert "1#0|4#0;1#0|4#1" (AMS an beiden + Unit 1)
@@ -72,7 +76,7 @@ const PS_SET = {
   extruder_nozzle_stats: ['Standard#1', 'Standard#4'],
   extruder_ams_count: ['1#0|4#0', '1#0|4#1'], // Studios echter H2C-Wert (Byte-Referenz)
   extruder_colour: ['#018001', '#018001'],
-  filament_nozzle_map: ['0', '0', '0', '0', '0'],
+  filament_nozzle_map: ['1'],                  // Studio: EIN Wert
   filament_extruder_compatibility: ['0', '0', '0', '0', '0'],
   machine_switch_extruder_time: '5',
   extruder_clearance_dist_to_rod: '50',
@@ -124,6 +128,10 @@ function injectMissingKeys(gcode3mfPath) {
     si = si.replace(/(key="X-BBL-Client-Version" value=")[^"]*(")/,
                     '$1' + BS_VERSION + '$2');
     si = si.replace(/^\s*<header_item key="OrcaSlicer-Version"[^>]*\/>\s*\n?/m, '');
+    // Studio-Slot-2: benutztes AMS-Filament von Slot 1 auf Slot 2 (wie Studio).
+    // filament_maps "2 1 1 1 1" → "1 2 1 1 1" und das benutzte <filament id="1"...> → id="2".
+    si = si.replace(/(key="filament_maps" value=")2 1 1 1 1(")/, '$11 2 1 1 1$2');
+    si = si.replace(/(<filament id=")1("[^>]*used_for_object="true")/, '$12$2');
     fs.writeFileSync(siPath, si);
     execFileSync('zip', ['-q', copy, SLICEINFO], { cwd: work, stdio: 'ignore' });
     gfix++;
