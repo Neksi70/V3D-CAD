@@ -399,7 +399,12 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
     if (await lan.reachable(p)) {
       // Rohes .gcode startet auf neuerer Firmware (H2-Serie) nicht mehr —
       // als .gcode.3mf verpacken und die Plate darin drucken lassen.
-      const jobName = name.replace(/\.gcode$/i, '');
+      // Job-Name EINDEUTIG machen: hat der Drucker bereits einen fertigen Job
+      // gleichen Namens (z.B. denselben von Studio gedruckt), no-oped die Firmware
+      // ein gleichnamiges project_file mit task_id:'0' → "direkt fertig", nichts
+      // passiert. Kurzer Zeitstempel-Suffix (base36) erzwingt einen neuen Job.
+      const uniq = Date.now().toString(36).slice(-4);
+      const jobName = name.replace(/\.gcode$/i, '') + '-' + uniq;
       const name3 = jobName + '.gcode.3mf';
       // Bevorzugt das vollständige, vom nativen OrcaSlicer erzeugte .gcode.3mf
       // (gültige slice_info mit Dual-Extruder-Feldern). Fällt auf das selbst
