@@ -137,6 +137,25 @@ function injectMissingKeys(gcode3mfPath) {
     gfix++;
   } catch (e) { /* slice_info optional */ }
 
+  // model_settings.config: MUSS konsistent zu slice_info sein! Unsere Injektion setzte
+  // slice_info filament_maps auf "1 2 1 1 1" (Slot 2), model_settings blieb "2 1 1 1 1"
+  // (Slot 1) → Widerspruch → Drucker kann AMS-Tabelle beim Load nicht auflösen [0x7008012].
+  // Studio: filament_maps "1 2 1 1 1", filament_map_mode "Auto For Flush", + filament_volume_maps.
+  try {
+    const MODELSET = 'Metadata/model_settings.config';
+    execFileSync('unzip', ['-o', copy, MODELSET, '-d', work], { stdio: 'ignore' });
+    const msPath = path.join(work, MODELSET);
+    let ms = fs.readFileSync(msPath, 'utf8');
+    ms = ms.replace(/(key="filament_maps" value=")2 1 1 1 1(")/, '$11 2 1 1 1$2');
+    ms = ms.replace(/(key="filament_map_mode" value=")Manual(")/, '$1Auto For Flush$2');
+    if (!/filament_volume_maps/.test(ms))
+      ms = ms.replace(/(<metadata key="filament_maps"[^>]*\/>)/,
+                      '$1\n    <metadata key="filament_volume_maps" value="0 0 0 0 0"/>');
+    fs.writeFileSync(msPath, ms);
+    execFileSync('zip', ['-q', copy, MODELSET], { cwd: work, stdio: 'ignore' });
+    gfix++;
+  } catch (e) { /* model_settings optional */ }
+
   // project_settings.config: Hotend-/Extruder-Menge+Modell auf Studios Werte (JSON).
   // HINWEIS: Experiment vom 2026-07-18 zeigte, dass ENTFERNEN von project_settings den
   // 0500-4047 NICHT behebt → die Firmware liest die Hotend-Prüfung NICHT aus PS. Der

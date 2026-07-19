@@ -570,12 +570,15 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
         job.phase = 'start'; job.percent = 100;
         const isOk = (r) => r && String(r.result || '').toLowerCase() === 'success';
         const { usedFil, ...amsPrint } = amsOverride || {}; // usedFil NICHT in den Befehl
+        // Für AMS-Drucke die letzten Befehl-Diffs auf Studio zwingen: flow_cali=false,
+        // bed_type=textured_plate (Studios Werte im Mitschnitt). Sonst printOpts.
+        const amsCmdMatch = amsOverride ? { flow_cali: false, bed_type: 'textured_plate' } : {};
         const basePrint = { sequence_id: '0', command: 'project_file',
           param: 'Metadata/plate_1.gcode', subtask_name: jobName,
           // Felder wie Bambu Studio: IDs + MD5 + Dateiname
           project_id: '0', profile_id: '0', task_id: '0', subtask_id: '0', file: name3,
           md5: require('crypto').createHash('md5').update(pack).digest('hex').toUpperCase(),
-          ...printOpts, ...amsPrint };
+          ...printOpts, ...amsPrint, ...amsCmdMatch };
         // URL passend zum Upload-Ort: brtc://emmc/ (emmc, umgeht AMS-Bug) oder ftp://.
         const projPayload = { print: { ...basePrint, url: fileUrl } };
         console.log('[send][DEBUG] project_file:', JSON.stringify(projPayload.print));
@@ -586,7 +589,7 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
         if (autoQuery) {
           console.log('[send] Zweischritt: auto-nozzle-mapping-Query + project_file (eine Verbindung)');
           pr = await lan.sendSequence(p, [
-            { payload: { print: autoQuery }, gapMs: 1500 },
+            { payload: { print: autoQuery }, gapMs: 3000 },
             { payload: projPayload },
           ], { finalWaitMs: 8000 }).catch(() => null);
         } else {
