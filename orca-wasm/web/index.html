@@ -84,14 +84,39 @@
   /* Ansichtswürfel (Studio-Look): klickbare Flächen für Standard-Ansichten */
   #navCube { position: absolute; left: 14px; bottom: 14px; width: 110px; height: 110px;
              cursor: pointer; z-index: 4; }
-  #overlay[hidden], #legend[hidden] { display: none; }
-  #overlay { position: absolute; left: 1rem; right: 1rem; bottom: 1rem; display: flex;
-             align-items: center; gap: 1rem; background: rgba(255,255,255,.9); border: 1px solid var(--border); border-radius: 10px;
-             padding: .6rem 1rem; }
-  #layerSlider { flex: 1; }
-  #legend { position: absolute; top: 3.2rem; left: 1rem; display: flex; flex-direction: column;
-            gap: .25rem; font-size: .78rem; background: rgba(255,255,255,.88); border: 1px solid var(--border); padding: .5rem .7rem;
-            border-radius: 8px; }
+  #overlay[hidden], #sliceResult[hidden] { display: none; }
+  /* Vorschau im Studio-Look: vertikaler Schicht-Slider am rechten Rand */
+  #overlay { position: absolute; right: .8rem; top: 4.2rem; bottom: 4rem; z-index: 5;
+             display: flex; flex-direction: column; align-items: center; gap: .5rem; }
+  #layerLabel { background: #fff; border: 1px solid var(--border); border-radius: 8px;
+                padding: .25rem .55rem; font-size: .76rem; font-weight: 600; text-align: center;
+                line-height: 1.4; white-space: pre; box-shadow: 0 4px 12px rgba(15,23,42,.12); }
+  #layerSlider { flex: 1; writing-mode: vertical-lr; direction: rtl; width: 22px; padding: 0;
+                 margin: 0; accent-color: var(--accent); }
+  /* Slicing-Ergebnis-Panel rechts oben (Farbschema + Verbrauch + Legende) */
+  #sliceResult { position: absolute; top: 3.8rem; right: 3.2rem; z-index: 6; width: 262px;
+                 background: #fff; border: 1px solid var(--border); border-radius: 10px;
+                 box-shadow: 0 8px 24px rgba(15,23,42,.15); font-size: .84rem; overflow: hidden; }
+  #sliceResult .srHead { background: var(--header-bg); color: #e8e8e8; font-weight: 600;
+                 padding: .45rem .8rem; font-size: .86rem; }
+  #sliceResult .srBody { padding: .6rem .8rem; display: flex; flex-direction: column; gap: .45rem; }
+  #sliceResult .srRow { display: flex; align-items: center; justify-content: space-between; gap: .6rem; }
+  #sliceResult .srRow[hidden] { display: none; }
+  #sliceResult .srRow > span { opacity: .75; }
+  #sliceResult select { padding: .25rem .4rem; font-size: .82rem; border: 1px solid var(--border);
+                 border-radius: 6px; background: #fff; color: var(--text); }
+  #legend { display: flex; flex-direction: column; gap: .25rem; font-size: .78rem;
+            border-top: 1px solid var(--border); padding-top: .45rem; }
+  #legend:empty { display: none; }
+  /* „Slice ok."-Toast unten rechts */
+  #sliceToast { position: absolute; right: 1rem; bottom: 1rem; z-index: 6; display: flex;
+                align-items: center; gap: .55rem; background: #fff; border: 1px solid var(--border);
+                border-radius: 10px; padding: .65rem .9rem; font-weight: 600;
+                box-shadow: 0 8px 24px rgba(15,23,42,.18); }
+  #sliceToast[hidden] { display: none; }
+  #sliceToast svg { width: 22px; height: 22px; color: #2aa84a; flex: 0 0 auto; }
+  #sliceToast button { background: none; border: 0; color: #888; font-size: 1rem; font-weight: 400;
+                padding: 0 0 0 .4rem; cursor: pointer; }
   .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
   /* Düsen-Sync- und Sende-Dialog (gleiche Modal-Optik) */
   #nozDlg, #sendDlg { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex;
@@ -484,14 +509,28 @@
     </div>
   </div>
 
-  <div id="legend" hidden></div>
+  <div id="sliceResult" hidden>
+    <div class="srHead">Slicing-Ergebnis</div>
+    <div class="srBody">
+      <div class="srRow" id="viewColorRow"><span>Farbschema</span>
+        <select id="viewColor">
+          <option value="filament">Filamentfarben</option>
+          <option value="feature">Merkmale</option>
+        </select>
+      </div>
+      <div id="legend"></div>
+      <div class="srRow"><span>Gesamt</span><b id="srTotal">–</b></div>
+      <div class="srRow"><span>Gesamtzeit</span><b id="srTime">–</b></div>
+    </div>
+  </div>
   <div id="overlay" hidden>
     <input type="range" id="layerSlider" min="1" max="1" value="1">
     <span id="layerLabel"></span>
-    <select id="viewColor" hidden style="width:auto;flex:0 0 auto">
-      <option value="filament">Filamentfarben</option>
-      <option value="feature">Merkmale</option>
-    </select>
+  </div>
+  <div id="sliceToast" hidden>
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.2l2.4 2.4 4.6-4.9"/></svg>
+    Slice ok.
+    <button id="sliceToastX" title="Schließen">✕</button>
   </div>
 
   <div id="nozDlg" hidden>
@@ -1996,6 +2035,15 @@ const FEATURE_COLORS = {
   'Bridge': 0x4dd0e1, 'Internal Bridge': 0x80deea, 'Gap infill': 0xff80ab,
 };
 const DEFAULT_COLOR = 0x8899aa;
+// Deutsche Merkmalsnamen für die Legende (Schlüssel im G-Code bleiben englisch)
+const FEATURE_DE = {
+  'Outer wall': 'Außenwand', 'Inner wall': 'Innenwand', 'Sparse infill': 'Füllung',
+  'Internal solid infill': 'Massive Füllung', 'Top surface': 'Deckfläche',
+  'Bottom surface': 'Bodenfläche', 'Skirt': 'Skirt', 'Brim': 'Brim',
+  'Support': 'Stützen', 'Support interface': 'Stütz-Kontaktfläche',
+  'Bridge': 'Brücke', 'Internal Bridge': 'Brücke (innen)', 'Gap infill': 'Lückenfüllung',
+  'Overhang wall': 'Überhang-Wand', 'Custom': 'Benutzerdefiniert',
+};
 // Fallback-Palette für die Filament-Ansicht, wenn ein Tool keine Projektfarbe hat
 const FIL_FALLBACK = [0x2ea2d8, 0xff4d4d, 0x4dff88, 0xfff144, 0xb04dff, 0xff984d, 0x4dc3ff, 0x9e9e9e];
 const toolpathGroup = new THREE.Group();
@@ -2010,7 +2058,8 @@ function showTab(name) {
   modelGroup.visible = name === 'prepare';
   toolpathGroup.visible = name === 'preview';
   $('overlay').hidden = name !== 'preview' || !layerGroups.length;
-  $('legend').hidden = name !== 'preview' || !layerGroups.length;
+  $('sliceResult').hidden = name !== 'preview' || !layerGroups.length;
+  if (name !== 'preview') $('sliceToast').hidden = true;
   $('devicePanel').hidden = name !== 'device';
   // Werkzeugleiste (Slicer/Plater) auf der Geräteseite ausblenden — sonst
   // überdeckt sie oben die Drucker-Auswahl
@@ -3486,7 +3535,7 @@ function applyPreviewColors() {
         const f = projectFilaments[t];
         return `<span>${sw(filColor(t))}Filament ${t + 1}${f ? ' · ' + (f.label || f.type || '') : ''}</span>`;
       }).join('')
-    : previewFeatures.map(f => `<span>${sw(FEATURE_COLORS[f] ?? DEFAULT_COLOR)}${f}</span>`).join('');
+    : previewFeatures.map(f => `<span>${sw(FEATURE_COLORS[f] ?? DEFAULT_COLOR)}${FEATURE_DE[f] || f}</span>`).join('');
 }
 $('viewColor').onchange = applyPreviewColors;
 
@@ -3508,19 +3557,24 @@ function showToolpaths(layers) {
     toolpathGroup.add(g); layerGroups.push(g);
   }
   previewFeatures = [...seenF]; previewTools = [...seenT].sort((a, b) => a - b);
+  // Schicht-Höhen für das Slider-Badge (z der ersten Koordinate je Layer)
+  layerZ = layers.map(l => { for (const c of l.features.values()) return c[2]; return 0; });
   // Umschalter nur bei Mehrfarbdruck; dann direkt in Filamentfarben starten
-  $('viewColor').hidden = previewTools.length <= 1;
+  $('viewColorRow').hidden = previewTools.length <= 1;
   $('viewColor').value = previewTools.length > 1 ? 'filament' : 'feature';
   applyPreviewColors();
-  $('legend').hidden = false;
+  $('sliceResult').hidden = false;
   const s = $('layerSlider');
   s.max = layers.length; s.value = layers.length;
   $('overlay').hidden = false;
   setVisibleLayers(layers.length);
 }
+let layerZ = [];
 function setVisibleLayers(n) {
   layerGroups.forEach((g, i) => g.visible = i < n);
-  $('layerLabel').textContent = `${n}/${layerGroups.length}`;
+  const z = layerZ[n - 1];
+  $('layerLabel').textContent = `${n}/${layerGroups.length}` +
+    (z != null ? `\n${z.toFixed(2).replace('.', ',')} mm` : '');
 }
 // Headless-Debug: Vorschau direkt mit G-Code füttern (Muster wie _paintDebug)
 window._previewDebug = (gcode) => {
@@ -3529,6 +3583,7 @@ window._previewDebug = (gcode) => {
            legend: $('legend').textContent, mode: $('viewColor').value };
 };
 $('layerSlider').oninput = () => setVisibleLayers(+$('layerSlider').value);
+$('sliceToastX').onclick = () => { $('sliceToast').hidden = true; };
 
 // ---------- Slicen (im Web-Worker — UI bleibt bedienbar) ----------
 let worker = null;
@@ -3589,6 +3644,17 @@ function handleMessage(e) {
       `Druckzeit: <b>${grab(/; total estimated time: (.*)/) || '–'}</b>`,
       `Filament: <b>${grab(/; filament used \[g\] = ([\d.]+)/) || grab(/; total filament used \[g\] = ([\d.]+)/) || '–'} g</b>`,
     ].join('<br>');
+    // Slicing-Ergebnis-Panel (Studio-Look): Länge/Gewicht summiert, Gesamtzeit
+    const nums = re => ((lastGcode.match(re) || [,''])[1]).split(',').map(parseFloat).filter(Number.isFinite);
+    const mmTot = nums(/; filament used \[mm\] = ([\d.,]+)/).reduce((a, b) => a + b, 0);
+    const gTot = nums(/; filament used \[g\] = ([\d.,]+)/).reduce((a, b) => a + b, 0)
+              || parseFloat(grab(/; total filament used \[g\] = ([\d.]+)/)) || 0;
+    const de = v => v.toFixed(2).replace('.', ',');
+    $('srTotal').textContent = mmTot || gTot
+      ? [mmTot ? de(mmTot / 1000) + ' m' : '', gTot ? de(gTot) + ' g' : ''].filter(Boolean).join(' / ')
+      : '–';
+    $('srTime').textContent = grab(/; total estimated time: (.*)/) || '–';
+    $('sliceToast').hidden = false;
     status.innerHTML = `<span class="ok" id="done">Fertig: ${modelName} → ${layers.length} Layer in ${dt}s</span>`;
     showTab('preview');
     updateSliceable();
