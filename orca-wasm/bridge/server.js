@@ -390,7 +390,7 @@ setInterval(() => {
 // Studio sendet KEIN ams_mapping_info / nozzles_info im project_file (das war ein anderer
 // Query-Flow, get_auto_nozzle_mapping). Unser falscher Key "ams_mapping_2" + fehlendes
 // nozzle_mapping ließen "AMS-Zuordnungstabelle konnte nicht abgerufen werden" [0x7FF8012].
-function buildAmsFieldsFromFile(nativePath, gids, nozzleTar) {
+function buildAmsFieldsFromFile(nativePath, gids) {
   if (!nativePath || !Array.isArray(gids) || !gids.length) return null;
   let si;
   try { si = execFileSync('unzip', ['-p', nativePath, 'Metadata/slice_info.config'],
@@ -426,7 +426,14 @@ function buildAmsFieldsFromFile(nativePath, gids, nozzleTar) {
   } else {
     used.forEach((slot, i) => { trayBySlot[slot] = gids[i] != null ? gids[i] : gids[gids.length - 1]; });
   }
-  const tar = Number.isFinite(nozzleTar) ? nozzleTar : 17; // aktive Düsen-Position
+  // Düsen-POSITION je Slot aus der DATEI ableiten (filament_maps: 1=links, 2=rechts):
+  // rechts = Position 17, links = 16. NICHT den Live-tar_id des Geräts kopieren —
+  // der zeigt beim H2C (Vortek-Düsenmagazin) auf die zuletzt angefahrene Position
+  // und stand bei den Fehlversuchen auf 16 (links) → die Firmware richtete den
+  // Spülschacht für die LINKE Düse aus, während die rechte purgte → Strang fiel
+  // neben das Loch, Klumpen blieb an der Düse. Beim erfolgreichen Druck (und in
+  // Studios MQTT-Mitschnitt, AMS rechts) stand hier 17.
+  const posOf = (slot) => (fmap[slot - 1] === 1 ? 16 : 17);
   const v0 = [], v1 = [];
   const nozMap = new Array(32).fill(-1);
   for (let slot = 1; slot <= N; slot++) {
@@ -434,7 +441,7 @@ function buildAmsFieldsFromFile(nativePath, gids, nozzleTar) {
     if (g != null) {
       v0.push(g);
       v1.push(g >= 254 ? { ams_id: g, slot_id: 0 } : { ams_id: Math.floor(g / 4), slot_id: g % 4 });
-      if (slot - 1 < 32) nozMap[slot - 1] = tar; // benutztes Filament → aktive Düse
+      if (slot - 1 < 32) nozMap[slot - 1] = posOf(slot); // benutztes Filament → Datei-Düse
     } else { v0.push(-1); v1.push({ ams_id: 0xff, slot_id: 0xff }); }
   }
   // benutzte Filamente mit Details (für die get_auto_nozzle_mapping-Vorabfrage)
@@ -515,15 +522,12 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       // überschreibt das simple 1-Element-amsFields aus printOpts. Behebt [0500-4047].
       let amsOverride = null;
       if (nativePath && Array.isArray(printOpts.ams_mapping) && printOpts.ams_mapping.length) {
-        // aktive Düsen-Position (nozzle.tar_id) für nozzle_mapping holen
-        let nozzleTar = 17;
-        try { const devStatus = await lan.getStatus(p, 6000);
-          const t = (devStatus.device?.nozzle || devStatus.nozzle || {}).tar_id;
-          if (Number.isFinite(t)) nozzleTar = t; } catch {}
-        amsOverride = buildAmsFieldsFromFile(nativePath, printOpts.ams_mapping, nozzleTar);
+        // nozzle_mapping kommt jetzt fix aus der Datei (filament_maps → 17/16),
+        // NICHT mehr vom Live-tar_id des Geräts (siehe buildAmsFieldsFromFile).
+        amsOverride = buildAmsFieldsFromFile(nativePath, printOpts.ams_mapping);
         if (amsOverride)
           console.log('[send] ams-fix: mapping=' + JSON.stringify(amsOverride.ams_mapping) +
-            ' nozzle_tar=' + nozzleTar);
+            ' nozzle_map=' + JSON.stringify(amsOverride.nozzle_mapping.slice(0, 5)));
       }
       console.log('[send]', nativePath ? 'natives 3MF' : 'eigenes 3MF', name3);
       job.phase = 'upload'; job.percent = 0;
