@@ -210,6 +210,7 @@
               border: 1px solid var(--border); border-radius: 8px; display: flex;
               align-items: center; justify-content: center; }
   .devThumb img { height: 32px; opacity: .35; }
+  .devThumb img.real { width: 100%; height: 100%; object-fit: contain; opacity: 1; }
   .devJobInfo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .5rem; }
   .devJobTop { display: flex; justify-content: space-between; align-items: center; gap: .8rem; }
   #devJobName { font-size: 1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -476,7 +477,7 @@
       <div id="devJob" class="devCard">
         <div class="devCardHead"><b>Druckprozess</b></div>
         <div class="devJobBody">
-          <div class="devThumb"><img src="logo.svg" alt=""></div>
+          <div class="devThumb"><img id="devThumbImg" src="logo.svg" alt=""></div>
           <div class="devJobInfo">
             <div class="devJobTop"><b id="devJobName">–</b><span id="devState" class="devBadge"></span></div>
             <div class="devJobRow2"><span id="devPct">–</span><span class="devMeta"><span id="devJobMeta"></span> <span id="devJobEta"></span></span></div>
@@ -693,6 +694,28 @@ function trayText(hex) {
 }
 function fmtEta(min) { if (min == null) return ''; const h = Math.floor(min/60), m = min%60; return h ? `noch ${h} h ${m} min` : `noch ${m} min`; }
 
+// Job-Miniatur: beim Senden wird die Plattenvorschau pro Drucker gemerkt und
+// im Druckprozess-Panel gezeigt, solange der laufende Jobname dazu passt.
+// Für fremd gestartete Drucke gibt es kein Bild → Logo-Platzhalter.
+const jobNorm = (n) => String(n || '').toLowerCase().replace(/\.(gcode\.3mf|gcode|3mf)$/, '');
+function saveJobThumb(serial, filename, b64) {
+  if (!serial || !b64) return;
+  try { localStorage.setItem('vs-thumb-' + serial, JSON.stringify({ n: jobNorm(filename), img: b64 })); } catch {}
+}
+function jobThumb(serial, subtask) {
+  try {
+    const t = JSON.parse(localStorage.getItem('vs-thumb-' + serial) || 'null');
+    const s = jobNorm(subtask);
+    // LAN-Bambu hängt einen Eindeutigkeits-Suffix an ("name-xxxx") → Präfix zählt
+    return (t && s && (s === t.n || s.startsWith(t.n + '-'))) ? t.img : null;
+  } catch { return null; }
+}
+function setDevThumb(b64) {
+  const img = $('devThumbImg');
+  const want = b64 ? 'data:image/png;base64,' + b64 : 'logo.svg';
+  if (img.getAttribute('src') !== want) { img.src = want; img.classList.toggle('real', Boolean(b64)); }
+}
+
 async function refreshDevice() {
   const serial = $('devPrinter').value;
   if (!serial) return;
@@ -703,6 +726,7 @@ async function refreshDevice() {
       $('devJobName').textContent = '–'; $('devBarFill').style.width = '0';
       $('devJobMeta').textContent = ''; $('devJobEta').textContent = '';
       $('devPct').textContent = '–';
+      setDevThumb(null);
       return;
     }
     const [label, cls] = DEV_STATE[d.state] || [d.state || '–', ''];
@@ -712,6 +736,7 @@ async function refreshDevice() {
     $('devLight').hidden = !cp.light;
     $('devCamCard').hidden = !cp.camera;
     $('devJobName').textContent = d.subtask || (d.state === 'IDLE' ? 'Kein Druck aktiv' : '–');
+    setDevThumb(jobThumb(serial, d.subtask));
     $('devJobEta').textContent = d.state === 'RUNNING' ? fmtEta(d.remaining) : '';
     $('devBarFill').style.width = (d.percent || 0) + '%';
     $('devPct').textContent = d.percent != null ? d.percent + ' %' : '–';
@@ -1064,7 +1089,7 @@ async function doSend(extra = {}) {
   $('btnSend').disabled = true;
   sendProgress(0, 'Übertrage zur Brücke …');
   try {
-    const { status, json } = await bridgeUpload('/api/send', {
+    const payload = {
       serial: $('sendPrinter').value,
       filename: modelName.replace(/\.[^.]+$/, '') + '.gcode',
       gcode: lastGcode, start: $('sendStart').checked,
@@ -1076,7 +1101,9 @@ async function doSend(extra = {}) {
       lanIp: $('lanIp').value.trim() || undefined,
       lanCode: $('lanCode').value.trim() || undefined,
       ...extra,
-    }, (p) => sendProgress(p * 0.5, 'Übertrage zur Brücke …'));
+    };
+    const { status, json } = await bridgeUpload('/api/send', payload,
+      (p) => sendProgress(p * 0.5, 'Übertrage zur Brücke …'));
     if (status === 200 && json.ok && json.id) {
       const t0 = Date.now();
       for (;;) {
@@ -1086,7 +1113,11 @@ async function doSend(extra = {}) {
         try { s = (await bridge(`/api/send/${json.id}/status`)).json; } catch {}
         if (!s || s.error) { $('sendStatus').innerHTML = `<span class="err">${s?.error || 'Brücke nicht erreichbar'}</span>`; break; }
         if (s.phase === 'error') { $('sendStatus').innerHTML = `<span class="err">${s.error || 'Fehler'}</span>`; break; }
-        if (s.phase === 'done') { renderSendResult(s.result || {}); break; }
+        if (s.phase === 'done') {
+          saveJobThumb(payload.serial, payload.filename, payload.thumbnail);
+          renderSendResult(s.result || {});
+          break;
+        }
         if (s.phase === 'upload') sendProgress(s.percent >= 0 ? 50 + s.percent * 0.48 : -1, 'Übertrage zum Drucker …');
         else if (s.phase === 'start') sendProgress(99, 'Starte Druck …');
         else sendProgress(50, 'Verbinde mit Drucker …');
