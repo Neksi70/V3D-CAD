@@ -5,7 +5,8 @@
 // Moonraker, Anycubic Kobra X via LAN-Modus) — ohne Bambu-Login nutzbar, weil
 // die Brücke nur im LAN/Tailnet erreichbar ist.
 const fs = require('fs');
-const { execFileSync } = require('child_process');
+const os = require('os');
+const { execFileSync, execFile } = require('child_process');
 const path = require('path');
 const https = require('https');
 const http = require('http');
@@ -467,6 +468,25 @@ function buildAutoNozzleQuery(dev, usedFil, tar) {
   };
 }
 
+// H2-Serie: 3MF auf den INTERNEN Speicher (emmc) laden — über Port 6000
+// (BambuTunnelLocal, emmc_upload.py). Studio macht das so; FTP/SD löst den
+// "AMS-Zuordnungstabelle nicht abrufbar"-Bug [0700-8012] aus. Datei-URL wird dann
+// brtc://emmc/<name>. Gibt true bei Erfolg.
+function emmcUpload(printer, buf, remoteName) {
+  return new Promise((resolve, reject) => {
+    const tmp = path.join(os.tmpdir(), 'emmc-' + Date.now().toString(36) + '.3mf');
+    fs.writeFileSync(tmp, buf);
+    execFile('python3', [path.join(__dirname, 'emmc_upload.py'),
+      printer.ip, printer.access_code, tmp, remoteName],
+      { timeout: 120000 }, (err, stdout, stderr) => {
+        try { fs.unlinkSync(tmp); } catch {}
+        if (err) return reject(new Error((stderr || err.message || '').trim()));
+        if (String(stdout).includes('OK')) return resolve(true);
+        reject(new Error('emmc-Upload: unerwartete Antwort ' + stdout));
+      });
+  });
+}
+
 async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId, settings, sliceId }) {
   if (fp) {
     job.phase = 'upload'; job.percent = -1;   // Adapter melden keinen Fortschritt
@@ -526,8 +546,25 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       }
       console.log('[send]', nativePath ? 'natives 3MF' : 'eigenes 3MF', name3);
       job.phase = 'upload'; job.percent = 0;
-      await lan.uploadGcode(p, name3, pack,
-        (sent) => { job.percent = Math.min(100, Math.round(sent / pack.length * 100)); });
+      // AMS-Druck (H2): auf emmc laden (Port 6000) statt FTP/SD — sonst
+      // "AMS-Zuordnungstabelle nicht abrufbar" [0700-8012]. Datei-URL wird brtc://emmc/.
+      // Scheitert der emmc-Upload, Fallback auf FTP (dann ggf. AMS-Bug, aber Druck lädt).
+      let fileUrl = `ftp://${name3}`;
+      if (amsOverride) {
+        try {
+          await emmcUpload(p, pack, name3);
+          fileUrl = `brtc://emmc/${name3}`;
+          job.percent = 100;
+          console.log('[send] emmc-Upload (Port 6000) ok → ' + fileUrl);
+        } catch (e) {
+          console.log('[send] emmc-Upload fehlgeschlagen, Fallback FTP:', e.message);
+          await lan.uploadGcode(p, name3, pack,
+            (sent) => { job.percent = Math.min(100, Math.round(sent / pack.length * 100)); });
+        }
+      } else {
+        await lan.uploadGcode(p, name3, pack,
+          (sent) => { job.percent = Math.min(100, Math.round(sent / pack.length * 100)); });
+      }
       let pr = null;
       if (start) {
         job.phase = 'start'; job.percent = 100;
@@ -539,7 +576,8 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
           project_id: '0', profile_id: '0', task_id: '0', subtask_id: '0', file: name3,
           md5: require('crypto').createHash('md5').update(pack).digest('hex').toUpperCase(),
           ...printOpts, ...amsPrint };
-        const projPayload = { print: { ...basePrint, url: `ftp://${name3}` } };
+        // URL passend zum Upload-Ort: brtc://emmc/ (emmc, umgeht AMS-Bug) oder ftp://.
+        const projPayload = { print: { ...basePrint, url: fileUrl } };
         // Studios Zweischritt über EINE Verbindung: get_auto_nozzle_mapping (baut die
         // AMS-Tabelle) → 1.5s → project_file. Getrennte Verbindungen verlieren die
         // Tabelle → [0x7FF8012/0x7008012]. Ohne AMS: nur project_file.
