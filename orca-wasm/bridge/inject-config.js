@@ -87,7 +87,9 @@ const PS_REMOVE = ['single_extruder_multi_material_priming', 'nozzle_hrc',
 const PROJSET = 'Metadata/project_settings.config';
 
 // Gibt Pfad zu einer KOPIE mit korrigiertem Header zurück (oder wirft).
-function injectMissingKeys(gcode3mfPath) {
+// opts.thumbnail: PNG-Buffer der App-Plattenvorschau → wird als plate_1.png &
+// Co. eingepackt (Job-Miniatur auf dem Drucker-Display statt 1×1-Platzhalter).
+function injectMissingKeys(gcode3mfPath, opts = {}) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'h2c-inject-'));
   const copy = path.join(work, path.basename(gcode3mfPath));
   fs.copyFileSync(gcode3mfPath, copy);
@@ -170,16 +172,21 @@ function injectMissingKeys(gcode3mfPath) {
   // filament_sequence.json: bleibt nativ (sequence=[1], Slot 1) — konsistent zu
   // slice_info/model_settings/Header. KEIN Slot-2-Relabel mehr.
 
-  // Fehlende Referenz-Dateien als Platzhalter ergänzen (Studio hat sie; der Drucker
-  // erwartet sie evtl. beim Load für die AMS-Tabelle). 1x1-PNG + minimale cut_information.
+  // Referenz-Dateien ergänzen (Studio hat sie; der Drucker erwartet sie beim Load
+  // für die AMS-Tabelle). Vorschau-PNGs: echtes Bild von der App, wenn geliefert
+  // (Display-Miniatur!), sonst 1×1-Platzhalter. pick_1.png bleibt Platzhalter —
+  // das ist eine Objekt-ID-Karte fürs Objekt-Überspringen, kein Foto.
   try {
-    const png = Buffer.from(
+    const px = Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
       'base64');
+    const thumb = Buffer.isBuffer(opts.thumbnail) && opts.thumbnail.length ? opts.thumbnail : null;
     const md = path.join(work, 'Metadata');
     fs.mkdirSync(md, { recursive: true });
-    for (const f of ['plate_1.png', 'plate_no_light_1.png', 'top_1.png', 'pick_1.png'])
-      fs.writeFileSync(path.join(md, f), png);
+    for (const [f, data] of [
+      ['plate_1.png', thumb || px], ['plate_no_light_1.png', thumb || px],
+      ['top_1.png', thumb || px], ['pick_1.png', px],
+    ]) fs.writeFileSync(path.join(md, f), data);
     fs.writeFileSync(path.join(md, 'cut_information.xml'),
       '<?xml version="1.0" encoding="UTF-8"?>\n<objects/>\n');
     execFileSync('zip', ['-q', copy,

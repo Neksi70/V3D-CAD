@@ -470,7 +470,7 @@ function emmcUpload(printer, buf, remoteName) {
   });
 }
 
-async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId, settings, sliceId }) {
+async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId, settings, sliceId, thumb }) {
   if (fp) {
     job.phase = 'upload'; job.percent = -1;   // Adapter melden keinen Fortschritt
     try {
@@ -506,11 +506,11 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       // Injektion kontrahiert genau 7 Header-Keys auf Studios per-Extruder-Werte
       // (2 Werte) + ergänzt fehlende (extruder_nozzle_stats etc.) + md5 neu.
       if (nativePath) {
-        try { const r = injectConfig.injectMissingKeys(nativePath);
+        try { const r = injectConfig.injectMissingKeys(nativePath, { thumbnail: thumb });
           console.log('[send] header-fix: gfix=' + r.gfix + ' Keys'); nativePath = r.path; }
         catch (e) { console.log('[send] header-fix fehlgeschlagen (sende original):', e.message); }
       }
-      const pack = nativePath ? fs.readFileSync(nativePath) : gcode3mf.wrap(buf, { modelId, settings });
+      const pack = nativePath ? fs.readFileSync(nativePath) : gcode3mf.wrap(buf, { modelId, settings, thumbnail: thumb });
       // AMS-Zuordnung aus der ECHTEN Datei per-Filament neu bauen (Studio-Format),
       // überschreibt das simple 1-Element-amsFields aus printOpts. Behebt [0500-4047].
       let amsOverride = null;
@@ -608,10 +608,18 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
 
 app.post('/api/send', (req, res) => {
   const { serial, filename, gcode, start, lanIp, lanCode, useAms,
-          timelapse, bedLeveling, flowCali, nozzleOffsetCali, amsMapping, modelId, settings, sliceId } = req.body || {};
+          timelapse, bedLeveling, flowCali, nozzleOffsetCali, amsMapping, modelId, settings, sliceId,
+          thumbnail } = req.body || {};
   if (!serial || !gcode) return res.status(400).json({ error: 'serial/gcode nötig' });
   const name = (filename || 'volmeslice.gcode').replace(/[^\w.\-]/g, '_');
   const buf = Buffer.from(gcode, 'utf8');
+  // Plattenvorschau (base64-PNG von der App) → Metadata/plate_1.png im 3MF,
+  // daraus baut das Drucker-Display die Job-Miniatur. Nur echte PNGs ≤ 2 MB.
+  let thumb = null;
+  if (typeof thumbnail === 'string' && thumbnail.length < 3e6) {
+    try { thumb = Buffer.from(thumbnail.replace(/^data:image\/png;base64,/, ''), 'base64'); } catch {}
+    if (thumb && thumb.slice(0, 8).toString('hex') !== '89504e470d0a1a0a') thumb = null;
+  }
   // Druckoptionen für project_file. Achtung Schreibweise: der Drucker erwartet
   // "bed_levelling" (britisch, wie OpenBambuAPI) — bed_leveling bleibt als
   // Doppelgänger drin, falls ältere Firmware die US-Schreibweise liest.
@@ -651,7 +659,7 @@ app.post('/api/send', (req, res) => {
   const id = require('crypto').randomBytes(8).toString('hex');
   const job = { phase: 'prepare', percent: 0, ts: Date.now() };
   sendJobs.set(id, job);
-  runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId, settings, sliceId })
+  runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId, settings, sliceId, thumb })
     .then((r) => { job.phase = 'done'; job.percent = 100; job.result = r; })
     .catch((e) => { job.phase = 'error'; job.error = e.message; });
   res.json({ ok: true, id });

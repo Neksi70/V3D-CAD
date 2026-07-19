@@ -1015,6 +1015,42 @@ function buildProjectSettings() {
   };
 }
 
+// Plattenvorschau (Metadata/plate_1.png im .gcode.3mf): Modell offscreen in
+// Schrägansicht rendern, wie Bambu Studio — das Drucker-Display zeigt dieses
+// Bild als Job-Miniatur. Transparenter Hintergrund, damit das Display seinen
+// eigenen dahinterlegt. Liefert base64 (ohne data:-Präfix) oder null.
+function renderPlateThumb(size = 512) {
+  try {
+    const box = new THREE.Box3().setFromObject(modelGroup);
+    if (box.isEmpty()) return null;
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1);
+    const cam = new THREE.PerspectiveCamera(35, 1, radius / 100, radius * 10);
+    cam.up.set(0, 0, 1);
+    const dir = new THREE.Vector3(0.7, -1, 0.65).normalize();
+    cam.position.copy(center).addScaledVector(dir, radius / Math.tan(17.5 * Math.PI / 180) * 1.15);
+    cam.lookAt(center);
+    // Nur Modell + Licht rendern — Bett, Toolpaths, Gizmos ausblenden
+    const saved = scene.children.map(c => [c, c.visible]);
+    for (const [c] of saved) c.visible = (c === modelGroup) || Boolean(c.isLight);
+    const mgVis = modelGroup.visible; modelGroup.visible = true;
+    const bg = scene.background; scene.background = null;
+    const r = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    let url = null;
+    try {
+      r.setSize(size, size);
+      r.render(scene, cam);
+      url = r.domElement.toDataURL('image/png');
+    } finally {
+      r.dispose(); r.forceContextLoss?.();
+      scene.background = bg;
+      modelGroup.visible = mgVis;
+      for (const [c, v] of saved) c.visible = v;
+    }
+    return url ? url.split(',')[1] : null;
+  } catch { return null; }
+}
+
 // Eigentlicher Versand; extra = Optionen aus dem Sende-Dialog (Bambu).
 // Ablauf: Upload Browser→Brücke (0–50 %), dann Job pollen: Brücke→Drucker
 // (50–98 %), Druckstart, Ergebnis.
@@ -1031,6 +1067,7 @@ async function doSend(extra = {}) {
       modelId: machines.find(m => m.name === $('machine').value)?.modelId || undefined,
       settings: buildProjectSettings(),   // → Metadata/project_settings.config (Fallback)
       sliceId: lastSliceId || undefined,  // Server-Slice: natives .gcode.3mf nutzen
+      thumbnail: renderPlateThumb() || undefined,  // → Metadata/plate_1.png (Display-Miniatur)
       useAms: projectFilaments.length > 1,   // Mehrfarbdruck braucht das AMS
       lanIp: $('lanIp').value.trim() || undefined,
       lanCode: $('lanCode').value.trim() || undefined,
@@ -3475,6 +3512,8 @@ window._vs = {
     const r = canvas.getBoundingClientRect();
     return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height };
   },
+  plateThumb: (size) => renderPlateThumb(size),   // Display-Miniatur (Headless-Test)
+  get modelCount() { return modelGroup.children.length; },
 };
 
 function parseGcode(gcode) {

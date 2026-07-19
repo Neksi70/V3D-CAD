@@ -88,16 +88,19 @@ function wrap(gcodeBuf, meta = {}) {
     `    <filament id="${i + 1}" tray_info_idx="" type="${types[i] || types[0] || 'PLA'}" color="${colors[i] || '#2EA2D8'}"` +
     ` used_m="${meters[i] || '0'}" used_g="${grams[i] || '0'}" nozzle_diameter="${diams[0] || '0.4'}" volume_type="Standard"/>`;
 
+  // Plattenvorschau von der App (PNG-Buffer) → Job-Miniatur auf dem Display
+  const thumb = Buffer.isBuffer(meta.thumbnail) && meta.thumbnail.length ? meta.thumbnail : null;
   const contentTypes = `<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
  <Default Extension="gcode" ContentType="text/x.gcode"/>
+ <Default Extension="png" ContentType="image/png"/>
 </Types>`;
   const rels = `<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
  <Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
-</Relationships>`;
+${thumb ? ' <Relationship Target="/Metadata/plate_1.png" Id="rel-2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/>\n' : ''}</Relationships>`;
   const model = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021">
  <metadata name="Application">VolmeSlice</metadata>
@@ -113,7 +116,10 @@ function wrap(gcodeBuf, meta = {}) {
     <metadata key="plater_name" value=""/>
     <metadata key="locked" value="false"/>
     <metadata key="gcode_file" value="Metadata/plate_1.gcode"/>
-    <metadata key="pattern_bbox_file" value="Metadata/plate_1.json"/>
+${thumb ? `    <metadata key="thumbnail_file" value="Metadata/plate_1.png"/>
+    <metadata key="thumbnail_no_light_file" value="Metadata/plate_no_light_1.png"/>
+    <metadata key="top_file" value="Metadata/top_1.png"/>
+` : ''}    <metadata key="pattern_bbox_file" value="Metadata/plate_1.json"/>
   </plate>
 </config>`;
   const plateJson = JSON.stringify({
@@ -173,6 +179,11 @@ ${Array.from({ length: nFil }, (_, i) => fil(i)).join('\n')}
     { name: 'Metadata/plate_1.gcode', data: gcodeBuf },
     { name: 'Metadata/plate_1.gcode.md5', data: Buffer.from(md5) },
   ];
+  if (thumb) {
+    files.push({ name: 'Metadata/plate_1.png', data: thumb },
+               { name: 'Metadata/plate_no_light_1.png', data: thumb },
+               { name: 'Metadata/top_1.png', data: thumb });
+  }
   // project_settings.config: die vollständige Slicer-Config. Ohne sie ist das
   // 3MF für die H2-Firmware ungültig. Die App liefert die gemergte Config.
   if (meta.settings && typeof meta.settings === 'object') {
