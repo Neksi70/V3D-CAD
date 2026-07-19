@@ -152,6 +152,10 @@ function fleetOk(req) {
     require('crypto').timingSafeEqual(Buffer.from(got), Buffer.from(fleetCode));
 }
 const needCode = (res) => res.status(403).json({ error: 'Druckcode nötig', needCode: true });
+// LAN-only Bambu (Entwicklermodus): Zugangscode liegt in lanAuth → Status/
+// Senden/Steuern laufen komplett über LAN, ohne Bambu-Konto. Gleiche Policy
+// wie die Flotte: LAN/Tailnet frei, öffentlich nur mit Druckcode.
+const lanOk = (req, serial) => lanAuth.has(serial) && fleetOk(req);
 const adapterOf = (p) => adapters[p.type];
 const caps = (p) => ({
   camera: p.cam !== false,                    // false in printers.json = keine Kamera
@@ -225,16 +229,30 @@ app.get('/api/printers', async (req, res) => {
       console.warn('[cloud] listDevices:', e.message);
       if (!list.length) return res.status(500).json({ error: e.message });
     }
-    // Per SSDP im LAN gesehene Bambu-Drucker, die NICHT in der Cloud sind
-    // (Entwicklermodus = LAN-only). Als eigener Typ "bambu-lan": Steuerung
-    // läuft über LAN mit dem Zugangscode vom Drucker-Display (lanCode).
+  }
+  // Bambu-Drucker im LAN-Modus (Entwicklermodus = nicht in der Cloud): bekannt
+  // über hinterlegten Zugangscode (lanAuth) oder frisch per SSDP gesehen.
+  // Brauchen KEIN Bambu-Konto — gleiche Policy wie die Flotte. Typ "bambu-lan":
+  // Steuerung läuft über LAN mit dem Zugangscode vom Drucker-Display.
+  if (fleetOk(req)) {
+    const cand = new Map();
+    for (const [serial, la] of lanAuth) cand.set(serial, { ip: la.ip, name: '', model: '' });
     for (const [serial, h] of ssdpSeen) {
-      if (cloudSerials.has(serial) || Date.now() - h.ts > 30 * 60e3) continue;
-      list.push({ serial, name: h.name || ('Bambu ' + serial.slice(-4)),
-        model: h.model || 'Bambu (LAN)', online: true, type: 'bambu-lan', ip: h.ip,
+      if (Date.now() - h.ts > 30 * 60e3) continue;
+      cand.set(serial, { ip: h.ip, name: h.name, model: h.model });
+    }
+    for (const [serial, c] of cand) {
+      if (cloudSerials.has(serial)) continue;
+      const la = lanAuth.get(serial);
+      // online: frische SSDP-Ankündigung genügt; sonst kurzer TCP-Check
+      const online = Boolean(ssdpFresh(serial)) ||
+        (la ? await lan.reachable({ ip: la.ip, access_code: la.code, serial }, 1500).catch(() => false) : false);
+      list.push({ serial, name: c.name || ('Bambu ' + serial.slice(-4)),
+        model: c.model || 'Bambu (LAN)', online, type: 'bambu-lan', ip: c.ip,
         caps: { camera: true, light: true, ams: true } });
     }
-  } else if (!list.length) {
+  }
+  if (!cloud.session(sid) && !list.length) {
     // needCode: es gäbe eine Flotte, aber der (öffentliche) Client hat keinen Code
     return res.status(401).json({ error: 'nicht angemeldet', needCode: fleet.length > 0 && !fleetOk(req) });
   }
@@ -254,7 +272,7 @@ app.get('/api/status/:serial', async (req, res) => {
     } catch { return res.json({ online: false }); }
   }
   const sid = sidOf(req);
-  if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
+  if (!cloud.session(sid) && !lanOk(req, req.params.serial)) return res.status(401).json({ error: 'nicht angemeldet' });
   try {
     const st = await printStatus(sid, req.params.serial);
     res.json({ online: Boolean(st), gcode_state: st?.gcode_state,
@@ -306,7 +324,7 @@ app.get('/api/device/:serial', async (req, res) => {
     } catch { return res.json({ online: false }); }
   }
   const sid = sidOf(req);
-  if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
+  if (!cloud.session(sid) && !lanOk(req, req.params.serial)) return res.status(401).json({ error: 'nicht angemeldet' });
   try {
     const st = await printStatus(sid, req.params.serial);
     if (!st) return res.json({ online: false });
@@ -353,7 +371,7 @@ app.post('/api/control/:serial', async (req, res) => {
     catch (e) { return res.status(500).json({ error: e.message }); }
   }
   const sid = sidOf(req);
-  if (!cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
+  if (!cloud.session(sid) && !lanOk(req, req.params.serial)) return res.status(401).json({ error: 'nicht angemeldet' });
   const { command, level } = req.body || {};
   const map = {
     pause:  { print: { sequence_id: '0', command: 'pause' } },
@@ -366,7 +384,11 @@ app.post('/api/control/:serial', async (req, res) => {
   const payload = map[command];
   if (!payload) return res.status(400).json({ error: 'unbekannter Befehl' });
   try {
-    const r = await cloud.sendCommand(sid, req.params.serial, payload, { waitMs: 0 });
+    // LAN-only Drucker (lanAuth): Befehl direkt per LAN-MQTT, Cloud kennt ihn nicht
+    const la = lanAuth.get(req.params.serial);
+    const r = la
+      ? await lan.sendCommand({ ip: la.ip, access_code: la.code, serial: req.params.serial }, payload, { waitMs: 0 })
+      : await cloud.sendCommand(sid, req.params.serial, payload, { waitMs: 0 });
     res.json({ ok: true, sent: r.sent });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -659,7 +681,7 @@ app.post('/api/send', (req, res) => {
   const fp = fleetOf(serial);
   if (fp && !fleetOk(req)) return needCode(res);
   const sid = sidOf(req);
-  if (!fp && !cloud.session(sid)) return res.status(401).json({ error: 'nicht angemeldet' });
+  if (!fp && !cloud.session(sid) && !lanOk(req, serial)) return res.status(401).json({ error: 'nicht angemeldet' });
   const id = require('crypto').randomBytes(8).toString('hex');
   const job = { phase: 'prepare', percent: 0, ts: Date.now() };
   sendJobs.set(id, job);
@@ -732,7 +754,9 @@ app.get('/api/camera/snapshot', async (req, res) => {
       return res.end(jpg);
     } catch { return res.status(503).end(); }
   }
-  if (!cloud.session(req.query.sid)) return res.status(401).end();
+  // LAN-Kamera braucht kein Bambu-Konto: IP+Zugangscode kommen ohnehin mit,
+  // Zugriff nur aus LAN/Tailnet bzw. mit Druckcode (gleiche Policy wie Flotte)
+  if (!cloud.session(req.query.sid) && !fleetOk(req)) return res.status(401).end();
   const ip = String(req.query.ip || ''), code = String(req.query.code || '');
   if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) || !/^[A-Za-z0-9]{4,16}$/.test(code))
     return res.status(400).end('ungültige IP/Code');
