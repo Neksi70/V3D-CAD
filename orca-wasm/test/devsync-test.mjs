@@ -43,16 +43,13 @@ if (dialog) {
   await page.click('#nozCancel');
 }
 
-// Nach Dialog-Schließen muss der AMS-Teil laufen (Hint oder Slot-Auswahl)
-await page.waitForFunction(() => {
-  const h = document.getElementById('amsHint').textContent;
-  const p = document.getElementById('amsPick');
-  return h.trim() !== '' || p.style.display === 'flex';
-}, null, { timeout: 20000 });
+// Nach Dialog-Schließen übernimmt der AMS-Teil alle Slots direkt: Mehrfarb-
+// Hinweis + ein Chip je Slot (inkl. externer Spule)
+await page.waitForFunction(() =>
+  document.getElementById('amsHint').textContent.includes('Mehrfarbdruck'), null, { timeout: 20000 });
 const ams = await page.evaluate(() => ({
   hint: document.getElementById('amsHint').textContent,
-  pick: document.getElementById('amsPick').style.display,
-  slots: document.getElementById('amsPick').querySelectorAll('button').length,
+  chips: [...document.getElementById('filChips').querySelectorAll('button')].map(b => b.innerText.replace(/\n/g, ' ')),
   filament: document.getElementById('filament').value,
   nozHint: document.getElementById('nozHint').textContent,
 }));
