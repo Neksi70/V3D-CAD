@@ -173,9 +173,30 @@
   #lgStatus { font-size: .82rem; min-height: 1.1em; margin-top: .3rem; }
   #userBadge { font-size: .82rem; color: #cfd3dc; }
   #userBadge button { background: none; border: 0; color: var(--accent); cursor: pointer; font-size: .82rem; padding: 0 0 0 .5rem; }
+  /* Kamera: Zoom-Icon auf dem Bild + Vollbild-Overlay */
+  #camWrap { position: relative; max-width: 640px; margin-top: .6rem; }
+  #camWrap[hidden] { display: none; }
+  #camImg { width: 100%; display: block; border-radius: 10px; background: #000; cursor: zoom-in; }
+  #camZoom { position: absolute; top: .5rem; right: .5rem; width: 38px; height: 38px; padding: 7px;
+             border: 0; border-radius: 8px; background: rgba(0,0,0,.45); color: #fff; cursor: pointer; }
+  #camZoom:hover { background: rgba(0,0,0,.75); }
+  #camZoom svg { width: 100%; height: 100%; display: block; }
+  #camFull { position: fixed; inset: 0; z-index: 120; background: rgba(0,0,0,.92);
+             display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
+  #camFull[hidden] { display: none; }
+  #camFull img { max-width: 96vw; max-height: 96vh; border-radius: 8px; }
+  #camFullClose { position: absolute; top: 1rem; right: 1rem; width: 44px; height: 44px; border: 0;
+                  border-radius: 999px; background: rgba(255,255,255,.15); color: #fff;
+                  font-size: 1.3rem; cursor: pointer; }
+  #camFullClose:hover { background: rgba(255,255,255,.3); }
 </style>
 </head>
 <body>
+<div id="camFull" hidden>
+  <img id="camImgBig" alt="Live-Kamerabild (groß)">
+  <button id="camFullClose" title="Schließen">✕</button>
+</div>
+
 <div id="loginGate">
   <div class="loginCard">
     <h2><img src="logo.svg" alt="" style="height:28px;width:auto;vertical-align:-6px;margin-right:6px;">V3D Slicer</h2>
@@ -333,7 +354,10 @@
         <button id="camBtn" class="secondary" style="padding:.4rem .8rem">Starten</button>
         <small id="camHint" style="opacity:.6"></small>
       </div>
-      <img id="camImg" hidden style="width:100%;max-width:640px;border-radius:10px;margin-top:.6rem;background:#000">
+      <div id="camWrap" hidden>
+        <img id="camImg" alt="Live-Kamerabild">
+        <button id="camZoom" title="Vergrößern"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="7"/><path d="M21 21l-5-5"/><path d="M7.5 10.5h6M10.5 7.5v6"/></svg></button>
+      </div>
     </div>
 
     <div id="devJob" class="devCard">
@@ -590,14 +614,16 @@ $('camCode').value = localStorage.getItem('vs-cam-code') || '';
 let camTimer = null, camFails = 0;
 function stopCam() {
   clearTimeout(camTimer); camTimer = null;
-  $('camImg').hidden = true; $('camImg').removeAttribute('src');
+  $('camWrap').hidden = true; $('camImg').removeAttribute('src');
+  closeCamFull();
   $('camBtn').textContent = 'Starten';
 }
 function pollCam(ip, code) {
   const img = new Image();
   img.onload = () => {
     camFails = 0;
-    $('camImg').src = img.src; $('camImg').hidden = false; $('camHint').textContent = 'Live';
+    $('camImg').src = img.src; $('camWrap').hidden = false; $('camHint').textContent = 'Live';
+    if (!$('camFull').hidden) $('camImgBig').src = img.src;
     if (camTimer !== null) camTimer = setTimeout(() => pollCam(ip, code), 200);
   };
   img.onerror = () => {
@@ -621,6 +647,24 @@ $('camBtn').onclick = () => {
   camFails = 0; camTimer = 0; $('camBtn').textContent = 'Stoppen'; $('camHint').textContent = 'Verbinde …';
   pollCam(ip, code);
 };
+
+// Vollbild-Zoom: Lupe oder Klick aufs Bild öffnet das Overlay; der Poll-Loop
+// oben füttert camImgBig weiter, solange das Overlay offen ist.
+function openCamFull() {
+  if (!$('camImg').src) return;
+  $('camImgBig').src = $('camImg').src;
+  $('camFull').hidden = false;
+}
+function closeCamFull() {
+  $('camFull').hidden = true; $('camImgBig').removeAttribute('src');
+}
+$('camZoom').onclick = (e) => { e.stopPropagation(); openCamFull(); };
+$('camImg').onclick = openCamFull;
+$('camFull').onclick = closeCamFull;
+$('camFullClose').onclick = closeCamFull;
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('camFull').hidden) closeCamFull();
+});
 
 function enterApp(email) {
   $('loginGate').hidden = true;
@@ -951,9 +995,11 @@ async function openSendDialog(p) {
           <span style="min-width:6rem">${i + 1} · ${f.label || f.type || f.name.slice(0, 20)}</span>
           <select class="sdTray">${options(best(f))}</select></div>`).join('')
       : `<div class="sdRow" style="opacity:.65">Kein AMS gemeldet — der Drucker nimmt die geladene Spule.</div>`}
-    <div style="margin-top:.5rem;font-weight:600">Optionen</div>
+    <div style="margin-top:.5rem;font-weight:600">Kalibrierung vor dem Druck</div>
     <label class="sdRow" style="opacity:1"><input type="checkbox" id="sdLevel" style="width:auto" checked> Automatische Bettnivellierung</label>
     <label class="sdRow" style="opacity:1"><input type="checkbox" id="sdFlow" style="width:auto" checked> Kalibrierung Flussdynamik</label>
+    <label class="sdRow" style="opacity:1"><input type="checkbox" id="sdNozOff" style="width:auto"> Düsenversatzkalibrierung neu vermessen <span style="opacity:.6;font-size:.78rem">(aus = gespeicherten Versatz nutzen, wie Studio; an nur auf sauberem Bett)</span></label>
+    <div style="margin-top:.35rem;font-weight:600">Optionen</div>
     <label class="sdRow" style="opacity:1"><input type="checkbox" id="sdLapse" style="width:auto"> Zeitraffer aufnehmen</label>
     ${$('sendStart').checked ? '' : '<div style="opacity:.6;font-size:.78rem">„Druck sofort starten" ist aus — die Datei wird nur hochgeladen.</div>'}`;
   $('sendDlg').hidden = false;
@@ -969,6 +1015,7 @@ $('sendGo').onclick = () => {
     timelapse: $('sdLapse').checked,
     bedLeveling: $('sdLevel').checked,
     flowCali: $('sdFlow').checked,
+    nozzleOffsetCali: $('sdNozOff').checked,
     // Extern-Spulen (254/255) brauchen kein AMS
     ...(mapping.length ? { amsMapping: mapping, useAms: mapping.some(g => g < 254) } : {}),
   });
@@ -3468,9 +3515,14 @@ async function filamentIdOf(name) {
 // AMS-Topologie des gewählten Bambu-Druckers → extruder_ams_count je Extruder
 // ("1#0|4#<ams_id>", 1#0 = externe Spule). Behebt „Filamentweiche offline",
 // weil die AMS-ids zu den echten Einheiten passen müssen.
-// H2-Serie: AMS hängt IMMER am rechten Extruder (id 0 = index 0), der linke
-// (id 1) hat nur die externe Spule. Deshalb NICHT an beiden deklarieren —
-// sonst erwartet die Firmware eine AMS-Weiche links, die es nicht gibt.
+// H2-Serie: AMS hängt IMMER am rechten Extruder. ACHTUNG Indizierung:
+// extruder_ams_count ist LOGISCH indexiert, aber physical_extruder_map=[1,0]
+// bildet logischen Index 0 → physisch LINKS und logischen Index 1 → physisch
+// RECHTS ab. Das AMS (physisch rechts) muss deshalb auf den LETZTEN logischen
+// Index (nExt-1 = 1), NICHT auf 0. Sonst legt der Auto-Map das Filament auf die
+// linke Düse (filament_map=1) → die Leveling-Düsenauswahl (M640.7/M640.2, gated
+// mit first_non_support_filaments[0]!=-1) fehlt → falsche Düse levelt → Düse
+// druckt ~1cm zu hoch. Studio hat hier filament_map=2 (Filament rechts).
 async function amsTopology() {
   const p = selectedPrinter();
   if (!p || isFleet(p)) return null;
@@ -3481,7 +3533,7 @@ async function amsTopology() {
   if (!amsIds.length) return null;
   const nExt = (Array.isArray(effectiveConfig.nozzle_diameter) ? effectiveConfig.nozzle_diameter.length : 1) || 1;
   const arr = Array(nExt).fill('1#0');            // je Extruder mindestens externe Spule
-  arr[0] = '1#0' + amsIds.map(id => '|4#' + id).join('');   // rechter Extruder (0): AMS
+  arr[nExt - 1] = '1#0' + amsIds.map(id => '|4#' + id).join('');   // physisch rechter Extruder: AMS
   return arr;
 }
 
@@ -3498,8 +3550,24 @@ async function sliceOnServer({ profiles, overrides, filamentChains, paints }) {
     ? projectFilaments.map(f => f.name) : [$('filament').value];
   const filamentIds = await Promise.all(filNames.map(filamentIdOf));
   const extruderAmsCount = await amsTopology().catch(() => null);
+  // filament_map deterministisch auf die AMS-Düse (physisch rechts) zwingen.
+  // Der Auto-Map (fmmAutoForFlush) würfelt bei Single-Material zwischen den
+  // Düsen (mal filament_map=1, mal 2) → bei 1 fehlt die Leveling-Düsenauswahl
+  // (M640.7/M640.2, gated first_non_support_filaments[0]!=-1) → falsche Düse
+  // levelt → Düse ~1cm zu hoch. Alle AMS-Filamente kommen ohnehin aus EINER
+  // (rechten) Düse; Manual + fester Map = Studio-Verhalten (filament_map=2).
+  // Der AMS-Extruder ist der Index mit "4#" in extruderAmsCount (= nExt-1).
+  // filament_map DETERMINISTISCH auf die AMS-Düse (physisch rechts) zwingen, damit
+  // Gcode (T0) + slice_info die richtige, heiße Düse nutzen — der Auto-Map würfelt
+  // sonst und wählt oft die leere linke Düse (T1, druckt bei 140° in die Luft).
+  // Der native Slicer patcht project_settings.filament_map danach auf [1,…] zurück
+  // (lockere Firmware-Validierung wie Studio), damit KEIN [0500-4047] kommt.
+  let ovr = overrides;
+  const amsIdx = Array.isArray(extruderAmsCount) ? extruderAmsCount.findIndex(s => s.includes('4#')) : -1;
+  if (amsIdx >= 0)
+    ovr = overrides + `\nfilament_map_mode = Manual\nfilament_map = ${amsIdx + 1}`;
   const { status: st, json } = await bridge('/api/slice', { method: 'POST', body: {
-    filename: modelName, model: b64, profiles, overrides,
+    filename: modelName, model: b64, profiles, overrides: ovr,
     transforms: currentTransforms(), filamentChains, ops: currentOps(),
     printerModelId: machines.find(m => m.name === $('machine').value)?.modelId || undefined,
     filamentIds: filamentIds.some(Boolean) ? filamentIds : undefined,
