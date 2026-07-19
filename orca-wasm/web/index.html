@@ -344,8 +344,8 @@
     <label>Drucker</label>
     <div style="display:flex;gap:.4rem">
       <select id="machine" style="flex:1;min-width:0"></select>
-      <button id="nozSync" class="secondary" hidden style="padding:.4rem .6rem;white-space:nowrap"
-              title="Düsenstatus vom gewählten Drucker abfragen und passende Düsen-Variante wählen">🔄 Düse</button>
+      <button id="devSync" class="secondary" hidden style="padding:.4rem .6rem;white-space:nowrap"
+              title="Düsenstatus und geladenes AMS-Filament vom gewählten Drucker übernehmen">🔄 Sync</button>
     </div>
     <small id="nozHint" style="opacity:.65"></small>
   </div>
@@ -356,11 +356,7 @@
   </div>
   <div>
     <label>Filament</label>
-    <div style="display:flex;gap:.4rem">
-      <input id="filament" list="filamentList" placeholder="Filament wählen …" style="flex:1;min-width:0">
-      <button id="amsSync" class="secondary" hidden style="padding:.4rem .6rem;white-space:nowrap"
-              title="Geladenes Filament vom AMS des gewählten Druckers übernehmen">🔄 AMS</button>
-    </div>
+    <input id="filament" list="filamentList" placeholder="Filament wählen …">
     <datalist id="filamentList"></datalist>
     <div id="amsPick" style="display:none;gap:.5rem;flex-wrap:wrap;margin-top:.4rem"></div>
     <div id="filChips" style="display:none;gap:.4rem;flex-wrap:wrap;margin-top:.4rem"></div>
@@ -649,10 +645,9 @@ async function loadPrinters() {
       // Geräte-Tab freischalten + eigenes Dropdown spiegeln
       $('tabDevice').hidden = false;
       $('devPrinter').innerHTML = $('sendPrinter').innerHTML;
-      $('amsSync').hidden = false;
-      // Düsen-Sync liefert nur Bambu — Button trotzdem zeigen, der Klick
+      // Düsen-Teil liefert nur Bambu — Button trotzdem zeigen, der Klick
       // erklärt sonst, dass ein Bambu-Login/Drucker nötig ist
-      $('nozSync').hidden = false;
+      $('devSync').hidden = false;
     }
     return true;
   } catch { return false; }
@@ -1585,15 +1580,9 @@ async function adoptProjectFilaments(trays) {
   $('amsHint').textContent = `Mehrfarbdruck aktiv: Objekt markieren, Taste 1–${fils.length} weist das Filament zu`;
 }
 
-$('amsSync').onclick = async () => {
-  const serial = $('sendPrinter').value;
-  if (!serial) { $('amsHint').textContent = 'Kein Drucker im Konto'; return; }
-  $('amsHint').textContent = 'Frage AMS ab …';
-  let trays = [];
-  try {
-    const { json: d } = await bridge('/api/device/' + encodeURIComponent(serial));
-    trays = (d.trays || []).filter(t => t.type || t.sub || t.idx);
-  } catch { $('amsHint').textContent = 'Brücke nicht erreichbar'; return; }
+// Übernimmt bereits abgefragte Tray-Daten (der kombinierte Sync fragt das
+// Gerät nur einmal ab und reicht trays hierher weiter)
+async function amsRunSync(trays) {
   if (!trays.length) { $('amsHint').textContent = 'Kein Filament gemeldet (AMS leer / Drucker offline?)'; return; }
   if (trays.length === 1) return amsApplyTray(trays[0]);
   // Mehrere Slots: kleine Auswahl unter dem Feld (mit aufgelöstem Produktnamen)
@@ -1608,7 +1597,7 @@ $('amsSync').onclick = async () => {
   pick.querySelector('[data-all]').onclick = () => adoptProjectFilaments(trays);
   pick.style.display = 'flex';
   pick.querySelectorAll('button[data-i]').forEach(b => b.onclick = () => amsApplyTray(trays[+b.dataset.i]));
-};
+}
 
 // ---------- Düsen-Sync (Studio-Dialog „Düsenstatus synchronisieren") ----------
 // H2-Serie: zwei Extruder + Induktions-Hotend-Magazin. Der Drucker meldet alle
@@ -1619,6 +1608,7 @@ const nozFlow = (t) => /^HH/i.test(String(t)) ? 'High Flow' : 'Standard';
 const nozMm = (d) => String(d).replace('.', ',') + ' mm';
 const variantDiam = (name) => (String(name).match(/([\d.]+)\s*nozzle/i) || [])[1] || null;
 let nozDlgPrinter = null;
+let nozDlgDone = null;   // Resolver: kombinierter Sync wartet aufs Schließen des Dialogs
 
 // Passende Druckervarianten: bevorzugt übers gemeldete Druckermodell
 // (modelId "O1C2" ← Drucker meldet "O1C2-V2"), sonst das aktuell gewählte Modell
@@ -1632,7 +1622,10 @@ function nozVariants(printer) {
   return list.filter(m => variantDiam(m.name));
 }
 
-$('nozSync').onclick = async () => {
+// Kombinierter Sync: EINE Geräteabfrage, daraus erst Düsen-Dialog (nur
+// Bambu meldet Düsenstatus), nach dessen Schließen die AMS-Übernahme —
+// so passt der Filament-Suffix schon zur ggf. gewechselten Düsen-Variante.
+$('devSync').onclick = async () => {
   // Zuerst den Bambu-Drucker suchen, dessen Modell zum gewählten Slicer-
   // Profil passt (H2C-Profil → echter H2C) — die Auswahl im Sende-Panel ist
   // nur Fallback, dort steht sonst der erste Flotten-Drucker vorausgewählt.
@@ -1641,24 +1634,29 @@ $('nozSync').onclick = async () => {
     (p.model === mid || String(p.model).startsWith(mid + '-'))) : [];
   const p = match.find(x => x.online) || match[0] || selectedPrinter();
   if (!p) { $('nozHint').textContent = 'Erst im Sende-Panel einen Drucker wählen'; return; }
-  if (isFleet(p)) {
-    $('nozHint').textContent = bridgePrinters.some(x => !isFleet(x))
-      ? `Kein Drucker vom Typ „${$('machine').value}" im Konto — unten im Sende-Panel einen Bambu-Drucker wählen`
-      : 'Düsenstatus gibt es nur bei Bambu-Druckern — oben rechts mit dem Bambu-Konto anmelden';
-    return;
-  }
   // Gefundenen Drucker auch fürs Senden übernehmen
   if (p.serial !== $('sendPrinter').value) { $('sendPrinter').value = p.serial; startStatusPolling(); }
-  $('nozHint').textContent = 'Frage Düsenstatus ab …';
-  let nz = null;
+  $('nozHint').textContent = 'Frage Drucker ab …';
+  $('amsHint').textContent = '';
+  let d = null;
   try {
-    const { json: d } = await bridge('/api/device/' + encodeURIComponent(p.serial));
-    if (!d.online) { $('nozHint').textContent = `${p.name} ist offline`; return; }
-    nz = d.nozzles;
+    ({ json: d } = await bridge('/api/device/' + encodeURIComponent(p.serial)));
   } catch { $('nozHint').textContent = 'Brücke nicht erreichbar'; return; }
-  if (!nz || !nz.extruders?.some(e => e.nozzle)) { $('nozHint').textContent = `${p.name} meldet keinen Düsenstatus`; return; }
-  $('nozHint').textContent = '';
-  nozShowDialog(nz, p);
+  // 1) Düsenstatus — Dialog abwarten (OK übernimmt Variante, Abbrechen überspringt)
+  const nz = d.nozzles;
+  if (isFleet(p)) {
+    $('nozHint').textContent = 'Düsenstatus gibt es nur bei Bambu-Druckern';
+  } else if (!d.online) {
+    $('nozHint').textContent = `${p.name} ist offline`;
+  } else if (!nz || !nz.extruders?.some(e => e.nozzle)) {
+    $('nozHint').textContent = `${p.name} meldet keinen Düsenstatus`;
+  } else {
+    $('nozHint').textContent = '';
+    nozShowDialog(nz, p);
+    await new Promise(r => { nozDlgDone = r; });
+  }
+  // 2) AMS-Filament aus derselben Abfrage übernehmen
+  await amsRunSync((d.trays || []).filter(t => t.type || t.sub || t.idx));
 };
 
 function nozShowDialog(nz, printer) {
@@ -1722,18 +1720,25 @@ function nozShowDialog(nz, printer) {
   $('nozDlg').hidden = false;
 }
 
-$('nozCancel').onclick = () => { $('nozDlg').hidden = true; };
-$('nozDlg').onclick = (e) => { if (e.target === $('nozDlg')) $('nozDlg').hidden = true; };
+function nozDlgClose() { $('nozDlg').hidden = true; nozDlgDone?.(); nozDlgDone = null; }
+$('nozCancel').onclick = nozDlgClose;
+$('nozDlg').onclick = (e) => { if (e.target === $('nozDlg')) nozDlgClose(); };
 $('nozOk').onclick = async () => {
   const sel = $('nozBody').querySelector('input[name=nozDiam]:checked');
   $('nozDlg').hidden = true;
-  if (!sel) return;
-  const m = nozVariants(nozDlgPrinter).find(v => variantDiam(v.name) === sel.value);
-  if (!m) { $('nozHint').textContent = `Kein Druckerprofil für ${nozMm(sel.value)}`; return; }
-  if (m.name === $('machine').value) { $('nozHint').textContent = `✅ Düse ${nozMm(sel.value)} — Profil passt schon`; return; }
-  $('machine').value = m.name;
-  applyMachineDefaults(); await applyMachineBed(); await refreshSettings(); savePresets();
-  $('nozHint').textContent = `✅ ${m.name}`;
+  try {
+    if (!sel) return;
+    const m = nozVariants(nozDlgPrinter).find(v => variantDiam(v.name) === sel.value);
+    if (!m) { $('nozHint').textContent = `Kein Druckerprofil für ${nozMm(sel.value)}`; return; }
+    if (m.name === $('machine').value) { $('nozHint').textContent = `✅ Düse ${nozMm(sel.value)} — Profil passt schon`; return; }
+    $('machine').value = m.name;
+    applyMachineDefaults(); await applyMachineBed(); await refreshSettings(); savePresets();
+    $('nozHint').textContent = `✅ ${m.name}`;
+  } finally {
+    // erst NACH der Profil-Übernahme auflösen — der AMS-Teil braucht den
+    // Filament-Suffix der neuen Düsen-Variante
+    nozDlgDone?.(); nozDlgDone = null;
+  }
 };
 
 // ---------- Datei-Handling ----------
