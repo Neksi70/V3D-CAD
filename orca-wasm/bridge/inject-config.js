@@ -164,6 +164,25 @@ function injectMissingKeys(gcode3mfPath) {
     gfix++;
   } catch (e) { /* model_settings optional */ }
 
+  // filament_sequence.json: MUSS konsistent Slot 2 sagen (wie slice_info/model_settings).
+  // Unser Slice: sequence=[1] (Slot 1), Studio: sequence=[2] + optimal_assignment=[0,0,0,0,0].
+  // Widerspruch → AMS-Tabelle nicht auflösbar [0x7008012].
+  try {
+    const FSEQ = 'Metadata/filament_sequence.json';
+    execFileSync('unzip', ['-o', copy, FSEQ, '-d', work], { stdio: 'ignore' });
+    const fsqPath = path.join(work, FSEQ);
+    const fsq = JSON.parse(fs.readFileSync(fsqPath, 'utf8'));
+    for (const pk of Object.keys(fsq)) {
+      if (fsq[pk] && Array.isArray(fsq[pk].sequence))
+        fsq[pk].sequence = fsq[pk].sequence.map(v => v === 1 ? 2 : v);
+      if (fsq[pk] && Array.isArray(fsq[pk].optimal_assignment))
+        fsq[pk].optimal_assignment = fsq[pk].optimal_assignment.map(() => 0);
+    }
+    fs.writeFileSync(fsqPath, JSON.stringify(fsq));
+    execFileSync('zip', ['-q', copy, FSEQ], { cwd: work, stdio: 'ignore' });
+    gfix++;
+  } catch (e) { /* filament_sequence optional */ }
+
   // Fehlende Referenz-Dateien als Platzhalter ergänzen (Studio hat sie; der Drucker
   // erwartet sie evtl. beim Load für die AMS-Tabelle). 1x1-PNG + minimale cut_information.
   try {
