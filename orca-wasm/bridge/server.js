@@ -551,6 +551,45 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
           console.log('[send] ams-fix: mapping=' + JSON.stringify(amsOverride.ams_mapping) +
             ' nozzle_map=' + JSON.stringify(amsOverride.nozzle_mapping.slice(0, 5)));
       }
+      // H2C-Vortek (Düsenmagazin): bei MEHRFARBE bekommt jede Farbe ihre gewidmete
+      // Magazin-Düse — die Zuordnung kennt nur der DRUCKER (Match Filamenttyp+Farbe
+      // der Trays gegen die "eingefärbten" Magazin-Düsen). Wie Studio vorab
+      // get_auto_nozzle_mapping fragen (per MQTT-Mitschnitt 2026-07-19 verifiziert:
+      // Antwort mapping=[17,16,…] je Datei-Slot) und als nozzle_mapping übernehmen.
+      // Unser statisches "alle auf 17" zwang beide Farben auf EINE Düse → falscher
+      // Umlade-Spül-Ablauf, Purge-Klumpen. Einfarbdruck bleibt beim bewährten Pfad.
+      if (amsOverride && amsOverride.usedFil.length > 1) {
+        try {
+          const st = await lan.getStatus(p, 8000);
+          const trays = {};
+          for (const unit of (st.ams?.ams || []))
+            for (const t of (unit.tray || []))
+              if (t.tray_info_idx) trays[Number(unit.id) * 4 + Number(t.id)] = t;
+          const amsMap33 = new Array(33).fill(65535);
+          const filaInfo = amsOverride.usedFil.map((f) => {
+            amsMap33[f.slot] = f.gid;
+            const t = trays[f.gid] || {};
+            return { cate: t.tray_info_idx || f.fid, color: String(t.tray_color || f.color || '').toUpperCase(),
+              direction: f.direction, group: f.slot, id: f.slot,
+              nozzle_d: '0.40', nozzle_v: 'Standard' };
+          });
+          const seq = new Array(Math.max(...amsOverride.usedFil.map(f => f.slot)) + 1).fill(-1);
+          amsOverride.usedFil.forEach((f, i) => { seq[f.slot] = i; });
+          const q = await lan.sendCommand(p, { print: {
+            sequence_id: '0', command: 'get_auto_nozzle_mapping', ams_mapping: amsMap33,
+            calibration: 2, extrude_cali_manual_mode: 0, fila_info: filaInfo,
+            filament_seq: seq, nozzle_info: [],
+          } }, { waitMs: 10000 });
+          const map = q.report && Array.isArray(q.report.mapping) ? q.report.mapping : null;
+          if (map && String(q.report.result) === 'success') {
+            amsOverride.nozzle_mapping = map;
+            console.log('[send] nozzle-query: mapping=' + JSON.stringify(map.slice(0, 6)));
+          } else {
+            console.log('[send] nozzle-query ohne Ergebnis (' + JSON.stringify(q.report?.result) +
+              ') — behalte Datei-Ableitung');
+          }
+        } catch (e) { console.log('[send] nozzle-query fehlgeschlagen:', e.message); }
+      }
       console.log('[send]', nativePath ? 'natives 3MF' : 'eigenes 3MF', name3);
       job.phase = 'upload'; job.percent = 0;
       // AMS-Druck (H2): auf emmc laden (Port 6000) statt FTP/SD — sonst
