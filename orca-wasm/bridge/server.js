@@ -440,33 +440,9 @@ function buildAmsFieldsFromFile(nativePath, gids, nozzleTar) {
   return { ams_mapping: v0, ams_mapping2: v1, nozzle_mapping: nozMap, usedFil };
 }
 
-// Studios Vorab-Query "get_auto_nozzle_mapping" (MQTT-Mitschnitt 2026-07-19): SIE baut
-// die AMS-Zuordnungstabelle auf dem Drucker auf. OHNE sie kommt beim project_file
-// "Zuordnungstabelle konnte nicht abgerufen werden" [0x7FF8012/0x7008012], obwohl das
-// project_file-Mapping korrekt ist. Wird VOR dem project_file geschickt. nozzle_info =
-// alle AMS-Trays+Düsen (aus device.nozzle.info), das benutzte Filament bekommt die aktive
-// Düsen-Position (tar_id) statt seiner Tray-id. fila_info = die benutzten Filamente.
-function buildAutoNozzleQuery(dev, usedFil, tar) {
-  const nz = (dev?.nozzle?.info) || [];
-  const usedColors = new Set(usedFil.map(f => f.color));
-  const nozzle_info = nz.map(n => ({
-    cate: n.fila_id || '', color: n.color_m || '00000000',
-    nozzle_d: Number(n.diameter || 0.4).toFixed(2), nozzle_v: 'Standard',
-    pos: usedColors.has((n.color_m || '').toUpperCase()) ? tar : n.id,
-    wear: n.wear || 0,
-  }));
-  const fila_info = usedFil.map(f => ({
-    cate: f.fid, color: f.color, direction: f.direction, group: 1,
-    id: f.slot, nozzle_d: '0.40', nozzle_v: 'Standard',
-  }));
-  const am = new Array(33).fill(65535);
-  usedFil.forEach(f => { if (f.slot < 33) am[f.slot] = f.gid; });
-  return {
-    ams_mapping: am, calibration: 2, command: 'get_auto_nozzle_mapping',
-    extrude_cali_manual_mode: 0, fila_info, filament_seq: [-1, -1, 0],
-    nozzle_info, sequence_id: '0',
-  };
-}
+// (get_auto_nozzle_mapping-Vorabquery entfernt 2026-07-19: LAN-AMS-Druck braucht sie nicht.
+// Der Drucker baut die AMS-Zuordnung allein aus ams_mapping/ams_mapping2 des project_file,
+// sofern die Datei slot-konsistent ist. Belegt via Isolationstest + OrcaSlicer/OBN-Quellcode.)
 
 // H2-Serie: 3MF auf den INTERNEN Speicher (emmc) laden — über Port 6000
 // (BambuTunnelLocal, emmc_upload.py). Studio macht das so; FTP/SD löst den
@@ -530,19 +506,17 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       const pack = nativePath ? fs.readFileSync(nativePath) : gcode3mf.wrap(buf, { modelId, settings });
       // AMS-Zuordnung aus der ECHTEN Datei per-Filament neu bauen (Studio-Format),
       // überschreibt das simple 1-Element-amsFields aus printOpts. Behebt [0500-4047].
-      let amsOverride = null, autoQuery = null, devStatus = null;
+      let amsOverride = null;
       if (nativePath && Array.isArray(printOpts.ams_mapping) && printOpts.ams_mapping.length) {
-        // aktive Düsen-Position (nozzle.tar_id) + Düsen-Info für nozzle_mapping/Query holen
+        // aktive Düsen-Position (nozzle.tar_id) für nozzle_mapping holen
         let nozzleTar = 17;
-        try { devStatus = await lan.getStatus(p, 6000);
+        try { const devStatus = await lan.getStatus(p, 6000);
           const t = (devStatus.device?.nozzle || devStatus.nozzle || {}).tar_id;
           if (Number.isFinite(t)) nozzleTar = t; } catch {}
         amsOverride = buildAmsFieldsFromFile(nativePath, printOpts.ams_mapping, nozzleTar);
-        if (amsOverride) {
+        if (amsOverride)
           console.log('[send] ams-fix: mapping=' + JSON.stringify(amsOverride.ams_mapping) +
             ' nozzle_tar=' + nozzleTar);
-          if (devStatus) autoQuery = buildAutoNozzleQuery(devStatus.device || devStatus, amsOverride.usedFil, nozzleTar);
-        }
       }
       console.log('[send]', nativePath ? 'natives 3MF' : 'eigenes 3MF', name3);
       job.phase = 'upload'; job.percent = 0;
@@ -581,20 +555,12 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
           ...printOpts, ...amsPrint, ...amsCmdMatch };
         // URL passend zum Upload-Ort: brtc://emmc/ (emmc, umgeht AMS-Bug) oder ftp://.
         const projPayload = { print: { ...basePrint, url: fileUrl } };
-        console.log('[send][DEBUG] project_file:', JSON.stringify(projPayload.print));
-        if (autoQuery) console.log('[send][DEBUG] auto_query:', JSON.stringify(autoQuery));
-        // Studios Zweischritt über EINE Verbindung: get_auto_nozzle_mapping (baut die
-        // AMS-Tabelle) → 1.5s → project_file. Getrennte Verbindungen verlieren die
-        // Tabelle → [0x7FF8012/0x7008012]. Ohne AMS: nur project_file.
-        if (autoQuery) {
-          console.log('[send] Zweischritt: auto-nozzle-mapping-Query + project_file (eine Verbindung)');
-          pr = await lan.sendSequence(p, [
-            { payload: { print: autoQuery }, gapMs: 3000 },
-            { payload: projPayload },
-          ], { finalWaitMs: 8000 }).catch(() => null);
-        } else {
-          pr = await lan.sendCommand(p, projPayload, { waitMs: 8000 }).catch(() => null);
-        }
+        // LAN-AMS-Druck = EIN project_file (Quellen: OrcaSlicer start_local_print +
+        // ClusterM/open-bamboo-networking run_local_print_job). KEIN get_auto_nozzle_mapping,
+        // kein Zweischritt — die AMS-Zuordnung steckt allein im ams_mapping/ams_mapping2.
+        // Voraussetzung: Datei ist slot-konsistent (inject-config macht KEINEN Slot-2-Relabel
+        // mehr), sonst 0x7008012 (Header Slot 1 vs Kommando Slot 2). Verifiziert 2026-07-19.
+        pr = await lan.sendCommand(p, projPayload, { waitMs: 8000 }).catch(() => null);
         console.log('[send] lan-start', serial, name3, 'result:', pr?.result, pr?.reason || '');
         // Bambu Authorization Control (Firmware 01.09+): Druckbefehle müssen
         // signiert sein → "mqtt message verify failed", über LAN wie Cloud.

@@ -128,26 +128,28 @@ function injectMissingKeys(gcode3mfPath) {
     si = si.replace(/(key="X-BBL-Client-Version" value=")[^"]*(")/,
                     '$1' + BS_VERSION + '$2');
     si = si.replace(/^\s*<header_item key="OrcaSlicer-Version"[^>]*\/>\s*\n?/m, '');
-    // Studio-Slot-2: benutztes AMS-Filament von Slot 1 auf Slot 2 (wie Studio).
-    // filament_maps "2 1 1 1 1" → "1 2 1 1 1" und das benutzte <filament id="1"...> → id="2".
-    si = si.replace(/(key="filament_maps" value=")2 1 1 1 1(")/, '$11 2 1 1 1$2');
-    si = si.replace(/(<filament id=")1("[^>]*used_for_object="true")/, '$12$2');
+    // KEIN Slot-2-Relabel mehr! Der native Slice ist slot-1-konsistent (benutztes AMS-
+    // Filament an Slot 1: filament_maps "2 1 1 1 1" = Slot 1 → rechte Düse, filament id="1",
+    // layer_filament_list="0", G-Code-Header filament_colour/ids grün an Index 0). Der
+    // Slot-2-Trick (id 1→2) relabelte nur slice_info, NICHT den G-Code-Header → Kommando-
+    // ams_mapping=[-1,0,..] (Slot 2) widersprach dem Header (Slot 1) → Drucker liest beim
+    // Load "Filament an Slot 1", findet ams_mapping[0]=-1 → 0x7008012. buildAmsFieldsFromFile
+    // baut aus dem nativen slice_info jetzt korrekt ams_mapping=[0,-1,..] passend zum Header.
+    // (4047 löst das KOMMANDO, nicht die Datei; Leveling nutzt Header filament_map=2 = rechts.)
     fs.writeFileSync(siPath, si);
     execFileSync('zip', ['-q', copy, SLICEINFO], { cwd: work, stdio: 'ignore' });
     gfix++;
   } catch (e) { /* slice_info optional */ }
 
-  // model_settings.config: MUSS konsistent zu slice_info sein! Unsere Injektion setzte
-  // slice_info filament_maps auf "1 2 1 1 1" (Slot 2), model_settings blieb "2 1 1 1 1"
-  // (Slot 1) → Widerspruch → Drucker kann AMS-Tabelle beim Load nicht auflösen [0x7008012].
-  // Studio: filament_maps "1 2 1 1 1", filament_map_mode "Auto For Flush", + filament_volume_maps.
+  // model_settings.config: bleibt slot-1-konsistent (nativer Wert "2 1 1 1 1"/Manual, wie
+  // slice_info + G-Code-Header). KEIN Slot-2-Relabel. Ergänzt werden nur fehlende Datei-
+  // Referenzen (thumbnail/pick/pattern_bbox_file → plate_1.json) + filament_volume_maps,
+  // die der Drucker beim Load erwartet.
   try {
     const MODELSET = 'Metadata/model_settings.config';
     execFileSync('unzip', ['-o', copy, MODELSET, '-d', work], { stdio: 'ignore' });
     const msPath = path.join(work, MODELSET);
     let ms = fs.readFileSync(msPath, 'utf8');
-    ms = ms.replace(/(key="filament_maps" value=")2 1 1 1 1(")/, '$11 2 1 1 1$2');
-    ms = ms.replace(/(key="filament_map_mode" value=")Manual(")/, '$1Auto For Flush$2');
     if (!/filament_volume_maps/.test(ms))
       ms = ms.replace(/(<metadata key="filament_maps"[^>]*\/>)/,
                       '$1\n    <metadata key="filament_volume_maps" value="0 0 0 0 0"/>');
@@ -164,24 +166,8 @@ function injectMissingKeys(gcode3mfPath) {
     gfix++;
   } catch (e) { /* model_settings optional */ }
 
-  // filament_sequence.json: MUSS konsistent Slot 2 sagen (wie slice_info/model_settings).
-  // Unser Slice: sequence=[1] (Slot 1), Studio: sequence=[2] + optimal_assignment=[0,0,0,0,0].
-  // Widerspruch → AMS-Tabelle nicht auflösbar [0x7008012].
-  try {
-    const FSEQ = 'Metadata/filament_sequence.json';
-    execFileSync('unzip', ['-o', copy, FSEQ, '-d', work], { stdio: 'ignore' });
-    const fsqPath = path.join(work, FSEQ);
-    const fsq = JSON.parse(fs.readFileSync(fsqPath, 'utf8'));
-    for (const pk of Object.keys(fsq)) {
-      if (fsq[pk] && Array.isArray(fsq[pk].sequence))
-        fsq[pk].sequence = fsq[pk].sequence.map(v => v === 1 ? 2 : v);
-      if (fsq[pk] && Array.isArray(fsq[pk].optimal_assignment))
-        fsq[pk].optimal_assignment = fsq[pk].optimal_assignment.map(() => 0);
-    }
-    fs.writeFileSync(fsqPath, JSON.stringify(fsq));
-    execFileSync('zip', ['-q', copy, FSEQ], { cwd: work, stdio: 'ignore' });
-    gfix++;
-  } catch (e) { /* filament_sequence optional */ }
+  // filament_sequence.json: bleibt nativ (sequence=[1], Slot 1) — konsistent zu
+  // slice_info/model_settings/Header. KEIN Slot-2-Relabel mehr.
 
   // Fehlende Referenz-Dateien als Platzhalter ergänzen (Studio hat sie; der Drucker
   // erwartet sie evtl. beim Load für die AMS-Tabelle). 1x1-PNG + minimale cut_information.
