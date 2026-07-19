@@ -154,8 +154,55 @@ function injectMissingKeys(gcode3mfPath) {
     execFileSync('zip', ['-q', copy, PROJSET], { cwd: work, stdio: 'ignore' });
   } catch (e) { /* project_settings optional */ }
 
+  // plate_1.json ERGÄNZEN — der Drucker liest sie beim Filament-Load, um die AMS-
+  // Zuordnungstabelle zu bauen (filament_colors/filament_ids/first_extruder/bed_type).
+  // Unser natives 3MF hat sie NICHT → "AMS-Zuordnungstabelle konnte nicht abgerufen
+  // werden" [0x7008012], obwohl der project_file-Befehl byte-identisch mit Studio ist.
+  let plate = 0;
+  try {
+    execFileSync('unzip', ['-o', copy, SLICEINFO, GCODE, '-d', work], { stdio: 'ignore' });
+    const si = fs.readFileSync(path.join(work, SLICEINFO), 'utf8');
+    const gc = fs.readFileSync(path.join(work, GCODE), 'utf8');
+    // Farben der benutzten Filamente (RRGGBB, mit #)
+    const colors = [...si.matchAll(/<filament\b[^>]*used_for_object="true"[^>]*>/g)]
+      .map(m => (m[0].match(/\bcolor="([^"]*)"/) || [])[1]).filter(Boolean);
+    const cols = colors.length ? colors : ['#FFFFFF'];
+    // curr_bed_type (voller Name) → plate_1.json-Code (wie Studio)
+    const bedMap = {
+      'Textured PEI Plate': 'textured_plate', 'Textured Cool Plate': 'textured_cool_plate',
+      'Cool Plate': 'cool_plate', 'Bambu Cool Plate': 'cool_plate',
+      'Engineering Plate': 'eng_plate', 'Bambu Engineering Plate': 'eng_plate',
+      'Smooth PEI Plate': 'hot_plate', 'High Temp Plate': 'hot_plate', 'Bambu Smooth PEI Plate': 'hot_plate',
+      'Cool Plate (SuperTack)': 'supertack_plate', 'Bambu Cool Plate SuperTack': 'supertack_plate',
+    };
+    const btFull = (gc.match(/^; curr_bed_type = (.*)$/m) || [])[1] || 'Textured PEI Plate';
+    const bt = bedMap[btFull] || 'textured_plate';
+    // bbox aus first_layer_print_min/size (Header), sonst Default-Box
+    const pmin = ((gc.match(/^; first_layer_print_min = (.*)$/m) || [])[1] || '').split(',').map(Number);
+    const psz = ((gc.match(/^; first_layer_print_size = (.*)$/m) || [])[1] || '').split(',').map(Number);
+    let bbox = [100, 100, 150, 150];
+    if (pmin.length === 2 && psz.length === 2 && pmin.every(Number.isFinite) && psz.every(Number.isFinite))
+      bbox = [pmin[0], pmin[1], pmin[0] + psz[0], pmin[1] + psz[1]];
+    const objName = (si.match(/<object[^>]*name="([^"]*)"/) || [])[1] || 'object.stl';
+    const plateJson = {
+      bbox_all: bbox,
+      bbox_objects: [{ area: (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]), bbox,
+        id: 1, layer_height: 0.2, name: objName }],
+      bed_type: bt,
+      filament_colors: cols,
+      filament_ids: cols.map((_, i) => i + 1),
+      first_extruder: 1,
+      is_seq_print: false,
+      nozzle_diameter: 0.4,
+      version: 2,
+    };
+    fs.writeFileSync(path.join(work, 'Metadata/plate_1.json'), JSON.stringify(plateJson));
+    execFileSync('zip', ['-q', copy, 'Metadata/plate_1.json'], { cwd: work, stdio: 'ignore' });
+    plate = 1;
+  } catch (e) { /* plate_1.json optional */ }
+
   execFileSync('zip', ['-q', copy, GCODE, GMD5], { cwd: work, stdio: 'ignore' });
-  return { path: copy, added: 0, overridden: 0, gfix, psfix };
+  return { path: copy, added: 0, overridden: 0, gfix, psfix, plate };
 }
 
 module.exports = { injectMissingKeys };

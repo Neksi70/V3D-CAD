@@ -578,6 +578,8 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
           ...printOpts, ...amsPrint };
         // URL passend zum Upload-Ort: brtc://emmc/ (emmc, umgeht AMS-Bug) oder ftp://.
         const projPayload = { print: { ...basePrint, url: fileUrl } };
+        console.log('[send][DEBUG] project_file:', JSON.stringify(projPayload.print));
+        if (autoQuery) console.log('[send][DEBUG] auto_query:', JSON.stringify(autoQuery));
         // Studios Zweischritt über EINE Verbindung: get_auto_nozzle_mapping (baut die
         // AMS-Tabelle) → 1.5s → project_file. Getrennte Verbindungen verlieren die
         // Tabelle → [0x7FF8012/0x7008012]. Ohne AMS: nur project_file.
@@ -658,7 +660,7 @@ app.post('/api/send', (req, res) => {
   // extrude_cali_flag=2, nozzle_offset_cali=int (0=aus/gespeichert, 1=neu),
   // layer_inspect=true, vibration_cali=false. Kali-Tri-State auto=2.
   const printOpts = {
-    bed_type: 'auto', use_ams: testNoAms ? false : Boolean(useAms),
+    bed_type: 'auto', cfg: '0', use_ams: testNoAms ? false : Boolean(useAms),
     timelapse: Boolean(timelapse),
     bed_leveling: bedLeveling !== false, auto_bed_leveling: 2,
     flow_cali: Boolean(flowCali), extrude_cali_flag: 2, extrude_cali_manual_mode: 0,
