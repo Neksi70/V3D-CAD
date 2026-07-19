@@ -429,7 +429,42 @@ function buildAmsFieldsFromFile(nativePath, gids, nozzleTar) {
       if (slot - 1 < 32) nozMap[slot - 1] = tar; // benutztes Filament → aktive Düse
     } else { v0.push(-1); v1.push({ ams_id: 0xff, slot_id: 0xff }); }
   }
-  return { ams_mapping: v0, ams_mapping2: v1, nozzle_mapping: nozMap };
+  // benutzte Filamente mit Details (für die get_auto_nozzle_mapping-Vorabfrage)
+  const usedFil = used.map((slot) => ({
+    slot, gid: trayBySlot[slot],
+    fid: (filBySlot[slot] || {}).fid || 'GFA00',
+    color: (filBySlot[slot] || {}).color || '',
+    direction: fmap[slot - 1] || 2, // 1=links, 2=rechts (aus filament_maps)
+  }));
+  return { ams_mapping: v0, ams_mapping2: v1, nozzle_mapping: nozMap, usedFil };
+}
+
+// Studios Vorab-Query "get_auto_nozzle_mapping" (MQTT-Mitschnitt 2026-07-19): SIE baut
+// die AMS-Zuordnungstabelle auf dem Drucker auf. OHNE sie kommt beim project_file
+// "Zuordnungstabelle konnte nicht abgerufen werden" [0x7FF8012/0x7008012], obwohl das
+// project_file-Mapping korrekt ist. Wird VOR dem project_file geschickt. nozzle_info =
+// alle AMS-Trays+Düsen (aus device.nozzle.info), das benutzte Filament bekommt die aktive
+// Düsen-Position (tar_id) statt seiner Tray-id. fila_info = die benutzten Filamente.
+function buildAutoNozzleQuery(dev, usedFil, tar) {
+  const nz = (dev?.nozzle?.info) || [];
+  const usedColors = new Set(usedFil.map(f => f.color));
+  const nozzle_info = nz.map(n => ({
+    cate: n.fila_id || '', color: n.color_m || '00000000',
+    nozzle_d: Number(n.diameter || 0.4).toFixed(2), nozzle_v: 'Standard',
+    pos: usedColors.has((n.color_m || '').toUpperCase()) ? tar : n.id,
+    wear: n.wear || 0,
+  }));
+  const fila_info = usedFil.map(f => ({
+    cate: f.fid, color: f.color, direction: f.direction, group: 1,
+    id: f.slot, nozzle_d: '0.40', nozzle_v: 'Standard',
+  }));
+  const am = new Array(33).fill(65535);
+  usedFil.forEach(f => { if (f.slot < 33) am[f.slot] = f.gid; });
+  return {
+    ams_mapping: am, calibration: 2, command: 'get_auto_nozzle_mapping',
+    extrude_cali_manual_mode: 0, fila_info, filament_seq: [-1, -1, 0],
+    nozzle_info, sequence_id: '0',
+  };
 }
 
 async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId, settings, sliceId }) {
@@ -475,16 +510,19 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       const pack = nativePath ? fs.readFileSync(nativePath) : gcode3mf.wrap(buf, { modelId, settings });
       // AMS-Zuordnung aus der ECHTEN Datei per-Filament neu bauen (Studio-Format),
       // überschreibt das simple 1-Element-amsFields aus printOpts. Behebt [0500-4047].
-      let amsOverride = null;
+      let amsOverride = null, autoQuery = null, devStatus = null;
       if (nativePath && Array.isArray(printOpts.ams_mapping) && printOpts.ams_mapping.length) {
-        // aktive Düsen-Position (nozzle.tar_id) für nozzle_mapping holen
+        // aktive Düsen-Position (nozzle.tar_id) + Düsen-Info für nozzle_mapping/Query holen
         let nozzleTar = 17;
-        try { const st = await lan.getStatus(p, 6000);
-          const t = (st.device?.nozzle || st.nozzle || {}).tar_id;
+        try { devStatus = await lan.getStatus(p, 6000);
+          const t = (devStatus.device?.nozzle || devStatus.nozzle || {}).tar_id;
           if (Number.isFinite(t)) nozzleTar = t; } catch {}
         amsOverride = buildAmsFieldsFromFile(nativePath, printOpts.ams_mapping, nozzleTar);
-        if (amsOverride) console.log('[send] ams-fix: mapping=' + JSON.stringify(amsOverride.ams_mapping) +
-          ' nozzle_tar=' + nozzleTar);
+        if (amsOverride) {
+          console.log('[send] ams-fix: mapping=' + JSON.stringify(amsOverride.ams_mapping) +
+            ' nozzle_tar=' + nozzleTar);
+          if (devStatus) autoQuery = buildAutoNozzleQuery(devStatus.device || devStatus, amsOverride.usedFil, nozzleTar);
+        }
       }
       console.log('[send]', nativePath ? 'natives 3MF' : 'eigenes 3MF', name3);
       job.phase = 'upload'; job.percent = 0;
@@ -494,12 +532,20 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       if (start) {
         job.phase = 'start'; job.percent = 100;
         const isOk = (r) => r && String(r.result || '').toLowerCase() === 'success';
+        // Studios Zweischritt: ZUERST get_auto_nozzle_mapping (baut die AMS-Tabelle auf
+        // dem Drucker), kurz warten, DANN project_file. Sonst [0x7FF8012/0x7008012].
+        if (autoQuery) {
+          try { await lan.sendCommand(p, { print: autoQuery }, { waitMs: 4000 });
+            console.log('[send] auto-nozzle-mapping-Query geschickt (AMS-Tabelle aufbauen)');
+            await new Promise(r => setTimeout(r, 1500)); } catch (e) { console.log('[send] query-Fehler:', e.message); }
+        }
+        const { usedFil, ...amsPrint } = amsOverride || {}; // usedFil NICHT in den Befehl
         const basePrint = { sequence_id: '0', command: 'project_file',
           param: 'Metadata/plate_1.gcode', subtask_name: jobName,
-          // Felder wie Bambu Studio: IDs + MD5 des Pakets (Firmware prüft ggf.)
-          project_id: '0', profile_id: '0', task_id: '0', subtask_id: '0', file: '',
+          // Felder wie Bambu Studio: IDs + MD5 + Dateiname
+          project_id: '0', profile_id: '0', task_id: '0', subtask_id: '0', file: name3,
           md5: require('crypto').createHash('md5').update(pack).digest('hex').toUpperCase(),
-          ...printOpts, ...(amsOverride || {}) };
+          ...printOpts, ...amsPrint };
         pr = await lan.sendCommand(p, { print: { ...basePrint, url: `ftp://${name3}` } },
                                    { waitMs: 8000 }).catch(() => null);
         console.log('[send] lan-start', serial, name3, 'result:', pr?.result, pr?.reason || '');
