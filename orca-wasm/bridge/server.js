@@ -416,9 +416,16 @@ function buildAmsFieldsFromFile(nativePath, gids, nozzleTar) {
   // benutzte Filament-Slots (1-basiert), in Datei-Reihenfolge
   const usedIds = Object.keys(filBySlot).map(Number).filter(id => filBySlot[id].used).sort((x, y) => x - y);
   const used = usedIds.length ? usedIds : gids.map((_, i) => i + 1);
-  // benutzten Slot → Tray-gid (Job-Filamente in Reihenfolge)
+  // benutzten Slot → Tray-gid. Der Sende-Dialog liefert EINEN gid je Projekt-Filament
+  // in Slot-Reihenfolge (gids[slot-1]). Nur wenn die Laengen nicht passen (Einfarb-Fall:
+  // 1 gid, aber 5 Profil-Slots in filament_maps), positional auf die benutzten mappen —
+  // sonst verrutscht die Zuordnung, sobald ein mittleres Filament unbenutzt ist.
   const trayBySlot = {};
-  used.forEach((slot, i) => { trayBySlot[slot] = gids[i] != null ? gids[i] : gids[gids.length - 1]; });
+  if (gids.length === N || gids.length >= Math.max(...used)) {
+    used.forEach((slot) => { trayBySlot[slot] = gids[slot - 1] != null ? gids[slot - 1] : gids[gids.length - 1]; });
+  } else {
+    used.forEach((slot, i) => { trayBySlot[slot] = gids[i] != null ? gids[i] : gids[gids.length - 1]; });
+  }
   const tar = Number.isFinite(nozzleTar) ? nozzleTar : 17; // aktive Düsen-Position
   const v0 = [], v1 = [];
   const nozMap = new Array(32).fill(-1);

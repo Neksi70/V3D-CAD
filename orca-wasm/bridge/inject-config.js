@@ -151,8 +151,9 @@ function injectMissingKeys(gcode3mfPath) {
     const msPath = path.join(work, MODELSET);
     let ms = fs.readFileSync(msPath, 'utf8');
     if (!/filament_volume_maps/.test(ms))
-      ms = ms.replace(/(<metadata key="filament_maps"[^>]*\/>)/,
-                      '$1\n    <metadata key="filament_volume_maps" value="0 0 0 0 0"/>');
+      ms = ms.replace(/(<metadata key="filament_maps" value="([^"]*)"[^>]*\/>)/,
+        (m, tag, maps) => tag + '\n    <metadata key="filament_volume_maps" value="'
+          + maps.trim().split(/\s+/).map(() => '0').join(' ') + '"/>');
     // Datei-Referenzen ergänzen (wie Studio) — der Drucker sucht plate_1.json u.a. hierüber.
     if (!/pattern_bbox_file/.test(ms))
       ms = ms.replace(/(<metadata key="gcode_file"[^>]*\/>)/,
@@ -195,6 +196,11 @@ function injectMissingKeys(gcode3mfPath) {
     execFileSync('unzip', ['-o', copy, PROJSET, '-d', work], { stdio: 'ignore' });
     const psPath = path.join(work, PROJSET);
     const ps = JSON.parse(fs.readFileSync(psPath, 'utf8'));
+    // Laengen-Korrektur fuer Mehrfarbdruck: per-Filament-Keys an die echte
+    // Filament-Anzahl der Datei anpassen (PS_SET-Vorlage stammt vom 5-Slot-Einfarbfall)
+    const nFil = Array.isArray(ps.filament_colour) && ps.filament_colour.length
+      ? ps.filament_colour.length : 5;
+    PS_SET.filament_extruder_compatibility = new Array(nFil).fill('0');
     for (const [k, v] of Object.entries(PS_SET)) {
       if (JSON.stringify(ps[k]) !== JSON.stringify(v)) { ps[k] = v; psfix++; }
     }
@@ -212,10 +218,12 @@ function injectMissingKeys(gcode3mfPath) {
     execFileSync('unzip', ['-o', copy, SLICEINFO, GCODE, '-d', work], { stdio: 'ignore' });
     const si = fs.readFileSync(path.join(work, SLICEINFO), 'utf8');
     const gc = fs.readFileSync(path.join(work, GCODE), 'utf8');
-    // Farben der benutzten Filamente (RRGGBB, mit #)
-    const colors = [...si.matchAll(/<filament\b[^>]*used_for_object="true"[^>]*>/g)]
-      .map(m => (m[0].match(/\bcolor="([^"]*)"/) || [])[1]).filter(Boolean);
+    // Benutzte Filamente: Farbe UND echte Slot-ID aus slice_info (Mehrfarbdruck:
+    // filament_ids müssen die Datei-Slots sein, nicht stur 1..n durchnummeriert)
+    const usedFil = [...si.matchAll(/<filament\b[^>]*used_for_object="true"[^>]*>/g)].map(m => m[0]);
+    const colors = usedFil.map(s => (s.match(/\bcolor="([^"]*)"/) || [])[1]).filter(Boolean);
     const cols = colors.length ? colors : ['#FFFFFF'];
+    const usedIds = usedFil.map(s => +((s.match(/\bid="(\d+)"/) || [])[1])).filter(Boolean);
     // curr_bed_type (voller Name) → plate_1.json-Code (wie Studio)
     const bedMap = {
       'Textured PEI Plate': 'textured_plate', 'Textured Cool Plate': 'textured_cool_plate',
@@ -239,8 +247,8 @@ function injectMissingKeys(gcode3mfPath) {
         id: 1, layer_height: 0.2, name: objName }],
       bed_type: bt,
       filament_colors: cols,
-      filament_ids: cols.map((_, i) => i + 1),
-      first_extruder: 1,
+      filament_ids: usedIds.length === cols.length && usedIds.length ? usedIds : cols.map((_, i) => i + 1),
+      first_extruder: usedIds.length ? usedIds[0] : 1,
       is_seq_print: false,
       nozzle_diameter: 0.4,
       version: 2,
