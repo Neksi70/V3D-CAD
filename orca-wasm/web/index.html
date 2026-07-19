@@ -3781,8 +3781,34 @@ $('btnSlice').onclick = async () => {
         filamentChains.push(chain);
       }
     }
+    // Mehrfarbdruck: Flush + Wechselrucke reißen Teile von der Platte (Testdruck
+    // 2026-07-19). Betttemperatur je Filament auf mindestens 60 °C anheben — nur
+    // anheben, nie absenken (PETG & Co. behalten ihre höheren Profilwerte).
+    const bedTempOverrides = [];
+    if (multi) {
+      const bedKey = {
+        'Cool Plate': 'cool_plate_temp', 'Engineering Plate': 'eng_plate_temp',
+        'Smooth PEI Plate': 'hot_plate_temp', 'High Temp Plate': 'hot_plate_temp',
+        'Textured PEI Plate': 'textured_plate_temp',
+        'Textured Cool Plate': 'textured_cool_plate_temp',
+        'Cool Plate (SuperTack)': 'supertack_plate_temp',
+      }[$('bedType').value];
+      if (bedKey) {
+        const lastVal = (chain, key) => {
+          let v = null;
+          for (const s of chain) { const j = JSON.parse(s); if (j[key] !== undefined) v = j[key]; }
+          const n = parseInt(Array.isArray(v) ? v[0] : v, 10);
+          return Number.isFinite(n) ? n : 0;
+        };
+        for (const key of [bedKey, bedKey + '_initial_layer']) {
+          const temps = filamentChains.map(ch => Math.max(60, lastVal(ch, key) || 55));
+          bedTempOverrides.push(`${key} = ${temps.join(',')}`);
+        }
+      }
+    }
     const profiles = multi ? [...c.machine, ...c.process] : [...c.machine, ...c.process, ...c.filament];
     const overrides = [
+      ...bedTempOverrides,
       'enable_arc_fitting = 0',
       `enable_support = ${$('support').checked ? 1 : 0}`,
       `brim_type = ${$('brim').checked ? 'outer_only' : 'no_brim'}`,
