@@ -532,13 +532,6 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       if (start) {
         job.phase = 'start'; job.percent = 100;
         const isOk = (r) => r && String(r.result || '').toLowerCase() === 'success';
-        // Studios Zweischritt: ZUERST get_auto_nozzle_mapping (baut die AMS-Tabelle auf
-        // dem Drucker), kurz warten, DANN project_file. Sonst [0x7FF8012/0x7008012].
-        if (autoQuery) {
-          try { await lan.sendCommand(p, { print: autoQuery }, { waitMs: 4000 });
-            console.log('[send] auto-nozzle-mapping-Query geschickt (AMS-Tabelle aufbauen)');
-            await new Promise(r => setTimeout(r, 1500)); } catch (e) { console.log('[send] query-Fehler:', e.message); }
-        }
         const { usedFil, ...amsPrint } = amsOverride || {}; // usedFil NICHT in den Befehl
         const basePrint = { sequence_id: '0', command: 'project_file',
           param: 'Metadata/plate_1.gcode', subtask_name: jobName,
@@ -546,8 +539,19 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
           project_id: '0', profile_id: '0', task_id: '0', subtask_id: '0', file: name3,
           md5: require('crypto').createHash('md5').update(pack).digest('hex').toUpperCase(),
           ...printOpts, ...amsPrint };
-        pr = await lan.sendCommand(p, { print: { ...basePrint, url: `ftp://${name3}` } },
-                                   { waitMs: 8000 }).catch(() => null);
+        const projPayload = { print: { ...basePrint, url: `ftp://${name3}` } };
+        // Studios Zweischritt über EINE Verbindung: get_auto_nozzle_mapping (baut die
+        // AMS-Tabelle) → 1.5s → project_file. Getrennte Verbindungen verlieren die
+        // Tabelle → [0x7FF8012/0x7008012]. Ohne AMS: nur project_file.
+        if (autoQuery) {
+          console.log('[send] Zweischritt: auto-nozzle-mapping-Query + project_file (eine Verbindung)');
+          pr = await lan.sendSequence(p, [
+            { payload: { print: autoQuery }, gapMs: 1500 },
+            { payload: projPayload },
+          ], { finalWaitMs: 8000 }).catch(() => null);
+        } else {
+          pr = await lan.sendCommand(p, projPayload, { waitMs: 8000 }).catch(() => null);
+        }
         console.log('[send] lan-start', serial, name3, 'result:', pr?.result, pr?.reason || '');
         // Bambu Authorization Control (Firmware 01.09+): Druckbefehle müssen
         // signiert sein → "mqtt message verify failed", über LAN wie Cloud.

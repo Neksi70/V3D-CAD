@@ -95,4 +95,41 @@ function getStatus(printer, timeoutMs = 6000) {
   });
 }
 
-module.exports = { reachable, uploadGcode, sendCommand, getStatus };
+// Mehrere Befehle über EINE persistente MQTT-Verbindung senden (Studio-Verhalten).
+// Nötig für die H2-AMS-Zwei-Schritt-Folge: get_auto_nozzle_mapping baut die AMS-Tabelle
+// auf dem Drucker auf — sie bleibt nur erhalten, wenn das project_file über DIESELBE
+// Verbindung folgt (getrennte Verbindungen → "Zuordnungstabelle nicht abrufbar").
+// payloads: [{payload, gapMs}] — nach jedem außer dem letzten wird gapMs gewartet;
+// Rückgabe = Echo-Ergebnis des LETZTEN Befehls (result/reason).
+function sendSequence(printer, steps, { finalWaitMs = 8000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const c = mqtt.connect(`mqtts://${printer.ip}:8883`, {
+      username: 'bblp', password: printer.access_code,
+      rejectUnauthorized: false, connectTimeout: 6000, reconnectPeriod: 0,
+    });
+    const reportTopic = `device/${printer.serial}/report`;
+    const requestTopic = `device/${printer.serial}/request`;
+    const lastCmd = steps[steps.length - 1]?.payload?.print?.command;
+    let settled = false, result = { sent: true };
+    const finish = (fn, arg) => { if (settled) return; settled = true; try { c.end(true); } catch {} fn(arg); };
+    c.on('connect', async () => {
+      c.subscribe(reportTopic);
+      for (let i = 0; i < steps.length; i++) {
+        c.publish(requestTopic, JSON.stringify(steps[i].payload), { qos: 1 });
+        const wait = i < steps.length - 1 ? (steps[i].gapMs || 1500) : finalWaitMs;
+        await new Promise(r => setTimeout(r, wait));
+      }
+      finish(resolve, result);
+    });
+    c.on('message', (_t, msg) => {
+      let j; try { j = JSON.parse(msg.toString()); } catch { return; }
+      const pr = j.print;
+      if (pr && pr.command && pr.command === lastCmd)
+        result = { sent: true, acked: true, result: pr.result, reason: pr.reason, report: pr };
+    });
+    c.on('error', (e) => finish(reject, e));
+    setTimeout(() => finish(resolve, result), finalWaitMs + steps.length * 2000 + 6000);
+  });
+}
+
+module.exports = { reachable, uploadGcode, sendCommand, sendSequence, getStatus };
