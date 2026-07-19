@@ -380,14 +380,16 @@ setInterval(() => {
   for (const [k, j] of sendJobs) if (now - j.ts > 15 * 60e3) sendJobs.delete(k);
 }, 60e3).unref?.();
 
-// H2/Dual-Düse: AMS-Zuordnung im project_file-Befehl EXAKT wie Bambu Studio bauen
-// (OrcaSlicer SelectMachine.cpp get_ams_mapping_result + build_nozzles_info). Studio
-// sendet EIN Element PRO FILAMENT-SLOT (nicht nur benutzte!), unbenutzte als -1/0xff,
-// plus nozzleId je Slot (aus filament_maps: links=1→Task-1, rechts=2→Task-0) und
-// nozzles_info (2 Düsen). Unser altes 1-Element-Format ohne Polsterung/nozzleId löste
-// die Hotend-Prüfung aus → [0500-4047]. Liest die echte filament_maps + benutzten
-// Slots aus der zu sendenden Datei, damit es konsistent ist (egal was die Injektion tat).
-function buildAmsFieldsFromFile(nativePath, gids) {
+// H2/Dual-Düse: AMS-Zuordnung im project_file-Befehl EXAKT wie Bambu Studio bauen.
+// Per echtem MQTT-Mitschnitt von Studios project_file-Befehl (2026-07-19) verifiziert:
+//   ams_mapping   = Array LÄNGE=Slots, tray-gid fürs benutzte, -1 sonst  (z.B. [-1,0,-1,-1,-1])
+//   ams_mapping2  = gleiche Länge, {ams_id,slot_id} bzw. {255,255}  (KEY OHNE Unterstrich!)
+//   nozzle_mapping= 32-Array, Düsen-POSITION (device.nozzle.tar_id, z.B. 17) am benutzten
+//                   Slot-Index, -1 sonst.  DAS mappt Filament→physische Düse; fehlte uns.
+// Studio sendet KEIN ams_mapping_info / nozzles_info im project_file (das war ein anderer
+// Query-Flow, get_auto_nozzle_mapping). Unser falscher Key "ams_mapping_2" + fehlendes
+// nozzle_mapping ließen "AMS-Zuordnungstabelle konnte nicht abgerufen werden" [0x7FF8012].
+function buildAmsFieldsFromFile(nativePath, gids, nozzleTar) {
   if (!nativePath || !Array.isArray(gids) || !gids.length) return null;
   let si;
   try { si = execFileSync('unzip', ['-p', nativePath, 'Metadata/slice_info.config'],
@@ -416,27 +418,18 @@ function buildAmsFieldsFromFile(nativePath, gids) {
   // benutzten Slot → Tray-gid (Job-Filamente in Reihenfolge)
   const trayBySlot = {};
   used.forEach((slot, i) => { trayBySlot[slot] = gids[i] != null ? gids[i] : gids[gids.length - 1]; });
-  // filament_map-Wert (1=links,2=rechts) → CloudTaskNozzleId (links=1, rechts=0)
-  const nozId = (fmVal) => (fmVal === 1 ? 1 : 0);
-  const v0 = [], v1 = [], info = [];
+  const tar = Number.isFinite(nozzleTar) ? nozzleTar : 17; // aktive Düsen-Position
+  const v0 = [], v1 = [];
+  const nozMap = new Array(32).fill(-1);
   for (let slot = 1; slot <= N; slot++) {
     const g = trayBySlot[slot];
-    const f = filBySlot[slot] || {};
     if (g != null) {
       v0.push(g);
       v1.push(g >= 254 ? { ams_id: g, slot_id: 0 } : { ams_id: Math.floor(g / 4), slot_id: g % 4 });
+      if (slot - 1 < 32) nozMap[slot - 1] = tar; // benutztes Filament → aktive Düse
     } else { v0.push(-1); v1.push({ ams_id: 0xff, slot_id: 0xff }); }
-    info.push({ ams: g != null ? g : -1, nozzleId: nozId(fmap[slot - 1] || 2),
-                sourceColor: f.color || '', targetColor: f.color || '',
-                filamentId: f.fid || '', filamentType: f.type || 'PLA' });
   }
-  return {
-    ams_mapping: v0, ams_mapping_2: v1, ams_mapping_info: info,
-    nozzles_info: [
-      { id: 1, type: null, flowSize: 'standard_flow', diameter: 0.4 },
-      { id: 0, type: null, flowSize: 'standard_flow', diameter: 0.4 },
-    ],
-  };
+  return { ams_mapping: v0, ams_mapping2: v1, nozzle_mapping: nozMap };
 }
 
 async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId, settings, sliceId }) {
@@ -484,9 +477,14 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       // überschreibt das simple 1-Element-amsFields aus printOpts. Behebt [0500-4047].
       let amsOverride = null;
       if (nativePath && Array.isArray(printOpts.ams_mapping) && printOpts.ams_mapping.length) {
-        amsOverride = buildAmsFieldsFromFile(nativePath, printOpts.ams_mapping);
-        if (amsOverride) console.log('[send] ams-fix: ' + amsOverride.ams_mapping.length +
-          ' Slots, mapping=' + JSON.stringify(amsOverride.ams_mapping));
+        // aktive Düsen-Position (nozzle.tar_id) für nozzle_mapping holen
+        let nozzleTar = 17;
+        try { const st = await lan.getStatus(p, 6000);
+          const t = (st.device?.nozzle || st.nozzle || {}).tar_id;
+          if (Number.isFinite(t)) nozzleTar = t; } catch {}
+        amsOverride = buildAmsFieldsFromFile(nativePath, printOpts.ams_mapping, nozzleTar);
+        if (amsOverride) console.log('[send] ams-fix: mapping=' + JSON.stringify(amsOverride.ams_mapping) +
+          ' nozzle_tar=' + nozzleTar);
       }
       console.log('[send]', nativePath ? 'natives 3MF' : 'eigenes 3MF', name3);
       job.phase = 'upload'; job.percent = 0;
@@ -560,45 +558,24 @@ app.post('/api/send', (req, res) => {
   // Ref: OrcaSlicer CalibUtils.cpp ~1916-1956 (ams_mapping/ams_mapping_2) und
   // DevMapping.cpp _parse_tray_info (ext-Tray: ams_id=255/254, slot_id=0).
   const gids = Array.isArray(amsMapping) ? amsMapping.map(Number).filter(Number.isFinite) : [];
-  // nozzleId (Cloud-Task-Konvention, SelectMachine.hpp): RECHTS=0, LINKS=1.
-  // AMS + externe Haupt-Spule (255) hängen an der rechten Düse → 0; externe
-  // Deputy-Spule (254, links) → 1. Die H2-Firmware braucht diese Düsen-Zuordnung
-  // im Sendebefehl, sonst "Hotend-Menge/-Modell stimmt nicht" [0500-4047].
-  const nozzleIdOf = (g) => (g === 254 ? 1 : 0);
-  const amsFields = gids.length ? {
-    ams_mapping: gids,
-    ams_mapping_2: gids.map(g => g >= 254
-      ? { ams_id: g, slot_id: 0 }
-      : { ams_id: Math.floor(g / 4), slot_id: g % 4 }),
-    // Je Filament die Düsen-Zuordnung (nozzleId) — das prüft die H2-Firmware.
-    ams_mapping_info: gids.map(g => ({
-      ams: g, nozzleId: nozzleIdOf(g), sourceColor: '', targetColor: '',
-      filamentId: '', filamentType: '',
-    })),
-    // Explizite Deklaration der physischen Düsen (Studio: "nozzles_info"). DAS ist die
-    // "Hotend-Menge/-Modell"-Angabe im Sendebefehl. H2C 0.4: 2 Standard-Düsen.
-    // id: links=1, rechts=0 (CloudTaskNozzleId); flowSize "standard_flow".
-    nozzles_info: [
-      { id: 1, type: null, flowSize: 'standard_flow', diameter: 0.4 },
-      { id: 0, type: null, flowSize: 'standard_flow', diameter: 0.4 },
-    ],
-  } : {};
+  // Roh-gids durchreichen; das echte per-Filament-Mapping (ams_mapping/ams_mapping2/
+  // nozzle_mapping wie Studio) baut buildAmsFieldsFromFile() in runSend aus der Datei
+  // + aktiver Düse und überschreibt diese hier. (Studio-MQTT-Mitschnitt 2026-07-19.)
+  const amsFields = gids.length ? { ams_mapping: gids } : {};
   // TEST-Schalter: TEST_NO_AMS=1 → sende OHNE AMS-Parameter (wie USB-Laden), um zu
   // isolieren, ob die AMS-Zuordnung im Sendebefehl den 0500-4047 auslöst.
   const testNoAms = process.env.TEST_NO_AMS === '1';
+  // Felder + Typen exakt wie Studios echter project_file-Befehl (MQTT-Mitschnitt
+  // 2026-07-19): bed_leveling=bool + auto_bed_leveling=2, flow_cali=bool +
+  // extrude_cali_flag=2, nozzle_offset_cali=int (0=aus/gespeichert, 1=neu),
+  // layer_inspect=true, vibration_cali=false. Kali-Tri-State auto=2.
   const printOpts = {
     bed_type: 'auto', use_ams: testNoAms ? false : Boolean(useAms),
     timelapse: Boolean(timelapse),
-    bed_levelling: bedLeveling !== false, bed_leveling: bedLeveling !== false,
-    flow_cali: Boolean(flowCali), vibration_cali: false,
-    // Düsenversatzkalibrierung (Dual-Düse H2): TRI-STATE-Int wie Studio, NICHT Boolean!
-    // Werte (SelectMachine.cpp PrintOption::getValueInt): off=0, on=1, auto=2.
-    // Boolean false = 0 (off) ließ die Firmware KEINEN gespeicherten Versatz nutzen →
-    // "Nozzle Offset Cali Failure" [0300-400C]. Studios Default ist AUTO(2) = "prüft
-    // gespeicherten Versatz, überspringt wenn gültig" → deshalb läuft Studio durch.
-    // Häkchen an = neu messen; aus = gespeicherten Versatz nutzen. (Tri-State auto=2
-    // wie Studio brachte keinen 0300-400C-Fix — separat prüfen, wenn 4047 gelöst ist.)
-    nozzle_offset_cali: Boolean(nozzleOffsetCali),
+    bed_leveling: bedLeveling !== false, auto_bed_leveling: 2,
+    flow_cali: Boolean(flowCali), extrude_cali_flag: 2, extrude_cali_manual_mode: 0,
+    vibration_cali: false, layer_inspect: true,
+    nozzle_offset_cali: nozzleOffsetCali ? 1 : 0,
     ...(testNoAms ? {} : amsFields),
   };
   const fp = fleetOf(serial);
