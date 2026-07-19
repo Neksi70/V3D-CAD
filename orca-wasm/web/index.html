@@ -697,7 +697,9 @@ function fmtEta(min) { if (min == null) return ''; const h = Math.floor(min/60),
 // Job-Miniatur: beim Senden wird die Plattenvorschau pro Drucker gemerkt und
 // im Druckprozess-Panel gezeigt, solange der laufende Jobname dazu passt.
 // Für fremd gestartete Drucke gibt es kein Bild → Logo-Platzhalter.
-const jobNorm = (n) => String(n || '').toLowerCase().replace(/\.(gcode\.3mf|gcode|3mf)$/, '');
+// Sanitisierung wie die Brücke beim Upload (Leerzeichen/Umlaute → _), sonst
+// matcht "Halter v2" nie gegen das vom Drucker gemeldete "Halter_v2".
+const jobNorm = (n) => String(n || '').replace(/[^\w.\-]/g, '_').toLowerCase().replace(/\.(gcode\.3mf|gcode|3mf)$/, '');
 function saveJobThumb(serial, filename, b64) {
   if (!serial || !b64) return;
   try { localStorage.setItem('vs-thumb-' + serial, JSON.stringify({ n: jobNorm(filename), img: b64 })); } catch {}
@@ -714,6 +716,22 @@ function setDevThumb(b64) {
   const img = $('devThumbImg');
   const want = b64 ? 'data:image/png;base64,' + b64 : 'logo.svg';
   if (img.getAttribute('src') !== want) { img.src = want; img.classList.toggle('real', Boolean(b64)); }
+}
+// Fallback: die Brücke merkt sich die Miniatur des zuletzt gesendeten Jobs
+// serverseitig — so sieht auch das Handy das Bild eines am Desktop gestarteten
+// Drucks. Fehltreffer werden 60 s gemerkt, damit nicht jeder 8-s-Poll fragt.
+const srvThumb = {};   // "serial|jobNorm" -> { img: base64|null, ts }
+async function fetchServerThumb(serial, subtask) {
+  if (!subtask) return null;
+  const k = serial + '|' + jobNorm(subtask);
+  const c = srvThumb[k];
+  if (c && (c.img || Date.now() - c.ts < 60e3)) return c.img;
+  try {
+    const { status, json } = await bridge('/api/device/' + encodeURIComponent(serial) + '/thumb');
+    const s = jobNorm(subtask), n = status === 200 && json.name ? jobNorm(json.name) : null;
+    srvThumb[k] = { img: (n && (s === n || s.startsWith(n + '-'))) ? json.img : null, ts: Date.now() };
+  } catch { return null; }   // Netzfehler nicht cachen
+  return srvThumb[k].img;
 }
 
 async function refreshDevice() {
@@ -736,7 +754,7 @@ async function refreshDevice() {
     $('devLight').hidden = !cp.light;
     $('devCamCard').hidden = !cp.camera;
     $('devJobName').textContent = d.subtask || (d.state === 'IDLE' ? 'Kein Druck aktiv' : '–');
-    setDevThumb(jobThumb(serial, d.subtask));
+    setDevThumb(jobThumb(serial, d.subtask) || await fetchServerThumb(serial, d.subtask));
     $('devJobEta').textContent = d.state === 'RUNNING' ? fmtEta(d.remaining) : '';
     $('devBarFill').style.width = (d.percent || 0) + '%';
     $('devPct').textContent = d.percent != null ? d.percent + ' %' : '–';

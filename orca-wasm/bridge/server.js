@@ -361,6 +361,21 @@ app.get('/api/device/:serial', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Miniatur des zuletzt über die Brücke gesendeten Jobs (Name + PNG base64).
+// Gleiche Zugriffsregeln wie /api/device — die App prüft selbst, ob der
+// Name zum laufenden Druck passt.
+app.get('/api/device/:serial/thumb', (req, res) => {
+  const serial = req.params.serial;
+  if (fleetOf(serial)) {
+    if (!fleetOk(req)) return needCode(res);
+  } else if (!cloud.session(sidOf(req)) && !lanOk(req, serial)) {
+    return res.status(401).json({ error: 'nicht angemeldet' });
+  }
+  const t = loadThumb(serial);
+  if (!t) return res.status(404).json({ error: 'keine Miniatur' });
+  res.json({ name: t.name, img: t.img, ts: t.ts });
+});
+
 // Steuerbefehle: pause/resume/stop/light_on/light_off/speed
 app.post('/api/control/:serial', async (req, res) => {
   const fp = fleetOf(req.params.serial);
@@ -402,6 +417,21 @@ setInterval(() => {
   const now = Date.now();
   for (const [k, j] of sendJobs) if (now - j.ts > 15 * 60e3) sendJobs.delete(k);
 }, 60e3).unref?.();
+
+// ---- Job-Miniaturen: Plattenvorschau des zuletzt gesendeten Jobs je Drucker.
+// Auf Platte (bridge/thumbs/), damit alle Geräte (Handy!) und Neustarts der
+// Brücke dasselbe Bild sehen. Die App gleicht den Jobnamen selbst ab.
+const THUMB_DIR = path.join(__dirname, 'thumbs');
+const thumbFile = (serial) => path.join(THUMB_DIR, String(serial).replace(/[^\w.\-]/g, '_') + '.json');
+function saveThumb(serial, name, buf) {
+  try {
+    fs.mkdirSync(THUMB_DIR, { recursive: true });
+    fs.writeFileSync(thumbFile(serial), JSON.stringify({ name, img: buf.toString('base64'), ts: Date.now() }));
+  } catch (e) { console.log('[thumb] Speichern fehlgeschlagen:', e.message); }
+}
+function loadThumb(serial) {
+  try { return JSON.parse(fs.readFileSync(thumbFile(serial), 'utf8')); } catch { return null; }
+}
 
 // H2/Dual-Düse: AMS-Zuordnung im project_file-Befehl EXAKT wie Bambu Studio bauen.
 // Per echtem MQTT-Mitschnitt von Studios project_file-Befehl (2026-07-19) verifiziert:
@@ -725,7 +755,10 @@ app.post('/api/send', (req, res) => {
   const job = { phase: 'prepare', percent: 0, ts: Date.now() };
   sendJobs.set(id, job);
   runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode, printOpts, modelId, settings, sliceId, thumb })
-    .then((r) => { job.phase = 'done'; job.percent = 100; job.result = r; })
+    .then((r) => {
+      job.phase = 'done'; job.percent = 100; job.result = r;
+      if (thumb) saveThumb(serial, name, thumb);   // Miniatur für alle Geräte merken
+    })
     .catch((e) => { job.phase = 'error'; job.error = e.message; });
   res.json({ ok: true, id });
 });
