@@ -151,10 +151,35 @@ function injectMissingKeys(gcode3mfPath) {
     if (!/filament_volume_maps/.test(ms))
       ms = ms.replace(/(<metadata key="filament_maps"[^>]*\/>)/,
                       '$1\n    <metadata key="filament_volume_maps" value="0 0 0 0 0"/>');
+    // Datei-Referenzen ergänzen (wie Studio) — der Drucker sucht plate_1.json u.a. hierüber.
+    if (!/pattern_bbox_file/.test(ms))
+      ms = ms.replace(/(<metadata key="gcode_file"[^>]*\/>)/,
+        '$1\n    <metadata key="thumbnail_file" value="Metadata/plate_1.png"/>' +
+        '\n    <metadata key="thumbnail_no_light_file" value="Metadata/plate_no_light_1.png"/>' +
+        '\n    <metadata key="top_file" value="Metadata/top_1.png"/>' +
+        '\n    <metadata key="pick_file" value="Metadata/pick_1.png"/>' +
+        '\n    <metadata key="pattern_bbox_file" value="Metadata/plate_1.json"/>');
     fs.writeFileSync(msPath, ms);
     execFileSync('zip', ['-q', copy, MODELSET], { cwd: work, stdio: 'ignore' });
     gfix++;
   } catch (e) { /* model_settings optional */ }
+
+  // Fehlende Referenz-Dateien als Platzhalter ergänzen (Studio hat sie; der Drucker
+  // erwartet sie evtl. beim Load für die AMS-Tabelle). 1x1-PNG + minimale cut_information.
+  try {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64');
+    const md = path.join(work, 'Metadata');
+    fs.mkdirSync(md, { recursive: true });
+    for (const f of ['plate_1.png', 'plate_no_light_1.png', 'top_1.png', 'pick_1.png'])
+      fs.writeFileSync(path.join(md, f), png);
+    fs.writeFileSync(path.join(md, 'cut_information.xml'),
+      '<?xml version="1.0" encoding="UTF-8"?>\n<objects/>\n');
+    execFileSync('zip', ['-q', copy,
+      'Metadata/plate_1.png', 'Metadata/plate_no_light_1.png', 'Metadata/top_1.png',
+      'Metadata/pick_1.png', 'Metadata/cut_information.xml'], { cwd: work, stdio: 'ignore' });
+  } catch (e) { /* optional */ }
 
   // project_settings.config: Hotend-/Extruder-Menge+Modell auf Studios Werte (JSON).
   // HINWEIS: Experiment vom 2026-07-18 zeigte, dass ENTFERNEN von project_settings den
