@@ -612,14 +612,11 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
           } }, { waitMs: 10000 });
           const map = q.report && Array.isArray(q.report.mapping) ? q.report.mapping : null;
           if (map && String(q.report.result) === 'success') {
-            // Query-Antwort ist in usedFil-REIHENFOLGE (map[i] = Düse des i-ten benutzten
-            // Filaments). nozzle_mapping muss aber nach FILAMENT-INDEX (slot-1) indiziert
-            // sein — bei H2C-Multi mit Links-Platzhalter liegt Grün auf Filament-Index 1,
-            // nicht 0. Deshalb re-indizieren statt direkt zuweisen (Bambu: [-1,17,16]).
-            const nm = new Array(32).fill(-1);
-            amsOverride.usedFil.forEach((f, i) => { if (map[i] != null) nm[f.slot - 1] = map[i]; });
-            amsOverride.nozzle_mapping = nm;
-            console.log('[send] nozzle-query: mapping=' + JSON.stringify(nm.slice(0, 6)));
+            // Die Query-Antwort ist BEREITS nach Filament-Index (=Datei-Slot-1) sortiert:
+            // verifiziert für das 1-basierte H2C-Layout mapping=[-1,17,16] (Index 1=Grün=17,
+            // Index 2=Blau=16). Direkt übernehmen — NICHT re-indizieren (das zerstörte es).
+            amsOverride.nozzle_mapping = map;
+            console.log('[send] nozzle-query: mapping=' + JSON.stringify(map.slice(0, 6)));
           } else {
             console.log('[send] nozzle-query ohne Ergebnis (' + JSON.stringify(q.report?.result) +
               ') — behalte Datei-Ableitung');
