@@ -611,15 +611,33 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
             filament_seq: seq, nozzle_info: [],
           } }, { waitMs: 10000 });
           const map = q.report && Array.isArray(q.report.mapping) ? q.report.mapping : null;
-          if (map && String(q.report.result) === 'success') {
-            // Die Query-Antwort ist BEREITS nach Filament-Index (=Datei-Slot-1) sortiert:
-            // verifiziert für das 1-basierte H2C-Layout mapping=[-1,17,16] (Index 1=Grün=17,
-            // Index 2=Blau=16). Direkt übernehmen — NICHT re-indizieren (das zerstörte es).
+          // FARB-MATCH gegen den ECHTEN Magazin-Zustand als PRIMÄRQUELLE. Die
+          // get_auto_nozzle_mapping-Query lieferte bei vergurktem Magazin (GFA00 auf
+          // mehreren Düsen nach vielen Fehldrucken) Müll: grün→16 statt 17, blau→20
+          // (=Gelbs Düse) → Layer-49-Load-Hänger. device.nozzle.info ist die Grundwahrheit:
+          // je Magazin-Düse id + color_m + Durchmesser. Wir matchen jede benutzte Farbe
+          // direkt auf die Düse, die GENAU diese Farbe trägt.
+          const nozInfo = st.device?.nozzle?.info || [];
+          const byColor = {};
+          for (const nz of nozInfo)
+            if (nz.color_m && nz.color_m !== '00000000' && String(nz.diameter) === '0.4')
+              byColor[String(nz.color_m).slice(0, 6).toUpperCase()] = nz.id;
+          const matched = amsOverride.nozzle_mapping.slice();
+          let allMatched = amsOverride.usedFil.length > 0;
+          for (const f of amsOverride.usedFil) {
+            const id = byColor[String(f.color || '').slice(0, 6).toUpperCase()];
+            if (id != null) matched[f.slot - 1] = id; else allMatched = false;
+          }
+          if (allMatched) {
+            amsOverride.nozzle_mapping = matched;
+            console.log('[send] nozzle-farbmatch: mapping=' + JSON.stringify(matched.slice(0, 6)) +
+              (map ? '  (query lieferte ' + JSON.stringify(map.slice(0, 6)) + ')' : ''));
+          } else if (map && String(q.report.result) === 'success') {
             amsOverride.nozzle_mapping = map;
-            console.log('[send] nozzle-query: mapping=' + JSON.stringify(map.slice(0, 6)));
+            console.log('[send] nozzle-query (Farbmatch unvollständig): mapping=' + JSON.stringify(map.slice(0, 6)));
           } else {
-            console.log('[send] nozzle-query ohne Ergebnis (' + JSON.stringify(q.report?.result) +
-              ') — behalte Datei-Ableitung');
+            console.log('[send] nozzle: kein Farbmatch, keine Query — Datei-Ableitung ' +
+              JSON.stringify(amsOverride.nozzle_mapping.slice(0, 6)));
           }
         } catch (e) { console.log('[send] nozzle-query fehlgeschlagen:', e.message); }
       }
