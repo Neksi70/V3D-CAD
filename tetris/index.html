@@ -47,10 +47,12 @@
     padding:12px 28px; font-size:17px; font-weight:600; cursor:pointer;
   }
   button:active { transform:scale(.97); }
-  #pauseBtn {
+  #pauseBtn, #soundBtn {
     background:#21262d; color:#8b949e; padding:4px 12px; font-size:13px;
     border-radius:6px; margin-top:4px;
   }
+  #soundBtn { padding:4px 9px; }
+  #soundBtn.off { opacity:.4; }
   #hint { font-size:11px; color:#484f58; padding:5px 0 7px; text-align:center; }
   @media (min-height:700px) { #hint { font-size:12px; } }
 </style>
@@ -67,7 +69,9 @@
       <div class="stat"><div class="label">Zeilen</div><div class="value" id="linesEl">0</div></div>
       <div class="stat"><div class="label">Level</div><div class="value" id="levelEl">1</div></div>
       <div class="stat"><div class="label">Rekord</div><div class="value" id="bestEl">0</div></div>
-      <div style="width:100%;text-align:center"><button id="pauseBtn">Pause</button></div>
+      <div style="width:100%;text-align:center;display:flex;gap:6px;justify-content:center">
+        <button id="pauseBtn">Pause</button><button id="soundBtn" title="Musik an/aus">🔊</button>
+      </div>
     </div>
     <div class="panel">
       <div class="label">Nächste</div>
@@ -322,6 +326,116 @@ function updateStats() {
   if (score > best) { best = score; bestEl.textContent = best; }
 }
 
+/* ---------- Musik (Korobeiniki, gemeinfreie Volksmelodie, WebAudio-Chiptune) ---------- */
+/* Noten als [MIDI, Schläge], 0 = Pause. A-Moll. */
+const MELODY_A = [
+  [76,1],[71,.5],[72,.5],[74,1],[72,.5],[71,.5],
+  [69,1],[69,.5],[72,.5],[76,1],[74,.5],[72,.5],
+  [71,1.5],[72,.5],[74,1],[76,1],
+  [72,1],[69,1],[69,1],[0,1],
+  [0,.5],[74,1],[77,.5],[81,1],[79,.5],[77,.5],
+  [76,1.5],[72,.5],[76,1],[74,.5],[72,.5],
+  [71,1],[71,.5],[72,.5],[74,1],[76,1],
+  [72,1],[69,1],[69,1],[0,1]
+];
+const MELODY_B = [
+  [76,2],[72,2],[74,2],[71,2],
+  [72,2],[69,2],[68,2],[71,2],
+  [76,2],[72,2],[74,2],[71,2],
+  [72,1],[76,1],[81,2],[80,4]
+];
+/* Bass: Akkord-Grundton pro Takt (4 Schläge), gespielt als Achtel Grundton/Oktave */
+const BASS_A = ['A','E','A','A','D','A','E','A'];
+const BASS_B = ['A','E','A','E','A','E','A','E'];
+const BASS_ROOT = { A:45, E:40, D:50 };
+
+const music = {
+  ctx: null, master: null, playing: false, nodes: [], timer: null,
+  on: localStorage.getItem('blockfall_sound') !== 'off'
+};
+const soundBtn = document.getElementById('soundBtn');
+function updateSoundBtn() {
+  soundBtn.textContent = music.on ? '🔊' : '🔇';
+  soundBtn.classList.toggle('off', !music.on);
+}
+updateSoundBtn();
+
+function ensureAudio() {
+  try {
+    if (!music.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return false;
+      music.ctx = new AC();
+      music.master = music.ctx.createGain();
+      music.master.gain.value = 1;
+      music.master.connect(music.ctx.destination);
+    }
+    if (music.ctx.state === 'suspended') music.ctx.resume();
+    return true;
+  } catch (e) { return false; }
+}
+
+function midiHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+
+function noteAt(t, midi, dur, type, vol) {
+  const ctx = music.ctx;
+  const osc = ctx.createOscillator(), g = ctx.createGain();
+  osc.type = type; osc.frequency.value = midiHz(midi);
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(vol, t + 0.012);
+  g.gain.setValueAtTime(vol, t + Math.max(0.03, dur * 0.7));
+  g.gain.linearRampToValueAtTime(0.0001, t + dur * 0.95);
+  osc.connect(g); g.connect(music.master);
+  osc.start(t); osc.stop(t + dur);
+  music.nodes.push(osc);
+}
+
+function scheduleLoop(t0) {
+  const bpm = Math.min(210, 150 + (level - 1) * 4);
+  const beat = 60 / bpm;
+  const melody = MELODY_A.concat(MELODY_A, MELODY_B);
+  const bassBars = BASS_A.concat(BASS_A, BASS_B);
+  let t = t0;
+  for (const [m, b] of melody) {
+    if (m) noteAt(t, m, b * beat, 'square', 0.09);
+    t += b * beat;
+  }
+  let bt = t0;
+  for (const bar of bassBars) {
+    const root = BASS_ROOT[bar];
+    for (let i = 0; i < 8; i++) {
+      noteAt(bt, i % 2 ? root + 12 : root, 0.5 * beat * 0.9, 'triangle', 0.13);
+      bt += 0.5 * beat;
+    }
+  }
+  const loopEnd = t;
+  music.timer = setTimeout(() => {
+    if (music.playing) { music.nodes = music.nodes.filter(o => { try { return o.context; } catch (e) { return false; } }); scheduleLoop(loopEnd); }
+  }, Math.max(100, (loopEnd - music.ctx.currentTime - 0.25) * 1000));
+}
+
+function startMusic() {
+  if (!music.on || music.playing) return;
+  if (!ensureAudio()) return;
+  music.playing = true;
+  scheduleLoop(music.ctx.currentTime + 0.08);
+}
+
+function stopMusic() {
+  music.playing = false;
+  clearTimeout(music.timer);
+  for (const o of music.nodes) { try { o.stop(); o.disconnect(); } catch (e) {} }
+  music.nodes = [];
+}
+
+soundBtn.addEventListener('click', () => {
+  music.on = !music.on;
+  localStorage.setItem('blockfall_sound', music.on ? 'on' : 'off');
+  updateSoundBtn();
+  if (!music.on) stopMusic();
+  else if (running) startMusic();
+});
+
 /* ---------- Start / Ende / Pause ---------- */
 function startGame() {
   board = newBoard(); bag = refillBag(); queue = [];
@@ -331,10 +445,12 @@ function startGame() {
   updateStats(); spawn();
   overlay.classList.add('hidden');
   lastTime = performance.now();
+  stopMusic(); startMusic();
 }
 
 function endGame() {
   running = false; gameOver = true;
+  stopMusic();
   localStorage.setItem('blockfall_best', best);
   ovText.innerHTML = 'Game Over';
   ovScore.style.display = 'block';
@@ -348,6 +464,7 @@ function togglePause() {
   paused = !paused;
   if (paused) {
     running = false;
+    stopMusic();
     ovText.innerHTML = 'Pause';
     ovScore.style.display = 'none';
     startBtn.textContent = 'Weiter';
@@ -356,6 +473,7 @@ function togglePause() {
     running = true;
     overlay.classList.add('hidden');
     lastTime = performance.now();
+    startMusic();
   }
 }
 
@@ -570,6 +688,7 @@ window._tdbg = {
                   hold, queue: queue ? queue.slice() : null }),
   board: () => board.map(r => r.map(c => c ? 1 : 0)),
   move: tryMove, rotate: tryRotate, hardDrop, softDrop: softDropStep, holdPiece: doHold,
+  music: () => ({ on: music.on, playing: music.playing, nodes: music.nodes.length, ctx: !!music.ctx }),
   tick: ms => { // Zeit künstlich voranschreiten
     const steps = Math.ceil(ms / 16);
     for (let i = 0; i < steps; i++) {
