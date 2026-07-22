@@ -468,13 +468,17 @@ function buildAmsFieldsFromFile(nativePath, gids) {
   // benutzte Filament-Slots (1-basiert), in Datei-Reihenfolge
   const usedIds = Object.keys(filBySlot).map(Number).filter(id => filBySlot[id].used).sort((x, y) => x - y);
   const used = usedIds.length ? usedIds : gids.map((_, i) => i + 1);
-  // benutzten Slot → Tray-gid. Der Sende-Dialog liefert EINEN gid je Projekt-Filament
-  // in Slot-Reihenfolge (gids[slot-1]). Nur wenn die Laengen nicht passen (Einfarb-Fall:
-  // 1 gid, aber 5 Profil-Slots in filament_maps), positional auf die benutzten mappen —
-  // sonst verrutscht die Zuordnung, sobald ein mittleres Filament unbenutzt ist.
+  // WICHTIG: gids sind nach APP-Filament indiziert (0-basiert: grün=gids[0], blau=gids[1]),
+  // die Datei-Slots aber ggf. VERSCHOBEN — der H2C-Renumber prependet einen Platzhalter, so
+  // dass grün auf Datei-Slot 2 (nicht 1) liegt. slot-1 träfe dann gids[1]=blau → +1-Versatz
+  // (Druck kam blau/gelb statt grün/blau raus). Deshalb NICHT slot-1, sondern slot-minId:
+  // minId = kleinste Filament-ID der Datei (1 ohne Renumber, 2 mit) → slot-minId = 0-basierter
+  // App-Filament-Index. Damit ist die Zuordnung unabhängig vom Renumber-Offset.
+  const allIds = Object.keys(filBySlot).map(Number);
+  const minId = allIds.length ? Math.min(...allIds) : 1;
   const trayBySlot = {};
   if (gids.length === N || gids.length >= Math.max(...used)) {
-    used.forEach((slot) => { trayBySlot[slot] = gids[slot - 1] != null ? gids[slot - 1] : gids[gids.length - 1]; });
+    used.forEach((slot) => { const gi = slot - minId; trayBySlot[slot] = gids[gi] != null ? gids[gi] : gids[gids.length - 1]; });
   } else {
     used.forEach((slot, i) => { trayBySlot[slot] = gids[i] != null ? gids[i] : gids[gids.length - 1]; });
   }
