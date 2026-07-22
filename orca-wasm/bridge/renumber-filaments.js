@@ -86,6 +86,14 @@ function renumberGcode(gcode) {
     let fm;
     if ((fm = line.match(/^(; filament: )([0-9,]+)$/)))
       return fm[1] + fm[2].split(',').map((n) => +n + 1).join(',');
+    // "; NOZZLE_CHANGE_START/END OF{n} NF{n} ON{n} NN{n}" — die H2-Firmware parst diesen
+    // Marker für den Vortek-Düsentausch (WipeTower.cpp:3002). OF/NF = Filament-Index,
+    // ON/NN = Nozzle-Gruppen-Index — bei Bambu BEIDE +1 (OF0 NF1 ON0 NN1 → OF1 NF2 ON1 NN2).
+    // Ohne diesen Shift sagt der Marker bei Layer 49 weiter "NF0" (return auf Filament 0),
+    // während M620 S1A lädt — genau die Inkonsistenz, die den letzten Load hängen lässt.
+    if (/^; NOZZLE_CHANGE_(START|END) /.test(line))
+      return line.replace(/\b(OF|NF|ON|NN)([0-9]+)\b/g,
+        (m, p, n) => (+n >= 0 && +n <= maxFil) ? p + (+n + 1) : m);
     if (line.startsWith(';') || line === '') return line; // andere Kommentare unberührt
     return shiftGcodeLine(line, maxFil);
   });
