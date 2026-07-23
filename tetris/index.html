@@ -371,10 +371,19 @@ function ensureAudio() {
       music.master = music.ctx.createGain();
       music.master.gain.value = 1;
       music.master.connect(music.ctx.destination);
+      // iOS: WebAudio trotz Stummschalter abspielen (Media- statt Klingelton-Kanal)
+      if (navigator.audioSession) { try { navigator.audioSession.type = 'playback'; } catch (e) {} }
     }
     if (music.ctx.state === 'suspended') music.ctx.resume();
     return true;
   } catch (e) { return false; }
+}
+
+/* iOS/Safari suspendiert den Context gern (Tab-Wechsel, Anruf) – bei nächster Berührung wecken */
+for (const ev of ['touchstart', 'pointerdown', 'keydown']) {
+  document.addEventListener(ev, () => {
+    if (music.ctx && music.ctx.state === 'suspended') music.ctx.resume();
+  }, { passive: true });
 }
 
 function midiHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
@@ -710,7 +719,21 @@ window._tdbg = {
                   hold, queue: queue ? queue.slice() : null }),
   board: () => board.map(r => r.map(c => c ? 1 : 0)),
   move: tryMove, rotate: tryRotate, hardDrop, softDrop: softDropStep, holdPiece: doHold,
-  music: () => ({ on: music.on, playing: music.playing, nodes: music.nodes.length, ctx: !!music.ctx }),
+  music: () => ({ on: music.on, playing: music.playing, nodes: music.nodes.length,
+                  ctx: !!music.ctx, ctxState: music.ctx ? music.ctx.state : null,
+                  t: music.ctx ? music.ctx.currentTime : -1 }),
+  audioProbe: () => new Promise(res => {
+    if (!music.ctx) { res(null); return; }
+    const an = music.ctx.createAnalyser();
+    music.master.connect(an);
+    setTimeout(() => {
+      const buf = new Float32Array(an.fftSize);
+      an.getFloatTimeDomainData(buf);
+      let rms = 0; for (const v of buf) rms += v * v;
+      music.master.disconnect(an);
+      res({ state: music.ctx.state, rms: Math.sqrt(rms / buf.length) });
+    }, 400);
+  }),
   tick: ms => { // Zeit künstlich voranschreiten
     const steps = Math.ceil(ms / 16);
     for (let i = 0; i < steps; i++) {
