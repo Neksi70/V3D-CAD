@@ -178,9 +178,19 @@ async function control(p, command, { level } = {}) {
 // Upload über den HTTP-Dienst des Handshakes, Start über das slicer-Topic.
 async function send(p, filename, gcodeBuffer, start) {
   const c = await connect(p);
+  // Die Upload-URL kommt aus dem MQTT-info-Report (urls.fileUploadurl) und trägt das
+  // korrekte ?s=<Token>. Das HTTP-/info-token (uploadToken) ist NICHT gültig fürs
+  // Upload → 401 code 19000. Also info anfragen und auf urls.fileUploadurl warten.
+  query(c, 'info');
+  let uploadUrl = null;
+  for (let i = 0; i < 40 && !uploadUrl; i++) {
+    uploadUrl = c.latest.get('info')?.urls?.fileUploadurl;
+    if (!uploadUrl) await wait(200);
+  }
+  if (!uploadUrl) throw new Error('keine fileUploadurl im info-Report (Drucker meldet keine Upload-URL)');
   const fd = new FormData();
   fd.append('file', new Blob([gcodeBuffer], { type: 'application/octet-stream' }), filename);
-  const r = await fetch(`http://${p.ip}:18910/gcode_upload?s=${encodeURIComponent(c.hs.uploadToken)}`, {
+  const r = await fetch(uploadUrl, {
     method: 'POST', body: fd, signal: AbortSignal.timeout(120000),
   });
   const body = await r.text();
