@@ -242,8 +242,16 @@ async function send(p, filename, gcodeBuffer, start) {
   let uploaded = {}; try { uploaded = JSON.parse(body); } catch {}
   // WICHTIG: Der Drucker liefert HTTP 200 auch bei Fehlern — der echte Status steht
   // im Body-code (200 = ok, 19005 = Parse-Fehler, 19000 = Auth). Nicht nur r.ok pruefen.
-  if (uploaded.code != null && Number(uploaded.code) !== 200)
-    throw new Error(`Upload abgelehnt (code ${uploaded.code}): ${uploaded.message || ''}`);
+  if (uploaded.code != null && Number(uploaded.code) !== 200) {
+    // 19006 "Invalid gcode file" kommt NICHT nur bei kaputtem Inhalt, sondern auch,
+    // wenn der Drucker gerade belegt/nicht frei ist (verifiziert: gueltige Datei bei
+    // state!=free -> 19006, bei state=free -> 200). Zustand mitgeben, sonst raetselt man.
+    const st = c.latest.get('info')?.state;
+    const hint = Number(uploaded.code) === 19006 && st && st !== 'free'
+      ? ` — Drucker ist gerade "${st}" (nicht frei); Upload/Start geht nur bei freiem Drucker`
+      : '';
+    throw new Error(`Upload abgelehnt (code ${uploaded.code}): ${uploaded.message || ''}${hint}`);
+  }
   // Erfolg = {"code":200,"data":{"gcode":<gespeicherter Name>}}
   const storedName = uploaded?.data?.gcode || uploaded?.data?.filename || uploaded?.filename || upName;
   if (!start) return { ok: true, uploaded: storedName };
