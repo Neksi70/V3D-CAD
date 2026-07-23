@@ -570,7 +570,19 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
   if (fp) {
     job.phase = 'upload'; job.percent = -1;   // Adapter melden keinen Fortschritt
     try {
-      const r = await adapterOf(fp).send(fp, name, buf, Boolean(start));
+      let sendBuf = buf, sendName = name;
+      // Anycubic-Kobra (avata) verlangt ein echtes .gcode.3mf-ZIP, KEIN rohes .gcode
+      // (sonst {"code":19006,"Invalid gcode file"}). Das vollstaendige native
+      // OrcaSlicer-.gcode.3mf schicken. Moonraker/Klipper (U1/Giga) dagegen will
+      // rohes .gcode — daher nur fuer anycubic umpacken.
+      if (fp.type === 'anycubic') {
+        const nativePath = sliceId ? nativeSlicer.gcode3mfPath(sliceId) : null;
+        if (!nativePath)
+          throw new Error('kein natives .gcode.3mf vorhanden — die Kobra braucht ein 3mf-Paket ("Auf dem Server slicen" aktivieren)');
+        sendBuf = fs.readFileSync(nativePath);
+        sendName = name.replace(/\.gcode(\.3mf)?$/i, '') + '.gcode.3mf';
+      }
+      const r = await adapterOf(fp).send(fp, sendName, sendBuf, Boolean(start));
       return { path: fp.type, ...r };
     } catch (e) {
       throw new Error(`${fp.name || fp.id} nicht erreichbar (${e.message})`);
