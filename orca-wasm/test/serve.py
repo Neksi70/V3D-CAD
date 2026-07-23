@@ -4,12 +4,19 @@ COOP/COEP-Header sind Pflicht: ohne crossOriginIsolated kein SharedArrayBuffer,
 ohne SharedArrayBuffer keine WASM-Threads. Bind 0.0.0.0 (Tailnet-intern,
 Port 8778 ist NICHT im Funnel — nur für Tests vom Desktop aus).
 """
+import gzip as _gzip
+import hashlib
 import http.server
 import os
 import re
+import shutil
+import tempfile
 
 PORT = 8778
 DIR = os.path.dirname(os.path.abspath(__file__))
+# Cache für vorkomprimierte Dateien — bewusst AUSSERHALB des Quellbaums,
+# damit keine .gz-Artefakte neben den Quellen/im Repo landen.
+GZ_CACHE = os.path.join(tempfile.gettempdir(), 'v3d-gzcache')
 WASM_BUILD = os.path.join(DIR, '..', 'OrcaSlicer', 'build-wasm-main', 'src', 'wasm')
 PROFILES = os.path.join(DIR, '..', 'profiles-merged')  # Orca-main + BambuStudio-BBL (H2C/H2D/H2S)
 WEB = os.path.join(DIR, '..', 'web')
@@ -140,6 +147,82 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not rel.startswith('..'):
                 return os.path.join(PROFILES, rel)
         return super().translate_path(path)
+
+    # ---- Vorkomprimierte Auslieferung ------------------------------------
+    # Der Orca-Kern ist 37 MB und ging bisher UNKOMPRIMIERT raus — aus der Ferne
+    # (Funnel) dauerte der erste Start dadurch ewig. gzip drückt ihn auf ~9 MB
+    # (fast 4x). Komprimiert wird EINMAL auf Platte, danach nur ausgeliefert.
+    GZIP_EXT = ('.wasm', '.js', '.mjs', '.html', '.json', '.css', '.svg')
+    GZIP_MIN = 4096
+
+    def _gz_for(self, path):
+        """Pfad einer aktuellen gzip-Variante von *path* (wird bei Bedarf erzeugt)."""
+        if not path.lower().endswith(self.GZIP_EXT):
+            return None
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        if st.st_size < self.GZIP_MIN:
+            return None
+        gz = os.path.join(GZ_CACHE, hashlib.sha1(os.path.abspath(path).encode()).hexdigest() + '.gz')
+        try:                                   # vorhandene Variante noch frisch?
+            if int(os.path.getmtime(gz)) == int(st.st_mtime):
+                return gz
+        except OSError:
+            pass
+        try:
+            os.makedirs(GZ_CACHE, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=GZ_CACHE, delete=False) as tmp:
+                tmpname = tmp.name
+                with open(path, 'rb') as src, \
+                     _gzip.GzipFile(fileobj=tmp, mode='wb', compresslevel=6) as dst:
+                    shutil.copyfileobj(src, dst, 1 << 20)
+            os.utime(tmpname, (int(st.st_mtime), int(st.st_mtime)))
+            os.replace(tmpname, gz)             # atomar: nie halbe Dateien ausliefern
+            return gz
+        except Exception:
+            return None
+
+    def send_head(self):
+        if 'gzip' not in self.headers.get('Accept-Encoding', ''):
+            return super().send_head()
+        path = self.translate_path(self.path)
+        if os.path.isdir(path):
+            return super().send_head()
+        gz = self._gz_for(path)
+        if not gz:
+            return super().send_head()
+        st = os.stat(path)
+        # If-Modified-Since selbst beantworten — sonst käme das ~9-MB-gzip bei
+        # JEDEM Aufruf neu statt als 304 (das macht sonst der Elternhandler).
+        ims = self.headers.get('If-Modified-Since')
+        if ims:
+            try:
+                from email.utils import parsedate_to_datetime
+                import datetime
+                t = parsedate_to_datetime(ims)
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=datetime.timezone.utc)
+                if int(t.timestamp()) >= int(st.st_mtime):
+                    self.send_response(304)
+                    self.send_header('Vary', 'Accept-Encoding')
+                    self.end_headers()
+                    return None
+            except Exception:
+                pass
+        try:
+            f = open(gz, 'rb')
+        except OSError:
+            return super().send_head()
+        self.send_response(200)
+        self.send_header('Content-Type', self.guess_type(path))
+        self.send_header('Content-Encoding', 'gzip')
+        self.send_header('Content-Length', str(os.path.getsize(gz)))
+        self.send_header('Last-Modified', self.date_time_string(int(st.st_mtime)))
+        self.send_header('Vary', 'Accept-Encoding')
+        self.end_headers()
+        return f
 
     def end_headers(self):
         self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
