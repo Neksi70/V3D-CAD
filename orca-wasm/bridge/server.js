@@ -396,7 +396,34 @@ app.post('/api/control/:serial', async (req, res) => {
     light_off: { system: { sequence_id: '0', command: 'ledctrl', led_node: 'chamber_light', led_mode: 'off' } },
     speed:  { print: { sequence_id: '0', command: 'print_speed', param: String(level || 2) } },
   };
-  const payload = map[command];
+  // ── Achsensteuerung (Wartung) ───────────────────────────────────────────────
+  // Relativ verfahren / homen per gcode_line. HARTE SPERRE während eines Drucks:
+  // ein Jog mitten im Druck würde ihn zerstören. Distanzen werden begrenzt (die
+  // Endstops fängt die Firmware ab, wir schicken aber erst gar keinen Unsinn).
+  const MOTION = { home_all: 'G28\n', home_xy: 'G28 X Y\n', home_z: 'G28 Z\n' };
+  let motion = MOTION[command] || null;
+  if (command === 'jog') {
+    const ax = String((req.body || {}).axis || '').toUpperCase();
+    let d = Number((req.body || {}).dist);
+    if (!['X', 'Y', 'Z'].includes(ax) || !Number.isFinite(d) || d === 0)
+      return res.status(400).json({ error: 'jog: axis X|Y|Z und dist (mm) noetig' });
+    const lim = ax === 'Z' ? 20 : 50;                    // max. Schrittweite je Klick
+    d = Math.max(-lim, Math.min(lim, d));
+    motion = `G91\nG1 ${ax}${d} F${ax === 'Z' ? 600 : 3000}\nG90\n`;
+  }
+  if (motion) {
+    const la0 = lanAuth.get(req.params.serial);
+    if (!la0) return res.status(400).json({ error: 'Achsensteuerung nur fuer LAN-Drucker' });
+    try {
+      const st0 = await lan.getStatus({ ip: la0.ip, access_code: la0.code, serial: req.params.serial }, 8000);
+      const gs = String(((st0.print || st0) || {}).gcode_state || '');
+      if (gs === 'RUNNING' || gs === 'PAUSE')
+        return res.status(409).json({ error: 'Drucker druckt gerade — Achsensteuerung gesperrt' });
+    } catch (e) { return res.status(503).json({ error: 'Status nicht abrufbar: ' + e.message }); }
+  }
+  const payload = motion
+    ? { print: { sequence_id: '0', command: 'gcode_line', param: motion } }
+    : map[command];
   if (!payload) return res.status(400).json({ error: 'unbekannter Befehl' });
   try {
     // LAN-only Drucker (lanAuth): Befehl direkt per LAN-MQTT, Cloud kennt ihn nicht
