@@ -206,23 +206,37 @@ async function send(p, filename, gcodeBuffer, start) {
     if (!uploadUrl) await wait(200);
   }
   if (!uploadUrl) throw new Error('keine fileUploadurl im info-Report (Drucker meldet keine Upload-URL)');
-  // Multipart nach dem avata-Protokoll (Kobra X): Feld heisst "gcode" (nicht "file"),
-  // zusaetzlich ein "filename"-Formfeld, und der Header X-File-Length mit der rohen
-  // Byte-Laenge ist PFLICHT — sonst antwortet die Firmware {"code":19005,"Parsing form
-  // fail"}. Die Datei muss auf .gcode.3mf enden. (Byte-verifiziert auf Kobra 3/20024;
-  // fuer Kobra X aus derselben Protokoll-Familie uebernommen.)
+  // Multipart nach dem avata-Protokoll (Kobra X) — byte-verifiziert gegen einen echten
+  // AnycubicSlicerNext-Upload (pktmon-Mitschnitt). ENTSCHEIDEND ist die Reihenfolge:
+  // ZUERST das "filename"-Textfeld, DANN der "gcode"-Datei-Part. Umgekehrt (Datei zuerst)
+  // antwortet die Firmware {"code":19005,"Parsing form fail"}. Zusaetzlich Pflicht:
+  //   - Header X-File-Length = rohe Byte-Laenge der Datei
+  //   - die X-BBL-*-Header (der Fork stammt von BambuStudio; der Parser erwartet sie)
+  //   - Dateiname endet auf .gcode.3mf, Inhalt = echtes .gcode.3mf-Zip (sonst 19006)
+  // Erfolg = {"code":200,"data":{"gcode":<gespeicherter Name ohne .3mf>}}
   const upName = filename.endsWith('.gcode.3mf') ? filename
     : filename.replace(/\.(gcode(\.3mf)?|3mf)$/i, '') + '.gcode.3mf';
-  const boundary = '----v3d' + Date.now().toString(16);
+  const HEX = '0123456789abcdef';
+  const boundary = '------------------------' + rnd(16, HEX);
   const parts = [
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="filename"\r\n\r\n${upName}\r\n`),
     Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="gcode"; filename="${upName}"\r\nContent-Type: application/octet-stream\r\n\r\n`),
     gcodeBuffer, Buffer.from('\r\n'),
-    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="filename"\r\n\r\n${upName}\r\n`),
     Buffer.from(`--${boundary}--\r\n`),
   ];
   const mp = Buffer.concat(parts);
-  const r = await httpPost(uploadUrl, mp, `multipart/form-data; boundary=${boundary}`,
-    120000, { 'X-File-Length': String(gcodeBuffer.length) });
+  const r = await httpPost(uploadUrl, mp, `multipart/form-data; boundary=${boundary}`, 120000, {
+    'User-Agent': 'AnycubicSlicerNext/1.4.1.2',
+    'Accept': '*/*',
+    'X-BBL-Client-Name': 'AnycubicSlicerNext',
+    'X-BBL-Client-Type': 'slicer',
+    'X-BBL-Client-Version': '01.04.01.02',
+    'X-BBL-Device-ID': PC_DID.slice(0, 8) + '-0000-4000-8000-' + PC_DID.slice(0, 12),
+    'X-BBL-Language': 'de-DE',
+    'X-BBL-OS-Type': 'linux',
+    'X-BBL-OS-Version': '1.0',
+    'X-File-Length': String(gcodeBuffer.length),
+  });
   const body = r.body;
   if (r.status < 200 || r.status >= 300) throw new Error(`Upload fehlgeschlagen (${r.status}): ${body.slice(0, 160)}`);
   let uploaded = {}; try { uploaded = JSON.parse(body); } catch {}
