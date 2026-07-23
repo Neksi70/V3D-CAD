@@ -354,8 +354,7 @@
   </div>
   <div>
     <label>Druckprofil</label>
-    <input id="process" list="processList" placeholder="Profil wählen …">
-    <datalist id="processList"></datalist>
+    <select id="process"></select>
   </div>
   <div>
     <label>Filament</label>
@@ -1497,10 +1496,25 @@ async function fillPresets(saved = {}) {
     `<optgroup label="${model}">${list.map(m =>
       `<option${m.name === selMachine ? ' selected' : ''}>${m.name}</option>`).join('')}</optgroup>`).join('');
   const fill = (listId, entries) => $(listId).innerHTML =
-    entries.map(e => `<option value="${e.name.replaceAll('"', '&quot;')}">`).join('');
-  fill('processList', idx.process_list);
+    entries.map(e => `<option value="${e.name.replaceAll('"', '&quot;')}">${e.name}</option>`).join('');
+  fillProcessOptions(idx);            // #process = <select>, nach gewähltem Drucker gefiltert
   fill('filamentList', idx.filament_list);
   applyMachineDefaults(saved);
+}
+
+// Druckprofil-Dropdown (#process = <select>): NUR Profile des gewählten Druckers.
+// Vorher war es eine ungefilterte <datalist> mit ALLEN Maschinen — der Browser
+// blendete beim Öffnen zudem alles aus, was nicht zum Feldtext ("0.08mm…") passte,
+// sodass nur die 0.08er erschienen. Der sub_path trägt den exakten Maschinennamen
+// ("…@Anycubic Kobra X 0.4 nozzle"), danach filtern. FALLBACK auf ALLE, falls ein
+// Vendor Kurznamen nutzt (z.B. BBL "@BBL H2C") und nichts matcht — lieber voll als leer.
+function fillProcessOptions(idx) {
+  const machine = $('machine').value || '';
+  const all = idx.process_list || [];
+  const compat = all.filter(e => (e.sub_path || '').includes('@' + machine));
+  const entries = compat.length ? compat : all;
+  $('process').innerHTML = entries.map(e =>
+    `<option value="${e.name.replaceAll('"', '&quot;')}">${e.name}</option>`).join('');
 }
 
 // Beim Druckerwechsel: Standard-Druckprofil + -Filament aus dem Druckerprofil
@@ -1594,7 +1608,7 @@ async function applyMachineBed() {
   } catch { /* unbekannter Drucker → Bett unverändert */ }
   requestPreview();
 }
-$('machine').onchange = async () => { chainsCache = null; applyMachineDefaults(); await applyMachineBed(); await refreshSettings(); savePresets(); };
+$('machine').onchange = async () => { chainsCache = null; fillProcessOptions(await vendorIndex($('vendor').value)); applyMachineDefaults(); await applyMachineBed(); await refreshSettings(); savePresets(); };
 
 // ---------- AMS → Filament-Sync ----------
 // Tray-Daten (Typ, Bambu-Produktname, Filament-ID, Farbe) kommen über die Brücke;
