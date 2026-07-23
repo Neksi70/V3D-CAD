@@ -127,13 +127,18 @@ async function status(p) {
     else if (proj.state) state = String(proj.state).toUpperCase();
     else state = 'RUNNING';
   } else if (/finish|done|complete/i.test(proj.state || '')) state = 'FINISH';
-  // ACE-Slots als Trays (color = [r,g,b])
+  // ACE-Slots als Trays (color = [r,g,b]). NUR wirklich bestückte Slots: leere Slots
+  // melden weiter ihre alte Farbe/Typ — echtes Signal ist status/edit_status:
+  //   edit_status 1 = Spule geladen, 2 = leer;  status 5 = geladen, 4 = leer.
+  // (verifiziert an Kobra X: Slot 0/3 geladen [1/5], Slot 1/2 leer [2/4]).
   const trays = [];
   for (const box of (c.latest.get('multiColorBox')?.multi_color_box || []))
     for (const s of (box.slots || [])) {
+      const loaded = s.edit_status === 1 || s.status === 5;
+      if (!loaded) continue;
       const col = Array.isArray(s.color) && s.color.length >= 3
         ? s.color.slice(0, 3).map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase() : '';
-      if (s.type || col) trays.push({ id: String(s.index), type: s.type || '', color: col });
+      trays.push({ id: String(s.index), type: s.type || '', color: col });
     }
   const light = (c.latest.get('light')?.lights || [])[0];
   return {
