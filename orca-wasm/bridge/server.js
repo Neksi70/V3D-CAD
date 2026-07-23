@@ -383,8 +383,13 @@ app.post('/api/control/:serial', async (req, res) => {
     if (!fleetOk(req)) return needCode(res);
     // axis/dist mitgeben: Flotten-Adapter (Moonraker) können jog/home ausführen.
     const { command, level, axis, dist } = req.body || {};
-    try { return res.json({ ok: true, ...(await adapterOf(fp).control(fp, command, { level, axis, dist })) }); }
-    catch (e) { return res.status(500).json({ error: e.message }); }
+    console.log(`[control] fleet ${fp.id || fp.name} cmd=${command}` +
+                (axis ? ` axis=${axis} dist=${dist}` : ''));
+    try {
+      const r = await adapterOf(fp).control(fp, command, { level, axis, dist });
+      console.log(`[control] → ok`);
+      return res.json({ ok: true, ...r });
+    } catch (e) { console.log(`[control] → FEHLER: ${e.message}`); return res.status(500).json({ error: e.message }); }
   }
   const sid = sidOf(req);
   if (!cloud.session(sid) && !lanOk(req, req.params.serial)) return res.status(401).json({ error: 'nicht angemeldet' });
