@@ -381,8 +381,9 @@ app.post('/api/control/:serial', async (req, res) => {
   const fp = fleetOf(req.params.serial);
   if (fp) {
     if (!fleetOk(req)) return needCode(res);
-    const { command, level } = req.body || {};
-    try { return res.json({ ok: true, ...(await adapterOf(fp).control(fp, command, { level })) }); }
+    // axis/dist mitgeben: Flotten-Adapter (Moonraker) können jog/home ausführen.
+    const { command, level, axis, dist } = req.body || {};
+    try { return res.json({ ok: true, ...(await adapterOf(fp).control(fp, command, { level, axis, dist })) }); }
     catch (e) { return res.status(500).json({ error: e.message }); }
   }
   const sid = sidOf(req);

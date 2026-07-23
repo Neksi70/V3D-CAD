@@ -61,9 +61,27 @@ async function status(p) {
   };
 }
 
-async function control(p, command) {
-  const g = { pause: 'PAUSE', resume: 'RESUME', stop: 'CANCEL_PRINT' }[command];
+// Achsen-Bewegungen (Wartung) — bei Klipper/Moonraker derselbe gcode/script-Weg.
+const MOTION_G = { home_all: 'G28', home_xy: 'G28 X Y', home_z: 'G28 Z' };
+
+async function control(p, command, { axis, dist } = {}) {
+  let g = { pause: 'PAUSE', resume: 'RESUME', stop: 'CANCEL_PRINT' }[command] || MOTION_G[command] || null;
+  if (command === 'jog') {
+    const ax = String(axis || '').toUpperCase();
+    let d = Number(dist);
+    if (!['X', 'Y', 'Z'].includes(ax) || !Number.isFinite(d) || d === 0)
+      throw new Error('jog: axis X|Y|Z und dist (mm) noetig');
+    const lim = ax === 'Z' ? 20 : 50;                 // max. Schrittweite je Klick
+    d = Math.max(-lim, Math.min(lim, d));
+    g = `G91\nG1 ${ax}${d} F${ax === 'Z' ? 600 : 3000}\nG90`;
+  }
   if (!g) throw new Error(`Befehl "${command}" wird von diesem Drucker nicht unterstützt`);
+  // HARTE SPERRE: keine Achsbewegung während eines Drucks (würde ihn zerstören).
+  if (command === 'jog' || MOTION_G[command]) {
+    const st = await status(p).catch(() => null);
+    if (st && (st.state === 'RUNNING' || st.state === 'PAUSE'))
+      throw new Error('Drucker druckt gerade — Achsensteuerung gesperrt');
+  }
   await api(p, `/printer/gcode/script?script=${encodeURIComponent(g)}`, { method: 'POST', timeoutMs: 20000 });
   return { ok: true };
 }
