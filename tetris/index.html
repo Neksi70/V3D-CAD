@@ -92,7 +92,7 @@
       <button id="startBtn">Spielen</button>
     </div>
   </div>
-  <div id="hint">Tippen drehen · ziehen bewegen · Wisch ↓ Drop · Wisch ↑ Halten</div>
+  <div id="hint">Tippen drehen · ziehen bewegen · Wisch ↓ Drop · Wisch ↑ Halten · v5</div>
 </div>
 
 <script>
@@ -371,6 +371,9 @@ function ensureAudio() {
       music.master = music.ctx.createGain();
       music.master.gain.value = 1;
       music.master.connect(music.ctx.destination);
+      music.sfxGain = music.ctx.createGain();   // eigener Kanal: wird beim Ducking nicht abgesenkt
+      music.sfxGain.gain.value = 1;
+      music.sfxGain.connect(music.ctx.destination);
       // iOS: WebAudio trotz Stummschalter abspielen (Media- statt Klingelton-Kanal)
       if (navigator.audioSession) { try { navigator.audioSession.type = 'playback'; } catch (e) {} }
     }
@@ -388,7 +391,7 @@ for (const ev of ['touchstart', 'pointerdown', 'keydown']) {
 
 function midiHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
 
-function noteAt(t, midi, dur, type, vol) {
+function noteAt(t, midi, dur, type, vol, dest) {
   const ctx = music.ctx;
   const osc = ctx.createOscillator(), g = ctx.createGain();
   osc.type = type; osc.frequency.value = midiHz(midi);
@@ -396,7 +399,7 @@ function noteAt(t, midi, dur, type, vol) {
   g.gain.linearRampToValueAtTime(vol, t + 0.012);
   g.gain.setValueAtTime(vol, t + Math.max(0.03, dur * 0.7));
   g.gain.linearRampToValueAtTime(0.0001, t + dur * 0.95);
-  osc.connect(g); g.connect(music.master);
+  osc.connect(g); g.connect(dest || music.master);
   osc.start(t); osc.stop(t + dur);
   music.nodes.push(osc);
 }
@@ -429,6 +432,8 @@ function startMusic() {
   if (!music.on || music.playing) return;
   if (!ensureAudio()) return;
   music.playing = true;
+  music.master.gain.cancelScheduledValues(music.ctx.currentTime);
+  music.master.gain.setValueAtTime(1, music.ctx.currentTime);
   scheduleLoop(music.ctx.currentTime + 0.08);
 }
 
@@ -449,22 +454,30 @@ function sfx(kind, n) {
     click.type = 'square';
     click.frequency.setValueAtTime(950, t);
     click.frequency.exponentialRampToValueAtTime(320, t + 0.04);
-    cg.gain.setValueAtTime(0.32, t);
+    cg.gain.setValueAtTime(0.4, t);
     cg.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
-    click.connect(cg); cg.connect(music.master);
+    click.connect(cg); cg.connect(music.sfxGain);
     click.start(t); click.stop(t + 0.06);
     const body = ctx.createOscillator(), bg = ctx.createGain();
     body.type = 'square';
     body.frequency.setValueAtTime(300, t);
     body.frequency.exponentialRampToValueAtTime(140, t + 0.09);
-    bg.gain.setValueAtTime(0.28, t);
+    bg.gain.setValueAtTime(0.34, t);
     bg.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
-    body.connect(bg); bg.connect(music.master);
+    body.connect(bg); bg.connect(music.sfxGain);
     body.start(t); body.stop(t + 0.11);
     music.nodes.push(click, body);
   } else if (kind === 'clear') {
     const run = n >= 4 ? [76,79,84,88,91,96] : [76,79,84,88,91].slice(0, 2 + n);
-    run.forEach((m, i) => noteAt(t + i * 0.06, m, 0.16, 'square', 0.24));
+    const dur = run.length * 0.06 + 0.2;
+    // Musik kurz absenken, damit das Arpeggio klar durchkommt
+    const mg = music.master.gain;
+    mg.cancelScheduledValues(t);
+    mg.setValueAtTime(mg.value, t);
+    mg.linearRampToValueAtTime(0.25, t + 0.04);
+    mg.setValueAtTime(0.25, t + dur);
+    mg.linearRampToValueAtTime(1, t + dur + 0.25);
+    run.forEach((m, i) => noteAt(t + i * 0.06, m, 0.17, 'square', 0.32, music.sfxGain));
   }
 }
 
@@ -731,15 +744,18 @@ window._tdbg = {
   music: () => ({ on: music.on, playing: music.playing, nodes: music.nodes.length,
                   ctx: !!music.ctx, ctxState: music.ctx ? music.ctx.state : null,
                   t: music.ctx ? music.ctx.currentTime : -1 }),
+  sfx,
   audioProbe: () => new Promise(res => {
     if (!music.ctx) { res(null); return; }
     const an = music.ctx.createAnalyser();
     music.master.connect(an);
+    if (music.sfxGain) music.sfxGain.connect(an);
     setTimeout(() => {
       const buf = new Float32Array(an.fftSize);
       an.getFloatTimeDomainData(buf);
       let rms = 0; for (const v of buf) rms += v * v;
       music.master.disconnect(an);
+      if (music.sfxGain) music.sfxGain.disconnect(an);
       res({ state: music.ctx.state, rms: Math.sqrt(rms / buf.length) });
     }, 400);
   }),
