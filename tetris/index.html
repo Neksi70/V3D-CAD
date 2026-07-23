@@ -298,7 +298,8 @@ function lockPiece() {
   for (let y = 0; y < m.length; y++) for (let x = 0; x < m.length; x++) {
     if (m[y][x] && cur.y + y >= 0) board[cur.y + y][cur.x + x] = cur.type;
   }
-  clearLines();
+  const cleared = clearLines();
+  cleared ? sfx('clear', cleared) : sfx('lock');
   canHold = true;
   spawn();
   updateStats();
@@ -307,7 +308,7 @@ function lockPiece() {
 function clearLines() {
   const full = [];
   for (let y = 0; y < ROWS; y++) if (board[y].every(c => c)) full.push(y);
-  if (!full.length) return;
+  if (!full.length) return 0;
   for (const y of full) { board.splice(y, 1); board.unshift(Array(COLS).fill(null)); }
   lines += full.length;
   score += LINE_SCORES[full.length] * level;
@@ -315,6 +316,7 @@ function clearLines() {
   flashRows = full.map(y => y - HID).filter(y => y >= 0);
   flashUntil = performance.now() + 160;
   if (navigator.vibrate) navigator.vibrate(full.length >= 4 ? [40, 40, 40] : 25);
+  return full.length;
 }
 
 function dropInterval() {
@@ -426,6 +428,26 @@ function stopMusic() {
   clearTimeout(music.timer);
   for (const o of music.nodes) { try { o.stop(); o.disconnect(); } catch (e) {} }
   music.nodes = [];
+}
+
+/* Soundeffekte: 'lock' = Stein setzt auf, 'clear' = n Zeilen gelöscht */
+function sfx(kind, n) {
+  if (!music.on || !ensureAudio()) return;
+  const ctx = music.ctx, t = ctx.currentTime;
+  if (kind === 'lock') {
+    const osc = ctx.createOscillator(), g = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(160, t);
+    osc.frequency.exponentialRampToValueAtTime(65, t + 0.09);
+    g.gain.setValueAtTime(0.3, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+    osc.connect(g); g.connect(music.master);
+    osc.start(t); osc.stop(t + 0.11);
+    music.nodes.push(osc);
+  } else if (kind === 'clear') {
+    const run = n >= 4 ? [72,76,79,84,88,91] : [72,76,79,84,88].slice(0, 2 + n);
+    run.forEach((m, i) => noteAt(t + i * 0.055, m, 0.13, 'square', 0.15));
+  }
 }
 
 soundBtn.addEventListener('click', () => {
