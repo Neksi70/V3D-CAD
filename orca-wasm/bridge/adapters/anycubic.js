@@ -8,8 +8,26 @@
 //   4. Kamera: video/startCapture per MQTT, dann RTSP-/FLV-Stream (:18088/flv)
 // Achtung Firmware-Eigenheit: der Temperatur-Typ heißt wirklich "tempature".
 const crypto = require('crypto');
+const http = require('http');
 const mqtt = require('mqtt');
 const ffcam = require('./ffcam');
+
+// Roher HTTP-POST (Node http, NICHT fetch/undici): der Drucker-Formparser ist
+// pingelig — undici mangelt Body/Header (chunked), http.request sendet exakt.
+function httpPost(url, buf, contentType, timeoutMs = 120000, extraHeaders = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = http.request({
+      hostname: u.hostname, port: u.port || 80, path: u.pathname + u.search, method: 'POST',
+      headers: { 'Content-Type': contentType, 'Content-Length': buf.length, ...extraHeaders }, timeout: timeoutMs,
+    }, (res) => {
+      let d = ''; res.on('data', (c) => d += c); res.on('end', () => resolve({ status: res.statusCode, body: d }));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Upload-Timeout')); });
+    req.write(buf); req.end();
+  });
+}
 
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
 const rnd = (n, chars) => Array.from(crypto.randomBytes(n), b => chars[b % chars.length]).join('');
@@ -188,18 +206,36 @@ async function send(p, filename, gcodeBuffer, start) {
     if (!uploadUrl) await wait(200);
   }
   if (!uploadUrl) throw new Error('keine fileUploadurl im info-Report (Drucker meldet keine Upload-URL)');
-  const fd = new FormData();
-  fd.append('file', new Blob([gcodeBuffer], { type: 'application/octet-stream' }), filename);
-  const r = await fetch(uploadUrl, {
-    method: 'POST', body: fd, signal: AbortSignal.timeout(120000),
-  });
-  const body = await r.text();
-  if (!r.ok) throw new Error(`Upload fehlgeschlagen (${r.status}): ${body.slice(0, 160)}`);
+  // Multipart nach dem avata-Protokoll (Kobra X): Feld heisst "gcode" (nicht "file"),
+  // zusaetzlich ein "filename"-Formfeld, und der Header X-File-Length mit der rohen
+  // Byte-Laenge ist PFLICHT — sonst antwortet die Firmware {"code":19005,"Parsing form
+  // fail"}. Die Datei muss auf .gcode.3mf enden. (Byte-verifiziert auf Kobra 3/20024;
+  // fuer Kobra X aus derselben Protokoll-Familie uebernommen.)
+  const upName = filename.endsWith('.gcode.3mf') ? filename
+    : filename.replace(/\.(gcode(\.3mf)?|3mf)$/i, '') + '.gcode.3mf';
+  const boundary = '----v3d' + Date.now().toString(16);
+  const parts = [
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="gcode"; filename="${upName}"\r\nContent-Type: application/octet-stream\r\n\r\n`),
+    gcodeBuffer, Buffer.from('\r\n'),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="filename"\r\n\r\n${upName}\r\n`),
+    Buffer.from(`--${boundary}--\r\n`),
+  ];
+  const mp = Buffer.concat(parts);
+  const r = await httpPost(uploadUrl, mp, `multipart/form-data; boundary=${boundary}`,
+    120000, { 'X-File-Length': String(gcodeBuffer.length) });
+  const body = r.body;
+  if (r.status < 200 || r.status >= 300) throw new Error(`Upload fehlgeschlagen (${r.status}): ${body.slice(0, 160)}`);
   let uploaded = {}; try { uploaded = JSON.parse(body); } catch {}
-  if (!start) return { ok: true, uploaded: filename };
+  // WICHTIG: Der Drucker liefert HTTP 200 auch bei Fehlern — der echte Status steht
+  // im Body-code (200 = ok, 19005 = Parse-Fehler, 19000 = Auth). Nicht nur r.ok pruefen.
+  if (uploaded.code != null && Number(uploaded.code) !== 200)
+    throw new Error(`Upload abgelehnt (code ${uploaded.code}): ${uploaded.message || ''}`);
+  // Erfolg = {"code":200,"data":{"gcode":<gespeicherter Name>}}
+  const storedName = uploaded?.data?.gcode || uploaded?.data?.filename || uploaded?.filename || upName;
+  if (!start) return { ok: true, uploaded: storedName };
   const payload = {
     taskid: '-1',
-    filename: uploaded?.data?.filename || uploaded?.filename || filename,
+    filename: storedName,
     filetype: 1,
     md5: crypto.createHash('md5').update(gcodeBuffer).digest('hex'),
     filesize: gcodeBuffer.length,
