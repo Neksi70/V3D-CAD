@@ -279,6 +279,9 @@ async function snapshot(p) {
     c.client.publish(pubTopic(c.hs, 'video'), buildMsg('video', 'startCapture'));
     query(c, 'info');   // info liefert ggf. urls.rtspUrl nach
   }
+  // Auf die Stream-URL warten: der info-Report mit urls.rtspUrl kommt erst NACH der
+  // Abfrage. Ohne Warten fällt es auf :18088/flv zurück (404).
+  for (let i = 0; i < 25 && !c.latest.get('info')?.urls?.rtspUrl; i++) await wait(200);
   // Die Kobra X meldet als "rtspUrl" in Wahrheit eine HTTP-FLV-URL
   // (http://<ip>:18088/live/<token>) — NICHT rtsp://. -rtsp_transport tcp nur bei
   // echten rtsp://-URLs anhängen, sonst scheitert ffmpeg am HTTP-Stream (503).
