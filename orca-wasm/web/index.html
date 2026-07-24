@@ -730,7 +730,7 @@ function startDevicePolling() {
   refreshDevice();
   deviceTimer = setInterval(refreshDevice, 8000);
 }
-$('devPrinter').onchange = () => { $('sendPrinter').value = $('devPrinter').value; stopCam(); syncCamUi(); refreshDevice(); };
+$('devPrinter').onchange = () => { $('sendPrinter').value = $('devPrinter').value; enforceServerSliceForTarget(); stopCam(); syncCamUi(); refreshDevice(); };
 
 // Flotten-Drucker: die Brücke kennt IP/Protokoll selbst — IP-/Code-Felder
 // braucht nur die Bambu-Kamera (RTSP mit Zugangscode).
@@ -1047,9 +1047,25 @@ function startStatusPolling() {
   refreshStatus();
   statusTimer = setInterval(refreshStatus, 12000);
 }
+// Anycubic (Kobra) braucht ein natives .gcode.3mf-Paket → Server-Slice ist Pflicht.
+// Ist ein Anycubic-Drucker das Ziel, Checkbox erzwingen (an + gesperrt); sonst die
+// gespeicherte Nutzer-Wahl wiederherstellen.
+function enforceServerSliceForTarget() {
+  const p = selectedPrinter(), cb = $('srvSlice');
+  if (!cb) return;
+  if (p && p.type === 'anycubic') {
+    cb.checked = true; cb.disabled = true;
+    cb.parentElement.title = 'Anycubic (Kobra) braucht ein natives .gcode.3mf — Server-Slice ist Pflicht';
+  } else {
+    cb.disabled = false;
+    cb.checked = localStorage.getItem('vs-srv-slice') !== '0';
+    cb.parentElement.title = '';
+  }
+}
 $('sendPrinter').onchange = async () => {
   // LAN-only-Bambu (Entwicklermodus): erst Zugangscode hinterlegen, sonst
   // klemmt das Status-Polling (kein Cloud-Zugriff auf den Drucker)
+  enforceServerSliceForTarget();
   const p = selectedPrinter();
   if (isLanBambu(p) && !lanAuthed.has(p.serial)) {
     $('sendConn').innerHTML = `<span style="color:#c77400">● Entwicklermodus — Zugangscode nötig (beim Senden abgefragt)</span>`;
@@ -4043,6 +4059,7 @@ $('srvSlice').onchange = () => localStorage.setItem('vs-srv-slice', $('srvSlice'
     if (st === 200 && json.available) {
       $('srvSliceRow').hidden = false;
       $('srvSlice').checked = localStorage.getItem('vs-srv-slice') !== '0';
+      enforceServerSliceForTarget();   // Anycubic-Ziel = Server-Slice erzwingen
     }
   } catch {}
 })();
