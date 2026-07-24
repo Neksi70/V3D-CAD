@@ -1461,7 +1461,12 @@ async function loadMachines(v) {
     const r = await fetch(`/profiles/${encodeURIComponent(v)}.machines.json`);
     if (r.ok) {
       const list = await r.json();
-      if (Array.isArray(list) && list.length) { machineCache.set(v, list); return list; }
+      if (Array.isArray(list) && list.length) {
+        // defFilament kann eine ';'-getrennte Liste sein (mehrere Default-Filamente) —
+        // überall wird nur EIN Name erwartet (amsSuffix, applyMachineDefaults …).
+        for (const m of list) m.defFilament = String(m.defFilament || '').split(';')[0];
+        machineCache.set(v, list); return list;
+      }
     }
   } catch {}
   const idx = await vendorIndex(v);
@@ -1471,7 +1476,7 @@ async function loadMachines(v) {
       if (String(j.instantiation) === 'false') return null;
       return { name: e.name, model: j.printer_model || e.name,
                defProcess:  [].concat(j.default_print_profile || [])[0] || '',
-               defFilament: [].concat(j.default_filament_profile || [])[0] || '' };
+               defFilament: ([].concat(j.default_filament_profile || [])[0] || '').split(';')[0] };
     } catch { return null; }
   }))).filter(Boolean);
   machineCache.set(v, list);
@@ -1667,7 +1672,7 @@ async function amsProductName(t) {
 
 // Drucker-Suffix der Filamentnamen (z. B. "@BBL H2D") aus dem Standard-Filament des Druckers
 function amsSuffix() {
-  const def = machines.find(m => m.name === $('machine').value)?.defFilament || '';
+  const def = (machines.find(m => m.name === $('machine').value)?.defFilament || '').split(';')[0];
   const at = def.indexOf('@');
   return at >= 0 ? def.slice(at) : '';
 }
