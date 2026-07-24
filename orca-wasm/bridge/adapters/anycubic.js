@@ -149,14 +149,16 @@ async function status(p) {
   // melden weiter ihre alte Farbe/Typ — echtes Signal ist status/edit_status:
   //   edit_status 1 = Spule geladen, 2 = leer;  status 5 = geladen, 4 = leer.
   // (verifiziert an Kobra X: Slot 0/3 geladen [1/5], Slot 1/2 leer [2/4]).
-  const trays = [];
+  // trays = nur BESTÜCKTE Slots (fürs Slicen/Adoptieren). amsSlots = ALLE Slots
+  // (auch leere, empty:true) für die 4-Slot-Übersicht auf der Geräteseite.
+  const trays = [], amsSlots = [];
   for (const box of (c.latest.get('multiColorBox')?.multi_color_box || []))
     for (const s of (box.slots || [])) {
       const loaded = s.edit_status === 1 || s.status === 5;
-      if (!loaded) continue;
       const col = Array.isArray(s.color) && s.color.length >= 3
         ? s.color.slice(0, 3).map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase() : '';
-      trays.push({ id: String(s.index), type: s.type || '', color: col });
+      amsSlots.push({ id: String(s.index), type: loaded ? (s.type || '') : '', color: loaded ? col : '', empty: !loaded });
+      if (loaded) trays.push({ id: String(s.index), type: s.type || '', color: col });
     }
   const light = (c.latest.get('light')?.lights || [])[0];
   return {
@@ -170,7 +172,7 @@ async function status(p) {
     fan_part: d.fan_speed_pct ?? null, fan_aux: d.aux_fan_speed_pct ?? null,
     speed_lvl: d.print_speed_mode ?? null,
     light: light ? (light.status === 1 ? 'on' : 'off') : undefined,
-    trays,
+    trays, amsSlots,
   };
 }
 
