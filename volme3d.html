@@ -2330,8 +2330,8 @@ const firebaseConfig = {
           <div class="vrow"><label>Seiten</label><input type="range" id="vp-polyN" min="3" max="12" value="6" step="1" oninput="document.getElementById('vv-polyN').textContent=this.value;_vaseUpd('polyN',this.value)"><span class="vv" id="vv-polyN">6</span></div>
         </div>
         <div id="vp-wave-row" style="display:none">
-          <div class="vrow"><label>Wellen</label><input type="range" id="vp-waveN" min="2" max="24" value="8" step="1" oninput="document.getElementById('vv-waveN').textContent=this.value;_vaseUpd('waveN',this.value)"><span class="vv" id="vv-waveN">8</span></div>
-          <div class="vrow"><label>Stärke</label><input type="range" id="vp-waveA" min="5" max="50" value="20" step="1" oninput="document.getElementById('vv-waveA').textContent=this.value+'%';_vaseUpd('waveAmp',this.value)"><span class="vv" id="vv-waveA">20%</span></div>
+          <div class="vrow"><label>Wellen</label><input type="range" id="vp-waveN" min="2" max="80" value="8" step="1" oninput="document.getElementById('vv-waveN').textContent=this.value;_vaseUpd('waveN',this.value)"><span class="vv" id="vv-waveN">8</span></div>
+          <div class="vrow"><label>Stärke</label><input type="range" id="vp-waveA" min="2" max="50" value="20" step="1" oninput="document.getElementById('vv-waveA').textContent=this.value+'%';_vaseUpd('waveAmp',this.value)"><span class="vv" id="vv-waveA">20%</span></div>
         </div>
         <!-- Oberfläche -->
         <span class="vsec">Oberfläche</span>
@@ -2347,6 +2347,8 @@ const firebaseConfig = {
         <!-- Verdrehung -->
         <span class="vsec">Form</span>
         <div class="vrow"><label>Twist</label><input type="range" id="vp-twist" min="-720" max="720" value="0" step="5" oninput="document.getElementById('vv-twist').textContent=this.value+'°';_vaseUpd('twist',this.value)"><span class="vv" id="vv-twist">0°</span></div>
+        <div class="vrow" title="Rippen/Muster schlängeln sich sinusförmig über die Höhe (Wellen-Vase). Wirkt bei Querschnitt „Welle/Polygon“ oder Oberfläche „Rillen“."><label>Schwung</label><input type="range" id="vp-sway" min="-90" max="90" value="0" step="1" oninput="document.getElementById('vv-sway').textContent=this.value+'°';_vaseUpd('swayA',this.value)"><span class="vv" id="vv-sway">0°</span></div>
+        <div class="vrow" title="Wie oft der Schwung über die Höhe hin- und herpendelt"><label>Perioden</label><input type="range" id="vp-swayf" min="0.5" max="4" value="1.5" step="0.25" oninput="document.getElementById('vv-swayf').textContent=this.value;_vaseUpd('swayF',this.value)"><span class="vv" id="vv-swayf">1.5</span></div>
       </div>
     </div>
     <div id="vase-footer">
@@ -7389,6 +7391,10 @@ function _revolveInterpolate(pts, targetN) {
 function _buildRevolveGeo(normPts, opts) {
   opts = opts || {};
   const twist      = opts.twist    || 0;
+  // Schwung: sinusförmige Ring-Verdrehung über die Höhe (rad Amplitude, Perioden).
+  // Lässt Rippen/Wellenmuster über die Höhe hin- und herschlängeln (Wellen-Vase).
+  const swayA      = opts.swayA    || 0;
+  const swayF      = opts.swayF    || 1.5;
   const cross      = opts.cross    || 'circle';
   const polyN      = Math.max(3,  Math.round(opts.polyN   || 6));
   const waveN      = Math.max(2,  Math.round(opts.waveN   || 8));
@@ -7407,15 +7413,41 @@ function _buildRevolveGeo(normPts, opts) {
   } else if (cross === 'polygon') {
     S = polyN * (hires ? 24 : 16);
   } else if (cross === 'wave') {
-    S = waveN * (hires ? 16 : 12);
+    S = waveN * (hires ? 16 : (waveN > 32 ? 8 : 12));   // feine Lamellen: 8 Samples/Welle reichen
   } else {
     S = hires ? 128 : 64;
   }
   if (surface === 'strips') S = Math.max(S, stripsN * (hires ? 8 : 6));
+  S = Math.min(S, 1024);   // Deckel bei feinen Lamellen (waveN bis 80) — sonst explodiert die Vertexzahl
 
-  const N = normPts.length;
-  const minH = normPts.reduce((m, p) => Math.min(m, p.y), Infinity);
-  const maxH = normPts.reduce((m, p) => Math.max(m, p.y), -Infinity);
+  // Diagonale Rippen (Twist/Schwung × feines Wellen-/Rillenmuster) brauchen vertikale
+  // Auflösung: wandert die Muster-Phase pro Ring um mehr als eine halbe Wellenlänge,
+  // entstehen Alias-Terrassen. Profil-Segmente dann linear nachverdichten (Endpunkte
+  // und Knicke bleiben exakt erhalten).
+  let profPts = normPts;
+  {
+    const patK = Math.max(cross === 'wave' ? waveN : cross === 'polygon' ? polyN : 1,
+                          surface === 'strips' ? stripsN : 1);
+    const phaseVel = Math.abs(twist) + Math.abs(swayA) * 2 * Math.PI * swayF;
+    if (patK > 1 && phaseVel > 0.01 && surface !== 'lowpoly') {
+      const yMin = profPts.reduce((m, p) => Math.min(m, p.y), Infinity);
+      const yMax = profPts.reduce((m, p) => Math.max(m, p.y), -Infinity);
+      const hSpan = (yMax - yMin) || 1;
+      const rings = Math.min(hires ? 340 : 240, Math.ceil(patK * phaseVel * 2 / Math.PI));
+      const maxDy = hSpan / rings;
+      const out = [profPts[0]];
+      for (let i = 1; i < profPts.length; i++) {
+        const a = profPts[i - 1], b = profPts[i];
+        const n = Math.max(1, Math.min(48, Math.ceil(Math.abs(b.y - a.y) / maxDy)));
+        for (let j = 1; j <= n; j++)
+          out.push(new THREE.Vector2(a.x + (b.x - a.x) * j / n, a.y + (b.y - a.y) * j / n));
+      }
+      profPts = out;
+    }
+  }
+  const N = profPts.length;
+  const minH = profPts.reduce((m, p) => Math.min(m, p.y), Infinity);
+  const maxH = profPts.reduce((m, p) => Math.max(m, p.y), -Infinity);
   const hRange = (maxH - minH) || 1;
 
   const pos = [], nor = [], uv = [], idx = [];
@@ -7429,14 +7461,14 @@ function _buildRevolveGeo(normPts, opts) {
     const v = i / (N - 1);
     if (i > 0) link.push(true);
     if (i > 0 && i < N - 1) {
-      const ax = normPts[i].x - normPts[i - 1].x, ay = normPts[i].y - normPts[i - 1].y;
-      const bx = normPts[i + 1].x - normPts[i].x, by = normPts[i + 1].y - normPts[i].y;
+      const ax = profPts[i].x - profPts[i - 1].x, ay = profPts[i].y - profPts[i - 1].y;
+      const bx = profPts[i + 1].x - profPts[i].x, by = profPts[i + 1].y - profPts[i].y;
       const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by);
       if (la > 1e-9 && lb > 1e-9 && (ax * bx + ay * by) / (la * lb) < CREASE) {
-        rows.push(normPts[i]); rowV.push(v); link.push(false);
+        rows.push(profPts[i]); rowV.push(v); link.push(false);
       }
     }
-    rows.push(normPts[i]); rowV.push(v);
+    rows.push(profPts[i]); rowV.push(v);
   }
   const M = rows.length;
 
@@ -7446,22 +7478,27 @@ function _buildRevolveGeo(normPts, opts) {
     for (let i = 0; i < M; i++) {
       const r = rows[i].x;
       const h = rows[i].y;
-      const phi = phiBase + twist * (h - minH) / hRange;
+      const tH = (h - minH) / hRange;
+      const phi = phiBase;
+      // Twist/Schwung verschieben die MUSTER-Phase gegen den Platzierungswinkel.
+      // (Beides zusammen zu drehen wäre ein No-Op: die Rotationsfläche bliebe identisch,
+      // nur die Parametrisierung rotiert → Muster bleibt gerade + Alias-Terrassen.)
+      const phiPat = phi - twist * tH - (swayA ? swayA * Math.sin(Math.PI * 2 * swayF * tH) : 0);
 
       // Cross-section shape
       let rEff = r;
       if (cross === 'polygon') {
         const step = (2 * Math.PI) / polyN;
-        const pLoc = ((phi % step) + step) % step;
+        const pLoc = ((phiPat % step) + step) % step;
         const alpha = pLoc - step * 0.5;          // [-π/N, π/N]
         rEff = r * Math.cos(Math.PI / polyN) / Math.cos(alpha);
       } else if (cross === 'wave') {
-        rEff = r * (1.0 + waveAmp * Math.sin(waveN * phi));
+        rEff = r * (1.0 + waveAmp * Math.sin(waveN * phiPat));
       }
 
       // Surface effect
       if (surface === 'strips') {
-        const g = Math.pow(Math.max(0, Math.cos(stripsN * phi)), 2);
+        const g = Math.pow(Math.max(0, Math.cos(stripsN * phiPat)), 2);
         rEff *= (1.0 - stripsD * g);
       }
 
@@ -7494,8 +7531,10 @@ function _buildRevolveGeo(normPts, opts) {
     return re;
   }
 
-  // Cap builder — separate vertices (not shared with side) so normals stay clean
-  function _addCap(yLevel, baseR, normalY) {
+  // Cap builder — separate vertices (not shared with side) so normals stay clean.
+  // patOff = Muster-Phasenversatz (Twist/Schwung) auf dieser Höhe, damit der
+  // Deckelrand exakt auf dem verdrehten Rand-Ring der Seitenwand liegt.
+  function _addCap(yLevel, baseR, normalY, patOff) {
     const cIdx = pos.length / 3;
     pos.push(0, yLevel, 0);
     nor.push(0, normalY, 0);
@@ -7503,7 +7542,7 @@ function _buildRevolveGeo(normPts, opts) {
     const eStart = pos.length / 3;
     for (let s = 0; s <= S; s++) {
       const phi = (s / S) * Math.PI * 2;
-      const re  = _rEff(baseR, phi);
+      const re  = _rEff(baseR, phi - (patOff || 0));
       pos.push(re * Math.cos(phi), yLevel, re * Math.sin(phi));
       nor.push(0, normalY, 0);
       uv.push(0.5 + Math.cos(phi) * 0.5, 0.5 + Math.sin(phi) * 0.5);
@@ -7514,8 +7553,9 @@ function _buildRevolveGeo(normPts, opts) {
     }
   }
 
-  if (bottomCap && normPts[0].x > 0.001)     _addCap(minH, normPts[0].x, -1);
-  if (topCap    && normPts[N-1].x > 0.001)   _addCap(maxH, normPts[N-1].x,  1);
+  const topOff = twist + (swayA ? swayA * Math.sin(Math.PI * 2 * swayF) : 0);
+  if (bottomCap && profPts[0].x > 0.001)     _addCap(minH, profPts[0].x, -1, 0);
+  if (topCap    && profPts[N-1].x > 0.001)   _addCap(maxH, profPts[N-1].x,  1, topOff);
 
   let geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -7542,6 +7582,8 @@ function _buildRevolveGeo(normPts, opts) {
 function _revolveOptsFromObj(o) {
   return {
     twist:      o.userData.revolveTwist     || 0,
+    swayA:      o.userData.revolveSwayA     || 0,
+    swayF:      o.userData.revolveSwayF     || 1.5,
     cross:      o.userData.revolveCross     || 'circle',
     polyN:      o.userData.revolvePolyN     || 6,
     waveN:      o.userData.revolveWaveN     || 8,
@@ -19976,7 +20018,7 @@ let _vaseP = {
   height:150, width:80, wall:2,
   cross:'circle', polyN:6, waveN:8, waveAmp:20,
   surface:'none', stripsN:16, stripsD:20,
-  twist:0
+  twist:0, swayA:0, swayF:1.5
 };
 let _vaseRenderer=null, _vaseScene=null, _vaseCamera=null;
 let _vaseMesh=null, _vaseAnimId=null;
@@ -28833,7 +28875,8 @@ function _vaseUpdateMesh() {
   const normPts = rawPts.map(([r, h]) => new THREE.Vector2(r, h * 2 - 1));
   const walled = _vaseWalledProfile(normPts, p);
   const opts = {
-    twist: p.twist * DEG, cross: p.cross, polyN: p.polyN,
+    twist: p.twist * DEG, swayA: p.swayA * DEG, swayF: p.swayF,
+    cross: p.cross, polyN: p.polyN,
     waveN: p.waveN, waveAmp: p.waveAmp,
     surface: p.surface, stripsN: p.stripsN, stripsD: p.stripsD,
     bottomCap: !walled,   // bei Wand schließt das Profil sich selbst
@@ -28972,7 +29015,8 @@ function _createVase() {
   const walled = _vaseWalledProfile(normPts, p);
   const profile = walled || normPts;
   const opts = {
-    twist: p.twist * DEG, cross: p.cross, polyN: p.polyN,
+    twist: p.twist * DEG, swayA: p.swayA * DEG, swayF: p.swayF,
+    cross: p.cross, polyN: p.polyN,
     waveN: p.waveN, waveAmp: p.waveAmp,
     surface: p.surface, stripsN: p.stripsN, stripsD: p.stripsD,
     bottomCap: !walled,   // bei Wand schließt das Profil sich selbst
@@ -28985,9 +29029,10 @@ function _createVase() {
   });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.castShadow = true; mesh.receiveShadow = true;
-  mesh.scale.set(p.width/2, p.height/2, p.width/2);
+  // 1 Unit = 10 mm: Slider-mm → Units = /10, Geometrie ist ±1 normiert → nochmal /2.
+  mesh.scale.set(p.width/20, p.height/20, p.width/20);
   mesh.quaternion.copy(_wpMakeQuat(workplaneNormal));
-  mesh.position.copy(workplanePoint).addScaledVector(workplaneNormal, p.height/2);
+  mesh.position.copy(workplanePoint).addScaledVector(workplaneNormal, p.height/20);
 
   const hiPts = walled ? profile : _revolveInterpolate(normPts, 48);
   const origGeo = _buildRevolveGeo(hiPts, { ...opts, hires: true });
@@ -28998,6 +29043,7 @@ function _createVase() {
     color, isHole: false, fillet: 0, chamfer: 0,
     revolveNormPts: profile.map(pt => ({ x: pt.x, y: pt.y })),
     revolveTwist: p.twist * DEG,
+    revolveSwayA: p.swayA * DEG, revolveSwayF: p.swayF,
     revolveCross: p.cross, revolvePolyN: p.polyN,
     revolveWaveN: p.waveN, revolveWaveAmp: p.waveAmp,
     revolveSurface: p.surface, revolveStripsN: p.stripsN,
