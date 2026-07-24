@@ -2393,7 +2393,7 @@ function autoOrient(st) {
   const verts = [];
   for (let i = 0; i < pos.count; i++) verts.push(new THREE.Vector3().fromBufferAttribute(pos, i));
   const tris = [], buckets = new Map();
-  const ab = new THREE.Vector3(), ac = new THREE.Vector3(), nn = new THREE.Vector3();
+  const ab = new THREE.Vector3(), ac = new THREE.Vector3(), nn = new THREE.Vector3(), ce = new THREE.Vector3();
   const cnt = idx ? idx.count : pos.count;
   for (let i = 0; i + 2 < cnt; i += 3) {
     const a = idx ? idx.getX(i) : i, b = idx ? idx.getX(i + 1) : i + 1, c = idx ? idx.getX(i + 2) : i + 2;
@@ -2401,7 +2401,8 @@ function autoOrient(st) {
     const area = nn.length() * 0.5;
     if (area < 1e-7) continue;
     nn.normalize();
-    tris.push({ n: nn.clone(), area });
+    ce.copy(verts[a]).add(verts[b]).add(verts[c]).multiplyScalar(1 / 3);   // Dreiecks-Schwerpunkt
+    tris.push({ n: nn.clone(), area, c: ce.clone() });
     const key = `${Math.round(nn.x * 12)},${Math.round(nn.y * 12)},${Math.round(nn.z * 12)}`;   // ~10°-Kübel
     const g = buckets.get(key);
     if (g) { g.area += area; g.n.add(nn); } else buckets.set(key, { area, n: nn.clone() });
@@ -2409,17 +2410,24 @@ function autoOrient(st) {
   // Kandidaten-Lagen: die flächenstärksten Facetten-Richtungen + die 6 Achsen.
   const cands = [...buckets.values()].sort((x, y) => y.area - x.area).slice(0, 30).map(g => g.n.clone().normalize());
   for (const ax of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) cands.push(new THREE.Vector3(...ax));
-  // Jede Lage bewerten: viel Auflagefläche (Facetten nach unten) bei WENIG Höhe.
+  // Jede Lage bewerten wie ein Slicer (Tweaker-Prinzip): viel AUFLAGEFLÄCHE (Facetten
+  // am Bett) und WENIG ÜBERHANG (nach unten geneigte Facetten, die frei in der Luft
+  // hängen → brauchen Stützen). Überhang stark bestrafen, Höhe nur leicht.
   const DOWN = new THREE.Vector3(0, 0, -1), rv = new THREE.Vector3(), rn = new THREE.Vector3();
   let best = null;
   for (const N of cands) {
     const q = new THREE.Quaternion().setFromUnitVectors(N, DOWN);
     let minZ = Infinity, maxZ = -Infinity;
-    for (const v of verts) { rv.copy(v).applyQuaternion(q); if (rv.z < minZ) minZ = rv.z; if (rv.z > maxZ) maxZ = rv.z; }
+    for (const v of verts) { const z = rv.copy(v).applyQuaternion(q).z; if (z < minZ) minZ = z; if (z > maxZ) maxZ = z; }
     const height = maxZ - minZ;
-    let contact = 0;
-    for (const t of tris) { rn.copy(t.n).applyQuaternion(q); if (rn.z < -0.95) contact += t.area; }
-    const score = contact / (height + 1);   // Auflagefläche pro Höhe → flach + große Standfläche gewinnt
+    let contact = 0, overhang = 0;
+    for (const t of tris) {
+      if (rn.copy(t.n).applyQuaternion(q).z > -0.5) continue;   // nicht nach unten geneigt → keine Stütze nötig
+      const cz = rv.copy(t.c).applyQuaternion(q).z;
+      if (cz < minZ + 0.6) contact += t.area;                   // liegt am Bett → Auflage
+      else overhang += t.area;                                  // frei hängend → Stütze nötig
+    }
+    const score = contact - 2.0 * overhang - 0.02 * height;     // maximieren: viel Auflage, wenig Stütze, flach
     if (!best || score > best.score) best = { q, score };
   }
   if (!best) return;
