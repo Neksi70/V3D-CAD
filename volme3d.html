@@ -10447,6 +10447,21 @@ function numChanged(axis, val) {
   sl.value = Math.min(parseFloat(sl.max), Math.max(parseFloat(sl.min), v));
 }
 
+// Welt-Achse ('x'|'y'|'z') → lokale scale-Achse des Objekts. Importierte STL/3MF
+// sind rotiert (Z-up → Y-up, rotation.x=-90°): lokale Y zeigt dann auf Welt-Z.
+// Ohne dieses Mapping ändert der Höhen-Regler die Tiefe (und umgekehrt).
+function _dimLocalAxis(o, worldAxis) {
+  o.updateMatrixWorld(true);
+  const e = o.matrixWorld.elements;
+  const row = { x: 0, y: 1, z: 2 }[worldAxis];
+  // Spalten 0/4/8 = lokale X/Y/Z-Achse in Weltkoordinaten (Länge egal, nur Richtung)
+  const comp = a => { const c = [e[a*4+0], e[a*4+1], e[a*4+2]]; const len = Math.hypot(c[0],c[1],c[2]) || 1; return Math.abs(c[row]) / len; };
+  let best = 'x', bd = comp(0);
+  if (comp(1) > bd) { best = 'y'; bd = comp(1); }
+  if (comp(2) > bd) { best = 'z'; }
+  return best;
+}
+
 function applyDimChange(axis, val) {
   const o = getFirst(); if (!o) return;
   // Schrauben (mit Gewinde): Höhen-Anfasser ändert die LÄNGE (Geometrie neu bauen,
@@ -10480,8 +10495,8 @@ function applyDimChange(axis, val) {
   // val ist Ziel-Größe in Display-mm. Relativ zur AKTUELLEN Objektgröße skalieren (statt fester 2-Unit/20mm-Basis):
   // für Standard-Boxen (Basis 2 Units) mathematisch identisch zu val/20, für Generator-Objekte mit echten Maßen
   // (Karte, QR …) korrekt — sonst verzerrt das Ziehen die Proportionen (Modell wird flach/riesig).
-  const oldScales = { x: o.scale.x, y: o.scale.y, z: o.scale.z };
-  const _csz = getMeshBox(o).getSize(new THREE.Vector3());          // aktuelle (skalierte) Größe in Units
+  const _preBox = getMeshBox(o);
+  const _csz = _preBox.getSize(new THREE.Vector3());                // aktuelle (skalierte) Größe in Units
   const curMM = { sw: _csz.x*10, sh: _csz.y*10, sd: _csz.z*10 };    // in mm
   if (axis === 'uniform') {
     const r = val / (Math.max(curMM.sw, curMM.sh, curMM.sd) || 0.1);
@@ -10490,24 +10505,25 @@ function applyDimChange(axis, val) {
     const r = val / (curMM[axis] || 0.1);
     o.scale.x = Math.max(0.01, o.scale.x*r); o.scale.y = Math.max(0.01, o.scale.y*r); o.scale.z = Math.max(0.01, o.scale.z*r);
   } else {
-    if (axis==='sw') o.scale.x = Math.max(0.01, o.scale.x * val / (curMM.sw||0.1));
-    if (axis==='sh') o.scale.y = Math.max(0.01, o.scale.y * val / (curMM.sh||0.1));
-    if (axis==='sd') o.scale.z = Math.max(0.01, o.scale.z * val / (curMM.sd||0.1));
+    // Nicht-proportional: die LOKALE Achse skalieren, die auf die geänderte WELT-Achse
+    // zeigt (Importe sind rotiert!) — sonst ändert "Höhe" die Tiefe statt der Höhe.
+    const la = _dimLocalAxis(o, axis === 'sw' ? 'x' : axis === 'sh' ? 'y' : 'z');
+    o.scale[la] = Math.max(0.01, o.scale[la] * val / (curMM[axis] || 0.1));
   }
-  // Position anpassen — echte Basis-Größe pro Achse (Units pro scale=1), nicht fixe 2 Units.
-  // Für Box(2,2,2) ist _bU=2 → identisch zum alten Verhalten; für Generator-Objekte korrekt.
-  const _bU = { x: _csz.x/(oldScales.x||1), y: _csz.y/(oldScales.y||1), z: _csz.z/(oldScales.z||1) };
+  // Position über die Welt-BBox verankern (statt scale-Deltas — die stimmen bei
+  // rotierten Objekten nicht): Verhalten für unrotierte Körper bleibt identisch.
+  const _postBox = getMeshBox(o);
   // Höhe (Y): Unterkante bleibt IMMER fixiert → Objekt wächst nach oben, bleibt auf der Buildplate.
   if (axis === 'sh' || (axis === 'uniform' && scaleLocked)) {
-    o.position.y += ((o.scale.y - oldScales.y) * _bU.y) / 2;
+    o.position.y += _preBox.min.y - _postBox.min.y;
   }
   // Breite/Tiefe (X/Z): nur verschieben, wenn nicht aus der Mitte skaliert wird
   if (!scaleFromCenter) {
     if (axis === 'sw' || (axis === 'uniform' && scaleLocked)) {
-      o.position.x -= ((o.scale.x - oldScales.x) * _bU.x) / 2;
+      o.position.x += _preBox.max.x - _postBox.max.x;
     }
     if (axis === 'sd' || (axis === 'uniform' && scaleLocked)) {
-      o.position.z -= ((o.scale.z - oldScales.z) * _bU.z) / 2;
+      o.position.z += _preBox.max.z - _postBox.max.z;
     }
   }
   // Sicherheitsnetz: Unterkante nie unter die Buildplate (y = 0)
