@@ -270,6 +270,7 @@ async function send(p, filename, gcodeBuffer, start) {
 
 // ---- Kamera: startCapture per MQTT, Stream via RTSP (aus info.urls) oder FLV ----
 const capStarted = new Map();   // p.id -> ts
+const rtspCache = new Map();    // p.id -> zuletzt bekannte Stream-URL (STABIL halten!)
 async function snapshot(p) {
   let c;
   try { c = await connect(p); } catch { return null; }
@@ -277,15 +278,18 @@ async function snapshot(p) {
   if ((capStarted.get(p.id) || 0) < now - 25000) {
     capStarted.set(p.id, now);
     c.client.publish(pubTopic(c.hs, 'video'), buildMsg('video', 'startCapture'));
-    query(c, 'info');   // info liefert ggf. urls.rtspUrl nach
+    query(c, 'info');   // urls.rtspUrl kommt erst mit der Antwort → darauf warten
+    for (let i = 0; i < 25 && !c.latest.get('info')?.urls?.rtspUrl; i++) await wait(200);
   }
-  // Auf die Stream-URL warten: der info-Report mit urls.rtspUrl kommt erst NACH der
-  // Abfrage. Ohne Warten fällt es auf :18088/flv zurück (404).
-  for (let i = 0; i < 25 && !c.latest.get('info')?.urls?.rtspUrl; i++) await wait(200);
-  // Die Kobra X meldet als "rtspUrl" in Wahrheit eine HTTP-FLV-URL
-  // (http://<ip>:18088/live/<token>) — NICHT rtsp://. -rtsp_transport tcp nur bei
-  // echten rtsp://-URLs anhängen, sonst scheitert ffmpeg am HTTP-Stream (503).
-  const url = c.latest.get('info')?.urls?.rtspUrl || `http://${p.ip}:18088/flv`;
+  // Frische rtspUrl übernehmen, sonst die zuletzt bekannte behalten. WICHTIG: NICHT
+  // zwischen echter URL und /flv-Fallback pendeln — periodische info-Reports melden
+  // KEINE urls und würden c.latest überschreiben; ffcam killt+neustartet ffmpeg bei
+  // jedem URL-Wechsel → nie ein stabiler Frame. Darum die URL cachen.
+  const fresh = c.latest.get('info')?.urls?.rtspUrl;
+  if (fresh) rtspCache.set(p.id, fresh);
+  // Die Kobra X meldet als "rtspUrl" eine HTTP-FLV-URL (http://<ip>:18088/live/
+  // <token>) — NICHT rtsp://. -rtsp_transport tcp nur bei echten rtsp://-URLs.
+  const url = rtspCache.get(p.id) || `http://${p.ip}:18088/flv`;
   const args = url.startsWith('rtsp://') ? ['-rtsp_transport', 'tcp'] : [];
   return ffcam.snapshot('anycubic:' + p.id, url, args);
 }
