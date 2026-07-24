@@ -279,9 +279,11 @@ async function snapshot(p) {
     c.client.publish(pubTopic(c.hs, 'video'), buildMsg('video', 'startCapture'));
     query(c, 'info');   // info liefert ggf. urls.rtspUrl nach
   }
-  const rtsp = c.latest.get('info')?.urls?.rtspUrl;
-  const url = rtsp || `http://${p.ip}:18088/flv`;
-  const args = rtsp ? ['-rtsp_transport', 'tcp'] : [];
+  // Die Kobra X meldet als "rtspUrl" in Wahrheit eine HTTP-FLV-URL
+  // (http://<ip>:18088/live/<token>) — NICHT rtsp://. -rtsp_transport tcp nur bei
+  // echten rtsp://-URLs anhängen, sonst scheitert ffmpeg am HTTP-Stream (503).
+  const url = c.latest.get('info')?.urls?.rtspUrl || `http://${p.ip}:18088/flv`;
+  const args = url.startsWith('rtsp://') ? ['-rtsp_transport', 'tcp'] : [];
   return ffcam.snapshot('anycubic:' + p.id, url, args);
 }
 
