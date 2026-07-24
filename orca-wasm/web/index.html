@@ -2160,38 +2160,66 @@ function setBed(w, h) {
   updateCam();
 }
 
-// ---------- Multi-Plate (Phase 1: mehrere Betten in der Szene) ----------
-// Platte 1 = das vorhandene bedGroup/modelGroup (Offset 0). Weitere Platten sind
-// zusätzliche Bett-Gruppen im 2-Spalten-Grid (wie Bambu Studio). Objekte/Slicen
-// pro Platte kommt in Phase 2/3 — hier erstmal die Szene.
-let extraPlates = [];   // [{ bed: Group, label: Sprite }]
+// ---------- Multi-Plate (Phase 2: Objekte + aktive Platte) ----------
+// plates[0] = Hauptplatte (bedGroup + modelGroup). Jede Platte hat eine EIGENE
+// Objekt-Gruppe (models), alle gleichzeitig sichtbar im 2-Spalten-Grid. Die
+// globalen Bearbeitungs-Referenzen (modelGroup/objectStates/modelBytes/modelName)
+// zeigen immer auf die AKTIVE Platte — Umschalten sichert/lädt den Zustand.
+let plates = [];                 // { bed, models, label, objectStates, bytes, name }
+let activePlate = 0;
 const PLATE_GAP = 32, PLATE_COLS = 2;
 let plate1Label = null;
-function plateOffset(i) {   // i 0-basiert; 0 = Hauptplatte
+function plateOffset(i) {         // i 0-basiert; 0 = Hauptplatte
   const col = i % PLATE_COLS, row = Math.floor(i / PLATE_COLS);
   return [col * (bedSize[0] + PLATE_GAP), -row * (bedSize[1] + PLATE_GAP)];
 }
 function makePlateLabel(text) {
   const c = document.createElement('canvas'); c.width = 128; c.height = 72;
-  const g = c.getContext('2d'); g.fillStyle = '#2e9e44';
+  const g = c.getContext('2d'); g.fillStyle = '#ffffff';
   g.font = 'bold 52px sans-serif'; g.textAlign = 'right'; g.textBaseline = 'bottom';
   g.fillText(text, 124, 66);
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false, transparent: true }));
   spr.scale.set(44, 25, 1);
   return spr;
 }
-function syncPlates() {
+function ensurePlate0() {         // Hauptplatte einmalig registrieren
+  if (plates.length) return;
   if (!plate1Label) { plate1Label = makePlateLabel('01'); scene.add(plate1Label); }
-  plate1Label.position.set(bedSize[0] - 4, -8, 1);
-  extraPlates.forEach((p, k) => {
-    p.bed.clear(); fillBed(p.bed, bedSize[0], bedSize[1]);
-    const [ox, oy] = plateOffset(k + 1);
+  plates.push({ bed: bedGroup, models: modelGroup, label: plate1Label,
+                objectStates, bytes: modelBytes, name: modelName });
+}
+function commitActive() {         // globale Bearbeitungszustände in die aktive Platte sichern
+  const p = plates[activePlate]; if (!p) return;
+  p.objectStates = objectStates; p.bytes = modelBytes; p.name = modelName; p.models = modelGroup;
+}
+function highlightPlates() {
+  plates.forEach((p, i) => p.label && p.label.material.color.setHex(i === activePlate ? 0xff8c1a : 0x9aa3af));
+}
+function activate(i) {
+  ensurePlate0();
+  if (!plates[i] || i === activePlate) { highlightPlates(); return; }
+  commitActive();
+  activePlate = i;
+  const p = plates[i];
+  modelGroup = p.models; objectStates = p.objectStates; modelBytes = p.bytes; modelName = p.name;
+  selectObject(-1);
+  highlightPlates();
+  if (typeof updateSliceable === 'function') updateSliceable();
+  if (typeof updateToolbar === 'function') updateToolbar();
+}
+function syncPlates() {           // Positionen aller Platten (Bett/Objekte/Label) ans Grid
+  ensurePlate0();
+  plates.forEach((p, i) => {
+    const [ox, oy] = plateOffset(i);
+    if (i > 0) { p.bed.clear(); fillBed(p.bed, bedSize[0], bedSize[1]); }
     p.bed.position.set(ox, oy, 0);
+    p.models.position.set(ox, oy, 0);
     p.label.position.set(ox + bedSize[0] - 4, oy - 8, 1);
   });
+  highlightPlates();
 }
 function fitAllPlates() {
-  const n = extraPlates.length + 1;
+  const n = plates.length || 1;
   const cols = Math.min(PLATE_COLS, n), rows = Math.ceil(n / PLATE_COLS);
   CENTER = new THREE.Vector3(
     (cols * bedSize[0] + (cols - 1) * PLATE_GAP) / 2,
@@ -2199,13 +2227,23 @@ function fitAllPlates() {
   camDist = Math.max(cols * bedSize[0], rows * bedSize[1]) * 1.7;
   updateCam();
 }
+// Welche Platte enthält den Bett-Punkt (x,y) in Weltkoordinaten? -1 = keine.
+function plateAt(x, y) {
+  for (let i = 0; i < plates.length; i++) {
+    const [ox, oy] = plateOffset(i);
+    if (x >= ox - 9 && x <= ox + bedSize[0] + 9 && y >= oy - 9 && y <= oy + bedSize[1] + 9) return i;
+  }
+  return -1;
+}
 function addPlate() {
+  ensurePlate0();
   const bed = new THREE.Group(); scene.add(bed);
-  const label = makePlateLabel(String(extraPlates.length + 2).padStart(2, '0'));
+  const models = new THREE.Group(); scene.add(models);
+  const label = makePlateLabel(String(plates.length + 1).padStart(2, '0'));
   scene.add(label);
-  extraPlates.push({ bed, label });
-  syncPlates();
-  fitAllPlates();
+  plates.push({ bed, models, label, objectStates: [], bytes: null, name: '' });
+  syncPlates(); fitAllPlates();
+  activate(plates.length - 1);   // neue Platte gleich aktiv
 }
 $('tbAddPlate').onclick = () => addPlate();
 // Standardansicht wie im Studio: frontal von schräg oben (Bett-Kanten parallel
@@ -2339,7 +2377,20 @@ canvas.addEventListener('pointerdown', (e) => {
   };
   const up = () => {
     removeEventListener('pointermove', move); removeEventListener('pointerup', up);
-    if (!orbited && modelGroup.visible && e.button === 0) selectObject(-1);
+    if (!orbited && modelGroup.visible && e.button === 0) {
+      selectObject(-1);
+      // Multi-Plate: auf welche Platte wurde geklickt? → aktivieren
+      if (plates.length > 1) {
+        const r = canvas.getBoundingClientRect();
+        const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+        raycaster.setFromCamera(ndc, camera);
+        const hit = new THREE.Vector3();
+        if (raycaster.ray.intersectPlane(dragPlane, hit)) {
+          const pi = plateAt(hit.x, hit.y);
+          if (pi >= 0) activate(pi);
+        }
+      }
+    }
   };
   addEventListener('pointermove', move); addEventListener('pointerup', up);
 });
@@ -2378,7 +2429,7 @@ const FEATURE_DE = {
 const FIL_FALLBACK = [0x2ea2d8, 0xff4d4d, 0x4dff88, 0xfff144, 0xb04dff, 0xff984d, 0x4dc3ff, 0x9e9e9e];
 const toolpathGroup = new THREE.Group();
 scene.add(toolpathGroup);
-const modelGroup = new THREE.Group();
+let modelGroup = new THREE.Group();   // zeigt auf die Objekt-Gruppe der AKTIVEN Platte (Multi-Plate)
 scene.add(modelGroup);
 let layerGroups = [];
 
@@ -2436,7 +2487,10 @@ function showModelMeshes(objects) {
     modelGroup.add(group);
     objectStates.push({ name: o.name, pivot, group, mesh, dx: 0, dy: 0, rx: 0, ry: 0, rz: 0, sx: 1, sy: 1, sz: 1, filament: 1 });
   }
-  CENTER = new THREE.Vector3(bedSize[0] / 2, bedSize[1] / 2, maxZ / 2);
+  ensurePlate0();
+  commitActive();    // frisch geladene Objekte/Bytes in die AKTIVE Platte sichern
+  const [aox, aoy] = plateOffset(activePlate);   // auf die aktive Platte zentrieren (Multi-Plate)
+  CENTER = new THREE.Vector3(aox + bedSize[0] / 2, aoy + bedSize[1] / 2, maxZ / 2);
   updateCam();
   showTab('prepare');
   updateToolbar();   // objektabhängige Buttons (Schneiden/Adaptiv/Bemalen) freischalten
