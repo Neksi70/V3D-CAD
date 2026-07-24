@@ -1752,25 +1752,29 @@ function renderFilChips() {
   div.querySelectorAll('button').forEach(b => b.onclick = () => assignFilament(+b.dataset.i + 1));
 }
 
-function assignFilament(fi) {
-  const f = projectFilaments[fi - 1];
-  if (!f) return;
+function assignFilament(slotNo) {
+  const t = aceSlots[slotNo - 1];
+  if (!t || !t.filIdx) {   // leerer Slot → nichts zuzuweisen
+    $('amsHint').textContent = `Slot ${slotNo} ist leer`;
+    return;
+  }
   const targets = selectedSet.size ? [...selectedSet] : [];
   if (!targets.length) {
     $('amsHint').textContent = 'Erst Objekt(e) markieren — Klick, Strg+Klick = mehrere, Strg+A = alle';
     return;
   }
+  const col = '#' + (t.color || '2ea2d8');
   let n = 0;
   for (const j of targets) {
     const st = objectStates[j];
     if (!st || st.deleted) continue;
-    st.filament = fi;
+    st.filament = t.filIdx;   // Filament-Index (1..N) dieses Slots
     // bemalte Objekte färben über Vertexfarben (Material bleibt weiß)
     if (st.paint) paintRefreshColors(st);
-    else st.mesh.material.color.set(f.color || '#2ea2d8');
+    else st.mesh.material.color.set(col);
     n++;
   }
-  $('amsHint').textContent = `Filament ${fi} (${f.type || f.name}) → ${n} Objekt${n > 1 ? 'e' : ''}`;
+  $('amsHint').textContent = `Slot ${slotNo} (${t.type || ''}) → ${n} Objekt${n > 1 ? 'e' : ''}`;
 }
 
 // Alle AMS-Slots (+ externe Spule) als Projekt-Filamente übernehmen
@@ -1813,20 +1817,32 @@ function renderAceChips() {
       ? `<div class="filChip empty" title="Slot ${i + 1}: leer"><b>${i + 1}</b><span class="filDot dotEmpty"></span>leer</div>`
       : `<button class="filChip" data-i="${i}" title="Slot ${i + 1}: ${t.type || ''} — Klick: als Slice-Filament übernehmen"><b>${i + 1}</b><span class="filDot" style="background:#${(t.color || 'cccccc').slice(0, 6)}"></span>${t.type || '?'}</button>`;
   }).join('');
-  div.querySelectorAll('button[data-i]').forEach(b => b.onclick = async () => {
-    const name = await amsApplyTray(aceSlots[+b.dataset.i]); renderAceChips();
-    if (name) $('amsHint').textContent = `✅ ${name} · Farbe übernommen`;
-  });
+  // Klick auf einen bestückten Slot-Chip = diesen Slot dem markierten Objekt
+  // zuweisen (wie die Zifferntaste) — Objekt nimmt die Slot-Farbe an.
+  div.querySelectorAll('button[data-i]').forEach(b => b.onclick = () => assignFilament(+b.dataset.i + 1));
 }
 
 // Sync-Ergebnis: ALLE Slots als Übersicht (Chips) zeigen; fürs Slicen nur die
 // bestückten. slots = amsSlots (Anycubic, mit empty-Flag) bzw. trays (andere).
 async function amsRunSync(slots) {
   aceSlots = slots || [];
-  const filled = aceSlots.filter(t => !t.empty && (t.type || t.sub || t.idx));
+  // Jedem BESTÜCKTEN Slot einen Filament-Index (1..N) geben (leer = 0) — die
+  // Objekt-Zuweisung/Farbe nutzt genau diesen Index gegen projectFilaments.
+  let fi = 0; const filled = [];
+  for (const t of aceSlots) {
+    const ok = !t.empty && (t.type || t.sub || t.idx);
+    t.filIdx = ok ? ++fi : 0;
+    if (ok) filled.push(t);
+  }
   if (!filled.length) { renderAceChips(); $('amsHint').textContent = 'Alle Slots leer — kein Filament geladen'; return; }
-  if (filled.length === 1) { await amsApplyTray(filled[0]); renderAceChips(); return; }   // renderAceChips NACH amsApplyTray (das setzt projectFilaments=[] und versteckt filChips)
-  await adoptProjectFilaments(filled);   // Mehrfarbe: zuweisbare projectFilaments-Chips
+  // projectFilaments IMMER aus den bestückten Slots (auch bei 1) — so kommen
+  // Objekt-Zuweisung + Farben aus den Slots. adoptProjectFilaments rendert
+  // projectFilaments-Chips in #filChips; danach mit der ACE-Übersicht überschreiben.
+  await adoptProjectFilaments(filled);
+  renderAceChips();
+  $('amsHint').textContent = filled.length === 1
+    ? `✅ ${projectFilaments[0].name} · Farbe übernommen`
+    : `Objekt markieren, Taste 1–${aceSlots.length} weist den Slot zu`;
 }
 
 // ---------- Düsen-Sync (Studio-Dialog „Düsenstatus synchronisieren") ----------
@@ -3639,7 +3655,7 @@ document.addEventListener('keydown', (e) => {
       if (+e.key <= projectFilaments.length) { paintFil = +e.key; paintClearPreview(); renderToolPanel(); }
       return;
     }
-    if (projectFilaments.length > 1) assignFilament(+e.key);
+    if (aceSlots.length) assignFilament(+e.key);
   }
 });
 
