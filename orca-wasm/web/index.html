@@ -2389,27 +2389,41 @@ function applyStateToGroup(st) {
 // Drehung; applyStateToGroup legt danach wieder aufs Bett.
 function autoOrient(st) {
   const geo = st.mesh.geometry, pos = geo.attributes.position, idx = geo.index;
-  const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
-  const ab = new THREE.Vector3(), ac = new THREE.Vector3(), nrm = new THREE.Vector3();
-  const buckets = new Map();
+  // Vertices + Dreiecks-Normalen/Flächen einmal sammeln.
+  const verts = [];
+  for (let i = 0; i < pos.count; i++) verts.push(new THREE.Vector3().fromBufferAttribute(pos, i));
+  const tris = [], buckets = new Map();
+  const ab = new THREE.Vector3(), ac = new THREE.Vector3(), nn = new THREE.Vector3();
   const cnt = idx ? idx.count : pos.count;
   for (let i = 0; i + 2 < cnt; i += 3) {
     const a = idx ? idx.getX(i) : i, b = idx ? idx.getX(i + 1) : i + 1, c = idx ? idx.getX(i + 2) : i + 2;
-    va.fromBufferAttribute(pos, a); vb.fromBufferAttribute(pos, b); vc.fromBufferAttribute(pos, c);
-    ab.subVectors(vb, va); ac.subVectors(vc, va); nrm.crossVectors(ab, ac);
-    const area = nrm.length() * 0.5;
+    ab.subVectors(verts[b], verts[a]); ac.subVectors(verts[c], verts[a]); nn.crossVectors(ab, ac);
+    const area = nn.length() * 0.5;
     if (area < 1e-7) continue;
-    nrm.normalize();
-    const key = `${Math.round(nrm.x * 24)},${Math.round(nrm.y * 24)},${Math.round(nrm.z * 24)}`;   // ~5°-Kübel
+    nn.normalize();
+    tris.push({ n: nn.clone(), area });
+    const key = `${Math.round(nn.x * 12)},${Math.round(nn.y * 12)},${Math.round(nn.z * 12)}`;   // ~10°-Kübel
     const g = buckets.get(key);
-    if (g) { g.area += area; g.n.add(nrm); } else buckets.set(key, { area, n: nrm.clone() });
+    if (g) { g.area += area; g.n.add(nn); } else buckets.set(key, { area, n: nn.clone() });
   }
+  // Kandidaten-Lagen: die flächenstärksten Facetten-Richtungen + die 6 Achsen.
+  const cands = [...buckets.values()].sort((x, y) => y.area - x.area).slice(0, 30).map(g => g.n.clone().normalize());
+  for (const ax of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) cands.push(new THREE.Vector3(...ax));
+  // Jede Lage bewerten: viel Auflagefläche (Facetten nach unten) bei WENIG Höhe.
+  const DOWN = new THREE.Vector3(0, 0, -1), rv = new THREE.Vector3(), rn = new THREE.Vector3();
   let best = null;
-  for (const g of buckets.values()) if (!best || g.area > best.area) best = g;
+  for (const N of cands) {
+    const q = new THREE.Quaternion().setFromUnitVectors(N, DOWN);
+    let minZ = Infinity, maxZ = -Infinity;
+    for (const v of verts) { rv.copy(v).applyQuaternion(q); if (rv.z < minZ) minZ = rv.z; if (rv.z > maxZ) maxZ = rv.z; }
+    const height = maxZ - minZ;
+    let contact = 0;
+    for (const t of tris) { rn.copy(t.n).applyQuaternion(q); if (rn.z < -0.95) contact += t.area; }
+    const score = contact / (height + 1);   // Auflagefläche pro Höhe → flach + große Standfläche gewinnt
+    if (!best || score > best.score) best = { q, score };
+  }
   if (!best) return;
-  best.n.normalize();
-  const q = new THREE.Quaternion().setFromUnitVectors(best.n, new THREE.Vector3(0, 0, -1));
-  const e = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+  const e = new THREE.Euler().setFromQuaternion(best.q, 'XYZ');
   st.rx = THREE.MathUtils.radToDeg(e.x);
   st.ry = THREE.MathUtils.radToDeg(e.y);
   st.rz = THREE.MathUtils.radToDeg(e.z);
