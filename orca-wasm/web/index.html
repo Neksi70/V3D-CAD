@@ -358,8 +358,7 @@
   </div>
   <div>
     <label>Filament</label>
-    <input id="filament" list="filamentList" placeholder="Filament wählen …">
-    <datalist id="filamentList"></datalist>
+    <select id="filament"></select>
     <div id="filChips" style="display:none;gap:.4rem;flex-wrap:wrap;margin-top:.4rem"></div>
     <small id="amsHint" style="opacity:.65"></small>
   </div>
@@ -1498,7 +1497,7 @@ async function fillPresets(saved = {}) {
   const fill = (listId, entries) => $(listId).innerHTML =
     entries.map(e => `<option value="${e.name.replaceAll('"', '&quot;')}">${e.name}</option>`).join('');
   fillProcessOptions(idx);            // #process = <select>, nach gewähltem Drucker gefiltert
-  fill('filamentList', idx.filament_list);
+  fillFilamentOptions(idx, saved.filament || machines.find(x => x.name === $('machine').value)?.defFilament);
   applyMachineDefaults(saved);
 }
 
@@ -1517,11 +1516,38 @@ function fillProcessOptions(idx) {
     `<option value="${e.name.replaceAll('"', '&quot;')}">${e.name}</option>`).join('');
 }
 
+// #filament = <select>: NUR Filamente des gewählten Druckers (sub_path @Maschine),
+// wie fillProcessOptions. Vorher war es eine <datalist>, die beim Öffnen alles
+// ausblendete, was nicht zum Feldtext passte ("…PLA…" versteckte PETG). Fallback
+// auf ALLE, falls nichts matcht. `want` = das gewünschte Preset ans Feld binden.
+function fillFilamentOptions(idx, want) {
+  const machine = $('machine').value || '';
+  const all = idx.filament_list || [];
+  const compat = all.filter(e => (e.sub_path || '').includes('@' + machine));
+  const entries = compat.length ? compat : all;
+  const names = entries.map(e => e.name);
+  const cur = want || $('filament').value || '';
+  if (cur && !names.includes(cur)) names.unshift(cur);   // aktuelles Preset behalten
+  $('filament').innerHTML = names.map(n =>
+    `<option value="${n.replaceAll('"', '&quot;')}">${n}</option>`).join('');
+  if (cur) $('filament').value = cur;
+}
+
+// Filament setzen und sicherstellen, dass die Option existiert — der AMS-Sync kann
+// ein Preset wählen, das nicht in der druckergefilterten Liste steht.
+function setFilament(name) {
+  if (!name) return;
+  const sel = $('filament');
+  if (![...sel.options].some(o => o.value === name))
+    sel.insertAdjacentHTML('afterbegin', `<option value="${name.replaceAll('"', '&quot;')}">${name}</option>`);
+  sel.value = name;
+}
+
 // Beim Druckerwechsel: Standard-Druckprofil + -Filament aus dem Druckerprofil
 function applyMachineDefaults(saved = {}) {
   const m = machines.find(x => x.name === $('machine').value);
   $('process').value  = saved.process  || m?.defProcess  || $('process').value;
-  $('filament').value = saved.filament || m?.defFilament || $('filament').value;
+  setFilament(saved.filament || m?.defFilament || $('filament').value);
 }
 
 // Passt das Preset zum gewählten Drucker? compatible_printers aus der Kette
@@ -1565,7 +1591,7 @@ async function ensureCompatiblePresets() {
         if (await presetCompatible(listKey, n, machine)) { repl = n; break; }
       }
     }
-    if (repl && repl !== $(field).value) { swapped.push(`${$(field).value} → ${repl}`); $(field).value = repl; }
+    if (repl && repl !== $(field).value) { swapped.push(`${$(field).value} → ${repl}`); if (field === 'filament') setFilament(repl); else $(field).value = repl; }
   }
   if (swapped.length)
     status.innerHTML = `<span class="ok">Profil an Drucker angepasst: ${swapped.join(' · ')}</span>`;
@@ -1608,7 +1634,7 @@ async function applyMachineBed() {
   } catch { /* unbekannter Drucker → Bett unverändert */ }
   requestPreview();
 }
-$('machine').onchange = async () => { chainsCache = null; fillProcessOptions(await vendorIndex($('vendor').value)); applyMachineDefaults(); await applyMachineBed(); await refreshSettings(); savePresets(); };
+$('machine').onchange = async () => { chainsCache = null; const idx = await vendorIndex($('vendor').value); fillProcessOptions(idx); fillFilamentOptions(idx, machines.find(x => x.name === $('machine').value)?.defFilament); applyMachineDefaults(); await applyMachineBed(); await refreshSettings(); savePresets(); };
 
 // ---------- AMS → Filament-Sync ----------
 // Tray-Daten (Typ, Bambu-Produktname, Filament-ID, Farbe) kommen über die Brücke;
@@ -1679,7 +1705,7 @@ async function amsApplyTray(t) {
     $('amsHint').textContent = `Kein passendes Profil für „${t.sub || t.type || 'Slot ' + t.id}" gefunden`;
     return null;
   }
-  $('filament').value = name;
+  setFilament(name);
   await refreshSettings();   // leert die Overrides, Farbe danach setzen
   if (t.color) changedValues.set('filament_colour', '#' + t.color);
   savePresets();
@@ -1736,7 +1762,7 @@ async function adoptProjectFilaments(trays) {
                 label: (t.external ? 'Ext' : '') + (t.type || '') });
   }
   projectFilaments = fils;
-  $('filament').value = fils[0].name;
+  setFilament(fils[0].name);
   renderFilChips();
   // Alle Objekte starten auf Filament 1 (Farbe von Slot 1)
   for (const st of objectStates) {
