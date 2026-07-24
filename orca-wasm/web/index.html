@@ -258,6 +258,13 @@
   .amsCard.amsEmpty { background: repeating-linear-gradient(45deg,#f2f2f2,#f2f2f2 6px,#e8e8e8 6px,#e8e8e8 12px);
              color: #999; border: 1px dashed #bbb; font-weight: 500; }
   .amsSlot.empty:hover .amsCard { outline: none; }
+  .filChip { display: flex; align-items: center; gap: .35rem; padding: .25rem .55rem;
+             border: 1px solid #0002; border-radius: 8px; background: var(--card, #f6f6f6);
+             font-size: .8rem; cursor: pointer; }
+  .filChip.empty { opacity: .55; cursor: default; }
+  .filChip .filDot { width: 13px; height: 13px; border-radius: 4px; border: 1px solid #0003; }
+  .filChip .filDot.dotEmpty { border: 1px dashed #bbb;
+             background: repeating-linear-gradient(45deg,#eee,#eee 3px,#ddd 3px,#ddd 6px); }
   @media (max-width: 1500px) { #devicePanel { grid-template-columns: 170px minmax(0,1fr) 300px; } }
   @media (max-width: 1200px) {
     #devicePanel { grid-template-columns: 170px minmax(0,1fr); overflow-y: auto; }
@@ -1789,12 +1796,34 @@ async function adoptProjectFilaments(trays) {
 
 // Übernimmt bereits abgefragte Tray-Daten (der kombinierte Sync fragt das
 // Gerät nur einmal ab und reicht trays hierher weiter)
-async function amsRunSync(trays) {
-  if (!trays.length) { $('amsHint').textContent = 'Kein Filament gemeldet (AMS leer / Drucker offline?)'; return; }
-  if (trays.length === 1) return amsApplyTray(trays[0]);
-  // Mehrere Slots (inkl. externer Spule): direkt alle als Projekt-Filamente
-  // übernehmen — Mehrfarbdruck ohne Zwischenauswahl
-  return adoptProjectFilaments(trays);
+// ---------- ACE-Slot-Übersicht (Chips) auf der Vorbereiten-Seite ----------
+// Zeigt ALLE Slots (leer oder voll), wie beim Snapmaker/Bambu. Leer = grau/"leer"
+// OHNE Farbe (nicht klickbar); voll = Farbe + Material, Klick übernimmt als Filament.
+let aceSlots = [];   // [{ id, type, color, empty }]
+function renderAceChips() {
+  const div = $('filChips');
+  if (!aceSlots.length) { div.style.display = 'none'; div.innerHTML = ''; return; }
+  div.style.display = 'flex';
+  div.innerHTML = aceSlots.map((t, i) => {
+    const empty = t.empty || (!t.type && !t.sub && !t.idx);
+    return empty
+      ? `<div class="filChip empty" title="Slot ${i + 1}: leer"><b>${i + 1}</b><span class="filDot dotEmpty"></span>leer</div>`
+      : `<button class="filChip" data-i="${i}" title="Slot ${i + 1}: ${t.type || ''} — Klick: als Slice-Filament übernehmen"><b>${i + 1}</b><span class="filDot" style="background:#${(t.color || 'cccccc').slice(0, 6)}"></span>${t.type || '?'}</button>`;
+  }).join('');
+  div.querySelectorAll('button[data-i]').forEach(b => b.onclick = async () => {
+    const name = await amsApplyTray(aceSlots[+b.dataset.i]); renderAceChips();
+    if (name) $('amsHint').textContent = `✅ ${name} · Farbe übernommen`;
+  });
+}
+
+// Sync-Ergebnis: ALLE Slots als Übersicht (Chips) zeigen; fürs Slicen nur die
+// bestückten. slots = amsSlots (Anycubic, mit empty-Flag) bzw. trays (andere).
+async function amsRunSync(slots) {
+  aceSlots = slots || [];
+  const filled = aceSlots.filter(t => !t.empty && (t.type || t.sub || t.idx));
+  if (!filled.length) { renderAceChips(); $('amsHint').textContent = 'Alle Slots leer — kein Filament geladen'; return; }
+  if (filled.length === 1) { await amsApplyTray(filled[0]); renderAceChips(); return; }   // renderAceChips NACH amsApplyTray (das setzt projectFilaments=[] und versteckt filChips)
+  await adoptProjectFilaments(filled);   // Mehrfarbe: zuweisbare projectFilaments-Chips
 }
 
 // ---------- Düsen-Sync (Studio-Dialog „Düsenstatus synchronisieren") ----------
@@ -1854,7 +1883,7 @@ $('devSync').onclick = async () => {
     await new Promise(r => { nozDlgDone = r; });
   }
   // 2) AMS-Filament aus derselben Abfrage übernehmen
-  await amsRunSync((d.trays || []).filter(t => t.type || t.sub || t.idx));
+  await amsRunSync(d.amsSlots || d.trays || []);   // amsSlots = ALLE Slots (leer/voll); trays = nur bestückt (andere Drucker)
 };
 
 function nozShowDialog(nz, printer) {
