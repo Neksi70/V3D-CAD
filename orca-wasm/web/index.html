@@ -267,6 +267,13 @@
   .filChip .filDot { width: 15px; height: 15px; border-radius: 4px; border: 1px solid #00000030; flex: none; }
   .filChip .filDot.dotEmpty { border: 1px dashed #bbb;
              background: repeating-linear-gradient(45deg,#eee,#eee 3px,#ddd 3px,#ddd 6px); }
+  /* Pro-Platte-Icon-Leiste (Multi-Plate), an jeder Platte projiziert */
+  #plateBars { position: fixed; inset: 0; pointer-events: none; z-index: 6; }
+  .plateBar { position: fixed; display: none; flex-direction: column; gap: 5px; pointer-events: auto; }
+  .plateBar button { width: 30px; height: 30px; padding: 0; background: #ffffffdd; color: #333;
+             border: 1px solid #0002; border-radius: 7px; font-size: 15px; font-weight: 500;
+             display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 3px #0002; }
+  .plateBar button:hover { background: #fff; border-color: var(--accent); color: var(--accent); }
   @media (max-width: 1500px) { #devicePanel { grid-template-columns: 170px minmax(0,1fr) 300px; } }
   @media (max-width: 1200px) {
     #devicePanel { grid-template-columns: 170px minmax(0,1fr); overflow-y: auto; }
@@ -454,6 +461,8 @@
   <div id="toolPanel" hidden></div>
   <canvas id="view"></canvas>
   <canvas id="navCube" width="220" height="220" title="Ansicht wählen"></canvas>
+  <div id="plateBars"></div>   <!-- Pro-Platte-Icons (Multi-Plate), per JS positioniert -->
+
 
   <div id="devicePanel" hidden>
     <div class="devSide">
@@ -2246,6 +2255,53 @@ function addPlate() {
   activate(plates.length - 1);   // neue Platte gleich aktiv
 }
 $('tbAddPlate').onclick = () => addPlate();
+// Pro-Platte-Icon-Leiste: 3D-Ecke jeder Platte auf den Bildschirm projizieren.
+function renderPlateBars() {
+  const host = $('plateBars'); if (!host || !plates.length) return;
+  while (host.children.length < plates.length) {
+    const s = document.createElement('div'); s.className = 'plateBar';
+    s.innerHTML = '<button data-a="del" title="Platte löschen / leeren">✕</button>' +
+                  '<button data-a="arr" title="Objekte auf der Platte anordnen">▤</button>';
+    host.appendChild(s);
+  }
+  while (host.children.length > plates.length) host.removeChild(host.lastChild);
+  const r = canvas.getBoundingClientRect(), v = new THREE.Vector3();
+  plates.forEach((p, i) => {
+    const s = host.children[i], [ox, oy] = plateOffset(i);
+    v.set(ox + bedSize[0], oy + bedSize[1], 0).project(camera);
+    if (v.z > 1) { s.style.display = 'none'; return; }
+    s.style.display = 'flex';
+    s.style.left = (r.left + (v.x * 0.5 + 0.5) * r.width + 8) + 'px';
+    s.style.top = (r.top + (-v.y * 0.5 + 0.5) * r.height) + 'px';
+    s.dataset.plate = i;
+  });
+}
+$('plateBars').onclick = (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  const i = +b.parentElement.dataset.plate;
+  if (b.dataset.a === 'del') deletePlate(i);
+  else { activate(i); $('tbArrange').onclick(); }
+};
+function deletePlate(i) {
+  ensurePlate0(); commitActive();
+  const p = plates[i]; if (!p) return;
+  if (i === 0) {                 // Hauptplatte bleibt (bedGroup/modelGroup fix) → nur leeren
+    p.models.clear(); p.objectStates = []; p.bytes = null; p.name = '';
+    if (activePlate === 0) { objectStates = []; modelBytes = null; modelName = ''; }
+  } else {
+    scene.remove(p.bed); scene.remove(p.models); scene.remove(p.label);
+    plates.splice(i, 1);
+    if (activePlate >= plates.length) activePlate = plates.length - 1;
+    else if (activePlate > i) activePlate--;
+    plates.forEach((pl, k) => { scene.remove(pl.label); pl.label = makePlateLabel(String(k + 1).padStart(2, '0')); scene.add(pl.label); });
+    plate1Label = plates[0].label;
+    const ap = plates[activePlate];
+    modelGroup = ap.models; objectStates = ap.objectStates; modelBytes = ap.bytes; modelName = ap.name;
+  }
+  syncPlates(); fitAllPlates(); selectObject(-1);
+  if (typeof updateToolbar === 'function') updateToolbar();
+  if (typeof updateSliceable === 'function') updateSliceable();
+}
 // Standardansicht wie im Studio: frontal von schräg oben (Bett-Kanten parallel
 // zum Bildschirm) — so liegen Auswahl-Rahmen/Kanten sichtbar eng am Objekt
 let camTheta = -Math.PI / 2, camPhi = 0.82, camDist = 260;
@@ -2406,7 +2462,7 @@ function resize() {
   }
 }
 let gizmoSizer = null;   // wird nach dem Werkzeug-Setup gesetzt (Deklaration folgt später im Modul)
-(function loop() { requestAnimationFrame(loop); resize(); if (gizmoSizer) gizmoSizer(); renderer.render(scene, camera); renderNavCube(); })();
+(function loop() { requestAnimationFrame(loop); resize(); if (gizmoSizer) gizmoSizer(); renderer.render(scene, camera); renderNavCube(); renderPlateBars(); })();
 updateCam();
 
 const FEATURE_COLORS = {
