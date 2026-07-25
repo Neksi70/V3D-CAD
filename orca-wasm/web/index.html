@@ -2205,13 +2205,39 @@ function commitActive() {         // globale Bearbeitungszustände in die aktive
 function highlightPlates() {
   plates.forEach((p, i) => p.label && p.label.material.color.setHex(i === activePlate ? 0xff8c1a : 0x9aa3af));
 }
+// Pro-Platte-Einstellungen (eigenes Profil/Filament/Bett/Overrides je Platte).
+function capturePlateSettings() {
+  const p = plates[activePlate]; if (!p) return;
+  p.settings = {
+    process: $('process').value, filament: $('filament').value,
+    bedType: $('bedType') ? $('bedType').value : '', overrides: $('overrides').value,
+    changed: [...changedValues.entries()],
+    projectFilaments: projectFilaments.slice(),
+    aceSlots: (typeof aceSlots !== 'undefined' ? aceSlots.slice() : []),
+  };
+}
+async function applyPlateSettings(p) {
+  const s = p.settings; if (!s) return;   // neue Platte ohne eigene Settings → aktuelle behalten
+  if (s.process && [...$('process').options].some(o => o.value === s.process)) $('process').value = s.process;
+  if (typeof setFilament === 'function') setFilament(s.filament); else $('filament').value = s.filament;
+  if ($('bedType') && s.bedType) $('bedType').value = s.bedType;
+  $('overrides').value = s.overrides || '';
+  changedValues.clear(); for (const [k, v] of (s.changed || [])) changedValues.set(k, v);
+  projectFilaments = s.projectFilaments || [];
+  if (typeof aceSlots !== 'undefined') aceSlots = s.aceSlots || [];
+  if (typeof renderAceChips === 'function') renderAceChips();
+  else if (typeof renderFilChips === 'function') renderFilChips();
+  try { await refreshSettings(); } catch {}
+}
 function activate(i) {
   ensurePlate0();
   if (!plates[i] || i === activePlate) { highlightPlates(); return; }
   commitActive();
+  capturePlateSettings();          // Einstellungen der bisherigen Platte sichern
   activePlate = i;
   const p = plates[i];
   modelGroup = p.models; objectStates = p.objectStates; modelBytes = p.bytes; modelName = p.name;
+  applyPlateSettings(p);           // Einstellungen der neuen Platte laden (async)
   selectObject(-1);
   highlightPlates();
   if (typeof updateSliceable === 'function') updateSliceable();
@@ -2264,7 +2290,9 @@ function renderPlateBars() {
     s.innerHTML = '<button data-a="del" title="Platte löschen / leeren">✕</button>' +
                   '<button data-a="arr" title="Objekte auf der Platte anordnen">▤</button>' +
                   '<button data-a="ori" title="Alle Objekte flach ausrichten">⟲</button>' +
-                  '<button data-a="lock" title="Platte sperren/entsperren">🔓</button>';
+                  '<button data-a="lock" title="Platte sperren/entsperren">🔓</button>' +
+                  '<button data-a="bed" title="Betttyp für diese Platte">⬡</button>' +
+                  '<button data-a="fil" title="Filament/Profil für diese Platte">🎨</button>';
     host.appendChild(s);
   }
   while (host.children.length > plates.length) host.removeChild(host.lastChild);
@@ -2288,6 +2316,8 @@ $('plateBars').onclick = (e) => {
   if (a === 'del') deletePlate(i);
   else if (a === 'arr') { activate(i); $('tbArrange').onclick(); }
   else if (a === 'ori') { activate(i); for (const st of objectStates) if (st && !st.deleted) autoOrient(st); if (typeof syncToolPanel === 'function') syncToolPanel(); }
+  else if (a === 'bed') { activate(i); const bt = $('bedType'); if (bt) { bt.scrollIntoView({ block: 'center' }); bt.focus(); } }
+  else if (a === 'fil') { activate(i); const f = $('filament'); if (f) { f.scrollIntoView({ block: 'center' }); f.focus(); } }
 };
 function deletePlate(i) {
   ensurePlate0(); commitActive();
