@@ -2298,20 +2298,28 @@ function renderPlateBars() {
   const r = canvas.getBoundingClientRect(), v = new THREE.Vector3();
   plates.forEach((p, i) => {
     const s = host.children[i], [ox, oy] = plateOffset(i);
-    // Den auf dem Schirm RECHTESTEN Platten-Eckpunkt nehmen (liegt immer AN der
-    // Platte, auch wenn sie als Raute projiziert). Leiste direkt rechts daneben,
-    // vertikal um die Ecke zentriert. Kein Loslösen wie bei der BBox-Ecke.
-    let best = null;
-    for (const [cx, cy] of [[ox, oy], [ox + bedSize[0], oy], [ox, oy + bedSize[1]], [ox + bedSize[0], oy + bedSize[1]]]) {
-      v.set(cx, cy, 0).project(camera);
-      if (v.z > 1) continue;
-      const sx = r.left + (v.x * 0.5 + 0.5) * r.width, sy = r.top + (-v.y * 0.5 + 0.5) * r.height;
-      if (!best || sx > best.sx) best = { sx, sy };
-    }
-    if (!best) { s.style.display = 'none'; return; }
+    // Leiste ENTLANG der rechten Plattenkante ausrichten (parallel, mitgedreht).
+    // Rechte Kante = Vorder-rechts (oy) → Hinter-rechts (oy+h); Streifen läuft vom
+    // oberen Endpunkt an der Kante entlang, leicht nach außen versetzt und rotiert.
+    const proj = (wx, wy) => {
+      v.set(wx, wy, 0).project(camera);
+      if (v.z > 1) return null;
+      return { x: r.left + (v.x * 0.5 + 0.5) * r.width, y: r.top + (-v.y * 0.5 + 0.5) * r.height };
+    };
+    const pa = proj(ox + bedSize[0], oy), pb = proj(ox + bedSize[0], oy + bedSize[1]),
+          pc = proj(ox + bedSize[0] / 2, oy + bedSize[1] / 2);
+    if (!pa || !pb || !pc) { s.style.display = 'none'; return; }
+    const startP = pa.y <= pb.y ? pa : pb, endP = pa.y <= pb.y ? pb : pa;   // oben = kleineres y
+    const ex = endP.x - startP.x, ey = endP.y - startP.y;
+    const ang = Math.atan2(ey, ex) - Math.PI / 2;                           // Down-Achse auf Kantenrichtung
+    let nx = -ey, ny = ex; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
+    if ((startP.x - pc.x) * nx + (startP.y - pc.y) * ny < 0) { nx = -nx; ny = -ny; }   // nach außen (weg von Mitte)
+    const off = 10;
     s.style.display = 'flex';
-    s.style.left = (best.sx + 6) + 'px';        // direkt rechts an der Platte
-    s.style.top = (best.sy - 96) + 'px';        // Streifen um den rechten Eckpunkt zentriert (~6 Buttons)
+    s.style.transformOrigin = 'top left';
+    s.style.left = (startP.x + nx * off) + 'px';
+    s.style.top = (startP.y + ny * off) + 'px';
+    s.style.transform = `rotate(${ang}rad)`;
     s.dataset.plate = i;
     const lk = s.querySelector('[data-a="lock"]'); if (lk) lk.textContent = p.locked ? '🔒' : '🔓';
   });
