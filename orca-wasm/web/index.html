@@ -2298,11 +2298,20 @@ function renderPlateBars() {
   const r = canvas.getBoundingClientRect(), v = new THREE.Vector3();
   plates.forEach((p, i) => {
     const s = host.children[i], [ox, oy] = plateOffset(i);
-    v.set(ox + bedSize[0], oy + bedSize[1], 0).project(camera);
-    if (v.z > 1) { s.style.display = 'none'; return; }
+    // Alle 4 Plattenecken projizieren und die "oben rechts" (max x−y auf dem Schirm)
+    // nehmen → Leiste klebt immer an der oberen rechten Ecke und dreht mit der Platte.
+    let best = null;
+    for (const [cx, cy] of [[ox, oy], [ox + bedSize[0], oy], [ox, oy + bedSize[1]], [ox + bedSize[0], oy + bedSize[1]]]) {
+      v.set(cx, cy, 0).project(camera);
+      if (v.z > 1) continue;
+      const sx = r.left + (v.x * 0.5 + 0.5) * r.width, sy = r.top + (-v.y * 0.5 + 0.5) * r.height;
+      const score = sx - sy;
+      if (!best || score > best.score) best = { sx, sy, score };
+    }
+    if (!best) { s.style.display = 'none'; return; }
     s.style.display = 'flex';
-    s.style.left = (r.left + (v.x * 0.5 + 0.5) * r.width + 3) + 'px';   // knapp NEBEN der rechten Plattenkante (an der Seite)
-    s.style.top = (r.top + (-v.y * 0.5 + 0.5) * r.height) + 'px';
+    s.style.left = (best.sx + 5) + 'px';   // knapp neben der oberen rechten Ecke (an der Seite)
+    s.style.top = best.sy + 'px';
     s.dataset.plate = i;
     const lk = s.querySelector('[data-a="lock"]'); if (lk) lk.textContent = p.locked ? '🔒' : '🔓';
   });
