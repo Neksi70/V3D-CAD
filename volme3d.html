@@ -2321,6 +2321,7 @@ const firebaseConfig = {
         <div class="vrow"><label>Hals</label>   <input type="range" id="vp-neck"   min="5" max="90" value="30" step="1" oninput="document.getElementById('vv-neck').textContent=this.value;_vaseUpd('neck',this.value)"><span class="vv" id="vv-neck">30</span><span class="vu">%</span></div>
         <div class="vrow"><label>Bauch</label>  <input type="range" id="vp-belly"  min="10" max="70" value="42" step="1" oninput="document.getElementById('vv-belly').textContent=this.value;_vaseUpd('bellyH',this.value)"><span class="vv" id="vv-belly">42</span><span class="vu">%</span></div>
         <div class="vrow"><label>Hals-Pos</label><input type="range" id="vp-neckh" min="30" max="92" value="72" step="1" oninput="document.getElementById('vv-neckh').textContent=this.value;_vaseUpd('neckH',this.value)"><span class="vv" id="vv-neckh">72</span><span class="vu">%</span></div>
+        <div class="vrow" title="Länge des geraden Halsabschnitts (0 = Hals läuft direkt zur Öffnung aus)"><label>Halslänge</label><input type="range" id="vp-neckl" min="0" max="35" value="0" step="1" oninput="document.getElementById('vv-neckl').textContent=this.value;_vaseUpd('neckLen',this.value)"><span class="vv" id="vv-neckl">0</span><span class="vu">%</span></div>
         <div class="vrow"><label>Boden</label>  <input type="range" id="vp-bot"    min="5" max="85" value="40" step="1" oninput="document.getElementById('vv-bot').textContent=this.value;_vaseUpd('bottom',this.value)"><span class="vv" id="vv-bot">40</span><span class="vu">%</span></div>
         <!-- Größe -->
         <span class="vsec">Größe</span>
@@ -20025,7 +20026,7 @@ function _maybeShowStarter(){
 
 // ═══ VASE DESIGNER ════════════════════════════════════════════════════════
 let _vaseP = {
-  top:55, neck:30, bellyH:42, neckH:72, bottom:40,
+  top:55, neck:30, bellyH:42, neckH:72, neckLen:0, bottom:40,
   height:150, width:80, wall:2,
   cross:'circle', polyN:6, waveN:8, waveAmp:20,
   surface:'none', stripsN:16, stripsD:20,
@@ -28928,18 +28929,21 @@ function _vaseGenProfile(p) {
   const hBel  = Math.max(0.15, Math.min(0.65, p.bellyH / 100));
   const hNeck = Math.max(hBel + 0.12, Math.min(0.93, p.neckH / 100));
 
-  // Catmull-Rom control points [r, h]: 2 phantoms + 4 key points + 2 phantoms
+  // Catmull-Rom control points [r, h]: Phantom + Boden + Bauch + Hals(+Halsende) + Öffnung + Phantom.
+  // Halslänge > 0 → zweiter Stützpunkt mit gleichem Radius = gerader Halsabschnitt.
+  const neckLen = Math.max(0, Math.min(0.35, (p.neckLen || 0) / 100));
+  const hNeck2  = Math.min(0.97, hNeck + neckLen);
   const k = [
     [rBot,  -0.15],
     [rBot,   0.00],
     [1.00,   hBel ],
     [rNeck,  hNeck],
-    [rTop,   1.00 ],
-    [rTop,   1.15 ],
   ];
+  if (neckLen > 0.005 && hNeck2 > hNeck + 0.01) k.push([rNeck, hNeck2]);
+  k.push([rTop, 1.00], [rTop, 1.15]);
   const result = [];
   const steps = 12;
-  for (let s = 0; s < 3; s++) {
+  for (let s = 0; s < k.length - 3; s++) {
     const p0=k[s],p1=k[s+1],p2=k[s+2],p3=k[s+3];
     for (let i=(s===0?0:1); i<=steps; i++) {
       const t=i/steps,t2=t*t,t3=t2*t;
