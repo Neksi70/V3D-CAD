@@ -603,7 +603,16 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       // ein gleichnamiges project_file mit task_id:'0' → "direkt fertig", nichts
       // passiert. Kurzer Zeitstempel-Suffix (base36) erzwingt einen neuen Job.
       const uniq = Date.now().toString(36).slice(-4);
-      const jobName = name.replace(/\.gcode$/i, '') + '-' + uniq;
+      // Dateiname FIRMWARE-SICHER machen: Die H2C-Firmware lehnt Namen mit EINGEBETTETEN
+      // Punkten ab (z.B. aus re-exportierten Modellen "modell.3neu.3mf" → Name
+      // "modell.3neu-xxxx.gcode.3mf") — Antwort: print_error 0x05004002 "nicht
+      // unterstützter Pfad/Name der Druckdatei" + Start-Ablehnung "ERROR STATE".
+      // Bambu Studio vergibt immer saubere Namen. Darum: alle Endungen strippen,
+      // Basisname auf [A-Za-z0-9_-] reduzieren (Punkte→_), genau EIN .gcode.3mf. (2026-07-27)
+      const baseName = (name.replace(/\.(gcode\.3mf|gcode|3mf|stl|step|stp|obj)$/i, '')
+                            .replace(/[^A-Za-z0-9_-]+/g, '_')
+                            .replace(/^_+|_+$/g, '')) || 'print';
+      const jobName = baseName + '-' + uniq;
       const name3 = jobName + '.gcode.3mf';
       // Bevorzugt das vollständige, vom nativen OrcaSlicer erzeugte .gcode.3mf
       // (gültige slice_info mit Dual-Extruder-Feldern). Fällt auf das selbst
@@ -692,29 +701,40 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       }
       console.log('[send]', nativePath ? 'natives 3MF' : 'eigenes 3MF', name3);
       job.phase = 'upload'; job.percent = 0;
-      // AMS-Druck (H2): auf emmc laden (Port 6000) statt FTP/SD — sonst
-      // "AMS-Zuordnungstabelle nicht abrufbar" [0700-8012]. Datei-URL wird brtc://emmc/.
-      // Scheitert der emmc-Upload, Fallback auf FTP (dann ggf. AMS-Bug, aber Druck lädt).
-      let fileUrl = `ftp://${name3}`;
-      if (amsOverride) {
-        try {
-          await emmcUpload(p, pack, name3);
-          fileUrl = `brtc://emmc/${name3}`;
-          job.percent = 100;
-          console.log('[send] emmc-Upload (Port 6000) ok → ' + fileUrl);
-        } catch (e) {
-          console.log('[send] emmc-Upload fehlgeschlagen, Fallback FTP:', e.message);
-          await lan.uploadGcode(p, name3, pack,
-            (sent) => { job.percent = Math.min(100, Math.round(sent / pack.length * 100)); });
-        }
-      } else {
-        await lan.uploadGcode(p, name3, pack,
-          (sent) => { job.percent = Math.min(100, Math.round(sent / pack.length * 100)); });
-      }
+      // Datei per FTPS in den Root laden, URL = ftp://<name>.
+      // FRÜHER wurden AMS-Drucke auf emmc geladen (brtc://emmc/, Port 6000) gegen den
+      // "AMS-Zuordnungstabelle nicht abrufbar"-Bug [0700-8012]. Die H2C-Firmware
+      // (ab 01.02.00.00, Juni 2026) LEHNT brtc://emmc/ aber ab: project_file →
+      // err_code 0x05004046 "nicht unterstützter Pfad", reason "ERROR STATE".
+      // ftp:// wird akzeptiert und druckt AMS-Mehrfarbe korrekt (LIVE verifiziert
+      // 2026-07-27: SUCCESS + RUNNING; use_ams + ams_mapping/ams_mapping2 tragen die
+      // AMS-Zuordnung, das 0700-8012 ist damit nicht mehr nötig). (2026-07-27)
+      const fileUrl = `ftp://${name3}`;
+      await lan.uploadGcode(p, name3, pack,
+        (sent) => { job.percent = Math.min(100, Math.round(sent / pack.length * 100)); });
       let pr = null;
       if (start) {
         job.phase = 'start'; job.percent = 100;
         const isOk = (r) => r && String(r.result || '').toLowerCase() === 'success';
+        // Diagnose: Druckerzustand DIREKT vor dem Start protokollieren — bei
+        // "ERROR STATE" ist so nachvollziehbar, ob gcode_state/HMS/print_error
+        // den Start blockiert (H2C-LAN-Debug 2026-07-27).
+        try {
+          const pre = await lan.getStatus(p, 6000).catch(() => null);
+          const pp = pre && (pre.print || pre);
+          if (pp) console.log('[send] pre-start', serial, 'gcode_state=' + pp.gcode_state,
+            'print_error=' + pp.print_error, 'hms=' + JSON.stringify(pp.hms || []));
+          // Hängt ein Geräte-Fehler (print_error != 0), lehnt die H2-Firmware JEDEN neuen
+          // Start mit "ERROR STATE" ab — auch bei einwandfreier Datei. Der Fehler bleibt
+          // über Neustart/stop bestehen; nur clean_print_error (= "Fehler bestätigen" am
+          // Display) räumt ihn. Häufigste Quelle: ein vorheriger Start mit ungültigem
+          // Dateinamen (0x05004002). Darum vor dem project_file aktiv quittieren. (2026-07-27)
+          if (pp && Number(pp.print_error) > 0) {
+            await lan.sendCommand(p, { print: { sequence_id: '0', command: 'clean_print_error', subtask_id: '0' } }, { waitMs: 4000 }).catch(() => {});
+            await new Promise((r) => setTimeout(r, 1500));
+            console.log('[send] clean_print_error gesendet (print_error war ' + pp.print_error + ')');
+          }
+        } catch {}
         const { usedFil, ...amsPrint } = amsOverride || {}; // usedFil NICHT in den Befehl
         // Für AMS-Drucke die letzten Befehl-Diffs auf Studio zwingen: flow_cali=false,
         // bed_type=textured_plate (Studios Werte im Mitschnitt). Sonst printOpts.
@@ -734,6 +754,8 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
         // mehr), sonst 0x7008012 (Header Slot 1 vs Kommando Slot 2). Verifiziert 2026-07-19.
         pr = await lan.sendCommand(p, projPayload, { waitMs: 8000 }).catch(() => null);
         console.log('[send] lan-start', serial, name3, 'result:', pr?.result, pr?.reason || '');
+        if (pr && String(pr.result || '').toLowerCase() !== 'success')
+          console.log('[send] lan-start FULL REPORT:', JSON.stringify(pr.report || pr));
         // Bambu Authorization Control (Firmware 01.09+): Druckbefehle müssen
         // signiert sein → "mqtt message verify failed", über LAN wie Cloud.
         // Dann ist der Cloud-Versuch zwecklos (spart 2 Runden); nur bei
