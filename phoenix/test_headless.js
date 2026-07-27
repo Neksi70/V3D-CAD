@@ -205,7 +205,7 @@ function check(name, cond, extra) {
     _pxdbg.goStage(4); G.invuln = true;            // frische Festung
     const before = G.score;
     // Bahn durch die Baender und die untere Huelle freiraeumen
-    for (let r = 9; r < 18; r++) for (let c = 13; c <= 16; c++) G.fort.cells[r][c] = null;
+    for (let r = 8; r < 18; r++) for (let c = 12; c <= 17; c++) G.fort.cells[r][c] = null;
     _t.aim(() => G.fort && G.fort.x + 15 * 4, 600, () => !G.fort || !G.fort.alien);
     const dead = !G.fort || !G.fort.alien;
     const pts = G.score - before;

@@ -14,26 +14,34 @@
   }
   #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
   /* Automaten-Look: schwarzer Rand + leichtes Glimmen wie eine Bildröhre */
-  #cab { position: relative; padding: 6px; background: #060606; border-radius: 4px; box-shadow: 0 0 0 2px #151515, 0 0 34px #061206; }
+  #cab { position: relative; padding: 4px; background: #060606; border-radius: 4px; box-shadow: 0 0 0 2px #151515, 0 0 34px #061206; }
   canvas#scr {
     display: block; background: #000;
     image-rendering: pixelated; image-rendering: crisp-edges;
   }
-  #scan { position: absolute; inset: 6px; pointer-events: none; opacity: .16;
+  #scan { position: absolute; inset: 4px; pointer-events: none; opacity: .14;
     background: repeating-linear-gradient(180deg, rgba(255,255,255,.5) 0 1px, transparent 1px 3px); }
   #hint { position: fixed; left: 0; right: 0; bottom: 3px; text-align: center; font-size: 10px; color: #2c4a2c; letter-spacing: .5px; }
   /* Touch-Bedienung (nur auf Touch-Geraeten sichtbar) */
-  #pad { position: fixed; inset: auto 0 0 0; height: 34%; display: none; }
+  #pad { position: fixed; inset: 0; display: none; pointer-events: none; }
   body.touch #pad { display: block; }
   body.touch #hint { display: none; }
-  .btn { position: absolute; bottom: 6%; border: 2px solid #1d3f1d; border-radius: 14px;
-    background: rgba(20,40,20,.30); color: #7d7; font-size: 22px; display: flex;
-    align-items: center; justify-content: center; }
+  .btn { position: absolute; border: 2px solid #1d3f1d; border-radius: 14px;
+    background: rgba(20,40,20,.30); color: #7d7; font-size: 20px; display: flex;
+    align-items: center; justify-content: center; pointer-events: auto; }
   .btn.on { background: rgba(60,140,60,.45); border-color: #4a4; }
-  #bL { left: 3%;  width: 21%; height: 62%; }
-  #bR { left: 26%; width: 21%; height: 62%; }
-  #bF { right: 3%; width: 22%; height: 62%; font-size: 15px; }
-  #bS { right: 27%; width: 20%; height: 62%; font-size: 13px; }
+  /* Hochformat: Tasten unter dem Bild */
+  #bL { left: 2%;  bottom: 3%; width: 21%; height: 20%; }
+  #bR { left: 25%; bottom: 3%; width: 21%; height: 20%; }
+  #bS { right: 25%; bottom: 3%; width: 21%; height: 20%; font-size: 12px; }
+  #bF { right: 2%; bottom: 3%; width: 21%; height: 20%; font-size: 14px; }
+  /* Querformat: Tasten links und rechts neben dem Bild */
+  @media (orientation: landscape) {
+    #bL { left: 1%;  bottom: 6%;  width: 12%; height: 34%; }
+    #bR { left: 14%; bottom: 6%;  width: 12%; height: 34%; }
+    #bS { right: 14%; bottom: 6%; width: 12%; height: 34%; font-size: 11px; }
+    #bF { right: 1%; bottom: 6%;  width: 12%; height: 34%; font-size: 13px; }
+  }
 </style>
 </head>
 <body>
@@ -62,9 +70,9 @@
 
 // ---------------------------------------------------------------- Konstanten
 var W = 208, H = 256, STEP = 1000 / 60;
-var PLAY_TOP = 18;            // unterhalb der Punkteanzeige
-var PLAY_BOT = 236;           // oberhalb der Leben-Anzeige
-var SHIP_Y   = 214;           // Oberkante Spielerschiff
+var PLAY_TOP = 27;            // unterhalb der dreizeiligen Punkteanzeige
+var PLAY_BOT = 252;           // das Original hat unten keine Anzeigeleiste
+var SHIP_Y   = 224;           // Oberkante Spielerschiff
 var SHIP_SPEED = 1.7;
 var SHOT_SPEED = 6;
 var BOMB_SPEED = 1.55;
@@ -73,27 +81,35 @@ var SHIELD_CD  = 300;         // 5 s Sperre (Original: ca. 5 s)
 var START_LIVES = 3;          // Automat war auf 3..6 einstellbar
 var BONUS_1 = 3000, BONUS_N = 30000;   // Extraleben bei 3.000 und ab 30.000
 
-// Arcade-Palette (gesaettigte RGB-Grundfarben wie die Original-Hardware)
+// ECHTE Hardware-Palette des Automaten, ausgerechnet aus den beiden Farb-PROMs
+// (palette_0/palette_1) der Phoenix-Hardware: je Kanal 2 Bit aus zwei PROMs,
+// video_r = p1<0> & p0<0>, video_g = p1<2> & p0<2>, video_b = p1<1> & p0<1>.
+// Ergibt genau 22 Farben, alle Kanalwerte sind 0x00, 0xaa oder 0xff.
 var C = {
-  white:'#ffffff', gray:'#a8a8a8', dark:'#585858',
-  red:'#ff3820',  orange:'#ff8a10', yellow:'#ffe830',
-  green:'#38e838', cyan:'#38e8f8',  blue:'#4058ff',
-  magenta:'#ff58e8', purple:'#a038ff'
+  white:'#ffffff', gray:'#aaaaaa',
+  red:'#ff0000',  dred:'#aa0000',   orange:'#ffaa00', yellow:'#ffff00', olive:'#aaaa00',
+  lime:'#aaff00', green:'#00ff00',  dark:'#00aa00',   spring:'#00ffaa',
+  cyan:'#00ffff', pcyan:'#aaffff',  lblue:'#00aaff',  teal:'#00aaaa',
+  blue:'#0000ff', purple:'#aa00ff', magenta:'#ff00ff', dmagenta:'#aa00aa',
+  pink:'#ff00aa', ppink:'#ffaaaa',  ppink2:'#ffaaff'
 };
+C.hudGreen = C.spring;   // Kopfzeilen des Automaten sind mintgruen
+C.hudRed   = C.red;
+C.slot     = C.dmagenta; // dunkle Schlitze in den Schildbaendern
 
-// Farbvarianten der Voegel je Welle (der Automat faerbt pro Welle/Zyklus um)
+// Die Grafik hat 2 Bit pro Pixel, also drei Farben je Objekt aus einem festen
+// Palettentripel. Aus den PROMs abgelesen: Vordergrund-Set 0 Zeile 3-5 ergibt
+// Gelb/Blassrosa/Magenta = die Phoenixe der Welle 1, Set 1 ergibt
+// Rosa/Gelb/Gruen = die Phoenixe der Welle 2. Der Automat wechselt pro Welle.
 var BIRD_PALS = [
-  { B:C.cyan,    W:C.white,   R:C.red    },
-  { B:C.red,     W:C.yellow,  R:C.white  },
-  { B:C.magenta, W:C.cyan,    R:C.yellow },
-  { B:C.green,   W:C.yellow,  R:C.red    },
-  { B:C.orange,  W:C.white,   R:C.cyan   }
+  { W:C.yellow, B:C.magenta, R:C.ppink  },
+  { W:C.ppink2, B:C.green,   R:C.yellow }
 ];
+// Grosse Phoenixe liegen in der Hintergrundebene: Set 0 Zeile 1 ergibt
+// Hellblau/Rosa/Orange (Welle 3), Set 1 dasselbe mit Violett (Welle 4).
 var BIG_PALS = [
-  { B:C.magenta, Y:C.yellow, R:C.white, WG:C.purple },
-  { B:C.green,   Y:C.cyan,   R:C.red,   WG:C.blue   },
-  { B:C.red,     Y:C.orange, R:C.white, WG:C.magenta},
-  { B:C.blue,    Y:C.cyan,   R:C.yellow,WG:C.purple }
+  { B:C.lblue,  Y:C.orange, R:C.pink, WG:C.lblue  },
+  { B:C.purple, Y:C.orange, R:C.pink, WG:C.purple }
 ];
 
 // ------------------------------------------------------------------ Sprites
@@ -125,83 +141,86 @@ function mirror(cv) {
   return out;
 }
 
-// Spielerschiff (Original: breiter Pfeilkopf mit zwei Fluegelpylonen)
+// Spielerschiff: im Original ein rotes X mit gelbem Kern und weissen Streben
 var SHIP_ROWS = [
-  '......WW......',
-  '.....WWWW.....',
-  '.....WCCW.....',
-  '....WWCCWW....',
-  '...WWWWWWWW...',
-  '..WWWWWWWWWW..',
-  '.WWW.WWWW.WWW.',
-  'WWW..WWWW..WWW',
-  'WW...W..W...WW',
-  '.R....RR....R.'
+  '..R.........R..',
+  '..RR...Y...RR..',
+  '...RR..Y..RR...',
+  '....RRRYRRR....',
+  '.....RRYRR.....',
+  'W....RRYRR....W',
+  'W...RRRYRRR...W',
+  'W..RRRRYRRRR..W',
+  'W.RRRRRYRRRRR.W',
+  'W.RRRR.Y.RRRR.W',
+  'W.RR...Y...RR.W',
+  'WWR....Y....RWW'
 ];
-// Kleiner Phoenix-Jaeger, zwei Schlagphasen
+// Kleiner Phoenix: zwei grosse Sichelfluegel, schmaler Koerper mit Kopfpunkten
+// und zwei Beinchen -- zwei Schlagphasen.
 var BIRD_UP = [
-  'W.........W',
-  '.WW.....WW.',
-  '..WW.B.WW..',
-  '...WWBWW...',
-  '....BRB....',
-  '....BBB....',
-  '.....B.....'
+  'WW.........WW',
+  'WWWW..R..WWWW',
+  'WWWWW.B.WWWWW',
+  '.WWWW.B.WWWW.',
+  '..WWWBBBWWW..',
+  '...WW.B.WW...',
+  '....W.B.W....',
+  '.....BBB.....',
+  '....B.B.B....',
+  '....B...B....'
 ];
 var BIRD_DOWN = [
-  '.....B.....',
-  '....BBB....',
-  '...WBRBW...',
-  '..WWBBBWW..',
-  '.WW.....WW.',
-  'W.........W',
-  '...........'
+  '......R......',
+  '.WW...B...WW.',
+  '.WWW.BBB.WWW.',
+  '..WWWBBBWWW..',
+  '...WWBBBWW...',
+  '....WBBBW....',
+  '....W.B.W....',
+  '.....BBB.....',
+  '....B.B.B....',
+  '....B...B....'
 ];
-// Grosser Phoenix: Koerper + Fluegel (Fluegel werden gespiegelt)
+// Grosser Phoenix: runder Koerper mit zwei Augen und gelben Klauen darunter,
+// dazu zwei weit gespreizte Fluegel (werden gespiegelt).
 var BIG_BODY = [
-  '....BBBB....',
-  '...BBBBBB...',
-  '...BRBBRB...',
-  '...BBBBBB...',
-  '..BBYYYYBB..',
-  '..BYYYYYYB..',
-  '..BYYYYYYB..',
-  '..BYYYYYYB..',
-  '..BBYYYYBB..',
-  '...BBBBBB...',
-  '...BBBBBB...',
-  '....BBBB....',
-  '....B..B....',
-  '...BB..BB...',
-  '..BB....BB..',
-  '..B......B..'
+  '...BBBBB...',
+  '..BBBBBBB..',
+  '.BBRBBBRBB.',
+  '.BBBBRBBBB.',
+  '.BBBBRBBBB.',
+  '..BBBRBBB..',
+  '..BBBBBBB..',
+  '...BBBBB...',
+  '...Y...Y...',
+  '...Y...Y...',
+  '..YY...YY..',
+  '...Y...Y...'
 ];
-// Fluegel des grossen Phoenix: am Koerper breit, nach aussen auslaufend,
-// mit gezackter Hinterkante (Federn). Spalte 0 = koerperseitig.
+// Fluegel des grossen Phoenix: am Koerper breit, zur Spitze hin abfallend,
+// mit gefiederter Unterkante. Spalte 0 = koerperseitig.
 var BIG_WING_UP = [
-  'GGG..........',
-  'GGGGGG.......',
-  'GGGGGGGGG....',
-  'GGGGGGGGGGGG.',
-  'GGGGGGGGGGGGG',
-  'GGGGGGGGGGGG.',
-  'GGGGGGGGG.G..',
-  'GGGGGGG.G....',
-  'GGGG.G.......',
-  'GG.G.........'
+  'GGGGGGGG....',
+  'GGGGGGGGGG..',
+  '.GGGGGGGGGG.',
+  '..GGGGGGGGGG',
+  '...GGGGGGGGG',
+  '....GGGGGGGG',
+  '.....GG.G.GG',
+  '......G...GG',
+  '.........G.G'
 ];
 var BIG_WING_DOWN = [
-  'GG...........',
-  'GGGG.........',
-  'GGGGGGG......',
-  'GGGGGGGGGG...',
-  'GGGGGGGGGGGG.',
-  'GGGGGGGGGGGGG',
-  '.GGGGGGGGGGGG',
-  '..GGGGGGGGG.G',
-  '....GGGGGG.G.',
-  '......GGG.G..',
-  '.......G.....'
+  'GGGG........',
+  'GGGGGGG.....',
+  'GGGGGGGGG...',
+  '.GGGGGGGGGG.',
+  '..GGGGGGGGGG',
+  '...GGGGGGGGG',
+  '....GGG.GGGG',
+  '.....G.G..GG',
+  '.......G..G.'
 ];
 var EGG_A = [
   '...EEEE...',
@@ -231,21 +250,18 @@ var EGG_B = [
   '..EEEEEE..',
   '...EEEE...'
 ];
-// Alien-Pilot in der Raumfestung
+// Alien-Pilot in der Raumfestung: magenta Falterwesen mit cyanfarbenen Augen
 var ALIEN = [
-  '...GGGGGG...',
-  '..GGGGGGGG..',
-  '..GWWGGWWG..',
-  '..GGGGGGGG..',
-  '...GGRRGG...',
-  '....GGGG....',
-  '..GGGGGGGG..',
-  '.GGGGGGGGGG.',
-  '.GGGGGGGGGG.',
-  '.GG.GGGG.GG.',
-  '....GGGG....',
-  '...GG..GG...',
-  '..GG....GG..'
+  'G...........G',
+  'GG..GGGGG..GG',
+  'GGGGGWGWGGGGG',
+  'GGGGGGGGGGGGG',
+  '.GGGGGGGGGGG.',
+  '..GG.GGG.GG..',
+  '...G.GGG.G...',
+  '.....GRG.....',
+  '....G...G....',
+  '...G.....G...'
 ];
 
 // 5x7-Pixelfont fuer die Anzeigen
@@ -297,8 +313,8 @@ var FONT = {
 // Sprites einmal vorrendern (pro Farbvariante)
 var SPR = { birdUp:[], birdDown:[], bigBody:[], wingUpL:[], wingUpR:[], wingDnL:[], wingDnR:[], eggA:[], eggB:[] };
 var i;
-SPR.ship = makeSprite(SHIP_ROWS, { W:C.white, C:C.cyan, R:C.red });
-SPR.alien = makeSprite(ALIEN, { G:C.green, W:C.white, R:C.red });
+SPR.ship = makeSprite(SHIP_ROWS, { W:C.white, Y:C.yellow, R:C.red });
+SPR.alien = makeSprite(ALIEN, { G:C.pink, W:C.lblue, R:C.ppink });
 for (i = 0; i < BIRD_PALS.length; i++) {
   SPR.birdUp[i]   = makeSprite(BIRD_UP,   BIRD_PALS[i]);
   SPR.birdDown[i] = makeSprite(BIRD_DOWN, BIRD_PALS[i]);
@@ -319,20 +335,31 @@ var cv = document.getElementById('scr');
 var ctx = cv.getContext('2d', { alpha: false });
 ctx.imageSmoothingEnabled = false;
 
+// Bild immer auf den verfuegbaren Platz strecken: volle Hoehe bzw. Breite,
+// Seitenverhaeltnis bleibt erhalten. Auf Touch-Geraeten wird im Hochformat
+// unten Platz fuer die Tasten freigehalten, im Querformat liegen sie seitlich.
 function fitScreen() {
-  var pad = 14;
-  var vw = window.innerWidth - pad, vh = window.innerHeight - pad;
-  if (document.body.classList.contains('touch')) vh = window.innerHeight * 0.66 - pad;
-  var s = Math.min(vw / W, vh / H);
-  s = Math.max(1, Math.floor(s * 2) / 2);          // halbe Stufen bleiben scharf genug
-  cv.style.width = (W * s) + 'px';
-  cv.style.height = (H * s) + 'px';
-  var cab = document.getElementById('cab');
-  document.getElementById('wrap').style.alignItems =
-    document.body.classList.contains('touch') ? 'flex-start' : 'center';
-  cab.style.marginTop = document.body.classList.contains('touch') ? '8px' : '0';
+  var touch = document.body.classList.contains('touch');
+  var vw = window.innerWidth;
+  var vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+  var landscape = vw > vh;
+  var availW = vw - 10, availH = vh - 10;
+  if (touch) {
+    if (landscape) availW = vw * 0.72 - 10;        // Tasten links/rechts
+    else           availH = vh * 0.74 - 10;        // Tasten unten
+  }
+  var s = Math.max(0.4, Math.min(availW / W, availH / H));
+  cv.style.width = Math.round(W * s) + 'px';
+  cv.style.height = Math.round(H * s) + 'px';
+  var wrap = document.getElementById('wrap');
+  wrap.style.alignItems = (touch && !landscape) ? 'flex-start' : 'center';
+  // im Hochformat mittig im Bereich oberhalb der Tasten sitzen
+  document.getElementById('cab').style.marginTop =
+    (touch && !landscape) ? Math.max(4, (availH - H * s) / 2) + 'px' : '0';
 }
 window.addEventListener('resize', fitScreen);
+window.addEventListener('orientationchange', function () { setTimeout(fitScreen, 120); });
+if (window.visualViewport) window.visualViewport.addEventListener('resize', fitScreen);
 if (('ontouchstart' in window) || navigator.maxTouchPoints > 0) document.body.classList.add('touch');
 fitScreen();
 
@@ -398,61 +425,70 @@ var SFX = {
   bonus:  function () { for (var k = 0; k < 8; k++) (function (k) { setTimeout(function () { tone(400 + k * 180, 0.09, 'square', 0.28); }, k * 70); })(k); }
 };
 
-// Notenhilfen fuer die Melodien
-var NOTE = { 'C':261.63,'C#':277.18,'D':293.66,'D#':311.13,'E':329.63,'F':349.23,
-             'F#':369.99,'G':392.00,'G#':415.30,'A':440.00,'A#':466.16,'B':493.88 };
-function nf(name, oct) {                       // nf('E',5) -> Frequenz
-  var base = NOTE[name];
-  return base * Math.pow(2, (oct || 4) - 4);
-}
-function N(name, oct, beats) { return [name === 'r' ? 0 : nf(name, oct), beats]; }
+// ---- Musik: Notendaten des Melodie-ICs (Matsushita MN6221AA) des Automaten.
+// Codierung je Schritt: Bit0-3 = Ton (0=A, 1=A#, 2=B, 3=C ... 11=G#),
+// Bit4-5 = Oktave (0 entspricht 220 Hz), Bit6 = 1 heisst "Ton halten" statt neu
+// anschlagen. Alle Schritte sind gleich lang. Beide Stuecke sind gemeinfrei
+// (Anonymus bzw. Beethoven); der Chip spielt sie einen Ganzton tiefer als die
+// Noten. Werte aus der Hardware-Nachbildung des Automaten uebernommen
+// (MiSTer-Core Arcade-Phoenix, rtl/phoenix_music.vhd).
+var MUSIC_ROMANCE_V1 = [    // Hauptstimme ("Jeux Interdits" = Romance de Amor)
+  32,96,32,96,32,96,32,96,26,90,24,88,24,88,23,87,21,85,21,85,24,88,32,96,37,101,
+  101,101,101,101,37,101,35,99,33,97,33,97,32,96,26,90,26,90,32,96,33,97,32,96,
+  33,97,32,96,36,100,33,97,32,96,32,96,26,90,24,88,24,88,23,87,21,85,23,87,23,87,
+  23,87,23,87,24,88,23,87,21,85,24,88,32,96,37,101,101,101,101];
+var MUSIC_ROMANCE_V2 = [    // Begleitstimme
+  5,69,69,69,69,69,16,80,80,80,80,80,8,72,8,72,8,72,16,80,80,80,80,80,5,69,5,8,
+  16,21,5,69,69,69,69,69,17,81,81,81,81,81,10,74,74,74,74,74,16,80,80,80,80,80,
+  16,80,80,80,80,80,8,72,72,72,72,72,5,69,69,69,69,69,7,71,71,71,71,71,17,81,81,
+  81,8,72,5,69,16,80,8,72,5,69,69,69,69];
+var MUSIC_ELISE = [         // "La lettre a Elise" = Fuer Elise
+  37,36,37,36,37,32,35,33,26,5,10,17,21,26,32,5,16,21,25,32,33,5,10,17,37,36,37,
+  36,37,32,35,33,26,5,10,17,21,26,32,5,16,21,33,32,26,90];
+// Schrittdauern aus den Tempo-Konstanten des Originals (Song 0 laeuft langsamer)
+var STEP_ROMANCE = 0.246, STEP_ELISE = 0.19;
 
-// "Fuer Elise" (Beethoven, gemeinfrei) -- im Original nach Wellenabschluss
-var MUSIC_ELISE = [
-  N('E',5,.5), N('D#',5,.5), N('E',5,.5), N('D#',5,.5), N('E',5,.5), N('B',4,.5), N('D',5,.5), N('C',5,.5),
-  N('A',4,1),  N('C',4,.5),  N('E',4,.5), N('A',4,.5), N('B',4,1),   N('E',4,.5), N('G#',4,.5), N('B',4,.5),
-  N('C',5,1),  N('E',4,.5),
-  N('E',5,.5), N('D#',5,.5), N('E',5,.5), N('D#',5,.5), N('E',5,.5), N('B',4,.5), N('D',5,.5), N('C',5,.5),
-  N('A',4,1),  N('C',4,.5),  N('E',4,.5), N('A',4,.5), N('B',4,1),   N('E',4,.5), N('C',5,.5), N('B',4,.5),
-  N('A',4,1.5)
-];
-// "Romance de Amor" (anonym, gemeinfrei) -- im Original beim Spielstart.
-// Freie, aber wiedererkennbare Wiedergabe der ersten Phrase: Melodie ueber
-// e-Moll-Arpeggien; Tonliste bewusst kompakt, laesst sich hier leicht tauschen.
-var MUSIC_ROMANCE = [
-  N('E',5,1.5), N('E',5,.5), N('D#',5,.5), N('E',5,.5), N('F#',5,.5),
-  N('G',5,1.5), N('F#',5,.5), N('E',5,.5), N('D#',5,.5), N('E',5,.5),
-  N('B',4,1.5), N('E',5,.5), N('G',5,.5),  N('B',5,.5),
-  N('A',5,1.5), N('G',5,.5), N('F#',5,.5), N('E',5,.5),
-  N('D#',5,1.5), N('F#',5,.5), N('B',4,1), N('E',5,2)
-];
-function playMusic(notes, tempo) {
-  if (!AU.ctx || AU.muted) return;
-  var t = AU.ctx.currentTime + 0.05, beat = 60 / (tempo || 132);
-  for (var k = 0; k < notes.length; k++) {
-    var f = notes[k][0], d = notes[k][1] * beat;
-    if (f > 0) {
-      var o = AU.ctx.createOscillator(), g = AU.ctx.createGain();
-      o.type = 'square'; o.frequency.setValueAtTime(f, t);
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.26, t + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + d * 0.95);
-      o.connect(g); g.connect(AU.musicGain);
-      o.start(t); o.stop(t + d);
-      // schlichte Bassbegleitung (Melodie-IC des Originals klang aehnlich schlicht)
-      if (k % 2 === 0) {
-        var o2 = AU.ctx.createOscillator(), g2 = AU.ctx.createGain();
-        o2.type = 'triangle'; o2.frequency.setValueAtTime(f / 4, t);
-        g2.gain.setValueAtTime(0.0001, t);
-        g2.gain.exponentialRampToValueAtTime(0.16, t + 0.02);
-        g2.gain.exponentialRampToValueAtTime(0.0001, t + d);
-        o2.connect(g2); g2.connect(AU.musicGain);
-        o2.start(t); o2.stop(t + d);
-      }
-    }
-    t += d;
+// Schrittliste in Toene mit Dauer uebersetzen ("halten" verlaengert den Vorton)
+function decodeVoice(codes, stepDur) {
+  var out = [], k;
+  for (k = 0; k < codes.length; k++) {
+    var c = codes[k];
+    if ((c & 64) && out.length) { out[out.length - 1].d += stepDur; continue; }
+    out.push({ f: 220 * Math.pow(2, (c >> 4) & 3) * Math.pow(2, (c & 15) / 12), d: stepDur });
   }
-  return (t - AU.ctx.currentTime) * 1000;
+  return out;
+}
+function voiceLen(v) { var s = 0; for (var k = 0; k < v.length; k++) s += v[k].d; return s; }
+function playVoice(notes, t0, vol, type) {
+  var t = t0;
+  for (var k = 0; k < notes.length; k++) {
+    var o = AU.ctx.createOscillator(), g = AU.ctx.createGain();
+    o.type = type || 'square';
+    o.frequency.setValueAtTime(notes[k].f, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + notes[k].d * 0.96);
+    o.connect(g); g.connect(AU.musicGain);
+    o.start(t); o.stop(t + notes[k].d);
+    t += notes[k].d;
+  }
+}
+// song: 'romance' (Spielstart, zweistimmig) oder 'elise' (Wellenabschluss)
+function playMusic(song) {
+  if (!AU.ctx || AU.muted) return 0;
+  var t0 = AU.ctx.currentTime + 0.05, len;
+  if (song === 'romance') {
+    var v1 = decodeVoice(MUSIC_ROMANCE_V1, STEP_ROMANCE);
+    var v2 = decodeVoice(MUSIC_ROMANCE_V2, STEP_ROMANCE);
+    playVoice(v1, t0, 0.26, 'square');
+    playVoice(v2, t0, 0.12, 'triangle');
+    len = Math.max(voiceLen(v1), voiceLen(v2));
+  } else {
+    var v3 = decodeVoice(MUSIC_ELISE, STEP_ELISE);
+    playVoice(v3, t0, 0.26, 'square');
+    len = voiceLen(v3);
+  }
+  return len * 1000;
 }
 // Laufender Hintergrundpuls waehrend des Spiels (im Original ein tiefes Brummen)
 function bgPulse() {
@@ -521,9 +557,34 @@ var G = {
 };
 try { G.hi = parseInt(localStorage.getItem('phoenix.hi') || '0', 10) || 0; } catch (e) {}
 
-for (i = 0; i < 56; i++) {
-  G.stars.push({ x: Math.random() * W, y: PLAY_TOP + Math.random() * (PLAY_BOT - PLAY_TOP),
-                 v: 0.2 + Math.random() * 0.7, c: Math.random() < .3 ? C.gray : C.white });
+// Hintergrund wie im Original: dichtes blaues Sternenfeld, dazwischen ein paar
+// helle Kreuz-Sterne, blaue Nebelfelder und langsam ziehende Planeten.
+for (i = 0; i < 120; i++) {
+  G.stars.push({ x: Math.random() * W, y: Math.random() * H,
+                 v: 0.10 + Math.random() * 0.35,
+                 c: [C.blue, C.blue, C.lblue][Math.floor(Math.random() * 3)], k: 0 });
+}
+for (i = 0; i < 14; i++) {
+  G.stars.push({ x: Math.random() * W, y: Math.random() * H,
+                 v: 0.35 + Math.random() * 0.4,
+                 c: Math.random() < .5 ? C.white : C.yellow, k: 1 });   // Kreuz-Stern
+}
+G.nebulae = [];
+for (i = 0; i < 4; i++) {
+  var pts = [];
+  for (var np = 0; np < 44; np++) {
+    var a = Math.random() * 6.283, rr = Math.pow(Math.random(), 0.6) * 26;
+    pts.push({ dx: Math.cos(a) * rr * 1.6, dy: Math.sin(a) * rr * 0.7 });
+  }
+  G.nebulae.push({ x: Math.random() * W, y: Math.random() * H, v: 0.14, pts: pts });
+}
+G.planets = [];
+for (i = 0; i < 2; i++) {
+  G.planets.push({
+    x: 20 + Math.random() * (W - 40), y: Math.random() * H,
+    r: i ? 9 : 5, v: 0.10 + i * 0.05,
+    c: i ? C.lblue : C.blue, spot: i ? C.pink : C.teal
+  });
 }
 
 // Wellenaufbau: 5 Stufen im Zyklus wie im Original
@@ -539,7 +600,7 @@ function startGame() {
   G.ship.x = W / 2 - 7; G.ship.shieldT = 0; G.ship.cdT = 0; G.ship.dead = false;
   buildStage();
   showMsg('PLAYER ONE', 90);
-  playMusic(MUSIC_ROMANCE, 150);
+  playMusic('romance');
 }
 
 function buildStage() {
@@ -591,26 +652,39 @@ var FORT_W = FCOLS * FCS, FORT_H = FROWS * FCS;
 // darunter die beiden rotierenden Schildbaender und zuunterst die Huelle.
 // Entscheidend: die Baender liegen ZWISCHEN Kanone und Pilot -- ihre wandernden
 // Luecken sind die eigentliche Huerde.
-var FORT_Y0 = PLAY_TOP - 10;
-var BAND_A_R0 = 9, BAND_A_R1 = 12, BAND_B_R0 = 12, BAND_B_R1 = 15;
-var CHAMBER_R0 = 5, CHAMBER_R1 = 9, CHAMBER_C0 = 11, CHAMBER_C1 = 18;
+var FORT_Y0 = PLAY_TOP - 8;
+var BAND_A_R0 = 8, BAND_A_R1 = 10, BAND_B_R0 = 10, BAND_B_R1 = 12;
+var CHAMBER_R0 = 4, CHAMBER_R1 = 8, CHAMBER_C0 = 12, CHAMBER_C1 = 17;
 function buildFort(cyc) {
   var cells = [], r, c, col;
   for (r = 0; r < FROWS; r++) {
     cells[r] = [];
     for (c = 0; c < FCOLS; c++) {
       col = null;
-      if (r < 2)            { if (c >= 12 && c <= 17) col = C.magenta; }   // Turmspitze
-      else if (r < 4)       { if (c >= 8  && c <= 21) col = C.magenta; }
-      else if (r < 5)       { if (c >= 4  && c <= 25) col = C.purple; }
-      else if (r < 9)       {                                              // Kammer des Piloten
-        if (c >= 3 && c <= 26) col = C.blue;
+      // Gittermast auf dem Dach
+      if (r === 0)          { if (c === 14 || c === 15) col = C.yellow; }
+      else if (r === 1)     { if (c >= 10 && c <= 19) col = C.yellow; }
+      else if (r === 2)     { if (c === 14 || c === 15) col = C.yellow;
+                              else if (c >= 11 && c <= 18) col = C.yellow; }
+      else if (r === 3)     { if (c >= 9 && c <= 20) col = C.yellow; }
+      // Stufenpyramiden aus Limettengruen, Kammer des Piloten in der Mitte
+      else if (r < 8)       {
+        var inset = [7, 5, 3, 2][r - 4];
+        if (c >= inset && c < FCOLS - inset) col = C.lime;
+        if (col && ((r === 5 && (c === inset + 1 || c === FCOLS - inset - 2)) ||
+                    (r === 6 && c % 3 === 0))) col = C.purple;          // Zierpunkte
         if (c >= CHAMBER_C0 && c <= CHAMBER_C1) col = null;
       }
-      else if (r < 12)      { col = C.green; }                             // Schildband A
-      else if (r < 15)      { col = C.cyan; }                              // Schildband B
-      else if (r < 17)      { if (c >= 2 && c <= 27) col = C.blue; }
-      else                  { if (c >= 6 && c <= 23) col = C.purple; }
+      // zwei gegenlaeufige Schildbaender; die dunklen Schlitze sind nur Zier,
+      // sie halten Schuesse genauso auf wie der Rest des Bandes
+      else if (r < BAND_A_R1) { col = (c % 4 === 3) ? C.slot : C.purple; }
+      else if (r < BAND_B_R1) { col = (c % 5 === 0) ? C.slot : C.pink; }
+      // grosser oranger Rumpf, unten ausgefranst
+      else if (r < 17)      {
+        var ins = [1, 1, 2, 3, 5][r - 12];
+        if (c >= ins && c < FCOLS - ins) col = C.orange;
+      }
+      else                  { if (c >= 7 && c <= 22 && c % 2 === 0) col = C.orange; }
       cells[r][c] = col;
     }
   }
@@ -651,7 +725,7 @@ function togglePause() {
 }
 
 function shipBox() { return { x: G.ship.x, y: SHIP_Y, w: SPR.ship.width, h: SPR.ship.height }; }
-function birdBox(b) { return { x: b.x, y: b.y, w: 11, h: 7 }; }
+function birdBox(b) { return { x: b.x, y: b.y, w: 13, h: 10 }; }
 
 // Kleinen Phoenix fuer den Festungskampf einfliegen lassen
 function spawnEscort(pal, d) {
@@ -672,7 +746,17 @@ function update() {
   for (var s = 0; s < G.stars.length; s++) {
     var st = G.stars[s];
     st.y += st.v;
-    if (st.y > PLAY_BOT) { st.y = PLAY_TOP; st.x = Math.random() * W; }
+    if (st.y > H) { st.y = -2; st.x = Math.random() * W; }
+  }
+  for (var nb = 0; nb < G.nebulae.length; nb++) {
+    var ne = G.nebulae[nb];
+    ne.y += ne.v;
+    if (ne.y > H + 30) { ne.y = -30; ne.x = Math.random() * W; }
+  }
+  for (var pl = 0; pl < G.planets.length; pl++) {
+    var pa = G.planets[pl];
+    pa.y += pa.v;
+    if (pa.y > H + pa.r) { pa.y = -pa.r; pa.x = 20 + Math.random() * (W - 40); }
   }
   for (var bi = G.booms.length - 1; bi >= 0; bi--) {
     G.booms[bi].t++;
@@ -687,7 +771,7 @@ function update() {
   }
 
   if (G.state === 'CLEAR') {
-    if (G.stateT === 1) playMusic(MUSIC_ELISE, stageKind(G.stage) === 4 ? 128 : 168);
+    if (G.stateT === 1) playMusic('elise');
     if (G.stateT > (stageKind(G.stage) === 4 ? 300 : 170)) {
       G.stage++;
       G.state = 'PLAY'; G.stateT = 0;
@@ -875,10 +959,11 @@ function fortShot(sp) {
   return false;
 }
 
-function bigBodyBox(bg) { return { x: bg.x, y: bg.y, w: 12, h: 16 }; }
+var BIGB_W = 11, BIGB_H = 12, BIGW_W = 12, BIGW_H = 9;
+function bigBodyBox(bg) { return { x: bg.x, y: bg.y, w: BIGB_W, h: BIGB_H }; }
 function bigWingBox(bg, side) {
-  return side < 0 ? { x: bg.x - 13, y: bg.y + 2, w: 13, h: 11 }
-                  : { x: bg.x + 12, y: bg.y + 2, w: 13, h: 11 };
+  return side < 0 ? { x: bg.x - BIGW_W, y: bg.y + 1, w: BIGW_W, h: BIGW_H }
+                  : { x: bg.x + BIGB_W, y: bg.y + 1, w: BIGW_W, h: BIGW_H };
 }
 
 function updateEnemies() {
@@ -893,8 +978,11 @@ function updateEnemies() {
     var b = G.birds[j];
     b.t++;
     b.wob += 0.24;
-    var slotX = fl.cx - (fl.cols - 1) * 10 + b.col * 20 - 5;
-    var slotY = fl.cy + b.row * 16;
+    // Formation als Bogen: aussen sitzen die Voegel tiefer (wie im Original,
+    // wo der Schwarm in einem Halbkreis haengt statt im Raster)
+    var half = (fl.cols - 1) / 2;
+    var slotX = fl.cx - half * 20 + b.col * 20 - 6;
+    var slotY = fl.cy + Math.abs(b.col - half) * 5.5 + b.row * 17;
 
     if (b.st === 'enter') {
       // Bogenanflug von oben in den Formationsplatz
@@ -1086,21 +1174,10 @@ function render() {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
 
-  // Sternenfeld
-  for (var s = 0; s < G.stars.length; s++) {
-    var st = G.stars[s];
-    ctx.fillStyle = st.c;
-    ctx.fillRect(Math.round(st.x), Math.round(st.y), 1, 1);
-  }
+  renderSky();
+  renderHud();
 
-  // Anzeigen oben
-  drawText('1UP', 4, 2, C.red);
-  drawText(pad(G.score, 6), 26, 2, C.white);
-  drawText('HI', 132, 2, C.red);
-  drawText(pad(G.hi, 6), 148, 2, C.white);
-  ctx.fillStyle = C.dark; ctx.fillRect(0, 13, W, 1);
-
-  if (G.state === 'ATTRACT') { renderAttract(); renderBottom(); return; }
+  if (G.state === 'ATTRACT') { renderAttract(); return; }
 
   // Raumfestung
   if (G.fort) renderFort(G.fort);
@@ -1117,8 +1194,8 @@ function render() {
   for (var g2 = 0; g2 < G.bigs.length; g2++) {
     var bg = G.bigs[g2];
     var up = bg.flap === 0;
-    if (bg.wingL) drawSprite(up ? SPR.wingUpL[bg.pal] : SPR.wingDnL[bg.pal], bg.x - 13, bg.y + 2);
-    if (bg.wingR) drawSprite(up ? SPR.wingUpR[bg.pal] : SPR.wingDnR[bg.pal], bg.x + 12, bg.y + 2);
+    if (bg.wingL) drawSprite(up ? SPR.wingUpL[bg.pal] : SPR.wingDnL[bg.pal], bg.x - BIGW_W, bg.y + 1);
+    if (bg.wingR) drawSprite(up ? SPR.wingUpR[bg.pal] : SPR.wingDnR[bg.pal], bg.x + BIGB_W, bg.y + 1);
     drawSprite(SPR.bigBody[bg.pal], bg.x, bg.y);
   }
 
@@ -1138,36 +1215,102 @@ function render() {
     ctx.fillRect(Math.round(bo.x), Math.round(bo.y), 2, 4);
   }
 
-  // Spielerschiff + Schild
+  // Spielerschiff + Schild. Das Original hat keine Schildanzeige -- statt einer
+  // Leiste sind die weissen Streben waehrend der Sperrzeit abgedunkelt.
   if (!G.ship.dead) {
-    drawSprite(SPR.ship, G.ship.x, SHIP_Y);
+    if (G.ship.cdT > 0 && G.ship.shieldT === 0) {
+      ctx.globalAlpha = 0.72; drawSprite(SPR.ship, G.ship.x, SHIP_Y); ctx.globalAlpha = 1;
+    } else {
+      drawSprite(SPR.ship, G.ship.x, SHIP_Y);
+    }
     if (G.ship.shieldT > 0 && G.frame % 4 < 3) {
       ctx.strokeStyle = (G.frame % 8 < 4) ? C.cyan : C.white;
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.arc(G.ship.x + SPR.ship.width / 2, SHIP_Y + 9, 13, Math.PI * 1.08, Math.PI * 1.92);
+      ctx.arc(G.ship.x + SPR.ship.width / 2, SHIP_Y + 9, 14, Math.PI * 1.06, Math.PI * 1.94);
       ctx.stroke();
     }
   }
 
-  // Explosionen: Sternchen-Ausbruch wie im Original
+  // Explosionen: magenta Sternenausbruch mit weissem Kern wie im Original
   for (var bi = 0; bi < G.booms.length; bi++) {
     var bm = G.booms[bi], t = bm.t / 22;
-    var rad = bm.size * (0.3 + t * 0.9);
-    ctx.fillStyle = t < 0.4 ? C.white : bm.c;
+    var rad = bm.size * (0.3 + t * 0.95);
     for (var a = 0; a < 8; a++) {
-      var ang = a * Math.PI / 4 + bm.t * 0.05;
-      ctx.fillRect(Math.round(bm.x + Math.cos(ang) * rad), Math.round(bm.y + Math.sin(ang) * rad), 2, 2);
+      var ang = a * Math.PI / 4 + bm.t * 0.04;
+      var len = rad * (a % 2 ? 0.62 : 1);
+      ctx.fillStyle = t < 0.35 ? C.white : (a % 2 ? bm.c : C.magenta);
+      ctx.fillRect(Math.round(bm.x + Math.cos(ang) * len), Math.round(bm.y + Math.sin(ang) * len), 2, 2);
+      if (t > 0.25) {
+        ctx.fillStyle = C.red;
+        ctx.fillRect(Math.round(bm.x + Math.cos(ang) * len * 0.6),
+                     Math.round(bm.y + Math.sin(ang) * len * 0.6), 1, 1);
+      }
     }
-    if (t < 0.5) { ctx.fillStyle = C.yellow; ctx.fillRect(Math.round(bm.x - 1), Math.round(bm.y - 1), 3, 3); }
+    if (t < 0.6) {                                  // weisser Rautenkern
+      ctx.fillStyle = C.white;
+      ctx.fillRect(Math.round(bm.x - 1), Math.round(bm.y), 3, 1);
+      ctx.fillRect(Math.round(bm.x), Math.round(bm.y - 1), 1, 3);
+    }
   }
 
-  if (G.msgT > 0 && G.msg) drawTextC(G.msg, 120, (G.frame % 20 < 14) ? C.yellow : C.red);
-  if (G.state === 'GAMEOVER') drawTextC('GAME OVER', 120, C.red);
-  if (G.state === 'PAUSE') drawTextC('PAUSE', 138, C.cyan);
-  if (G.state === 'CLEAR' && stageKind(G.stage) === 4) drawTextC('MOTHERSHIP DOWN', 132, C.green);
+  if (G.msgT > 0 && G.msg) drawTextC(G.msg, 128, (G.frame % 20 < 14) ? C.yellow : C.hudRed);
+  if (G.state === 'GAMEOVER') drawTextC('GAME OVER', 128, C.hudRed);
+  if (G.state === 'PAUSE') drawTextC('PAUSE', 146, C.cyan);
+  if (G.state === 'CLEAR' && stageKind(G.stage) === 4) drawTextC('MOTHERSHIP DOWN', 140, C.lime);
+}
 
-  renderBottom();
+function renderSky() {
+  var i2, j2;
+  // Nebelfelder zuerst, damit Sterne davor liegen
+  for (i2 = 0; i2 < G.nebulae.length; i2++) {
+    var ne = G.nebulae[i2];
+    ctx.fillStyle = C.blue;
+    for (j2 = 0; j2 < ne.pts.length; j2++) {
+      ctx.fillRect(Math.round(ne.x + ne.pts[j2].dx), Math.round(ne.y + ne.pts[j2].dy), 1, 1);
+    }
+  }
+  for (i2 = 0; i2 < G.planets.length; i2++) {
+    var pa = G.planets[i2];
+    ctx.fillStyle = pa.c;
+    ctx.beginPath(); ctx.arc(Math.round(pa.x), Math.round(pa.y), pa.r, 0, 6.283); ctx.fill();
+    ctx.fillStyle = pa.spot;
+    for (j2 = 0; j2 < 7; j2++) {
+      var a2 = j2 * 1.7 + pa.y * 0.01, rr2 = (j2 % 3) * pa.r * 0.3;
+      ctx.fillRect(Math.round(pa.x + Math.cos(a2) * rr2), Math.round(pa.y + Math.sin(a2) * rr2), 1, 1);
+    }
+  }
+  for (i2 = 0; i2 < G.stars.length; i2++) {
+    var st = G.stars[i2];
+    ctx.fillStyle = st.c;
+    var sx = Math.round(st.x), sy = Math.round(st.y);
+    if (st.k) {                       // heller Kreuz-Stern wie im Original
+      ctx.fillRect(sx - 1, sy, 3, 1);
+      ctx.fillRect(sx, sy - 1, 1, 3);
+    } else {
+      ctx.fillRect(sx, sy, 1, 1);
+    }
+  }
+}
+
+// Dreizeilige Kopfanzeige des Automaten:
+// SCORE1 / HI-SCORE / SCORE2, darunter die Punkte, darunter Leben und COIN
+function renderHud() {
+  drawText('SCORE1', 6, 1, C.hudGreen);
+  drawText('HI-SCORE', 80, 1, C.hudGreen);
+  drawText('SCORE2', 161, 1, C.hudGreen);
+  drawText(pad(G.score, 6), 6, 9, C.hudRed);
+  drawText(pad(G.hi, 6), 86, 9, C.hudRed);
+  drawText('000000', 161, 9, C.hudRed);
+
+  var icon = SPR.birdUp[G.stage % BIRD_PALS.length];
+  var lives = Math.max(0, G.lives);
+  ctx.save(); ctx.translate(26, 17); ctx.scale(0.62, 0.62); ctx.drawImage(icon, 0, 0); ctx.restore();
+  drawText('X' + Math.min(9, lives), 36, 17, C.hudRed);
+  drawText('COIN', 74, 17, C.hudGreen);
+  drawText('00', 98, 17, C.hudRed);
+  ctx.save(); ctx.translate(166, 17); ctx.scale(0.62, 0.62); ctx.drawImage(icon, 0, 0); ctx.restore();
+  drawText('X0', 176, 17, C.hudRed);
 }
 
 function renderFort(f) {
@@ -1187,48 +1330,26 @@ function renderFort(f) {
   }
 }
 
-function renderBottom() {
-  ctx.fillStyle = C.dark; ctx.fillRect(0, PLAY_BOT + 1, W, 1);
-  // Restleben als kleine Schiffe
-  var n = Math.min(6, Math.max(0, G.lives - (G.state === 'ATTRACT' ? 0 : 0)));
-  for (var i2 = 0; i2 < n; i2++) {
-    ctx.save();
-    ctx.translate(4 + i2 * 16, PLAY_BOT + 6);
-    ctx.scale(0.85, 0.85);
-    ctx.drawImage(SPR.ship, 0, 0);
-    ctx.restore();
-  }
-  // Wellenanzeige + Schildbalken
-  var kind = stageKind(G.stage) + 1, cyc = cycleOf(G.stage) + 1;
-  drawText('ST' + kind + '-' + cyc, W - 44, PLAY_BOT + 8, C.green);
-  var bx = W - 92, bw = 40;
-  ctx.fillStyle = C.dark; ctx.fillRect(bx, PLAY_BOT + 9, bw, 4);
-  var frac = G.ship.shieldT > 0 ? G.ship.shieldT / SHIELD_ON
-           : (G.ship.cdT > 0 ? 1 - G.ship.cdT / SHIELD_CD : 1);
-  ctx.fillStyle = G.ship.shieldT > 0 ? C.cyan : (G.ship.cdT > 0 ? C.red : C.green);
-  ctx.fillRect(bx, PLAY_BOT + 9, Math.round(bw * frac), 4);
-}
-
 function renderAttract() {
   var t = G.stateT;
-  drawTextC('PHOENIX', 44, (t % 40 < 20) ? C.red : C.yellow, 3);
-  drawTextC('NACHBAU DES AUTOMATEN', 76, C.dark);
-  drawTextC('AMSTAR 1980', 88, C.dark);
+  drawTextC('PHOENIX', 46, (t % 40 < 20) ? C.hudRed : C.yellow, 3);
+  drawTextC('NACHBAU DES AUTOMATEN', 78, C.dark);
+  drawTextC('AMSTAR 1980', 90, C.dark);
 
   // Kleine Vorschau der Gegner
-  drawSprite(SPR.birdUp[1], 40, 112);
-  drawSprite(SPR.birdDown[0], 156, 112);
-  drawSprite(SPR.bigBody[0], W / 2 - 6, 106);
-  drawSprite(SPR.wingUpL[0], W / 2 - 19, 108);
-  drawSprite(SPR.wingUpR[0], W / 2 + 6, 108);
+  drawSprite(SPR.birdUp[0], 30, 116);
+  drawSprite(SPR.birdDown[1], 164, 116);
+  drawSprite(SPR.wingUpL[0], W / 2 - 6 - BIGW_W, 114);
+  drawSprite(SPR.wingUpR[0], W / 2 - 6 + BIGB_W, 114);
+  drawSprite(SPR.bigBody[0], W / 2 - 6, 113);
 
-  drawText('20  40  80', 30, 146, C.cyan);   drawText('PHOENIX', 120, 146, C.gray);
-  drawText('50  100', 30, 158, C.magenta);   drawText('EGG', 120, 158, C.gray);
-  drawText('100-800', 30, 170, C.yellow);    drawText('BIG BIRD', 120, 170, C.gray);
-  drawText('1000-9000', 30, 182, C.green);   drawText('FORTRESS', 120, 182, C.gray);
+  drawText('20  40  80', 26, 152, C.yellow);    drawText('PHOENIX', 118, 152, C.hudGreen);
+  drawText('50  100', 26, 164, C.magenta);      drawText('EGG', 118, 164, C.hudGreen);
+  drawText('100-800', 26, 176, C.blue);         drawText('BIG BIRD', 118, 176, C.hudGreen);
+  drawText('1000-9000', 26, 188, C.orange);     drawText('FORTRESS', 118, 188, C.hudGreen);
 
-  if (t % 60 < 40) drawTextC('PUSH START', 206, C.white);
-  drawSprite(SPR.ship, W / 2 - 7, SHIP_Y);
+  if (t % 60 < 40) drawTextC('PUSH START', 208, C.white);
+  drawSprite(SPR.ship, W / 2 - SPR.ship.width / 2, SHIP_Y);
 }
 
 // --------------------------------------------------------------- Hauptschleife
