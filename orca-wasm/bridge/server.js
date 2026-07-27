@@ -668,34 +668,46 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
             calibration: 2, extrude_cali_manual_mode: 0, fila_info: filaInfo,
             filament_seq: seq, nozzle_info: [],
           } }, { waitMs: 10000 });
-          const map = q.report && Array.isArray(q.report.mapping) ? q.report.mapping : null;
-          // FARB-MATCH gegen den ECHTEN Magazin-Zustand als PRIMÄRQUELLE. Die
-          // get_auto_nozzle_mapping-Query lieferte bei vergurktem Magazin (GFA00 auf
-          // mehreren Düsen nach vielen Fehldrucken) Müll: grün→16 statt 17, blau→20
-          // (=Gelbs Düse) → Layer-49-Load-Hänger. device.nozzle.info ist die Grundwahrheit:
-          // je Magazin-Düse id + color_m + Durchmesser. Wir matchen jede benutzte Farbe
-          // direkt auf die Düse, die GENAU diese Farbe trägt.
+          const map = (q.report && String(q.report.result) === 'success' && Array.isArray(q.report.mapping))
+            ? q.report.mapping : null;
+          // device.nozzle.info = Grundwahrheit: je 0.4-Düse id + color_m. Nach vielen
+          // Abbrüchen ist das Magazin oft DOPPELT belegt (dieselbe Farbe auf 2 Düsen,
+          // eine davon die MONTIERTE id0/1). Die Drucker-eigene get_auto_nozzle_mapping-
+          // Query wählt daraus die stimmige Magazin-Kombination (z.B. [17,16]) und ist
+          // darum PRIMÄRQUELLE — sofern jede benutzte Position auf eine wirklich
+          // existierende 0.4-Düse zeigt. (2026-07-27: Farbmatch pickte bei Dubletten
+          // last-write = [20,0] inkl. montierter id0 → project_file err 0x05004046.)
           const nozInfo = st.device?.nozzle?.info || [];
-          const byColor = {};
+          const validIds = new Set();
           for (const nz of nozInfo)
-            if (nz.color_m && nz.color_m !== '00000000' && String(nz.diameter) === '0.4')
-              byColor[String(nz.color_m).slice(0, 6).toUpperCase()] = nz.id;
-          const matched = amsOverride.nozzle_mapping.slice();
-          let allMatched = amsOverride.usedFil.length > 0;
-          for (const f of amsOverride.usedFil) {
-            const id = byColor[String(f.color || '').slice(0, 6).toUpperCase()];
-            if (id != null) matched[f.slot - 1] = id; else allMatched = false;
-          }
-          if (allMatched) {
-            amsOverride.nozzle_mapping = matched;
-            console.log('[send] nozzle-farbmatch: mapping=' + JSON.stringify(matched.slice(0, 6)) +
-              (map ? '  (query lieferte ' + JSON.stringify(map.slice(0, 6)) + ')' : ''));
-          } else if (map && String(q.report.result) === 'success') {
+            if (nz.color_m && nz.color_m !== '00000000' && String(nz.diameter) === '0.4') validIds.add(nz.id);
+          const queryValid = map && amsOverride.usedFil.every((f) => validIds.has(map[f.slot - 1]));
+          if (queryValid) {
             amsOverride.nozzle_mapping = map;
-            console.log('[send] nozzle-query (Farbmatch unvollständig): mapping=' + JSON.stringify(map.slice(0, 6)));
+            console.log('[send] nozzle-query (primär, valide): mapping=' + JSON.stringify(map.slice(0, 6)));
           } else {
-            console.log('[send] nozzle: kein Farbmatch, keine Query — Datei-Ableitung ' +
-              JSON.stringify(amsOverride.nozzle_mapping.slice(0, 6)));
+            // Fallback: Farbe→Düse, bei Dubletten die MAGAZIN-Düse (id>=16) bevorzugen,
+            // NICHT die montierte (id0/1) — die verursacht 0x05004046.
+            const byColor = {};
+            for (const nz of nozInfo)
+              if (nz.color_m && nz.color_m !== '00000000' && String(nz.diameter) === '0.4') {
+                const k = String(nz.color_m).slice(0, 6).toUpperCase();
+                if (byColor[k] == null || (byColor[k] < 16 && nz.id >= 16)) byColor[k] = nz.id;
+              }
+            const matched = amsOverride.nozzle_mapping.slice();
+            let allMatched = amsOverride.usedFil.length > 0;
+            for (const f of amsOverride.usedFil) {
+              const id = byColor[String(f.color || '').slice(0, 6).toUpperCase()];
+              if (id != null) matched[f.slot - 1] = id; else allMatched = false;
+            }
+            if (allMatched) {
+              amsOverride.nozzle_mapping = matched;
+              console.log('[send] nozzle-farbmatch (Fallback, Magazin bevorzugt): mapping=' + JSON.stringify(matched.slice(0, 6)) +
+                (map ? '  (query war ' + JSON.stringify(map.slice(0, 6)) + ')' : ''));
+            } else {
+              console.log('[send] nozzle: kein valides Mapping — Datei-Ableitung ' +
+                JSON.stringify(amsOverride.nozzle_mapping.slice(0, 6)));
+            }
           }
         } catch (e) { console.log('[send] nozzle-query fehlgeschlagen:', e.message); }
       }
@@ -709,7 +721,10 @@ async function runSend(job, { fp, sid, serial, name, buf, start, lanIp, lanCode,
       // ftp:// wird akzeptiert und druckt AMS-Mehrfarbe korrekt (LIVE verifiziert
       // 2026-07-27: SUCCESS + RUNNING; use_ams + ams_mapping/ams_mapping2 tragen die
       // AMS-Zuordnung, das 0700-8012 ist damit nicht mehr nötig). (2026-07-27)
-      const fileUrl = `ftp://${name3}`;
+      // WICHTIG: ftp:/// mit DREI Slashes (leerer Host + /pfad). Bei ftp://<name>
+      // (zwei Slashes) parst die Firmware den Dateinamen als HOST → "ungültiger Pfad"
+      // (0x05004046, ERROR STATE). Live verifiziert 2026-07-27.
+      const fileUrl = `ftp:///${name3}`;
       await lan.uploadGcode(p, name3, pack,
         (sent) => { job.percent = Math.min(100, Math.round(sent / pack.length * 100)); });
       let pr = null;
