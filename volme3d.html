@@ -24500,15 +24500,30 @@ const _UF_CHARS = (function(){
 
 // opentype.js erst bei Bedarf nachladen — es kostet 167 KB und die allermeisten
 // Sitzungen brauchen es nie.
+// Zweiter Pfad als Rückfall: dieselbe Bibliothek liegt seit VolmeDraw unter
+// /volmedraw/lib/. Das rettet die Funktion auf einem Server, dessen ALLOW-Liste
+// den neuen /lib/-Pfad noch nicht kennt (läuft noch mit altem Prozess).
+const _UF_OT_SRCS = ['lib/opentype.min.js', 'volmedraw/lib/opentype.min.js'];
 function _ufOpentype(cb){
   if(window.opentype){ cb(window.opentype); return; }
   if(_ufOpentype._loading){ _ufOpentype._loading.push(cb); return; }
   _ufOpentype._loading = [cb];
-  const s = document.createElement('script');
-  s.src = 'lib/opentype.min.js';
-  s.onload  = ()=>{ const q = _ufOpentype._loading; _ufOpentype._loading = null; q.forEach(f=>f(window.opentype)); };
-  s.onerror = ()=>{ _ufOpentype._loading = null; notify('Schrift-Leser konnte nicht geladen werden','w'); };
-  document.head.appendChild(s);
+  (function attempt(i){
+    if(i >= _UF_OT_SRCS.length){
+      const q = _ufOpentype._loading; _ufOpentype._loading = null;
+      notify('Schrift-Leser konnte nicht geladen werden','w');
+      q.forEach(f=>f(null));
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = _UF_OT_SRCS[i];
+    s.onload  = ()=>{
+      if(!window.opentype){ attempt(i+1); return; }
+      const q = _ufOpentype._loading; _ufOpentype._loading = null; q.forEach(f=>f(window.opentype));
+    };
+    s.onerror = ()=>attempt(i+1);
+    document.head.appendChild(s);
+  })(0);
 }
 
 // opentype liefert Canvas-Koordinaten (y nach unten); three erwartet y nach oben

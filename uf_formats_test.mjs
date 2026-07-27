@@ -1,6 +1,6 @@
 // Formattest: OTF (CFF/kubische Kurven) und Härtefälle. Gegen den --dev-Server.
 import { chromium } from 'playwright';
-const URL = 'http://127.0.0.1:8769/volme3d.html';
+const URL = process.env.V3D_URL || 'http://127.0.0.1:8765/volme3d.html';   // 8765 = ausgelieferte dist, V3D_URL=…:8766 fuer die Arbeitskopie
 const ok = [], bad = [];
 const check = (n, c, i = '') => (c ? ok : bad).push(n + (i ? '  ' + i : ''));
 

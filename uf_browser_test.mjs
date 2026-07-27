@@ -2,7 +2,7 @@
 // damit die Arbeitskopie geprüft wird und nicht die ausgelieferte dist.
 import { chromium } from 'playwright';
 
-const URL = 'http://127.0.0.1:8769/volme3d.html';
+const URL = process.env.V3D_URL || 'http://127.0.0.1:8765/volme3d.html';   // 8765 = ausgelieferte dist, V3D_URL=…:8766 fuer die Arbeitskopie
 const TTF = '/home/v3da/volmedraw/lib/GreatVibes-Regular.ttf';
 const ok = [], bad = [];
 const check = (name, cond, info = '') => (cond ? ok : bad).push(name + (info ? '  ' + info : ''));
