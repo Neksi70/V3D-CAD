@@ -1,0 +1,1272 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<title>PHOENIX</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden;
+    font-family: ui-monospace, "DejaVu Sans Mono", monospace; color: #8f8;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  /* Automaten-Look: schwarzer Rand + leichtes Glimmen wie eine Bildröhre */
+  #cab { position: relative; padding: 6px; background: #060606; border-radius: 4px; box-shadow: 0 0 0 2px #151515, 0 0 34px #061206; }
+  canvas#scr {
+    display: block; background: #000;
+    image-rendering: pixelated; image-rendering: crisp-edges;
+  }
+  #scan { position: absolute; inset: 6px; pointer-events: none; opacity: .16;
+    background: repeating-linear-gradient(180deg, rgba(255,255,255,.5) 0 1px, transparent 1px 3px); }
+  #hint { position: fixed; left: 0; right: 0; bottom: 3px; text-align: center; font-size: 10px; color: #2c4a2c; letter-spacing: .5px; }
+  /* Touch-Bedienung (nur auf Touch-Geraeten sichtbar) */
+  #pad { position: fixed; inset: auto 0 0 0; height: 34%; display: none; }
+  body.touch #pad { display: block; }
+  body.touch #hint { display: none; }
+  .btn { position: absolute; bottom: 6%; border: 2px solid #1d3f1d; border-radius: 14px;
+    background: rgba(20,40,20,.30); color: #7d7; font-size: 22px; display: flex;
+    align-items: center; justify-content: center; }
+  .btn.on { background: rgba(60,140,60,.45); border-color: #4a4; }
+  #bL { left: 3%;  width: 21%; height: 62%; }
+  #bR { left: 26%; width: 21%; height: 62%; }
+  #bF { right: 3%; width: 22%; height: 62%; font-size: 15px; }
+  #bS { right: 27%; width: 20%; height: 62%; font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="cab">
+    <canvas id="scr" width="208" height="256"></canvas>
+    <div id="scan"></div>
+  </div>
+</div>
+<div id="pad">
+  <div class="btn" id="bL">&#9664;</div>
+  <div class="btn" id="bR">&#9654;</div>
+  <div class="btn" id="bS">SCHILD</div>
+  <div class="btn" id="bF">FEUER</div>
+</div>
+<div id="hint">&#8592; &#8594; bewegen &nbsp;&middot;&nbsp; LEERTASTE feuern &nbsp;&middot;&nbsp; UMSCHALT Schild &nbsp;&middot;&nbsp; P Pause &nbsp;&middot;&nbsp; M Ton</div>
+
+<script>
+/* =========================================================================
+   PHOENIX  --  Nachbau des Arcade-Automaten von Amstar Electronics (1980)
+   Alles handgezeichnet/handsynthetisiert, keine Original-ROM-Assets.
+   Aufbau: 208x256 Pixel Hochformat, fester 60-Hz-Tick wie die Original-Hardware.
+   ========================================================================= */
+(function () {
+'use strict';
+
+// ---------------------------------------------------------------- Konstanten
+var W = 208, H = 256, STEP = 1000 / 60;
+var PLAY_TOP = 18;            // unterhalb der Punkteanzeige
+var PLAY_BOT = 236;           // oberhalb der Leben-Anzeige
+var SHIP_Y   = 214;           // Oberkante Spielerschiff
+var SHIP_SPEED = 1.7;
+var SHOT_SPEED = 6;
+var BOMB_SPEED = 1.55;
+var SHIELD_ON  = 120;         // 2 s aktiv  (Original: ca. 2 s)
+var SHIELD_CD  = 300;         // 5 s Sperre (Original: ca. 5 s)
+var START_LIVES = 3;          // Automat war auf 3..6 einstellbar
+var BONUS_1 = 3000, BONUS_N = 30000;   // Extraleben bei 3.000 und ab 30.000
+
+// Arcade-Palette (gesaettigte RGB-Grundfarben wie die Original-Hardware)
+var C = {
+  white:'#ffffff', gray:'#a8a8a8', dark:'#585858',
+  red:'#ff3820',  orange:'#ff8a10', yellow:'#ffe830',
+  green:'#38e838', cyan:'#38e8f8',  blue:'#4058ff',
+  magenta:'#ff58e8', purple:'#a038ff'
+};
+
+// Farbvarianten der Voegel je Welle (der Automat faerbt pro Welle/Zyklus um)
+var BIRD_PALS = [
+  { B:C.cyan,    W:C.white,   R:C.red    },
+  { B:C.red,     W:C.yellow,  R:C.white  },
+  { B:C.magenta, W:C.cyan,    R:C.yellow },
+  { B:C.green,   W:C.yellow,  R:C.red    },
+  { B:C.orange,  W:C.white,   R:C.cyan   }
+];
+var BIG_PALS = [
+  { B:C.magenta, Y:C.yellow, R:C.white, WG:C.purple },
+  { B:C.green,   Y:C.cyan,   R:C.red,   WG:C.blue   },
+  { B:C.red,     Y:C.orange, R:C.white, WG:C.magenta},
+  { B:C.blue,    Y:C.cyan,   R:C.yellow,WG:C.purple }
+];
+
+// ------------------------------------------------------------------ Sprites
+// Jedes Sprite ist eine Zeilenliste; Buchstaben verweisen in eine Farbtabelle.
+function makeSprite(rows, pal) {
+  var w = 0, i, j;
+  for (i = 0; i < rows.length; i++) if (rows[i].length > w) w = rows[i].length;
+  var cv = document.createElement('canvas');
+  cv.width = w; cv.height = rows.length;
+  var g = cv.getContext('2d');
+  for (i = 0; i < rows.length; i++) {
+    for (j = 0; j < rows[i].length; j++) {
+      var ch = rows[i][j];
+      if (ch === '.' || ch === ' ') continue;
+      var col = pal[ch];
+      if (!col) continue;
+      g.fillStyle = col;
+      g.fillRect(j, i, 1, 1);
+    }
+  }
+  return cv;
+}
+function mirror(cv) {
+  var out = document.createElement('canvas');
+  out.width = cv.width; out.height = cv.height;
+  var g = out.getContext('2d');
+  g.translate(cv.width, 0); g.scale(-1, 1);
+  g.drawImage(cv, 0, 0);
+  return out;
+}
+
+// Spielerschiff (Original: breiter Pfeilkopf mit zwei Fluegelpylonen)
+var SHIP_ROWS = [
+  '......WW......',
+  '.....WWWW.....',
+  '.....WCCW.....',
+  '....WWCCWW....',
+  '...WWWWWWWW...',
+  '..WWWWWWWWWW..',
+  '.WWW.WWWW.WWW.',
+  'WWW..WWWW..WWW',
+  'WW...W..W...WW',
+  '.R....RR....R.'
+];
+// Kleiner Phoenix-Jaeger, zwei Schlagphasen
+var BIRD_UP = [
+  'W.........W',
+  '.WW.....WW.',
+  '..WW.B.WW..',
+  '...WWBWW...',
+  '....BRB....',
+  '....BBB....',
+  '.....B.....'
+];
+var BIRD_DOWN = [
+  '.....B.....',
+  '....BBB....',
+  '...WBRBW...',
+  '..WWBBBWW..',
+  '.WW.....WW.',
+  'W.........W',
+  '...........'
+];
+// Grosser Phoenix: Koerper + Fluegel (Fluegel werden gespiegelt)
+var BIG_BODY = [
+  '....BBBB....',
+  '...BBBBBB...',
+  '...BRBBRB...',
+  '...BBBBBB...',
+  '..BBYYYYBB..',
+  '..BYYYYYYB..',
+  '..BYYYYYYB..',
+  '..BYYYYYYB..',
+  '..BBYYYYBB..',
+  '...BBBBBB...',
+  '...BBBBBB...',
+  '....BBBB....',
+  '....B..B....',
+  '...BB..BB...',
+  '..BB....BB..',
+  '..B......B..'
+];
+// Fluegel des grossen Phoenix: am Koerper breit, nach aussen auslaufend,
+// mit gezackter Hinterkante (Federn). Spalte 0 = koerperseitig.
+var BIG_WING_UP = [
+  'GGG..........',
+  'GGGGGG.......',
+  'GGGGGGGGG....',
+  'GGGGGGGGGGGG.',
+  'GGGGGGGGGGGGG',
+  'GGGGGGGGGGGG.',
+  'GGGGGGGGG.G..',
+  'GGGGGGG.G....',
+  'GGGG.G.......',
+  'GG.G.........'
+];
+var BIG_WING_DOWN = [
+  'GG...........',
+  'GGGG.........',
+  'GGGGGGG......',
+  'GGGGGGGGGG...',
+  'GGGGGGGGGGGG.',
+  'GGGGGGGGGGGGG',
+  '.GGGGGGGGGGGG',
+  '..GGGGGGGGG.G',
+  '....GGGGGG.G.',
+  '......GGG.G..',
+  '.......G.....'
+];
+var EGG_A = [
+  '...EEEE...',
+  '..EEEEEE..',
+  '.EEEEEEEE.',
+  '.EEHHEEEE.',
+  'EEEHHEEEEE',
+  'EEEEEEEEEE',
+  'EEEEEEEEEE',
+  'EEEEEEEEEE',
+  '.EEEEEEEE.',
+  '.EEEEEEEE.',
+  '..EEEEEE..',
+  '...EEEE...'
+];
+var EGG_B = [
+  '...EEEE...',
+  '..EEEEEE..',
+  '.EEEEEEEE.',
+  '.EEEEHHEE.',
+  'EEEEEHHEEE',
+  'EEEEEEEEEE',
+  'EEEEEEEEEE',
+  'EEEEEEEEEE',
+  '.EEEEEEEE.',
+  '.EEEEEEEE.',
+  '..EEEEEE..',
+  '...EEEE...'
+];
+// Alien-Pilot in der Raumfestung
+var ALIEN = [
+  '...GGGGGG...',
+  '..GGGGGGGG..',
+  '..GWWGGWWG..',
+  '..GGGGGGGG..',
+  '...GGRRGG...',
+  '....GGGG....',
+  '..GGGGGGGG..',
+  '.GGGGGGGGGG.',
+  '.GGGGGGGGGG.',
+  '.GG.GGGG.GG.',
+  '....GGGG....',
+  '...GG..GG...',
+  '..GG....GG..'
+];
+
+// 5x7-Pixelfont fuer die Anzeigen
+var FONT = {
+  '0':['.###.','#...#','#..##','#.#.#','##..#','#...#','.###.'],
+  '1':['..#..','.##..','..#..','..#..','..#..','..#..','.###.'],
+  '2':['.###.','#...#','....#','...#.','..#..','.#...','#####'],
+  '3':['#####','...#.','..#..','...#.','....#','#...#','.###.'],
+  '4':['...#.','..##.','.#.#.','#..#.','#####','...#.','...#.'],
+  '5':['#####','#....','####.','....#','....#','#...#','.###.'],
+  '6':['..##.','.#...','#....','####.','#...#','#...#','.###.'],
+  '7':['#####','....#','...#.','..#..','.#...','.#...','.#...'],
+  '8':['.###.','#...#','#...#','.###.','#...#','#...#','.###.'],
+  '9':['.###.','#...#','#...#','.####','....#','...#.','.##..'],
+  'A':['..#..','.#.#.','#...#','#...#','#####','#...#','#...#'],
+  'B':['####.','#...#','#...#','####.','#...#','#...#','####.'],
+  'C':['.###.','#...#','#....','#....','#....','#...#','.###.'],
+  'D':['####.','#...#','#...#','#...#','#...#','#...#','####.'],
+  'E':['#####','#....','#....','####.','#....','#....','#####'],
+  'F':['#####','#....','#....','####.','#....','#....','#....'],
+  'G':['.###.','#...#','#....','#..##','#...#','#...#','.###.'],
+  'H':['#...#','#...#','#...#','#####','#...#','#...#','#...#'],
+  'I':['.###.','..#..','..#..','..#..','..#..','..#..','.###.'],
+  'J':['..###','...#.','...#.','...#.','...#.','#..#.','.##..'],
+  'K':['#...#','#..#.','#.#..','##...','#.#..','#..#.','#...#'],
+  'L':['#....','#....','#....','#....','#....','#....','#####'],
+  'M':['#...#','##.##','#.#.#','#.#.#','#...#','#...#','#...#'],
+  'N':['#...#','##..#','##..#','#.#.#','#..##','#..##','#...#'],
+  'O':['.###.','#...#','#...#','#...#','#...#','#...#','.###.'],
+  'P':['####.','#...#','#...#','####.','#....','#....','#....'],
+  'Q':['.###.','#...#','#...#','#...#','#.#.#','#..#.','.##.#'],
+  'R':['####.','#...#','#...#','####.','#.#..','#..#.','#...#'],
+  'S':['.####','#....','#....','.###.','....#','....#','####.'],
+  'T':['#####','..#..','..#..','..#..','..#..','..#..','..#..'],
+  'U':['#...#','#...#','#...#','#...#','#...#','#...#','.###.'],
+  'V':['#...#','#...#','#...#','#...#','#...#','.#.#.','..#..'],
+  'W':['#...#','#...#','#...#','#.#.#','#.#.#','##.##','#...#'],
+  'X':['#...#','#...#','.#.#.','..#..','.#.#.','#...#','#...#'],
+  'Y':['#...#','#...#','.#.#.','..#..','..#..','..#..','..#..'],
+  'Z':['#####','....#','...#.','..#..','.#...','#....','#####'],
+  '-':['.....','.....','.....','#####','.....','.....','.....'],
+  '.':['.....','.....','.....','.....','.....','.##..','.##..'],
+  ':':['.....','.##..','.##..','.....','.##..','.##..','.....'],
+  '!':['..#..','..#..','..#..','..#..','..#..','.....','..#..'],
+  '*':['.....','#.#.#','.###.','#####','.###.','#.#.#','.....'],
+  ' ':['.....','.....','.....','.....','.....','.....','.....']
+};
+
+// Sprites einmal vorrendern (pro Farbvariante)
+var SPR = { birdUp:[], birdDown:[], bigBody:[], wingUpL:[], wingUpR:[], wingDnL:[], wingDnR:[], eggA:[], eggB:[] };
+var i;
+SPR.ship = makeSprite(SHIP_ROWS, { W:C.white, C:C.cyan, R:C.red });
+SPR.alien = makeSprite(ALIEN, { G:C.green, W:C.white, R:C.red });
+for (i = 0; i < BIRD_PALS.length; i++) {
+  SPR.birdUp[i]   = makeSprite(BIRD_UP,   BIRD_PALS[i]);
+  SPR.birdDown[i] = makeSprite(BIRD_DOWN, BIRD_PALS[i]);
+}
+for (i = 0; i < BIG_PALS.length; i++) {
+  var p = BIG_PALS[i];
+  SPR.bigBody[i] = makeSprite(BIG_BODY, p);
+  SPR.wingUpR[i] = makeSprite(BIG_WING_UP,   { G:p.WG });
+  SPR.wingDnR[i] = makeSprite(BIG_WING_DOWN, { G:p.WG });
+  SPR.wingUpL[i] = mirror(SPR.wingUpR[i]);
+  SPR.wingDnL[i] = mirror(SPR.wingDnR[i]);
+  SPR.eggA[i] = makeSprite(EGG_A, { E:p.B, H:p.Y });
+  SPR.eggB[i] = makeSprite(EGG_B, { E:p.B, H:p.Y });
+}
+
+// ------------------------------------------------------------------- Canvas
+var cv = document.getElementById('scr');
+var ctx = cv.getContext('2d', { alpha: false });
+ctx.imageSmoothingEnabled = false;
+
+function fitScreen() {
+  var pad = 14;
+  var vw = window.innerWidth - pad, vh = window.innerHeight - pad;
+  if (document.body.classList.contains('touch')) vh = window.innerHeight * 0.66 - pad;
+  var s = Math.min(vw / W, vh / H);
+  s = Math.max(1, Math.floor(s * 2) / 2);          // halbe Stufen bleiben scharf genug
+  cv.style.width = (W * s) + 'px';
+  cv.style.height = (H * s) + 'px';
+  var cab = document.getElementById('cab');
+  document.getElementById('wrap').style.alignItems =
+    document.body.classList.contains('touch') ? 'flex-start' : 'center';
+  cab.style.marginTop = document.body.classList.contains('touch') ? '8px' : '0';
+}
+window.addEventListener('resize', fitScreen);
+if (('ontouchstart' in window) || navigator.maxTouchPoints > 0) document.body.classList.add('touch');
+fitScreen();
+
+// -------------------------------------------------------------------- Audio
+var AU = {
+  ctx: null, master: null, muted: false, musicGain: null, sfxGain: null,
+  bgTimer: 0, bgStep: 0, seq: [], seqAt: 0
+};
+function auInit() {
+  if (AU.ctx || AU.failed) return;
+  var AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) { AU.failed = true; return; }
+  try { AU.ctx = new AC(); } catch (err) { AU.failed = true; return; }
+  AU.master = AU.ctx.createGain(); AU.master.gain.value = 0.5; AU.master.connect(AU.ctx.destination);
+  AU.musicGain = AU.ctx.createGain(); AU.musicGain.gain.value = 0.30; AU.musicGain.connect(AU.master);
+  AU.sfxGain = AU.ctx.createGain(); AU.sfxGain.gain.value = 0.55; AU.sfxGain.connect(AU.master);
+  // Rauschpuffer fuer Explosionen
+  var n = AU.ctx.sampleRate * 0.6, buf = AU.ctx.createBuffer(1, n, AU.ctx.sampleRate), d = buf.getChannelData(0);
+  for (var k = 0; k < n; k++) d[k] = Math.random() * 2 - 1;
+  AU.noise = buf;
+}
+function auResume() {
+  auInit();
+  try { if (AU.ctx && AU.ctx.state === 'suspended') AU.ctx.resume(); } catch (err) {}
+}
+
+function tone(freq, dur, type, vol, slideTo, dest) {
+  if (!AU.ctx || AU.muted) return;
+  var t = AU.ctx.currentTime;
+  var o = AU.ctx.createOscillator(), g = AU.ctx.createGain();
+  o.type = type || 'square';
+  o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol || 0.3, t + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(dest || AU.sfxGain);
+  o.start(t); o.stop(t + dur + 0.02);
+}
+function noiseBurst(dur, vol, freqFrom, freqTo) {
+  if (!AU.ctx || AU.muted) return;
+  var t = AU.ctx.currentTime;
+  var s = AU.ctx.createBufferSource(); s.buffer = AU.noise;
+  var f = AU.ctx.createBiquadFilter(); f.type = 'lowpass';
+  f.frequency.setValueAtTime(freqFrom || 2400, t);
+  f.frequency.exponentialRampToValueAtTime(freqTo || 180, t + dur);
+  var g = AU.ctx.createGain();
+  g.gain.setValueAtTime(vol || 0.4, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(f); f.connect(g); g.connect(AU.sfxGain);
+  s.start(t); s.stop(t + dur);
+}
+var SFX = {
+  shoot:  function () { tone(1180, 0.07, 'square', 0.22, 260); },
+  boom:   function () { noiseBurst(0.32, 0.45, 2600, 140); },
+  bigBoom:function () { noiseBurst(0.7, 0.6, 1800, 90); tone(180, 0.5, 'sawtooth', 0.25, 40); },
+  hit:    function () { tone(320, 0.05, 'square', 0.18, 180); },
+  dive:   function () { tone(520, 0.22, 'sawtooth', 0.12, 1400); },
+  hatch:  function () { tone(300, 0.28, 'triangle', 0.22, 900); },
+  shield: function () { tone(90, 0.18, 'sawtooth', 0.2, 220); },
+  die:    function () { noiseBurst(0.9, 0.55, 1200, 60); tone(400, 0.8, 'square', 0.25, 40); },
+  extra:  function () { tone(660, 0.1, 'square', 0.3); setTimeout(function(){ tone(990, 0.14, 'square', 0.3); }, 110); },
+  bonus:  function () { for (var k = 0; k < 8; k++) (function (k) { setTimeout(function () { tone(400 + k * 180, 0.09, 'square', 0.28); }, k * 70); })(k); }
+};
+
+// Notenhilfen fuer die Melodien
+var NOTE = { 'C':261.63,'C#':277.18,'D':293.66,'D#':311.13,'E':329.63,'F':349.23,
+             'F#':369.99,'G':392.00,'G#':415.30,'A':440.00,'A#':466.16,'B':493.88 };
+function nf(name, oct) {                       // nf('E',5) -> Frequenz
+  var base = NOTE[name];
+  return base * Math.pow(2, (oct || 4) - 4);
+}
+function N(name, oct, beats) { return [name === 'r' ? 0 : nf(name, oct), beats]; }
+
+// "Fuer Elise" (Beethoven, gemeinfrei) -- im Original nach Wellenabschluss
+var MUSIC_ELISE = [
+  N('E',5,.5), N('D#',5,.5), N('E',5,.5), N('D#',5,.5), N('E',5,.5), N('B',4,.5), N('D',5,.5), N('C',5,.5),
+  N('A',4,1),  N('C',4,.5),  N('E',4,.5), N('A',4,.5), N('B',4,1),   N('E',4,.5), N('G#',4,.5), N('B',4,.5),
+  N('C',5,1),  N('E',4,.5),
+  N('E',5,.5), N('D#',5,.5), N('E',5,.5), N('D#',5,.5), N('E',5,.5), N('B',4,.5), N('D',5,.5), N('C',5,.5),
+  N('A',4,1),  N('C',4,.5),  N('E',4,.5), N('A',4,.5), N('B',4,1),   N('E',4,.5), N('C',5,.5), N('B',4,.5),
+  N('A',4,1.5)
+];
+// "Romance de Amor" (anonym, gemeinfrei) -- im Original beim Spielstart.
+// Freie, aber wiedererkennbare Wiedergabe der ersten Phrase: Melodie ueber
+// e-Moll-Arpeggien; Tonliste bewusst kompakt, laesst sich hier leicht tauschen.
+var MUSIC_ROMANCE = [
+  N('E',5,1.5), N('E',5,.5), N('D#',5,.5), N('E',5,.5), N('F#',5,.5),
+  N('G',5,1.5), N('F#',5,.5), N('E',5,.5), N('D#',5,.5), N('E',5,.5),
+  N('B',4,1.5), N('E',5,.5), N('G',5,.5),  N('B',5,.5),
+  N('A',5,1.5), N('G',5,.5), N('F#',5,.5), N('E',5,.5),
+  N('D#',5,1.5), N('F#',5,.5), N('B',4,1), N('E',5,2)
+];
+function playMusic(notes, tempo) {
+  if (!AU.ctx || AU.muted) return;
+  var t = AU.ctx.currentTime + 0.05, beat = 60 / (tempo || 132);
+  for (var k = 0; k < notes.length; k++) {
+    var f = notes[k][0], d = notes[k][1] * beat;
+    if (f > 0) {
+      var o = AU.ctx.createOscillator(), g = AU.ctx.createGain();
+      o.type = 'square'; o.frequency.setValueAtTime(f, t);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.26, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + d * 0.95);
+      o.connect(g); g.connect(AU.musicGain);
+      o.start(t); o.stop(t + d);
+      // schlichte Bassbegleitung (Melodie-IC des Originals klang aehnlich schlicht)
+      if (k % 2 === 0) {
+        var o2 = AU.ctx.createOscillator(), g2 = AU.ctx.createGain();
+        o2.type = 'triangle'; o2.frequency.setValueAtTime(f / 4, t);
+        g2.gain.setValueAtTime(0.0001, t);
+        g2.gain.exponentialRampToValueAtTime(0.16, t + 0.02);
+        g2.gain.exponentialRampToValueAtTime(0.0001, t + d);
+        o2.connect(g2); g2.connect(AU.musicGain);
+        o2.start(t); o2.stop(t + d);
+      }
+    }
+    t += d;
+  }
+  return (t - AU.ctx.currentTime) * 1000;
+}
+// Laufender Hintergrundpuls waehrend des Spiels (im Original ein tiefes Brummen)
+function bgPulse() {
+  if (!AU.ctx || AU.muted) return;
+  var f = [55, 58, 55, 62][AU.bgStep % 4];
+  AU.bgStep++;
+  tone(f, 0.16, 'sawtooth', 0.1, f * 0.9, AU.musicGain);
+}
+
+// ------------------------------------------------------------------- Eingabe
+var K = { left:false, right:false, fire:false, shield:false };
+var keyMap = {
+  ArrowLeft:'left', ArrowRight:'right', KeyA:'left', KeyD:'right',
+  Space:'fire', KeyZ:'fire', KeyJ:'fire',
+  ShiftLeft:'shield', ShiftRight:'shield', KeyX:'shield', KeyK:'shield'
+};
+window.addEventListener('keydown', function (e) {
+  var m = keyMap[e.code];
+  if (m) { K[m] = true; e.preventDefault(); auResume(); }
+  if (e.code === 'KeyP') { togglePause(); e.preventDefault(); }
+  if (e.code === 'KeyM') { AU.muted = !AU.muted; auResume(); e.preventDefault(); }
+  if (e.code === 'Enter' || e.code === 'Space' || e.code === 'KeyS') {
+    auResume();
+    if (G.state === 'ATTRACT' || G.state === 'GAMEOVER') startGame();
+  }
+}, false);
+window.addEventListener('keyup', function (e) {
+  var m = keyMap[e.code];
+  if (m) { K[m] = false; e.preventDefault(); }
+}, false);
+
+function bindTouch(id, key) {
+  var el = document.getElementById(id);
+  function on(e) {
+    e.preventDefault(); auResume(); K[key] = true; el.classList.add('on');
+    if (G.state === 'ATTRACT' || G.state === 'GAMEOVER') startGame();
+  }
+  function off(e) { e.preventDefault(); K[key] = false; el.classList.remove('on'); }
+  el.addEventListener('touchstart', on, { passive:false });
+  el.addEventListener('touchend', off, { passive:false });
+  el.addEventListener('touchcancel', off, { passive:false });
+  el.addEventListener('mousedown', on); el.addEventListener('mouseup', off);
+  el.addEventListener('mouseleave', off);
+}
+bindTouch('bL','left'); bindTouch('bR','right'); bindTouch('bF','fire'); bindTouch('bS','shield');
+cv.addEventListener('pointerdown', function () {
+  auResume();
+  if (G.state === 'ATTRACT' || G.state === 'GAMEOVER') startGame();
+});
+
+// ------------------------------------------------------------------- Zustand
+var G = {
+  state: 'ATTRACT',       // ATTRACT | PLAY | DYING | CLEAR | GAMEOVER | PAUSE
+  prevState: null,
+  frame: 0, stateT: 0,
+  score: 0, hi: 0, lives: START_LIVES, invuln: false,
+  stage: 0,               // laufende Wellennummer (0-basiert, zaehlt durch)
+  nextBonus: BONUS_1,
+  ship: { x: W / 2 - 7, shieldT: 0, cdT: 0, dead: false },
+  shots: [], bombs: [], birds: [], eggs: [], bigs: [], booms: [], stars: [],
+  fort: null,
+  flock: { t: 0, cx: W / 2, cy: 46, cols: 8, rows: 2, diveT: 0, flyawayDone: false },
+  bonusKills: [],         // Zeitstempel diagonal wegfliegender Abschuesse (Geheimbonus)
+  bonusGiven: false,
+  msg: null, msgT: 0
+};
+try { G.hi = parseInt(localStorage.getItem('phoenix.hi') || '0', 10) || 0; } catch (e) {}
+
+for (i = 0; i < 56; i++) {
+  G.stars.push({ x: Math.random() * W, y: PLAY_TOP + Math.random() * (PLAY_BOT - PLAY_TOP),
+                 v: 0.2 + Math.random() * 0.7, c: Math.random() < .3 ? C.gray : C.white });
+}
+
+// Wellenaufbau: 5 Stufen im Zyklus wie im Original
+function stageKind(stage) { return stage % 5; }   // 0,1 Voegel | 2,3 Eier/Grossvoegel | 4 Raumfestung
+function cycleOf(stage) { return Math.floor(stage / 5); }
+function diff(stage) { return 1 + 0.14 * cycleOf(stage); }   // Tempozuschlag je Zyklus
+
+function startGame() {
+  auResume();
+  G.score = 0; G.lives = START_LIVES; G.stage = 0; G.nextBonus = BONUS_1;
+  G.bonusGiven = false; G.bonusKills = [];
+  G.state = 'PLAY'; G.stateT = 0;
+  G.ship.x = W / 2 - 7; G.ship.shieldT = 0; G.ship.cdT = 0; G.ship.dead = false;
+  buildStage();
+  showMsg('PLAYER ONE', 90);
+  playMusic(MUSIC_ROMANCE, 150);
+}
+
+function buildStage() {
+  G.shots.length = 0; G.bombs.length = 0; G.birds.length = 0;
+  G.eggs.length = 0; G.bigs.length = 0; G.booms.length = 0;
+  G.fort = null;
+  var kind = stageKind(G.stage), cyc = cycleOf(G.stage), d = diff(G.stage);
+  var pal = (G.stage) % BIRD_PALS.length;
+  var bpal = (G.stage) % BIG_PALS.length;
+
+  if (kind === 0 || kind === 1) {
+    // Vogelschwarm: Formation aus 2 Reihen, Anflug in Boegen von oben
+    var cols = kind === 0 ? 8 : 10;
+    G.flock.cols = cols; G.flock.rows = 2;
+    G.flock.t = 0; G.flock.cy = 44; G.flock.diveT = kind === 0 ? 110 : 80;
+    G.flock.flyawayDone = kind !== 0 || cyc > 0;   // Geheimbonus nur in Welle 1
+    var n = cols * 2, k;
+    for (k = 0; k < n; k++) {
+      var col = k % cols, row = Math.floor(k / cols);
+      G.birds.push({
+        x: W / 2 - 6, y: -14 - k * 3, st: 'enter', t: -k * 5,
+        col: col, row: row, pal: pal, d: d,
+        ex: (k % 2 ? 1 : -1), dive: 0, wob: Math.random() * 6.28, dead: false
+      });
+    }
+  } else if (kind === 2 || kind === 3) {
+    // Eier, die quer pendeln und zu grossen Phoenixen schluepfen
+    var eggs = kind === 2 ? 6 : 8;
+    for (var e2 = 0; e2 < eggs; e2++) {
+      G.eggs.push({
+        x: W / 2 - (eggs - 1) * 12 + e2 * 24, y: 52 + (e2 % 2) * 14,
+        t: 0, hatchAt: 260 + Math.random() * 340 - cyc * 40,
+        frame: 0, pal: bpal, dead: false, hatching: 0
+      });
+    }
+    G.flock.t = 0;
+  } else {
+    G.fort = buildFort(cyc);
+    // Begleitschutz: kleine Phoenixe greifen waehrend des Festungskampfs an
+    G.flock.diveT = 70;
+  }
+  G.stateT = 0;
+}
+
+// ---------------------------------------------------- Raumfestung (Stufe 5)
+var FCS = 4, FCOLS = 30, FROWS = 18;             // Zellraster 4 px -> 120 x 72
+var FORT_W = FCOLS * FCS, FORT_H = FROWS * FCS;
+// Aufbau von oben nach unten wie im Original: Dach, Kammer mit dem Piloten,
+// darunter die beiden rotierenden Schildbaender und zuunterst die Huelle.
+// Entscheidend: die Baender liegen ZWISCHEN Kanone und Pilot -- ihre wandernden
+// Luecken sind die eigentliche Huerde.
+var FORT_Y0 = PLAY_TOP - 10;
+var BAND_A_R0 = 9, BAND_A_R1 = 12, BAND_B_R0 = 12, BAND_B_R1 = 15;
+var CHAMBER_R0 = 5, CHAMBER_R1 = 9, CHAMBER_C0 = 11, CHAMBER_C1 = 18;
+function buildFort(cyc) {
+  var cells = [], r, c, col;
+  for (r = 0; r < FROWS; r++) {
+    cells[r] = [];
+    for (c = 0; c < FCOLS; c++) {
+      col = null;
+      if (r < 2)            { if (c >= 12 && c <= 17) col = C.magenta; }   // Turmspitze
+      else if (r < 4)       { if (c >= 8  && c <= 21) col = C.magenta; }
+      else if (r < 5)       { if (c >= 4  && c <= 25) col = C.purple; }
+      else if (r < 9)       {                                              // Kammer des Piloten
+        if (c >= 3 && c <= 26) col = C.blue;
+        if (c >= CHAMBER_C0 && c <= CHAMBER_C1) col = null;
+      }
+      else if (r < 12)      { col = C.green; }                             // Schildband A
+      else if (r < 15)      { col = C.cyan; }                              // Schildband B
+      else if (r < 17)      { if (c >= 2 && c <= 27) col = C.blue; }
+      else                  { if (c >= 6 && c <= 23) col = C.purple; }
+      cells[r][c] = col;
+    }
+  }
+  // Durchlaesse in den Baendern (spaetere Zyklen haben weniger davon)
+  var gaps = Math.max(1, 3 - cyc);
+  for (var g = 0; g < gaps; g++) {
+    var gc = Math.floor(Math.random() * FCOLS);
+    for (r = BAND_A_R0; r < BAND_B_R1; r++) cells[r][(gc + (r < BAND_A_R1 ? 0 : 4)) % FCOLS] = null;
+  }
+  return {
+    x: (W - FORT_W) / 2, y: FORT_Y0, y0: FORT_Y0, cells: cells,
+    rot: 0, alien: true, alienHitT: 0, dying: 0,
+    speed: 0.045 * (1 + 0.25 * cyc), wob: 0, birdT: 40
+  };
+}
+function fortAlienBox(f) {                        // Trefferfeld des Piloten
+  return { x: f.x + CHAMBER_C0 * FCS, y: f.y + CHAMBER_R0 * FCS,
+           w: (CHAMBER_C1 - CHAMBER_C0 + 1) * FCS, h: (CHAMBER_R1 - CHAMBER_R0) * FCS };
+}
+
+// ------------------------------------------------------------------ Helfer
+function rectHit(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+function addScore(n) {
+  G.score += n;
+  if (G.score >= G.nextBonus) {
+    G.lives++; SFX.extra();
+    G.nextBonus = G.nextBonus < BONUS_N ? BONUS_N : G.nextBonus + BONUS_N;
+  }
+  if (G.score > G.hi) { G.hi = G.score; try { localStorage.setItem('phoenix.hi', String(G.hi)); } catch (e) {} }
+}
+function boom(x, y, size, col) { G.booms.push({ x:x, y:y, t:0, size:size || 10, c:col || C.yellow }); }
+function showMsg(text, frames) { G.msg = text; G.msgT = frames; }
+function togglePause() {
+  if (G.state === 'PAUSE') { G.state = G.prevState || 'PLAY'; }
+  else if (G.state === 'PLAY' || G.state === 'DYING') { G.prevState = G.state; G.state = 'PAUSE'; }
+}
+
+function shipBox() { return { x: G.ship.x, y: SHIP_Y, w: SPR.ship.width, h: SPR.ship.height }; }
+function birdBox(b) { return { x: b.x, y: b.y, w: 11, h: 7 }; }
+
+// Kleinen Phoenix fuer den Festungskampf einfliegen lassen
+function spawnEscort(pal, d) {
+  var side = Math.random() < .5 ? -12 : W + 2;
+  G.birds.push({
+    x: side, y: PLAY_TOP + 10 + Math.random() * 40, st: 'dive', t: 0,
+    col: 0, row: 0, pal: pal, d: d, ex: side < 0 ? 1 : -1,
+    dive: 0, wob: Math.random() * 6.28, dead: false, escort: true
+  });
+}
+
+// ------------------------------------------------------------------- Update
+function update() {
+  G.frame++; G.stateT++;
+  if (G.msgT > 0) G.msgT--;
+
+  // Sternenfeld laeuft immer (auch im Attract-Modus)
+  for (var s = 0; s < G.stars.length; s++) {
+    var st = G.stars[s];
+    st.y += st.v;
+    if (st.y > PLAY_BOT) { st.y = PLAY_TOP; st.x = Math.random() * W; }
+  }
+  for (var bi = G.booms.length - 1; bi >= 0; bi--) {
+    G.booms[bi].t++;
+    if (G.booms[bi].t > 22) G.booms.splice(bi, 1);
+  }
+
+  if (G.state === 'PAUSE') return;
+
+  if (G.state === 'ATTRACT' || G.state === 'GAMEOVER') {
+    if (G.state === 'GAMEOVER' && G.stateT > 420) { G.state = 'ATTRACT'; G.stateT = 0; }
+    return;
+  }
+
+  if (G.state === 'CLEAR') {
+    if (G.stateT === 1) playMusic(MUSIC_ELISE, stageKind(G.stage) === 4 ? 128 : 168);
+    if (G.stateT > (stageKind(G.stage) === 4 ? 300 : 170)) {
+      G.stage++;
+      G.state = 'PLAY'; G.stateT = 0;
+      buildStage();
+      showMsg('STAGE ' + (stageKind(G.stage) + 1), 80);
+    }
+    return;
+  }
+
+  if (G.state === 'DYING') {
+    if (G.stateT > 100) {
+      if (G.lives <= 0) {
+        G.state = 'GAMEOVER'; G.stateT = 0; showMsg('GAME OVER', 999);
+      } else {
+        G.state = 'PLAY'; G.stateT = 0; G.ship.dead = false;
+        G.ship.x = W / 2 - 7; G.ship.shieldT = 0; G.ship.cdT = 0;
+        G.bombs.length = 0;
+      }
+    }
+    updateEnemies();
+    return;
+  }
+
+  // -------- PLAY
+  if (G.frame % 26 === 0) bgPulse();
+
+  var sh = G.ship;
+  if (K.left)  sh.x -= SHIP_SPEED;
+  if (K.right) sh.x += SHIP_SPEED;
+  if (sh.x < 2) sh.x = 2;
+  if (sh.x > W - SPR.ship.width - 2) sh.x = W - SPR.ship.width - 2;
+
+  // Schutzschild: 2 s aktiv, danach 5 s Sperre; waehrend des Schilds kein Feuer
+  if (sh.shieldT > 0) { sh.shieldT--; if (sh.shieldT === 0) sh.cdT = SHIELD_CD; }
+  else if (sh.cdT > 0) sh.cdT--;
+  if (K.shield && sh.shieldT === 0 && sh.cdT === 0) { sh.shieldT = SHIELD_ON; SFX.shield(); }
+
+  // Schuss: im Original nur ein Geschoss gleichzeitig
+  if (K.fire && sh.shieldT === 0 && G.shots.length === 0) {
+    G.shots.push({ x: sh.x + SPR.ship.width / 2 - 0.5, y: SHIP_Y - 4 });
+    SFX.shoot();
+  }
+  for (var k = G.shots.length - 1; k >= 0; k--) {
+    var sp = G.shots[k];
+    sp.y -= SHOT_SPEED;
+    if (sp.y < PLAY_TOP - 4) { G.shots.splice(k, 1); continue; }
+    if (shotHits(sp)) G.shots.splice(k, 1);
+  }
+
+  updateEnemies();
+
+  // Bomben gegen Spieler
+  for (var b = G.bombs.length - 1; b >= 0; b--) {
+    var bo = G.bombs[b];
+    bo.y += bo.vy; bo.x += bo.vx || 0;
+    if (bo.y > PLAY_BOT || bo.x < 0 || bo.x > W) { G.bombs.splice(b, 1); continue; }
+    if (!sh.dead && rectHit({ x:bo.x - 1, y:bo.y, w:3, h:5 }, shipBox())) {
+      G.bombs.splice(b, 1);
+      if (sh.shieldT > 0) { boom(bo.x, bo.y, 6, C.cyan); SFX.hit(); }
+      else killPlayer();
+    }
+  }
+
+  // Wellenende pruefen
+  var kind = stageKind(G.stage);
+  if (kind <= 1) {
+    if (G.birds.length === 0) { G.state = 'CLEAR'; G.stateT = 0; }
+  } else if (kind <= 3) {
+    if (G.eggs.length === 0 && G.bigs.length === 0) { G.state = 'CLEAR'; G.stateT = 0; }
+  } else if (G.fort && !G.fort.alien && G.fort.dying > 70) {
+    G.state = 'CLEAR'; G.stateT = 0;
+  }
+
+  // Geheimbonus: drei diagonal wegfliegende Phoenixe innerhalb von 2 s
+  while (G.bonusKills.length && G.frame - G.bonusKills[0] > 120) G.bonusKills.shift();
+  if (!G.bonusGiven && G.bonusKills.length >= 3) {
+    G.bonusGiven = true; G.bonusKills.length = 0;
+    addScore(200000); SFX.bonus(); showMsg('BONUS 200000', 150);
+  }
+}
+
+function killPlayer() {
+  if (G.ship.dead || G.invuln) return;      // G.invuln nur fuer den Headless-Test
+  G.ship.dead = true; G.lives--;
+  boom(G.ship.x + 6, SHIP_Y + 4, 20, C.white);
+  boom(G.ship.x, SHIP_Y, 14, C.red);
+  SFX.die();
+  G.state = 'DYING'; G.stateT = 0;
+  if (G.fort) G.fort.y = Math.max(G.fort.y0, G.fort.y - 26);
+}
+
+// Treffer eines Spielergeschosses; true = Geschoss verbraucht
+function shotHits(sp) {
+  var box = { x: sp.x - 1, y: sp.y - 4, w: 3, h: 6 }, j;
+
+  for (j = G.birds.length - 1; j >= 0; j--) {
+    var b = G.birds[j];
+    if (rectHit(box, birdBox(b))) {
+      // Punkte wie im Original: 20 in Formation, 40 im Anflug, 80 im Tiefflug
+      var pts = 20;
+      if (b.st === 'dive' || b.st === 'flyaway') pts = b.y > (PLAY_BOT - 90) ? 80 : 40;
+      else if (b.st === 'enter' || b.st === 'return') pts = 40;
+      addScore(pts);
+      if (b.st === 'flyaway') G.bonusKills.push(G.frame);
+      boom(b.x + 5, b.y + 3, 11, BIRD_PALS[b.pal].W);
+      SFX.boom();
+      G.birds.splice(j, 1);
+      return true;
+    }
+  }
+  for (j = G.eggs.length - 1; j >= 0; j--) {
+    var e = G.eggs[j];
+    if (rectHit(box, { x:e.x, y:e.y, w:10, h:12 })) {
+      addScore(e.hatching > 0 ? 100 : 50);       // Original: 50 bzw. 100 pro Ei
+      boom(e.x + 5, e.y + 6, 12, BIG_PALS[e.pal].Y);
+      SFX.boom();
+      G.eggs.splice(j, 1);
+      return true;
+    }
+  }
+  for (j = G.bigs.length - 1; j >= 0; j--) {
+    var bg = G.bigs[j];
+    // Fluegel fangen Schuesse ab und wachsen nach ein paar Sekunden nach
+    if (bg.wingL && rectHit(box, bigWingBox(bg, -1))) {
+      bg.wingL = false; bg.wlT = 240; bg.wings--;
+      boom(bg.x - 6, bg.y + 8, 10, BIG_PALS[bg.pal].WG); SFX.hit();
+      return true;
+    }
+    if (bg.wingR && rectHit(box, bigWingBox(bg, 1))) {
+      bg.wingR = false; bg.wrT = 240; bg.wings--;
+      boom(bg.x + 18, bg.y + 8, 10, BIG_PALS[bg.pal].WG); SFX.hit();
+      return true;
+    }
+    if (rectHit(box, bigBodyBox(bg))) {
+      // 100..800 Punkte: mehr, wenn noch Fluegel dran sind und der Vogel nah ist
+      var wingsIntact = (bg.wingL ? 1 : 0) + (bg.wingR ? 1 : 0);
+      var base = [100, 200, 400][wingsIntact];
+      if (bg.y > 130) base *= 2;
+      addScore(Math.min(800, base));
+      boom(bg.x + 6, bg.y + 8, 22, BIG_PALS[bg.pal].B);
+      boom(bg.x + 6, bg.y + 2, 14, C.white);
+      SFX.bigBoom();
+      G.bigs.splice(j, 1);
+      return true;
+    }
+  }
+  if (G.fort && G.fort.dying === 0) return fortShot(sp);
+  return false;
+}
+
+// Geschoss gegen Raumfestung: Zellen wegsprengen, Pilot als Ziel
+function fortShot(sp) {
+  var f = G.fort;
+  var lx = sp.x - f.x, ly = sp.y - f.y;
+  if (lx < 0 || lx >= FORT_W) return false;
+  // Flugbahn in 2-px-Schritten pruefen, damit schnelle Schuesse nichts ueberspringen
+  for (var d = 0; d <= SHOT_SPEED; d += 2) {
+    var yy = ly + d;
+    if (yy < 0 || yy >= FORT_H) continue;
+    var r = Math.floor(yy / FCS), c = Math.floor(lx / FCS);
+    if (f.cells[r][c]) {
+      var col = f.cells[r][c];
+      // 2x2-Zellen-Krater wie die groben Einschlaege im Original
+      for (var rr = r; rr <= r + 1 && rr < FROWS; rr++)
+        for (var cc = c - 1; cc <= c + 1; cc++)
+          if (cc >= 0 && cc < FCOLS) f.cells[rr][cc] = null;
+      boom(f.x + c * FCS, f.y + r * FCS, 8, col);
+      SFX.hit();
+      return true;
+    }
+    if (f.alien) {
+      var ab = fortAlienBox(f);
+      if (sp.x >= ab.x && sp.x <= ab.x + ab.w && f.y + yy >= ab.y && f.y + yy <= ab.y + ab.h) {
+        f.alien = false; f.dying = 1;
+        // 1.000 bis 9.000 Punkte, je tiefer die Festung stand, desto mehr
+        var span = Math.max(1, (SHIP_Y - FORT_H) - f.y0);
+        var tier = Math.max(0, Math.min(8, Math.floor(((f.y - f.y0) / span) * 9)));
+        addScore(1000 + tier * 1000);
+        showMsg(String(1000 + tier * 1000), 120);
+        SFX.bigBoom();
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function bigBodyBox(bg) { return { x: bg.x, y: bg.y, w: 12, h: 16 }; }
+function bigWingBox(bg, side) {
+  return side < 0 ? { x: bg.x - 13, y: bg.y + 2, w: 13, h: 11 }
+                  : { x: bg.x + 12, y: bg.y + 2, w: 13, h: 11 };
+}
+
+function updateEnemies() {
+  var kind = stageKind(G.stage), d = diff(G.stage), j, sh = G.ship;
+
+  // ---- Formation und Anflug der kleinen Phoenixe
+  var fl = G.flock;
+  fl.t++;
+  fl.cx = W / 2 + Math.sin(fl.t * 0.011) * 26;
+
+  for (j = G.birds.length - 1; j >= 0; j--) {
+    var b = G.birds[j];
+    b.t++;
+    b.wob += 0.24;
+    var slotX = fl.cx - (fl.cols - 1) * 10 + b.col * 20 - 5;
+    var slotY = fl.cy + b.row * 16;
+
+    if (b.st === 'enter') {
+      // Bogenanflug von oben in den Formationsplatz
+      if (b.t > 0) {
+        var p = Math.min(1, b.t / 80);
+        var ease = p * p * (3 - 2 * p);
+        var ctrlX = W / 2 + b.ex * 78, ctrlY = 96;
+        var sx = W / 2 - 6, sy = -14;
+        var u = 1 - ease;
+        b.x = u * u * sx + 2 * u * ease * ctrlX + ease * ease * slotX;
+        b.y = u * u * sy + 2 * u * ease * ctrlY + ease * ease * slotY;
+        if (p >= 1) b.st = 'form';
+      }
+    } else if (b.st === 'form') {
+      b.x += (slotX - b.x) * 0.14;
+      b.y += (slotY + Math.sin(b.wob * 0.35) * 2 - b.y) * 0.14;
+    } else if (b.st === 'dive') {
+      b.y += 1.35 * d * (b.escort ? 0.85 : 1);
+      b.x += Math.sin(b.t * 0.055) * 1.9 * b.ex + Math.sign((sh.x + 6) - b.x) * 0.32;
+      if (b.t % 46 === 0 && Math.random() < 0.55 && b.y < PLAY_BOT - 40) dropBomb(b);
+      if (b.y > PLAY_BOT) {
+        if (b.escort) { G.birds.splice(j, 1); continue; }
+        b.st = 'return'; b.y = PLAY_TOP - 12; b.t = 0;
+        b.x = Math.max(6, Math.min(W - 18, slotX + (Math.random() * 40 - 20)));
+      }
+    } else if (b.st === 'return') {
+      b.x += (slotX - b.x) * 0.05;
+      b.y += 1.1;
+      if (b.y >= slotY) b.st = 'form';
+    } else if (b.st === 'flyaway') {
+      // diagonal nach oben aus dem Bild -- Ziel des 200.000er Geheimbonus
+      b.x += 1.15 * b.ex; b.y -= 0.95;
+      if (b.y < PLAY_TOP - 16) { b.st = 'return'; b.y = PLAY_TOP - 12; b.t = 0; }
+    }
+
+    if (b.x < -14) b.x = -14; if (b.x > W + 2) b.x = W + 2;
+
+    // Rammtreffer am Schiff
+    if (!sh.dead && b.y + 7 > SHIP_Y && rectHit(birdBox(b), shipBox())) {
+      if (sh.shieldT > 0) {
+        addScore(b.st === 'dive' ? 80 : 20);
+        boom(b.x + 5, b.y + 3, 12, C.cyan); SFX.boom();
+        G.birds.splice(j, 1); continue;
+      }
+      killPlayer();
+    }
+  }
+
+  // Angriffe ausloesen
+  if (G.state === 'PLAY') {
+    if (kind <= 1) {
+      if (fl.t % Math.max(26, Math.round(fl.diveT / d)) === 0) {
+        var formers = G.birds.filter(function (x) { return x.st === 'form'; });
+        if (formers.length) {
+          var nDive = 1 + (Math.random() < 0.35 ? 1 : 0) + (cycleOf(G.stage) > 1 ? 1 : 0);
+          for (var q = 0; q < nDive && formers.length; q++) {
+            var pick = formers.splice(Math.floor(Math.random() * formers.length), 1)[0];
+            pick.st = 'dive'; pick.t = 0; pick.ex = Math.random() < .5 ? -1 : 1;
+          }
+          SFX.dive();
+        }
+      }
+      // einmaliger Dreier-Abflug (Geheimbonus-Gelegenheit) in Welle 1
+      if (!fl.flyawayDone && fl.t > 340) {
+        fl.flyawayDone = true;
+        var cand = G.birds.filter(function (x) { return x.st === 'form'; }).slice(0, 3);
+        for (var z = 0; z < cand.length; z++) {
+          cand[z].st = 'flyaway'; cand[z].t = 0; cand[z].ex = z === 1 ? -1 : 1;
+        }
+        SFX.dive();
+      }
+    }
+  }
+
+  // ---- Eier
+  for (j = G.eggs.length - 1; j >= 0; j--) {
+    var e = G.eggs[j];
+    e.t++;
+    e.x += Math.sin(e.t * 0.012) * 0.9 * d;
+    e.y += Math.sin(e.t * 0.02 + j) * 0.12;
+    if (e.x < 2) e.x = 2; if (e.x > W - 12) e.x = W - 12;
+    e.frame = Math.floor(e.t / 16) % 2;
+    if (e.t > e.hatchAt) {
+      e.hatching++;
+      if (e.hatching === 1) SFX.hatch();
+      if (e.hatching > 40) {
+        G.bigs.push({
+          x: e.x - 1, y: e.y - 2, pal: e.pal, t: 0, st: 'roam',
+          wingL: true, wingR: true, wlT: 0, wrT: 0, wings: 2,
+          ex: Math.random() < .5 ? -1 : 1, flap: 0, baseY: e.y, dead: false
+        });
+        boom(e.x + 5, e.y + 6, 12, C.white);
+        G.eggs.splice(j, 1);
+      }
+    }
+  }
+
+  // ---- Grosse Phoenixe
+  for (j = G.bigs.length - 1; j >= 0; j--) {
+    var bg = G.bigs[j];
+    bg.t++;
+    bg.flap = Math.floor(bg.t / 11) % 2;
+    if (bg.wlT > 0 && --bg.wlT === 0) { bg.wingL = true; bg.wings++; }
+    if (bg.wrT > 0 && --bg.wrT === 0) { bg.wingR = true; bg.wings++; }
+
+    if (bg.st === 'roam') {
+      bg.x += 0.55 * d * bg.ex;
+      bg.y = bg.baseY + Math.sin(bg.t * 0.03) * 8;
+      if (bg.x < 16 || bg.x > W - 28) bg.ex = -bg.ex;
+      if (bg.t % 70 === 0 && Math.random() < 0.5) dropBomb(bg, 6);
+      if (bg.t > 150 && Math.random() < 0.006 * d) { bg.st = 'dive'; bg.t = 0; bg.dx = (sh.x + 6) - bg.x; }
+    } else {
+      bg.y += 1.05 * d;
+      bg.x += Math.sin(bg.t * 0.045) * 1.6 * bg.ex + Math.sign((sh.x + 6) - bg.x) * 0.25;
+      if (bg.t % 55 === 0) dropBomb(bg, 6);
+      if (bg.y > PLAY_BOT - 20) {
+        bg.st = 'roam'; bg.t = 0; bg.baseY = 56 + Math.random() * 30;
+        bg.y = bg.baseY;
+      }
+    }
+    if (bg.x < 14) bg.x = 14; if (bg.x > W - 26) bg.x = W - 26;
+
+    if (!sh.dead && rectHit(bigBodyBox(bg), shipBox())) {
+      if (sh.shieldT > 0) { boom(bg.x + 6, bg.y + 8, 18, C.cyan); SFX.bigBoom(); G.bigs.splice(j, 1); addScore(100); continue; }
+      killPlayer();
+    }
+  }
+
+  // ---- Raumfestung
+  if (G.fort) {
+    var f = G.fort;
+    if (f.dying > 0) {
+      f.dying++;
+      if (f.dying % 6 === 0) {
+        boom(f.x + Math.random() * FORT_W, f.y + Math.random() * FORT_H, 16, [C.yellow, C.white, C.red][f.dying % 3]);
+        SFX.boom();
+      }
+    } else {
+      f.y += f.speed;
+      f.wob += 0.008;
+      f.x = (W - FORT_W) / 2 + Math.sin(f.wob) * 12;
+      // rotierende Schildbaender: Zeilen zyklisch verschieben
+      f.rot++;
+      if (f.rot % 7 === 0) {
+        for (var r = BAND_A_R0; r < BAND_A_R1; r++) f.cells[r].unshift(f.cells[r].pop());
+        for (var r2 = BAND_B_R0; r2 < BAND_B_R1; r2++) f.cells[r2].push(f.cells[r2].shift());
+      }
+      // Begleitschutz nachschieben
+      if (G.state === 'PLAY') {
+        f.birdT--;
+        if (f.birdT <= 0 && G.birds.length < 4) {
+          f.birdT = Math.round(150 / d);
+          spawnEscort(G.stage % BIRD_PALS.length, d);
+        }
+      }
+      // Festung erdrueckt den Spieler
+      if (!sh.dead && f.y + FORT_H > SHIP_Y) killPlayer();
+    }
+  }
+}
+
+function dropBomb(src, xoff) {
+  G.bombs.push({ x: src.x + (xoff || 5), y: src.y + 7, vy: BOMB_SPEED * diff(G.stage), vx: 0 });
+}
+
+// -------------------------------------------------------------------- Render
+function drawSprite(cvs, x, y) { ctx.drawImage(cvs, Math.round(x), Math.round(y)); }
+
+function drawText(str, x, y, col, scale) {
+  scale = scale || 1;
+  ctx.fillStyle = col || C.white;
+  var cx = Math.round(x);
+  for (var i2 = 0; i2 < str.length; i2++) {
+    var g = FONT[str[i2].toUpperCase()];
+    if (!g) { cx += 6 * scale; continue; }
+    for (var r = 0; r < g.length; r++) {
+      for (var c = 0; c < g[r].length; c++) {
+        if (g[r][c] === '#') ctx.fillRect(cx + c * scale, Math.round(y) + r * scale, scale, scale);
+      }
+    }
+    cx += 6 * scale;
+  }
+}
+function textW(str, scale) { return str.length * 6 * (scale || 1) - (scale || 1); }
+function drawTextC(str, y, col, scale) { drawText(str, (W - textW(str, scale)) / 2, y, col, scale); }
+function pad(n, len) { var s = String(n); while (s.length < len) s = '0' + s; return s; }
+
+function render() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  // Sternenfeld
+  for (var s = 0; s < G.stars.length; s++) {
+    var st = G.stars[s];
+    ctx.fillStyle = st.c;
+    ctx.fillRect(Math.round(st.x), Math.round(st.y), 1, 1);
+  }
+
+  // Anzeigen oben
+  drawText('1UP', 4, 2, C.red);
+  drawText(pad(G.score, 6), 26, 2, C.white);
+  drawText('HI', 132, 2, C.red);
+  drawText(pad(G.hi, 6), 148, 2, C.white);
+  ctx.fillStyle = C.dark; ctx.fillRect(0, 13, W, 1);
+
+  if (G.state === 'ATTRACT') { renderAttract(); renderBottom(); return; }
+
+  // Raumfestung
+  if (G.fort) renderFort(G.fort);
+
+  // Eier
+  for (var e = 0; e < G.eggs.length; e++) {
+    var eg = G.eggs[e];
+    var flash = eg.hatching > 0 && Math.floor(eg.hatching / 3) % 2 === 0;
+    var spr = flash ? SPR.eggB[eg.pal] : (eg.frame ? SPR.eggA[eg.pal] : SPR.eggB[eg.pal]);
+    drawSprite(spr, eg.x, eg.y);
+  }
+
+  // Grosse Phoenixe
+  for (var g2 = 0; g2 < G.bigs.length; g2++) {
+    var bg = G.bigs[g2];
+    var up = bg.flap === 0;
+    if (bg.wingL) drawSprite(up ? SPR.wingUpL[bg.pal] : SPR.wingDnL[bg.pal], bg.x - 13, bg.y + 2);
+    if (bg.wingR) drawSprite(up ? SPR.wingUpR[bg.pal] : SPR.wingDnR[bg.pal], bg.x + 12, bg.y + 2);
+    drawSprite(SPR.bigBody[bg.pal], bg.x, bg.y);
+  }
+
+  // Kleine Phoenixe
+  for (var b = 0; b < G.birds.length; b++) {
+    var bd = G.birds[b];
+    var f = Math.floor((G.frame + b * 3) / 7) % 2;
+    drawSprite(f ? SPR.birdUp[bd.pal] : SPR.birdDown[bd.pal], bd.x, bd.y);
+  }
+
+  // Geschosse
+  ctx.fillStyle = C.white;
+  for (var k = 0; k < G.shots.length; k++) ctx.fillRect(Math.round(G.shots[k].x), Math.round(G.shots[k].y), 1, 5);
+  for (var m = 0; m < G.bombs.length; m++) {
+    var bo = G.bombs[m];
+    ctx.fillStyle = (G.frame + m) % 6 < 3 ? C.yellow : C.red;
+    ctx.fillRect(Math.round(bo.x), Math.round(bo.y), 2, 4);
+  }
+
+  // Spielerschiff + Schild
+  if (!G.ship.dead) {
+    drawSprite(SPR.ship, G.ship.x, SHIP_Y);
+    if (G.ship.shieldT > 0 && G.frame % 4 < 3) {
+      ctx.strokeStyle = (G.frame % 8 < 4) ? C.cyan : C.white;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(G.ship.x + SPR.ship.width / 2, SHIP_Y + 9, 13, Math.PI * 1.08, Math.PI * 1.92);
+      ctx.stroke();
+    }
+  }
+
+  // Explosionen: Sternchen-Ausbruch wie im Original
+  for (var bi = 0; bi < G.booms.length; bi++) {
+    var bm = G.booms[bi], t = bm.t / 22;
+    var rad = bm.size * (0.3 + t * 0.9);
+    ctx.fillStyle = t < 0.4 ? C.white : bm.c;
+    for (var a = 0; a < 8; a++) {
+      var ang = a * Math.PI / 4 + bm.t * 0.05;
+      ctx.fillRect(Math.round(bm.x + Math.cos(ang) * rad), Math.round(bm.y + Math.sin(ang) * rad), 2, 2);
+    }
+    if (t < 0.5) { ctx.fillStyle = C.yellow; ctx.fillRect(Math.round(bm.x - 1), Math.round(bm.y - 1), 3, 3); }
+  }
+
+  if (G.msgT > 0 && G.msg) drawTextC(G.msg, 120, (G.frame % 20 < 14) ? C.yellow : C.red);
+  if (G.state === 'GAMEOVER') drawTextC('GAME OVER', 120, C.red);
+  if (G.state === 'PAUSE') drawTextC('PAUSE', 138, C.cyan);
+  if (G.state === 'CLEAR' && stageKind(G.stage) === 4) drawTextC('MOTHERSHIP DOWN', 132, C.green);
+
+  renderBottom();
+}
+
+function renderFort(f) {
+  var r, c;
+  for (r = 0; r < FROWS; r++) {
+    var row = f.cells[r];
+    for (c = 0; c < FCOLS; c++) {
+      var col = row[c];
+      if (!col) continue;
+      ctx.fillStyle = col;
+      ctx.fillRect(Math.round(f.x) + c * FCS, Math.round(f.y) + r * FCS, FCS - 1, FCS - 1);
+    }
+  }
+  if (f.alien) {
+    var ab = fortAlienBox(f);
+    drawSprite(SPR.alien, ab.x + (ab.w - SPR.alien.width) / 2, ab.y + 2);
+  }
+}
+
+function renderBottom() {
+  ctx.fillStyle = C.dark; ctx.fillRect(0, PLAY_BOT + 1, W, 1);
+  // Restleben als kleine Schiffe
+  var n = Math.min(6, Math.max(0, G.lives - (G.state === 'ATTRACT' ? 0 : 0)));
+  for (var i2 = 0; i2 < n; i2++) {
+    ctx.save();
+    ctx.translate(4 + i2 * 16, PLAY_BOT + 6);
+    ctx.scale(0.85, 0.85);
+    ctx.drawImage(SPR.ship, 0, 0);
+    ctx.restore();
+  }
+  // Wellenanzeige + Schildbalken
+  var kind = stageKind(G.stage) + 1, cyc = cycleOf(G.stage) + 1;
+  drawText('ST' + kind + '-' + cyc, W - 44, PLAY_BOT + 8, C.green);
+  var bx = W - 92, bw = 40;
+  ctx.fillStyle = C.dark; ctx.fillRect(bx, PLAY_BOT + 9, bw, 4);
+  var frac = G.ship.shieldT > 0 ? G.ship.shieldT / SHIELD_ON
+           : (G.ship.cdT > 0 ? 1 - G.ship.cdT / SHIELD_CD : 1);
+  ctx.fillStyle = G.ship.shieldT > 0 ? C.cyan : (G.ship.cdT > 0 ? C.red : C.green);
+  ctx.fillRect(bx, PLAY_BOT + 9, Math.round(bw * frac), 4);
+}
+
+function renderAttract() {
+  var t = G.stateT;
+  drawTextC('PHOENIX', 44, (t % 40 < 20) ? C.red : C.yellow, 3);
+  drawTextC('NACHBAU DES AUTOMATEN', 76, C.dark);
+  drawTextC('AMSTAR 1980', 88, C.dark);
+
+  // Kleine Vorschau der Gegner
+  drawSprite(SPR.birdUp[1], 40, 112);
+  drawSprite(SPR.birdDown[0], 156, 112);
+  drawSprite(SPR.bigBody[0], W / 2 - 6, 106);
+  drawSprite(SPR.wingUpL[0], W / 2 - 19, 108);
+  drawSprite(SPR.wingUpR[0], W / 2 + 6, 108);
+
+  drawText('20  40  80', 30, 146, C.cyan);   drawText('PHOENIX', 120, 146, C.gray);
+  drawText('50  100', 30, 158, C.magenta);   drawText('EGG', 120, 158, C.gray);
+  drawText('100-800', 30, 170, C.yellow);    drawText('BIG BIRD', 120, 170, C.gray);
+  drawText('1000-9000', 30, 182, C.green);   drawText('FORTRESS', 120, 182, C.gray);
+
+  if (t % 60 < 40) drawTextC('PUSH START', 206, C.white);
+  drawSprite(SPR.ship, W / 2 - 7, SHIP_Y);
+}
+
+// --------------------------------------------------------------- Hauptschleife
+var last = 0, acc = 0;
+function loop(ts) {
+  if (!last) last = ts;
+  var dt = ts - last; last = ts;
+  if (dt > 250) dt = 250;                     // nach Tab-Wechsel nicht aufholen
+  acc += dt;
+  var guard = 0;
+  while (acc >= STEP && guard++ < 8) { update(); acc -= STEP; }
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ------------------------------------------------------- Testhaken (headless)
+window._pxdbg = {
+  G: G, SPR: SPR,
+  start: function () { startGame(); },
+  tick: function (n) { for (var k = 0; k < (n || 1); k++) update(); },
+  goStage: function (n) { G.stage = n; G.state = 'PLAY'; G.stateT = 0; buildStage(); },
+  set: function (key, val) { G[key] = val; },
+  press: function (k, v) { K[k] = !!v; },
+  snap: function () {
+    return {
+      state: G.state, stage: G.stage, kind: stageKind(G.stage), cycle: cycleOf(G.stage),
+      score: G.score, lives: G.lives, shipX: Math.round(G.ship.x),
+      birds: G.birds.length, eggs: G.eggs.length, bigs: G.bigs.length,
+      bombs: G.bombs.length, shots: G.shots.length,
+      fort: G.fort ? { y: Math.round(G.fort.y), alien: G.fort.alien,
+                       cells: G.fort.cells.reduce(function (a, r) {
+                         return a + r.filter(Boolean).length; }, 0) } : null,
+      shield: G.ship.shieldT, cd: G.ship.cdT
+    };
+  }
+};
+})();
+</script>
+</body>
+</html>
