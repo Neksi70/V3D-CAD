@@ -20,6 +20,12 @@ function shiftGcodeLine(line, maxFil) {
   };
   // ^T{n}  (Toolchange) — nur einstellig 0..maxFil, gefolgt von Space/Ende
   line = line.replace(/^(T)([0-9]+)( |$)/, (m, p, n, s) => inc(m, p, n, s));
+  // M1020 S{n}  (Select Tool — der Fork emittiert das für BBL-Drucker (GCodeWriter.cpp:602),
+  // Bambu Studio gar nicht). MUSS mitgeschoben werden: sonst bleibt M1020 S0/S1 0-basiert,
+  // während T/M620/M632 1-basiert sind → am LETZTEN Wechsel sagt "M1020 S0" (wähle Tool 0 =
+  // grün/Initial), während "M620 S1A" grün als Filament 1 lädt = Widerspruch am finalen Load
+  // → deterministischer Layer-49-stg4-Hänger. Studios File hat kein M1020, deshalb hängt es nie.
+  line = line.replace(/^(M1020 S)([0-9]+)( |$)/, (m, p, n, s) => inc(m, p, n, s));
   // M620 S{n}A
   line = line.replace(/^(M620 S)([0-9]+)(A)/, (m, p, n, s) => inc(m, p, n, s));
   // M621 S{n}A

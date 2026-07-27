@@ -27,6 +27,7 @@ const os = require('os');
 const GCODE = 'Metadata/plate_1.gcode';
 const GMD5 = 'Metadata/plate_1.gcode.md5';
 const SLICEINFO = 'Metadata/slice_info.config';
+const SEQFILE = 'Metadata/filament_sequence.json';
 
 // Die H2C-Firmware validiert Generator + Slicer-Version des 3MF. Unser Fork meldet
 // "OrcaSlicer 2.5.0-dev" / X-BBL-Client-Version 02.06.00.51 → die Firmware lehnt es als
@@ -150,6 +151,14 @@ function injectMissingKeys(gcode3mfPath, opts = {}) {
       if (re.test(g)) { g = g.replace(re, line); gfix++; }
       else if (anchor.test(g)) { g = g.replace(anchor, m => m + '\n' + line); gfix++; }
     }
+    // M620 O{n} = Toolchange-Zähler, den die H2-Firmware für die Vortek-Magazin-Rotation
+    // mitzählt. Unser Slicer lässt O2 aus (O1,O3,O4,…,O50) statt Studios O1,O2,…,O49 →
+    // der Off-by-one akkumuliert die Magazin-Rotation über alle Wechsel und desynct sie
+    // am FINALEN Load (deterministischer Layer-49-stg4-Hänger). Byte-Diff gegen bambu.gcode
+    // (Studios funktionierender Magazin-Slice) 2026-07-27. Fix: sequenziell 1,2,3,… renumbern.
+    let oCnt = 0; const beforeO = g;
+    g = g.replace(/^M620 O[0-9]+/gm, () => 'M620 O' + (++oCnt));
+    if (g !== beforeO) gfix++;
   }
   fs.writeFileSync(gcodePath, g);
   // md5 wie Bambu: Großbuchstaben-Hex
@@ -211,8 +220,37 @@ function injectMissingKeys(gcode3mfPath, opts = {}) {
     gfix++;
   } catch (e) { /* model_settings optional */ }
 
-  // filament_sequence.json: bleibt nativ (sequence=[1], Slot 1) — konsistent zu
-  // slice_info/model_settings/Header. KEIN Slot-2-Relabel mehr.
+  // filament_sequence.json: die H2-Firmware plant HIERAUS die Vortek-Magazin-Rotation
+  // fürs ganze Druck vor. Unsere native Version ist systematisch falsch — PROOF-Druck
+  // 2026-07-27 (unser File + NUR Studios filament_sequence.json) lief durch Layer 49,
+  // unseres hängt dort deterministisch: der Versatz läuft am LETZTEN Load aus (stg4).
+  // Der Renumber fasst diese Datei sonst nicht an. Byte-Diff vs Studios funktionierendem
+  // Magazin-Slice (gleiches Objekt) ergab genau drei Transformationen (reproduzieren
+  // Studios Werte EXAKT aus unseren):
+  //   sequence           +1  (renumbern wie Gcode/T)          1,2,1,2 → 2,3,2,3
+  //   nozzle_sequence     Gruppen 1↔2 tauschen (invertiert)   1,2,1,2 → 2,1,2,1
+  //   optimal_assignment  → 0 (Magazin = rechter Extruder)    1,…     → 0,…
+  // Nur im doRenumber-Fall (H2C-Mehrfarbe). Für >2 Farben ist der 1↔2-Swap ein
+  // Sonderfall — falls je 3+ Magazinfarben nötig, hier generalisieren.
+  if (doRenumber) {
+    try {
+      execFileSync('unzip', ['-o', copy, SEQFILE, '-d', work], { stdio: 'ignore' });
+      const sqPath = path.join(work, SEQFILE);
+      const sq = JSON.parse(fs.readFileSync(sqPath, 'utf8'));
+      for (const plate of Object.values(sq)) {
+        if (!plate || typeof plate !== 'object') continue;
+        if (Array.isArray(plate.sequence))
+          plate.sequence = plate.sequence.map(v => (typeof v === 'number' ? v + 1 : v));
+        if (Array.isArray(plate.nozzle_sequence))
+          plate.nozzle_sequence = plate.nozzle_sequence.map(v => (v === 1 ? 2 : v === 2 ? 1 : v));
+        if (Array.isArray(plate.optimal_assignment))
+          plate.optimal_assignment = plate.optimal_assignment.map(() => 0);
+      }
+      fs.writeFileSync(sqPath, JSON.stringify(sq));
+      execFileSync('zip', ['-q', copy, SEQFILE], { cwd: work, stdio: 'ignore' });
+      gfix++;
+    } catch (e) { /* filament_sequence optional */ }
+  }
 
   // Referenz-Dateien ergänzen (Studio hat sie; der Drucker erwartet sie beim Load
   // für die AMS-Tabelle). Vorschau-PNGs: echtes Bild von der App, wenn geliefert
