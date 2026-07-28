@@ -7431,6 +7431,26 @@ function _buildRevolveGeo(normPts, opts) {
   const stripsD    = (opts.stripsD || 20) / 100;
   const hires      = opts.hires    || false;
   const bottomCap  = opts.bottomCap !== false ? (opts.bottomCap || false) : false;
+
+  // Vieleck mit IMMER verrundeten Ecken (Minkowski: geschrumpftes Vieleck + Kreis).
+  // Flächen bleiben auf dem Inkreis a=r·cos(π/N), Ecken werden Bögen mit ρ=12%
+  // des lokalen Radius — druckfreundlich und keine Spitzen-Artefakte bei Twist.
+  const POLY_ROUND = 0.12;
+  const _polyHalf = Math.PI / polyN;
+  function _polyR(r, ang) {
+    const step = 2 * _polyHalf;
+    const pLoc = ((ang % step) + step) % step;
+    const alpha = pLoc - _polyHalf;               // [-π/N, π/N], 0 = Flächenmitte
+    const rho = POLY_ROUND * r;
+    const a  = r * Math.cos(_polyHalf);           // Inkreis (Flächenabstand)
+    const a2 = Math.max(1e-4, a - rho);           // geschrumpftes Vieleck
+    const flatAng = Math.atan2(a2 * Math.tan(_polyHalf), a);
+    if (Math.abs(alpha) <= flatAng) return a / Math.cos(alpha);
+    const R2 = a2 / Math.cos(_polyHalf);          // Umkreis des geschrumpften Vielecks
+    const g  = _polyHalf - Math.abs(alpha);       // Winkelabstand zur Ecke
+    const s  = R2 * Math.sin(g);
+    return R2 * Math.cos(g) + Math.sqrt(Math.max(0, rho * rho - s * s));
+  }
   const topCap     = opts.topCap    !== false ? (opts.topCap    || false) : false;
 
   // Segment count: enough for clean edges per mode
@@ -7438,7 +7458,7 @@ function _buildRevolveGeo(normPts, opts) {
   if (surface === 'lowpoly') {
     S = cross === 'polygon' ? polyN : 12;
   } else if (cross === 'polygon') {
-    S = polyN * (hires ? 24 : 16);
+    S = Math.max(polyN * (hires ? 24 : 16), 256);   // Eckbögen (~5–15°) brauchen feines Raster
   } else if (cross === 'wave') {
     S = waveN * (hires ? 16 : (waveN > 32 ? 8 : 12));   // feine Lamellen: 8 Samples/Welle reichen
   } else {
@@ -7529,10 +7549,7 @@ function _buildRevolveGeo(normPts, opts) {
       const patOn = rows[i].pat !== 0;
       let rEff = r;
       if (cross === 'polygon') {
-        const step = (2 * Math.PI) / polyN;
-        const pLoc = ((phiPat % step) + step) % step;
-        const alpha = pLoc - step * 0.5;          // [-π/N, π/N]
-        rEff = r * Math.cos(Math.PI / polyN) / Math.cos(alpha);
+        rEff = _polyR(r, phiPat);
       } else if (patOn && cross === 'wave') {
         rEff = r * (1.0 + waveAmp * Math.sin(waveN * phiPat));
       }
@@ -7560,9 +7577,7 @@ function _buildRevolveGeo(normPts, opts) {
   function _rEff(r, phi) {
     let re = r;
     if (cross === 'polygon') {
-      const step = (2 * Math.PI) / polyN;
-      const pLoc = ((phi % step) + step) % step;
-      re = r * Math.cos(Math.PI / polyN) / Math.cos(pLoc - step * 0.5);
+      re = _polyR(r, phi);
     } else if (cross === 'wave') {
       re = r * (1.0 + waveAmp * Math.sin(waveN * phi));
     }
