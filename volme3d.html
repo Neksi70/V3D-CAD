@@ -7514,11 +7514,14 @@ function _buildRevolveGeo(normPts, opts) {
       const r = rows[i].x;
       const h = rows[i].y;
       const tH = (h - minH) / hRange;
-      const phi = phiBase;
-      // Twist/Schwung verschieben die MUSTER-Phase gegen den Platzierungswinkel.
-      // (Beides zusammen zu drehen wäre ein No-Op: die Rotationsfläche bliebe identisch,
-      // nur die Parametrisierung rotiert → Muster bleibt gerade + Alias-Terrassen.)
-      const phiPat = phi - twist * tH - (swayA ? swayA * Math.sin(Math.PI * 2 * swayF * tH) : 0);
+      // Twist/Schwung drehen den PLATZIERUNGSWINKEL, das Muster bleibt fest am
+      // Sample-Raster (phiBase): so liegen Rillenkanten/Ecken auf jeder Ringhöhe
+      // exakt auf denselben s-Indizes → keine ausgefransten Kanten durch Winkel-
+      // Aliasing. (Offset stattdessen in der Muster-Phase = gleiche Fläche, aber
+      // die Kanten fallen pro Ring anders zwischen die Samples und flattern.
+      // Offset in BEIDEN = No-Op: Muster bleibt gerade.)
+      const phi = phiBase + twist * tH + (swayA ? swayA * Math.sin(Math.PI * 2 * swayF * tH) : 0);
+      const phiPat = phiBase;
 
       // Cross-section shape — pat=0 (z.B. Innenwand der Vase): Oberflächen-Muster
       // (Welle/Rillen) aus, Vieleck-Grundform gilt als glatte Form auch innen.
@@ -7569,8 +7572,9 @@ function _buildRevolveGeo(normPts, opts) {
   }
 
   // Cap builder — separate vertices (not shared with side) so normals stay clean.
-  // patOff = Muster-Phasenversatz (Twist/Schwung) auf dieser Höhe, damit der
-  // Deckelrand exakt auf dem verdrehten Rand-Ring der Seitenwand liegt.
+  // patOff = Positions-Verdrehung (Twist/Schwung) auf dieser Höhe: Muster wird
+  // rasterfest gesampelt, der Ring wie die Seitenwand verdreht platziert →
+  // Deckelrand liegt Vertex-genau auf dem Rand-Ring.
   function _addCap(yLevel, baseR, normalY, patOff) {
     const cIdx = pos.length / 3;
     pos.push(0, yLevel, 0);
@@ -7579,8 +7583,9 @@ function _buildRevolveGeo(normPts, opts) {
     const eStart = pos.length / 3;
     for (let s = 0; s <= S; s++) {
       const phi = (s / S) * Math.PI * 2;
-      const re  = _rEff(baseR, phi - (patOff || 0));
-      pos.push(re * Math.cos(phi), yLevel, re * Math.sin(phi));
+      const re  = _rEff(baseR, phi);
+      const a   = phi + (patOff || 0);
+      pos.push(re * Math.cos(a), yLevel, re * Math.sin(a));
       nor.push(0, normalY, 0);
       uv.push(0.5 + Math.cos(phi) * 0.5, 0.5 + Math.sin(phi) * 0.5);
     }
