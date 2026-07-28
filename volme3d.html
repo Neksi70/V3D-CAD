@@ -7443,7 +7443,7 @@ function _buildRevolveGeo(normPts, opts) {
   // 'Organisch': handmodellierte Keramik — glattes, 2π-periodisches Zufallsrelief
   // aus wenigen Sinus-Produkten (deterministisch aus orgSeed, nahtfrei), Summe der
   // Amplituden auf 1 normiert → Auslenkung sicher in ±orgAmp (Innenwand-Clearance!).
-  let _orgTerms = null;
+  let _orgTerms = null, _orgStruct = null;
   if (surface === 'organic') {
     let st = orgSeed;
     const rnd = () => (st = (st * 1664525 + 1013904223) >>> 0) / 4294967296;
@@ -7459,14 +7459,40 @@ function _buildRevolveGeo(normPts, opts) {
       _orgTerms.push(t); norm += t.a;
     }
     for (const t of _orgTerms) t.a /= norm;
+    // Schnitz-Struktur: schmale, senkrecht durchlaufende Bahnen unregelmäßiger
+    // Breite (3 inkommensurable Umfangsfrequenzen), leicht wandernd, Amplitude
+    // über die Höhe nur moduliert (Envelope) statt genullt → Bahnen reißen nicht ab.
+    // Schnitz-Facetten: unregelmäßige Winkel-Knoten, Radius dazwischen LINEAR
+    // interpoliert → Sehnen = flache geschnitzte Bahnen mit klaren Kanten
+    // (kein Sinus-Gewelle). Die Knoten-Tiefen atmen sanft über die Höhe.
+    const K = 14 + Math.floor(rnd() * 6);
+    _orgStruct = { th: [], off: [] };
+    for (let k = 0; k < K; k++) {
+      _orgStruct.th.push((k + 0.15 + rnd() * 0.7) * 2 * Math.PI / K);
+      _orgStruct.off.push({ p: rnd() * Math.PI * 2, f: 0.6 + rnd() * 1.8 });
+    }
   }
   function _orgN(ang, tH) {
-    let n = 0;
+    let big = 0;
     for (const t of _orgTerms)
-      n += t.a * Math.sin(t.m * ang + t.p + t.w * tH) * Math.sin(t.f * Math.PI * tH + t.q);
-    // Sinus-Produkte mitteln sich zu ±0.2..0.4 → tanh spreizt auf volle ±1-Nutzung
-    // und flacht Spitzen zu Plateaus ab (geschnitzter Keramik-Look); bleibt < ±1.
-    return Math.tanh(2.4 * n);
+      big += t.a * Math.sin(t.m * ang + t.p + t.w * tH) * Math.sin(t.f * Math.PI * tH + t.q);
+    // Schnitz-Facetten: Segment der Winkel-Knoten finden, Tiefen linear mischen
+    const th = _orgStruct.th, off = _orgStruct.off, K = th.length;
+    const TP = 2 * Math.PI;
+    const a = ((ang % TP) + TP) % TP;
+    let t0 = th[K - 1] - TP, t1 = th[0], k0 = K - 1;
+    for (let i = 0; i < K && a >= th[i]; i++) {
+      k0 = i; t0 = th[i]; t1 = i + 1 < K ? th[i + 1] : th[0] + TP;
+    }
+    const k1 = (k0 + 1) % K;
+    const u  = (a - t0) / (t1 - t0);
+    // tanh drückt die Knoten-Tiefen Richtung ±1 → kräftige Stufen zwischen
+    // benachbarten Schnitzbahnen (sonst säuft die Struktur im Rendering ab)
+    const o0 = Math.tanh(1.6 * Math.sin(off[k0].p + off[k0].f * Math.PI * tH));
+    const o1 = Math.tanh(1.6 * Math.sin(off[k1].p + off[k1].f * Math.PI * tH));
+    const s  = o0 + (o1 - o0) * u;                    // ∈ [-1,1], Sehnen bleiben flach
+    // Gewichtete Summe bleibt in ±1 → Innenwand-Clearance über orgAmp garantiert.
+    return 0.65 * Math.tanh(2.4 * big) + 0.35 * s;
   }
   const bottomCap  = opts.bottomCap !== false ? (opts.bottomCap || false) : false;
 
@@ -7496,7 +7522,7 @@ function _buildRevolveGeo(normPts, opts) {
   if (surface === 'lowpoly') {
     S = cross === 'polygon' ? polyN : 12;
   } else if (surface === 'organic' && cross === 'circle') {
-    S = 26;                                   // grobe Facetten = geschnitzter Look
+    S = hires ? 128 : 96;                     // fein genug für die Schnitz-Bahnen (m bis 27)
   } else if (cross === 'polygon') {
     S = Math.max(polyN * (hires ? 24 : 16), 256);   // Eckbögen (~5–15°) brauchen feines Raster
   } else if (cross === 'wave') {
