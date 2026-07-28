@@ -2332,7 +2332,9 @@ const firebaseConfig = {
         <span class="vsec">Querschnitt</span>
         <div class="vbg" id="vbg-cross">
           <button class="vtb on" onclick="_vaseSetCross('circle')">Rund</button>
-          <button class="vtb"    onclick="_vaseSetCross('polygon')">Polygon</button>
+          <button class="vtb"    onclick="_vaseSetCross('tri')">Dreieck</button>
+          <button class="vtb"    onclick="_vaseSetCross('quad')">Quadrat</button>
+          <button class="vtb"    onclick="_vaseSetCross('polygon')">Vieleck</button>
           <button class="vtb"    onclick="_vaseSetCross('wave')">Welle</button>
         </div>
         <div id="vp-poly-row" style="display:none">
@@ -7457,13 +7459,17 @@ function _buildRevolveGeo(normPts, opts) {
       const yMin = profPts.reduce((m, p) => Math.min(m, p.y), Infinity);
       const yMax = profPts.reduce((m, p) => Math.max(m, p.y), -Infinity);
       const hSpan = (yMax - yMin) || 1;
-      const rings = Math.min(hires ? 340 : 240, Math.ceil(patK * phaseVel * 3 / Math.PI));
+      // patK-Term: ≥3 Ringe pro Muster-Halbwelle; phaseVel-Term: ≤~2° Verdrehung
+      // pro Ring (sonst Treppenstufen an Vieleck-Kanten bei kleinem N)
+      const rings = Math.min(hires ? 340 : 240,
+        Math.max(Math.ceil(patK * phaseVel * 3 / Math.PI), Math.ceil(phaseVel * 30)));
       const maxDy = hSpan / rings;
       const out = [profPts[0]];
       for (let i = 1; i < profPts.length; i++) {
         const a = profPts[i - 1], b = profPts[i];
-        // Glatte Abschnitte (pat=0, z.B. Innenwand) brauchen keine Muster-Verdichtung
-        const smooth = a.pat === 0 && b.pat === 0;
+        // Glatte Abschnitte (pat=0, z.B. Innenwand) brauchen keine Muster-Verdichtung —
+        // außer beim Vieleck: dessen Grundform (und damit der Twist) gilt auch innen
+        const smooth = a.pat === 0 && b.pat === 0 && cross !== 'polygon';
         const n = smooth ? 1 : Math.max(1, Math.min(48, Math.ceil(Math.abs(b.y - a.y) / maxDy)));
         for (let j = 1; j <= n; j++) {
           const v = new THREE.Vector2(a.x + (b.x - a.x) * j / n, a.y + (b.y - a.y) * j / n);
@@ -7514,10 +7520,11 @@ function _buildRevolveGeo(normPts, opts) {
       // nur die Parametrisierung rotiert → Muster bleibt gerade + Alias-Terrassen.)
       const phiPat = phi - twist * tH - (swayA ? swayA * Math.sin(Math.PI * 2 * swayF * tH) : 0);
 
-      // Cross-section shape — pat=0 (z.B. Innenwand der Vase) bleibt glatter Kreis
+      // Cross-section shape — pat=0 (z.B. Innenwand der Vase): Oberflächen-Muster
+      // (Welle/Rillen) aus, Vieleck-Grundform gilt als glatte Form auch innen.
       const patOn = rows[i].pat !== 0;
       let rEff = r;
-      if (patOn && cross === 'polygon') {
+      if (cross === 'polygon') {
         const step = (2 * Math.PI) / polyN;
         const pLoc = ((phiPat % step) + step) % step;
         const alpha = pLoc - step * 0.5;          // [-π/N, π/N]
@@ -29065,8 +29072,16 @@ function _vaseUpd(key, val) {
 }
 
 function _vaseSetCross(mode) {
-  _vaseP.cross = mode;
-  ['circle','polygon','wave'].forEach((m,i) => {
+  // Schnellwahl: Dreieck/Quadrat = Vieleck mit fester Seitenzahl
+  const quick = { tri: 3, quad: 4 };
+  _vaseP.cross = quick[mode] ? 'polygon' : mode;
+  if (quick[mode]) {
+    _vaseP.polyN = quick[mode];
+    const sl = document.getElementById('vp-polyN'), vv = document.getElementById('vv-polyN');
+    if (sl) sl.value = quick[mode];
+    if (vv) vv.textContent = quick[mode];
+  }
+  ['circle','tri','quad','polygon','wave'].forEach((m,i) => {
     const btn = document.querySelector(`#vbg-cross .vtb:nth-child(${i+1})`);
     if (btn) btn.classList.toggle('on', m === mode);
   });
@@ -29204,11 +29219,14 @@ function _vaseWalledProfile(normPts, p) {
   // _buildRevolveGeo). Die Innenwand bleibt glatt (pat=0) und weicht zusätzlich um
   // die Mustertiefe zurück — sonst durchstoßen tiefe Rillen die Wand von außen
   // (Selbstdurchdringung = zerfetzte Oberfläche, v.a. mit Twist/Schwung).
-  const crossMin = p.cross === 'wave'    ? 1 - (p.waveAmp || 0) / 100
-                 : p.cross === 'polygon' ? Math.cos(Math.PI / Math.max(3, p.polyN || 6)) : 1;
+  // Vieleck ist eine glatte Form → gilt auch innen (Kavität bleibt eckig, Wand-
+  // stärke senkrecht zur Fläche via 1/cos-Korrektur). Nur Welle/Rillen sind
+  // Oberflächen-Muster und bleiben außen.
+  const crossMin = p.cross === 'wave' ? 1 - (p.waveAmp || 0) / 100 : 1;
   const surfMin  = p.surface === 'strips' ? 1 - (p.stripsD || 0) / 100 : 1;
+  const polyAdj  = p.cross === 'polygon' ? 1 / Math.cos(Math.PI / Math.max(3, p.polyN || 6)) : 1;
   const minF = Math.max(0.2, crossMin * surfMin);                  // min. Radiusfaktor des Musters
-  const inR = r => Math.max(0.03, r * minF - wallR);               // glatter Innenwand-Radius
+  const inR = r => Math.max(0.03, r * minF - wallR * polyAdj);     // glatter Innenwand-Radius
   const outer = normPts;
   const yBot = outer[0].y, yTop = outer[outer.length - 1].y;
   const floorY = Math.min(yTop - 0.1, yBot + wallH);               // Kavitätsboden-Höhe
