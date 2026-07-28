@@ -7457,14 +7457,19 @@ function _buildRevolveGeo(normPts, opts) {
       const yMin = profPts.reduce((m, p) => Math.min(m, p.y), Infinity);
       const yMax = profPts.reduce((m, p) => Math.max(m, p.y), -Infinity);
       const hSpan = (yMax - yMin) || 1;
-      const rings = Math.min(hires ? 340 : 240, Math.ceil(patK * phaseVel * 2 / Math.PI));
+      const rings = Math.min(hires ? 340 : 240, Math.ceil(patK * phaseVel * 3 / Math.PI));
       const maxDy = hSpan / rings;
       const out = [profPts[0]];
       for (let i = 1; i < profPts.length; i++) {
         const a = profPts[i - 1], b = profPts[i];
-        const n = Math.max(1, Math.min(48, Math.ceil(Math.abs(b.y - a.y) / maxDy)));
-        for (let j = 1; j <= n; j++)
-          out.push(new THREE.Vector2(a.x + (b.x - a.x) * j / n, a.y + (b.y - a.y) * j / n));
+        // Glatte Abschnitte (pat=0, z.B. Innenwand) brauchen keine Muster-Verdichtung
+        const smooth = a.pat === 0 && b.pat === 0;
+        const n = smooth ? 1 : Math.max(1, Math.min(48, Math.ceil(Math.abs(b.y - a.y) / maxDy)));
+        for (let j = 1; j <= n; j++) {
+          const v = new THREE.Vector2(a.x + (b.x - a.x) * j / n, a.y + (b.y - a.y) * j / n);
+          if (j < n ? (a.pat === 0 || b.pat === 0) : b.pat === 0) v.pat = 0;
+          out.push(v);
+        }
       }
       profPts = out;
     }
@@ -7509,19 +7514,20 @@ function _buildRevolveGeo(normPts, opts) {
       // nur die Parametrisierung rotiert → Muster bleibt gerade + Alias-Terrassen.)
       const phiPat = phi - twist * tH - (swayA ? swayA * Math.sin(Math.PI * 2 * swayF * tH) : 0);
 
-      // Cross-section shape
+      // Cross-section shape — pat=0 (z.B. Innenwand der Vase) bleibt glatter Kreis
+      const patOn = rows[i].pat !== 0;
       let rEff = r;
-      if (cross === 'polygon') {
+      if (patOn && cross === 'polygon') {
         const step = (2 * Math.PI) / polyN;
         const pLoc = ((phiPat % step) + step) % step;
         const alpha = pLoc - step * 0.5;          // [-π/N, π/N]
         rEff = r * Math.cos(Math.PI / polyN) / Math.cos(alpha);
-      } else if (cross === 'wave') {
+      } else if (patOn && cross === 'wave') {
         rEff = r * (1.0 + waveAmp * Math.sin(waveN * phiPat));
       }
 
       // Surface effect
-      if (surface === 'strips') {
+      if (patOn && surface === 'strips') {
         const g = Math.pow(Math.max(0, Math.cos(stripsN * phiPat)), 2);
         rEff *= (1.0 - stripsD * g);
       }
@@ -7657,7 +7663,11 @@ function _revolveWalledProfile(normPts, wallR, wallH) {
 
 function _rebuildRevolveGeo(o) {
   if (!o || o.userData.shapeType !== 'revolve') return;
-  const normPts = (o.userData.revolveNormPts || []).map(p => new THREE.Vector2(p.x, p.y));
+  const normPts = (o.userData.revolveNormPts || []).map(p => {
+    const v = new THREE.Vector2(p.x, p.y);
+    if (p.pat !== undefined) v.pat = p.pat;   // Muster-Flag (Innenwand glatt) erhalten
+    return v;
+  });
   if (normPts.length < 2) return;
   const opts = _revolveOptsFromObj(o);
   // Wandstärke (mm) → normierte Einheiten über die aktuelle Objektgröße
@@ -29190,25 +29200,35 @@ function _vaseWalledProfile(normPts, p) {
   if (wall <= 0) return null;
   const wallR = Math.max(0.02, 2 * wall / Math.max(1, p.width));   // radial (normiert)
   const wallH = Math.max(0.02, 2 * wall / Math.max(1, p.height));  // Bodenstärke (normiert)
+  // Muster (Welle/Polygon/Rillen) trägt nur auf der AUSSENWAND auf (pat=1, siehe
+  // _buildRevolveGeo). Die Innenwand bleibt glatt (pat=0) und weicht zusätzlich um
+  // die Mustertiefe zurück — sonst durchstoßen tiefe Rillen die Wand von außen
+  // (Selbstdurchdringung = zerfetzte Oberfläche, v.a. mit Twist/Schwung).
+  const crossMin = p.cross === 'wave'    ? 1 - (p.waveAmp || 0) / 100
+                 : p.cross === 'polygon' ? Math.cos(Math.PI / Math.max(3, p.polyN || 6)) : 1;
+  const surfMin  = p.surface === 'strips' ? 1 - (p.stripsD || 0) / 100 : 1;
+  const minF = Math.max(0.2, crossMin * surfMin);                  // min. Radiusfaktor des Musters
+  const inR = r => Math.max(0.03, r * minF - wallR);               // glatter Innenwand-Radius
   const outer = normPts;
   const yBot = outer[0].y, yTop = outer[outer.length - 1].y;
   const floorY = Math.min(yTop - 0.1, yBot + wallH);               // Kavitätsboden-Höhe
+  const mk = (x, y, pat) => { const v = new THREE.Vector2(x, y); v.pat = pat; return v; };
   const loop = [];
-  loop.push(new THREE.Vector2(0, yBot));                           // Achse unten
-  for (const pt of outer) loop.push(new THREE.Vector2(pt.x, pt.y));// Außenwand unten→oben
+  loop.push(mk(0, yBot, 1));                                       // Achse unten (Boden folgt Muster am Rand)
+  for (const pt of outer) loop.push(mk(pt.x, pt.y, 1));            // Außenwand unten→oben
   // Innenwand oben→unten, nach innen versetzt, bis Bodenhöhe
   for (let i = outer.length - 1; i >= 0; i--) {
     if (outer[i].y <= floorY) {
       const hi = outer[i + 1] || outer[i];                         // Punkt oberhalb des Bodens
       const t = (floorY - outer[i].y) / ((hi.y - outer[i].y) || 1);
       const rOuterAtFloor = outer[i].x + (hi.x - outer[i].x) * t;
-      loop.push(new THREE.Vector2(Math.max(0.03, rOuterAtFloor - wallR), floorY));
+      loop.push(mk(inR(rOuterAtFloor), floorY, 0));
       break;
     }
-    loop.push(new THREE.Vector2(Math.max(0.03, outer[i].x - wallR), outer[i].y));
+    loop.push(mk(inR(outer[i].x), outer[i].y, 0));
   }
-  loop.push(new THREE.Vector2(0, floorY));                         // Kavitätsboden-Mitte (Achse)
-  loop.push(new THREE.Vector2(0, yBot));                           // entlang Achse schließen
+  loop.push(mk(0, floorY, 0));                                     // Kavitätsboden-Mitte (Achse)
+  loop.push(mk(0, yBot, 1));                                       // entlang Achse schließen
   return loop;
 }
 
@@ -29288,7 +29308,7 @@ function _createVase() {
     id: idCtr++, type: 'revolve', shapeType: 'revolve',
     name: 'Vase ' + typeCounts['revolve'],
     color, isHole: false, fillet: 0, chamfer: 0,
-    revolveNormPts: profile.map(pt => ({ x: pt.x, y: pt.y })),
+    revolveNormPts: profile.map(pt => (pt.pat !== undefined ? { x: pt.x, y: pt.y, pat: pt.pat } : { x: pt.x, y: pt.y })),
     revolveTwist: p.twist * DEG,
     revolveSwayA: p.swayA * DEG, revolveSwayF: p.swayF,
     revolveCross: p.cross, revolvePolyN: p.polyN,
