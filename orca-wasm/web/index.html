@@ -106,6 +106,21 @@
   #sliceResult .srRow > span { opacity: .75; }
   #sliceResult select { padding: .25rem .4rem; font-size: .82rem; border: 1px solid var(--border);
                  border-radius: 6px; background: #fff; color: var(--text); }
+  #sliceResult .srSep { border-top: 1px solid var(--border); margin: .15rem 0; opacity: .55; }
+  #sliceResult .srTotalRow > span { opacity: 1; font-weight: 700; }
+  #sliceResult .srTotalRow b { color: var(--accent); font-weight: 700; font-size: 1.02rem; }
+  #sliceResult .srLink { background: none; border: 0; color: var(--accent); font-size: .76rem;
+                 cursor: pointer; padding: 0; text-decoration: underline; }
+  #sliceResult #srShip { max-width: 58%; }
+  #sliceResult #srCostForm { display: flex; flex-direction: column; gap: .3rem; background: var(--bg);
+                 border: 1px solid var(--border); border-radius: 6px; padding: .5rem; margin-top: .1rem; }
+  #sliceResult #srCostForm[hidden] { display: none; }
+  #sliceResult #srCostForm label { display: flex; justify-content: space-between; align-items: center;
+                 gap: .5rem; font-size: .78rem; }
+  #sliceResult #srCostForm input { width: 5rem; padding: .15rem .3rem; border: 1px solid var(--border);
+                 border-radius: 5px; }
+  #sliceResult #srCostForm button { align-self: flex-end; padding: .25rem .8rem; font-size: .8rem;
+                 background: var(--accent); color: #fff; border: 0; border-radius: 6px; cursor: pointer; }
   #legend { display: flex; flex-direction: column; gap: .25rem; font-size: .78rem;
             border-top: 1px solid var(--border); padding-top: .45rem; }
   #legend:empty { display: none; }
@@ -597,6 +612,20 @@
       <div id="legend"></div>
       <div class="srRow"><span>Gesamt</span><b id="srTotal">–</b></div>
       <div class="srRow"><span>Gesamtzeit</span><b id="srTime">–</b></div>
+      <div class="srSep"></div>
+      <div class="srRow"><span>Material</span><b id="srCostMat">–</b></div>
+      <div class="srRow"><span>Druckzeit</span><b id="srCostTime">–</b></div>
+      <div class="srRow"><span>Grundpreis</span><b id="srCostBase">–</b></div>
+      <div class="srRow"><span>Versand</span><select id="srShip"></select></div>
+      <div class="srRow srTotalRow"><span>Gesamtpreis</span><b id="srCostTotal">–</b></div>
+      <div class="srRow"><button id="srCostEdit" class="srLink" type="button">⚙ Preise anpassen</button></div>
+      <div id="srCostForm" hidden>
+        <label>Material €/g <input id="cfgPerGram" type="number" min="0" step="0.01"></label>
+        <label>Maschine €/h <input id="cfgPerHour" type="number" min="0" step="0.1"></label>
+        <label>Grundpreis € <input id="cfgBase" type="number" min="0" step="0.5"></label>
+        <label>Versand € <input id="cfgShip" type="number" min="0" step="0.5" title="Versandkosten (Option „Versand“)"></label>
+        <button id="cfgSave" type="button">Speichern</button>
+      </div>
     </div>
   </div>
   <div id="overlay" hidden>
@@ -4327,11 +4356,66 @@ function handleMessage(e) {
       ? [mmTot ? de(mmTot / 1000) + ' m' : '', gTot ? de(gTot) + ' g' : ''].filter(Boolean).join(' / ')
       : '–';
     $('srTime').textContent = grab(/; total estimated time: (.*)/) || '–';
+    // Kostenschätzung aktualisieren (Gewicht in g, Druckzeit in Stunden)
+    lastCostG = gTot || 0;
+    lastCostH = parseHours(grab(/; total estimated time: (.*)/) || grab(/; model printing time: (.*)/) || '');
+    renderCost();
     $('sliceToast').hidden = false;
     status.innerHTML = `<span class="ok" id="done">Fertig: ${modelName} → ${layers.length} Layer in ${dt}s</span>`;
     showTab('preview');
     updateSliceable();
   }
+}
+
+// ── Kostenschätzung (Material + Maschinenzeit + Grundpreis + Versandoption) ──
+const COST_DEFAULTS = { perGram: 0.08, perHour: 2.0, base: 2.0, ship: 4.90 };
+function costCfg() {
+  try { return { ...COST_DEFAULTS, ...JSON.parse(localStorage.getItem('vs-cost') || '{}') }; }
+  catch { return { ...COST_DEFAULTS }; }
+}
+let lastCostG = 0, lastCostH = 0;   // gemerkt fürs Neu-Rechnen bei Versand-/Preiswechsel
+// Zeitstring "1h 5m 3s" / "48m 51s" → Stunden (dezimal)
+function parseHours(t) {
+  if (!t) return 0;
+  const h = +(t.match(/(\d+)\s*h/) || [, 0])[1];
+  const m = +(t.match(/(\d+)\s*m(?!m)/) || [, 0])[1];
+  const s = +(t.match(/(\d+)\s*s/) || [, 0])[1];
+  return h + m / 60 + s / 3600;
+}
+const eur = v => (Number.isFinite(v) ? v : 0).toFixed(2).replace('.', ',') + ' €';
+function fillShip() {
+  const c = costCfg(), sel = $('srShip'); if (!sel) return;
+  const keep = sel.value || 'pickup';
+  sel.innerHTML = `<option value="pickup">Abholung (0,00 €)</option><option value="ship">Versand (${eur(c.ship)})</option>`;
+  sel.value = keep;
+}
+function renderCost() {
+  if (!$('srCostTotal')) return;
+  const c = costCfg();
+  const mat = lastCostG * c.perGram, time = lastCostH * c.perHour;
+  const ship = $('srShip') && $('srShip').value === 'ship' ? c.ship : 0;
+  $('srCostMat').textContent = `${eur(mat)} (${Math.round(lastCostG)} g)`;
+  $('srCostTime').textContent = `${eur(time)} (${Math.round(lastCostH * 60)} min)`;
+  $('srCostBase').textContent = eur(c.base);
+  $('srCostTotal').textContent = eur(mat + time + c.base + ship);
+}
+// Verdrahtung (DOM existiert hier bereits — Panel liegt weiter oben im Body)
+if ($('srShip')) {
+  fillShip();
+  $('srShip').onchange = renderCost;
+  $('srCostEdit').onclick = () => {
+    const c = costCfg();
+    $('cfgPerGram').value = c.perGram; $('cfgPerHour').value = c.perHour;
+    $('cfgBase').value = c.base; $('cfgShip').value = c.ship;
+    $('srCostForm').hidden = !$('srCostForm').hidden;
+  };
+  $('cfgSave').onclick = () => {
+    localStorage.setItem('vs-cost', JSON.stringify({
+      perGram: +$('cfgPerGram').value || 0, perHour: +$('cfgPerHour').value || 0,
+      base: +$('cfgBase').value || 0, ship: +$('cfgShip').value || 0,
+    }));
+    $('srCostForm').hidden = true; fillShip(); renderCost();
+  };
 }
 
 function initWorker() {
@@ -4419,6 +4503,13 @@ async function sliceOnServer({ profiles, overrides, filamentChains, paints }) {
   const amsIdx = Array.isArray(extruderAmsCount) ? extruderAmsCount.findIndex(s => s.includes('4#')) : -1;
   if (amsIdx >= 0)
     ovr = overrides + `\nfilament_map_mode = Manual\nfilament_map = ${amsIdx + 1}`;
+  // SPEED: accel_to_decel drosselt die Beschleunigung bei Richtungswechseln auf 50% gegen
+  // Ringing — die H2-Serie hat aber Input-Shaping/aktive Dämpfung und BRAUCHT das nicht.
+  // Bambu Studio schaltet es bei der H2 ab (0); unser Profil hatte es (fälschlich) an (1),
+  // was ~15% Druckzeit kostet (57 vs 48 min, Byte-Diff 2026-07-28). Nur für H2-Bambus
+  // (amsIdx>=0 = Bambu mit AMS/Magazin) abschalten, damit andere Drucker unberührt bleiben.
+  if (amsIdx >= 0)
+    ovr += `\naccel_to_decel_enable = 0`;
   const { status: st, json } = await bridge('/api/slice', { method: 'POST', timeout: 300000, body: {
     filename: modelName, model: b64, profiles, overrides: ovr,
     transforms: currentTransforms(), filamentChains, ops: currentOps(),
