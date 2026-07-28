@@ -7542,14 +7542,20 @@ function _buildRevolveGeo(normPts, opts) {
     const patK = Math.max(cross === 'wave' ? waveN : cross === 'polygon' ? polyN : 1,
                           surface === 'strips' ? stripsN : 1);
     const phaseVel = Math.abs(twist) + Math.abs(swayA) * 2 * Math.PI * swayF;
-    if (patK > 1 && phaseVel > 0.01 && surface !== 'lowpoly') {
+    // patK-Term: ≥3 Ringe pro Muster-Halbwelle; phaseVel-Term: ≤~2° Verdrehung
+    // pro Ring (sonst Treppenstufen an Vieleck-Kanten bei kleinem N)
+    let ringsNeed = 0;
+    if (patK > 1 && phaseVel > 0.01 && surface !== 'lowpoly')
+      ringsNeed = Math.max(Math.ceil(patK * phaseVel * 3 / Math.PI), Math.ceil(phaseVel * 30));
+    // Organisch: Beulen-/Bahn-Tiefen variieren über die Höhe → ohne dichte Ringe
+    // sichtbare horizontale Terrassen (Flat-Shading verstärkt das noch)
+    if (surface === 'organic')
+      ringsNeed = Math.max(ringsNeed, Math.ceil(60 * Math.max(1, orgFreq * 0.7)));
+    if (ringsNeed > 0) {
       const yMin = profPts.reduce((m, p) => Math.min(m, p.y), Infinity);
       const yMax = profPts.reduce((m, p) => Math.max(m, p.y), -Infinity);
       const hSpan = (yMax - yMin) || 1;
-      // patK-Term: ≥3 Ringe pro Muster-Halbwelle; phaseVel-Term: ≤~2° Verdrehung
-      // pro Ring (sonst Treppenstufen an Vieleck-Kanten bei kleinem N)
-      const rings = Math.min(hires ? 340 : 240,
-        Math.max(Math.ceil(patK * phaseVel * 3 / Math.PI), Math.ceil(phaseVel * 30)));
+      const rings = Math.min(hires ? 340 : 240, ringsNeed);
       const maxDy = hSpan / rings;
       const out = [profPts[0]];
       for (let i = 1; i < profPts.length; i++) {
