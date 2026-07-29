@@ -1560,7 +1560,7 @@ function renderSettings() {
       `<button class="setTab${i === activePage ? ' active' : ''}" data-page="${i}">${p.name}</button>`).join('')}</div>
     ${page.groups.map((g, gi) => `
       <details${gi === 0 ? ' open' : ''}><summary>${g.name}</summary>
-        ${g.options.map(fieldHtml).join('')}
+        ${g.options.filter(k => k !== 'enable_support').map(fieldHtml).join('')}
       </details>`).join('')}`;
   $('settings').querySelectorAll('.scopeBtn').forEach(b =>
     b.onclick = () => { settingScope = b.dataset.scope; renderSettings(); });
@@ -1577,16 +1577,15 @@ function renderSettings() {
       if (uiVal === base) store.delete(key);
       else store.set(key, uiVal);
       el.closest('.field').classList.toggle('changed', store.has(key));
-      // Stützen-Falle (Druck 2026-07-29): Typ „Baum" gewählt, aber der Master-
-      // Schalter blieb aus → Datei ging mit enable_support=0 raus, KEINE Stützen.
-      // Eine Typ-Wahl schaltet die Stützen deshalb sichtbar mit ein; der
-      // Panel-Schalter und die Haupt-Checkbox spiegeln sich gegenseitig.
-      if (store === changedValues) {
-        if (key === 'enable_support') $('support').checked = uiVal === '1';
-        else if (key === 'support_type' && !$('support').checked) { setSupportEnabled(true); renderSettings(); }
-      } else if (key === 'support_type' && !store.has('enable_support')
-                 && baseVal('enable_support') !== '1' && baseVal('enable_support') !== 'true') {
-        store.set('enable_support', '1'); renderSettings();   // Objekt-Scope: Stützen am Objekt aktivieren
+      // Stützen-Falle (Druck 2026-07-29): Typ „Baum" gewählt, aber enable_support
+      // blieb 0 → Datei ging OHNE Stützen raus. Es gibt genau EINEN Schalter
+      // (Checkbox „Stützen"; enable_support ist aus dem Panel ausgeblendet) —
+      // eine Typ-Wahl schaltet ihn sichtbar mit ein.
+      if (key === 'support_type') {
+        if (store === changedValues) { if (!$('support').checked) setSupportEnabled(true); }
+        else if (!store.has('enable_support')
+                 && baseVal('enable_support') !== '1' && baseVal('enable_support') !== 'true')
+          store.set('enable_support', '1');   // Objekt-Scope: Stützen am Objekt aktivieren
       }
     };
   });
@@ -1597,8 +1596,8 @@ function settingOverrides() {
   return [...changedValues.entries()];
 }
 
-// Haupt-Checkbox „Stützen" und Panel-Schalter „Stützstrukturen aktivieren"
-// synchron halten — beide steuern denselben Slicer-Key enable_support.
+// Die Checkbox „Stützen" ist der EINZIGE Schalter für enable_support
+// (im Settings-Panel ausgeblendet); der Slicer-Key wird hier gespiegelt.
 function setSupportEnabled(on) {
   $('support').checked = on;
   const want = on ? '1' : '0';
@@ -1607,7 +1606,7 @@ function setSupportEnabled(on) {
   if (want === base) changedValues.delete('enable_support');
   else changedValues.set('enable_support', want);
 }
-$('support').onchange = () => { setSupportEnabled($('support').checked); renderSettings(); };
+$('support').onchange = () => setSupportEnabled($('support').checked);
 
 async function fillVendor() {
   const vendors = await (await fetch('/profiles/index.json')).json();

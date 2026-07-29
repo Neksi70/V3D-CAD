@@ -38,16 +38,12 @@ await page.evaluate(() => {
 });
 const afterType = await page.evaluate(() => ({
   master: document.getElementById('support').checked,
-  panel: document.querySelector('#settings input[data-key="enable_support"]')?.checked,
+  panelDupe: !!document.querySelector('#settings [data-key="enable_support"]'),
 }));
 console.log('Stützen vorher:', before, '→ nach Typ-Wahl:', JSON.stringify(afterType));
-if (!afterType.master) fail('Master-Checkbox wurde durch Typ-Wahl NICHT aktiviert');
-if (afterType.panel !== true) fail('Panel-Schalter enable_support zeigt nicht „an"');
-// Master wieder aus → Panel muss folgen
-await page.evaluate(() => { const c = document.getElementById('support'); c.checked = false; c.dispatchEvent(new Event('change')); });
-const afterOff = await page.$eval('#settings input[data-key="enable_support"]', el => el.checked);
-if (afterOff) fail('Panel folgt dem Ausschalten der Master-Checkbox nicht');
-else step('Stützen-Sync ok (an & aus)');
+if (!afterType.master) fail('Checkbox „Stützen" wurde durch Typ-Wahl NICHT aktiviert');
+if (afterType.panelDupe) fail('enable_support taucht noch doppelt im Panel auf');
+else step('Stützen: ein Schalter, Typ-Wahl aktiviert ihn');
 // für den Slice-Test wieder an
 await page.evaluate(() => { const c = document.getElementById('support'); c.checked = true; c.dispatchEvent(new Event('change')); });
 
