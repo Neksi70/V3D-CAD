@@ -503,18 +503,41 @@ function buildAmsFieldsFromFile(nativePath, gids) {
   const used = usedIds.length ? usedIds : gids.map((_, i) => i + 1);
   // WICHTIG: gids sind nach APP-Filament indiziert (0-basiert: grün=gids[0], blau=gids[1]),
   // die Datei-Slots aber ggf. VERSCHOBEN — der H2C-Renumber prependet einen Platzhalter, so
-  // dass grün auf Datei-Slot 2 (nicht 1) liegt. slot-1 träfe dann gids[1]=blau → +1-Versatz
-  // (Druck kam blau/gelb statt grün/blau raus). Deshalb NICHT slot-1, sondern slot-minId:
-  // minId = kleinste Filament-ID der Datei (1 ohne Renumber, 2 mit) → slot-minId = 0-basierter
-  // App-Filament-Index. Damit ist die Zuordnung unabhängig vom Renumber-Offset.
+  // dass grün auf Datei-Slot 2 (nicht 1) liegt. Der alte Versatz-Trick (slot - kleinste
+  // Filament-ID der slice_info) BRACH beim Einfarbdruck: slice_info listet nur die
+  // BENUTZTEN Filamente → minId=7 statt 2 → gids[0] = Dialog-Zeile 1 = Tray A1, egal
+  // welcher Slot gewählt war (Fehl-Drucke 2026-07-29, 2× PLA statt PETG).
+  // Deshalb PRIMÄR über Farbe+Typ auflösen: project_settings.config im selben 3MF trägt
+  // filament_type/filament_colour in APP-Reihenfolge (unrotiert) — der Treffer-Index IST
+  // der gids-Index, unabhängig vom Renumber-Offset.
+  let appFils = [];
+  try {
+    const ps = JSON.parse(execFileSync('unzip', ['-p', nativePath, 'Metadata/project_settings.config'],
+                                       { maxBuffer: 1 << 26 }).toString());
+    const types = ps.filament_type || [], cols = ps.filament_colour || [];
+    appFils = types.map((t, i) => ({ type: String(t),
+      color: String(cols[i] || '').replace('#', '').toUpperCase().slice(0, 6) }));
+  } catch {}
+  const appIdxOf = (slot) => {
+    const f = filBySlot[slot];
+    if (!f || !appFils.length) return -1;
+    const c = String(f.color || '').slice(0, 6);   // RRGGBBAA → RRGGBB
+    let i = appFils.findIndex(a => a.type === f.type && a.color === c);
+    if (i < 0) i = appFils.findIndex(a => a.color === c);
+    if (i < 0) i = appFils.findIndex(a => a.type === f.type);
+    return i;
+  };
   const allIds = Object.keys(filBySlot).map(Number);
   const minId = allIds.length ? Math.min(...allIds) : 1;
+  const fullMap = gids.length === N || gids.length >= Math.max(...used);
   const trayBySlot = {};
-  if (gids.length === N || gids.length >= Math.max(...used)) {
-    used.forEach((slot) => { const gi = slot - minId; trayBySlot[slot] = gids[gi] != null ? gids[gi] : gids[gids.length - 1]; });
-  } else {
-    used.forEach((slot, i) => { trayBySlot[slot] = gids[i] != null ? gids[i] : gids[gids.length - 1]; });
-  }
+  used.forEach((slot, i) => {
+    const ai = appIdxOf(slot);
+    let g = (ai >= 0 && ai < gids.length && gids.length > 1) ? gids[ai]
+          : fullMap ? gids[slot - minId]
+          : gids[i];
+    trayBySlot[slot] = g != null ? g : gids[gids.length - 1];
+  });
   // Düsen-POSITION je Slot aus der DATEI ableiten (filament_maps: 1=links, 2=rechts):
   // rechts = Position 17, links = 16. NICHT den Live-tar_id des Geräts kopieren —
   // der zeigt beim H2C (Vortek-Düsenmagazin) auf die zuletzt angefahrene Position
@@ -956,4 +979,6 @@ function start() {
     http.createServer(app).listen(PORT, '0.0.0.0', () => console.log(`Bridge (HTTP) :${PORT}`));
   }
 }
-start();
+// Als Modul geladen (Tests): nur exportieren, keinen Server starten
+if (require.main === module) start();
+module.exports = { buildAmsFieldsFromFile };
