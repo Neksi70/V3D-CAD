@@ -876,10 +876,13 @@ async function refreshDevice() {
     // AMS-Slots im Studio-Look (Klick = Filament in den Slicer übernehmen)
     // ALLE Slots zeigen (leer oder voll) — amsSlots vom Adapter; Fallback trays.
     devTrays = d.amsSlots || d.trays || [];
+    // Slot-Name wie im Sende-Dialog/Studio (A1–A4, B1–B4 …) — die alte
+    // Durchnummerierung A1–A9 nannte denselben Slot anders als der Dialog.
+    const slotLbl = (t, i) => t.external ? 'Ext' : (t.gid != null ? amsSlotName(t.gid) : 'A' + (i + 1));
     $('devAms').innerHTML = devTrays.length
       ? devTrays.map((t, i) => t.empty
-          ? `<div class="amsSlot empty" title="Slot ${i + 1}: leer"><div class="amsCard amsEmpty">leer</div><span class="amsId">${t.external ? 'Ext' : 'A' + (i + 1)}</span></div>`
-          : `<div class="amsSlot" data-i="${i}" title="Klick: als Slice-Filament übernehmen"><div class="amsCard" style="background:#${(t.color || 'cccccc').slice(0, 6)};color:${trayText(t.color)}">${t.external ? 'Ext' : (t.type || '–')}</div><span class="amsId">${t.external ? 'Ext' : 'A' + (i + 1)}</span></div>`).join('')
+          ? `<div class="amsSlot empty" title="Slot ${slotLbl(t, i)}: leer"><div class="amsCard amsEmpty">leer</div><span class="amsId">${slotLbl(t, i)}</span></div>`
+          : `<div class="amsSlot" data-i="${i}" title="Klick: als Slice-Filament übernehmen"><div class="amsCard" style="background:#${(t.color || 'cccccc').slice(0, 6)};color:${trayText(t.color)}">${t.external ? 'Ext' : (t.type || '–')}</div><span class="amsId">${slotLbl(t, i)}</span></div>`).join('')
       : '<span style="opacity:.6;font-size:.82rem">keine AMS-Daten</span>';
     $('devAms').querySelectorAll('.amsSlot[data-i]').forEach(el => el.onclick = async () => {
       const name = await amsApplyTray(devTrays[+el.dataset.i]);
@@ -1344,8 +1347,10 @@ async function openSendDialog(p) {
       nozLine += ` <span class="err">⚠ Profil ist ${nozMm(want)} — Drucker hat diese Düse nicht</span>`;
   }
   // Filamente des Jobs (Mehrfarbdruck oder das eine gewählte)
+  // Typ MITGEBEN: die Slot-Vorauswahl matcht sonst nur über die Farbe — das
+  // wählte am 2026-07-29 zum PETG-Job (Profil-Grün) den grünen PLA-Slot A1 vor.
   const fils = projectFilaments.length > 1 ? projectFilaments
-    : [{ name: $('filament').value, type: '', label: '',
+    : [{ name: $('filament').value, type: effVal('filament_type') || '', label: '',
          color: changedValues.get('filament_colour') || effVal('filament_colour') || '#2ea2d8' }];
   const trays = (dev.trays || []).filter(t => t.gid != null);
   const best = (f) => {
@@ -1358,7 +1363,7 @@ async function openSendDialog(p) {
     return b?.gid;
   };
   const options = (sel) => trays.map(t =>
-    `<option value="${t.gid}"${t.gid === sel ? ' selected' : ''}>${amsSlotName(t.gid)} · ${t.type || '?'}</option>`).join('');
+    `<option value="${t.gid}" data-type="${t.type || ''}"${t.gid === sel ? ' selected' : ''}>${amsSlotName(t.gid)} · ${t.type || '?'}</option>`).join('');
   $('sendBody').innerHTML = `
     <div class="sdRow"><label style="opacity:1;min-width:6rem;margin:0">Jobname</label>
       <input id="sdName" style="flex:1" value="${modelName.replace(/\.[^.]+$/, '').replace(/"/g, '&quot;')}"></div>
@@ -1368,7 +1373,8 @@ async function openSendDialog(p) {
       + fils.map((f, i) => `<div class="sdRow">
           <span class="nozChip" style="width:14px;height:14px;background:${f.color || '#ccc'}"></span>
           <span style="min-width:6rem">${i + 1} · ${f.label || f.type || f.name.slice(0, 20)}</span>
-          <select class="sdTray">${options(best(f))}</select></div>`).join('')
+          <select class="sdTray" data-ftype="${f.type || ''}">${options(best(f))}</select>
+          <span class="sdTypeWarn err" hidden></span></div>`).join('')
       : `<div class="sdRow" style="opacity:.65">Kein AMS gemeldet — der Drucker nimmt die geladene Spule.</div>`}
     <div style="margin-top:.5rem;font-weight:600">Kalibrierung vor dem Druck</div>
     <label class="sdRow" style="opacity:1"><input type="checkbox" id="sdLevel" style="width:auto" checked> Automatische Bettnivellierung</label>
@@ -1377,12 +1383,32 @@ async function openSendDialog(p) {
     <div style="margin-top:.35rem;font-weight:600">Optionen</div>
     <label class="sdRow" style="opacity:1"><input type="checkbox" id="sdLapse" style="width:auto"> Zeitraffer aufnehmen</label>
     ${$('sendStart').checked ? '' : '<div style="opacity:.6;font-size:.78rem">„Druck sofort starten" ist aus — die Datei wird nur hochgeladen.</div>'}`;
+  // Typ-Mismatch sofort sichtbar machen (Druck 2026-07-29: PETG-Job lief
+  // unbemerkt vom vorgewählten PLA-Slot A1) — Warnung je Zeile, live bei Wechsel.
+  const warnTray = (sel) => {
+    const want = sel.dataset.ftype, got = sel.selectedOptions[0]?.dataset.type || '';
+    const bad = want && got && want !== got;
+    const w = sel.parentElement.querySelector('.sdTypeWarn');
+    if (w) { w.hidden = !bad; w.textContent = bad ? `⚠ Job ist ${want}, Slot ist ${got}` : ''; }
+  };
+  $('sendBody').querySelectorAll('select.sdTray').forEach(sel => {
+    warnTray(sel); sel.onchange = () => warnTray(sel);
+  });
   $('sendDlg').hidden = false;
 }
 $('sendCancel').onclick = () => { $('sendDlg').hidden = true; };
 $('sendDlg').onclick = (e) => { if (e.target === $('sendDlg')) $('sendDlg').hidden = true; };
 $('sendGo').onclick = () => {
-  const mapping = [...$('sendBody').querySelectorAll('select.sdTray')].map(s => +s.value);
+  const sels = [...$('sendBody').querySelectorAll('select.sdTray')];
+  // Letzte Bremse vor dem Druckstart: Typ-Mismatch nur nach Rückfrage senden
+  const mism = sels.filter(s => {
+    const want = s.dataset.ftype, got = s.selectedOptions[0]?.dataset.type || '';
+    return want && got && want !== got;
+  });
+  if (mism.length && !confirm(mism.map(s =>
+    `Filament-Typ passt nicht: Job ist ${s.dataset.ftype}, gewählter Slot ist ${s.selectedOptions[0].dataset.type} (${s.selectedOptions[0].textContent.trim()}).`)
+    .join('\n') + '\n\nTrotzdem senden?')) return;
+  const mapping = sels.map(s => +s.value);
   const name = ($('sdName')?.value.trim() || modelName.replace(/\.[^.]+$/, '')) + '.gcode';
   $('sendDlg').hidden = true;
   doSend({
@@ -1488,6 +1514,8 @@ async function refreshSettings() {
     for (const s of [...c.machine, ...c.process, ...c.filament])
       Object.assign(effectiveConfig, JSON.parse(s));
     changedValues.clear();
+    // Master-Checkbox „Stützen" überlebt den Profilwechsel — Panel nachziehen
+    if ($('support').checked) setSupportEnabled(true);
   } catch { return; }   // unvollstaendige Auswahl -> Panel unveraendert
   renderSettings();
 }
@@ -1549,6 +1577,17 @@ function renderSettings() {
       if (uiVal === base) store.delete(key);
       else store.set(key, uiVal);
       el.closest('.field').classList.toggle('changed', store.has(key));
+      // Stützen-Falle (Druck 2026-07-29): Typ „Baum" gewählt, aber der Master-
+      // Schalter blieb aus → Datei ging mit enable_support=0 raus, KEINE Stützen.
+      // Eine Typ-Wahl schaltet die Stützen deshalb sichtbar mit ein; der
+      // Panel-Schalter und die Haupt-Checkbox spiegeln sich gegenseitig.
+      if (store === changedValues) {
+        if (key === 'enable_support') $('support').checked = uiVal === '1';
+        else if (key === 'support_type' && !$('support').checked) { setSupportEnabled(true); renderSettings(); }
+      } else if (key === 'support_type' && !store.has('enable_support')
+                 && baseVal('enable_support') !== '1' && baseVal('enable_support') !== 'true') {
+        store.set('enable_support', '1'); renderSettings();   // Objekt-Scope: Stützen am Objekt aktivieren
+      }
     };
   });
 }
@@ -1557,6 +1596,18 @@ function renderSettings() {
 function settingOverrides() {
   return [...changedValues.entries()];
 }
+
+// Haupt-Checkbox „Stützen" und Panel-Schalter „Stützstrukturen aktivieren"
+// synchron halten — beide steuern denselben Slicer-Key enable_support.
+function setSupportEnabled(on) {
+  $('support').checked = on;
+  const want = on ? '1' : '0';
+  const b = effVal('enable_support');
+  const base = (b === '1' || b === 'true') ? '1' : '0';
+  if (want === base) changedValues.delete('enable_support');
+  else changedValues.set('enable_support', want);
+}
+$('support').onchange = () => { setSupportEnabled($('support').checked); renderSettings(); };
 
 async function fillVendor() {
   const vendors = await (await fetch('/profiles/index.json')).json();
