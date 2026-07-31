@@ -1092,6 +1092,7 @@ const firebaseConfig = {
         <div class="sli-item" onclick="doImport()" title="STL-, STEP-, 3MF- oder OBJ-Datei importieren">⬆ Import (STL/STEP/3MF/OBJ)</div>
         <div class="sli-item" onclick="_localSave()" title="Design lokal speichern (Strg+S)" id="btn-local-save">💾 Speichern</div>
         <div class="sli-item" onclick="_localSaveAs()" title="Unter neuem Namen speichern">💾 Speichern unter …</div>
+        <div class="sli-item" onclick="_bakOpen()" title="Automatische Sicherungen des aktuellen Designs — ältere Stände der letzten Arbeitsstunde wiederherstellen">🛟 Sicherungen</div>
         <div class="sli-sep"></div>
         <div class="bm-sec">Lernen &amp; Hilfe</div>
         <div class="sli-item" onclick="tutorMenu()" title="Geführte Kurse: Schritt für Schritt lernen">🎓 Kurs</div>
@@ -20188,6 +20189,91 @@ function _flashSaveDot() {
   setTimeout(() => dot.classList.remove('active'), 2000);
 }
 
+// ── Versionierte Sicherungen (IndexedDB) ───────────────────────────────────
+// Schutz gegen „guten Stand mit kaputtem überschrieben": Autosave legt
+// zusätzlich zeitlich gestaffelte Snapshots ab (frühestens alle 5 min,
+// max. 5 pro Design). Wiederherstellen: Burger-Menü → 🛟 Sicherungen.
+const _BAK_MAX = 5, _BAK_MIN_GAP = 5 * 60 * 1000;
+
+function _bakDb(){ return new Promise((res, rej) => {
+  const r = indexedDB.open('volme3d-backups', 1);
+  r.onupgradeneeded = () => { const db = r.result; if (!db.objectStoreNames.contains('bak')) db.createObjectStore('bak'); };
+  r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+}); }
+
+async function _bakList(id){
+  const db = await _bakDb();
+  return new Promise(res => {
+    const rq = db.transaction('bak', 'readonly').objectStore('bak').get(id);
+    rq.onsuccess = () => res(Array.isArray(rq.result) ? rq.result : []);
+    rq.onerror = () => res([]);
+  });
+}
+
+async function _bakWrite(id, list){
+  const db = await _bakDb();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('bak', 'readwrite');
+    tx.objectStore('bak').put(list, id);
+    tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+  });
+}
+
+async function _bakSnapshot(id, data, force){
+  try {
+    const list = await _bakList(id);
+    const now = Date.now();
+    if (!force && list.length && now - list[0].ts < _BAK_MIN_GAP) return;
+    const json = JSON.stringify(data);
+    if (list.length && list[0].json === json) return;   // unverändert → kein neues Backup
+    list.unshift({ ts: now, json, n: (data.objects || []).length });
+    while (list.length > _BAK_MAX) list.pop();
+    await _bakWrite(id, list);
+  } catch(e){ console.warn('[backup]', e); }
+}
+
+let _bakPanel = null;
+function _bakClose(){ if (_bakPanel){ _bakPanel.remove(); _bakPanel = null; } }
+
+async function _bakOpen(){
+  document.getElementById('burger-menu')?.classList.remove('show');
+  if (_bakPanel){ _bakClose(); return; }
+  if (!currentDesignId){ notify('Kein Design offen — Sicherungen entstehen automatisch beim Arbeiten', 'w'); return; }
+  const list = await _bakList(currentDesignId);
+  const p = document.createElement('div');
+  p.id = 'bak-panel';
+  p.style.cssText = 'position:fixed;top:70px;left:50%;transform:translateX(-50%);width:340px;z-index:6000;' +
+    'background:#1f2329;border:1px solid #3a3f47;border-radius:9px;padding:14px 16px;' +
+    'color:#e6e8eb;font:12px/1.4 system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.45)';
+  let h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
+    '<b style="font-size:13px">🛟 Sicherungen — ' + (dsGetMeta(currentDesignId)?.name || 'Design') + '</b>' +
+    '<span onclick="_bakClose()" style="cursor:pointer;color:#9aa0a8;font-size:16px;line-height:1">✕</span></div>';
+  if (!list.length){
+    h += '<div style="color:#9aa0a8">Noch keine Sicherungen — sie entstehen automatisch beim Arbeiten (alle ~5 Minuten ein Stand, die letzten ' + _BAK_MAX + ' bleiben erhalten).</div>';
+  } else {
+    h += '<div style="color:#9aa0a8;margin-bottom:8px">Ältere Stände dieses Designs. Vor dem Wiederherstellen wird der aktuelle Stand selbst gesichert.</div>' +
+      list.map((b, i) =>
+        '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid #2a2f37">' +
+        '<span style="flex:1">' + _fmtDate(b.ts) + ' <span style="color:#9aa0a8">· ' + b.n + ' Objekt(e)</span></span>' +
+        '<button onclick="_bakRestore(' + i + ')" style="background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:4px 10px;cursor:pointer">↩ Wiederherstellen</button></div>').join('');
+  }
+  p.innerHTML = h;
+  document.body.appendChild(p);
+  _bakPanel = p;
+}
+
+async function _bakRestore(i){
+  const list = await _bakList(currentDesignId);
+  const b = list[i];
+  if (!b){ notify('Sicherung nicht gefunden', 'e'); return; }
+  let data; try { data = JSON.parse(b.json); } catch { notify('Sicherung ist beschädigt', 'e'); return; }
+  await _bakSnapshot(currentDesignId, _sceneSnapshot(), true);   // aktuellen Stand nicht verlieren
+  _applySnapshot(data);
+  _bakClose();
+  _doAutoSave();
+  notify('Stand von ' + _fmtDate(b.ts) + ' wiederhergestellt ✓', 'ok');
+}
+
 // ── Auto-save ──────────────────────────────────────────────────────────────
 function _doAutoSave() {
   if (_autoSaveBusy) return;
@@ -20200,7 +20286,9 @@ function _doAutoSave() {
     }
     const meta = dsGetMeta(currentDesignId);
     const name = meta?.name || _randomDesignName();
-    dsSaveDesign(currentDesignId, _sceneSnapshot(), captureThumbnail(), name, true);  // still: kein Nag-Popup
+    const snap = _sceneSnapshot();
+    dsSaveDesign(currentDesignId, snap, captureThumbnail(), name, true);  // still: kein Nag-Popup
+    _bakSnapshot(currentDesignId, snap);   // async, fire & forget
     _updateDesignLabel(name);
     _flashSaveDot();
     // Zusätzlich auf die Festplatte des Nutzers, wenn eine Datei verknüpft ist
@@ -32449,6 +32537,7 @@ const CMDK = [
   {i:'⚙️',g:'Seite',t:'Szene-Einstellungen',k:'settings bett platte',run:()=>_openSceneSettings()},
   {i:'📝',g:'Seite',t:'Was ist neu?',k:'changelog version',run:()=>_openChangelog()},
   {i:'◪',g:'Ansicht',t:'Schnittansicht (Modell aufschneiden)',k:'schnitt section querschnitt clipping wandstaerke innen',run:()=>sectionTool()},
+  {i:'🛟',g:'Datei',t:'Sicherungen (ältere Stände)',k:'backup sicherung wiederherstellen restore version',run:()=>_bakOpen()},
   {i:'📱',g:'Ansicht',t:'Ansehen-Modus (mobil)',k:'mobile view vorschau',run:()=>_mviewToggle()},
 ];
 let _cmdkSel=0, _cmdkRes=[];
