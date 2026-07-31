@@ -2843,6 +2843,7 @@ Patrick</textarea>
         <div class="vrow"><label title="Wie weit benachbarte Buchstaben seitlich ineinandergreifen. Schreibschriften verbinden sich oft schon von allein — der Rest wird automatisch mit Stegen verbunden.">Überlappung</label> <input type="range" id="tt-overlap" min="0" max="35" value="8" step="1" oninput="document.getElementById('tt-overlapv').textContent=this.value;_ttPreview()"><span class="vv" id="tt-overlapv">8</span><span class="vu">%</span></div>
         <div class="vrow" id="tt-row-linegap"><label title="Abstand der Zeilen zueinander. Kleine Werte lassen die Zeilen ineinandergreifen (wie bei den klassischen Toppern) — verbunden wird ohnehin automatisch.">Zeilenabstand</label> <input type="range" id="tt-linegap" min="50" max="130" value="85" step="1" oninput="document.getElementById('tt-linegapv').textContent=this.value;_ttPreview()"><span class="vv" id="tt-linegapv">85</span><span class="vu">%</span></div>
         <div class="vrow"><label title="Breite der automatischen Verbindungsstege (i-Punkte, getrennte Buchstaben, Wörter, Symbole)">Steg-Breite</label> <input type="range" id="tt-web" min="1" max="5" value="2" step="0.1" oninput="document.getElementById('tt-webv').textContent=this.value;_ttPreview()"><span class="vv" id="tt-webv">2</span><span class="vu">mm</span></div>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:4px" title="Normal kommt der Schriftzug als EIN Teil in die Szene (nur Stege und Pins sind einzeln). Mit dieser Option wird jeder Buchstabe, jedes Symbol und jedes Motivteil ein eigenes Teil — nach „Aufheben" lässt sich alles frei neu zusammenstellen. Zusammengehörige Konturen bleiben beisammen: der i-Punkt am „i", die Pünktchen am „ä"."><input type="checkbox" id="tt-explode"> Alles einzeln zerlegen (jeder Buchstabe ein Teil)</label>
         <span class="vsec" style="margin-top:4px">Motiv (SVG)</span>
         <div class="vrow" style="gap:5px">
           <button class="btn" style="flex:1;padding:4px 8px;font-size:12px" onclick="document.getElementById('tt-svg-file').click()" title="Eine SVG-Datei als Motiv an den Schriftzug hängen. Jede Einzelkontur wird ein eigenes Teil — was frei schweben würde, hängen die Auto-Stege von selbst an.">🖼️ SVG laden</button>
@@ -26670,12 +26671,13 @@ function _ttMotifParts(parts, sizeU, pct, pos, gapPct){
     else if(pos === 'bottom') { ox = (minX+maxX)/2 - W/2;   oy = minY - gap - H; }
     else                      { ox = maxX + gap;            oy = (minY+maxY)/2 - H/2; }
   }
-  const out = [];
-  for(const poly of _ttMotif.polys){
+  const out = [], solo = _ttMotif.polys.length === 1;
+  _ttMotif.polys.forEach((poly, i)=>{
     const sh = new THREE.Shape(poly.outer.map(p=>new THREE.Vector2(p.x*H, p.y*H)));
     for(const h of poly.holes) sh.holes.push(new THREE.Path(h.map(p=>new THREE.Vector2(p.x*H, p.y*H))));
-    out.push({ shape:sh, dx:ox, dy:oy, pts: poly.spts.map(p=>({x:p.x*H+ox, y:p.y*H+oy})) });
-  }
+    out.push({ shape:sh, dx:ox, dy:oy, key:'m'+i, label: solo ? 'Motiv' : 'Motiv '+(i+1),
+      pts: poly.spts.map(p=>({x:p.x*H+ox, y:p.y*H+oy})) });
+  });
   return out;
 }
 function _ttMotifFile(ev){
@@ -26733,7 +26735,7 @@ function _ttLayoutParts(font, txt, sizeU, overlap, lineStepU){
   const lines = txt.split('\n').map(s=>s.trim()).filter(s=>s.length);
   const parts = [];
   lines.forEach((line, li)=>{
-    let cursor = 0;
+    let cursor = 0, ci = 0;
     const lineParts = [];
     for(const ch of line){
       const sym = _ttSymShape(ch, sizeU);
@@ -26745,13 +26747,17 @@ function _ttLayoutParts(font, txt, sizeU, overlap, lineStepU){
         if(ch !== ' '){ try{ shapes = font.generateShapes(ch, sizeU); }catch(e){} }
       }
       if(shapes){
+        // key = Zeichen-Kennung: alle Konturen EINES Zeichens teilen sie sich, damit
+        // beim Zerlegen der i-Punkt am „i" bleibt und „ä" nicht in drei Teile zerfällt
+        const key = 'g'+li+'_'+ci, label = ch;
         for(const s of shapes){
           const raw = s.getPoints(28);
           if(raw.length < 3) continue;
-          lineParts.push({ shape:s, dx:cursor, dy:0, pts: raw.map(p=>({x:p.x+cursor, y:p.y})) });
+          lineParts.push({ shape:s, dx:cursor, dy:0, key, label, pts: raw.map(p=>({x:p.x+cursor, y:p.y})) });
         }
       }
       cursor += adv * (ch===' ' ? 1 : (1 - overlap));
+      ci++;
     }
     if(!lineParts.length) return;
     let minX=Infinity, maxX=-Infinity;
@@ -26781,7 +26787,7 @@ function _ttDateHeartParts(textParts, dateFont, dateTxt, sizeU){
   const ring = _ttHeartRing(H, 0, wall);
   const out = [];
   const ringPts = ring.shape.getPoints(48).map(p=>({x:p.x+x0, y:p.y+y0}));
-  out.push({ shape:ring.shape, dx:x0, dy:y0, pts:ringPts });
+  out.push({ shape:ring.shape, dx:x0, dy:y0, key:'dh_ring', label:'Datums-Herz', pts:ringPts });
   const date = (dateTxt||'').trim();
   if(!date) return out;
   // Balkenhöhe/Schriftgröße; Balkenbreite = Innenkontur-Querschnitt auf Balkenhöhe
@@ -26804,7 +26810,7 @@ function _ttDateHeartParts(textParts, dateFont, dateTxt, sizeU){
   const bandPts = [{x:xL,y:yBand-bandH/2},{x:xR,y:yBand-bandH/2},{x:xR,y:yBand+bandH/2}];
   for(let x=xR; x>=xL; x-=0.08) bandPts.push({x, y:yBand+bandH/2});   // Oberkante dicht abtasten
   bandPts.push({x:xL,y:yBand+bandH/2});
-  out.push({ shape:band, dx:0, dy:0, pts:bandPts });
+  out.push({ shape:band, dx:0, dy:0, key:'dh_band', label:'Datums-Balken', pts:bandPts });
   // Datum auf den Balken setzen: Größe einpassen (2 Durchläufe), Unterkante minimal in
   // den Balken gedrückt — Ziffern ohne Grundlinienkontakt fängt der Auto-Steg ab.
   const fitW = (xR-xL) - wall*1.6;
@@ -26824,7 +26830,7 @@ function _ttDateHeartParts(textParts, dateFont, dateTxt, sizeU){
   for(const s of shapes){
     const raw = s.getPoints(20);
     if(raw.length < 3) continue;
-    out.push({ shape:s, dx:ddx, dy:ddy, pts: raw.map(p=>({x:p.x+ddx, y:p.y+ddy})) });
+    out.push({ shape:s, dx:ddx, dy:ddy, key:'dh_date', label:'Datum', pts: raw.map(p=>({x:p.x+ddx, y:p.y+ddy})) });
   }
   return out;
 }
@@ -26938,7 +26944,8 @@ function _ttPinGeos(parts, nPins, pinLenU, pinWU, thickU){
 // Komplette Topper-Geometrie: flach gelegt (Achse Y, Unterseite y=0), mittig zentriert.
 // o = Optionen aus _ttOpts (+ dateFont, wenn Datums-Herz aktiv). Liefert
 // {geo, wMM, hMM, nBridges} oder null; mit split=true stattdessen
-// {textGeo, bridgeGeos, pinGeos, …} für einzeln verschiebbare Stege/Pins.
+// {pieces:[{name,geo}], bridgeGeos, pinGeos, …} für einzeln verschiebbare Teile
+// (pieces = ein Eintrag „Schriftzug", mit o.explode einer je Zeichen/Motivteil).
 function _ttGeo(font, o, split){
   const sizeU  = o.sizeMM/10;
   const thickU = Math.max(0.06, o.thickMM/10);
@@ -26971,10 +26978,25 @@ function _ttGeo(font, o, split){
   for(const g of all) g.translate(dx, dy, dz);
   const wMM=(bb.max.x-bb.min.x)*10, hMM=(textMaxY-textMinY)*10;
   if(split){
-    const textGeo = _mergePos(textGeos); textGeo.computeVertexNormals();
+    // Ohne „alles einzeln" ist der Schriftzug EIN Teil (bisheriges Verhalten).
+    // Mit der Option wird je Zeichen ein Teil daraus — nach p.key gruppiert, damit
+    // der i-Punkt am „i" bleibt und „ä" nicht in drei Stücke zerfällt.
+    const pieces = [];
+    if(o.explode){
+      const byKey = new Map();
+      parts.forEach((p, i)=>{
+        const k = p.key || ('t'+i);
+        if(!byKey.has(k)) byKey.set(k, { name:p.label || 'Teil', geos:[] });
+        byKey.get(k).geos.push(textGeos[i]);
+      });
+      for(const v of byKey.values()) pieces.push({ name:v.name, geo:_mergePos(v.geos) });
+    } else {
+      pieces.push({ name:'Schriftzug', geo:_mergePos(textGeos) });
+    }
+    for(const p of pieces) p.geo.computeVertexNormals();
     for(const g of bridgeGeos) g.computeVertexNormals();
     for(const g of pinGeos) g.computeVertexNormals();
-    return { textGeo, bridgeGeos, pinGeos, wMM, hMM, nBridges:segs.length };
+    return { pieces, bridgeGeos, pinGeos, wMM, hMM, nBridges:segs.length };
   }
   const geo = _mergePos(all);
   geo.computeVertexNormals();
@@ -26998,6 +27020,7 @@ function _ttOpts(){
     motifSize: +document.getElementById('tt-motifsize').value,
     motifGap:  +document.getElementById('tt-motifgap').value,
     motifPos:  _ttMotifPos,
+    explode:   document.getElementById('tt-explode').checked,
   };
 }
 
@@ -27063,23 +27086,30 @@ function _ttCreate(){
     typeCounts['topper'] = (typeCounts['topper']||0) + 1;
     const label = 'Tortentopper #'+typeCounts['topper'];
     let top;
-    if(r.bridgeGeos.length || r.pinGeos.length){
-      // Gruppe: Schriftzug + jeder Steg + jeder Pin als eigenes Teil — „Aufheben" trennt
-      // sie, einzelne Stege lassen sich verschieben oder löschen. Überlappend platziert
-      // drucken sie weiterhin als EIN Stück (Slicer-Union).
+    const nParts = r.pieces.length + r.bridgeGeos.length + r.pinGeos.length;
+    if(nParts > 1){
+      // Gruppe: jedes Teil ein eigenes Mesh — „Aufheben" trennt sie, danach lässt sich
+      // jedes einzeln packen, verschieben oder löschen. Überlappend platziert drucken
+      // sie weiterhin als EIN Stück (Slicer-Union).
       top = new THREE.Group();
       top.userData={id:idCtr++, name:label, isGroup:true};
-      top.add(mkMesh(r.textGeo, 'Schriftzug'));
+      const seen = {};
+      for(const p of r.pieces){
+        seen[p.name] = (seen[p.name]||0) + 1;
+        top.add(mkMesh(p.geo, r.pieces.length>1 && seen[p.name]>1 ? p.name+' ('+seen[p.name]+')' : p.name));
+      }
       r.bridgeGeos.forEach((g,i)=>top.add(mkMesh(g, 'Steg '+(i+1))));
       r.pinGeos.forEach((g,i)=>top.add(mkMesh(g, 'Pin '+(i+1))));
     } else {
-      top = mkMesh(r.textGeo, label);
+      top = mkMesh(r.pieces[0].geo, label);
     }
     top.quaternion.copy(_wpMakeQuat(workplaneNormal)); top.position.copy(workplanePoint);
     scene.add(top); objects.push(top);
     selectObjs([top]); updateTree(); fitToObjects([top]);
     const what = o.txt.trim() ? o.txt.replace(/\n+/g,' · ') : (_ttMotif ? _ttMotif.name : '');
-    notify('Tortentopper „'+what+'" erstellt'+(r.nBridges?' — '+r.nBridges+' Stege einzeln verschiebbar (Gruppe „Aufheben")':''),'ok');
+    notify('Tortentopper „'+what+'" erstellt — '+nParts+' Teile'
+      + (o.explode ? ' (jeder Buchstabe einzeln)' : '')
+      + (nParts>1 ? '; „Aufheben" trennt sie, überlappend gedruckt bleibt es EIN Stück' : ''),'ok');
     _ttClose();
   });
 }
@@ -29128,8 +29158,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.51';
+const VOLME3D_VERSION = '1.15.52';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.52', date:'2026-07-31', changes:[
+    ['🧩','Tortentopper: neue Option „Alles einzeln zerlegen (jeder Buchstabe ein Teil)". Bisher trennte „Aufheben" nur Stege und Pins vom Schriftzug — jetzt wird auf Wunsch JEDES Zeichen ein eigenes Teil, dazu jedes Motivteil, jeder Steg und jeder Pin. Damit lässt sich der Topper nach dem Aufheben völlig frei neu zusammenstellen: Buchstaben versetzen, drehen, anders anordnen, statt an der Zeile im Textfeld zu kleben. Zusammengehörige Konturen bleiben dabei beisammen — der Punkt bleibt am „i", die Pünktchen am „ä", der Bogen am „é". Ohne die Option bleibt alles wie gehabt. In beiden Fällen gilt: solange sich die Teile überlappen, druckt es weiter als EIN Stück.'],
+  ]},
   { version:'1.15.51', date:'2026-07-31', changes:[
     ['🎂','Der Tortentopper nimmt jetzt MOTIVE an. Unter „Motiv (SVG)" lädst du eine SVG-Datei — oder du klickst „📷 aus Bild", vektorisierst dein Foto und schickst es mit „🎂 In den Topper" direkt herüber. Das Motiv lässt sich links, rechts, über oder unter den Schriftzug setzen, Größe und Abstand sind einstellbar. Das Wichtigste: Jede Einzelkontur des Motivs wird ein eigenes Teil — und dieselbe Steg-Automatik, die sonst i-Punkte und getrennte Buchstaben anhängt, verschweißt jetzt auch das Motiv mit dem Schriftzug. Nichts fällt beim Drucken ab, auch wenn Teile davon frei schweben würden. Die Steckpins suchen sich ihren Ansatz automatisch am tiefsten Punkt, Motiv eingeschlossen. Auch ohne Text möglich: nur Motiv + Pins.'],
     ['⚡','Die Topper-Vorschau ruckelt nicht mehr beim Reglerziehen — sie wird jetzt kurz nach dem Loslassen neu aufgebaut statt bei jedem Zwischenschritt.'],

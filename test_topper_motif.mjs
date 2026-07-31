@@ -116,6 +116,28 @@ const res = await page.evaluate(async () => {
     out.sizeMM = [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z].map(v => +(v * 10).toFixed(1));
   }
 
+  // ── „Alles einzeln": jeder Buchstabe ein Teil, i-Punkt bleibt am „i" ──
+  // „Lili" = 4 Zeichen, aber 6 Konturen (zwei i-Punkte) → 4 Teile + Motiv(2) = 6
+  document.getElementById('tt-text').value = 'Lili';
+  document.getElementById('tt-pins').value = '1';
+  document.getElementById('tt-explode').checked = false;
+  const rPlain = _ttGeo(font, _ttOpts(), true);
+  out.plainPieces = rPlain.pieces.map(p => p.name);
+  document.getElementById('tt-explode').checked = true;
+  const rExpl = _ttGeo(font, _ttOpts(), true);
+  out.explPieces = rExpl.pieces.map(p => p.name);
+  // gleiche Gesamtgeometrie in beiden Modi (nur anders aufgeteilt)
+  const vsum = r => r.pieces.reduce((a, p) => a + p.geo.attributes.position.count, 0);
+  out.vertsEqual = vsum(rPlain) === vsum(rExpl);
+  out.bridgesEqual = rPlain.nBridges === rExpl.nBridges;
+  const beforeE = objects.length;
+  _ttCreate();
+  await new Promise(r => setTimeout(r, 700));
+  out.explCreated = objects.length - beforeE;
+  out.explKids = objects.length > beforeE ? objects[objects.length - 1].children.map(c => c.userData.name) : null;
+  document.getElementById('tt-explode').checked = false;
+  document.getElementById('tt-text').value = 'Ida';
+
   // ── Nur Motiv, ohne Text ──
   document.getElementById('tt-text').value = '';
   const g2 = _ttGeo(font, _ttOpts());
@@ -162,7 +184,14 @@ const ok =
   res.geoOk && res.nBridges > 0 && res.geoMs < 400 &&
   res.created === 1 && res.kids >= 3 &&
   res.motifOnly && res.handoff && res.topperOpen && res.rowsShown &&
-  res.rowsInstant && res.infoDeferred && res.infoAfter;
+  res.rowsInstant && res.infoDeferred && res.infoAfter &&
+  // ohne Option: ein Schriftzug-Teil; mit Option: L,i,l,i + Motiv 1, Motiv 2
+  res.plainPieces.length === 1 && res.plainPieces[0] === 'Schriftzug' &&
+  res.explPieces.join(',') === 'L,i,l,i,Motiv 1,Motiv 2' &&
+  res.vertsEqual && res.bridgesEqual &&
+  res.explCreated === 1 &&
+  res.explKids.filter(n => /^[Lil]/.test(n)).length === 4 &&
+  res.explKids.some(n => n.startsWith('Steg')) && res.explKids.some(n => n.startsWith('Pin'));
 
 console.log(ok ? '\n✅ Topper-Motiv: alle Prüfungen bestanden' : '\n❌ Topper-Motiv: Prüfung fehlgeschlagen');
 
