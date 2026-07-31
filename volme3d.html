@@ -12883,6 +12883,7 @@ function _offsetApply(offMm) {
   if (!offMm || !isFinite(offMm)) return;
   if (Math.abs(offMm) > 5) { notify('Maximal ±5 mm pro Schritt', 'w'); return; }
   saveUndo();
+  const _preOffset = objectToData(o);   // Zustand vor der Op → Verlauf/Auflösen
   const d = offMm / 10;   // mm → Units (Welt)
   o.updateMatrixWorld(true);
   const geo = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry;
@@ -12959,6 +12960,7 @@ function _offsetApply(offMm) {
   const sumEl = document.getElementById('offset-sum');
   if (sumEl) sumEl.textContent = o.userData._offsetSumMm + ' mm';
   if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(o);
+  o.userData.opJournal = { op: 'offset', mm: offMm, parts: [_preOffset] };
   updateFP();
   notify('Spielraum ' + (offMm > 0 ? '+' : '') + offMm + ' mm angewendet ✓', 'ok');
 }
@@ -18248,8 +18250,137 @@ function editOpJournal() {
   }
   if (!restored.length) { notify('Teile nicht wiederherstellbar', 'e'); return; }
   selectObjs(restored); updateTree();
-  notify('Operation aufgelöst (' + restored.length + ' Teile) — anpassen, dann erneut ' +
-         (j.op === 'union' ? '∪ Vereinen' : '⊖ Abziehen'), 'ok');
+  const redo = j.op === 'union' ? '∪ Vereinen' : j.op === 'subtract' ? '⊖ Abziehen' : '⧈ Spielraum';
+  notify(j.op === 'offset'
+    ? 'Spielraum rückgängig — Zustand vor der Op wiederhergestellt'
+    : 'Operation aufgelöst (' + restored.length + ' Teile) — anpassen, dann erneut ' + redo, 'ok');
+}
+
+// ═══ VERLAUF (Feature-Historie pro Körper) ═══════════════════════════════════
+// Zeigt alle aufgezeichneten Schritte eines Körpers: die opJournal-Kette
+// (Vereinen/Abziehen/Spielraum — rekursiv, da Teile ihr eigenes Journal
+// mitbringen) und die OCCT-Kantenschritte (_occtParams.ops), letztere mit
+// Radius-Änderung und Entfernen einzelner Schritte (Neuaufbau via Replay).
+let _histPanel = null, _histObjId = null;
+
+function _histOpLabel(j){
+  if (j.op === 'union')    return '∪ Vereinen — ' + j.parts.length + ' Teile';
+  if (j.op === 'subtract') return '⊖ Abziehen — ' + j.parts.length + ' Teile';
+  if (j.op === 'offset')   return '⧈ Spielraum ' + (j.mm > 0 ? '+' : '') + String(j.mm).replace('.', ',') + ' mm';
+  return j.op;
+}
+
+function _histJournalRows(j, depth){
+  let h = '<div style="padding:3px 0 3px ' + (depth * 14) + 'px;color:' + (depth ? '#9aa0a8' : '#e6e8eb') + '">' +
+          (depth ? '↳ ' : '') + _histOpLabel(j) + '</div>';
+  for (const p of j.parts) if (p.opJournal) h += _histJournalRows(p.opJournal, depth + 1);
+  return h;
+}
+
+function _histObj(){
+  return objects.find(x => x.userData.id === _histObjId) || null;
+}
+
+function _histOpen(){
+  const o = getFirst();
+  if (!o) { notify('Einen Körper auswählen', 'w'); return; }
+  if (_histPanel) _histClose();
+  _histObjId = o.userData.id;
+  const p = document.createElement('div');
+  p.id = 'hist-panel';
+  p.style.cssText = 'position:fixed;top:70px;right:14px;width:300px;max-height:70vh;overflow:auto;z-index:6000;' +
+    'background:#1f2329;border:1px solid #3a3f47;border-radius:9px;padding:14px 16px;' +
+    'color:#e6e8eb;font:12px/1.4 system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.45)';
+  document.body.appendChild(p);
+  _histPanel = p;
+  _histRender();
+}
+
+function _histRender(){
+  const o = _histObj();
+  if (!o || !_histPanel){ _histClose(); return; }
+  const ops = o.userData._occtParams?.ops || [];
+  let h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
+    '<b style="font-size:13px">🕘 Verlauf — ' + (o.userData.name || 'Objekt') + '</b>' +
+    '<span onclick="_histClose()" style="cursor:pointer;color:#9aa0a8;font-size:16px;line-height:1">✕</span></div>';
+  let any = false;
+  if (ops.length){
+    any = true;
+    h += '<div style="color:#9aa0a8;margin-bottom:4px">Kanten (änderbar):</div>';
+    ops.forEach((op, i) => {
+      const mm = (Math.abs(op.dist) * 10).toFixed(1);
+      h += '<div style="display:flex;align-items:center;gap:6px;padding:3px 0">' +
+        '<span style="flex:1">' + (op.type === 'fillet' ? '◠ Rundung' : '◣ Fase') + ' <span style="color:#9aa0a8">Kante ' + op.idx + '</span></span>' +
+        '<input id="hist-op-' + i + '" type="number" step="0.5" min="0.1" value="' + mm + '" ' +
+          'style="width:52px;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:3px 5px">' +
+        '<span style="color:#9aa0a8">mm</span>' +
+        '<button onclick="_histSetOp(' + i + ')" title="Neuen Wert anwenden" style="background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:3px 7px;cursor:pointer">✓</button>' +
+        '<button onclick="_histDelOp(' + i + ')" title="Diesen Schritt entfernen" style="background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#ff6b6b;padding:3px 7px;cursor:pointer">✕</button></div>';
+    });
+  }
+  if (o.userData.opJournal){
+    any = true;
+    h += '<div style="color:#9aa0a8;margin:8px 0 4px">Operationen (neueste zuerst):</div>' +
+      _histJournalRows(o.userData.opJournal, 0) +
+      '<button onclick="editOpJournal();_histClose()" title="Obersten Schritt in seine Ausgangsteile auflösen" ' +
+        'style="margin-top:8px;width:100%;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">✎ Letzten Schritt auflösen</button>';
+  }
+  if (!any) h += '<div style="color:#9aa0a8">Für diesen Körper sind keine Bearbeitungsschritte aufgezeichnet.<br><br>' +
+    'Aufgezeichnet werden: ∪ Vereinen, ⊖ Abziehen, ⧈ Spielraum sowie OCCT-Kantenrundungen/-fasen.</div>';
+  _histPanel.innerHTML = h;
+}
+
+async function _histApplyOps(newOps){
+  const o = _histObj();
+  if (!o || !o.userData._occtParams) return;
+  try {
+    const oc = await _loadOCCT();
+    const { sx, sy, sz, geoOff } = o.userData._occtParams;
+    const occtShape = o.userData.occtShape || 'box';
+    const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, null, o.userData.coneTop || 0, o.userData.coneFlip);
+    const { shape: finalShape, opOk } = _replayOCCTOps(oc, baseShape, newOps, sx, sy, sz);
+    if (!opOk) { notify('Neu berechnen fehlgeschlagen — Schritt bleibt unverändert', 'e'); return; }
+    saveUndo();
+    const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(o.userData.color || '#0078ff'),
+      roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide });
+    const result = new THREE.Mesh(geo, mat);
+    result.castShadow = true; result.receiveShadow = true;
+    result.userData = { ...o.userData, _occtParams: { ...o.userData._occtParams, ops: newOps } };
+    delete result.userData._dynamicEdges;
+    const ii = objects.indexOf(o);
+    if (ii >= 0) objects[ii] = result;
+    scene.remove(o); scene.add(result);
+    _updateObjEdgeLines(result);
+    selectObjs([result]); updateTree();
+    _histObjId = result.userData.id;
+    _histRender();
+    notify('Verlauf aktualisiert ✓', 'ok');
+  } catch (e) {
+    console.warn('[verlauf] Neuaufbau fehlgeschlagen:', e);
+    notify('Neu berechnen fehlgeschlagen: ' + (e.message || e), 'e');
+  }
+}
+
+function _histSetOp(i){
+  const o = _histObj();
+  const ops = o?.userData._occtParams?.ops; if (!ops || !ops[i]) return;
+  const mm = parseFloat(document.getElementById('hist-op-' + i)?.value);
+  if (!mm || mm <= 0) { notify('Wert in mm angeben (größer 0)', 'w'); return; }
+  const newOps = ops.map((op, k) => k === i ? { ...op, dist: mm / 10 } : op);
+  _histApplyOps(newOps);
+}
+
+function _histDelOp(i){
+  const o = _histObj();
+  const ops = o?.userData._occtParams?.ops; if (!ops || !ops[i]) return;
+  _histApplyOps(ops.filter((_, k) => k !== i));
+}
+
+function _histClose(){
+  if (_histPanel) { _histPanel.remove(); _histPanel = null; }
+  _histObjId = null;
 }
 
 // ═══ VARIABLEN (benannte Maße + Formeln) ═════════════════════════════════════
@@ -30545,8 +30676,13 @@ function updateFP() {
   if (_fpCurType !== typeKey) {
     _fpCurType = typeKey;
     let rows = _fpBuildRows(type, o);
-    if (o.userData.opJournal && !_shellMode && !_edgeMode)
-      rows += `<div class="fp-sep"></div><div class="fp-row fp-edge-row"><button class="fp-btn" onclick="editOpJournal()" title="Ergebnis wieder in die Ausgangsteile auflösen — anpassen und erneut kombinieren">✎ Operation bearbeiten</button></div>`;
+    const hasOcctOps = !!(o.userData._occtParams && o.userData._occtParams.ops && o.userData._occtParams.ops.length);
+    if ((o.userData.opJournal || hasOcctOps) && !_shellMode && !_edgeMode) {
+      rows += `<div class="fp-sep"></div><div class="fp-row fp-edge-row">`;
+      if (o.userData.opJournal)
+        rows += `<button class="fp-btn" onclick="editOpJournal()" title="Ergebnis wieder in die Ausgangsteile auflösen — anpassen und erneut kombinieren">✎ Operation bearbeiten</button>`;
+      rows += `<button class="fp-btn" onclick="_histOpen()" title="Verlauf: aufgezeichnete Bearbeitungsschritte dieses Körpers ansehen, Kanten-Radien ändern oder Schritte entfernen">🕘 Verlauf</button></div>`;
+    }
     document.getElementById('fp-body').innerHTML = rows;
   } else {
     _fpSyncValues();
