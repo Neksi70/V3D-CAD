@@ -1114,6 +1114,7 @@ const firebaseConfig = {
       <button class="btn sub" onclick="subtractHoles()" title="Abziehen: 1. Objekt als Bohrung ○ markieren  2. Beide auswählen  3. Abziehen">⊖ Abziehen</button>
       <button class="btn" onclick="groupSelected()" title="Strg+G">⊞ Gruppe</button>
       <button class="btn" onclick="ungroupSelected()" title="Strg+Shift+G">⊟ Aufheben</button>
+      <button class="btn" onclick="_ttRebridge()" title="Stege neu berechnen: flache Teile (z. B. Topper-Buchstaben nach dem Aufheben) auswählen → verbindet alles, was frei schweben würde, über kürzeste Stege. Alte Stege in der Auswahl werden dabei ersetzt. Steg-Breite kommt aus dem Tortentopper.">🖇️ Stege</button>
       <button class="btn" onclick="fitCheckTool()" title="Passung prüfen: 2 Objekte auswählen → zeigt Überschneidung (rot) oder kleinsten Abstand">⧉ Passung</button>
     </div></div>
     <div class="tbg"><span class="tbg-l">Anordnen</span><div class="tbg-row">
@@ -26941,6 +26942,203 @@ function _ttPinGeos(parts, nPins, pinLenU, pinWU, thickU){
   return geos;
 }
 
+// ── Stege für bereits platzierte Teile neu berechnen ────────────────────────
+// Nach „Aufheben" darf alles frei verschoben werden — die automatisch gesetzten
+// Stege sitzen dann falsch. Dieser Befehl vermisst die gewählten Platten in ihrer
+// JETZIGEN Lage, wirft die alten Stege weg und setzt neue. Arbeitet auf beliebigen
+// flachen Teilen, nicht nur auf Toppern.
+
+// Normale der gemeinsamen Ebene: Dreiecksnormalen nach Richtung bündeln (Vorzeichen
+// vereinheitlicht) und die flächenstärkste Richtung nehmen. Deck- und Bodenfläche
+// fallen so in EIN Bündel und schlagen die vielen verschieden gerichteten
+// Seitenwände — auch bei filigranen Schreibschriften, wo die Wandfläche insgesamt
+// größer sein kann als die Deckfläche.
+function _ttPlateNormal(meshes){
+  const acc = new Map();
+  const a=new THREE.Vector3(), b=new THREE.Vector3(), c=new THREE.Vector3();
+  const ab=new THREE.Vector3(), ac=new THREE.Vector3(), nn=new THREE.Vector3();
+  for(const m of meshes){
+    const pos=m.geometry.attributes.position, idx=m.geometry.index?m.geometry.index.array:null;
+    const nTri = idx ? idx.length/3 : pos.count/3;
+    for(let t=0;t<nTri;t++){
+      const i0=idx?idx[t*3]:t*3, i1=idx?idx[t*3+1]:t*3+1, i2=idx?idx[t*3+2]:t*3+2;
+      a.fromBufferAttribute(pos,i0).applyMatrix4(m.matrixWorld);
+      b.fromBufferAttribute(pos,i1).applyMatrix4(m.matrixWorld);
+      c.fromBufferAttribute(pos,i2).applyMatrix4(m.matrixWorld);
+      ab.subVectors(b,a); ac.subVectors(c,a); nn.crossVectors(ab,ac);
+      const L = nn.length(); if(L < 1e-12) continue;
+      nn.divideScalar(L);
+      if(nn.x < -1e-6 || (Math.abs(nn.x)<=1e-6 && (nn.y < -1e-6 || (Math.abs(nn.y)<=1e-6 && nn.z<0)))) nn.negate();
+      const key = nn.x.toFixed(2)+','+nn.y.toFixed(2)+','+nn.z.toFixed(2);
+      const e = acc.get(key);
+      if(e) e.a += L*0.5; else acc.set(key, {a:L*0.5, v:nn.clone()});
+    }
+  }
+  let best=null;
+  for(const e of acc.values()) if(!best || e.a > best.a) best = e;
+  return best ? best.v.normalize() : null;
+}
+
+// Randkanten (nur einmal benutzt) zu Ringen auffädeln — ALLE Ringe, denn ein Teil
+// kann aus mehreren Inseln bestehen (das „i" ist Körper + Punkt in EINEM Mesh).
+function _ttStitchLoops(edge, uv){
+  const adj = new Map();
+  for(const [k,n] of edge){
+    if(n !== 1) continue;
+    const s = k.indexOf('_'), p = +k.slice(0,s), q = +k.slice(s+1);
+    if(!adj.has(p)) adj.set(p, []); adj.get(p).push(q);
+    if(!adj.has(q)) adj.set(q, []); adj.get(q).push(p);
+  }
+  const loops = [];
+  const used = new Set();
+  for(const start of adj.keys()){
+    if(used.has(start)) continue;
+    const loop=[start]; used.add(start);
+    let cur=start, prev=-1, guard=adj.size+5;
+    while(guard-- > 0){
+      let nxt = -1;
+      for(const q of (adj.get(cur)||[])) if(q!==prev && !used.has(q)){ nxt=q; break; }
+      if(nxt < 0) break;
+      used.add(nxt); loop.push(nxt); prev=cur; cur=nxt;
+    }
+    if(loop.length < 3) continue;
+    const pts = loop.map(i=>uv[i]);
+    let ar=0;
+    for(let i=0;i<pts.length;i++){ const p=pts[i], q=pts[(i+1)%pts.length]; ar += p.x*q.y - q.x*p.y; }
+    loops.push({pts, area:Math.abs(ar)/2});
+  }
+  return loops;
+}
+// Ringe → Inseln: gerade Verschachtelungstiefe = Materialfläche, ungerade = Loch.
+// Ohne diese Trennung würde der Innenraum eines „o" als eigenes Teil gelten und
+// einen Steg quer durchs Loch bekommen.
+function _ttIslands(loops){
+  const L = loops.filter(l => l.area > 1e-7);
+  const out = [];
+  L.forEach((l,i)=>{
+    let d = 0;
+    const p = l.pts[0];
+    for(let j=0;j<L.length;j++)
+      if(j!==i && L[j].area > l.area && _ttInPoly(L[j].pts, p.x, p.y)) d++;
+    if(d % 2 === 0) out.push(l.pts);
+  });
+  return out;
+}
+
+// Platte → ihre Inseln als Umrisse in Ebenenkoordinaten (u,v): Dreiecke EINER
+// Deckfläche nehmen, Punkte über ihre Ebenenlage verschweißen (ExtrudeGeometry
+// dupliziert Vertices), Kanten zählen, Rand auffädeln, Löcher aussortieren.
+function _ttOutlines2D(mesh, N, U, V){
+  const pos = mesh.geometry.attributes.position, idx = mesh.geometry.index ? mesh.geometry.index.array : null;
+  const nTri = idx ? idx.length/3 : pos.count/3;
+  const a=new THREE.Vector3(), b=new THREE.Vector3(), c=new THREE.Vector3();
+  const ab=new THREE.Vector3(), ac=new THREE.Vector3(), nn=new THREE.Vector3();
+  const uv=[], byKey=new Map(), edge=new Map();
+  const vid = p => {
+    const u=p.dot(U), v=p.dot(V);
+    const k = Math.round(u*2000)+'/'+Math.round(v*2000);
+    let i = byKey.get(k);
+    if(i === undefined){ i = uv.length; uv.push({x:u, y:v}); byKey.set(k,i); }
+    return i;
+  };
+  for(const sign of [1,-1]){
+    edge.clear();
+    let any = false;
+    for(let t=0;t<nTri;t++){
+      const i0=idx?idx[t*3]:t*3, i1=idx?idx[t*3+1]:t*3+1, i2=idx?idx[t*3+2]:t*3+2;
+      a.fromBufferAttribute(pos,i0).applyMatrix4(mesh.matrixWorld);
+      b.fromBufferAttribute(pos,i1).applyMatrix4(mesh.matrixWorld);
+      c.fromBufferAttribute(pos,i2).applyMatrix4(mesh.matrixWorld);
+      ab.subVectors(b,a); ac.subVectors(c,a); nn.crossVectors(ab,ac);
+      const L = nn.length(); if(L < 1e-12) continue;
+      if(nn.dot(N)/L*sign < 0.9) continue;
+      const t0=vid(a), t1=vid(b), t2=vid(c);
+      for(const [p,q] of [[t0,t1],[t1,t2],[t2,t0]]){
+        if(p===q) continue;
+        const k = p<q ? p+'_'+q : q+'_'+p;
+        edge.set(k, (edge.get(k)||0)+1);
+      }
+      any = true;
+    }
+    if(!any) continue;
+    const isl = _ttIslands(_ttStitchLoops(edge, uv));
+    if(isl.length) return isl;
+  }
+  return [];
+}
+
+function _ttRebridge(){
+  const sel = (typeof selectedObjs !== 'undefined' ? selectedObjs : []).filter(Boolean);
+  if(!sel.length){ notify('Erst die Teile auswählen, die verbunden werden sollen','w'); return; }
+  // Eine einzelne Gruppe: darin arbeiten, neue Stege kommen wieder hinein
+  const host = (sel.length === 1 && (sel[0].isGroup || sel[0].userData.isGroup)) ? sel[0] : null;
+  const keep = [], oldBridges = [];
+  for(const o of sel){
+    o.updateMatrixWorld(true);
+    o.traverse(ch=>{
+      if(!ch.isMesh || !ch.geometry || ch.userData.isEdgeLines || ch.userData.isHole || ch.visible === false) return;
+      if(/^Steg\b/.test(ch.userData.name || '')) oldBridges.push(ch); else keep.push(ch);
+    });
+  }
+  if(keep.length < 2){ notify('Mindestens zwei Teile auswählen — nach „Aufheben" z. B. alle Buchstaben','w'); return; }
+  if(keep.length > 80){ notify('Zu viele Teile ('+keep.length+') — bitte kleinere Auswahl','w'); return; }
+  const N = _ttPlateNormal(keep);
+  if(!N){ notify('Ebene der Teile nicht erkennbar','w'); return; }
+  const U = new THREE.Vector3(Math.abs(N.x) > 0.9 ? 0 : 1, Math.abs(N.x) > 0.9 ? 1 : 0, 0);
+  U.crossVectors(U, N).normalize();
+  const V = new THREE.Vector3().crossVectors(N, U).normalize();
+  // Jede Insel wird ein eigenes Teil — ein Mesh kann mehrere enthalten (im „i"
+  // stecken Körper UND Punkt), und der Punkt braucht seinen eigenen Steg.
+  const parts = [];
+  for(const m of keep) for(const pts of _ttOutlines2D(m, N, U, V))
+    if(pts.length >= 3) parts.push({ pts });
+  if(parts.length < 2){ notify('Das sind keine flachen Platten in einer Ebene','w'); return; }
+  // Dicke und Nulllage aus der Ausdehnung längs der Normalen
+  let nMin=Infinity, nMax=-Infinity;
+  const v3 = new THREE.Vector3();
+  for(const m of keep){
+    const pos = m.geometry.attributes.position;
+    for(let i=0;i<pos.count;i++){
+      const d = v3.fromBufferAttribute(pos,i).applyMatrix4(m.matrixWorld).dot(N);
+      if(d<nMin)nMin=d; if(d>nMax)nMax=d;
+    }
+  }
+  const thickU = Math.max(0.02, nMax-nMin);
+  const webEl  = document.getElementById('tt-web');
+  const webU   = Math.max(0.08, (webEl ? +webEl.value : 2)/10);
+  let segs = [];
+  try{ segs = _ttBridgeSegs(parts, webU); }
+  catch(e){ console.error('Stege:',e); notify('Stege konnten nicht berechnet werden','w'); return; }
+  if(!segs.length && !oldBridges.length){ notify('Alles hängt schon zusammen — keine Stege nötig','ok'); return; }
+  saveUndo();
+  for(const b of oldBridges){
+    if(b.parent) b.parent.remove(b);
+    scene.remove(b);
+    objects = objects.filter(x => x !== b);
+  }
+  const M = new THREE.Matrix4().makeBasis(U, V, N).setPosition(N.clone().multiplyScalar(nMin));
+  const inv = host ? new THREE.Matrix4().copy(host.matrixWorld).invert() : null;
+  const col = (keep[0].userData && keep[0].userData.color) || (typeof currentColor !== 'undefined' ? currentColor : '#e91e63');
+  const made = [];
+  segs.forEach((s,i)=>{
+    const g = _posOnly(_ttBridgeGeo(s, webU, thickU));
+    g.applyMatrix4(M);
+    if(inv) g.applyMatrix4(inv);
+    g.computeVertexNormals();
+    const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({color:new THREE.Color(col), roughness:0.55, metalness:0, side:THREE.DoubleSide}));
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    mesh.userData = {id:idCtr++, type:'custom', shapeType:'custom', name:'Steg '+(i+1), color:col, isHole:false, fillet:0, chamfer:0};
+    if(host) host.add(mesh); else { scene.add(mesh); objects.push(mesh); }
+    if(typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(mesh);
+    made.push(mesh);
+  });
+  selectObjs(host ? [host] : keep.concat(made));
+  updateTree();
+  notify(oldBridges.length
+    ? made.length+' Steg'+(made.length!==1?'e':'')+' neu gesetzt ('+oldBridges.length+' alte entfernt) — Breite '+(webU*10).toFixed(1)+' mm'
+    : made.length+' Steg'+(made.length!==1?'e':'')+' gesetzt — Breite '+(webU*10).toFixed(1)+' mm (im Tortentopper unter „Steg-Breite" einstellbar)','ok');
+}
+
 // Komplette Topper-Geometrie: flach gelegt (Achse Y, Unterseite y=0), mittig zentriert.
 // o = Optionen aus _ttOpts (+ dateFont, wenn Datums-Herz aktiv). Liefert
 // {geo, wMM, hMM, nBridges} oder null; mit split=true stattdessen
@@ -29158,8 +29356,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.52';
+const VOLME3D_VERSION = '1.15.53';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.53', date:'2026-07-31', changes:[
+    ['🖇️','Neuer Knopf „🖇️ Stege" (oben bei Kombinieren, neben „Aufheben"). Das ist das Gegenstück zum Zerlegen: Nachdem du die Buchstaben zurechtgeschoben hast, wählst du alles aus und drückst den Knopf — die alten Stege fliegen raus und es werden neue gesetzt, passend zur neuen Anordnung. Alles, was sonst frei schweben würde, hängt danach wieder über kürzestmögliche Stege am Rest. Der i-Punkt wird dabei genauso mitgedacht wie ein einzelner Buchstabe. Die Stege übernehmen Dicke und Ebene der Teile automatisch, die Breite kommt aus dem Regler „Steg-Breite" im Tortentopper. Du kannst den Knopf beliebig oft drücken, auch auf eine noch nicht aufgehobene Gruppe — die neuen Stege landen dann wieder in der Gruppe. Funktioniert nicht nur bei Toppern, sondern bei allen flachen Teilen in einer Ebene.'],
+  ]},
   { version:'1.15.52', date:'2026-07-31', changes:[
     ['🧩','Tortentopper: neue Option „Alles einzeln zerlegen (jeder Buchstabe ein Teil)". Bisher trennte „Aufheben" nur Stege und Pins vom Schriftzug — jetzt wird auf Wunsch JEDES Zeichen ein eigenes Teil, dazu jedes Motivteil, jeder Steg und jeder Pin. Damit lässt sich der Topper nach dem Aufheben völlig frei neu zusammenstellen: Buchstaben versetzen, drehen, anders anordnen, statt an der Zeile im Textfeld zu kleben. Zusammengehörige Konturen bleiben dabei beisammen — der Punkt bleibt am „i", die Pünktchen am „ä", der Bogen am „é". Ohne die Option bleibt alles wie gehabt. In beiden Fällen gilt: solange sich die Teile überlappen, druckt es weiter als EIN Stück.'],
   ]},
@@ -33476,6 +33677,7 @@ const CMDK = [
   {i:'⊖',g:'Bearbeiten',t:'Abziehen',k:'subtract bohrung loch',run:()=>subtractHoles()},
   {i:'⊞',g:'Bearbeiten',t:'Gruppieren',k:'group',run:()=>groupSelected()},
   {i:'⊟',g:'Bearbeiten',t:'Gruppe auflösen',k:'ungroup',run:()=>ungroupSelected()},
+  {i:'🖇️',g:'Bearbeiten',t:'Stege neu berechnen',k:'steg stege bruecke bridge verbinden topper buchstaben schweben zusammenhang',run:()=>_ttRebridge()},
   {i:'⊿',g:'Bearbeiten',t:'Spiegeln',k:'mirror',run:()=>mirrorTool()},
   {i:'⊜',g:'Bearbeiten',t:'Ausrichten',k:'align',run:()=>alignTool()},
   {i:'⋮',g:'Bearbeiten',t:'Lineares Muster',k:'array pattern',run:()=>linearPatternTool()},
