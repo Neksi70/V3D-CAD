@@ -30991,6 +30991,7 @@ Object.defineProperty(window, '_mapShapeLayerRef', { get: () => _mapShapeLayer, 
 // Section-tool test hooks
 window._getObjects = () => objects;
 window._getSec = () => _sec;
+window._getPcOhVis = () => _pcOhVis;
 // OCCT module access for test helpers
 window._getOC = () => _oc;
 window.EDGE_ENDPOINTS_exposed = EDGE_ENDPOINTS;
@@ -32038,6 +32039,63 @@ function _pcClearThinVis(){
   if (_pcThinTimer) { clearTimeout(_pcThinTimer); _pcThinTimer = null; }
 }
 
+// ── Überhang-Anzeige: Flächen >45° nach unten rot im Viewport markieren ──────
+let _pcOhVis = [], _pcOhTimer = null;
+
+function _pcClearOhVis(){
+  _pcOhVis.forEach(m => { scene.remove(m); m.geometry && m.geometry.dispose(); m.material && m.material.dispose(); });
+  _pcOhVis = [];
+  if (_pcOhTimer) { clearTimeout(_pcOhTimer); _pcOhTimer = null; }
+}
+
+function _pcShowOverhangs(){
+  _pcClearOhVis();
+  _printCheckClose();
+  const meshes = [];
+  objects.forEach(o => o.traverse(n => { if (n.isMesh && n.visible && !n.userData.isEdgeLines && !n.userData.isHole) meshes.push(n); }));
+  if (!meshes.length) return;
+  const box = new THREE.Box3();
+  meshes.forEach(m => { m.updateWorldMatrix(true, true); box.expandByObject(m); });
+  const minY = box.min.y, DOWN = Math.cos(45 * Math.PI / 180);
+  const verts = [];
+  const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3(),
+        ab = new THREE.Vector3(), ac = new THREE.Vector3(), nrm = new THREE.Vector3();
+  const MAXTRI = 150000;   // Sicherheitsdeckel — Overlay bleibt flüssig
+  let count = 0, truncated = false;
+  outer:
+  for (const m of meshes){
+    const g = m.geometry, pos = g && g.attributes.position; if (!pos) continue;
+    const idx = g.index, triCount = (idx ? idx.count : pos.count) / 3;
+    for (let t = 0; t < triCount; t++){
+      const i0 = idx ? idx.getX(t*3) : t*3, i1 = idx ? idx.getX(t*3+1) : t*3+1, i2 = idx ? idx.getX(t*3+2) : t*3+2;
+      vA.fromBufferAttribute(pos, i0).applyMatrix4(m.matrixWorld);
+      vB.fromBufferAttribute(pos, i1).applyMatrix4(m.matrixWorld);
+      vC.fromBufferAttribute(pos, i2).applyMatrix4(m.matrixWorld);
+      ab.subVectors(vB, vA); ac.subVectors(vC, vA); nrm.crossVectors(ab, ac);
+      const len = nrm.length(); if (len < 1e-12) continue;
+      nrm.multiplyScalar(1 / len);
+      if (nrm.y >= -DOWN) continue;
+      if ((vA.y + vB.y + vC.y) / 3 <= minY + 0.05) continue;   // Basis auf der Platte ≠ Überhang
+      // Minimal entlang der Normale versetzen, damit das Overlay nicht mit der Fläche flackert
+      const e = 0.006;
+      verts.push(vA.x + nrm.x*e, vA.y + nrm.y*e, vA.z + nrm.z*e,
+                 vB.x + nrm.x*e, vB.y + nrm.y*e, vB.z + nrm.z*e,
+                 vC.x + nrm.x*e, vC.y + nrm.y*e, vC.z + nrm.z*e);
+      if (++count >= MAXTRI){ truncated = true; break outer; }
+    }
+  }
+  if (!count){ notify('Keine Überhänge über 45° gefunden ✓', 'ok'); return; }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: 0xff2244, side: THREE.DoubleSide, transparent: true, opacity: 0.85,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+  mesh.renderOrder = 998; mesh.raycast = () => {};
+  scene.add(mesh); _pcOhVis.push(mesh);
+  notify('Überhänge rot markiert (steiler als 45° nach unten' + (truncated ? ', Anzeige gekappt' : '') + ') — verschwindet nach 15 s', 'w');
+  _pcOhTimer = setTimeout(_pcClearOhVis, 15000);
+}
+
 function _pcShowThinSpots(){
   _pcClearThinVis();
   _printCheckClose();
@@ -32057,7 +32115,7 @@ function _printCheckOpen(){
   let r; try{ r=_printCheckAnalyze(); }catch(e){ console.warn('Druck-Check:',e); body.innerHTML='<div class="pc-summary">Analyse fehlgeschlagen.</div>'; return; }
   if(!r){ body.innerHTML='<div class="pc-summary" style="color:var(--dim)">Keine druckbaren Körper in der Szene.</div>'; return; }
   const items=[];
-  const row=(lvl,ic,tt,ms,btn,act)=>items.push({lvl,ic,tt,ms,btn,act});
+  const row=(lvl,ic,tt,ms,btn,act,btn2,act2)=>items.push({lvl,ic,tt,ms,btn,act,btn2,act2});
   // Wasserdicht / Manifold
   if(r.capped) row('info','⏭','Sehr große Szene', r.tris.toLocaleString('de')+' Dreiecke — Detailprüfung (wasserdicht/Überhänge) übersprungen, um nicht einzufrieren.');
   else if(r.boundaryEdges===0 && r.nonManifold===0) row('ok','✅','Wasserdicht','Geschlossenes Volumen — sauber druckbar.');
@@ -32073,8 +32131,8 @@ function _printCheckOpen(){
   else row('warn','⚠️','Unter der Platte','Ragt '+(-r.minYmm).toFixed(1)+' mm unter die Platte.','⬇ Auf Platte','_printDropToPlate()');
   // Überhänge
   if(!r.capped){
-    if(r.overhangPct<10) row('ok','✅','Kaum Überhänge', r.overhangPct+'% steile Unterseiten — wenig/kein Stützmaterial nötig.');
-    else row('info','ℹ️','Überhänge', r.overhangPct+'% der Fläche zeigt steil nach unten (>45°) — evtl. Stützen nötig.','↻ Ausrichten','_printCheckOrient()');
+    if(r.overhangPct<10) row('ok','✅','Kaum Überhänge', r.overhangPct+'% steile Unterseiten — wenig/kein Stützmaterial nötig.', r.overhangPct>0?'👁 Zeigen':null, '_pcShowOverhangs()');
+    else row('info','ℹ️','Überhänge', r.overhangPct+'% der Fläche zeigt steil nach unten (>45°) — evtl. Stützen nötig.','👁 Zeigen','_pcShowOverhangs()','↻ Ausrichten','_printCheckOrient()');
   }
   // Sehr dünn (Heuristik auf Außenmaße)
   const minDim=Math.min(r.wMM,r.dMM,r.hMM);
@@ -32102,7 +32160,8 @@ function _printCheckOpen(){
   body.innerHTML='<div class="pc-summary">'+head+'</div>'+items.map(i=>
     '<div class="pc-row lvl-'+i.lvl+'"><div class="pc-ic">'+i.ic+'</div>'+
     '<div class="pc-tx"><div class="pc-tt">'+i.tt+'</div><div class="pc-ms">'+i.ms+'</div></div>'+
-    (i.btn?'<button class="btn" onclick="'+i.act+'">'+i.btn+'</button>':'')+'</div>').join('');
+    (i.btn?'<button class="btn" onclick="'+i.act+'">'+i.btn+'</button>':'')+
+    (i.btn2?'<button class="btn" onclick="'+i.act2+'">'+i.btn2+'</button>':'')+'</div>').join('');
 }
 function _printCheckClose(){ document.getElementById('printcheck-modal').classList.remove('show'); }
 function _printCheckRepair(){ selectObjs(objects.slice()); repairSelected(); setTimeout(_printCheckOpen,30); }
