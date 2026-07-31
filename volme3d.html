@@ -2627,6 +2627,46 @@ const firebaseConfig = {
   </div>
 </div>
 
+<!-- Werkzeug-Einleger: Foto auf DIN A4 → Gridfinity-Einsatz mit Werkzeug-Tasche (client-seitig, Manifold-WASM) -->
+<div id="wz-modal" class="g3dm" onclick="if(event.target===this)_wzClose()">
+  <div class="g3box">
+    <div class="g3hdr">🧰 Werkzeug-Einleger (Foto → Gridfinity)<span class="vx" onclick="_wzClose()">✕</span></div>
+    <div class="g3body">
+      <canvas id="wz-canvas" width="360" height="480" style="background:#fff;align-self:flex-start;border-radius:8px;cursor:crosshair" onclick="_wzClick(event)"></canvas>
+      <div class="g3ctrl" style="min-width:290px">
+        <input type="file" id="wz-file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="_wzFile(event)">
+        <button class="btn" style="width:100%" onclick="document.getElementById('wz-file').click()">📷 Foto wählen (Werkzeug auf DIN A4)</button>
+        <div class="vbg" id="wzg-land">
+          <button class="vtb on" onclick="_wzSet('land',0)">A4 hoch</button>
+          <button class="vtb" onclick="_wzSet('land',1)">A4 quer</button>
+        </div>
+        <button class="btn" style="width:100%" onclick="_wzReset()">↺ Ecken neu anklicken</button>
+        <span class="vsec">Erkennung</span>
+        <div class="vrow"><label title="Trennung Werkzeug/Papier — höher = mehr zählt als Werkzeug">Schwelle</label> <input type="range" id="wz-thr" min="30" max="220" value="128" step="1" oninput="document.getElementById('wzv-thr').textContent=this.value;_wzSet('thr',this.value)"><span class="vv" id="wzv-thr">128</span><span class="vu"></span></div>
+        <div class="vrow"><label title="Konturglättung (0 = pixelgenau)">Glättung</label> <input type="range" id="wz-smooth" min="0" max="4" value="2" step="1" oninput="document.getElementById('wzv-smooth').textContent=this.value;_wzSet('smooth',this.value)"><span class="vv" id="wzv-smooth">2</span><span class="vu"></span></div>
+        <span class="vsec">Tasche</span>
+        <div class="vrow"><label title="Luft rund ums Werkzeug — 0.5 mm = saugend, 1 mm = locker">Spiel</label> <input type="range" id="wz-clr" min="0" max="2" value="0.5" step="0.05" oninput="document.getElementById('wzv-clr').textContent=this.value;_wzSet('clr',this.value)"><span class="vv" id="wzv-clr">0.5</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Taschentiefe — meist halbe Werkzeugdicke">Tiefe</label> <input type="range" id="wz-depth" min="4" max="45" value="12" step="0.5" oninput="document.getElementById('wzv-depth').textContent=this.value;_wzSet('depth',this.value)"><span class="vv" id="wzv-depth">12</span><span class="vu">mm</span></div>
+        <div class="vbg" id="wzg-fin">
+          <button class="vtb on" onclick="_wzSet('finger',1)">Mit Fingermulde</button>
+          <button class="vtb" onclick="_wzSet('finger',0)">Ohne</button>
+        </div>
+        <span class="vsec">Box</span>
+        <div class="vrow"><label title="Gesamthöhe in Gridfinity-Einheiten (1 u = 7 mm)">Höhe</label> <input type="range" id="wz-hu" min="2" max="8" value="3" step="1" oninput="document.getElementById('wzv-hu').textContent=this.value*7;_wzSet('hu',this.value)"><span class="vv" id="wzv-hu">21</span><span class="vu">mm</span></div>
+        <div class="vbg" id="wzg-feet">
+          <button class="vtb on" onclick="_wzSet('feet',1)">Gridfinity-Füße</button>
+          <button class="vtb" onclick="_wzSet('feet',0)">Flache Platte</button>
+        </div>
+        <div class="g3info" id="wz-info">Werkzeug(e) mit etwas Abstand auf ein weißes DIN-A4-Blatt legen, von möglichst senkrecht oben fotografieren. Foto laden, dann die 4 Papierecken anklicken — das Blatt ist die Maßstabs-Referenz.</div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_wzClose()">Abbrechen</button>
+      <button class="btn pri" id="wz-go" onclick="_wzCreate()" disabled>✓ Erzeugen</button>
+    </div>
+  </div>
+</div>
+
 <!-- Silikon-Gießform: druckbarer Gießrahmen um ein gewähltes Modell (client-seitig, Manifold-WASM) -->
 <div id="mold-modal" class="g3dm" onclick="if(event.target===this)_closeMoldModal()">
   <div class="g3box">
@@ -14734,6 +14774,393 @@ async function _ckCreate() {
   }
 }
 
+// ═══ WERKZEUG-EINLEGER (Foto auf DIN A4 → Gridfinity-Einsatz, Manifold-WASM) ═
+// Das A4-Blatt liefert Maßstab UND Entzerrung: 4 angeklickte Papierecken →
+// Homographie → mm-genaues Raster. Schwellwert trennt Werkzeug vom Papier,
+// dann Distanzfeld + Konturverfolgung (Helfer vom Keksausstecher), Spiel =
+// Iso-Offset im Distanzfeld. Tasche per Manifold-Boolean in den Bin.
+const _wzMM = 3;                          // Raster der Entzerrung: 3 px/mm
+const _wzP = { land:0, thr:128, smooth:2, clr:0.5, depth:12, hu:3, finger:1, feet:1 };
+const _wz = { img:null, gray:null, GW:0, GH:0, pts:[], rect:null, mask:null,
+              RW:0, RH:0, rcv:null, fit:null, res:null };
+let _wzBusy = false, _wzRT = null;
+
+function _wzOpen() { document.getElementById('wz-modal').classList.add('show'); _wzDraw(); }
+function _wzClose() { document.getElementById('wz-modal').classList.remove('show'); }
+
+function _wzFile(ev) {
+  const f = ev.target.files[0]; if (!f) return;
+  const img = new Image();
+  img.onload = () => { _wzSetImage(img); URL.revokeObjectURL(img.src); };
+  img.onerror = () => notify('Bild konnte nicht geladen werden', 'e');
+  img.src = URL.createObjectURL(f);
+  ev.target.value = '';
+}
+
+// Foto übernehmen: auf max. 2200 px verkleinern, Farb-Canvas (Anzeige) +
+// Graustufen-Array (Entzerrung) ablegen. Ecken-Klicks beginnen von vorn.
+function _wzSetImage(img) {
+  const sc = Math.min(1, 2200 / Math.max(img.width || 1, img.height || 1));
+  const W = Math.max(2, Math.round(img.width * sc)), H = Math.max(2, Math.round(img.height * sc));
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const cx = cv.getContext('2d', { willReadFrequently: true });
+  cx.drawImage(img, 0, 0, W, H);
+  const d = cx.getImageData(0, 0, W, H).data;
+  const g = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) g[i] = (0.299*d[i*4] + 0.587*d[i*4+1] + 0.114*d[i*4+2]) | 0;
+  _wz.img = cv; _wz.gray = g; _wz.GW = W; _wz.GH = H;
+  _wz.pts = []; _wz.rect = null; _wz.mask = null; _wz.rcv = null; _wz.res = null;
+  const btn = document.getElementById('wz-go'); if (btn) btn.disabled = true;
+  _wzInfo('Jetzt die 4 Ecken des A4-Blatts anklicken (Reihenfolge egal).');
+  _wzDraw();
+}
+
+function _wzInfo(t) { const el = document.getElementById('wz-info'); if (el) el.textContent = t; }
+
+function _wzSet(k, v) {
+  v = parseFloat(v);
+  if (k === 'land' || k === 'finger' || k === 'feet') {
+    _wzP[k] = v;
+    const gid = { land:'wzg-land', finger:'wzg-fin', feet:'wzg-feet' }[k];
+    const g = document.getElementById(gid);
+    if (g) [...g.children].forEach((b, i) => b.classList.toggle('on', (i === 0) === (k === 'land' ? v === 0 : v === 1)));
+    if (k === 'land') { if (_wz.pts.length === 4) _wzRectify(); else _wzDraw(); }
+    else _wzRecalcSoon();
+    return;
+  }
+  _wzP[k] = v;
+  if (k === 'thr' || k === 'smooth' || k === 'clr') _wzRecalcSoon();
+  else _wzUpdInfo();                       // Tiefe/Höhe ändern nur Zahlen, nicht die Kontur
+}
+function _wzRecalcSoon() { clearTimeout(_wzRT); _wzRT = setTimeout(_wzRecalc, 120); }
+
+function _wzReset() {
+  _wz.pts = []; _wz.rect = null; _wz.mask = null; _wz.rcv = null; _wz.res = null;
+  const btn = document.getElementById('wz-go'); if (btn) btn.disabled = true;
+  if (_wz.img) _wzInfo('Die 4 Ecken des A4-Blatts anklicken (Reihenfolge egal).');
+  _wzDraw();
+}
+
+function _wzClick(ev) {
+  if (!_wz.img) { document.getElementById('wz-file').click(); return; }
+  if (_wz.pts.length >= 4) return;         // fertig — Änderungen über „Ecken neu"
+  const cv = document.getElementById('wz-canvas'), r = cv.getBoundingClientRect();
+  const mx = (ev.clientX - r.left) * (cv.width / r.width), my = (ev.clientY - r.top) * (cv.height / r.height);
+  const f = _wz.fit; if (!f) return;
+  const ix = (mx - f.ox) / f.s, iy = (my - f.oy) / f.s;
+  if (ix < -20 || iy < -20 || ix > _wz.GW + 20 || iy > _wz.GH + 20) return;
+  _wz.pts.push([Math.max(0, Math.min(_wz.GW - 1, ix)), Math.max(0, Math.min(_wz.GH - 1, iy))]);
+  if (_wz.pts.length === 4) _wzRectify(); else { _wzInfo('Ecke ' + (_wz.pts.length + 1) + ' von 4 anklicken …'); _wzDraw(); }
+}
+
+// Ecken sortieren: oben-links = min(x+y), unten-rechts = max(x+y),
+// oben-rechts = max(x−y), unten-links = min(x−y)
+function _wzOrder(pts) {
+  const s = pts.map(p => p[0] + p[1]), d = pts.map(p => p[0] - p[1]);
+  const o = [pts[s.indexOf(Math.min(...s))], pts[d.indexOf(Math.max(...d))],
+             pts[s.indexOf(Math.max(...s))], pts[d.indexOf(Math.min(...d))]];
+  return (new Set(o)).size === 4 ? o : null;
+}
+
+// Homographie mm→Bildpixel aus 4 Punktpaaren (DLT, Gauß mit Pivot)
+function _wzHomography(src, dst) {
+  const A = [];
+  for (let i = 0; i < 4; i++) {
+    const [X, Y] = src[i], [x, y] = dst[i];
+    A.push([X, Y, 1, 0, 0, 0, -x*X, -x*Y, x]);
+    A.push([0, 0, 0, X, Y, 1, -y*X, -y*Y, y]);
+  }
+  for (let c = 0; c < 8; c++) {
+    let p = c;
+    for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    if (Math.abs(A[p][c]) < 1e-9) return null;
+    [A[c], A[p]] = [A[p], A[c]];
+    for (let r = 0; r < 8; r++) {
+      if (r === c) continue;
+      const f = A[r][c] / A[c][c];
+      for (let k = c; k < 9; k++) A[r][k] -= f * A[c][k];
+    }
+  }
+  const h = [];
+  for (let i = 0; i < 8; i++) h.push(A[i][8] / A[i][i]);
+  h.push(1);
+  return h;
+}
+
+// Entzerren: Blatt-Quadrilateral → mm-Raster (3 px/mm), bilinear gesampelt.
+// Danach Otsu-Schwelle als Startwert für den Regler.
+function _wzRectify() {
+  const o = _wzOrder(_wz.pts);
+  if (!o) { notify('Die 4 Punkte bilden kein Viereck — bitte neu anklicken', 'w'); _wzReset(); return; }
+  const SW = _wzP.land ? 297 : 210, SH = _wzP.land ? 210 : 297;
+  const Hm = _wzHomography([[0,0],[SW,0],[SW,SH],[0,SH]], o);
+  if (!Hm) { notify('Ecken unbrauchbar (kollinear?) — bitte neu anklicken', 'w'); _wzReset(); return; }
+  const RW = SW * _wzMM, RH = SH * _wzMM, g = _wz.gray, GW = _wz.GW, GH = _wz.GH;
+  const rect = new Uint8Array(RW * RH);
+  for (let yd = 0; yd < RH; yd++) {
+    const Y = (yd + 0.5) / _wzMM;
+    for (let xd = 0; xd < RW; xd++) {
+      const X = (xd + 0.5) / _wzMM;
+      const w = Hm[6]*X + Hm[7]*Y + 1;
+      if (Math.abs(w) < 1e-9) { rect[yd*RW+xd] = 255; continue; }
+      const sx = (Hm[0]*X + Hm[1]*Y + Hm[2]) / w, sy = (Hm[3]*X + Hm[4]*Y + Hm[5]) / w;
+      const x0 = Math.floor(sx), y0 = Math.floor(sy);
+      if (x0 < 0 || y0 < 0 || x0 >= GW - 1 || y0 >= GH - 1) { rect[yd*RW+xd] = 255; continue; }
+      const fx = sx - x0, fy = sy - y0, i0 = y0*GW + x0;
+      rect[yd*RW+xd] = (g[i0]*(1-fx)*(1-fy) + g[i0+1]*fx*(1-fy) + g[i0+GW]*(1-fx)*fy + g[i0+GW+1]*fx*fy) | 0;
+    }
+  }
+  // Rand weißen: Papierkanten-Schatten und Klick-Ungenauigkeit ausblenden
+  const m = 4 * _wzMM;
+  for (let y = 0; y < RH; y++) for (let x = 0; x < RW; x++)
+    if (x < m || y < m || x >= RW - m || y >= RH - m) rect[y*RW+x] = 255;
+  _wz.rect = rect; _wz.RW = RW; _wz.RH = RH;
+  _wzP.thr = _wzOtsu(rect, RW, RH, m);
+  const sl = document.getElementById('wz-thr'), sv = document.getElementById('wzv-thr');
+  if (sl) sl.value = _wzP.thr; if (sv) sv.textContent = _wzP.thr;
+  _wzRecalc();
+}
+
+function _wzOtsu(g, W, H, m) {
+  const h = new Float64Array(256); let n = 0;
+  for (let y = m; y < H - m; y++) for (let x = m; x < W - m; x++) { h[g[y*W+x]]++; n++; }
+  let sum = 0; for (let i = 0; i < 256; i++) sum += i * h[i];
+  let sb = 0, wb = 0, mx = 0, t = 128;
+  for (let i = 0; i < 256; i++) {
+    wb += h[i]; if (!wb) continue;
+    const wf = n - wb; if (!wf) break;
+    sb += i * h[i];
+    const mb = sb / wb, mf = (sum - sb) / wf, v = wb * wf * (mb - mf) * (mb - mf);
+    if (v > mx) { mx = v; t = i; }
+  }
+  return Math.max(30, Math.min(220, t));
+}
+
+// Maske → Konturen: Löcher füllen (Hintergrund-Flutung vom Rand), Fragmente
+// unter ~250 mm² verwerfen, dann Distanzfeld + Iso-Kontur bei Spiel-Abstand.
+function _wzRecalc() {
+  if (!_wz.rect) return;
+  const W = _wz.RW, H = _wz.RH, g = _wz.rect, thr = _wzP.thr;
+  const mask = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) mask[i] = g[i] < thr ? 1 : 0;
+  // Hintergrund vom Rand fluten (4er) — nicht Erreichtes im "Weiß" = Loch im Werkzeug
+  const bg = new Uint8Array(W * H), st = [];
+  const seed = i => { if (!mask[i] && !bg[i]) { bg[i] = 1; st.push(i); } };
+  for (let x = 0; x < W; x++) { seed(x); seed((H-1)*W + x); }
+  for (let y = 0; y < H; y++) { seed(y*W); seed(y*W + W - 1); }
+  while (st.length) {
+    const i = st.pop();
+    const x = i % W, y = (i / W) | 0;
+    if (x > 0     && !mask[i-1] && !bg[i-1]) { bg[i-1] = 1; st.push(i-1); }
+    if (x < W - 1 && !mask[i+1] && !bg[i+1]) { bg[i+1] = 1; st.push(i+1); }
+    if (y > 0     && !mask[i-W] && !bg[i-W]) { bg[i-W] = 1; st.push(i-W); }
+    if (y < H - 1 && !mask[i+W] && !bg[i+W]) { bg[i+W] = 1; st.push(i+W); }
+  }
+  for (let i = 0; i < W * H; i++) if (!mask[i] && !bg[i]) mask[i] = 1;
+  // Zusammenhangskomponenten (8er): kleine Flecken (Schattenreste) verwerfen
+  const minPx = 250 * _wzMM * _wzMM;       // ~250 mm²
+  const lbl = new Int32Array(W * H); let big = 0;
+  for (let i0 = 0; i0 < W * H; i0++) {
+    if (!mask[i0] || lbl[i0]) continue;
+    const q = [i0]; lbl[i0] = 1; let cnt = 0; const comp = [];
+    while (q.length) {
+      const i = q.pop(); comp.push(i); cnt++;
+      const x = i % W, y = (i / W) | 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy) continue;
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const ni = ny*W + nx;
+        if (mask[ni] && !lbl[ni]) { lbl[ni] = 1; q.push(ni); }
+      }
+    }
+    if (cnt < minPx) { for (const i of comp) mask[i] = 0; } else big++;
+  }
+  _wz.mask = mask; _wz.rcv = null;
+  if (!big) {
+    _wz.res = null;
+    const btn = document.getElementById('wz-go'); if (btn) btn.disabled = true;
+    _wzInfo('Kein Werkzeug erkannt — Schwelle anpassen oder Foto mit mehr Kontrast wählen.');
+    _wzDraw(); return;
+  }
+  // Auf Silhouette zuschneiden, Zeilen spiegeln (Bild-y ↓ → mm-y ↑, sonst seitenverkehrt)
+  let x0 = W, x1 = 0, y0 = H, y1 = 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++)
+    if (mask[y*W+x]) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  const CW = x1 - x0 + 1, CH = y1 - y0 + 1, cm = new Uint8Array(CW * CH);
+  for (let y = 0; y < CH; y++) {
+    const sr = (y0 + (CH - 1 - y)) * W + x0;
+    cm.set(mask.subarray(sr, sr + CW), y * CW);
+  }
+  const cell = 1 / _wzMM, pad = Math.ceil((_wzP.clr + 2) * _wzMM) + 2;
+  const fld = _ckDistField(cm, CW, CH, cell, pad);
+  const ox = (x0 - pad) * cell, oy = (H - y0 - CH - pad) * cell;
+  const cont = _moldContoursAt(fld.dist, fld.W, fld.H, ox, oy, cell, _wzP.clr + cell * 0.7, Math.round(_wzP.smooth));
+  if (!cont.length) { _wz.res = null; _wzInfo('Kontur konnte nicht ermittelt werden.'); _wzDraw(); return; }
+  let bx0 = 1e9, bx1 = -1e9, by0 = 1e9, by1 = -1e9;
+  for (const c of cont) for (const p of c) {
+    if (p[0] < bx0) bx0 = p[0]; if (p[0] > bx1) bx1 = p[0];
+    if (p[1] < by0) by0 = p[1]; if (p[1] > by1) by1 = p[1];
+  }
+  const wall = 2.6;                        // Mindest-Steg Tasche → Bin-Außenwand
+  const nx = Math.max(1, Math.min(10, Math.ceil((bx1 - bx0 + 2*wall + 0.5) / 42)));
+  const ny = Math.max(1, Math.min(10, Math.ceil((by1 - by0 + 2*wall + 0.5) / 42)));
+  _wz.res = { cont, bb: { x0: bx0, x1: bx1, y0: by0, y1: by1 }, nx, ny, parts: big };
+  const btn = document.getElementById('wz-go'); if (btn) btn.disabled = false;
+  _wzUpdInfo(); _wzDraw();
+}
+
+function _wzUpdInfo() {
+  const r = _wz.res; if (!r) return;
+  const bw = r.bb.x1 - r.bb.x0, bh = r.bb.y1 - r.bb.y0;
+  const Ht = _wzP.hu * 7, dep = Math.min(_wzP.depth, Ht - 5.75);
+  _wzInfo('Erkannt: ' + r.parts + ' Teil(e), ' + bw.toFixed(0) + '×' + bh.toFixed(0) + ' mm · Bin ' +
+    r.nx + '×' + r.ny + ' (' + (r.nx*42 - 0.5).toFixed(1) + '×' + (r.ny*42 - 0.5).toFixed(1) + ' mm, ' + Ht +
+    ' mm hoch) · Tasche ' + dep.toFixed(1) + ' mm tief.');
+}
+
+// Canvas: Schritt 1 = Foto + Eckenmarker, Schritt 2 = entzerrtes Blatt mit
+// Masken-Overlay (rot), Konturen (grün) und Bin-Raster (blau)
+function _wzDraw() {
+  const cv = document.getElementById('wz-canvas'); if (!cv) return;
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+  if (!_wz.img) {
+    ctx.fillStyle = '#9aa4b2'; ctx.font = '14px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('Klicken zum Foto wählen', cv.width/2, cv.height/2);
+    _wz.fit = null; return;
+  }
+  if (!_wz.rect) {                         // Schritt 1: Foto + Ecken
+    const s = Math.min(cv.width / _wz.GW, cv.height / _wz.GH);
+    const ox = (cv.width - _wz.GW*s) / 2, oy = (cv.height - _wz.GH*s) / 2;
+    _wz.fit = { s, ox, oy };
+    ctx.drawImage(_wz.img, ox, oy, _wz.GW*s, _wz.GH*s);
+    ctx.lineWidth = 1.5;
+    if (_wz.pts.length > 1) {
+      ctx.strokeStyle = 'rgba(66,165,245,0.9)'; ctx.beginPath();
+      _wz.pts.forEach((p, i) => ctx[i ? 'lineTo' : 'moveTo'](ox + p[0]*s, oy + p[1]*s));
+      if (_wz.pts.length === 4) ctx.closePath();
+      ctx.stroke();
+    }
+    _wz.pts.forEach((p, i) => {
+      const x = ox + p[0]*s, y = oy + p[1]*s;
+      ctx.fillStyle = '#42a5f5'; ctx.beginPath(); ctx.arc(x, y, 7, 0, 2*Math.PI); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(i + 1), x, y);
+    });
+    return;
+  }
+  // Schritt 2: entzerrtes Blatt
+  const W = _wz.RW, H = _wz.RH;
+  if (!_wz.rcv) {
+    const oc = document.createElement('canvas'); oc.width = W; oc.height = H;
+    const octx = oc.getContext('2d'), im = octx.createImageData(W, H);
+    for (let i = 0; i < W * H; i++) {
+      const v = _wz.rect[i], hit = _wz.mask && _wz.mask[i];
+      im.data[i*4]   = hit ? Math.min(255, v * 0.4 + 175) : v;
+      im.data[i*4+1] = hit ? v * 0.35 : v;
+      im.data[i*4+2] = hit ? v * 0.35 : v;
+      im.data[i*4+3] = 255;
+    }
+    octx.putImageData(im, 0, 0);
+    _wz.rcv = oc;
+  }
+  const s = Math.min(cv.width / W, cv.height / H);
+  const ox = (cv.width - W*s) / 2, oy = (cv.height - H*s) / 2;
+  _wz.fit = { s, ox, oy };
+  ctx.drawImage(_wz.rcv, ox, oy, W*s, H*s);
+  ctx.strokeStyle = '#8892a0'; ctx.lineWidth = 1; ctx.strokeRect(ox, oy, W*s, H*s);
+  const r = _wz.res; if (!r) return;
+  const px = v => ox + v * _wzMM * s, py = v => oy + (H - v * _wzMM) * s;   // mm (y↑) → Canvas
+  ctx.strokeStyle = '#2ec56f'; ctx.lineWidth = 1.5;
+  for (const c of r.cont) {
+    ctx.beginPath();
+    c.forEach((p, i) => ctx[i ? 'lineTo' : 'moveTo'](px(p[0]), py(p[1])));
+    ctx.closePath(); ctx.stroke();
+  }
+  // Bin-Raster um den Silhouetten-Schwerpunkt
+  const cx = (r.bb.x0 + r.bb.x1) / 2, cy = (r.bb.y0 + r.bb.y1) / 2;
+  const BW = r.nx * 42 - 0.5, BH = r.ny * 42 - 0.5;
+  ctx.strokeStyle = 'rgba(66,165,245,0.9)'; ctx.lineWidth = 1.5;
+  ctx.strokeRect(px(cx - BW/2), py(cy + BH/2), BW * _wzMM * s, BH * _wzMM * s);
+  ctx.lineWidth = 0.75; ctx.strokeStyle = 'rgba(66,165,245,0.5)';
+  for (let i = 1; i < r.nx; i++) { const x = px(cx - BW/2 + i*42 - 0.25); ctx.beginPath(); ctx.moveTo(x, py(cy + BH/2)); ctx.lineTo(x, py(cy - BH/2)); ctx.stroke(); }
+  for (let j = 1; j < r.ny; j++) { const y = py(cy - BH/2 + j*42 - 0.25); ctx.beginPath(); ctx.moveTo(px(cx - BW/2), y); ctx.lineTo(px(cx + BW/2), y); ctx.stroke(); }
+}
+
+// Ein Gridfinity-Fuß (von unten: 0.8 Fase / 1.8 senkrecht / 2.15 Fase, oben
+// 41.5 mm² r3.75, Höhe 4.75) als EINE Extrusion des Spec-Profils, per warp auf
+// die Silhouette gezogen. Divisionen liegen exakt auf den Profilknicken und
+// alle Ebenen teilen dasselbe Polygon — gestapelte Teil-Extrusionen hinterließen
+// Splitter-Nähte (nicht-manifolde Kanten) im Union.
+function _wzFoot(M, keep) {
+  const sB = 35.6/41.5, sM = 37.2/41.5;
+  const foot = keep(M.extrude([_moldRectContour(-20.75, -20.75, 20.75, 20.75, 3.75)], 3, 3));
+  return keep(foot.warp(v => {
+    const t = v[2]; let s, z;
+    if (t <= 1)      { s = sB + (sM - sB) * t;       z = 0.8 * t; }
+    else if (t <= 2) { s = sM;                       z = 0.8 + 1.8 * (t - 1); }
+    else             { s = sM + (1 - sM) * (t - 2);  z = 2.6 + 2.15 * (t - 2); }
+    v[0] *= s; v[1] *= s; v[2] = z;
+  }));
+}
+
+async function _wzCreate() {
+  if (_wzBusy || !_wz.res || !_wz.res.cont.length) return;
+  const btn = document.getElementById('wz-go');
+  _wzBusy = true; if (btn) { btn.disabled = true; btn.textContent = '… rechnet'; }
+  const mfTemp = [];
+  try {
+    const r = _wz.res, p = _wzP;
+    _wzClose();
+    _progressShow('Einleger wird berechnet…'); _progressSet(15); await _moldTick();
+    const Ht = p.hu * 7, dep = Math.min(p.depth, Ht - 5.75);
+    const sx = -(r.bb.x0 + r.bb.x1) / 2, sy = -(r.bb.y0 + r.bb.y1) / 2;   // Werkzeug → Bin-Mitte
+    const cont = r.cont.map(c => c.map(q => [q[0] + sx, q[1] + sy]));
+    const BW = r.nx * 42 - 0.5, BH = r.ny * 42 - 0.5;
+    const w = await _mfInit(); const M = w.Manifold;
+    const keep = x => { mfTemp.push(x); return x; };
+    _progressSet(40, 'Bin wird aufgebaut…'); await _moldTick();
+    const shell = _moldRectContour(-BW/2, -BH/2, BW/2, BH/2, 3.75);
+    let bin;
+    if (p.feet) {
+      bin = keep(keep(M.extrude([shell], Ht - 4.75)).translate([0, 0, 4.75]));
+      const foot = _wzFoot(M, keep);
+      const feet = [];
+      for (let i = 0; i < r.nx; i++) for (let j = 0; j < r.ny; j++)
+        feet.push(keep(foot.translate([(i - (r.nx - 1)/2) * 42, (j - (r.ny - 1)/2) * 42, 0])));
+      bin = keep(bin.add(keep(M.compose(feet))));
+    } else {
+      bin = keep(M.extrude([shell], Ht));
+    }
+    _progressSet(65, 'Tasche wird geschnitten…'); await _moldTick();
+    const pocket = keep(keep(M.extrude(cont, dep + 0.02)).translate([0, 0, Ht - dep]));
+    bin = keep(bin.subtract(pocket));
+    if (p.finger) {
+      const fdep = Math.min(dep + 9, Ht - 5.55);
+      for (const c of cont) {
+        let fx = 0, fy = 0;
+        for (const q of c) { fx += q[0]; fy += q[1]; }
+        fx /= c.length; fy /= c.length;
+        bin = keep(bin.subtract(keep(keep(M.cylinder(fdep + 0.02, 11, 11, 48)).translate([fx, fy, Ht - fdep]))));
+      }
+    }
+    _progressSet(85, 'Netz wird erzeugt…'); await _moldTick();
+    const geo = _moldNormals(_mfToGeo(bin).toNonIndexed());
+    saveUndo();
+    const mesh = _moldSceneMesh(geo, 'Werkzeug-Einleger');
+    selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
+    _progressDone();
+    notify('Werkzeug-Einleger erzeugt ✓ (' + r.nx + '×' + r.ny + ' Gridfinity, Tasche ' + dep.toFixed(1) + ' mm)', 'ok');
+  } catch (e) {
+    _progressHide(); console.error('[wz]', e); notify('Einleger fehlgeschlagen: ' + (e.message || e), 'e');
+  } finally {
+    for (const x of mfTemp) { try { x && x.delete && x.delete(); } catch (_) {} }
+    _wzBusy = false; if (btn) { btn.disabled = !_wz.res; btn.textContent = '✓ Erzeugen'; }
+  }
+}
+
 function _matrixToOCCTTrsf(oc, m4) {
   // Three.js Matrix4 (column-major) → gp_Trsf (SetValues row-major 3x4)
   const e = m4.elements;
@@ -20458,6 +20885,7 @@ const _STARTERS = [
   {i:'💡',t:'Lampe',d:'Lampenschirm (Pop-Lamp-Stil)',run:()=>_openLampModal()},
   {i:'🫗',t:'Silikon-Gießform',d:'Gießrahmen um dein Modell',run:()=>_openMoldModal()},
   {i:'🍪',t:'Keksausstecher',d:'Bild → Ausstecher mit Schneide',run:()=>_ckOpen()},
+  {i:'🧰',t:'Werkzeug-Einleger',d:'Foto → Gridfinity-Einsatz',run:()=>_wzOpen()},
   {i:'✨',t:'KI-Modell',d:'Aus Text erzeugen',run:()=>kiTogglePanel()},
   {i:'🧪',t:'Rasterbox',d:'Gridfinity-Raster',dev:true,run:()=>_openGFModal()},
 ];
@@ -32501,6 +32929,7 @@ const CMDK = [
   {i:'💡',g:'Generator',t:'Lampe',k:'lampe lampenschirm leuchte licht led pop lamp shade schirm bambu',run:()=>_openLampModal()},
   {i:'🫗',g:'Generator',t:'Silikon-Gießform',k:'silikon gießform gussform mold form casting negativform silikonform tray eiswürfel schokolade',run:()=>_openMoldModal()},
   {i:'🍪',g:'Generator',t:'Keksausstecher',k:'keks ausstecher plätzchen cookie cutter backen förmchen',run:()=>_ckOpen()},
+  {i:'🧰',g:'Generator',t:'Werkzeug-Einleger',k:'werkzeug einleger organizer gridfinity shadowboard schaum inlay einsatz tasche foto sortierung koffer',run:()=>_wzOpen()},
   {i:'∪',g:'Bearbeiten',t:'Vereinen',k:'union merge',run:()=>unionSelected()},
   {i:'⊖',g:'Bearbeiten',t:'Abziehen',k:'subtract bohrung loch',run:()=>subtractHoles()},
   {i:'⊞',g:'Bearbeiten',t:'Gruppieren',k:'group',run:()=>groupSelected()},
