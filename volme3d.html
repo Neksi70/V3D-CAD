@@ -1134,6 +1134,7 @@ const firebaseConfig = {
     </div></div>
     <div class="tbg"><span class="tbg-l">Prüfen</span><div class="tbg-row">
       <button class="btn" id="btn-measure" onclick="measureTool()" title="Messen — zwei Punkte anklicken, Abstand in mm ablesen (Esc beendet)">📐 Messen</button>
+      <button class="btn" id="btn-section" onclick="sectionTool()" title="Schnittansicht — Modell mit einer Ebene aufschneiden, Wandstärken &amp; Innenleben prüfen (nur Ansicht, ändert nichts am Körper, Esc beendet)">◪ Schnitt</button>
     </div></div>
     <div class="tbg"><span class="tbg-l">Ansicht</span><div class="tbg-row">
       <button class="btn" id="btn-lock" onclick="toggleLockSelected()" title="Strg+L — Objekt gegen Verschieben sichern">🔒 Sperren</button>
@@ -12662,6 +12663,123 @@ async function fitCheckTool() {
 // entstehen — dafür gibt es den Hinweis im Panel.
 let _offsetPanel = null;
 
+// ═══ SCHNITTANSICHT (Clipping-Ebene, nur Ansicht) ═════════════════════════
+// Schneidet die Szene visuell mit einer Ebene auf — Wandstärken/Innenleben
+// prüfen ohne Geometrie-Änderung. Clipping per Material (nur objects[]),
+// Bauplatte/Gizmos/Helper bleiben sichtbar. 1 Unit = 10 mm.
+let _secPanel = null;
+const _sec = { axis:'y', flip:false, pos:0, min:-1, max:1, helper:null,
+               plane:null, arr:null };
+
+function sectionTool(){
+  if (_secPanel) { _secClose(); return; }
+  if (!objects.length) { notify('Szene ist leer — nichts zum Aufschneiden', 'w'); return; }
+  _sec.plane = _sec.plane || new THREE.Plane();
+  _sec.arr   = _sec.arr   || [_sec.plane];
+  renderer.localClippingEnabled = true;
+  const p = document.createElement('div');
+  p.id = 'section-panel';
+  p.style.cssText = 'position:fixed;top:70px;right:14px;width:280px;z-index:6000;' +
+    'background:#1f2329;border:1px solid #3a3f47;border-radius:9px;padding:14px 16px;' +
+    'color:#e6e8eb;font:12px/1.4 system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.45)';
+  const axBtn = a => `<button id="sec-ax-${a}" onclick="_secSetAxis('${a}')" style="flex:1;background:#2a2f37;` +
+    `border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer;font-weight:700">${a.toUpperCase()}</button>`;
+  p.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <b style="font-size:13px">◪ Schnittansicht</b>
+      <span onclick="_secClose()" style="cursor:pointer;color:#9aa0a8;font-size:16px;line-height:1">✕</span>
+    </div>
+    <div style="color:#9aa0a8;margin-bottom:10px">Nur Ansicht — ändert nichts am Körper. Ebene mit dem Regler durchs Modell schieben.</div>
+    <div style="display:flex;gap:5px;margin-bottom:10px">${axBtn('x')}${axBtn('y')}${axBtn('z')}
+      <button onclick="_secFlipSide()" title="Seite wechseln — andere Hälfte zeigen" style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer">⇄</button>
+    </div>
+    <input id="sec-slider" type="range" min="0" max="1000" value="500" oninput="_secSlide(this.value)" style="width:100%">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+      <span style="color:#9aa0a8">Position: <b id="sec-mm" style="color:#e6e8eb">0 mm</b></span>
+      <label style="color:#9aa0a8;cursor:pointer;display:flex;align-items:center;gap:5px">
+        <input id="sec-ghost" type="checkbox" checked onchange="_secApply()">Ebene zeigen</label>
+    </div>`;
+  document.body.appendChild(p);
+  _secPanel = p;
+  document.addEventListener('keydown', _secEsc);
+  _secSetAxis('y');
+  const btn = document.getElementById('btn-section'); if (btn) btn.classList.add('active');
+}
+
+function _secEsc(e){ if (e.key === 'Escape' && _secPanel) _secClose(); }
+
+function _secBBox(){
+  const box = new THREE.Box3();
+  objects.forEach(o => { if (o.visible) { try { box.expandByObject(o); } catch(_){} } });
+  if (box.isEmpty()) { box.min.set(-10,-1,-10); box.max.set(10,10,10); }
+  return box;
+}
+
+function _secSetAxis(a){
+  _sec.axis = a;
+  const box = _secBBox(), eps = 0.02;
+  _sec.min = box.min[a] - eps; _sec.max = box.max[a] + eps;
+  ['x','y','z'].forEach(x => { const b = document.getElementById('sec-ax-' + x);
+    if (b) { b.style.background = x === a ? '#F97316' : '#2a2f37'; b.style.borderColor = x === a ? '#F97316' : '#3a3f47'; } });
+  const sl = document.getElementById('sec-slider'); if (sl) sl.value = 500;
+  _secSlide(500);
+}
+
+function _secSlide(v){
+  _sec.pos = _sec.min + (v / 1000) * (_sec.max - _sec.min);
+  const lbl = document.getElementById('sec-mm');
+  if (lbl) lbl.textContent = (_sec.pos * 10).toFixed(1).replace('.', ',') + ' mm';
+  _secApply();
+}
+
+function _secFlipSide(){ _sec.flip = !_sec.flip; _secApply(); }
+
+function _secApply(){
+  const n = new THREE.Vector3(); n[_sec.axis] = _sec.flip ? -1 : 1;
+  const pt = new THREE.Vector3(); pt[_sec.axis] = _sec.pos;
+  _sec.plane.setFromNormalAndCoplanarPoint(n, pt);
+  _secUpdateHelper();
+}
+
+function _secUpdateHelper(){
+  const show = document.getElementById('sec-ghost')?.checked !== false;
+  if (_sec.helper) { scene.remove(_sec.helper); _sec.helper.geometry.dispose(); _sec.helper.material.dispose(); _sec.helper = null; }
+  if (!show || !_secPanel) return;
+  const box = _secBBox(), size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+  const dims = { x:['z','y'], y:['x','z'], z:['x','y'] }[_sec.axis];
+  const w = Math.max(size[dims[0]], 0.5) * 1.15, h = Math.max(size[dims[1]], 0.5) * 1.15;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
+    new THREE.MeshBasicMaterial({ color:0xF97316, transparent:true, opacity:0.10, side:THREE.DoubleSide, depthWrite:false }));
+  if (_sec.axis === 'x') m.rotation.y = Math.PI / 2;
+  else if (_sec.axis === 'y') m.rotation.x = -Math.PI / 2;
+  m.position.copy(c); m.position[_sec.axis] = _sec.pos;
+  m.userData.isSectionHelper = true; m.raycast = () => {};   // nie anklick-/messbar
+  scene.add(m); _sec.helper = m;
+}
+
+// Läuft pro Frame solange aktiv — erwischt auch Objekte, die während der
+// Schnittansicht neu entstehen (Undo, Import, Boolean-Ergebnis).
+function _secApplyMats(){
+  objects.forEach(o => o.traverse(ch => {
+    if (!ch.material) return;
+    const mats = Array.isArray(ch.material) ? ch.material : [ch.material];
+    mats.forEach(mt => { if (mt.clippingPlanes !== _sec.arr) mt.clippingPlanes = _sec.arr; });
+  }));
+}
+
+function _secClose(){
+  if (!_secPanel) return;
+  _secPanel.remove(); _secPanel = null;
+  document.removeEventListener('keydown', _secEsc);
+  objects.forEach(o => o.traverse(ch => {
+    if (!ch.material) return;
+    const mats = Array.isArray(ch.material) ? ch.material : [ch.material];
+    mats.forEach(mt => { mt.clippingPlanes = null; });
+  }));
+  if (_sec.helper) { scene.remove(_sec.helper); _sec.helper.geometry.dispose(); _sec.helper.material.dispose(); _sec.helper = null; }
+  const btn = document.getElementById('btn-section'); if (btn) btn.classList.remove('active');
+}
+
 function openOffsetTool() {
   if (_offsetPanel) { _offsetClose(); return; }
   const o = getFirst();
@@ -19311,6 +19429,7 @@ function animate() {
     _lastSelLen = 0; clearDimHandles(); updateRotHandles();
   }
   if (_navAccum.dirty) _applyNavAccum();   // gesammelte Wheel-Navigation 1×/Frame anwenden
+  if (_secPanel) _secApplyMats();          // Schnittansicht: Clipping auch auf neue Objekte
   // Always keep floating panel in sync (position + values) — cheap per frame
   if (selectedObjs.length === 1) { _fpPositionPanel(); _fpSyncValues(); }
   _detectResizeForTexture();
@@ -30869,6 +30988,9 @@ Object.defineProperty(window, '_mapShape', { get: () => _mapShape, set: v => { _
 Object.defineProperty(window, '_mapObjRef', { get: () => _mapObj, configurable: true });
 Object.defineProperty(window, '_mapBaseLayerRef', { get: () => _mapBaseLayer, configurable: true });
 Object.defineProperty(window, '_mapShapeLayerRef', { get: () => _mapShapeLayer, configurable: true });
+// Section-tool test hooks
+window._getObjects = () => objects;
+window._getSec = () => _sec;
 // OCCT module access for test helpers
 window._getOC = () => _oc;
 window.EDGE_ENDPOINTS_exposed = EDGE_ENDPOINTS;
@@ -32071,6 +32193,7 @@ const CMDK = [
   {i:'🗳',g:'Seite',t:'Abstimmung',k:'poll umfrage',run:()=>window.open('abstimmung.html','_blank')},
   {i:'⚙️',g:'Seite',t:'Szene-Einstellungen',k:'settings bett platte',run:()=>_openSceneSettings()},
   {i:'📝',g:'Seite',t:'Was ist neu?',k:'changelog version',run:()=>_openChangelog()},
+  {i:'◪',g:'Ansicht',t:'Schnittansicht (Modell aufschneiden)',k:'schnitt section querschnitt clipping wandstaerke innen',run:()=>sectionTool()},
   {i:'📱',g:'Ansicht',t:'Ansehen-Modus (mobil)',k:'mobile view vorschau',run:()=>_mviewToggle()},
 ];
 let _cmdkSel=0, _cmdkRes=[];
