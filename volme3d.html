@@ -6305,8 +6305,7 @@ function _skPlanePoint(e){
 }
 function _skSnap(p){
   const tol = Math.max(0.06, sph.r*0.012);
-  let best=null, bd=tol;
-  for (const ep of _skAllVertices()){ const d=Math.hypot(ep.u-p.u, ep.v-p.v); if (d<bd){ bd=d; best=ep; } }
+  const best = _skBestSnap(p, tol);
   if (best) return { u:best.u, v:best.v };
   return { u: snapV(p.u), v: snapV(p.v) };
 }
@@ -6315,10 +6314,9 @@ function _skSnap(p){
 // _sk.hint (für Badge: • Punkt, H waagerecht, V senkrecht, 45°, ⋮/⋯ Ausrichtung).
 function _skSnapFull(p){
   const tol = Math.max(0.06, sph.r*0.012);
-  // 1) Endpunkt-Fang (höchste Priorität)
-  let best=null, bd=tol;
-  for (const ep of _skAllVertices()){ const d=Math.hypot(ep.u-p.u, ep.v-p.v); if (d<bd){ bd=d; best=ep; } }
-  if (best){ _sk.hint='•'; return { u:best.u, v:best.v }; }
+  // 1) Punkt-Fang (höchste Priorität): Ecke › Mitte/Quadrant › Zentrum
+  const best = _skBestSnap(p, tol);
+  if (best){ _sk.hint=best.k; return { u:best.u, v:best.v }; }
   let u=p.u, v=p.v, hint='';
   if (_sk.ortho){
     // 2) Ortho relativ zum letzten gesetzten Punkt (Linie/Spline)
@@ -6357,7 +6355,7 @@ function _skUpdateBadge(){
   if (!b){ b=document.createElement('div'); b.id='sk-snap-badge';
     b.style.cssText='position:fixed;z-index:9000;pointer-events:none;background:#f97316;color:#fff;font:700 10px system-ui;padding:1px 5px;border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,.4)';
     document.body.appendChild(b); }
-  const m={'•':'Punkt','H':'— waagerecht','V':'| senkrecht','45°':'45°','⋮':'| ausrichten','⋯':'— ausrichten','⋮⋯':'+ ausrichten'};
+  const m={'•':'Punkt','◐':'Mitte','⊕':'Zentrum','H':'— waagerecht','V':'| senkrecht','45°':'45°','⋮':'| ausrichten','⋯':'— ausrichten','⋮⋯':'+ ausrichten'};
   b.textContent=m[_sk.hint]||_sk.hint;
   const s=_skScreen(_sk.cursor.u,_sk.cursor.v);
   b.style.left=(s.x+14)+'px'; b.style.top=(s.y+14)+'px'; b.style.display='block';
@@ -6372,6 +6370,38 @@ function _skAllVertices(){
     else if (en.type==='circle'||en.type==='ellipse'){ out.push(en.c); }
   }
   return out;
+}
+// Fang-Kandidaten mit Typ: '•' Punkt, '◐' Mitte (Segment/Quadrant), '⊕' Zentrum.
+// Getrennt von _skAllVertices, damit die Ortho-Achs-Ausrichtung weiter nur auf
+// Eckpunkten arbeitet (Mittelpunkt-Ausrichten wäre überraschend).
+function _skSnapCandidates(){
+  const out=[];
+  const p=(pt,k)=>out.push({u:pt.u, v:pt.v, k});
+  for (const en of _sk.ents){
+    if (en.type==='line'){ p(en.a,'•'); p(en.b,'•'); p({u:(en.a.u+en.b.u)/2, v:(en.a.v+en.b.v)/2},'◐'); }
+    else if (en.type==='arc'){ p(_skArcPt(en,en.a0),'•'); p(_skArcPt(en,en.a1),'•'); p(en.c,'⊕');
+      p(_skArcPt(en, en.a0 + (_skArcEnd(en.a0,en.a1)-en.a0)/2),'◐'); }
+    else if (en.type==='spline'){ p(en.pts[0],'•'); p(en.pts[en.pts.length-1],'•'); }
+    else if (en.type==='poly'){ en.pts.forEach(pt=>p(pt,'•'));
+      for(let i=0;i<en.pts.length-1;i++) p({u:(en.pts[i].u+en.pts[i+1].u)/2, v:(en.pts[i].v+en.pts[i+1].v)/2},'◐'); }
+    else if (en.type==='circle'){ p(en.c,'⊕');
+      p({u:en.c.u+en.r,v:en.c.v},'◐'); p({u:en.c.u-en.r,v:en.c.v},'◐');
+      p({u:en.c.u,v:en.c.v+en.r},'◐'); p({u:en.c.u,v:en.c.v-en.r},'◐'); }
+    else if (en.type==='ellipse'){ p(en.c,'⊕');
+      p({u:en.c.u+en.rx,v:en.c.v},'◐'); p({u:en.c.u-en.rx,v:en.c.v},'◐');
+      p({u:en.c.u,v:en.c.v+en.ry},'◐'); p({u:en.c.u,v:en.c.v-en.ry},'◐'); }
+  }
+  return out;
+}
+// Bester Fang-Kandidat im Toleranzradius; Eckpunkte werden leicht bevorzugt,
+// damit an Segment-Enden nicht die Mitte "gewinnt".
+function _skBestSnap(p, tol){
+  let best=null, bd=Infinity;
+  for (const c of _skSnapCandidates()){
+    const d=Math.hypot(c.u-p.u, c.v-p.v) * (c.k==='•' ? 0.75 : 1);
+    if (d<tol && d<bd){ bd=d; best=c; }
+  }
+  return best;
 }
 function _skArcPt(en,a){ return { u: en.c.u + en.r*Math.cos(a), v: en.c.v + en.r*Math.sin(a) }; }
 function _skArcEnd(a0,a1){ let d=a1-a0; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI; return a0+d; }
@@ -30992,6 +31022,7 @@ Object.defineProperty(window, '_mapShapeLayerRef', { get: () => _mapShapeLayer, 
 window._getObjects = () => objects;
 window._getSec = () => _sec;
 window._getPcOhVis = () => _pcOhVis;
+window._getSk = () => _sk;
 // OCCT module access for test helpers
 window._getOC = () => _oc;
 window.EDGE_ENDPOINTS_exposed = EDGE_ENDPOINTS;
