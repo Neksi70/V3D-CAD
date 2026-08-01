@@ -85,6 +85,21 @@ const res = await page.evaluate(async () => {
   out.motifHoles = _ttMotif ? { polys: _ttMotif.polys.length, holes: _ttMotif.polys.map(p => p.holes.length) } : null;
   _ttMotifClear();
 
+  // ── 1d) Ausschnitt: zwei Klötze nebeneinander, nur der linke wird gewählt ──
+  _vec.img = await mkImg(400, 200, cx => {
+    cx.fillStyle = '#000';
+    cx.fillRect(30, 50, 100, 100);          // links
+    cx.fillRect(270, 50, 100, 100);         // rechts
+  });
+  _vecP.crop = null; _vecProcess();
+  out.cropOff = { faces: _vec.out.layers[0].faces.length };
+  _vecP.crop = { x: 0, y: 0, w: 0.5, h: 1 };   // linke Bildhälfte
+  _vecProcess();
+  out.cropOn = { faces: _vec.out.layers[0].faces.length };
+  // Der Ausschnitt darf die mm-Maße nicht verfälschen: Klotz ist quadratisch
+  out.cropSquare = Math.abs(_vec.out.bb.w - _vec.out.bb.h) / _vec.out.bb.w < 0.05;
+  _vecP.crop = null;
+
   // ── 2) Lage: Dreieck mit Spitze oben → oben schmal, unten breit (kein Y-Flip) ──
   _vec.img = await mkImg(400, 400, cx => {
     cx.fillStyle = '#000'; cx.beginPath();
@@ -140,6 +155,81 @@ const res = await page.evaluate(async () => {
   return out;
 });
 
+// ── Rahmen mit der echten Maus aufziehen (Bedienung, nicht nur Rechnung) ──
+const drag = await page.evaluate(async () => {
+  const cv = document.createElement('canvas'); cv.width = 400; cv.height = 200;
+  const cx = cv.getContext('2d');
+  cx.fillStyle = '#fff'; cx.fillRect(0, 0, 400, 200);
+  cx.fillStyle = '#000'; cx.fillRect(30, 50, 100, 100); cx.fillRect(270, 50, 100, 100);
+  await new Promise((r, j) => { const im = new Image(); im.onload = () => { _vec.img = im; r(); }; im.onerror = j; im.src = cv.toDataURL(); });
+  _vecP.crop = null; _vecP.mode = 0;
+  if (typeof hideStarter === 'function') hideStarter();   // Startgalerie liegt sonst darüber
+  _vecOpen(); _vecFitCanvas();
+  const c = document.getElementById('vec-canvas');
+  return { w: c.width, h: c.height, aspectOk: Math.abs(c.width / c.height - 2) < 0.05 };
+});
+await page.waitForTimeout(300);
+await page.click('#vec-sel-btn');
+const box = await page.locator('#vec-canvas').boundingBox();
+await page.mouse.move(box.x + box.width * 0.03, box.y + box.height * 0.10);
+await page.mouse.down();
+await page.mouse.move(box.x + box.width * 0.45, box.y + box.height * 0.90, { steps: 8 });
+await page.mouse.up();
+await page.waitForTimeout(500);
+const afterDrag = await page.evaluate(() => ({
+  crop: _vecP.crop ? { x: +_vecP.crop.x.toFixed(2), w: +_vecP.crop.w.toFixed(2) } : null,
+  selOff: _vecSel === false,
+  clrShown: document.getElementById('vec-sel-clr').style.display !== 'none',
+  faces: _vec.out ? _vec.out.layers[0].faces.length : -1,
+  info: document.getElementById('vec-info').textContent.startsWith('Ausschnitt'),
+}));
+const afterClear = await page.evaluate(() => { _vecCropClear(); return null; });
+await page.waitForTimeout(400);
+const cleared = await page.evaluate(() => ({
+  crop: _vecP.crop,
+  faces: _vec.out ? _vec.out.layers[0].faces.length : -1,
+  clrHidden: document.getElementById('vec-sel-clr').style.display === 'none',
+}));
+res.canvas = drag;
+res.drag = afterDrag;
+res.cleared = cleared;
+
+// ── Einfügen aus der Zwischenablage (Strg+V bei offenem Fenster) ──
+res.paste = await page.evaluate(async () => {
+  _vec.img = null; _vec.out = null; _vec.name = 'alt';
+  _vecOpen();
+  // Screenshot-artiges PNG bauen und als Zwischenablage-Ereignis schicken
+  const cv = document.createElement('canvas'); cv.width = 240; cv.height = 240;
+  const cx = cv.getContext('2d');
+  cx.fillStyle = '#fff'; cx.fillRect(0, 0, 240, 240);
+  cx.fillStyle = '#000'; cx.beginPath(); cx.arc(120, 120, 80, 0, 7); cx.fill();
+  const blob = await new Promise(r => cv.toBlob(r, 'image/png'));
+  const dt = new DataTransfer();
+  dt.items.add(new File([blob], 'screenshot.png', { type: 'image/png' }));
+  document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  await new Promise(r => setTimeout(r, 600));
+  return {
+    gotImage: !!_vec.img && _vec.img.width === 240,
+    name: _vec.name,
+    faces: _vec.out ? _vec.out.layers[0].faces.length : -1,
+    btn: !!document.querySelector('[onclick="_vecPasteBtn()"]'),
+    saveOn: !document.getElementById('vec-save-btn').disabled,
+  };
+});
+// Paste außerhalb des Fensters darf nichts anfassen
+res.pasteClosed = await page.evaluate(async () => {
+  _vecClose();
+  const before = _vec.img && _vec.img.width;
+  const cv = document.createElement('canvas'); cv.width = 80; cv.height = 80;
+  cv.getContext('2d').fillRect(0, 0, 80, 80);
+  const blob = await new Promise(r => cv.toBlob(r, 'image/png'));
+  const dt = new DataTransfer();
+  dt.items.add(new File([blob], 'x.png', { type: 'image/png' }));
+  document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  await new Promise(r => setTimeout(r, 400));
+  return { unchanged: (_vec.img && _vec.img.width) === before };
+});
+
 console.log(JSON.stringify(res, null, 2));
 console.log('\nSeitenfehler:', errs.length ? errs : 'keine');
 
@@ -154,7 +244,19 @@ const ok =
   res.spanTop > 0 && res.spanBottom > res.spanTop * 3 &&
   res.invFaces === 1 &&
   res.colLayers && res.colLayers.length === 3 && res.colSorted &&
-  res.sceneAdded === 1 && Math.abs(res.sceneMM[0] - 100) < 2 && Math.abs(res.sceneMM[1] - 3) < 0.3;
+  res.sceneAdded === 1 && Math.abs(res.sceneMM[0] - 100) < 2 && Math.abs(res.sceneMM[1] - 3) < 0.3 &&
+  // Ausschnitt rechnerisch: 2 Klötze → 1 Klotz, Seitenverhältnis bleibt heil
+  res.cropOff.faces === 2 && res.cropOn.faces === 1 && res.cropSquare &&
+  // Ausschnitt per Maus: Leinwand im Bild-Seitenverhältnis, Rahmen sitzt links,
+  // Auswahl-Modus schaltet sich ab, nur noch ein Klotz erfasst
+  res.canvas.aspectOk &&
+  res.drag.crop && res.drag.crop.x < 0.1 && Math.abs(res.drag.crop.w - 0.42) < 0.08 &&
+  res.drag.selOff && res.drag.clrShown && res.drag.faces === 1 && res.drag.info &&
+  // Aufheben → wieder ganzes Bild
+  res.cleared.crop === null && res.cleared.faces === 2 && res.cleared.clrHidden &&
+  // Zwischenablage: Strg+V bei offenem Fenster übernimmt das Bild und rechnet los
+  res.paste.gotImage && res.paste.name === 'zwischenablage' && res.paste.faces === 1 &&
+  res.paste.btn && res.paste.saveOn && res.pasteClosed.unchanged;
 
 console.log(ok ? '\n✅ Bild → SVG: alle Prüfungen bestanden' : '\n❌ Bild → SVG: Prüfung fehlgeschlagen');
 
