@@ -3298,6 +3298,9 @@ Patrick</textarea>
           <button class="vtb" onclick="_vecSet('mode',1)" title="Nur der äußere Umriss, alle Innenflächen werden zugemacht — aus der Strichzeichnung wird die volle Silhouette. Das ist „Außenrand nachzeichnen"; für Tortentopper und Ausstecher meist das Bessere.">Außenrand</button>
           <button class="vtb" onclick="_vecSet('mode',2)" title="Zerlegt das Bild in mehrere Farbebenen — für mehrfarbige Motive.">Farbflächen</button>
         </div>
+        <div class="vrow" style="gap:5px">
+          <button class="btn pri" style="flex:1;padding:5px 8px;font-size:12px" onclick="_vecTrace()" title="Jetzt nachzeichnen: Was erfasst wird, erscheint gelb über dem Bild. Danach wirkt jede Regler-Änderung sofort.">▶ Nachzeichnen</button>
+        </div>
         <div id="vec-rows-sil">
           <div class="vrow"><label title="Ab welcher Helligkeit ein Pixel zum Motiv gehört. Nach links = nur ganz dunkle Bereiche, nach rechts = auch helle. Was erfasst wird, leuchtet in der Vorschau gelb über dem Bild.">Schwellenwert</label> <input type="range" id="vc-thr" min="10" max="90" value="55" step="1" oninput="document.getElementById('vv-thr').textContent=this.value;_vecSet('thr',this.value)"><span class="vv" id="vv-thr">55</span><span class="vu">%</span></div>
           <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:4px" title="Helles Motiv auf dunklem Grund? Dann hier umschalten."><input type="checkbox" id="vc-inv" onchange="_vecSet('inv',this.checked?1:0)"> Umkehren (helles Motiv)</label>
@@ -24322,7 +24325,7 @@ function _createIbx(){
 // von groß nach klein (Maler-Reihenfolge) — so bleiben zwischen benachbarten
 // Flächen keine Haarrisse stehen.
 const _vecP = { mode:0, thr:55, inv:0, ncol:4, bg:1, smooth:2, minA:1.0, res:300, wmm:100, crop:null };
-const _vec  = { img:null, out:null, name:'motiv' };
+const _vec  = { img:null, out:null, name:'motiv', traced:false };
 let _vecSel = false, _vecDrag = null;      // Rahmen-Ziehen über der Vorschau
 const _VEC_MAX_CMDS = 45000;      // knapp unter dem Limit von _svgPreflight
 let _vecRT = null;
@@ -24333,14 +24336,29 @@ function _vecOpen(){
 }
 function _vecClose(){ document.getElementById('vec-modal').classList.remove('show'); }
 
+// Frisch eingefügt wird NICHT sofort nachgezeichnet: erst sieht man das Motiv in
+// seiner eigenen Farbe. Das Gelb kommt, sobald man nachzeichnet oder einen Regler
+// anfasst — so ist immer klar, was das Bild ist und was das Ergebnis.
 function _vecUseImage(img, name){
+  if(_vecRT){ clearTimeout(_vecRT); _vecRT = null; }
   _vec.img = img;
   _vec.name = name || 'motiv';
+  _vec.out = null; _vec.traced = false;
   _vecP.crop = null; _vecSel = false; _vecDrag = null;
   _vecFitCanvas();
   const d = document.getElementById('vec-drop');
   if(d) d.textContent = '📷 Bild ersetzen ('+img.width+'×'+img.height+')';
-  _vecSelSyncUI();
+  _vecSyncBtns(false); _vecSelSyncUI(); _vecDraw(); _vecInfo();
+}
+function _vecSyncBtns(ok){
+  for(const id of ['vec-save-btn','vec-scene-btn','vec-topper-btn']){
+    const b = document.getElementById(id); if(b) b.disabled = !ok;
+  }
+}
+// Nachzeichnen anstoßen; ab jetzt läuft die Vorschau bei jeder Änderung mit.
+function _vecTrace(){
+  if(!_vec.img){ notify('Erst ein Bild einfügen oder wählen','w'); return; }
+  _vec.traced = true;
   _vecRun(true);
 }
 function _vecLoadBlob(blob, name){
@@ -24390,6 +24408,8 @@ function _vecSet(k,v){
     document.getElementById('vec-rows-col').style.display = _vecP.mode===2 ? '' : 'none';
   } else _vecP[k] = parseFloat(v);
   if(k==='wmm'){ _vecInfo(); return; }   // reine Ausgabe-Skalierung — nichts neu rechnen
+  if(!_vec.img){ _vecDraw(); _vecInfo(); return; }
+  _vec.traced = true;                    // an einem Regler drehen heißt: zeichne nach
   _vecRun(false);
 }
 
@@ -24397,10 +24417,7 @@ function _vecRun(now){
   if(_vecRT) clearTimeout(_vecRT);
   const run = () => { _vecRT = null;
     try { _vecProcess(); } catch(e){ console.error('Vektorisieren:',e); _vec.out=null; }
-    const ok = !!(_vec.out && _vec.out.layers.length);
-    for(const id of ['vec-save-btn','vec-scene-btn','vec-topper-btn']){
-      const b = document.getElementById(id); if(b) b.disabled = !ok;
-    }
+    _vecSyncBtns(!!(_vec.out && _vec.out.layers.length));
     _vecDraw(); _vecInfo();
   };
   if(now) run(); else _vecRT = setTimeout(run, 220);
@@ -24436,16 +24453,13 @@ function _vecSelSyncUI(){
 // alte ohnehin — das hier ist für „nochmal von vorn".)
 function _vecClearImage(){
   if(_vecRT){ clearTimeout(_vecRT); _vecRT = null; }
-  _vec.img = null; _vec.out = null; _vec.name = 'motiv';
+  _vec.img = null; _vec.out = null; _vec.name = 'motiv'; _vec.traced = false;
   _vecP.crop = null; _vecSel = false; _vecDrag = null;
   const d = document.getElementById('vec-drop');
   if(d) d.textContent = '📷 Bild wählen (JPG / PNG / WebP)';
   const cv = document.getElementById('vec-canvas');
   if(cv){ cv.width = 380; cv.height = 420; }
-  for(const id of ['vec-save-btn','vec-scene-btn','vec-topper-btn']){
-    const b = document.getElementById(id); if(b) b.disabled = true;
-  }
-  _vecSelSyncUI(); _vecDraw(); _vecInfo();
+  _vecSyncBtns(false); _vecSelSyncUI(); _vecDraw(); _vecInfo();
 }
 function _vecSelToggle(){
   if(!_vec.img){ notify('Erst ein Bild wählen','w'); return; }
@@ -24454,7 +24468,8 @@ function _vecSelToggle(){
 }
 function _vecCropClear(){
   _vecP.crop = null; _vecSel = false; _vecDrag = null;
-  _vecSelSyncUI(); _vecRun(true);
+  _vecSelSyncUI();
+  if(_vec.traced) _vecRun(true); else { _vecDraw(); _vecInfo(); }
 }
 function _vecPos(ev){
   const cv = document.getElementById('vec-canvas'), r = cv.getBoundingClientRect();
@@ -24477,6 +24492,7 @@ function _vecDown(ev){
     if(w < 0.03 || h < 0.03){ _vecDraw(); return; }   // Klick statt Rahmen → nichts tun
     _vecP.crop = { x, y, w, h };
     _vecSel = false; _vecSelSyncUI();
+    _vec.traced = true;                 // Bereich gewählt = der will nachzeichnen
     _vecRun(true);
   };
   window.addEventListener('mousemove', move);
@@ -24680,7 +24696,7 @@ function _vecDraw(){
     ctx.fillText('noch kein Bild', cv.width/2, cv.height/2);
     return;
   }
-  const o = _vec.out;
+  const o = _vec.traced ? _vec.out : null;
   if(o){
     // Analyse-Pixel → Leinwand: die Leinwand hat das Bild-Seitenverhältnis, der
     // Ausschnitt sitzt als Anteil darin.
@@ -24696,11 +24712,13 @@ function _vecDraw(){
         _vecAddPath(pth, f.outer.pts);
         for(const h of (f.holes||[])) _vecAddPath(pth, h.pts);
       }
-      ctx.fillStyle = mono ? 'rgba(255,214,0,0.55)' : L.color;
-      ctx.globalAlpha = mono ? 1 : 0.8;
+      // Deckendes Gelb: über schwarzen Linien würde halbdurchsichtiges Gelb zu
+      // trübem Oliv — man sähe nicht mehr, was erfasst ist und was nicht.
+      ctx.fillStyle = mono ? '#ffdd00' : L.color;
+      ctx.globalAlpha = mono ? 1 : 0.85;
       ctx.fill(pth, 'evenodd');
       ctx.globalAlpha = 1;
-      ctx.strokeStyle = mono ? '#c8a000' : 'rgba(0,0,0,0.35)';
+      ctx.strokeStyle = mono ? '#a37c00' : 'rgba(0,0,0,0.35)';
       ctx.lineWidth = Math.max(0.6, o.W/320);
       ctx.stroke(pth);
     }
@@ -24723,11 +24741,13 @@ function _vecDraw(){
 
 function _vecInfo(){
   const el = document.getElementById('vec-info'); if(!el) return;
-  const o = _vec.out;
+  const o = _vec.traced ? _vec.out : null;
   if(!o){
-    el.textContent = _vec.img
-      ? 'Nichts erkannt — Schwellenwert verschieben oder „Umkehren" anhaken.'
-      : 'Noch kein Bild geladen. Tipp: Motive mit klaren Kanten und ruhigem Hintergrund werden am saubersten.';
+    el.textContent = !_vec.img
+      ? 'Noch kein Bild geladen. Tipp: Motive mit klaren Kanten und ruhigem Hintergrund werden am saubersten.'
+      : (!_vec.traced
+        ? 'Bild geladen — so sieht es im Original aus. „▶ Nachzeichnen" drücken (oder einen Regler bewegen): was erfasst wird, erscheint dann gelb.'
+        : 'Nichts erkannt — Schwellenwert verschieben oder „Umkehren" anhaken.');
     return;
   }
   const hmm = (_vecP.wmm * o.bb.h / o.bb.w).toFixed(1);
@@ -29634,8 +29654,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.56';
+const VOLME3D_VERSION = '1.15.57';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.57', date:'2026-08-01', changes:[
+    ['👁️','„Bild → SVG" trennt jetzt sauber zwischen Bild und Ergebnis. Frisch eingefügt siehst du dein Motiv erst einmal SO WIE ES IST — beim schwarzen Pferd also schwarz. Erst wenn du „▶ Nachzeichnen" drückst (oder einen Regler bewegst), legt sich das Erfasste in kräftigem Gelb darüber. Vorher war das Gelb halbdurchsichtig und wurde über schwarzen Linien zu trübem Oliv — man konnte kaum unterscheiden, was schon erfasst war und was noch nicht. Jetzt ist es deckend: gelb heißt drin, schwarz heißt noch nicht erfasst. Der Regler „Schwellenwert" wird damit endlich ablesbar.'],
+  ]},
   { version:'1.15.56', date:'2026-08-01', changes:[
     ['🗑️','„Bild → SVG": Falsches Bild eingefügt? Neben dem Einfügen-Knopf sitzt jetzt ein ✕, das Bild und Ergebnis wieder wegräumt — samt Ausschnitt, zurück auf Anfang. (Ein neues Bild einzufügen ersetzt das alte weiterhin einfach.)'],
   ]},

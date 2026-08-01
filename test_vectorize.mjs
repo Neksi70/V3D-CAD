@@ -208,12 +208,25 @@ res.paste = await page.evaluate(async () => {
   dt.items.add(new File([blob], 'screenshot.png', { type: 'image/png' }));
   document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
   await new Promise(r => setTimeout(r, 600));
+  // Frisch eingefügt: Motiv in seiner eigenen Farbe, noch kein Gelb, noch kein Ergebnis
+  const mid = () => {
+    const c = document.getElementById('vec-canvas');
+    const d = c.getContext('2d').getImageData((c.width/2)|0, (c.height/2)|0, 1, 1).data;
+    return [d[0], d[1], d[2]];
+  };
+  const before = { px: mid(), traced: _vec.traced, out: _vec.out,
+                   saveOn: !document.getElementById('vec-save-btn').disabled };
+  _vecTrace();
+  await new Promise(r => setTimeout(r, 600));
+  const after = { px: mid(), traced: _vec.traced,
+                  faces: _vec.out ? _vec.out.layers[0].faces.length : -1,
+                  saveOn: !document.getElementById('vec-save-btn').disabled };
   return {
     gotImage: !!_vec.img && _vec.img.width === 240,
     name: _vec.name,
-    faces: _vec.out ? _vec.out.layers[0].faces.length : -1,
     btn: !!document.querySelector('[onclick="_vecPasteBtn()"]'),
-    saveOn: !document.getElementById('vec-save-btn').disabled,
+    traceBtn: !!document.querySelector('[onclick="_vecTrace()"]'),
+    before, after,
   };
 });
 // ── Falsches Bild wieder loswerden ──
@@ -247,8 +260,12 @@ res.afterClear = await page.evaluate(async () => {
   dt.items.add(new File([blob], 's.png', { type: 'image/png' }));
   document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
   await new Promise(r => setTimeout(r, 600));
+  // Regler bewegen muss ebenfalls losrechnen — ohne den Knopf zu drücken
+  _vecSet('thr', 55);
+  await new Promise(r => setTimeout(r, 600));
   return {
     faces: _vec.out ? _vec.out.layers[0].faces.length : -1,
+    traced: _vec.traced,
     btnShown: document.getElementById('vec-img-clr').style.display !== 'none',
     saveOn: !document.getElementById('vec-save-btn').disabled,
   };
@@ -293,15 +310,21 @@ const ok =
   // Aufheben → wieder ganzes Bild
   res.cleared.crop === null && res.cleared.faces === 2 && res.cleared.clrHidden &&
   // Zwischenablage: Strg+V bei offenem Fenster übernimmt das Bild und rechnet los
-  res.paste.gotImage && res.paste.name === 'zwischenablage' && res.paste.faces === 1 &&
-  res.paste.btn && res.paste.saveOn &&
+  res.paste.gotImage && res.paste.name === 'zwischenablage' &&
+  res.paste.btn && res.paste.traceBtn &&
+  // frisch eingefügt: Motiv in Originalfarbe (schwarz), noch nichts nachgezeichnet
+  res.paste.before.traced === false && res.paste.before.out === null && !res.paste.before.saveOn &&
+  res.paste.before.px[0] < 60 && res.paste.before.px[1] < 60 && res.paste.before.px[2] < 60 &&
+  // nach „Nachzeichnen": deckendes Gelb, kein trübes Oliv
+  res.paste.after.traced && res.paste.after.faces === 1 && res.paste.after.saveOn &&
+  res.paste.after.px[0] > 230 && res.paste.after.px[1] > 190 && res.paste.after.px[2] < 90 &&
   // ✕ wirft Bild, Ergebnis, Ausschnitt und die Knopf-Freigaben zurück auf Anfang
   res.clearImg.had && res.clearImg.img === null && res.clearImg.out === null &&
   res.clearImg.crop === null && res.clearImg.name === 'motiv' &&
   res.clearImg.btnHidden && res.clearImg.cropBtnHidden && res.clearImg.saveOff &&
   res.clearImg.dropReset && res.clearImg.info &&
   // und danach geht es normal weiter
-  res.afterClear.faces === 1 && res.afterClear.btnShown && res.afterClear.saveOn &&
+  res.afterClear.faces === 1 && res.afterClear.traced && res.afterClear.btnShown && res.afterClear.saveOn &&
   res.pasteClosed.unchanged;
 
 console.log(ok ? '\n✅ Bild → SVG: alle Prüfungen bestanden' : '\n❌ Bild → SVG: Prüfung fehlgeschlagen');
