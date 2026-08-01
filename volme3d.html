@@ -3317,7 +3317,8 @@ Patrick</textarea>
           <div id="vec-rows-plate2" style="display:none">
             <div class="vrow"><label title="Wie weit der Rand rings um die Figur übersteht — der sichtbare Saum wie bei gekauften Toppern. Gibt dünnen Stellen am Motivrand zusätzlich Halt.">Rand ringsum</label> <input type="range" id="vc-platemm" min="0" max="8" value="1.5" step="0.1" oninput="document.getElementById('vv-platemm').textContent=this.value;_vecSet('plateMM',this.value)"><span class="vv" id="vv-platemm">1.5</span><span class="vu">mm</span></div>
             <div class="vrow"><label title="Dicke des Randes / der Grundplatte.">Platten-Dicke</label> <input type="range" id="vc-plateh" min="0.6" max="6" value="2" step="0.2" oninput="document.getElementById('vv-plateh').textContent=this.value;_vecSet('plateH',this.value)"><span class="vv" id="vv-plateh">2</span><span class="vu">mm</span></div>
-            <div class="vrow" title="Wie hoch die Figur bzw. die Linien über dem Rand stehen. Beim Mehrfarbdruck genügt eine Lage."><label>Motiv erhaben</label> <input type="range" id="vc-relief" min="0.2" max="4" value="1" step="0.2" oninput="document.getElementById('vv-relief').textContent=this.value;_vecSet('reliefH',this.value)"><span class="vv" id="vv-relief">1</span><span class="vu">mm</span></div>
+            <div class="vrow" title="Wie hoch die Figur über dem Saum steht."><label>Figur erhaben</label> <input type="range" id="vc-relief" min="0.2" max="4" value="1" step="0.2" oninput="document.getElementById('vv-relief').textContent=this.value;_vecSet('reliefH',this.value)"><span class="vv" id="vv-relief">1</span><span class="vu">mm</span></div>
+            <div class="vrow" id="vec-row-lineh" title="Wie hoch die Konturen der Zeichnung noch einmal über der Figur stehen. Genau das hält das Motiv erkennbar, statt es zum plumpen Umriss werden zu lassen. Nur im Modus „Nachzeichnen"."><label>Konturen erhaben</label> <input type="range" id="vc-lineh" min="0.2" max="3" value="0.6" step="0.2" oninput="document.getElementById('vv-lineh').textContent=this.value;_vecSet('lineH',this.value)"><span class="vv" id="vv-lineh">0.6</span><span class="vu">mm</span></div>
           </div>
         </div>
         <span class="vsec">Feinschliff</span>
@@ -24372,7 +24373,7 @@ function _createIbx(){
 // Pferdeauge oder Mähnenspitzen kommentarlos (gemessen: 5 statt 12 Feinheiten).
 // Wer verrauschte Vorlagen hat, dreht ihn selbst hoch.
 const _vecP = { mode:0, thr:55, inv:0, ncol:4, bg:1, smooth:2, minA:0, res:900, wmm:100, crop:null,
-                plate:0, plateMM:1.5, plateH:2, reliefH:1 };
+                plate:0, plateMM:1.5, plateH:2, reliefH:1, lineH:0.6 };
 const _vec  = { img:null, out:null, name:'motiv', traced:false };
 let _vecSel = false, _vecDrag = null;      // Rahmen-Ziehen über der Vorschau
 const _VEC_MAX_CMDS = 45000;      // knapp unter dem Limit von _svgPreflight
@@ -24454,9 +24455,11 @@ function _vecSet(k,v){
     document.querySelectorAll('#vec-mode-bg .vtb').forEach((b,i)=>b.classList.toggle('on', i===_vecP.mode));
     document.getElementById('vec-rows-sil').style.display = _vecP.mode<=1 ? '' : 'none';
     document.getElementById('vec-rows-col').style.display = _vecP.mode===2 ? '' : 'none';
+    _vecSyncPlateRows();
   } else if(k==='plate'){
     _vecP.plate = Number(v)|0;
     document.getElementById('vec-rows-plate2').style.display = _vecP.plate ? '' : 'none';
+    _vecSyncPlateRows();
   } else _vecP[k] = parseFloat(v);
   if(k==='wmm'){ _vecInfo(); return; }   // reine Ausgabe-Skalierung — nichts neu rechnen
   if(!_vec.img){ _vecDraw(); _vecInfo(); return; }
@@ -24487,6 +24490,12 @@ function _vecFitCanvas(){
   const M = 460, k = M / Math.max(img.width, img.height);
   cv.width  = Math.max(40, Math.round(img.width  * k));
   cv.height = Math.max(40, Math.round(img.height * k));
+}
+// „Konturen erhaben" gibt es nur, wo es auch Konturen ÜBER der Figur gibt —
+// bei „Außenrand" ist die obere Ebene schon die volle Figur.
+function _vecSyncPlateRows(){
+  const r = document.getElementById('vec-row-lineh');
+  if(r) r.style.display = (_vecP.mode === 0) ? '' : 'none';
 }
 function _vecSelSyncUI(){
   const btn = document.getElementById('vec-sel-btn'), clr = document.getElementById('vec-sel-clr');
@@ -24730,12 +24739,20 @@ function _vecProcess(){
   }
   if(!(x1-x0 > 0.5 && y1-y0 > 0.5)) return;
 
-  // Grundplatte: die volle Silhouette unter die Nachzeichnung legen. Die
-  // Strichzeichnung besteht aus lauter losen Ringen — auf der Platte hängt alles
-  // zusammen und kommt am Stück von der Druckplatte.
-  let plate = null;
+  // Grundplatte: die volle Silhouette unter das Motiv legen. Drei Ebenen wie bei
+  // gekauften Toppern — Saum ringsum, darauf die volle Figur, darauf die
+  // Konturen der Zeichnung. Ohne die mittlere Ebene läge der Saum auf derselben
+  // Höhe wie der Figurenkörper und wäre gar nicht zu sehen.
+  let plate = null, body = null;
   if(plateMask){
     _vecFillHoles(plateMask, W, H);
+    // Volle Figur (ungedehnt) = mittlere Ebene; nur nötig, wenn oben die Linien
+    // liegen. Bei „Außenrand" IST die obere Ebene schon die volle Figur.
+    if(p.mode === 0){
+      const bodyMask = plateMask.slice();
+      const bf = _vecFaces(bodyMask, W, H, smooth, minPx);
+      if(bf.length) body = bf;
+    }
     // „Rand" in mm → Pixel. Der Maßstab steht erst mit der Motivbreite fest,
     // deshalb hier über die Breite der Nachzeichnung geschätzt (reicht auf ein
     // paar Prozent genau, die Platte wächst ja nur wenig).
@@ -24755,7 +24772,7 @@ function _vecProcess(){
   }
   // Auf das Motiv zuschneiden: der Regler „Breite" soll die Breite des Motivs
   // meinen, nicht die des Bildes samt leerem Rand.
-  _vec.out = { W, H, bb:{ x0, y0, w:x1-x0, h:y1-y0 }, layers, plate, nPaths, nPts };
+  _vec.out = { W, H, bb:{ x0, y0, w:x1-x0, h:y1-y0 }, layers, plate, body, nPaths, nPts };
 }
 
 function _vecPathD(pts, s, bb){
@@ -24784,6 +24801,14 @@ function _vecSvgText(nur){
       for(const h of (f.holes||[])) d += _vecPathD(h.pts, s, bb);
     }
     if(d) body += '<path fill="#cccccc" fill-rule="evenodd" d="'+d.trim()+'"/>';
+  }
+  if(o.body && nur !== 'plate' && nur !== 'art'){
+    let d = '';
+    for(const f of o.body){
+      d += _vecPathD(f.outer.pts, s, bb);
+      for(const h of (f.holes||[])) d += _vecPathD(h.pts, s, bb);
+    }
+    if(d) body += '<path fill="#8a8a8a" fill-rule="evenodd" d="'+d.trim()+'"/>';
   }
   if(nur !== 'plate') for(const L of o.layers){
     let d = '';
@@ -24828,15 +24853,18 @@ function _vecDraw(){
     ctx.scale(cr.w*cv.width/o.W, cr.h*cv.height/o.H);
     const mono = _vecP.mode <= 1;
     ctx.lineJoin = 'round';
-    if(o.plate){                       // Grundplatte zuerst, damit sie darunter liegt
+    // von unten nach oben: Saum, volle Figur, Konturen
+    const unter = (faces, fill, stroke) => {
       const pp = new Path2D();
-      for(const f of o.plate){
+      for(const f of faces){
         _vecAddPath(pp, f.outer.pts);
         for(const h of (f.holes||[])) _vecAddPath(pp, h.pts);
       }
-      ctx.fillStyle = 'rgba(60,140,255,0.38)'; ctx.fill(pp, 'evenodd');
-      ctx.strokeStyle = '#2f6fe0'; ctx.lineWidth = Math.max(0.8, o.W/260); ctx.stroke(pp);
-    }
+      ctx.fillStyle = fill; ctx.fill(pp, 'evenodd');
+      ctx.strokeStyle = stroke; ctx.lineWidth = Math.max(0.8, o.W/260); ctx.stroke(pp);
+    };
+    if(o.plate) unter(o.plate, 'rgba(60,140,255,0.38)', '#2f6fe0');
+    if(o.body)  unter(o.body,  'rgba(255,221,0,0.42)',  '#c8a000');
     for(const L of o.layers){
       const pth = new Path2D();
       for(const f of L.faces){
@@ -24928,10 +24956,14 @@ function _vecPlateToScene(){
     if(!geos.length) return null;
     const m = _mergePos(geos); m.computeVertexNormals(); return m;
   };
+  // Drei Stufen: Saum (dU), volle Figur (+rU), Konturen (+lU). Ohne die mittlere
+  // Stufe säße der Saum auf Körperhöhe und wäre unsichtbar.
   const dU = Math.max(0.02, _vecP.plateH/10);
   const rU = Math.max(0.02, _vecP.reliefH/10);
+  const lU = Math.max(0.02, _vecP.lineH/10);
   const gPlate = build(o.plate, dU);
-  const gArt   = build(o.layers.flatMap(L => L.faces), dU + rU);
+  const gBody  = o.body ? build(o.body, dU + rU) : null;
+  const gArt   = build(o.layers.flatMap(L => L.faces), dU + rU + (o.body ? lU : 0));
   if(!gPlate || !gArt) return null;
   const col = (typeof currentColor !== 'undefined') ? currentColor : '#e91e63';
   const mk = (geo, nm) => {
@@ -24944,14 +24976,15 @@ function _vecPlateToScene(){
   typeCounts['vec'] = (typeCounts['vec']||0) + 1;
   grp.userData = {id:idCtr++, name:(_vec.name || 'Motiv')+' #'+typeCounts['vec'], isGroup:true};
   grp.add(mk(gPlate, 'Rand'));
-  grp.add(mk(gArt, _vecP.mode === 1 ? 'Figur' : 'Nachzeichnung'));
+  if(gBody) grp.add(mk(gBody, 'Figur'));
+  grp.add(mk(gArt, gBody ? 'Konturen' : 'Figur'));
   grp.quaternion.copy(_wpMakeQuat(workplaneNormal)); grp.position.copy(workplanePoint);
   saveUndo();
   scene.add(grp); objects.push(grp);
   selectObjs([grp]); updateTree(); fitToObjects([grp]);
-  notify((_vecP.mode === 1 ? 'Volle Figur mit ' : 'Nachzeichnung auf ')
-    + _vecP.plateMM + ' mm Rand ringsum, ' + _vecP.reliefH + ' mm erhaben — für zwei Farben im Slicer '
-    + 'die beiden Teile getrennt lassen.' + _vecStueckHinweis(), 'ok');
+  notify((gBody ? 'Volle Figur mit Konturen darauf' : 'Volle Figur')
+    + ', ' + _vecP.plateMM + ' mm Saum ringsum — die Teile bleiben getrennt, '
+    + 'damit du im Slicer verschiedene Farben vergeben kannst.' + _vecStueckHinweis(), 'ok');
   return grp;
 }
 
@@ -29853,8 +29886,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.62';
+const VOLME3D_VERSION = '1.15.63';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.63', date:'2026-08-02', changes:[
+    ['🗿','„Nachzeichnen" + Grundplatte baut das Motiv jetzt in DREI Stufen statt zwei — damit die Figur voll wird, ohne zum plumpen Umriss zu verkommen. Unten der Saum, der ringsum übersteht. Darauf die volle Figur. Und obenauf die Konturen der Zeichnung, sodass Gesicht, Falten und alle Innenlinien erkennbar bleiben. Vorher gab es nur Saum und Linien: der Figurenkörper lag dann auf derselben Höhe wie der Saum, dadurch war weder der Saum zu sehen noch die Figur als Körper. Neuer Regler „Konturen erhaben" bestimmt, wie weit die Linien über der Figur stehen. In der Szene kommen die drei Stufen als Gruppe „Rand", „Figur", „Konturen" — im Slicer also drei Farben möglich. Mit „Außenrand" bleibt es bei zwei Stufen (Saum + volle Figur), da gibt es ja keine Innenlinien.'],
+  ]},
   { version:'1.15.62', date:'2026-08-02', changes:[
     ['🧍','Das Häkchen „Auf Grundplatte legen" gibt es jetzt auch im Modus „Außenrand" — und DAS ist die Kombination für den Look gekaufter Topper: die VOLLE Figur, erhaben auf einem Rand ringsum. Vorher war das Häkchen dort gesperrt, weil „Außenrand" ja schon voll ist; dabei entsteht genau durch den überstehenden Rand der sichtbare Saum um die Figur. Zwei Kombinationen sind damit möglich: „Außenrand" + Grundplatte = volle Figur mit Saum ringsum. „Nachzeichnen" + Grundplatte = volle Figur, auf der die Linien der Zeichnung erhaben stehen. Beides kommt als Gruppe („Rand" + „Figur" bzw. „Nachzeichnung") in die Szene, damit im Slicer zwei Farben möglich sind.'],
   ]},

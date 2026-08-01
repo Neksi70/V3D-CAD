@@ -93,6 +93,26 @@ const res = await page.evaluate(async () => {
   }
   _vecP.mode = 0; _vecProcess();
 
+  // ── Drei Stufen: Saum, volle Figur, Konturen obenauf. Ohne die mittlere Stufe
+  // säße der Saum auf Körperhöhe und die Figur wäre ein plumper Umriss.
+  Object.assign(_vecP, { mode: 0, plate: 1, plateH: 2, reliefH: 1, lineH: 0.6 });
+  _vecProcess();
+  const d3 = _vec.out;
+  out.stufen = { platte: d3.plate ? d3.plate.length : 0,
+                 figur: d3.body ? d3.body.length : 0,
+                 konturen: d3.layers[0].faces.length,
+                 figurVoll: d3.body ? d3.body.every(f => (f.holes||[]).length === 0) : false };
+  {
+    const n0 = objects.length;
+    _vecToScene();
+    await new Promise(r => setTimeout(r, 700));
+    const g = objects[objects.length - 1];
+    const hh = o => { const b = new THREE.Box3().setFromObject(o); return +((b.max.y-b.min.y)*10).toFixed(2); };
+    const bx = o => { const b = new THREE.Box3().setFromObject(o); return +((b.max.x-b.min.x)*10).toFixed(1); };
+    out.drei = { added: objects.length - n0, kinder: g.children.map(c => c.userData.name),
+                 h: g.children.map(hh), breite: g.children.map(bx) };
+  }
+
   // ── Weg in den Topper: dort zählt nur die volle Platte, keine Linien-Ringe.
   // Sonst hielte der SVG-Leser die Linien INNERHALB der Platte für Löcher und
   // machte aus dem vollen Motiv wieder eine Strichzeichnung.
@@ -123,7 +143,7 @@ const ok =
   res.ohne.teile === 3 && !res.ohne.platte &&          // vorher drei lose Ringe
   res.mit.plattenTeile === 3 && res.platteVoll &&      // Platte: drei volle Scheiben
   res.randAussen && res.svgPlateFirst &&
-  res.added === 1 && res.kinder.join() === 'Rand,Nachzeichnung' &&
+  res.added === 1 && res.kinder.join() === 'Rand,Figur,Konturen' &&
   res.platteDick && res.kunstHoeher && res.gleicherBoden &&
   res.breiteStimmt && res.kunstSchmaler &&
   // Topper bekommt drei VOLLE Scheiben, keine Ringe (also keine Löcher)
@@ -135,7 +155,15 @@ const ok =
   res.voll && res.voll.figur === 3 && res.voll.figurLoecher === 0 && res.voll.randTeile === 3 &&
   res.vollSzene.added === 1 && res.vollSzene.kinder.join() === 'Rand,Figur' &&
   res.vollSzene.randBreiter &&
-  Math.abs(res.vollSzene.randH - 2) < 0.15 && Math.abs(res.vollSzene.figurH - 3) < 0.2;
+  Math.abs(res.vollSzene.randH - 2) < 0.15 && Math.abs(res.vollSzene.figurH - 3) < 0.2 &&
+  // Drei Stufen: Saum 2 mm, volle Figur 3 mm, Konturen 3,6 mm — und die Figur
+  // ist wirklich voll (keine Ringe), der Saum breiter als sie
+  res.stufen.platte === 3 && res.stufen.figur === 3 && res.stufen.konturen === 3 &&
+  res.stufen.figurVoll &&
+  res.drei.added === 1 && res.drei.kinder.join() === 'Rand,Figur,Konturen' &&
+  Math.abs(res.drei.h[0] - 2) < 0.15 && Math.abs(res.drei.h[1] - 3) < 0.2 &&
+  Math.abs(res.drei.h[2] - 3.6) < 0.25 &&
+  res.drei.breite[0] > res.drei.breite[1];
 
 console.log(ok ? '\n✅ Grundplatte: alles verbunden, Linien erhaben' : '\n❌ Grundplatte: Prüfung fehlgeschlagen');
 await browser.close(); srv.kill();
