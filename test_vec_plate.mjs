@@ -69,6 +69,30 @@ const res = await page.evaluate(async () => {
   out.breiteStimmt = Math.abs(bP.x - 100) < 2;                    // Regler „Breite"
   out.kunstSchmaler = bA.x < bP.x;                                 // Platte überragt
 
+  // ── Ralfs Bild: „Außenrand" + Grundplatte = VOLLE Figur, erhaben auf einem
+  // Rand ringsum. Die Figur darf keine Löcher mehr haben, der Rand muss sie
+  // allseits überragen, und beide müssen unterschiedlich hoch sein.
+  _vecP.mode = 1; _vecProcess();
+  const v = _vec.out;
+  out.voll = v && v.plate ? {
+    figur: v.layers[0].faces.length,
+    figurLoecher: v.layers[0].faces.reduce((s, f) => s + (f.holes || []).length, 0),
+    randTeile: v.plate.length
+  } : null;
+  {
+    const n0 = objects.length;
+    _vecToScene();
+    await new Promise(r => setTimeout(r, 600));
+    const g = objects[objects.length - 1];
+    out.vollSzene = { added: objects.length - n0, kinder: g.children.map(c => c.userData.name) };
+    const b = o => { const x = new THREE.Box3().setFromObject(o);
+      return { x:+((x.max.x-x.min.x)*10).toFixed(1), h:+((x.max.y-x.min.y)*10).toFixed(2) }; };
+    const bR = b(g.children[0]), bF = b(g.children[1]);
+    out.vollSzene.randBreiter = bR.x > bF.x;
+    out.vollSzene.randH = bR.h; out.vollSzene.figurH = bF.h;
+  }
+  _vecP.mode = 0; _vecProcess();
+
   // ── Weg in den Topper: dort zählt nur die volle Platte, keine Linien-Ringe.
   // Sonst hielte der SVG-Leser die Linien INNERHALB der Platte für Löcher und
   // machte aus dem vollen Motiv wieder eine Strichzeichnung.
@@ -99,14 +123,19 @@ const ok =
   res.ohne.teile === 3 && !res.ohne.platte &&          // vorher drei lose Ringe
   res.mit.plattenTeile === 3 && res.platteVoll &&      // Platte: drei volle Scheiben
   res.randAussen && res.svgPlateFirst &&
-  res.added === 1 && res.kinder.join() === 'Grundplatte,Nachzeichnung' &&
+  res.added === 1 && res.kinder.join() === 'Rand,Nachzeichnung' &&
   res.platteDick && res.kunstHoeher && res.gleicherBoden &&
   res.breiteStimmt && res.kunstSchmaler &&
   // Topper bekommt drei VOLLE Scheiben, keine Ringe (also keine Löcher)
   res.topper && res.topper.teile === 3 && res.topper.loecher === 0 &&
   res.svgNur.platteOhneKunst && res.svgNur.kunstOhnePlatte &&
   // getrennte Figuren bleiben getrennt — das muss die App auch sagen
-  res.plattenStuecke === 3;
+  res.plattenStuecke === 3 &&
+  // Ralfs Bild: volle Figur ohne Löcher, Rand ringsum breiter, Figur höher
+  res.voll && res.voll.figur === 3 && res.voll.figurLoecher === 0 && res.voll.randTeile === 3 &&
+  res.vollSzene.added === 1 && res.vollSzene.kinder.join() === 'Rand,Figur' &&
+  res.vollSzene.randBreiter &&
+  Math.abs(res.vollSzene.randH - 2) < 0.15 && Math.abs(res.vollSzene.figurH - 3) < 0.2;
 
 console.log(ok ? '\n✅ Grundplatte: alles verbunden, Linien erhaben' : '\n❌ Grundplatte: Prüfung fehlgeschlagen');
 await browser.close(); srv.kill();

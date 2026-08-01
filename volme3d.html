@@ -3313,11 +3313,11 @@ Patrick</textarea>
           <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:4px" title="Einfarbigen Hintergrund (oder PNG-Transparenz) wegschneiden — es bleibt nur das Motiv."><input type="checkbox" id="vc-bg" checked onchange="_vecSet('bg',this.checked?1:0)"> Hintergrund entfernen</label>
         </div>
         <div id="vec-rows-plate">
-          <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:6px" title="Legt die volle Silhouette als Platte UNTER die Nachzeichnung. Eine Strichzeichnung besteht aus lauter losen Ringen — auf der Platte hängt alles zusammen und kommt am Stück von der Druckplatte. Die Linien stehen erhaben darauf, das Motiv bleibt also sichtbar."><input type="checkbox" id="vc-plate" onchange="_vecSet('plate',this.checked?1:0)"> Auf Grundplatte legen (alles verbunden)</label>
+          <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:6px" title="Legt die volle Silhouette als Platte darunter — alles hängt zusammen und kommt am Stück von der Druckplatte. Mit „Außenrand" ergibt das die VOLLE FIGUR mit einem Rand ringsum, die erhaben darauf steht. Mit „Nachzeichnen" ergibt es die volle Figur mit den Linien erhaben darauf."><input type="checkbox" id="vc-plate" onchange="_vecSet('plate',this.checked?1:0)"> Auf Grundplatte legen (voll + Rand ringsum)</label>
           <div id="vec-rows-plate2" style="display:none">
-            <div class="vrow"><label title="Wie weit die Platte über die Zeichnung hinaussteht. Etwas Rand gibt dünnen Strichen am Motivrand Halt.">Platten-Rand</label> <input type="range" id="vc-platemm" min="0" max="8" value="1.5" step="0.1" oninput="document.getElementById('vv-platemm').textContent=this.value;_vecSet('plateMM',this.value)"><span class="vv" id="vv-platemm">1.5</span><span class="vu">mm</span></div>
-            <div class="vrow"><label title="Dicke der Grundplatte.">Platten-Dicke</label> <input type="range" id="vc-plateh" min="0.6" max="6" value="2" step="0.2" oninput="document.getElementById('vv-plateh').textContent=this.value;_vecSet('plateH',this.value)"><span class="vv" id="vv-plateh">2</span><span class="vu">mm</span></div>
-            <div class="vrow" title="Wie hoch die Linien über der Platte stehen. Beim Mehrfarbdruck genügt eine Lage."><label>Linien erhaben</label> <input type="range" id="vc-relief" min="0.2" max="4" value="1" step="0.2" oninput="document.getElementById('vv-relief').textContent=this.value;_vecSet('reliefH',this.value)"><span class="vv" id="vv-relief">1</span><span class="vu">mm</span></div>
+            <div class="vrow"><label title="Wie weit der Rand rings um die Figur übersteht — der sichtbare Saum wie bei gekauften Toppern. Gibt dünnen Stellen am Motivrand zusätzlich Halt.">Rand ringsum</label> <input type="range" id="vc-platemm" min="0" max="8" value="1.5" step="0.1" oninput="document.getElementById('vv-platemm').textContent=this.value;_vecSet('plateMM',this.value)"><span class="vv" id="vv-platemm">1.5</span><span class="vu">mm</span></div>
+            <div class="vrow"><label title="Dicke des Randes / der Grundplatte.">Platten-Dicke</label> <input type="range" id="vc-plateh" min="0.6" max="6" value="2" step="0.2" oninput="document.getElementById('vv-plateh').textContent=this.value;_vecSet('plateH',this.value)"><span class="vv" id="vv-plateh">2</span><span class="vu">mm</span></div>
+            <div class="vrow" title="Wie hoch die Figur bzw. die Linien über dem Rand stehen. Beim Mehrfarbdruck genügt eine Lage."><label>Motiv erhaben</label> <input type="range" id="vc-relief" min="0.2" max="4" value="1" step="0.2" oninput="document.getElementById('vv-relief').textContent=this.value;_vecSet('reliefH',this.value)"><span class="vv" id="vv-relief">1</span><span class="vu">mm</span></div>
           </div>
         </div>
         <span class="vsec">Feinschliff</span>
@@ -24454,8 +24454,6 @@ function _vecSet(k,v){
     document.querySelectorAll('#vec-mode-bg .vtb').forEach((b,i)=>b.classList.toggle('on', i===_vecP.mode));
     document.getElementById('vec-rows-sil').style.display = _vecP.mode<=1 ? '' : 'none';
     document.getElementById('vec-rows-col').style.display = _vecP.mode===2 ? '' : 'none';
-    // „Außenrand" ist schon voll — eine Platte darunter wäre sinnlos
-    document.getElementById('vec-rows-plate').style.display = _vecP.mode===1 ? 'none' : '';
   } else if(k==='plate'){
     _vecP.plate = Number(v)|0;
     document.getElementById('vec-rows-plate2').style.display = _vecP.plate ? '' : 'none';
@@ -24644,7 +24642,11 @@ function _vecProcess(){
       if(hasA && !opaque[i]) on = false;
       mask[i] = on ? 1 : 0;
     }
-    if(p.plate && p.mode === 0) plateMask = mask.slice();
+    // Plattenmaske aus der rohen Motivmaske — gefüllt und verbreitert wird sie
+    // weiter unten. Gilt für BEIDE Modi: mit „Außenrand" entsteht daraus die
+    // volle Figur auf einem Rand ringsum, mit „Nachzeichnen" die volle Figur
+    // mit den Linien erhaben darauf.
+    if(p.plate) plateMask = mask.slice();
     if(p.mode === 1) _vecFillHoles(mask, W, H);   // „Außenrand": Innenflächen zu
     const faces = _vecFaces(mask, W, H, smooth, minPx);
     if(faces.length) layers.push({ color:'#000000', faces, w:1 });
@@ -24941,13 +24943,14 @@ function _vecPlateToScene(){
   const grp = new THREE.Group();
   typeCounts['vec'] = (typeCounts['vec']||0) + 1;
   grp.userData = {id:idCtr++, name:(_vec.name || 'Motiv')+' #'+typeCounts['vec'], isGroup:true};
-  grp.add(mk(gPlate, 'Grundplatte'));
-  grp.add(mk(gArt, 'Nachzeichnung'));
+  grp.add(mk(gPlate, 'Rand'));
+  grp.add(mk(gArt, _vecP.mode === 1 ? 'Figur' : 'Nachzeichnung'));
   grp.quaternion.copy(_wpMakeQuat(workplaneNormal)); grp.position.copy(workplanePoint);
   saveUndo();
   scene.add(grp); objects.push(grp);
   selectObjs([grp]); updateTree(); fitToObjects([grp]);
-  notify('Auf Grundplatte gelegt, Linien '+_vecP.reliefH+' mm erhaben — für zwei Farben im Slicer '
+  notify((_vecP.mode === 1 ? 'Volle Figur mit ' : 'Nachzeichnung auf ')
+    + _vecP.plateMM + ' mm Rand ringsum, ' + _vecP.reliefH + ' mm erhaben — für zwei Farben im Slicer '
     + 'die beiden Teile getrennt lassen.' + _vecStueckHinweis(), 'ok');
   return grp;
 }
@@ -29850,8 +29853,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.61';
+const VOLME3D_VERSION = '1.15.62';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.62', date:'2026-08-02', changes:[
+    ['🧍','Das Häkchen „Auf Grundplatte legen" gibt es jetzt auch im Modus „Außenrand" — und DAS ist die Kombination für den Look gekaufter Topper: die VOLLE Figur, erhaben auf einem Rand ringsum. Vorher war das Häkchen dort gesperrt, weil „Außenrand" ja schon voll ist; dabei entsteht genau durch den überstehenden Rand der sichtbare Saum um die Figur. Zwei Kombinationen sind damit möglich: „Außenrand" + Grundplatte = volle Figur mit Saum ringsum. „Nachzeichnen" + Grundplatte = volle Figur, auf der die Linien der Zeichnung erhaben stehen. Beides kommt als Gruppe („Rand" + „Figur" bzw. „Nachzeichnung") in die Szene, damit im Slicer zwei Farben möglich sind.'],
+  ]},
   { version:'1.15.61', date:'2026-08-02', changes:[
     ['🧱','„Bild → SVG": neues Häkchen „Auf Grundplatte legen". Genau für das Problem, dass eine schöne Nachzeichnung aus lauter losen Ringen besteht und man sie nicht am Stück von der Druckplatte bekommt. Angehakt legt V3D CAD die volle Silhouette als Platte UNTER die Zeichnung — alles, was sich berührt, hängt damit zusammen, und die Linien stehen erhaben darauf, das Motiv bleibt also sichtbar. Einstellbar sind Platten-Rand (wie weit die Platte übersteht, gibt dünnen Strichen am Rand Halt), Platten-Dicke und wie hoch die Linien stehen. „➕ In die Szene" liefert dann eine Gruppe aus Platte und Nachzeichnung — getrennt, damit man im Slicer zwei Farben vergeben kann. Wer das Motiv in den Tortentopper schickt, bekommt automatisch nur die volle Fläche, weil ein Topper flach ist. Und ganz wichtig: Wenn dein Motiv aus mehreren getrennten Figuren besteht (Braut und Bräutigam, die sich nicht berühren), sagt V3D CAD das jetzt ausdrücklich mit der Zahl der Teile — die verbindest du dann mit „🖇️ Stege". Idee und Analyse dazu kamen von Ralf.'],
   ]},
