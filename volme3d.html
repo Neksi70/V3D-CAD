@@ -3312,6 +3312,14 @@ Patrick</textarea>
           <div class="vrow"><label title="In wie viele Farbflächen das Bild zerlegt wird.">Farben</label> <input type="range" id="vc-ncol" min="2" max="8" value="4" step="1" oninput="document.getElementById('vv-ncol').textContent=this.value;_vecSet('ncol',this.value)"><span class="vv" id="vv-ncol">4</span><span class="vu"></span></div>
           <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:4px" title="Einfarbigen Hintergrund (oder PNG-Transparenz) wegschneiden — es bleibt nur das Motiv."><input type="checkbox" id="vc-bg" checked onchange="_vecSet('bg',this.checked?1:0)"> Hintergrund entfernen</label>
         </div>
+        <div id="vec-rows-plate">
+          <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:6px" title="Legt die volle Silhouette als Platte UNTER die Nachzeichnung. Eine Strichzeichnung besteht aus lauter losen Ringen — auf der Platte hängt alles zusammen und kommt am Stück von der Druckplatte. Die Linien stehen erhaben darauf, das Motiv bleibt also sichtbar."><input type="checkbox" id="vc-plate" onchange="_vecSet('plate',this.checked?1:0)"> Auf Grundplatte legen (alles verbunden)</label>
+          <div id="vec-rows-plate2" style="display:none">
+            <div class="vrow"><label title="Wie weit die Platte über die Zeichnung hinaussteht. Etwas Rand gibt dünnen Strichen am Motivrand Halt.">Platten-Rand</label> <input type="range" id="vc-platemm" min="0" max="8" value="1.5" step="0.1" oninput="document.getElementById('vv-platemm').textContent=this.value;_vecSet('plateMM',this.value)"><span class="vv" id="vv-platemm">1.5</span><span class="vu">mm</span></div>
+            <div class="vrow"><label title="Dicke der Grundplatte.">Platten-Dicke</label> <input type="range" id="vc-plateh" min="0.6" max="6" value="2" step="0.2" oninput="document.getElementById('vv-plateh').textContent=this.value;_vecSet('plateH',this.value)"><span class="vv" id="vv-plateh">2</span><span class="vu">mm</span></div>
+            <div class="vrow" title="Wie hoch die Linien über der Platte stehen. Beim Mehrfarbdruck genügt eine Lage."><label>Linien erhaben</label> <input type="range" id="vc-relief" min="0.2" max="4" value="1" step="0.2" oninput="document.getElementById('vv-relief').textContent=this.value;_vecSet('reliefH',this.value)"><span class="vv" id="vv-relief">1</span><span class="vu">mm</span></div>
+          </div>
+        </div>
         <span class="vsec">Feinschliff</span>
         <div class="vrow"><label title="0 = pixelgenau (Treppenstufen), höher = weichere Kurven.">Glättung</label> <input type="range" id="vc-smooth" min="0" max="4" value="2" step="1" oninput="document.getElementById('vv-smooth').textContent=this.value;_vecSet('smooth',this.value)"><span class="vv" id="vv-smooth">2</span><span class="vu"></span></div>
         <div class="vrow"><label title="Despeckle: Flecken kleiner als dieser Anteil der Bildfläche fliegen raus — gegen Rauschen und Staubkörner im Scan. ACHTUNG: schon 1 ‰ kann feine Sachen wie ein Auge oder Mähnenspitzen verschlucken. Nur hochdrehen, wenn wirklich Krümel übrig bleiben.">Despeckle</label> <input type="range" id="vc-mina" min="0" max="30" value="0" step="1" oninput="document.getElementById('vv-mina').textContent=(this.value/10).toFixed(1);_vecSet('minA',this.value/10)"><span class="vv" id="vv-mina">0.0</span><span class="vu">‰</span></div>
@@ -24363,7 +24371,8 @@ function _createIbx(){
 // Despeckle steht bewusst auf 0: bei 1 ‰ verschwinden feine Sachen wie ein
 // Pferdeauge oder Mähnenspitzen kommentarlos (gemessen: 5 statt 12 Feinheiten).
 // Wer verrauschte Vorlagen hat, dreht ihn selbst hoch.
-const _vecP = { mode:0, thr:55, inv:0, ncol:4, bg:1, smooth:2, minA:0, res:900, wmm:100, crop:null };
+const _vecP = { mode:0, thr:55, inv:0, ncol:4, bg:1, smooth:2, minA:0, res:900, wmm:100, crop:null,
+                plate:0, plateMM:1.5, plateH:2, reliefH:1 };
 const _vec  = { img:null, out:null, name:'motiv', traced:false };
 let _vecSel = false, _vecDrag = null;      // Rahmen-Ziehen über der Vorschau
 const _VEC_MAX_CMDS = 45000;      // knapp unter dem Limit von _svgPreflight
@@ -24445,6 +24454,11 @@ function _vecSet(k,v){
     document.querySelectorAll('#vec-mode-bg .vtb').forEach((b,i)=>b.classList.toggle('on', i===_vecP.mode));
     document.getElementById('vec-rows-sil').style.display = _vecP.mode<=1 ? '' : 'none';
     document.getElementById('vec-rows-col').style.display = _vecP.mode===2 ? '' : 'none';
+    // „Außenrand" ist schon voll — eine Platte darunter wäre sinnlos
+    document.getElementById('vec-rows-plate').style.display = _vecP.mode===1 ? 'none' : '';
+  } else if(k==='plate'){
+    _vecP.plate = Number(v)|0;
+    document.getElementById('vec-rows-plate2').style.display = _vecP.plate ? '' : 'none';
   } else _vecP[k] = parseFloat(v);
   if(k==='wmm'){ _vecInfo(); return; }   // reine Ausgabe-Skalierung — nichts neu rechnen
   if(!_vec.img){ _vecDraw(); _vecInfo(); return; }
@@ -24554,6 +24568,29 @@ function _vecFillHoles(mask, W, H){
   for(let i=0;i<N;i++) if(!outs[i]) mask[i]=1;
 }
 
+// Maske um n Pixel verbreitern (Grundplatten-Rand). Abwechselnd Kreuz und
+// Diagonale — das nähert einen runden Stempel an, ein reines Kreuz gäbe Rauten.
+function _vecDilate(mask, W, H, n){
+  const N=W*H;
+  let cur = mask, tmp = new Uint8Array(N);
+  for(let k=0;k<n;k++){
+    const diag = (k % 2) === 1;
+    tmp.fill(0);
+    for(let y=0;y<H;y++) for(let x=0;x<W;x++){
+      const i=y*W+x; if(!cur[i]) continue;
+      tmp[i]=1;
+      if(x>0)tmp[i-1]=1; if(x<W-1)tmp[i+1]=1;
+      if(y>0)tmp[i-W]=1; if(y<H-1)tmp[i+W]=1;
+      if(diag){
+        if(x>0&&y>0)tmp[i-W-1]=1;     if(x<W-1&&y>0)tmp[i-W+1]=1;
+        if(x>0&&y<H-1)tmp[i+W-1]=1;   if(x<W-1&&y<H-1)tmp[i+W+1]=1;
+      }
+    }
+    const sw=cur; cur=tmp; tmp=sw;
+  }
+  if(cur !== mask) mask.set(cur);
+}
+
 // Binärmaske → geschachtelte Flächen {outer,holes}; Flecken unter minPx fliegen
 // vor dem Glätten raus (JPG-Rauschen, Staubkörner im Scan).
 function _vecFaces(mask, W, H, smooth, minPx){
@@ -24595,6 +24632,7 @@ function _vecProcess(){
   const minPx  = Math.max(4, N * p.minA/1000);
   const smooth = Math.round(p.smooth);
   const layers = [];
+  let plateMask = null;         // Maske für die Grundplatte (vor dem Löcherfüllen)
 
   if(p.mode <= 1){
     // Eine Helligkeitsschwelle. Transparente Pixel zählen nie zum Motiv —
@@ -24606,6 +24644,7 @@ function _vecProcess(){
       if(hasA && !opaque[i]) on = false;
       mask[i] = on ? 1 : 0;
     }
+    if(p.plate && p.mode === 0) plateMask = mask.slice();
     if(p.mode === 1) _vecFillHoles(mask, W, H);   // „Außenrand": Innenflächen zu
     const faces = _vecFaces(mask, W, H, smooth, minPx);
     if(faces.length) layers.push({ color:'#000000', faces, w:1 });
@@ -24676,6 +24715,7 @@ function _vecProcess(){
     }
     // große Flächen zuerst, kleine darüber — sonst decken sie einander zu
     layers.sort((a,b)=>b.w - a.w);
+    if(p.plate) plateMask = keep.slice();
   }
 
   if(!layers.length) return;
@@ -24687,9 +24727,33 @@ function _vecProcess(){
     for(const h of (f.holes||[])){ nPaths++; nPts += h.pts.length; }
   }
   if(!(x1-x0 > 0.5 && y1-y0 > 0.5)) return;
+
+  // Grundplatte: die volle Silhouette unter die Nachzeichnung legen. Die
+  // Strichzeichnung besteht aus lauter losen Ringen — auf der Platte hängt alles
+  // zusammen und kommt am Stück von der Druckplatte.
+  let plate = null;
+  if(plateMask){
+    _vecFillHoles(plateMask, W, H);
+    // „Rand" in mm → Pixel. Der Maßstab steht erst mit der Motivbreite fest,
+    // deshalb hier über die Breite der Nachzeichnung geschätzt (reicht auf ein
+    // paar Prozent genau, die Platte wächst ja nur wenig).
+    const pxPerMm = (x1-x0) / Math.max(1, _vecP.wmm);
+    const grow = Math.max(0, Math.min(60, Math.round((_vecP.plateMM||0) * pxPerMm)));
+    if(grow > 0) _vecDilate(plateMask, W, H, grow);
+    const pf = _vecFaces(plateMask, W, H, smooth, minPx);
+    if(pf.length){
+      plate = pf;
+      for(const f of pf){
+        nPaths++; nPts += f.outer.pts.length;
+        for(const pt of f.outer.pts){
+          if(pt.x<x0)x0=pt.x; if(pt.x>x1)x1=pt.x; if(pt.y<y0)y0=pt.y; if(pt.y>y1)y1=pt.y; }
+        for(const h of (f.holes||[])){ nPaths++; nPts += h.pts.length; }
+      }
+    }
+  }
   // Auf das Motiv zuschneiden: der Regler „Breite" soll die Breite des Motivs
   // meinen, nicht die des Bildes samt leerem Rand.
-  _vec.out = { W, H, bb:{ x0, y0, w:x1-x0, h:y1-y0 }, layers, nPaths, nPts };
+  _vec.out = { W, H, bb:{ x0, y0, w:x1-x0, h:y1-y0 }, layers, plate, nPaths, nPts };
 }
 
 function _vecPathD(pts, s, bb){
@@ -24702,12 +24766,24 @@ function _vecPathD(pts, s, bb){
 // Ergebnis → SVG-Text mit echten mm-Maßen (width/height in mm, viewBox in mm),
 // damit die Datei überall maßhaltig ankommt. Bild-Y läuft nach unten wie SVG-Y —
 // kein Flip nötig, sonst käme das Motiv auf dem Kopf heraus.
-function _vecSvgText(){
+// nur='plate' → nur die Grundplatte, nur='art' → nur die Nachzeichnung.
+// Für den Topper wird die Platte allein gebraucht: dort liegt alles auf einer
+// Höhe, und die Linien INNERHALB der Platte würde der SVG-Leser sonst für
+// Löcher halten und aus dem vollen Motiv wieder eine Strichzeichnung machen.
+function _vecSvgText(nur){
   const o = _vec.out; if(!o) return null;
   const bb = o.bb, s = _vecP.wmm / bb.w;
   const wmm = +(bb.w*s).toFixed(3), hmm = +(bb.h*s).toFixed(3);
   let body = '';
-  for(const L of o.layers){
+  if(o.plate && nur !== 'art'){        // zuerst schreiben = liegt hinten
+    let d = '';
+    for(const f of o.plate){
+      d += _vecPathD(f.outer.pts, s, bb);
+      for(const h of (f.holes||[])) d += _vecPathD(h.pts, s, bb);
+    }
+    if(d) body += '<path fill="#cccccc" fill-rule="evenodd" d="'+d.trim()+'"/>';
+  }
+  if(nur !== 'plate') for(const L of o.layers){
     let d = '';
     for(const f of L.faces){
       d += _vecPathD(f.outer.pts, s, bb);
@@ -24750,6 +24826,15 @@ function _vecDraw(){
     ctx.scale(cr.w*cv.width/o.W, cr.h*cv.height/o.H);
     const mono = _vecP.mode <= 1;
     ctx.lineJoin = 'round';
+    if(o.plate){                       // Grundplatte zuerst, damit sie darunter liegt
+      const pp = new Path2D();
+      for(const f of o.plate){
+        _vecAddPath(pp, f.outer.pts);
+        for(const h of (f.holes||[])) _vecAddPath(pp, h.pts);
+      }
+      ctx.fillStyle = 'rgba(60,140,255,0.38)'; ctx.fill(pp, 'evenodd');
+      ctx.strokeStyle = '#2f6fe0'; ctx.lineWidth = Math.max(0.8, o.W/260); ctx.stroke(pp);
+    }
     for(const L of o.layers){
       const pth = new Path2D();
       for(const f of L.faces){
@@ -24799,6 +24884,7 @@ function _vecInfo(){
   // bringt Weiterdrehen nichts — das soll man sehen und nicht raten müssen.
   const srcPx = Math.round(Math.max(_vec.img.width, _vec.img.height) * ((_vecP.crop && Math.max(_vecP.crop.w,_vecP.crop.h)) || 1));
   let t = (_vecP.crop ? 'Ausschnitt · ' : '')
+        + (o.plate ? 'Grundplatte (' + o.plate.length + (o.plate.length>1 ? ' getrennte Teile — „🖇️ Stege" verbinden sie)' : ' Stück)') + ' · ' : '')
         + o.layers.length + (o.layers.length===1 ? ' Ebene' : ' Ebenen') + ' · ' + o.nPaths + ' Konturen · '
         + o.nPts + ' Punkte · ' + _vecP.wmm + ' × ' + hmm + ' mm · abgetastet mit '
         + Math.max(o.W, o.H) + ' px'
@@ -24819,9 +24905,57 @@ function _vecSave(){
   notify('SVG gespeichert — nutzbar in V3D CAD, im Slicer und im Schneideplotter','ok');
 }
 
+// Grundplatte + Nachzeichnung als Relief in die Szene: Platte flach, die Linien
+// stehen darüber. Direkt aus den Konturen gebaut statt über den SVG-Umweg —
+// nur so passen beide Teile exakt aufeinander und bekommen eigene Höhen.
+// 1 Einheit = 10 mm.
+function _vecPlateToScene(){
+  const o = _vec.out;
+  const s  = (_vecP.wmm / o.bb.w) * 0.1;
+  const V2 = p => new THREE.Vector2((p.x - o.bb.x0)*s, -(p.y - o.bb.y0)*s);
+  const build = (faces, depth) => {
+    const geos = [];
+    for(const f of faces){
+      if(!f.outer.pts || f.outer.pts.length < 3) continue;
+      const sh = new THREE.Shape(f.outer.pts.map(V2));
+      for(const h of (f.holes||[])) if(h.pts && h.pts.length >= 3) sh.holes.push(new THREE.Path(h.pts.map(V2)));
+      const g = new THREE.ExtrudeGeometry(sh, {depth, bevelEnabled:false, steps:1, curveSegments:1});
+      g.rotateX(-Math.PI/2);                 // flach legen, Dicke nach oben
+      geos.push(_posOnly(g));
+    }
+    if(!geos.length) return null;
+    const m = _mergePos(geos); m.computeVertexNormals(); return m;
+  };
+  const dU = Math.max(0.02, _vecP.plateH/10);
+  const rU = Math.max(0.02, _vecP.reliefH/10);
+  const gPlate = build(o.plate, dU);
+  const gArt   = build(o.layers.flatMap(L => L.faces), dU + rU);
+  if(!gPlate || !gArt) return null;
+  const col = (typeof currentColor !== 'undefined') ? currentColor : '#e91e63';
+  const mk = (geo, nm) => {
+    const me = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color:new THREE.Color(col), roughness:0.55, metalness:0, side:THREE.DoubleSide}));
+    me.castShadow = true; me.receiveShadow = true;
+    me.userData = {id:idCtr++, type:'custom', shapeType:'custom', name:nm, color:col, isHole:false, fillet:0, chamfer:0};
+    return me;
+  };
+  const grp = new THREE.Group();
+  typeCounts['vec'] = (typeCounts['vec']||0) + 1;
+  grp.userData = {id:idCtr++, name:(_vec.name || 'Motiv')+' #'+typeCounts['vec'], isGroup:true};
+  grp.add(mk(gPlate, 'Grundplatte'));
+  grp.add(mk(gArt, 'Nachzeichnung'));
+  grp.quaternion.copy(_wpMakeQuat(workplaneNormal)); grp.position.copy(workplanePoint);
+  saveUndo();
+  scene.add(grp); objects.push(grp);
+  selectObjs([grp]); updateTree(); fitToObjects([grp]);
+  notify('Auf Grundplatte gelegt, Linien '+_vecP.reliefH+' mm erhaben — für zwei Farben im Slicer '
+    + 'die beiden Teile getrennt lassen.' + _vecStueckHinweis(), 'ok');
+  return grp;
+}
+
 function _vecToScene(){
   const o = _vec.out;
   if(!o){ notify('Erst ein Bild vektorisieren','w'); return; }
+  if(o.plate){ _vecClose(); _vecPlateToScene(); return; }
   if(o.nPts + o.nPaths > _VEC_MAX_CMDS){
     notify('Zu fein für den Import — Glättung hoch, Genauigkeit runter oder „Kleinstes Teil" größer stellen','w'); return; }
   const svg = _vecSvgText(); if(!svg) return;
@@ -24835,12 +24969,25 @@ function _vecToScene(){
 // Vektorisiertes Motiv an den Tortentopper übergeben. Die Größe legt dort der
 // Regler „Motiv-Größe" fest — die mm-Maße der SVG spielen hier keine Rolle.
 function _vecToTopper(){
-  if(!_vec.out){ notify('Erst ein Bild vektorisieren','w'); return; }
-  const svg = _vecSvgText(); if(!svg) return;
+  const o = _vec.out;
+  if(!o){ notify('Erst ein Bild vektorisieren','w'); return; }
+  // Mit Grundplatte geht nur die Platte in den Topper — er ist flach, die
+  // erhabenen Linien gäbe es dort ohnehin nicht.
+  const svg = _vecSvgText(o.plate ? 'plate' : undefined); if(!svg) return;
   if(!_ttSetMotif(svg, _vec.name)) return;
   _vecClose(); _ttOpen();
-  if(_vecP.mode === 0)
-    notify('Tipp: „Nachzeichnen" liefert die Linien als schmale Ringe. Für einen Topper hält „Außenrand" meist besser — dort wird das Motiv ausgefüllt.','w');
+  if(o.plate)
+    notify('Motiv als volle Fläche übernommen (Grundplatte)' + _vecStueckHinweis(), 'ok');
+  else if(_vecP.mode === 0)
+    notify('Tipp: „Nachzeichnen" liefert die Linien als schmale Ringe — die brechen im Druck leicht. '
+      + 'Für einen Topper besser „Außenrand" oder „Auf Grundplatte legen".','w');
+}
+// Getrennte Teile ehrlich benennen: die Platte verbindet nur, was sich berührt.
+// Zwei Figuren nebeneinander bleiben zwei Teile — dafür gibt es „🖇️ Stege".
+function _vecStueckHinweis(){
+  const o = _vec.out;
+  const n = o && o.plate ? o.plate.length : 0;
+  return n > 1 ? ' — Achtung: ' + n + ' getrennte Teile. Mit „🖇️ Stege" verbinden, sonst fällt es auseinander.' : '';
 }
 // ═══ END BILD → SVG ═══════════════════════════════════════════════════════
 
@@ -29703,8 +29850,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.60';
+const VOLME3D_VERSION = '1.15.61';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.61', date:'2026-08-02', changes:[
+    ['🧱','„Bild → SVG": neues Häkchen „Auf Grundplatte legen". Genau für das Problem, dass eine schöne Nachzeichnung aus lauter losen Ringen besteht und man sie nicht am Stück von der Druckplatte bekommt. Angehakt legt V3D CAD die volle Silhouette als Platte UNTER die Zeichnung — alles, was sich berührt, hängt damit zusammen, und die Linien stehen erhaben darauf, das Motiv bleibt also sichtbar. Einstellbar sind Platten-Rand (wie weit die Platte übersteht, gibt dünnen Strichen am Rand Halt), Platten-Dicke und wie hoch die Linien stehen. „➕ In die Szene" liefert dann eine Gruppe aus Platte und Nachzeichnung — getrennt, damit man im Slicer zwei Farben vergeben kann. Wer das Motiv in den Tortentopper schickt, bekommt automatisch nur die volle Fläche, weil ein Topper flach ist. Und ganz wichtig: Wenn dein Motiv aus mehreren getrennten Figuren besteht (Braut und Bräutigam, die sich nicht berühren), sagt V3D CAD das jetzt ausdrücklich mit der Zahl der Teile — die verbindest du dann mit „🖇️ Stege". Idee und Analyse dazu kamen von Ralf.'],
+  ]},
   { version:'1.15.60', date:'2026-08-02', changes:[
     ['💬','Meldungen bleiben jetzt so lange stehen, wie man zum Lesen braucht. Bisher verschwand JEDE Meldung nach 1,8 Sekunden — bei einem langen Hinweis war er weg, bevor man ihn zu Ende gelesen hatte. Die Anzeigedauer richtet sich jetzt nach der Textlänge (ein langer Hinweis steht rund 10 Sekunden, kurze wie bisher knapp 2). Zusätzlich: Mauszeiger drauf hält die Meldung an, solange du liest, und ein Klick schließt sie sofort weg. Sehr lange Meldungen laufen außerdem nicht mehr über den halben Bildschirm, sondern brechen sauber um. Danke an Ralf für den Hinweis.'],
   ]},
