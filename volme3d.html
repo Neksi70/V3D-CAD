@@ -3223,6 +3223,18 @@ Patrick</textarea>
           <button class="vtb on" onclick="_lampSet('pattern','ribs')">Rillen</button>
           <button class="vtb"    onclick="_lampSet('pattern','twist')">Twist</button>
           <button class="vtb"    onclick="_lampSet('pattern','facet')">Facetten</button>
+          <button class="vtb"    onclick="_lampSet('pattern','photo')">🖼️ Foto</button>
+        </div>
+        <div id="lp-row-photo" style="display:none">
+          <div id="lpf-drop" onclick="document.getElementById('lpf-file').click()" style="border:1.5px dashed #4a5266;border-radius:8px;padding:10px;text-align:center;cursor:pointer;color:#9fb0c4;font-size:12px;margin:4px 0">📷 Motiv wählen (Foto / PNG)</div>
+          <input type="file" id="lpf-file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="_lampPhotoFile(event)">
+          <div class="vrow"><label title="Wie viel dicker die dunklen Stellen werden">Relief-Tiefe</label> <input type="range" id="lpf-depth" min="0.4" max="4" value="1.6" step="0.1" oninput="document.getElementById('lvf-depth').textContent=this.value;_lampSet('photoDepth',this.value)"><span class="vv" id="lvf-depth">1.6</span><span class="vu">mm</span></div>
+          <div class="vrow"><label title="360° = nahtlos um den ganzen Schirm">Motiv-Breite</label> <input type="range" id="lpf-arc" min="30" max="360" value="360" step="5" oninput="document.getElementById('lvf-arc').textContent=this.value;_lampSet('photoArc',this.value)"><span class="vv" id="lvf-arc">360</span><span class="vu">°</span></div>
+          <div class="vrow"><label title="Höhe des Motivs auf der Wand">Motiv-Höhe</label> <input type="range" id="lpf-mh" min="10" max="280" value="60" step="2" oninput="document.getElementById('lvf-mh').textContent=this.value;_lampSet('photoH',this.value)"><span class="vv" id="lvf-mh">60</span><span class="vu">mm</span></div>
+          <div class="vrow"><label title="Mitte des Motivs, 0 = unten, 100 = oben">Position</label> <input type="range" id="lpf-y" min="5" max="95" value="55" step="1" oninput="document.getElementById('lvf-y').textContent=this.value;_lampSet('photoY',this.value)"><span class="vv" id="lvf-y">55</span><span class="vu">%</span></div>
+          <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer"><input type="checkbox" id="lpf-inv" onchange="_lampSet('photoInv',this.checked?1:0)"> Negativ (hell = dick)</label>
+          <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Nach außen ist fühlbar, macht aber Überhänge. Nach innen bleibt der Schirm außen glatt."><input type="checkbox" id="lpf-out" onchange="_lampSet('photoOut',this.checked?1:0)"> Relief nach außen (statt innen)</label>
+          <div class="g3info" id="lpf-info" style="margin:4px 0 0">Noch kein Motiv geladen.</div>
         </div>
         <div class="vrow" id="lp-row-ribs"><label>Rillen-Zahl</label> <input type="range" id="lp-ribs" min="4" max="48" value="16" step="1" oninput="document.getElementById('lv-ribs').textContent=this.value;_lampSet('ribs',this.value)"><span class="vv" id="lv-ribs">16</span></div>
         <div class="vrow" id="lp-row-ribamp"><label>Rillen-Tiefe</label> <input type="range" id="lp-ribamp" min="0.5" max="5" value="2.2" step="0.1" oninput="document.getElementById('lv-ribamp').textContent=this.value;_lampSet('ribamp',this.value)"><span class="vv" id="lv-ribamp">2.2</span><span class="vu">mm</span></div>
@@ -25035,13 +25047,98 @@ function _vecStueckHinweis(){
 const _lampP = { form:'straight', h:120, dia:90, topd:60, bulge:18, wall:2.4,
   pattern:'ribs', ribs:16, ribamp:2.2, twist:120, facets:8,
   led:60, ledh:9, clr:0.5, top:true, cable:true,
-  mount:'standalone', puckD:70, puckH:28, travel:5 };
+  mount:'standalone', puckD:70, puckH:28, travel:5,
+  photoDepth:1.6, photoArc:360, photoH:60, photoY:55, photoInv:false, photoOut:false };
 let _lampRT=null;
-function _buildLampShadeGeo(p){
+// ── Foto-Muster: Lithophane direkt auf der Schirmwand ──────────────────────
+// Die Wand wird dort dicker, wo das Bild dunkel ist. Außen bleibt die Kontur
+// glatt (Standard), das Relief wächst nach innen → kopfüber ohne Stützen.
+const _lampImg = { img:null, lum:null, cols:0, rows:0, aspect:1 };
+function _lampImgSample(u,v){          // bilinear, u/v in 0..1 (v=0 oben)
+  const G=_lampImg, nx=G.cols, nz=G.rows;
+  const fx=Math.max(0,Math.min(1,u))*(nx-1), fz=Math.max(0,Math.min(1,v))*(nz-1);
+  const x0=Math.floor(fx), z0=Math.floor(fz);
+  const x1=Math.min(nx-1,x0+1), z1=Math.min(nz-1,z0+1);
+  const tx=fx-x0, tz=fz-z0, L=G.lum;
+  return (L[z0*nx+x0]*(1-tx)+L[z0*nx+x1]*tx)*(1-tz)
+       + (L[z1*nx+x0]*(1-tx)+L[z1*nx+x1]*tx)*tz;
+}
+// Vertex-Versatz auf den Wandbereich [y0, y0+H]. side[i]: +1 Außenwand,
+// -1 Innenwand, 0 = nicht anfassen (Boden, Tasche, Schürze …).
+function _lampPhotoWarp(pos, np, side, S, y0, H, p, yLo, rMin){
+  if(!_lampImg.lum) return;
+  const U=0.1, PI=Math.PI, TAU=PI*2;
+  const depth=Math.max(0.2,p.photoDepth)*U;
+  const arc=Math.max(20,Math.min(360,p.photoArc))*PI/180;
+  const full=(arc>=TAU-1e-6);
+  const target=p.photoOut?1:-1, sgn=p.photoOut?1:-1;
+  // Motiv-Fenster auf die Wand klemmen, die es hier wirklich gibt: nach innen
+  // fängt die Wand erst über der LED-Tasche an (yLo), nach außen schon unten.
+  const lo=Math.max(y0, yLo==null?y0:yLo), hi=y0+H;
+  const mh=Math.min(hi-lo, Math.max(3*U, p.photoH*U));
+  let cy=y0+H*Math.max(0,Math.min(100,p.photoY))/100;
+  cy=Math.max(lo+mh/2, Math.min(hi-mh/2, cy));
+  const y1=cy-mh/2, y2=cy+mh/2;
+  const fade=(t)=>t<=0?0:(t>=1?1:t*t*(3-2*t));          // weiche Motivkante
+  const fy=Math.min(0.12, 2*U/mh), fu=full?0:0.05;
+  for(let s=0;s<=S;s++){
+    for(let i=0;i<np;i++){
+      if(side[i]!==target) continue;
+      const idx=s*np+i, y=pos.getY(idx);
+      if(y<y1||y>y2) continue;
+      const x=pos.getX(idx), z=pos.getZ(idx);
+      const r0=Math.hypot(x,z); if(r0<1e-4) continue;
+      const ang=Math.atan2(z,x);
+      // u läuft GEGEN den Winkel: der Schirm wird von außen betrachtet, sonst
+      // stünde das Motiv (und jede Schrift darin) spiegelverkehrt.
+      let u;
+      if(full){ u=((-ang/TAU)%1+1)%1; }
+      else { const da=Math.atan2(Math.sin(ang),Math.cos(ang));
+             if(Math.abs(da)>arc/2) continue; u=0.5-da/arc; }
+      const v=(y2-y)/(y2-y1);                            // Bildzeile 0 = oben
+      const lev=p.photoInv?_lampImgSample(u,v):(1-_lampImgSample(u,v));
+      const soft=fade(Math.min(v,1-v)/fy)*(full?1:fade(Math.min(u,1-u)/fu));
+      // Nach innen nie in die LED-Tasche hineinwachsen (schmaler Schirm + große
+      // Tasche): dort lieber Relief verlieren als den Körper durchdringen.
+      const r=Math.max(rMin||0, r0+sgn*depth*lev*soft);
+      pos.setX(idx,r*Math.cos(ang)); pos.setZ(idx,r*Math.sin(ang));
+    }
+  }
+}
+// Wie fein die Lathe abgetastet werden muss, damit das Motiv scharf wird.
+// Segmentzahl folgt dem bedeckten Bogen (ein 90°-Motiv braucht kein 360°-Raster).
+function _lampPhotoRes(p,H,vorschau){
+  if(p.pattern!=='photo'||!_lampImg.lum) return null;
+  const f=Math.max(20,Math.min(360,p.photoArc))/360;
+  const bogen=Math.PI*Math.max(40,p.dia)*f;                 // bedeckte Bogenlänge in mm
+  const mh=Math.min(p.h, Math.max(5,p.photoH));
+  if(vorschau) return { S:Math.max(56,Math.min(170,Math.round(bogen*0.6))), NV:120 };
+  // ~2 Segmente/mm am Umfang, ~5 Profilzeilen/mm Motivhöhe (davon 80 % im Motiv)
+  return { S:Math.max(110,Math.min(420,Math.round(bogen*2))),
+           NV:Math.max(120,Math.min(300,Math.round(mh*5/0.8))) };
+}
+// Höhen-Stützstellen des Profils. Beim Foto-Muster liegen 80 % davon im
+// Motivfenster — sonst müsste die Gesamtzahl explodieren, damit ein kleines
+// Motiv scharf wird.
+function _lampProfileVs(p,H,RES){
+  const a=[];
+  if(!RES){ for(let i=0;i<=44;i++) a.push(i/44); return a; }
+  const mh=Math.min(H,Math.max(0.3,p.photoH*0.1));
+  let cy=H*Math.max(0,Math.min(100,p.photoY))/100;
+  cy=Math.max(mh/2,Math.min(H-mh/2,cy));
+  const v1=Math.max(0,(cy-mh/2)/H), v2=Math.min(1,(cy+mh/2)/H);
+  const N=RES.NV, nIn=Math.max(8,Math.round(N*0.8)), rest=Math.max(4,N-nIn);
+  const nLo=Math.max(2,Math.round(rest*v1/Math.max(1e-6,v1+(1-v2)))), nHi=Math.max(2,rest-nLo);
+  for(let i=0;i<nLo;i++) a.push(v1*i/nLo);
+  for(let i=0;i<=nIn;i++) a.push(v1+(v2-v1)*i/nIn);
+  for(let i=1;i<=nHi;i++) a.push(v2+(1-v2)*i/nHi);
+  return a.filter((v,i,arr)=>i===0||v>arr[i-1]+1e-9);
+}
+function _buildLampShadeGeo(p,vorschau){
   const U=0.1, PI=Math.PI;
   const H=Math.max(30,p.h)*U;
   const Rb=Math.max(40,p.dia)/2*U;
-  const wall=Math.max(1.2,p.wall)*U;
+  const wall=Math.max(p.pattern==='photo'?0.8:1.2,p.wall)*U;
   const clr=Math.max(0.2,p.clr)*U;
   const seatH=Math.max(4,p.ledh)*U+clr;
   const closed=!!p.top;
@@ -25054,17 +25151,20 @@ function _buildLampShadeGeo(p){
   if(pocketR>innerAtSeat-0.6*U) pocketR=Math.max(2*U,innerAtSeat-0.6*U);
   const RiSeat=Math.max(pocketR+0.6*U,innerAtSeat);
   // ── Profil (geschlossene Querschnitts-Schleife) + Wand-Flag pro Punkt
-  const pts=[], wf=[]; const NV=44;
-  for(let i=0;i<=NV;i++){ const v=i/NV; pts.push(new THREE.Vector2(Math.max(.02,Rout(v)), v*H)); wf.push(1); }   // Außenwand
-  if(closed){ pts.push(new THREE.Vector2(0.02,H)); wf.push(0); pts.push(new THREE.Vector2(0.02,H-wall)); wf.push(0); }
-  else      { pts.push(new THREE.Vector2(Math.max(.02,Rout(1)-wall),H)); wf.push(0); }
-  for(let i=NV;i>=0;i--){ const v=i/NV, z=v*H; if(z<seatH) break; pts.push(new THREE.Vector2(Math.max(.02,Rout(v)-wall), z)); wf.push(1); }   // Innenwand
-  pts.push(new THREE.Vector2(RiSeat, seatH)); wf.push(0);
-  pts.push(new THREE.Vector2(pocketR, seatH)); wf.push(0);   // Schulter = LED-Anschlag
-  pts.push(new THREE.Vector2(pocketR, 0)); wf.push(0);       // Taschenwand
-  pts.push(new THREE.Vector2(Math.max(.02,Rout(0)), 0)); wf.push(0);   // Bodenring → schließt zum Start
+  // sd: +1 Außenwand, -1 Innenwand, 0 = Boden/Tasche (Foto-Relief lässt die in Ruhe)
+  const RES=_lampPhotoRes(p,H,vorschau);
+  const pts=[], wf=[], sd=[]; const VS=_lampProfileVs(p,H,RES);
+  let innerLoY=H;   // tiefste Höhe, auf der es überhaupt eine Innenwand gibt
+  for(let i=0;i<VS.length;i++){ const v=VS[i]; pts.push(new THREE.Vector2(Math.max(.02,Rout(v)), v*H)); wf.push(1); sd.push(1); }   // Außenwand
+  if(closed){ pts.push(new THREE.Vector2(0.02,H)); wf.push(0); sd.push(0); pts.push(new THREE.Vector2(0.02,H-wall)); wf.push(0); sd.push(0); }
+  else      { pts.push(new THREE.Vector2(Math.max(.02,Rout(1)-wall),H)); wf.push(0); sd.push(0); }
+  for(let i=VS.length-1;i>=0;i--){ const v=VS[i], z=v*H; if(z<seatH) break; pts.push(new THREE.Vector2(Math.max(.02,Rout(v)-wall), z)); wf.push(1); sd.push(-1); innerLoY=z; }   // Innenwand
+  pts.push(new THREE.Vector2(RiSeat, seatH)); wf.push(0); sd.push(0);
+  pts.push(new THREE.Vector2(pocketR, seatH)); wf.push(0); sd.push(0);   // Schulter = LED-Anschlag
+  pts.push(new THREE.Vector2(pocketR, 0)); wf.push(0); sd.push(0);       // Taschenwand
+  pts.push(new THREE.Vector2(Math.max(.02,Rout(0)), 0)); wf.push(0); sd.push(0);   // Bodenring → schließt zum Start
   // ── Segmentzahl / Muster
-  let S = (p.pattern==='facet') ? Math.max(3,Math.min(24,Math.round(p.facets))) : (p.pattern==='smooth'?128:160);
+  let S = RES ? RES.S : ((p.pattern==='facet') ? Math.max(3,Math.min(24,Math.round(p.facets))) : (p.pattern==='smooth'?128:160));
   const ribN=(p.pattern==='ribs'||p.pattern==='twist')?Math.max(1,Math.round(p.ribs)):0;
   const ribAmp=ribN?Math.max(0,p.ribamp)*U:0;
   const twist=(p.pattern==='twist')?p.twist*PI/180:0;
@@ -25080,6 +25180,7 @@ function _buildLampShadeGeo(p){
       pos.setX(idx,r*Math.cos(ang)); pos.setZ(idx,r*Math.sin(ang));
     }}
   }
+  if(RES) _lampPhotoWarp(pos,np,sd,S,0,H,p, p.photoOut?0:innerLoY, p.photoOut?0:pocketR+0.6*U);
   // Kabel-Aussparung: Boden-Außenrand in schmalem Winkelfenster anheben
   if(p.cable){
     const ch=7*U, aw=Math.min(PI*0.4, 11*U/Math.max(Rb,1));
@@ -25136,24 +25237,25 @@ function _buildLampBaseGeo(p){
 }
 // Schirm im Push-Modus: Schürze (über die Basis), Snap-Bead, Flansch auf den Knopf,
 // darüber der dekorative Körper. Geometrie ist bereits über die Basis gehoben.
-function _buildLampShadeBaseGeo(p){
+function _buildLampShadeBaseGeo(p,vorschau){
   const d=_lampDims(p), U=d.U, PI=Math.PI;
-  const H=Math.max(30,p.h)*U, wall=Math.max(1.2,p.wall)*U;
+  const H=Math.max(30,p.h)*U, wall=Math.max(p.pattern==='photo'?0.8:1.2,p.wall)*U;
   const Rb=Math.max(d.skirtOuterR+1.5*U, Math.max(40,p.dia)/2*U);   // Körper ≥ Schürze
   const Rtop=(p.form==='cone')?Math.max(20,p.topd)/2*U:Rb;
   const bulge=(p.form==='barrel')?Math.max(0,p.bulge)*U:0;
   const Rout=(v)=>{ if(p.form==='cone') return Rb+(Rtop-Rb)*v; if(p.form==='barrel') return Rb+bulge*Math.sin(PI*v); return Rb; };
   const closed=!!p.top, yBb=d.yBb;
-  const pts=[], wf=[]; const NV=44;
-  const P=(r,y,w)=>{pts.push(new THREE.Vector2(Math.max(.02,r),y)); wf.push(w);};
+  const RES=_lampPhotoRes(p,H,vorschau);
+  const pts=[], wf=[], sd=[]; const VS=_lampProfileVs(p,H,RES);
+  const P=(r,y,w,s)=>{pts.push(new THREE.Vector2(Math.max(.02,r),y)); wf.push(w); sd.push(s||0);};
   P(d.skirtOuterR, 0, 0); P(d.skirtOuterR, yBb, 0); P(Rout(0), yBb, 0);          // Schürze außen + Übergang
-  for(let i=0;i<=NV;i++){ const v=i/NV; P(Rout(v), yBb+v*H, 1); }                 // Körper außen
+  for(let i=0;i<VS.length;i++){ const v=VS[i]; P(Rout(v), yBb+v*H, 1, 1); }       // Körper außen
   if(closed){ P(0.02,yBb+H,0); P(0.02,yBb+H-wall,0); } else { P(Math.max(.02,Rout(1)-wall),yBb+H,0); }
-  for(let i=NV;i>=0;i--){ const v=i/NV; P(Rout(v)-wall, yBb+v*H, 1); }            // Körper innen
+  for(let i=VS.length-1;i>=0;i--){ const v=VS[i]; P(Rout(v)-wall, yBb+v*H, 1, -1); }   // Körper innen
   P(d.flangeR, yBb, 0); P(d.flangeR, d.yB, 0); P(d.skirtR, d.yB, 0);             // Flansch (auf Knopf)
   P(d.skirtR, d.beadY+d.beadH/2, 0); P(d.skirtR-d.beadDepth, d.beadY, 0); P(d.skirtR, d.beadY-d.beadH/2, 0);  // Snap-Bead
   P(d.skirtR, 0, 0);                                                              // Schürze innen → schließt
-  let S=(p.pattern==='facet')?Math.max(3,Math.min(24,Math.round(p.facets))):(p.pattern==='smooth'?128:160);
+  let S=RES?RES.S:((p.pattern==='facet')?Math.max(3,Math.min(24,Math.round(p.facets))):(p.pattern==='smooth'?128:160));
   const ribN=(p.pattern==='ribs'||p.pattern==='twist')?Math.max(1,Math.round(p.ribs)):0;
   const ribAmp=ribN?Math.max(0,p.ribamp)*U:0;
   const twist=(p.pattern==='twist')?p.twist*PI/180:0;
@@ -25168,6 +25270,7 @@ function _buildLampShadeBaseGeo(p){
       pos.setX(idx,r*Math.cos(ang)); pos.setZ(idx,r*Math.sin(ang));
     }}
   }
+  if(RES) _lampPhotoWarp(pos,np,sd,S,yBb,H,p,yBb, p.photoOut?0:d.flangeR+0.6*U);
   geo.computeVertexNormals();
   geo.translate(0, d.skirtBottomWorld, 0);   // über die Basis heben
   const plain=_toPlainGeo(geo); plain.computeBoundingBox(); geo.dispose();
@@ -25176,10 +25279,10 @@ function _buildLampShadeBaseGeo(p){
 // Vorschau-Geometrie (im Push-Modus Basis+Schirm zusammengeführt).
 function _buildLampPreview(){
   if(_lampP.mount==='base'){
-    const m=_mergeGeos([_buildLampBaseGeo(_lampP), _buildLampShadeBaseGeo(_lampP)]);
+    const m=_mergeGeos([_buildLampBaseGeo(_lampP), _buildLampShadeBaseGeo(_lampP,true)]);
     m.computeVertexNormals(); m.computeBoundingBox(); return m;
   }
-  return _buildLampShadeGeo(_lampP);
+  return _buildLampShadeGeo(_lampP,true);
 }
 function _openLampModal(){
   document.getElementById('lamp-modal').classList.add('show');
@@ -25188,7 +25291,10 @@ function _openLampModal(){
 }
 function _closeLampModal(){ document.getElementById('lamp-modal').classList.remove('show'); _gpvStop('lamp'); }
 function _lampSet(k,v){
-  _lampP[k]=(k==='form'||k==='pattern'||k==='mount')?v:((k==='top'||k==='cable')?!!Number(v):parseFloat(v));
+  _lampP[k]=(k==='form'||k==='pattern'||k==='mount')?v
+    :((k==='top'||k==='cable'||k==='photoInv'||k==='photoOut')?!!Number(v):parseFloat(v));
+  // Nur das Foto-Muster verträgt eine 0,8-mm-Wand; sonst wieder auf 1,2 hoch
+  if(k==='pattern'&&v!=='photo'&&_lampP.wall<1.2) _lampP.wall=1.2;
   _lampSyncUI();
   if(_lampRT)clearTimeout(_lampRT); _lampRT=setTimeout(()=>{_lampRT=null;_gpvUpdate('lamp');},90);
 }
@@ -25203,13 +25309,21 @@ function _lampSyncUI(){
   const tc=document.getElementById('lp-top'); if(tc)tc.checked=_lampP.top;
   const cc=document.getElementById('lp-cable'); if(cc)cc.checked=_lampP.cable;
   ['straight','cone','barrel'].forEach((m,i)=>{const b=document.querySelector(`#lbg-form .vtb:nth-child(${i+1})`); if(b)b.classList.toggle('on',m===_lampP.form);});
-  ['smooth','ribs','twist','facet'].forEach((m,i)=>{const b=document.querySelector(`#lbg-pat .vtb:nth-child(${i+1})`); if(b)b.classList.toggle('on',m===_lampP.pattern);});
+  ['smooth','ribs','twist','facet','photo'].forEach((m,i)=>{const b=document.querySelector(`#lbg-pat .vtb:nth-child(${i+1})`); if(b)b.classList.toggle('on',m===_lampP.pattern);});
+  set('lpf-depth','lvf-depth',_lampP.photoDepth); set('lpf-arc','lvf-arc',_lampP.photoArc);
+  set('lpf-mh','lvf-mh',_lampP.photoH); set('lpf-y','lvf-y',_lampP.photoY);
+  const pi=document.getElementById('lpf-inv'); if(pi)pi.checked=_lampP.photoInv;
+  const po=document.getElementById('lpf-out'); if(po)po.checked=_lampP.photoOut;
+  // min muss VOR dem Setzen stehen, sonst klemmt der Browser 0,8 auf 1,2 hoch
+  const ws=document.getElementById('lp-wall');
+  if(ws){ ws.min=(_lampP.pattern==='photo')?0.8:1.2; set('lp-wall','lv-wall',_lampP.wall); }
   ['standalone','base'].forEach((m,i)=>{const b=document.querySelector(`#lbg-mount .vtb:nth-child(${i+1})`); if(b)b.classList.toggle('on',m===_lampP.mount);});
   const show=(id,on)=>{const e=document.getElementById(id); if(e)e.style.display=on?'':'none';};
   show('lp-row-topd', _lampP.form==='cone'); show('lp-row-bulge', _lampP.form==='barrel');
   const rib=(_lampP.pattern==='ribs'||_lampP.pattern==='twist');
   show('lp-row-ribs', rib); show('lp-row-ribamp', rib);
   show('lp-row-twist', _lampP.pattern==='twist'); show('lp-row-facets', _lampP.pattern==='facet');
+  show('lp-row-photo', _lampP.pattern==='photo');
   const base=_lampP.mount==='base';
   show('lp-row-led', !base); show('lp-row-ledh', !base);
   show('lp-row-puckd', base); show('lp-row-puckh', base); show('lp-row-travel', base);
@@ -25217,13 +25331,51 @@ function _lampSyncUI(){
   const hdr=document.getElementById('lp-elec-hdr'); if(hdr) hdr.textContent=base?'Elektronik (Button-Puck)':'Elektronik (Bambu LED-Kit)';
   _lampInfo();
 }
+function _lampPhotoFile(ev){
+  const f=ev.target.files[0]; ev.target.value=''; if(!f) return;
+  const img=new Image();
+  img.onload=()=>{
+    _lampImg.img=img; _lampImg.aspect=(img.width/img.height)||1;
+    const cols=Math.max(40,Math.min(900,img.width));
+    const rows=Math.max(40,Math.round(cols/_lampImg.aspect));
+    const c=document.createElement('canvas'); c.width=cols; c.height=rows;
+    const ctx=c.getContext('2d');
+    ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
+    ctx.drawImage(img,0,0,cols,rows);
+    const d=ctx.getImageData(0,0,cols,rows).data, lum=new Float32Array(cols*rows);
+    for(let i=0;i<cols*rows;i++) lum[i]=(0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2])/255;
+    _lampImg.lum=lum; _lampImg.cols=cols; _lampImg.rows=rows;
+    // Motiv-Höhe einmalig aufs Seitenverhältnis setzen: Bogenlänge / Aspect,
+    // gedeckelt auf das, was der Schirm hergibt (der Info-Text nennt dann den
+    // unverzerrten Sollwert).
+    const arcLen=Math.PI*Math.max(40,_lampP.dia)*Math.max(20,Math.min(360,_lampP.photoArc))/360;
+    _lampP.photoH=Math.round(Math.max(10,Math.min(280,_lampP.h*0.9,arcLen/_lampImg.aspect)));
+    document.getElementById('lpf-drop').textContent='📷 Motiv ersetzen';
+    _lampSyncUI(); _gpvUpdate('lamp');
+  };
+  img.onerror=()=>notify('Bild konnte nicht geladen werden','e');
+  img.src=URL.createObjectURL(f);
+}
+function _lampPhotoInfo(){
+  const el=document.getElementById('lpf-info'); if(!el) return;
+  if(!_lampImg.lum){ el.textContent='Noch kein Motiv geladen — bis dahin bleibt der Schirm glatt.'; return; }
+  const arcLen=Math.PI*_lampP.dia*_lampP.photoArc/360;
+  const soll=Math.round(arcLen/_lampImg.aspect);
+  el.innerHTML=`Bild ${_lampImg.img.width}×${_lampImg.img.height} · Motivfläche ${Math.round(arcLen)}×${_lampP.photoH} mm`
+    +(Math.abs(soll-_lampP.photoH)>3?` <span style="color:#e0a33e">(unverzerrt wären ${soll} mm)</span>`:'')
+    +`<br><span style="color:var(--dim)">Wand ${_lampP.wall} → ${(_lampP.wall+_lampP.photoDepth).toFixed(1)} mm an den dunklen Stellen. Dünne Wand + weißes/transluzentes Filament, 100 % Infill, keine Stützen.</span>`;
+}
 function _lampInfo(){
+  _lampPhotoInfo();
   const el=document.getElementById('lamp-info'); if(!el) return;
   const formN={straight:'Gerade',cone:'Konisch',barrel:'Bauchig'}[_lampP.form];
   if(_lampP.mount==='base'){
     el.innerHTML=`Push-Lampe · ${formN} · Ø${_lampP.dia}×${_lampP.h} mm<br>Button-Puck Ø${_lampP.puckD}×${_lampP.puckH} mm · Hub ${_lampP.travel} mm<br><span style="color:var(--dim)">Basis + Schirm SEPARAT drucken (Schirm kopfüber), dann Schirm über die Basis schnappen. Drücken = an/aus. Snap/Hub brauchen evtl. einen Kalibrierdruck (Spiel-Slider).</span>`;
   } else {
-    el.innerHTML=`${formN} · Ø${_lampP.dia}×${_lampP.h} mm · Wand ${_lampP.wall} mm<br>LED-Tasche Ø${_lampP.led} mm · Bambu LED-Kit<br><span style="color:var(--dim)">KOPFÜBER drucken (geschlossene Seite aufs Bett) → ohne Stützen. Lichtdurchlass am besten mit dünner Wand + transluzentem Filament.</span>`;
+    const tip=(_lampP.pattern==='photo')
+      ? 'KOPFÜBER drucken (geschlossene Seite aufs Bett) → ohne Stützen. Für ein Lithophane: helles/weißes Filament, 0,1–0,15 mm Schichten, 100 % Infill und Wand-Anzahl hoch genug, dass die dicken Stellen massiv werden.'
+      : 'KOPFÜBER drucken (geschlossene Seite aufs Bett) → ohne Stützen. Lichtdurchlass am besten mit dünner Wand + transluzentem Filament.';
+    el.innerHTML=`${formN} · Ø${_lampP.dia}×${_lampP.h} mm · Wand ${_lampP.wall} mm<br>LED-Tasche Ø${_lampP.led} mm · Bambu LED-Kit<br><span style="color:var(--dim)">${tip}</span>`;
   }
 }
 function _createLamp(){
@@ -25234,7 +25386,9 @@ function _createLamp(){
   const shadeUD={...common,lpForm:_lampP.form,lpH:_lampP.h,lpDia:_lampP.dia,lpTopd:_lampP.topd,lpBulge:_lampP.bulge,lpWall:_lampP.wall,
     lpPattern:_lampP.pattern,lpRibs:_lampP.ribs,lpRibamp:_lampP.ribamp,lpTwist:_lampP.twist,lpFacets:_lampP.facets,
     lpLed:_lampP.led,lpLedh:_lampP.ledh,lpClr:_lampP.clr,lpTop:_lampP.top,lpCable:_lampP.cable,
-    lpMount:_lampP.mount,lpPuckD:_lampP.puckD,lpPuckH:_lampP.puckH,lpTravel:_lampP.travel};
+    lpMount:_lampP.mount,lpPuckD:_lampP.puckD,lpPuckH:_lampP.puckH,lpTravel:_lampP.travel,
+    lpPhotoDepth:_lampP.photoDepth,lpPhotoArc:_lampP.photoArc,lpPhotoH:_lampP.photoH,
+    lpPhotoY:_lampP.photoY,lpPhotoInv:_lampP.photoInv,lpPhotoOut:_lampP.photoOut};
   try{
     if(_lampP.mount==='base'){
       const baseGeo=_buildLampBaseGeo(_lampP), shadeGeo=_buildLampShadeBaseGeo(_lampP);
