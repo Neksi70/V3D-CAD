@@ -762,6 +762,16 @@ body.devmode .dev-only{display:flex!important}
 #cur-design-lbl:hover{color:var(--acc)}
 #as-dot{width:6px;height:6px;border-radius:50%;background:var(--grn);flex-shrink:0;opacity:0;transition:opacity .3s}
 #as-dot.active{opacity:1}
+/* Projekt-Tabs (wie Silhouette Studio): jeder Tab = ein geöffnetes Design */
+#tb-r2>#dtabs{display:flex;align-items:center;gap:3px;overflow-x:auto;scrollbar-width:thin;min-width:70px;max-width:480px;flex-shrink:1;padding:2px 0}
+.dtab{display:flex;align-items:center;gap:5px;padding:4px 6px 4px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px 6px 0 0;border-bottom:2px solid transparent;font-size:11px;font-weight:600;color:var(--mid);cursor:pointer;white-space:nowrap;user-select:none;flex-shrink:0;max-width:150px}
+.dtab:hover{color:var(--text);border-color:var(--border2)}
+.dtab-act{background:var(--white);color:var(--text);border-bottom:2px solid var(--acc);box-shadow:var(--sh)}
+.dtab-nm{overflow:hidden;text-overflow:ellipsis}
+.dtab-x{font-size:13px;line-height:1;padding:0 3px;border-radius:4px;color:var(--dim)}
+.dtab-x:hover{background:var(--red);color:#fff}
+.dtab-plus{padding:4px 9px;font-size:13px;border-style:dashed;border-radius:6px;border-bottom-width:1px}
+.dtab-plus:hover{color:var(--acc);border-color:var(--acc)}
 
 /* ── Rotation Ring Handles ───────────────────────────────────────────── */
 #rot-svg{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:30;display:none}
@@ -1150,8 +1160,10 @@ const firebaseConfig = {
     <button class="btn" onclick="_cmdkOpen()" title="Befehl suchen (Strg/Cmd+K) — jede Funktion in 2 Sekunden finden">🔍 Suche</button>
     <div id="cur-design-wrap">
       <div id="as-dot" title="Auto-Save aktiv"></div>
-      <span id="cur-design-lbl" onclick="_renameCurrentDesign()" title="Klicken zum Umbenennen">Unbenannt</span>
+      <!-- unsichtbar, aber lebendig: Exporte lesen den Design-Namen aus diesem Span -->
+      <span id="cur-design-lbl" style="display:none">Unbenannt</span>
     </div>
+    <div id="dtabs"></div>
     <input type="file" id="fload" accept=".v3d,.json" style="display:none" onchange="handleLoad(event)">
     <div id="tbr">
       <div id="snp" onclick="cycleSnap()"><div id="sdot"></div><span id="slbl">SNAP AUS</span></div>
@@ -20541,6 +20553,7 @@ function dsDeleteDesign(id) {
   localStorage.removeItem(_dsDataKey(id));
   localStorage.removeItem(_dsThumbKey(id));
   if (currentDesignId === id) { currentDesignId = null; localStorage.removeItem('volme3d_cur'); }
+  _tabRemove(id); _tabsSig = ''; _tabsSync();
   _fsDeleteDesign(id); // async, fire & forget
 }
 
@@ -20666,6 +20679,7 @@ async function _dsRefreshThumbs() {
 function _updateDesignLabel(name) {
   const el = document.getElementById('cur-design-lbl');
   if (el) el.textContent = name || 'Unbenannt';
+  _tabsSync();   // jeder Ort, der das Label setzt, hält damit auch die Tab-Leiste aktuell
 }
 
 function _flashSaveDot() {
@@ -20673,6 +20687,94 @@ function _flashSaveDot() {
   if (!dot) return;
   dot.classList.add('active');
   setTimeout(() => dot.classList.remove('active'), 2000);
+}
+
+// ── Projekt-Tabs (wie Silhouette Studio) ───────────────────────────────────
+// Jeder Tab ist ein geöffnetes Design aus dem Design-Manager. Tab schließen
+// entfernt nur den Tab — das Design bleibt unter „Meine Designs" erhalten.
+// Offene Tabs überleben Reloads (localStorage). Gehalten wird nur die ID-Liste;
+// Namen kommen live aus dem Design-Index, das Umbenennen bleibt also ein Ort.
+const TABS_KEY = 'volme3d_tabs';
+let _tabIds = null;
+let _tabsSig = '';
+
+function _tabsList() {
+  if (!_tabIds) {
+    try { _tabIds = JSON.parse(localStorage.getItem(TABS_KEY) || '[]'); } catch { _tabIds = []; }
+    if (!Array.isArray(_tabIds)) _tabIds = [];
+  }
+  const before = _tabIds.length;
+  _tabIds = _tabIds.filter(id => dsGetMeta(id));   // Tabs zu gelöschten Designs verwerfen
+  if (_tabIds.length !== before) _tabsPersist();
+  return _tabIds;
+}
+function _tabsPersist() { try { localStorage.setItem(TABS_KEY, JSON.stringify(_tabIds || [])); } catch(_) {} }
+function _tabEsc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+function _tabsSync() {
+  const bar = document.getElementById('dtabs');
+  if (!bar) return;
+  const ids = _tabsList();
+  if (currentDesignId && dsGetMeta(currentDesignId) && !ids.includes(currentDesignId)) {
+    ids.push(currentDesignId); _tabsPersist();
+  }
+  // Nur neu rendern, wenn sich sichtbar etwas geändert hat (läuft u.a. im Auto-Save)
+  const sig = ids.map(id => id + '|' + (dsGetMeta(id)?.name || '')).join('\n') + '#' + currentDesignId;
+  if (sig === _tabsSig) return;
+  _tabsSig = sig;
+  bar.innerHTML = ids.map(id => {
+    const nm  = dsGetMeta(id)?.name || 'Unbenannt';
+    const cur = id === currentDesignId;
+    return `<div class="dtab${cur ? ' dtab-act' : ''}" onclick="_tabActivate('${id}')" ondblclick="_renameDesign('${id}')"` +
+      ` onauxclick="if(event.button===1){event.preventDefault();_tabClose('${id}')}"` +
+      ` title="${_tabEsc(nm)}&#10;Doppelklick: umbenennen · Mittelklick/×: Tab schließen">` +
+      `<span class="dtab-nm">${_tabEsc(nm)}</span>` +
+      `<span class="dtab-x" onclick="event.stopPropagation();_tabClose('${id}')" title="Tab schließen (Design bleibt gespeichert)">×</span></div>`;
+  }).join('') + `<div class="dtab dtab-plus" onclick="_tabNew()" title="Neues Design in neuem Tab">＋</div>`;
+  const act = bar.querySelector('.dtab-act');
+  if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+function _tabActivate(id) {
+  if (id === currentDesignId) return;
+  _doAutoSave();                        // aktuellen Stand sichern, bevor gewechselt wird
+  const data = dsLoadData(id);
+  if (!data) { notify('Design nicht gefunden — Tab wird geschlossen', 'e'); _tabRemove(id); _tabsSig = ''; _tabsSync(); return; }
+  _localDetachFile();                   // anderes Design ≠ alte Datei
+  _applySnapshot(data);
+  currentDesignId = id;
+  localStorage.setItem('volme3d_cur', id);
+  _updateDesignLabel(dsGetMeta(id)?.name);
+}
+
+function _tabNew() { _newCreate(true); }   // sichert die alte Szene und startet leer im neuen Tab
+
+function _tabRemove(id) {
+  const ids = _tabsList();
+  const i = ids.indexOf(id);
+  if (i >= 0) { ids.splice(i, 1); _tabsPersist(); }
+  return i;
+}
+
+function _tabClose(id) {
+  const wasCurrent = id === currentDesignId;
+  if (wasCurrent) _doAutoSave();        // letzten Stand sichern, bevor der Tab geht
+  const i = _tabRemove(id);
+  const ids = _tabsList();
+  if (wasCurrent) {
+    const next = ids[Math.min(Math.max(i, 0), ids.length - 1)];   // rechter Nachbar, sonst letzter
+    // Letzter Tab zu → frisches leeres Design. Ohne erneutes Auto-Save (_newCreate(true)
+    // würde das eben geschlossene Design sofort wieder als Tab einsortieren).
+    if (!next) { _newCreate(false); return; }
+    const data = dsLoadData(next);
+    _localDetachFile();
+    if (data) _applySnapshot(data);
+    currentDesignId = next;
+    localStorage.setItem('volme3d_cur', next);
+    _updateDesignLabel(dsGetMeta(next)?.name);
+  }
+  _tabsSig = ''; _tabsSync();
+  notify('Tab geschlossen — Design bleibt unter „Meine Designs"', 'ok');
 }
 
 // ── Versionierte Sicherungen (IndexedDB) ───────────────────────────────────
@@ -20900,6 +21002,7 @@ function _renameDesign(id) {
   if (!name || !name.trim()) return;
   dsRenameDesign(id, name.trim());
   if (id === currentDesignId) _updateDesignLabel(name.trim());
+  _tabsSync();   // auch Umbenennen von Nicht-aktiven Tabs sichtbar machen
   _renderGallery();
 }
 
@@ -31117,6 +31220,7 @@ function _initDesigns() {
   }
   _startAutoSave();
   _resumeDiskAutosave();
+  _tabsSync();   // offene Tabs vom letzten Besuch anzeigen (auch ohne wiederhergestelltes Design)
 }
 
 // ═══ FLOATING PROPERTY PANEL ════════════════════════════════════════════
