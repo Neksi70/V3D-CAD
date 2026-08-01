@@ -216,6 +216,44 @@ res.paste = await page.evaluate(async () => {
     saveOn: !document.getElementById('vec-save-btn').disabled,
   };
 });
+// ── Falsches Bild wieder loswerden ──
+res.clearImg = await page.evaluate(async () => {
+  const had = !!_vec.img && !!_vec.out;
+  _vecP.crop = { x: 0.1, y: 0.1, w: 0.5, h: 0.5 };   // auch ein Ausschnitt muss weg
+  _vecSelSyncUI();
+  _vecClearImage();
+  await new Promise(r => setTimeout(r, 400));        // ein noch laufender Lauf darf nichts zurückholen
+  return {
+    had,
+    img: _vec.img, out: _vec.out, crop: _vecP.crop, name: _vec.name,
+    btnHidden: document.getElementById('vec-img-clr').style.display === 'none',
+    cropBtnHidden: document.getElementById('vec-sel-clr').style.display === 'none',
+    saveOff: document.getElementById('vec-save-btn').disabled
+          && document.getElementById('vec-scene-btn').disabled
+          && document.getElementById('vec-topper-btn').disabled,
+    dropReset: document.getElementById('vec-drop').textContent.indexOf('Bild wählen') >= 0,
+    info: document.getElementById('vec-info').textContent.indexOf('Noch kein Bild') >= 0,
+  };
+});
+// Danach muss ein neues Bild wieder normal ankommen
+res.afterClear = await page.evaluate(async () => {
+  _vecOpen();
+  const cv = document.createElement('canvas'); cv.width = 200; cv.height = 200;
+  const cx = cv.getContext('2d');
+  cx.fillStyle = '#fff'; cx.fillRect(0, 0, 200, 200);
+  cx.fillStyle = '#000'; cx.beginPath(); cx.arc(100, 100, 70, 0, 7); cx.fill();
+  const blob = await new Promise(r => cv.toBlob(r, 'image/png'));
+  const dt = new DataTransfer();
+  dt.items.add(new File([blob], 's.png', { type: 'image/png' }));
+  document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  await new Promise(r => setTimeout(r, 600));
+  return {
+    faces: _vec.out ? _vec.out.layers[0].faces.length : -1,
+    btnShown: document.getElementById('vec-img-clr').style.display !== 'none',
+    saveOn: !document.getElementById('vec-save-btn').disabled,
+  };
+});
+
 // Paste außerhalb des Fensters darf nichts anfassen
 res.pasteClosed = await page.evaluate(async () => {
   _vecClose();
@@ -256,7 +294,15 @@ const ok =
   res.cleared.crop === null && res.cleared.faces === 2 && res.cleared.clrHidden &&
   // Zwischenablage: Strg+V bei offenem Fenster übernimmt das Bild und rechnet los
   res.paste.gotImage && res.paste.name === 'zwischenablage' && res.paste.faces === 1 &&
-  res.paste.btn && res.paste.saveOn && res.pasteClosed.unchanged;
+  res.paste.btn && res.paste.saveOn &&
+  // ✕ wirft Bild, Ergebnis, Ausschnitt und die Knopf-Freigaben zurück auf Anfang
+  res.clearImg.had && res.clearImg.img === null && res.clearImg.out === null &&
+  res.clearImg.crop === null && res.clearImg.name === 'motiv' &&
+  res.clearImg.btnHidden && res.clearImg.cropBtnHidden && res.clearImg.saveOff &&
+  res.clearImg.dropReset && res.clearImg.info &&
+  // und danach geht es normal weiter
+  res.afterClear.faces === 1 && res.afterClear.btnShown && res.afterClear.saveOn &&
+  res.pasteClosed.unchanged;
 
 console.log(ok ? '\n✅ Bild → SVG: alle Prüfungen bestanden' : '\n❌ Bild → SVG: Prüfung fehlgeschlagen');
 
