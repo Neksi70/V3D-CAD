@@ -3265,7 +3265,7 @@ Patrick</textarea>
         <div class="vrow"><label>Breite</label> <input type="range" id="lp-width" min="40" max="200" value="100" step="1" oninput="document.getElementById('lv-width').textContent=this.value;_lithoSet('width',this.value)"><span class="vv" id="lv-width">100</span><span class="vu">mm</span></div>
         <div class="vrow"><label>Max-Dicke</label> <input type="range" id="lp-maxt" min="1.5" max="5" value="3" step="0.1" oninput="document.getElementById('lv-maxt').textContent=this.value;_lithoSet('maxT',this.value)"><span class="vv" id="lv-maxt">3</span><span class="vu">mm</span></div>
         <div class="vrow"><label>Basis-Dicke</label> <input type="range" id="lp-mint" min="0.4" max="2" value="0.8" step="0.1" oninput="document.getElementById('lv-mint').textContent=this.value;_lithoSet('minT',this.value)"><span class="vv" id="lv-mint">0.8</span><span class="vu">mm</span></div>
-        <div class="vrow"><label>Auflösung</label> <input type="range" id="lp-res" min="80" max="320" value="200" step="10" oninput="document.getElementById('lv-res').textContent=this.value;_lithoSet('res',this.value)"><span class="vv" id="lv-res">200</span><span class="vu">px</span></div>
+        <div class="vrow"><label>Auflösung</label> <input type="range" id="lp-res" min="80" max="1200" value="500" step="20" oninput="document.getElementById('lv-res').textContent=this.value;_lithoSet('res',this.value)"><span class="vv" id="lv-res">500</span><span class="vu">px</span></div>
         <div class="vrow"><label>Rahmen</label> <input type="range" id="lp-frame" min="0" max="8" value="0" step="0.5" oninput="document.getElementById('lv-frame').textContent=this.value;_lithoSet('frame',this.value)"><span class="vv" id="lv-frame">0</span><span class="vu">mm</span></div>
         <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:4px"><input type="checkbox" id="lp-invert" onchange="_lithoSet('invert',this.checked)"> Negativ (hell = dick)</label>
         <div class="g3info" id="litho-info">Noch kein Bild geladen.</div>
@@ -25665,20 +25665,39 @@ function _createBatt(){
 // ein wasserdichtes Heightmap-Solid: Relief-Oberseite + flache Rückseite +
 // 4 Seitenwände. Bild wird auf die Auflösung herunterskaliert (Performance).
 const _litho = { img:null, lum:null, cols:0, rows:0, aspect:1,
-  p:{ width:100, maxT:3.0, minT:0.8, res:200, frame:0, invert:false } };
+  p:{ width:100, maxT:3.0, minT:0.8, res:500, frame:0, invert:false } };
 function _lithoSample(){
   if(!_litho.img) return;
-  const cols=Math.max(20,Math.min(360,Math.round(_litho.p.res)));
+  // Der Deckel lag bei 360 Spalten — damit blieb das Relief auch am Reglerende
+  // grob, egal wie gut die Vorlage war. Nie feiner als die Vorlage abtasten:
+  // Hochskalieren erfindet keine Details, kostet aber Dreiecke.
+  const want=Math.max(20,Math.min(1200,Math.round(_litho.p.res)));
+  const cols=Math.max(20,Math.min(want,_litho.img.width||want));
   const rows=Math.max(20,Math.round(cols/_litho.aspect));
   const c=document.createElement('canvas'); c.width=cols; c.height=rows;
-  const ctx=c.getContext('2d'); ctx.drawImage(_litho.img,0,0,cols,rows);
+  const ctx=c.getContext('2d');
+  ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
+  ctx.drawImage(_litho.img,0,0,cols,rows);
   const d=ctx.getImageData(0,0,cols,rows).data, lum=new Float32Array(cols*rows);
   for(let i=0;i<cols*rows;i++){ lum[i]=(0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2])/255; }
   _litho.lum=lum; _litho.cols=cols; _litho.rows=rows;
+  // Zweites, grobes Raster nur für die Vorschau: bei 900 Spalten dauert ein
+  // Aufbau über eine halbe Sekunde — beim Reglerziehen wäre das zäh. Erstellt
+  // wird natürlich mit der vollen Auflösung.
+  const pc=Math.max(20,Math.min(cols,240)), pr=Math.max(20,Math.round(pc/_litho.aspect));
+  if(pc===cols){ _litho.prev={lum,cols,rows}; return; }
+  const c2=document.createElement('canvas'); c2.width=pc; c2.height=pr;
+  const x2=c2.getContext('2d');
+  x2.imageSmoothingEnabled=true; x2.imageSmoothingQuality='high';
+  x2.drawImage(_litho.img,0,0,pc,pr);
+  const d2=x2.getImageData(0,0,pc,pr).data, l2=new Float32Array(pc*pr);
+  for(let i=0;i<pc*pr;i++){ l2[i]=(0.299*d2[i*4]+0.587*d2[i*4+1]+0.114*d2[i*4+2])/255; }
+  _litho.prev={lum:l2, cols:pc, rows:pr};
 }
-function _buildLithoGeo(){
+function _buildLithoGeo(vorschau){
   if(!_litho.lum) return new THREE.BoxGeometry(8,0.4,5);   // Platzhalter
-  const lum=_litho.lum, nx=_litho.cols, nz=_litho.rows, P=_litho.p;
+  const src=(vorschau && _litho.prev) ? _litho.prev : _litho;
+  const lum=src.lum, nx=src.cols, nz=src.rows, P=_litho.p;
   const wU=Math.max(2,P.width)/10, hU=wU/_litho.aspect;
   const maxT=Math.max(0.2,P.maxT)/10;
   const minT=Math.max(0.1,Math.min(P.minT,P.maxT-0.1))/10;
@@ -25725,7 +25744,7 @@ function _buildLithoGeo(){
 function _openLithoModal(){
   document.getElementById('litho-modal').classList.add('show');
   _lithoSyncUI();
-  requestAnimationFrame(()=>{ if(!_gpv['litho']) _gpvInit('litho',()=>_buildLithoGeo()); else { _gpvUpdate('litho'); if(!_gpv['litho'].anim) _gpvLoop('litho'); } });
+  requestAnimationFrame(()=>{ if(!_gpv['litho']) _gpvInit('litho',()=>_buildLithoGeo(true)); else { _gpvUpdate('litho'); if(!_gpv['litho'].anim) _gpvLoop('litho'); } });
 }
 function _closeLithoModal(){ document.getElementById('litho-modal').classList.remove('show'); _gpvStop('litho'); }
 function _lithoSyncUI(){
@@ -25747,9 +25766,9 @@ function _lithoFile(ev){
     _litho.img=img; _litho.aspect=img.width/img.height || 1;
     _lithoSample();
     const btn=document.getElementById('litho-create-btn'); if(btn) btn.disabled=false;
-    const info=document.getElementById('litho-info'); if(info) info.textContent=`Bild ${img.width}×${img.height} · Raster ${_litho.cols}×${_litho.rows}`;
+    const info=document.getElementById('litho-info'); if(info) info.textContent=`Bild ${img.width}×${img.height} · Raster ${_litho.cols}×${_litho.rows}`+` · rund ${Math.round(2*(_litho.cols-1)*(_litho.rows-1)/1000)}k Dreiecke`+(_litho.cols<_litho.p.res?` (Vorlage gibt nicht mehr her)`:``);
     document.getElementById('litho-drop').textContent='📷 Bild ersetzen';
-    if(!_gpv['litho']) _gpvInit('litho',()=>_buildLithoGeo()); else _gpvUpdate('litho');
+    if(!_gpv['litho']) _gpvInit('litho',()=>_buildLithoGeo(true)); else _gpvUpdate('litho');
   };
   img.onerror=()=>notify('Bild konnte nicht geladen werden','e');
   img.src=URL.createObjectURL(f);
@@ -29886,8 +29905,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.63';
+const VOLME3D_VERSION = '1.15.64';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.64', date:'2026-08-02', changes:[
+    ['🏔️','Das Relief (Lithophane) wird deutlich FEINER. Der Auflösungs-Regler ging bis 320, intern war aber ohnehin bei 360 Rasterspalten Schluss — auch am Anschlag blieb das Relief also grob, egal wie gut die Vorlage war. Jetzt sind bis 1200 Spalten möglich, Standard ist 500. Aus einer 900-Pixel-Vorlage werden damit statt 95.000 rund 594.000 Dreiecke, also gut sechsmal so viel Detail. Über die Auflösung deiner Vorlage hinaus wird nicht mehr hochgerechnet, und die Infozeile nennt jetzt das tatsächliche Raster samt Dreieckszahl — und sagt dir, wenn ein größeres Bild mehr brächte. Damit das Bedienen flott bleibt, rechnet die VORSCHAU bewusst grob weiter (240 Spalten); erstellt wird immer mit der vollen Auflösung.'],
+  ]},
   { version:'1.15.63', date:'2026-08-02', changes:[
     ['🗿','„Nachzeichnen" + Grundplatte baut das Motiv jetzt in DREI Stufen statt zwei — damit die Figur voll wird, ohne zum plumpen Umriss zu verkommen. Unten der Saum, der ringsum übersteht. Darauf die volle Figur. Und obenauf die Konturen der Zeichnung, sodass Gesicht, Falten und alle Innenlinien erkennbar bleiben. Vorher gab es nur Saum und Linien: der Figurenkörper lag dann auf derselben Höhe wie der Saum, dadurch war weder der Saum zu sehen noch die Figur als Körper. Neuer Regler „Konturen erhaben" bestimmt, wie weit die Linien über der Figur stehen. In der Szene kommen die drei Stufen als Gruppe „Rand", „Figur", „Konturen" — im Slicer also drei Farben möglich. Mit „Außenrand" bleibt es bei zwei Stufen (Saum + volle Figur), da gibt es ja keine Innenlinien.'],
   ]},
