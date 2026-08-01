@@ -54,6 +54,37 @@ const res = await page.evaluate(async () => {
   // Zugeschnitten auf das Motiv: runder Ring → quadratisch, also 100 × 100 mm
   out.svgH = svg ? +(/height="([\d.]+)mm"/.exec(svg) || [])[1] : null;
 
+  // ── 1b) „Außenrand": derselbe Ring, aber Innenfläche zu → 1 Fläche, 0 Löcher ──
+  _vecP.mode = 1; _vecProcess();
+  const oa = _vec.out;
+  out.outer = oa ? { faces: oa.layers[0].faces.length, holes: oa.layers[0].faces[0].holes.length } : null;
+  const svgA = _vecSvgText();
+  out.outerSubpaths = svgA ? (svgA.match(/M/g) || []).length : 0;
+
+  // Strichzeichnung (Ring aus dünner Linie, wie nachgezeichnete Kontur):
+  // „Nachzeichnen" ergibt den schmalen Ring, „Außenrand" die volle Scheibe.
+  _vec.img = await mkImg(300, 300, cx => {
+    cx.strokeStyle = '#000'; cx.lineWidth = 6;
+    cx.beginPath(); cx.arc(150, 150, 100, 0, 7); cx.stroke();
+  });
+  _vecP.mode = 0; _vecProcess();
+  const oL = _vec.out;
+  out.lineTrace = { faces: oL.layers[0].faces.length, holes: oL.layers[0].faces[0].holes.length };
+  _vecP.mode = 1; _vecProcess();
+  const oF = _vec.out;
+  out.lineFilled = { faces: oF.layers[0].faces.length, holes: oF.layers[0].faces[0].holes.length };
+  _vecP.mode = 0;
+
+  // ── 1c) Löcher müssen den Weg durch den SVGLoader in den Topper überstehen ──
+  _vec.img = await mkImg(300, 300, cx => {
+    cx.fillStyle = '#000'; cx.beginPath(); cx.arc(150, 150, 110, 0, 7); cx.fill();
+    cx.fillStyle = '#fff'; cx.beginPath(); cx.arc(150, 150, 45, 0, 7); cx.fill();
+  });
+  _vecProcess();
+  _ttSetMotif(_vecSvgText(), 'Ring');
+  out.motifHoles = _ttMotif ? { polys: _ttMotif.polys.length, holes: _ttMotif.polys.map(p => p.holes.length) } : null;
+  _ttMotifClear();
+
   // ── 2) Lage: Dreieck mit Spitze oben → oben schmal, unten breit (kein Y-Flip) ──
   _vec.img = await mkImg(400, 400, cx => {
     cx.fillStyle = '#000'; cx.beginPath();
@@ -86,7 +117,7 @@ const res = await page.evaluate(async () => {
     cx.fillStyle = '#2050d0'; cx.fillRect(135, 40, 90, 160);
     cx.fillStyle = '#20a040'; cx.fillRect(250, 40, 90, 160);
   });
-  Object.assign(_vecP, { mode: 1, ncol: 4, bg: 1 });
+  Object.assign(_vecP, { mode: 2, ncol: 4, bg: 1 });
   _vecProcess();
   out.colLayers = _vec.out ? _vec.out.layers.map(L => L.color) : null;
   // groß nach klein sortiert?
@@ -115,6 +146,11 @@ console.log('\nSeitenfehler:', errs.length ? errs : 'keine');
 const ok =
   res.ring && res.ring.layers === 1 && res.ring.faces === 1 && res.ring.holes === 1 &&
   res.svgHasMM && res.svgEvenOdd && res.svgSubpaths === 2 && Math.abs(res.svgH - 100) < 1 &&
+  // Außenrand macht das Loch zu: eine Fläche, ein Subpfad
+  res.outer && res.outer.faces === 1 && res.outer.holes === 0 && res.outerSubpaths === 1 &&
+  res.lineTrace.holes === 1 && res.lineFilled.holes === 0 &&
+  // Loch überlebt SVG-Text → SVGLoader → Topper-Motiv
+  res.motifHoles && res.motifHoles.polys === 1 && res.motifHoles.holes[0] === 1 &&
   res.spanTop > 0 && res.spanBottom > res.spanTop * 3 &&
   res.invFaces === 1 &&
   res.colLayers && res.colLayers.length === 3 && res.colSorted &&

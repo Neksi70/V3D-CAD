@@ -3283,8 +3283,9 @@ Patrick</textarea>
         <input type="file" id="vec-file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="_vecFile(event)">
         <span class="vsec">Was soll herauskommen?</span>
         <div class="vbg" id="vec-mode-bg">
-          <button class="vtb on" onclick="_vecSet('mode',0)" title="Ein einziger schwarzer Umriss mit Löchern — das Richtige für Tortentopper, Ausstecher und Schablonen.">Silhouette</button>
-          <button class="vtb" onclick="_vecSet('mode',1)" title="Mehrere Farbflächen übereinander — für mehrfarbige Motive.">Farbflächen</button>
+          <button class="vtb on" onclick="_vecSet('mode',0)" title="Zeichnet JEDE Linie nach, auch die inneren — Innenflächen bleiben offen. Das ist „Nachzeichnen" wie im Silhouette Studio, das Richtige für Strichzeichnungen.">Nachzeichnen</button>
+          <button class="vtb" onclick="_vecSet('mode',1)" title="Nur der äußere Umriss, alle Innenflächen werden zugemacht — aus der Strichzeichnung wird die volle Silhouette. Das ist „Außenrand nachzeichnen"; für Tortentopper und Ausstecher meist das Bessere.">Außenrand</button>
+          <button class="vtb" onclick="_vecSet('mode',2)" title="Zerlegt das Bild in mehrere Farbebenen — für mehrfarbige Motive.">Farbflächen</button>
         </div>
         <div id="vec-rows-sil">
           <div class="vrow"><label title="Ab welcher Helligkeit ein Pixel zum Motiv gehört. Nach links = nur ganz dunkle Bereiche, nach rechts = auch helle.">Schwellwert</label> <input type="range" id="vc-thr" min="10" max="90" value="55" step="1" oninput="document.getElementById('vv-thr').textContent=this.value;_vecSet('thr',this.value)"><span class="vv" id="vv-thr">55</span><span class="vu">%</span></div>
@@ -24336,8 +24337,8 @@ function _vecSet(k,v){
   if(k==='mode'){
     _vecP.mode = Number(v)|0;
     document.querySelectorAll('#vec-mode-bg .vtb').forEach((b,i)=>b.classList.toggle('on', i===_vecP.mode));
-    document.getElementById('vec-rows-sil').style.display = _vecP.mode===0 ? '' : 'none';
-    document.getElementById('vec-rows-col').style.display = _vecP.mode===1 ? '' : 'none';
+    document.getElementById('vec-rows-sil').style.display = _vecP.mode<=1 ? '' : 'none';
+    document.getElementById('vec-rows-col').style.display = _vecP.mode===2 ? '' : 'none';
   } else _vecP[k] = parseFloat(v);
   if(k==='wmm'){ _vecInfo(); return; }   // reine Ausgabe-Skalierung — nichts neu rechnen
   _vecRun(false);
@@ -24358,6 +24359,22 @@ function _vecRun(now){
 
 function _vecHex(c){
   return '#' + c.slice(0,3).map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join('');
+}
+
+// „Außenrand": alles zumachen, was vom Bildrand aus nicht erreichbar ist. Aus der
+// Strichzeichnung wird so die volle Silhouette — beim Pferd das ausgefüllte Pferd
+// statt lauter dünner Ringe entlang der Striche.
+function _vecFillHoles(mask, W, H){
+  const N=W*H, outs=new Uint8Array(N), q=new Int32Array(N);
+  let h=0, t=0;
+  const push = i => { if(!outs[i] && !mask[i]){ outs[i]=1; q[t++]=i; } };
+  for(let x=0;x<W;x++){ push(x); push((H-1)*W+x); }
+  for(let y=0;y<H;y++){ push(y*W); push(y*W+W-1); }
+  while(h<t){
+    const i=q[h++], x=i%W, y=(i/W)|0;
+    if(x>0)push(i-1); if(x<W-1)push(i+1); if(y>0)push(i-W); if(y<H-1)push(i+W);
+  }
+  for(let i=0;i<N;i++) if(!outs[i]) mask[i]=1;
 }
 
 // Binärmaske → geschachtelte Flächen {outer,holes}; Flecken unter minPx fliegen
@@ -24396,9 +24413,9 @@ function _vecProcess(){
   const smooth = Math.round(p.smooth);
   const layers = [];
 
-  if(p.mode === 0){
-    // Silhouette: eine Helligkeitsschwelle. Transparente Pixel zählen nie zum
-    // Motiv — sonst kippt „Umkehren" bei PNGs den Hintergrund mit rein.
+  if(p.mode <= 1){
+    // Eine Helligkeitsschwelle. Transparente Pixel zählen nie zum Motiv —
+    // sonst kippt „Umkehren" bei PNGs den Hintergrund mit rein.
     const t = p.thr/100*255, mask = new Uint8Array(N);
     for(let i=0;i<N;i++){
       const lum = 0.299*rgb[i*3] + 0.587*rgb[i*3+1] + 0.114*rgb[i*3+2];
@@ -24406,6 +24423,7 @@ function _vecProcess(){
       if(hasA && !opaque[i]) on = false;
       mask[i] = on ? 1 : 0;
     }
+    if(p.mode === 1) _vecFillHoles(mask, W, H);   // „Außenrand": Innenflächen zu
     const faces = _vecFaces(mask, W, H, smooth, minPx);
     if(faces.length) layers.push({ color:'#000000', faces, w:1 });
   } else {
@@ -24597,6 +24615,8 @@ function _vecToTopper(){
   const svg = _vecSvgText(); if(!svg) return;
   if(!_ttSetMotif(svg, _vec.name)) return;
   _vecClose(); _ttOpen();
+  if(_vecP.mode === 0)
+    notify('Tipp: „Nachzeichnen" liefert die Linien als schmale Ringe. Für einen Topper hält „Außenrand" meist besser — dort wird das Motiv ausgefüllt.','w');
 }
 // ═══ END BILD → SVG ═══════════════════════════════════════════════════════
 
@@ -29459,8 +29479,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.53';
+const VOLME3D_VERSION = '1.15.54';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.54', date:'2026-08-01', changes:[
+    ['✏️','„Bild → SVG" heißt jetzt so wie im Silhouette Studio und kann dasselbe: Oben stehen drei Knöpfe — „Nachzeichnen", „Außenrand" und „Farbflächen". „Nachzeichnen" zeichnet jede Linie nach, auch die inneren; bei einer Strichzeichnung bleiben die Innenflächen offen, es entstehen also Ringe entlang der Striche. NEU ist „Außenrand": macht alle Innenflächen zu und liefert die volle Silhouette — aus dem gezeichneten Pferd wird ein ausgefülltes Pferd. Für Tortentopper, Ausstecher und Schablonen ist das meistens das, was man will, weil dünne Ringe beim Drucken leicht brechen. Umschalten kostet nichts, die Vorschau zeigt beides sofort.'],
+  ]},
   { version:'1.15.53', date:'2026-07-31', changes:[
     ['🖇️','Neuer Knopf „🖇️ Stege" (oben bei Kombinieren, neben „Aufheben"). Das ist das Gegenstück zum Zerlegen: Nachdem du die Buchstaben zurechtgeschoben hast, wählst du alles aus und drückst den Knopf — die alten Stege fliegen raus und es werden neue gesetzt, passend zur neuen Anordnung. Alles, was sonst frei schweben würde, hängt danach wieder über kürzestmögliche Stege am Rest. Der i-Punkt wird dabei genauso mitgedacht wie ein einzelner Buchstabe. Die Stege übernehmen Dicke und Ebene der Teile automatisch, die Breite kommt aus dem Regler „Steg-Breite" im Tortentopper. Du kannst den Knopf beliebig oft drücken, auch auf eine noch nicht aufgehobene Gruppe — die neuen Stege landen dann wieder in der Gruppe. Funktioniert nicht nur bei Toppern, sondern bei allen flachen Teilen in einer Ebene.'],
   ]},
