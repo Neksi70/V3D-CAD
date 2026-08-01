@@ -66,17 +66,43 @@ const res = await page.evaluate(async () => {
   return out;
 });
 
+// ── Meldungsdauer: lange Hinweise müssen lesbar stehenbleiben ──
+res.toast = await page.evaluate(async () => {
+  const messe = async (txt) => {
+    document.getElementById('notif').innerHTML = '';
+    notify(txt, 'w');
+    const el = document.querySelector('#notif .ni');
+    // Ausblend-Verzögerung: zweiter Wert von animation-delay (Einblenden, Ausblenden).
+    // Nicht aus der Kurzschreibweise parsen — die schreibt der Browser um.
+    const delay = parseFloat((getComputedStyle(el).animationDelay || '').split(',')[1] || '0');
+    const breite = el.getBoundingClientRect().width;
+    await new Promise(r => setTimeout(r, 2600));           // über die alte Frist hinaus
+    const el2 = document.querySelector('#notif .ni');
+    const sichtbar = !!el2 && +getComputedStyle(el2).opacity > 0.5;
+    return { len: txt.length, delay, sichtbar, breite: Math.round(breite) };
+  };
+  const kurz = await messe('Gruppiert');
+  const lang = await messe('Zu aufwendig: 31.284 Dreiecke in 7 Teilen (ca. 188 s). Stattdessen gruppiert — '
+    + 'zum Drucken reicht das, überlappende Teile werden ohnehin ein Stück. Echter Verbundkörper? Vorher 🔻 Vereinfachen.');
+  document.querySelector('#notif .ni').click();            // Klick schließt sofort
+  return { kurz, lang, nachKlick: !document.querySelector('#notif .ni') };
+});
+
 console.log(JSON.stringify(res, null, 2));
 console.log('\nMeldungen:'); notes.forEach(n => console.log(' •', n.slice(0, 160)));
 console.log('\nSeitenfehler:', errs.length ? errs : 'keine');
 
-const gross = notes.find(n => n.includes('Zu aufwendig zum Verschmelzen'));
+const gross = notes.find(n => n.includes('Zu aufwendig:'));
 const ok =
   res.nTri > 20000 && res.teile >= 3 &&
   res.ms < 5000 &&                       // sofort statt Minuten
   res.gruppiert && res.fortschrittWeg &&
-  !!gross && gross.includes('überlappen') &&
-  res.kleinDelta === -1 && /Verschmolzen/.test(res.kleinName || '') && res.kleinMs < 60000;
+  !!gross && gross.includes('überlappen') && gross.length < 220 &&
+  res.kleinDelta === -1 && /Verschmolzen/.test(res.kleinName || '') && res.kleinMs < 60000 &&
+  // kurze Meldung wie bisher weg, lange steht noch; Klick schließt; Breite begrenzt
+  res.toast.kurz.delay < 2.5 && !res.toast.kurz.sichtbar &&
+  res.toast.lang.delay > 8 && res.toast.lang.sichtbar &&
+  res.toast.lang.breite <= 430 && res.toast.nachKlick;
 
 console.log(ok ? '\n✅ Vereinen: hängt nicht mehr, kleiner Fall geht weiter' : '\n❌ Vereinen: Prüfung fehlgeschlagen');
 await browser.close(); srv.kill();

@@ -544,7 +544,10 @@ body.devmode .dev-only{display:flex!important}
 .dp-cancel{flex:1;padding:5px;background:var(--bg);color:var(--mid);border:1.5px solid var(--border);border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--font)}
 .dp-cancel:hover{border-color:var(--red);color:var(--red)}
 
-.ni{background:var(--white);border:1.5px solid var(--border);border-radius:var(--rs);padding:6px 12px;font-size:11px;font-weight:700;margin-bottom:4px;color:var(--mid);box-shadow:var(--shm);animation:nfi .14s ease,nfo .25s ease 1.8s forwards}
+/* Ausblend-Verzögerung setzt notify() je nach Textlänge inline — der Wert hier
+   ist nur der Rückfall für kurze Meldungen. pointer-events:auto, damit man eine
+   lange Meldung anklicken (schließen) und zum Lesen anhalten kann. */
+.ni{background:var(--white);border:1.5px solid var(--border);border-radius:var(--rs);padding:6px 12px;font-size:11px;font-weight:700;margin-bottom:4px;color:var(--mid);box-shadow:var(--shm);animation:nfi .14s ease,nfo .25s ease 1.8s forwards;pointer-events:auto;cursor:pointer;max-width:min(420px,92vw);line-height:1.5}
 .ni.ok{border-color:var(--acc);color:var(--acc)}
 .ni.w{border-color:var(--ora);color:var(--ora)}
 .ni.e{border-color:var(--red);color:var(--red)}
@@ -12740,10 +12743,9 @@ async function unionSelected() {
   const estMs  = nTri * nFuse;
   const EST_MAX = 40000;                    // darüber lohnt das Warten nicht
   if (estMs > EST_MAX) {
-    notify('Zu aufwendig zum Verschmelzen: ' + Math.round(nTri).toLocaleString('de') + ' Dreiecke in '
-      + stls.length + ' Teilen (geschätzt ' + Math.round(estMs/1000) + ' s). Für den DRUCK ist das gar nicht nötig — '
-      + 'solange sich die Teile überlappen, wird daraus ohnehin ein Stück. Sie werden jetzt gruppiert. '
-      + 'Wenn du wirklich einen verschmolzenen Körper brauchst: erst 🔻 Vereinfachen.', 'w');
+    notify('Zu aufwendig: ' + Math.round(nTri).toLocaleString('de') + ' Dreiecke in ' + stls.length
+      + ' Teilen (ca. ' + Math.round(estMs/1000) + ' s). Stattdessen gruppiert — zum Drucken reicht das, '
+      + 'überlappende Teile werden ohnehin ein Stück. Echter Verbundkörper? Vorher 🔻 Vereinfachen.', 'w');
     return _unionGroupFallback(sel);
   }
 
@@ -12781,9 +12783,8 @@ async function unionSelected() {
     console.warn('[union] Backend fehlgeschlagen → Gruppierung:', e.message || e);
     const abbruch = e && (e.name === 'AbortError' || /abort/i.test(e.message || ''));
     notify(abbruch
-      ? 'Verschmelzen hat zu lange gedauert und wurde abgebrochen — die Teile sind jetzt gruppiert. '
-        + 'Zum Drucken reicht das: überlappende Teile werden vom Slicer ohnehin zu einem Stück. '
-        + 'Für einen echten Verbundkörper vorher 🔻 Vereinfachen.'
+      ? 'Verschmelzen hat zu lange gedauert, abgebrochen und stattdessen gruppiert — '
+        + 'zum Drucken reicht das. Echter Verbundkörper? Vorher 🔻 Vereinfachen.'
       : 'Verschmelzen nicht möglich (' + (e.message || e) + ') — gruppiere stattdessen', 'w');
     _unionGroupFallback(sel);
   } finally {
@@ -19680,12 +19681,26 @@ function _fernwartung() {
 }
 
 // ═══ NOTIFICATIONS ═════════════════════════════════════════════════════
+// Anzeigedauer nach Textlänge: lange Hinweise waren nach 1,8 s wieder weg,
+// bevor man sie zu Ende lesen konnte. ~45 ms je Zeichen ist bequemes Lesetempo.
+// Wichtig: Das Ausblenden steckt in einer CSS-Animation mit fester Verzögerung —
+// die muss mitgezogen werden, sonst nützt die längere Frist nichts.
+// Mauszeiger darüber hält die Meldung an, Klick schließt sie sofort.
 function notify(msg, type, ms) {
   const el = document.createElement('div');
   el.className = 'ni ' + (type || 'ok');
   el.textContent = msg;
+  const dur = ms || Math.min(20000, Math.max(2200, 1200 + String(msg).length * 45));
+  el.style.animation = 'nfi .14s ease, nfo .25s ease ' + ((dur - 250) / 1000).toFixed(2) + 's forwards';
+  if (dur > 4000) el.title = 'Zum Lesen mit der Maus draufbleiben · Klick schließt';
   document.getElementById('notif').appendChild(el);
-  setTimeout(() => el.remove(), ms || 2200);
+  let t = setTimeout(() => el.remove(), dur);
+  el.addEventListener('click', () => { clearTimeout(t); el.remove(); });
+  el.addEventListener('mouseenter', () => { clearTimeout(t); el.style.animationPlayState = 'paused'; });
+  el.addEventListener('mouseleave', () => {
+    el.style.animationPlayState = 'running';
+    t = setTimeout(() => el.remove(), 2000);
+  });
 }
 
 // ── Fortschrittsbalken (z.B. für Abziehen/OCCT-Schnitt) ─────────────────────
@@ -29688,8 +29703,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.59';
+const VOLME3D_VERSION = '1.15.60';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.60', date:'2026-08-02', changes:[
+    ['💬','Meldungen bleiben jetzt so lange stehen, wie man zum Lesen braucht. Bisher verschwand JEDE Meldung nach 1,8 Sekunden — bei einem langen Hinweis war er weg, bevor man ihn zu Ende gelesen hatte. Die Anzeigedauer richtet sich jetzt nach der Textlänge (ein langer Hinweis steht rund 10 Sekunden, kurze wie bisher knapp 2). Zusätzlich: Mauszeiger drauf hält die Meldung an, solange du liest, und ein Klick schließt sie sofort weg. Sehr lange Meldungen laufen außerdem nicht mehr über den halben Bildschirm, sondern brechen sauber um. Danke an Ralf für den Hinweis.'],
+  ]},
   { version:'1.15.59', date:'2026-08-01', changes:[
     ['⏱️','„∪ Vereinen" bleibt nicht mehr bei 85 % stehen. Wer einen Tortentopper aufhebt, den Stecker verschiebt und dann verschmelzen will, hat bisher ewig gewartet — ein Schriftzug bringt rund 31.000 Dreiecke mit, und das Verschmelzen läuft mit etwa einer Millisekunde je Dreieck und Teil. Bei sieben Teilen sind das über drei Minuten, und am Ende bricht es womöglich ab. Volme rechnet das jetzt VORHER aus: Wird es zu lang, sagt es das sofort mit der geschätzten Dauer und gruppiert stattdessen. Und falls es doch einmal hängt, gibt es eine Notbremse statt endlosem Warten. WICHTIG dabei: Zum Drucken musst du gar nicht verschmelzen — solange sich die Teile überlappen, macht der Slicer daraus ohnehin ein Stück. Verschmelzen brauchst du nur, wenn du wirklich einen einzelnen wasserdichten Körper exportieren willst; dann vorher 🔻 Vereinfachen. Kleine Sachen (zwei Grundkörper o. ä.) verschmelzen unverändert in Sekunden.'],
   ]},
