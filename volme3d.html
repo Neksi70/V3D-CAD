@@ -3311,8 +3311,8 @@ Patrick</textarea>
         </div>
         <span class="vsec">Feinschliff</span>
         <div class="vrow"><label title="0 = pixelgenau (Treppenstufen), höher = weichere Kurven.">Glättung</label> <input type="range" id="vc-smooth" min="0" max="4" value="2" step="1" oninput="document.getElementById('vv-smooth').textContent=this.value;_vecSet('smooth',this.value)"><span class="vv" id="vv-smooth">2</span><span class="vu"></span></div>
-        <div class="vrow"><label title="Despeckle: Flecken kleiner als dieser Anteil der Bildfläche fliegen raus — gegen JPG-Rauschen und Staubkörner im Scan.">Despeckle</label> <input type="range" id="vc-mina" min="0" max="30" value="10" step="1" oninput="document.getElementById('vv-mina').textContent=(this.value/10).toFixed(1);_vecSet('minA',this.value/10)"><span class="vv" id="vv-mina">1.0</span><span class="vu">‰</span></div>
-        <div class="vrow"><label title="Wie fein das Bild analysiert wird. Höher = mehr Details, aber größere SVG.">Genauigkeit</label> <input type="range" id="vc-res" min="150" max="600" value="300" step="25" oninput="document.getElementById('vv-res').textContent=this.value;_vecSet('res',this.value)"><span class="vv" id="vv-res">300</span><span class="vu">px</span></div>
+        <div class="vrow"><label title="Despeckle: Flecken kleiner als dieser Anteil der Bildfläche fliegen raus — gegen Rauschen und Staubkörner im Scan. ACHTUNG: schon 1 ‰ kann feine Sachen wie ein Auge oder Mähnenspitzen verschlucken. Nur hochdrehen, wenn wirklich Krümel übrig bleiben.">Despeckle</label> <input type="range" id="vc-mina" min="0" max="30" value="0" step="1" oninput="document.getElementById('vv-mina').textContent=(this.value/10).toFixed(1);_vecSet('minA',this.value/10)"><span class="vv" id="vv-mina">0.0</span><span class="vu">‰</span></div>
+        <div class="vrow"><label title="Wie fein das Bild abgetastet wird. Höher = mehr Details, aber größere SVG. Über die Auflösung deiner Vorlage hinaus bringt es nichts — die Infozeile unten zeigt, womit wirklich gerechnet wird.">Genauigkeit</label> <input type="range" id="vc-res" min="150" max="2000" value="900" step="50" oninput="document.getElementById('vv-res').textContent=this.value;_vecSet('res',this.value)"><span class="vv" id="vv-res">900</span><span class="vu">px</span></div>
         <span class="vsec">Größe der SVG</span>
         <div class="vrow"><label title="Breite in Millimetern — die SVG bekommt echte mm-Maße, damit sie überall maßhaltig ankommt.">Breite</label> <input type="range" id="vc-wmm" min="10" max="300" value="100" step="1" oninput="document.getElementById('vv-wmm').textContent=this.value;_vecSet('wmm',this.value)"><span class="vv" id="vv-wmm">100</span><span class="vu">mm</span></div>
         <div class="g3info" id="vec-info">Noch kein Bild geladen. Tipp: Motive mit klaren Kanten und ruhigem Hintergrund werden am saubersten.</div>
@@ -24324,7 +24324,10 @@ function _createIbx(){
 // das Ergebnis als SVG: Löcher als Subpfade mit fill-rule="evenodd", Farbflächen
 // von groß nach klein (Maler-Reihenfolge) — so bleiben zwischen benachbarten
 // Flächen keine Haarrisse stehen.
-const _vecP = { mode:0, thr:55, inv:0, ncol:4, bg:1, smooth:2, minA:1.0, res:300, wmm:100, crop:null };
+// Despeckle steht bewusst auf 0: bei 1 ‰ verschwinden feine Sachen wie ein
+// Pferdeauge oder Mähnenspitzen kommentarlos (gemessen: 5 statt 12 Feinheiten).
+// Wer verrauschte Vorlagen hat, dreht ihn selbst hoch.
+const _vecP = { mode:0, thr:55, inv:0, ncol:4, bg:1, smooth:2, minA:0, res:900, wmm:100, crop:null };
 const _vec  = { img:null, out:null, name:'motiv', traced:false };
 let _vecSel = false, _vecDrag = null;      // Rahmen-Ziehen über der Vorschau
 const _VEC_MAX_CMDS = 45000;      // knapp unter dem Limit von _svgPreflight
@@ -24529,12 +24532,14 @@ function _vecProcess(){
   _vec.out = null;
   const img = _vec.img; if(!img) return;
   const p = _vecP;
-  const R  = Math.max(120, Math.min(600, Math.round(p.res)));
+  const R  = Math.max(120, Math.min(2000, Math.round(p.res)));
   // Nur den gewählten Ausschnitt analysieren (ohne Auswahl das ganze Bild)
   const cr = p.crop || {x:0, y:0, w:1, h:1};
   const sx = cr.x*img.width, sy = cr.y*img.height;
   const sw = Math.max(1, cr.w*img.width), sh = Math.max(1, cr.h*img.height);
-  const sc = R / Math.max(sw, sh);
+  // Nie über die Bildauflösung hinaus rechnen — Hochskalieren erfindet keine
+  // Details, kostet aber Zeit. Feiner als die Vorlage geht es nun mal nicht.
+  const sc = Math.min(1, R / Math.max(sw, sh));
   const W  = Math.max(4, Math.round(sw*sc)), H = Math.max(4, Math.round(sh*sc));
   const cv = document.createElement('canvas'); cv.width=W; cv.height=H;
   const cx = cv.getContext('2d', {willReadFrequently:true});
@@ -24596,7 +24601,10 @@ function _vecProcess(){
     }
     let nPure=0; for(let i=0;i<N;i++) if(pure[i]) nPure++;
     const src = nPure > N*0.01 ? pure : keep;      // zu dünnes Motiv → doch alles nehmen
-    const idxs = [], step = N > 90000 ? 2 : 1;
+    // Stichprobe für k-Means mit der Bildfläche mitwachsen lassen — sonst wird
+    // die Farbtrennung bei hoher Genauigkeit unnötig langsam.
+    const step = Math.max(1, Math.round(Math.sqrt(N/90000)));
+    const idxs = [];
     for(let i=0;i<N;i+=step) if(src[i]) idxs.push(i);
     if(idxs.length < 20) return;
     const pal = _ibxQuant(rgb, idxs, Math.max(2, Math.min(8, Math.round(p.ncol))));
@@ -24751,9 +24759,14 @@ function _vecInfo(){
     return;
   }
   const hmm = (_vecP.wmm * o.bb.h / o.bb.w).toFixed(1);
+  // Analyse-Größe mit anzeigen: wenn die Vorlage kleiner ist als der Regler,
+  // bringt Weiterdrehen nichts — das soll man sehen und nicht raten müssen.
+  const srcPx = Math.round(Math.max(_vec.img.width, _vec.img.height) * ((_vecP.crop && Math.max(_vecP.crop.w,_vecP.crop.h)) || 1));
   let t = (_vecP.crop ? 'Ausschnitt · ' : '')
         + o.layers.length + (o.layers.length===1 ? ' Ebene' : ' Ebenen') + ' · ' + o.nPaths + ' Konturen · '
-        + o.nPts + ' Punkte · ' + _vecP.wmm + ' × ' + hmm + ' mm';
+        + o.nPts + ' Punkte · ' + _vecP.wmm + ' × ' + hmm + ' mm · abgetastet mit '
+        + Math.max(o.W, o.H) + ' px'
+        + (_vecP.res > srcPx ? ' (Vorlage gibt nicht mehr her — größeres Bild einfügen)' : '');
   if(o.nPts + o.nPaths > _VEC_MAX_CMDS)
     t += ' — für „In die Szene" zu fein: Glättung hoch, Genauigkeit runter oder „Kleinstes Teil" größer.';
   el.textContent = t;
@@ -29654,8 +29667,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.57';
+const VOLME3D_VERSION = '1.15.58';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.58', date:'2026-08-01', changes:[
+    ['🔬','„Bild → SVG" wird deutlich FEINER. Zwei Voreinstellungen haben bisher Details verschluckt, egal wie man sonst geschoben hat: (1) „Despeckle" stand auf 1 ‰ und hat damit alles Kleine weggeräumt — bei einem Testbild mit zwölf feinen Elementen (kleine Punkte, dünne Striche) überlebten nur fünf. Ein Pferdeauge oder eine Mähnenspitze fällt genau in diese Größe. Der Regler steht jetzt auf 0, du drehst ihn nur hoch, wenn wirklich Krümel übrig bleiben. (2) Die Abtastung war intern auf 600 px gedeckelt und stand auf 300 — jede größere Vorlage wurde also erst kleingerechnet. Jetzt sind bis 2000 px möglich, Standard ist 900, und über die Auflösung deiner Vorlage hinaus wird nicht mehr hochgerechnet (bringt nichts). Mit den neuen Werten bleiben im selben Testbild alle zwölf Elemente erhalten. Die Infozeile zeigt jetzt auch, mit wie viel Pixeln tatsächlich abgetastet wurde — und sagt dir, wenn deine Vorlage zu klein ist und ein größeres Bild mehr bringen würde.'],
+  ]},
   { version:'1.15.57', date:'2026-08-01', changes:[
     ['👁️','„Bild → SVG" trennt jetzt sauber zwischen Bild und Ergebnis. Frisch eingefügt siehst du dein Motiv erst einmal SO WIE ES IST — beim schwarzen Pferd also schwarz. Erst wenn du „▶ Nachzeichnen" drückst (oder einen Regler bewegst), legt sich das Erfasste in kräftigem Gelb darüber. Vorher war das Gelb halbdurchsichtig und wurde über schwarzen Linien zu trübem Oliv — man konnte kaum unterscheiden, was schon erfasst war und was noch nicht. Jetzt ist es deckend: gelb heißt drin, schwarz heißt noch nicht erfasst. Der Regler „Schwellenwert" wird damit endlich ablesbar.'],
   ]},

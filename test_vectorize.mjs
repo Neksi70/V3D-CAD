@@ -54,6 +54,30 @@ const res = await page.evaluate(async () => {
   // Zugeschnitten auf das Motiv: runder Ring → quadratisch, also 100 × 100 mm
   out.svgH = svg ? +(/height="([\d.]+)mm"/.exec(svg) || [])[1] : null;
 
+  // ── 1a) Feinheiten: mit den WERKSEINSTELLUNGEN darf nichts verschluckt werden.
+  // 6 Punkte (r = 2…7 px) und 6 Striche (1…6 px breit) — Pferdeauge, Mähnenspitzen.
+  // Bei Despeckle 1 ‰ überlebten davon nur 5, deshalb steht der Regler auf 0.
+  _vec.img = await mkImg(540, 540, cx => {
+    cx.fillStyle = '#000';
+    for (let i = 0; i < 6; i++) { cx.beginPath(); cx.arc(60 + i * 80, 80, 2 + i, 0, 7); cx.fill(); }
+    for (let i = 0; i < 6; i++) cx.fillRect(60 + i * 80, 200, 1 + i, 200);
+  });
+  const dflt = { mode: 0, thr: 55, inv: 0, smooth: 2, minA: 0, res: 900, wmm: 100, crop: null };
+  Object.assign(_vecP, dflt);
+  const tD = performance.now();
+  _vecProcess();
+  out.fein = { teile: _vec.out.layers[0].faces.length, abgetastet: Math.max(_vec.out.W, _vec.out.H),
+               ms: Math.round(performance.now() - tD) };
+  // Gegenprobe: mit dem früheren Standard gehen Details verloren — der Regler wirkt
+  _vecP.minA = 1.0; _vecP.res = 300; _vecProcess();
+  out.feinAlt = { teile: _vec.out.layers[0].faces.length, abgetastet: Math.max(_vec.out.W, _vec.out.H) };
+  Object.assign(_vecP, dflt);
+  // Ring für die folgenden Prüfungen zurücklegen
+  _vec.img = await mkImg(400, 300, cx => {
+    cx.fillStyle = '#000'; cx.beginPath(); cx.arc(200, 150, 110, 0, 7); cx.fill();
+    cx.fillStyle = '#fff'; cx.beginPath(); cx.arc(200, 150, 45, 0, 7); cx.fill();
+  });
+
   // ── 1b) „Außenrand": derselbe Ring, aber Innenfläche zu → 1 Fläche, 0 Löcher ──
   _vecP.mode = 1; _vecProcess();
   const oa = _vec.out;
@@ -106,16 +130,19 @@ const res = await page.evaluate(async () => {
     cx.moveTo(200, 40); cx.lineTo(360, 340); cx.lineTo(40, 340); cx.closePath(); cx.fill();
   });
   _vecProcess();
+  // Flächenschwerpunkt statt Punktzählung: bei einem Dreieck mit Spitze oben liegt
+  // er unterhalb der Mitte. Unabhängig davon, wie dicht die Kontur abgetastet ist.
   const pts = _vec.out.layers[0].faces[0].outer.pts;
   const bb = _vec.out.bb;
-  const spanAt = frac => {                       // x-Breite auf Höhe frac (0 = oben)
-    const yc = bb.y0 + bb.h * frac, band = bb.h * 0.08;
-    let a = 1e9, b = -1e9;
-    for (const p of pts) if (Math.abs(p.y - yc) < band) { if (p.x < a) a = p.x; if (p.x > b) b = p.x; }
-    return b > a ? +((b - a) / bb.w).toFixed(2) : 0;
-  };
-  out.spanTop = spanAt(0.15);
-  out.spanBottom = spanAt(0.85);
+  let A = 0, cy = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i], q = pts[(i + 1) % pts.length];
+    const cr = p.x * q.y - q.x * p.y;
+    A += cr; cy += (p.y + q.y) * cr;
+  }
+  cy /= (3 * A);
+  // 0 = Schwerpunkt ganz oben, 1 = ganz unten (Bild-Y zeigt nach unten)
+  out.centroidY = +((cy - bb.y0) / bb.h).toFixed(2);   // Dreieck Spitze oben → ~0,67
 
   // ── 3) Umkehren: weißes Motiv auf schwarzem Grund ──
   _vec.img = await mkImg(300, 300, cx => {
@@ -290,13 +317,16 @@ console.log('\nSeitenfehler:', errs.length ? errs : 'keine');
 
 const ok =
   res.ring && res.ring.layers === 1 && res.ring.faces === 1 && res.ring.holes === 1 &&
+  // Werkseinstellungen halten alle 12 Feinheiten; der frühere Standard tat es nicht
+  res.fein.teile === 12 && res.fein.abgetastet === 540 && res.fein.ms < 300 &&
+  res.feinAlt.teile < 12 &&
   res.svgHasMM && res.svgEvenOdd && res.svgSubpaths === 2 && Math.abs(res.svgH - 100) < 1 &&
   // Außenrand macht das Loch zu: eine Fläche, ein Subpfad
   res.outer && res.outer.faces === 1 && res.outer.holes === 0 && res.outerSubpaths === 1 &&
   res.lineTrace.holes === 1 && res.lineFilled.holes === 0 &&
   // Loch überlebt SVG-Text → SVGLoader → Topper-Motiv
   res.motifHoles && res.motifHoles.polys === 1 && res.motifHoles.holes[0] === 1 &&
-  res.spanTop > 0 && res.spanBottom > res.spanTop * 3 &&
+  res.centroidY > 0.58 && res.centroidY < 0.76 &&
   res.invFaces === 1 &&
   res.colLayers && res.colLayers.length === 3 && res.colSorted &&
   res.sceneAdded === 1 && Math.abs(res.sceneMM[0] - 100) < 2 && Math.abs(res.sceneMM[1] - 3) < 0.3 &&
