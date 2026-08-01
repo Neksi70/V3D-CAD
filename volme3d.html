@@ -12731,19 +12731,33 @@ async function unionSelected() {
 
   const stls = _objsToUnionStls(sel);
   const nTri = stls.reduce((s, b) => s + (b.byteLength - 84) / 50, 0);
-  const HARD_CAP = 120000;   // OCCT-Booleans skalieren ~quadratisch mit Face-Zahl
   if (!stls.length) { notify('Keine druckbaren Flächen in der Auswahl', 'w'); return; }
-  if (nTri > HARD_CAP) {
-    notify('Zu viele Dreiecke (' + Math.round(nTri).toLocaleString('de') + ') zum Verschmelzen — erst 🔻 Vereinfachen. Gruppiere stattdessen.', 'w');
+  // Laufzeit VORHER abschätzen statt den Nutzer bei 85 % hängen zu lassen.
+  // Gemessen (Kugeln 200…6272 Dreiecke gegen eine Box): der Fuse läuft mit rund
+  // 1 ms je Dreieck, und jeder weitere Körper kostet einen weiteren Durchgang.
+  // Ein Tortentopper-Schriftzug bringt allein 31.000 Dreiecke mit → Minuten.
+  const nFuse  = Math.max(1, stls.length - 1);
+  const estMs  = nTri * nFuse;
+  const EST_MAX = 40000;                    // darüber lohnt das Warten nicht
+  if (estMs > EST_MAX) {
+    notify('Zu aufwendig zum Verschmelzen: ' + Math.round(nTri).toLocaleString('de') + ' Dreiecke in '
+      + stls.length + ' Teilen (geschätzt ' + Math.round(estMs/1000) + ' s). Für den DRUCK ist das gar nicht nötig — '
+      + 'solange sich die Teile überlappen, wird daraus ohnehin ein Stück. Sie werden jetzt gruppiert. '
+      + 'Wenn du wirklich einen verschmolzenen Körper brauchst: erst 🔻 Vereinfachen.', 'w');
     return _unionGroupFallback(sel);
   }
 
-  _progressShow('Körper werden verschmolzen…'); _progressSet(8);
+  _progressShow('Körper werden verschmolzen…' + (estMs > 8000 ? ' (etwa ' + Math.round(estMs/1000) + ' s)' : ''));
+  _progressSet(8);
   _progressCreep(85, 0.5);   // kriecht, solange der Server rechnet
+  // Notbremse: ohne sie wartet fetch endlos und die Anzeige klebt bei 85 %.
+  const ctl = new AbortController();
+  const bail = setTimeout(() => ctl.abort(), Math.min(300000, estMs * 4 + 20000));
   try {
     const resp = await fetch(_OCCT_BASE + '/api/occt-union', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stlsBase64: stls.map(_bufToBase64) })
+      body: JSON.stringify({ stlsBase64: stls.map(_bufToBase64) }),
+      signal: ctl.signal
     });
     _progressStopCreep(); _progressSet(90, 'Ergebnis wird geladen…');
     const data = await resp.json();
@@ -12765,8 +12779,15 @@ async function unionSelected() {
   } catch (e) {
     _progressHide();
     console.warn('[union] Backend fehlgeschlagen → Gruppierung:', e.message || e);
-    notify('Verschmelzen nicht möglich (' + (e.message || e) + ') — gruppiere stattdessen', 'w');
+    const abbruch = e && (e.name === 'AbortError' || /abort/i.test(e.message || ''));
+    notify(abbruch
+      ? 'Verschmelzen hat zu lange gedauert und wurde abgebrochen — die Teile sind jetzt gruppiert. '
+        + 'Zum Drucken reicht das: überlappende Teile werden vom Slicer ohnehin zu einem Stück. '
+        + 'Für einen echten Verbundkörper vorher 🔻 Vereinfachen.'
+      : 'Verschmelzen nicht möglich (' + (e.message || e) + ') — gruppiere stattdessen', 'w');
     _unionGroupFallback(sel);
+  } finally {
+    clearTimeout(bail);
   }
 }
 
@@ -29667,8 +29688,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.58';
+const VOLME3D_VERSION = '1.15.59';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.59', date:'2026-08-01', changes:[
+    ['⏱️','„∪ Vereinen" bleibt nicht mehr bei 85 % stehen. Wer einen Tortentopper aufhebt, den Stecker verschiebt und dann verschmelzen will, hat bisher ewig gewartet — ein Schriftzug bringt rund 31.000 Dreiecke mit, und das Verschmelzen läuft mit etwa einer Millisekunde je Dreieck und Teil. Bei sieben Teilen sind das über drei Minuten, und am Ende bricht es womöglich ab. Volme rechnet das jetzt VORHER aus: Wird es zu lang, sagt es das sofort mit der geschätzten Dauer und gruppiert stattdessen. Und falls es doch einmal hängt, gibt es eine Notbremse statt endlosem Warten. WICHTIG dabei: Zum Drucken musst du gar nicht verschmelzen — solange sich die Teile überlappen, macht der Slicer daraus ohnehin ein Stück. Verschmelzen brauchst du nur, wenn du wirklich einen einzelnen wasserdichten Körper exportieren willst; dann vorher 🔻 Vereinfachen. Kleine Sachen (zwei Grundkörper o. ä.) verschmelzen unverändert in Sekunden.'],
+  ]},
   { version:'1.15.58', date:'2026-08-01', changes:[
     ['🔬','„Bild → SVG" wird deutlich FEINER. Zwei Voreinstellungen haben bisher Details verschluckt, egal wie man sonst geschoben hat: (1) „Despeckle" stand auf 1 ‰ und hat damit alles Kleine weggeräumt — bei einem Testbild mit zwölf feinen Elementen (kleine Punkte, dünne Striche) überlebten nur fünf. Ein Pferdeauge oder eine Mähnenspitze fällt genau in diese Größe. Der Regler steht jetzt auf 0, du drehst ihn nur hoch, wenn wirklich Krümel übrig bleiben. (2) Die Abtastung war intern auf 600 px gedeckelt und stand auf 300 — jede größere Vorlage wurde also erst kleingerechnet. Jetzt sind bis 2000 px möglich, Standard ist 900, und über die Auflösung deiner Vorlage hinaus wird nicht mehr hochgerechnet (bringt nichts). Mit den neuen Werten bleiben im selben Testbild alle zwölf Elemente erhalten. Die Infozeile zeigt jetzt auch, mit wie viel Pixeln tatsächlich abgetastet wurde — und sagt dir, wenn deine Vorlage zu klein ist und ein größeres Bild mehr bringen würde.'],
   ]},
