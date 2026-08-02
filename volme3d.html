@@ -12758,7 +12758,14 @@ async function unionSelected() {
   if (selectedObjs.length < 2) { notify('Mind. 2 Objekte', 'w'); return; }
   const sel = selectedObjs.slice();
 
-  const stls = _objsToUnionStls(sel);
+  // Als „Bohrung" markierte Körper NICHT stillschweigend überspringen:
+  // _objsToUnionStls filtert isHole raus, aber unten werden ALLE sel-Objekte
+  // gelöscht → die Bohrung verschwand ersatzlos und das Ergebnis stand ohne
+  // sie da. Wer eine Bohrung mit-vereint, bekommt sie als normalen Körper
+  // (zum Ausstanzen gibt es „Abziehen").
+  const holeSel = sel.filter(o => o.userData.isHole && o.visible !== false);
+  const stls = [..._objsToUnionStls(sel), ...holeSel.flatMap(o => _meshWorldToStls(o))];
+  if (holeSel.length) notify('Bohrungs-Körper in der Auswahl werden als normales Material mitverschmolzen — zum Ausstanzen stattdessen „Abziehen" nutzen', 'w');
   const nTri = stls.reduce((s, b) => s + (b.byteLength - 84) / 50, 0);
   if (!stls.length) { notify('Keine druckbaren Flächen in der Auswahl', 'w'); return; }
   // Laufzeit VORHER abschätzen statt den Nutzer bei 85 % hängen zu lassen.
@@ -12797,7 +12804,7 @@ async function unionSelected() {
     saveUndo();
     // Operations-Journal VOR dem Entfernen der Teile sichern → „✎ Operation bearbeiten"
     const _opJournal = { op: 'union', parts: sel.map(objectToData) };
-    const mesh = _meshFromStlB64(data.stlBase64, 'Verschmolzen ' + idCtr);
+    const mesh = _meshFromStlB64(data.stlBase64, 'Verschmolzen ' + idCtr, true);   // keepWorld: bleibt an Ort und Stelle
     if (!mesh) throw new Error('Ergebnis-STL nicht ladbar');
     mesh.userData.opJournal = _opJournal;
     sel.forEach(o => { objects = objects.filter(x => x !== o); scene.remove(o); });
@@ -13865,7 +13872,11 @@ async function _createHollowLid() {
 }
 
 // STL-base64 → import-artiges Mesh (gleiche Ausrichtung/Skalierung wie ein Import)
-function _meshFromStlB64(b64, name) {
+// keepWorld=true: Ergebnis bleibt EXAKT an der Welt-Position der Quellkörper
+// (für Union/Boolean — sonst „springt" der verschmolzene Körper auf die Platte
+// und die vom Nutzer gebaute Anordnung ist zerstört). Ohne keepWorld wird wie
+// beim STL-Import zentriert und auf die Platte gesetzt.
+function _meshFromStlB64(b64, name, keepWorld) {
   try {
     const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
     const geo = parseSTL(bytes.buffer); _creaseNormals(geo);
@@ -13875,8 +13886,10 @@ function _meshFromStlB64(b64, name) {
     mesh.scale.setScalar(0.1);          // STL mm → App-Einheit
     mesh.rotation.x = -Math.PI / 2;     // STL Z-up → Editor Y-up
     mesh.updateMatrixWorld(true);
-    { const bb = new THREE.Box3().setFromObject(mesh); const c = bb.getCenter(new THREE.Vector3());
-      mesh.position.x -= c.x; mesh.position.z -= c.z; mesh.position.y -= bb.min.y; mesh.updateMatrixWorld(true); }
+    if (!keepWorld) {
+      const bb = new THREE.Box3().setFromObject(mesh); const c = bb.getCenter(new THREE.Vector3());
+      mesh.position.x -= c.x; mesh.position.z -= c.z; mesh.position.y -= bb.min.y; mesh.updateMatrixWorld(true);
+    }
     mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import', name, color: currentColor,
       isHole: false, _origGeo: geo, _origStlBuf: bytes.buffer };
     scene.add(mesh); objects.push(mesh);
@@ -16244,8 +16257,15 @@ function repositionAlignHandles() {
 
 function alignObjects(type) {
   if (selectedObjs.length < 2) { notify('Mind. 2 Objekte', 'w'); return; }
-  saveUndo();
   const boxes = selectedObjs.map(o => getMeshBox(o));
+  // Leere Box (±Infinity) oder NaN in der Rechnung → Positionen würden NaN und
+  // die Objekte verschwinden spurlos. Passiert z.B. wenn ein gewähltes Objekt
+  // gerade von einer noch laufenden Operation ersetzt wurde.
+  if (boxes.some(b => b.isEmpty() || !isFinite(b.min.x + b.max.x + b.min.y + b.max.y + b.min.z + b.max.z))) {
+    notify('Ausrichten nicht möglich — ein gewähltes Objekt hat keine gültige Größe. Bitte neu auswählen.', 'w');
+    return;
+  }
+  saveUndo();
   const cx = i => (boxes[i].min.x + boxes[i].max.x) / 2;
   const cy = i => (boxes[i].min.y + boxes[i].max.y) / 2;
   const cz = i => (boxes[i].min.z + boxes[i].max.z) / 2;
@@ -19730,9 +19750,21 @@ function notify(msg, type, ms) {
 }
 
 // ── Fortschrittsbalken (z.B. für Abziehen/OCCT-Schnitt) ─────────────────────
-let _progEl = null, _progTimer = null, _progVal = 0;
+// Solange er sichtbar ist, sind Maus UND Tastatur gesperrt: Boolean-Ops löschen
+// am Ende die Objekte, die sie am START erfasst haben — klickt der Nutzer
+// währenddessen weiter (verschieben, zentrieren, nochmal Abziehen…), geht das
+// verloren oder trifft schon gelöschte Körper → „jedes Mal passiert was anderes".
+let _progEl = null, _progTimer = null, _progVal = 0, _progBlockEl = null;
+function _progKeyBlock(e) {
+  if (e.key === 'Escape' || (e.key && e.key.length > 1 && e.key[0] === 'F')) return; // F5/F12 etc. durchlassen
+  e.stopPropagation();
+}
 function _progressShow(label) {
   _progressHide();
+  _progBlockEl = document.createElement('div');
+  _progBlockEl.style.cssText = 'position:fixed;inset:0;z-index:99998;cursor:progress;background:transparent';
+  document.body.appendChild(_progBlockEl);
+  window.addEventListener('keydown', _progKeyBlock, true);
   _progEl = document.createElement('div');
   _progEl.style.cssText = 'position:fixed;left:50%;top:20px;transform:translateX(-50%);z-index:99999;'
     + 'background:rgba(22,22,30,.94);color:#fff;padding:13px 18px;border-radius:11px;'
@@ -19745,6 +19777,8 @@ function _progressShow(label) {
     + '<div class="_pf" style="height:100%;width:0%;border-radius:5px;'
     + 'background:linear-gradient(90deg,#ff9a2e,#ff5e00);transition:width .3s ease"></div></div>';
   document.body.appendChild(_progEl);
+  _progEl.title = 'Doppelklick = Anzeige ausblenden (Notausstieg, falls nichts mehr passiert)';
+  _progEl.addEventListener('dblclick', () => _progressHide());
   _progVal = 0;
   _progEl.querySelector('._pl').textContent = label || 'Bitte warten…';
 }
@@ -19766,7 +19800,12 @@ function _progressCreep(target, step) {
 }
 function _progressStopCreep() { if (_progTimer) { clearInterval(_progTimer); _progTimer = null; } }
 function _progressDone() { _progressStopCreep(); _progressSet(100); setTimeout(_progressHide, 550); }
-function _progressHide() { _progressStopCreep(); if (_progEl) { _progEl.remove(); _progEl = null; } }
+function _progressHide() {
+  _progressStopCreep();
+  if (_progEl) { _progEl.remove(); _progEl = null; }
+  if (_progBlockEl) { _progBlockEl.remove(); _progBlockEl = null; }
+  window.removeEventListener('keydown', _progKeyBlock, true);
+}
 
 // ── Gravur-Regler-Dialog (erhaben ↔ vertieft) → Promise<number|null> ─────────
 // Rückgabe: negativ = erhaben (Schrift steht raus), positiv = vertieft (Cut), null = Abbruch.
