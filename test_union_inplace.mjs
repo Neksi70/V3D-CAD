@@ -46,6 +46,7 @@ const res = await page.evaluate(async () => {
   const ring = objects[objects.length - 1];
   out.subtractOk = !!ring.userData.isSubtract;
   out.ringBox = bbox(ring);
+  const ringVerts = ring.geometry.attributes.position.count;   // CSG-Geometrie (mit Loch)
 
   // ── 2. Dritter Zylinder rein, Ring hochziehen, Vereinen ──
   addShape('cylinder'); await new Promise(r => setTimeout(r, 200));
@@ -72,6 +73,21 @@ const res = await page.evaluate(async () => {
   out.maxShift = +d.toFixed(3);
   out.bleibtAnOrt = d < 0.05;                           // < 0,5 mm
 
+  // ── 2c. Undo nach Union: Ring muss mit CSG-Geometrie zurückkommen ──
+  // (Vorher: objectToData sicherte die Geometrie nicht, weil das Subtract-
+  //  Ergebnis type 'cylinder' erbt → Undo baute einen nackten Standard-Zylinder.)
+  undo();
+  await new Promise(r => setTimeout(r, 200));
+  const restoredRing = objects.find(o => o.userData.isSubtract);
+  out.undoRingDa = !!restoredRing;
+  out.undoRingVerts = restoredRing ? restoredRing.geometry.attributes.position.count : 0;
+  out.undoOk = !!restoredRing && out.undoRingVerts === ringVerts;   // Loch noch drin
+  redo();
+  await new Promise(r => setTimeout(r, 200));
+  const remerged = objects[objects.length - 1];
+  out.redoOk = /Verschmolzen/.test(remerged.userData.name || '');
+  const merged3 = remerged;   // für Abschnitt 3 (Referenzen sind nach restore neu)
+
   // ── 2b. Union mit Bohrung-markiertem Körper: darf NICHT verschwinden ──
   addShape('cylinder'); await new Promise(r => setTimeout(r, 200));
   const holeBody = objects[objects.length - 1];
@@ -96,9 +112,9 @@ const res = await page.evaluate(async () => {
   // ── 3. Ausrichten-Guard: Objekt ohne Geometrie in der Auswahl → kein NaN ──
   const ghost = new THREE.Group();                      // leere Box
   scene.add(ghost); objects.push(ghost);
-  selectObjs([merged, ghost]);
+  selectObjs([merged3, ghost]);
   alignObjects('xcenter');
-  out.nanGuard = isFinite(merged.position.x) && isFinite(merged.position.y);
+  out.nanGuard = isFinite(merged3.position.x) && isFinite(merged3.position.y);
   scene.remove(ghost); objects = objects.filter(o => o !== ghost);
 
   // ── 4. Eingabesperre: Overlay + Tastatur-Block, solange Fortschritt läuft ──
@@ -121,9 +137,9 @@ console.log(JSON.stringify(res, null, 2));
 console.log('Seitenfehler:', errs.length ? errs : 'keine');
 
 const ok = res.subtractOk && res.unionDelta === -1 && /Verschmolzen/.test(res.unionName || '')
-  && res.bleibtAnOrt && res.holeUnionOk
+  && res.bleibtAnOrt && res.holeUnionOk && res.undoOk && res.redoOk
   && res.nanGuard && res.blockOverlay && res.keyBlocked && res.blockWeg;
-console.log(ok ? '\n✅ Union bleibt an Ort (auch mit Bohr-Körper), Align-NaN-Guard + Eingabesperre greifen'
+console.log(ok ? '\n✅ Union bleibt an Ort, Undo/Redo behalten CSG-Geometrie, Guards greifen'
               : '\n❌ Prüfung fehlgeschlagen');
 await browser.close(); srv.kill();
 process.exit(ok && !errs.length ? 0 : 1);
