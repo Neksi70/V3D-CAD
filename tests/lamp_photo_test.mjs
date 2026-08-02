@@ -44,6 +44,7 @@ const res = await page.evaluate(async () => {
 
   _lampP.pattern = 'photo'; _lampP.photoDepth = 1.6; _lampP.photoArc = 360;
   _lampP.photoH = 60; _lampP.photoY = 55; _lampP.photoInv = false; _lampP.photoOut = false;
+  _lampP.photoFit = 'stretch';   // dieser Block prüft das Rundum-Mapping
 
   let t0 = performance.now();
   out.prev = stats(_buildLampShadeGeo(_lampP, true)); out.prevMs = Math.round(performance.now() - t0);
@@ -112,6 +113,23 @@ const res = await page.evaluate(async () => {
   out.extremInnenMin = rmin;
   out.extremPocketR = Math.min(60/2 + _lampP.clr, (50/2 - _lampP.wall) - 0.6) / 10;
   Object.assign(_lampP, { h: save.h, dia: save.dia, photoH: save.mh, photoDepth: save.d });
+
+  // Hochkant-Motiv (3:4) auf Ø90×120: der Umfang ist 283 mm breit, unverzerrt
+  // bräuchte das Bild 377 mm Höhe. Genau der Fall, der vorher zerquetscht wurde.
+  _lampImg.aspect = 0.75;
+  Object.assign(_lampP, { h: 120, dia: 90, photoH: 90, photoArc: 360 });
+  out.lay = {};
+  for (const modus of ['stretch', 'fit', 'repeat']) {
+    _lampP.photoFit = modus;
+    const L = _lampPhotoLayout(_lampP);
+    out.lay[modus] = { arc: Math.round(L.arc), rep: L.rep, mh: Math.round(L.mh),
+      breite: Math.round(L.breiteMm), verz: +L.verzerrung.toFixed(2),
+      tris: stats(_buildLampShadeGeo(_lampP)).tris, vol: stats(_buildLampShadeGeo(_lampP)).vol };
+  }
+  // Querformat (4:3) soll bei „Einpassen" fast den ganzen Umfang belegen dürfen
+  _lampImg.aspect = 4 / 3; _lampP.photoFit = 'fit';
+  out.querArc = Math.round(_lampPhotoLayout(_lampP).arc);
+  _lampImg.aspect = 1; _lampP.photoFit = 'stretch';
   return out;
 });
 
@@ -135,6 +153,15 @@ all &= check(`Relief fügt keine Topologie-Fehler hinzu (${res.topoFlach.nm} →
   res.topoRelief.nm <= res.topoFlach.nm);
 all &= check(`Relief bleibt aus der LED-Tasche (${res.extremInnenMin.toFixed(2)} > ${res.extremPocketR.toFixed(2)})`,
   res.extremInnenMin > res.extremPocketR);
+const L = res.lay;
+all &= check(`Hochkant + „Strecken" verzerrt erwartungsgemäß (${L.stretch.verz}×)`, L.stretch.verz > 3);
+all &= check(`Hochkant + „Einpassen" unverzerrt (${L.fit.verz}×, ${L.fit.arc}° statt 360°)`,
+  Math.abs(L.fit.verz - 1) < 0.02 && L.fit.arc < 120);
+all &= check(`Hochkant + „Wiederholen" unverzerrt (${L.repeat.rep}× rundum, ${L.repeat.verz}×)`,
+  L.repeat.rep >= 3 && Math.abs(L.repeat.verz - 1) < 0.1 && L.repeat.arc === 360);
+all &= check('alle drei Modi bauen ein positives Volumen',
+  ['stretch','fit','repeat'].every(m => L[m].vol > 0 && L[m].tris > 5000));
+all &= check(`Querformat belegt bei „Einpassen" mehr Umfang (${res.querArc}°)`, res.querArc > L.fit.arc * 1.5);
 all &= check('keine Seitenfehler', errs.length === 0);
 console.log('\n' + ok.join('\n'));
 console.log(all ? '\nALLES GRÜN' : '\nFEHLGESCHLAGEN');

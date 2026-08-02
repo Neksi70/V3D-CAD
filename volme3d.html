@@ -3229,7 +3229,12 @@ Patrick</textarea>
           <div id="lpf-drop" onclick="document.getElementById('lpf-file').click()" style="border:1.5px dashed #4a5266;border-radius:8px;padding:10px;text-align:center;cursor:pointer;color:#9fb0c4;font-size:12px;margin:4px 0">📷 Motiv wählen (Foto / PNG)</div>
           <input type="file" id="lpf-file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="_lampPhotoFile(event)">
           <div class="vrow"><label title="Wie viel dicker die dunklen Stellen werden">Relief-Tiefe</label> <input type="range" id="lpf-depth" min="0.4" max="4" value="1.6" step="0.1" oninput="document.getElementById('lvf-depth').textContent=this.value;_lampSet('photoDepth',this.value)"><span class="vv" id="lvf-depth">1.6</span><span class="vu">mm</span></div>
-          <div class="vrow"><label title="360° = nahtlos um den ganzen Schirm">Motiv-Breite</label> <input type="range" id="lpf-arc" min="30" max="360" value="360" step="5" oninput="document.getElementById('lvf-arc').textContent=this.value;_lampSet('photoArc',this.value)"><span class="vv" id="lvf-arc">360</span><span class="vu">°</span></div>
+          <div class="vbg" id="lbg-photofit" style="margin:4px 0">
+            <button class="vtb on" onclick="_lampSet('photoFit','fit')" title="Motiv unverzerrt — die Breite ergibt sich aus der Höhe. Hochkant-Fotos belegen dann nur einen Teil des Umfangs.">Einpassen</button>
+            <button class="vtb"    onclick="_lampSet('photoFit','repeat')" title="Motiv unverzerrt, dafür mehrfach rundum wiederholt">Wiederholen</button>
+            <button class="vtb"    onclick="_lampSet('photoFit','stretch')" title="Motiv auf die eingestellte Breite ziehen — verzerrt, füllt aber genau">Strecken</button>
+          </div>
+          <div class="vrow" id="lp-row-arc" style="display:none"><label title="360° = nahtlos um den ganzen Schirm">Motiv-Breite</label> <input type="range" id="lpf-arc" min="30" max="360" value="360" step="5" oninput="document.getElementById('lvf-arc').textContent=this.value;_lampSet('photoArc',this.value)"><span class="vv" id="lvf-arc">360</span><span class="vu">°</span></div>
           <div class="vrow"><label title="Höhe des Motivs auf der Wand">Motiv-Höhe</label> <input type="range" id="lpf-mh" min="10" max="280" value="60" step="2" oninput="document.getElementById('lvf-mh').textContent=this.value;_lampSet('photoH',this.value)"><span class="vv" id="lvf-mh">60</span><span class="vu">mm</span></div>
           <div class="vrow"><label title="Mitte des Motivs, 0 = unten, 100 = oben">Position</label> <input type="range" id="lpf-y" min="5" max="95" value="55" step="1" oninput="document.getElementById('lvf-y').textContent=this.value;_lampSet('photoY',this.value)"><span class="vv" id="lvf-y">55</span><span class="vu">%</span></div>
           <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer"><input type="checkbox" id="lpf-inv" onchange="_lampSet('photoInv',this.checked?1:0)"> Negativ (hell = dick)</label>
@@ -25048,12 +25053,33 @@ const _lampP = { form:'straight', h:120, dia:90, topd:60, bulge:18, wall:2.4,
   pattern:'ribs', ribs:16, ribamp:2.2, twist:120, facets:8,
   led:60, ledh:9, clr:0.5, top:true, cable:true,
   mount:'standalone', puckD:70, puckH:28, travel:5,
-  photoDepth:1.6, photoArc:360, photoH:60, photoY:55, photoInv:false, photoOut:false };
+  photoDepth:1.6, photoArc:360, photoH:60, photoY:55, photoInv:false, photoOut:false, photoFit:'fit' };
 let _lampRT=null;
 // ── Foto-Muster: Lithophane direkt auf der Schirmwand ──────────────────────
 // Die Wand wird dort dicker, wo das Bild dunkel ist. Außen bleibt die Kontur
 // glatt (Standard), das Relief wächst nach innen → kopfüber ohne Stützen.
 const _lampImg = { img:null, lum:null, cols:0, rows:0, aspect:1 };
+// Wie das Motiv auf der Wand liegt. Der Umfang ist meist viel breiter als der
+// Schirm hoch ist (Ø90 → 283 mm Umfang bei 120 mm Höhe) — ein Hochkant-Foto
+// über die vollen 360° zu ziehen quetscht es darum bis zur Unkenntlichkeit.
+//   fit    = unverzerrt, belegt nur den Teil des Umfangs, den es braucht
+//   repeat = unverzerrt, dafür mehrfach rundum wiederholt
+//   stretch= auf die eingestellte Breite gezogen (füllt genau, verzerrt)
+function _lampPhotoLayout(p){
+  const asp=_lampImg.aspect||1;
+  const umfang=Math.PI*Math.max(40,p.dia);
+  let mh=Math.max(5,Math.min(p.h,p.photoH));
+  let arc=Math.max(20,Math.min(360,p.photoArc)), rep=1;
+  if(p.photoFit!=='stretch'){
+    let need=mh*asp;                                   // Bogenlänge für unverzerrt
+    if(need>umfang){ need=umfang; mh=umfang/asp; }     // passt nicht mal einfach rundum
+    const w=need/umfang*360;
+    if(p.photoFit==='repeat'){ rep=Math.max(1,Math.round(360/w)); arc=360; }
+    else arc=Math.max(5,Math.min(360,w));
+  }
+  const breiteMm=arc/360*umfang/rep;
+  return { arc, rep, mh, umfang, breiteMm, verzerrung:breiteMm/(mh*asp) };
+}
 function _lampImgSample(u,v){          // bilinear, u/v in 0..1 (v=0 oben)
   const G=_lampImg, nx=G.cols, nz=G.rows;
   const fx=Math.max(0,Math.min(1,u))*(nx-1), fz=Math.max(0,Math.min(1,v))*(nz-1);
@@ -25068,19 +25094,22 @@ function _lampImgSample(u,v){          // bilinear, u/v in 0..1 (v=0 oben)
 function _lampPhotoWarp(pos, np, side, S, y0, H, p, yLo, rMin){
   if(!_lampImg.lum) return;
   const U=0.1, PI=Math.PI, TAU=PI*2;
+  const L=_lampPhotoLayout(p);
   const depth=Math.max(0.2,p.photoDepth)*U;
-  const arc=Math.max(20,Math.min(360,p.photoArc))*PI/180;
+  const arc=L.arc*PI/180, rep=L.rep;
   const full=(arc>=TAU-1e-6);
   const target=p.photoOut?1:-1, sgn=p.photoOut?1:-1;
   // Motiv-Fenster auf die Wand klemmen, die es hier wirklich gibt: nach innen
   // fängt die Wand erst über der LED-Tasche an (yLo), nach außen schon unten.
   const lo=Math.max(y0, yLo==null?y0:yLo), hi=y0+H;
-  const mh=Math.min(hi-lo, Math.max(3*U, p.photoH*U));
+  const mh=Math.min(hi-lo, Math.max(3*U, L.mh*U));
   let cy=y0+H*Math.max(0,Math.min(100,p.photoY))/100;
   cy=Math.max(lo+mh/2, Math.min(hi-mh/2, cy));
   const y1=cy-mh/2, y2=cy+mh/2;
   const fade=(t)=>t<=0?0:(t>=1?1:t*t*(3-2*t));          // weiche Motivkante
-  const fy=Math.min(0.12, 2*U/mh), fu=full?0:0.05;
+  // Nahtstellen weich auslaufen lassen — auch zwischen wiederholten Kopien,
+  // deren Bildränder sonst hart aufeinanderstoßen.
+  const fy=Math.min(0.12, 2*U/mh), fu=(full&&rep===1)?0:(full?0.03:0.05);
   for(let s=0;s<=S;s++){
     for(let i=0;i<np;i++){
       if(side[i]!==target) continue;
@@ -25092,12 +25121,12 @@ function _lampPhotoWarp(pos, np, side, S, y0, H, p, yLo, rMin){
       // u läuft GEGEN den Winkel: der Schirm wird von außen betrachtet, sonst
       // stünde das Motiv (und jede Schrift darin) spiegelverkehrt.
       let u;
-      if(full){ u=((-ang/TAU)%1+1)%1; }
+      if(full){ u=((-ang/TAU*rep)%1+1)%1; }
       else { const da=Math.atan2(Math.sin(ang),Math.cos(ang));
              if(Math.abs(da)>arc/2) continue; u=0.5-da/arc; }
       const v=(y2-y)/(y2-y1);                            // Bildzeile 0 = oben
       const lev=p.photoInv?_lampImgSample(u,v):(1-_lampImgSample(u,v));
-      const soft=fade(Math.min(v,1-v)/fy)*(full?1:fade(Math.min(u,1-u)/fu));
+      const soft=fade(Math.min(v,1-v)/fy)*(fu>0?fade(Math.min(u,1-u)/fu):1);
       // Nach innen nie in die LED-Tasche hineinwachsen (schmaler Schirm + große
       // Tasche): dort lieber Relief verlieren als den Körper durchdringen.
       const r=Math.max(rMin||0, r0+sgn*depth*lev*soft);
@@ -25109,9 +25138,9 @@ function _lampPhotoWarp(pos, np, side, S, y0, H, p, yLo, rMin){
 // Segmentzahl folgt dem bedeckten Bogen (ein 90°-Motiv braucht kein 360°-Raster).
 function _lampPhotoRes(p,H,vorschau){
   if(p.pattern!=='photo'||!_lampImg.lum) return null;
-  const f=Math.max(20,Math.min(360,p.photoArc))/360;
-  const bogen=Math.PI*Math.max(40,p.dia)*f;                 // bedeckte Bogenlänge in mm
-  const mh=Math.min(p.h, Math.max(5,p.photoH));
+  const L=_lampPhotoLayout(p);
+  const bogen=L.arc/360*L.umfang;                           // bedeckte Bogenlänge in mm
+  const mh=L.mh;
   if(vorschau) return { S:Math.max(56,Math.min(170,Math.round(bogen*0.6))), NV:120 };
   // ~2 Segmente/mm am Umfang, ~5 Profilzeilen/mm Motivhöhe (davon 80 % im Motiv)
   return { S:Math.max(110,Math.min(420,Math.round(bogen*2))),
@@ -25123,7 +25152,7 @@ function _lampPhotoRes(p,H,vorschau){
 function _lampProfileVs(p,H,RES){
   const a=[];
   if(!RES){ for(let i=0;i<=44;i++) a.push(i/44); return a; }
-  const mh=Math.min(H,Math.max(0.3,p.photoH*0.1));
+  const mh=Math.min(H,Math.max(0.3,_lampPhotoLayout(p).mh*0.1));
   let cy=H*Math.max(0,Math.min(100,p.photoY))/100;
   cy=Math.max(mh/2,Math.min(H-mh/2,cy));
   const v1=Math.max(0,(cy-mh/2)/H), v2=Math.min(1,(cy+mh/2)/H);
@@ -25291,7 +25320,7 @@ function _openLampModal(){
 }
 function _closeLampModal(){ document.getElementById('lamp-modal').classList.remove('show'); _gpvStop('lamp'); }
 function _lampSet(k,v){
-  _lampP[k]=(k==='form'||k==='pattern'||k==='mount')?v
+  _lampP[k]=(k==='form'||k==='pattern'||k==='mount'||k==='photoFit')?v
     :((k==='top'||k==='cable'||k==='photoInv'||k==='photoOut')?!!Number(v):parseFloat(v));
   // Nur das Foto-Muster verträgt eine 0,8-mm-Wand; sonst wieder auf 1,2 hoch
   if(k==='pattern'&&v!=='photo'&&_lampP.wall<1.2) _lampP.wall=1.2;
@@ -25314,6 +25343,7 @@ function _lampSyncUI(){
   set('lpf-mh','lvf-mh',_lampP.photoH); set('lpf-y','lvf-y',_lampP.photoY);
   const pi=document.getElementById('lpf-inv'); if(pi)pi.checked=_lampP.photoInv;
   const po=document.getElementById('lpf-out'); if(po)po.checked=_lampP.photoOut;
+  ['fit','repeat','stretch'].forEach((m,i)=>{const b=document.querySelector(`#lbg-photofit .vtb:nth-child(${i+1})`); if(b)b.classList.toggle('on',m===_lampP.photoFit);});
   // min muss VOR dem Setzen stehen, sonst klemmt der Browser 0,8 auf 1,2 hoch
   const ws=document.getElementById('lp-wall');
   if(ws){ ws.min=(_lampP.pattern==='photo')?0.8:1.2; set('lp-wall','lv-wall',_lampP.wall); }
@@ -25324,6 +25354,7 @@ function _lampSyncUI(){
   show('lp-row-ribs', rib); show('lp-row-ribamp', rib);
   show('lp-row-twist', _lampP.pattern==='twist'); show('lp-row-facets', _lampP.pattern==='facet');
   show('lp-row-photo', _lampP.pattern==='photo');
+  show('lp-row-arc', _lampP.pattern==='photo'&&_lampP.photoFit==='stretch');   // sonst rechnet die App die Breite
   const base=_lampP.mount==='base';
   show('lp-row-led', !base); show('lp-row-ledh', !base);
   show('lp-row-puckd', base); show('lp-row-puckh', base); show('lp-row-travel', base);
@@ -25345,11 +25376,10 @@ function _lampPhotoFile(ev){
     const d=ctx.getImageData(0,0,cols,rows).data, lum=new Float32Array(cols*rows);
     for(let i=0;i<cols*rows;i++) lum[i]=(0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2])/255;
     _lampImg.lum=lum; _lampImg.cols=cols; _lampImg.rows=rows;
-    // Motiv-Höhe einmalig aufs Seitenverhältnis setzen: Bogenlänge / Aspect,
-    // gedeckelt auf das, was der Schirm hergibt (der Info-Text nennt dann den
-    // unverzerrten Sollwert).
-    const arcLen=Math.PI*Math.max(40,_lampP.dia)*Math.max(20,Math.min(360,_lampP.photoArc))/360;
-    _lampP.photoH=Math.round(Math.max(10,Math.min(280,_lampP.h*0.9,arcLen/_lampImg.aspect)));
+    // Höhe an den Schirm anlehnen; die Breite ergibt sich daraus unverzerrt
+    // (Modus „Einpassen"). Früher lief es andersherum — dabei wurde ein
+    // Hochkant-Foto auf den vollen Umfang gezogen und dabei zerquetscht.
+    _lampP.photoH=Math.round(Math.max(10,Math.min(280,_lampP.h*0.75)));
     document.getElementById('lpf-drop').textContent='📷 Motiv ersetzen';
     _lampSyncUI(); _gpvUpdate('lamp');
   };
@@ -25359,10 +25389,19 @@ function _lampPhotoFile(ev){
 function _lampPhotoInfo(){
   const el=document.getElementById('lpf-info'); if(!el) return;
   if(!_lampImg.lum){ el.textContent='Noch kein Motiv geladen — bis dahin bleibt der Schirm glatt.'; return; }
-  const arcLen=Math.PI*_lampP.dia*_lampP.photoArc/360;
-  const soll=Math.round(arcLen/_lampImg.aspect);
-  el.innerHTML=`Bild ${_lampImg.img.width}×${_lampImg.img.height} · Motivfläche ${Math.round(arcLen)}×${_lampP.photoH} mm`
-    +(Math.abs(soll-_lampP.photoH)>3?` <span style="color:#e0a33e">(unverzerrt wären ${soll} mm)</span>`:'')
+  const L=_lampPhotoLayout(_lampP), v=L.verzerrung;
+  const hoch=_lampImg.aspect<1;
+  let lage;
+  if(L.rep>1) lage=`${L.rep}× rundum wiederholt, je ${Math.round(L.breiteMm)}×${Math.round(L.mh)} mm`;
+  else if(L.arc>=359.5) lage=`nahtlos rundum, ${Math.round(L.breiteMm)}×${Math.round(L.mh)} mm`;
+  else lage=`${Math.round(L.arc)}° des Umfangs, ${Math.round(L.breiteMm)}×${Math.round(L.mh)} mm`;
+  let warn='';
+  if(v>1.15||v<0.87){
+    const wie=v>1?`${v.toFixed(1)}× in die Breite gezogen`:`${(1/v).toFixed(1)}× gestaucht`;
+    warn=` <span style="color:#e0a33e">— ${wie}</span>`;
+  }
+  el.innerHTML=`Bild ${_lampImg.img.width}×${_lampImg.img.height}${hoch?' (hochkant)':''} · ${lage}${warn}`
+    +(v>1.15||v<0.87 ? `<br><span style="color:#e0a33e">„Einpassen" oder „Wiederholen" legt das Motiv unverzerrt auf den Schirm.</span>` : '')
     +`<br><span style="color:var(--dim)">Wand ${_lampP.wall} → ${(_lampP.wall+_lampP.photoDepth).toFixed(1)} mm an den dunklen Stellen. Dünne Wand + weißes/transluzentes Filament, 100 % Infill, keine Stützen.</span>`;
 }
 function _lampInfo(){
@@ -25388,7 +25427,7 @@ function _createLamp(){
     lpLed:_lampP.led,lpLedh:_lampP.ledh,lpClr:_lampP.clr,lpTop:_lampP.top,lpCable:_lampP.cable,
     lpMount:_lampP.mount,lpPuckD:_lampP.puckD,lpPuckH:_lampP.puckH,lpTravel:_lampP.travel,
     lpPhotoDepth:_lampP.photoDepth,lpPhotoArc:_lampP.photoArc,lpPhotoH:_lampP.photoH,
-    lpPhotoY:_lampP.photoY,lpPhotoInv:_lampP.photoInv,lpPhotoOut:_lampP.photoOut};
+    lpPhotoY:_lampP.photoY,lpPhotoInv:_lampP.photoInv,lpPhotoOut:_lampP.photoOut,lpPhotoFit:_lampP.photoFit};
   try{
     if(_lampP.mount==='base'){
       const baseGeo=_buildLampBaseGeo(_lampP), shadeGeo=_buildLampShadeBaseGeo(_lampP);

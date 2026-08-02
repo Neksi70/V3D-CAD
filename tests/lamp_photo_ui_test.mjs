@@ -50,6 +50,20 @@ const res = await page.evaluate(async () => {
   out.dropText = document.getElementById('lpf-drop').textContent;
   out.infoMitBild = document.getElementById('lpf-info').textContent.slice(0, 90);
 
+  // Anpassungs-Modi: „Einpassen" ist Standard, Breiten-Regler nur bei „Strecken"
+  out.fitStandard = _lampP.photoFit;
+  out.arcReglerVersteckt = !vis('lp-row-arc');
+  const fitTabs = document.querySelectorAll('#lbg-photofit .vtb');
+  out.fitTabs = fitTabs.length;
+  out.fitTabAktiv = fitTabs[0].classList.contains('on');
+  fitTabs[2].click(); await new Promise(r => setTimeout(r, 200));
+  out.nachStretch = _lampP.photoFit;
+  out.arcReglerSichtbar = vis('lp-row-arc');
+  out.infoStretch = document.getElementById('lpf-info').textContent.slice(0, 120);
+  fitTabs[0].click(); await new Promise(r => setTimeout(r, 200));
+  out.zurueckAufFit = _lampP.photoFit;
+  out.infoFit = document.getElementById('lpf-info').textContent.slice(0, 120);
+
   // Wandstärke auf 0,8 stellen (nur im Foto-Muster erlaubt)
   _lampSet('wall', 0.8);
   out.wallFoto = _lampP.wall;
@@ -89,6 +103,11 @@ check('Foto-Regler sichtbar, Rillen versteckt', res.fotoZeileSichtbar && res.ril
 check('Wand-Slider erlaubt 0,8', res.wallMin === '0.8' && res.wallFoto === 0.8 && res.sliderWert === '0.8');
 check('Bild geladen', res.bildGeladen);
 check('Motiv-Höhe automatisch gesetzt', res.autoMotivHoehe > 10);
+check('„Einpassen" ist Standard, Breiten-Regler versteckt', res.fitStandard === 'fit' && res.arcReglerVersteckt && res.fitTabAktiv);
+check('3 Anpassungs-Tabs', res.fitTabs === 3);
+check('„Strecken" blendet den Breiten-Regler ein', res.nachStretch === 'stretch' && res.arcReglerSichtbar);
+check('„Strecken" warnt vor Verzerrung', /gezogen|gestaucht/.test(res.infoStretch));
+check('„Einpassen" meldet keine Verzerrung', res.zurueckAufFit === 'fit' && !/gezogen|gestaucht/.test(res.infoFit));
 check('Drop-Zone zeigt „ersetzen"', /ersetzen/.test(res.dropText));
 check('Schirm erstellt', res.erstellt);
 check('Foto-Parameter in userData', res.gespeicherteTiefe > 0);
