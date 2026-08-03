@@ -3388,7 +3388,7 @@ Patrick</textarea>
   <div class="g3box">
     <div class="g3hdr">✏️ Bild → SVG (Vektorisieren)<span class="vx" onclick="_vecClose()">✕</span></div>
     <div class="g3body">
-      <div id="vec-cvwrap"><canvas id="vec-canvas" width="380" height="420" onmousedown="_vecDown(event)"></canvas></div>
+      <div id="vec-cvwrap"><canvas id="vec-canvas" width="380" height="420" onpointerdown="_vecDown(event)"></canvas></div>
       <div class="g3ctrl">
         <span class="vsec">Bild</span>
         <div id="vec-drop" onclick="document.getElementById('vec-file').click()" style="border:1.5px dashed #4a5266;border-radius:8px;padding:12px;text-align:center;cursor:pointer;color:#9fb0c4;font-size:12px">📷 Bild wählen (JPG / PNG / WebP)</div>
@@ -24661,7 +24661,10 @@ function _vecSelSyncUI(){
   }
   if(clr)    clr.style.display    = _vecP.crop ? '' : 'none';
   if(imgClr) imgClr.style.display = _vec.img ? '' : 'none';
-  if(cv)     cv.style.cursor = _vecSel ? 'crosshair' : 'default';
+  if(cv){ cv.style.cursor = _vecSel ? 'crosshair' : 'default';
+          // nur während der Auswahl: sonst scrollt der Finger den Dialog statt
+          // den Rahmen aufzuziehen — außerhalb der Auswahl soll er das aber
+          cv.style.touchAction = _vecSel ? 'none' : ''; }
 }
 // Falsches Bild erwischt: alles zurück auf Anfang. (Ein neues Bild ersetzt das
 // alte ohnehin — das hier ist für „nochmal von vorn".)
@@ -24690,27 +24693,45 @@ function _vecPos(ev){
   return { x: Math.max(0, Math.min(1, (ev.clientX-r.left)/r.width)),
            y: Math.max(0, Math.min(1, (ev.clientY-r.top )/r.height)) };
 }
+// Pointer- statt Maus-Events: damit zieht der Rahmen auch per Finger oder Stift
+// auf. Am Touchscreen bricht der Browser die Geste sonst als Scrollen ab —
+// deshalb setzt _vecSelSyncUI() für die Dauer der Auswahl touch-action:none.
 function _vecDown(ev){
   if(!_vecSel || !_vec.img) return;
+  if(ev.button !== undefined && ev.button > 0) return;   // nur Haupttaste
   ev.preventDefault();
   const p = _vecPos(ev);
-  _vecDrag = { x0:p.x, y0:p.y, x1:p.x, y1:p.y };
-  const move = e => { const q = _vecPos(e); _vecDrag.x1=q.x; _vecDrag.y1=q.y; _vecDraw(); };
-  const up = () => {
-    window.removeEventListener('mousemove', move);
-    window.removeEventListener('mouseup', up);
+  _vecDrag = { x0:p.x, y0:p.y, x1:p.x, y1:p.y, id:ev.pointerId };
+  const mine = e => e.pointerId === undefined || !_vecDrag || e.pointerId === _vecDrag.id;
+  const move = e => { if(!_vecDrag || !mine(e)) return;
+    const q = _vecPos(e); _vecDrag.x1=q.x; _vecDrag.y1=q.y; _vecDraw(); };
+  const end = e => {
+    if(e && !mine(e)) return;
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', end);
+    window.removeEventListener('pointercancel', cancel);
     const d = _vecDrag; _vecDrag = null;
     if(!d){ return; }
+    // Loslass-Punkt zählt: am Touchscreen kann das letzte pointermove der
+    // Fingerspitze hinterherhinken, sonst fehlt dem Rahmen das letzte Stück
+    if(e && e.clientX !== undefined){ const q = _vecPos(e); d.x1 = q.x; d.y1 = q.y; }
     const x = Math.min(d.x0,d.x1), y = Math.min(d.y0,d.y1);
     const w = Math.abs(d.x1-d.x0), h = Math.abs(d.y1-d.y0);
-    if(w < 0.03 || h < 0.03){ _vecDraw(); return; }   // Klick statt Rahmen → nichts tun
+    if(w < 0.03 || h < 0.03){ _vecDraw(); return; }   // Tipp statt Rahmen → nichts tun
     _vecP.crop = { x, y, w, h };
     _vecSel = false; _vecSelSyncUI();
     _vec.traced = true;                 // Bereich gewählt = der will nachzeichnen
     _vecRun(true);
   };
-  window.addEventListener('mousemove', move);
-  window.addEventListener('mouseup', up);
+  // abgebrochene Geste (Anruf, Systemgeste): Rahmen verwerfen, Auswahl bleibt an
+  const cancel = e => { if(e && !mine(e)) return;
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', end);
+    window.removeEventListener('pointercancel', cancel);
+    _vecDrag = null; _vecDraw(); };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', cancel);
 }
 
 // „Außenrand": alles zumachen, was vom Bildrand aus nicht erreichbar ist. Aus der
