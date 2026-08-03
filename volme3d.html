@@ -1154,6 +1154,7 @@ const firebaseConfig = {
     <div class="tbg"><span class="tbg-l">Form ändern</span><div class="tbg-row">
       <button class="btn" onclick="openCutTool()" title="Schneiden — großes Objekt mit einer Schnittebene in zwei druckbare Teile teilen">✂ Schneiden</button>
       <button class="btn" onclick="openEraserTool()" title="Radierer — mit dem Pinsel über das Modell fahren, um Flächen/Geometrie zu entfernen (Radius per Mausrad)">🧽 Radierer</button>
+      <button class="btn" onclick="openSculptTool()" title="Modellieren — mit dem Pinsel Beulen aufbauen, abtragen oder glätten (Radius per Mausrad, Shift = glätten)">🖌️ Modellieren</button>
       <button class="btn" onclick="repairSelected()" title="Reparieren — offene Löcher im ausgewählten Objekt schließen (wieder wasserdicht/druckbar machen)">🩹 Reparieren</button>
       <button class="btn" onclick="openSimplifyModal()" title="Vereinfachen — Dreiecke eines (importierten) Modells reduzieren, fürs schnellere Slicen">🔻 Vereinfachen</button>
       <button class="btn" onclick="openOffsetTool()" title="Spielraum — Körper um ±mm aufblasen/schrumpfen (Toleranz für Passungen, z.B. −0,2 mm für klemmende Deckel)">⧈ Spielraum</button>
@@ -17300,6 +17301,7 @@ canvas.addEventListener('mousedown', e => {
   if (_ae && (_ae.tagName === 'INPUT' || _ae.tagName === 'TEXTAREA')) _ae.blur();
   if (e.button !== 0) return;
   if (typeof _eraser !== 'undefined' && _eraser.active) return;  // Radierer: keine Auswahl/kein Rechteck
+  if (typeof _sculpt !== 'undefined' && _sculpt.active) return;  // Modellieren: dito
   e.preventDefault(); // Verhindert Browser-nativen Drag (Verbots-Cursor)
   if (_plugMode) { _plugClick(e); return; }
   if (_revolveMode) { _revolveAddPoint(e); return; }
@@ -34588,6 +34590,472 @@ function _eraserEraseAt(mesh, pw) {
   return true;
 }
 
+// ═══ MODELLIEREN (Skulptier-Pinsel) ══════════════════════════════════════
+// Vertex-Displacement mit der Maus, direkt auf dem fertigen Mesh:
+//   Aufbauen/Abtragen entlang der Vertex-Normalen, Glätten als Laplace-Schritt
+//   über die echte Nachbarschaft, Flach drückt auf die Ebene der Anstichstelle.
+// Zwei Fallen, die hier gelöst sind:
+//  • Nahtstellen: viele Meshes haben doppelte Vertices auf derselben Position
+//    (Deckelkanten, toNonIndexed, Rotationsnaht). Ohne Verschweißen zieht der
+//    Pinsel sie auseinander → klaffendes Loch. Deshalb wandern VERSCHWEISS-
+//    GRUPPEN gemeinsam.
+//  • Undo/Speichern: die Geometrie wird in-place mutiert, also muss der
+//    JSON-Cache verworfen werden — sonst sichert der nächste Undo-Punkt (und
+//    das Auto-Speichern alle 30 s) den alten Stand.
+const _sculpt = { active:false, radiusMm:12, strengthMm:0.5, mode:'raise', symX:false,
+                  brushing:false, panel:null, ind:null, target:null, touched:null,
+                  savedUndo:false, did:false, lastPoint:null, lastApply:null,
+                  planeP:null, planeN:null, lastClient:null };
+
+function openSculptTool() {
+  if (_sculpt.active) { _sculptClose(); return; }
+  if (typeof _eraser !== 'undefined' && _eraser.active) _eraserClose();
+  if (typeof _cut !== 'undefined' && _cut.active) _cutClose();
+  if (typeof deselect === 'function') deselect();
+  _sculpt.active = true;
+  _sculpt.lastPoint = new THREE.Vector3();
+  _sculpt.touched = new Set();
+  _sculptBuildPanel();
+  _sculptBuildIndicator();
+  canvas.style.cursor = 'crosshair';
+  canvas.addEventListener('mousedown', _sculptDown, true);
+  window.addEventListener('mousemove', _sculptMove, true);
+  window.addEventListener('mouseup', _sculptUp, true);
+  canvas.addEventListener('wheel', _sculptWheel, { passive:false, capture:true });
+  notify('Modellieren aktiv — mit gedrückter Maus über das Modell fahren (Radius per Mausrad)', 'ok');
+}
+
+function _sculptClose() {
+  _sculpt.active = false; _sculpt.brushing = false;
+  if (_sculpt.ind) { _sculpt.ind.remove(); _sculpt.ind = null; }
+  if (_sculpt.panel) { _sculpt.panel.remove(); _sculpt.panel = null; }
+  canvas.style.cursor = '';
+  canvas.removeEventListener('mousedown', _sculptDown, true);
+  window.removeEventListener('mousemove', _sculptMove, true);
+  window.removeEventListener('mouseup', _sculptUp, true);
+  canvas.removeEventListener('wheel', _sculptWheel, { capture:true });
+  _sculpt.target = null;
+}
+
+const _SC_MODES = [['raise','⬆ Aufbauen'],['lower','⬇ Abtragen'],['smooth','〜 Glätten'],['flatten','▬ Flach']];
+
+function _sculptBuildPanel() {
+  if (_sculpt.panel) _sculpt.panel.remove();
+  const p = document.createElement('div');
+  p.id = 'sculpt-panel';
+  p.style.cssText = 'position:fixed;top:70px;right:14px;width:272px;z-index:6000;'+
+    'background:#1f2329;border:1px solid #3a3f47;border-radius:9px;padding:14px 16px;'+
+    'color:#e6e8eb;font:12px/1.4 system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.45)';
+  const btn = (m,l) => `<button onclick="_sculptSetMode('${m}')" data-scm="${m}" style="flex:1;min-width:calc(50% - 3px);background:${_sculpt.mode===m?'#F97316':'#2a2f37'};border:1px solid ${_sculpt.mode===m?'#F97316':'#3a3f47'};color:#e6e8eb;border-radius:6px;padding:6px 4px;cursor:pointer;font-size:11px">${l}</button>`;
+  p.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <b style="font-size:13px">🖌️ Modellieren</b>
+      <span onclick="_sculptClose()" style="cursor:pointer;color:#9aa0a8;font-size:16px;line-height:1">✕</span>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px">${_SC_MODES.map(m=>btn(m[0],m[1])).join('')}</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span style="width:52px;color:#9aa0a8">Radius</span>
+      <input id="sculpt-rad" type="range" min="1" max="60" step="0.5" value="${_sculpt.radiusMm}" style="flex:1" oninput="_sculptSetRadius(this.value)">
+      <span id="sculpt-rad-v" style="width:38px;text-align:right">${_sculpt.radiusMm}</span><span style="color:#9aa0a8">mm</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span style="width:52px;color:#9aa0a8">Stärke</span>
+      <input id="sculpt-str" type="range" min="0.05" max="3" step="0.05" value="${_sculpt.strengthMm}" style="flex:1" oninput="_sculptSetStrength(this.value)">
+      <span id="sculpt-str-v" style="width:38px;text-align:right">${_sculpt.strengthMm}</span><span style="color:#9aa0a8">mm</span>
+    </div>
+    <label style="display:flex;align-items:center;gap:7px;margin-bottom:10px;cursor:pointer">
+      <input type="checkbox" ${_sculpt.symX?'checked':''} onchange="_sculpt.symX=this.checked">
+      <span>Symmetrie (X, zur Objektmitte)</span></label>
+    <div id="sculpt-info" style="color:#9aa0a8;font-size:11px;margin-bottom:8px">Objekt anfahren …</div>
+    <button onclick="_sculptRefine()" style="width:100%;background:#2a2f37;border:1px solid #3a3f47;color:#e6e8eb;border-radius:6px;padding:8px;cursor:pointer;margin-bottom:8px">🔬 Verfeinern (mehr Dreiecke zum Modellieren)</button>
+    <div style="color:#9aa0a8;font-size:11px;margin-bottom:10px">Halten: <b>Shift</b> = Glätten, <b>Alt</b> = Richtung umkehren. Radius per Mausrad, Rechtsklick dreht wie immer. Strg+Z macht den ganzen Strich rückgängig.</div>
+    <button onclick="_sculptClose()" style="width:100%;background:#F97316;border:none;color:#fff;border-radius:6px;padding:8px;font-weight:700;cursor:pointer">Fertig</button>`;
+  document.body.appendChild(p);
+  _sculpt.panel = p;
+}
+
+function _sculptSetMode(m) {
+  _sculpt.mode = m;
+  if (_sculpt.panel) _sculpt.panel.querySelectorAll('[data-scm]').forEach(b => {
+    const on = b.getAttribute('data-scm') === m;
+    b.style.background  = on ? '#F97316' : '#2a2f37';
+    b.style.borderColor = on ? '#F97316' : '#3a3f47';
+  });
+}
+function _sculptSetRadius(mm) {
+  _sculpt.radiusMm = Math.max(0.5, Math.min(60, parseFloat(mm) || 12));
+  const r = document.getElementById('sculpt-rad'), v = document.getElementById('sculpt-rad-v');
+  if (r) r.value = _sculpt.radiusMm;
+  if (v) v.textContent = _sculpt.radiusMm;
+  if (_sculpt.lastClient) _sculptUpdateCursor(_sculpt.lastClient, !!_sculpt.target);
+}
+function _sculptSetStrength(mm) {
+  _sculpt.strengthMm = Math.max(0.05, Math.min(3, parseFloat(mm) || 0.5));
+  const v = document.getElementById('sculpt-str-v'); if (v) v.textContent = _sculpt.strengthMm;
+}
+
+function _sculptBuildIndicator() {
+  if (_sculpt.ind) _sculpt.ind.remove();
+  const d = document.createElement('div');
+  d.id = 'sculpt-cursor';
+  d.style.cssText = 'position:fixed;border:2px solid #23c9d8;border-radius:50%;pointer-events:none;z-index:6500;' +
+    'transform:translate(-50%,-50%);box-shadow:0 0 0 1px rgba(255,255,255,.5),0 0 7px rgba(35,201,216,.7);display:none';
+  document.body.appendChild(d);
+  _sculpt.ind = d;
+}
+
+// Bildschirm-Pixelradius aus dem Welt-Radius an der zuletzt getroffenen Tiefe
+function _sculptUpdateCursor(e, onModel) {
+  const el = _sculpt.ind; if (!el) return;
+  const rw = _sculpt.radiusMm / 10;
+  const c = _sculpt.lastPoint;
+  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  const rect = vpEl.getBoundingClientRect();
+  const proj = (v) => { const p = v.clone().project(camera);
+    return { x: (p.x*0.5+0.5)*rect.width + rect.left, y: (-p.y*0.5+0.5)*rect.height + rect.top }; };
+  const a = proj(c), bp = proj(c.clone().addScaledVector(right, rw));
+  const pr = Math.max(4, Math.hypot(bp.x - a.x, bp.y - a.y));
+  el.style.left = e.clientX + 'px'; el.style.top = e.clientY + 'px';
+  el.style.width = el.style.height = (2 * pr) + 'px';
+  el.style.borderColor = onModel ? '#23c9d8' : 'rgba(35,201,216,.4)';
+  el.style.display = 'block';
+}
+
+function _sculptPick(e) {
+  getNorm(e); raycaster.setFromCamera(mousev, camera);
+  const hits = raycaster.intersectObjects(objects, true)
+    .filter(h => h.object.isMesh && h.face && !h.object.userData.isEdgeLines &&
+                 !h.object.userData.locked && h.object.visible !== false);
+  return hits.length ? hits[0] : null;
+}
+
+// Verschweiß-Gruppen + Nachbarschaft, einmal pro Geometrie (Cache an der Geometrie).
+// Positionen werden auf 1 µm gerundet gruppiert — genau dafür, dass koinzidente
+// Vertices (Naht/Knick) als EIN Punkt wandern.
+function _sculptPrep(mesh) {
+  const g = mesh.geometry, pos = g.attributes.position;
+  if (!pos || pos.isInterleavedBufferAttribute) return null;
+  const n = pos.count;
+  if (g.userData._sc && g.userData._sc.n === n) return g.userData._sc;
+  const pa = pos.array;
+  const map = new Map(), grp = new Int32Array(n);
+  let G = 0;
+  const K = 1e4;   // 1 Unit = 10 mm → Raster 1 µm
+  for (let i = 0; i < n; i++) {
+    const k = Math.round(pa[i*3]*K) + '_' + Math.round(pa[i*3+1]*K) + '_' + Math.round(pa[i*3+2]*K);
+    let id = map.get(k);
+    if (id === undefined) { id = G++; map.set(k, id); }
+    grp[i] = id;
+  }
+  // Gruppen-Mitglieder als CSR
+  const cnt = new Int32Array(G);
+  for (let i = 0; i < n; i++) cnt[grp[i]]++;
+  const gStart = new Int32Array(G + 1);
+  for (let i = 0; i < G; i++) gStart[i+1] = gStart[i] + cnt[i];
+  const gMem = new Int32Array(n), fill = gStart.slice(0, G);
+  for (let i = 0; i < n; i++) gMem[fill[grp[i]]++] = i;
+  // Nachbarschaft der Gruppen über die Dreiecke (fürs Glätten)
+  const idx = g.index, triN = (idx ? idx.count : n) / 3;
+  const sets = new Array(G);
+  const link = (a, b) => { if (a === b) return; (sets[a] || (sets[a] = new Set())).add(b); };
+  for (let t = 0; t < triN; t++) {
+    const i0 = idx ? idx.getX(t*3) : t*3, i1 = idx ? idx.getX(t*3+1) : t*3+1, i2 = idx ? idx.getX(t*3+2) : t*3+2;
+    const a = grp[i0], b = grp[i1], c = grp[i2];
+    link(a,b); link(b,a); link(b,c); link(c,b); link(c,a); link(a,c);
+  }
+  const nStart = new Int32Array(G + 1);
+  for (let i = 0; i < G; i++) nStart[i+1] = nStart[i] + (sets[i] ? sets[i].size : 0);
+  const nList = new Int32Array(nStart[G]);
+  for (let i = 0, w = 0; i < G; i++) if (sets[i]) for (const v of sets[i]) nList[w++] = v;
+  const sc = { n, G, grp, gStart, gMem, nStart, nList, gRep: new Int32Array(G) };
+  for (let i = 0; i < G; i++) sc.gRep[i] = gMem[gStart[i]];
+  g.userData._sc = sc;
+  return sc;
+}
+
+// Einmal pro Objekt: parametrische Herkunft verwerfen, sonst würde der Körper
+// beim nächsten Regenerieren (Maß ändern, Laden) die Modellierung wegwerfen.
+function _sculptDetach(mesh) {
+  const ud = mesh.userData;
+  if (ud.type === 'custom' && !ud.shapeType) return;
+  ud.type = 'custom';
+  delete ud.shapeType; delete ud.occtShape; delete ud._occtParams;
+  delete ud._origGeo; delete ud._origStlBuf; delete ud.edgeBevels;
+}
+
+const _scV = { m: new THREE.Matrix4(), s: new THREE.Vector3(), c: new THREE.Vector3() };
+
+// Ein Pinsel-Abdruck. Liefert true, wenn wirklich Vertices bewegt wurden.
+function _sculptApplyAt(mesh, centerWorld, mode, invert) {
+  const sc = _sculptPrep(mesh); if (!sc) return false;
+  _sculptDetach(mesh);          // hier, nicht erst im Strich — kein Weg daran vorbei
+  const g = mesh.geometry, pos = g.attributes.position, nrm = g.attributes.normal;
+  const pa = pos.array, na = nrm ? nrm.array : null;
+  mesh.updateMatrixWorld(true);
+  const mw = mesh.matrixWorld;
+  const inv = _scV.m.copy(mw).invert();
+  const s = _scV.s.setFromMatrixScale(mw);
+  const rw = _sculpt.radiusMm / 10;                     // Welt-Radius (1 Unit = 10 mm)
+  const amp = (_sculpt.strengthMm / 10) * (mode === 'lower' ? -1 : 1) * (invert ? -1 : 1);
+  const lam = Math.max(0.05, Math.min(0.9, _sculpt.strengthMm));   // Glätt-Faktor
+  // Die Welt-Kugel wird im lokalen Raum zum Ellipsoid: Abstände mit den Achsen-
+  // skalierungen wichten → der Pinsel bleibt auch auf skalierten Körpern rund.
+  const c0 = _scV.c.copy(centerWorld).applyMatrix4(inv).clone();
+  const centers = [c0];
+  if (_sculpt.symX) centers.push(new THREE.Vector3(-c0.x, c0.y, c0.z));
+
+  const wp = new THREE.Vector3();
+  let moved = 0;
+  for (const ct of centers) {
+    for (let gi = 0; gi < sc.G; gi++) {
+      const vi = sc.gRep[gi];
+      const px = pa[vi*3], py = pa[vi*3+1], pz = pa[vi*3+2];
+      const ax = (px - ct.x) * s.x, ay = (py - ct.y) * s.y, az = (pz - ct.z) * s.z;
+      const d2 = ax*ax + ay*ay + az*az;
+      if (d2 >= rw*rw) continue;
+      const f = 1 - Math.sqrt(d2) / rw, w = f * f * (3 - 2*f);   // weiche Glocke
+      let dx = 0, dy = 0, dz = 0;
+
+      if (mode === 'smooth') {
+        let sx = 0, sy = 0, sz = 0, cn = 0;
+        for (let k = sc.nStart[gi]; k < sc.nStart[gi+1]; k++) {
+          const nv = sc.gRep[sc.nList[k]];
+          sx += pa[nv*3]; sy += pa[nv*3+1]; sz += pa[nv*3+2]; cn++;
+        }
+        if (!cn) continue;
+        const l = lam * w;
+        dx = (sx/cn - px) * l; dy = (sy/cn - py) * l; dz = (sz/cn - pz) * l;
+      } else if (mode === 'flatten') {
+        if (!_sculpt.planeN) continue;
+        wp.set(px, py, pz).applyMatrix4(mw);
+        const sd = wp.x*_sculpt.planeN.x + wp.y*_sculpt.planeN.y + wp.z*_sculpt.planeN.z
+                 - _sculpt.planeP.dot(_sculpt.planeN);
+        const lim = Math.abs(amp) * 3;
+        wp.addScaledVector(_sculpt.planeN, -Math.max(-lim, Math.min(lim, sd)) * w).applyMatrix4(inv);
+        dx = wp.x - px; dy = wp.y - py; dz = wp.z - pz;
+      } else {
+        if (!na) continue;
+        // Normale über die ganze Verschweiß-Gruppe mitteln — an einer Naht zeigt
+        // die Normale eines einzelnen Vertex zur Seite, der Pinsel würde schmieren
+        let nx = 0, ny = 0, nz = 0;
+        for (let k = sc.gStart[gi]; k < sc.gStart[gi+1]; k++) {
+          const mv = sc.gMem[k]; nx += na[mv*3]; ny += na[mv*3+1]; nz += na[mv*3+2];
+        }
+        const ln = Math.hypot(nx, ny, nz); if (ln < 1e-9) continue;
+        nx /= ln; ny /= ln; nz /= ln;
+        // Weltlänge einer lokalen Einheitsnormalen → der Hub bleibt in mm korrekt
+        const sEff = Math.hypot(nx*s.x, ny*s.y, nz*s.z) || 1;
+        const a2 = amp * w / sEff;
+        dx = nx * a2; dy = ny * a2; dz = nz * a2;
+      }
+      if (!dx && !dy && !dz) continue;
+      for (let k = sc.gStart[gi]; k < sc.gStart[gi+1]; k++) {
+        const mv = sc.gMem[k];
+        pa[mv*3] += dx; pa[mv*3+1] += dy; pa[mv*3+2] += dz;
+      }
+      moved++;
+    }
+  }
+  if (!moved) return false;
+  pos.needsUpdate = true;
+  const triN = (g.index ? g.index.count : pos.count) / 3;
+  if (triN <= 150000) g.computeVertexNormals();      // sonst erst am Strich-Ende
+  else g.userData._scNeedNormals = true;
+  g.computeBoundingSphere();
+  _geoJsonCache.delete(g);      // in-place mutiert → Cache verwerfen (Undo/Speichern!)
+  _sculpt.touched.add(mesh);
+  return true;
+}
+
+function _sculptStroke(hit, e) {
+  const mesh = hit.object;
+  if (mesh.userData.isHole) { notify('Bohrungen lassen sich nicht modellieren', 'w'); return; }
+  const mode = e.shiftKey ? 'smooth' : _sculpt.mode;
+  if (!_sculpt.savedUndo) { saveUndo(); _sculpt.savedUndo = true; }
+  if (_sculptApplyAt(mesh, hit.point, mode, !!e.altKey)) _sculpt.did = true;
+}
+
+function _sculptMove(e) {
+  if (!_sculpt.active) return;
+  _sculpt.lastClient = { clientX: e.clientX, clientY: e.clientY };
+  const hit = _sculptPick(e);
+  if (hit) { _sculpt.lastPoint.copy(hit.point); _sculptSetTarget(hit.object); }
+  _sculptUpdateCursor(e, !!hit);
+  if (!_sculpt.brushing) return;
+  e.preventDefault(); e.stopPropagation();
+  if (!hit) return;
+  // Strich gleichmäßig auftragen: nächster Abdruck erst ab ~12 % Pinselabstand,
+  // sonst häuft langsames Ziehen an einer Stelle das Vielfache der Stärke auf
+  if (_sculpt.lastApply && hit.point.distanceTo(_sculpt.lastApply) < _sculptSpacing()) return;
+  _sculpt.lastApply = hit.point.clone();
+  _sculptStroke(hit, e);
+}
+function _sculptSpacing() { return _sculpt.radiusMm / 10 * 0.12; }
+
+function _sculptDown(e) {
+  if (!_sculpt.active || e.button !== 0) return;
+  e.preventDefault(); e.stopPropagation();
+  _sculpt.brushing = true; _sculpt.did = false; _sculpt.savedUndo = false;
+  _sculpt.touched = new Set(); _sculpt.lastApply = null;
+  const hit = _sculptPick(e);
+  if (!hit) return;
+  _sculpt.lastPoint.copy(hit.point);
+  // „Flach" arbeitet auf der Ebene der Anstichstelle — einmal pro Strich gesetzt
+  _sculpt.planeP = hit.point.clone();
+  _sculpt.planeN = hit.face.normal.clone()
+    .applyMatrix3(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize();
+  _sculpt.lastApply = hit.point.clone();
+  _sculptStroke(hit, e);
+}
+
+function _sculptUp() {
+  if (!_sculpt.brushing) return;
+  _sculpt.brushing = false;
+  if (!_sculpt.did) return;
+  _sculpt.touched.forEach(m => {
+    if (m.geometry.userData._scNeedNormals) { m.geometry.computeVertexNormals(); delete m.geometry.userData._scNeedNormals; }
+    _sculptFixEdges(m);
+  });
+  updateTree(); _sculptInfo();
+}
+
+function _sculptWheel(e) {
+  if (!_sculpt.active) return;
+  e.preventDefault(); e.stopPropagation();
+  const step = e.shiftKey ? 0.5 : 2;
+  _sculptSetRadius(_sculpt.radiusMm + (e.deltaY < 0 ? step : -step));
+}
+
+// Kantenlinien: auf einem modellierten Netz überschreiten tausende Beulen die
+// 30°-Schwelle → nur Rauschen und teuer. Bei feinen Netzen deshalb entfernen.
+function _sculptFixEdges(mesh) {
+  const lines = mesh.children.filter(c => c.userData.isEdgeLines);
+  if (!lines.length) return;
+  const g = mesh.geometry, triN = (g.index ? g.index.count : g.attributes.position.count) / 3;
+  if (triN > 20000) lines.forEach(c => { c.geometry.dispose(); mesh.remove(c); });
+  else if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(mesh);
+}
+
+function _sculptSetTarget(mesh) {
+  if (_sculpt.target === mesh) return;
+  _sculpt.target = mesh; _sculptInfo();
+}
+function _sculptInfo() {
+  const el = document.getElementById('sculpt-info'); if (!el) return;
+  const m = _sculpt.target;
+  if (!m) { el.textContent = 'Objekt anfahren …'; return; }
+  const g = m.geometry, triN = Math.round((g.index ? g.index.count : g.attributes.position.count) / 3);
+  const edgeMm = _sculptAvgEdge(m) * 10;
+  const fein = edgeMm <= _sculpt.radiusMm / 3;
+  el.innerHTML = '<b>' + (m.userData.name || 'Körper') + '</b><br>' +
+    triN.toLocaleString('de-DE') + ' Dreiecke · Kante ø ' + edgeMm.toFixed(1) + ' mm' +
+    (fein ? '' : '<br><span style="color:#f0a83c">Für diesen Radius zu grob — „Verfeinern" drücken.</span>');
+}
+
+// Mittlere Kantenlänge (Stichprobe) in Welt-Units
+function _sculptAvgEdgeGeo(g) {
+  const pos = g.attributes.position, idx = g.index, pa = pos.array;
+  const triN = (idx ? idx.count : pos.count) / 3;
+  const step = Math.max(1, Math.floor(triN / 400));
+  let sum = 0, cnt = 0;
+  for (let t = 0; t < triN; t += step) {
+    const a = idx ? idx.getX(t*3) : t*3, b = idx ? idx.getX(t*3+1) : t*3+1;
+    sum += Math.hypot(pa[a*3]-pa[b*3], pa[a*3+1]-pa[b*3+1], pa[a*3+2]-pa[b*3+2]);
+    cnt++;
+  }
+  return cnt ? sum / cnt : 0;
+}
+function _sculptAvgEdge(mesh) {
+  mesh.updateMatrixWorld(true);
+  const s = new THREE.Vector3().setFromMatrixScale(mesh.matrixWorld);
+  return _sculptAvgEdgeGeo(mesh.geometry) * ((s.x + s.y + s.z) / 3 || 1);
+}
+
+// Ein Unterteilungsschritt 1→4. Indiziert bleibt indiziert (Kantenmitten werden
+// geteilt → Knicke bleiben Knicke, weil dort ohnehin doppelte Vertices und damit
+// doppelte Kanten liegen); nicht-indizierte Netze werden als Dreieckssuppe
+// unterteilt — die Mitten stimmen bitgenau überein (a+b === b+a), nichts reißt auf.
+function _sculptSubdivideGeo(geo) {
+  const pos = geo.attributes.position, idx = geo.index;
+  const ng = new THREE.BufferGeometry();
+  if (idx) {
+    const N = pos.count, pa = pos.array;
+    const xs = Array.from(pa);                    // wächst um die Kantenmitten
+    const em = new Map();
+    const mid = (a, b) => {
+      const k = a < b ? a * N + b : b * N + a;
+      let m = em.get(k);
+      if (m === undefined) {
+        m = xs.length / 3;
+        xs.push((pa[a*3]+pa[b*3])/2, (pa[a*3+1]+pa[b*3+1])/2, (pa[a*3+2]+pa[b*3+2])/2);
+        em.set(k, m);
+      }
+      return m;
+    };
+    const out = [];
+    for (let t = 0; t < idx.count / 3; t++) {
+      const a = idx.getX(t*3), b = idx.getX(t*3+1), c = idx.getX(t*3+2);
+      const ab = mid(a,b), bc = mid(b,c), ca = mid(c,a);
+      out.push(a,ab,ca, ab,b,bc, ca,bc,c, ab,bc,ca);
+    }
+    ng.setAttribute('position', new THREE.Float32BufferAttribute(xs, 3));
+    ng.setIndex(out);
+  } else {
+    const pa = pos.array, triN = pos.count / 3;
+    const out = new Float32Array(triN * 4 * 9);
+    let w = 0;
+    const push = (x,y,z) => { out[w++]=x; out[w++]=y; out[w++]=z; };
+    for (let t = 0; t < triN; t++) {
+      const o = t*9;
+      const ax=pa[o],   ay=pa[o+1], az=pa[o+2];
+      const bx=pa[o+3], by=pa[o+4], bz=pa[o+5];
+      const cx=pa[o+6], cy=pa[o+7], cz=pa[o+8];
+      const mx=(ax+bx)/2, my=(ay+by)/2, mz=(az+bz)/2;
+      const nx=(bx+cx)/2, ny=(by+cy)/2, nz=(bz+cz)/2;
+      const ox=(cx+ax)/2, oy=(cy+ay)/2, oz=(cz+az)/2;
+      push(ax,ay,az); push(mx,my,mz); push(ox,oy,oz);
+      push(mx,my,mz); push(bx,by,bz); push(nx,ny,nz);
+      push(ox,oy,oz); push(nx,ny,nz); push(cx,cy,cz);
+      push(mx,my,mz); push(nx,ny,nz); push(ox,oy,oz);
+    }
+    ng.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+  }
+  ng.computeVertexNormals();
+  return ng;
+}
+
+// Unterteilt so oft, bis die Kanten zum Pinselradius passen (Deckel: 400k Dreiecke)
+function _sculptRefine() {
+  const mesh = _sculpt.target;
+  if (!mesh) { notify('Erst mit der Maus über den Körper fahren', 'w'); return; }
+  const CAP = 400000;
+  const g0 = mesh.geometry;
+  let triN = (g0.index ? g0.index.count : g0.attributes.position.count) / 3;
+  if (triN * 4 > CAP) { notify('Schon ' + Math.round(triN).toLocaleString('de-DE') + ' Dreiecke — feiner wird zu schwer', 'w'); return; }
+  mesh.updateMatrixWorld(true);
+  const s = new THREE.Vector3().setFromMatrixScale(mesh.matrixWorld);
+  const sAvg = (s.x + s.y + s.z) / 3 || 1;
+  const target = _sculpt.radiusMm / 10 / 3.5;    // Zielkantenlänge in Welt-Units
+  if (_sculptAvgEdgeGeo(g0) * sAvg <= target) { notify('Netz ist für diesen Radius schon fein genug', 'ok'); return; }
+  saveUndo();
+  _sculptDetach(mesh);
+  let geo = g0, steps = 0;
+  const before = triN;
+  while (steps < 6 && triN * 4 <= CAP && _sculptAvgEdgeGeo(geo) * sAvg > target) {
+    const ng = _sculptSubdivideGeo(geo);
+    if (geo !== g0) geo.dispose();
+    geo = ng; steps++;
+    triN = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
+  }
+  if (!steps) return;
+  mesh.geometry.dispose();
+  mesh.geometry = geo;
+  _geoJsonCache.delete(geo);
+  _sculptFixEdges(mesh);
+  _sculptInfo(); updateTree();
+  notify('Verfeinert: ' + Math.round(before).toLocaleString('de-DE') + ' → ' + Math.round(triN).toLocaleString('de-DE') + ' Dreiecke', 'ok');
+}
+
 // Reparieren: offene Löcher im ausgewählten Objekt (oder dessen Mesh-Kindern) schließen
 // ===== DRUCK-CHECK =====
 // Analysiert die sichtbaren Körper (was exportiert würde): wasserdicht/manifold,
@@ -34894,6 +35362,7 @@ const CMDK = [
   {i:'⊙',g:'Bearbeiten',t:'Kreismuster',k:'circular array',run:()=>circularPatternTool()},
   {i:'✂',g:'Bearbeiten',t:'Schneiden',k:'cut split zerteilen',run:()=>openCutTool()},
   {i:'🧽',g:'Bearbeiten',t:'Radierer',k:'eraser',run:()=>openEraserTool()},
+  {i:'🖌️',g:'Bearbeiten',t:'Modellieren',k:'modellieren sculpt pinsel beule delle glätten skulptieren verformen organisch kneten',run:()=>openSculptTool()},
   {i:'🩹',g:'Druck',t:'Reparieren',k:'repair loch wasserdicht',run:()=>repairSelected()},
   {i:'🖨',g:'Druck',t:'Druck-Check',k:'print check druckbar',run:()=>_printCheckOpen()},
   {i:'↻',g:'Druck',t:'Für Druck ausrichten',k:'orient',run:()=>autoOrientForPrint()},
