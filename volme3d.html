@@ -30692,8 +30692,12 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.67';
+const VOLME3D_VERSION = '1.15.68';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.68', date:'2026-08-03', changes:[
+    ['📏','Der Druck-Check verwechselt Löcher nicht mehr mit dünnen Wänden. Bisher maß er einfach von jeder Fläche nach innen bis zur nächsten Fläche — bei einem Sieb oder einem Teil mit Schlitzen traf er dabei quer durch die Öffnung die andere Lochwand und meldete deren Abstand als „dünne Wand". Je enger die Löcher, desto mehr Fehlmeldungen. Jetzt prüft er, ob die Strecke wirklich durch Material läuft: nur dann zählt sie als Wand. Ein Luftspalt von 0,4 mm zwischen zwei dicken Platten wird nicht mehr gemeldet, eine echte 0,4-mm-Wand weiterhin punktgenau.'],
+    ['⬆','„⬆ Verstärken" schlägt jetzt einen Wert vor, der auch wirklich passt. V3D CAD misst dafür zusätzlich die engste Öffnung im Modell und trägt höchstens so viel auf, dass Löcher und Schlitze nicht zuwachsen — trägt man mehr auf als ein Loch halb breit ist, wächst es zu und das Modell beschädigt sich selbst. Einzelne kaputte Dreiecke im Netz ziehen den Vorschlag außerdem nicht mehr in die Irre: gerechnet wird mit dem typischen statt dem allerkleinsten Messwert. Beim Duschsieb kommt so 0,19 mm heraus statt vorher 0,38 mm — die Wände wurden damit im Schnitt doppelt so dick, ohne dass die Sieblöcher gelitten haben.'],
+  ]},
   { version:'1.15.67', date:'2026-08-03', changes:[
     ['⚡','„⊖ Abziehen" bleibt bei feinen Modellen nicht mehr bei 93 % stehen. Wer ein detailreiches Teil importiert hatte — etwa ein Duschsieb mit tausenden Löchern — und eine Bohrung hineinsetzen wollte, sah den Balken ewig bei 93 % hängen. Dahinter steckte kein Absturz, sondern echtes Rechnen: der Server baut aus so einem Netz erst ein exaktes Flächenmodell, und bei dem Sieb dauerte allein das Einlesen eine halbe Stunde, danach ging ihm der Speicher aus. Für solche Netze rechnet V3D CAD den Schnitt jetzt direkt im Browser — dasselbe Sieb ist in gut zwei Sekunden statt einer Stunde durch, ganz ohne Server. Bei normalen Teilen bleibt alles beim exakten alten Weg. Gemeldet von Ralf.'],
     ['⬆','Im Druck-Check kann man dünne Wände jetzt auch gleich verstärken, statt sie nur anzeigen zu lassen. Neben „👁 Zeigen" sitzt ein neuer Knopf „⬆ Verstärken": V3D CAD schlägt vor, wie viel Material pro Seite nötig ist, damit die dünnste Stelle die druckbaren 0,8 mm erreicht, und trägt es auf alle Flächen auf. Eine Wand wird dabei um das Doppelte dicker (Material wächst ja von beiden Seiten), Löcher und Schlitze werden entsprechend enger — bei einem Sieb bleiben sie offen, nur die Stege werden kräftiger. Damit erledigt sich das Herumprobieren im Slicer, mit dem sich eine Mindest-Wandstärke gar nicht erzwingen lässt. Der Hinweis auf dünne Wände erscheint außerdem jetzt auch bei sehr großen Modellen, wo er bisher übersprungen wurde. Angeregt von Ralf.'],
@@ -35298,7 +35302,7 @@ function _printCheckAnalyze(){
 // Von Dreiecks-Mittelpunkten knapp unter der Oberfläche nach INNEN schießen;
 // erster Treffer = lokale Wandstärke. Unter der Schwelle → dünne Stelle.
 // Stichprobe (max ~350 Dreiecke/Objekt, flächenverteilt) hält es schnell.
-let _pcThinSpots = [], _pcThinMinMm = 0;
+let _pcThinSpots = [], _pcThinMinMm = 0, _pcMinGapMm = null, _pcThinTypMm = null;
 let _pcThinVis = [], _pcThinTimer = null;
 
 function _pcWallAnalysis(thresholdMm, totalTris){
@@ -35310,7 +35314,10 @@ function _pcWallAnalysis(thresholdMm, totalTris){
   const ray = new THREE.Raycaster();
   const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
   const ctr = new THREE.Vector3(), n = new THREE.Vector3(), e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
-  const spots = []; let minT = Infinity;
+  const dir = new THREE.Vector3(), nHit = new THREE.Vector3();
+  const ha = new THREE.Vector3(), hb = new THREE.Vector3(), hc = new THREE.Vector3();
+  const he1 = new THREE.Vector3(), he2 = new THREE.Vector3();
+  const spots = [], gaps = []; let minT = Infinity, minGap = Infinity;
   for (const mesh of meshes) {
     mesh.updateMatrixWorld(true);
     const pos = mesh.geometry.attributes.position; if (!pos) continue;
@@ -35329,16 +35336,71 @@ function _pcWallAnalysis(thresholdMm, totalTris){
       if (n.lengthSq() < 1e-14) continue;
       n.normalize();
       const eps = 0.002;   // 0,02 mm unter die Oberfläche, dann nach innen
-      ray.set(ctr.clone().addScaledVector(n, -eps), n.clone().negate());
+      dir.copy(n).negate();
+      ray.set(ctr.clone().addScaledVector(n, -eps), dir);
       ray.far = thr * 4;
       const hits = ray.intersectObject(mesh, false).filter(h => h.distance > 1e-4 && h.face);
-      if (hits.length) {
-        const d = hits[0].distance + eps;
-        if (d < thr) { spots.push({ p: ctr.clone(), mm: d * 10 }); if (d < minT) minT = d; }
-      }
+      if (!hits.length) continue;
+      const hit = hits[0];
+      // Nur Strecken zählen, die wirklich durch MATERIAL laufen. Bei einer Wand
+      // tritt der Strahl aus der Gegenfläche von innen aus — deren Normale zeigt
+      // dann in Strahlrichtung (Rückseiten-Treffer). Zeigt sie entgegen, lag Luft
+      // dazwischen: ein Loch oder Schlitz, dessen Breite keine Wandstärke ist.
+      // Ohne diese Prüfung meldete ein Duschsieb seine Löcher reihenweise als
+      // „dünne Wand" — und je enger sie wurden, desto mehr Treffer.
+      // Trefferflächen-Normale genauso aus Welt-Vertices rechnen wie die
+      // Startnormale (hit.face.normal wäre lokal und bräuchte die Normalmatrix).
+      ha.fromBufferAttribute(pos, hit.face.a).applyMatrix4(mesh.matrixWorld);
+      hb.fromBufferAttribute(pos, hit.face.b).applyMatrix4(mesh.matrixWorld);
+      hc.fromBufferAttribute(pos, hit.face.c).applyMatrix4(mesh.matrixWorld);
+      nHit.crossVectors(he1.subVectors(hb, ha), he2.subVectors(hc, ha));
+      if (nHit.dot(dir) <= 0) continue;
+      const d = hit.distance + eps;
+      if (d < thr) { spots.push({ p: ctr.clone(), mm: d * 10 }); if (d < minT) minT = d; }
+      continue;
+    }
+    // ── Zweiter Durchgang: engster LUFTSPALT (Loch, Schlitz, Nachbarwand) ────
+    // Strahl nach AUSSEN; ein Frontface-Treffer heißt: dort steht Material
+    // gegenüber. Der engste solche Spalt begrenzt, wie weit „⬆ Verstärken"
+    // auftragen darf — sonst wachsen die Öffnungen zu und das Netz durchdringt
+    // sich selbst (am Sieb ab 0,4 mm/Seite messbar: Artefakte <0,1 mm 1 → 11).
+    for (let t = 0; t < triCount; t += step) {
+      const ia = idx ? idx[t*3] : t*3, ib = idx ? idx[t*3+1] : t*3+1, ic = idx ? idx[t*3+2] : t*3+2;
+      a.fromBufferAttribute(pos, ia).applyMatrix4(mesh.matrixWorld);
+      b.fromBufferAttribute(pos, ib).applyMatrix4(mesh.matrixWorld);
+      c.fromBufferAttribute(pos, ic).applyMatrix4(mesh.matrixWorld);
+      ctr.copy(a).add(b).add(c).multiplyScalar(1/3);
+      e1.subVectors(b, a); e2.subVectors(c, a);
+      n.crossVectors(e1, e2);
+      if (n.lengthSq() < 1e-14) continue;
+      n.normalize();
+      const eps = 0.002;
+      ray.set(ctr.clone().addScaledVector(n, eps), n);
+      ray.far = thr * 4;
+      const gh = ray.intersectObject(mesh, false).filter(h => h.distance > 1e-4 && h.face);
+      if (!gh.length) continue;
+      const g0 = gh[0];
+      ha.fromBufferAttribute(pos, g0.face.a).applyMatrix4(mesh.matrixWorld);
+      hb.fromBufferAttribute(pos, g0.face.b).applyMatrix4(mesh.matrixWorld);
+      hc.fromBufferAttribute(pos, g0.face.c).applyMatrix4(mesh.matrixWorld);
+      nHit.crossVectors(he1.subVectors(hb, ha), he2.subVectors(hc, ha));
+      if (nHit.dot(n) >= 0) continue;          // kein Frontface → kein Spalt
+      const gd = g0.distance + eps;
+      if (gd > 1e-3) { gaps.push(gd); if (gd < minGap) minGap = gd; }   // Null-Abstände sind Netzmüll
     }
   }
-  return { spots, minMm: isFinite(minT) ? minT * 10 : null };
+  // Min/Max sind auf Import-Netzen unbrauchbar: EIN degeneriertes Dreieckspaar
+  // (am Duschsieb 0,03 mm) zieht sie beliebig weit runter. Fürs Aufdicken zählt
+  // deshalb das 10. Perzentil — dünn, aber nicht Netzmüll. Das echte Minimum
+  // bleibt für die Anzeige erhalten.
+  const perc = (arr, q) => { if (!arr.length) return null;
+    const s = arr.slice().sort((x, y) => x - y);
+    return s[Math.min(s.length - 1, Math.floor(s.length * q))]; };
+  return { spots,
+           minMm:    isFinite(minT)   ? minT   * 10 : null,
+           minGapMm: isFinite(minGap) ? minGap * 10 : null,
+           thinMm:   perc(spots.map(s => s.mm), 0.1),            // spots.mm ist schon mm
+           gapMm:    (g => g === null ? null : g * 10)(perc(gaps, 0.1)) };
 }
 
 function _pcClearThinVis(){
@@ -35426,18 +35488,30 @@ async function _pcThickenWalls(){
     if (o.isMesh && !o.userData.isEdgeLines) meshes.push(o); });
   if (!meshes.length) { notify('Keine passenden Körper — Gruppen bitte vorher auflösen', 'w'); return; }
 
-  // Vorschlag: so viel pro Seite, dass die dünnste gemessene Stelle 0,8 mm wird.
-  const need = Math.max(0, 0.8 - (_pcThinMinMm || 0)) / 2;
-  const sugg = Math.max(0.05, Math.min(0.5, need)).toFixed(2).replace('.', ',');
+  // Vorschlag: so viel pro Seite, dass die dünnste gemessene Stelle 0,8 mm wird —
+  // aber gedeckelt auf das, was der engste Luftspalt hergibt. Trägt man mehr auf,
+  // als ein Loch halb breit ist, wächst es zu und das Netz durchdringt sich
+  // selbst (am Duschsieb ab 0,4 mm/Seite messbar). 80 % als Sicherheitsabstand.
+  const need  = Math.max(0, 0.8 - (_pcThinTypMm || _pcThinMinMm || 0)) / 2;
+  const limit = _pcMinGapMm ? _pcMinGapMm / 2 * 0.8 : Infinity;
+  const val   = Math.max(0.05, Math.min(0.5, need, limit));
+  const sugg  = val.toFixed(2).replace('.', ',');
   const ans = prompt(
     'Wände verstärken — Material pro Seite in mm:\n\n' +
-    'Eine Wand wird um das DOPPELTE dicker (' + sugg.replace(',', '.') + ' mm → ca. ' +
-    (parseFloat(sugg.replace(',', '.')) * 2).toFixed(2) + ' mm Zuwachs).\n' +
+    'Eine Wand wird um das DOPPELTE dicker (' + val.toFixed(2) + ' mm → ' +
+    (val * 2).toFixed(2) + ' mm Zuwachs).\n' +
     'Löcher und Schlitze werden entsprechend enger.\n' +
-    'Dünnste gemessene Stelle aktuell: ' + (_pcThinMinMm || 0).toFixed(2) + ' mm.', sugg);
+    'Dünnste gemessene Wand: ' + (_pcThinMinMm || 0).toFixed(2) + ' mm.' +
+    (isFinite(limit)
+      ? '\n\nEngste Öffnung: ' + _pcMinGapMm.toFixed(2) + ' mm — mehr als ' +
+        limit.toFixed(2) + ' mm pro Seite lässt sie zuwachsen.'
+      : ''), sugg);
   if (ans === null) return;
   const dist = parseFloat(String(ans).replace(',', '.'));
   if (!isFinite(dist) || dist <= 0) { notify('Ungültiger Wert', 'w'); return; }
+  if (isFinite(limit) && dist > limit + 1e-9)
+    notify('⚠️ ' + dist.toFixed(2) + ' mm ist mehr als die halbe engste Öffnung (' +
+           _pcMinGapMm.toFixed(2) + ' mm) — Löcher können zuwachsen', 'w');
 
   _printCheckClose();
   _progressShow('Wände werden verstärkt…'); _progressSet(8); _progressCreep(93);
@@ -35512,7 +35586,7 @@ function _printCheckOpen(){
   if(r.tris <= 1500000){
     try{
       const w=_pcWallAnalysis(0.8, r.tris);
-      _pcThinSpots=w.spots; _pcThinMinMm=w.minMm;
+      _pcThinSpots=w.spots; _pcThinMinMm=w.minMm; _pcMinGapMm=w.gapMm; _pcThinTypMm=w.thinMm;
       if(w.spots.length) row('warn','⚠️','Dünne Wände', w.spots.length+' Stelle(n) unter 0,8 mm (dünnste ~'+w.minMm.toFixed(2)+' mm) — Gefahr von Löchern oder Bruch. Wand ≥ 0,8 mm = 2 Bahnen bei 0,4er Düse.','👁 Zeigen','_pcShowThinSpots()','⬆ Verstärken','_pcThickenWalls()');
       else row('ok','✅','Wandstärken','Keine Stellen unter 0,8 mm gefunden (Stichprobe).');
     }catch(e){ console.warn('Wandstärken-Check:',e); }
