@@ -12823,6 +12823,88 @@ function _meshWorldToStls(obj) {
   return out;
 }
 
+// ── Mesh-Boolean via Manifold (Schnellweg für große/löchrige Netze) ─────────
+// OCCT muss ein STL erst zu einem B-Rep sewen. Bei feinen Import-Netzen mit
+// vielen Durchbrüchen explodiert das: ein Duschsieb mit 281k Dreiecken und
+// Genus 5541 brauchte 30 min zum Einlesen, 13,5 min zum Sewen und kippte dann
+// in den WASM-OOM — der Nutzer sah nur den Balken bei 93 % stehen.
+// Manifold rechnet direkt auf dem Dreiecksnetz: derselbe Fall in ~1,4 s.
+// Darunter bleibt OCCT zuständig (exaktere Kanten, echte B-Rep-Flächen).
+const _MF_SUBTRACT_MIN_TRIS = 50000;
+
+function _countTris(objs) {
+  let n = 0;
+  for (const o of objs) o.traverse(ch => {
+    if (!ch.isMesh || !ch.geometry?.attributes?.position) return;
+    if (ch.userData.isEdgeLines || ch.visible === false) return;
+    const g = ch.geometry;
+    n += Math.floor((g.index ? g.index.count : g.attributes.position.count) / 3);
+  });
+  return n;
+}
+
+// Objekte → EIN Manifold (mehrere Teile werden vereint). Wirft, wenn nichts
+// Brauchbares dabei ist; _mfFromSoup verschweißt via merge() auch Netze, die
+// der Druck-Check als „nicht wasserdicht" meldet.
+function _mfUnionObjs(w, objs) {
+  let acc = null;
+  for (const o of objs) {
+    const tris = _moldCollectTris(o);
+    if (!tris.length) continue;
+    const part = _mfFromSoup(w, tris);
+    acc = acc ? w.Manifold.union(acc, part) : part;
+  }
+  return acc;
+}
+
+// Liefert die Ergebnis-Geometrie in App-Units/Y-up — gleiche Konvention wie der
+// OCCT-Zweig, der sein Ergebnis-STL mit rotateX(-90°)+scale(0.1) zurückdreht.
+async function _mfSubtractWorld(solidObjs, toolObjs) {
+  const w = await _mfInit();
+  const solid = _mfUnionObjs(w, solidObjs);
+  if (!solid) throw new Error('kein gültiger Körper');
+  const tool = _mfUnionObjs(w, toolObjs);
+  if (!tool) throw new Error('kein gültiges Werkzeug');
+  const res = w.Manifold.difference(solid, tool);
+  if (res.isEmpty()) throw new Error('Ergebnis ist leer — trifft die Bohrung den Körper?');
+  // Manifold gibt indiziert zurück; _creaseNormals steigt darauf aus (siehe
+  // Definition weiter unten) → vorher auflösen, sonst bleibt alles flat-shaded.
+  const geo = _mfToGeo(res).toNonIndexed();
+  geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);   // mm/Z-up → App-Units/Y-up
+  return _moldNormals(geo);
+}
+
+// ── Wände verstärken (Offset entlang der Vertex-Normalen) ───────────────────
+// Jeder Vertex wandert um distMm entlang seiner flächengewichteten Normalen-
+// Summe nach außen. Eine dünne Wand hat zwei gegenläufige Seiten → sie wächst
+// um 2×distMm, während Durchbrüche offen bleiben: am Duschsieb des Testers
+// geprüft — Genus blieb bei 5541 Löchern, Volumen +17 % bei 0,2 mm.
+// Bewusst KEIN minkowskiSum (wäre der exakte Offset, ist aber auf 280k
+// Dreiecken nicht bezahlbar).
+function _mfOffsetVerts(w, mf, distMm) {
+  const m = mf.getMesh(), P = m.vertProperties, T = m.triVerts, np = m.numProp;
+  const nv = P.length / np, N = new Float64Array(nv * 3);
+  for (let i = 0; i < T.length; i += 3) {
+    const a = T[i], b = T[i+1], c = T[i+2];
+    const ax=P[a*np],ay=P[a*np+1],az=P[a*np+2];
+    const ux=P[b*np]-ax, uy=P[b*np+1]-ay, uz=P[b*np+2]-az;
+    const vx=P[c*np]-ax, vy=P[c*np+1]-ay, vz=P[c*np+2]-az;
+    // NICHT normiert: so zählt jede Fläche nach ihrer Größe (glattere Normalen)
+    const nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    N[a*3]+=nx; N[a*3+1]+=ny; N[a*3+2]+=nz;
+    N[b*3]+=nx; N[b*3+1]+=ny; N[b*3+2]+=nz;
+    N[c*3]+=nx; N[c*3+1]+=ny; N[c*3+2]+=nz;
+  }
+  const P2 = new Float32Array(nv * 3);
+  for (let i = 0; i < nv; i++) {
+    const L = Math.hypot(N[i*3], N[i*3+1], N[i*3+2]) || 1;
+    P2[i*3]   = P[i*np]   + N[i*3]  /L*distMm;
+    P2[i*3+1] = P[i*np+1] + N[i*3+1]/L*distMm;
+    P2[i*3+2] = P[i*np+2] + N[i*3+2]/L*distMm;
+  }
+  return new w.Manifold(new w.Mesh({ numProp:3, vertProperties:P2, triVerts:new Uint32Array(T) }));
+}
+
 // Fallback: nur optisch GRUPPIEREN (kein echtes Solid) — wenn das OCCT-Backend
 // nicht erreichbar ist. Geometrisch bleiben es getrennte, durchdringende Hüllen
 // (im Slicer evtl. "schwebende Regionen"). Entspricht dem alten Verhalten.
@@ -15873,7 +15955,26 @@ async function _doSubtractHoles(solids, holes) {
 
   if (_genericTools.length) {
     let occtOk = false;
-    try {
+    // ── Schnellweg: große/löchrige Netze gehen an Manifold statt an OCCT ─────
+    // (OCCT-Sewing skaliert auf solchen Netzen nicht — siehe _mfSubtractWorld.)
+    const _nTris = _countTris([solidMesh, ...solids.slice(1)]) + _countTris(_genericTools);
+    if (_nTris >= _MF_SUBTRACT_MIN_TRIS) {
+      try {
+        const t0 = performance.now();
+        const geo = await _mfSubtractWorld([solidMesh, ...solids.slice(1)], _genericTools);
+        console.log(`[subtract] Manifold-Schnellweg: ${_nTris} Dreiecke in ${Math.round(performance.now()-t0)} ms`);
+        solidMesh = new THREE.Mesh(geo, mat);
+        // Kein Ergebnis-STL vom Server → der Buffer des AUSGANGS-Objekts darf
+        // nicht weitervererbt werden (zeigt sonst auf die ungeschnittene Form).
+        // null ist sicher: der Gravur-Pfad baut ihn bei Bedarf neu (s. o.).
+        solidMesh.userData._staleStlBuf = true;
+        occtOk = true;   // OCCT/BSP überspringen
+        solids.slice(1).forEach(s => consumedSolids.add(s));
+      } catch (e) {
+        console.warn('[subtract] Manifold-Schnellweg fehlgeschlagen → OCCT:', e.message || e);
+      }
+    }
+    if (!occtOk) try {
       // ALLE ausgewählten Volumenkörper mitschicken — der Server fust sie zu
       // EINEM Körper (dafür ist solidStls ein Array). Vorher wurde nur solids[0]
       // geschnitten und der Rest stillschweigend gelöscht.
@@ -15932,7 +16033,9 @@ async function _doSubtractHoles(solids, holes) {
     isSubtract: true,   // Boolean-Abzug im State erkennbar (analog isUnion); u.a. für den Kurs-Modus
     type: _origUD.type || 'custom',
     // STL-Buffer + Snap-Daten für mögliche weitere Gravuren erhalten
-    _origStlBuf: solidMesh.userData._origStlBuf || _origUD._origStlBuf || null,
+    _origStlBuf: solidMesh.userData._staleStlBuf
+      ? null
+      : (solidMesh.userData._origStlBuf || _origUD._origStlBuf || null),
     edgeBevels: Array.from({length:12}, () => ({fillet:0, chamfer:0}))
   };
 
@@ -30589,8 +30692,12 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.66';
+const VOLME3D_VERSION = '1.15.67';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.67', date:'2026-08-03', changes:[
+    ['⚡','„⊖ Abziehen" bleibt bei feinen Modellen nicht mehr bei 93 % stehen. Wer ein detailreiches Teil importiert hatte — etwa ein Duschsieb mit tausenden Löchern — und eine Bohrung hineinsetzen wollte, sah den Balken ewig bei 93 % hängen. Dahinter steckte kein Absturz, sondern echtes Rechnen: der Server baut aus so einem Netz erst ein exaktes Flächenmodell, und bei dem Sieb dauerte allein das Einlesen eine halbe Stunde, danach ging ihm der Speicher aus. Für solche Netze rechnet V3D CAD den Schnitt jetzt direkt im Browser — dasselbe Sieb ist in gut zwei Sekunden statt einer Stunde durch, ganz ohne Server. Bei normalen Teilen bleibt alles beim exakten alten Weg. Gemeldet von Ralf.'],
+    ['⬆','Im Druck-Check kann man dünne Wände jetzt auch gleich verstärken, statt sie nur anzeigen zu lassen. Neben „👁 Zeigen" sitzt ein neuer Knopf „⬆ Verstärken": V3D CAD schlägt vor, wie viel Material pro Seite nötig ist, damit die dünnste Stelle die druckbaren 0,8 mm erreicht, und trägt es auf alle Flächen auf. Eine Wand wird dabei um das Doppelte dicker (Material wächst ja von beiden Seiten), Löcher und Schlitze werden entsprechend enger — bei einem Sieb bleiben sie offen, nur die Stege werden kräftiger. Damit erledigt sich das Herumprobieren im Slicer, mit dem sich eine Mindest-Wandstärke gar nicht erzwingen lässt. Der Hinweis auf dünne Wände erscheint außerdem jetzt auch bei sehr großen Modellen, wo er bisher übersprungen wurde. Angeregt von Ralf.'],
+  ]},
   { version:'1.15.66', date:'2026-08-03', changes:[
     ['🎁','Das Motiv der „Bild-Box" ist nicht mehr spiegelverkehrt. Der Grund: Die Sichtseite des Deckels liegt beim Drucken UNTEN auf der Druckplatte — was dort gedruckt wird, sieht man später von der anderen Seite, also seitenverkehrt. Bei einem Herz oder einem Tier fällt das niemandem auf, bei Schrift sofort. V3D CAD dreht das Bild jetzt von sich aus vor der Analyse um, das fertige Teil zeigt das Motiv genau wie deine Vorlage. Wer es doch seitenverkehrt braucht (Stempel, Abziehmotive), stellt im Fenster auf „Gespiegelt" um. Gemeldet von Ralf.'],
     ['👆','Im Fenster „Bild → SVG" lässt sich der Auswahlrahmen jetzt auch mit dem FINGER oder einem Stift aufziehen. Bisher hörte er nur auf die Maus — am Tablet oder Handy passierte beim Ziehen schlicht nichts, man kam an „Bereich zum Nachzeichnen auswählen" gar nicht heran. Solange die Auswahl läuft, scrollt der Finger auch nicht mehr aus Versehen das Fenster weg; danach scrollt es wieder ganz normal. Wird die Geste vom Gerät unterbrochen (Anruf, Systemgeste), verwirft V3D CAD den halben Rahmen, statt einen falschen Ausschnitt zu übernehmen.'],
@@ -35191,7 +35298,7 @@ function _printCheckAnalyze(){
 // Von Dreiecks-Mittelpunkten knapp unter der Oberfläche nach INNEN schießen;
 // erster Treffer = lokale Wandstärke. Unter der Schwelle → dünne Stelle.
 // Stichprobe (max ~350 Dreiecke/Objekt, flächenverteilt) hält es schnell.
-let _pcThinSpots = [];
+let _pcThinSpots = [], _pcThinMinMm = 0;
 let _pcThinVis = [], _pcThinTimer = null;
 
 function _pcWallAnalysis(thresholdMm, totalTris){
@@ -35310,6 +35417,65 @@ function _pcShowThinSpots(){
   _pcThinTimer = setTimeout(_pcClearThinVis, 15000);
 }
 
+// Dünne Wände nicht nur ZEIGEN, sondern aufdicken (Tester-Wunsch): trägt auf
+// alle Flächen Material auf. Eine Wand wächst dabei um das Doppelte des Werts
+// (beide Seiten), Durchbrüche werden entsprechend enger — bleiben aber offen.
+async function _pcThickenWalls(){
+  const meshes = [];
+  objects.forEach(o => { if (o.visible === false || o.userData.isHole) return;
+    if (o.isMesh && !o.userData.isEdgeLines) meshes.push(o); });
+  if (!meshes.length) { notify('Keine passenden Körper — Gruppen bitte vorher auflösen', 'w'); return; }
+
+  // Vorschlag: so viel pro Seite, dass die dünnste gemessene Stelle 0,8 mm wird.
+  const need = Math.max(0, 0.8 - (_pcThinMinMm || 0)) / 2;
+  const sugg = Math.max(0.05, Math.min(0.5, need)).toFixed(2).replace('.', ',');
+  const ans = prompt(
+    'Wände verstärken — Material pro Seite in mm:\n\n' +
+    'Eine Wand wird um das DOPPELTE dicker (' + sugg.replace(',', '.') + ' mm → ca. ' +
+    (parseFloat(sugg.replace(',', '.')) * 2).toFixed(2) + ' mm Zuwachs).\n' +
+    'Löcher und Schlitze werden entsprechend enger.\n' +
+    'Dünnste gemessene Stelle aktuell: ' + (_pcThinMinMm || 0).toFixed(2) + ' mm.', sugg);
+  if (ans === null) return;
+  const dist = parseFloat(String(ans).replace(',', '.'));
+  if (!isFinite(dist) || dist <= 0) { notify('Ungültiger Wert', 'w'); return; }
+
+  _printCheckClose();
+  _progressShow('Wände werden verstärkt…'); _progressSet(8); _progressCreep(93);
+  try {
+    const w = await _mfInit();
+    saveUndo();
+    let ok = 0, failed = 0;
+    for (const o of meshes) {
+      try {
+        const tris = _moldCollectTris(o);
+        if (!tris.length) continue;
+        const geo = _mfToGeo(_mfOffsetVerts(w, _mfFromSoup(w, tris), dist)).toNonIndexed();
+        geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);   // mm/Z-up → App-Units
+        _moldNormals(geo);
+        if (typeof _geoJsonCache !== 'undefined') _geoJsonCache.delete(o.geometry);
+        o.geometry.dispose();
+        o.geometry = geo;
+        // _moldCollectTris hat die Welt-Transform schon eingerechnet → sonst wirkt sie doppelt
+        o.position.set(0, 0, 0); o.quaternion.identity(); o.scale.set(1, 1, 1);
+        o.updateWorldMatrix(true, true);
+        o.userData._origStlBuf = null; o.userData._origGeo = null;   // passen nicht mehr
+        if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(o);
+        ok++;
+      } catch (e) { console.warn('[verstärken]', o.userData?.name, e.message || e); failed++; }
+    }
+    _progressDone();
+    if (!ok) { notify('Verstärken fehlgeschlagen — Netz zu defekt zum Verschweißen', 'w'); return; }
+    notify('✓ ' + ok + ' Körper verstärkt: Wände +' + (dist * 2).toFixed(2) + ' mm, Löcher ' +
+           (dist * 2).toFixed(2) + ' mm enger' + (failed ? ' (' + failed + ' übersprungen)' : ''), 'ok');
+    updateTree();
+    setTimeout(_printCheckOpen, 30);
+  } catch (e) {
+    _progressHide();
+    console.error('[verstärken]', e);
+    notify('Verstärken fehlgeschlagen: ' + (e.message || e), 'w');
+  }
+}
+
 function _printCheckOpen(){
   document.getElementById('printcheck-modal').classList.add('show');
   const body=document.getElementById('printcheck-body');
@@ -35338,12 +35504,16 @@ function _printCheckOpen(){
   // Sehr dünn (Heuristik auf Außenmaße)
   const minDim=Math.min(r.wMM,r.dMM,r.hMM);
   if(minDim<0.8) row('warn','⚠️','Sehr filigran','Dünnste Außenabmessung ~'+minDim.toFixed(1)+' mm — könnte zu dünn zum Drucken sein.');
-  // Wandstärken (Stichproben-Raycast nach innen; bei sehr großen Szenen übersprungen)
-  if(!r.capped){
+  // Wandstärken (Stichproben-Raycast nach innen). Hängt bewusst NICHT an
+  // r.capped: die Stichprobe ist gedeckelt (max 120 Rays) und damit auch auf
+  // großen Netzen bezahlbar — am 281k-Dreieck-Duschsieb 1,1 s gemessen. Über
+  // r.capped würde der Hinweis ausgerechnet bei feinen Import-Netzen fehlen,
+  // wo dünne Wände am häufigsten sind. Eigene, höhere Obergrenze:
+  if(r.tris <= 1500000){
     try{
       const w=_pcWallAnalysis(0.8, r.tris);
-      _pcThinSpots=w.spots;
-      if(w.spots.length) row('warn','⚠️','Dünne Wände', w.spots.length+' Stelle(n) unter 0,8 mm (dünnste ~'+w.minMm.toFixed(2)+' mm) — Gefahr von Löchern oder Bruch. Wand ≥ 0,8 mm = 2 Bahnen bei 0,4er Düse.','👁 Zeigen','_pcShowThinSpots()');
+      _pcThinSpots=w.spots; _pcThinMinMm=w.minMm;
+      if(w.spots.length) row('warn','⚠️','Dünne Wände', w.spots.length+' Stelle(n) unter 0,8 mm (dünnste ~'+w.minMm.toFixed(2)+' mm) — Gefahr von Löchern oder Bruch. Wand ≥ 0,8 mm = 2 Bahnen bei 0,4er Düse.','👁 Zeigen','_pcShowThinSpots()','⬆ Verstärken','_pcThickenWalls()');
       else row('ok','✅','Wandstärken','Keine Stellen unter 0,8 mm gefunden (Stichprobe).');
     }catch(e){ console.warn('Wandstärken-Check:',e); }
   }
