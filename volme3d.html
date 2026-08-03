@@ -2906,6 +2906,8 @@ Patrick</textarea>
         </div>
         <div class="vrow"><label title="Höhe der Buchstaben (Versalhöhe)">Texthöhe</label> <input type="range" id="tt-size" min="15" max="80" value="30" step="0.5" oninput="document.getElementById('tt-sizev').textContent=this.value;_ttPreview()"><span class="vv" id="tt-sizev">30</span><span class="vu">mm</span></div>
         <div class="vrow"><label title="Dicke des Toppers (Extrusion)">Dicke</label> <input type="range" id="tt-thick" min="1.5" max="8" value="3" step="0.1" oninput="document.getElementById('tt-thickv').textContent=this.value;_ttPreview()"><span class="vv" id="tt-thickv">3</span><span class="vu">mm</span></div>
+        <div class="vrow" id="tt-row-round"><label title="Bricht die scharfen Ober-/Unterkanten des Toppers — statt der harten Druckkante bekommt der Schriftzug einen weichen, angenehm anzufassenden Rand (wie bei gekauften Toppern). An dünnen Schreibschrift-Strichen wird der Radius automatisch zurückgenommen, damit nichts einschnürt. 0 = scharfkantig wie bisher.">Kanten runden</label> <input type="range" id="tt-round" min="0" max="1.2" value="0.4" step="0.05" oninput="document.getElementById('tt-roundv').textContent=(+this.value).toFixed(2).replace('.',',');_ttPreview()"><span class="vv" id="tt-roundv">0,40</span><span class="vu">mm</span></div>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:2px" title="Normal wird nur die OBERE Kante gerundet — die Unterseite bleibt flach und hält damit auf der Druckplatte. Angehakt wird auch die Unterkante gebrochen: schöner in der Hand, aber filigrane Schreibschriften haften dann deutlich schlechter (Brim empfehlenswert)."><input type="checkbox" id="tt-round2" onchange="_ttPreview()"> Auch die Unterkante runden (haftet schlechter)</label>
         <div class="vrow"><label title="Wie weit benachbarte Buchstaben seitlich ineinandergreifen. Schreibschriften verbinden sich oft schon von allein — der Rest wird automatisch mit Stegen verbunden.">Überlappung</label> <input type="range" id="tt-overlap" min="0" max="35" value="8" step="1" oninput="document.getElementById('tt-overlapv').textContent=this.value;_ttPreview()"><span class="vv" id="tt-overlapv">8</span><span class="vu">%</span></div>
         <div class="vrow" id="tt-row-linegap"><label title="Abstand der Zeilen zueinander. Kleine Werte lassen die Zeilen ineinandergreifen (wie bei den klassischen Toppern) — verbunden wird ohnehin automatisch.">Zeilenabstand</label> <input type="range" id="tt-linegap" min="50" max="130" value="85" step="1" oninput="document.getElementById('tt-linegapv').textContent=this.value;_ttPreview()"><span class="vv" id="tt-linegapv">85</span><span class="vu">%</span></div>
         <div class="vrow"><label title="Breite der automatischen Verbindungsstege (i-Punkte, getrennte Buchstaben, Wörter, Symbole)">Steg-Breite</label> <input type="range" id="tt-web" min="1" max="5" value="2" step="0.1" oninput="document.getElementById('tt-webv').textContent=this.value;_ttPreview()"><span class="vv" id="tt-webv">2</span><span class="vu">mm</span></div>
@@ -7024,43 +7026,78 @@ function _loopOffsetNormals(pts, isHole){
 // EIN Vertex-Array, Dreiecks-Orientierung gegen Referenznormale erzwungen, dann
 // Vertices verschweißt → wasserdicht & korrekte Normalen (verifiziert: Kreis/
 // Rechteck/Washer, 0 offene Kanten, 0 non-manifold).
-function _skRoundExtrude(profiles, hU, bevU, useFil){
-  const K=useFil?6:1, rings=[];
+// opts.bottom===false / opts.top===false lässt die jeweilige Kante scharf (Tortentopper:
+// nur oben runden, damit die Unterseite flach auf der Druckplatte haftet). Ohne opts
+// bleibt es beidseitig wie bisher.
+function _skRoundExtrude(profiles, hU, bevU, useFil, opts){
+  const doBot = !opts || opts.bottom !== false;
+  const doTop = !opts || opts.top    !== false;
+  const K=useFil?((opts&&opts.segs)||6):1, rings=[];
   if (useFil){
-    for(let k=K;k>=0;k--){ const a=(k/K)*(Math.PI/2); rings.push({ins:bevU*(1-Math.cos(a)), y:bevU*(1-Math.sin(a))}); }
-    for(let k=0;k<=K;k++){ const a=(k/K)*(Math.PI/2); rings.push({ins:bevU*(1-Math.cos(a)), y:hU-bevU*(1-Math.sin(a))}); }
-  } else { rings.push({ins:bevU,y:0},{ins:0,y:bevU},{ins:0,y:hU-bevU},{ins:bevU,y:hU}); }
+    if(doBot) for(let k=K;k>=0;k--){ const a=(k/K)*(Math.PI/2); rings.push({ins:bevU*(1-Math.cos(a)), y:bevU*(1-Math.sin(a))}); }
+    else rings.push({ins:0, y:0});
+    if(doTop) for(let k=0;k<=K;k++){ const a=(k/K)*(Math.PI/2); rings.push({ins:bevU*(1-Math.cos(a)), y:hU-bevU*(1-Math.sin(a))}); }
+    else rings.push({ins:0, y:hU});
+  } else {
+    if(doBot) rings.push({ins:bevU,y:0},{ins:0,y:bevU}); else rings.push({ins:0,y:0});
+    if(doTop) rings.push({ins:0,y:hU-bevU},{ins:bevU,y:hU}); else rings.push({ins:0,y:hU});
+  }
   const P=[], I=[];
   const addV=(x,y,z)=>{ P.push(x,y,z); return P.length/3-1; };
-  const get=i=>[P[i*3],P[i*3+1],P[i*3+2]];
-  const pushTri=(a,b,c,ref)=>{ const A=get(a),B=get(b),C=get(c);
-    const ux=B[0]-A[0],uy=B[1]-A[1],uz=B[2]-A[2], vx=C[0]-A[0],vy=C[1]-A[1],vz=C[2]-A[2];
-    const nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx;
-    if(nx*ref[0]+ny*ref[1]+nz*ref[2]>=0) I.push(a,b,c); else I.push(a,c,b); };
   const loops=[];
+  // Fertige Versatz-Normalen dürfen mitgeliefert werden (Tortentopper: pro Vertex
+  // gedeckelt, damit die Rundung an haarfeinen Stellen von allein ausläuft).
+  // Umlaufsinn der Schleife → welche Seite ist außen (wie in _loopOffsetNormals)
+  const loopDir=(pts,isHole)=>{ let ar=0; for(let i=0;i<pts.length;i++){const a=pts[i],b=pts[(i+1)%pts.length];ar+=a.u*b.v-b.u*a.v;}
+    return (isHole?-1:1)*(ar>=0?1:-1); };
   for(const pr of profiles){
-    loops.push({pts:pr.outer, norms:_loopOffsetNormals(pr.outer,false), isHole:false});
-    (pr.holes||[]).forEach(h=>loops.push({pts:h, norms:_loopOffsetNormals(h,true), isHole:true}));
+    loops.push({pts:pr.outer, norms:pr.outerNorms || _loopOffsetNormals(pr.outer,false), isHole:false, dir:loopDir(pr.outer,false)});
+    (pr.holes||[]).forEach((h,hi)=>loops.push({pts:h, norms:(pr.holeNorms&&pr.holeNorms[hi]) || _loopOffsetNormals(h,true), isHole:true, dir:loopDir(h,true)}));
   }
   for(const L of loops){
     const n=L.pts.length;
     const ringIdx=rings.map(r=> L.pts.map((p,i)=> addV(p.u+L.norms[i].u*r.ins, r.y, p.v+L.norms[i].v*r.ins)) );
+    // Umlaufsinn EINMAL pro Schleife festlegen statt Dreieck für Dreieck an einer
+    // Referenznormalen auszurichten. Die Ringe laufen von unten nach oben, also
+    // ergibt sich die richtige Reihenfolge allein aus dem Umlaufsinn der Kontur.
+    // Nachorientieren wäre sogar schädlich: wo sich die eingezogene Kontur
+    // überschlägt, klappt ein Streifen um — zwangsgedreht zählt er dann als
+    // zusätzliches Material statt sich herauszukürzen (gemessen: +7 % Volumen).
+    const rev = L.dir > 0;
     for(let r=0;r<rings.length-1;r++) for(let i=0;i<n;i++){
       const i2=(i+1)%n, a=ringIdx[r][i], b=ringIdx[r][i2], c=ringIdx[r+1][i], d=ringIdx[r+1][i2];
-      const ref=[-L.norms[i].u,0,-L.norms[i].v];
-      pushTri(a,b,d,ref); pushTri(a,d,c,ref);
+      if(rev){ I.push(a,d,b, a,c,d); } else { I.push(a,b,d, a,d,c); }
     }
   }
   const outerL=loops.find(l=>!l.isHole), holeLs=loops.filter(l=>l.isHole);
-  const mkCap=(y,ref)=>{
-    const contour=outerL.pts.map((p,i)=>new THREE.Vector2(p.u+outerL.norms[i].u*bevU, p.v+outerL.norms[i].v*bevU));
-    const holes=holeLs.map(h=>h.pts.map((p,i)=>new THREE.Vector2(p.u+h.norms[i].u*bevU, p.v+h.norms[i].v*bevU)));
-    const all=contour.concat(...holes);
-    const tris=THREE.ShapeUtils.triangulateShape(contour, holes);
-    const vidx=all.map(pt=>addV(pt.x, y, pt.y));
-    for(const t of tris) pushTri(vidx[t[0]],vidx[t[1]],vidx[t[2]], ref);
+  // Trianguliert wird die UNVERSETZTE Kontur, erst danach werden die Punkte um den
+  // Radius eingezogen. Umgekehrt (erst einziehen, dann earcut) reißen Löcher in den
+  // Deckel: an engen Innenkurven überholt sich die eingezogene Kontur selbst und
+  // earcut lässt dort Dreiecke weg — gemessen an einem Schriftzug: Deckel undicht.
+  // Die Verbindungsstruktur der Originalkontur passt dagegen immer und stimmt mit
+  // dem obersten Ring überein (gleiche Punkte) → Naht schließt sauber.
+  const mkCap=(y,up,ins)=>{
+    const base  = outerL.pts.map(p=>new THREE.Vector2(p.u, p.v));
+    const hbase = holeLs.map(h=>h.pts.map(p=>new THREE.Vector2(p.u, p.v)));
+    const tris  = THREE.ShapeUtils.triangulateShape(base, hbase);
+    const off   = (L,i)=>addV(L.pts[i].u + L.norms[i].u*ins, y, L.pts[i].v + L.norms[i].v*ins);
+    const vidx  = base.map((p,i)=>off(outerL,i));
+    hbase.forEach((h,hi)=>h.forEach((p,i)=>vidx.push(off(holeLs[hi],i))));
+    // Auch hier gilt EIN Umlaufsinn für alle Dreiecke (s. Wandstreifen). Welchen
+    // earcut geliefert hat, wird an den Dreiecken selbst abgelesen — es richtet die
+    // Außenkontur intern aus, ihr Umlauf in der Eingabe sagt darüber also nichts.
+    // (u,v)→(x,z) dreht die Händigkeit: Normale nach +y ⇔ negative Fläche in (u,v).
+    const bp = outerL.pts.concat(...holeLs.map(h=>h.pts));
+    let sa=0;
+    for(const t of tris){ const A=bp[t[0]], B=bp[t[1]], C=bp[t[2]];
+      if(A&&B&&C) sa += (B.u-A.u)*(C.v-A.v) - (C.u-A.u)*(B.v-A.v); }
+    const rev = up ? (sa>0) : (sa<0);
+    for(const t of tris){
+      const a=vidx[t[0]], b=vidx[t[1]], c=vidx[t[2]];
+      if(rev) I.push(a,c,b); else I.push(a,b,c);
+    }
   };
-  mkCap(hU,[0,1,0]); mkCap(0,[0,-1,0]);
+  mkCap(hU, true, doTop?bevU:0); mkCap(0, false, doBot?bevU:0);
   // Vertices verschweißen (Naht Wand↔Deckel schließen)
   const map=new Map(), remap=new Array(P.length/3), NP=[];
   for(let i=0;i<P.length/3;i++){ const k=Math.round(P[i*3]*1e4)+'_'+Math.round(P[i*3+1]*1e4)+'_'+Math.round(P[i*3+2]*1e4);
@@ -28222,8 +28259,146 @@ function _ttBridgeSegs(parts, webU){
   return segs;
 }
 
+// ── Weiche Kanten ───────────────────────────────────────────────────────────
+// THREE.Shape → Profil {outer, holes} in (u,v) wie beim Skizzen-Körper: u=x, v=-y.
+// Doppelpunkte fliegen raus (getPoints hängt bei geschlossenen Konturen den
+// Startpunkt nochmal an) — sonst stehen im Ring-Builder Nullkanten und die
+// Versatz-Normale dort zeigt irgendwohin.
+function _ttShapeProfile(shape, curveSegs){
+  const clean = arr => {
+    const out = [];
+    for(const p of arr){
+      const q = {u:p.x, v:-p.y};
+      const l = out[out.length-1];
+      if(l && Math.hypot(l.u-q.u, l.v-q.v) < 1e-6) continue;
+      out.push(q);
+    }
+    while(out.length>1 && Math.hypot(out[0].u-out[out.length-1].u, out[0].v-out[out.length-1].v) < 1e-6) out.pop();
+    return out;
+  };
+  const ep = shape.extractPoints(curveSegs);
+  const outer = clean(ep.shape);
+  if(outer.length < 3) return null;
+  return { outer, holes:(ep.holes||[]).map(clean).filter(h=>h.length>=3) };
+}
+// Versatz-Normalen fürs Runden, PRO VERTEX begrenzt: an jeder Stützstelle wird quer
+// über den Strich gemessen (Nachbarn entlang derselben Kontur zählen nicht mit) und
+// der Versatz auf knapp die Hälfte dieser Materialstärke gedeckelt. Ein gemeinsamer
+// Radius für den ganzen Buchstaben taugt nicht — Schreibschriften haben haarfeine
+// Anstriche und Schlaufen, die sich selbst berühren; ein einziger solcher Punkt würde
+// die Rundung sonst überall auf null ziehen. So läuft sie nur dort aus, wo kein
+// Material mehr ist, und der Rest des Buchstabens bekommt den vollen Radius.
+function _ttSafeNorms(prof, bevU){
+  const loops = [{pts:prof.outer, isHole:false}].concat((prof.holes||[]).map(h=>({pts:h, isHole:true})));
+  const meta = loops.map(L=>{
+    const n=L.pts.length, cum=new Array(n+1); cum[0]=0;
+    for(let i=0;i<n;i++){ const a=L.pts[i], b=L.pts[(i+1)%n]; cum[i+1]=cum[i]+Math.hypot(b.u-a.u, b.v-a.v); }
+    return { cum, total:cum[n] };
+  });
+  // Stützstellen dicht über die Bogenlänge — auch mitten auf langen Geraden, wo die
+  // Kontur selbst gar keine Punkte hat (Stege, Blockschriften). Grob abgetastet
+  // rutscht die Messung an einer Engstelle vorbei und der Deckel läuft dort doch zu.
+  const S = [];
+  loops.forEach((L,li)=>{
+    const {cum,total} = meta[li];
+    if(total < 1e-9) return;
+    const step = Math.max(bevU*0.35, total/4000);
+    for(let s=0, j=0; s<total; s+=step){
+      while(j < L.pts.length-1 && cum[j+1] < s) j++;
+      const seg = Math.max(1e-9, cum[j+1]-cum[j]), t = Math.min(1, Math.max(0, (s-cum[j])/seg));
+      const a = L.pts[j], b = L.pts[(j+1)%L.pts.length];
+      S.push({ u:a.u+(b.u-a.u)*t, v:a.v+(b.v-a.v)*t, s, li, total });
+    }
+  });
+  // Nur Abstände unter R sind interessant — darüber passt der volle Radius ohnehin.
+  // Damit reicht ein Raster: jede Stützstelle schaut nur in die 9 Nachbarzellen,
+  // statt jede mit jeder zu vergleichen (bei dieser Punktdichte sonst unbezahlbar).
+  const R = bevU/0.45, grid = new Map();
+  S.forEach((p,i)=>{
+    const k = Math.floor(p.u/R)+'_'+Math.floor(p.v/R);
+    let a = grid.get(k); if(!a){ a=[]; grid.set(k,a); } a.push(i);
+  });
+  const dS = new Array(S.length).fill(Infinity);
+  for(let i=0;i<S.length;i++){
+    const cx = Math.floor(S[i].u/R), cy = Math.floor(S[i].v/R);
+    for(let ax=cx-1;ax<=cx+1;ax++) for(let ay=cy-1;ay<=cy+1;ay++){
+      const arr = grid.get(ax+'_'+ay); if(!arr) continue;
+      for(const j of arr){
+        if(j === i) continue;
+        const d = Math.hypot(S[i].u-S[j].u, S[i].v-S[j].v);
+        if(d >= dS[i] || d >= R) continue;
+        if(S[i].li === S[j].li){
+          const ds = Math.abs(S[i].s-S[j].s);
+          if(Math.min(ds, S[i].total-ds) < d*2.2) continue;  // derselbe Strichrand, keine Engstelle
+        }
+        dS[i] = d;
+      }
+    }
+  }
+  // Zurück auf die Vertices: konservativ die kleinere der beiden umgebenden Stützstellen.
+  const out = [];
+  loops.forEach((L,li)=>{
+    const idx = []; for(let k=0;k<S.length;k++) if(S[k].li===li) idx.push(k);
+    const norms = _loopOffsetNormals(L.pts, L.isHole);
+    const {cum} = meta[li];
+    for(let i=0;i<L.pts.length;i++){
+      let d = Infinity;
+      if(idx.length){
+        // Stützstellen liegen nach Bogenlänge sortiert vor → passendes Paar suchen
+        let lo = 0; while(lo+1 < idx.length && S[idx[lo+1]].s <= cum[i]) lo++;
+        d = Math.min(dS[idx[lo]], dS[idx[(lo+1)%idx.length]]);
+      }
+      // Die Normale trägt schon die Gehrungs-Verlängerung (bis 4× an spitzen Ecken) —
+      // sonst schießt der Versatz genau dort über die gemessene Materialstärke hinaus.
+      const m = Math.hypot(norms[i].u, norms[i].v) || 1;
+      const sc = d===Infinity ? 1 : Math.min(1, (d*0.45)/Math.max(1e-9, bevU*m));
+      norms[i].u *= sc; norms[i].v *= sc;
+    }
+    out.push(norms);
+  });
+  // Zweite Sicherung: keine Kontur-Kante darf sich beim Einziehen umdrehen. Genau
+  // das passiert an engen Außenkurven — an der runden Spitze eines Haarstrichs etwa,
+  // wo der Quer-Abstand nichts meldet (beide Ränder liegen dort entlang der Kontur
+  // zu dicht beieinander, um als Engstelle zu zählen). Schlägt die Kante um, bekommt
+  // der Deckel eine Falte. An einer normalen Ecke sind beide Normalen gleich
+  // gerichtet — dort greift die Sicherung nicht und die Ecke wird voll eingezogen.
+  loops.forEach((L,li)=>{
+    const norms = out[li], n = L.pts.length;
+    for(let pass=0; pass<3; pass++) for(let i=0;i<n;i++){
+      const j=(i+1)%n, a=L.pts[i], b=L.pts[j];
+      const ex=b.u-a.u, ey=b.v-a.v, e2=ex*ex+ey*ey;
+      if(e2 < 1e-14) continue;
+      const dot = (norms[j].u-norms[i].u)*ex + (norms[j].v-norms[i].v)*ey;
+      if(dot >= 0) continue;                                   // Kante wird nicht gestaucht
+      const f = 0.8*e2/(bevU*(-dot));                          // ab hier dreht sie sich um
+      if(f >= 1) continue;
+      norms[i].u*=f; norms[i].v*=f; norms[j].u*=f; norms[j].v*=f;
+    }
+  });
+  return { outerNorms: out[0], holeNorms: out.slice(1) };
+}
+// Ein Topper-Teil extrudieren. roundU=0 → wie bisher scharfkantig. Sonst über den
+// wasserdichten Ring-Builder der Skizzen-Körper; dessen Ergebnis liegt bereits Y-oben,
+// also einmal zurückdrehen, damit alle Teile (Stege, Pins, Motiv) im selben
+// XY-Extrusionssystem bleiben. st sammelt den tatsächlich verwendeten Radius.
+function _ttExtrude(shape, thickU, roundU, roundBoth, curveSegs, st){
+  const plain = () => new THREE.ExtrudeGeometry(shape, {depth:thickU, bevelEnabled:false, steps:1, curveSegments:curveSegs});
+  if(!(roundU > 1e-4)) return plain();
+  const prof = _ttShapeProfile(shape, curveSegs);
+  if(!prof) return plain();
+  const bev = Math.min(roundU, thickU*(roundBoth ? 0.48 : 0.9));
+  if(st) st.min = Math.min(st.min, bev);
+  if(!(bev > 1e-3)) return plain();
+  Object.assign(prof, _ttSafeNorms(prof, bev));    // pro Vertex gedeckelt, s. o.
+  // 4 Stufen statt 6: ein Schriftzug bringt schon scharfkantig ~37.000 Dreiecke mit,
+  // und bei 0,4 mm Radius sieht man den Unterschied ohnehin nicht.
+  const g = _skRoundExtrude([prof], thickU, bev, true, {bottom:roundBoth, segs:4});
+  g.rotateX(Math.PI/2);                                   // Y-oben → zurück in die XY-Extrusionslage
+  return g;
+}
+
 // Steg-Segment → extrudierte Balken-Geometrie (verlängert beide Enden ins Material)
-function _ttBridgeGeo(seg, webU, thickU){
+function _ttBridgeGeo(seg, webU, thickU, roundU, roundBoth, st){
   let dx = seg.bx-seg.ax, dy = seg.by-seg.ay;
   const L = Math.hypot(dx,dy);
   if(L < 1e-6){ dx = 1; dy = 0; } else { dx/=L; dy/=L; }
@@ -28235,7 +28410,7 @@ function _ttBridgeGeo(seg, webU, thickU){
   sh.moveTo(ax+nx, ay+ny); sh.lineTo(bx+nx, by+ny);
   sh.lineTo(bx-nx, by-ny); sh.lineTo(ax-nx, ay-ny);
   sh.closePath();
-  return new THREE.ExtrudeGeometry(sh, {depth:thickU, bevelEnabled:false, steps:1, curveSegments:4});
+  return _ttExtrude(sh, thickU, roundU, roundBoth, 4, st);
 }
 
 // Steckpins: an ~25 %/75 % (bzw. mittig) der Breite den tiefsten Konturpunkt in der
@@ -28457,7 +28632,7 @@ function _ttRebridge(){
   const col = (keep[0].userData && keep[0].userData.color) || (typeof currentColor !== 'undefined' ? currentColor : '#e91e63');
   const made = [];
   segs.forEach((s,i)=>{
-    const g = _posOnly(_ttBridgeGeo(s, webU, thickU));
+    const g = _posOnly(_ttBridgeGeo(s, webU, thickU, _ttRoundU(), _ttRoundBoth(), {min:Infinity}));
     g.applyMatrix4(M);
     if(inv) g.applyMatrix4(inv);
     g.computeVertexNormals();
@@ -28492,13 +28667,17 @@ function _ttGeo(font, o, split){
   // Motiv zuletzt: es richtet sich nach allem, was schon steht (Text + Datums-Herz)
   if(_ttMotif) parts.push(..._ttMotifParts(parts, sizeU, o.motifSize, o.motifPos, o.motifGap));
   if(!parts.length) return null;
+  // Weiche Kanten: die Pins bleiben absichtlich scharf — sie stecken in der Torte,
+  // und volle Kante heißt dort mehr Halt.
+  const roundU = Math.max(0, (o.roundMM||0)/10), roundBoth = !!o.roundBoth;
+  const rst = { min: Infinity };
   const textGeos = parts.map(p=>{
-    const g = new THREE.ExtrudeGeometry(p.shape, {depth:thickU, bevelEnabled:false, steps:1, curveSegments:12});
+    const g = _ttExtrude(p.shape, thickU, roundU, roundBoth, 12, rst);
     g.translate(p.dx, p.dy||0, 0);
     return _posOnly(g);
   });
   const segs = _ttBridgeSegs(parts, webU);
-  const bridgeGeos = segs.map(s=>_posOnly(_ttBridgeGeo(s, webU, thickU)));
+  const bridgeGeos = segs.map(s=>_posOnly(_ttBridgeGeo(s, webU, thickU, roundU, roundBoth, rst)));
   let textMinY = Infinity, textMaxY = -Infinity;
   for(const p of parts) for(const q of p.pts){ if(q.y<textMinY)textMinY=q.y; if(q.y>textMaxY)textMaxY=q.y; }
   const pinGeos = _ttPinGeos(parts, o.nPins, o.pinLen/10, o.pinW/10, thickU).map(_posOnly);
@@ -28530,12 +28709,26 @@ function _ttGeo(font, o, split){
     for(const p of pieces) p.geo.computeVertexNormals();
     for(const g of bridgeGeos) g.computeVertexNormals();
     for(const g of pinGeos) g.computeVertexNormals();
-    return { pieces, bridgeGeos, pinGeos, wMM, hMM, nBridges:segs.length };
+    return { pieces, bridgeGeos, pinGeos, wMM, hMM, nBridges:segs.length, roundMM:_ttRoundEff(rst, roundU) };
   }
   const geo = _mergePos(all);
   geo.computeVertexNormals();
-  return { geo, wMM, hMM, nBridges:segs.length };
+  return { geo, wMM, hMM, nBridges:segs.length, roundMM:_ttRoundEff(rst, roundU) };
 }
+// Tatsächlich gebauter Radius in mm (0 = scharfkantig). Liegt er unter dem
+// eingestellten Wert, hat die Engstellen-Bremse zugeschlagen — das sagen wir an.
+function _ttRoundEff(st, roundU){
+  if(!(roundU > 1e-4) || st.min === Infinity) return 0;
+  return Math.max(0, st.min*10);
+}
+// Klartext zur Kantenrundung für die Info-Zeile.
+function _ttRoundNote(o, r){
+  if(!(o.roundMM > 0) || !(r.roundMM > 0)) return ' · scharfe Kanten';
+  return ' · Kanten ' + (o.roundBoth ? 'oben und unten' : 'oben') + ' gerundet ('
+    + r.roundMM.toFixed(2).replace('.',',') + ' mm, an dünnen Strichen automatisch weniger)';
+}
+function _ttRoundU(){ const e=document.getElementById('tt-round'); return e ? Math.max(0, +e.value/10) : 0; }
+function _ttRoundBoth(){ const e=document.getElementById('tt-round2'); return !!(e && e.checked); }
 
 function _ttOpts(){
   return {
@@ -28546,6 +28739,8 @@ function _ttOpts(){
     overlap: +document.getElementById('tt-overlap').value,
     lineGap: +document.getElementById('tt-linegap').value,
     webMM:   +document.getElementById('tt-web').value,
+    roundMM:   +document.getElementById('tt-round').value,
+    roundBoth: document.getElementById('tt-round2').checked,
     dheart:  document.getElementById('tt-dheart').checked,
     dateTxt: document.getElementById('tt-date').value.trim(),
     nPins:   +document.getElementById('tt-pins').value,
@@ -28598,6 +28793,7 @@ function _ttPreviewNow(){
       + (_ttMotif ? 'Motiv „'+_ttMotif.name+'" ('+_ttMotif.polys.length+' Kontur'+(_ttMotif.polys.length>1?'en':'')+') · ' : '')
       + (r.nBridges ? r.nBridges+' Steg'+(r.nBridges>1?'e':'')+' automatisch ergänzt · ' : 'alles verbunden, keine Stege nötig · ')
       + (o.nPins ? o.nPins+' Steckpin'+(o.nPins>1?'s':'')+' à '+o.pinLen+' mm' : 'ohne Pins')
+      + _ttRoundNote(o, r)
       + ' — flach drucken, Pins zeigen in der Vorschau nach vorn.';
   });
 }
@@ -30692,8 +30888,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.69';
+const VOLME3D_VERSION = '1.15.70';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.70', date:'2026-08-03', spots:[{id:'topper-round',sel:'#tt-row-round'}], changes:[
+    ['🎂','Der Tortentopper hat jetzt WEICHE KANTEN — neuer Regler „Kanten runden" (Vorgabe 0,4 mm). Bisher kam jeder Topper mit der harten Druckkante aus dem Generator; wer sie loswerden wollte, musste den Umweg über „⬡ Kanten bearbeiten" gehen — und der steht nach dem Vereinen gar nicht mehr zur Verfügung, weil ein Schriftzug zu groß zum Verschmelzen ist und stattdessen gruppiert wird. Die Rundung sitzt deshalb jetzt direkt im Generator, sie steckt gleich in der Geometrie. Gerundet wird normal nur OBEN: die Unterseite bleibt flach und hält damit auf der Druckplatte — für filigrane Schreibschriften ist das entscheidend. Wer den Topper rundum weich haben will, hakt „Auch die Unterkante runden" an (dann besser mit Brim drucken). Das Wichtigste dabei: An haarfeinen Stellen — den Anstrichen einer Schreibschrift, den Spitzen der Auslaufbögen — nimmt sich die Rundung von allein zurück, statt den Strich zuzuschnüren. V3D CAD misst dafür an jedem Punkt der Kontur, wie viel Material dort überhaupt steht. Die Stege werden mitgerundet, die Steckpins bleiben absichtlich scharf (mehr Halt in der Torte). Aus dem Testerkreis angeregt.'],
+  ]},
   { version:'1.15.69', date:'2026-08-03', changes:[
     ['🔍','Der Druck-Check prüft jetzt auch detailreiche Modelle auf Dichtheit. Bei mehr als 250.000 Dreiecken hat er die genaue Prüfung bisher stillschweigend übersprungen und stattdessen nur „Sehr große Szene" gemeldet — ausgerechnet bei importierten Teilen, wo undichte Stellen am häufigsten sind. Ein Duschsieb mit 281.000 Dreiecken fiel damit knapp durchs Raster und wurde nie geprüft. Nachgemessen kostet die Prüfung dort nur rund drei Zehntelsekunden, deshalb greift sie jetzt bis eine Million Dreiecke; darüber wird weiter übersprungen, damit Tablets nicht am Speicher ersticken. Beim Sieb kommen so 12.061 undichte Kanten samt „🩹 Reparieren" ans Licht, dazu die Überhang-Auswertung.'],
     ['🛡','Der Rechenserver erkennt jetzt eine ganze Klasse von Abstürzen, die er bisher für harmlose Fehler hielt. Ging ihm bei einem sehr großen Modell der Speicher aus, meldete er zwar den einzelnen Vorgang als gescheitert, arbeitete aber mit dem beschädigten Rechenkern weiter — der nächste Schnitt konnte dann „erfolgreich" aussehen und trotzdem stillschweigend falsche Geometrie liefern. Solche Fälle werden jetzt als das behandelt, was sie sind: der Kern wird verworfen und beim nächsten Auftrag frisch geladen, und ein laufender Auftrag bricht sauber ab, statt auf einem kaputten Kern weiterzurechnen.'],
