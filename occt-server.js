@@ -67,8 +67,15 @@ function dumpStls(route, groups) {
 // aufrufen. Gibt true zurück, wenn es ein fataler WASM-Fehler war.
 function ocFatal(e) {
   const msg = String((e && e.message) || e);
+  // __cxa_* is not defined: opencascade.js ruft im Glue ___cxa_can_catch auf,
+  // exportiert es aber nicht. Der ReferenceError fliegt also MITTEN in der
+  // C++-Exception-Behandlung — die Instanz ist danach genauso hinüber wie nach
+  // einem Trap, wurde bisher aber als harmloser Routen-Fehler durchgewinkt.
+  // abort(...): Emscripten hat die Runtime beendet, danach geht gar nichts mehr.
   const fatal = e instanceof WebAssembly.RuntimeError ||
-    /memory access out of bounds|unreachable|table index is out of bounds|null function or function signature|Aborted\(/i.test(msg);
+    /memory access out of bounds|unreachable|table index is out of bounds|null function or function signature|Aborted\(/i.test(msg) ||
+    /__cxa_\w+ is not defined/i.test(msg) ||
+    /\babort\(/i.test(msg);
   if (fatal && _oc) {
     console.error('[OCCT] WASM-Trap (' + msg + ') — Instanz wird verworfen, nächster Aufruf lädt neu');
     _oc = null;
@@ -1155,7 +1162,8 @@ app.post('/api/occt-union', async (req, res) => {
         const s = stlToOCCTSolid(oc, buf, keep, warn);
         if (!s) { console.log(`[union] Körper ${i}: STL → Solid fehlgeschlagen, übersprungen`); continue; }
         solids.push(s);
-      } catch (e) { ocFatal(e); console.log(`[union] Körper ${i}: ${e.message}`); }
+      } catch (e) { if (ocFatal(e)) throw e;   // tote Instanz: nicht weiterrechnen
+                    console.log(`[union] Körper ${i}: ${e.message}`); }
     }
     if (!solids.length) return res.json({ error: 'Kein Körper ergab ein gültiges Solid' });
 
@@ -1202,7 +1210,8 @@ app.post('/api/occt-subtract-mesh', async (req, res) => {
         const s = stlToOCCTSolid(oc, Buffer.from(solidList[i], 'base64'), keep, warn);
         if (s) solids.push(s);
         else console.log(`[subtract-mesh] Solid ${i}: STL → Solid fehlgeschlagen`);
-      } catch (e) { ocFatal(e); console.log(`[subtract-mesh] Solid ${i}: ${e.message}`); }
+      } catch (e) { if (ocFatal(e)) throw e;   // tote Instanz: nicht weiterrechnen
+                    console.log(`[subtract-mesh] Solid ${i}: ${e.message}`); }
     }
     if (!solids.length) return res.json({ error: 'Kein gültiges Solid' });
     let result = solids[0];
@@ -1218,7 +1227,8 @@ app.post('/api/occt-subtract-mesh', async (req, res) => {
         const t = stlToOCCTSolid(oc, Buffer.from(toolList[i], 'base64'), keep, warn, { toolCompound: true });
         if (t) tools.push(t);
         else console.log(`[subtract-mesh] Tool ${i}: STL → Solid fehlgeschlagen`);
-      } catch (e) { ocFatal(e); console.log(`[subtract-mesh] Tool ${i}: ${e.message}`); }
+      } catch (e) { if (ocFatal(e)) throw e;   // tote Instanz: nicht weiterrechnen
+                    console.log(`[subtract-mesh] Tool ${i}: ${e.message}`); }
     }
     if (!tools.length) return res.json({ error: 'Kein gültiges Werkzeug' });
     let tool = tools[0];

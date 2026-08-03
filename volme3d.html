@@ -30692,8 +30692,12 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.68';
+const VOLME3D_VERSION = '1.15.69';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.69', date:'2026-08-03', changes:[
+    ['🔍','Der Druck-Check prüft jetzt auch detailreiche Modelle auf Dichtheit. Bei mehr als 250.000 Dreiecken hat er die genaue Prüfung bisher stillschweigend übersprungen und stattdessen nur „Sehr große Szene" gemeldet — ausgerechnet bei importierten Teilen, wo undichte Stellen am häufigsten sind. Ein Duschsieb mit 281.000 Dreiecken fiel damit knapp durchs Raster und wurde nie geprüft. Nachgemessen kostet die Prüfung dort nur rund drei Zehntelsekunden, deshalb greift sie jetzt bis eine Million Dreiecke; darüber wird weiter übersprungen, damit Tablets nicht am Speicher ersticken. Beim Sieb kommen so 12.061 undichte Kanten samt „🩹 Reparieren" ans Licht, dazu die Überhang-Auswertung.'],
+    ['🛡','Der Rechenserver erkennt jetzt eine ganze Klasse von Abstürzen, die er bisher für harmlose Fehler hielt. Ging ihm bei einem sehr großen Modell der Speicher aus, meldete er zwar den einzelnen Vorgang als gescheitert, arbeitete aber mit dem beschädigten Rechenkern weiter — der nächste Schnitt konnte dann „erfolgreich" aussehen und trotzdem stillschweigend falsche Geometrie liefern. Solche Fälle werden jetzt als das behandelt, was sie sind: der Kern wird verworfen und beim nächsten Auftrag frisch geladen, und ein laufender Auftrag bricht sauber ab, statt auf einem kaputten Kern weiterzurechnen.'],
+  ]},
   { version:'1.15.68', date:'2026-08-03', changes:[
     ['📏','Der Druck-Check verwechselt Löcher nicht mehr mit dünnen Wänden. Bisher maß er einfach von jeder Fläche nach innen bis zur nächsten Fläche — bei einem Sieb oder einem Teil mit Schlitzen traf er dabei quer durch die Öffnung die andere Lochwand und meldete deren Abstand als „dünne Wand". Je enger die Löcher, desto mehr Fehlmeldungen. Jetzt prüft er, ob die Strecke wirklich durch Material läuft: nur dann zählt sie als Wand. Ein Luftspalt von 0,4 mm zwischen zwei dicken Platten wird nicht mehr gemeldet, eine echte 0,4-mm-Wand weiterhin punktgenau.'],
     ['⬆','„⬆ Verstärken" schlägt jetzt einen Wert vor, der auch wirklich passt. V3D CAD misst dafür zusätzlich die engste Öffnung im Modell und trägt höchstens so viel auf, dass Löcher und Schlitze nicht zuwachsen — trägt man mehr auf als ein Loch halb breit ist, wächst es zu und das Modell beschädigt sich selbst. Einzelne kaputte Dreiecke im Netz ziehen den Vorschlag außerdem nicht mehr in die Irre: gerechnet wird mit dem typischen statt dem allerkleinsten Messwert. Beim Duschsieb kommt so 0,19 mm heraus statt vorher 0,38 mm — die Wände wurden damit im Schnitt doppelt so dick, ohne dass die Sieblöcher gelitten haben.'],
@@ -35267,7 +35271,14 @@ function _printCheckAnalyze(){
     }
   }
   volUnits=Math.abs(volUnits/6);
-  const heavy = tris>250000;   // sehr große Szene → Detail-Analyse überspringen (kein Einfrieren)
+  // Detail-Analyse (wasserdicht + Überhänge). Die alte Grenze von 250k übersprang
+  // ausgerechnet die feinen Import-Netze, um die es geht: das Duschsieb eines
+  // Testers liegt mit 281k knapp darüber und wurde nie auf Dichtheit geprüft.
+  // Gemessen kostet der Durchgang dort 313 ms — die Kanten-Map wächst aber
+  // linear mit (405k Einträge), deshalb nicht unbegrenzt: ab 1 Mio Dreiecken
+  // (~1,1 s, ~1,4 Mio Einträge) bleibt es beim Überspringen, damit schwache
+  // Geräte nicht am Speicher ersticken.
+  const heavy = tris>1000000;
   const minY = box.min.y;      // Unterkante: nach unten zeigende Flächen hier sind die Basis (kein Überhang)
   if(!heavy){
     const vA=new THREE.Vector3(), vB=new THREE.Vector3(), vC=new THREE.Vector3(), ab=new THREE.Vector3(), ac=new THREE.Vector3(), nrm=new THREE.Vector3();
