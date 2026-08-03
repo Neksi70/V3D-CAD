@@ -130,12 +130,30 @@ body.mview #mview-bar,body.mview #mview-info{display:flex}
 #share-body{padding:16px 18px;overflow-y:auto;font-size:13px}
 #share-body .sp-btn{display:inline-flex;align-items:center;gap:6px}
 /* Mitsehen */
-#mit-modal{position:fixed;inset:0;background:rgba(10,12,20,.5);z-index:3300;display:none;align-items:center;justify-content:center;font-family:var(--font)}
+/* ueber dem Startbildschirm (3600): wer per Einladungslink kommt, soll die
+   Code-Abfrage sehen und nicht erst ein neues Design anlegen muessen */
+#mit-modal{position:fixed;inset:0;background:rgba(10,12,20,.5);z-index:3700;display:none;align-items:center;justify-content:center;font-family:var(--font)}
 #mit-modal.show{display:flex}
 #mit-box{background:#fff;border-radius:14px;width:460px;max-width:96vw;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.30)}
 #mit-hd{display:flex;align-items:center;gap:8px;padding:14px 18px;border-bottom:1px solid var(--border);font-size:16px;font-weight:800;color:var(--text);background:#fafbfd}
 #mit-hd .sx{margin-left:auto;cursor:pointer;color:#aaa;font-size:16px;line-height:1;padding:0 2px}
 #mit-body{padding:16px 18px;overflow-y:auto;font-size:13px}
+/* Sitzungsleiste — schwebt ueber dem Viewport, schiebt nichts weg */
+#mit-bar{position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:3200;display:flex;align-items:center;gap:8px;padding:7px 11px;background:rgba(255,255,255,.97);border:1.5px solid var(--acc);border-radius:999px;box-shadow:0 6px 24px rgba(0,0,0,.18);font-family:var(--font);font-size:12px;font-weight:700;max-width:96vw;flex-wrap:wrap}
+#mit-bar .mb-dot{width:9px;height:9px;border-radius:50%;background:#c3c8d4;flex:none}
+#mit-bar .mb-dot.mine{background:#10b981;animation:mitpulse 1.8s ease-in-out infinite}
+@keyframes mitpulse{0%,100%{opacity:1}50%{opacity:.3}}
+#mit-bar .mb-txt{color:var(--text);white-space:nowrap}
+#mit-bar .mb-eyes{color:var(--dim);font-weight:600;white-space:nowrap}
+#mit-bar .mb-b{font-family:var(--font);font-size:12px;font-weight:700;color:var(--text);background:#fff;border:1.5px solid var(--border);border-radius:999px;padding:5px 11px;cursor:pointer;white-space:nowrap}
+#mit-bar .mb-b:hover{border-color:var(--acc)}
+#mit-bar .mb-b.on{background:var(--acc2);color:#fff;border-color:var(--acc2)}
+#mit-bar .mb-b.hot{background:var(--acc);color:#fff;border-color:var(--acc)}
+/* Wer den Stift nicht hat, guckt zu: Werkzeuge aus, Kamera und Menue bleiben */
+body.mit-ro #tb .tbg,
+body.mit-ro #rp,
+body.mit-ro #lp{pointer-events:none;opacity:.5;filter:grayscale(.35)}
+body.mit-marking #vp{cursor:crosshair}
 /* Bemaßung */
 #measure-label{position:absolute;transform:translate(-50%,-150%);background:var(--acc);color:#fff;font-family:var(--font);font-size:12px;font-weight:800;padding:3px 9px;border-radius:8px;pointer-events:none;z-index:60;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.22);display:none}
 #changelog-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:4000;display:none;align-items:center;justify-content:center}
@@ -1018,6 +1036,12 @@ const firebaseConfig = {
   window._fbUser = null;
   window._fbDb   = null;
 
+  // Gast einer gemeinsamen Sitzung (?sitzung=...): kommt ueber einen
+  // Einladungslink und braucht bewusst KEIN Konto. Fuer ihn bleibt das
+  // Anmeldefenster zu, sonst kaeme er gar nicht bis zur Code-Abfrage.
+  try { window._mitGuestMode = !!new URLSearchParams(location.search).get('sitzung'); }
+  catch (e) { window._mitGuestMode = false; }
+
   if (!USE_FIREBASE) {
     window._authLogout = function(){};
     return; // Overlay bleibt hidden — Editor startet direkt
@@ -1028,7 +1052,7 @@ const firebaseConfig = {
   var googleProvider = new firebase.auth.GoogleAuthProvider();
   window._fbDb = firebase.firestore();
 
-  overlay.classList.remove('hidden');
+  if (!window._mitGuestMode) overlay.classList.remove('hidden');
 
   auth.onAuthStateChanged(function(user) {
     window._fbUser = user;
@@ -1052,7 +1076,7 @@ const firebaseConfig = {
       // damit _fsLoadAllToCache zuerst ein evtl. vorhandenes Design wiederherstellen kann.
       setTimeout(function() { try { if (typeof _maybeShowStarter === 'function') _maybeShowStarter(); } catch(e){} }, 700);
     } else {
-      overlay.classList.remove('hidden');
+      if (!window._mitGuestMode) overlay.classList.remove('hidden');
       if (chip)      chip.style.display = 'none';
       if (logoutBtn) logoutBtn.style.display = 'none';
       if (logoutSep) logoutSep.style.display = 'none';
@@ -1121,7 +1145,7 @@ const firebaseConfig = {
         <div class="sli-item" onclick="tutorMenu()" title="Geführte Kurse: Schritt für Schritt lernen">🎓 Kurs</div>
         <div class="sli-item" onclick="switchTab('keys')" title="Alle Tastenkürzel und Mausbefehle auf einen Blick">⌨ Tastenkürzel</div>
         <div class="sli-item" onclick="_fernwartung()" title="Fernwartung: lädt V3D Remote herunter, damit dein Betreuer dir per Fernzugriff helfen kann">🛟 Fernwartung</div>
-        <div class="sli-item" onclick="_mitOpen()" title="Mitsehen lassen: dein Betreuer schaut deinem Modell live zu und kann dir Stellen markieren — er braucht kein Konto">👀 Mitsehen lassen</div>
+        <div class="sli-item" onclick="_mitOpen()" title="Gemeinsam arbeiten: ihr seht beide alles, bearbeiten darf einer — den Stift reicht ihr euch weiter. Der andere braucht kein Konto">👥 Gemeinsam arbeiten</div>
         <div class="sli-sep"></div>
         <div class="bm-sec">Extras</div>
         <div class="sli-item" onclick="openShareModal()" title="Modell als 3D-Link teilen — Empfänger dreht &amp; zoomt im Browser">🔗 Teilen</div>
@@ -1271,10 +1295,10 @@ const firebaseConfig = {
   </div>
 </div>
 
-<!-- MITSEHEN (Live-Hilfe) -->
+<!-- GEMEINSAM ARBEITEN -->
 <div id="mit-modal" onclick="if(event.target===this)_mitClose()">
   <div id="mit-box">
-    <div id="mit-hd">👀 Mitsehen lassen<span class="sx" onclick="_mitClose()">✕</span></div>
+    <div id="mit-hd">👥 Gemeinsam arbeiten<span class="sx" onclick="_mitClose()">✕</span></div>
     <div id="mit-body"></div>
   </div>
 </div>
@@ -35538,24 +35562,27 @@ function _shareCopy(){ const l=_shareLink(_shareId); (navigator.clipboard?naviga
 async function _shareNative(){ try{ await navigator.share({ title:_shareName||'3D-Modell', url:_shareLink(_shareId) }); }catch(e){} }
 // ===== END MODELL TEILEN =====
 
-// ===== MITSEHEN — Live-Sitzung fuer Hilfe aus der Ferne =====
-// Der Gastgeber laedt seine sichtbaren Koerper live nach sessions/{sid} hoch;
-// der Betreuer oeffnet mitsehen.html?s=<sid>, gibt den vorgelesenen Code ein
-// und schaut ohne Anmeldung zu. Drei Stufen:
-//   1. Live-Blick   — Geometrie, sobald die Szene 2 s ruhig ist
-//   2. Folgen       — Kamera + Auswahl des Gastgebers (state/cam)
-//   3. Markierungen — der Betreuer zeigt auf eine Stelle, sie erscheint hier
-// Geometrie und Kamera liegen bewusst in getrennten Dokumenten: sonst wuerde
-// jede Kamerabewegung das komplette Modell erneut an alle Zuschauer schicken.
+// ===== MITARBEITEN — gemeinsame Sitzung mit Staffelstab =====
+// Zwei Leute am selben Modell: beide sehen alles (echte Objekte samt Parametern,
+// nicht nur Dreiecke), bearbeiten darf immer genau einer — der mit dem "Stift".
+//
+//   Gastgeber  startet die Sitzung (braucht Konto) und gibt Link + Code weiter.
+//   Gast       oeffnet volme3d.html?sitzung=<id>, gibt den Code ein, ist dabei.
+//
+// Uebertragen wird _sceneSnapshot() — derselbe Stand, den auch Undo und das
+// Cloud-Speichern benutzen. Der Empfaenger baut ihn mit _applySnapshot() auf.
+//
+// WICHTIG: Die Sitzung ist eine Arbeitskopie. Nichts davon landet automatisch
+// im gespeicherten Design des Gastgebers — der speichert bewusst selbst.
 const _MIT_TTL    = 3 * 60 * 60 * 1000;  // Sitzung laeuft nach 3 h ab
-const _MIT_QUIET  = 2000;                // erst hochladen, wenn die Szene so lange ruhig ist
+const _MIT_QUIET  = 1200;                // senden, wenn die Szene so lange ruhig ist
 const _MIT_CAM_MS = 500;                 // Kamera hoechstens 2x/s
 let _mit = null;                         // laufende Sitzung, sonst null
 let _mitMarks = null;                    // THREE.Group mit den Markierungen
 
-function _mitRandId(){
-  const u = new Uint8Array(15); (crypto.getRandomValues ? crypto : window.msCrypto).getRandomValues(u);
-  return 's_' + Array.from(u, b => b.toString(36).padStart(2,'0')).join('').slice(0,24);
+function _mitRandId(pfx){
+  const u = new Uint8Array(15); crypto.getRandomValues(u);
+  return pfx + Array.from(u, b => b.toString(36).padStart(2,'0')).join('').slice(0,24);
 }
 function _mitNewCode(){
   const u = new Uint32Array(1); crypto.getRandomValues(u);
@@ -35566,18 +35593,23 @@ async function _mitHash(sid, code){
   try{
     const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sid + ':' + code));
     return Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2,'0')).join('');
-  }catch(e){ return ''; }   // kein secure context → Viewer laesst dann ohne Code durch
+  }catch(e){ return ''; }   // kein secure context → dann ohne Code-Pruefung
+}
+function _mitHasPen(){ return !!_mit && _mit.pen === _mit.me; }
+function _mitPeerName(){
+  if (!_mit) return '';
+  return _mit.role === 'host' ? (_mit.guestName || 'Der Betreuer') : (_mit.hostName || 'Der Gestalter');
 }
 
-// Billiger Fingerabdruck der sichtbaren Szene (FNV-1a) — erkennt Verschieben,
-// Skalieren, Farbwechsel und Geometrie-Aenderungen, ohne etwas zu backen.
+// Billiger Fingerabdruck der Szene (FNV-1a) — erkennt Verschieben, Skalieren,
+// Farbwechsel und Geometrie-Aenderungen, ohne etwas zu serialisieren.
 function _mitFp(){
   let h = 2166136261;
   const add = v => { h ^= v | 0; h = Math.imul(h, 16777619); };
   const addStr = s => { for (let i = 0; i < s.length; i++) add(s.charCodeAt(i)); };
   add(objects.length);
   objects.forEach(o => o.traverse(n => {
-    if (!n.isMesh || n.userData.isEdgeLines) return;
+    if (n.userData.isEdgeLines) return;
     const e = n.matrixWorld.elements;
     for (let i = 0; i < 16; i++) add(Math.round(e[i] * 1000));
     add(n.visible ? 1 : 0); add(n.userData.isHole ? 1 : 0);
@@ -35585,53 +35617,126 @@ function _mitFp(){
     if (p) { add(p.count); add(p.version); }
     if (g) addStr(g.uuid.slice(-8));
     if (n.userData.color) addStr(n.userData.color);
+    if (n.userData.name) addStr(n.userData.name);
   }));
   return h;
 }
 
-// Kurzfassung des Objektbaums — damit der Betreuer die Struktur sieht und
-// nicht nur den Dreieckssalat.
-function _mitTree(){
-  const b = new THREE.Box3(), s = new THREE.Vector3();
-  return objects.slice(0, 60).map(o => {
-    let d = null;
-    try { b.setFromObject(o); if (!b.isEmpty()) { b.getSize(s); d = [Math.round(s.x*10), Math.round(s.z*10), Math.round(s.y*10)]; } } catch(_){}
-    return { n: (o.userData.name || 'Objekt').slice(0,40), t: o.userData.shapeType || '',
-             d, h: !!o.userData.isHole, v: o.visible !== false };
-  });
-}
-
-async function _mitPushGeo(force){
-  if (!_mit || _mit.busy) return;
+// ── Stand senden (nur der Stift-Inhaber) ──
+async function _mitPushDoc(force){
+  if (!_mit || _mit.busy || !_mitHasPen()) return;
   const fp = _mitFp();
   if (!force && fp === _mit.sentFp) return;
   _mit.busy = true;
   try{
-    const parts = _shareBakeParts();
-    const verts = parts.reduce((s,p) => s + p.n, 0);
-    const payload = _dsCompress(JSON.stringify({ name: _mit.name, parts, tree: _mitTree() }));
+    const payload = _dsCompress(JSON.stringify(_sceneSnapshot()));
     if (payload.length > 900000){
-      if (!_mit.warnedBig){ _mit.warnedBig = true; notify('Modell zu groß fürs Mitsehen — der Betreuer sieht den letzten übertragenen Stand','w'); }
+      if (!_mit.warnedBig){ _mit.warnedBig = true; notify('Modell zu groß für die Sitzung — der andere sieht den letzten übertragenen Stand','w'); }
       return;
     }
-    await _mit.ref.collection('state').doc('geo').set({
-      host: _mit.host, data: payload, verts, at: Date.now(), expiresAt: _mit.exp });
+    await _mit.ref.collection('state').doc('doc').set({
+      data: payload, by: _mit.me, byName: _mit.myName,
+      at: Date.now(), expiresAt: _mit.exp, rev: (_mit.rev || 0) + 1 });
+    _mit.rev = (_mit.rev || 0) + 1;
     _mit.sentFp = fp; _mit.sentAt = Date.now(); _mit.warnedBig = false;
     _mitPaint();
-  }catch(e){ console.warn('mitsehen/geo', e); }
+  }catch(e){ console.warn('mitarbeit/push', e); }
   finally{ _mit.busy = false; }
+}
+
+// ── Stand empfangen (wer den Stift NICHT hat) ──
+function _mitApplyDoc(d){
+  if (!_mit || !d || !d.data) return;
+  if (d.by === _mit.me) return;              // eigener Stand, kommt zurueck
+  if (_mitHasPen()) return;                  // ich bearbeite gerade — nicht ueberschreiben
+  if (d.rev && d.rev === _mit.appliedRev) return;
+  let snap;
+  try{ snap = JSON.parse(_dsDecompress(d.data)); }catch(e){ console.warn('mitarbeit/apply', e); return; }
+  try{
+    _mit.applying = true;
+    _applySnapshot(snap);
+    _mit.appliedRev = d.rev || 0;
+    _mit.sentFp = _mitFp(); _mit.seenFp = _mit.sentFp; _mit.dirtyAt = 0;
+  }catch(e){ console.warn('mitarbeit/apply', e); }
+  finally{ _mit.applying = false; }
 }
 
 function _mitPushCam(){
   if (!_mit) return;
   const sel = (selectedObjs || []).slice(0,8).map(o => (o.userData && o.userData.name) || 'Objekt');
-  _mit.ref.collection('state').doc('cam').set({
-    host: _mit.host, t: [orbitTarget.x, orbitTarget.y, orbitTarget.z],
-    th: sph.theta, ph: sph.phi, r: sph.r, sel, at: Date.now(), expiresAt: _mit.exp
+  _mit.ref.collection('cams').doc(_mit.me).set({
+    t: [orbitTarget.x, orbitTarget.y, orbitTarget.z],
+    th: sph.theta, ph: sph.phi, r: sph.r, sel,
+    name: _mit.myName, at: Date.now(), expiresAt: _mit.exp
   }).catch(()=>{});
 }
+function _mitFollowCam(c){
+  if (!_mit || !_mit.follow || !c || !Array.isArray(c.t)) return;
+  orbitTarget.set(c.t[0], c.t[1], c.t[2]);
+  sph.theta = c.th; sph.phi = c.ph; sph.r = c.r;
+  sph2cam();
+}
+function _mitToggleFollow(){
+  if (!_mit) return;
+  _mit.follow = !_mit.follow;
+  if (_mit.follow){ _mitFollowCam(_mit.peerCam); notify('Du folgst jetzt der Ansicht von ' + _mitPeerName(),'ok'); }
+  _mitPaint(); _mitBar();
+}
 
-// ── Markierungen der Zuschauer in der Szene ──
+// ── Staffelstab ──
+async function _mitSetPen(who){
+  if (!_mit) return;
+  try{ await _mit.ref.update({ pen: who, penReq: '', penAt: Date.now() }); }
+  catch(e){ console.warn('mitarbeit/pen', e); notify('Stift-Übergabe fehlgeschlagen','w'); }
+}
+async function _mitGivePen(){                     // ich gebe ab
+  if (!_mit || !_mitHasPen()) return;
+  await _mitPushDoc(true);                        // erst meinen Stand sichern
+  await _mitSetPen(_mit.role === 'host' ? (_mit.guestId || 'guest') : 'host');
+  notify('Stift abgegeben — ' + _mitPeerName() + ' darf jetzt bearbeiten','ok');
+}
+async function _mitTakePen(){                     // ich hole ihn (zurueck)
+  if (!_mit || _mitHasPen()) return;
+  await _mitSetPen(_mit.me);
+  notify('Du hast jetzt den Stift','ok');
+}
+async function _mitAskPen(){                      // ich frage danach
+  if (!_mit || _mitHasPen()) return;
+  try{ await _mit.ref.update({ penReq: _mit.me, penReqName: _mit.myName, penAt: Date.now() }); notify('Angefragt — ' + _mitPeerName() + ' bekommt einen Hinweis','ok'); }
+  catch(e){ notify('Anfrage fehlgeschlagen','w'); }
+}
+
+// Werkzeuge sperren, wenn der andere den Stift hat. Kamera und Menue bleiben frei.
+function _mitLockUI(){
+  const ro = !!_mit && !_mitHasPen();
+  document.body.classList.toggle('mit-ro', ro);
+}
+
+// ── Kopfleiste der Sitzung ──
+function _mitBar(){
+  let bar = document.getElementById('mit-bar');
+  if (!_mit){ if (bar) bar.remove(); document.body.classList.remove('mit-on','mit-ro'); return; }
+  if (!bar){
+    bar = document.createElement('div'); bar.id = 'mit-bar';
+    document.body.appendChild(bar); document.body.classList.add('mit-on');
+  }
+  const mine = _mitHasPen(), peer = _mitPeerName();
+  const req  = _mit.penReq && _mit.penReq !== _mit.me;
+  bar.innerHTML =
+    '<span class="mb-dot' + (mine ? ' mine' : '') + '"></span>' +
+    '<span class="mb-txt">' + (mine ? '✏️ Du bearbeitest' : '👀 ' + _mitEsc(peer) + ' bearbeitet gerade') + '</span>' +
+    (req ? '<button class="mb-b hot" onclick="_mitSetPen(\'' + _mitEsc(_mit.penReq) + '\')">' + _mitEsc(_mit.penReqName || peer) + ' möchte den Stift — geben</button>' : '') +
+    (mine ? '<button class="mb-b" onclick="_mitGivePen()">Stift abgeben</button>'
+          : '<button class="mb-b" onclick="_mitAskPen()">Stift anfordern</button>' +
+            (_mit.role === 'host' ? '<button class="mb-b" onclick="_mitTakePen()">Zurückholen</button>' : '')) +
+    '<button class="mb-b' + (_mit.follow ? ' on' : '') + '" onclick="_mitToggleFollow()" title="Der Ansicht des anderen folgen">🎯 Folgen</button>' +
+    '<span class="mb-eyes">' + (_mit.peerHere ? '● ' + _mitEsc(peer) + ' ist da' : '○ wartet auf ' + _mitEsc(peer)) + '</span>' +
+    '<button class="mb-b" onclick="_mitOpen()">Sitzung</button>';
+  _mitLockUI();
+}
+function _mitEsc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ── Markierungen ("schau mal hier") ──
 function _mitMarkGroup(){
   if (!_mitMarks){ _mitMarks = new THREE.Group(); _mitMarks.renderOrder = 997; _mitMarks.userData.isHelper = true; scene.add(_mitMarks); }
   return _mitMarks;
@@ -35645,8 +35750,7 @@ function _mitShowMark(id, d){
   const cone = new THREE.Mesh(
     new THREE.ConeGeometry(size * 0.32, size, 20),
     new THREE.MeshBasicMaterial({ color: 0xF97316, transparent: true, opacity: 0.92, depthTest: false }));
-  cone.rotation.x = Math.PI;                       // Spitze zeigt auf den Punkt
-  cone.position.y = size * 0.5;
+  cone.rotation.x = Math.PI; cone.position.y = size * 0.5;
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(size * 0.34, size * 0.5, 28),
     new THREE.MeshBasicMaterial({ color: 0xF97316, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthTest: false }));
@@ -35657,8 +35761,8 @@ function _mitShowMark(id, d){
     cx.font = 'bold 34px Inter, sans-serif';
     cv.width = Math.min(720, Math.ceil(cx.measureText(d.t).width) + 36); cv.height = 56;
     const c2 = cv.getContext('2d');
-    c2.fillStyle = '#F97316'; c2.beginPath();
-    (c2.roundRect ? c2.roundRect(0,0,cv.width,cv.height,14) : c2.rect(0,0,cv.width,cv.height)); c2.fill();
+    c2.fillStyle = '#F97316';
+    if (c2.roundRect){ c2.beginPath(); c2.roundRect(0,0,cv.width,cv.height,14); c2.fill(); } else c2.fillRect(0,0,cv.width,cv.height);
     c2.font = 'bold 34px Inter, sans-serif'; c2.fillStyle = '#fff'; c2.textBaseline = 'middle';
     c2.fillText(d.t, 18, cv.height/2 + 1);
     const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), depthTest: false, transparent: true }));
@@ -35668,7 +35772,7 @@ function _mitShowMark(id, d){
   }
   pin.position.set(d.p[0], d.p[1], d.p[2]);
   g.add(pin);
-  notify('👀 ' + ((d.by || 'Der Betreuer')) + ' zeigt auf eine Stelle' + (d.t ? ': ' + d.t : ''), 'ok');
+  if (d.by !== _mit?.myName) notify('👀 ' + (d.by || 'Der andere') + ' zeigt auf eine Stelle' + (d.t ? ': ' + d.t : ''), 'ok');
 }
 function _mitRemoveMark(id){
   if (!_mitMarks) return;
@@ -35676,41 +35780,95 @@ function _mitRemoveMark(id){
   if (c) _mitMarks.remove(c);
 }
 async function _mitClearMarks(){
-  if (_mitMarks){ _mitMarks.clear(); }
+  if (_mitMarks) _mitMarks.clear();
   if (!_mit) return;
   try{ const q = await _mit.ref.collection('marks').get(); await Promise.all(q.docs.map(d => d.ref.delete().catch(()=>{}))); }catch(_){}
   notify('Markierungen entfernt','ok');
 }
-
-// ── Sitzung starten / beenden ──
-async function _mitStart(){
-  if (_mit){ _mitOpen(); return; }
-  if (!window._fbUser){ notify('Zum Einladen bitte oben anmelden','w'); return; }
-  if (!window._fbDb){ notify('Keine Verbindung zum Server','w'); return; }
-  const sid = _mitRandId(), code = _mitNewCode(), now = Date.now();
-  const name = (document.getElementById('cur-design-lbl')?.textContent || 'Modell').trim();
-  const ref = window._fbDb.collection('sessions').doc(sid);
+// Auf eine Stelle zeigen: naechster Klick ins Modell setzt die Markierung.
+let _mitMarkArm = false;
+function _mitArmMark(){
+  if (!_mit){ notify('Nur während einer Sitzung','w'); return; }
+  _mitMarkArm = !_mitMarkArm;
+  document.body.classList.toggle('mit-marking', _mitMarkArm);
+  notify(_mitMarkArm ? 'Klick auf die Stelle, die du zeigen möchtest' : 'Zeigen abgebrochen','ok');
+  _mitClose();
+}
+async function _mitPlaceMark(ev){
+  if (!_mitMarkArm || !_mit) return false;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const rc = new THREE.Raycaster();
+  rc.setFromCamera(new THREE.Vector2(((ev.clientX-rect.left)/rect.width)*2-1, -((ev.clientY-rect.top)/rect.height)*2+1), camera);
+  const meshes = []; objects.forEach(o => o.traverse(n => { if (n.isMesh && n.visible && !n.userData.isEdgeLines) meshes.push(n); }));
+  const hits = rc.intersectObjects(meshes, false);
+  _mitMarkArm = false; document.body.classList.remove('mit-marking');
+  if (!hits.length){ notify('Daneben — bitte direkt auf das Modell klicken','w'); return true; }
+  const p = hits[0].point;
+  const t = (window.prompt('Was möchtest du zeigen? (leer lassen für nur einen Pfeil)','') || '').trim().slice(0,80);
   try{
-    await ref.set({ name, host: window._fbUser.uid, codeHash: await _mitHash(sid, code),
-                    createdAt: now, expiresAt: now + _MIT_TTL, live: true });
-  }catch(e){
-    console.warn('mitsehen/start', e);
-    notify('Sitzung konnte nicht gestartet werden — sind die Firestore-Regeln für „sessions" freigegeben?','w');
-    return;
-  }
-  _mit = { id: sid, code, name, ref, host: window._fbUser.uid, exp: now + _MIT_TTL,
-           sentFp: 0, seenFp: 0, dirtyAt: 0, camKey: '', sentAt: 0, eyes: 0, busy: false };
+    await _mit.ref.collection('marks').add({ p:[p.x,p.y,p.z], t, at:Date.now(), by:_mit.myName.slice(0,40), expiresAt:_mit.exp });
+    notify('📍 Markierung gesetzt','ok');
+  }catch(e){ console.warn(e); notify('Markierung konnte nicht gesendet werden','w'); }
+  return true;
+}
 
-  // Geometrie: pollt den Fingerabdruck und laedt hoch, sobald es ruhig ist.
-  _mit.tick = setInterval(() => {
+// ── Gemeinsame Verdrahtung fuer Gastgeber und Gast ──
+function _mitWire(){
+  const ref = _mit.ref;
+  // Stand des anderen
+  _mit.offDoc = ref.collection('state').doc('doc').onSnapshot(doc => {
+    if (doc.exists) _mitApplyDoc(doc.data());
+  }, e => console.warn('mitarbeit/doc', e));
+  // Sitzungskopf: Stift, Anfragen, Ende
+  _mit.offSes = ref.onSnapshot(doc => {
     if (!_mit) return;
+    if (!doc.exists || doc.data().live === false){
+      if (_mit.role === 'guest'){ notify('Die Sitzung wurde beendet','w'); _mitLeave(); }
+      return;
+    }
+    const d = doc.data(), hadPen = _mitHasPen();
+    _mit.pen = d.pen || 'host'; _mit.penReq = d.penReq || ''; _mit.penReqName = d.penReqName || '';
+    _mit.hostName = d.hostName || _mit.hostName; _mit.guestId = d.guestId || _mit.guestId;
+    if (!hadPen && _mitHasPen()){
+      _mit.sentFp = _mitFp();                       // Stand gilt als gesendet
+      notify('Du hast jetzt den Stift — du kannst bearbeiten','ok');
+    } else if (hadPen && !_mitHasPen()){
+      notify(_mitPeerName() + ' hat jetzt den Stift','ok');
+    }
+    if (d.penReq && d.penReq !== _mit.me && _mitHasPen() && d.penReq !== _mit.lastReqSeen){
+      _mit.lastReqSeen = d.penReq;
+      notify('✋ ' + (d.penReqName || _mitPeerName()) + ' möchte den Stift — oben in der Leiste geben','ok', 9000);
+    }
+    _mitBar(); _mitPaint();
+  }, () => {});
+  // Kamera des anderen
+  _mit.offCams = ref.collection('cams').onSnapshot(snap => {
+    if (!_mit) return;
+    snap.docs.forEach(d => { if (d.id !== _mit.me){ _mit.peerCam = d.data(); if (_mit.role === 'host') _mit.guestName = d.data().name || _mit.guestName; _mitFollowCam(d.data()); } });
+  }, () => {});
+  // Markierungen
+  _mit.offMarks = ref.collection('marks').onSnapshot(snap => {
+    snap.docChanges().forEach(ch => {
+      if (ch.type === 'added') _mitShowMark(ch.doc.id, ch.doc.data());
+      else if (ch.type === 'removed') _mitRemoveMark(ch.doc.id);
+    });
+  }, () => {});
+  // Anwesenheit
+  _mit.offEyes = ref.collection('eyes').onSnapshot(snap => {
+    if (!_mit) return;
+    const fresh = Date.now() - 45000;
+    _mit.peerHere = snap.docs.some(d => d.id !== _mit.me && (d.data().at || 0) > fresh);
+    _mitBar(); _mitPaint();
+  }, () => {});
+
+  // Senden, sobald die Szene ruhig ist (nur mit Stift)
+  _mit.tick = setInterval(() => {
+    if (!_mit || _mit.applying) return;
     const fp = _mitFp();
     if (fp !== _mit.seenFp){ _mit.seenFp = fp; _mit.dirtyAt = Date.now(); }
-    else if (_mit.dirtyAt && Date.now() - _mit.dirtyAt >= _MIT_QUIET){ _mit.dirtyAt = 0; _mitPushGeo(); }
-  }, 700);
-  // Kamera: nur schreiben, wenn sie sich wirklich bewegt hat — aber mindestens
-  // alle 20 s ein Lebenszeichen, sonst zeigt der Viewer „live", obwohl der
-  // Gastgeber laengst den Tab zugemacht hat (beforeunload kommt nicht immer an).
+    else if (_mit.dirtyAt && Date.now() - _mit.dirtyAt >= _MIT_QUIET){ _mit.dirtyAt = 0; _mitPushDoc(); }
+  }, 600);
+  // Kamera + Lebenszeichen
   _mit.camTick = setInterval(() => {
     if (!_mit) return;
     const k = [orbitTarget.x, orbitTarget.y, orbitTarget.z, sph.theta, sph.phi, sph.r]
@@ -35719,87 +35877,187 @@ async function _mitStart(){
       _mit.camKey = k; _mit.camAt = Date.now(); _mitPushCam();
     }
   }, _MIT_CAM_MS);
-  // Rueckkanal: Markierungen der Zuschauer
-  _mit.offMarks = ref.collection('marks').onSnapshot(snap => {
-    snap.docChanges().forEach(ch => {
-      if (ch.type === 'added') _mitShowMark(ch.doc.id, ch.doc.data());
-      else if (ch.type === 'removed') _mitRemoveMark(ch.doc.id);
-    });
-  }, e => console.warn('mitsehen/marks', e));
-  // Anwesenheit: wer guckt gerade zu?
-  _mit.offEyes = ref.collection('eyes').onSnapshot(snap => {
-    if (!_mit) return;
-    const fresh = Date.now() - 45000;
-    _mit.eyes = snap.docs.filter(d => (d.data().at || 0) > fresh).length;
-    _mitPaint();
-  }, () => {});
-
-  await _mitPushGeo(true); _mitPushCam();
-  _mitOpen();
-  notify('Mitsehen läuft — Link und Code stehen im Fenster','ok');
+  // Anwesenheit melden
+  const beat = () => { if (_mit) _mit.ref.collection('eyes').doc(_mit.me).set({ at: Date.now(), name: _mit.myName.slice(0,40) }).catch(()=>{}); };
+  beat(); _mit.eyeTick = setInterval(beat, 20000);
+  _mitBar();
 }
 
-async function _mitStop(silent){
-  if (!_mit) return;
+// ── Sitzung starten (Gastgeber) ──
+async function _mitStart(){
+  if (_mit){ _mitOpen(); return; }
+  if (!window._fbUser){ notify('Zum Einladen bitte oben anmelden','w'); return; }
+  if (!window._fbDb){ notify('Keine Verbindung zum Server','w'); return; }
+  const sid = _mitRandId('s_'), code = _mitNewCode(), now = Date.now();
+  const name = (document.getElementById('cur-design-lbl')?.textContent || 'Modell').trim();
+  const myName = (window._fbUser.displayName || window._fbUser.email || 'Gestalter').split('@')[0];
+  const ref = window._fbDb.collection('sessions').doc(sid);
+  try{
+    await ref.set({ name, host: window._fbUser.uid, hostName: myName, codeHash: await _mitHash(sid, code),
+                    pen: 'host', penReq: '', createdAt: now, expiresAt: now + _MIT_TTL, live: true });
+  }catch(e){
+    console.warn('mitarbeit/start', e);
+    notify('Sitzung konnte nicht gestartet werden — sind die Firestore-Regeln für „sessions" freigegeben?','w');
+    return;
+  }
+  _mit = { id: sid, code, name, ref, role: 'host', me: 'host', myName, hostName: myName,
+           exp: now + _MIT_TTL, pen: 'host', penReq: '', sentFp: 0, seenFp: 0, dirtyAt: 0,
+           camKey: '', sentAt: 0, rev: 0, appliedRev: 0, follow: false, peerHere: false, busy: false };
+  _mitWire();
+  await _mitPushDoc(true); _mitPushCam();
+  _mitOpen();
+  notify('Sitzung läuft — Link und Code stehen im Fenster','ok');
+}
+
+// ── Sitzung beitreten (Gast, ohne Konto) ──
+async function _mitJoin(sid, code){
+  if (!window._fbDb){ notify('Keine Verbindung zum Server','w'); return false; }
+  const ref = window._fbDb.collection('sessions').doc(sid);
+  let d;
+  try{ const doc = await ref.get(); if (!doc.exists) throw new Error('weg'); d = doc.data(); }
+  catch(e){ notify('Sitzung nicht gefunden — sie wurde beendet oder ist abgelaufen','w', 8000); return false; }
+  if (d.live === false){ notify('Diese Sitzung wurde bereits beendet','w'); return false; }
+  if (d.codeHash && await _mitHash(sid, code) !== d.codeHash){ notify('Der Code stimmt nicht','w'); return false; }
+
+  let me = sessionStorage.getItem('mit_me');
+  if (!me){ me = _mitRandId('g_'); sessionStorage.setItem('mit_me', me); }
+  let myName = localStorage.getItem('mit_name') || '';
+  if (!myName){ myName = (window.prompt('Wie heißt du? (sieht der andere)','Betreuer') || 'Betreuer').trim().slice(0,40); localStorage.setItem('mit_name', myName); }
+
+  _mit = { id: sid, code, name: d.name, ref, role: 'guest', me, myName, hostName: d.hostName || 'Der Gestalter',
+           exp: d.expiresAt, pen: d.pen || 'host', penReq: d.penReq || '', sentFp: 0, seenFp: 0, dirtyAt: 0,
+           camKey: '', sentAt: 0, rev: 0, appliedRev: 0, follow: true, peerHere: false, busy: false };
+  try{ await ref.update({ guestId: me, guestName: myName }); }catch(_){}
+  // aktuellen Stand holen
+  try{
+    const st = await ref.collection('state').doc('doc').get();
+    if (st.exists) _mitApplyDoc(st.data());
+  }catch(e){ console.warn('mitarbeit/join', e); }
+  _mitWire();
+  _mitPushCam();
+  notify('Du bist in der Sitzung von ' + _mit.hostName + ' — ' + (_mitHasPen() ? 'du darfst bearbeiten' : 'zum Bearbeiten oben „Stift anfordern"'), 'ok', 9000);
+  return true;
+}
+
+// ── Sitzung verlassen / beenden ──
+function _mitTeardown(){
+  if (!_mit) return null;
   const m = _mit; _mit = null;
-  clearInterval(m.tick); clearInterval(m.camTick);
-  try{ m.offMarks && m.offMarks(); m.offEyes && m.offEyes(); }catch(_){}
+  clearInterval(m.tick); clearInterval(m.camTick); clearInterval(m.eyeTick);
+  ['offDoc','offSes','offCams','offMarks','offEyes'].forEach(k => { try{ m[k] && m[k](); }catch(_){} });
   if (_mitMarks) _mitMarks.clear();
+  _mitMarkArm = false; document.body.classList.remove('mit-marking');
+  _mitBar();
+  return m;
+}
+async function _mitLeave(){                       // Gast steigt aus
+  const m = _mitTeardown(); if (!m) return;
+  try{ await m.ref.collection('cams').doc(m.me).delete().catch(()=>{}); await m.ref.collection('eyes').doc(m.me).delete().catch(()=>{}); }catch(_){}
+  _mitPaint(); notify('Sitzung verlassen','ok');
+}
+async function _mitStop(silent){                  // Gastgeber beendet
+  if (_mit && _mit.role === 'guest') return _mitLeave();
+  const m = _mitTeardown(); if (!m) return;
   try{
     await m.ref.update({ live: false }).catch(()=>{});
-    for (const sub of ['marks','eyes']){
+    for (const sub of ['marks','eyes','cams']){
       const q = await m.ref.collection(sub).get();
       await Promise.all(q.docs.map(d => d.ref.delete().catch(()=>{})));
     }
-    await Promise.all(['geo','cam'].map(d => m.ref.collection('state').doc(d).delete().catch(()=>{})));
+    await m.ref.collection('state').doc('doc').delete().catch(()=>{});
     await m.ref.delete().catch(()=>{});
-  }catch(e){ console.warn('mitsehen/stop', e); }
-  if (!silent){ _mitPaint(); notify('Mitsehen beendet','ok'); }
+  }catch(e){ console.warn('mitarbeit/stop', e); }
+  if (!silent){ _mitPaint(); notify('Sitzung beendet','ok'); }
 }
 
 // ── Fenster ──
-function _mitLink(){ return location.origin + '/mitsehen.html?s=' + (_mit ? _mit.id : ''); }
+function _mitLink(){ return location.origin + '/volme3d.html?sitzung=' + (_mit ? _mit.id : ''); }
 function _mitClose(){ document.getElementById('mit-modal').classList.remove('show'); }
 function _mitOpen(){ document.getElementById('mit-modal').classList.add('show'); _mitPaint(); }
 function _mitPaint(){
+  const modal = document.getElementById('mit-modal');
   const body = document.getElementById('mit-body');
-  if (!body || !document.getElementById('mit-modal').classList.contains('show')) return;
+  if (!body || !modal || !modal.classList.contains('show')) return;
   if (!_mit){
     body.innerHTML =
-      '<p style="font-size:13px;color:var(--mid);line-height:1.55;margin:0 0 14px">Lade jemanden ein, dir über die Schulter zu schauen. Dein Betreuer sieht dein Modell <b>live</b>, dreht es selbst, kann deinem Blick folgen und dir eine Stelle markieren.</p>'+
-      '<p style="font-size:12px;color:var(--dim);line-height:1.5;margin:0 0 14px">Er braucht kein Konto — nur den Link und den Code, den du ihm vorliest. Die Sitzung endet automatisch nach 3 Stunden.</p>'+
-      '<button class="btn pri" onclick="_mitStart()">👀 Mitsehen starten</button>';
+      '<p style="font-size:13px;color:var(--mid);line-height:1.55;margin:0 0 14px">Arbeite gemeinsam an einem Modell. Ihr seht <b>beide alles</b> — Objektbaum, Maße, Werkzeuge. Bearbeiten darf immer einer; den „Stift" reicht ihr euch per Knopf weiter.</p>'+
+      '<p style="font-size:12px;color:var(--dim);line-height:1.5;margin:0 0 14px">Der andere braucht kein Konto — nur den Link und den Code, den du ihm vorliest. Die Sitzung endet automatisch nach 3 Stunden. Dein gespeichertes Design bleibt unberührt, bis du selbst speicherst.</p>'+
+      '<button class="btn pri" onclick="_mitStart()">👥 Sitzung starten</button>';
     return;
   }
-  const link = _mitLink();
-  const eyes = _mit.eyes > 0
-    ? '<span style="color:#059669;font-weight:800">● '+_mit.eyes+(_mit.eyes===1?' Person schaut zu':' Personen schauen zu')+'</span>'
-    : '<span style="color:var(--dim)">○ Noch schaut niemand zu</span>';
-  const last = _mit.sentAt ? 'zuletzt übertragen: '+new Date(_mit.sentAt).toLocaleTimeString('de-DE') : 'wird übertragen…';
+  const link = _mitLink(), mine = _mitHasPen(), peer = _mitPeerName();
+  const here = _mit.peerHere
+    ? '<span style="color:#059669;font-weight:800">● ' + _mitEsc(peer) + ' ist dabei</span>'
+    : '<span style="color:var(--dim)">○ wartet auf ' + _mitEsc(peer) + '</span>';
   body.innerHTML =
-    '<div style="font-weight:800;color:#059669;margin-bottom:10px">✓ Mitsehen läuft</div>'+
-    '<div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:12px;padding:12px 14px;margin-bottom:12px">'+
-      '<div style="font-size:12px;color:var(--mid);font-weight:700;margin-bottom:4px">Code zum Vorlesen</div>'+
-      '<div style="font-size:30px;font-weight:800;letter-spacing:5px;color:var(--acc);font-variant-numeric:tabular-nums">'+_mit.code+'</div>'+
-    '</div>'+
-    '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">'+
-      '<button class="btn" style="background:#25D366;color:#fff;border-color:#25D366" onclick="_mitWA()">🟢 WhatsApp</button>'+
-      '<button class="btn" onclick="_mitCopy()">🔗 Link kopieren</button>'+
-      '<button class="btn" onclick="window.open(_mitLink(),\'_blank\')">👁 Selbst ansehen</button>'+
-    '</div>'+
-    '<input readonly value="'+link.replace(/"/g,'&quot;')+'" onclick="this.select()" style="width:100%;box-sizing:border-box;font-size:12px;color:var(--mid);border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-family:var(--font)">'+
-    '<div style="display:flex;align-items:center;gap:8px;margin:12px 0 4px;font-size:12px">'+eyes+
-      '<span style="flex:1"></span><span style="color:var(--dim)">'+last+'</span></div>'+
+    '<div style="font-weight:800;color:#059669;margin-bottom:10px">✓ Sitzung läuft · ' + (mine ? 'du hast den Stift' : _mitEsc(peer) + ' hat den Stift') + '</div>' +
+    (_mit.role === 'host' ?
+      '<div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:12px;padding:12px 14px;margin-bottom:12px">'+
+        '<div style="font-size:12px;color:var(--mid);font-weight:700;margin-bottom:4px">Code zum Vorlesen</div>'+
+        '<div style="font-size:30px;font-weight:800;letter-spacing:5px;color:var(--acc);font-variant-numeric:tabular-nums">'+_mitEsc(_mit.code)+'</div>'+
+      '</div>'+
+      '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">'+
+        '<button class="btn" style="background:#25D366;color:#fff;border-color:#25D366" onclick="_mitWA()">🟢 WhatsApp</button>'+
+        '<button class="btn" onclick="_mitCopy()">🔗 Link kopieren</button>'+
+      '</div>'+
+      '<input readonly value="'+_mitEsc(link)+'" onclick="this.select()" style="width:100%;box-sizing:border-box;font-size:12px;color:var(--mid);border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-family:var(--font)">'
+      : '<p style="font-size:13px;color:var(--mid);margin:0 0 12px">Du bist zu Gast in der Sitzung von <b>'+_mitEsc(_mit.hostName)+'</b>.</p>') +
+    '<div style="display:flex;align-items:center;gap:8px;margin:12px 0 4px;font-size:12px">'+here+
+      '<span style="flex:1"></span><span style="color:var(--dim)">'+(_mit.sentAt ? 'zuletzt gesendet: '+new Date(_mit.sentAt).toLocaleTimeString('de-DE') : '')+'</span></div>'+
     '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;border-top:1px solid var(--border);padding-top:12px">'+
-      '<button class="btn" onclick="_mitClearMarks()">🧹 Markierungen entfernen</button>'+
+      (mine ? '<button class="btn" onclick="_mitGivePen();_mitPaint()">✏️ Stift abgeben</button>'
+            : '<button class="btn" onclick="_mitAskPen()">✋ Stift anfordern</button>') +
+      '<button class="btn" onclick="_mitArmMark()">📍 Stelle zeigen</button>'+
+      '<button class="btn" onclick="_mitClearMarks()">🧹 Markierungen weg</button>'+
       '<span style="flex:1"></span>'+
-      '<button class="btn" style="color:#b91c1c;border-color:#fecaca" onclick="_mitStop()">⏹ Beenden</button>'+
+      '<button class="btn" style="color:#b91c1c;border-color:#fecaca" onclick="'+(_mit.role==='host'?'_mitStop()':'_mitLeave()')+';_mitPaint()">⏹ '+(_mit.role==='host'?'Beenden':'Verlassen')+'</button>'+
     '</div>';
 }
 function _mitWA(){ window.open('https://wa.me/?text='+encodeURIComponent('Kannst du kurz mit draufschauen? '+_mitLink()+'\n\nCode: '+_mit.code),'_blank'); }
 function _mitCopy(){ const l=_mitLink(); (navigator.clipboard?navigator.clipboard.writeText(l):Promise.reject()).then(()=>notify('Link kopiert — den Code '+_mit.code+' bitte separat durchgeben','ok')).catch(()=>window.prompt('Link:',l)); }
-addEventListener('beforeunload', () => { if (_mit) _mitStop(true); });
-// ===== END MITSEHEN =====
+
+// ── Einstieg ueber ?sitzung=<id> ──
+function _mitCodeAsk(sid){
+  const modal = document.getElementById('mit-modal'), body = document.getElementById('mit-body');
+  modal.classList.add('show');
+  body.innerHTML =
+    '<p style="font-size:13px;color:var(--mid);line-height:1.55;margin:0 0 12px">Du wurdest zu einer gemeinsamen Sitzung eingeladen. Gib den Code ein, den dir der Gestalter durchgibt.</p>'+
+    '<input id="mit-code-in" inputmode="numeric" maxlength="6" placeholder="––––––" style="width:100%;box-sizing:border-box;font-family:var(--font);font-size:26px;font-weight:800;letter-spacing:7px;text-align:center;border:1.5px solid var(--border);border-radius:11px;padding:11px;margin-bottom:10px;color:var(--text)">'+
+    '<div id="mit-code-err" style="color:#b91c1c;font-size:13px;font-weight:700;min-height:18px;margin-bottom:8px"></div>'+
+    '<button class="btn pri" style="width:100%;justify-content:center" onclick="_mitCodeGo(\''+_mitEsc(sid)+'\')">Beitreten</button>';
+  const inp = document.getElementById('mit-code-in');
+  inp.focus();
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') _mitCodeGo(sid); });
+}
+async function _mitCodeGo(sid){
+  const inp = document.getElementById('mit-code-in'), err = document.getElementById('mit-code-err');
+  const v = (inp.value || '').trim();
+  if (v.length < 6){ err.textContent = 'Bitte alle 6 Ziffern eingeben.'; return; }
+  err.textContent = 'Verbinde…';
+  if (await _mitJoin(sid, v)){ _mitClose(); history.replaceState(null, '', location.pathname); }
+  else err.textContent = 'Beitritt fehlgeschlagen — Code falsch oder Sitzung beendet.';
+}
+addEventListener('load', () => {
+  let sid = '';
+  try{ sid = new URLSearchParams(location.search).get('sitzung') || ''; }catch(_){}
+  if (!sid) return;
+  setTimeout(() => {
+    // Der Startbildschirm liegt sonst ueber der Code-Abfrage — wer per
+    // Einladungslink kommt, will nicht erst ein neues Design anlegen.
+    try{ hideStarter(); }catch(_){}
+    _mitCodeAsk(sid);
+  }, 800);   // erst die App fertig aufbauen lassen
+});
+addEventListener('beforeunload', () => { if (_mit) (_mit.role === 'host' ? _mitStop(true) : _mitLeave()); });
+// Im Zeige-Modus faengt der Klick VOR allen App-Handlern ab, sonst wuerde
+// stattdessen gedreht oder ausgewaehlt.
+addEventListener('load', () => {
+  const vp = document.getElementById('vp');
+  if (vp) vp.addEventListener('pointerdown', e => {
+    if (_mitMarkArm){ e.stopPropagation(); e.preventDefault(); _mitPlaceMark(e); }
+  }, true);
+});
+// ===== END MITARBEITEN =====
 
 function repairSelected() {
   const meshes = [];

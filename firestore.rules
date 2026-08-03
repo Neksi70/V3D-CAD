@@ -26,37 +26,52 @@ service cloud.firestore {
                     && request.auth.uid == resource.data.createdBy;
     }
 
-    // ── Mitseh-Sitzungen (Live-Hilfe) ────────────────────────────────
-    // Der Gastgeber laedt seine Geometrie live hoch, der Betreuer schaut zu
-    // und kann Markierungen setzen. Zuschauer brauchen keinen Account.
+    // ── Gemeinsame Sitzungen (zu zweit am selben Modell) ──────────────
+    // Gastgeber und Gast arbeiten abwechselnd; wer den "Stift" hat, schreibt
+    // den Stand nach state/doc. Der Gast braucht bewusst KEIN Konto — der
+    // Link ist der Schluessel. Entsprechend gilt: wer den Link hat, darf in
+    // der Sitzung aendern.
     //
-    // Schutz besteht aus drei Teilen:
+    // Durchgesetzt wird hier:
     //   1. die Sitzungs-ID ist zufaellig und unratbar (der eigentliche Schutz)
-    //   2. expiresAt wird hier durchgesetzt — abgelaufen = nicht mehr lesbar
-    //   3. der vorgelesene Code wird im Client geprueft (siehe mitsehen.html);
-    //      im Doc liegt nur sein SHA-256-Hash, nie der Klartext.
+    //   2. expiresAt — abgelaufen heisst weder lesbar noch schreibbar
+    //   3. Eigentuemer, Code und Ablauf sind unveraenderlich: niemand kann
+    //      die Sitzung kapern oder heimlich verlaengern
+    // Der vorgelesene Code wird im Client geprueft; im Doc liegt nur sein
+    // SHA-256-Hash, nie der Klartext.
+    //
+    // Was hier NICHT passiert: das gespeicherte Design des Gastgebers
+    // anfassen. Die Sitzung ist eine Arbeitskopie, Speichern bleibt bei ihm.
     match /sessions/{sid} {
       allow read: if resource != null && resource.data.expiresAt > request.time.toMillis();
       allow create: if request.auth != null
                     && request.resource.data.host == request.auth.uid
                     && request.resource.data.expiresAt <= request.time.toMillis() + 86400000;
-      allow update: if request.auth != null
-                    && request.auth.uid == resource.data.host
-                    && request.resource.data.host == resource.data.host;
+      allow update: if resource != null
+                    && resource.data.expiresAt > request.time.toMillis()
+                    && request.resource.data.host == resource.data.host
+                    && request.resource.data.codeHash == resource.data.codeHash
+                    && request.resource.data.createdAt == resource.data.createdAt
+                    && request.resource.data.expiresAt == resource.data.expiresAt;
       allow delete: if request.auth != null && request.auth.uid == resource.data.host;
 
-      // Geometrie (state/geo) und Kamera (state/cam) — nur der Gastgeber
-      // schreibt. host ist unveraenderlich, damit niemand die Sitzung kapert.
-      // Bewusst ohne get() auf das Eltern-Doc: die Kamera wird mehrmals pro
-      // Sekunde geschrieben, ein get() je Zugriff waere teuer.
+      // Der gemeinsame Stand (state/doc). Schreiben darf, wer in der Sitzung
+      // ist — wer gerade dran ist, klaert der Staffelstab im Client.
+      // Bewusst ohne get() auf das Eltern-Doc: das waere ein zusaetzlicher
+      // Lesevorgang bei jedem einzelnen Schreiben.
       match /state/{docId} {
         allow read: if resource != null && resource.data.expiresAt > request.time.toMillis();
-        allow create: if request.auth != null
-                      && request.resource.data.host == request.auth.uid;
-        allow update: if request.auth != null
-                      && request.auth.uid == resource.data.host
-                      && request.resource.data.host == resource.data.host;
-        allow delete: if request.auth != null && request.auth.uid == resource.data.host;
+        allow create, update: if request.resource.data.expiresAt > request.time.toMillis()
+                              && request.resource.data.expiresAt <= request.time.toMillis() + 86400000;
+        allow delete: if true;
+      }
+
+      // Kamera je Teilnehmer, damit man einander folgen kann.
+      match /cams/{camId} {
+        allow read: if true;
+        allow create, update: if request.resource.data.expiresAt > request.time.toMillis()
+                              && request.resource.data.expiresAt <= request.time.toMillis() + 86400000;
+        allow delete: if true;
       }
 
       // Markierungen der Zuschauer ("schau mal hier"). Anonym erlaubt, weil
