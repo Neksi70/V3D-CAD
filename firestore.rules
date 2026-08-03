@@ -26,6 +26,64 @@ service cloud.firestore {
                     && request.auth.uid == resource.data.createdBy;
     }
 
+    // ── Mitseh-Sitzungen (Live-Hilfe) ────────────────────────────────
+    // Der Gastgeber laedt seine Geometrie live hoch, der Betreuer schaut zu
+    // und kann Markierungen setzen. Zuschauer brauchen keinen Account.
+    //
+    // Schutz besteht aus drei Teilen:
+    //   1. die Sitzungs-ID ist zufaellig und unratbar (der eigentliche Schutz)
+    //   2. expiresAt wird hier durchgesetzt — abgelaufen = nicht mehr lesbar
+    //   3. der vorgelesene Code wird im Client geprueft (siehe mitsehen.html);
+    //      im Doc liegt nur sein SHA-256-Hash, nie der Klartext.
+    match /sessions/{sid} {
+      allow read: if resource != null && resource.data.expiresAt > request.time.toMillis();
+      allow create: if request.auth != null
+                    && request.resource.data.host == request.auth.uid
+                    && request.resource.data.expiresAt <= request.time.toMillis() + 86400000;
+      allow update: if request.auth != null
+                    && request.auth.uid == resource.data.host
+                    && request.resource.data.host == resource.data.host;
+      allow delete: if request.auth != null && request.auth.uid == resource.data.host;
+
+      // Geometrie (state/geo) und Kamera (state/cam) — nur der Gastgeber
+      // schreibt. host ist unveraenderlich, damit niemand die Sitzung kapert.
+      // Bewusst ohne get() auf das Eltern-Doc: die Kamera wird mehrmals pro
+      // Sekunde geschrieben, ein get() je Zugriff waere teuer.
+      match /state/{docId} {
+        allow read: if resource != null && resource.data.expiresAt > request.time.toMillis();
+        allow create: if request.auth != null
+                      && request.resource.data.host == request.auth.uid;
+        allow update: if request.auth != null
+                      && request.auth.uid == resource.data.host
+                      && request.resource.data.host == resource.data.host;
+        allow delete: if request.auth != null && request.auth.uid == resource.data.host;
+      }
+
+      // Markierungen der Zuschauer ("schau mal hier"). Anonym erlaubt, weil
+      // der Betreuer sich nicht anmelden muss; Missbrauch setzt Kenntnis der
+      // unratbaren Sitzungs-ID voraus und endet mit der Sitzung.
+      match /marks/{markId} {
+        allow read: if true;
+        allow create: if request.resource.data.keys().hasOnly(['p','t','at','by','expiresAt'])
+                      && request.resource.data.p.size() == 3
+                      && request.resource.data.t is string
+                      && request.resource.data.t.size() <= 80
+                      && request.resource.data.by is string
+                      && request.resource.data.by.size() <= 40;
+        allow update: if false;
+        allow delete: if true;   // Gastgeber raeumt auf, Zuschauer nimmt seinen zurueck
+      }
+
+      // Anwesenheit: jeder Zuschauer haelt ein Doc mit Zeitstempel frisch,
+      // damit der Gastgeber sieht, dass wirklich jemand mitguckt.
+      match /eyes/{viewerId} {
+        allow read: if true;
+        allow create, update: if request.resource.data.keys().hasOnly(['at','name'])
+                              && request.resource.data.at is number;
+        allow delete: if true;
+      }
+    }
+
     match /polls/{pollId} {
       allow read: if true;
       allow create: if request.auth != null
