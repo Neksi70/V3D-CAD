@@ -5193,8 +5193,42 @@ function _buildHighResGeo(type, topRatio, flip) {
 const _MM_PER_UNIT = 10;   // 1 Scene-Unit = 10 mm
 // Höhe (0..1) eines Musters an einer UV-Stelle. Aus dem alten Switch extrahiert,
 // damit wir triplanar 3× samplen und weich überblenden können.
-function _patternHeight(pattern, u, v, freq) {
+// Stückweise lineares „cos": gleiche Periode und Phase wie Math.cos, aber mit
+// echten Knicken statt Rundung. Basis der kantigen Muster-Varianten — ein
+// gedruckter Rändel soll scharfe Rauten haben, keine verwaschenen Hügel.
+const _triCos  = x => { const p = x / (2 * Math.PI); return 1 - 4 * Math.abs(p - Math.floor(p + 0.5)); };
+const _clamp01 = x => x < 0 ? 0 : (x > 1 ? 1 : x);
+// Dreieck → Trapez: unten und oben eine ebene Fläche, dazwischen gerade Flanken.
+const _trapez  = (s, land) => _clamp01((s - land / 2) / (1 - land));
+
+// Höhe (0..1) eines Musters an einer UV-Stelle.
+// sharp=true → kantige Variante: dieselbe Form, aber aus ebenen Flächen und
+// scharfen Kanten statt aus Sinus-Rundungen. Nur für die Gitter-Muster sinnvoll;
+// organische (Rauschen/Holz/Organisch) fallen auf die runde Fassung zurück.
+function _patternHeight(pattern, u, v, freq, sharp) {
   const PI = Math.PI;
+  if (sharp) {
+    const f = freq * PI;
+    switch (pattern) {
+      // Riffel: Trapez-Rippen — ebener Grund, gerade Flanke, ebener Rücken
+      case 'riffel':  return _trapez(0.5 + 0.5 * _triCos(u * f), 0.35);
+      // Rändel/Diamant: zwei gekreuzte Dreieck-Wellen, min() → echte Pyramidenflächen
+      case 'diamant': return Math.min(0.5 + 0.5 * _triCos(u * f), 0.5 + 0.5 * _triCos(v * f));
+      // Waben: dieselben drei Achsen wie rund, aber linear → flache Deckel, steile Wände
+      case 'waben': {
+        const a = _triCos(u * f), b = _triCos((u * 0.5 + v * 0.866) * f), c = _triCos((u * 0.5 - v * 0.866) * f);
+        return _clamp01(Math.max(0, (a + b + c) / 3) * 1.45);
+      }
+      case 'wellen':  return 0.5 + 0.5 * _triCos((u + v) * f);
+      // Punkte: Kegel statt Kuppel
+      case 'punkte': {
+        const gu = (u * freq + 100) - Math.floor(u * freq + 100) - 0.5;
+        const gv = (v * freq + 100) - Math.floor(v * freq + 100) - 0.5;
+        return Math.max(0, 1 - Math.sqrt(gu * gu + gv * gv) * 3.2);
+      }
+      // pyramide/gitter/ziegel/streifen sind schon kantig, Rest bleibt rund
+    }
+  }
   let t = 0;
   switch (pattern) {
     case 'riffel':  t = 0.5 + 0.5 * Math.sin(u * freq * PI); break;
@@ -5217,11 +5251,11 @@ function _patternHeight(pattern, u, v, freq) {
 
 // Triplanar-Höhe mit weicher Überblendung der 3 Projektionen (kein harter
 // Achsen-Wechsel → keine Kanten-Spikes; entspricht BumpMeshs „Übergangsglättung").
-function _triplanarHeight(pattern, px, py, pz, nx, ny, nz, freq, orient) {
+function _triplanarHeight(pattern, px, py, pz, nx, ny, nz, freq, orient, sharp) {
   const k = 4;   // Blend-Schärfe
   let wx = Math.pow(Math.abs(nx), k), wy = Math.pow(Math.abs(ny), k), wz = Math.pow(Math.abs(nz), k);
   const s = wx + wy + wz + 1e-9; wx /= s; wy /= s; wz /= s;
-  const P = (a, b) => orient === 'quer' ? _patternHeight(pattern, b, a, freq) : _patternHeight(pattern, a, b, freq);
+  const P = (a, b) => orient === 'quer' ? _patternHeight(pattern, b, a, freq, sharp) : _patternHeight(pattern, a, b, freq, sharp);
   return wx * P(pz, py) + wy * P(px, pz) + wz * P(px, py);
 }
 
@@ -5244,39 +5278,146 @@ function _prepWarpBase(baseGeo) {
 
 // Adaptive, wasserdichte Unterteilung (rot/grün mit geteilten Kanten-Mittel-
 // punkten → keine T-Stöße/Risse). pos/idx als flache Arrays, target = max. Kante.
+const _ek = (a, b) => a < b ? a + '_' + b : b + '_' + a;
+// Ein Rot/Grün-Durchgang: alle markierten Kanten teilen, Nachbardreiecke sauber
+// nachziehen (geteilte Teilungspunkte → keine T-Stöße/Risse).
+// tOf(a,b) liefert die Teilungsstelle 0..1 auf der Kante (Standard: Mitte).
+// Der Punkt wird PRO KANTE einmal berechnet und von beiden Dreiecken benutzt,
+// deshalb bleibt das Netz auch bei verschobenen Teilungspunkten wasserdicht.
+function _subdivStep(pos, idx, marked, tOf) {
+  const mid = new Map();
+  const getMid = (a, b) => {
+    const k = _ek(a, b); let m = mid.get(k);
+    if (m === undefined) {
+      const lo = Math.min(a, b), hi = Math.max(a, b);
+      const t = tOf ? tOf(lo, hi) : 0.5;
+      m = pos.length / 3;
+      pos.push(pos[lo*3]   + (pos[hi*3]   - pos[lo*3])   * t,
+               pos[lo*3+1] + (pos[hi*3+1] - pos[lo*3+1]) * t,
+               pos[lo*3+2] + (pos[hi*3+2] - pos[lo*3+2]) * t);
+      mid.set(k, m);
+    }
+    return m;
+  };
+  const nIdx = [];
+  for (let i = 0; i < idx.length; i += 3) {
+    const a = idx[i], b = idx[i + 1], c = idx[i + 2];
+    const m0 = marked.has(_ek(a, b)), m1 = marked.has(_ek(b, c)), m2 = marked.has(_ek(c, a));
+    const n = (m0 ? 1 : 0) + (m1 ? 1 : 0) + (m2 ? 1 : 0);
+    if (n === 0) { nIdx.push(a, b, c); continue; }
+    const M0 = m0 ? getMid(a, b) : -1, M1 = m1 ? getMid(b, c) : -1, M2 = m2 ? getMid(c, a) : -1;
+    if (n === 3) { nIdx.push(a, M0, M2, M0, b, M1, M2, M1, c, M0, M1, M2); }
+    else if (n === 1) {
+      if (m0) nIdx.push(a, M0, c, M0, b, c);
+      else if (m1) nIdx.push(b, M1, a, M1, c, a);
+      else nIdx.push(c, M2, b, M2, a, b);
+    } else { // n === 2
+      if (m0 && m1) nIdx.push(M0, b, M1, a, M0, M1, a, M1, c);
+      else if (m1 && m2) nIdx.push(c, M2, M1, a, b, M1, a, M1, M2);
+      else nIdx.push(a, M0, M2, M0, b, c, M0, c, M2);
+    }
+  }
+  return nIdx;
+}
+
 function _subdivideAdaptive(pos, idx, target) {
   const t2 = target * target;
-  const ek = (a, b) => a < b ? a + '_' + b : b + '_' + a;
   const e2 = (p, q) => { const dx = pos[p * 3] - pos[q * 3], dy = pos[p * 3 + 1] - pos[q * 3 + 1], dz = pos[p * 3 + 2] - pos[q * 3 + 2]; return dx * dx + dy * dy + dz * dz; };
   for (let iter = 0; iter < 9; iter++) {
     if (pos.length / 3 > 150000) break;
     const marked = new Set(); let any = false;
     for (let i = 0; i < idx.length; i += 3) {
       const a = idx[i], b = idx[i + 1], c = idx[i + 2];
-      if (Math.max(e2(a, b), e2(b, c), e2(c, a)) > t2) { marked.add(ek(a, b)); marked.add(ek(b, c)); marked.add(ek(c, a)); any = true; }
+      if (Math.max(e2(a, b), e2(b, c), e2(c, a)) > t2) { marked.add(_ek(a, b)); marked.add(_ek(b, c)); marked.add(_ek(c, a)); any = true; }
     }
     if (!any) break;
-    const mid = new Map();
-    const getMid = (a, b) => { const k = ek(a, b); let m = mid.get(k); if (m === undefined) { m = pos.length / 3; pos.push((pos[a * 3] + pos[b * 3]) / 2, (pos[a * 3 + 1] + pos[b * 3 + 1]) / 2, (pos[a * 3 + 2] + pos[b * 3 + 2]) / 2); mid.set(k, m); } return m; };
-    const nIdx = [];
-    for (let i = 0; i < idx.length; i += 3) {
-      const a = idx[i], b = idx[i + 1], c = idx[i + 2];
-      const m0 = marked.has(ek(a, b)), m1 = marked.has(ek(b, c)), m2 = marked.has(ek(c, a));
-      const n = (m0 ? 1 : 0) + (m1 ? 1 : 0) + (m2 ? 1 : 0);
-      if (n === 0) { nIdx.push(a, b, c); continue; }
-      const M0 = m0 ? getMid(a, b) : -1, M1 = m1 ? getMid(b, c) : -1, M2 = m2 ? getMid(c, a) : -1;
-      if (n === 3) { nIdx.push(a, M0, M2, M0, b, M1, M2, M1, c, M0, M1, M2); }
-      else if (n === 1) {
-        if (m0) nIdx.push(a, M0, c, M0, b, c);
-        else if (m1) nIdx.push(b, M1, a, M1, c, a);
-        else nIdx.push(c, M2, b, M2, a, b);
-      } else { // n === 2
-        if (m0 && m1) nIdx.push(M0, b, M1, a, M0, M1, a, M1, c);
-        else if (m1 && m2) nIdx.push(c, M2, M1, a, b, M1, a, M1, M2);
-        else nIdx.push(a, M0, M2, M0, b, c, M0, c, M2);
+    idx = _subdivStep(pos, idx, marked, null);
+  }
+  return { pos, idx };
+}
+
+// Flächengewichtete Vertex-Normalen auf flachen Arrays (ohne BufferGeometry).
+function _flatVertexNormals(pos, idx) {
+  const n = new Float32Array(pos.length);
+  for (let i = 0; i < idx.length; i += 3) {
+    const a = idx[i]*3, b = idx[i+1]*3, c = idx[i+2]*3;
+    const ux = pos[b]-pos[a], uy = pos[b+1]-pos[a+1], uz = pos[b+2]-pos[a+2];
+    const vx = pos[c]-pos[a], vy = pos[c+1]-pos[a+1], vz = pos[c+2]-pos[a+2];
+    const nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;   // Länge = 2·Fläche
+    n[a]+=nx; n[a+1]+=ny; n[a+2]+=nz;
+    n[b]+=nx; n[b+1]+=ny; n[b+2]+=nz;
+    n[c]+=nx; n[c+1]+=ny; n[c+2]+=nz;
+  }
+  for (let i = 0; i < n.length; i += 3) {
+    const l = Math.hypot(n[i], n[i+1], n[i+2]) || 1;
+    n[i] /= l; n[i+1] /= l; n[i+2] /= l;
+  }
+  return n;
+}
+
+// KNICK-VERFEINERUNG (von SindriCADs „crease-aligned lattice" abgeschaut, aber
+// auf unsere triplanare Pipeline übertragen).
+//
+// Das Problem: eine gleichmäßige Unterteilung setzt die Vertices irgendwohin.
+// Die Knicklinien des Musters — der Grat einer Rändel-Raute, die Wabenwand —
+// liegen dann MITTEN in einem Dreieck und werden linear weggemittelt. Gedruckt
+// wird daraus verwaschener Matsch statt scharfer Kanten, egal wie fein man
+// unterteilt.
+//
+// Die Lösung: Kanten teilen, auf denen das Höhenfeld einen Knick hat, und den
+// neuen Vertex GENAU AUF DEN KNICK setzen statt in die Mitte. Nach zwei, drei
+// Durchgängen liegen die Vertices auf den Knicklinien des Musters und die
+// Facetten dazwischen sind wirklich eben.
+//
+// hf(x, y, z, nx, ny, nz) → Höhe 0..1 an einem Punkt mit Flächennormale.
+function _subdivideCrease(pos, idx, hf, passes, maxVerts) {
+  const EPS   = 0.035;  // Abweichung von der Geraden, ab der es ein Knick ist
+  const SCAN  = 9;      // Abtastungen entlang der Kante bei der Knick-Suche
+  const T_MIN = 0.22, T_MAX = 0.78;   // Teilungspunkt begrenzen (Dreiecksqualität)
+  for (let p = 0; p < (passes || 2); p++) {
+    if (pos.length / 3 > (maxVerts || 200000)) break;
+    const nor = _flatVertexNormals(pos, idx);
+    const H = new Float32Array(pos.length / 3);
+    const Hok = new Uint8Array(pos.length / 3);
+    const hAt = i => { if (!Hok[i]) { H[i] = hf(pos[i*3], pos[i*3+1], pos[i*3+2], nor[i*3], nor[i*3+1], nor[i*3+2]); Hok[i] = 1; } return H[i]; };
+    // Höhe an der Stelle t auf der Kante (Normale linear mitgeführt)
+    const hOn = (a, b, t) => {
+      const x = pos[a*3]   + (pos[b*3]   - pos[a*3])   * t;
+      const y = pos[a*3+1] + (pos[b*3+1] - pos[a*3+1]) * t;
+      const z = pos[a*3+2] + (pos[b*3+2] - pos[a*3+2]) * t;
+      let nx = nor[a*3]   + (nor[b*3]   - nor[a*3])   * t;
+      let ny = nor[a*3+1] + (nor[b*3+1] - nor[a*3+1]) * t;
+      let nz = nor[a*3+2] + (nor[b*3+2] - nor[a*3+2]) * t;
+      const l = Math.hypot(nx, ny, nz) || 1;
+      return hf(x, y, z, nx/l, ny/l, nz/l);
+    };
+    const marked = new Set(), tPos = new Map();
+    let any = false;
+    const check = (a, b) => {
+      const k = _ek(a, b);
+      if (tPos.has(k)) { if (tPos.get(k) >= 0) { marked.add(k); } return; }
+      const lo = Math.min(a, b), hi = Math.max(a, b);
+      const ha = hAt(lo), hb = hAt(hi);
+      // Krümmung entlang der Kante abtasten; die stärkste Abweichung von der
+      // Verbindungsgeraden ist der Knick.
+      let bestT = -1, bestD = EPS;
+      for (let s = 1; s < SCAN; s++) {
+        const t = s / SCAN;
+        if (t < T_MIN || t > T_MAX) continue;
+        const d = Math.abs(hOn(lo, hi, t) - (ha + (hb - ha) * t));
+        if (d > bestD) { bestD = d; bestT = t; }
       }
+      tPos.set(k, bestT);
+      if (bestT >= 0) { marked.add(k); any = true; }
+    };
+    for (let i = 0; i < idx.length; i += 3) {
+      check(idx[i], idx[i+1]); check(idx[i+1], idx[i+2]); check(idx[i+2], idx[i]);
     }
-    idx = nIdx;
+    if (!any) break;
+    idx = _subdivStep(pos, idx, marked, (a, b) => {
+      const t = tPos.get(_ek(a, b));
+      return (t >= T_MIN && t <= T_MAX) ? t : 0.5;
+    });
   }
   return { pos, idx };
 }
@@ -5304,6 +5445,53 @@ function _toggleWhere(cur, cat) {
   return arr.length === 4 ? 'alle' : (arr.length === 0 ? 'nichts' : arr.join(','));
 }
 
+// Muster mit echten Knicklinien — nur die profitieren vom kantigen Profil.
+const _SHARP_PATTERNS = new Set(['riffel','diamant','waben','wellen','punkte','pyramide','gitter','ziegel','streifen']);
+
+// Normalen mit Knick-Erhalt: über eine echte Kante (Winkel > Schwelle) wird
+// NICHT gemittelt. Ohne das bügelt computeVertexNormals() die frisch gewonnenen
+// scharfen Musterkanten optisch wieder glatt — das Teil druckt kantig, sieht auf
+// dem Schirm aber rund aus, und genau diese Lüge wollen wir nicht.
+// Ergebnis ist nicht-indiziert (pro Dreiecksecke eine eigene Normale).
+function _creasedNormalsGeo(pos, idx, angleDeg) {
+  const nTri = idx.length / 3;
+  const cosT = Math.cos((angleDeg || 35) * Math.PI / 180);
+  const fN = new Float32Array(nTri * 3);
+  const vFaces = new Array(pos.length / 3);
+  for (let t = 0; t < nTri; t++) {
+    const a = idx[t*3]*3, b = idx[t*3+1]*3, c = idx[t*3+2]*3;
+    const ux = pos[b]-pos[a], uy = pos[b+1]-pos[a+1], uz = pos[b+2]-pos[a+2];
+    const vx = pos[c]-pos[a], vy = pos[c+1]-pos[a+1], vz = pos[c+2]-pos[a+2];
+    let nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+    const l = Math.hypot(nx, ny, nz) || 1;
+    fN[t*3] = nx/l; fN[t*3+1] = ny/l; fN[t*3+2] = nz/l;
+    for (let k = 0; k < 3; k++) {
+      const v = idx[t*3+k];
+      (vFaces[v] || (vFaces[v] = [])).push(t);
+    }
+  }
+  const P = new Float32Array(nTri * 9), N = new Float32Array(nTri * 9);
+  for (let t = 0; t < nTri; t++) {
+    for (let k = 0; k < 3; k++) {
+      const v = idx[t*3+k], o = (t*3+k)*3;
+      P[o] = pos[v*3]; P[o+1] = pos[v*3+1]; P[o+2] = pos[v*3+2];
+      let sx = 0, sy = 0, sz = 0;
+      const fl = vFaces[v];
+      for (let j = 0; j < fl.length; j++) {
+        const f = fl[j];
+        if (fN[t*3]*fN[f*3] + fN[t*3+1]*fN[f*3+1] + fN[t*3+2]*fN[f*3+2] < cosT) continue;  // Knick → nicht mitteln
+        sx += fN[f*3]; sy += fN[f*3+1]; sz += fN[f*3+2];
+      }
+      const l = Math.hypot(sx, sy, sz) || 1;
+      N[o] = sx/l; N[o+1] = sy/l; N[o+2] = sz/l;
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  g.setAttribute('normal',   new THREE.Float32BufferAttribute(N, 3));
+  return g;
+}
+
 // Zentrale Displacement-Pipeline: weld → 3D-Tessellierung → glatte Welt-Normalen
 // → triplanar-Höhe → Verschiebung im WELT-Raum mit ABSOLUTER mm-Höhe → zurück in
 // Local-Space. ampMm = Texturhöhe in mm, unabhängig von Modellgröße/-skalierung.
@@ -5315,9 +5503,16 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
   const M = mesh.matrixWorld;
   const Minv = new THREE.Matrix4().copy(M).invert();
   const ampU = (ampMm || 0) / _MM_PER_UNIT;
+  // Kantig = ebene Facetten + Vertices auf den Knicklinien (Standard für neue
+  // Texturen). Rund = die alte, weiche Fassung; geladene Szenen bekommen sie
+  // beim Öffnen gesetzt, damit sich vorhandene Teile nicht verändern.
+  // Organische Muster (Rauschen, Holz, Organisch, eigenes Bild) haben keine
+  // Knicklinien — sie laufen immer über den runden Weg, sonst würde die
+  // Knick-Verfeinerung überall auslösen und nur Dreiecke verbrennen.
+  const sharp = (mesh.userData.texProfile || 'kantig') === 'kantig' && _SHARP_PATTERNS.has(pattern);
   // Basis-Anteil der Welt-Matrix (Rotation·Skalierung, ohne Translation) → Cache-Key
   const basis = M.elements.slice(0, 12).map(e => Math.round(e * 1e4)).join(',');
-  const sig = pattern + '|' + freq + '|' + orient + '|' + where + '|' + basis;
+  const sig = pattern + '|' + freq + '|' + orient + '|' + where + '|' + (sharp ? 'k' : 'r') + '|' + basis;
 
   let C = mesh.userData._warpCache;
   if (!C || C.sig !== sig) {
@@ -5345,9 +5540,22 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
     //    Ziel-Kantenlänge an der ABSOLUTEN Muster-Wellenlänge ausrichten (ref/freq),
     //    damit auch große Objekte mit vielen Zyklen sauber aufgelöst werden – nicht
     //    an der Objektgröße. Untergrenze worldMax/200 deckelt die Dreieckszahl (FPS).
-    const target = Math.max(worldMax / 200, (ref / Math.max(0.5, freq)) / 3);
+    //    Kantig startet bewusst GRÖBER: das gleichmäßige Raster liefert nur die
+    //    Grundauflösung, die Schärfe kommt danach aus der Knick-Verfeinerung.
+    //    Die setzt ihre Vertices dorthin, wo sie gebraucht werden, statt überall
+    //    — unterm Strich weniger Dreiecke bei schärferem Ergebnis.
+    const target = Math.max(worldMax / 200, (ref / Math.max(0.5, freq)) / 3) * (sharp ? 2.5 : 1);
     const r = _subdivideAdaptive(pos, idx, target);
     pos = r.pos; idx = r.idx;
+    // 3b. Knick-Verfeinerung: Vertices auf die Knicklinien des Musters ziehen,
+    //     damit Grate und Wände wirklich scharf werden statt weggemittelt.
+    //     Nur im kantigen Profil — rund soll unverändert bleiben.
+    if (sharp) {
+      const hf = (x, y, z, nx, ny, nz) =>
+        _triplanarHeight(pattern, (x - ctr.x) / ref, (y - ctr.y) / ref, (z - ctr.z) / ref, nx, ny, nz, freq, orient, true);
+      const rc = _subdivideCrease(pos, idx, hf, 3, 200000);
+      pos = rc.pos; idx = rc.idx;
+    }
     // 4. glatte Welt-Normalen
     const wg = new THREE.BufferGeometry();
     wg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -5383,7 +5591,7 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
       // Amplitude an Grenzen zu AUSGESCHLOSSENEN Flächen weich gegen 0 → kein
       // ausgefranstes Band an der Wand-Boden-/Wand-Dach-Kante (Triplanar-Misch-
       // zone + harte Maskenkante). Innerhalb einer Fläche bleibt fade = 1.
-      baseT[i] = _triplanarHeight(pattern, (x - ctr.x) / ref, (y - ctr.y) / ref, (z - ctr.z) / ref, nx, ny, nz, freq, orient) * fade;
+      baseT[i] = _triplanarHeight(pattern, (x - ctr.x) / ref, (y - ctr.y) / ref, (z - ctr.z) / ref, nx, ny, nz, freq, orient, sharp) * fade;
     }
     wg.dispose();
     C = mesh.userData._warpCache = { sig, wpos, wnor, baseT, mask, idx, count };
@@ -5402,6 +5610,10 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
     v.set(x, y, z).applyMatrix4(Minv);
     out[i * 3] = v.x; out[i * 3 + 1] = v.y; out[i * 3 + 2] = v.z;
   }
+  // Kantiges Profil: Normalen mit Knick-Erhalt (nicht-indiziert), damit die
+  // Facetten auch auf dem Schirm Facetten bleiben. Bei sehr großen Netzen zu
+  // teuer → dann die alte, indizierte Glättung.
+  if (sharp && idx.length / 3 <= 250000) return _creasedNormalsGeo(out, idx, 32);
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
   geo.setIndex(idx.slice());
@@ -5482,11 +5694,13 @@ function _applyDisplacementNow(param, val) {
     if (param === 'invert')    o.userData.displacementInvert    = !!val;
     if (param === 'symmetric') o.userData.displacementSymmetric = !!val;
     if (param === 'orient')    o.userData.texOrient = val;
+    if (param === 'profile')   o.userData.texProfile = val;
     if (param === 'where')     o.userData.texWhere  = _toggleWhere(o.userData.texWhere, val);
     const gp = o.userData.displacementPattern || 'keine', ga = o.userData.displacementAmp || 0.5,
           gf = o.userData.displacementFreq || 4, gi = !!o.userData.displacementInvert, gs = !!o.userData.displacementSymmetric,
-          go = o.userData.texOrient || 'laengs', gw = o.userData.texWhere || 'alle';
-    o.traverse(m => { if (m.isMesh && !m.userData.isEdgeLines && !m.userData.isHole) _dispMesh(m, gp, ga, gf, gi, gs, go, gw); });
+          go = o.userData.texOrient || 'laengs', gw = o.userData.texWhere || 'alle',
+          gpr = o.userData.texProfile || 'kantig';
+    o.traverse(m => { if (m.isMesh && !m.userData.isEdgeLines && !m.userData.isHole) { m.userData.texProfile = gpr; _dispMesh(m, gp, ga, gf, gi, gs, go, gw); } });
     _fpCurType = null; updateFP();
     if (param === 'pattern' && gp !== 'keine') o.traverse(m => { if (m.isMesh && m.material) _startTexPreview(m); });
     return;
@@ -5500,6 +5714,7 @@ function _applyDisplacementNow(param, val) {
   if (param === 'invert')    o.userData.displacementInvert    = !!val;
   if (param === 'symmetric') o.userData.displacementSymmetric = !!val;
   if (param === 'orient')    o.userData.texOrient = val;
+  if (param === 'profile')   o.userData.texProfile = val;
   if (param === 'where')     o.userData.texWhere  = _toggleWhere(o.userData.texWhere, val);
 
   const pat  = o.userData.displacementPattern  || 'keine';
@@ -12547,6 +12762,10 @@ function buildObjectFromData(data) {
   if (data.polyMeasure) obj.userData.polyMeasure = data.polyMeasure;
   if (data.texOrient) obj.userData.texOrient = data.texOrient;
   if (data.texWhere)  obj.userData.texWhere  = data.texWhere;
+  // Alt-Stand ohne Profil-Angabe: die runde Fassung behalten, sonst wuerde sich
+  // ein gespeichertes Teil beim Oeffnen sichtbar veraendern.
+  obj.userData.texProfile = data.texProfile ||
+    ((data.displacementPattern && data.displacementPattern !== 'keine') ? 'rund' : 'kantig');
   if (data.hidden) obj.visible = false;
   if (data._svgPathData) {   // SVG: Pfaddaten/Parameter zurück in userData (für Folge-Gravuren/erneutes Speichern)
     obj.userData._svgPathData   = data._svgPathData;
@@ -12711,6 +12930,7 @@ function objectToData(o) {
     if (o.userData.displacementSymmetric) d.displacementSymmetric = true;
     if (o.userData.texOrient && o.userData.texOrient !== 'laengs') d.texOrient = o.userData.texOrient;
     if (o.userData.texWhere && o.userData.texWhere !== 'alle')     d.texWhere  = o.userData.texWhere;
+    d.texProfile = o.userData.texProfile || 'kantig';
     if (o.isMesh && o.geometry) d.geometry = _cachedGeoJSON(o.geometry);   // Gruppen haben keine eigene Geometrie
   } else if (o.userData.type === 'svg' && o.userData._svgPathData &&
              (!o.userData.displacementPattern || o.userData.displacementPattern === 'keine')) {
@@ -33909,6 +34129,7 @@ function _buildTexPanelContent(o) {
   const sym  = o.userData.displacementSymmetric ? 'checked' : '';
   const ori  = o.userData.texOrient || 'laengs';
   const whr  = o.userData.texWhere  || 'alle';
+  const prf  = o.userData.texProfile || 'kantig';
   const hide = '';   // Einstellungs-Block immer sichtbar, auch ohne gewählte Textur
   const row = (lbl, id, val, oc, u, mn, mx, st) =>
     `<div class="fp-row"><div class="fp-row-top"><span class="fp-lbl">${lbl}</span>` +
@@ -33939,6 +34160,11 @@ function _buildTexPanelContent(o) {
         `<button class="fp-toggle-btn${ori==='laengs'?' on':''}" style="flex:1" onclick="applyDisplacement('orient','laengs')">Längs</button>` +
         `<button class="fp-toggle-btn${ori==='quer'?' on':''}" style="flex:1" onclick="applyDisplacement('orient','quer')">Quer</button>` +
       `</div>` +
+      `<div class="fp-tex-sec" style="margin-top:6px">Kanten</div>` +
+      `<div class="fp-row" style="flex-direction:row;gap:5px">` +
+        `<button class="fp-toggle-btn${prf==='kantig'?' on':''}" data-tprof="kantig" style="flex:1" onclick="applyDisplacement('profile','kantig')" title="Ebene Facetten mit scharfen Graten — die Vertices liegen auf den Knicklinien des Musters, so wie es gedruckt wird">Kantig</button>` +
+        `<button class="fp-toggle-btn${prf==='rund'?' on':''}" data-tprof="rund" style="flex:1" onclick="applyDisplacement('profile','rund')" title="Weiche Sinus-Form (die bisherige Fassung)">Rund</button>` +
+      `</div>` +
       (() => { const _W = _parseWhere(whr); const _all = _W.aussen && _W.oben && _W.innen && _W.unten;
         return `<div class="fp-tex-sec" style="margin-top:6px">Ort <span style="font-weight:400;color:#999">· mehrfach wählbar</span></div>` +
         `<div class="fp-row" style="flex-direction:row;gap:4px;flex-wrap:wrap">` +
@@ -33968,6 +34194,8 @@ function _syncTexPanel(o) {
   };
   setV('tex-disp-amp',  o.userData.displacementAmp  != null ? o.userData.displacementAmp  : 0.5);
   setV('tex-disp-freq', o.userData.displacementFreq != null ? o.userData.displacementFreq : 4);
+  const prof = o.userData.texProfile || 'kantig';
+  panel.querySelectorAll('[data-tprof]').forEach(b => b.classList.toggle('on', b.dataset.tprof === prof));
   const invEl = document.getElementById('tex-disp-inv'); if (invEl) invEl.checked = !!o.userData.displacementInvert;
   const symEl = document.getElementById('tex-disp-sym'); if (symEl) symEl.checked = !!o.userData.displacementSymmetric;
   const extra = document.getElementById('tex-disp-extra'); if (extra) extra.style.display = '';   // immer sichtbar
