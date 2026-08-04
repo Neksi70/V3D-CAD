@@ -3,6 +3,7 @@
 (Allowlist), nicht das ganze Verzeichnis. POST /volme3d-export.stl fuer Slicer."""
 
 import os
+import re
 import sys
 import ssl
 import http.client
@@ -28,6 +29,11 @@ APP_PATHS = ('/volme3d.html',)
 # nie die dist. Fuer lokale Vorschau der WIP-Aenderungen, ohne Testern
 # (die ueber 8765/Funnel die dist sehen) etwas Halbfertiges zu schicken.
 DEV_MODE = False
+
+# Howto-Videos (videos/make.mjs). Eigener Zweig statt ALLOW-Eintraegen, weil
+# pro Generator eine Datei dazukommt.
+VIDEO_DIR = 'videos/out'
+VIDEO_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,63}\.(mp4|vtt|json)$')
 
 # Erlaubte oeffentliche Pfade -> (Datei, Content-Type). Alles andere: 404.
 ALLOW = {
@@ -154,11 +160,74 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_video(self, path):
+        """Howto-Videos aus videos/out/ ausliefern.
+
+        Eigener Zweig statt ALLOW-Eintraegen, weil pro Generator ein Video
+        dazukommt. Der Dateiname wird streng geprueft (kein Pfad-Traversal).
+        Range wird unterstuetzt, sonst kann man im Video nicht springen.
+        """
+        name = path[len('/videos/'):]
+        if not VIDEO_RE.match(name):
+            self.send_error(404)
+            return
+        fname = os.path.join(VIDEO_DIR, name)
+        if not os.path.isfile(fname):
+            self.send_error(404)
+            return
+        ctype = ('video/mp4' if name.endswith('.mp4')
+                 else 'application/json; charset=utf-8' if name.endswith('.json')
+                 else 'text/vtt; charset=utf-8')
+        size = os.path.getsize(fname)
+        start, end = 0, size - 1
+
+        rng = self.headers.get('Range', '')
+        partial = rng.startswith('bytes=')
+        if partial:
+            try:
+                s, _, e = rng[6:].partition('-')
+                start = int(s) if s else 0
+                end = int(e) if e else size - 1
+            except ValueError:
+                partial = False
+            if partial and (start >= size or start > end):
+                self.send_response(416)
+                self.send_header('Content-Range', f'bytes */{size}')
+                self.end_headers()
+                return
+        end = min(end, size - 1)
+        length = end - start + 1
+
+        self.send_response(206 if partial else 200)
+        self._cors()
+        self.send_header('Content-Type', ctype)
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('Content-Length', str(length))
+        if partial:
+            self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+        self.end_headers()
+        with open(fname, 'rb') as f:
+            f.seek(start)
+            rest = length
+            while rest > 0:
+                chunk = f.read(min(262144, rest))
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    return  # Zuschauer hat weggeklickt
+                rest -= len(chunk)
+
     def do_GET(self):
         path = self.path.split('?', 1)[0]
 
         if path == '/occt-health':
             self._proxy_occt('GET')
+            return
+
+        if path.startswith('/videos/'):
+            self._send_video(path)
             return
 
         if path == '/volme3d-export.stl':
