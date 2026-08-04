@@ -2733,6 +2733,24 @@ const firebaseConfig = {
   </div>
 </div>
 
+<!-- Alles abrunden: scharfe Außenkanten beliebiger (auch importierter) Teile brechen -->
+<div id="round-modal" class="g3dm" onclick="if(event.target===this)_closeRoundModal()">
+  <div class="g3box">
+    <div class="g3hdr">⬤ Alles abrunden<span class="vx" onclick="_closeRoundModal()">✕</span></div>
+    <div class="g3body">
+      <div class="g3ctrl" style="min-width:320px">
+        <div class="g3info" id="round-dim" style="margin-bottom:2px"></div>
+        <div class="vrow" title="Radius, den jede scharfe Außenkante bekommt. 0,5–1 mm fühlt sich in der Hand schon deutlich weicher an; für Kinderspielzeug darf es mehr sein."><label>Radius</label> <input type="range" id="round-r" min="0.2" max="3" value="0.8" step="0.1" oninput="document.getElementById('round-rv').textContent=(+this.value).toFixed(1).replace('.',',');_roundInfo()"><span class="vv" id="round-rv">0,8</span><span class="vu">mm</span></div>
+        <div class="g3info" id="round-info"></div>
+        <div class="vrow" style="gap:6px;margin-top:6px">
+          <button class="btn" id="round-go" style="flex:1" onclick="_roundApply()">⬤ Abrunden</button>
+          <button class="btn" onclick="_closeRoundModal()">Abbrechen</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Silikon-Gießform: druckbarer Gießrahmen um ein gewähltes Modell (client-seitig, Manifold-WASM) -->
 <div id="mold-modal" class="g3dm" onclick="if(event.target===this)_closeMoldModal()">
   <div class="g3box">
@@ -8925,27 +8943,34 @@ async function _applyEdgeHandleValue(chamferDist) {
       }
     }
 
-    // ThreeCSG Fallback
-    let current = o;
+    // ThreeCSG Fallback. Beide Wege bauen den Körper aus seinen Grundkörper-
+    // Parametern neu auf — ein IMPORT hat die nicht, dort scheitern sie
+    // zwangsläufig. Das wurde früher trotzdem als Erfolg gemeldet („12 Kanten
+    // abgeschrägt", Geometrie unverändert). Jetzt wird gezählt, was wirklich
+    // geklappt hat, und sonst auf das Werkzeug verwiesen, das es kann.
+    const _noEdgeHint = 'An diesem Teil lassen sich Kanten nicht einzeln bearbeiten — '
+      + 'dafür braucht es die Grundkörper-Maße, ein importiertes Netz hat die nicht. '
+      + 'Nimm „⬤ Alles abrunden" im Eigenschaften-Panel: das bricht alle Außenkanten auf einmal.';
+    let current = o, changed = 0;
     if (isPos) {
       for (const {idx, dynEdge} of edgeData) {
         const next = await _applyCSGChamfer(current, dynEdge, idx, dist);
-        if (next) current = next;
+        if (next) { current = next; changed++; }
       }
       selectObjs([current]);
-      notify(edgeData.length + ' Kante(n) abgeschrägt', 'ok');
+      notify(changed ? changed + ' Kante(n) abgeschrägt' : _noEdgeHint, changed ? 'ok' : 'w');
     } else {
       for (const {idx, dynEdge} of edgeData) {
         const next = await _applyCSGFillet(current, dynEdge, idx, dist);
         if (next === null) {
-          notify('Abrundung nicht möglich für diese Kante', 'w');
+          notify(changed ? 'Abrundung nicht möglich für diese Kante' : _noEdgeHint, 'w');
           selectObjs([current]);
           return;
         }
-        current = next;
+        current = next; changed++;
       }
       selectObjs([current]);
-      notify(edgeData.length + ' Kante(n) abgerundet', 'ok');
+      notify(changed + ' Kante(n) abgerundet', 'ok');
     }
     return;
   }
@@ -14644,6 +14669,135 @@ function _moldSceneMesh(outGeo, name) {
   return mesh;
 }
 
+// ═══ ALLES ABRUNDEN (Kanten brechen an beliebigen Netzen) ═══════════════════
+// Für importierte Teile gibt es keine Kantenliste, an der man einzeln runden
+// könnte — also wird über die FORM gerundet: erst um den Radius schrumpfen,
+// dann wieder um denselben Radius aufblasen. Was dabei herauskommt, ist genau
+// die Menge aller Kugeln vom Radius r, die ins Teil passen: Flächen bleiben, wo
+// sie waren, scharfe Außenkanten werden zum Viertelkreis. (Fachlich: eine
+// Öffnung im morphologischen Sinn, „rolling ball"-Verrundung.)
+// Beides läuft über den Distanzfeld-Offset der Gießform, nur einmal mit
+// negativem und einmal mit positivem Vorzeichen.
+let _moldLastVox = 0;
+let _roundBusy = false;
+
+// Manifold → flache Dreiecksliste (9 Floats je Dreieck), Eingabeformat des Offsets
+function _mfToSoup(mf) {
+  const m = mf.getMesh(), P = m.vertProperties, T = m.triVerts, np = m.numProp;
+  const out = new Float32Array(T.length * 3);
+  for (let i = 0; i < T.length; i++) {
+    const v = T[i] * np;
+    out[i*3] = P[v]; out[i*3+1] = P[v+1]; out[i*3+2] = P[v+2];
+  }
+  return out;
+}
+
+function _openRoundModal() {
+  const o = getFirst();
+  if (!o) { notify('Bitte zuerst das Teil auswählen, dessen Kanten weich werden sollen', 'w'); return; }
+  o.updateMatrixWorld(true);
+  const s = new THREE.Box3().setFromObject(o).getSize(new THREE.Vector3()).multiplyScalar(10);
+  const el = document.getElementById('round-dim');
+  if (el) {
+    const f = v => Math.round(v*10)/10;
+    const maxDim = Math.max(s.x, s.y, s.z);
+    el.innerHTML = 'Teil: <b>' + f(s.x) + ' × ' + f(s.z) + ' × ' + f(s.y) + ' mm</b> (B × T × H)' +
+      (maxDim < 5 ? '<br><span style="color:#d33;font-weight:700">⚠️ Winzig — vermutlich falsche Import-Einheit. Erst auf die echte Größe skalieren!</span>' : '');
+  }
+  _roundInfo();
+  document.getElementById('round-modal').classList.add('show');
+}
+function _closeRoundModal() { document.getElementById('round-modal').classList.remove('show'); }
+
+// Was der Radius bedeutet, in Klartext — inklusive der ehrlichen Warnung, dass
+// Stellen dünner als der doppelte Radius verschwinden (sie überstehen das
+// Schrumpfen nicht). Genau daran scheitert die Methode bei filigranen Teilen.
+function _roundInfo() {
+  const r = +document.getElementById('round-r').value;
+  const el = document.getElementById('round-info');
+  if (el) el.innerHTML = 'Alle scharfen Außenkanten bekommen einen Radius von <b>' + r.toFixed(1).replace('.',',')
+    + ' mm</b>. Flächen und Maße bleiben, wo sie sind.<br>'
+    + '<b>Wichtig:</b> Stellen, die dünner als <b>' + (2*r).toFixed(1).replace('.',',')
+    + ' mm</b> sind, überstehen das nicht — dünne Stege, feine Schrift oder scharfe Spitzen verschwinden dabei. '
+    + 'Bei filigranen Teilen also lieber klein anfangen. Innenecken bleiben scharf.';
+}
+
+async function _roundApply() {
+  if (_roundBusy) return;
+  const o = getFirst();
+  if (!o) { notify('Kein Teil gewählt', 'w'); return; }
+  const r = +document.getElementById('round-r').value;
+  const btn = document.getElementById('round-go');
+  _roundBusy = true; if (btn) { btn.disabled = true; btn.textContent = '… rechnet'; }
+  _closeRoundModal();
+  const mfTemp = [];
+  try {
+    _progressShow('Kanten werden gebrochen…'); _progressSet(3); await _moldTick();
+    const w = await _mfInit();
+    const tris = _moldCollectTris(o);
+    if (!tris.length) throw new Error('keine Geometrie');
+    // Gitter am Radius ausrichten: unter ~2,5 Zellen je Radius sieht die Rundung
+    // eckig aus. Bei großen Teilen bremst das Zellbudget das wieder ein — dann
+    // sagen wir es hinterher, statt still ein grobes Ergebnis abzuliefern.
+    const opts = { voxTarget: r/2.5, maxCells: 16e6 };
+    const shrunk = await _moldDilate3D(w, tris, -r, f => _progressSet(4 + 46*f, 'Teil wird geschrumpft…'), opts);
+    mfTemp.push(shrunk);
+    const voxUsed = _moldLastVox;
+    const soup = _mfToSoup(shrunk);
+    if (!soup.length) {
+      throw new Error('Bei ' + r.toFixed(1).replace('.',',') + ' mm bleibt vom Teil nichts übrig — '
+        + 'es ist überall dünner als ' + (2*r).toFixed(1).replace('.',',') + ' mm. Mit kleinerem Radius versuchen.');
+    }
+    let grown = await _moldDilate3D(w, soup, r, f => _progressSet(50 + 45*f, 'Kanten werden verrundet…'), opts);
+    mfTemp.push(grown);
+    _progressSet(94, 'Netz wird aufgeräumt…'); await _moldTick();
+    // Marching Cubes zerlegt auch ebene Flächen in tausende Dreiecke — ein Würfel
+    // kam so auf 56.000. Toleranz = ein Zehntel der Voxelgröße: das ist die
+    // Größenordnung der Gitter-Welligkeit, also genau das, was weg darf. Gemessen
+    // am 20-mm-Würfel mit 1 mm Radius: 56.232 → 926 Dreiecke, Volumen 33 mm³
+    // (0,4 ‰) daneben, schärfste Kante unverändert bei ~29°. Mit vox·0,35 war die
+    // Rundung dagegen stellenweise wieder platt (90°-Kanten zurück).
+    if (typeof grown.simplify === 'function') {
+      try { const sm = grown.simplify(voxUsed*0.1); mfTemp.push(sm); grown = sm; }
+      catch (e) { console.warn('[round] Vereinfachen übersprungen:', e); }
+    }
+    _progressSet(96, 'Netz wird übernommen…'); await _moldTick();
+    // toNonIndexed(): _creaseNormals steigt bei indizierten Netzen aus (und ließe
+    // das Ergebnis ohne Normalen → im Bild pechschwarz). Gleicher Weg wie Gießform.
+    const geo = _mfToGeo(grown).toNonIndexed();
+    if (!geo.attributes.position.count) throw new Error('leeres Ergebnis');
+    _moldNormals(geo);
+    saveUndo();
+    // Ergebnis liegt in Welt-Koordinaten (mm, Z-up) → wie bei der Gießform als
+    // eigenes Mesh mit fester Transformation einsetzen und das Original ersetzen.
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(o.userData.color || currentColor), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    mesh.scale.setScalar(0.1); mesh.rotation.x = -Math.PI/2; mesh.updateMatrixWorld(true);
+    mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import',
+      name: o.userData.name || 'Teil', color: o.userData.color || currentColor,
+      isHole: !!o.userData.isHole, _origGeo: geo, _roundedMM: r };
+    const i = objects.indexOf(o);
+    if (i >= 0) objects[i] = mesh; else objects.push(mesh);
+    scene.remove(o); scene.add(mesh);
+    if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(mesh);
+    selectObjs([mesh]); updateTree();
+    _progressDone();
+    const coarse = voxUsed > r/1.6;
+    notify('Kanten abgerundet (' + r.toFixed(1).replace('.',',') + ' mm)'
+      + (coarse ? ' — das Teil ist groß im Verhältnis zum Radius, deshalb wirkt die Rundung etwas kantig. Größerer Radius = glatter.' : '')
+      + (o.children && o.children.length ? ' · Unterteile wurden dabei zu EINEM Körper verschmolzen' : ''), coarse ? 'w' : 'ok');
+  } catch (e) {
+    _progressHide();
+    console.error('[round]', e);
+    notify('Abrunden fehlgeschlagen: ' + (e.message || e), 'e');
+  } finally {
+    for (const m of mfTemp) { try { m && m.delete && m.delete(); } catch(_) {} }
+    _roundBusy = false; if (btn) { btn.disabled = false; btn.textContent = '⬤ Abrunden'; }
+  }
+}
+
 // ── 3D-Offset (Dilatation) über signiertes Distanzfeld ──────────────────────
 // Dreiecke → Voxelgitter: exakte Punkt–Dreieck-Distanz im schmalen Band um die
 // Oberfläche, Chamfer-Propagation (26er-Nachbarschaft, ≤ ~3 % Fehler) für den
@@ -14716,8 +14870,14 @@ function _moldSplitBigTris(tris, maxEdge) {
   return out;
 }
 
-async function _moldDilate3D(w, tris, off, prog) {
+// opts.voxTarget = feineres Gitter erzwingen (kleine Radien beim Abrunden),
+// opts.maxCells = abweichendes Zellbudget.
+// NEGATIVES off = Erosion (Schrumpfen). Der Rand ums Modell darf dabei NICHT
+// mitschrumpfen, sonst liegt die Iso-Fläche am Gitterrand und wird angeschnitten
+// → deshalb überall Math.max(0, off) für die Randbreite.
+async function _moldDilate3D(w, tris, off, prog, opts) {
   const P = f => { if (prog) prog(f); };
+  const maxCells = (opts && opts.maxCells) || 12e6;
   let minX=Infinity,minY=Infinity,minZ=Infinity,maxX=-Infinity,maxY=-Infinity,maxZ=-Infinity;
   for (let i = 0; i < tris.length; i += 3) {
     if (tris[i]<minX)minX=tris[i]; if (tris[i]>maxX)maxX=tris[i];
@@ -14727,11 +14887,12 @@ async function _moldDilate3D(w, tris, off, prog) {
   const dxb=maxX-minX, dyb=maxY-minY, dzb=maxZ-minZ;
   // Voxelgröße: Detail-Ziel ~140 Zellen längste Seite, hartes Budget ~12 Mio Zellen
   let vox = Math.max(0.4, Math.max(dxb,dyb,dzb)/140);
-  for (let it = 0; it < 4; it++) {
-    const pad = off + 3*vox;
+  if (opts && opts.voxTarget) vox = Math.max(0.12, Math.min(vox, opts.voxTarget));
+  for (let it = 0; it < 6; it++) {
+    const pad = Math.max(0, off) + 3*vox;
     const cells = ((dxb+2*pad)/vox+2)*((dyb+2*pad)/vox+2)*((dzb+2*pad)/vox+2);
-    if (cells <= 12e6) break;
-    vox *= Math.cbrt(cells/12e6) * 1.02;
+    if (cells <= maxCells) break;
+    vox *= Math.cbrt(cells/maxCells) * 1.02;
   }
   // Band-Arbeitsbudget: große Dreiecke teilen, Gesamtarbeit schätzen; wäre die
   // Band-Phase zu teuer (Minuten-"Hänger"), Gitter automatisch vergröbern.
@@ -14751,7 +14912,8 @@ async function _moldDilate3D(w, tris, off, prog) {
     console.log('[mold-sdf] Band-Arbeit', (work/1e6).toFixed(0)+'M zu hoch → Voxel', vox.toFixed(2), 'mm');
   }
   tris = split;
-  const pad = off + 3*vox;
+  _moldLastVox = vox;                       // fürs Abrunden: wie fein wurde wirklich gerechnet?
+  const pad = Math.max(0, off) + 3*vox;
   const ox=minX-pad, oy=minY-pad, oz=minZ-pad;
   const nx=Math.ceil((dxb+2*pad)/vox)+1, ny=Math.ceil((dyb+2*pad)/vox)+1, nz=Math.ceil((dzb+2*pad)/vox)+1;
   const N = nx*ny*nz;
@@ -14809,16 +14971,30 @@ async function _moldDilate3D(w, tris, off, prog) {
       const v = ((by-ay)*(zc-az)-(bz-az)*(yc-ay))/det;
       if (u < 0 || v < 0 || u+v > 1) continue;
       const r = iz*ny+iy;
-      (rows[r] || (rows[r] = [])).push(ax + u*(bx-ax) + v*(cx-ax));
+      // Neben dem Treffpunkt die Durchstoß-RICHTUNG merken: det ist die
+      // x-Komponente der Dreiecksnormalen, also Eintritt (+1) oder Austritt (−1).
+      (rows[r] || (rows[r] = [])).push(ax + u*(bx-ax) + v*(cx-ax), det > 0 ? 1 : -1);
     }
   }
   const inside = new Uint8Array(N);
+  // Innen = Windungszahl ≠ 0 statt „jede zweite Kreuzung". Reine Parität kippt bei
+  // Modellen aus mehreren ineinandersteckenden Hüllen (Steg im Klotz, zusammen-
+  // gesteckte Bauteile): der überlappende Bereich zählte als AUSSEN und wurde zum
+  // Hohlraum. Die Windungszahl zählt ihn korrekt als Material — und ein komplett
+  // falsch herum gewickeltes Netz (Windung −1) bleibt ebenfalls massiv.
+  const ord = [];
   for (let iz=0; iz<nz; iz++) for (let iy=0; iy<ny; iy++) {
-    const xs = rows[iz*ny+iy]; if (!xs || xs.length < 2) continue;
-    xs.sort((a,b)=>a-b);
+    const xs = rows[iz*ny+iy]; if (!xs || xs.length < 4) continue;
+    const nc = xs.length/2;
+    ord.length = nc; for (let k=0;k<nc;k++) ord[k]=k;
+    ord.sort((a,b)=>xs[a*2]-xs[b*2]);
     const base = (iz*ny+iy)*nx;
-    for (let k = 0; k+1 < xs.length; k += 2) {
-      let i0 = Math.max(0, Math.ceil((xs[k]-ox)/vox-0.5)), i1 = Math.min(nx-1, Math.floor((xs[k+1]-ox)/vox-0.5));
+    let wind = 0;
+    for (let k = 0; k+1 < nc; k++) {
+      wind += xs[ord[k]*2+1];
+      if (wind === 0) continue;                     // hier liegt Luft
+      let i0 = Math.max(0, Math.ceil((xs[ord[k]*2]-ox)/vox-0.5));
+      let i1 = Math.min(nx-1, Math.floor((xs[ord[k+1]*2]-ox)/vox-0.5));
       for (let ix=i0; ix<=i1; ix++) inside[base+ix] = 1;
     }
   }
@@ -30888,8 +31064,12 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.70';
+const VOLME3D_VERSION = '1.15.71';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.71', date:'2026-08-04', spots:[{id:'round-all',sel:'[onclick="_openRoundModal()"]'}], changes:[
+    ['⬤','NEU: „⬤ Alles abrunden" — bricht ALLE scharfen Außenkanten eines Teils auf einmal, auch bei IMPORTIERTEN Modellen. Genau da ging es bisher nicht: „⬡ Kanten bearbeiten" braucht die Grundkörper-Maße (Würfel, Zylinder …), und die hat ein importiertes Netz nicht — es meldete sogar „Kanten abgeschrägt", ohne irgendetwas zu ändern. Das neue Werkzeug arbeitet ganz anders: Es schrumpft das Teil um den Radius und bläst es wieder auf. Übrig bleibt genau das, was eine Kugel von diesem Radius im Teil erreichen kann — Flächen und Maße bleiben stehen, scharfe Kanten werden zum Viertelkreis. Für die Haptik in der Hand und für Kinderspielzeug macht das den Unterschied. Zu finden im Eigenschaften-Panel bei ausgewähltem Teil, Radius 0,2–3 mm. Ein 20-mm-Würfel mit 1 mm Radius braucht keine zwei Sekunden. WICHTIG: Stellen, die dünner als der doppelte Radius sind, überstehen das Schrumpfen nicht — bei filigranen Teilen klein anfangen. Wird nichts übrig bleiben, sagt V3D CAD das vorher, statt ein kaputtes Teil abzuliefern. Angeregt von Ralf.'],
+    ['🧩','Modelle aus mehreren ineinandersteckenden Teilen werden beim Abrunden und beim Gießform-Bauen richtig als Material erkannt. Bisher entschied ein Zählverfahren („jede zweite Kreuzung ist innen"), was innen liegt — bei zusammengesteckten Bauteilen zählte der überlappende Bereich damit als AUSSEN und wurde zum Hohlraum mitten im Körper. Jetzt wird richtig gezählt, in welche Richtung die Flächen durchstoßen werden; ein zusammengestecktes Modell bleibt massiv. Nebeneffekt: Auch ein komplett falsch herum gewickeltes Import-Netz bleibt jetzt ein Vollkörper statt sich in Luft aufzulösen.'],
+  ]},
   { version:'1.15.70', date:'2026-08-03', spots:[{id:'topper-round',sel:'#tt-row-round'}], changes:[
     ['🎂','Der Tortentopper hat jetzt WEICHE KANTEN — neuer Regler „Kanten runden" (Vorgabe 0,4 mm). Bisher kam jeder Topper mit der harten Druckkante aus dem Generator; wer sie loswerden wollte, musste den Umweg über „⬡ Kanten bearbeiten" gehen — und der steht nach dem Vereinen gar nicht mehr zur Verfügung, weil ein Schriftzug zu groß zum Verschmelzen ist und stattdessen gruppiert wird. Die Rundung sitzt deshalb jetzt direkt im Generator, sie steckt gleich in der Geometrie. Gerundet wird normal nur OBEN: die Unterseite bleibt flach und hält damit auf der Druckplatte — für filigrane Schreibschriften ist das entscheidend. Wer den Topper rundum weich haben will, hakt „Auch die Unterkante runden" an (dann besser mit Brim drucken). Das Wichtigste dabei: An haarfeinen Stellen — den Anstrichen einer Schreibschrift, den Spitzen der Auslaufbögen — nimmt sich die Rundung von allein zurück, statt den Strich zuzuschnüren. V3D CAD misst dafür an jedem Punkt der Kontur, wie viel Material dort überhaupt steht. Die Stege werden mitgerundet, die Steckpins bleiben absichtlich scharf (mehr Halt in der Torte). Aus dem Testerkreis angeregt.'],
   ]},
@@ -32866,6 +33046,8 @@ function _fpBuildRows(type, o) {
     : '';
   // Silikon-Gießform: druckbarer Gießrahmen um das gewählte Modell (jeder Typ)
   const moldBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_openMoldModal()">🫗 Silikon-Gießform</button></div>`;
+  // Alles abrunden: Kanten brechen ohne Kantenliste — auch für Importe (jeder Typ)
+  const roundBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_openRoundModal()" title="Bricht ALLE scharfen Außenkanten auf einmal — auch bei importierten Modellen, wo es keine einzeln anklickbaren Kanten gibt. Gut für die Haptik und für Kinderspielzeug.">⬤ Alles abrunden</button></div>`;
 
   // Early return only for generic/OCCT types that have no dedicated switch case and no texture support
   const _ownPanelTypes = ['box','cylinder','tube','cone','pyramid','torus','sphere','wedge','star','import',
@@ -33237,7 +33419,7 @@ function _fpBuildRows(type, o) {
              `<div class="fp-lbl" style="display:block;margin-bottom:3px;color:var(--dim);font-size:10px">Ober-/Unterkante</div>` +
              row('Radius',      'fp-sk-fil', o.userData.fillet||0,  "_skApplyBevel(this.value, 0)", 'mm', 0, skMax, 0.1) +
              row('Abschrägung', 'fp-sk-cha', o.userData.chamfer||0, "_skApplyBevel(0, this.value)", 'mm', 0, skMax, 0.1) +
-             '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn + moldBtn +
+             '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn + roundBtn + moldBtn +
              _dispRows();
     }
     case 'loft':
@@ -33271,7 +33453,7 @@ function _fpBuildRows(type, o) {
              propLock() +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
-             '<div class="fp-sep"></div>' + edgeBtn + shellBtn + hollowLidBtn + moldBtn +
+             '<div class="fp-sep"></div>' + edgeBtn + shellBtn + hollowLidBtn + roundBtn + moldBtn +
              _dispRows();
   }
 }
@@ -35872,6 +36054,7 @@ const CMDK = [
   {i:'🎁',g:'Generator',t:'Bild-Box',k:'bild box hingebox klappbox motiv silhouette mehrfarbig image geschenk',run:()=>_openIbxModal()},
   {i:'💡',g:'Generator',t:'Lampe',k:'lampe lampenschirm leuchte licht led pop lamp shade schirm bambu',run:()=>_openLampModal()},
   {i:'🪴',g:'Generator',t:'Organic Planter',k:'planter übertopf blumentopf pflanztopf topf pflanze organic organisch sculpted keramik ton untersetzer',run:()=>_openOplModal()},
+  {i:'⬤',g:'Bearbeiten',t:'Alles abrunden',k:'abrunden rundung kanten brechen weich haptik fillet radius import stl spielzeug',run:()=>_openRoundModal()},
   {i:'🫗',g:'Generator',t:'Silikon-Gießform',k:'silikon gießform gussform mold form casting negativform silikonform tray eiswürfel schokolade',run:()=>_openMoldModal()},
   {i:'🍪',g:'Generator',t:'Keksausstecher',k:'keks ausstecher plätzchen cookie cutter backen förmchen',run:()=>_ckOpen()},
   {i:'🧰',g:'Generator',t:'Werkzeug-Einleger',k:'werkzeug einleger organizer gridfinity shadowboard schaum inlay einsatz tasche foto sortierung koffer',run:()=>_wzOpen()},
