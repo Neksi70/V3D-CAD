@@ -74,6 +74,9 @@ ALLOW = {
     '/volme3d-print-helper-LIESMICH.txt': ('volme3d-print-helper-LIESMICH.txt', 'text/plain; charset=utf-8'),
     '/V3D-Remote.exe':                    ('V3D-Remote.exe', 'application/octet-stream'),
     '/V3D-Remote.zip':                    ('V3D-Remote.zip', 'application/zip'),
+    # Briefing fuer Claude Cowork (Code-Signing). Nicht verlinkt, unrateharer Pfad;
+    # persoenliche Daten stehen bewusst nicht drin. Nach Abschluss wieder rausnehmen.
+    '/cowork-WeqZghcEcheD.md':            ('cowork-WeqZghcEcheD.md', 'text/plain; charset=utf-8'),
 }
 
 
