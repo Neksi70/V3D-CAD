@@ -2907,6 +2907,15 @@ Patrick</textarea>
           <button class="btn" style="padding:3px 9px;font-size:15px" onclick="_ttInsertSym('★')" title="Stern einfügen">★</button>
           <button class="btn" style="padding:3px 9px;font-size:15px" onclick="_ttInsertSym('✿')" title="Blume einfügen">✿</button>
         </div>
+        <div id="tt-row-amp" style="display:none">
+          <span class="vsec" style="margin-top:4px" title="Verschnörkelte Schreibschriften setzen das &amp; als große Schleife, die sich quer über die Namen legt — schön gemeint, aber oft nicht mehr als Zeichen zu erkennen. Hier lässt sich das Verbindungszeichen tauschen, ohne die Schrift zu wechseln.">Das &amp; zwischen den Namen</span>
+          <div class="vbg" id="tt-amp-bg">
+            <button class="vtb on" data-amp="font" onclick="_ttSetAmp('font')" title="Das &amp; der gewählten Schrift — bei Schreibschriften der große Schnörkel">&amp; der Schrift</button>
+            <button class="vtb" data-amp="plain" onclick="_ttSetAmp('plain')" title="Ein schlichtes &amp; aus einer ruhigen Serifenschrift, klar lesbar neben der Schreibschrift">schlichtes &amp;</button>
+            <button class="vtb" data-amp="heart" onclick="_ttSetAmp('heart')" title="Herz statt &amp; — der Klassiker beim Hochzeits-Topper">♥</button>
+            <button class="vtb" data-amp="und" onclick="_ttSetAmp('und')" title="Das Wort „und" in derselben Schrift">„und"</button>
+          </div>
+        </div>
         <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:2px" title="Großes Umriss-Herz rechts am Schriftzug, innen ein Querbalken mit dem Datum — wie bei den klassischen Hochzeits-Toppern. Wird automatisch mit dem Schriftzug verschweißt."><input type="checkbox" id="tt-dheart" onchange="_ttPreview()"> Datums-Herz rechts anhängen</label>
         <div class="vrow" id="tt-row-date" style="display:none"><label>Datum</label> <input id="tt-date" type="text" maxlength="14" oninput="_ttPreview()" placeholder="10.10.2025" value="10.10.2025" style="flex:1;font-family:var(--font);font-size:13px;border:1.5px solid var(--border);border-radius:9px;padding:5px 8px"></div>
         <div class="vrow"><label>Schrift</label> <select id="tt-font" onchange="_ttPreview()" style="flex:1;font-family:var(--font);font-size:12px;border:1.5px solid var(--border);border-radius:9px;padding:5px 8px;background:#fff;cursor:pointer">
@@ -28807,6 +28816,21 @@ function _npPrevRender(ctx, cv, items){
 // i-Punkt!) wird eine eigene Zusammenhangskomponente; frei schwebende Teile werden
 // automatisch über kürzeste Stege (greedy MST auf den abgetasteten Umrissen) mit dem
 // Rest verschweißt. Unten spitz zulaufende Steckpins zum Einstecken in die Torte.
+let _ttAmp = 'font';                 // wie das & gesetzt wird: font|plain|heart|und
+function _ttSetAmp(v){
+  _ttAmp = v;
+  document.querySelectorAll('#tt-amp-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.amp === v));
+  _ttPreview();
+}
+// „♥" und „und" sind reine Textersetzungen — das Herz kann der Symbol-Weg schon,
+// „und" ist normaler Text. Nur „schlicht" braucht eine zweite Schrift (s. _ttLayoutParts).
+function _ttAmpText(o){
+  if(!o.txt.includes('&')) return o.txt;
+  if(o.amp === 'heart') return o.txt.replace(/&/g, '♥');
+  if(o.amp === 'und')   return o.txt.replace(/ *& */g, ' und ');
+  return o.txt;
+}
+
 function _ttOpen(){ document.getElementById('topper-modal').classList.add('show'); _ttMotifSyncUI(); _ttPreview(); }
 function _ttClose(){ document.getElementById('topper-modal').classList.remove('show'); }
 
@@ -29029,9 +29053,32 @@ function _ttInPoly(pts, x, y){
 // den klassischen Toppern). Liefert Teile: {shape, dx, dy, pts} — shape unverschoben,
 // dx/dy = Versatz, pts = abgetasteter AUSSEN-Umriss bereits in Endposition
 // (für Zusammenhangs-Analyse, Stege und Pin-Ansatzpunkte).
-function _ttLayoutParts(font, txt, sizeU, overlap, lineStepU){
+// opt.ampFont: Schrift NUR für das &-Zeichen (s. _ttAmpText). Der Rest des
+// Schriftzugs bleibt in der gewählten Schrift.
+// Höhe eines Zeichens in Einheiten — für den Größenabgleich zwischen zwei Schriften
+function _ttGlyphH(font, ch, sizeU){
+  try {
+    const shapes = font.generateShapes(ch, sizeU);
+    let lo = Infinity, hi = -Infinity;
+    for(const sh of shapes) for(const p of sh.getPoints(12)){ if(p.y<lo)lo=p.y; if(p.y>hi)hi=p.y; }
+    return hi > lo ? hi-lo : 0;
+  } catch(e){ return 0; }
+}
+function _ttLayoutParts(font, txt, sizeU, overlap, lineStepU, opt){
   const res = (font.data && font.data.resolution) || 1000;
   const scale = sizeU / res;
+  const ampFont = opt && opt.ampFont;
+  // Ersatz-& auf die Größe bringen, die das & der HAUPTSCHRIFT hätte — dort soll
+  // es ja sitzen. Bei gleicher Nenngröße fallen Schriften sehr unterschiedlich
+  // aus: das Gentilis-& maß 30,1 mm, wo Great Vibes 22,5 mm zeichnet. Die
+  // Versalhöhe taugt als Maßstab nicht, verschnörkelte Großbuchstaben sind
+  // deutlich höher als das eigene &.
+  let ampSize = sizeU;
+  if(ampFont){
+    const refH = _ttGlyphH(font, '&', sizeU) || _ttGlyphH(font, 'H', sizeU);
+    const ampH = _ttGlyphH(ampFont, '&', sizeU);
+    if(refH > 0 && ampH > 0) ampSize = sizeU * (refH/ampH);
+  }
   const lines = txt.split('\n').map(s=>s.trim()).filter(s=>s.length);
   const parts = [];
   lines.forEach((line, li)=>{
@@ -29042,9 +29089,12 @@ function _ttLayoutParts(font, txt, sizeU, overlap, lineStepU){
       let shapes = null, adv;
       if(sym){ shapes = sym.shapes; adv = sym.adv; }
       else {
-        const g = font.data && font.data.glyphs && (font.data.glyphs[ch] || font.data.glyphs['?']);
-        adv = (g ? g.ha : res*0.5) * scale;
-        if(ch !== ' '){ try{ shapes = font.generateShapes(ch, sizeU); }catch(e){} }
+        const isAmp = (ch === '&' && ampFont);
+        const f = isAmp ? ampFont : font, fSize = isAmp ? ampSize : sizeU;
+        const fRes = (f.data && f.data.resolution) || res;
+        const g = f.data && f.data.glyphs && (f.data.glyphs[ch] || f.data.glyphs['?']);
+        adv = (g ? g.ha : fRes*0.5) * (fSize / fRes);
+        if(ch !== ' '){ try{ shapes = f.generateShapes(ch, fSize); }catch(e){} }
       }
       if(shapes){
         // key = Zeichen-Kennung: alle Konturen EINES Zeichens teilen sie sich, damit
@@ -29587,7 +29637,7 @@ function _ttGeo(font, o, split){
   const webU   = Math.max(0.08, o.webMM/10);
   const overlap= Math.min(0.35, Math.max(0, (o.overlap||0)/100));
   const lineStepU = sizeU * Math.max(0.3, (o.lineGap||85)/100);
-  const parts  = _ttLayoutParts(font, o.txt, sizeU, overlap, lineStepU);
+  const parts  = _ttLayoutParts(font, _ttAmpText(o), sizeU, overlap, lineStepU, o);
   if(!parts.length && !_ttMotif) return null;
   if(parts.length && o.dheart && o.dateFont) parts.push(..._ttDateHeartParts(parts, o.dateFont, o.dateTxt, sizeU));
   // Motiv zuletzt: es richtet sich nach allem, was schon steht (Text + Datums-Herz)
@@ -29676,15 +29726,21 @@ function _ttOpts(){
     motifGap:  +document.getElementById('tt-motifgap').value,
     motifPos:  _ttMotifPos,
     explode:   document.getElementById('tt-explode').checked,
+    amp:       _ttAmp,
   };
 }
 
 // Haupt- und ggf. Datums-Schrift laden, dann cb(font) — die Datums-Schrift landet in o.dateFont.
 function _ttWithFonts(o, cb){
   _npLoadFont(o.fontKey, font=>{
-    if(o.dheart && o.dateTxt){
-      _npLoadFont('helvetiker_bold', df=>{ o.dateFont = df; cb(font); });
-    } else { cb(font); }
+    const next = () => {
+      // Schlichtes & aus einer Serifenschrift — ruhig genug, um neben einer
+      // Schreibschrift lesbar zu bleiben, ohne wie ein Fremdkörper zu wirken.
+      if(o.amp === 'plain' && o.txt.includes('&')) _npLoadFont('gentilis_bold', af=>{ o.ampFont = af; cb(font); });
+      else cb(font);
+    };
+    if(o.dheart && o.dateTxt) _npLoadFont('helvetiker_bold', df=>{ o.dateFont = df; next(); });
+    else next();
   });
 }
 
@@ -29700,6 +29756,7 @@ function _ttPreview(){
   row('tt-row-pinw',    o.nPins);
   row('tt-row-date',    o.dheart);
   row('tt-row-linegap', o.txt.includes('\n'));
+  row('tt-row-amp',     o.txt.includes('&'));
   if(_ttPT) clearTimeout(_ttPT);
   _ttPT = setTimeout(()=>{ _ttPT=null; _ttPreviewNow(); }, 140);
 }
@@ -31814,8 +31871,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.72';
+const VOLME3D_VERSION = '1.15.73';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.73', date:'2026-08-04', spots:[{id:'topper-amp',sel:'#tt-amp-bg'}], changes:[
+    ['🎂','Tortentopper: Das <b>&amp;</b> zwischen zwei Namen lässt sich jetzt tauschen. Verschnörkelte Schreibschriften wie Great Vibes setzen es als große Schleife, die sich quer über beide Namen legt — schön gemeint, aber oft nicht mehr als Zeichen zu erkennen. Sobald ein &amp; im Text steht, erscheint deshalb eine neue Auswahl: <b>&amp; der Schrift</b> (wie bisher), <b>schlichtes &amp;</b> (ruhige Serifenschrift, klar lesbar), <b>♥</b> oder das Wort <b>„und"</b>. Die Schrift für die Namen bleibt dabei unverändert. Das schlichte &amp; wird automatisch auf die Größe gebracht, die das &amp; der gewählten Schrift hätte — sonst thront es über den Namen, weil Schriften bei gleicher Nenngröße sehr unterschiedlich groß ausfallen (gemessen: 30,1 mm gegen 22,5 mm). Gemeldet von Ralf.'],
+  ]},
   { version:'1.15.72', date:'2026-08-04', changes:[
     ['⬤','„⬤ Alles abrunden" nimmt Modelle jetzt auseinander, rundet jedes Teil einzeln und setzt sie wieder zusammen — genau so, wie Ralf es vorgeschlagen hat. Der Grund: Ein Schriftzug besteht aus ineinandergesteckten Buchstaben, und das Verfahren arbeitet über ein Abstandsraster, das aus ALLEN Dreiecken entsteht — auch aus den Flächen, die im Überlappungsbereich versteckt im Material liegen. Die wirkten wie echte Oberflächen: Das Schrumpfen schnitt mitten durchs Material, die Buchstaben schnürten sich an den Nahtstellen ein, und dünne Anstriche verschwanden ganz. Nachgemessen an drei überlappenden Klötzen mit einer 0,6 mm dünnen Fahne: am Stück gerechnet blieb ein zerteiltes Gebilde ohne die Fahne übrig, einzeln gerundet bleibt alles heil und die Nahtstellen bleiben scharf und voll. Und was zu fein zum Runden ist, bleibt jetzt einfach unverändert stehen, statt zu verschwinden — V3D CAD sagt hinterher, wie viele Teile das waren. Damit sind auch kleine Radien wie 0,2 mm an filigranen Toppern brauchbar.'],
   ]},
