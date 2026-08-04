@@ -131,6 +131,58 @@ const res = await page.evaluate(async () => {
   out.twoShell = { vol:+volMM3(twoRound).toFixed(0), ...topo(twoRound) };
   out.twoShellSoll = 20*10*20 + 6*6*6;      // Klotz + herausragender Teil des Stegs
 
+  // ── 1c) Ralfs Fall: ineinandergesteckte „Buchstaben" mit dünner Fahne ────
+  // Drei Klötze, die sich überlappen, plus ein hauchdünner Anstrich (0,6 mm).
+  // Einzeln gerundet muss ALLES erhalten bleiben (der dünne bleibt unverändert),
+  // am Stück gerundet fällt der dünne weg — genau der Unterschied, um den es geht.
+  const letters = () => {
+    const gs = [];
+    for (const x of [-0.6, 0, 0.6]) { const g = new THREE.BoxGeometry(0.8,0.8,0.4).toNonIndexed(); g.translate(x,0.4,0); gs.push(g); }
+    const thin = new THREE.BoxGeometry(0.9,0.06,0.3).toNonIndexed(); thin.translate(1.2,0.4,0); gs.push(thin);  // 0,6 mm dünn
+    let n=0; gs.forEach(g=>n+=g.attributes.position.count/3);
+    const buf = new ArrayBuffer(84+n*50), dv = new DataView(buf); dv.setUint32(80,n,true);
+    let t=0;
+    for (const g of gs){ const p=g.attributes.position.array;
+      for (let i=0;i<p.length/9;i++,t++){ const o3=84+t*50;
+        for (let k=0;k<3;k++){ dv.setFloat32(o3+12+k*12,   p[i*9+k*3]*10,   true);
+                               dv.setFloat32(o3+12+k*12+4, p[i*9+k*3+1]*10, true);
+                               dv.setFloat32(o3+12+k*12+8, p[i*9+k*3+2]*10, true); } } }
+    _addImportedGeo(parseSTL(buf), 'buchstaben.stl', false, buf, false);
+    return objects[objects.length-1];
+  };
+  const bboxMM = m => { m.updateMatrixWorld(true);
+    const b = new THREE.Box3().setFromObject(m); return [+(b.max.x*10).toFixed(1), +(b.min.x*10).toFixed(1)]; };
+  for (const o2 of objects.slice()) scene.remove(o2);
+  objects.length = 0;
+  const L1 = letters(); await new Promise(r2=>setTimeout(r2,400));
+  out.lettersBefore = { vol:+volMM3(L1).toFixed(0), xmax:bboxMM(L1)[0] };
+  out.notes = [];
+  const Lr = await run(L1, 0.4);
+  out.lettersParts = { vol:+volMM3(Lr).toFixed(0), xmax:bboxMM(Lr)[0], ...topo(Lr), notes:out.notes.slice() };
+
+  // Gegenprobe auf dem alten Weg (alles in EINEM Distanzfeld). Den gibt es als
+  // Bedienoption nicht mehr, weil die im Material versteckten Flächen der
+  // Überlappungen mitgeschnitten werden — hier belegt, damit das dokumentiert ist.
+  for (const o2 of objects.slice()) scene.remove(o2);
+  objects.length = 0;
+  const L2 = letters(); await new Promise(r2=>setTimeout(r2,400));
+  {
+    const w = await _mfInit();
+    const whole = _moldCollectTris(L2);
+    const mf = await _roundOnePart(w, whole, 0.4, { voxTarget: 0.4/2.5, maxCells: 16e6 }, ()=>{});
+    if (!mf) out.lettersWhole = { vol:0, xmax:0 };
+    else {
+      const g = _mfToGeo(mf);
+      g.computeBoundingBox();
+      const p = g.attributes.position.array, idx = g.index.array; let V=0;
+      for (let t=0;t<idx.length/3;t++){ const i0=idx[t*3],i1=idx[t*3+1],i2=idx[t*3+2];
+        const ax=p[i0*3],ay=p[i0*3+1],az=p[i0*3+2],bx=p[i1*3],by=p[i1*3+1],bz=p[i1*3+2],cx=p[i2*3],cy=p[i2*3+1],cz=p[i2*3+2];
+        V += (ax*(by*cz-bz*cy)-ay*(bx*cz-bz*cx)+az*(bx*cy-by*cx))/6; }
+      out.lettersWhole = { vol:+Math.abs(V).toFixed(0), xmax:+g.boundingBox.max.x.toFixed(1) };   // schon in mm
+      mf.delete();
+    }
+  }
+
   // ── 2) Bremse: 1 mm dünne Platte, 1,5 mm Radius → muss abgelehnt werden ──
   for (const o2 of objects.slice()) { scene.remove(o2); }
   objects.length = 0;
@@ -171,6 +223,15 @@ ok(res.twoShell && Math.abs(res.twoShell.vol - res.twoShellSoll) < res.twoShellS
 // Gemessen: schon vor dem Vereinfachen 5 solcher Stellen, also kein Folgefehler.
 ok(res.twoShell && res.twoShell.open === 0, 'Zwei-Hüllen-Ergebnis hat offene Kanten: ' + (res.twoShell||{}).open);
 ok(res.twoShell && res.twoShell.nonman <= 8, 'Auffällig viele Selbstberührungen: ' + (res.twoShell||{}).nonman);
+// Ralfs Fall: einzeln gerundet bleibt die dünne Fahne erhalten (Ausdehnung in x),
+// am Stück gerundet fällt sie weg. Genau dafür ist die Option da.
+const LP = res.lettersParts || {}, LW = res.lettersWhole || {}, LB = res.lettersBefore || {};
+ok(Math.abs(LP.xmax - LB.xmax) < 0.6, 'Teile einzeln: dünne Fahne verschwunden (x-Ende ' + LP.xmax + ' statt ' + LB.xmax + ')');
+ok(LW.xmax < LP.xmax - 1, 'Gegenprobe am Stück: dort MUSS die dünne Fahne wegfallen (x-Ende ' + LW.xmax + ')');
+ok(LP.vol > LW.vol, 'Teile einzeln muss mehr Material behalten als am Stück (' + LP.vol + ' vs ' + LW.vol + ')');
+ok(LP.open === 0, 'Buchstaben-Verbund hat offene Kanten: ' + LP.open);
+ok((LP.notes||[]).some(n => /Teile einzeln gerundet/.test(n)), 'Meldung nennt die Teile nicht: ' + JSON.stringify(LP.notes));
+ok((LP.notes||[]).some(n => /zu fein|unverändert/.test(n)), 'Meldung verschweigt das übersprungene dünne Teil: ' + JSON.stringify(LP.notes));
 ok(errs.length === 0, 'Page-Errors: ' + errs.join(' | '));
 
 console.log(fails.length ? '❌ FAIL\n' + fails.map(f=>' - '+f).join('\n') : '✅ alle Prüfungen bestanden');

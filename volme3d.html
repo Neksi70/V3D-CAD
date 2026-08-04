@@ -14692,6 +14692,69 @@ function _mfToSoup(mf) {
   return out;
 }
 
+// Zusammenhängende Hüllen trennen (Union-Find über gemeinsame Eckpunkte).
+// Ein Topper besteht aus ineinandergesteckten, aber NICHT verschweißten
+// Buchstaben — als Ganzes gerundet frisst das Schrumpfen die dünnen Überlapp-
+// Stellen weg und die Buchstaben schnüren sich an den Nahtstellen ein. Jedes
+// Teil für sich gerundet und danach wieder zusammengesetzt bleibt dagegen heil,
+// und die Nahtstellen bleiben scharf (dort will niemand eine Rundung).
+function _roundSplitShells(tris, maxParts) {
+  const nTri = tris.length / 9;
+  const par = new Int32Array(nTri); for (let i=0;i<nTri;i++) par[i] = i;
+  const find = a => { while (par[a] !== a) { par[a] = par[par[a]]; a = par[a]; } return a; };
+  const uni = (a,b) => { a = find(a); b = find(b); if (a !== b) par[b] = a; };
+  const seen = new Map();
+  for (let t = 0; t < nTri; t++) {
+    for (let k = 0; k < 3; k++) {
+      const o9 = t*9 + k*3;
+      const key = Math.round(tris[o9]*1e3)+'_'+Math.round(tris[o9+1]*1e3)+'_'+Math.round(tris[o9+2]*1e3);
+      const prev = seen.get(key);
+      if (prev === undefined) seen.set(key, t); else uni(prev, t);
+    }
+  }
+  const groups = new Map();
+  for (let t = 0; t < nTri; t++) {
+    const r = find(t);
+    let g = groups.get(r); if (!g) groups.set(r, g = []);
+    g.push(t);
+  }
+  if (groups.size < 2 || groups.size > (maxParts||60)) return null;   // nichts zu trennen / zu kleinteilig
+  const out = [];
+  for (const g of groups.values()) {
+    if (g.length < 4) continue;                    // Splitter überspringen
+    const a = new Float32Array(g.length*9);
+    g.forEach((t,i) => a.set(tris.subarray(t*9, t*9+9), i*9));
+    out.push(a);
+  }
+  return out.length > 1 ? out : null;
+}
+
+// Volumen einer Dreiecksliste (mm³) — zum Vergleich vorher/nachher
+function _roundSoupVolume(tris) {
+  let V = 0;
+  for (let i = 0; i < tris.length; i += 9) {
+    const ax=tris[i],ay=tris[i+1],az=tris[i+2], bx=tris[i+3],by=tris[i+4],bz=tris[i+5], cx=tris[i+6],cy=tris[i+7],cz=tris[i+8];
+    V += ax*(by*cz-bz*cy) - ay*(bx*cz-bz*cx) + az*(bx*cy-by*cx);
+  }
+  return Math.abs(V)/6;
+}
+
+// Ein einzelnes Teil runden: schrumpfen, aufblasen. Liefert das Manifold oder
+// null, wenn dabei zu viel verloren ginge (dann bleibt das Teil unangetastet —
+// besser ein scharfkantiger Buchstabe als ein verschwundener).
+async function _roundOnePart(w, tris, r, opts, prog) {
+  const shrunk = await _moldDilate3D(w, tris, -r, f => prog(f*0.5), opts);
+  const soup = _mfToSoup(shrunk);
+  try { shrunk.delete(); } catch(_) {}
+  if (!soup.length) return null;
+  const grown = await _moldDilate3D(w, soup, r, f => prog(0.5 + f*0.5), opts);
+  const volBefore = _roundSoupVolume(tris), volAfter = _roundSoupVolume(_mfToSoup(grown));
+  // Runden nimmt nur die Kantenzwickel weg (Promille bis wenige Prozent). Fehlt
+  // deutlich mehr, sind Details untergegangen → Teil lieber im Original lassen.
+  if (volBefore > 0 && volAfter < volBefore*0.75) { try { grown.delete(); } catch(_) {} return null; }
+  return grown;
+}
+
 function _openRoundModal() {
   const o = getFirst();
   if (!o) { notify('Bitte zuerst das Teil auswählen, dessen Kanten weich werden sollen', 'w'); return; }
@@ -14716,10 +14779,12 @@ function _roundInfo() {
   const r = +document.getElementById('round-r').value;
   const el = document.getElementById('round-info');
   if (el) el.innerHTML = 'Alle scharfen Außenkanten bekommen einen Radius von <b>' + r.toFixed(1).replace('.',',')
-    + ' mm</b>. Flächen und Maße bleiben, wo sie sind.<br>'
-    + '<b>Wichtig:</b> Stellen, die dünner als <b>' + (2*r).toFixed(1).replace('.',',')
-    + ' mm</b> sind, überstehen das nicht — dünne Stege, feine Schrift oder scharfe Spitzen verschwinden dabei. '
-    + 'Bei filigranen Teilen also lieber klein anfangen. Innenecken bleiben scharf.';
+    + ' mm</b>. Flächen und Maße bleiben, wo sie sind; Innenecken und Nahtstellen zwischen '
+    + 'ineinandersteckenden Teilen bleiben scharf und voll.<br>'
+    + '<b>Wichtig:</b> Was dünner als <b>' + (2*r).toFixed(1).replace('.',',')
+    + ' mm</b> ist, lässt sich nicht runden — dünne Stege, feine Schrift, scharfe Spitzen. '
+    + 'Solche Teile bleiben unverändert stehen, statt zu verschwinden; bei filigranen Modellen '
+    + 'trotzdem klein anfangen.';
 }
 
 async function _roundApply() {
@@ -14740,17 +14805,41 @@ async function _roundApply() {
     // eckig aus. Bei großen Teilen bremst das Zellbudget das wieder ein — dann
     // sagen wir es hinterher, statt still ein grobes Ergebnis abzuliefern.
     const opts = { voxTarget: r/2.5, maxCells: 16e6 };
-    const shrunk = await _moldDilate3D(w, tris, -r, f => _progressSet(4 + 46*f, 'Teil wird geschrumpft…'), opts);
-    mfTemp.push(shrunk);
-    const voxUsed = _moldLastVox;
-    const soup = _mfToSoup(shrunk);
-    if (!soup.length) {
-      throw new Error('Bei ' + r.toFixed(1).replace('.',',') + ' mm bleibt vom Teil nichts übrig — '
-        + 'es ist überall dünner als ' + (2*r).toFixed(1).replace('.',',') + ' mm. Mit kleinerem Radius versuchen.');
+    // Ineinandergesteckte Teile (Topper-Buchstaben!) IMMER einzeln behandeln.
+    // Am Stück gerechnet wäre das Ergebnis falsch: Das Distanzfeld entsteht aus
+    // der rohen Dreiecksliste, also wirken auch die im Material VERSTECKTEN
+    // Flächen der Überlappungen wie echte Oberflächen — das Schrumpfen schneidet
+    // dort mitten durchs Material und der Schriftzug zerfällt in Scheiben.
+    // (Nachgemessen an drei überlappenden Klötzen: am Stück blieb ein zerteiltes
+    // Gebilde ohne den dünnen Anstrich, einzeln gerundet blieb alles heil.)
+    const parts = _roundSplitShells(tris, 200);
+    const list = parts || [tris];
+    if (parts) { _progressSet(4, list.length + ' Teile werden einzeln gerundet…'); await _moldTick(); }
+
+    const mfs = [], kept = [];
+    let voxUsed = 0;
+    for (let i = 0; i < list.length; i++) {
+      const base = 4 + 90*i/list.length, span = 90/list.length;
+      const mf = await _roundOnePart(w, list[i], r, opts,
+        f => _progressSet(base + span*f, list.length > 1 ? 'Teil ' + (i+1) + ' von ' + list.length + '…' : 'Kanten werden verrundet…'));
+      voxUsed = Math.max(voxUsed, _moldLastVox);
+      if (mf) { mfs.push(mf); mfTemp.push(mf); } else kept.push(list[i]);
     }
-    let grown = await _moldDilate3D(w, soup, r, f => _progressSet(50 + 45*f, 'Kanten werden verrundet…'), opts);
-    mfTemp.push(grown);
-    _progressSet(94, 'Netz wird aufgeräumt…'); await _moldTick();
+    if (!mfs.length) {
+      throw new Error('Bei ' + r.toFixed(1).replace('.',',') + ' mm bliebe zu wenig übrig — '
+        + 'das Teil ist überall dünner als ' + (2*r).toFixed(1).replace('.',',') + ' mm. Mit kleinerem Radius versuchen.');
+    }
+    // Unveränderte Teile mit in den Verbund nehmen, damit nichts verschwindet.
+    for (const k of kept) {
+      try { const m = _mfFromSoup(w, k); mfs.push(m); mfTemp.push(m); }
+      catch (e) { console.warn('[round] Teil nicht verbundfähig, bleibt außen vor:', e); }
+    }
+    _progressSet(94, 'Teile werden zusammengesetzt…'); await _moldTick();
+    let grown = mfs[0];
+    if (mfs.length > 1) {
+      try { const u = w.Manifold.union(mfs); mfTemp.push(u); grown = u; }
+      catch (e) { console.warn('[round] Vereinen fehlgeschlagen, Teile bleiben einzeln:', e); }
+    }
     // Marching Cubes zerlegt auch ebene Flächen in tausende Dreiecke — ein Würfel
     // kam so auf 56.000. Toleranz = ein Zehntel der Voxelgröße: das ist die
     // Größenordnung der Gitter-Welligkeit, also genau das, was weg darf. Gemessen
@@ -14786,8 +14875,11 @@ async function _roundApply() {
     _progressDone();
     const coarse = voxUsed > r/1.6;
     notify('Kanten abgerundet (' + r.toFixed(1).replace('.',',') + ' mm)'
-      + (coarse ? ' — das Teil ist groß im Verhältnis zum Radius, deshalb wirkt die Rundung etwas kantig. Größerer Radius = glatter.' : '')
-      + (o.children && o.children.length ? ' · Unterteile wurden dabei zu EINEM Körper verschmolzen' : ''), coarse ? 'w' : 'ok');
+      + (list.length > 1 ? ' · ' + list.length + ' Teile einzeln gerundet und wieder zusammengesetzt' : '')
+      + (kept.length ? ' · ' + kept.length + ' Teil' + (kept.length>1?'e sind':' ist') + ' zu fein dafür und blieb'
+          + (kept.length>1?'en':'') + ' unverändert' : '')
+      + (coarse ? ' — das Teil ist groß im Verhältnis zum Radius, deshalb wirkt die Rundung etwas kantig. Größerer Radius = glatter.' : ''),
+      (coarse || kept.length) ? 'w' : 'ok');
   } catch (e) {
     _progressHide();
     console.error('[round]', e);
@@ -31064,8 +31156,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.71';
+const VOLME3D_VERSION = '1.15.72';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.72', date:'2026-08-04', changes:[
+    ['⬤','„⬤ Alles abrunden" nimmt Modelle jetzt auseinander, rundet jedes Teil einzeln und setzt sie wieder zusammen — genau so, wie Ralf es vorgeschlagen hat. Der Grund: Ein Schriftzug besteht aus ineinandergesteckten Buchstaben, und das Verfahren arbeitet über ein Abstandsraster, das aus ALLEN Dreiecken entsteht — auch aus den Flächen, die im Überlappungsbereich versteckt im Material liegen. Die wirkten wie echte Oberflächen: Das Schrumpfen schnitt mitten durchs Material, die Buchstaben schnürten sich an den Nahtstellen ein, und dünne Anstriche verschwanden ganz. Nachgemessen an drei überlappenden Klötzen mit einer 0,6 mm dünnen Fahne: am Stück gerechnet blieb ein zerteiltes Gebilde ohne die Fahne übrig, einzeln gerundet bleibt alles heil und die Nahtstellen bleiben scharf und voll. Und was zu fein zum Runden ist, bleibt jetzt einfach unverändert stehen, statt zu verschwinden — V3D CAD sagt hinterher, wie viele Teile das waren. Damit sind auch kleine Radien wie 0,2 mm an filigranen Toppern brauchbar.'],
+  ]},
   { version:'1.15.71', date:'2026-08-04', spots:[{id:'round-all',sel:'[onclick="_openRoundModal()"]'}], changes:[
     ['⬤','NEU: „⬤ Alles abrunden" — bricht ALLE scharfen Außenkanten eines Teils auf einmal, auch bei IMPORTIERTEN Modellen. Genau da ging es bisher nicht: „⬡ Kanten bearbeiten" braucht die Grundkörper-Maße (Würfel, Zylinder …), und die hat ein importiertes Netz nicht — es meldete sogar „Kanten abgeschrägt", ohne irgendetwas zu ändern. Das neue Werkzeug arbeitet ganz anders: Es schrumpft das Teil um den Radius und bläst es wieder auf. Übrig bleibt genau das, was eine Kugel von diesem Radius im Teil erreichen kann — Flächen und Maße bleiben stehen, scharfe Kanten werden zum Viertelkreis. Für die Haptik in der Hand und für Kinderspielzeug macht das den Unterschied. Zu finden im Eigenschaften-Panel bei ausgewähltem Teil, Radius 0,2–3 mm. Ein 20-mm-Würfel mit 1 mm Radius braucht keine zwei Sekunden. WICHTIG: Stellen, die dünner als der doppelte Radius sind, überstehen das Schrumpfen nicht — bei filigranen Teilen klein anfangen. Wird nichts übrig bleiben, sagt V3D CAD das vorher, statt ein kaputtes Teil abzuliefern. Angeregt von Ralf.'],
     ['🧩','Modelle aus mehreren ineinandersteckenden Teilen werden beim Abrunden und beim Gießform-Bauen richtig als Material erkannt. Bisher entschied ein Zählverfahren („jede zweite Kreuzung ist innen"), was innen liegt — bei zusammengesteckten Bauteilen zählte der überlappende Bereich damit als AUSSEN und wurde zum Hohlraum mitten im Körper. Jetzt wird richtig gezählt, in welche Richtung die Flächen durchstoßen werden; ein zusammengestecktes Modell bleibt massiv. Nebeneffekt: Auch ein komplett falsch herum gewickeltes Import-Netz bleibt jetzt ein Vollkörper statt sich in Luft aufzulösen.'],
