@@ -6487,6 +6487,18 @@ function enterEdgeMode(quiet = false) {
     _edgeCircles.renderOrder = 999;
     _edgeCircles.userData._edgeMap = circEdgeMap;
     o.add(_edgeCircles);
+  } else if (_brepOk(o) && o.userData._brepEdges.length) {
+    // Import MIT echter Form: die Kanten kommen aus der B-Rep statt aus dem
+    // Dreiecksnetz. Sie liegen in STEP-eigenen Koordinaten → hier erst mit der
+    // aktuellen Weltmatrix in die Szene rechnen, damit ein zwischenzeitlich
+    // verschobenes oder skaliertes Teil passende Kanten bekommt.
+    o.updateMatrixWorld(true);
+    const _mw = o.matrixWorld, _pv = new THREE.Vector3();
+    const toW = p => _pv.set(p[0], p[1], p[2]).applyMatrix4(_mw).toArray();
+    o.userData._dynamicEdges = o.userData._brepEdges.map(e => ({
+      worldA: toW(e.a), worldB: toW(e.b), brep: true, circle: !!e.circle
+    }));
+    edges = o.userData._dynamicEdges;
   } else {
     // Kreiskanten (Lochränder) erkennen → als wählbare Kanten anbieten (Shapr3D-artig).
     let _rims = [];
@@ -8862,30 +8874,58 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz) {
              a: [(ep[0][0]+1)*sx, (ep[0][1]+1)*sy, (ep[0][2]+1)*sz],
              b: [(ep[1][0]+1)*sx, (ep[1][1]+1)*sy, (ep[1][2]+1)*sz] };
   };
+  // Operationen auf die Kanten der aktuellen Form auflösen — und dabei die
+  // Referenz KANONISIEREN: gespeichert wird danach der Fingerabdruck der Kante,
+  // die tatsächlich getroffen wurde, nicht der angeklickte Punkt.
+  // Zwei Gründe:
+  //   • Beim nächsten Mal trifft der exakte Vergleich sofort (Kosten 0).
+  //   • Wer nach dem Runden die Kante der Rundungsfläche anklickt, meint die
+  //     ursprüngliche Kante. Vorher wurde daraus eine zweite Operation auf
+  //     derselben Kante — die Rundung wurde doppelt angesetzt statt geändert.
+  //     Jetzt erkennen wir das und die neuere Angabe gewinnt.
+  const _resolve = (shape, list, tol) => {
+    const res = [];
+    for (const op of list) {
+      const { want, a, b } = _q(op);
+      const ms = _findAllOCCTEdges(oc, shape, a[0], a[1], a[2], b[0], b[1], b[2], tol, want, diagLen);
+      if (!ms.length) return null;
+      res.push({ op, edges: ms, fp: _efpOfEdge(oc, ms[0]) });
+    }
+    // Doppelte auf dieselbe Kante zusammenfassen — die zuletzt angelegte gewinnt
+    const keep = res.filter((r, i) =>
+      !res.some((s, j) => j > i && r.fp && s.fp && _efpCost(r.fp, s.fp, diagLen) < _EFP.SAME));
+    for (const r of keep) if (r.fp) {                 // Referenz festschreiben
+      r.op.fp = r.fp;
+      r.op.dim = { sx, sy, sz };
+      r.op.wa = r.fp.a; r.op.wb = r.fp.b;
+    }
+    return keep;
+  };
   let curShape = baseShape;
   let opOk = true;
+  let lebende = ops.filter(op => op.type === 'shell');
   if (chamferOps.length > 0) {
-    const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
-    for (const op of chamferOps) {
-      const { want, a, b } = _q(op);
-      const ms = _findAllOCCTEdges(oc, curShape, a[0], a[1], a[2], b[0], b[1], b[2], 0.01, want, diagLen);
-      if (!ms.length) { opOk = false; break; }
-      for (const e of ms) ch.Add_2(op.dist, e);
+    const r = _resolve(curShape, chamferOps, 0.01);
+    if (!r) opOk = false;
+    else {
+      lebende = lebende.concat(r.map(x => x.op));
+      const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
+      for (const x of r) for (const e of x.edges) ch.Add_2(x.op.dist, e);
+      ch.Build(); opOk = ch.IsDone(); if (opOk) curShape = ch.Shape();
+      ch.delete();
     }
-    if (opOk) { ch.Build(); opOk = ch.IsDone(); if (opOk) curShape = ch.Shape(); }
-    ch.delete();
   }
   if (filletOps.length > 0 && opOk) {
     const tol = chamferOps.length > 0 ? Math.max(...chamferOps.map(o => o.dist)) + 0.1 : 0.01;
-    const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
-    for (const op of filletOps) {
-      const { want, a, b } = _q(op);
-      const ms = _findAllOCCTEdges(oc, curShape, a[0], a[1], a[2], b[0], b[1], b[2], tol, want, diagLen);
-      if (!ms.length) { opOk = false; break; }
-      for (const e of ms) fi.Add_2(op.dist, e);
+    const r = _resolve(curShape, filletOps, tol);
+    if (!r) opOk = false;
+    else {
+      lebende = lebende.concat(r.map(x => x.op));
+      const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
+      for (const x of r) for (const e of x.edges) fi.Add_2(x.op.dist, e);
+      fi.Build(); opOk = fi.IsDone(); if (opOk) curShape = fi.Shape();
+      fi.delete();
     }
-    if (opOk) { fi.Build(); opOk = fi.IsDone(); if (opOk) curShape = fi.Shape(); }
-    fi.delete();
   }
   // ─── Gehäuse / Shell: Solid aushöhlen (nach Fillet/Chamfer) ──────────
   const shellOp = ops.find(op => op.type === 'shell');
@@ -8925,10 +8965,153 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz) {
       facesToRemove.delete();
     } catch (e) { console.warn('Shell (MakeThickSolid) fehlgeschlagen:', e); opOk = false; }
   }
-  return { shape: curShape, opOk };
+  // ops = die überlebenden Operationen (Doppelte auf dieselbe Kante entfernt,
+  // Referenzen auf die tatsächlich getroffene Kante festgeschrieben)
+  return { shape: curShape, opOk, ops: opOk ? lebende : ops };
 }
 
-function _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, sides, topRatio, flip) {
+// ═══ ECHTE B-REP AUS DEM STEP-IMPORT ═══════════════════════════════════════
+// Bisher endete ein STEP-Import sofort als Dreiecksnetz: lesen, tessellieren,
+// STL — die echte Geometrie war weg. Danach ließen sich einzelne Kanten nicht
+// mehr bearbeiten (nur „Alles abrunden"), und Bohrungsränder mussten aus dem
+// Netz erraten werden (_rimDetectCircles).
+// Jetzt bleiben die STEP-Bytes am Objekt (nur im Speicher, wie _origStlBuf).
+// Daraus wird bei Bedarf die echte Form neu gelesen — damit greifen der OCCT-
+// Weg und die Kanten-Fingerabdrücke auch an importierten Teilen.
+//
+// _brep = { step, uid, m: Weltmatrix beim ersten Zugriff, off0: Welt-Ursprung
+//           damals, dim0: Halbmaße damals }
+// Die Grundform lebt — wie bei den Grundkörpern — im Ursprung; geoOff setzt sie
+// in die Welt. Spätere gleichmäßige Skalierung wird über dim0 nachgezogen.
+const _MAX_BREP_BYTES = 12 * 1024 * 1024;   // größere STEPs nicht im Speicher halten
+let _brepCache = null;                      // { key, shape } — ein Platz reicht
+let _brepUid = 0;
+
+function _trsfFromMatrix4(oc, m) {
+  const e = m.elements;
+  const sx = Math.hypot(e[0], e[1], e[2]), sy = Math.hypot(e[4], e[5], e[6]), sz = Math.hypot(e[8], e[9], e[10]);
+  // gp_Trsf kann nur GLEICHMÄSSIGE Skalierung — ungleichmäßig würde aus Kreisen
+  // Ellipsen machen und die Fillet-Rechnung reihenweise scheitern lassen.
+  if (sx < 1e-9 || Math.abs(sx - sy) > 1e-4 * sx || Math.abs(sx - sz) > 1e-4 * sx) return null;
+  const t = new oc.gp_Trsf_1();
+  t.SetValues(e[0], e[4], e[8],  e[12],
+              e[1], e[5], e[9],  e[13],
+              e[2], e[6], e[10], e[14]);
+  return t;
+}
+
+function _brepReadStep(oc, bytes) {
+  oc.FS.writeFile('/brep.step', bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+  const reader = new oc.STEPControl_Reader_1();
+  const rst = reader.ReadFile('/brep.step');
+  try { oc.FS.unlink('/brep.step'); } catch (_) {}
+  if ((rst.value !== undefined ? rst.value : rst) !== 1) { reader.delete(); return null; }
+  if (!reader.TransferRoots()) { reader.delete(); return null; }
+  const shape = reader.OneShape();
+  reader.delete();
+  return shape;
+}
+
+// Grundform aus den STEP-Bytes, in der aktuellen Größe und im Ursprung.
+function _brepBaseShape(oc, brep, sx, sy, sz) {
+  const key = brep.uid + '|' + sx.toFixed(5) + '|' + sy.toFixed(5) + '|' + sz.toFixed(5);
+  if (_brepCache && _brepCache.key === key) return _brepCache.shape;
+  const raw = _brepReadStep(oc, brep.step);
+  if (!raw) return null;
+  const f = (brep.dim0 && brep.dim0.sx > 1e-9) ? sx / brep.dim0.sx : 1;
+  const full = new THREE.Matrix4()
+    .multiply(new THREE.Matrix4().makeScale(f, f, f))
+    .multiply(new THREE.Matrix4().makeTranslation(-brep.off0[0], -brep.off0[1], -brep.off0[2]))
+    .multiply(new THREE.Matrix4().fromArray(brep.m));
+  const trsf = _trsfFromMatrix4(oc, full);
+  if (!trsf) return null;
+  const tr = new oc.BRepBuilderAPI_Transform_2(raw, trsf, true);
+  const shape = tr.Shape();
+  tr.delete(); trsf.delete();
+  _brepCache = { key, shape };
+  return shape;
+}
+
+// Kanten der echten Form — in STEP-EIGENEN Koordinaten. Die Welt-Lage kommt
+// erst beim Betreten des Kanten-Modus dazu, damit ein zwischenzeitlich
+// verschobenes oder skaliertes Teil nicht mit veralteten Kanten dasteht.
+const _BREP_MAX_EDGES = 600;
+function _brepEdgesOf(oc, bytes) {
+  const shape = _brepReadStep(oc, bytes);
+  if (!shape) return null;
+  const r = _brepEdgeList(oc, shape, null);
+  try { shape.delete(); } catch (e) {}
+  return r;
+}
+
+// Kantenliste einer fertigen Form. off = Verschiebung in die Welt (die
+// Grundform lebt im Ursprung) oder null.
+function _brepEdgeList(oc, shape, off) {
+  const seen = new Set(), out = [];
+  const sh = off ? (p => [p[0]+off.x, p[1]+off.y, p[2]+off.z]) : (p => p);
+  const exp = new oc.TopExp_Explorer_2(shape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+  // Notbremse: OCCT rechnet synchron — eine Baugruppe mit zehntausenden Kanten
+  // würde die Seite sonst sekundenlang einfrieren.
+  let besucht = 0;
+  while (exp.More() && besucht++ < 40000) {
+    const edge = oc.TopoDS.Edge_1(exp.Current());
+    const fp = _efpOfEdge(oc, edge);
+    exp.Next();
+    if (!fp) { try { edge.delete(); } catch (e) {} continue; }
+    // Jede Kante wird pro angrenzender Fläche einmal besucht → einmal reicht
+    const k = fp.mid.map(v => Math.round(v * 1e3)).join('_') + '|' + Math.round(fp.len * 1e3);
+    if (seen.has(k)) { try { edge.delete(); } catch (e) {} continue; }
+    seen.add(k);
+    if (fp.kind === 'circle') out.push({ a: sh(fp.cen), b: sh(fp.cen), len: fp.len, circle: true });
+    else if (fp.len > 1e-6) out.push({ a: sh(fp.a), b: sh(fp.b), len: fp.len });
+    try { edge.delete(); } catch (e) {}
+  }
+  exp.delete();
+  // Bei sehr vielen Kanten die längsten zeigen — sonst wird der Klick-Wald
+  // unbedienbar und das Picking zäh.
+  out.sort((p, q) => q.len - p.len);
+  return { edges: out.slice(0, _BREP_MAX_EDGES), gesamt: out.length };
+}
+
+// Die gespeicherte B-Rep gilt nur, solange das Netz dazu passt. Radierer,
+// Modellieren, Drücken/Ziehen und die Bool-Operationen bauen die Geometrie neu
+// — danach zeigt sie auf einen Stand, den es nicht mehr gibt. Der Vergleich der
+// Geometrie-Referenz fängt jeden dieser Wege ab, auch die, die nichts von der
+// B-Rep wissen.
+function _brepOk(o) {
+  const ud = o && o.userData;
+  if (!ud || !ud._brepStep || !ud._brepEdges) return false;
+  if (ud._brepGeo && ud._brepGeo !== o.geometry) {
+    delete ud._brepStep; delete ud._brepEdges; delete ud._brep;
+    delete ud._brepGeo;  delete ud._brepEdgesTotal;
+    return false;
+  }
+  return true;
+}
+
+// Nach dem Import einmal im Hintergrund die echten Kanten ziehen.
+async function _brepPrepare(o) {
+  if (!o || !o.userData || !o.userData._brepStep || o.userData._brepEdges) return;
+  try {
+    const oc = await _loadOCCT();
+    const r = _brepEdgesOf(oc, o.userData._brepStep);
+    if (!r || !r.edges.length) { o.userData._brepStep = null; return; }
+    o.userData._brepEdges = r.edges;
+    o.userData._brepEdgesTotal = r.gesamt;
+    o.userData._brepGeo = o.geometry;
+    if (_edgeMode && _edgeObj === o) { exitEdgeMode(); enterEdgeMode(true); }
+  } catch (e) {
+    console.warn('[brep] Kanten konnten nicht gelesen werden:', e);
+    o.userData._brepStep = null;
+  }
+}
+
+function _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, sides, topRatio, flip, brep) {
+  if (occtShape === 'brep') {
+    const s = brep && _brepBaseShape(oc, brep, sx, sy, sz);
+    if (!s) throw new Error('Die echte Form des Imports ist nicht mehr verfügbar');
+    return s;
+  }
   if (occtShape === 'polygon') {
     // Vieleck-Prisma: regelmäßiges N-Eck (wie THREE.CylinderGeometry(1,1,2,N)),
     // Querschnitt bei y=0, Extrusion +Y um 2*sy. Vertex-Winkel wie Three: x=r·sin, z=r·cos.
@@ -9002,7 +9185,7 @@ async function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
     const wa = toOcct(dynEdge.worldA), wb = toOcct(dynEdge.worldB);
     const allOps = _mergeOCCTOps(prevOps, [{ idx: edgeIndex, dist: chamferDist, type: 'chamfer', wa, wb }], { sx, sy, sz });
     const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, null, obj.userData.coneTop||0, obj.userData.coneFlip);
-    const { shape: finalShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
+    const { shape: finalShape, opOk, ops: liveOps } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
     if (!opOk) return null;
     const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
     const mat = new THREE.MeshStandardMaterial({
@@ -9012,7 +9195,7 @@ async function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
     const result = new THREE.Mesh(geo, mat);
     result.castShadow = true; result.receiveShadow = true;
     result.userData = { ...obj.userData, type: 'custom', shapeType: 'custom', occtShape,
-      _occtParams: { sx, sy, sz, geoOff, ops: allOps } };
+      _occtParams: { sx, sy, sz, geoOff, ops: liveOps || allOps } };
     delete result.userData.wasBox;
     delete result.userData.edgeBevels;
     delete result.userData._dynamicEdges;
@@ -9048,7 +9231,7 @@ async function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
     const wa = toOcct(dynEdge.worldA), wb = toOcct(dynEdge.worldB);
     const allOps = _mergeOCCTOps(prevOps, [{ idx: edgeIndex, dist: filletR, type: 'fillet', wa, wb }], { sx, sy, sz });
     const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, null, obj.userData.coneTop||0, obj.userData.coneFlip);
-    const { shape: finalShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
+    const { shape: finalShape, opOk, ops: liveOps } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
     if (!opOk) return null;
     const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
     const mat = new THREE.MeshStandardMaterial({
@@ -9058,7 +9241,7 @@ async function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
     const result = new THREE.Mesh(geo, mat);
     result.castShadow = true; result.receiveShadow = true;
     result.userData = { ...obj.userData, type: 'custom', shapeType: 'custom', occtShape,
-      _occtParams: { sx, sy, sz, geoOff, ops: allOps } };
+      _occtParams: { sx, sy, sz, geoOff, ops: liveOps || allOps } };
     delete result.userData.wasBox;
     delete result.userData.edgeBevels;
     delete result.userData._dynamicEdges;
@@ -9223,7 +9406,7 @@ async function _applyCSGShell(obj, faces, thickness) {
     };
     const allOps = _mergeOCCTOps(prevOps, [shellOp], { sx, sy, sz });
     const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, polySides, obj.userData.coneTop||0, obj.userData.coneFlip);
-    const { shape: finalShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
+    const { shape: finalShape, opOk, ops: liveOps } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
     if (!opOk) return null;
     const geo = _occtShapeToThreeGeo(oc, finalShape, geoOff);
     const mat = new THREE.MeshStandardMaterial({
@@ -9233,7 +9416,7 @@ async function _applyCSGShell(obj, faces, thickness) {
     const result = new THREE.Mesh(geo, mat);
     result.castShadow = true; result.receiveShadow = true;
     result.userData = { ...obj.userData, type: 'custom', shapeType: 'custom', occtShape,
-      _occtParams: { sx, sy, sz, geoOff, ops: allOps } };
+      _occtParams: { sx, sy, sz, geoOff, ops: liveOps || allOps } };
     delete result.userData.wasBox;
     delete result.userData.edgeBevels;
     delete result.userData._dynamicEdges;
@@ -9303,10 +9486,13 @@ async function _applyEdgeHandleValue(chamferDist) {
     return;
   }
 
+  // Import MIT echter Form (STEP): über die B-Rep bearbeiten statt über das
+  // Dreiecksnetz — dann greifen Fillet/Chamfer wie an einem Grundkörper.
+  const _hasBrep = _brepOk(o);
   // 'sketch' ist kein OCCT-Primitiv (lässt sich nicht aus Parametern neu bauen) →
   // nicht über den OCCT/ThreeCSG-Pfad, sondern über den lokalen BufferGeometry-
   // Chamfer (unten) bearbeiten.
-  const occtShape = o.userData.occtShape ||
+  const occtShape = o.userData.occtShape || (_hasBrep ? 'brep' : null) ||
     (o.userData.shapeType === 'sketch' ? null : o.userData.shapeType) || null;
 
   if (occtShape) {
@@ -9320,7 +9506,9 @@ async function _applyEdgeHandleValue(chamferDist) {
     deselect();
     exitEdgeMode();
 
-    const _occtQOk = o.userData._occtParams ||
+    // Der B-Rep-Weg bringt die Drehung selbst in die Form ein (gp_Trsf aus der
+    // Weltmatrix) — die Quaternion-Sperre gilt für ihn nicht.
+    const _occtQOk = o.userData._occtParams || _hasBrep ||
       Math.abs(o.quaternion.x) + Math.abs(o.quaternion.y) + Math.abs(o.quaternion.z) < 0.01;
     if (_occtQOk) {
       try {
@@ -9331,6 +9519,19 @@ async function _applyEdgeHandleValue(chamferDist) {
         if (o.userData._occtParams) {
           ({ sx, sy, sz, geoOff, ops: prevOps } = o.userData._occtParams);
           toOcct = w => [w[0]-geoOff.x, w[1]-geoOff.y, w[2]-geoOff.z];
+        } else if (occtShape === 'brep') {
+          // Maße und Ursprung kommen aus der Welt-Bounding-Box, nicht aus
+          // o.scale — ein Import trägt seine Größe in der Geometrie.
+          o.updateMatrixWorld(true);
+          const bb = getMeshBox(o), bs = bb.getSize(new THREE.Vector3());
+          sx = bs.x/2; sy = bs.y/2; sz = bs.z/2;
+          geoOff = { x: bb.min.x, y: bb.min.y, z: bb.min.z };
+          toOcct = w => [w[0]-geoOff.x, w[1]-geoOff.y, w[2]-geoOff.z];
+          prevOps = [];
+          o.userData._brep = { step: o.userData._brepStep, uid: ++_brepUid,
+                               m: o.matrixWorld.toArray(),
+                               off0: [geoOff.x, geoOff.y, geoOff.z],
+                               dim0: { sx, sy, sz } };
         } else {
           sx = o.scale.x; sy = o.scale.y; sz = o.scale.z;
           if (occtShape === 'cylinder' || occtShape === 'tube' || occtShape === 'cone') {
@@ -9348,8 +9549,8 @@ async function _applyEdgeHandleValue(chamferDist) {
         }));
         const allOps = _mergeOCCTOps(prevOps, newOps, { sx, sy, sz });
 
-        const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, null, o.userData.coneTop||0, o.userData.coneFlip);
-        const { shape: curShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
+        const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, null, o.userData.coneTop||0, o.userData.coneFlip, o.userData._brep);
+        const { shape: curShape, opOk, ops: liveOps } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
 
         if (opOk) {
           const geo = _occtShapeToThreeGeo(oc, curShape, geoOff);
@@ -9360,10 +9561,22 @@ async function _applyEdgeHandleValue(chamferDist) {
           const result = new THREE.Mesh(geo, mat);
           result.castShadow = true; result.receiveShadow = true;
           result.userData = { ...o.userData, type: 'custom', shapeType: 'custom', occtShape,
-            _occtParams: { sx, sy, sz, geoOff, ops: allOps } };
+            _occtParams: { sx, sy, sz, geoOff, ops: liveOps || allOps } };
           delete result.userData.wasBox;
           delete result.userData.edgeBevels;
           delete result.userData._dynamicEdges;
+          // B-Rep-Import: die wählbaren Kanten aus dem NEUEN Stand ziehen —
+          // die gerundete Kante ist weg, dafür sind die Rundungskanten da.
+          // Das Ergebnis-Mesh hat keine eigene Transformation mehr, seine
+          // Geometrie steht schon in Weltkoordinaten → geoOff mit einrechnen.
+          if (occtShape === 'brep') {
+            try {
+              const rl = _brepEdgeList(oc, curShape, geoOff);
+              result.userData._brepEdges = rl.edges;
+              result.userData._brepEdgesTotal = rl.gesamt;
+              result.userData._brepGeo = result.geometry;
+            } catch (e) { console.warn('[brep] Kantenliste nach der Operation:', e); }
+          }
           const ii = objects.indexOf(o);
           if (ii >= 0) objects[ii] = result;
           scene.remove(o); scene.add(result);
@@ -17677,6 +17890,7 @@ function _ppApply(){
   ud.type = 'custom'; ud.shapeType = 'custom';
   delete ud.occtShape; delete ud._occtParams; delete ud.edgeBevels;
   delete ud._dynamicEdges; delete ud._origGeo; delete ud._origStlBuf; delete ud.wasBox;
+  delete ud._brepStep; delete ud._brepEdges; delete ud._brep; delete ud._brepGeo;
   mesh.geometry.computeBoundingBox();
   const target = _pp.obj;
   _pp.didUndo = false;   // Änderung wird übernommen (kein Restore)
@@ -20335,23 +20549,26 @@ async function _importStepFile(file) {
       for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
       stlBuf = u8.buffer;
     }
-    _addImportedStl(stlBuf, file.name.replace(/\.(step|stp)$/i, '.stl'), true);
+    // Die echte Form behalten (nur im Speicher, wie _origStlBuf): damit lassen
+    // sich am Import einzelne Kanten runden statt nur „alles auf einmal".
+    _addImportedStl(stlBuf, file.name.replace(/\.(step|stp)$/i, '.stl'), true,
+                    buf.byteLength <= _MAX_BREP_BYTES ? new Uint8Array(buf) : null);
   } catch (err) {
     notify('STEP-Import fehlgeschlagen: ' + err.message, 'e');
   }
 }
 
 // Gemeinsamer STL-Import (Datei-Dialog + STL-Bibliothek). showDialog=true → Größendialog.
-function _addImportedStl(buffer, filename, showDialog) {
+function _addImportedStl(buffer, filename, showDialog, stepBytes) {
   let geo; try { geo = parseSTL(buffer); }   // parseSTL berechnet bereits Normalen
   catch(err){ notify('Import Fehler: ' + err.message, 'e'); return; }
-  _addImportedGeo(geo, filename, true, buffer, showDialog);
+  _addImportedGeo(geo, filename, true, buffer, showDialog, stepBytes);
 }
 
 // Gemeinsamer Kern: nimmt eine fertige Geometrie (STL/OBJ/3MF) und setzt sie als
 // Import-Mesh in die Szene. zUp=true → Z-up-Quelle (STL/3MF) um -90° um X kippen.
 // stlBuf = rohe STL-Bytes für die OCCT-Cut-Pipeline (nur bei STL sinnvoll, sonst null).
-function _addImportedGeo(geo, filename, zUp, stlBuf, showDialog) {
+function _addImportedGeo(geo, filename, zUp, stlBuf, showDialog, stepBytes) {
   try {
     if (!geo || !geo.attributes.position || !geo.attributes.position.count) { notify('Datei enthält keine Geometrie', 'w'); return; }
     saveUndo();
@@ -20371,6 +20588,7 @@ function _addImportedGeo(geo, filename, zUp, stlBuf, showDialog) {
       _stlCx: (geo.boundingBox ? (geo.boundingBox.min.x + geo.boundingBox.max.x) / 2 : 12.8),
       _stlCy: (geo.boundingBox ? (geo.boundingBox.min.y + geo.boundingBox.max.y) / 2 : 12.8),
       _stlCz: (geo.boundingBox ? (geo.boundingBox.min.z + geo.boundingBox.max.z) / 2 : 10.1) };
+    if (stepBytes) { mesh.userData._brepStep = stepBytes; _brepPrepare(mesh); }
     scene.add(mesh); objects.push(mesh); selectObjs([mesh]); updateTree();
     if (showDialog) _showSizeDialog(() => notify('"' + filename + '" importiert & positioniert ✓', 'ok'));
     else { fitToObjects([mesh]); notify('"' + filename + '" geladen ✓', 'ok'); }
@@ -35696,6 +35914,7 @@ function _eraserEraseAt(mesh, pw) {
   ud.type = 'custom';
   delete ud.shapeType; delete ud.occtShape; delete ud._occtParams;
   delete ud._origGeo; delete ud._origStlBuf; delete ud.edgeBevels;
+  delete ud._brepStep; delete ud._brepEdges; delete ud._brep; delete ud._brepGeo;
   return true;
 }
 
@@ -35890,6 +36109,7 @@ function _sculptDetach(mesh) {
   ud.type = 'custom';
   delete ud.shapeType; delete ud.occtShape; delete ud._occtParams;
   delete ud._origGeo; delete ud._origStlBuf; delete ud.edgeBevels;
+  delete ud._brepStep; delete ud._brepEdges; delete ud._brep; delete ud._brepGeo;
 }
 
 const _scV = { m: new THREE.Matrix4(), s: new THREE.Vector3(), c: new THREE.Vector3() };

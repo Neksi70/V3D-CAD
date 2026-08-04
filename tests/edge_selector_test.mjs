@@ -148,8 +148,18 @@ const r3 = await pg.evaluate(async () => {
   cur = window._getObjects().slice(-1)[0];
   const p = cur.userData._occtParams;
   const bb2 = getMeshBox(cur), s2 = bb2.getSize(new THREE.Vector3());
-  return { vorher, nachher: p ? p.ops.length : 0,
+  // Alle Referenzen müssen nach dem Neuaufbau in der AKTUELLEN Größe stehen
+  // und auf dem Teil liegen — sonst zeigt eine davon ins Leere.
+  const bbX = getMeshBox(cur);
+  const aufTeil = p ? p.ops.every(op => {
+    const q = [op.fp.a, op.fp.b].map(v => new THREE.Vector3(v[0]+p.geoOff.x, v[1]+p.geoOff.y, v[2]+p.geoOff.z));
+    return q.every(v => v.x >= bbX.min.x-1e-3 && v.x <= bbX.max.x+1e-3 &&
+                        v.y >= bbX.min.y-1e-3 && v.y <= bbX.max.y+1e-3 &&
+                        v.z >= bbX.min.z-1e-3 && v.z <= bbX.max.z+1e-3);
+  }) : false;
+  return { vorher, nachher: p ? p.ops.length : 0, aufTeil,
            dims: p ? p.ops.map(o => +o.dim.sx.toFixed(2)) : [],
+           sxJetzt: p ? +p.sx.toFixed(2) : 0,
            breite: +s2.x.toFixed(2), hoehe: +s2.y.toFixed(2),
            verts: cur.geometry.attributes.position.count,
            diag: _efpDiag.slice(-3) };
@@ -157,7 +167,10 @@ const r3 = await pg.evaluate(async () => {
 console.log('   ', JSON.stringify(r3));
 ok('erste Rundung vor dem Skalieren da', r3.vorher === 1, r3.vorher);
 ok('nach dem Skalieren bleibt sie erhalten und die zweite kommt dazu', r3.nachher === 2, r3.nachher);
-ok('Operationen merken sich die Größe, bei der sie entstanden', r3.dims.length === 2 && r3.dims[0] !== r3.dims[1], r3.dims);
+// Nach dem Neuaufbau sind alle Referenzen auf die aktuelle Größe festgeschrieben
+// (Kanonisierung) — und beide zeigen weiter auf echte Kanten des Teils.
+ok('beide Referenzen stehen in der aktuellen Größe', r3.dims.length === 2 && r3.dims.every(d => d === r3.sxJetzt), [r3.dims, r3.sxJetzt]);
+ok('beide Referenzen liegen auf dem gestreckten Teil', r3.aufTeil);
 ok('gestreckte Box ist doppelt so breit wie hoch', Math.abs(r3.breite / r3.hoehe - 2) < 0.05, [r3.breite, r3.hoehe]);
 
 console.log('\n=== Seitenfehler ===');
