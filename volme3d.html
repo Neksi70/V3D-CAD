@@ -8345,7 +8345,185 @@ function _occtShapeToThreeGeo(oc, shape, offset, linDeflect) {
   return geo;
 }
 
-function _findAllOCCTEdges(oc, shape, ax, ay, az, bx, by, bz, tol) {
+// ═══ KANTEN-SELEKTOREN: FINGERABDRUCK STATT INDEX ══════════════════════════
+// Eine gespeicherte Kanten-Operation (Rundung/Fase) hat ihre Kante bisher über
+// EXAKTE Endpunkt-Koordinaten wiedergefunden. Das reißt in drei Alltagsfällen:
+//   • Nachbarkante schon gefast → unsere Kante ist gekürzt, Endpunkte weg
+//   • Körper skaliert → gespeicherte Absolut-Koordinaten passen nicht mehr
+//     (_occtParams.sx/sy/sz werden beim Ziehen nachgeführt, ops[].wa/wb nicht)
+//   • Kernel-Drift beim Neuaufbau → Endpunkt um Bruchteile daneben
+// Stattdessen trägt jede Operation einen geometrischen FINGERABDRUCK, und beim
+// Neuaufbau wird JEDER Kandidat der frisch gebauten Form dagegen gescort —
+// günstigster gewinnt. Für gerade Kanten zählt dabei die ACHSE (Richtung +
+// senkrechter Abstand + Überlappung), nicht der Mittelpunkt: eine getrimmte
+// Kante liegt weiter auf derselben Geraden, ihr Mittelpunkt wandert aber.
+// Kreiskanten werden über Zentrum, Radius und Achse verglichen.
+// Der exakte Weg läuft weiterhin zuerst (unverändertes Verhalten, wo er greift),
+// der Fingerabdruck ist der Auffangnetz-Pfad. Diagnose: window._efpDiag.
+const _EFP = {
+  ANG: 0.03,        // 1-|cos| Toleranz für Richtungen (≈14°)
+  PERP: 0.05,       // senkrechter Achsabstand in Szene-Einheiten (0,5 mm)
+  PERP_REL: 0.012,  // + Anteil der Bauteil-Diagonale (skaliert mit der Größe)
+  LEN_REL: 0.4,     // Länge darf sich durch Nachbarfasen stark ändern
+  W_ANG: 3, W_PERP: 2.5, W_OVL: 1.5, W_LEN: 0.4, W_RAD: 2.5, W_CEN: 2.5,
+  MARGIN: 0.35,     // Kandidaten so dicht am Besten gelten als gleichwertig
+  SAME: 0.8,        // darunter = „dieselbe Kante" (Merge zweier Operationen)
+  REJECT: 6.0       // darüber lieber gar nichts liefern als die falsche Kante
+};
+let _efpDiag = [];   // letzte Auflösungen (Headless-Tests / Konsole)
+let _efpAdaptor = 0; // 0=ungeprüft, 1=Binding da, 2=fehlt
+
+const _efpVec  = (a, b) => [b[0]-a[0], b[1]-a[1], b[2]-a[2]];
+const _efpLen  = v => Math.hypot(v[0], v[1], v[2]);
+const _efpDot  = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+const _efpUnit = v => { const l = _efpLen(v); return l < 1e-9 ? [0,0,0] : [v[0]/l, v[1]/l, v[2]/l]; };
+
+// Fingerabdruck aus zwei Endpunkten (OCCT-lokale Koordinaten).
+// worldA ≈ worldB (entartete Anfrage, z.B. Zylinder-Deckelkante) → 'point'.
+function _efpFromPts(a, b) {
+  const v = _efpVec(a, b), len = _efpLen(v);
+  return { kind: len < 1e-6 ? 'point' : 'line', a: [...a], b: [...b], len,
+           mid: [(a[0]+b[0])/2, (a[1]+b[1])/2, (a[2]+b[2])/2], dir: _efpUnit(v) };
+}
+
+// Fingerabdruck auf eine andere Bauteilgröße umrechnen (Körper skaliert).
+function _efpScale(fp, f) {
+  if (!fp) return null;
+  if (Math.abs(f.x-1) < 1e-9 && Math.abs(f.y-1) < 1e-9 && Math.abs(f.z-1) < 1e-9) return fp;
+  const m = p => [p[0]*f.x, p[1]*f.y, p[2]*f.z];
+  if (fp.kind === 'circle') {
+    const rf = (Math.abs(f.x) + Math.abs(f.z)) / 2;   // Kreise liegen bei uns in XZ
+    return { ...fp, cen: m(fp.cen), mid: m(fp.mid), r: fp.r * rf, len: fp.len * rf };
+  }
+  const out = _efpFromPts(m(fp.a), m(fp.b));
+  if (fp.kind === 'point') out.kind = 'point';
+  return out;
+}
+
+// Fingerabdruck einer echten OCCT-Kante. Endpunkte reichen für alle geraden
+// Kanten; Kreise werden über BRepAdaptor_Curve angereichert, falls das Binding
+// da ist (einmal geprüft, danach gemerkt — wie _dssForm beim DistShapeShape).
+function _efpOfEdge(oc, edge) {
+  const pts = [];
+  try {
+    const vExp = new oc.TopExp_Explorer_2(edge, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+    while (vExp.More()) {
+      const p = oc.BRep_Tool.Pnt(oc.TopoDS.Vertex_1(vExp.Current()));
+      pts.push([p.X(), p.Y(), p.Z()]);
+      vExp.Next();
+    }
+    vExp.delete();
+  } catch (e) { return null; }
+  if (_efpAdaptor !== 2) {
+    let c = null;
+    try {
+      c = new oc.BRepAdaptor_Curve_2(edge);
+      _efpAdaptor = 1;
+      if (c.GetType() === oc.GeomAbs_CurveType.GeomAbs_Circle) {
+        const g   = c.Circle();
+        const lo  = g.Location(), ax = g.Axis().Direction();
+        const t0  = c.FirstParameter(), t1 = c.LastParameter();
+        const pm  = c.Value((t0 + t1) / 2);
+        const cen = [lo.X(), lo.Y(), lo.Z()];
+        const fp  = { kind: 'circle', r: g.Radius(), cen,
+                      axis: _efpUnit([ax.X(), ax.Y(), ax.Z()]),
+                      mid: [pm.X(), pm.Y(), pm.Z()], len: 2 * Math.PI * g.Radius(),
+                      a: pts[0] || cen, b: pts[1] || pts[0] || cen };
+        fp.dir = fp.axis;
+        try { c.delete(); } catch (e) {}
+        return fp;
+      }
+      try { c.delete(); } catch (e) {}
+    } catch (e) {
+      if (_efpAdaptor === 0) _efpAdaptor = 2;
+      if (c) { try { c.delete(); } catch (e2) {} }
+    }
+  }
+  if (pts.length >= 2) return _efpFromPts(pts[0], pts[1]);
+  if (pts.length === 1) { const fp = _efpFromPts(pts[0], pts[0]); fp.kind = 'point'; return fp; }
+  return null;
+}
+
+// Kosten „Wunschkante gegen Kandidat". 0 = identisch, größer = unwahrscheinlicher.
+function _efpCost(want, cand, diagLen) {
+  if (!want || !cand) return Infinity;
+  const posTol = _EFP.PERP + _EFP.PERP_REL * (diagLen || 0);
+  if (want.kind === 'circle' || cand.kind === 'circle' || want.kind === 'point' || cand.kind === 'point') {
+    const wc = want.kind === 'circle' ? want.cen : want.mid;
+    const cc = cand.kind === 'circle' ? cand.cen : cand.mid;
+    let c = _EFP.W_CEN * (_efpLen(_efpVec(wc, cc)) / posTol);
+    if (want.kind === 'circle' && cand.kind === 'circle') {
+      const rScale = Math.max(posTol, _EFP.LEN_REL * Math.max(want.r, cand.r));
+      c += _EFP.W_RAD * (Math.abs(want.r - cand.r) / rScale);
+      c += _EFP.W_ANG * ((1 - Math.abs(_efpDot(want.axis, cand.axis))) / _EFP.ANG);
+    } else if (want.kind === 'circle' || cand.kind === 'circle') {
+      c += 1.5;   // Typ-Mismatch: möglich (entartete Anfrage), aber unwahrscheinlich
+    }
+    return c;
+  }
+  // Gerade gegen Gerade: die ACHSE zählt, nicht der Mittelpunkt.
+  const ang  = 1 - Math.abs(_efpDot(want.dir, cand.dir));
+  const d    = _efpVec(want.a, cand.mid);
+  const alng = _efpDot(d, want.dir);
+  const perp = Math.hypot(d[0] - alng*want.dir[0], d[1] - alng*want.dir[1], d[2] - alng*want.dir[2]);
+  // Überlappung beider Strecken, projiziert auf die Wunsch-Achse
+  const pa = _efpDot(_efpVec(want.a, cand.a), want.dir);
+  const pb = _efpDot(_efpVec(want.a, cand.b), want.dir);
+  const ov = Math.max(0, Math.min(Math.max(pa, pb), want.len) - Math.max(Math.min(pa, pb), 0));
+  const ovFrac  = ov / Math.max(1e-6, Math.min(want.len, cand.len));
+  const lenDiff = Math.abs(want.len - cand.len) / Math.max(1e-6, _EFP.LEN_REL * Math.max(want.len, cand.len));
+  return _EFP.W_ANG  * (ang / _EFP.ANG)
+       + _EFP.W_PERP * (perp / posTol)
+       + _EFP.W_OVL  * (1 - Math.min(1, ovFrac))
+       + _EFP.W_LEN  * Math.min(1, lenDiff);
+}
+
+// Alle Kanten der Form gegen den Wunsch-Fingerabdruck scoren. Zurück kommen der
+// beste Kandidat plus alle gleichwertigen (eine durch Fasen aufgeteilte Kante
+// liegt als zwei kollineare Teilkanten vor — die gehören beide dazu).
+function _efpResolveEdges(oc, shape, want, diagLen, label) {
+  if (!want) return { edges: [], conf: 0 };
+  const scored = [];
+  try {
+    const exp = new oc.TopExp_Explorer_2(shape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+    while (exp.More()) {
+      const edge = oc.TopoDS.Edge_1(exp.Current());
+      scored.push({ edge, cost: _efpCost(want, _efpOfEdge(oc, edge), diagLen) });
+      exp.Next();
+    }
+    exp.delete();
+  } catch (e) { console.warn('[efp] Explorer:', e); return { edges: [], conf: 0 }; }
+  if (!scored.length) return { edges: [], conf: 0 };
+  scored.sort((p, q) => p.cost - q.cost);
+  const best = scored[0].cost;
+  const drop = s => { try { s.edge.delete(); } catch (e) {} };
+  if (!isFinite(best) || best > _EFP.REJECT) {
+    scored.forEach(drop);
+    _efpDiag.push({ label, ok: false, best: isFinite(best) ? +best.toFixed(2) : null });
+    return { edges: [], conf: 0 };
+  }
+  const keep = scored.filter(s => s.cost <= best + _EFP.MARGIN);
+  scored.slice(keep.length).forEach(drop);
+  const runner = scored[keep.length] ? scored[keep.length].cost : Infinity;
+  const conf = isFinite(runner) ? Math.min(1, (runner - best) / Math.max(0.2, best + 0.2)) : 1;
+  _efpDiag.push({ label, ok: true, n: keep.length, best: +best.toFixed(2),
+                  conf: +conf.toFixed(2), lossy: best > 1 });
+  if (_efpDiag.length > 60) _efpDiag = _efpDiag.slice(-30);
+  return { edges: keep.map(s => s.edge), conf };
+}
+
+// Wunsch-Fingerabdruck einer gespeicherten Operation, umgerechnet auf die
+// AKTUELLE Bauteilgröße (op.dim = Größe beim Anlegen der Operation).
+function _efpWantOf(op, sx, sy, sz) {
+  let fp = op.fp || (op.wa && op.wb ? _efpFromPts(op.wa, op.wb) : null);
+  if (!fp) return null;
+  const d = op.dim;
+  if (d && d.sx > 1e-6 && d.sy > 1e-6 && d.sz > 1e-6)
+    fp = _efpScale(fp, { x: sx/d.sx, y: sy/d.sy, z: sz/d.sz });
+  return fp;
+}
+
+function _findAllOCCTEdges(oc, shape, ax, ay, az, bx, by, bz, tol, want, diagLen) {
   tol = tol || 0.01;
   const found = [];
   const exp = new oc.TopExp_Explorer_2(shape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
@@ -8376,6 +8554,8 @@ function _findAllOCCTEdges(oc, shape, ax, ay, az, bx, by, bz, tol) {
     exp.Next();
   }
   exp.delete();
+  // Exakt nichts gefunden → über den Fingerabdruck scoren statt aufzugeben.
+  if (!found.length && want) return _efpResolveEdges(oc, shape, want, diagLen, want.kind).edges;
   return found;
 }
 
@@ -8419,24 +8599,61 @@ function _findOCCTFaceByPoint(oc, shape, p, tol) {
   return (best && bestD < (tol ?? 0.6)) ? best : null;
 }
 
-function _mergeOCCTOps(prevOps, newOps) {
-  const m = new Map(prevOps.map(op => [op.idx, op]));
-  for (const op of newOps) m.set(op.idx, op);
-  return [...m.values()];
+// Operationen zusammenführen. Früher lief das über op.idx — der Kantenindex
+// verschiebt sich aber bei jedem Neuaufbau, sodass eine zweite Rundung die
+// Operation einer FREMDEN Kante überschreiben konnte. Jetzt entscheidet der
+// Fingerabdruck, ob es dieselbe Kante ist.
+function _mergeOCCTOps(prevOps, newOps, dim) {
+  const stamp = op => {
+    if (!op.fp && op.wa && op.wb && op.type !== 'shell') op.fp = _efpFromPts(op.wa, op.wb);
+    if (!op.dim && dim && dim.sx > 1e-6) op.dim = { sx: dim.sx, sy: dim.sy, sz: dim.sz };
+    return op;
+  };
+  const out = (prevOps || []).map(stamp);
+  const cur = (dim && dim.sx > 1e-6) ? dim : null;
+  const diagLen = cur ? 2 * Math.hypot(cur.sx, cur.sy, cur.sz) : 0;
+  for (const raw of newOps) {
+    const op = stamp({ ...raw });
+    let hit = -1;
+    if (op.type === 'shell') {
+      hit = out.findIndex(p => p.type === 'shell');
+    } else if (op.fp && cur) {
+      let bestC = Infinity;
+      out.forEach((p, i) => {
+        if (p.type === 'shell' || !p.fp) return;
+        const c = _efpCost(_efpWantOf(p, cur.sx, cur.sy, cur.sz), op.fp, diagLen);
+        if (c < bestC && c < _EFP.SAME) { bestC = c; hit = i; }
+      });
+    }
+    // Alt-Stände ohne Fingerabdruck: weiterhin über den Index zusammenführen
+    if (hit < 0) hit = out.findIndex(p => !p.fp && p.type !== 'shell' && p.idx === op.idx);
+    if (hit >= 0) out[hit] = op; else out.push(op);
+  }
+  return out;
 }
 
 function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz) {
   const chamferOps = ops.filter(op => op.type === 'chamfer');
   const filletOps  = ops.filter(op => op.type === 'fillet');
+  const diagLen = 2 * Math.hypot(sx, sy, sz);
+  // Kanten einer gespeicherten Operation auf die AKTUELLE Bauteilgröße
+  // umrechnen. Ohne das zeigen die Absolut-Koordinaten nach dem Skalieren ins
+  // Leere und der gesamte Replay scheitert (opOk=false → alle Fasen weg).
+  const _q = op => {
+    const want = _efpWantOf(op, sx, sy, sz);
+    if (want) return { want, a: want.a, b: want.b };
+    const ep = EDGE_ENDPOINTS[op.idx] || EDGE_ENDPOINTS[0];
+    return { want: null,
+             a: [(ep[0][0]+1)*sx, (ep[0][1]+1)*sy, (ep[0][2]+1)*sz],
+             b: [(ep[1][0]+1)*sx, (ep[1][1]+1)*sy, (ep[1][2]+1)*sz] };
+  };
   let curShape = baseShape;
   let opOk = true;
   if (chamferOps.length > 0) {
     const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
     for (const op of chamferOps) {
-      let ax, ay, az, bx, by, bz;
-      if (op.wa) { [ax,ay,az]=op.wa; [bx,by,bz]=op.wb; }
-      else { const ep=EDGE_ENDPOINTS[op.idx]; ax=(ep[0][0]+1)*sx; ay=(ep[0][1]+1)*sy; az=(ep[0][2]+1)*sz; bx=(ep[1][0]+1)*sx; by=(ep[1][1]+1)*sy; bz=(ep[1][2]+1)*sz; }
-      const ms = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz, 0.01);
+      const { want, a, b } = _q(op);
+      const ms = _findAllOCCTEdges(oc, curShape, a[0], a[1], a[2], b[0], b[1], b[2], 0.01, want, diagLen);
       if (!ms.length) { opOk = false; break; }
       for (const e of ms) ch.Add_2(op.dist, e);
     }
@@ -8447,10 +8664,8 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz) {
     const tol = chamferOps.length > 0 ? Math.max(...chamferOps.map(o => o.dist)) + 0.1 : 0.01;
     const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
     for (const op of filletOps) {
-      let ax, ay, az, bx, by, bz;
-      if (op.wa) { [ax,ay,az]=op.wa; [bx,by,bz]=op.wb; }
-      else { const ep=EDGE_ENDPOINTS[op.idx]; ax=(ep[0][0]+1)*sx; ay=(ep[0][1]+1)*sy; az=(ep[0][2]+1)*sz; bx=(ep[1][0]+1)*sx; by=(ep[1][1]+1)*sy; bz=(ep[1][2]+1)*sz; }
-      const ms = _findAllOCCTEdges(oc, curShape, ax, ay, az, bx, by, bz, tol);
+      const { want, a, b } = _q(op);
+      const ms = _findAllOCCTEdges(oc, curShape, a[0], a[1], a[2], b[0], b[1], b[2], tol, want, diagLen);
       if (!ms.length) { opOk = false; break; }
       for (const e of ms) fi.Add_2(op.dist, e);
     }
@@ -8471,8 +8686,13 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz) {
     } else try {
       const facesToRemove = new oc.TopTools_ListOfShape_1();
       let nFound = 0;
+      // Flächenpunkte wie die Kanten auf die aktuelle Größe umrechnen
+      const sd = shellOp.dim;
+      const sp = (sd && sd.sx > 1e-6)
+        ? p => [p[0]*sx/sd.sx, p[1]*sy/sd.sy, p[2]*sz/sd.sz]
+        : p => p;
       for (const fdesc of reqFaces) {
-        const f = _findOCCTFaceByPoint(oc, curShape, fdesc.p, 0.8);
+        const f = _findOCCTFaceByPoint(oc, curShape, sp(fdesc.p), 0.8);
         if (f) { facesToRemove.Append_1(f); nFound++; }
       }
       if (nFound === 0) {
@@ -8565,7 +8785,7 @@ async function _applyCSGChamfer(obj, dynEdge, edgeIndex, chamferDist) {
       prevOps = [];
     }
     const wa = toOcct(dynEdge.worldA), wb = toOcct(dynEdge.worldB);
-    const allOps = _mergeOCCTOps(prevOps, [{ idx: edgeIndex, dist: chamferDist, type: 'chamfer', wa, wb }]);
+    const allOps = _mergeOCCTOps(prevOps, [{ idx: edgeIndex, dist: chamferDist, type: 'chamfer', wa, wb }], { sx, sy, sz });
     const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, null, obj.userData.coneTop||0, obj.userData.coneFlip);
     const { shape: finalShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
     if (!opOk) return null;
@@ -8611,7 +8831,7 @@ async function _applyCSGFillet(obj, dynEdge, edgeIndex, filletR) {
       prevOps = [];
     }
     const wa = toOcct(dynEdge.worldA), wb = toOcct(dynEdge.worldB);
-    const allOps = _mergeOCCTOps(prevOps, [{ idx: edgeIndex, dist: filletR, type: 'fillet', wa, wb }]);
+    const allOps = _mergeOCCTOps(prevOps, [{ idx: edgeIndex, dist: filletR, type: 'fillet', wa, wb }], { sx, sy, sz });
     const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, null, obj.userData.coneTop||0, obj.userData.coneFlip);
     const { shape: finalShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
     if (!opOk) return null;
@@ -8786,7 +9006,7 @@ async function _applyCSGShell(obj, faces, thickness) {
       thickness: Math.abs(thickness) / 10,  // mm → Scene-Units (1 Unit = 10 mm)
       faces: faces.map(f => ({ p: toOcct(f.worldP), n: f.worldN }))
     };
-    const allOps = _mergeOCCTOps(prevOps, [shellOp]);
+    const allOps = _mergeOCCTOps(prevOps, [shellOp], { sx, sy, sz });
     const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, polySides, obj.userData.coneTop||0, obj.userData.coneFlip);
     const { shape: finalShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
     if (!opOk) return null;
@@ -8911,7 +9131,7 @@ async function _applyEdgeHandleValue(chamferDist) {
           idx, dist, type: isPos ? 'chamfer' : 'fillet',
           wa: toOcct(dynEdge.worldA), wb: toOcct(dynEdge.worldB)
         }));
-        const allOps = _mergeOCCTOps(prevOps, newOps);
+        const allOps = _mergeOCCTOps(prevOps, newOps, { sx, sy, sz });
 
         const baseShape = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz, null, o.userData.coneTop||0, o.userData.coneFlip);
         const { shape: curShape, opOk } = _replayOCCTOps(oc, baseShape, allOps, sx, sy, sz);
