@@ -79,6 +79,30 @@ await pg.evaluate(() => {
       return hits;
     },
     inside(geo, x, z, y) { return this.hitsBelow(geo, x, z, y) % 2 === 1; },
+    // Dreiecke auf einer waagerechten Ebene müssen alle gleich herum liegen.
+    // Ein einzelnes gekipptes Dreieck bleibt bei der Kanten-Parität unsichtbar
+    // (Fläche stimmt), wird aber als harte Kante gezeichnet — quer über die
+    // Platte laufende Striche, die wie ein Defekt aussehen.
+    flippedOnPlane(geo, y, wantUp) {
+      const p = geo.attributes.position, idx = geo.index;
+      const n = idx ? idx.count : p.count;
+      const g = i => { const j = idx ? idx.getX(i) : i; return [p.getX(j), p.getY(j), p.getZ(j)]; };
+      let tris = 0, flipped = 0, slivers = 0;
+      for (let t = 0; t < n; t += 3) {
+        const A = g(t), B = g(t + 1), C = g(t + 2);
+        if (Math.abs(A[1] - y) > 1e-6 || Math.abs(B[1] - y) > 1e-6 || Math.abs(C[1] - y) > 1e-6) continue;
+        tris++;
+        const ny = (C[0] - A[0]) * (B[2] - A[2]) - (B[0] - A[0]) * (C[2] - A[2]);
+        // Splitter unter 0,0001 mm² (≈ 10 µm Kante) haben keine belastbare
+        // Orientierung — sie entstehen aus fast kollinearen Punkten auf dem
+        // Eckbogen, rendern nicht und drucken nicht mit. Für die Dichtheit
+        // zählen sie trotzdem mit (siehe Kanten-Parität), also nur separat
+        // ausweisen statt als Kipper werten.
+        if (Math.abs(ny) < 2e-6) { slivers++; continue; }
+        if ((ny > 0) !== !!wantUp) flipped++;
+      }
+      return { tris, flipped, slivers };
+    },
   };
 });
 
@@ -193,8 +217,63 @@ ok('Gitter hat Aussparungen', r5.zellen > 4, r5);
 ok('Gitter spart Material', r5.grid > 0 && r5.grid < r5.solid * 0.92, { solid: r5.solid, grid: r5.grid });
 ok('Gitter-Hülle geschlossen', r5.dicht.badEdges === 0, r5.dicht);
 
-console.log('\n=== 6. Beschriftung + Erstellen in der Szene ===');
-const r6 = await pg.evaluate(async () => {
+console.log('\n=== 6. Deck- und Bodenfläche liegen alle gleich herum ===');
+const r6a = await pg.evaluate(() => {
+  const cases = [
+    ['Bohrersatz', { shape: 'round', cols: 8, rows: 1, size: 3, grade: 1, step: 1 }],
+    ['Quadrate im Raster', { shape: 'square', cols: 4, rows: 3, size: 10, grade: 0 }],
+    ['Schlitze', { shape: 'rect', cols: 5, rows: 2, size: 3, size2: 40, grade: 0 }],
+    ['Sechskant', { shape: 'hex', cols: 6, rows: 2, size: 4, grade: 1, step: 0.5 }],
+    ['breiter Rand, kleine Löcher', { shape: 'round', cols: 4, rows: 2, size: 3, grade: 0, edge: 22, gap: 20 }],
+    ['Spar-Gitter', { shape: 'round', cols: 6, rows: 2, size: 6, grade: 0, fill: 'grid', fillPct: 40, h: 30, depth: 12 }],
+  ];
+  return cases.map(([name, over]) => {
+    const p = { ..._HP_DEFAULTS, label: 0, ...over };
+    const L = _hpLayout(p), geo = _hpBuild(p, false), T = window._hpTest;
+    return { name, oben: T.flippedOnPlane(geo, L.H * 0.1, true), unten: T.flippedOnPlane(geo, 0, false) };
+  });
+});
+for (const r of r6a) ok(r.name + ': keine gekippten Dreiecke', r.oben.flipped === 0 && r.unten.flipped === 0 && r.oben.tris > 0, r);
+
+console.log('\n=== 7. Zufalls-Parametersätze: dicht, positives Volumen, keine Kipper ===');
+const r7 = await pg.evaluate(() => {
+  const shapes = ['round', 'square', 'rect', 'hex'];
+  let seed = 42;
+  const R = (a, b) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return a + (seed / 0x7fffffff) * (b - a); };
+  const T = window._hpTest;
+  const bad = [];
+  const N = 120;
+  for (let k = 0; k < N; k++) {
+    const p = {
+      shape: shapes[k % 4], cols: Math.round(R(1, 20)), rows: Math.round(R(1, 8)),
+      size: +R(1, 40).toFixed(1), size2: +R(1, 60).toFixed(1),
+      grade: R(0, 1) > 0.5 ? 1 : 0, step: +R(0.1, 4).toFixed(1), clr: +R(0, 2).toFixed(2),
+      depth: +R(2, 80).toFixed(1), through: R(0, 1) > 0.75 ? 1 : 0, cham: +R(0, 2.5).toFixed(1),
+      outer: R(0, 1) > 0.5 ? 'fixed' : 'auto', gap: +R(1, 25).toFixed(1), edge: +R(1.5, 25).toFixed(1),
+      ow: Math.round(R(20, 300)), od: Math.round(R(20, 300)), h: +R(3, 120).toFixed(1),
+      corner: +R(0, 25).toFixed(1), fill: R(0, 1) > 0.5 ? 'grid' : 'solid',
+      fillPct: Math.round(R(20, 90)), label: 0,
+    };
+    try {
+      const L = _hpLayout(p), g = _hpBuild(p, false);
+      const w = T.watertight(g);
+      const pos = g.attributes.position, idx = g.index, n = idx ? idx.count : pos.count;
+      const gv = i => { const j = idx ? idx.getX(i) : i; return [pos.getX(j), pos.getY(j), pos.getZ(j)]; };
+      let vol = 0;
+      for (let t = 0; t < n; t += 3) {
+        const A = gv(t), B = gv(t + 1), C = gv(t + 2);
+        vol += (A[0] * (B[1] * C[2] - C[1] * B[2]) - A[1] * (B[0] * C[2] - C[0] * B[2]) + A[2] * (B[0] * C[1] - C[0] * B[1])) / 6;
+      }
+      const fo = T.flippedOnPlane(g, L.H * 0.1, true), fu = T.flippedOnPlane(g, 0, false);
+      if (w.badEdges || vol <= 0 || fo.flipped || fu.flipped) bad.push({ p, badEdges: w.badEdges, vol: Math.round(vol * 1000), fo, fu });
+    } catch (e) { bad.push({ p, error: String(e) }); }
+  }
+  return { N, fehler: bad.length, beispiel: bad[0] };
+});
+ok(r7.N + ' Zufalls-Kombinationen fehlerfrei', r7.fehler === 0, r7);
+
+console.log('\n=== 8. Beschriftung + Erstellen in der Szene ===');
+const r8 = await pg.evaluate(async () => {
   await new Promise(res => _npLoadFont('baloo_local', res));
   const before = objects.length;
   Object.assign(_hpP, _HP_DEFAULTS);
@@ -211,10 +290,10 @@ const r6 = await pg.evaluate(async () => {
     hatParams: o?.userData?.hpShape === 'round' && o?.userData?.hpCols === 8,
   };
 });
-ok('Schrift geladen (lokal, kein CDN)', r6.fontDa === true, r6);
-ok('Beschriftung fügt Geometrie hinzu', r6.mehrDreiecke === true);
-ok('Objekt landet in der Szene', r6.neu === 1 && r6.typ === 'holder');
-ok('Parameter am Objekt gespeichert', r6.hatParams === true);
+ok('Schrift geladen (lokal, kein CDN)', r8.fontDa === true, r8);
+ok('Beschriftung fügt Geometrie hinzu', r8.mehrDreiecke === true);
+ok('Objekt landet in der Szene', r8.neu === 1 && r8.typ === 'holder');
+ok('Parameter am Objekt gespeichert', r8.hatParams === true);
 
 ok('keine JS-Fehler auf der Seite', pageErrors.length === 0, pageErrors.slice(0, 3));
 

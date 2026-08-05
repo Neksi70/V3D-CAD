@@ -27494,6 +27494,12 @@ const _HP_U     = 0.1;    // 1 Unit = 10 mm
 const _HP_LBL_H = 5;      // mm Platz für die Beschriftung hinter jeder Reihe
 const _HP_SKIN  = 1.2;    // mm Mindest-Decke zwischen Gitter und Taschenboden
 const _HP_PITCH = 12;     // mm Rastermaß des Spar-Gitters
+// Units (= 1 µm): Punkte darunter gelten als identisch. Muss gröber sein als der
+// Abstand, den ein x- und ein z-Schnitt derselben Umriss-Kante auseinanderliegen
+// können — sonst bleibt ein Doppelpunkt stehen, Earcut macht ein entartetes
+// Dreieck daraus, und genau dort reißt die Hülle auf.
+const _HP_EPS   = 1e-4;
+const _HP_MAXCELLS = 2000;   // mehr Gitterfelder bremsen nur noch
 const _HP_DEFAULTS = { shape:'round', cols:8, rows:1, size:3, size2:8, grade:1, step:1,
   clr:0.3, depth:15, through:0, cham:0.6, outer:'auto', gap:6, edge:5, ow:140, od:50,
   h:22, corner:3, fill:'solid', fillPct:45, label:1 };
@@ -27542,59 +27548,88 @@ function _hpCap(outer, holes, y, up){
   g.translate(0,y,0);
   return g;
 }
-// Planarer Ring zwischen zwei konvexen Konturen (inner liegt komplett in outer,
-// beide CCW in XZ). Zwei-Zeiger nach Polarwinkel um (cx,cz) — bewusst NICHT
-// Earcut: der stolpert über exakt kollineare Kanten benachbarter Löcher und
-// hinterlässt T-Vertices (Kante läuft über den Nachbarpunkt hinweg).
-function _hpRing(inner, outer, cx, cz, y, up){
-  const seq=arr=>{
-    const a=arr.map(p=>({p, a:Math.atan2(p.z-cz, p.x-cx)}));
-    let k=0; for(let i=1;i<a.length;i++) if(a[i].a<a[k].a) k=i;
-    const o=[]; let prev=-Infinity;
-    for(let i=0;i<a.length;i++){ const e=a[(k+i)%a.length]; let ang=e.a;
-      while(ang<prev) ang+=Math.PI*2; prev=ang; o.push({p:e.p, a:ang}); }
-    o.push({p:o[0].p, a:o[0].a+Math.PI*2});          // Umlauf schließen
-    return o;
-  };
-  const A=seq(inner), B=seq(outer), pos=[], idx=[];
-  const nA=A.length-1, nB=B.length-1;
-  for(let i=0;i<nA;i++) pos.push(A[i].p.x, y, A[i].p.z);
-  for(let i=0;i<nB;i++) pos.push(B[i].p.x, y, B[i].p.z);
-  const iA=i=>i%nA, iB=j=>nA+(j%nB);
-  const tri=(a,b,c)=>{ if(up) idx.push(a,b,c); else idx.push(a,c,b); };
-  let i=0, j=0;
-  while(i<nA || j<nB){
-    const takeA = (j>=nB) || (i<nA && A[i+1].a<=B[j+1].a);
-    if(takeA){ tri(iA(i), iA(i+1), iB(j)); i++; }
-    else     { tri(iA(i), iB(j+1), iB(j)); j++; }
+// Konvexes Polygon an einer Halbebene abschneiden (Sutherland-Hodgman).
+// keep(p) true = behalten, isect = Schnittpunkt auf der Kante.
+function _hpClipHalf(poly, keep, isect){
+  const out=[], n=poly.length;
+  for(let i=0;i<n;i++){
+    const a=poly[i], b=poly[(i+1)%n], ka=keep(a), kb=keep(b);
+    if(ka) out.push(a);
+    if(ka!==kb) out.push(isect(a,b));
   }
-  const g=new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
-  g.setIndex(idx); return g;
+  return out;
 }
-// Gelochte Deckfläche als Zellraster: jede Zelle wird als Ring um ihr Loch
-// aufgelöst, leere Zellen als Rechteck, der Rest als Rahmen zwischen Zellblock
-// und Umriss. Nachbarzellen teilen exakt zwei Eckpunkte → keine T-Vertices.
+// Plattenumriss auf eine Rasterzelle beschneiden. Nachbarzellen schneiden
+// dieselbe Kante mit derselben Formel → identische Punkte, keine T-Vertices.
+function _hpClipCell(outline, x0, x1, z0, z1){
+  const E=_HP_EPS;
+  // Jeden errechneten Schnittpunkt auf einen vorhandenen Umrisspunkt schnappen.
+  // Ohne das interpoliert die Nachbarzelle auf einem anders zerschnittenen
+  // Kantenstück minimal daneben — und genau dort klafft die Hülle auf.
+  const snap=q=>{
+    for(const o of outline) if(Math.abs(o.x-q.x)<E && Math.abs(o.z-q.z)<E) return o;
+    return q;
+  };
+  const ix=(a,b,x)=>snap({x, z:a.z+(b.z-a.z)*((x-a.x)/(b.x-a.x))});
+  const iz=(a,b,z)=>snap({x:a.x+(b.x-a.x)*((z-a.z)/(b.z-a.z)), z});
+  let p=outline;
+  p=_hpClipHalf(p, q=>q.x>=x0-E, (a,b)=>ix(a,b,x0)); if(p.length<3) return null;
+  p=_hpClipHalf(p, q=>q.x<=x1+E, (a,b)=>ix(a,b,x1)); if(p.length<3) return null;
+  p=_hpClipHalf(p, q=>q.z>=z0-E, (a,b)=>iz(a,b,z0)); if(p.length<3) return null;
+  p=_hpClipHalf(p, q=>q.z<=z1+E, (a,b)=>iz(a,b,z1)); if(p.length<3) return null;
+  // Doppelte Punkte entfernen — nicht nur benachbarte: berührt eine Zellgrenze
+  // eine Umriss-Ecke, steht derselbe Punkt zweimal im Polygon, und Earcut macht
+  // daraus ein entartetes Dreieck. Genau dort reißt die Hülle auf.
+  const o=[];
+  for(const q of p){
+    if(o.some(u=>Math.abs(u.x-q.x)<_HP_EPS && Math.abs(u.z-q.z)<_HP_EPS)) continue;
+    o.push(q);
+  }
+  return o.length>=3 ? o : null;
+}
+// Umriss an allen Rastergrenzen unterteilen. Ohne das entstehen beim Zellen-
+// Clipping Punkte, die der Außenmantel nicht kennt → T-Vertices an der Kante.
+function _hpSplitOutline(outline, xs, zs){
+  const ix=(a,b,x)=>({x, z:a.z+(b.z-a.z)*((x-a.x)/(b.x-a.x))});
+  const iz=(a,b,z)=>({x:a.x+(b.x-a.x)*((z-a.z)/(b.z-a.z)), z});
+  const out=[];
+  for(let i=0;i<outline.length;i++){
+    const a=outline[i], b=outline[(i+1)%outline.length];
+    out.push(a);
+    const cuts=[];
+    for(const x of xs) if((a.x-x)*(b.x-x)<0){ const t=(x-a.x)/(b.x-a.x); if(t>1e-9&&t<1-1e-9) cuts.push({t,p:ix(a,b,x)}); }
+    for(const z of zs) if((a.z-z)*(b.z-z)<0){ const t=(z-a.z)/(b.z-a.z); if(t>1e-9&&t<1-1e-9) cuts.push({t,p:iz(a,b,z)}); }
+    cuts.sort((u,v)=>u.t-v.t);
+    let prev=-1;
+    for(const c of cuts){ if(c.t-prev<1e-9) continue; prev=c.t; out.push(c.p); }
+  }
+  // Punkte, die praktisch aufeinander liegen (zwei Raster mit fast gleicher
+  // Grenze), zusammenfassen — sonst kennt der Mantel eine Mikro-Kante, die die
+  // geclippte Deckfläche verwirft: genau dort reißt die Hülle auf.
+  const o=[];
+  for(const q of out){
+    const l=o[o.length-1];
+    if(l && Math.abs(l.x-q.x)<_HP_EPS && Math.abs(l.z-q.z)<_HP_EPS) continue;
+    o.push(q);
+  }
+  while(o.length>2){
+    const a=o[0], b=o[o.length-1];
+    if(Math.abs(a.x-b.x)<_HP_EPS && Math.abs(a.z-b.z)<_HP_EPS) o.pop(); else break;
+  }
+  return o;
+}
+// Gelochte Deckfläche als Zellraster: jede Zelle ist der auf sie beschnittene
+// Plattenumriss mit HÖCHSTENS EINEM Loch. Earcut ist damit unauffällig — erst
+// bei mehreren achsparallelen Löchern in einer Fläche lässt es T-Vertices
+// zurück (Kante läuft über den Nachbar-Lochpunkt hinweg).
 function _hpPerfCap(outline, xB, zB, holeAt, y, up){
   const parts=[], nx=xB.length-1, nz=zB.length-1;
   for(let r=0;r<nz;r++) for(let c=0;c<nx;c++){
-    const rect=[{x:xB[c],z:zB[r]},{x:xB[c+1],z:zB[r]},{x:xB[c+1],z:zB[r+1]},{x:xB[c],z:zB[r+1]}];
+    const cell=_hpClipCell(outline, xB[c], xB[c+1], zB[r], zB[r+1]);
+    if(!cell) continue;
     const h=holeAt(r,c);
-    if(h){
-      // Winkelzentrum MUSS im Loch liegen (nicht die Zellmitte — bei außermittigen
-      // Löchern wäre die Kontur von dort aus nicht sternförmig)
-      let mx=0, mz=0; for(const q of h){ mx+=q.x; mz+=q.z; }
-      parts.push(_hpRing(h, rect, mx/h.length, mz/h.length, y, up));
-    }
-    else  parts.push(_hpCap(rect, null, y, up));
+    parts.push(_hpCap(cell, h?[h]:null, y, up));
   }
-  // Rahmen: Innenkontur trägt alle Zellgrenzen, damit sie zu den Zellen passt
-  const blk=[];
-  for(let c=0;c<nx;c++)  blk.push({x:xB[c],   z:zB[0]});
-  for(let r=0;r<nz;r++)  blk.push({x:xB[nx],  z:zB[r]});
-  for(let c=nx;c>0;c--)  blk.push({x:xB[c],   z:zB[nz]});
-  for(let r=nz;r>0;r--)  blk.push({x:xB[0],   z:zB[r]});
-  parts.push(_hpRing(blk, outline, 0, 0, y, up));
   return parts;
 }
 // Mantel zwischen zwei gleich langen Konturen (a unten bei ya, b oben bei yb).
@@ -27662,13 +27697,17 @@ function _hpLayout(p){
   if(rows>1) freeGap=Math.min(freeGap, gapZ+lbl);
   if(!isFinite(freeGap)) freeGap=2*Math.min(edgeX,edgeZ);
   const minEdge=Math.min(edgeX,edgeZ);
-  const cf=Math.max(0, Math.min(p.cham, (T-0.4)/2, 2.5, (freeGap-0.4)/2, minEdge-0.7));
+  // Die Fase weitet die Grundfläche auf — beim Sechskant um das Eckenmaß
+  // (2/√3). Bleibt das unberücksichtigt, ragt das aufgeweitete Loch über die
+  // Zellgrenze und die Triangulation dieser Zelle bricht.
+  const ff = p.shape==='hex' ? 2/Math.sqrt(3) : 1;
+  const cf=Math.max(0, Math.min(p.cham, (T-0.4)/2, 2.5, (freeGap-0.4)/2/ff, (minEdge-0.7)/ff));
   // Eckenradius so begrenzen, dass die Rundung weder die Aufnahmen noch den
   // Zellblock der Deckfläche anschneidet
   const free=Math.max(0.5, minEdge-cf-0.2);
   const corner=Math.max(0, Math.min(p.corner, W/2-0.1, D/2-0.1, free/0.35));
-  const mIn=Math.min(free, Math.max(0.35*corner, 0.3));   // Einrückung des Zellblocks
-  // Zellgrenzen der Deckfläche: Mitten zwischen den Aufnahme-Grundflächen
+  // Zellgrenzen der Deckfläche: Mitten zwischen den Aufnahme-Grundflächen,
+  // außen bis an die Bounding-Box (die Rundung wird pro Zelle abgeschnitten)
   const bound=(cent, size, lo, hi)=>{
     const b=[lo];
     for(let i=1;i<cent.length;i++) b.push(((cent[i-1]+size[i-1]/2)+(cent[i]-size[i]/2))/2);
@@ -27677,9 +27716,9 @@ function _hpLayout(p){
   const cxs=[], czs=[];
   for(let c=0;c<cols;c++) cxs.push(LX.c[c]-LX.total/2);
   for(let r=0;r<rows;r++) czs.push(LZ.c[r]-LZ.total/2);
-  const xB=bound(cxs, colW, -W/2+mIn, W/2-mIn);
-  const zB=bound(czs, rowD, -D/2+mIn, D/2-mIn);
-  return { cols, rows, W, D, H, T, cf, corner, mIn, xB, zB, aps, tight, lbl,
+  const xB=bound(cxs, colW, -W/2, W/2);
+  const zB=bound(czs, rowD, -D/2, D/2);
+  return { cols, rows, W, D, H, T, cf, corner, xB, zB, aps, tight, lbl,
            gapX, edgeX, gapZ, edgeZ, minNom:nom[0], maxNom:nom[nom.length-1] };
 }
 // Punkt im abgerundeten Rechteck, um ins eingerückt?
@@ -27701,16 +27740,21 @@ function _hpGridCells(p, L){
   const cw=_HP_PITCH*Math.sqrt(1-fill);           // Feldbreite → Lochanteil = 1-fill
   const s=_HP_PITCH-cw;                           // Stegbreite
   if(cw<1.5) return none;
-  const m=Math.max(s, 0.35*L.corner, 0.3);        // Rasterblock von der Rundung fernhalten
+  const m=Math.max(s, 0.35*L.corner, 0.3);        // Aussparungen von der Rundung fernhalten
   const nx=Math.floor((L.W-2*m)/_HP_PITCH), nz=Math.floor((L.D-2*m)/_HP_PITCH);
   if(nx<1||nz<1) return none;
-  const gxB=[], gzB=[];
+  if(nx*nz>_HP_MAXCELLS) return none;             // Riesenplatte: lieber massiv als unbedienbar
+  // Rasterzellen innen, außen bis an den Plattenrand (dort bleibt kein Loch übrig)
+  const gxB=[-L.W/2], gzB=[-L.D/2];
   for(let i=0;i<=nx;i++) gxB.push(-nx*_HP_PITCH/2+i*_HP_PITCH);
   for(let j=0;j<=nz;j++) gzB.push(-nz*_HP_PITCH/2+j*_HP_PITCH);
+  gxB.push(L.W/2); gzB.push(L.D/2);
   const has=[], cells=[], h=cw/2;
-  for(let j=0;j<nz;j++){
+  const NX=gxB.length-1, NZ=gzB.length-1;
+  for(let j=0;j<NZ;j++){
     const row=[];
-    for(let i=0;i<nx;i++){
+    for(let i=0;i<NX;i++){
+      if(i<1||i>nx||j<1||j>nz){ row.push(null); continue; }   // Randzellen bleiben zu
       const x=(gxB[i]+gxB[i+1])/2, z=(gzB[j]+gzB[j+1])/2;
       let ok=true;
       for(const q of [[-h,-h],[h,-h],[h,h],[-h,h]]) if(!_hpInRR(x+q[0], z+q[1], L.W, L.D, L.corner, m)){ ok=false; break; }
@@ -27728,8 +27772,13 @@ function _hpBuild(p, prev){
   const parts=[];
   const yT=L.H*U, yB=0, cfU=L.cf*U;
   const yFloor = p.through ? yB : (L.H-L.T)*U;    // Taschenboden
-  const out=_hpRoundRect(L.W, L.D, L.corner, prev?12:32);
   const xBU=L.xB.map(v=>v*U), zBU=L.zB.map(v=>v*U);
+  const grid=_hpGridCells(p,L), cells=grid.cells;
+  // Umriss an ALLEN Rastergrenzen unterteilen (Aufnahmen oben, Gitter unten),
+  // damit Deckflächen und Außenmantel exakt dieselben Randpunkte benutzen
+  const out=_hpSplitOutline(_hpRoundRect(L.W, L.D, L.corner, prev?12:32),
+    grid.gxB ? xBU.concat(grid.gxB) : xBU,
+    grid.gzB ? zBU.concat(grid.gzB) : zBU);
   // Lochkonturen: innen = Nutzmaß, außen = um die Fase aufgeweitet
   const holes=L.aps.map(a=>{
     const mv=q=>({x:q.x+a.x*U, z:q.z+a.z*U});
@@ -27738,7 +27787,7 @@ function _hpBuild(p, prev){
     return { inner, wide };
   });
   // Oberseite (Löcher = Fasen-Oberkante)
-  parts.push(..._hpPerfCap(out, xBU, zBU, (r,c)=>holes[r*L.cols+c].wide, yT, true));
+  for(const g of _hpPerfCap(out, xBU, zBU, (r,c)=>holes[r*L.cols+c].wide, yT, true)) parts.push(g);
   for(const h of holes){
     if(L.cf>0) parts.push(_hpLoft(h.inner, h.wide, yT-cfU, yT, true));   // Einführtrichter
     parts.push(_hpLoft(h.inner, h.inner, yFloor, yT-cfU, true));         // Taschenwand
@@ -27746,12 +27795,11 @@ function _hpBuild(p, prev){
   }
   parts.push(_hpLoft(out, out, yB, yT, false));                          // Außenmantel
   // Unterseite: durchgehend / massiv / Spar-Gitter
-  const grid=_hpGridCells(p,L), cells=grid.cells;
   if(p.through){
-    parts.push(..._hpPerfCap(out, xBU, zBU, (r,c)=>holes[r*L.cols+c].inner, yB, false));
+    for(const g of _hpPerfCap(out, xBU, zBU, (r,c)=>holes[r*L.cols+c].inner, yB, false)) parts.push(g);
   } else if(cells.length){
     const ycU=grid.yc*U;
-    parts.push(..._hpPerfCap(out, grid.gxB, grid.gzB, (r,c)=>grid.has[r][c], yB, false));
+    for(const g of _hpPerfCap(out, grid.gxB, grid.gzB, (r,c)=>grid.has[r][c], yB, false)) parts.push(g);
     for(const c of cells){
       parts.push(_hpLoft(c, c, yB, ycU, true));
       parts.push(_hpCap(c, null, ycU, false));
@@ -27775,8 +27823,17 @@ function _hpBuild(p, prev){
       }catch(e){ /* Zeichen fehlt in der Schrift → ohne Beschriftung weiter */ }
     }
   }
-  const geo=_mergeGeos(parts);
-  geo.computeVertexNormals(); geo.computeBoundingBox();
+  const raw=_mergeGeos(parts);
+  raw.computeVertexNormals();
+  // Nähte verschweißen: sonst zeichnet EdgesGeometry jede Teilflächen-Grenze als
+  // harte Kante — quer über die Deckfläche laufende Striche, die wie ein Defekt
+  // aussehen. mergeVertices vergleicht auch die Normalen, echte Kanten bleiben.
+  let geo=raw;
+  try{
+    if(THREE.BufferGeometryUtils && THREE.BufferGeometryUtils.mergeVertices)
+      geo=THREE.BufferGeometryUtils.mergeVertices(raw, 1e-4);
+  }catch(e){ geo=raw; }
+  geo.computeBoundingBox();
   return geo;
 }
 
