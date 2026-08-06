@@ -1181,6 +1181,7 @@ const firebaseConfig = {
       <button class="btn" onclick="openCutTool()" title="Schneiden — großes Objekt mit einer Schnittebene in zwei druckbare Teile teilen">✂ Schneiden</button>
       <button class="btn" onclick="openEraserTool()" title="Radierer — mit dem Pinsel über das Modell fahren, um Flächen/Geometrie zu entfernen (Radius per Mausrad)">🧽 Radierer</button>
       <button class="btn" onclick="openSculptTool()" title="Modellieren — mit dem Pinsel Beulen aufbauen, abtragen oder glätten (Radius per Mausrad, Shift = glätten)">🖌️ Modellieren</button>
+      <button class="btn" onclick="openPaintTool()" title="Bemalen — Farben direkt aufs Modell malen (z.B. Tabletop-Figuren). Fürs Ansehen und Screenshots; der STL-Export bleibt einfarbig.">🎨 Bemalen</button>
       <button class="btn" onclick="repairSelected()" title="Reparieren — offene Löcher im ausgewählten Objekt schließen (wieder wasserdicht/druckbar machen)">🩹 Reparieren</button>
       <button class="btn" onclick="openSimplifyModal()" title="Vereinfachen — Dreiecke eines (importierten) Modells reduzieren, fürs schnellere Slicen">🔻 Vereinfachen</button>
       <button class="btn" onclick="openOffsetTool()" title="Spielraum — Körper um ±mm aufblasen/schrumpfen (Toleranz für Passungen, z.B. −0,2 mm für klemmende Deckel)">⧈ Spielraum</button>
@@ -13062,6 +13063,9 @@ function buildObjectFromData(data) {
     } else {
       geo = buildGeo(data.type || 'box');
     }
+    // Bemalte Meshes: Vertex-Farben überleben als Geometrie-Attribut — das
+    // Material muss sie nach Undo/Laden wieder anzeigen (sonst einfarbig)
+    if (geo && geo.getAttribute && geo.getAttribute('color')) { mat.vertexColors = true; mat.color.set('#ffffff'); }
     obj = new THREE.Mesh(geo, mat);
     obj.castShadow = true; obj.receiveShadow = true;
     _updateObjEdgeLines(obj);
@@ -13161,6 +13165,7 @@ function _roundGeoJSON(j){
   if (at.position) round(at.position.array, 3);
   if (at.normal)   round(at.normal.array, 3);
   if (at.uv)       round(at.uv.array, 3);
+  if (at.color)    round(at.color.array, 3);   // Bemalung (Vertex-Farben)
   if (j.data.boundingSphere) delete j.data.boundingSphere; // wird beim Laden neu berechnet
   return j;
 }
@@ -13190,6 +13195,31 @@ function _cachedGeoJSON(geo){
       const dec = new THREE.BufferGeometry();
       dec.setAttribute('position', new THREE.BufferAttribute(out instanceof Float32Array ? out : Float32Array.from(out), 3));
       dec.computeVertexNormals();
+      // Bemalung in die reduzierte Kopie retten: Farbe des nächstliegenden
+      // Original-Vertex über ein Raster-Hash (0,5 mm) übertragen
+      const srcCol = src.attributes.color;
+      if (srcCol) {
+        const K = 20, cmap = new Map();
+        const key = (x,y,z) => Math.round(x*K)+'_'+Math.round(y*K)+'_'+Math.round(z*K);
+        for (let i = 0; i < pos.count; i++) {
+          const k = key(pos.getX(i), pos.getY(i), pos.getZ(i));
+          if (!cmap.has(k)) cmap.set(k, i);
+        }
+        const dp = dec.attributes.position, ca = new Float32Array(dp.count*3);
+        for (let i = 0; i < dp.count; i++) {
+          const x = dp.getX(i), y = dp.getY(i), z = dp.getZ(i);
+          let si = cmap.get(key(x,y,z));
+          if (si === undefined) {            // Nachbarzellen absuchen
+            outer: for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) for (let oz = -1; oz <= 1; oz++) {
+              si = cmap.get((Math.round(x*K)+ox)+'_'+(Math.round(y*K)+oy)+'_'+(Math.round(z*K)+oz));
+              if (si !== undefined) break outer;
+            }
+          }
+          if (si === undefined) { ca[i*3]=ca[i*3+1]=ca[i*3+2]=0.6; continue; }
+          ca[i*3]=srcCol.getX(si); ca[i*3+1]=srcCol.getY(si); ca[i*3+2]=srcCol.getZ(si);
+        }
+        dec.setAttribute('color', new THREE.BufferAttribute(ca, 3));
+      }
       console.warn('[geoJSON] Riesen-Netz (' + nTri + ' Dreiecke) → Undo/Speichern nutzen reduzierte Kopie (' + dec.attributes.position.count/3 + ')');
       src = dec;
     }
@@ -37507,6 +37537,289 @@ function _sculptWheel(e) {
   _sculptSetRadius(_sculpt.radiusMm + (e.deltaY < 0 ? step : -step));
 }
 
+// ═══ BEMALEN (Vertex-Farben-Pinsel) ══════════════════════════════════════
+// Malt Farben direkt aufs Mesh (Vertex-Farben, weiche Kante). Nutzt die
+// Verschweiß-Gruppen des Skulptier-Pinsels — koinzidente Vertices bekommen
+// dieselbe Farbe, sonst entstehen Farbnähte an Deckelkanten/Rotationsnähten.
+// Farben sind fürs Ansehen/Screenshots — der STL-Export bleibt einfarbig.
+const _paint = { active:false, radiusMm:3, opacity:0.85, color:'#6b4a2e', mode:'paint',
+                 brushing:false, panel:null, ind:null, target:null,
+                 savedUndo:false, did:false, lastPoint:null, lastApply:null, lastClient:null };
+const _PAINT_SWATCHES = [
+  ['#4a5548','Feldgrau'], ['#5c5a3c','Oliv'],    ['#6b4a2e','Leder'],   ['#9a8a62','Khaki'],
+  ['#8b9097','Stahl'],    ['#a98c3f','Messing'], ['#c9a227','Gold'],    ['#d8cfb4','Knochen'],
+  ['#7a1f1f','Blutrot'],  ['#4a2a5a','Purpur'],  ['#23262b','Schwarz'], ['#e8e8e6','Weiß'],
+];
+
+function openPaintTool() {
+  if (_paint.active) { _paintClose(); return; }
+  if (typeof _sculpt !== 'undefined' && _sculpt.active) _sculptClose();
+  if (typeof _eraser !== 'undefined' && _eraser.active) _eraserClose();
+  if (typeof _cut !== 'undefined' && _cut.active) _cutClose();
+  if (typeof deselect === 'function') deselect();
+  _paint.active = true;
+  _paint.lastPoint = new THREE.Vector3();
+  _paintBuildPanel();
+  _paintBuildIndicator();
+  canvas.style.cursor = 'crosshair';
+  canvas.addEventListener('mousedown', _paintDown, true);
+  window.addEventListener('mousemove', _paintMove, true);
+  window.addEventListener('mouseup', _paintUp, true);
+  canvas.addEventListener('wheel', _paintWheel, { passive:false, capture:true });
+  notify('Bemalen aktiv — Farbe wählen und mit gedrückter Maus malen (Radius per Mausrad)', 'ok');
+}
+
+function _paintClose() {
+  _paint.active = false; _paint.brushing = false;
+  if (_paint.ind) { _paint.ind.remove(); _paint.ind = null; }
+  if (_paint.panel) { _paint.panel.remove(); _paint.panel = null; }
+  canvas.style.cursor = '';
+  canvas.removeEventListener('mousedown', _paintDown, true);
+  window.removeEventListener('mousemove', _paintMove, true);
+  window.removeEventListener('mouseup', _paintUp, true);
+  canvas.removeEventListener('wheel', _paintWheel, { capture:true });
+  _paint.target = null;
+}
+
+function _paintBuildPanel() {
+  if (_paint.panel) _paint.panel.remove();
+  const p = document.createElement('div');
+  p.id = 'paint-panel';
+  p.style.cssText = 'position:fixed;top:70px;right:14px;width:272px;z-index:6000;'+
+    'background:#1f2329;border:1px solid #3a3f47;border-radius:9px;padding:14px 16px;'+
+    'color:#e6e8eb;font:12px/1.4 system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.45)';
+  const sw = _PAINT_SWATCHES.map(([c,t]) =>
+    `<div onclick="_paintSetColor('${c}')" data-psw="${c}" title="${t}" style="width:34px;height:26px;border-radius:5px;cursor:pointer;background:${c};border:2px solid ${_paint.color===c?'#F97316':'transparent'};box-sizing:border-box"></div>`).join('');
+  p.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <b style="font-size:13px">🎨 Bemalen</b>
+      <span onclick="_paintClose()" style="cursor:pointer;color:#9aa0a8;font-size:16px;line-height:1">✕</span>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px">${sw}</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <span style="color:#9aa0a8">Eigene:</span>
+      <input type="color" value="${_paint.color}" id="paint-custom" style="width:44px;height:26px;border:none;background:none;padding:0;cursor:pointer" oninput="_paintSetColor(this.value)">
+      <div style="display:flex;gap:5px;margin-left:auto">
+        <button onclick="_paintSetMode('paint')" data-pm="paint" style="background:${_paint.mode==='paint'?'#F97316':'#2a2f37'};border:1px solid #3a3f47;color:#e6e8eb;border-radius:6px;padding:5px 8px;cursor:pointer;font-size:11px">🖌 Malen</button>
+        <button onclick="_paintSetMode('blur')" data-pm="blur" title="Verwischt harte Farbkanten" style="background:${_paint.mode==='blur'?'#F97316':'#2a2f37'};border:1px solid #3a3f47;color:#e6e8eb;border-radius:6px;padding:5px 8px;cursor:pointer;font-size:11px">〜 Verwischen</button>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span style="width:56px;color:#9aa0a8">Radius</span>
+      <input id="paint-rad" type="range" min="0.5" max="20" step="0.5" value="${_paint.radiusMm}" style="flex:1" oninput="_paintSetRadius(this.value)">
+      <span id="paint-rad-v" style="width:34px;text-align:right">${_paint.radiusMm}</span><span style="color:#9aa0a8">mm</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <span style="width:56px;color:#9aa0a8">Deckkraft</span>
+      <input id="paint-op" type="range" min="5" max="100" step="5" value="${Math.round(_paint.opacity*100)}" style="flex:1" oninput="_paintSetOpacity(this.value)">
+      <span id="paint-op-v" style="width:34px;text-align:right">${Math.round(_paint.opacity*100)}</span><span style="color:#9aa0a8">%</span>
+    </div>
+    <div style="display:flex;gap:5px;margin-bottom:8px">
+      <button onclick="_paintFillObject()" title="Ganzes Objekt mit der aktuellen Farbe grundieren" style="flex:1;background:#2a2f37;border:1px solid #3a3f47;color:#e6e8eb;border-radius:6px;padding:7px 4px;cursor:pointer;font-size:11px">🪣 Grundieren</button>
+      <button onclick="_paintClearObject()" title="Bemalung des zuletzt angefahrenen Objekts entfernen" style="flex:1;background:#2a2f37;border:1px solid #3a3f47;color:#e6e8eb;border-radius:6px;padding:7px 4px;cursor:pointer;font-size:11px">↺ Entfernen</button>
+    </div>
+    <div style="color:#9aa0a8;font-size:11px;margin-bottom:10px">Radius per Mausrad, <b>Alt</b> = Farbe vom Modell aufnehmen (Pipette). Farben sind fürs Ansehen und Screenshots — der STL-Export bleibt einfarbig. Strg+Z macht den Strich rückgängig.</div>
+    <button onclick="_paintClose()" style="width:100%;background:#F97316;border:none;color:#fff;border-radius:6px;padding:8px;font-weight:700;cursor:pointer">Fertig</button>`;
+  document.body.appendChild(p);
+  _paint.panel = p;
+}
+
+function _paintSetColor(c) {
+  _paint.color = c;
+  _paint.mode = 'paint';
+  if (_paint.panel) {
+    _paint.panel.querySelectorAll('[data-psw]').forEach(d =>
+      d.style.borderColor = d.getAttribute('data-psw') === c ? '#F97316' : 'transparent');
+    const inp = document.getElementById('paint-custom'); if (inp && inp.value !== c) inp.value = c;
+    _paintSetMode('paint');
+  }
+}
+function _paintSetMode(m) {
+  _paint.mode = m;
+  if (_paint.panel) _paint.panel.querySelectorAll('[data-pm]').forEach(b =>
+    b.style.background = b.getAttribute('data-pm') === m ? '#F97316' : '#2a2f37');
+}
+function _paintSetRadius(mm) {
+  _paint.radiusMm = Math.max(0.3, Math.min(20, parseFloat(mm) || 3));
+  const r = document.getElementById('paint-rad'), v = document.getElementById('paint-rad-v');
+  if (r) r.value = _paint.radiusMm;
+  if (v) v.textContent = _paint.radiusMm;
+  if (_paint.lastClient) _paintUpdateCursor(_paint.lastClient, !!_paint.target);
+}
+function _paintSetOpacity(pct) {
+  _paint.opacity = Math.max(0.05, Math.min(1, (parseFloat(pct) || 85) / 100));
+  const v = document.getElementById('paint-op-v'); if (v) v.textContent = Math.round(_paint.opacity*100);
+}
+
+function _paintBuildIndicator() {
+  if (_paint.ind) _paint.ind.remove();
+  const d = document.createElement('div');
+  d.id = 'paint-cursor';
+  d.style.cssText = 'position:fixed;border:2px solid #F97316;border-radius:50%;pointer-events:none;z-index:6500;' +
+    'transform:translate(-50%,-50%);box-shadow:0 0 0 1px rgba(255,255,255,.5),0 0 7px rgba(249,115,22,.7);display:none';
+  document.body.appendChild(d);
+  _paint.ind = d;
+}
+function _paintUpdateCursor(e, onModel) {
+  const el = _paint.ind; if (!el) return;
+  const rw = _paint.radiusMm / 10, c = _paint.lastPoint;
+  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  const rect = vpEl.getBoundingClientRect();
+  const proj = (v) => { const p = v.clone().project(camera);
+    return { x: (p.x*0.5+0.5)*rect.width + rect.left, y: (-p.y*0.5+0.5)*rect.height + rect.top }; };
+  const a = proj(c), bp = proj(c.clone().addScaledVector(right, rw));
+  const pr = Math.max(3, Math.hypot(bp.x - a.x, bp.y - a.y));
+  el.style.left = e.clientX + 'px'; el.style.top = e.clientY + 'px';
+  el.style.width = el.style.height = (2 * pr) + 'px';
+  el.style.borderColor = onModel ? '#F97316' : 'rgba(249,115,22,.4)';
+  el.style.background = _paint.color + '44';
+  el.style.display = 'block';
+}
+
+// Farb-Attribut sicherstellen + Material auf Vertex-Farben umstellen
+function _paintEnsure(mesh) {
+  const g = mesh.geometry, pos = g.attributes.position;
+  if (!pos || pos.isInterleavedBufferAttribute) return null;
+  let col = g.getAttribute('color');
+  if (!col || col.count !== pos.count) {
+    const base = new THREE.Color((mesh.userData && mesh.userData.color) || '#9aa0a8');
+    const arr = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) { arr[i*3] = base.r; arr[i*3+1] = base.g; arr[i*3+2] = base.b; }
+    col = new THREE.Float32BufferAttribute(arr, 3);
+    g.setAttribute('color', col);
+  }
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  for (const m of mats) if (m && !m.vertexColors) { m.vertexColors = true; m.color.set('#ffffff'); m.needsUpdate = true; }
+  if (typeof _sculptDetach === 'function') _sculptDetach(mesh);   // Geometrie muss mitgespeichert werden
+  mesh.userData._painted = 1;
+  return col;
+}
+
+const _pV = { m: new THREE.Matrix4(), s: new THREE.Vector3(), c: new THREE.Vector3(), col: new THREE.Color() };
+
+function _paintApplyAt(mesh, centerWorld, mode) {
+  const sc = _sculptPrep(mesh); if (!sc) return false;
+  const col = _paintEnsure(mesh); if (!col) return false;
+  const g = mesh.geometry, pos = g.attributes.position;
+  const pa = pos.array, ca = col.array;
+  mesh.updateMatrixWorld(true);
+  const inv = _pV.m.copy(mesh.matrixWorld).invert();
+  const s = _pV.s.setFromMatrixScale(mesh.matrixWorld);
+  const rw = _paint.radiusMm / 10;
+  const bc = _pV.col.set(_paint.color);
+  const ct = _pV.c.copy(centerWorld).applyMatrix4(inv);
+  let painted = 0;
+  for (let gi = 0; gi < sc.G; gi++) {
+    const vi = sc.gRep[gi];
+    const ax = (pa[vi*3] - ct.x) * s.x, ay = (pa[vi*3+1] - ct.y) * s.y, az = (pa[vi*3+2] - ct.z) * s.z;
+    const d2 = ax*ax + ay*ay + az*az;
+    if (d2 >= rw*rw) continue;
+    const f = 1 - Math.sqrt(d2) / rw, w = f * f * (3 - 2*f);
+    let nr, ng2, nb;
+    if (mode === 'blur') {
+      let sr = 0, sg = 0, sb = 0, cn = 0;
+      for (let k = sc.nStart[gi]; k < sc.nStart[gi+1]; k++) {
+        const nv = sc.gRep[sc.nList[k]];
+        sr += ca[nv*3]; sg += ca[nv*3+1]; sb += ca[nv*3+2]; cn++;
+      }
+      if (!cn) continue;
+      const l = Math.min(0.9, _paint.opacity) * w;
+      nr = ca[vi*3] + (sr/cn - ca[vi*3]) * l;
+      ng2 = ca[vi*3+1] + (sg/cn - ca[vi*3+1]) * l;
+      nb = ca[vi*3+2] + (sb/cn - ca[vi*3+2]) * l;
+    } else {
+      const a = _paint.opacity * w;
+      nr = ca[vi*3] + (bc.r - ca[vi*3]) * a;
+      ng2 = ca[vi*3+1] + (bc.g - ca[vi*3+1]) * a;
+      nb = ca[vi*3+2] + (bc.b - ca[vi*3+2]) * a;
+    }
+    for (let k = sc.gStart[gi]; k < sc.gStart[gi+1]; k++) {
+      const mv = sc.gMem[k];
+      ca[mv*3] = nr; ca[mv*3+1] = ng2; ca[mv*3+2] = nb;
+    }
+    painted++;
+  }
+  if (!painted) return false;
+  col.needsUpdate = true;
+  _geoJsonCache.delete(g);      // in-place mutiert → Cache verwerfen (Undo/Speichern!)
+  return true;
+}
+
+function _paintPickColor(hit) {
+  const g = hit.object.geometry, col = g.getAttribute && g.getAttribute('color');
+  let c;
+  if (col && hit.face) c = '#' + new THREE.Color(col.getX(hit.face.a), col.getY(hit.face.a), col.getZ(hit.face.a)).getHexString();
+  else c = '#' + new THREE.Color((hit.object.userData && hit.object.userData.color) || '#9aa0a8').getHexString();
+  _paintSetColor(c);
+  notify('Farbe aufgenommen: ' + c, 'ok');
+}
+
+function _paintMove(e) {
+  if (!_paint.active) return;
+  _paint.lastClient = { clientX: e.clientX, clientY: e.clientY };
+  const hit = _sculptPick(e);
+  if (hit) { _paint.lastPoint.copy(hit.point); _paint.target = hit.object; }
+  _paintUpdateCursor(e, !!hit);
+  if (!_paint.brushing) return;
+  e.preventDefault(); e.stopPropagation();
+  if (!hit) return;
+  if (_paint.lastApply && hit.point.distanceTo(_paint.lastApply) < _paint.radiusMm / 10 * 0.2) return;
+  _paint.lastApply = hit.point.clone();
+  if (!_paint.savedUndo) { saveUndo(); _paint.savedUndo = true; }
+  if (_paintApplyAt(hit.object, hit.point, _paint.mode)) _paint.did = true;
+}
+
+function _paintDown(e) {
+  if (!_paint.active || e.button !== 0) return;
+  e.preventDefault(); e.stopPropagation();
+  const hit = _sculptPick(e);
+  if (hit && e.altKey) { _paintPickColor(hit); return; }   // Pipette
+  _paint.brushing = true; _paint.did = false; _paint.savedUndo = false; _paint.lastApply = null;
+  if (!hit) return;
+  _paint.lastPoint.copy(hit.point);
+  _paint.lastApply = hit.point.clone();
+  if (!_paint.savedUndo) { saveUndo(); _paint.savedUndo = true; }
+  if (_paintApplyAt(hit.object, hit.point, _paint.mode)) _paint.did = true;
+}
+
+function _paintUp() {
+  if (!_paint.brushing) return;
+  _paint.brushing = false;
+  if (_paint.did) updateTree();
+}
+
+function _paintWheel(e) {
+  if (!_paint.active) return;
+  e.preventDefault(); e.stopPropagation();
+  const step = e.shiftKey ? 0.5 : 1;
+  _paintSetRadius(_paint.radiusMm + (e.deltaY < 0 ? step : -step));
+}
+
+function _paintFillObject() {
+  const mesh = _paint.target;
+  if (!mesh) { notify('Erst ein Objekt mit der Maus anfahren', 'w'); return; }
+  saveUndo();
+  const col = _paintEnsure(mesh); if (!col) return;
+  const bc = new THREE.Color(_paint.color);
+  const ca = col.array;
+  for (let i = 0; i < col.count; i++) { ca[i*3] = bc.r; ca[i*3+1] = bc.g; ca[i*3+2] = bc.b; }
+  col.needsUpdate = true;
+  _geoJsonCache.delete(mesh.geometry);
+  notify('Objekt grundiert — jetzt Details malen', 'ok');
+}
+
+function _paintClearObject() {
+  const mesh = _paint.target;
+  if (!mesh || !mesh.geometry.getAttribute('color')) { notify('Kein bemaltes Objekt angefahren', 'w'); return; }
+  saveUndo();
+  mesh.geometry.deleteAttribute('color');
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  for (const m of mats) if (m) { m.vertexColors = false; m.color.set((mesh.userData && mesh.userData.color) || '#9aa0a8'); m.needsUpdate = true; }
+  delete mesh.userData._painted;
+  _geoJsonCache.delete(mesh.geometry);
+  notify('Bemalung entfernt', 'ok');
+}
+
 // Kantenlinien: auf einem modellierten Netz überschreiten tausende Beulen die
 // 30°-Schwelle → nur Rauschen und teuer. Bei feinen Netzen deshalb entfernen.
 function _sculptFixEdges(mesh) {
@@ -38087,6 +38400,7 @@ const CMDK = [
   {i:'✂',g:'Bearbeiten',t:'Schneiden',k:'cut split zerteilen',run:()=>openCutTool()},
   {i:'🧽',g:'Bearbeiten',t:'Radierer',k:'eraser',run:()=>openEraserTool()},
   {i:'🖌️',g:'Bearbeiten',t:'Modellieren',k:'modellieren sculpt pinsel beule delle glätten skulptieren verformen organisch kneten',run:()=>openSculptTool()},
+  {i:'🎨',g:'Bearbeiten',t:'Bemalen',k:'bemalen malen anmalen färben farbe paint pinsel figur miniatur vertex color bunt',run:()=>openPaintTool()},
   {i:'🩹',g:'Druck',t:'Reparieren',k:'repair loch wasserdicht',run:()=>repairSelected()},
   {i:'🖨',g:'Druck',t:'Druck-Check',k:'print check druckbar',run:()=>_printCheckOpen()},
   {i:'↻',g:'Druck',t:'Für Druck ausrichten',k:'orient',run:()=>autoOrientForPrint()},
