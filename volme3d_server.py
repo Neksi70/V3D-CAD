@@ -70,7 +70,13 @@ def _ki_run(job, prompt, img_path):
     try:
         from gradio_client import Client, handle_file
         token = _ki_token()
-        kw = {'hf_token': token} if token else {}
+        # gradio_client >=1.x nennt den Parameter 'token', aeltere 'hf_token'
+        if token:
+            import inspect
+            pname = 'token' if 'token' in inspect.signature(Client.__init__).parameters else 'hf_token'
+            kw = {pname: token}
+        else:
+            kw = {}
         job['phase'] = 'Warten auf freie GPU…'
         with _ki_gpu_lock:
             if prompt:
