@@ -6,6 +6,12 @@ import os
 import re
 import sys
 import ssl
+import json
+import uuid
+import time
+import base64
+import tempfile
+import threading
 import http.client
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -18,6 +24,90 @@ OCCT_HOST = '127.0.0.1'
 OCCT_PORT = 3001
 OCCT_TIMEOUT = 600   # Booleans mit vielen Tools (Wabenmuster) brauchen Minuten
 _OCCT_CTX = ssl._create_unverified_context()
+
+# ── KI-Generierung (Hugging Face ZeroGPU, kostenlos) ──────────────────
+# Text→Bild ueber den FLUX.1-schnell-Space, Bild→3D ueber den offiziellen
+# tencent/Hunyuan3D-2-Space. Kein API-Key beim Nutzer mehr: der Server
+# spricht die Spaces selbst an (optionaler HF-Token hebt das ZeroGPU-Limit).
+# gradio_client wird erst im Job-Thread importiert — der Server startet
+# auch, wenn das Paket fehlt (dann liefert /ki/generate einen Fehler).
+KI_TOKEN_FILE = os.path.expanduser('~/.config/volme3d/hf_token')
+KI_FLUX_SPACE = 'black-forest-labs/FLUX.1-schnell'
+KI_SHAPE_SPACE = 'tencent/Hunyuan3D-2'
+KI_MAX_PER_DAY = 20      # eigene Bremse VOR dem ZeroGPU-Tageslimit
+KI_JOB_TTL = 1800        # fertige Jobs nach 30 min vergessen
+_ki_jobs = {}            # id -> {status, phase, file, error, ts}
+_ki_gpu_lock = threading.Lock()   # nur 1 Generierung gleichzeitig (Quota!)
+_ki_day = ['', 0]        # [YYYY-MM-DD, Zaehler]
+
+
+def _ki_token():
+    try:
+        with open(KI_TOKEN_FILE) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def _ki_quota_ok():
+    today = time.strftime('%Y-%m-%d')
+    if _ki_day[0] != today:
+        _ki_day[0], _ki_day[1] = today, 0
+    if _ki_day[1] >= KI_MAX_PER_DAY:
+        return False
+    _ki_day[1] += 1
+    return True
+
+
+def _ki_cleanup():
+    cutoff = time.time() - KI_JOB_TTL
+    for jid in [j for j, d in _ki_jobs.items() if d['ts'] < cutoff]:
+        del _ki_jobs[jid]
+
+
+def _ki_run(job, prompt, img_path):
+    """Job-Thread: (Text→Bild→)3D ueber die HF-Spaces, Ergebnis = GLB-Pfad."""
+    try:
+        from gradio_client import Client, handle_file
+        token = _ki_token()
+        kw = {'hf_token': token} if token else {}
+        job['phase'] = 'Warten auf freie GPU…'
+        with _ki_gpu_lock:
+            if prompt:
+                job['phase'] = 'Referenzbild wird erzeugt…'
+                flux = Client(KI_FLUX_SPACE, verbose=False, **kw)
+                r = flux.predict(
+                    prompt + ', single object, product photo, '
+                    'plain white background',
+                    0, True, 1024, 1024, 4, api_name='/infer')
+                img_path = r[0]
+            job['phase'] = '3D-Modell wird berechnet…'
+            shape = Client(KI_SHAPE_SPACE, verbose=False, **kw)
+            r = shape.predict(image=handle_file(img_path),
+                              api_name='/shape_generation')
+        out = r[0]['value'] if isinstance(r[0], dict) else r[0]
+        if not (out and os.path.isfile(out)):
+            raise RuntimeError('Space lieferte keine Modelldatei')
+        job['file'] = out
+        job['status'] = 'fertig'
+    except Exception as e:
+        msg = str(e).replace('\n', ' ')[:300]
+        low = msg.lower()
+        if 'quota' in low or 'exceeded' in low:
+            m = re.search(r'try again in (\d+):(\d+):(\d+)', low)
+            wait = ''
+            if m:
+                h, mi = int(m.group(1)), int(m.group(2))
+                mins = h * 60 + mi + 1
+                wait = f' In ca. {mins} min geht es weiter.' if mins > 1 else \
+                       ' Gleich noch einmal versuchen.'
+            msg = ('Das kostenlose GPU-Kontingent ist gerade aufgebraucht.'
+                   + wait)
+        job['error'] = msg
+        job['status'] = 'fehler'
+    finally:
+        job['ts'] = time.time()
+
 
 TMP_STL = '/tmp/volme3d-export.stl'
 WASM_GZ = 'volme3d-occt.wasm.gz'
@@ -124,9 +214,63 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(msg)
 
+    def _json(self, code, obj):
+        data = json.dumps(obj).encode()
+        self.send_response(code)
+        self._cors()
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _ki_generate(self):
+        """POST /ki/generate — {prompt} ODER {image: dataURL} -> {job}."""
+        length = int(self.headers.get('Content-Length', 0))
+        if length > 12 * 1024 * 1024:
+            self._json(413, {'error': 'Bild zu gross (max. 12 MB)'})
+            return
+        try:
+            body = json.loads(self.rfile.read(length) or b'{}')
+        except ValueError:
+            self._json(400, {'error': 'Ungueltige Anfrage'})
+            return
+        prompt = (body.get('prompt') or '').strip()[:500]
+        img_data = body.get('image') or ''
+        if not prompt and not img_data:
+            self._json(400, {'error': 'Prompt oder Bild fehlt'})
+            return
+        if not _ki_quota_ok():
+            self._json(429, {'error': 'Tageslimit erreicht — morgen geht es '
+                                      'kostenlos weiter.'})
+            return
+        img_path = None
+        if img_data:
+            try:
+                head, _, b64 = img_data.partition(',')
+                ext = '.png' if 'png' in head else '.webp' \
+                    if 'webp' in head else '.jpg'
+                raw = base64.b64decode(b64 or img_data)
+                fd, img_path = tempfile.mkstemp(prefix='ki-', suffix=ext)
+                with os.fdopen(fd, 'wb') as f:
+                    f.write(raw)
+            except (ValueError, OSError):
+                self._json(400, {'error': 'Bild nicht lesbar'})
+                return
+        _ki_cleanup()
+        jid = uuid.uuid4().hex[:12]
+        job = {'status': 'laeuft', 'phase': 'In Warteschlange…',
+               'file': None, 'error': None, 'ts': time.time()}
+        _ki_jobs[jid] = job
+        threading.Thread(target=_ki_run, args=(job, prompt, img_path),
+                         daemon=True).start()
+        self._json(200, {'job': jid})
+
     def do_POST(self):
         if self.path.startswith('/api/occt'):
             self._proxy_occt('POST')
+            return
+        if self.path == '/ki/generate':
+            self._ki_generate()
             return
         if self.path != '/volme3d-export.stl':
             self.send_error(404)
@@ -224,6 +368,25 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == '/occt-health':
             self._proxy_occt('GET')
+            return
+
+        if path.startswith('/ki/status/'):
+            job = _ki_jobs.get(path[len('/ki/status/'):])
+            if not job:
+                self._json(404, {'error': 'Unbekannter Job'})
+            else:
+                self._json(200, {'status': job['status'],
+                                 'phase': job['phase'],
+                                 'error': job['error']})
+            return
+
+        if path.startswith('/ki/result/'):
+            job = _ki_jobs.get(path[len('/ki/result/'):])
+            if not (job and job['status'] == 'fertig' and job['file']
+                    and os.path.isfile(job['file'])):
+                self.send_error(404, 'Kein Ergebnis')
+                return
+            self._send_file(job['file'], 'model/gltf-binary')
             return
 
         if path.startswith('/videos/'):
