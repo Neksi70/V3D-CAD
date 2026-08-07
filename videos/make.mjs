@@ -145,8 +145,8 @@ async function record(script, audio, opts) {
 
       // Scheinwerfer nach der Aktion auffrischen: Dialoge schließen, Zeilen
       // schalten um, die Ansicht springt — danach kann der Rahmen woanders
-      // sitzen als beim Setzen.
-      if (sc.at) await api.spot(sc.at, sc.pad ?? 8);
+      // sitzen als beim Setzen. Bewusst die wartefreie Variante.
+      if (sc.at) await api.spotRefresh(sc.at, sc.pad ?? 8);
 
       // Szene stehen lassen, bis der Satz zu Ende gesprochen ist
       const soll = (a.dur || 0) + (sc.hold ?? 0.55);

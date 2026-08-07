@@ -230,6 +230,20 @@ export function makeApi(page, log) {
     },
 
     /**
+     * Rahmen nachziehen, ohne zu warten und ohne zu meckern.
+     *
+     * Nach einer Aktion ist das Ziel oft weg (Dialog zu, Karte angeklickt).
+     * spot() liefe dann in seinen Sichtbarkeits-Timeout und verlängerte die
+     * Szene um Sekunden — daraus wird im fertigen Video eine Tonlücke.
+     */
+    async spotRefresh(sel, pad = 8) {
+      if (/:has-text\(|:text|^text=|>>|:visible|:nth-match/.test(sel)) return;
+      await page
+        .evaluate(([s, p]) => window.__vid.follow(s, p), [sel, pad])
+        .catch(() => {});
+    },
+
+    /**
      * Scheinwerfer auf ein Bedienelement.
      *
      * Bei reinen CSS-Selektoren bleibt der Rahmen am Element kleben (Dialoge
