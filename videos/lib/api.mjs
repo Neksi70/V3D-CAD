@@ -68,6 +68,19 @@ export function makeApi(page, log) {
       if (after) await sleep(after);
     },
 
+    /**
+     * Klick auf eine Bildschirmposition statt auf ein Element.
+     * Für Zeichenflächen: dort gibt es keine Selektoren, aber der Zuschauer
+     * muss trotzdem sehen, wohin geklickt wird.
+     */
+    async clickAt(punkt, { moveMs = 520, after = 260 } = {}) {
+      await api.moveTo(punkt, moveMs);
+      await page.evaluate(() => window.__vid.click());
+      await sleep(120);
+      await page.mouse.click(punkt.x, punkt.y);
+      if (after) await sleep(after);
+    },
+
     /** Text zeichenweise eintippen — Tippen soll man sehen. */
     async type(sel, text, { clear = true, delay = 85 } = {}) {
       await api.click(sel, { after: 120 });
