@@ -190,6 +190,25 @@ export function makeApi(page, log) {
       return ok;
     },
 
+    /**
+     * Feste Ansicht einnehmen: 'top' | 'front' | 'right' | 'iso'.
+     * Für flache Teile (Lithophane, Platten) zeigt die Draufsicht das Relief
+     * deutlich besser als jede Drehung.
+     */
+    async view(name, { fit = true, hold = 600 } = {}) {
+      await page.evaluate((n) => window.setView && window.setView(n), name);
+      await sleep(250);
+      if (fit) await api.fit({ hold: 0 });
+      await sleep(hold);
+    },
+
+    /** Näher heran oder weiter weg (negative Werte zoomen hinein). */
+    async zoom(betrag = -300, { at = { x: 960, y: 600 }, hold = 700 } = {}) {
+      await page.mouse.move(at.x, at.y);
+      await page.mouse.wheel(0, betrag);
+      await sleep(hold);
+    },
+
     /** Modell in der 3D-Ansicht drehen — zeigt das Ergebnis von allen Seiten. */
     async orbit({ dx = 320, dy = -60, ms = 1600, from } = {}) {
       const start = from || { x: 960, y: 560 };
