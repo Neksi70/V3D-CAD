@@ -153,11 +153,9 @@ export default {
       at: null,
       hold: 0.4,
       run: async (v) => {
-        await v.page.mouse.move(960, 620);
-        await v.page.mouse.wheel(0, -140);
-        await v.sleep(500);
-        await v.orbit({ dx: 340, dy: -70, ms: 1700, from: { x: 900, y: 620 } });
-        await v.orbit({ dx: -260, dy: 40, ms: 1300, from: { x: 1100, y: 600 } });
+        await v.fit();
+        await v.orbit({ dx: 170, dy: -50, ms: 1700, from: { x: 900, y: 620 } });
+        await v.orbit({ dx: -130, dy: 30, ms: 1300, from: { x: 1100, y: 600 } });
       },
     },
     {

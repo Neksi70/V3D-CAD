@@ -31,6 +31,9 @@ export function makeApi(page, log) {
   async function center(sel) {
     const el = page.locator(sel).first();
     await el.waitFor({ state: 'visible', timeout: 15000 });
+    // Absicherung: liegt das Ziel außerhalb des Sichtbereichs, zeigt der
+    // gemalte Cursor sonst irgendwohin und der Klick geht daneben.
+    await el.scrollIntoViewIfNeeded().catch(() => {});
     const b = await el.boundingBox();
     if (!b) throw new Error(`kein Kasten für ${sel}`);
     return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
@@ -122,6 +125,33 @@ export function makeApi(page, log) {
       await sleep(320);
     },
 
+    /** Sanft zu einem Element scrollen — im Video besser als ein Sprung. */
+    async scroll(sel, { hold = 700 } = {}) {
+      await page
+        .locator(sel)
+        .first()
+        .evaluate((n) =>
+          n.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        );
+      await sleep(hold);
+    },
+
+    /**
+     * Datei über die sichtbare Schaltfläche laden.
+     *
+     * Der Klick wird echt ausgeführt und der native Dateidialog abgefangen —
+     * so sieht man im Video den Zeiger auf der Schaltfläche, ohne dass ein
+     * Systemfenster die Aufnahme blockiert.
+     */
+    async upload(sel, datei, { after = 800 } = {}) {
+      const [chooser] = await Promise.all([
+        page.waitForEvent('filechooser', { timeout: 15000 }),
+        api.click(sel, { after: 0 }),
+      ]);
+      await chooser.setFiles(datei);
+      if (after) await sleep(after);
+    },
+
     /** Kontrollkästchen auf den gewünschten Zustand bringen. */
     async check(sel, on = true) {
       const el = page.locator(sel).first();
@@ -129,11 +159,32 @@ export function makeApi(page, log) {
       if (is !== on) await api.click(sel);
     },
 
+    /**
+     * Ansicht auf alle Körper zentrieren und passend zoomen.
+     *
+     * Vor jedem Drehen nötig: Wie groß und wo ein Generator-Ergebnis landet,
+     * ist je nach Bauteil verschieden — ohne das rutscht das Modell beim
+     * Zoomen aus dem Bild.
+     */
+    async fit({ hold = 500 } = {}) {
+      const ok = await page.evaluate(() => {
+        if (typeof window.fitView !== 'function') return false;
+        window.fitView();
+        return true;
+      });
+      if (!ok) log('  ⚠ fitView() nicht verfügbar — Ansicht bleibt, wie sie ist');
+      await sleep(hold);
+      return ok;
+    },
+
     /** Modell in der 3D-Ansicht drehen — zeigt das Ergebnis von allen Seiten. */
     async orbit({ dx = 320, dy = -60, ms = 1600, from } = {}) {
       const start = from || { x: 960, y: 560 };
       await api.moveTo(start, 420);
-      await page.mouse.down();
+      // RECHTE Taste: die App dreht nur mit button 2 — links zieht Objekte,
+      // die Mitte schiebt die Ansicht. Mit links würde man im Video das
+      // Modell verschieben statt die Kamera zu drehen.
+      await page.mouse.down({ button: 'right' });
       await page.evaluate(
         ([x, y, d]) => window.__vid.glide(x, y, d),
         [start.x + dx, start.y + dy, ms]
@@ -142,7 +193,7 @@ export function makeApi(page, log) {
         const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
         await page.mouse.move(start.x + dx * e, start.y + dy * e);
       });
-      await page.mouse.up();
+      await page.mouse.up({ button: 'right' });
       await sleep(200);
     },
 
