@@ -69,6 +69,17 @@ async function record(script, audio, opts) {
     recordVideo: { dir: vidDir, size: { width: W, height: H } },
     permissions: [],
   });
+  // Einmalige Hinweise der App vorab abhaken. Sie poppen sonst mitten in
+  // einer Erklärung auf, verdecken die Oberfläche und wirken im fertigen
+  // Video wie ein Fehler.
+  await ctx.addInitScript(() => {
+    try {
+      localStorage.setItem('v3d-disk-tip', '1');
+    } catch (e) {
+      /* privater Modus o.ä. — dann eben mit Hinweis */
+    }
+  });
+
   // Titelkarte vorab bekanntgeben: sie steht dann schon im allerersten Frame
   // und deckt die Ladephase ab.
   await ctx.addInitScript(
@@ -131,6 +142,11 @@ async function record(script, audio, opts) {
       }
 
       if (sc.run) await sc.run(api);
+
+      // Scheinwerfer nach der Aktion auffrischen: Dialoge schließen, Zeilen
+      // schalten um, die Ansicht springt — danach kann der Rahmen woanders
+      // sitzen als beim Setzen.
+      if (sc.at) await api.spot(sc.at, sc.pad ?? 8);
 
       // Szene stehen lassen, bis der Satz zu Ende gesprochen ist
       const soll = (a.dur || 0) + (sc.hold ?? 0.55);

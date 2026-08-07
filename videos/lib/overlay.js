@@ -214,12 +214,23 @@
      */
     follow(sel, pad = 8) {
       stopFollow();
-      const el = document.querySelector(sel);
-      if (!el) return put(null, pad);
+      // erstes SICHTBARES Treffer-Element: bei mehrdeutigen Selektoren steht
+      // sonst schnell ein ausgeblendetes Element vorn und der Rahmen sitzt
+      // irgendwo im Nichts
+      const sichtbar = () => {
+        for (const e of document.querySelectorAll(sel)) {
+          const b = e.getBoundingClientRect();
+          if (b.width && b.height && e.offsetParent !== null) return e;
+        }
+        return null;
+      };
+      if (!sichtbar()) return false;
       const tick = () => {
-        const e = document.querySelector(sel);
-        if (!e || !e.isConnected) return put(null, pad);
-        put(e.getBoundingClientRect(), pad);
+        const e = sichtbar();
+        // Nur ausblenden, NICHT abbrechen: Ist das Ziel kurz weg (Dialog
+        // schließt und öffnet, Zeile wird umgeschaltet), soll der Rahmen
+        // zurückkommen, sobald es wieder da ist.
+        put(e ? e.getBoundingClientRect() : null, pad);
         followRaf = requestAnimationFrame(tick);
       };
       tick();
