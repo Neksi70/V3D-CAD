@@ -179,9 +179,6 @@ ALLOW = {
     # Agenten geht NICHT — signtool loescht die im Signaturblock eingebettete
     # Serveradresse. Neu bauen nur noch bei Server-/Gruppenwechsel.
     '/V3D-Fernwartung-Setup.exe':         ('V3D-Fernwartung-Setup.exe', 'application/octet-stream'),
-    # MeshCentral Assistant: laeuft nur auf Zuruf, Kunde fordert selbst Hilfe an.
-    # Einstellungen liegen als .msh im Paket daneben (kein Signaturblock-Trick noetig).
-    '/V3D-Hilfe.exe':                     ('V3D-Hilfe.exe', 'application/octet-stream'),
 }
 
 
