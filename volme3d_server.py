@@ -170,6 +170,18 @@ ALLOW = {
     '/volme3d-print-helper-LIESMICH.txt': ('volme3d-print-helper-LIESMICH.txt', 'text/plain; charset=utf-8'),
     '/V3D-Remote.exe':                    ('V3D-Remote.exe', 'application/octet-stream'),
     '/V3D-Remote.zip':                    ('V3D-Remote.zip', 'application/zip'),
+    # Testfassung 1.4.9 (Installer + portabel). Nicht verlinkt, nur zum Pruefen
+    # auf frischen Rechnern. Nach bestandenem Test wird daraus die regulaere Datei.
+    '/V3D-Remote-test.msi':               ('V3D-Remote-149-signiert.msi', 'application/octet-stream'),
+    '/V3D-Remote-test.exe':               ('V3D-Remote-149-signiert.exe', 'application/octet-stream'),
+    # MeshCentral-Agent als eine Datei: signierte IExpress-Huelle (Herausgeber
+    # Volker Isken), darin der fertig konfigurierte Agent. Direktes Signieren des
+    # Agenten geht NICHT — signtool loescht die im Signaturblock eingebettete
+    # Serveradresse. Neu bauen nur noch bei Server-/Gruppenwechsel.
+    '/V3D-Fernwartung-Setup.exe':         ('V3D-Fernwartung-Setup.exe', 'application/octet-stream'),
+    # MeshCentral Assistant: laeuft nur auf Zuruf, Kunde fordert selbst Hilfe an.
+    # Einstellungen liegen als .msh im Paket daneben (kein Signaturblock-Trick noetig).
+    '/V3D-Hilfe.exe':                     ('V3D-Hilfe.exe', 'application/octet-stream'),
 }
 
 
