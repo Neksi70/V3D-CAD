@@ -1182,6 +1182,7 @@ const firebaseConfig = {
       <button class="btn" onclick="openEraserTool()" title="Radierer — mit dem Pinsel über das Modell fahren, um Flächen/Geometrie zu entfernen (Radius per Mausrad)">🧽 Radierer</button>
       <button class="btn" onclick="openSculptTool()" title="Modellieren — mit dem Pinsel Beulen aufbauen, abtragen oder glätten (Radius per Mausrad, Shift = glätten)">🖌️ Modellieren</button>
       <button class="btn" onclick="openPaintTool()" title="Bemalen — Farben direkt aufs Modell malen (z.B. Tabletop-Figuren). Fürs Ansehen und Screenshots; der STL-Export bleibt einfarbig.">🎨 Bemalen</button>
+      <button class="btn" onclick="openMmuPaintTool()" title="Mehrfarb-Druck — Flächen filamentgenau einfärben wie in Bambu Studio (Pinsel, Füllen, Dreieck, Höhenband). Export als 3MF (Farben → Filamente) oder OBJ.">🖍️ Mehrfarb-Druck</button>
       <button class="btn" onclick="repairSelected()" title="Reparieren — offene Löcher im ausgewählten Objekt schließen (wieder wasserdicht/druckbar machen)">🩹 Reparieren</button>
       <button class="btn" onclick="openSimplifyModal()" title="Vereinfachen — Dreiecke eines (importierten) Modells reduzieren, fürs schnellere Slicen">🔻 Vereinfachen</button>
       <button class="btn" onclick="openOffsetTool()" title="Spielraum — Körper um ±mm aufblasen/schrumpfen (Toleranz für Passungen, z.B. −0,2 mm für klemmende Deckel)">⧈ Spielraum</button>
@@ -13127,6 +13128,11 @@ function buildObjectFromData(data) {
   if (data._loftLoops)   { obj.userData._loftLoops = data._loftLoops; obj.userData._loftHmm = data._loftHmm; obj.userData._loftSides = data._loftSides; }
   if (data._sweepProfile){ obj.userData._sweepProfile = data._sweepProfile; obj.userData._sweepPath = data._sweepPath; obj.userData._sweepSides = data._sweepSides; }
   if (data._l3Rings)     { obj.userData._l3Rings = data._l3Rings; obj.userData._l3Sides = data._l3Sides; obj.userData._l3Smooth = !!data._l3Smooth; }
+  if (data._mmuPaint) {
+    obj.userData._mmuPaint = 1;
+    if (data._mmuBase)  obj.userData._mmuBase  = data._mmuBase;
+    if (data._mmuSlots) obj.userData._mmuSlots = data._mmuSlots;
+  }
   if (data._origGeoData) obj.userData._origGeo = new THREE.BufferGeometryLoader().parse(data._origGeoData);
   else if (data._origSameAsGeo && obj.isMesh && obj.geometry) obj.userData._origGeo = obj.geometry;
   // Rohr aus Parametern neu bauen (Geometrie nicht als JSON gespeichert):
@@ -13292,6 +13298,8 @@ function objectToData(o) {
   if (o.userData._l3Rings)     { d._l3Rings = o.userData._l3Rings; d._l3Sides = o.userData._l3Sides; if (o.userData._l3Smooth) d._l3Smooth = true; }
   if (o.userData.occtShape)    d.occtShape   = o.userData.occtShape;
   if (o.userData._occtParams)  d._occtParams = o.userData._occtParams;
+  // Mehrfarb-Bemalung: Farben stecken im Geometrie-Attribut, hier nur Flag+Palette
+  if (o.userData._mmuPaint) { d._mmuPaint = 1; d._mmuBase = o.userData._mmuBase; d._mmuSlots = o.userData._mmuSlots; }
   if (o.userData._hollowFlip)  d._hollowFlip = true;
   if (o.userData.displacementPattern && o.userData.displacementPattern !== 'keine') {
     d.displacementPattern   = o.userData.displacementPattern;
@@ -19631,28 +19639,49 @@ function exportOBJ() {
   const lines = ['# V3D CAD OBJ Export', `mtllib ${mtlName}`];
   const mats = new Map();   // colorHex → matName
   let vOffset = 1, objIdx = 0;
-  function matFor(mesh) {
-    const c = mesh.material?.color || new THREE.Color(0xcccccc);
-    const hex = c.getHexString();
+  function matForHex(hex) {
+    hex = hex.replace(/^#/, '').toLowerCase();
     if (!mats.has(hex)) mats.set(hex, `mat_${mats.size}`);
     return mats.get(hex);
   }
+  function matFor(mesh) {
+    const c = mesh.material?.color || new THREE.Color(0xcccccc);
+    return matForHex(c.getHexString());
+  }
   function collectMesh(mesh) {
     const geo = mesh.geometry.clone().toNonIndexed();
+    // Mehrfarb-Bemalung (🖍️): Zustände aus den Vertex-Farben, Flächen nach Slot
+    // gruppiert mit eigenem usemtl → Slicer/Blender sehen echte Farbbereiche
+    const mmu = (mesh.userData._mmuPaint && typeof _mmuTriStatesGeo === 'function')
+      ? _mmuTriStatesGeo(geo, mesh.userData) : null;
     mesh.updateMatrixWorld(true);
     geo.applyMatrix4(mesh.matrixWorld);
     geo.rotateX(Math.PI / 2);                     // Y-up (Editor) → Z-up (Slicer)
     if (!geo.attributes.normal) geo.computeVertexNormals();
     const pos = geo.attributes.position, norm = geo.attributes.normal, count = pos.count;
     const name = (mesh.userData?.name || 'Objekt').replace(/\s+/g, '_') + '_' + (objIdx++);
-    lines.push(`o ${name}`, `usemtl ${matFor(mesh)}`);
+    lines.push(`o ${name}`);
+    if (!mmu) lines.push(`usemtl ${matFor(mesh)}`);
     for (let i = 0; i < count; i++)
       lines.push(`v ${(pos.getX(i)*10).toFixed(6)} ${(pos.getY(i)*10).toFixed(6)} ${(pos.getZ(i)*10).toFixed(6)}`);
     for (let i = 0; i < count; i++)
       lines.push(`vn ${norm.getX(i).toFixed(6)} ${norm.getY(i).toFixed(6)} ${norm.getZ(i).toFixed(6)}`);
-    for (let i = 0; i < Math.floor(count / 3); i++) {
+    const triN = Math.floor(count / 3);
+    const face = (i) => {
       const a = vOffset + i*3, b = a+1, c = a+2;
-      lines.push(`f ${a}//${a} ${b}//${b} ${c}//${c}`);
+      return `f ${a}//${a} ${b}//${b} ${c}//${c}`;
+    };
+    if (mmu && mmu.states.length === triN) {
+      for (let s = 0; s < mmu.hexes.length; s++) {
+        let started = false;
+        for (let i = 0; i < triN; i++) {
+          if (mmu.states[i] !== s) continue;
+          if (!started) { lines.push(`usemtl ${matForHex(mmu.hexes[s])}`); started = true; }
+          lines.push(face(i));
+        }
+      }
+    } else {
+      for (let i = 0; i < triN; i++) lines.push(face(i));
     }
     vOffset += count;
     geo.dispose();
@@ -19712,8 +19741,10 @@ function export3MF() {
     const r = _build3mfBlob(expSrc);
     if (!r) { notify('Keine Flächen', 'w'); return; }
     const fname = _designFilename('3mf');
-    _saveExport(r.blob, fname).then(res =>
-      notify(`3MF „${fname}" ${res.wrote ? '→ ' + res.dir : ''} — ${r.parts} Teile, ${r.colors} Farbe/n ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok'));
+    _saveExport(r.blob, fname).then(res => {
+      notify(`3MF „${fname}" ${res.wrote ? '→ ' + res.dir : ''} — ${r.parts} Teile, ${r.colors} Farbe/n ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok');
+      if (r.colors > 1) notify('Filament-Zuordnung im Slicer: ' + r.legend.join('  '), 'ok');
+    });
   } catch(e) {
     console.error('3MF Export Fehler:', e);
     notify('3MF Fehler: ' + (e.message || e), 'w');
@@ -19738,10 +19769,35 @@ function _build3mfBlob(expSrc) {
     const objXml = [], compXml = [], partXml = [];
     meshes.forEach((m, i) => {
       const id = i + 1;
-      const hex = (m.material?.color || new THREE.Color(0xcccccc)).getHexString().toUpperCase();
+      let geo = m.geometry.clone().toNonIndexed();
+      // Mehrfarb-Bemalung (🖍️): Dreiecks-Zustände VOR dem Attribut-Löschen aus
+      // den Vertex-Farben ableiten; jede benutzte Slot-Farbe wird ein Filament.
+      let mmu = null;
+      if (m.userData._mmuPaint && typeof _mmuTriStatesGeo === 'function') {
+        mmu = _mmuTriStatesGeo(geo, m.userData);
+      }
+      const hex = mmu ? mmu.hexes[0].slice(1).toUpperCase()
+                      : (m.material?.color || new THREE.Color(0xcccccc)).getHexString().toUpperCase();
       if (!colorIndex.has(hex)) colorIndex.set(hex, colorIndex.size);
       const extruder = colorIndex.get(hex) + 1;
-      let geo = m.geometry.clone().toNonIndexed();
+      let triFil = null;   // pro Dreieck: Filamentnummer (0 = Teil-Filament)
+      if (mmu) {
+        const used = new Set(mmu.states);
+        // Filamente in Slot-Reihenfolge registrieren, aber nur benutzte
+        for (let s2 = 1; s2 < mmu.hexes.length; s2++) {
+          if (!used.has(s2)) continue;
+          const h2 = mmu.hexes[s2].slice(1).toUpperCase();
+          if (!colorIndex.has(h2)) colorIndex.set(h2, colorIndex.size);
+        }
+        if (colorIndex.size > 16) throw new Error('Mehr als 16 Farben/Filamente — Slicer-Grenze');
+        triFil = new Uint8Array(mmu.states.length);
+        for (let k = 0; k < mmu.states.length; k++) {
+          const s2 = mmu.states[k];
+          if (!s2) continue;
+          const f = colorIndex.get(mmu.hexes[s2].slice(1).toUpperCase()) + 1;
+          if (f !== extruder) triFil[k] = f;
+        }
+      }
       m.updateMatrixWorld(true);
       geo.applyMatrix4(m.matrixWorld);
       geo.scale(10, 10, 10);                                  // App-Einheiten → mm
@@ -19753,9 +19809,12 @@ function _build3mfBlob(expSrc) {
       for (let k = 0; k < pos.count; k++)
         v += `<vertex x="${pos.getX(k).toFixed(5)}" y="${pos.getY(k).toFixed(5)}" z="${pos.getZ(k).toFixed(5)}"/>`;
       const triN = idx ? idx.length / 3 : pos.count / 3;
+      // mergeVertices erhält die Dreiecks-Reihenfolge — Zustände bleiben passgenau
+      if (triFil && triFil.length !== triN) triFil = null;
       for (let k = 0; k < triN; k++) {
         const a = idx ? idx[k*3] : k*3, b = idx ? idx[k*3+1] : k*3+1, c = idx ? idx[k*3+2] : k*3+2;
-        t += `<triangle v1="${a}" v2="${b}" v3="${c}"/>`;
+        const pc = (triFil && triFil[k]) ? ` paint_color="${_mmuPaintCode(triFil[k])}"` : '';
+        t += `<triangle v1="${a}" v2="${b}" v3="${c}"${pc}/>`;
       }
       objXml.push(`  <object id="${id}" type="model"><mesh><vertices>${v}</vertices><triangles>${t}</triangles></mesh></object>`);
       compXml.push(`<component objectid="${id}" transform="${IDENT}"/>`);
@@ -19792,7 +19851,8 @@ ${partXml.join('\n')}
       'Metadata/model_settings.config': u8(cfg),
     }, { level: 6 });
     const blob3mf = new Blob([zipped], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
-    return { blob: blob3mf, parts: meshes.length, colors: colorIndex.size };
+    const legend = [...colorIndex.entries()].sort((a, b) => a[1] - b[1]).map(([h, ix]) => (ix + 1) + '=#' + h);
+    return { blob: blob3mf, parts: meshes.length, colors: colorIndex.size, legend };
 }
 
 // ═══ STEP LOKAL IM BROWSER ═══════════════════════════════════════════════════
@@ -37225,6 +37285,7 @@ const _sculpt = { active:false, radiusMm:12, strengthMm:0.5, mode:'raise', symX:
 
 function openSculptTool() {
   if (_sculpt.active) { _sculptClose(); return; }
+  if (typeof _mmu !== 'undefined' && _mmu.active) _mmuClose();
   if (typeof _eraser !== 'undefined' && _eraser.active) _eraserClose();
   if (typeof _cut !== 'undefined' && _cut.active) _cutClose();
   if (typeof deselect === 'function') deselect();
@@ -37559,6 +37620,7 @@ const _PAINT_SWATCHES = [
 
 function openPaintTool() {
   if (_paint.active) { _paintClose(); return; }
+  if (typeof _mmu !== 'undefined' && _mmu.active) _mmuClose();
   if (typeof _sculpt !== 'undefined' && _sculpt.active) _sculptClose();
   if (typeof _eraser !== 'undefined' && _eraser.active) _eraserClose();
   if (typeof _cut !== 'undefined' && _cut.active) _cutClose();
@@ -37824,6 +37886,540 @@ function _paintClearObject() {
   delete mesh.userData._painted;
   _geoJsonCache.delete(mesh.geometry);
   notify('Bemalung entfernt', 'ok');
+}
+
+// ═══ MEHRFARB-DRUCK-BEMALEN (🖍️, Bambu-Studio-Stil) ═════════════════════════
+// Diskretes Dreiecks-Malen für den Mehrfarbdruck: jeder Farb-Slot = ein Filament.
+// Wahrheit sind die flachen Vertex-Farben (alle 3 Ecken eines Dreiecks identisch) —
+// die überleben Undo/Speichern als Geometrie-Attribut ohne eigene Serialisierung;
+// der 3MF/OBJ-Export leitet daraus die Filament-Zustände per Nächster-Slot-
+// Zuordnung ab (_mmuTriStatesGeo). paint_color-Kodierung verifiziert gegen Orcas
+// Model.cpp (CONST_FILAMENTS) + TriangleSelector: Filament F → F=1:"4" F=2:"8"
+// F≥3: hex(F-3)+"C"; unbemalt = kein Attribut = Filament des Teils.
+const _mmu = { active:false, slots:['#e53935','#1e88e5','#fdd835','#43a047'], cur:0,
+  tool:'brush', radiusMm:3, fillAngle:30, bandMm:5, symX:false,
+  target:null, brushing:false, did:false, savedUndo:false, lastApply:null,
+  lastClient:null, lastPoint:null, ind:null, panel:null };
+
+function openMmuPaintTool() {
+  if (_mmu.active) { _mmuClose(); return; }
+  if (typeof _paint !== 'undefined' && _paint.active) _paintClose();
+  if (typeof _sculpt !== 'undefined' && _sculpt.active) _sculptClose();
+  // Palette aus einem früher bemalten Objekt übernehmen (Design neu geladen)
+  const prev = objects.find(o => o.userData && o.userData._mmuSlots);
+  if (prev) _mmu.slots = prev.userData._mmuSlots.slice();
+  _mmu.active = true;
+  _mmu.lastPoint = new THREE.Vector3();
+  _mmuBuildPanel();
+  _mmuBuildIndicator();
+  canvas.addEventListener('mousedown', _mmuDown, true);
+  window.addEventListener('mousemove', _mmuMove, true);
+  window.addEventListener('mouseup', _mmuUp, true);
+  canvas.addEventListener('wheel', _mmuWheel, { passive:false, capture:true });
+  notify('Mehrfarb-Bemalen aktiv — Farbe und Werkzeug wählen, aufs Modell malen (Alt = Pipette)', 'ok');
+}
+
+function _mmuClose() {
+  _mmu.active = false; _mmu.brushing = false;
+  if (_mmu.ind) { _mmu.ind.remove(); _mmu.ind = null; }
+  if (_mmu.panel) { _mmu.panel.remove(); _mmu.panel = null; }
+  canvas.removeEventListener('mousedown', _mmuDown, true);
+  window.removeEventListener('mousemove', _mmuMove, true);
+  window.removeEventListener('mouseup', _mmuUp, true);
+  canvas.removeEventListener('wheel', _mmuWheel, { capture:true });
+  _mmu.target = null;
+}
+
+// Grundfarbe (Filament 1) des Objekts — vor dem Weißschalten des Materials gemerkt
+function _mmuBaseHex(mesh) {
+  if (mesh.userData._mmuBase) return mesh.userData._mmuBase;
+  const m = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+  const hex = (m && !m.vertexColors && m.color) ? '#' + m.color.getHexString()
+            : ((mesh.userData && mesh.userData.color) || '#9aa0a8');
+  mesh.userData._mmuBase = hex;
+  return hex;
+}
+
+// Non-indexed + Farb-Attribut sicherstellen; Objekt wird 'custom' (Geometrie wird
+// mitgespeichert). Indexierte Geometrie MUSS aufgelöst werden, sonst teilen sich
+// Nachbar-Dreiecke Ecken und die Farbkante schmiert.
+function _mmuEnsure(mesh) {
+  let g = mesh.geometry;
+  const pos0 = g.attributes.position;
+  if (!pos0 || pos0.isInterleavedBufferAttribute) return null;
+  _mmuBaseHex(mesh);                       // Grundfarbe VOR vertexColors sichern
+  if (g.index) {
+    const ng = g.toNonIndexed();
+    mesh.geometry = ng; g.dispose(); g = ng;
+    delete g.userData._sc;
+  }
+  const n = g.attributes.position.count;
+  let col = g.getAttribute('color');
+  if (!col || col.count !== n) {
+    const base = new THREE.Color(_mmuBaseHex(mesh));
+    const arr = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { arr[i*3] = base.r; arr[i*3+1] = base.g; arr[i*3+2] = base.b; }
+    col = new THREE.Float32BufferAttribute(arr, 3);
+    g.setAttribute('color', col);
+  }
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  for (const m of mats) if (m && !m.vertexColors) { m.vertexColors = true; m.color.set('#ffffff'); m.needsUpdate = true; }
+  if (typeof _sculptDetach === 'function') _sculptDetach(mesh);
+  mesh.userData._mmuPaint = 1;
+  mesh.userData._mmuSlots = _mmu.slots.slice();
+  return col;
+}
+
+// Nachbarschaft (Kanten über 1-µm-Punktraster) + float64-Flächennormalen.
+// Winziges Koplanar-Epsilon ist Pflicht: mit float32/großzügigem Epsilon kriecht
+// das Füllen auf fein tessellierten Rundungen über alles (s. Slicer-Mal-Werkzeug).
+function _mmuPrep(mesh) {
+  const g = mesh.geometry, pos = g.attributes.position, n = pos.count;
+  let ad = g.userData._mmuAdj;
+  if (ad && ad.n === n) return ad;
+  const pa = pos.array, triN = (n / 3) | 0;
+  const map = new Map(), gid = new Int32Array(n);
+  let G = 0;
+  const K = 1e4;
+  for (let i = 0; i < n; i++) {
+    const k = Math.round(pa[i*3]*K) + '_' + Math.round(pa[i*3+1]*K) + '_' + Math.round(pa[i*3+2]*K);
+    let id = map.get(k);
+    if (id === undefined) { id = G++; map.set(k, id); }
+    gid[i] = id;
+  }
+  const em = new Map(), nbr = new Int32Array(triN * 3).fill(-1);
+  for (let t = 0; t < triN; t++) {
+    for (let e = 0; e < 3; e++) {
+      const a = gid[t*3+e], b = gid[t*3+(e+1)%3];
+      if (a === b) continue;
+      const key = a < b ? a + '_' + b : b + '_' + a;
+      const o = em.get(key);
+      if (o === undefined) em.set(key, t);
+      else if (o >= 0) {
+        for (let s = 0; s < 3; s++) if (nbr[t*3+s] < 0) { nbr[t*3+s] = o; break; }
+        for (let s = 0; s < 3; s++) if (nbr[o*3+s] < 0) { nbr[o*3+s] = t; break; }
+        em.set(key, -2);               // >2 Dreiecke an einer Kante: weitere ignorieren
+      }
+    }
+  }
+  const fn = new Float64Array(triN * 3);
+  for (let t = 0; t < triN; t++) {
+    const i0 = t*9, i1 = t*9+3, i2 = t*9+6;
+    const ux = pa[i1]-pa[i0], uy = pa[i1+1]-pa[i0+1], uz = pa[i1+2]-pa[i0+2];
+    const vx = pa[i2]-pa[i0], vy = pa[i2+1]-pa[i0+1], vz = pa[i2+2]-pa[i0+2];
+    let nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+    const l = Math.sqrt(nx*nx + ny*ny + nz*nz) || 1;
+    fn[t*3] = nx/l; fn[t*3+1] = ny/l; fn[t*3+2] = nz/l;
+  }
+  ad = { n, nbr, fn };
+  g.userData._mmuAdj = ad;
+  return ad;
+}
+
+const _mmuV = { m: new THREE.Matrix4(), s: new THREE.Vector3(), c: new THREE.Vector3(), col: new THREE.Color() };
+
+function _mmuColor(mesh) {
+  return (_mmu.tool === 'erase' || _mmu.cur < 0) ? _mmuBaseHex(mesh) : _mmu.slots[_mmu.cur];
+}
+function _mmuSetTri(ca, t, c) {
+  for (let k = 0; k < 3; k++) { const o = (t*3+k)*3; ca[o] = c.r; ca[o+1] = c.g; ca[o+2] = c.b; }
+}
+function _mmuCommit(mesh, col, painted) {
+  if (!painted) return false;
+  col.needsUpdate = true;
+  _geoJsonCache.delete(mesh.geometry);
+  mesh.userData._mmuSlots = _mmu.slots.slice();
+  return true;
+}
+
+// Kugel-Pinsel: Dreieck gilt als getroffen, wenn eine Ecke ODER der Schwerpunkt
+// in der Welt-Kugel liegt (im lokalen Raum als Ellipsoid — skalierte Körper).
+function _mmuApplyBrush(mesh, centerWorld) {
+  const col = _mmuEnsure(mesh); if (!col) return false;
+  const g = mesh.geometry, pos = g.attributes.position, pa = pos.array, ca = col.array;
+  mesh.updateMatrixWorld(true);
+  const inv = _mmuV.m.copy(mesh.matrixWorld).invert();
+  const s = _mmuV.s.setFromMatrixScale(mesh.matrixWorld);
+  const rw = _mmu.radiusMm / 10, r2 = rw * rw;
+  const c0 = _mmuV.c.copy(centerWorld).applyMatrix4(inv).clone();
+  const centers = [c0];
+  if (_mmu.symX) centers.push(new THREE.Vector3(-c0.x, c0.y, c0.z));
+  const bc = _mmuV.col.set(_mmuColor(mesh));
+  const triN = (pos.count / 3) | 0;
+  let painted = 0;
+  for (const ct of centers) {
+    for (let t = 0; t < triN; t++) {
+      let hit = false, cx = 0, cy = 0, cz = 0;
+      for (let k = 0; k < 3; k++) {
+        const o = (t*3+k)*3, px = pa[o], py = pa[o+1], pz = pa[o+2];
+        cx += px; cy += py; cz += pz;
+        const ax = (px-ct.x)*s.x, ay = (py-ct.y)*s.y, az = (pz-ct.z)*s.z;
+        if (ax*ax + ay*ay + az*az < r2) hit = true;
+      }
+      if (!hit) {
+        const ax = (cx/3-ct.x)*s.x, ay = (cy/3-ct.y)*s.y, az = (cz/3-ct.z)*s.z;
+        hit = ax*ax + ay*ay + az*az < r2;
+      }
+      if (hit) { _mmuSetTri(ca, t, bc); painted++; }
+    }
+  }
+  return _mmuCommit(mesh, col, painted);
+}
+
+// Smart-Füllen: Flutfüllung über Kanten, solange der Knickwinkel unter der
+// Schwelle bleibt (Vergleich im cos-Raum, Epsilon 1e-9 → Regler 0° = nur koplanar).
+function _mmuApplyFill(mesh, triSeed) {
+  const col = _mmuEnsure(mesh); if (!col) return false;
+  const ad = _mmuPrep(mesh);
+  const ca = col.array;
+  const cosT = Math.cos(Math.min(89.9, Math.max(0, _mmu.fillAngle)) * Math.PI / 180) - 1e-9;
+  const triN = (ad.n / 3) | 0;
+  if (triSeed < 0 || triSeed >= triN) return false;
+  const bc = _mmuV.col.set(_mmuColor(mesh));
+  const seen = new Uint8Array(triN), stack = [triSeed];
+  seen[triSeed] = 1;
+  let painted = 0;
+  while (stack.length) {
+    const t = stack.pop();
+    _mmuSetTri(ca, t, bc); painted++;
+    for (let e = 0; e < 3; e++) {
+      const nb = ad.nbr[t*3+e];
+      if (nb < 0 || seen[nb]) continue;
+      const dot = ad.fn[t*3]*ad.fn[nb*3] + ad.fn[t*3+1]*ad.fn[nb*3+1] + ad.fn[t*3+2]*ad.fn[nb*3+2];
+      if (dot >= cosT) { seen[nb] = 1; stack.push(nb); }
+    }
+  }
+  return _mmuCommit(mesh, col, painted);
+}
+
+function _mmuApplyTri(mesh, triIdx) {
+  const col = _mmuEnsure(mesh); if (!col) return false;
+  const triN = (mesh.geometry.attributes.position.count / 3) | 0;
+  if (triIdx < 0 || triIdx >= triN) return false;
+  _mmuSetTri(col.array, triIdx, _mmuV.col.set(_mmuColor(mesh)));
+  return _mmuCommit(mesh, col, 1);
+}
+
+// Höhenband: färbt rundum alle Dreiecke, deren Schwerpunkt (Welt-Y = Höhe) im
+// Band von der Klickhöhe abwärts liegt.
+function _mmuApplyBand(mesh, hitPoint) {
+  const col = _mmuEnsure(mesh); if (!col) return false;
+  const g = mesh.geometry, pos = g.attributes.position, pa = pos.array, ca = col.array;
+  mesh.updateMatrixWorld(true);
+  const mw = mesh.matrixWorld;
+  const yTop = hitPoint.y + 1e-6, yBot = hitPoint.y - _mmu.bandMm / 10;
+  const bc = _mmuV.col.set(_mmuColor(mesh));
+  const v = _mmuV.c;
+  const triN = (pos.count / 3) | 0;
+  let painted = 0;
+  for (let t = 0; t < triN; t++) {
+    const o = t*9;
+    v.set((pa[o]+pa[o+3]+pa[o+6])/3, (pa[o+1]+pa[o+4]+pa[o+7])/3, (pa[o+2]+pa[o+5]+pa[o+8])/3).applyMatrix4(mw);
+    if (v.y <= yTop && v.y >= yBot) { _mmuSetTri(ca, t, bc); painted++; }
+  }
+  return _mmuCommit(mesh, col, painted);
+}
+
+// Pipette: Farbe des getroffenen Dreiecks → nächstliegender Slot wird aktiv
+function _mmuPick(hit) {
+  const g = hit.object.geometry, col = g.getAttribute && g.getAttribute('color');
+  if (!col || hit.faceIndex == null) return;
+  const i = hit.faceIndex * 3;
+  const c = new THREE.Color(col.getX(i), col.getY(i), col.getZ(i));
+  const cands = [_mmuBaseHex(hit.object), ..._mmu.slots];
+  let best = 0, bd = 1e9;
+  const cc = new THREE.Color();
+  cands.forEach((h, k) => {
+    cc.set(h);
+    const d = (cc.r-c.r)**2 + (cc.g-c.g)**2 + (cc.b-c.b)**2;
+    if (d < bd) { bd = d; best = k; }
+  });
+  if (best === 0) { _mmuSetTool('erase'); notify('Grundfarbe aufgenommen (Radierer)', 'ok'); }
+  else { _mmuSelSlot(best - 1); notify('Farbe ' + (best + 1) + ' aufgenommen', 'ok'); }
+}
+
+function _mmuApplyAt(mesh, hit) {
+  switch (_mmu.tool) {
+    case 'fill':   return _mmuApplyFill(mesh, hit.faceIndex);
+    case 'tri':    return _mmuApplyTri(mesh, hit.faceIndex);
+    case 'height': return _mmuApplyBand(mesh, hit.point);
+    default:       return _mmuApplyBrush(mesh, hit.point);   // brush + erase
+  }
+}
+
+function _mmuDown(e) {
+  if (!_mmu.active || e.button !== 0) return;
+  e.preventDefault(); e.stopPropagation();
+  const hit = _sculptPick(e);
+  if (hit && e.altKey) { _mmuPick(hit); return; }
+  _mmu.brushing = (_mmu.tool === 'brush' || _mmu.tool === 'erase');
+  _mmu.did = false; _mmu.savedUndo = false; _mmu.lastApply = null;
+  if (!hit) return;
+  _mmu.lastPoint.copy(hit.point);
+  _mmu.lastApply = hit.point.clone();
+  if (!_mmu.savedUndo) { saveUndo(); _mmu.savedUndo = true; }
+  if (_mmuApplyAt(hit.object, hit)) { _mmu.did = true; _mmu.target = hit.object; }
+}
+
+function _mmuMove(e) {
+  if (!_mmu.active) return;
+  _mmu.lastClient = { clientX: e.clientX, clientY: e.clientY };
+  const hit = _sculptPick(e);
+  if (hit) { _mmu.lastPoint.copy(hit.point); _mmu.target = hit.object; }
+  _mmuUpdateCursor(e, !!hit);
+  if (!_mmu.brushing) return;
+  e.preventDefault(); e.stopPropagation();
+  if (!hit) return;
+  if (_mmu.lastApply && hit.point.distanceTo(_mmu.lastApply) < _mmu.radiusMm / 10 * 0.2) return;
+  _mmu.lastApply = hit.point.clone();
+  if (!_mmu.savedUndo) { saveUndo(); _mmu.savedUndo = true; }
+  if (_mmuApplyAt(hit.object, hit)) _mmu.did = true;
+}
+
+function _mmuUp() {
+  if (!_mmu.brushing) return;
+  _mmu.brushing = false;
+  if (_mmu.did) updateTree();
+}
+
+function _mmuWheel(e) {
+  if (!_mmu.active) return;
+  e.preventDefault(); e.stopPropagation();
+  const step = e.shiftKey ? 0.5 : 1;
+  if (_mmu.tool === 'height') _mmuSetBand(_mmu.bandMm + (e.deltaY < 0 ? step : -step));
+  else _mmuSetRadius(_mmu.radiusMm + (e.deltaY < 0 ? step : -step));
+}
+
+function _mmuBuildIndicator() {
+  if (_mmu.ind) _mmu.ind.remove();
+  const d = document.createElement('div');
+  d.style.cssText = 'position:fixed;pointer-events:none;z-index:5999;border:2px solid #F97316;' +
+    'border-radius:50%;display:none;box-sizing:border-box';
+  document.body.appendChild(d);
+  _mmu.ind = d;
+}
+function _mmuUpdateCursor(e, onModel) {
+  const el = _mmu.ind; if (!el) return;
+  if (!onModel || (_mmu.tool !== 'brush' && _mmu.tool !== 'erase')) { el.style.display = 'none'; return; }
+  const rw = _mmu.radiusMm / 10, c = _mmu.lastPoint;
+  const p1 = c.clone().project(camera);
+  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  const p2 = c.clone().addScaledVector(right, rw).project(camera);
+  const rect = canvas.getBoundingClientRect();
+  const rp = Math.abs(p2.x - p1.x) * rect.width / 2;
+  const sx = rect.left + (p1.x + 1) * rect.width / 2, sy = rect.top + (1 - p1.y) * rect.height / 2;
+  el.style.display = 'block';
+  el.style.width = el.style.height = (rp * 2) + 'px';
+  el.style.left = (sx - rp) + 'px'; el.style.top = (sy - rp) + 'px';
+  el.style.background = _mmuColor(_mmu.target || { userData: {} }) + '44';
+}
+
+const _MMU_TOOLS = [
+  ['brush',  '🖌', 'Pinsel',   'Kugel-Pinsel — färbt alle berührten Dreiecke (Radius per Mausrad)'],
+  ['fill',   '🪄', 'Füllen',   'Smart-Füllen — färbt zusammenhängende Fläche bis zur Knickkante (Winkel-Regler)'],
+  ['tri',    '▲',  'Dreieck',  'Einzelnes Dreieck färben (maximale Präzision)'],
+  ['height', '↕',  'Höhe',     'Höhenband — färbt rundum von der Klickhöhe abwärts (Bandhöhe-Regler)'],
+  ['erase',  '⌫',  'Radierer', 'Zurück zur Grundfarbe des Objekts (Filament 1)'],
+];
+
+function _mmuBuildPanel() {
+  if (_mmu.panel) _mmu.panel.remove();
+  const p = document.createElement('div');
+  p.id = 'mmu-panel';
+  p.style.cssText = 'position:fixed;top:70px;right:14px;width:280px;z-index:6000;' +
+    'background:#1f2329;border:1px solid #3a3f47;border-radius:9px;padding:14px 16px;' +
+    'color:#e6e8eb;font:12px/1.4 system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.45)';
+  document.body.appendChild(p);
+  _mmu.panel = p;
+  _mmuRenderPanel();
+}
+
+function _mmuRenderPanel() {
+  const p = _mmu.panel; if (!p) return;
+  const slotHtml = _mmu.slots.map((c, i) => `
+    <div style="position:relative">
+      <div onclick="_mmuSelSlot(${i})" title="Filament ${i + 2}" style="width:34px;height:26px;border-radius:5px;cursor:pointer;background:${c};border:2px solid ${(_mmu.cur === i && _mmu.tool !== 'erase') ? '#F97316' : 'transparent'};box-sizing:border-box;display:flex;align-items:center;justify-content:center;color:#fff;text-shadow:0 0 3px #000;font-size:10px">${i + 2}</div>
+      <input type="color" value="${c}" oninput="_mmuSlotColor(${i}, this.value)" style="position:absolute;left:0;top:0;width:34px;height:26px;opacity:0;cursor:pointer" onclick="event.stopPropagation();_mmuSelSlot(${i})">
+      ${_mmu.slots.length > 1 ? `<span onclick="_mmuDelSlot(${i})" title="Slot entfernen (Flächen → Grundfarbe)" style="position:absolute;right:-4px;top:-6px;cursor:pointer;color:#9aa0a8;font-size:10px;background:#1f2329;border-radius:50%;padding:0 2px">✕</span>` : ''}
+    </div>`).join('');
+  const toolHtml = _MMU_TOOLS.map(([id, ic, lb, ti]) =>
+    `<button onclick="_mmuSetTool('${id}')" data-mt="${id}" title="${ti}" style="flex:1;background:${_mmu.tool === id ? '#F97316' : '#2a2f37'};border:1px solid #3a3f47;color:#e6e8eb;border-radius:6px;padding:5px 2px;cursor:pointer;font-size:11px">${ic}<br>${lb}</button>`).join('');
+  p.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <b style="font-size:13px">🖍️ Mehrfarb-Druck</b>
+      <span onclick="_mmuClose()" style="cursor:pointer;color:#9aa0a8;font-size:16px;line-height:1">✕</span>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;align-items:center">
+      ${slotHtml}
+      ${_mmu.slots.length < 15 ? `<div onclick="_mmuAddSlot()" title="Neue Farbe (Filament) hinzufügen" style="width:34px;height:26px;border-radius:5px;cursor:pointer;background:#2a2f37;border:1px dashed #3a3f47;display:flex;align-items:center;justify-content:center;color:#9aa0a8">+</div>` : ''}
+    </div>
+    <div style="color:#9aa0a8;font-size:11px;margin-bottom:8px">Klick = wählen, nochmal Klick = Farbe ändern. Nr. = Filament im Slicer (1 = Grundfarbe).</div>
+    <div style="display:flex;gap:4px;margin-bottom:10px">${toolHtml}</div>
+    <div id="mmu-row-rad" style="display:${(_mmu.tool === 'brush' || _mmu.tool === 'erase') ? 'flex' : 'none'};align-items:center;gap:8px;margin-bottom:8px">
+      <span style="width:70px;color:#9aa0a8">Radius</span>
+      <input id="mmu-rad" type="range" min="0.5" max="30" step="0.5" value="${_mmu.radiusMm}" style="flex:1" oninput="_mmuSetRadius(this.value)">
+      <span id="mmu-rad-v" style="width:34px;text-align:right">${_mmu.radiusMm}</span><span style="color:#9aa0a8">mm</span>
+    </div>
+    <div id="mmu-row-ang" style="display:${_mmu.tool === 'fill' ? 'flex' : 'none'};align-items:center;gap:8px;margin-bottom:8px">
+      <span style="width:70px;color:#9aa0a8">Kantenwinkel</span>
+      <input id="mmu-ang" type="range" min="0" max="90" step="1" value="${_mmu.fillAngle}" style="flex:1" oninput="_mmuSetAngle(this.value)">
+      <span id="mmu-ang-v" style="width:34px;text-align:right">${_mmu.fillAngle}</span><span style="color:#9aa0a8">°</span>
+    </div>
+    <div id="mmu-row-band" style="display:${_mmu.tool === 'height' ? 'flex' : 'none'};align-items:center;gap:8px;margin-bottom:8px">
+      <span style="width:70px;color:#9aa0a8">Bandhöhe</span>
+      <input id="mmu-band" type="range" min="0.5" max="50" step="0.5" value="${_mmu.bandMm}" style="flex:1" oninput="_mmuSetBand(this.value)">
+      <span id="mmu-band-v" style="width:34px;text-align:right">${_mmu.bandMm}</span><span style="color:#9aa0a8">mm</span>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;color:#9aa0a8">
+      <input type="checkbox" ${_mmu.symX ? 'checked' : ''} onchange="_mmu.symX=this.checked"> Symmetrisch malen (X-Spiegel)
+    </label>
+    <button onclick="_mmuRefine()" title="Jedes Dreieck in 4 teilen — feinere Farbgrenzen (Bemalung bleibt erhalten)" style="width:100%;background:#2a2f37;border:1px solid #3a3f47;color:#e6e8eb;border-radius:6px;padding:7px;cursor:pointer;margin-bottom:8px">🔬 Feiner unterteilen</button>
+    <div style="color:#9aa0a8;font-size:11px;margin-bottom:10px"><b>Alt</b> = Pipette, Mausrad = Radius/Band, Strg+Z = rückgängig. Export über <b>⬇ 3MF</b> (Bambu/Orca: Farben → Filamente) oder <b>⬇ OBJ</b>; STL bleibt einfarbig.</div>
+    <button onclick="_mmuClose()" style="width:100%;background:#F97316;border:none;color:#fff;border-radius:6px;padding:8px;font-weight:700;cursor:pointer">Fertig</button>`;
+}
+
+function _mmuSelSlot(i) {
+  _mmu.cur = i;
+  if (_mmu.tool === 'erase') _mmu.tool = 'brush';
+  _mmuRenderPanel();
+}
+function _mmuSlotColor(i, c) { _mmu.slots[i] = c; _mmu.cur = i; _mmuRenderPanel(); }
+function _mmuAddSlot() {
+  if (_mmu.slots.length >= 15) { notify('Maximal 16 Filamente (Grund + 15)', 'w'); return; }
+  const pool = ['#8e24aa', '#fb8c00', '#00acc1', '#6d4c41', '#c0ca33', '#ec407a', '#78909c', '#ffffff', '#111111'];
+  _mmu.slots.push(pool[(_mmu.slots.length - 4 + pool.length) % pool.length] || '#888888');
+  _mmu.cur = _mmu.slots.length - 1;
+  _mmuRenderPanel();
+}
+// Slot löschen: bemalte Flächen dieses Slots zurück auf die jeweilige Grundfarbe
+function _mmuDelSlot(i) {
+  const hex = _mmu.slots[i];
+  saveUndo();
+  const del = new THREE.Color(hex), c2 = new THREE.Color();
+  objects.forEach(o => o.traverse ? o.traverse(m => {
+    if (!m.isMesh || !m.userData._mmuPaint) return;
+    const col = m.geometry.getAttribute('color'); if (!col) return;
+    const cands = [_mmuBaseHex(m), ..._mmu.slots];
+    const base = new THREE.Color(cands[0]);
+    const ca = col.array;
+    const triN = (col.count / 3) | 0;
+    let n = 0;
+    for (let t = 0; t < triN; t++) {
+      const o3 = t * 9;
+      c2.setRGB(ca[o3], ca[o3+1], ca[o3+2]);
+      // Nächster-Slot-Test: gehört das Dreieck zum zu löschenden Slot?
+      let best = 0, bd = 1e9;
+      cands.forEach((h, k) => {
+        const cc = new THREE.Color(h);
+        const d = (cc.r-c2.r)**2 + (cc.g-c2.g)**2 + (cc.b-c2.b)**2;
+        if (d < bd) { bd = d; best = k; }
+      });
+      if (best === i + 1) { _mmuSetTri(ca, t, base); n++; }
+    }
+    if (n) { col.needsUpdate = true; _geoJsonCache.delete(m.geometry); }
+    m.userData._mmuSlots = _mmu.slots.filter((_, k) => k !== i);
+  }) : null);
+  _mmu.slots.splice(i, 1);
+  if (_mmu.cur >= _mmu.slots.length) _mmu.cur = _mmu.slots.length - 1;
+  _mmuRenderPanel();
+}
+function _mmuSetTool(t) { _mmu.tool = t; _mmuRenderPanel(); }
+function _mmuSetRadius(mm) {
+  _mmu.radiusMm = Math.max(0.5, Math.min(30, parseFloat(mm) || 3));
+  const r = document.getElementById('mmu-rad'), v = document.getElementById('mmu-rad-v');
+  if (r) r.value = _mmu.radiusMm;
+  if (v) v.textContent = _mmu.radiusMm;
+  if (_mmu.lastClient) _mmuUpdateCursor(_mmu.lastClient, !!_mmu.target);
+}
+function _mmuSetAngle(d) {
+  _mmu.fillAngle = Math.max(0, Math.min(90, parseFloat(d) || 0));
+  const v = document.getElementById('mmu-ang-v'); if (v) v.textContent = _mmu.fillAngle;
+}
+function _mmuSetBand(mm) {
+  _mmu.bandMm = Math.max(0.5, Math.min(50, parseFloat(mm) || 5));
+  const r = document.getElementById('mmu-band'), v = document.getElementById('mmu-band-v');
+  if (r) r.value = _mmu.bandMm;
+  if (v) v.textContent = _mmu.bandMm;
+}
+
+// 1:4-Subdivision ohne T-Stöße (ALLE Dreiecke gleichmäßig — geteilte Kanten
+// bekommen beidseitig denselben Mittelpunkt, bleibt wasserdicht). Farben erben.
+function _mmuRefine() {
+  const mesh = _mmu.target;
+  if (!mesh) { notify('Erst ein Objekt mit der Maus anfahren', 'w'); return; }
+  const col = _mmuEnsure(mesh); if (!col) return;
+  const g = mesh.geometry, pos = g.attributes.position, triN = (pos.count / 3) | 0;
+  if (triN * 4 > 400000) { notify('Netz zu fein (' + triN + ' Dreiecke) — mehr würde Speichern/Undo lähmen', 'w'); return; }
+  saveUndo();
+  const pa = pos.array, na = g.attributes.normal ? g.attributes.normal.array : null, ca = col.array;
+  const np = new Float32Array(triN * 4 * 9), nn = na ? new Float32Array(triN * 4 * 9) : null, nc = new Float32Array(triN * 4 * 9);
+  let w = 0;
+  const vtx = (o) => [pa[o], pa[o+1], pa[o+2]];
+  const nrm = (o) => na ? [na[o], na[o+1], na[o+2]] : null;
+  const mid = (a, b) => [(a[0]+b[0])/2, (a[1]+b[1])/2, (a[2]+b[2])/2];
+  const nmid = (a, b) => {
+    const m = [(a[0]+b[0])/2, (a[1]+b[1])/2, (a[2]+b[2])/2];
+    const l = Math.sqrt(m[0]*m[0]+m[1]*m[1]+m[2]*m[2]) || 1;
+    return [m[0]/l, m[1]/l, m[2]/l];
+  };
+  for (let t = 0; t < triN; t++) {
+    const o = t * 9;
+    const v0 = vtx(o), v1 = vtx(o+3), v2 = vtx(o+6);
+    const m01 = mid(v0, v1), m12 = mid(v1, v2), m20 = mid(v2, v0);
+    const n0 = nrm(o), n1 = nrm(o+3), n2 = nrm(o+6);
+    const q01 = n0 ? nmid(n0, n1) : null, q12 = n0 ? nmid(n1, n2) : null, q20 = n0 ? nmid(n2, n0) : null;
+    const cr = ca[o], cg = ca[o+1], cb = ca[o+2];
+    const tris = [[v0, m01, m20, n0, q01, q20], [m01, v1, m12, q01, n1, q12],
+                  [m20, m12, v2, q20, q12, n2], [m01, m12, m20, q01, q12, q20]];
+    for (const tr of tris) {
+      for (let k = 0; k < 3; k++) {
+        np[w] = tr[k][0]; np[w+1] = tr[k][1]; np[w+2] = tr[k][2];
+        if (nn) { nn[w] = tr[k+3][0]; nn[w+1] = tr[k+3][1]; nn[w+2] = tr[k+3][2]; }
+        nc[w] = cr; nc[w+1] = cg; nc[w+2] = cb;
+        w += 3;
+      }
+    }
+  }
+  const ng = new THREE.BufferGeometry();
+  ng.setAttribute('position', new THREE.BufferAttribute(np, 3));
+  if (nn) ng.setAttribute('normal', new THREE.BufferAttribute(nn, 3));
+  ng.setAttribute('color', new THREE.BufferAttribute(nc, 3));
+  ng.computeBoundingSphere(); ng.computeBoundingBox();
+  mesh.geometry = ng; g.dispose();
+  _geoJsonCache.delete(ng);
+  if (typeof _sculptFixEdges === 'function') _sculptFixEdges(mesh);
+  notify('Verfeinert: ' + triN + ' → ' + (triN * 4) + ' Dreiecke', 'ok');
+}
+
+// Dreiecks-Zustände aus den Vertex-Farben ableiten: Zustand 0 = Grundfarbe,
+// i ≥ 1 = Slot i-1. Liefert {states, hexes} — hexes[k] = Farbe von Zustand k.
+function _mmuTriStatesGeo(geo, ud) {
+  const col = geo.getAttribute('color'), pos = geo.attributes.position;
+  if (!col || !pos || col.count !== pos.count) return null;
+  const hexes = [(ud && ud._mmuBase) || '#9aa0a8', ...((ud && ud._mmuSlots) || _mmu.slots)];
+  const cands = hexes.map(h => new THREE.Color(h));
+  const triN = (pos.count / 3) | 0;
+  const states = new Uint8Array(triN);
+  const ca = col.array;
+  for (let t = 0; t < triN; t++) {
+    const o = t * 9;
+    const r = (ca[o]+ca[o+3]+ca[o+6])/3, gg = (ca[o+1]+ca[o+4]+ca[o+7])/3, b = (ca[o+2]+ca[o+5]+ca[o+8])/3;
+    let best = 0, bd = 1e9;
+    for (let k = 0; k < cands.length; k++) {
+      const c = cands[k];
+      const d = (c.r-r)**2 + (c.g-gg)**2 + (c.b-b)**2;
+      if (d < bd) { bd = d; best = k; }
+    }
+    states[t] = best;
+  }
+  return { states, hexes: hexes.map(h => '#' + new THREE.Color(h).getHexString()) };
+}
+
+// paint_color-String für Filament F (1-basiert) — Kodierung s. Blockkommentar oben
+function _mmuPaintCode(f) {
+  if (f <= 1) return '4';
+  if (f === 2) return '8';
+  return (f - 3).toString(16).toUpperCase() + 'C';
 }
 
 // Kantenlinien: auf einem modellierten Netz überschreiten tausende Beulen die
@@ -38407,6 +39003,7 @@ const CMDK = [
   {i:'🧽',g:'Bearbeiten',t:'Radierer',k:'eraser',run:()=>openEraserTool()},
   {i:'🖌️',g:'Bearbeiten',t:'Modellieren',k:'modellieren sculpt pinsel beule delle glätten skulptieren verformen organisch kneten',run:()=>openSculptTool()},
   {i:'🎨',g:'Bearbeiten',t:'Bemalen',k:'bemalen malen anmalen färben farbe paint pinsel figur miniatur vertex color bunt',run:()=>openPaintTool()},
+  {i:'🖍️',g:'Bearbeiten',t:'Mehrfarb-Druck',k:'mehrfarb mmu multicolor filament bambu ams bemalen druck malen füllen slot mehrfarbig',run:()=>openMmuPaintTool()},
   {i:'🩹',g:'Druck',t:'Reparieren',k:'repair loch wasserdicht',run:()=>repairSelected()},
   {i:'🖨',g:'Druck',t:'Druck-Check',k:'print check druckbar',run:()=>_printCheckOpen()},
   {i:'↻',g:'Druck',t:'Für Druck ausrichten',k:'orient',run:()=>autoOrientForPrint()},
