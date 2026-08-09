@@ -116,6 +116,18 @@ $xamlText = @'
         </Grid>
       </TabItem>
 
+      <TabItem Header=" Hersteller ">
+        <StackPanel Margin="16" MaxWidth="760" HorizontalAlignment="Left">
+          <TextBlock TextWrapping="Wrap" Foreground="#374151" Margin="0,0,0,10">
+            Windows Update liefert oft nicht die neuesten Treiber. Diese Links fuehren
+            direkt zur Treiber-Seite des Geraete-Herstellers und der wichtigsten
+            Komponenten. Gefundene Hersteller-Updater lassen sich hier starten.
+          </TextBlock>
+          <TextBlock x:Name="txtSystem" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,0,0,12"/>
+          <WrapPanel x:Name="pnlLinks"/>
+        </StackPanel>
+      </TabItem>
+
     </TabControl>
 
     <GroupBox Grid.Row="2" Header="Protokoll" Margin="10,0,10,4">
@@ -143,6 +155,7 @@ foreach ($name in @('txtHost','btnInvRefresh','btnReport','txtInvCount','dgInv',
                     'btnBrowseBackup','txtBackupDir','btnBackup',
                     'btnBrowseRestore','txtRestoreDir','btnRestore',
                     'btnSearchUpd','btnInstallSel','btnInstallAll','dgUpd',
+                    'txtSystem','pnlLinks',
                     'txtLog','txtStatus','pbBusy')) {
     Set-Variable -Name $name -Scope Script -Value $script:Window.FindName($name)
 }
@@ -517,10 +530,123 @@ $script:btnInstallAll.Add_Click({
 })
 
 # ----------------------------------------------------------------------------
+#  Hersteller-Reiter: Systemerkennung + Direkt-Links
+# ----------------------------------------------------------------------------
+function Add-LinkKnopf([string]$Text, [scriptblock]$Aktion, [bool]$Primaer) {
+    $b = New-Object System.Windows.Controls.Button
+    $b.Content = $Text
+    $b.Margin = '0,0,8,8'
+    $b.Padding = '12,6'
+    if ($Primaer) {
+        $b.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#2563EB')
+        $b.Foreground = [System.Windows.Media.Brushes]::White
+        $b.FontWeight = 'SemiBold'
+    }
+    $b.Tag = $Aktion
+    $b.Add_Click({ & $this.Tag })
+    [void]$script:pnlLinks.Children.Add($b)
+}
+
+function Invoke-HerstellerErkennung {
+    try {
+        $cs   = Get-CimInstance Win32_ComputerSystem
+        $bios = Get-CimInstance Win32_BIOS
+        $bb   = $null; try { $bb = Get-CimInstance Win32_BaseBoard } catch {}
+        $gpus = @(Get-CimInstance Win32_VideoController | ForEach-Object {
+                    @{ name = [string]$_.Name; version = [string]$_.DriverVersion } })
+        $netz  = @(Get-CimInstance Win32_NetworkAdapter -Filter "PhysicalAdapter=TRUE" |
+                     ForEach-Object { [string]$_.Name })
+        $audio = @(Get-CimInstance Win32_SoundDevice | ForEach-Object { [string]$_.Name })
+    } catch {
+        $script:txtSystem.Text = 'Systemerkennung fehlgeschlagen: ' + $_.Exception.Message
+        return
+    }
+
+    $generisch = (-not $cs.Manufacturer) -or
+                 ($cs.Manufacturer -match 'System manufacturer|To be filled|Default')
+    $herst  = if ($generisch -and $bb) { [string]$bb.Manufacturer } else { [string]$cs.Manufacturer }
+    $modell = if ($generisch -and $bb) { [string]$bb.Product }     else { [string]$cs.Model }
+    $sn = [string]$bios.SerialNumber
+    if ($sn -match 'To be filled|Default') { $sn = '' }
+    $name = ('{0} {1}' -f $herst, $modell).Trim()
+
+    $teile = @($name)
+    if ($sn) { $teile += ('S/N ' + $sn) }
+    foreach ($g in $gpus) { $teile += ('{0} (Treiber {1})' -f $g.name, $g.version) }
+    $script:txtSystem.Text = ($teile -join '  |  ')
+
+    $script:pnlLinks.Children.Clear()
+    $h = $herst.ToLower()
+    $links = New-Object System.Collections.ArrayList
+    $snEnc = [uri]::EscapeDataString($sn)
+    if ($h -match 'dell') {
+        $url = if ($sn) { "https://www.dell.com/support/home/de-de/product-support/servicetag/$snEnc/drivers" }
+               else { 'https://www.dell.com/support/home/de-de' }
+        [void]$links.Add(@('Dell-Treiber fuer dieses Geraet', $url))
+    } elseif ($h -match 'lenovo') {
+        $q = if ($sn) { $snEnc } else { [uri]::EscapeDataString($modell) }
+        [void]$links.Add(@('Lenovo-Treiber fuer dieses Geraet', "https://pcsupport.lenovo.com/de/de/search?query=$q"))
+    } elseif ($h -match 'hewlett|^hp$|^hp ') {
+        [void]$links.Add(@('HP-Treiber (Geraet wird erkannt)', 'https://support.hp.com/de-de/drivers'))
+    } elseif ($h -match 'asus')       { [void]$links.Add(@('ASUS Download-Center', 'https://www.asus.com/de/support/download-center/')) }
+    elseif ($h -match 'micro-star|msi') { [void]$links.Add(@('MSI-Treiber', 'https://de.msi.com/support/download')) }
+    elseif ($h -match 'gigabyte')     { [void]$links.Add(@('Gigabyte-Support', 'https://www.gigabyte.com/de/Support')) }
+    elseif ($h -match 'asrock')       { [void]$links.Add(@('ASRock-Support', 'https://www.asrock.com/support/index.de.asp')) }
+    elseif ($h -match 'acer')         { [void]$links.Add(@('Acer Treiber und Handbuecher', 'https://www.acer.com/de-de/support/drivers-and-manuals')) }
+    elseif ($h -match 'medion')       { [void]$links.Add(@('Medion-Service', 'https://www.medion.com/de/service/')) }
+    elseif ($h -match 'microsoft')    { [void]$links.Add(@('Surface-Support', 'https://support.microsoft.com/de-de/surface')) }
+    elseif ($h -match 'fujitsu')      { [void]$links.Add(@('Fujitsu-Support', 'https://support.ts.fujitsu.com/')) }
+    elseif ($name) {
+        [void]$links.Add(@(('"{0}" Treiber suchen' -f $name),
+            ('https://duckduckgo.com/?q=' + [uri]::EscapeDataString($name + ' Treiber Download'))))
+    }
+
+    $gpuText = (($gpus | ForEach-Object { $_.name }) -join ' ').ToLower()
+    if ($gpuText -match 'nvidia|geforce|quadro|rtx |gtx ') {
+        [void]$links.Add(@('NVIDIA-Grafiktreiber', 'https://www.nvidia.com/de-de/drivers/'))
+    }
+    if ($gpuText -match 'radeon|amd') {
+        [void]$links.Add(@('AMD-Grafiktreiber', 'https://www.amd.com/de/support/download/drivers.html'))
+    }
+    $naText = (($netz + $audio) -join ' ').ToLower()
+    if ($gpuText -match 'intel' -or $naText -match 'intel') {
+        [void]$links.Add(@('Intel Treiber-Assistent', 'https://www.intel.de/content/www/de/de/support/detect.html'))
+    }
+    if ($naText -match 'realtek') {
+        [void]$links.Add(@('Realtek (Netzwerk/Audio)', 'https://www.realtek.com/Download'))
+    }
+
+    $gesehen = @{}
+    foreach ($l in $links) {
+        if ($gesehen.ContainsKey($l[1])) { continue }
+        $gesehen[$l[1]] = $true
+        $url = $l[1]
+        Add-LinkKnopf ($l[0] + '  >') ([scriptblock]::Create("Start-Process '$url'")) $false
+    }
+
+    # Installierte Hersteller-Updater als Start-Knopf anbieten
+    $kand = @(
+        @{ n = 'Dell Command Update';  p = "$env:ProgramFiles\Dell\CommandUpdate\dcu-ui.exe" },
+        @{ n = 'Dell Command Update';  p = "${env:ProgramFiles(x86)}\Dell\CommandUpdate\dcu-ui.exe" },
+        @{ n = 'Lenovo System Update'; p = "${env:ProgramFiles(x86)}\Lenovo\System Update\tvsu.exe" },
+        @{ n = 'HP Support Assistant'; p = "${env:ProgramFiles(x86)}\Hp\HP Support Framework\HPSF.exe" },
+        @{ n = 'MSI Center';           p = "$env:ProgramFiles\MSI\MSI Center\MSI Center.exe" },
+        @{ n = 'ASUS Armoury Crate';   p = "$env:ProgramFiles\ASUS\ARMOURY CRATE Service\ArmouryCrate.exe" }
+    )
+    foreach ($k in $kand) {
+        if ($k.p -and (Test-Path -LiteralPath $k.p)) {
+            $pfad = $k.p
+            Add-LinkKnopf ($k.n + ' starten') ([scriptblock]::Create("Start-Process '$pfad'")) $true
+        }
+    }
+}
+
+# ----------------------------------------------------------------------------
 #  Start
 # ----------------------------------------------------------------------------
 $script:Window.Add_ContentRendered({
     Write-Log 'VolmeDriver gestartet (mit Administrator-Rechten).'
+    Invoke-HerstellerErkennung
     Invoke-InventoryRefresh
 })
 
