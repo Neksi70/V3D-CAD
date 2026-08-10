@@ -49,7 +49,8 @@ function store(name, fallback) {
 }
 
 const SETTINGS_DEF = {
-  firma: { name: 'Volme 3D', inhaber: '', strasse: '', plz: '', ort: '', email: '', telefon: '+49 1512 0164288', web: '' },
+  firma: { name: 'Volme 3D', inhaber: '', strasse: '', plz: '', ort: '', email: '', telefon: '+49 1512 0164288', web: '', slogan: '3D-Druck · Konstruktion · Kurse' },
+  briefkopf: 'band', // 'band' | 'linie' | 'seite'
   bank: { iban: '', bic: '', institut: '' },
   steuer: { modus: 'klein', steuernummer: '', ustId: '' }, // 'klein' = §19 UStG, 'regel' = mit USt
   zahlungszielTage: 14,
