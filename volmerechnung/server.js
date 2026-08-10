@@ -62,6 +62,19 @@ const SETTINGS_DEF = {
     mahnung: 'auf unsere unten genannte Rechnung konnten wir bislang keinen Zahlungseingang feststellen. Wir bitten Sie, den offenen Betrag innerhalb von 7 Tagen zu überweisen. Sollte sich Ihre Zahlung mit diesem Schreiben überschnitten haben, betrachten Sie es bitte als gegenstandslos.',
   },
   nummern: { jahr: new Date().getFullYear(), rechnung: 1, angebot: 1, kunde: 1 },
+  kalkulation: {
+    materialien: [
+      { name: 'PLA', preisKg: 25 },
+      { name: 'PETG', preisKg: 30 },
+      { name: 'ABS/ASA', preisKg: 32 },
+      { name: 'TPU', preisKg: 40 },
+      { name: 'PA-CF', preisKg: 80 },
+    ],
+    maschineProStd: 2.5,  // Abschreibung+Strom+Wartung je Druckstunde
+    arbeitProStd: 45,     // Vor-/Nachbereitung, Slicing, Entgraten
+    margeProzent: 30,
+    mindestpreis: 5,
+  },
 };
 
 const settings = store('settings', SETTINGS_DEF);
@@ -80,6 +93,8 @@ const settings = store('settings', SETTINGS_DEF);
 const customers = store('customers', []);
 const items = store('items', []);
 const docs = store('docs', []); // Angebote + Rechnungen gemeinsam, Feld "art": 'angebot'|'rechnung'
+const courses = store('courses', []); // Kurse mit Teilnehmerliste (Akademie)
+const expenses = store('expenses', []); // Eingangsbelege/Ausgaben
 
 // --- Nummernkreise: RE-2026-0001 / AN-2026-0001, jahresweise, lückenlos ----
 function nextNumber(art) {
@@ -201,6 +216,26 @@ async function api(req, res, url) {
     }
   }
 
+  // GiroCode (EPC-QR): Kunde scannt, Banking-App ist vorausgefüllt
+  if (col === 'girocode' && docId && m === 'GET') {
+    const doc = docs.data.find((d) => d.id === docId);
+    if (!doc) return send(res, 404, { error: 'Beleg nicht gefunden' });
+    const s = settings.data;
+    const iban = String(s.bank.iban || '').replace(/\s/g, '');
+    if (!iban) return send(res, 400, { error: 'Keine IBAN in den Einstellungen' });
+    const brutto = calcTotals(doc).brutto;
+    // EPC069-12 Version 002: BIC optional, Name max 70, Verwendungszweck max 140
+    const epc = ['BCD', '002', '1', 'SCT', String(s.bank.bic || '').replace(/\s/g, ''),
+      String(s.firma.name || '').slice(0, 70), iban,
+      'EUR' + brutto.toFixed(2), '', '',
+      ('Rechnung ' + (doc.nummer || '')).trim().slice(0, 140), ''].join('\n');
+    const py = require('child_process').spawnSync('python3', ['-c',
+      'import segno,io,sys\nqr=segno.make_qr(sys.stdin.read(),error="m")\nb=io.BytesIO()\nqr.save(b,kind="svg",scale=3,xmldecl=False,border=2)\nsys.stdout.write(b.getvalue().decode())'],
+      { input: epc, encoding: 'utf8', timeout: 10000 });
+    if (py.status !== 0 || !py.stdout) return send(res, 500, { error: 'QR-Erzeugung fehlgeschlagen: ' + (py.stderr || '').slice(0, 200) });
+    return send(res, 200, py.stdout, 'image/svg+xml');
+  }
+
   if (col === 'ki' && m === 'POST') {
     // /api/ki/entwurf — formlose Auftragsbeschreibung -> Beleg-Entwurf
     if (docId === 'entwurf') {
@@ -265,8 +300,34 @@ Positionen:\n${liste.slice(0, 2000)}`;
     return send(res, 404, { error: 'unbekannte KI-Funktion' });
   }
 
-  if (col === 'customers' || col === 'items') {
-    const st = col === 'customers' ? customers : items;
+  // Kurs abrechnen: je Teilnehmer ein Rechnungsentwurf
+  if (col === 'courses' && docId && action === 'rechnungen' && m === 'POST') {
+    const kurs = courses.data.find((c) => c.id === docId);
+    if (!kurs) return send(res, 404, { error: 'Kurs nicht gefunden' });
+    const teilnehmer = (kurs.teilnehmer || []).filter((t) => t.kundeId);
+    if (!teilnehmer.length) return send(res, 400, { error: 'Keine Teilnehmer mit zugeordnetem Kunden' });
+    const neu = [];
+    for (const t of teilnehmer) {
+      const kunde = customers.data.find((k) => k.id === t.kundeId);
+      if (!kunde) continue;
+      neu.push({
+        id: id(), created: now(), art: 'rechnung', status: 'entwurf', nummer: null,
+        festgeschrieben: false, mahnstufe: 0, kundeId: kunde.id, kunde: JSON.parse(JSON.stringify(kunde)),
+        datum: now().slice(0, 10), rabattProzent: 0,
+        positionen: [{
+          name: kurs.name, menge: 1, einheit: 'pauschal', preis: Number(kurs.preis) || 0, ust: 19,
+          beschreibung: [kurs.beschreibung, kurs.datum ? 'Termin: ' + kurs.datum : ''].filter(Boolean).join(' — '),
+        }],
+        quelleKurs: kurs.name,
+      });
+    }
+    docs.data.push(...neu); docs.save();
+    kurs.abgerechnetAm = now().slice(0, 10); courses.save();
+    return send(res, 200, { anzahl: neu.length });
+  }
+
+  if (col === 'customers' || col === 'items' || col === 'courses' || col === 'expenses') {
+    const st = { customers, items, courses, expenses }[col];
     if (m === 'GET') return send(res, 200, st.data);
     if (m === 'POST') {
       const body = await readBody(req);

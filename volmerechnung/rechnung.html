@@ -139,6 +139,8 @@ table.list tr.click{cursor:pointer}
     <button data-v="rechnung" onclick="nav('rechnung')">🧾 Rechnungen</button>
     <button data-v="kunden" onclick="nav('kunden')">👥 Kunden</button>
     <button data-v="artikel" onclick="nav('artikel')">📦 Artikel</button>
+    <button data-v="kurse" onclick="nav('kurse')">🎓 Kurse</button>
+    <button data-v="ausgaben" onclick="nav('ausgaben')">💸 Ausgaben</button>
     <button data-v="einstellungen" onclick="nav('einstellungen')">⚙️ Einstellungen</button>
     <div class="foot">VolmeRechnung · Tailnet-intern<br>Port 8782</div>
   </nav>
@@ -157,7 +159,7 @@ const dtDE=s=>s?new Date(s+(s.length===10?'T12:00:00':'')).toLocaleDateString('d
 const today=()=>new Date().toISOString().slice(0,10);
 
 let KEY=localStorage.getItem('vrKey')||'';
-let S={settings:null,customers:[],items:[],docs:[]};
+let S={settings:null,customers:[],items:[],docs:[],courses:[],expenses:[]};
 let view='dash', editDoc=null; // editDoc = gerade offener Beleg-Editor
 
 async function api(path,method='GET',body){
@@ -168,8 +170,8 @@ async function api(path,method='GET',body){
   return j;
 }
 async function loadAll(){
-  [S.settings,S.customers,S.items,S.docs]=await Promise.all([
-    api('settings'),api('customers'),api('items'),api('docs')]);
+  [S.settings,S.customers,S.items,S.docs,S.courses,S.expenses]=await Promise.all([
+    api('settings'),api('customers'),api('items'),api('docs'),api('courses'),api('expenses')]);
 }
 function showLogin(){$('#login').style.display='flex';$('#app').style.display='none';$('#loginKey').focus();}
 async function doLogin(){
@@ -234,6 +236,8 @@ function render(){
     case 'rechnung':return renderDocList(m,'rechnung');
     case 'kunden':return renderKunden(m);
     case 'artikel':return renderArtikel(m);
+    case 'kurse':return renderKurse(m);
+    case 'ausgaben':return renderAusgaben(m);
     case 'einstellungen':return renderSettings(m);
   }
 }
@@ -247,6 +251,7 @@ function renderDash(m){
   const ueber=re.filter(d=>docStatus(d)==='ueberfaellig');
   const offenSum=offen.concat(ueber).reduce((a,d)=>a+calcTotals(d).brutto,0);
   const angOffen=S.docs.filter(d=>d.art==='angebot'&&['offen','entwurf'].includes(docStatus(d)));
+  const ausgaben=S.expenses.filter(a=>(a.datum||'').startsWith(jahr)).reduce((x,a)=>x+(Number(a.betrag)||0),0);
   const letzten=[...S.docs].sort((a,b)=>(b.created||'').localeCompare(a.created||'')).slice(0,8);
   m.innerHTML=`
   <h1>Übersicht <span class="spacer"></span>
@@ -257,6 +262,8 @@ function renderDash(m){
     <div class="kpi acc"><div class="l">Offene Forderungen</div><div class="v">${eur(offenSum)}</div></div>
     <div class="kpi ${ueber.length?'warn':''}"><div class="l">Überfällige Rechnungen</div><div class="v">${ueber.length}</div></div>
     <div class="kpi"><div class="l">Offene Angebote</div><div class="v">${angOffen.length}</div></div>
+    <div class="kpi"><div class="l">Ausgaben ${jahr}</div><div class="v">${eur(ausgaben)}</div></div>
+    <div class="kpi ${umsatz-ausgaben>=0?'ok':'warn'}"><div class="l">Gewinn ${jahr} (grob)</div><div class="v">${eur(umsatz-ausgaben)}</div></div>
   </div>
   <div class="card"><h3 style="margin-bottom:8px">Zuletzt bearbeitet</h3>
   ${letzten.length?docTable(letzten,true):'<p style="color:var(--dim)">Noch keine Belege. Leg mit einem Angebot oder einer Rechnung los!</p>'}
@@ -575,6 +582,180 @@ async function delArtikel(id){
   try{await api('items/'+id,'DELETE');await loadAll();render();}catch(e){toast(e.message,true);}
 }
 
+// --- 3D-Druck-Kalkulator (Dialog im Beleg-Editor)
+function kalkOpen(){
+  const k=S.settings.kalkulation;
+  let dlg=$('#kalkDlg');
+  if(dlg)dlg.remove();
+  dlg=document.createElement('div');dlg.id='kalkDlg';
+  dlg.style.cssText='position:fixed;inset:0;background:rgba(20,24,35,.5);display:flex;align-items:center;justify-content:center;z-index:60';
+  dlg.innerHTML=`<div class="card" style="width:430px;margin:0">
+    <h3>🖨️ 3D-Druck kalkulieren</h3>
+    <div class="grid2">
+      <div><label>Material</label><select id="kMat">${k.materialien.map((x,i)=>`<option value="${i}">${esc(x.name)} (${x.preisKg} €/kg)</option>`).join('')}</select></div>
+      <div><label>Gewicht (g)</label><input id="kGramm" type="number" value="100"></div>
+      <div><label>Druckzeit (Std:Min)</label><div style="display:flex;gap:6px"><input id="kStd" type="number" value="2" style="width:70px"><input id="kMin" type="number" value="0" style="width:70px"></div></div>
+      <div><label>Arbeitszeit (Min)</label><input id="kArbeit" type="number" value="15"></div>
+      <div><label>Marge (%)</label><input id="kMarge" type="number" value="${k.margeProzent}"></div>
+      <div><label>Stückzahl</label><input id="kAnzahl" type="number" value="1"></div>
+    </div>
+    <div class="totals" style="width:100%;margin-top:14px" id="kalkErg"></div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn" onclick="kalkUebernehmen()">➕ Als Position übernehmen</button>
+      <button class="btn sec" onclick="$('#kalkDlg').remove()">Abbrechen</button>
+    </div>
+    <p style="color:var(--dim);font-size:12px;margin-top:8px">Sätze (Material, Maschine ${k.maschineProStd} €/h, Arbeit ${k.arbeitProStd} €/h) änderst du in den Einstellungen.</p>
+  </div>`;
+  document.body.appendChild(dlg);
+  dlg.addEventListener('input',kalkRechnen);
+  dlg.addEventListener('click',e=>{if(e.target===dlg)dlg.remove();});
+  kalkRechnen();
+}
+function kalkWerte(){
+  const k=S.settings.kalkulation;
+  const mat=k.materialien[parseInt($('#kMat').value)||0];
+  const gramm=parseFloat($('#kGramm').value)||0;
+  const stunden=(parseFloat($('#kStd').value)||0)+(parseFloat($('#kMin').value)||0)/60;
+  const arbeitMin=parseFloat($('#kArbeit').value)||0;
+  const marge=parseFloat($('#kMarge').value)||0;
+  const anzahl=Math.max(1,parseInt($('#kAnzahl').value)||1);
+  const material=gramm/1000*mat.preisKg;
+  const maschine=stunden*k.maschineProStd;
+  const arbeit=arbeitMin/60*k.arbeitProStd;
+  const selbstkosten=material+maschine+arbeit;
+  let preis=selbstkosten*(1+marge/100);
+  preis=Math.max(preis,k.mindestpreis||0);
+  preis=Math.ceil(preis*10)/10; // auf 10 Cent aufrunden
+  return {mat,gramm,stunden,arbeitMin,marge,anzahl,material,maschine,arbeit,selbstkosten,preis};
+}
+function kalkRechnen(){
+  const w=kalkWerte();
+  $('#kalkErg').innerHTML=`
+    <div><span>Material (${w.gramm} g ${esc(w.mat.name)})</span><b>${eur(w.material)}</b></div>
+    <div><span>Maschine (${w.stunden.toFixed(2).replace('.',',')} h)</span><b>${eur(w.maschine)}</b></div>
+    <div><span>Arbeit (${w.arbeitMin} min)</span><b>${eur(w.arbeit)}</b></div>
+    <div><span>Selbstkosten</span><b>${eur(w.selbstkosten)}</b></div>
+    <div class="sum"><span>VK je Stück (+${w.marge} %)</span><b>${eur(w.preis)}</b></div>`;
+}
+function kalkUebernehmen(){
+  const w=kalkWerte();
+  const std=Math.floor(w.stunden),min=Math.round((w.stunden-std)*60);
+  editDoc.positionen.push({
+    name:'3D-Druck '+w.mat.name,
+    beschreibung:`${w.gramm} g ${w.mat.name}, ${std}:${String(min).padStart(2,'0')} h Druckzeit, ${w.arbeitMin} min Arbeitszeit`,
+    menge:w.anzahl,einheit:'Stk.',preis:w.preis,ust:19,
+  });
+  $('#kalkDlg').remove();render();toast('Position übernommen');
+}
+
+// --- Kurse (Akademie)
+function renderKurse(m){
+  m.innerHTML=`<h1>🎓 Kurse<span class="spacer"></span><button class="btn" onclick="editKurs()">+ Kurs</button></h1>
+  <div class="card"><table class="list"><tr><th>Kurs</th><th>Termin</th><th class="num">Preis p. P.</th><th class="num">Teilnehmer</th><th>Abgerechnet</th><th></th></tr>
+  ${S.courses.map(c=>`<tr class="click" onclick="editKurs('${c.id}')">
+    <td><b>${esc(c.name)}</b></td><td>${esc(c.datum||'—')}</td><td class="num">${eur(c.preis)}</td>
+    <td class="num">${(c.teilnehmer||[]).length}</td><td>${c.abgerechnetAm?dtDE(c.abgerechnetAm):'—'}</td>
+    <td><button class="btn sm danger" onclick="event.stopPropagation();delKurs('${c.id}')">✕</button></td></tr>`).join('')||'<tr><td colspan="6" style="color:var(--dim)">Noch keine Kurse — z. B. „Grundkurs 3D-Druck“.</td></tr>'}
+  </table></div>
+  <div id="kursForm"></div>`;
+}
+function editKurs(id){
+  const c=id?S.courses.find(x=>x.id===id):{teilnehmer:[]};
+  window._kursTeilnehmer=JSON.parse(JSON.stringify(c.teilnehmer||[]));
+  $('#kursForm').innerHTML=`<div class="card"><h3>${id?'Kurs bearbeiten':'Neuer Kurs'}</h3>
+  <div class="grid3">
+    <div><label>Kursname</label><input id="cName" value="${esc(c.name||'')}"></div>
+    <div><label>Termin (frei, z. B. 18.09.2026 17 Uhr)</label><input id="cDatum" value="${esc(c.datum||'')}"></div>
+    <div><label>Preis pro Teilnehmer (netto, €)</label><input id="cPreis" value="${c.preis??''}"></div>
+  </div>
+  <label>Beschreibung (erscheint auf der Rechnung)</label><textarea id="cBeschr" rows="2">${esc(c.beschreibung||'')}</textarea>
+  <label>Teilnehmer (aus dem Kundenstamm)</label>
+  <div style="display:flex;gap:8px"><select id="cKunde">${S.customers.map(k=>`<option value="${k.id}">${esc(k.firma||k.name)}</option>`).join('')}</select>
+  <button class="btn sm sec" onclick="kursAddTeilnehmer()">+ hinzufügen</button></div>
+  <div id="cTeilnehmer" style="margin-top:8px"></div>
+  <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+    <button class="btn" onclick="saveKurs('${id||''}')">💾 Speichern</button>
+    ${id&&(c.teilnehmer||[]).length?`<button class="btn" style="background:var(--green)" onclick="kursRechnungen('${id}')">🧾 ${(c.teilnehmer||[]).length} Rechnung(en) erzeugen</button>`:''}
+    <button class="btn sec" onclick="$('#kursForm').innerHTML=''">Abbrechen</button>
+  </div></div>`;
+  kursRenderTeilnehmer();
+  $('#cName').focus();
+}
+function kursRenderTeilnehmer(){
+  $('#cTeilnehmer').innerHTML=window._kursTeilnehmer.map((t,i)=>{
+    const k=S.customers.find(x=>x.id===t.kundeId);
+    return `<span class="badge b-entwurf" style="margin:2px 4px 2px 0">${esc(k?(k.firma||k.name):t.name||'?')} <a style="cursor:pointer;color:var(--red)" onclick="window._kursTeilnehmer.splice(${i},1);kursRenderTeilnehmer()">✕</a></span>`;
+  }).join('')||'<span style="color:var(--dim);font-size:13px">Noch keine Teilnehmer.</span>';
+}
+function kursAddTeilnehmer(){
+  const kid=$('#cKunde').value;
+  if(!kid)return;
+  if(window._kursTeilnehmer.some(t=>t.kundeId===kid)){toast('Schon in der Liste',true);return;}
+  window._kursTeilnehmer.push({kundeId:kid});
+  kursRenderTeilnehmer();
+}
+async function saveKurs(id){
+  const rec={name:$('#cName').value.trim(),datum:$('#cDatum').value.trim(),preis:parseFloat(String($('#cPreis').value).replace(',','.'))||0,
+    beschreibung:$('#cBeschr').value.trim(),teilnehmer:window._kursTeilnehmer};
+  if(!rec.name){toast('Kursname angeben',true);return;}
+  try{
+    if(id)await api('courses/'+id,'PUT',rec);else await api('courses','POST',rec);
+    await loadAll();toast('Gespeichert');render();
+  }catch(e){toast(e.message,true);}
+}
+async function delKurs(id){
+  if(!confirm('Kurs löschen? (Bereits erzeugte Rechnungen bleiben)'))return;
+  try{await api('courses/'+id,'DELETE');await loadAll();render();}catch(e){toast(e.message,true);}
+}
+async function kursRechnungen(id){
+  if(!confirm('Für jeden Teilnehmer einen Rechnungsentwurf erzeugen?'))return;
+  try{const r=await api('courses/'+id+'/rechnungen','POST',{});await loadAll();toast(r.anzahl+' Rechnungsentwürfe erzeugt');nav('rechnung');}
+  catch(e){toast(e.message,true);}
+}
+
+// --- Ausgaben
+function renderAusgaben(m){
+  const jahr=new Date().getFullYear();
+  const summe=S.expenses.filter(a=>(a.datum||'').startsWith(jahr)).reduce((x,a)=>x+(Number(a.betrag)||0),0);
+  m.innerHTML=`<h1>💸 Ausgaben<span class="spacer"></span><span style="font-size:15px;color:var(--mid)">Summe ${jahr}: <b>${eur(summe)}</b></span><button class="btn" onclick="editAusgabe()">+ Ausgabe</button></h1>
+  <div class="card"><table class="list"><tr><th>Datum</th><th>Lieferant</th><th>Beschreibung</th><th>Kategorie</th><th class="num">Brutto</th><th></th></tr>
+  ${[...S.expenses].sort((a,b)=>(b.datum||'').localeCompare(a.datum||'')).map(a=>`<tr class="click" onclick="editAusgabe('${a.id}')">
+    <td>${dtDE(a.datum)}</td><td><b>${esc(a.lieferant||'')}</b></td><td>${esc(a.beschreibung||'')}</td>
+    <td>${esc(a.kategorie||'')}</td><td class="num">${eur(a.betrag)}</td>
+    <td><button class="btn sm danger" onclick="event.stopPropagation();delAusgabe('${a.id}')">✕</button></td></tr>`).join('')||'<tr><td colspan="6" style="color:var(--dim)">Noch keine Ausgaben erfasst — z. B. Filament-Bestellung, Strom, Werkzeug.</td></tr>'}
+  </table></div>
+  <div id="ausgabeForm"></div>`;
+}
+function editAusgabe(id){
+  const a=id?S.expenses.find(x=>x.id===id):{datum:today()};
+  $('#ausgabeForm').innerHTML=`<div class="card"><h3>${id?'Ausgabe bearbeiten':'Neue Ausgabe'}</h3>
+  <div class="grid3">
+    <div><label>Datum</label><input id="aDatum" type="date" value="${esc(a.datum||today())}"></div>
+    <div><label>Lieferant</label><input id="aLief" value="${esc(a.lieferant||'')}"></div>
+    <div><label>Betrag (brutto, €)</label><input id="aBetrag" value="${a.betrag??''}"></div>
+    <div><label>Kategorie</label><select id="aKat">${['Material','Maschinen/Werkzeug','Strom/Miete','Software/IT','Versand','Marketing','Sonstiges'].map(k=>`<option ${a.kategorie===k?'selected':''}>${k}</option>`).join('')}</select></div>
+    <div style="grid-column:span 2"><label>Beschreibung</label><input id="aBeschrE" value="${esc(a.beschreibung||'')}"></div>
+  </div>
+  <div style="margin-top:12px;display:flex;gap:10px">
+    <button class="btn" onclick="saveAusgabe('${id||''}')">💾 Speichern</button>
+    <button class="btn sec" onclick="$('#ausgabeForm').innerHTML=''">Abbrechen</button>
+  </div></div>`;
+  $('#aLief').focus();
+}
+async function saveAusgabe(id){
+  const rec={datum:$('#aDatum').value,lieferant:$('#aLief').value.trim(),betrag:parseFloat(String($('#aBetrag').value).replace(',','.'))||0,
+    kategorie:$('#aKat').value,beschreibung:$('#aBeschrE').value.trim()};
+  if(!rec.lieferant&&!rec.beschreibung){toast('Lieferant oder Beschreibung angeben',true);return;}
+  try{
+    if(id)await api('expenses/'+id,'PUT',rec);else await api('expenses','POST',rec);
+    await loadAll();toast('Gespeichert');render();
+  }catch(e){toast(e.message,true);}
+}
+async function delAusgabe(id){
+  if(!confirm('Ausgabe löschen?'))return;
+  try{await api('expenses/'+id,'DELETE');await loadAll();render();}catch(e){toast(e.message,true);}
+}
+
 // --- Einstellungen
 function renderSettings(m){
   const s=S.settings;
@@ -603,6 +784,16 @@ function renderSettings(m){
     <div><label>BIC</label><input id="sBic" value="${esc(s.bank.bic)}"></div>
     <div><label>Institut</label><input id="sInstitut" value="${esc(s.bank.institut)}"></div>
   </div></div>
+  <div class="card"><h3>3D-Druck-Kalkulation</h3>
+  <div class="grid3">
+    <div><label>Maschinensatz (€/Druckstunde)</label><input id="sKMasch" value="${s.kalkulation.maschineProStd}"></div>
+    <div><label>Arbeitssatz (€/Stunde)</label><input id="sKArbeit" value="${s.kalkulation.arbeitProStd}"></div>
+    <div class="grid2"><div><label>Marge (%)</label><input id="sKMarge" value="${s.kalkulation.margeProzent}"></div>
+    <div><label>Mindestpreis (€)</label><input id="sKMin" value="${s.kalkulation.mindestpreis}"></div></div>
+  </div>
+  <label>Materialien (je Zeile: Name: Preis €/kg)</label>
+  <textarea id="sKMat" rows="5">${esc(s.kalkulation.materialien.map(x=>x.name+': '+x.preisKg).join('\n'))}</textarea>
+  </div>
   <div class="card"><h3>Vorgaben &amp; Textbausteine</h3>
   <div class="grid2">
     <div><label>Zahlungsziel Rechnungen (Tage)</label><input id="sZiel" type="number" value="${s.zahlungszielTage}"></div>
@@ -623,6 +814,15 @@ async function saveSettings(){
     firma:{name:$('#sName').value,inhaber:$('#sInhaber').value,telefon:$('#sTel').value,strasse:$('#sStrasse').value,plz:$('#sPlz').value,ort:$('#sOrt').value,email:$('#sEmail').value,web:$('#sWeb').value},
     steuer:{modus:$('#sModus').value,steuernummer:$('#sStnr').value,ustId:$('#sUstId').value},
     bank:{iban:$('#sIban').value,bic:$('#sBic').value,institut:$('#sInstitut').value},
+    kalkulation:{
+      maschineProStd:parseFloat(String($('#sKMasch').value).replace(',','.'))||0,
+      arbeitProStd:parseFloat(String($('#sKArbeit').value).replace(',','.'))||0,
+      margeProzent:parseFloat(String($('#sKMarge').value).replace(',','.'))||0,
+      mindestpreis:parseFloat(String($('#sKMin').value).replace(',','.'))||0,
+      materialien:$('#sKMat').value.split('\n').map(z=>{
+        const[t,p]=z.split(':');return t&&p?{name:t.trim(),preisKg:parseFloat(p.replace(',','.'))||0}:null;
+      }).filter(Boolean),
+    },
     zahlungszielTage:parseInt($('#sZiel').value)||14,
     angebotGueltigTage:parseInt($('#sGuelt').value)||30,
     texte:{angebotOben:$('#sTAO').value,angebotUnten:$('#sTAU').value,rechnungOben:$('#sTRO').value,rechnungUnten:$('#sTRU').value,mahnung:$('#sTM').value},
@@ -632,7 +832,7 @@ async function saveSettings(){
 }
 
 // ---------------------------------------------------------------- Druck
-function sheetHtml(d,mahnung){
+function sheetHtml(d,mahnung,girocode){
   const s=S.settings,t=calcTotals(d),klein=s.steuer.modus==='klein';
   const re=d.art==='rechnung';
   const k=d.kunde||{};
@@ -689,7 +889,10 @@ function sheetHtml(d,mahnung){
     <div class="endsum"><span>${re?'Rechnungsbetrag':'Gesamtbetrag'}</span><span>${eur(t.brutto)}</span></div>
   </div>`}
   ${klein?`<div class="hinweis">Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.</div>`:''}
-  ${re&&!mahnung?`<div class="hinweis">Bitte überweisen Sie den Betrag bis zum <b>${zielStr}</b> unter Angabe der Rechnungsnummer auf das unten genannte Konto.</div>`:''}
+  ${re&&!mahnung?`<div class="hinweis" style="display:flex;gap:5mm;align-items:center">
+    ${girocode?`<div style="flex-shrink:0">${girocode}</div>`:''}
+    <div>Bitte überweisen Sie den Betrag bis zum <b>${zielStr}</b> unter Angabe der Rechnungsnummer auf das unten genannte Konto.${girocode?'<br><b>Tipp:</b> GiroCode mit der Banking-App scannen — alle Daten sind schon ausgefüllt.':''}</div>
+  </div>`:''}
   ${d.status==='storniert'?'<div class="hinweis" style="color:#ef4444;font-weight:700">STORNIERT am '+dtDE(d.storniertAm)+'</div>':''}
   <div class="schluss">${esc(schluss)}${schluss?'\n\n':''}Mit freundlichen Grüßen\n${esc(s.firma.inhaber||s.firma.name)}</div>
   <div class="fuss">
@@ -700,9 +903,16 @@ function sheetHtml(d,mahnung){
   </div>
   </div>`;
 }
-function printDoc(id){
+async function printDoc(id){
   const d=S.docs.find(x=>x.id===id)||editDoc;if(!d)return;
-  $('#printArea').innerHTML=sheetHtml(d,false);
+  let girocode=null;
+  if(d.art==='rechnung'&&d.festgeschrieben&&S.settings.bank.iban&&!['bezahlt','storniert'].includes(d.status)){
+    try{
+      const r=await fetch('/api/girocode/'+d.id,{headers:{'X-Key':KEY}});
+      if(r.ok)girocode=await r.text();
+    }catch(e){/* ohne QR drucken */}
+  }
+  $('#printArea').innerHTML=sheetHtml(d,false,girocode);
   setTimeout(()=>window.print(),80);
 }
 async function printMahnung(id){
