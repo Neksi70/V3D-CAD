@@ -111,7 +111,7 @@ function nextNumber(art) {
 }
 
 // --- HTTP ------------------------------------------------------------------
-const MIME = { '.html': 'text/html; charset=utf-8', '.svg': 'image/svg+xml', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.svg': 'image/svg+xml', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.webmanifest': 'application/manifest+json' };
 
 function send(res, code, body, type) {
   const buf = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
