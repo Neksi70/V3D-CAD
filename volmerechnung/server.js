@@ -22,6 +22,8 @@ function loadConfig() {
     adminKey: crypto.randomBytes(16).toString('base64url'),
     // Lokale KI (Ollama auf 11434) — Finanzdaten bleiben auf der Maschine
     kiModel: 'llama3.1:8b',
+    // Öffentliche Basis für Beleg-Links (Funnel-Pfad /beleg)
+    publicBase: 'https://v3da.tailf05fe9.ts.net/beleg',
   };
   let changed = false;
   for (const k of Object.keys(def)) if (!(k in cfg)) { cfg[k] = def[k]; changed = true; }
@@ -160,6 +162,104 @@ function calcTotals(doc) {
     ustSumme += ust[satz];
   }
   return { netto, rabatt, nettoNachRabatt, ust, brutto: nettoNachRabatt + ustSumme };
+}
+
+// --- GiroCode-SVG (EPC069-12 Version 002) -----------------------------------
+function giroSvg(doc) {
+  const s = settings.data;
+  const iban = String(s.bank.iban || '').replace(/\s/g, '');
+  if (!iban) return null;
+  const epc = ['BCD', '002', '1', 'SCT', String(s.bank.bic || '').replace(/\s/g, ''),
+    String(s.firma.name || '').slice(0, 70), iban,
+    'EUR' + calcTotals(doc).brutto.toFixed(2), '', '',
+    ('Rechnung ' + (doc.nummer || '')).trim().slice(0, 140), ''].join('\n');
+  const py = require('child_process').spawnSync('python3', ['-c',
+    'import segno,io,sys\nqr=segno.make_qr(sys.stdin.read(),error="m")\nb=io.BytesIO()\nqr.save(b,kind="svg",scale=3,xmldecl=False,border=2)\nsys.stdout.write(b.getvalue().decode())'],
+    { input: epc, encoding: 'utf8', timeout: 10000 });
+  return (py.status === 0 && py.stdout) ? py.stdout : null;
+}
+
+// --- Öffentliche Beleg-Seite (/beleg/<token>) --------------------------------
+// Kunde öffnet den Link -> Zugriff wird protokolliert = Lesebestätigung.
+const hesc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const eurS = (v) => (Number(v) || 0).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
+
+function belegHtml(doc) {
+  const s = settings.data;
+  const t = calcTotals(doc);
+  const klein = s.steuer.modus === 'klein';
+  const re = doc.art === 'rechnung';
+  const k = doc.kunde || {};
+  const ziel = new Date(doc.datum); ziel.setDate(ziel.getDate() + (Number(doc.zahlungszielTage) || (re ? s.zahlungszielTage : s.angebotGueltigTage) || 14));
+  const zielStr = ziel.toLocaleDateString('de-DE');
+  const giro = re && !['bezahlt', 'storniert'].includes(doc.status) ? giroSvg(doc) : null;
+  let nr = 0;
+  const zeilen = (doc.positionen || []).map((p) => {
+    if (p.typ === 'text') return `<tr class="txt"><td></td><td colspan="4">${p.name ? `<b>${hesc(p.name)}</b> ` : ''}${hesc(p.beschreibung || '')}</td></tr>`;
+    nr++;
+    return `<tr><td>${nr}</td><td><b>${hesc(p.name)}</b>${p.beschreibung ? `<div class="be">${hesc(p.beschreibung)}</div>` : ''}${p.rabatt ? `<div class="be">abzgl. ${p.rabatt} % Rabatt</div>` : ''}</td>
+      <td class="n">${Number(p.menge) || 0} ${hesc(p.einheit || '')}</td><td class="n">${eurS(p.preis)}</td>
+      <td class="n">${eurS((p.menge || 0) * (p.preis || 0) * (1 - (p.rabatt || 0) / 100))}</td></tr>`;
+  }).join('');
+  const ustZeilen = klein ? '' : Object.entries(t.ust).map(([sz, v]) => `<div><span>zzgl. ${sz} % USt</span><b>${eurS(v)}</b></div>`).join('');
+  return `<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${re ? 'Rechnung' : 'Angebot'} ${hesc(doc.nummer)} — ${hesc(s.firma.name)}</title>
+<meta name="robots" content="noindex,nofollow">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#f4f5f9;color:#1c2030;padding:14px}
+.wrap{max-width:720px;margin:0 auto}
+.band{display:flex;align-items:center;gap:14px;background:linear-gradient(100deg,#EA6000,#F97316 55%,#FB923C);border-radius:14px 14px 0 0;padding:16px 20px;color:#fff}
+.band img{width:74px;background:#fff;border-radius:8px;padding:5px}
+.band b{font-size:19px;display:block}
+.band span{font-size:12.5px;opacity:.92}
+.card{background:#fff;border:1px solid #e3e6ef;border-top:0;border-radius:0 0 14px 14px;padding:20px}
+h1{font-size:20px;margin:6px 0 2px}h1 em{color:#EA6000;font-style:normal}
+.meta{color:#5b6172;font-size:13.5px;margin-bottom:14px}
+table{width:100%;border-collapse:collapse;margin:10px 0}
+th{background:#F97316;color:#fff;font-size:12.5px;text-align:left;padding:7px 8px}
+td{padding:8px;border-bottom:1px solid #eceef4;vertical-align:top;font-size:14px}
+.n{text-align:right;white-space:nowrap}th.n{text-align:right}
+.be{font-size:12.5px;color:#666;white-space:pre-wrap}
+.txt td{color:#555;font-size:13px}
+.sums{margin-left:auto;max-width:300px}
+.sums div{display:flex;justify-content:space-between;padding:2px 0;font-size:14.5px}
+.sums .end{border-top:2px solid #1c2030;font-weight:700;font-size:17px;margin-top:4px;padding-top:6px;color:#EA6000}
+.hin{font-size:13px;color:#555;margin:12px 0;padding:10px 12px;background:#fff8f2;border:1px solid #ffe4cc;border-radius:10px}
+.giro{display:flex;gap:14px;align-items:center;margin:12px 0;padding:12px;background:#fafbfd;border:1px solid #e3e6ef;border-radius:10px}
+.giro svg{flex-shrink:0}
+.fuss{font-size:12px;color:#777;margin-top:16px;border-top:1px solid #e3e6ef;padding-top:10px;display:flex;flex-wrap:wrap;gap:6px 26px}
+.tbl{overflow-x:auto;margin:10px 0}
+.tbl table{margin:0;min-width:430px}
+@media (max-width:480px){td,th{font-size:12.5px;padding:6px 5px}.be{font-size:11.5px}}
+.btn{display:inline-block;background:#F97316;color:#fff;border:0;border-radius:9px;padding:10px 16px;font-weight:600;font-size:14.5px;cursor:pointer;margin-top:10px}
+@media print{body{background:#fff;padding:0}.btn{display:none}.card,.band{border-radius:0}}
+</style></head><body><div class="wrap">
+<div class="band"><img src="data:image/svg+xml;base64,${fs.readFileSync(path.join(ROOT, 'logo.svg')).toString('base64')}" alt="">
+<div><b>${hesc(s.firma.name)}</b><span>${hesc(s.firma.slogan || '')}</span></div></div>
+<div class="card">
+<h1>${re ? 'Rechnung' : 'Angebot'} <em>${hesc(doc.nummer)}</em>${doc.status === 'storniert' ? ' — STORNIERT' : ''}</h1>
+<div class="meta">für ${hesc(k.firma || k.name || '')} · Datum: ${new Date(doc.datum).toLocaleDateString('de-DE')} · ${re ? 'zahlbar bis' : 'gültig bis'}: <b>${zielStr}</b></div>
+<div class="tbl"><table><tr><th style="width:30px">Pos.</th><th>Leistung</th><th class="n">Menge</th><th class="n">Einzelpreis</th><th class="n">Gesamt</th></tr>${zeilen}</table></div>
+<div class="sums">
+<div><span>Nettobetrag</span><b>${eurS(t.netto)}</b></div>
+${t.rabatt ? `<div><span>Rabatt (${doc.rabattProzent} %)</span><b>−${eurS(t.rabatt)}</b></div>` : ''}
+${ustZeilen}
+<div class="end"><span>${re ? 'Rechnungsbetrag' : 'Gesamtbetrag'}</span><span>${eurS(t.brutto)}</span></div>
+</div>
+${klein ? '<div class="hin">Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.</div>' : ''}
+${re && !['bezahlt', 'storniert'].includes(doc.status) ? `<div class="hin">Bitte überweisen Sie den Betrag bis zum <b>${zielStr}</b> unter Angabe der Rechnungsnummer${s.bank.iban ? ` auf:<br><b>IBAN ${hesc(s.bank.iban)}</b>${s.bank.bic ? ' · BIC ' + hesc(s.bank.bic) : ''} (${hesc(s.firma.name)})` : '.'}</div>` : ''}
+${giro ? `<div class="giro">${giro}<div><b>Mit Banking-App zahlen:</b><br>GiroCode scannen — Empfänger, Betrag und Verwendungszweck sind schon ausgefüllt.</div></div>` : ''}
+${doc.status === 'bezahlt' ? '<div class="hin">✅ Diese Rechnung ist bereits bezahlt — vielen Dank!</div>' : ''}
+<button class="btn" onclick="window.print()">🖨️ Drucken / als PDF speichern</button>
+<div class="fuss">
+<span><b>${hesc(s.firma.name)}</b>${s.firma.inhaber ? ' · ' + hesc(s.firma.inhaber) : ''}</span>
+<span>${hesc([s.firma.strasse, (s.firma.plz + ' ' + s.firma.ort).trim()].filter(Boolean).join(', '))}</span>
+<span>${hesc(s.firma.telefon || '')}</span><span>${hesc(s.firma.email || '')}</span>
+${s.steuer.steuernummer ? `<span>St-Nr. ${hesc(s.steuer.steuernummer)}</span>` : ''}
+${s.steuer.ustId ? `<span>USt-IdNr. ${hesc(s.steuer.ustId)}</span>` : ''}
+</div>
+</div></div></body></html>`;
 }
 
 // --- XRechnung (EN 16931 / UBL 2.1) -----------------------------------------
@@ -316,20 +416,9 @@ async function api(req, res, url) {
   if (col === 'girocode' && docId && m === 'GET') {
     const doc = docs.data.find((d) => d.id === docId);
     if (!doc) return send(res, 404, { error: 'Beleg nicht gefunden' });
-    const s = settings.data;
-    const iban = String(s.bank.iban || '').replace(/\s/g, '');
-    if (!iban) return send(res, 400, { error: 'Keine IBAN in den Einstellungen' });
-    const brutto = calcTotals(doc).brutto;
-    // EPC069-12 Version 002: BIC optional, Name max 70, Verwendungszweck max 140
-    const epc = ['BCD', '002', '1', 'SCT', String(s.bank.bic || '').replace(/\s/g, ''),
-      String(s.firma.name || '').slice(0, 70), iban,
-      'EUR' + brutto.toFixed(2), '', '',
-      ('Rechnung ' + (doc.nummer || '')).trim().slice(0, 140), ''].join('\n');
-    const py = require('child_process').spawnSync('python3', ['-c',
-      'import segno,io,sys\nqr=segno.make_qr(sys.stdin.read(),error="m")\nb=io.BytesIO()\nqr.save(b,kind="svg",scale=3,xmldecl=False,border=2)\nsys.stdout.write(b.getvalue().decode())'],
-      { input: epc, encoding: 'utf8', timeout: 10000 });
-    if (py.status !== 0 || !py.stdout) return send(res, 500, { error: 'QR-Erzeugung fehlgeschlagen: ' + (py.stderr || '').slice(0, 200) });
-    return send(res, 200, py.stdout, 'image/svg+xml');
+    const svg = giroSvg(doc);
+    if (!svg) return send(res, 400, { error: 'GiroCode nicht möglich (IBAN fehlt oder QR-Fehler)' });
+    return send(res, 200, svg, 'image/svg+xml');
   }
 
   if (col === 'ki' && m === 'POST') {
@@ -535,6 +624,12 @@ Positionen:\n${liste.slice(0, 2000)}`;
           docs.data.push(kopie); docs.save();
           return send(res, 200, kopie);
         }
+        case 'share': { // Versand-Link erzeugen (Lesebestätigung über Zugriffs-Log)
+          if (!doc.festgeschrieben) return send(res, 400, { error: 'Erst festschreiben, dann versenden' });
+          if (!doc.shareToken) doc.shareToken = crypto.randomBytes(16).toString('base64url');
+          docs.save();
+          return send(res, 200, { url: CFG.publicBase.replace(/\/$/, '') + '/' + doc.shareToken, zugriffe: doc.zugriffe || [] });
+        }
         case 'remind': {
           doc.mahnstufe = (doc.mahnstufe || 0) + 1;
           doc.letzteMahnung = now().slice(0, 10);
@@ -566,6 +661,24 @@ const handler = async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
+    // Öffentliche Beleg-Ansicht: /beleg/<token> — einziger Zugang ohne Key.
+    // Jeder Aufruf wird protokolliert (= Lesebestätigung), außer mit ?v=1 (eigene Vorschau).
+    const mBeleg = url.pathname.match(/^\/beleg\/([A-Za-z0-9_-]{16,64})\/?$/);
+    if (mBeleg) {
+      const doc = docs.data.find((d) => d.shareToken === mBeleg[1] && d.festgeschrieben);
+      if (!doc) return send(res, 404, 'Dieser Link ist ungültig oder abgelaufen.', 'text/plain; charset=utf-8');
+      if (url.searchParams.get('v') !== '1') {
+        doc.zugriffe = doc.zugriffe || [];
+        doc.zugriffe.push({
+          t: now(),
+          ua: String(req.headers['user-agent'] || '').slice(0, 140),
+          ip: String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').slice(0, 45),
+        });
+        if (doc.zugriffe.length > 100) doc.zugriffe = doc.zugriffe.slice(-100);
+        docs.save();
+      }
+      return send(res, 200, belegHtml(doc), 'text/html; charset=utf-8');
+    }
     // statisch
     let file = url.pathname === '/' ? '/rechnung.html' : url.pathname;
     file = path.normalize(file).replace(/^([.][.][/\\])+/, '');

@@ -336,7 +336,7 @@ function docTable(list,mitArt){
     <td><b>${esc(d.nummer||'(Entwurf)')}</b></td>
     ${mitArt?`<td>${d.art==='rechnung'?'🧾':'📝'}</td>`:''}
     <td>${esc(kundeName(d))}</td><td>${dtDE(d.datum||d.created?.slice(0,10))}</td>
-    <td class="num">${eur(calcTotals(d).brutto)}</td><td>${badge(d)}</td>
+    <td class="num">${eur(calcTotals(d).brutto)}</td><td>${badge(d)}${(d.zugriffe||[]).length?` <span title="vom Kunden geöffnet: ${(d.zugriffe||[]).length}×">👁</span>`:''}</td>
     <td class="num"><button class="btn sm sec" onclick="event.stopPropagation();printDoc('${d.id}')">🖨️</button></td>
   </tr>`).join('')}</table>`;
 }
@@ -495,8 +495,63 @@ function renderEditor(m){
     ${fest&&d.status!=='storniert'?`<button class="btn danger" onclick="if(confirm('Beleg wirklich stornieren?'))docAction('cancel')">Stornieren</button>`:''}
     ${!fest&&d.id&&!d.unsaved?`<button class="btn danger" onclick="if(confirm('Entwurf löschen?'))deleteDoc()">🗑️ Löschen</button>`:''}
   </div>
+  ${fest?shareCardHtml(d):''}
   ${fest?'<p style="color:var(--dim);font-size:13px">Dieser Beleg ist festgeschrieben (GoBD) und kann nicht mehr geändert werden — nur Status/Storno.</p>':''}`;
 }
+// --- Versand mit Lesebestätigung (öffentlicher Beleg-Link über den Funnel)
+function shareUrl(d){return d.shareToken?'https://v3da.tailf05fe9.ts.net/beleg/'+d.shareToken:null;}
+function shareCardHtml(d){
+  const url=shareUrl(d);
+  const z=d.zugriffe||[];
+  const status=!url?''
+    :z.length?`<span class="badge b-bezahlt">👁 ${z.length}× geöffnet</span> <small style="color:var(--mid)">zuletzt ${new Date(z[z.length-1].t).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})} Uhr</small>`
+    :`<span class="badge b-offen">👁 noch nicht geöffnet</span>`;
+  return `<div class="card">
+    <h3 style="margin-bottom:6px">📬 Versand &amp; Lesebestätigung</h3>
+    <p style="color:var(--mid);font-size:13.5px;margin-bottom:10px">Verschicke den persönlichen Beleg-Link — sobald der Kunde ihn öffnet, siehst du es hier. Funktioniert per E-Mail und WhatsApp.</p>
+    ${!url?`<button class="btn" onclick="shareDoc()">🔗 Versand-Link erzeugen</button>`
+    :`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn" onclick="mailShare()">📧 Per E-Mail</button>
+        <button class="btn" style="background:#25D366" onclick="waShare()">💬 Per WhatsApp</button>
+        <button class="btn sec" onclick="copyShare()">📋 Link kopieren</button>
+        <a class="btn sec" style="text-decoration:none" href="${url}?v=1" target="_blank">👁 Vorschau</a>
+        ${status}
+      </div>
+      <input style="margin-top:8px;font-size:12.5px;color:var(--mid)" value="${url}" readonly onclick="this.select()">
+      ${z.length?`<details style="margin-top:8px;font-size:12.5px;color:var(--mid)"><summary>Zugriffs-Protokoll (${z.length})</summary>
+        ${z.slice(-8).reverse().map(x=>`<div>· ${new Date(x.t).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})} Uhr — ${esc((x.ua||'').split(')')[0].split('(').pop()||'?')}</div>`).join('')}
+      </details>`:''}`}
+  </div>`;
+}
+async function shareDoc(){
+  try{const r=await api('docs/'+editDoc.id+'/share','POST',{});editDoc.shareToken=r.url.split('/').pop();await loadAll();render();toast('Versand-Link erzeugt');}
+  catch(e){toast(e.message,true);}
+}
+function nachrichtText(d){
+  const s=S.settings,re=d.art==='rechnung';
+  const t=calcTotals(d);
+  return `Guten Tag${d.kunde&&d.kunde.name?' '+d.kunde.name:''},\n\n`+
+    (re?`anbei erhalten Sie Ihre Rechnung ${d.nummer} über ${eur(t.brutto)}:`:
+        `anbei erhalten Sie unser Angebot ${d.nummer} über ${eur(t.brutto)}:`)+
+    `\n\n${shareUrl(d)}\n\n`+(re?`Der Link enthält alle Zahlungsinformationen inkl. QR-Code zum Scannen.\n\n`:'')+
+    `Mit freundlichen Grüßen\n${s.firma.inhaber||s.firma.name}\n${s.firma.name}${s.firma.telefon?' · '+s.firma.telefon:''}`;
+}
+function mailShare(){
+  const d=editDoc,re=d.art==='rechnung';
+  const betreff=`${re?'Rechnung':'Angebot'} ${d.nummer} — ${S.settings.firma.name}`;
+  location.href=`mailto:${encodeURIComponent(d.kunde&&d.kunde.email||'')}?subject=${encodeURIComponent(betreff)}&body=${encodeURIComponent(nachrichtText(d))}`;
+}
+function waShare(){
+  const d=editDoc;
+  let nr=String(d.kunde&&d.kunde.telefon||'').replace(/[^0-9]/g,'');
+  if(nr.startsWith('00'))nr=nr.slice(2);else if(nr.startsWith('0'))nr='49'+nr.slice(1);
+  window.open(`https://wa.me/${nr}?text=${encodeURIComponent(nachrichtText(d))}`,'_blank');
+}
+async function copyShare(){
+  try{await navigator.clipboard.writeText(shareUrl(editDoc));toast('Link kopiert');}
+  catch(e){toast('Kopieren blockiert — Link im Feld darunter markieren',true);}
+}
+
 // --- KI-Assistent (lokales Ollama über den Server)
 function kiBusy(on,msg){
   const b1=$('#kiBtn'),b2=$('#kiTxtBtn'),s=$('#kiStatus');
