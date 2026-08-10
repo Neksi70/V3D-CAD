@@ -161,6 +161,101 @@ function calcTotals(doc) {
   return { netto, rabatt, nettoNachRabatt, ust, brutto: nettoNachRabatt + ustSumme };
 }
 
+// --- XRechnung (EN 16931 / UBL 2.1) -----------------------------------------
+const xesc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+const geld = (n) => (Math.round(n * 100) / 100).toFixed(2);
+
+function xrechnungXml(doc) {
+  const s = settings.data;
+  const t = calcTotals(doc);
+  const klein = s.steuer.modus === 'klein';
+  const k = doc.kunde || {};
+  const ziel = new Date(doc.datum); ziel.setDate(ziel.getDate() + (Number(doc.zahlungszielTage) || s.zahlungszielTage || 14));
+  const einheit = (e) => (/std/i.test(e) ? 'HUR' : /pauschal/i.test(e) ? 'C62' : 'C62'); // UN/ECE Rec 20
+  const posLines = (doc.positionen || []).filter((p) => p.typ !== 'text');
+  const catId = klein ? 'E' : 'S';
+
+  // USt-Aufschlüsselung
+  const taxSubtotals = Object.entries(t.ust).map(([satz, betrag]) => {
+    const basis = klein ? t.nettoNachRabatt
+      : posLines.filter((p) => (Number(p.ust) || 0) === Number(satz))
+          .reduce((a, p) => a + (p.menge || 0) * (p.preis || 0) * (1 - (p.rabatt || 0) / 100), 0)
+          * (t.netto ? t.nettoNachRabatt / t.netto : 1);
+    return `<cac:TaxSubtotal>
+      <cbc:TaxableAmount currencyID="EUR">${geld(basis)}</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="EUR">${geld(betrag)}</cbc:TaxAmount>
+      <cac:TaxCategory><cbc:ID>${catId}</cbc:ID><cbc:Percent>${Number(satz).toFixed(2)}</cbc:Percent>
+        ${klein ? '<cbc:TaxExemptionReason>Kleinunternehmerregelung §19 UStG — keine Umsatzsteuer</cbc:TaxExemptionReason>' : ''}
+        <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory>
+    </cac:TaxSubtotal>`;
+  }).join('\n');
+
+  const lines = posLines.map((p, i) => {
+    const netto = (p.menge || 0) * (p.preis || 0) * (1 - (p.rabatt || 0) / 100);
+    const stkPreis = (p.preis || 0) * (1 - (p.rabatt || 0) / 100);
+    return `<cac:InvoiceLine>
+    <cbc:ID>${i + 1}</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="${einheit(p.einheit)}">${Number(p.menge) || 0}</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="EUR">${geld(netto)}</cbc:LineExtensionAmount>
+    <cac:Item>
+      ${p.beschreibung ? `<cbc:Description>${xesc(p.beschreibung)}</cbc:Description>` : ''}
+      <cbc:Name>${xesc(p.name)}</cbc:Name>
+      <cac:ClassifiedTaxCategory><cbc:ID>${catId}</cbc:ID><cbc:Percent>${(klein ? 0 : Number(p.ust) || 0).toFixed(2)}</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory>
+    </cac:Item>
+    <cac:Price><cbc:PriceAmount currencyID="EUR">${geld(stkPreis)}</cbc:PriceAmount></cac:Price>
+  </cac:InvoiceLine>`;
+  }).join('\n');
+
+  const rabattXml = t.rabatt > 0 ? `<cac:AllowanceCharge>
+    <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
+    <cbc:AllowanceChargeReason>Rabatt</cbc:AllowanceChargeReason>
+    <cbc:Amount currencyID="EUR">${geld(t.rabatt)}</cbc:Amount>
+    <cac:TaxCategory><cbc:ID>${catId}</cbc:ID><cbc:Percent>${klein ? '0.00' : '19.00'}</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory>
+  </cac:AllowanceCharge>` : '';
+
+  const ustSumme = t.brutto - t.nettoNachRabatt;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+ xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+ xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+<cbc:CustomizationID>urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0</cbc:CustomizationID>
+<cbc:ProfileID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</cbc:ProfileID>
+<cbc:ID>${xesc(doc.nummer)}</cbc:ID>
+<cbc:IssueDate>${doc.datum}</cbc:IssueDate>
+<cbc:DueDate>${ziel.toISOString().slice(0, 10)}</cbc:DueDate>
+<cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
+<cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
+<cbc:BuyerReference>${xesc(doc.leitwegId || k.nr || doc.nummer)}</cbc:BuyerReference>
+<cac:AccountingSupplierParty><cac:Party>
+  <cac:PostalAddress><cbc:StreetName>${xesc(s.firma.strasse)}</cbc:StreetName><cbc:CityName>${xesc(s.firma.ort)}</cbc:CityName><cbc:PostalZone>${xesc(s.firma.plz)}</cbc:PostalZone><cac:Country><cbc:IdentificationCode>DE</cbc:IdentificationCode></cac:Country></cac:PostalAddress>
+  ${s.steuer.ustId ? `<cac:PartyTaxScheme><cbc:CompanyID>${xesc(s.steuer.ustId)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme>` : ''}
+  ${s.steuer.steuernummer ? `<cac:PartyTaxScheme><cbc:CompanyID>${xesc(s.steuer.steuernummer)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>FC</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme>` : ''}
+  <cac:PartyLegalEntity><cbc:RegistrationName>${xesc(s.firma.name)}</cbc:RegistrationName></cac:PartyLegalEntity>
+  <cac:Contact><cbc:Name>${xesc(s.firma.inhaber || s.firma.name)}</cbc:Name><cbc:Telephone>${xesc(s.firma.telefon)}</cbc:Telephone><cbc:ElectronicMail>${xesc(s.firma.email)}</cbc:ElectronicMail></cac:Contact>
+</cac:Party></cac:AccountingSupplierParty>
+<cac:AccountingCustomerParty><cac:Party>
+  <cac:PostalAddress><cbc:StreetName>${xesc(k.strasse)}</cbc:StreetName><cbc:CityName>${xesc(k.ort)}</cbc:CityName><cbc:PostalZone>${xesc(k.plz)}</cbc:PostalZone><cac:Country><cbc:IdentificationCode>DE</cbc:IdentificationCode></cac:Country></cac:PostalAddress>
+  <cac:PartyLegalEntity><cbc:RegistrationName>${xesc(k.firma || k.name)}</cbc:RegistrationName></cac:PartyLegalEntity>
+</cac:Party></cac:AccountingCustomerParty>
+<cac:PaymentMeans><cbc:PaymentMeansCode>58</cbc:PaymentMeansCode>
+  <cac:PayeeFinancialAccount><cbc:ID>${xesc(String(s.bank.iban || '').replace(/\s/g, ''))}</cbc:ID><cbc:Name>${xesc(s.firma.name)}</cbc:Name></cac:PayeeFinancialAccount>
+</cac:PaymentMeans>
+<cac:PaymentTerms><cbc:Note>Zahlbar bis ${ziel.toISOString().slice(0, 10)} ohne Abzug.</cbc:Note></cac:PaymentTerms>
+${rabattXml}
+<cac:TaxTotal><cbc:TaxAmount currencyID="EUR">${geld(ustSumme)}</cbc:TaxAmount>
+${taxSubtotals}
+</cac:TaxTotal>
+<cac:LegalMonetaryTotal>
+  <cbc:LineExtensionAmount currencyID="EUR">${geld(t.netto)}</cbc:LineExtensionAmount>
+  <cbc:TaxExclusiveAmount currencyID="EUR">${geld(t.nettoNachRabatt)}</cbc:TaxExclusiveAmount>
+  <cbc:TaxInclusiveAmount currencyID="EUR">${geld(t.brutto)}</cbc:TaxInclusiveAmount>
+  ${t.rabatt > 0 ? `<cbc:AllowanceTotalAmount currencyID="EUR">${geld(t.rabatt)}</cbc:AllowanceTotalAmount>` : ''}
+  <cbc:PayableAmount currencyID="EUR">${geld(t.brutto)}</cbc:PayableAmount>
+</cac:LegalMonetaryTotal>
+${lines}
+</Invoice>`;
+}
+
 // --- Lokale KI via Ollama ---------------------------------------------------
 function ollama(prompt) {
   return new Promise((resolve, reject) => {
@@ -368,6 +463,15 @@ Positionen:\n${liste.slice(0, 2000)}`;
     const doc = docs.data.find((d) => d.id === docId);
     if (!doc) return send(res, 404, { error: 'nicht gefunden' });
 
+    if (m === 'GET' && action === 'xrechnung') {
+      if (doc.art !== 'rechnung' || !doc.festgeschrieben) return send(res, 400, { error: 'Nur festgeschriebene Rechnungen können als XRechnung exportiert werden' });
+      res.writeHead(200, {
+        'Content-Type': 'application/xml; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${doc.nummer}-xrechnung.xml"`,
+        'Cache-Control': 'no-store',
+      });
+      return res.end(xrechnungXml(doc));
+    }
     if (m === 'PUT') {
       if (doc.festgeschrieben) return send(res, 409, { error: 'Beleg ist festgeschrieben und kann nicht mehr geändert werden' });
       const body = await readBody(req);
