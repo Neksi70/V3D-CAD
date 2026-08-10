@@ -212,7 +212,8 @@ function badge(d){const s=docStatus(d);return `<span class="badge b-${s}">${STAT
 function calcTotals(doc){
   let netto=0;const ust={};
   for(const p of doc.positionen||[]){
-    const zeile=(Number(p.menge)||0)*(Number(p.preis)||0);netto+=zeile;
+    if(p.typ==='text')continue;
+    const zeile=(Number(p.menge)||0)*(Number(p.preis)||0)*(1-(Number(p.rabatt)||0)/100);netto+=zeile;
     const satz=S.settings.steuer.modus==='klein'?0:(Number(p.ust)||0);
     ust[satz]=(ust[satz]||0)+zeile*satz/100;
   }
@@ -274,11 +275,42 @@ function docTable(list,mitArt){
     <td class="num"><button class="btn sm sec" onclick="event.stopPropagation();printDoc('${d.id}')">🖨️</button></td>
   </tr>`).join('')}</table>`;
 }
+let sucheTxt='';
+function sucheFilter(list){
+  const q=sucheTxt.trim().toLowerCase();
+  if(!q)return list;
+  return list.filter(d=>[d.nummer,kundeName(d),d.datum,String(calcTotals(d).brutto.toFixed(2)),
+    ...(d.positionen||[]).map(p=>p.name)].join(' ').toLowerCase().includes(q));
+}
 function renderDocList(m,art){
   const titel=art==='rechnung'?'Rechnungen':'Angebote';
-  const list=S.docs.filter(d=>d.art===art).sort((a,b)=>(b.created||'').localeCompare(a.created||''));
-  m.innerHTML=`<h1>${titel}<span class="spacer"></span><button class="btn" onclick="newDoc('${art}')">+ Neu</button></h1>
-  <div class="card">${list.length?docTable(list):`<p style="color:var(--dim)">Noch keine ${titel}.</p>`}</div>`;
+  const list=sucheFilter(S.docs.filter(d=>d.art===art)).sort((a,b)=>(b.created||'').localeCompare(a.created||''));
+  m.innerHTML=`<h1>${titel}<span class="spacer"></span>
+    <input id="suche" style="width:220px" placeholder="🔍 Nummer, Kunde, Artikel, Betrag …" value="${esc(sucheTxt)}" oninput="sucheTxt=this.value;renderDocList($('#main'),'${art}');$('#suche').focus();$('#suche').setSelectionRange(99,99)">
+    ${art==='rechnung'?'<button class="btn sec" onclick="exportCsv()">⬇️ CSV</button>':''}
+    <button class="btn" onclick="newDoc('${art}')">+ Neu</button></h1>
+  <div class="card">${list.length?docTable(list):`<p style="color:var(--dim)">${sucheTxt?'Nichts gefunden.':'Noch keine '+titel+'.'}</p>`}</div>`;
+}
+function exportCsv(){
+  const sep=';',f=n=>String(n.toFixed(2)).replace('.',','); // deutsches Excel
+  const rows=[['Nummer','Art','Datum','Kunde','Status','Netto','USt','Brutto','Bezahlt am'].join(sep)];
+  for(const d of S.docs.filter(x=>x.festgeschrieben).sort((a,b)=>(a.nummer||'').localeCompare(b.nummer||''))){
+    const t=calcTotals(d);
+    rows.push([d.nummer,d.art,dtDE(d.datum),'"'+kundeName(d).replace(/"/g,'""')+'"',STATUS_TXT[docStatus(d)]||d.status,
+      f(t.netto- t.rabatt),f(t.brutto-t.nettoNachRabatt),f(t.brutto),d.bezahltAm?dtDE(d.bezahltAm):''].join(sep));
+  }
+  if(typeof S.expenses!=='undefined'&&S.expenses.length){
+    rows.push('');rows.push(['Ausgaben:'].join(sep));
+    rows.push(['Datum','Lieferant','Beschreibung','Kategorie','Brutto'].join(sep));
+    for(const a of S.expenses)rows.push([dtDE(a.datum),'"'+(a.lieferant||'').replace(/"/g,'""')+'"','"'+(a.beschreibung||'').replace(/"/g,'""')+'"',a.kategorie||'',f(Number(a.betrag)||0)].join(sep));
+  }
+  const blob=new Blob(['﻿'+rows.join('\r\n')],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='volmerechnung-export-'+today()+'.csv';a.click();URL.revokeObjectURL(a.href);
+}
+async function duplicateDoc(){
+  try{const kopie=await api('docs/'+editDoc.id+'/duplicate','POST',{});await loadAll();editDoc=kopie;view=kopie.art;toast('Kopie als neuer Entwurf angelegt');render();}
+  catch(e){toast(e.message,true);}
 }
 
 // --- Beleg-Editor
@@ -298,14 +330,19 @@ function edKunde(id){
   const k=S.customers.find(c=>c.id===id);
   editDoc.kunde=k?JSON.parse(JSON.stringify(k)):null; // Schnappschuss: Beleg behält Kundendaten von damals
 }
-function edPos(i,f,v){editDoc.positionen[i][f]=(f==='menge'||f==='preis'||f==='ust')?parseFloat(String(v).replace(',','.'))||0:v;renderTotalsOnly();}
+function edPos(i,f,v){editDoc.positionen[i][f]=(f==='menge'||f==='preis'||f==='ust'||f==='rabatt')?parseFloat(String(v).replace(',','.'))||0:v;renderTotalsOnly();}
 function edPosArtikel(i,artId){
   const a=S.items.find(x=>x.id===artId);if(!a)return;
   Object.assign(editDoc.positionen[i],{name:a.name,beschreibung:a.beschreibung||'',preis:a.preis,einheit:a.einheit||'Stk.',ust:a.ust??19});
   render();
 }
 function edAddPos(){editDoc.positionen.push({name:'',beschreibung:'',menge:1,einheit:'Stk.',preis:0,ust:19});render();}
+function edAddText(){editDoc.positionen.push({typ:'text',name:'',beschreibung:''});render();}
 function edDelPos(i){editDoc.positionen.splice(i,1);render();}
+function edMovePos(i,dir){
+  const j=i+dir;if(j<0||j>=editDoc.positionen.length)return;
+  const a=editDoc.positionen;[a[i],a[j]]=[a[j],a[i]];render();
+}
 function renderTotalsOnly(){const t=$('#edTotals');if(t)t.innerHTML=totalsHtml(editDoc);}
 function totalsHtml(d){
   const t=calcTotals(d);const klein=S.settings.steuer.modus==='klein';
@@ -346,20 +383,31 @@ function renderEditor(m){
         <input type="number" value="${d.zahlungszielTage??(re?S.settings.zahlungszielTage:S.settings.angebotGueltigTage)}" ${fest?'disabled':''} onchange="edSet('zahlungszielTage',parseInt(this.value)||14)"></div>
     </div>
 
-    <table class="pos-table"><tr><th style="width:26%">Bezeichnung</th><th style="width:24%">Beschreibung</th><th style="width:8%">Menge</th><th style="width:9%">Einheit</th><th style="width:11%">Einzelpreis €</th>${S.settings.steuer.modus==='klein'?'':'<th style="width:8%">USt %</th>'}<th style="width:10%" class="num">Summe</th><th></th></tr>
-    ${d.positionen.map((p,i)=>`<tr>
+    <table class="pos-table"><tr><th style="width:23%">Bezeichnung</th><th style="width:21%">Beschreibung</th><th style="width:7%">Menge</th><th style="width:8%">Einheit</th><th style="width:10%">Einzelpreis €</th><th style="width:6%">Rab. %</th>${S.settings.steuer.modus==='klein'?'':'<th style="width:7%">USt %</th>'}<th style="width:9%" class="num">Summe</th><th style="width:9%"></th></tr>
+    ${d.positionen.map((p,i)=>{
+      const moveBtns=fest?'':`<button class="btn sm sec" title="hoch" ${i===0?'disabled':''} onclick="edMovePos(${i},-1)">▲</button><button class="btn sm sec" title="runter" ${i===d.positionen.length-1?'disabled':''} onclick="edMovePos(${i},1)">▼</button><button class="btn sm danger" onclick="edDelPos(${i})">✕</button>`;
+      if(p.typ==='text')return `<tr style="background:#fafbff">
+        <td><input value="${esc(p.name)}" ${fest?'disabled':''} onchange="edPos(${i},'name',this.value)" placeholder="Überschrift (optional)"></td>
+        <td colspan="${S.settings.steuer.modus==='klein'?6:7}"><textarea rows="2" ${fest?'disabled':''} onchange="edPos(${i},'beschreibung',this.value)" placeholder="Freier Text auf dem Beleg">${esc(p.beschreibung)}</textarea></td>
+        <td style="white-space:nowrap">${moveBtns}</td></tr>`;
+      return `<tr>
       <td><input value="${esc(p.name)}" ${fest?'disabled':''} onchange="edPos(${i},'name',this.value)" placeholder="Leistung">
           ${fest?'':`<select style="margin-top:3px;font-size:12px;color:var(--dim)" onchange="edPosArtikel(${i},this.value)">${artOpts}</select>`}</td>
       <td><textarea rows="2" ${fest?'disabled':''} onchange="edPos(${i},'beschreibung',this.value)">${esc(p.beschreibung)}</textarea></td>
       <td><input value="${p.menge}" ${fest?'disabled':''} onchange="edPos(${i},'menge',this.value)"></td>
       <td><input value="${esc(p.einheit)}" ${fest?'disabled':''} onchange="edPos(${i},'einheit',this.value)"></td>
       <td><input value="${p.preis}" ${fest?'disabled':''} onchange="edPos(${i},'preis',this.value)"></td>
+      <td><input value="${p.rabatt||''}" placeholder="0" ${fest?'disabled':''} onchange="edPos(${i},'rabatt',this.value)"></td>
       ${S.settings.steuer.modus==='klein'?'':`<td><input value="${p.ust??19}" ${fest?'disabled':''} onchange="edPos(${i},'ust',this.value)"></td>`}
-      <td class="num" style="padding-top:10px">${eur((p.menge||0)*(p.preis||0))}</td>
-      <td>${fest?'':`<button class="btn sm danger" onclick="edDelPos(${i})">✕</button>`}</td>
-    </tr>`).join('')}
+      <td class="num" style="padding-top:10px">${eur((p.menge||0)*(p.preis||0)*(1-(p.rabatt||0)/100))}</td>
+      <td style="white-space:nowrap">${moveBtns}</td>
+    </tr>`;}).join('')}
     </table>
-    ${fest?'':'<button class="btn sm sec" style="margin-top:8px" onclick="edAddPos()">+ Position</button>'}
+    ${fest?'':`<div style="margin-top:8px;display:flex;gap:8px">
+      <button class="btn sm sec" onclick="edAddPos()">+ Position</button>
+      <button class="btn sm sec" onclick="edAddText()">+ Textzeile</button>
+      <button class="btn sm sec" onclick="kalkOpen()">🖨️ 3D-Druck kalkulieren</button>
+    </div>`}
     <div style="display:flex;gap:20px;align-items:flex-start">
       <div style="flex:1"><label>Rabatt (%)</label><input style="width:110px" type="number" value="${d.rabattProzent||0}" ${fest?'disabled':''} onchange="edSet('rabattProzent',parseFloat(this.value)||0);renderTotalsOnly()"></div>
       <div class="totals" id="edTotals">${totalsHtml(d)}</div>
@@ -368,6 +416,7 @@ function renderEditor(m){
 
   <div class="card" style="display:flex;gap:10px;flex-wrap:wrap">
     ${fest?'':`<button class="btn" onclick="saveDoc()">💾 Speichern</button>`}
+    ${d.id&&!d.unsaved?`<button class="btn sec" onclick="duplicateDoc()">📋 Duplizieren</button>`:''}
     ${!fest&&d.id&&!d.unsaved?`<button class="btn" style="background:var(--green)" onclick="finalizeDoc()">✅ Festschreiben &amp; Nummer vergeben</button>`:''}
     ${fest&&re&&['offen','ueberfaellig'].includes(docStatus(d))?`
       <button class="btn" style="background:var(--green)" onclick="docAction('status',{status:'bezahlt'})">💶 Als bezahlt markieren</button>
@@ -623,12 +672,15 @@ function sheetHtml(d,mahnung){
     <tr><td>${esc(d.nummer)}</td><td>${dtDE(d.datum)}</td><td class="num"><b>${eur(t.brutto)}</b></td></tr></table>`
   :`<table class="pos">
     <tr><th style="width:8mm">Pos.</th><th>Bezeichnung</th><th class="num">Menge</th><th>Einheit</th><th class="num">Einzelpreis</th><th class="num">Gesamt</th></tr>
-    ${(d.positionen||[]).map((p,i)=>`<tr>
-      <td>${i+1}</td>
-      <td><b>${esc(p.name)}</b>${p.beschreibung?`<div class="beschr">${esc(p.beschreibung)}</div>`:''}</td>
+    ${(()=>{let nr=0;return (d.positionen||[]).map(p=>{
+      if(p.typ==='text')return `<tr><td></td><td colspan="5">${p.name?`<b>${esc(p.name)}</b>`:''}${p.beschreibung?`<div class="beschr">${esc(p.beschreibung)}</div>`:''}</td></tr>`;
+      nr++;
+      return `<tr>
+      <td>${nr}</td>
+      <td><b>${esc(p.name)}</b>${p.beschreibung?`<div class="beschr">${esc(p.beschreibung)}</div>`:''}${p.rabatt?`<div class="beschr">abzgl. ${p.rabatt} % Rabatt</div>`:''}</td>
       <td class="num">${(Number(p.menge)||0).toLocaleString('de-DE')}</td><td>${esc(p.einheit||'')}</td>
-      <td class="num">${eur(p.preis)}</td><td class="num">${eur((p.menge||0)*(p.preis||0))}</td>
-    </tr>`).join('')}
+      <td class="num">${eur(p.preis)}</td><td class="num">${eur((p.menge||0)*(p.preis||0)*(1-(p.rabatt||0)/100))}</td>
+    </tr>`;}).join('');})()}
   </table>
   <div class="sumBlock">
     <div><span>Nettobetrag</span><span>${eur(t.netto)}</span></div>

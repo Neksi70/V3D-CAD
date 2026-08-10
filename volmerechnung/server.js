@@ -130,7 +130,8 @@ const now = () => new Date().toISOString();
 function calcTotals(doc) {
   let netto = 0; const ust = {};
   for (const p of doc.positionen || []) {
-    const zeile = (Number(p.menge) || 0) * (Number(p.preis) || 0);
+    if (p.typ === 'text') continue; // freie Textposition ohne Betrag
+    const zeile = (Number(p.menge) || 0) * (Number(p.preis) || 0) * (1 - (Number(p.rabatt) || 0) / 100);
     netto += zeile;
     const satz = settings.data.steuer.modus === 'klein' ? 0 : (Number(p.ust) || 0);
     ust[satz] = (ust[satz] || 0) + zeile * satz / 100;
@@ -356,6 +357,17 @@ Positionen:\n${liste.slice(0, 2000)}`;
           doc.status = 'angenommen';
           docs.save();
           return send(res, 200, re);
+        }
+        case 'duplicate': { // Kopie als neuer Entwurf (auch von festgeschriebenen)
+          const kopie = {
+            id: id(), created: now(), art: doc.art, status: 'entwurf', nummer: null,
+            festgeschrieben: false, mahnstufe: 0, kundeId: doc.kundeId, kunde: doc.kunde,
+            positionen: JSON.parse(JSON.stringify(doc.positionen || [])),
+            rabattProzent: doc.rabattProzent || 0, zahlungszielTage: doc.zahlungszielTage,
+            leitwegId: doc.leitwegId, datum: now().slice(0, 10),
+          };
+          docs.data.push(kopie); docs.save();
+          return send(res, 200, kopie);
         }
         case 'remind': {
           doc.mahnstufe = (doc.mahnstufe || 0) + 1;
