@@ -20,6 +20,8 @@ function loadConfig() {
   const def = {
     port: 8782,
     adminKey: crypto.randomBytes(16).toString('base64url'),
+    // Lokale KI (Ollama auf 11434) — Finanzdaten bleiben auf der Maschine
+    kiModel: 'llama3.1:8b',
   };
   let changed = false;
   for (const k of Object.keys(def)) if (!(k in cfg)) { cfg[k] = def[k]; changed = true; }
@@ -143,6 +145,39 @@ function calcTotals(doc) {
   return { netto, rabatt, nettoNachRabatt, ust, brutto: nettoNachRabatt + ustSumme };
 }
 
+// --- Lokale KI via Ollama ---------------------------------------------------
+function ollama(prompt) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      model: CFG.kiModel, stream: false, format: 'json',
+      options: { temperature: 0.2, num_ctx: 4096 }, prompt,
+    });
+    const rq = http.request({ host: '127.0.0.1', port: 11434, path: '/api/generate', method: 'POST', headers: { 'Content-Type': 'application/json' } }, (rs) => {
+      let b = '';
+      rs.on('data', (c) => b += c);
+      rs.on('end', () => {
+        try { resolve(JSON.parse(JSON.parse(b).response)); }
+        catch (e) { reject(new Error('KI-Antwort war kein gültiges JSON')); }
+      });
+    });
+    rq.setTimeout(180000, () => rq.destroy(new Error('KI-Timeout (3 min)')));
+    rq.on('error', (e) => reject(new Error('Lokale KI (Ollama) nicht erreichbar: ' + e.message)));
+    rq.end(body);
+  });
+}
+
+// Kunden-Namen aus KI-Antwort einem angelegten Kunden zuordnen (unscharf)
+function matchKunde(name) {
+  if (!name) return null;
+  const norm = (s) => String(s || '').toLowerCase().replace(/\b(herr|frau|firma|fa\.?|gmbh|ug|kg|ohg)\b/g, '').replace(/[^a-zä-ü0-9 ]/g, '').trim();
+  const n = norm(name);
+  if (!n) return null;
+  return customers.data.find((k) => {
+    const kf = norm(k.firma), kn = norm(k.name);
+    return (kf && (kf.includes(n) || n.includes(kf))) || (kn && (kn.includes(n) || n.includes(kn)));
+  }) || null;
+}
+
 async function api(req, res, url) {
   // Auth: alle API-Aufrufe brauchen den Key
   const key = req.headers['x-key'] || url.searchParams.get('key') || '';
@@ -163,6 +198,70 @@ async function api(req, res, url) {
       settings.data = Object.assign({}, settings.data, body, { nummern: alt });
       return send(res, 200, settings.data);
     }
+  }
+
+  if (col === 'ki' && m === 'POST') {
+    // /api/ki/entwurf — formlose Auftragsbeschreibung -> Beleg-Entwurf
+    if (docId === 'entwurf') {
+      const { text, art } = await readBody(req);
+      if (!text || !String(text).trim()) return send(res, 400, { error: 'Bitte den Auftrag kurz beschreiben' });
+      const kundenListe = customers.data.map((k) => k.firma || k.name).filter(Boolean).join('; ') || '(noch keine)';
+      const preisliste = items.data.map((a) => `${a.name}: ${a.preis} €/${a.einheit || 'Stk.'}`).join('; ') || '(keine)';
+      const belegArt = art === 'rechnung' ? 'eine Rechnung' : 'ein Angebot';
+      const prompt = `Du bist Büro-Assistent eines deutschen 3D-Druck- und CAD-Dienstleisters ("Volme 3D") und wandelst eine formlose Auftragsbeschreibung in ${belegArt} um.
+Antworte NUR mit JSON nach exakt diesem Schema:
+{"kunde": string|null, "positionen": [{"name": string, "beschreibung": string, "menge": number, "einheit": string, "preis": number, "ust": number}]}
+Regeln:
+- "preis" ist der NETTO-Einzelpreis in Euro. Deutsche Preise haben oft ein Dezimal-KOMMA: "5,90" bedeutet 5.90. Übernimm jeden im Text genannten Preis zur passenden Position. Erfinde niemals Preise: steht kein Preis im Text und auch nicht in der Preisliste, setze 0.
+- Steht eine Leistung in der Preisliste, übernimm deren Preis und Einheit, falls im Text nichts anderes steht.
+- "ust" ist 19, außer im Text steht etwas anderes.
+- "beschreibung": genau 1 kurzer, professioneller deutscher Satz zur Leistung (keine Preise darin).
+- "einheit" z. B. "Stk.", "Std.", "pauschal".
+- "kunde": der im Text genannte Kunde, sonst null.
+Bekannte Kunden: ${kundenListe}
+Preisliste: ${preisliste}
+Auftragsbeschreibung: ${String(text).slice(0, 2000)}`;
+      const j = await ollama(prompt).catch((e) => { send(res, 502, { error: e.message }); return null; });
+      if (!j) return;
+      const roh = Array.isArray(j.positionen) ? j.positionen : [];
+      const positionen = roh.slice(0, 30).map((p) => {
+        const pos = {
+          name: String(p.name || '').slice(0, 200),
+          beschreibung: String(p.beschreibung || '').slice(0, 500),
+          menge: Number(p.menge) || 1,
+          einheit: String(p.einheit || 'Stk.').slice(0, 20),
+          preis: Number(p.preis) || 0,
+          ust: Number.isFinite(Number(p.ust)) ? Number(p.ust) : 19,
+        };
+        // Preis 0, aber Artikel bekannt? Dann Preisliste ziehen.
+        if (!pos.preis) {
+          const a = items.data.find((x) => x.name.toLowerCase() === pos.name.toLowerCase());
+          if (a) { pos.preis = a.preis; pos.einheit = a.einheit || pos.einheit; pos.ust = a.ust ?? pos.ust; }
+        }
+        return pos;
+      }).filter((p) => p.name);
+      const kunde = matchKunde(j.kunde);
+      return send(res, 200, {
+        positionen,
+        kundeId: kunde ? kunde.id : null,
+        kunde: kunde ? kunde : null,
+        kundeVorschlag: !kunde && j.kunde ? String(j.kunde).slice(0, 100) : null,
+      });
+    }
+    // /api/ki/texte — Positionsbeschreibungen professionell ausformulieren
+    if (docId === 'texte') {
+      const { positionen } = await readBody(req);
+      if (!Array.isArray(positionen) || !positionen.length) return send(res, 400, { error: 'Keine Positionen' });
+      const liste = positionen.map((p, i) => `${i + 1}. ${p.name}${p.beschreibung ? ' — bisher: ' + p.beschreibung : ''}`).join('\n');
+      const prompt = `Du bist Büro-Assistent eines deutschen 3D-Druck- und CAD-Dienstleisters. Formuliere für jede Rechnungsposition eine kurze, professionelle Beschreibung (genau 1 Satz, deutsch, ohne Preise, ohne Anrede).
+Antworte NUR mit JSON: {"beschreibungen": [string, ...]} — exakt ${positionen.length} Einträge, gleiche Reihenfolge wie die Liste.
+Positionen:\n${liste.slice(0, 2000)}`;
+      const j = await ollama(prompt).catch((e) => { send(res, 502, { error: e.message }); return null; });
+      if (!j) return;
+      const b = Array.isArray(j.beschreibungen) ? j.beschreibungen.map((s) => String(s).slice(0, 500)) : [];
+      return send(res, 200, { beschreibungen: b });
+    }
+    return send(res, 404, { error: 'unbekannte KI-Funktion' });
   }
 
   if (col === 'customers' || col === 'items') {

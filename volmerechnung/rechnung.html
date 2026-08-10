@@ -325,6 +325,15 @@ function renderEditor(m){
     <button class="btn sec" onclick="nav('${d.art}')">← Zurück</button>
     ${d.id&&!d.unsaved?`<button class="btn sec" onclick="printDoc('${d.id}')">🖨️ Drucken / PDF</button>`:''}
   </h1>
+  ${fest?'':`<div class="card" style="border-color:var(--acc-l);background:linear-gradient(180deg,#fff8f2,#fff)">
+    <b>✨ KI-Assistent</b> <small style="color:var(--dim)">(läuft lokal auf deinem Server — nichts verlässt die Maschine)</small>
+    <textarea id="kiText" rows="2" style="margin-top:8px" placeholder="Auftrag formlos beschreiben — z. B. „für Müller 3 Stunden Konstruktion je 45 €, 2 Ersatzteile PLA je 12,50 und Versand 5,90“"></textarea>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
+      <button class="btn" id="kiBtn" onclick="kiEntwurf()">✨ ${re?'Rechnung':'Angebot'} ausfüllen</button>
+      <button class="btn sec" id="kiTxtBtn" onclick="kiTexte()">📝 Beschreibungen verfeinern</button>
+      <span id="kiStatus" style="color:var(--dim);font-size:13px"></span>
+    </div>
+  </div>`}
   <div class="card">
     <div class="grid3">
       <div><label>Kunde</label>
@@ -371,8 +380,44 @@ function renderEditor(m){
   </div>
   ${fest?'<p style="color:var(--dim);font-size:13px">Dieser Beleg ist festgeschrieben (GoBD) und kann nicht mehr geändert werden — nur Status/Storno.</p>':''}`;
 }
+// --- KI-Assistent (lokales Ollama über den Server)
+function kiBusy(on,msg){
+  const b1=$('#kiBtn'),b2=$('#kiTxtBtn'),s=$('#kiStatus');
+  if(b1)b1.disabled=on;if(b2)b2.disabled=on;
+  if(s)s.textContent=on?(msg||'KI arbeitet … (lokal, 10–60 s)'):'';
+}
+async function kiEntwurf(){
+  const text=$('#kiText').value.trim();
+  if(!text){toast('Bitte den Auftrag kurz beschreiben',true);return;}
+  kiBusy(true);
+  try{
+    const r=await api('ki/entwurf','POST',{text,art:editDoc.art});
+    if(r.positionen.length)editDoc.positionen=r.positionen;
+    if(r.kundeId){editDoc.kundeId=r.kundeId;editDoc.kunde=r.kunde;}
+    editDoc._kiText=text;
+    render();
+    const hinweis=r.kundeVorschlag?` — Kunde „${r.kundeVorschlag}“ ist noch nicht angelegt, bitte wählen/anlegen`:'';
+    toast(r.positionen.length?`${r.positionen.length} Position(en) übernommen${hinweis}`:'Keine Positionen erkannt — bitte konkreter beschreiben',!r.positionen.length);
+    const t=$('#kiText');if(t)t.value=text;
+  }catch(e){toast(e.message,true);}
+  kiBusy(false);
+}
+async function kiTexte(){
+  if(!editDoc.positionen.some(p=>p.name)){toast('Erst Positionen anlegen',true);return;}
+  kiBusy(true,'KI formuliert Beschreibungen …');
+  try{
+    const r=await api('ki/texte','POST',{positionen:editDoc.positionen});
+    editDoc.positionen.forEach((p,i)=>{if(r.beschreibungen[i])p.beschreibung=r.beschreibungen[i];});
+    render();
+    const t=$('#kiText');if(t&&editDoc._kiText)t.value=editDoc._kiText;
+    toast('Beschreibungen aktualisiert');
+  }catch(e){toast(e.message,true);}
+  kiBusy(false);
+}
+
 async function saveDoc(){
   if(!editDoc.kundeId){toast('Bitte Kunden wählen',true);return;}
+  delete editDoc._kiText;
   try{
     if(editDoc.unsaved){delete editDoc.unsaved;const d=await api('docs','POST',editDoc);editDoc=d;}
     else editDoc=await api('docs/'+editDoc.id,'PUT',editDoc);
