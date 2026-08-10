@@ -390,10 +390,34 @@ function matchKunde(name) {
   }) || null;
 }
 
+// Brute-Force-Bremse: nach 10 Fehlversuchen 15 Minuten Sperre (je IP)
+const authFails = new Map(); // ip -> { n, until }
+function clientIp(req) {
+  return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim() || '?';
+}
+function keyOk(key) {
+  const a = Buffer.from(String(key)), b = Buffer.from(CFG.adminKey);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 async function api(req, res, url) {
   // Auth: alle API-Aufrufe brauchen den Key
+  const ip = clientIp(req);
+  const fail = authFails.get(ip);
+  if (fail && fail.until > Date.now()) {
+    return send(res, 429, { error: 'Zu viele Fehlversuche — bitte 15 Minuten warten' });
+  }
   const key = req.headers['x-key'] || url.searchParams.get('key') || '';
-  if (key !== CFG.adminKey) return send(res, 401, { error: 'Ungültiger Schlüssel' });
+  if (!keyOk(key)) {
+    const f = authFails.get(ip) || { n: 0, until: 0, last: 0 };
+    f.n = (Date.now() - f.last < 30 * 60000) ? f.n + 1 : 1; // Zähler verfällt nach 30 min Ruhe
+    f.last = Date.now();
+    if (f.n >= 10) { f.until = Date.now() + 15 * 60000; f.n = 0; }
+    authFails.set(ip, f);
+    if (authFails.size > 5000) authFails.clear(); // Speicher-Backstop
+    return send(res, 401, { error: 'Ungültiger Schlüssel' });
+  }
+  authFails.delete(ip);
 
   const parts = url.pathname.replace(/^\/api\//, '').split('/').filter(Boolean);
   const [col, docId, action] = parts;
@@ -657,8 +681,16 @@ try {
   console.warn('Kein TLS-Zertifikat gefunden — starte unverschlüsselt (HTTP):', e.message);
 }
 
+const BASE = '/rechnung'; // öffentlicher Funnel-Pfad; direkt auf :8782 läuft alles weiter unter /
+
 const handler = async (req, res) => {
   const url = new URL(req.url, 'http://x');
+  // Funnel-Pfad /rechnung auf die Wurzel abbilden ("/rechnung" -> "/rechnung/" für relative Pfade)
+  if (url.pathname === BASE) {
+    res.writeHead(301, { Location: BASE + '/' });
+    return res.end();
+  }
+  if (url.pathname.startsWith(BASE + '/')) url.pathname = url.pathname.slice(BASE.length) || '/';
   try {
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
     // Öffentliche Beleg-Ansicht: /beleg/<token> — einziger Zugang ohne Key.
