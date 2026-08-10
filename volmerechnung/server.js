@@ -273,7 +273,19 @@ async function api(req, res, url) {
   return send(res, 404, { error: 'unbekannter Endpunkt' });
 }
 
-const server = http.createServer(async (req, res) => {
+// HTTPS mit Tailscale-Zertifikat: die ts.net-Domain erzwingt per HSTS HTTPS
+// auf ALLEN Ports, reines HTTP liefert im Browser ERR_SSL_PROTOCOL_ERROR.
+// Zertifikat erneuern: `tailscale cert v3da.tailf05fe9.ts.net` (im Home-Verzeichnis).
+const CERT_FILE = '/home/v3da/v3da.tailf05fe9.ts.net.crt';
+const KEY_FILE = '/home/v3da/v3da.tailf05fe9.ts.net.key';
+let creds = null;
+try {
+  creds = { cert: fs.readFileSync(CERT_FILE), key: fs.readFileSync(KEY_FILE) };
+} catch (e) {
+  console.warn('Kein TLS-Zertifikat gefunden — starte unverschlüsselt (HTTP):', e.message);
+}
+
+const handler = async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
@@ -289,9 +301,10 @@ const server = http.createServer(async (req, res) => {
     console.error(e);
     return send(res, 500, { error: String(e.message || e) });
   }
-});
+};
 
+const server = creds ? require('https').createServer(creds, handler) : http.createServer(handler);
 server.listen(PORT, () => {
-  console.log(`VolmeRechnung läuft auf Port ${PORT}`);
+  console.log(`VolmeRechnung läuft auf ${creds ? 'https' : 'http'}://v3da.tailf05fe9.ts.net:${PORT}`);
   console.log(`Login-Schlüssel: ${CFG.adminKey}`);
 });
