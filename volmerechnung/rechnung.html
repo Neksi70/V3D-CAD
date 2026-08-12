@@ -1103,10 +1103,20 @@ async function giroFor(d){ // QR nur auf offenen, festgeschriebenen Rechnungen
     return r.ok?await r.text():null;
   }catch(e){return null;/* ohne QR drucken */}
 }
+// Beim Einfügen ins DOM entsteht ein frisches <img>; über den Funnel braucht das
+// Logo dafür einen Netzwerk-Roundtrip. Ohne Warten druckt der Bogen ohne Logo.
+function bilderFertig(el,maxMs=3000){
+  const imgs=[...el.querySelectorAll('img')];
+  if(!imgs.length)return Promise.resolve();
+  const geladen=Promise.all(imgs.map(i=>(i.complete&&i.naturalWidth)?Promise.resolve()
+    :new Promise(r=>{i.addEventListener('load',r,{once:true});i.addEventListener('error',r,{once:true});})));
+  return Promise.race([geladen,new Promise(r=>setTimeout(r,maxMs))]);
+}
 async function printDoc(id){
   const d=S.docs.find(x=>x.id===id)||editDoc;if(!d)return;
   $('#printArea').innerHTML=sheetHtml(d,false,await giroFor(d));
-  setTimeout(()=>window.print(),80);
+  await bilderFertig($('#printArea'));
+  window.print();
 }
 // Vorschau zeigt IMMER den Editor-Stand — auch noch nicht gespeicherte Änderungen
 let pvZoomStep=0;
@@ -1133,9 +1143,10 @@ function pvBackdrop(e){ // die freie Fläche neben dem Bogen gehört zu #pvStage
   if(e.target.id==='preview'||e.target.id==='pvStage')closePreview();
 }
 function closePreview(){$('#preview').classList.remove('on');document.body.style.overflow='';}
-function printFromPreview(){ // Bogen aus der Vorschau übernehmen (#pvScale trägt nur die Skalierung)
+async function printFromPreview(){ // Bogen aus der Vorschau übernehmen (#pvScale trägt nur die Skalierung)
   $('#printArea').innerHTML=$('#pvScale').innerHTML;
-  setTimeout(()=>window.print(),50);
+  await bilderFertig($('#printArea'));
+  window.print();
 }
 addEventListener('resize',()=>{if($('#preview').classList.contains('on'))pvFit();});
 addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#preview').classList.contains('on'))closePreview();});
@@ -1143,7 +1154,8 @@ async function printMahnung(id){
   const d=S.docs.find(x=>x.id===id);if(!d)return;
   try{editDoc=await api('docs/'+id+'/remind','POST',{});await loadAll();}catch(e){toast(e.message,true);return;}
   $('#printArea').innerHTML=sheetHtml(editDoc,true);
-  setTimeout(()=>window.print(),80);
+  await bilderFertig($('#printArea'));
+  window.print();
   render();
 }
 </script>
