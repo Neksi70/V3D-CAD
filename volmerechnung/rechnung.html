@@ -117,10 +117,19 @@ table.list tr.click{cursor:pointer}
 /* Druckansicht */
 #printArea{display:none}
 @media print{
-  body>#app,#login{display:none!important}
+  body>#app,#login,#preview{display:none!important}
   body{background:#fff}
   #printArea{display:block}
 }
+
+/* Bildschirm-Vorschau des Druckbogens */
+#preview{position:fixed;inset:0;background:#2a2f3d;z-index:60;display:none;overflow:auto;-webkit-overflow-scrolling:touch}
+#preview.on{display:block}
+#pvBar{position:sticky;top:0;z-index:2;background:#1c2030;color:#fff;padding:9px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+#pvBar b{margin-right:auto;font-size:14px}
+#pvStage{padding:14px 0 40px;display:flex;justify-content:center}
+#pvScale{transform-origin:top left;box-shadow:0 4px 24px rgba(0,0,0,.4)}
+#pvScale .sheet{min-height:297mm}
 .sheet{width:210mm;min-height:280mm;padding:18mm 20mm 14mm;background:#fff;color:#1c2030;font-size:10.5pt;line-height:1.45;position:relative;display:flex;flex-direction:column;overflow:hidden;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 
 /* Briefkopf-Variante „Akzentband“: volles Farbband oben */
@@ -206,6 +215,16 @@ table.list tr.click{cursor:pointer}
 </div>
 
 <div id="printArea"></div>
+<div id="preview" onclick="if(event.target===this)closePreview()">
+  <div id="pvBar">
+    <b>👁️ Vorschau</b>
+    <button class="btn sm" onclick="printFromPreview()">🖨️ Drucken / PDF</button>
+    <button class="btn sm sec" onclick="pvZoom(-1)">−</button>
+    <button class="btn sm sec" onclick="pvZoom(1)">+</button>
+    <button class="btn sm sec" onclick="closePreview()">✕ Schließen</button>
+  </div>
+  <div id="pvStage"><div id="pvScale"></div></div>
+</div>
 
 <script>
 'use strict';
@@ -218,7 +237,16 @@ const today=()=>new Date().toISOString().slice(0,10);
 
 // App läuft unter / (Tailnet :8782) ODER unter /rechnung (öffentlicher Funnel)
 const ROOTP=location.pathname.startsWith('/rechnung')?'/rechnung':'';
-let KEY=localStorage.getItem('vrKey')||'';
+// Schlüssel aus ?key=… übernehmen (Lesezeichen/Direktlink vom Handy), danach
+// sofort aus der Adresszeile entfernen, damit er nicht im Verlauf stehen bleibt.
+let KEY=(()=>{
+  const u=new URL(location.href),k=u.searchParams.get('key');
+  if(!k)return localStorage.getItem('vrKey')||'';
+  localStorage.setItem('vrKey',k);
+  u.searchParams.delete('key');
+  history.replaceState(null,'',u.pathname+(u.search||'')+u.hash);
+  return k;
+})();
 let S={settings:null,customers:[],items:[],docs:[],courses:[],expenses:[]};
 let view='dash', editDoc=null; // editDoc = gerade offener Beleg-Editor
 
@@ -427,6 +455,7 @@ function renderEditor(m){
   <h1>${re?'🧾 Rechnung':'📝 Angebot'} ${esc(d.nummer||'(Entwurf)')} ${d.id?badge(d):''}
     <span class="spacer"></span>
     <button class="btn sec" onclick="nav('${d.art}')">← Zurück</button>
+    <button class="btn sec" onclick="previewDoc()">👁️ Vorschau</button>
     ${d.id&&!d.unsaved?`<button class="btn sec" onclick="printDoc('${d.id}')">🖨️ Drucken / PDF</button>`:''}
   </h1>
   ${!fest&&d.fassung>1?`<div class="card" style="border-color:var(--acc-l);background:#fff8f2">
@@ -1052,18 +1081,46 @@ function sheetHtml(d,mahnung,girocode){
   </div>
   </div>`;
 }
+async function giroFor(d){ // QR nur auf offenen, festgeschriebenen Rechnungen
+  if(!(d.art==='rechnung'&&d.festgeschrieben&&S.settings.bank.iban&&!['bezahlt','storniert'].includes(d.status)))return null;
+  try{
+    const r=await fetch(ROOTP+'/api/girocode/'+d.id,{headers:{'X-Key':KEY}});
+    return r.ok?await r.text():null;
+  }catch(e){return null;/* ohne QR drucken */}
+}
 async function printDoc(id){
   const d=S.docs.find(x=>x.id===id)||editDoc;if(!d)return;
-  let girocode=null;
-  if(d.art==='rechnung'&&d.festgeschrieben&&S.settings.bank.iban&&!['bezahlt','storniert'].includes(d.status)){
-    try{
-      const r=await fetch(ROOTP+'/api/girocode/'+d.id,{headers:{'X-Key':KEY}});
-      if(r.ok)girocode=await r.text();
-    }catch(e){/* ohne QR drucken */}
-  }
-  $('#printArea').innerHTML=sheetHtml(d,false,girocode);
+  $('#printArea').innerHTML=sheetHtml(d,false,await giroFor(d));
   setTimeout(()=>window.print(),80);
 }
+// Vorschau zeigt IMMER den Editor-Stand — auch noch nicht gespeicherte Änderungen
+let pvZoomStep=0;
+async function previewDoc(id){
+  const d=(id?S.docs.find(x=>x.id===id):null)||editDoc;if(!d)return;
+  $('#pvScale').innerHTML=sheetHtml(d,false,await giroFor(d));
+  $('#preview').classList.add('on');
+  document.body.style.overflow='hidden';
+  pvZoomStep=0;pvFit();
+}
+function pvFit(){
+  const sc=$('#pvScale'),sheet=sc.firstElementChild;if(!sheet)return;
+  sc.style.transform='none';
+  const breit=sheet.offsetWidth||794;
+  const platz=$('#pvStage').clientWidth-16;
+  const f=Math.min(1,platz/breit)*Math.pow(1.25,pvZoomStep);
+  sc.style.transform='scale('+f+')';
+  // skaliertes Element behält sonst die alte Höhe -> Leerraum bzw. abgeschnitten
+  sc.style.height=(sheet.offsetHeight*f)+'px';
+  sc.style.width=(breit*f)+'px';
+}
+function pvZoom(dir){pvZoomStep=Math.max(-2,Math.min(4,pvZoomStep+dir));pvFit();}
+function closePreview(){$('#preview').classList.remove('on');document.body.style.overflow='';}
+function printFromPreview(){ // Bogen aus der Vorschau übernehmen (#pvScale trägt nur die Skalierung)
+  $('#printArea').innerHTML=$('#pvScale').innerHTML;
+  setTimeout(()=>window.print(),50);
+}
+addEventListener('resize',()=>{if($('#preview').classList.contains('on'))pvFit();});
+addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#preview').classList.contains('on'))closePreview();});
 async function printMahnung(id){
   const d=S.docs.find(x=>x.id===id);if(!d)return;
   try{editDoc=await api('docs/'+id+'/remind','POST',{});await loadAll();}catch(e){toast(e.message,true);return;}
