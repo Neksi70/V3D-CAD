@@ -44,6 +44,20 @@ eigener DNS-Client in `server.py` — die Standardbibliothek kann nur A/AAAA.
 
 Tastatur: `n` neue Nachricht, `r` antworten, `j`/`k` blättern, `Entf` löschen, `Esc` schließen.
 
+## Bilder und Anhänge
+
+Über der Nachricht stehen zwei Leisten: Dateien als Anhang-Zeilen, **Bilder als
+Kacheln mit Vorschau** — egal ob sie als Anhang mitkommen oder im Text eingebettet
+sind (Logos, Signaturbilder). Ein Klick speichert; ab zwei Bildern gibt es
+zusätzlich „Alle speichern".
+
+Jeder Teil wird nur einmal vom Server geholt und für die geöffnete Nachricht
+behalten — Vorschau, Einbettung im Text und Herunterladen teilen sich denselben
+Zwischenspeicher, der beim Wechsel auf eine andere Mail freigegeben wird.
+
+Extern nachzuladende Bilder bleiben davon unberührt: die werden weiter blockiert
+und erst auf Knopfdruck geholt.
+
 ## Mehrere Postfächer
 
 Beliebig viele Konten nebeneinander. Sie stehen **untereinander oben in der

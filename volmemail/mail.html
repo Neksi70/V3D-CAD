@@ -101,6 +101,14 @@ a{color:var(--acc-d)}
 .att{display:flex;gap:7px;align-items:center;border:1px solid var(--line);border-radius:9px;padding:6px 11px;font-size:13px;background:#fafbff;cursor:pointer}
 .att:hover{border-color:var(--acc)}
 .att small{color:var(--dim)}
+#read .imgs{padding:10px 22px 0}
+#read .imgs .kopf{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--mid);font-weight:600;margin-bottom:7px}
+#read .imgs .raster{display:flex;gap:9px;flex-wrap:wrap}
+.bild{border:1px solid var(--line);border-radius:9px;padding:5px;background:#fafbff;cursor:pointer;width:104px;text-align:center}
+.bild:hover{border-color:var(--acc)}
+.bild .vor{width:92px;height:70px;border-radius:6px;background:#eceef4 center/contain no-repeat;display:flex;align-items:center;justify-content:center;font-size:22px;color:var(--dim)}
+.bild .nm{font-size:11px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bild .gr{font-size:10.5px;color:var(--dim)}
 #frame{flex:1;width:100%;border:0;background:#fff}
 #empty{flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:var(--dim)}
 #empty .big{font-size:40px}
@@ -205,6 +213,7 @@ a{color:var(--acc-d)}
         <button class="btn sm" style="margin-left:auto" onclick="showImages()">Bilder anzeigen</button>
       </div>
       <div class="atts hide" id="ratts"></div>
+      <div class="imgs hide" id="rimgs"></div>
       <iframe id="frame" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>
     </div>
   </section>
@@ -437,6 +446,13 @@ function showList() { document.body.classList.remove('v-read'); document.body.cl
 function showRead() { document.body.classList.remove('v-list'); document.body.classList.add('v-read'); }
 
 async function openMsg(uid, withImages) {
+  // Beim Wechsel auf eine andere Nachricht die zwischengespeicherten Anhänge
+  // und Vorschaubilder freigeben, sonst wächst der Speicher mit jeder Mail.
+  if (S.cur && S.cur.uid !== uid) {
+    (S.vorschauUrls || []).forEach(u => URL.revokeObjectURL(u));
+    S.vorschauUrls = [];
+    if (S.blobs) S.blobs.clear();
+  }
   showRead();
   document.getElementById('empty').classList.add('hide');
   const inner = document.getElementById('readinner');
@@ -466,15 +482,87 @@ async function openMsg(uid, withImages) {
       `${m.blockedImages} externe${m.blockedImages === 1 ? 's Bild wurde' : ' Bilder wurden'} blockiert (Schutz vor Lesebestätigungs-Pixeln).`;
   } else warn.classList.add('hide');
 
-  const atts = m.attachments.filter(a => !a.inline || !a.cid);
-  const ab = document.getElementById('ratts');
-  if (atts.length) {
-    ab.classList.remove('hide');
-    ab.innerHTML = atts.map(a => `<div class="att" onclick="dlAtt('${a.part}','${esc(a.filename).replace(/'/g, "\\'")}')">
-      📎 ${esc(a.filename)} <small>${fmtSize(a.size)}</small></div>`).join('');
-  } else { ab.classList.add('hide'); ab.innerHTML = ''; }
+  // Bilder bekommen eine eigene Leiste mit Vorschau, alles andere bleibt Anhang.
+  const bilder = m.attachments.filter(a => (a.type || '').startsWith('image/'));
+  const dateien = m.attachments.filter(a => !(a.type || '').startsWith('image/'));
 
+  const ab = document.getElementById('ratts');
+  if (dateien.length) {
+    ab.classList.remove('hide');
+    ab.innerHTML = dateien.map((a, i) => `<div class="att" onclick="dlPart(${i},'datei')">
+      📎 ${esc(a.filename)} <small>${fmtSize(a.size)}</small></div>`).join('');
+    S.dateien = dateien;
+  } else { ab.classList.add('hide'); ab.innerHTML = ''; S.dateien = []; }
+
+  renderImages(m, bilder);
   renderBody(m);
+}
+
+// Teile der Mail einmal holen und behalten — Vorschau, Einbettung im Text und
+// Herunterladen greifen sonst je dreimal auf denselben Anhang zu.
+async function holePart(uid, part) {
+  const key = uid + ':' + part;
+  if (!S.blobs) S.blobs = new Map();
+  if (S.blobs.has(key)) return S.blobs.get(key);
+  const r = await fetch(API(`api/attachment?acc=${S.acc.id}&folder=${encodeURIComponent(S.folder)}&uid=${uid}&part=${part}&inline=1`),
+                        { credentials: 'same-origin' });
+  if (!r.ok) throw new Error('Anhang nicht ladbar');
+  const blob = await r.blob();
+  S.blobs.set(key, blob);
+  return blob;
+}
+
+function speichern(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name || 'bild';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+async function dlPart(i, art) {
+  const liste = art === 'bild' ? S.bilder : S.dateien;
+  const a = (liste || [])[i];
+  if (!a) return;
+  try { speichern(await holePart(S.cur.uid, a.part), a.filename); }
+  catch (e) { toast('Konnte nicht laden: ' + e.message); }
+}
+
+async function renderImages(m, bilder) {
+  const box = document.getElementById('rimgs');
+  S.bilder = bilder;
+  if (!bilder.length) { box.classList.add('hide'); box.innerHTML = ''; return; }
+  box.classList.remove('hide');
+  const gesamt = bilder.reduce((s, a) => s + (a.size || 0), 0);
+  box.innerHTML = `<div class="kopf"><span>🖼️ ${bilder.length} ${bilder.length === 1 ? 'Bild' : 'Bilder'} in dieser Nachricht</span>
+      <span style="color:var(--dim);font-weight:400">${fmtSize(gesamt)}</span>
+      ${bilder.length > 1 ? '<button class="btn sec sm" onclick="alleBilder()">Alle speichern</button>' : ''}</div>
+    <div class="raster">${bilder.map((a, i) => `<div class="bild" onclick="dlPart(${i},'bild')" title="${esc(a.filename)} — zum Speichern anklicken">
+      <div class="vor" id="vor${i}">🖼️</div>
+      <div class="nm">${esc(a.filename)}</div><div class="gr">${fmtSize(a.size)}</div></div>`).join('')}</div>`;
+
+  // Vorschaubilder nachladen; sehr große überspringen, damit die Ansicht flott bleibt.
+  bilder.forEach(async (a, i) => {
+    if ((a.size || 0) > 8 * 1024 * 1024) return;
+    try {
+      const blob = await holePart(m.uid, a.part);
+      const el = document.getElementById('vor' + i);
+      if (!el || S.cur.uid !== m.uid) return;
+      const url = URL.createObjectURL(blob);
+      (S.vorschauUrls = S.vorschauUrls || []).push(url);
+      el.style.backgroundImage = `url("${url}")`;
+      el.textContent = '';
+    } catch (e) { /* Platzhalter bleibt stehen */ }
+  });
+}
+
+async function alleBilder() {
+  if (!S.bilder || !S.bilder.length) return;
+  toast(`Speichere ${S.bilder.length} Bilder…`);
+  for (let i = 0; i < S.bilder.length; i++) {
+    await dlPart(i, 'bild');
+    await new Promise(r => setTimeout(r, 350));   // Browser mag keine Download-Salve
+  }
 }
 
 async function renderBody(m) {
@@ -484,8 +572,7 @@ async function renderBody(m) {
   const parts = [...new Set([...html.matchAll(/cid-part:(\d+)/g)].map(x => x[1]))];
   for (const p of parts) {
     try {
-      const r = await fetch(API(`api/attachment?acc=${S.acc.id}&folder=${encodeURIComponent(S.folder)}&uid=${m.uid}&part=${p}&inline=1`), { credentials: 'same-origin' });
-      const blob = await r.blob();
+      const blob = await holePart(m.uid, p);
       const url = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(blob); });
       html = html.split('cid-part:' + p).join(url);
     } catch (e) { /* Bild bleibt leer */ }
@@ -501,15 +588,6 @@ async function renderBody(m) {
 
 function showImages() { if (S.cur) openMsg(S.cur.uid, true); }
 
-async function dlAtt(part, name) {
-  const url = API(`api/attachment?acc=${S.acc.id}&folder=${encodeURIComponent(S.folder)}&uid=${S.cur.uid}&part=${part}`);
-  const r = await fetch(url, { credentials: 'same-origin' });
-  const blob = await r.blob();
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-}
 
 async function toggleUnread() {
   if (!S.cur) return;

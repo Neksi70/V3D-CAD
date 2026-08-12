@@ -24,7 +24,7 @@ def check(name, cond, detail=''):
 
 with sync_playwright() as p:
     br = p.chromium.launch()
-    ctx = br.new_context(ignore_https_errors=True)
+    ctx = br.new_context(ignore_https_errors=True, accept_downloads=True)
     page = ctx.new_page()
     errors = []
     page.on('pageerror', lambda e: errors.append(str(e)))
@@ -62,8 +62,12 @@ with sync_playwright() as p:
         check('Nachrichtenliste geladen', page.evaluate('S.msgs.length') > 0,
               'keine Nachrichten')
 
-        # Nur eine bereits gelesene Mail öffnen — sonst verändern wir echte Daten.
-        uid = page.evaluate('(S.msgs.find(m => m.seen) || {}).uid ?? null')
+        # Nur bereits gelesene Mails öffnen — sonst verändern wir echte Daten.
+        # Bevorzugt eine mit Anhang, damit die Bilderleiste geprüft wird.
+        uid = page.evaluate("""() => {
+            const g = S.msgs.filter(m => m.seen);
+            return ((g.find(m => m.hasAttachments) || g[0]) || {}).uid ?? null;
+        }""")
         if uid is None:
             print('  (übersprungen: keine bereits gelesene Mail vorhanden)')
         else:
@@ -84,6 +88,41 @@ with sync_playwright() as p:
                       'iframe rendert leer')
             except Exception as e:
                 print('  (Rendering-Prüfung nicht möglich: %s)' % type(e).__name__)
+
+            # Bilder aus der Mail müssen einzeln speicherbar sein. Nicht jede Mail
+            # hat welche — unter den gelesenen nach einer passenden suchen.
+            bilder = page.evaluate('(S.bilder || []).length')
+            if not bilder:
+                # Nicht auf hasAttachments filtern: eingebettete Signaturbilder
+                # zählen bewusst nicht als Anhang, sind hier aber genau der Fall.
+                kandidaten = page.evaluate('S.msgs.filter(m => m.seen).map(m => m.uid).slice(0, 8)')
+                for k in kandidaten:
+                    if k == uid:
+                        continue
+                    page.evaluate('openMsg(%d)' % k)
+                    page.wait_for_timeout(2500)
+                    bilder = page.evaluate('(S.bilder || []).length')
+                    if bilder:
+                        break
+            if bilder:
+                check('Bilderleiste sichtbar', page.is_visible('#rimgs'))
+                check('Jedes Bild als eigene Kachel',
+                      page.evaluate("document.querySelectorAll('#rimgs .bild').length") == bilder)
+                page.wait_for_timeout(2500)
+                check('Vorschau wird geladen',
+                      page.evaluate("""() => [...document.querySelectorAll('#rimgs .vor')]
+                          .some(e => (e.style.backgroundImage || '').startsWith('url'))"""))
+                with page.expect_download(timeout=15000) as dl:
+                    page.click('#rimgs .bild')
+                datei = dl.value
+                check('Bild lässt sich herunterladen', bool(datei.suggested_filename),
+                      'kein Dateiname')
+                pfad = datei.path()
+                check('Heruntergeladene Datei ist nicht leer',
+                      pfad and os.path.getsize(pfad) > 0)
+                print('       (gespeichert: %s)' % datei.suggested_filename)
+            else:
+                print('  (übersprungen: gewählte Mail enthält keine Bilder)')
         # Absenderwahl beim Verfassen: erscheint erst ab zwei Konten. Das zweite
         # Konto wird nur im Browser vorgetäuscht — der Server bleibt unberührt.
         page.evaluate("""() => {

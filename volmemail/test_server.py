@@ -159,6 +159,19 @@ class TestSanitizer(unittest.TestCase):
         out, _ = server.sanitize_html('<img src="cid:fehlt">', cid_map={})
         self.assertNotIn('cid:', out)
 
+    def test_unresolvable_image_leaves_no_alt_text(self):
+        """Outlook setzt alt="id:image001.jpg@..." — das darf nicht als Text stehenbleiben."""
+        out, _ = server.sanitize_html('<img src="cid:fehlt" alt="id:image001.jpg@01D62229.FD1825B0">',
+                                      cid_map={})
+        self.assertNotIn('image001', out)
+        self.assertNotIn('<img', out)
+
+    def test_cid_matching_ignores_case(self):
+        """Die Content-ID im Kopf und der Verweis im HTML sind oft unterschiedlich geschrieben."""
+        out, _ = server.sanitize_html('<img src="cid:IMAGE001.jpg@01D62229.FD1825B0">',
+                                      cid_map={'image001.jpg@01d62229.fd1825b0': 'cid-part:4'})
+        self.assertIn('cid-part:4', out)
+
 
 # --- IMAP-Stub --------------------------------------------------------------
 

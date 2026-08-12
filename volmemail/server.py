@@ -538,6 +538,7 @@ class Sanitizer(HTMLParser):
         if self.skip_depth or tag not in ALLOWED_TAGS:
             return
         parts = []
+        src_ok = False
         for k, v in attrs:
             k = (k or '').lower()
             v = v or ''
@@ -555,16 +556,22 @@ class Sanitizer(HTMLParser):
                     if part is None:
                         continue
                     v = part
+                    src_ok = True
                 elif low.startswith('data:image/'):
-                    pass
+                    src_ok = True
                 elif low.startswith('http://') or low.startswith('https://'):
                     if not self.allow_remote:
                         self.blocked += 1
                         parts.append('data-blocked-src="%s"' % html.escape(v, quote=True))
                         continue
+                    src_ok = True
                 else:
                     continue
             parts.append('%s="%s"' % (k, html.escape(v, quote=True)))
+        # Ein Bild ohne brauchbare Quelle würde nur seinen Alternativtext als
+        # kryptischen Textschnipsel hinterlassen — dann lieber ganz weglassen.
+        if tag == 'img' and not src_ok and not any(p.startswith('data-blocked-src') for p in parts):
+            return
         if tag == 'a':
             parts.append('target="_blank"')
             parts.append('rel="noopener noreferrer nofollow"')
@@ -645,7 +652,9 @@ def load_message(box, folder, uid, allow_remote=False):
         if cid:
             # Platzhalter — die Oberfläche ersetzt ihn durch eine data:-URL, weil
             # das Anzeige-iframe abgeschottet ist und keine Cookies mitschickt.
-            cid_map[cid] = 'cid-part:%s' % item['part']
+            # Schlüssel klein geschrieben: Outlook verweist im HTML gern in anderer
+            # Schreibweise auf die Content-ID als im Kopf des Teils.
+            cid_map[cid.lower()] = 'cid-part:%s' % item['part']
 
     body_html = ''
     blocked = 0
