@@ -603,7 +603,9 @@ Positionen:\n${liste.slice(0, 2000)}`;
       switch (action) {
         case 'finalize': { // Nummer vergeben + festschreiben
           if (doc.festgeschrieben) break;
-          doc.nummer = nextNumber(doc.art);
+          // Überarbeitetes Angebot behält seine Nummer — sonst Loch im Nummernkreis
+          // und der Kunde hätte zwei Nummern für dasselbe Angebot.
+          if (!doc.nummer) doc.nummer = nextNumber(doc.art);
           doc.festgeschrieben = true;
           doc.datum = doc.datum || now().slice(0, 10);
           doc.status = doc.art === 'rechnung' ? 'offen' : 'offen';
@@ -616,6 +618,19 @@ Positionen:\n${liste.slice(0, 2000)}`;
             doc.status = body.status;
             if (body.status === 'bezahlt') doc.bezahltAm = body.datum || now().slice(0, 10);
           }
+          break;
+        }
+        case 'reopen': { // Angebot zur Überarbeitung wieder öffnen (Rechnungen bleiben GoBD-fest)
+          if (doc.art !== 'angebot') return send(res, 400, { error: 'Rechnungen bleiben unveränderlich (GoBD) — bitte stornieren oder duplizieren' });
+          if (!doc.festgeschrieben) break;
+          if (doc.status === 'storniert') return send(res, 400, { error: 'Stornierte Angebote können nicht überarbeitet werden' });
+          doc.fassung = (doc.fassung || 1) + 1;
+          (doc.historie = doc.historie || []).push({
+            am: now(), was: 'überarbeitet', fassung: doc.fassung - 1,
+            brutto: (doc.totals || calcTotals(doc)).brutto,
+          });
+          doc.festgeschrieben = false;
+          doc.status = 'entwurf';
           break;
         }
         case 'cancel': { // Storno: Beleg bleibt, Gegenbeleg entsteht nicht (einfaches Kennzeichen)

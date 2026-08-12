@@ -429,6 +429,10 @@ function renderEditor(m){
     <button class="btn sec" onclick="nav('${d.art}')">← Zurück</button>
     ${d.id&&!d.unsaved?`<button class="btn sec" onclick="printDoc('${d.id}')">🖨️ Drucken / PDF</button>`:''}
   </h1>
+  ${!fest&&d.fassung>1?`<div class="card" style="border-color:var(--acc-l);background:#fff8f2">
+    🔓 <b>Überarbeitung (Fassung ${d.fassung})</b> — Nummer ${esc(d.nummer||'')} bleibt erhalten. Nach dem Ändern wieder festschreiben.
+    ${(d.zugriffe||[]).length?`<br><small style="color:var(--dim)">Achtung: Der Kunde hat die vorige Fassung bereits gesehen — der versendete Link zeigt nach dem Festschreiben die neue.</small>`:''}
+  </div>`:''}
   ${fest?'':`<div class="card" style="border-color:var(--acc-l);background:linear-gradient(180deg,#fff8f2,#fff)">
     <b>✨ KI-Assistent</b> <small style="color:var(--dim)">(läuft lokal auf deinem Server — nichts verlässt die Maschine)</small>
     <textarea id="kiText" rows="2" style="margin-top:8px" placeholder="Auftrag formlos beschreiben — z. B. „für Müller 3 Stunden Konstruktion je 45 €, 2 Ersatzteile PLA je 12,50 und Versand 5,90“"></textarea>
@@ -494,6 +498,7 @@ function renderEditor(m){
     ${fest&&!re&&docStatus(d)==='offen'?`
       <button class="btn" style="background:var(--green)" onclick="convertDoc()">➡️ In Rechnung umwandeln</button>
       <button class="btn sec" onclick="docAction('status',{status:'abgelehnt'})">Abgelehnt</button>`:''}
+    ${fest&&!re&&d.status!=='storniert'?`<button class="btn sec" onclick="reopenDoc()">🔓 Wieder bearbeiten</button>`:''}
     ${fest&&d.status!=='storniert'?`<button class="btn danger" onclick="if(confirm('Beleg wirklich stornieren?'))docAction('cancel')">Stornieren</button>`:''}
     ${!fest&&d.id&&!d.unsaved?`<button class="btn danger" onclick="if(confirm('Entwurf löschen?'))deleteDoc()">🗑️ Löschen</button>`:''}
   </div>
@@ -605,6 +610,15 @@ async function finalizeDoc(){
 }
 async function docAction(action,body){
   try{editDoc=await api('docs/'+editDoc.id+'/'+action,'POST',body||{});await loadAll();toast('Erledigt');render();}
+  catch(e){toast(e.message,true);}
+}
+async function reopenDoc(){
+  const d=editDoc,gelesen=(d.zugriffe||[]).length;
+  let w='Angebot '+(d.nummer||'')+' wieder zur Bearbeitung öffnen?\n\nDie Nummer '+(d.nummer||'')+' bleibt erhalten, die bisherige Fassung wird in der Historie vermerkt.';
+  if(gelesen)w+='\n\n⚠️ Der Kunde hat das Angebot bereits '+gelesen+'× geöffnet. Änderungen sind sofort unter dem bereits versendeten Link sichtbar.';
+  if(d.status==='angenommen')w+='\n\n⚠️ Dieses Angebot wurde bereits in eine Rechnung umgewandelt. Die Rechnung ändert sich dadurch NICHT.';
+  if(!confirm(w))return;
+  try{editDoc=await api('docs/'+d.id+'/reopen','POST',{});await loadAll();toast('Angebot ist wieder bearbeitbar');render();}
   catch(e){toast(e.message,true);}
 }
 async function convertDoc(){
