@@ -118,6 +118,84 @@ const res = await page.evaluate(async () => {
   out.vorschau = { ms: Math.round(performance.now() - t), dreiecke: Math.round(gp.index.count / 3) };
   gp.dispose();
 
+  // --- 5b) Ständer + Kartenfach (Stufe 2)
+  // Beide sind aus Einzelflächen gebaut, nicht indiziert → Kantenbilanz über
+  // die POSITION hashen, nicht über Indizes.
+  const dichtPos = (geo) => {
+    const p = geo.attributes.position.array, ix = geo.index ? geo.index.array : null;
+    const n = ix ? ix.length : p.length / 3;
+    const key = i => { const o = (ix ? ix[i] : i) * 3;
+      return Math.round(p[o] * 1e4) + '|' + Math.round(p[o + 1] * 1e4) + '|' + Math.round(p[o + 2] * 1e4); };
+    const m = new Map();
+    for (let i = 0; i < n; i += 3) {
+      const a = key(i), b = key(i + 1), c = key(i + 2);
+      for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+        if (u === v) continue;                       // entartet
+        const k = u + '>' + v; m.set(k, (m.get(k) || 0) + 1);
+      }
+    }
+    let rest = 0;
+    for (const [k, v] of m) {
+      const [u, w] = k.split('>');
+      rest += Math.abs(v - (m.get(w + '>' + u) || 0));
+    }
+    return rest;
+  };
+
+  _vkPreset('aufsteller');
+  out.preset = { w: _vk.p.w, h: _vk.p.h, base: _vk.p.base, tsize: _vk.p.tsize,
+                 stand: _vk.p.stand, fuss: +_vkFuss().toFixed(2) };
+
+  // Fußleiste: der untere Streifen des Schilds muss glatt bleiben
+  {
+    const gs = _buildVkGeo(false);
+    const p = gs.attributes.position.array;
+    const zFuss = (_vk.p.h / 2 - _vkFuss() + 1) / 10;
+    let maxY = 0;
+    for (let i = 0; i < p.length; i += 3) if (p[i + 2] > zFuss && p[i + 1] > maxY) maxY = p[i + 1];
+    out.fussGlatt = { maxDicke: +(maxY * 10).toFixed(3), soll: _vk.p.base };
+    gs.dispose();
+  }
+
+  const teile = _vkBaseParts();
+  out.teile = teile.map(t => t.name);
+  const bb = (g) => { g.computeBoundingBox(); const b = g.boundingBox;
+    return { x: +((b.max.x - b.min.x) * 10).toFixed(2), y: +((b.max.y - b.min.y) * 10).toFixed(2),
+             z: +((b.max.z - b.min.z) * 10).toFixed(2), z0: +(b.min.z * 10).toFixed(2),
+             y0: +(b.min.y * 10).toFixed(3) }; };
+
+  const fach = teile.find(t => t.name === 'Kartenfach');
+  const stnd = teile.find(t => t.name === 'Ständer');
+  const Pp = _vk.p, wall = Pp.wall;
+  out.fach = { ...bb(fach.geo), dicht: dichtPos(fach.geo), vol: +(_geoSignedVolume(fach.geo) * 1000).toFixed(1),
+    // Außenquader minus Tasche, in mm³
+    soll: +((Pp.fachW + 2 * wall) * (Pp.fachD + 2 * wall) * (Pp.fachT + 1.6)
+          - Pp.fachW * Pp.fachD * (Pp.fachT + 1.6 - 1.6)).toFixed(1) };
+  const sdEff = Math.max(3, Math.min(Pp.slotD,
+    (Pp.standH - 1.5 - ((Pp.base + Pp.spiel) / 2) * Math.sin(Pp.tilt * Math.PI / 180)) / Math.cos(Pp.tilt * Math.PI / 180)));
+  out.stand = { ...bb(stnd.geo), dicht: dichtPos(stnd.geo), vol: +(_geoSignedVolume(stnd.geo) * 1000).toFixed(1),
+    // Klotz minus Nut; die Nutfläche ist exakt Breite × Tiefe (die Schrägen heben sich auf)
+    soll: +(Pp.w * (Pp.standD * Pp.standH - (Pp.base + Pp.spiel) * sdEff)).toFixed(1) };
+  out.reihenfolge = { schildHinten: +(Pp.h / 2).toFixed(1), fachVorn: out.fach.z0,
+                      standVorn: out.stand.z0, fachHinten: +(out.fach.z0 + out.fach.z).toFixed(2) };
+  for (const t of teile) t.geo.dispose();
+
+  // Vorschau mit Ständer darf nicht platzen
+  const gpv = _vkPreviewGeo();
+  out.vorschauAufsteller = { dreiecke: Math.round(gpv.attributes.position.count / 3) };
+  gpv.dispose();
+
+  // Erstellen im Aufsteller-Modus → Gruppe mit Schild + Fach + Ständer
+  {
+    const n0 = objects.length;
+    _vkCreate();
+    await new Promise(r => setTimeout(r, 700));
+    const o = objects[objects.length - 1];
+    out.aufstellerErstellt = { added: objects.length - n0, gruppe: !!(o && o.userData && o.userData.isGroup),
+      kinder: o && o.children ? o.children.map(c => c.userData.name) : [] };
+  }
+  _vkPreset('karte');
+
   // --- 6) Erstellen legt genau ein Objekt an
   const n0 = objects.length;
   _vkCreate();
@@ -155,6 +233,19 @@ const pruef = [
   ['ohne Radius sitzt ein Punkt in der Ecke', res.eckAbstandR0 < 0.4],
   ['Radius 5 zieht die Ecke ein', res.eckAbstandR5 > 1.2],
   ['Vorschau unter 250 ms', res.vorschau.ms < 250],
+  // Stufe 2: Aufsteller
+  ['Preset Aufsteller: größer, dicker, Name 16 mm', res.preset.w === 100 && res.preset.base === 2.5 && res.preset.tsize === 16 && res.preset.stand],
+  ['Fußleiste bleibt glatt (kein Relief in der Nut)', nah(res.fussGlatt.maxDicke, res.fussGlatt.soll, 0.02)],
+  ['Ständer und Kartenfach erzeugt', res.teile.join(',') === 'Kartenfach,Ständer'],
+  ['Kartenfach geschlossen', res.fach.dicht === 0],
+  ['Kartenfach-Volumen = Quader minus Tasche', nah(res.fach.vol, res.fach.soll, 1)],
+  ['Kartenfach-Außenmaß = Innen + 2× Wand', nah(res.fach.x, 87 + 4, 0.05) && nah(res.fach.z, 57 + 4, 0.05)],
+  ['Ständer geschlossen', res.stand.dicht === 0],
+  ['Nut hat exakt Schilddicke + Spiel', nah(res.stand.vol, res.stand.soll, 1)],
+  ['Ständer-Außenmaß 100×22×16', nah(res.stand.x, 100, 0.05) && nah(res.stand.z, 22, 0.05) && nah(res.stand.y, 16, 0.05)],
+  ['alle Teile stehen auf der Druckplatte', nah(res.fach.y0, 0, 0.01) && nah(res.stand.y0, 0, 0.01)],
+  ['Teile überlappen nicht: Schild → Fach → Ständer', res.reihenfolge.fachVorn > res.reihenfolge.schildHinten && nah(res.reihenfolge.standVorn, res.reihenfolge.fachHinten, 0.05)],
+  ['Aufsteller wird als Gruppe erstellt', res.aufstellerErstellt.added === 1 && res.aufstellerErstellt.gruppe && res.aufstellerErstellt.kinder.join(',') === 'Schild,Kartenfach,Ständer'],
   ['Erstellen legt 1 Objekt an', res.erstellt.added === 1 && res.erstellt.typ === 'vcard'],
   ['Dialog auf/zu', res.dialogOffen && res.dialogZu],
 ];
