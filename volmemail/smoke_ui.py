@@ -52,6 +52,13 @@ with sync_playwright() as p:
         # Echtes Postfach vorhanden: Ordner, Liste und Darstellung prüfen.
         page.wait_for_timeout(4000)
         check('Ordner geladen', page.evaluate('S.folders.length') > 0)
+        check('Postfächer stehen als Knöpfe in der Seitenleiste',
+              page.evaluate("document.querySelectorAll('#accs .acc').length") ==
+              page.evaluate('S.accounts.length'))
+        check('Aktives Postfach ist hervorgehoben',
+              page.evaluate("document.querySelectorAll('#accs .acc.act').length") == 1)
+        check('Postfach-hinzufügen direkt in der Seitenleiste',
+              page.is_visible('#accs .accadd'))
         check('Nachrichtenliste geladen', page.evaluate('S.msgs.length') > 0,
               'keine Nachrichten')
 
@@ -84,10 +91,23 @@ with sync_playwright() as p:
             S.accounts = S.accounts.concat([{ id: 'test-zweit', email: 'zweit@beispiel.de',
                                               name: 'Zweitkonto', signature: 'Zweite Signatur' }]);
         }""")
+        erwartet = page.evaluate('S.accounts.length')      # echte Konten + das vorgetäuschte
+        page.evaluate('renderAccounts()')
+        page.wait_for_timeout(200)
+        check('Zusätzliches Postfach erscheint als eigener Knopf',
+              page.evaluate("document.querySelectorAll('#accs .acc').length") == erwartet,
+              'erwartet %d' % erwartet)
+        check('Nur eines ist hervorgehoben',
+              page.evaluate("document.querySelectorAll('#accs .acc.act').length") == 1)
+        check('Adresse steht unter dem Namen',
+              'zweit@beispiel.de' in page.inner_text('#accs'))
+
         page.evaluate('compose()')
         page.wait_for_timeout(400)
-        check('Absenderzeile bei zwei Konten sichtbar', page.is_visible('#cfromrow'))
-        check('Beide Konten zur Auswahl', page.evaluate("document.querySelectorAll('#cfrom option').length") == 2)
+        check('Absenderzeile bei mehreren Konten sichtbar', page.is_visible('#cfromrow'))
+        check('Alle Konten zur Auswahl',
+              page.evaluate("document.querySelectorAll('#cfrom option').length") == erwartet,
+              'erwartet %d' % erwartet)
         page.select_option('#cfrom', 'test-zweit')
         page.wait_for_timeout(300)
         check('Signatur folgt dem Absender', 'Zweite Signatur' in page.input_value('#ctext'),
@@ -100,7 +120,7 @@ with sync_playwright() as p:
             return senderFor({ to: [{ email: eigen.email }], cc: [] }) === eigen.id;
         }""")
         check('Antwort nutzt das empfangende Postfach', treffer)
-        page.evaluate('S.accounts = window._echteKonten')
+        page.evaluate('S.accounts = window._echteKonten; renderAccounts()')
 
         page.click('text=⚙️ Konten')
         page.wait_for_timeout(600)

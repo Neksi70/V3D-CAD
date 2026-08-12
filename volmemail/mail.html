@@ -44,8 +44,17 @@ a{color:var(--acc-d)}
 #side .logo{display:flex;align-items:baseline;gap:8px;margin:4px 8px 14px}
 #side .logo b{font-size:18px}
 #side .logo small{color:var(--acc-l);font-weight:600;font-size:11px;letter-spacing:.5px}
-#side .accsel{margin:0 4px 12px}
-#side select{background:#2a2f3f;color:#e6e8eb;border-color:#3a4053;font-size:13.5px;padding:7px 8px}
+#side .acc{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:#252a38;border:1px solid transparent;color:#c8ccd6;padding:7px 9px;border-radius:10px;margin:0 0 5px;font-size:13.5px}
+#side .acc:hover{background:#2f3546}
+#side .acc.act{background:#2f3546;border-color:var(--acc);color:#fff}
+#side .acc .ini{width:26px;height:26px;border-radius:50%;background:#3a4053;color:#c8ccd6;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0}
+#side .acc.act .ini{background:var(--acc);color:#fff}
+#side .acc .txt{flex:1;min-width:0}
+#side .acc .nm{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#side .acc .ad{display:block;font-size:11px;color:#8a90a3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#side .acc.act .ad{color:#c8ccd6}
+#side .accadd{width:100%;background:none;border:1px dashed #3a4053;color:#8a90a3;border-radius:10px;padding:6px 9px;font-size:12.5px;margin-bottom:4px}
+#side .accadd:hover{border-color:var(--acc);color:var(--acc-l)}
 #side .fold{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:none;border:0;color:#c8ccd6;padding:8px 11px;border-radius:9px;font-size:14px}
 #side .fold:hover{background:#2a2f3f}
 #side .fold.act{background:var(--acc);color:#fff;font-weight:600}
@@ -148,7 +157,7 @@ a{color:var(--acc-d)}
 <div id="app" class="hide">
   <nav id="side">
     <div class="logo"><b>V3D Mail</b><small>VOLME 3D</small></div>
-    <div class="accsel"><select id="accsel" onchange="switchAcc(this.value)"></select></div>
+    <div id="accs"></div>
     <button class="btn" style="margin:0 4px 10px;width:calc(100% - 8px)" onclick="compose()">✉️ Neue Nachricht</button>
     <div id="folders"></div>
     <div class="foot">
@@ -273,23 +282,54 @@ async function boot() {
   document.getElementById('app').classList.remove('hide');
   S.accounts = st.accounts || [];
   if (!S.accounts.length) return accountDialog(true);
-  const sel = document.getElementById('accsel');
-  sel.innerHTML = S.accounts.map(a => `<option value="${a.id}">${esc(a.email)}</option>`).join('');
   const last = localStorage.getItem('v3dmail.acc');
   S.acc = S.accounts.find(a => a.id === last) || S.accounts[0];
-  sel.value = S.acc.id;
+  renderAccounts();
   await loadFolders();
 }
+
+function renderAccounts() {
+  // Postfächer untereinander in der Seitenleiste — ein Klick wechselt.
+  const box = document.getElementById('accs');
+  box.innerHTML = S.accounts.map((a, i) => {
+    const mail = a.email || '';
+    // Anzeigename oben, Adresse darunter. Steht im Namensfeld selbst eine
+    // Adresse (kommt beim Anlegen leicht vor), nehmen wir den Teil davor.
+    const kurz = (a.name && !a.name.includes('@')) ? a.name : mail.split('@')[0];
+    const zweite = kurz === mail ? '' : `<span class="ad">${esc(mail)}</span>`;
+    const ini = (kurz[0] || '?').toUpperCase();
+    return `<button class="acc${S.acc && a.id === S.acc.id ? ' act' : ''}" onclick="switchAcc(S.accounts[${i}].id)" title="${esc(mail)}">
+      <span class="ini">${esc(ini)}</span>
+      <span class="txt"><span class="nm">${esc(kurz)}</span>${zweite}</span>
+    </button>`;
+  }).join('') + '<button class="accadd" onclick="editAccount(null)">+ Postfach hinzufügen</button>';
+}
+
 function switchAcc(id) {
+  if (S.acc && S.acc.id === id) { document.getElementById('side').classList.remove('open'); return; }
   S.acc = S.accounts.find(a => a.id === id) || S.accounts[0];
   localStorage.setItem('v3dmail.acc', S.acc.id);
-  S.folder = 'INBOX'; S.cur = null;
+  S.folder = 'INBOX'; S.cur = null; S.q = '';
+  document.getElementById('q').value = '';
   document.getElementById('readinner').classList.add('hide');
   document.getElementById('empty').classList.remove('hide');
+  document.getElementById('items').innerHTML = '';
+  showList();
+  renderAccounts();
   loadFolders();
 }
 
 const FOLD_ICONS = { inbox: '📥', sent: '📤', drafts: '📝', trash: '🗑', junk: '⚠️', archive: '📦' };
+// Der Server liefert die Ordner so, wie sie im Postfach heißen ("INBOX").
+const FOLD_NAMEN = { inbox: 'Posteingang', sent: 'Gesendet', drafts: 'Entwürfe',
+                     trash: 'Papierkorb', junk: 'Spam', archive: 'Archiv' };
+function foldName(f) {
+  if (!f) return '';
+  const roh = f.name || f.path;
+  // Nur echte englische Systemnamen übersetzen — eigene Namen bleiben unangetastet.
+  return /^(inbox|sent|drafts|trash|junk|archive|sent items|deleted items)$/i.test(roh)
+    ? (FOLD_NAMEN[f.kind] || roh) : roh;
+}
 
 async function loadFolders() {
   const box = document.getElementById('folders');
@@ -308,7 +348,7 @@ function renderFolders() {
   const btn = i => {
     const f = S.folders[i];
     return `<button class="fold${f.path === S.folder ? ' act' : ''}" onclick="openFolder(${i})">
-      <span class="ic">${FOLD_ICONS[f.kind] || '📁'}</span><span class="nm">${esc(f.name || f.path)}</span></button>`;
+      <span class="ic">${FOLD_ICONS[f.kind] || '📁'}</span><span class="nm">${esc(foldName(f))}</span></button>`;
   };
   const main = [], rest = [];
   S.folders.forEach((f, i) => (f.kind ? main : rest).push(i));
@@ -360,7 +400,7 @@ function renderList() {
   const bar = document.getElementById('listbar');
   const from = S.total ? S.page * 50 + 1 : 0;
   const to = Math.min(S.total, (S.page + 1) * 50);
-  const fname = (S.folders.find(f => f.path === S.folder) || {}).name || S.folder;
+  const fname = foldName(S.folders.find(f => f.path === S.folder)) || S.folder;
   bar.innerHTML = `<b>${esc(fname)}</b><span>${from}–${to} von ${S.total}</span>` +
     (S.q ? `<span>· Suche „${esc(S.q)}"</span>` : '') +
     `<span style="margin-left:auto;display:flex;gap:4px">
@@ -731,10 +771,9 @@ async function saveAccount(id) {
     const idx = S.accounts.findIndex(x => x.id === r.account.id);
     if (idx >= 0) S.accounts[idx] = r.account; else S.accounts.push(r.account);
     closeModal(); toast('Konto gespeichert ✓');
-    const sel = document.getElementById('accsel');
-    sel.innerHTML = S.accounts.map(x => `<option value="${x.id}">${esc(x.email)}</option>`).join('');
     document.getElementById('app').classList.remove('hide');
-    switchAcc(r.account.id);
+    if (S.acc && S.acc.id === r.account.id) { S.acc = r.account; renderAccounts(); loadFolders(); }
+    else switchAcc(r.account.id);
   } catch (e) {
     err.textContent = e.message;
   } finally { btn.disabled = false; btn.textContent = 'Prüfen & speichern'; }

@@ -46,9 +46,10 @@ Tastatur: `n` neue Nachricht, `r` antworten, `j`/`k` blättern, `Entf` löschen,
 
 ## Mehrere Postfächer
 
-Beliebig viele Konten nebeneinander: **⚙️ Konten → + Konto hinzufügen** (der Knopf
-sitzt unten links in der Seitenleiste, auf dem Handy hinter ☰). Umgeschaltet wird
-oben links im Auswahlfeld; die zuletzt benutzte Wahl merkt sich der Browser.
+Beliebig viele Konten nebeneinander. Sie stehen **untereinander oben in der
+Seitenleiste** (auf dem Handy hinter ☰); ein Klick wechselt, das aktive ist orange
+umrandet. Darunter sitzt **+ Postfach hinzufügen**. Die zuletzt benutzte Wahl merkt
+sich der Browser. Bearbeiten und Löschen weiterhin über **⚙️ Konten** unten links.
 
 Jedes Konto hat eine eigene IMAP-Verbindung, eigene Ordner und eine eigene
 Signatur. Beim Verfassen erscheint ab zwei Konten eine **Von**-Zeile; wechselt man
