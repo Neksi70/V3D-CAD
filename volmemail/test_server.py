@@ -15,7 +15,9 @@ import time
 import unittest
 from email.message import EmailMessage
 
-os.environ.setdefault('HOME', tempfile.mkdtemp(prefix='v3dmail-test-'))
+# HOME hart umbiegen, BEVOR server importiert wird: die Tests schreiben Konfiguration,
+# und das darf niemals die echten Konten in ~/.config/v3dmail überschreiben.
+os.environ['HOME'] = tempfile.mkdtemp(prefix='v3dmail-test-')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import server  # noqa: E402
@@ -554,6 +556,106 @@ class TestReadableError(unittest.TestCase):
         msg = server.readable_error(Exception('SELECT kaputt'), 'IMAP')
         self.assertIn('IMAP-Fehler', msg)
         self.assertIn('SELECT kaputt', msg)
+
+
+class TestMultipleAccounts(unittest.TestCase):
+    """Mehrere Postfächer nebeneinander — Anlegen, Ändern, Wechseln, Entfernen."""
+
+    @classmethod
+    def setUpClass(cls):
+        from http.server import ThreadingHTTPServer
+        server.CFG['adminKey'] = 'mehrkonten-test'
+        server.CFG['accounts'] = []
+        cls.srv = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+        cls.srv.daemon_threads = True
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    def setUp(self):
+        server.CFG['accounts'] = []
+        # Anmeldung am Mailserver überspringen — hier geht es um die Verwaltung.
+        self.orig_test = server.test_account
+        server.test_account = lambda a: True
+        c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
+        c.request('POST', '/api/login', json.dumps({'key': 'mehrkonten-test'}),
+                  {'Content-Type': 'application/json'})
+        r = c.getresponse()
+        r.read()
+        self.sid = r.getheader('Set-Cookie').split(';')[0]
+        c.close()
+
+    def tearDown(self):
+        server.test_account = self.orig_test
+        server.CFG['accounts'] = []
+
+    def call(self, method, path, body=None):
+        c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
+        c.request(method, path, json.dumps(body) if body is not None else None,
+                  {'Content-Type': 'application/json', 'Cookie': self.sid})
+        r = c.getresponse()
+        data = json.loads(r.read() or b'{}')
+        status = r.status
+        c.close()
+        return status, data
+
+    def add(self, mail, host):
+        return self.call('POST', '/api/account/save', {
+            'email': mail, 'password': 'geheim-' + mail, 'imapHost': host,
+            'imapPort': 993, 'imapSSL': True, 'smtpHost': host.replace('imap', 'smtp'),
+            'smtpPort': 465, 'smtpMode': 'ssl', 'name': mail.split('@')[0]})
+
+    def test_two_accounts_side_by_side(self):
+        s1, a = self.add('erste@volme3dakademie.de', 'imap.goneo.de')
+        s2, b = self.add('zweite@beispiel.de', 'imap.beispiel.de')
+        self.assertEqual((s1, s2), (200, 200))
+        self.assertNotEqual(a['account']['id'], b['account']['id'], 'jedes Konto braucht eine eigene Kennung')
+        _, st = self.call('GET', '/api/state')
+        self.assertEqual(len(st['accounts']), 2)
+        self.assertEqual({x['email'] for x in st['accounts']},
+                         {'erste@volme3dakademie.de', 'zweite@beispiel.de'})
+
+    def test_passwords_never_leave_the_server(self):
+        self.add('erste@volme3dakademie.de', 'imap.goneo.de')
+        self.add('zweite@beispiel.de', 'imap.beispiel.de')
+        _, st = self.call('GET', '/api/state')
+        self.assertNotIn('password', json.dumps(st))
+        self.assertNotIn('geheim', json.dumps(st))
+
+    def test_edit_keeps_password_when_left_empty(self):
+        _, a = self.add('erste@volme3dakademie.de', 'imap.goneo.de')
+        acc_id = a['account']['id']
+        status, _ = self.call('POST', '/api/account/save',
+                              {'id': acc_id, 'email': 'erste@volme3dakademie.de',
+                               'imapHost': 'imap.goneo.de', 'password': '', 'name': 'Neuer Name'})
+        self.assertEqual(status, 200)
+        stored = server.account_by_id(acc_id)
+        self.assertEqual(stored['password'], 'geheim-erste@volme3dakademie.de')
+        self.assertEqual(stored['name'], 'Neuer Name')
+
+    def test_delete_removes_only_that_account(self):
+        _, a = self.add('erste@volme3dakademie.de', 'imap.goneo.de')
+        _, b = self.add('zweite@beispiel.de', 'imap.beispiel.de')
+        self.call('POST', '/api/account/delete', {'id': a['account']['id']})
+        _, st = self.call('GET', '/api/state')
+        self.assertEqual([x['email'] for x in st['accounts']], ['zweite@beispiel.de'])
+
+    def test_each_account_has_its_own_connection(self):
+        _, a = self.add('erste@volme3dakademie.de', 'imap.goneo.de')
+        _, b = self.add('zweite@beispiel.de', 'imap.beispiel.de')
+        box_a = server.get_box(server.account_by_id(a['account']['id']))
+        box_b = server.get_box(server.account_by_id(b['account']['id']))
+        self.assertIsNot(box_a, box_b)
+        self.assertEqual(box_a.acc['imapHost'], 'imap.goneo.de')
+        self.assertEqual(box_b.acc['imapHost'], 'imap.beispiel.de')
+
+    def test_unknown_account_rejected(self):
+        status, data = self.call('GET', '/api/folders?acc=gibtsnicht')
+        self.assertEqual(status, 400)
+        self.assertIn('Konto', data['error'])
 
 
 class TestAccountStorage(unittest.TestCase):

@@ -77,9 +77,38 @@ with sync_playwright() as p:
                       'iframe rendert leer')
             except Exception as e:
                 print('  (Rendering-Prüfung nicht möglich: %s)' % type(e).__name__)
+        # Absenderwahl beim Verfassen: erscheint erst ab zwei Konten. Das zweite
+        # Konto wird nur im Browser vorgetäuscht — der Server bleibt unberührt.
+        page.evaluate("""() => {
+            window._echteKonten = S.accounts;
+            S.accounts = S.accounts.concat([{ id: 'test-zweit', email: 'zweit@beispiel.de',
+                                              name: 'Zweitkonto', signature: 'Zweite Signatur' }]);
+        }""")
+        page.evaluate('compose()')
+        page.wait_for_timeout(400)
+        check('Absenderzeile bei zwei Konten sichtbar', page.is_visible('#cfromrow'))
+        check('Beide Konten zur Auswahl', page.evaluate("document.querySelectorAll('#cfrom option').length") == 2)
+        page.select_option('#cfrom', 'test-zweit')
+        page.wait_for_timeout(300)
+        check('Signatur folgt dem Absender', 'Zweite Signatur' in page.input_value('#ctext'),
+              repr(page.input_value('#ctext')[:60]))
+        page.evaluate('closeCompose()')
+
+        # Antwort soll aus dem Postfach kommen, das die Mail empfangen hat
+        treffer = page.evaluate("""() => {
+            const eigen = window._echteKonten[0];
+            return senderFor({ to: [{ email: eigen.email }], cc: [] }) === eigen.id;
+        }""")
+        check('Antwort nutzt das empfangende Postfach', treffer)
+        page.evaluate('S.accounts = window._echteKonten')
+
         page.click('text=⚙️ Konten')
         page.wait_for_timeout(600)
         check('Kontoverwaltung erreichbar', page.is_visible('#modal'))
+        check('Vorhandenes Konto wird aufgelistet',
+              '@' in page.inner_text('#modalbox'))
+        check('Knopf zum Hinzufügen vorhanden',
+              'Konto hinzufügen' in page.inner_text('#modalbox'))
     else:
         check('Kontodialog erscheint bei leerem Konto', page.is_visible('#modal'))
         check('Hinweis auf erstes Konto', 'Konto' in page.inner_text('#modalbox'))

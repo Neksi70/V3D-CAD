@@ -204,6 +204,7 @@ a{color:var(--acc-d)}
 <div id="compose" class="hide">
   <div class="ch"><span id="ctitle">Neue Nachricht</span><button class="x" onclick="closeCompose()">✕</button></div>
   <div class="cb">
+    <div class="row hide" id="cfromrow"><span>Von</span><select id="cfrom" onchange="fromChanged()" style="border:0;padding:6px 2px"></select></div>
     <div class="row"><span>An</span><input id="cto" placeholder="empfaenger@beispiel.de"></div>
     <div class="row" id="cccrow"><span>Kopie</span><input id="ccc" placeholder="optional"></div>
     <div class="row"><span>Betreff</span><input id="csubj"></div>
@@ -517,15 +518,38 @@ async function doMove() {
 function compose(pre) {
   pre = pre || {};
   S.reply = pre.reply || null; S.atts = [];
+  // Absender: bei mehreren Konten wählbar, sonst bleibt die Zeile verborgen.
+  const from = document.getElementById('cfrom');
+  from.innerHTML = S.accounts.map(a =>
+    `<option value="${a.id}">${esc(a.name ? a.name + ' <' + a.email + '>' : a.email)}</option>`).join('');
+  from.value = pre.from || (S.acc && S.acc.id) || '';
+  document.getElementById('cfromrow').classList.toggle('hide', S.accounts.length < 2);
+  const sender = S.accounts.find(a => a.id === from.value) || S.acc;
+
   document.getElementById('ctitle').textContent = pre.title || 'Neue Nachricht';
   document.getElementById('cto').value = pre.to || '';
   document.getElementById('ccc').value = pre.cc || '';
   document.getElementById('csubj').value = pre.subject || '';
-  document.getElementById('ctext').value = pre.text || (S.acc && S.acc.signature ? '\n\n' + S.acc.signature : '');
+  const text = 'text' in pre ? pre.text : (sender && sender.signature ? '\n\n' + sender.signature : '');
+  document.getElementById('ctext').value = text;
+  S.composeText = text;          // gemerkt, um die Signatur beim Wechsel zu tauschen
+  S.composeFrom = from.value;
   document.getElementById('cattlist').innerHTML = '';
   document.getElementById('cstatus').textContent = '';
   document.getElementById('compose').classList.remove('hide');
   document.getElementById(pre.to ? 'ctext' : 'cto').focus();
+}
+
+function fromChanged() {
+  // Signatur mitziehen — aber nur, solange am Text noch nichts geändert wurde.
+  const ta = document.getElementById('ctext');
+  if (ta.value !== S.composeText) return;
+  const sender = S.accounts.find(a => a.id === document.getElementById('cfrom').value);
+  const alt = S.accounts.find(a => a.id === S.composeFrom);
+  let t = ta.value;
+  if (alt && alt.signature) t = t.replace('\n\n' + alt.signature, '');
+  if (sender && sender.signature) t = '\n\n' + sender.signature + t.replace(/^\n\n/, '');
+  ta.value = t; S.composeText = t; S.composeFrom = sender ? sender.id : null;
 }
 function closeCompose() { document.getElementById('compose').classList.add('hide'); }
 
@@ -539,25 +563,36 @@ function stripTags(h) {
   const d = document.createElement('div'); d.innerHTML = (h || '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n\n');
   return (d.textContent || '').trim();
 }
+function senderFor(m) {
+  // Aus welchem Postfach wurde die Mail empfangen? Danach richtet sich der
+  // Absender der Antwort — sonst antwortet man aus dem falschen Konto.
+  const adressen = m.to.concat(m.cc || []).map(a => (a.email || '').toLowerCase());
+  const treffer = S.accounts.find(a => adressen.includes((a.email || '').toLowerCase()));
+  return (treffer || S.acc).id;
+}
 function reply(all) {
   if (!S.cur) return;
   const m = S.cur;
+  const fromId = senderFor(m);
+  const self = (S.accounts.find(a => a.id === fromId) || S.acc);
   const to = (m.replyTo.length ? m.replyTo : m.from).map(a => a.email).join(', ');
-  const cc = all ? m.to.concat(m.cc).map(a => a.email).filter(e => e !== S.acc.email).join(', ') : '';
+  const cc = all ? m.to.concat(m.cc).map(a => a.email).filter(e => e !== self.email).join(', ') : '';
   compose({
-    title: 'Antworten', to, cc,
+    title: 'Antworten', to, cc, from: fromId,
     subject: /^(re|aw):/i.test(m.subject) ? m.subject : 'Re: ' + m.subject,
-    text: (S.acc.signature ? '\n\n' + S.acc.signature : '') + quoted(m),
+    text: (self.signature ? '\n\n' + self.signature : '') + quoted(m),
     reply: { inReplyTo: m.messageId, references: m.references },
   });
 }
 function forward() {
   if (!S.cur) return;
   const m = S.cur;
+  const fromId = senderFor(m);
+  const self = (S.accounts.find(a => a.id === fromId) || S.acc);
   compose({
-    title: 'Weiterleiten',
+    title: 'Weiterleiten', from: fromId,
     subject: /^(fwd|wg):/i.test(m.subject) ? m.subject : 'Fwd: ' + m.subject,
-    text: (S.acc.signature ? '\n\n' + S.acc.signature : '') +
+    text: (self.signature ? '\n\n' + self.signature : '') +
       `\n\n---------- Weitergeleitete Nachricht ----------\nVon: ${m.from.map(a => a.email).join(', ')}\nDatum: ${m.date}\nBetreff: ${m.subject}\n\n` +
       (m.plain || stripTags(m.html)),
   });
@@ -582,7 +617,8 @@ async function doSend() {
   document.getElementById('cstatus').innerHTML = '<span class="spin"></span> sendet…';
   try {
     const r = await post('send', Object.assign({
-      acc: S.acc.id, to, cc: document.getElementById('ccc').value.trim(),
+      acc: document.getElementById('cfrom').value || S.acc.id,
+      to, cc: document.getElementById('ccc').value.trim(),
       subject: document.getElementById('csubj').value,
       text: document.getElementById('ctext').value,
       attachments: S.atts,

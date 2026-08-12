@@ -44,6 +44,18 @@ eigener DNS-Client in `server.py` — die Standardbibliothek kann nur A/AAAA.
 
 Tastatur: `n` neue Nachricht, `r` antworten, `j`/`k` blättern, `Entf` löschen, `Esc` schließen.
 
+## Mehrere Postfächer
+
+Beliebig viele Konten nebeneinander: **⚙️ Konten → + Konto hinzufügen** (der Knopf
+sitzt unten links in der Seitenleiste, auf dem Handy hinter ☰). Umgeschaltet wird
+oben links im Auswahlfeld; die zuletzt benutzte Wahl merkt sich der Browser.
+
+Jedes Konto hat eine eigene IMAP-Verbindung, eigene Ordner und eine eigene
+Signatur. Beim Verfassen erscheint ab zwei Konten eine **Von**-Zeile; wechselt man
+dort den Absender, zieht die Signatur mit — aber nur, solange am Text noch nichts
+geändert wurde. Antworten und Weiterleitungen wählen von selbst das Postfach, an
+das die Mail gerichtet war.
+
 ## Sicherheitsentscheidungen
 
 * **Externe Bilder werden blockiert.** Zählpixel dürfen nicht ungefragt melden,
