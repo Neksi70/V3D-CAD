@@ -62,7 +62,20 @@ with sync_playwright() as p:
     smtp = page.input_value('#a_sh')
     check('IMAP-Server gefunden', imap == 'posteo.de', imap)
     check('SMTP-Server gefunden', smtp == 'posteo.de', smtp)
-    check('Quelle angezeigt', 'Autoconfig' in page.inner_text('#a_ac'), page.inner_text('#a_ac'))
+    check('Quelle angezeigt', 'Anbieterdatenbank' in page.inner_text('#a_ac'), page.inner_text('#a_ac'))
+
+    # Zweiter Fall: Domain ohne eigene imap.-Namen — hier hilft nur Autodiscover
+    # über den SRV-Eintrag, genau wie bei Outlook.
+    page.fill('#a_email', 'info@volme3dakademie.de')
+    page.click('text=Server suchen')
+    page.wait_for_timeout(8000)
+    check('Fremdgehostete Domain: IMAP gefunden', page.input_value('#a_ih') == 'imap.goneo.de',
+          page.input_value('#a_ih'))
+    check('Fremdgehostete Domain: SMTP gefunden', page.input_value('#a_sh') == 'smtp.goneo.de',
+          page.input_value('#a_sh'))
+    check('Fremdgehostete Domain: SSL-Versand erkannt', page.input_value('#a_sp') == '465',
+          page.input_value('#a_sp'))
+    check('Weg wird benannt', 'Autodiscover' in page.inner_text('#a_ac'), page.inner_text('#a_ac'))
 
     # Speichern ohne Passwort muss abgelehnt werden
     page.click('#a_save')

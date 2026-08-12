@@ -23,9 +23,24 @@ Zugangsdaten liegen **nicht** hier, sondern in `~/.config/v3dmail/config.json`
 ## Bedienung
 
 Anmelden mit dem Schlüssel, dann **Konten → + Konto hinzufügen**. „Server suchen"
-holt die Einstellungen aus der Thunderbird-Datenbank; findet die nichts, werden
-`imap.<domain>` / `mail.<domain>` auf den üblichen Ports abgetastet. Sonst manuell
-eintragen. „Prüfen & speichern" meldet sich testweise an, bevor gespeichert wird.
+geht dieselben Wege wie Outlook und Thunderbird, der Reihe nach:
+
+1. Anbieterdatenbank von Thunderbird (ISPDB)
+2. Autodiscover auf `autodiscover.<domain>` und `<domain>` — Microsofts Verfahren
+3. Autoconfig beim Hoster (`autoconfig.<domain>`, `.well-known`)
+4. **Autodiscover über den SRV-Eintrag `_autodiscover._tcp.<domain>`** — der Weg für
+   fremdgehostete Domains. `volme3dakademie.de` etwa hat keine eigenen
+   `imap.`-Namen; der SRV-Eintrag zeigt auf `autodiscover.goneo.de`, und der
+   verrät `imap.goneo.de:993` und `smtp.goneo.de:465`.
+5. SRV-Einträge nach RFC 6186 (`_imaps._tcp`, `_submissions._tcp`)
+6. Über den MX-Eintrag zum Hoster (`mx01.goneo.de` → `goneo.de`) und dort erneut suchen
+7. Zuletzt die üblichen Servernamen abtasten
+
+Die benutzte Quelle steht unter dem Adressfeld; scheitert alles, listet die Antwort
+unter `tried` die einzelnen Versuche. SRV- und MX-Auflösung macht ein kleiner
+eigener DNS-Client in `server.py` — die Standardbibliothek kann nur A/AAAA.
+
+„Prüfen & speichern" meldet sich testweise an, bevor gespeichert wird.
 
 Tastatur: `n` neue Nachricht, `r` antworten, `j`/`k` blättern, `Entf` löschen, `Esc` schließen.
 

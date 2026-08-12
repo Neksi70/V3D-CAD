@@ -332,6 +332,158 @@ class TestHttp(unittest.TestCase):
         self.assertEqual(status, 404)
 
 
+AUTODISCOVER_ANTWORT = """<?xml version="1.0"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
+  <Response>
+    <Account>
+      <AccountType>email</AccountType>
+      <Protocol>
+        <Type>IMAP</Type><Server>imap.goneo.de</Server><Port>993</Port>
+        <SSL>on</SSL><AuthRequired>on</AuthRequired>
+        <LoginName>volker.isken@volme3dakademie.de</LoginName>
+      </Protocol>
+      <Protocol>
+        <Type>SMTP</Type><Server>smtp.goneo.de</Server><Port>465</Port>
+        <SSL>on</SSL><AuthRequired>on</AuthRequired>
+      </Protocol>
+    </Account>
+  </Response>
+</Autodiscover>"""
+
+AUTODISCOVER_STARTTLS = """<Autodiscover><Response><Account>
+  <Protocol><Type>IMAP</Type><Server>imap.beispiel.de</Server><Port>143</Port>
+  <SSL>on</SSL><Encryption>TLS</Encryption></Protocol>
+  <Protocol><Type>SMTP</Type><Server>smtp.beispiel.de</Server><Port>587</Port>
+  <SSL>on</SSL><Encryption>TLS</Encryption></Protocol>
+</Account></Response></Autodiscover>"""
+
+MOZILLA_ANTWORT = """<clientConfig version="1.1"><emailProvider id="beispiel.de">
+  <incomingServer type="imap">
+    <hostname>imap.beispiel.de</hostname><port>143</port>
+    <socketType>STARTTLS</socketType><username>%EMAILADDRESS%</username>
+  </incomingServer>
+  <outgoingServer type="smtp">
+    <hostname>smtp.beispiel.de</hostname><port>587</port>
+    <socketType>STARTTLS</socketType><username>%EMAILADDRESS%</username>
+  </outgoingServer>
+</emailProvider></clientConfig>"""
+
+
+class FakeResponse:
+    def __init__(self, text):
+        self.text = text.encode('utf-8')
+
+    def read(self):
+        return self.text
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class TestServerLookup(unittest.TestCase):
+    """Serversuche ohne Netzzugriff — urlopen wird ersetzt."""
+
+    def setUp(self):
+        import urllib.request
+        self.orig = urllib.request.urlopen
+        self.mod = urllib.request
+
+    def tearDown(self):
+        self.mod.urlopen = self.orig
+
+    def serve(self, text):
+        self.mod.urlopen = lambda *a, **kw: FakeResponse(text)
+
+    def test_autodiscover_parsed(self):
+        self.serve(AUTODISCOVER_ANTWORT)
+        r = server.try_autodiscover('https://autodiscover.goneo.de/autodiscover/autodiscover.xml',
+                                    'volker.isken@volme3dakademie.de')
+        self.assertEqual(r['imapHost'], 'imap.goneo.de')
+        self.assertEqual(r['imapPort'], 993)
+        self.assertTrue(r['imapSSL'])
+        self.assertEqual(r['smtpHost'], 'smtp.goneo.de')
+        self.assertEqual(r['smtpPort'], 465)
+        self.assertEqual(r['smtpMode'], 'ssl')
+        self.assertEqual(r['user'], 'volker.isken@volme3dakademie.de')
+
+    def test_autodiscover_starttls_recognised(self):
+        self.serve(AUTODISCOVER_STARTTLS)
+        r = server.try_autodiscover('https://autodiscover.beispiel.de/autodiscover/autodiscover.xml',
+                                    'a@beispiel.de')
+        self.assertFalse(r['imapSSL'], 'Encryption=TLS auf 143 ist STARTTLS, nicht direktes SSL')
+        self.assertEqual(r['smtpMode'], 'starttls')
+
+    def test_autodiscover_ignores_html_error_page(self):
+        self.serve('<!DOCTYPE html><html><body>404</body></html>')
+        self.assertIsNone(server.try_autodiscover('https://x.de/autodiscover/autodiscover.xml', 'a@x.de'))
+
+    def test_autodiscover_refuses_plain_http(self):
+        self.serve(AUTODISCOVER_ANTWORT)
+        self.assertIsNone(server.try_autodiscover('http://x.de/autodiscover/autodiscover.xml', 'a@x.de'))
+
+    def test_mozilla_autoconfig_parsed(self):
+        self.serve(MOZILLA_ANTWORT)
+        r = server.try_mozilla_autoconfig('https://autoconfig.beispiel.de/mail/config-v1.1.xml', 'a@beispiel.de')
+        self.assertEqual(r['imapHost'], 'imap.beispiel.de')
+        self.assertFalse(r['imapSSL'])
+        self.assertEqual(r['user'], 'a@beispiel.de', 'Platzhalter %EMAILADDRESS% muss ersetzt werden')
+
+    def test_autoconfig_uses_first_hit(self):
+        self.serve(AUTODISCOVER_ANTWORT)
+        r = server.autoconfig('volker.isken@volme3dakademie.de')
+        self.assertEqual(r['imapHost'], 'imap.goneo.de')
+        self.assertIn('source', r)
+
+    def test_autoconfig_reports_nothing_found(self):
+        def boom(*a, **kw):
+            raise OSError('kein Netz')
+        self.mod.urlopen = boom
+        orig_dns, orig_probe = server.dns_query, server.probe
+        server.dns_query = lambda *a, **kw: []
+        server.probe = lambda *a, **kw: False
+        try:
+            r = server.autoconfig('a@gibtsnicht.invalid')
+            self.assertIn('nichts gefunden', r['source'])
+            self.assertTrue(r['tried'], 'Versuchsprotokoll hilft beim Nachvollziehen')
+        finally:
+            server.dns_query, server.probe = orig_dns, orig_probe
+
+    def test_incomplete_address_rejected(self):
+        with self.assertRaises(server.MailError):
+            server.autoconfig('volker.isken')
+
+
+class TestBaseDomain(unittest.TestCase):
+    def test_hoster_domain_from_mx(self):
+        self.assertEqual(server.base_domain('mx01.goneo.de'), 'goneo.de')
+        self.assertEqual(server.base_domain('aspmx.l.google.com'), 'google.com')
+        self.assertEqual(server.base_domain('goneo.de'), 'goneo.de')
+
+    def test_two_part_suffix(self):
+        self.assertEqual(server.base_domain('mail.firma.co.uk'), 'firma.co.uk')
+
+
+class TestDnsParser(unittest.TestCase):
+    def test_name_with_compression_pointer(self):
+        # "goneo.de" ab Position 12, danach ein Zeiger darauf
+        buf = b'\x00' * 12 + b'\x05goneo\x02de\x00' + b'\xc0\x0c'
+        name, end = server._dns_name(buf, 12)
+        self.assertEqual(name, 'goneo.de')
+        ptr_name, _ = server._dns_name(buf, end)
+        self.assertEqual(ptr_name, 'goneo.de')
+
+    def test_query_survives_dead_nameserver(self):
+        orig = server._nameservers
+        server._nameservers = lambda: ['127.0.0.1']   # dort lauscht kein DNS
+        try:
+            self.assertEqual(server.dns_query('beispiel.de', 15, timeout=1), [])
+        finally:
+            server._nameservers = orig
+
+
 class TestReadableError(unittest.TestCase):
     def test_bytes_repr_unwrapped(self):
         e = Exception("b'[AUTHENTICATIONFAILED] Authentication failed.'")

@@ -713,62 +713,302 @@ def probe(host, port, timeout=4):
         return False
 
 
+# --- Minimaler DNS-Client (SRV/MX) ------------------------------------------
+# Die Standardbibliothek löst nur A/AAAA auf. Für Autodiscover und RFC 6186
+# brauchen wir SRV- und MX-Einträge, deshalb hier ein kleiner eigener Resolver.
+
+def _nameservers():
+    out = []
+    try:
+        with open('/etc/resolv.conf', 'r', encoding='utf-8') as fh:
+            for line in fh:
+                if line.startswith('nameserver'):
+                    parts = line.split()
+                    if len(parts) > 1:
+                        out.append(parts[1])
+    except Exception:
+        pass
+    out.extend(['1.1.1.1', '9.9.9.9'])
+    return out[:3]
+
+
+def _dns_name(buf, off):
+    """Namen ab Position off lesen, Zeiger-Komprimierung auflösen."""
+    labels = []
+    jumped = False
+    end = off
+    for _ in range(64):
+        if off >= len(buf):
+            break
+        n = buf[off]
+        if n == 0:
+            off += 1
+            if not jumped:
+                end = off
+            break
+        if n & 0xC0 == 0xC0:
+            ptr = ((n & 0x3F) << 8) | buf[off + 1]
+            if not jumped:
+                end = off + 2
+            off = ptr
+            jumped = True
+            continue
+        labels.append(buf[off + 1:off + 1 + n].decode('ascii', 'replace'))
+        off += 1 + n
+        if not jumped:
+            end = off
+    return '.'.join(labels), end
+
+
+def dns_query(name, qtype, timeout=3):
+    """qtype 15 = MX, 33 = SRV. Liefert Liste von (prio, wert...)-Tupeln."""
+    qname = b''.join(bytes([len(p)]) + p.encode('idna' if any(ord(c) > 127 for c in p) else 'ascii')
+                     for p in name.split('.') if p) + b'\x00'
+    tid = secrets.randbits(16)
+    pkt = tid.to_bytes(2, 'big') + b'\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00' + \
+        qname + qtype.to_bytes(2, 'big') + b'\x00\x01'
+    for ns in _nameservers():
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(timeout)
+            s.sendto(pkt, (ns, 53))
+            data, _ = s.recvfrom(4096)
+            s.close()
+        except Exception:
+            continue
+        if len(data) < 12 or data[:2] != pkt[:2]:
+            continue
+        qd, an = int.from_bytes(data[4:6], 'big'), int.from_bytes(data[6:8], 'big')
+        off = 12
+        for _ in range(qd):
+            _, off = _dns_name(data, off)
+            off += 4
+        out = []
+        for _ in range(an):
+            _, off = _dns_name(data, off)
+            if off + 10 > len(data):
+                break
+            rtype = int.from_bytes(data[off:off + 2], 'big')
+            rdlen = int.from_bytes(data[off + 8:off + 10], 'big')
+            rdata = off + 10
+            if rtype == 15 and qtype == 15:
+                prio = int.from_bytes(data[rdata:rdata + 2], 'big')
+                host, _ = _dns_name(data, rdata + 2)
+                out.append((prio, host))
+            elif rtype == 33 and qtype == 33:
+                prio = int.from_bytes(data[rdata:rdata + 2], 'big')
+                port = int.from_bytes(data[rdata + 4:rdata + 6], 'big')
+                host, _ = _dns_name(data, rdata + 6)
+                out.append((prio, host, port))
+            off = rdata + rdlen
+        if out:
+            out.sort()
+            return out
+    return []
+
+
+# --- Serversuche ------------------------------------------------------------
+
+def _https_get(url, timeout=6):
+    req = urllib.request.Request(url, headers={'User-Agent': 'V3DMail/1.0'})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode('utf-8', 'replace')
+
+
+def _tag(block, tag):
+    m = re.search(r'<%s[^>]*>([^<]*)</%s>' % (tag, tag), block, re.I)
+    return m.group(1).strip() if m else ''
+
+
+def try_mozilla_autoconfig(url, address):
+    """Thunderbird-Format — von der ISPDB und von Hostern selbst ausgeliefert."""
+    xml = _https_get(url)
+    imap = re.search(r'<incomingServer[^>]*type="imap".*?</incomingServer>', xml, re.S | re.I)
+    smtp = re.search(r'<outgoingServer[^>]*type="smtp".*?</outgoingServer>', xml, re.S | re.I)
+    if not (imap and smtp):
+        return None
+    i, o = imap.group(0), smtp.group(0)
+    i_sock, o_sock = _tag(i, 'socketType').lower(), _tag(o, 'socketType').lower()
+    user = _tag(i, 'username')
+    return {
+        'imapHost': _tag(i, 'hostname'),
+        'imapPort': int(_tag(i, 'port') or 993),
+        'imapSSL': i_sock != 'starttls',
+        'smtpHost': _tag(o, 'hostname'),
+        'smtpPort': int(_tag(o, 'port') or 587),
+        'smtpMode': 'ssl' if o_sock == 'ssl' else 'starttls',
+        'user': address if '%EMAILADDRESS%' in user.upper() or not user else user,
+    }
+
+
+AUTODISCOVER_REQ = """<?xml version="1.0" encoding="utf-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006">
+  <Request>
+    <EMailAddress>%s</EMailAddress>
+    <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>
+  </Request>
+</Autodiscover>"""
+
+
+def try_autodiscover(url, address):
+    """Microsofts Autodiscover — den Weg geht auch Outlook.
+
+    Nur https, und ohne Passwort: viele Hoster (z.B. goneo) antworten auch
+    unangemeldet mit den reinen Serverdaten.
+    """
+    if not url.startswith('https://'):
+        return None
+    body = (AUTODISCOVER_REQ % html.escape(address)).encode('utf-8')
+    req = urllib.request.Request(url, data=body, method='POST',
+                                 headers={'Content-Type': 'text/xml; charset=utf-8',
+                                          'User-Agent': 'V3DMail/1.0'})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        xml = resp.read().decode('utf-8', 'replace')
+    if '<Protocol' not in xml:
+        return None
+    out = {}
+    for block in re.findall(r'<Protocol>.*?</Protocol>', xml, re.S | re.I):
+        typ = _tag(block, 'Type').upper()
+        host, port = _tag(block, 'Server'), _tag(block, 'Port')
+        ssl_on = _tag(block, 'SSL').lower() in ('on', 'true')
+        enc = _tag(block, 'Encryption').upper()
+        if not host or not port.isdigit():
+            continue
+        if typ == 'IMAP':
+            # Encryption=TLS meint bei Autodiscover STARTTLS, SSL/leer meint direktes TLS
+            direct_tls = int(port) == 993 or (ssl_on and enc != 'TLS')
+            out.update({'imapHost': host, 'imapPort': int(port), 'imapSSL': direct_tls})
+            login = _tag(block, 'LoginName')
+            if login:
+                out['user'] = login
+        elif typ == 'SMTP':
+            mode = 'ssl' if (int(port) == 465 or (ssl_on and enc == 'SSL')) else 'starttls'
+            out.update({'smtpHost': host, 'smtpPort': int(port), 'smtpMode': mode})
+    return out if out.get('imapHost') else None
+
+
+def base_domain(host):
+    """mx01.goneo.de -> goneo.de (grob, reicht für die Serversuche)."""
+    parts = host.strip('.').split('.')
+    if len(parts) <= 2:
+        return '.'.join(parts)
+    # zweistufige Endungen wie co.uk berücksichtigen
+    if len(parts[-2]) <= 3 and len(parts[-1]) <= 3 and len(parts) >= 3:
+        return '.'.join(parts[-3:])
+    return '.'.join(parts[-2:])
+
+
+def probe_hosts(domain):
+    """Letzter Ausweg: übliche Servernamen antasten."""
+    found = {}
+    for prefix in ('imap.', 'mail.', 'imap.mail.', 'secure.', ''):
+        host = prefix + domain
+        if probe(host, 993):
+            found.update({'imapHost': host, 'imapPort': 993, 'imapSSL': True})
+            break
+        if probe(host, 143):
+            found.update({'imapHost': host, 'imapPort': 143, 'imapSSL': False})
+            break
+    for prefix in ('smtp.', 'mail.', 'smtp.mail.', 'secure.', ''):
+        host = prefix + domain
+        if probe(host, 587):
+            found.update({'smtpHost': host, 'smtpPort': 587, 'smtpMode': 'starttls'})
+            break
+        if probe(host, 465):
+            found.update({'smtpHost': host, 'smtpPort': 465, 'smtpMode': 'ssl'})
+            break
+    return found if found.get('imapHost') else None
+
+
 def autoconfig(address):
-    """Serverdaten raten: erst Thunderbird-ISPDB, sonst übliche Namen probieren."""
+    """Serverdaten suchen — dieselben Wege, die auch Outlook und Thunderbird gehen.
+
+    Reihenfolge: Anbieterdatenbank, Autodiscover (auch per SRV-Eintrag),
+    Autoconfig beim Hoster, RFC-6186-SRV, dann der Mailserver aus dem
+    MX-Eintrag, zuletzt Servernamen abtasten.
+    """
     if '@' not in address:
         raise MailError('Bitte vollständige E-Mail-Adresse angeben')
     domain = address.split('@', 1)[1].strip().lower()
-    result = {'source': '', 'domain': domain}
+    tried = []
 
-    url = 'https://autoconfig.thunderbird.net/v1.1/' + domain
-    try:
-        with urllib.request.urlopen(url, timeout=6) as resp:
-            xml = resp.read().decode('utf-8', 'replace')
-        imap = re.search(r'<incomingServer[^>]*type="imap".*?</incomingServer>', xml, re.S)
-        smtp = re.search(r'<outgoingServer[^>]*type="smtp".*?</outgoingServer>', xml, re.S)
-        if imap and smtp:
-            def field(block, tag):
-                m = re.search(r'<%s>([^<]*)</%s>' % (tag, tag), block)
-                return m.group(1).strip() if m else ''
-            i, o = imap.group(0), smtp.group(0)
-            i_sock, o_sock = field(i, 'socketType').lower(), field(o, 'socketType').lower()
-            result.update({
-                'source': 'Thunderbird-Autoconfig',
-                'imapHost': field(i, 'hostname'),
-                'imapPort': int(field(i, 'port') or 993),
-                'imapSSL': i_sock != 'starttls',
-                'smtpHost': field(o, 'hostname'),
-                'smtpPort': int(field(o, 'port') or 587),
-                'smtpMode': 'ssl' if o_sock == 'ssl' else 'starttls',
-                'user': address if 'EMAILADDRESS' in field(i, 'username').upper() else address,
-            })
-            return result
-    except Exception:
-        pass
+    def attempt(label, fn):
+        try:
+            r = fn()
+            if r and r.get('imapHost'):
+                r.setdefault('user', address)
+                r.setdefault('smtpHost', r['imapHost'].replace('imap.', 'smtp.', 1))
+                r.setdefault('smtpPort', 587)
+                r.setdefault('smtpMode', 'starttls')
+                r['source'] = label
+                r['domain'] = domain
+                r['tried'] = tried
+                return r
+        except Exception as e:
+            tried.append('%s: %s' % (label, type(e).__name__))
+            return None
+        tried.append('%s: nichts' % label)
+        return None
 
-    # Kein Eintrag in der Datenbank: die üblichen Namen antesten.
-    for prefix in ('imap.', 'mail.', 'imap.mail.', ''):
-        host = prefix + domain
-        if probe(host, 993):
-            result.update({'imapHost': host, 'imapPort': 993, 'imapSSL': True})
-            break
-        if probe(host, 143):
-            result.update({'imapHost': host, 'imapPort': 143, 'imapSSL': False})
-            break
-    for prefix in ('smtp.', 'mail.', 'smtp.mail.', ''):
-        host = prefix + domain
-        if probe(host, 587):
-            result.update({'smtpHost': host, 'smtpPort': 587, 'smtpMode': 'starttls'})
-            break
-        if probe(host, 465):
-            result.update({'smtpHost': host, 'smtpPort': 465, 'smtpMode': 'ssl'})
-            break
-    if result.get('imapHost'):
-        result['source'] = 'geraten (Servernamen abgetastet)'
-        result.setdefault('user', address)
-    else:
-        result['source'] = 'nichts gefunden — bitte manuell eintragen'
-    return result
+    steps = [
+        ('Anbieterdatenbank (Thunderbird)',
+         lambda: try_mozilla_autoconfig('https://autoconfig.thunderbird.net/v1.1/' + domain, address)),
+        ('Autodiscover (wie Outlook)',
+         lambda: try_autodiscover('https://autodiscover.%s/autodiscover/autodiscover.xml' % domain, address)),
+        ('Autoconfig beim Hoster',
+         lambda: try_mozilla_autoconfig(
+             'https://autoconfig.%s/mail/config-v1.1.xml?emailaddress=%s' % (domain, address), address)),
+        ('Autoconfig (.well-known)',
+         lambda: try_mozilla_autoconfig(
+             'https://%s/.well-known/autoconfig/mail/config-v1.1.xml' % domain, address)),
+    ]
+    for label, fn in steps:
+        r = attempt(label, fn)
+        if r:
+            return r
+
+    # Autodiscover per SRV-Eintrag — so findet Outlook fremdgehostete Domains.
+    for _, host, port in dns_query('_autodiscover._tcp.' + domain, 33):
+        r = attempt('Autodiscover über SRV-Eintrag (%s)' % host,
+                    lambda h=host: try_autodiscover('https://%s/autodiscover/autodiscover.xml' % h, address))
+        if r:
+            return r
+
+    # RFC 6186: der Hoster verrät seine Mailserver direkt im DNS.
+    srv_imap = dns_query('_imaps._tcp.' + domain, 33) or dns_query('_imap._tcp.' + domain, 33)
+    if srv_imap:
+        prio, host, port = srv_imap[0]
+        if host and host != '.':
+            found = {'imapHost': host, 'imapPort': port, 'imapSSL': port == 993}
+            sub = dns_query('_submissions._tcp.' + domain, 33) or dns_query('_submission._tcp.' + domain, 33)
+            if sub and sub[0][1] != '.':
+                found.update({'smtpHost': sub[0][1], 'smtpPort': sub[0][2],
+                              'smtpMode': 'ssl' if sub[0][2] == 465 else 'starttls'})
+            r = attempt('SRV-Einträge im DNS', lambda: found)
+            if r:
+                return r
+
+    # Über den MX-Eintrag zum Hoster: mx01.goneo.de -> goneo.de
+    for _, mx in dns_query(domain, 15):
+        bd = base_domain(mx)
+        if not bd or bd == domain:
+            continue
+        for label, fn in [
+            ('Anbieterdatenbank über MX (%s)' % bd,
+             lambda b=bd: try_mozilla_autoconfig('https://autoconfig.thunderbird.net/v1.1/' + b, address)),
+            ('Autodiscover über MX (%s)' % bd,
+             lambda b=bd: try_autodiscover('https://autodiscover.%s/autodiscover/autodiscover.xml' % b, address)),
+            ('Mailserver des Hosters (%s)' % bd, lambda b=bd: probe_hosts(b)),
+        ]:
+            r = attempt(label, fn)
+            if r:
+                return r
+        break
+
+    r = attempt('Servernamen abgetastet', lambda: probe_hosts(domain))
+    if r:
+        return r
+    return {'source': 'nichts gefunden — bitte manuell eintragen', 'domain': domain, 'tried': tried}
 
 
 def test_account(a):
