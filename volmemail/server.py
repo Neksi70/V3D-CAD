@@ -505,6 +505,13 @@ ALLOWED_ATTRS = {
     'face', 'size', 'style', 'bgcolor', 'dir',
 }
 VOID_TAGS = {'br', 'hr', 'img', 'col', 'wbr'}
+# Verworfen SAMT Inhalt. Nur Tags, die auch wirklich ein Endtag haben: der
+# Zähler unten wartet darauf. Leere Elemente wie <meta> oder <link> gehören hier
+# NICHT hinein — sie kämen nie zurück, der Zähler bliebe oben und die restliche
+# Mail verschwände. (Outlook setzt zwei <meta> in jeden Kopf.)
+# Alles andere, was nicht in ALLOWED_TAGS steht, verliert nur sein Tag; der Text
+# darin bleibt erhalten — auch bei <form>, dessen Eingabefelder ohnehin fallen.
+SKIP_TAGS = {'script', 'style', 'iframe', 'object', 'embed', 'svg', 'applet'}
 STYLE_BAD = re.compile(r'(expression|javascript:|@import|behavior\s*:|position\s*:\s*fixed)', re.I)
 
 
@@ -525,9 +532,8 @@ class Sanitizer(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
-        if tag in ('script', 'style', 'iframe', 'object', 'embed', 'form', 'svg', 'link', 'meta', 'base'):
-            if tag not in VOID_TAGS:
-                self.skip_depth += 1
+        if tag in SKIP_TAGS:
+            self.skip_depth += 1
             return
         if self.skip_depth or tag not in ALLOWED_TAGS:
             return
@@ -566,7 +572,7 @@ class Sanitizer(HTMLParser):
 
     def handle_endtag(self, tag):
         tag = tag.lower()
-        if tag in ('script', 'style', 'iframe', 'object', 'embed', 'form', 'svg'):
+        if tag in SKIP_TAGS:
             if self.skip_depth:
                 self.skip_depth -= 1
             return
@@ -667,6 +673,12 @@ def load_message(box, folder, uid, allow_remote=False):
             plain = p.get_content()
     except Exception:
         pass
+
+    # Sicherheitsgurt: bleibt nach der Säuberung nichts Lesbares übrig, obwohl es
+    # einen Textteil gibt, dann lieber den Text zeigen als eine leere Seite.
+    if plain.strip() and not re.sub(r'<[^>]*>', '', body_html).strip():
+        body_html = text_to_html(plain)
+        blocked = 0
 
     return {
         'uid': uid,

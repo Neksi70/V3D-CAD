@@ -46,8 +46,43 @@ with sync_playwright() as p:
     page.click('text=Anmelden')
     page.wait_for_timeout(1200)
     check('Anmeldung erfolgreich', not page.is_visible('#login'))
-    check('Kontodialog erscheint bei leerem Konto', page.is_visible('#modal'))
-    check('Hinweis auf erstes Konto', 'Konto' in page.inner_text('#modalbox'))
+
+    hat_konto = page.evaluate('S.accounts.length > 0')
+    if hat_konto:
+        # Echtes Postfach vorhanden: Ordner, Liste und Darstellung prüfen.
+        page.wait_for_timeout(4000)
+        check('Ordner geladen', page.evaluate('S.folders.length') > 0)
+        check('Nachrichtenliste geladen', page.evaluate('S.msgs.length') > 0,
+              'keine Nachrichten')
+
+        # Nur eine bereits gelesene Mail öffnen — sonst verändern wir echte Daten.
+        uid = page.evaluate('(S.msgs.find(m => m.seen) || {}).uid ?? null')
+        if uid is None:
+            print('  (übersprungen: keine bereits gelesene Mail vorhanden)')
+        else:
+            page.evaluate('openMsg(%d)' % uid)
+            page.wait_for_timeout(3500)
+            check('Betreff angezeigt', len(page.inner_text('#rsubj')) > 0)
+            # Der Kern der Sache: im Anzeige-iframe muss lesbarer Text stehen.
+            sichtbar = page.evaluate("""() => {
+                const s = document.getElementById('frame').srcdoc || '';
+                const b = s.replace(/^[\\s\\S]*?<body>/, '').replace(/<[^>]*>/g, '');
+                return b.trim().length;
+            }""")
+            check('Mail-Rumpf ist nicht leer', sichtbar > 0,
+                  'iframe enthält keinen lesbaren Text (%d Zeichen)' % sichtbar)
+            try:
+                gerendert = page.frame_locator('#frame').locator('body').inner_text(timeout=4000)
+                check('Rumpf wird tatsächlich dargestellt', len(gerendert.strip()) > 0,
+                      'iframe rendert leer')
+            except Exception as e:
+                print('  (Rendering-Prüfung nicht möglich: %s)' % type(e).__name__)
+        page.click('text=⚙️ Konten')
+        page.wait_for_timeout(600)
+        check('Kontoverwaltung erreichbar', page.is_visible('#modal'))
+    else:
+        check('Kontodialog erscheint bei leerem Konto', page.is_visible('#modal'))
+        check('Hinweis auf erstes Konto', 'Konto' in page.inner_text('#modalbox'))
 
     # Kontoformular öffnen
     page.click('text=+ Konto hinzufügen')

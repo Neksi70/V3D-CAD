@@ -121,6 +121,38 @@ class TestSanitizer(unittest.TestCase):
         out, _ = server.sanitize_html('<img src="cid:bild1">', cid_map={'bild1': 'cid-part:3'})
         self.assertIn('cid-part:3', out)
 
+    def test_meta_tag_does_not_swallow_body(self):
+        """<meta> hat kein Endtag — es darf den Überspringen-Zähler nicht hochsetzen."""
+        out, _ = server.sanitize_html(
+            '<html><head><meta http-equiv="Content-Type" content="text/html">'
+            '<meta name="Generator" content="Word"></head>'
+            '<body><p>Sichtbarer Text</p></body></html>')
+        self.assertIn('Sichtbarer Text', out)
+
+    def test_link_and_base_do_not_swallow_body(self):
+        out, _ = server.sanitize_html('<head><link rel="x" href="y"><base href="z"></head>'
+                                      '<body><p>Bleibt sichtbar</p></body>')
+        self.assertIn('Bleibt sichtbar', out)
+
+    def test_outlook_mail_survives_filter(self):
+        """Typisches Outlook-HTML: meta, style-Block, o:p-Tags, span mit style."""
+        roh = ('<html><head><meta http-equiv=Content-Type content="text/html; charset=utf-8">'
+               '<meta name=Generator content="Microsoft Word 15">'
+               '<style><!-- p.MsoNormal {margin:0cm} --></style></head>'
+               '<body lang=DE><div class=WordSection1>'
+               '<p class=MsoNormal><span style="font-size:11.0pt">Moin Volker,<o:p></o:p></span></p>'
+               '<p class=MsoNormal><span style="font-size:11.0pt">anbei die Unterlagen.<o:p></o:p></span></p>'
+               '</div></body></html>')
+        out, _ = server.sanitize_html(roh)
+        self.assertIn('Moin Volker', out)
+        self.assertIn('anbei die Unterlagen', out)
+        self.assertNotIn('MsoNormal {margin', out, 'CSS-Inhalt gehört nicht in den Text')
+
+    def test_style_content_still_removed(self):
+        out, _ = server.sanitize_html('<style>body{color:red}</style><p>Text</p>')
+        self.assertNotIn('color:red', out)
+        self.assertIn('Text', out)
+
     def test_unknown_cid_dropped(self):
         out, _ = server.sanitize_html('<img src="cid:fehlt">', cid_map={})
         self.assertNotIn('cid:', out)
@@ -247,6 +279,33 @@ class TestMessageParsing(unittest.TestCase):
 
     def test_find_special(self):
         self.assertEqual(server.find_special(self.box, 'trash'), 'Papierkorb')
+
+
+class TestEmptyHtmlFallback(unittest.TestCase):
+    def test_falls_back_to_plain_when_html_unusable(self):
+        """Wenn der HTML-Teil nichts Lesbares hergibt, muss der Textteil einspringen."""
+        msg = EmailMessage()
+        msg['From'] = 'a@b.de'
+        msg['Subject'] = 'Test'
+        msg.set_content('Das ist der eigentliche Inhalt.')
+        msg.add_alternative('<html><head><style>p{color:red}</style></head><body></body></html>',
+                            subtype='html')
+        box = fake_box(msg.as_bytes())
+        m = server.load_message(box, 'INBOX', 7)
+        self.assertIn('Das ist der eigentliche Inhalt', m['html'])
+
+    def test_outlook_style_mail_keeps_html(self):
+        msg = EmailMessage()
+        msg['From'] = 'a@b.de'
+        msg['Subject'] = 'Test'
+        msg.set_content('Nur-Text-Fassung')
+        msg.add_alternative('<html><head><meta name=Generator content="Microsoft Word 15">'
+                            '</head><body><p>HTML-Fassung mit <b>Formatierung</b></p></body></html>',
+                            subtype='html')
+        box = fake_box(msg.as_bytes())
+        m = server.load_message(box, 'INBOX', 7)
+        self.assertIn('HTML-Fassung mit <b>Formatierung</b>', m['html'])
+        self.assertNotIn('Nur-Text-Fassung', m['html'])
 
 
 class TestHtmlFromPlainOnly(unittest.TestCase):
