@@ -158,6 +158,17 @@ function tone(f0,f1,dur,type,vol,when){ if(muted) return;
     o.connect(g); g.connect(a.destination); o.start(t); o.stop(t+dur+0.02);
   }catch(e){} }
 let walkAlt=false;
+function crash(dur,vol,when){ // Rausch-Krachen fuer Aufprall
+  if(muted) return;
+  try{
+    const a=ac(), len=(a.sampleRate*dur)|0,
+          buf=a.createBuffer(1,len,a.sampleRate), d=buf.getChannelData(0);
+    for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*(1-i/len);
+    const s=a.createBufferSource(); s.buffer=buf;
+    const g=a.createGain(); g.gain.setValueAtTime(vol,a.currentTime+(when||0));
+    s.connect(g); g.connect(a.destination); s.start(a.currentTime+(when||0));
+  }catch(e){}
+}
 const sfx={
   // Warbelnder Laufton wie im Original: pro Schritt ein schnell absackender
   // Blip, mit alternierender Tonhoehe wirkt es wie "wa-wa-wa"
@@ -174,7 +185,12 @@ const sfx={
   // Bedrohliche chromatische Reihe (eigene Komposition, kein Nintendo-Original)
   intro(){ [98,104,110,117,123,131,139,147].forEach((f,i)=>tone(f,f,.15,'square',.07,i*.17));
     tone(156,156,.45,'square',.08,1.36); },
-  thud(){ tone(75,40,.22,'triangle',.14); tone(50,35,.3,'sine',.12,.02); },
+  thud(){ // LAUTER Wumms, wenn ein Traeger krummgetreten wird
+    tone(95,32,.4,'triangle',.4);
+    tone(55,28,.5,'sine',.45,.01);
+    tone(240,45,.12,'sawtooth',.2);
+    crash(.18,.35);
+  },
   roar(){ tone(90,55,.6,'sawtooth',.09); tone(70,45,.6,'sawtooth',.09,.05); },
 };
 
@@ -848,7 +864,13 @@ function render(){
   if(state==='title') drawTitle();
   else if(state==='over') drawOver();
   else if(state==='win') drawWin();
-  else drawLevel();
+  else{
+    // Bildschirm wackelt kurz, wenn ein Traeger krummgetreten wird
+    const shake = state==='intro' && intro && intro.phase==='bend' && intro.fr<12;
+    if(shake){ ctx.save(); ctx.translate((frame>>1)%2?2:-2,(frame>>2)%2?1:-1); }
+    drawLevel();
+    if(shake) ctx.restore();
+  }
 }
 
 // ---- Loop mit festem Zeittakt
