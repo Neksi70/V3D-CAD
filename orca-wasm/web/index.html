@@ -672,10 +672,16 @@ if (!crossOriginIsolated) {
   throw new Error('no COI');
 }
 
+// Mount-Präfix: über den 443-Funnel läuft die App unter /slicer/app/
+// (Standard-Port, kommt durch restriktive Firewalls). Absolute Pfade
+// (/profiles, /debug-upload) brauchen dann den Präfix; serve.py streift ihn ab.
+const ROOTP = location.pathname.startsWith('/slicer/') ? '/slicer' : '';
+
 // ---------- Login-Gate + Multi-User-Cloud (über die Bridge) ----------
-// :10000 (Funnel + Tailnet): Brücke läuft als Pfad /bridge auf demselben Origin.
-// Sonst wie gehabt — Tailnet-Port :10001, lokal HTTP :7781.
-const BRIDGE = location.port === '10000'
+// :10000 (Funnel + Tailnet) und /slicer auf :443: Brücke läuft als Pfad
+// /bridge auf demselben Origin. Sonst wie gehabt — Tailnet-Port :10001,
+// lokal HTTP :7781.
+const BRIDGE = (location.port === '10000' || (ROOTP && location.hostname.endsWith('.ts.net')))
   ? location.origin + '/bridge'
   : location.hostname.endsWith('.ts.net')
     ? `https://${location.hostname}:10001`
@@ -1442,7 +1448,7 @@ $('sendGo').onclick = () => {
 // ---------- Profil-Datenbank ----------
 const vendorCache = new Map();
 async function vendorIndex(v) {
-  if (!vendorCache.has(v)) vendorCache.set(v, await (await fetch(`/profiles/${v}.json`)).json());
+  if (!vendorCache.has(v)) vendorCache.set(v, await (await fetch(`${ROOTP}/profiles/${v}.json`)).json());
   return vendorCache.get(v);
 }
 async function profileChain(vendor, listKey, presetName) {
@@ -1452,7 +1458,7 @@ async function profileChain(vendor, listKey, presetName) {
   while (name) {
     const sub = byName.get(name);
     if (!sub) throw new Error(`Preset nicht gefunden: ${name}`);
-    const json = await (await fetch(`/profiles/${vendor}/${sub.split('/').map(encodeURIComponent).join('/')}`)).json();
+    const json = await (await fetch(`${ROOTP}/profiles/${vendor}/${sub.split('/').map(encodeURIComponent).join('/')}`)).json();
     chain.unshift(json); name = json.inherits;
   }
   return chain.map(j => JSON.stringify(j));
@@ -1609,7 +1615,7 @@ function setSupportEnabled(on) {
 $('support').onchange = () => setSupportEnabled($('support').checked);
 
 async function fillVendor() {
-  const vendors = await (await fetch('/profiles/index.json')).json();
+  const vendors = await (await fetch(ROOTP + '/profiles/index.json')).json();
   const saved = JSON.parse(localStorage.getItem('vs-presets') || '{}');
   const sel = saved.vendor && vendors.includes(saved.vendor) ? saved.vendor : 'BBL';
   $('vendor').innerHTML = vendors.map(v => `<option${v === sel ? ' selected' : ''}>${v}</option>`).join('');
@@ -1623,7 +1629,7 @@ async function loadMachines(v) {
   if (machineCache.has(v)) return machineCache.get(v);
   // Aggregierter Endpunkt: eine Antwort statt ~150 Einzel-Profilabrufe
   try {
-    const r = await fetch(`/profiles/${encodeURIComponent(v)}.machines.json`);
+    const r = await fetch(`${ROOTP}/profiles/${encodeURIComponent(v)}.machines.json`);
     if (r.ok) {
       const list = await r.json();
       if (Array.isArray(list) && list.length) {
@@ -1637,7 +1643,7 @@ async function loadMachines(v) {
   const idx = await vendorIndex(v);
   const list = (await Promise.all(idx.machine_list.map(async e => {
     try {
-      const j = await (await fetch(`/profiles/${v}/${e.sub_path.split('/').map(encodeURIComponent).join('/')}`)).json();
+      const j = await (await fetch(`${ROOTP}/profiles/${v}/${e.sub_path.split('/').map(encodeURIComponent).join('/')}`)).json();
       if (String(j.instantiation) === 'false') return null;
       return { name: e.name, model: j.printer_model || e.name,
                defProcess:  [].concat(j.default_print_profile || [])[0] || '',
@@ -1823,7 +1829,7 @@ function amsCodes() {
   return amsCodePromise ??= (async () => {
     const map = new Map();
     try {
-      const j = await (await fetch('/profiles/BBL/filament/filaments_color_codes.json')).json();
+      const j = await (await fetch(ROOTP + '/profiles/BBL/filament/filaments_color_codes.json')).json();
       for (const e of j.data || []) if (e.fila_id && e.fila_type) map.set(e.fila_id, e.fila_type);
     } catch { /* ohne Farbcode-Tabelle bleibt der Typ-Fallback */ }
     return map;
@@ -4353,7 +4359,7 @@ function crashRecovery(message) {
   status.innerHTML = `<span class="err">CRASH: ${message.slice(0, 160)}</span> — Kern neu gestartet. ` +
     `<button id="dbgUp" style="padding:.15rem .5rem;font-size:.8rem">Modell zur Fehleranalyse ablegen</button>`;
   $('dbgUp').onclick = async () => {
-    await fetch(`/debug-upload?name=${encodeURIComponent(modelName)}`, { method: 'POST', body: modelBytes });
+    await fetch(`${ROOTP}/debug-upload?name=${encodeURIComponent(modelName)}`, { method: 'POST', body: modelBytes });
     status.innerHTML = '<span class="ok">Debug-Kopie gespeichert — danke!</span>';
   };
 }

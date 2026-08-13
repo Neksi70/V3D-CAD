@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Mini-Server für den Orca-WASM-Browser-Test.
 COOP/COEP-Header sind Pflicht: ohne crossOriginIsolated kein SharedArrayBuffer,
-ohne SharedArrayBuffer keine WASM-Threads. Bind 0.0.0.0 (Tailnet-intern,
-Port 8778 ist NICHT im Funnel — nur für Tests vom Desktop aus).
+ohne SharedArrayBuffer keine WASM-Threads. Bind 0.0.0.0. Öffentlich erreichbar
+über den Funnel: https://…:10000/ (Root) und https://…/slicer/… (Port 443,
+Präfix-Strip unten — für Netze, die Nicht-Standard-Ports blocken).
 """
 import gzip as _gzip
 import hashlib
@@ -23,15 +24,34 @@ WEB = os.path.join(DIR, '..', 'web')
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    # Funnel-Mount auf Port 443: die App hängt zusätzlich unter
+    # https://…/slicer/app/ (Standard-Port — restriktive Firewalls wie in der
+    # VHS blocken :10000). tailscale serve reicht den Pfad-Präfix durch,
+    # deshalb hier abstreifen, damit alle Routen unverändert funktionieren.
+    PREFIX = '/slicer'
+
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=DIR, **kw)
 
+    def _strip_prefix(self):
+        """Entfernt den Mount-Präfix aus self.path; Rückgabe = Präfix oder ''."""
+        p = self.path
+        if p == self.PREFIX or p.startswith(self.PREFIX + '/') or p.startswith(self.PREFIX + '?'):
+            self.path = p[len(self.PREFIX):] or '/'
+            return self.PREFIX
+        return ''
+
+    def do_HEAD(self):
+        self._strip_prefix()
+        super().do_HEAD()
+
     def do_GET(self):
+        pfx = self._strip_prefix()
         # /app ohne Slash → relative Pfade (slicer-worker.js, params.json …)
         # zeigen sonst auf die Root und laufen ins 404
         if self.path.split('?')[0] == '/app':
             self.send_response(301)
-            self.send_header('Location', '/app/')
+            self.send_header('Location', pfx + '/app/')
             self.send_header('Content-Length', '0')
             self.end_headers()
             return
@@ -101,6 +121,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
+        self._strip_prefix()
         # Debug-Upload: Modell, das im WASM crasht, zur lokalen Analyse ablegen
         if self.path.split('?')[0] == '/debug-upload':
             from urllib.parse import urlparse, parse_qs, unquote

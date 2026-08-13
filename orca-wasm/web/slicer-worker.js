@@ -1,7 +1,10 @@
 // Slicer-Worker: hält den Orca-WASM-Kern und sliced abseits des UI-Threads.
 // Fortschritt kommt aus den stderr-Zeilen des Wrappers ("[orca NN%] Text")
 // — printErr-Hook fängt sie ab und reicht sie als progress-Messages weiter.
-import createOrcaSlicer from '/orca-slicer.js';
+// Relativ statt '/orca-slicer.js': unter dem /slicer-Mount (443-Funnel) läuft
+// der Worker als /slicer/app/slicer-worker.js — die Root gehört dort dem CAD.
+// serve.py routet orca-slicer.* per Basename ins WASM-Build, der Ordner ist egal.
+import createOrcaSlicer from './orca-slicer.js';
 
 const orca = await createOrcaSlicer({
   printErr: (line) => {
