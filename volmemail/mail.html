@@ -305,6 +305,7 @@ async function boot() {
   S.acc = S.accounts.find(a => a.id === last) || S.accounts[0];
   renderAccounts();
   await loadFolders();
+  starteAusAdresse();
   sendenEmpfangen(true);
   // Im Hintergrund alle drei Minuten nachsehen — ohne Meldung, außer es kommt
   // wirklich etwas Neues an.
@@ -781,6 +782,50 @@ function compose(pre) {
   document.getElementById('compose').classList.remove('hide');
   pushLayer('compose');
   document.getElementById(pre.to ? 'ctext' : 'cto').focus();
+}
+
+// Als Programm installiert meldet sich V3D Mail für mailto:-Links an. Windows
+// startet die App dann mit ?compose=mailto:… — dasselbe Feld dient der
+// Sprungliste ("Neue Nachricht") mit ?compose=1.
+function ausMailto(wert) {
+  if (!wert || wert === '1') return {};
+  // Kodiert übergeben (so macht es Windows) einmal auflösen. Steht das mailto
+  // dagegen im Klartext in der Adresse, sind seine &-Teile schon getrennt —
+  // dann nicht nochmal auflösen, sonst zerfallen kodierte Zeichen im Text.
+  let roh = wert;
+  if (!/^mailto:/i.test(wert)) {
+    try { roh = decodeURIComponent(wert); } catch (e) { /* roh lassen */ }
+  }
+  if (!/^mailto:/i.test(roh)) return { to: roh };
+  const [adressen, abfrage] = roh.slice(7).split('?');
+  const pre = { to: decodeURIComponent(adressen || '').replace(/,\s*/g, ', ') };
+  for (const paar of (abfrage || '').split('&')) {
+    if (!paar) continue;
+    const [k, ...rest] = paar.split('=');
+    let v = rest.join('=');
+    try { v = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (e) { /* roh lassen */ }
+    const name = k.toLowerCase();
+    if (name === 'subject') pre.subject = v;
+    else if (name === 'body') pre.text = v;
+    else if (name === 'cc') pre.cc = v;
+    else if (name === 'to') pre.to = pre.to ? pre.to + ', ' + v : v;
+  }
+  return pre;
+}
+
+function starteAusAdresse() {
+  // Alles hinter compose= nehmen, nicht nur den ersten Parameter: ein im
+  // Klartext übergebenes mailto bringt eigene &-Teile mit (&body=…), die
+  // URLSearchParams sonst abschneidet.
+  const treffer = location.search.match(/[?&]compose=([\s\S]*)$/);
+  const wert = treffer && treffer[1];
+  if (!wert) return;
+  // Adresse wieder säubern, damit ein Neuladen nicht erneut das Fenster öffnet.
+  history.replaceState(history.state, '', location.pathname);
+  const pre = ausMailto(wert);
+  const eigen = S.acc && S.acc.signature ? '\n\n' + S.acc.signature : '';
+  compose(Object.assign({ title: 'Neue Nachricht' }, pre,
+                        pre.text !== undefined ? { text: pre.text + eigen } : {}));
 }
 
 function fromChanged() {

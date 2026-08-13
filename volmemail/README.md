@@ -17,6 +17,8 @@ ganz normal IMAP und SMTP.
 | `test_server.py` | 41 Tests ohne echtes Postfach (IMAP wird gestubbt) |
 | `smoke_ui.py` | Browser-Durchlauf am Rechner: Anmeldung, Postfächer, Lesen, Bilder |
 | `smoke_handy.py` | Browser-Durchlauf im Handy-Format: Zurück-Knopf und Zurück-Geste |
+| `smoke_windows.py` | Installierbarkeit als Windows-App und mailto-Anbindung |
+| `werkzeug/icons_bauen.py` | erzeugt die PNG-Symbole für das Manifest |
 
 Zugangsdaten liegen **nicht** hier, sondern in `~/.config/v3dmail/config.json`
 (Modus 0600). Dort steht auch der Anmeldeschlüssel (`adminKey`).
@@ -44,6 +46,26 @@ eigener DNS-Client in `server.py` — die Standardbibliothek kann nur A/AAAA.
 „Prüfen & speichern" meldet sich testweise an, bevor gespeichert wird.
 
 Tastatur: `n` neue Nachricht, `r` antworten, `j`/`k` blättern, `Entf` löschen, `Esc` schließen.
+
+## Unter Windows (und am Rechner allgemein)
+
+Adresse in Edge oder Chrome öffnen → **Als App installieren**. Danach eigenes
+Fenster ohne Browserleiste, Symbol in Taskleiste und Startmenü, Rechtsklick auf
+das Symbol bietet **Neue Nachricht**.
+
+Die App meldet sich dabei als Programm für **`mailto:`-Links** an (Manifest-Eintrag
+`protocol_handlers`). Einmal in Windows unter *Standard-Apps → E-Mail* bestätigen,
+dann öffnet ein Mailto-Link aus Word, dem Browser oder der Buchhaltung ein
+vorausgefülltes Fenster in V3D Mail statt Outlook. Empfänger, Kopie, Betreff und
+Text werden übernommen.
+
+Damit Windows die Installation überhaupt anbietet, braucht das Manifest ein
+PNG-Symbol ab 192 px — ein SVG allein genügt nicht. Die Symbole liegen als
+`icon-192.png`, `icon-512.png` und `icon-512-maskable.png` bei und werden von
+`werkzeug/icons_bauen.py` erzeugt.
+
+`smoke_windows.py` prüft Manifest, Symbole und die mailto-Auswertung in beiden
+Schreibweisen (kodiert wie von Windows übergeben und im Klartext).
 
 ## Auf dem Handy
 
@@ -128,7 +150,9 @@ das die Mail gerichtet war.
 systemctl --user restart volmemail.service     # nach Code-Änderung
 journalctl --user -u volmemail -f              # Protokoll
 python3 test_server.py                         # Tests
-python3 smoke_ui.py                            # Browser-Durchlauf
+python3 smoke_ui.py                            # Browser-Durchlauf am Rechner
+python3 smoke_handy.py                         # Handy-Ansicht
+python3 smoke_windows.py                       # Installation als Windows-App
 tailscale funnel --set-path=/mail off          # öffentlichen Zugang abschalten
 ```
 
