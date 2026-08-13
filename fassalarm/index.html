@@ -86,6 +86,7 @@ let score=0, high=+(localStorage.getItem('fassalarm_high')||0);
 let level=1, lives=3, bonus=5000, extraGiven=false;
 let player, barrels=[], hammers=[], popups=[], apeT=0, apeAnim=0, muted=false, paused=false;
 let flameT=0; // Stichflamme am Oelfass, wenn ein Fass hineinrollt
+let princessPlaced=true; // false nur waehrend des Intros, bis Kong sie oben absetzt
 let fires=[], barrelCount=0; // Feuerbaelle aus dem Oelfass, Fass-Zaehler (1. Fass = blau)
 
 const keys={l:0,r:0,u:0,d:0,j:0};
@@ -100,50 +101,54 @@ function resetRound(){
 }
 function startGame(){
   score=0; level=1; lives=3; extraGiven=false; resetRound();
-  // Intro wie im Original: Traeger sind noch gerade, der Gorilla hopst sie krumm
+  // Intro wie im Original: Kong traegt die Prinzessin die Leiter hoch,
+  // setzt sie oben ab und stampft die (noch geraden) Traeger krumm
   for(const i of [0,1,2,3,4,6]) GIRDERS[i].bend=0;
-  intro={t:0, hop:-1, phase:'wait', fr:0, x:70, y:492, x0:0, y0:0};
+  princessPlaced=false;
+  intro={t:0, fr:0, phase:'wait', x:210, y:492, px:176, py:470, stomp:0};
   state='intro'; stateT=0; sfx.intro();
 }
 function finishIntro(){ for(const g of GIRDERS) if(g.bend!==undefined) g.bend=1;
-  state='play'; stateT=0; }
-// Sprungziele des Intros: von Etage zu Etage, zuletzt auf die Affen-Plattform
-const INTRO_HOPS=[{g:1,x:130},{g:2,x:250},{g:3,x:130},{g:4,x:250},{g:6,x:250},{g:5,x:96}];
+  princessPlaced=true; state='play'; stateT=0; }
 let intro=null;
-function beginHop(){ const it=intro; it.hop++; it.phase='jump'; it.fr=0; it.x0=it.x; it.y0=it.y; }
+// Reihenfolge, in der die Traeger beim Stampfen krumm werden (oben -> unten)
+const STOMP_ORDER=[6,4,3,2,1];
 function stepIntro(){
-  const it=intro; it.t++;
-  if(it.phase==='wait'){ if(it.t>100) beginHop(); return; }
-  if(it.phase==='jump'){
-    it.fr++;
-    const T=30, k=it.fr/T, hop=INTRO_HOPS[it.hop],
-          tx=hop.x, ty=gY(GIRDERS[hop.g],tx); // mit aktuellem bend => noch flach
-    it.x=it.x0+(tx-it.x0)*k;
-    it.y=it.y0+(ty-it.y0)*k - Math.sin(Math.PI*Math.min(1,k))*74;
-    if(it.fr>=T){
-      it.x=tx; it.y=ty; sfx.thud(); it.fr=0;
-      it.phase = (GIRDERS[hop.g].bend!==undefined && GIRDERS[hop.g].bend<1) ? 'bend' : 'pause';
-    }
-    return;
+  const it=intro; it.t++; it.fr++;
+  switch(it.phase){
+    case 'wait': if(it.fr>40){ it.phase='climb'; it.fr=0; } break;
+    case 'climb': // mit der Prinzessin unterm Arm die lange Leiter hoch
+      it.y=Math.max(170, 492-it.fr*2);
+      it.px=it.x-34; it.py=it.y-22;
+      if(it.y<=170){ it.phase='place'; it.fr=0; }
+      break;
+    case 'place': { // Prinzessin hinauf aufs Podest setzen
+      const k=Math.min(1,it.fr/50);
+      it.px=210+(224-210)*k;
+      it.py=(it.y-84)+(106-(it.y-84))*k - Math.sin(Math.PI*k)*26;
+      if(k>=1){ princessPlaced=true; it.phase='walk'; it.fr=0; }
+      break; }
+    case 'walk': // zu seinem Platz stapfen
+      it.x=Math.max(96, 210-it.fr*2.2);
+      if(it.x<=96){ it.phase='hopup'; it.fr=0; }
+      break;
+    case 'hopup': { // Stampf-Sprung auf der Stelle
+      const T=22, k=Math.min(1,it.fr/T);
+      it.y=170-Math.sin(Math.PI*k)*46;
+      if(it.fr>=T){ it.y=170; sfx.thud(); it.phase='bend'; it.fr=0; }
+      break; }
+    case 'bend': { // ein Traeger nach dem anderen biegt sich durch
+      const gi=STOMP_ORDER[it.stomp], g=GIRDERS[gi];
+      g.bend=Math.min(1,g.bend+1/22);
+      if(gi===1) GIRDERS[0].bend=g.bend; // Boden-Rampe kippt mit dem letzten
+      if(g.bend>=1){
+        it.stomp++; it.fr=0;
+        if(it.stomp>=STOMP_ORDER.length){ it.phase='roar'; sfx.roar(); }
+        else it.phase='hopup';
+      }
+      break; }
+    case 'roar': if(it.fr>=60) finishIntro(); break;
   }
-  if(it.phase==='bend'){ // der Traeger biegt sich unter ihm durch
-    it.fr++;
-    const hop=INTRO_HOPS[it.hop], g=GIRDERS[hop.g];
-    g.bend=Math.min(1,g.bend+1/22);
-    if(it.hop===0) GIRDERS[0].bend=g.bend; // Boden-Rampe kippt beim ersten Wumms mit
-    it.y=gY(g,it.x);
-    if(g.bend>=1){ it.phase='pause'; it.fr=0; }
-    return;
-  }
-  if(it.phase==='pause'){
-    it.fr++;
-    if(it.fr>=10){
-      if(it.hop>=INTRO_HOPS.length-1){ it.phase='roar'; it.fr=0; sfx.roar(); }
-      else beginHop();
-    }
-    return;
-  }
-  if(it.phase==='roar'){ it.fr++; if(it.fr>=60) finishIntro(); }
 }
 
 // ---- Sound (WebAudio, winzige Synth-Bleeps)
@@ -542,6 +547,37 @@ const SPR={
     "...rrr..rrr...",
     "..NNNN..NNNN..",
   ],2),
+  // Prinzessin (10x13): braune Haare, rosa Kleid; zwei Posen (winkend)
+  princess:mkspr([
+    "...NNNN...",
+    "..NNNNNN..",
+    "..NSSSSN..",
+    "..SKSSKS..",
+    "..SSSSSS..",
+    "...SSSS...",
+    "..pppppp..",
+    ".SppppppS.",
+    ".SppppppS.",
+    "..pppppp..",
+    ".pppppppp.",
+    "pppppppppp",
+    "..NN..NN..",
+  ],2),
+  princessWave:mkspr([
+    "...NNNN...",
+    "..NNNNNN.S",
+    "..NSSSSN.S",
+    "..SKSSKSS.",
+    "..SSSSSS..",
+    "...SSSS...",
+    "..pppppp..",
+    ".Spppppp..",
+    ".Spppppp..",
+    "..pppppp..",
+    ".pppppppp.",
+    "pppppppppp",
+    "..NN..NN..",
+  ],2),
   // Gorilla "Kranko" in 40x32 (feineres Raster => erkennbarer Affe):
   // Haarkamm, Ohren, Brauenwulst, Schnauze mit Nuestern/Zaehnen,
   // massige runde Schultern, haengende Arme mit Knoecheln, kurze Beine
@@ -721,24 +757,18 @@ function drawOil(){ // Oelfass unten links, schluckt die Faesser
   ctx.fillStyle=PAL.Y; ctx.fillRect(x-4+(f?-2:2),y-30,8,6);
 }
 function drawGoal(){
-  const x=224,y=106; // der entfuehrte 3D-Drucker wartet auf Rettung
-  ctx.fillStyle=PAL.G;
-  ctx.fillRect(x-16,y-30,5,30); ctx.fillRect(x+11,y-30,5,30); // Tuerme
-  ctx.fillRect(x-16,y-30,32,5);                               // Traverse
-  ctx.fillStyle=PAL.g; ctx.fillRect(x-13,y-6,26,4);           // Druckbett
-  ctx.fillStyle=PAL.O; ctx.fillRect(x-6,y-14,12,8);           // Druckteil
-  const nx=x-8+((frame>>3)%5)*4;                              // Duese pendelt
-  ctx.fillStyle=PAL.G; ctx.fillRect(nx-3,y-25,6,7);
-  ctx.fillStyle=PAL.Y; ctx.fillRect(nx-1,y-18,2,4);
-  ctx.fillStyle=PAL.g; ctx.fillRect(x-2,y-34,4,4);            // Display-Halter
-  ctx.fillStyle=PAL.C; ctx.fillRect(x-10,y-44,20,10);         // Display mit Augen
-  ctx.fillStyle='#000';
-  if((frame>>4)%4===3){ ctx.fillRect(x-6,y-40,4,1); ctx.fillRect(x+2,y-40,4,1); }
-  else { ctx.fillRect(x-6,y-42,4,4); ctx.fillRect(x+2,y-42,4,4); }
-  if((frame>>5)%2){ // blinkender Hilferuf wie im Original
+  if(!princessPlaced) return; // im Intro traegt Kong sie noch
+  const x=224,y=106; // die entfuehrte Prinzessin wartet auf dem Podest
+  blit((frame>>4)%2 ? SPR.princessWave : SPR.princess, x, y, false);
+  if(state!=='intro' && (frame>>5)%2){ // blinkender Hilferuf wie im Original
     ctx.fillStyle='#fff'; ctx.font='bold 12px monospace'; ctx.textAlign='center';
-    ctx.fillText('HILFE!',x,y-52);
+    ctx.fillText('HILFE!',x,y-40);
   }
+}
+function drawIntroLadder(){ // lange Leiter, die Kong im Intro hochklettert
+  ctx.fillStyle='#3ed6ff';
+  ctx.fillRect(202,170,2,322); ctx.fillRect(216,170,2,322);
+  for(let y=173;y<488;y+=7) ctx.fillRect(202,y,16,2);
 }
 function drawPlayer(){
   const p=player, x=p.x, y=p.y, d=p.dir, flip=d<0;
@@ -804,8 +834,13 @@ function drawLevel(){
   drawOil(); drawStack();
   for(const hm of hammers) if(!hm.taken) drawHammerPickup(hm);
   drawGoal();
-  if(state==='intro'){ // Gorilla hopst die Traeger krumm
-    blit(intro.phase==='roar'?SPR.kongThrow:SPR.kong, intro.x, Math.round(intro.y), false);
+  if(state==='intro'){ // Kong traegt die Prinzessin hoch und stampft alles krumm
+    drawIntroLadder();
+    const roar = intro.phase==='roar'||intro.phase==='place';
+    blit(roar?SPR.kongThrow:SPR.kong, intro.x, Math.round(intro.y),
+         intro.phase==='climb' && (intro.fr>>3)%2===1);
+    if(!princessPlaced) // Prinzessin unterm Arm bzw. beim Hochsetzen
+      blit(SPR.princess, intro.px, Math.round(intro.py), false);
   } else {
     drawApe();
     for(const b of barrels) drawBarrel(b);
@@ -831,7 +866,7 @@ function drawTitle(){
   // Pranken des Wurf-Sprites (oberste Reihe) beruehren das Fass direkt
   ctx.drawImage(SPR.kongThrow,W/2-80,142,160,128);
   ctx.fillStyle='#fff'; ctx.font='13px monospace';
-  ctx.fillText('Rette den 3D-Drucker vor dem Gorilla!',W/2,296);
+  ctx.fillText('Rette die Prinzessin vor dem Gorilla!',W/2,296);
   ctx.fillStyle=PAL.C;
   ctx.fillText('←→ laufen   ↑↓ Leiter   LEER springen',W/2,330);
   ctx.fillText('Hammer einsammeln = Faesser zertruemmern',W/2,354);
