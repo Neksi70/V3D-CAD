@@ -91,7 +91,8 @@ wartet auf einen Ladevorgang, den es bei Sprüngen im selben Dokument nicht gibt
 
 ## Senden/Empfangen
 
-Der Knopf in der Seitenleiste prüft **alle Postfächer gleichzeitig** (Thread-Pool,
+Zwei Wege, dieselbe Wirkung: der orange umrandete Knopf in der Seitenleiste
+unter „Neue Nachricht" und das **⟳** oben neben dem Suchfeld. Beides prüft **alle Postfächer gleichzeitig** (Thread-Pool,
 drei Konten in ~0,2 s) und zeigt die Zahl der Ungelesenen als Marke am jeweiligen
 Konto; ein nicht erreichbares Postfach bekommt ein ⚠ mit dem Fehler als Tooltip.
 Die offene Nachrichtenliste wird gleich mitgezogen.
