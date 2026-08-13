@@ -75,6 +75,7 @@ let state='title', frame=0, stateT=0;
 let score=0, high=+(localStorage.getItem('fassalarm_high')||0);
 let level=1, lives=3, bonus=5000, extraGiven=false;
 let player, barrels=[], hammers=[], popups=[], apeT=0, apeAnim=0, muted=false, paused=false;
+let flameT=0; // Stichflamme am Oelfass, wenn ein Fass hineinrollt
 
 const keys={l:0,r:0,u:0,d:0,j:0};
 let jumpLatch=false; // Leertaste muss losgelassen werden
@@ -183,7 +184,7 @@ function stepBarrel(b){
         const d=downhill(GIRDERS[n]); if(d) b.dir=d; }
     }
   }
-  if(b.x<-24 && b.g===0) b.dead=true; // rollt links aus dem Bild
+  if(b.g===0 && b.x<38 && b.mode==='roll'){ b.dead=true; flameT=26; } // landet im Oelfass
 }
 
 // Zufall austauschbar (Headless-Tests koennen deterministisch seeden)
@@ -296,6 +297,7 @@ function step(){
   stateT++;
   if(stateT%120===0 && bonus>0) bonus=Math.max(0,bonus-100);
   if(stateT%34===0) sfx.beat();
+  if(flameT>0) flameT--;
 
   // Affe wirft Faesser
   apeT--; apeAnim++;
@@ -327,6 +329,129 @@ function step(){
 // ================= RENDERING =================
 ctx.imageSmoothingEnabled=false;
 
+// ---- Pixel-Sprites (eigene Zeichnungen im Arcade-Look)
+const PAL={O:'#ff8c1a',o:'#c86400',S:'#ffc48c',B:'#2a5cff',D:'#16307e',K:'#000',
+  W:'#fff',R:'#e8404c',Y:'#ffd23e',N:'#7a4510',T:'#c8742c',t:'#e8a050',
+  F:'#8a5230',f:'#5e3a1a',P:'#eec39a',C:'#3ed6ff',G:'#c8ccd4',g:'#565e6a'};
+function mkspr(rows,sc){
+  const w=Math.max(...rows.map(r=>r.length)), h=rows.length,
+        c=document.createElement('canvas');
+  c.width=w*sc; c.height=h*sc;
+  const x=c.getContext('2d');
+  for(let j=0;j<h;j++) for(let i=0;i<rows[j].length;i++){
+    const ch=rows[j][i];
+    if(ch!=='.'){ x.fillStyle=PAL[ch]||'#f0f'; x.fillRect(i*sc,j*sc,sc,sc); } }
+  return c;
+}
+function blit(spr,cx,by,flip){ // cx = Fuss-Mitte, by = Unterkante
+  ctx.save(); ctx.translate(cx,by); if(flip) ctx.scale(-1,1);
+  ctx.drawImage(spr,-spr.width>>1,-spr.height); ctx.restore();
+}
+const SPR={
+  // Held "Monti" (12 breit, Blick nach rechts)
+  stand:mkspr([
+    "...OOOOOO...",
+    "..OOOOOOOOO.",
+    "..SSSSSKS...",
+    "..SSSSSSS...",
+    "...BBBBB....",
+    "..BBBBBBB...",
+    ".SBBBBBBBS..",
+    ".SBBBBBBBS..",
+    "..BBBBBBB...",
+    "..DDDDDDD...",
+    "..DDD.DDD...",
+    "..DDD.DDD...",
+    "..DDD.DDD...",
+    ".NNN...NNN..",
+  ],2),
+  walk:mkspr([
+    "...OOOOOO...",
+    "..OOOOOOOOO.",
+    "..SSSSSKS...",
+    "..SSSSSSS...",
+    "...BBBBB....",
+    "..BBBBBBBS..",
+    ".SBBBBBBB...",
+    ".S.BBBBBB...",
+    "..BBBBBBB...",
+    "..DDDDDDD...",
+    ".DDD..DDD...",
+    ".DDD..DDD...",
+    "NNN....DDD..",
+    ".......NNN..",
+  ],2),
+  jump:mkspr([
+    "...OOOOOO...",
+    "..OOOOOOOOO.",
+    ".SSSSSSKS...",
+    ".S.SSSSSS...",
+    ".S..BBBB....",
+    ".SBBBBBBBS..",
+    "..BBBBBBBS..",
+    "..BBBBBB.S..",
+    "..DDDDDDD...",
+    ".DDD..DDD...",
+    ".NDD...DDN..",
+    ".NNN...NNN..",
+  ],2),
+  climb:mkspr([
+    ".S..........",
+    ".S.OOOOOO...",
+    ".S.OOOOOOO..",
+    ".SSSSSSSS...",
+    "...BBBBB....",
+    "..BBBBBBB...",
+    "..BBBBBBBS..",
+    "..BBBBBB.S..",
+    "..DDDDDD....",
+    "..DDD.DDD...",
+    "..DDD.DDD...",
+    ".NNN...NNN..",
+  ],2),
+  // Gorilla "Kranko" (20 breit, Skalierung 4 => 80px)
+  kong:mkspr([
+    "....FFFFFFFFFF......",
+    "...FFFFFFFFFFFF.....",
+    "...FKKFFFFFFKKF.....",
+    "...FWKFPPPPFWKF.....",
+    "...PPPPPPPPPPPP.....",
+    "...PKPPPPPPPPKP.....",
+    "...PPKKKKKKKKPP.....",
+    "....PPPPPPPPPP......",
+    "..FFFFFFFFFFFFFF....",
+    ".FFFFFFFFFFFFFFFF...",
+    "FFFFPPPPPPPPPPFFFF..",
+    "FFFFPPPPPPPPPPFFFF..",
+    "FFFFPPPPPPPPPPFFFF..",
+    "FFF.FFFFFFFFFF.FFF..",
+    "FFF.FFFFFFFFFF.FFF..",
+    "PPP.FFFFFFFFFF.PPP..",
+    "...ffff....ffff.....",
+    "..fffff....fffff....",
+  ],4),
+  kongThrow:mkspr([
+    "PPP..FFFFFFFF..PPP..",
+    "FFF.FFFFFFFFFF.FFF..",
+    "FFF.FKKFFFFKKF.FFF..",
+    "FFF.FWKFPPFWKF.FFF..",
+    "FFF.PPPPPPPPPP.FFF..",
+    "FFF.PKPPPPPPKP.FFF..",
+    "FFF.PPKKKKKKPP.FFF..",
+    "FFF..PPPPPPPP..FFF..",
+    ".FFFFFFFFFFFFFFFF...",
+    ".FFFFFFFFFFFFFFFF...",
+    "FFFFPPPPPPPPPPFFFF..",
+    "FFFFPPPPPPPPPPFFFF..",
+    "..FFPPPPPPPPPPFF....",
+    "..FFFFFFFFFFFFFF....",
+    "...FFFFFFFFFFFF.....",
+    "...FFFFFFFFFFFF.....",
+    "...ffff....ffff.....",
+    "..fffff....fffff....",
+  ],4),
+};
+
 function drawGirder(g){
   const len=Math.hypot(g.x2-g.x1,g.y2-g.y1), ang=Math.atan2(g.y2-g.y1,g.x2-g.x1);
   ctx.save(); ctx.translate(g.x1,g.y1); ctx.rotate(ang);
@@ -351,118 +476,132 @@ function drawLadder(l){
 function drawBarrel(b){
   const x=b.x,y=b.y; // y = Unterkante
   if(b.mode==='ladder'){ // Frontansicht beim Leiter-Abstieg
-    ctx.fillStyle='#b06820'; ctx.fillRect(x-7,y-12,14,12);
-    ctx.fillStyle='#e8a050'; ctx.fillRect(x-4,y-9,8,6);
-    ctx.fillStyle='#6a3a10'; ctx.fillRect(x-2,y-7,4,2);
+    ctx.fillStyle=PAL.N; ctx.fillRect(x-7,y-13,14,13);
+    ctx.fillStyle=PAL.T; ctx.fillRect(x-5,y-11,10,9);
+    ctx.fillStyle=PAL.t; ctx.fillRect(x-3,y-9,6,5);
+    ctx.fillStyle=PAL.N; ctx.fillRect(x-1,y-8,2,3);
     return;
   }
-  ctx.fillStyle='#b06820'; ctx.fillRect(x-8,y-11,16,11);
-  ctx.fillStyle='#7a4510'; ctx.fillRect(x-8,y-11,16,2); ctx.fillRect(x-8,y-2,16,2);
-  ctx.fillStyle='#e8a050';
-  const ph=(b.anim>>2)%4; // "Rotation": wandernde Daube
-  ctx.fillRect(x-7+ph*4,y-9,2,7);
+  ctx.fillStyle=PAL.T; ctx.fillRect(x-8,y-12,16,12);
+  ctx.fillStyle=PAL.N;
+  ctx.fillRect(x-8,y-12,16,2); ctx.fillRect(x-8,y-2,16,2);   // Boeden
+  ctx.fillRect(x-6,y-12,2,12); ctx.fillRect(x+4,y-12,2,12);  // Reifen
+  ctx.fillStyle=PAL.t;
+  const ph=(b.anim>>2)%3; // "Rotation": wandernde helle Daube
+  ctx.fillRect(x-3+ph*2,y-10,2,8);
 }
 function drawHammerPickup(hm){
-  ctx.fillStyle='#8a5a2a'; ctx.fillRect(hm.x-2,hm.y-6,4,16);
-  ctx.fillStyle='#ffd23e'; ctx.fillRect(hm.x-9,hm.y-8,18,9);
+  ctx.fillStyle=PAL.N; ctx.fillRect(hm.x-2,hm.y-4,4,16);
+  ctx.fillStyle=PAL.Y; ctx.fillRect(hm.x-10,hm.y-10,20,10);
+  ctx.fillStyle=PAL.O; ctx.fillRect(hm.x-10,hm.y-10,20,3);
 }
 function drawApe(){
   const x=96,y=170; // Fusslinie auf Traeger 5
-  const throwing=apeT<36, beat=(apeAnim>>4)%2;
-  ctx.fillStyle='#7a4a22';
-  ctx.fillRect(x-32,y-48,64,48);            // Rumpf
-  ctx.fillRect(x-24,y-58,48,12);            // Schultern
-  ctx.fillRect(x-18,y-74,36,20);            // Kopf
-  ctx.fillStyle='#5a3212';
-  ctx.fillRect(x-32,y-6,20,6); ctx.fillRect(x+12,y-6,20,6); // Fuesse
-  ctx.fillStyle='#e8b888';
-  ctx.fillRect(x-13,y-68,26,11);            // Gesicht
-  ctx.fillRect(x-18,y-40,36,18);            // Brust
-  ctx.fillStyle='#000';
-  ctx.fillRect(x-9,y-66,4,4); ctx.fillRect(x+5,y-66,4,4);   // Augen
-  ctx.fillRect(x-6,y-60,12,2);              // Mund
-  ctx.fillStyle='#7a4a22';
-  if(throwing){ // Arme hoch, Fass ueber dem Kopf
-    ctx.fillRect(x-44,y-84,12,40); ctx.fillRect(x+32,y-84,12,40);
-    ctx.fillStyle='#b06820'; ctx.fillRect(x-10,y-96,20,14);
-    ctx.fillStyle='#7a4510'; ctx.fillRect(x-10,y-96,20,2); ctx.fillRect(x-10,y-84,20,2);
-  } else if(beat){ // Brust trommeln
-    ctx.fillRect(x-30,y-38,12,14); ctx.fillRect(x+18,y-38,12,14);
+  if(apeT<36){
+    blit(SPR.kongThrow,x,y,false);
+    // Fass ueber dem Kopf
+    ctx.fillStyle=PAL.T; ctx.fillRect(x-12,y-88,24,14);
+    ctx.fillStyle=PAL.N; ctx.fillRect(x-12,y-88,24,3); ctx.fillRect(x-12,y-77,24,3);
+    ctx.fillStyle=PAL.t; ctx.fillRect(x-4,y-85,3,8);
   } else {
-    ctx.fillRect(x-44,y-44,12,40); ctx.fillRect(x+32,y-44,12,40);
+    blit(SPR.kong,x,y,false);
+    // Brusttrommeln: Tatze wandert
+    ctx.fillStyle=PAL.P;
+    if((apeAnim>>4)%2) ctx.fillRect(x-22,y-32,12,10);
+    else ctx.fillRect(x+10,y-32,12,10);
   }
+}
+function drawStack(){ // Fass-Vorrat neben dem Gorilla (Deko)
+  for(const [sx,sy] of [[16,170],[40,170],[16,148],[40,148]]){
+    ctx.fillStyle=PAL.T; ctx.fillRect(sx-10,sy-22,20,22);
+    ctx.fillStyle=PAL.N; ctx.fillRect(sx-10,sy-22,20,2); ctx.fillRect(sx-10,sy-2,20,2);
+    ctx.fillStyle=PAL.t; ctx.fillRect(sx-7,sy-17,3,12); ctx.fillRect(sx+4,sy-17,3,12);
+  }
+}
+function drawOil(){ // Oelfass unten links, schluckt die Faesser
+  const x=24, y=gY(GIRDERS[0],24);
+  ctx.fillStyle=PAL.D; ctx.fillRect(x-12,y-24,24,24);
+  ctx.fillStyle='#000'; ctx.fillRect(x-12,y-19,24,2); ctx.fillRect(x-12,y-7,24,2);
+  ctx.fillStyle='#fff'; ctx.font='bold 9px monospace'; ctx.textAlign='center';
+  ctx.fillText('ÖL',x,y-10);
+  const f=(frame>>2)%2;
+  if(flameT>0){ ctx.fillStyle=PAL.R; ctx.fillRect(x-10,y-42+(f?3:0),20,18); }
+  ctx.fillStyle=PAL.R; ctx.fillRect(x-6+(f?2:-2),y-32,12,8);
+  ctx.fillStyle=PAL.Y; ctx.fillRect(x-4+(f?-2:2),y-30,8,6);
 }
 function drawGoal(){
-  const x=224,y=106; // kleiner 3D-Drucker wartet auf Rettung
-  ctx.fillStyle='#9aa4b0';
-  ctx.fillRect(x-14,y-26,4,26); ctx.fillRect(x+10,y-26,4,26); // Tuerme
-  ctx.fillRect(x-14,y-26,28,4);                               // Traverse
-  ctx.fillStyle='#5a626e'; ctx.fillRect(x-12,y-4,24,4);       // Druckbett
-  ctx.fillStyle='#ff8c1a'; ctx.fillRect(x-5,y-12,10,8);       // Druckteil
-  ctx.fillStyle='#3ed6ff'; ctx.fillRect(x-10,y-22,6,4);       // Display
-  if((frame>>5)%2){ ctx.fillStyle='#fff'; ctx.font='10px monospace';
-    ctx.textAlign='center'; ctx.fillText('HILFE!',x,y-34); }
+  const x=224,y=106; // der entfuehrte 3D-Drucker wartet auf Rettung
+  ctx.fillStyle=PAL.G;
+  ctx.fillRect(x-16,y-30,5,30); ctx.fillRect(x+11,y-30,5,30); // Tuerme
+  ctx.fillRect(x-16,y-30,32,5);                               // Traverse
+  ctx.fillStyle=PAL.g; ctx.fillRect(x-13,y-6,26,4);           // Druckbett
+  ctx.fillStyle=PAL.O; ctx.fillRect(x-6,y-14,12,8);           // Druckteil
+  const nx=x-8+((frame>>3)%5)*4;                              // Duese pendelt
+  ctx.fillStyle=PAL.G; ctx.fillRect(nx-3,y-25,6,7);
+  ctx.fillStyle=PAL.Y; ctx.fillRect(nx-1,y-18,2,4);
+  ctx.fillStyle=PAL.g; ctx.fillRect(x-2,y-34,4,4);            // Display-Halter
+  ctx.fillStyle=PAL.C; ctx.fillRect(x-10,y-44,20,10);         // Display mit Augen
+  ctx.fillStyle='#000';
+  if((frame>>4)%4===3){ ctx.fillRect(x-6,y-40,4,1); ctx.fillRect(x+2,y-40,4,1); }
+  else { ctx.fillRect(x-6,y-42,4,4); ctx.fillRect(x+2,y-42,4,4); }
+  if((frame>>5)%2){ // Sprechblase
+    ctx.fillStyle='#fff'; ctx.fillRect(x-26,y-64,52,14);
+    ctx.beginPath(); ctx.moveTo(x-2,y-50); ctx.lineTo(x+6,y-50);
+    ctx.lineTo(x,y-45); ctx.closePath(); ctx.fill();
+    ctx.fillStyle='#000'; ctx.font='bold 10px monospace'; ctx.textAlign='center';
+    ctx.fillText('HILFE!',x,y-54);
+  }
 }
 function drawPlayer(){
-  const p=player, x=p.x, y=p.y, d=p.dir;
+  const p=player, x=p.x, y=p.y, d=p.dir, flip=d<0;
   ctx.save();
   if(state==='dying'){ // Sterbe-Drehung
-    ctx.translate(x,y-11); ctx.rotate(stateT*0.15); ctx.translate(-x,-(y-11));
+    ctx.translate(x,y-14); ctx.rotate(stateT*0.15); ctx.translate(-x,-(y-14));
   }
-  const run=(p.anim>>3)%2;
   if(p.mode==='climb'){
-    ctx.fillStyle='#1a3fa0'; ctx.fillRect(x-5,y-8,4,8); ctx.fillRect(x+1,y-8,4,8);
-    ctx.fillStyle='#2266ff'; ctx.fillRect(x-6,y-17,12,10);
-    ctx.fillStyle='#f2c088';
-    if(run){ ctx.fillRect(x-9,y-24,3,9); ctx.fillRect(x+6,y-19,3,9); }
-    else   { ctx.fillRect(x-9,y-19,3,9); ctx.fillRect(x+6,y-24,3,9); }
-    ctx.fillRect(x-5,y-24,10,7);               // Hinterkopf
-    ctx.fillStyle='#ff8c1a'; ctx.fillRect(x-6,y-27,12,5); // Helm
+    blit(SPR.climb,x,y,(p.anim>>3)%2===1); // Frames = gespiegelt
   } else {
-    ctx.fillStyle='#1a3fa0'; // Beine
-    if(p.mode==='ground'&&run){ ctx.fillRect(x-6,y-8,5,8); ctx.fillRect(x+2,y-6,5,6); }
-    else if(p.mode==='air'){ ctx.fillRect(x-6,y-10,5,8); ctx.fillRect(x+2,y-8,5,6); }
-    else { ctx.fillRect(x-5,y-8,4,8); ctx.fillRect(x+1,y-8,4,8); }
-    ctx.fillStyle='#2266ff'; ctx.fillRect(x-6,y-17,12,10); // Rumpf
-    ctx.fillStyle='#f2c088';
-    ctx.fillRect(x-5,y-24,10,7);               // Kopf
-    ctx.fillStyle='#000'; ctx.fillRect(x+d*3-1,y-22,2,2);  // Auge
-    ctx.fillStyle='#ff8c1a'; ctx.fillRect(x-6,y-27,12,4);  // Helm
-    ctx.fillRect(x+d*4-2,y-25,4,2);            // Helm-Schirm
-    // Hammer
+    const running=(keys.l||keys.r)&&p.mode==='ground';
+    const spr = p.mode==='air' ? SPR.jump
+              : (running&&(p.anim>>3)%2 ? SPR.walk : SPR.stand);
+    blit(spr,x,y,flip);
     if(p.hammerT>0){
       const up=(Math.floor(p.hammerT/8)%2)===0;
-      ctx.fillStyle='#8a5a2a';
-      if(up){ ctx.fillRect(x-2,y-52,4,28); ctx.fillStyle='#ffd23e'; ctx.fillRect(x-9,y-58,18,10); }
-      else { ctx.fillRect(x+(d>0?4:-16),y-18,12,4); ctx.fillStyle='#ffd23e';
-             ctx.fillRect(x+(d>0?12:-28),y-24,16,16); }
-    } else {
-      ctx.fillStyle='#f2c088'; // Arme
-      ctx.fillRect(x-8,y-16,2,7); ctx.fillRect(x+6,y-16,2,7);
+      ctx.fillStyle=PAL.N;
+      if(up){ ctx.fillRect(x-2,y-54,4,28);
+        ctx.fillStyle=PAL.Y; ctx.fillRect(x-12,y-62,24,12);
+        ctx.fillStyle=PAL.O; ctx.fillRect(x-12,y-62,24,3); }
+      else { ctx.fillRect(x+(d>0?4:-24),y-20,20,4);
+        ctx.fillStyle=PAL.Y; ctx.fillRect(x+(d>0?18:-34),y-28,16,18);
+        ctx.fillStyle=PAL.O; ctx.fillRect(x+(d>0?18:-34),y-28,4,18); }
     }
   }
   ctx.restore();
 }
 function drawHud(){
-  ctx.textAlign='left'; ctx.font='bold 13px monospace';
-  ctx.fillStyle='#fff'; ctx.fillText('PUNKTE',8,16);
-  ctx.fillStyle='#ff8c1a'; ctx.fillText((''+score).padStart(6,'0'),8,30);
+  ctx.font='bold 13px monospace';
+  ctx.textAlign='left';
+  ctx.fillStyle=PAL.R; ctx.fillText('1UP',20,14);
+  ctx.fillStyle='#fff'; ctx.fillText((''+score).padStart(6,'0'),8,28);
   ctx.textAlign='center';
-  ctx.fillStyle='#fff'; ctx.fillText('REKORD',W/2,16);
-  ctx.fillStyle='#ff4d5e'; ctx.fillText((''+high).padStart(6,'0'),W/2,30);
+  ctx.fillStyle=PAL.R; ctx.fillText('REKORD',W/2,14);
+  ctx.fillStyle='#fff'; ctx.fillText((''+high).padStart(6,'0'),W/2,28);
+  ctx.strokeStyle=PAL.C; ctx.lineWidth=2; ctx.strokeRect(W-80,4,74,38); // Bonus-Kasten
+  ctx.fillStyle=PAL.C; ctx.font='bold 11px monospace';
+  ctx.fillText('BONUS',W-43,17);
+  ctx.fillStyle=PAL.Y; ctx.font='bold 13px monospace';
+  ctx.fillText(''+bonus,W-43,35);
   ctx.textAlign='right';
-  ctx.fillStyle='#3ed6ff'; ctx.fillText('BONUS '+bonus,W-8,16);
-  ctx.fillStyle='#fff'; ctx.fillText('RUNDE '+level,W-8,30);
-  for(let i=0;i<Math.min(lives,6);i++){ // Rest-Leben als Helme
-    ctx.fillStyle='#ff8c1a'; ctx.fillRect(8+i*16,38,12,5);
-    ctx.fillStyle='#f2c088'; ctx.fillRect(9+i*16,43,10,4);
-  }
+  ctx.fillStyle=PAL.C; ctx.fillText('R='+level,W-8,58);
+  for(let i=0;i<Math.min(lives,6);i++)
+    ctx.drawImage(SPR.stand,8+i*15,32,12,14); // Rest-Leben als Mini-Monti
   if(paused){ ctx.fillStyle='#fff'; ctx.textAlign='center';
     ctx.font='bold 22px monospace'; ctx.fillText('PAUSE',W/2,H/2); }
 }
 function drawLevel(){
   for(const g of GIRDERS) drawGirder(g);
   for(const l of LADDERS) drawLadder(l);
+  drawOil(); drawStack();
   for(const hm of hammers) if(!hm.taken) drawHammerPickup(hm);
   drawGoal(); drawApe();
   for(const b of barrels) drawBarrel(b);
@@ -474,20 +613,28 @@ function drawLevel(){
 }
 function drawTitle(){
   ctx.textAlign='center';
-  ctx.fillStyle='#ff8c1a'; ctx.font='bold 44px monospace';
-  ctx.fillText('FASS-ALARM',W/2,120);
-  ctx.fillStyle='#e8404c'; ctx.font='bold 14px monospace';
-  ctx.fillText('EIN VOLME3D RETRO-SPIEL',W/2,150);
+  ctx.fillStyle=PAL.O; ctx.font='bold 44px monospace';
+  ctx.fillText('FASS-ALARM',W/2,70);
+  ctx.fillStyle=PAL.R; ctx.font='bold 13px monospace';
+  ctx.fillText('EIN VOLME3D RETRO-SPIEL',W/2,94);
+  // Gorilla stemmt ein grosses Fass ueber den Kopf (Fass zuerst, Pranken druecken drauf)
+  ctx.fillStyle=PAL.T; ctx.fillRect(W/2-56,106,112,30);
+  ctx.fillStyle=PAL.N; ctx.fillRect(W/2-56,106,112,4); ctx.fillRect(W/2-56,132,112,4);
+  ctx.fillRect(W/2-38,106,5,30); ctx.fillRect(W/2+33,106,5,30);
+  ctx.fillStyle=PAL.t; ctx.fillRect(W/2-8,112,6,18);
+  ctx.drawImage(SPR.kongThrow,W/2-70,142,140,126);
+  ctx.fillStyle=PAL.P; // Pranken greifen von unten ans Fass
+  ctx.fillRect(W/2-66,124,16,22); ctx.fillRect(W/2+50,124,16,22);
   ctx.fillStyle='#fff'; ctx.font='13px monospace';
-  ctx.fillText('Rette den 3D-Drucker vor dem Gorilla!',W/2,220);
-  ctx.fillStyle='#3ed6ff';
-  ctx.fillText('←→ laufen   ↑↓ Leiter   LEER springen',W/2,270);
-  ctx.fillText('Hammer einsammeln = Faesser zertruemmern',W/2,294);
-  ctx.fillText('M Ton an/aus   P Pause',W/2,318);
-  if((stateT>>5)%2){ ctx.fillStyle='#ffd23e'; ctx.font='bold 18px monospace';
-    ctx.fillText(document.body.classList.contains('touch')?'TIPPEN ZUM START':'ENTER DRUECKEN',W/2,390); }
+  ctx.fillText('Rette den 3D-Drucker vor dem Gorilla!',W/2,296);
+  ctx.fillStyle=PAL.C;
+  ctx.fillText('←→ laufen   ↑↓ Leiter   LEER springen',W/2,330);
+  ctx.fillText('Hammer einsammeln = Faesser zertruemmern',W/2,354);
+  ctx.fillText('M Ton an/aus   P Pause',W/2,378);
+  if((stateT>>5)%2){ ctx.fillStyle=PAL.Y; ctx.font='bold 18px monospace';
+    ctx.fillText(document.body.classList.contains('touch')?'TIPPEN ZUM START':'ENTER DRUECKEN',W/2,430); }
   ctx.fillStyle='#888'; ctx.font='11px monospace';
-  ctx.fillText('REKORD '+(''+high).padStart(6,'0'),W/2,440);
+  ctx.fillText('REKORD '+(''+high).padStart(6,'0'),W/2,470);
 }
 function drawWin(){
   drawLevel();
