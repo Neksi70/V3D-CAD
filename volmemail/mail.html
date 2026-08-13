@@ -1137,6 +1137,10 @@ function signaturDialog(id) {
       <button class="btn" onclick="sigSpeichern('${id || ''}')">Übernehmen</button>
     </div>`);
   sigVorschau();
+  // Beim ersten Einrichten die Firmendaten von selbst eintragen. Sie erst auf
+  // Knopfdruck zu holen führte dazu, dass eine Signatur nur aus der Mailadresse
+  // bestand — das ist keine.
+  if (!(a.signatureData && a.signatureData.name)) sigAusRechnung(true);
 }
 
 function sigDaten() {
@@ -1149,16 +1153,16 @@ function sigVorschau() {
   document.getElementById('sig_vor').innerHTML =
     sigBauen(d, d.layout).html || '<span class="muted">noch nichts ausgefüllt</span>';
 }
-async function sigAusRechnung() {
+async function sigAusRechnung(still) {
   let f;
-  try { f = (await api('firma')).firma || {}; } catch (e) { return toast(e.message); }
-  if (!Object.keys(f).length) return toast('Keine Firmendaten gefunden');
+  try { f = (await api('firma')).firma || {}; } catch (e) { return still || toast(e.message); }
+  if (!Object.keys(f).length) return still || toast('Keine Firmendaten gefunden');
   const setze = (k, v) => { const el = document.getElementById('sig_' + k); if (el && v && !el.value) el.value = v; };
   setze('name', f.inhaber); setze('firma', f.name); setze('slogan', f.slogan);
   setze('strasse', f.strasse); setze('ort', [f.plz, f.ort].filter(Boolean).join(' '));
   setze('telefon', f.telefon); setze('web', f.web);
   sigVorschau();
-  toast('Aus VolmeRechnung übernommen');
+  if (!still) toast('Aus VolmeRechnung übernommen');
 }
 function sigLeeren() {
   for (const [k] of SIG_FELDER) document.getElementById('sig_' + k).value = '';
@@ -1169,6 +1173,11 @@ async function sigSpeichern(id) {
   const d = sigDaten();
   const { html, text } = sigBauen(d, d.layout);
   const leer = !text.trim();
+  // Nur Adresse und Telefon ohne Namen ergibt keine Signatur, sondern eine
+  // zusammenhanglose Zeile unter der Mail.
+  if (!leer && !d.name && !d.firma) {
+    return toast('Bitte mindestens Name oder Firma ausfüllen', 5000);
+  }
   try {
     const r = await post('account/save', {
       id, signatureData: leer ? {} : d,
