@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Fass-Alarm</title>
+<style>
+  html,body{margin:0;height:100%;background:#0a0a12;overflow:hidden;touch-action:none;
+    display:flex;align-items:center;justify-content:center;font-family:monospace}
+  canvas{image-rendering:pixelated;background:#000;
+    width:min(100vw,calc(100vh * 0.875));height:auto;display:block}
+  /* Touch-Steuerung: nur auf Touch-Geraeten sichtbar */
+  #touch{display:none;position:fixed;inset:0;pointer-events:none;user-select:none;
+    -webkit-user-select:none;font-family:monospace}
+  body.touch #touch{display:block}
+  .tb{position:fixed;pointer-events:auto;width:64px;height:64px;border-radius:14px;
+    background:rgba(255,255,255,.10);border:2px solid rgba(255,255,255,.25);
+    color:#fff;font-size:28px;display:flex;align-items:center;justify-content:center}
+  .tb:active{background:rgba(255,255,255,.3)}
+  #bL{left:14px;bottom:22px} #bR{left:92px;bottom:22px}
+  #bU{right:92px;bottom:96px} #bD{right:92px;bottom:22px}
+  #bJ{right:14px;bottom:52px;width:72px;height:72px;border-radius:50%;
+    background:rgba(255,140,26,.25);border-color:rgba(255,140,26,.6);font-size:15px}
+</style>
+</head>
+<body>
+<canvas id="cv" width="448" height="512"></canvas>
+<div id="touch">
+  <div class="tb" id="bL">◀</div><div class="tb" id="bR">▶</div>
+  <div class="tb" id="bU">▲</div><div class="tb" id="bD">▼</div>
+  <div class="tb" id="bJ">SPRUNG</div>
+</div>
+<script>
+'use strict';
+// ============ Fass-Alarm — Retro-Plattformer im Stil des Arcade-Klassikers ============
+// Eigene Grafiken/Namen (Nintendo-Marken sind geschuetzt). Feste 60-Hz-Steps,
+// dadurch deterministisch genug fuer Headless-Tests via window._faDbg.
+
+const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+const W=448,H=512, GRAV=0.28, JUMP=-5.0, SPEED=1.5, CLIMB=1.1;
+
+// ---- Traeger: x1/y1 = linkes Ende (Oberkante), x2/y2 = rechtes Ende
+// Faesser rollen bergab (Richtung des groesseren y) und fallen am offenen Ende.
+const GIRDERS=[
+  {x1:0,  y1:492, x2:448, y2:486},            // 0 Boden (Faesser rollen links raus)
+  {x1:0,  y1:424, x2:428, y2:436},            // 1 bergab nach rechts
+  {x1:20, y1:376, x2:448, y2:364},            // 2 bergab nach links
+  {x1:0,  y1:304, x2:428, y2:316},            // 3 bergab nach rechts
+  {x1:20, y1:256, x2:448, y2:244},            // 4 bergab nach links
+  {x1:0,  y1:170, x2:190, y2:170},            // 5 Affen-Plattform (flach)
+  {x1:190,y1:170, x2:448, y2:180},            // 6 oberer Schraegtraeger
+  {x1:176,y1:106, x2:272, y2:106, goal:true}, // 7 Ziel-Plattform
+];
+function gY(g,x){ return g.x2===g.x1 ? g.y1 : g.y1+(g.y2-g.y1)*((x-g.x1)/(g.x2-g.x1)); }
+function downhill(g){ return g.y2>g.y1 ? 1 : (g.y2<g.y1 ? -1 : 0); }
+
+// ---- Leitern: [x, oberer Traeger, unterer Traeger, kaputt]
+// Kaputte nutzt nur das Fass (rollt runter), der Spieler kann sie nicht klettern.
+const LDEF=[
+  [192,7,6,0],[256,7,6,0],
+  [72,5,4,0],[352,6,4,0],[232,6,4,1],
+  [112,4,3,0],[408,4,3,0],[280,4,3,1],
+  [48,3,2,0],[304,3,2,0],[180,3,2,1],
+  [144,2,1,0],[384,2,1,0],[64,2,1,1],
+  [96,1,0,0],[336,1,0,0],[200,1,0,1],
+];
+const LADDERS=LDEF.map(([x,up,dn,br])=>({x,up,dn,broken:!!br,
+  yTop:gY(GIRDERS[up],x), yBot:gY(GIRDERS[dn],x)}));
+
+// Haemmer: [x, Traeger] — haengen in Sprunghoehe ueber dem Traeger
+const HDEF=[[200,2],[64,4]];
+
+// ---- Zustand
+let state='title', frame=0, stateT=0;
+let score=0, high=+(localStorage.getItem('fassalarm_high')||0);
+let level=1, lives=3, bonus=5000, extraGiven=false;
+let player, barrels=[], hammers=[], popups=[], apeT=0, apeAnim=0, muted=false, paused=false;
+
+const keys={l:0,r:0,u:0,d:0,j:0};
+let jumpLatch=false; // Leertaste muss losgelassen werden
+
+function resetRound(){
+  player={x:60, y:gY(GIRDERS[0],60), vx:0, vy:0, dir:1, mode:'ground', g:0,
+          ladder:null, anim:0, hammerT:0, airFrom:0};
+  barrels=[]; popups=[];
+  hammers=HDEF.map(([x,g])=>({x, y:gY(GIRDERS[g],x)-36, taken:false}));
+  apeT=90; apeAnim=0; bonus=5000;
+}
+function startGame(){ score=0; level=1; lives=3; extraGiven=false; resetRound(); state='play'; stateT=0; }
+
+// ---- Sound (WebAudio, winzige Synth-Bleeps)
+let AC=null;
+function ac(){ if(!AC) AC=new (window.AudioContext||window.webkitAudioContext)();
+  if(AC.state==='suspended') AC.resume(); return AC; }
+function tone(f0,f1,dur,type,vol,when){ if(muted) return;
+  try{ const a=ac(), o=a.createOscillator(), g=a.createGain(), t=a.currentTime+(when||0);
+    o.type=type; o.frequency.setValueAtTime(f0,t);
+    if(f1!==f0) o.frequency.exponentialRampToValueAtTime(Math.max(f1,1),t+dur);
+    g.gain.setValueAtTime(vol,t); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+    o.connect(g); g.connect(a.destination); o.start(t); o.stop(t+dur+0.02);
+  }catch(e){} }
+const sfx={
+  jump(){ tone(280,560,.14,'square',.05); },
+  point(){ tone(900,1500,.09,'square',.05); },
+  smash(){ tone(220,50,.22,'sawtooth',.08); },
+  grab(){ tone(500,900,.12,'square',.06); },
+  throw(){ tone(130,70,.12,'triangle',.09); },
+  beat(){ tone(72,55,.09,'triangle',.045); },
+  death(){ [520,415,350,262,208,175].forEach((f,i)=>tone(f,f,.13,'square',.06,i*.12)); },
+  win(){ [523,659,784,1047].forEach((f,i)=>tone(f,f,.12,'square',.06,i*.1)); },
+  life(){ [784,988,1175].forEach((f,i)=>tone(f,f,.1,'square',.06,i*.08)); },
+};
+
+function addScore(n,x,y){
+  score+=n; if(x!==undefined) popups.push({x,y,txt:''+n,t:0});
+  if(!extraGiven && score>=7500){ extraGiven=true; lives++; sfx.life(); }
+}
+
+// ---- Geometrie-Helfer
+function girderUnder(x,footY,tol){ // Traeger, auf dem der Fuss (x,footY) steht
+  let best=-1, bY=1e9;
+  for(let i=0;i<GIRDERS.length;i++){ const g=GIRDERS[i];
+    if(x<g.x1-2||x>g.x2+2) continue;
+    const s=gY(g,x);
+    if(Math.abs(s-footY)<=tol && s<bY){ best=i; bY=s; } }
+  return best;
+}
+function crossLanding(x,y0,y1,minSurf,noGoal){ // erster Traeger, dessen Oberkante zwischen y0..y1 liegt
+  let best=-1, bY=1e9;
+  for(let i=0;i<GIRDERS.length;i++){ const g=GIRDERS[i];
+    if(noGoal&&g.goal) continue;
+    if(x<g.x1-2||x>g.x2+2) continue;
+    const s=gY(g,x);
+    if(s>=y0-0.01 && s<=y1+0.01 && s>=minSurf && s<bY){ best=i; bY=s; } }
+  return best;
+}
+function overlap(ax,ay,aw,ah,bx,by,bw,bh){
+  return ax<bx+bw && ax+aw>bx && ay<by+bh && ay+ah>by;
+}
+
+// ---- Faesser
+function spawnBarrel(){
+  barrels.push({x:150, y:170, dir:1, mode:'roll', g:5, vx:0, vy:0, anim:0,
+                scored:false, ladder:null});
+  sfx.throw();
+}
+function barrelSpeed(){ return Math.min(2.9, 1.7+0.2*(level-1)); }
+function ladderChance(){ return Math.min(0.6, 0.2+0.06*(level-1)); }
+
+function stepBarrel(b){
+  b.anim++;
+  if(b.mode==='roll'){
+    const g=GIRDERS[b.g];
+    const oldX=b.x;
+    b.x+=b.dir*barrelSpeed();
+    // Leiter-Abstieg? (Fass rollt ueber Leiterkopf)
+    for(const l of LADDERS){
+      if(l.up!==b.g) continue;
+      if((oldX-l.x)*(b.x-l.x)<=0 && rng()<ladderChance()){
+        b.mode='ladder'; b.x=l.x; b.ladder=l; return; }
+    }
+    if(b.x<g.x1||b.x>g.x2){
+      // Anschluss-Traeger auf gleicher Hoehe? (z.B. flacher -> schraeger Top-Traeger)
+      const n=girderUnder(b.x,b.y,4);
+      if(n>=0 && n!==b.g){ b.g=n; b.y=gY(GIRDERS[n],b.x); return; }
+      b.mode='fall'; b.vx=b.dir*0.5; b.vy=0; return;
+    }
+    b.y=gY(g,b.x);
+  } else if(b.mode==='ladder'){
+    b.y+=1.6;
+    if(b.y>=b.ladder.yBot){
+      b.g=b.ladder.dn; b.y=b.ladder.yBot; b.mode='roll';
+      const d=downhill(GIRDERS[b.g]); if(d) b.dir=d;
+      b.ladder=null;
+    }
+  } else { // fall
+    b.vy+=GRAV*0.75;
+    const y0=b.y; b.x+=b.vx; b.y+=b.vy;
+    if(b.x<-24||b.x>W+24){ b.dead=true; return; }
+    if(b.vy>0){
+      const n=crossLanding(b.x,y0,b.y,-1e9,true);
+      if(n>=0){ b.g=n; b.y=gY(GIRDERS[n],b.x); b.mode='roll';
+        const d=downhill(GIRDERS[n]); if(d) b.dir=d; }
+    }
+  }
+  if(b.x<-24 && b.g===0) b.dead=true; // rollt links aus dem Bild
+}
+
+// Zufall austauschbar (Headless-Tests koennen deterministisch seeden)
+let rng=Math.random;
+
+// ---- Spieler
+function killPlayer(){ if(DBG.god) return; state='dying'; stateT=0; sfx.death(); }
+function reachGoal(){ state='win'; stateT=0; addScore(bonus); sfx.win(); }
+
+function stepPlayer(){
+  const p=player;
+  if(p.hammerT>0){ p.hammerT--; }
+  const canClimb=p.hammerT<=0;
+
+  if(p.mode==='ground'){
+    const g=GIRDERS[p.g];
+    let moved=false;
+    if(keys.l){ p.dir=-1; p.x-=SPEED; moved=true; }
+    if(keys.r){ p.dir=1;  p.x+=SPEED; moved=true; }
+    p.x=Math.max(8,Math.min(W-8,p.x));
+    // Affen-Plattform: unsichtbare Wand vor dem Affen
+    if(p.g===5 && p.x<156) p.x=156;
+    if(moved) p.anim++;
+    const gi=girderUnder(p.x,p.y,8);
+    if(gi>=0){ p.g=gi; p.y=gY(GIRDERS[gi],p.x);
+      if(GIRDERS[gi].goal) { reachGoal(); return; } }
+    else { p.mode='air'; p.vx=p.dir*0.6; p.vy=0; p.airFrom=p.y; return; }
+    // Leiter rauf/runter
+    if(canClimb && (keys.u||keys.d)){
+      for(const l of LADDERS){
+        if(l.broken || Math.abs(p.x-l.x)>=10) continue;
+        if(keys.u && l.dn===p.g && Math.abs(p.y-l.yBot)<6){
+          p.mode='climb'; p.ladder=l; p.x=l.x; return; }
+        if(keys.d && l.up===p.g && Math.abs(p.y-l.yTop)<6){
+          p.mode='climb'; p.ladder=l; p.x=l.x; p.y+=2; return; }
+      }
+    }
+    // Sprung
+    if(keys.j && !jumpLatch && p.hammerT<=0){
+      jumpLatch=true; p.mode='air'; p.vy=JUMP; p.vx=(keys.l?-1:keys.r?1:0)*1.3;
+      p.airFrom=p.y; sfx.jump();
+    }
+  }
+  else if(p.mode==='air'){
+    p.vy+=GRAV;
+    const y0=p.y;
+    p.x=Math.max(8,Math.min(W-8,p.x+p.vx));
+    p.y+=p.vy;
+    if(p.vy>0){
+      const gi=crossLanding(p.x,y0,p.y,p.airFrom-10,false);
+      if(gi>=0){
+        if(p.y-p.airFrom>100){ p.g=gi; p.y=gY(GIRDERS[gi],p.x); killPlayer(); return; }
+        p.g=gi; p.y=gY(GIRDERS[gi],p.x); p.mode='ground'; p.vx=0; p.vy=0;
+        if(GIRDERS[gi].goal){ reachGoal(); return; }
+      }
+    }
+    if(p.y>H+40){ killPlayer(); return; }
+  }
+  else if(p.mode==='climb'){
+    const l=p.ladder;
+    if(keys.u) { p.y-=CLIMB; p.anim++; }
+    if(keys.d) { p.y+=CLIMB; p.anim++; }
+    if(p.y<=l.yTop){ p.y=l.yTop; p.g=l.up; p.mode='ground'; p.ladder=null;
+      if(GIRDERS[l.up].goal){ reachGoal(); return; } }
+    else if(p.y>=l.yBot){ p.y=l.yBot; p.g=l.dn; p.mode='ground'; p.ladder=null; }
+  }
+  if(!keys.j) jumpLatch=false;
+
+  // Hammer greifen (nicht beim Klettern)
+  if(p.mode!=='climb' && p.hammerT<=0){
+    for(const hm of hammers){
+      if(hm.taken) continue;
+      if(overlap(p.x-7,p.y-22,14,22, hm.x-9,hm.y-8,18,16)){
+        hm.taken=true; p.hammerT=380; sfx.grab(); }
+    }
+  }
+}
+
+function hammerRect(){
+  const p=player;
+  if(p.hammerT<=0) return null;
+  const up=(Math.floor(p.hammerT/8)%2)===0;
+  return up ? {x:p.x-9, y:p.y-58, w:18, h:18}
+            : (p.dir>0 ? {x:p.x+5, y:p.y-24, w:26, h:18}
+                       : {x:p.x-31, y:p.y-24, w:26, h:18});
+}
+
+// ---- Haupt-Step (fester 60-Hz-Takt)
+function step(){
+  frame++;
+  if(state==='title'||state==='over'){ stateT++; return; }
+  if(paused) return;
+
+  if(state==='dying'){
+    stateT++;
+    if(stateT>=140){
+      lives--;
+      if(lives<0){ state='over'; stateT=0;
+        if(score>high){ high=score; localStorage.setItem('fassalarm_high',high); } }
+      else { resetRound(); state='play'; }
+    }
+    return;
+  }
+  if(state==='win'){
+    stateT++;
+    if(stateT>=150){ level++; resetRound(); state='play'; }
+    return;
+  }
+  // ---- state === 'play'
+  stateT++;
+  if(stateT%120===0 && bonus>0) bonus=Math.max(0,bonus-100);
+  if(stateT%34===0) sfx.beat();
+
+  // Affe wirft Faesser
+  apeT--; apeAnim++;
+  if(apeT===18) spawnBarrel();
+  if(apeT<=0) apeT=Math.max(70, 170-20*(level-1));
+
+  stepPlayer();
+  if(state!=='play') return;
+
+  for(const b of barrels) stepBarrel(b);
+  barrels=barrels.filter(b=>!b.dead);
+  if(barrels.length>14) barrels.shift();
+
+  // Kollisionen
+  const hr=hammerRect(), p=player;
+  for(const b of barrels){
+    if(b.dead) continue;
+    if(hr && overlap(hr.x,hr.y,hr.w,hr.h, b.x-8,b.y-12,16,12)){
+      b.dead=true; addScore(500,b.x,b.y-16); sfx.smash(); continue; }
+    if(overlap(p.x-6,p.y-20,12,20, b.x-7,b.y-11,14,10)){ killPlayer(); return; }
+    // Punkte fuers Drueberspringen
+    if(!b.scored && p.mode==='air' && Math.abs(b.x-p.x)<10 && b.y>p.y && b.y-p.y<80){
+      b.scored=true; addScore(100,p.x,p.y-30); sfx.point(); }
+  }
+  for(const pp of popups) pp.t++;
+  popups=popups.filter(pp=>pp.t<50);
+}
+
+// ================= RENDERING =================
+ctx.imageSmoothingEnabled=false;
+
+function drawGirder(g){
+  const len=Math.hypot(g.x2-g.x1,g.y2-g.y1), ang=Math.atan2(g.y2-g.y1,g.x2-g.x1);
+  ctx.save(); ctx.translate(g.x1,g.y1); ctx.rotate(ang);
+  ctx.fillStyle= g.goal ? '#3ed6ff' : '#e8404c';
+  ctx.fillRect(0,0,len,3); ctx.fillRect(0,8,len,3);
+  ctx.fillStyle= g.goal ? '#1a7aa0' : '#8c1424';
+  for(let x=2;x<len-8;x+=14){
+    ctx.beginPath();
+    if((x/14|0)%2){ ctx.moveTo(x,8); ctx.lineTo(x+8,3); ctx.lineTo(x+11,3); ctx.lineTo(x+3,8); }
+    else { ctx.moveTo(x,3); ctx.lineTo(x+8,8); ctx.lineTo(x+11,8); ctx.lineTo(x+3,3); }
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+function drawLadder(l){
+  ctx.fillStyle='#3ed6ff';
+  const seg=(a,c)=>{ ctx.fillRect(l.x-8,a,2,c-a); ctx.fillRect(l.x+6,a,2,c-a);
+    for(let y=a+3;y<c-2;y+=7) ctx.fillRect(l.x-8,y,16,2); };
+  if(l.broken){ seg(l.yTop+2,l.yTop+16); seg(l.yBot-14,l.yBot); }
+  else seg(l.yTop+2,l.yBot);
+}
+function drawBarrel(b){
+  const x=b.x,y=b.y; // y = Unterkante
+  if(b.mode==='ladder'){ // Frontansicht beim Leiter-Abstieg
+    ctx.fillStyle='#b06820'; ctx.fillRect(x-7,y-12,14,12);
+    ctx.fillStyle='#e8a050'; ctx.fillRect(x-4,y-9,8,6);
+    ctx.fillStyle='#6a3a10'; ctx.fillRect(x-2,y-7,4,2);
+    return;
+  }
+  ctx.fillStyle='#b06820'; ctx.fillRect(x-8,y-11,16,11);
+  ctx.fillStyle='#7a4510'; ctx.fillRect(x-8,y-11,16,2); ctx.fillRect(x-8,y-2,16,2);
+  ctx.fillStyle='#e8a050';
+  const ph=(b.anim>>2)%4; // "Rotation": wandernde Daube
+  ctx.fillRect(x-7+ph*4,y-9,2,7);
+}
+function drawHammerPickup(hm){
+  ctx.fillStyle='#8a5a2a'; ctx.fillRect(hm.x-2,hm.y-6,4,16);
+  ctx.fillStyle='#ffd23e'; ctx.fillRect(hm.x-9,hm.y-8,18,9);
+}
+function drawApe(){
+  const x=96,y=170; // Fusslinie auf Traeger 5
+  const throwing=apeT<36, beat=(apeAnim>>4)%2;
+  ctx.fillStyle='#7a4a22';
+  ctx.fillRect(x-32,y-48,64,48);            // Rumpf
+  ctx.fillRect(x-24,y-58,48,12);            // Schultern
+  ctx.fillRect(x-18,y-74,36,20);            // Kopf
+  ctx.fillStyle='#5a3212';
+  ctx.fillRect(x-32,y-6,20,6); ctx.fillRect(x+12,y-6,20,6); // Fuesse
+  ctx.fillStyle='#e8b888';
+  ctx.fillRect(x-13,y-68,26,11);            // Gesicht
+  ctx.fillRect(x-18,y-40,36,18);            // Brust
+  ctx.fillStyle='#000';
+  ctx.fillRect(x-9,y-66,4,4); ctx.fillRect(x+5,y-66,4,4);   // Augen
+  ctx.fillRect(x-6,y-60,12,2);              // Mund
+  ctx.fillStyle='#7a4a22';
+  if(throwing){ // Arme hoch, Fass ueber dem Kopf
+    ctx.fillRect(x-44,y-84,12,40); ctx.fillRect(x+32,y-84,12,40);
+    ctx.fillStyle='#b06820'; ctx.fillRect(x-10,y-96,20,14);
+    ctx.fillStyle='#7a4510'; ctx.fillRect(x-10,y-96,20,2); ctx.fillRect(x-10,y-84,20,2);
+  } else if(beat){ // Brust trommeln
+    ctx.fillRect(x-30,y-38,12,14); ctx.fillRect(x+18,y-38,12,14);
+  } else {
+    ctx.fillRect(x-44,y-44,12,40); ctx.fillRect(x+32,y-44,12,40);
+  }
+}
+function drawGoal(){
+  const x=224,y=106; // kleiner 3D-Drucker wartet auf Rettung
+  ctx.fillStyle='#9aa4b0';
+  ctx.fillRect(x-14,y-26,4,26); ctx.fillRect(x+10,y-26,4,26); // Tuerme
+  ctx.fillRect(x-14,y-26,28,4);                               // Traverse
+  ctx.fillStyle='#5a626e'; ctx.fillRect(x-12,y-4,24,4);       // Druckbett
+  ctx.fillStyle='#ff8c1a'; ctx.fillRect(x-5,y-12,10,8);       // Druckteil
+  ctx.fillStyle='#3ed6ff'; ctx.fillRect(x-10,y-22,6,4);       // Display
+  if((frame>>5)%2){ ctx.fillStyle='#fff'; ctx.font='10px monospace';
+    ctx.textAlign='center'; ctx.fillText('HILFE!',x,y-34); }
+}
+function drawPlayer(){
+  const p=player, x=p.x, y=p.y, d=p.dir;
+  ctx.save();
+  if(state==='dying'){ // Sterbe-Drehung
+    ctx.translate(x,y-11); ctx.rotate(stateT*0.15); ctx.translate(-x,-(y-11));
+  }
+  const run=(p.anim>>3)%2;
+  if(p.mode==='climb'){
+    ctx.fillStyle='#1a3fa0'; ctx.fillRect(x-5,y-8,4,8); ctx.fillRect(x+1,y-8,4,8);
+    ctx.fillStyle='#2266ff'; ctx.fillRect(x-6,y-17,12,10);
+    ctx.fillStyle='#f2c088';
+    if(run){ ctx.fillRect(x-9,y-24,3,9); ctx.fillRect(x+6,y-19,3,9); }
+    else   { ctx.fillRect(x-9,y-19,3,9); ctx.fillRect(x+6,y-24,3,9); }
+    ctx.fillRect(x-5,y-24,10,7);               // Hinterkopf
+    ctx.fillStyle='#ff8c1a'; ctx.fillRect(x-6,y-27,12,5); // Helm
+  } else {
+    ctx.fillStyle='#1a3fa0'; // Beine
+    if(p.mode==='ground'&&run){ ctx.fillRect(x-6,y-8,5,8); ctx.fillRect(x+2,y-6,5,6); }
+    else if(p.mode==='air'){ ctx.fillRect(x-6,y-10,5,8); ctx.fillRect(x+2,y-8,5,6); }
+    else { ctx.fillRect(x-5,y-8,4,8); ctx.fillRect(x+1,y-8,4,8); }
+    ctx.fillStyle='#2266ff'; ctx.fillRect(x-6,y-17,12,10); // Rumpf
+    ctx.fillStyle='#f2c088';
+    ctx.fillRect(x-5,y-24,10,7);               // Kopf
+    ctx.fillStyle='#000'; ctx.fillRect(x+d*3-1,y-22,2,2);  // Auge
+    ctx.fillStyle='#ff8c1a'; ctx.fillRect(x-6,y-27,12,4);  // Helm
+    ctx.fillRect(x+d*4-2,y-25,4,2);            // Helm-Schirm
+    // Hammer
+    if(p.hammerT>0){
+      const up=(Math.floor(p.hammerT/8)%2)===0;
+      ctx.fillStyle='#8a5a2a';
+      if(up){ ctx.fillRect(x-2,y-52,4,28); ctx.fillStyle='#ffd23e'; ctx.fillRect(x-9,y-58,18,10); }
+      else { ctx.fillRect(x+(d>0?4:-16),y-18,12,4); ctx.fillStyle='#ffd23e';
+             ctx.fillRect(x+(d>0?12:-28),y-24,16,16); }
+    } else {
+      ctx.fillStyle='#f2c088'; // Arme
+      ctx.fillRect(x-8,y-16,2,7); ctx.fillRect(x+6,y-16,2,7);
+    }
+  }
+  ctx.restore();
+}
+function drawHud(){
+  ctx.textAlign='left'; ctx.font='bold 13px monospace';
+  ctx.fillStyle='#fff'; ctx.fillText('PUNKTE',8,16);
+  ctx.fillStyle='#ff8c1a'; ctx.fillText((''+score).padStart(6,'0'),8,30);
+  ctx.textAlign='center';
+  ctx.fillStyle='#fff'; ctx.fillText('REKORD',W/2,16);
+  ctx.fillStyle='#ff4d5e'; ctx.fillText((''+high).padStart(6,'0'),W/2,30);
+  ctx.textAlign='right';
+  ctx.fillStyle='#3ed6ff'; ctx.fillText('BONUS '+bonus,W-8,16);
+  ctx.fillStyle='#fff'; ctx.fillText('RUNDE '+level,W-8,30);
+  for(let i=0;i<Math.min(lives,6);i++){ // Rest-Leben als Helme
+    ctx.fillStyle='#ff8c1a'; ctx.fillRect(8+i*16,38,12,5);
+    ctx.fillStyle='#f2c088'; ctx.fillRect(9+i*16,43,10,4);
+  }
+  if(paused){ ctx.fillStyle='#fff'; ctx.textAlign='center';
+    ctx.font='bold 22px monospace'; ctx.fillText('PAUSE',W/2,H/2); }
+}
+function drawLevel(){
+  for(const g of GIRDERS) drawGirder(g);
+  for(const l of LADDERS) drawLadder(l);
+  for(const hm of hammers) if(!hm.taken) drawHammerPickup(hm);
+  drawGoal(); drawApe();
+  for(const b of barrels) drawBarrel(b);
+  drawPlayer();
+  ctx.font='bold 12px monospace'; ctx.textAlign='center';
+  for(const pp of popups){ ctx.fillStyle='#fff';
+    ctx.fillText(pp.txt,pp.x,pp.y-pp.t*0.6); }
+  drawHud();
+}
+function drawTitle(){
+  ctx.textAlign='center';
+  ctx.fillStyle='#ff8c1a'; ctx.font='bold 44px monospace';
+  ctx.fillText('FASS-ALARM',W/2,120);
+  ctx.fillStyle='#e8404c'; ctx.font='bold 14px monospace';
+  ctx.fillText('EIN VOLME3D RETRO-SPIEL',W/2,150);
+  ctx.fillStyle='#fff'; ctx.font='13px monospace';
+  ctx.fillText('Rette den 3D-Drucker vor dem Gorilla!',W/2,220);
+  ctx.fillStyle='#3ed6ff';
+  ctx.fillText('←→ laufen   ↑↓ Leiter   LEER springen',W/2,270);
+  ctx.fillText('Hammer einsammeln = Faesser zertruemmern',W/2,294);
+  ctx.fillText('M Ton an/aus   P Pause',W/2,318);
+  if((stateT>>5)%2){ ctx.fillStyle='#ffd23e'; ctx.font='bold 18px monospace';
+    ctx.fillText(document.body.classList.contains('touch')?'TIPPEN ZUM START':'ENTER DRUECKEN',W/2,390); }
+  ctx.fillStyle='#888'; ctx.font='11px monospace';
+  ctx.fillText('REKORD '+(''+high).padStart(6,'0'),W/2,440);
+}
+function drawWin(){
+  drawLevel();
+  ctx.fillStyle='#ff4d5e'; ctx.font='bold 26px monospace'; ctx.textAlign='center';
+  ctx.fillText('♥',224,80);
+  ctx.fillStyle='#fff'; ctx.font='bold 20px monospace';
+  ctx.fillText('GERETTET!',W/2,H/2-20);
+  ctx.font='14px monospace';
+  ctx.fillText('BONUS +'+bonus,W/2,H/2+8);
+}
+function drawOver(){
+  ctx.fillStyle='#ff4d5e'; ctx.font='bold 32px monospace'; ctx.textAlign='center';
+  ctx.fillText('SPIEL VORBEI',W/2,200);
+  ctx.fillStyle='#fff'; ctx.font='bold 16px monospace';
+  ctx.fillText('PUNKTE '+score,W/2,250);
+  if(score>=high){ ctx.fillStyle='#ffd23e'; ctx.fillText('NEUER REKORD!',W/2,280); }
+  if((stateT>>5)%2){ ctx.fillStyle='#3ed6ff'; ctx.font='14px monospace';
+    ctx.fillText(document.body.classList.contains('touch')?'TIPPEN FUER NEUSTART':'ENTER FUER NEUSTART',W/2,340); }
+}
+function render(){
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+  if(state==='title') drawTitle();
+  else if(state==='over') drawOver();
+  else if(state==='win') drawWin();
+  else drawLevel();
+}
+
+// ---- Loop mit festem Zeittakt
+let acc=0, last=performance.now();
+function loop(now){
+  acc+=Math.min(100,now-last); last=now;
+  while(acc>=1000/60){ step(); acc-=1000/60; }
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---- Eingabe
+function anyStart(){
+  if(state==='title'||state==='over'){ startGame(); return true; }
+  return false;
+}
+addEventListener('keydown',e=>{
+  if(e.repeat) return;
+  const k=e.key;
+  if(k==='ArrowLeft'||k==='a') keys.l=1;
+  if(k==='ArrowRight'||k==='d') keys.r=1;
+  if(k==='ArrowUp'||k==='w') keys.u=1;
+  if(k==='ArrowDown'||k==='s') keys.d=1;
+  if(k===' '){ keys.j=1; e.preventDefault(); }
+  if(k==='Enter') anyStart();
+  if(k==='m'||k==='M') muted=!muted;
+  if(k==='p'||k==='P') paused=!paused;
+  if(AC===null&&!muted) try{ac();}catch(err){}
+});
+addEventListener('keyup',e=>{
+  const k=e.key;
+  if(k==='ArrowLeft'||k==='a') keys.l=0;
+  if(k==='ArrowRight'||k==='d') keys.r=0;
+  if(k==='ArrowUp'||k==='w') keys.u=0;
+  if(k==='ArrowDown'||k==='s') keys.d=0;
+  if(k===' ') keys.j=0;
+});
+// Touch
+if('ontouchstart' in window) document.body.classList.add('touch');
+cv.addEventListener('pointerdown',()=>{ anyStart(); if(AC===null&&!muted) try{ac();}catch(err){} });
+function bindBtn(id,key){
+  const el=document.getElementById(id);
+  el.addEventListener('pointerdown',e=>{ e.preventDefault(); keys[key]=1;
+    if(anyStart()) keys[key]=0; if(AC===null&&!muted) try{ac();}catch(err){} });
+  const off=e=>{ e.preventDefault(); keys[key]=0; };
+  el.addEventListener('pointerup',off); el.addEventListener('pointercancel',off);
+  el.addEventListener('pointerleave',off);
+}
+bindBtn('bL','l'); bindBtn('bR','r'); bindBtn('bU','u'); bindBtn('bD','d'); bindBtn('bJ','j');
+
+document.addEventListener('visibilitychange',()=>{ if(document.hidden&&state==='play') paused=true; });
+
+// ---- Test-Hook fuer Headless-Checks (analog _tdbg bei Blockfall)
+const DBG={
+  god:false,
+  get st(){ return {state,score,lives,level,bonus,frame,
+    player:{...player}, barrels:barrels.map(b=>({...b}))}; },
+  tick(n){ for(let i=0;i<(n||1);i++) step(); },
+  start(){ startGame(); },
+  spawn(){ spawnBarrel(); },
+  tp(x,y){ player.x=x; player.y=y; player.mode='air'; player.vy=0; player.vx=0; player.airFrom=y; },
+  key(k,v){ keys[k]=v?1:0; },
+  win(){ reachGoal(); },
+  kill(){ killPlayer(); },
+  seed(fn){ rng=fn||Math.random; },
+};
+window._faDbg=DBG;
+muted=navigator.webdriver||false; // Headless: kein Audio-Genöle
+</script>
+</body>
+</html>
