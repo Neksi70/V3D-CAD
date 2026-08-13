@@ -222,6 +222,10 @@ class FakeConn:
                        rb'(\HasNoChildren \Sent) "/" "Gesendet"',
                        rb'(\HasNoChildren \Trash) "/" "Papierkorb"'])
 
+    def status(self, folder, items):
+        self.status_calls = getattr(self, 'status_calls', []) + [folder]
+        return ('OK', [b'"INBOX" (MESSAGES 42 UNSEEN 7)'])
+
     def logout(self):
         return ('BYE', [b''])
 
@@ -321,6 +325,60 @@ class TestEmptyHtmlFallback(unittest.TestCase):
         m = server.load_message(box, 'INBOX', 7)
         self.assertIn('HTML-Fassung mit <b>Formatierung</b>', m['html'])
         self.assertNotIn('Nur-Text-Fassung', m['html'])
+
+
+class TestSendenEmpfangen(unittest.TestCase):
+    """Zustandsabfrage für den Senden/Empfangen-Knopf."""
+
+    def setUp(self):
+        self.acc = {'id': 'k1', 'email': 'a@volme3dakademie.de', 'imapHost': 'h', 'password': 'p'}
+        self.box = fake_box(build_mail().as_bytes())
+        self.box.acc = self.acc
+        server._boxes['k1'] = self.box
+
+    def tearDown(self):
+        server._boxes.pop('k1', None)
+
+    def test_counts_read_from_status(self):
+        st = server.account_status(self.acc)
+        self.assertEqual(st['unread'], 7)
+        self.assertEqual(st['total'], 42)
+        self.assertEqual(st['email'], 'a@volme3dakademie.de')
+        self.assertNotIn('error', st)
+
+    def test_uses_special_use_inbox(self):
+        server.account_status(self.acc)
+        self.assertIn('"INBOX"', self.box.conn.status_calls[0])
+
+    def test_does_not_change_selected_folder(self):
+        """STATUS darf die offene Ordnerauswahl nicht umbiegen."""
+        self.box.select('Gesendet', readonly=True)
+        vorher = self.box.selected
+        server.account_status(self.acc)
+        self.assertEqual(self.box.selected, vorher)
+
+    def test_broken_account_reports_error_instead_of_raising(self):
+        def kaputt(*a, **kw):
+            raise OSError('Verbindung abgelehnt')
+        self.box.conn.status = kaputt
+        st = server.account_status(self.acc)
+        self.assertIn('error', st)
+        self.assertEqual(st['id'], 'k1')
+
+    def test_check_all_returns_one_entry_per_account(self):
+        zweit = {'id': 'k2', 'email': 'b@volme3dakademie.de', 'imapHost': 'h', 'password': 'p'}
+        box2 = fake_box(build_mail().as_bytes())
+        box2.acc = zweit
+        server._boxes['k2'] = box2
+        try:
+            res = server.check_all([self.acc, zweit])
+            self.assertEqual([r['id'] for r in res], ['k1', 'k2'])
+            self.assertEqual([r['unread'] for r in res], [7, 7])
+        finally:
+            server._boxes.pop('k2', None)
+
+    def test_check_all_empty(self):
+        self.assertEqual(server.check_all([]), [])
 
 
 class TestHtmlFromPlainOnly(unittest.TestCase):

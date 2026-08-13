@@ -53,7 +53,13 @@ a{color:var(--acc-d)}
 #side .acc .nm{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #side .acc .ad{display:block;font-size:11px;color:#8a90a3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #side .acc.act .ad{color:#c8ccd6}
+#side .acc .zahl{background:var(--acc);color:#fff;font-size:11px;font-weight:700;border-radius:20px;padding:1px 7px;flex-shrink:0}
+#side .acc .fehler{color:var(--red);font-size:14px;flex-shrink:0}
 #side .accadd{width:100%;background:none;border:1px dashed #3a4053;color:#8a90a3;border-radius:10px;padding:6px 9px;font-size:12.5px;margin-bottom:4px}
+#sendrecv{width:calc(100% - 8px);margin:0 4px 12px;background:#2a2f3f;color:#c8ccd6;border:0;
+  border-radius:9px;padding:8px 10px;font-size:13.5px;font-weight:600;white-space:nowrap}
+#sendrecv:hover{background:#3a4053;color:#fff}
+#sendrecv:disabled{opacity:.6}
 #side .accadd:hover{border-color:var(--acc);color:var(--acc-l)}
 #side .fold{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:none;border:0;color:#c8ccd6;padding:8px 11px;border-radius:9px;font-size:14px}
 #side .fold:hover{background:#2a2f3f}
@@ -166,7 +172,8 @@ a{color:var(--acc-d)}
   <nav id="side">
     <div class="logo"><b>V3D Mail</b><small>VOLME 3D</small></div>
     <div id="accs"></div>
-    <button class="btn" style="margin:0 4px 10px;width:calc(100% - 8px)" onclick="compose()">✉️ Neue Nachricht</button>
+    <button class="btn" style="margin:0 4px 6px;width:calc(100% - 8px)" onclick="compose()">✉️ Neue Nachricht</button>
+    <button id="sendrecv" onclick="sendenEmpfangen()">⟳ Senden/Empfangen</button>
     <div id="folders"></div>
     <div class="foot">
       <button onclick="accountDialog()">⚙️ Konten</button>
@@ -295,6 +302,11 @@ async function boot() {
   S.acc = S.accounts.find(a => a.id === last) || S.accounts[0];
   renderAccounts();
   await loadFolders();
+  sendenEmpfangen(true);
+  // Im Hintergrund alle drei Minuten nachsehen — ohne Meldung, außer es kommt
+  // wirklich etwas Neues an.
+  clearInterval(S.timer);
+  S.timer = setInterval(() => { if (!document.hidden) sendenEmpfangen(true); }, 180000);
 }
 
 function renderAccounts() {
@@ -307,9 +319,13 @@ function renderAccounts() {
     const kurz = (a.name && !a.name.includes('@')) ? a.name : mail.split('@')[0];
     const zweite = kurz === mail ? '' : `<span class="ad">${esc(mail)}</span>`;
     const ini = (kurz[0] || '?').toUpperCase();
+    const st = (S.status || {})[a.id] || {};
+    const marke = st.error ? `<span class="fehler" title="${esc(st.error)}">⚠</span>`
+      : (st.unread ? `<span class="zahl">${st.unread}</span>` : '');
     return `<button class="acc${S.acc && a.id === S.acc.id ? ' act' : ''}" onclick="switchAcc(S.accounts[${i}].id)" title="${esc(mail)}">
       <span class="ini">${esc(ini)}</span>
       <span class="txt"><span class="nm">${esc(kurz)}</span>${zweite}</span>
+      ${marke}
     </button>`;
   }).join('') + '<button class="accadd" onclick="editAccount(null)">+ Postfach hinzufügen</button>';
 }
@@ -433,6 +449,43 @@ function renderList() {
 }
 
 function doSearch() { S.q = document.getElementById('q').value.trim(); loadMessages(S.folder, 0); }
+
+// --- Senden/Empfangen ------------------------------------------------------
+async function sendenEmpfangen(leise) {
+  const btn = document.getElementById('sendrecv');
+  const vorher = S.status || {};
+  if (!leise) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> prüfe…'; }
+  let r;
+  try {
+    r = await api('check');
+  } catch (e) {
+    if (!leise) toast('Prüfen fehlgeschlagen: ' + e.message, 5000);
+    return;
+  } finally {
+    btn.disabled = false; btn.textContent = '⟳ Senden/Empfangen';
+  }
+
+  S.status = {};
+  let neue = 0, fehler = [];
+  for (const st of r.accounts) {
+    S.status[st.id] = st;
+    if (st.error) { fehler.push((st.email || '') + ': ' + st.error); continue; }
+    const alt = vorher[st.id];
+    // Nur echte Zuwächse zählen — beim ersten Durchlauf ist noch nichts bekannt.
+    if (alt && typeof alt.unread === 'number' && st.unread > alt.unread) neue += st.unread - alt.unread;
+  }
+  renderAccounts();
+  // Sichtbare Liste mitziehen, damit neue Nachrichten gleich auftauchen.
+  await loadMessages(S.folder, S.page, true);
+
+  if (neue) return toast(neue === 1 ? '1 neue Nachricht' : neue + ' neue Nachrichten');
+  // Beim automatischen Lauf still bleiben; ein klemmendes Postfach zeigt schon
+  // sein ⚠ am Kontoknopf und soll nicht alle paar Minuten dazwischenfunken.
+  if (leise) return;
+  if (fehler.length) return toast('Nicht erreichbar — ' + fehler[0], 6000);
+  const offen = Object.values(S.status).reduce((s, x) => s + (x.unread || 0), 0);
+  toast(offen ? 'Keine neuen — ' + offen + ' ungelesen' : 'Keine neuen Nachrichten');
+}
 
 async function star(uid, on) {
   const m = S.msgs.find(x => x.uid === uid); if (m) m.flagged = on;

@@ -62,6 +62,27 @@ with sync_playwright() as p:
         check('Nachrichtenliste geladen', page.evaluate('S.msgs.length') > 0,
               'keine Nachrichten')
 
+        # Senden/Empfangen prüft alle Postfächer auf einmal
+        check('Senden/Empfangen-Knopf vorhanden', page.is_visible('#sendrecv'))
+        page.evaluate('S.status = {}')
+        page.click('#sendrecv')
+        page.wait_for_timeout(6000)
+        st = page.evaluate('S.status || {}')
+        check('Alle Postfächer geprüft', len(st) == page.evaluate('S.accounts.length'),
+              '%d von %d' % (len(st), page.evaluate('S.accounts.length')))
+        check('Kein Postfach meldet einen Fehler',
+              not [v for v in st.values() if v.get('error')],
+              str([v.get('error') for v in st.values() if v.get('error')][:1]))
+        check('Zustand enthält Zählwerte',
+              all(isinstance(v.get('unread'), int) and isinstance(v.get('total'), int)
+                  for v in st.values() if not v.get('error')))
+        ungelesen = sum(v.get('unread', 0) for v in st.values())
+        check('Ungelesene werden am Postfach angezeigt',
+              page.evaluate("document.querySelectorAll('#accs .acc .zahl').length") ==
+              len([v for v in st.values() if v.get('unread')]),
+              'insgesamt %d ungelesen' % ungelesen)
+        check('Knopf ist wieder benutzbar', not page.evaluate("document.getElementById('sendrecv').disabled"))
+
         # Nur bereits gelesene Mails öffnen — sonst verändern wir echte Daten.
         # Bevorzugt eine mit Anhang, damit die Bilderleiste geprüft wird.
         uid = page.evaluate("""() => {

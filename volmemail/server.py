@@ -14,6 +14,7 @@ Start:  python3 server.py [port]
 
 import base64
 import binascii
+import concurrent.futures
 import email.header
 import email.utils
 import hmac
@@ -375,6 +376,41 @@ def list_folders(box):
     order = {'inbox': 0, 'drafts': 1, 'sent': 2, 'archive': 3, 'junk': 4, 'trash': 5}
     out.sort(key=lambda f: (order.get(f['kind'], 9), f['path'].lower()))
     return out
+
+
+STATUS_RE = re.compile(r'MESSAGES (\d+).*?UNSEEN (\d+)|UNSEEN (\d+).*?MESSAGES (\d+)', re.S)
+
+
+def account_status(acc):
+    """Ungelesene und Gesamtzahl im Posteingang — per STATUS, ohne den Ordner
+    zu wechseln, damit eine offene Ansicht nicht durcheinandergerät."""
+    try:
+        box = get_box(acc)
+        inbox = find_special(box, 'inbox') or 'INBOX'
+        with box.lock:
+            box.ensure()
+            typ, data = box.conn.status('"%s"' % utf7_encode(inbox), '(MESSAGES UNSEEN)')
+            box.last_used = time.time()
+        if typ != 'OK' or not data:
+            raise MailError('Postfach meldet keinen Zustand')
+        raw = data[0].decode('utf-8', 'replace') if isinstance(data[0], bytes) else str(data[0])
+        gesamt = re.search(r'MESSAGES (\d+)', raw)
+        ungelesen = re.search(r'UNSEEN (\d+)', raw)
+        return {'id': acc['id'], 'email': acc.get('email'), 'inbox': inbox,
+                'total': int(gesamt.group(1)) if gesamt else 0,
+                'unread': int(ungelesen.group(1)) if ungelesen else 0}
+    except Exception as e:
+        return {'id': acc['id'], 'email': acc.get('email'),
+                'error': readable_error(e, 'IMAP')}
+
+
+def check_all(accounts):
+    """Alle Postfächer gleichzeitig abfragen — nacheinander dauert es sonst
+    so lange wie die Summe aller Verbindungen."""
+    if not accounts:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(accounts))) as pool:
+        return list(pool.map(account_status, accounts))
 
 
 def find_special(box, kind):
@@ -1355,6 +1391,10 @@ class Handler(BaseHTTPRequestHandler):
                 save_conf(CFG)
             drop_box(acc_id)
             return self._send(200, {'ok': True})
+
+        # Senden/Empfangen: alle Postfächer auf einmal prüfen
+        if route == '/check':
+            return self._send(200, {'accounts': check_all(CFG.get('accounts', []))})
 
         # --- Postfach ---
         acc = account_by_id((q or {}).get('acc') or (self._body_cached() or {}).get('acc'))

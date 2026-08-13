@@ -44,6 +44,20 @@ eigener DNS-Client in `server.py` — die Standardbibliothek kann nur A/AAAA.
 
 Tastatur: `n` neue Nachricht, `r` antworten, `j`/`k` blättern, `Entf` löschen, `Esc` schließen.
 
+## Senden/Empfangen
+
+Der Knopf in der Seitenleiste prüft **alle Postfächer gleichzeitig** (Thread-Pool,
+drei Konten in ~0,2 s) und zeigt die Zahl der Ungelesenen als Marke am jeweiligen
+Konto; ein nicht erreichbares Postfach bekommt ein ⚠ mit dem Fehler als Tooltip.
+Die offene Nachrichtenliste wird gleich mitgezogen.
+
+Gezählt wird per IMAP-`STATUS` — das fragt den Posteingang ab, ohne die aktuell
+gewählte Ordneransicht umzubiegen. Zusätzlich läuft die Prüfung alle drei Minuten
+von selbst, aber still: gemeldet wird nur, wenn wirklich etwas Neues ankommt.
+
+„Senden" ist im Namen mitgemeint, hat aber keine Warteschlange: Nachrichten gehen
+beim Klick auf *Senden* sofort raus, ein Postausgang existiert nicht.
+
 ## Bilder und Anhänge
 
 Über der Nachricht stehen zwei Leisten: Dateien als Anhang-Zeilen, **Bilder als
