@@ -17028,19 +17028,25 @@ async function subtractHoles() {
 
   saveUndo();
   const hasSvg = holes.some(h => h.userData.type === 'svg');
+  let svgThrough = false;   // Durchbruch statt Gravur → normaler Boolean-Pfad
 
   if (hasSvg) {
     const svgHoles = holes.filter(h => h.userData.type === 'svg');
     const currentDepth = svgHoles[0].userData.svgDepth || 1;
     const res = await _engraveDepthDialog(currentDepth);
     if (res === null) return;                             // Abbruch
-    const { depth, wantInlay } = res;
-    if (Math.abs(depth) < 0.05) { notify('0 mm — nichts zu tun', 'w'); return; }
-    svgHoles.forEach(h => { h.userData.svgDepth = depth;     // negativ = erhaben
+    const { depth, wantInlay, through } = res;
+    svgThrough = !!through;
+    if (!svgThrough && Math.abs(depth) < 0.05) { notify('0 mm — nichts zu tun', 'w'); return; }
+    // _cutThrough schaltet den Gravur-Sonderweg ab: das SVG-/Text-Prisma wird
+    // wie ein gewöhnlicher Bohrungs-Körper behandelt und durchgestreckt.
+    svgHoles.forEach(h => { h.userData._cutThrough = svgThrough;
+                            if (svgThrough) return;
+                            h.userData.svgDepth = depth;     // negativ = erhaben
                             h.userData.svgWantInlay = wantInlay; });
   }
 
-  _progressShow(hasSvg ? 'Gravur wird abgezogen…' : 'Abziehen läuft…');
+  _progressShow(hasSvg && !svgThrough ? 'Gravur wird abgezogen…' : 'Abziehen läuft…');
   _progressSet(8);
   _progressCreep(93);   // kriecht während OCCT rechnet; springt am Ende auf 100%
 
@@ -17093,7 +17099,10 @@ async function _doSubtractHoles(solids, holes) {
   for (const hole of holes) {
 
     // ── SVG: OCCT-Abzug ────────────────────────────────────────────────────────
-    if (hole.userData.type === 'svg') {
+    // _cutThrough (Dialog-Modus „Durchbruch") übergeht die Gravur-Pipeline —
+    // die schneidet nur eine feste Tiefe ab der Oberfläche ein und liefert bei
+    // einem komplett eingetauchten Text einen unsichtbaren Hohlraum im Inneren.
+    if (hole.userData.type === 'svg' && !hole.userData._cutThrough) {
       hole.updateMatrixWorld(true);
 
       // ── SVG Gravur ────────────────────────────────────────────────────────────
@@ -17174,8 +17183,42 @@ async function _doSubtractHoles(solids, holes) {
       csgProxy.updateWorldMatrix(true, true);
     }
 
+    // ── Durchbruch: SVG-/Text-Prisma über den ganzen Körper strecken ─────────
+    // Die Schrift wird meist mitten in den Körper geschoben. Ohne Durchstrecken
+    // bliebe ein Hohlraum ganz im Inneren — von außen unsichtbar. Gestreckt wird
+    // entlang der lokalen Extrusionsachse (Y), damit gekippte Schrift stimmt.
+    let cutThrough = false;
+    if (hole.userData.type === 'svg' && hole.userData._cutThrough) {
+      cutThrough = true;
+      const geo = hole.geometry;
+      if (!geo.boundingBox) geo.computeBoundingBox();
+      const gbb  = geo.boundingBox;
+      const cyL  = (gbb.max.y + gbb.min.y) / 2;   // lokale Prisma-Mitte
+      const extL = gbb.max.y - gbb.min.y;
+      hole.updateWorldMatrix(true, true);
+      const solidBB = new THREE.Box3().setFromObject(solidMesh);
+      const target  = solidBB.getSize(new THREE.Vector3()).length() * 1.05 + 0.4;
+      const lenW    = extL * Math.abs(hole.scale.y);
+      csgProxy = new THREE.Mesh(geo, new THREE.MeshStandardMaterial());
+      csgProxy.position.copy(hole.position);
+      csgProxy.quaternion.copy(hole.quaternion);
+      csgProxy.scale.copy(hole.scale);
+      if (lenW > 1e-6 && target > lenW) {
+        // Skalierung geht vom lokalen Ursprung aus → Prisma-Mitte nachziehen,
+        // sonst wandert die Schrift beim Strecken aus dem Körper heraus.
+        const mid0 = hole.localToWorld(new THREE.Vector3(0, cyL, 0));
+        csgProxy.scale.y *= target / lenW;
+        csgProxy.updateWorldMatrix(true, true);
+        const mid1 = csgProxy.localToWorld(new THREE.Vector3(0, cyL, 0));
+        csgProxy.position.add(mid0.sub(mid1));
+      }
+      csgProxy.updateWorldMatrix(true, true);
+      // Buchstaben = viele getrennte Körper → BSP liefert hier garantiert Müll
+      csgProxy.userData = { _noBspFallback: true };
+    }
+
     // ── Koplanar-Fix: Proxy über Solid-Grenzen verlängern ────────────────────
-    {
+    if (!cutThrough) {
       const solidBB = new THREE.Box3().setFromObject(solidMesh);
       const proxyBB = new THREE.Box3().setFromObject(csgProxy);
       const eps   = 0.08;
@@ -21287,8 +21330,15 @@ function _engraveDepthDialog(current) {
     ov.innerHTML =
       '<div style="background:#fff;color:#222;padding:22px 24px;border-radius:14px;width:min(400px,90vw);'
       + 'box-shadow:0 12px 44px rgba(0,0,0,.32)">'
-      + '<div style="font-weight:600;font-size:16px;margin-bottom:2px">Gravur einstellen</div>'
+      + '<div style="font-weight:600;font-size:16px;margin-bottom:12px">Gravur einstellen</div>'
+      // Modus-Umschalter: Gravur = feste Tiefe ab Oberfläche, Durchbruch = echtes Loch
+      + '<div style="display:flex;gap:6px;margin-bottom:14px">'
+      + '<button class="_em-mode" data-through="0" style="flex:1;padding:8px 6px;border:1px solid #ccc;'
+      + 'background:#f4f4f4;border-radius:9px;cursor:pointer;font:inherit">Gravur</button>'
+      + '<button class="_em-mode" data-through="1" style="flex:1;padding:8px 6px;border:1px solid #ccc;'
+      + 'background:#f4f4f4;border-radius:9px;cursor:pointer;font:inherit">Durchbruch</button></div>'
       + '<div class="_em-lbl" style="color:#777;margin-bottom:16px;min-height:18px"></div>'
+      + '<div class="_em-grv">'
       + '<input class="_em-rng" type="range" min="-2" max="5" step="0.1" value="' + v0 + '" style="width:100%">'
       + '<div style="display:flex;justify-content:space-between;color:#aaa;font-size:11px;margin-top:4px">'
       + '<span>◀ erhaben</span><span>bündig</span><span>vertieft ▶</span></div>'
@@ -21296,6 +21346,7 @@ function _engraveDepthDialog(current) {
       + 'cursor:pointer;color:#555;font-size:13px">'
       + '<input class="_em-inlay" type="checkbox" style="width:16px;height:16px;cursor:pointer">'
       + '<span>Zweifarb-Inlay erzeugen <span style="color:#aaa">(für 2-Farb-Druck, deutlich langsamer)</span></span></label>'
+      + '</div>'
       + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">'
       + '<button class="_em-cancel" style="padding:9px 16px;border:1px solid #ccc;background:#f4f4f4;'
       + 'border-radius:9px;cursor:pointer">Abbrechen</button>'
@@ -21304,7 +21355,21 @@ function _engraveDepthDialog(current) {
     document.body.appendChild(ov);
     const rng = ov.querySelector('._em-rng'), lbl = ov.querySelector('._em-lbl');
     const inlayCb = ov.querySelector('._em-inlay'), inlayRow = ov.querySelector('._em-inlay-row');
+    const grvBox = ov.querySelector('._em-grv'), modeBtns = [...ov.querySelectorAll('._em-mode')];
+    let through = false;
     const upd = () => {
+      // Modus-Buttons einfärben
+      modeBtns.forEach(b => {
+        const on = (b.dataset.through === '1') === through;
+        b.style.background = on ? '#ff5e00' : '#f4f4f4';
+        b.style.color      = on ? '#fff'    : '#222';
+        b.style.borderColor = on ? '#ff5e00' : '#ccc';
+      });
+      grvBox.style.display = through ? 'none' : '';
+      if (through) {
+        lbl.textContent = 'Schneidet komplett durch den Körper — z.B. Fenster oder Schriftzug zum Durchgucken';
+        return;
+      }
       const v = parseFloat(rng.value);
       lbl.textContent = v > 0.05 ? `Vertieft ${v.toFixed(1)} mm — wird in die Wand graviert`
         : v < -0.05 ? `Erhaben ${(-v).toFixed(1)} mm — Schrift steht raus`
@@ -21314,10 +21379,11 @@ function _engraveDepthDialog(current) {
       inlayRow.style.opacity = recessed ? '1' : '.4';
       inlayCb.disabled = !recessed;
     };
+    modeBtns.forEach(b => b.onclick = () => { through = b.dataset.through === '1'; upd(); });
     rng.oninput = upd; upd();
     const done = val => { ov.remove(); resolve(val); };
     ov.querySelector('._em-ok').onclick = () =>
-      done({ depth: parseFloat(rng.value), wantInlay: inlayCb.checked && !inlayCb.disabled });
+      done({ depth: parseFloat(rng.value), wantInlay: inlayCb.checked && !inlayCb.disabled, through });
     ov.querySelector('._em-cancel').onclick = () => done(null);
     ov.onclick = e => { if (e.target === ov) done(null); };
     setTimeout(() => rng.focus(), 50);
@@ -34582,12 +34648,25 @@ const VOLME3D_CHANGELOG = [
   ]},
 ];
 
+// Versionsvergleich ZAHLENWEISE, nicht als Text: '1.15.100' > '1.15.99' ist als
+// Zeichenkette falsch ('1' < '9'), damit wäre ab .100 kein Eintrag mehr „NEU"
+// und der Punkt am Versionsknopf bliebe aus. Fehlende Stellen zählen als 0
+// ('1.16' < '1.16.1'), eine leere gespeicherte Version ist kleiner als alles.
+function _verGt(a, b){
+  if(!b) return !!a;
+  const A = String(a).split('.'), B = String(b).split('.');
+  for(let i = 0; i < Math.max(A.length, B.length); i++){
+    const x = parseInt(A[i], 10) || 0, y = parseInt(B[i], 10) || 0;
+    if(x !== y) return x > y;
+  }
+  return false;
+}
 function _openChangelog(){
   const modal = document.getElementById('changelog-modal');
   const body  = document.getElementById('changelog-body');
   const seen  = localStorage.getItem('volme3d_seen_ver') || '';
   body.innerHTML = VOLME3D_CHANGELOG.map(v => {
-    const isNew = v.version > seen;
+    const isNew = _verGt(v.version, seen);
     return `<div class="cl-ver">
       <div class="cl-ver-hdr">
         <span class="cl-ver-num">v${v.version}</span>
@@ -34626,7 +34705,7 @@ function _whatsNewApply(){
   if(!seenVer) return;                       // Erstbesuch → keine Punkte (für Neulinge ist alles neu)
   let seenFeat=[]; try{ seenFeat=JSON.parse(localStorage.getItem('volme3d_seen_feat')||'[]'); }catch(e){}
   (VOLME3D_CHANGELOG||[]).forEach(v=>{
-    if(!(v.version>seenVer) || !Array.isArray(v.spots)) return;
+    if(!_verGt(v.version, seenVer) || !Array.isArray(v.spots)) return;
     v.spots.forEach(s=>{
       if(seenFeat.includes(s.id)) return;
       let el; try{ el=document.querySelector(s.sel); }catch(e){ el=null; }
@@ -34646,7 +34725,7 @@ function _whatsNewApply(){
   const vb = document.getElementById('version-btn');
   if(vb && vb.firstChild && vb.firstChild.nodeType === 3) vb.firstChild.nodeValue = 'v'+VOLME3D_VERSION;
   const seen = localStorage.getItem('volme3d_seen_ver') || '';
-  if(VOLME3D_VERSION > seen) document.getElementById('version-dot').classList.add('on');
+  if(_verGt(VOLME3D_VERSION, seen)) document.getElementById('version-dot').classList.add('on');
   try{ _whatsNewApply(); }catch(e){}
 })();
 // ===== END CHANGELOG =====
