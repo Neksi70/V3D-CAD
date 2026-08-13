@@ -42,7 +42,7 @@ const W=448,H=512, GRAV=0.28, JUMP=-5.0, SPEED=1.5, CLIMB=1.1;
 // ---- Traeger: x1/y1 = linkes Ende (Oberkante), x2/y2 = rechtes Ende
 // Faesser rollen bergab (Richtung des groesseren y) und fallen am offenen Ende.
 const GIRDERS=[
-  {x1:0,  y1:492, x2:448, y2:486},            // 0 Boden (Faesser rollen links raus)
+  {x1:256,y1:492, x2:448, y2:476},            // 0 Boden rechts (steigt an, wie 25m)
   {x1:0,  y1:424, x2:428, y2:436},            // 1 bergab nach rechts
   {x1:20, y1:376, x2:448, y2:364},            // 2 bergab nach links
   {x1:0,  y1:304, x2:428, y2:316},            // 3 bergab nach rechts
@@ -51,6 +51,7 @@ const GIRDERS=[
   {x1:190,y1:170, x2:428, y2:179},            // 6 oberer Schraegtraeger (endet vor
                                               //   dem Rand, damit Faesser auf 4 fallen)
   {x1:176,y1:106, x2:272, y2:106, goal:true}, // 7 Ziel-Plattform
+  {x1:0,  y1:492, x2:256, y2:492},            // 8 Boden links flach (Oelfass, Start)
 ];
 function gY(g,x){ return g.x2===g.x1 ? g.y1 : g.y1+(g.y2-g.y1)*((x-g.x1)/(g.x2-g.x1)); }
 function downhill(g){ return g.y2>g.y1 ? 1 : (g.y2<g.y1 ? -1 : 0); }
@@ -63,7 +64,7 @@ const LDEF=[
   [112,4,3,0],[408,4,3,0],[280,4,3,1],
   [48,3,2,0],[304,3,2,0],[180,3,2,1],
   [144,2,1,0],[384,2,1,0],[64,2,1,1],
-  [96,1,0,0],[336,1,0,0],[200,1,0,1],
+  [96,1,8,0],[336,1,0,0],[200,1,8,1],
 ];
 const LADDERS=LDEF.map(([x,up,dn,br])=>({x,up,dn,broken:!!br,
   yTop:gY(GIRDERS[up],x), yBot:gY(GIRDERS[dn],x)}));
@@ -83,7 +84,7 @@ const keys={l:0,r:0,u:0,d:0,j:0};
 let jumpLatch=false; // Leertaste muss losgelassen werden
 
 function resetRound(){
-  player={x:60, y:gY(GIRDERS[0],60), vx:0, vy:0, dir:1, mode:'ground', g:0,
+  player={x:90, y:gY(GIRDERS[8],90), vx:0, vy:0, dir:1, mode:'ground', g:8,
           ladder:null, anim:0, hammerT:0, airFrom:0};
   barrels=[]; popups=[]; fires=[]; barrelCount=0;
   hammers=HDEF.map(([x,g])=>({x, y:gY(GIRDERS[g],x)-36, taken:false}));
@@ -189,10 +190,10 @@ function stepBarrel(b){
         const d=downhill(GIRDERS[n]); if(d) b.dir=d; }
     }
   }
-  if(b.g===0 && b.x<38 && b.mode==='roll'){ // landet im Oelfass
+  if(b.g===8 && b.x<38 && b.mode==='roll'){ // landet im Oelfass
     b.dead=true; flameT=26;
     if(fires.length < (level>=3?2:1)) // gebiert einen Feuerball (wie im Original)
-      fires.push({x:30, y:gY(GIRDERS[0],30), g:0, dir:1, mode:'walk', tgt:0, tg:0, anim:0});
+      fires.push({x:30, y:gY(GIRDERS[8],30), g:8, dir:1, mode:'walk', tgt:0, tg:0, anim:0});
   }
 }
 
@@ -202,8 +203,12 @@ function stepFire(f){
   if(f.mode==='walk'){
     const g=GIRDERS[f.g], oldX=f.x;
     f.x+=f.dir*0.7;
-    if(f.x<g.x1+4||f.x>g.x2-4){ f.dir*=-1; f.x=Math.max(g.x1+4,Math.min(g.x2-4,f.x)); }
-    f.y=gY(g,f.x);
+    if(f.x<g.x1+4||f.x>g.x2-4){
+      const n=girderUnder(f.x,f.y,5); // Anschluss-Traeger (flacher Boden <-> Rampe)?
+      if(n>=0&&n!==f.g&&!GIRDERS[n].goal) f.g=n;
+      else { f.dir*=-1; f.x=Math.max(g.x1+4,Math.min(g.x2-4,f.x)); }
+    }
+    f.y=gY(GIRDERS[f.g],f.x);
     if(rng()<0.005) f.dir*=-1;
     for(const l of LADDERS){
       if((oldX-l.x)*(f.x-l.x)<=0){
@@ -448,65 +453,65 @@ const SPR={
     "..rrr.rrr...",
     ".NNN...NNN..",
   ],2),
-  // Gorilla "Kranko" (20 breit, Skalierung 4 => 80px)
+  // Gorilla "Kranko": breit und geduckt mit Knoechelgang wie das Original
+  // (24 breit x 16 hoch, Skalierung 4 => 96x64)
   kong:mkspr([
-    "....FFFFFFFFFF......",
-    "...FFFFFFFFFFFF.....",
-    "...FKKFFFFFFKKF.....",
-    "...FWKFPPPPFWKF.....",
-    "...PPPPPPPPPPPP.....",
-    "...PKPPPPPPPPKP.....",
-    "...PPWKWKWKWKPP.....",
-    "....PPPPPPPPPP......",
-    "..FFFFFFFFFFFFFF....",
-    ".FFFFFFFFFFFFFFFF...",
-    "FFFFPPPPPPPPPPFFFF..",
-    "FFFFPPPPPPPPPPFFFF..",
-    "FFFFPPPPPPPPPPFFFF..",
-    "FFF.FFFFFFFFFF.FFF..",
-    "FFF.FFFFFFFFFF.FFF..",
-    "PPP.FFFFFFFFFF.PPP..",
-    "...ffff....ffff.....",
-    "..fffff....fffff....",
+    "........FFFFFFFF........",
+    ".......FFFFFFFFFF.......",
+    ".......FKKFFFFKKF.......",
+    ".......FWKFPPFWKF.......",
+    ".......PPPPPPPPPP.......",
+    ".......PKPPPPPPKP.......",
+    ".......PPWKWKWKPP.......",
+    "..FFFFF.PPPPPPPP.FFFFF..",
+    ".FFFFFFFFFFFFFFFFFFFFFF.",
+    "FFFFFFFPPPPPPPPPPFFFFFFF",
+    "FFFFFFPPPPPPPPPPPPFFFFFF",
+    "FFFFF.PPPPPPPPPPPP.FFFFF",
+    "FFFFF.PPPPPPPPPPPP.FFFFF",
+    "FFFFF.FFFFFFFFFFFF.FFFFF",
+    "PPPPP.FFFFFFFFFFFF.PPPPP",
+    "......ffffff.ffffff.....",
   ],4),
   kongThrow:mkspr([
-    "PPP..FFFFFFFF..PPP..",
-    "FFF.FFFFFFFFFF.FFF..",
-    "FFF.FKKFFFFKKF.FFF..",
-    "FFF.FWKFPPFWKF.FFF..",
-    "FFF.PPPPPPPPPP.FFF..",
-    "FFF.PKPPPPPPKP.FFF..",
-    "FFF.PPWKKKKWPP.FFF..",
-    "FFF..PPPPPPPP..FFF..",
-    ".FFFFFFFFFFFFFFFF...",
-    ".FFFFFFFFFFFFFFFF...",
-    "FFFFPPPPPPPPPPFFFF..",
-    "FFFFPPPPPPPPPPFFFF..",
-    "..FFPPPPPPPPPPFF....",
-    "..FFFFFFFFFFFFFF....",
-    "...FFFFFFFFFFFF.....",
-    "...FFFFFFFFFFFF.....",
-    "...ffff....ffff.....",
-    "..fffff....fffff....",
+    "PPPP...FFFFFFFFFF...PPPP",
+    "FFFF...FFFFFFFFFF...FFFF",
+    "FFFF...FKKFFFFKKF...FFFF",
+    "FFFF...FWKFPPFWKF...FFFF",
+    "FFFF...PPPPPPPPPP...FFFF",
+    "FFFF...PKPPPPPPKP...FFFF",
+    "FFFF...PPWKKKKWPP...FFFF",
+    ".FFFF...PPPPPPPP...FFFF.",
+    ".FFFFFFFFFFFFFFFFFFFFF..",
+    "..FFFFPPPPPPPPPPFFFF....",
+    "..FFFPPPPPPPPPPPPFFF....",
+    "...FFPPPPPPPPPPPPFF.....",
+    "...FFPPPPPPPPPPPPFF.....",
+    "...FFFFFFFFFFFFFFFF.....",
+    "....FFFFFFFFFFFFFF......",
+    ".....ffffff..ffffff.....",
   ],4),
 };
 
 function drawGirder(g){
-  // Himbeer-pinke Fachwerktraeger wie im Arcade-Original: 2 Gurte + X-Verstrebungen
-  const len=Math.hypot(g.x2-g.x1,g.y2-g.y1), ang=Math.atan2(g.y2-g.y1,g.x2-g.x1);
-  ctx.save(); ctx.translate(g.x1,g.y1); ctx.rotate(ang);
-  ctx.fillStyle=PAL.q;
-  for(let x=0;x<len-10;x+=14){
-    ctx.beginPath();
-    ctx.moveTo(x,8); ctx.lineTo(x+10,3); ctx.lineTo(x+13,3); ctx.lineTo(x+3,8);
-    ctx.closePath(); ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(x,3); ctx.lineTo(x+10,8); ctx.lineTo(x+13,8); ctx.lineTo(x+3,3);
-    ctx.closePath(); ctx.fill();
+  // Wie im Arcade-Original: schraege Traeger bestehen aus horizontalen
+  // Stuecken, die stufig versetzt sind (keine durchgehende Schraege!)
+  const step=28;
+  for(let x=g.x1; x<g.x2; x+=step){
+    const xe=Math.min(x+step,g.x2), w=xe-x;
+    const y=Math.round(gY(g,(x+xe)/2));
+    ctx.fillStyle=PAL.q; // X-Verstrebungen
+    for(let k=x; k<xe-10; k+=14){
+      ctx.beginPath();
+      ctx.moveTo(k,y+8); ctx.lineTo(k+10,y+3); ctx.lineTo(k+13,y+3); ctx.lineTo(k+3,y+8);
+      ctx.closePath(); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(k,y+3); ctx.lineTo(k+10,y+8); ctx.lineTo(k+13,y+8); ctx.lineTo(k+3,y+3);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.fillStyle=PAL.p;
+    ctx.fillRect(x,y,w,3); ctx.fillRect(x,y+8,w,3);
   }
-  ctx.fillStyle=PAL.p;
-  ctx.fillRect(0,0,len,3); ctx.fillRect(0,8,len,3);
-  ctx.restore();
 }
 function drawLadder(l){
   ctx.fillStyle='#3ed6ff';
@@ -556,33 +561,35 @@ function drawApe(){
   if(apeT<36){
     blit(SPR.kongThrow,x,y,false);
     // Fass ueber dem Kopf
-    ctx.fillStyle=PAL.T; ctx.fillRect(x-12,y-88,24,14);
-    ctx.fillStyle=PAL.N; ctx.fillRect(x-12,y-88,24,3); ctx.fillRect(x-12,y-77,24,3);
-    ctx.fillStyle=PAL.t; ctx.fillRect(x-4,y-85,3,8);
+    ctx.fillStyle=PAL.T; ctx.fillRect(x-12,y-78,24,14);
+    ctx.fillStyle=PAL.N; ctx.fillRect(x-12,y-78,24,3); ctx.fillRect(x-12,y-67,24,3);
+    ctx.fillStyle=PAL.t; ctx.fillRect(x-4,y-75,3,8);
   } else if(apeT<64){ // greift zum Fass-Stapel rueber
     blit(SPR.kong,x-10,y,false);
-    ctx.fillStyle=PAL.P; ctx.fillRect(x-58,y-40,16,12); // Pranke am Stapel
+    ctx.fillStyle=PAL.P; ctx.fillRect(x-64,y-34,16,10); // Pranke am Stapel
   } else {
     blit(SPR.kong,x,y,false);
     // Brusttrommeln: Tatze wandert
     ctx.fillStyle=PAL.P;
-    if((apeAnim>>4)%2) ctx.fillRect(x-22,y-32,12,10);
-    else ctx.fillRect(x+10,y-32,12,10);
+    if((apeAnim>>4)%2) ctx.fillRect(x-26,y-26,12,10);
+    else ctx.fillRect(x+14,y-26,12,10);
   }
 }
-function drawStack(){ // Fass-Vorrat neben dem Gorilla (Deko)
-  for(const [sx,sy] of [[16,170],[40,170],[16,148],[40,148]]){
-    ctx.fillStyle=PAL.T; ctx.fillRect(sx-10,sy-22,20,22);
-    ctx.fillStyle=PAL.N; ctx.fillRect(sx-10,sy-22,20,2); ctx.fillRect(sx-10,sy-2,20,2);
-    ctx.fillStyle=PAL.t; ctx.fillRect(sx-7,sy-17,3,12); ctx.fillRect(sx+4,sy-17,3,12);
+function drawStack(){ // Fass-Vorrat: liegende Faesser, Ringe von vorn (wie Original)
+  for(const [sx,sy] of [[16,170],[40,170],[16,146],[40,146]]){
+    ctx.fillStyle=PAL.N; ctx.fillRect(sx-11,sy-24,22,24);
+    ctx.fillStyle=PAL.T; ctx.fillRect(sx-8,sy-21,16,18);
+    ctx.fillStyle=PAL.t; ctx.fillRect(sx-5,sy-18,10,12);
+    ctx.fillStyle=PAL.N; ctx.fillRect(sx-2,sy-15,4,6);
   }
 }
 function drawOil(){ // Oelfass unten links, schluckt die Faesser
-  const x=24, y=gY(GIRDERS[0],24);
-  ctx.fillStyle=PAL.D; ctx.fillRect(x-12,y-24,24,24);
-  ctx.fillStyle='#000'; ctx.fillRect(x-12,y-19,24,2); ctx.fillRect(x-12,y-7,24,2);
-  ctx.fillStyle='#fff'; ctx.font='bold 9px monospace'; ctx.textAlign='center';
-  ctx.fillText('ÖL',x,y-10);
+  const x=24, y=gY(GIRDERS[8],24);
+  ctx.fillStyle='#1c1c24'; ctx.fillRect(x-12,y-24,24,24);
+  ctx.fillStyle='#fff';
+  ctx.fillRect(x-12,y-24,24,2); ctx.fillRect(x-12,y-4,24,2); // weisse Raender
+  ctx.font='bold 9px monospace'; ctx.textAlign='center';
+  ctx.fillText('ÖL',x,y-9);
   const f=(frame>>2)%2;
   if(flameT>0){ ctx.fillStyle=PAL.R; ctx.fillRect(x-10,y-42+(f?3:0),20,18); }
   ctx.fillStyle=PAL.R; ctx.fillRect(x-6+(f?2:-2),y-32,12,8);
@@ -603,12 +610,9 @@ function drawGoal(){
   ctx.fillStyle='#000';
   if((frame>>4)%4===3){ ctx.fillRect(x-6,y-40,4,1); ctx.fillRect(x+2,y-40,4,1); }
   else { ctx.fillRect(x-6,y-42,4,4); ctx.fillRect(x+2,y-42,4,4); }
-  if((frame>>5)%2){ // Sprechblase
-    ctx.fillStyle='#fff'; ctx.fillRect(x-26,y-64,52,14);
-    ctx.beginPath(); ctx.moveTo(x-2,y-50); ctx.lineTo(x+6,y-50);
-    ctx.lineTo(x,y-45); ctx.closePath(); ctx.fill();
-    ctx.fillStyle='#000'; ctx.font='bold 10px monospace'; ctx.textAlign='center';
-    ctx.fillText('HILFE!',x,y-54);
+  if((frame>>5)%2){ // blinkender Hilferuf wie im Original
+    ctx.fillStyle='#fff'; ctx.font='bold 12px monospace'; ctx.textAlign='center';
+    ctx.fillText('HILFE!',x,y-52);
   }
 }
 function drawPlayer(){
@@ -658,7 +662,7 @@ function drawHud(){
   ctx.fillStyle=PAL.R; ctx.fillText('REKORD',W/2,14);
   ctx.fillStyle='#fff'; ctx.fillText((''+high).padStart(6,'0'),W/2,28);
   ctx.strokeStyle=PAL.C; ctx.lineWidth=2; ctx.strokeRect(W-80,4,74,38); // Bonus-Kasten
-  ctx.fillStyle=PAL.C; ctx.font='bold 11px monospace';
+  ctx.fillStyle=PAL.R; ctx.font='bold 11px monospace';
   ctx.fillText('BONUS',W-43,17);
   ctx.fillStyle=PAL.Y; ctx.font='bold 13px monospace';
   ctx.fillText(''+bonus,W-43,35);
@@ -690,13 +694,12 @@ function drawTitle(){
   ctx.fillStyle=PAL.R; ctx.font='bold 13px monospace';
   ctx.fillText('EIN VOLME3D RETRO-SPIEL',W/2,94);
   // Gorilla stemmt ein grosses Fass ueber den Kopf (Fass zuerst, Pranken druecken drauf)
-  ctx.fillStyle=PAL.T; ctx.fillRect(W/2-56,106,112,30);
-  ctx.fillStyle=PAL.N; ctx.fillRect(W/2-56,106,112,4); ctx.fillRect(W/2-56,132,112,4);
-  ctx.fillRect(W/2-38,106,5,30); ctx.fillRect(W/2+33,106,5,30);
-  ctx.fillStyle=PAL.t; ctx.fillRect(W/2-8,112,6,18);
-  ctx.drawImage(SPR.kongThrow,W/2-70,142,140,126);
-  ctx.fillStyle=PAL.P; // Pranken greifen von unten ans Fass
-  ctx.fillRect(W/2-66,124,16,22); ctx.fillRect(W/2+50,124,16,22);
+  ctx.fillStyle=PAL.T; ctx.fillRect(W/2-56,112,112,30);
+  ctx.fillStyle=PAL.N; ctx.fillRect(W/2-56,112,112,4); ctx.fillRect(W/2-56,138,112,4);
+  ctx.fillRect(W/2-38,112,5,30); ctx.fillRect(W/2+33,112,5,30);
+  ctx.fillStyle=PAL.t; ctx.fillRect(W/2-8,118,6,18);
+  // Pranken des Wurf-Sprites (oberste Reihe) beruehren das Fass direkt
+  ctx.drawImage(SPR.kongThrow,W/2-84,142,168,112);
   ctx.fillStyle='#fff'; ctx.font='13px monospace';
   ctx.fillText('Rette den 3D-Drucker vor dem Gorilla!',W/2,296);
   ctx.fillStyle=PAL.C;
