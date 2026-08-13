@@ -19111,7 +19111,7 @@ function _applyNavAccum() {
 }
 // Hilfsfunktion: Pan-Beitrag (in Welt-Einheiten) gepuffert hinzufügen
 function _queuePan(right, up) { _panPending.right += right; _panPending.up += up; _navAccum.dirty = true; }
-canvas.addEventListener('wheel', e => {
+function _camWheel(e) {
   e.preventDefault(); e.stopPropagation();
   if (e.ctrlKey || e.metaKey) {                  // Pinch (Touchpad) / Ctrl+Rad → Zoom
     _navAccum.zMul *= Math.max(0.5, Math.min(1.6, 1 + e.deltaY * 0.01 * _navMouse));
@@ -19126,7 +19126,8 @@ canvas.addEventListener('wheel', e => {
   } else {                                       // Mausrad -> Zoom
     _navAccum.zAdd += e.deltaY; _navAccum.dirty = true;
   }
-}, { passive: false });
+}
+canvas.addEventListener('wheel', _camWheel, { passive: false });
 
 // ═══ TOUCH-SUPPORT ═══════════════════════════════════════════════════
 // 1 Finger  → Orbit (wie rechte Maustaste)
@@ -19324,13 +19325,42 @@ canvas.addEventListener('touchend', e => {
   }
 }, { passive: false });
 
-// Verhindert Browser-Zoom durch Ctrl+Scroll/Pinch → steuert stattdessen sph.r
-document.addEventListener('wheel', e => {
-  if (e.ctrlKey || e.metaKey) {
-    e.preventDefault();
-    sph.r = Math.max(1.5, Math.min(200, sph.r * (e.deltaY > 0 ? 1.1 : 0.91)));
-    sph2cam();
+// ── Mausrad über Werkzeugfenstern ────────────────────────────────────
+// Panels liegen über dem Canvas und schluckten das wheel-Event: Zoomen ging
+// nur nach Schließen des Fensters. Jetzt geht das Rad an die Kamera, sofern
+// unter dem Zeiger nichts wirklich Scrollbares liegt.
+// Deckt außerdem Ctrl+Scroll/Pinch ab (sonst zoomt der Browser die Seite).
+
+// Liegt zwischen target und <body> ein Bereich, der in Scroll-Richtung noch Weg hat?
+function _hasScrollable(el, dy) {
+  for (let n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+    if (!(n instanceof Element)) continue;
+    const st = getComputedStyle(n);
+    if (!/auto|scroll/.test(st.overflowY)) continue;
+    if (n.scrollHeight - n.clientHeight < 2) continue;          // kein echter Überhang
+    if (dy > 0 && n.scrollTop < n.scrollHeight - n.clientHeight - 1) return true;
+    if (dy < 0 && n.scrollTop > 1) return true;
   }
+  return false;
+}
+// Vollbild-Dialoge (Start-Modal, Auth-Overlay …) sollen die Kamera nicht bewegen
+function _inFullOverlay(el) {
+  for (let n = el; n && n !== document.body; n = n.parentElement) {
+    if (!(n instanceof Element)) continue;
+    const st = getComputedStyle(n);
+    if (st.position !== 'fixed') continue;
+    const r = n.getBoundingClientRect();
+    if (r.width > innerWidth * 0.9 && r.height > innerHeight * 0.9) return true;
+  }
+  return false;
+}
+document.addEventListener('wheel', e => {
+  if (e.defaultPrevented) return;                 // Canvas/Werkzeug hat es schon behandelt
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl) e.preventDefault();                   // Browser-Zoom in jedem Fall unterbinden
+  if (_inFullOverlay(e.target)) return;
+  if (!ctrl && _hasScrollable(e.target, e.deltaY)) return;   // Liste/Panel darf scrollen
+  _camWheel(e);
 }, { passive: false });
 
 canvas.addEventListener('dblclick', e => {
@@ -37240,10 +37270,8 @@ _rhInit();
 _makeDraggable(document.getElementById('fp'), document.getElementById('fp-hdr'));
 _makeDraggable(document.getElementById('tex-panel'), document.getElementById('tex-hdr'));
 
-// Forward wheel events on panels to camera zoom
-const _wheelToCam = e => { sph.r = Math.max(1.5, Math.min(200, sph.r + e.deltaY * 0.03)); sph2cam(); e.preventDefault(); };
-document.getElementById('fp').addEventListener('wheel', _wheelToCam, { passive: false });
-document.getElementById('tex-panel').addEventListener('wheel', _wheelToCam, { passive: false });
+// Rad über Panels → Kamera-Zoom: erledigt jetzt zentral der document-wheel-Handler
+// (galt vorher nur für 'fp' und 'tex-panel', alle anderen Werkzeugfenster blockierten)
 
 // Block _fpSyncValues from overwriting slider values while user is dragging
 document.getElementById('fp').addEventListener('pointerdown', e => {
