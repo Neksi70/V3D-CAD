@@ -55,7 +55,13 @@ const GIRDERS=[
   {x1:176,y1:106, x2:272, y2:106, goal:true}, // 7 Ziel-Plattform
   {x1:0,  y1:492, x2:256, y2:492},            // 8 Boden links flach (Oelfass, Start)
 ];
-function gY(g,x){ return g.x2===g.x1 ? g.y1 : g.y1+(g.y2-g.y1)*((x-g.x1)/(g.x2-g.x1)); }
+function gY(g,x){
+  const raw = g.x2===g.x1 ? g.y1 : g.y1+(g.y2-g.y1)*((x-g.x1)/(g.x2-g.x1));
+  const b = g.bend===undefined ? 1 : g.bend; // Intro: 0 = noch gerade, 1 = krumm
+  if(b>=1) return raw;
+  const flat=Math.min(g.y1,g.y2);
+  return flat+(raw-flat)*b;
+}
 function downhill(g){ return g.y2>g.y1 ? 1 : (g.y2<g.y1 ? -1 : 0); }
 
 // ---- Leitern: [x, oberer Traeger, unterer Traeger, kaputt]
@@ -92,7 +98,53 @@ function resetRound(){
   hammers=HDEF.map(([x,g])=>({x, y:gY(GIRDERS[g],x)-36, taken:false}));
   apeT=90; apeAnim=0; bonus=5000;
 }
-function startGame(){ score=0; level=1; lives=3; extraGiven=false; resetRound(); state='play'; stateT=0; }
+function startGame(){
+  score=0; level=1; lives=3; extraGiven=false; resetRound();
+  // Intro wie im Original: Traeger sind noch gerade, der Gorilla hopst sie krumm
+  for(const i of [0,1,2,3,4,6]) GIRDERS[i].bend=0;
+  intro={t:0, hop:-1, phase:'wait', fr:0, x:70, y:492, x0:0, y0:0};
+  state='intro'; stateT=0; sfx.intro();
+}
+function finishIntro(){ for(const g of GIRDERS) if(g.bend!==undefined) g.bend=1;
+  state='play'; stateT=0; }
+// Sprungziele des Intros: von Etage zu Etage, zuletzt auf die Affen-Plattform
+const INTRO_HOPS=[{g:1,x:130},{g:2,x:250},{g:3,x:130},{g:4,x:250},{g:6,x:250},{g:5,x:96}];
+let intro=null;
+function beginHop(){ const it=intro; it.hop++; it.phase='jump'; it.fr=0; it.x0=it.x; it.y0=it.y; }
+function stepIntro(){
+  const it=intro; it.t++;
+  if(it.phase==='wait'){ if(it.t>100) beginHop(); return; }
+  if(it.phase==='jump'){
+    it.fr++;
+    const T=30, k=it.fr/T, hop=INTRO_HOPS[it.hop],
+          tx=hop.x, ty=gY(GIRDERS[hop.g],tx); // mit aktuellem bend => noch flach
+    it.x=it.x0+(tx-it.x0)*k;
+    it.y=it.y0+(ty-it.y0)*k - Math.sin(Math.PI*Math.min(1,k))*74;
+    if(it.fr>=T){
+      it.x=tx; it.y=ty; sfx.thud(); it.fr=0;
+      it.phase = (GIRDERS[hop.g].bend!==undefined && GIRDERS[hop.g].bend<1) ? 'bend' : 'pause';
+    }
+    return;
+  }
+  if(it.phase==='bend'){ // der Traeger biegt sich unter ihm durch
+    it.fr++;
+    const hop=INTRO_HOPS[it.hop], g=GIRDERS[hop.g];
+    g.bend=Math.min(1,g.bend+1/22);
+    if(it.hop===0) GIRDERS[0].bend=g.bend; // Boden-Rampe kippt beim ersten Wumms mit
+    it.y=gY(g,it.x);
+    if(g.bend>=1){ it.phase='pause'; it.fr=0; }
+    return;
+  }
+  if(it.phase==='pause'){
+    it.fr++;
+    if(it.fr>=10){
+      if(it.hop>=INTRO_HOPS.length-1){ it.phase='roar'; it.fr=0; sfx.roar(); }
+      else beginHop();
+    }
+    return;
+  }
+  if(it.phase==='roar'){ it.fr++; if(it.fr>=60) finishIntro(); }
+}
 
 // ---- Sound (WebAudio, winzige Synth-Bleeps)
 let AC=null;
@@ -119,6 +171,11 @@ const sfx={
   death(){ [520,415,350,262,208,175].forEach((f,i)=>tone(f,f,.13,'square',.06,i*.12)); },
   win(){ [523,659,784,1047].forEach((f,i)=>tone(f,f,.12,'square',.06,i*.1)); },
   life(){ [784,988,1175].forEach((f,i)=>tone(f,f,.1,'square',.06,i*.08)); },
+  // Bedrohliche chromatische Reihe (eigene Komposition, kein Nintendo-Original)
+  intro(){ [98,104,110,117,123,131,139,147].forEach((f,i)=>tone(f,f,.15,'square',.07,i*.17));
+    tone(156,156,.45,'square',.08,1.36); },
+  thud(){ tone(75,40,.22,'triangle',.14); tone(50,35,.3,'sine',.12,.02); },
+  roar(){ tone(90,55,.6,'sawtooth',.09); tone(70,45,.6,'sawtooth',.09,.05); },
 };
 
 function addScore(n,x,y){
@@ -318,6 +375,7 @@ function step(){
   frame++;
   if(state==='title'||state==='over'){ stateT++; return; }
   if(paused) return;
+  if(state==='intro'){ stepIntro(); return; }
 
   if(state==='dying'){
     stateT++;
@@ -562,11 +620,13 @@ function drawGirder(g){
   }
 }
 function drawLadder(l){
+  // Hoehen live berechnen, damit die Leitern im Intro mit den Traegern wandern
+  const yT=gY(GIRDERS[l.up],l.x), yB=gY(GIRDERS[l.dn],l.x);
   ctx.fillStyle='#3ed6ff';
   const seg=(a,c)=>{ ctx.fillRect(l.x-8,a,2,c-a); ctx.fillRect(l.x+6,a,2,c-a);
     for(let y=a+3;y<c-2;y+=7) ctx.fillRect(l.x-8,y,16,2); };
-  if(l.broken){ seg(l.yTop+2,l.yTop+16); seg(l.yBot-14,l.yBot); }
-  else seg(l.yTop+2,l.yBot);
+  if(l.broken){ seg(yT+2,yT+16); seg(yB-14,yB); }
+  else seg(yT+2,yB);
 }
 function drawBarrel(b){
   const x=b.x,y=b.y; // y = Unterkante
@@ -727,10 +787,15 @@ function drawLevel(){
   for(const l of LADDERS) drawLadder(l);
   drawOil(); drawStack();
   for(const hm of hammers) if(!hm.taken) drawHammerPickup(hm);
-  drawGoal(); drawApe();
-  for(const b of barrels) drawBarrel(b);
-  for(const f of fires) drawFire(f);
-  drawPlayer();
+  drawGoal();
+  if(state==='intro'){ // Gorilla hopst die Traeger krumm
+    blit(intro.phase==='roar'?SPR.kongThrow:SPR.kong, intro.x, Math.round(intro.y), false);
+  } else {
+    drawApe();
+    for(const b of barrels) drawBarrel(b);
+    for(const f of fires) drawFire(f);
+    drawPlayer();
+  }
   ctx.font='bold 12px monospace'; ctx.textAlign='center';
   for(const pp of popups){ ctx.fillStyle='#fff';
     ctx.fillText(pp.txt,pp.x,pp.y-pp.t*0.6); }
@@ -799,6 +864,7 @@ requestAnimationFrame(loop);
 // ---- Eingabe
 function anyStart(){
   if(state==='title'||state==='over'){ startGame(); return true; }
+  if(state==='intro'){ finishIntro(); return true; } // Intro ueberspringbar
   return false;
 }
 addEventListener('keydown',e=>{
@@ -844,7 +910,8 @@ const DBG={
     player:{...player}, barrels:barrels.map(b=>({...b})),
     fires:fires.map(f=>({...f}))}; },
   tick(n){ for(let i=0;i<(n||1);i++) step(); },
-  start(){ startGame(); },
+  start(){ startGame(); finishIntro(); }, // Tests ueberspringen das Intro
+  intro(){ startGame(); },
   spawn(){ spawnBarrel(); },
   tp(x,y){ player.x=x; player.y=y; player.mode='air'; player.vy=0; player.vx=0; player.airFrom=y; },
   key(k,v){ keys[k]=v?1:0; },
