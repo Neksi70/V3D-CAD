@@ -118,6 +118,54 @@ const res = await page.evaluate(async () => {
   out.vorschau = { ms: Math.round(performance.now() - t), dreiecke: Math.round(gp.index.count / 3) };
   gp.dispose();
 
+  // --- 5a) Text als eigenes Teil (2-farbig)
+  {
+    _vk.img = null; _vk.p.photo = 'kein'; _vk.p.tmode = 'raised';
+    _vk.p.base = 1.2; _vk.p.traise = 0.4; _vk.p.res = 300; _vk.p.stand = false;
+    _vk.p.name = 'Ralf Leuschner'; _vk.p.l2 = 'Bö 8'; _vk.p.l3 = ''; _vk.p.l4 = '';
+
+    _vk.p.zweifarbig = false;
+    const mit = _buildVkGeo(false);
+    out.textEingebacken = { hoehe: oben(mit) };
+    mit.dispose();
+    out.keinExtraTeil = _vkTextGeo() === null;
+
+    _vk.p.zweifarbig = true;
+    const karte = _buildVkGeo(false);
+    out.karteOhneText = { hoehe: oben(karte), ...huelle(karte) };
+    karte.dispose();
+    const tg = _vkTextGeo();
+    tg.computeBoundingBox();
+    const tb = tg.boundingBox;
+    out.textTeil = {
+      unten: +(tb.min.y * 10).toFixed(2), oben: +(tb.max.y * 10).toFixed(2),
+      breite: +((tb.max.x - tb.min.x) * 10).toFixed(1),
+      dreiecke: Math.round(tg.attributes.position.count / 3),
+    };
+    // Löcher in a/o/ß: ohne sie wären die Buchstaben zugeklebt. Fläche der
+    // Deckflächen zählen — mit Löchern ist sie deutlich kleiner.
+    {
+      const p = tg.attributes.position.array;
+      let deckel = 0;
+      for (let i = 0; i < p.length; i += 9) {
+        const ay = p[i + 1], by = p[i + 4], cy = p[i + 7];
+        if (Math.abs(ay - tb.max.y) < 1e-6 && Math.abs(by - tb.max.y) < 1e-6 && Math.abs(cy - tb.max.y) < 1e-6) {
+          deckel += Math.abs((p[i + 3] - p[i]) * (p[i + 8] - p[i + 2]) - (p[i + 6] - p[i]) * (p[i + 5] - p[i + 2])) / 2;
+        }
+      }
+      out.textTeil.deckelFlaeche = +(deckel * 100).toFixed(1);   // mm²
+      out.textTeil.rechteckFlaeche = +((tb.max.x - tb.min.x) * (tb.max.z - tb.min.z) * 100).toFixed(1);
+    }
+    tg.dispose();
+
+    // Eingelassener Text darf kein eigenes Teil erzeugen
+    _vk.p.tmode = 'engraved';
+    out.graviertKeinTeil = _vkTextGeo() === null;
+    _vk.p.tmode = 'raised'; _vk.p.zweifarbig = false;
+    _vk.p.name = 'Max Mustermann'; _vk.p.l2 = 'V3D CAD · 3D-Druck';
+    _vk.p.l3 = '0170 1234567'; _vk.p.l4 = 'max@example.de';
+  }
+
   // --- 5b) Ständer + Kartenfach (Stufe 2)
   // Beide sind aus Einzelflächen gebaut, nicht indiziert → Kantenbilanz über
   // die POSITION hashen, nicht über Indizes.
@@ -233,6 +281,14 @@ const pruef = [
   ['ohne Radius sitzt ein Punkt in der Ecke', res.eckAbstandR0 < 0.4],
   ['Radius 5 zieht die Ecke ein', res.eckAbstandR5 > 1.2],
   ['Vorschau unter 250 ms', res.vorschau.ms < 250],
+  // 2-farbig: Text als eigenes Teil
+  ['ohne Haken bleibt der Text eingebacken', nah(res.textEingebacken.hoehe.max, 1.6, 0.03) && res.keinExtraTeil],
+  ['mit Haken ist die Karte glatt (Text nicht mehr drin)', nah(res.karteOhneText.hoehe.max, 1.2, 0.02)],
+  ['glatte Karte bleibt geschlossen', dicht(res.karteOhneText)],
+  ['Textteil steht 0,4 mm über der Karte', nah(res.textTeil.oben, 1.6, 0.02)],
+  ['Textteil reicht in die Karte hinein (verschmilzt)', res.textTeil.unten <= 0.25],
+  ['Buchstaben haben Löcher (a/o/ß nicht zugeklebt)', res.textTeil.deckelFlaeche > 20 && res.textTeil.deckelFlaeche < res.textTeil.rechteckFlaeche * 0.55],
+  ['eingelassener Text erzeugt kein zweites Teil', res.graviertKeinTeil],
   // Stufe 2: Aufsteller
   ['Preset Aufsteller: größer, dicker, Name 16 mm', res.preset.w === 100 && res.preset.base === 2.5 && res.preset.tsize === 16 && res.preset.stand],
   ['Fußleiste bleibt glatt (kein Relief in der Nut)', nah(res.fussGlatt.maxDicke, res.fussGlatt.soll, 0.02)],

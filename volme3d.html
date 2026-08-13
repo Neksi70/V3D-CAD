@@ -3576,6 +3576,7 @@ Patrick</textarea>
           <button class="vtb on" onclick="_vkSet('tmode','raised')" title="Text steht aus der Karte heraus — fühlbar">Erhaben</button>
           <button class="vtb" onclick="_vkSet('tmode','engraved')" title="Text ist in die Karte hineingefräst">Eingelassen</button>
         </div>
+        <label id="vk-row-2f" style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:4px" title="Die Buchstaben werden ein eigener Körper. Nur so lassen sie sich getrennt einfärben und 2-farbig drucken — solange alles ein Teil ist, gibt es nur eine Farbe."><input type="checkbox" id="vk-2f" onchange="_vkSet('zweifarbig',this.checked)"> Text als eigenes Teil (2-farbig)</label>
         <div class="vbg" id="vk-galign">
           <button class="vtb on" onclick="_vkSet('talign','links')">Linksbündig</button>
           <button class="vtb" onclick="_vkSet('talign','mitte')">Zentriert</button>
@@ -28863,7 +28864,7 @@ const _vk = { img:null,
       photo:'links', pw:32, relief:0.6, plastik:60, glatt:1, hohl:false,
       name:'Max Mustermann', l2:'V3D CAD · 3D-Druck', l3:'0170 1234567', l4:'max@example.de',
       font:'Arial, Helvetica, sans-serif', tsize:5, lsize:3, traise:0.4,
-      tmode:'raised', talign:'links',
+      tmode:'raised', talign:'links', zweifarbig:false,
       stand:false, tilt:12, slotD:8, spiel:0.35, standD:22, standH:16,
       fach:true, fachW:87, fachD:57, fachT:8, wall:2 } };
 
@@ -28959,44 +28960,121 @@ function _vkHeightMap(ppm){
     }
   }
 
-  // Text wird als Canvas-Maske gerastert. Dadurch geht jede CSS-Schrift ohne
-  // typeface.json, und eingelassener Text ist nur ein Vorzeichen.
-  const lines=[{t:P.name,s:P.tsize},{t:P.l2,s:P.lsize},{t:P.l3,s:P.lsize},{t:P.l4,s:P.lsize}]
-    .filter(l=>l.t && l.t.trim());
-  if(lines.length && P.traise>0){
-    let ax0=P.marg, ax1=P.w-P.marg;
-    if(pr && P.photo==='links')  ax0=pr.x+pr.w+P.marg;
-    if(pr && P.photo==='rechts') ax1=pr.x-P.marg;
-    if(ax1-ax0>3){
-      const tc=document.createElement('canvas'); tc.width=W; tc.height=H;
-      const tx=tc.getContext('2d');
-      tx.fillStyle='#000'; tx.fillRect(0,0,W,H);
-      tx.fillStyle='#fff'; tx.textBaseline='top';
-      const maxW=(ax1-ax0)*ppm, gap=0.85*ppm;
-      const hs=lines.map(l=>l.s*ppm*1.3);
-      // Senkrecht im nutzbaren Band zentrieren (ohne Rand und Fußleiste) —
-      // ohne Ständer ist das Band symmetrisch, also unverändert mittig.
-      const by0=P.marg*ppm, by1=(P.h-P.marg-_vkFuss())*ppm;
-      let y=by0 + ((by1-by0) - (hs.reduce((a,b)=>a+b,0) + gap*(lines.length-1)))/2;
-      for(let i=0;i<lines.length;i++){
-        let px=lines[i].s*ppm;
-        tx.font='600 '+px.toFixed(1)+'px '+P.font;
-        const w=tx.measureText(lines[i].t).width;
-        if(w>maxW && w>0){ px*=maxW/w; tx.font='600 '+px.toFixed(1)+'px '+P.font; }   // zu lang → passend schrumpfen
-        if(P.talign==='mitte'){ tx.textAlign='center'; tx.fillText(lines[i].t,(ax0+ax1)/2*ppm,y); }
-        else { tx.textAlign='left'; tx.fillText(lines[i].t,ax0*ppm,y); }
-        y+=hs[i]+gap;
-      }
-      const td=tx.getImageData(0,0,W,H).data;
+  // Text nur einbacken, wenn er NICHT als eigenes Teil entsteht (2-farbig).
+  if(!_vkTextExtra()){
+    const T=_vkTextAlpha(ppm);
+    if(T){
       const sgn=(P.tmode==='engraved')?-1:1;
       for(let i=0;i<W*H;i++){
-        const a=td[i*4]/255;
+        const a=T.alpha[i];
         // Kantenglättung des Canvas liefert Zwischenwerte → weiche Flanken
         if(a>0.004) hgt[i]=Math.max(0.4, hgt[i]+sgn*P.traise*a);
       }
     }
   }
   return {hgt,W,H};
+}
+
+// Soll der Text ein eigener Körper werden? Nur sinnvoll bei erhabenem Text —
+// eingelassener Text ist eine Vertiefung, dafür gibt es kein zweites Teil.
+function _vkTextExtra(){
+  const P=_vk.p;
+  return !!P.zweifarbig && P.tmode==='raised' &&
+    [P.name,P.l2,P.l3,P.l4].some(t=>t && t.trim());
+}
+
+// Text als Canvas-Maske rastern. Dadurch geht jede CSS-Schrift ohne
+// typeface.json, zu lange Zeilen schrumpfen selbst, und eingelassener Text
+// ist beim Einbacken nur ein Vorzeichen. Liefert Deckung 0..1 je Pixel.
+function _vkTextAlpha(ppm){
+  const P=_vk.p;
+  const W=Math.max(24,Math.round(P.w*ppm)), H=Math.max(24,Math.round(P.h*ppm));
+  const lines=[{t:P.name,s:P.tsize},{t:P.l2,s:P.lsize},{t:P.l3,s:P.lsize},{t:P.l4,s:P.lsize}]
+    .filter(l=>l.t && l.t.trim());
+  if(!lines.length || P.traise<=0) return null;
+  const pr=_vkPhotoRect();
+  let ax0=P.marg, ax1=P.w-P.marg;
+  if(pr && P.photo==='links')  ax0=pr.x+pr.w+P.marg;
+  if(pr && P.photo==='rechts') ax1=pr.x-P.marg;
+  if(ax1-ax0<=3) return null;
+  const tc=document.createElement('canvas'); tc.width=W; tc.height=H;
+  const tx=tc.getContext('2d');
+  tx.fillStyle='#000'; tx.fillRect(0,0,W,H);
+  tx.fillStyle='#fff'; tx.textBaseline='top';
+  const maxW=(ax1-ax0)*ppm, gap=0.85*ppm;
+  const hs=lines.map(l=>l.s*ppm*1.3);
+  // Senkrecht im nutzbaren Band zentrieren (ohne Rand und Fußleiste) —
+  // ohne Ständer ist das Band symmetrisch, also unverändert mittig.
+  const by0=P.marg*ppm, by1=(P.h-P.marg-_vkFuss())*ppm;
+  let y=by0 + ((by1-by0) - (hs.reduce((a,b)=>a+b,0) + gap*(lines.length-1)))/2;
+  for(let i=0;i<lines.length;i++){
+    let px=lines[i].s*ppm;
+    tx.font='600 '+px.toFixed(1)+'px '+P.font;
+    const w=tx.measureText(lines[i].t).width;
+    if(w>maxW && w>0){ px*=maxW/w; tx.font='600 '+px.toFixed(1)+'px '+P.font; }   // zu lang → passend schrumpfen
+    if(P.talign==='mitte'){ tx.textAlign='center'; tx.fillText(lines[i].t,(ax0+ax1)/2*ppm,y); }
+    else { tx.textAlign='left'; tx.fillText(lines[i].t,ax0*ppm,y); }
+    y+=hs[i]+gap;
+  }
+  const td=tx.getImageData(0,0,W,H).data;
+  const alpha=new Float32Array(W*H);
+  for(let i=0;i<W*H;i++) alpha[i]=td[i*4]/255;
+  return {alpha,W,H,band:{ax0,ax1}};
+}
+
+// Buchstaben als eigener Körper: Maske → Konturen (derselbe Tracer wie beim
+// Bild-Box-Generator, inkl. Löchern in a/o/ß) → Extrusion. Die Buchstaben
+// reichen bis 0,2 mm in die Karte hinein, damit sie beim Drucken sicher
+// verschmelzen — sie sitzen ja nicht bündig auf, sondern überlappen.
+function _vkTextGeo(){
+  if(!_vkTextExtra()) return null;
+  const P=_vk.p;
+  // 12 px/mm mit leichter Glättung: A/B verglichen — grob gerastert bleiben
+  // Treppen in e/s/c stehen, ungeglättet ebenso, zu stark geglättet runden die
+  // Ecken von L und f weg.
+  const ppm=12;
+  const T=_vkTextAlpha(ppm); if(!T) return null;
+  const {W,H,alpha}=T;
+  const mask=new Uint8Array(W*H);
+  for(let i=0;i<W*H;i++) mask[i]=alpha[i]>0.5?1:0;
+  let n=0; for(let i=0;i<W*H;i++) n+=mask[i];
+  if(!n) return null;
+
+  // Steht der Text über dem Foto, muss er auf dem Relief aufsetzen
+  const pr=_vkPhotoRect();
+  const ueberFoto=!!pr && (P.photo==='voll' ||
+    !(T.band.ax1<=pr.x || T.band.ax0>=pr.x+pr.w));
+  const oben=P.base + (ueberFoto?P.relief:0) + P.traise;
+  const unten=0.2;
+  const wU=P.w/10, hU=P.h/10;
+
+  const loops=_ibxTrace(mask,W,H)
+    .map(l=>({pts:_ibxRefine(l.pts,1),area:l.area}))
+    .filter(l=>l.pts && Math.abs(l.area)>ppm*ppm*0.05);   // Rasterkrümel raus
+  if(!loops.length) return null;
+  // Shape-Ebene: x bleibt x, y = -z, weil rotateX(-90°) danach (x,y,z) → (x,z,-y)
+  // abbildet und die Extrusion dadurch nach oben zeigt.
+  const put=(path,pts)=>{
+    pts.forEach((p,i)=>{
+      const x=p.x/ppm/10-wU/2, z=p.y/ppm/10-hU/2;
+      if(i===0) path.moveTo(x,-z); else path.lineTo(x,-z);
+    });
+    path.closePath();
+  };
+  const shapes=[];
+  for(const grp of _ibxNest(loops)){
+    const sh=new THREE.Shape();
+    put(sh,grp.outer.pts);
+    for(const h of grp.holes){ const hp=new THREE.Path(); put(hp,h.pts); sh.holes.push(hp); }
+    shapes.push(sh);
+  }
+  if(!shapes.length) return null;
+  const g=new THREE.ExtrudeGeometry(shapes,{depth:(oben-unten)/10,bevelEnabled:false,steps:1});
+  g.rotateX(-Math.PI/2);
+  g.translate(0,unten/10,0);
+  const out=_toPlainGeo(g); g.dispose();
+  out.computeVertexNormals(); out.computeBoundingBox();
+  return out;
 }
 
 function _buildVkGeo(vorschau){
@@ -29168,6 +29246,7 @@ function _vkMergeGeos(list){
 }
 function _vkPreviewGeo(){
   const list=[_buildVkGeo(true)];
+  const t=_vkTextGeo(); if(t) list.push(t);
   for(const p of _vkBaseParts()) list.push(p.geo);
   if(list.length===1) return list[0];
   const m=_vkMergeGeos(list);
@@ -29200,7 +29279,7 @@ function _vkOpen(){
 function _vkClose(){ document.getElementById('vk-modal').classList.remove('show'); _gpvStop('vk'); }
 
 const _VK_STR={photo:1,name:1,l2:1,l3:1,l4:1,font:1,tmode:1,talign:1};
-const _VK_BOOL={hohl:1,stand:1,fach:1};
+const _VK_BOOL={hohl:1,stand:1,fach:1,zweifarbig:1};
 let _vkRT=null;
 function _vkSet(k,v){
   if(_VK_STR[k]) _vk.p[k]=v;
@@ -29223,6 +29302,10 @@ function _vkSyncUI(){
   set('vk-fachw','vkv-fachw',P.fachW); set('vk-fachd','vkv-fachd',P.fachD);
   set('vk-facht','vkv-facht',P.fachT); set('vk-wall','vkv-wall',P.wall);
   const hh=document.getElementById('vk-hohl'); if(hh) hh.checked=!!P.hohl;
+  const zf=document.getElementById('vk-2f'); if(zf) zf.checked=!!P.zweifarbig;
+  // Eingelassener Text ist eine Vertiefung — dafür gibt es kein zweites Teil
+  const zr=document.getElementById('vk-row-2f');
+  if(zr) zr.style.display=(P.tmode==='raised')?'flex':'none';
   const st=document.getElementById('vk-stand'); if(st) st.checked=!!P.stand;
   const fa=document.getElementById('vk-fach'); if(fa) fa.checked=!!P.fach;
   const fs=document.getElementById('vk-font'); if(fs) fs.value=P.font;
@@ -29278,15 +29361,20 @@ function _vkCreate(){
   saveUndo();
   let teile;
   try{
-    teile=[{geo:_buildVkGeo(false), name:P.stand?'Schild':'Karte'}].concat(_vkBaseParts());
+    teile=[{geo:_buildVkGeo(false), name:P.stand?'Schild':'Karte'}];
+    const tg=_vkTextGeo();
+    if(tg) teile.push({geo:tg, name:'Text', kontrast:true});
+    teile=teile.concat(_vkBaseParts());
   }catch(e){ console.error('Visitenkarte:',e); notify('Fehler beim Erstellen','w'); return; }
   const color=currentColor;
+  const colText=_nameContrast(color);
   typeCounts['vcard']=(typeCounts['vcard']||0)+1;
   const nr=typeCounts['vcard'];
   const mk=(t)=>{
-    const mat=new THREE.MeshStandardMaterial({color:new THREE.Color(color),roughness:0.6,metalness:0.0,side:THREE.DoubleSide});
+    const c=t.kontrast?colText:color;
+    const mat=new THREE.MeshStandardMaterial({color:new THREE.Color(c),roughness:0.6,metalness:0.0,side:THREE.DoubleSide});
     const m=new THREE.Mesh(t.geo,mat); m.castShadow=true; m.receiveShadow=true;
-    m.userData={id:idCtr++,type:'vcard',shapeType:'custom',name:t.name,color,isHole:false,fillet:0,chamfer:0};
+    m.userData={id:idCtr++,type:'vcard',shapeType:'custom',name:t.name,color:c,isHole:false,fillet:0,chamfer:0};
     return m;
   };
   if(teile.length===1){
@@ -29298,12 +29386,14 @@ function _vkCreate(){
     notify('Visitenkarte erstellt — flach drucken, Relief nach oben, ohne Stützen','ok');
   }else{
     const grp=new THREE.Group();
-    grp.userData={id:idCtr++,name:'Tischaufsteller #'+nr,isGroup:true};
+    grp.userData={id:idCtr++,name:(P.stand?'Tischaufsteller #':'Visitenkarte #')+nr,isGroup:true};
     for(const t of teile){ const m=mk(t); grp.add(m); _updateObjEdgeLines(m); }
     grp.quaternion.copy(_wpMakeQuat(workplaneNormal)); grp.position.copy(workplanePoint);
     scene.add(grp); objects.push(grp);
     selectObjs([grp]); updateTree(); fitToObjects([grp]);
-    notify('Aufsteller mit '+(teile.length-1)+' Ständerteil(en) erstellt — alles liegt druckfertig, ohne Stützen','ok');
+    notify(_vkTextExtra()
+      ? 'Erstellt — der Text ist ein eigenes Teil und lässt sich getrennt einfärben (2-farbig drucken)'
+      : 'Aufsteller erstellt — alles liegt druckfertig, ohne Stützen','ok');
   }
   _vkClose();
 }
