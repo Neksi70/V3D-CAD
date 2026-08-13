@@ -15,7 +15,8 @@ ganz normal IMAP und SMTP.
 | `server.py` | Dienst: HTTP-API, IMAP-Verbindungen, SMTP-Versand, HTML-Säuberung |
 | `mail.html` | Oberfläche, eine Datei, Vanilla JS |
 | `test_server.py` | 41 Tests ohne echtes Postfach (IMAP wird gestubbt) |
-| `smoke_ui.py` | Browser-Durchlauf: Anmeldung, Kontodialog, Server-Suche |
+| `smoke_ui.py` | Browser-Durchlauf am Rechner: Anmeldung, Postfächer, Lesen, Bilder |
+| `smoke_handy.py` | Browser-Durchlauf im Handy-Format: Zurück-Knopf und Zurück-Geste |
 
 Zugangsdaten liegen **nicht** hier, sondern in `~/.config/v3dmail/config.json`
 (Modus 0600). Dort steht auch der Anmeldeschlüssel (`adminKey`).
@@ -43,6 +44,28 @@ eigener DNS-Client in `server.py` — die Standardbibliothek kann nur A/AAAA.
 „Prüfen & speichern" meldet sich testweise an, bevor gespeichert wird.
 
 Tastatur: `n` neue Nachricht, `r` antworten, `j`/`k` blättern, `Entf` löschen, `Esc` schließen.
+
+## Auf dem Handy
+
+Es gibt **keine eigene Android-App** — dieselbe Web-App, über den Funnel-Pfad
+aufgerufen und bei Bedarf über „Zum Startbildschirm hinzufügen" als PWA
+installiert. Alle Funktionen gelten dort genauso.
+
+Aus einer geöffneten Mail kommt man auf zwei Wegen zurück: über den orangen
+Knopf **‹ Zurück zur Liste** ganz oben und über die **System-Zurück-Geste**.
+Letztere funktioniert nur, weil jede Ebene (Mail, Verfassen, Dialog) einen
+Eintrag im Verlauf des Browsers anlegt. Zwei Stolpersteine stecken darin:
+
+* Das Anzeige-`iframe` muss bei jeder Nachricht **neu erzeugt** werden. Setzt man
+  nur `srcdoc` neu, hängt der Browser jedes Mal einen eigenen Verlaufseintrag an
+  — die Zurück-Geste landet dann dort statt bei der Mail, und man sitzt fest.
+* Chromium überspringt Verlaufseinträge, die es für Manipulation hält. Deshalb
+  wird der vorhandene Seiteneintrag per `replaceState` als Basis markiert, statt
+  einen zweiten anzulegen; pro Ebene entsteht genau ein Eintrag.
+
+`smoke_handy.py` prüft beides im Handy-Format und steuert die Zurück-Taste über
+das Browser-Protokoll (`Page.navigateToHistoryEntry`) — Playwrights `go_back()`
+wartet auf einen Ladevorgang, den es bei Sprüngen im selben Dokument nicht gibt.
 
 ## Senden/Empfangen
 

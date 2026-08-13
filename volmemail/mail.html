@@ -142,7 +142,10 @@ a{color:var(--acc-d)}
 @keyframes sp{to{transform:rotate(360deg)}}
 
 /* --- Handy --- */
-#back{display:none}
+#back{display:none;align-items:center;gap:6px;background:#fff6ee;color:var(--acc-d);
+  border:1px solid #ffd7ad;border-radius:9px;padding:9px 14px;font-size:15px;font-weight:600;
+  margin-bottom:12px;min-height:42px}
+#back:active{background:#ffe8d5}
 @media(max-width:900px){
   #side{position:fixed;left:0;top:0;bottom:0;z-index:40;transform:translateX(-100%);transition:transform .2s;box-shadow:4px 0 24px rgba(0,0,0,.3)}
   #side.open{transform:none}
@@ -196,6 +199,7 @@ a{color:var(--acc-d)}
     <div id="empty"><div class="big">✉️</div><div>Keine Nachricht ausgewählt</div></div>
     <div id="readinner" class="hide" style="display:flex;flex-direction:column;flex:1;min-height:0">
       <div class="hd">
+        <button id="back" onclick="zurueck()">‹ Zurück zur Liste</button>
         <h2 id="rsubj"></h2>
         <div class="from">
           <div class="av" id="rav"></div>
@@ -207,7 +211,6 @@ a{color:var(--acc-d)}
         </div>
       </div>
       <div class="acts">
-        <button class="btn sec sm" id="back" onclick="showList()">‹ Zurück</button>
         <button class="btn sm" onclick="reply(false)">↩ Antworten</button>
         <button class="btn sec sm" onclick="reply(true)">↩↩ Allen</button>
         <button class="btn sec sm" onclick="forward()">↪ Weiterleiten</button>
@@ -494,9 +497,59 @@ async function star(uid, on) {
   catch (e) { toast(e.message); }
 }
 
+// --- Ebenen und Zurück-Taste ----------------------------------------------
+// Jede geöffnete Ebene (Mail, Verfassen, Dialog) bekommt einen Eintrag in der
+// Browser-Chronik. Nur so wirkt die Zurück-Geste auf dem Handy auf die App und
+// schließt nicht gleich die ganze Seite.
+S.layers = [];
+
+function pushLayer(name) {
+  if (S.layers[S.layers.length - 1] === name) return;   // dieselbe Ebene nicht doppelt
+  // Der vorhandene Seiteneintrag wird als Basis markiert, statt einen zweiten
+  // anzulegen: Chromium überspringt beim Zurückgehen Einträge, die es für
+  // Verlaufsmanipulation hält — und zwei pushState in einer einzigen Geste
+  // fallen genau darunter. So bleibt es bei einem Eintrag pro Ebene.
+  if (!S.layers.length && !(history.state && 'v3d' in history.state)) {
+    history.replaceState({ v3d: 0 }, '');
+  }
+  S.layers.push(name);
+  history.pushState({ v3d: S.layers.length }, '');
+}
+
+function closeTop() {
+  const top = S.layers.pop();
+  if (top === 'compose') document.getElementById('compose').classList.add('hide');
+  else if (top === 'modal') document.getElementById('modal').classList.add('hide');
+  else if (top === 'msg') showList();
+}
+
+// Alle Schließen-Wege laufen über die Chronik, damit Stapel und Verlauf
+// nicht auseinanderdriften; geschlossen wird immer erst in popstate.
+function zurueck() {
+  if (!S.layers.length) return showList();
+  const tiefe = S.layers.length;
+  history.back();
+  // Sicherheitsnetz: verweigert der Browser den Rücksprung, schließen wir die
+  // Ebene selbst. Sonst säße man in der Mail fest, obwohl man Zurück gedrückt hat.
+  setTimeout(() => { if (S.layers.length === tiefe) closeTop(); }, 150);
+}
+
+window.addEventListener('popstate', (e) => {
+  // Die Zieltiefe steht im Verlaufseintrag. Danach richten wir uns, statt blind
+  // eine Ebene zu schließen — sonst reißt ein verspätetes Zurück eine Ebene mit,
+  // die inzwischen neu geöffnet wurde.
+  const ziel = (e.state && typeof e.state.v3d === 'number') ? e.state.v3d : 0;
+  while (S.layers.length > ziel) closeTop();
+});
+
+function istHandy() { return window.innerWidth <= 900; }
+
 // --- Leseansicht -----------------------------------------------------------
 function showList() { document.body.classList.remove('v-read'); document.body.classList.add('v-list'); }
 function showRead() { document.body.classList.remove('v-list'); document.body.classList.add('v-read'); }
+function verlasseMail() {
+  if (S.layers[S.layers.length - 1] === 'msg') zurueck(); else showList();
+}
 
 async function openMsg(uid, withImages) {
   // Beim Wechsel auf eine andere Nachricht die zwischengespeicherten Anhänge
@@ -507,10 +560,13 @@ async function openMsg(uid, withImages) {
     if (S.blobs) S.blobs.clear();
   }
   showRead();
+  // Auf dem Handy verdeckt die Mail die Liste — dafür braucht es einen Eintrag
+  // in der Chronik. Am Rechner stehen beide nebeneinander, da wäre er sinnlos.
+  if (istHandy()) pushLayer('msg');
   document.getElementById('empty').classList.add('hide');
   const inner = document.getElementById('readinner');
   inner.classList.remove('hide');
-  document.getElementById('frame').srcdoc = '<body style="font:15px system-ui;color:#8a90a3;padding:20px">lädt…</body>';
+  setzeFrame('<body style="font:15px system-ui;color:#8a90a3;padding:20px">lädt…</body>');
   let m;
   try {
     m = await api(`message?acc=${S.acc.id}&folder=${encodeURIComponent(S.folder)}&uid=${uid}` + (withImages ? '&images=1' : ''));
@@ -618,6 +674,21 @@ async function alleBilder() {
   }
 }
 
+// Inhalt immer in ein FRISCHES iframe setzen. Ein bestehendes iframe neu zu
+// laden hängt jedes Mal einen Eintrag an den Verlauf des Browsers — die
+// Zurück-Geste landete dann dort statt bei der geöffneten Mail, und man kam
+// aus der Nachricht nicht mehr heraus. Das erste Laden eines neu eingefügten
+// iframes zählt dagegen nicht als Navigation.
+function setzeFrame(doc) {
+  const alt = document.getElementById('frame');
+  const neu = document.createElement('iframe');
+  neu.id = 'frame';
+  neu.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
+  neu.setAttribute('referrerpolicy', 'no-referrer');
+  neu.srcdoc = doc;
+  alt.replaceWith(neu);
+}
+
 async function renderBody(m) {
   let html = m.html || '';
   // Eingebettete Bilder (cid:) nachladen und als data:-URL einsetzen — das
@@ -636,7 +707,7 @@ async function renderBody(m) {
     img{max-width:100%;height:auto}table{max-width:100%}pre.plain{font:14.5px/1.6 system-ui,sans-serif;white-space:pre-wrap;word-wrap:break-word}
     blockquote{border-left:3px solid #e3e6ef;margin:8px 0;padding:2px 0 2px 12px;color:#5b6172}
     a{color:#EA6000}</style></head><body>${html}</body></html>`;
-  document.getElementById('frame').srcdoc = doc;
+  setzeFrame(doc);
 }
 
 function showImages() { if (S.cur) openMsg(S.cur.uid, true); }
@@ -646,7 +717,7 @@ async function toggleUnread() {
   if (!S.cur) return;
   await post('flag', { acc: S.acc.id, folder: S.folder, uids: [S.cur.uid], flag: '\\Seen', on: false });
   const lm = S.msgs.find(x => x.uid === S.cur.uid); if (lm) lm.seen = false;
-  renderList(); showList(); toast('Als ungelesen markiert');
+  renderList(); verlasseMail(); toast('Als ungelesen markiert');
 }
 
 async function delCurrent() {
@@ -659,7 +730,7 @@ async function delCurrent() {
   S.cur = null;
   document.getElementById('readinner').classList.add('hide');
   document.getElementById('empty').classList.remove('hide');
-  showList();
+  verlasseMail();
   loadMessages(S.folder, S.page, true);
 }
 
@@ -682,7 +753,7 @@ async function doMove() {
   S.cur = null;
   document.getElementById('readinner').classList.add('hide');
   document.getElementById('empty').classList.remove('hide');
-  showList(); loadMessages(S.folder, S.page, true);
+  verlasseMail(); loadMessages(S.folder, S.page, true);
 }
 
 // --- Verfassen -------------------------------------------------------------
@@ -708,6 +779,7 @@ function compose(pre) {
   document.getElementById('cattlist').innerHTML = '';
   document.getElementById('cstatus').textContent = '';
   document.getElementById('compose').classList.remove('hide');
+  pushLayer('compose');
   document.getElementById(pre.to ? 'ctext' : 'cto').focus();
 }
 
@@ -722,7 +794,10 @@ function fromChanged() {
   if (sender && sender.signature) t = '\n\n' + sender.signature + t.replace(/^\n\n/, '');
   ta.value = t; S.composeText = t; S.composeFrom = sender ? sender.id : null;
 }
-function closeCompose() { document.getElementById('compose').classList.add('hide'); }
+function closeCompose() {
+  if (S.layers[S.layers.length - 1] === 'compose') zurueck();
+  else document.getElementById('compose').classList.add('hide');
+}
 
 function quoted(m) {
   const who = m.from[0] ? (m.from[0].name || m.from[0].email) : '';
@@ -803,8 +878,15 @@ async function doSend() {
 }
 
 // --- Dialoge / Konten ------------------------------------------------------
-function modal(html) { document.getElementById('modalbox').innerHTML = html; document.getElementById('modal').classList.remove('hide'); }
-function closeModal() { document.getElementById('modal').classList.add('hide'); }
+function modal(html) {
+  document.getElementById('modalbox').innerHTML = html;
+  document.getElementById('modal').classList.remove('hide');
+  pushLayer('modal');     // aufeinanderfolgende Dialoge teilen sich einen Eintrag
+}
+function closeModal() {
+  if (S.layers[S.layers.length - 1] === 'modal') zurueck();
+  else document.getElementById('modal').classList.add('hide');
+}
 
 function accountDialog(first) {
   const list = S.accounts.map(a => `<div class="att" style="width:100%;justify-content:space-between">
@@ -924,7 +1006,7 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Escape') e.target.blur();
     return;
   }
-  if (e.key === 'Escape') { closeModal(); if (!document.getElementById('compose').classList.contains('hide')) closeCompose(); }
+  if (e.key === 'Escape') zurueck();     // schließt genau die oberste Ebene
   if (e.key === 'n') compose();
   if (e.key === 'r' && S.cur) reply(false);
   if (e.key === 'Delete' && S.cur) delCurrent();
