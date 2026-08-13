@@ -170,8 +170,12 @@ with sync_playwright() as p:
               'erwartet %d' % erwartet)
         page.select_option('#cfrom', 'test-zweit')
         page.wait_for_timeout(300)
-        check('Signatur folgt dem Absender', 'Zweite Signatur' in page.input_value('#ctext'),
-              repr(page.input_value('#ctext')[:60]))
+        # Die Signatur steht nicht mehr im Textfeld, sondern wird darunter
+        # angekündigt und erst beim Senden angehängt.
+        check('Signatur folgt dem Absender', 'Zweite Signatur' in page.inner_text('#csig'),
+              repr(page.inner_text('#csig')[:70]))
+        check('Signatur bleibt aus dem Textfeld heraus',
+              'Zweite Signatur' not in page.input_value('#ctext'))
         page.evaluate('closeCompose()')
         page.wait_for_timeout(500)     # Zurück-Sprung abwarten, sonst überholt der nächste Klick
 

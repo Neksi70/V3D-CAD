@@ -133,6 +133,8 @@ a{color:var(--acc-d)}
 #compose textarea:focus{outline:0}
 #compose .cf{padding:10px 16px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 #cattlist{display:flex;gap:6px;flex-wrap:wrap;padding:6px 0}
+#csig{border-top:1px dashed var(--line);margin-top:6px;padding:10px 2px 4px}
+#csig .k{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);font-weight:700;margin-bottom:6px}
 
 /* --- Dialoge --- */
 #modal{position:fixed;inset:0;background:rgba(20,25,40,.55);display:flex;align-items:center;justify-content:center;z-index:70;padding:16px}
@@ -239,6 +241,7 @@ a{color:var(--acc-d)}
     <div class="row"><span>Betreff</span><input id="csubj"></div>
     <div id="cattlist"></div>
     <textarea id="ctext"></textarea>
+    <div id="csig" class="hide"></div>
   </div>
   <div class="cf">
     <button class="btn" onclick="doSend()" id="csend">Senden</button>
@@ -768,16 +771,17 @@ function compose(pre) {
     `<option value="${a.id}">${esc(a.name ? a.name + ' <' + a.email + '>' : a.email)}</option>`).join('');
   from.value = pre.from || (S.acc && S.acc.id) || '';
   document.getElementById('cfromrow').classList.toggle('hide', S.accounts.length < 2);
-  const sender = S.accounts.find(a => a.id === from.value) || S.acc;
-
   document.getElementById('ctitle').textContent = pre.title || 'Neue Nachricht';
   document.getElementById('cto').value = pre.to || '';
   document.getElementById('ccc').value = pre.cc || '';
   document.getElementById('csubj').value = pre.subject || '';
-  const text = 'text' in pre ? pre.text : (sender && sender.signature ? '\n\n' + sender.signature : '');
+  // Die Signatur steht bewusst NICHT im Textfeld: sie wird erst beim Senden
+  // angehängt. So kann sie nicht versehentlich zerschrieben werden, und beim
+  // Wechsel des Absenders stimmt sie ohne Nachbessern.
+  const text = pre.text || '';
   document.getElementById('ctext').value = text;
-  S.composeText = text;          // gemerkt, um die Signatur beim Wechsel zu tauschen
   S.composeFrom = from.value;
+  sigZeile();
   document.getElementById('cattlist').innerHTML = '';
   document.getElementById('cstatus').textContent = '';
   document.getElementById('compose').classList.remove('hide');
@@ -830,15 +834,35 @@ function starteAusAdresse() {
 }
 
 function fromChanged() {
-  // Signatur mitziehen — aber nur, solange am Text noch nichts geändert wurde.
-  const ta = document.getElementById('ctext');
-  if (ta.value !== S.composeText) return;
-  const sender = S.accounts.find(a => a.id === document.getElementById('cfrom').value);
-  const alt = S.accounts.find(a => a.id === S.composeFrom);
-  let t = ta.value;
-  if (alt && alt.signature) t = t.replace('\n\n' + alt.signature, '');
-  if (sender && sender.signature) t = '\n\n' + sender.signature + t.replace(/^\n\n/, '');
-  ta.value = t; S.composeText = t; S.composeFrom = sender ? sender.id : null;
+  S.composeFrom = document.getElementById('cfrom').value;
+  sigZeile();
+}
+
+function sigZeile() {
+  const sender = S.accounts.find(a => a.id === S.composeFrom) || S.acc || {};
+  const box = document.getElementById('csig');
+  if (!box) return;
+  if (sender.signatureHtml || sender.signature) {
+    box.classList.remove('hide');
+    box.innerHTML = '<div class="k">Signatur wird angehängt</div>' +
+      (sender.signatureHtml || esc(sender.signature).replace(/\n/g, '<br>')) +
+      `<button class="btn sec sm" style="margin-top:8px" onclick="editAccount('${sender.id}')">Ändern</button>`;
+  } else {
+    box.classList.remove('hide');
+    box.innerHTML = '<div class="k">Keine Signatur hinterlegt</div>' +
+      `<button class="btn sec sm" onclick="signaturDialog('${sender.id || ''}')">Signatur einrichten</button>`;
+  }
+}
+
+// Getippter Text in die formatierte Fassung übersetzen. Zitatzeilen bekommen
+// die übliche graue Leiste, damit die Antwort lesbar bleibt.
+function htmlAusText(text) {
+  return (text || '').split('\n').map(z => {
+    if (/^\s*>/.test(z)) {
+      return `<div style="border-left:2px solid #ccd0da;padding-left:8px;color:#5b6172">${esc(z.replace(/^\s*>\s?/, ''))}</div>`;
+    }
+    return esc(z) + '<br>';
+  }).join('');
 }
 function closeCompose() {
   if (S.layers[S.layers.length - 1] === 'compose') zurueck();
@@ -872,7 +896,7 @@ function reply(all) {
   compose({
     title: 'Antworten', to, cc, from: fromId,
     subject: /^(re|aw):/i.test(m.subject) ? m.subject : 'Re: ' + m.subject,
-    text: (self.signature ? '\n\n' + self.signature : '') + quoted(m),
+    text: quoted(m),
     reply: { inReplyTo: m.messageId, references: m.references },
   });
 }
@@ -884,8 +908,7 @@ function forward() {
   compose({
     title: 'Weiterleiten', from: fromId,
     subject: /^(fwd|wg):/i.test(m.subject) ? m.subject : 'Fwd: ' + m.subject,
-    text: (self.signature ? '\n\n' + self.signature : '') +
-      `\n\n---------- Weitergeleitete Nachricht ----------\nVon: ${m.from.map(a => a.email).join(', ')}\nDatum: ${m.date}\nBetreff: ${m.subject}\n\n` +
+    text: `\n\n---------- Weitergeleitete Nachricht ----------\nVon: ${m.from.map(a => a.email).join(', ')}\nDatum: ${m.date}\nBetreff: ${m.subject}\n\n` +
       (m.plain || stripTags(m.html)),
   });
 }
@@ -907,12 +930,22 @@ async function doSend() {
   if (!to) return toast('Bitte Empfänger angeben');
   btn.disabled = true;
   document.getElementById('cstatus').innerHTML = '<span class="spin"></span> sendet…';
+  const accId = document.getElementById('cfrom').value || S.acc.id;
+  const sender = S.accounts.find(a => a.id === accId) || {};
+  const roh = document.getElementById('ctext').value;
+  // "-- " ist der seit jeher übliche Trenner vor der Signatur; Mailprogramme
+  // blenden alles darunter beim Antworten aus.
+  const text = sender.signature ? roh.replace(/\s+$/, '') + '\n\n-- \n' + sender.signature : roh;
+  const html = sender.signatureHtml
+    ? `<div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.45">` +
+      htmlAusText(roh) + '<br>' + sender.signatureHtml + '</div>'
+    : '';
   try {
     const r = await post('send', Object.assign({
-      acc: document.getElementById('cfrom').value || S.acc.id,
+      acc: accId,
       to, cc: document.getElementById('ccc').value.trim(),
       subject: document.getElementById('csubj').value,
-      text: document.getElementById('ctext').value,
+      text, html,
       attachments: S.atts,
     }, S.reply || {}));
     closeCompose();
@@ -974,7 +1007,14 @@ function editAccount(id) {
       <option value="starttls" ${a.smtpMode === 'ssl' ? '' : 'selected'}>STARTTLS (587)</option>
       <option value="ssl" ${a.smtpMode === 'ssl' ? 'selected' : ''}>SSL/TLS (465)</option>
     </select>
-    <label>Signatur</label><textarea id="a_sig" rows="3" style="min-height:0">${esc(a.signature || '')}</textarea>
+    <label>Signatur</label>
+    <div style="display:flex;gap:8px;align-items:center">
+      <div id="a_sigvor" style="flex:1;border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+           font-size:12px;color:var(--mid);max-height:88px;overflow:hidden;background:#fafbff">
+        ${a.signatureHtml || (a.signature ? esc(a.signature).replace(/\n/g, '<br>') : '<em>keine Signatur</em>')}
+      </div>
+      <button class="btn sec" style="white-space:nowrap" onclick="signaturDialog('${id || ''}')">Bearbeiten</button>
+    </div>
     <div id="a_err" style="color:var(--red);font-size:13px;margin-top:10px"></div>
     <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end">
       <button class="btn sec" onclick="accountDialog()">Zurück</button>
@@ -1004,6 +1044,144 @@ async function doAutoconfig() {
   } catch (e) { out.textContent = e.message; }
 }
 
+// --- Signatur --------------------------------------------------------------
+// Aus den Angaben entstehen zwei Fassungen: HTML für die formatierte Mail und
+// Klartext als Rückfallebene. Die HTML-Fassung nutzt ausschließlich Stile
+// direkt am Element — Mailprogramme werfen <style>-Blöcke im Kopf weg.
+const SIG_FELDER = [
+  ['name', 'Name', 'Volker Isken'], ['rolle', 'Funktion', 'Inhaber'],
+  ['firma', 'Firma', 'Volme 3D'], ['slogan', 'Zusatz unter der Firma', '3D-Druck · Konstruktion · Kurse'],
+  ['strasse', 'Straße', 'Tückinger Höhe 15'], ['ort', 'PLZ und Ort', '58135 Hagen'],
+  ['telefon', 'Telefon', '+49 1512 0164288'], ['email', 'E-Mail', ''],
+  ['web', 'Web', 'https://volme3dakademie.de'], ['zusatz', 'Freie Zeile', ''],
+];
+
+function sigBauen(d, layout) {
+  const A = '#EA6000', T = '#1c2030', M = '#5b6172';
+  const e = s => esc(s || '');
+  const web = (d.web || '').replace(/^https?:\/\//, '');
+  const schrift = "font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.45";
+
+  const zeilen = [];
+  if (d.strasse) zeilen.push(e(d.strasse));
+  if (d.ort) zeilen.push(e(d.ort));
+  const kontakt = [];
+  if (d.telefon) kontakt.push(`Tel. <a href="tel:${e((d.telefon || '').replace(/[^+\d]/g, ''))}" style="color:${M};text-decoration:none">${e(d.telefon)}</a>`);
+  if (d.email) kontakt.push(`<a href="mailto:${e(d.email)}" style="color:${A};text-decoration:none">${e(d.email)}</a>`);
+  if (d.web) kontakt.push(`<a href="${e(d.web)}" style="color:${A};text-decoration:none">${e(web)}</a>`);
+
+  const kopf = `<span style="font-weight:bold;color:${T};font-size:14px">${e(d.name)}</span>` +
+    (d.rolle ? `<span style="color:${M}"> · ${e(d.rolle)}</span>` : '');
+  const firma = d.firma ? `<div style="color:${T};font-weight:bold;margin-top:2px">${e(d.firma)}</div>` : '';
+  const slogan = d.slogan ? `<div style="color:${A};font-size:11.5px;letter-spacing:.3px">${e(d.slogan)}</div>` : '';
+  const adresse = zeilen.length ? `<div style="color:${M};margin-top:6px">${zeilen.join('<br>')}</div>` : '';
+  const kontaktZeile = kontakt.length ? `<div style="color:${M};margin-top:4px">${kontakt.join(' &nbsp;·&nbsp; ')}</div>` : '';
+  const zusatz = d.zusatz ? `<div style="color:${M};font-size:11.5px;margin-top:6px">${e(d.zusatz)}</div>` : '';
+
+  let html;
+  if (layout === 'balken') {
+    html = `<div style="${schrift};border-left:3px solid ${A};padding-left:12px">` +
+      `<div>${kopf}</div>${firma}${slogan}${adresse}${kontaktZeile}${zusatz}</div>`;
+  } else if (layout === 'kompakt') {
+    const alles = [d.strasse, d.ort].filter(Boolean).map(e).join(', ');
+    html = `<div style="${schrift};color:${M}">` +
+      `<div>${kopf}${d.firma ? ` · <span style="font-weight:bold;color:${T}">${e(d.firma)}</span>` : ''}</div>` +
+      (alles ? `<div style="margin-top:3px">${alles}</div>` : '') +
+      kontaktZeile + zusatz + '</div>';
+  } else {
+    html = `<div style="${schrift}">` +
+      `<div style="border-top:1px solid #e3e6ef;padding-top:8px">${kopf}</div>` +
+      `${firma}${slogan}${adresse}${kontaktZeile}${zusatz}</div>`;
+  }
+
+  const t = [];
+  t.push([d.name, d.rolle].filter(Boolean).join(' · '));
+  if (d.firma) t.push(d.firma);
+  if (d.slogan) t.push(d.slogan);
+  if (d.strasse) t.push(d.strasse);
+  if (d.ort) t.push(d.ort);
+  const tk = [];
+  if (d.telefon) tk.push('Tel. ' + d.telefon);
+  if (d.email) tk.push(d.email);
+  if (d.web) tk.push(web);
+  if (tk.length) t.push(tk.join(' · '));
+  if (d.zusatz) t.push(d.zusatz);
+  return { html, text: t.filter(Boolean).join('\n') };
+}
+
+function signaturDialog(id) {
+  const a = S.accounts.find(x => x.id === id) || {};
+  const d = Object.assign({ email: a.email || '' }, a.signatureData || {});
+  const layout = d.layout || 'schlicht';
+  const feld = ([k, label, platzhalter]) => `<div>
+      <label>${label}</label>
+      <input id="sig_${k}" value="${esc(d[k] || '')}" placeholder="${esc(platzhalter)}" oninput="sigVorschau()">
+    </div>`;
+  modal(`<h3>Signatur</h3>
+    <p class="muted" style="font-size:13.5px">Wird an jede Nachricht angehängt — formatiert und als reiner Text.</p>
+    <div style="display:flex;gap:8px;margin:12px 0">
+      <button class="btn sec sm" onclick="sigAusRechnung()">Daten aus VolmeRechnung übernehmen</button>
+      <button class="btn sec sm" onclick="sigLeeren()">Signatur entfernen</button>
+    </div>
+    <label>Gestaltung</label>
+    <select id="sig_layout" onchange="sigVorschau()">
+      <option value="schlicht"${layout === 'schlicht' ? ' selected' : ''}>Schlicht — Trennlinie oben</option>
+      <option value="balken"${layout === 'balken' ? ' selected' : ''}>Akzentbalken links</option>
+      <option value="kompakt"${layout === 'kompakt' ? ' selected' : ''}>Kompakt — wenige Zeilen</option>
+    </select>
+    <div class="grid2">${SIG_FELDER.map(feld).join('')}</div>
+    <label>Vorschau</label>
+    <div id="sig_vor" style="border:1px solid var(--line);border-radius:9px;padding:14px;background:#fff;min-height:80px"></div>
+    <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+      <button class="btn sec" onclick="editAccount('${id || ''}')">Zurück</button>
+      <button class="btn" onclick="sigSpeichern('${id || ''}')">Übernehmen</button>
+    </div>`);
+  sigVorschau();
+}
+
+function sigDaten() {
+  const d = { layout: document.getElementById('sig_layout').value };
+  for (const [k] of SIG_FELDER) d[k] = document.getElementById('sig_' + k).value.trim();
+  return d;
+}
+function sigVorschau() {
+  const d = sigDaten();
+  document.getElementById('sig_vor').innerHTML =
+    sigBauen(d, d.layout).html || '<span class="muted">noch nichts ausgefüllt</span>';
+}
+async function sigAusRechnung() {
+  let f;
+  try { f = (await api('firma')).firma || {}; } catch (e) { return toast(e.message); }
+  if (!Object.keys(f).length) return toast('Keine Firmendaten gefunden');
+  const setze = (k, v) => { const el = document.getElementById('sig_' + k); if (el && v && !el.value) el.value = v; };
+  setze('name', f.inhaber); setze('firma', f.name); setze('slogan', f.slogan);
+  setze('strasse', f.strasse); setze('ort', [f.plz, f.ort].filter(Boolean).join(' '));
+  setze('telefon', f.telefon); setze('web', f.web);
+  sigVorschau();
+  toast('Aus VolmeRechnung übernommen');
+}
+function sigLeeren() {
+  for (const [k] of SIG_FELDER) document.getElementById('sig_' + k).value = '';
+  sigVorschau();
+}
+async function sigSpeichern(id) {
+  if (!id) return toast('Bitte das Konto erst speichern, dann die Signatur einrichten', 5000);
+  const d = sigDaten();
+  const { html, text } = sigBauen(d, d.layout);
+  const leer = !text.trim();
+  try {
+    const r = await post('account/save', {
+      id, signatureData: leer ? {} : d,
+      signature: leer ? '' : text, signatureHtml: leer ? '' : html,
+    });
+    const i = S.accounts.findIndex(x => x.id === r.account.id);
+    if (i >= 0) S.accounts[i] = r.account;
+    if (S.acc && S.acc.id === r.account.id) S.acc = r.account;
+    toast(leer ? 'Signatur entfernt' : 'Signatur gespeichert ✓');
+    editAccount(id);
+  } catch (e) { toast('Fehler: ' + e.message, 5000); }
+}
+
 async function saveAccount(id) {
   const btn = document.getElementById('a_save');
   const err = document.getElementById('a_err');
@@ -1019,7 +1197,8 @@ async function saveAccount(id) {
     smtpHost: document.getElementById('a_sh').value.trim(),
     smtpPort: parseInt(document.getElementById('a_sp').value, 10) || 587,
     smtpMode: document.getElementById('a_sm').value,
-    signature: document.getElementById('a_sig').value,
+    // Signatur bewusst nicht mitschicken: sie wird im eigenen Editor gepflegt,
+    // der Server behält beim Speichern die nicht übergebenen Felder.
   };
   if (!acc.email || !acc.imapHost) { err.textContent = 'E-Mail-Adresse und IMAP-Server sind Pflicht.'; return; }
   if (!acc.password && !id) { err.textContent = 'Passwort fehlt.'; return; }

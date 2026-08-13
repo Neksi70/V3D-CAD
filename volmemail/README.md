@@ -18,6 +18,7 @@ ganz normal IMAP und SMTP.
 | `smoke_ui.py` | Browser-Durchlauf am Rechner: Anmeldung, Postfächer, Lesen, Bilder |
 | `smoke_handy.py` | Browser-Durchlauf im Handy-Format: Zurück-Knopf und Zurück-Geste |
 | `smoke_windows.py` | Installierbarkeit als Windows-App und mailto-Anbindung |
+| `smoke_signatur.py` | Signatur-Editor und Aufbau der versendeten Nachricht |
 | `werkzeug/icons_bauen.py` | erzeugt die PNG-Symbole für das Manifest |
 
 Zugangsdaten liegen **nicht** hier, sondern in `~/.config/v3dmail/config.json`
@@ -103,6 +104,26 @@ von selbst, aber still: gemeldet wird nur, wenn wirklich etwas Neues ankommt.
 
 „Senden" ist im Namen mitgemeint, hat aber keine Warteschlange: Nachrichten gehen
 beim Klick auf *Senden* sofort raus, ein Postausgang existiert nicht.
+
+## Signatur
+
+Pro Konto, unter **⚙️ Konten → Bearbeiten → Signatur → Bearbeiten**. Der Editor
+hat Felder für Name, Funktion, Firma, Anschrift, Telefon, E-Mail und Web, drei
+Gestaltungen (schlicht mit Trennlinie, Akzentbalken links, kompakt) und eine
+Live-Vorschau. **Daten aus VolmeRechnung übernehmen** zieht die Absenderdaten aus
+`~/volmerechnung/data/settings.json` — Bank- und Steuerdaten bleiben außen vor,
+die gehören nicht in eine Signatur.
+
+Gespeichert werden drei Dinge: die formatierte Fassung (`signatureHtml`), eine
+Klartextfassung (`signature`) und die Einzelangaben (`signatureData`), damit sich
+die Signatur später weiter bearbeiten lässt.
+
+Beim Verfassen steht die Signatur **nicht im Textfeld**, sondern wird darunter
+angezeigt und erst beim Senden angehängt. So kann sie nicht versehentlich
+zerschrieben werden, und beim Wechsel des Absenders stimmt sie ohne Nachbessern.
+Versandt wird beides: Klartext mit dem üblichen Trenner `-- ` und eine formatierte
+Fassung. Deren Stile stehen direkt an den Elementen — `<style>`-Blöcke im Kopf
+werfen Mailprogramme weg.
 
 ## Bilder und Anhänge
 

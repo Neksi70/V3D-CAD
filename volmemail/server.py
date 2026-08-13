@@ -114,7 +114,25 @@ def public_account(a):
         'user': a.get('user'),
         'smtpUser': a.get('smtpUser') or a.get('user'),
         'signature': a.get('signature', ''),
+        'signatureHtml': a.get('signatureHtml', ''),
+        'signatureData': a.get('signatureData') or {},
     }
+
+
+# VolmeRechnung pflegt dieselben Absenderdaten bereits — von dort übernehmen
+# statt abtippen zu lassen. Bank- und Steuerdaten bleiben bewusst außen vor,
+# die gehören nicht in eine Signatur.
+RECHNUNG_SETTINGS = os.path.join(os.path.expanduser('~'), 'volmerechnung', 'data', 'settings.json')
+
+
+def firmendaten():
+    try:
+        with open(RECHNUNG_SETTINGS, 'r', encoding='utf-8') as fh:
+            firma = (json.load(fh) or {}).get('firma') or {}
+    except Exception:
+        return {}
+    erlaubt = ('name', 'inhaber', 'strasse', 'plz', 'ort', 'telefon', 'email', 'web', 'slogan')
+    return {k: firma.get(k, '') for k in erlaubt if firma.get(k)}
 
 
 # --- Sitzungen --------------------------------------------------------------
@@ -1391,6 +1409,9 @@ class Handler(BaseHTTPRequestHandler):
                 save_conf(CFG)
             drop_box(acc_id)
             return self._send(200, {'ok': True})
+
+        if route == '/firma' and method == 'GET':
+            return self._send(200, {'firma': firmendaten()})
 
         # Senden/Empfangen: alle Postfächer auf einmal prüfen
         if route == '/check':
