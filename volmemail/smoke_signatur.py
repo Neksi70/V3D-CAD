@@ -88,6 +88,8 @@ with sync_playwright() as p:
               page.evaluate("((S.sigLogo||{}).data||'').slice(0,30)"))
         check('Logo in der Vorschau sichtbar',
               page.evaluate("!!document.querySelector('#sig_vor img')"))
+        page.select_option('#sig_logoPos', 'links')   # Anordnung explizit setzen
+        page.wait_for_timeout(300)
         check('Logo neben den Daten (Tabelle für Outlook)',
               page.evaluate("document.querySelector('#sig_vor table') !== null"))
         page.select_option('#sig_logoPos', 'oben')
@@ -95,8 +97,11 @@ with sync_playwright() as p:
         check('Logo lässt sich darüber stellen',
               page.evaluate("document.querySelector('#sig_vor table') === null")
               and page.evaluate("!!document.querySelector('#sig_vor img')"))
-        page.select_option('#sig_logoPos', 'links')
+        # Kontaktangaben untereinander
+        page.check('#sig_kontaktUnter')
         page.wait_for_timeout(300)
+        check('Kontakt untereinander ergibt eigene Zeilen',
+              page.evaluate("sigBauen(sigDaten(), sigDaten().layout).text.split('\\n').length") >= 7)
 
         # Spruch eintragen
         page.fill('#sig_slogan', 'Ideen, die man anfassen kann.')

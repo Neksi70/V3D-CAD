@@ -121,7 +121,9 @@ die Signatur später weiter bearbeiten lässt.
 **Logo:** „Firmenlogo laden" holt `~/volmerechnung/logo.svg` und wandelt es im
 Browser über ein Canvas in ein PNG um — auf dem Server liegt kein Rasterer, und
 SVG zeigen viele Mailprogramme ohnehin nicht an. Breite und Lage (links daneben
-oder darüber) sind einstellbar; eigene Bilddateien gehen auch.
+oder darüber) sind einstellbar; eigene Bilddateien gehen auch. Ebenso lässt sich
+wählen, ob Telefon, E-Mail und Web in einer Zeile mit Trennpunkten oder
+untereinander stehen.
 
 Beim Versand steckt das Logo als **eingebettetes Bild mit Content-ID** in der
 Nachricht (`multipart/related`), nicht als Link und nicht als `data:`-URL:
