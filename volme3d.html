@@ -3558,6 +3558,7 @@ Patrick</textarea>
         <div class="vrow"><label title="Wie hoch das Relief an der hellsten Stelle über der Karte steht">Relief-Tiefe</label> <input type="range" id="vk-relief" min="0.2" max="1.2" value="0.6" step="0.05" oninput="document.getElementById('vkv-relief').textContent=this.value;_vkSet('relief',this.value)"><span class="vv" id="vkv-relief">0.6</span><span class="vu">mm</span></div>
         <div class="vrow"><label title="0 % = reine Helligkeit wie beim Lithophane (auf einer undurchsichtigen Karte matschig). 100 % = nur Kanten und Konturen. Dazwischen liegt der Basrelief-Look.">Plastik</label> <input type="range" id="vk-plastik" min="0" max="100" value="60" step="5" oninput="document.getElementById('vkv-plastik').textContent=this.value;_vkSet('plastik',this.value)"><span class="vv" id="vkv-plastik">60</span><span class="vu">%</span></div>
         <div class="vrow"><label title="Glättet Bildrauschen, das sonst als Krümel im Relief landet">Glättung</label> <input type="range" id="vk-glatt" min="0" max="4" value="1" step="0.5" oninput="document.getElementById('vkv-glatt').textContent=this.value;_vkSet('glatt',this.value)"><span class="vv" id="vkv-glatt">1</span><span class="vu"></span></div>
+        <label id="vk-row-ft" style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:4px" title="Das Foto-Relief wird ein eigener Körper. Nur so bekommt es eine eigene Farbe — solange alles ein Teil ist, gibt es nur eine."><input type="checkbox" id="vk-ft" onchange="_vkSet('fotoTeil',this.checked)"> Foto als eigenes Teil (eigene Farbe)</label>
         <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:4px" title="Relief nach innen statt nach außen. Das Gehirn liest die Schatten trotzdem als erhaben — dadurch scheint das Gesicht dem Betrachter zu folgen. Braucht den Testdruck, das entscheidet die Beleuchtung."><input type="checkbox" id="vk-hohl" onchange="_vkSet('hohl',this.checked)"> Hohlform (Blick folgt)</label>
 
         <span class="vsec">Text</span>
@@ -10577,6 +10578,11 @@ function _updateObjEdgeLines(mesh) {
   // überschreiten tausende Bump-Kanten die 30°-Schwelle → teuer zu bauen und zu
   // rendern (Ruckeln), und optisch nur Rauschen. Saubere Flächen wie BumpMesh.
   if (mesh.userData && mesh.userData.displacementPattern && mesh.userData.displacementPattern !== 'keine') return;
+  // Gleiches Problem bei Foto-Reliefs: die Konturen im Gesicht sind echte
+  // Kanten über 30°, als Linien aber nur Gesprenkel. Wer so ein Netz baut,
+  // setzt das Flag selbst — sonst entscheidet nur zufällig die Dreiecksgrenze
+  // weiter unten, ob es sprenkelt.
+  if (mesh.userData && mesh.userData.noEdgeLines) return;
   // Riesen-Netze (Scans): EdgesGeometry baut Hash-Maps über jede Kante →
   // sekundenlanger Freeze + Render-Last, optisch eh nur Rauschen. Überspringen.
   { const g = mesh.geometry, nTri = g?.attributes?.position ? (g.index ? g.index.count : g.attributes.position.count) / 3 : 0;
@@ -17311,6 +17317,17 @@ async function _doSubtractHoles(solids, holes) {
     solidMesh.quaternion.identity();
     solidMesh.scale.set(1, 1, 1);
     solidMesh.updateWorldMatrix(true, true);
+  }
+
+  // ── Leeres Ergebnis abfangen ───────────────────────────────────────────────
+  // Ein Gravur-Schnitt gegen eine Schrift, die komplett IM Körper steckt, kann
+  // ein Mesh ohne jede Fläche liefern. Käme das in die Szene, wäre der Körper
+  // weg und jedes spätere saveUndo/Speichern würde daran scheitern. Hier
+  // abbrechen — die Originale sind noch unberührt, es geht also nichts verloren.
+  if (!(solidMesh.geometry?.attributes?.position?.count > 0)) {
+    throw new Error(holes.some(h => h.userData.type === 'svg' && !h.userData._cutThrough)
+      ? 'Gravur ergab einen leeren Körper — steckt die Schrift ganz im Inneren? Für ein echtes Loch im Dialog „Durchbruch" wählen.'
+      : 'Abziehen ergab einen leeren Körper — Vorgang abgebrochen.');
   }
 
   solidMesh.castShadow = true;
@@ -28973,7 +28990,7 @@ const _vk = { img:null,
       photo:'links', pw:32, relief:0.6, plastik:60, glatt:1, hohl:false,
       name:'Max Mustermann', l2:'V3D CAD · 3D-Druck', l3:'0170 1234567', l4:'max@example.de',
       font:'Arial, Helvetica, sans-serif', tsize:5, lsize:3, traise:0.4,
-      tmode:'raised', talign:'links', zweifarbig:false,
+      tmode:'raised', talign:'links', zweifarbig:false, fotoTeil:false,
       stand:false, tilt:12, slotD:8, spiel:0.35, standD:22, standH:16,
       fach:true, fachW:87, fachD:57, fachT:8, wall:2 } };
 
@@ -29016,13 +29033,17 @@ function _vkPhotoRect(){
 }
 
 // Höhenkarte der ganzen Karte in mm, Raster ppm Pixel pro Millimeter.
-function _vkHeightMap(ppm){
+// opts.foto / opts.text: ob Relief bzw. Buchstaben eingebacken werden. Beides
+// wird abgeschaltet, sobald das jeweilige Teil eigenständig entsteht — die
+// Karte bleibt an der Stelle dann glatt.
+function _vkHeightMap(ppm,opts){
   const P=_vk.p;
+  const o=opts||{foto:!_vkPhotoExtra(), text:!_vkTextExtra()};
   const W=Math.max(24,Math.round(P.w*ppm)), H=Math.max(24,Math.round(P.h*ppm));
   const hgt=new Float32Array(W*H); hgt.fill(P.base);
 
   const pr=_vkPhotoRect();
-  if(pr && P.relief>0){
+  if(pr && P.relief>0 && o.foto!==false){
     const rx=Math.round(pr.x*ppm), ry=Math.round(pr.y*ppm);
     const rw=Math.max(8,Math.min(W-rx,Math.round(pr.w*ppm)));
     const rh=Math.max(8,Math.min(H-ry,Math.round(pr.h*ppm)));
@@ -29070,7 +29091,7 @@ function _vkHeightMap(ppm){
   }
 
   // Text nur einbacken, wenn er NICHT als eigenes Teil entsteht (2-farbig).
-  if(!_vkTextExtra()){
+  if(o.text!==false){
     const T=_vkTextAlpha(ppm);
     if(T){
       const sgn=(P.tmode==='engraved')?-1:1;
@@ -29082,6 +29103,76 @@ function _vkHeightMap(ppm){
     }
   }
   return {hgt,W,H};
+}
+
+// Soll das Foto-Relief ein eigener Körper werden? Nur dann lässt es sich
+// getrennt einfärben — solange alles ein Körper ist, gibt es eine Farbe.
+function _vkPhotoExtra(){
+  const P=_vk.p;
+  return !!P.fotoTeil && !!_vk.img && P.photo!=='kein' && P.relief>0;
+}
+
+// Zweischichtiges Solid über einem Rechteck: Oberseite aus topFn(xmm,zmm),
+// Unterseite flach bei untenMM. Gleiche Wicklung wie beim Kartenkörper —
+// Wände gegenläufig zu wickeln ist genau der Fehler, der im Lithophane steckt.
+function _vkSlabGeo(x0,z0,bw,bd,nx,nz,topFn,untenMM){
+  const P=_vk.p, wU=P.w/10, hU=P.h/10;
+  const pos=[], idx=[];
+  const vid=(l,ix,iz)=> l*nx*nz + iz*nx + ix;
+  for(let l=0;l<2;l++)
+    for(let iz=0;iz<nz;iz++){
+      const zmm=z0+iz/(nz-1)*bd;
+      for(let ix=0;ix<nx;ix++){
+        const xmm=x0+ix/(nx-1)*bw;
+        pos.push(xmm/10-wU/2, (l===0?topFn(xmm,zmm):untenMM)/10, zmm/10-hU/2);
+      }
+    }
+  for(let iz=0;iz<nz-1;iz++)for(let ix=0;ix<nx-1;ix++){
+    const a=vid(0,ix,iz),b=vid(0,ix+1,iz),c=vid(0,ix+1,iz+1),d=vid(0,ix,iz+1);
+    idx.push(a,d,c, a,c,b);
+  }
+  for(let iz=0;iz<nz-1;iz++)for(let ix=0;ix<nx-1;ix++){
+    const a=vid(1,ix,iz),b=vid(1,ix+1,iz),c=vid(1,ix+1,iz+1),d=vid(1,ix,iz+1);
+    idx.push(a,b,c, a,c,d);
+  }
+  const wall=(aT,aB,bT,bB)=>{ idx.push(aT,bB,aB, aT,bT,bB); };
+  for(let ix=0;ix<nx-1;ix++){
+    wall(vid(0,ix,0),vid(1,ix,0),vid(0,ix+1,0),vid(1,ix+1,0));
+    wall(vid(0,ix+1,nz-1),vid(1,ix+1,nz-1),vid(0,ix,nz-1),vid(1,ix,nz-1));
+  }
+  for(let iz=0;iz<nz-1;iz++){
+    wall(vid(0,0,iz+1),vid(1,0,iz+1),vid(0,0,iz),vid(1,0,iz));
+    wall(vid(0,nx-1,iz),vid(1,nx-1,iz),vid(0,nx-1,iz+1),vid(1,nx-1,iz+1));
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  g.setIndex(idx);
+  if(_geoSignedVolume(g)<0){ const a=g.index.array; for(let i=0;i<a.length;i+=3){ const t=a[i+1];a[i+1]=a[i+2];a[i+2]=t; } g.index.needsUpdate=true; }
+  g.computeVertexNormals(); g.computeBoundingBox();
+  return g;
+}
+
+// Foto-Relief als eigener Körper. Reicht unter die Kartenoberfläche, damit es
+// beim Drucken verschmilzt statt bloß aufzuliegen.
+function _vkPhotoGeo(vorschau){
+  if(!_vkPhotoExtra()) return null;
+  const P=_vk.p, pr=_vkPhotoRect(); if(!pr) return null;
+  const resK=vorschau?150:Math.max(80,Math.min(1000,Math.round(P.res)));
+  const ppm=vorschau?4:Math.max(6,2*resK/P.w);
+  const M=_vkHeightMap(ppm,{foto:true,text:false});
+  const HW=M.W, HH=M.H, hgt=M.hgt;
+  const samp=(xmm,zmm)=>{
+    const fx=Math.max(0,Math.min(HW-1, xmm/P.w*(HW-1)));
+    const fz=Math.max(0,Math.min(HH-1, zmm/P.h*(HH-1)));
+    const x0=Math.floor(fx), z0=Math.floor(fz);
+    const x1=Math.min(HW-1,x0+1), z1=Math.min(HH-1,z0+1);
+    const tx=fx-x0, tz=fz-z0;
+    return (hgt[z0*HW+x0]*(1-tx)+hgt[z0*HW+x1]*tx)*(1-tz)
+         + (hgt[z1*HW+x0]*(1-tx)+hgt[z1*HW+x1]*tx)*tz;
+  };
+  const nx=Math.max(24,Math.round(resK*pr.w/P.w));
+  const nz=Math.max(24,Math.round(nx*pr.h/pr.w));
+  return _vkSlabGeo(pr.x,pr.y,pr.w,pr.h,nx,nz,samp,Math.max(0.2,P.base-0.4));
 }
 
 // Soll der Text ein eigener Körper werden? Nur sinnvoll bei erhabenem Text —
@@ -29355,6 +29446,7 @@ function _vkMergeGeos(list){
 }
 function _vkPreviewGeo(){
   const list=[_buildVkGeo(true)];
+  const f=_vkPhotoGeo(true); if(f) list.push(f);
   const t=_vkTextGeo(); if(t) list.push(t);
   for(const p of _vkBaseParts()) list.push(p.geo);
   if(list.length===1) return list[0];
@@ -29388,7 +29480,7 @@ function _vkOpen(){
 function _vkClose(){ document.getElementById('vk-modal').classList.remove('show'); _gpvStop('vk'); }
 
 const _VK_STR={photo:1,name:1,l2:1,l3:1,l4:1,font:1,tmode:1,talign:1};
-const _VK_BOOL={hohl:1,stand:1,fach:1,zweifarbig:1};
+const _VK_BOOL={hohl:1,stand:1,fach:1,zweifarbig:1,fotoTeil:1};
 let _vkRT=null;
 function _vkSet(k,v){
   if(_VK_STR[k]) _vk.p[k]=v;
@@ -29412,6 +29504,9 @@ function _vkSyncUI(){
   set('vk-facht','vkv-facht',P.fachT); set('vk-wall','vkv-wall',P.wall);
   const hh=document.getElementById('vk-hohl'); if(hh) hh.checked=!!P.hohl;
   const zf=document.getElementById('vk-2f'); if(zf) zf.checked=!!P.zweifarbig;
+  const ft=document.getElementById('vk-ft'); if(ft) ft.checked=!!P.fotoTeil;
+  const ftr=document.getElementById('vk-row-ft');
+  if(ftr) ftr.style.display=(_vk.img && P.photo!=='kein')?'flex':'none';
   // Eingelassener Text ist eine Vertiefung — dafür gibt es kein zweites Teil
   const zr=document.getElementById('vk-row-2f');
   if(zr) zr.style.display=(P.tmode==='raised')?'flex':'none';
@@ -29470,20 +29565,28 @@ function _vkCreate(){
   saveUndo();
   let teile;
   try{
-    teile=[{geo:_buildVkGeo(false), name:P.stand?'Schild':'Karte'}];
+    // Steckt das Relief noch in der Karte, sprenkelt sie genauso
+    teile=[{geo:_buildVkGeo(false), name:P.stand?'Schild':'Karte',
+            relief:!!_vk.img && P.photo!=='kein' && P.relief>0 && !_vkPhotoExtra()}];
+    const fg=_vkPhotoGeo(false);
+    if(fg) teile.push({geo:fg, name:'Foto', zweit:true, relief:true});
     const tg=_vkTextGeo();
     if(tg) teile.push({geo:tg, name:'Text', kontrast:true});
     teile=teile.concat(_vkBaseParts());
   }catch(e){ console.error('Visitenkarte:',e); notify('Fehler beim Erstellen','w'); return; }
   const color=currentColor;
   const colText=_nameContrast(color);
+  const mix=(a,b,t)=>{ const A=new THREE.Color(a), B=new THREE.Color(b);
+    return '#'+A.lerp(B,t).getHexString(); };
+  const colFoto=mix(color,colText,0.55);
   typeCounts['vcard']=(typeCounts['vcard']||0)+1;
   const nr=typeCounts['vcard'];
   const mk=(t)=>{
-    const c=t.kontrast?colText:color;
+    const c=t.kontrast?colText:(t.zweit?colFoto:color);
     const mat=new THREE.MeshStandardMaterial({color:new THREE.Color(c),roughness:0.6,metalness:0.0,side:THREE.DoubleSide});
     const m=new THREE.Mesh(t.geo,mat); m.castShadow=true; m.receiveShadow=true;
-    m.userData={id:idCtr++,type:'vcard',shapeType:'custom',name:t.name,color:c,isHole:false,fillet:0,chamfer:0};
+    m.userData={id:idCtr++,type:'vcard',shapeType:'custom',name:t.name,color:c,isHole:false,fillet:0,chamfer:0,
+      noEdgeLines:!!t.relief};
     return m;
   };
   if(teile.length===1){

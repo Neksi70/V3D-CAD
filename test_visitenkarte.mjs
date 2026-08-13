@@ -166,6 +166,34 @@ const res = await page.evaluate(async () => {
     _vk.p.l3 = '0170 1234567'; _vk.p.l4 = 'max@example.de';
   }
 
+  // --- 5a2) Foto als eigenes Teil (eigene Farbe)
+  {
+    _vk.img = foto; _vk.p.photo = 'links'; _vk.p.relief = 0.6; _vk.p.pw = 32;
+    _vk.p.zweifarbig = false; _vk.p.tmode = 'raised'; _vk.p.stand = false;
+    _vk.p.base = 1.2; _vk.p.res = 300;
+
+    _vk.p.fotoTeil = false;
+    out.fotoKeinTeil = _vkPhotoGeo(false) === null;
+
+    _vk.p.fotoTeil = true;
+    const karte = _buildVkGeo(false);
+    // Karte muss im Foto-Feld glatt sein: höchster Punkt = Basis + Text
+    out.karteOhneFoto = { hoehe: oben(karte), ...huelle(karte) };
+    karte.dispose();
+
+    const fg = _vkPhotoGeo(false);
+    fg.computeBoundingBox();
+    const fb = fg.boundingBox;
+    out.fotoTeil = {
+      ...huelle(fg), vol: +_geoSignedVolume(fg).toFixed(4),
+      breite: +((fb.max.x - fb.min.x) * 10).toFixed(2),
+      tiefe: +((fb.max.z - fb.min.z) * 10).toFixed(2),
+      unten: +(fb.min.y * 10).toFixed(2), oben: +(fb.max.y * 10).toFixed(2),
+    };
+    fg.dispose();
+    _vk.p.fotoTeil = false; _vk.p.photo = 'links';
+  }
+
   // --- 5b) Ständer + Kartenfach (Stufe 2)
   // Beide sind aus Einzelflächen gebaut, nicht indiziert → Kantenbilanz über
   // die POSITION hashen, nicht über Indizes.
@@ -289,6 +317,15 @@ const pruef = [
   ['Textteil reicht in die Karte hinein (verschmilzt)', res.textTeil.unten <= 0.25],
   ['Buchstaben haben Löcher (a/o/ß nicht zugeklebt)', res.textTeil.deckelFlaeche > 20 && res.textTeil.deckelFlaeche < res.textTeil.rechteckFlaeche * 0.55],
   ['eingelassener Text erzeugt kein zweites Teil', res.graviertKeinTeil],
+  // Foto als eigenes Teil
+  ['ohne Haken kein Foto-Teil', res.fotoKeinTeil],
+  ['mit Haken ist die Karte im Foto-Feld glatt', nah(res.karteOhneFoto.hoehe.max, 1.6, 0.03)],
+  ['Karte ohne Foto-Relief bleibt geschlossen', dicht(res.karteOhneFoto)],
+  ['Foto-Teil geschlossen', dicht(res.fotoTeil)],
+  ['Foto-Teil Wicklung außen', res.fotoTeil.vol > 0],
+  ['Foto-Teil deckt genau das Foto-Feld (32 mm breit)', nah(res.fotoTeil.breite, 32, 0.05)],
+  ['Foto-Teil reicht unter die Kartenoberfläche', nah(res.fotoTeil.unten, 0.8, 0.02)],
+  ['Foto-Teil nutzt die volle Relief-Tiefe (1,2 + 0,6)', nah(res.fotoTeil.oben, 1.8, 0.06)],
   // Stufe 2: Aufsteller
   ['Preset Aufsteller: größer, dicker, Name 16 mm', res.preset.w === 100 && res.preset.base === 2.5 && res.preset.tsize === 16 && res.preset.stand],
   ['Fußleiste bleibt glatt (kein Relief in der Nut)', nah(res.fussGlatt.maxDicke, res.fussGlatt.soll, 0.02)],
