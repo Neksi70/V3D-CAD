@@ -48,7 +48,8 @@ const GIRDERS=[
   {x1:0,  y1:304, x2:428, y2:316},            // 3 bergab nach rechts
   {x1:20, y1:256, x2:448, y2:244},            // 4 bergab nach links
   {x1:0,  y1:170, x2:190, y2:170},            // 5 Affen-Plattform (flach)
-  {x1:190,y1:170, x2:448, y2:180},            // 6 oberer Schraegtraeger
+  {x1:190,y1:170, x2:428, y2:179},            // 6 oberer Schraegtraeger (endet vor
+                                              //   dem Rand, damit Faesser auf 4 fallen)
   {x1:176,y1:106, x2:272, y2:106, goal:true}, // 7 Ziel-Plattform
 ];
 function gY(g,x){ return g.x2===g.x1 ? g.y1 : g.y1+(g.y2-g.y1)*((x-g.x1)/(g.x2-g.x1)); }
@@ -76,6 +77,7 @@ let score=0, high=+(localStorage.getItem('fassalarm_high')||0);
 let level=1, lives=3, bonus=5000, extraGiven=false;
 let player, barrels=[], hammers=[], popups=[], apeT=0, apeAnim=0, muted=false, paused=false;
 let flameT=0; // Stichflamme am Oelfass, wenn ein Fass hineinrollt
+let fires=[], barrelCount=0; // Feuerbaelle aus dem Oelfass, Fass-Zaehler (1. Fass = blau)
 
 const keys={l:0,r:0,u:0,d:0,j:0};
 let jumpLatch=false; // Leertaste muss losgelassen werden
@@ -83,7 +85,7 @@ let jumpLatch=false; // Leertaste muss losgelassen werden
 function resetRound(){
   player={x:60, y:gY(GIRDERS[0],60), vx:0, vy:0, dir:1, mode:'ground', g:0,
           ladder:null, anim:0, hammerT:0, airFrom:0};
-  barrels=[]; popups=[];
+  barrels=[]; popups=[]; fires=[]; barrelCount=0;
   hammers=HDEF.map(([x,g])=>({x, y:gY(GIRDERS[g],x)-36, taken:false}));
   apeT=90; apeAnim=0; bonus=5000;
 }
@@ -141,8 +143,11 @@ function overlap(ax,ay,aw,ah,bx,by,bw,bh){
 
 // ---- Faesser
 function spawnBarrel(){
+  // Wie im Original: das erste Fass jeder Runde ist blau und nimmt die Leitern
+  const blue = barrelCount===0 || barrelCount%8===7;
+  barrelCount++;
   barrels.push({x:150, y:170, dir:1, mode:'roll', g:5, vx:0, vy:0, anim:0,
-                scored:false, ladder:null});
+                scored:false, ladder:null, blue});
   sfx.throw();
 }
 function barrelSpeed(){ return Math.min(2.9, 1.7+0.2*(level-1)); }
@@ -157,7 +162,7 @@ function stepBarrel(b){
     // Leiter-Abstieg? (Fass rollt ueber Leiterkopf)
     for(const l of LADDERS){
       if(l.up!==b.g) continue;
-      if((oldX-l.x)*(b.x-l.x)<=0 && rng()<ladderChance()){
+      if((oldX-l.x)*(b.x-l.x)<=0 && rng()<(b.blue?0.85:ladderChance())){
         b.mode='ladder'; b.x=l.x; b.ladder=l; return; }
     }
     if(b.x<g.x1||b.x>g.x2){
@@ -184,7 +189,32 @@ function stepBarrel(b){
         const d=downhill(GIRDERS[n]); if(d) b.dir=d; }
     }
   }
-  if(b.g===0 && b.x<38 && b.mode==='roll'){ b.dead=true; flameT=26; } // landet im Oelfass
+  if(b.g===0 && b.x<38 && b.mode==='roll'){ // landet im Oelfass
+    b.dead=true; flameT=26;
+    if(fires.length < (level>=3?2:1)) // gebiert einen Feuerball (wie im Original)
+      fires.push({x:30, y:gY(GIRDERS[0],30), g:0, dir:1, mode:'walk', tgt:0, tg:0, anim:0});
+  }
+}
+
+// ---- Feuerbaelle: wandern zufaellig, klettern auch Leitern
+function stepFire(f){
+  f.anim++;
+  if(f.mode==='walk'){
+    const g=GIRDERS[f.g], oldX=f.x;
+    f.x+=f.dir*0.7;
+    if(f.x<g.x1+4||f.x>g.x2-4){ f.dir*=-1; f.x=Math.max(g.x1+4,Math.min(g.x2-4,f.x)); }
+    f.y=gY(g,f.x);
+    if(rng()<0.005) f.dir*=-1;
+    for(const l of LADDERS){
+      if((oldX-l.x)*(f.x-l.x)<=0){
+        if(l.dn===f.g && rng()<0.35){ f.mode='climb'; f.x=l.x; f.tgt=l.yTop; f.tg=l.up; break; }
+        if(l.up===f.g && rng()<0.2){ f.mode='climb'; f.x=l.x; f.tgt=l.yBot; f.tg=l.dn; break; }
+      }
+    }
+  } else {
+    f.y += (f.tgt>f.y?0.8:-0.8);
+    if(Math.abs(f.y-f.tgt)<1){ f.y=f.tgt; f.g=f.tg; f.mode='walk'; }
+  }
 }
 
 // Zufall austauschbar (Headless-Tests koennen deterministisch seeden)
@@ -310,6 +340,7 @@ function step(){
   for(const b of barrels) stepBarrel(b);
   barrels=barrels.filter(b=>!b.dead);
   if(barrels.length>14) barrels.shift();
+  for(const f of fires) stepFire(f);
 
   // Kollisionen
   const hr=hammerRect(), p=player;
@@ -322,6 +353,12 @@ function step(){
     if(!b.scored && p.mode==='air' && Math.abs(b.x-p.x)<10 && b.y>p.y && b.y-p.y<80){
       b.scored=true; addScore(100,p.x,p.y-30); sfx.point(); }
   }
+  for(const f of fires){
+    if(hr && overlap(hr.x,hr.y,hr.w,hr.h, f.x-7,f.y-14,14,14)){
+      f.dead=true; addScore(300,f.x,f.y-18); sfx.smash(); continue; }
+    if(overlap(p.x-6,p.y-20,12,20, f.x-6,f.y-13,12,13)){ killPlayer(); return; }
+  }
+  fires=fires.filter(f=>!f.dead);
   for(const pp of popups) pp.t++;
   popups=popups.filter(pp=>pp.t<50);
 }
@@ -332,7 +369,8 @@ ctx.imageSmoothingEnabled=false;
 // ---- Pixel-Sprites (eigene Zeichnungen im Arcade-Look)
 const PAL={O:'#ff8c1a',o:'#c86400',S:'#ffc48c',B:'#2a5cff',D:'#16307e',K:'#000',
   W:'#fff',R:'#e8404c',Y:'#ffd23e',N:'#7a4510',T:'#c8742c',t:'#e8a050',
-  F:'#8a5230',f:'#5e3a1a',P:'#eec39a',C:'#3ed6ff',G:'#c8ccd4',g:'#565e6a'};
+  F:'#8a5230',f:'#5e3a1a',P:'#eec39a',C:'#3ed6ff',G:'#c8ccd4',g:'#565e6a',
+  p:'#f8487c',q:'#c22a58',r:'#e02818'}; // p/q = Traeger-Pink, r = Latzhosen-Rot
 function mkspr(rows,sc){
   const w=Math.max(...rows.map(r=>r.length)), h=rows.length,
         c=document.createElement('canvas');
@@ -349,20 +387,21 @@ function blit(spr,cx,by,flip){ // cx = Fuss-Mitte, by = Unterkante
 }
 const SPR={
   // Held "Monti" (12 breit, Blick nach rechts)
+  // Arcade-Farbwelt: blaues Hemd, rote Latzhose, oranger Helm (eigene Figur)
   stand:mkspr([
     "...OOOOOO...",
     "..OOOOOOOOO.",
     "..SSSSSKS...",
     "..SSSSSSS...",
     "...BBBBB....",
-    "..BBBBBBB...",
-    ".SBBBBBBBS..",
-    ".SBBBBBBBS..",
-    "..BBBBBBB...",
-    "..DDDDDDD...",
-    "..DDD.DDD...",
-    "..DDD.DDD...",
-    "..DDD.DDD...",
+    "..BrrrrrB...",
+    ".SBrrrrrBS..",
+    ".S.rrrrr.S..",
+    "..rrrrrrr...",
+    "..rrrrrrr...",
+    "..rrr.rrr...",
+    "..rrr.rrr...",
+    "..rrr.rrr...",
     ".NNN...NNN..",
   ],2),
   walk:mkspr([
@@ -371,14 +410,14 @@ const SPR={
     "..SSSSSKS...",
     "..SSSSSSS...",
     "...BBBBB....",
-    "..BBBBBBBS..",
-    ".SBBBBBBB...",
-    ".S.BBBBBB...",
-    "..BBBBBBB...",
-    "..DDDDDDD...",
-    ".DDD..DDD...",
-    ".DDD..DDD...",
-    "NNN....DDD..",
+    "..BrrrrrBS..",
+    ".SBrrrrrB...",
+    ".S.rrrrr....",
+    "..rrrrrrr...",
+    "..rrrrrrr...",
+    ".rrr..rrr...",
+    ".rrr..rrr...",
+    "NNN....rrr..",
     ".......NNN..",
   ],2),
   jump:mkspr([
@@ -387,26 +426,26 @@ const SPR={
     ".SSSSSSKS...",
     ".S.SSSSSS...",
     ".S..BBBB....",
-    ".SBBBBBBBS..",
-    "..BBBBBBBS..",
-    "..BBBBBB.S..",
-    "..DDDDDDD...",
-    ".DDD..DDD...",
-    ".NDD...DDN..",
+    ".SBrrrrrBS..",
+    "..BrrrrrBS..",
+    "..rrrrrr.S..",
+    "..rrrrrrr...",
+    ".rrr..rrr...",
+    ".Nrr...rrN..",
     ".NNN...NNN..",
   ],2),
   climb:mkspr([
     ".S..........",
     ".S.OOOOOO...",
     ".S.OOOOOOO..",
-    ".SSSSSSSS...",
-    "...BBBBB....",
-    "..BBBBBBB...",
-    "..BBBBBBBS..",
-    "..BBBBBB.S..",
-    "..DDDDDD....",
-    "..DDD.DDD...",
-    "..DDD.DDD...",
+    ".SSSBBBBB...",
+    "...BBBBBB...",
+    "..BrrrrrB...",
+    "..BrrrrrBS..",
+    "..rrrrrr.S..",
+    "..rrrrrr....",
+    "..rrr.rrr...",
+    "..rrr.rrr...",
     ".NNN...NNN..",
   ],2),
   // Gorilla "Kranko" (20 breit, Skalierung 4 => 80px)
@@ -417,7 +456,7 @@ const SPR={
     "...FWKFPPPPFWKF.....",
     "...PPPPPPPPPPPP.....",
     "...PKPPPPPPPPKP.....",
-    "...PPKKKKKKKKPP.....",
+    "...PPWKWKWKWKPP.....",
     "....PPPPPPPPPP......",
     "..FFFFFFFFFFFFFF....",
     ".FFFFFFFFFFFFFFFF...",
@@ -437,7 +476,7 @@ const SPR={
     "FFF.FWKFPPFWKF.FFF..",
     "FFF.PPPPPPPPPP.FFF..",
     "FFF.PKPPPPPPKP.FFF..",
-    "FFF.PPKKKKKKPP.FFF..",
+    "FFF.PPWKKKKWPP.FFF..",
     "FFF..PPPPPPPP..FFF..",
     ".FFFFFFFFFFFFFFFF...",
     ".FFFFFFFFFFFFFFFF...",
@@ -453,17 +492,20 @@ const SPR={
 };
 
 function drawGirder(g){
+  // Himbeer-pinke Fachwerktraeger wie im Arcade-Original: 2 Gurte + X-Verstrebungen
   const len=Math.hypot(g.x2-g.x1,g.y2-g.y1), ang=Math.atan2(g.y2-g.y1,g.x2-g.x1);
   ctx.save(); ctx.translate(g.x1,g.y1); ctx.rotate(ang);
-  ctx.fillStyle= g.goal ? '#3ed6ff' : '#e8404c';
-  ctx.fillRect(0,0,len,3); ctx.fillRect(0,8,len,3);
-  ctx.fillStyle= g.goal ? '#1a7aa0' : '#8c1424';
-  for(let x=2;x<len-8;x+=14){
+  ctx.fillStyle=PAL.q;
+  for(let x=0;x<len-10;x+=14){
     ctx.beginPath();
-    if((x/14|0)%2){ ctx.moveTo(x,8); ctx.lineTo(x+8,3); ctx.lineTo(x+11,3); ctx.lineTo(x+3,8); }
-    else { ctx.moveTo(x,3); ctx.lineTo(x+8,8); ctx.lineTo(x+11,8); ctx.lineTo(x+3,3); }
+    ctx.moveTo(x,8); ctx.lineTo(x+10,3); ctx.lineTo(x+13,3); ctx.lineTo(x+3,8);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x,3); ctx.lineTo(x+10,8); ctx.lineTo(x+13,8); ctx.lineTo(x+3,3);
     ctx.closePath(); ctx.fill();
   }
+  ctx.fillStyle=PAL.p;
+  ctx.fillRect(0,0,len,3); ctx.fillRect(0,8,len,3);
   ctx.restore();
 }
 function drawLadder(l){
@@ -475,20 +517,34 @@ function drawLadder(l){
 }
 function drawBarrel(b){
   const x=b.x,y=b.y; // y = Unterkante
+  // Blaues Fass = nimmt die Leitern (wie im Original)
+  const body=b.blue?'#4890f0':PAL.T, dark=b.blue?'#1c4ea0':PAL.N,
+        lite=b.blue?'#90c4ff':PAL.t;
   if(b.mode==='ladder'){ // Frontansicht beim Leiter-Abstieg
-    ctx.fillStyle=PAL.N; ctx.fillRect(x-7,y-13,14,13);
-    ctx.fillStyle=PAL.T; ctx.fillRect(x-5,y-11,10,9);
-    ctx.fillStyle=PAL.t; ctx.fillRect(x-3,y-9,6,5);
-    ctx.fillStyle=PAL.N; ctx.fillRect(x-1,y-8,2,3);
+    ctx.fillStyle=dark; ctx.fillRect(x-7,y-13,14,13);
+    ctx.fillStyle=body; ctx.fillRect(x-5,y-11,10,9);
+    ctx.fillStyle=lite; ctx.fillRect(x-3,y-9,6,5);
+    ctx.fillStyle=dark; ctx.fillRect(x-1,y-8,2,3);
     return;
   }
-  ctx.fillStyle=PAL.T; ctx.fillRect(x-8,y-12,16,12);
-  ctx.fillStyle=PAL.N;
+  ctx.fillStyle=body; ctx.fillRect(x-8,y-12,16,12);
+  ctx.fillStyle=dark;
   ctx.fillRect(x-8,y-12,16,2); ctx.fillRect(x-8,y-2,16,2);   // Boeden
   ctx.fillRect(x-6,y-12,2,12); ctx.fillRect(x+4,y-12,2,12);  // Reifen
-  ctx.fillStyle=PAL.t;
+  ctx.fillStyle=lite;
   const ph=(b.anim>>2)%3; // "Rotation": wandernde helle Daube
   ctx.fillRect(x-3+ph*2,y-10,2,8);
+}
+function drawFire(f){ // Feuerball mit Augen
+  const j=(f.anim>>2)%2;
+  ctx.fillStyle=PAL.R;
+  ctx.fillRect(f.x-6,f.y-14+(j?1:0),12,14-(j?1:0));
+  ctx.fillRect(f.x-8,f.y-8,16,8);
+  ctx.fillRect(f.x-2+(j?3:-3),f.y-17,3,4); // Zuengel
+  ctx.fillStyle=PAL.Y;
+  ctx.fillRect(f.x-4,f.y-11+(j?1:-1),8,11);
+  ctx.fillStyle='#000';
+  ctx.fillRect(f.x-3,f.y-8,2,3); ctx.fillRect(f.x+1,f.y-8,2,3);
 }
 function drawHammerPickup(hm){
   ctx.fillStyle=PAL.N; ctx.fillRect(hm.x-2,hm.y-4,4,16);
@@ -503,6 +559,9 @@ function drawApe(){
     ctx.fillStyle=PAL.T; ctx.fillRect(x-12,y-88,24,14);
     ctx.fillStyle=PAL.N; ctx.fillRect(x-12,y-88,24,3); ctx.fillRect(x-12,y-77,24,3);
     ctx.fillStyle=PAL.t; ctx.fillRect(x-4,y-85,3,8);
+  } else if(apeT<64){ // greift zum Fass-Stapel rueber
+    blit(SPR.kong,x-10,y,false);
+    ctx.fillStyle=PAL.P; ctx.fillRect(x-58,y-40,16,12); // Pranke am Stapel
   } else {
     blit(SPR.kong,x,y,false);
     // Brusttrommeln: Tatze wandert
@@ -554,10 +613,22 @@ function drawGoal(){
 }
 function drawPlayer(){
   const p=player, x=p.x, y=p.y, d=p.dir, flip=d<0;
-  ctx.save();
-  if(state==='dying'){ // Sterbe-Drehung
-    ctx.translate(x,y-14); ctx.rotate(stateT*0.15); ctx.translate(-x,-(y-14));
+  if(state==='dying'){
+    if(stateT<80){ // Sterbe-Drehung ...
+      ctx.save();
+      ctx.translate(x,y-14); ctx.rotate(stateT*0.2); ctx.translate(-x,-(y-14));
+      blit(SPR.jump,x,y,false);
+      ctx.restore();
+    } else { // ... dann flach liegen mit Heiligenschein (wie im Original)
+      ctx.save(); ctx.translate(x,y-10); ctx.rotate(Math.PI/2);
+      ctx.drawImage(SPR.stand,-(SPR.stand.width>>1),-(SPR.stand.height>>1));
+      ctx.restore();
+      ctx.strokeStyle='#fff'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(x,y-32,7,0,7); ctx.stroke();
+    }
+    return;
   }
+  ctx.save();
   if(p.mode==='climb'){
     blit(SPR.climb,x,y,(p.anim>>3)%2===1); // Frames = gespiegelt
   } else {
@@ -592,7 +663,7 @@ function drawHud(){
   ctx.fillStyle=PAL.Y; ctx.font='bold 13px monospace';
   ctx.fillText(''+bonus,W-43,35);
   ctx.textAlign='right';
-  ctx.fillStyle=PAL.C; ctx.fillText('R='+level,W-8,58);
+  ctx.fillStyle=PAL.C; ctx.fillText('L='+(''+level).padStart(2,'0'),W-8,58);
   for(let i=0;i<Math.min(lives,6);i++)
     ctx.drawImage(SPR.stand,8+i*15,32,12,14); // Rest-Leben als Mini-Monti
   if(paused){ ctx.fillStyle='#fff'; ctx.textAlign='center';
@@ -605,6 +676,7 @@ function drawLevel(){
   for(const hm of hammers) if(!hm.taken) drawHammerPickup(hm);
   drawGoal(); drawApe();
   for(const b of barrels) drawBarrel(b);
+  for(const f of fires) drawFire(f);
   drawPlayer();
   ctx.font='bold 12px monospace'; ctx.textAlign='center';
   for(const pp of popups){ ctx.fillStyle='#fff';
@@ -717,7 +789,8 @@ document.addEventListener('visibilitychange',()=>{ if(document.hidden&&state==='
 const DBG={
   god:false,
   get st(){ return {state,score,lives,level,bonus,frame,
-    player:{...player}, barrels:barrels.map(b=>({...b}))}; },
+    player:{...player}, barrels:barrels.map(b=>({...b})),
+    fires:fires.map(f=>({...f}))}; },
   tick(n){ for(let i=0;i<(n||1);i++) step(); },
   start(){ startGame(); },
   spawn(){ spawnBarrel(); },
