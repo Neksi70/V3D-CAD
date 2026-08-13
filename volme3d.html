@@ -19325,13 +19325,42 @@ canvas.addEventListener('touchend', e => {
   }
 }, { passive: false });
 
-// Verhindert Browser-Zoom durch Ctrl+Scroll/Pinch → steuert stattdessen sph.r
-document.addEventListener('wheel', e => {
-  if (e.ctrlKey || e.metaKey) {
-    e.preventDefault();
-    sph.r = Math.max(1.5, Math.min(200, sph.r * (e.deltaY > 0 ? 1.1 : 0.91)));
-    sph2cam();
+// ── Mausrad über Werkzeugfenstern ────────────────────────────────────
+// Panels liegen über dem Canvas und schluckten das wheel-Event: Zoomen ging
+// nur nach Schließen des Fensters. Jetzt geht das Rad an die Kamera, sofern
+// unter dem Zeiger nichts wirklich Scrollbares liegt.
+// Deckt außerdem Ctrl+Scroll/Pinch ab (sonst zoomt der Browser die Seite).
+
+// Liegt zwischen target und <body> ein Bereich, der in Scroll-Richtung noch Weg hat?
+function _hasScrollable(el, dy) {
+  for (let n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+    if (!(n instanceof Element)) continue;
+    const st = getComputedStyle(n);
+    if (!/auto|scroll/.test(st.overflowY)) continue;
+    if (n.scrollHeight - n.clientHeight < 2) continue;          // kein echter Überhang
+    if (dy > 0 && n.scrollTop < n.scrollHeight - n.clientHeight - 1) return true;
+    if (dy < 0 && n.scrollTop > 1) return true;
   }
+  return false;
+}
+// Vollbild-Dialoge (Start-Modal, Auth-Overlay …) sollen die Kamera nicht bewegen
+function _inFullOverlay(el) {
+  for (let n = el; n && n !== document.body; n = n.parentElement) {
+    if (!(n instanceof Element)) continue;
+    const st = getComputedStyle(n);
+    if (st.position !== 'fixed') continue;
+    const r = n.getBoundingClientRect();
+    if (r.width > innerWidth * 0.9 && r.height > innerHeight * 0.9) return true;
+  }
+  return false;
+}
+document.addEventListener('wheel', e => {
+  if (e.defaultPrevented) return;                 // Canvas/Werkzeug hat es schon behandelt
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl) e.preventDefault();                   // Browser-Zoom in jedem Fall unterbinden
+  if (_inFullOverlay(e.target)) return;
+  if (!ctrl && _hasScrollable(e.target, e.deltaY)) return;   // Liste/Panel darf scrollen
+  _camWheel(e);
 }, { passive: false });
 
 canvas.addEventListener('dblclick', e => {
@@ -29182,24 +29211,24 @@ function _reliefBandGeo(o){
     const schwelle=(k===0)?-1e9:hLo+k*step;
     const deckel=(k===n-1)?1e9:hLo+(k+1)*step;
     const pos=[];
-    // Entartete Dreiecke müssen raus: an der Bandkante läuft die Oberseite auf
-    // den Bandboden zu, dann schrumpfen einzelne Wand-Dreiecke auf null Fläche.
-    // Unsichtbar, aber sie hinterlassen Kanten ohne Gegenstück — die Hülle
-    // gilt dann als nicht geschlossen.
-    const tri=(A,B,C)=>{
+    // Umlaufrichtung PRO DREIECK gegen die Soll-Normale prüfen, nicht pro
+    // Viereck: an der Bandkante läuft die Oberseite auf den Bandboden zu, dann
+    // fällt eine Viereck-Ecke mit einer anderen zusammen. Der Aufspann-Vektor
+    // für die Normale wird null, die Prüfung damit wirkungslos — und genau
+    // diese entarteten Wände bekamen eine zufällige Wicklung. Nulldreiecke
+    // fliegen gleich mit raus; sie sind unsichtbar, hinterlassen aber Kanten
+    // ohne Gegenstück.
+    const tri=(A,B,C,nrm)=>{
       const ux=B[0]-A[0],uy=B[1]-A[1],uz=B[2]-A[2];
       const vx=C[0]-A[0],vy=C[1]-A[1],vz=C[2]-A[2];
       const a=uy*vz-uz*vy, b=uz*vx-ux*vz, c=ux*vy-uy*vx;
       if(a*a+b*b+c*c<1e-20) return;
-      pos.push(A[0],A[1],A[2], B[0],B[1],B[2], C[0],C[1],C[2]);
+      if(a*nrm[0]+b*nrm[1]+c*nrm[2]<0)
+        pos.push(A[0],A[1],A[2], C[0],C[1],C[2], B[0],B[1],B[2]);
+      else
+        pos.push(A[0],A[1],A[2], B[0],B[1],B[2], C[0],C[1],C[2]);
     };
-    const q=(A,B,C,D,nrm)=>{
-      const ux=B[0]-A[0],uy=B[1]-A[1],uz=B[2]-A[2];
-      const vx=D[0]-A[0],vy=D[1]-A[1],vz=D[2]-A[2];
-      const a=uy*vz-uz*vy, b=uz*vx-ux*vz, c=ux*vy-uy*vx;
-      if(a*nrm[0]+b*nrm[1]+c*nrm[2]<0){ const t=B; B=D; D=t; }
-      tri(A,B,C); tri(A,C,D);
-    };
+    const q=(A,B,C,D,nrm)=>{ tri(A,B,C,nrm); tri(A,C,D,nrm); };
     const X=i=>(x0+i/(nx-1)*w-cx)/10, Z=i=>(z0+i/(nz-1)*d-cz)/10;
     const Y=v=>Math.min(deckel,Math.max(boden,v))/10;
     const drin=(ix,iz)=>{
@@ -29622,6 +29651,10 @@ function _vkInfo(){
   const zell=(P.w/nx).toFixed(2);
   let txt=(_vk.img?'Foto geladen. ':'Noch kein Foto — geht auch als reine Textkarte. ')+
     `Schild ${P.w}×${P.h} mm, ${dick} mm dick · Raster ${zell} mm · rund ${tris}k Dreiecke`;
+  if(_vkPhotoExtra() && P.fotoStufen>1)
+    txt+=`<br>Foto in ${P.fotoStufen} Tonwert-Bändern — ${P.fotoStufen} Filamente, braucht AMS/Mehrfarb-Drucker`;
+  else if(_vkPhotoExtra()) txt+='<br>Foto als eigenes Teil (eigene Farbe)';
+  if(_vkTextExtra()) txt+=' · Text als eigenes Teil';
   let tipp='Flach drucken, Relief nach oben, 0,08–0,12 mm Schicht, ohne Stützen.';
   if(P.stand){
     const wall=Math.max(1.2,P.wall), len=Math.max(30,P.w);
@@ -37237,10 +37270,8 @@ _rhInit();
 _makeDraggable(document.getElementById('fp'), document.getElementById('fp-hdr'));
 _makeDraggable(document.getElementById('tex-panel'), document.getElementById('tex-hdr'));
 
-// Forward wheel events on panels to camera zoom
-const _wheelToCam = e => { sph.r = Math.max(1.5, Math.min(200, sph.r + e.deltaY * 0.03)); sph2cam(); e.preventDefault(); };
-document.getElementById('fp').addEventListener('wheel', _wheelToCam, { passive: false });
-document.getElementById('tex-panel').addEventListener('wheel', _wheelToCam, { passive: false });
+// Rad über Panels → Kamera-Zoom: erledigt jetzt zentral der document-wheel-Handler
+// (galt vorher nur für 'fp' und 'tex-panel', alle anderen Werkzeugfenster blockierten)
 
 // Block _fpSyncValues from overwriting slider values while user is dragging
 document.getElementById('fp').addEventListener('pointerdown', e => {

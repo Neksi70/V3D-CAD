@@ -51,6 +51,29 @@ const res = await page.evaluate(async () => {
     for (let i = 1; i < p.length; i += 3) { if (p[i] > 1e-6) { if (p[i] < mn) mn = p[i]; if (p[i] > mx) mx = p[i]; } }
     return { min: +(mn * 10).toFixed(3), max: +(mx * 10).toFixed(3) };
   };
+  // Teile aus Einzelflächen sind nicht indiziert → Kantenbilanz über
+  // die POSITION hashen, nicht über Indizes.
+  const dichtPos = (geo) => {
+    const p = geo.attributes.position.array, ix = geo.index ? geo.index.array : null;
+    const n = ix ? ix.length : p.length / 3;
+    const key = i => { const o = (ix ? ix[i] : i) * 3;
+      return Math.round(p[o] * 1e4) + '|' + Math.round(p[o + 1] * 1e4) + '|' + Math.round(p[o + 2] * 1e4); };
+    const m = new Map();
+    for (let i = 0; i < n; i += 3) {
+      const a = key(i), b = key(i + 1), c = key(i + 2);
+      for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+        if (u === v) continue;                       // entartet
+        const k = u + '>' + v; m.set(k, (m.get(k) || 0) + 1);
+      }
+    }
+    let rest = 0;
+    for (const [k, v] of m) {
+      const [u, w] = k.split('>');
+      rest += Math.abs(v - (m.get(w + '>' + u) || 0));
+    }
+    return rest;
+  };
+
   const masse = (geo) => {
     geo.computeBoundingBox(); const b = geo.boundingBox;
     return { x: +((b.max.x - b.min.x) * 10).toFixed(2), y: +((b.max.y - b.min.y) * 10).toFixed(3),
@@ -173,7 +196,7 @@ const res = await page.evaluate(async () => {
     _vk.p.base = 1.2; _vk.p.res = 300;
 
     _vk.p.fotoTeil = false;
-    out.fotoKeinTeil = _vkPhotoGeo(false) === null;
+    out.fotoKeinTeil = _vkPhotoParts(false).length === 0;
 
     _vk.p.fotoTeil = true;
     const karte = _buildVkGeo(false);
@@ -181,7 +204,8 @@ const res = await page.evaluate(async () => {
     out.karteOhneFoto = { hoehe: oben(karte), ...huelle(karte) };
     karte.dispose();
 
-    const fg = _vkPhotoGeo(false);
+    _vk.p.fotoStufen = 1;
+    const fg = _vkPhotoParts(false)[0].geo;
     fg.computeBoundingBox();
     const fb = fg.boundingBox;
     out.fotoTeil = {
@@ -190,34 +214,29 @@ const res = await page.evaluate(async () => {
       tiefe: +((fb.max.z - fb.min.z) * 10).toFixed(2),
       unten: +(fb.min.y * 10).toFixed(2), oben: +(fb.max.y * 10).toFixed(2),
     };
+    const einVol = _geoSignedVolume(fg);
     fg.dispose();
+
+    // Tonwert-Bänder: Summe der Bänder muss exakt das eine Relief ergeben
+    _vk.p.fotoStufen = 4;
+    const baender = _vkPhotoParts(false);
+    let summe = 0, dichtAlle = 0, stapel = [];
+    for (const b of baender) {
+      summe += _geoSignedVolume(b.geo);
+      dichtAlle += dichtPos(b.geo);
+      b.geo.computeBoundingBox();
+      stapel.push({ von: +(b.geo.boundingBox.min.y * 10).toFixed(3),
+                    bis: +(b.geo.boundingBox.max.y * 10).toFixed(3),
+                    tris: Math.round(b.geo.attributes.position.count / 3) });
+      b.geo.dispose();
+    }
+    out.baender = { anzahl: baender.length, dicht: dichtAlle,
+      summeVol: +(summe * 1000).toFixed(1), einVol: +(einVol * 1000).toFixed(1), stapel };
+    _vk.p.fotoStufen = 1;
     _vk.p.fotoTeil = false; _vk.p.photo = 'links';
   }
 
   // --- 5b) Ständer + Kartenfach (Stufe 2)
-  // Beide sind aus Einzelflächen gebaut, nicht indiziert → Kantenbilanz über
-  // die POSITION hashen, nicht über Indizes.
-  const dichtPos = (geo) => {
-    const p = geo.attributes.position.array, ix = geo.index ? geo.index.array : null;
-    const n = ix ? ix.length : p.length / 3;
-    const key = i => { const o = (ix ? ix[i] : i) * 3;
-      return Math.round(p[o] * 1e4) + '|' + Math.round(p[o + 1] * 1e4) + '|' + Math.round(p[o + 2] * 1e4); };
-    const m = new Map();
-    for (let i = 0; i < n; i += 3) {
-      const a = key(i), b = key(i + 1), c = key(i + 2);
-      for (const [u, v] of [[a, b], [b, c], [c, a]]) {
-        if (u === v) continue;                       // entartet
-        const k = u + '>' + v; m.set(k, (m.get(k) || 0) + 1);
-      }
-    }
-    let rest = 0;
-    for (const [k, v] of m) {
-      const [u, w] = k.split('>');
-      rest += Math.abs(v - (m.get(w + '>' + u) || 0));
-    }
-    return rest;
-  };
-
   _vkPreset('aufsteller');
   out.preset = { w: _vk.p.w, h: _vk.p.h, base: _vk.p.base, tsize: _vk.p.tsize,
                  stand: _vk.p.stand, fuss: +_vkFuss().toFixed(2) };
@@ -326,6 +345,11 @@ const pruef = [
   ['Foto-Teil deckt genau das Foto-Feld (32 mm breit)', nah(res.fotoTeil.breite, 32, 0.05)],
   ['Foto-Teil reicht unter die Kartenoberfläche', nah(res.fotoTeil.unten, 0.8, 0.02)],
   ['Foto-Teil nutzt die volle Relief-Tiefe (1,2 + 0,6)', nah(res.fotoTeil.oben, 1.8, 0.06)],
+  // Tonwert-Bänder (Mehrfarbdruck)
+  ['4 Farbstufen ergeben 4 Bänder', res.baender.anzahl === 4],
+  ['jedes Band ist geschlossen', res.baender.dicht === 0],
+  ['Bänder ergeben zusammen exakt das eine Relief', nah(res.baender.summeVol, res.baender.einVol, 0.5)],
+  ['Bänder stapeln lückenlos aufeinander', res.baender.stapel.every((b, i, a) => i === 0 || nah(b.von, a[i-1].bis, 0.01))],
   // Stufe 2: Aufsteller
   ['Preset Aufsteller: größer, dicker, Name 16 mm', res.preset.w === 100 && res.preset.base === 2.5 && res.preset.tsize === 16 && res.preset.stand],
   ['Fußleiste bleibt glatt (kein Relief in der Nut)', nah(res.fussGlatt.maxDicke, res.fussGlatt.soll, 0.02)],
