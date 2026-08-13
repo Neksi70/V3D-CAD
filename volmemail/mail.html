@@ -845,7 +845,7 @@ function sigZeile() {
   if (sender.signatureHtml || sender.signature) {
     box.classList.remove('hide');
     box.innerHTML = '<div class="k">Signatur wird angehängt</div>' +
-      (sender.signatureHtml || esc(sender.signature).replace(/\n/g, '<br>')) +
+      (sigAnzeige(sender) || esc(sender.signature).replace(/\n/g, '<br>')) +
       `<button class="btn sec sm" style="margin-top:8px" onclick="editAccount('${sender.id}')">Ändern</button>`;
   } else {
     box.classList.remove('hide');
@@ -940,12 +940,20 @@ async function doSend() {
     ? `<div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.45">` +
       htmlAusText(roh) + '<br>' + sender.signatureHtml + '</div>'
     : '';
+  // Logo der Signatur fest mitschicken, damit es beim Empfänger auch ohne
+  // Nachladen erscheint. Quelle ist die im Konto abgelegte data:-Fassung.
+  const logoRoh = (sender.signatureData || {}).logo;
+  const bilder = logoRoh ? [{
+    cid: SIG_LOGO_CID, name: 'logo.png',
+    type: (sender.signatureData.logoTyp || 'image/png'),
+    data: String(logoRoh).split(',')[1] || '',
+  }] : [];
   try {
     const r = await post('send', Object.assign({
       acc: accId,
       to, cc: document.getElementById('ccc').value.trim(),
       subject: document.getElementById('csubj').value,
-      text, html,
+      text, html, inlineImages: bilder,
       attachments: S.atts,
     }, S.reply || {}));
     closeCompose();
@@ -1011,7 +1019,7 @@ function editAccount(id) {
     <div style="display:flex;gap:8px;align-items:center">
       <div id="a_sigvor" style="flex:1;border:1px solid var(--line);border-radius:8px;padding:8px 10px;
            font-size:12px;color:var(--mid);max-height:88px;overflow:hidden;background:#fafbff">
-        ${a.signatureHtml || (a.signature ? esc(a.signature).replace(/\n/g, '<br>') : '<em>keine Signatur</em>')}
+        ${sigAnzeige(a) || (a.signature ? esc(a.signature).replace(/\n/g, '<br>') : '<em>keine Signatur</em>')}
       </div>
       <button class="btn sec" style="white-space:nowrap" onclick="signaturDialog('${id || ''}')">Bearbeiten</button>
     </div>
@@ -1048,6 +1056,16 @@ async function doAutoconfig() {
 // Aus den Angaben entstehen zwei Fassungen: HTML für die formatierte Mail und
 // Klartext als Rückfallebene. Die HTML-Fassung nutzt ausschließlich Stile
 // direkt am Element — Mailprogramme werfen <style>-Blöcke im Kopf weg.
+const SIG_LOGO_CID = 'v3dsiglogo';
+
+// Die gespeicherte Signatur verweist fürs Versenden auf das eingebettete Logo
+// (cid:). Im Browser gibt es das nicht — für Vorschauen die data:-Fassung
+// wieder einsetzen.
+function sigAnzeige(acc) {
+  const h = (acc && acc.signatureHtml) || '';
+  const logo = ((acc && acc.signatureData) || {}).logo;
+  return (h && logo) ? h.split('cid:' + SIG_LOGO_CID).join(logo) : h;
+}
 const SIG_FELDER = [
   ['name', 'Name', 'Volker Isken'], ['rolle', 'Funktion', 'Inhaber'],
   ['firma', 'Firma', 'Volme 3D'], ['slogan', 'Zusatz unter der Firma', '3D-Druck · Konstruktion · Kurse'],
@@ -1056,7 +1074,8 @@ const SIG_FELDER = [
   ['web', 'Web', 'https://volme3dakademie.de'], ['zusatz', 'Freie Zeile', ''],
 ];
 
-function sigBauen(d, layout) {
+function sigBauen(d, layout, opts) {
+  opts = opts || {};
   const A = '#EA6000', T = '#1c2030', M = '#5b6172';
   const e = s => esc(s || '');
   const web = (d.web || '').replace(/^https?:\/\//, '');
@@ -1078,20 +1097,39 @@ function sigBauen(d, layout) {
   const kontaktZeile = kontakt.length ? `<div style="color:${M};margin-top:4px">${kontakt.join(' &nbsp;·&nbsp; ')}</div>` : '';
   const zusatz = d.zusatz ? `<div style="color:${M};font-size:11.5px;margin-top:6px">${e(d.zusatz)}</div>` : '';
 
+  let innen;
+  if (layout === 'kompakt') {
+    const alles = [d.strasse, d.ort].filter(Boolean).map(e).join(', ');
+    innen = `<div>${kopf}${d.firma ? ` · <span style="font-weight:bold;color:${T}">${e(d.firma)}</span>` : ''}</div>` +
+      (alles ? `<div style="margin-top:3px;color:${M}">${alles}</div>` : '') + kontaktZeile + zusatz;
+  } else {
+    innen = `<div>${kopf}</div>${firma}${slogan}${adresse}${kontaktZeile}${zusatz}`;
+  }
+
+  // Das Logo kommt als eingebettetes Bild (Content-ID) in die Mail. Für die
+  // Vorschau in der App wird stattdessen die data:-Fassung durchgereicht.
+  const logo = opts.logo || (d.logo && { src: d.logo, breite: d.logoBreite });
+  if (logo && logo.src) {
+    const br = parseInt(logo.breite, 10) || 140;
+    const bild = `<img src="${e(logo.src)}" width="${br}" alt="${e(d.firma || d.name)}"` +
+      ` style="display:block;border:0;outline:none;width:${br}px;max-width:${br}px;height:auto">`;
+    if (d.logoPos === 'oben') {
+      innen = `<div style="margin-bottom:10px">${bild}</div>${innen}`;
+    } else {
+      // Tabelle statt Flexbox: Outlook kann kein modernes Layout.
+      innen = `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse">` +
+        `<tr><td valign="top" style="padding:0 16px 0 0;vertical-align:top">${bild}</td>` +
+        `<td valign="top" style="vertical-align:top">${innen}</td></tr></table>`;
+    }
+  }
+
   let html;
   if (layout === 'balken') {
-    html = `<div style="${schrift};border-left:3px solid ${A};padding-left:12px">` +
-      `<div>${kopf}</div>${firma}${slogan}${adresse}${kontaktZeile}${zusatz}</div>`;
+    html = `<div style="${schrift};border-left:3px solid ${A};padding-left:12px">${innen}</div>`;
   } else if (layout === 'kompakt') {
-    const alles = [d.strasse, d.ort].filter(Boolean).map(e).join(', ');
-    html = `<div style="${schrift};color:${M}">` +
-      `<div>${kopf}${d.firma ? ` · <span style="font-weight:bold;color:${T}">${e(d.firma)}</span>` : ''}</div>` +
-      (alles ? `<div style="margin-top:3px">${alles}</div>` : '') +
-      kontaktZeile + zusatz + '</div>';
+    html = `<div style="${schrift};color:${M}">${innen}</div>`;
   } else {
-    html = `<div style="${schrift}">` +
-      `<div style="border-top:1px solid #e3e6ef;padding-top:8px">${kopf}</div>` +
-      `${firma}${slogan}${adresse}${kontaktZeile}${zusatz}</div>`;
+    html = `<div style="${schrift};border-top:1px solid #e3e6ef;padding-top:10px">${innen}</div>`;
   }
 
   const t = [];
@@ -1130,12 +1168,39 @@ function signaturDialog(id) {
       <option value="kompakt"${layout === 'kompakt' ? ' selected' : ''}>Kompakt — wenige Zeilen</option>
     </select>
     <div class="grid2">${SIG_FELDER.map(feld).join('')}</div>
+    <label>Logo</label>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <div id="sig_logovor" style="min-width:120px;min-height:52px;border:1px solid var(--line);
+           border-radius:8px;padding:6px;background:#fff;display:flex;align-items:center;justify-content:center">
+        <span class="muted" style="font-size:12px">kein Logo</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn sec sm" onclick="sigLogoAusRechnung()">Firmenlogo laden</button>
+          <button class="btn sec sm" onclick="document.getElementById('sig_datei').click()">Datei wählen</button>
+          <button class="btn sec sm" onclick="sigLogoWeg()">Entfernen</button>
+          <input type="file" id="sig_datei" accept="image/*" class="hide" onchange="sigLogoDatei(this.files[0])">
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--mid)">
+          <span>Breite</span>
+          <input id="sig_logoBreite" type="range" min="70" max="240" step="10" value="${d.logoBreite || 140}"
+                 oninput="document.getElementById('sig_breitewert').textContent=this.value+' px';sigVorschau()"
+                 style="width:130px;padding:0">
+          <span id="sig_breitewert">${d.logoBreite || 140} px</span>
+          <select id="sig_logoPos" onchange="sigVorschau()" style="width:auto">
+            <option value="links"${d.logoPos === 'oben' ? '' : ' selected'}>links daneben</option>
+            <option value="oben"${d.logoPos === 'oben' ? ' selected' : ''}>darüber</option>
+          </select>
+        </div>
+      </div>
+    </div>
     <label>Vorschau</label>
     <div id="sig_vor" style="border:1px solid var(--line);border-radius:9px;padding:14px;background:#fff;min-height:80px"></div>
     <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
       <button class="btn sec" onclick="editAccount('${id || ''}')">Zurück</button>
       <button class="btn" onclick="sigSpeichern('${id || ''}')">Übernehmen</button>
     </div>`);
+  S.sigLogo = d.logo ? { data: d.logo, type: d.logoTyp || 'image/png', name: 'logo.png' } : null;
   sigVorschau();
   // Beim ersten Einrichten die Firmendaten von selbst eintragen. Sie erst auf
   // Knopfdruck zu holen führte dazu, dass eine Signatur nur aus der Mailadresse
@@ -1146,13 +1211,69 @@ function signaturDialog(id) {
 function sigDaten() {
   const d = { layout: document.getElementById('sig_layout').value };
   for (const [k] of SIG_FELDER) d[k] = document.getElementById('sig_' + k).value.trim();
+  d.logo = S.sigLogo ? S.sigLogo.data : '';
+  d.logoTyp = S.sigLogo ? S.sigLogo.type : '';
+  d.logoBreite = parseInt(document.getElementById('sig_logoBreite').value, 10) || 140;
+  d.logoPos = document.getElementById('sig_logoPos').value;
   return d;
 }
 function sigVorschau() {
   const d = sigDaten();
   document.getElementById('sig_vor').innerHTML =
     sigBauen(d, d.layout).html || '<span class="muted">noch nichts ausgefüllt</span>';
+  const lv = document.getElementById('sig_logovor');
+  lv.innerHTML = d.logo
+    ? `<img src="${esc(d.logo)}" style="max-width:110px;max-height:60px">`
+    : '<span class="muted" style="font-size:12px">kein Logo</span>';
 }
+
+// --- Logo -------------------------------------------------------------------
+// Mails wollen Rasterbilder: SVG zeigen viele Programme nicht an. Die Umwandlung
+// macht der Browser über ein Canvas — auf dem Server liegt kein Rasterer.
+function svgZuPng(svg, zielBreite) {
+  return new Promise((fertig, schief) => {
+    const bild = new Image();
+    const url = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg)));
+    bild.onload = () => {
+      const v = bild.width || 600, h = bild.height || 300;
+      const b = zielBreite * 2;                     // doppelt für scharfe Darstellung
+      const c = document.createElement('canvas');
+      c.width = b; c.height = Math.round(b * h / v);
+      const g = c.getContext('2d');
+      g.fillStyle = '#ffffff';                      // Mailprogramme mit dunklem Hintergrund
+      g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(bild, 0, 0, c.width, c.height);
+      fertig(c.toDataURL('image/png'));
+    };
+    bild.onerror = () => schief(new Error('Logo konnte nicht gelesen werden'));
+    bild.src = url;
+  });
+}
+
+async function sigLogoAusRechnung() {
+  let r;
+  try { r = await api('firmenlogo'); } catch (e) { return toast(e.message); }
+  if (!r.svg) return toast('Kein Firmenlogo gefunden');
+  try {
+    const breite = parseInt(document.getElementById('sig_logoBreite').value, 10) || 140;
+    S.sigLogo = { data: await svgZuPng(r.svg, breite), type: 'image/png', name: 'logo.png' };
+    sigVorschau();
+    toast('Firmenlogo übernommen');
+  } catch (e) { toast(e.message); }
+}
+
+function sigLogoDatei(datei) {
+  if (!datei) return;
+  if (datei.size > 400 * 1024) return toast('Bitte ein Logo unter 400 KB wählen');
+  const fr = new FileReader();
+  fr.onload = () => {
+    S.sigLogo = { data: fr.result, type: datei.type || 'image/png', name: datei.name || 'logo.png' };
+    sigVorschau();
+  };
+  fr.readAsDataURL(datei);
+}
+
+function sigLogoWeg() { S.sigLogo = null; sigVorschau(); }
 async function sigAusRechnung(still) {
   let f;
   try { f = (await api('firma')).firma || {}; } catch (e) { return still || toast(e.message); }
@@ -1171,7 +1292,11 @@ function sigLeeren() {
 async function sigSpeichern(id) {
   if (!id) return toast('Bitte das Konto erst speichern, dann die Signatur einrichten', 5000);
   const d = sigDaten();
-  const { html, text } = sigBauen(d, d.layout);
+  const { text } = sigBauen(d, d.layout);
+  // Für den Versand verweist das Logo auf den eingebetteten Teil (cid), nicht
+  // auf die data:-Fassung — die zeigt Outlook nicht an.
+  const { html } = sigBauen(d, d.layout,
+    d.logo ? { logo: { src: 'cid:' + SIG_LOGO_CID, breite: d.logoBreite } } : {});
   const leer = !text.trim();
   // Nur Adresse und Telefon ohne Namen ergibt keine Signatur, sondern eine
   // zusammenhanglose Zeile unter der Mail.

@@ -75,6 +75,31 @@ with sync_playwright() as p:
         check('Stile stehen direkt am Element', 'style=' in html and '<style' not in html.lower())
         check('Web-Adresse verlinkt', 'href="https://volme3dakademie.de"' in html, html[:80])
 
+
+        # --- Logo ---
+        page.click('text=Firmenlogo laden')
+        page.wait_for_timeout(3000)
+        check('Firmenlogo geladen', page.evaluate('!!(S.sigLogo && S.sigLogo.data)'))
+        check('Logo als PNG umgewandelt',
+              page.evaluate("(S.sigLogo||{}).data||''").startswith('data:image/png'),
+              page.evaluate("((S.sigLogo||{}).data||'').slice(0,30)"))
+        check('Logo in der Vorschau sichtbar',
+              page.evaluate("!!document.querySelector('#sig_vor img')"))
+        check('Logo neben den Daten (Tabelle für Outlook)',
+              page.evaluate("document.querySelector('#sig_vor table') !== null"))
+        page.select_option('#sig_logoPos', 'oben')
+        page.wait_for_timeout(300)
+        check('Logo lässt sich darüber stellen',
+              page.evaluate("document.querySelector('#sig_vor table') === null")
+              and page.evaluate("!!document.querySelector('#sig_vor img')"))
+        page.select_option('#sig_logoPos', 'links')
+        page.wait_for_timeout(300)
+
+        # Spruch eintragen
+        page.fill('#sig_slogan', 'Ideen, die man anfassen kann.')
+        page.wait_for_timeout(300)
+        check('Spruch erscheint in der Vorschau',
+              'anfassen' in page.inner_text('#sig_vor'))
         # --- speichern ---
         # exakt den Speichern-Knopf treffen — "Daten aus VolmeRechnung übernehmen"
         # enthält dasselbe Wort
@@ -121,6 +146,19 @@ with sync_playwright() as p:
         check('Getippter Text auch formatiert', 'kurze Frage.' in (daten.get('html') or ''))
         check('Signatur nur einmal enthalten',
               (daten.get('html') or '').count('Tückinger') <= 1)
+
+        check('Logo als eingebettetes Bild mitgeschickt',
+              len(daten.get('inlineImages') or []) == 1,
+              str(len(daten.get('inlineImages') or [])))
+        bild = (daten.get('inlineImages') or [{}])[0]
+        check('Bild trägt eine Content-ID', bool(bild.get('cid')))
+        check('Bilddaten sind vorhanden', len(bild.get('data') or '') > 500,
+              '%d Zeichen' % len(bild.get('data') or ''))
+        check('HTML verweist auf das eingebettete Bild',
+              'cid:' + (bild.get('cid') or 'x') in (daten.get('html') or ''))
+        check('Keine data:-URL in der versendeten Fassung',
+              'data:image' not in (daten.get('html') or ''),
+              'data:-URLs zeigt Outlook nicht an')
 
         # --- ohne Signatur bleibt alles beim Alten ---
         page.evaluate('S.accounts[0].signature = ""; S.accounts[0].signatureHtml = ""')

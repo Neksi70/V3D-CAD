@@ -118,6 +118,18 @@ Gespeichert werden drei Dinge: die formatierte Fassung (`signatureHtml`), eine
 Klartextfassung (`signature`) und die Einzelangaben (`signatureData`), damit sich
 die Signatur später weiter bearbeiten lässt.
 
+**Logo:** „Firmenlogo laden" holt `~/volmerechnung/logo.svg` und wandelt es im
+Browser über ein Canvas in ein PNG um — auf dem Server liegt kein Rasterer, und
+SVG zeigen viele Mailprogramme ohnehin nicht an. Breite und Lage (links daneben
+oder darüber) sind einstellbar; eigene Bilddateien gehen auch.
+
+Beim Versand steckt das Logo als **eingebettetes Bild mit Content-ID** in der
+Nachricht (`multipart/related`), nicht als Link und nicht als `data:`-URL:
+verlinkte Bilder blockieren Mailprogramme bis zum Nachladen, `data:`-URLs zeigt
+Outlook gar nicht. Nebeneinander wird per Tabelle gesetzt, weil Outlook kein
+modernes Layout beherrscht. Für die Vorschau in der App ersetzt `sigAnzeige()`
+den `cid:`-Verweis wieder durch die gespeicherte `data:`-Fassung.
+
 Beim Verfassen steht die Signatur **nicht im Textfeld**, sondern wird darunter
 angezeigt und erst beim Senden angehängt. So kann sie nicht versehentlich
 zerschrieben werden, und beim Wechsel des Absenders stimmt sie ohne Nachbessern.

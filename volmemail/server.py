@@ -1135,6 +1135,21 @@ def send_mail(acc, data):
     msg.set_content(text)
     if data.get('html'):
         msg.add_alternative(data['html'], subtype='html')
+        # Bilder der Signatur fest in die Nachricht legen (Content-ID). Extern
+        # verlinkte Bilder blockieren Mailprogramme, und data:-URLs zeigt
+        # Outlook gar nicht an.
+        for bild in data.get('inlineImages') or []:
+            try:
+                roh = base64.b64decode(bild.get('data', ''))
+            except Exception:
+                continue
+            if not roh or not bild.get('cid'):
+                continue
+            maintype, _, subtype = (bild.get('type') or 'image/png').partition('/')
+            msg.get_payload()[-1].add_related(
+                roh, maintype=maintype or 'image', subtype=subtype or 'png',
+                cid='<%s>' % bild['cid'], disposition='inline',
+                filename=bild.get('name') or 'logo.png')
 
     for att in data.get('attachments') or []:
         raw = base64.b64decode(att.get('data', ''))
@@ -1412,6 +1427,18 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == '/firma' and method == 'GET':
             return self._send(200, {'firma': firmendaten()})
+
+        if route == '/firmenlogo' and method == 'GET':
+            # Das SVG wandelt die Oberfläche selbst in ein PNG um — hier liegt
+            # kein Rasterer, und der Browser kann es ohnehin besser.
+            for p in (os.path.join(os.path.expanduser('~'), 'volmerechnung', 'logo.svg'),
+                      os.path.join(ROOT, 'logo.svg')):
+                try:
+                    with open(p, 'r', encoding='utf-8') as fh:
+                        return self._send(200, {'svg': fh.read(), 'quelle': os.path.basename(p)})
+                except Exception:
+                    continue
+            return self._send(200, {'svg': ''})
 
         # Senden/Empfangen: alle Postfächer auf einmal prüfen
         if route == '/check':
