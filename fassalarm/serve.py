@@ -9,6 +9,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
 http.server.ThreadingHTTPServer(
-    ('127.0.0.1', 8771),
+    ('0.0.0.0', 8771),  # auch im Tailnet erreichbar (http://100.125.34.44:8771)
     functools.partial(Handler, directory='/home/v3da/fassalarm')
 ).serve_forever()
