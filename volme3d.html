@@ -4865,6 +4865,38 @@ function toggleTransparent() {
   setTransparent(!t.classList.contains('on'));
 }
 
+// Durchsichtige Körper sahen bei Testern tiefschwarz aus. Ursache ist nicht die
+// Deckkraft selbst, sondern was ohne Tiefen-Schreiben zusätzlich sichtbar wird:
+//   1. DoubleSide zeigt die Innenflächen — die liegen im Eigenschatten und
+//      stapeln sich bei vielen Konturen (Text!) Schicht für Schicht zu Schwarz
+//   2. der eigene Schlagschatten liegt dann sichtbar auf diesen Innenflächen
+//   3. die schwarzen Kantenlinien werden nicht mehr verdeckt → alle Kanten des
+//      Körpers liegen gleichzeitig im Bild, auch die hinteren
+// Darum im Durchsicht-Modus: nur Außenflächen, kein Eigenschatten, blasse
+// Kanten. Die Ausgangswerte bleiben in userData, damit "aus" sauber zurückkommt.
+function _applyTranspLook(o) {
+  if (!o || !o.isMesh || !o.material || Array.isArray(o.material)) return;
+  const m  = o.material;
+  // Nur der vom Nutzer gesetzte Durchsicht-Modus zählt (userData.opacity) —
+  // Bohrungen sind ebenfalls halbdurchlässig, sollen aber unangetastet bleiben.
+  // Ihr isHole steht beim ersten Kantenbau noch nicht in userData, opacity nie.
+  const on = !!m.transparent && !o.userData.isHole &&
+             o.userData.opacity != null && o.userData.opacity < 0.99;
+  if (o.userData._sideOrig === undefined) o.userData._sideOrig = m.side;
+  if (o.userData._castOrig === undefined) o.userData._castOrig = o.castShadow;
+  m.side        = on ? THREE.FrontSide : o.userData._sideOrig;
+  m.depthWrite  = !on;
+  m.needsUpdate = true;
+  o.castShadow  = on ? false : o.userData._castOrig;
+  o.children.filter(c => c.userData.isEdgeLines).forEach(c => {
+    c.material.color.setHex(on ? 0x64748b : 0x000000);
+    c.material.transparent = on;
+    c.material.opacity     = on ? 0.3 : 1.0;
+    c.material.depthWrite  = !on;
+    c.material.needsUpdate = true;
+  });
+}
+
 function setTransparent(on) {
   const t = document.getElementById('transp-toggle');
   if (t) t.classList.toggle('on', on);
@@ -4873,9 +4905,8 @@ function setTransparent(on) {
     const opac = on ? 0.35 : 1.0;
     o.material.transparent = on;
     o.material.opacity     = opac;
-    o.material.depthWrite  = !on;
-    o.material.needsUpdate = true;
     o.userData.opacity = opac;
+    _applyTranspLook(o);
   });
 }
 
@@ -10556,6 +10587,7 @@ function _updateObjEdgeLines(mesh) {
   );
   wf.userData.isEdgeLines = true;
   mesh.add(wf);
+  _applyTranspLook(mesh);   // frische Kanten am Durchsicht-Zustand ausrichten
 }
 
 // ═══ ADD SHAPE ═══════════════════════════════════════════════════════
@@ -13237,6 +13269,13 @@ function buildObjectFromData(data) {
        (['cylinder','sphere'].includes(obj.userData.shapeType) &&
         (obj.userData.segments || obj.userData.capBevel))))
     _fpRebuildGeo(obj);
+  // Durchsicht-Zustand nach dem Laden/Undo wiederherstellen (die userData-Zuweisung
+  // oben hat die gemerkten Ausgangswerte überschrieben → Seite fest auf DoubleSide,
+  // so wie das Material hier gebaut wird).
+  if (obj.isMesh) {
+    obj.userData._sideOrig = THREE.DoubleSide; obj.userData._castOrig = true;
+    _applyTranspLook(obj);
+  }
   return obj;
 }
 
