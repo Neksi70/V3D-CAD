@@ -616,6 +616,87 @@ class TestDnsParser(unittest.TestCase):
             server._nameservers = orig
 
 
+def png_bytes():
+    return (b'\x89PNG\r\n\x1a\n' + b'\x00' * 64)
+
+
+class TestNachrichtenaufbau(unittest.TestCase):
+    """Aufbau der versendeten Nachricht — besonders das eingebettete Logo."""
+
+    def setUp(self):
+        import base64
+        self.b64 = base64.b64encode(png_bytes()).decode()
+        self.acc = {'email': 'a@volme3dakademie.de', 'name': 'Volker Isken',
+                    'signatureData': {'logo': 'data:image/png;base64,' + self.b64}}
+
+    def typen(self, msg):
+        return [p.get_content_type() for p in msg.walk()]
+
+    def test_nur_text(self):
+        msg = server.baue_nachricht(self.acc, {'to': 'x@y.de', 'text': 'Moin'})
+        self.assertEqual(msg.get_content_type(), 'text/plain')
+
+    def test_text_und_html(self):
+        msg = server.baue_nachricht(self.acc, {'to': 'x@y.de', 'text': 'Moin',
+                                               'html': '<p>Moin</p>'})
+        self.assertIn('multipart/alternative', self.typen(msg))
+        self.assertIn('text/html', self.typen(msg))
+
+    def test_logo_wird_eingebettet(self):
+        msg = server.baue_nachricht(self.acc, {
+            'to': 'x@y.de', 'text': 'Moin',
+            'html': '<p>Moin</p><img src="cid:v3dsiglogo">',
+            'inlineImages': [{'cid': 'v3dsiglogo', 'data': self.b64, 'type': 'image/png'}]})
+        self.assertIn('multipart/related', self.typen(msg))
+        bilder = [p for p in msg.walk() if p.get_content_type() == 'image/png']
+        self.assertEqual(len(bilder), 1)
+        self.assertEqual(bilder[0].get('Content-ID'), '<v3dsiglogo>')
+        self.assertEqual(bilder[0].get_payload(decode=True), png_bytes())
+
+    def test_logo_wird_aus_dem_konto_ergaenzt(self):
+        """Ein alter Browserstand schickt das Bild nicht mit — dann muss der
+        Server es selbst anhängen, sonst kommt ein kaputtes Bild an."""
+        msg = server.baue_nachricht(self.acc, {
+            'to': 'x@y.de', 'text': 'Moin',
+            'html': '<p>Moin</p><img src="cid:v3dsiglogo" width="150">'})
+        bilder = [p for p in msg.walk() if p.get_content_type() == 'image/png']
+        self.assertEqual(len(bilder), 1, 'Logo fehlt in der Nachricht')
+        self.assertEqual(bilder[0].get('Content-ID'), '<v3dsiglogo>')
+
+    def test_verweis_ohne_bild_wird_entfernt(self):
+        """Kein Logo am Konto: dann darf auch kein toter Verweis übrig bleiben."""
+        acc = {'email': 'a@b.de'}
+        msg = server.baue_nachricht(acc, {
+            'to': 'x@y.de', 'text': 'Moin',
+            'html': '<p>Moin</p><img src="cid:v3dsiglogo" width="150" alt="Logo">'})
+        html = msg.get_body(preferencelist=('html',)).get_content()
+        self.assertNotIn('cid:v3dsiglogo', html)
+        self.assertIn('Moin', html)
+
+    def test_anhang_neben_logo(self):
+        msg = server.baue_nachricht(self.acc, {
+            'to': 'x@y.de', 'text': 'Moin', 'html': '<img src="cid:v3dsiglogo">',
+            'attachments': [{'name': 'Angebot.pdf', 'type': 'application/pdf',
+                             'data': self.b64}]})
+        typen = self.typen(msg)
+        self.assertIn('multipart/mixed', typen)
+        self.assertIn('multipart/related', typen)
+        self.assertIn('application/pdf', typen)
+
+    def test_absendername_im_kopf(self):
+        msg = server.baue_nachricht(self.acc, {'to': 'x@y.de', 'text': 'Moin'})
+        self.assertIn('Volker Isken', msg['From'])
+        self.assertIn('a@volme3dakademie.de', msg['From'])
+
+    def test_antwortbezug_wird_gesetzt(self):
+        msg = server.baue_nachricht(self.acc, {
+            'to': 'x@y.de', 'text': 'Moin', 'inReplyTo': '<abc@x.de>',
+            'references': '<vorher@x.de>'})
+        self.assertEqual(msg['In-Reply-To'], '<abc@x.de>')
+        self.assertIn('<vorher@x.de>', msg['References'])
+        self.assertIn('<abc@x.de>', msg['References'])
+
+
 class TestReadableError(unittest.TestCase):
     def test_bytes_repr_unwrapped(self):
         e = Exception("b'[AUTHENTICATIONFAILED] Authentication failed.'")

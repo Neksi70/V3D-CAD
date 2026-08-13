@@ -71,7 +71,10 @@ with sync_playwright() as p:
         # --- keine gefährlichen Bestandteile ---
         html = page.evaluate("sigBauen(sigDaten(), sigDaten().layout).html")
         check('Signatur enthält keine Skripte', '<script' not in html.lower())
-        check('Signatur ohne externe Bilder', 'src=' not in html.lower())
+        # Eingebettete Bilder (cid:/data:) sind erwünscht — nur extern
+        # nachzuladende nicht, die blockieren Mailprogramme.
+        check('Signatur ohne extern verlinkte Bilder',
+              'src="http' not in html.lower() and 'src=\'http' not in html.lower())
         check('Stile stehen direkt am Element', 'style=' in html and '<style' not in html.lower())
         check('Web-Adresse verlinkt', 'href="https://volme3dakademie.de"' in html, html[:80])
 

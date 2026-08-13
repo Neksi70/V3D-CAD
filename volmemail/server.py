@@ -1115,7 +1115,46 @@ def test_account(a):
 
 # --- Senden -----------------------------------------------------------------
 
-def send_mail(acc, data):
+SIG_LOGO_CID = 'v3dsiglogo'
+
+
+def logo_aus_konto(acc):
+    """Das Signaturlogo liegt als data:-URL am Konto — daraus die Rohdaten."""
+    roh = (acc.get('signatureData') or {}).get('logo') or ''
+    if not roh.startswith('data:'):
+        return None
+    kopf, _, b64 = roh.partition(',')
+    if not b64:
+        return None
+    typ = kopf[5:].split(';')[0] or 'image/png'
+    return {'cid': SIG_LOGO_CID, 'data': b64, 'type': typ, 'name': 'logo.png'}
+
+
+def ergaenze_signaturbild(acc, html, bilder):
+    """Sicherstellen, dass zu jedem cid-Verweis im HTML auch ein Bild gehört.
+
+    Die Oberfläche schickt das Logo normalerweise mit. Tut sie es nicht — etwa
+    weil in einem alten Browserfenster noch eine frühere Fassung läuft —, holen
+    wir es hier aus dem Konto. Sonst verschickt man ein kaputtes Bild, ohne es
+    zu merken. Bleibt ein Verweis übrig, fliegt das Bild ganz aus dem HTML.
+    """
+    verweise = set(re.findall(r'cid:([A-Za-z0-9._-]+)', html))
+    if not verweise:
+        return html, bilder
+    vorhanden = {b.get('cid') for b in bilder}
+    if SIG_LOGO_CID in verweise and SIG_LOGO_CID not in vorhanden:
+        logo = logo_aus_konto(acc)
+        if logo:
+            bilder = bilder + [logo]
+            vorhanden.add(SIG_LOGO_CID)
+    for fehlt in verweise - vorhanden:
+        html = re.sub(r'<img[^>]*cid:%s[^>]*>' % re.escape(fehlt), '', html)
+    return html, bilder
+
+
+def baue_nachricht(acc, data):
+    """Die Nachricht zusammensetzen — getrennt vom Versand, damit der Aufbau
+    (besonders eingebettete Bilder) ohne SMTP prüfbar ist."""
     msg = EmailMessage()
     from_name = acc.get('name') or ''
     msg['From'] = email.utils.formataddr((from_name, acc['email'])) if from_name else acc['email']
@@ -1133,12 +1172,15 @@ def send_mail(acc, data):
 
     text = data.get('text') or ''
     msg.set_content(text)
-    if data.get('html'):
-        msg.add_alternative(data['html'], subtype='html')
+    html = data.get('html') or ''
+    if html:
+        bilder = [b for b in (data.get('inlineImages') or []) if b.get('cid') and b.get('data')]
+        html, bilder = ergaenze_signaturbild(acc, html, bilder)
+        msg.add_alternative(html, subtype='html')
         # Bilder der Signatur fest in die Nachricht legen (Content-ID). Extern
         # verlinkte Bilder blockieren Mailprogramme, und data:-URLs zeigt
         # Outlook gar nicht an.
-        for bild in data.get('inlineImages') or []:
+        for bild in bilder:
             try:
                 roh = base64.b64decode(bild.get('data', ''))
             except Exception:
@@ -1157,6 +1199,11 @@ def send_mail(acc, data):
         maintype, _, subtype = ctype.partition('/')
         msg.add_attachment(raw, maintype=maintype, subtype=subtype or 'octet-stream',
                            filename=att.get('name') or 'anhang')
+    return msg
+
+
+def send_mail(acc, data):
+    msg = baue_nachricht(acc, data)
 
     recipients = []
     for field in ('to', 'cc', 'bcc'):
