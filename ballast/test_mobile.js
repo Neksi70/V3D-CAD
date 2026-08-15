@@ -33,6 +33,28 @@ const FORMATE = [
     await page.screenshot({ path: `/tmp/b_${name.split(' ')[0]}.png` });
     await ctx.close();
   }
+  // Bedienknoepfe muessen nach dem Umbau wirklich Eingaben ausloesen
+  const bc = await b.newContext({ viewport: { width: 851, height: 393 }, isMobile: true, hasTouch: true });
+  const bp = await bc.newPage();
+  await bp.goto('http://127.0.0.1:8773/', { waitUntil: 'networkidle' });
+  await bp.evaluate(() => { const d = window._blDbg; d.level(0); d.G.introT = 0; d.step(120); });
+  const probe = async (sel, feld) => {
+    await bp.dispatchEvent(sel, 'pointerdown');
+    const an = await bp.evaluate(f => window._keys[f], feld);
+    await bp.dispatchEvent(sel, 'pointerup');
+    const aus = await bp.evaluate(f => window._keys[f], feld);
+    return an === 1 && aus === 0;
+  };
+  const knoepfe = [['#tl', 'left'], ['#tr', 'right'], ['#tj', 'jump'], ['#tq', 'drop'], ['#te', 'pick'], ['#td', 'down'], ['#to', 'look']];
+  const kaputt = [];
+  for (const [sel, feld] of knoepfe) if (!await probe(sel, feld)) kaputt.push(sel);
+  // laufen die Eingaben auch im Spiel an?
+  await bp.dispatchEvent('#tr', 'pointerdown');
+  const x0 = await bp.evaluate(() => { window._blDbg.step(60); return Math.round(window._blDbg.G.player.x); });
+  await bp.dispatchEvent('#tr', 'pointerup');
+  const x1 = await bp.evaluate(() => Math.round(window._blDbg.G.player.x));
+  console.log(`${'Bedienknöpfe'.padEnd(20)} ${kaputt.length ? 'DEFEKT: ' + kaputt.join(',') : 'alle sieben reagieren'}, Laufweg ${x1 - 84}px`);
+
   // Hochformat: dort soll der Dreh-Hinweis erscheinen
   const hoch = await b.newContext({ viewport: { width: 393, height: 851 }, isMobile: true, hasTouch: true });
   const hp = await hoch.newPage();
