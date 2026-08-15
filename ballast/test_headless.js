@@ -186,6 +186,57 @@ const { chromium } = require('playwright');
   if (win === 'won') ok('Ziel loest Sieg aus');
   else bad('Ziel reagiert nicht (state=' + win + ')');
 
+  // 9b. Steinbeisser: drei Interaktionen, alle am Gewicht haengend
+  const bug = await page.evaluate(() => {
+    const d = window._blDbg;
+    const setup = mass => {
+      d.level(2);                       // "Durchschlag" hat einen Steinbeisser bei x=29
+      d.G.chunks.length = 0;
+      const e = d.G.enemies[0], p = d.G.player;
+      p.mass = mass; p.x = e.x + e.w / 2; p.y = e.y - 40; p.vx = 0; p.vy = 260;
+      return { e, p };
+    };
+    const out = {};
+    // schwer von oben: zertreten
+    let s = setup(4); d.step(22);
+    out.stomp = { enemy: s.e.alive, player: d.G.state, bounce: Math.round(d.G.player.vy) };
+    // leicht von oben: verloren
+    s = setup(2); d.step(60);
+    out.tooLight = { enemy: s.e.alive, player: d.G.state };
+    // seitlicher Kontakt toetet immer
+    d.level(2); d.G.chunks.length = 0;
+    const e2 = d.G.enemies[0], p2 = d.G.player;
+    p2.mass = 6; p2.x = e2.x - 6; p2.y = e2.y + e2.h; p2.vx = 0; p2.vy = 0;
+    d.step(40);
+    out.side = d.G.state;
+    // geworfener Klumpen zerschlaegt den Panzer
+    d.level(2); d.G.chunks.length = 0;
+    const e3 = d.G.enemies[0];
+    d.G.player.x = 100; d.G.player.y = 12 * 24;
+    d.G.chunks.push({ x: e3.x - 34, y: e3.y + e3.h - 20, vx: 320, vy: 0, w: 20, h: 20, rest: false, age: 0 });
+    d.step(24);
+    out.thrown = { enemy: e3.alive, player: d.G.state };
+    // Patrouille: bleibt auf dem Podest und im Radius
+    d.level(2);
+    const e4 = d.G.enemies[0], x0 = e4.x;
+    let min = x0, max = x0;
+    for (let i = 0; i < 900; i++) { d.step(1); min = Math.min(min, e4.x); max = Math.max(max, e4.x); }
+    out.patrol = { spanne: Math.round(max - min), y: Math.round(e4.y), lebt: e4.alive, boden: e4.grounded };
+    return out;
+  });
+  if (!bug.stomp.enemy && bug.stomp.player === 'play' && bug.stomp.bounce < -40)
+    ok(`Steinbeisser: mit Gewicht 4 zertreten (Abprall ${bug.stomp.bounce})`);
+  else bad('Zertreten geht nicht: ' + JSON.stringify(bug.stomp));
+  if (bug.tooLight.enemy && bug.tooLight.player === 'dead') ok('Zu leicht draufspringen ist toedlich');
+  else bad('Leichtes Draufspringen falsch: ' + JSON.stringify(bug.tooLight));
+  if (bug.side === 'dead') ok('Seitlicher Kontakt ist toedlich');
+  else bad('Seitlicher Kontakt wirkungslos: ' + bug.side);
+  if (!bug.thrown.enemy && bug.thrown.player === 'play') ok('Geworfener Klumpen zerschlaegt den Steinbeisser');
+  else bad('Klumpenwurf wirkungslos: ' + JSON.stringify(bug.thrown));
+  if (bug.patrol.lebt && bug.patrol.spanne > 30 && bug.patrol.spanne < 170 && bug.patrol.y < 12 * 24)
+    ok(`Patrouille: ${bug.patrol.spanne}px hin und her, faellt nicht herunter`);
+  else bad('Patrouille falsch: ' + JSON.stringify(bug.patrol));
+
   // 10. Machbarkeit der Schluesselstellen: echte Simulation mit Anlauf + Sprung
   await page.evaluate(() => {
     window._sim = o => {
@@ -241,7 +292,7 @@ const { chromium } = require('playwright');
 
   // L3: Aufstieg zu den beiden Klumpen
   await feas('L3 Podest 1 (72px) mit Gewicht 2',
-    { level: 2, mass: 2, fromX: 11 * 24, fromY: 12 * 24, dir: 1, jumpAtX: 13 * 24 },
+    { level: 2, mass: 2, fromX: 11 * 24, fromY: 12 * 24, dir: 1, jumpAtX: 13 * 24, after: 60 },
     r => r.alive && stood(r, 9 * 24));
   await feas('L3 Podest 2 (72px) mit Gewicht 3',
     { level: 2, mass: 3, fromX: 15 * 24, fromY: 9 * 24, dir: 1, jumpAtX: 19 * 24, clear: true },
@@ -281,7 +332,7 @@ const { chromium } = require('playwright');
 
   // L8: Podest der oberen Etage + Durchbruch durch die Falltuer
   await feas('L8 Podest obere Etage mit Gewicht 1',
-    { level: 7, mass: 1, fromX: 20 * 24, fromY: 5 * 24, dir: 1, jumpAtX: 21 * 24, clear: true },
+    { level: 7, mass: 1, fromX: 20 * 24, fromY: 5 * 24, dir: 1, jumpAtX: 21 * 24, clear: true, after: 40 },
     r => r.alive && stood(r, 4 * 24));
   const fin = await page.evaluate(() => {
     const d = window._blDbg;
@@ -299,6 +350,45 @@ const { chromium } = require('playwright');
   if (fin.open && fin.bruch === '.' && fin.state === 'won')
     ok('L8 Falltuer offen, Bruchboden durchschlagen, Ziel erreicht');
   else bad('L8 Finale klemmt: ' + JSON.stringify(fin));
+
+  // 11. Ablauf: Titel -> Kapitelkarte -> Spiel -> Sieg -> naechste Karte
+  const flow = await page.evaluate(() => {
+    const d = window._blDbg, out = {};
+    d.G.state = 'title';
+    out.start = d.G.state;
+    d.advance(); out.nachTitel = d.G.state;                 // Kapitel 1 hat eine Karte
+    out.karte = d.G.pending;
+    d.advance(); out.imSpiel = d.G.state + '/' + d.G.li;
+    d.G.state = 'won'; d.G.li = 0;
+    d.advance(); out.nachSieg = d.G.state + '/' + d.G.li;   // Ebene 2 ohne Karte
+    d.G.state = 'won'; d.G.li = 2;
+    d.advance(); out.vorKapitel2 = d.G.state + '/' + d.G.pending;
+    d.G.state = 'won'; d.G.li = 7;
+    d.advance(); out.nachLetztem = d.G.state;
+    return out;
+  });
+  const flowOk = flow.start === 'title' && flow.nachTitel === 'story' && flow.karte === 0 &&
+    flow.imSpiel === 'play/0' && flow.nachSieg === 'play/1' &&
+    flow.vorKapitel2 === 'story/3' && flow.nachLetztem === 'end';
+  if (flowOk) ok('Ablauf Titel -> Kapitelkarte -> Ebene -> Sieg -> Abspann');
+  else bad('Ablauf stimmt nicht: ' + JSON.stringify(flow));
+
+  // 12. Musik laeuft nach einer echten Nutzergeste
+  await page.evaluate(() => { window._blDbg.pause(false); window._blDbg.level(0); });
+  await page.waitForTimeout(800);            // alte Respawn-Timer auslaufen lassen
+  await page.keyboard.press('KeyM'); await page.keyboard.press('KeyM');
+  await page.waitForTimeout(200);
+  const m0 = await page.evaluate(() => ({ step: window._AUD.step, song: window._AUD.song }));
+  await page.waitForTimeout(1000);
+  const mus = await page.evaluate(() => ({
+    song: window._AUD.song, laeuft: !!window._AUD.timer, step: window._AUD.step,
+    an: window._AUD.music, kontext: window._actxState(),
+  }));
+  await page.evaluate(() => window._blDbg.pause());
+  const takte = mus.step - m0.step;
+  if (mus.kontext === 'running' && mus.laeuft && mus.song === m0.song && takte >= 2)
+    ok(`Musik: Song "${mus.song}" laeuft, ${takte} Achtel in einer Sekunde geplant`);
+  else bad('Musik laeuft nicht: ' + JSON.stringify({ m0, mus, takte }));
 
   if (errs.length) errs.forEach(e => bad(e));
   else ok('keine JS-Fehler');
