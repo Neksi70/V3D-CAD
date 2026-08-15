@@ -86,6 +86,7 @@ let score=0, high=+(localStorage.getItem('fassalarm_high')||0);
 let level=1, lives=3, bonus=5000, extraGiven=false;
 let player, barrels=[], hammers=[], popups=[], apeT=0, apeAnim=0, muted=false, paused=false;
 let flameT=0; // Stichflamme am Oelfass, wenn ein Fass hineinrollt
+let helpT=0;  // laeuft, waehrend die Prinzessin "HILFE!" ruft (Bild + Ton synchron)
 let princessPlaced=true; // false nur waehrend des Intros, bis Kong sie oben absetzt
 let fires=[], barrelCount=0; // Feuerbaelle aus dem Oelfass, Fass-Zaehler (1. Fass = blau)
 
@@ -97,7 +98,7 @@ function resetRound(){
           ladder:null, anim:0, hammerT:0, airFrom:0};
   barrels=[]; popups=[]; fires=[]; barrelCount=0;
   hammers=HDEF.map(([x,g])=>({x, y:gY(GIRDERS[g],x)-36, taken:false}));
-  apeT=90; apeAnim=0; bonus=5000;
+  apeT=90; apeAnim=0; bonus=5000; helpT=0;
 }
 function startGame(){
   score=0; level=1; lives=3; extraGiven=false; resetRound();
@@ -174,6 +175,28 @@ function crash(dur,vol,when){ // Rausch-Krachen fuer Aufprall
     s.connect(g); g.connect(a.destination); s.start(a.currentTime+(when||0));
   }catch(e){}
 }
+// Stimm-artiger Ton: Saegezahn durch ein Bandpass-Filter = grobe Vokalfarbe.
+// formant tief (~900) klingt nach "e/a", hoch (~1800) nach "i". vib = Vibrato-Tiefe.
+function voice(f0,f1,dur,formant,vol,when,vib){ if(muted) return;
+  try{
+    const a=ac(), t=a.currentTime+(when||0);
+    const o=a.createOscillator(); o.type='sawtooth';
+    o.frequency.setValueAtTime(f0,t);
+    o.frequency.exponentialRampToValueAtTime(Math.max(f1,1),t+dur);
+    const bp=a.createBiquadFilter(); bp.type='bandpass';
+    bp.frequency.setValueAtTime(formant,t); bp.Q.setValueAtTime(7,t);
+    const g=a.createGain();
+    g.gain.setValueAtTime(.0001,t);
+    g.gain.exponentialRampToValueAtTime(vol,t+.04);
+    g.gain.setValueAtTime(vol,t+dur*.6);
+    g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+    if(vib){ // Vibrato, sonst klingt der Ruf nach Roboter statt nach Mensch
+      const lfo=a.createOscillator(), lg=a.createGain();
+      lfo.frequency.setValueAtTime(6.5,t); lg.gain.setValueAtTime(vib,t);
+      lfo.connect(lg); lg.connect(o.frequency); lfo.start(t); lfo.stop(t+dur+.05); }
+    o.connect(bp); bp.connect(g); g.connect(a.destination);
+    o.start(t); o.stop(t+dur+.05);
+  }catch(e){} }
 const sfx={
   // Warbelnder Laufton wie im Original: pro Schritt ein schnell absackender
   // Blip, mit alternierender Tonhoehe wirkt es wie "wa-wa-wa"
@@ -182,7 +205,25 @@ const sfx={
   point(){ tone(900,1500,.09,'square',.05); },
   smash(){ tone(220,50,.22,'sawtooth',.08); },
   grab(){ tone(500,900,.12,'square',.06); },
-  throw(){ tone(130,70,.12,'triangle',.09); },
+  // Kong greift in den Fass-Stapel: hohler Holz-Klonk
+  stack(){ tone(210,120,.09,'triangle',.09); crash(.05,.07); },
+  // ... wuchtet das Fass ueber den Kopf: ansteigender Grunzer
+  heave(){ tone(85,155,.30,'sawtooth',.10); },
+  // ... und schleudert es los: Grunzer, Rums beim Loslassen,
+  // dann poltert das Fass auf den Traeger und rollt an
+  throw(){
+    tone(155,55,.24,'sawtooth',.17);
+    tone(300,110,.10,'square',.08,.02);
+    crash(.09,.18,.02);
+    tone(180,90,.26,'triangle',.14,.10);
+    crash(.15,.11,.12);
+  },
+  // Hilferuf der Prinzessin: "HIL-FE!" in zwei Silben
+  help(){
+    crash(.05,.05);                    // Hauch fuer das "H"
+    voice(660,700,.20,1800,.10,.02,8); // "HIL" — hell
+    voice(720,540,.34,900,.11,.26,14); // "FE!" — dunkler, faellt ab
+  },
   beat(){ tone(72,55,.09,'triangle',.045); },
   death(){ [520,415,350,262,208,175].forEach((f,i)=>tone(f,f,.13,'square',.06,i*.12)); },
   win(){ [523,659,784,1047].forEach((f,i)=>tone(f,f,.12,'square',.06,i*.1)); },
@@ -197,6 +238,46 @@ const sfx={
     crash(.18,.35);
   },
   roar(){ tone(90,55,.6,'sawtooth',.09); tone(70,45,.6,'sawtooth',.09,.05); },
+};
+
+// ---- Hintergrundmusik (eigene Komposition, kein Nintendo-Original)
+// Treibender 16tel-Groove in a-moll, 4 Takte im Kreis. Die Noten werden mit
+// echten Audio-Zeitstempeln ~0,25 s vorausgeplant, damit die Musik nicht am
+// Frame-Jitter haengt; beim Pausieren verstummt sie darum erst nach <0,25 s.
+const NOTE={E2:82.41,F2:87.31,G2:98,A2:110,C3:130.81,D3:146.83,E3:164.81,G3:196,
+            E4:329.63,F4:349.23,G4:392,A4:440,B4:493.88,
+            C5:523.25,D5:587.33,E5:659.26,F5:698.46,G5:783.99};
+function seq(s){ return s.trim().split(/\s+/).map(n=>n==='-'?0:NOTE[n]); }
+const SONG={
+  lead:[].concat(
+    seq('A4 -  C5 -  E5 -  D5 C5 -  B4 -  -  -  A4 -  -'),
+    seq('F4 -  A4 -  C5 -  -  A4 -  G4 -  -  F4 -  -  -'),
+    seq('G4 -  C5 -  E5 -  G5 -  F5 -  E5 -  D5 -  -  -'),
+    seq('E5 -  D5 -  C5 -  B4 -  A4 -  -  -  E4 -  -  -')),
+  bass:[].concat(
+    seq('A2 -  A2 -  A2 -  E3 -  A2 -  A2 -  A2 -  E3 -'),
+    seq('F2 -  F2 -  F2 -  C3 -  F2 -  F2 -  F2 -  C3 -'),
+    seq('C3 -  C3 -  C3 -  G3 -  G2 -  G2 -  G2 -  D3 -'),
+    seq('A2 -  A2 -  A2 -  E3 -  E2 -  E2 -  E3 -  E3 -')),
+};
+const MUS={
+  i:0, t:0,
+  stepDur(){ return Math.max(.10, .133-(level-1)*.006); }, // je Level etwas hektischer
+  stop(){ this.i=0; this.t=0; },  // t=0 => beim naechsten tick() neu einklinken
+  tick(){
+    if(muted) return;
+    let a; try{ a=ac(); }catch(e){ return; }
+    if(this.t<a.currentTime+.05) this.t=a.currentTime+.05; // nach Pause/Mute/Tab-Wechsel
+    const d=this.stepDur();
+    while(this.t<a.currentTime+.25){
+      const w=this.t-a.currentTime, k=this.i%SONG.lead.length;
+      const L=SONG.lead[k], B=SONG.bass[k];
+      if(L) tone(L,L,.11,'square',.035,w);
+      if(B) tone(B,B,.16,'triangle',.075,w);
+      if(this.i%2) crash(.02,.05,w); // Hi-Hat auf den Zwischenschlaegen
+      this.i++; this.t+=d;
+    }
+  },
 };
 
 function addScore(n,x,y){
@@ -394,12 +475,12 @@ function hammerRect(){
 // ---- Haupt-Step (fester 60-Hz-Takt)
 function step(){
   frame++;
-  if(state==='title'||state==='over'){ stateT++; return; }
-  if(paused) return;
-  if(state==='intro'){ stepIntro(); return; }
+  if(state==='title'||state==='over'){ stateT++; MUS.stop(); return; }
+  if(paused){ MUS.stop(); return; }
+  if(state==='intro'){ MUS.stop(); stepIntro(); return; }
 
   if(state==='dying'){
-    stateT++;
+    stateT++; MUS.stop(); // Musik weg, damit die Sterbe-Melodie freisteht
     if(stateT>=140){
       lives--;
       if(lives<0){ state='over'; stateT=0;
@@ -409,18 +490,24 @@ function step(){
     return;
   }
   if(state==='win'){
-    stateT++;
+    stateT++; MUS.stop();
     if(stateT>=150){ level++; resetRound(); state='play'; }
     return;
   }
   // ---- state === 'play'
   stateT++;
+  MUS.tick(); // Hintergrundmusik loest den frueheren nackten Herzschlag ab
   if(stateT%120===0 && bonus>0) bonus=Math.max(0,bonus-100);
-  if(stateT%34===0) sfx.beat();
   if(flameT>0) flameT--;
+
+  // Prinzessin ruft regelmaessig um Hilfe
+  if(helpT>0) helpT--;
+  if(stateT%280===90){ sfx.help(); helpT=110; }
 
   // Affe wirft Faesser
   apeT--; apeAnim++;
+  if(apeT===63) sfx.stack(); // Pranke wuehlt im Fass-Stapel
+  if(apeT===35) sfx.heave(); // Fass wandert ueber den Kopf
   if(apeT===18) spawnBarrel();
   if(apeT<=0) apeT=Math.max(70, 170-20*(level-1));
 
@@ -759,10 +846,11 @@ function drawOil(){ // Oelfass unten links, schluckt die Faesser
 function drawGoal(){
   if(!princessPlaced) return; // im Intro traegt Kong sie noch
   const x=224,y=106; // die entfuehrte Prinzessin wartet auf dem Podest
-  blit((frame>>4)%2 ? SPR.princessWave : SPR.princess, x, y, false);
-  if(state!=='intro' && (frame>>5)%2){ // blinkender Hilferuf wie im Original
-    ctx.fillStyle='#fff'; ctx.font='bold 12px monospace'; ctx.textAlign='center';
-    ctx.fillText('HILFE!',x,y-40);
+  const cry=helpT>0; // waehrend des Rufs winkt sie hektisch und der Text steht fest
+  blit((cry?(frame>>2):(frame>>4))%2 ? SPR.princessWave : SPR.princess, x, y, false);
+  if(state!=='intro' && (cry || (frame>>5)%2)){ // blinkender Hilferuf wie im Original
+    ctx.fillStyle='#fff'; ctx.font='bold '+(cry?14:12)+'px monospace'; ctx.textAlign='center';
+    ctx.fillText('HILFE!',x,y-40-(cry?2:0));
   }
 }
 function drawIntroLadder(){ // lange Leiter, die Kong im Intro hochklettert
@@ -963,7 +1051,8 @@ document.addEventListener('visibilitychange',()=>{ if(document.hidden&&state==='
 // ---- Test-Hook fuer Headless-Checks (analog _tdbg bei Blockfall)
 const DBG={
   god:false,
-  get st(){ return {state,score,lives,level,bonus,frame,
+  get st(){ return {state,score,lives,level,bonus,frame,helpT,apeT,
+    mus:{i:MUS.i,step:MUS.stepDur()},
     player:{...player}, barrels:barrels.map(b=>({...b})),
     fires:fires.map(f=>({...f}))}; },
   tick(n){ for(let i=0;i<(n||1);i++) step(); },
@@ -975,6 +1064,10 @@ const DBG={
   win(){ reachGoal(); },
   kill(){ killPlayer(); },
   seed(fn){ rng=fn||Math.random; },
+  // Ton-Checks von Hand: _faDbg.unmute(); _faDbg.sfx('help')
+  sfx(n,...a){ if(sfx[n]) sfx[n](...a); },
+  unmute(){ muted=false; try{ac();}catch(e){} },
+  mus:MUS,
 };
 window._faDbg=DBG;
 muted=navigator.webdriver||false; // Headless: kein Audio-Genöle
