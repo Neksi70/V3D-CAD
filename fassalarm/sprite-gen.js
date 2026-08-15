@@ -19,11 +19,12 @@ const outline=(g,ch)=>{
   for(const [r,c] of add) g[r][c]=ch;
 };
 
-// ---- Kopf: Hut, Brauenwulst, tiefliegende Augen, Monokel, kurze Schnauze
-function head(g,brim){
-  row(g,0,16,27,'M'); row(g,1,15,28,'M'); row(g,2,14,29,'M');   // Krone
-  row(g,3,13,30,'e');                                            // Hutband
-  row(g,4,brim[0],brim[1],'M'); row(g,5,brim[0]+2,brim[1]-2,'m');// Krempe + Schatten
+// ---- Kopf: Fellkuppe mit Scheitelkamm, Brauenwulst, tiefliegende Augen,
+// Monokel, kurze Schnauze. Kein Hut -- der Schaedel traegt sich selbst.
+function head(g){
+  row(g,3,20,23,'F');                                            // Scheitelkamm
+  row(g,4,17,26,'F'); row(g,5,15,28,'F');                        // Kuppe
+  row(g,4,18,25,'b'); row(g,5,17,26,'b');                        // Licht von oben
   row(g,6,14,29,'F'); box(g,7,15,13,30,'F');
   box(g,9,11,11,12,'f'); box(g,9,11,31,32,'f');                  // Ohren
   px(g,10,12,'P'); px(g,10,31,'P');
@@ -40,12 +41,6 @@ function head(g,brim){
   px(g,13,19,'K'); px(g,13,24,'K');                              // Nuestern
   row(g,15,18,25,'K'); px(g,14,17,'K'); px(g,14,26,'K');         // Mund, Winkel hoch
   row(g,18,15,28,'f'); row(g,19,17,26,'f');                      // Bart laeuft aus
-}
-// ---- Keule im Rueckengepaeck: dicker Schaft, knorriger Kopf
-function club(g){
-  box(g,1,4,2,6,'N'); px(g,1,3,'t'); px(g,2,2,'t'); px(g,3,5,'t'); px(g,2,6,'f');
-  box(g,5,9,4,6,'N');  box(g,10,14,5,7,'N'); box(g,15,19,6,8,'N');
-  for(let r=5;r<=19;r++) px(g,r,4+Math.floor((r-5)/5),'t');      // Lichtkante
 }
 // ---- Rumpf mit Brustschild und Tragegurt: schmale Schultern, breiter Bauch
 function trunk(g,r1,r2){
@@ -85,7 +80,7 @@ const ARM=[[20,4,10],[21,3,10],[22,2,10],[23,1,10],[24,1,10],[25,1,10],
 
 // ================= Pose 1: stehend, Knoechel am Boden =================
 const A=grid();
-head(A,[8,35]); club(A);
+head(A);
 row(A,20,10,33,'f');                                   // Nackenlinie
 trunk(A,20,30);
 arm(A,ARM,false,true); arm(A,ARM,true,true);            // Arme neben dem Rumpf
@@ -96,7 +91,7 @@ outline(A,'e');
 
 // ================= Pose 2: Arme hoch (wirft / klettert) =================
 const B=grid();
-head(B,[10,33]);                                       // Krempe schmaler, Arme davor
+head(B);
 const UP=[];
 for(let r=2;r<=18;r++){ const o=2+Math.floor((18-r)/6); UP.push([r,o,o+6]); }
 arm(B,UP,false,false); arm(B,UP,true,false);
