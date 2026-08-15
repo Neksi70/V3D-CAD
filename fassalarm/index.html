@@ -888,6 +888,47 @@ const SPR={
     ".............eeeeeeee.......................",
     "............................................",
   ],2),
+  // Profil (Zwischenbild der Drehung) -- wird von sprite-gen.js gefuellt
+  kongSide:mkspr([
+    "............................................",
+    "............................................",
+    ".................eeeeeee....................",
+    "...............eeFFFFFFFee..................",
+    "..............eFFbbbbbbbFFe.................",
+    ".............eFFbbbbbbbFFFFe................",
+    ".............eFFFFFFFFFFFFFe................",
+    ".............eFFFFFFFFFFFFFe................",
+    ".............eFFFFFFFFFFFFFee...............",
+    "............eFFFFFFFFFFFFffffe..............",
+    "............eFFfffFFFFFFFffffe..............",
+    "............eFFfffFFFFFWWffffeee............",
+    "............eFFfffFFFFFKFPPPPPPPe...........",
+    "............eFFfffFFFFFFFPPPPPPPe...........",
+    "............eFFFFFFFFFFFFPPPPPKPe...........",
+    "............eFFFFFFFFFFFFPPPPPPPe...........",
+    "............eFFFFFFFFFFFFPKKKKKPe...........",
+    "............eFFFFFFFFfffffffffPPe...........",
+    ".............eeeeeeeefffffffffee............",
+    "............efffffffffffffffffe.............",
+    "............eeFFFFFbFFFFFfFFffe.............",
+    "...........efffFFFFbFFFFFfFFFe..............",
+    "...........efffFFFFbFFFFFfPPPPe.............",
+    "...........efffFFFFbFFFFFfPPPPe.............",
+    "...........efffFFFFbFFFFFfPPPPe.............",
+    "...........efffFFFFbFFFFFfPPPPe.............",
+    "...........efffFFFFbFFFFFfPPPPe.............",
+    "...........efffFFFFbFFFFFfPPPPe.............",
+    "...........efffFFFFbFFFFFfPPPPe.............",
+    "............eeeFFFFbFFFFFfFeee..............",
+    "...............eFFFPPPPPPPe.................",
+    "..............ebFFFFFFFFPe..................",
+    "..............ebFFFFFFFFe...................",
+    "..............ebFFFFFFFFe...................",
+    ".............eebFFFFFFFFee..................",
+    "............efffffffffffffee................",
+    "...........effffffffffffffffe...............",
+    "...........effPPPPPPPPPPPPffe...............",
+  ],2),
 };
 
 function drawGirder(g){
@@ -1007,20 +1048,37 @@ function drawGoal(){
     ctx.fillText('HILFE!',x,y-40-(cry?2:0));
   }
 }
-// Kong an der Leiter: erst dreht er sich weg (Figur horizontal stauchen und
-// als Rueckenansicht wieder aufziehen), danach laeuft der Kletterschritt --
-// die Rueckenpose gespiegelt ergibt genau den Gegenschritt.
-const TURN=14;
-function climbSquash(fr){ return fr<TURN ? Math.max(.06,Math.abs(2*fr/TURN-1)) : 1; }
-function withTurn(cx,s,fn){ // alles um Kongs Mitte stauchen, damit die
-  if(s>=1){ fn(); return; } // Prinzessin unterm Arm mitschwenkt statt zu schweben
-  ctx.save(); ctx.translate(cx,0); ctx.scale(s,1); ctx.translate(-cx,0);
-  fn(); ctx.restore();
+// Kong dreht sich um die eigene Hochachse: der Winkel laeuft von 0 (Front)
+// ueber 90 Grad (Profil) auf 180 Grad (Ruecken). Jede Pose wird mit ihrer
+// eigenen Projektion skaliert -- Front/Ruecken mit cos, das Profil mit sin.
+// Umgeschaltet wird dort, wo beide gleich breit erscheinen (tan = 44/20),
+// dadurch bleibt die Breite ueber die ganze Drehung stetig und die Figur
+// wird nie zum Strich wie beim frueheren flachen Stauchen.
+const TURN=18, FRONTW=44, SIDEW=20, SWAP=Math.atan(FRONTW/SIDEW);
+function turnAngle(fr){ return Math.PI*Math.min(1,fr/TURN); }
+// wie weit die Figur seitlich zusammenlaeuft (fuer alles, was mitgedreht wird)
+function climbSquash(fr){ return fr<TURN ? Math.abs(Math.cos(turnAngle(fr))) : 1; }
+function blitTurn(spr,cx,by,sx,flip){
+  ctx.save(); ctx.translate(cx,by); ctx.scale((flip?-1:1)*Math.max(.02,sx),1);
+  ctx.drawImage(spr,-spr.width>>1,-spr.height); ctx.restore();
 }
 function blitClimb(front,cx,by,fr){
-  const s=climbSquash(fr);
-  if(s<1) withTurn(cx,s,()=>blit(fr/TURN<.5?front:SPR.kongClimb,cx,by,false));
-  else blit(SPR.kongClimb, cx, by, ((fr-TURN)>>3)%2===1);
+  if(fr>=TURN){ blit(SPR.kongClimb, cx, by, ((fr-TURN)>>3)%2===1); return; }
+  const a=turnAngle(fr), c=Math.abs(Math.cos(a)), s=Math.abs(Math.sin(a));
+  if(a<SWAP)              blitTurn(front,          cx,by,c,false);
+  else if(a>Math.PI-SWAP) blitTurn(SPR.kongClimb,  cx,by,c,false);
+  // im mittleren Drittel steht er im Profil, ab 90 Grad gespiegelt, damit
+  // die Schnauze auf die andere Seite wandert
+  else                    blitTurn(SPR.kongSide,   cx,by,s,a>Math.PI/2);
+}
+// Kong mit der Prinzessin unterm Arm. Waehrend der Drehung wandert sie auf
+// seine Mitte zu und liegt hinter ihm -- sie mitzustauchen sah nach Papier aus.
+function drawCarry(front,cx,by,fr,climbing,px,py,carry){
+  const turning=climbing && fr<TURN;
+  if(carry && turning)
+    blit(SPR.princess, Math.round(cx+(px-cx)*climbSquash(fr)), py, false);
+  if(climbing) blitClimb(front,cx,by,fr); else blit(front,cx,by,false);
+  if(carry && !turning) blit(SPR.princess, px, py, false);
 }
 function drawIntroLadder(){ // lange Leiter, die Kong im Intro hochklettert
   ctx.fillStyle='#3ed6ff';
@@ -1099,21 +1157,15 @@ function drawLevel(){
   drawGoal();
   if(state==='intro'){ // Kong traegt die Prinzessin hoch und stampft alles krumm
     drawIntroLadder();
-    if(intro.phase==='climb') blitClimb(SPR.kong, intro.x, Math.round(intro.y), intro.fr);
-    else blit(intro.phase==='roar'||intro.phase==='place' ? SPR.kongThrow : SPR.kong,
-              intro.x, Math.round(intro.y), false);
-    if(!princessPlaced) // Prinzessin unterm Arm bzw. beim Hochsetzen
-      withTurn(intro.x, intro.phase==='climb'?climbSquash(intro.fr):1,
-        ()=>blit(SPR.princess, intro.px, Math.round(intro.py), false));
+    drawCarry(intro.phase==='roar'||intro.phase==='place' ? SPR.kongThrow : SPR.kong,
+              intro.x, Math.round(intro.y), intro.fr, intro.phase==='climb',
+              Math.round(intro.px), Math.round(intro.py), !princessPlaced);
   } else if(state==='flee'){ // Kong schnappt sie sich und flieht eine Ebene hoeher
     if(flee.phase==='up') drawFleeLadder();
     drawPlayer();
-    if(flee.phase==='up') blitClimb(SPR.kongThrow, Math.round(flee.x), Math.round(flee.y), flee.fr);
-    else blit(flee.phase==='come'?SPR.kong:SPR.kongThrow,
-              Math.round(flee.x), Math.round(flee.y), false);
-    if(!princessPlaced)
-      withTurn(Math.round(flee.x), flee.phase==='up'?climbSquash(flee.fr):1,
-        ()=>blit(SPR.princess, Math.round(flee.px), Math.round(flee.py), false));
+    drawCarry(flee.phase==='come'?SPR.kong:SPR.kongThrow,
+              Math.round(flee.x), Math.round(flee.y), flee.fr, flee.phase==='up',
+              Math.round(flee.px), Math.round(flee.py), !princessPlaced);
   } else {
     if(state!=='rescue') drawApe(); // im Finale ist Kong ueber alle Berge
     for(const b of barrels) drawBarrel(b);

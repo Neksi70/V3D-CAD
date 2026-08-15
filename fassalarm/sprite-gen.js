@@ -136,15 +136,43 @@ box(C,29,35,13,20,'F'); box(C,29,35,20,20,'f');        // linkes Bein gestreckt
 row(C,33,23,30,'P'); row(C,35,13,20,'P');              // Fuesse auf den Sprossen
 outline(C,'e');
 
+// ============ Pose 4: Profil -- das Zwischenbild der Drehung ============
+// Nur rund 20 Spalten breit: das ist die Koerpertiefe. Die Drehung blendet
+// Front -> Profil -> Ruecken und skaliert jede Pose mit ihrer Projektion,
+// dadurch wird die Figur nie zum Strich.
+const D=grid();
+row(D,3,17,23,'F'); row(D,4,15,25,'F');
+box(D,5,8,14,26,'F'); box(D,9,17,13,26,'F');      // runder Hinterschaedel
+row(D,4,17,23,'b'); row(D,5,16,22,'b');           // Licht von oben
+box(D,10,13,15,17,'f');                           // Ohr
+box(D,9,11,25,28,'f');                            // Brauenwulst springt vor
+px(D,11,23,'W'); px(D,12,23,'K'); px(D,11,24,'W');// Auge im Schatten
+box(D,12,17,25,31,'P');                           // Schnauze ragt heraus
+px(D,14,30,'K'); row(D,16,26,30,'K');             // Nuester, Mund
+box(D,17,20,21,29,'f');                           // Kiefer und Bart
+row(D,19,13,28,'f');                              // Nackenlinie
+const SIDE=[[20,14,27],[21,13,28],[22,12,29],[23,12,29],[24,12,29],[25,12,29],
+            [26,12,29],[27,13,28],[28,14,27],[29,15,26],[30,16,25]];
+for(const [r,c1,c2] of SIDE) row(D,r,c1,c2,'F');
+box(D,21,28,12,14,'f');                           // Ruecken liegt im Schatten
+box(D,22,28,24,29,'P');                           // Brust nach vorn
+box(D,20,29,19,25,'F');                           // haengender Arm davor
+box(D,20,29,19,19,'b'); box(D,20,29,25,25,'f');
+row(D,30,19,25,'P'); row(D,31,20,24,'P');         // Knoechel
+box(D,31,34,15,23,'F'); box(D,31,34,15,15,'b');   // Bein im Profil
+row(D,35,13,25,'f'); row(D,36,12,27,'f'); row(D,37,12,27,'f');
+row(D,37,14,25,'P');                              // Fuss ragt nach vorn
+outline(D,'e');
+
 const out=g=>g.map(r=>'    "'+r.join('')+'",').join('\n');
 if(process.argv[2]==='--patch'){
   const fs=require('fs'), file='/home/v3da/fassalarm/index.html';
   let h=fs.readFileSync(file,'utf8');
-  for(const [name,g] of [['kong',A],['kongThrow',B],['kongClimb',C]]){
+  for(const [name,g] of [['kong',A],['kongThrow',B],['kongClimb',C],['kongSide',D]]){
     const re=new RegExp('('+name+':mkspr\\(\\[)[\\s\\S]*?(\\],2\\))');
     if(!re.test(h)) throw new Error('Sprite '+name+' nicht gefunden');
     h=h.replace(re,'$1\n'+out(g)+'\n  $2');
   }
   fs.writeFileSync(file,h);
-  console.log('kong + kongThrow + kongClimb ersetzt ('+W+'x'+H+')');
+  console.log('Posen ersetzt ('+W+'x'+H+')');
 } else { console.log(out(A)); }
