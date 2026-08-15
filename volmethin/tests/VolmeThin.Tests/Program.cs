@@ -1,6 +1,32 @@
 using System.Text;
 using VolmeThin.Core;
 
+// Sondermodus: erzeugt ein Testpaket fuer den Integrationstest des Verteilservers.
+if (args.Length >= 2 && args[0] == "paket")
+{
+    var zielPfad = args[1];
+    var quelle = Path.Combine(Path.GetTempPath(), "vthin_probe_" + Guid.NewGuid().ToString("N") + ".dat");
+    File.WriteAllText(quelle, "Beispielinhalt fuer den Integrationstest");
+
+    var probe = new PackageManifest
+    {
+        Id = args.Length > 2 ? args[2] : "probe",
+        Name = args.Length > 3 ? args[3] : "Probeprogramm",
+        Version = args.Length > 4 ? args[4] : "1.0.0",
+        EntryPoint = @"{ProgramFiles}\Probe\probe.exe",
+        Mode = DeployMode.Install
+    };
+    using (var pw = new PackageWriter(zielPfad))
+    {
+        probe.Files.Add(pw.AddFile(quelle, @"{ProgramFiles}\Probe\probe.exe"));
+        probe.Registry.Add(new RegistryEntry { Root = "HKCU", Key = @"Software\Probe", Name = "Start", Kind = RegKind.String, Value = "ja" });
+        pw.Finish(probe);
+    }
+    File.Delete(quelle);
+    Console.WriteLine(zielPfad);
+    return 0;
+}
+
 int failed = 0, passed = 0;
 
 void Check(string name, Func<bool> test)

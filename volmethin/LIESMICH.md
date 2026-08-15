@@ -40,6 +40,68 @@ braucht. Es gibt **keine** Umleitung von Dateizugriffen zur Laufzeit – dafuer 
 API-Hooking noetig, das VolmeThin bewusst nicht macht. Fuer Kursraeume mit Adminzugang
 ist der Installationsmodus der verlaessliche Weg.
 
+## Verteilstelle
+
+Der Server steht in der VHS, die Kurs-PCs fragen bei ihm nach. Kein Anfassen der einzelnen
+Rechner mehr: im Browser anhaken, welcher Raum was bekommt, den Rest machen die Agenten.
+
+```
+VolmeThin (Arbeitsplatz)  --Upload-->  Verteilserver (VHS)  <--fragt nach--  Agent (Kurs-PC)
+```
+
+**Server einrichten** (einmalig, auf dem VHS-Rechner):
+
+```
+volmethin-server.exe
+```
+
+Beim ersten Start entsteht `config.json` neben der EXE mit Port (Vorgabe 8790), Admin- und
+Agentschluessel. Die Weboberflaeche laeuft auf `http://<rechner>:8790`. Damit er dauerhaft
+laeuft, als Dienst eintragen:
+
+```
+sc create VolmeThinServer binPath= "C:\VolmeThin-Server\volmethin-server.exe" start= auto
+sc start VolmeThinServer
+netsh advfirewall firewall add rule name="VolmeThin" dir=in action=allow protocol=TCP localport=8790
+```
+
+**Kurs-PC anbinden** (einmalig pro Rechner, als Administrator):
+
+```
+VolmeThinAgent.exe einrichten --server http://vhs-server:8790 --schluessel <Agentschluessel> --raum "Kursraum 1"
+```
+
+Der Agent kopiert sich nach `%ProgramData%\VolmeThin\Agent`, traegt sich als Dienst ein und
+meldet sich fortan alle fuenf Minuten. Weitere Befehle: `jetzt` (sofort nachfragen, zum
+Ausprobieren), `stand`, `entfernen`.
+
+**Betrieb**: Fertige EXE in der Weboberflaeche ablegen oder direkt aus VolmeThin hochladen.
+Dann im Bereich *Zuweisung* anhaken, welcher Raum sie bekommt. Der naechste Nachfragezyklus
+holt sie. In der Rechnerliste steht pro Programm, ob es liegt, offen ist oder gescheitert ist.
+
+Laedt man eine neue Fassung mit gleicher Kennung hoch, ziehen alle Rechner automatisch nach -
+die alte Paketdatei wird dabei geloescht, damit der Server nicht zulaeuft.
+
+### Benutzerteil ueber Active Setup
+
+Der Agent laeuft als Systemdienst. Dessen `HKCU` ist das Dienstprofil und nicht das des
+Kursteilnehmers. Alles unter `HKCU` traegt der Stub darum nicht selbst ein, sondern
+hinterlegt sich als Active-Setup-Komponente. Windows ruft die EXE dann einmal pro Benutzer
+bei der ersten Anmeldung mit `--vt-benutzer` auf und der Benutzerteil landet im richtigen
+Profil. Dafuer muss die EXE liegen bleiben: sie wohnt unter
+`%ProgramData%\VolmeThin\installiert\<kennung>.exe` und darf nicht aufgeraeumt werden.
+
+### Schalter des Stubs
+
+| Schalter | Wirkung |
+|---|---|
+| ohne | einrichten (falls noetig) und Anwendung starten |
+| `--vt-einrichten` | nur einrichten, nichts starten, kein Fenster - das nutzt der Agent |
+| `--vt-benutzer` | nur die HKCU-Werte schreiben - das ruft Active Setup auf |
+| `--vt-info` | Paketangaben anzeigen |
+
+Alles Uebrige wird an die gestartete Anwendung durchgereicht.
+
 ## Aufbau
 
 | Teil | Aufgabe |
@@ -49,7 +111,10 @@ ist der Installationsmodus der verlaessliche Weg.
 | `src/VolmeThin.Stub` | Launcher-EXE, die spaeter das Paket traegt (12 MB, ohne .NET auf dem Ziel) |
 | `src/VolmeThin.Builder` | Kommandozeile + Zusammenbau + Symbolwechsel |
 | `src/VolmeThin.App` | WPF-Oberflaeche in drei Schritten |
+| `src/VolmeThin.Server` | Verteilserver mit Weboberflaeche (ASP.NET Core, JSON-Dateien statt Datenbank) |
+| `src/VolmeThin.Agent` | Windows-Dienst auf den Kurs-PCs, holt zugewiesene Programme |
 | `tests/VolmeThin.Tests` | Testlaeufer fuer Paket, Overlay und Pfad-Makros |
+| `tests/server-test.sh` | Durchstich: bauen, hochladen, zuweisen, abholen, zurueckmelden |
 
 Paketformat: ZIP mit `package.json` und `files/00001.bin`. Inhaltsgleiche Dateien
 werden nur einmal gespeichert. In der Einzeldatei haengt dieses ZIP hinter dem Stub,
@@ -58,9 +123,13 @@ abgeschlossen von `[int64 Laenge][int32 Version]["V3THINPK"]`.
 ## Bauen
 
 ```
-./publish.sh          # erzeugt build/VolmeThin (laeuft auch unter Linux)
+./publish.sh                          # erzeugt alle drei Pakete unter build/
 dotnet run --project tests/VolmeThin.Tests
+./tests/server-test.sh                # braucht vorher ./publish.sh
 ```
+
+Es entstehen drei Ordner: `VolmeThin` (Arbeitsplatz), `VolmeThin-Server` (VHS-Rechner),
+`VolmeThin-Agent` (Kurs-PCs, 15 MB).
 
 Der Stub laesst sich auf einem Windows-Rechner deutlich kleiner bekommen
 (12 MB -> ca. 4 MB), weil dort NativeAOT verfuegbar ist:
@@ -77,5 +146,8 @@ dotnet publish src\VolmeThin.Stub -c Release -p:PublishAot=true -p:PublishSingle
   werden mitgenommen, aber kein Dienst registriert oder gestartet.
 - **WinSxS bleibt aussen vor.** Bringt ein Setup VC- oder .NET-Runtimes ueber MSI mit,
   fehlen die im Paket. Solche Runtimes gehoeren einmal separat auf die Kurs-PCs.
+- **Der Server kennt keine Benutzer.** Ein Adminschluessel fuer die Oberflaeche, ein
+  Agentschluessel fuer die Anmeldung. Fuer ein Hausnetz reicht das; ins offene Internet
+  gehoert er nur hinter HTTPS.
 - **Keine Signatur.** Unsignierte EXEs mit unbekanntem Namen bekommen beim ersten Start
   den SmartScreen-Hinweis "Weitere Informationen -> Trotzdem ausfuehren".

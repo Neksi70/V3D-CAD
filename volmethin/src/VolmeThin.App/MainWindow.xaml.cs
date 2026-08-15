@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using VolmeThin.Builder;
@@ -18,7 +20,11 @@ public partial class MainWindow : Window
     private int _schritt;
     private bool _busy;
 
-    public MainWindow() => InitializeComponent();
+    public MainWindow()
+    {
+        InitializeComponent();
+        Loaded += (_, _) => EinstellungenLaden();
+    }
 
     // ------------------------------------------------------------ Schritt 1
 
@@ -160,6 +166,7 @@ public partial class MainWindow : Window
             await Task.Run(() => ExeBuilder.Build(_paketPfad!, ziel, null, icon.Length == 0 ? null : icon, Log));
             _gebauteExe = ziel;
             BtnOrdner.IsEnabled = true;
+            BtnSenden.IsEnabled = true;
             var mb = new FileInfo(ziel).Length / 1024 / 1024;
             TxtStatus.Text = $"Fertig: {Path.GetFileName(ziel)} ({mb} MB)";
             MessageBox.Show($"{Path.GetFileName(ziel)} ist fertig ({mb} MB).", "VolmeThin",
@@ -171,6 +178,84 @@ public partial class MainWindow : Window
     {
         if (_gebauteExe is null) return;
         Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{_gebauteExe}\"") { UseShellExecute = true });
+    }
+
+    private async void BtnSenden_Click(object sender, RoutedEventArgs e)
+    {
+        if (_gebauteExe is null || !File.Exists(_gebauteExe))
+        {
+            MessageBox.Show("Erst die EXE bauen."); return;
+        }
+
+        var server = TbServer.Text.Trim().TrimEnd('/');
+        var schluessel = PbSchluessel.Password;
+        if (server.Length == 0 || schluessel.Length == 0)
+        {
+            MessageBox.Show("Serveradresse und Adminschluessel werden gebraucht."); return;
+        }
+
+        await RunAsync("Wird hochgeladen ...", async () =>
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
+            http.DefaultRequestHeaders.Add("X-VT-Admin", schluessel);
+
+            using var inhalt = new MultipartFormDataContent();
+            await using var fs = File.OpenRead(_gebauteExe!);
+            using var datei = new StreamContent(fs);
+            inhalt.Add(datei, "datei", Path.GetFileName(_gebauteExe!));
+
+            var antwort = await http.PostAsync($"{server}/api/upload", inhalt);
+            var text = await antwort.Content.ReadAsStringAsync();
+
+            if (!antwort.IsSuccessStatusCode)
+                throw new InvalidOperationException(FehlerText(antwort.StatusCode, text));
+
+            TxtSenden.Text = "Im Katalog eingetragen.";
+            Log($"Hochgeladen an {server}");
+            EinstellungenSichern(server);
+        });
+    }
+
+    private static string FehlerText(System.Net.HttpStatusCode code, string text)
+    {
+        if (code == System.Net.HttpStatusCode.Unauthorized) return "Der Adminschluessel stimmt nicht.";
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            if (doc.RootElement.TryGetProperty("fehler", out var f)) return f.GetString() ?? text;
+        }
+        catch (JsonException) { }
+        return $"Der Server hat abgelehnt ({(int)code}).";
+    }
+
+    // Serveradresse merken, damit sie nicht bei jedem Paket neu eingetippt werden muss.
+    private static string EinstellungsPfad => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VolmeThin", "studio.json");
+
+    private void EinstellungenSichern(string server)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(EinstellungsPfad)!);
+            File.WriteAllText(EinstellungsPfad, JsonSerializer.Serialize(new Studioeinstellungen { Server = server }));
+        }
+        catch (IOException) { }
+    }
+
+    private void EinstellungenLaden()
+    {
+        try
+        {
+            if (!File.Exists(EinstellungsPfad)) return;
+            var s = JsonSerializer.Deserialize<Studioeinstellungen>(File.ReadAllText(EinstellungsPfad));
+            if (s?.Server is { Length: > 0 }) TbServer.Text = s.Server;
+        }
+        catch (Exception e) when (e is IOException or JsonException) { }
+    }
+
+    private sealed class Studioeinstellungen
+    {
+        public string Server { get; set; } = "";
     }
 
     // ------------------------------------------------------------ Ablauf
@@ -287,6 +372,7 @@ public partial class MainWindow : Window
         BtnInstaller.IsEnabled = !busy && _vorher is not null;
         BtnNachher.IsEnabled = !busy && _vorher is not null;
         BtnBauen.IsEnabled = !busy;
+        BtnSenden.IsEnabled = !busy && _gebauteExe is not null;
         BtnZurueck.IsEnabled = !busy && _schritt > 0;
         BtnWeiter.IsEnabled = !busy && _schritt < 2 && _diff is not null;
     }
