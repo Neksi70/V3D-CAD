@@ -58,15 +58,29 @@ await pg.evaluate(() => {
       }
       return V/6;
     },
-    // Liegt irgendein Dreieckspunkt im Zylinder r um die Achse (cx,cz), y in [y0,y1]?
-    trifftZylinder(geo, cx, cz, r, y0, y1) {
+    // Freie Bohrung um die Achse (0,0) auf Höhe y, in mm.
+    //
+    // Eckpunkte in einem Höhenband abzufragen bringt hier NICHTS: ein
+    // Strangkörper hat Eckpunkte nur an den beiden Deckflächen, dazwischen
+    // liegt kein einziger. Der alte Test war deshalb immer grün, egal wie eng
+    // der Ring war. Also echten Querschnitt legen und dessen kleinsten
+    // Achsabstand nehmen — das ist die Innenwand.
+    bohrung(geo, y) {
       const p = geo.attributes.position, idx = geo.index;
-      const n = idx ? idx.count : p.count; let hits = 0;
-      for (let i = 0; i < n; i++) { const j = idx ? idx.getX(i) : i;
-        const x=p.getX(j), y=p.getY(j), z=p.getZ(j);
-        if (y < y0 || y > y1) continue;
-        if (Math.hypot(x-cx, z-cz) < r) hits++; }
-      return hits;
+      const n = idx ? idx.count : p.count;
+      const g = (i,k) => { const j = idx ? idx.getX(i) : i; return k===0?p.getX(j):k===1?p.getY(j):p.getZ(j); };
+      let rmin = Infinity;
+      for (let t = 0; t < n; t += 3) {
+        const v = [0,1,2].map(o => [g(t+o,0), g(t+o,1), g(t+o,2)]);
+        for (let e = 0; e < 3; e++) {
+          const a = v[e], b = v[(e+1)%3];
+          if ((a[1]-y)*(b[1]-y) >= 0) continue;
+          const f = (y-a[1])/(b[1]-a[1]);
+          const x = a[0]+f*(b[0]-a[0]), z = a[2]+f*(b[2]-a[2]);
+          rmin = Math.min(rmin, Math.hypot(x,z));
+        }
+      }
+      return rmin*20;                       // Einheiten → mm-Durchmesser
     },
     // Marker bauen (mm-Werte kommen in App-Einheiten zurück: 1 = 10 mm)
     // _gmk.warn wird gesetzt, wenn der Manifold-Boolean scheitert und der
@@ -97,21 +111,38 @@ for (const halt of ['wein','flasche','glas']) {
   ok(halt + ': steht auf der Platte', Math.abs(r.bb.y[0]) < 1e-6, r.bb.y);
 }
 
-// Stieltasche frei? (Ringmittelpunkt liegt im Modell bei x=0,z=0)
+// Stieltasche: Stiel + Spiel muss durchgehen (Ringmittelpunkt liegt bei x=0,z=0)
 {
   const r = await pg.evaluate(async () => {
     const g = await window._gmkT.bau({ halt:'wein', stiel:8 });
-    return window._gmkT.trifftZylinder(g, 0, 0, 0.40, 0.05, 0.85);   // Ø8 mm = r 0,4 Einheiten
+    return [0.15,0.45,0.75].map(y => +window._gmkT.bohrung(g,y).toFixed(2));
   });
-  ok('wein: Stieltasche Ø8 bleibt frei', r === 0, r + ' Punkte im Stielraum');
+  ok('wein: Stieltasche ≥ Ø8 auf ganzer Höhe', r.every(d => d >= 8.0 && d < 9.2), r);
 }
-// Ringinneres frei?
+// Flaschenring: Bohrung muss ENGER sein als der Hals (sonst klemmt nichts)
 {
   const r = await pg.evaluate(async () => {
-    const g = await window._gmkT.bau({ halt:'flasche', hals:26 });
-    return window._gmkT.trifftZylinder(g, 0, 0, 1.30, 0.05, 0.35);
+    const auf = await window._gmkT.bau({ halt:'flasche', hals:26, klemm:0.6 });
+    const los = await window._gmkT.bau({ halt:'flasche', hals:26, klemm:0 });
+    return { klemmend: +window._gmkT.bohrung(auf,0.3).toFixed(2),
+             lose:     +window._gmkT.bohrung(los,0.3).toFixed(2) };
   });
-  ok('flasche: Hals Ø26 bleibt frei', r === 0, r + ' Punkte im Halsraum');
+  ok('flasche: Ring klemmt (Bohrung < Hals-Ø)', r.klemmend > 24.9 && r.klemmend < 25.7, r.klemmend + ' mm bei Hals 26');
+  ok('flasche: Klemmung 0 gibt vollen Hals-Ø', Math.abs(r.lose - 26) < 0.3, r.lose + ' mm');
+}
+// Öffnung: enger eingestellt heißt auch wirklich enger
+{
+  const r = await pg.evaluate(async () => {
+    const w = {}; for (const o of [70, 90]) {
+      const g = await window._gmkT.bau({ halt:'flasche', hals:26, oeffnung:o });
+      const p = g.attributes.position; let xmin = 1e9;   // Armenden liegen unten (z minimal)
+      let zmin = 1e9; for (let i=0;i<p.count;i++) zmin = Math.min(zmin, p.getZ(i));
+      for (let i=0;i<p.count;i++) if (p.getZ(i) < zmin+0.06) xmin = Math.min(xmin, Math.abs(p.getX(i)));
+      w[o] = +(xmin*20).toFixed(1);
+    }
+    return w;
+  });
+  ok('flasche: kleinere Öffnung = engerer Spalt', r[70] < r[90], r);
 }
 // Bügelspalt frei? (Spalt liegt zwischen x=0 und x=spalt)
 {
@@ -193,6 +224,26 @@ for (const halt of ['wein','flasche','glas']) {
   });
   ok('Erstellen legt eine Gruppe an', r.neu === 1, r.name);
   ok('Gruppe enthält 5 verschiedene Marker', r.kinder === 5 && new Set(r.namen).size === 5, r.namen);
+}
+
+// ── 7: Motive lassen sich einzeln wählen ──────────────────────────────────
+{
+  const r = await pg.evaluate(() => {
+    _gmkP = Object.assign({}, _GMK_DEFAULTS, { wahl:_GMK_SETS.tiere.slice(), anzahl:10 });
+    const vorher = _gmkMotifList(_gmkP).map(m => m.v);
+    _gmkP.wahl = ['herz','pilz','anker']; _gmkP.anzahl = 3;
+    const nachher = _gmkMotifList(_gmkP).map(m => m.v);
+    _gmkP.anzahl = 7;                                   // mehr Marker als Motive → zyklisch
+    const zyklisch = _gmkMotifList(_gmkP).map(m => m.v);
+    _gmkSyncUI();
+    return { vorher, nachher, zyklisch, satz:_gmkP.satz, alle:_GMK_ALLE.length };
+  });
+  ok('alle 26 Motive stehen zur Wahl', r.alle === 26, r.alle);
+  ok('eigene Auswahl schlägt auf die Marker durch',
+     JSON.stringify(r.nachher) === JSON.stringify(['herz','pilz','anker']), r.nachher);
+  ok('mehr Marker als Motive wiederholt zyklisch',
+     JSON.stringify(r.zyklisch) === JSON.stringify(['herz','pilz','anker','herz','pilz','anker','herz']), r.zyklisch);
+  ok('quer gewählt heißt im Menü „Eigene Mischung"', r.satz === 'mix', r.satz);
 }
 
 ok('keine Seitenfehler', pageErrors.length === 0, pageErrors.slice(0,4));
