@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Ballast</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: #070a14; color: #cfe0ff;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    touch-action: none; user-select: none;
+  }
+  #wrap {
+    position: fixed; inset: 0; display: flex;
+    align-items: center; justify-content: center;
+  }
+  canvas {
+    display: block; max-width: 100%; max-height: 100%;
+    image-rendering: auto;
+    box-shadow: 0 0 60px rgba(80,140,255,.15);
+  }
+  #touch {
+    position: fixed; inset: 0; display: none; pointer-events: none;
+  }
+  #touch.on { display: block; }
+  .tb {
+    position: absolute; pointer-events: auto;
+    border-radius: 50%; border: 2px solid rgba(150,190,255,.35);
+    background: rgba(30,50,90,.35); color: #dbe8ff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px; font-weight: 600;
+    backdrop-filter: blur(3px);
+  }
+  .tb:active, .tb.hit { background: rgba(90,150,255,.5); }
+  #tl { left: 16px;  bottom: 22px;  width: 74px; height: 74px; }
+  #tr { left: 104px; bottom: 22px;  width: 74px; height: 74px; }
+  #td { left: 60px;  bottom: 106px; width: 62px; height: 62px; font-size: 22px; }
+  #tj { right: 20px; bottom: 26px;  width: 86px; height: 86px; }
+  #tq { right: 118px; bottom: 92px; width: 68px; height: 68px; font-size: 15px; }
+  #te { right: 30px; bottom: 124px; width: 62px; height: 62px; font-size: 15px; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv" width="960" height="432"></canvas></div>
+<div id="touch">
+  <div class="tb" id="tl" data-k="left">◀</div>
+  <div class="tb" id="tr" data-k="right">▶</div>
+  <div class="tb" id="td" data-k="down">▼</div>
+  <div class="tb" id="tj" data-k="jump">▲</div>
+  <div class="tb" id="tq" data-k="drop">ABWERFEN</div>
+  <div class="tb" id="te" data-k="pick">HOLEN</div>
+</div>
+<script>
+"use strict";
+// ============================================================================
+//  BALLAST  -  Jump'n'Run, in dem das eigene Gewicht die Ressource ist.
+//  Kernidee: Der Koerper besteht aus Masseklumpen. Abwerfen macht leicht
+//  (hoch/weit springen, Aufwind traegt), aber die Masse liegt dann als
+//  physischer Block in der Welt herum - als Stufe, Stachel-Deckel oder
+//  Gewicht auf einer Druckplatte. Schwer sein bricht Boeden und trotzt Sturm.
+// ============================================================================
+
+const TS = 24, GW = 40, GH = 18;
+const CW = TS * GW, CH = TS * GH;
+
+const MAXW = 6;               // maximales Gewicht (1 Kern + 5 Klumpen)
+const CHUNK = 20;             // Kantenlaenge eines abgelegten Klumpens
+
+// Gewichtsabhaengige Werte: Index 0 ist ungenutzt, 1..6 = Gewicht
+const JUMP  = w => 560 - 45 * (w - 1);      // Absprunggeschwindigkeit
+const GRAV  = w => 900 + 130 * (w - 1);     // Schwerkraft
+const RUN   = w => 196 - 9  * (w - 1);      // Laufgeschwindigkeit
+const ACC   = w => 2600 - 240 * (w - 1);    // Beschleunigung am Boden
+const UPWIND = 2400;                        // Aufwind als Beschleunigung / Gewicht
+const SIDEWIND_AIR = 1500;                  // Seitenwind in der Luft (Beschleunigung)
+const SIDEWIND_GND = 400;                   // Seitenwind am Boden (Tempoversatz)
+const BREAK_W = 4, BREAK_V = 380;           // Bruchboden: Gewicht + Aufprall
+
+// --- Tiles ---------------------------------------------------------------
+// #  Fels        =  Bruchboden      ^  Stacheln
+// 1/2/3 Platte Kreis A (Schwelle 1-3)   D  Tor A
+// 4/5/6 Platte Kreis B (Schwelle 1-3)   E  Tor B
+// u  Aufwind     < >  Seitenwind    S  Start   Z  Ziel   o  freier Klumpen
+const SOLID = new Set(['#', '=', '^', '1', '2', '3', '4', '5', '6']);
+const PLATE = { '1': ['A', 1], '2': ['A', 2], '3': ['A', 3], '4': ['B', 1], '5': ['B', 2], '6': ['B', 3] };
+
+const LEVELS = [
+{
+  name: "Leichter werden",
+  hint: "Pfeile/WASD laufen, Leertaste springen.  Q wirft einen Klumpen ab – je leichter du bist, desto weiter fliegst du.",
+  mass: 4,
+  rows: [
+    "########################################",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#..S......................o......Z.....#",
+    "###############^^^^^^^^#################",
+    "########################################",
+  ],
+},
+{
+  name: "Trittsteine",
+  hint: "Unter der niedrigen Decke kommst du nicht weit genug. Wirf deine Klumpen als Trittsteine ins Stachelfeld – E holt sie zurück.",
+  mass: 5,
+  rows: [
+    "########################################",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "########################...............#",
+    "#......................................#",
+    "#......................................#",
+    "#..S..........................o...Z....#",
+    "##########^^^^^^^^^^####################",
+    "########################################",
+  ],
+},
+{
+  name: "Durchschlag",
+  hint: "Der gerissene Boden hält leichte Wesen aus. Sammle Masse mit E und lass dich schwer darauf fallen.",
+  mass: 2,
+  rows: [
+    "########################################",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#.......................o..............#",
+    "#.....................#####............#",
+    "#......................................#",
+    "#................o.....................#",
+    "#..............#####...................#",
+    "#......................................#",
+    "#..S...................................#",
+    "############======######################",
+    "#......................................#",
+    "#......................................#",
+    "#.............Z........................#",
+    "########################################",
+    "########################################",
+  ],
+},
+{
+  name: "Aufwind",
+  hint: "Der Schacht trägt nur, wer wenig wiegt. Was du unten ablegst, bleibt unten liegen.",
+  mass: 5,
+  rows: [
+    "########################################",
+    "#..........uuuu........................#",
+    "#..........uuuu........................#",
+    "#..........uuuu............Z...........#",
+    "#..........uuuu..........#####.........#",
+    "#.........#uuuu#####...................#",
+    "#.........#uuuu#.......................#",
+    "#.........#uuuu#.......................#",
+    "#.........#uuuu#.......................#",
+    "#.........#uuuu#.......................#",
+    "#.........#uuuu#.......................#",
+    "#.........#uuuu#.......................#",
+    "#.........#uuuu#.......................#",
+    "#.........#uuuu#.......................#",
+    "#.........#uuuu#.......................#",
+    "#..S.......uuuu#.......................#",
+    "########################################",
+    "########################################",
+  ],
+},
+{
+  name: "Kaltes Gewicht",
+  hint: "Druckplatten wollen Gewicht, das liegen bleibt. Du selbst musst ja weiter.",
+  mass: 4,
+  rows: [
+    "########################################",
+    "#.................#....................#",
+    "#.................#....................#",
+    "#.................#....................#",
+    "#.................#....................#",
+    "#.................#....................#",
+    "#.................#....................#",
+    "#.................#....................#",
+    "#.................#....................#",
+    "#.............o...#....................#",
+    "#...........#####.D....................#",
+    "#.................D....................#",
+    "#.................D....................#",
+    "#.................D....................#",
+    "#.................D....................#",
+    "#..S.....2........D...........Z........#",
+    "########################################",
+    "########################################",
+  ],
+},
+{
+  name: "Gegenwind",
+  hint: "Der Sturm schiebt Leichtgewichte zurück. Erst Ballast aufnehmen – und ihn am Ende wieder loswerden.",
+  mass: 2,
+  rows: [
+    "########################################",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#......................................#",
+    "#....................................Z.#",
+    "#.................................######",
+    "#############################..........#",
+    "#.........<<<<<<<<<<<<<<...............#",
+    "#.........<<<<<<<<<<<<<<...............#",
+    "#..S.o.o..<<<<<<<<<<<<<<...............#",
+    "########################################",
+    "########################################",
+  ],
+},
+{
+  name: "Pfandsystem",
+  hint: "Zwei Stromkreise, ein Vorrat. Was auf einer Platte liegt, bleibt dort – rechne nach, bevor du wirfst.",
+  mass: 4,
+  rows: [
+    "########################################",
+    "#........#..............#..............#",
+    "#........#..............#..............#",
+    "#........#..............#..............#",
+    "#........#..............#..............#",
+    "#........#..............#..............#",
+    "#........#..............#..............#",
+    "#........#..............#..............#",
+    "#........#..............#..............#",
+    "#........D..............E..............#",
+    "#........D..............E..............#",
+    "#........D..............E..............#",
+    "#....o...D.........o....E..............#",
+    "#...####.D........####..E..............#",
+    "#........D..............E..............#",
+    "#..S..2..D......o..5....E......Z.......#",
+    "########################################",
+    "########################################",
+  ],
+},
+{
+  name: "Der letzte Klumpen",
+  hint: "Alles auf einmal: leicht nach oben, schwer nach unten. Am Ende zählt genau ein Klumpen zu viel oder zu wenig.",
+  mass: 5,
+  rows: [
+    "########################################",
+    "#..........uuuu........................#",
+    "#..........uuuu........................#",
+    "#..........uuuu.....o..................#",
+    "#..........uuuu.....#####..............#",
+    "#.........#uuuu#####...................#",
+    "#.........#uuuu#......1..o........o....#",
+    "#.........#uuuu############DD###########",
+    "#.........#uuuu#.......................#",
+    "#.........#uuuu#.......................#",
+    "#.........#uuuu#.......................#",
+    "#.........#uuuu#..........======.......#",
+    "#.........#uuuu#.........#......#......#",
+    "#.........#uuuu#.........#......#......#",
+    "#....o....#uuuu#.........#..Z...#......#",
+    "#..S.......uuuu#.........########......#",
+    "########################################",
+    "########################################",
+  ],
+},
+];
+
+// --- Canvas / Skalierung --------------------------------------------------
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+function fit() {
+  const s = Math.min(innerWidth / CW, innerHeight / CH);
+  cv.style.width = Math.floor(CW * s) + 'px';
+  cv.style.height = Math.floor(CH * s) + 'px';
+}
+addEventListener('resize', fit); fit();
+
+// --- Ton (kleine WebAudio-Bleeps) ----------------------------------------
+let actx = null;
+function beep(freq, dur, type, vol) {
+  try {
+    if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') actx.resume();
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = type || 'square'; o.frequency.value = freq;
+    g.gain.setValueAtTime((vol || .06), actx.currentTime);
+    g.gain.exponentialRampToValueAtTime(.0005, actx.currentTime + dur);
+    o.connect(g); g.connect(actx.destination);
+    o.start(); o.stop(actx.currentTime + dur);
+  } catch (e) {}
+}
+
+// --- Eingabe --------------------------------------------------------------
+const keys = { left: 0, right: 0, up: 0, down: 0, jump: 0, drop: 0, pick: 0 };
+const MAP = {
+  ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
+  ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down',
+  Space: 'jump', KeyQ: 'drop', KeyE: 'pick',
+};
+let jumpBuf = 0, dropEdge = false, pickEdge = false;
+
+addEventListener('keydown', e => {
+  const k = MAP[e.code];
+  if (k) {
+    e.preventDefault();
+    if (!keys[k]) {
+      if (k === 'jump') jumpBuf = .12;
+      if (k === 'drop') dropEdge = true;
+      if (k === 'pick') pickEdge = true;
+    }
+    keys[k] = 1;
+  }
+  if (e.code === 'KeyR') restart();
+  if (e.code === 'KeyN') { if (G.state === 'play' || G.state === 'won') gotoLevel(G.li + 1); }
+  if (e.code === 'KeyP') gotoLevel(G.li - 1);
+  if (e.code === 'Enter' && G.state !== 'play') advance();
+});
+addEventListener('keyup', e => { const k = MAP[e.code]; if (k) keys[k] = 0; });
+
+// Touch
+const touchLayer = document.getElementById('touch');
+if (matchMedia('(pointer: coarse)').matches) touchLayer.classList.add('on');
+touchLayer.querySelectorAll('.tb').forEach(btn => {
+  const k = btn.dataset.k;
+  const on = e => {
+    e.preventDefault(); btn.classList.add('hit');
+    if (!keys[k]) {
+      if (k === 'jump') jumpBuf = .12;
+      if (k === 'drop') dropEdge = true;
+      if (k === 'pick') pickEdge = true;
+    }
+    keys[k] = 1;
+    if (G.state !== 'play') advance();
+  };
+  const off = e => { e.preventDefault(); btn.classList.remove('hit'); keys[k] = 0; };
+  btn.addEventListener('pointerdown', on);
+  btn.addEventListener('pointerup', off);
+  btn.addEventListener('pointercancel', off);
+  btn.addEventListener('pointerleave', off);
+});
+cv.addEventListener('pointerdown', () => { if (G.state !== 'play') advance(); beep(1, .01, 'sine', .0001); });
+
+// --- Spielzustand ---------------------------------------------------------
+const G = {
+  li: 0, state: 'play', tiles: [], w: GW, h: GH,
+  player: null, chunks: [], parts: [], doorsOpen: { A: false, B: false },
+  plates: [], t: 0, deaths: 0, msg: 0, best: 0, shake: 0, hintT: 6, paused: false,
+};
+
+function tileAt(tx, ty) {
+  if (tx < 0 || ty < 0 || tx >= G.w || ty >= G.h) return '#';
+  return G.tiles[ty][tx];
+}
+function setTile(tx, ty, c) { if (G.tiles[ty]) G.tiles[ty][tx] = c; }
+function isSolid(tx, ty) {
+  const c = tileAt(tx, ty);
+  if (c === 'D') return !G.doorsOpen.A;
+  if (c === 'E') return !G.doorsOpen.B;
+  return SOLID.has(c);
+}
+
+function loadLevel(i) {
+  const L = LEVELS[i];
+  G.li = i; G.state = 'play'; G.chunks = []; G.parts = []; G.plates = [];
+  G.doorsOpen = { A: false, B: false }; G.t = 0; G.hintT = 6; G.shake = 0;
+  G.tiles = [];
+  for (let y = 0; y < GH; y++) {
+    const src = L.rows[y] || '';
+    const row = [];
+    for (let x = 0; x < GW; x++) row.push(src[x] || '.');
+    G.tiles.push(row);
+  }
+  let sx = 3 * TS, sy = 14 * TS;
+  for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) {
+    const c = G.tiles[y][x];
+    if (c === 'S') { sx = x * TS + TS / 2; sy = y * TS + TS; setTile(x, y, '.'); }
+    else if (c === 'o') { spawnChunk(x * TS + (TS - CHUNK) / 2, y * TS + TS - CHUNK, 0, 0); setTile(x, y, '.'); }
+    else if (PLATE[c]) G.plates.push({ x, y, grp: PLATE[c][0], need: PLATE[c][1], load: 0 });
+  }
+  G.player = {
+    x: sx, y: sy, vx: 0, vy: 0, mass: L.mass, onGround: 0, coyote: 0,
+    face: 1, squash: 0, alive: true, spawn: { x: sx, y: sy }, blink: 0,
+  };
+}
+function restart() { loadLevel(G.li); }
+function gotoLevel(i) { if (i >= 0 && i < LEVELS.length) { loadLevel(i); saveBest(); } }
+function advance() {
+  if (G.state === 'won') { if (G.li + 1 < LEVELS.length) gotoLevel(G.li + 1); else { G.state = 'end'; } }
+  else if (G.state === 'end') gotoLevel(0);
+  else if (G.state === 'dead') restart();
+}
+function saveBest() {
+  try {
+    G.best = Math.max(G.best, G.li);
+    localStorage.setItem('ballast.best', String(G.best));
+  } catch (e) {}
+}
+try { G.best = +(localStorage.getItem('ballast.best') || 0) || 0; } catch (e) {}
+
+// --- Masse ----------------------------------------------------------------
+function playerBox(p) {
+  const w = 12 + 2 * p.mass, h = 14 + 2 * p.mass;
+  return { w, h };
+}
+function spawnChunk(x, y, vx, vy) {
+  G.chunks.push({ x, y, vx: vx || 0, vy: vy || 0, w: CHUNK, h: CHUNK, rest: false, age: 0 });
+}
+function dropChunk() {
+  const p = G.player;
+  if (p.mass <= 1) { beep(120, .08, 'sine', .05); return; }
+  const b = playerBox(p);
+  const below = keys.down;
+  p.mass--;
+  const nb = playerBox(p);               // Fuesse bleiben, Box schrumpft nach oben
+  let cx, cy, vx = 0, vy = 0, lift = false;
+  if (below && !boxHitsWorld(p.x - nb.w / 2, p.y - CHUNK - nb.h, nb.w, nb.h)) {
+    // direkt unter sich ablegen und selbst eine Stufe hoeher stehen
+    cx = p.x - CHUNK / 2; cy = p.y - CHUNK; lift = true;
+  } else {
+    // nach vorne werfen - der Klumpen darf den eigenen Koerper nicht schneiden,
+    // sonst schiebt ihn die Kollisionsaufloesung im naechsten Frame weg
+    cx = p.face > 0 ? p.x + nb.w / 2 + 2 : p.x - nb.w / 2 - 2 - CHUNK;
+    cy = p.y - CHUNK - 2;
+    if (!below) { vx = p.face * 230; vy = -190; }
+    if (boxHitsWorld(cx, cy, CHUNK, CHUNK)) { cx = p.x - CHUNK / 2; cy = p.y - CHUNK - 2; vx = 0; vy = 0; }
+  }
+  spawnChunk(cx, cy, vx, vy);
+  if (lift) { p.y -= CHUNK; p.vy = 0; }
+  else if (!below) p.vy -= 40;           // kleiner Rueckstoss beim Werfen
+  burst(cx + CHUNK / 2, cy + CHUNK / 2, '#7fd0ff', 8);
+  beep(300, .09, 'triangle', .05);
+}
+function pickChunk() {
+  const p = G.player;
+  if (p.mass >= MAXW) { beep(120, .08, 'sine', .05); return; }
+  let best = -1, bd = 44 * 44;
+  for (let i = 0; i < G.chunks.length; i++) {
+    const c = G.chunks[i];
+    const dx = (c.x + CHUNK / 2) - p.x, dy = (c.y + CHUNK / 2) - (p.y - playerBox(p).h / 2);
+    const d = dx * dx + dy * dy;
+    if (d < bd) { bd = d; best = i; }
+  }
+  if (best < 0) return;
+  const c = G.chunks[best];
+  burst(c.x + CHUNK / 2, c.y + CHUNK / 2, '#9ff0c0', 10);
+  G.chunks.splice(best, 1);
+  p.mass++;
+  // groessere Box darf nicht in der Decke stecken
+  const b = playerBox(p);
+  for (let k = 0; k < 8 && boxHitsWorld(p.x - b.w / 2, p.y - b.h, b.w, b.h); k++) p.y += 2;
+  beep(520, .1, 'triangle', .05);
+}
+
+// --- Kollision ------------------------------------------------------------
+function boxHitsWorld(x, y, w, h) {
+  const x0 = Math.floor(x / TS), x1 = Math.floor((x + w - .01) / TS);
+  const y0 = Math.floor(y / TS), y1 = Math.floor((y + h - .01) / TS);
+  for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++)
+    if (isSolid(tx, ty)) return true;
+  return false;
+}
+function overlaps(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+// verschiebt eine Box achsenweise aus der Welt heraus; liefert Kontaktflags
+function moveBox(box, dx, dy, others) {
+  const res = { ground: false, ceil: false, wall: false, hitV: 0 };
+  box.x += dx;
+  if (boxHitsWorld(box.x, box.y, box.w, box.h)) {
+    // exakt auf die Kachelkante setzen - eine 1px-Schleife liesse einen Spalt,
+    // in dem der Koerper jeden Frame neu zu fallen anfaengt
+    box.x = dx > 0
+      ? Math.floor((box.x + box.w) / TS) * TS - box.w - .001
+      : (Math.floor(box.x / TS) + 1) * TS + .001;
+    res.wall = true;
+  }
+  if (others && dx) for (const o of others) {
+    if (o.box === box) continue;
+    if (overlaps(box, o.box)) {
+      box.x = (dx > 0) ? (o.box.x - box.w - .001) : (o.box.x + o.box.w + .001);
+      res.wall = true;
+    }
+  }
+  box.y += dy;
+  if (boxHitsWorld(box.x, box.y, box.w, box.h)) {
+    box.y = dy > 0
+      ? Math.floor((box.y + box.h) / TS) * TS - box.h - .001
+      : (Math.floor(box.y / TS) + 1) * TS + .001;
+    if (dy > 0) res.ground = true; else res.ceil = true;
+    res.hitV = dy;
+  }
+  if (others) for (const o of others) {
+    if (o.box === box) continue;
+    if (overlaps(box, o.box)) {
+      // knapp daneben absetzen: eine exakte Kante zaehlt als Ueberlappung und
+      // wuerde den Koerper im naechsten Frame seitlich wegschieben
+      if (dy > 0) { box.y = o.box.y - box.h - .001; res.ground = true; res.hitV = dy; }
+      else { box.y = o.box.y + o.box.h + .001; res.ceil = true; }
+    }
+  }
+  return res;
+}
+
+// --- Partikel -------------------------------------------------------------
+function burst(x, y, col, n, spread) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = (spread || 90) * (.3 + Math.random());
+    G.parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 40, life: .5 + Math.random() * .4, col, r: 1 + Math.random() * 2.5 });
+  }
+}
+
+// --- Simulation -----------------------------------------------------------
+function windAt(x, y) {
+  const c = tileAt(Math.floor(x / TS), Math.floor(y / TS));
+  if (c === 'u') return { x: 0, y: -1 };
+  if (c === '<') return { x: -1, y: 0 };
+  if (c === '>') return { x: 1, y: 0 };
+  return null;
+}
+
+function updatePlayer(dt) {
+  const p = G.player;
+  const b = playerBox(p);
+  const W = p.mass;
+  const box = { x: p.x - b.w / 2, y: p.y - b.h, w: b.w, h: b.h };
+
+  // Wind wirkt umgekehrt proportional zum Gewicht.
+  // Am Boden als Tempoversatz - sonst wuerde die Laufsteuerung ihn einfach
+  // wegregeln und ein Federgewicht kaeme genauso gut gegen den Sturm an.
+  const wnd = windAt(p.x, p.y - b.h / 2);
+  const drift = (wnd && p.onGround) ? wnd.x * SIDEWIND_GND / W : 0;
+
+  // horizontale Steuerung
+  const dir = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+  const target = dir * RUN(W) + drift;
+  const acc = (p.onGround ? ACC(W) : ACC(W) * .55) * dt;
+  if (dir || drift) { if (dir) p.face = dir; p.vx += Math.sign(target - p.vx) * Math.min(acc, Math.abs(target - p.vx)); }
+  else {
+    const fr = (p.onGround ? 2100 : 500) * dt;
+    p.vx -= Math.sign(p.vx) * Math.min(fr, Math.abs(p.vx));
+  }
+
+  if (wnd) {
+    if (wnd.y) p.vy += wnd.y * UPWIND / W * dt;
+    if (wnd.x && !p.onGround) p.vx += wnd.x * SIDEWIND_AIR / W * dt;
+  }
+
+  // Schwerkraft
+  p.vy += GRAV(W) * dt;
+  if (p.vy > 900) p.vy = 900;
+  if (p.vy < -700) p.vy = -700;
+
+  // Sprung (mit Coyote-Zeit und Puffer)
+  if (jumpBuf > 0 && (p.onGround || p.coyote > 0)) {
+    p.vy = -JUMP(W); p.onGround = 0; p.coyote = 0; jumpBuf = 0; p.squash = -.35;
+    burst(p.x, p.y, '#6ea8ff', 5, 50);
+    beep(300 + (MAXW - W) * 45, .09, 'square', .04);
+  }
+  if (!keys.jump && p.vy < -110) p.vy *= .82;   // variable Sprunghoehe
+
+  const others = G.chunks.map(c => ({ box: c, obj: c }));
+  const wantX = box.x + p.vx * dt;
+  const r1 = moveBox(box, p.vx * dt, 0, others);
+  if (r1.wall) {
+    // Stufen-Automatik: ueber einen liegenden Klumpen laeuft man hinweg, statt
+    // wie an einer Wand haengenzubleiben (Felskanten bleiben Kanten, 24 > lift)
+    const lift = CHUNK + 2;
+    const free = t => !boxHitsWorld(t.x, t.y, t.w, t.h) && !others.some(o => overlaps(t, o.box));
+    if (p.onGround && Math.abs(p.vx) > 20 &&
+        free({ x: wantX, y: box.y - lift, w: box.w, h: box.h }) &&
+        free({ x: box.x, y: box.y - lift, w: box.w, h: box.h })) {
+      box.x = wantX; box.y -= lift;
+    } else p.vx = 0;
+  }
+  const before = p.vy;
+  const r2 = moveBox(box, 0, p.vy * dt, others);
+  if (r2.ground) {
+    if (before > 300) { burst(box.x + box.w / 2, box.y + box.h, '#5d7cb0', 6, 70); G.shake = Math.min(6, before / 120); beep(120, .07, 'sine', .05); }
+    if (before > 60) p.squash = Math.min(.45, before / 1400);
+    // Bruchboden?
+    if (W >= BREAK_W && before > BREAK_V) tryBreak(box, W);
+    p.vy = 0; p.onGround = 1; p.coyote = .09;
+  } else {
+    if (r2.ceil) p.vy = Math.max(p.vy, 0);
+    p.onGround = 0;
+  }
+  p.x = box.x + box.w / 2; p.y = box.y + box.h;
+
+  // Stacheln toeten (leicht aufgeblasene Box pruefen)
+  const sx0 = Math.floor((box.x + 2) / TS), sx1 = Math.floor((box.x + box.w - 3) / TS);
+  const sy0 = Math.floor((box.y + 2) / TS), sy1 = Math.floor((box.y + box.h - 1) / TS);
+  for (let ty = sy0; ty <= sy1 + 1 && p.alive; ty++)
+    for (let tx = sx0; tx <= sx1; tx++) {
+      if (tileAt(tx, ty) !== '^') continue;
+      // toedlich nur bei echtem Kontakt mit der Tile-Oberflaeche
+      if (box.y + box.h > ty * TS + 1 && box.y < ty * TS + TS - 1) kill();
+      else if (ty * TS - (box.y + box.h) < 1 && ty * TS - (box.y + box.h) > -1) kill();
+    }
+  if (p.y > CH + 60) kill();
+
+  // Ziel erreicht?
+  const gx = Math.floor(p.x / TS), gy = Math.floor((p.y - b.h / 2) / TS);
+  if (tileAt(gx, gy) === 'Z' && G.state === 'play') {
+    G.state = 'won'; saveBest();
+    for (let i = 0; i < 5; i++) setTimeout(() => beep(440 + i * 110, .12, 'triangle', .05), i * 90);
+    burst(gx * TS + TS / 2, gy * TS + TS / 2, '#ffe27a', 30, 160);
+  }
+  p.squash += (0 - p.squash) * Math.min(1, dt * 12);
+}
+
+function tryBreak(box, W) {
+  const y = Math.floor((box.y + box.h + 2) / TS);
+  const x0 = Math.floor(box.x / TS), x1 = Math.floor((box.x + box.w - 1) / TS);
+  let broke = false;
+  for (let x = x0; x <= x1; x++) {
+    if (tileAt(x, y) === '=') {
+      // ganze zusammenhaengende Bruchflaeche mitreissen
+      for (let d = 0; ; d++) { if (tileAt(x - d, y) !== '=') break; setTile(x - d, y, '.'); }
+      for (let d = 1; ; d++) { if (tileAt(x + d, y) !== '=') break; setTile(x + d, y, '.'); }
+      broke = true;
+    }
+  }
+  if (broke) {
+    for (let i = 0; i < 4; i++) burst(box.x + box.w / 2 + (i - 2) * 12, y * TS + TS / 2, '#c98a5a', 8, 130);
+    G.shake = 9; beep(90, .25, 'sawtooth', .06);
+  }
+}
+
+function kill() {
+  if (!G.player.alive || G.state !== 'play') return;
+  G.player.alive = false; G.state = 'dead'; G.deaths++; G.shake = 10;
+  burst(G.player.x, G.player.y - 10, '#ff7a8a', 26, 170);
+  beep(200, .3, 'sawtooth', .07);
+  setTimeout(restart, 620);
+}
+
+function updateChunks(dt) {
+  // von unten nach oben aufloesen, damit Stapel stabil bleiben
+  G.chunks.sort((a, b) => b.y - a.y);
+  for (const c of G.chunks) {
+    c.age += dt;
+    c.vy += 1500 * dt;
+    if (c.vy > 900) c.vy = 900;
+    const others = G.chunks.filter(o => o !== c).map(o => ({ box: o }));
+    const rx = moveBox(c, c.vx * dt, 0, others);
+    if (rx.wall) c.vx *= -.25;
+    const vy0 = c.vy;
+    const ry = moveBox(c, 0, c.vy * dt, others);
+    if (ry.ground) {
+      if (vy0 > 260 && !c.rest) { burst(c.x + CHUNK / 2, c.y + CHUNK, '#7fd0ff', 5, 60); beep(180, .05, 'sine', .03); }
+      c.vy = 0; c.rest = true;
+      c.vx -= Math.sign(c.vx) * Math.min(1400 * dt, Math.abs(c.vx));
+    } else { c.vy = ry.ceil ? 0 : c.vy; c.rest = false; }
+  }
+}
+
+// Alles, was auf der Platte lastet - auch ein Turm aus Klumpen, denn auf die
+// eine Kachel breite Platte passt nur ein Klumpen nebeneinander.
+function plateLoad(pl) {
+  const top = pl.y * TS, x0 = pl.x * TS, x1 = x0 + TS;
+  let layer = G.chunks.filter(c => Math.abs((c.y + c.h) - top) < 3 && c.x + c.w > x0 + 2 && c.x < x1 - 2);
+  const carried = new Set(layer);
+  let load = 0;
+  while (layer.length) {
+    load += layer.length;
+    const next = [];
+    for (const c of G.chunks) {
+      if (carried.has(c)) continue;
+      for (const base of layer) {
+        if (Math.abs((c.y + c.h) - base.y) < 3 && c.x + c.w > base.x + 2 && c.x < base.x + base.w - 2) {
+          next.push(c); carried.add(c); break;
+        }
+      }
+    }
+    layer = next;
+  }
+  const p = G.player, b = playerBox(p);
+  if (p.alive) {
+    const onPlate = Math.abs(p.y - top) < 3 && p.x + b.w / 2 > x0 + 2 && p.x - b.w / 2 < x1 - 2;
+    let onStack = false;
+    for (const c of carried)
+      if (Math.abs(p.y - c.y) < 3 && p.x + b.w / 2 > c.x + 2 && p.x - b.w / 2 < c.x + c.w - 2) { onStack = true; break; }
+    if (onPlate || onStack) load += p.mass;
+  }
+  return load;
+}
+
+function updatePlates() {
+  const grp = { A: null, B: null };
+  for (const pl of G.plates) {
+    const load = plateLoad(pl);
+    const was = pl.load >= pl.need;
+    pl.load = load;
+    const now = load >= pl.need;
+    if (now !== was) beep(now ? 660 : 220, .09, 'triangle', .05);
+    grp[pl.grp] = (grp[pl.grp] === null) ? now : (grp[pl.grp] && now);
+  }
+  G.doorsOpen.A = !!grp.A;
+  G.doorsOpen.B = !!grp.B;
+}
+
+function update(dt) {
+  G.t += dt;
+  if (jumpBuf > 0) jumpBuf -= dt;
+  if (G.player.coyote > 0 && !G.player.onGround) G.player.coyote -= dt;
+  if (G.hintT > 0) G.hintT -= dt;
+  if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 22);
+
+  if (G.state === 'play') {
+    if (dropEdge) dropChunk();
+    if (pickEdge) pickChunk();
+    updatePlayer(dt);
+  }
+  dropEdge = false; pickEdge = false;
+  updateChunks(dt);
+  updatePlates();
+
+  for (let i = G.parts.length - 1; i >= 0; i--) {
+    const q = G.parts[i];
+    q.life -= dt; if (q.life <= 0) { G.parts.splice(i, 1); continue; }
+    q.vy += 500 * dt; q.x += q.vx * dt; q.y += q.vy * dt;
+  }
+}
+
+// --- Darstellung ----------------------------------------------------------
+const STARS = [];
+for (let i = 0; i < 90; i++) STARS.push({ x: Math.random() * CW, y: Math.random() * CH, r: Math.random() * 1.4 + .3, s: Math.random() * .5 + .2 });
+
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function draw() {
+  const t = G.t;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const g = ctx.createLinearGradient(0, 0, 0, CH);
+  g.addColorStop(0, '#0a1024'); g.addColorStop(1, '#131b33');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, CW, CH);
+
+  for (const s of STARS) {
+    ctx.globalAlpha = .25 + .35 * Math.sin(t * s.s * 3 + s.x);
+    ctx.fillStyle = '#9fc4ff';
+    ctx.fillRect(s.x, (s.y + t * s.s * 8) % CH, s.r, s.r);
+  }
+  ctx.globalAlpha = 1;
+
+  if (G.shake > .1) ctx.setTransform(1, 0, 0, 1, (Math.random() - .5) * G.shake, (Math.random() - .5) * G.shake);
+
+  // Tiles
+  for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) {
+    const c = G.tiles[y][x], px = x * TS, py = y * TS;
+    if (c === '#') {
+      ctx.fillStyle = '#243252'; ctx.fillRect(px, py, TS, TS);
+      if (!isSolid(x, y - 1)) { ctx.fillStyle = '#3d5891'; ctx.fillRect(px, py, TS, 4); ctx.fillStyle = '#5f83c8'; ctx.fillRect(px, py, TS, 1.5); }
+      ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(px, py + TS - 3, TS, 3);
+    } else if (c === '=') {
+      ctx.fillStyle = '#5c4230'; ctx.fillRect(px, py, TS, TS);
+      ctx.fillStyle = '#8a6242'; ctx.fillRect(px, py, TS, 3);
+      ctx.strokeStyle = 'rgba(0,0,0,.45)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(px + 4, py + 3); ctx.lineTo(px + 10, py + 13); ctx.lineTo(px + 6, py + TS - 2);
+      ctx.moveTo(px + 17, py + 2); ctx.lineTo(px + 13, py + 12); ctx.lineTo(px + 19, py + TS - 3);
+      ctx.stroke();
+    } else if (c === '^') {
+      ctx.fillStyle = '#1b2440'; ctx.fillRect(px, py, TS, TS);
+      ctx.fillStyle = '#c3d4ff';
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.moveTo(px + i * 8, py + TS); ctx.lineTo(px + i * 8 + 4, py + 3); ctx.lineTo(px + i * 8 + 8, py + TS);
+        ctx.closePath(); ctx.fill();
+      }
+    } else if (c === 'u' || c === '<' || c === '>') {
+      const horiz = c !== 'u';
+      ctx.strokeStyle = 'rgba(140,210,255,.30)'; ctx.lineWidth = 2;
+      for (let i = 0; i < 3; i++) {
+        const o = ((t * (horiz ? 150 : 190) + i * 34 + x * 11 + y * 7) % TS);
+        ctx.beginPath();
+        if (horiz) {
+          const dx = c === '>' ? o : TS - o;
+          ctx.moveTo(px + dx, py + 5 + i * 7); ctx.lineTo(px + dx + (c === '>' ? 8 : -8), py + 5 + i * 7);
+        } else {
+          ctx.moveTo(px + 4 + i * 7, py + TS - o); ctx.lineTo(px + 4 + i * 7, py + TS - o - 9);
+        }
+        ctx.stroke();
+      }
+    } else if (c === 'D' || c === 'E') {
+      const open = c === 'D' ? G.doorsOpen.A : G.doorsOpen.B;
+      const col = c === 'D' ? '160,200,255' : '255,190,140';
+      if (open) {
+        ctx.globalAlpha = .18; ctx.fillStyle = '#7fffc4'; ctx.fillRect(px + 8, py, 8, TS); ctx.globalAlpha = 1;
+      } else {
+        ctx.fillStyle = '#2b3f6b'; ctx.fillRect(px + 3, py, TS - 6, TS);
+        ctx.fillStyle = 'rgba(' + col + ',' + (.5 + .25 * Math.sin(t * 4 + y)) + ')';
+        ctx.fillRect(px + 8, py + 2, 8, TS - 4);
+      }
+    } else if (PLATE[c]) {
+      const pl = G.plates.find(q => q.x === x && q.y === y);
+      const down = pl && pl.load >= pl.need;
+      ctx.fillStyle = '#243252'; ctx.fillRect(px, py + 6, TS, TS - 6);
+      ctx.fillStyle = down ? '#7fffc4' : (pl && pl.grp === 'B' ? '#ffb06a' : '#a9c8ff');
+      ctx.fillRect(px + 2, py + (down ? 5 : 1), TS - 4, down ? 5 : 6);
+      ctx.fillStyle = down ? '#0d2a1e' : '#3a2a08';
+      ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText(String(pl ? pl.need : ''), px + TS / 2, py + (down ? 9.5 : 6));
+    } else if (c === 'Z') {
+      const cx = px + TS / 2, cy = py + TS / 2;
+      for (let i = 3; i >= 0; i--) {
+        ctx.globalAlpha = .18 + .2 * Math.sin(t * 3 - i);
+        ctx.strokeStyle = '#ffe27a'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(cx, cy, 6 + i * 4 + Math.sin(t * 2 + i) * 1.5, 0, 7); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#fff3c0'; ctx.beginPath(); ctx.arc(cx, cy, 4.5, 0, 7); ctx.fill();
+    }
+  }
+
+  // Klumpen
+  for (const c of G.chunks) {
+    const px = c.x, py = c.y;
+    ctx.fillStyle = '#2b6f9e'; rr(px, py, c.w, c.h, 4); ctx.fill();
+    ctx.fillStyle = '#48a8dd'; rr(px + 2, py + 2, c.w - 4, c.h - 6, 3); ctx.fill();
+    ctx.fillStyle = 'rgba(220,250,255,.75)'; rr(px + 4, py + 4, 6, 4, 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(150,230,255,' + (.25 + .15 * Math.sin(t * 3 + px)) + ')';
+    ctx.lineWidth = 1; rr(px - 1, py - 1, c.w + 2, c.h + 2, 5); ctx.stroke();
+  }
+
+  // Spieler
+  const p = G.player;
+  if (p.alive) {
+    const b = playerBox(p);
+    const sq = p.squash;
+    const w = b.w * (1 + sq), h = b.h * (1 - sq);
+    const px = p.x - w / 2, py = p.y - h;
+    ctx.fillStyle = 'rgba(0,0,0,.25)';
+    ctx.beginPath(); ctx.ellipse(p.x, p.y + 1, w * .5, 3, 0, 0, 7); ctx.fill();
+    const grd = ctx.createLinearGradient(px, py, px, py + h);
+    grd.addColorStop(0, '#a6f2d0'); grd.addColorStop(1, '#3fbf94');
+    ctx.fillStyle = grd; rr(px, py, w, h, 6); ctx.fill();
+    ctx.strokeStyle = 'rgba(220,255,240,.55)'; ctx.lineWidth = 1.2; rr(px, py, w, h, 6); ctx.stroke();
+    // Augen
+    const ey = py + h * .36, ex = p.x + p.face * w * .12;
+    ctx.fillStyle = '#0d2b22';
+    const blink = (Math.sin(t * 1.7) > .985) ? .25 : 1;
+    ctx.beginPath(); ctx.ellipse(ex - 3.5, ey, 2, 2.6 * blink, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(ex + 3.5, ey, 2, 2.6 * blink, 0, 0, 7); ctx.fill();
+    // getragene Klumpen als Kreise im Koerper
+    for (let i = 0; i < p.mass - 1; i++) {
+      const a = t * 1.6 + i * (Math.PI * 2 / Math.max(1, p.mass - 1));
+      ctx.fillStyle = 'rgba(80,190,240,.85)';
+      ctx.beginPath();
+      ctx.arc(p.x + Math.cos(a) * w * .26, py + h * .68 + Math.sin(a) * h * .16, 2.6, 0, 7);
+      ctx.fill();
+    }
+  }
+
+  // Partikel
+  for (const q of G.parts) {
+    ctx.globalAlpha = Math.max(0, Math.min(1, q.life * 2));
+    ctx.fillStyle = q.col;
+    ctx.fillRect(q.x, q.y, q.r, q.r);
+  }
+  ctx.globalAlpha = 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  drawHud();
+}
+
+function drawHud() {
+  const L = LEVELS[G.li], p = G.player;
+  ctx.fillStyle = 'rgba(8,12,26,.55)'; ctx.fillRect(0, 0, CW, 26);
+  ctx.textAlign = 'left'; ctx.font = 'bold 13px system-ui';
+  ctx.fillStyle = '#8fb6ff';
+  ctx.fillText((G.li + 1) + '/' + LEVELS.length + '  ' + L.name, 10, 18);
+
+  // Massenanzeige
+  ctx.textAlign = 'right';
+  ctx.font = '11px system-ui'; ctx.fillStyle = '#6e88bd';
+  ctx.fillText('GEWICHT', CW - 12 - MAXW * 15, 18);
+  for (let i = 0; i < MAXW; i++) {
+    const x = CW - 12 - (MAXW - i) * 15 + 6, on = i < p.mass;
+    ctx.beginPath(); ctx.arc(x, 13, 5, 0, 7);
+    ctx.fillStyle = on ? (i === 0 ? '#7fffc4' : '#48a8dd') : 'rgba(120,150,200,.18)';
+    ctx.fill();
+    if (!on) { ctx.strokeStyle = 'rgba(120,150,200,.35)'; ctx.lineWidth = 1; ctx.stroke(); }
+  }
+
+  ctx.textAlign = 'center';
+  if (G.hintT > 0 && G.state === 'play') {
+    // oben halten: unten stehen Platten, Stacheln und abgelegte Klumpen
+    ctx.globalAlpha = Math.min(1, G.hintT);
+    ctx.fillStyle = 'rgba(8,12,26,.75)'; ctx.fillRect(60, 30, CW - 120, 32);
+    ctx.fillStyle = '#cfe0ff'; ctx.font = '13px system-ui';
+    ctx.fillText(L.hint, CW / 2, 51);
+    ctx.globalAlpha = 1;
+  }
+  if (G.state === 'won') {
+    ctx.fillStyle = 'rgba(8,12,26,.72)'; ctx.fillRect(0, CH / 2 - 52, CW, 104);
+    ctx.fillStyle = '#ffe27a'; ctx.font = 'bold 30px system-ui';
+    ctx.fillText('Geschafft!', CW / 2, CH / 2 - 8);
+    ctx.fillStyle = '#cfe0ff'; ctx.font = '14px system-ui';
+    ctx.fillText(G.li + 1 < LEVELS.length ? 'Enter / Tippen fuer die naechste Ebene' : 'Enter fuer das Finale', CW / 2, CH / 2 + 22);
+  } else if (G.state === 'end') {
+    ctx.fillStyle = 'rgba(8,12,26,.85)'; ctx.fillRect(0, 0, CW, CH);
+    ctx.fillStyle = '#7fffc4'; ctx.font = 'bold 36px system-ui';
+    ctx.fillText('BALLAST abgeworfen', CW / 2, CH / 2 - 14);
+    ctx.fillStyle = '#cfe0ff'; ctx.font = '15px system-ui';
+    ctx.fillText('Alle ' + LEVELS.length + ' Ebenen geschafft - mit ' + G.deaths + ' Fehlversuchen.', CW / 2, CH / 2 + 16);
+    ctx.fillText('Enter startet von vorn.', CW / 2, CH / 2 + 40);
+  }
+  ctx.textAlign = 'left';
+  ctx.font = '10px system-ui'; ctx.fillStyle = 'rgba(140,170,220,.45)';
+  ctx.fillText('Q abwerfen   E holen   R neu   N/P Ebene', 10, CH - 8);
+}
+
+// --- Hauptschleife --------------------------------------------------------
+let last = performance.now(), acc = 0;
+const STEP = 1 / 120;
+function frame(now) {
+  let dt = (now - last) / 1000; last = now;
+  if (dt > .25) dt = .25;
+  if (G.paused) acc = 0; else acc += dt;   // pausiert nur die Simulation, nicht das Bild
+  let guard = 0;
+  while (acc >= STEP && guard++ < 30) { update(STEP); acc -= STEP; }
+  draw();
+  requestAnimationFrame(frame);
+}
+loadLevel(0);
+requestAnimationFrame(frame);
+
+// --- Test-Hook (headless) -------------------------------------------------
+window._blDbg = {
+  G, LEVELS,
+  pause: v => { G.paused = v !== false; },   // Tests treiben die Simulation selbst per step()
+  level: i => gotoLevel(i),
+  state: () => ({
+    level: G.li, name: LEVELS[G.li].name, state: G.state,
+    x: Math.round(G.player.x), y: Math.round(G.player.y),
+    mass: G.player.mass, chunks: G.chunks.length,
+    doors: G.doorsOpen, plates: G.plates.map(p => p.load + '/' + p.need),
+    deaths: G.deaths,
+  }),
+  key: (k, v) => { if (v && !keys[k]) { if (k === 'jump') jumpBuf = .12; if (k === 'drop') dropEdge = true; if (k === 'pick') pickEdge = true; } keys[k] = v ? 1 : 0; },
+  tap: k => { window._blDbg.key(k, 1); setTimeout(() => window._blDbg.key(k, 0), 60); },
+  step: (n, s) => { for (let i = 0; i < (n || 1); i++) update(s || STEP); },
+  tile: (x, y) => tileAt(x, y),
+  jumpHeight: w => { const v = JUMP(w); return Math.round(v * v / (2 * GRAV(w))); },
+  jumpSpan: w => { const v = JUMP(w); return Math.round(2 * v / GRAV(w) * RUN(w)); },
+};
+</script>
+</body>
+</html>
