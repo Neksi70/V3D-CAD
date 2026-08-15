@@ -13,6 +13,30 @@ auf die Kurs-PCs bringen. Angelehnt an VMware ThinApp Setup Capture.
 Auf dem Kurs-PC: Doppelklick. Beim ersten Mal packt der Launcher alles aus und schreibt
 die Registry-Eintraege, danach startet er nur noch das Programm.
 
+## Aufnehmen gehoert in eine VM
+
+Nicht auf dem Arbeitsrechner packen. Zwei Gruende, der zweite ist der wichtigere:
+
+1. Ein Arbeitsrechner rauscht. Defender-Definitionen, Browser-Update, OneDrive - alles
+   landet zwischen den beiden Aufnahmen im Diff und damit im Paket.
+2. **Der Diff zeigt nur Neues.** Bringen zwei Programme dieselbe VC-Runtime mit, steckt sie
+   nur im ersten Paket - beim zweiten war sie schon da. Auf dem Kurs-PC startet Programm
+   zwei dann nicht. Darum nach jedem Paket auf den Basis-Snapshot zurueckspulen.
+
+Ablauf je Programm: VM auf *Basis* zurueck -> vorher aufnehmen -> installieren ->
+nachher aufnehmen -> EXE bauen -> hochladen -> VM zurueck auf *Basis*.
+
+### Die Basis muss dem Kurs-PC entsprechen
+
+Was in der Basis schon vorhanden ist, taucht im Diff nicht auf und fehlt im Paket. Also
+gehoert alles, was auf den Kurs-PCs ohnehin liegt (VC-Runtimes, .NET, Office), auch in die
+Basis - sonst schleppt es jedes Paket unnoetig mit. Umgekehrt gilt genauso: was in der Basis
+steckt, muss auf dem Kurs-PC wirklich da sein. Gleiche Windows-Fassung nehmen.
+
+Basis einmal herrichten: Windows frisch aufsetzen, Updates durchziehen, den Grundbestand der
+Kurs-PCs installieren, Windows Update und Defender-Updates fuer die Aufnahmezeit abschalten,
+dann Snapshot "Basis".
+
 ## Bedienung
 
 Oberflaeche: `VolmeThin.exe` (fragt beim Start nach Adminrechten – noetig fuer Program Files und HKLM).
