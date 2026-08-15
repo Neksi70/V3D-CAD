@@ -42,6 +42,19 @@ function head(g){
   row(g,15,18,25,'K'); px(g,14,17,'K'); px(g,14,26,'K');         // Mund, Winkel hoch
   row(g,18,15,28,'f'); row(g,19,17,26,'f');                      // Bart laeuft aus
 }
+// ---- Hinterkopf: gleiche Kuppe, aber kein Gesicht -- nur Fell und Ohren,
+// die von hinten als schmale Sicheln stehen.
+function backHead(g){
+  row(g,5,20,23,'F');
+  row(g,6,17,26,'F'); row(g,7,15,28,'F');
+  row(g,6,18,25,'b'); row(g,7,17,26,'b');                        // Licht von oben
+  box(g,8,17,13,30,'F');
+  row(g,8,15,28,'b');                                            // Scheitelglanz
+  box(g,10,12,11,12,'f'); box(g,10,12,31,32,'f');                // Ohren von hinten
+  px(g,11,13,'e'); px(g,11,30,'e');
+  box(g,9,15,13,14,'f'); box(g,9,15,29,30,'f');                  // Fell faellt seitlich ab
+  row(g,16,15,28,'f'); row(g,17,17,26,'f');                      // Nacken im Schatten
+}
 // ---- Rumpf mit Brustschild und Tragegurt: schmale Schultern, breiter Bauch
 function trunk(g,r1,r2){
   const shape=[[20,14,29],[21,13,30],[22,12,31],[23,11,32],[24,11,32],[25,11,32],
@@ -102,15 +115,36 @@ row(B,30,12,31,'f');
 legs(B);
 outline(B,'e');
 
+// ============ Pose 3: von hinten an der Leiter, im Diagonalgang ============
+// Ein Bild reicht: gespiegelt wird daraus der zweite Kletterschritt, weil bei
+// der Rueckenansicht das Spiegeln genau die Glieder tauscht.
+const C=grid();
+backHead(C);
+row(C,18,11,32,'f');                                   // Schulterlinie
+const BACK=[[19,13,30],[20,12,31],[21,11,32],[22,11,32],[23,11,32],[24,11,32],
+            [25,11,32],[26,12,31],[27,13,30],[28,14,29],[29,15,28]];
+for(const [r,c1,c2] of BACK) row(C,r,c1,c2,'F');
+box(C,21,27,15,28,'b');                                // Silberruecken
+box(C,19,29,21,22,'f');                                // Rueckgrat
+// linker Arm greift hoch, rechter haelt tiefer -- daher der Diagonalgang
+const armUp=(r1,r2,c1,c2)=>{ box(C,r1,r2,c1,c2,'F');
+  box(C,r1,r2,c1,c1,'b'); box(C,r1,r2,c2,c2,'f');
+  row(C,r1,c1,c2,'P'); row(C,r1+1,c1+1,c2-1,'P'); };   // Pranke am Holm
+armUp(2,19,3,10); armUp(9,25,33,40);
+box(C,26,33,23,30,'F'); box(C,26,33,23,23,'b');        // rechtes Bein angezogen
+box(C,29,35,13,20,'F'); box(C,29,35,20,20,'f');        // linkes Bein gestreckt
+row(C,33,23,30,'P'); row(C,35,13,20,'P');              // Fuesse auf den Sprossen
+outline(C,'e');
+
 const out=g=>g.map(r=>'    "'+r.join('')+'",').join('\n');
 if(process.argv[2]==='--patch'){
   const fs=require('fs'), file='/home/v3da/fassalarm/index.html';
   let h=fs.readFileSync(file,'utf8');
-  for(const [name,g] of [['kong',A],['kongThrow',B]]){
+  for(const [name,g] of [['kong',A],['kongThrow',B],['kongClimb',C]]){
     const re=new RegExp('('+name+':mkspr\\(\\[)[\\s\\S]*?(\\],2\\))');
     if(!re.test(h)) throw new Error('Sprite '+name+' nicht gefunden');
     h=h.replace(re,'$1\n'+out(g)+'\n  $2');
   }
   fs.writeFileSync(file,h);
-  console.log('kong + kongThrow ersetzt ('+W+'x'+H+')');
+  console.log('kong + kongThrow + kongClimb ersetzt ('+W+'x'+H+')');
 } else { console.log(out(A)); }

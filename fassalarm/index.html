@@ -183,8 +183,9 @@ function stepFlee(){
       f.px=cx+(f.x-34-cx)*k; f.py=f.gy+((f.y-22)-f.gy)*k;
       if(k>=1){ f.phase='up'; f.fr=0; sfx.help(); }
       break; }
-    case 'up': // die Leiter hoch und oben aus dem Bild
-      f.y-=2.6; f.px=f.x-34; f.py=f.y-22;
+    case 'up': // erst zur Leiter umdrehen, dann hoch und oben aus dem Bild
+      if(f.fr>TURN) f.y-=2.6;
+      f.px=f.x-34; f.py=f.y-22;
       if(f.fr%16===0) sfx.thud();
       if(f.y<-110) nextLevel();
       break;
@@ -198,8 +199,8 @@ function stepIntro(){
   const it=intro; it.t++; it.fr++;
   switch(it.phase){
     case 'wait': if(it.fr>40){ it.phase='climb'; it.fr=0; } break;
-    case 'climb': // mit der Prinzessin unterm Arm die lange Leiter hoch
-      it.y=Math.max(170, 492-it.fr*2);
+    case 'climb': // umdrehen, dann mit der Prinzessin unterm Arm die Leiter hoch
+      it.y=Math.max(170, 492-Math.max(0,it.fr-TURN)*2);
       it.px=it.x-34; it.py=it.y-22;
       if(it.y<=170){ it.phase='place'; it.fr=0; }
       break;
@@ -846,6 +847,47 @@ const SPR={
     ".........effPPPPPPPffeeffPPPPPPPffe.........",
     "..........eeeeeeeeeee..eeeeeeeeeee..........",
   ],2),
+  // Kletter-Pose (Rueckenansicht) -- wird von sprite-gen.js gefuellt
+  kongClimb:mkspr([
+    "............................................",
+    "...eeeeeeee.................................",
+    "..ePPPPPPPPe................................",
+    "..ebPPPPPPfe................................",
+    "..ebFFFFFFfe........eeee....................",
+    "..ebFFFFFFfe.....eeeFFFFeee.................",
+    "..ebFFFFFFfe...eeFbbbbbbbbFee...............",
+    "..ebFFFFFFfe.eeFFbbbbbbbbbbFFee.............",
+    "..ebFFFFFFfeeFFbbbbbbbbbbbbbbFFe.eeeeeeee...",
+    "..ebFFFFFFfeeffFFFFFFFFFFFFFFffeePPPPPPPPe..",
+    "..ebFFFFFFfffffFFFFFFFFFFFFFFffffbPPPPPPfe..",
+    "..ebFFFFFFfffffFFFFFFFFFFFFFFffffbFFFFFFfe..",
+    "..ebFFFFFFfffffFFFFFFFFFFFFFFffffbFFFFFFfe..",
+    "..ebFFFFFFfeeffFFFFFFFFFFFFFFffeebFFFFFFfe..",
+    "..ebFFFFFFfeeffFFFFFFFFFFFFFFffeebFFFFFFfe..",
+    "..ebFFFFFFfeeffFFFFFFFFFFFFFFffeebFFFFFFfe..",
+    "..ebFFFFFFfeeFFffffffffffffffFFeebFFFFFFfe..",
+    "..ebFFFFFFfeeFFFFffffffffffFFFFeebFFFFFFfe..",
+    "..ebFFFFFFfffffffffffffffffffffffbFFFFFFfe..",
+    "..ebFFFFFFfeeFFFFFFFFffFFFFFFFFeebFFFFFFfe..",
+    "...eeeeeeeeeFFFFFFFFFffFFFFFFFFFebFFFFFFfe..",
+    "..........eFFFFbbbbbbffbbbbbbFFFFbFFFFFFfe..",
+    "..........eFFFFbbbbbbffbbbbbbFFFFbFFFFFFfe..",
+    "..........eFFFFbbbbbbffbbbbbbFFFFbFFFFFFfe..",
+    "..........eFFFFbbbbbbffbbbbbbFFFFbFFFFFFfe..",
+    "..........eFFFFbbbbbbffbbbbbbFFFFbFFFFFFfe..",
+    "...........eFFFbbbbbbffbFFFFFFFFeeeeeeeee...",
+    "............eFFbbbbbbffbFFFFFFFe............",
+    ".............eFFFFFFFffbFFFFFFFe............",
+    "............eFFFFFFFfffbFFFFFFFe............",
+    "............eFFFFFFFfeebFFFFFFFe............",
+    "............eFFFFFFFfeebFFFFFFFe............",
+    "............eFFFFFFFfeebFFFFFFFe............",
+    "............eFFFFFFFfeePPPPPPPPe............",
+    "............eFFFFFFFfe.eeeeeeee.............",
+    "............ePPPPPPPPe......................",
+    ".............eeeeeeee.......................",
+    "............................................",
+  ],2),
 };
 
 function drawGirder(g){
@@ -965,6 +1007,21 @@ function drawGoal(){
     ctx.fillText('HILFE!',x,y-40-(cry?2:0));
   }
 }
+// Kong an der Leiter: erst dreht er sich weg (Figur horizontal stauchen und
+// als Rueckenansicht wieder aufziehen), danach laeuft der Kletterschritt --
+// die Rueckenpose gespiegelt ergibt genau den Gegenschritt.
+const TURN=14;
+function climbSquash(fr){ return fr<TURN ? Math.max(.06,Math.abs(2*fr/TURN-1)) : 1; }
+function withTurn(cx,s,fn){ // alles um Kongs Mitte stauchen, damit die
+  if(s>=1){ fn(); return; } // Prinzessin unterm Arm mitschwenkt statt zu schweben
+  ctx.save(); ctx.translate(cx,0); ctx.scale(s,1); ctx.translate(-cx,0);
+  fn(); ctx.restore();
+}
+function blitClimb(front,cx,by,fr){
+  const s=climbSquash(fr);
+  if(s<1) withTurn(cx,s,()=>blit(fr/TURN<.5?front:SPR.kongClimb,cx,by,false));
+  else blit(SPR.kongClimb, cx, by, ((fr-TURN)>>3)%2===1);
+}
 function drawIntroLadder(){ // lange Leiter, die Kong im Intro hochklettert
   ctx.fillStyle='#3ed6ff';
   ctx.fillRect(202,170,2,322); ctx.fillRect(216,170,2,322);
@@ -1042,17 +1099,21 @@ function drawLevel(){
   drawGoal();
   if(state==='intro'){ // Kong traegt die Prinzessin hoch und stampft alles krumm
     drawIntroLadder();
-    const roar = intro.phase==='roar'||intro.phase==='place';
-    blit(roar?SPR.kongThrow:SPR.kong, intro.x, Math.round(intro.y),
-         intro.phase==='climb' && (intro.fr>>3)%2===1);
+    if(intro.phase==='climb') blitClimb(SPR.kong, intro.x, Math.round(intro.y), intro.fr);
+    else blit(intro.phase==='roar'||intro.phase==='place' ? SPR.kongThrow : SPR.kong,
+              intro.x, Math.round(intro.y), false);
     if(!princessPlaced) // Prinzessin unterm Arm bzw. beim Hochsetzen
-      blit(SPR.princess, intro.px, Math.round(intro.py), false);
+      withTurn(intro.x, intro.phase==='climb'?climbSquash(intro.fr):1,
+        ()=>blit(SPR.princess, intro.px, Math.round(intro.py), false));
   } else if(state==='flee'){ // Kong schnappt sie sich und flieht eine Ebene hoeher
     if(flee.phase==='up') drawFleeLadder();
     drawPlayer();
-    blit(flee.phase==='come'?SPR.kong:SPR.kongThrow, Math.round(flee.x),
-         Math.round(flee.y), flee.phase==='up' && (flee.fr>>3)%2===1);
-    if(!princessPlaced) blit(SPR.princess, Math.round(flee.px), Math.round(flee.py), false);
+    if(flee.phase==='up') blitClimb(SPR.kongThrow, Math.round(flee.x), Math.round(flee.y), flee.fr);
+    else blit(flee.phase==='come'?SPR.kong:SPR.kongThrow,
+              Math.round(flee.x), Math.round(flee.y), false);
+    if(!princessPlaced)
+      withTurn(Math.round(flee.x), flee.phase==='up'?climbSquash(flee.fr):1,
+        ()=>blit(SPR.princess, Math.round(flee.px), Math.round(flee.py), false));
   } else {
     if(state!=='rescue') drawApe(); // im Finale ist Kong ueber alle Berge
     for(const b of barrels) drawBarrel(b);
