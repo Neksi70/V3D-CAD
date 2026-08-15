@@ -135,6 +135,8 @@ let flameT=0; // Stichflamme am Oelfass, wenn ein Fass hineinrollt
 let helpT=0;  // laeuft, waehrend die Prinzessin "HILFE!" ruft (Bild + Ton synchron)
 let princessPlaced=true; // false nur waehrend des Intros, bis Kong sie oben absetzt
 let fires=[], barrelCount=0; // Feuerbaelle aus dem Oelfass, Fass-Zaehler (1. Fass = blau)
+let glut=[], ghosts=[];      // liegengebliebene Glut, schwebende Geister
+let notice='', noticeT=0;    // Warnung, wenn eine neue Gefahr dazukommt
 
 const keys={l:0,r:0,u:0,d:0,j:0};
 let jumpLatch=false; // Leertaste muss losgelassen werden
@@ -143,7 +145,7 @@ function resetRound(){
   buildLevel(level);  // jedes Level hat eigene Traeger, Leitern und Haemmer
   player={x:90, y:gY(GIRDERS[8],90), vx:0, vy:0, dir:1, mode:'ground', g:8,
           ladder:null, anim:0, hammerT:0, airFrom:0};
-  barrels=[]; popups=[]; fires=[]; barrelCount=0;
+  barrels=[]; popups=[]; fires=[]; glut=[]; ghosts=[]; barrelCount=0;
   hammers=HAMDEF.map(([x,g])=>({x, y:gY(GIRDERS[g],x)-36, taken:false}));
   apeT=90; apeAnim=0; bonus=5000+Math.min(4,level-1)*500; helpT=0;
   princessPlaced=true; flee=null;
@@ -191,7 +193,11 @@ function stepFlee(){
       break;
   }
 }
-function nextLevel(){ level++; resetRound(); state='play'; stateT=0; }
+function announceHazard(){ // Warnung nur beim Wechsel, nicht nach jedem Tod
+  const h=HAZARD.find(h=>h.lvl===level);
+  if(h){ notice=h.txt; noticeT=170; } else { notice=''; noticeT=0; }
+}
+function nextLevel(){ level++; resetRound(); announceHazard(); state='play'; stateT=0; }
 
 // Reihenfolge, in der die Traeger beim Stampfen krumm werden (oben -> unten)
 const STOMP_ORDER=[6,4,3,2,1];
@@ -319,6 +325,10 @@ const sfx={
     crash(.18,.35);
   },
   roar(){ tone(90,55,.6,'sawtooth',.09); tone(70,45,.6,'sawtooth',.09,.05); },
+  ignite(){ crash(.28,.13); tone(420,120,.3,'sawtooth',.07); },   // Feuerfass faengt an
+  clank(){ tone(1500,700,.09,'square',.11); tone(900,380,.16,'triangle',.09,.02); },
+  douse(){ crash(.22,.09); tone(300,90,.22,'sine',.05); },        // Glut geloescht
+  ghost(){ voice(300,220,.5,600,.07,0,10); voice(240,300,.45,520,.06,.3,12); },
 };
 
 // ---- Hintergrundmusik (eigene Komposition, kein Nintendo-Original)
@@ -393,19 +403,58 @@ function spawnBarrel(){
   // Wie im Original: das erste Fass jeder Runde ist blau und nimmt die Leitern
   const blue = barrelCount===0 || barrelCount%8===7;
   barrelCount++;
+  // Das blaue Leiterfass bleibt ein normales Fass, sonst gibt es zu viele
+  // Sonderfaelle auf einmal.
+  const kind = blue ? 'normal' : pickBarrelKind();
   barrels.push({x:150, y:170, dir:1, mode:'roll', g:5, vx:0, vy:0, anim:0,
-                scored:false, ladder:null, blue});
+                scored:false, ladder:null, blue, kind, hopY:0, glut:0});
   sfx.throw();
+  if(kind==='feuer') sfx.ignite();
 }
-function barrelSpeed(){ return Math.min(2.9, 1.7+0.2*(level-1)); }
-function ladderChance(){ return Math.min(0.6, 0.2+0.06*(level-1)); }
+// ---- Schwierigkeit: was ab welcher Ebene dazukommt
+const HAZARD=[
+  {lvl:3, txt:'FEUERFAESSER! SIE LASSEN GLUT LIEGEN'},
+  {lvl:5, txt:'GEISTER! SIE SCHWEBEN DURCH ALLES'},
+  {lvl:6, txt:'HUEPFFAESSER! SIE SPRINGEN MIT'},
+  {lvl:8, txt:'STAHLFAESSER! DER HAMMER PRALLT AB'},
+];
+function barrelSpeed(){ return Math.min(3.4, 1.7+0.22*(level-1)); }
+function ladderChance(){ return Math.min(0.65, 0.2+0.06*(level-1)); }
+function throwGap(){ return Math.max(46, 165-13*(level-1)); }   // Wurfabstand
+function maxFires(){ return Math.min(5, 1+Math.floor(level/2.5)); }
+function maxGhosts(){ return level>=5 ? Math.min(3,1+Math.floor((level-5)/2)) : 0; }
+function hammerTime(){ return Math.max(210, 380-18*(level-1)); } // Hammer haelt kuerzer
+function bonusTick(){ return Math.max(60, 120-6*(level-1)); }    // Bonus schmilzt schneller
+// Gewichtete Auswahl statt gestapelter Schwellen -- so bleiben die Anteile lesbar
+function pickBarrelKind(){
+  const w=[['stahl', level>=8 ? 10+(level-8)*7 : 0],
+           ['huepf', level>=6 ? 14+(level-6)*5 : 0],
+           ['feuer', level>=3 ? 14+(level-3)*4 : 0],
+           ['normal', 62]];
+  let tot=0; for(const [,n] of w) tot+=n;
+  let r=rng()*tot;
+  for(const [k,n] of w) if((r-=n)<0) return k;
+  return 'normal';
+}
+function barrelPace(b){ // Feuer rollt heisser, Stahl traege
+  return barrelSpeed()*(b.kind==='feuer'?1.24 : b.kind==='stahl'?0.76 : 1);
+}
 
 function stepBarrel(b){
   b.anim++;
+  // Huepffaesser springen im Bogen mit. hopY liegt neben b.y, damit die
+  // Traeger- und Leiterlogik unveraendert mit der Rollhoehe rechnet.
+  b.hopY = (b.kind==='huepf' && b.mode==='roll')
+         ? Math.abs(Math.sin(b.anim*0.085))*24 : 0;
   if(b.mode==='roll'){
     const g=GIRDERS[b.g];
     const oldX=b.x;
-    b.x+=b.dir*barrelSpeed();
+    b.x+=b.dir*barrelPace(b);
+    // Feuerfass laesst Glut auf dem Traeger zurueck
+    if(b.kind==='feuer' && --b.glut<=0){
+      b.glut=38;
+      if(glut.length<12) glut.push({x:b.x, y:gY(g,b.x), t:0, life:100+level*7});
+    }
     // Leiter-Abstieg? (Fass rollt ueber Leiterkopf)
     for(const l of LADDERS){
       if(l.up!==b.g) continue;
@@ -438,9 +487,38 @@ function stepBarrel(b){
   }
   if(b.g===8 && b.x<38 && b.mode==='roll'){ // landet im Oelfass
     b.dead=true; flameT=26;
-    if(fires.length < Math.min(4,1+Math.floor(level/3))) // Feuerbaelle wie im Original
-      fires.push({x:30, y:gY(GIRDERS[8],30), g:8, dir:1, mode:'walk', tgt:0, tg:0, anim:0});
+    // Feuerfaesser entzuenden das Oel doppelt
+    for(let i=0;i<(b.kind==='feuer'?2:1);i++)
+      if(fires.length<maxFires())
+        fires.push({x:30, y:gY(GIRDERS[8],30), g:8, dir:1, mode:'walk', tgt:0, tg:0, anim:0});
   }
+}
+
+// ---- Glut: was ein Feuerfass liegen laesst. Steht still, brennt aus,
+// blinkt die letzten Zuckungen -- der Hammer loescht sie.
+function stepGlut(gl){ gl.t++; if(gl.t>=gl.life) gl.dead=true; }
+
+// ---- Geister: schweben durch Traeger und Leitern und driften zum Spieler.
+// Bewusst langsamer als er laufen kann, sonst waere es unfair -- gefaehrlich
+// werden sie auf der Leiter, wo man nur mit 1.1 vorankommt.
+function spawnGhost(){
+  const p=player;
+  const x = p.x>W/2 ? 14 : W-14;            // immer auf der abgewandten Seite
+  ghosts.push({x, y:126+rng()*110, anim:0, t:0});
+  sfx.ghost();
+}
+function ghostSpeed(){ return 0.40+Math.min(0.30,(level-5)*0.06); }
+function stepGhost(gh){
+  gh.anim++; gh.t++;
+  const p=player, dx=p.x-gh.x, dy=(p.y-16)-gh.y;
+  const d=Math.hypot(dx,dy)||1, sp=ghostSpeed();
+  // Rand so weit weg, dass das ganze Laken sichtbar bleibt (20 breit, 22 hoch)
+  gh.x=Math.max(12,Math.min(W-12, gh.x+dx/d*sp+Math.sin(gh.anim*0.06)*0.55));
+  gh.y=Math.max(94,Math.min(H-4, gh.y+dy/d*sp+Math.cos(gh.anim*0.045)*0.45));
+  if(gh.t>1050) gh.dead=true;               // loest sich von selbst wieder auf
+}
+function ghostAlpha(gh){ // erscheint und vergeht weich, damit er nie ploetzlich trifft
+  return Math.max(0,Math.min(1, gh.t<45 ? gh.t/45 : (gh.t>990 ? (1050-gh.t)/60 : 1)));
 }
 
 // ---- Feuerbaelle: wandern zufaellig, klettern auch Leitern
@@ -542,7 +620,7 @@ function stepPlayer(){
     for(const hm of hammers){
       if(hm.taken) continue;
       if(overlap(p.x-7,p.y-22,14,22, hm.x-9,hm.y-8,18,16)){
-        hm.taken=true; p.hammerT=380; sfx.grab(); }
+        hm.taken=true; p.hammerT=hammerTime(); sfx.grab(); }
     }
   }
 }
@@ -569,7 +647,10 @@ function step(){
       lives--;
       if(lives<0){ state='over'; stateT=0;
         if(score>high){ high=score; localStorage.setItem('fassalarm_high',high); } }
-      else { resetRound(); state='play'; }
+      // stateT mitzuruecksetzen ist wichtig: sonst laeuft der Takt der
+      // Todesphase weiter und direkt nach dem Wiederbeleben steht ein Geist
+      // auf dem Spieler, weil dessen Zeitpunkt schon ueberschritten war.
+      else { resetRound(); state='play'; stateT=0; }
     }
     return;
   }
@@ -588,8 +669,9 @@ function step(){
   // ---- state === 'play'
   stateT++;
   MUS.tick(); // Hintergrundmusik loest den frueheren nackten Herzschlag ab
-  if(stateT%120===0 && bonus>0) bonus=Math.max(0,bonus-100);
+  if(stateT%bonusTick()===0 && bonus>0) bonus=Math.max(0,bonus-100);
   if(flameT>0) flameT--;
+  if(noticeT>0) noticeT--;
 
   // Prinzessin ruft regelmaessig um Hilfe
   if(helpT>0) helpT--;
@@ -600,26 +682,36 @@ function step(){
   if(apeT===63) sfx.stack(); // Pranke wuehlt im Fass-Stapel
   if(apeT===35) sfx.heave(); // Fass wandert ueber den Kopf
   if(apeT===18) spawnBarrel();
-  if(apeT<=0) apeT=Math.max(70, 170-20*(level-1));
+  if(apeT<=0) apeT=throwGap();
+
+  // Geister erscheinen ab Ebene 5 in Abstaenden, nie mehr als erlaubt
+  if(ghosts.length<maxGhosts() && stateT%Math.max(200,360-level*12)===150) spawnGhost();
 
   stepPlayer();
   if(state!=='play') return;
 
   for(const b of barrels) stepBarrel(b);
   barrels=barrels.filter(b=>!b.dead);
-  if(barrels.length>14) barrels.shift();
+  if(barrels.length>16) barrels.shift();
   for(const f of fires) stepFire(f);
+  for(const gl of glut) stepGlut(gl);
+  glut=glut.filter(gl=>!gl.dead);
+  for(const gh of ghosts) stepGhost(gh);
 
   // Kollisionen
   const hr=hammerRect(), p=player;
   for(const b of barrels){
     if(b.dead) continue;
-    if(hr && overlap(hr.x,hr.y,hr.w,hr.h, b.x-8,b.y-12,16,12)){
-      b.dead=true; addScore(500,b.x,b.y-16); sfx.smash(); continue; }
-    if(overlap(p.x-6,p.y-20,12,20, b.x-7,b.y-11,14,10)){ killPlayer(); return; }
+    const by=b.y-b.hopY; // Huepffaesser trifft man nur unten
+    if(hr && overlap(hr.x,hr.y,hr.w,hr.h, b.x-8,by-12,16,12)){
+      if(b.kind==='stahl'){ // Stahl haelt dem Hammer stand
+        if(!b.clanked){ b.clanked=true; sfx.clank(); }
+        continue; }
+      b.dead=true; addScore(b.kind==='feuer'?800:500,b.x,by-16); sfx.smash(); continue; }
+    if(overlap(p.x-6,p.y-20,12,20, b.x-7,by-11,14,10)){ killPlayer(); return; }
     // Punkte fuers Drueberspringen
-    if(!b.scored && p.mode==='air' && Math.abs(b.x-p.x)<10 && b.y>p.y && b.y-p.y<80){
-      b.scored=true; addScore(100,p.x,p.y-30); sfx.point(); }
+    if(!b.scored && p.mode==='air' && Math.abs(b.x-p.x)<10 && by>p.y && by-p.y<80){
+      b.scored=true; addScore(b.kind==='normal'?100:200,p.x,p.y-30); sfx.point(); }
   }
   for(const f of fires){
     if(hr && overlap(hr.x,hr.y,hr.w,hr.h, f.x-7,f.y-14,14,14)){
@@ -627,6 +719,20 @@ function step(){
     if(overlap(p.x-6,p.y-20,12,20, f.x-6,f.y-13,12,13)){ killPlayer(); return; }
   }
   fires=fires.filter(f=>!f.dead);
+  for(const gl of glut){
+    if(hr && overlap(hr.x,hr.y,hr.w,hr.h, gl.x-7,gl.y-10,14,10)){
+      gl.dead=true; addScore(150,gl.x,gl.y-14); sfx.douse(); continue; }
+    if(overlap(p.x-6,p.y-20,12,20, gl.x-6,gl.y-8,12,8)){ killPlayer(); return; }
+  }
+  glut=glut.filter(gl=>!gl.dead);
+  for(const gh of ghosts){
+    if(hr && overlap(hr.x,hr.y,hr.w,hr.h, gh.x-9,gh.y-19,18,19)){
+      gh.dead=true; addScore(800,gh.x,gh.y-22); sfx.smash(); continue; }
+    // erst wenn er voll da ist, sonst stirbt man an einem halbdurchsichtigen Fleck
+    if(ghostAlpha(gh)>=1 && overlap(p.x-6,p.y-20,12,20, gh.x-7,gh.y-16,14,16)){
+      killPlayer(); return; }
+  }
+  ghosts=ghosts.filter(gh=>!gh.dead);
   for(const pp of popups) pp.t++;
   popups=popups.filter(pp=>pp.t<50);
 }
@@ -960,11 +1066,25 @@ function drawLadder(l){
   if(l.broken){ seg(yT+2,yT+16); seg(yB-14,yB); }
   else seg(yT+2,yB);
 }
+// Farbe verraet die Sorte: Feuer rot, Huepfer gruen, Stahl grau, Leiter blau
+const BKIND={
+  normal:{body:PAL.T,     dark:PAL.N,     lite:PAL.t},
+  feuer :{body:'#e0521c', dark:'#7a2408', lite:'#ffb03c'},
+  huepf :{body:'#3fae62', dark:'#1c5c32', lite:'#8ee0a4'},
+  stahl :{body:'#9aa4b0', dark:'#4a525c', lite:'#d8dee6'},
+};
 function drawBarrel(b){
-  const x=b.x,y=b.y; // y = Unterkante
-  // Blaues Fass = nimmt die Leitern (wie im Original)
-  const body=b.blue?'#4890f0':PAL.T, dark=b.blue?'#1c4ea0':PAL.N,
-        lite=b.blue?'#90c4ff':PAL.t;
+  const x=b.x, y=b.y-b.hopY; // y = Unterkante, Huepffass schwebt darueber
+  const k=b.blue?{body:'#4890f0',dark:'#1c4ea0',lite:'#90c4ff'}:BKIND[b.kind]||BKIND.normal;
+  const body=k.body, dark=k.dark, lite=k.lite;
+  if(b.kind==='feuer'){ // zuengelnde Flammen obendrauf
+    const f=(b.anim>>2)%3;
+    ctx.fillStyle='#ffd23e'; ctx.fillRect(x-6+f,y-18,3,6);
+    ctx.fillStyle='#ff7a1a'; ctx.fillRect(x-1-f,y-20,4,8); ctx.fillRect(x+3,y-17,3,5);
+  }
+  if(b.hopY>2){ // Schatten am Boden zeigt, wo es aufsetzt
+    ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fillRect(x-6,b.y-2,12,2);
+  }
   if(b.mode==='ladder'){ // Frontansicht beim Leiter-Abstieg
     ctx.fillStyle=dark; ctx.fillRect(x-7,y-13,14,13);
     ctx.fillStyle=body; ctx.fillRect(x-5,y-11,10,9);
@@ -990,6 +1110,31 @@ function drawFire(f){ // Feuerball mit Augen
   ctx.fillRect(f.x-4,f.y-11+(j?1:-1),8,11);
   ctx.fillStyle='#000';
   ctx.fillRect(f.x-3,f.y-8,2,3); ctx.fillRect(f.x+1,f.y-8,2,3);
+}
+function drawGlut(gl){ // liegengebliebene Glut, blinkt sich zum Schluss aus
+  const rest=gl.life-gl.t;
+  if(rest<45 && (gl.t>>2)%2) return;
+  const f=(gl.t>>2)%3;
+  ctx.fillStyle='#7a2408'; ctx.fillRect(gl.x-7,gl.y-3,14,3);
+  ctx.fillStyle='#e0521c'; ctx.fillRect(gl.x-6,gl.y-6,12,4);
+  ctx.fillStyle='#ffb03c'; ctx.fillRect(gl.x-4+f,gl.y-9,3,4);
+  ctx.fillStyle=PAL.Y;     ctx.fillRect(gl.x+1-f,gl.y-8,2,3);
+}
+function drawGhost(gh){ // durchscheinendes Laken. Alpha auf Schwarz frisst die
+  // Helligkeit, deshalb hoher Grundwert und ein heller Kern obendrauf.
+  const a=ghostAlpha(gh), w=(gh.anim>>3)%2;
+  ctx.globalAlpha=a*(0.80+0.14*Math.sin(gh.anim*0.08));
+  ctx.fillStyle='#dcecff';
+  ctx.fillRect(gh.x-8,gh.y-22,16,5);
+  ctx.fillRect(gh.x-10,gh.y-18,20,16);
+  for(let i=0;i<4;i++) ctx.fillRect(gh.x-10+i*5, gh.y-2, 4, (i+w)%2?5:2); // Fransen
+  ctx.globalAlpha=a;
+  ctx.fillStyle='#f2f8ff';                                  // Lichtkante oben
+  ctx.fillRect(gh.x-6,gh.y-21,12,3); ctx.fillRect(gh.x-9,gh.y-17,3,12);
+  ctx.fillStyle='#12203a';                                  // Augen und Maul
+  ctx.fillRect(gh.x-6+(w?1:0),gh.y-15,4,5); ctx.fillRect(gh.x+2+(w?1:0),gh.y-15,4,5);
+  ctx.fillRect(gh.x-3,gh.y-8,6,4);
+  ctx.globalAlpha=1;
 }
 function drawHammerPickup(hm){
   ctx.fillStyle=PAL.N; ctx.fillRect(hm.x-2,hm.y-4,4,16);
@@ -1146,6 +1291,12 @@ function drawHud(){
   ctx.fillStyle=PAL.C; ctx.fillText('L='+(''+level).padStart(2,'0'),W-8,58);
   for(let i=0;i<Math.min(lives,6);i++)
     ctx.drawImage(SPR.stand,8+i*15,32,12,14); // Rest-Leben als Mini-Monti
+  if(noticeT>0 && (noticeT>40 || (noticeT>>2)%2)){ // Warnung vor neuer Gefahr
+    ctx.textAlign='center';
+    ctx.fillStyle='rgba(0,0,0,.72)'; ctx.fillRect(0,H/2-26,W,34);
+    ctx.fillStyle=PAL.R; ctx.font='bold 13px monospace';
+    ctx.fillText(notice,W/2,H/2-4);
+  }
   if(paused){ ctx.fillStyle='#fff'; ctx.textAlign='center';
     ctx.font='bold 22px monospace'; ctx.fillText('PAUSE',W/2,H/2); }
 }
@@ -1168,9 +1319,11 @@ function drawLevel(){
               Math.round(flee.px), Math.round(flee.py), !princessPlaced);
   } else {
     if(state!=='rescue') drawApe(); // im Finale ist Kong ueber alle Berge
+    for(const gl of glut) drawGlut(gl);   // Glut liegt unter allem anderen
     for(const b of barrels) drawBarrel(b);
     for(const f of fires) drawFire(f);
     drawPlayer();
+    for(const gh of ghosts) drawGhost(gh); // Geister schweben ueber der Szene
   }
   ctx.font='bold 12px monospace'; ctx.textAlign='center';
   for(const pp of popups){ ctx.fillStyle='#fff';
@@ -1307,6 +1460,9 @@ const DBG={
     maxLevel:MAXLEVEL, princessPlaced, flee:flee&&{...flee},
     girders:GIRDERS.map(g=>({...g})), ladders:LADDERS.map(l=>({...l})),
     hammers:hammers.map(h=>({...h})),
+    glut:glut.map(g=>({...g})), ghosts:ghosts.map(g=>({...g})), notice,
+    tempo:{speed:barrelSpeed(), wurf:throwGap(), feuer:maxFires(),
+           geister:maxGhosts(), hammer:hammerTime(), bonusTakt:bonusTick()},
     mus:{i:MUS.i,step:MUS.stepDur()},
     player:{...player}, barrels:barrels.map(b=>({...b})),
     fires:fires.map(f=>({...f}))}; },
@@ -1318,7 +1474,16 @@ const DBG={
   key(k,v){ keys[k]=v?1:0; },
   win(){ reachGoal(); },
   kill(){ killPlayer(); },
-  goto(n){ level=Math.max(1,Math.min(MAXLEVEL,n)); resetRound(); state='play'; stateT=0; },
+  goto(n){ level=Math.max(1,Math.min(MAXLEVEL,n)); resetRound(); announceHazard();
+    state='play'; stateT=0; },
+  kinds(n){ const out={}; for(let i=0;i<(n||400);i++){ const k=pickBarrelKind();
+    out[k]=(out[k]||0)+1; } return out; },
+  ghost(){ spawnGhost(); },
+  hammer(){ player.hammerT=hammerTime(); },
+  put(kind,x){ // Fass einer Sorte gezielt neben den Spieler setzen
+    barrels.push({x:x===undefined?player.x+16:x, y:player.y, dir:-1, mode:'roll',
+      g:player.g, vx:0, vy:0, anim:0, scored:false, ladder:null, blue:false,
+      kind:kind||'normal', hopY:0, glut:0}); },
   tp7(){ const g=GIRDERS[7]; player.x=(g.x1+g.x2)/2; player.y=g.y1; player.g=7; },
   seed(fn){ rng=fn||Math.random; },
   // Ton-Checks von Hand: _faDbg.unmute(); _faDbg.sfx('help')
