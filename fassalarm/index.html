@@ -41,20 +41,78 @@
 const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
 const W=448,H=512, GRAV=0.28, JUMP=-5.0, SPEED=1.5, CLIMB=1.1;
 
-// ---- Traeger: x1/y1 = linkes Ende (Oberkante), x2/y2 = rechtes Ende
-// Faesser rollen bergab (Richtung des groesseren y) und fallen am offenen Ende.
-const GIRDERS=[
-  {x1:256,y1:492, x2:448, y2:476},            // 0 Boden rechts (steigt an, wie 25m)
-  {x1:0,  y1:424, x2:428, y2:436},            // 1 bergab nach rechts
-  {x1:20, y1:376, x2:448, y2:364},            // 2 bergab nach links
-  {x1:0,  y1:304, x2:428, y2:316},            // 3 bergab nach rechts
-  {x1:20, y1:256, x2:448, y2:244},            // 4 bergab nach links
-  {x1:0,  y1:170, x2:190, y2:170},            // 5 Affen-Plattform (flach)
-  {x1:190,y1:170, x2:428, y2:179},            // 6 oberer Schraegtraeger (endet vor
-                                              //   dem Rand, damit Faesser auf 4 fallen)
-  {x1:176,y1:106, x2:272, y2:106, goal:true}, // 7 Ziel-Plattform
-  {x1:0,  y1:492, x2:256, y2:492},            // 8 Boden links flach (Oelfass, Start)
+// ---- Zehn Level. Jeder Traeger-Index behaelt in allen Leveln seine Rolle:
+// 0 Boden rechts, 1-4 Mittelebenen, 5 Affen-Plattform (immer flach, sonst
+// rollt das frisch geworfene Fass rueckwaerts), 6 oberer Traeger, 7 Ziel,
+// 8 Boden links (Oelfass + Start). Die Neigungsvorzeichen liegen fest, sonst
+// laufen die Faesser nicht im Zickzack nach unten: 6/1/3 fallen nach rechts,
+// 2/4 nach links. Variiert werden Neigung, Spannweite, Leitern und Haemmer.
+const ROWY=[430,370,310,250];   // Hoehen der Mittelebenen 1..4
+// t = [t0,t1,t2,t3,t4,t6] Neigung in px    sp = Spannweiten von 1,2,3,4,6
+// top = [ziel_x1, ziel_x2, Ende der Affen-Plattform]
+// lad = [x, oben, unten, kaputt?]          ham = [x, traeger]
+const LEVELS=[
+ { t:[-16,12,-12,12,-12,9], sp:[[0,428],[20,448],[0,428],[20,448],[190,428]], top:[176,272,190],
+   lad:[[192,7,6],[256,7,6],[72,5,4],[352,6,4],[232,6,4,1],[112,4,3],[408,4,3],[280,4,3,1],
+        [48,3,2],[304,3,2],[180,3,2,1],[144,2,1],[384,2,1],[64,2,1,1],[96,1,8],[336,1,0],[200,1,8,1]],
+   ham:[[200,2],[64,4]] },
+ { t:[-16,14,-14,14,-14,11], sp:[[0,436],[12,448],[0,436],[12,448],[190,436]], top:[176,272,190],
+   lad:[[206,7,6],[262,7,6],[148,5,4],[300,6,4],[392,6,4,1],[64,4,3],[352,4,3],[216,4,3,1],
+        [120,3,2],[400,3,2],[248,3,2,1],[72,2,1],[328,2,1],[192,2,1,1],[152,1,8],[392,1,0],[264,1,0,1]],
+   ham:[[112,3],[344,1]] },
+ { t:[-18,16,-16,16,-16,12], sp:[[0,420],[28,448],[0,420],[28,448],[196,420]], top:[168,264,196],
+   lad:[[200,7,6],[248,7,6],[96,5,4],[268,6,4],[368,6,4,1],[152,4,3],[392,4,3],[56,4,3,1],
+        [88,3,2],[344,3,2],[224,3,2,1],[168,2,1],[408,2,1],[112,2,1,1],[64,1,8],[368,1,0],[232,1,8,1]],
+   ham:[[280,3],[128,1]] },
+ { t:[-16,18,-18,18,-18,10], sp:[[0,444],[8,448],[0,444],[8,448],[186,444]], top:[184,280,186],
+   lad:[[198,7,6],[268,7,6],[40,5,4],[320,6,4],[240,6,4,1],[76,4,3],[424,4,3],[196,4,3,1],
+        [128,3,2],[368,3,2],[264,3,2,1],[40,2,1],[296,2,1],[168,2,1,1],[112,1,8],[416,1,0],[224,1,8,1]],
+   ham:[[344,2],[80,4]] },
+ { t:[-14,15,-15,15,-15,13], sp:[[0,392],[56,448],[0,392],[56,448],[190,392]], top:[172,268,190],
+   lad:[[188,7,6],[254,7,6],[120,5,4],[288,6,4],[352,6,4,1],[96,4,3],[368,4,3],[248,4,3,1],
+        [152,3,2],[320,3,2],[72,3,2,1],[104,2,1],[352,2,1],[232,2,1,1],[80,1,8],[352,1,0],[184,1,8,1]],
+   ham:[[176,3],[312,1]] },
+ { t:[-18,20,-20,20,-20,14], sp:[[0,432],[16,448],[0,432],[16,448],[192,432]], top:[164,260,192],
+   lad:[[202,7,6],[244,7,6],[56,5,4],[344,6,4],[264,6,4,1],[136,4,3],[400,4,3],[224,4,3,1],
+        [64,3,2],[288,3,2],[176,3,2,1],[128,2,1],[368,2,1],[248,2,1,1],[136,1,8],[400,1,0],[288,1,0,1]],
+   ham:[[224,4],[96,2]] },
+ { t:[-16,17,-17,17,-17,12], sp:[[0,412],[36,448],[0,412],[36,448],[188,412]], top:[180,276,188],
+   lad:[[196,7,6],[266,7,6],[168,5,4],[256,6,4],[380,6,4,1],[48,4,3],[404,4,3],[232,4,3,1],
+        [176,3,2],[392,3,2],[96,3,2,1],[56,2,1],[312,2,1],[200,2,1,1],[104,1,8],[344,1,0],[216,1,8,1]],
+   ham:[[288,2],[144,4]] },
+ { t:[-20,22,-22,22,-22,15], sp:[[0,440],[8,448],[0,440],[8,448],[194,440]], top:[168,264,194],
+   lad:[[204,7,6],[250,7,6],[88,5,4],[312,6,4],[400,6,4,1],[120,4,3],[376,4,3],[264,4,3,1],
+        [40,3,2],[328,3,2],[208,3,2,1],[152,2,1],[416,2,1],[280,2,1,1],[72,1,8],[384,1,0],[240,1,8,1]],
+   ham:[[336,3]] },
+ { t:[-18,19,-19,19,-19,13], sp:[[0,404],[44,448],[0,404],[44,448],[190,404]], top:[176,272,190],
+   lad:[[192,7,6],[260,7,6],[136,5,4],[276,6,4],[364,6,4,1],[64,4,3],[388,4,3],[216,4,3,1],
+        [112,3,2],[356,3,2],[240,3,2,1],[88,2,1],[336,2,1],[192,2,1,1],[160,1,8],[392,1,0],[272,1,0,1]],
+   ham:[[248,1]] },
+ { t:[-20,24,-24,24,-24,16], sp:[[0,448],[0,448],[0,448],[0,448],[190,448]], top:[172,268,190],
+   lad:[[196,7,6],[252,7,6],[32,5,4],[336,6,4],[248,6,4,1],[144,4,3],[420,4,3],[280,4,3,1],
+        [32,3,2],[300,3,2],[168,3,2,1],[176,2,1],[424,2,1],[96,2,1,1],[48,1,8],[424,1,0],[208,1,8,1]],
+   ham:[[368,4]] },
 ];
+const MAXLEVEL=LEVELS.length;
+// x1/y1 = linkes Ende (Oberkante), x2/y2 = rechtes Ende.
+// Faesser rollen bergab (Richtung des groesseren y) und fallen am offenen Ende.
+let GIRDERS=[], LADDERS=[], HAMDEF=[];
+function buildLevel(n){
+  const L=LEVELS[Math.min(n,MAXLEVEL)-1];
+  const [t0,t1,t2,t3,t4,t6]=L.t, sp=L.sp, [gx1,gx2,apeEnd]=L.top;
+  const mid=(i,t)=>({x1:sp[i][0], y1:ROWY[i]-t/2, x2:sp[i][1], y2:ROWY[i]+t/2});
+  GIRDERS=[
+    {x1:256,y1:492,x2:448,y2:492+t0},
+    mid(0,t1), mid(1,t2), mid(2,t3), mid(3,t4),
+    {x1:0,y1:170,x2:apeEnd,y2:170},
+    {x1:apeEnd,y1:170,x2:sp[4][1],y2:170+t6},
+    {x1:gx1,y1:106,x2:gx2,y2:106,goal:true},
+    {x1:0,y1:492,x2:256,y2:492},
+  ];
+  LADDERS=L.lad.map(([x,up,dn,br])=>({x,up,dn,broken:!!br,
+    yTop:gY(GIRDERS[up],x), yBot:gY(GIRDERS[dn],x)}));
+  HAMDEF=L.ham;
+}
 function gY(g,x){
   const raw = g.x2===g.x1 ? g.y1 : g.y1+(g.y2-g.y1)*((x-g.x1)/(g.x2-g.x1));
   const b = g.bend===undefined ? 1 : g.bend; // Intro: 0 = noch gerade, 1 = krumm
@@ -64,21 +122,9 @@ function gY(g,x){
 }
 function downhill(g){ return g.y2>g.y1 ? 1 : (g.y2<g.y1 ? -1 : 0); }
 
-// ---- Leitern: [x, oberer Traeger, unterer Traeger, kaputt]
-// Kaputte nutzt nur das Fass (rollt runter), der Spieler kann sie nicht klettern.
-const LDEF=[
-  [192,7,6,0],[256,7,6,0],
-  [72,5,4,0],[352,6,4,0],[232,6,4,1],
-  [112,4,3,0],[408,4,3,0],[280,4,3,1],
-  [48,3,2,0],[304,3,2,0],[180,3,2,1],
-  [144,2,1,0],[384,2,1,0],[64,2,1,1],
-  [96,1,8,0],[336,1,0,0],[200,1,8,1],
-];
-const LADDERS=LDEF.map(([x,up,dn,br])=>({x,up,dn,broken:!!br,
-  yTop:gY(GIRDERS[up],x), yBot:gY(GIRDERS[dn],x)}));
-
-// Haemmer: [x, Traeger] — haengen in Sprunghoehe ueber dem Traeger
-const HDEF=[[200,2],[64,4]];
+// Kaputte Leitern nutzt nur das Fass (rollt runter), der Spieler nicht.
+// Haemmer haengen in Sprunghoehe ueber ihrem Traeger.
+buildLevel(1);
 
 // ---- Zustand
 let state='title', frame=0, stateT=0;
@@ -94,11 +140,13 @@ const keys={l:0,r:0,u:0,d:0,j:0};
 let jumpLatch=false; // Leertaste muss losgelassen werden
 
 function resetRound(){
+  buildLevel(level);  // jedes Level hat eigene Traeger, Leitern und Haemmer
   player={x:90, y:gY(GIRDERS[8],90), vx:0, vy:0, dir:1, mode:'ground', g:8,
           ladder:null, anim:0, hammerT:0, airFrom:0};
   barrels=[]; popups=[]; fires=[]; barrelCount=0;
-  hammers=HDEF.map(([x,g])=>({x, y:gY(GIRDERS[g],x)-36, taken:false}));
-  apeT=90; apeAnim=0; bonus=5000; helpT=0;
+  hammers=HAMDEF.map(([x,g])=>({x, y:gY(GIRDERS[g],x)-36, taken:false}));
+  apeT=90; apeAnim=0; bonus=5000+Math.min(4,level-1)*500; helpT=0;
+  princessPlaced=true; flee=null;
 }
 function startGame(){
   score=0; level=1; lives=3; extraGiven=false; resetRound();
@@ -111,7 +159,39 @@ function startGame(){
 }
 function finishIntro(){ for(const g of GIRDERS) if(g.bend!==undefined) g.bend=1;
   princessPlaced=true; state='play'; stateT=0; }
-let intro=null;
+let intro=null, flee=null;
+
+// ---- Levelwechsel: Kong laesst sich das nicht bieten, schnappt sich die
+// Prinzessin vom Podest und klettert mit ihr ins naechste Stockwerk.
+function startFlee(){
+  const g=GIRDERS[7], cx=(g.x1+g.x2)/2;
+  flee={phase:'come', fr:0, x:96, y:170, px:cx, py:g.y1, gx:cx-24, gy:g.y1};
+  state='flee'; stateT=0; sfx.heave();
+}
+function stepFlee(){
+  const f=flee; f.fr++;
+  switch(f.phase){
+    case 'come': { // vom eigenen Podest hinueber zur Prinzessin
+      const k=Math.min(1,f.fr/55);
+      f.x=96+(f.gx-96)*k;
+      f.y=170+(f.gy-170)*k-Math.sin(Math.PI*k)*30;
+      if(k>=1){ f.y=f.gy; f.phase='grab'; f.fr=0; sfx.roar(); }
+      break; }
+    case 'grab': { // Prinzessin unter den Arm klemmen
+      princessPlaced=false;
+      const k=Math.min(1,f.fr/28), cx=f.gx+24;
+      f.px=cx+(f.x-34-cx)*k; f.py=f.gy+((f.y-22)-f.gy)*k;
+      if(k>=1){ f.phase='up'; f.fr=0; sfx.help(); }
+      break; }
+    case 'up': // die Leiter hoch und oben aus dem Bild
+      f.y-=2.6; f.px=f.x-34; f.py=f.y-22;
+      if(f.fr%16===0) sfx.thud();
+      if(f.y<-110) nextLevel();
+      break;
+  }
+}
+function nextLevel(){ level++; resetRound(); state='play'; stateT=0; }
+
 // Reihenfolge, in der die Traeger beim Stampfen krumm werden (oben -> unten)
 const STOMP_ORDER=[6,4,3,2,1];
 function stepIntro(){
@@ -357,7 +437,7 @@ function stepBarrel(b){
   }
   if(b.g===8 && b.x<38 && b.mode==='roll'){ // landet im Oelfass
     b.dead=true; flameT=26;
-    if(fires.length < (level>=3?2:1)) // gebiert einen Feuerball (wie im Original)
+    if(fires.length < Math.min(4,1+Math.floor(level/3))) // Feuerbaelle wie im Original
       fires.push({x:30, y:gY(GIRDERS[8],30), g:8, dir:1, mode:'walk', tgt:0, tg:0, anim:0});
   }
 }
@@ -392,7 +472,10 @@ let rng=Math.random;
 
 // ---- Spieler
 function killPlayer(){ if(DBG.god) return; state='dying'; stateT=0; sfx.death(); }
-function reachGoal(){ state='win'; stateT=0; addScore(bonus); sfx.win(); }
+// Ziel erreicht: in Level 1-9 schnappt Kong sich die Prinzessin und flieht
+// ein Stockwerk hoeher, im letzten Level ist sie endgueltig gerettet.
+function reachGoal(){ state='win'; stateT=0; addScore(bonus); sfx.win();
+  if(level>=MAXLEVEL){ addScore(10000,224,90); state='rescue'; } }
 
 function stepPlayer(){
   const p=player;
@@ -489,9 +572,16 @@ function step(){
     }
     return;
   }
-  if(state==='win'){
+  if(state==='win'){ // kurzer Jubel, dann holt Kong sie sich zurueck
     stateT++; MUS.stop();
-    if(stateT>=150){ level++; resetRound(); state='play'; }
+    if(stateT>=110) startFlee();
+    return;
+  }
+  if(state==='flee'){ stateT++; MUS.stop(); stepFlee(); return; }
+  if(state==='rescue'){ // letztes Level geschafft -- Abspann
+    stateT++; MUS.stop();
+    if(stateT>=360){ state='over'; stateT=0;
+      if(score>high){ high=score; localStorage.setItem('fassalarm_high',high); } }
     return;
   }
   // ---- state === 'play'
@@ -551,7 +641,8 @@ const PAL={O:'#ff8c1a',o:'#c86400',S:'#ffc48c',B:'#2a5cff',D:'#16307e',K:'#000',
   m:'#7e7448',M:'#a89a68',   // Schlapphut des Affen (Krempe / Krone)
   v:'#4a7a3a',V:'#6d9c4e',   // Safari-Gruen der Prinzessin
   h:'#e8c264',H:'#b8902c',   // Blond (Haar / Zopfschatten)
-  w:'#d8dce4'};              // gebrochenes Weiss (Feder, Bart-Schatten)
+  w:'#d8dce4',               // gebrochenes Weiss (Feder, Bart-Schatten)
+  b:'#a8703c',e:'#3a2410'};  // Fell-Lichtkante / dunkelste Fell-Kontur
 function mkspr(rows,sc){
   const w=Math.max(...rows.map(r=>r.length)), h=rows.length,
         c=document.createElement('canvas');
@@ -670,76 +761,90 @@ const SPR={
     "..SS..SS..",
     "..SS..SS..",
   ],2),
-  // Abenteurer-Gorilla "Kranko" in 40x32: Schlapphut, blaues Monokel am
-  // linken Auge, Vollbart um die Schnauze, Keule im Rucksack auf dem
-  // Ruecken, Tragegurt quer ueber der hellen Brust
+  // Abenteurer-Gorilla "Kranko" in 44x36, von Grund auf neu gezeichnet:
+  // Schlapphut mit Hutband, schwerer Brauenwulst mit tiefliegenden Augen,
+  // Monokel am linken Auge, vorspringende Schnauze mit Nuestern statt
+  // Vollbreit-Grinsen, Vollbart, Lichtkante auf den Schultern, muskuloese
+  // Arme mit Knoechelstuetze, Keule im Rueckengepaeck, Gurt ueber der Brust
   kong:mkspr([
-    "................MMMMMMMM................",
-    ".....ttt.......MMMMMMMMMM...............",
-    "....ttttt......MMMMMMMMMM...............",
-    ".....ttt.....mmmmmmmmmmmmmmmm...........",
-    "......N....mmmmmmmmmmmmmmmmmmmm.........",
-    "......N....FFffffffFFGffffGFF...........",
-    "......N....FPPPKWPPFFGCWKCGPF...........",
-    "......N.FFFPPPPPPPFFPGPPPPGPFFF.........",
-    "......N.FFPPPPPPPPPPPPPPPPPPFF..........",
-    "......N.FfPPPKKPPPPPPPPKKPPPfF..........",
-    "......N.FfPKKKKKKKKKKKKKKKKPfF..........",
-    "......N.FffWKWKWKWKWKWKWKWKffF..........",
-    ".....FFFFFFFFPPPffffffffPPPFFFFFFFF.....",
-    "...FFFFFFFFFFFFPPPPPPPPPPFFFFFFFFFFFF...",
-    ".FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF.",
-    "FFFFFFFFFFFFPPPPPPPPPPPPPPPPFFFFFFFFFFFF",
-    "FFFFFFFFFFPNNPPPPPPPPPPPPPPPPPFFFFFFFFFF",
-    "FFFFFFFFFPPPNNPPPPPPPPPPPPPPPPPPFFFFFFFF",
-    "FFFFFFFF.PPPPNNPPPPPPPPPPPPPPPP.FFFFFFFF",
-    "FFFFFFFF.PPPPPNNPPPPPPPPPPPPPPP.FFFFFFFF",
-    "FFFFFFF..PPPPPPNNPPPPPPPPPPPPPP..FFFFFFF",
-    "FFFFFFF..FPPPPPPNNPPPPPPPPPPPPF..FFFFFFF",
-    "FFFFFF...FFPPPPPPPPPPPPPPPPPPFF...FFFFFF",
-    "FFFFFF...FFFFPPPPPPPPPPPPPPFFFF...FFFFFF",
-    "FFFFFF...FFFFFFPPPPPPPPPPFFFFFF...FFFFFF",
-    "PPPPPP...FFFFFFFFPPPPPPFFFFFFFF...PPPPPP",
-    "PPPPPP..FFFFFFFFFFFFFFFFFFFFFFFF..PPPPPP",
-    "PPPPP....FFFFFFFFFFFFFFFFFFFFFF....PPPPP",
-    ".........FFFFFFFF......FFFFFFFF.........",
-    ".........FFFFFFFF......FFFFFFFF.........",
-    "........ffffffffff....ffffffffff........",
-    ".......fffffffffff....fffffffffff.......",
+    "..eeeee........eMMMMMMMMMMMMe...............",
+    ".eNtNNNe......eMMMMMMMMMMMMMMe..............",
+    ".etNNNfe.....eMMMMMMMMMMMMMMMMe.............",
+    ".eNNNtNeeeeeeeeeeeeeeeeeeeeeeeeeeeee........",
+    ".eNNNNNeMMMMMMMMMMMMMMMMMMMMMMMMMMMMe.......",
+    "..eetNNeeemmmmmmmmmmmmmmmmmmmmmmmmee........",
+    "...etNNe..eeeeFFFFFFFFFFFFFFFFeeee..........",
+    "...etNNe....eFffffffffffffffffFe............",
+    "...etNNe...eefffffffffffeeeeeffee...........",
+    "...etNNe..effFFFWWWFFFFFeWWCeFFffe..........",
+    "....etNNe.efPFFFWKWFFFFFeWKWeFFPfe..........",
+    "....etNNe.effFFFFFFFFFFFeeeeeFFffe..........",
+    "....etNNe..eeFfffPPPPPPPPPPfffFee...........",
+    "....etNNe...eFffPPPKPPPPKPPPffFe............",
+    "....etNNe...eFffPKPPPPPPPPKPffFe............",
+    ".....etNNe..eFffPPKKKKKKKKPPffFe............",
+    ".....etNNe...efffPPPPPPPPPPfffe.............",
+    ".....etNNe...effffffffffffffffe.............",
+    ".....etNNe....effffffffffffffe..............",
+    "....eetNNeeeeeeeeffffffffffeeeeeeeeeeeee....",
+    "...ebFFFFFfeffFFFFFFFFFFFFFFFFffefFFFFFbe...",
+    "..ebFFFFFFfeeFFFFNNPPPPPPPPFFFFeefFFFFFFbe..",
+    ".ebFFFFFFFfeFFFFPPNNPPPPPPPPFFFFefFFFFFFFbe.",
+    "ebFFFFFFFFfFFFFPPPPNNPPPPPPPPFFFFfFFFFFFFFbe",
+    "ebFFFFFFFFfFFFFPPPPPNNPPPPPPPFFFFfFFFFFFFFbe",
+    "ebFFFFFFFFfFFFFPPPPPPNNPPPPPPFFFFfFFFFFFFFbe",
+    ".ebFFFFFFFfFFFFFPPPPPPNNPPPPFFFFFfFFFFFFFbe.",
+    ".ebFFFFFFFfeFFFFFPPPPPPNNPPFFFFFefFFFFFFFbe.",
+    "..ebFFFFFfe.eFFFFFFPPPPPPFFFFFFe.efFFFFFbe..",
+    "..ebFFFFFfe.eeFFFFFFFFFFFFFFFFee.efFFFFFbe..",
+    "..ePPPPPPPeeffffffffffffffffffffeePPPPPPPe..",
+    "...ePPPPPe..ebFFFFFFFeebFFFFFFFe..ePPPPPe...",
+    "....eeeee...ebFFFFFFFeebFFFFFFFe...eeeee....",
+    "............ebFFFFFFFeebFFFFFFFe............",
+    "..........eefffffffffeefffffffffee..........",
+    ".........efffffffffffeefffffffffffe.........",
+    ".........effPPPPPPPffeeffPPPPPPPffe.........",
+    "..........eeeeeeeeeee..eeeeeeeeeee..........",
   ],2),
   kongThrow:mkspr([
-    "..PPPPPP........MMMMMMMM........PPPPPP..",
-    "..PPPPPP.......MMMMMMMMMM.......PPPPPP..",
-    "..FFFFFF......MMMMMMMMMMMM......FFFFFF..",
-    "..FFFFFF..mmmmmmmmmmmmmmmmmmmm..FFFFFF..",
-    "..FFFFFF..mmmmmmmmmmmmmmmmmmmm..FFFFFF..",
-    "..FFFFFF...FFffffffFFGffffGFF...FFFFFF..",
-    "..FFFFFF...FPPPKWPPFFGCWKCGPF...FFFFFF..",
-    "..FFFFFF..FFPPPPPPPFFGPPPPGPFF..FFFFFF..",
-    "..FFFFFF..FPPPPPPPPPPPPPPPPPPF..FFFFFF..",
-    "..FFFFFF..FfPPKKPPPPPPPPKKPPfF..FFFFFF..",
-    "..FFFFFF..FfPKKKKKKKKKKKKKKPfF..FFFFFF..",
-    "..FFFFFF..FffWKWKWKWKWKWKWKffF..FFFFFF..",
-    ".FFFFFFFFFFFFPPPffffffffPPPFFFFFFFFFFFF.",
-    ".FFFFFFFFFFFFFPPPPPPPPPPPPFFFFFFFFFFFFF.",
-    "..FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF....",
-    "....FFFFFFFPPNNPPPPPPPPPPPPPPFFFFFFF....",
-    "....FFFFFFPPPNNPPPPPPPPPPPPPPPFFFFFF....",
-    "....FFFFFFPPPPNNPPPPPPPPPPPPPPFFFFFF....",
-    "....FFFFFPPPPPNNPPPPPPPPPPPPPPPFFFFF....",
-    "....FFFFFPPPPPPNNPPPPPPPPPPPPPPFFFFF....",
-    "....FFFFFPPPPPPPNNPPPPPPPPPPPPPFFFFF....",
-    "....FFFFFFPPPPPPPPPPPPPPPPPPPPFFFFFF....",
-    "......FFFFFFPPPPPPPPPPPPPPPPFFFFFF......",
-    "......FFFFFFFPPPPPPPPPPPPPPFFFFFFF......",
-    "......FFFFFFFFPPPPPPPPPPPPFFFFFFFF......",
-    ".......FFFFFFFFFFFFFFFFFFFFFFFFFF.......",
-    ".......FFFFFFFFFFFFFFFFFFFFFFFFFF.......",
-    "........FFFFFFFFFFFFFFFFFFFFFFFF........",
-    ".........FFFFFFFF......FFFFFFFF.........",
-    ".........FFFFFFFF......FFFFFFFF.........",
-    "........ffffffffff....ffffffffff........",
-    ".......fffffffffff....fffffffffff.......",
+    "..ePPPPPPPe....eMMMMMMMMMMMMe....ePPPPPPPe..",
+    "..ePPPPPPPe...eMMMMMMMMMMMMMMe...ePPPPPPPe..",
+    "...ebFFFFFfe.eMMMMMMMMMMMMMMMMe.efFFFFFbe...",
+    "...ebFFFFFfeeeeeeeeeeeeeeeeeeeeeefFFFFFbe...",
+    "...ebFFFFFfMMMMMMMMMMMMMMMMMMMMMMfFFFFFbe...",
+    "...ebFFFFFfemmmmmmmmmmmmmmmmmmmmefFFFFFbe...",
+    "...ebFFFFFfeeeFFFFFFFFFFFFFFFFeeefFFFFFbe...",
+    "..ebFFFFFfe.eFffffffffffffffffFe.efFFFFFbe..",
+    "..ebFFFFFfeeefffffffffffeeeeeffeeefFFFFFbe..",
+    "..ebFFFFFfeffFFFWWWFFFFFeWWCeFFffefFFFFFbe..",
+    "..ebFFFFFfefPFFFWKWFFFFFeWKWeFFPfefFFFFFbe..",
+    "..ebFFFFFfeffFFFFFFFFFFFeeeeeFFffefFFFFFbe..",
+    "..ebFFFFFfeeeFfffPPPPPPPPPPfffFeeefFFFFFbe..",
+    ".ebFFFFFfe..eFffPPPKPPPPKPPPffFe..efFFFFFbe.",
+    ".ebFFFFFfe..eFffPKPPPPPPPPKPffFe..efFFFFFbe.",
+    ".ebFFFFFfe..eFffPPKKKKKKKKPPffFe..efFFFFFbe.",
+    ".ebFFFFFfe...efffPPPPPPPPPPfffe...efFFFFFbe.",
+    ".ebFFFFFfe...effffffffffffffffe...efFFFFFbe.",
+    ".ebFFFFFfeeeeeeffffffffffffffeeeeeefFFFFFbe.",
+    "..eeeeeeeeffffffffffffffffffffffffeeeeeeee..",
+    "..........eeFFFFFFFFFFFFFFFFFFFFee..........",
+    "............eFFFFNNPPPPPPPPFFFFe............",
+    "...........eFFFFPPNNPPPPPPPPFFFFe...........",
+    "..........eFFFFPPPPNNPPPPPPPPFFFFe..........",
+    "..........eFFFFPPPPPNNPPPPPPPFFFFe..........",
+    "..........eFFFFPPPPPPNNPPPPPPFFFFe..........",
+    "..........eFFFFFPPPPPPNNPPPPFFFFFe..........",
+    "...........eFFFFFPPPPPPNNPPFFFFFe...........",
+    "............eFFFFFFPPPPPPFFFFFFe............",
+    "............eeFFFFFFFFFFFFFFFFee............",
+    "...........effffffffffffffffffffe...........",
+    "............ebFFFFFFFeebFFFFFFFe............",
+    "............ebFFFFFFFeebFFFFFFFe............",
+    "............ebFFFFFFFeebFFFFFFFe............",
+    "..........eefffffffffeefffffffffee..........",
+    ".........efffffffffffeefffffffffffe.........",
+    ".........effPPPPPPPffeeffPPPPPPPffe.........",
+    "..........eeeeeeeeeee..eeeeeeeeeee..........",
   ],2),
 };
 
@@ -813,19 +918,20 @@ function drawApe(){
   if(apeT<36){
     blit(SPR.kongThrow,x,y,false);
     // Fass quer ueber dem Kopf, von beiden Pranken gehalten
-    ctx.fillStyle=PAL.T; ctx.fillRect(x-32,y-78,64,16);
-    ctx.fillStyle=PAL.N; ctx.fillRect(x-32,y-78,64,3); ctx.fillRect(x-32,y-65,64,3);
-    ctx.fillRect(x-22,y-78,4,16); ctx.fillRect(x+18,y-78,4,16);
-    ctx.fillStyle=PAL.t; ctx.fillRect(x-4,y-74,4,9);
+    // (Sprite ist 72 hoch, die Pranken liegen ganz oben bei y-72)
+    ctx.fillStyle=PAL.T; ctx.fillRect(x-34,y-86,68,16);
+    ctx.fillStyle=PAL.N; ctx.fillRect(x-34,y-86,68,3); ctx.fillRect(x-34,y-73,68,3);
+    ctx.fillRect(x-24,y-86,4,16); ctx.fillRect(x+20,y-86,4,16);
+    ctx.fillStyle=PAL.t; ctx.fillRect(x-4,y-82,4,9);
   } else if(apeT<64){ // greift zum Fass-Stapel rueber
     blit(SPR.kong,x-10,y,false);
-    ctx.fillStyle=PAL.P; ctx.fillRect(x-64,y-34,16,10); // Pranke am Stapel
+    ctx.fillStyle=PAL.P; ctx.fillRect(x-66,y-40,16,10); // Pranke am Stapel
   } else {
     blit(SPR.kong,x,y,false);
     // Brusttrommeln: Tatze wandert
     ctx.fillStyle=PAL.P;
-    if((apeAnim>>4)%2) ctx.fillRect(x-22,y-28,10,8);
-    else ctx.fillRect(x+12,y-28,10,8);
+    if((apeAnim>>4)%2) ctx.fillRect(x-24,y-34,10,8);
+    else ctx.fillRect(x+14,y-34,10,8);
   }
 }
 function drawStack(){ // Fass-Vorrat: liegende Faesser, Ringe von vorn (wie Original)
@@ -850,7 +956,8 @@ function drawOil(){ // Oelfass unten links, schluckt die Faesser
 }
 function drawGoal(){
   if(!princessPlaced) return; // im Intro traegt Kong sie noch
-  const x=224,y=106; // die entfuehrte Prinzessin wartet auf dem Podest
+  // die entfuehrte Prinzessin wartet mittig auf dem Ziel-Podest des Levels
+  const g=GIRDERS[7], x=Math.round((g.x1+g.x2)/2), y=g.y1;
   const cry=helpT>0; // waehrend des Rufs winkt sie hektisch und der Text steht fest
   blit((cry?(frame>>2):(frame>>4))%2 ? SPR.princessWave : SPR.princess, x, y, false);
   if(state!=='intro' && (cry || (frame>>5)%2)){ // blinkender Hilferuf wie im Original
@@ -862,6 +969,12 @@ function drawIntroLadder(){ // lange Leiter, die Kong im Intro hochklettert
   ctx.fillStyle='#3ed6ff';
   ctx.fillRect(202,170,2,322); ctx.fillRect(216,170,2,322);
   for(let y=173;y<488;y+=7) ctx.fillRect(202,y,16,2);
+}
+function drawFleeLadder(){ // Leiter ins naechste Stockwerk, oben aus dem Bild
+  const x=Math.round(flee.x);
+  ctx.fillStyle='#3ed6ff';
+  ctx.fillRect(x-8,-40,2,150); ctx.fillRect(x+6,-40,2,150);
+  for(let y=-38;y<108;y+=7) ctx.fillRect(x-8,y,16,2);
 }
 function drawPlayer(){
   const p=player, x=p.x, y=p.y, d=p.dir, flip=d<0;
@@ -934,8 +1047,14 @@ function drawLevel(){
          intro.phase==='climb' && (intro.fr>>3)%2===1);
     if(!princessPlaced) // Prinzessin unterm Arm bzw. beim Hochsetzen
       blit(SPR.princess, intro.px, Math.round(intro.py), false);
+  } else if(state==='flee'){ // Kong schnappt sie sich und flieht eine Ebene hoeher
+    if(flee.phase==='up') drawFleeLadder();
+    drawPlayer();
+    blit(flee.phase==='come'?SPR.kong:SPR.kongThrow, Math.round(flee.x),
+         Math.round(flee.y), flee.phase==='up' && (flee.fr>>3)%2===1);
+    if(!princessPlaced) blit(SPR.princess, Math.round(flee.px), Math.round(flee.py), false);
   } else {
-    drawApe();
+    if(state!=='rescue') drawApe(); // im Finale ist Kong ueber alle Berge
     for(const b of barrels) drawBarrel(b);
     for(const f of fires) drawFire(f);
     drawPlayer();
@@ -952,17 +1071,19 @@ function drawTitle(){
   ctx.fillStyle=PAL.R; ctx.font='bold 13px monospace';
   ctx.fillText('EIN VOLME3D RETRO-SPIEL',W/2,94);
   // Gorilla stemmt ein grosses Fass ueber den Kopf (Fass zuerst, Pranken druecken drauf)
-  ctx.fillStyle=PAL.T; ctx.fillRect(W/2-56,112,112,30);
-  ctx.fillStyle=PAL.N; ctx.fillRect(W/2-56,112,112,4); ctx.fillRect(W/2-56,138,112,4);
-  ctx.fillRect(W/2-38,112,5,30); ctx.fillRect(W/2+33,112,5,30);
-  ctx.fillStyle=PAL.t; ctx.fillRect(W/2-8,118,6,18);
+  ctx.fillStyle=PAL.T; ctx.fillRect(W/2-48,114,96,26);
+  ctx.fillStyle=PAL.N; ctx.fillRect(W/2-48,114,96,4); ctx.fillRect(W/2-48,136,96,4);
+  ctx.fillRect(W/2-32,114,5,26); ctx.fillRect(W/2+28,114,5,26);
+  ctx.fillStyle=PAL.t; ctx.fillRect(W/2-6,120,5,15);
   // Pranken des Wurf-Sprites (oberste Reihe) beruehren das Fass direkt
-  ctx.drawImage(SPR.kongThrow,W/2-80,142,160,128);
+  ctx.drawImage(SPR.kongThrow,W/2-66,140,132,114);
   ctx.fillStyle='#fff'; ctx.font='13px monospace';
-  ctx.fillText('Rette die Prinzessin vor dem Gorilla!',W/2,296);
-  ctx.fillStyle=PAL.C;
-  ctx.fillText('←→ laufen   ↑↓ Leiter   LEER springen',W/2,330);
-  ctx.fillText('Hammer einsammeln = Faesser zertruemmern',W/2,354);
+  ctx.fillText('Rette die Prinzessin vor dem Gorilla!',W/2,282);
+  ctx.fillStyle='#9aa';  ctx.font='12px monospace';
+  ctx.fillText('Er schleppt sie durch '+MAXLEVEL+' Ebenen hoch',W/2,302);
+  ctx.fillStyle=PAL.C; ctx.font='13px monospace';
+  ctx.fillText('←→ laufen   ↑↓ Leiter   LEER springen',W/2,334);
+  ctx.fillText('Hammer einsammeln = Faesser zertruemmern',W/2,356);
   ctx.fillText('M Ton an/aus   P Pause',W/2,378);
   if((stateT>>5)%2){ ctx.fillStyle=PAL.Y; ctx.font='bold 18px monospace';
     ctx.fillText(document.body.classList.contains('touch')?'TIPPEN ZUM START':'ENTER DRUECKEN',W/2,430); }
@@ -971,12 +1092,24 @@ function drawTitle(){
 }
 function drawWin(){
   drawLevel();
+  const px=GIRDERS[7] ? (GIRDERS[7].x1+GIRDERS[7].x2)/2 : 224;
   ctx.fillStyle='#ff4d5e'; ctx.font='bold 26px monospace'; ctx.textAlign='center';
-  ctx.fillText('♥',224,80);
+  ctx.fillText('♥',px,80);
   ctx.fillStyle='#fff'; ctx.font='bold 20px monospace';
-  ctx.fillText('GERETTET!',W/2,H/2-20);
+  ctx.fillText('EBENE '+level+' GESCHAFFT!',W/2,H/2-20);
   ctx.font='14px monospace';
   ctx.fillText('BONUS +'+bonus,W/2,H/2+8);
+}
+function drawRescue(){ // letztes Level: Kong ist weg, die Prinzessin ist frei
+  drawLevel();
+  const px=(GIRDERS[7].x1+GIRDERS[7].x2)/2;
+  ctx.textAlign='center'; ctx.fillStyle='#ff4d5e'; ctx.font='bold 22px monospace';
+  for(let i=0;i<3;i++) if(((stateT>>4)+i)%3) ctx.fillText('♥',px-26+i*26,78-((stateT+i*20)%40)*0.4);
+  ctx.fillStyle=PAL.Y; ctx.font='bold 24px monospace';
+  ctx.fillText('PRINZESSIN GERETTET!',W/2,H/2-40);
+  ctx.fillStyle='#fff'; ctx.font='bold 16px monospace';
+  ctx.fillText('ALLE '+MAXLEVEL+' EBENEN GESCHAFFT',W/2,H/2-12);
+  ctx.fillText('PUNKTE '+score,W/2,H/2+16);
 }
 function drawOver(){
   ctx.fillStyle='#ff4d5e'; ctx.font='bold 32px monospace'; ctx.textAlign='center';
@@ -992,6 +1125,7 @@ function render(){
   if(state==='title') drawTitle();
   else if(state==='over') drawOver();
   else if(state==='win') drawWin();
+  else if(state==='rescue') drawRescue();
   else{
     // Bildschirm wackelt kurz, wenn ein Traeger krummgetreten wird
     const shake = state==='intro' && intro && intro.phase==='bend' && intro.fr<12;
@@ -1057,6 +1191,9 @@ document.addEventListener('visibilitychange',()=>{ if(document.hidden&&state==='
 const DBG={
   god:false,
   get st(){ return {state,score,lives,level,bonus,frame,helpT,apeT,
+    maxLevel:MAXLEVEL, princessPlaced, flee:flee&&{...flee},
+    girders:GIRDERS.map(g=>({...g})), ladders:LADDERS.map(l=>({...l})),
+    hammers:hammers.map(h=>({...h})),
     mus:{i:MUS.i,step:MUS.stepDur()},
     player:{...player}, barrels:barrels.map(b=>({...b})),
     fires:fires.map(f=>({...f}))}; },
@@ -1068,6 +1205,8 @@ const DBG={
   key(k,v){ keys[k]=v?1:0; },
   win(){ reachGoal(); },
   kill(){ killPlayer(); },
+  goto(n){ level=Math.max(1,Math.min(MAXLEVEL,n)); resetRound(); state='play'; stateT=0; },
+  tp7(){ const g=GIRDERS[7]; player.x=(g.x1+g.x2)/2; player.y=g.y1; player.g=7; },
   seed(fn){ rng=fn||Math.random; },
   // Ton-Checks von Hand: _faDbg.unmute(); _faDbg.sfx('help')
   sfx(n,...a){ if(sfx[n]) sfx[n](...a); },
