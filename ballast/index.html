@@ -25,32 +25,66 @@
     position: fixed; inset: 0; display: none; pointer-events: none;
   }
   #touch.on { display: block; }
+  #turn { display: none; }
+  /* im Hochformat ist das Spielfeld nur noch ein Streifen - lieber drehen */
+  @media (orientation: portrait) and (pointer: coarse) {
+    #turn {
+      display: flex; position: fixed; inset: 0; z-index: 20;
+      background: #070a14; color: #cfe0ff;
+      align-items: center; justify-content: center; text-align: center;
+    }
+    #turn b { font-size: 20px; }
+    #turn p { font-size: 14px; color: #8fb6ff; margin-top: 8px; padding: 0 30px; }
+    #touch.on { display: none; }
+  }
+  /* Bedienknöpfe liegen flach in den unteren Ecken - Knoll wird von der
+     Kamera in der oberen Bildhälfte gehalten, dort greift kein Daumen hin. */
   .tb {
     position: absolute; pointer-events: auto;
-    border-radius: 50%; border: 2px solid rgba(150,190,255,.35);
-    background: rgba(30,50,90,.35); color: #dbe8ff;
+    border-radius: 50%; border: 1.5px solid rgba(150,190,255,.28);
+    background: rgba(24,40,74,.26); color: rgba(219,232,255,.8);
     display: flex; align-items: center; justify-content: center;
-    font-size: 26px; font-weight: 600;
-    backdrop-filter: blur(3px);
+    font-size: 24px; font-weight: 600;
+    backdrop-filter: blur(2px);
   }
-  .tb:active, .tb.hit { background: rgba(90,150,255,.5); }
-  #tl { left: 16px;  bottom: 22px;  width: 74px; height: 74px; }
-  #tr { left: 104px; bottom: 22px;  width: 74px; height: 74px; }
-  #td { left: 60px;  bottom: 106px; width: 62px; height: 62px; font-size: 22px; }
-  #tj { right: 20px; bottom: 26px;  width: 86px; height: 86px; }
-  #tq { right: 118px; bottom: 92px; width: 68px; height: 68px; font-size: 15px; }
-  #te { right: 30px; bottom: 124px; width: 62px; height: 62px; font-size: 15px; }
+  .tb:active, .tb.hit {
+    background: rgba(90,150,255,.45); color: #fff;
+    border-color: rgba(190,220,255,.6);
+  }
+  .tb.sm { font-size: 12px; letter-spacing: .04em; }
+  #tl { left: 10px;   bottom: 10px; width: 64px; height: 64px; }
+  #tr { left: 82px;   bottom: 10px; width: 64px; height: 64px; }
+  #td { left: 46px;   bottom: 80px; width: 52px; height: 52px; font-size: 19px; }
+  #tj { right: 12px;  bottom: 10px; width: 74px; height: 74px; }
+  #tq { right: 94px;  bottom: 10px; width: 62px; height: 62px; }
+  #te { right: 100px; bottom: 80px; width: 52px; height: 52px; }
+  #to { right: 14px;  top: 34px;    width: 46px; height: 46px; }
+  /* sehr flache Bildschirme: alles etwas kleiner und dichter an die Ecken */
+  @media (max-height: 420px) {
+    #tl { width: 56px; height: 56px; bottom: 6px; left: 8px; }
+    #tr { width: 56px; height: 56px; bottom: 6px; left: 70px; }
+    #td { width: 46px; height: 46px; bottom: 68px; left: 40px; }
+    #tj { width: 64px; height: 64px; bottom: 6px; right: 8px; }
+    #tq { width: 54px; height: 54px; bottom: 6px; right: 78px; }
+    #te { width: 46px; height: 46px; bottom: 68px; right: 84px; }
+  }
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="cv" width="960" height="432"></canvas></div>
+<div id="turn"><div>
+  <div style="font-size:44px;line-height:1.4">📱↻</div>
+  <b>Bitte quer halten</b>
+  <p>Ballast braucht die Breite – dreh dein Gerät.</p>
+</div></div>
 <div id="touch">
   <div class="tb" id="tl" data-k="left">◀</div>
   <div class="tb" id="tr" data-k="right">▶</div>
   <div class="tb" id="td" data-k="down">▼</div>
   <div class="tb" id="tj" data-k="jump">▲</div>
-  <div class="tb" id="tq" data-k="drop">ABWERFEN</div>
-  <div class="tb" id="te" data-k="pick">HOLEN</div>
+  <div class="tb sm" id="tq" data-k="drop">WERFEN</div>
+  <div class="tb sm" id="te" data-k="pick">HOLEN</div>
+  <div class="tb sm" id="to" data-k="look">KARTE</div>
 </div>
 <script>
 "use strict";
@@ -295,6 +329,39 @@ const LEVELS = [
 },
 ];
 
+// --- Kamera ---------------------------------------------------------------
+// Die Welt bleibt 40x18 Kacheln gross; die Kamera zoomt hinein, damit die
+// Figuren auf dem Handy erkennbar sind, und zeigt jedes Level einmal ganz.
+const ZOOM = 2.0, INTRO = 1.7;
+const CAM = { x: CW / 2, y: CH / 2, z: 1, tz: 1 };
+const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
+
+function updateCamera(dt) {
+  const p = G.player;
+  const overview = keys.look || G.introT > 0 || (G.state !== 'play' && G.state !== 'dead');
+  CAM.tz = overview ? 1 : ZOOM;
+  CAM.z += (CAM.tz - CAM.z) * Math.min(1, dt * 4.5);
+  const viewW = CW / CAM.z, viewH = CH / CAM.z;
+  let tx = CW / 2, ty = CH / 2;
+  if (!overview && p) {
+    tx = p.x;
+    ty = p.y + viewH * .14;          // Knoll sitzt in der oberen Bildhaelfte,
+  }                                   // damit die Daumen unten nichts verdecken
+  tx = clamp(tx, viewW / 2, CW - viewW / 2);
+  // unten etwas ueber den Levelrand hinausschauen duerfen: dort ist nur noch
+  // massiver Fels, dafuer rutscht Knoll aus dem Daumenbereich nach oben
+  ty = clamp(ty, viewH / 2, CH - viewH / 2 + (overview ? 0 : 36));
+  const f = Math.min(1, dt * (overview ? 4 : 9));
+  CAM.x += (tx - CAM.x) * f;
+  CAM.y += (ty - CAM.y) * f;
+}
+function camTransform() {
+  const sx = G.shake > .1 ? (Math.random() - .5) * G.shake : 0;
+  const sy = G.shake > .1 ? (Math.random() - .5) * G.shake : 0;
+  ctx.setTransform(CAM.z, 0, 0, CAM.z,
+    CW / 2 - CAM.x * CAM.z + sx, CH / 2 - CAM.y * CAM.z + sy);
+}
+
 // --- Canvas / Skalierung --------------------------------------------------
 const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
 function fit() {
@@ -442,11 +509,12 @@ function fanfare(up) {                      // kurzer Jingle ueber der Musik
 }
 
 // --- Eingabe --------------------------------------------------------------
-const keys = { left: 0, right: 0, up: 0, down: 0, jump: 0, drop: 0, pick: 0 };
+const keys = { left: 0, right: 0, up: 0, down: 0, jump: 0, drop: 0, pick: 0, look: 0 };
 const MAP = {
   ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
   ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down',
   Space: 'jump', KeyQ: 'drop', KeyE: 'pick',
+  KeyO: 'look', ShiftLeft: 'look', ShiftRight: 'look',
 };
 let jumpBuf = 0, dropEdge = false, pickEdge = false;
 
@@ -472,7 +540,8 @@ addEventListener('keyup', e => { const k = MAP[e.code]; if (k) keys[k] = 0; });
 
 // Touch
 const touchLayer = document.getElementById('touch');
-if (matchMedia('(pointer: coarse)').matches) touchLayer.classList.add('on');
+const TOUCH = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+if (TOUCH) touchLayer.classList.add('on');
 touchLayer.querySelectorAll('.tb').forEach(btn => {
   const k = btn.dataset.k;
   const on = e => {
@@ -498,7 +567,7 @@ const G = {
   li: 0, state: 'play', tiles: [], w: GW, h: GH,
   player: null, chunks: [], parts: [], enemies: [], doorsOpen: { A: false, B: false },
   plates: [], t: 0, deaths: 0, msg: 0, best: 0, shake: 0, hintT: 6, paused: false,
-  pending: 0, cardT: 0, torches: [],
+  pending: 0, cardT: 0, torches: [], introT: 0,
 };
 
 function tileAt(tx, ty) {
@@ -537,6 +606,8 @@ function loadLevel(i) {
     }
   }
   bakeTerrain();
+  G.introT = INTRO;                   // erst das ganze Level zeigen, dann heranfahren
+  CAM.z = 1; CAM.tz = 1; CAM.x = CW / 2; CAM.y = CH / 2;
   playSong(chapterSong(i));
   G.player = {
     x: sx, y: sy, vx: 0, vy: 0, mass: L.mass, onGround: 0, coyote: 0,
@@ -949,6 +1020,8 @@ function update(dt) {
   if (jumpBuf > 0) jumpBuf -= dt;
   if (G.player.coyote > 0 && !G.player.onGround) G.player.coyote -= dt;
   if (G.hintT > 0) G.hintT -= dt;
+  if (G.introT > 0) G.introT -= dt;
+  updateCamera(dt);
   if (G.msg > 0) G.msg -= dt;
   G.cardT += dt;
   if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 22);
@@ -992,12 +1065,23 @@ function rr(g, x, y, w, h, r) {
 // Fels, Bruchboden und Kristalle aendern sich fast nie - einmal in ein
 // Zwischenbild malen und pro Frame nur noch kopieren.
 const terrain = document.createElement('canvas');
-terrain.width = CW; terrain.height = CH;
+terrain.width = CW; terrain.height = CH + 3 * TS;   // drei Reihen Untergrund extra
 const tctx = terrain.getContext('2d');
 
 function bakeTerrain() {
-  tctx.clearRect(0, 0, CW, CH);
+  tctx.clearRect(0, 0, CW, terrain.height);
   G.torches = [];
+  // Untergrund unterhalb des Levels: der Berg hoert nicht am Rand auf
+  for (let y = GH; y < GH + 3; y++) for (let x = 0; x < GW; x++) {
+    const px = x * TS, py = y * TS, shade = .62 + hash(x, y) * .22;
+    tctx.fillStyle = `rgb(${Math.round(54 * shade)},${Math.round(70 * shade)},${Math.round(108 * shade)})`;
+    tctx.fillRect(px, py, TS, TS);
+    tctx.strokeStyle = 'rgba(10,15,30,.5)'; tctx.lineWidth = 1;
+    tctx.beginPath();
+    tctx.moveTo(px + hash(x + 7, y) * TS, py + 2);
+    tctx.lineTo(px + hash(x, y + 11) * TS, py + TS - 2);
+    tctx.stroke();
+  }
   for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) {
     const c = G.tiles[y][x], px = x * TS, py = y * TS;
     if (c === '#') {
@@ -1319,8 +1403,7 @@ function draw() {
   if (G.state === 'story') { drawStory(t); return; }
   if (G.state === 'end') { drawEnd(t); return; }
 
-  if (G.shake > .1) ctx.setTransform(1, 0, 0, 1, (Math.random() - .5) * G.shake, (Math.random() - .5) * G.shake);
-
+  camTransform();
   ctx.drawImage(terrain, 0, 0);
 
   // bewegte Kacheln: Wind, Tore, Platten, Ausgang
@@ -1423,7 +1506,6 @@ function draw() {
     ctx.fillRect(q.x, q.y, q.r, q.r);
   }
   ctx.globalAlpha = 1;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
 
   // Licht: erst warme Scheine addieren, dann sanft abdunkeln
   ctx.save();
@@ -1442,6 +1524,7 @@ function draw() {
     ctx.fillStyle = pg; ctx.fillRect(p.x - r, p.y - 10 - r, r * 2, r * 2);
   }
   ctx.restore();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   const vg = ctx.createRadialGradient(CW / 2, CH / 2, CH * .5, CW / 2, CH / 2, CH * 1.25);
   vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.42)');
   ctx.fillStyle = vg; ctx.fillRect(0, 0, CW, CH);
@@ -1472,9 +1555,12 @@ function drawTitle(t) {
   ctx.globalAlpha = blink;
   centered(['Leertaste drücken'], 330, 'bold 18px system-ui', '#e8f2ff');
   ctx.globalAlpha = 1;
-  centered([
+  centered(TOUCH ? [
+    'Links laufen · ▲ springen · WERFEN legt einen Klumpen ab (mit ▼ direkt unter sich)',
+    'HOLEN hebt ihn wieder auf · KARTE zeigt die ganze Ebene',
+  ] : [
     'Pfeile / WASD laufen · Leertaste springen · Q Klumpen abwerfen (mit ↓ direkt unter sich) · E aufheben',
-    'R Ebene neu · M Musik an/aus' + (G.best > 0 ? '  ·  N/P springt bis Ebene ' + (G.best + 1) : ''),
+    'O Übersicht · R Ebene neu · M Musik an/aus' + (G.best > 0 ? '  ·  N/P springt bis Ebene ' + (G.best + 1) : ''),
   ], 372, '13px system-ui', 'rgba(190,210,245,.75)', 19);
 }
 
@@ -1513,6 +1599,15 @@ function drawEnd(t) {
   ], 368, '14px system-ui', 'rgba(190,210,245,.8)', 20);
 }
 
+// Hinweise nennen Tasten - auf dem Handy heissen die Knöpfe anders
+function hintText(L) {
+  if (!TOUCH) return L.hint;
+  return L.hint
+    .replace('Pfeile/WASD laufen, Leertaste springen.', 'Pfeile links laufen, ▲ springt.')
+    .replace(/\bQ\b/g, 'WERFEN')
+    .replace(/\bE\b/g, 'HOLEN');
+}
+
 function drawHud() {
   const L = LEVELS[G.li], p = G.player;
   ctx.fillStyle = 'rgba(8,12,26,.6)'; ctx.fillRect(0, 0, CW, 26);
@@ -1540,10 +1635,11 @@ function drawHud() {
   ctx.textAlign = 'center';
   if (G.hintT > 0 && G.state === 'play') {
     ctx.globalAlpha = Math.min(1, G.hintT);
-    ctx.fillStyle = 'rgba(8,12,26,.8)'; ctx.fillRect(50, 30, CW - 100, 32);
-    ctx.strokeStyle = 'rgba(255,213,138,.25)'; ctx.strokeRect(50.5, 30.5, CW - 101, 31);
+    const bw = CW - (TOUCH ? 190 : 100), bx = TOUCH ? 50 : 50;
+    ctx.fillStyle = 'rgba(8,12,26,.8)'; ctx.fillRect(bx, 30, bw, 32);
+    ctx.strokeStyle = 'rgba(255,213,138,.25)'; ctx.strokeRect(bx + .5, 30.5, bw - 1, 31);
     ctx.fillStyle = '#d9e6ff'; ctx.font = '13px system-ui';
-    ctx.fillText(L.hint, CW / 2, 51);
+    ctx.fillText(hintText(L), bx + bw / 2, 51);
     ctx.globalAlpha = 1;
   }
   if (G.msg > 0 && G.msgText) {
@@ -1564,9 +1660,11 @@ function drawHud() {
     ctx.fillStyle = '#ffb0b8'; ctx.font = 'bold 22px Georgia, serif';
     ctx.fillText('Zerbrochen', CW / 2, CH / 2);
   }
-  ctx.textAlign = 'left';
-  ctx.font = '10px system-ui'; ctx.fillStyle = 'rgba(140,170,220,.45)';
-  ctx.fillText('Q abwerfen (↓+Q ablegen)   E aufheben   R neu   M Musik   N/P Ebene', 10, CH - 8);
+  if (!TOUCH) {                       // auf dem Handy verdecken die Knöpfe die Zeile
+    ctx.textAlign = 'left';
+    ctx.font = '10px system-ui'; ctx.fillStyle = 'rgba(140,170,220,.45)';
+    ctx.fillText('Q abwerfen (↓+Q ablegen)   E aufheben   O Übersicht   R neu   M Musik   N/P Ebene', 10, CH - 8);
+  }
 }
 
 // --- Hauptschleife --------------------------------------------------------
@@ -1588,6 +1686,7 @@ requestAnimationFrame(frame);
 
 // --- Test-Hook (headless) -------------------------------------------------
 window._AUD = AUD;
+window._CAM = CAM;
 window._actxState = () => actx ? actx.state : 'none';
 window._blDbg = {
   G, LEVELS, advance,

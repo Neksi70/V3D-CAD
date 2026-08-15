@@ -390,6 +390,37 @@ const { chromium } = require('playwright');
     ok(`Musik: Song "${mus.song}" laeuft, ${takte} Achtel in einer Sekunde geplant`);
   else bad('Musik laeuft nicht: ' + JSON.stringify({ m0, mus, takte }));
 
+  // 13. Kamera: Uebersicht beim Start, danach nah dran, Knoll immer im Bild
+  const cam = await page.evaluate(() => {
+    const d = window._blDbg, C = window._CAM, p = d.G.player;
+    const out = {};
+    d.level(4);                                         // "Kaltes Gewicht": Boden ohne Falle
+    d.step(30);
+    out.startZoom = +C.z.toFixed(2);                    // Introfahrt zeigt alles
+    d.G.introT = 0; d.step(240);
+    out.spielZoom = +C.z.toFixed(2);
+    const sichtbar = () => {
+      const vw = 960 / C.z, vh = 432 / C.z;
+      return p.x > C.x - vw / 2 && p.x < C.x + vw / 2 && p.y > C.y - vh / 2 && p.y < C.y + vh / 2;
+    };
+    // quer durch die Ebene laufen, Kamera muss folgen
+    d.key('right', 1);
+    let immerSichtbar = true;
+    for (let i = 0; i < 300; i++) { d.step(); if (!sichtbar()) immerSichtbar = false; }
+    out.zustand = d.G.state;
+    d.key('right', 0);
+    out.folgt = immerSichtbar;
+    out.figurAufSchirm = Math.round((14 + 2 * p.mass) * C.z);
+    d.key('look', 1); d.step(180); d.key('look', 0);
+    out.kartenZoom = +C.z.toFixed(2);
+    d.step(180);
+    out.zurueck = +C.z.toFixed(2);
+    return out;
+  });
+  if (cam.startZoom < 1.2 && cam.spielZoom > 1.8 && cam.folgt && cam.kartenZoom < 1.1 && cam.zurueck > 1.8 && cam.zustand === 'play')
+    ok(`Kamera: Start Übersicht (${cam.startZoom}x), Spiel ${cam.spielZoom}x, Knoll ${cam.figurAufSchirm}px, KARTE zoomt raus`);
+  else bad('Kamera stimmt nicht: ' + JSON.stringify(cam));
+
   if (errs.length) errs.forEach(e => bad(e));
   else ok('keine JS-Fehler');
 
