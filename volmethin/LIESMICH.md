@@ -26,6 +26,32 @@ Nicht auf dem Arbeitsrechner packen. Zwei Gruende, der zweite ist der wichtigere
 Ablauf je Programm: VM auf *Basis* zurueck -> vorher aufnehmen -> installieren ->
 nachher aufnehmen -> EXE bauen -> hochladen -> VM zurueck auf *Basis*.
 
+### Mit VMware Workstation automatisieren
+
+`werkzeuge\Neues-Paket.ps1` faehrt den ganzen Weg allein: zuruecksetzen, aufnehmen,
+installieren, aufnehmen, bauen, EXE abholen, hochladen, wieder zuruecksetzen.
+
+```
+.\Neues-Paket.ps1 -Vmx C:\VMs\Paketier\Paketier.vmx -Installer C:\Install\npp.exe `
+    -Name "Notepad++" -Version 8.6 -GastBenutzer kurs -GastPasswort geheim `
+    -SetupArgumente "/S" -Server http://vhs-server:8790 -Adminschluessel ABC123
+```
+
+Ohne `-SetupArgumente` oeffnet das Setup im VM-Fenster und das Skript wartet, bis du
+durchgeklickt hast - fuer alles, was keinen stillen Schalter kennt. `-VmBehalten` laesst
+die VM am Ende laufen, wenn etwas schiefging und du nachsehen willst.
+
+Vorher einmalig in der VM einrichten und in den Basis-Snapshot aufnehmen: VMware Tools,
+VolmeThin nach `C:\VolmeThin` und ein Konto, dessen Anmeldedaten das Skript benutzt.
+
+Zwei Eigenheiten, die dahinter stecken:
+
+- **`vmrun stop` scheitert, wenn die VM aus ist.** Das ist der Normalfall zu Beginn, darum
+  duerfen `stop` und `createDirectoryInGuest` fehlschlagen, ohne den Lauf abzubrechen.
+- **Jeder Schritt wandert als Batchdatei in den Gast**, nicht als lange Kommandozeile.
+  `cmd /c` entfernt bei mehreren Anfuehrungszeichen das erste und letzte der Zeile und
+  zerlegt damit genau die Befehle, die Pfade mit Leerzeichen und eine Umleitung enthalten.
+
 ### Die Basis muss dem Kurs-PC entsprechen
 
 Was in der Basis schon vorhanden ist, taucht im Diff nicht auf und fehlt im Paket. Also
@@ -139,6 +165,7 @@ Alles Uebrige wird an die gestartete Anwendung durchgereicht.
 | `src/VolmeThin.Agent` | Windows-Dienst auf den Kurs-PCs, holt zugewiesene Programme |
 | `tests/VolmeThin.Tests` | Testlaeufer fuer Paket, Overlay und Pfad-Makros |
 | `tests/server-test.sh` | Durchstich: bauen, hochladen, zuweisen, abholen, zurueckmelden |
+| `werkzeuge/Neues-Paket.ps1` | Kompletter Paketlauf in einer VMware-Workstation-VM |
 
 Paketformat: ZIP mit `package.json` und `files/00001.bin`. Inhaltsgleiche Dateien
 werden nur einmal gespeichert. In der Einzeldatei haengt dieses ZIP hinter dem Stub,
