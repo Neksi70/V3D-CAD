@@ -96,6 +96,11 @@ def erlaubter_pfad(pfad):
     return p
 
 
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 class Griff(BaseHTTPRequestHandler):
     server_version = "VolmeStick"
 
@@ -296,7 +301,16 @@ def main():
     ISO_ORDNER = os.path.expanduser(a.isos)
     AUSGABE_ORDNER = os.path.join(ISO_ORDNER, "fertig")
     os.makedirs(AUSGABE_ORDNER, exist_ok=True)
-    srv = ThreadingHTTPServer((a.host, a.port), Griff)
+    try:
+        srv = Server((a.host, a.port), Griff)
+    except OSError as e:
+        if e.errno == 98:
+            print(f"Port {a.port} ist schon belegt. Wer da lauscht:")
+            os.system(f"ss -ltnp 2>/dev/null | grep ':{a.port} ' || true")
+            print(f"Entweder den laufenden VolmeStick benutzen "
+                  f"(http://localhost:{a.port}) oder mit --port einen anderen waehlen.")
+            return 1
+        raise
     print(f"VolmeStick laeuft auf http://{a.host}:{a.port}  (ISOs: {ISO_ORDNER})")
     if not vstick._xorriso():
         print("Hinweis: xorriso fehlt - ISO-Bau nur eingeschraenkt. "
@@ -304,8 +318,9 @@ def main():
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        pass
+        print("\nBeendet.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
