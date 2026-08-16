@@ -29,22 +29,37 @@ Wer es doch aus dem Netz voll bedienen will — etwa ein Linux-Rechner, an dem d
 Stick steckt, ohne Bildschirm — startet mit `--fernzugriff`. Dann werden die
 Datenträger *dieses* Rechners angeboten.
 
-## ISO für VMware: die Antwort-ISO
+## ISO für VMware
 
-Für eine virtuelle Maschine braucht es weder Stick noch ISO-Umbau. Windows Setup
-sucht die `autounattend.xml` auf **jedem** angeschlossenen Laufwerk. VolmeStick
-erzeugt deshalb eine 60 KB kleine ISO, die nur diese Datei enthält:
+**Der einfache Weg — eine einzige Datei:**
+
+```bash
+python3 vstick.py iso Win11.iso -o Win11-v3d.iso --benutzer kurs
+```
+
+Die Antworten werden in eine **Kopie** der Windows-ISO eingehängt: Die Datei wird
+ans Ende angefügt und nur das Wurzelverzeichnis umgebogen. Die Startsätze (BIOS
+und UEFI) bleiben dabei unangetastet, weil sie auf Sektoren zeigen, die sich nicht
+bewegen. In VMware bindest du diese eine ISO ein — sonst nichts.
+
+Das braucht **kein xorriso** (das es unter Windows nicht gibt) und dauert nur so
+lange wie das Kopieren. Passt der neue Eintrag nicht mehr in den vorhandenen
+Verzeichnisplatz, zieht das Wurzelverzeichnis ans Ende um; dann werden auch seine
+`.`- und `..`-Einträge sowie die der Unterverzeichnisse mitgezogen — sonst sähen
+Leser, die diesen Einträgen folgen (xorriso tut das), noch den alten Stand.
+
+Mit `--werkzeug xorriso` lässt sich die ISO stattdessen komplett neu schreiben.
+
+**Die kleine Beilage — wenn die Original-ISO unangetastet bleiben soll:**
 
 ```bash
 python3 vstick.py antwort -o autounattend.iso --benutzer kurs
 ```
 
-In VMware die Original-ISO wie gewohnt einbinden und ein **zweites CD-Laufwerk**
-mit `autounattend.iso` hinzufügen — fertig. Die große ISO bleibt unangetastet,
-und es braucht kein `xorriso` (das es unter Windows ohnehin nicht gibt).
-
-Den kompletten Umbau der großen ISO gibt es weiterhin (`vstick.py iso`), er
-lohnt sich aber vor allem, wenn das Medium ohne Zweitlaufwerk auskommen muss.
+Ergibt eine 60 KB kleine ISO mit nur der `autounattend.xml`. In VMware als
+**zweites** CD-Laufwerk neben die Windows-ISO hängen — Windows Setup sucht die
+Datei auf jedem Laufwerk. Diese Variante gibt es auch auf der Startseite des
+Servers, weil dabei nichts hochgeladen werden muss.
 
 > **Nicht in den Tailscale-Funnel legen.** Das Werkzeug löscht Datenträger.
 > Heimnetz/Tailnet reicht.
@@ -160,6 +175,7 @@ Ergebnis: `windows\dist\VolmeStick.exe`, fordert beim Start Administratorrechte 
 | `linuxisos.py` | löst die Downloadadressen von zehn Linux-Distributionen live auf |
 | `bestand.py` | erkennt, was schon da ist und was ein echter Versionswechsel wäre |
 | `isowriter.py` | schreibt die kleine Antwort-ISO (ISO9660 + Joliet, reines Python) |
+| `isopatch.py` | hängt die autounattend.xml in eine bestehende ISO ein, ohne sie neu zu bauen |
 | `web/verteil.html` | Startseite für Aufrufe aus dem Netz |
 | `server.py`, `web/ui.html` | Weboberfläche |
 | `windows/vstick_gui.pyw` | Windows-Fenster |

@@ -29,6 +29,7 @@ from iso9660 import Iso, IsoFehler          # noqa: E402
 import wim                                  # noqa: E402
 import unattend                             # noqa: E402
 import isowriter                            # noqa: E402
+import isopatch                             # noqa: E402
 
 IST_WINDOWS = platform.system() == "Windows"
 GIB = 1024 ** 3
@@ -105,46 +106,65 @@ def _xorriso():
     return shutil.which("xorriso")
 
 
-def baue_iso(quelle, ziel, optionen=None, fortschritt=_still, volid=None):
-    """Kopie der ISO mit eingelegter autounattend.xml. Startfaehigkeit
-    (BIOS + UEFI) wird 1:1 uebernommen - deshalb xorriso mit 'replay'."""
+def baue_iso(quelle, ziel, optionen=None, fortschritt=_still, volid=None,
+             werkzeug="auto"):
+    """Fertige ISO mit eingelegter autounattend.xml - eine einzige Datei, die
+    in VMware sofort startet.
+
+    werkzeug  auto    - einhaengen (ueberall lauffaehig), sonst xorriso
+              patch   - nur einhaengen
+              xorriso - ISO komplett neu schreiben (nur Linux)
+
+    Der Regelweg haengt die Datei in eine Kopie der ISO ein, statt sie neu zu
+    bauen: das braucht kein xorriso (das es unter Windows nicht gibt), dauert
+    nur so lange wie das Kopieren und laesst die Startsaetze unangetastet.
+    """
     quelle = os.path.abspath(quelle)
     ziel = os.path.abspath(ziel)
     if quelle == ziel:
         raise Fehler("Quelle und Ziel duerfen nicht dieselbe Datei sein")
     info = analysiere(quelle)
     xml = unattend.baue_unattend(optionen)
+    label = (volid or info["volid"] or "V3D_WIN")[:32]
+
+    if werkzeug in ("auto", "patch"):
+        try:
+            isopatch.lege_datei_bei(quelle, ziel,
+                                    {"AUTOUNATTEND.XML": xml.encode("utf-8")},
+                                    fortschritt)
+            return {"ziel": ziel, "groesse": os.path.getsize(ziel),
+                    "volid": info["volid"], "unattend": xml, "weg": "eingehaengt"}
+        except isopatch.PatchFehler as e:
+            if werkzeug == "patch" or not _xorriso():
+                raise Fehler(f"Einhaengen fehlgeschlagen: {e}")
+            fortschritt(5, f"Einhaengen ging nicht ({e}) - baue neu mit xorriso")
+            if os.path.exists(ziel):
+                os.remove(ziel)
+
+    if not _xorriso():
+        raise Fehler("Fuer diesen Weg wird xorriso gebraucht: sudo apt install xorriso")
 
     tmp = tempfile.mkdtemp(prefix="vstick-")
     xml_datei = os.path.join(tmp, "autounattend.xml")
     with open(xml_datei, "w", encoding="utf-8") as f:
         f.write(xml)
-    label = (volid or info["volid"] or "V3D_WIN")[:32]
-
     try:
-        xr = _xorriso()
-        if xr:
-            fortschritt(5, "Startdateien uebernehmen ...")
-            befehl = [
-                xr, "-indev", quelle, "-outdev", ziel,
-                "-boot_image", "any", "replay",
-                "-volid", label,
-                "-overwrite", "on",
-                "-map", xml_datei, "/autounattend.xml",
-                "-map", xml_datei, "/AUTOUNATTEND.XML",
-                "-commit", "-end",
-            ]
-            _lauf_mit_fortschritt(befehl, fortschritt, info["groesse"], ziel)
-        else:
-            _baue_iso_ohne_xorriso(quelle, ziel, xml_datei, label, info, fortschritt)
+        fortschritt(5, "Startdateien uebernehmen ...")
+        befehl = [_xorriso(), "-indev", quelle, "-outdev", ziel,
+                  "-boot_image", "any", "replay", "-volid", label,
+                  "-overwrite", "on",
+                  "-map", xml_datei, "/autounattend.xml",
+                  "-map", xml_datei, "/AUTOUNATTEND.XML",
+                  "-commit", "-end"]
+        _lauf_mit_fortschritt(befehl, fortschritt, info["groesse"], ziel)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     if not os.path.isfile(ziel) or os.path.getsize(ziel) < 1024:
         raise Fehler("ISO wurde nicht geschrieben")
     fortschritt(100, "Fertig")
-    return {"ziel": ziel, "groesse": os.path.getsize(ziel),
-            "volid": label, "unattend": xml}
+    return {"ziel": ziel, "groesse": os.path.getsize(ziel), "volid": label,
+            "unattend": xml, "weg": "neu gebaut"}
 
 
 def _lauf_mit_fortschritt(befehl, fortschritt, erwartet, ziel):

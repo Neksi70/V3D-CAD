@@ -102,8 +102,10 @@ class Anwendung(tk.Tk):
             .pack(side="left", padx=6)
         ttk.Button(w, text="Prüfsummen", command=self.pruefsummen)\
             .pack(side="left")
-        ttk.Button(w, text="Antwort-ISO für VMware", command=self.antwort_iso)\
+        ttk.Button(w, text="ISO für VMware bauen", command=self.iso_bauen)\
             .pack(side="left", padx=6)
+        ttk.Button(w, text="nur Antwort-ISO", command=self.antwort_iso)\
+            .pack(side="left")
 
         self.info_feld = tk.Text(rahmen, height=6, wrap="word", state="disabled",
                                  background="#f4f6f9", relief="flat")
@@ -370,6 +372,24 @@ class Anwendung(tk.Tk):
             lambda: vstick.pruefsummen(self.iso, self._melden),
             lambda e, f: self._fertig(e, f, "Prüfsummen: " + (
                 "\n".join(f"{k.upper()} {v}" for k, v in (e or {}).items()))))
+
+    def iso_bauen(self):
+        """Eine einzige fertige ISO: die Antworten werden in eine Kopie der
+        Windows-ISO eingehaengt. Kein Zweitlaufwerk in der VM noetig."""
+        if not self.iso:
+            return messagebox.showinfo("VolmeStick", "Erst eine Windows-ISO auswählen.")
+        grund = os.path.splitext(os.path.basename(self.iso))[0]
+        ziel = filedialog.asksaveasfilename(
+            title="Fertige ISO speichern", defaultextension=".iso",
+            initialfile=grund + "-v3d.iso", initialdir=self.zielordner,
+            filetypes=[("ISO-Abbild", "*.iso")])
+        if not ziel:
+            return
+        self.protokoll.delete("1.0", "end")
+        self._im_hintergrund(
+            lambda: vstick.baue_iso(self.iso, ziel, self.wue, self._melden),
+            lambda e, f: self._fertig(
+                e, f, "ISO fertig – in VMware als CD-Laufwerk einbinden."))
 
     def antwort_iso(self):
         """Winzige ISO nur mit der autounattend.xml - fuer virtuelle Maschinen
