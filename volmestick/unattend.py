@@ -248,8 +248,10 @@ def _oobe(o, arch):
     if o["bypass_konto"]:
         oobe += "        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>\n"
     if o["express_einstellungen"]:
-        oobe += ("        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>\n"
-                 "        <HideLocalAccountScreen>false</HideLocalAccountScreen>\n")
+        # HideLocalAccountScreen wird bewusst NICHT gesetzt: Rufus schreibt das
+        # Element ebenfalls nicht, und ein "false" blendet die Kontoseite
+        # ausdruecklich ein - das Gegenteil dessen, was der Haken verspricht.
+        oobe += "        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>\n"
     if o["keine_datenerhebung"]:
         # 3 = alle Datenschutz-Schalter auf "aus", Fragen entfallen
         oobe += "        <ProtectYourPC>3</ProtectYourPC>\n"
@@ -275,13 +277,12 @@ def _oobe(o, arch):
             "            </Password>\n"
             "          </LocalAccount>\n"
             "        </LocalAccounts>\n      </UserAccounts>\n")
-        if not o["passwort"]:
-            # Ohne Kennwort meldet sich der erste Start von selbst an
-            shell += ("      <AutoLogon>\n"
-                      f"        <Username>{_t(o['benutzer'])}</Username>\n"
-                      "        <Enabled>true</Enabled>\n"
-                      "        <LogonCount>1</LogonCount>\n"
-                      "      </AutoLogon>\n")
+        # KEIN AutoLogon-Block: Microsoft weist ausdruecklich darauf hin, dass
+        # eine in der Antwortdatei vorgegebene Auto-Anmeldung das Betreten der
+        # Ersteinrichtung verhindern kann - und dann fragt die OOBE trotz
+        # hinterlegtem lokalen Konto wieder nach einem Microsoft-Konto.
+        # Rufus setzt aus demselben Grund keinen AutoLogon. Ein Konto ohne
+        # Kennwort meldet sich beim ersten Start ohnehin ohne Eingabe an.
         if o["passwort_aendern"]:
             o["extra_befehle"] = list(o["extra_befehle"]) + [
                 f'net user "{_t(o["benutzer"])}" /logonpasswordchg:yes',
