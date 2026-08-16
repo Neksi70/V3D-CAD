@@ -75,7 +75,12 @@ Windows Setup liest sie von selbst. Kein Eingriff ins Abbild, also auch keine
 kaputte Signatur.
 
 * Hardware-Sperren aus: TPM 2.0, Secure Boot, RAM, CPU, Datenträger
-* Kein Microsoft-Konto, Installation ohne Internet (BypassNRO)
+* Kein Microsoft-Konto: Dafür wird ein **lokales Konto** in die Antwortdatei
+  geschrieben — seit Windows 11 24H2 ist das der einzige Weg, der noch wirkt.
+  Der früher übliche Schalter `BypassNRO` wird zusätzlich gesetzt, genügt aber
+  allein nicht mehr. Das Kennwort wird dabei so kodiert, wie Microsoft es
+  erwartet (UTF-16LE + „Password", Base64) — eine leere Klartextangabe lässt
+  das Anlegen des Kontos scheitern, und dann fragt die Einrichtung doch wieder
 * Datenerhebung aus: Telemetrie, Werbe-ID, vorgeschlagene Apps, Datenschutzfragen
 * Keine automatische BitLocker-Verschlüsselung
 * Aufgeräumtes Windows: Copilot, OneDrive-Zwang, Outlook/Dev-Home-Nachinstallation,

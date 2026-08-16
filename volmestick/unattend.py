@@ -12,6 +12,7 @@
 #      Die Hardware-Sperren MUESSEN in der Phase windowsPE gesetzt werden,
 #      denn danach hat das Setup schon geprueft und bricht ab.
 
+import base64
 import xml.sax.saxutils as _sx
 
 NS = "urn:schemas-microsoft-com:unattend"
@@ -54,6 +55,14 @@ STANDARD = {
 
 def _t(x):
     return _sx.escape(str(x))
+
+
+def kennwort_kodiert(kennwort):
+    """Microsofts Kodierung: an das Kennwort wird der Name des XML-Elements
+    ("Password") angehaengt, das Ganze als UTF-16LE in Base64. Ein leeres
+    Kennwort ergibt genau den Wert, den auch Rufus einsetzt - anders als eine
+    leere Klartextangabe, an der das Anlegen des Kontos scheitern kann."""
+    return base64.b64encode((kennwort + "Password").encode("utf-16-le")).decode()
 
 
 def _komponente(name, arch, inhalt):
@@ -250,31 +259,33 @@ def _oobe(o, arch):
     shell += f"      <TimeZone>{_t(o['zeitzone'])}</TimeZone>\n"
 
     if o["benutzer"]:
-        pw = _t(o["passwort"])
+        # Der wirksame Hebel gegen den Microsoft-Konto-Zwang: Steht in der
+        # Antwortdatei ein lokales Konto, ueberspringt die Ersteinrichtung die
+        # Kontoseite - auch mit angeschlossenem Netzwerk. Der frueher uebliche
+        # Schalter BypassNRO allein genuegt seit Windows 11 24H2 nicht mehr.
         shell += (
             "      <UserAccounts>\n        <LocalAccounts>\n"
             '          <LocalAccount wcm:action="add">\n'
             f"            <Name>{_t(o['benutzer'])}</Name>\n"
             f"            <DisplayName>{_t(o['benutzer'])}</DisplayName>\n"
-            "            <Group>Administrators</Group>\n"
+            "            <Group>Administrators;Power Users</Group>\n"
             "            <Password>\n"
-            f"              <Value>{pw}</Value>\n"
-            "              <PlainText>true</PlainText>\n"
+            f"              <Value>{kennwort_kodiert(o['passwort'])}</Value>\n"
+            "              <PlainText>false</PlainText>\n"
             "            </Password>\n"
             "          </LocalAccount>\n"
             "        </LocalAccounts>\n      </UserAccounts>\n")
-        if o["passwort_aendern"]:
-            # wie bei Rufus: Konto anlegen, Kennwort muss beim ersten
-            # Anmelden gesetzt werden
-            o["extra_befehle"] = list(o["extra_befehle"]) + [
-                f'net user "{_t(o["benutzer"])}" /logonpasswordchg:yes']
         if not o["passwort"]:
-            # Ohne Passwort laeuft die Anmeldung sonst in eine leere Maske
+            # Ohne Kennwort meldet sich der erste Start von selbst an
             shell += ("      <AutoLogon>\n"
                       f"        <Username>{_t(o['benutzer'])}</Username>\n"
                       "        <Enabled>true</Enabled>\n"
                       "        <LogonCount>1</LogonCount>\n"
                       "      </AutoLogon>\n")
+        if o["passwort_aendern"]:
+            o["extra_befehle"] = list(o["extra_befehle"]) + [
+                f'net user "{_t(o["benutzer"])}" /logonpasswordchg:yes',
+                "net accounts /maxpwage:unlimited"]
 
     befehle = list(o["extra_befehle"])
     if o["dateiendungen"]:
@@ -315,6 +326,10 @@ def baue_unattend(optionen=None, arch="amd64"):
         raise ValueError(f"Unbekannte Architektur: {arch}")
     o = dict(STANDARD)
     o.update(optionen or {})
+    if o["bypass_konto"] and not str(o.get("benutzer", "")).strip():
+        # Ohne lokales Konto in der Antwortdatei besteht Windows 11 ab 24H2 auf
+        # einem Microsoft-Konto. Lieber ein sinnvoller Name als eine Sackgasse.
+        o["benutzer"] = "Benutzer"
     for k in ("bypass_hardware", "bypass_konto", "bypass_netzwerk",
               "keine_datenerhebung", "kein_bitlocker", "eula_ueberspringen",
               "sprachauswahl_ueberspringen", "express_einstellungen"):
@@ -342,7 +357,8 @@ def zusammenfassung(optionen=None):
     if o["bypass_hardware"]:
         z.append("Laeuft auch ohne TPM 2.0, Secure Boot und mit wenig RAM/alter CPU")
     if o["bypass_konto"]:
-        z.append("Kein Microsoft-Konto noetig")
+        z.append("Kein Microsoft-Konto noetig (dafuer wird ein lokales Konto "
+                 "angelegt - ohne das besteht Windows 11 seit 24H2 darauf)")
     if o["bypass_netzwerk"]:
         z.append("Installation ohne Internetverbindung moeglich")
     if o["benutzer"]:
