@@ -193,7 +193,7 @@ FERN_GESPERRT = {"/api/stick", "/api/blockpruefung", "/api/geraete"}
 FERNZUGRIFF = False
 
 
-FASSUNG = "1.4"
+FASSUNG = "1.5"
 
 FAVICON = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
@@ -243,7 +243,10 @@ pause
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # Unter Windows heisst SO_REUSEADDR etwas anderes als unter Unix: dort
+    # duerfte sich ein zweiter Dienst auf denselben Port setzen, und die
+    # Anfragen landen abwechselnd mal hier, mal dort.
+    allow_reuse_address = os.name != "nt"
 
     def handle_error(self, request, client_address):
         # Die Vorlage schreibt hier stur auf sys.stderr - ohne Konsolenfenster

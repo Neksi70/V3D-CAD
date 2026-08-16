@@ -60,23 +60,67 @@ def belegt(port):
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
+def antwortet(port):
+    """Laeuft dort ein GESUNDES VolmeStick? Liefert die Fassung oder None.
+    Wichtig, weil eine haengende aeltere Fassung den Port belegt halten kann,
+    ohne noch zu antworten - der Browser zeigt dann eine leere Seite."""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/werkzeuge",
+                                    timeout=3) as a:
+            return json.loads(a.read().decode("utf-8")).get("fassung", "?")
+    except Exception:
+        return None
+
+
+def freier_port(ab=PORT, bis=PORT + 12):
+    """Per bind pruefen, nicht per Verbindungsversuch: ein haengendes Programm
+    nimmt womoeglich keine Verbindung mehr an, haelt den Port aber weiter."""
+    for p in range(ab, bis):
+        probe = socket.socket()
+        try:
+            probe.bind(("127.0.0.1", p))
+            return p
+        except OSError:
+            continue
+        finally:
+            probe.close()
+    return None
+
+
 def main():
     protokoll_umlenken()
     if getattr(sys, "frozen", False):
         os.chdir(os.path.dirname(sys.executable))
 
+    import webbrowser
+    port = PORT
     if belegt(PORT):
-        # Schon gestartet - dann einfach die vorhandene Oberflaeche zeigen
-        import webbrowser
-        webbrowser.open(f"http://localhost:{PORT}/")
-        meldung(f"VolmeStick läuft bereits.\n\n"
-                f"Die Oberfläche wurde im Browser geöffnet:\n"
-                f"http://localhost:{PORT}")
-        return 0
+        fassung = antwortet(PORT)
+        if fassung:
+            # Alles in Ordnung - einfach die laufende Oberflaeche zeigen
+            webbrowser.open(f"http://localhost:{PORT}/")
+            meldung(f"VolmeStick läuft bereits (Fassung {fassung}).\n\n"
+                    f"Die Oberfläche wurde im Browser geöffnet:\n"
+                    f"http://localhost:{PORT}")
+            return 0
+        port = freier_port(PORT + 1)
+        if port is None:
+            meldung("Auf Port 8775 hängt ein Programm, das nicht mehr antwortet, "
+                    "und es ist kein freier Port zu finden.\n\n"
+                    "Bitte im Task-Manager alle Einträge „VolmeStick.exe“ beenden "
+                    "und noch einmal starten.", "VolmeStick", 0x10)
+            return 1
+        meldung(f"Auf Port {PORT} hängt noch ein Programm, das nicht mehr "
+                f"antwortet – vermutlich eine ältere Fassung von VolmeStick.\n\n"
+                f"VolmeStick startet deshalb auf Port {port}.\n\n"
+                f"Aufräumen: im Task-Manager die alten Einträge "
+                f"„VolmeStick.exe“ beenden.")
 
     import server
     if len(sys.argv) == 1:
-        sys.argv += ["--host", "127.0.0.1", "--port", str(PORT), "--browser"]
+        sys.argv += ["--host", "127.0.0.1", "--port", str(port), "--browser"]
     return server.main()
 
 
