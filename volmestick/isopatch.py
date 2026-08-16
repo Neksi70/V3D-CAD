@@ -12,7 +12,10 @@
 #
 # Wichtig: Die Startsaetze (El Torito, BIOS + UEFI) werden nicht angefasst - sie
 # verweisen auf Sektoren, die unveraendert an ihrem Platz bleiben. Genau deshalb
-# bleibt die ISO startfaehig.
+# bleibt die ISO startfaehig. Aus demselben Grund wird auch das UDF nur ergaenzt
+# und nicht neu geschrieben: Ein frueherer Anlauf hat die ISO dafuer komplett neu
+# gebaut (pycdlib) - danach war die Antwortdatei zwar sichtbar, das Abbild aber
+# nicht mehr startfaehig.
 
 import io
 import os
@@ -143,82 +146,244 @@ def hat_udf(pfad):
         return False
 
 
-def _kurzname(name):
-    """8.3-Form fuer den ISO9660-Teil (dort sind lange Namen nicht sicher)."""
-    grund, _, endung = name.rpartition(".")
-    grund = (grund or name)[:8].upper()
-    endung = endung[:3].upper()
-    return f"{grund}.{endung};1" if endung else f"{grund};1"
+# ------------------------------------------------------------------ UDF
+# Windows liest bei diesen Abbildern ausschliesslich das UDF-Dateisystem.
+# Frueher wurde dafuer die ganze ISO mit pycdlib neu geschrieben - dabei
+# verschieben sich saemtliche Adressen, und das Abbild startet hinterher nicht
+# mehr. Deshalb wird auch das UDF nur noch an Ort und Stelle ergaenzt:
+# Dateiinhalt und Dateieintrag hinten anhaengen, im Wurzelverzeichnis einen
+# Eintrag einfuegen. Kein bestehender Sektor wandert.
+
+def _crc16(daten):
+    """CRC-16/CCITT, wie ihn UDF fuer jeden Deskriptor verlangt."""
+    crc = 0
+    for b in daten:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
 
 
-def _namen_wie_microsoft(pycdlib):
-    """pycdlib schreibt Dateinamen im UDF als 8-Bit-Zeichen, sobald sie sich so
-    darstellen lassen. Erlaubt ist das, aber Microsoft legt in seinen ISOs alle
-    Namen als UTF-16BE ab. Wir ziehen nach, damit unser Eintrag sich in nichts
-    von seinen Nachbarn unterscheidet - beim Suchen nach der Antwortdatei soll
-    es keine Unterschiede geben, an denen etwas haengen bleiben kann."""
-    from pycdlib import udf as _udf
-    klasse = _udf.UDFFileIdentifierDescriptor
-    if getattr(klasse, "_volmestick", False):
-        return
-    urspruenglich = klasse.new
-
-    def neu(self, isdir, isparent, name, parent):
-        urspruenglich(self, isdir, isparent, name, parent)
-        if not isparent and getattr(self, "encoding", "") == "latin-1":
-            self.fi = self.fi.decode("latin-1").encode("utf-16_be")
-            self.encoding = "utf-16_be"
-            self.len_fi = len(self.fi) + 1
-
-    klasse.new = neu
-    klasse._volmestick = True
+def _udf_etikett_setzen(puffer, versatz, lba, crc_laenge):
+    """Erneuert Pruefsumme und CRC eines Deskriptor-Etiketts. Beides muss
+    stimmen, sonst verwirft Windows die Struktur wortlos."""
+    # Etikett-Aufbau: 0 Kennung, 2 Fassung, 4 Pruefsumme, 5 frei, 6 Seriennummer,
+    # 8 CRC, 10 CRC-Laenge, 12 Lage. Die beiden letzten Felder sind leicht zu
+    # verwechseln - schreibt man sie vier Bytes zu weit hinten, landen sie in den
+    # Nutzdaten und der Deskriptor ist unbrauchbar.
+    struct.pack_into("<H", puffer, versatz + 10, crc_laenge)
+    struct.pack_into("<I", puffer, versatz + 12, lba)
+    crc = _crc16(bytes(puffer[versatz + 16:versatz + 16 + crc_laenge]))
+    struct.pack_into("<H", puffer, versatz + 8, crc)
+    puffer[versatz + 4] = 0
+    puffer[versatz + 4] = sum(puffer[versatz:versatz + 16]) % 256
 
 
-def _mit_udf(quelle, ziel, dateien, fortschritt=None):
-    """Einhaengen in ISO9660, Joliet UND UDF. Dafuer wird die ISO neu
-    geschrieben - anders kommt man an die UDF-Strukturen nicht heran."""
-    try:
-        import pycdlib
-    except ImportError:
-        raise PatchFehler(
-            "Diese ISO benutzt UDF - dafuer wird die Bibliothek pycdlib "
-            "gebraucht, die hier fehlt.")
-    _namen_wie_microsoft(pycdlib)
-    iso = pycdlib.PyCdlib()
-    try:
-        iso.open(quelle)
-        joliet = iso.has_joliet()
-        for name, inhalt in dateien.items():
-            klein = name.lower()
-            for weg in ("/" + klein, "/" + name):
-                try:
-                    iso.rm_file(udf_path=weg)      # eine vorhandene ersetzen
-                except Exception:
-                    pass
-            iso.add_fp(io.BytesIO(inhalt), len(inhalt), "/" + _kurzname(name),
-                       joliet_path=("/" + klein) if joliet else None,
-                       udf_path="/" + klein)
-        gesamt = [0]
+def _udf_wegweiser(f):
+    """Anker -> Partition, Dateisatz, Wurzelverzeichnis. Liefert die Orte,
+    an denen spaeter geschrieben wird."""
+    f.seek(256 * SEKTOR)
+    anker = f.read(SEKTOR)
+    if struct.unpack_from("<H", anker, 0)[0] != 2:
+        raise PatchFehler("UDF-Anker bei Sektor 256 nicht gefunden")
+    haupt_laenge, haupt_lba = struct.unpack_from("<II", anker, 16)
 
-        def melden(fertig, alles, _egal=None):
-            if fortschritt and alles:
-                gesamt[0] = fertig
-                fortschritt(min(99, int(100 * fertig / alles)),
-                            f"ISO schreiben: {fertig / 1024**3:.2f} / {alles / 1024**3:.2f} GB")
+    partition = None
+    fsd = None
+    for i in range(haupt_laenge // SEKTOR):
+        f.seek((haupt_lba + i) * SEKTOR)
+        d = f.read(SEKTOR)
+        kennung = struct.unpack_from("<H", d, 0)[0]
+        if kennung == 0:
+            break
+        if kennung == 5:            # Partitionsbeschreibung
+            start, laenge = struct.unpack_from("<II", d, 188)
+            partition = {"lba": haupt_lba + i, "start": start, "laenge": laenge}
+        elif kennung == 6:          # Logischer Datentraeger
+            fsd = struct.unpack_from("<II", d, 248)[1]
+    if partition is None or fsd is None:
+        raise PatchFehler("UDF-Beschreibungen unvollstaendig")
 
-        iso.write(ziel, progress_cb=melden)
-    except PatchFehler:
-        raise
-    except Exception as e:
-        raise PatchFehler(f"UDF-Einhaengen fehlgeschlagen: {e}")
-    finally:
-        try:
-            iso.close()
-        except Exception:
-            pass
-    if fortschritt:
-        fortschritt(100, "Fertig")
-    return {"ziel": ziel, "groesse": os.path.getsize(ziel), "weg": "udf"}
+    f.seek((partition["start"] + fsd) * SEKTOR)
+    dateisatz = f.read(SEKTOR)
+    if struct.unpack_from("<H", dateisatz, 0)[0] != 256:
+        raise PatchFehler("UDF-Dateisatz nicht gefunden")
+    wurzel_icb = struct.unpack_from("<II", dateisatz, 400)[1]
+    return partition, wurzel_icb
+
+
+def _udf_dateieintrag_lesen(f, partition, icb_lba):
+    """Liest einen Dateieintrag und zerlegt ihn so weit, wie wir ihn brauchen."""
+    f.seek((partition["start"] + icb_lba) * SEKTOR)
+    roh = bytearray(f.read(SEKTOR))
+    kennung = struct.unpack_from("<H", roh, 0)[0]
+    if kennung not in (261, 266):
+        raise PatchFehler(f"Kein UDF-Dateieintrag bei {icb_lba} (Tag {kennung})")
+    kopf = 176 if kennung == 261 else 216
+    ea_laenge, ad_laenge = struct.unpack_from("<II", roh, kopf - 8)
+    return {"roh": roh, "tag": kennung, "kopf": kopf, "lba": icb_lba,
+            "ea_laenge": ea_laenge, "ad_laenge": ad_laenge,
+            "ad_versatz": kopf + ea_laenge}
+
+
+def _udf_fids(daten, laenge):
+    """Zerlegt einen Verzeichnisinhalt in seine Eintraege."""
+    aus, pos = [], 0
+    while pos + 38 <= laenge:
+        namenlaenge = daten[pos + 19]
+        iu_laenge = struct.unpack_from("<H", daten, pos + 36)[0]
+        satz = 38 + iu_laenge + namenlaenge
+        satz += (4 - satz % 4) % 4                 # auf 4 Bytes aufrunden
+        if satz <= 0 or pos + satz > laenge:
+            break
+        aus.append((pos, satz, daten[pos:pos + satz]))
+        pos += satz
+    return aus
+
+
+def _udf_ad_typ(eintrag):
+    """Wie die Zuordnungen abgelegt sind: kurz (8 Bytes) oder lang (16)."""
+    flaggen = struct.unpack_from("<H", eintrag["roh"], 16 + 18)[0]
+    return flaggen & 0x07
+
+
+def _udf_ad_schreiben(puffer, versatz, typ, laenge, lba):
+    """Eine Zuordnung eintragen - je nach Bauart kurz oder lang."""
+    if typ == 0:                                  # kurz
+        struct.pack_into("<II", puffer, versatz, laenge, lba)
+        return 8
+    struct.pack_into("<IIH", puffer, versatz, laenge, lba, 0)
+    puffer[versatz + 10:versatz + 16] = b"\x00" * 6
+    return 16
+
+
+def _udf_einhaengen(f, dateien, lage, fortschritt=None):
+    """Haengt die bereits ans Ende geschriebenen Dateien zusaetzlich in den
+    UDF-Baum ein - ohne einen einzigen bestehenden Sektor zu verschieben."""
+    partition, wurzel_icb = _udf_wegweiser(f)
+    wurzel = _udf_dateieintrag_lesen(f, partition, wurzel_icb)
+    ad_typ = _udf_ad_typ(wurzel)
+    if ad_typ not in (0, 1):
+        raise PatchFehler("UDF legt die Zuordnungen in einer Form ab, die "
+                          "hier nicht behandelt wird")
+
+    # Verzeichnisinhalt einlesen
+    zu = wurzel["ad_versatz"]
+    inhalt_laenge, inhalt_lba = struct.unpack_from("<II", wurzel["roh"], zu)
+    inhalt_laenge &= 0x3FFFFFFF
+    f.seek((partition["start"] + inhalt_lba) * SEKTOR)
+    sektoren = (inhalt_laenge + SEKTOR - 1) // SEKTOR
+    verzeichnis = bytearray(f.read(sektoren * SEKTOR))
+    eintraege = _udf_fids(verzeichnis, inhalt_laenge)
+    if not eintraege:
+        raise PatchFehler("UDF-Wurzelverzeichnis liess sich nicht zerlegen")
+
+    # Eine gewoehnliche Datei als Vorlage - so uebernehmen wir Zeitstempel,
+    # Kennungen und Bauart genau so, wie sie auf diesem Datentraeger ueblich sind.
+    vorlage_fid = None
+    for _pos, _laenge, roh in eintraege:
+        merkmale = roh[18]
+        if not (merkmale & 0x08) and not (merkmale & 0x02) and roh[19]:
+            vorlage_fid = roh
+            break
+    if vorlage_fid is None:
+        raise PatchFehler("Keine Vorlage im UDF-Wurzelverzeichnis gefunden")
+    vorlage_icb = struct.unpack_from("<I", vorlage_fid, 24)[0]
+    vorlage_fe = _udf_dateieintrag_lesen(f, partition, vorlage_icb)
+
+    f.seek(0, 2)
+    naechste = f.tell() // SEKTOR
+    neue_fids = []
+
+    for name, (daten_lba, groesse) in lage.items():
+        klein = name.lower().encode("utf-16-be")
+
+        # 1. Dateieintrag nach dem Muster der Vorlage
+        fe = bytearray(vorlage_fe["roh"])
+        struct.pack_into("<Q", fe, 56, groesse)                  # Laenge in Bytes
+        bloecke = (groesse + SEKTOR - 1) // SEKTOR
+        if vorlage_fe["tag"] == 266:
+            struct.pack_into("<Q", fe, 64, groesse)              # Objektgroesse
+            struct.pack_into("<Q", fe, 72, bloecke)
+        else:
+            struct.pack_into("<Q", fe, 64, bloecke)
+        ad_versatz = vorlage_fe["ad_versatz"]
+        breite = _udf_ad_schreiben(fe, ad_versatz, ad_typ, groesse,
+                                   daten_lba - partition["start"])
+        struct.pack_into("<I", fe, vorlage_fe["kopf"] - 4, breite)   # nur eine Zuordnung
+        fe[ad_versatz + breite:] = b"\x00" * (len(fe) - ad_versatz - breite)
+        fe_lba = naechste
+        _udf_etikett_setzen(fe, 0, fe_lba - partition["start"],
+                            vorlage_fe["kopf"] + breite - 16)
+        f.seek(fe_lba * SEKTOR)
+        f.write(bytes(fe))
+        naechste += 1
+
+        # 2. Verzeichniseintrag nach dem Muster der Vorlage
+        iu_laenge = struct.unpack_from("<H", vorlage_fid, 36)[0]
+        fid = bytearray(vorlage_fid[:38 + iu_laenge])
+        fid[19] = len(klein) + 1                                 # Namenslaenge
+        struct.pack_into("<I", fid, 24, fe_lba - partition["start"])
+        struct.pack_into("<I", fid, 20, SEKTOR)                  # Laenge des ICB
+        fid += b"\x10" + klein                                   # 0x10 = 16-Bit-Zeichen
+        fuell = (4 - len(fid) % 4) % 4
+        fid += b"\x00" * fuell
+        _udf_etikett_setzen(fid, 0, inhalt_lba, len(fid) - 16)
+        neue_fids.append((klein, bytes(fid)))
+
+    # 3. Verzeichnis ergaenzen - alte Eintraege gleichen Namens fallen raus
+    weg = {k for k, _ in neue_fids}
+    behalten = []
+    for _pos, _laenge, roh in eintraege:
+        namenlaenge = roh[19]
+        iu = struct.unpack_from("<H", roh, 36)[0]
+        name = bytes(roh[38 + iu + 1:38 + iu + namenlaenge])
+        if namenlaenge and name in weg:
+            continue
+        behalten.append(roh)
+    neu = b"".join(behalten) + b"".join(f for _n, f in neue_fids)
+    if len(neu) > sektoren * SEKTOR:
+        raise PatchFehler("Im UDF-Wurzelverzeichnis ist kein Platz mehr - "
+                          "dieser Fall wird noch nicht behandelt")
+
+    f.seek((partition["start"] + inhalt_lba) * SEKTOR)
+    f.write(neu.ljust(sektoren * SEKTOR, b"\x00"))
+
+    # 4. Wurzeleintrag auf die neue Laenge bringen
+    roh = wurzel["roh"]
+    struct.pack_into("<Q", roh, 56, len(neu))
+    if wurzel["tag"] == 266:
+        struct.pack_into("<Q", roh, 64, len(neu))
+    laenge_alt = struct.unpack_from("<I", roh, wurzel["ad_versatz"])[0]
+    struct.pack_into("<I", roh, wurzel["ad_versatz"],
+                     (laenge_alt & 0xC0000000) | len(neu))
+    _udf_etikett_setzen(roh, 0, wurzel_icb,
+                        wurzel["kopf"] + wurzel["ad_laenge"] - 16)
+    f.seek((partition["start"] + wurzel_icb) * SEKTOR)
+    f.write(bytes(roh))
+
+    # 5. Die Partition muss die neuen Sektoren mit umfassen
+    f.seek(partition["lba"] * SEKTOR)
+    pd = bytearray(f.read(SEKTOR))
+    ende = naechste - partition["start"]
+    if ende > partition["laenge"]:
+        struct.pack_into("<I", pd, 192, ende)
+        _udf_etikett_setzen(pd, 0, partition["lba"], 496)
+        f.seek(partition["lba"] * SEKTOR)
+        f.write(bytes(pd))
+
+    # 6. UDF verlangt einen zweiten Anker am ENDE des Datentraegers. Weil hinten
+    #    Sektoren dazugekommen sind, steht der alte nicht mehr dort - ohne einen
+    #    Anker an der neuen letzten Stelle verwirft ein Leser das ganze UDF
+    #    ("Expected at least 2 UDF Anchors") und sieht damit auch die
+    #    Antwortdatei nicht.
+    f.seek(256 * SEKTOR)
+    anker = bytearray(f.read(SEKTOR))
+    f.seek(naechste * SEKTOR)
+    _udf_etikett_setzen(anker, 0, naechste, 496)
+    f.write(bytes(anker))
+    f.flush()
+    return True
 
 
 def lege_datei_bei(quelle, ziel, dateien, fortschritt=None):
@@ -226,8 +391,6 @@ def lege_datei_bei(quelle, ziel, dateien, fortschritt=None):
 
     dateien: {"AUTOUNATTEND.XML": b"..."} - Name in Grossbuchstaben.
     """
-    if hat_udf(quelle):
-        return _mit_udf(quelle, ziel, dateien, fortschritt)
     quelle, ziel = os.path.abspath(quelle), os.path.abspath(ziel)
     if quelle == ziel:
         raise PatchFehler("Quelle und Ziel duerfen nicht dieselbe Datei sein")
@@ -338,7 +501,15 @@ def lege_datei_bei(quelle, ziel, dateien, fortschritt=None):
                 if tab:
                     _pfadtabelle_umbiegen(f, tab, gross, alt_lba, neu_lba)
 
-        # 6. Neue Gesamtgroesse in alle Deskriptoren eintragen
+        # 6. Dieselben Dateien in den UDF-Baum haengen. Windows liest bei
+        #    diesen Abbildern ausschliesslich das UDF - eine Datei, die nur im
+        #    ISO9660-Teil steht, ist fuer das Setup unsichtbar.
+        if hat_udf(ziel):
+            if fortschritt:
+                fortschritt(92, "UDF ergaenzen ...")
+            _udf_einhaengen(f, dateien, lage, fortschritt)
+
+        # 7. Neue Gesamtgroesse in alle Deskriptoren eintragen
         f.flush()
         sektoren_gesamt = (os.path.getsize(ziel) + SEKTOR - 1) // SEKTOR
         for offset, _roh, _j in deskriptoren:
