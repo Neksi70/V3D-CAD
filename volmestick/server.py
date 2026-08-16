@@ -12,6 +12,7 @@ import mimetypes
 import os
 import platform
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -193,7 +194,7 @@ FERN_GESPERRT = {"/api/stick", "/api/blockpruefung", "/api/geraete"}
 FERNZUGRIFF = False
 
 
-FASSUNG = "1.5"
+FASSUNG = "1.6"
 
 FAVICON = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
@@ -495,6 +496,27 @@ class Griff(BaseHTTPRequestHandler):
                 opt = d.get("optionen") or {}
                 return self._json({"xml": unattend.baue_unattend(opt),
                                    "zusammenfassung": unattend.zusammenfassung(opt)})
+
+            if weg == "/api/ordner-zeigen":
+                if not self._ist_lokal():
+                    return self._fehler("Geht nur auf dem eigenen Rechner", 403)
+                d = self._koerper()
+                pfad = os.path.abspath(os.path.expanduser(d.get("pfad", "")))
+                if not os.path.exists(pfad):
+                    return self._fehler(f"Nicht gefunden: {pfad}", 404)
+                ordner = pfad if os.path.isdir(pfad) else os.path.dirname(pfad)
+                try:
+                    if os.name == "nt":
+                        # Mit /select springt der Explorer direkt auf die Datei
+                        if os.path.isfile(pfad):
+                            subprocess.Popen(["explorer", "/select,", pfad])
+                        else:
+                            subprocess.Popen(["explorer", ordner])
+                    else:
+                        subprocess.Popen(["xdg-open", ordner])
+                except Exception as e:
+                    return self._fehler(f"Ordner liess sich nicht oeffnen: {e}")
+                return self._json({"ok": True, "ordner": ordner})
 
             if weg == "/api/beenden":
                 if not self._ist_lokal():
