@@ -8,7 +8,8 @@ pyinstaller --noconfirm --onefile --windowed --uac-admin ^
   --name VolmeStick ^
   --paths ".." ^
   --hidden-import vstick --hidden-import unattend --hidden-import download ^
-  --hidden-import iso9660 --hidden-import wim ^
+  --hidden-import iso9660 --hidden-import wim --hidden-import isowriter ^
+  --hidden-import linuxisos --hidden-import bestand ^
   vstick_gui.pyw || goto :fehler
 pyinstaller --noconfirm --onefile --uac-admin ^
   --name VolmeStick-Web ^
@@ -16,7 +17,8 @@ pyinstaller --noconfirm --onefile --uac-admin ^
   --add-data "..\web\ui.html;web" ^
   --hidden-import vstick --hidden-import unattend --hidden-import download ^
   --hidden-import iso9660 --hidden-import wim --hidden-import linuxisos ^
-  --hidden-import bestand ^
+  --hidden-import bestand --hidden-import isowriter ^
+  --add-data "..\web\verteil.html;web" ^
   "..\server.py" || goto :fehler
 
 echo.

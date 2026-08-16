@@ -102,6 +102,8 @@ class Anwendung(tk.Tk):
             .pack(side="left", padx=6)
         ttk.Button(w, text="Prüfsummen", command=self.pruefsummen)\
             .pack(side="left")
+        ttk.Button(w, text="Antwort-ISO für VMware", command=self.antwort_iso)\
+            .pack(side="left", padx=6)
 
         self.info_feld = tk.Text(rahmen, height=6, wrap="word", state="disabled",
                                  background="#f4f6f9", relief="flat")
@@ -368,6 +370,25 @@ class Anwendung(tk.Tk):
             lambda: vstick.pruefsummen(self.iso, self._melden),
             lambda e, f: self._fertig(e, f, "Prüfsummen: " + (
                 "\n".join(f"{k.upper()} {v}" for k, v in (e or {}).items()))))
+
+    def antwort_iso(self):
+        """Winzige ISO nur mit der autounattend.xml - fuer virtuelle Maschinen
+        braucht es keinen Stick und keinen Umbau der grossen ISO."""
+        ziel = filedialog.asksaveasfilename(
+            title="Antwort-ISO speichern", defaultextension=".iso",
+            initialfile="autounattend.iso", initialdir=self.zielordner,
+            filetypes=[("ISO-Abbild", "*.iso")])
+        if not ziel:
+            return
+        try:
+            r = vstick.antwort_iso(ziel, self.wue)
+        except Exception as e:
+            return messagebox.showerror("VolmeStick", str(e))
+        messagebox.showinfo(
+            "VolmeStick",
+            f'{os.path.basename(ziel)} erzeugt ({r["groesse"] / 1024:.0f} KB).\n\n'
+            "In VMware als zweites CD-Laufwerk neben die Windows-ISO hängen – "
+            "Setup findet die Datei dort von selbst.")
 
     def starten(self):
         if not self.geraete:

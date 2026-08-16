@@ -28,8 +28,18 @@ import unattend      # noqa: E402
 import download      # noqa: E402
 import linuxisos     # noqa: E402
 import bestand       # noqa: E402
+import isowriter     # noqa: E402
 
-ISO_ORDNER = os.path.expanduser("~/isos")
+def _standard_ordner():
+    """Abbilder gehoeren dorthin, wo gearbeitet wird. Auf einem Server soll
+    ohnehin nichts liegen - der liefert nur die App aus."""
+    fuer_downloads = os.path.expanduser("~/Downloads")
+    if os.path.isdir(fuer_downloads):
+        return os.path.join(fuer_downloads, "VolmeStick")
+    return os.path.expanduser("~/VolmeStick-Abbilder")
+
+
+ISO_ORDNER = _standard_ordner()
 AUSGABE_ORDNER = os.path.join(ISO_ORDNER, "fertig")
 AUFTRAEGE = {}
 SPERRE = threading.Lock()
@@ -128,6 +138,13 @@ def erlaubter_pfad(pfad):
     return p
 
 
+# Was ein entfernter Aufruf sehen darf. Alles andere arbeitet auf der
+# Hardware dieses Rechners und waere aus der Ferne sinnlos bis gefaehrlich.
+FERN_ERLAUBT = {"/", "/index.html", "/api/windows-paket", "/api/werkzeuge",
+                "/api/xml", "/api/antwort-iso"}
+FERNZUGRIFF = False
+
+
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -140,6 +157,19 @@ class Griff(BaseHTTPRequestHandler):
         sys.stderr.write("%s - %s\n" % (self.address_string(), format % args))
 
     # -- Hilfen
+    def _ist_lokal(self):
+        return self.client_address[0] in ("127.0.0.1", "::1", "localhost")
+
+    def _darf(self, pfad):
+        if FERNZUGRIFF or self._ist_lokal() or pfad in FERN_ERLAUBT:
+            return True
+        self._json({"fehler":
+                    "VolmeStick arbeitet nur fuer den Rechner, auf dem er laeuft. "
+                    "Fuer Downloads und USB-Sticks bitte VolmeStick auf dem eigenen "
+                    "Rechner starten - das Paket dazu gibt es auf der Startseite."},
+                   403)
+        return False
+
     def _json(self, daten, code=200):
         roh = json.dumps(daten, ensure_ascii=False).encode()
         self.send_response(code)
@@ -178,8 +208,13 @@ class Griff(BaseHTTPRequestHandler):
         weg = urlparse(self.path)
         pfad = weg.path
         try:
+            if not self._darf(pfad):
+                return
             if pfad in ("/", "/index.html"):
-                return self._datei(os.path.join(BASIS, "web", "ui.html"), "text/html; charset=utf-8")
+                # Von aussen: Verteilseite. Lokal: die eigentliche Anwendung.
+                seite = "ui.html" if (self._ist_lokal() or FERNZUGRIFF) else "verteil.html"
+                return self._datei(os.path.join(BASIS, "web", seite),
+                                   "text/html; charset=utf-8")
             if pfad == "/api/isos":
                 return self._json({"isos": isos_auflisten(), "ordner": ISO_ORDNER})
             if pfad == "/api/geraete":
@@ -231,9 +266,10 @@ class Griff(BaseHTTPRequestHandler):
         derselbe VolmeStick laeuft und der Stick DORT entsteht."""
         import io
         import zipfile
-        dateien = ["vstick.py", "unattend.py", "iso9660.py", "wim.py",
-                   "download.py", "linuxisos.py", "bestand.py", "server.py",
-                   "LIESMICH.md", "web/ui.html",
+        dateien = ["vstick.py", "unattend.py", "iso9660.py", "isowriter.py",
+                   "wim.py", "download.py", "linuxisos.py", "bestand.py",
+                   "server.py", "LIESMICH.md", "start.sh",
+                   "web/ui.html", "web/verteil.html",
                    "windows/vstick_gui.pyw", "windows/EXE-bauen.bat",
                    "windows/Weboberflaeche-starten.bat"]
         puffer = io.BytesIO()
@@ -255,6 +291,8 @@ class Griff(BaseHTTPRequestHandler):
     def do_POST(self):
         weg = urlparse(self.path).path
         try:
+            if not self._darf(weg):
+                return
             if weg == "/api/analyse":
                 d = self._koerper()
                 return self._json(vstick.analysiere(erlaubter_pfad(d.get("pfad", ""))))
@@ -264,6 +302,23 @@ class Griff(BaseHTTPRequestHandler):
                 opt = d.get("optionen") or {}
                 return self._json({"xml": unattend.baue_unattend(opt),
                                    "zusammenfassung": unattend.zusammenfassung(opt)})
+
+            if weg == "/api/antwort-iso":
+                import tempfile
+                d = self._koerper()
+                xml = unattend.baue_unattend(d.get("optionen") or {})
+                with tempfile.TemporaryDirectory() as tmp:
+                    ziel = os.path.join(tmp, "autounattend.iso")
+                    isowriter.antwort_iso(ziel, xml)
+                    roh = open(ziel, "rb").read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(roh)))
+                self.send_header("Content-Disposition",
+                                 'attachment; filename="autounattend.iso"')
+                self.end_headers()
+                self.wfile.write(roh)
+                return
 
             if weg == "/api/iso":
                 d = self._koerper()
@@ -367,14 +422,18 @@ class Griff(BaseHTTPRequestHandler):
 
 
 def main():
-    global ISO_ORDNER, AUSGABE_ORDNER
+    global ISO_ORDNER, AUSGABE_ORDNER, FERNZUGRIFF
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=8775)
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--isos", default=ISO_ORDNER)
+    p.add_argument("--fernzugriff", action="store_true",
+                   help="Auch aus dem Netz voll bedienbar (dann werden die "
+                        "Datentraeger DIESES Rechners angeboten)")
     p.add_argument("--browser", action="store_true",
                    help="Oberflaeche gleich im Browser oeffnen (lokaler Betrieb)")
     a = p.parse_args()
+    FERNZUGRIFF = a.fernzugriff
     ISO_ORDNER = os.path.expanduser(a.isos)
     AUSGABE_ORDNER = os.path.join(ISO_ORDNER, "fertig")
     os.makedirs(AUSGABE_ORDNER, exist_ok=True)
@@ -391,6 +450,9 @@ def main():
     print(f"VolmeStick laeuft auf http://{a.host}:{a.port}  (ISOs: {ISO_ORDNER})")
     print(f"Datentraeger dieses Rechners ({platform.node()}) werden bedient - "
           "ein USB-Stick muss HIER stecken.")
+    print("Aufrufe aus dem Netz bekommen nur die Startseite mit dem Paket zum "
+          "Selberstarten." if not FERNZUGRIFF else
+          "ACHTUNG: --fernzugriff ist an, das Netz darf diesen Rechner voll bedienen.")
     if a.browser:
         import webbrowser
         webbrowser.open(f"http://localhost:{a.port}/")

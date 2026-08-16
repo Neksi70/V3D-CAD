@@ -3,33 +3,48 @@
 Windows-Installationsmedien bauen — wie Rufus, aber zusätzlich **als ISO**,
 damit sie sich direkt in VMware einbinden lässt.
 
-**Wichtig zum Verständnis:** Ein USB-Stick kann nur an dem Rechner beschrieben
-werden, an dem er auch steckt. Die Weboberfläche zeigt immer die Datenträger
-*des Rechners, auf dem sie läuft* — läuft sie auf dem Server, sind das dessen
-Datenträger. Deshalb läuft VolmeStick an beiden Stellen:
+**Grundsatz: VolmeStick arbeitet immer nur für den Rechner, auf dem es läuft.**
+Ein USB-Stick lässt sich nur dort beschreiben, wo er steckt — also läuft die App
+auf deinem Arbeitsplatz, nicht auf dem Server.
 
-| Rechner | wozu | Start |
-|---|---|---|
-| **Server (V3DA)** | ISOs sammeln und herunterladen, ISO für VMware bauen | Dienst auf Port 8775 |
-| **dein Windows-PC** | **den USB-Stick schreiben** | `windows\Weboberflaeche-starten.bat` (oder `VolmeStick.exe`) |
+Der Server (V3DA) ist reine **Verteilstelle**: Ruft man ihn aus dem Netz auf,
+zeigt er nur eine Startseite mit dem Paket zum Selberstarten. Alle arbeitenden
+Endpunkte antworten von außen mit 403 — es landen also keine Abbilder auf dem
+Server, und niemand kann dessen Datenträger anfassen.
 
-Am Windows-PC wählst du als Quelle **„Bestand eines anderen VolmeStick"** und
-trägst die Serveradresse ein — dann erscheint dort, was auf V3DA liegt, wird
-einmal herübergeladen und landet auf dem Stick, der bei dir steckt.
+| Aufruf | was passiert |
+|---|---|
+| `localhost:8775` | die volle App: Abbilder laden, Stick schreiben, ISO bauen |
+| `<server>:8775` aus dem Netz | Startseite: Paket herunterladen + Antwort-ISO erzeugen |
 
-Das nötige Paket gibt es direkt aus der Oberfläche: **VolmeStick für Windows
-herunterladen (ZIP)** → entpacken → `windows\Weboberflaeche-starten.bat`
-doppelklicken (holt sich selbst Administratorrechte und öffnet den Browser).
-Wer lieber ein Fenster im Rufus-Aufbau mag, nimmt `windows\EXE-bauen.bat` und
-danach `dist\VolmeStick.exe`.
+So kommst du auf deinem Rechner los:
 
-Drei Oberflächen, ein Kern:
+* **Windows** — ZIP von der Startseite, entpacken,
+  `windows\Weboberflaeche-starten.bat` doppelklicken (holt sich selbst
+  Administratorrechte und öffnet den Browser). Alternativ `windows\EXE-bauen.bat`
+  für `VolmeStick.exe` (Fenster im Rufus-Aufbau) und `VolmeStick-Web.exe`.
+* **Linux** — `./start.sh` (startet sich per sudo neu und öffnet den Browser).
 
-| | wo | wofür |
-|---|---|---|
-| Weboberfläche | `python3 server.py` → `:8775` | alles außer dem Stick am fremden Rechner |
-| Windows-Fenster | `windows/VolmeStick.exe` | Stick schreiben im Rufus-Aufbau |
-| Kommandozeile | `python3 vstick.py …` | alles, skriptbar |
+Wer es doch aus dem Netz voll bedienen will — etwa ein Linux-Rechner, an dem der
+Stick steckt, ohne Bildschirm — startet mit `--fernzugriff`. Dann werden die
+Datenträger *dieses* Rechners angeboten.
+
+## ISO für VMware: die Antwort-ISO
+
+Für eine virtuelle Maschine braucht es weder Stick noch ISO-Umbau. Windows Setup
+sucht die `autounattend.xml` auf **jedem** angeschlossenen Laufwerk. VolmeStick
+erzeugt deshalb eine 60 KB kleine ISO, die nur diese Datei enthält:
+
+```bash
+python3 vstick.py antwort -o autounattend.iso --benutzer kurs
+```
+
+In VMware die Original-ISO wie gewohnt einbinden und ein **zweites CD-Laufwerk**
+mit `autounattend.iso` hinzufügen — fertig. Die große ISO bleibt unangetastet,
+und es braucht kein `xorriso` (das es unter Windows ohnehin nicht gibt).
+
+Den kompletten Umbau der großen ISO gibt es weiterhin (`vstick.py iso`), er
+lohnt sich aber vor allem, wenn das Medium ohne Zweitlaufwerk auskommen muss.
 
 > **Nicht in den Tailscale-Funnel legen.** Das Werkzeug löscht Datenträger.
 > Heimnetz/Tailnet reicht.
@@ -55,7 +70,7 @@ kaputte Signatur.
 |---|---|
 | **WinFuture** | Windows 11 / 10 (Deutsch), Spiegel der Microsoft-ISOs |
 | **Linux** | Ubuntu, Mint, Debian, Fedora, openSUSE, Arch, Pop!_OS, Kali, Rocky, AlmaLinux |
-| **anderer VolmeStick** | der ISO-Bestand eines zweiten Rechners (Server → Arbeitsplatz) |
+| **anderer VolmeStick** | der Abbild-Bestand eines zweiten Rechners im Netz |
 
 Die Linux-Adressen werden bei den offiziellen Projektspiegeln **live aufgelöst** —
 es steht also nie eine veraltete Fassung in der Liste. Bei WinFuture sind die
@@ -67,7 +82,8 @@ liefert denselben deutschen Datenbestand ohne diese Sperre.*
 
 ### Nichts zweimal laden
 
-Vor dem Anzeigen wird mit dem Bestand in `~/isos` abgeglichen:
+Abbilder landen in `~/Downloads/VolmeStick` (bzw. `~/VolmeStick-Abbilder`).
+Vor dem Anzeigen wird mit diesem Bestand abgeglichen:
 
 * **schon da** — Datei liegt vollständig vor (Größenvergleich per HEAD-Abfrage).
   Statt eines Downloads gibt es „Diese verwenden“, das sie direkt als Quelle setzt.
@@ -143,6 +159,8 @@ Ergebnis: `windows\dist\VolmeStick.exe`, fordert beim Start Administratorrechte 
 | `download.py` | Windows-Abbilder vom WinFuture-Spiegel, Download mit Prüfsumme |
 | `linuxisos.py` | löst die Downloadadressen von zehn Linux-Distributionen live auf |
 | `bestand.py` | erkennt, was schon da ist und was ein echter Versionswechsel wäre |
+| `isowriter.py` | schreibt die kleine Antwort-ISO (ISO9660 + Joliet, reines Python) |
+| `web/verteil.html` | Startseite für Aufrufe aus dem Netz |
 | `server.py`, `web/ui.html` | Weboberfläche |
 | `windows/vstick_gui.pyw` | Windows-Fenster |
 

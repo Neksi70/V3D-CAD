@@ -28,6 +28,7 @@ sys.path.insert(0, BASIS)
 from iso9660 import Iso, IsoFehler          # noqa: E402
 import wim                                  # noqa: E402
 import unattend                             # noqa: E402
+import isowriter                            # noqa: E402
 
 IST_WINDOWS = platform.system() == "Windows"
 GIB = 1024 ** 3
@@ -201,6 +202,16 @@ def _baue_iso_ohne_xorriso(quelle, ziel, xml_datei, label, info, fortschritt):
             raise Fehler("genisoimage: " + (r.stderr or r.stdout)[-300:])
     finally:
         shutil.rmtree(arbeit, ignore_errors=True)
+
+
+def antwort_iso(ziel, optionen=None):
+    """Winzige ISO mit nur der autounattend.xml. In VMware als zweites
+    CD-Laufwerk neben die Windows-ISO haengen - Setup findet die Datei auf
+    jedem Laufwerk. Spart den Umbau des grossen Abbilds vollstaendig."""
+    xml = unattend.baue_unattend(optionen)
+    isowriter.antwort_iso(ziel, xml)
+    return {"ziel": os.path.abspath(ziel), "groesse": os.path.getsize(ziel),
+            "unattend": xml}
 
 
 # --------------------------------------------------------------- Geraete
@@ -709,6 +720,10 @@ def main(argv=None):
     a3.add_argument("-o", "--ausgabe", required=True)
     gemeinsam(a3)
 
+    a8 = u.add_parser("antwort", help="Kleine Antwort-ISO fuer VMware bauen")
+    a8.add_argument("-o", "--ausgabe", default="autounattend.iso")
+    gemeinsam(a8)
+
     u.add_parser("geraete", help="Wechseldatentraeger auflisten")
 
     a6 = u.add_parser("pruefsumme", help="MD5/SHA1/SHA256 einer Datei")
@@ -753,6 +768,12 @@ def main(argv=None):
     if a.befehl == "iso":
         r = baue_iso(a.iso, a.ausgabe, _opt_aus_args(a), _fortschritt_konsole)
         print(f"\nISO fertig: {r['ziel']} ({r['groesse'] / GIB:.2f} GB)")
+        return 0
+
+    if a.befehl == "antwort":
+        r = antwort_iso(a.ausgabe, _opt_aus_args(a))
+        print(f"Antwort-ISO: {r['ziel']} ({r['groesse'] / 1024:.0f} KB)")
+        print("In VMware zusaetzlich zur Windows-ISO als CD-Laufwerk einbinden.")
         return 0
 
     if a.befehl == "geraete":
