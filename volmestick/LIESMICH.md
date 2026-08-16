@@ -7,7 +7,7 @@ Kern in Python, zwei Oberflächen:
 
 | | wo | wofür |
 |---|---|---|
-| Weboberfläche | `python3 server.py` → `http://<server>:8775` | ISO bauen (VMware), ISO bei Microsoft holen, Prüfsummen |
+| Weboberfläche | `python3 server.py` → `http://<server>:8775` | Abbilder herunterladen, ISO bauen (VMware), Prüfsummen |
 | Windows-Fenster | `windows/VolmeStick.exe` | USB-Stick am Arbeitsplatz schreiben |
 | Kommandozeile | `python3 vstick.py …` | alles, skriptbar |
 
@@ -28,6 +28,24 @@ kaputte Signatur.
   Schnellstart, Widgets, Chat-Symbol, Bing-Suche im Startmenü
 * Lokales Konto (Administrator), Computername, Sprache/Tastatur/Zeitzone, Edition
 * Dateiendungen im Explorer, interne Platten offline lassen (Windows-vom-Stick)
+
+## Abbild herunterladen
+
+Drei Quellen, alle in Oberfläche und Fenster:
+
+| Quelle | was | Besonderheit |
+|---|---|---|
+| **WinFuture** | Windows 11 / 10 (Deutsch) | Spiegel der Microsoft-ISOs, kein Bot-Schutz — der zuverlässige Weg |
+| **Microsoft** | Windows 11 / 10, alle Sprachen | direkt an der Quelle, wird aber von Server- und VPN-Adressen oft abgewiesen |
+| **Linux** | Ubuntu, Mint, Debian, Fedora, openSUSE, Arch, Pop!_OS, Kali, Rocky, AlmaLinux | Adressen werden bei den offiziellen Projektspiegeln **live aufgelöst** — nie eine veraltete Fassung |
+
+Wo die Quelle eine `SHA256SUMS`-Datei mitliefert (bei Linux fast überall), wird die
+Prüfsumme **während des Ladens** mitgerechnet und am Ende verglichen. Stimmt sie
+nicht, landet die Datei als `.unvollstaendig` daneben statt auf dem Stick.
+Abgebrochene Downloads werden fortgesetzt, wenn der Server das unterstützt.
+
+Linux-Abbilder sind Hybrid-ISOs: sie werden 1:1 geschrieben (DD-Modus), das
+erkennt der Schreibmodus „Automatisch" von selbst.
 
 ## Bedienung
 
@@ -83,7 +101,8 @@ Ergebnis: `windows\dist\VolmeStick.exe`, fordert beim Start Administratorrechte 
 | `unattend.py` | erzeugt die `autounattend.xml` |
 | `iso9660.py` | eigener ISO9660/Joliet-Leser (kein root, kein 7z nötig, auch > 4 GB) |
 | `wim.py` | liest die Editionsliste aus `install.wim`/`.esd` |
-| `download.py` | holt offizielle ISOs bei Microsoft |
+| `download.py` | Windows-Abbilder: Microsoft-API und WinFuture-Spiegel |
+| `linuxisos.py` | löst die Downloadadressen von zehn Linux-Distributionen live auf |
 | `server.py`, `web/ui.html` | Weboberfläche |
 | `windows/vstick_gui.pyw` | Windows-Fenster |
 
@@ -96,6 +115,6 @@ Ergebnis: `windows\dist\VolmeStick.exe`, fordert beim Start Administratorrechte 
 * Prüfung auf zurückgezogene UEFI-Bootloader (DBX), `SkuSiPolicy.p7b`
 * Die „stille" Installation, die die Zielplatte ohne Rückfrage löscht — bewusst nicht.
 
-Der Microsoft-Download läuft über Microsofts Bot-Schutz („Sentinel"). Von
-Server- und VPN-Adressen wird er oft abgewiesen; vom heimischen Anschluss
-klappt er in der Regel. Sonst: ISO von Hand laden und hochladen.
+Der direkte Microsoft-Download läuft über deren Bot-Schutz („Sentinel") und wird
+von Server- und VPN-Adressen oft abgewiesen. Deshalb steht **WinFuture** an
+erster Stelle: derselbe deutsche Datenbestand, ohne Sperre.

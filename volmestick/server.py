@@ -24,6 +24,7 @@ sys.path.insert(0, BASIS)
 import vstick        # noqa: E402
 import unattend      # noqa: E402
 import download      # noqa: E402
+import linuxisos     # noqa: E402
 
 ISO_ORDNER = os.path.expanduser("~/isos")
 AUSGABE_ORDNER = os.path.join(ISO_ORDNER, "fertig")
@@ -165,6 +166,10 @@ class Griff(BaseHTTPRequestHandler):
                 name = unquote(pfad.rsplit("/", 1)[-1])
                 ziel = os.path.join(AUSGABE_ORDNER, os.path.basename(name))
                 return self._datei(ziel)
+            if pfad == "/api/quelle/winfuture":
+                return self._json({"eintraege": download.winfuture_seiten()})
+            if pfad == "/api/quelle/linux":
+                return self._json({"eintraege": linuxisos.distributionen()})
             if pfad == "/api/ms/ausgaben":
                 produkt = parse_qs(weg.query).get("produkt", ["windows11"])[0]
                 return self._json({"ausgaben": download.ausgaben(produkt)})
@@ -175,7 +180,8 @@ class Griff(BaseHTTPRequestHandler):
                     "root": (os.name != "nt" and os.geteuid() == 0),
                 })
             self.send_error(404)
-        except (vstick.Fehler, download.DownloadFehler) as e:
+        except (vstick.Fehler, download.DownloadFehler,
+                linuxisos.QuellenFehler) as e:
             self._fehler(e)
         except Exception as e:
             traceback.print_exc()
@@ -253,6 +259,26 @@ class Griff(BaseHTTPRequestHandler):
                 return self._json({"links": download.links(
                     d.get("sitzung"), d.get("sprache"), d.get("produkt", "windows11"))})
 
+            if weg == "/api/quelle/dateien":
+                d = self._koerper()
+                quelle, kennung = d.get("quelle"), str(d.get("id", ""))
+                if quelle == "winfuture":
+                    return self._json({"dateien": download.winfuture_dateien(kennung)})
+                if quelle == "linux":
+                    return self._json({"dateien": linuxisos.dateien(kennung)})
+                return self._fehler("Unbekannte Quelle")
+
+            if weg == "/api/laden":
+                d = self._koerper()
+                uri = d.get("uri", "")
+                if not uri.startswith("https://"):
+                    return self._fehler("Ungueltige Adresse")
+                kennung = auftrag_neu("download")
+                auftrag_laufen(kennung, lambda f: download.herunterladen(
+                    uri, ISO_ORDNER, d.get("name"), f,
+                    referer=d.get("referer"), sha256=d.get("sha256") or None))
+                return self._json({"auftrag": kennung})
+
             if weg == "/api/ms/laden":
                 d = self._koerper()
                 uri = d.get("uri", "")
@@ -284,7 +310,8 @@ class Griff(BaseHTTPRequestHandler):
                 return self._json({"pfad": ziel, "groesse": os.path.getsize(ziel)})
 
             self.send_error(404)
-        except (vstick.Fehler, download.DownloadFehler) as e:
+        except (vstick.Fehler, download.DownloadFehler,
+                linuxisos.QuellenFehler) as e:
             self._fehler(e)
         except Exception as e:
             traceback.print_exc()

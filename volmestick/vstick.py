@@ -80,13 +80,12 @@ def analysiere(iso_pfad):
                     lambda off, l, _e=e, _i=iso: _i.lies(_e, off, l))
             info["ist_windows"] = bool(setup and boot_wim and e is not None)
             if not info["ist_windows"]:
-                fehlt = [n for n, ok in (("setup.exe", setup),
-                                         ("sources/boot.wim", boot_wim),
-                                         ("sources/install.wim|.esd", e is not None))
-                         if not ok]
+                # Linux- und andere Abbilder bringen ihren eigenen Startsatz mit
+                # und gehoeren 1:1 auf den Stick.
                 info["warnungen"].append(
-                    "Sieht nicht nach einer Windows-Installations-ISO aus (fehlt: "
-                    + ", ".join(fehlt) + "). autounattend.xml bleibt wirkungslos.")
+                    "Keine Windows-Installations-ISO - wird 1:1 auf den Stick "
+                    "geschrieben (DD-Modus). Die Windows-Anpassungen bleiben "
+                    "dabei ohne Wirkung.")
             if not info["uefi"]:
                 info["warnungen"].append(
                     "Keine EFI-Startdateien gefunden - in VMware nur mit BIOS-Firmware startbar.")

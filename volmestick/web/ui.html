@@ -65,21 +65,24 @@
      Ohne Microsoft-Konto, ohne TPM-Zwang.</p>
 
   <div class="karte">
-    <h2>0 &middot; Windows bei Microsoft holen</h2>
+    <h2>0 &middot; Abbild herunterladen</h2>
     <div class="reihe">
-      <div><label>Produkt</label>
-        <select id="ms_produkt">
-          <option value="windows11">Windows 11</option>
-          <option value="windows10">Windows 10</option>
+      <div><label>Quelle</label>
+        <select id="quelle">
+          <option value="winfuture">Windows &ndash; WinFuture (Spiegel, ohne Sperre)</option>
+          <option value="microsoft">Windows &ndash; direkt bei Microsoft</option>
+          <option value="linux">Linux &ndash; offizielle Projektseiten</option>
         </select></div>
-      <div><label>Ausgabe</label><select id="ms_ausgabe"><option>&ndash;</option></select></div>
-      <div><label>Sprache</label><select id="ms_sprache"><option>&ndash;</option></select></div>
+      <div id="feld_auswahl"><label>Angebot</label>
+        <select id="auswahl"><option>&ndash; auf Suchen klicken &ndash;</option></select></div>
+      <div id="feld_sprache" class="weg"><label>Sprache</label>
+        <select id="ms_sprache"><option>&ndash;</option></select></div>
       <div style="flex:0 0 auto;display:flex;align-items:flex-end;gap:8px">
-        <button class="zweit" id="ms_suchen" type="button">Suchen</button>
-        <button class="zweit" id="ms_laden" type="button" disabled>Herunterladen</button>
+        <button class="zweit" id="q_suchen" type="button">Suchen</button>
+        <button class="zweit" id="q_dateien" type="button" disabled>Abbilder zeigen</button>
       </div>
     </div>
-    <div id="ms_info"></div>
+    <div id="q_info"></div>
   </div>
 
   <div class="karte">
@@ -393,50 +396,87 @@ async function verfolgen(kennung, fertigText){
   }
 }
 
-// ---- Microsoft-Download
+// ---- Abbild herunterladen (WinFuture / Microsoft / Linux)
 let msSitzung = null;
-async function msAusgaben(){
-  const k = $("#ms_info"); k.innerHTML = '<div class="stichwort">frage Microsoft &hellip;</div>';
+const istMicrosoft = () => $("#quelle").value === "microsoft";
+
+$("#quelle").onchange = () => {
+  $("#feld_sprache").classList.toggle("weg", !istMicrosoft());
+  $("#auswahl").innerHTML = "<option>– auf Suchen klicken –</option>";
+  $("#q_dateien").disabled = true;
+  $("#q_info").innerHTML = "";
+};
+
+$("#q_suchen").onclick = async () => {
+  const k = $("#q_info");
+  k.innerHTML = '<div class="stichwort">wird abgefragt &hellip;</div>';
   try{
-    const j = await hole("/api/ms/ausgaben?produkt="+$("#ms_produkt").value);
-    $("#ms_ausgabe").innerHTML = j.ausgaben.map(a=>`<option value="${a.id}">${a.name}</option>`).join("");
-    await msSprachen();
+    if(istMicrosoft()){
+      const j = await hole("/api/ms/ausgaben?produkt=windows11");
+      $("#auswahl").innerHTML = j.ausgaben.map(a=>`<option value="${a.id}">${a.name}</option>`).join("");
+      await msSprachen();
+    }else{
+      const j = await hole("/api/quelle/" + $("#quelle").value);
+      $("#auswahl").innerHTML = j.eintraege.map(e =>
+        `<option value="${e.id}">${e.name || e.titel}${e.hinweis ? " – " + e.hinweis : ""}</option>`).join("");
+      k.innerHTML = "";
+    }
+    $("#q_dateien").disabled = false;
   }catch(e){ k.innerHTML=""; meldung(k, e.message, "warn"); }
-}
+};
+
 async function msSprachen(){
-  const k = $("#ms_info"); k.innerHTML = '<div class="stichwort">Sprachen &hellip;</div>';
+  const k = $("#q_info");
   try{
-    const j = await hole("/api/ms/sprachen", {ausgabe: $("#ms_ausgabe").value,
-                                              produkt: $("#ms_produkt").value});
+    const j = await hole("/api/ms/sprachen", {ausgabe: $("#auswahl").value, produkt:"windows11"});
     msSitzung = j.sitzung;
     $("#ms_sprache").innerHTML = j.sprachen.map(s=>`<option value="${s.id}">${s.name}</option>`).join("");
     const de = [...$("#ms_sprache").options].find(o=>/German|Deutsch/i.test(o.text));
     if(de) $("#ms_sprache").value = de.value;
-    $("#ms_laden").disabled = false; k.innerHTML="";
-  }catch(e){ k.innerHTML=""; meldung(k, e.message, "warn"); }
-}
-$("#ms_suchen").onclick = msAusgaben;
-$("#ms_produkt").onchange = msAusgaben;
-$("#ms_ausgabe").onchange = msSprachen;
-$("#ms_laden").onclick = async () => {
-  const k = $("#ms_info"); k.innerHTML = '<div class="stichwort">hole Downloadlink &hellip;</div>';
-  try{
-    const j = await hole("/api/ms/links", {sitzung: msSitzung, sprache: $("#ms_sprache").value,
-                                           produkt: $("#ms_produkt").value});
     k.innerHTML = "";
-    j.links.forEach(l => {
-      k.insertAdjacentHTML("beforeend",
-        `<div class="meldung m-gut">${l.typ||""} &middot; ${l.name}
-         <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
-           <button class="zweit" data-uri="${l.uri}" data-name="${l.name}">Auf den Server laden</button>
-           <a href="${l.uri}" style="color:#a6e9c4;align-self:center">Direkt im Browser laden</a>
-         </div></div>`);
-    });
-    k.querySelectorAll("button[data-uri]").forEach(b => b.onclick = async () => {
-      laufZeigen();
-      const r = await hole("/api/ms/laden", {uri: b.dataset.uri, name: b.dataset.name});
-      verfolgen(r.auftrag, e => `Geladen: ${e.pfad} (${mb(e.groesse)})`);
-    });
+  }catch(e){ meldung(k, e.message, "warn"); }
+}
+$("#auswahl").onchange = () => { if(istMicrosoft()) msSprachen(); };
+
+function ladeKnopf(d){
+  const groesse = d.groesse ? " · " + mb(d.groesse) : (d.hinweis_groesse ? " · " + d.hinweis_groesse : "");
+  return `<div class="meldung m-gut">${d.typ ? d.typ + " · " : ""}${d.name}${groesse}
+      ${d.sha256 ? '<br><span class="stichwort">SHA256 bekannt – wird nach dem Laden geprüft</span>' : ""}
+      <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="zweit" data-uri="${d.uri}" data-name="${d.name}"
+                data-referer="${d.referer||""}" data-sha="${d.sha256||""}">Auf den Server laden</button>
+        <a href="${d.uri}" style="color:#a6e9c4;align-self:center">Link im Browser öffnen</a>
+      </div></div>`;
+}
+
+function knoepfeVerdrahten(k){
+  k.querySelectorAll("button[data-uri]").forEach(b => b.onclick = async () => {
+    laufZeigen();
+    try{
+      const r = await hole("/api/laden", {uri: b.dataset.uri, name: b.dataset.name,
+                                          referer: b.dataset.referer, sha256: b.dataset.sha});
+      verfolgen(r.auftrag, e => `Geladen: ${e.name} (${mb(e.groesse)})`
+        + (e.geprueft ? " – Prüfsumme stimmt" : ""));
+    }catch(e){ meldung($("#lauf_ergebnis"), e.message, "fehler"); }
+  });
+}
+
+$("#q_dateien").onclick = async () => {
+  const k = $("#q_info");
+  k.innerHTML = '<div class="stichwort">hole Downloadadressen &hellip;</div>';
+  try{
+    let dateien;
+    if(istMicrosoft()){
+      const j = await hole("/api/ms/links", {sitzung: msSitzung, sprache: $("#ms_sprache").value,
+                                             produkt:"windows11"});
+      dateien = j.links;
+    }else{
+      const j = await hole("/api/quelle/dateien", {quelle: $("#quelle").value,
+                                                   id: $("#auswahl").value});
+      dateien = j.dateien;
+    }
+    k.innerHTML = dateien.map(ladeKnopf).join("");
+    knoepfeVerdrahten(k);
   }catch(e){ k.innerHTML=""; meldung(k, e.message, "warn"); }
 };
 

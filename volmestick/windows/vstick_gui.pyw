@@ -22,6 +22,7 @@ if hasattr(sys, "_MEIPASS"):                  # in der gebauten EXE
 import vstick        # noqa: E402
 import unattend      # noqa: E402
 import download      # noqa: E402
+import linuxisos     # noqa: E402
 
 GIB = 1024 ** 3
 
@@ -95,7 +96,7 @@ class Anwendung(tk.Tk):
         w.pack(fill="x", **pad)
         ttk.Button(w, text="Windows-Anpassungen …", command=self.wue_dialog)\
             .pack(side="left")
-        ttk.Button(w, text="ISO bei Microsoft holen", command=self.ms_dialog)\
+        ttk.Button(w, text="Abbild herunterladen …", command=self.quellen_dialog)\
             .pack(side="left", padx=6)
         ttk.Button(w, text="Prüfsummen", command=self.pruefsummen)\
             .pack(side="left")
@@ -235,58 +236,110 @@ class Anwendung(tk.Tk):
             d.destroy()
         ttk.Button(d, text="Übernehmen", command=uebernehmen).pack(pady=8)
 
-    def ms_dialog(self):
+    def quellen_dialog(self):
+        """Abbild holen: WinFuture (Windows-Spiegel), Microsoft direkt oder
+        die offiziellen Linux-Projektseiten."""
         d = tk.Toplevel(self)
-        d.title("Windows bei Microsoft holen")
-        d.geometry("560x220")
+        d.title("Abbild herunterladen")
+        d.geometry("640x360")
         d.transient(self)
-        zustand = {"sitzung": None}
-        produkt = ttk.Combobox(d, state="readonly", values=["windows11", "windows10"])
-        produkt.current(0)
-        produkt.pack(fill="x", padx=12, pady=6)
-        ausgabe = ttk.Combobox(d, state="readonly")
-        ausgabe.pack(fill="x", padx=12, pady=6)
+        zustand = {"sitzung": None, "eintraege": [], "dateien": []}
+
+        ttk.Label(d, text="Quelle").pack(anchor="w", padx=12, pady=(10, 0))
+        quelle = ttk.Combobox(d, state="readonly", values=[
+            "Windows – WinFuture (Spiegel, ohne Sperre)",
+            "Windows – direkt bei Microsoft",
+            "Linux – offizielle Projektseiten"])
+        quelle.current(0)
+        quelle.pack(fill="x", padx=12)
+
+        ttk.Label(d, text="Angebot").pack(anchor="w", padx=12, pady=(8, 0))
+        auswahl = ttk.Combobox(d, state="readonly")
+        auswahl.pack(fill="x", padx=12)
+
+        ttk.Label(d, text="Sprache (nur Microsoft)").pack(anchor="w", padx=12, pady=(8, 0))
         sprache = ttk.Combobox(d, state="readonly")
-        sprache.pack(fill="x", padx=12, pady=6)
-        hinweis = ttk.Label(d, text="", wraplength=520)
-        hinweis.pack(fill="x", padx=12)
+        sprache.pack(fill="x", padx=12)
+
+        ttk.Label(d, text="Abbild").pack(anchor="w", padx=12, pady=(8, 0))
+        datei = ttk.Combobox(d, state="readonly")
+        datei.pack(fill="x", padx=12)
+
+        hinweis = ttk.Label(d, text="", wraplength=610, justify="left")
+        hinweis.pack(fill="x", padx=12, pady=6)
+
+        def art():
+            return ("winfuture", "microsoft", "linux")[quelle.current()]
 
         def suchen():
+            hinweis["text"] = "wird abgefragt …"
+            d.update_idletasks()
             try:
-                liste = download.ausgaben(produkt.get())
-                ausgabe["values"] = [a["name"] for a in liste]
-                ausgabe.current(0)
-                zustand["ausgaben"] = liste
-                sid, sprachen = download.sprachen(liste[0]["id"], produkt.get())
-                zustand["sitzung"] = sid
-                zustand["sprachen"] = sprachen
-                sprache["values"] = [s["name"] for s in sprachen]
-                deutsch = next((i for i, s in enumerate(sprachen)
-                                if "German" in s["name"]), 0)
-                sprache.current(deutsch)
-                hinweis["text"] = "Sprache wählen und herunterladen."
+                if art() == "microsoft":
+                    zustand["eintraege"] = download.ausgaben("windows11")
+                    auswahl["values"] = [e["name"] for e in zustand["eintraege"]]
+                    auswahl.current(0)
+                    sid, sprachen = download.sprachen(zustand["eintraege"][0]["id"])
+                    zustand["sitzung"], zustand["sprachen"] = sid, sprachen
+                    sprache["values"] = [s["name"] for s in sprachen]
+                    sprache.current(next((i for i, s in enumerate(sprachen)
+                                          if "German" in s["name"]), 0))
+                elif art() == "winfuture":
+                    zustand["eintraege"] = download.winfuture_seiten()
+                    auswahl["values"] = [e["titel"] for e in zustand["eintraege"]]
+                    auswahl.current(0)
+                else:
+                    zustand["eintraege"] = linuxisos.distributionen()
+                    auswahl["values"] = [f'{e["name"]} – {e["hinweis"]}'
+                                         for e in zustand["eintraege"]]
+                    auswahl.current(0)
+                hinweis["text"] = "Angebot wählen und „Abbilder zeigen“ drücken."
+            except Exception as e:
+                hinweis["text"] = str(e)
+
+        def zeigen():
+            hinweis["text"] = "hole Downloadadressen …"
+            d.update_idletasks()
+            try:
+                gewaehlt = zustand["eintraege"][auswahl.current()]
+                if art() == "microsoft":
+                    s = zustand["sprachen"][sprache.current()]
+                    zustand["dateien"] = download.links(zustand["sitzung"], s["id"])
+                elif art() == "winfuture":
+                    zustand["dateien"] = download.winfuture_dateien(gewaehlt["id"])
+                else:
+                    zustand["dateien"] = linuxisos.dateien(gewaehlt["id"])
+                datei["values"] = [f'{x.get("typ", "")} {x["name"]}'.strip()
+                                   for x in zustand["dateien"]]
+                datei.current(0)
+                mit_summe = sum(1 for x in zustand["dateien"] if x.get("sha256"))
+                hinweis["text"] = (f'{len(zustand["dateien"])} Abbilder'
+                                   + (f' – {mit_summe} mit Prüfsumme, die nach dem '
+                                      'Laden geprüft wird.' if mit_summe else ""))
             except Exception as e:
                 hinweis["text"] = str(e)
 
         def laden():
-            try:
-                s = zustand["sprachen"][sprache.current()]
-                treffer = download.links(zustand["sitzung"], s["id"], produkt.get())
-                ziel = filedialog.askdirectory(title="Wohin soll die ISO?")
-                if not ziel:
-                    return
-                d.destroy()
-                self._im_hintergrund(
-                    lambda: download.herunterladen(treffer[0]["uri"], ziel,
-                                                   treffer[0]["name"], self._melden),
-                    lambda e, f: self._fertig(e, f, "ISO geladen"))
-            except Exception as e:
-                hinweis["text"] = str(e)
+            if not zustand["dateien"]:
+                return
+            x = zustand["dateien"][datei.current()]
+            ziel = filedialog.askdirectory(title="Wohin soll das Abbild?")
+            if not ziel:
+                return
+            d.destroy()
+            self._im_hintergrund(
+                lambda: download.herunterladen(
+                    x["uri"], ziel, x["name"], self._melden,
+                    referer=x.get("referer"), sha256=x.get("sha256") or None),
+                lambda e, f: self._fertig(
+                    e, f, "Geladen: " + (e or {}).get("name", "")
+                    + (" – Prüfsumme stimmt" if (e or {}).get("geprueft") else "")))
 
         knoepfe = ttk.Frame(d)
-        knoepfe.pack(pady=8)
+        knoepfe.pack(pady=10)
         ttk.Button(knoepfe, text="Suchen", command=suchen).pack(side="left", padx=6)
-        ttk.Button(knoepfe, text="Herunterladen", command=laden).pack(side="left")
+        ttk.Button(knoepfe, text="Abbilder zeigen", command=zeigen).pack(side="left", padx=6)
+        ttk.Button(knoepfe, text="Herunterladen", command=laden).pack(side="left", padx=6)
 
     def pruefsummen(self):
         if not self.iso:
