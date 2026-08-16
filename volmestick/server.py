@@ -97,6 +97,42 @@ def isos_auflisten():
     return treffer
 
 
+def _bestandsuebersicht():
+    """Was liegt hier gerade herum - damit man es im Blick behaelt und
+    mit einem Klick wieder los wird."""
+    eintraege = []
+    for ordner in (ISO_ORDNER, AUSGABE_ORDNER):
+        if not os.path.isdir(ordner):
+            continue
+        for name in sorted(os.listdir(ordner)):
+            if not name.lower().endswith((".iso", ".img", ".teil",
+                                          ".unvollstaendig")):
+                continue
+            pfad = os.path.join(ordner, name)
+            eintraege.append({"name": name, "pfad": pfad,
+                              "groesse": os.path.getsize(pfad),
+                              "gebaut": ordner == AUSGABE_ORDNER})
+    frei = shutil.disk_usage(ISO_ORDNER if os.path.isdir(ISO_ORDNER)
+                             else os.path.expanduser("~")).free
+    return {"dateien": eintraege,
+            "belegt": sum(e["groesse"] for e in eintraege),
+            "frei": frei, "ordner": ISO_ORDNER}
+
+
+def _aufraeumen(namen=None):
+    """namen=None raeumt alles ab."""
+    entfernt = []
+    for e in _bestandsuebersicht()["dateien"]:
+        if namen and e["name"] not in namen:
+            continue
+        try:
+            os.remove(e["pfad"])
+            entfernt.append(e["name"])
+        except OSError:
+            pass
+    return entfernt, _bestandsuebersicht()["frei"]
+
+
 def _ferner_bestand(adresse):
     """ISO-Liste eines anderen VolmeStick holen - so kommt der Windows-Rechner
     an die Abbilder, die schon auf dem Server liegen."""
@@ -138,10 +174,10 @@ def erlaubter_pfad(pfad):
     return p
 
 
-# Was ein entfernter Aufruf sehen darf. Alles andere arbeitet auf der
-# Hardware dieses Rechners und waere aus der Ferne sinnlos bis gefaehrlich.
-FERN_ERLAUBT = {"/", "/index.html", "/api/windows-paket", "/api/werkzeuge",
-                "/api/xml", "/api/antwort-iso"}
+# Aus der Ferne bedienbar ist alles, was Dateiarbeit ist. Gesperrt bleibt nur,
+# was die Datentraeger DIESES Rechners anfasst - ein USB-Stick gehoert an den
+# Rechner, an dem man sitzt.
+FERN_GESPERRT = {"/api/stick", "/api/blockpruefung", "/api/geraete"}
 FERNZUGRIFF = False
 
 
@@ -161,12 +197,12 @@ class Griff(BaseHTTPRequestHandler):
         return self.client_address[0] in ("127.0.0.1", "::1", "localhost")
 
     def _darf(self, pfad):
-        if FERNZUGRIFF or self._ist_lokal() or pfad in FERN_ERLAUBT:
+        if FERNZUGRIFF or self._ist_lokal() or pfad not in FERN_GESPERRT:
             return True
         self._json({"fehler":
-                    "VolmeStick arbeitet nur fuer den Rechner, auf dem er laeuft. "
-                    "Fuer Downloads und USB-Sticks bitte VolmeStick auf dem eigenen "
-                    "Rechner starten - das Paket dazu gibt es auf der Startseite."},
+                    "Datentraeger lassen sich nur an dem Rechner beschreiben, an "
+                    "dem sie stecken. Dafuer bitte VolmeStick auf dem eigenen "
+                    "Rechner starten - das Paket dazu gibt es ueber den Knopf oben."},
                    403)
         return False
 
@@ -211,9 +247,10 @@ class Griff(BaseHTTPRequestHandler):
             if not self._darf(pfad):
                 return
             if pfad in ("/", "/index.html"):
-                # Von aussen: Verteilseite. Lokal: die eigentliche Anwendung.
-                seite = "ui.html" if (self._ist_lokal() or FERNZUGRIFF) else "verteil.html"
-                return self._datei(os.path.join(BASIS, "web", seite),
+                return self._datei(os.path.join(BASIS, "web", "ui.html"),
+                                   "text/html; charset=utf-8")
+            if pfad in ("/paket", "/paket.html"):
+                return self._datei(os.path.join(BASIS, "web", "verteil.html"),
                                    "text/html; charset=utf-8")
             if pfad == "/api/isos":
                 return self._json({"isos": isos_auflisten(), "ordner": ISO_ORDNER})
@@ -230,10 +267,18 @@ class Griff(BaseHTTPRequestHandler):
                 return self._json(a)
             if pfad.startswith("/api/holen/"):
                 name = os.path.basename(unquote(pfad.rsplit("/", 1)[-1]))
+                danach_weg = parse_qs(weg.query).get("aufraeumen", ["0"])[0] == "1"
                 for ordner in (AUSGABE_ORDNER, ISO_ORDNER):
                     ziel = os.path.join(ordner, name)
                     if os.path.isfile(ziel):
-                        return self._datei(ziel)
+                        self._datei(ziel)
+                        if danach_weg:
+                            # Heruntergeladen heisst: hier nicht mehr gebraucht.
+                            try:
+                                os.remove(ziel)
+                            except OSError:
+                                pass
+                        return
                 self.send_error(404)
                 return
             if pfad == "/api/quelle/winfuture":
@@ -246,9 +291,12 @@ class Griff(BaseHTTPRequestHandler):
                 return self._json({"eintraege": linuxisos.distributionen()})
             if pfad == "/api/windows-paket":
                 return self._paket()
+            if pfad == "/api/bestand":
+                return self._json(_bestandsuebersicht())
             if pfad == "/api/werkzeuge":
                 return self._json({
                     "rechner": platform.node(),
+                    "lokal": self._ist_lokal() or FERNZUGRIFF,
                     "xorriso": bool(vstick._xorriso()),
                     "system": "Windows" if vstick.IST_WINDOWS else "Linux",
                     "root": (os.name != "nt" and os.geteuid() == 0),
@@ -303,6 +351,12 @@ class Griff(BaseHTTPRequestHandler):
                 return self._json({"xml": unattend.baue_unattend(opt),
                                    "zusammenfassung": unattend.zusammenfassung(opt)})
 
+            if weg == "/api/aufraeumen":
+                d = self._koerper()
+                namen = d.get("namen")
+                entfernt, frei = _aufraeumen(namen)
+                return self._json({"entfernt": entfernt, "frei": frei})
+
             if weg == "/api/antwort-iso":
                 import tempfile
                 d = self._koerper()
@@ -329,9 +383,20 @@ class Griff(BaseHTTPRequestHandler):
                     grund = os.path.splitext(os.path.basename(quelle))[0]
                     name = f"{grund}-v3d.iso"
                 ziel = os.path.join(AUSGABE_ORDNER, name)
+                quelle_weg = bool(d.get("quelle_loeschen"))
+
+                def bauen(f):
+                    r = vstick.baue_iso(quelle, ziel, d.get("optionen") or {}, f)
+                    if quelle_weg:
+                        try:
+                            os.remove(quelle)
+                            r["quelle_entfernt"] = os.path.basename(quelle)
+                        except OSError:
+                            pass
+                    return r
+
                 kennung = auftrag_neu("iso")
-                auftrag_laufen(kennung, lambda f: vstick.baue_iso(
-                    quelle, ziel, d.get("optionen") or {}, f))
+                auftrag_laufen(kennung, bauen)
                 return self._json({"auftrag": kennung, "ziel": os.path.basename(ziel)})
 
             if weg == "/api/stick":

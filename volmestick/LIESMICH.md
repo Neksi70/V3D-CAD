@@ -3,31 +3,24 @@
 Windows-Installationsmedien bauen — wie Rufus, aber zusätzlich **als ISO**,
 damit sie sich direkt in VMware einbinden lässt.
 
-**Grundsatz: VolmeStick arbeitet immer nur für den Rechner, auf dem es läuft.**
-Ein USB-Stick lässt sich nur dort beschreiben, wo er steckt — also läuft die App
-auf deinem Arbeitsplatz, nicht auf dem Server.
+**Was wo läuft:** Die Weboberfläche ist von überall im Netz voll bedienbar —
+Abbild herunterladen, ISO für VMware bauen, Prüfsummen. Gesperrt ist nur, was
+die Datenträger des jeweiligen Rechners anfasst: **USB-Sticks lassen sich nur
+dort schreiben, wo sie stecken.** Ruft man den Server aus dem Netz auf, wird der
+Stick-Bereich deshalb ausgeblendet und stattdessen das Paket für den eigenen
+Rechner angeboten (`/paket`).
 
-Der Server (V3DA) ist reine **Verteilstelle**: Ruft man ihn aus dem Netz auf,
-zeigt er nur eine Startseite mit dem Paket zum Selberstarten. Alle arbeitenden
-Endpunkte antworten von außen mit 403 — es landen also keine Abbilder auf dem
-Server, und niemand kann dessen Datenträger anfassen.
+**Der Server bleibt dabei sauber.** Abbilder gelten als Durchlaufposten:
 
-| Aufruf | was passiert |
-|---|---|
-| `localhost:8775` | die volle App: Abbilder laden, Stick schreiben, ISO bauen |
-| `<server>:8775` aus dem Netz | Startseite: Paket herunterladen + Antwort-ISO erzeugen |
+* Die fertige ISO wird beim Herunterladen automatisch von dort entfernt.
+* „Quell-ISO nach dem Bauen entfernen“ ist bei entfernter Bedienung vorausgewählt.
+* Eine Leiste zeigt jederzeit, was gerade belegt ist — mit einem Knopf
+  „Alles entfernen“.
 
-So kommst du auf deinem Rechner los:
-
-* **Windows** — ZIP von der Startseite, entpacken,
-  `windows\Weboberflaeche-starten.bat` doppelklicken (holt sich selbst
-  Administratorrechte und öffnet den Browser). Alternativ `windows\EXE-bauen.bat`
-  für `VolmeStick.exe` (Fenster im Rufus-Aufbau) und `VolmeStick-Web.exe`.
-* **Linux** — `./start.sh` (startet sich per sudo neu und öffnet den Browser).
-
-Wer es doch aus dem Netz voll bedienen will — etwa ein Linux-Rechner, an dem der
-Stick steckt, ohne Bildschirm — startet mit `--fernzugriff`. Dann werden die
-Datenträger *dieses* Rechners angeboten.
+Für den USB-Stick am Arbeitsplatz: `/paket` öffnen, ZIP laden, unter Windows
+`windows\Weboberflaeche-starten.bat` doppelklicken (holt sich Administratorrechte
+und öffnet den Browser), unter Linux `./start.sh`. Wer die Datenträger eines
+kopflosen Rechners doch aus der Ferne bedienen will, startet mit `--fernzugriff`.
 
 ## ISO für VMware
 

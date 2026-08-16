@@ -203,6 +203,10 @@
       <div><label>Datentr&auml;gerbezeichnung</label>
         <input type="text" id="label" value="V3D_WIN" maxlength="11"></div>
     </div>
+    <label class="haken" style="margin-top:6px"><input type="checkbox" id="quelle_loeschen">
+      <span><b>Quell-ISO nach dem Bauen entfernen</b>
+      <small>Die gro&szlig;e Ausgangsdatei wird nicht mehr gebraucht, sobald die fertige ISO steht.</small></span></label>
+    <div id="bestandsleiste"></div>
     <label class="haken" style="margin-top:4px"><input type="checkbox" id="schnell" checked>
       <span><b>Schnellformatierung</b>
       <small>Aus = Datentr&auml;ger wird beim Formatieren auf Fehler gepr&uuml;ft (dauert deutlich l&auml;nger).</small></span></label>
@@ -377,6 +381,30 @@ document.addEventListener("change", e => {
   if(e.target && e.target.id === "modus") pruefeKnoepfe();
 });
 
+// ---- Was liegt auf diesem Rechner herum
+async function bestandZeigen(){
+  const l = $("#bestandsleiste");
+  try{
+    const j = await hole("/api/bestand");
+    if(!j.dateien.length){
+      l.innerHTML = `<div class="stichwort" style="margin-top:8px">
+        Abbild-Ordner ${j.ordner} ist leer – ${mb(j.frei)} frei.</div>`;
+      return;
+    }
+    l.innerHTML = `<div class="meldung m-warn" style="margin-top:10px">
+      <b>${mb(j.belegt)} belegt</b> in ${j.ordner} (${mb(j.frei)} frei)
+      <div class="stichwort" style="margin:4px 0">${j.dateien.map(d =>
+        d.name + " (" + mb(d.groesse) + ")").join("<br>")}</div>
+      <button class="zweit" id="aufraeumen" type="button">Alles entfernen</button></div>`;
+    $("#aufraeumen").onclick = async () => {
+      if(!confirm("Alle Abbilder in " + j.ordner + " löschen?")) return;
+      const r = await hole("/api/aufraeumen", {});
+      meldung(l, `${r.entfernt.length} Datei(en) entfernt – ${mb(r.frei)} frei.`, "gut");
+      bestandZeigen(); isosLaden();
+    };
+  }catch(e){ l.innerHTML = ""; }
+}
+
 // ---- Auftraege
 function laufZeigen(){
   $("#lauf").style.display="block";
@@ -397,7 +425,7 @@ async function verfolgen(kennung, fertigText){
       if(a.fehler) meldung($("#lauf_ergebnis"), a.fehler, "fehler");
       else meldung($("#lauf_ergebnis"), fertigText(a.ergebnis), "gut");
       $("#iso_bauen").disabled=false; pruefeKnoepfe();
-      isosLaden();
+      isosLaden(); bestandZeigen();
       break;
     }
   }
@@ -538,10 +566,15 @@ $("#iso_bauen").onclick = async () => {
   $("#iso_bauen").disabled = true; laufZeigen();
   try{
     const j = await hole("/api/iso", {pfad: analyse.pfad, ziel: $("#zielname").value.trim(),
-                                      optionen: optionen()});
-    verfolgen(j.auftrag, e => `Fertig: <a href="/api/holen/${encodeURIComponent(j.ziel)}"
-        style="color:#a6e9c4">${j.ziel}</a> (${mb(e.groesse)}) – in VMware als
-        einziges CD-Laufwerk einbinden, fertig.`);
+                                      optionen: optionen(),
+                                      quelle_loeschen: $("#quelle_loeschen").checked});
+    verfolgen(j.auftrag, e => `Fertig (${mb(e.groesse)}):
+        <a href="/api/holen/${encodeURIComponent(j.ziel)}?aufraeumen=1"
+           style="color:#a6e9c4"><b>${j.ziel} herunterladen</b></a>
+        – in VMware als einziges CD-Laufwerk einbinden.
+        <div class="stichwort" style="margin-top:4px">Die Datei wird beim
+        Herunterladen von diesem Rechner entfernt.
+        ${e.quelle_entfernt ? "Quell-ISO " + e.quelle_entfernt + " ist bereits weg." : ""}</div>`);
   }catch(e){ meldung($("#lauf_ergebnis"), e.message, "fehler"); $("#iso_bauen").disabled=false; }
 };
 
@@ -565,33 +598,32 @@ $("#stick_schreiben").onclick = async () => {
 };
 
 (async () => {
-  await isosLaden(); await geraeteLaden();
-  try{
-    werkzeuge = await hole("/api/werkzeuge");
-    const entfernt = !["localhost","127.0.0.1","::1"].includes(location.hostname);
-    $("#wessen_geraete").innerHTML = entfernt
-      ? `<div class="meldung m-warn"><b>Hier siehst du die Datenträger von
-           „${werkzeuge.rechner}“ – nicht die deines eigenen Rechners.</b><br>
-           Ein USB-Stick müsste also an <em>${werkzeuge.rechner}</em> stecken.
-           Für einen Stick an deinem Arbeitsplatz: VolmeStick dort starten
-           (<code>VolmeStick.exe</code> bzw. <code>Weboberflaeche-starten.bat</code>)
-           und als Quelle „Bestand eines anderen VolmeStick“ mit der Adresse
-           <code>${location.host}</code> wählen – dann bleibt die ISO hier und
-           der Stick entsteht bei dir.
-           <div style="margin-top:8px"><a href="/api/windows-paket"
-             style="color:#ffd08a">VolmeStick für Windows herunterladen (ZIP)</a>
-             – entpacken, <code>windows\\Weboberflaeche-starten.bat</code> doppelklicken.</div>
-           </div>`
-      : `<div class="stichwort">Datenträger dieses Rechners (${werkzeuge.rechner}).</div>`;
-    if(!werkzeuge.xorriso)
-      meldung($("#isoinfo"), "xorriso fehlt auf dem Server – große ISOs (Abbild &gt; 4 GB) "
-        + "können nicht gebaut werden. Abhilfe: <code>sudo apt install xorriso</code>", "warn");
-    if(!werkzeuge.root)
-      $("#stickhinweis").innerHTML = '<div class="meldung m-warn">Der Server l&auml;uft ohne '
-        + 'root-Rechte – Sticks lassen sich nur über die Kommandozeile schreiben:<br>'
-        + '<code>sudo python3 vstick.py stick ISO /dev/sdX</code><br>'
-        + 'Am Windows-Rechner: VolmeStick.exe als Administrator.</div>';
-  }catch(e){}
+  // Erst klaeren, wo wir sind - danach nur abfragen, was hier ueberhaupt geht.
+  try{ werkzeuge = await hole("/api/werkzeuge"); }catch(e){ werkzeuge = {lokal:true}; }
+  const entfernt = !werkzeuge.lokal;
+  if(entfernt){
+    ["#geraete","#geraete_neu","#stick_schreiben","#blockpruefung"].forEach(w => {
+      const el = $(w); if(el) el.style.display = "none";
+    });
+    $("#quelle_loeschen").checked = true;
+    $("#wessen_geraete").innerHTML = `<div class="meldung m-warn">
+      <b>USB-Sticks gehen hier nicht – du arbeitest gerade auf „${werkzeuge.rechner}“.</b><br>
+      Ein Stick lässt sich nur an dem Rechner beschreiben, an dem er steckt.
+      Alles andere (Abbild holen, ISO für VMware bauen) läuft hier ganz normal.
+      <div style="margin-top:8px">
+        <a href="/paket" style="color:#ffd08a">VolmeStick für den eigenen Rechner</a>
+        – dann erscheinen dort deine Sticks.</div></div>`;
+  }else{
+    $("#wessen_geraete").innerHTML =
+      `<div class="stichwort">Datenträger dieses Rechners (${werkzeuge.rechner}).</div>`;
+    await geraeteLaden();
+  }
+  if(!werkzeuge.xorriso && werkzeuge.system === "Linux"){
+    // Nur ein Hinweis - der Regelweg haengt die Datei ein und braucht es nicht
+    console.log("xorriso fehlt - der Umbauweg über xorriso steht nicht bereit.");
+  }
+  await isosLaden();
+  bestandZeigen();
 })();
 </script>
 </body>
