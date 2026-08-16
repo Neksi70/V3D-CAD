@@ -21,7 +21,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.parse
 from urllib.parse import urlparse, parse_qs, unquote
 
-BASIS = os.path.dirname(os.path.abspath(__file__))
+# In einer gebauten EXE liegen die Dateien im Auspackordner von PyInstaller
+BASIS = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASIS)
 import vstick        # noqa: E402
 import unattend      # noqa: E402
@@ -329,6 +330,11 @@ class Griff(BaseHTTPRequestHandler):
                 return self._json({"eintraege": linuxisos.distributionen()})
             if pfad == "/api/windows-paket":
                 return self._paket()
+            if pfad == "/api/exe":
+                exe = os.path.join(BASIS, "build", "VolmeStick.exe")
+                if not os.path.isfile(exe):
+                    return self._fehler("Es liegt keine gebaute EXE bereit", 404)
+                return self._datei(exe, "application/octet-stream")
             if pfad == "/api/bestand":
                 return self._json(_bestandsuebersicht())
             if pfad == "/api/werkzeuge":
@@ -379,6 +385,10 @@ class Griff(BaseHTTPRequestHandler):
                    "bestand.py", "server.py", "LIESMICH.md", "start.sh",
                    "web/ui.html", "web/verteil.html",
                    "windows/vstick_gui.pyw", "windows/EXE-bauen.bat"]
+        if getattr(sys, "frozen", False):
+            return self._json({"fehler":
+                               "Diese Fassung laeuft bereits auf deinem Rechner - "
+                               "das Paket wird hier nicht gebraucht."}, 400)
         puffer = io.BytesIO()
         with zipfile.ZipFile(puffer, "w", zipfile.ZIP_DEFLATED) as z:
             for name in dateien:

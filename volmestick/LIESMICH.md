@@ -22,9 +22,15 @@ entpacken und `VolmeStick starten.bat` doppelklicken. **Python muss dafür nicht
 installiert sein** — das Paket bringt eine eigene Laufzeit im Ordner `runtime`
 mit und verändert am Rechner nichts. Unter Linux: `./start.sh`.
 
-Eine echte `.exe` liegt nicht bei: die lässt sich nur auf einem Windows-Rechner
-bauen. `windows\EXE-bauen.bat` erledigt das dort in einem Durchgang, benötigt
-dann aber ein normal installiertes Python samt `pip`. Wer die Datenträger eines
+Alternativ gibt es **`VolmeStick.exe`** (5,6 MB, eine Datei, fragt selbst nach
+Administratorrechten) über den Knopf auf der Startseite. Sie wird unter Linux
+mit Wine gebaut — `windows/exe-bauen-mit-wine.sh` erledigt das reproduzierbar
+und dokumentiert die Klippen (Wine 6 kann keine MSI-Installer, Python 3.12
+startet dort nicht, `get-pip` stirbt still, PyInstaller 6 läuft nicht). Ein
+**Lauftest ist damit aber nicht möglich**: Wine 6 kann die fertige EXE nicht
+starten. Wenn sie auf deinem Windows zickt, ist das ZIP der sichere Weg.
+
+Auf einem Windows-Rechner mit Python baut `windows\EXE-bauen.bat` dieselbe EXE. Wer die Datenträger eines
 kopflosen Rechners doch aus der Ferne bedienen will, startet mit `--fernzugriff`.
 
 ## ISO für VMware
