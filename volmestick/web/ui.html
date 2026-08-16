@@ -71,7 +71,10 @@
         <select id="quelle">
           <option value="winfuture">Windows 10 / 11 (WinFuture-Spiegel)</option>
           <option value="linux">Linux &ndash; offizielle Projektseiten</option>
+          <option value="server">Bestand eines anderen VolmeStick</option>
         </select></div>
+      <div id="feld_adresse" class="weg"><label>Adresse des anderen VolmeStick</label>
+        <input type="text" id="serveradresse" placeholder="100.125.34.44:8775"></div>
       <div id="feld_auswahl"><label>Angebot</label>
         <select id="auswahl"><option>&ndash; auf Suchen klicken &ndash;</option></select></div>
       <div style="flex:0 0 auto;display:flex;align-items:flex-end;gap:8px">
@@ -202,6 +205,7 @@
     <label class="haken" style="margin-top:4px"><input type="checkbox" id="schnell" checked>
       <span><b>Schnellformatierung</b>
       <small>Aus = Datentr&auml;ger wird beim Formatieren auf Fehler gepr&uuml;ft (dauert deutlich l&auml;nger).</small></span></label>
+    <div id="wessen_geraete"></div>
     <p class="stichwort" style="margin:12px 0 4px">USB-Stick beschreiben (l&ouml;scht den Datentr&auml;ger vollst&auml;ndig):</p>
     <table id="geraete"><tr><td class="stichwort">&ndash; wird geladen &ndash;</td></tr></table>
     <div class="knopfreihe">
@@ -395,13 +399,17 @@ async function verfolgen(kennung, fertigText){
 
 // ---- Abbild herunterladen (WinFuture / Linux)
 $("#quelle").onchange = () => {
+  const server = $("#quelle").value === "server";
+  $("#feld_adresse").classList.toggle("weg", !server);
+  $("#feld_auswahl").classList.toggle("weg", server);
   $("#auswahl").innerHTML = "<option>– auf Suchen klicken –</option>";
-  $("#q_dateien").disabled = true;
+  $("#q_dateien").disabled = server ? false : true;
   $("#q_info").innerHTML = "";
 };
 
 $("#q_suchen").onclick = async () => {
   const k = $("#q_info");
+  if($("#quelle").value === "server") return $("#q_dateien").click();
   k.innerHTML = '<div class="stichwort">wird abgefragt &hellip;</div>';
   try{
     const j = await hole("/api/quelle/" + $("#quelle").value);
@@ -475,8 +483,9 @@ $("#q_dateien").onclick = async () => {
   const k = $("#q_info");
   k.innerHTML = '<div class="stichwort">hole Downloadadressen und gleiche mit dem Bestand ab &hellip;</div>';
   try{
-    const j = await hole("/api/quelle/dateien", {quelle: $("#quelle").value,
-                                                 id: $("#auswahl").value});
+    const kennung = $("#quelle").value === "server"
+                  ? $("#serveradresse").value.trim() : $("#auswahl").value;
+    const j = await hole("/api/quelle/dateien", {quelle: $("#quelle").value, id: kennung});
     k.innerHTML = j.dateien.map(ladeKnopf).join("");
     knoepfeVerdrahten(k);
   }catch(e){ k.innerHTML=""; meldung(k, e.message, "warn"); }
@@ -537,6 +546,21 @@ $("#stick_schreiben").onclick = async () => {
   await isosLaden(); await geraeteLaden();
   try{
     werkzeuge = await hole("/api/werkzeuge");
+    const entfernt = !["localhost","127.0.0.1","::1"].includes(location.hostname);
+    $("#wessen_geraete").innerHTML = entfernt
+      ? `<div class="meldung m-warn"><b>Hier siehst du die Datenträger von
+           „${werkzeuge.rechner}“ – nicht die deines eigenen Rechners.</b><br>
+           Ein USB-Stick müsste also an <em>${werkzeuge.rechner}</em> stecken.
+           Für einen Stick an deinem Arbeitsplatz: VolmeStick dort starten
+           (<code>VolmeStick.exe</code> bzw. <code>Weboberflaeche-starten.bat</code>)
+           und als Quelle „Bestand eines anderen VolmeStick“ mit der Adresse
+           <code>${location.host}</code> wählen – dann bleibt die ISO hier und
+           der Stick entsteht bei dir.
+           <div style="margin-top:8px"><a href="/api/windows-paket"
+             style="color:#ffd08a">VolmeStick für Windows herunterladen (ZIP)</a>
+             – entpacken, <code>windows\\Weboberflaeche-starten.bat</code> doppelklicken.</div>
+           </div>`
+      : `<div class="stichwort">Datenträger dieses Rechners (${werkzeuge.rechner}).</div>`;
     if(!werkzeuge.xorriso)
       meldung($("#isoinfo"), "xorriso fehlt auf dem Server – große ISOs (Abbild &gt; 4 GB) "
         + "können nicht gebaut werden. Abhilfe: <code>sudo apt install xorriso</code>", "warn");

@@ -3,12 +3,32 @@
 Windows-Installationsmedien bauen — wie Rufus, aber zusätzlich **als ISO**,
 damit sie sich direkt in VMware einbinden lässt.
 
-Kern in Python, zwei Oberflächen:
+**Wichtig zum Verständnis:** Ein USB-Stick kann nur an dem Rechner beschrieben
+werden, an dem er auch steckt. Die Weboberfläche zeigt immer die Datenträger
+*des Rechners, auf dem sie läuft* — läuft sie auf dem Server, sind das dessen
+Datenträger. Deshalb läuft VolmeStick an beiden Stellen:
+
+| Rechner | wozu | Start |
+|---|---|---|
+| **Server (V3DA)** | ISOs sammeln und herunterladen, ISO für VMware bauen | Dienst auf Port 8775 |
+| **dein Windows-PC** | **den USB-Stick schreiben** | `windows\Weboberflaeche-starten.bat` (oder `VolmeStick.exe`) |
+
+Am Windows-PC wählst du als Quelle **„Bestand eines anderen VolmeStick"** und
+trägst die Serveradresse ein — dann erscheint dort, was auf V3DA liegt, wird
+einmal herübergeladen und landet auf dem Stick, der bei dir steckt.
+
+Das nötige Paket gibt es direkt aus der Oberfläche: **VolmeStick für Windows
+herunterladen (ZIP)** → entpacken → `windows\Weboberflaeche-starten.bat`
+doppelklicken (holt sich selbst Administratorrechte und öffnet den Browser).
+Wer lieber ein Fenster im Rufus-Aufbau mag, nimmt `windows\EXE-bauen.bat` und
+danach `dist\VolmeStick.exe`.
+
+Drei Oberflächen, ein Kern:
 
 | | wo | wofür |
 |---|---|---|
-| Weboberfläche | `python3 server.py` → `http://<server>:8775` | Abbilder herunterladen, ISO bauen (VMware), Prüfsummen |
-| Windows-Fenster | `windows/VolmeStick.exe` | USB-Stick am Arbeitsplatz schreiben |
+| Weboberfläche | `python3 server.py` → `:8775` | alles außer dem Stick am fremden Rechner |
+| Windows-Fenster | `windows/VolmeStick.exe` | Stick schreiben im Rufus-Aufbau |
 | Kommandozeile | `python3 vstick.py …` | alles, skriptbar |
 
 > **Nicht in den Tailscale-Funnel legen.** Das Werkzeug löscht Datenträger.
@@ -35,6 +55,7 @@ kaputte Signatur.
 |---|---|
 | **WinFuture** | Windows 11 / 10 (Deutsch), Spiegel der Microsoft-ISOs |
 | **Linux** | Ubuntu, Mint, Debian, Fedora, openSUSE, Arch, Pop!_OS, Kali, Rocky, AlmaLinux |
+| **anderer VolmeStick** | der ISO-Bestand eines zweiten Rechners (Server → Arbeitsplatz) |
 
 Die Linux-Adressen werden bei den offiziellen Projektspiegeln **live aufgelöst** —
 es steht also nie eine veraltete Fassung in der Liste. Bei WinFuture sind die

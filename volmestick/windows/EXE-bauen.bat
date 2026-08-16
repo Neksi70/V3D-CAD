@@ -10,8 +10,19 @@ pyinstaller --noconfirm --onefile --windowed --uac-admin ^
   --hidden-import vstick --hidden-import unattend --hidden-import download ^
   --hidden-import iso9660 --hidden-import wim ^
   vstick_gui.pyw || goto :fehler
+pyinstaller --noconfirm --onefile --uac-admin ^
+  --name VolmeStick-Web ^
+  --paths ".." ^
+  --add-data "..\web\ui.html;web" ^
+  --hidden-import vstick --hidden-import unattend --hidden-import download ^
+  --hidden-import iso9660 --hidden-import wim --hidden-import linuxisos ^
+  --hidden-import bestand ^
+  "..\server.py" || goto :fehler
+
 echo.
-echo Fertig: %~dp0dist\VolmeStick.exe
+echo Fertig:
+echo   %~dp0dist\VolmeStick.exe      (Fenster im Rufus-Aufbau)
+echo   %~dp0dist\VolmeStick-Web.exe  (gleiche Weboberflaeche wie auf dem Server)
 pause
 exit /b 0
 :fehler

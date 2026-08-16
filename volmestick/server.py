@@ -10,6 +10,7 @@ import argparse
 import json
 import mimetypes
 import os
+import platform
 import shutil
 import sys
 import threading
@@ -17,6 +18,7 @@ import time
 import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.parse
 from urllib.parse import urlparse, parse_qs, unquote
 
 BASIS = os.path.dirname(os.path.abspath(__file__))
@@ -83,6 +85,27 @@ def isos_auflisten():
                             "groesse": os.path.getsize(pfad),
                             "ausgabe": ordner == AUSGABE_ORDNER})
     return treffer
+
+
+def _ferner_bestand(adresse):
+    """ISO-Liste eines anderen VolmeStick holen - so kommt der Windows-Rechner
+    an die Abbilder, die schon auf dem Server liegen."""
+    import urllib.request
+    if not adresse:
+        raise vstick.Fehler("Keine Adresse angegeben")
+    if not adresse.startswith(("http://", "https://")):
+        adresse = "http://" + adresse
+    adresse = adresse.rstrip("/")
+    try:
+        with urllib.request.urlopen(adresse + "/api/isos", timeout=15) as a:
+            daten = json.loads(a.read().decode("utf-8"))
+    except Exception as e:
+        raise vstick.Fehler(f"{adresse} antwortet nicht: {e}")
+    return [{"name": i["name"],
+             "uri": f"{adresse}/api/holen/{urllib.parse.quote(i['name'])}",
+             "groesse": i.get("groesse"),
+             "quelle": "server"}
+            for i in daten.get("isos", [])]
 
 
 def _abgleichen(dateien):
@@ -171,15 +194,26 @@ class Griff(BaseHTTPRequestHandler):
                     return self._fehler("Unbekannter Auftrag", 404)
                 return self._json(a)
             if pfad.startswith("/api/holen/"):
-                name = unquote(pfad.rsplit("/", 1)[-1])
-                ziel = os.path.join(AUSGABE_ORDNER, os.path.basename(name))
-                return self._datei(ziel)
+                name = os.path.basename(unquote(pfad.rsplit("/", 1)[-1]))
+                for ordner in (AUSGABE_ORDNER, ISO_ORDNER):
+                    ziel = os.path.join(ordner, name)
+                    if os.path.isfile(ziel):
+                        return self._datei(ziel)
+                self.send_error(404)
+                return
             if pfad == "/api/quelle/winfuture":
                 return self._json({"eintraege": download.winfuture_seiten()})
+            if pfad == "/api/quelle/server":
+                adresse = parse_qs(weg.query).get("adresse", [""])[0]
+                return self._json({"eintraege": [{"id": adresse or "",
+                                                  "name": "Bestand auf " + (adresse or "?")}]})
             if pfad == "/api/quelle/linux":
                 return self._json({"eintraege": linuxisos.distributionen()})
+            if pfad == "/api/windows-paket":
+                return self._paket()
             if pfad == "/api/werkzeuge":
                 return self._json({
+                    "rechner": platform.node(),
                     "xorriso": bool(vstick._xorriso()),
                     "system": "Windows" if vstick.IST_WINDOWS else "Linux",
                     "root": (os.name != "nt" and os.geteuid() == 0),
@@ -191,6 +225,31 @@ class Griff(BaseHTTPRequestHandler):
         except Exception as e:
             traceback.print_exc()
             self._fehler(e, 500)
+
+    def _paket(self):
+        """Alles, was der Windows-Rechner braucht, als ZIP - damit dort
+        derselbe VolmeStick laeuft und der Stick DORT entsteht."""
+        import io
+        import zipfile
+        dateien = ["vstick.py", "unattend.py", "iso9660.py", "wim.py",
+                   "download.py", "linuxisos.py", "bestand.py", "server.py",
+                   "LIESMICH.md", "web/ui.html",
+                   "windows/vstick_gui.pyw", "windows/EXE-bauen.bat",
+                   "windows/Weboberflaeche-starten.bat"]
+        puffer = io.BytesIO()
+        with zipfile.ZipFile(puffer, "w", zipfile.ZIP_DEFLATED) as z:
+            for name in dateien:
+                voll = os.path.join(BASIS, name)
+                if os.path.isfile(voll):
+                    z.write(voll, "VolmeStick/" + name)
+        roh = puffer.getvalue()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(len(roh)))
+        self.send_header("Content-Disposition",
+                         'attachment; filename="VolmeStick-fuer-Windows.zip"')
+        self.end_headers()
+        self.wfile.write(roh)
 
     # -- POST
     def do_POST(self):
@@ -257,7 +316,9 @@ class Griff(BaseHTTPRequestHandler):
             if weg == "/api/quelle/dateien":
                 d = self._koerper()
                 quelle, kennung = d.get("quelle"), str(d.get("id", ""))
-                if quelle == "winfuture":
+                if quelle == "server":
+                    dateien = _ferner_bestand(kennung)
+                elif quelle == "winfuture":
                     dateien = download.winfuture_dateien(kennung)
                 elif quelle == "linux":
                     dateien = linuxisos.dateien(kennung)
@@ -311,6 +372,8 @@ def main():
     p.add_argument("--port", type=int, default=8775)
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--isos", default=ISO_ORDNER)
+    p.add_argument("--browser", action="store_true",
+                   help="Oberflaeche gleich im Browser oeffnen (lokaler Betrieb)")
     a = p.parse_args()
     ISO_ORDNER = os.path.expanduser(a.isos)
     AUSGABE_ORDNER = os.path.join(ISO_ORDNER, "fertig")
@@ -326,6 +389,11 @@ def main():
             return 1
         raise
     print(f"VolmeStick laeuft auf http://{a.host}:{a.port}  (ISOs: {ISO_ORDNER})")
+    print(f"Datentraeger dieses Rechners ({platform.node()}) werden bedient - "
+          "ein USB-Stick muss HIER stecken.")
+    if a.browser:
+        import webbrowser
+        webbrowser.open(f"http://localhost:{a.port}/")
     if not vstick._xorriso():
         print("Hinweis: xorriso fehlt - ISO-Bau nur eingeschraenkt. "
               "sudo apt install xorriso")
