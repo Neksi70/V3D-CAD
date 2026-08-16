@@ -33,6 +33,10 @@ starten. Wenn sie auf deinem Windows zickt, ist das ZIP der sichere Weg.
 Auf einem Windows-Rechner mit Python baut `windows\EXE-bauen.bat` dieselbe EXE. Wer die Datenträger eines
 kopflosen Rechners doch aus der Ferne bedienen will, startet mit `--fernzugriff`.
 
+> **Stand:** Am 17.08.2026 mit Windows 11 25H2 in VMware durchgespielt — eine
+> einzige ISO, Ersteinrichtung ohne Microsoft-Konto. Der USB-Stick-Weg unter
+> Windows ist bislang nicht am echten Gerät erprobt.
+
 ## ISO für VMware
 
 **Der einfache Weg — eine einzige Datei:**
