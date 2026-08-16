@@ -69,14 +69,11 @@
     <div class="reihe">
       <div><label>Quelle</label>
         <select id="quelle">
-          <option value="winfuture">Windows &ndash; WinFuture (Spiegel, ohne Sperre)</option>
-          <option value="microsoft">Windows &ndash; direkt bei Microsoft</option>
+          <option value="winfuture">Windows 10 / 11 (WinFuture-Spiegel)</option>
           <option value="linux">Linux &ndash; offizielle Projektseiten</option>
         </select></div>
       <div id="feld_auswahl"><label>Angebot</label>
         <select id="auswahl"><option>&ndash; auf Suchen klicken &ndash;</option></select></div>
-      <div id="feld_sprache" class="weg"><label>Sprache</label>
-        <select id="ms_sprache"><option>&ndash;</option></select></div>
       <div style="flex:0 0 auto;display:flex;align-items:flex-end;gap:8px">
         <button class="zweit" id="q_suchen" type="button">Suchen</button>
         <button class="zweit" id="q_dateien" type="button" disabled>Abbilder zeigen</button>
@@ -396,12 +393,8 @@ async function verfolgen(kennung, fertigText){
   }
 }
 
-// ---- Abbild herunterladen (WinFuture / Microsoft / Linux)
-let msSitzung = null;
-const istMicrosoft = () => $("#quelle").value === "microsoft";
-
+// ---- Abbild herunterladen (WinFuture / Linux)
 $("#quelle").onchange = () => {
-  $("#feld_sprache").classList.toggle("weg", !istMicrosoft());
   $("#auswahl").innerHTML = "<option>– auf Suchen klicken –</option>";
   $("#q_dateien").disabled = true;
   $("#q_info").innerHTML = "";
@@ -411,45 +404,62 @@ $("#q_suchen").onclick = async () => {
   const k = $("#q_info");
   k.innerHTML = '<div class="stichwort">wird abgefragt &hellip;</div>';
   try{
-    if(istMicrosoft()){
-      const j = await hole("/api/ms/ausgaben?produkt=windows11");
-      $("#auswahl").innerHTML = j.ausgaben.map(a=>`<option value="${a.id}">${a.name}</option>`).join("");
-      await msSprachen();
-    }else{
-      const j = await hole("/api/quelle/" + $("#quelle").value);
-      $("#auswahl").innerHTML = j.eintraege.map(e =>
-        `<option value="${e.id}">${e.name || e.titel}${e.hinweis ? " – " + e.hinweis : ""}</option>`).join("");
-      k.innerHTML = "";
-    }
+    const j = await hole("/api/quelle/" + $("#quelle").value);
+    $("#auswahl").innerHTML = j.eintraege.map(e =>
+      `<option value="${e.id}">${e.name || e.titel}${e.hinweis ? " – " + e.hinweis : ""}</option>`).join("");
     $("#q_dateien").disabled = false;
+    k.innerHTML = "";
   }catch(e){ k.innerHTML=""; meldung(k, e.message, "warn"); }
 };
 
-async function msSprachen(){
-  const k = $("#q_info");
-  try{
-    const j = await hole("/api/ms/sprachen", {ausgabe: $("#auswahl").value, produkt:"windows11"});
-    msSitzung = j.sitzung;
-    $("#ms_sprache").innerHTML = j.sprachen.map(s=>`<option value="${s.id}">${s.name}</option>`).join("");
-    const de = [...$("#ms_sprache").options].find(o=>/German|Deutsch/i.test(o.text));
-    if(de) $("#ms_sprache").value = de.value;
-    k.innerHTML = "";
-  }catch(e){ meldung(k, e.message, "warn"); }
-}
-$("#auswahl").onchange = () => { if(istMicrosoft()) msSprachen(); };
-
 function ladeKnopf(d){
-  const groesse = d.groesse ? " · " + mb(d.groesse) : (d.hinweis_groesse ? " · " + d.hinweis_groesse : "");
-  return `<div class="meldung m-gut">${d.typ ? d.typ + " · " : ""}${d.name}${groesse}
+  const groesse = d.groesse ? " · " + mb(d.groesse)
+                : (d.hinweis_groesse ? " · " + d.hinweis_groesse : "");
+  const kopf = `${d.typ ? d.typ + " · " : ""}${d.name}${groesse}`;
+  const laden = (beschriftung, klasse) => `<button class="${klasse||'zweit'}"
+      data-uri="${d.uri}" data-name="${d.name}" data-referer="${d.referer||""}"
+      data-sha="${d.sha256||""}">${beschriftung}</button>`;
+  const oeffnen = `<a href="${d.uri}" style="color:#a6e9c4;align-self:center">Link im Browser öffnen</a>`;
+
+  // Schon da? Dann nicht noch einmal sieben Gigabyte ziehen.
+  if(d.vorhanden && d.vorhanden.vollstaendig){
+    return `<div class="meldung m-gut">✓ ${kopf}
+      <div class="stichwort">Liegt schon auf dem Server: ${d.vorhanden.pfad} (${mb(d.vorhanden.groesse)})</div>
+      <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
+        <button data-nehmen="${d.vorhanden.pfad}">Diese verwenden</button>
+        ${laden("Trotzdem neu laden")}
+      </div></div>`;
+  }
+  if(d.vorhanden){
+    const da = d.vorhanden.groesse, soll = d.vorhanden.erwartet;
+    return `<div class="meldung m-warn">⚠ ${kopf}
+      <div class="stichwort">Angefangen, aber unvollständig: ${mb(da)}${soll ? " von " + mb(soll) : ""}</div>
+      <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
+        ${laden("Weiterladen", "")} ${oeffnen}
+      </div></div>`;
+  }
+  if(d.ersetzt && d.ersetzt.length){
+    return `<div class="meldung m-warn">🆕 ${kopf}
+      <div class="stichwort">Neuere Fassung als das, was hier liegt:
+        ${d.ersetzt.join(", ")}</div>
+      <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
+        ${laden("Neue Fassung laden", "")} ${oeffnen}
+      </div></div>`;
+  }
+  return `<div class="meldung m-gut">${kopf}
       ${d.sha256 ? '<br><span class="stichwort">SHA256 bekannt – wird nach dem Laden geprüft</span>' : ""}
       <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="zweit" data-uri="${d.uri}" data-name="${d.name}"
-                data-referer="${d.referer||""}" data-sha="${d.sha256||""}">Auf den Server laden</button>
-        <a href="${d.uri}" style="color:#a6e9c4;align-self:center">Link im Browser öffnen</a>
+        ${laden("Auf den Server laden")} ${oeffnen}
       </div></div>`;
 }
 
 function knoepfeVerdrahten(k){
+  // Bereits vorhandene Datei direkt als Quelle uebernehmen
+  k.querySelectorAll("button[data-nehmen]").forEach(b => b.onclick = () => {
+    $("#isopfad").value = b.dataset.nehmen;
+    analysieren(b.dataset.nehmen);
+    $("#isopfad").scrollIntoView({behavior:"smooth", block:"center"});
+  });
   k.querySelectorAll("button[data-uri]").forEach(b => b.onclick = async () => {
     laufZeigen();
     try{
@@ -463,19 +473,11 @@ function knoepfeVerdrahten(k){
 
 $("#q_dateien").onclick = async () => {
   const k = $("#q_info");
-  k.innerHTML = '<div class="stichwort">hole Downloadadressen &hellip;</div>';
+  k.innerHTML = '<div class="stichwort">hole Downloadadressen und gleiche mit dem Bestand ab &hellip;</div>';
   try{
-    let dateien;
-    if(istMicrosoft()){
-      const j = await hole("/api/ms/links", {sitzung: msSitzung, sprache: $("#ms_sprache").value,
-                                             produkt:"windows11"});
-      dateien = j.links;
-    }else{
-      const j = await hole("/api/quelle/dateien", {quelle: $("#quelle").value,
-                                                   id: $("#auswahl").value});
-      dateien = j.dateien;
-    }
-    k.innerHTML = dateien.map(ladeKnopf).join("");
+    const j = await hole("/api/quelle/dateien", {quelle: $("#quelle").value,
+                                                 id: $("#auswahl").value});
+    k.innerHTML = j.dateien.map(ladeKnopf).join("");
     knoepfeVerdrahten(k);
   }catch(e){ k.innerHTML=""; meldung(k, e.message, "warn"); }
 };

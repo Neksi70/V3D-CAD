@@ -25,6 +25,7 @@ import vstick        # noqa: E402
 import unattend      # noqa: E402
 import download      # noqa: E402
 import linuxisos     # noqa: E402
+import bestand       # noqa: E402
 
 ISO_ORDNER = os.path.expanduser("~/isos")
 AUSGABE_ORDNER = os.path.join(ISO_ORDNER, "fertig")
@@ -82,6 +83,13 @@ def isos_auflisten():
                             "groesse": os.path.getsize(pfad),
                             "ausgabe": ordner == AUSGABE_ORDNER})
     return treffer
+
+
+def _abgleichen(dateien):
+    """Was liegt schon in ~/isos? Erspart den zweiten 7-GB-Download."""
+    return bestand.abgleichen(
+        dateien, [ISO_ORDNER, AUSGABE_ORDNER],
+        groesse_holen=lambda uri: download.ferngroesse(uri))
 
 
 def erlaubter_pfad(pfad):
@@ -170,9 +178,6 @@ class Griff(BaseHTTPRequestHandler):
                 return self._json({"eintraege": download.winfuture_seiten()})
             if pfad == "/api/quelle/linux":
                 return self._json({"eintraege": linuxisos.distributionen()})
-            if pfad == "/api/ms/ausgaben":
-                produkt = parse_qs(weg.query).get("produkt", ["windows11"])[0]
-                return self._json({"ausgaben": download.ausgaben(produkt)})
             if pfad == "/api/werkzeuge":
                 return self._json({
                     "xorriso": bool(vstick._xorriso()),
@@ -249,24 +254,16 @@ class Griff(BaseHTTPRequestHandler):
                     bool(d.get("gruendlich")), bool(d.get("erzwingen"))))
                 return self._json({"auftrag": kennung})
 
-            if weg == "/api/ms/sprachen":
-                d = self._koerper()
-                sid, liste = download.sprachen(d.get("ausgabe"), d.get("produkt", "windows11"))
-                return self._json({"sitzung": sid, "sprachen": liste})
-
-            if weg == "/api/ms/links":
-                d = self._koerper()
-                return self._json({"links": download.links(
-                    d.get("sitzung"), d.get("sprache"), d.get("produkt", "windows11"))})
-
             if weg == "/api/quelle/dateien":
                 d = self._koerper()
                 quelle, kennung = d.get("quelle"), str(d.get("id", ""))
                 if quelle == "winfuture":
-                    return self._json({"dateien": download.winfuture_dateien(kennung)})
-                if quelle == "linux":
-                    return self._json({"dateien": linuxisos.dateien(kennung)})
-                return self._fehler("Unbekannte Quelle")
+                    dateien = download.winfuture_dateien(kennung)
+                elif quelle == "linux":
+                    dateien = linuxisos.dateien(kennung)
+                else:
+                    return self._fehler("Unbekannte Quelle")
+                return self._json({"dateien": _abgleichen(dateien)})
 
             if weg == "/api/laden":
                 d = self._koerper()
@@ -277,16 +274,6 @@ class Griff(BaseHTTPRequestHandler):
                 auftrag_laufen(kennung, lambda f: download.herunterladen(
                     uri, ISO_ORDNER, d.get("name"), f,
                     referer=d.get("referer"), sha256=d.get("sha256") or None))
-                return self._json({"auftrag": kennung})
-
-            if weg == "/api/ms/laden":
-                d = self._koerper()
-                uri = d.get("uri", "")
-                if not uri.startswith("https://"):
-                    return self._fehler("Ungueltige Adresse")
-                kennung = auftrag_neu("download")
-                auftrag_laufen(kennung, lambda f: download.herunterladen(
-                    uri, ISO_ORDNER, d.get("name"), f))
                 return self._json({"auftrag": kennung})
 
             if weg == "/api/hochladen":

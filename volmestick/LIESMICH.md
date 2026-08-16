@@ -31,18 +31,36 @@ kaputte Signatur.
 
 ## Abbild herunterladen
 
-Drei Quellen, alle in Oberfläche und Fenster:
+| Quelle | was |
+|---|---|
+| **WinFuture** | Windows 11 / 10 (Deutsch), Spiegel der Microsoft-ISOs |
+| **Linux** | Ubuntu, Mint, Debian, Fedora, openSUSE, Arch, Pop!_OS, Kali, Rocky, AlmaLinux |
 
-| Quelle | was | Besonderheit |
-|---|---|---|
-| **WinFuture** | Windows 11 / 10 (Deutsch) | Spiegel der Microsoft-ISOs, kein Bot-Schutz — der zuverlässige Weg |
-| **Microsoft** | Windows 11 / 10, alle Sprachen | direkt an der Quelle, wird aber von Server- und VPN-Adressen oft abgewiesen |
-| **Linux** | Ubuntu, Mint, Debian, Fedora, openSUSE, Arch, Pop!_OS, Kali, Rocky, AlmaLinux | Adressen werden bei den offiziellen Projektspiegeln **live aufgelöst** — nie eine veraltete Fassung |
+Die Linux-Adressen werden bei den offiziellen Projektspiegeln **live aufgelöst** —
+es steht also nie eine veraltete Fassung in der Liste. Bei WinFuture sind die
+Adressen zeitsigniert und werden erst unmittelbar vor dem Laden geholt.
+
+*Microsofts eigene Download-API ist absichtlich nicht angebunden: sie weist
+Anfragen von Server- und VPN-Adressen über ihren Bot-Schutz ab. WinFuture
+liefert denselben deutschen Datenbestand ohne diese Sperre.*
+
+### Nichts zweimal laden
+
+Vor dem Anzeigen wird mit dem Bestand in `~/isos` abgeglichen:
+
+* **schon da** — Datei liegt vollständig vor (Größenvergleich per HEAD-Abfrage).
+  Statt eines Downloads gibt es „Diese verwenden“, das sie direkt als Quelle setzt.
+* **unvollständig** — angefangener Download, wird per Range fortgesetzt.
+* **neuere Fassung** — z. B. `Win11_25H2_German_x64.iso`, wo `Win11_24H2_German_x64.iso`
+  liegt. Nur dann lohnt der Download wirklich, und genau das steht dann dran.
+
+Die Zusammengehörigkeit erkennt `bestand.py` am Dateinamen: versionsartige
+Bestandteile werden ausgeblendet, der Rest muss übereinstimmen. `Win10` und
+`Win11` oder `x64` und `Arm64` fallen dabei ausdrücklich **nicht** zusammen.
 
 Wo die Quelle eine `SHA256SUMS`-Datei mitliefert (bei Linux fast überall), wird die
 Prüfsumme **während des Ladens** mitgerechnet und am Ende verglichen. Stimmt sie
 nicht, landet die Datei als `.unvollstaendig` daneben statt auf dem Stick.
-Abgebrochene Downloads werden fortgesetzt, wenn der Server das unterstützt.
 
 Linux-Abbilder sind Hybrid-ISOs: sie werden 1:1 geschrieben (DD-Modus), das
 erkennt der Schreibmodus „Automatisch" von selbst.
@@ -101,8 +119,9 @@ Ergebnis: `windows\dist\VolmeStick.exe`, fordert beim Start Administratorrechte 
 | `unattend.py` | erzeugt die `autounattend.xml` |
 | `iso9660.py` | eigener ISO9660/Joliet-Leser (kein root, kein 7z nötig, auch > 4 GB) |
 | `wim.py` | liest die Editionsliste aus `install.wim`/`.esd` |
-| `download.py` | Windows-Abbilder: Microsoft-API und WinFuture-Spiegel |
+| `download.py` | Windows-Abbilder vom WinFuture-Spiegel, Download mit Prüfsumme |
 | `linuxisos.py` | löst die Downloadadressen von zehn Linux-Distributionen live auf |
+| `bestand.py` | erkennt, was schon da ist und was ein echter Versionswechsel wäre |
 | `server.py`, `web/ui.html` | Weboberfläche |
 | `windows/vstick_gui.pyw` | Windows-Fenster |
 
@@ -115,6 +134,5 @@ Ergebnis: `windows\dist\VolmeStick.exe`, fordert beim Start Administratorrechte 
 * Prüfung auf zurückgezogene UEFI-Bootloader (DBX), `SkuSiPolicy.p7b`
 * Die „stille" Installation, die die Zielplatte ohne Rückfrage löscht — bewusst nicht.
 
-Der direkte Microsoft-Download läuft über deren Bot-Schutz („Sentinel") und wird
-von Server- und VPN-Adressen oft abgewiesen. Deshalb steht **WinFuture** an
-erster Stelle: derselbe deutsche Datenbestand, ohne Sperre.
+Windows-Abbilder kommen ausschließlich über den WinFuture-Spiegel; Microsofts
+eigene Download-API sperrt automatisierte Abrufe.

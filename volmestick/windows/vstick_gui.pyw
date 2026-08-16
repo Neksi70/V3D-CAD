@@ -23,6 +23,7 @@ import vstick        # noqa: E402
 import unattend      # noqa: E402
 import download      # noqa: E402
 import linuxisos     # noqa: E402
+import bestand       # noqa: E402
 
 GIB = 1024 ** 3
 
@@ -38,6 +39,7 @@ class Anwendung(tk.Tk):
         self.info = None
         self.wue = dict(unattend.STANDARD)
         self.wue["benutzer"] = ""
+        self.zielordner = os.path.expanduser("~/Downloads")
         self._bauen()
         self.geraete_laden()
         self.after(120, self._pumpe)
@@ -164,12 +166,16 @@ class Anwendung(tk.Tk):
     def iso_waehlen(self):
         pfad = filedialog.askopenfilename(
             title="Windows-ISO wählen",
+            initialdir=self.zielordner,
             filetypes=[("Abbilddateien", "*.iso *.img"), ("Alle Dateien", "*.*")])
-        if not pfad:
-            return
+        if pfad:
+            self.iso_setzen(pfad)
+
+    def iso_setzen(self, pfad):
         self.iso_feld.delete(0, "end")
         self.iso_feld.insert(0, pfad)
         self.iso = pfad
+        self.zielordner = os.path.dirname(pfad) or self.zielordner
         try:
             self.info = vstick.analysiere(pfad)
         except Exception as e:
@@ -243,12 +249,11 @@ class Anwendung(tk.Tk):
         d.title("Abbild herunterladen")
         d.geometry("640x360")
         d.transient(self)
-        zustand = {"sitzung": None, "eintraege": [], "dateien": []}
+        zustand = {"eintraege": [], "dateien": []}
 
         ttk.Label(d, text="Quelle").pack(anchor="w", padx=12, pady=(10, 0))
         quelle = ttk.Combobox(d, state="readonly", values=[
-            "Windows – WinFuture (Spiegel, ohne Sperre)",
-            "Windows – direkt bei Microsoft",
+            "Windows 10 / 11 (WinFuture-Spiegel)",
             "Linux – offizielle Projektseiten"])
         quelle.current(0)
         quelle.pack(fill="x", padx=12)
@@ -256,10 +261,6 @@ class Anwendung(tk.Tk):
         ttk.Label(d, text="Angebot").pack(anchor="w", padx=12, pady=(8, 0))
         auswahl = ttk.Combobox(d, state="readonly")
         auswahl.pack(fill="x", padx=12)
-
-        ttk.Label(d, text="Sprache (nur Microsoft)").pack(anchor="w", padx=12, pady=(8, 0))
-        sprache = ttk.Combobox(d, state="readonly")
-        sprache.pack(fill="x", padx=12)
 
         ttk.Label(d, text="Abbild").pack(anchor="w", padx=12, pady=(8, 0))
         datei = ttk.Combobox(d, state="readonly")
@@ -269,30 +270,20 @@ class Anwendung(tk.Tk):
         hinweis.pack(fill="x", padx=12, pady=6)
 
         def art():
-            return ("winfuture", "microsoft", "linux")[quelle.current()]
+            return ("winfuture", "linux")[quelle.current()]
 
         def suchen():
             hinweis["text"] = "wird abgefragt …"
             d.update_idletasks()
             try:
-                if art() == "microsoft":
-                    zustand["eintraege"] = download.ausgaben("windows11")
-                    auswahl["values"] = [e["name"] for e in zustand["eintraege"]]
-                    auswahl.current(0)
-                    sid, sprachen = download.sprachen(zustand["eintraege"][0]["id"])
-                    zustand["sitzung"], zustand["sprachen"] = sid, sprachen
-                    sprache["values"] = [s["name"] for s in sprachen]
-                    sprache.current(next((i for i, s in enumerate(sprachen)
-                                          if "German" in s["name"]), 0))
-                elif art() == "winfuture":
+                if art() == "winfuture":
                     zustand["eintraege"] = download.winfuture_seiten()
                     auswahl["values"] = [e["titel"] for e in zustand["eintraege"]]
-                    auswahl.current(0)
                 else:
                     zustand["eintraege"] = linuxisos.distributionen()
                     auswahl["values"] = [f'{e["name"]} – {e["hinweis"]}'
                                          for e in zustand["eintraege"]]
-                    auswahl.current(0)
+                auswahl.current(0)
                 hinweis["text"] = "Angebot wählen und „Abbilder zeigen“ drücken."
             except Exception as e:
                 hinweis["text"] = str(e)
@@ -302,18 +293,31 @@ class Anwendung(tk.Tk):
             d.update_idletasks()
             try:
                 gewaehlt = zustand["eintraege"][auswahl.current()]
-                if art() == "microsoft":
-                    s = zustand["sprachen"][sprache.current()]
-                    zustand["dateien"] = download.links(zustand["sitzung"], s["id"])
-                elif art() == "winfuture":
+                if art() == "winfuture":
                     zustand["dateien"] = download.winfuture_dateien(gewaehlt["id"])
                 else:
                     zustand["dateien"] = linuxisos.dateien(gewaehlt["id"])
-                datei["values"] = [f'{x.get("typ", "")} {x["name"]}'.strip()
-                                   for x in zustand["dateien"]]
+                # Was schon im Zielordner liegt, wird gekennzeichnet
+                zustand["dateien"] = bestand.abgleichen(
+                    zustand["dateien"], [self.zielordner],
+                    groesse_holen=lambda u: download.ferngroesse(u))
+                beschriftungen = []
+                for x in zustand["dateien"]:
+                    marke = ""
+                    if x.get("vorhanden"):
+                        marke = ("  [schon da]" if x["vorhanden"]["vollstaendig"]
+                                 else "  [unvollständig]")
+                    elif x.get("ersetzt"):
+                        marke = "  [neuer als " + x["ersetzt"][0] + "]"
+                    beschriftungen.append(
+                        f'{x.get("typ", "")} {x["name"]}{marke}'.strip())
+                datei["values"] = beschriftungen
                 datei.current(0)
                 mit_summe = sum(1 for x in zustand["dateien"] if x.get("sha256"))
+                schon = sum(1 for x in zustand["dateien"]
+                            if x.get("vorhanden", {}).get("vollstaendig"))
                 hinweis["text"] = (f'{len(zustand["dateien"])} Abbilder'
+                                   + (f' – {schon} davon schon im Ordner' if schon else "")
                                    + (f' – {mit_summe} mit Prüfsumme, die nach dem '
                                       'Laden geprüft wird.' if mit_summe else ""))
             except Exception as e:
@@ -323,23 +327,39 @@ class Anwendung(tk.Tk):
             if not zustand["dateien"]:
                 return
             x = zustand["dateien"][datei.current()]
-            ziel = filedialog.askdirectory(title="Wohin soll das Abbild?")
+            if x.get("vorhanden", {}).get("vollstaendig"):
+                if not messagebox.askyesno(
+                        "Schon vorhanden",
+                        f'{x["name"]} liegt bereits in {self.zielordner}.\n\n'
+                        "Trotzdem noch einmal herunterladen?"):
+                    self.iso_setzen(x["vorhanden"]["pfad"])
+                    d.destroy()
+                    return
+            ziel = filedialog.askdirectory(title="Wohin soll das Abbild?",
+                                           initialdir=self.zielordner)
             if not ziel:
                 return
+            self.zielordner = ziel
             d.destroy()
             self._im_hintergrund(
                 lambda: download.herunterladen(
                     x["uri"], ziel, x["name"], self._melden,
                     referer=x.get("referer"), sha256=x.get("sha256") or None),
-                lambda e, f: self._fertig(
-                    e, f, "Geladen: " + (e or {}).get("name", "")
-                    + (" – Prüfsumme stimmt" if (e or {}).get("geprueft") else "")))
+                lambda e, f: self._nach_download(e, f))
 
         knoepfe = ttk.Frame(d)
         knoepfe.pack(pady=10)
         ttk.Button(knoepfe, text="Suchen", command=suchen).pack(side="left", padx=6)
         ttk.Button(knoepfe, text="Abbilder zeigen", command=zeigen).pack(side="left", padx=6)
         ttk.Button(knoepfe, text="Herunterladen", command=laden).pack(side="left", padx=6)
+
+    def _nach_download(self, ergebnis, fehler):
+        """Geladenes Abbild gleich als Quelle uebernehmen."""
+        self._fertig(ergebnis, fehler,
+                     "Geladen: " + (ergebnis or {}).get("name", "")
+                     + (" – Prüfsumme stimmt" if (ergebnis or {}).get("geprueft") else ""))
+        if ergebnis and not fehler:
+            self.iso_setzen(ergebnis["pfad"])
 
     def pruefsummen(self):
         if not self.iso:
