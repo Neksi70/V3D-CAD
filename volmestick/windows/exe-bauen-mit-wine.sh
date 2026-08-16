@@ -24,6 +24,8 @@ mkdir -p "$CACHE"
 
 if [ ! -d "$WINEPREFIX" ]; then wineboot --init; fi
 
+PYI_FASSUNG="5.13.2"
+
 if [ ! -f "$PY/python.exe" ]; then
     echo "== Python 3.9 (embeddable) einrichten =="
     [ -f "$CACHE/python-3.9.13-embed.zip" ] || curl -sL -o "$CACHE/python-3.9.13-embed.zip" \
@@ -31,25 +33,35 @@ if [ ! -f "$PY/python.exe" ]; then
     mkdir -p "$PY" && unzip -oq "$CACHE/python-3.9.13-embed.zip" -d "$PY"
     printf 'python39.zip\n.\nLib\\site-packages\nimport site\n' > "$PY/python39._pth"
 
-    echo "== Baupakete als Wheels holen und entpacken =="
-    rm -rf "$CACHE/wheels" && mkdir -p "$CACHE/wheels"
-    python3 -m pip download --platform win_amd64 --python-version 3.9 \
-        --only-binary :all: --no-deps -d "$CACHE/wheels" -q \
-        "pyinstaller==5.13.2" "setuptools==69.5.1" altgraph pefile pywin32-ctypes \
-        importlib-metadata zipp packaging
-    for w in "$CACHE"/wheels/*.whl; do unzip -oq "$w" -d "$PY/Lib/site-packages"; done
 fi
+
+# Immer die Bauwerkzeuge auf einen bekannten Stand bringen. Eine Mischung aus
+# zwei PyInstaller-Fassungen ergibt eine EXE, die beim Start abbricht
+# ("Bootloader did not set sys._pyinstaller_pyz") - der Bootloader kommt dann
+# aus der einen, die Lademodule aus der anderen Fassung.
+echo "== Baupakete auf Fassung $PYI_FASSUNG bringen =="
+rm -rf "$PY"/Lib/site-packages/PyInstaller "$PY"/Lib/site-packages/pyinstaller* \
+       "$PY"/Lib/site-packages/PyInstaller-* "$PY"/Lib/site-packages/_pyinstaller_hooks_contrib \
+       "$PY"/Lib/site-packages/setuptools "$PY"/Lib/site-packages/pkg_resources
+rm -rf "$CACHE/wheels" && mkdir -p "$CACHE/wheels"
+python3 -m pip download --platform win_amd64 --python-version 3.9 \
+    --only-binary :all: --no-deps -d "$CACHE/wheels" -q \
+    "pyinstaller==$PYI_FASSUNG" "pyinstaller-hooks-contrib==2023.12" \
+    "setuptools==69.5.1" altgraph pefile pywin32-ctypes importlib-metadata zipp packaging
+for w in "$CACHE"/wheels/*.whl; do unzip -oq "$w" -d "$PY/Lib/site-packages"; done
 
 echo "== Quellen bereitstellen =="
 B="$WINEPREFIX/drive_c/build"
-rm -rf "$B" && mkdir -p "$B/web"
+# Zwischenergebnisse eines frueheren Laufs koennen sonst wiederverwendet werden
+rm -rf "$B" "$WINEPREFIX"/drive_c/users/*/AppData/Roaming/pyinstaller
+mkdir -p "$B/web"
 cp "$HIER"/*.py "$B/"
 cp "$HIER"/web/*.html "$B/web/"
 cp "$HIER"/windows/exe_start.py "$B/"
 
 echo "== EXE bauen =="
 cd "$B"
-wine "$PY/python.exe" -m PyInstaller --noconfirm --onefile --console --uac-admin \
+wine "$PY/python.exe" -m PyInstaller --noconfirm --clean --onefile --console --uac-admin \
     --name VolmeStick --add-data "web;web" \
     --hidden-import vstick --hidden-import unattend --hidden-import iso9660 \
     --hidden-import isowriter --hidden-import isopatch --hidden-import wim \
@@ -58,6 +70,16 @@ wine "$PY/python.exe" -m PyInstaller --noconfirm --onefile --console --uac-admin
 
 mkdir -p "$HIER/build"
 cp "$B/dist/VolmeStick.exe" "$HIER/build/"
+
+# Gegenprobe: keine Fassungsmischung in der fertigen Datei
+python3 - "$HIER/build/VolmeStick.exe" <<'PRUEF'
+import sys
+roh = open(sys.argv[1], "rb").read()
+if b"_pyinstaller_pyz" in roh:
+    sys.exit("FEHLER: Die EXE enthaelt Lademodule von PyInstaller 6 - "
+             "sie wuerde beim Start abbrechen. Bitte neu bauen.")
+print("Gegenprobe in Ordnung: einheitliche PyInstaller-Fassung")
+PRUEF
 echo
 echo "Fertig: $HIER/build/VolmeStick.exe"
 echo "ACHTUNG: Unter Wine 6 laesst sich die EXE nicht starten - ein Lauftest"
