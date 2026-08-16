@@ -30,6 +30,8 @@ import wim                                  # noqa: E402
 import unattend                             # noqa: E402
 import isowriter                            # noqa: E402
 import isopatch                             # noqa: E402
+import download                             # noqa: E402
+import linuxisos                            # noqa: E402
 
 IST_WINDOWS = platform.system() == "Windows"
 GIB = 1024 ** 3
@@ -706,6 +708,45 @@ def _opt_aus_args(a):
     return o
 
 
+WINDOWS_NAMEN = {"windows11": "4051", "windows10": "3891",
+                 "windows10-enterprise": "3545"}
+
+
+def _holen(a):
+    """Abbild von der Konsole holen - dieselben Quellen wie in der Oberflaeche."""
+    if not a.was:
+        print("Windows:", ", ".join(WINDOWS_NAMEN))
+        print("Linux:  ", ", ".join(d["id"] for d in linuxisos.distributionen()))
+        print("\nBeispiel: vstick.py holen windows11 --nummer 1 -o ~/Downloads")
+        return 0
+
+    name = a.was.lower()
+    if name in WINDOWS_NAMEN:
+        dateien = download.winfuture_dateien(WINDOWS_NAMEN[name])
+    else:
+        dateien = linuxisos.dateien(name)
+
+    if not a.nummer:
+        for i, d in enumerate(dateien, 1):
+            marke = f" [{d['typ']}]" if d.get("typ") else ""
+            summe = " (SHA256 bekannt)" if d.get("sha256") else ""
+            print(f"{i:2d}  {d['name']}{marke}{summe}")
+        print("\nZum Laden: --nummer N angeben")
+        return 0
+
+    if not 1 <= a.nummer <= len(dateien):
+        raise Fehler(f"Es gibt nur {len(dateien)} Abbilder")
+    d = dateien[a.nummer - 1]
+    ordner = os.path.expanduser(a.ordner)
+    print(f"Lade {d['name']} nach {ordner} ...")
+    r = download.herunterladen(d["uri"], ordner, d["name"], _fortschritt_konsole,
+                               referer=d.get("referer"),
+                               sha256=d.get("sha256") or None)
+    print(f"\nFertig: {r['pfad']} ({r['groesse'] / GIB:.2f} GB)"
+          + (" - Pruefsumme stimmt" if r.get("geprueft") else ""))
+    return 0
+
+
 def _fortschritt_konsole(prozent, text=""):
     sys.stderr.write(f"\r[{prozent:3d}%] {text[:90]:<90}")
     sys.stderr.flush()
@@ -739,6 +780,12 @@ def main(argv=None):
     a3.add_argument("iso")
     a3.add_argument("-o", "--ausgabe", required=True)
     gemeinsam(a3)
+
+    a9 = u.add_parser("holen", help="Abbild herunterladen (ohne Argument: Liste)")
+    a9.add_argument("was", nargs="?", default="",
+                    help="windows11 | windows10 | ubuntu | mint | debian | ...")
+    a9.add_argument("--nummer", type=int, default=0, help="welches Abbild")
+    a9.add_argument("-o", "--ordner", default=".")
 
     a8 = u.add_parser("antwort", help="Kleine Antwort-ISO fuer VMware bauen")
     a8.add_argument("-o", "--ausgabe", default="autounattend.iso")
@@ -789,6 +836,9 @@ def main(argv=None):
         r = baue_iso(a.iso, a.ausgabe, _opt_aus_args(a), _fortschritt_konsole)
         print(f"\nISO fertig: {r['ziel']} ({r['groesse'] / GIB:.2f} GB)")
         return 0
+
+    if a.befehl == "holen":
+        return _holen(a)
 
     if a.befehl == "antwort":
         r = antwort_iso(a.ausgabe, _opt_aus_args(a))
