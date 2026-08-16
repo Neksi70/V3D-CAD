@@ -34,16 +34,27 @@ import isowriter     # noqa: E402
 def _standard_ordner():
     """Abbilder gehoeren dorthin, wo gearbeitet wird. Auf einem Server soll
     ohnehin nichts liegen - der liefert nur die App aus."""
-    fuer_downloads = os.path.expanduser("~/Downloads")
+    heim = os.path.expanduser("~")
+    fuer_downloads = os.path.join(heim, "Downloads")
     if os.path.isdir(fuer_downloads):
-        return os.path.join(fuer_downloads, "VolmeStick")
-    return os.path.expanduser("~/VolmeStick-Abbilder")
+        return os.path.normpath(os.path.join(fuer_downloads, "VolmeStick"))
+    return os.path.normpath(os.path.join(heim, "VolmeStick-Abbilder"))
 
 
 ISO_ORDNER = _standard_ordner()
 AUSGABE_ORDNER = os.path.join(ISO_ORDNER, "fertig")
 AUFTRAEGE = {}
 SPERRE = threading.Lock()
+
+
+def _protokoll_ausnahme():
+    """Fehlertext wegschreiben, ohne sich auf eine Konsole zu verlassen."""
+    if sys.stderr is not None:
+        try:
+            traceback.print_exc()
+            return
+        except Exception:
+            pass
 
 
 def auftrag_neu(art):
@@ -79,7 +90,7 @@ def auftrag_laufen(kennung, funktion):
             with SPERRE:
                 AUFTRAEGE[kennung].update(fertig=True, fehler=str(e),
                                           text="Fehler: " + str(e))
-            traceback.print_exc()
+            _protokoll_ausnahme()
     threading.Thread(target=arbeit, daemon=True).start()
 
 
@@ -237,7 +248,16 @@ class Griff(BaseHTTPRequestHandler):
     server_version = "VolmeStick"
 
     def log_message(self, format, *args):
-        sys.stderr.write("%s - %s\n" % (self.address_string(), format % args))
+        # Ohne Konsolenfenster ist sys.stderr None - ein Schreibversuch wuerde
+        # die Anfrage mit einer Ausnahme abbrechen (der Browser sieht dann eine
+        # leere Antwort). Deshalb hier nichts erzwingen.
+        strom = sys.stderr
+        if strom is None:
+            return
+        try:
+            strom.write("%s - %s\n" % (self.address_string(), format % args))
+        except Exception:
+            pass
 
     # -- Hilfen
     def _ist_lokal(self):
@@ -367,7 +387,7 @@ class Griff(BaseHTTPRequestHandler):
                 linuxisos.QuellenFehler) as e:
             self._fehler(e)
         except Exception as e:
-            traceback.print_exc()
+            _protokoll_ausnahme()
             self._fehler(e, 500)
 
     LAUFZEIT = os.path.expanduser("~/.cache/volmestick/python-embed-amd64.zip")
@@ -593,7 +613,7 @@ class Griff(BaseHTTPRequestHandler):
                 linuxisos.QuellenFehler) as e:
             self._fehler(e)
         except Exception as e:
-            traceback.print_exc()
+            _protokoll_ausnahme()
             self._fehler(e, 500)
 
 
@@ -632,9 +652,11 @@ def main():
     if a.browser:
         import webbrowser
         webbrowser.open(f"http://localhost:{a.port}/")
-    if not vstick._xorriso():
-        print("Hinweis: xorriso fehlt - ISO-Bau nur eingeschraenkt. "
-              "sudo apt install xorriso")
+    if not vstick._xorriso() and not vstick.IST_WINDOWS:
+        # Nur eine Randnotiz: der Regelweg haengt die Antwortdatei ein und
+        # kommt ohne xorriso aus.
+        print("Hinweis: xorriso fehlt - der alternative Weg 'ISO komplett neu "
+              "schreiben' steht damit nicht bereit (sudo apt install xorriso).")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

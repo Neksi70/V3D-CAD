@@ -8,9 +8,37 @@
 import os
 import socket
 import sys
+import tempfile
 import traceback
 
 PORT = 8775
+
+
+def protokoll_umlenken():
+    """Ohne Konsolenfenster gibt es weder stdout noch stderr - jeder
+    Schreibversuch darauf wuerde die laufende Anfrage abbrechen. Also
+    schreiben wir in eine Datei, die zugleich bei der Fehlersuche hilft."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return None
+    ordner = os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(),
+                          "VolmeStick")
+    try:
+        os.makedirs(ordner, exist_ok=True)
+        datei = open(os.path.join(ordner, "protokoll.txt"), "a", encoding="utf-8",
+                     buffering=1)
+    except Exception:
+        class Still:
+            def write(self, *a):
+                pass
+
+            def flush(self):
+                pass
+        datei = Still()
+    if sys.stdout is None:
+        sys.stdout = datei
+    if sys.stderr is None:
+        sys.stderr = datei
+    return getattr(datei, "name", None)
 
 
 def meldung(text, titel="VolmeStick", art=0x40):
@@ -29,6 +57,7 @@ def belegt(port):
 
 
 def main():
+    protokoll_umlenken()
     if getattr(sys, "frozen", False):
         os.chdir(os.path.dirname(sys.executable))
 
@@ -53,6 +82,8 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception:
-        meldung("VolmeStick konnte nicht starten:\n\n" + traceback.format_exc()[-1200:],
+        pfad = protokoll_umlenken()
+        meldung("VolmeStick konnte nicht starten:\n\n" + traceback.format_exc()[-1200:]
+                + (f"\n\nEinzelheiten: {pfad}" if pfad else ""),
                 "VolmeStick - Fehler", 0x10)
         sys.exit(1)
