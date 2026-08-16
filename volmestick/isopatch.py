@@ -14,11 +14,18 @@
 # verweisen auf Sektoren, die unveraendert an ihrem Platz bleiben. Genau deshalb
 # bleibt die ISO startfaehig.
 
+import io
 import os
 import shutil
 import struct
+import sys
 
 SEKTOR = 2048
+BASIS = os.path.dirname(os.path.abspath(__file__))
+# Mitgelieferte Fremdbibliothek fuer UDF (pycdlib, LGPL 2.1)
+for _pfad in (os.path.join(BASIS, "vendor"), getattr(sys, "_MEIPASS", "")):
+    if _pfad and _pfad not in sys.path:
+        sys.path.append(_pfad)
 
 
 class PatchFehler(Exception):
@@ -122,11 +129,105 @@ def _pfadtabelle_umbiegen(f, tabelle_lba, gross, alt_lba, neu_lba):
     f.write(daten)
 
 
+def hat_udf(pfad):
+    """Windows-ISOs tragen neben ISO9660 ein UDF-Dateisystem - und Windows
+    liest AUSSCHLIESSLICH das UDF. Eine Datei, die nur im ISO9660-Teil steht,
+    ist fuer das Setup unsichtbar. Erkennbar an der Kennung NSR02/NSR03 in der
+    Erkennungssequenz ab Sektor 16."""
+    try:
+        with open(pfad, "rb") as f:
+            f.seek(16 * SEKTOR)
+            roh = f.read(16 * SEKTOR)
+        return b"NSR02" in roh or b"NSR03" in roh
+    except OSError:
+        return False
+
+
+def _kurzname(name):
+    """8.3-Form fuer den ISO9660-Teil (dort sind lange Namen nicht sicher)."""
+    grund, _, endung = name.rpartition(".")
+    grund = (grund or name)[:8].upper()
+    endung = endung[:3].upper()
+    return f"{grund}.{endung};1" if endung else f"{grund};1"
+
+
+def _namen_wie_microsoft(pycdlib):
+    """pycdlib schreibt Dateinamen im UDF als 8-Bit-Zeichen, sobald sie sich so
+    darstellen lassen. Erlaubt ist das, aber Microsoft legt in seinen ISOs alle
+    Namen als UTF-16BE ab. Wir ziehen nach, damit unser Eintrag sich in nichts
+    von seinen Nachbarn unterscheidet - beim Suchen nach der Antwortdatei soll
+    es keine Unterschiede geben, an denen etwas haengen bleiben kann."""
+    from pycdlib import udf as _udf
+    klasse = _udf.UDFFileIdentifierDescriptor
+    if getattr(klasse, "_volmestick", False):
+        return
+    urspruenglich = klasse.new
+
+    def neu(self, isdir, isparent, name, parent):
+        urspruenglich(self, isdir, isparent, name, parent)
+        if not isparent and getattr(self, "encoding", "") == "latin-1":
+            self.fi = self.fi.decode("latin-1").encode("utf-16_be")
+            self.encoding = "utf-16_be"
+            self.len_fi = len(self.fi) + 1
+
+    klasse.new = neu
+    klasse._volmestick = True
+
+
+def _mit_udf(quelle, ziel, dateien, fortschritt=None):
+    """Einhaengen in ISO9660, Joliet UND UDF. Dafuer wird die ISO neu
+    geschrieben - anders kommt man an die UDF-Strukturen nicht heran."""
+    try:
+        import pycdlib
+    except ImportError:
+        raise PatchFehler(
+            "Diese ISO benutzt UDF - dafuer wird die Bibliothek pycdlib "
+            "gebraucht, die hier fehlt.")
+    _namen_wie_microsoft(pycdlib)
+    iso = pycdlib.PyCdlib()
+    try:
+        iso.open(quelle)
+        joliet = iso.has_joliet()
+        for name, inhalt in dateien.items():
+            klein = name.lower()
+            for weg in ("/" + klein, "/" + name):
+                try:
+                    iso.rm_file(udf_path=weg)      # eine vorhandene ersetzen
+                except Exception:
+                    pass
+            iso.add_fp(io.BytesIO(inhalt), len(inhalt), "/" + _kurzname(name),
+                       joliet_path=("/" + klein) if joliet else None,
+                       udf_path="/" + klein)
+        gesamt = [0]
+
+        def melden(fertig, alles, _egal=None):
+            if fortschritt and alles:
+                gesamt[0] = fertig
+                fortschritt(min(99, int(100 * fertig / alles)),
+                            f"ISO schreiben: {fertig / 1024**3:.2f} / {alles / 1024**3:.2f} GB")
+
+        iso.write(ziel, progress_cb=melden)
+    except PatchFehler:
+        raise
+    except Exception as e:
+        raise PatchFehler(f"UDF-Einhaengen fehlgeschlagen: {e}")
+    finally:
+        try:
+            iso.close()
+        except Exception:
+            pass
+    if fortschritt:
+        fortschritt(100, "Fertig")
+    return {"ziel": ziel, "groesse": os.path.getsize(ziel), "weg": "udf"}
+
+
 def lege_datei_bei(quelle, ziel, dateien, fortschritt=None):
     """Kopiert die ISO und haengt die Dateien ins Wurzelverzeichnis ein.
 
     dateien: {"AUTOUNATTEND.XML": b"..."} - Name in Grossbuchstaben.
     """
+    if hat_udf(quelle):
+        return _mit_udf(quelle, ziel, dateien, fortschritt)
     quelle, ziel = os.path.abspath(quelle), os.path.abspath(ziel)
     if quelle == ziel:
         raise PatchFehler("Quelle und Ziel duerfen nicht dieselbe Datei sein")

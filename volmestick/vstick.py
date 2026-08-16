@@ -93,6 +93,7 @@ def analysiere(iso_pfad):
             if not info["uefi"]:
                 info["warnungen"].append(
                     "Keine EFI-Startdateien gefunden - in VMware nur mit BIOS-Firmware startbar.")
+            info["udf"] = isopatch.hat_udf(iso_pfad)
             if info["braucht_ntfs"]:
                 info["warnungen"].append(
                     f"{os.path.basename(info['install_datei'])} ist "
@@ -131,11 +132,15 @@ def baue_iso(quelle, ziel, optionen=None, fortschritt=_still, volid=None,
 
     if werkzeug in ("auto", "patch"):
         try:
+            if isopatch.hat_udf(quelle):
+                fortschritt(1, "Diese ISO benutzt UDF - sie wird dafuer neu "
+                               "geschrieben, das dauert etwas laenger ...")
             isopatch.lege_datei_bei(quelle, ziel,
                                     {"AUTOUNATTEND.XML": xml.encode("utf-8")},
                                     fortschritt)
             return {"ziel": ziel, "groesse": os.path.getsize(ziel),
-                    "volid": info["volid"], "unattend": xml, "weg": "eingehaengt"}
+                    "volid": info["volid"], "unattend": xml,
+                    "weg": "udf" if isopatch.hat_udf(quelle) else "eingehaengt"}
         except isopatch.PatchFehler as e:
             if werkzeug == "patch" or not _xorriso():
                 raise Fehler(f"Einhaengen fehlgeschlagen: {e}")

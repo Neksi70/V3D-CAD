@@ -194,7 +194,7 @@ FERN_GESPERRT = {"/api/stick", "/api/blockpruefung", "/api/geraete"}
 FERNZUGRIFF = False
 
 
-FASSUNG = "1.7"
+FASSUNG = "1.9"
 
 FAVICON = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'

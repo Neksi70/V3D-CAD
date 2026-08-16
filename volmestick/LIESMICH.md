@@ -41,10 +41,26 @@ kopflosen Rechners doch aus der Ferne bedienen will, startet mit `--fernzugriff`
 python3 vstick.py iso Win11.iso -o Win11-v3d.iso --benutzer kurs
 ```
 
-Die Antworten werden in eine **Kopie** der Windows-ISO eingehängt: Die Datei wird
-ans Ende angefügt und nur das Wurzelverzeichnis umgebogen. Die Startsätze (BIOS
-und UEFI) bleiben dabei unangetastet, weil sie auf Sektoren zeigen, die sich nicht
-bewegen. In VMware bindest du diese eine ISO ein — sonst nichts.
+**Windows-ISOs tragen zwei Dateisysteme übereinander: ISO9660 und UDF — und
+Windows liest ausschließlich das UDF.** Eine Datei, die nur im ISO9660-Teil
+steht, ist für das Setup unsichtbar; die ISO bootet dann zwar, aber die
+Antwortdatei existiert für Windows nicht. Erkennbar ist UDF an der Kennung
+`NSR02`/`NSR03` ab Sektor 16.
+
+VolmeStick prüft das und wählt den Weg:
+
+* **Mit UDF** (alle Windows-ISOs): Die Datei wird über `pycdlib` in ISO9660
+  *und* UDF eingetragen. Dafür wird die ISO neu geschrieben — anders kommt man
+  an die UDF-Strukturen nicht heran. Dauert bei 7 GB etwa 20 Sekunden.
+  Der Name wird dabei als UTF-16BE abgelegt, genau wie Microsoft es tut.
+* **Ohne UDF**: Die Datei wird ans Ende angefügt und nur das Wurzelverzeichnis
+  umgebogen — schneller, weil nichts neu geschrieben wird.
+
+Die Startsätze (BIOS und UEFI) bleiben in beiden Fällen erhalten. In VMware
+bindest du diese eine ISO ein — sonst nichts.
+
+Am echten Objekt geprüft (Win11 25H2, 7,2 GB): `install.wim` byte-identisch
+(gleiche SHA256 über 6,86 GB), kein Eintrag verloren, genau ein Eintrag dazu.
 
 Das braucht **kein xorriso** (das es unter Windows nicht gibt) und dauert nur so
 lange wie das Kopieren. Passt der neue Eintrag nicht mehr in den vorhandenen

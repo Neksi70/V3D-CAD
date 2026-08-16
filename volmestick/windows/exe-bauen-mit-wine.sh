@@ -7,7 +7,8 @@
 #
 #   * Wine 6 (Ubuntu) kann die MSI-Installer von python.org nicht ausfuehren
 #     -> stattdessen das "embeddable" Python-Paket, das nur entpackt wird
-#   * Python 3.12 startet unter Wine 6 gar nicht -> 3.9 laeuft
+#   * Python 3.12 startet unter Wine 6 gar nicht -> 3.11 laeuft (3.9 waere auch
+#     moeglich, bekaeme aber nur eine veraltete pycdlib ohne UDF-Korrekturen)
 #   * get-pip.py stirbt unter Wine still -> Pakete als Wheels von Linux-pip
 #     herunterladen und einfach nach Lib/site-packages entpacken
 #   * PyInstaller 6 braucht Windows-Funktionen, die Wine 6 nicht hat
@@ -19,7 +20,7 @@ HIER="$(cd "$(dirname "$0")/.." && pwd)"
 export WINEPREFIX="$HOME/.wine-volmestick" WINEARCH=win64 WINEDEBUG=-all
 export WINEDLLOVERRIDES="mscoree,mshtml="
 CACHE="$HOME/.cache/volmestick"
-PY="$WINEPREFIX/drive_c/Py39e"
+PY="$WINEPREFIX/drive_c/Py311e"
 mkdir -p "$CACHE"
 
 if [ ! -d "$WINEPREFIX" ]; then wineboot --init; fi
@@ -27,11 +28,13 @@ if [ ! -d "$WINEPREFIX" ]; then wineboot --init; fi
 PYI_FASSUNG="5.13.2"
 
 if [ ! -f "$PY/python.exe" ]; then
-    echo "== Python 3.9 (embeddable) einrichten =="
-    [ -f "$CACHE/python-3.9.13-embed.zip" ] || curl -sL -o "$CACHE/python-3.9.13-embed.zip" \
-        https://www.python.org/ftp/python/3.9.13/python-3.9.13-embed-amd64.zip
-    mkdir -p "$PY" && unzip -oq "$CACHE/python-3.9.13-embed.zip" -d "$PY"
-    printf 'python39.zip\n.\nLib\\site-packages\nimport site\n' > "$PY/python39._pth"
+    # 3.11: neuer als 3.9 (das bekaeme nur eine veraltete pycdlib), laeuft aber
+    # noch unter Wine 6 - 3.12 startet dort gar nicht.
+    echo "== Python 3.11 (embeddable) einrichten =="
+    [ -f "$CACHE/python-3.11.9-embed.zip" ] || curl -sL -o "$CACHE/python-3.11.9-embed.zip" \
+        https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip
+    mkdir -p "$PY/Lib/site-packages" && unzip -oq "$CACHE/python-3.11.9-embed.zip" -d "$PY"
+    printf 'python311.zip\n.\nLib\\site-packages\nimport site\n' > "$PY/python311._pth"
 
 fi
 
@@ -43,11 +46,12 @@ echo "== Baupakete auf Fassung $PYI_FASSUNG bringen =="
 rm -rf "$PY"/Lib/site-packages/PyInstaller "$PY"/Lib/site-packages/pyinstaller* \
        "$PY"/Lib/site-packages/PyInstaller-* "$PY"/Lib/site-packages/_pyinstaller_hooks_contrib \
        "$PY"/Lib/site-packages/setuptools "$PY"/Lib/site-packages/pkg_resources
-rm -rf "$CACHE/wheels" && mkdir -p "$CACHE/wheels"
-python3 -m pip download --platform win_amd64 --python-version 3.9 \
+rm -rf "$CACHE/wheels" && mkdir -p "$CACHE/wheels" "$PY/Lib/site-packages"
+python3 -m pip download --platform win_amd64 --python-version 3.11 \
     --only-binary :all: --no-deps -d "$CACHE/wheels" -q \
     "pyinstaller==$PYI_FASSUNG" "pyinstaller-hooks-contrib==2023.12" \
-    "setuptools==69.5.1" altgraph pefile pywin32-ctypes importlib-metadata zipp packaging
+    "setuptools==69.5.1" altgraph pefile pywin32-ctypes importlib-metadata zipp packaging \
+    pycdlib
 for w in "$CACHE"/wheels/*.whl; do unzip -oq "$w" -d "$PY/Lib/site-packages"; done
 
 echo "== Quellen bereitstellen =="
@@ -66,6 +70,7 @@ wine "$PY/python.exe" -m PyInstaller --noconfirm --clean --onefile --windowed --
     --hidden-import vstick --hidden-import unattend --hidden-import iso9660 \
     --hidden-import isowriter --hidden-import isopatch --hidden-import wim \
     --hidden-import download --hidden-import linuxisos --hidden-import bestand \
+    --hidden-import pycdlib --hidden-import pycdlib.pycdlib \
     exe_start.py
 
 mkdir -p "$HIER/build"
