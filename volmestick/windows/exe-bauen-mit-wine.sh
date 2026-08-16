@@ -61,7 +61,7 @@ cp "$HIER"/windows/exe_start.py "$B/"
 
 echo "== EXE bauen =="
 cd "$B"
-wine "$PY/python.exe" -m PyInstaller --noconfirm --clean --onefile --console --uac-admin \
+wine "$PY/python.exe" -m PyInstaller --noconfirm --clean --onefile --windowed --uac-admin \
     --name VolmeStick --add-data "web;web" \
     --hidden-import vstick --hidden-import unattend --hidden-import iso9660 \
     --hidden-import isowriter --hidden-import isopatch --hidden-import wim \

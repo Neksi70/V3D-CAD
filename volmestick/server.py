@@ -182,6 +182,14 @@ FERN_GESPERRT = {"/api/stick", "/api/blockpruefung", "/api/geraete"}
 FERNZUGRIFF = False
 
 
+FAVICON = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+    '<rect width="64" height="64" rx="12" fill="#12151a"/>'
+    '<rect x="22" y="10" width="20" height="30" rx="3" fill="#ff8b2c"/>'
+    '<rect x="27" y="40" width="10" height="12" fill="#93a0b4"/>'
+    '<rect x="24" y="50" width="16" height="5" rx="2" fill="#93a0b4"/>'
+    '</svg>')
+
 # Startdatei fuer Windows. Holt sich Adminrechte (ohne die darf Windows keinen
 # Datentraeger neu aufteilen) und startet die Oberflaeche im Browser.
 STARTER_MIT_PYTHON = """@echo off
@@ -288,6 +296,15 @@ class Griff(BaseHTTPRequestHandler):
             if pfad in ("/", "/index.html"):
                 return self._datei(os.path.join(BASIS, "web", "ui.html"),
                                    "text/html; charset=utf-8")
+            if pfad == "/favicon.ico" or pfad == "/favicon.svg":
+                roh = FAVICON.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "image/svg+xml")
+                self.send_header("Content-Length", str(len(roh)))
+                self.send_header("Cache-Control", "max-age=86400")
+                self.end_headers()
+                self.wfile.write(roh)
+                return
             if pfad in ("/paket", "/paket.html"):
                 return self._datei(os.path.join(BASIS, "web", "verteil.html"),
                                    "text/html; charset=utf-8")
@@ -437,6 +454,13 @@ class Griff(BaseHTTPRequestHandler):
                 opt = d.get("optionen") or {}
                 return self._json({"xml": unattend.baue_unattend(opt),
                                    "zusammenfassung": unattend.zusammenfassung(opt)})
+
+            if weg == "/api/beenden":
+                if not self._ist_lokal():
+                    return self._fehler("Beenden geht nur vom eigenen Rechner", 403)
+                self._json({"ok": True})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
 
             if weg == "/api/aufraeumen":
                 d = self._koerper()
