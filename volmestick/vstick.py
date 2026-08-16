@@ -48,6 +48,69 @@ def _still(*a, **k):
 
 
 # --------------------------------------------------------------- Analyse
+def _udf_analyse(iso_pfad, info):
+    """Microsoft legt im ISO9660-Teil seiner Abbilder nur eine README.TXT ab -
+    alle echten Dateien stehen ausschliesslich im UDF. Wer hier ISO9660 liest,
+    sieht ein leeres Abbild und haelt es faelschlich fuer kein Windows."""
+    import isopatch                                    # bringt den Suchpfad mit
+    import pycdlib
+    iso = pycdlib.PyCdlib()
+    iso.open(iso_pfad)
+    try:
+        def eintrag(pfad):
+            try:
+                return iso.get_record(udf_path=pfad)
+            except Exception:
+                return None
+
+        info["uefi"] = bool(eintrag("/efi/microsoft/boot/efisys.bin")
+                            or eintrag("/efi/boot/bootx64.efi"))
+        info["bios"] = bool(eintrag("/boot/etfsboot.com") or eintrag("/bootmgr"))
+        setup = bool(eintrag("/setup.exe"))
+        boot_wim = bool(eintrag("/sources/boot.wim"))
+        for name in ("/sources/install.wim", "/sources/install.esd"):
+            e = eintrag(name)
+            if e is None:
+                continue
+            info["install_datei"] = name
+            info["install_groesse"] = e.get_data_length()
+            info["braucht_ntfs"] = info["install_groesse"] > FAT32_GRENZE
+            info["editionen"] = wim.editionen(
+                lambda off, laenge, _e=e: _udf_lesen(iso, _e, off, laenge))
+            break
+        info["ist_windows"] = bool(setup and boot_wim and info["install_datei"])
+    finally:
+        try:
+            iso.close()
+        except Exception:
+            pass
+    return info
+
+
+def _udf_lesen(iso, eintrag, offset, laenge):
+    """Bytes aus einer UDF-Datei, ohne sie ganz durchzureichen: die Lage der
+    Datenbloecke steht im Eintrag, gelesen wird direkt aus der ISO."""
+    teil = iso.pvd.logical_block_size() if hasattr(iso, "pvd") else 2048
+    start = iso.udf_main_descs.partitions[0].part_start_location
+    roh = bytearray()
+    pos = 0
+    for beschreibung in eintrag.alloc_descs:
+        # UDFShortAD: Laenge des Blocks und seine Nummer innerhalb der Partition
+        block_laenge = beschreibung.extent_length
+        block_lba = beschreibung.log_block_num
+        if pos + block_laenge <= offset:
+            pos += block_laenge
+            continue
+        innen = max(0, offset - pos)
+        wieviel = min(block_laenge - innen, laenge - len(roh))
+        iso._cdfp.seek((start + block_lba) * teil + innen)
+        roh += iso._cdfp.read(wieviel)
+        pos += block_laenge
+        if len(roh) >= laenge:
+            break
+    return bytes(roh)
+
+
 def analysiere(iso_pfad):
     """Was steckt in der ISO? Fuer die Oberflaeche und als Sicherheitsnetz."""
     if not os.path.isfile(iso_pfad):
@@ -64,43 +127,50 @@ def analysiere(iso_pfad):
         "braucht_ntfs": False,
         "uefi": False,
         "bios": False,
+        "udf": False,
         "warnungen": [],
     }
     try:
         with Iso(iso_pfad) as iso:
             info["volid"] = iso.volid
-            info["uefi"] = iso.existiert("efi/microsoft/boot/efisys.bin") \
-                or iso.existiert("efi/boot/bootx64.efi")
-            info["bios"] = iso.existiert("boot/etfsboot.com") \
-                or iso.existiert("bootmgr")
-            setup = iso.existiert("setup.exe")
-            boot_wim = iso.existiert("sources/boot.wim")
-            e = iso.finde("sources/install.wim") or iso.finde("sources/install.esd")
-            if e is not None:
-                info["install_datei"] = e.pfad
-                info["install_groesse"] = e.groesse
-                info["braucht_ntfs"] = e.groesse > FAT32_GRENZE
-                info["editionen"] = wim.editionen(
-                    lambda off, l, _e=e, _i=iso: _i.lies(_e, off, l))
-            info["ist_windows"] = bool(setup and boot_wim and e is not None)
-            if not info["ist_windows"]:
-                # Linux- und andere Abbilder bringen ihren eigenen Startsatz mit
-                # und gehoeren 1:1 auf den Stick.
-                info["warnungen"].append(
-                    "Keine Windows-Installations-ISO - wird 1:1 auf den Stick "
-                    "geschrieben (DD-Modus). Die Windows-Anpassungen bleiben "
-                    "dabei ohne Wirkung.")
-            if not info["uefi"]:
-                info["warnungen"].append(
-                    "Keine EFI-Startdateien gefunden - in VMware nur mit BIOS-Firmware startbar.")
             info["udf"] = isopatch.hat_udf(iso_pfad)
-            if info["braucht_ntfs"]:
-                info["warnungen"].append(
-                    f"{os.path.basename(info['install_datei'])} ist "
-                    f"{info['install_groesse'] / GIB:.1f} GB gross und passt nicht auf FAT32. "
-                    "Der Stick wird deshalb zweigeteilt (FAT32 zum Starten + NTFS fuer das Abbild).")
+            if not info["udf"]:
+                info["uefi"] = iso.existiert("efi/microsoft/boot/efisys.bin") \
+                    or iso.existiert("efi/boot/bootx64.efi")
+                info["bios"] = iso.existiert("boot/etfsboot.com") \
+                    or iso.existiert("bootmgr")
+                setup = iso.existiert("setup.exe")
+                boot_wim = iso.existiert("sources/boot.wim")
+                e = iso.finde("sources/install.wim") or iso.finde("sources/install.esd")
+                if e is not None:
+                    info["install_datei"] = e.pfad
+                    info["install_groesse"] = e.groesse
+                    info["braucht_ntfs"] = e.groesse > FAT32_GRENZE
+                    info["editionen"] = wim.editionen(
+                        lambda off, l, _e=e, _i=iso: _i.lies(_e, off, l))
+                info["ist_windows"] = bool(setup and boot_wim and e is not None)
     except IsoFehler as e:
         raise Fehler(f"ISO nicht lesbar: {e}")
+
+    if info["udf"]:
+        try:
+            _udf_analyse(iso_pfad, info)
+        except Exception as e:
+            info["warnungen"].append(f"UDF-Teil nicht lesbar: {e}")
+
+    if not info["ist_windows"]:
+        info["warnungen"].append(
+            "Keine Windows-Installations-ISO - wird 1:1 auf den Stick "
+            "geschrieben (DD-Modus). Die Windows-Anpassungen bleiben "
+            "dabei ohne Wirkung.")
+    if not info["uefi"]:
+        info["warnungen"].append(
+            "Keine EFI-Startdateien gefunden - in VMware nur mit BIOS-Firmware startbar.")
+    if info["braucht_ntfs"]:
+        info["warnungen"].append(
+            f"{os.path.basename(info['install_datei'])} ist "
+            f"{info['install_groesse'] / GIB:.1f} GB gross und passt nicht auf FAT32. "
+            "Der Stick wird deshalb zweigeteilt (FAT32 zum Starten + NTFS fuer das Abbild).")
     return info
 
 
