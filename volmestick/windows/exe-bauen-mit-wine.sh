@@ -69,7 +69,13 @@ wine "$PY/python.exe" -m PyInstaller --noconfirm --clean --onefile --windowed --
     exe_start.py
 
 mkdir -p "$HIER/build"
-cp "$B/dist/VolmeStick.exe" "$HIER/build/"
+cp "$B/dist/VolmeStick.exe" "$HIER/build/VolmeStick.exe"
+
+# Gegenprobe: liegt wirklich der frische Bau im Projekt?
+if ! cmp -s "$B/dist/VolmeStick.exe" "$HIER/build/VolmeStick.exe"; then
+    echo "FEHLER: Im Projekt liegt nicht die eben gebaute Datei." >&2
+    exit 1
+fi
 
 # Gegenprobe: keine Fassungsmischung in der fertigen Datei
 python3 - "$HIER/build/VolmeStick.exe" <<'PRUEF'

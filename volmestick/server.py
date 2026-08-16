@@ -193,6 +193,8 @@ FERN_GESPERRT = {"/api/stick", "/api/blockpruefung", "/api/geraete"}
 FERNZUGRIFF = False
 
 
+FASSUNG = "1.4"
+
 FAVICON = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
     '<rect width="64" height="64" rx="12" fill="#12151a"/>'
@@ -242,6 +244,12 @@ pause
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def handle_error(self, request, client_address):
+        # Die Vorlage schreibt hier stur auf sys.stderr - ohne Konsolenfenster
+        # gibt es den aber nicht, und die Ausnahme daraus reisst die Verbindung
+        # ab, bevor eine Antwort rausgeht.
+        _protokoll_ausnahme()
 
 
 class Griff(BaseHTTPRequestHandler):
@@ -371,11 +379,21 @@ class Griff(BaseHTTPRequestHandler):
                 exe = os.path.join(BASIS, "build", "VolmeStick.exe")
                 if not os.path.isfile(exe):
                     return self._fehler("Es liegt keine gebaute EXE bereit", 404)
-                return self._datei(exe, "application/octet-stream")
+                groesse = os.path.getsize(exe)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(groesse))
+                self.send_header("Content-Disposition",
+                                 f'attachment; filename="VolmeStick-{FASSUNG}.exe"')
+                self.end_headers()
+                with open(exe, "rb") as f:
+                    shutil.copyfileobj(f, self.wfile, 1024 * 1024)
+                return
             if pfad == "/api/bestand":
                 return self._json(_bestandsuebersicht())
             if pfad == "/api/werkzeuge":
                 return self._json({
+                    "fassung": FASSUNG,
                     "rechner": platform.node(),
                     "lokal": self._ist_lokal() or FERNZUGRIFF,
                     "xorriso": bool(vstick._xorriso()),

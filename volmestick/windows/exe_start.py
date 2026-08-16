@@ -18,7 +18,8 @@ def protokoll_umlenken():
     """Ohne Konsolenfenster gibt es weder stdout noch stderr - jeder
     Schreibversuch darauf wuerde die laufende Anfrage abbrechen. Also
     schreiben wir in eine Datei, die zugleich bei der Fehlersuche hilft."""
-    if sys.stdout is not None and sys.stderr is not None:
+    if not getattr(sys, "frozen", False) and sys.stdout is not None \
+            and sys.stderr is not None:
         return None
     ordner = os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(),
                           "VolmeStick")
@@ -34,10 +35,13 @@ def protokoll_umlenken():
             def flush(self):
                 pass
         datei = Still()
-    if sys.stdout is None:
-        sys.stdout = datei
-    if sys.stderr is None:
-        sys.stderr = datei
+    sys.stdout = datei
+    sys.stderr = datei
+    try:
+        import time
+        datei.write(f"\n=== VolmeStick gestartet {time.strftime('%d.%m.%Y %H:%M:%S')} ===\n")
+    except Exception:
+        pass
     return getattr(datei, "name", None)
 
 
