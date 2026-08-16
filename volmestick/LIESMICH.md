@@ -17,9 +17,14 @@ Rechner angeboten (`/paket`).
 * Eine Leiste zeigt jederzeit, was gerade belegt ist — mit einem Knopf
   „Alles entfernen“.
 
-Für den USB-Stick am Arbeitsplatz: `/paket` öffnen, ZIP laden, unter Windows
-`windows\Weboberflaeche-starten.bat` doppelklicken (holt sich Administratorrechte
-und öffnet den Browser), unter Linux `./start.sh`. Wer die Datenträger eines
+Für den USB-Stick am Arbeitsplatz: `/paket` öffnen, ZIP laden (ca. 11 MB),
+entpacken und `VolmeStick starten.bat` doppelklicken. **Python muss dafür nicht
+installiert sein** — das Paket bringt eine eigene Laufzeit im Ordner `runtime`
+mit und verändert am Rechner nichts. Unter Linux: `./start.sh`.
+
+Eine echte `.exe` liegt nicht bei: die lässt sich nur auf einem Windows-Rechner
+bauen. `windows\EXE-bauen.bat` erledigt das dort in einem Durchgang, benötigt
+dann aber ein normal installiertes Python samt `pip`. Wer die Datenträger eines
 kopflosen Rechners doch aus der Ferne bedienen will, startet mit `--fernzugriff`.
 
 ## ISO für VMware

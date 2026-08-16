@@ -181,6 +181,44 @@ FERN_GESPERRT = {"/api/stick", "/api/blockpruefung", "/api/geraete"}
 FERNZUGRIFF = False
 
 
+# Startdatei fuer Windows. Holt sich Adminrechte (ohne die darf Windows keinen
+# Datentraeger neu aufteilen) und startet die Oberflaeche im Browser.
+STARTER_MIT_PYTHON = """@echo off
+title VolmeStick
+cd /d "%~dp0"
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+  echo Starte mit Administratorrechten neu ...
+  powershell -NoProfile -Command "Start-Process -Verb RunAs -FilePath '%~f0'"
+  exit /b
+)
+echo VolmeStick startet - der Browser oeffnet sich gleich.
+echo Dieses Fenster bitte offen lassen, es ist der Dienst.
+runtime\\python.exe server.py --host 127.0.0.1 --port 8775 --browser
+echo.
+echo VolmeStick wurde beendet.
+pause
+"""
+
+STARTER_OHNE_PYTHON = """@echo off
+title VolmeStick
+cd /d "%~dp0"
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+  powershell -NoProfile -Command "Start-Process -Verb RunAs -FilePath '%~f0'"
+  exit /b
+)
+where python >nul 2>&1 || (
+  echo In diesem Paket fehlt die Python-Laufzeit und auf dem Rechner ist
+  echo ebenfalls keine installiert. Bitte das Paket erneut herunterladen.
+  pause
+  exit /b 1
+)
+python server.py --host 127.0.0.1 --port 8775 --browser
+pause
+"""
+
+
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -309,29 +347,68 @@ class Griff(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._fehler(e, 500)
 
+    LAUFZEIT = os.path.expanduser("~/.cache/volmestick/python-embed-amd64.zip")
+    LAUFZEIT_QUELLE = ("https://www.python.org/ftp/python/3.12.10/"
+                       "python-3.12.10-embed-amd64.zip")
+
+    def _laufzeit(self):
+        """Eingebettetes Windows-Python beilegen, damit auf dem Zielrechner
+        nichts installiert werden muss. Wird einmal geholt und gemerkt."""
+        if os.path.isfile(self.LAUFZEIT):
+            return self.LAUFZEIT
+        try:
+            import urllib.request
+            os.makedirs(os.path.dirname(self.LAUFZEIT), exist_ok=True)
+            vorlaeufig = self.LAUFZEIT + ".teil"
+            with urllib.request.urlopen(self.LAUFZEIT_QUELLE, timeout=60) as a, \
+                    open(vorlaeufig, "wb") as f:
+                shutil.copyfileobj(a, f)
+            os.replace(vorlaeufig, self.LAUFZEIT)
+            return self.LAUFZEIT
+        except Exception as e:
+            sys.stderr.write(f"Laufzeit nicht ladbar: {e}\n")
+            return None
+
     def _paket(self):
-        """Alles, was der Windows-Rechner braucht, als ZIP - damit dort
-        derselbe VolmeStick laeuft und der Stick DORT entsteht."""
+        """Alles, was der Windows-Rechner braucht, als ZIP - mitsamt Python,
+        damit ein Doppelklick genuegt."""
         import io
         import zipfile
         dateien = ["vstick.py", "unattend.py", "iso9660.py", "isowriter.py",
-                   "wim.py", "download.py", "linuxisos.py", "bestand.py",
-                   "server.py", "LIESMICH.md", "start.sh",
+                   "isopatch.py", "wim.py", "download.py", "linuxisos.py",
+                   "bestand.py", "server.py", "LIESMICH.md", "start.sh",
                    "web/ui.html", "web/verteil.html",
-                   "windows/vstick_gui.pyw", "windows/EXE-bauen.bat",
-                   "windows/Weboberflaeche-starten.bat"]
+                   "windows/vstick_gui.pyw", "windows/EXE-bauen.bat"]
         puffer = io.BytesIO()
         with zipfile.ZipFile(puffer, "w", zipfile.ZIP_DEFLATED) as z:
             for name in dateien:
                 voll = os.path.join(BASIS, name)
                 if os.path.isfile(voll):
                     z.write(voll, "VolmeStick/" + name)
+
+            laufzeit = self._laufzeit()
+            if laufzeit:
+                with zipfile.ZipFile(laufzeit) as lz:
+                    for eintrag in lz.namelist():
+                        inhalt = lz.read(eintrag)
+                        if eintrag.endswith("._pth"):
+                            # Bei eingebettetem Python bestimmt diese Datei den
+                            # GESAMTEN Suchpfad - das Skriptverzeichnis kommt
+                            # nicht von selbst dazu. ".." ist der Ordner
+                            # darueber, in dem VolmeStick liegt.
+                            erste = inhalt.decode().splitlines()[0].strip()
+                            inhalt = (erste + "\r\n.\r\n..\r\n").encode()
+                        z.writestr("VolmeStick/runtime/" + eintrag, inhalt)
+                z.writestr("VolmeStick/VolmeStick starten.bat", STARTER_MIT_PYTHON)
+            else:
+                z.writestr("VolmeStick/VolmeStick starten.bat", STARTER_OHNE_PYTHON)
+
         roh = puffer.getvalue()
         self.send_response(200)
         self.send_header("Content-Type", "application/zip")
         self.send_header("Content-Length", str(len(roh)))
         self.send_header("Content-Disposition",
-                         'attachment; filename="VolmeStick-fuer-Windows.zip"')
+                         'attachment; filename="VolmeStick.zip"')
         self.end_headers()
         self.wfile.write(roh)
 
