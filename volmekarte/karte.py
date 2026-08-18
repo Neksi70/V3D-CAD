@@ -138,6 +138,33 @@ class Aufbau:
             return [TITEL, RUECK]
         return [TITEL, INNEN_A, INNEN_B, RUECK]
 
+    def druckfolge(self):
+        """Reihenfolge fuer den Druck auf einen bereits gefalzten Rohling.
+
+        Erst beide Aussenseiten, dann beide Innenseiten. So muss die Karte
+        nur einmal gegenlaeufig gefaltet werden statt zweimal hin und her.
+        """
+        if self.falz == "keine":
+            return [TITEL, RUECK]
+        return [TITEL, RUECK, INNEN_A, INNEN_B]
+
+    def einlegefolge(self):
+        """Klartext je Seite fuer den Druck auf einen gefalzten Rohling."""
+        schritte = []
+        for nr, kennung in enumerate(self.druckfolge(), 1):
+            name = self.beschriftung(kennung)
+            if nr == 1:
+                tun = "Karte zugeklappt einlegen, diese Seite nach oben"
+            elif nr == 2:
+                tun = "Karte umdrehen, Falz bleibt auf derselben Seite"
+            elif nr == 3:
+                tun = ("Karte gegenläufig falten, sodass die Innenseite "
+                       "nach außen zeigt")
+            else:
+                tun = "Karte noch einmal umdrehen"
+            schritte.append("Seite %d – %s: %s" % (nr, name, tun))
+        return schritte
+
     def beschriftung(self, kennung):
         return BESCHRIFTUNG[self.falz].get(kennung, kennung)
 

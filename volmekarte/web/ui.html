@@ -183,10 +183,10 @@ input[type=color]{width:100%;height:30px;padding:1px;border:1px solid var(--lini
   <fieldset>
     <legend>Ausgabe</legend>
     <div class="zeile"><input type="checkbox" id="hilfslinien" checked
-      onchange="null"><label for="hilfslinien" style="margin:0">Falz- und
+      onchange="zeichnen()"><label for="hilfslinien" style="margin:0">Falz- und
       Schnittmarken mitdrucken</label></div>
     <div class="zeile"><input type="checkbox" id="einzelseiten"
-      onchange="null"><label for="einzelseiten" style="margin:0">Rohling ist
+      onchange="zeichnen()"><label for="einzelseiten" style="margin:0">Rohling ist
       schon gefalzt – je Panel eine Seite</label></div>
     <label>Bildauflösung</label>
     <select id="dpi">
@@ -217,7 +217,7 @@ input[type=color]{width:100%;height:30px;padding:1px;border:1px solid var(--lini
   </div>
 
   <div class="gruppe">
-    <h2>So kommt es aus dem Drucker</h2>
+    <h2 id="vorschau_titel">So kommt es aus dem Drucker</h2>
     <div class="reihe" id="druckvorschau"></div>
     <div class="hinweis" id="einlegehinweis" style="max-width:640px"></div>
   </div>
@@ -394,7 +394,15 @@ function zeichnen(auchInspektor){
     ? "Die zweite Bogenseite wird vorgedreht – das ist bei diesem "
       + "Bogenformat richtig so."
     : "Die zweite Bogenseite wird unverändert gedruckt.";
-  g("einlegehinweis").textContent = p.hinweis;
+  const einzeln = g("einzelseiten").checked;
+  g("vorschau_titel").textContent = einzeln
+    ? "So kommt es aus dem Drucker – vier Einzelseiten"
+    : "So kommt es aus dem Drucker";
+  g("einlegehinweis").innerHTML = einzeln
+    ? (p.einlegefolge||[]).map(entschaerfen).join("<br>")
+      + '<br><br>Erst einmal auf normalem Papier proben – wie herum der '
+      + 'Drucker einzieht, ist von Gerät zu Gerät verschieden.'
+    : entschaerfen(p.hinweis);
 
   const namen = Object.fromEntries(p.panels.map(x=>[x.kennung,x.name]));
   const aussen = ["titel","rueck"].filter(k=>namen[k]);
@@ -757,6 +765,7 @@ function zeichnenOhneInspektor(){ zeichnen(false); }
 function druckvorschau(){
   const p = Z.plan, ziel = g("druckvorschau");
   ziel.innerHTML = "";
+  if(g("einzelseiten").checked) return einzelvorschau(p, ziel);
   const mm = Math.min(1.5, 380/Math.max(p.bogen[0],p.bogen[1]));
   const namen = Object.fromEntries(p.panels.map(x=>[x.kennung,x.name]));
 
@@ -797,6 +806,31 @@ function druckvorschau(){
       }
       bg.appendChild(l);
     }
+    kasten.appendChild(bg);
+    ziel.appendChild(kasten);
+  });
+}
+
+/** Vorschau fuer den Druck auf einen bereits gefalzten Rohling:
+    je Panel eine eigene Seite in Kartengroesse. */
+function einzelvorschau(p, ziel){
+  const mm = Math.min(1.2, 190/Math.max(p.karte[0], p.karte[1]));
+  (p.druckfolge||p.panels).forEach((eintrag,nr)=>{
+    const kasten = document.createElement("div");
+    const kopf = document.createElement("div");
+    kopf.className = "kopf";
+    kopf.textContent = "Seite "+(nr+1)+" – "+eintrag.name;
+    kasten.appendChild(kopf);
+    const bg = document.createElement("div");
+    bg.className = "bogen";
+    bg.style.width = (p.karte[0]*mm)+"px";
+    bg.style.height = (p.karte[1]*mm)+"px";
+    const f = document.createElement("div");
+    f.className = "feld";
+    f.style.inset = "0";
+    f.style.border = "none";
+    f.textContent = eintrag.name;
+    bg.appendChild(f);
     kasten.appendChild(bg);
     ziel.appendChild(kasten);
   });

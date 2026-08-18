@@ -133,7 +133,7 @@ def _einzelseiten(aufbau, panels, titel):
     schon gefalzt in den Drucker gehen."""
     dok = pdf.Dokument(titel)
     zaehler = [0]
-    for kennung in aufbau.panels():
+    for kennung in aufbau.druckfolge():
         blatt = dok.seite(aufbau.karte_b, aufbau.karte_h)
         panel = dict(panels.get(kennung) or {})
         panel["_b"] = aufbau.karte_b

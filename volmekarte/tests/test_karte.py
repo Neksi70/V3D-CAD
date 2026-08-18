@@ -183,6 +183,34 @@ class TestAnordnung(unittest.TestCase):
         for kennung in auf.panels():
             self._aufrecht(auf, kennung)
 
+    # -- Bogen 200 x 150, Laengsfalz (gekaufter Rohling) ---------------
+    def test_bogen_200x150_laengsfalz(self):
+        auf = karte.Aufbau(200, 150, falz="laengs")
+        self.assertAlmostEqual(auf.falz_pos, 100.0, places=6)
+        self.assertAlmostEqual(auf.karte_b, 100.0, places=6)
+        self.assertAlmostEqual(auf.karte_h, 150.0, places=6)
+        for kennung in auf.panels():
+            self._aufrecht(auf, kennung)
+        # Querformat + lange Kante -> zweite Bogenseite wird vorgedreht
+        self.assertTrue(auf.rueckseite_drehen)
+
+    def test_druckfolge_erst_aussen_dann_innen(self):
+        auf = karte.Aufbau(200, 150, falz="laengs")
+        self.assertEqual(auf.druckfolge(),
+                         [karte.TITEL, karte.RUECK,
+                          karte.INNEN_A, karte.INNEN_B])
+        # Es muessen genau dieselben Panels sein wie in panels(), nur anders
+        # sortiert - sonst faellt beim Einzelseitendruck eines unter den Tisch.
+        self.assertEqual(sorted(auf.druckfolge()), sorted(auf.panels()))
+        schritte = auf.einlegefolge()
+        self.assertEqual(len(schritte), 4)
+        self.assertTrue(schritte[0].startswith("Seite 1 – Titel"))
+
+    def test_druckfolge_ohne_falz(self):
+        auf = karte.Aufbau(148, 105, falz="keine")
+        self.assertEqual(sorted(auf.druckfolge()), sorted(auf.panels()))
+        self.assertEqual(len(auf.einlegefolge()), 2)
+
     # -- Fehleingaben --------------------------------------------------
     def test_karte_zu_gross(self):
         with self.assertRaises(ValueError):

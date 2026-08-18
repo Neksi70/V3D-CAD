@@ -59,6 +59,10 @@ VORLAGEN = [
      "bogen": [210, 297], "falz": "quer", "karte": [210, 105]},
     {"name": "Quadratisch 145 mm (aus 290 × 145, Längsfalz)",
      "bogen": [290, 145], "falz": "laengs"},
+    {"name": "Klappkarte 100 × 150 (Bogen 200 × 150, Längsfalz)",
+     "bogen": [200, 150], "falz": "laengs"},
+    {"name": "Klappkarte 200 × 150 (Bogen 200 × 300, Querfalz)",
+     "bogen": [200, 300], "falz": "quer"},
     {"name": "Postkarte A6 flach (aus A6)",
      "bogen": [148, 105], "falz": "keine"},
     {"name": "Postkarte DIN lang flach",
@@ -257,6 +261,9 @@ class Griff(BaseHTTPRequestHandler):
             "seiten": auf.anordnung(),
             "panels": [{"kennung": k, "name": auf.beschriftung(k)}
                        for k in auf.panels()],
+            "druckfolge": [{"kennung": k, "name": auf.beschriftung(k)}
+                           for k in auf.druckfolge()],
+            "einlegefolge": auf.einlegefolge(),
             "hinweis": auf.einlegehinweis(),
         })
 
@@ -284,10 +291,12 @@ class Griff(BaseHTTPRequestHandler):
             ok, anmerkung = _oeffnen(pfad)
         hinweis = auf.einlegehinweis()
         if einzeln:
-            hinweis = ("Je Panel eine Seite in Kartengröße. Reihenfolge: "
-                       + ", ".join(auf.beschriftung(k) for k in auf.panels())
-                       + ". Den gefalzten Rohling für jede Seite passend "
-                         "einlegen und einseitig drucken.")
+            hinweis = ("Je Panel eine Seite in %g × %g mm, einseitig drucken. "
+                       % (auf.karte_b, auf.karte_h)
+                       + " | ".join(auf.einlegefolge())
+                       + " | Erst einmal auf normalem Papier proben – wie "
+                         "herum der Drucker einzieht, ist von Gerät zu Gerät "
+                         "verschieden.")
         self._json({"ok": True, "pfad": pfad, "groesse": len(roh),
                     "hinweis": hinweis, "anmerkung": anmerkung})
 

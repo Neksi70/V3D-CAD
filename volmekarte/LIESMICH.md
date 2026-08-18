@@ -22,7 +22,9 @@ Beides rechnet `karte.py` aus. Der Nutzer gibt nur Maße ein.
 
 ## Bedienung
 
-1. **Vorlage** wählen oder Bogen-/Kartenmaße in mm eintippen.
+1. **Vorlage** wählen oder Bogen-/Kartenmaße in mm eintippen. Angegeben
+   wird immer der **flache Bogen**; die Kartengröße ergibt sich aus dem
+   Falz. Beispiel: Bogen 200 × 150 mm mit Längsfalz → Karte 100 × 150 mm.
 2. **Testdruck** drucken (einmal je Drucker):
    * Das 100-mm-Lineal nachmessen. Stimmt es nicht, steht der Druckdialog
      auf „An Seite anpassen“ statt auf **100 % / Tatsächliche Größe**.
@@ -46,7 +48,14 @@ Vorschau.
   Die Karte wird in der Bogenhälfte zentriert und bekommt Schnittmarken.
 * **Rohling schon gefalzt**: Haken bei „Rohling ist schon gefalzt“. Dann
   kommt jedes Panel auf eine eigene Seite in Kartengröße, weil der Drucker
-  eine gefaltete Karte je Durchlauf nur einseitig bedrucken kann.
+  eine gefaltete Karte je Durchlauf nur einseitig bedrucken kann. Die
+  Reihenfolge ist Titel → Rückseite → Innen links → Innen rechts: erst beide
+  Außenseiten, dann beide Innenseiten, damit die Karte nur einmal
+  gegenläufig gefaltet werden muss. Die Vorschau zeigt in diesem Fall die
+  vier Einzelseiten statt der zwei Bogenseiten.
+
+  Wie herum der Drucker eine kleine, gefalzte Karte einzieht, ist von Gerät
+  zu Gerät verschieden — den ersten Durchlauf auf normalem Papier proben.
 * **Einseitiger Drucker**: Wenderichtung auf „von Hand wenden“.
 * **Drucker legt die Rückseite versetzt aufs Blatt**: Feinabgleich X/Y.
 
