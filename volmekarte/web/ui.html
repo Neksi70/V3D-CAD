@@ -1,0 +1,990 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VolmeKarte – Klappkarten drucken</title>
+<style>
+:root{
+  --bg:#f4f5f7; --flaeche:#ffffff; --linie:#d8dbe0; --text:#20242b;
+  --grau:#6b7280; --akzent:#1f6feb; --akzent2:#e8f0fe; --warn:#b45309;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font:14px/1.45 system-ui,"Segoe UI",Roboto,sans-serif;color:var(--text);
+     background:var(--bg);display:flex;flex-direction:column;overflow:hidden}
+
+header{display:flex;align-items:center;gap:12px;padding:9px 14px;
+  background:var(--flaeche);border-bottom:1px solid var(--linie);flex:0 0 auto}
+header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.2px}
+header .fassung{color:var(--grau);font-size:12px}
+header .luecke{flex:1}
+
+button{font:inherit;padding:6px 12px;border:1px solid var(--linie);
+  border-radius:7px;background:#fff;cursor:pointer}
+button:hover{background:#f0f2f5}
+button.haupt{background:var(--akzent);border-color:var(--akzent);color:#fff;font-weight:600}
+button.haupt:hover{filter:brightness(1.08)}
+button:disabled{opacity:.5;cursor:default}
+button.klein{padding:3px 8px;font-size:12px;border-radius:6px}
+
+.rumpf{flex:1;display:flex;min-height:0}
+aside{width:290px;flex:0 0 auto;background:var(--flaeche);
+  border-right:1px solid var(--linie);overflow-y:auto;padding:12px}
+aside.rechts{border-right:none;border-left:1px solid var(--linie);width:270px}
+main{flex:1;overflow:auto;padding:18px;min-width:0}
+
+fieldset{border:none;padding:0;margin:0 0 16px}
+legend,.titelchen{font-size:11px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.6px;color:var(--grau);margin-bottom:7px;display:block}
+label{display:block;font-size:12px;color:var(--grau);margin:8px 0 3px}
+input[type=text],input[type=number],select,textarea{width:100%;padding:5px 7px;
+  border:1px solid var(--linie);border-radius:6px;font:inherit;background:#fff}
+input[type=color]{width:100%;height:30px;padding:1px;border:1px solid var(--linie);
+  border-radius:6px;background:#fff}
+.paar{display:flex;gap:8px}
+.paar>div{flex:1}
+.zeile{display:flex;align-items:center;gap:7px;margin:7px 0;font-size:13px}
+.zeile input[type=checkbox]{margin:0}
+.hinweis{font-size:12px;color:var(--grau);margin-top:6px;line-height:1.4}
+.warnung{font-size:12px;color:var(--warn);background:#fffbeb;border:1px solid #fde68a;
+  border-radius:6px;padding:7px 9px;margin-top:8px}
+
+/* --- Panels ------------------------------------------------------- */
+.gruppe{margin-bottom:26px}
+.gruppe>h2{font-size:12px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.6px;color:var(--grau);margin:0 0 10px}
+.reihe{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+.karteikasten{display:flex;flex-direction:column;gap:6px}
+.karteikasten>.name{font-size:12px;font-weight:600;color:var(--grau)}
+.panel{position:relative;background:#fff;border:1px solid var(--linie);
+  box-shadow:0 1px 4px rgba(0,0,0,.10);overflow:hidden;cursor:default}
+.panel.aktiv{outline:2px solid var(--akzent);outline-offset:1px}
+.panel .sicher{position:absolute;inset:0;pointer-events:none;
+  border:1px dashed rgba(180,83,9,.45);z-index:5}
+.panel .ablage{position:absolute;inset:0;display:flex;align-items:center;
+  justify-content:center;color:#9aa1ac;font-size:12px;text-align:center;
+  pointer-events:none;padding:10px;z-index:1}
+.panel.ueber{outline:2px dashed var(--akzent);outline-offset:1px}
+.bildlage{position:absolute;overflow:hidden;cursor:grab}
+.bildlage.zieht{cursor:grabbing}
+.bildlage img{position:absolute;transform-origin:0 0;user-select:none;
+  -webkit-user-drag:none;pointer-events:none}
+.textlage{position:absolute;cursor:move;z-index:3}
+.textlage.gewaehlt{outline:1px solid var(--akzent);outline-offset:2px}
+.textlage .zl{position:absolute;white-space:pre;pointer-events:none}
+.textlage textarea{position:absolute;inset:0;border:1px solid var(--akzent);
+  background:rgba(255,255,255,.94);resize:none;padding:0;border-radius:2px}
+.werkzeuge{display:flex;gap:5px;flex-wrap:wrap}
+
+/* --- Druckvorschau ------------------------------------------------ */
+.bogen{position:relative;background:#fff;border:1px solid var(--linie);
+  box-shadow:0 1px 4px rgba(0,0,0,.10)}
+.bogen .feld{position:absolute;border:1px dashed #c2c7d0;display:flex;
+  align-items:center;justify-content:center;font-size:10px;color:#6b7280;
+  text-align:center;padding:2px;line-height:1.2}
+.bogen .falz{position:absolute;background:repeating-linear-gradient(
+  90deg,#c2c7d0 0 3px,transparent 3px 6px)}
+.bogen .falzq{position:absolute;background:repeating-linear-gradient(
+  0deg,#c2c7d0 0 3px,transparent 3px 6px)}
+.kopf{font-size:11px;color:var(--grau);margin:0 0 5px}
+
+.meldung{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
+  background:#20242b;color:#fff;padding:9px 16px;border-radius:9px;
+  box-shadow:0 6px 22px rgba(0,0,0,.3);z-index:99;max-width:70vw;
+  font-size:13px;opacity:0;transition:opacity .18s}
+.meldung.an{opacity:1}
+.meldung.fehler{background:#991b1b}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>VolmeKarte</h1>
+  <span class="fassung" id="fassung"></span>
+  <span class="luecke"></span>
+  <button onclick="entwurfSpeichern()">Entwurf sichern</button>
+  <button onclick="entwurfLaden()">Entwurf öffnen</button>
+  <button onclick="testdruck()">Testdruck</button>
+  <button class="haupt" onclick="pdfErzeugen(false)">PDF erzeugen</button>
+  <button class="haupt" onclick="pdfErzeugen(true)">Drucken</button>
+</header>
+
+<div class="rumpf">
+
+<!-- ============ Einstellungen ============ -->
+<aside>
+  <fieldset>
+    <legend>Vorlage</legend>
+    <select id="vorlage" onchange="vorlageWaehlen(this.value)">
+      <option value="">– eigene Maße –</option>
+    </select>
+  </fieldset>
+
+  <fieldset>
+    <legend>Bogen (Papier im Drucker)</legend>
+    <div class="paar">
+      <div><label>Breite mm</label>
+        <input type="number" id="bogen_b" step="0.1" oninput="ausEingabe()"></div>
+      <div><label>Höhe mm</label>
+        <input type="number" id="bogen_h" step="0.1" oninput="ausEingabe()"></div>
+    </div>
+    <div class="hinweis" id="bogen_info"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Falz</legend>
+    <select id="falz" onchange="ausEingabe(true)">
+      <option value="laengs">Längsfalz – klappt zur Seite (wie ein Buch)</option>
+      <option value="quer">Querfalz – klappt nach oben</option>
+      <option value="keine">kein Falz – flache Postkarte</option>
+    </select>
+    <label>Falzposition mm <span class="hinweis" style="display:inline">(leer = Mitte)</span></label>
+    <input type="number" id="falz_pos" step="0.1" placeholder="Mitte" oninput="ausEingabe()">
+  </fieldset>
+
+  <fieldset>
+    <legend>Karte</legend>
+    <div class="paar">
+      <div><label>Breite mm</label>
+        <input type="number" id="karte_b" step="0.1" oninput="ausEingabe()"></div>
+      <div><label>Höhe mm</label>
+        <input type="number" id="karte_h" step="0.1" oninput="ausEingabe()"></div>
+    </div>
+    <div class="hinweis">Nur ändern, wenn der Karten­rohling kleiner ist als
+      der Bogen. Die Karte wird dann in der Bogenhälfte zentriert und
+      bekommt Schnittmarken.</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Drucker</legend>
+    <label>Wenderichtung beim beidseitigen Druck</label>
+    <select id="wenden" onchange="ausEingabe()">
+      <option value="lang">über die lange Kante</option>
+      <option value="kurz">über die kurze Kante</option>
+      <option value="manuell">von Hand wenden (einseitiger Drucker)</option>
+    </select>
+    <div class="hinweis" id="wenden_info"></div>
+
+    <label>Sicherheitsrand mm (nur Anzeige)</label>
+    <input type="number" id="rand" step="0.5" value="5" oninput="zeichnen()">
+
+    <label>Feinabgleich Rückseite (mm)</label>
+    <div class="paar">
+      <div><input type="number" id="versatz_x" step="0.1" value="0"
+             oninput="ausEingabe()" title="nach rechts"></div>
+      <div><input type="number" id="versatz_y" step="0.1" value="0"
+             oninput="ausEingabe()" title="nach oben"></div>
+    </div>
+    <div class="hinweis">Falls der Drucker die Rückseite versetzt aufs
+      Blatt legt: hier nachschieben (X / Y).</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Ausgabe</legend>
+    <div class="zeile"><input type="checkbox" id="hilfslinien" checked
+      onchange="null"><label for="hilfslinien" style="margin:0">Falz- und
+      Schnittmarken mitdrucken</label></div>
+    <div class="zeile"><input type="checkbox" id="einzelseiten"
+      onchange="null"><label for="einzelseiten" style="margin:0">Rohling ist
+      schon gefalzt – je Panel eine Seite</label></div>
+    <label>Bildauflösung</label>
+    <select id="dpi">
+      <option value="150">150 dpi (Entwurf)</option>
+      <option value="300" selected>300 dpi (Druck)</option>
+      <option value="600">600 dpi (Fotoqualität)</option>
+    </select>
+    <label>Dateiname</label>
+    <input type="text" id="dateiname" value="Karte">
+    <label>Ansichtsgröße</label>
+    <input type="range" id="zoom" min="1.2" max="5" step="0.1" value="2.4"
+           oninput="zeichnen()" style="width:100%">
+  </fieldset>
+</aside>
+
+<!-- ============ Arbeitsfläche ============ -->
+<main>
+  <div id="warnbereich"></div>
+
+  <div class="gruppe">
+    <h2>Außen</h2>
+    <div class="reihe" id="aussen"></div>
+  </div>
+
+  <div class="gruppe" id="innen_gruppe">
+    <h2>Innen</h2>
+    <div class="reihe" id="innen"></div>
+  </div>
+
+  <div class="gruppe">
+    <h2>So kommt es aus dem Drucker</h2>
+    <div class="reihe" id="druckvorschau"></div>
+    <div class="hinweis" id="einlegehinweis" style="max-width:640px"></div>
+  </div>
+</main>
+
+<!-- ============ Element ============ -->
+<aside class="rechts" id="inspektor"></aside>
+
+</div>
+
+<div class="meldung" id="meldung"></div>
+
+<script>
+"use strict";
+
+/* =====================================================================
+   Zustand
+   ===================================================================== */
+const Z = {
+  aufbau:{bogen_b:297,bogen_h:210,falz:"laengs",falz_pos:null,wenden:"lang",
+          karte_b:null,karte_h:null,versatz_x:0,versatz_y:0},
+  panels:{}, plan:null, auswahl:null, vorlagen:[]
+};
+
+const SCHRIFTEN = [
+  {wert:"Helvetica",           name:"Arial",                css:'"Arial","Helvetica",sans-serif',      fett:false,kursiv:false},
+  {wert:"Helvetica-Bold",      name:"Arial fett",           css:'"Arial","Helvetica",sans-serif',      fett:true, kursiv:false},
+  {wert:"Helvetica-Oblique",   name:"Arial kursiv",         css:'"Arial","Helvetica",sans-serif',      fett:false,kursiv:true},
+  {wert:"Helvetica-BoldOblique",name:"Arial fett kursiv",   css:'"Arial","Helvetica",sans-serif',      fett:true, kursiv:true},
+  {wert:"Times-Roman",         name:"Times",                css:'"Times New Roman",Times,serif',       fett:false,kursiv:false},
+  {wert:"Times-Bold",          name:"Times fett",           css:'"Times New Roman",Times,serif',       fett:true, kursiv:false},
+  {wert:"Times-Italic",        name:"Times kursiv",         css:'"Times New Roman",Times,serif',       fett:false,kursiv:true},
+  {wert:"Times-BoldItalic",    name:"Times fett kursiv",    css:'"Times New Roman",Times,serif',       fett:true, kursiv:true},
+  {wert:"Courier",             name:"Courier",              css:'"Courier New",Courier,monospace',     fett:false,kursiv:false},
+  {wert:"Courier-Bold",        name:"Courier fett",         css:'"Courier New",Courier,monospace',     fett:true, kursiv:false}
+];
+const SCHRIFT = Object.fromEntries(SCHRIFTEN.map(s=>[s.wert,s]));
+
+const PT_JE_MM = 72/25.4;
+const MM_JE_PT = 25.4/72;
+const zoom = ()=>parseFloat(document.getElementById("zoom").value);
+const g = id=>document.getElementById(id);
+
+/* =====================================================================
+   Schriftmaße – gemessen im Browser, damit Vorschau und PDF gleich sind.
+   Arial/Times New Roman/Courier New sind metrisch gleich zu den
+   PDF-Standardschriften Helvetica/Times/Courier.
+   ===================================================================== */
+const messLeinwand = document.createElement("canvas").getContext("2d");
+const REF = 200;                       // Messung bei 200 px, dann skalieren
+const messSpeicher = new Map();
+
+function cssSchrift(wert, px){
+  const s = SCHRIFT[wert] || SCHRIFT["Helvetica"];
+  return (s.kursiv?"italic ":"")+(s.fett?"700 ":"400 ")+px+"px "+s.css;
+}
+function _mass(wert){
+  if(messSpeicher.has(wert)) return messSpeicher.get(wert);
+  messLeinwand.font = cssSchrift(wert, REF);
+  const m = messLeinwand.measureText("Hxdpg");
+  const asc = (m.fontBoundingBoxAscent||m.actualBoundingBoxAscent||REF*0.9)/REF;
+  const desc= (m.fontBoundingBoxDescent||m.actualBoundingBoxDescent||REF*0.21)/REF;
+  const w = {asc, desc};
+  messSpeicher.set(wert, w);
+  return w;
+}
+/** Textbreite in mm bei Schriftgröße pt. */
+function breiteMm(text, wert, pt){
+  if(!text) return 0;
+  messLeinwand.font = cssSchrift(wert, REF);
+  return messLeinwand.measureText(text).width/REF * pt * MM_JE_PT;
+}
+const ascMm = (wert,pt)=>_mass(wert).asc * pt * MM_JE_PT;
+const descMm= (wert,pt)=>_mass(wert).desc * pt * MM_JE_PT;
+
+/** Eigener Zeilenumbruch: so sind Vorschau und PDF zwangsläufig gleich. */
+function umbrechen(text, wert, pt, breite){
+  const aus = [];
+  for(const absatz of String(text==null?"":text).split("\n")){
+    if(!absatz){ aus.push(""); continue; }
+    let zeile = "";
+    for(const wort of absatz.split(/(\s+)/)){
+      const probe = zeile + wort;
+      if(zeile && breiteMm(probe.trimEnd(), wert, pt) > breite){
+        aus.push(zeile.trimEnd());
+        zeile = wort.replace(/^\s+/,"");
+      }else{
+        zeile = probe;
+      }
+    }
+    aus.push(zeile.trimEnd());
+  }
+  return aus.length?aus:[""];
+}
+
+/* =====================================================================
+   Meldungen
+   ===================================================================== */
+let meldeUhr=null;
+function melden(text, fehler){
+  const el = g("meldung");
+  el.textContent = text;
+  el.className = "meldung an"+(fehler?" fehler":"");
+  clearTimeout(meldeUhr);
+  meldeUhr = setTimeout(()=>{el.className="meldung";}, fehler?7000:3800);
+}
+
+/* =====================================================================
+   Panels
+   ===================================================================== */
+function leeresPanel(){
+  return {hintergrund:"#ffffff", bild:null, texte:[]};
+}
+function panel(kennung){
+  if(!Z.panels[kennung]) Z.panels[kennung] = leeresPanel();
+  return Z.panels[kennung];
+}
+
+/* =====================================================================
+   Aufbau lesen / Plan holen
+   ===================================================================== */
+function zahlOderNull(id){
+  const w = g(id).value.trim();
+  if(w==="") return null;
+  const z = parseFloat(w);
+  return isFinite(z)?z:null;
+}
+function ausEingabe(falzGewechselt){
+  Z.aufbau.bogen_b = zahlOderNull("bogen_b") || 297;
+  Z.aufbau.bogen_h = zahlOderNull("bogen_h") || 210;
+  Z.aufbau.falz    = g("falz").value;
+  Z.aufbau.falz_pos= zahlOderNull("falz_pos");
+  Z.aufbau.wenden  = g("wenden").value;
+  Z.aufbau.karte_b = zahlOderNull("karte_b");
+  Z.aufbau.karte_h = zahlOderNull("karte_h");
+  Z.aufbau.versatz_x = zahlOderNull("versatz_x") || 0;
+  Z.aufbau.versatz_y = zahlOderNull("versatz_y") || 0;
+  if(falzGewechselt){ g("karte_b").value=""; g("karte_h").value=""; }
+  g("vorlage").value = "";
+  planHolen();
+}
+
+let planLauf = 0;
+async function planHolen(){
+  const meins = ++planLauf;
+  try{
+    const a = await fetch("/api/plan",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({aufbau:Z.aufbau})});
+    const d = await a.json();
+    if(meins!==planLauf) return;
+    if(d.fehler){ Z.plan=null; warnung(d.fehler); zeichnen(); return; }
+    Z.plan = d; warnung(""); zeichnen();
+  }catch(f){ warnung("Der Dienst antwortet nicht: "+f.message); }
+}
+function warnung(text){
+  g("warnbereich").innerHTML = text
+    ? '<div class="warnung">'+entschaerfen(text)+'</div>' : "";
+}
+function entschaerfen(t){
+  return String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+/* =====================================================================
+   Zeichnen
+   ===================================================================== */
+function zeichnen(auchInspektor){
+  if(!Z.plan) return;
+  const p = Z.plan, mm = zoom();
+  g("bogen_info").textContent =
+    "Bogen "+p.bogen[0]+" × "+p.bogen[1]+" mm · Karte "+
+    p.karte[0].toFixed(1)+" × "+p.karte[1].toFixed(1)+" mm";
+  g("wenden_info").textContent = p.rueckseite_drehen
+    ? "Die zweite Bogenseite wird vorgedreht – das ist bei diesem "
+      + "Bogenformat richtig so."
+    : "Die zweite Bogenseite wird unverändert gedruckt.";
+  g("einlegehinweis").textContent = p.hinweis;
+
+  const namen = Object.fromEntries(p.panels.map(x=>[x.kennung,x.name]));
+  const aussen = ["titel","rueck"].filter(k=>namen[k]);
+  const innen  = ["innen_a","innen_b"].filter(k=>namen[k]);
+  g("innen_gruppe").style.display = innen.length?"":"none";
+
+  g("aussen").innerHTML = "";
+  aussen.forEach(k=>g("aussen").appendChild(karteikasten(k, namen[k], mm)));
+  g("innen").innerHTML = "";
+  innen.forEach(k=>g("innen").appendChild(karteikasten(k, namen[k], mm)));
+
+  druckvorschau();
+  if(auchInspektor!==false) inspektor();
+}
+
+function karteikasten(kennung, name, mm){
+  const p = Z.plan;
+  const kasten = document.createElement("div");
+  kasten.className = "karteikasten";
+
+  const kopf = document.createElement("div");
+  kopf.className = "name";
+  kopf.textContent = name;
+  kasten.appendChild(kopf);
+
+  const el = document.createElement("div");
+  el.className = "panel" + (Z.auswahl && Z.auswahl.panel===kennung?" aktiv":"");
+  el.style.width  = (p.karte[0]*mm)+"px";
+  el.style.height = (p.karte[1]*mm)+"px";
+  el.dataset.panel = kennung;
+  const d = panel(kennung);
+  el.style.background = d.hintergrund || "#ffffff";
+  el.onmousedown = ev=>{ if(ev.target===el){ waehlen(kennung,null); } };
+  ablageZiel(el, kennung);
+
+  if(d.bild) el.appendChild(bildLage(kennung, d.bild, mm));
+  else{
+    const hin = document.createElement("div");
+    hin.className = "ablage";
+    hin.textContent = "Bild hierher ziehen";
+    el.appendChild(hin);
+  }
+  d.texte.forEach((t,i)=>el.appendChild(textLage(kennung, t, i, mm)));
+
+  const rand = parseFloat(g("rand").value)||0;
+  if(rand>0){
+    const s = document.createElement("div");
+    s.className = "sicher";
+    s.style.inset = (rand*mm)+"px";
+    el.appendChild(s);
+  }
+  kasten.appendChild(el);
+
+  const wz = document.createElement("div");
+  wz.className = "werkzeuge";
+  wz.innerHTML =
+    '<button class="klein" onclick="bildWaehlen(\''+kennung+'\')">Bild …</button>'+
+    '<button class="klein" onclick="textNeu(\''+kennung+'\')">+ Text</button>'+
+    '<button class="klein" onclick="panelLeeren(\''+kennung+'\')">Leeren</button>';
+  kasten.appendChild(wz);
+  return kasten;
+}
+
+/* ---------- Bild ---------- */
+function bildMasse(b, panelB, panelH){
+  // Grundmaßstab in mm je Bildpixel
+  const s0 = b.modus==="einpassen"
+    ? Math.min(panelB/b.iw, panelH/b.ih)
+    : Math.max(panelB/b.iw, panelH/b.ih);
+  const k = s0 * (b.zoom||1);
+  const bb = b.iw*k, hh = b.ih*k;
+  return {bb, hh, x:(panelB-bb)/2 + (b.dx||0), y:(panelH-hh)/2 + (b.dy||0)};
+}
+
+function bildLage(kennung, b, mm){
+  const p = Z.plan;
+  const lage = document.createElement("div");
+  lage.className = "bildlage";
+  lage.style.left="0"; lage.style.top="0";
+  lage.style.width=(p.karte[0]*mm)+"px";
+  lage.style.height=(p.karte[1]*mm)+"px";
+
+  const bild = new Image();
+  bild.src = b.src;
+  const m = bildMasse(b, p.karte[0], p.karte[1]);
+  bild.style.left = (m.x*mm)+"px";
+  bild.style.top  = (m.y*mm)+"px";
+  bild.style.width  = (m.bb*mm)+"px";
+  bild.style.height = (m.hh*mm)+"px";
+  lage.appendChild(bild);
+
+  lage.onmousedown = ev=>{
+    waehlen(kennung, null);
+    ev.preventDefault();
+    const sx=ev.clientX, sy=ev.clientY, dx0=b.dx||0, dy0=b.dy||0;
+    lage.classList.add("zieht");
+    const beweg = e=>{
+      b.dx = dx0 + (e.clientX-sx)/mm;
+      b.dy = dy0 + (e.clientY-sy)/mm;
+      const n = bildMasse(b, p.karte[0], p.karte[1]);
+      bild.style.left=(n.x*mm)+"px"; bild.style.top=(n.y*mm)+"px";
+    };
+    const los = ()=>{ lage.classList.remove("zieht");
+      document.removeEventListener("mousemove",beweg);
+      document.removeEventListener("mouseup",los); };
+    document.addEventListener("mousemove",beweg);
+    document.addEventListener("mouseup",los);
+  };
+  lage.onwheel = ev=>{
+    ev.preventDefault();
+    b.zoom = Math.max(0.2, Math.min(8, (b.zoom||1) * (ev.deltaY<0?1.08:1/1.08)));
+    zeichnen();
+    waehlen(kennung, null);
+  };
+  return lage;
+}
+
+function ablageZiel(el, kennung){
+  el.ondragover = ev=>{ ev.preventDefault(); el.classList.add("ueber"); };
+  el.ondragleave = ()=>el.classList.remove("ueber");
+  el.ondrop = ev=>{
+    ev.preventDefault(); el.classList.remove("ueber");
+    const datei = ev.dataTransfer.files && ev.dataTransfer.files[0];
+    if(datei) bildLaden(kennung, datei);
+  };
+}
+function bildWaehlen(kennung){
+  const e = document.createElement("input");
+  e.type="file"; e.accept="image/*";
+  e.onchange = ()=>{ if(e.files[0]) bildLaden(kennung, e.files[0]); };
+  e.click();
+}
+function bildLaden(kennung, datei){
+  if(!datei.type.startsWith("image/")){ melden("Das ist kein Bild.",true); return; }
+  const leser = new FileReader();
+  leser.onload = ()=>{
+    const bild = new Image();
+    bild.onload = ()=>{
+      panel(kennung).bild = {src:leser.result, name:datei.name,
+        iw:bild.naturalWidth, ih:bild.naturalHeight,
+        modus:"fuellen", zoom:1, dx:0, dy:0};
+      waehlen(kennung, null);
+      zeichnen();
+    };
+    bild.onerror = ()=>melden("Das Bild lässt sich nicht lesen.",true);
+    bild.src = leser.result;
+  };
+  leser.readAsDataURL(datei);
+}
+
+/* ---------- Text ---------- */
+function textNeu(kennung){
+  const p = Z.plan;
+  const t = {txt:"Neuer Text", x:8, y:8, b:Math.max(20,p.karte[0]-16),
+             pt:14, font:"Helvetica", farbe:"#20242b",
+             ausrichtung:"links", zeilen:1.25};
+  panel(kennung).texte.push(t);
+  waehlen(kennung, panel(kennung).texte.length-1);
+  zeichnen();
+}
+
+function textZeilen(t){
+  const zeilen = umbrechen(t.txt, t.font, t.pt, t.b);
+  const asc = ascMm(t.font, t.pt), desc = descMm(t.font, t.pt);
+  const abstand = t.pt * MM_JE_PT * (t.zeilen||1.25);
+  return {zeilen, asc, desc, abstand,
+          hoehe: Math.max(asc+desc, (zeilen.length-1)*abstand + asc + desc)};
+}
+
+function textLage(kennung, t, index, mm){
+  const info = textZeilen(t);
+  const lage = document.createElement("div");
+  lage.className = "textlage" +
+    (Z.auswahl && Z.auswahl.panel===kennung && Z.auswahl.text===index
+      ? " gewaehlt":"");
+  lage.style.left=(t.x*mm)+"px"; lage.style.top=(t.y*mm)+"px";
+  lage.style.width=(t.b*mm)+"px"; lage.style.height=(info.hoehe*mm)+"px";
+
+  info.zeilen.forEach((zeile,i)=>{
+    const el = document.createElement("div");
+    el.className="zl";
+    el.textContent = zeile;
+    const grundlinie = i*info.abstand + info.asc;      // mm ab Kastenoberkante
+    el.style.top = ((grundlinie-info.asc)*mm)+"px";
+    el.style.font = cssSchrift(t.font, t.pt*MM_JE_PT*mm);
+    el.style.lineHeight = ((info.asc+info.desc)*mm)+"px";
+    el.style.color = t.farbe;
+    const w = breiteMm(zeile, t.font, t.pt);
+    el.style.left = (versatzX(t, w)*mm)+"px";
+    lage.appendChild(el);
+  });
+
+  lage.onmousedown = ev=>{
+    ev.stopPropagation(); ev.preventDefault();
+    waehlen(kennung, index);
+    const sx=ev.clientX, sy=ev.clientY, x0=t.x, y0=t.y;
+    const beweg = e=>{
+      t.x = x0 + (e.clientX-sx)/mm;
+      t.y = y0 + (e.clientY-sy)/mm;
+      lage.style.left=(t.x*mm)+"px"; lage.style.top=(t.y*mm)+"px";
+    };
+    const los = ()=>{ document.removeEventListener("mousemove",beweg);
+      document.removeEventListener("mouseup",los); inspektor(); };
+    document.addEventListener("mousemove",beweg);
+    document.addEventListener("mouseup",los);
+  };
+  lage.ondblclick = ev=>{ ev.stopPropagation(); textBearbeiten(lage, t); };
+  return lage;
+}
+
+function versatzX(t, zeilenbreite){
+  if(t.ausrichtung==="mitte")  return (t.b-zeilenbreite)/2;
+  if(t.ausrichtung==="rechts") return t.b-zeilenbreite;
+  return 0;
+}
+
+function textBearbeiten(lage, t){
+  const feld = document.createElement("textarea");
+  feld.value = t.txt;
+  feld.style.font = getComputedStyle(lage.querySelector(".zl")||lage).font;
+  lage.appendChild(feld);
+  feld.focus(); feld.select();
+  const fertig = ()=>{ t.txt = feld.value; zeichnen(); };
+  feld.onblur = fertig;
+  feld.onkeydown = e=>{
+    if(e.key==="Escape"){ feld.onblur=null; feld.remove(); zeichnen(); }
+    if(e.key==="Enter" && (e.ctrlKey||e.metaKey)) feld.blur();
+    e.stopPropagation();
+  };
+}
+
+function panelLeeren(kennung){
+  Z.panels[kennung] = leeresPanel();
+  Z.auswahl = {panel:kennung, text:null};
+  zeichnen();
+}
+
+function waehlen(kennung, textIndex){
+  Z.auswahl = {panel:kennung, text:(textIndex==null?null:textIndex)};
+  document.querySelectorAll(".panel").forEach(el=>
+    el.classList.toggle("aktiv", el.dataset.panel===kennung));
+  document.querySelectorAll(".textlage").forEach(el=>
+    el.classList.remove("gewaehlt"));
+  if(textIndex!=null){
+    const p = document.querySelector('.panel[data-panel="'+kennung+'"]');
+    const l = p && p.querySelectorAll(".textlage")[textIndex];
+    if(l) l.classList.add("gewaehlt");
+  }
+  inspektor();
+}
+
+/* =====================================================================
+   Inspektor
+   ===================================================================== */
+function inspektor(){
+  const el = g("inspektor");
+  if(!Z.auswahl || !Z.plan){
+    el.innerHTML = '<span class="titelchen">Element</span>'+
+      '<div class="hinweis">Ein Panel anklicken. Bilder lassen sich mit der '+
+      'Maus verschieben und mit dem Mausrad zoomen. Text: doppelklicken zum '+
+      'Ändern.</div>';
+    return;
+  }
+  const kennung = Z.auswahl.panel, d = panel(kennung);
+  const name = (Z.plan.panels.find(x=>x.kennung===kennung)||{}).name || kennung;
+  let h = '<span class="titelchen">'+entschaerfen(name)+'</span>';
+
+  h += '<label>Hintergrundfarbe</label><input type="color" value="'+
+       (d.hintergrund||"#ffffff")+'" oninput="setzeGrund(\''+kennung+'\',this.value)">';
+
+  if(d.bild){
+    h += '<span class="titelchen" style="margin-top:16px">Bild</span>'+
+      '<div class="hinweis">'+entschaerfen(d.bild.name||"")+' · '+
+      d.bild.iw+'×'+d.bild.ih+' px</div>'+
+      '<label>Einpassen</label><select onchange="bildModus(\''+kennung+'\',this.value)">'+
+      '<option value="fuellen"'+(d.bild.modus==="fuellen"?" selected":"")+
+        '>Panel füllen (Ränder werden beschnitten)</option>'+
+      '<option value="einpassen"'+(d.bild.modus==="einpassen"?" selected":"")+
+        '>ganz zeigen</option></select>'+
+      '<label>Vergrößerung '+(d.bild.zoom||1).toFixed(2)+'×</label>'+
+      '<input type="range" min="0.2" max="4" step="0.01" value="'+(d.bild.zoom||1)+
+        '" oninput="bildZoom(\''+kennung+'\',this.value)" style="width:100%">'+
+      '<div class="werkzeuge" style="margin-top:8px">'+
+      '<button class="klein" onclick="bildMitte(\''+kennung+'\')">Mittig</button>'+
+      '<button class="klein" onclick="bildWeg(\''+kennung+'\')">Entfernen</button>'+
+      '<button class="klein" onclick="bildWaehlen(\''+kennung+'\')">Ersetzen</button></div>';
+  }
+
+  if(Z.auswahl.text!=null && d.texte[Z.auswahl.text]){
+    const t = d.texte[Z.auswahl.text], i = Z.auswahl.text;
+    // Das Attribut wird mit " begrenzt - innen also einfache Anführungs-
+    // zeichen, sonst reisst das Attribut mitten im Aufruf ab.
+    const s = w=>"setzeText("+i+",'"+w+"',this.value)";
+    h += '<span class="titelchen" style="margin-top:16px">Text</span>'+
+      '<textarea rows="4" oninput="'+s("txt")+'">'+entschaerfen(t.txt)+'</textarea>'+
+      '<label>Schrift</label><select oninput="'+s("font")+'">'+
+      SCHRIFTEN.map(f=>'<option value="'+f.wert+'"'+(t.font===f.wert?" selected":"")+
+        '>'+f.name+'</option>').join("")+'</select>'+
+      '<div class="paar"><div><label>Größe pt</label>'+
+      '<input type="number" step="0.5" min="3" value="'+t.pt+'" oninput="'+s("pt")+'"></div>'+
+      '<div><label>Zeilenabstand</label>'+
+      '<input type="number" step="0.05" min="0.8" value="'+t.zeilen+'" oninput="'+s("zeilen")+'"></div></div>'+
+      '<label>Ausrichtung</label><select oninput="'+s("ausrichtung")+'">'+
+      ['links','mitte','rechts'].map(a=>'<option value="'+a+'"'+
+        (t.ausrichtung===a?" selected":"")+'>'+a+'</option>').join("")+'</select>'+
+      '<label>Farbe</label><input type="color" value="'+t.farbe+'" oninput="'+s("farbe")+'">'+
+      '<div class="paar"><div><label>X mm</label>'+
+      '<input type="number" step="0.5" value="'+t.x.toFixed(1)+'" oninput="'+s("x")+'"></div>'+
+      '<div><label>Y mm</label>'+
+      '<input type="number" step="0.5" value="'+t.y.toFixed(1)+'" oninput="'+s("y")+'"></div></div>'+
+      '<label>Kastenbreite mm</label>'+
+      '<input type="number" step="0.5" min="5" value="'+t.b.toFixed(1)+'" oninput="'+s("b")+'">'+
+      '<div class="werkzeuge" style="margin-top:9px">'+
+      '<button class="klein" onclick="textMitte('+i+')">Waagerecht mittig</button>'+
+      '<button class="klein" onclick="textWeg('+i+')">Löschen</button></div>';
+  }else if(d.texte.length){
+    h += '<span class="titelchen" style="margin-top:16px">Texte</span>'+
+      d.texte.map((t,i)=>'<div class="zeile"><button class="klein" '+
+        'onclick="waehlen(\''+kennung+'\','+i+')">'+
+        entschaerfen((t.txt||"").slice(0,26)||"(leer)")+'</button></div>').join("");
+  }
+  el.innerHTML = h;
+}
+
+function setzeGrund(k,w){ panel(k).hintergrund=w; zeichnen(false); }
+function bildModus(k,w){ panel(k).bild.modus=w; panel(k).bild.dx=0;
+  panel(k).bild.dy=0; zeichnen(); }
+function bildZoom(k,w){
+  panel(k).bild.zoom=parseFloat(w);
+  zeichnen(false);
+  const el = g("inspektor").querySelector("label + input[type=range]");
+  const beschriftung = el && el.previousElementSibling;
+  if(beschriftung) beschriftung.textContent =
+    "Vergrößerung "+parseFloat(w).toFixed(2)+"×";
+}
+function bildMitte(k){ panel(k).bild.dx=0; panel(k).bild.dy=0; zeichnen(); }
+function bildWeg(k){ panel(k).bild=null; zeichnen(); }
+function setzeText(i, feld, wert){
+  const d = panel(Z.auswahl.panel), t = d.texte[i];
+  if(!t) return;
+  t[feld] = ["pt","x","y","b","zeilen"].includes(feld)
+    ? (parseFloat(wert)||0) : wert;
+  zeichnenOhneInspektor();
+}
+function textMitte(i){
+  const d = panel(Z.auswahl.panel), t = d.texte[i];
+  t.x = (Z.plan.karte[0]-t.b)/2; zeichnen();
+}
+function textWeg(i){
+  panel(Z.auswahl.panel).texte.splice(i,1);
+  Z.auswahl.text = null; zeichnen();
+}
+/* Beim Tippen den Inspektor stehen lassen – sonst verliert das Feld den
+   Fokus und der Cursor springt an den Anfang. */
+function zeichnenOhneInspektor(){ zeichnen(false); }
+
+/* =====================================================================
+   Druckvorschau der Bogenseiten
+   ===================================================================== */
+function druckvorschau(){
+  const p = Z.plan, ziel = g("druckvorschau");
+  ziel.innerHTML = "";
+  const mm = Math.min(1.5, 380/Math.max(p.bogen[0],p.bogen[1]));
+  const namen = Object.fromEntries(p.panels.map(x=>[x.kennung,x.name]));
+
+  p.seiten.forEach((seite,nr)=>{
+    const kasten = document.createElement("div");
+    const kopf = document.createElement("div");
+    kopf.className="kopf";
+    kopf.textContent = "Bogenseite "+(nr+1)+(nr?" (Rückseite des Blattes)":"");
+    kasten.appendChild(kopf);
+
+    const bg = document.createElement("div");
+    bg.className="bogen";
+    bg.style.width=(p.bogen[0]*mm)+"px";
+    bg.style.height=(p.bogen[1]*mm)+"px";
+
+    seite.forEach(e=>{
+      const f = document.createElement("div");
+      f.className="feld";
+      f.style.left=(e.x*mm)+"px";
+      f.style.bottom=(e.y*mm)+"px";
+      f.style.width=(e.b*mm)+"px";
+      f.style.height=(e.h*mm)+"px";
+      if(e.drehung===180) f.style.transform="rotate(180deg)";
+      f.textContent = (namen[e.panel]||e.panel) + (e.drehung===180?" ↓":"");
+      bg.appendChild(f);
+    });
+
+    if(p.falzlinie){
+      const l = document.createElement("div");
+      if(p.falz==="laengs"){
+        l.className="falzq";
+        l.style.left=(p.falz_pos*mm)+"px"; l.style.top="0";
+        l.style.width="1px"; l.style.height="100%";
+      }else{
+        l.className="falz";
+        l.style.left="0"; l.style.bottom=(p.falz_pos*mm)+"px";
+        l.style.height="1px"; l.style.width="100%";
+      }
+      bg.appendChild(l);
+    }
+    kasten.appendChild(bg);
+    ziel.appendChild(kasten);
+  });
+}
+
+/* =====================================================================
+   Ausgabe: Panels in PDF-Elemente umrechnen
+   ===================================================================== */
+const bildSpeicher = new Map();
+function bildHolen(src){
+  if(bildSpeicher.has(src)) return Promise.resolve(bildSpeicher.get(src));
+  return new Promise((ja,nein)=>{
+    const b = new Image();
+    b.onload = ()=>{ bildSpeicher.set(src,b); ja(b); };
+    b.onerror = ()=>nein(new Error("Bild nicht lesbar"));
+    b.src = src;
+  });
+}
+
+/** Panel-Bild auf Panelgröße freistellen und als JPEG zurückgeben. */
+async function bildAlsJpeg(b, panelB, panelH, grund, dpi){
+  const bild = await bildHolen(b.src);
+  const px = dpi/25.4;
+  const lw = document.createElement("canvas");
+  lw.width  = Math.max(1, Math.round(panelB*px));
+  lw.height = Math.max(1, Math.round(panelH*px));
+  const c = lw.getContext("2d");
+  // JPEG kennt keine Transparenz – Hintergrund muss also mit hinein,
+  // sonst wird alles Freie schwarz.
+  c.fillStyle = grund || "#ffffff";
+  c.fillRect(0,0,lw.width,lw.height);
+  c.imageSmoothingQuality = "high";
+  const m = bildMasse(b, panelB, panelH);
+  c.drawImage(bild, m.x*px, m.y*px, m.bb*px, m.hh*px);
+  const daten = lw.toDataURL("image/jpeg", 0.92);
+  return daten.split(",")[1];
+}
+
+async function panelsFuerPdf(){
+  const p = Z.plan, dpi = parseInt(g("dpi").value,10);
+  const aus = {};
+  for(const eintrag of p.panels){
+    const k = eintrag.kennung, d = panel(k);
+    const raus = {hintergrund: d.hintergrund||"#ffffff", bilder:[], texte:[]};
+    if(d.bild){
+      raus.bilder.push({
+        jpeg: await bildAlsJpeg(d.bild, p.karte[0], p.karte[1],
+                                d.hintergrund, dpi),
+        x:0, y:0, b:p.karte[0], h:p.karte[1]});
+    }
+    for(const t of d.texte){
+      const info = textZeilen(t);
+      info.zeilen.forEach((zeile,i)=>{
+        if(!zeile) return;
+        const w = breiteMm(zeile, t.font, t.pt);
+        const grundlinie = t.y + i*info.abstand + info.asc;   // ab oben
+        raus.texte.push({
+          txt: zeile,
+          x: t.x + versatzX(t, w),
+          y: p.karte[1] - grundlinie,      // PDF zählt von unten
+          pt: t.pt, font: t.font, farbe: t.farbe});
+      });
+    }
+    aus[k] = raus;
+  }
+  return aus;
+}
+
+async function pdfErzeugen(drucken){
+  if(!Z.plan){ melden("Die Maße stimmen noch nicht.",true); return; }
+  const knoepfe = document.querySelectorAll("header button");
+  knoepfe.forEach(b=>b.disabled=true);
+  melden("PDF wird gebaut …");
+  try{
+    const panels = await panelsFuerPdf();
+    const a = await fetch("/api/pdf",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({aufbau:Z.aufbau, panels,
+        hilfslinien:g("hilfslinien").checked,
+        einzelseiten:g("einzelseiten").checked,
+        dateiname:g("dateiname").value, drucken:!!drucken})});
+    const d = await a.json();
+    if(d.fehler){ melden(d.fehler,true); return; }
+    melden((drucken?"An den Drucker geschickt: ":"Fertig: ")+d.pfad+
+           (d.anmerkung?" – "+d.anmerkung:""));
+  }catch(f){ melden("Fehlgeschlagen: "+f.message,true); }
+  finally{ knoepfe.forEach(b=>b.disabled=false); }
+}
+
+async function testdruck(){
+  try{
+    const a = await fetch("/api/testdruck",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({aufbau:Z.aufbau})});
+    const d = await a.json();
+    if(d.fehler){ melden(d.fehler,true); return; }
+    melden("Testdruck erzeugt: "+d.pfad);
+  }catch(f){ melden("Fehlgeschlagen: "+f.message,true); }
+}
+
+/* =====================================================================
+   Entwürfe
+   ===================================================================== */
+async function entwurfSpeichern(){
+  const name = prompt("Name des Entwurfs:", g("dateiname").value||"Karte");
+  if(!name) return;
+  try{
+    const a = await fetch("/api/entwurf",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name, entwurf:{aufbau:Z.aufbau, panels:Z.panels}})});
+    const d = await a.json();
+    if(d.fehler){ melden(d.fehler,true); return; }
+    melden("Gesichert: "+d.pfad);
+  }catch(f){ melden("Fehlgeschlagen: "+f.message,true); }
+}
+
+async function entwurfLaden(){
+  try{
+    const liste = (await (await fetch("/api/entwuerfe")).json()).entwuerfe||[];
+    if(!liste.length){ melden("Es gibt noch keine Entwürfe."); return; }
+    const name = prompt("Welchen Entwurf öffnen?\n\n"+
+      liste.map(e=>"• "+e.name).join("\n"), liste[0].name);
+    if(!name) return;
+    const d = await (await fetch("/api/entwurf/"+encodeURIComponent(name))).json();
+    if(d.fehler){ melden(d.fehler,true); return; }
+    Z.aufbau = Object.assign(Z.aufbau, d.aufbau||{});
+    Z.panels = d.panels||{};
+    inFelder(); planHolen();
+    melden("Geöffnet: "+name);
+  }catch(f){ melden("Fehlgeschlagen: "+f.message,true); }
+}
+
+function inFelder(){
+  g("bogen_b").value = Z.aufbau.bogen_b;
+  g("bogen_h").value = Z.aufbau.bogen_h;
+  g("falz").value    = Z.aufbau.falz;
+  g("falz_pos").value= Z.aufbau.falz_pos==null?"":Z.aufbau.falz_pos;
+  g("wenden").value  = Z.aufbau.wenden;
+  g("karte_b").value = Z.aufbau.karte_b==null?"":Z.aufbau.karte_b;
+  g("karte_h").value = Z.aufbau.karte_h==null?"":Z.aufbau.karte_h;
+  g("versatz_x").value = Z.aufbau.versatz_x||0;
+  g("versatz_y").value = Z.aufbau.versatz_y||0;
+}
+
+/* =====================================================================
+   Vorlagen
+   ===================================================================== */
+function vorlageWaehlen(index){
+  if(index==="") return;
+  const v = Z.vorlagen[parseInt(index,10)];
+  if(!v) return;
+  Z.aufbau.bogen_b = v.bogen[0];
+  Z.aufbau.bogen_h = v.bogen[1];
+  Z.aufbau.falz = v.falz;
+  Z.aufbau.falz_pos = null;
+  Z.aufbau.karte_b = v.karte ? v.karte[0] : null;
+  Z.aufbau.karte_h = v.karte ? v.karte[1] : null;
+  inFelder();
+  g("vorlage").value = index;
+  planHolen();
+}
+
+/* =====================================================================
+   Start
+   ===================================================================== */
+(async function start(){
+  try{
+    const w = await (await fetch("/api/werkzeuge")).json();
+    g("fassung").textContent = "Fassung "+w.fassung+" · "+w.ordner;
+  }catch(f){}
+  try{
+    Z.vorlagen = (await (await fetch("/api/vorlagen")).json()).vorlagen||[];
+    g("vorlage").innerHTML = '<option value="">– eigene Maße –</option>'+
+      Z.vorlagen.map((v,i)=>'<option value="'+i+'">'+entschaerfen(v.name)+
+        '</option>').join("");
+  }catch(f){}
+  inFelder();
+  await planHolen();
+  // Etwas Anfangsinhalt, damit sofort klar ist, wie es gemeint ist
+  waehlen("titel", null);
+})();
+
+window.addEventListener("keydown", ev=>{
+  if(ev.key==="Delete" && Z.auswahl && Z.auswahl.text!=null
+     && document.activeElement===document.body){
+    textWeg(Z.auswahl.text);
+  }
+});
+</script>
+</body>
+</html>
