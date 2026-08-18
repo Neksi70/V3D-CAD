@@ -3,7 +3,10 @@
 Klapp- und Postkarten drucken, ohne sich mit dem Ausschießen zu plagen:
 Maße eingeben, Bild und Text setzen, PDF erzeugen.
 
-Windows-Programm (eine EXE, keine Installation). Die Oberfläche läuft im
+Windows-Programm (eine EXE, keine Installation). Doppelklick genügt — die
+EXE startet den Dienst und öffnet den Browser von selbst. Ein zweiter
+Doppelklick startet keine zweite Instanz, sondern holt die laufende zurück.
+Beenden über den Task-Manager (Eintrag „VolmeKarte.exe“). Die Oberfläche läuft im
 Browser gegen einen mitgelieferten lokalen Dienst auf Port 8785 — nur
 `127.0.0.1`, nichts davon geht ins Netz.
 
@@ -70,6 +73,7 @@ Vorschau.
 | `web/ui.html` | Oberfläche (Editor, Vorschau, Textsatz) |
 | `exe_start.py` | Einstieg der EXE (Port belegt, Protokoll, Meldefenster) |
 | `tests/test_karte.py` | spielt Drucken → Wenden → Falzen physikalisch nach |
+| `volmekarte.ico` | Programmsymbol (aus `web/ui.html` als SVG gespiegelt) |
 
 Keine Fremdpakete — nur die Python-Standardbibliothek.
 
