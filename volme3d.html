@@ -12066,6 +12066,35 @@ function _dimLocalAxis(o, worldAxis) {
   return best;
 }
 
+// Form-Maß entlang der EIGENEN Achsen setzen (val in mm):
+//   axes 'xz' = Durchmesser (beide Radial-Achsen), 'y' = Höhe/Länge der Achse.
+// Nötig für Rotationskörper, deren Durchmesser sich nicht mit der Lage im Raum
+// verdrehen darf — ein liegendes Rohr bekam sonst über „Durchmesser" die Länge
+// verstellt, weil applyDimChange('sw') die WELT-X-Ausdehnung meint.
+function applyLocalDimChange(o, axes, val) {
+  if (!o) return;
+  const v = parseFloat(val); if (!(v > 0)) return;
+  const _preBox = getMeshBox(o);
+  const ls  = _fpLocalSize(o);
+  const cur = (axes === 'y' ? ls.y : ls.x) * 10;   // mm entlang der lokalen Achse
+  const r   = v / (cur || 0.1);
+  if (!isFinite(r) || r <= 0) return;
+  if (scaleLocked || axes === 'xyz') {             // proportional: alles mitziehen
+    o.scale.x = Math.max(0.01, o.scale.x*r); o.scale.y = Math.max(0.01, o.scale.y*r); o.scale.z = Math.max(0.01, o.scale.z*r);
+  } else if (axes === 'y') {
+    o.scale.y = Math.max(0.01, o.scale.y*r);
+  } else {
+    o.scale.x = Math.max(0.01, o.scale.x*r); o.scale.z = Math.max(0.01, o.scale.z*r);
+  }
+  // Verankerung wie bei applyDimChange: Unterkante bleibt auf der Buildplate,
+  // bei Breitenänderung ohne „aus der Mitte" die rechte Welt-Kante festhalten.
+  const _postBox = getMeshBox(o);
+  o.position.y += _preBox.min.y - _postBox.min.y;
+  if (!scaleFromCenter && axes !== 'y') o.position.x += _preBox.max.x - _postBox.max.x;
+  { const _b0 = getMeshBox(o); if (_b0.min.y < -1e-4) o.position.y -= _b0.min.y; }
+  _dimChangePost(o);
+}
+
 function applyDimChange(axis, val) {
   const o = getFirst(); if (!o) return;
   // Schrauben (mit Gewinde): Höhen-Anfasser ändert die LÄNGE (Geometrie neu bauen,
@@ -12135,6 +12164,12 @@ function applyDimChange(axis, val) {
     const _b0 = getMeshBox(o);
     if (_b0.min.y < -1e-4) o.position.y -= _b0.min.y;
   }
+  _dimChangePost(o);
+}
+
+// Nachlauf jeder Größenänderung: Slider/Transform-Felder aus der echten BBox
+// nachziehen, Handles neu setzen, Kanten-Modus neu aufbauen.
+function _dimChangePost(o) {
   // Always sync all sliders from actual bbox
   const bx = getMeshBox(o); const bsz = bx.getSize(new THREE.Vector3());
   setSliderVal('sl-w','dn-w', r2(bsz.x*10));
@@ -12570,6 +12605,31 @@ function getMeshBox(o) {
     });
   });
   return box.isEmpty() ? new THREE.Box3().setFromObject(o) : box;
+}
+
+// Rotationskörper: bei diesen Typen sind „Durchmesser" und „Höhe" Maße der FORM
+// (lokale X/Z = radial, lokale Y = Achse) und nicht Maße der Welt-Achsen.
+const _FP_ROT_TYPES = ['cylinder','tube','cone','pyramid','sphere','torus','polygon','paraboloid','sphericalshell'];
+function _fpIsRot(o) { return !!o && _FP_ROT_TYPES.includes(o.userData.shapeType || ''); }
+
+// Größe entlang der EIGENEN Achsen des Objekts (in Units), unabhängig von der
+// Drehung im Raum. Ein liegendes Rohr behält so X/Z = Durchmesser und Y = Länge —
+// die Welt-BBox würde hier Länge und Durchmesser vertauschen.
+function _fpLocalSize(o) {
+  o.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(o.matrixWorld).invert();
+  const box = new THREE.Box3();
+  o.traverse(child => {
+    if (!child.isMesh || !child.geometry || !child.geometry.attributes.position) return;
+    const lb = new THREE.Box3().setFromBufferAttribute(child.geometry.attributes.position);
+    const m  = new THREE.Matrix4().multiplyMatrices(inv, child.matrixWorld);
+    for (const x of [lb.min.x, lb.max.x]) for (const y of [lb.min.y, lb.max.y]) for (const z of [lb.min.z, lb.max.z])
+      box.expandByPoint(new THREE.Vector3(x, y, z).applyMatrix4(m));
+  });
+  if (box.isEmpty()) return getMeshBox(o).getSize(new THREE.Vector3());
+  const s  = o.getWorldScale(new THREE.Vector3());
+  const sz = box.getSize(new THREE.Vector3());
+  return new THREE.Vector3(sz.x * Math.abs(s.x), sz.y * Math.abs(s.y), sz.z * Math.abs(s.z));
 }
 
 // Returns 3D world position for a handle key given current bbox
@@ -18872,6 +18932,7 @@ let rubberStart = { x: 0, y: 0 };
 // Orbit/pan start: window-level so right-click on handles still orbits
 window.addEventListener('mousedown', e => {
   if (e.button !== 2 && e.button !== 1) return;
+  if (!e.target || !vpEl.contains(e.target)) return;   // Klick in einem Modal über dem Viewport → nicht orbiten
   const rect = vpEl.getBoundingClientRect();
   if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
   isOrbit = true; isPan = (e.button === 1 || (e.button === 2 && e.shiftKey));
@@ -34306,11 +34367,15 @@ function _measureDetectCircle(hit){
 }
 function _measureDown(e){
   if(!_measureMode || e.button!==0) return;
+  // Nur echte Klicks INS 3D-Fenster abfangen. Der Rechteck-Test allein reicht nicht:
+  // Modals (Generatoren, position:fixed inset:0) liegen über dem Viewport — ohne die
+  // contains-Prüfung schluckt der Capture-Handler dort jeden Klick auf Schieber/Buttons.
+  if(!e.target || !vpEl.contains(e.target)) return;
   const rect=vpEl.getBoundingClientRect();
   if(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom) return;
   e.stopImmediatePropagation(); e.preventDefault();
   const hits=pickObjects(e);
-  if(!hits.length){ notify('Daneben — auf ein Objekt klicken','w'); return; }
+  if(!hits.length){ notify('Daneben — auf ein Objekt klicken (Esc beendet das Messen)','w'); return; }
   // Erster ECHTER Flächentreffer: pickObjects liefert rekursiv auch die
   // Kanten-Overlay-Linien der Objekte — die haben kein face und kein brauchbares Mesh
   const hit=hits.find(h=>h.face && h.object.isMesh) || hits[0];
@@ -35730,8 +35795,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.76';
+const VOLME3D_VERSION = '1.15.77';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.77', date:'2026-08-19', changes:[
+    ['🐛','<b>Durchmesser</b> und <b>Höhe</b> in den Eigenschaften wirken jetzt auch bei <b>gedrehten (liegenden) Körpern</b> richtig. Bisher wurden beide Maße an den Achsen des Raums abgelesen statt an denen des Bauteils: Bei einem liegenden Rohr stand darum die Länge im Feld „Durchmesser", und der Regler machte das Rohr länger statt dicker (Höhe umgekehrt genauso). Ø und Höhe gehören zur Form — sie werden jetzt immer entlang der eigenen Achse gemessen und verstellt, egal wie das Teil im Raum liegt. Gilt für Rohr, Zylinder, Kegel, Pyramide, Kugel, Torus, Vieleck, Paraboloid und Hohlkugel; das Bauteil bleibt dabei auf der Druckplatte. Bei Box &amp; Co. bleiben „Länge X / Tiefe Y / Höhe Z" wie gehabt Raum-Maße. Gemeldet von Ralf.'],
+  ]},
   { version:'1.15.76', date:'2026-08-18', spots:[{id:'measure-dia',sel:'#btn-measure'}], changes:[
     ['📐','Messen kann jetzt <b>Durchmesser</b>: Einfach im Mess-Modus eine <b>Kreiskante</b> anklicken — den Rand einer Bohrung, eines Zapfens oder die Deckelkante eines Zylinders — und V3D CAD erkennt den Kreis, zeichnet ihn orange nach und zeigt direkt <b>Ø in mm</b> an. Bisher musste man zwei gegenüberliegende Punkte treffen und hat dabei fast immer eine Sehne statt des Durchmessers erwischt — das Maß war dann zu klein. Zwei-Punkt-Messung für Abstände geht weiter wie gewohnt; auf glatten Flächen ändert sich nichts. Wunsch von Ralf.'],
   ]},
@@ -37656,6 +37724,10 @@ function _fpBuildRows(type, o) {
   const box = getMeshBox(o);
   const sz  = box.getSize(new THREE.Vector3());
   const w = r2(sz.x * 10), h = r2(sz.y * 10), d = r2(sz.z * 10);
+  // Rotationskörper: Durchmesser/Höhe entlang der EIGENEN Achsen messen, sonst
+  // zeigt ein liegendes Rohr seine Länge als „Durchmesser" an (Welt-BBox).
+  const lsz = _fpIsRot(o) ? _fpLocalSize(o) : sz;
+  const lh  = r2(lsz.y * 10);   // Höhe/Länge entlang der Körperachse
   // row(lbl, id, val, onchange, unit, min, max, step)
   // Proportional-Toggle zwischen Breite X und Tiefe Y
   const propLock = () =>
@@ -37803,7 +37875,7 @@ function _fpBuildRows(type, o) {
              edgeBtn + shellBtn + _dispRows();
     }
     case 'cylinder': case 'tube': {
-      const rad = r2(sz.x / 2 * 10);
+      const rad = r2(lsz.x / 2 * 10);
       const wallRow = type === 'tube'
         ? row('Wandstärke', 'fp-tubewall', r2(o.userData.tubeWall != null ? o.userData.tubeWall : 2),
               "fpApplyTubeWall(this.value)", 'mm', 0.2, Math.max(0.2, r2(rad * 0.95)), 0.1)
@@ -37840,7 +37912,7 @@ function _fpBuildRows(type, o) {
         : '';
       return row('Durchmesser', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
              (type === 'cylinder' ? propLock() : '') +
-             row('Höhe',     'fph',   h,   "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+             row('Höhe',     'fph',   lh,  "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              wallRow +
              '<div class="fp-sep"></div>' +
              row('Seiten', 'fp-seg', segs|| (o.userData.tubePoly?4:32), "fpApplySegs(this.value)", '', 3, 128, 1) +
@@ -37850,7 +37922,7 @@ function _fpBuildRows(type, o) {
              _dispRows();
     }
     case 'sphere': {
-      const rad = r2(sz.x / 2 * 10);
+      const rad = r2(lsz.x / 2 * 10);
       return row('Durchmesser', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
              row('Schritte', 'fp-seg', segs||32, "fpApplySegs(this.value)", '', 3, 128, 1) +
@@ -37894,7 +37966,7 @@ function _fpBuildRows(type, o) {
              _dispRows();
     }
     case 'cone': case 'pyramid': {
-      const rad = r2(sz.x / 2 * 10);
+      const rad = r2(lsz.x / 2 * 10);
       const defSegs = type === 'pyramid' ? 4 : 32;
       const flip = !!o.userData.coneFlip;   // true = schmale Seite/Spitze unten
       // Kegel: oberer Durchmesser (0 = spitzer Kegel, >0 = Kegelstumpf).
@@ -37934,7 +38006,7 @@ function _fpBuildRows(type, o) {
              topRow +
              (type === 'cone' ? propLock() : '') +
              flipRow +
-             row('Höhe',     'fph',   h,   "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+             row('Höhe',     'fph',   lh,  "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
              row('Seiten', 'fp-seg', segs||defSegs, "fpApplySegs(this.value)", '', 3, 128, 1) +
              capBevelRows +
@@ -37942,9 +38014,9 @@ function _fpBuildRows(type, o) {
              _dispRows();
     }
     case 'torus': {
-      const outerR = r2(sz.x / 2 * 10);
+      const outerR = r2(lsz.x / 2 * 10);
       const tr     = o.userData.tubeRatio || 0.35;
-      const tubeR  = r2(tr * (sz.x / 2) * 10);
+      const tubeR  = r2(tr * (lsz.x / 2) * 10);
       return row('Außen-Ø', 'fp-r', r2(outerR*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
              row('Rohrradius',  'fp-tr', tubeR,  "fpApplyTube(this.value)",   'mm', 0.1, 150) +
              '<div class="fp-sep"></div>' +
@@ -37967,7 +38039,7 @@ function _fpBuildRows(type, o) {
         row('Obere Kante abschräg.',  'fp-cb-tc', r2(pcbv.topChamfer||0), "fpCapBevelSet('topchamfer',this.value)", 'mm', 0, pcmax, 0.1);
       return modeRow +
              row(mode==='flaeche' ? 'Ø Fläche' : 'Ø Spitze', 'fp-r', dia, "fpApplyPolyDia(this.value)", 'mm', 0.1, 500) +
-             row('Höhe',    'fph',    h,          "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+             row('Höhe',    'fph',    lh,         "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
              row('Seiten',  'fp-seg', segs||6,    "fpApplySegs(this.value)",   '',   3, 64, 1) +
              polyBevelRows +
@@ -37975,15 +38047,15 @@ function _fpBuildRows(type, o) {
              _dispRows();
     }
     case 'paraboloid': {
-      const rad = r2(sz.x / 2 * 10);
+      const rad = r2(lsz.x / 2 * 10);
       return row('Durchmesser', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
-             row('Höhe',     'fph',    h,          "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+             row('Höhe',     'fph',    lh,         "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
              '<div class="fp-sep"></div>' +
              row('Schritte', 'fp-seg', segs||24,   "fpApplySegs(this.value)",   '',   4, 96, 1) +
              _dispRows();
     }
     case 'sphericalshell': {
-      const rad = r2(sz.x / 2 * 10);
+      const rad = r2(lsz.x / 2 * 10);
       return row('Außen-Ø', 'fp-r', r2(rad*2), "fpApplyDiameter(this.value)", 'mm', 0.1, 500) +
              _dispRows();
     }
@@ -38181,6 +38253,9 @@ function _fpSyncValues() {
     if (sl && document.activeElement !== sl) sl.value = v;
   };
   const w = r2(sz.x*10), h = r2(sz.y*10), d = r2(sz.z*10);
+  // Rotationskörper: Ø/Höhe entlang der eigenen Achsen (siehe _fpBuildRows)
+  const lsz = _fpIsRot(o) ? _fpLocalSize(o) : sz;
+  const lh  = r2(lsz.y*10);
   switch (type) {
     case 'box': {
       set('fpw', w); set('fph', h); set('fpd', d);
@@ -38194,7 +38269,7 @@ function _fpSyncValues() {
       break;
     }
     case 'cylinder': case 'tube':
-      set('fp-r', r2(sz.x*10)); set('fph', h);
+      set('fp-r', r2(lsz.x*10)); set('fph', lh);
       set('fp-seg', o.userData.segments|| (o.userData.tubePoly?4:32));
       if (type === 'tube') set('fp-tubewall', r2(o.userData.tubeWall != null ? o.userData.tubeWall : 2));
       if (type === 'tube' && o.userData.tubePoly) set('fp-twist', r2(o.userData.tubeTwist || 0));
@@ -38211,7 +38286,7 @@ function _fpSyncValues() {
       }
       break;
     case 'sphere':
-      set('fp-r', r2(sz.x*10));
+      set('fp-r', r2(lsz.x*10));
       set('fp-seg', o.userData.segments||32); break;
     case 'funnel':
       set('fp-fn-top',   r2(o.userData.funnelTopDia||40));
@@ -38236,23 +38311,23 @@ function _fpSyncValues() {
       set('fp-seg', o.userData.segments||48); break;
     }
     case 'cone': case 'pyramid':
-      set('fp-r', r2(sz.x*10)); set('fph', h);
-      if (type === 'cone') set('fp-ctop', r2(sz.x*10*(o.userData.coneTop||0)));
+      set('fp-r', r2(lsz.x*10)); set('fph', lh);
+      if (type === 'cone') set('fp-ctop', r2(lsz.x*10*(o.userData.coneTop||0)));
       set('fp-seg', o.userData.segments||(type==='pyramid'?4:32)); break;
     case 'torus': {
-      set('fp-r', r2(sz.x*10));
+      set('fp-r', r2(lsz.x*10));
       const tr = o.userData.tubeRatio||0.35;
-      set('fp-tr', r2(tr*(sz.x/2)*10));
+      set('fp-tr', r2(tr*(lsz.x/2)*10));
       set('fp-seg', o.userData.segments||48); break;
     }
     case 'polygon':
-      set('fp-r', r2(o.scale.x*2*10*_polyDiaFactor(o))); set('fph', h);   // Fläche- oder Eckmaß
+      set('fp-r', r2(o.scale.x*2*10*_polyDiaFactor(o))); set('fph', lh);   // Fläche- oder Eckmaß
       set('fp-seg', o.userData.segments||6); break;
     case 'paraboloid':
-      set('fp-r', r2(sz.x*10)); set('fph', h);
+      set('fp-r', r2(lsz.x*10)); set('fph', lh);
       set('fp-seg', o.userData.segments||24); break;
     case 'sphericalshell':
-      set('fp-r', r2(sz.x*10)); break;
+      set('fp-r', r2(lsz.x*10)); break;
     case 'spring': case 'bentpipe':
       set('fpw', w); set('fph', h); break;
     case 'thread': {
@@ -38483,9 +38558,12 @@ function fpSetMode(mode) {
 function fpApplyDim(axis, val) {
   const v = parseFloat(val); if (!(v > 0)) return;
   saveUndoDebounced();
-  applyDimChange(axis === 'w' ? 'sw' : axis === 'h' ? 'sh' : 'sd', v);
-  // Boden-Rohr: Bodendicke hängt an der Höhe → bei Höhenänderung neu bauen
   const o = getFirst();
+  // Rotationskörper: „Höhe" ist die Länge der eigenen Achse (lokal Y), nicht die
+  // Ausdehnung in Welt-Y — sonst staucht der Regler ein liegendes Rohr quer.
+  if (axis === 'h' && _fpIsRot(o)) applyLocalDimChange(o, 'y', v);
+  else applyDimChange(axis === 'w' ? 'sw' : axis === 'h' ? 'sh' : 'sd', v);
+  // Boden-Rohr: Bodendicke hängt an der Höhe → bei Höhenänderung neu bauen
   if (o && o.userData.shapeType === 'tube' && o.userData.tubeFloor && axis === 'h') _fpRebuildGeo(o);
   _fpSyncValues();
 }
@@ -38577,8 +38655,8 @@ function fpApplyPolyDia(val) {
   const o = getFirst(); if (!o || o.userData.shapeType !== 'polygon') return;
   const D = parseFloat(val); if (!(D > 0)) return;
   saveUndoDebounced();
-  applyDimChange('sw', D / _polyDiaFactor(o));   // setzt scale.x = Umkreisradius
-  o.scale.z = o.scale.x;
+  applyLocalDimChange(o, 'xz', D / _polyDiaFactor(o));   // setzt scale.x = Umkreisradius (lageunabhängig)
+  if (Math.abs(o.scale.z - o.scale.x) > 1e-6) { o.scale.z = o.scale.x; _dimChangePost(o); }
   _fpSyncValues();
   if (selectedObjs.length > 0) _doRepositionDimHandles();
 }
@@ -38590,11 +38668,14 @@ function fpSetPolyMode(mode) {
 
 function fpApplyRadius(val) {
   const v = parseFloat(val); if (!(v > 0)) return;
+  const o = getFirst(); if (!o) return;
   saveUndoDebounced();
-  applyDimChange('sw', v * 2);  // diameter = radius * 2
-  const o = getFirst();
-  if (o) { o.scale.z = o.scale.x; }  // keep circular
-  if (o && o.userData.shapeType === 'tube') _fpRebuildGeo(o);  // Wandstärke (mm) konstant halten
+  // Durchmesser ist ein Maß der FORM: immer die lokalen Radial-Achsen (X/Z)
+  // skalieren. Über die Welt-X-Achse würde der Regler bei einem gedrehten
+  // (liegenden) Rohr die Länge verstellen statt des Durchmessers.
+  applyLocalDimChange(o, 'xz', v * 2);   // diameter = radius * 2
+  if (Math.abs(o.scale.z - o.scale.x) > 1e-6) { o.scale.z = o.scale.x; _dimChangePost(o); }  // keep circular
+  if (o.userData.shapeType === 'tube') _fpRebuildGeo(o);  // Wandstärke (mm) konstant halten
   _fpSyncValues();
 }
 
