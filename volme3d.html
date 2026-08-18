@@ -1192,7 +1192,7 @@ const firebaseConfig = {
       <button class="btn" onclick="openOffsetTool()" title="Spielraum — Körper um ±mm aufblasen/schrumpfen (Toleranz für Passungen, z.B. −0,2 mm für klemmende Deckel)">⧈ Spielraum</button>
     </div></div>
     <div class="tbg"><span class="tbg-l">Prüfen</span><div class="tbg-row">
-      <button class="btn" id="btn-measure" onclick="measureTool()" title="Messen — zwei Punkte anklicken, Abstand in mm ablesen (Esc beendet)">📐 Messen</button>
+      <button class="btn" id="btn-measure" onclick="measureTool()" title="Messen — Kreiskante anklicken für Durchmesser, zwei Punkte für Abstand in mm (Esc beendet)">📐 Messen</button>
       <button class="btn" id="btn-section" onclick="sectionTool()" title="Schnittansicht — Modell mit einer Ebene aufschneiden, Wandstärken &amp; Innenleben prüfen (nur Ansicht, ändert nichts am Körper, Esc beendet)">◪ Schnitt</button>
     </div></div>
     <div class="tbg"><span class="tbg-l">Ansicht</span><div class="tbg-row">
@@ -1437,7 +1437,7 @@ const firebaseConfig = {
   <div id="sel-box"></div>
   <div id="text-snap-hint"></div>
   <div id="vp-ctxmenu">
-    <div class="sli-item" id="ctx-measure">📐 Messen (Abstand)</div>
+    <div class="sli-item" id="ctx-measure">📐 Messen (Abstand / Ø)</div>
     <div class="sli-item" id="ctx-pushpull">↕ Fläche ziehen (Push/Pull)</div>
     <div class="sli-item" id="ctx-loft">⤧ Loft (Flächen verbinden)</div>
   </div>
@@ -21977,11 +21977,11 @@ if ('hid' in navigator) {
 window._smCfg = _smCfg;
 window.toggleSpaceMouseDebug = () => { _smDebug = !_smDebug; if (!_smDebug) document.getElementById('sm-debug')?.remove(); notify('SpaceMouse-Debug ' + (_smDebug ? 'an' : 'aus'), 'ok'); };
 
-let _measureMode=false, _measureA=null, _measureB=null, _measureGroup=null, _measureLabel=null;  // Bemaßung (vor animate)
+let _measureMode=false, _measureA=null, _measureB=null, _measureCircle=null, _measureGroup=null, _measureLabel=null;  // Bemaßung (vor animate)
 function animate() {
   requestAnimationFrame(animate);
   _smTick();
-  if (_measureMode && _measureA && _measureB) _measureUpdateLabel();   // Maßlabel der Kamera folgen lassen
+  if (_measureMode && ((_measureA && _measureB) || _measureCircle)) _measureUpdateLabel();   // Maßlabel der Kamera folgen lassen
   if (ttOn) { sph.theta += 0.005; sph2cam(); }
   if (window._updateVcube) window._updateVcube();
   if (specialMode === 'align' && selectedObjs.length < 2) {
@@ -34164,10 +34164,10 @@ function _mapBuildModel(parsed, bb, terrain){
 function measureTool(){
   _measureMode=!_measureMode;
   const btn=document.getElementById('btn-measure'); if(btn) btn.classList.toggle('active',_measureMode);
-  if(_measureMode){ _measureA=_measureB=null; _measureRemoveGroup(); if(_measureLabel)_measureLabel.style.display='none'; document.body.style.cursor='crosshair'; notify('Messen: zwei Punkte anklicken (Esc beendet)','ok'); }
+  if(_measureMode){ _measureA=_measureB=_measureCircle=null; _measureRemoveGroup(); if(_measureLabel)_measureLabel.style.display='none'; document.body.style.cursor='crosshair'; notify('Messen: Kreiskante anklicken → Durchmesser · zwei Punkte anklicken → Abstand (Esc beendet)','ok'); }
   else _measureExit();
 }
-function _measureExit(){ _measureMode=false; document.body.style.cursor=''; const btn=document.getElementById('btn-measure'); if(btn) btn.classList.remove('active'); _measureRemoveGroup(); if(_measureLabel)_measureLabel.style.display='none'; }
+function _measureExit(){ _measureMode=false; _measureA=_measureB=_measureCircle=null; document.body.style.cursor=''; const btn=document.getElementById('btn-measure'); if(btn) btn.classList.remove('active'); _measureRemoveGroup(); if(_measureLabel)_measureLabel.style.display='none'; }
 function _measureRemoveGroup(){ if(_measureGroup){ scene.remove(_measureGroup); _measureGroup.traverse(o=>{if(o.geometry)o.geometry.dispose(); if(o.material)o.material.dispose&&o.material.dispose();}); _measureGroup=null; } }
 function _measureSnap(hit, pt){
   try{
@@ -34179,6 +34179,131 @@ function _measureSnap(hit, pt){
     return bd<thr ? best.clone() : pt;
   }catch(e){ return pt; }
 }
+// Featurekanten (Knick > 25° oder offene Kante) je Objekt extrahieren und cachen.
+// Vertices werden über gerundete Koordinaten verschweißt, weil CSG-/STL-Meshes
+// unverbundene Dreiecke liefern — ohne Schweißen zerfällt jede Kante in Einzelstücke.
+function _measureBuildEdges(o){
+  const g=o.geometry; if(!g||!g.attributes||!g.attributes.position) return null;
+  if(o.userData._measEdges && o.userData._measEdges.uuid===g.uuid) return o.userData._measEdges;
+  const pos=g.attributes.position, idx=g.index;
+  const triN=Math.floor((idx?idx.count:pos.count)/3);
+  if(triN>800000) return null;   // Riesen-Import: Extraktion würde ruckeln, dann eben nur Punkt-Messung
+  const weld=new Map(), wp=[];
+  const wid=i=>{ const x=pos.getX(i),y=pos.getY(i),z=pos.getZ(i);
+    const k=Math.round(x*1e3)+'_'+Math.round(y*1e3)+'_'+Math.round(z*1e3);
+    let w=weld.get(k); if(w===undefined){ w=wp.length/3; wp.push(x,y,z); weld.set(k,w); } return w; };
+  const va=new THREE.Vector3(), vb=new THREE.Vector3(), vc=new THREE.Vector3(), fn=new THREE.Vector3(), tmp=new THREE.Vector3();
+  const COS=Math.cos(25*Math.PI/180);
+  const edges=new Map();
+  for(let t=0;t<triN;t++){
+    const i0=idx?idx.getX(t*3):t*3, i1=idx?idx.getX(t*3+1):t*3+1, i2=idx?idx.getX(t*3+2):t*3+2;
+    va.fromBufferAttribute(pos,i0); vb.fromBufferAttribute(pos,i1); vc.fromBufferAttribute(pos,i2);
+    fn.copy(vb).sub(va).cross(tmp.copy(vc).sub(va));
+    if(fn.lengthSq()<1e-14) continue;
+    fn.normalize();
+    const w0=wid(i0), w1=wid(i1), w2=wid(i2);
+    const pairs=[[w0,w1],[w1,w2],[w2,w0]];
+    for(const [a,b] of pairs){
+      if(a===b) continue;
+      const key=Math.min(a,b)+'_'+Math.max(a,b);
+      const rec=edges.get(key);
+      if(!rec) edges.set(key,{a:Math.min(a,b),b:Math.max(a,b),nx:fn.x,ny:fn.y,nz:fn.z,cnt:1,feat:false});
+      else{ rec.cnt++;
+        if(rec.cnt===2){ if(rec.nx*fn.x+rec.ny*fn.y+rec.nz*fn.z<COS) rec.feat=true; }
+        else rec.feat=true; }  // non-manifold: sicherheitshalber als Kante behandeln
+    }
+  }
+  const segs=[]; edges.forEach(r=>{ if(r.feat||r.cnt===1) segs.push([r.a,r.b]); });
+  const adj=new Map();
+  segs.forEach((s,si)=>{ for(const v of s){ let l=adj.get(v); if(!l){ l=[]; adj.set(v,l); } l.push(si); } });
+  const res={uuid:g.uuid, wp, segs, adj};
+  o.userData._measEdges=res;
+  return res;
+}
+// Liegt der Klick nahe an einer Featurekante, den zusammenhängenden Kantenzug
+// verfolgen und einen Kreis fitten (Kasa-Fit in der Best-Fit-Ebene). Liefert
+// {center,radius,normal} in Weltkoordinaten oder null (→ normale Punkt-Messung).
+function _measureDetectCircle(hit){
+  try{
+    const o=hit.object; if(!o.isMesh) return null;
+    const E=_measureBuildEdges(o);
+    if(!E||!E.segs.length) return null;
+    const mw=o.matrixWorld, P=hit.point;
+    const wcache=new Map();
+    const W=i=>{ let v=wcache.get(i); if(!v){ v=new THREE.Vector3(E.wp[i*3],E.wp[i*3+1],E.wp[i*3+2]).applyMatrix4(mw); wcache.set(i,v); } return v; };
+    // Klick-Toleranz mit Kamera-Abstand skalieren, sonst trifft man weit weg keine Kante
+    const thr=Math.max(0.06, P.distanceTo(camera.position)*0.015);
+    const l3=new THREE.Line3(), cp=new THREE.Vector3();
+    let bestSeg=-1, bd=thr;
+    for(let si=0;si<E.segs.length;si++){
+      l3.start.copy(W(E.segs[si][0])); l3.end.copy(W(E.segs[si][1]));
+      l3.closestPointToPoint(P,true,cp);
+      const d=cp.distanceTo(P); if(d<bd){ bd=d; bestSeg=si; }
+    }
+    if(bestSeg<0) return null;
+    // Kantenzug in beide Richtungen verfolgen; an Verzweigungen/Ecken stoppen
+    const segs=E.segs, adj=E.adj, deg=i=>(adj.get(i)||[]).length;
+    const visited=new Set([bestSeg]);
+    let chain=[segs[bestSeg][0],segs[bestSeg][1]], closed=false;
+    const extend=(atEnd)=>{
+      for(let it=0;it<4096;it++){
+        const cur=atEnd?chain[chain.length-1]:chain[0];
+        if(deg(cur)!==2) return;
+        const nxt=(adj.get(cur)||[]).filter(si=>!visited.has(si));
+        if(nxt.length!==1) return;
+        const s=segs[nxt[0]]; visited.add(nxt[0]);
+        const v=(s[0]===cur)?s[1]:s[0];
+        if(v===(atEnd?chain[0]:chain[chain.length-1])){ closed=true; return; }
+        if(atEnd) chain.push(v); else chain.unshift(v);
+      }
+    };
+    extend(true); if(!closed) extend(false);
+    if(chain.length<8) return null;
+    const pts=chain.map(W);
+    const c=new THREE.Vector3(); pts.forEach(p=>c.add(p)); c.divideScalar(pts.length);
+    // Ebenennormale nach Newell
+    const n=new THREE.Vector3(), t1=new THREE.Vector3(), t2=new THREE.Vector3();
+    const m=pts.length, last=closed?m:m-1;
+    for(let i=0;i<last;i++){ t1.copy(pts[i]).sub(c); t2.copy(pts[(i+1)%m]).sub(c); n.add(new THREE.Vector3().crossVectors(t1,t2)); }
+    if(n.lengthSq()<1e-12) return null;
+    n.normalize();
+    const u=Math.abs(n.x)>0.9?new THREE.Vector3(0,1,0):new THREE.Vector3(1,0,0);
+    u.cross(n).normalize();
+    const v2=new THREE.Vector3().crossVectors(n,u);
+    // Kasa-Kreisfit: w = a·u + b·v + c0 mit w=u²+v²
+    let Suu=0,Suv=0,Svv=0,Su=0,Sv=0,Suw=0,Svw=0,Sw=0, devPlane=0;
+    const uv=pts.map(p=>{ t1.copy(p).sub(c);
+      const du=t1.dot(u), dv=t1.dot(v2);
+      devPlane=Math.max(devPlane,Math.abs(t1.dot(n)));
+      const w=du*du+dv*dv;
+      Suu+=du*du; Suv+=du*dv; Svv+=dv*dv; Su+=du; Sv+=dv; Suw+=du*w; Svw+=dv*w; Sw+=w;
+      return [du,dv]; });
+    const det=Suu*(Svv*m-Sv*Sv)-Suv*(Suv*m-Sv*Su)+Su*(Suv*Sv-Svv*Su);
+    if(Math.abs(det)<1e-12) return null;
+    const a =(Suw*(Svv*m-Sv*Sv)-Suv*(Svw*m-Sv*Sw)+Su*(Svw*Sv-Svv*Sw))/det;
+    const b =(Suu*(Svw*m-Sv*Sw)-Suw*(Suv*m-Sv*Su)+Su*(Suv*Sw-Svw*Su))/det;
+    const c0=(Suu*(Svv*Sw-Svw*Sv)-Suv*(Suv*Sw-Svw*Su)+Suw*(Suv*Sv-Svv*Su))/det;
+    const uc=a/2, vcc=b/2, r2=c0+uc*uc+vcc*vcc;
+    if(!(r2>1e-4)) return null;
+    const r=Math.sqrt(r2);
+    // Nur akzeptieren, wenn es wirklich ein Kreis ist: Punkte auf Radius + in der Ebene
+    let maxDev=0;
+    for(const [du,dv] of uv) maxDev=Math.max(maxDev,Math.abs(Math.hypot(du-uc,dv-vcc)-r));
+    if(maxDev>Math.max(0.04, r*0.05)) return null;
+    // Ebenen-Toleranz bewusst lockerer: der Rand einer Bohrung in einer GEWÖLBTEN
+    // Wand (Ralfs Becher) ist eine Sattelkurve, weicht ~r²/2R aus der Ebene ab —
+    // radial stimmt der Kreis trotzdem exakt, also nur grobe Ausreißer abfangen
+    if(devPlane>Math.max(0.06, r*0.3)) return null;
+    if(!closed){ // offener Bogen: mindestens 240° Überdeckung verlangen
+      const angs=uv.map(([du,dv])=>Math.atan2(dv-vcc,du-uc)).sort((x,y)=>x-y);
+      let gap=angs[0]+2*Math.PI-angs[angs.length-1];
+      for(let i=1;i<angs.length;i++) gap=Math.max(gap,angs[i]-angs[i-1]);
+      if((2*Math.PI-gap)<Math.PI*4/3) return null;
+    }
+    const center=c.clone().addScaledVector(u,uc).addScaledVector(v2,vcc);
+    return {center, radius:r, normal:n.clone()};
+  }catch(e){ return null; }
+}
 function _measureDown(e){
   if(!_measureMode || e.button!==0) return;
   const rect=vpEl.getBoundingClientRect();
@@ -34186,7 +34311,13 @@ function _measureDown(e){
   e.stopImmediatePropagation(); e.preventDefault();
   const hits=pickObjects(e);
   if(!hits.length){ notify('Daneben — auf ein Objekt klicken','w'); return; }
-  const pt=_measureSnap(hits[0], hits[0].point.clone());
+  // Erster ECHTER Flächentreffer: pickObjects liefert rekursiv auch die
+  // Kanten-Overlay-Linien der Objekte — die haben kein face und kein brauchbares Mesh
+  const hit=hits.find(h=>h.face && h.object.isMesh) || hits[0];
+  const circ=_measureDetectCircle(hit);
+  if(circ){ _measureCircle=circ; _measureA=_measureB=null; _measureDraw(); return; }
+  const pt=_measureSnap(hit, hit.point.clone());
+  _measureCircle=null;
   if(!_measureA || (_measureA && _measureB)){ _measureA=pt; _measureB=null; }
   else _measureB=pt;
   _measureDraw();
@@ -34195,6 +34326,18 @@ function _measureDraw(){
   _measureRemoveGroup();
   _measureGroup=new THREE.Group();
   const dot=p=>{ const s=new THREE.Mesh(new THREE.SphereGeometry(0.11,12,12), new THREE.MeshBasicMaterial({color:0xF97316,depthTest:false})); s.position.copy(p); s.renderOrder=999; return s; };
+  if(_measureCircle){
+    const {center,radius,normal}=_measureCircle;
+    const u=Math.abs(normal.x)>0.9?new THREE.Vector3(0,1,0):new THREE.Vector3(1,0,0);
+    u.cross(normal).normalize();
+    const v2=new THREE.Vector3().crossVectors(normal,u);
+    const cpts=[]; for(let i=0;i<96;i++){ const a=i/96*2*Math.PI; cpts.push(center.clone().addScaledVector(u,Math.cos(a)*radius).addScaledVector(v2,Math.sin(a)*radius)); }
+    const mat=new THREE.LineBasicMaterial({color:0xF97316,depthTest:false});
+    const ring=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(cpts), mat); ring.renderOrder=999;
+    const dia=new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+      center.clone().addScaledVector(u,-radius), center.clone().addScaledVector(u,radius)]), mat.clone()); dia.renderOrder=999;
+    _measureGroup.add(ring); _measureGroup.add(dia); _measureGroup.add(dot(center));
+  }
   if(_measureA) _measureGroup.add(dot(_measureA));
   if(_measureB){
     _measureGroup.add(dot(_measureB));
@@ -34207,7 +34350,12 @@ function _measureDraw(){
 }
 function _measureUpdateLabel(){
   if(!_measureLabel){ _measureLabel=document.createElement('div'); _measureLabel.id='measure-label'; vpEl.appendChild(_measureLabel); }
-  if(_measureA && _measureB){
+  if(_measureCircle){
+    const c=_measureCircle.center;
+    const sc=_worldToScreen(c.x,c.y,c.z);
+    if(sc){ _measureLabel.textContent='Ø '+(_measureCircle.radius*2*10).toFixed(1)+' mm'; _measureLabel.style.display='block'; _measureLabel.style.left=sc.x+'px'; _measureLabel.style.top=sc.y+'px'; }
+    else _measureLabel.style.display='none';
+  } else if(_measureA && _measureB){
     const mid=_measureA.clone().add(_measureB).multiplyScalar(0.5);
     const sc=_worldToScreen(mid.x,mid.y,mid.z);
     if(sc){ _measureLabel.textContent=(_measureA.distanceTo(_measureB)*10).toFixed(1)+' mm'; _measureLabel.style.display='block'; _measureLabel.style.left=sc.x+'px'; _measureLabel.style.top=sc.y+'px'; }
@@ -34419,17 +34567,17 @@ const TUTOR_LESSONS = {
     title: 'Messen & Bemaßung',
     steps: [
       { type:'info', title:'Abstände prüfen 📐',
-        text:'Mit dem <b>Mess-Werkzeug</b> ermittelst du den <b>Abstand zwischen zwei Punkten</b> in mm — ideal, um Maße zu kontrollieren, bevor du druckst. Klick <b>Weiter</b>.' },
+        text:'Mit dem <b>Mess-Werkzeug</b> ermittelst du den <b>Abstand zwischen zwei Punkten</b> in mm — ideal, um Maße zu kontrollieren, bevor du druckst. Klickst du direkt auf eine <b>Kreiskante</b> (z.B. den Rand einer Bohrung), bekommst du automatisch den <b>Durchmesser Ø</b>. Klick <b>Weiter</b>.' },
       { type:'info', title:'Etwas zum Messen',
         text:'Falls die Szene leer ist: füg dir kurz eine beliebige Form hinzu (z.B. eine Box), damit du Punkte zum Anklicken hast. Sonst weiter mit <b>Weiter</b>.' },
       { type:'action', title:'Mess-Modus aktivieren', highlight:'#btn-measure',
         text:'Klick oben auf <b>📐 Messen</b>. Der Cursor wird zum Fadenkreuz und du kannst Punkte anklicken.',
         check:()=> _measureMode===true },
       { type:'checkpoint', title:'Zwei Punkte anklicken', highlight:'#measure-label',
-        text:'Klick einen <b>ersten Punkt</b> auf einem Objekt an, dann einen <b>zweiten</b>. Zwischen beiden erscheint der gemessene Abstand in mm.',
-        check:()=> !!(_measureA && _measureB) },
+        text:'Klick einen <b>ersten Punkt</b> auf einem Objekt an, dann einen <b>zweiten</b>. Zwischen beiden erscheint der gemessene Abstand in mm. Oder klick eine <b>Kreiskante</b> an — dann erscheint direkt der Durchmesser.',
+        check:()=> !!((_measureA && _measureB) || _measureCircle) },
       { type:'info', title:'Top! 🎉',
-        text:'Du kannst beliebig weitere Punktpaare messen. Mit <b>Esc</b> beendest du das Mess-Werkzeug. Erreichst du auch über Rechtsklick → <b>📐 Messen (Abstand)</b>.' },
+        text:'Du kannst beliebig weitermessen: Kreiskante = Durchmesser Ø, zwei Punkte = Abstand. Mit <b>Esc</b> beendest du das Mess-Werkzeug. Erreichst du auch über Rechtsklick → <b>📐 Messen (Abstand / Ø)</b>.' },
     ]
   }
 };
@@ -35582,8 +35730,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.75';
+const VOLME3D_VERSION = '1.15.76';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.76', date:'2026-08-18', spots:[{id:'measure-dia',sel:'#btn-measure'}], changes:[
+    ['📐','Messen kann jetzt <b>Durchmesser</b>: Einfach im Mess-Modus eine <b>Kreiskante</b> anklicken — den Rand einer Bohrung, eines Zapfens oder die Deckelkante eines Zylinders — und V3D CAD erkennt den Kreis, zeichnet ihn orange nach und zeigt direkt <b>Ø in mm</b> an. Bisher musste man zwei gegenüberliegende Punkte treffen und hat dabei fast immer eine Sehne statt des Durchmessers erwischt — das Maß war dann zu klein. Zwei-Punkt-Messung für Abstände geht weiter wie gewohnt; auf glatten Flächen ändert sich nichts. Wunsch von Ralf.'],
+  ]},
   { version:'1.15.75', date:'2026-08-13', spots:[{id:'gen-rohrklipp',sel:'#gen-dd-btn'}], changes:[
     ['🛡️','Neuer Generator <b>Rohr-Klipp</b> — eine Schutzschale, die man wie einen Riesen-Klipp seitlich über ein Rohr schnappt. Der Unterschied zum bisherigen Rohrbogen: Die Schale wird <b>entlang eines echten Kreisbogens</b> gezogen und krümmt sich damit gleichmäßig über die ganze Länge, statt stückweise. Die Biegung gibst du so ein, wie du sie am Rohr messen kannst — Lineal anlegen, in der Mitte den <b>Durchhang</b> abgreifen; wer den Radius kennt, gibt ihn direkt ein, und „Gerade" gibt es auch. Frei wählbar sind Rohr-Ø, Spiel, Wandstärke, Länge und die <b>Umschlingung</b> (120–330°): über 180° wird der Klipp aufgeschnappt und hält von allein, dazu greifen kleine <b>Rastnasen</b> an den Öffnungskanten hinter das Rohr. Auf welcher Seite die Schale offen ist, bestimmst du selbst — Schnellwahl innen/außen/oben/unten oder stufenlos drehen. Die Stirnseiten laufen angefast aus, damit die Schale nicht am Stoff scheuert, und auf Wunsch gibt es umlaufende <b>Nuten für Kabelbinder</b>. Die Infozeile rechnet mit: Radius, Sehne, lichte Öffnung und ob der Klipp von allein hält. Bauteil liegt flach auf dem Bett, druckt ohne Stützen. Wunsch von Ralf (Hundeanhänger-Reparatur).'],
   ]},
@@ -41461,7 +41612,7 @@ const CMDK = [
   {i:'🩹',g:'Druck',t:'Reparieren',k:'repair loch wasserdicht',run:()=>repairSelected()},
   {i:'🖨',g:'Druck',t:'Druck-Check',k:'print check druckbar',run:()=>_printCheckOpen()},
   {i:'↻',g:'Druck',t:'Für Druck ausrichten',k:'orient',run:()=>autoOrientForPrint()},
-  {i:'📐',g:'Bearbeiten',t:'Messen (Abstand)',k:'measure distance bemaszung',run:()=>measureTool()},
+  {i:'📐',g:'Bearbeiten',t:'Messen (Abstand / Durchmesser)',k:'measure distance diameter durchmesser bemaszung',run:()=>measureTool()},
   {i:'↕',g:'Bearbeiten',t:'Fläche ziehen (Push/Pull)',k:'push pull fläche offset extrudieren',run:()=>enterPushPull()},
   {i:'⤧',g:'Bearbeiten',t:'Loft (Flächen verbinden)',k:'loft übergang flächen verbinden shapr',run:()=>{ if(!_lf.active) enterLoftMode(); }},
   {i:'🔻',g:'Bearbeiten',t:'Vereinfachen (Dreiecke)',k:'simplify decimate reduzieren',run:()=>openSimplifyModal()},
