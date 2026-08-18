@@ -19,19 +19,26 @@ import threading
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 
 BASIS = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASIS)
 
 import karte      # noqa: E402
 import render     # noqa: E402
+import drucken    # noqa: E402
 
 FASSUNG = "1.0"
 WEB = os.path.join(BASIS, "web")
 
 # Anfragen mit eingebetteten Bildern werden gross - aber nicht beliebig.
 GRENZE_BYTES = 160 * 1024 * 1024
+# Beim Direktdruck kommen rohe Bildpunkte an; die schickt die Oberflaeche
+# seitenweise und binaer, damit nichts durch Base64 um ein Drittel waechst.
+GRENZE_ROH_BYTES = 120 * 1024 * 1024
+DRUCKPUFFER = {}
+DRUCKSPERRE = threading.Lock()
+PUFFER_HALTBAR = 600           # Sekunden
 
 
 def _ausgabeordner():
@@ -174,6 +181,9 @@ class Griff(BaseHTTPRequestHandler):
                                    "system": platform.system()})
             if pfad == "/api/vorlagen":
                 return self._json({"vorlagen": VORLAGEN})
+            if pfad == "/api/drucker":
+                return self._json({"direktdruck": drucken.verfuegbar(),
+                                   "drucker": drucken.drucker()})
             if pfad == "/api/entwuerfe":
                 return self._json({"entwuerfe": self._entwurfsliste()})
             if pfad.startswith("/api/entwurf/"):
@@ -220,7 +230,15 @@ class Griff(BaseHTTPRequestHandler):
 
     # -- POST ----------------------------------------------------------
     def do_POST(self):
-        pfad = unquote(urlparse(self.path).path)
+        zerlegt = urlparse(self.path)
+        pfad = unquote(zerlegt.path)
+        if pfad == "/api/druckdaten":
+            # Rohe Bildpunkte, nicht JSON - separat behandeln
+            try:
+                return self._druckdaten(parse_qs(zerlegt.query))
+            except Exception as fehler:
+                traceback.print_exc()
+                return self._fehler(fehler, 400)
         try:
             daten = self._koerper()
         except ValueError as fehler:
@@ -237,6 +255,8 @@ class Griff(BaseHTTPRequestHandler):
                 return self._testdruck(daten)
             if pfad == "/api/entwurf":
                 return self._entwurf_schreiben(daten)
+            if pfad == "/api/direktdruck":
+                return self._direktdruck(daten)
             if pfad == "/api/beenden":
                 self._json({"ok": True})
                 threading.Timer(0.4, lambda: os._exit(0)).start()
@@ -310,6 +330,90 @@ class Griff(BaseHTTPRequestHandler):
             ok, anmerkung = _oeffnen(pfad)
         self._json({"ok": True, "pfad": pfad, "hinweis": auf.einlegehinweis(),
                     "anmerkung": anmerkung})
+
+    def _puffer_aufraeumen(self):
+        """Liegengebliebene Druckauftraege verwerfen - Rohbilder sind gross."""
+        jetzt = time.time()
+        for kennung in [k for k, w in DRUCKPUFFER.items()
+                        if jetzt - w["zeit"] > PUFFER_HALTBAR]:
+            DRUCKPUFFER.pop(kennung, None)
+
+    def _druckdaten(self, abfrage):
+        """Eine Bogenseite als rohe Bildpunkte entgegennehmen.
+
+        Die Oberflaeche legt die Punkte schon so hin, wie Windows sie haben
+        will (BGR, unterste Zeile zuerst, Zeilen auf 4 Byte aufgefuellt) -
+        so muss hier kein einziges Pixel angefasst werden. Bei sechs
+        Millionen Bildpunkten je Seite waere das in Python sonst zaeh.
+        """
+        def hole(name, standard=None):
+            wert = abfrage.get(name, [standard])[0]
+            if wert is None:
+                raise ValueError("Angabe fehlt: " + name)
+            return wert
+
+        auftrag = _sauberer_name(hole("auftrag"), "auftrag")
+        nummer = int(hole("seite"))
+        breite = int(hole("b"))
+        hoehe = int(hole("h"))
+        laenge = int(self.headers.get("Content-Length") or 0)
+        erwartet = ((breite * 3 + 3) & ~3) * hoehe
+        if laenge != erwartet:
+            raise ValueError("Die Bildgröße passt nicht: %d Byte angekündigt, "
+                             "%d erwartet." % (laenge, erwartet))
+        if laenge > GRENZE_ROH_BYTES:
+            raise ValueError("Die Seite ist zu groß (%d MB). Bitte eine "
+                             "kleinere Auflösung wählen."
+                             % (laenge // (1024 * 1024)))
+        roh = bytearray()
+        rest = laenge
+        while rest > 0:
+            teil = self.rfile.read(min(rest, 1 << 20))
+            if not teil:
+                break
+            roh += teil
+            rest -= len(teil)
+        if len(roh) != laenge:
+            raise ValueError("Die Übertragung brach ab.")
+
+        with DRUCKSPERRE:
+            self._puffer_aufraeumen()
+            eintrag = DRUCKPUFFER.setdefault(auftrag, {"zeit": time.time(),
+                                                       "seiten": {}})
+            eintrag["zeit"] = time.time()
+            eintrag["seiten"][nummer] = (breite, hoehe, bytes(roh))
+        self._json({"ok": True, "seite": nummer, "bytes": laenge})
+
+    def _direktdruck(self, daten):
+        if not drucken.verfuegbar():
+            return self._fehler("Direktdruck gibt es nur unter Windows. "
+                                "Hier bitte ein PDF erzeugen.", 400)
+        auf = _aufbau_aus(daten)
+        auftrag = _sauberer_name(daten.get("auftrag"), "auftrag")
+        with DRUCKSPERRE:
+            eintrag = DRUCKPUFFER.get(auftrag)
+        if not eintrag or not eintrag["seiten"]:
+            return self._fehler("Zu diesem Auftrag liegen keine Seiten vor.",
+                                400)
+        seiten = [eintrag["seiten"][n] for n in sorted(eintrag["seiten"])]
+
+        name = daten.get("drucker") or drucken.standarddrucker()
+        if not name:
+            return self._fehler("Es ist kein Drucker eingerichtet.", 400)
+        # Diagnoseschalter: schreibt der Treiber in eine Datei, statt zu
+        # drucken. Zum Pruefen des Druckwegs, ohne Papier zu verbrauchen.
+        nach_datei = os.environ.get("VOLMEKARTE_DRUCK_DATEI") or None
+        try:
+            ergebnis = drucken.drucke(
+                name, seiten, auf.bogen_b, auf.bogen_h,
+                wenden=auf.wenden, kopien=int(daten.get("kopien") or 1),
+                titel=_sauberer_name(daten.get("dateiname"), "VolmeKarte"),
+                ausgabedatei=nach_datei)
+        finally:
+            with DRUCKSPERRE:
+                DRUCKPUFFER.pop(auftrag, None)
+        self._json({"ok": True, "drucker": name, "einzelheiten": ergebnis,
+                    "hinweis": auf.einlegehinweis()})
 
     def _entwurf_schreiben(self, daten):
         name = _sauberer_name(daten.get("name"), "Entwurf")

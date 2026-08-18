@@ -36,14 +36,42 @@ Beides rechnet `karte.py` aus. Der Nutzer gibt nur Maße ein.
      umstellen und noch einmal testen.
 3. Panels füllen: Bild hineinziehen (mit der Maus verschieben, Mausrad
    zoomt), `+ Text` für Textkästen, Doppelklick zum Ändern.
-4. **PDF erzeugen** oder **Drucken**. Die PDFs landen in
-   `Downloads\VolmeKarte`.
+4. **Drucken** geht unter Windows direkt an den Drucker – VolmeKarte setzt
+   dabei Papierformat, Wenderichtung und Maßstab selbst, es gibt also keinen
+   Druckdialog, in dem etwas verstellt sein könnte. **PDF erzeugen** legt
+   stattdessen eine Datei in `Downloads\VolmeKarte` ab.
 
 Die Vorschau ist maßstabsgetreu: Die Oberfläche misst die Schriftbreiten im
 Browser und schickt fertig umbrochene Zeilen an das PDF. Arial, Times New
 Roman und Courier New sind metrisch gleich zu den PDF-Standardschriften
 Helvetica, Times und Courier — deshalb sieht der Ausdruck aus wie die
 Vorschau.
+
+## Direktdruck
+
+Ein PDF an Windows weiterzureichen lässt alles offen, worauf es bei einer
+Karte ankommt: Papierformat, Wenderichtung und vor allem der Maßstab. Der
+Betrachter skaliert dann gern auf „an Seite anpassen“, und die Karte ist ein
+paar Millimeter zu klein. `drucken.py` druckt deshalb selbst:
+
+* Papierformat im DEVMODE gesetzt — zuerst über die Windows-Kennung eines
+  genormten Formats (A4, A5, A6, Letter …), sonst über ein im Treiber
+  angelegtes Formular, sonst als freies Maß.
+* Jede Bogenseite wird von der Oberfläche in der Auflösung des Druckers
+  gerendert und an die physische Blattecke gelegt (`PHYSICALOFFSET`), nicht
+  an den Rand des Druckbereichs. Der Treiber skaliert nichts mehr.
+* **Sicherung:** Nach dem Öffnen des Druckers wird nachgesehen, welches
+  Blattmaß tatsächlich eingestellt ist. Weicht es um mehr als 1 mm ab, wird
+  gar nicht gedruckt, sondern gemeldet — sonst käme die Karte falsch
+  skaliert oder abgeschnitten heraus.
+
+Die Oberfläche legt die Bildpunkte gleich so hin, wie GDI sie will (BGR,
+unterste Zeile zuerst, Zeilen auf 4 Byte aufgefüllt) und schickt sie binär.
+Bei sechs Millionen Bildpunkten je Seite wäre das Umsortieren in Python
+sonst zäh.
+
+Zum Prüfen ohne Papier: Umgebungsvariable `VOLMEKARTE_DRUCK_DATEI` auf einen
+Dateinamen setzen, dann schreibt der Treiber dorthin statt zu drucken.
 
 ## Sonderfälle
 
@@ -73,6 +101,7 @@ Vorschau.
 | `web/ui.html` | Oberfläche (Editor, Vorschau, Textsatz) |
 | `exe_start.py` | Einstieg der EXE (Port belegt, Protokoll, Meldefenster) |
 | `tests/test_karte.py` | spielt Drucken → Wenden → Falzen physikalisch nach |
+| `drucken.py` | Direktdruck über Windows-GDI (Papierformat, Duplex, Maßstab) |
 | `volmekarte.ico` | Programmsymbol (aus `web/ui.html` als SVG gespiegelt) |
 
 Keine Fremdpakete — nur die Python-Standardbibliothek.

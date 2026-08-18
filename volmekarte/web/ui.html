@@ -108,7 +108,7 @@ input[type=color]{width:100%;height:30px;padding:1px;border:1px solid var(--lini
   <button onclick="entwurfLaden()">Entwurf öffnen</button>
   <button onclick="testdruck()">Testdruck</button>
   <button class="haupt" onclick="pdfErzeugen(false)">PDF erzeugen</button>
-  <button class="haupt" onclick="pdfErzeugen(true)">Drucken</button>
+  <button class="haupt" onclick="drucken()">Drucken</button>
 </header>
 
 <div class="rumpf">
@@ -179,6 +179,19 @@ input[type=color]{width:100%;height:30px;padding:1px;border:1px solid var(--lini
     </div>
     <div class="hinweis">Falls der Drucker die Rückseite versetzt aufs
       Blatt legt: hier nachschieben (X / Y).</div>
+  </fieldset>
+
+  <fieldset id="direktdruck_feld" style="display:none">
+    <legend>Direkt drucken</legend>
+    <label>Drucker</label>
+    <select id="drucker" onchange="druckerGewaehlt()"></select>
+    <div class="hinweis" id="drucker_info"></div>
+    <label>Anzahl</label>
+    <input type="number" id="kopien" min="1" max="99" value="1">
+    <button class="haupt" style="width:100%;margin-top:9px"
+            onclick="direktDrucken()">Jetzt drucken</button>
+    <div class="hinweis">Geht ohne Umweg über ein PDF an den Drucker –
+      Papierformat, Wenderichtung und Maßstab setzt VolmeKarte dabei selbst.</div>
   </fieldset>
 
   <fieldset>
@@ -921,6 +934,14 @@ async function pdfErzeugen(drucken){
   finally{ knoepfe.forEach(b=>b.disabled=false); }
 }
 
+/** „Drucken“ im Kopf: unter Windows direkt auf den Drucker, sonst der
+    Umweg über ein PDF, das im Betrachter geöffnet wird. */
+function drucken(){
+  if(DRUCKER.verfuegbar && DRUCKER.liste.length && !g("einzelseiten").checked)
+    return direktDrucken();
+  return pdfErzeugen(true);
+}
+
 async function testdruck(){
   try{
     const a = await fetch("/api/testdruck",{method:"POST",
@@ -930,6 +951,198 @@ async function testdruck(){
     if(d.fehler){ melden(d.fehler,true); return; }
     melden("Testdruck erzeugt: "+d.pfad);
   }catch(f){ melden("Fehlgeschlagen: "+f.message,true); }
+}
+
+/* =====================================================================
+   Direktdruck: Bogenseite auf eine Leinwand, dann roh an den Drucker
+   ===================================================================== */
+let DRUCKER = {verfuegbar:false, liste:[]};
+
+async function druckerHolen(){
+  try{
+    const d = await (await fetch("/api/drucker")).json();
+    DRUCKER = {verfuegbar:!!d.direktdruck, liste:d.drucker||[]};
+  }catch(f){ return; }
+  if(!DRUCKER.verfuegbar || !DRUCKER.liste.length) return;
+  g("direktdruck_feld").style.display = "";
+  g("drucker").innerHTML = DRUCKER.liste.map((d,i)=>
+    '<option value="'+i+'"'+(d.standard?" selected":"")+'>'+
+    entschaerfen(d.name)+'</option>').join("");
+  druckerGewaehlt();
+}
+
+function gewaehlterDrucker(){
+  return DRUCKER.liste[parseInt(g("drucker").value,10)] || null;
+}
+
+function druckerGewaehlt(){
+  const d = gewaehlterDrucker();
+  if(!d) return;
+  const teile = [];
+  if(d.dpi) teile.push(d.dpi[0]+" dpi");
+  if(d.rand) teile.push("unbedruckbarer Rand "+d.rand.join(" / ")+" mm");
+  g("drucker_info").textContent = teile.join(" · ");
+}
+
+/** Auflösung, mit der gedruckt wird: möglichst genau die des Druckers,
+    damit nichts nachskaliert wird - aber gedeckelt, sonst wird die
+    Datenmenge je Seite unhandlich. */
+function druckAufloesung(){
+  const d = gewaehlterDrucker();
+  const roh = (d && d.dpi && d.dpi[0]) ? d.dpi[0] : 300;
+  return Math.max(150, Math.min(400, roh));
+}
+
+/** Eine Bogenseite so zeichnen, wie sie aufs Papier soll. Nutzt dieselben
+    Rechenwege wie Vorschau und PDF - damit kann es gar nicht auseinander-
+    laufen. */
+function bogenAufLeinwand(seitenNr, dpi){
+  const p = Z.plan, k = dpi/25.4;
+  const lw = document.createElement("canvas");
+  lw.width  = Math.round(p.bogen[0]*k);
+  lw.height = Math.round(p.bogen[1]*k);
+  const c = lw.getContext("2d");
+  c.fillStyle = "#ffffff";
+  c.fillRect(0,0,lw.width,lw.height);
+  c.imageSmoothingQuality = "high";
+
+  p.seiten[seitenNr].forEach(e=>{
+    const d = panel(e.panel);
+    c.save();
+    // Bogen zählt von unten, die Leinwand von oben
+    c.translate(e.x*k, (p.bogen[1]-e.y-e.h)*k);
+    if(e.drehung===180){ c.translate(e.b*k, e.h*k); c.rotate(Math.PI); }
+    c.beginPath(); c.rect(0,0,e.b*k,e.h*k); c.clip();
+
+    if(d.hintergrund){ c.fillStyle=d.hintergrund; c.fillRect(0,0,e.b*k,e.h*k); }
+    if(d.bild){
+      const bild = bildSpeicher.get(d.bild.src);
+      if(bild){
+        const m = bildMasse(d.bild, e.b, e.h);
+        c.drawImage(bild, m.x*k, m.y*k, m.bb*k, m.hh*k);
+      }
+    }
+    d.texte.forEach(t=>{
+      const info = textZeilen(t);
+      c.fillStyle = t.farbe;
+      c.font = cssSchrift(t.font, t.pt*MM_JE_PT*k);
+      c.textBaseline = "alphabetic";
+      info.zeilen.forEach((zeile,i)=>{
+        if(!zeile) return;
+        const w = breiteMm(zeile, t.font, t.pt);
+        c.fillText(zeile, (t.x+versatzX(t,w))*k,
+                   (t.y + i*info.abstand + info.asc)*k);
+      });
+    });
+    c.restore();
+  });
+
+  if(g("hilfslinien").checked) hilfslinienAufLeinwand(c, p, seitenNr, k);
+  return lw;
+}
+
+function hilfslinienAufLeinwand(c, p, seitenNr, k){
+  const hoch = y => (p.bogen[1]-y)*k;
+  c.save();
+  c.strokeStyle = "#b0b0b0";
+  c.lineWidth = Math.max(1, 0.15*k);
+  if(p.falzlinie){
+    const [x1,y1,x2,y2] = p.falzlinie;
+    c.setLineDash([1.5*k, 1.5*k]);
+    c.beginPath(); c.moveTo(x1*k, hoch(y1)); c.lineTo(x2*k, hoch(y2)); c.stroke();
+    c.setLineDash([]);
+  }
+  p.seiten[seitenNr].forEach(e=>{
+    const randlos = Math.abs(e.x)<0.01 && Math.abs(e.b-p.bogen[0])<0.01 &&
+                    Math.abs(e.y)<0.01 && Math.abs(e.h-p.bogen[1])<0.01;
+    if(randlos) return;
+    const L = 4;
+    [[e.x,e.y,-1,0],[e.x,e.y,0,-1],[e.x+e.b,e.y,1,0],[e.x+e.b,e.y,0,-1],
+     [e.x,e.y+e.h,-1,0],[e.x,e.y+e.h,0,1],
+     [e.x+e.b,e.y+e.h,1,0],[e.x+e.b,e.y+e.h,0,1]].forEach(([mx,my,dx,dy])=>{
+      const x2 = Math.min(Math.max(mx+dx*L,0), p.bogen[0]);
+      const y2 = Math.min(Math.max(my+dy*L,0), p.bogen[1]);
+      if(Math.abs(x2-mx)>0.05 || Math.abs(y2-my)>0.05){
+        c.beginPath(); c.moveTo(mx*k, hoch(my)); c.lineTo(x2*k, hoch(y2));
+        c.stroke();
+      }
+    });
+  });
+  c.restore();
+}
+
+/** Leinwand in das Format bringen, das Windows-GDI erwartet:
+    BGR, unterste Zeile zuerst, Zeilenlänge auf 4 Byte aufgefüllt.
+    Das hier zu machen statt im Server spart bei sechs Millionen
+    Bildpunkten je Seite sehr viel Zeit. */
+function leinwandAlsDib(lw){
+  const c = lw.getContext("2d");
+  const q = c.getImageData(0,0,lw.width,lw.height).data;
+  const schritt = (lw.width*3+3) & ~3;
+  const aus = new Uint8Array(schritt*lw.height);
+  for(let y=0; y<lw.height; y++){
+    let a = y*lw.width*4;
+    let b = (lw.height-1-y)*schritt;
+    for(let x=0; x<lw.width; x++, a+=4, b+=3){
+      aus[b]   = q[a+2];
+      aus[b+1] = q[a+1];
+      aus[b+2] = q[a];
+    }
+  }
+  return {daten:aus, b:lw.width, h:lw.height};
+}
+
+/** Alle Panelbilder in den Speicher holen. Ohne das zeichnet die Leinwand
+    stillschweigend ohne Bild - der Bildspeicher füllt sich sonst nur beim
+    PDF-Export. */
+async function bilderBereitstellen(){
+  const offen = [];
+  for(const eintrag of (Z.plan.panels||[])){
+    const d = panel(eintrag.kennung);
+    if(d.bild && !bildSpeicher.has(d.bild.src)) offen.push(bildHolen(d.bild.src));
+  }
+  if(offen.length) await Promise.all(offen);
+}
+
+async function direktDrucken(){
+  if(!Z.plan){ melden("Die Maße stimmen noch nicht.",true); return; }
+  const d = gewaehlterDrucker();
+  if(!d){ melden("Kein Drucker ausgewählt.",true); return; }
+  if(g("einzelseiten").checked){
+    melden("Für bereits gefalzte Rohlinge bitte ein PDF erzeugen – die "
+           + "Karte muss zwischen den Seiten neu eingelegt werden.", true);
+    return;
+  }
+  const knoepfe = document.querySelectorAll("header button, #direktdruck_feld button");
+  knoepfe.forEach(b=>b.disabled=true);
+  const dpi = druckAufloesung();
+  try{
+    melden("Seiten werden aufbereitet ("+dpi+" dpi) …");
+    await bilderBereitstellen();
+    const auftrag = "a"+Date.now().toString(36);
+    for(let n=0; n<Z.plan.seiten.length; n++){
+      const lw = bogenAufLeinwand(n, dpi);
+      const dib = leinwandAlsDib(lw);
+      lw.width = lw.height = 0;               // Speicher sofort freigeben
+      const a = await fetch("/api/druckdaten?auftrag="+auftrag+"&seite="+n
+                            +"&b="+dib.b+"&h="+dib.h,
+        {method:"POST", headers:{"Content-Type":"application/octet-stream"},
+         body:dib.daten});
+      const r = await a.json();
+      if(r.fehler){ melden(r.fehler,true); return; }
+      melden("Seite "+(n+1)+" von "+Z.plan.seiten.length+" übertragen …");
+    }
+    const a = await fetch("/api/direktdruck",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({aufbau:Z.aufbau, auftrag, drucker:d.name,
+        kopien:parseInt(g("kopien").value,10)||1,
+        dateiname:g("dateiname").value})});
+    const r = await a.json();
+    if(r.fehler){ melden(r.fehler,true); return; }
+    melden("An „"+r.drucker+"“ geschickt – "+r.einzelheiten.seiten
+           +" Seiten auf "+r.einzelheiten.blatt_mm.join(" × ")+" mm.");
+  }catch(f){ melden("Fehlgeschlagen: "+f.message,true); }
+  finally{ knoepfe.forEach(b=>b.disabled=false); }
 }
 
 /* =====================================================================
@@ -1010,6 +1223,7 @@ function vorlageWaehlen(index){
   }catch(f){}
   inFelder();
   await planHolen();
+  druckerHolen();
   // Etwas Anfangsinhalt, damit sofort klar ist, wie es gemeint ist
   waehlen("titel", null);
 })();
