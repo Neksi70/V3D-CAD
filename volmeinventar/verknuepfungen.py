@@ -13,6 +13,7 @@ import datetime
 import os
 
 import lnk
+import windowsteile
 
 # Name des Bereichs -> (Umgebungsvariable, Unterpfad, nur dieser Benutzer?)
 BEREICHE = [
@@ -139,7 +140,16 @@ def scannen(orte_liste, auf_fehler=None):
                 ergebnis.append(eintrag)
     ergebnis.sort(key=lambda e: (e.get("bereich", ""), e.get("gruppe", ""),
                                  (e.get("anzeigename") or "").lower()))
-    return ergebnis
+    return kennzeichnen(ergebnis)
+
+
+def kennzeichnen(eintraege, umgebung=None):
+    """Vermerken, welche Verknuepfung auf ein Windows-eigenes Programm
+    zeigt - eine Kachel fuer den Editor sagt nichts darueber, was auf diesem
+    Rechner installiert wurde.  Aussortiert wird erst bei der Anzeige."""
+    for e in eintraege:
+        e["windows_eigen"] = windowsteile.ist_windows_verknuepfung(e, umgebung)
+    return eintraege
 
 
 def _unterordner_anderer_bereiche(bereich, orte_liste):

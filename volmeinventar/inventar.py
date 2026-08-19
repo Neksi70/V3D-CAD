@@ -120,7 +120,10 @@ def kennzahlen(bestand):
     """Die Zahlen fuer den Kopf des Berichts."""
     programme_ = bestand["programme"]
     verweise = bestand["verknuepfungen"]
+    versteckt = bestand.get("ausgeblendet") or {}
     return {
+        "ausgeblendet_programme": versteckt.get("programme", 0),
+        "ausgeblendet_verknuepfungen": versteckt.get("verknuepfungen", 0),
         "programme": len(programme_),
         "store_apps": sum(1 for p in programme_ if p.get("art") == "Store-App"),
         "nur_benutzer": sum(1 for p in programme_
@@ -131,6 +134,31 @@ def kennzahlen(bestand):
         "ziel_fehlt": sum(1 for v in verweise if v.get("ziel_fehlt")),
         "unlesbar": sum(1 for v in verweise if v.get("fehler")),
     }
+
+
+def anwenden(bestand, mit_windows=False):
+    """Sicht auf die Aufnahme.  Programme und Verknuepfungen, die zu Windows
+    selbst gehoeren, zaehlen nicht als "auf diesem Rechner installiert" und
+    bleiben deshalb draussen.
+
+    Gefiltert wird erst hier und nicht schon beim Lesen: so laesst sich
+    beziffern, WIE VIEL ausgeblendet wurde.  Eine Liste, die stillschweigend
+    die Haelfte weglaesst, ist schlimmer als eine zu lange."""
+    sicht = dict(bestand)
+    if mit_windows:
+        sicht["ausgeblendet"] = {"programme": 0, "verknuepfungen": 0}
+    else:
+        sicht["programme"] = [p for p in bestand["programme"]
+                              if not p.get("windows_eigen")]
+        sicht["verknuepfungen"] = [v for v in bestand["verknuepfungen"]
+                                   if not v.get("windows_eigen")]
+        sicht["ausgeblendet"] = {
+            "programme": len(bestand["programme"]) - len(sicht["programme"]),
+            "verknuepfungen": (len(bestand["verknuepfungen"])
+                               - len(sicht["verknuepfungen"])),
+        }
+    sicht["kennzahlen"] = kennzahlen(sicht)
+    return sicht
 
 
 def hauptprogramm(argumente=None):
@@ -145,6 +173,8 @@ def hauptprogramm(argumente=None):
                           help="nur diesen Teil aufnehmen")
     zerleger.add_argument("--ohne-store", action="store_true",
                           help="Store-Apps auslassen")
+    zerleger.add_argument("--mit-windows", action="store_true",
+                          help="Windows-eigene Programme mitzaehlen")
     zerleger.add_argument("--leise", action="store_true",
                           help="Bericht nicht im Browser oeffnen")
     zerleger.add_argument("--oberflaeche", action="store_true",
@@ -160,6 +190,7 @@ def hauptprogramm(argumente=None):
         mit_verknuepfungen=werte.nur != "programme",
         mit_store=not werte.ohne_store,
         melden=lambda t: print(t, file=sys.stderr))
+    bestand = anwenden(bestand, mit_windows=werte.mit_windows)
 
     import bericht
     ziel = werte.ausgabe or bericht.name_vorschlagen(bestand, werte.format)

@@ -15,6 +15,8 @@ import datetime
 import os
 import platform
 
+import windowsteile
+
 IST_WINDOWS = platform.system() == "Windows"
 
 DEINSTALL_PFAD = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
@@ -167,6 +169,7 @@ def _eintrag_bauen(schluessel, werte, quelle, sicht):
     eintrag["msi_kennung"] = schluessel if schluessel.startswith("{") \
         and schluessel.endswith("}") else None
     eintrag["art"] = "Programm"
+    eintrag["store_kennung"] = None
     return eintrag
 
 
@@ -201,6 +204,10 @@ def _uwp_lesen():
                 "ordner": _als_text(werte.get("PackageRootFolder")),
                 "schluessel": voll,
                 "quelle": "Store (Benutzer)",
+                # Die Kennung aus dem Paketnamen behalten, NICHT nur den
+                # Anzeigenamen: nur an ihr laesst sich erkennen, ob das Paket
+                # von Microsoft selbst stammt.
+                "store_kennung": teile["herausgeber"],
                 "bitheit": teile["architektur"],
                 "art": "Store-App",
                 "installiert_am": None,
@@ -227,7 +234,16 @@ def lesen(mit_store=True):
             alle.extend(_zweig_lesen(wurzel, sicht, quelle))
     if mit_store:
         alle.extend(_uwp_lesen())
-    return zusammenfassen(alle)
+    return kennzeichnen(zusammenfassen(alle))
+
+
+def kennzeichnen(eintraege, umgebung=None):
+    """Vermerken, was zu Windows selbst gehoert.  Aussortiert wird hier
+    NICHT - das entscheidet erst die Anzeige, damit die Zahl der
+    ausgeblendeten Eintraege nennbar bleibt."""
+    for e in eintraege:
+        e["windows_eigen"] = windowsteile.ist_windows_programm(e, umgebung)
+    return eintraege
 
 
 def zusammenfassen(eintraege):

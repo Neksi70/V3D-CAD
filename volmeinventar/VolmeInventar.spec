@@ -12,7 +12,7 @@ a = Analysis(
     binaries=[],
     datas=[],
     hiddenimports=['inventar', 'oberflaeche', 'bericht', 'programme',
-                   'verknuepfungen', 'lnk'],
+                   'verknuepfungen', 'lnk', 'windowsteile'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

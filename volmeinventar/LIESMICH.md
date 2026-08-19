@@ -18,6 +18,11 @@ zwei Reiter:
 * **Programme** – alles aus „Apps & Features", plus Store-Apps
 * **Verknüpfungen** – Startmenü, Desktop, Autostart, Taskleiste, „Senden an"
 
+**Windows selbst zählt nicht mit.** Gezeigt wird, was auf diesem Rechner
+*installiert wurde* – nicht, was ohnehin zu Windows gehört. Was ausgeblendet
+wurde, steht als Zahl unter den Kacheln; der Schalter *Windows-Bestandteile
+mitzählen* holt es zurück (er filtert nur um, ohne neu einzulesen).
+
 Oben rechts drei Knöpfe zum Speichern:
 
 | Knopf | Ergebnis |
@@ -39,6 +44,7 @@ Bericht oben selbst hin.
 VolmeInventar.exe -o C:\Berichte\%COMPUTERNAME%.html --leise
 VolmeInventar.exe --format csv -o C:\Berichte\bestand.csv
 VolmeInventar.exe --nur verknuepfungen --format json -o C:\temp\v.json
+VolmeInventar.exe --mit-windows -o C:\Berichte\alles.html
 ```
 
 Sobald ein Argument angegeben ist, öffnet sich kein Fenster.
@@ -58,6 +64,34 @@ Pakete und Karteileichen ohne Deinstallationsweg. **Ohne diesen Filter besteht
 die Liste zur Hälfte aus Sicherheitsupdates.**
 
 Store-Apps stehen in keinem Deinstallations-Zweig und werden getrennt gelesen.
+
+### Was als „gehört zu Windows" gilt
+
+Der naheliegende Kurzschluss wäre „alles von Microsoft" – der ist **falsch**:
+Office, Teams, Visual Studio und der SQL Server stammen ebenfalls von
+Microsoft und sind echte Installationen. Erkannt wird deshalb an harten
+Merkmalen (`windowsteile.py`):
+
+1. **Store-Pakete mit Microsofts eigener Herausgeberkennung** – `8wekyb3d8bbwe`
+   (Rechner, Fotos, Terminal …) und `cw5n1h2txyewy` (Startmenü, Suche …). Die
+   Kennung stammt aus dem Signaturzertifikat und lässt sich nicht frei wählen.
+2. **Programme, die im Windows-Ordner liegen** (`%SystemRoot%`).
+3. Eine **kurze, nachlesbare Liste** mitgelieferter Programme, die außerhalb
+   des Windows-Ordners installiert werden: Edge (samt Update und WebView2),
+   OneDrive, Update Health Tools.
+
+Bei Verknüpfungen gilt dasselbe: Ziel im Windows-Ordner, oder eine
+AppUserModelID aus einem Microsoft-Paket. Internet-Verweise (`.url`) zählen
+nie als Windows-Programm.
+
+Ausdrücklich **nicht** als Merkmal benutzt: der Deinstallations-Befehl. Der
+zeigt bei jedem MSI-Paket auf `C:\Windows\System32\MsiExec.exe` – damit wäre
+schlagartig jedes MSI-Programm ein Windows-Bestandteil.
+
+Der teuerste Fehler wäre hier ein falsch positiver: was fälschlich als
+Windows-Bestandteil gilt, verschwindet aus der Liste. Deshalb wird erst bei
+der *Anzeige* gefiltert, nie beim Lesen – die Rohaufnahme behält alles, und
+die Zahl der ausgeblendeten Einträge steht im Bericht.
 
 **Verknüpfungen** – `.lnk` und `.url` in allen üblichen Orten, jeweils auf
 beiden Ebenen (alle Benutzer / nur dieser). Der Autostart-Ordner liegt
@@ -92,6 +126,7 @@ Feld, das anderswo als Pfad weiterverwendet wird.
 | `lnk.py` | liest eine `.lnk`-Datei (eigenständig, ohne Windows benutzbar) |
 | `verknuepfungen.py` | geht die Verknüpfungs-Orte ab, prüft die Ziele |
 | `programme.py` | liest die Registry; Filter/Datum/Paketnamen ohne Registry-Zugriff |
+| `windowsteile.py` | trennt „gehört zu Windows" von „wurde installiert" |
 | `inventar.py` | Kern und Kommandozeile |
 | `bericht.py` | HTML / CSV / JSON |
 | `oberflaeche.py` | das Fenster (Tkinter) |
@@ -143,5 +178,10 @@ Modul erst auf dem Kurs-PC auf.
   Der maschinenweite Paketspeicher gehört SYSTEM und ist auch als
   Administrator nicht ohne Weiteres lesbar.
 * **Andere Benutzerkonten** bleiben außen vor (siehe oben).
+* **Die Windows-Erkennung ist eine Heuristik.** Ein Programm, das sich in den
+  Windows-Ordner installiert, gilt als Bestandteil, auch wenn es keiner ist.
+  Umgekehrt rutscht ein mitgeliefertes Programm durch, das weder im
+  Windows-Ordner liegt noch auf der Liste steht. Im Zweifel den Schalter
+  *Windows-Bestandteile mitzählen* umlegen und selbst nachsehen.
 * **Angelegt-Zeitpunkt** einer Verknüpfung ist der des Dateisystems. Wird eine
   Verknüpfung kopiert statt neu erstellt, steht dort das Kopierdatum.

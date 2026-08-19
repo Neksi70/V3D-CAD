@@ -117,6 +117,7 @@ h2 {{ font-size:17px; margin:28px 0 10px; }}
 .zahl b {{ display:block; font-size:22px; line-height:1.2; }}
 .zahl span {{ font-size:12px; color:var(--leise); }}
 .zahl.warnung b {{ color:var(--warn); }}
+.fussnote {{ color:var(--leise); font-size:13px; margin:-8px 0 18px; }}
 .hinweis {{ background:var(--warn-grund); border:1px solid var(--warn);
   border-radius:8px; padding:10px 14px; margin-bottom:16px; font-size:13px; }}
 .hinweis ul {{ margin:6px 0 0; padding-left:20px; }}
@@ -164,6 +165,7 @@ td.pfad {{ font-family:Consolas,ui-monospace,monospace; font-size:12px;
   &middot; {rechte}
 </div>
 {zahlen}
+{ausgeblendet}
 {hinweise}
 {abschnitte}
 <div class="fuss">VolmeInventar {fassung} &middot; Volme3D</div>
@@ -287,6 +289,19 @@ def als_html(bestand):
         _zahl_karte(z.get("autostart", 0), "im Autostart"),
         _zahl_karte(z.get("ziel_fehlt", 0), "Ziel fehlt", warnen=True),
     ]
+    # Was ausgeblendet wurde, MUSS dastehen - sonst sieht eine um die Haelfte
+    # gekuerzte Liste aus wie der vollstaendige Bestand.
+    versteckt = []
+    if z.get("ausgeblendet_programme"):
+        versteckt.append(f"{z['ausgeblendet_programme']} Programme")
+    if z.get("ausgeblendet_verknuepfungen"):
+        versteckt.append(f"{z['ausgeblendet_verknuepfungen']} Verknuepfungen")
+    ausgeblendet = ""
+    if versteckt:
+        ausgeblendet = ('<div class="fussnote">Nicht mitgezaehlt: '
+                        + " und ".join(versteckt)
+                        + ", die zu Windows selbst gehoeren.</div>")
+
     hinweise = ""
     if bestand.get("hinweise"):
         punkte = "".join(f"<li>{html.escape(str(h))}</li>"
@@ -316,6 +331,7 @@ def als_html(bestand):
                else "ohne Administratorrechte",
         fassung=html.escape(a["fassung"]),
         zahlen='<div class="zahlen">' + "".join(karten) + "</div>",
+        ausgeblendet=ausgeblendet,
         hinweise=hinweise,
         abschnitte="\n".join(abschnitte) or '<div class="leer">Nichts aufgenommen.</div>')
 

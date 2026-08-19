@@ -115,6 +115,21 @@ class HtmlBericht(unittest.TestCase):
         self.assertIn("Nichts aufgenommen", text)
         self.assertEqual(pruefen(text).fehler, [])
 
+    def test_ausgeblendete_werden_beziffert(self):
+        """Eine um Windows gekuerzte Liste muss sagen, dass sie gekuerzt ist -
+        sonst haelt der Leser sie fuer den vollstaendigen Bestand."""
+        b = beispiel()
+        b["ausgeblendet"] = {"programme": 37, "verknuepfungen": 12}
+        b["kennzahlen"] = inventar.kennzahlen(b)
+        text = bericht.als_html(b)
+        self.assertIn("37 Programme", text)
+        self.assertIn("12 Verknuepfungen", text)
+        self.assertIn("Nicht mitgezaehlt", text)
+        self.assertEqual(pruefen(text).fehler, [])
+
+    def test_ohne_ausgeblendete_keine_fussnote(self):
+        self.assertNotIn("Nicht mitgezaehlt", bericht.als_html(beispiel()))
+
     def test_hinweise_erscheinen(self):
         text = bericht.als_html(beispiel(hinweise=["Ohne Adminrechte gelesen"]))
         self.assertIn("Ohne Adminrechte gelesen", text)

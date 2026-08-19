@@ -161,6 +161,36 @@ class GanzesFenster(unittest.TestCase):
             self.assertEqual(str(k.cget("state")), "normal")
         self.assertIn("(3)", self.fenster.reiter.tab(0, "text"))
 
+    def test_windows_schalter_blendet_um_ohne_neu_zu_lesen(self):
+        """Der Schalter darf nur filtern - ein neuer Registry-Durchlauf
+        waere langsam und koennte anderes liefern als die gezeigte Aufnahme."""
+        roh = {
+            "angaben": {}, "hinweise": [],
+            "programme": [dict(name="V3D CAD", windows_eigen=False,
+                               art="Programm"),
+                          dict(name="Editor", windows_eigen=True,
+                               art="Programm")],
+            "verknuepfungen": [dict(anzeigename="Editor", windows_eigen=True,
+                                    bereich="Startmenue (alle Benutzer)",
+                                    ziel_fehlt=False, fehler=None)],
+        }
+        import inventar
+        roh["kennzahlen"] = inventar.kennzahlen(roh)
+        self.fenster.meldungen.put(("fertig", roh))
+        self.fenster._meldungen_holen()
+        self.assertEqual(len(self.fenster.programme.baum.get_children()), 1,
+                         "Windows-Eintrag darf nicht mitgezaehlt werden")
+        self.assertIn("nicht mitgezaehlt", self.fenster.zustand.get())
+
+        self.fenster.mit_windows.set(True)
+        self.fenster._neu_filtern()
+        self.assertEqual(len(self.fenster.programme.baum.get_children()), 2)
+
+        self.fenster.mit_windows.set(False)
+        self.fenster._neu_filtern()
+        self.assertEqual(len(self.fenster.programme.baum.get_children()), 1,
+                         "Umschalten muss umkehrbar sein")
+
     def test_fortschritt_erscheint_in_der_leiste(self):
         self.fenster.meldungen.put(("hinweis", "Suche Verknuepfungen ..."))
         self.fenster._meldungen_holen()

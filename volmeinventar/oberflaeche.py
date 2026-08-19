@@ -174,7 +174,8 @@ class Fenster(tk.Tk):
         self.title("VolmeInventar - Bestandsaufnahme")
         self.geometry("1180x680")
         self.minsize(820, 480)
-        self.bestand = None
+        self.roh = None          # Aufnahme, wie gelesen
+        self.bestand = None      # daraus die angezeigte Sicht
         self.meldungen = queue.Queue()
 
         try:
@@ -191,6 +192,11 @@ class Fenster(tk.Tk):
         self.mit_store = tk.BooleanVar(value=True)
         ttk.Checkbutton(leiste, text="Store-Apps einbeziehen",
                         variable=self.mit_store).pack(side="left", padx=12)
+        # Umschalten filtert nur die vorhandene Aufnahme - kein neuer Durchlauf.
+        self.mit_windows = tk.BooleanVar(value=False)
+        ttk.Checkbutton(leiste, text="Windows-Bestandteile mitzaehlen",
+                        variable=self.mit_windows,
+                        command=self._neu_filtern).pack(side="left")
         ttk.Separator(leiste, orient="vertical").pack(side="left", fill="y",
                                                       padx=8)
         self.speicherknoepfe = []
@@ -254,7 +260,13 @@ class Fenster(tk.Tk):
             pass
         self.after(120, self._meldungen_holen)
 
-    def _anzeigen(self, bestand):
+    def _neu_filtern(self):
+        if self.roh:
+            self._anzeigen(self.roh)
+
+    def _anzeigen(self, roh):
+        self.roh = roh
+        bestand = inventar.anwenden(roh, mit_windows=self.mit_windows.get())
         self.bestand = bestand
         self.programme.fuellen([bericht._programm_zeile(p)
                                 for p in bestand["programme"]])
@@ -273,7 +285,12 @@ class Fenster(tk.Tk):
             teile.append(f"{z['ziel_fehlt']} mit fehlendem Ziel")
         if z["unlesbar"]:
             teile.append(f"{z['unlesbar']} unlesbar")
-        self.zustand.set("Fertig: " + ", ".join(teile) + ".")
+        text = "Fertig: " + ", ".join(teile) + "."
+        versteckt = z["ausgeblendet_programme"] + z["ausgeblendet_verknuepfungen"]
+        if versteckt:
+            text += (f"  ({versteckt} Windows-eigene Eintraege nicht "
+                     f"mitgezaehlt)")
+        self.zustand.set(text)
 
     # -------------------------------------------------------------- Ausgabe
     def speichern(self, form):
