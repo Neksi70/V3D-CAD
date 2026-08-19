@@ -31,6 +31,7 @@ import ssl
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from email import policy
 from email.message import EmailMessage
@@ -116,6 +117,7 @@ def public_account(a):
         'signature': a.get('signature', ''),
         'signatureHtml': a.get('signatureHtml', ''),
         'signatureData': a.get('signatureData') or {},
+        'davReady': bool((a.get('dav') or {}).get('calendars')),
     }
 
 
@@ -1250,6 +1252,464 @@ def send_mail(acc, data):
     return {'ok': True, 'savedToSent': saved, 'messageId': msg['Message-ID']}
 
 
+# --- KI (Anthropic-API) -----------------------------------------------------
+# Direkter HTTPS-Aufruf statt SDK-Paket: der Dienst bleibt bewusst reine
+# Standardbibliothek. Der API-Schlüssel steht in der Config (Abschnitt "ai"),
+# er wird in der Oberfläche unter ✨ KI hinterlegt.
+
+ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages'
+AI_DEFAULT_MODEL = 'claude-haiku-4-5'
+AI_MAX_INPUT = 60000    # Zeichen; längere Mails lehnen wir mit klarer Meldung ab
+
+AI_SYSTEM = (
+    'Du bist der Schreibassistent in V3D Mail, dem Mail-Programm von Volme 3D '
+    '(Volker Isken, 3D-Druck-Dienstleistungen und Kurse in Hagen). '
+    'Antworte auf Deutsch, außer die Mail ist eindeutig in einer anderen Sprache. '
+    'Gib nur das gewünschte Ergebnis aus — keine Vorrede, keine Erklärungen, '
+    'keine Anführungszeichen um das Ganze.'
+)
+
+
+def ai_conf():
+    return CFG.get('ai') or {}
+
+
+def ai_call(user_text, max_tokens=2000):
+    key = (ai_conf().get('key') or '').strip()
+    if not key:
+        raise MailError('Kein KI-Schlüssel hinterlegt — in der Seitenleiste unter ✨ KI einrichten.')
+    body = json.dumps({
+        'model': ai_conf().get('model') or AI_DEFAULT_MODEL,
+        'max_tokens': max_tokens,
+        'system': AI_SYSTEM,
+        'messages': [{'role': 'user', 'content': user_text}],
+    }).encode('utf-8')
+    req = urllib.request.Request(ANTHROPIC_URL, data=body, headers={
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'User-Agent': 'V3DMail/1.0',
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        detail = ''
+        try:
+            detail = ((json.loads(e.read().decode('utf-8')) or {}).get('error') or {}).get('message') or ''
+        except Exception:
+            pass
+        if e.code == 401:
+            raise MailError('KI-Schlüssel abgelehnt — stimmt der API-Schlüssel?')
+        if e.code == 429:
+            raise MailError('KI-Kontingent erschöpft — kurz warten oder Limit in der Anthropic-Konsole prüfen.')
+        raise MailError('KI-Anfrage fehlgeschlagen (%s): %s' % (e.code, detail or e.reason))
+    except (socket.timeout, TimeoutError):
+        raise MailError('KI-Anfrage: Zeitüberschreitung')
+    if data.get('stop_reason') == 'refusal':
+        raise MailError('Die KI hat diese Anfrage abgelehnt.')
+    out = ''.join(b.get('text', '') for b in (data.get('content') or []) if b.get('type') == 'text')
+    if not out.strip():
+        raise MailError('Leere KI-Antwort')
+    return out.strip()
+
+
+def _ai_mailkopf(b):
+    kopf = 'Betreff: %s\nVon: %s\n\n' % ((b.get('subject') or '(ohne Betreff)').strip(),
+                                         (b.get('from') or 'unbekannt').strip())
+    text = (b.get('text') or '').strip()
+    if not text:
+        raise MailError('Kein Mail-Text übergeben')
+    if len(text) > AI_MAX_INPUT:
+        raise MailError('Diese Mail ist zu lang für die KI (%d Zeichen, Grenze %d).' % (len(text), AI_MAX_INPUT))
+    return kopf + text
+
+
+def ai_task(b):
+    task = b.get('task')
+    if task == 'summary':
+        prompt = ('Fasse die folgende E-Mail knapp zusammen: 2 bis 5 Stichpunkte mit dem Wesentlichen. '
+                  'Wenn eine Antwort oder Handlung erwartet wird, nenne sie in einer letzten Zeile, die mit '
+                  '"Zu tun:" beginnt.\n\n' + _ai_mailkopf(b))
+        return ai_call(prompt, 1000)
+    if task == 'draft':
+        hint = (b.get('hint') or '').strip()
+        prompt = ('Entwirf eine Antwort auf die folgende E-Mail. Nur den Antworttext, ohne Betreff, '
+                  'ohne Grußformel-Signatur (die hängt das Programm selbst an), mit passender Anrede. '
+                  'Freundlich, klar, geschäftlich-locker.\n')
+        if hint:
+            prompt += 'Inhaltliche Vorgabe des Nutzers: %s\n' % hint
+        prompt += '\n' + _ai_mailkopf(b)
+        return ai_call(prompt, 1500)
+    if task == 'polish':
+        text = (b.get('text') or '').strip()
+        if not text:
+            raise MailError('Kein Text übergeben')
+        if len(text) > AI_MAX_INPUT:
+            raise MailError('Der Text ist zu lang für die KI.')
+        betreff = (b.get('subject') or '').strip()
+        if b.get('mode') == 'ausformulieren':
+            prompt = ('Formuliere aus den folgenden Stichpunkten eine fertige E-Mail aus '
+                      '(nur den Text, ohne Betreff, ohne Signatur). '
+                      + ('Betreff der Mail: %s. ' % betreff if betreff else '')
+                      + 'Stichpunkte:\n\n' + text)
+        else:
+            prompt = ('Verbessere den folgenden E-Mail-Text: Rechtschreibung, Grammatik und Ton glätten, '
+                      'Inhalt und Sprache beibehalten, nichts dazuerfinden. Gib nur den überarbeiteten '
+                      'Text aus.\n\n' + text)
+        return ai_call(prompt, 1500)
+    raise MailError('Unbekannte KI-Aufgabe')
+
+
+# --- Kalender (CalDAV) ------------------------------------------------------
+# Termine liegen beim Mail-Hoster (goneo: Host goneo.email, Voraussetzung
+# "Webmail Plus") und werden per CalDAV gelesen/geschrieben — damit sind sie
+# auch am Handy und in Thunderbird dieselben. Eigener Mini-Client, weil der
+# Dienst ohne Fremdpakete auskommt.
+
+DAV_NS = {'d': 'DAV:', 'c': 'urn:ietf:params:xml:ns:caldav'}
+
+
+def _dav_http(acc, method, url, body=None, ctype=None, depth=None, extra=None):
+    """Eine DAV-Anfrage; folgt Umleitungen selbst (urllib kann kein PROPFIND-Redirect)."""
+    import http.client
+    from urllib.parse import urlsplit, urljoin
+    dav = acc.get('dav') or {}
+    user = dav.get('user') or acc.get('user') or acc.get('email')
+    pw = dav.get('password') or acc.get('password') or ''
+    auth = base64.b64encode(('%s:%s' % (user, pw)).encode('utf-8')).decode('ascii')
+    for _ in range(4):
+        u = urlsplit(url)
+        conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=25)
+        hdrs = {'Authorization': 'Basic ' + auth, 'User-Agent': 'V3DMail/1.0'}
+        if depth is not None:
+            hdrs['Depth'] = str(depth)
+        if ctype:
+            hdrs['Content-Type'] = ctype
+        hdrs.update(extra or {})
+        try:
+            conn.request(method, (u.path or '/') + (('?' + u.query) if u.query else ''),
+                         body=body, headers=hdrs)
+            resp = conn.getresponse()
+            data = resp.read()
+        finally:
+            conn.close()
+        if resp.status in (301, 302, 307, 308) and resp.getheader('Location'):
+            url = urljoin(url, resp.getheader('Location'))
+            continue
+        return resp.status, dict(resp.getheaders()), data
+    raise MailError('Kalender-Server leitet endlos um')
+
+
+def _dav_check(status, was):
+    if status == 401:
+        raise MailError('Kalender-Anmeldung abgelehnt — für goneo muss "Webmail Plus" '
+                        'im Tarif aktiv sein; Zugangsdaten sind die des Postfachs.')
+    if status >= 400:
+        raise MailError('%s fehlgeschlagen (HTTP %d)' % (was, status))
+
+
+def _xml_findall(data, path):
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError:
+        raise MailError('Unverständliche Kalender-Antwort')
+    return root.findall(path, DAV_NS)
+
+
+def dav_discover(acc):
+    """CalDAV-Wurzel finden: SRV der Mail-Domain, .well-known, bekannte Hoster."""
+    from urllib.parse import urljoin
+    domain = (acc.get('email') or '').split('@')[-1].strip().lower()
+    kandidaten = []
+    for row in dns_query('_caldavs._tcp.' + domain, 33):
+        host, port = row[1], row[2]
+        kandidaten.append('https://%s%s/.well-known/caldav' % (host, '' if port in (0, 443) else ':%d' % port))
+    kandidaten.append('https://%s/.well-known/caldav' % domain)
+    hoster = base_domain(acc.get('imapHost') or '')
+    if hoster and hoster != domain:
+        kandidaten.append('https://%s/.well-known/caldav' % hoster)
+    if 'goneo' in (acc.get('imapHost') or ''):
+        kandidaten.append('https://goneo.email/.well-known/caldav')
+    tried = []
+    for url in kandidaten:
+        try:
+            status, _, _ = _dav_http(acc, 'PROPFIND', url, body=PROPFIND_PRINCIPAL,
+                                     ctype='application/xml; charset=utf-8', depth=0)
+        except (OSError, MailError) as e:
+            tried.append('%s: %s' % (url, e))
+            continue
+        if status in (207, 401):    # 401 = Endpunkt existiert, nur Anmeldung fehlt
+            _dav_check(status, 'Kalender-Suche')
+            return url
+        tried.append('%s: HTTP %d' % (url, status))
+    raise MailError('Kein CalDAV-Server gefunden. Versucht: ' + '; '.join(tried))
+
+
+PROPFIND_PRINCIPAL = (b'<?xml version="1.0"?><d:propfind xmlns:d="DAV:">'
+                      b'<d:prop><d:current-user-principal/></d:prop></d:propfind>')
+PROPFIND_HOME = (b'<?xml version="1.0"?><d:propfind xmlns:d="DAV:" '
+                 b'xmlns:c="urn:ietf:params:xml:ns:caldav">'
+                 b'<d:prop><c:calendar-home-set/></d:prop></d:propfind>')
+PROPFIND_CALS = (b'<?xml version="1.0"?><d:propfind xmlns:d="DAV:" '
+                 b'xmlns:c="urn:ietf:params:xml:ns:caldav">'
+                 b'<d:prop><d:displayname/><d:resourcetype/>'
+                 b'<c:supported-calendar-component-set/></d:prop></d:propfind>')
+
+
+def dav_setup(acc):
+    """Kalenderliste des Kontos ermitteln und im Konto speichern."""
+    from urllib.parse import urljoin
+    wurzel = dav_discover(acc)
+    status, _, data = _dav_http(acc, 'PROPFIND', wurzel, body=PROPFIND_PRINCIPAL,
+                                ctype='application/xml; charset=utf-8', depth=0)
+    _dav_check(status, 'Kalender-Suche')
+    hrefs = [h.text for h in _xml_findall(data, './/d:current-user-principal/d:href') if h.text]
+    if not hrefs:
+        raise MailError('Kalender-Server nennt kein Benutzerkonto (principal)')
+    principal = urljoin(wurzel, hrefs[0])
+    status, _, data = _dav_http(acc, 'PROPFIND', principal, body=PROPFIND_HOME,
+                                ctype='application/xml; charset=utf-8', depth=0)
+    _dav_check(status, 'Kalender-Suche')
+    hrefs = [h.text for h in _xml_findall(data, './/c:calendar-home-set/d:href') if h.text]
+    if not hrefs:
+        raise MailError('Kalender-Server nennt keinen Kalender-Ordner')
+    home = urljoin(wurzel, hrefs[0])
+    status, _, data = _dav_http(acc, 'PROPFIND', home, body=PROPFIND_CALS,
+                                ctype='application/xml; charset=utf-8', depth=1)
+    _dav_check(status, 'Kalenderliste')
+    cals = []
+    for resp in _xml_findall(data, './/d:response'):
+        href = resp.findtext('d:href', '', DAV_NS)
+        if resp.find('.//d:resourcetype/c:calendar', DAV_NS) is None:
+            continue
+        comps = [c.get('name') for c in resp.findall('.//c:supported-calendar-component-set/c:comp', DAV_NS)]
+        if comps and 'VEVENT' not in comps:
+            continue
+        name = resp.findtext('.//d:displayname', '', DAV_NS) or href.rstrip('/').rsplit('/', 1)[-1]
+        cals.append({'href': urljoin(home, href), 'name': name})
+    if not cals:
+        raise MailError('Keine Kalender im Konto gefunden')
+    with _conf_lock:
+        acc['dav'] = {'base': wurzel, 'home': home, 'calendars': cals}
+        save_conf(CFG)
+    return cals
+
+
+# -- iCalendar: kleiner Parser/Schreiber --
+
+def _ics_unfold(text):
+    return re.sub(r'\r?\n[ \t]', '', text.replace('\r\n', '\n'))
+
+
+def _ics_unescape(v):
+    return v.replace('\\n', '\n').replace('\\N', '\n').replace('\\,', ',') \
+            .replace('\\;', ';').replace('\\\\', '\\')
+
+
+def _ics_escape(v):
+    return v.replace('\\', '\\\\').replace(';', '\\;').replace(',', '\\,') \
+            .replace('\r\n', '\\n').replace('\n', '\\n')
+
+
+def _ics_dt(value, params):
+    """DTSTART/DTEND → (ISO-UTC-String, allDay). Naive Zeiten gelten als Europe/Berlin."""
+    import datetime
+    if params.get('VALUE') == 'DATE' or (len(value) == 8 and value.isdigit()):
+        return value[0:4] + '-' + value[4:6] + '-' + value[6:8], True
+    try:
+        naiv = datetime.datetime.strptime(value.rstrip('Z'), '%Y%m%dT%H%M%S')
+    except ValueError:
+        raise MailError('Unverständliche Termin-Zeit: %s' % value)
+    if value.endswith('Z'):
+        dt = naiv.replace(tzinfo=datetime.timezone.utc)
+    else:
+        import zoneinfo
+        try:
+            tz = zoneinfo.ZoneInfo(params.get('TZID') or 'Europe/Berlin')
+        except Exception:
+            tz = zoneinfo.ZoneInfo('Europe/Berlin')
+        dt = naiv.replace(tzinfo=tz)
+    return dt.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), False
+
+
+def ics_parse_events(text):
+    """Alle VEVENTs einer ICS-Datei als flache Dicts."""
+    out = []
+    ev = None
+    for line in _ics_unfold(text).split('\n'):
+        if line == 'BEGIN:VEVENT':
+            ev = {}
+            continue
+        if line == 'END:VEVENT':
+            if ev is not None and ev.get('uid') and ev.get('start'):
+                ev.setdefault('end', ev['start'])
+                ev.setdefault('endAllDay', ev.get('allDay', False))
+                out.append(ev)
+            ev = None
+            continue
+        if ev is None or ':' not in line:
+            continue
+        kopf, wert = line.split(':', 1)
+        teile = kopf.split(';')
+        name = teile[0].upper()
+        params = {}
+        for p in teile[1:]:
+            if '=' in p:
+                k, v = p.split('=', 1)
+                params[k.upper()] = v
+        if name == 'UID':
+            ev['uid'] = wert
+        elif name == 'SUMMARY':
+            ev['summary'] = _ics_unescape(wert)
+        elif name == 'LOCATION':
+            ev['location'] = _ics_unescape(wert)
+        elif name == 'DESCRIPTION':
+            ev['description'] = _ics_unescape(wert)
+        elif name == 'DTSTART':
+            ev['start'], ev['allDay'] = _ics_dt(wert, params)
+        elif name == 'DTEND':
+            ev['end'], ev['endAllDay'] = _ics_dt(wert, params)
+        elif name in ('RRULE', 'RECURRENCE-ID'):
+            ev['recurring'] = True
+    return out
+
+
+def _ics_fold(line):
+    """Zeilen nach RFC 5545 auf 75 Oktette falten."""
+    raw = line.encode('utf-8')
+    if len(raw) <= 75:
+        return line
+    out = []
+    while raw:
+        cut = min(75 if not out else 74, len(raw))
+        # UTF-8-Fortsetzungsbytes nicht zerschneiden
+        while 1 < cut < len(raw) and (raw[cut] & 0xC0) == 0x80:
+            cut -= 1
+        out.append(raw[:cut].decode('utf-8'))
+        raw = raw[cut:]
+    return '\r\n '.join(out)
+
+
+def ics_build_event(ev, uid):
+    """Aus dem Oberflächen-Dict eine VCALENDAR-Datei bauen (Zeiten kommen als ISO-UTC)."""
+    import datetime
+    zeilen = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Volme3D//V3DMail//DE',
+              'BEGIN:VEVENT', 'UID:' + uid,
+              'DTSTAMP:' + datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')]
+    if ev.get('allDay'):
+        start = (ev.get('start') or '').replace('-', '')[:8]
+        ende = (ev.get('end') or ev.get('start') or '').replace('-', '')[:8]
+        if not (len(start) == 8 and start.isdigit()):
+            raise MailError('Ungültiges Termin-Datum')
+        # DTEND ist bei Ganztags-Terminen exklusiv → letzter Tag + 1
+        d = datetime.date(int(ende[0:4]), int(ende[4:6]), int(ende[6:8])) + datetime.timedelta(days=1)
+        zeilen.append('DTSTART;VALUE=DATE:' + start)
+        zeilen.append('DTEND;VALUE=DATE:' + d.strftime('%Y%m%d'))
+    else:
+        def utc(iso):
+            try:
+                dt = datetime.datetime.strptime(iso, '%Y-%m-%dT%H:%M:%SZ')
+            except (ValueError, TypeError):
+                raise MailError('Ungültige Termin-Zeit')
+            return dt.strftime('%Y%m%dT%H%M%SZ')
+        zeilen.append('DTSTART:' + utc(ev.get('start')))
+        zeilen.append('DTEND:' + utc(ev.get('end') or ev.get('start')))
+    if ev.get('summary'):
+        zeilen.append('SUMMARY:' + _ics_escape(ev['summary']))
+    if ev.get('location'):
+        zeilen.append('LOCATION:' + _ics_escape(ev['location']))
+    if ev.get('description'):
+        zeilen.append('DESCRIPTION:' + _ics_escape(ev['description']))
+    zeilen += ['END:VEVENT', 'END:VCALENDAR']
+    return '\r\n'.join(_ics_fold(z) for z in zeilen) + '\r\n'
+
+
+def _report_query(start, end, expand):
+    innen = '<c:calendar-data/>'
+    if expand:
+        innen = '<c:calendar-data><c:expand start="%s" end="%s"/></c:calendar-data>' % (start, end)
+    return ('<?xml version="1.0"?>'
+            '<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+            '<d:prop><d:getetag/>%s</d:prop>'
+            '<c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">'
+            '<c:time-range start="%s" end="%s"/>'
+            '</c:comp-filter></c:comp-filter></c:filter>'
+            '</c:calendar-query>' % (innen, start, end)).encode('utf-8')
+
+
+def dav_events(acc, start, end):
+    """Termine aller Kalender des Kontos im Zeitraum (ISO-UTC-Grenzen)."""
+    from urllib.parse import urljoin
+    dav = acc.get('dav') or {}
+    if not dav.get('calendars'):
+        raise MailError('Kalender ist für dieses Konto noch nicht verbunden')
+    z_start = start.replace('-', '').replace(':', '')
+    z_end = end.replace('-', '').replace(':', '')
+    out = []
+    for cal in dav['calendars']:
+        # Wiederkehrende Termine lässt der Server aufklappen (expand); können
+        # nicht alle Server — dann unaufgeklappt noch einmal.
+        for expand in (True, False):
+            status, _, data = _dav_http(acc, 'REPORT', cal['href'],
+                                        body=_report_query(z_start, z_end, expand),
+                                        ctype='application/xml; charset=utf-8', depth=1)
+            if status == 207:
+                break
+        _dav_check(status, 'Terminabruf')
+        for resp in _xml_findall(data, './/d:response'):
+            href = resp.findtext('d:href', '', DAV_NS)
+            ics = resp.findtext('.//c:calendar-data', '', DAV_NS)
+            if not ics:
+                continue
+            for ev in ics_parse_events(ics):
+                ev['href'] = urljoin(cal['href'], href)
+                ev['calendar'] = cal['href']
+                ev['calendarName'] = cal['name']
+                out.append(ev)
+    # Aufgeklappte Serien erkennt man am mehrfachen UID — die Instanzen dürfen
+    # nicht einzeln überschrieben werden, sonst zerlegt es die ganze Serie.
+    anzahl = {}
+    for ev in out:
+        anzahl[ev['uid']] = anzahl.get(ev['uid'], 0) + 1
+    for ev in out:
+        if anzahl[ev['uid']] > 1:
+            ev['recurring'] = True
+    out.sort(key=lambda e: e.get('start') or '')
+    return out
+
+
+def dav_save_event(acc, b):
+    from urllib.parse import quote
+    dav = acc.get('dav') or {}
+    ev = b.get('ev') or {}
+    href = b.get('href')
+    uid = b.get('uid') or ('v3dmail-%s@volme3d' % secrets.token_hex(8))
+    ics = ics_build_event(ev, uid)
+    if not href:
+        cal = b.get('calendar') or (dav.get('calendars') or [{}])[0].get('href')
+        if not cal:
+            raise MailError('Kein Kalender ausgewählt')
+        href = cal.rstrip('/') + '/' + quote(uid) + '.ics'
+        extra = {'If-None-Match': '*'}      # nie versehentlich überschreiben
+    else:
+        extra = {}
+    status, _, data = _dav_http(acc, 'PUT', href, body=ics.encode('utf-8'),
+                                ctype='text/calendar; charset=utf-8', extra=extra)
+    _dav_check(status, 'Termin speichern')
+    return {'ok': True, 'uid': uid, 'href': href}
+
+
+def dav_delete_event(acc, href):
+    if not href:
+        raise MailError('Kein Termin angegeben')
+    status, _, _ = _dav_http(acc, 'DELETE', href)
+    if status not in (200, 204, 404):
+        _dav_check(status, 'Termin löschen')
+    return {'ok': True}
+
+
 # --- HTTP -------------------------------------------------------------------
 
 def json_bytes(obj):
@@ -1490,6 +1950,44 @@ class Handler(BaseHTTPRequestHandler):
         # Senden/Empfangen: alle Postfächer auf einmal prüfen
         if route == '/check':
             return self._send(200, {'accounts': check_all(CFG.get('accounts', []))})
+
+        # --- KI ---
+        if route == '/ai/settings' and method == 'GET':
+            return self._send(200, {'hasKey': bool((ai_conf().get('key') or '').strip()),
+                                    'model': ai_conf().get('model') or AI_DEFAULT_MODEL})
+
+        if route == '/ai/settings' and method == 'POST':
+            b = self._body()
+            with _conf_lock:
+                ai = CFG.setdefault('ai', {})
+                if (b.get('key') or '').strip():
+                    ai['key'] = b['key'].strip()
+                if b.get('clearKey'):
+                    ai['key'] = ''
+                if (b.get('model') or '').strip():
+                    ai['model'] = b['model'].strip()
+                save_conf(CFG)
+            return self._send(200, {'ok': True, 'hasKey': bool((ai.get('key') or '').strip())})
+
+        if route == '/ai' and method == 'POST':
+            return self._send(200, {'text': ai_task(self._body())})
+
+        # --- Kalender ---
+        if route.startswith('/cal/') and method == 'POST':
+            b = self._body()
+            cal_acc = account_by_id(b.get('acc'))
+            if not cal_acc:
+                raise MailError('Kein Konto ausgewählt')
+            if route == '/cal/setup':
+                return self._send(200, {'ok': True, 'calendars': dav_setup(cal_acc)})
+            if route == '/cal/events':
+                return self._send(200, {'events': dav_events(cal_acc, b.get('start') or '',
+                                                             b.get('end') or ''),
+                                        'calendars': (cal_acc.get('dav') or {}).get('calendars') or []})
+            if route == '/cal/save':
+                return self._send(200, dav_save_event(cal_acc, b))
+            if route == '/cal/delete':
+                return self._send(200, dav_delete_event(cal_acc, b.get('href')))
 
         # --- Postfach ---
         acc = account_by_id((q or {}).get('acc') or (self._body_cached() or {}).get('acc'))

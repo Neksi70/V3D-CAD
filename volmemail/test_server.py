@@ -825,5 +825,105 @@ class TestAccountStorage(unittest.TestCase):
         self.assertEqual(mode, 0o600, 'config.json muss 0600 sein — enthält Klartext-Passwörter')
 
 
+class TestICS(unittest.TestCase):
+    def test_rundlauf_zeit_termin(self):
+        ics = server.ics_build_event({'summary': 'Kurs, Reihe; 1', 'location': 'Hagen',
+                                      'description': 'Zeile1\nZeile2',
+                                      'start': '2026-08-20T09:00:00Z',
+                                      'end': '2026-08-20T10:30:00Z'}, 'u1@v3d')
+        ev = server.ics_parse_events(ics)[0]
+        self.assertEqual(ev['summary'], 'Kurs, Reihe; 1')
+        self.assertEqual(ev['start'], '2026-08-20T09:00:00Z')
+        self.assertEqual(ev['end'], '2026-08-20T10:30:00Z')
+        self.assertEqual(ev['description'], 'Zeile1\nZeile2')
+        self.assertFalse(ev.get('allDay'))
+
+    def test_rundlauf_ganztags(self):
+        # DTEND ist exklusiv: 21.–22.8. ergibt DTEND 23.8.
+        ics = server.ics_build_event({'summary': 'Messe', 'allDay': True,
+                                      'start': '2026-08-21', 'end': '2026-08-22'}, 'u2@v3d')
+        self.assertIn('DTSTART;VALUE=DATE:20260821', ics)
+        self.assertIn('DTEND;VALUE=DATE:20260823', ics)
+        ev = server.ics_parse_events(ics)[0]
+        self.assertTrue(ev['allDay'])
+        self.assertEqual((ev['start'], ev['end']), ('2026-08-21', '2026-08-23'))
+
+    def test_tzid_wird_nach_utc_gerechnet(self):
+        evs = server.ics_parse_events(
+            'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:1\r\n'
+            'DTSTART;TZID=Europe/Berlin:20260820T120000\r\nSUMMARY:M\r\n'
+            'END:VEVENT\r\nEND:VCALENDAR')
+        self.assertEqual(evs[0]['start'], '2026-08-20T10:00:00Z')     # Sommerzeit: −2 h
+
+    def test_gefaltete_zeilen_und_escapes(self):
+        lang = 'Sehr langer Termin ' + 'ä' * 100
+        ics = server.ics_build_event({'summary': lang, 'start': '2026-08-20T09:00:00Z',
+                                      'end': '2026-08-20T10:00:00Z'}, 'u3@v3d')
+        for zeile in ics.split('\r\n'):
+            self.assertLessEqual(len(zeile.encode('utf-8')), 76)      # 75 + Fortsetzungs-Leerzeichen
+        self.assertEqual(server.ics_parse_events(ics)[0]['summary'], lang)
+
+    def test_serie_wird_erkannt(self):
+        evs = server.ics_parse_events(
+            'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:s1\r\nDTSTART:20260820T090000Z\r\n'
+            'RRULE:FREQ=WEEKLY\r\nSUMMARY:Kurs\r\nEND:VEVENT\r\nEND:VCALENDAR')
+        self.assertTrue(evs[0].get('recurring'))
+
+
+class TestKI(unittest.TestCase):
+    def test_ohne_schluessel_klare_meldung(self):
+        server.CFG.pop('ai', None)
+        with self.assertRaises(server.MailError) as cm:
+            server.ai_task({'task': 'summary', 'subject': 'x', 'text': 'Hallo'})
+        self.assertIn('KI-Schlüssel', str(cm.exception))
+
+    def test_leerer_text_wird_abgelehnt(self):
+        with self.assertRaises(server.MailError):
+            server.ai_task({'task': 'summary', 'subject': 'x', 'text': ''})
+
+    def test_zu_lange_mail_wird_abgelehnt(self):
+        server.CFG['ai'] = {'key': 'sk-test'}
+        try:
+            with self.assertRaises(server.MailError) as cm:
+                server.ai_task({'task': 'summary', 'text': 'x' * (server.AI_MAX_INPUT + 1)})
+            self.assertIn('zu lang', str(cm.exception))
+        finally:
+            server.CFG.pop('ai', None)
+
+    def test_unbekannte_aufgabe(self):
+        with self.assertRaises(server.MailError):
+            server.ai_task({'task': 'hex'})
+
+    def test_prompt_bau(self):
+        # ai_call stubben — es darf keine echte Anfrage rausgehen
+        server.CFG['ai'] = {'key': 'sk-test'}
+        gesehen = {}
+        echt = server.ai_call
+        server.ai_call = lambda text, max_tokens=2000: (gesehen.setdefault('text', text), 'OK')[1]
+        try:
+            out = server.ai_task({'task': 'draft', 'subject': 'Anfrage', 'from': 'k@d.de',
+                                  'text': 'Haben Sie Donnerstag Zeit?', 'hint': 'zusagen'})
+            self.assertEqual(out, 'OK')
+            self.assertIn('Betreff: Anfrage', gesehen['text'])
+            self.assertIn('zusagen', gesehen['text'])
+        finally:
+            server.ai_call = echt
+            server.CFG.pop('ai', None)
+
+
+class TestKalenderRouten(unittest.TestCase):
+    """Kalender-Routen: Kontoprüfung und Fehlerbilder ohne echten DAV-Server."""
+
+    def test_events_ohne_dav_klare_meldung(self):
+        acc = {'id': 'k1', 'email': 'a@b.de'}
+        with self.assertRaises(server.MailError) as cm:
+            server.dav_events(acc, '2026-08-01T00:00:00Z', '2026-09-01T00:00:00Z')
+        self.assertIn('nicht verbunden', str(cm.exception))
+
+    def test_delete_ohne_href(self):
+        with self.assertRaises(server.MailError):
+            server.dav_delete_event({'id': 'k1'}, '')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

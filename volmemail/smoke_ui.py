@@ -198,6 +198,50 @@ with sync_playwright() as p:
         check('Kontodialog erscheint bei leerem Konto', page.is_visible('#modal'))
         check('Hinweis auf erstes Konto', 'Konto' in page.inner_text('#modalbox'))
 
+    # Kalender: Ansicht öffnet, zeigt Monat und entweder Termine oder den Verbinden-Hinweis
+    page.keyboard.press('Escape')
+    page.wait_for_timeout(400)
+    if page.evaluate('S.accounts.length > 0'):
+        page.click('#calbtn')
+        page.wait_for_timeout(2500)
+        check('Kalender öffnet', page.is_visible('#cal'))
+        check('Monat wird angezeigt', any(m in page.inner_text('#calmon') for m in
+              ('Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August',
+               'September', 'Oktober', 'November', 'Dezember')), page.inner_text('#calmon'))
+        gitter = page.evaluate("document.querySelectorAll('#calgrid .calday').length")
+        verbinden = 'verbinden' in page.inner_text('#calgrid')
+        check('Termin-Gitter oder Verbinden-Hinweis', gitter == 42 or verbinden,
+              'Zellen: %s' % gitter)
+        if gitter == 42:
+            page.click('#calbar >> text=＋ Neuer Termin')
+            page.wait_for_timeout(400)
+            check('Termin-Dialog öffnet', page.is_visible('#t_titel'))
+            page.keyboard.press('Escape')
+            page.wait_for_timeout(400)
+        page.click('#cal .x')
+        page.wait_for_timeout(400)
+        check('Kalender schließt', not page.is_visible('#cal'))
+
+    # KI-Dialog: erreichbar, Schlüssel-Feld und Modellwahl vorhanden
+    page.click('text=✨ KI')
+    page.wait_for_timeout(600)
+    check('KI-Dialog öffnet', page.is_visible('#ki_key'))
+    check('Modellwahl vorhanden', page.is_visible('#ki_model'))
+    page.keyboard.press('Escape')
+    page.wait_for_timeout(400)
+
+    # Verfassen: Diktier- und Text-KI-Knöpfe vorhanden
+    page.evaluate('compose()')
+    page.wait_for_timeout(400)
+    check('Diktier-Knopf im Verfassen-Fenster', page.is_visible('#cdictate'))
+    check('Text-KI-Knopf im Verfassen-Fenster', page.is_visible('#compose >> text=✨ Text-KI'))
+    page.keyboard.press('Escape')
+    page.wait_for_timeout(400)
+
+    # Kontoverwaltung wieder öffnen (oben per Escape geschlossen)
+    page.click('text=⚙️ Konten')
+    page.wait_for_timeout(500)
+
     # Kontoformular öffnen
     page.click('text=+ Konto hinzufügen')
     page.wait_for_timeout(400)

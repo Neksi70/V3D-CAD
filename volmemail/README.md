@@ -195,6 +195,44 @@ tailscale funnel --set-path=/mail off          # öffentlichen Zugang abschalten
 Das Zertifikat stammt von `tailscale cert v3da.tailf05fe9.ts.net` (im Home-Verzeichnis)
 und wird mit den anderen V3D-Diensten geteilt.
 
+## KI (Zusammenfassen, Antwort-Entwurf, Text-Hilfe, Diktieren)
+
+Eingerichtet wird unter **✨ KI** unten in der Seitenleiste: dort den
+Anthropic-API-Schlüssel (console.anthropic.com → API Keys) hinterlegen und das
+Modell wählen (Standard Haiku 4.5, wahlweise Sonnet 5). Der Schlüssel landet im
+`ai`-Abschnitt der config.json; der Server ruft die Anthropic-API direkt per
+HTTPS auf — bewusst ohne SDK-Paket, der Dienst bleibt reine Standardbibliothek.
+
+* **✨ Zusammenfassen** (Lese-Ansicht): Stichpunkte plus „Zu tun:"-Zeile.
+* **✨ Antwort-Entwurf** (Lese-Ansicht): optionale Vorgabe („zusagen, Termin
+  vorschlagen"), Entwurf wird angezeigt und erst auf Klick in die Antwort
+  übernommen — über dem Zitat, Signatur bleibt Sache des Programms.
+* **✨ Text-KI** (Verfassen): Stichpunkte ausformulieren oder Rechtschreibung/Ton
+  glätten; der Vorschlag ersetzt den Text erst nach „Übernehmen".
+* **🎤 Diktieren** (Verfassen): Spracherkennung des Browsers (Chrome/Edge,
+  auch am Handy), braucht keinen Schlüssel und keinen Server.
+
+Mails über 60 000 Zeichen lehnt der Server mit klarer Meldung ab, statt still
+zu kürzen.
+
+## Kalender (CalDAV)
+
+**📅 Kalender** in der Seitenleiste zeigt eine Monatsansicht; Termine anlegen,
+bearbeiten und löschen läuft über CalDAV direkt beim Mail-Hoster — dieselben
+Termine wie am Handy oder in Thunderbird. Bei goneo ist der Endpunkt
+`https://goneo.email/dav` (Voraussetzung: „Webmail Plus" im Tarif), angemeldet
+wird mit den Postfach-Zugangsdaten.
+
+„Kalender verbinden" sucht den Server selbst (SRV `_caldavs._tcp`, `.well-known`
+auf Mail-Domain und Hoster-Domain, goneo als bekannter Sonderfall), hangelt sich
+über principal → calendar-home-set zur Kalenderliste und speichert sie im
+Konto (`dav`-Abschnitt). Termine kommen per REPORT mit Server-`expand`, damit
+Serien aufgeklappt sind; Serientermine sind in der Oberfläche bewusst
+schreibgeschützt (ein PUT würde die ganze Serie überschreiben). Ganztags-Termine:
+`DTEND` ist exklusiv — die Oberfläche rechnet das beim Anzeigen zurück.
+Der iCalendar-Teil (Parser, Zeilen-Faltung, Zeitzonen nach UTC) ist eigener
+Code in `server.py`, Tests in `test_server.py`.
+
 ## Noch offen
 
 * Entwürfe serverseitig speichern (bisher nur senden)
