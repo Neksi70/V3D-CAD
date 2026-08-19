@@ -1370,7 +1370,8 @@ def ai_task(b):
 DAV_NS = {'d': 'DAV:', 'c': 'urn:ietf:params:xml:ns:caldav'}
 
 
-def _dav_http(acc, method, url, body=None, ctype=None, depth=None, extra=None):
+def _dav_http(acc, method, url, body=None, ctype=None, depth=None, extra=None,
+              follow=True, anon=False):
     """Eine DAV-Anfrage; folgt Umleitungen selbst (urllib kann kein PROPFIND-Redirect)."""
     import http.client
     from urllib.parse import urlsplit, urljoin
@@ -1381,7 +1382,9 @@ def _dav_http(acc, method, url, body=None, ctype=None, depth=None, extra=None):
     for _ in range(4):
         u = urlsplit(url)
         conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=25)
-        hdrs = {'Authorization': 'Basic ' + auth, 'User-Agent': 'V3DMail/1.0'}
+        hdrs = {'User-Agent': 'V3DMail/1.0'}
+        if not anon:
+            hdrs['Authorization'] = 'Basic ' + auth
         if depth is not None:
             hdrs['Depth'] = str(depth)
         if ctype:
@@ -1394,7 +1397,7 @@ def _dav_http(acc, method, url, body=None, ctype=None, depth=None, extra=None):
             data = resp.read()
         finally:
             conn.close()
-        if resp.status in (301, 302, 307, 308) and resp.getheader('Location'):
+        if follow and resp.status in (301, 302, 307, 308) and resp.getheader('Location'):
             url = urljoin(url, resp.getheader('Location'))
             continue
         return resp.status, dict(resp.getheaders()), data
@@ -1434,16 +1437,44 @@ def dav_discover(acc):
         kandidaten.append('https://goneo.email/.well-known/caldav')
     tried = []
     for url in kandidaten:
+        # Die Umleitung der well-known-Adresse verrät die DAV-Wurzel. Per GET
+        # erfragen — auf ein PROPFIND antworten manche Server dort mit 500
+        # (goneo.email), die Umleitung schicken sie nur bei GET.
+        wurzeln = []
         try:
-            status, _, _ = _dav_http(acc, 'PROPFIND', url, body=PROPFIND_PRINCIPAL,
-                                     ctype='application/xml; charset=utf-8', depth=0)
+            status, hdrs, _ = _dav_http(acc, 'GET', url, follow=False)
+            ort = next((v for k, v in hdrs.items() if k.lower() == 'location'), None)
+            if status in (301, 302, 307, 308) and ort:
+                from urllib.parse import urljoin as _uj
+                wurzeln.append(_uj(url, ort))
         except (OSError, MailError) as e:
             tried.append('%s: %s' % (url, e))
             continue
-        if status in (207, 401):    # 401 = Endpunkt existiert, nur Anmeldung fehlt
-            _dav_check(status, 'Kalender-Suche')
-            return url
-        tried.append('%s: HTTP %d' % (url, status))
+        wurzeln.append(url)
+        for wurzel in wurzeln:
+            try:
+                status, _, _ = _dav_http(acc, 'PROPFIND', wurzel, body=PROPFIND_PRINCIPAL,
+                                         ctype='application/xml; charset=utf-8', depth=0)
+            except (OSError, MailError) as e:
+                tried.append('%s: %s' % (wurzel, e))
+                continue
+            if status in (207, 401):    # 401 = Endpunkt existiert, nur Anmeldung fehlt
+                _dav_check(status, 'Kalender-Suche')
+                return wurzel
+            if status == 500:
+                # goneo-Eigenart: verworfene Zugangsdaten quittiert der Server
+                # mit 500 statt 401. Ohne Anmeldung gegenprüfen — kommt dann
+                # 401, existiert der Endpunkt und es liegt an der Anmeldung.
+                try:
+                    s2, _, _ = _dav_http(acc, 'PROPFIND', wurzel, body=PROPFIND_PRINCIPAL,
+                                         ctype='application/xml; charset=utf-8', depth=0, anon=True)
+                except (OSError, MailError):
+                    s2 = None
+                if s2 == 401:
+                    raise MailError('Kalender gefunden (%s), aber der Server verwirft die '
+                                    'Postfach-Zugangsdaten. Bei goneo muss „Webmail Plus" im '
+                                    'Tarif aktiv sein — danach hier erneut verbinden.' % wurzel)
+            tried.append('%s: HTTP %d' % (wurzel, status))
     raise MailError('Kein CalDAV-Server gefunden. Versucht: ' + '; '.join(tried))
 
 
