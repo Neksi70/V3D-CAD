@@ -36311,8 +36311,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.78';
+const VOLME3D_VERSION = '1.15.79';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.79', date:'2026-08-25', changes:[
+    ['🎂','Tortentopper: <b>Pins und Stege lassen sich jetzt direkt verlängern</b>. Nach dem „Aufheben" einen Pin oder Steg anklicken — in den Eigenschaften steht jetzt ganz oben <b>„Pin-Länge"</b> bzw. „Steg-Länge". Der Pin wächst dabei an der SPITZE: der Ansatz bleibt im Schriftzug liegen, Breite und Dicke bleiben unverändert — nichts verzerrt, nichts verrutscht. Ein Steg wächst symmetrisch aus der Mitte, damit beide Enden weiter ihre Buchstaben treffen. Bisher musste man dafür über „Länge X / Tiefe Y / Höhe Z" skalieren — bei so dünnen Teilen war kaum zu treffen, welches der drei Maße die Länge ist, je nachdem wie das Teil gerade liegt. Gemeldet von Ralf.'],
+  ]},
   { version:'1.15.78', date:'2026-08-24', spots:[{id:'topper-font2',sel:'#tt-text2'}], changes:[
     ['🎂','Tortentopper: <b>Zwei Schriften in einem Topper</b> — der Name oben in Schreibschrift, darunter z. B. „1. KLASSE" in Blockschrift, wie bei den gekauften Schulanfangs-Toppern. Dafür gibt es ein neues Textfeld <b>„Zweite Schrift"</b> mit eigener Schriftwahl (auch mehrere Zeilen, auch eigene TTF/OTF-Schriften) und einem Regler <b>„Größe 2"</b> für das Größenverhältnis. Die Versalhöhen beider Schriften werden dabei automatisch abgeglichen — bei gleicher Nenngröße fallen Schriften sonst sehr unterschiedlich aus. Dazu die neue <b>Trennlinie</b>: wählbar zwischen Schrift 1 und 2 oder zwischen allen Zeilen, Stärke einstellbar. Sie spannt sich über die Breite der breiteren Nachbarzeile und wird automatisch mit verschweißt — schwebt sie frei, fangen die Auto-Stege sie ab wie jeden i-Punkt. Gewünscht von Ralf.'],
   ]},
@@ -38354,7 +38357,16 @@ function _fpBuildRows(type, o) {
     const flipHollowRow = o.userData.occtShape === 'cone'
       ? `<label class="fp-check-lbl"><input type="checkbox" id="fp-hollowflip" ${o.userData._hollowFlip?'checked':''} onchange="fpFlipHollow(this.checked)"> Umgedreht (Öffnung oben/unten)</label>`
       : '';
-    return row('Länge X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
+    // Topper-Pin/Steg: direktes Längenmaß — Pin wächst an der Spitze, Steg aus der
+    // Mitte; Breite/Dicke bleiben. Löst „Steg verlängern geht nicht" (Ralf).
+    const ttKind = _ttPartKind(o);
+    const ttRow = ttKind
+      ? row(ttKind === 'pin' ? 'Pin-Länge' : 'Steg-Länge', 'fp-ttlen',
+            r2(_ttPartLenInfo(o).lenMM), 'fpApplyTtLen(this.value)', 'mm', 5, 250, 0.5) +
+        '<div class="fp-sep"></div>'
+      : '';
+    return ttRow +
+           row('Länge X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
            propLock() +
            row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
            row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
@@ -38870,6 +38882,7 @@ function _fpSyncValues() {
       break;
     default:
       set('fpw', w); set('fph', h); set('fpd', d);
+      if (typeof _ttPartKind === 'function' && _ttPartKind(o)) set('fp-ttlen', r2(_ttPartLenInfo(o).lenMM));
   }
   _syncTexPanel(o);
 }
@@ -39074,6 +39087,70 @@ function fpSetMode(mode) {
 }
 
 // Apply width/depth/height change from floating panel
+// ── Tortentopper-Pins/Stege: echte „Länge"-Eigenschaft ───────────────────────
+// Nach „Aufheben" heißen die Teile „Pin N"/„Steg N". Skalieren über die Welt-BBox
+// ist für diese dünnen Teile unpraktisch (Ralf: „nur die Höhe kann man verändern")
+// — darum ein direktes Längenmaß entlang der langen EIGENEN Achse des Teils.
+function _ttPartKind(o){
+  if (!o || !o.isMesh || !o.geometry || (o.userData||{}).shapeType !== 'custom') return null;
+  const n = (o.userData && o.userData.name) || '';
+  if (/^Pin \d+/.test(n)) return 'pin';
+  if (/^Steg \d+/.test(n)) return 'steg';
+  return null;
+}
+function _ttPartLenInfo(o){
+  const g = o.geometry;
+  g.computeBoundingBox();
+  const bb = g.boundingBox;
+  const ext = [bb.max.x-bb.min.x, bb.max.y-bb.min.y, bb.max.z-bb.min.z];
+  let ax = 0; if (ext[1] > ext[ax]) ax = 1; if (ext[2] > ext[ax]) ax = 2;
+  const axName = 'xyz'[ax];
+  return { ax, axName, bb, ext, lenMM: ext[ax] * o.scale[axName] * 10 };
+}
+// Streckt die GEOMETRIE entlang der langen Achse: Pins wachsen an der SPITZE
+// (der Ansatz im Schriftzug bleibt liegen), Stege symmetrisch aus der Mitte.
+// Breite/Dicke bleiben unverändert — kein Verzerren.
+function fpApplyTtLen(val){
+  const o = getFirst(); const kind = _ttPartKind(o); if (!kind) return;
+  const v = parseFloat(val); if (!(v > 0)) return;
+  const inf = _ttPartLenInfo(o);
+  const curGeo = inf.ext[inf.ax]; if (!(curGeo > 1e-6)) return;
+  const r = (v / 10) / (o.scale[inf.axName] || 1) / curGeo;
+  if (!isFinite(r) || r <= 0 || Math.abs(r - 1) < 1e-4) return;
+  saveUndoDebounced();
+  const g = o.geometry, pos = g.attributes.position;
+  const aName = inf.axName, lo = inf.bb.min[aName], hi = inf.bb.max[aName];
+  let anchor;
+  if (kind === 'steg') anchor = (lo + hi) / 2;
+  else {
+    // Pin: Ansatz (überlappt den Schriftzug) = Ende mit dem GRÖSSEREN Querschnitt,
+    // die Spitze läuft zu. Querschnitt in 10%-Scheiben an beiden Enden messen.
+    const others = ['x','y','z'].filter(n => n !== aName);
+    const slab = curGeo * 0.1;
+    const cross = (from, to) => {
+      let mnA=Infinity, mxA=-Infinity, mnB=Infinity, mxB=-Infinity;
+      for (let i = 0; i < pos.count; i++) {
+        const c = pos['get' + aName.toUpperCase()](i);
+        if (c < from || c > to) continue;
+        const a = pos['get' + others[0].toUpperCase()](i), b = pos['get' + others[1].toUpperCase()](i);
+        if (a < mnA) mnA = a; if (a > mxA) mxA = a;
+        if (b < mnB) mnB = b; if (b > mxB) mxB = b;
+      }
+      return (mxA > mnA ? mxA - mnA : 0) + (mxB > mnB ? mxB - mnB : 0);
+    };
+    anchor = cross(lo, lo + slab) >= cross(hi - slab, hi) ? lo : hi;
+  }
+  const setA = 'set' + aName.toUpperCase(), getA = 'get' + aName.toUpperCase();
+  for (let i = 0; i < pos.count; i++) pos[setA](i, anchor + (pos[getA](i) - anchor) * r);
+  pos.needsUpdate = true;
+  g.computeVertexNormals();
+  g.computeBoundingBox(); g.computeBoundingSphere();
+  _geoJsonCache.delete(g);          // in-place mutiert → sonst speichert toJSON die alte Form
+  _updateObjEdgeLines(o);
+  _dimChangePost(o);
+  _fpSyncValues();
+}
+
 function fpApplyDim(axis, val) {
   const v = parseFloat(val); if (!(v > 0)) return;
   saveUndoDebounced();
