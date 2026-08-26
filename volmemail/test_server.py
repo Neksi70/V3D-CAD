@@ -410,11 +410,13 @@ class TestHttp(unittest.TestCase):
     def tearDownClass(cls):
         cls.srv.shutdown()
 
-    def req(self, method, path, body=None, cookie=None):
+    def req(self, method, path, body=None, cookie=None, fwd=None):
         c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
         headers = {'Content-Type': 'application/json'}
         if cookie:
             headers['Cookie'] = cookie
+        if fwd:
+            headers['X-Forwarded-For'] = fwd
         c.request(method, path, json.dumps(body) if body is not None else None, headers)
         r = c.getresponse()
         data = r.read()
@@ -456,6 +458,23 @@ class TestHttp(unittest.TestCase):
     def test_no_path_traversal(self):
         status, _, _ = self.req('GET', '/../../etc/passwd')
         self.assertIn(status, (400, 404))
+
+    def test_sperre_pro_weitergeleiteter_ip(self):
+        # Hinter dem Funnel kommen alle Besucher als 127.0.0.1 an; gezählt
+        # werden muss die Adresse aus X-Forwarded-For, sonst sperren fremde
+        # Fehlversuche (Bots auf der öffentlichen Adresse) jeden aus.
+        self.addCleanup(server._login_fails.clear)
+        for _ in range(5):
+            status, _, _ = self.req('POST', '/api/login', {'key': 'falsch'},
+                                    fwd='198.51.100.7')
+            self.assertEqual(status, 401)
+        status, _, _ = self.req('POST', '/api/login', {'key': 'falsch'},
+                                fwd='198.51.100.7')
+        self.assertEqual(status, 429)
+        # Anderer Besucher, andere Adresse: kommt mit richtigem Schlüssel rein.
+        status, _, _ = self.req('POST', '/api/login', {'key': 'test-schluessel'},
+                                fwd='203.0.113.9')
+        self.assertEqual(status, 200)
 
     def test_unknown_endpoint(self):
         status, cookie, _ = self.req('POST', '/api/login', {'key': 'test-schluessel'})

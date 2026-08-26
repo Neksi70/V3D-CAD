@@ -178,7 +178,10 @@ das die Mail gerichtet war.
   nicht: der Dienst muss sie an IMAP/SMTP weiterreichen. Schutz ist Modus 0600,
   nicht Verschlüsselung.
 * **Anmeldung:** ein Schlüssel, 5 Fehlversuche pro IP → 5 Minuten Sperre,
-  Sitzungscookie `HttpOnly`/`SameSite=Lax`.
+  Sitzungscookie `HttpOnly`/`SameSite=Lax`. Hinter dem Funnel kommen alle
+  Verbindungen als 127.0.0.1 an; gezählt wird darum die echte Adresse aus
+  `X-Forwarded-For` (nur bei Loopback-Verbindungen, von außen wäre der Header
+  fälschbar) — sonst würden Bots auf der öffentlichen Adresse jeden aussperren.
 
 ## Wartung
 

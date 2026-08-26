@@ -1811,6 +1811,17 @@ class Handler(BaseHTTPRequestHandler):
     def _authed(self):
         return session_valid(self._cookies().get('v3dmail_sid'))
 
+    def _client_ip(self):
+        """Hinter dem Tailscale-Funnel kommt jede Verbindung als 127.0.0.1 an;
+        die echte Adresse steht in X-Forwarded-For. Der Header zählt nur bei
+        Loopback-Verbindungen — von außen wäre er fälschbar."""
+        ip = self.client_address[0]
+        if ip in ('127.0.0.1', '::1', '::ffff:127.0.0.1'):
+            fwd = (self.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
+            if fwd:
+                return fwd
+        return ip
+
     def _read_body(self):
         n = int(self.headers.get('Content-Length') or 0)
         if n <= 0:
@@ -1889,7 +1900,7 @@ class Handler(BaseHTTPRequestHandler):
         route = path[len('/api'):]
 
         if route == '/login' and method == 'POST':
-            ip = self.client_address[0]
+            ip = self._client_ip()
             if login_blocked(ip):
                 return self._send(429, {'error': 'Zu viele Versuche. Bitte 5 Minuten warten.'})
             key = (self._body().get('key') or '').strip()
