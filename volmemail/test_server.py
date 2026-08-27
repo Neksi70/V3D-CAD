@@ -925,5 +925,30 @@ class TestKalenderRouten(unittest.TestCase):
             server.dav_delete_event({'id': 'k1'}, '')
 
 
+class TestBildWeiterleitung(unittest.TestCase):
+    """Bilder aus dem Netz holt der Server — aber nur oeffentliche Adressen."""
+
+    def test_eigenes_netz_gesperrt(self):
+        for host in ('localhost', '127.0.0.1', '10.0.0.5', '192.168.1.10', '169.254.1.1'):
+            self.assertFalse(server._adresse_erlaubt(host), host)
+
+    def test_fremdes_schema_gesperrt(self):
+        for url in ('file:///etc/passwd', 'ftp://beispiel.de/x.png', 'data:image/png;base64,AA', ''):
+            with self.assertRaises(server.MailError):
+                server.fetch_remote_image(url)
+
+    def test_interne_adresse_wird_abgewiesen(self):
+        with self.assertRaises(server.MailError) as cm:
+            server.fetch_remote_image('http://127.0.0.1:1/logo.png')
+        self.assertIn('nicht erlaubt', str(cm.exception))
+
+    def test_bildtyp_aus_kennung(self):
+        self.assertEqual(server._bildtyp(b'\x89PNG\r\n\x1a\n rest'), 'image/png')
+        self.assertEqual(server._bildtyp(b'GIF89a...'), 'image/gif')
+        self.assertEqual(server._bildtyp(b'\xff\xd8\xff\xe0'), 'image/jpeg')
+        self.assertEqual(server._bildtyp(b'RIFF????WEBPVP8 '), 'image/webp')
+        self.assertEqual(server._bildtyp(b'nur Text'), 'application/octet-stream')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

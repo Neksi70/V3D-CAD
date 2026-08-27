@@ -676,6 +676,38 @@ async function holePart(uid, part) {
   return blob;
 }
 
+// Bilder, die die Mail nur verlinkt (Newsletter-Grafiken), holt der SERVER —
+// nie der Browser. Sonst verriete jeder Abruf dem Absender IP und Lesezeit.
+async function holeBild(url) {
+  const key = 'url:' + url;
+  if (!S.blobs) S.blobs = new Map();
+  if (S.blobs.has(key)) return S.blobs.get(key);
+  const r = await fetch(API('api/bild?inline=1&url=' + encodeURIComponent(url)),
+                        { credentials: 'same-origin' });
+  if (!r.ok) throw new Error('Bild nicht ladbar');
+  const blob = await r.blob();
+  S.blobs.set(key, blob);
+  return blob;
+}
+
+// Anhang oder Netz-Bild — je nachdem, was in der Kachel steckt.
+function holeStueck(uid, a) {
+  return a.url ? holeBild(a.url) : holePart(uid, a.part);
+}
+
+function alsDataUrl(blob) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.onerror = () => rej(new Error('Lesefehler'));
+    fr.readAsDataURL(blob);
+  });
+}
+
+function entschaerftZurueck(s) {
+  const t = document.createElement('textarea'); t.innerHTML = s; return t.value;
+}
+
 function speichern(blob, name) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -688,7 +720,7 @@ async function dlPart(i, art) {
   const liste = art === 'bild' ? S.bilder : S.dateien;
   const a = (liste || [])[i];
   if (!a) return;
-  try { speichern(await holePart(S.cur.uid, a.part), a.filename); }
+  try { speichern(await holeStueck(S.cur.uid, a), a.filename); }
   catch (e) { toast('Konnte nicht laden: ' + e.message); }
 }
 
@@ -709,7 +741,7 @@ async function renderImages(m, bilder) {
   bilder.forEach(async (a, i) => {
     if ((a.size || 0) > 8 * 1024 * 1024) return;
     try {
-      const blob = await holePart(m.uid, a.part);
+      const blob = await holeStueck(m.uid, a);
       const el = document.getElementById('vor' + i);
       if (!el || S.cur.uid !== m.uid) return;
       const url = URL.createObjectURL(blob);
@@ -738,7 +770,7 @@ function setzeFrame(doc) {
   const alt = document.getElementById('frame');
   const neu = document.createElement('iframe');
   neu.id = 'frame';
-  neu.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
+  neu.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox allow-downloads');
   neu.setAttribute('referrerpolicy', 'no-referrer');
   neu.srcdoc = doc;
   alt.replaceWith(neu);
@@ -752,9 +784,42 @@ async function renderBody(m) {
   for (const p of parts) {
     try {
       const blob = await holePart(m.uid, p);
-      const url = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(blob); });
+      const url = await alsDataUrl(blob);
       html = html.split('cid-part:' + p).join(url);
     } catch (e) { /* Bild bleibt leer */ }
+  }
+  // Bilder, die die Mail nur verlinkt: erst nach ausdrücklichem "Bilder
+  // anzeigen" liefert der Server sie überhaupt im Text aus. Dann holt sie der
+  // Server stellvertretend und wir legen sie ebenfalls als data:-URL hinein —
+  // sonst blockt die Inhaltsregel des iframes jedes Nachladen.
+  const stellen = new Map();     // roher Treffer -> { url, bau(dataUrl) }
+  for (const t of html.matchAll(/src="(https?:[^"]+)"/gi)) {
+    stellen.set(t[0], { url: entschaerftZurueck(t[1]), bau: d => 'src="' + d + '"' });
+  }
+  // Hintergrundbilder im style-Attribut zählen genauso — sonst bleibt der Kopf
+  // eines Newsletters leer, obwohl das Bild da ist.
+  for (const t of html.matchAll(/url\(\s*(?:&quot;|['"])?(https?:[^)'"]+?)(?:&quot;|['"])?\s*\)/gi)) {
+    stellen.set(t[0], { url: entschaerftZurueck(t[1]), bau: d => 'url("' + d + '")' });
+  }
+  const geholt = [];
+  await Promise.all([...stellen.entries()].slice(0, 60).map(async ([roh, wie]) => {
+    try {
+      const blob = await holeBild(wie.url);
+      const url = await alsDataUrl(blob);
+      html = html.split(roh).join(wie.bau(url));
+      geholt.push({ url: wie.url, blob });
+    } catch (e) { /* Bild bleibt leer */ }
+  }));
+  if (S.cur && S.cur.uid === m.uid && geholt.length) {
+    // Winzlinge (Abstandshalter, Zählpixel) gehören nicht in die Bilderleiste.
+    const gesehen = new Set();
+    const kacheln = geholt.filter(g => g.blob.size >= 1024 && (g.blob.type || '').startsWith('image/'))
+      .filter(g => !gesehen.has(g.url) && gesehen.add(g.url))
+      .map(g => ({
+        url: g.url, filename: decodeURIComponent((g.url.split('?')[0].split('/').pop() || 'bild')),
+        type: g.blob.type, size: g.blob.size, inline: true,
+      }));
+    if (kacheln.length) renderImages(m, (S.bilder || []).filter(a => !a.url).concat(kacheln));
   }
   const doc = `<!DOCTYPE html><html><head><meta charset="utf-8">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'">

@@ -19,6 +19,7 @@ ganz normal IMAP und SMTP.
 | `smoke_handy.py` | Browser-Durchlauf im Handy-Format: Zurück-Knopf und Zurück-Geste |
 | `smoke_windows.py` | Installierbarkeit als Windows-App und mailto-Anbindung |
 | `smoke_signatur.py` | Signatur-Editor und Aufbau der versendeten Nachricht |
+| `smoke_bilder.py` | Bilder im Text: Anzeige (cid und verlinkt) und Speichern |
 | `werkzeug/icons_bauen.py` | erzeugt die PNG-Symbole für das Manifest |
 
 Zugangsdaten liegen **nicht** hier, sondern in `~/.config/v3dmail/config.json`
@@ -150,8 +151,18 @@ Jeder Teil wird nur einmal vom Server geholt und für die geöffnete Nachricht
 behalten — Vorschau, Einbettung im Text und Herunterladen teilen sich denselben
 Zwischenspeicher, der beim Wechsel auf eine andere Mail freigegeben wird.
 
-Extern nachzuladende Bilder bleiben davon unberührt: die werden weiter blockiert
-und erst auf Knopfdruck geholt.
+Verlinkte Bilder (Newsletter-Grafiken) bleiben zunächst blockiert. Nach „Bilder
+anzeigen" holt sie **der Server stellvertretend** (`/api/bild`) und reicht sie
+als `data:`-URL in die Nachricht — der Absender sieht dadurch weder IP noch
+Lesezeitpunkt des Lesers, und das abgeschottete iframe muss selbst nie ins Netz.
+Auch Hintergrundbilder aus `style="…url(…)"` laufen über diesen Weg. Anschließend
+stehen diese Bilder ebenfalls als Kacheln in der Leiste und lassen sich einzeln
+speichern; Winzlinge unter 1 kB (Abstandshalter, Zählpixel) bleiben draußen.
+
+Die Weiterleitung nimmt nur `http`/`https` und nur öffentliche Adressen an —
+Adressen im eigenen Netz (localhost, 10.x, 192.168.x, …) werden abgewiesen, auch
+wenn erst eine Umleitung dorthin zeigt. Obergrenze 12 MB, Inhalt muss ein Bild
+sein (Content-Type oder Dateikennung).
 
 ## Mehrere Postfächer
 
@@ -173,7 +184,8 @@ das die Mail gerichtet war.
 * **HTML-Mails laufen durch einen Allowlist-Filter** (Skripte, `on*`-Attribute,
   `javascript:`, iframes, Formulare raus) und danach in einem abgeschotteten
   iframe mit `Content-Security-Policy: default-src 'none'`.
-  Eingebettete Bilder (`cid:`) werden deshalb als `data:`-URL nachgereicht.
+  Eingebettete Bilder (`cid:`) und über den Server geholte Fremdbilder werden
+  deshalb als `data:`-URL nachgereicht.
 * **Passwörter im Klartext** in `~/.config/v3dmail/config.json`. Anders geht es
   nicht: der Dienst muss sie an IMAP/SMTP weiterreichen. Schutz ist Modus 0600,
   nicht Verschlüsselung.
@@ -187,6 +199,7 @@ systemctl --user restart volmemail.service     # nach Code-Änderung
 journalctl --user -u volmemail -f              # Protokoll
 python3 test_server.py                         # Tests
 python3 smoke_ui.py                            # Browser-Durchlauf am Rechner
+python3 smoke_bilder.py                        # Bilder anzeigen und speichern
 python3 smoke_handy.py                         # Handy-Ansicht
 python3 smoke_windows.py                       # Installation als Windows-App
 tailscale funnel --set-path=/mail off          # öffentlichen Zugang abschalten

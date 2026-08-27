@@ -20,6 +20,7 @@ import email.utils
 import hmac
 import html
 import imaplib
+import ipaddress
 import json
 import mimetypes
 import os
@@ -50,6 +51,7 @@ DEFAULT_PORT = 8783
 # Große Mails nicht komplett in den Speicher ziehen (Anhänge holen wir separat).
 MAX_BODY_BYTES = 25 * 1024 * 1024
 PAGE_SIZE = 50
+MAX_BILD_BYTES = 12 * 1024 * 1024   # Obergrenze fuer nachgeladene Bilder aus dem Netz
 
 imaplib._MAXLINE = 10 * 1024 * 1024
 
@@ -778,6 +780,112 @@ def load_attachment(box, folder, uid, part_idx):
         name = decode_header(name) if name else 'anhang'
         return payload, p.get_content_type(), name
     raise MailError('Anhang nicht gefunden')
+
+
+def _adresse_erlaubt(host):
+    """Nur oeffentliche Adressen: schuetzt vor Abrufen ins eigene Netz (SSRF)."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or
+                ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+            return False
+    return bool(infos)
+
+
+def fetch_remote_image(url):
+    """Ein Bild aus dem Netz holen — der Server tut das, nicht der Browser.
+
+    So erfaehrt der Absender weder IP noch Browser des Lesers, und das
+    abgeschottete Anzeige-iframe bekommt das Bild als data:-URL statt selbst
+    ins Netz zu greifen. Umleitungen werden von Hand verfolgt, damit die
+    Adresspruefung nicht per Redirect ins Heimnetz umgangen werden kann.
+    """
+    from urllib.parse import urlsplit
+    ziel = url
+    for _ in range(4):
+        teile = urlsplit(ziel)
+        if teile.scheme not in ('http', 'https') or not teile.hostname:
+            raise MailError('Adresse nicht erlaubt')
+        if not _adresse_erlaubt(teile.hostname):
+            raise MailError('Adresse nicht erlaubt')
+        req = urllib.request.Request(ziel, headers={
+            'User-Agent': 'Mozilla/5.0 (V3DMail)',
+            'Accept': 'image/*,*/*;q=0.8',
+        })
+        opener = urllib.request.build_opener(_KeinRedirect)
+        umleitung = None
+        letzter = None
+        for versuch in range(2):     # Newsletter-Server schwächeln gern bei Salven
+            try:
+                with opener.open(req, timeout=10) as resp:
+                    ctype = (resp.headers.get('Content-Type') or '').split(';')[0].strip().lower()
+                    daten = resp.read(MAX_BILD_BYTES + 1)
+                break
+            except urllib.error.HTTPError as e:
+                if e.code in (301, 302, 303, 307, 308) and e.headers.get('Location'):
+                    from urllib.parse import urljoin
+                    umleitung = urljoin(ziel, e.headers['Location'])
+                    break
+                raise MailError('Bild nicht erreichbar (%s)' % e.code)
+            except Exception as e:
+                letzter = e
+                if versuch == 0:
+                    time.sleep(0.4)
+        else:
+            raise MailError('Bild nicht erreichbar (%s)' % type(letzter).__name__)
+        if umleitung:
+            ziel = umleitung
+            continue
+        if len(daten) > MAX_BILD_BYTES:
+            raise MailError('Bild zu gross')
+        if not ctype.startswith('image/'):
+            # Manche Server liefern octet-stream; dann ueber die Kennung entscheiden.
+            if not _sieht_nach_bild_aus(daten):
+                raise MailError('Kein Bild')
+            ctype = _bildtyp(daten)
+        name = os.path.basename(urlsplit(ziel).path) or 'bild'
+        if '.' not in name:
+            name += mimetypes.guess_extension(ctype) or '.img'
+        return daten, ctype, name
+    raise MailError('Zu viele Umleitungen')
+
+
+class _KeinRedirect(urllib.request.HTTPRedirectHandler):
+    """Umleitungen nicht selbst folgen — die Adresse muss erst geprueft werden."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_BILD_KENNUNGEN = [
+    (b'\x89PNG\r\n\x1a\n', 'image/png'),
+    (b'\xff\xd8\xff', 'image/jpeg'),
+    (b'GIF87a', 'image/gif'),
+    (b'GIF89a', 'image/gif'),
+    (b'BM', 'image/bmp'),
+]
+
+
+def _bildtyp(daten):
+    for kennung, typ in _BILD_KENNUNGEN:
+        if daten.startswith(kennung):
+            return typ
+    if daten[:4] == b'RIFF' and daten[8:12] == b'WEBP':
+        return 'image/webp'
+    if daten.lstrip()[:5].lower() == b'<?xml' or daten.lstrip()[:4].lower() == b'<svg':
+        return 'image/svg+xml'
+    return 'application/octet-stream'
+
+
+def _sieht_nach_bild_aus(daten):
+    return _bildtyp(daten) != 'application/octet-stream'
 
 
 # --- Autoconfig -------------------------------------------------------------
@@ -2069,6 +2177,17 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import quote
             return self._send(200, payload, ctype, extra=[
                 ('Content-Disposition', "%s; filename*=UTF-8''%s" % (disp, quote(name))),
+            ])
+
+        if route == '/bild':
+            # Bild aus dem Netz — der Server holt es stellvertretend, damit
+            # der Absender den Leser nicht sieht und das iframe zu bleibt.
+            payload, ctype, name = fetch_remote_image(q.get('url') or '')
+            disp = 'inline' if q.get('inline') == '1' else 'attachment'
+            from urllib.parse import quote
+            return self._send(200, payload, ctype, extra=[
+                ('Content-Disposition', "%s; filename*=UTF-8''%s" % (disp, quote(name))),
+                ('Cache-Control', 'private, max-age=600'),
             ])
 
         if route == '/flag' and method == 'POST':
