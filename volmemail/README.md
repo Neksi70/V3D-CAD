@@ -142,10 +142,21 @@ werfen Mailprogramme weg.
 
 ## Bilder und Anhänge
 
-Über der Nachricht stehen zwei Leisten: Dateien als Anhang-Zeilen, **Bilder als
-Kacheln mit Vorschau** — egal ob sie als Anhang mitkommen oder im Text eingebettet
-sind (Logos, Signaturbilder). Ein Klick speichert; ab zwei Bildern gibt es
-zusätzlich „Alle speichern".
+Über der Nachricht stehen zwei Leisten: Dateien als Anhang-Zeilen und eine
+**einzeilige Bilderleiste** („🖼️ 7 Bilder in dieser Nachricht"). Angeschaut werden
+die Bilder in der Nachricht selbst — die Leiste ist zum **Speichern** da und
+bleibt deshalb eingeklappt; „Speichern…" klappt die Kacheln mit Vorschau auf, ein
+Klick auf eine Kachel sichert das Bild, „Alle speichern" nimmt alle.
+
+**Warum eingeklappt:** aufgeklappte Kacheln drückten auf dem Handy den
+Nachrichtentext auf einen 150-px-Streifen zusammen — man sah die Bilder als
+Kacheln, aber die Mail nicht mehr.
+
+Der Rahmen der Nachricht **wächst mit dem Inhalt**, die Leseansicht scrollt als
+Ganzes. Mails sind meist auf 650 px Breite gebaut; passt das nicht (Handy), wird
+der Inhalt passend heruntergezoomt, statt seitlich wegzulaufen. Dafür — und nur
+dafür — trägt das iframe `allow-same-origin`: ohne `allow-scripts` läuft darin
+trotzdem nichts.
 
 Jeder Teil wird nur einmal vom Server geholt und für die geöffnete Nachricht
 behalten — Vorschau, Einbettung im Text und Herunterladen teilen sich denselben

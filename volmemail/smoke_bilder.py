@@ -40,7 +40,10 @@ with sync_playwright() as p:
     page = ctx.new_page()
     fehler = []
     page.on('pageerror', lambda e: fehler.append(str(e)[:200]))
-    page.on('console', lambda m: fehler.append(m.text[:160]) if m.type == 'error' else None)
+    # Ein 400 vom fremden Bildserver ist kein Fehler UNSERER Oberfläche —
+    # dafür gibt es die Quotenprüfung weiter unten.
+    page.on('console', lambda m: fehler.append(m.text[:160])
+            if m.type == 'error' and 'Failed to load resource' not in m.text else None)
 
     page.goto(URL, wait_until='networkidle')
     page.fill('#lkey', KEY)
@@ -71,6 +74,10 @@ with sync_playwright() as p:
         st = bilder_im_rahmen(page)
         check('Eingebettete Bilder werden dargestellt', st['alle'] > 0 and st['geladen'] == st['alle'],
               '%d von %d' % (st['geladen'], st['alle']))
+        check('Kacheln bleiben eingeklappt, bis man speichern will',
+              page.is_visible('#rimgs') and not page.is_visible('#rraster'))
+        page.click('#bkacheln')
+        page.wait_for_timeout(500)
         check('Bilderleiste hat Kacheln',
               page.evaluate("document.querySelectorAll('#rimgs .bild').length") > 0)
         with page.expect_download(timeout=20000) as dl:
@@ -94,6 +101,15 @@ with sync_playwright() as p:
         check('Nach "Bilder anzeigen" sind sie auch wirklich da',
               st['alle'] > 0 and st['geladen'] == st['alle'],
               '%d von %d geladen (vorher %d)' % (st['geladen'], st['alle'], vorher))
+        # Bilder, die der fremde Server trotz Wiederholung nicht rausrückt,
+        # bleiben ohne data:-Quelle. Einzelne Ausfälle sind nicht unser Fehler,
+        # aber der Großteil muss ankommen.
+        roh = page.frame_locator('#frame').locator('body').evaluate(
+            "b => b.querySelectorAll('img').length")
+        check('Fast alle verlinkten Bilder kommen an', st['alle'] >= roh * 0.9,
+              '%d von %d umgesetzt' % (st['alle'], roh))
+        page.click('#bkacheln')
+        page.wait_for_timeout(500)
         kacheln = page.evaluate("document.querySelectorAll('#rimgs .bild').length")
         check('Verlinkte Bilder bekommen eigene Kacheln', kacheln > 0)
         if kacheln:
@@ -105,6 +121,19 @@ with sync_playwright() as p:
                   datei.suggested_filename)
     else:
         print('  (kein Fall mit verlinkten Bildern in den letzten 20 Mails)')
+
+    # Der Kern der Beschwerde: die Bilder sollen IN der Nachricht zu sehen sein.
+    masse = page.evaluate("""() => {
+        const f = document.getElementById('frame'), d = f.contentDocument;
+        return { rahmen: Math.round(f.getBoundingClientRect().height),
+                 inhalt: d ? d.documentElement.scrollHeight : 0,
+                 breite: d ? d.documentElement.scrollWidth : 0,
+                 platz: f.clientWidth };
+    }""")
+    check('Nachrichtenfenster ist nicht zusammengequetscht', masse['rahmen'] >= 280,
+          'nur %d px hoch' % masse['rahmen'])
+    check('Inhalt passt in die Breite', masse['breite'] <= masse['platz'] + 4,
+          '%d px Inhalt auf %d px Platz' % (masse['breite'], masse['platz']))
 
     check('Keine JavaScript-Fehler', not fehler, ' | '.join(fehler[:3]))
     br.close()

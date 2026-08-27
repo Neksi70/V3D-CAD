@@ -97,7 +97,9 @@ a{color:var(--acc-d)}
 .item .star.on{color:var(--acc)}
 
 /* --- Leseansicht --- */
-#read{flex:1;display:flex;flex-direction:column;background:#fff;min-width:0}
+/* Die Leseansicht scrollt als Ganzes: der Rahmen der Nachricht wächst mit dem
+   Inhalt mit, statt die Mail in einen Streifen unter den Knöpfen zu quetschen. */
+#read{flex:1;display:flex;flex-direction:column;background:#fff;min-width:0;overflow-y:auto}
 #read .hd{padding:16px 22px;border-bottom:1px solid var(--line)}
 #read h2{font-size:19px;line-height:1.35;margin-bottom:8px;word-break:break-word}
 #read .from{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13.5px}
@@ -180,7 +182,7 @@ a{color:var(--acc-d)}
   #side{position:fixed;left:0;top:0;bottom:0;z-index:40;transform:translateX(-100%);transition:transform .2s;box-shadow:4px 0 24px rgba(0,0,0,.3)}
   #side.open{transform:none}
   #list{width:100%;border-right:0}
-  #read{position:fixed;inset:0;z-index:30}
+  #read{position:fixed;inset:0;z-index:30;overflow-y:auto;-webkit-overflow-scrolling:touch}
   body.v-list #read{display:none}
   body.v-read #list{display:none}
   #back{display:inline-flex}
@@ -682,10 +684,16 @@ async function holeBild(url) {
   const key = 'url:' + url;
   if (!S.blobs) S.blobs = new Map();
   if (S.blobs.has(key)) return S.blobs.get(key);
-  const r = await fetch(API('api/bild?inline=1&url=' + encodeURIComponent(url)),
-                        { credentials: 'same-origin' });
-  if (!r.ok) throw new Error('Bild nicht ladbar');
-  const blob = await r.blob();
+  let blob = null;
+  // Zwei Anläufe mit Pause: Newsletter-Server werfen unter Last gern einzelne
+  // Bilder ab, beim zweiten Mal kommen sie fast immer.
+  for (let versuch = 0; versuch < 2 && !blob; versuch++) {
+    if (versuch) await new Promise(r => setTimeout(r, 900));
+    const r = await fetch(API('api/bild?inline=1&url=' + encodeURIComponent(url)),
+                          { credentials: 'same-origin' });
+    if (r.ok) blob = await r.blob();
+    else if (versuch) throw new Error('Bild nicht ladbar');
+  }
   S.blobs.set(key, blob);
   return blob;
 }
@@ -724,30 +732,50 @@ async function dlPart(i, art) {
   catch (e) { toast('Konnte nicht laden: ' + e.message); }
 }
 
+// Die Bilderleiste bleibt EINGEKLAPPT: sie ist zum Speichern da, nicht zum
+// Anschauen — angeschaut werden die Bilder in der Nachricht selbst. Aufgeklappte
+// Kacheln drängten auf dem Handy den Nachrichtentext auf einen Streifen zusammen.
 async function renderImages(m, bilder) {
   const box = document.getElementById('rimgs');
   S.bilder = bilder;
+  S.bilderOffen = false;
   if (!bilder.length) { box.classList.add('hide'); box.innerHTML = ''; return; }
   box.classList.remove('hide');
   const gesamt = bilder.reduce((s, a) => s + (a.size || 0), 0);
   box.innerHTML = `<div class="kopf"><span>🖼️ ${bilder.length} ${bilder.length === 1 ? 'Bild' : 'Bilder'} in dieser Nachricht</span>
       <span style="color:var(--dim);font-weight:400">${fmtSize(gesamt)}</span>
+      <button class="btn sec sm" id="bkacheln" onclick="bilderUmschalten()">Speichern…</button>
       ${bilder.length > 1 ? '<button class="btn sec sm" onclick="alleBilder()">Alle speichern</button>' : ''}</div>
-    <div class="raster">${bilder.map((a, i) => `<div class="bild" onclick="dlPart(${i},'bild')" title="${esc(a.filename)} — zum Speichern anklicken">
+    <div class="raster hide" id="rraster">${bilder.map((a, i) => `<div class="bild" onclick="dlPart(${i},'bild')" title="${esc(a.filename)} — zum Speichern anklicken">
       <div class="vor" id="vor${i}">🖼️</div>
       <div class="nm">${esc(a.filename)}</div><div class="gr">${fmtSize(a.size)}</div></div>`).join('')}</div>`;
+}
 
-  // Vorschaubilder nachladen; sehr große überspringen, damit die Ansicht flott bleibt.
+function bilderUmschalten() {
+  const raster = document.getElementById('rraster');
+  const knopf = document.getElementById('bkacheln');
+  if (!raster) return;
+  S.bilderOffen = !S.bilderOffen;
+  raster.classList.toggle('hide', !S.bilderOffen);
+  if (knopf) knopf.textContent = S.bilderOffen ? 'Zuklappen' : 'Speichern…';
+  if (S.bilderOffen) ladeVorschauen(S.cur, S.bilder || []);
+}
+
+// Vorschaubilder erst beim Aufklappen holen; sehr große überspringen, damit die
+// Ansicht flott bleibt.
+function ladeVorschauen(m, bilder) {
   bilder.forEach(async (a, i) => {
     if ((a.size || 0) > 8 * 1024 * 1024) return;
+    const el = document.getElementById('vor' + i);
+    if (!el || el.dataset.fertig) return;
     try {
       const blob = await holeStueck(m.uid, a);
-      const el = document.getElementById('vor' + i);
-      if (!el || S.cur.uid !== m.uid) return;
+      if (!S.cur || S.cur.uid !== m.uid || !el.isConnected) return;
       const url = URL.createObjectURL(blob);
       (S.vorschauUrls = S.vorschauUrls || []).push(url);
       el.style.backgroundImage = `url("${url}")`;
       el.textContent = '';
+      el.dataset.fertig = '1';
     } catch (e) { /* Platzhalter bleibt stehen */ }
   });
 }
@@ -770,10 +798,44 @@ function setzeFrame(doc) {
   const alt = document.getElementById('frame');
   const neu = document.createElement('iframe');
   neu.id = 'frame';
-  neu.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox allow-downloads');
+  // allow-same-origin NUR damit wir den Inhalt ausmessen können (Breite/Höhe).
+  // Ohne allow-scripts läuft im Rahmen nichts — der Filter wirft Skripte ohnehin
+  // raus, und die Inhaltsregel des Dokuments lässt nur data:-Bilder zu.
+  neu.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox allow-downloads allow-same-origin');
   neu.setAttribute('referrerpolicy', 'no-referrer');
+  neu.addEventListener('load', () => passeRahmenAn(neu));
   neu.srcdoc = doc;
   alt.replaceWith(neu);
+}
+
+// Mails sind auf ~650 px Breite gebaut — auf dem Handy passt das nicht. Also
+// den Inhalt herunterzoomen, bis er in die Breite passt, und den Rahmen auf dem
+// Handy so hoch machen wie die Nachricht: dann scrollt die ganze Ansicht, statt
+// die Mail in einen Streifen zu quetschen.
+function passeRahmenAn(fr) {
+  let d;
+  try { d = fr.contentDocument; } catch (e) { return; }
+  if (!d || !d.body) return;
+  const anpassen = () => {
+    if (!fr.isConnected) return;
+    const platz = fr.clientWidth || 1;
+    d.body.style.zoom = '';
+    const breit = Math.max(d.body.scrollWidth, d.documentElement.scrollWidth);
+    const faktor = breit > platz + 4 ? Math.max(0.4, platz / breit) : 1;
+    if (faktor < 1) d.body.style.zoom = faktor;
+    requestAnimationFrame(() => {
+      if (!fr.isConnected) return;
+      // scrollHeight steht bereits in gezoomten Pixeln — nicht nochmal rechnen.
+      const hoch = Math.ceil(d.documentElement.scrollHeight) + 16;
+      fr.style.flex = 'none';
+      fr.style.height = Math.max(280, hoch) + 'px';
+    });
+  };
+  anpassen();
+  // Bilder trudeln als data:-URL erst nach dem Aufbau ein und ändern die Höhe.
+  [...d.images].forEach(i => i.complete || i.addEventListener('load', anpassen, { once: true }));
+  clearTimeout(S.rahmenTimer);
+  S.rahmenTimer = setTimeout(anpassen, 1200);
 }
 
 async function renderBody(m) {
@@ -801,14 +863,21 @@ async function renderBody(m) {
   for (const t of html.matchAll(/url\(\s*(?:&quot;|['"])?(https?:[^)'"]+?)(?:&quot;|['"])?\s*\)/gi)) {
     stellen.set(t[0], { url: entschaerftZurueck(t[1]), bau: d => 'url("' + d + '")' });
   }
+  // Höchstens vier Abrufe gleichzeitig: Newsletter-Server werfen bei einer
+  // Salve aus einem Dutzend Anfragen zuverlässig einzelne Bilder ab.
   const geholt = [];
-  await Promise.all([...stellen.entries()].slice(0, 60).map(async ([roh, wie]) => {
-    try {
-      const blob = await holeBild(wie.url);
-      const url = await alsDataUrl(blob);
-      html = html.split(roh).join(wie.bau(url));
-      geholt.push({ url: wie.url, blob });
-    } catch (e) { /* Bild bleibt leer */ }
+  const aufgabe = [...stellen.entries()].slice(0, 60);
+  let naechste = 0;
+  await Promise.all(Array.from({ length: Math.min(4, aufgabe.length) }, async () => {
+    while (naechste < aufgabe.length) {
+      const [roh, wie] = aufgabe[naechste++];
+      try {
+        const blob = await holeBild(wie.url);
+        const url = await alsDataUrl(blob);
+        html = html.split(roh).join(wie.bau(url));
+        geholt.push({ url: wie.url, blob });
+      } catch (e) { /* Bild bleibt leer */ }
+    }
   }));
   if (S.cur && S.cur.uid === m.uid && geholt.length) {
     // Winzlinge (Abstandshalter, Zählpixel) gehören nicht in die Bilderleiste.

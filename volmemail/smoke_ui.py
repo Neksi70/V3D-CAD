@@ -127,6 +127,10 @@ with sync_playwright() as p:
                         break
             if bilder:
                 check('Bilderleiste sichtbar', page.is_visible('#rimgs'))
+                # Die Kacheln sind eingeklappt, damit der Text Platz behält.
+                check('Kacheln zunächst eingeklappt', not page.is_visible('#rraster'))
+                page.click('#bkacheln')
+                page.wait_for_timeout(400)
                 check('Jedes Bild als eigene Kachel',
                       page.evaluate("document.querySelectorAll('#rimgs .bild').length") == bilder)
                 page.wait_for_timeout(2500)

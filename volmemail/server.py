@@ -822,7 +822,7 @@ def fetch_remote_image(url):
         opener = urllib.request.build_opener(_KeinRedirect)
         umleitung = None
         letzter = None
-        for versuch in range(2):     # Newsletter-Server schwächeln gern bei Salven
+        for versuch in range(3):     # Newsletter-Server schwächeln gern bei Salven
             try:
                 with opener.open(req, timeout=10) as resp:
                     ctype = (resp.headers.get('Content-Type') or '').split(';')[0].strip().lower()
@@ -836,8 +836,8 @@ def fetch_remote_image(url):
                 raise MailError('Bild nicht erreichbar (%s)' % e.code)
             except Exception as e:
                 letzter = e
-                if versuch == 0:
-                    time.sleep(0.4)
+                if versuch < 2:
+                    time.sleep(0.4 + versuch)
         else:
             raise MailError('Bild nicht erreichbar (%s)' % type(letzter).__name__)
         if umleitung:
