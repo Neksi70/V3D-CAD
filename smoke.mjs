@@ -1,15 +1,25 @@
 // Smoke-Test: laedt die ausgelieferte (dist) App headless und prueft,
 // ob das Minifying die JS-Ausfuehrung oder bekannte Globals zerstoert hat.
 import { chromium } from '@playwright/test';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 
 const PORT = 8799;
 const srv = spawn('python3', ['volme3d_server.py', String(PORT)], { cwd: process.cwd() });
 await new Promise(r => setTimeout(r, 800));
 
+// Der Server liefert den Editor nur noch gegen ein gueltiges Sitzungs-Cookie
+// aus. Fuers Smoke-Testen stellen wir uns eins selbst aus (gleicher HMAC-
+// Schluessel wie der Server) — kein Firebase-Login noetig.
+const sessCookie = execFileSync('python3',
+  ['-c', "import v3d_auth;print(v3d_auth.make_cookie('smoke','smoke@lokal'))"],
+  { cwd: process.cwd(), encoding: 'utf8' }).trim();
+
 const pageErrors = [];
 const browser = await chromium.launch();
-const page = await browser.newPage();
+const context = await browser.newContext();
+await context.addCookies([{ name: 'v3dsess', value: sessCookie, domain: 'localhost',
+                            path: '/', httpOnly: true, secure: false, sameSite: 'Lax' }]);
+const page = await context.newPage();
 page.on('pageerror', e => pageErrors.push(String(e)));
 
 let served = '?';
@@ -18,6 +28,10 @@ try {
   // Einführung der Startseite der Launcher (start.html) und enthält die App-Globals nicht.
   const resp = await page.goto(`http://localhost:${PORT}/volme3d.html`, { waitUntil: 'load', timeout: 20000 });
   served = `${resp.status()} ${resp.headers()['content-length'] || '?'}B`;
+  // Umleitung auf die Anmeldung waere ein stiller Fehlschlag: die Globals
+  // fehlen dann natuerlich, ohne dass am Minifying etwas kaputt ist.
+  if (new URL(page.url()).pathname !== '/volme3d.html')
+    pageErrors.push('GATE: umgeleitet auf ' + page.url() + ' — Sitzungs-Cookie nicht akzeptiert');
   await page.waitForTimeout(3500); // Init/Module laufen lassen
 } catch (e) {
   pageErrors.push('GOTO: ' + e.message);

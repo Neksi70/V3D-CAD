@@ -1053,6 +1053,22 @@ const firebaseConfig = {
     return; // Overlay bleibt hidden — Editor startet direkt
   }
 
+  // Laeuft die Server-Sitzung waehrend der Arbeit ab, antworten OCCT- und
+  // KI-Aufrufe mit 401. Ohne das hier landet der Nutzer bei "Backend nicht
+  // erreichbar" statt bei der Anmeldung.
+  var _origFetch = window.fetch;
+  window.fetch = function(input) {
+    return _origFetch.apply(this, arguments).then(function(r){
+      try {
+        var u = typeof input === 'string' ? input : (input && input.url) || '';
+        if (r.status === 401 && (u.indexOf('/api/occt') === 0 || u.indexOf('/ki/') === 0))
+          location.replace('/login?grund=abgelaufen&weiter=' +
+                           encodeURIComponent(location.pathname + location.search));
+      } catch (e) {}
+      return r;
+    });
+  };
+
   firebase.initializeApp(firebaseConfig);
   var auth = firebase.auth();
   var googleProvider = new firebase.auth.GoogleAuthProvider();
@@ -1068,6 +1084,15 @@ const firebaseConfig = {
     var fb = document.getElementById('beta-fb');
     if (user) {
       overlay.classList.add('hidden');
+      // Serverseitige Sitzung auffrischen: der Server liefert den Editor nur
+      // gegen ein gueltiges Cookie aus. Firebase-Login allein reicht nicht —
+      // das lief frueher komplett im Browser und schuetzte gar nichts.
+      user.getIdToken().then(function(t){
+        return fetch('/auth/session', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({idToken: t}), credentials: 'same-origin'
+        });
+      }).catch(function(e){ console.warn('[auth] Sitzung nicht erneuert', e); });
       if (chip)      { chip.style.display = 'flex'; chip.querySelector('span').textContent = user.displayName || user.email || ''; }
       if (logoutBtn) logoutBtn.style.display = '';
       if (logoutSep) logoutSep.style.display = '';
@@ -1112,7 +1137,14 @@ const firebaseConfig = {
     var pw    = document.getElementById('auth-pw').value;
     auth.createUserWithEmailAndPassword(email, pw).catch(function(e){ window._authShowErr(e.message); });
   };
-  window._authLogout = function() { auth.signOut(); };
+  window._authLogout = function() {
+    // Erst das Server-Cookie loeschen, dann Firebase: sonst bliebe die
+    // Sitzung auf dem Server bestehen und ein Reload liesse einen wieder rein.
+    fetch('/auth/logout', {method: 'POST', credentials: 'same-origin'})
+      .catch(function(){})
+      .then(function(){ return auth.signOut(); })
+      .then(function(){ location.replace('/login'); });
+  };
   window._authShowErr = function(msg) {
     var el = document.getElementById('auth-err');
     el.textContent = msg;

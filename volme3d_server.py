@@ -13,7 +13,12 @@ import base64
 import tempfile
 import threading
 import http.client
+import urllib.parse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+
+# Serverseitige Anmeldung: Firebase-ID-Token pruefen, eigenes Sitzungs-
+# Cookie ausstellen. Ohne das war das Login-Fenster reine Kosmetik.
+import v3d_auth
 
 # OCCT-Backend (occt-server.js) laeuft lokal auf HTTPS:3001 (self-signed).
 # Wir reichen /api/occt* + /occt-health dorthin durch, damit die Server-CAD-
@@ -57,6 +62,21 @@ def _ki_quota_ok():
         return False
     _ki_day[1] += 1
     return True
+
+
+def _ki_user_quota_ok(uid):
+    """Zweite Bremse neben dem Tageslimit: einer allein soll das freie
+    GPU-Kontingent nicht fuer alle anderen leerlaufen."""
+    today = time.strftime('%Y-%m-%d')
+    with _ki_user_lock:
+        rec = _ki_user_day.get(uid)
+        if not rec or rec[0] != today:
+            rec = [today, 0]
+            _ki_user_day[uid] = rec
+        if rec[1] >= KI_MAX_PER_USER:
+            return False
+        rec[1] += 1
+        return True
 
 
 def _ki_cleanup():
@@ -125,6 +145,14 @@ APP_PATHS = ('/volme3d.html',)
 # nie die dist. Fuer lokale Vorschau der WIP-Aenderungen, ohne Testern
 # (die ueber 8765/Funnel die dist sehen) etwas Halbfertiges zu schicken.
 DEV_MODE = False
+
+# Geschuetzte Pfade: nur der Editor. start.html (Werbeseite), ansehen.html
+# (geteilte Modelle), abstimmung.html und mitsehen.html bleiben bewusst
+# oeffentlich — die brauchen kein Konto.
+GATED_PATHS = {'/volme3d.html'}
+KI_MAX_PER_USER = 10     # KI-Generierungen pro Nutzer und Tag
+_ki_user_day = {}        # uid -> [YYYY-MM-DD, Zaehler]
+_ki_user_lock = threading.Lock()
 
 # Howto-Videos (videos/make.mjs). Eigener Zweig statt ALLOW-Eintraegen, weil
 # pro Generator eine Datei dazukommt.
@@ -229,14 +257,105 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(msg)
 
-    def _json(self, code, obj):
+    def _json(self, code, obj, cookie=None):
         data = json.dumps(obj).encode()
         self.send_response(code)
         self._cors()
+        if cookie is not None:
+            self.send_header('Set-Cookie', cookie)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    # ── Anmeldung ────────────────────────────────────────────────────
+
+    def _cookies(self):
+        out = {}
+        for part in (self.headers.get('Cookie') or '').split(';'):
+            k, _, v = part.strip().partition('=')
+            if k:
+                out[k] = v
+        return out
+
+    def _cookie_header(self, value, max_age):
+        # Secure faellt im Dev-Modus weg, sonst nimmt der Browser das Cookie
+        # ueber http://localhost:8766 nicht an.
+        secure = '' if DEV_MODE else '; Secure'
+        return (v3d_auth.COOKIE_NAME + '=' + value +
+                '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + str(max_age) + secure)
+
+    def _session(self):
+        """Sitzung aus dem Cookie — oder None. Im Dev-Modus immer offen."""
+        if DEV_MODE:
+            return {'u': 'dev', 'e': 'dev@lokal', 'g': 0}
+        return v3d_auth.read_cookie(self._cookies().get(v3d_auth.COOKIE_NAME))
+
+    def _need_session(self, ki=False):
+        """True = weitermachen. Sonst steht die Fehlerantwort schon."""
+        sess = self._session()
+        if not sess:
+            self._json(401, {'error': 'Bitte anmelden.', 'login': '/login'})
+            return False
+        if ki and sess.get('g'):
+            self._json(403, {'error': 'Die KI-Generierung steht nur '
+                                      'angemeldeten Nutzern offen.'})
+            return False
+        return True
+
+    def _auth_session(self):
+        """POST /auth/session — Firebase-ID-Token gegen Sitzungs-Cookie."""
+        length = int(self.headers.get('Content-Length', 0))
+        if length > 16 * 1024:
+            self._json(413, {'error': 'Anfrage zu gross'})
+            return
+        try:
+            body = json.loads(self.rfile.read(length) or b'{}')
+        except ValueError:
+            self._json(400, {'error': 'Ungueltige Anfrage'})
+            return
+        claims = v3d_auth.verify_id_token((body.get('idToken') or '').strip())
+        if not claims:
+            self._json(401, {'error': 'Anmeldung nicht gueltig — bitte neu '
+                                      'anmelden.'})
+            return
+        cookie = v3d_auth.make_cookie(claims['sub'], claims.get('email', ''))
+        self._json(200, {'ok': True, 'email': claims.get('email', '')},
+                   cookie=self._cookie_header(cookie, v3d_auth.SESSION_TTL))
+
+    def _auth_logout(self):
+        self._json(200, {'ok': True}, cookie=self._cookie_header('', 0))
+
+    def _gate_app(self, path):
+        """Editor nur fuer Angemeldete. True = ausliefern.
+
+        Gaeste einer gemeinsamen Sitzung kommen ohne Konto rein — aber nur
+        mit einer Sitzungs-ID, die es in Firestore wirklich gibt und die
+        noch laeuft. Vorher genuegte ein beliebiger Text hinter ?sitzung=.
+        """
+        if self._session():
+            return True
+        query = self.path.split('?', 1)[1] if '?' in self.path else ''
+        sid = (urllib.parse.parse_qs(query).get('sitzung') or [''])[0]
+        if sid and v3d_auth.session_alive(sid):
+            cookie = v3d_auth.make_cookie('gast:' + sid[:32], guest=True)
+            self.send_response(302)
+            self._cors()
+            self.send_header('Set-Cookie',
+                             self._cookie_header(cookie, v3d_auth.GUEST_TTL))
+            self.send_header('Location', self.path)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return False
+        ziel = '/login?weiter=' + urllib.parse.quote(self.path, safe='')
+        if sid:
+            ziel += '&grund=sitzung'
+        self.send_response(302)
+        self._cors()
+        self.send_header('Location', ziel)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+        return False
 
     def _ki_generate(self):
         """POST /ki/generate — {prompt} ODER {image: dataURL} -> {job}."""
@@ -253,6 +372,12 @@ class Handler(BaseHTTPRequestHandler):
         img_data = body.get('image') or ''
         if not prompt and not img_data:
             self._json(400, {'error': 'Prompt oder Bild fehlt'})
+            return
+        uid = (self._session() or {}).get('u', '?')
+        if not _ki_user_quota_ok(uid):
+            self._json(429, {'error': f'Dein Tageslimit von {KI_MAX_PER_USER} '
+                                      'Generierungen ist erreicht — morgen '
+                                      'geht es kostenlos weiter.'})
             return
         if not _ki_quota_ok():
             self._json(429, {'error': 'Tageslimit erreicht — morgen geht es '
@@ -281,14 +406,26 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {'job': jid})
 
     def do_POST(self):
+        if self.path == '/auth/session':
+            self._auth_session()
+            return
+        if self.path == '/auth/logout':
+            self._auth_logout()
+            return
         if self.path.startswith('/api/occt'):
+            if not self._need_session():
+                return
             self._proxy_occt('POST')
             return
         if self.path == '/ki/generate':
+            if not self._need_session(ki=True):
+                return
             self._ki_generate()
             return
         if self.path != '/volme3d-export.stl':
             self.send_error(404)
+            return
+        if not self._need_session():
             return
         length = int(self.headers.get('Content-Length', 0))
         data = self.rfile.read(length)
@@ -381,9 +518,24 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split('?', 1)[0]
 
+        if path in ('/login', '/login.html'):
+            self._send_file('login.html', 'text/html; charset=utf-8')
+            return
+
+        if path == '/auth/me':
+            sess = self._session()
+            self._json(200, {'angemeldet': bool(sess),
+                             'gast': bool(sess and sess.get('g')),
+                             'email': (sess or {}).get('e', '')})
+            return
+
         if path == '/occt-health':
             self._proxy_occt('GET')
             return
+
+        if path.startswith('/ki/status/') or path.startswith('/ki/result/'):
+            if not self._need_session():
+                return
 
         if path.startswith('/ki/status/'):
             job = _ki_jobs.get(path[len('/ki/status/'):])
@@ -429,6 +581,8 @@ class Handler(BaseHTTPRequestHandler):
 
         # App-Auslieferung: dist bevorzugen, sonst Arbeitskopie (Fallback).
         if path in APP_PATHS:
+            if path in GATED_PATHS and not self._gate_app(path):
+                return
             if DEV_MODE:
                 # Dev: rohe Arbeitskopie ausliefern und das Firebase-Login-Gate
                 # ausschalten (USE_FIREBASE=false -> Editor startet ohne Login).
