@@ -1486,22 +1486,56 @@ app.post('/debug-occt', async (req, res) => {
   res.json(result);
 });
 
-const PORT = 3001;
+// Zwei Betriebsarten:
+//   OCCT_WORKER=1  -> Arbeiter hinter occt-pool.js, einfaches HTTP auf 127.0.0.1
+//   sonst          -> wie bisher allein auf HTTPS:3001
+// Eine OCCT-Operation belegt genau einen Kern für Sekunden bis Minuten; eine
+// einzelne WASM-Instanz arbeitet strikt der Reihe nach. Der Pool startet
+// deshalb mehrere dieser Prozesse und verteilt die Arbeit.
+const AS_WORKER = process.env.OCCT_WORKER === '1';
+const PORT = Number(process.env.OCCT_PORT) || 3001;
 const https = require('https');
 const fs2   = require('fs');
-const creds = {
-  cert: fs2.readFileSync('/home/v3da/v3da.tailf05fe9.ts.net.crt'),
-  key:  fs2.readFileSync('/home/v3da/v3da.tailf05fe9.ts.net.key')
-};
+
 // Nur als eigenständiger Prozess den Server starten. Beim `require()` (z. B. aus
 // dem Bench-/Test-Skript) bleibt der Listener aus, damit Port 3001 frei bleibt.
 if (require.main === module) {
-  https.createServer(creds, app).listen(PORT, '0.0.0.0', () => {
-    console.log(`OCCT-Server läuft auf https://v3da.tailf05fe9.ts.net:${PORT}`);
+  const fertig = (was) => {
+    console.log(was);
     getOC()
       .then(() => console.log('OCCT bereit'))
       .catch(e  => console.error('OCCT Init Fehler:', e.message));
-  });
+  };
+  if (AS_WORKER) {
+    // Stirbt der Pool hart (SIGKILL, OOM), wuerden die Arbeiter als Waisen
+    // weiterlaufen — je bis 2,5 GB, unsichtbar und ohne Auftraggeber. Zwei
+    // Reissleinen dagegen:
+    //   1. stdin des Pools bricht ab -> sofort Schluss
+    //   2. der Elternprozess hat gewechselt -> spaetestens nach 10 s Schluss
+    //
+    // Zu 2.: NICHT auf ppid===1 pruefen. Unter systemd erbt nicht init die
+    // Waisen, sondern der User-Manager (systemd --user) als Subreaper — genau
+    // deshalb sind bei den Testlaeufen vier Waisen mit PPID 979 haengen
+    // geblieben. Verglichen wird deshalb mit dem Elternteil vom Start.
+    const ELTERN = process.ppid;
+    process.stdin.resume();
+    process.stdin.on('end',   () => process.exit(0));
+    process.stdin.on('close', () => process.exit(0));
+    process.stdin.on('error', () => process.exit(0));
+    setInterval(() => { if (process.ppid !== ELTERN) process.exit(0); }, 10000).unref();
+
+    // Kein TLS: der Pool spricht den Arbeiter nur über die Loopback-Schnittstelle
+    // an, und der Handshake würde pro Auftrag unnötig Zeit kosten.
+    require('http').createServer(app).listen(PORT, '127.0.0.1',
+      () => fertig(`OCCT-Arbeiter läuft auf http://127.0.0.1:${PORT}`));
+  } else {
+    const creds = {
+      cert: fs2.readFileSync('/home/v3da/v3da.tailf05fe9.ts.net.crt'),
+      key:  fs2.readFileSync('/home/v3da/v3da.tailf05fe9.ts.net.key')
+    };
+    https.createServer(creds, app).listen(PORT, '0.0.0.0',
+      () => fertig(`OCCT-Server läuft auf https://v3da.tailf05fe9.ts.net:${PORT}`));
+  }
 }
 
 module.exports = { getOC, buildSvgSolid, stlToOCCTSolid, solidToSTLBuffer,
