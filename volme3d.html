@@ -1517,8 +1517,10 @@ const firebaseConfig = {
     <button class="skbtn" onclick="_skSweep()" title="Geschlossenes Profil entlang offenem Pfad (Linie/Spline) ziehen → Rohr/Profil folgt der Kurve">↝ Sweep</button>
     <div class="sksep"></div>
     <button class="skbtn" onclick="document.getElementById('sk-dxf-file').click()" title="DXF-Datei (Linien/Kreise/Bögen) als Skizze laden">⬆ DXF laden</button>
+    <button class="skbtn" onclick="document.getElementById('sk-svg-file').click()" title="SVG-Datei als Skizze laden — Konturen beschneiden, teilen, ändern und neu extrudieren">⬆ SVG laden</button>
     <button class="skbtn" onclick="_skExportDXF()" title="Skizze als DXF speichern (für Lasercutter/Plotter)">⬇ DXF speichern</button>
     <input type="file" id="sk-dxf-file" accept=".dxf" style="display:none" onchange="_skDxfFileSelected(event)">
+    <input type="file" id="sk-svg-file" accept=".svg,image/svg+xml" style="display:none" onchange="_skSvgFileSelected(event)">
     <button class="skbtn" onclick="exitSketchMode()" title="Skizze schließen (ESC)">✕ Schließen</button>
   </div>
   <style>
@@ -2401,6 +2403,7 @@ const firebaseConfig = {
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btn" onclick="_closeSvgModal()">Abbrechen</button>
+      <button class="btn" onclick="_svgImportAsSketch()" title="Konturen in den Skizzen-Editor laden — beschneiden, teilen, ändern und dann extrudieren">✎ Als Skizze</button>
       <button class="btn pri" onclick="_importSvgConfirm()">✓ Importieren</button>
     </div>
   </div>
@@ -7645,6 +7648,56 @@ function _skImportDXF(text){
   notify('⬆ DXF geladen: '+ents.length+' Elemente — „Extrudieren" macht daraus einen Körper','ok');
 }
 
+// ── SVG in die Skizze laden ──────────────────────────────────────────────
+// Jede Kontur (Außen + Löcher) wird ein geschlossener Poly-Zug in u,v
+// (1 Unit = 10 mm) — _skBuildShapes ordnet innenliegende Konturen beim
+// Extrudieren wieder als Löcher zu. SVG-Y zeigt nach unten wie Skizzen-v,
+// daher KEINE Spiegelung (DXF spiegelt, weil dort Y nach oben zeigt).
+function _skSvgFileSelected(e){
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=ev=>{ try{ _skImportSVG(ev.target.result); }catch(err){ console.warn('SVG→Skizze:',err); notify('SVG-Import fehlgeschlagen: '+err.message,'e'); } };
+  r.readAsText(f); e.target.value='';
+}
+// Physischer Maßstab aus dem Wurzelelement: width mit Einheit (mm/cm/in/pt)
+// + viewBox → mm pro SVG-Unit. Ohne beides null (Aufrufer passt dann ein).
+function _svgMMPerUnit(svgText){
+  const m=svgText.match(/<svg\b[^>]*>/i); if(!m) return null;
+  const att=n=>{ const r=m[0].match(new RegExp(n+'\\s*=\\s*(["\'])([^"\']*)\\1','i')); return r?r[2].trim():null; };
+  const um=(att('width')||'').match(/^([\d.]+)\s*(mm|cm|in|pt)$/i); if(!um) return null;
+  const wMM=parseFloat(um[1])*({mm:1,cm:10,in:25.4,pt:25.4/72})[um[2].toLowerCase()];
+  const vb=(att('viewBox')||'').trim().split(/[\s,]+/).map(Number);
+  return (vb.length===4 && vb[2]>0 && isFinite(wMM) && wMM>0) ? wMM/vb[2] : null;
+}
+function _skImportSVG(svgText){
+  _svgPreflight(svgText);
+  if(!window.THREE||!THREE.SVGLoader){ notify('SVGLoader nicht geladen','w'); return; }
+  const data=new THREE.SVGLoader().parse(svgText);
+  const allShapes=[];
+  for(const path of (data.paths||[])){
+    const shapes=THREE.SVGLoader.createShapes?THREE.SVGLoader.createShapes(path):path.toShapes(true);
+    for(const s of shapes) allShapes.push(s);
+  }
+  if(!allShapes.length){ notify('Keine Formen im SVG','w'); return; }
+  const loops=[];
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  const take=pts=>{ const lp=pts.map(p=>({u:p.x,v:p.y}));
+    for(const q of lp){ if(q.u<minX)minX=q.u; if(q.u>maxX)maxX=q.u; if(q.v<minY)minY=q.v; if(q.v>maxY)maxY=q.v; }
+    if(lp.length>=3) loops.push(lp); };
+  for(const s of allShapes){ take(s.getPoints(16)); for(const h of (s.holes||[])) take(h.getPoints(16)); }
+  const w=maxX-minX, hgt=maxY-minY;
+  if(!loops.length || !(w>1e-9||hgt>1e-9)){ notify('SVG hat keine Ausdehnung','w'); return; }
+  let mmU=_svgMMPerUnit(svgText);
+  if(!mmU||!isFinite(mmU)||mmU<=0) mmU=100/Math.max(w,hgt);   // keine echten mm im SVG → größte Seite auf 100 mm
+  const s=mmU/10, cx=(minX+maxX)/2, cy=(minY+maxY)/2;         // zentriert auf den Skizzen-Ursprung
+  const ents=loops.map(lp=>({type:'poly', pts:lp.map(p=>({u:(p.u-cx)*s, v:(p.v-cy)*s})), closed:true}));
+  if(!_sk.active) enterSketchMode();
+  for(const e of ents) _sk.ents.push(e);
+  _skRender();
+  notify('⬆ SVG geladen: '+ents.length+' Kontur'+(ents.length>1?'en':'')+', '
+    +Math.round(Math.max(w,hgt)*mmU)+' mm breit — beschneiden/ändern, dann „Extrudieren"','ok');
+}
+
 // ── Beschneiden (Trim) ───────────────────────────────────────────────────
 function _segInt(p1,p2,p3,p4){
   const d=(p1.u-p2.u)*(p3.v-p4.v)-(p1.v-p2.v)*(p3.u-p4.u);
@@ -12003,6 +12056,88 @@ function _importSvgConfirm(override) {
   notify('SVG "' + fname + '" importiert', 'ok');
   _closeSvgModal();
   return mesh;
+}
+
+// SVG-Modal → Skizzen-Editor: statt festem Mesh die Konturen zum Bearbeiten laden
+function _svgImportAsSketch(){
+  if(!_svgParsedData) return;
+  const txt=_svgParsedData.svgText;
+  try{ _svgPreflight(txt); }catch(err){ notify(err.message,'w'); return; }
+  _closeSvgModal();
+  try{ _skImportSVG(txt); }catch(err){ console.warn('SVG→Skizze:',err); notify('SVG→Skizze fehlgeschlagen: '+err.message,'e'); }
+}
+
+// SVG-Objekt in Einzelteile zerlegen: jede geschlossene Form (mit ihren Löchern)
+// wird ein eigenes Szene-Objekt. Baut pro Form über _svgRebuildGeo neu — dieselbe
+// Transform-Kette wie beim Laden, nur mit dem Form-eigenen Zentrum (cx/cy), damit
+// jedes Teil seinen Drehpunkt in der eigenen Mitte hat. Der Versatz zum alten
+// Gesamt-Zentrum wandert in die Objekt-Position (lokal → Welt über Scale+Rotation).
+function _svgExplode(){
+  const o=getFirst(); if(!o||o.userData.type!=='svg') return;
+  const ud=o.userData, pd=ud._svgPathData||[], tm=ud._svgTransformM;
+  if(!tm||!tm.scale||pd.length<2){ notify('Dieses SVG besteht nur aus einer Form — nichts zu zerlegen','w'); return; }
+  saveUndo();
+  const normF=2/(ud.svgSize||50);
+  const created=[]; let n=0;
+  for(const p of pd){
+    let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+    const scan=pts=>{ for(const q of pts){ if(q[0]<minX)minX=q[0]; if(q[0]>maxX)maxX=q[0]; if(q[1]<minY)minY=q[1]; if(q[1]>maxY)maxY=q[1]; } };
+    scan(p.pts||[]); for(const h of (p.holes||[])) scan(h);
+    if(!isFinite(minX)) continue;
+    n++;
+    const scx=(minX+maxX)/2, scy=(minY+maxY)/2;
+    const tm2={...tm, cx:scx, cy:scy};
+    const geo=_svgRebuildGeo({ type:'svg', _svgPathData:[p], _svgTransformM:tm2,
+      svgSize:ud.svgSize, svgDepth:ud.svgDepth, svgMode:ud.svgMode, isHole:ud.isHole });
+    const mesh=new THREE.Mesh(geo, o.material.clone());
+    mesh.castShadow=mesh.receiveShadow=true;
+    mesh.position.copy(o.position); mesh.quaternion.copy(o.quaternion); mesh.scale.copy(o.scale);
+    const d=new THREE.Vector3((scx-tm.cx)*tm.scale*normF, 0, (scy-tm.cy)*tm.scale*normF);
+    d.multiply(o.scale); d.applyQuaternion(o.quaternion); mesh.position.add(d);
+    typeCounts['svg']=(typeCounts['svg']||0)+1;
+    mesh.userData={ id:idCtr++, type:'svg', shapeType:'svg',
+      name:(ud.name||'SVG')+' · Teil '+n, color:ud.color, isHole:!!ud.isHole,
+      fillet:0, chamfer:0, svgMode:ud.svgMode, svgDepth:ud.svgDepth, svgSize:ud.svgSize,
+      _svgPathData:[p], _svgTransformM:tm2,
+      displacementPattern:'keine', displacementAmp:0.5, displacementFreq:4,
+      displacementInvert:false, displacementSymmetric:false };
+    scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh); created.push(mesh);
+  }
+  if(!created.length){ notify('Zerlegen fehlgeschlagen — keine gültigen Konturen','w'); return; }
+  scene.remove(o); const i=objects.indexOf(o); if(i>=0) objects.splice(i,1);
+  selectObjs(created); updateTree();
+  notify('⧉ SVG in '+created.length+' Teile zerlegt','ok');
+}
+
+// SVG-Objekt nachträglich als Skizze bearbeiten: Konturen (inkl. aktueller
+// Größenänderung über mesh.scale) in den Skizzen-Editor übernehmen, Original
+// entfernen (Undo bringt es zurück). Dort beschneiden/teilen, dann extrudieren.
+function _svgEditAsSketch(){
+  const o=getFirst(); if(!o||o.userData.type!=='svg'||!o.userData._svgPathData){ notify('Kein SVG-Objekt gewählt','w'); return; }
+  const ud=o.userData, tm=ud._svgTransformM||{};
+  if(!tm.scale){ notify('SVG-Pfaddaten fehlen — dieses Objekt lässt sich nicht in eine Skizze wandeln','w'); return; }
+  const loops=[];
+  for(const p of ud._svgPathData){
+    if((p.pts||[]).length>=3) loops.push(p.pts);
+    for(const h of (p.holes||[])) if(h.length>=3) loops.push(h);
+  }
+  if(!loops.length){ notify('Keine Konturen im SVG-Objekt','w'); return; }
+  saveUndo();
+  const sc0=(ud.svgSize||50)/20;                       // Mesh-Scale beim Import
+  const fac=sc0>0?(o.scale.x/sc0):1;                   // nachträgliche Größenänderung mitnehmen
+  const s=tm.scale*fac/10;                             // SVG-Rohkoordinaten → Szenen-Units (1 Unit = 10 mm)
+  const ents=loops.map(lp=>({type:'poly', pts:lp.map(q=>({u:(q[0]-tm.cx)*s, v:(q[1]-tm.cy)*s})), closed:true}));
+  const hEl=document.getElementById('sketch-h');       // Extrusionshöhe aus der SVG-Tiefe vorbelegen
+  if(hEl&&ud.svgMode==='extrude'){
+    const facY=sc0>0?(o.scale.y/sc0):1;
+    hEl.value=Math.max(0.2, Math.round((ud.svgDepth||3)*facY*10)/10);
+  }
+  scene.remove(o); const i=objects.indexOf(o); if(i>=0) objects.splice(i,1);
+  deselect(); updateTree();
+  if(!_sk.active) enterSketchMode();
+  for(const e of ents) _sk.ents.push(e);
+  _skRender();
+  notify('✎ SVG in Skizze übernommen — Konturen bearbeiten, dann „Extrudieren" (Undo holt das Original zurück)','ok');
 }
 
 // ═══ SELECTION ═══════════════════════════════════════════════════════
@@ -38788,6 +38923,18 @@ function _fpBuildRows(type, o) {
                (o.userData._l3Rings.length >= 3 ?
                  `<div class="fp-row"><span class="fp-lbl">Glatt</span><label style="display:flex;align-items:center;cursor:pointer"><input type="checkbox" ${o.userData._l3Smooth?'checked':''} onchange="_l3ApplySmooth(this.checked)" style="accent-color:#F97316"></label></div>` : '') : '') +
              _dispRows();
+    case 'svg': {
+      const nShapes=(o.userData._svgPathData||[]).length;
+      const svgBtns=
+        (nShapes>1 ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_svgExplode()" title="Jede geschlossene Form wird ein eigenes Objekt — einzeln verschieben, färben, löschen">⧉ Zerlegen (${nShapes} Teile)</button></div>` : '') +
+        (o.userData._svgPathData ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_svgEditAsSketch()" title="Konturen in den Skizzen-Editor übernehmen — beschneiden, teilen, ändern und neu extrudieren">✎ Als Skizze bearbeiten</button></div>` : '');
+      return row('Breite X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
+             propLock() +
+             row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
+             row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+             '<div class="fp-sep"></div>' + svgBtns + edgeBtn + shellBtn + hollowLidBtn + roundBtn + moldBtn +
+             _dispRows();
+    }
     default:
       return row('Breite X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
              propLock() +
@@ -42328,6 +42475,7 @@ const CMDK = [
   {i:'🔻',g:'Bearbeiten',t:'Vereinfachen (Dreiecke)',k:'simplify decimate reduzieren',run:()=>openSimplifyModal()},
   {i:'⬇',g:'Export',t:'Skizze als DXF',k:'dxf laser export skizze',run:()=>{ if(_sk.active) _skExportDXF(); else notify('Erst Skizzen-Modus öffnen','w'); }},
   {i:'⬆',g:'Datei',t:'DXF in Skizze laden',k:'dxf laser import skizze',run:()=>{ if(!_sk.active) enterSketchMode(); document.getElementById('sk-dxf-file').click(); }},
+  {i:'⬆',g:'Datei',t:'SVG in Skizze laden',k:'svg import skizze kontur beschneiden teilen',run:()=>{ if(!_sk.active) enterSketchMode(); document.getElementById('sk-svg-file').click(); }},
   {i:'⬇',g:'Export',t:'STL exportieren',k:'export stl',run:()=>exportSTL()},
   {i:'⬇',g:'Export',t:'STL pro Körper',k:'parts stl',run:()=>exportPartsSTL()},
   {i:'⬇',g:'Export',t:'OBJ exportieren',k:'export obj',run:()=>exportOBJ()},
