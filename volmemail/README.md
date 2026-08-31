@@ -69,11 +69,32 @@ PNG-Symbol ab 192 px — ein SVG allein genügt nicht. Die Symbole liegen als
 `smoke_windows.py` prüft Manifest, Symbole und die mailto-Auswertung in beiden
 Schreibweisen (kodiert wie von Windows übergeben und im Klartext).
 
+Wer lieber eine echte EXE verteilt: in `windows/` liegt ein kleiner Starter
+(`V3DMail.exe`, Bau mit `windows/bauen.sh` im Wine-Prefix wie VolmeInventar).
+Er öffnet die Seite über Edge/Chrome `--app=...` als eigenes App-Fenster —
+kein eigener Browser-Motor, keine Runtime nötig, Sitzung/Cookies teilen sich
+mit dem normalen Browser. Mit einem `mailto:...`-Argument startet er direkt
+den Verfassen-Dialog (für die Verknüpfung als Standard-Mailprogramm).
+
 ## Auf dem Handy
 
-Es gibt **keine eigene Android-App** — dieselbe Web-App, über den Funnel-Pfad
-aufgerufen und bei Bedarf über „Zum Startbildschirm hinzufügen" als PWA
-installiert. Alle Funktionen gelten dort genauso.
+Grundweg: dieselbe Web-App, über den Funnel-Pfad aufgerufen und bei Bedarf
+über „Zum Startbildschirm hinzufügen" als PWA installiert. Alle Funktionen
+gelten dort genauso.
+
+Zusätzlich gibt es in `android/` eine **echte Android-App** (WebView-Hülle,
+`com.volme3d.mail`): Anhänge hochladen über die System-Dateiauswahl, Anhänge
+speichern über eine `blob:`-Brücke in den Download-Ordner (WebView kann
+`blob:`-Downloads sonst nicht), Zurück-Taste navigiert im Verlauf, und die App
+meldet sich für `mailto:`-Links an (öffnet `?compose=…`). Bau wie bei der
+Kartenbox:
+
+    cd android && JAVA_HOME=~/android-toolchain/jdk17 \
+      ~/android-toolchain/gradle/bin/gradle --no-daemon assembleRelease
+
+`keystore.jks`/`signing.properties` liegen lokal in `android/` (nicht im Git,
+**nicht löschen** — sonst lassen sich keine Updates über die installierte App
+spielen). Getestet im Toolchain-Emulator (test34): Anmeldung + Posteingang.
 
 Aus einer geöffneten Mail kommt man auf zwei Wegen zurück: über den orangen
 Knopf **‹ Zurück zur Liste** ganz oben und über die **System-Zurück-Geste**.
