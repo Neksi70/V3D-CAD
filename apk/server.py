@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Kleiner APK-Verteiler für den Funnel-Pfad :10000/apk (Port 8779).
+"""Kleiner App-Verteiler für den Funnel-Pfad :10000/apk (Port 8779).
 
-Serviert nur .apk-Dateien aus diesem Ordner plus eine Übersichtsseite.
+Serviert .apk- und .exe-Dateien aus diesem Ordner plus eine Übersichtsseite.
 Der Funnel schneidet das /apk-Präfix ab, hier kommt also / an.
 """
 import html
@@ -11,6 +11,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8779
+TYPEN = {
+    '.apk': 'application/vnd.android.package-archive',
+    '.exe': 'application/octet-stream',
+}
+
+
+def dateityp(name):
+    return TYPEN.get(os.path.splitext(name)[1].lower())
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -20,13 +28,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.uebersicht()
         name = os.path.basename(pfad)  # keine Unterordner, kein ..
         voll = os.path.join(ROOT, name)
-        if not name.endswith('.apk') or not os.path.isfile(voll):
+        if not dateityp(name) or not os.path.isfile(voll):
             self.send_error(404)
             return
         with open(voll, 'rb') as f:
             daten = f.read()
         self.send_response(200)
-        self.send_header('Content-Type', 'application/vnd.android.package-archive')
+        self.send_header('Content-Type', dateityp(name))
         self.send_header('Content-Disposition', f'attachment; filename="{name}"')
         self.send_header('Content-Length', str(len(daten)))
         self.end_headers()
@@ -35,7 +43,7 @@ class Handler(BaseHTTPRequestHandler):
     def uebersicht(self):
         zeilen = []
         for name in sorted(os.listdir(ROOT)):
-            if not name.endswith('.apk'):
+            if not dateityp(name):
                 continue
             mb = os.path.getsize(os.path.join(ROOT, name)) / 1e6
             n = html.escape(name)
@@ -47,8 +55,10 @@ class Handler(BaseHTTPRequestHandler):
                  'max-width:32em;margin:3em auto;padding:0 1em">'
                  '<h1>Volme 3D — Apps</h1><ul style="line-height:2">'
                  + '\n'.join(zeilen) +
-                 '</ul><p><small>Installation: Datei antippen, „Unbekannte Apps '
-                 'installieren" für den Browser erlauben.</small></p>').encode()
+                 '</ul><p><small>Android (.apk): Datei antippen, „Unbekannte Apps '
+                 'installieren" für den Browser erlauben. Windows (.exe): laden, '
+                 'im SmartScreen-Hinweis „Weitere Informationen → Trotzdem '
+                 'ausführen" wählen (unsigniert).</small></p>').encode()
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('Content-Length', str(len(seite)))
