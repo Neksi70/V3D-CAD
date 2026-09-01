@@ -22048,6 +22048,8 @@ let rh_r       = 80;      // approx screen ring radius
 let rh_a0      = 0;       // screen angle at drag start (rad)
 let rh_3dR     = 1;       // 3D ring radius (Three.js units)
 let rh_c3      = null;    // THREE.Vector3 centre of rings
+let rh_piv     = null;    // THREE.Vector3 Objektmitte beim Drag-Start (Dreh-Pivot)
+let rh_pos0    = null;    // THREE.Vector3 o.position beim Drag-Start
 
 const RH_SNAP = 22.5 * Math.PI / 180;   // 22.5 ° snapping
 
@@ -22150,6 +22152,8 @@ function _rhStartDrag(axis, event) {
   camera.updateMatrixWorld(true); o.updateMatrixWorld(true);
   const box = getMeshBox(o);
   rh_c3    = box.getCenter(new THREE.Vector3());
+  rh_piv   = rh_c3.clone();
+  rh_pos0  = o.position.clone();
   const bsz = box.getSize(new THREE.Vector3());
   rh_3dR   = Math.max(bsz.x, bsz.y, bsz.z) / 2 * 1.48;
   const sc = _rhPrj(rh_c3.x, rh_c3.y, rh_c3.z);
@@ -22177,14 +22181,24 @@ function _rhMove(event) {
   const dist = Math.hypot(mx - rh_center.x, my - rh_center.y);
   const snap = dist < rh_r * 1.15;
   if (snap) delta = Math.round(delta / RH_SNAP) * RH_SNAP;
-  // Apply
+  // Apply — delta ist absolut zur Startlage, darum Position jedes Mal frisch
   const o = rh_obj;
+  o.position.copy(rh_pos0);
   if      (rh_axis === 'y') o.rotation.y = rh_rot0.y + delta;
   else if (rh_axis === 'x') o.rotation.x = rh_rot0.x + delta;
   else                      o.rotation.z = rh_rot0.z + delta;
-  // Objekt auf Buildplate halten: Unterseite immer bei y=0
+  // Um die Objektmitte drehen: rotation.* dreht um den Geometrie-Ursprung,
+  // der bei Importen weit neben der Mitte liegen kann → Mitte zurückschieben
   o.updateMatrixWorld(true);
-  const _rotBB = getMeshBox(o);
+  let _rotBB = getMeshBox(o);
+  if (!_rotBB.isEmpty()) {
+    const _rc = _rotBB.getCenter(new THREE.Vector3());
+    o.position.x += rh_piv.x - _rc.x;
+    o.position.z += rh_piv.z - _rc.z;
+    o.updateMatrixWorld(true);
+    _rotBB = getMeshBox(o);
+  }
+  // Objekt auf Buildplate halten: Unterseite immer bei y=0
   if (!_rotBB.isEmpty() && _rotBB.min.y !== 0) {
     o.position.y -= _rotBB.min.y;
   }
