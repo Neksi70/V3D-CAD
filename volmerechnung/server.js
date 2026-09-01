@@ -179,6 +179,35 @@ function giroSvg(doc) {
   return (py.status === 0 && py.stdout) ? py.stdout : null;
 }
 
+// --- Beleg als PDF (Headless-Chrome druckt die Beleg-Seite) ------------------
+// Für den Mail-Versand: dieselbe HTML wie /beleg/<token>, aber als echte Datei.
+function belegPdf(doc) {
+  const chrome = ['/usr/bin/google-chrome', '/usr/bin/chromium-browser']
+    .find((p) => fs.existsSync(p));
+  if (!chrome) throw new Error('Kein Chrome/Chromium auf dem Server gefunden');
+  const os = require('os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vrpdf-'));
+  try {
+    const htmlFile = path.join(dir, 'beleg.html');
+    const pdfFile = path.join(dir, 'beleg.pdf');
+    fs.writeFileSync(htmlFile, belegHtml(doc));
+    // Eigenes user-data-dir: sonst verweigert Chrome den Start, wenn irgendwo
+    // schon eine Instanz mit dem Standard-Profil läuft.
+    const r = require('child_process').spawnSync(chrome, [
+      '--headless=new', '--disable-gpu', '--no-pdf-header-footer',
+      '--user-data-dir=' + path.join(dir, 'profil'),
+      '--print-to-pdf=' + pdfFile, 'file://' + htmlFile,
+    ], { timeout: 30000 });
+    if (!fs.existsSync(pdfFile)) {
+      throw new Error('Chrome lieferte keine PDF' +
+        (r.stderr ? ' (' + String(r.stderr).slice(-200).trim() + ')' : ''));
+    }
+    return fs.readFileSync(pdfFile);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // --- Öffentliche Beleg-Seite (/beleg/<token>) --------------------------------
 // Kunde öffnet den Link -> Zugriff wird protokolliert = Lesebestätigung.
 const hesc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -577,6 +606,20 @@ Positionen:\n${liste.slice(0, 2000)}`;
     const doc = docs.data.find((d) => d.id === docId);
     if (!doc) return send(res, 404, { error: 'nicht gefunden' });
 
+    if (m === 'GET' && action === 'pdf') {
+      if (!doc.festgeschrieben) return send(res, 400, { error: 'Erst festschreiben — dann gibt es den Beleg als PDF' });
+      try {
+        const pdf = belegPdf(doc);
+        res.writeHead(200, {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `inline; filename="${String(doc.nummer || doc.id).replace(/[^\w.-]/g, '_')}.pdf"`,
+          'Cache-Control': 'no-store',
+        });
+        return res.end(pdf);
+      } catch (e) {
+        return send(res, 500, { error: 'PDF-Erzeugung fehlgeschlagen: ' + e.message });
+      }
+    }
     if (m === 'GET' && action === 'xrechnung') {
       if (doc.art !== 'rechnung' || !doc.festgeschrieben) return send(res, 400, { error: 'Nur festgeschriebene Rechnungen können als XRechnung exportiert werden' });
       res.writeHead(200, {

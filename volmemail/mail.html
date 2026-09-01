@@ -360,7 +360,7 @@ async function boot() {
   S.acc = S.accounts.find(a => a.id === last) || S.accounts[0];
   renderAccounts();
   await loadFolders();
-  starteAusAdresse();
+  if (!uebergabeAbholen()) starteAusAdresse();
   sendenEmpfangen(true);
   // Im Hintergrund alle drei Minuten nachsehen — ohne Meldung, außer es kommt
   // wirklich etwas Neues an.
@@ -1000,6 +1000,25 @@ function ausMailto(wert) {
     else if (name === 'to') pre.to = pre.to ? pre.to + ', ' + v : v;
   }
   return pre;
+}
+
+// Übergabe von VolmeRechnung: fertiger Entwurf samt PDF-Anhang liegt in
+// localStorage (gleiche Origin — /rechnung und /mail teilen sich Port 443).
+// mailto taugt dafür nicht, weil es keine Anhänge transportieren kann.
+function uebergabeAbholen() {
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem('v3dmail.uebergabe') || 'null'); } catch (e) { /* kaputt = weg */ }
+  if (d !== null) localStorage.removeItem('v3dmail.uebergabe');
+  // Liegengebliebene alte Übergaben nicht Tage später plötzlich aufpoppen lassen.
+  if (!d || !d.t || Date.now() - d.t > 10 * 60000) return false;
+  compose({ title: 'Neue Nachricht', to: d.to || '', subject: d.subject || '', text: d.text || '' });
+  for (const a of d.attachments || []) {
+    if (!a.data) continue;
+    S.atts.push({ name: a.name || 'anhang.pdf', type: a.type || 'application/octet-stream',
+                  data: a.data, size: a.size || Math.floor(a.data.length * 3 / 4) });
+  }
+  addAttachments([]); // nur Liste zeichnen — es kommen keine neuen Dateien dazu
+  return true;
 }
 
 function starteAusAdresse() {

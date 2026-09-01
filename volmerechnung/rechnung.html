@@ -552,7 +552,8 @@ function shareCardHtml(d){
     <p style="color:var(--mid);font-size:13.5px;margin-bottom:10px">Verschicke den persönlichen Beleg-Link — sobald der Kunde ihn öffnet, siehst du es hier. Funktioniert per E-Mail und WhatsApp.</p>
     ${!url?`<button class="btn" onclick="shareDoc()">🔗 Versand-Link erzeugen</button>`
     :`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <button class="btn" onclick="mailShare()">📧 Per E-Mail</button>
+        <button class="btn" id="v3dmBtn" onclick="v3dMailShare()">📨 Mit V3D Mail senden</button>
+        <button class="btn sec" onclick="mailShare()">📧 Anderes Mail-Programm</button>
         <button class="btn" style="background:#25D366" onclick="waShare()">💬 Per WhatsApp</button>
         <button class="btn sec" onclick="copyShare()">📋 Link kopieren</button>
         <a class="btn sec" style="text-decoration:none" href="${url}?v=1" target="_blank">👁 Vorschau</a>
@@ -576,6 +577,41 @@ function nachrichtText(d){
         `anbei erhalten Sie unser Angebot ${d.nummer} über ${eur(t.brutto)}:`)+
     `\n\n${shareUrl(d)}\n\n`+(re?`Der Link enthält alle Zahlungsinformationen inkl. QR-Code zum Scannen.\n\n`:'')+
     `Mit freundlichen Grüßen\n${s.firma.inhaber||s.firma.name}\n${s.firma.name}${s.firma.telefon?' · '+s.firma.telefon:''}`;
+}
+// V3D Mail öffnen — Entwurf samt PDF-Anhang liegt in localStorage (gleiche
+// Origin über den Funnel: /rechnung und /mail hängen beide an Port 443).
+async function v3dMailShare(){
+  const d=editDoc,re=d.art==='rechnung';
+  if(ROOTP!=='/rechnung'){
+    toast('Nur über https://v3da.tailf05fe9.ts.net/rechnung möglich (gleiche Adresse wie V3D Mail)',true);
+    return;
+  }
+  const btn=$('#v3dmBtn');if(btn)btn.disabled=true;
+  try{
+    toast('PDF wird erstellt …');
+    const r=await fetch(ROOTP+'/api/docs/'+d.id+'/pdf',{headers:{'X-Key':KEY}});
+    if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||'PDF fehlgeschlagen (HTTP '+r.status+')');
+    const buf=new Uint8Array(await r.arrayBuffer());
+    let bin='';for(let i=0;i<buf.length;i+=32768)bin+=String.fromCharCode.apply(null,buf.subarray(i,i+32768));
+    const name=`${re?'Rechnung':'Angebot'}_${String(d.nummer||d.id).replace(/[^\w-]/g,'_')}.pdf`;
+    const s=S.settings,t=calcTotals(d);
+    const text=`Guten Tag${d.kunde&&d.kunde.name?' '+d.kunde.name:''},\n\n`+
+      (re?`anbei erhalten Sie Ihre Rechnung ${d.nummer} über ${eur(t.brutto)} als PDF.`:
+          `anbei erhalten Sie unser Angebot ${d.nummer} über ${eur(t.brutto)} als PDF.`)+
+      `\n\nSie können den Beleg auch online abrufen:\n${shareUrl(d)}\n\n`+
+      (re?`Der Link enthält alle Zahlungsinformationen inkl. QR-Code zum Scannen.\n\n`:'')+
+      // Kurzer Gruß reicht: V3D Mail hängt beim Senden die Konto-Signatur an.
+      `Mit freundlichen Grüßen\n${s.firma.inhaber||s.firma.name}`;
+    localStorage.setItem('v3dmail.uebergabe',JSON.stringify({
+      t:Date.now(),
+      to:d.kunde&&d.kunde.email||'',
+      subject:`${re?'Rechnung':'Angebot'} ${d.nummer} — ${s.firma.name}`,
+      text,
+      attachments:[{name,type:'application/pdf',data:btoa(bin),size:buf.length}],
+    }));
+    window.open('/mail/','_blank');
+  }catch(e){toast(e.message,true);}
+  finally{if(btn)btn.disabled=false;}
 }
 function mailShare(){
   const d=editDoc,re=d.art==='rechnung';
