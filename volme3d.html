@@ -1158,7 +1158,7 @@ const firebaseConfig = {
   <!-- Zeile 0: Schwarze Kopfleiste im V3D-Slicer-Look (Branding + Konto) -->
   <div id="tb-r0">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>V3D<span style="color:#F97316"> CAD</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.49<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.50<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="r0-spacer"></div>
     <div id="beta-fb" onclick="_betaOpen()" title="Beta-Feedback: Fehler oder Idee melden">💬 Feedback</div>
@@ -4317,6 +4317,13 @@ Patrick</textarea>
         </select>
       </div>
       <div class="ss-row">
+        <div><div class="ss-lbl">Verschiebe-Pfeile</div><div class="ss-sub">X/Y/Z-Gizmo am ausgewählten Objekt</div></div>
+        <select class="ss-sel" id="mgz-sel" onchange="setMoveGizmo(this.value==='1')">
+          <option value="1">An</option>
+          <option value="0">Aus</option>
+        </select>
+      </div>
+      <div class="ss-row">
         <div class="ss-lbl">Fangraster</div>
         <select class="ss-sel" id="sg-sel" onchange="setSnapGrid(this.value)">
           <option value="0">Aus</option>
@@ -5205,6 +5212,8 @@ function applySceneSettings() {
   const magSel = document.getElementById('mag-sel');
   // direkt aus localStorage (setMagnet/_magnetOn sind hier noch in der TDZ)
   if (magSel) magSel.value = (localStorage.getItem('volme3d_magnet') ?? '1') !== '0' ? '1' : '0';
+  const mgzSel = document.getElementById('mgz-sel');
+  if (mgzSel) mgzSel.value = (localStorage.getItem('volme3d_moveGizmo') ?? '1') !== '0' ? '1' : '0';
   _syncSnapBtn();
   // Gespeicherten Drucker wiederherstellen
   const saved = localStorage.getItem('printerPreset');
@@ -22389,6 +22398,233 @@ window._smCfg = _smCfg;
 window.toggleSpaceMouseDebug = () => { _smDebug = !_smDebug; if (!_smDebug) document.getElementById('sm-debug')?.remove(); notify('SpaceMouse-Debug ' + (_smDebug ? 'an' : 'aus'), 'ok'); };
 
 let _measureMode=false, _measureA=null, _measureB=null, _measureCircle=null, _measureGroup=null, _measureLabel=null;  // Bemaßung (vor animate)
+// ═══ VERSCHIEBE-GIZMO: X/Y/Z-Pfeile am ausgewählten Objekt ═══════════════
+// Am Objekt selbst zu ziehen bleibt wie gehabt (frei über die Bodenebene, mit
+// Andock-Magnet). Wer stattdessen einen PFEIL packt, verschiebt exakt entlang
+// dieser einen Achse — inklusive Höhe (Y), die per Maus bisher überhaupt nicht
+// erreichbar war (nur über die Zahlenfelder).
+const _mg = { group: null, arrows: {}, drag: null, hover: null, curSet: false };
+const MG_COLOR = { x: 0xe5484d, y: 0x30a46c, z: 0x3b82f6 };
+const MG_HILITE = 0xffc53d;
+const MG_PX = 108;            // Ziel-Pfeillänge in Bildschirm-Pixeln
+let _mgOn = (localStorage.getItem('volme3d_moveGizmo') ?? '1') !== '0';
+
+function setMoveGizmo(on) {
+  _mgOn = !!on;
+  localStorage.setItem('volme3d_moveGizmo', _mgOn ? '1' : '0');
+  const sel = document.getElementById('mgz-sel');
+  if (sel) sel.value = _mgOn ? '1' : '0';
+  if (!_mgOn && _mg.group) _mg.group.visible = false;
+}
+
+function _mgAxisVec(a) {
+  return a === 'x' ? new THREE.Vector3(1, 0, 0)
+       : a === 'y' ? new THREE.Vector3(0, 1, 0)
+                   : new THREE.Vector3(0, 0, 1);
+}
+
+// Einmal bauen (Einheitsgröße), danach nur noch positionieren und skalieren.
+function _mgBuild() {
+  if (_mg.group) return _mg.group;
+  const g = new THREE.Group();
+  g.visible = false;
+  ['x', 'y', 'z'].forEach(axis => {
+    const grp = new THREE.Group();
+    const mat = new THREE.MeshBasicMaterial({ color: MG_COLOR[axis], depthTest: false,
+                                              transparent: true, opacity: 0.95 });
+    // Die Pfeile beginnen bewusst mit ABSTAND zur Mitte: dort muss ein Klick
+    // weiterhin das Objekt selbst treffen (freies Ziehen über die Bodenebene
+    // samt Andock-Magnet) — sonst schluckt der Gizmo die Objektmitte.
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.030, 0.030, 0.54, 12), mat);
+    shaft.position.y = 0.45;                       // 0,18 … 0,72
+    const head = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.24, 18), mat);
+    head.position.y = 0.84;                        // 0,72 … 0,96
+    // unsichtbarer dicker Zylinder als Greiffläche — der Pfeil selbst darf dünn bleiben
+    const hit = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.82, 8),
+      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, colorWrite: false }));
+    hit.position.y = 0.57;                         // 0,16 … 0,98
+    // Dunkle Kontur dahinter: sonst verschwindet der blaue Z-Pfeil auf einem
+    // blauen Körper und der grüne auf der Wiese-Ansicht.
+    const outMat = new THREE.MeshBasicMaterial({ color: 0x14181f, depthTest: false,
+                                                 transparent: true, opacity: 0.8 });
+    const shaftOut = new THREE.Mesh(new THREE.CylinderGeometry(0.044, 0.044, 0.58, 12), outMat);
+    shaftOut.position.y = 0.45;
+    const headOut = new THREE.Mesh(new THREE.ConeGeometry(0.094, 0.28, 18), outMat);
+    headOut.position.y = 0.838;
+    [shaftOut, headOut].forEach(m => { m.renderOrder = 1198; grp.add(m); });
+    [shaft, head, hit].forEach(m => { m.renderOrder = 1200; m.userData._mgAxis = axis; grp.add(m); });
+    if (axis === 'x') grp.rotation.z = -Math.PI / 2;   // lokales +Y → Welt +X
+    if (axis === 'z') grp.rotation.x =  Math.PI / 2;   // lokales +Y → Welt +Z
+    grp.userData._mat = mat;
+    _mg.arrows[axis] = grp;
+    g.add(grp);
+  });
+  scene.add(g);
+  _mg.group = g;
+  return g;
+}
+
+// Werkzeuge, die den Viewport für sich beanspruchen. _cut/_eraser/_sculpt/_paint/
+// _mmu werden erst WEIT unten deklariert — beim allerersten (synchronen) animate()
+// stehen sie noch in der temporalen Todeszone, deshalb der Schutz.
+function _mgBusy() {
+  if (_sk.active || _pp.active || _lf.active) return true;
+  if (workplaneMode || _edgeMode || _shellMode || _revolveMode || _plugMode) return true;
+  if (_measureMode || specialMode === 'align') return true;
+  try {
+    if (_cut.active || _eraser.active || _sculpt.active || _paint.active || _mmu.active) return true;
+  } catch (_) { /* Werkzeuge im ersten Frame noch nicht initialisiert */ }
+  return false;
+}
+
+// Bildschirm-konstante Größe: der Gizmo ist bei einem 5-mm-Würfel genauso groß
+// wie bei einem 300-mm-Gehäuse.
+function _mgScreenScale(p) {
+  const H = vpEl.clientHeight || 800;
+  if (_camIsPerspective) {
+    const d = camera.position.distanceTo(p);
+    return 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * d * (MG_PX / H);
+  }
+  return (camera.top - camera.bottom) / (camera.zoom || 1) * (MG_PX / H);
+}
+
+function _mgUpdate() {
+  const g = _mgBuild();
+  const show = _mgOn && selectedObjs.length > 0
+            && (editMode === 'select' || editMode === 'move')
+            && !isRubber && !_mgBusy();
+  if (!show) {
+    if (g.visible) { g.visible = false; _mgSetHover(null); }
+    return;
+  }
+  const box = new THREE.Box3();
+  selectedObjs.forEach(o => { o.updateMatrixWorld(true); box.union(getMeshBox(o)); });
+  if (box.isEmpty()) { g.visible = false; return; }
+  box.getCenter(g.position);
+  g.scale.setScalar(_mgScreenScale(g.position));
+  g.visible = true;
+}
+
+function _mgPick(e) {
+  if (!_mg.group || !_mg.group.visible) return null;
+  getNorm(e); raycaster.setFromCamera(mousev, camera);
+  const ms = [];
+  _mg.group.traverse(o => { if (o.isMesh && o.userData._mgAxis) ms.push(o); });
+  const h = raycaster.intersectObjects(ms, false);
+  return h.length ? h[0].object.userData._mgAxis : null;
+}
+
+function _mgSetHover(axis) {
+  if (_mg.hover === axis) return;
+  _mg.hover = axis;
+  const dragAxis = _mg.drag ? _mg.drag.axis : null;
+  ['x', 'y', 'z'].forEach(a => {
+    const m = _mg.arrows[a] && _mg.arrows[a].userData._mat;
+    if (!m) return;
+    const active = (a === axis) || (a === dragAxis);
+    m.color.setHex(active ? MG_HILITE : MG_COLOR[a]);
+    m.opacity = (dragAxis && a !== dragAxis) ? 0.22 : 0.95;
+  });
+  // Cursor nur anfassen, wenn wir ihn selbst gesetzt haben — andere Werkzeuge
+  // setzen eigene Cursor und sollen davon nichts merken.
+  if (axis) { canvas.style.cursor = 'move'; _mg.curSet = true; }
+  else if (_mg.curSet) { canvas.style.cursor = ''; _mg.curSet = false; }
+}
+
+// Parameter t des Punktes auf der Achsen-Geraden (origin + t·dir), der dem
+// Maus-Strahl am nächsten liegt. null, wenn die Achse fast zur Kamera zeigt —
+// dann ist die Zuordnung Maus→Achse mehrdeutig.
+function _mgRayT(e, origin, dir) {
+  getNorm(e); raycaster.setFromCamera(mousev, camera);
+  const ro = raycaster.ray.origin, rd = raycaster.ray.direction;
+  const w0 = new THREE.Vector3().subVectors(origin, ro);
+  const a = dir.dot(dir), b = dir.dot(rd), c = rd.dot(rd);
+  const d = dir.dot(w0), f = rd.dot(w0);
+  const den = a * c - b * b;
+  if (Math.abs(den) < 1e-6) return null;
+  return (b * f - c * d) / den;
+}
+
+function _mgTip(e, axis, mm) {
+  let el = document.getElementById('mg-tip');
+  if (!e) { if (el) el.style.display = 'none'; return; }
+  if (!el) {
+    el = document.createElement('div'); el.id = 'mg-tip';
+    el.style.cssText = 'position:fixed;z-index:7000;background:#1f2329;color:#fff;border:1px solid #3a3f47;' +
+      'border-radius:5px;padding:3px 8px;font:12px system-ui,sans-serif;pointer-events:none;' +
+      'box-shadow:0 4px 14px rgba(0,0,0,.4)';
+    document.body.appendChild(el);
+  }
+  const sign = mm > 0 ? '+' : (mm < 0 ? '−' : '');
+  el.textContent = axis.toUpperCase() + ': ' + sign + Math.abs(mm).toFixed(1).replace('.', ',') + ' mm';
+  el.style.display = 'block';
+  el.style.left = (e.clientX + 14) + 'px';
+  el.style.top  = (e.clientY - 10) + 'px';
+}
+
+function _mgDown(e) {
+  if (e.button !== 0 || _mg.drag) return;
+  const axis = _mgPick(e);
+  if (!axis) return;
+  const movable = selectedObjs.filter(o => !o.userData.locked);
+  if (!movable.length) { notify('Objekt ist gesperrt', 'warn'); return; }
+  const dir = _mgAxisVec(axis);
+  const origin = _mg.group.position.clone();
+  const t0 = _mgRayT(e, origin, dir);
+  if (t0 === null) { notify('Diese Achse zeigt gerade zur Kamera — Ansicht etwas drehen', 'warn'); return; }
+  e.stopPropagation(); e.preventDefault();
+  saveUndo();
+  isDrag = false; dragData = null; isRubber = false;   // freien Objekt-Zug sicher aus
+  _mg.drag = { axis, dir, origin, t0, moved: false,
+               start: selectedObjs.map(o => ({ x: o.position.x, y: o.position.y, z: o.position.z })) };
+  _mg.hover = null; _mgSetHover(axis);
+  window.addEventListener('mousemove', _mgMove, true);
+  window.addEventListener('mouseup', _mgUp, true);
+}
+
+function _mgMove(e) {
+  const d = _mg.drag;
+  if (!d) return;
+  e.stopPropagation();
+  const t = _mgRayT(e, d.origin, d.dir);
+  if (t === null) return;
+  const delta = t - d.t0;
+  const k = d.axis;
+  let shown = 0;
+  selectedObjs.forEach((o, i) => {
+    const st = d.start[i];
+    if (!st || o.userData.locked) return;
+    const before = o.position[k];
+    o.position[k] = snapV(st[k] + delta);
+    if (!shown) shown = o.position[k] - st[k];
+    if (o.position[k] !== before) d.moved = true;
+  });
+  updateTFInputs(); updateCtxPopup();
+  _doRepositionDimHandles();
+  if (selectedObjs.length === 1) _fpPositionPanel();
+  _mgTip(e, k, shown * 10);   // 1 Scene-Unit = 10 mm
+}
+
+function _mgUp(e) {
+  if (!_mg.drag) return;
+  if (e) e.stopPropagation();
+  window.removeEventListener('mousemove', _mgMove, true);
+  window.removeEventListener('mouseup', _mgUp, true);
+  _mg.drag = null;
+  _mgTip(null);
+  _mg.hover = 'reset'; _mgSetHover(null);   // Farben/Deckkraft zurücksetzen
+  updateTFInputs();
+}
+
+function _mgHoverMove(e) {
+  if (_mg.drag || isDrag || isOrbit || isRubber) return;
+  _mgSetHover(_mgPick(e));
+}
+
+// Capture: läuft vor der Objekt-Auswahl im normalen mousedown-Handler.
+canvas.addEventListener('mousedown', _mgDown, true);
+canvas.addEventListener('mousemove', _mgHoverMove);
+
 function animate() {
   requestAnimationFrame(animate);
   _smTick();
@@ -22412,6 +22648,7 @@ function animate() {
   if (selectedObjs.length === 1) { _fpPositionPanel(); _fpSyncValues(); }
   _detectResizeForTexture();
   _updateEdgeBevelHandleDOM();
+  _mgUpdate();
   renderer.render(scene, camera);
 }
 
@@ -22875,6 +23112,9 @@ function _applySnapshot(data) {
 
 // ── Thumbnail capture ──────────────────────────────────────────────────────
 function captureThumbnail() {
+  // Verschiebe-Pfeile gehoeren nicht ins Vorschaubild
+  const _mgWasVis = _mg.group && _mg.group.visible;
+  if (_mgWasVis) _mg.group.visible = false;
   try {
     // Statt der zufälligen Live-Ansicht: aus einer einheitlichen Kamera rendern,
     // die das Modell sauber einrahmt (sonst zeigt das Thumbnail nur die gekippte
@@ -22906,6 +23146,8 @@ function captureThumbnail() {
     console.warn('captureThumbnail:', e.message);
     try { renderer.render(scene, camera); } catch(_){}
     return '';
+  } finally {
+    if (_mgWasVis) _mg.group.visible = true;
   }
 }
 
@@ -37278,6 +37520,10 @@ const VOLME3D_CHANGELOG = [
   ]},
   { version:'1.15.49', date:'2026-07-27', changes:[
     ['✒️','EIGENE SCHRIFTEN — im Tortentopper, im Namensschild und beim 3D-Text sitzt jetzt unter der Schrift-Auswahl der Knopf „＋ Eigene Schrift (TTF/OTF)". Damit lässt sich jede Schriftdatei vom eigenen Rechner laden: gekaufte Schreibschriften, kostenlose Downloads, alles was als .ttf oder .otf vorliegt. Die Schrift erscheint danach ganz oben in ALLEN Schrift-Auswahlen (mit ★ markiert) und bleibt auch nach dem Schließen des Browsers erhalten. Über ⚙ daneben lassen sich geladene Schriften ansehen und wieder entfernen. Wichtig: Die Schriftdatei verlässt deinen Rechner nicht — sie wird nur im Browser umgerechnet, nichts wird hochgeladen. Damit bleibt auch die Schriftlizenz deine Sache; Schriften mit „Personal Use"-Lizenz dürfen so genutzt werden, ohne dass wir sie weitergeben.'],
+  ]},
+  { version:'1.15.50', date:'2026-09-01', changes:[
+    ['\u2728','Verschiebe-Pfeile (X/Y/Z) am ausgew\u00e4hlten Objekt: rot = X, gr\u00fcn = Y (H\u00f6he), blau = Z. Einen Pfeil packen und ziehen verschiebt EXAKT entlang dieser einen Achse, mit Millimeter-Anzeige am Cursor. Damit l\u00e4sst sich ein Teil endlich auch per Maus ANHEBEN — das ging bisher nur \u00fcber die Zahlenfelder. Die Pfeile sind immer gleich gro\u00df, egal ob 5-mm-W\u00fcrfel oder 300-mm-Geh\u00e4use.'],
+    ['\U0001F527','Am Objekt selbst zu ziehen bleibt unver\u00e4ndert (frei \u00fcber die Bodenebene, mit Andock-Magnet) — die Pfeile lassen die Objektmitte bewusst frei. Fangraster und R\u00fcckg\u00e4ngig greifen auch beim Pfeil-Ziehen. Abschaltbar unter Szene-Einstellungen \u2192 „Verschiebe-Pfeile".'],
   ]},
   { version:'1.15.49', date:'2026-09-01', changes:[
     ['\U0001F41B','Andock-Magnet beruhigt: Wer ein Rohr dicht neben ein anderes zog, sah es „tanzen" — der Magnet suchte sich bei JEDER Mausbewegung ein neues Kreis-Ziel und riss das Rohr dabei bis zu 90\u00b0 herum. Jetzt bleibt ein einmal gefangenes Ziel kleben, bis ein anderes deutlich n\u00e4her ist, und gedreht wird nur noch, wenn die eigene Achse ohnehin schon fast passt (unter 20\u00b0 zur Bohrung). Das Aufsetzen auf eine schr\u00e4ge Fl\u00e4che passiert erst beim LOSLASSEN statt live beim Ziehen. Rohr-in-Rohr rastet weiterhin sauber achsgleich ein.'],
