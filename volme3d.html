@@ -475,6 +475,8 @@ body.devmode .dev-only{display:flex!important}
   z-index:35;display:none;
 }
 #dim-handles{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:25}
+/* Zeiger steht auf einem Pfeil des Verschiebe-Gizmos → Anfasser lassen durch */
+#dim-handles.gizmo-first > *{pointer-events:none!important}
 #dim-handles.handles-off .h-white,
 #dim-handles.handles-off .h-black,
 #dim-handles.handles-off .h-lift { pointer-events:none !important; cursor:default !important; }
@@ -681,6 +683,15 @@ body.devmode .dev-only{display:flex!important}
 .g3dm .g3body{display:flex;flex:1;overflow:hidden;min-height:0}
 .g3dm canvas{display:block;flex-shrink:0;background:#10141c;width:200px;height:auto}
 .g3dm .g3ctrl{flex:1;overflow-y:auto;padding:10px 14px;font-size:12px}
+/* „Bild einfügen": Auswahl, was aus dem Bild werden soll */
+.img-opts{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:8px;align-content:start;min-width:0}
+.img-opt{display:flex;gap:9px;align-items:flex-start;text-align:left;padding:9px 10px;background:linear-gradient(180deg,#fff,#f3eefc);border:1.5px solid #e2d4fb;border-radius:var(--rs);font-family:var(--font);cursor:pointer;transition:all .12s;min-width:0}
+.img-opt:hover{border-color:#8b5cf6;background:linear-gradient(180deg,#fdfbff,#f1eaff);transform:translateY(-1px);box-shadow:0 3px 8px rgba(124,58,237,.18)}
+.img-opt .io-i{font-size:17px;line-height:1.1;flex:none}
+.img-opt .io-t{font-size:12px;font-weight:800;color:var(--text)}
+.img-opt .io-d{font-size:10.5px;font-weight:600;color:var(--dim);line-height:1.35;margin-top:2px}
+#img-drop-hint{position:absolute;inset:0;z-index:70;display:none;align-items:center;justify-content:center;background:rgba(124,58,237,.13);border:3px dashed #8b5cf6;border-radius:var(--rs);pointer-events:none;font-family:var(--font);font-size:15px;font-weight:800;color:#6d28d9}
+#img-drop-hint.show{display:flex}
 .g3dm .g3foot{display:flex;justify-content:flex-end;gap:8px;padding:11px 18px;border-top:1px solid var(--border);flex-shrink:0}
 .g3dm .g3info{font-size:10.5px;color:#888;line-height:1.5;margin-top:8px;padding-top:8px;border-top:1px solid #eee}
 /* Vektorisierer: größere Vorschau — der Rahmen wird direkt darauf aufgezogen */
@@ -1158,7 +1169,7 @@ const firebaseConfig = {
   <!-- Zeile 0: Schwarze Kopfleiste im V3D-Slicer-Look (Branding + Konto) -->
   <div id="tb-r0">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>V3D<span style="color:#F97316"> CAD</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.50<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.51<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="r0-spacer"></div>
     <div id="beta-fb" onclick="_betaOpen()" title="Beta-Feedback: Fehler oder Idee melden">💬 Feedback</div>
@@ -1193,7 +1204,9 @@ const firebaseConfig = {
     </div>
     <div class="tbg"><span class="tbg-l">Datei</span><div class="tbg-row">
       <button class="btn" onclick="_stlLibOpen()" title="Bibliothek: heruntergeladene Modelle (STL/3MF/OBJ/STEP) durchsuchen, ansehen, öffnen, drucken">📚 Bibliothek</button>
+      <button class="btn" onclick="_imgInsert()" title="Bild einfügen — Foto/Logo (PNG, JPG) wählen und danach aussuchen, was daraus werden soll: Gravur, Leuchtrelief, Box, Ausstecher …  Bild ins Fenster ziehen geht auch">🖼️ Bild</button>
       <input type="file" id="fimport" accept=".stl,.step,.stp,.3mf,.obj" style="display:none" onchange="handleImport(event)">
+      <input type="file" id="img-file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="_imgFile(event)">
     </div></div>
     <div class="tbg hot"><span class="tbg-l">Kombinieren</span><div class="tbg-row">
       <button class="btn add" onclick="unionSelected()" title="Vereinen: Beide auswählen → Vereinen">∪ Vereinen</button>
@@ -1467,6 +1480,7 @@ const firebaseConfig = {
   <canvas id="c3d"></canvas>
   <svg id="rov" class="dim-line-svg"></svg>
   <div id="sel-box"></div>
+  <div id="img-drop-hint">🖼️ Bild hier ablegen</div>
   <div id="text-snap-hint"></div>
   <div id="vp-ctxmenu">
     <div class="sli-item" id="ctx-measure">📐 Messen (Abstand / Ø)</div>
@@ -1521,6 +1535,16 @@ const firebaseConfig = {
     <button class="skbtn" onclick="_skExportDXF()" title="Skizze als DXF speichern (für Lasercutter/Plotter)">⬇ DXF speichern</button>
     <input type="file" id="sk-dxf-file" accept=".dxf" style="display:none" onchange="_skDxfFileSelected(event)">
     <input type="file" id="sk-svg-file" accept=".svg,image/svg+xml" style="display:none" onchange="_skSvgFileSelected(event)">
+    <div class="sksep"></div>
+    <button class="skbtn" onclick="document.getElementById('sk-ref-file').click()" title="Bild als Vorlage unter die Skizze legen und mit den Zeichenwerkzeugen nachfahren (Foto/PNG/JPG)">🖼 Vorlage zum Nachzeichnen</button>
+    <input type="file" id="sk-ref-file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="_skRefFile(event)">
+    <div id="sk-ref-ctl" style="display:none">
+      <label class="skh">Breite <input id="sk-ref-w" type="number" value="100" min="5" max="2000" step="1" onchange="_skRefSet('w',this.value)"> mm</label>
+      <label class="skh">Deckkraft <input id="sk-ref-o" type="range" min="10" max="100" value="45" step="5" style="width:74px" oninput="_skRefSet('o',this.value)"><span id="sk-ref-ov">45%</span></label>
+      <label class="skh">Versatz X <input id="sk-ref-x" type="number" value="0" step="1" onchange="_skRefSet('x',this.value)"> mm</label>
+      <label class="skh">Versatz Y <input id="sk-ref-y" type="number" value="0" step="1" onchange="_skRefSet('y',this.value)"> mm</label>
+      <button class="skbtn" onclick="_skRefClear()" title="Vorlage wieder entfernen">✕ Vorlage entfernen</button>
+    </div>
     <button class="skbtn" onclick="exitSketchMode()" title="Skizze schließen (ESC)">✕ Schließen</button>
   </div>
   <style>
@@ -3881,6 +3905,20 @@ Patrick</textarea>
       <button class="btn" onclick="_tfgReset()">Zurücksetzen</button>
       <button class="btn" onclick="_tfgClose()">Abbrechen</button>
       <button class="btn pri" onclick="_tfgCreate()">✓ Erstellen</button>
+    </div>
+  </div>
+</div>
+
+<div id="img-modal" class="g3dm" onclick="if(event.target===this)_imgClose()">
+  <div class="g3box" style="width:680px">
+    <div class="g3hdr">🖼️ Bild einfügen — was soll daraus werden?<span class="vx" onclick="_imgClose()">✕</span></div>
+    <div style="display:flex;gap:14px;padding:14px 18px 16px;overflow:auto">
+      <div style="flex:0 0 148px;min-width:0">
+        <img id="img-prev" alt="" style="width:148px;max-height:180px;object-fit:contain;border-radius:8px;border:1px solid var(--border);background:#f4f5f7;display:block">
+        <div id="img-name" style="font-size:10.5px;color:var(--dim);margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
+        <button class="btn" style="margin-top:8px;width:100%;justify-content:center" onclick="document.getElementById('img-file').click()">Anderes Bild</button>
+      </div>
+      <div id="img-opts" class="img-opts"></div>
     </div>
   </div>
 </div>
@@ -7367,6 +7405,7 @@ function exitSketchMode() {
   _sk.active = false; canvas.style.cursor = ''; _sk.hint=''; _skUpdateBadge();
   if (_sk.group) { scene.remove(_sk.group); _skDisposeGroup(); _sk.group = null; }
   _sk.ents = []; _sk.pending = []; _sk.dimLock = false;
+  _skRefClear();
   document.getElementById('sketch-bar').style.display = 'none';
   document.getElementById('sk-dim').style.display = 'none';
   if (_sk.savedCam) {
@@ -7566,6 +7605,89 @@ function _skEllipsePts(c,rx,ry){ const p=[]; for(let i=0;i<=64;i++){ const a=i/6
 function _skRectPts(a,b){ return [{u:a.u,v:a.v},{u:b.u,v:a.v},{u:b.u,v:b.v},{u:a.u,v:b.v},{u:a.u,v:a.v}]; }
 
 // ── Rendering ────────────────────────────────────────────────────────────
+// ── Bild-Vorlage zum Nachzeichnen ────────────────────────────────────────
+// Liegt als texturierte Ebene UNTER den Skizzenlinien in der Skizzenebene
+// (Welt-XZ). Reines Hilfsmittel: kein Körper, nicht in `objects`, nicht im
+// Export, verschwindet mit der Skizze. Rückmeldung Sebastian: „echt zum
+// Nachzeichnen" — dafür gab es bis dahin gar keinen Weg.
+const _skRef = { img: null, mesh: null, wMm: 100, op: 45, xMm: 0, yMm: 0 };
+
+function _skRefFile(ev) {
+  const f = ev.target.files[0];
+  ev.target.value = '';
+  if (f) _skRefLoad(f);
+}
+
+function _skRefLoad(file) {
+  if (!file) return false;
+  if (!_sk.active) enterSketchMode();
+  const img = new Image();
+  img.onload = () => {
+    _skRef.img = img;
+    // Beim ersten Bild eine sinnvolle Breite: rund ein Drittel der Bauplatte
+    _skRef.wMm = Math.max(5, Math.min(2000, Math.round(buildplateW / 3) || 100));
+    const wi = document.getElementById('sk-ref-w'); if (wi) wi.value = _skRef.wMm;
+    _skRefApply();
+    document.getElementById('sk-ref-ctl').style.display = '';
+    notify('Vorlage liegt unter der Skizze — jetzt nachzeichnen. Breite/Deckkraft in der Leiste', 'ok');
+    URL.revokeObjectURL(img.src);
+  };
+  img.onerror = () => notify('Bild konnte nicht geladen werden', 'e');
+  img.src = URL.createObjectURL(file);
+  return true;
+}
+
+function _skRefSet(k, v) {
+  const n = parseFloat(v);
+  const sync = (id, val) => { const el = document.getElementById(id); if (el && el.value != val) el.value = val; };
+  if (k === 'w' && n > 0) { _skRef.wMm = n; sync('sk-ref-w', n); }
+  else if (k === 'o') {
+    _skRef.op = n;
+    const lbl = document.getElementById('sk-ref-ov'); if (lbl) lbl.textContent = Math.round(n) + '%';
+    sync('sk-ref-o', n);
+  }
+  else if (k === 'x') { _skRef.xMm = n || 0; sync('sk-ref-x', _skRef.xMm); }
+  else if (k === 'y') { _skRef.yMm = n || 0; sync('sk-ref-y', _skRef.yMm); }
+  _skRefApply();
+}
+
+function _skRefApply() {
+  if (!_skRef.img) return;
+  _skRefDispose();
+  const img = _skRef.img;
+  const wU = _skRef.wMm / 10;                          // 1 Scene-Unit = 10 mm
+  const hU = wU * ((img.height || 1) / (img.width || 1));
+  const tex = new THREE.Texture(img);
+  tex.needsUpdate = true;
+  if (THREE.sRGBEncoding !== undefined) tex.encoding = THREE.sRGBEncoding;
+  const geo = new THREE.PlaneGeometry(wU, hU);
+  geo.rotateX(-Math.PI / 2);                           // XY-Ebene → Welt-XZ (Draufsicht)
+  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    map: tex, transparent: true, opacity: Math.max(0.05, _skRef.op / 100),
+    depthWrite: false, side: THREE.DoubleSide
+  }));
+  mesh.position.set(_skRef.xMm / 10, _SK_Y - 0.005, _skRef.yMm / 10);
+  mesh.renderOrder = 994;                              // unter den Skizzenlinien (996)
+  mesh.userData.isSketchRef = true;
+  scene.add(mesh);
+  _skRef.mesh = mesh;
+}
+
+function _skRefDispose() {
+  if (!_skRef.mesh) return;
+  scene.remove(_skRef.mesh);
+  _skRef.mesh.geometry.dispose();
+  if (_skRef.mesh.material.map) _skRef.mesh.material.map.dispose();
+  _skRef.mesh.material.dispose();
+  _skRef.mesh = null;
+}
+
+function _skRefClear() {
+  _skRefDispose();
+  _skRef.img = null;
+  const ctl = document.getElementById('sk-ref-ctl'); if (ctl) ctl.style.display = 'none';
+}
+
 function _skRender(){
   if (!_sk.group) return;
   _skDisposeGroup();
@@ -13006,6 +13128,15 @@ function getHandlePos3D(key, mn, mx, cx, cy, cz) {
   return map[key] || [cx, cy, cz];
 }
 
+// Der grüne Y-Pfeil des Verschiebe-Gizmos hebt das Objekt genauso an wie der
+// schwarze ▲-Anfasser — und liegt an derselben Stelle auf dem Bildschirm. Der
+// DOM-Anfasser liegt dabei ÜBER dem Canvas und schluckt den Klick auf den
+// Pfeil, also immer nur einen von beiden zeigen.
+function _liftHandleHidden() {
+  try { return _mgOn && (editMode === 'select' || editMode === 'move'); }
+  catch (_) { return false; }   // Gizmo-Flag im ersten Frame noch nicht initialisiert
+}
+
 function updateDimHandles() {
   if (specialMode === 'align') { return; }   // Ausricht-Modus: keine Resize-Griffe bauen
   const o = getFirst();
@@ -13063,7 +13194,7 @@ function updateDimHandles() {
     {key:'fy-',cls:'h-black',axis:'sh',side:-1},
     // Lift arrow
     {key:'lift',cls:'h-lift',axis:'lift',side:0},
-  ];
+  ].filter(d => d.key !== 'lift' || !_liftHandleHidden());
 
   defs.forEach(def => {
     const pos3d = getHandlePos3D(def.key, mn, mx, cx, cy, cz);
@@ -19238,6 +19369,8 @@ function setMode(m) {
   // In move/rotate/scale: disable handle clicks so canvas drag works
   const dh = document.getElementById('dim-handles');
   if (dh) dh.classList.toggle('handles-off', m !== 'select');
+  // Der ▲-Hebe-Anfasser haengt am Modus (siehe _liftHandleHidden) → neu aufbauen
+  if (selectedObjs.length) updateDimHandles();
   updateRotHandles();  // show/hide rings based on new mode
 }
 
@@ -22430,6 +22563,8 @@ function setMoveGizmo(on) {
   const sel = document.getElementById('mgz-sel');
   if (sel) sel.value = _mgOn ? '1' : '0';
   if (!_mgOn && _mg.group) _mg.group.visible = false;
+  // Anfasser neu aufbauen: mit Gizmo entfaellt der ▲-Hebe-Anfasser, ohne kommt er zurueck
+  if (selectedObjs.length) updateDimHandles();
 }
 
 function _mgAxisVec(a) {
@@ -22509,7 +22644,7 @@ function _mgUpdate() {
             && (editMode === 'select' || editMode === 'move')
             && !isRubber && !_mgBusy();
   if (!show) {
-    if (g.visible) { g.visible = false; _mgSetHover(null); }
+    if (g.visible) { g.visible = false; _mgSetHover(null); _mgMuteHandles(false); }
     return;
   }
   const box = new THREE.Box3();
@@ -22577,8 +22712,30 @@ function _mgTip(e, axis, mm) {
   el.style.top  = (e.clientY - 10) + 'px';
 }
 
+// Die Maß-Anfasser sind DOM-Elemente ÜBER dem Canvas: liegt einer auf einem
+// Pfeil, bekäme das Canvas den Klick nie. Deshalb hängen Treffer-Prüfung und
+// Zug am FENSTER (Capture-Phase) — und zwar nur, wenn der Klick dem Canvas
+// oder der Anfasser-Ebene gilt, damit Panels und Knöpfe unangetastet bleiben.
+function _mgOwnsEvent(e) {
+  const t = e.target;
+  if (!t) return false;
+  if (t === canvas) return true;
+  return !!(t.closest && t.closest('#dim-handles'));
+}
+
+// Solange der Zeiger auf einem Pfeil steht, lässt die Anfasser-Ebene die Maus
+// durch — sonst schnappt sich ein Anfasser den Griff und den Cursor.
+let _mgHandlesMuted = false;
+function _mgMuteHandles(on) {
+  if (_mgHandlesMuted === !!on) return;
+  _mgHandlesMuted = !!on;
+  const dh = document.getElementById('dim-handles');
+  if (dh) dh.classList.toggle('gizmo-first', !!on);   // Container ist ohnehin none, die Kinder sind all
+}
+
 function _mgDown(e) {
   if (e.button !== 0 || _mg.drag) return;
+  if (!_mgOwnsEvent(e)) return;
   const axis = _mgPick(e);
   if (!axis) return;
   const movable = selectedObjs.filter(o => !o.userData.locked);
@@ -22593,8 +22750,11 @@ function _mgDown(e) {
   _mg.drag = { axis, dir, origin, t0, moved: false,
                start: selectedObjs.map(o => ({ x: o.position.x, y: o.position.y, z: o.position.z })) };
   _mg.hover = null; _mgSetHover(axis);
-  window.addEventListener('mousemove', _mgMove, true);
-  window.addEventListener('mouseup', _mgUp, true);
+  // Konsequent Pointer-Events: das preventDefault oben unterdrückt die
+  // Maus-Ersatzereignisse, mousemove/mouseup kämen gar nicht mehr an.
+  window.addEventListener('pointermove', _mgMove, true);
+  window.addEventListener('pointerup', _mgUp, true);
+  window.addEventListener('pointercancel', _mgUp, true);
 }
 
 function _mgMove(e) {
@@ -22623,22 +22783,34 @@ function _mgMove(e) {
 function _mgUp(e) {
   if (!_mg.drag) return;
   if (e) e.stopPropagation();
-  window.removeEventListener('mousemove', _mgMove, true);
-  window.removeEventListener('mouseup', _mgUp, true);
+  window.removeEventListener('pointermove', _mgMove, true);
+  window.removeEventListener('pointerup', _mgUp, true);
+  window.removeEventListener('pointercancel', _mgUp, true);
   _mg.drag = null;
   _mgTip(null);
   _mg.hover = 'reset'; _mgSetHover(null);   // Farben/Deckkraft zurücksetzen
+  _mgMuteHandles(false);
   updateTFInputs();
 }
 
 function _mgHoverMove(e) {
   if (_mg.drag || isDrag || isOrbit || isRubber) return;
-  _mgSetHover(_mgPick(e));
+  if (!_mgOwnsEvent(e)) { _mgSetHover(null); _mgMuteHandles(false); return; }
+  const axis = _mgPick(e);
+  _mgSetHover(axis);
+  _mgMuteHandles(!!axis);
 }
 
-// Capture: läuft vor der Objekt-Auswahl im normalen mousedown-Handler.
-canvas.addEventListener('mousedown', _mgDown, true);
-canvas.addEventListener('mousemove', _mgHoverMove);
+// Die Maß-Anfasser starten ihren Zug auf pointerdown — das feuert VOR mousedown.
+// Der Gizmo muss also ebenfalls auf pointerdown greifen, sonst hat der Anfasser
+// den Griff schon übernommen. Das anschließende mousedown wird dann verschluckt,
+// damit nicht zusätzlich das freie Objekt-Ziehen anspringt.
+function _mgSwallow(e) {
+  if (_mg.drag) { e.stopPropagation(); e.preventDefault(); }
+}
+window.addEventListener('pointerdown', _mgDown, true);
+window.addEventListener('mousedown', _mgSwallow, true);
+window.addEventListener('pointermove', _mgHoverMove, true);
 
 function animate() {
   requestAnimationFrame(animate);
@@ -23127,9 +23299,11 @@ function _applySnapshot(data) {
 
 // ── Thumbnail capture ──────────────────────────────────────────────────────
 function captureThumbnail() {
-  // Verschiebe-Pfeile gehoeren nicht ins Vorschaubild
+  // Verschiebe-Pfeile und Zeichen-Vorlage gehoeren nicht ins Vorschaubild
   const _mgWasVis = _mg.group && _mg.group.visible;
   if (_mgWasVis) _mg.group.visible = false;
+  const _refWasVis = _skRef.mesh && _skRef.mesh.visible;
+  if (_refWasVis) _skRef.mesh.visible = false;
   try {
     // Statt der zufälligen Live-Ansicht: aus einer einheitlichen Kamera rendern,
     // die das Modell sauber einrahmt (sonst zeigt das Thumbnail nur die gekippte
@@ -23163,6 +23337,7 @@ function captureThumbnail() {
     return '';
   } finally {
     if (_mgWasVis) _mg.group.visible = true;
+    if (_refWasVis && _skRef.mesh) _skRef.mesh.visible = true;
   }
 }
 
@@ -26939,6 +27114,143 @@ const _vec  = { img:null, out:null, name:'motiv', traced:false };
 let _vecSel = false, _vecDrag = null;      // Rahmen-Ziehen über der Vorschau
 const _VEC_MAX_CMDS = 45000;      // knapp unter dem Limit von _svgPreflight
 let _vecRT = null;
+
+// ═══ BILD EINFÜGEN: ein Einstieg für alle Bild-Werkzeuge ═════════════════
+// Bilder kamen bisher ausschließlich über die einzelnen Generatoren herein —
+// wer nicht wusste, dass „Lithophane" oder „Bild → SVG" die Foto-Werkzeuge
+// sind, fand überhaupt keinen Einstieg (Rückmeldung Sebastian, 1.9.2026).
+// Hier wird zuerst das Bild gewählt und dann, was daraus werden soll; die
+// Datei wandert anschließend in das Datei-Feld des jeweiligen Generators,
+// dessen Lade-Logik damit unverändert bleibt.
+const _IMG_OK = /^image\/(png|jpe?g|webp)$/i;
+let _imgPending = null;
+
+const _IMG_TARGETS = [
+  { k: 'trace', i: '📐', t: 'Zum Nachzeichnen',
+    d: 'Bild als Vorlage unter die Skizze legen und mit Linie/Bogen/Spline nachfahren.',
+    open: () => { if (!_sk.active) enterSketchMode(); },
+    feed: f => _skRefLoad(f) },
+  { k: 'vec',   i: '✏️', t: 'Aufs Modell gravieren',
+    d: 'Bild → Konturen (SVG). Danach auf ein Teil ziehen — vertieft oder erhaben.',
+    open: () => _vecOpen(),        input: 'vec-file' },
+  { k: 'litho', i: '🖼️', t: 'Leuchtrelief',
+    d: 'Lithophane: vor einer Lampe erscheint das Foto in Graustufen.',
+    open: () => _openLithoModal(), input: 'litho-file' },
+  { k: 'ibx',   i: '🎁', t: 'Bild-Box',
+    d: 'Klappbox mit dem Motiv als Silhouette.',
+    open: () => _openIbxModal(),   input: 'ibx-file' },
+  { k: 'vk',    i: '💳', t: '3D-Visitenkarte',
+    d: 'Foto als Relief, dazu fühlbarer Text.',
+    open: () => _vkOpen(),         input: 'vk-file' },
+  { k: 'ck',    i: '🍪', t: 'Keksausstecher',
+    d: 'Der Umriss des Bildes wird zur Ausstechform.',
+    open: () => _ckOpen(),         input: 'ck-file' },
+  { k: 'wz',    i: '🧰', t: 'Werkzeug-Einleger',
+    d: 'Foto vom ausgelegten Werkzeug → passgenauer Einleger.',
+    open: () => _wzOpen(),         input: 'wz-file' },
+  { k: 'ki',    i: '✨', t: 'KI: Bild → 3D-Modell',
+    d: 'Aus einem Foto ein Modell erzeugen lassen (dauert etwas).',
+    open: () => { document.getElementById('ki-panel').classList.add('show'); kiSetTab('image'); },
+    feed: f => { _kiSetImage(f); return true; } },
+];
+
+function _imgInsert() { document.getElementById('img-file').click(); }
+
+function _imgFile(ev) {
+  const f = ev.target.files[0];
+  ev.target.value = '';
+  if (f) _imgChoose(f);
+}
+
+function _imgChoose(file) {
+  if (!file) return;
+  if (/svg/i.test(file.type || '')) {
+    notify('SVG geht direkt in die Skizze: Menü → SVG in Skizze laden', 'w');
+    return;
+  }
+  if (!_IMG_OK.test(file.type || '')) { notify('Bitte ein Bild wählen (PNG, JPG oder WebP)', 'w'); return; }
+  _imgPending = file;
+  const prev = document.getElementById('img-prev');
+  if (prev.dataset.url) URL.revokeObjectURL(prev.dataset.url);
+  const url = URL.createObjectURL(file);
+  prev.src = url; prev.dataset.url = url;
+  document.getElementById('img-name').textContent = file.name || 'Bild';
+  const box = document.getElementById('img-opts');
+  if (!box.childElementCount) {
+    box.innerHTML = _IMG_TARGETS.map(o =>
+      '<div class="img-opt" onclick="_imgGo(\'' + o.k + '\')"><div class="io-i">' + o.i + '</div>' +
+      '<div style="min-width:0"><div class="io-t">' + o.t + '</div>' +
+      '<div class="io-d">' + o.d + '</div></div></div>').join('');
+  }
+  document.getElementById('img-modal').classList.add('show');
+}
+
+function _imgClose() { document.getElementById('img-modal').classList.remove('show'); }
+
+// Datei ins Datei-Feld des Ziel-Generators legen und dessen change-Handler
+// auslösen — damit läuft exakt derselbe Weg wie beim Klick auf „Bild wählen".
+function _imgFeed(inputId, file) {
+  const inp = document.getElementById(inputId);
+  if (!inp) return false;
+  try {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    inp.files = dt.files;
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  } catch (e) { return false; }
+}
+
+function _imgGo(kind) {
+  const o = _IMG_TARGETS.find(t => t.k === kind);
+  const f = _imgPending;
+  if (!o || !f) return;
+  _imgClose();
+  o.open();
+  // erst im nächsten Frame füttern: manche Generatoren bauen ihre Vorschau
+  // beim Öffnen auf und brauchen dafür ein sichtbares Fenster
+  requestAnimationFrame(() => {
+    const ok = o.feed ? o.feed(f) : _imgFeed(o.input, f);
+    if (ok) { notify('Bild übernommen → ' + o.t, 'ok'); return; }
+    // Browser ohne DataTransfer-Zuweisung: Generator ist offen, Bild dort wählen
+    notify('Bitte im Fenster auf „Bild wählen" klicken', 'w');
+    const inp = document.getElementById(o.input);
+    if (inp) inp.click();
+  });
+}
+
+// ── Bild ins 3D-Fenster ziehen = derselbe Weg ────────────────────────────
+let _imgDragDepth = 0;
+function _imgDragHasImage(dt) {
+  if (!dt) return false;
+  const items = dt.items;
+  if (items && items.length) {
+    for (let i = 0; i < items.length; i++)
+      if (items[i].kind === 'file' && _IMG_OK.test(items[i].type || '')) return true;
+    return false;
+  }
+  return Array.from(dt.types || []).indexOf('Files') >= 0;
+}
+function _imgDropHint(on) {
+  const el = document.getElementById('img-drop-hint');
+  if (el) el.classList.toggle('show', !!on);
+}
+vpEl.addEventListener('dragenter', e => {
+  if (!_imgDragHasImage(e.dataTransfer)) return;
+  e.preventDefault(); _imgDragDepth++; _imgDropHint(true);
+});
+vpEl.addEventListener('dragover', e => { if (_imgDragDepth) e.preventDefault(); });
+vpEl.addEventListener('dragleave', () => {
+  if (_imgDragDepth && --_imgDragDepth <= 0) { _imgDragDepth = 0; _imgDropHint(false); }
+});
+vpEl.addEventListener('drop', e => {
+  const armed = _imgDragDepth;
+  _imgDragDepth = 0; _imgDropHint(false);
+  if (!armed) return;                       // kein Bild → Browser macht wie bisher
+  e.preventDefault();
+  const f = Array.from(e.dataTransfer.files || []).find(x => _IMG_OK.test(x.type || ''));
+  if (f) _imgChoose(f);
+});
 
 function _vecOpen(){
   document.getElementById('vec-modal').classList.add('show');
@@ -37536,6 +37848,10 @@ const VOLME3D_CHANGELOG = [
   { version:'1.15.49', date:'2026-07-27', changes:[
     ['✒️','EIGENE SCHRIFTEN — im Tortentopper, im Namensschild und beim 3D-Text sitzt jetzt unter der Schrift-Auswahl der Knopf „＋ Eigene Schrift (TTF/OTF)". Damit lässt sich jede Schriftdatei vom eigenen Rechner laden: gekaufte Schreibschriften, kostenlose Downloads, alles was als .ttf oder .otf vorliegt. Die Schrift erscheint danach ganz oben in ALLEN Schrift-Auswahlen (mit ★ markiert) und bleibt auch nach dem Schließen des Browsers erhalten. Über ⚙ daneben lassen sich geladene Schriften ansehen und wieder entfernen. Wichtig: Die Schriftdatei verlässt deinen Rechner nicht — sie wird nur im Browser umgerechnet, nichts wird hochgeladen. Damit bleibt auch die Schriftlizenz deine Sache; Schriften mit „Personal Use"-Lizenz dürfen so genutzt werden, ohne dass wir sie weitergeben.'],
   ]},
+  { version:'1.15.51', date:'2026-09-01', changes:[
+    ['\U0001F4D0','NEU: Bild-Vorlage zum Nachzeichnen. In der Skizze „\U0001F5BC Vorlage zum Nachzeichnen" w\u00e4hlen \u2014 das Foto liegt dann UNTER der Skizze und wird mit Linie, Bogen, Kreis oder Spline nachgefahren. Breite in Millimeter, Deckkraft und Versatz sind einstellbar; die Vorlage ist reines Hilfsmittel, kommt nicht ins Modell und verschwindet mit der Skizze.'],
+    ['\u2728','NEU: ein Knopf „\U0001F5BC Bild" oben bei Datei \u2014 endlich EIN Einstieg f\u00fcr alles, was mit Bildern geht. Bild w\u00e4hlen (oder einfach ins 3D-Fenster ziehen), dann aussuchen, was daraus werden soll: nachzeichnen, aufs Modell gravieren, Leuchtrelief, Bild-Box, Visitenkarte, Keksausstecher, Werkzeug-Einleger oder KI-Modell. Das Bild ist im Zielwerkzeug schon geladen. Bisher steckten diese Wege einzeln in den Generatoren und waren praktisch nicht zu finden.'],
+  ]},
   { version:'1.15.50', date:'2026-09-01', changes:[
     ['\u2728','Verschiebe-Pfeile (X/Y/Z) am ausgew\u00e4hlten Objekt: rot = X, gr\u00fcn = Y (H\u00f6he), blau = Z. Einen Pfeil packen und ziehen verschiebt EXAKT entlang dieser einen Achse, mit Millimeter-Anzeige am Cursor. Damit l\u00e4sst sich ein Teil endlich auch per Maus ANHEBEN — das ging bisher nur \u00fcber die Zahlenfelder. Die Pfeile sind immer gleich gro\u00df, egal ob 5-mm-W\u00fcrfel oder 300-mm-Geh\u00e4use.'],
     ['\U0001F527','Am Objekt selbst zu ziehen bleibt unver\u00e4ndert (frei \u00fcber die Bodenebene, mit Andock-Magnet) — die Pfeile lassen die Objektmitte bewusst frei. Fangraster und R\u00fcckg\u00e4ngig greifen auch beim Pfeil-Ziehen. Abschaltbar unter Szene-Einstellungen \u2192 „Verschiebe-Pfeile".'],
@@ -43426,12 +43742,14 @@ const CMDK = [
   {i:'⤧',g:'Bearbeiten',t:'Loft (Flächen verbinden)',k:'loft übergang flächen verbinden shapr',run:()=>{ if(!_lf.active) enterLoftMode(); }},
   {i:'🔻',g:'Bearbeiten',t:'Vereinfachen (Dreiecke)',k:'simplify decimate reduzieren',run:()=>openSimplifyModal()},
   {i:'⬇',g:'Export',t:'Skizze als DXF',k:'dxf laser export skizze',run:()=>{ if(_sk.active) _skExportDXF(); else notify('Erst Skizzen-Modus öffnen','w'); }},
+  {i:'📐',g:'Datei',t:'Bild-Vorlage zum Nachzeichnen',k:'vorlage nachzeichnen abpausen pausen durchpausen nachfahren nachbauen referenz referenzbild hintergrundbild unterlegen skizze bild foto zeichnung plan skizzieren umriss abzeichnen',run:()=>{ if(!_sk.active) enterSketchMode(); document.getElementById('sk-ref-file').click(); }},
   {i:'⬆',g:'Datei',t:'DXF in Skizze laden',k:'dxf laser import skizze',run:()=>{ if(!_sk.active) enterSketchMode(); document.getElementById('sk-dxf-file').click(); }},
   {i:'⬆',g:'Datei',t:'SVG in Skizze laden',k:'svg import skizze kontur beschneiden teilen',run:()=>{ if(!_sk.active) enterSketchMode(); document.getElementById('sk-svg-file').click(); }},
   {i:'⬇',g:'Export',t:'STL exportieren',k:'export stl',run:()=>exportSTL()},
   {i:'⬇',g:'Export',t:'STL pro Körper',k:'parts stl',run:()=>exportPartsSTL()},
   {i:'⬇',g:'Export',t:'OBJ exportieren',k:'export obj',run:()=>exportOBJ()},
   {i:'⬇',g:'Export',t:'STEP exportieren',k:'export step',run:()=>exportSTEP()},
+  {i:'🖼️',g:'Datei',t:'Bild einfügen',k:'bild foto einfuegen einfügen hinzufuegen png jpg jpeg webp logo motiv grafik gravur relief lithophane image picture importieren laden wo',run:()=>_imgInsert()},
   {i:'📄',g:'Datei',t:'Neues Design',k:'new neu',run:()=>newScene()},
   {i:'📂',g:'Datei',t:'Design öffnen',k:'open laden',run:()=>_localOpen()},
   {i:'💾',g:'Datei',t:'Design speichern',k:'save',run:()=>_localSave()},

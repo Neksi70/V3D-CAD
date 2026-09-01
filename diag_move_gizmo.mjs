@@ -36,6 +36,11 @@ async function dragAxis(axis, dxPx, dyPx) {
     const o = objects[0]; return { x: o.position.x, y: o.position.y, z: o.position.z, undo: undoStack.length };
   });
   const a = await arrowPoint(axis);
+  if (process.env.DBG) console.log('  dbg', axis, JSON.stringify(await page.evaluate(({x,y}) => {
+    const el = document.elementFromPoint(x, y);
+    return { el: el ? (el.id || el.className || el.tagName) : null, pick: _mgPick({clientX:x, clientY:y}),
+             vis: _mg.group.visible, on: _mgOn, mode: editMode };
+  }, a)));
   await page.mouse.move(a.x, a.y);
   const hover = await page.evaluate(() => _mg.hover);
   await page.mouse.down();
@@ -51,6 +56,7 @@ async function dragAxis(axis, dxPx, dyPx) {
 }
 
 let ok = true;
+const say = (l, c, e='') => { if(!c) ok=false; console.log(`${c?'✓':'✗'} ${l}${e?' — '+e:''}`); };
 for (const [axis, dx, dy, expect] of [['y', 0, -140, 'y'], ['x', 150, 0, 'x'], ['z', -150, 0, 'z']]) {
   const r = await dragAxis(axis, dx, dy);
   const moved = r.d[expect];
@@ -90,8 +96,39 @@ if (vis.leer || !vis.an || vis.rot || vis.aus || !vis.wieder) ok = false;
 const snap = await page.evaluate(() => { setSnapGrid(5); return snapGrid; });
 const r5 = await dragAxis('y', 0, -95);
 const onGrid = Math.abs((r5.after.y * 10) % 5) < 0.01 || Math.abs(Math.abs((r5.after.y * 10) % 5) - 5) < 0.01;
-console.log(`Fangraster ${snap}mm am Pfeil: Y=${(r5.after.y*10).toFixed(2)}mm auf Raster =`, onGrid);
+console.log(`Fangraster ${snap}mm am Pfeil: griff=${r5.started} Y=${(r5.after.y*10).toFixed(2)}mm auf Raster =`, onGrid);
 if (!onGrid) ok = false;
+
+// Die Maß-Anfasser muessen erreichbar bleiben, wo sie NICHT auf einem Pfeil liegen
+await page.evaluate(() => { setSnapGrid(0); setMode('select'); selectObjs([objects[0]]); });
+await page.waitForTimeout(300);
+const hInfo = await page.evaluate(() => {
+  const r = vpEl.getBoundingClientRect();
+  const els = [...document.querySelectorAll('#dim-handles .h-white')].filter(e => e.style.visibility !== 'hidden');
+  for (const el of els) {
+    const x = parseFloat(el.style.left) + r.left, y = parseFloat(el.style.top) + r.top;
+    if (_mgPick({ clientX: x, clientY: y })) continue;         // liegt auf einem Pfeil → naechster
+    return { ecken: els.length, trifftAnfasser: document.elementFromPoint(x, y) === el,
+             lift: document.querySelectorAll('#dim-handles .h-lift').length,
+             klasse: document.getElementById('dim-handles').classList.contains('gizmo-first') };
+  }
+  return null;
+});
+say('freier Ecken-Anfasser vorhanden', !!hInfo, hInfo ? hInfo.ecken + ' Ecken' : '');
+if (hInfo) {
+  say('Ecken-Anfasser bleibt anklickbar (Gizmo nimmt ihn nicht weg)', hInfo.trifftAnfasser && !hInfo.klasse);
+  say('▲-Hebe-Anfasser ist bei aktivem Gizmo weg (Doppelung mit Y-Pfeil)', hInfo.lift === 0);
+}
+// Zeiger auf einem Pfeil → Anfasser-Ebene laesst durch
+const ap = await arrowPoint('x');
+await page.mouse.move(ap.x - 3, ap.y - 3);
+await page.mouse.move(ap.x, ap.y);
+const mute = await page.evaluate(() => ({
+  auf: document.getElementById('dim-handles').classList.contains('gizmo-first'), hover: _mg.hover }));
+await page.mouse.move(ap.x, ap.y + 260);   // wieder weg vom Pfeil
+const frei = await page.evaluate(() => document.getElementById('dim-handles').classList.contains('gizmo-first'));
+say('neben dem Pfeil: Anfasser wieder scharf', !frei);
+say('auf dem Pfeil: Anfasser stummgeschaltet', mute.auf && mute.hover === 'x');
 
 // Vorschaubild darf die Pfeile nicht enthalten, danach muessen sie zurueck sein
 const thumb = await page.evaluate(() => {
