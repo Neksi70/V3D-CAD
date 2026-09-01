@@ -578,22 +578,14 @@ function nachrichtText(d){
     `\n\n${shareUrl(d)}\n\n`+(re?`Der Link enthält alle Zahlungsinformationen inkl. QR-Code zum Scannen.\n\n`:'')+
     `Mit freundlichen Grüßen\n${s.firma.inhaber||s.firma.name}\n${s.firma.name}${s.firma.telefon?' · '+s.firma.telefon:''}`;
 }
-// V3D Mail öffnen — Entwurf samt PDF-Anhang liegt in localStorage (gleiche
-// Origin über den Funnel: /rechnung und /mail hängen beide an Port 443).
+// V3D Mail öffnen — der Server legt Entwurf + PDF unter einem Einmal-Token ab,
+// die Mail-App holt ihn über den Funnel ab. Funktioniert daher von jeder
+// Adresse aus (:8782 direkt oder Funnel /rechnung).
 async function v3dMailShare(){
   const d=editDoc,re=d.art==='rechnung';
-  if(ROOTP!=='/rechnung'){
-    toast('Nur über https://v3da.tailf05fe9.ts.net/rechnung möglich (gleiche Adresse wie V3D Mail)',true);
-    return;
-  }
   const btn=$('#v3dmBtn');if(btn)btn.disabled=true;
   try{
     toast('PDF wird erstellt …');
-    const r=await fetch(ROOTP+'/api/docs/'+d.id+'/pdf',{headers:{'X-Key':KEY}});
-    if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||'PDF fehlgeschlagen (HTTP '+r.status+')');
-    const buf=new Uint8Array(await r.arrayBuffer());
-    let bin='';for(let i=0;i<buf.length;i+=32768)bin+=String.fromCharCode.apply(null,buf.subarray(i,i+32768));
-    const name=`${re?'Rechnung':'Angebot'}_${String(d.nummer||d.id).replace(/[^\w-]/g,'_')}.pdf`;
     const s=S.settings,t=calcTotals(d);
     const text=`Guten Tag${d.kunde&&d.kunde.name?' '+d.kunde.name:''},\n\n`+
       (re?`anbei erhalten Sie Ihre Rechnung ${d.nummer} über ${eur(t.brutto)} als PDF.`:
@@ -602,14 +594,12 @@ async function v3dMailShare(){
       (re?`Der Link enthält alle Zahlungsinformationen inkl. QR-Code zum Scannen.\n\n`:'')+
       // Kurzer Gruß reicht: V3D Mail hängt beim Senden die Konto-Signatur an.
       `Mit freundlichen Grüßen\n${s.firma.inhaber||s.firma.name}`;
-    localStorage.setItem('v3dmail.uebergabe',JSON.stringify({
-      t:Date.now(),
+    const r=await api('docs/'+d.id+'/uebergabe','POST',{
       to:d.kunde&&d.kunde.email||'',
       subject:`${re?'Rechnung':'Angebot'} ${d.nummer} — ${s.firma.name}`,
       text,
-      attachments:[{name,type:'application/pdf',data:btoa(bin),size:buf.length}],
-    }));
-    window.open('/mail/','_blank');
+    });
+    window.open(r.url,'_blank');
   }catch(e){toast(e.message,true);}
   finally{if(btn)btn.disabled=false;}
 }

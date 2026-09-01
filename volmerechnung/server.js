@@ -208,6 +208,13 @@ function belegPdf(doc) {
   }
 }
 
+// --- Übergabe an V3D Mail -----------------------------------------------------
+// Entwurf (Empfänger/Betreff/Text + PDF) liegt kurz unter einem Einmal-Token;
+// die Mail-App holt ihn über /rechnung/api/uebergabe/<token> ab. So klappt der
+// Versand-Knopf von jeder Adresse aus (:8782 direkt ODER Funnel /rechnung).
+const uebergaben = new Map(); // token -> { t, draft }
+const UEBERGABE_TTL = 10 * 60000;
+
 // --- Öffentliche Beleg-Seite (/beleg/<token>) --------------------------------
 // Kunde öffnet den Link -> Zugriff wird protokolliert = Lesebestätigung.
 const hesc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -430,6 +437,18 @@ function keyOk(key) {
 }
 
 async function api(req, res, url) {
+  // Einmal-Abholung durch V3D Mail — bewusst OHNE Key: das Token ist
+  // unerratbar (24 Zufallsbytes), verfällt nach 10 min und stirbt beim Abruf.
+  const mU = url.pathname.match(/^\/api\/uebergabe\/([A-Za-z0-9_-]{20,64})$/);
+  if (mU && req.method === 'GET') {
+    const u = uebergaben.get(mU[1]);
+    uebergaben.delete(mU[1]);
+    if (!u || Date.now() - u.t > UEBERGABE_TTL) {
+      return send(res, 404, { error: 'Übergabe abgelaufen — bitte in VolmeRechnung erneut auf „Mit V3D Mail senden" klicken' });
+    }
+    return send(res, 200, u.draft);
+  }
+
   // Auth: alle API-Aufrufe brauchen den Key
   const ip = clientIp(req);
   const fail = authFails.get(ip);
@@ -619,6 +638,23 @@ Positionen:\n${liste.slice(0, 2000)}`;
       } catch (e) {
         return send(res, 500, { error: 'PDF-Erzeugung fehlgeschlagen: ' + e.message });
       }
+    }
+    if (m === 'POST' && action === 'uebergabe') {
+      if (!doc.festgeschrieben) return send(res, 400, { error: 'Erst festschreiben — dann kann der Beleg verschickt werden' });
+      const body = await readBody(req).catch(() => ({}));
+      let pdf;
+      try { pdf = belegPdf(doc); }
+      catch (e) { return send(res, 500, { error: 'PDF-Erzeugung fehlgeschlagen: ' + e.message }); }
+      for (const [k, v] of uebergaben) if (Date.now() - v.t > UEBERGABE_TTL) uebergaben.delete(k);
+      const token = crypto.randomBytes(24).toString('base64url');
+      const name = `${doc.art === 'rechnung' ? 'Rechnung' : 'Angebot'}_${String(doc.nummer || doc.id).replace(/[^\w-]/g, '_')}.pdf`;
+      uebergaben.set(token, { t: Date.now(), draft: {
+        to: String(body.to || ''), subject: String(body.subject || ''), text: String(body.text || ''),
+        attachments: [{ name, type: 'application/pdf', data: pdf.toString('base64'), size: pdf.length }],
+      } });
+      // Mail-App hängt am selben Funnel wie die Beleg-Links (publicBase)
+      const mailBase = String(CFG.publicBase).replace(/\/beleg\/?$/, '/mail/');
+      return send(res, 200, { url: mailBase + '?uebergabe=' + token });
     }
     if (m === 'GET' && action === 'xrechnung') {
       if (doc.art !== 'rechnung' || !doc.festgeschrieben) return send(res, 400, { error: 'Nur festgeschriebene Rechnungen können als XRechnung exportiert werden' });
