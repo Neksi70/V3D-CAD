@@ -22,6 +22,7 @@ PORT = 7777
 # Nur diese Web-Adressen duerfen drucken. Trag hier ggf. deine Volme3D-URL ein.
 ALLOWED_ORIGINS = {
     "https://v3da.tailf05fe9.ts.net",
+    "https://v3dcad.volme3dakademie.de",
 }
 # localhost (zum Testen) wird zusaetzlich automatisch akzeptiert.
 
