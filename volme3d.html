@@ -1169,7 +1169,7 @@ const firebaseConfig = {
   <!-- Zeile 0: Schwarze Kopfleiste im V3D-Slicer-Look (Branding + Konto) -->
   <div id="tb-r0">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>V3D<span style="color:#F97316"> CAD</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.51<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.52<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="r0-spacer"></div>
     <div id="beta-fb" onclick="_betaOpen()" title="Beta-Feedback: Fehler oder Idee melden">💬 Feedback</div>
@@ -19700,11 +19700,7 @@ window.addEventListener('mousemove', e => {
     _doRepositionDimHandles();
     if (selectedObjs.length === 1) _fpPositionPanel();
     // Text/SVG-Snap: bei Drag Ziel-Fläche ermitteln (Magnet-Effekt)
-    if ((editMode==='move'||editMode==='select') && selectedObjs.length===1) {
-      const _sType = selectedObjs[0].userData.shapeType;
-      if (_sType === 'text') _textSnapDetect(selectedObjs[0], e);
-      else if (_sType === 'svg') _svgSnapDetect(selectedObjs[0], e);
-    }
+    if (editMode === 'move' || editMode === 'select') _detectTextSnapWhileDragging(e);
   }
 });
 
@@ -19714,13 +19710,7 @@ window.addEventListener('mouseup', e => {
   if (e.button === 0) {
     isDrag = false; dragData = null;
     // Text/SVG auf Ziel heften wenn Snap-Ziel vorhanden
-    if (_textSnapTarget && selectedObjs.length===1) {
-      const _st = selectedObjs[0].userData.shapeType;
-      if (_st === 'text') _applyTextConform(selectedObjs[0], _textSnapTarget);
-      else if (_st === 'svg') _applySvgSnap(selectedObjs[0], _textSnapTarget);
-    }
-    _textSnapTarget = null;
-    document.getElementById('text-snap-hint').style.display='none';
+    _applyTextSnapOnDrop();
     // Mitten-Snap-Kreis ausblenden
     _snapSticky = null; _magnetBypass = false;
     if (_centerSnapTarget) {
@@ -22555,6 +22545,12 @@ const _mg = { group: null, arrows: {}, drag: null, hover: null, curSet: false };
 const MG_COLOR = { x: 0xe5484d, y: 0x30a46c, z: 0x3b82f6 };
 const MG_HILITE = 0xffc53d;
 const MG_PX = 108;            // Ziel-Pfeillänge in Bildschirm-Pixeln
+// Zeigt eine Achse fast zur Kamera, ist die Zuordnung Maus→Achse extrem
+// empfindlich: bei 8° machen 10 px Maus schon 12 mm statt 2 mm — das Teil
+// „flieht". Solche Pfeile sind ohnehin nur ein Punkt auf dem Schirm, also
+// werden sie ausgeblendet und lassen sich nicht greifen.
+const MG_MIN_SIN2  = 0.117;   // sin²(20°) — flacher: Pfeil weg
+const MG_DROP_SIN2 = 0.067;   // sin²(15°) — läuft ein Zug, endet er erst hier
 let _mgOn = (localStorage.getItem('volme3d_moveGizmo') ?? '1') !== '0';
 
 function setMoveGizmo(on) {
@@ -22565,6 +22561,13 @@ function setMoveGizmo(on) {
   if (!_mgOn && _mg.group) _mg.group.visible = false;
   // Anfasser neu aufbauen: mit Gizmo entfaellt der ▲-Hebe-Anfasser, ohne kommt er zurueck
   if (selectedObjs.length) updateDimHandles();
+}
+
+// sin² des Winkels zwischen Achse und Blickrichtung (1 = quer zur Kamera)
+function _mgAxisSin2(axis) {
+  const cd = camera.getWorldDirection(new THREE.Vector3()).normalize();
+  const c  = Math.abs(cd.dot(_mgAxisVec(axis)));
+  return Math.max(0, 1 - c * c);
 }
 
 function _mgAxisVec(a) {
@@ -22653,13 +22656,22 @@ function _mgUpdate() {
   box.getCenter(g.position);
   g.scale.setScalar(_mgScreenScale(g.position));
   g.visible = true;
+  // Zu flach stehende Pfeile ausblenden (siehe MG_MIN_SIN2)
+  ['x', 'y', 'z'].forEach(a => {
+    const arr = _mg.arrows[a];
+    if (!arr) return;
+    const grenze = (_mg.drag && _mg.drag.axis === a) ? MG_DROP_SIN2 : MG_MIN_SIN2;
+    arr.visible = _mgAxisSin2(a) > grenze;
+  });
 }
 
 function _mgPick(e) {
   if (!_mg.group || !_mg.group.visible) return null;
   getNorm(e); raycaster.setFromCamera(mousev, camera);
   const ms = [];
-  _mg.group.traverse(o => { if (o.isMesh && o.userData._mgAxis) ms.push(o); });
+  _mg.group.traverse(o => {
+    if (o.isMesh && o.userData._mgAxis && o.parent && o.parent.visible) ms.push(o);
+  });
   const h = raycaster.intersectObjects(ms, false);
   return h.length ? h[0].object.userData._mgAxis : null;
 }
@@ -22741,9 +22753,12 @@ function _mgDown(e) {
   const movable = selectedObjs.filter(o => !o.userData.locked);
   if (!movable.length) { notify('Objekt ist gesperrt', 'warn'); return; }
   const dir = _mgAxisVec(axis);
+  if (_mgAxisSin2(axis) <= MG_MIN_SIN2) {
+    notify('Diese Achse zeigt fast zur Kamera — Ansicht etwas drehen', 'warn'); return;
+  }
   const origin = _mg.group.position.clone();
   const t0 = _mgRayT(e, origin, dir);
-  if (t0 === null) { notify('Diese Achse zeigt gerade zur Kamera — Ansicht etwas drehen', 'warn'); return; }
+  if (t0 === null) { notify('Diese Achse zeigt fast zur Kamera — Ansicht etwas drehen', 'warn'); return; }
   e.stopPropagation(); e.preventDefault();
   saveUndo();
   isDrag = false; dragData = null; isRubber = false;   // freien Objekt-Zug sicher aus
@@ -22761,6 +22776,8 @@ function _mgMove(e) {
   const d = _mg.drag;
   if (!d) return;
   e.stopPropagation();
+  // Kippt die Achse während des Zuges zu flach, lieber stehen bleiben als fliehen
+  if (_mgAxisSin2(d.axis) <= MG_DROP_SIN2) return;
   const t = _mgRayT(e, d.origin, d.dir);
   if (t === null) return;
   const delta = t - d.t0;
@@ -22778,6 +22795,8 @@ function _mgMove(e) {
   _doRepositionDimHandles();
   if (selectedObjs.length === 1) _fpPositionPanel();
   _mgTip(e, k, shown * 10);   // 1 Scene-Unit = 10 mm
+  // Anschmiegen muss auch beim Ziehen am Pfeil greifen
+  _detectTextSnapWhileDragging(e);
 }
 
 function _mgUp(e) {
@@ -22790,6 +22809,7 @@ function _mgUp(e) {
   _mgTip(null);
   _mg.hover = 'reset'; _mgSetHover(null);   // Farben/Deckkraft zurücksetzen
   _mgMuteHandles(false);
+  _applyTextSnapOnDrop();                  // Text/SVG ans Ziel schmiegen
   updateTFInputs();
 }
 
@@ -24993,6 +25013,28 @@ function _applyFaceDockOnDrop(tgt) {
 
 // ── Text-Snap / Conform ────────────────────────────────────────────────────
 let _textSnapTarget = null;
+
+// Beim Loslassen anschmiegen. Wird von BEIDEN Zieh-Wegen gerufen: freies Ziehen
+// am Objekt und Ziehen an einem Gizmo-Pfeil — sonst wäre das Anschmiegen mit
+// den neuen Pfeilen gar nicht mehr erreichbar.
+function _applyTextSnapOnDrop() {
+  if (_textSnapTarget && selectedObjs.length === 1) {
+    const st = selectedObjs[0].userData.shapeType;
+    if (st === 'text')     _applyTextConform(selectedObjs[0], _textSnapTarget);
+    else if (st === 'svg') _applySvgSnap(selectedObjs[0], _textSnapTarget);
+  }
+  _textSnapTarget = null;
+  const hint = document.getElementById('text-snap-hint');
+  if (hint) hint.style.display = 'none';
+}
+
+// Während eines Zuges das Andock-Ziel für Text/SVG suchen (Magnet-Hinweis).
+function _detectTextSnapWhileDragging(e) {
+  if (selectedObjs.length !== 1) return;
+  const st = selectedObjs[0].userData.shapeType;
+  if (st === 'text')     _textSnapDetect(selectedObjs[0], e);
+  else if (st === 'svg') _svgSnapDetect(selectedObjs[0], e);
+}
 
 function _textSnapDetect(textMesh, mouseEvent) {
   const hint = document.getElementById('text-snap-hint');
@@ -37847,6 +37889,10 @@ const VOLME3D_CHANGELOG = [
   ]},
   { version:'1.15.49', date:'2026-07-27', changes:[
     ['✒️','EIGENE SCHRIFTEN — im Tortentopper, im Namensschild und beim 3D-Text sitzt jetzt unter der Schrift-Auswahl der Knopf „＋ Eigene Schrift (TTF/OTF)". Damit lässt sich jede Schriftdatei vom eigenen Rechner laden: gekaufte Schreibschriften, kostenlose Downloads, alles was als .ttf oder .otf vorliegt. Die Schrift erscheint danach ganz oben in ALLEN Schrift-Auswahlen (mit ★ markiert) und bleibt auch nach dem Schließen des Browsers erhalten. Über ⚙ daneben lassen sich geladene Schriften ansehen und wieder entfernen. Wichtig: Die Schriftdatei verlässt deinen Rechner nicht — sie wird nur im Browser umgerechnet, nichts wird hochgeladen. Damit bleibt auch die Schriftlizenz deine Sache; Schriften mit „Personal Use"-Lizenz dürfen so genutzt werden, ohne dass wir sie weitergeben.'],
+  ]},
+  { version:'1.15.52', date:'2026-09-01', changes:[
+    ['\U0001F41B','Verschiebe-Pfeile: „das Teil flieht, obwohl ich nicht loslasse". Zeigte eine Achse fast zur Kamera, war der Pfeil nur noch ein Punkt — und 10 Pixel Maus wurden zu 12 mm statt 2 mm. Solche Pfeile werden jetzt ausgeblendet und lassen sich nicht mehr greifen; kippt die Ansicht mitten im Zug zu flach, bleibt das Teil stehen statt davonzuspringen.'],
+    ['\U0001F41B','Anschmiegen ging beim Ziehen an einem Pfeil verloren: der Magnet („Um Zylinder wickeln" / „Auf Fläche heften") reagierte nur beim freien Ziehen am Objekt. Jetzt meldet er sich auf beiden Wegen und schmiegt beim Loslassen an.'],
   ]},
   { version:'1.15.51', date:'2026-09-01', changes:[
     ['\U0001F4D0','NEU: Bild-Vorlage zum Nachzeichnen. In der Skizze „\U0001F5BC Vorlage zum Nachzeichnen" w\u00e4hlen \u2014 das Foto liegt dann UNTER der Skizze und wird mit Linie, Bogen, Kreis oder Spline nachgefahren. Breite in Millimeter, Deckkraft und Versatz sind einstellbar; die Vorlage ist reines Hilfsmittel, kommt nicht ins Modell und verschwindet mit der Skizze.'],
