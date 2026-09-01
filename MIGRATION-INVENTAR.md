@@ -1,7 +1,7 @@
 # MIGRATION-INVENTAR — V3D CAD → netcup RS 4000 G12
 
 Stand: 01.09.2026 · Quelle: V3DA (Tailscale 100.125.34.44), nur lesend erfasst.
-Ziel: Parallel-Testinstanz auf `v2202609407527510336.bestsrv.de` (159.195.247.82 / 2a0a:4cc0:61:1be8:b88b:42ff:fecc:742f), Debian 13 minimal.
+Ziel: Parallel-Instanz (Produktion nach Rollout; getestet wird auf V3DA) auf `v2202609407527510336.bestsrv.de` (159.195.247.82 / 2a0a:4cc0:61:1be8:b88b:42ff:fecc:742f), Debian 13 minimal.
 
 ## 1. Dienste, die zu V3D CAD gehören
 
@@ -90,15 +90,15 @@ Erledigt:
 - [x] Secrets + videos/out per rsync, checksummen-verifiziert
 - [x] occt-pool: self-signed Cert unter den hartkodierten Tailscale-Pfadnamen (Code unverändert)
 - [x] Dienste: volme3d.service (System) + occt-server.service (User-Unit, `loginctl enable-linger v3da`) laufen; Pool 4 Arbeiter, occtReady
-- [x] nginx-vhost `v3d-cad` (Port 80, server_name cad-test.volme3dakademie.de): `/`→8765, `/api/occt-*`+`/occt-health`→3001, robots.txt Disallow, gzip; von außen getestet (curl --resolve)
+- [x] nginx-vhost `v3d-cad` (Port 80, server_name v3dcad.volme3dakademie.de): `/`→8765, `/api/occt-*`+`/occt-health`→3001, robots.txt Disallow, gzip; von außen getestet (curl --resolve)
 - [x] Fix committet (4989f7f): SVG-Gravur-Fetch → `_OCCT_BASE` (relativ), CORS-Allowlist + `*.volme3dakademie.de`. Auf netcup deployt; **auf V3DA nur committet, NICHT gebaut/deployt**
 - Zugriff von V3DA: `ssh netcup` (Alias in ~/.ssh/config, Key id_ed25519_netcup)
 - Python auf netcup ist 3.13 (V3DA 3.10) — volme3d_server.py läuft, weiter beobachten
 
 Offen:
-- [ ] DNS: `cad-test.volme3dakademie.de` A→159.195.247.82, AAAA→2a0a:4cc0:61:1be8:b88b:42ff:fecc:742f (von Hand, goneo)
+- [ ] DNS: `v3dcad.volme3dakademie.de` A→159.195.247.82, AAAA→2a0a:4cc0:61:1be8:b88b:42ff:fecc:742f (von Hand, goneo)
 - [ ] certbot + HTTPS-Redirect (erst nach DNS), danach HTTPS-Funktionstests (Login, FS-Access-API, PWA)
-- [ ] Firebase Console: `cad-test.volme3dakademie.de` unter Authentication → Authorized domains (von Hand)
+- [ ] Firebase Console: `v3dcad.volme3dakademie.de` unter Authentication → Authorized domains (von Hand)
 - [ ] SCP-Passwort ändern (von Hand; root-PW ist schon neu gesetzt)
 - [ ] Entscheidung Firestore: Produktiv-DB mitnutzen oder trennen (Testdaten!)
 - [ ] Entscheidung Basic-Auth/IP-Sperre für die Testphase
