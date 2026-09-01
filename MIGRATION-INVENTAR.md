@@ -42,6 +42,7 @@ Git: Pack ~56 MiB. CAD-relevante Dateien alle committet (einzig `volmedraw/_shif
 - `~/.config/volme3d/session_secret` — signiert die `v3dsess`-Session-Cookies (`v3d_auth.py`)
 - TLS für occt-pool 3001: `/home/v3da/v3da.tailf05fe9.ts.net.crt`/`.key` (Tailscale-Cert, **hartkodiert** in occt-pool.js:43 u. occt-server.js:1533) → auf netcup: eigenes selbstsigniertes Cert für 127.0.0.1 ODER Pool auf HTTP/127.0.0.1 umstellen (nginx terminiert TLS)
 - `~/.env` (PostgreSQL claude_sync) — gehört NICHT zu V3D CAD, wandert nicht mit
+- Fernwartungs-Downloads aus der ALLOW-Liste (bewusst nicht im Git, per rsync kopiert 01.09.): `V3D-Fernwartung-Setup.exe`, `V3D-Remote-149-signiert.exe/.msi`, `V3D-Remote.exe/.zip` (~95 MB). `logo.svg` war ebenfalls untracked → seit Commit a2fdbba im Git.
 
 ## 5. Hartkodierte Tailscale-URLs (müssen in der Kopie umgestellt werden)
 
