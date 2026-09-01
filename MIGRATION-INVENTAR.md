@@ -80,10 +80,27 @@ Git: Pack ~56 MiB. CAD-relevante Dateien alle committet (einzig `volmedraw/_shif
 - netcup-Vorgabe-Firewall blockt SMTP (Policy „netcup Mail Block" im SCP) — für CAD egal
 - SCP: Benutzer 419577, https://www.servercontrolpanel.de/SCP/ (Passwort ändern! steht im Klartext im Postfach)
 
-## 10. Offene Punkte / Abweichungen
+## 10. Stand netcup-Server (01.09.2026 abends)
 
-- [ ] DNS: `cad-test.volme3dakademie.de` A→159.195.247.82, AAAA→2a0a:4cc0:61:1be8:… (von Hand, goneo)
-- [ ] SCP-Passwort + root-Passwort ändern (von Hand)
-- [ ] Erstlogin/Key-Bootstrap auf netcup (Passwort-Login vom Automations-Classifier geblockt → einmal manuell `ssh-copy-id`)
-- [ ] Entscheidung Firestore: Produktiv-DB mitnutzen oder trennen
+Erledigt:
+- [x] Key-Bootstrap (root-PW-Reset via SCP + VNC-Konsole `PermitRootLogin yes` temporär; wieder entfernt)
+- [x] Grundabsicherung: User `v3da` (sudo NOPASSWD, Keys: Migration/Desktop/Notebook), sshd `PermitRootLogin no` + `PasswordAuthentication no` (verifiziert), ufw 22/80/443, fail2ban (sshd, backend=systemd), unattended-upgrades, TZ Europe/Berlin, Hostname `v3d-cad-test` (+/etc/hosts), 4G-Swapfile
+- [x] Pakete: git/nginx 1.26/build-essential/rsync/certbot; Node **22.23.2** (NodeSource node_22.x)
+- [x] Repo via Git-Bundle → /home/v3da (Push extern geblockt; Remote-Ref `v3da/master`), `npm ci`, `npm run build` ok
+- [x] Secrets + videos/out per rsync, checksummen-verifiziert
+- [x] occt-pool: self-signed Cert unter den hartkodierten Tailscale-Pfadnamen (Code unverändert)
+- [x] Dienste: volme3d.service (System) + occt-server.service (User-Unit, `loginctl enable-linger v3da`) laufen; Pool 4 Arbeiter, occtReady
+- [x] nginx-vhost `v3d-cad` (Port 80, server_name cad-test.volme3dakademie.de): `/`→8765, `/api/occt-*`+`/occt-health`→3001, robots.txt Disallow, gzip; von außen getestet (curl --resolve)
+- [x] Fix committet (4989f7f): SVG-Gravur-Fetch → `_OCCT_BASE` (relativ), CORS-Allowlist + `*.volme3dakademie.de`. Auf netcup deployt; **auf V3DA nur committet, NICHT gebaut/deployt**
+- Zugriff von V3DA: `ssh netcup` (Alias in ~/.ssh/config, Key id_ed25519_netcup)
+- Python auf netcup ist 3.13 (V3DA 3.10) — volme3d_server.py läuft, weiter beobachten
+
+Offen:
+- [ ] DNS: `cad-test.volme3dakademie.de` A→159.195.247.82, AAAA→2a0a:4cc0:61:1be8:b88b:42ff:fecc:742f (von Hand, goneo)
+- [ ] certbot + HTTPS-Redirect (erst nach DNS), danach HTTPS-Funktionstests (Login, FS-Access-API, PWA)
+- [ ] Firebase Console: `cad-test.volme3dakademie.de` unter Authentication → Authorized domains (von Hand)
+- [ ] SCP-Passwort ändern (von Hand; root-PW ist schon neu gesetzt)
+- [ ] Entscheidung Firestore: Produktiv-DB mitnutzen oder trennen (Testdaten!)
+- [ ] Entscheidung Basic-Auth/IP-Sperre für die Testphase
+- [ ] Funktionstest-Durchlauf (Checkliste Punkt 8) nach TLS
 - [ ] Später mit umziehen (heute NICHT Teil der Kopie): V3D Mail, VolmeRechnung, VolmeShop, Terminfinder, Fotobox, Quiz, Spiele, V3D Slicer (orca-wasm), MeshCentral, Frigate …
