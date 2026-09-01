@@ -95,10 +95,15 @@ Erledigt:
 - Zugriff von V3DA: `ssh netcup` (Alias in ~/.ssh/config, Key id_ed25519_netcup)
 - Python auf netcup ist 3.13 (V3DA 3.10) — volme3d_server.py läuft, weiter beobachten
 
+Erledigt am 01.09. abends (nach DNS-Setzung):
+- [x] DNS aufgelöst (A+AAAA, auch via 8.8.8.8); Port 80 v4+v6 von außen erreichbar
+- [x] certbot: Zertifikat + HTTP→HTTPS-Redirect aktiv, `renew --dry-run` erfolgreich
+- [x] Firebase Authorized Domain eingetragen (laut Volker via Cowork)
+- [x] Headless-Funktionstest über HTTPS (Playwright von V3DA, Cookie via v3d_auth): Editor 200, alle Button-Globals ok, Three.js-Szene rendert, Firebase init, 0 pageErrors/failedRequests
+- [x] SVG-Gravur-E2E (`bench_cut_e2e.js`) auf netcup lokal UND über die öffentliche HTTPS-Route: Cut + Inlay korrekt (1116/1028 Dreiecke, ~4–10 s)
+- Merke: HEAD auf .wasm gibt 501 (server.py kann kein HEAD — wie auf V3DA), GET liefert 200
+
 Offen:
-- [ ] DNS: `v3dcad.volme3dakademie.de` A→159.195.247.82, AAAA→2a0a:4cc0:61:1be8:b88b:42ff:fecc:742f (von Hand, goneo)
-- [ ] certbot + HTTPS-Redirect (erst nach DNS), danach HTTPS-Funktionstests (Login, FS-Access-API, PWA)
-- [ ] Firebase Console: `v3dcad.volme3dakademie.de` unter Authentication → Authorized domains (von Hand)
 - [ ] SCP-Passwort ändern (von Hand; root-PW ist schon neu gesetzt)
 - [ ] Entscheidung Firestore: Produktiv-DB mitnutzen oder trennen (Testdaten!)
 - [ ] Entscheidung Basic-Auth/IP-Sperre für die Testphase
