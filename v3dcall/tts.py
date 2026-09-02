@@ -36,6 +36,9 @@ def sprich(text, ziel_mp3):
         "voice_settings": {
             "stability": core.cfg("elevenlabs", "stability", default=0.5),
             "similarity_boost": core.cfg("elevenlabs", "similarity", default=0.75),
+            # Sprechtempo: 1.0 = normal, kleiner = langsamer. Das Modell
+            # dehnt dabei natuerlich, anders als nachtraegliches Strecken.
+            "speed": core.cfg("elevenlabs", "speed", default=1.0),
         },
     }
     r = requests.post(f"{API}/text-to-speech/{voice}", json=body,
