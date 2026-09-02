@@ -79,6 +79,8 @@ fuer eine telefonische Auskunft.
   Preise nur von den einzelnen Kursseiten ("ab 89 EUR inkl. MwSt."). Steht
   irgendwo "0 EUR", ist das ein Platzhalter und KEIN Preis — weglassen.
 - Auf Deutsch, hoechstens 1200 Woerter.
+- Schreibe "Maker-Kurs" mit Bindestrich. Ohne ihn liest die Sprachausgabe
+  "Markerkurs".
 
 WEBSITE-TEXT:
 """

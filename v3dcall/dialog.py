@@ -161,6 +161,10 @@ ABKUERZUNGEN = [
     ("evtl.", "eventuell"), ("ggf.", "gegebenenfalls"), ("u.a.", "unter anderem"),
     ("Nr.", "Nummer"), ("Std.", "Stunden"), ("Min.", "Minuten"),
     ("€", " Euro"), ("&", " und "),
+    # Aussprache: "Makerkurs" wird als "Markerkurs" gelesen — die Stimme
+    # schiebt ein R ein. Mit Bindestrich trifft sie es.
+    ("Makerkurs", "Maker-Kurs"), ("Makerkurse", "Maker-Kurse"),
+    ("makerkurs", "Maker-Kurs"),
 ]
 
 
