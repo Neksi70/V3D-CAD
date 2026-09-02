@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#141821">
+<title>V3D Anrufannahme</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+:root{
+  --bg:#141821; --flaeche:#1d222e; --flaeche2:#252b39; --rand:#333b4d;
+  --text:#e8ecf4; --schwach:#9aa4bb; --akzent:#4f8cff; --gut:#3ecf8e;
+  --warn:#f0a83c; --schlecht:#f2585b;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  padding-bottom:env(safe-area-inset-bottom)}
+header{position:sticky;top:0;z-index:5;background:rgba(20,24,33,.94);
+  backdrop-filter:blur(10px);border-bottom:1px solid var(--rand);
+  padding:14px 16px calc(14px + env(safe-area-inset-top)) 16px;
+  padding-top:calc(14px + env(safe-area-inset-top));
+  display:flex;align-items:center;gap:12px}
+header h1{font-size:17px;margin:0;font-weight:650;letter-spacing:.2px}
+.wrap{max-width:760px;margin:0 auto;padding:16px}
+.reiter{display:flex;gap:6px;margin-left:auto}
+.reiter button{background:none;border:0;color:var(--schwach);padding:7px 12px;
+  border-radius:8px;font-size:14px;cursor:pointer}
+.reiter button.an{background:var(--flaeche2);color:var(--text)}
+.karte{background:var(--flaeche);border:1px solid var(--rand);border-radius:14px;
+  padding:14px 16px;margin-bottom:12px}
+.karte.neu{border-color:var(--akzent);box-shadow:0 0 0 1px rgba(79,140,255,.25)}
+.kopf{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.nummer{font-weight:650;font-size:16px}
+.wann{color:var(--schwach);font-size:13px;margin-left:auto}
+.abzeichen{font-size:11px;padding:2px 8px;border-radius:20px;
+  background:var(--flaeche2);color:var(--schwach);white-space:nowrap}
+.abzeichen.neu{background:rgba(79,140,255,.18);color:#9dc0ff}
+.abzeichen.warten{background:rgba(240,168,60,.16);color:var(--warn)}
+.abzeichen.fehler{background:rgba(242,88,91,.16);color:var(--schlecht)}
+.text{margin:10px 0 0;white-space:pre-wrap;line-height:1.6}
+.text.leer{color:var(--schwach);font-style:italic}
+audio{width:100%;margin-top:12px;height:38px}
+.zeile{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+button.tat{background:var(--flaeche2);border:1px solid var(--rand);color:var(--text);
+  padding:7px 13px;border-radius:9px;font-size:13px;cursor:pointer}
+button.tat:hover{border-color:var(--akzent)}
+button.tat.gefahr:hover{border-color:var(--schlecht);color:var(--schlecht)}
+button.haupt{background:var(--akzent);border:0;color:#fff;padding:10px 18px;
+  border-radius:10px;font-size:14px;font-weight:600;cursor:pointer}
+button.haupt:disabled{opacity:.5;cursor:default}
+label{display:block;margin:14px 0 5px;font-size:13px;color:var(--schwach)}
+input,textarea,select{width:100%;background:var(--bg);border:1px solid var(--rand);
+  color:var(--text);border-radius:9px;padding:10px 12px;font:inherit}
+textarea{min-height:130px;resize:vertical;line-height:1.6}
+.hinweis{color:var(--schwach);font-size:13px;margin:6px 0 0}
+.leerzustand{text-align:center;color:var(--schwach);padding:60px 20px}
+.leerzustand div:first-child{font-size:40px;margin-bottom:12px;opacity:.5}
+fieldset{border:1px solid var(--rand);border-radius:12px;padding:4px 16px 18px;margin:0 0 16px}
+legend{padding:0 8px;color:var(--schwach);font-size:13px}
+#anmeldung{max-width:340px;margin:16vh auto;text-align:center}
+.punkt{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--schwach)}
+.punkt.gut{background:var(--gut)} .punkt.schlecht{background:var(--schlecht)}
+</style>
+</head>
+<body>
+
+<div id="anmeldung" style="display:none">
+  <div class="karte">
+    <h1 style="margin:0 0 4px;font-size:18px">V3D Anrufannahme</h1>
+    <p class="hinweis" style="margin-bottom:16px">Bitte Zugangsschlüssel eingeben.</p>
+    <input id="schluessel" type="password" placeholder="Schlüssel" autocomplete="current-password">
+    <div style="margin-top:12px"><button class="haupt" onclick="anmelden()">Anmelden</button></div>
+    <p class="hinweis" id="anmeldefehler" style="color:var(--schlecht)"></p>
+  </div>
+</div>
+
+<div id="app" style="display:none">
+  <header>
+    <h1>Anrufannahme</h1>
+    <nav class="reiter">
+      <button id="tabNachrichten" class="an" onclick="zeige('nachrichten')">Nachrichten</button>
+      <button id="tabEinstellungen" onclick="zeige('einstellungen')">Einstellungen</button>
+    </nav>
+  </header>
+
+  <div class="wrap">
+    <section id="nachrichten"></section>
+
+    <section id="einstellungen" style="display:none">
+      <fieldset>
+        <legend>Ansage</legend>
+        <p class="hinweis">Dieser Text wird dem Anrufer vorgelesen. Nach dem Ändern
+           „Ansage neu erzeugen“ drücken — sonst hört der Anrufer noch die alte.</p>
+        <label for="ansageText">Begrüßung</label>
+        <textarea id="ansageText"></textarea>
+        <label for="dankeText">Verabschiedung (nach der Aufnahme)</label>
+        <textarea id="dankeText" style="min-height:60px"></textarea>
+        <label for="stimme">Stimme (ElevenLabs)</label>
+        <select id="stimme"><option value="">— Schlüssel eintragen, dann laden —</option></select>
+        <div class="zeile">
+          <button class="tat" onclick="ladeStimmen()">Stimmen laden</button>
+          <button class="tat" onclick="baueAnsage()">Ansage neu erzeugen</button>
+          <button class="tat" onclick="hoereAnsage()">Anhören</button>
+        </div>
+        <p class="hinweis" id="ansageStatus"></p>
+        <audio id="vorschau" style="display:none" controls></audio>
+      </fieldset>
+
+      <fieldset>
+        <legend>ElevenLabs</legend>
+        <label for="elKey">API-Schlüssel</label>
+        <input id="elKey" type="password" placeholder="sk_…">
+      </fieldset>
+
+      <fieldset>
+        <legend>E-Mail-Zustellung</legend>
+        <label for="mailTo">Nachrichten schicken an</label>
+        <input id="mailTo" type="email">
+        <label for="mailUser">Postfach (Absender)</label>
+        <input id="mailUser" type="email">
+        <label for="mailPass">Postfach-Passwort</label>
+        <input id="mailPass" type="password">
+        <label for="mailHost">SMTP-Server</label>
+        <input id="mailHost">
+      </fieldset>
+
+      <fieldset>
+        <legend>Telefon</legend>
+        <label for="sipRegistrar">Fritzbox / SIP-Registrar</label>
+        <input id="sipRegistrar">
+        <label for="sipUser">Benutzername des IP-Telefons</label>
+        <input id="sipUser">
+        <label for="sipPass">Passwort des IP-Telefons</label>
+        <input id="sipPass" type="password">
+        <label for="maxSec">Höchstlänge einer Nachricht (Sekunden)</label>
+        <input id="maxSec" type="number" min="10" max="600">
+        <p class="hinweis">Nach Änderungen hier:
+           <code>sudo ~/v3dcall/asterisk/install.sh</code> erneut ausführen.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Benachrichtigung aufs Handy</legend>
+        <p class="hinweis" id="pushStatus">Wird geprüft …</p>
+        <div class="zeile">
+          <button class="tat" onclick="pushAnmelden()">Push einschalten</button>
+          <button class="tat" onclick="pushTesten()">Test schicken</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Android-App</legend>
+        <p class="hinweis">Die App ist eine Hülle um diese Seite plus ein
+           Wächter, der alle 15 Minuten nach neuen Nachrichten sieht.
+           Für <em>sofortige</em> Meldungen zusätzlich im Chrome
+           „Zum Startbildschirm hinzufügen“ und oben Push einschalten.</p>
+        <div class="zeile"><a class="tat" href="app.apk"
+           style="text-decoration:none">V3D-Anrufe.apk herunterladen</a></div>
+      </fieldset>
+
+      <button class="haupt" onclick="speichern()">Einstellungen speichern</button>
+      <span class="hinweis" id="speicherStatus" style="margin-left:12px"></span>
+    </section>
+  </div>
+</div>
+
+<script>
+const B = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
+const $ = s => document.querySelector(s);
+let cfgZwischen = null, letzteIds = new Set();
+
+async function api(pfad, opt = {}) {
+  const r = await fetch(B + pfad, {credentials:'same-origin', ...opt});
+  if (r.status === 401) { zeigeAnmeldung(); throw new Error('nicht angemeldet'); }
+  return r;
+}
+async function jget(pfad){ return (await api(pfad)).json(); }
+async function jpost(pfad, koerper, methode='POST'){
+  const r = await api(pfad, {method:methode,
+    headers:{'Content-Type':'application/json'},
+    body: koerper === undefined ? null : JSON.stringify(koerper)});
+  return r.json();
+}
+
+/* ---------------------------------------------------------- Anmeldung */
+function zeigeAnmeldung(){ $('#anmeldung').style.display='block'; $('#app').style.display='none'; }
+async function anmelden(){
+  const r = await fetch(B+'api/login', {method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({key: $('#schluessel').value})});
+  if (r.ok) {
+    // In der Android-App den Schlüssel auch nativ hinterlegen — der
+    // Hintergrund-Wächter braucht ihn für die Benachrichtigungen.
+    try { window.AndroidBruecke?.schluesselMerken($('#schluessel').value); } catch(_){}
+    location.reload();
+  }
+  else $('#anmeldefehler').textContent = 'Schlüssel stimmt nicht.';
+}
+$('#schluessel').addEventListener('keydown', e => { if (e.key === 'Enter') anmelden(); });
+
+/* -------------------------------------------------------- Nachrichten */
+function zeitText(ts){
+  const d = new Date(ts*1000), jetzt = new Date();
+  const uhr = d.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+  if (d.toDateString() === jetzt.toDateString()) return 'heute ' + uhr;
+  const gestern = new Date(jetzt); gestern.setDate(jetzt.getDate()-1);
+  if (d.toDateString() === gestern.toDateString()) return 'gestern ' + uhr;
+  return d.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'}) + ' ' + uhr;
+}
+function abzeichen(a){
+  if (a.status === 'Fehler') return '<span class="abzeichen fehler">Fehler</span>';
+  if (a.status && a.status.startsWith('transkribiert')) return '<span class="abzeichen warten">wird geschrieben …</span>';
+  if (!a.gelesen) return '<span class="abzeichen neu">neu</span>';
+  return '';
+}
+function sicher(s){ return (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function ladeNachrichten(){
+  let d; try { d = await jget('api/calls'); } catch { return; }
+  const ziel = $('#nachrichten');
+  if (!d.calls.length){
+    ziel.innerHTML = '<div class="leerzustand"><div>☎</div>'
+      + '<div>Noch keine Nachrichten.</div>'
+      + '<div class="hinweis" style="margin-top:8px">Sobald jemand auf die Anrufannahme '
+      + 'umgeleitet wird, taucht die Nachricht hier auf.</div></div>';
+    return;
+  }
+  ziel.innerHTML = d.calls.map(a => `
+    <article class="karte ${a.gelesen ? '' : 'neu'}">
+      <div class="kopf">
+        <span class="nummer">${sicher(a.caller) || 'Nummer unterdrückt'}</span>
+        ${abzeichen(a)}
+        <span class="wann">${zeitText(a.ts)}${a.seconds ? ' · ' + Math.round(a.seconds) + ' s' : ''}</span>
+      </div>
+      ${a.text ? `<p class="text">${sicher(a.text)}</p>`
+               : `<p class="text leer">${a.status === 'Fehler' ? 'Verarbeitung fehlgeschlagen.'
+                  : 'Keine verständliche Nachricht hinterlassen.'}</p>`}
+      ${a.hatAudio ? `<audio controls preload="none" src="${B}api/calls/${a.id}/audio"></audio>` : ''}
+      <div class="zeile">
+        ${a.gelesen ? '' : `<button class="tat" onclick="alsGelesen('${a.id}')">Als gelesen markieren</button>`}
+        ${a.hatAudio ? `<button class="tat" onclick="nochmal('${a.id}')">Neu verschriftlichen</button>` : ''}
+        <button class="tat gefahr" onclick="loeschen('${a.id}')">Löschen</button>
+      </div>
+    </article>`).join('');
+  document.title = d.ungelesen ? `(${d.ungelesen}) V3D Anrufannahme` : 'V3D Anrufannahme';
+}
+async function alsGelesen(id){ await jpost(`api/calls/${id}/gelesen`, {wert:1}); ladeNachrichten(); }
+async function nochmal(id){ await jpost(`api/calls/${id}/neu-verarbeiten`); ladeNachrichten(); }
+async function loeschen(id){
+  if (!confirm('Diese Nachricht endgültig löschen?')) return;
+  await jpost(`api/calls/${id}`, undefined, 'DELETE'); ladeNachrichten();
+}
+
+/* ------------------------------------------------------ Einstellungen */
+function zeige(welche){
+  const n = welche === 'nachrichten';
+  $('#nachrichten').style.display = n ? 'block' : 'none';
+  $('#einstellungen').style.display = n ? 'none' : 'block';
+  $('#tabNachrichten').classList.toggle('an', n);
+  $('#tabEinstellungen').classList.toggle('an', !n);
+  if (!n) ladeEinstellungen();
+}
+async function ladeEinstellungen(){
+  const c = cfgZwischen = await jget('api/einstellungen');
+  $('#ansageText').value = c.ansage?.text || '';
+  $('#dankeText').value  = c.ansage?.danke || '';
+  $('#elKey').value      = c.elevenlabs?.apiKey || '';
+  $('#mailTo').value     = c.mail?.to || '';
+  $('#mailUser').value   = c.mail?.user || '';
+  $('#mailPass').value   = c.mail?.pass || '';
+  $('#mailHost').value   = c.mail?.smtpHost || '';
+  $('#sipRegistrar').value = c.asterisk?.registrar || '';
+  $('#sipUser').value    = c.asterisk?.sipUser || '';
+  $('#sipPass').value    = c.asterisk?.sipPass || '';
+  $('#maxSec').value     = c.asterisk?.maxSeconds || 180;
+  if (c.elevenlabs?.voiceId){
+    const s = $('#stimme');
+    if (![...s.options].some(o => o.value === c.elevenlabs.voiceId))
+      s.add(new Option('gespeicherte Stimme', c.elevenlabs.voiceId, true, true));
+    s.value = c.elevenlabs.voiceId;
+  }
+}
+async function speichern(){
+  const s = $('#speicherStatus'); s.textContent = 'speichere …';
+  await jpost('api/einstellungen', {
+    ansage:{ text: $('#ansageText').value, danke: $('#dankeText').value },
+    elevenlabs:{ apiKey: $('#elKey').value, voiceId: $('#stimme').value },
+    mail:{ to: $('#mailTo').value, user: $('#mailUser').value,
+           pass: $('#mailPass').value, smtpHost: $('#mailHost').value },
+    asterisk:{ registrar: $('#sipRegistrar').value, sipUser: $('#sipUser').value,
+               sipPass: $('#sipPass').value, maxSeconds: +$('#maxSec').value }
+  });
+  s.textContent = 'gespeichert.'; setTimeout(() => s.textContent = '', 2500);
+}
+async function ladeStimmen(){
+  const st = $('#ansageStatus'); st.textContent = 'lade Stimmen …';
+  await speichern();
+  const d = await jget('api/stimmen');
+  if (d.fehler){ st.textContent = 'Fehler: ' + d.fehler; return; }
+  const s = $('#stimme'); s.innerHTML = '';
+  d.stimmen.forEach(v => s.add(new Option(
+    `${v.name}${v.labels?.language ? ' · ' + v.labels.language : ''}`, v.id)));
+  if (cfgZwischen?.elevenlabs?.voiceId) s.value = cfgZwischen.elevenlabs.voiceId;
+  st.textContent = `${d.stimmen.length} Stimmen geladen — eine auswählen und „Ansage neu erzeugen“.`;
+}
+async function baueAnsage(){
+  const st = $('#ansageStatus'); st.textContent = 'erzeuge Ansage …';
+  await speichern();
+  const d = await jpost('api/ansage-bauen');
+  st.textContent = d.fehler ? 'Fehler: ' + d.fehler
+    : 'Ansage erzeugt. Jetzt noch: sudo ~/v3dcall/asterisk/install.sh';
+}
+function hoereAnsage(){
+  const a = $('#vorschau');
+  a.src = B + 'api/ansage-anhoeren?name=ansage&t=' + Date.now();
+  a.style.display = 'block'; a.play().catch(()=>{});
+}
+
+/* --------------------------------------------------------------- Push */
+function b64(s){
+  const p = '='.repeat((4 - s.length % 4) % 4);
+  const roh = atob((s + p).replace(/-/g,'+').replace(/_/g,'/'));
+  return Uint8Array.from([...roh].map(c => c.charCodeAt(0)));
+}
+async function pushZustand(){
+  const el = $('#pushStatus');
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)){
+    el.innerHTML = '<span class="punkt schlecht"></span> Dieser Browser kann keine Push-Nachrichten.'; return;
+  }
+  const reg = await navigator.serviceWorker.getRegistration(B);
+  const sub = reg && await reg.pushManager.getSubscription();
+  el.innerHTML = sub ? '<span class="punkt gut"></span> Push ist eingeschaltet.'
+                     : '<span class="punkt"></span> Push ist aus.';
+}
+async function pushAnmelden(){
+  const el = $('#pushStatus');
+  try{
+    if (Notification.permission !== 'granted'
+        && await Notification.requestPermission() !== 'granted'){
+      el.textContent = 'Benachrichtigungen wurden abgelehnt.'; return;
+    }
+    const {key} = await jget('api/push/key');
+    if (!key){ el.textContent = 'Noch kein Push-Schlüssel auf dem Server erzeugt.'; return; }
+    const reg = await navigator.serviceWorker.register(B + 'sw.js', {scope: B});
+    await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.subscribe(
+      {userVisibleOnly:true, applicationServerKey: b64(key)});
+    await jpost('api/push/anmelden', sub.toJSON());
+    pushZustand();
+  } catch(e){ el.textContent = 'Fehler: ' + e.message; }
+}
+async function pushTesten(){
+  const d = await jpost('api/push/test');
+  $('#pushStatus').textContent = `Test an ${d.zugestellt} Gerät(e) geschickt.`;
+}
+
+/* --------------------------------------------------------------- Start */
+(async function(){
+  try { await jget('api/calls'); } catch { return; }
+  $('#app').style.display = 'block';
+  ladeNachrichten();
+  pushZustand();
+  setInterval(ladeNachrichten, 15000);
+  if ('serviceWorker' in navigator)
+    navigator.serviceWorker.register(B + 'sw.js', {scope: B}).catch(()=>{});
+})();
+</script>
+</body>
+</html>
