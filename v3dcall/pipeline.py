@@ -76,6 +76,28 @@ def sende_mail(anruf):
     nummer = _nummer_lesbar(anruf.get("caller"))
     text = (anruf.get("text") or "").strip()
 
+    gespraech = "\nAnrufer:" in ("\n" + text) and "Assistent:" in text
+    if gespraech:
+        betreff = f"Gespräch mit {nummer}"
+        koerper = (
+            f"Anruf am {wann}\n"
+            f"Von: {nummer}\n"
+            f"Dauer: {anruf.get('seconds', 0):.0f} Sekunden\n"
+            f"\n{'-' * 52}\n\n{text}\n\n{'-' * 52}\n\n"
+            "Die Aufnahme der Anruferseite hängt an dieser E-Mail.\n")
+        msg = EmailMessage()
+        name, adresse = parseaddr(m.get("from") or m["user"])
+        absender = adresse or m["user"]
+        msg["From"] = formataddr((name or "V3D Anrufannahme", absender))
+        msg["To"] = m["to"]
+        msg["Subject"] = betreff
+        msg["Date"] = formatdate(anruf["ts"], localtime=True)
+        msg["Message-ID"] = make_msgid(domain=absender.rsplit("@", 1)[-1])
+        msg.set_content(koerper)
+        _haenge_audio_an(msg, m, anruf, wann)
+        _versende(m, msg)
+        return betreff
+
     if text:
         betreff = f"Neue Nachricht von {nummer}"
         koerper = (
@@ -107,24 +129,33 @@ def sende_mail(anruf):
     msg["Message-ID"] = make_msgid(domain=absender.rsplit("@", 1)[-1])
     msg.set_content(koerper)
 
-    audio = anruf.get("audio")
-    if m.get("attachAudio", True) and audio and os.path.exists(audio):
-        anhang = _wandle_mp3(audio)
-        with open(anhang, "rb") as fh:
-            daten = fh.read()
-        endung = os.path.splitext(anhang)[1].lstrip(".").lower()
-        # "audio/mp3" ist kein gueltiger MIME-Typ — manche Postfaecher
-        # zeigen den Anhang dann nicht als abspielbar an.
-        subtyp = {"mp3": "mpeg", "wav": "wav", "ogg": "ogg"}.get(endung, endung)
-        stempel = time.strftime("%Y-%m-%d_%H-%M", time.localtime(anruf["ts"]))
-        msg.add_attachment(daten, maintype="audio", subtype=subtyp,
-                           filename=f"Nachricht_{stempel}.{endung}")
+    _haenge_audio_an(msg, m, anruf, wann)
+    _versende(m, msg)
+    return betreff
 
+
+def _haenge_audio_an(msg, m, anruf, wann):
+    audio = anruf.get("audio")
+    if not (m.get("attachAudio", True) and audio and os.path.exists(audio)):
+        return
+    anhang = _wandle_mp3(audio)
+    with open(anhang, "rb") as fh:
+        daten = fh.read()
+    endung = os.path.splitext(anhang)[1].lstrip(".").lower()
+    # "audio/mp3" ist kein gueltiger MIME-Typ — manche Postfaecher
+    # zeigen den Anhang dann nicht als abspielbar an.
+    subtyp = {"mp3": "mpeg", "wav": "wav", "ogg": "ogg"}.get(endung, endung)
+    stempel = time.strftime("%Y-%m-%d_%H-%M", time.localtime(anruf["ts"]))
+    msg.add_attachment(daten, maintype="audio", subtype=subtyp,
+                       filename=f"Nachricht_{stempel}.{endung}")
+
+
+def _versende(m, msg):
     ctx = ssl.create_default_context()
-    with smtplib.SMTP_SSL(m["smtpHost"], int(m.get("smtpPort", 465)), context=ctx, timeout=60) as s:
+    with smtplib.SMTP_SSL(m["smtpHost"], int(m.get("smtpPort", 465)), context=ctx,
+                          timeout=60) as s:
         s.login(m["user"], m["pass"])
         s.send_message(msg)
-    return betreff
 
 
 # --------------------------------------------------------------------- Push
@@ -165,12 +196,69 @@ def sende_push(anruf):
 
 # ------------------------------------------------------------ Gesamtablauf
 
+def _gespraech_einsammeln(cid):
+    """Im Gespraechsmodus liegen die Aufnahmen rundenweise im Spool.
+
+    Liefert (Mitschrift, zusammengefuegte Aufnahme) — oder (None, None),
+    wenn es kein Gespraech war.
+    """
+    import glob
+    import dialog
+    mitschrift = dialog.verlauf_text(cid)
+    if not mitschrift:
+        return None, None
+
+    runden = sorted(glob.glob(f"/var/spool/v3dcall/{cid}-r*.wav"))
+    zusammen = None
+    if runden:
+        liste = os.path.join(core.REC, f"{cid}-teile.txt")
+        with open(liste, "w", encoding="utf-8") as fh:
+            for r in runden:
+                fh.write(f"file '{r}'\n")
+        zusammen = os.path.join(core.REC, f"{cid}.wav")
+        try:
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat",
+                            "-safe", "0", "-i", liste, "-c", "copy", zusammen],
+                           check=True)
+        except subprocess.CalledProcessError:
+            zusammen = None
+        finally:
+            os.remove(liste)
+    for r in runden:                      # Spool aufraeumen
+        try:
+            os.remove(r)
+        except OSError:
+            pass
+    for a in glob.glob(f"/var/spool/v3dcall/{cid}-antwort-*"):
+        try:
+            os.remove(a)
+        except OSError:
+            pass
+    dialog.beende(cid)
+    return mitschrift, zusammen
+
+
 def verarbeite(cid):
     """Kompletter Durchlauf für einen Anruf. Läuft im Hintergrund-Thread."""
     anruf = core.get_call(cid)
     if not anruf:
         return
     try:
+        # War es ein Gespraech, ist die Mitschrift schon da — dann muss
+        # Whisper nicht noch einmal ueber alles laufen.
+        mitschrift, zusammen = _gespraech_einsammeln(cid)
+        if mitschrift:
+            if zusammen and os.path.exists(zusammen):
+                core.update_call(cid, audio=zusammen, seconds=dauer(zusammen))
+                anruf["audio"] = zusammen
+            core.update_call(cid, text=mitschrift, status="Gespräch")
+            anruf["text"] = mitschrift
+            anruf["seconds"] = core.get_call(cid)["seconds"]
+            sende_mail(anruf)
+            core.update_call(cid, gemailt=1, status="fertig")
+            sende_push(anruf)
+            return
+
         pfad = anruf.get("audio") or ""
         if pfad and os.path.exists(pfad):
             core.update_call(cid, status="transkribiert gerade",

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#141821">
+<title>Wissen des Assistenten</title>
+<style>
+:root{--bg:#141821;--flaeche:#1d222e;--flaeche2:#252b39;--rand:#333b4d;
+  --text:#e8ecf4;--schwach:#9aa4bb;--akzent:#4f8cff;--gut:#3ecf8e;--warn:#f0a83c}
+*{box-sizing:border-box}
+html,body{overflow-x:hidden;max-width:100%}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:20px 16px 60px}
+.wrap{max-width:820px;margin:0 auto}
+h1{font-size:20px;margin:0 0 6px}
+p.hinweis{color:var(--schwach);font-size:14px;margin:0 0 14px}
+.karte{background:var(--flaeche);border:1px solid var(--rand);border-radius:14px;
+  padding:16px 18px;margin-bottom:14px}
+h2{font-size:15px;margin:0 0 10px;color:var(--schwach);font-weight:600}
+textarea{width:100%;min-height:340px;background:var(--bg);border:1px solid var(--rand);
+  color:var(--text);border-radius:10px;padding:12px 14px;
+  font:14px/1.65 ui-monospace,"SF Mono",Menlo,Consolas,monospace;resize:vertical}
+button{background:var(--flaeche2);border:1px solid var(--rand);color:var(--text);
+  padding:10px 16px;border-radius:10px;font:inherit;font-size:14px;cursor:pointer}
+button:hover:not(:disabled){border-color:var(--akzent)}
+button.haupt{background:var(--akzent);border-color:var(--akzent);color:#fff;font-weight:600}
+.zeile{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
+a{color:var(--akzent)}
+code{background:var(--flaeche2);padding:1px 6px;border-radius:5px;font-size:13px}
+.vorrang{background:rgba(62,207,142,.08);border-color:rgba(62,207,142,.35)}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>Was der Assistent weiß</h1>
+<p class="hinweis">Zwei Quellen. Wo sie sich widersprechen, gilt deine Datei —
+nicht die Website.</p>
+
+<div class="karte vorrang">
+  <h2>Deine Korrekturen und Ergänzungen &nbsp;·&nbsp; haben Vorrang</h2>
+  <p class="hinweis">Alles, was hier steht, überstimmt die Website. Schreib
+     einfach in ganzen Sätzen, wie du es jemandem erklären würdest. Besonders
+     wichtig: <strong>was er NICHT sagen soll</strong> und was sich seit dem
+     letzten Website-Stand geändert hat.</p>
+  <textarea id="korrekturen" spellcheck="true"></textarea>
+  <div class="zeile">
+    <button class="haupt" onclick="speichern()">Speichern</button>
+    <span class="hinweis" id="status"></span>
+  </div>
+</div>
+
+<div class="karte">
+  <h2>Stand der Website</h2>
+  <p class="hinweis" id="websiteStand">wird geladen …</p>
+  <div class="zeile">
+    <button onclick="holen()">Website neu einlesen</button>
+    <span class="hinweis" id="holStatus"></span>
+  </div>
+</div>
+
+<p class="hinweis"><a href="./">Zurück zur Anrufannahme</a></p>
+</div>
+
+<script>
+const B = location.pathname.replace(/\/wissen\/?$/, '/');
+const $ = s => document.querySelector(s);
+
+const VORLAGE = `# Korrekturen und Ergänzungen
+
+## Das darf der Assistent NICHT
+- Keine Termine verbindlich zusagen. Immer nur notieren, dass Interesse besteht.
+- Keine Preise nennen, die hier oder auf der Website nicht ausdrücklich stehen.
+- Nichts über Liefer- oder Fertigungszeiten sagen.
+
+## Aktuelles
+(Hier eintragen, was sich geändert hat und noch nicht auf der Website steht.)
+
+## Häufige Fragen am Telefon
+Frage: Kann ich auch einzelne Teile drucken lassen?
+Antwort: (deine Antwort hier)
+`;
+
+async function laden(){
+  const r = await fetch(B + 'api/wissen', {credentials:'same-origin'});
+  if (!r.ok){ $('#status').textContent = 'Nicht angemeldet — Seite neu laden.'; return; }
+  const d = await r.json();
+  $('#korrekturen').value = d.korrekturen || VORLAGE;
+  $('#websiteStand').textContent = d.websiteZeichen
+    ? `${d.websiteZeichen.toLocaleString('de-DE')} Zeichen, zuletzt geholt am ${d.websiteStand}.`
+    : 'Noch nicht eingelesen.';
+}
+async function speichern(){
+  $('#status').textContent = 'speichere …';
+  await fetch(B + 'api/wissen', {method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({korrekturen: $('#korrekturen').value})});
+  $('#status').textContent = 'gespeichert — gilt ab dem nächsten Anruf.';
+  setTimeout(() => $('#status').textContent = '', 4000);
+}
+async function holen(){
+  $('#holStatus').textContent = 'lese die Website …';
+  const r = await fetch(B + 'api/wissen/website-holen',
+    {method:'POST', credentials:'same-origin'});
+  const d = await r.json();
+  $('#holStatus').textContent = d.fehler ? 'Fehler: ' + d.fehler
+    : `${d.seiten} Seiten, ${d.zeichen.toLocaleString('de-DE')} Zeichen übernommen.`;
+  laden();
+}
+laden();
+</script>
+</body>
+</html>

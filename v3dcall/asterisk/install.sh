@@ -25,6 +25,11 @@ SILENCE="$(lies asterisk.silenceSeconds)"
 TRANSPORT="$(lies asterisk.transport)"
 EXTERN="$(lies asterisk.externalAddress)"
 EXPIRE="$(lies asterisk.expiration)"
+DIALOG="$(lies dialog.aktiv | tr "[:upper:]" "[:lower:]")"
+[ "$DIALOG" = "true" ] && DIALOG=1 || DIALOG=0
+MAXRUNDEN="$(lies dialog.maxRunden)"
+MAXSEKRUNDE="$(lies dialog.maxSekundenProRunde)"
+STILLE="$(lies dialog.stilleSekunden)"
 LOCALNET="$(lies asterisk.localNet)"
 
 if [ -z "$SIPPASS" ]; then
@@ -49,9 +54,14 @@ lies notifyToken > /etc/v3dcall.token
 chown root:asterisk /etc/v3dcall.token
 chmod 0640 /etc/v3dcall.token
 
+# AGI-Skript fuer den Gespraechsmodus. Muss in agi-bin liegen und ohne
+# Zugriff auf /home/v3da auskommen — das ist fuer asterisk gesperrt.
+install -d -o root -g root -m 0755 /usr/share/asterisk/agi-bin
+install -m 0755 "$BASE/bin/v3dcall-agi" /usr/share/asterisk/agi-bin/v3dcall-agi
+
 echo "==> 4/6  Ansagen bereitstellen ($SOUNDS)"
 install -d -o asterisk -g asterisk -m 0755 "$SOUNDS"
-for n in ansage danke beep; do
+for n in ansage danke beep dialog-begruessung nachfrage stoerung; do
   if [ -f "$BASE/data/sounds/$n.wav" ]; then
     install -o asterisk -g asterisk -m 0644 "$BASE/data/sounds/$n.wav" "$SOUNDS/$n.wav"
     echo "    $n.wav uebernommen"
@@ -71,12 +81,20 @@ sed -e "s|@@TRANSPORT@@|$TRANSPORT|g" \
     -e "s|@@REGISTRAR@@|$REGISTRAR|g" \
     -e "s|@@CLIENTURI@@|sip:${SIPUSER}@${REGISTRAR}|g" \
     -e "s|@@USER@@|$SIPUSER|g" \
+    -e "s|@@DIALOG@@|$DIALOG|g" \
+    -e "s|@@MAXRUNDEN@@|$MAXRUNDEN|g" \
+    -e "s|@@MAXSEKRUNDE@@|$MAXSEKRUNDE|g" \
+    -e "s|@@STILLE@@|$STILLE|g" \
     -e "s|@@PASS@@|$SIPPASS|g" \
     "$BASE/asterisk/pjsip_v3dcall.conf" > "$ETC/pjsip_v3dcall.conf"
 chown root:asterisk "$ETC/pjsip_v3dcall.conf"; chmod 0640 "$ETC/pjsip_v3dcall.conf"
 
 sed -e "s|@@MAXSEC@@|$MAXSEC|g" -e "s|@@SILENCE@@|$SILENCE|g" \
     -e "s|@@USER@@|$SIPUSER|g" \
+    -e "s|@@DIALOG@@|$DIALOG|g" \
+    -e "s|@@MAXRUNDEN@@|$MAXRUNDEN|g" \
+    -e "s|@@MAXSEKRUNDE@@|$MAXSEKRUNDE|g" \
+    -e "s|@@STILLE@@|$STILLE|g" \
     "$BASE/asterisk/extensions_v3dcall.conf" > "$ETC/extensions_v3dcall.conf"
 chown root:asterisk "$ETC/extensions_v3dcall.conf"; chmod 0640 "$ETC/extensions_v3dcall.conf"
 

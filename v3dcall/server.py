@@ -368,6 +368,91 @@ a{{color:#4f8cff}}
 </body></html>""", mimetype="text/html; charset=utf-8")
 
 
+# ------------------------------------------------------------- Gespraech
+
+@app.post("/api/dialog")
+def dialog_runde():
+    """Eine Gespraechsrunde. Wird vom AGI-Skript in Asterisk aufgerufen."""
+    if not lokal():
+        return jsonify(fehler="nur lokal"), 403
+    import dialog
+    d = request.get_json(silent=True) or request.form.to_dict() or {}
+    cid = re.sub(r"[^A-Za-z0-9._-]", "", (d.get("id") or ""))[:64]
+    aufnahme = spool_pfad((d.get("file") or "").strip())
+    ziel = os.path.join(SPOOL, f"{cid}-antwort-{re.sub(r'[^0-9]', '', d.get('runde') or '0')}")
+    if not cid or not aufnahme:
+        return jsonify(fehler="id oder Aufnahme fehlt"), 400
+    try:
+        r = dialog.runde(cid, aufnahme, ziel)
+    except Exception as e:
+        # Am Telefon darf ein Fehler nicht in Stille enden — der Anrufer
+        # bekommt einen Hinweis und landet im normalen Anrufbeantworter.
+        app.logger.exception("Gesprächsrunde fehlgeschlagen")
+        return jsonify(fehler=str(e)[:200], ende=True), 200
+    r["antwortDatei"] = os.path.splitext(ziel)[0] if not r.get("leer") else ""
+    return jsonify(**r)
+
+
+@app.post("/api/dialog/begruessung")
+def dialog_begruessung():
+    """Begruessung fuer den Gespraechsmodus erzeugen (einmalig, gecacht)."""
+    if (w := wache()):
+        return w
+    import dialog
+    text = core.cfg("dialog", "begruessung", default="")
+    if not text:
+        return jsonify(fehler="kein Begrüßungstext hinterlegt"), 400
+    try:
+        p = tts.baue("dialog-begruessung", text)
+        return jsonify(ok=True, datei=os.path.basename(p["wav"]))
+    except Exception as e:
+        return jsonify(fehler=str(e)), 400
+
+
+@app.get("/wissen")
+def wissen_seite():
+    if (w := wache()):
+        return w
+    return send_file(os.path.join(WEB, "wissen.html"))
+
+
+@app.get("/api/wissen")
+def wissen_lesen():
+    if (w := wache()):
+        return w
+    import wissen as W
+    return jsonify(
+        korrekturen=(open(W.KORREKTUREN, encoding="utf-8").read()
+                     if os.path.exists(W.KORREKTUREN) else ""),
+        websiteZeichen=(os.path.getsize(W.WEBSITE) if os.path.exists(W.WEBSITE) else 0),
+        websiteStand=(time.strftime("%d.%m.%Y %H:%M",
+                      time.localtime(os.path.getmtime(W.WEBSITE)))
+                      if os.path.exists(W.WEBSITE) else ""))
+
+
+@app.post("/api/wissen")
+def wissen_speichern():
+    if (w := wache()):
+        return w
+    import wissen as W
+    os.makedirs(W.WISSEN, exist_ok=True)
+    with open(W.KORREKTUREN, "w", encoding="utf-8") as fh:
+        fh.write((request.get_json(silent=True) or {}).get("korrekturen", ""))
+    return jsonify(ok=True)
+
+
+@app.post("/api/wissen/website-holen")
+def wissen_holen():
+    if (w := wache()):
+        return w
+    import wissen as W
+    try:
+        inhalt = W.hole_website()
+        return jsonify(ok=True, zeichen=len(inhalt), seiten=inhalt.count("# Seite:"))
+    except Exception as e:
+        return jsonify(fehler=str(e)), 400
+
+
 # ------------------------------------------------------- Eigene Stimme
 
 STIMME = os.path.join(core.DATA, "stimme")

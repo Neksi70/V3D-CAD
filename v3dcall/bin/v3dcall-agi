@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Fuehrt das Telefongespraech — laeuft in Asterisk als AGI-Skript.
+
+Bewusst nur Standardbibliothek: das Skript laeuft als Benutzer 'asterisk',
+und /home/v3da ist fuer den nicht lesbar. Alles Schwere (Whisper, Claude,
+ElevenLabs) macht der V3D-Dienst auf 127.0.0.1:8786.
+"""
+import json
+import os
+import sys
+import urllib.request
+
+DIENST = "http://127.0.0.1:8786"
+SPOOL = "/var/spool/v3dcall"
+# Der Token liegt in /etc/v3dcall.token (root:asterisk, 0640). Im Betrieb
+# laeuft dieses Skript als asterisk und darf ihn lesen. Die Umgebungsvariable
+# ist nur fuer Tests von der Kommandozeile aus.
+TOKEN = os.environ.get("V3DCALL_TOKEN", "")
+if not TOKEN:
+    try:
+        with open("/etc/v3dcall.token") as fh:
+            TOKEN = fh.read().strip()
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------- AGI-Grundlagen
+
+def agi(befehl):
+    """Befehl an Asterisk schicken und Ergebniszeile zurueckgeben."""
+    sys.stdout.write(befehl + "\n")
+    sys.stdout.flush()
+    antwort = sys.stdin.readline().strip()
+    return antwort
+
+
+def ergebnis(zeile):
+    """'200 result=-1' -> -1 ; -1 heisst hier: Anrufer hat aufgelegt."""
+    for teil in zeile.split():
+        if teil.startswith("result="):
+            wert = teil.split("=", 1)[1].strip("()")
+            try:
+                return int(wert)
+            except ValueError:
+                return 0
+    return 0
+
+
+def sag(text):
+    agi('VERBOSE "%s" 1' % text.replace('"', "'"))
+
+
+def spiele(datei_ohne_endung):
+    """Datei abspielen. Liefert False, wenn aufgelegt wurde."""
+    return ergebnis(agi('STREAM FILE %s ""' % datei_ohne_endung)) != -1
+
+
+def nimm_auf(ziel_ohne_endung, max_sekunden, stille_sekunden):
+    agi("RECORD FILE %s wav \"\" %d 0 s=%d"
+        % (ziel_ohne_endung, max_sekunden * 1000, stille_sekunden))
+    return ziel_ohne_endung + ".wav"
+
+
+def hole(pfad, nutzlast):
+    daten = json.dumps(nutzlast).encode()
+    anfrage = urllib.request.Request(
+        DIENST + pfad, data=daten,
+        headers={"Content-Type": "application/json", "X-V3D-Notify": TOKEN})
+    with urllib.request.urlopen(anfrage, timeout=60) as r:
+        return json.loads(r.read().decode())
+
+
+def rueckfall(cid):
+    """Wenn das Gespraech nicht laeuft, wenigstens eine Nachricht aufnehmen.
+
+    Ein Anrufer, der wegen eines Ausfalls einfach abgewuergt wird, ist
+    schlimmer als gar kein Assistent. Darum hier der klassische
+    Anrufbeantworter als Netz.
+    """
+    sag("V3D faellt auf den Anrufbeantworter zurueck")
+    if not spiele("/var/lib/asterisk/sounds/v3d/stoerung"):
+        return
+    if not spiele("/var/lib/asterisk/sounds/v3d/beep"):
+        return
+    nimm_auf("%s/%s" % (SPOOL, cid), 180, 4)
+    spiele("/var/lib/asterisk/sounds/v3d/danke")
+    agi("HANGUP")
+
+
+# ------------------------------------------------------------------- Ablauf
+
+def main():
+    # Asterisk schickt die Kanaldaten, abgeschlossen von einer Leerzeile
+    umgebung = {}
+    while True:
+        zeile = sys.stdin.readline().strip()
+        if not zeile:
+            break
+        if ":" in zeile:
+            k, v = zeile.split(":", 1)
+            umgebung[k.strip()] = v.strip()
+
+    cid = umgebung.get("agi_uniqueid", "unbekannt")
+    max_runden = int(sys.argv[1]) if len(sys.argv) > 1 else 12
+    max_sek = int(sys.argv[2]) if len(sys.argv) > 2 else 30
+    stille = int(sys.argv[3]) if len(sys.argv) > 3 else 2
+
+    agi("ANSWER")
+    agi("EXEC Wait 1")
+
+    if not spiele("/var/lib/asterisk/sounds/v3d/dialog-begruessung"):
+        return
+
+    leer_hintereinander = 0
+    for runde in range(1, max_runden + 1):
+        aufnahme = nimm_auf("%s/%s-r%d" % (SPOOL, cid, runde), max_sek, stille)
+        if not os.path.exists(aufnahme) or os.path.getsize(aufnahme) < 2000:
+            leer_hintereinander += 1
+            if leer_hintereinander >= 2:
+                break
+            if not spiele("/var/lib/asterisk/sounds/v3d/nachfrage"):
+                return
+            continue
+
+        try:
+            antw = hole("/api/dialog", {"id": cid, "runde": str(runde), "file": aufnahme})
+        except Exception as e:
+            sag("V3D Dialog Fehler: %s" % e)
+            return rueckfall(cid)
+
+        if antw.get("leer"):
+            leer_hintereinander += 1
+            if leer_hintereinander >= 2:
+                break
+            if not spiele("/var/lib/asterisk/sounds/v3d/nachfrage"):
+                return
+            continue
+        leer_hintereinander = 0
+
+        sag("V3D Runde %d: %s" % (runde, (antw.get("frage") or "")[:80]))
+        datei = antw.get("antwortDatei")
+        if datei and not spiele(datei):
+            return
+        if antw.get("fehler"):
+            sag("V3D Dialog Fehler: %s" % antw["fehler"])
+            return rueckfall(cid)
+        if antw.get("ende"):
+            break
+
+    spiele("/var/lib/asterisk/sounds/v3d/danke")
+    agi("HANGUP")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        try:
+            sag("V3D AGI Ausnahme: %s" % e)
+        except Exception:
+            pass
