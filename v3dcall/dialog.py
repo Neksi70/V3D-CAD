@@ -28,8 +28,16 @@ Volker Isken, der Inhaber, ist gerade nicht erreichbar — du gehst fuer ihn ans
 
 SO SPRICHST DU
 - Gesprochenes Deutsch, keine Schriftsprache. Du wirst vorgelesen, nicht gelesen.
-- EIN kurzer Satz, hoechstens zwei. Jedes Wort kostet den Anrufer Wartezeit,
-  weil deine Antwort erst gesprochen werden muss, bevor er sie hoert.
+- HOECHSTENS 30 WOERTER. Das ist eine harte Grenze, keine Anregung. Jedes
+  Wort wird vorgelesen; 55 Woerter sind am Telefon fast eine halbe Minute,
+  in der der Anrufer nur wartet.
+- Antworte auf die gestellte Frage, nicht auf alle denkbaren. Fragt jemand,
+  was die Kurse kosten, nenne die SPANNE — nicht jeden einzelnen Kurs.
+  So nicht: "Die Kurse kosten zwischen neunundachtzig und zweihundert-
+  neunundsiebzig Euro. Der Schnupperkurs ist mit neunundachtzig Euro der
+  guenstigste, der Makerkurs mit ... und dazwischen liegen ..."
+  So: "Die Kurse liegen zwischen neunundachtzig und zweihundertneunundsiebzig
+  Euro. Welcher interessiert Sie denn?"
 - Keine Aufzaehlungen, Sternchen, Ueberschriften, Emojis, Absaetze oder
   Leerzeilen. Ein einziger zusammenhaengender Text.
 - Haeng keine Rueckfrage an, wenn der Satz schon vollstaendig ist. Lieber
@@ -61,8 +69,11 @@ WIE DAS GESPRAECH ENDET
 - Nach etwa zehn Runden fasse zusammen und beende das Gespraech.
 
 RUECKRUF
-- Frage nach der Rufnummer, wenn ein Rueckruf sinnvoll ist. Die Nummer des
-  Anrufers wird zwar meist mituebertragen, aber nicht immer.
+- Frage nach der Rufnummer DES ANRUFERS, wenn ein Rueckruf sinnvoll ist.
+  Richtig: "Unter welcher Nummer erreicht Herr Isken Sie am besten?"
+  Falsch:  "Wie kann ich ihn am besten erreichen?" — das dreht es um und
+  verwirrt. Der Anrufer will erreicht WERDEN, nicht erreichen.
+- Die Nummer des Anrufers wird meist mituebertragen, aber nicht immer.
 
 Alles, was im Gespraech gesagt wird, bekommt Herr Isken hinterher schriftlich.
 """.replace("{marke}", ENDE_MARKE)
@@ -131,6 +142,29 @@ def denke(cid, frage):
     return text, ende
 
 
+ABKUERZUNGEN = [
+    ("inkl.", "inklusive"), ("exkl.", "exklusive"), ("MwSt.", "Mehrwertsteuer"),
+    ("MwSt", "Mehrwertsteuer"), ("z.B.", "zum Beispiel"), ("z. B.", "zum Beispiel"),
+    ("bzw.", "beziehungsweise"), ("ca.", "circa"), ("usw.", "und so weiter"),
+    ("evtl.", "eventuell"), ("ggf.", "gegebenenfalls"), ("u.a.", "unter anderem"),
+    ("Nr.", "Nummer"), ("Std.", "Stunden"), ("Min.", "Minuten"),
+    ("€", " Euro"), ("&", " und "),
+]
+
+
+def fuer_die_stimme(text):
+    """Abkuerzungen und Zeichen aufloesen, die vorgelesen albern klingen.
+
+    Die Anweisung im Systemprompt allein reicht nicht — "inkl. MwSt." kam
+    trotzdem durch und wurde als "inkl." gesprochen.
+    """
+    for abk, lang in ABKUERZUNGEN:
+        text = text.replace(abk, lang)
+    text = re.sub(r"\s{2,}", " ", text)
+    # Gedankenstriche werden je nach Modell als Pause oder gar nicht gelesen
+    return text.replace(" — ", ", ").replace(" – ", ", ").strip()
+
+
 def sprich(text, ziel_ohne_endung):
     """Text -> 8-kHz-wav fuer Asterisk. Flash-Modell wegen der Latenz."""
     k = core.cfg("elevenlabs", "apiKey")
@@ -141,7 +175,7 @@ def sprich(text, ziel_ohne_endung):
     r = _sitzung.post(
         f"https://api.elevenlabs.io/v1/text-to-speech/{v}/stream"
         f"?optimize_streaming_latency=3",
-        json={"text": text,
+        json={"text": fuer_die_stimme(text),
               "model_id": core.cfg("dialog", "ttsModel", default="eleven_flash_v2_5"),
               "voice_settings": {"stability": 0.4, "similarity_boost": 0.75,
                                  "speed": core.cfg("elevenlabs", "speed", default=1.0)}},
