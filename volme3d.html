@@ -474,6 +474,10 @@ body.devmode .dev-only{display:flex!important}
   background:rgba(249,115,22,.08);pointer-events:none;
   z-index:35;display:none;
 }
+/* Freiform-Auswahl („Lasso"): frei gezogener Rahmen statt Rechteck */
+#lasso-svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:35;display:none}
+#lasso-svg path{fill:rgba(249,115,22,.10);stroke:var(--acc);stroke-width:1.5;
+  stroke-linejoin:round;stroke-dasharray:5 4}
 #dim-handles{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:25}
 /* Zeiger steht auf einem Pfeil des Verschiebe-Gizmos → Anfasser lassen durch */
 #dim-handles.gizmo-first > *{pointer-events:none!important}
@@ -1169,7 +1173,7 @@ const firebaseConfig = {
   <!-- Zeile 0: Schwarze Kopfleiste im V3D-Slicer-Look (Branding + Konto) -->
   <div id="tb-r0">
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>V3D<span style="color:#F97316"> CAD</span></span></div>
-    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.52<div id="version-dot"></div></div>
+    <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.53<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="r0-spacer"></div>
     <div id="beta-fb" onclick="_betaOpen()" title="Beta-Feedback: Fehler oder Idee melden">💬 Feedback</div>
@@ -1413,6 +1417,13 @@ const firebaseConfig = {
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="1" width="5" height="5" rx="1"/><rect x="10" y="10" width="5" height="5" rx="1"/><line x1="6" y1="6" x2="10" y2="10"/></svg>
     <span class="tip">Skalieren (R · Shift=proportional)</span>
   </div>
+  <div class="lt" id="lt-lasso" onclick="toggleLasso()">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+      <path d="M8 2.2c3.2 0 5.8 1.7 5.8 3.9S11.2 10 8 10 2.2 8.3 2.2 6.1 4.8 2.2 8 2.2z"/>
+      <path d="M5.6 9.4c-.5 1.5-.2 2.7.5 3.3"/><circle cx="6.4" cy="13.6" r="1.2"/>
+    </svg>
+    <span class="tip">Freiform-Auswahl (Lasso) — frei um mehrere Teile herumziehen</span>
+  </div>
   <div class="lsep"></div>
   <div class="lt" onclick="smartDuplicate()">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="4" width="9" height="9" rx="1"/><rect x="6" y="1" width="9" height="9" rx="1" fill="white"/></svg>
@@ -1480,6 +1491,7 @@ const firebaseConfig = {
   <canvas id="c3d"></canvas>
   <svg id="rov" class="dim-line-svg"></svg>
   <div id="sel-box"></div>
+  <svg id="lasso-svg"><path d=""></path></svg>
   <div id="img-drop-hint">🖼️ Bild hier ablegen</div>
   <div id="text-snap-hint"></div>
   <div id="vp-ctxmenu">
@@ -1520,6 +1532,7 @@ const firebaseConfig = {
     <button class="skt" data-tool="arc"     onclick="_skSetTool('arc')"     title="Bogen: Mitte → Start → Ende"><span class="ski">⌒</span><span class="skl">Bogen</span><span class="skk">A</span></button>
     <button class="skt" data-tool="ellipse" onclick="_skSetTool('ellipse')" title="Ellipse"><span class="ski">⬭</span><span class="skl">Ellipse</span><span class="skk">E</span></button>
     <button class="skt" data-tool="spline"  onclick="_skSetTool('spline')"  title="Spline durch Punkte"><span class="ski">∿</span><span class="skl">Spline</span><span class="skk">I</span></button>
+    <button class="skt" data-tool="free"    onclick="_skSetTool('free')"    title="Freihand: Maustaste gedrückt halten und zeichnen wie mit dem Stift — die Linie wird geglättet. Endest du nahe am Anfang, schließt sich die Kontur automatisch"><span class="ski">✎</span><span class="skl">Freihand</span><span class="skk">F</span></button>
     <button class="skt" data-tool="trim"    onclick="_skSetTool('trim')"    title="Beschneiden / Löschen"><span class="ski">✂</span><span class="skl">Trim</span><span class="skk">T</span></button>
     <button class="skt" data-tool="pull"    onclick="_skSetTool('pull')"    title="Fläche andrücken und nach oben ziehen — Höhe live (Zahl tippen = exakt, Enter bestätigt, Esc bricht ab)"><span class="ski">⬆</span><span class="skl">Ziehen</span><span class="skk">P</span></button>
     <div class="sksep"></div>
@@ -5252,6 +5265,8 @@ function applySceneSettings() {
   if (magSel) magSel.value = (localStorage.getItem('volme3d_magnet') ?? '1') !== '0' ? '1' : '0';
   const mgzSel = document.getElementById('mgz-sel');
   if (mgzSel) mgzSel.value = (localStorage.getItem('volme3d_moveGizmo') ?? '1') !== '0' ? '1' : '0';
+  const lassoBtn = document.getElementById('lt-lasso');
+  if (lassoBtn && (localStorage.getItem('volme3d_lasso') ?? '0') === '1') lassoBtn.classList.add('active');
   _syncSnapBtn();
   // Gespeicherten Drucker wiederherstellen
   const saved = localStorage.getItem('printerPreset');
@@ -7711,6 +7726,7 @@ function _skRender(){
     if (lock && d1>0){ const dx=cur.u-a.u, dy=cur.v-a.v, L=Math.hypot(dx,dy)||1; end={u:a.u+dx/L*d1, v:a.v+dy/L*d1}; }
     addPoly([...P.slice(0,-1), a, end], matPrev, 997); }
   if (T==='spline' && P.length) addPoly(_skSampleSpline([...P, cur]), matPrev, 997);
+  if (_skFree.on && _skFree.pts.length > 1) addPoly(_skFree.pts, matPrev, 997);   // Freihand-Strich live
   if (T==='rect' && P.length===1){ let b=cur;
     if (lock){ b={u:P[0].u+Math.sign((cur.u-P[0].u)||1)*(d1>0?d1:0), v:P[0].v+Math.sign((cur.v-P[0].v)||1)*(d2>0?d2:0)}; }
     addPoly(_skRectPts(P[0],b), matPrev, 997); }
@@ -7740,9 +7756,101 @@ function _skRender(){
 }
 
 // ── Klick / Werkzeuglogik ────────────────────────────────────────────────
+// ── Freihand („Lasso" wie in CorelDRAW) ──────────────────────────────────
+// Maustaste halten und zeichnen. Der rohe Mauszug hat hunderte Punkte und
+// zittert; daraus wird geglättet und per Douglas-Peucker ausgedünnt eine
+// saubere Polylinie. Endet der Strich nahe am Anfang, schließt sich die
+// Kontur — nur geschlossene Konturen lassen sich extrudieren.
+const _skFree = { on: false, pts: [] };
+
+// Douglas-Peucker: entfernt Punkte, die weniger als eps von der Sehne abweichen
+function _skRDP(pts, eps) {
+  if (pts.length < 3) return pts.slice();
+  const keep = new Uint8Array(pts.length);
+  keep[0] = 1; keep[pts.length - 1] = 1;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [i, j] = stack.pop();
+    if (j <= i + 1) continue;
+    const a = pts[i], b = pts[j];
+    const dx = b.u - a.u, dy = b.v - a.v, L = Math.hypot(dx, dy);
+    let best = -1, bd = eps;
+    for (let k = i + 1; k < j; k++) {
+      const q = pts[k];
+      const d = L > 1e-9 ? Math.abs((q.u - a.u) * dy - (q.v - a.v) * dx) / L
+                         : Math.hypot(q.u - a.u, q.v - a.v);
+      if (d > bd) { bd = d; best = k; }
+    }
+    if (best >= 0) { keep[best] = 1; stack.push([i, best], [best, j]); }
+  }
+  return pts.filter((_, k) => keep[k]);
+}
+
+// Zittern glätten (gewichteter 3-Punkt-Mittelwert, Enden bleiben fest)
+function _skSmoothPts(pts, passes) {
+  let p = pts;
+  for (let n = 0; n < passes && p.length > 2; n++) {
+    const q = [p[0]];
+    for (let i = 1; i < p.length - 1; i++)
+      q.push({ u: (p[i-1].u + 2*p[i].u + p[i+1].u) / 4,
+               v: (p[i-1].v + 2*p[i].v + p[i+1].v) / 4 });
+    q.push(p[p.length - 1]);
+    p = q;
+  }
+  return p;
+}
+
+function _skFreeStart(raw) {
+  _skFree.on = true;
+  _skFree.pts = [{ u: raw.u, v: raw.v }];
+  window.addEventListener('pointermove', _skFreeMove, true);
+  window.addEventListener('pointerup', _skFreeEnd, true);
+  window.addEventListener('pointercancel', _skFreeEnd, true);
+}
+
+function _skFreeMove(e) {
+  if (!_skFree.on) return;
+  e.stopPropagation();
+  const raw = _skPlanePoint(e);
+  if (!raw) return;
+  const last = _skFree.pts[_skFree.pts.length - 1];
+  const minStep = Math.max(0.008, sph.r * 0.0015);   // grob 1 px bei aktuellem Zoom
+  if (Math.hypot(raw.u - last.u, raw.v - last.v) < minStep) return;
+  _skFree.pts.push({ u: raw.u, v: raw.v });
+  _sk.cursor = { u: raw.u, v: raw.v };
+  _skRender();
+}
+
+function _skFreeEnd(e) {
+  if (!_skFree.on) return;
+  if (e) e.stopPropagation();
+  window.removeEventListener('pointermove', _skFreeMove, true);
+  window.removeEventListener('pointerup', _skFreeEnd, true);
+  window.removeEventListener('pointercancel', _skFreeEnd, true);
+  _skFree.on = false;
+  let pts = _skFree.pts;
+  _skFree.pts = [];
+  if (pts.length < 3) { _skRender(); return; }        // reiner Klick, kein Strich
+  pts = _skSmoothPts(pts, 2);
+  pts = _skRDP(pts, Math.max(0.015, sph.r * 0.003));
+  if (pts.length < 2) { _skRender(); return; }
+  // Nahe am Anfang geendet → Kontur schließen (sonst nicht extrudierbar)
+  const a = pts[0], b = pts[pts.length - 1];
+  const closeTol = Math.max(0.12, sph.r * 0.03);
+  const closed = Math.hypot(a.u - b.u, a.v - b.v) < closeTol;
+  if (closed) pts[pts.length - 1] = { u: a.u, v: a.v };
+  _sk.ents.push({ type: 'poly', pts, closed });
+  _sk.pending = [];
+  _skRender(); _skDimUpdate();
+  notify(closed ? `Freihand-Kontur geschlossen (${pts.length} Punkte) — extrudierbar`
+                : `Freihand-Linie (${pts.length} Punkte) — Enden zusammenführen zum Schließen`,
+         closed ? 'ok' : 'w');
+}
+
 function _skClick(e){
   const raw=_skPlanePoint(e); if(!raw) return;
   if (_sk.tool==='pull'){ if(!_skPull.editing) _skPullStart(raw); return; }   // Fläche andrücken → interaktiv hochziehen
+  if (_sk.tool==='free'){ _skFreeStart(raw); return; }                        // Freihand: ziehen statt klicken
   const sp=_skSnapFull(raw), cur={u:sp.u, v:sp.v};
   _sk.dimLock=false;
   const T=_sk.tool, P=_sk.pending;
@@ -13522,12 +13630,12 @@ function commitDimPanel() {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     closeDimPanel();
-    if (isRubber) { isRubber = false; document.getElementById('sel-box').style.display = 'none'; }
+    if (isRubber) { isRubber = false; document.getElementById('sel-box').style.display = 'none'; _lassoPts = []; _lassoDraw(false); }
   }
 });
 // Cancel rubber-band if mouse released outside canvas
 window.addEventListener('mouseup', () => {
-  if (isRubber) { isRubber = false; document.getElementById('sel-box').style.display = 'none'; }
+  if (isRubber) { isRubber = false; document.getElementById('sel-box').style.display = 'none'; _lassoPts = []; _lassoDraw(false); }
 });
 document.addEventListener('mousedown', e => {
   const panel = document.getElementById('dim-panel');
@@ -19411,6 +19519,43 @@ vpEl.addEventListener('contextmenu', e => e.preventDefault());
 let isRubber = false;
 let rubberStart = { x: 0, y: 0 };
 
+// ── Freiform-Auswahl („Lasso" wie in CorelDRAW) ──────────────────────────
+// Umschalter für die Form des Auswahl-Rahmens: Rechteck (Standard) oder frei
+// gezogene Schlaufe. Ausgewählt wird wie beim Rechteck, was mit seinem
+// Mittelpunkt innerhalb liegt — nur eben in einer beliebigen Form.
+let _lassoOn = (localStorage.getItem('volme3d_lasso') ?? '0') === '1';
+let _lassoPts = [];
+
+function toggleLasso() {
+  _lassoOn = !_lassoOn;
+  localStorage.setItem('volme3d_lasso', _lassoOn ? '1' : '0');
+  const btn = document.getElementById('lt-lasso');
+  if (btn) btn.classList.toggle('active', _lassoOn);
+  notify(_lassoOn ? 'Freiform-Auswahl: frei um die Teile herumziehen'
+                  : 'Auswahl-Rahmen wieder rechteckig', 'ok');
+}
+
+function _lassoPath() {
+  if (_lassoPts.length < 2) return '';
+  return 'M' + _lassoPts.map(p => p.x.toFixed(1) + ' ' + p.y.toFixed(1)).join('L') + 'Z';
+}
+function _lassoDraw(show) {
+  const svg = document.getElementById('lasso-svg');
+  if (!svg) return;
+  svg.style.display = show ? 'block' : 'none';
+  svg.firstElementChild.setAttribute('d', show ? _lassoPath() : '');
+}
+// Punkt-in-Polygon (Strahlensatz, ungerade Schnittzahl = innen)
+function _lassoContains(x, y) {
+  let inside = false;
+  for (let i = 0, j = _lassoPts.length - 1; i < _lassoPts.length; j = i++) {
+    const a = _lassoPts[i], b = _lassoPts[j];
+    if ((a.y > y) !== (b.y > y) &&
+        x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
 // Orbit/pan start: window-level so right-click on handles still orbits
 window.addEventListener('mousedown', e => {
   if (e.button !== 2 && e.button !== 1) return;
@@ -19541,11 +19686,16 @@ canvas.addEventListener('mousedown', e => {
       isRubber = true;
       const rect = vpEl.getBoundingClientRect();
       rubberStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-      const sb = document.getElementById('sel-box');
-      sb.style.left = rubberStart.x + 'px';
-      sb.style.top  = rubberStart.y + 'px';
-      sb.style.width = '0'; sb.style.height = '0';
-      sb.style.display = 'block';
+      if (_lassoOn) {
+        _lassoPts = [{ x: rubberStart.x, y: rubberStart.y }];
+        _lassoDraw(true);
+      } else {
+        const sb = document.getElementById('sel-box');
+        sb.style.left = rubberStart.x + 'px';
+        sb.style.top  = rubberStart.y + 'px';
+        sb.style.width = '0'; sb.style.height = '0';
+        sb.style.display = 'block';
+      }
     }
   }
 });
@@ -19607,15 +19757,21 @@ window.addEventListener('mousemove', e => {
     sph2cam();
     orbitStart = { x: e.clientX, y: e.clientY };
   }
-  // Rubber-band selection box
+  // Rubber-band selection box (rechteckig) bzw. Freiform-Schlaufe
   if (isRubber) {
     const rect = vpEl.getBoundingClientRect();
     const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
-    const sb = document.getElementById('sel-box');
-    sb.style.left   = Math.min(rubberStart.x, cx) + 'px';
-    sb.style.top    = Math.min(rubberStart.y, cy) + 'px';
-    sb.style.width  = Math.abs(cx - rubberStart.x) + 'px';
-    sb.style.height = Math.abs(cy - rubberStart.y) + 'px';
+    if (_lassoOn) {
+      const last = _lassoPts[_lassoPts.length - 1];
+      if (!last || Math.hypot(cx - last.x, cy - last.y) > 3) _lassoPts.push({ x: cx, y: cy });
+      _lassoDraw(true);
+    } else {
+      const sb = document.getElementById('sel-box');
+      sb.style.left   = Math.min(rubberStart.x, cx) + 'px';
+      sb.style.top    = Math.min(rubberStart.y, cy) + 'px';
+      sb.style.width  = Math.abs(cx - rubberStart.x) + 'px';
+      sb.style.height = Math.abs(cy - rubberStart.y) + 'px';
+    }
   }
   // Object drag (left-click drag on object)
   if (isDrag && dragData && selectedObjs.length > 0) {
@@ -19757,27 +19913,36 @@ canvas.addEventListener('mouseup', e => {
 
   if (isRubber) {
     isRubber = false;
-    const sb = document.getElementById('sel-box');
     const rect = vpEl.getBoundingClientRect();
     const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
-    const rL = Math.min(rubberStart.x, cx);
-    const rR = Math.max(rubberStart.x, cx);
-    const rT = Math.min(rubberStart.y, cy);
-    const rB = Math.max(rubberStart.y, cy);
-    sb.style.display = 'none';
-    if (rR - rL > 4 && rB - rT > 4) {
-      const W = rect.width, H = rect.height;
-      const inBox = objects.filter(o => {
-        o.updateMatrixWorld(true);
-        const box = getMeshBox(o);
-        const center = box.getCenter(new THREE.Vector3()).project(camera);
-        const sx = (center.x+1)/2*W, sy = (-center.y+1)/2*H;
-        return sx >= rL && sx <= rR && sy >= rT && sy <= rB;
-      });
-      if (inBox.length > 0) {
-        selectObjs(e.shiftKey ? [...selectedObjs, ...inBox.filter(o => !selectedObjs.includes(o))] : inBox);
-        notify(`${inBox.length} Objekt(e) ausgewählt`, 'ok');
-      }
+    const W = rect.width, H = rect.height;
+    // Bildschirm-Mittelpunkt jedes Objekts — Test ist bei beiden Formen derselbe
+    const screenCenter = o => {
+      o.updateMatrixWorld(true);
+      const c = getMeshBox(o).getCenter(new THREE.Vector3()).project(camera);
+      return { x: (c.x + 1) / 2 * W, y: (-c.y + 1) / 2 * H };
+    };
+    let treffer = null;
+    if (_lassoOn) {
+      _lassoDraw(false);
+      // Fläche der Schlaufe grob prüfen, damit ein Klick nichts auswählt
+      let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+      _lassoPts.forEach(p => { minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x);
+                               minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y); });
+      if (_lassoPts.length >= 3 && maxX - minX > 6 && maxY - minY > 6)
+        treffer = objects.filter(o => { const s = screenCenter(o); return _lassoContains(s.x, s.y); });
+      _lassoPts = [];
+    } else {
+      document.getElementById('sel-box').style.display = 'none';
+      const rL = Math.min(rubberStart.x, cx), rR = Math.max(rubberStart.x, cx);
+      const rT = Math.min(rubberStart.y, cy), rB = Math.max(rubberStart.y, cy);
+      if (rR - rL > 4 && rB - rT > 4)
+        treffer = objects.filter(o => { const s = screenCenter(o);
+          return s.x >= rL && s.x <= rR && s.y >= rT && s.y <= rB; });
+    }
+    if (treffer && treffer.length > 0) {
+      selectObjs(e.shiftKey ? [...selectedObjs, ...treffer.filter(o => !selectedObjs.includes(o))] : treffer);
+      notify(`${treffer.length} Objekt(e) ausgewählt`, 'ok');
     }
     return;
   }
@@ -20314,7 +20479,7 @@ window.addEventListener('keydown', e => {
     }
     if (k === 'Enter') { _skFinishCurrent(); return; }
     if (k.toLowerCase() === 'o') { _skToggleOrtho(); return; }
-    const map = { l:'line', r:'rect', c:'circle', a:'arc', e:'ellipse', i:'spline', t:'trim', p:'pull' };
+    const map = { l:'line', r:'rect', c:'circle', a:'arc', e:'ellipse', i:'spline', f:'free', t:'trim', p:'pull' };
     const t = map[k.toLowerCase()];
     if (t) { _skSetTool(t); return; }
   }
@@ -37890,6 +38055,10 @@ const VOLME3D_CHANGELOG = [
   { version:'1.15.49', date:'2026-07-27', changes:[
     ['✒️','EIGENE SCHRIFTEN — im Tortentopper, im Namensschild und beim 3D-Text sitzt jetzt unter der Schrift-Auswahl der Knopf „＋ Eigene Schrift (TTF/OTF)". Damit lässt sich jede Schriftdatei vom eigenen Rechner laden: gekaufte Schreibschriften, kostenlose Downloads, alles was als .ttf oder .otf vorliegt. Die Schrift erscheint danach ganz oben in ALLEN Schrift-Auswahlen (mit ★ markiert) und bleibt auch nach dem Schließen des Browsers erhalten. Über ⚙ daneben lassen sich geladene Schriften ansehen und wieder entfernen. Wichtig: Die Schriftdatei verlässt deinen Rechner nicht — sie wird nur im Browser umgerechnet, nichts wird hochgeladen. Damit bleibt auch die Schriftlizenz deine Sache; Schriften mit „Personal Use"-Lizenz dürfen so genutzt werden, ohne dass wir sie weitergeben.'],
   ]},
+  { version:'1.15.53', date:'2026-09-02', changes:[
+    ['\u2728','NEU: Freihand-Zeichnen in der Skizze (Taste F). Maustaste halten und zeichnen wie mit dem Stift — das Zittern wird herausgerechnet und der Strich zu einer sauberen Polylinie ausged\u00fcnnt. Endest du nahe am Anfang, schlie\u00dft sich die Kontur von selbst und l\u00e4sst sich sofort extrudieren. Zusammen mit der Bild-Vorlage heißt das: Foto unterlegen, Umriss in einem Zug umfahren, fertiger K\u00f6rper.'],
+    ['\u2728','NEU: Freiform-Auswahl („Lasso") in der linken Werkzeugleiste. Statt des Auswahl-Rechtecks eine beliebige Schlaufe um mehrere Teile ziehen — praktisch, wenn die gew\u00fcnschten Teile nicht in ein Rechteck passen. Umschaltbar, die Einstellung bleibt erhalten. Vorschlag von Sebastian.'],
+  ]},
   { version:'1.15.52', date:'2026-09-01', changes:[
     ['\U0001F41B','Verschiebe-Pfeile: „das Teil flieht, obwohl ich nicht loslasse". Zeigte eine Achse fast zur Kamera, war der Pfeil nur noch ein Punkt — und 10 Pixel Maus wurden zu 12 mm statt 2 mm. Solche Pfeile werden jetzt ausgeblendet und lassen sich nicht mehr greifen; kippt die Ansicht mitten im Zug zu flach, bleibt das Teil stehen statt davonzuspringen.'],
     ['\U0001F41B','Anschmiegen ging beim Ziehen an einem Pfeil verloren: der Magnet („Um Zylinder wickeln" / „Auf Fläche heften") reagierte nur beim freien Ziehen am Objekt. Jetzt meldet er sich auf beiden Wegen und schmiegt beim Loslassen an.'],
@@ -43788,6 +43957,8 @@ const CMDK = [
   {i:'⤧',g:'Bearbeiten',t:'Loft (Flächen verbinden)',k:'loft übergang flächen verbinden shapr',run:()=>{ if(!_lf.active) enterLoftMode(); }},
   {i:'🔻',g:'Bearbeiten',t:'Vereinfachen (Dreiecke)',k:'simplify decimate reduzieren',run:()=>openSimplifyModal()},
   {i:'⬇',g:'Export',t:'Skizze als DXF',k:'dxf laser export skizze',run:()=>{ if(_sk.active) _skExportDXF(); else notify('Erst Skizzen-Modus öffnen','w'); }},
+  {i:'✎',g:'Skizze',t:'Freihand zeichnen',k:'freihand lasso stift zeichnen malen kurve kontur nachzeichnen abpausen coreldraw frei ziehen strich umriss',run:()=>{ if(!_sk.active) enterSketchMode(); _skSetTool('free'); }},
+  {i:'🔗',g:'Bearbeiten',t:'Freiform-Auswahl (Lasso)',k:'lasso freiform auswahl markieren umkreisen mehrere teile coreldraw rahmen schlaufe',run:()=>toggleLasso()},
   {i:'📐',g:'Datei',t:'Bild-Vorlage zum Nachzeichnen',k:'vorlage nachzeichnen abpausen pausen durchpausen nachfahren nachbauen referenz referenzbild hintergrundbild unterlegen skizze bild foto zeichnung plan skizzieren umriss abzeichnen',run:()=>{ if(!_sk.active) enterSketchMode(); document.getElementById('sk-ref-file').click(); }},
   {i:'⬆',g:'Datei',t:'DXF in Skizze laden',k:'dxf laser import skizze',run:()=>{ if(!_sk.active) enterSketchMode(); document.getElementById('sk-dxf-file').click(); }},
   {i:'⬆',g:'Datei',t:'SVG in Skizze laden',k:'svg import skizze kontur beschneiden teilen',run:()=>{ if(!_sk.active) enterSketchMode(); document.getElementById('sk-svg-file').click(); }},
