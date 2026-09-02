@@ -23,6 +23,8 @@ SIPPASS="$(lies asterisk.sipPass)"
 MAXSEC="$(lies asterisk.maxSeconds)"
 SILENCE="$(lies asterisk.silenceSeconds)"
 TRANSPORT="$(lies asterisk.transport)"
+EXTERN="$(lies asterisk.externalAddress)"
+LOCALNET="$(lies asterisk.localNet)"
 
 if [ -z "$SIPPASS" ]; then
   echo "FEHLER: asterisk.sipPass ist in config.json noch leer."
@@ -62,6 +64,8 @@ cp -n "$ETC/pjsip.conf"      "$ETC/pjsip.conf.vor-v3dcall"      2>/dev/null || t
 cp -n "$ETC/extensions.conf" "$ETC/extensions.conf.vor-v3dcall" 2>/dev/null || true
 
 sed -e "s|@@TRANSPORT@@|$TRANSPORT|g" \
+    -e "s|@@EXTERN@@|$EXTERN|g" \
+    -e "s|@@LOCALNET@@|$LOCALNET|g" \
     -e "s|@@REGISTRAR@@|$REGISTRAR|g" \
     -e "s|@@CLIENTURI@@|sip:${SIPUSER}@${REGISTRAR}|g" \
     -e "s|@@USER@@|$SIPUSER|g" \
