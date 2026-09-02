@@ -24,6 +24,7 @@ MAXSEC="$(lies asterisk.maxSeconds)"
 SILENCE="$(lies asterisk.silenceSeconds)"
 TRANSPORT="$(lies asterisk.transport)"
 EXTERN="$(lies asterisk.externalAddress)"
+EXPIRE="$(lies asterisk.expiration)"
 LOCALNET="$(lies asterisk.localNet)"
 
 if [ -z "$SIPPASS" ]; then
@@ -65,6 +66,7 @@ cp -n "$ETC/extensions.conf" "$ETC/extensions.conf.vor-v3dcall" 2>/dev/null || t
 
 sed -e "s|@@TRANSPORT@@|$TRANSPORT|g" \
     -e "s|@@EXTERN@@|$EXTERN|g" \
+    -e "s|@@EXPIRE@@|$EXPIRE|g" \
     -e "s|@@LOCALNET@@|$LOCALNET|g" \
     -e "s|@@REGISTRAR@@|$REGISTRAR|g" \
     -e "s|@@CLIENTURI@@|sip:${SIPUSER}@${REGISTRAR}|g" \

@@ -16,9 +16,10 @@ TPID=$!
 sleep 2
 kill -0 $TPID 2>/dev/null || { echo "FEHLER: tcpdump laeuft nicht."; exit 1; }
 
-# Anmeldung sofort anstossen, statt auf den 60-s-Takt zu warten
-asterisk -rx 'pjsip send unregister fritzbox_reg' >/dev/null 2>&1
-sleep 2
+# NIEMALS 'send unregister' benutzen: die zweite Abmeldung bekommt ein 404,
+# und auf ein 404 stellt Asterisk die Anmeldung DAUERHAFT ein
+# ("Fatal response '404' ... stopping outbound registration").
+# Genau das hat hier die Anmeldung zerschossen. Nur neu anmelden.
 asterisk -rx 'pjsip send register fritzbox_reg' >/dev/null 2>&1
 
 sleep "$DAUER"
