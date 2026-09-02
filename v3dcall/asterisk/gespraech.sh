@@ -15,8 +15,10 @@ esac
 # sonst laeuft jeder Anrufer in die Stoerungsansage.
 if [ "$WERT" = true ]; then
   echo "==> Pruefe den Anthropic-Zugang"
-  ANTWORT=$(sudo -u "$(stat -c %U "$BASE")" "$BASE/.venv/bin/python" - <<'PY'
-import json, urllib.request, core
+  ANTWORT=$(sed "s|@@BASE@@|$BASE|" <<'PY' | sudo -u "$(stat -c %U "$BASE")" "$BASE/.venv/bin/python" -
+import json, sys, urllib.request
+sys.path.insert(0, "@@BASE@@")
+import core
 k = core.cfg("dialog", "apiKey", default="")
 if not k:
     print("FEHLER: kein Schluessel hinterlegt"); raise SystemExit
@@ -44,8 +46,10 @@ PY
   esac
 fi
 
-sudo -u "$(stat -c %U "$BASE")" "$BASE/.venv/bin/python" - "$WERT" <<'PY'
-import sys, core
+sed "s|@@BASE@@|$BASE|" <<'PY' | sudo -u "$(stat -c %U "$BASE")" "$BASE/.venv/bin/python" - "$WERT"
+import sys
+sys.path.insert(0, "@@BASE@@")
+import core
 c = core.full_cfg(); c["dialog"]["aktiv"] = (sys.argv[1] == "true"); core.save_cfg(c)
 print("    dialog.aktiv =", c["dialog"]["aktiv"])
 PY
