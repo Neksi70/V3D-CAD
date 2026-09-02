@@ -6,12 +6,27 @@ BASE="$(cd "$(dirname "$0")/.." && pwd)"
 # Zeitstempel im Namen: sonst wertet das Skript stillschweigend
 # einen alten Mitschnitt aus, wenn tcpdump nicht startet.
 SCHNITT="/tmp/v3dcall-anruf-$(date +%H%M%S).pcap"
+ETC_DIALPLAN=/etc/asterisk/extensions_v3dcall.conf
 DAUER=${1:-75}
 
 [ "$(id -u)" -eq 0 ] || { echo "Bitte mit sudo starten."; exit 1; }
 
 echo "=== Konfiguration neu ausrollen ==="
-bash "$BASE/asterisk/install.sh" 2>&1 | tail -8 || exit 1
+# Ohne PIPESTATUS verschluckt "| tail" den Fehlschlag von install.sh —
+# das Skript lief dann weiter, obwohl Asterisk gar nicht neu gestartet war.
+bash "$BASE/asterisk/install.sh" 2>&1 | tail -8
+[ "${PIPESTATUS[0]}" -eq 0 ] || { echo "ABBRUCH: install.sh ist fehlgeschlagen."; exit 1; }
+
+# Belegen, dass Asterisk die neue Konfiguration wirklich geladen hat
+GESTARTET=$(systemctl show asterisk -p ActiveEnterTimestampMonotonic --value)
+DATEI=$(stat -c %Y "$ETC_DIALPLAN" 2>/dev/null || echo 0)
+echo
+echo "Asterisk gestartet: $(systemctl show asterisk -p ActiveEnterTimestamp --value)"
+echo "Dialplan geschrieben: $(date -d @"$DATEI" '+%%a %%Y-%%m-%%d %%H:%%M:%%S %%Z' 2>/dev/null)"
+grep -q "exten => $(python3 -c "
+import json;print(json.load(open('$BASE/config.json'))['asterisk']['sipUser'])")" \
+  "$ETC_DIALPLAN" && echo "Dialplan enthaelt das richtige Ziel." \
+  || { echo "ABBRUCH: Ziel fehlt im ausgerollten Dialplan."; exit 1; }
 
 echo
 echo "=== Anmeldung ==="

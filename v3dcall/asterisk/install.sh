@@ -83,7 +83,10 @@ chown root:asterisk "$ETC/extensions_v3dcall.conf"; chmod 0640 "$ETC/extensions_
 # Sicherung: kein Platzhalter darf uebrig bleiben. Genau daran ist es
 # gescheitert — im Dialplan stand woertlich "exten => @@USER@@", und
 # Asterisk suchte nach einem Ziel dieses Namens.
-UEBRIG=$(grep -l '@@[A-Z]*@@' "$ETC/pjsip_v3dcall.conf" "$ETC/extensions_v3dcall.conf" 2>/dev/null)
+# "|| true" ist Pflicht: grep liefert 1, wenn es NICHTS findet — mit set -e
+# bricht das Skript sonst genau dann ab, wenn alles in Ordnung ist, und zwar
+# vor dem Neustart. Genau das ist passiert.
+UEBRIG=$(grep -l '@@[A-Z]*@@' "$ETC/pjsip_v3dcall.conf" "$ETC/extensions_v3dcall.conf" 2>/dev/null || true)
 if [ -n "$UEBRIG" ]; then
   echo
   echo "FEHLER: nicht ersetzte Platzhalter in:"
