@@ -614,6 +614,27 @@ def health():
                    ansageBereit=os.path.exists(os.path.join(core.SOUNDS, "ansage.wav")))
 
 
+def _modelle_vorwaermen():
+    """Whisper im Hintergrund laden, solange noch niemand anruft.
+
+    Sonst zahlt die erste Gespraechsrunde jedes Neustarts das Laden mit —
+    gemessen 1,4 s statt 0,6 s.
+    """
+    import threading
+
+    def laden():
+        try:
+            import dialog
+            dialog._get_hoerer()
+            app.logger.info("Whisper vorgewärmt")
+        except Exception:
+            app.logger.exception("Vorwärmen fehlgeschlagen")
+
+    threading.Thread(target=laden, daemon=True).start()
+
+
 if __name__ == "__main__":
+    if core.cfg("dialog", "aktiv", default=False):
+        _modelle_vorwaermen()
     port = int(sys.argv[1]) if len(sys.argv) > 1 else core.cfg("port", default=8786)
     app.run(host="127.0.0.1", port=port, threaded=True)

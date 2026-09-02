@@ -8,6 +8,7 @@ ElevenLabs) macht der V3D-Dienst auf 127.0.0.1:8786.
 import json
 import os
 import sys
+import threading
 import urllib.request
 
 DIENST = "http://127.0.0.1:8786"
@@ -147,17 +148,28 @@ def main():
                 return
             continue
 
-        # Sofort ein kurzes Fuellwort, BEVOR der Dienst befragt wird. Ohne das
-        # horcht der Anrufer fuenf bis sechs Sekunden in die Stille und haelt
-        # die Leitung fuer tot. Das kostet zwar eine halbe Sekunde extra,
-        # fuehlt sich aber viel kuerzer an.
-        spiele("/var/lib/asterisk/sounds/v3d/fueller%d" % (runde % 3 + 1))
+        # Fuellwort und Verarbeitung laufen GLEICHZEITIG. Nacheinander wuerde
+        # das Fuellwort die Wartezeit um seine eigene Laenge verlaengern,
+        # statt sie zu ueberbruecken — es soll die Denkpause fuellen, nicht
+        # vor ihr liegen.
+        kasten = {}
 
-        try:
-            antw = hole("/api/dialog", {"id": cid, "runde": str(runde), "file": aufnahme})
-        except Exception as e:
-            sag("V3D Dialog Fehler: %s" % e)
+        def arbeite():
+            try:
+                kasten["antwort"] = hole("/api/dialog",
+                    {"id": cid, "runde": str(runde), "file": aufnahme})
+            except Exception as e:
+                kasten["fehler"] = e
+
+        faden = threading.Thread(target=arbeite)
+        faden.start()
+        spiele("/var/lib/asterisk/sounds/v3d/fueller%d" % (runde % 3 + 1))
+        faden.join(timeout=60)
+
+        if "fehler" in kasten or "antwort" not in kasten:
+            sag("V3D Dialog Fehler: %s" % kasten.get("fehler", "Zeitueberschreitung"))
             return rueckfall(cid)
+        antw = kasten["antwort"]
 
         if antw.get("leer"):
             leer_hintereinander += 1
