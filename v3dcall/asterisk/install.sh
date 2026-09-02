@@ -76,8 +76,24 @@ sed -e "s|@@TRANSPORT@@|$TRANSPORT|g" \
 chown root:asterisk "$ETC/pjsip_v3dcall.conf"; chmod 0640 "$ETC/pjsip_v3dcall.conf"
 
 sed -e "s|@@MAXSEC@@|$MAXSEC|g" -e "s|@@SILENCE@@|$SILENCE|g" \
+    -e "s|@@USER@@|$SIPUSER|g" \
     "$BASE/asterisk/extensions_v3dcall.conf" > "$ETC/extensions_v3dcall.conf"
 chown root:asterisk "$ETC/extensions_v3dcall.conf"; chmod 0640 "$ETC/extensions_v3dcall.conf"
+
+# Sicherung: kein Platzhalter darf uebrig bleiben. Genau daran ist es
+# gescheitert — im Dialplan stand woertlich "exten => @@USER@@", und
+# Asterisk suchte nach einem Ziel dieses Namens.
+UEBRIG=$(grep -l '@@[A-Z]*@@' "$ETC/pjsip_v3dcall.conf" "$ETC/extensions_v3dcall.conf" 2>/dev/null)
+if [ -n "$UEBRIG" ]; then
+  echo
+  echo "FEHLER: nicht ersetzte Platzhalter in:"
+  for f in $UEBRIG; do
+    echo "  $f"
+    grep -n '@@[A-Z]*@@' "$f" | sed 's/^/      /'
+  done
+  echo "Abbruch — install.sh muss angepasst werden."
+  exit 1
+fi
 
 # Nur pjsip soll Port 5060 belegen — chan_sip stillegen
 if ! grep -q "^noload = chan_sip.so" "$ETC/modules.conf"; then
