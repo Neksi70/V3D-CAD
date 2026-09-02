@@ -143,8 +143,42 @@ def firmendaten():
 
 SESSIONS = {}           # sid -> ablaufzeit
 SESSION_TTL = 30 * 24 * 3600
+SESS_FILE = os.path.join(CONF_DIR, 'sessions.json')
 _login_fails = {}       # ip -> (anzahl, letzter_versuch)
 _sess_lock = threading.Lock()
+
+
+def _sess_laden():
+    """Sitzungen ueberdauern den Neustart.
+
+    Vorher lagen sie nur im Arbeitsspeicher — jeder Neustart des Dienstes
+    hat alle Geraete abgemeldet, obwohl die Anmeldung 30 Tage gelten soll.
+    Das war der Grund, warum staendig wieder der Schluessel abgefragt wurde.
+    """
+    try:
+        with open(SESS_FILE, 'r', encoding='utf-8') as fh:
+            daten = json.load(fh)
+        jetzt = time.time()
+        return {k: v for k, v in daten.items()
+                if isinstance(v, (int, float)) and v > jetzt}
+    except Exception:
+        return {}
+
+
+def _sess_sichern():
+    """Aufrufer haelt _sess_lock."""
+    try:
+        os.makedirs(CONF_DIR, exist_ok=True)
+        tmp = SESS_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(SESSIONS, fh)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, SESS_FILE)
+    except Exception:
+        pass        # Sitzungen sind Bequemlichkeit, kein Grund zum Absturz
+
+
+SESSIONS.update(_sess_laden())
 
 
 def new_session():
@@ -155,6 +189,7 @@ def new_session():
             if exp < now:
                 del SESSIONS[k]
         SESSIONS[sid] = now + SESSION_TTL
+        _sess_sichern()
     return sid
 
 
@@ -167,6 +202,7 @@ def session_valid(sid):
             return False
         if exp < time.time():
             del SESSIONS[sid]
+            _sess_sichern()
             return False
         return True
 
@@ -2026,6 +2062,7 @@ class Handler(BaseHTTPRequestHandler):
             sid = self._cookies().get('v3dmail_sid')
             with _sess_lock:
                 SESSIONS.pop(sid, None)
+                _sess_sichern()
             return self._send(200, {'ok': True},
                               extra=[('Set-Cookie', 'v3dmail_sid=; Path=/; Max-Age=0')])
 
