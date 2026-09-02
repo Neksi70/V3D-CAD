@@ -22,6 +22,7 @@ SIPUSER="$(lies asterisk.sipUser)"
 SIPPASS="$(lies asterisk.sipPass)"
 MAXSEC="$(lies asterisk.maxSeconds)"
 SILENCE="$(lies asterisk.silenceSeconds)"
+TRANSPORT="$(lies asterisk.transport)"
 
 if [ -z "$SIPPASS" ]; then
   echo "FEHLER: asterisk.sipPass ist in config.json noch leer."
@@ -60,7 +61,8 @@ echo "==> 5/6  Konfiguration schreiben"
 cp -n "$ETC/pjsip.conf"      "$ETC/pjsip.conf.vor-v3dcall"      2>/dev/null || true
 cp -n "$ETC/extensions.conf" "$ETC/extensions.conf.vor-v3dcall" 2>/dev/null || true
 
-sed -e "s|@@REGISTRAR@@|$REGISTRAR|g" \
+sed -e "s|@@TRANSPORT@@|$TRANSPORT|g" \
+    -e "s|@@REGISTRAR@@|$REGISTRAR|g" \
     -e "s|@@CLIENTURI@@|sip:${SIPUSER}@${REGISTRAR}|g" \
     -e "s|@@USER@@|$SIPUSER|g" \
     -e "s|@@PASS@@|$SIPPASS|g" \

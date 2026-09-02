@@ -50,6 +50,13 @@ Der Ansagetext steht ebenfalls dort und ist frei änderbar — nach jeder
 (goneo, SMTP 465) eintragen und das Empfänger-Postfach prüfen.
 
 ### 3. Fritzbox: IP-Telefon anlegen
+
+**Netzaufbau hier:** FRITZ!Box 6690 Cable auf **192.168.2.1**, davor das
+UniFi-Gateway (192.168.178.1), der Server auf 192.168.178.254. Asterisk
+meldet sich also durch ein zweites NAT hindurch an. Vom Server aus ist
+`192.168.2.1:5060` erreichbar; ob die Box die Anmeldung aus dem
+Unternetz annimmt, zeigt erst der Versuch.
+
 *Telefonie → Telefoniegeräte → Neues Gerät → Telefon → LAN/WLAN (IP-Telefon)*
 
 - Benutzername und Passwort vergeben (Vorgabe hier: Benutzer `620`)
@@ -69,6 +76,13 @@ Anmeldung prüfen:
 sudo asterisk -rx 'pjsip show registrations'    # → Registered
 sudo asterisk -rx 'dialplan show v3dcall'
 ```
+Steht dort **nicht** „Registered", ist das doppelte NAT die wahrscheinliche
+Ursache. Dann in `config.json` `asterisk.transport` von `udp` auf `tcp`
+setzen und `install.sh` erneut laufen lassen — TCP übersteht NAT deutlich
+besser. Hilft auch das nicht, muss die Fritzbox das Unternetz erreichen
+können (statische Route im UniFi) oder der Server bekommt ein Bein direkt
+ins 192.168.2.x-Netz.
+
 Danach die Festnetznummer von einem anderen Telefon aus anrufen.
 Mitlesen: `sudo asterisk -rvvv` und `journalctl --user -u v3dcall -f`
 
