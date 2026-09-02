@@ -9,9 +9,16 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8785
 BASE = os.path.dirname(os.path.abspath(__file__))
 
 
+def seite():
+    """Auslieferung bevorzugen: index.live.html traegt die echten, persoenlichen
+    Daten und ist nicht versioniert; index.html ist die Arbeitskopie mit Beispiel."""
+    live = os.path.join(BASE, "index.live.html")
+    return live if os.path.exists(live) else os.path.join(BASE, "index.html")
+
+
 class QuizHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        with open(os.path.join(BASE, "index.html"), "rb") as f:
+        with open(seite(), "rb") as f:
             body = f.read()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
