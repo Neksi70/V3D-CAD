@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#141821">
+<title>Eigene Stimme aufnehmen</title>
+<style>
+:root{--bg:#141821;--flaeche:#1d222e;--flaeche2:#252b39;--rand:#333b4d;
+  --text:#e8ecf4;--schwach:#9aa4bb;--akzent:#4f8cff;--gut:#3ecf8e;--rot:#f2585b;--warn:#f0a83c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:16px/1.65 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:20px 16px 60px}
+.wrap{max-width:720px;margin:0 auto}
+h1{font-size:20px;margin:0 0 6px}
+p.hinweis{color:var(--schwach);font-size:14px;margin:0 0 8px}
+.karte{background:var(--flaeche);border:1px solid var(--rand);border-radius:14px;
+  padding:16px 18px;margin-bottom:14px}
+.karte.laeuft{border-color:var(--rot);box-shadow:0 0 0 1px rgba(242,88,91,.3)}
+.karte.fertig{border-color:var(--gut)}
+.tipps{background:rgba(240,168,60,.08);border-color:rgba(240,168,60,.35)}
+.tipps li{margin:4px 0;font-size:14px}
+h2{font-size:15px;margin:0 0 10px;color:var(--schwach);font-weight:600}
+.vorlese{font-size:17px;line-height:1.75;margin:0 0 14px}
+button{background:var(--flaeche2);border:1px solid var(--rand);color:var(--text);
+  padding:10px 16px;border-radius:10px;font:inherit;font-size:14px;cursor:pointer}
+button:hover:not(:disabled){border-color:var(--akzent)}
+button:disabled{opacity:.45;cursor:default}
+button.auf{background:var(--rot);border-color:var(--rot);color:#fff;font-weight:600}
+button.haupt{background:var(--akzent);border-color:var(--akzent);color:#fff;font-weight:600}
+.zeile{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.uhr{font-variant-numeric:tabular-nums;color:var(--schwach);font-size:14px}
+.balken{height:6px;background:var(--flaeche2);border-radius:3px;overflow:hidden;margin:10px 0 4px}
+.balken i{display:block;height:100%;background:var(--akzent);width:0;transition:width .4s}
+#gesamt{position:sticky;top:0;z-index:3;background:rgba(20,24,33,.95);
+  backdrop-filter:blur(8px);padding:12px 0;margin:-20px 0 14px}
+audio{width:100%;height:38px;margin-top:10px}
+.pegel{height:26px;background:var(--flaeche2);border-radius:6px;overflow:hidden;margin-top:10px}
+.pegel i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--gut),var(--warn),var(--rot))}
+a{color:var(--akzent)}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>Deine eigene Stimme</h1>
+<p class="hinweis">Lies die vier Abschnitte vor. Daraus baut ElevenLabs eine
+Stimme, die klingt wie du — und die dann deine Anrufe entgegennimmt.</p>
+
+<div id="gesamt">
+  <div class="balken"><i id="fortschritt"></i></div>
+  <div class="zeile"><span class="uhr" id="stand">0 von 60 Sekunden</span></div>
+</div>
+
+<div class="karte tipps">
+  <h2>Damit es gut wird</h2>
+  <ul>
+    <li>Ruhiger Raum, Fenster zu, keine Musik im Hintergrund.</li>
+    <li>Handy etwa eine Handbreit vom Mund weg — nicht direkt davor, sonst poppt es.</li>
+    <li>Sprich so, wie der Anrufbeantworter später klingen soll: ruhig und normal laut.</li>
+    <li>Versprecher sind egal. Einfach den Abschnitt neu aufnehmen.</li>
+    <li>Weiche Umgebung ist besser als eine kahle: Vorhänge und Teppich schlucken den Hall.</li>
+  </ul>
+</div>
+
+<div id="abschnitte"></div>
+
+<div class="karte">
+  <h2>Wenn du fertig bist</h2>
+  <p class="hinweis" id="klonHinweis">Mindestens 60 Sekunden aufnehmen, besser zwei Minuten.</p>
+  <div class="zeile">
+    <button class="haupt" id="klonen" disabled onclick="klonen()">Stimme erzeugen</button>
+    <button id="probe" style="display:none" onclick="probe()">Ansage damit sprechen</button>
+    <button id="uebernehmen" style="display:none" onclick="uebernehmen()">Übernehmen</button>
+  </div>
+  <p class="hinweis" id="klonStatus"></p>
+  <audio id="probeAudio" style="display:none" controls></audio>
+</div>
+
+<p class="hinweis"><a href="./">Zurück zur Anrufannahme</a></p>
+</div>
+
+<script>
+const B = location.pathname.replace(/\/stimme\/?$/, '/');
+const $ = s => document.querySelector(s);
+
+const TEXTE = [
+`Guten Tag. Mein Name ist Volker Isken, ich arbeite in Hagen mit
+dreidimensionalem Druck. Wer zum ersten Mal vor einem solchen Gerät steht,
+unterschätzt meistens, wie viel Geduld dazugehört. Die Maschine trägt Schicht
+für Schicht auf, zwei Zehntelmillimeter auf einmal, und ein Werkstück von der
+Größe einer Kaffeetasse braucht dafür schon einmal fünf Stunden. Dafür
+entsteht am Ende etwas, das es vorher nirgends zu kaufen gab.`,
+
+`Am Anfang steht immer eine Zeichnung. Manche bringen eine Skizze auf einem
+Bierdeckel mit, andere haben schon eine fertige Datei dabei. Beides geht.
+Wichtiger als das Werkzeug ist die Frage, wozu das Teil später taugen soll:
+Muss es Gewicht tragen? Kommt es in die Sonne? Soll es sich anfühlen wie
+Kunststoff oder eher wie Holz? Aus den Antworten ergibt sich das Material,
+und aus dem Material ergibt sich fast alles Weitere.`,
+
+`Fehlschläge gehören dazu. Ein Bauteil löst sich in der Nacht von der Platte,
+ein Überhang sackt durch, eine Schraube passt um drei Zehntel nicht. Ärgerlich
+ist das nur beim ersten Mal — danach weiß man, woran es lag, und der zweite
+Versuch sitzt. Genau deshalb halte ich wenig von Hochglanzbildern und viel von
+Werkstattarbeit. Wer einmal selbst zugesehen hat, wie die Düse ihre Bahnen
+zieht, versteht die Sache schneller als durch jede Erklärung.`,
+
+`Fragen beantworte ich gern, aber selten sofort. Meistens sitze ich an einer
+Maschine oder unterrichte gerade. Schreiben Sie mir also ruhig, was Sie
+vorhaben, und lassen Sie mir etwas Zeit für die Antwort. Umgekehrt bitte ich
+um dasselbe Verständnis: Was ich zusage, halte ich ein; was ich nicht schaffe,
+sage ich vorher. Das hat sich über die Jahre bewährt, bei Kursteilnehmern
+genauso wie bei Kunden, die zum dritten oder vierten Mal wiederkommen.`];
+
+let aufnahme = null, laufendeKarte = null, tickt = null, start = 0, pegelStop = null;
+
+TEXTE.forEach((t, i) => {
+  const d = document.createElement('div');
+  d.className = 'karte'; d.id = 'a' + i;
+  d.innerHTML = `<h2>Abschnitt ${i+1} von ${TEXTE.length}</h2>
+    <p class="vorlese">${t.replace(/\s+/g,' ').trim()}</p>
+    <div class="zeile">
+      <button onclick="knopf(${i})" id="k${i}">Aufnehmen</button>
+      <span class="uhr" id="u${i}"></span>
+    </div>
+    <div class="pegel" id="p${i}" style="display:none"><i></i></div>`;
+  $('#abschnitte').appendChild(d);
+});
+
+async function knopf(i){
+  if (aufnahme && laufendeKarte === i) return stoppen();
+  if (aufnahme) return;
+  try {
+    const strom = await navigator.mediaDevices.getUserMedia({audio:{
+      echoCancellation:false, noiseSuppression:true, autoGainControl:true}});
+    const typ = ['audio/webm;codecs=opus','audio/webm','audio/mp4']
+      .find(t => MediaRecorder.isTypeSupported(t)) || '';
+    aufnahme = new MediaRecorder(strom, typ ? {mimeType:typ, audioBitsPerSecond:128000} : {});
+    const stuecke = [];
+    aufnahme.ondataavailable = e => e.data.size && stuecke.push(e.data);
+    aufnahme.onstop = async () => {
+      strom.getTracks().forEach(t => t.stop());
+      if (pegelStop) { pegelStop(); pegelStop = null; }
+      const fd = new FormData();
+      fd.append('audio', new Blob(stuecke, {type: typ || 'audio/webm'}), 'aufnahme');
+      $('#u'+i).textContent = 'wird übertragen …';
+      const r = await fetch(B + 'api/stimme/aufnahme', {method:'POST', body:fd,
+        credentials:'same-origin'});
+      const d = await r.json();
+      if (d.fehler){ $('#u'+i).textContent = 'Fehler: ' + d.fehler; }
+      else {
+        $('#a'+i).classList.add('fertig');
+        $('#u'+i).textContent = `${d.sekunden.toFixed(0)} s aufgenommen`;
+        stand(d.gesamt);
+      }
+      $('#k'+i).textContent = 'Neu aufnehmen';
+      $('#k'+i).classList.remove('auf');
+      $('#p'+i).style.display = 'none';
+      aufnahme = null; laufendeKarte = null;
+    };
+    aufnahme.start();
+    laufendeKarte = i; start = Date.now();
+    $('#a'+i).classList.add('laeuft'); $('#a'+i).classList.remove('fertig');
+    $('#k'+i).textContent = 'Fertig — stoppen'; $('#k'+i).classList.add('auf');
+    $('#p'+i).style.display = 'block';
+    pegel(strom, $('#p'+i).firstElementChild);
+    tickt = setInterval(() => {
+      $('#u'+i).textContent = ((Date.now()-start)/1000).toFixed(0) + ' s';
+    }, 250);
+  } catch(e){
+    $('#u'+i).textContent = 'Mikrofon nicht freigegeben: ' + e.message;
+  }
+}
+
+function stoppen(){
+  clearInterval(tickt);
+  $('#a'+laufendeKarte).classList.remove('laeuft');
+  aufnahme.stop();
+}
+
+/* Aussteuerungsanzeige — zeigt, ob laut genug gesprochen wird */
+function pegel(strom, balken){
+  const ctx = new (window.AudioContext||window.webkitAudioContext)();
+  const an = ctx.createAnalyser(); an.fftSize = 512;
+  ctx.createMediaStreamSource(strom).connect(an);
+  const puffer = new Uint8Array(an.frequencyBinCount);
+  let laeuft = true;
+  (function schleife(){
+    if (!laeuft) return;
+    an.getByteTimeDomainData(puffer);
+    let max = 0;
+    for (const v of puffer) max = Math.max(max, Math.abs(v-128));
+    balken.style.width = Math.min(100, max/128*140) + '%';
+    requestAnimationFrame(schleife);
+  })();
+  pegelStop = () => { laeuft = false; ctx.close().catch(()=>{}); };
+}
+
+function stand(g){
+  const s = g.sekunden || 0;
+  $('#stand').textContent = `${s.toFixed(0)} von 60 Sekunden · ${g.anzahl} Aufnahme(n)`;
+  $('#fortschritt').style.width = Math.min(100, s/60*100) + '%';
+  $('#klonen').disabled = s < 60;
+  $('#klonHinweis').textContent = s < 60
+    ? `Noch ${(60-s).toFixed(0)} Sekunden bis zum Mindestmaß.`
+    : (s < 120 ? 'Reicht aus. Mehr Material macht die Stimme aber treffsicherer.'
+               : 'Gutes Material. Du kannst die Stimme jetzt erzeugen.');
+}
+
+async function klonen(){
+  $('#klonStatus').textContent = 'Stimme wird erzeugt, das dauert einen Moment …';
+  $('#klonen').disabled = true;
+  const r = await fetch(B + 'api/stimme/klonen', {method:'POST', credentials:'same-origin'});
+  const d = await r.json();
+  if (d.fehler){ $('#klonStatus').textContent = 'Fehler: ' + d.fehler; $('#klonen').disabled = false; return; }
+  $('#klonStatus').textContent = 'Stimme erzeugt. Jetzt anhören, wie sie deine Ansage spricht.';
+  $('#probe').style.display = 'inline-block';
+}
+
+async function probe(){
+  $('#klonStatus').textContent = 'Ansage wird gesprochen …';
+  const r = await fetch(B + 'api/stimme/probe', {method:'POST', credentials:'same-origin'});
+  const d = await r.json();
+  if (d.fehler){ $('#klonStatus').textContent = 'Fehler: ' + d.fehler; return; }
+  const a = $('#probeAudio');
+  a.src = B + 'api/ansage-anhoeren?name=probe-eigene&t=' + Date.now();
+  a.style.display = 'block'; a.play().catch(()=>{});
+  $('#klonStatus').textContent = 'Gefällt es dir? Dann übernehmen.';
+  $('#uebernehmen').style.display = 'inline-block';
+}
+
+async function uebernehmen(){
+  const r = await fetch(B + 'api/stimme/uebernehmen', {method:'POST', credentials:'same-origin'});
+  const d = await r.json();
+  $('#klonStatus').textContent = d.fehler ? 'Fehler: ' + d.fehler
+    : 'Übernommen. ' + d.hinweis;
+}
+
+fetch(B + 'api/stimme/bestand', {credentials:'same-origin'})
+  .then(r => r.json()).then(d => { stand(d); if (d.geklont) $('#probe').style.display='inline-block'; })
+  .catch(()=>{});
+</script>
+</body>
+</html>

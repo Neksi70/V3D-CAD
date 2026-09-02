@@ -3,7 +3,7 @@
 Nimmt Meldungen von Asterisk entgegen, stösst die Verarbeitung an und
 liefert die Weboberflaeche aus. Hinter dem Funnel unter /anrufe.
 """
-import json, os, re, shutil, sys, time
+import json, os, re, shutil, subprocess, sys, time
 from flask import Flask, Response, jsonify, request, send_file
 
 import core, pipeline, tts
@@ -304,6 +304,199 @@ def apk():
         return jsonify(fehler="noch nicht gebaut"), 404
     return send_file(pfad, mimetype="application/vnd.android.package-archive",
                      as_attachment=True, download_name="V3D-Anrufe.apk")
+
+
+@app.get("/proben")
+def proben():
+    """Alle Stimmproben auf einer Seite zum Vergleichen.
+
+    Nimmt den Schluessel auch als ?key= entgegen, damit die Seite auf
+    einem Geraet funktioniert, auf dem man noch nicht angemeldet ist.
+    """
+    if (w := wache()):
+        return w
+    key = request.args.get("key", "")
+    anhang = f"&key={key}" if key else ""
+    dateien = sorted(f[:-4] for f in os.listdir(core.SOUNDS)
+                     if f.startswith("probe-") and f.endswith(".mp3"))
+    if not dateien:
+        return "<p>Keine Proben vorhanden.</p>", 404
+
+    bloecke = "".join(
+        f'<section><h2>{n[6:].capitalize()}</h2>'
+        f'<audio controls preload="none" '
+        f'src="api/ansage-anhoeren?name={n}{anhang}"></audio></section>'
+        for n in dateien)
+    return Response(f"""<!doctype html><html lang="de"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stimmproben</title><style>
+body{{margin:0;background:#141821;color:#e8ecf4;
+  font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:20px}}
+h1{{font-size:19px;margin:0 0 6px}}
+p.hinweis{{color:#9aa4bb;font-size:14px;margin:0 0 22px}}
+section{{background:#1d222e;border:1px solid #333b4d;border-radius:14px;
+  padding:14px 16px;margin-bottom:14px}}
+h2{{font-size:16px;margin:0 0 10px}}
+audio{{width:100%;height:40px}}
+a{{color:#4f8cff}}
+</style></head><body>
+<h1>Stimmproben</h1>
+<p class="hinweis">Dieselbe Ansage, vier Stimmen. Achte auf die Aussprache von
+„Anschluss“, „persönlich“, „zurückrufen“ und „Signalton“.</p>
+{bloecke}
+<p class="hinweis" style="margin-top:24px">
+<a href="./">Zurück zur Anrufannahme</a></p>
+</body></html>""", mimetype="text/html; charset=utf-8")
+
+
+# ------------------------------------------------------- Eigene Stimme
+
+STIMME = os.path.join(core.DATA, "stimme")
+
+
+@app.get("/stimme")
+def stimme_seite():
+    if (w := wache()):
+        return w
+    return send_file(os.path.join(WEB, "stimme.html"))
+
+
+@app.post("/api/stimme/aufnahme")
+def stimme_aufnahme():
+    if (w := wache()):
+        return w
+    datei = request.files.get("audio")
+    if not datei:
+        return jsonify(fehler="keine Aufnahme empfangen"), 400
+    os.makedirs(STIMME, exist_ok=True)
+
+    nummer = 1 + max([int(re.search(r"(\d+)", f).group(1))
+                      for f in os.listdir(STIMME) if f.endswith(".mp3")] or [0])
+    roh = os.path.join(STIMME, f"roh-{nummer:02d}")
+    datei.save(roh)
+    ziel = os.path.join(STIMME, f"stimme-{nummer:02d}.mp3")
+    try:
+        # Fuer das Klonen zaehlt Qualitaet: 44,1 kHz, mono, ordentliche Rate.
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", roh,
+                        "-ar", "44100", "-ac", "1", "-b:a", "128k", ziel], check=True)
+    except subprocess.CalledProcessError:
+        return jsonify(fehler="Aufnahme konnte nicht umgewandelt werden"), 400
+    finally:
+        if os.path.exists(roh):
+            os.remove(roh)
+
+    return jsonify(ok=True, nummer=nummer, sekunden=pipeline.dauer(ziel),
+                   gesamt=stimme_bestand())
+
+
+def stimme_bestand():
+    if not os.path.isdir(STIMME):
+        return {"anzahl": 0, "sekunden": 0.0}
+    dateien = sorted(f for f in os.listdir(STIMME) if f.endswith(".mp3"))
+    return {"anzahl": len(dateien),
+            "sekunden": round(sum(pipeline.dauer(os.path.join(STIMME, f))
+                                  for f in dateien), 1),
+            "dateien": dateien}
+
+
+@app.get("/api/stimme/bestand")
+def stimme_stand():
+    if (w := wache()):
+        return w
+    return jsonify(**stimme_bestand(),
+                   geklont=bool(core.cfg("elevenlabs", "eigeneVoiceId", default="")))
+
+
+@app.get("/api/stimme/anhoeren/<name>")
+def stimme_anhoeren(name):
+    if (w := wache()):
+        return w
+    p = os.path.join(STIMME, os.path.basename(name))
+    if not p.endswith(".mp3") or not os.path.exists(p):
+        return jsonify(fehler="nicht gefunden"), 404
+    return send_file(p, mimetype="audio/mpeg")
+
+
+@app.delete("/api/stimme/aufnahme/<name>")
+def stimme_loeschen(name):
+    if (w := wache()):
+        return w
+    p = os.path.join(STIMME, os.path.basename(name))
+    if p.endswith(".mp3") and os.path.exists(p):
+        os.remove(p)
+    return jsonify(ok=True, gesamt=stimme_bestand())
+
+
+@app.post("/api/stimme/klonen")
+def stimme_klonen():
+    if (w := wache()):
+        return w
+    import requests
+    stand = stimme_bestand()
+    if stand["sekunden"] < 60:
+        return jsonify(fehler=f"Nur {stand['sekunden']:.0f} Sekunden Material — "
+                              "für ein gutes Ergebnis sollten es mindestens 60 sein."), 400
+
+    dateien = [("files", (f, open(os.path.join(STIMME, f), "rb"), "audio/mpeg"))
+               for f in stand["dateien"]]
+    try:
+        r = requests.post("https://api.elevenlabs.io/v1/voices/add",
+                          headers={"xi-api-key": core.cfg("elevenlabs", "apiKey")},
+                          data={"name": "Volker Isken",
+                                "description": "Eigene Stimme für die Anrufannahme"},
+                          files=dateien, timeout=180)
+    finally:
+        for _, (_, fh, _) in dateien:
+            fh.close()
+
+    if r.status_code != 200:
+        return jsonify(fehler=f"ElevenLabs {r.status_code}: {r.text[:300]}"), 400
+    vid = r.json().get("voice_id")
+    c = core.full_cfg()
+    c["elevenlabs"]["eigeneVoiceId"] = vid
+    core.save_cfg(c)
+    return jsonify(ok=True, voiceId=vid)
+
+
+@app.post("/api/stimme/probe")
+def stimme_probe():
+    """Ansage mit der geklonten Stimme erzeugen, zum Vergleich."""
+    if (w := wache()):
+        return w
+    vid = core.cfg("elevenlabs", "eigeneVoiceId", default="")
+    if not vid:
+        return jsonify(fehler="noch keine eigene Stimme erzeugt"), 400
+    c = core.full_cfg()
+    gemerkt = c["elevenlabs"]["voiceId"]
+    c["elevenlabs"]["voiceId"] = vid
+    core.save_cfg(c)
+    try:
+        tts.baue("probe-eigene", core.cfg("ansage", "text"))
+    except Exception as e:
+        return jsonify(fehler=str(e)), 400
+    finally:
+        c = core.full_cfg()
+        c["elevenlabs"]["voiceId"] = gemerkt
+        core.save_cfg(c)
+    return jsonify(ok=True)
+
+
+@app.post("/api/stimme/uebernehmen")
+def stimme_uebernehmen():
+    """Eigene Stimme als die der Anrufannahme festlegen."""
+    if (w := wache()):
+        return w
+    vid = core.cfg("elevenlabs", "eigeneVoiceId", default="")
+    if not vid:
+        return jsonify(fehler="noch keine eigene Stimme erzeugt"), 400
+    c = core.full_cfg()
+    c["elevenlabs"]["voiceId"] = vid
+    core.save_cfg(c)
+    try:
+        tts.baue_alle()
+    except Exception as e:
+        return jsonify(fehler=str(e)), 400
+    return jsonify(ok=True, hinweis="Jetzt noch: sudo ~/v3dcall/asterisk/install.sh")
 
 
 @app.get("/api/health")
