@@ -33,7 +33,9 @@ tcpdump -n -r "$SCHNITT" 2>/dev/null | grep -iE "INVITE|OPTIONS|REGISTER|SIP/2.0
 echo
 echo "--- Zusammenfassung ---"
 GES=$(tcpdump -n -r "$SCHNITT" 2>/dev/null | wc -l)
-INV=$(tcpdump -A -n -r "$SCHNITT" 2>/dev/null | grep -c "^INVITE")
+# INVITE steht im Paketauszug nicht am Zeilenanfang — ohne -a bricht grep
+# ausserdem bei den Binaeranteilen ab und meldet faelschlich 0.
+INV=$(tcpdump -n -r "$SCHNITT" 2>/dev/null | grep -ac "SIP: INVITE")
 echo "  SIP-Pakete gesamt : $GES"
 echo "  eingehende INVITEs: $INV"
 if [ "$INV" -gt 0 ]; then
@@ -41,6 +43,9 @@ if [ "$INV" -gt 0 ]; then
 else
   echo "  -> Kein INVITE. Die Fritzbox reicht den Anruf nicht bis zu uns durch."
 fi
+echo
+echo "=== Anmeldung danach ==="
+asterisk -rx 'pjsip show registrations' | sed -n '3,5p'
 echo
 echo "=== Asterisk-Protokoll ==="
 tail -20 /var/log/asterisk/messages | grep -viE "loader.c|deprecated" | tail -10
