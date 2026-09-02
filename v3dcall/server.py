@@ -142,7 +142,13 @@ def eingehend():
                 os.remove(quelle)
             except OSError:
                 pass
-        os.chmod(ziel, 0o640)
+        try:
+            os.chmod(ziel, 0o640)
+        except PermissionError:
+            # Nach dem Verschieben gehoert die Datei weiterhin asterisk;
+            # Rechte darf nur der Eigentümer aendern. Lesbar ist sie ohnehin,
+            # also ist das kein Grund, den ganzen Anruf fallenzulassen.
+            pass
 
     core.add_call(cid, nummer, (d.get("name") or "").strip(), ziel)
     pipeline.verarbeite_async(cid)
