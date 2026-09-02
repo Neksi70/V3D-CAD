@@ -389,7 +389,10 @@ def dialog_runde():
         # bekommt einen Hinweis und landet im normalen Anrufbeantworter.
         app.logger.exception("Gesprächsrunde fehlgeschlagen")
         return jsonify(fehler=str(e)[:200], ende=True), 200
-    r["antwortDatei"] = os.path.splitext(ziel)[0] if not r.get("leer") else ""
+    # NICHT splitext benutzen: die Asterisk-Anruf-ID enthaelt einen Punkt
+    # ("1788382797.0"), splitext wuerde mitten in der ID abschneiden. ziel
+    # traegt ohnehin keine Endung — sprich() haengt ".wav" selbst an.
+    r["antwortDatei"] = ziel if not r.get("leer") else ""
     return jsonify(**r)
 
 
