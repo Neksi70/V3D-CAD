@@ -16,13 +16,39 @@ def seite():
     return live if os.path.exists(live) else os.path.join(BASE, "index.html")
 
 
+# Zum Herunterladen des QR-Codes. Auf Endung geprueft, nicht auf den ganzen
+# Pfad — der Funnel schneidet das Praefix /geburtstag ab, lokal fehlt es ohnehin.
+DATEIEN = {
+    "qr.png": ("quiz-qr.png", "image/png"),
+    "qr.svg": ("quiz-qr.svg", "image/svg+xml"),
+}
+
+
 class QuizHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        name = self.path.split("?")[0].rstrip("/").rsplit("/", 1)[-1].lower()
+        if name in DATEIEN:
+            return self.datei(*DATEIEN[name])
         with open(seite(), "rb") as f:
             body = f.read()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def datei(self, dateiname, typ):
+        pfad = os.path.join(BASE, dateiname)
+        if not os.path.exists(pfad):
+            self.send_error(404, "nicht vorhanden: %s" % dateiname)
+            return
+        with open(pfad, "rb") as f:
+            body = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", typ)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % dateiname)
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(body)
