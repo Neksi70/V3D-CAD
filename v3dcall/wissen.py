@@ -10,6 +10,7 @@ import core
 
 WISSEN = os.path.join(core.DATA, "wissen")
 WEBSITE = os.path.join(WISSEN, "website.md")
+KOMPAKT = os.path.join(WISSEN, "website-kompakt.md")
 KORREKTUREN = os.path.join(WISSEN, "korrekturen.md")
 SITEMAP = "https://volme3dakademie.de/sitemap.xml"
 KOPF = {"User-Agent": "Mozilla/5.0 (kompatibel; V3D-Anrufannahme)"}
@@ -24,6 +25,12 @@ def _text(roh):
     q = re.sub(r"<(p|br|div|tr|section)[^>]*>", "\n", q, flags=re.I)
     q = html.unescape(re.sub(r"<[^>]+>", " ", q))
     q = re.sub(r"[ \t ]+", " ", q)
+    # Die Preisseite zaehlt ihre Preise per JavaScript hoch; im ausgelieferten
+    # Quelltext steht bei jedem Kurs "0 €". Muss weg, sonst sagt der Assistent
+    # am Telefon, die Kurse seien kostenlos. Diese Zeile MUSS nach dem
+    # Entfernen der Auszeichnung stehen — vorher steckt der Betrag noch im
+    # Markup und die Zeilenanker greifen nicht.
+    q = re.sub(r"(?m)^[ \t\u00a0]*0[ \t\u00a0]*€[ \t\u00a0]*$", "", q)
     q = re.sub(r"\n\s*\n\s*\n+", "\n\n", q)
     return "\n".join(z.strip() for z in q.splitlines()).strip()
 
@@ -59,6 +66,47 @@ def hole_website():
     return inhalt
 
 
+VERDICHTEN = """Verdichte den folgenden Website-Text zu einem knappen Briefing
+fuer eine telefonische Auskunft.
+
+- Nur Fakten, die am Telefon gefragt werden: Angebote, Preise, Dauer, Inhalte,
+  Voraussetzungen, Termine, Anschrift, Erreichbarkeit, haeufige Fragen.
+- Navigation, Werbetexte, Rechtliches, Bildhinweise und Wiederholungen weg.
+- Praegnant gliedern. Zahlen und Eigennamen WOERTLICH uebernehmen, niemals
+  runden oder umformulieren — daraus werden am Telefon Auskuenfte.
+- Steht etwas nicht drin, erfinde es nicht. Luecken sind in Ordnung.
+- VORSICHT bei Preisen: die Preisseite liefert animierte Platzhalter. Nimm
+  Preise nur von den einzelnen Kursseiten ("ab 89 EUR inkl. MwSt."). Steht
+  irgendwo "0 EUR", ist das ein Platzhalter und KEIN Preis — weglassen.
+- Auf Deutsch, hoechstens 1200 Woerter.
+
+WEBSITE-TEXT:
+"""
+
+
+def verdichte():
+    """Website-Text einmalig zu einem Briefing eindampfen.
+
+    Der Rohtext kostet ~0,6 s je Gespraechsrunde, weil er im Systemprompt
+    steckt und jedes Mal durchgesehen wird — auch zwischengespeichert.
+    Einmal verdichten spart das bei jeder Antwort.
+    """
+    import anthropic
+    roh = _lies(WEBSITE)
+    if not roh:
+        raise RuntimeError("Kein Website-Text vorhanden — erst einlesen.")
+    k = anthropic.Anthropic(api_key=core.cfg("dialog", "apiKey"), timeout=180.0)
+    a = k.messages.create(
+        model=core.cfg("dialog", "verdichtungsModel", default="claude-sonnet-5"),
+        max_tokens=4000,
+        messages=[{"role": "user", "content": VERDICHTEN + roh}])
+    text = "".join(b.text for b in a.content if b.type == "text").strip()
+    with open(KOMPAKT, "w", encoding="utf-8") as fh:
+        fh.write(f"<!-- Aus website.md verdichtet am {time.strftime('%d.%m.%Y %H:%M')}. -->\n\n"
+                 + text)
+    return text
+
+
 def _lies(p):
     try:
         with open(p, encoding="utf-8") as fh:
@@ -68,8 +116,11 @@ def _lies(p):
 
 
 def wissensstand():
-    """Beide Quellen zusammengesetzt — Korrekturen zuletzt, damit sie gelten."""
-    w, k = _lies(WEBSITE), _lies(KORREKTUREN)
+    """Beide Quellen zusammengesetzt — Korrekturen zuletzt, damit sie gelten.
+
+    Bevorzugt das verdichtete Briefing; der Rohtext ist der Rueckfall.
+    """
+    w, k = _lies(KOMPAKT) or _lies(WEBSITE), _lies(KORREKTUREN)
     teile = []
     if w:
         teile.append("=== STAND DER WEBSITE (Hintergrund) ===\n\n" + w)
@@ -84,3 +135,5 @@ if __name__ == "__main__":
     inhalt = hole_website()
     print(f"Website eingesammelt: {len(inhalt):,} Zeichen, "
           f"{inhalt.count('# Seite:')} Seiten -> {WEBSITE}")
+    kurz = verdichte()
+    print(f"Verdichtet: {len(kurz):,} Zeichen ({len(kurz)/len(inhalt)*100:.0f} %) -> {KOMPAKT}")

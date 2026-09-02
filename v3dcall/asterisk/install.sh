@@ -61,7 +61,7 @@ install -m 0755 "$BASE/bin/v3dcall-agi" /usr/share/asterisk/agi-bin/v3dcall-agi
 
 echo "==> 4/6  Ansagen bereitstellen ($SOUNDS)"
 install -d -o asterisk -g asterisk -m 0755 "$SOUNDS"
-for n in ansage danke beep dialog-begruessung nachfrage stoerung; do
+for n in ansage danke beep dialog-begruessung nachfrage stoerung fueller1 fueller2 fueller3; do
   if [ -f "$BASE/data/sounds/$n.wav" ]; then
     install -o asterisk -g asterisk -m 0644 "$BASE/data/sounds/$n.wav" "$SOUNDS/$n.wav"
     echo "    $n.wav uebernommen"
