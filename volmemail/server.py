@@ -1964,6 +1964,15 @@ class Handler(BaseHTTPRequestHandler):
         return out
 
     def _authed(self):
+        # Schalter "offenerZugang" in der Konfiguration: dann ist V3D Mail
+        # ohne Schluessel benutzbar. ACHTUNG — der Dienst haengt im Funnel
+        # und ist damit aus dem offenen Internet erreichbar: wer die Adresse
+        # kennt, kann Mails lesen, loeschen und in deinem Namen verschicken.
+        # Auf Wunsch von Volker so eingestellt (2026-09-02).
+        # Zurueckdrehen: "offenerZugang": false in ~/.config/v3dmail/config.json
+        # setzen und den Dienst neu starten.
+        if CFG.get('offenerZugang'):
+            return True
         return session_valid(self._cookies().get('v3dmail_sid'))
 
     def _read_body(self):
@@ -2331,6 +2340,9 @@ def main():
         sys.stderr.write('Kein TLS-Zertifikat (%s) — starte unverschlüsselt.\n' % e)
     scheme = 'https' if USE_TLS else 'http'
     print('V3D Mail läuft auf %s://127.0.0.1:%d/  (Schlüssel in %s)' % (scheme, port, CONF_FILE), flush=True)
+    if CFG.get('offenerZugang'):
+        print('*** ACHTUNG: offenerZugang=true — KEIN Schlüssel nötig. '
+              'Der Dienst ist über den Funnel öffentlich erreichbar. ***', flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
