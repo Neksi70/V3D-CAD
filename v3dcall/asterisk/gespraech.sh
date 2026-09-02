@@ -49,5 +49,13 @@ import sys, core
 c = core.full_cfg(); c["dialog"]["aktiv"] = (sys.argv[1] == "true"); core.save_cfg(c)
 print("    dialog.aktiv =", c["dialog"]["aktiv"])
 PY
+echo "==> V3D-Dienst neu starten"
+# Pflicht: dialog.py wird beim Start eingelesen. Ohne Neustart laeuft der
+# Assistent mit dem alten Systemprompt weiter, ohne dass man es merkt.
+EIGNER="$(stat -c %U "$BASE")"
+sudo -u "$EIGNER" XDG_RUNTIME_DIR="/run/user/$(id -u "$EIGNER")" \
+    systemctl --user restart v3dcall.service
+sleep 2
+
 echo "==> Neu ausrollen"
 bash "$BASE/asterisk/install.sh" | tail -4
