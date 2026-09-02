@@ -1,7 +1,7 @@
 """Aufnahme -> Text -> E-Mail -> Push."""
 import json, os, smtplib, ssl, subprocess, threading, time, traceback
 from email.message import EmailMessage
-from email.utils import formataddr, parseaddr
+from email.utils import formataddr, formatdate, make_msgid, parseaddr
 
 import core
 
@@ -94,9 +94,17 @@ def sende_mail(anruf):
 
     msg = EmailMessage()
     name, adresse = parseaddr(m.get("from") or m["user"])
-    msg["From"] = formataddr((name or "V3D Anrufannahme", adresse or m["user"]))
+    absender = adresse or m["user"]
+    msg["From"] = formataddr((name or "V3D Anrufannahme", absender))
     msg["To"] = m["to"]
     msg["Subject"] = betreff
+    # Date und Message-ID gehoeren in jede Mail. Ohne Date sortieren
+    # Mailprogramme die Nachricht ans Listenende (V3D Mail zeigte sie
+    # gar nicht mehr oben an), ohne Message-ID brechen Threading und
+    # Doppelerkennung, und Spamfilter rechnen es an.
+    # Der Zeitstempel ist der des Anrufs, nicht der des Versands.
+    msg["Date"] = formatdate(anruf["ts"], localtime=True)
+    msg["Message-ID"] = make_msgid(domain=absender.rsplit("@", 1)[-1])
     msg.set_content(koerper)
 
     audio = anruf.get("audio")

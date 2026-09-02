@@ -484,7 +484,7 @@ def fetch_list(box, folder, uids):
     with box.lock:
         box.select(folder, readonly=True)
         typ, data = box.conn.uid('FETCH', ','.join(str(u) for u in uids),
-                                 '(UID FLAGS RFC822.SIZE BODYSTRUCTURE %s)' % hdr)
+                                 '(UID FLAGS RFC822.SIZE INTERNALDATE BODYSTRUCTURE %s)' % hdr)
         box.last_used = time.time()
     if typ != 'OK':
         raise MailError('Nachrichten konnten nicht geladen werden')
@@ -509,6 +509,17 @@ def fetch_list(box, folder, uids):
             ts = email.utils.parsedate_to_datetime(date).timestamp()
         except Exception:
             ts = 0
+        if not ts:
+            # Manche Absender schicken keine oder eine kaputte Date-Zeile.
+            # Dann zaehlt der Empfangszeitpunkt des Servers — sonst landet
+            # die Nachricht mit ts=0 ganz unten in der Liste und wirkt,
+            # als waere sie gar nicht angekommen.
+            try:
+                ts = time.mktime(imaplib.Internaldate2tuple(meta))
+                if not date:
+                    date = email.utils.formatdate(ts, localtime=True)
+            except Exception:
+                pass
         msgs[uid] = {
             'uid': uid,
             'subject': decode_header(head.get('Subject')) or '(kein Betreff)',
