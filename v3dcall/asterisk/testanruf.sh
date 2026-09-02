@@ -3,7 +3,9 @@
 #   sudo bash ~/v3dcall/asterisk/testanruf.sh
 set -u
 BASE="$(cd "$(dirname "$0")/.." && pwd)"
-SCHNITT=/tmp/v3dcall-anruf.pcap
+# Zeitstempel im Namen: sonst wertet das Skript stillschweigend
+# einen alten Mitschnitt aus, wenn tcpdump nicht startet.
+SCHNITT="/tmp/v3dcall-anruf-$(date +%H%M%S).pcap"
 DAUER=${1:-75}
 
 [ "$(id -u)" -eq 0 ] || { echo "Bitte mit sudo starten."; exit 1; }
@@ -26,7 +28,8 @@ echo "#  Ich schneide $DAUER Sekunden lang mit.                        #"
 echo "############################################################"
 echo
 
-timeout "$DAUER" tcpdump -n -i any -s0 -w "$SCHNITT" 'udp port 5060 or tcp port 5060' 2>/dev/null
+timeout "$DAUER" tcpdump -n -i any -s0 -w "$SCHNITT" 'port 5060' 2>/dev/null
+[ -s "$SCHNITT" ] || { echo "FEHLER: tcpdump hat nichts geschrieben."; exit 1; }
 
 echo "=== Mitschnitt fertig. Was kam an? ==="
 tcpdump -n -r "$SCHNITT" 2>/dev/null | grep -iE "INVITE|OPTIONS|REGISTER|SIP/2.0" | head -25
