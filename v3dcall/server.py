@@ -32,6 +32,19 @@ def wache():
     return None
 
 
+@app.after_request
+def schluessel_merken(antwort):
+    """Kommt ein gueltiger Schluessel als ?key= herein, gleich das
+    Plaetzchen setzen. Sonst autorisiert die Adresse nur den einen
+    Aufruf — alle Nachfragen der Seite laufen ohne Schluessel und
+    laufen in "nicht angemeldet"."""
+    key = core.cfg("adminKey", default="")
+    if key and request.args.get("key") == key and request.cookies.get(COOKIE) != key:
+        antwort.set_cookie(COOKIE, key, max_age=365 * 24 * 3600,
+                           samesite="Lax", httponly=True, secure=True)
+    return antwort
+
+
 def lokal():
     """Nur der eigene Rechner darf Anrufe melden.
 
