@@ -278,6 +278,41 @@ schreibgeschützt (ein PUT würde die ganze Serie überschreiben). Ganztags-Term
 Der iCalendar-Teil (Parser, Zeilen-Faltung, Zeitzonen nach UTC) ist eigener
 Code in `server.py`, Tests in `test_server.py`.
 
+## Claude / Cowork (MCP-Connector)
+
+V3D Mail stellt unter `/api/mcp/<mcpKey>` einen MCP-Server (Model Context
+Protocol, Streamable HTTP, reines JSON-RPC) bereit. Damit kann Claude —
+Cowork, Claude Desktop, claude.ai, Handy-App — das Postfach lesen, Anhänge
+holen, Entwürfe ablegen, Nachrichten verschieben/markieren und den Kalender
+nutzen.
+
+- **Adresse für den Connector:**
+  `https://v3da.tailf05fe9.ts.net/mail/api/mcp/<mcpKey>` — der `mcpKey` steht
+  in `~/.config/v3dmail/config.json` (wird beim ersten Start erzeugt).
+  In Claude: Einstellungen → Connectors → „Benutzerdefinierten Connector
+  hinzufügen", nur die Adresse eintragen (kein OAuth).
+- **Warum öffentlich (Funnel) und Schlüssel in der Adresse:** Claude verbindet
+  sich von Anthropics Cloud aus, nicht vom eigenen Gerät — ein Tailnet-Endpunkt
+  wäre unerreichbar. Der Connector-Dialog kennt nur OAuth oder gar keine
+  Anmeldung, deshalb ist der Schlüssel Teil der Adresse (zusätzlich geht
+  `Authorization: Bearer <mcpKey>`). Der Schlüssel gilt **unabhängig** von
+  `offenerZugang`.
+- **Bewusst kein Senden-Werkzeug.** `entwurf_ablegen` legt die Mail im Ordner
+  Entwürfe ab (IMAP APPEND, `\Draft`). In V3D Mail: Ordner Entwürfe → Mail
+  öffnen → „✏️ Bearbeiten" → prüfen → Senden. Nach dem Senden wandert der
+  Entwurf in den Papierkorb. Die Signatur hängt V3D Mail beim Senden an,
+  Claude soll sie nicht mitschreiben (steht in der Werkzeugbeschreibung).
+- **Werkzeuge:** `konten`, `ordner`, `nachrichten` (Suche, nur ungelesen,
+  Seiten), `nachricht` (markiert nicht als gelesen, außer `als_gelesen`),
+  `anhang` (Text als Text, Bilder als Bild, Rest als eingebettete Datei, max.
+  8 MB), `entwurf_ablegen` (optional als Antwort mit In-Reply-To),
+  `verschieben` (Pfad oder Art wie `trash`), `markieren`, `termine`,
+  `termin_anlegen` (nur Datum = ganztags).
+- **Schlüssel wechseln:** `mcpKey` in der config.json ändern/löschen (leer →
+  neu erzeugt beim Start), Dienst neu starten, Connector in Claude mit der
+  neuen Adresse neu anlegen.
+- Tests: `TestMcp` in `test_server.py` (Stub-IMAP, ohne Postfach).
+
 ## Noch offen
 
 * Entwürfe serverseitig speichern (bisher nur senden)

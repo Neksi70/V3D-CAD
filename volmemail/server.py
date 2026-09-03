@@ -72,6 +72,11 @@ def load_conf():
     if not conf.get('adminKey'):
         conf['adminKey'] = secrets.token_urlsafe(16)
         changed = True
+    if not conf.get('mcpKey'):
+        # Eigener Schluessel fuer die Claude/Cowork-Anbindung (MCP). Steht in
+        # der Connector-Adresse und gilt UNABHAENGIG von offenerZugang.
+        conf['mcpKey'] = secrets.token_urlsafe(24)
+        changed = True
     if 'port' not in conf:
         conf['port'] = DEFAULT_PORT
         changed = True
@@ -573,17 +578,18 @@ def fetch_list(box, folder, uids):
     return [msgs[u] for u in uids if u in msgs]
 
 
-def search_uids(box, folder, query):
+def search_uids(box, folder, query, unseen=False):
+    vor = ['UNSEEN'] if unseen else []
     with box.lock:
         box.select(folder, readonly=True)
         if query:
             # Serverseitige Volltextsuche über Kopf und Rumpf.
-            crit = ['OR', 'OR', 'FROM', _q(query), 'SUBJECT', _q(query), 'BODY', _q(query)]
+            crit = vor + ['OR', 'OR', 'FROM', _q(query), 'SUBJECT', _q(query), 'BODY', _q(query)]
             typ, data = box.conn.uid('SEARCH', 'CHARSET', 'UTF-8', *crit)
             if typ != 'OK':
-                typ, data = box.conn.uid('SEARCH', None, 'TEXT', _q(query))
+                typ, data = box.conn.uid('SEARCH', None, *(vor + ['TEXT', _q(query)]))
         else:
-            typ, data = box.conn.uid('SEARCH', None, 'ALL')
+            typ, data = box.conn.uid('SEARCH', None, *(vor or ['ALL']))
         box.last_used = time.time()
     if typ != 'OK':
         raise MailError('Suche fehlgeschlagen')
@@ -1898,6 +1904,346 @@ def dav_delete_event(acc, href):
 
 # --- HTTP -------------------------------------------------------------------
 
+def move_uids(box, folder, uids, target):
+    uid_set = ','.join(str(int(u)) for u in uids)
+    if not uid_set:
+        return
+    with box.lock:
+        box.select(folder, readonly=False)
+        enc = '"%s"' % utf7_encode(target)
+        typ = 'NO'
+        if 'MOVE' in (box.conn.capabilities or ()):
+            typ, _ = box.conn.uid('MOVE', uid_set, enc)
+        if typ != 'OK':
+            typ, _ = box.conn.uid('COPY', uid_set, enc)
+            if typ != 'OK':
+                raise MailError('Verschieben fehlgeschlagen')
+            box.conn.uid('STORE', uid_set, '+FLAGS', '(\\Deleted)')
+            box.conn.expunge()
+        box.last_used = time.time()
+
+
+def set_flags(box, folder, uids, flag, on):
+    uid_set = ','.join(str(int(u)) for u in uids)
+    if not uid_set:
+        return
+    with box.lock:
+        box.select(folder, readonly=False)
+        box.conn.uid('STORE', uid_set, '+FLAGS' if on else '-FLAGS', '(%s)' % flag)
+        box.last_used = time.time()
+
+
+# --- MCP: Anbindung an Claude / Cowork ---------------------------------------
+# Streamable-HTTP-Endpunkt des Model Context Protocol, als reines JSON-RPC ueber
+# POST (kein SSE-Strom, zustandslos). Claude verbindet sich von Anthropics Cloud
+# aus — deshalb muss der Endpunkt oeffentlich erreichbar sein (Funnel /mail),
+# und deshalb steckt der Schluessel in der Adresse: der Connector-Dialog kennt
+# nur OAuth oder gar nichts, keinen festen Kopfzeilen-Schluessel.
+# Bewusst KEIN Senden-Werkzeug: Claude legt Entwuerfe ab, abgeschickt wird in
+# V3D Mail von Hand.
+
+MCP_VERSIONS = ('2025-06-18', '2025-03-26', '2024-11-05')
+MCP_MAX_ANHANG = 8 * 1024 * 1024
+MCP_MAX_TEXT = 60000
+
+MCP_ANLEITUNG = (
+    'V3D Mail: Zugriff auf die Postfaecher (IMAP) und Kalender (CalDAV) von Volme3D. '
+    'Ablauf: konten -> ordner/nachrichten -> nachricht -> anhang. '
+    'Mails werden NICHT direkt versendet: entwurf_ablegen legt sie im Ordner '
+    'Entwuerfe ab, der Nutzer prueft und sendet sie in V3D Mail. '
+    'UIDs gelten immer nur innerhalb ihres Ordners.'
+)
+
+
+def _p(typ, beschreibung, **mehr):
+    d = {'type': typ, 'description': beschreibung}
+    d.update(mehr)
+    return d
+
+
+_P_KONTO = _p('string', 'Postfach (ID oder E-Mail-Adresse aus "konten"). Bei nur einem Postfach weglassen.')
+_P_ORDNER = _p('string', 'Ordnerpfad aus "ordner" (Standard INBOX).')
+
+MCP_TOOLS = [
+    {'name': 'konten', 'description': 'Eingerichtete Postfaecher auflisten (ID, Name, Adresse, Kalender ja/nein).',
+     'inputSchema': {'type': 'object', 'properties': {}}},
+    {'name': 'ordner', 'description': 'Ordner eines Postfachs auflisten (Pfad, Anzeigename, Art wie inbox/sent/drafts/trash).',
+     'inputSchema': {'type': 'object', 'properties': {'konto': _P_KONTO}}},
+    {'name': 'nachrichten',
+     'description': 'Nachrichten eines Ordners auflisten, neueste zuerst. Liefert nur Kopfdaten '
+                    '(uid, Betreff, Absender, Datum, gelesen, Anhang ja/nein) — den Inhalt holt "nachricht".',
+     'inputSchema': {'type': 'object', 'properties': {
+         'konto': _P_KONTO, 'ordner': _P_ORDNER,
+         'suche': _p('string', 'Volltextsuche ueber Absender, Betreff und Text (optional).'),
+         'nur_ungelesen': _p('boolean', 'Nur ungelesene Nachrichten (Standard false).'),
+         'anzahl': _p('integer', 'Wie viele (Standard 20, hoechstens 100).'),
+         'seite': _p('integer', 'Seite ab 0 fuer weitere Treffer.')}}},
+    {'name': 'nachricht',
+     'description': 'Eine Nachricht vollstaendig lesen: Kopfdaten, Text und Liste der Anhaenge. '
+                    'Markiert sie NICHT als gelesen, ausser als_gelesen ist true.',
+     'inputSchema': {'type': 'object', 'required': ['uid'], 'properties': {
+         'konto': _P_KONTO, 'ordner': _P_ORDNER,
+         'uid': _p('integer', 'UID aus "nachrichten".'),
+         'als_gelesen': _p('boolean', 'Nachricht als gelesen markieren (Standard false).')}}},
+    {'name': 'anhang',
+     'description': 'Einen Anhang holen. Textdateien kommen als Text, Bilder als Bild, '
+                    'alles andere (z. B. PDF) als eingebettete Datei. Hoechstens 8 MB.',
+     'inputSchema': {'type': 'object', 'required': ['uid', 'teil'], 'properties': {
+         'konto': _P_KONTO, 'ordner': _P_ORDNER,
+         'uid': _p('integer', 'UID der Nachricht.'),
+         'teil': _p('string', 'Kennung "part" aus der Anhangliste von "nachricht".')}}},
+    {'name': 'entwurf_ablegen',
+     'description': 'Eine neue Mail oder Antwort als ENTWURF im Ordner Entwuerfe ablegen. '
+                    'Wird nicht gesendet — der Nutzer oeffnet den Entwurf in V3D Mail, prueft ihn und '
+                    'sendet ihn dort (die Signatur haengt V3D Mail beim Senden selbst an, nicht mitschreiben).',
+     'inputSchema': {'type': 'object', 'required': ['an', 'betreff', 'text'], 'properties': {
+         'konto': _P_KONTO,
+         'an': _p('string', 'Empfaenger, mehrere mit Komma.'),
+         'cc': _p('string', 'Kopie-Empfaenger (optional).'),
+         'betreff': _p('string', 'Betreff.'),
+         'text': _p('string', 'Nachrichtentext als Klartext.'),
+         'antwort_auf_uid': _p('integer', 'Optional: UID der Nachricht, auf die geantwortet wird (fuer den Gespraechsfaden).'),
+         'antwort_auf_ordner': _p('string', 'Ordner dieser Nachricht (Standard INBOX).')}}},
+    {'name': 'verschieben',
+     'description': 'Nachrichten in einen anderen Ordner verschieben. Ziel ist ein Pfad aus "ordner" '
+                    'oder eine Art (trash, archive, junk, inbox).',
+     'inputSchema': {'type': 'object', 'required': ['uids', 'ziel'], 'properties': {
+         'konto': _P_KONTO, 'ordner': _P_ORDNER,
+         'uids': _p('array', 'UIDs im Quellordner.', items={'type': 'integer'}),
+         'ziel': _p('string', 'Zielordner (Pfad oder Art).')}}},
+    {'name': 'markieren',
+     'description': 'Nachrichten als gelesen/ungelesen oder markiert/unmarkiert setzen.',
+     'inputSchema': {'type': 'object', 'required': ['uids'], 'properties': {
+         'konto': _P_KONTO, 'ordner': _P_ORDNER,
+         'uids': _p('array', 'UIDs im Ordner.', items={'type': 'integer'}),
+         'gelesen': _p('boolean', 'true = gelesen, false = ungelesen, weglassen = unveraendert.'),
+         'markiert': _p('boolean', 'true = Fahne setzen, false = entfernen, weglassen = unveraendert.')}}},
+    {'name': 'termine',
+     'description': 'Kalendertermine des Postfachs in einem Zeitraum (CalDAV). Zeiten in UTC.',
+     'inputSchema': {'type': 'object', 'required': ['von', 'bis'], 'properties': {
+         'konto': _P_KONTO,
+         'von': _p('string', 'Beginn, ISO-8601 UTC, z. B. 2026-09-01T00:00:00Z'),
+         'bis': _p('string', 'Ende, ISO-8601 UTC, z. B. 2026-09-30T23:59:59Z')}}},
+    {'name': 'termin_anlegen',
+     'description': 'Neuen Kalendertermin anlegen (CalDAV).',
+     'inputSchema': {'type': 'object', 'required': ['titel', 'start'], 'properties': {
+         'konto': _P_KONTO,
+         'titel': _p('string', 'Titel des Termins.'),
+         'start': _p('string', 'Beginn: ISO-8601 UTC (2026-09-10T08:00:00Z) oder bei ganztags nur das Datum (2026-09-10).'),
+         'ende': _p('string', 'Ende im selben Format (Standard = Beginn; bei ganztags letzter Tag einschliesslich).'),
+         'ganztags': _p('boolean', 'Ganztaegiger Termin (Standard false).'),
+         'ort': _p('string', 'Ort (optional).'),
+         'beschreibung': _p('string', 'Beschreibung (optional).')}}},
+]
+
+
+def mcp_account(arg):
+    accounts = CFG.get('accounts', [])
+    if arg:
+        for a in accounts:
+            if a.get('id') == arg or (a.get('email') or '').lower() == str(arg).strip().lower():
+                return a
+        raise MailError('Postfach "%s" nicht gefunden' % arg)
+    if len(accounts) == 1:
+        return accounts[0]
+    if not accounts:
+        raise MailError('Kein Postfach eingerichtet')
+    raise MailError('Mehrere Postfaecher vorhanden — bitte "konto" angeben: '
+                    + ', '.join(a.get('email') or a.get('id') for a in accounts))
+
+
+def _mcp_uids(args):
+    uids = args.get('uids') or []
+    if not isinstance(uids, list) or not uids:
+        raise MailError('uids fehlt')
+    return [int(u) for u in uids]
+
+
+def _mcp_text(msg):
+    text = (msg.get('plain') or '').strip()
+    if not text:
+        text = html.unescape(re.sub(r'<[^>]+>', ' ', msg.get('html') or ''))
+        text = re.sub(r'[ \t]+', ' ', text)
+        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text).strip()
+    if len(text) > MCP_MAX_TEXT:
+        text = text[:MCP_MAX_TEXT] + '\n[… gekuerzt, Nachricht ist laenger]'
+    return text
+
+
+def _mcp_ziel(box, ziel):
+    for f in list_folders(box):
+        if f['path'] == ziel or f['kind'] == ziel or f['name'] == ziel:
+            return f['path']
+    raise MailError('Zielordner "%s" nicht gefunden' % ziel)
+
+
+def mcp_call(name, args):
+    """Ein Werkzeug ausfuehren. Gibt ein Dict (wird als JSON-Text geliefert)
+    oder eine fertige Inhaltsliste zurueck."""
+    args = args or {}
+    if name == 'konten':
+        return {'konten': [{'id': a['id'], 'name': a.get('name') or a.get('email'),
+                            'email': a.get('email'),
+                            'kalender': bool((a.get('dav') or {}).get('calendars'))}
+                           for a in CFG.get('accounts', [])]}
+
+    acc = mcp_account(args.get('konto'))
+    ordner = args.get('ordner') or 'INBOX'
+
+    if name in ('termine', 'termin_anlegen'):
+        if name == 'termine':
+            return {'termine': dav_events(acc, str(args.get('von') or ''), str(args.get('bis') or ''))}
+        ganz = bool(args.get('ganztags'))
+        start = str(args.get('start') or '')
+        if not ganz and re.fullmatch(r'\d{4}-\d{2}-\d{2}', start):
+            ganz = True         # nur ein Datum = ganztags
+        ev = {'summary': args.get('titel') or '', 'start': start,
+              'end': str(args.get('ende') or start), 'allDay': ganz,
+              'location': args.get('ort') or '', 'description': args.get('beschreibung') or ''}
+        return dav_save_event(acc, {'ev': ev})
+
+    box = get_box(acc)
+
+    if name == 'ordner':
+        return {'ordner': [{'pfad': f['path'], 'name': f['name'], 'art': f['kind']}
+                           for f in list_folders(box)]}
+
+    if name == 'nachrichten':
+        anzahl = max(1, min(100, int(args.get('anzahl') or 20)))
+        seite = max(0, int(args.get('seite') or 0))
+        uids = search_uids(box, ordner, str(args.get('suche') or '').strip(),
+                           unseen=bool(args.get('nur_ungelesen')))
+        uids.reverse()
+        chunk = uids[seite * anzahl:(seite + 1) * anzahl]
+        msgs = fetch_list(box, ordner, chunk)
+        msgs.sort(key=lambda m: m['ts'], reverse=True)
+        for m in msgs:
+            m.pop('ts', None)
+        return {'ordner': ordner, 'gesamt': len(uids), 'seite': seite, 'nachrichten': msgs}
+
+    if name == 'nachricht':
+        uid = int(args.get('uid'))
+        m = load_message(box, ordner, uid)
+        if args.get('als_gelesen'):
+            set_flags(box, ordner, [uid], '\\Seen', True)
+        return {'uid': uid, 'ordner': ordner, 'subject': m['subject'], 'from': m['from'],
+                'to': m['to'], 'cc': m['cc'], 'date': m['date'], 'messageId': m['messageId'],
+                'text': _mcp_text(m),
+                'anhaenge': [{'part': a['part'], 'filename': a['filename'], 'type': a['type'],
+                              'size': a['size'], 'eingebettet': a['inline']}
+                             for a in m['attachments']]}
+
+    if name == 'anhang':
+        payload, ctype, dateiname = load_attachment(box, ordner, int(args.get('uid')),
+                                                    str(args.get('teil')))
+        if len(payload) > MCP_MAX_ANHANG:
+            raise MailError('Anhang zu gross (%d KB, Grenze %d KB)' % (len(payload) // 1024, MCP_MAX_ANHANG // 1024))
+        kopf = {'type': 'text', 'text': json.dumps({'filename': dateiname, 'type': ctype,
+                                                    'size': len(payload)}, ensure_ascii=False)}
+        if ctype.startswith('text/') or ctype in ('application/json', 'application/xml'):
+            return [kopf, {'type': 'text', 'text': payload.decode('utf-8', 'replace')}]
+        b64 = base64.b64encode(payload).decode('ascii')
+        if ctype.startswith('image/'):
+            return [kopf, {'type': 'image', 'data': b64, 'mimeType': ctype}]
+        return [kopf, {'type': 'resource', 'resource': {
+            'uri': 'v3dmail://%s/%s/%s/%s' % (acc['id'], ordner, args.get('uid'), args.get('teil')),
+            'name': dateiname, 'mimeType': ctype, 'blob': b64}}]
+
+    if name == 'entwurf_ablegen':
+        daten = {'to': args.get('an') or '', 'cc': args.get('cc') or '',
+                 'subject': args.get('betreff') or '', 'text': args.get('text') or ''}
+        if not daten['to'].strip():
+            raise MailError('Empfaenger fehlt')
+        if args.get('antwort_auf_uid'):
+            orig = load_message(box, args.get('antwort_auf_ordner') or 'INBOX', int(args['antwort_auf_uid']))
+            daten['inReplyTo'] = orig.get('messageId') or ''
+            daten['references'] = orig.get('references') or ''
+        msg = baue_nachricht(acc, daten)
+        msg['X-V3D-Quelle'] = 'Claude'
+        drafts = find_special(box, 'drafts')
+        if not drafts:
+            raise MailError('Das Postfach hat keinen Entwuerfe-Ordner')
+        with box.lock:
+            box.ensure()
+            typ, _ = box.conn.append('"%s"' % utf7_encode(drafts), '(\\Draft \\Seen)',
+                                     imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+            box.last_used = time.time()
+        if typ != 'OK':
+            raise MailError('Entwurf konnte nicht abgelegt werden')
+        return {'ok': True, 'ordner': drafts, 'an': daten['to'], 'betreff': daten['subject'],
+                'hinweis': 'Entwurf liegt in V3D Mail unter "Entwuerfe". Dort oeffnen, '
+                           '"Bearbeiten" druecken, pruefen und senden.'}
+
+    if name == 'verschieben':
+        uids = _mcp_uids(args)
+        ziel = _mcp_ziel(box, str(args.get('ziel') or ''))
+        move_uids(box, ordner, uids, ziel)
+        return {'ok': True, 'verschoben': len(uids), 'nach': ziel}
+
+    if name == 'markieren':
+        uids = _mcp_uids(args)
+        getan = {}
+        if args.get('gelesen') is not None:
+            set_flags(box, ordner, uids, '\\Seen', bool(args['gelesen']))
+            getan['gelesen'] = bool(args['gelesen'])
+        if args.get('markiert') is not None:
+            set_flags(box, ordner, uids, '\\Flagged', bool(args['markiert']))
+            getan['markiert'] = bool(args['markiert'])
+        if not getan:
+            raise MailError('Weder gelesen noch markiert angegeben')
+        return {'ok': True, 'uids': uids, 'gesetzt': getan}
+
+    raise MailError('Unbekanntes Werkzeug: %s' % name)
+
+
+def _rpc_err(rid, code, msg):
+    return {'jsonrpc': '2.0', 'id': rid, 'error': {'code': code, 'message': msg}}
+
+
+def mcp_rpc(req):
+    """Eine JSON-RPC-Anfrage beantworten. None = Benachrichtigung, keine Antwort."""
+    if not isinstance(req, dict):
+        return _rpc_err(None, -32600, 'Ungueltige Anfrage')
+    rid = req.get('id')
+    method = req.get('method') or ''
+    params = req.get('params') or {}
+    if 'id' not in req or method.startswith('notifications/'):
+        return None
+    if method == 'initialize':
+        gew = str(params.get('protocolVersion') or '')
+        return {'jsonrpc': '2.0', 'id': rid, 'result': {
+            'protocolVersion': gew if gew in MCP_VERSIONS else MCP_VERSIONS[0],
+            'capabilities': {'tools': {'listChanged': False}},
+            'serverInfo': {'name': 'V3D Mail', 'version': '1.0'},
+            'instructions': MCP_ANLEITUNG}}
+    if method == 'ping':
+        return {'jsonrpc': '2.0', 'id': rid, 'result': {}}
+    if method == 'tools/list':
+        return {'jsonrpc': '2.0', 'id': rid, 'result': {'tools': MCP_TOOLS}}
+    if method == 'tools/call':
+        name = params.get('name') or ''
+        if not any(t['name'] == name for t in MCP_TOOLS):
+            return _rpc_err(rid, -32602, 'Unbekanntes Werkzeug: %s' % name)
+        try:
+            out = mcp_call(name, params.get('arguments') or {})
+        except MailError as e:
+            out = {'content': [{'type': 'text', 'text': 'Fehler: %s' % e}], 'isError': True}
+        except (imaplib.IMAP4.error, ssl.SSLError, socket.gaierror, OSError) as e:
+            out = {'content': [{'type': 'text', 'text': 'Fehler beim Mailserver: %s' % readable_error(e, 'IMAP')}],
+                   'isError': True}
+        except Exception as e:
+            sys.stderr.write('MCP-Fehler bei %s: %r\n' % (name, e))
+            out = {'content': [{'type': 'text', 'text': 'Interner Fehler: %s' % e}], 'isError': True}
+        else:
+            if isinstance(out, list):
+                out = {'content': out}
+            else:
+                out = {'content': [{'type': 'text', 'text': json.dumps(out, ensure_ascii=False, indent=1)}],
+                       'structuredContent': out}
+        return {'jsonrpc': '2.0', 'id': rid, 'result': out}
+    return _rpc_err(rid, -32601, 'Methode nicht unterstuetzt: %s' % method)
+
+
 def json_bytes(obj):
     return json.dumps(obj, ensure_ascii=False).encode('utf-8')
 
@@ -2003,6 +2349,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._dispatch('POST')
 
+    def do_DELETE(self):
+        self._dispatch('DELETE')
+
     def _dispatch(self, method):
         path, q = self._path()
         if path is None:
@@ -2049,8 +2398,44 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, data, ctype + ('; charset=utf-8' if ctype.startswith('text/') else ''), extra)
 
     # -- API --
+    def _mcp_key_ok(self, route):
+        # Schluessel aus der Adresse (/api/mcp/<key>) oder als Bearer-Kopfzeile.
+        key = ''
+        rest = route[len('/mcp'):]
+        if rest.startswith('/'):
+            key = rest[1:].split('/')[0]
+        auth = self.headers.get('Authorization') or ''
+        if not key and auth.lower().startswith('bearer '):
+            key = auth[7:].strip()
+        soll = CFG.get('mcpKey') or ''
+        return bool(key) and bool(soll) and hmac.compare_digest(key, soll)
+
+    def _mcp(self, method, route):
+        if not self._mcp_key_ok(route):
+            time.sleep(0.5)     # Bremse gegen Durchprobieren (IP ist hinter dem Funnel immer 127.0.0.1)
+            return self._send(401, {'error': 'MCP-Schluessel fehlt oder falsch'},
+                              extra=[('WWW-Authenticate', 'Bearer')])
+        if method == 'DELETE':
+            return self._send(200, {'ok': True})     # Sitzungsende — wir sind zustandslos
+        if method != 'POST':
+            return self._send(405, {'error': 'Nur POST (JSON-RPC); kein Ereignisstrom'},
+                              extra=[('Allow', 'POST, DELETE')])
+        body = self._body()
+        if isinstance(body, list):          # Stapel (aeltere Protokollfassung)
+            antworten = [a for a in (mcp_rpc(r) for r in body) if a is not None]
+            if not antworten:
+                return self._send(202, b'')
+            return self._send(200, antworten)
+        antwort = mcp_rpc(body)
+        if antwort is None:
+            return self._send(202, b'')
+        return self._send(200, antwort)
+
     def _api(self, method, path, q):
         route = path[len('/api'):]
+
+        if route == '/mcp' or route.startswith('/mcp/'):
+            return self._mcp(method, route)
 
         if route == '/login' and method == 'POST':
             ip = self.client_address[0]
@@ -2288,22 +2673,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {'error': 'unbekannter Endpunkt'})
 
     def _move(self, box, folder, uids, target):
-        uid_set = ','.join(str(int(u)) for u in uids)
-        if not uid_set:
-            return
-        with box.lock:
-            box.select(folder, readonly=False)
-            enc = '"%s"' % utf7_encode(target)
-            typ = 'NO'
-            if 'MOVE' in (box.conn.capabilities or ()):
-                typ, _ = box.conn.uid('MOVE', uid_set, enc)
-            if typ != 'OK':
-                typ, _ = box.conn.uid('COPY', uid_set, enc)
-                if typ != 'OK':
-                    raise MailError('Verschieben fehlgeschlagen')
-                box.conn.uid('STORE', uid_set, '+FLAGS', '(\\Deleted)')
-                box.conn.expunge()
-            box.last_used = time.time()
+        move_uids(box, folder, uids, target)
 
     _body_cache = None
 
@@ -2340,6 +2710,8 @@ def main():
         sys.stderr.write('Kein TLS-Zertifikat (%s) — starte unverschlüsselt.\n' % e)
     scheme = 'https' if USE_TLS else 'http'
     print('V3D Mail läuft auf %s://127.0.0.1:%d/  (Schlüssel in %s)' % (scheme, port, CONF_FILE), flush=True)
+    print('MCP-Connector fuer Claude/Cowork: https://v3da.tailf05fe9.ts.net%s/api/mcp/<mcpKey aus der config>'
+          % BASE, flush=True)
     if CFG.get('offenerZugang'):
         print('*** ACHTUNG: offenerZugang=true — KEIN Schlüssel nötig. '
               'Der Dienst ist über den Funnel öffentlich erreichbar. ***', flush=True)

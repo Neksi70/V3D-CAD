@@ -950,5 +950,257 @@ class TestBildWeiterleitung(unittest.TestCase):
         self.assertEqual(server._bildtyp(b'nur Text'), 'application/octet-stream')
 
 
+class McpConn(FakeConn):
+    """FakeConn mit Entwürfe-Ordner und APPEND — für die Claude-Anbindung."""
+
+    def list(self):
+        return ('OK', [rb'(\HasNoChildren) "/" "INBOX"',
+                       rb'(\HasNoChildren \Drafts) "/" "Entw&APw-rfe"',
+                       rb'(\HasNoChildren \Sent) "/" "Gesendet"',
+                       rb'(\HasNoChildren \Trash) "/" "Papierkorb"'])
+
+    def append(self, folder, flags, date, data):
+        self.appended = getattr(self, 'appended', []) + [(folder, flags, data)]
+        return ('OK', [b''])
+
+
+class TestMcp(unittest.TestCase):
+    """MCP-Endpunkt für Claude/Cowork: Schlüssel, JSON-RPC-Gerüst, Werkzeuge."""
+
+    @classmethod
+    def setUpClass(cls):
+        from http.server import ThreadingHTTPServer
+        server.CFG['mcpKey'] = 'mcp-test-schluessel'
+        server.CFG['adminKey'] = 'admin-test'
+        server.CFG['accounts'] = [{'id': 'x', 'email': 'v3d@volme3d.de', 'name': 'V3D',
+                                   'imapHost': 'h', 'password': 'p'}]
+        msg = EmailMessage()
+        msg['From'] = 'Frank <frank@iserlohn.de>'
+        msg['To'] = 'v3d@volme3d.de'
+        msg['Subject'] = 'Unser Termin'
+        msg['Message-ID'] = '<abc@iserlohn.de>'
+        msg['Date'] = 'Thu, 03 Sep 2026 11:24:28 +0200'
+        msg.set_content('Hallo Volker,\n\nbis Donnerstag.')
+        msg.add_attachment(b'Name;Ort\nA;B\n', maintype='text', subtype='csv', filename='liste.csv')
+        msg.add_attachment(b'\x89PNG\r\n\x1a\n' + b'\0' * 20, maintype='image', subtype='png',
+                           filename='foto.png')
+        cls.conn = McpConn(bytes(msg))
+        cls.box = server.Mailbox(server.CFG['accounts'][0])
+        cls.box.conn = cls.conn
+        cls.box.last_used = time.time()
+        cls.orig_get_box = server.get_box
+        server.get_box = lambda acc: cls.box
+        cls.srv = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+        cls.srv.daemon_threads = True
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        server.get_box = cls.orig_get_box
+        server.CFG['accounts'] = []
+        cls.srv.shutdown()
+
+    def raw(self, method, path, body=None, headers=None):
+        c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
+        h = {'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'}
+        h.update(headers or {})
+        c.request(method, path, json.dumps(body) if body is not None else None, h)
+        r = c.getresponse()
+        data = r.read()
+        c.close()
+        return r.status, (json.loads(data) if data else None)
+
+    def rpc(self, method, params=None, rid=1):
+        status, data = self.raw('POST', '/api/mcp/mcp-test-schluessel',
+                                {'jsonrpc': '2.0', 'id': rid, 'method': method, 'params': params or {}})
+        self.assertEqual(status, 200, data)
+        return data
+
+    def tool(self, name, **args):
+        r = self.rpc('tools/call', {'name': name, 'arguments': args})
+        self.assertIn('result', r, r)
+        return r['result']
+
+    def test_ohne_schluessel_abgewiesen(self):
+        status, _ = self.raw('POST', '/api/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'ping'})
+        self.assertEqual(status, 401)
+        status, _ = self.raw('POST', '/api/mcp/falsch', {'jsonrpc': '2.0', 'id': 1, 'method': 'ping'})
+        self.assertEqual(status, 401)
+
+    def test_schluessel_auch_als_bearer(self):
+        status, data = self.raw('POST', '/api/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'ping'},
+                                {'Authorization': 'Bearer mcp-test-schluessel'})
+        self.assertEqual(status, 200)
+        self.assertEqual(data['result'], {})
+
+    def test_schluessel_gilt_trotz_offenem_zugang(self):
+        alt = server.CFG.get('offenerZugang')
+        server.CFG['offenerZugang'] = True
+        try:
+            status, _ = self.raw('POST', '/api/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'ping'})
+            self.assertEqual(status, 401)
+        finally:
+            server.CFG['offenerZugang'] = alt
+
+    def test_funnel_praefix(self):
+        status, data = self.raw('POST', '/mail/api/mcp/mcp-test-schluessel',
+                                {'jsonrpc': '2.0', 'id': 1, 'method': 'ping'})
+        self.assertEqual(status, 200)
+        self.assertEqual(data['id'], 1)
+
+    def test_get_liefert_405(self):
+        status, _ = self.raw('GET', '/api/mcp/mcp-test-schluessel')
+        self.assertEqual(status, 405)
+
+    def test_initialize(self):
+        r = self.rpc('initialize', {'protocolVersion': '2025-03-26', 'capabilities': {},
+                                    'clientInfo': {'name': 'test', 'version': '0'}})
+        self.assertEqual(r['result']['protocolVersion'], '2025-03-26')
+        self.assertIn('tools', r['result']['capabilities'])
+        self.assertEqual(r['result']['serverInfo']['name'], 'V3D Mail')
+        r = self.rpc('initialize', {'protocolVersion': '1999-01-01'})
+        self.assertEqual(r['result']['protocolVersion'], '2025-06-18')
+
+    def test_benachrichtigung_ohne_antwort(self):
+        status, data = self.raw('POST', '/api/mcp/mcp-test-schluessel',
+                                {'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+        self.assertEqual(status, 202)
+        self.assertIsNone(data)
+
+    def test_unbekannte_methode(self):
+        r = self.rpc('gibtsnicht')
+        self.assertEqual(r['error']['code'], -32601)
+
+    def test_werkzeugliste(self):
+        r = self.rpc('tools/list')
+        namen = [t['name'] for t in r['result']['tools']]
+        for n in ('konten', 'ordner', 'nachrichten', 'nachricht', 'anhang', 'entwurf_ablegen',
+                  'verschieben', 'markieren', 'termine', 'termin_anlegen'):
+            self.assertIn(n, namen)
+        self.assertNotIn('senden', namen)      # Senden bleibt bewusst beim Menschen
+        for t in r['result']['tools']:
+            self.assertEqual(t['inputSchema']['type'], 'object')
+
+    def test_unbekanntes_werkzeug(self):
+        r = self.rpc('tools/call', {'name': 'senden', 'arguments': {}})
+        self.assertEqual(r['error']['code'], -32602)
+
+    def test_konten(self):
+        res = self.tool('konten')
+        self.assertEqual(res['structuredContent']['konten'][0]['email'], 'v3d@volme3d.de')
+        self.assertNotIn('password', json.dumps(res))
+
+    def test_ordner(self):
+        res = self.tool('ordner')
+        arten = {o['pfad']: o['art'] for o in res['structuredContent']['ordner']}
+        self.assertEqual(arten['Entwürfe'], 'drafts')
+
+    def test_nachrichten(self):
+        res = self.tool('nachrichten', anzahl=5)
+        sc = res['structuredContent']
+        self.assertEqual(sc['gesamt'], 4)
+        self.assertEqual(sc['nachrichten'][0]['subject'], 'Unser Termin')
+        self.assertTrue(sc['nachrichten'][0]['hasAttachments'])
+        self.assertNotIn('ts', sc['nachrichten'][0])
+        self.assertIn('Unser Termin', res['content'][0]['text'])
+
+    def test_nachrichten_nur_ungelesen(self):
+        res = self.tool('nachrichten', nur_ungelesen=True)
+        self.assertFalse(res.get('isError'))   # Stub antwortet gleich — der Aufruf muss durchlaufen
+
+    def test_nachricht_liest_text_und_anhaenge(self):
+        vorher = len(self.conn.stored)
+        res = self.tool('nachricht', uid=7)
+        sc = res['structuredContent']
+        self.assertIn('bis Donnerstag', sc['text'])
+        self.assertEqual(sc['from'][0]['email'], 'frank@iserlohn.de')
+        namen = [a['filename'] for a in sc['anhaenge']]
+        self.assertEqual(namen, ['liste.csv', 'foto.png'])
+        self.assertEqual(len(self.conn.stored), vorher, 'darf nicht als gelesen markieren')
+
+    def test_nachricht_als_gelesen(self):
+        vorher = len(self.conn.stored)
+        self.tool('nachricht', uid=7, als_gelesen=True)
+        self.assertEqual(len(self.conn.stored), vorher + 1)
+        self.assertIn('\\Seen', self.conn.stored[-1][-1])
+
+    def test_anhang_text_und_bild(self):
+        sc = self.tool('nachricht', uid=7)['structuredContent']
+        teile = {a['filename']: a['part'] for a in sc['anhaenge']}
+        res = self.tool('anhang', uid=7, teil=teile['liste.csv'])
+        self.assertEqual(res['content'][1]['type'], 'text')
+        self.assertIn('Name;Ort', res['content'][1]['text'])
+        res = self.tool('anhang', uid=7, teil=teile['foto.png'])
+        self.assertEqual(res['content'][1]['type'], 'image')
+        self.assertEqual(res['content'][1]['mimeType'], 'image/png')
+
+    def test_entwurf_ablegen(self):
+        res = self.tool('entwurf_ablegen', an='frank@iserlohn.de', betreff='Re: Unser Termin',
+                        text='Hallo Frank,\n\npasst.', antwort_auf_uid=7)
+        sc = res['structuredContent']
+        self.assertTrue(sc['ok'])
+        self.assertEqual(sc['ordner'], 'Entwürfe')
+        folder, flags, data = self.conn.appended[-1]
+        self.assertEqual(folder, '"Entw&APw-rfe"')
+        self.assertIn('\\Draft', flags)
+        from email import policy as _pol
+        from email.parser import BytesParser as _BP
+        m = _BP(policy=_pol.default).parsebytes(data)
+        self.assertEqual(m['To'], 'frank@iserlohn.de')
+        self.assertEqual(m['Subject'], 'Re: Unser Termin')
+        self.assertEqual(m['In-Reply-To'], '<abc@iserlohn.de>')
+        self.assertEqual(m['X-V3D-Quelle'], 'Claude')
+        self.assertIn('passt.', m.get_body(preferencelist=('plain',)).get_content())
+
+    def test_entwurf_ohne_empfaenger(self):
+        res = self.tool('entwurf_ablegen', an='', betreff='x', text='y')
+        self.assertTrue(res.get('isError'))
+        self.assertIn('Empfaenger', res['content'][0]['text'])
+
+    def test_verschieben_nach_art(self):
+        res = self.tool('verschieben', uids=[7], ziel='trash')
+        self.assertEqual(res['structuredContent']['nach'], 'Papierkorb')
+        res = self.tool('verschieben', uids=[7], ziel='Gibtsnicht')
+        self.assertTrue(res.get('isError'))
+
+    def test_markieren(self):
+        res = self.tool('markieren', uids=[7, 3], markiert=True)
+        self.assertEqual(res['structuredContent']['gesetzt'], {'markiert': True})
+        self.assertIn('\\Flagged', self.conn.stored[-1][-1])
+        res = self.tool('markieren', uids=[7])
+        self.assertTrue(res.get('isError'))
+
+    def test_unbekanntes_konto(self):
+        res = self.tool('ordner', konto='fremd@example.org')
+        self.assertTrue(res.get('isError'))
+        self.assertIn('nicht gefunden', res['content'][0]['text'])
+
+    def test_konto_per_adresse(self):
+        res = self.tool('ordner', konto='V3D@volme3d.de')
+        self.assertFalse(res.get('isError'))
+
+    def test_termin_anlegen_ganztags_aus_datum(self):
+        aufrufe = []
+        orig = server.dav_save_event
+        server.dav_save_event = lambda acc, b: aufrufe.append(b) or {'ok': True, 'uid': 'u', 'href': 'h'}
+        try:
+            res = self.tool('termin_anlegen', titel='Kurs', start='2026-09-10', ort='Hagen')
+        finally:
+            server.dav_save_event = orig
+        self.assertTrue(res['structuredContent']['ok'])
+        self.assertTrue(aufrufe[0]['ev']['allDay'])
+        self.assertEqual(aufrufe[0]['ev']['summary'], 'Kurs')
+        self.assertEqual(aufrufe[0]['ev']['location'], 'Hagen')
+
+    def test_stapel(self):
+        status, data = self.raw('POST', '/api/mcp/mcp-test-schluessel', [
+            {'jsonrpc': '2.0', 'id': 1, 'method': 'ping'},
+            {'jsonrpc': '2.0', 'method': 'notifications/initialized'},
+        ])
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data), 1)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
