@@ -226,6 +226,7 @@ GEHOER_HINWEIS = (
     "Es geht um 3D-Druck, Filament, PLA, PETG, ASA, Resin, Düse, Layer, "
     "Slicer, Bambu Lab, A1 Mini, AMS, Anycubic Kobra, Snapmaker, Elegoo, "
     "Saturn, xTool, Cricut, Revopoint, Lasergravur, Plotten, Flexfolie, "
+    "Silhouette Cameo, Silhouette Studio, Schneidplotter, "
     "CAD, Fusion, Tinkercad, Shapr3D, STL, STEP, Schnupperkurs, Grundkurs, "
     "Erweiterungskurs, Maker-Kurs, Aufbaukurs, Anfängerkurs.")
 
