@@ -30,6 +30,7 @@ DIALOG="$(lies dialog.aktiv | tr "[:upper:]" "[:lower:]")"
 MAXRUNDEN="$(lies dialog.maxRunden)"
 MAXSEKRUNDE="$(lies dialog.maxSekundenProRunde)"
 STILLE="$(lies dialog.stilleSekunden)"
+KURZGRENZE="$(lies dialog.kurzGrenzeBytes)"
 LOCALNET="$(lies asterisk.localNet)"
 
 if [ -z "$SIPPASS" ]; then
@@ -57,11 +58,13 @@ chmod 0640 /etc/v3dcall.token
 # AGI-Skript fuer den Gespraechsmodus. Muss in agi-bin liegen und ohne
 # Zugriff auf /home/v3da auskommen — das ist fuer asterisk gesperrt.
 install -d -o root -g root -m 0755 /usr/share/asterisk/agi-bin
-install -m 0755 "$BASE/bin/v3dcall-agi" /usr/share/asterisk/agi-bin/v3dcall-agi
+sed "s|@@KURZGRENZE@@|$KURZGRENZE|" "$BASE/bin/v3dcall-agi" \
+  > /usr/share/asterisk/agi-bin/v3dcall-agi
+chmod 0755 /usr/share/asterisk/agi-bin/v3dcall-agi
 
 echo "==> 4/6  Ansagen bereitstellen ($SOUNDS)"
 install -d -o asterisk -g asterisk -m 0755 "$SOUNDS"
-for n in ansage danke beep dialog-begruessung nachfrage stoerung fueller1 fueller2 fueller3 fueller4 fueller5 fueller6 fueller7 fueller8; do
+for n in ansage danke beep dialog-begruessung nachfrage stoerung fueller1 fueller2 fueller3 fueller4 fueller5 fueller6 fueller7 fueller8 kurz1 kurz2 kurz3 kurz4 kurz5; do
   if [ -f "$BASE/data/sounds/$n.wav" ]; then
     install -o asterisk -g asterisk -m 0644 "$BASE/data/sounds/$n.wav" "$SOUNDS/$n.wav"
     echo "    $n.wav uebernommen"
