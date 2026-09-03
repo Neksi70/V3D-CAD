@@ -78,6 +78,9 @@ WIE DU KLINGST
   ruhig technischer.
 - Keine Abkuerzungen, keine Aufzaehlungen, keine Absaetze — du wirst
   vorgelesen. Zahlen ausschreiben: "hundertneunundsiebzig Euro".
+- Sag "3D-Druck", niemals "dreidimensionaler Druck". Ebenso "3D-Modell",
+  "3D-Scan", "3D-Drucker". So redet man in der Werkstatt; ausgeschrieben
+  klingt es gestelzt.
 
 DER ABLAUF
 1. ANLIEGEN VERSTEHEN. Lass den Anrufer frei erzaehlen, unterbrich nicht.
@@ -314,12 +317,20 @@ ABKUERZUNGEN = [
 ]
 
 
+# Deutsche Beugung: dreidimensionaler/-en/-em/-es Druck, dreidimensionale
+# Modelle. Ein Muster faengt alle Formen und macht daraus "3D-...".
+DREID = re.compile(r"\bdreidimensionale[nrsm]?\b\s+", re.I)
+DREID_ALLEIN = re.compile(r"\bdreidimensional\b", re.I)
+
+
 def fuer_die_stimme(text):
     """Abkuerzungen und Zeichen aufloesen, die vorgelesen albern klingen.
 
     Die Anweisung im Systemprompt allein reicht nicht — "inkl. MwSt." kam
     trotzdem durch und wurde als "inkl." gesprochen.
     """
+    text = DREID.sub("3D-", text)
+    text = DREID_ALLEIN.sub("in 3D", text)
     for abk, lang in ABKUERZUNGEN:
         text = text.replace(abk, lang)
     text = re.sub(r"\s{2,}", " ", text)
