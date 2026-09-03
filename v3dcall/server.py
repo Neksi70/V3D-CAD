@@ -399,6 +399,17 @@ def dialog_runde():
     return jsonify(**r)
 
 
+@app.post("/api/dialog/vorwaermen")
+def dialog_vorwaermen():
+    """Wird beim Anrufbeginn angestossen, waehrend die Begruessung laeuft."""
+    if not lokal():
+        return jsonify(fehler="nur lokal"), 403
+    import threading
+    import dialog
+    threading.Thread(target=dialog.vorwaermen, daemon=True).start()
+    return jsonify(ok=True)
+
+
 @app.post("/api/dialog/begruessung")
 def dialog_begruessung():
     """Begruessung fuer den Gespraechsmodus erzeugen (einmalig, gecacht)."""

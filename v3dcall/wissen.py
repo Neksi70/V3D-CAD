@@ -78,14 +78,10 @@ fuer eine telefonische Auskunft.
 - VORSICHT bei Preisen: die Preisseite liefert animierte Platzhalter. Nimm
   Preise nur von den einzelnen Kursseiten ("ab 89 EUR inkl. MwSt."). Steht
   irgendwo "0 EUR", ist das ein Platzhalter und KEIN Preis — weglassen.
-- PFLICHT: ein eigener Abschnitt "Ueber Volker Isken" mit allem zur Person —
-  Werdegang, Berufserfahrung, was er unterrichtet, welche Technik und Geraete
-  er beherrscht, warum es die Akademie gibt. Danach wird am Telefon
-  regelmaessig gefragt ("Ist Volker Dozent?", "Was kann der eigentlich?"),
-  und darauf muss aus dem Stand geantwortet werden. Diesen Abschnitt
-  AUSFUEHRLICH halten, nicht auf eine Zeile eindampfen.
 - Auf Deutsch, hoechstens 1200 Woerter.
-- Statt 1200 lieber 1500 Woerter, wenn der Abschnitt zur Person das braucht.
+- Zur PERSON nur das Noetigste (ein, zwei Saetze). Der ausfuehrliche
+  Werdegang steht in der gepflegten Wissensbasis und wuerde sich sonst
+  doppeln — doppeltes Wissen kostet bei jeder Antwort Zeit.
 - Schreibe "Maker-Kurs" mit Bindestrich. Ohne ihn liest die Sprachausgabe
   "Markerkurs".
 
