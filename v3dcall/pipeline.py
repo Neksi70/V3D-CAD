@@ -206,7 +206,7 @@ def _gespraech_einsammeln(cid):
     import dialog
     mitschrift = dialog.verlauf_text(cid)
     if not mitschrift:
-        return None, None
+        return None, None, ""
 
     runden = sorted(glob.glob(f"/var/spool/v3dcall/{cid}-r*.wav"))
     zusammen = None
@@ -234,8 +234,14 @@ def _gespraech_einsammeln(cid):
             os.remove(a)
         except OSError:
             pass
+    # Auswertung VOR dem Aufraeumen — danach ist der Verlauf weg.
+    kurzfassung = ""
+    try:
+        kurzfassung = dialog.auswertung(cid, (core.get_call(cid) or {}).get("caller"))
+    except Exception:
+        pass
     dialog.beende(cid)
-    return mitschrift, zusammen
+    return mitschrift, zusammen, kurzfassung
 
 
 def verarbeite(cid):
@@ -246,8 +252,12 @@ def verarbeite(cid):
     try:
         # War es ein Gespraech, ist die Mitschrift schon da — dann muss
         # Whisper nicht noch einmal ueber alles laufen.
-        mitschrift, zusammen = _gespraech_einsammeln(cid)
+        mitschrift, zusammen, kurzfassung = _gespraech_einsammeln(cid)
         if mitschrift:
+            if kurzfassung:
+                mitschrift = (kurzfassung + "\n\n" + "=" * 52
+                              + "\nGESPRÄCH IM WORTLAUT\n" + "=" * 52
+                              + "\n\n" + mitschrift)
             if zusammen and os.path.exists(zusammen):
                 core.update_call(cid, audio=zusammen, seconds=dauer(zusammen))
                 anruf["audio"] = zusammen

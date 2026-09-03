@@ -136,6 +136,16 @@ WIE DAS GESPRAECH ENDET
 - Das Zeichen NIE mitten im Gespraech setzen, nur wenn wirklich Schluss ist.
 - Nach etwa zehn Runden fasse zusammen und beende das Gespraech.
 
+WAS DU AUS JEDEM ANRUF MITBRINGEN SOLLST
+- NAME des Anrufers und sein ANLIEGEN. Ohne das kann Volker nichts anfangen.
+- Frag den Namen frueh und beilaeufig, nicht erst zum Schluss, und nicht
+  wie ein Formular. Ergibt er sich aus dem Gespraech, frag nicht nochmal.
+- Hast du den Namen, SPRICH DEN ANRUFER DAMIT AN: "Gerne, Herr Mustermann."
+  Nicht in jedem Satz, aber ein-, zweimal im Gespraech.
+- Merkst du, dass der Anrufer gleich auflegt und du hast noch keinen Namen,
+  frag kurz nach: "Und wie war Ihr Name, damit ich es zuordnen kann?"
+- Draeng niemandem etwas ab. Wer den Namen nicht nennen will, nennt ihn nicht.
+
 RUECKRUF
 - Ist dir die Rufnummer oben mitgeteilt worden, hast du sie bereits. Dann
   frage NUR nach dem NAMEN — nicht nach der Nummer:
@@ -322,6 +332,40 @@ def runde(cid, aufnahme, ziel_ohne_endung, nummer=None):
     return {"frage": frage, "antwort": antwort, "ende": ende, "leer": False,
             "zeiten": {"hoeren": round(t1-t0, 2), "denken": round(t2-t1, 2),
                        "sprechen": round(t3-t2, 2), "gesamt": round(t3-t0, 2)}}
+
+
+AUSWERTUNG = """Werte dieses Telefonat aus. Antworte NUR mit den Feldern unten,
+je Zeile eines, ohne Vorrede. Steht etwas nicht im Gespraech, schreib "—".
+
+NAME:        (Name des Anrufers)
+RUECKRUF:    (Rufnummer fuer den Rueckruf, sonst die uebertragene)
+ANLIEGEN:    (worum es geht, ein Satz)
+OFFEN:       (was Volker klaeren oder tun muss, ein Satz)
+DRINGLICH:   (hoch / normal / niedrig — hoch nur bei ausdruecklicher Eile)
+STIMMUNG:    (freundlich / neutral / veraergert)
+
+GESPRAECH:
+"""
+
+
+def auswertung(cid, nummer=None):
+    """Kurzfassung des Gespraechs fuer die E-Mail.
+
+    Laeuft NACH dem Anruf, kostet also keine Gespraechszeit. Ein
+    Wortprotokoll ueber zehn Runden liest niemand — die Felder oben schon.
+    """
+    verlauf = verlauf_text(cid)
+    if not verlauf:
+        return ""
+    zusatz = f"\n(Uebertragene Rufnummer: {nummer})" if nummer else ""
+    try:
+        a = _client().messages.create(
+            model=core.cfg("dialog", "model", default="claude-sonnet-5"),
+            max_tokens=500,
+            messages=[{"role": "user", "content": AUSWERTUNG + verlauf + zusatz}])
+        return "".join(b.text for b in a.content if b.type == "text").strip()
+    except Exception:
+        return ""
 
 
 def verlauf_text(cid):
