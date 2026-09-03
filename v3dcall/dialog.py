@@ -118,13 +118,16 @@ WIE DAS GESPRAECH ENDET
 - Nach etwa zehn Runden fasse zusammen und beende das Gespraech.
 
 RUECKRUF
-- Frage nach NAME UND RUFNUMMER des Anrufers, wenn ein Rueckruf sinnvoll ist.
-  Der Name zuerst — Herr Isken muss wissen, wer angerufen hat, eine blosse
-  Nummer nuetzt ihm wenig. Beides in EINEM Satz erfragen, nicht nacheinander:
-  "Wie ist Ihr Name, und unter welcher Nummer erreicht er Sie am besten?"
-  Hat der Anrufer den Namen schon genannt, frag nicht nochmal danach.
-- Wiederhole Name und Nummer einmal kurz zur Bestaetigung, wenn du sie
-  bekommen hast — am Telefon verhoert man sich leicht.
+- Ist dir die Rufnummer oben mitgeteilt worden, hast du sie bereits. Dann
+  frage NUR nach dem NAMEN — nicht nach der Nummer:
+  "Wie ist Ihr Name, damit Herr Isken weiss, wer angerufen hat?"
+  Willst du die Nummer bestaetigen, lies sie vor und frag kurz nach:
+  "Ich erreiche Sie unter null eins fuenf eins zwei ... — stimmt das?"
+  Nenne die Ziffern einzeln, sonst versteht sie am Telefon niemand.
+- Wurde KEINE Nummer uebertragen, frage nach Name und Nummer in EINEM Satz.
+- Hat der Anrufer seinen Namen schon genannt, frag nicht nochmal danach.
+- Eine genannte Nummer wiederholst du einmal zur Bestaetigung — am Telefon
+  verhoert man sich leicht.
   Falsch:  "Wie kann ich ihn am besten erreichen?" — das dreht es um und
   verwirrt. Der Anrufer will erreicht WERDEN, nicht erreichen.
 - Die Nummer des Anrufers wird meist mituebertragen, aber nicht immer.
@@ -183,11 +186,18 @@ def ist_zoegern(text):
     return not t or len(t) < 3 or bool(ZOEGERN.match(t))
 
 
-def denke(cid, frage):
+def denke(cid, frage, nummer=None):
     """Antwort auf eine Aeusserung. Liefert (text, gespraech_zu_ende)."""
     with _lock:
         g = _gespraeche.setdefault(cid, {"verlauf": [], "start": time.time()})
         verlauf = g["verlauf"]
+
+    if not verlauf and nummer:
+        # Einmalig zu Beginn: die uebertragene Rufnummer bekanntgeben. Nicht
+        # in den Systemprompt — der ist zwischengespeichert, und jede
+        # Aenderung wuerfe den Zwischenspeicher weg.
+        frage = (f"[Hinweis fuer dich, nicht vorlesen: Die Rufnummer des Anrufers "
+                 f"wird uebertragen und lautet {nummer}.]\n\n{frage}")
     verlauf.append({"role": "user", "content": frage})
 
     antwort = _client().messages.create(
@@ -266,7 +276,7 @@ def sprich(text, ziel_ohne_endung):
     return ziel_ohne_endung + ".wav"
 
 
-def runde(cid, aufnahme, ziel_ohne_endung):
+def runde(cid, aufnahme, ziel_ohne_endung, nummer=None):
     """Eine komplette Gespraechsrunde. Liefert Zeiten fuer die Fehlersuche."""
     t0 = time.time()
     frage = hoere(aufnahme)
@@ -275,7 +285,7 @@ def runde(cid, aufnahme, ziel_ohne_endung):
         # Nicht als "nicht verstanden" behandeln — einfach weiter zuhoeren.
         return {"frage": frage, "antwort": "", "ende": False,
                 "leer": True, "zoegern": True}
-    antwort, ende = denke(cid, frage)
+    antwort, ende = denke(cid, frage, nummer)
     t2 = time.time()
     sprich(antwort, ziel_ohne_endung)
     t3 = time.time()

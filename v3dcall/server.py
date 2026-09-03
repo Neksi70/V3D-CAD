@@ -383,7 +383,10 @@ def dialog_runde():
     if not cid or not aufnahme:
         return jsonify(fehler="id oder Aufnahme fehlt"), 400
     try:
-        r = dialog.runde(cid, aufnahme, ziel)
+        nummer = (d.get("caller") or "").strip() or None
+        if nummer in ("unknown", "anonymous", "restricted"):
+            nummer = None
+        r = dialog.runde(cid, aufnahme, ziel, nummer)
     except Exception as e:
         # Am Telefon darf ein Fehler nicht in Stille enden — der Anrufer
         # bekommt einen Hinweis und landet im normalen Anrufbeantworter.
