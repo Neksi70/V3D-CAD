@@ -202,7 +202,10 @@ def _client():
             raise RuntimeError("Kein Anthropic-Schlüssel in config.json (dialog.apiKey)")
         # Kurzer Zeitrahmen: am Telefon ist eine haengende Anfrage schlimmer
         # als eine ausgefallene — dann sagen wir lieber schnell Bescheid.
-        _klient = anthropic.Anthropic(api_key=schluessel, timeout=12.0, max_retries=1)
+        # Mehr Versuche als frueher: ein 529 "Overloaded" hat einem echten
+        # Anrufer das ganze Gespraech gekostet. Das SDK wartet zwischen den
+        # Versuchen kurz — billiger als der Rueckfall auf den Anrufbeantworter.
+        _klient = anthropic.Anthropic(api_key=schluessel, timeout=15.0, max_retries=3)
     return _klient
 
 
@@ -303,22 +306,35 @@ def denke(cid, frage, nummer=None):
 
     verlauf.append({"role": "user", "content": frage})
 
-    antwort = _client().messages.create(
-        model=core.cfg("dialog", "model", default="claude-haiku-4-5"),
-        max_tokens=300,
-        # Kein internes Nachdenken: bei diesem umfangreichen Leitfaden
-        # gruebelt das Modell sonst ueber Regeln, die fuer einen Zweisatz am
-        # Telefon keine Rolle spielen. Gemessen 3,51 s gegen 2,49 s, bei
-        # gleich guten, eher knapperen Antworten.
-        thinking={"type": "disabled"},
-        system=[{
-            "type": "text",
-            "text": ROLLE + "\n\n=== WISSENSSTAND ===\n\n" + wissen.wissensstand(),
-            # Der Wissensstand ist gross und aendert sich selten — zwischenspeichern
-            # spart Geld und ein paar Zehntelsekunden je Runde.
-            "cache_control": {"type": "ephemeral"},
-        }],
-        messages=verlauf[-20:])
+    def _frag(modell):
+        return _client().messages.create(
+            model=modell,
+            max_tokens=300,
+            # Kein internes Nachdenken: bei diesem umfangreichen Leitfaden
+            # gruebelt das Modell sonst ueber Regeln, die fuer einen Zweisatz
+            # am Telefon keine Rolle spielen. Gemessen 3,51 s gegen 2,49 s,
+            # bei gleich guten, eher knapperen Antworten.
+            thinking={"type": "disabled"},
+            system=[{
+                "type": "text",
+                "text": ROLLE + "\n\n=== WISSENSSTAND ===\n\n" + wissen.wissensstand(),
+                # Der Wissensstand ist gross und aendert sich selten — zwischenspeichern
+                # spart Geld und ein paar Zehntelsekunden je Runde.
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=verlauf[-20:])
+
+    hauptmodell = core.cfg("dialog", "model", default="claude-haiku-4-5")
+    ausweich = core.cfg("dialog", "ausweichModel", default="claude-haiku-4-5")
+    try:
+        antwort = _frag(hauptmodell)
+    except anthropic.APIStatusError as e:
+        # Ist das Hauptmodell ueberlastet, lieber mit dem kleineren antworten
+        # als den Anrufer in die Stoerungsansage zu schicken. Es liegt in
+        # einem anderen Kontingent, ist also oft noch erreichbar.
+        if e.status_code not in (429, 500, 502, 503, 529) or ausweich == hauptmodell:
+            raise
+        antwort = _frag(ausweich)
 
     text = "".join(b.text for b in antwort.content if b.type == "text").strip()
     verlauf.append({"role": "assistant", "content": text})
