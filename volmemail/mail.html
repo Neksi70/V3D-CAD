@@ -118,6 +118,18 @@ a{color:var(--acc-d)}
 .bild .vor{width:92px;height:70px;border-radius:6px;background:#eceef4 center/contain no-repeat;display:flex;align-items:center;justify-content:center;font-size:22px;color:var(--dim)}
 .bild .nm{font-size:11px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bild .gr{font-size:10.5px;color:var(--dim)}
+/* Dateinamen der Bilder sind immer sichtbar — ein Klick öffnet den Betrachter. */
+#read .imgs .namen{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+#read .imgs .namen .att{padding:5px 10px}
+#lightbox{position:fixed;inset:0;z-index:60;background:rgba(12,14,22,.92);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px}
+#lightbox img{max-width:96vw;max-height:78vh;object-fit:contain;border-radius:6px;background:#fff}
+#lightbox .lb-info{color:#e8eaf0;font-size:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:center;max-width:96vw}
+#lightbox .lb-info small{color:#a4a9b8}
+#lightbox .lb-x{position:absolute;top:10px;right:14px;background:none;border:0;color:#e8eaf0;font-size:30px;line-height:1;cursor:pointer}
+#lightbox .lb-pfeil{position:absolute;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.12);border:0;color:#fff;font-size:28px;width:44px;height:64px;border-radius:8px;cursor:pointer}
+#lightbox .lb-pfeil:disabled{opacity:.2;cursor:default}
+#lightbox .lb-l{left:8px}#lightbox .lb-r{right:8px}
+#lightbox .lb-warte{color:#a4a9b8;font-size:15px}
 #frame{flex:1;width:100%;border:0;background:#fff}
 #empty{flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:var(--dim)}
 #empty .big{font-size:40px}
@@ -263,6 +275,16 @@ a{color:var(--acc-d)}
       <iframe id="frame" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>
     </div>
   </section>
+</div>
+
+<div id="lightbox" class="hide" onclick="if(event.target===this)lightboxZu()">
+  <button class="lb-x" onclick="lightboxZu()" title="Schließen">✕</button>
+  <button class="lb-pfeil lb-l" id="lbprev" onclick="lightboxBlaettern(-1)">‹</button>
+  <img id="lbimg" alt="">
+  <div class="lb-warte hide" id="lbwarte"><span class="spin"></span> lädt…</div>
+  <div class="lb-info"><span id="lbname"></span><small id="lbgr"></small>
+    <button class="btn sm" onclick="lightboxSpeichern()">⬇ Speichern</button></div>
+  <button class="lb-pfeil lb-r" id="lbnext" onclick="lightboxBlaettern(1)">›</button>
 </div>
 
 <div id="compose" class="hide">
@@ -577,6 +599,7 @@ function closeTop() {
   if (top === 'compose') document.getElementById('compose').classList.add('hide');
   else if (top === 'modal') document.getElementById('modal').classList.add('hide');
   else if (top === 'cal') document.getElementById('cal').classList.add('hide');
+  else if (top === 'bild') lightboxAus();
   else if (top === 'msg') showList();
 }
 
@@ -732,9 +755,62 @@ async function dlPart(i, art) {
   catch (e) { toast('Konnte nicht laden: ' + e.message); }
 }
 
-// Die Bilderleiste bleibt EINGEKLAPPT: sie ist zum Speichern da, nicht zum
-// Anschauen — angeschaut werden die Bilder in der Nachricht selbst. Aufgeklappte
+// Die Kachelleiste bleibt EINGEKLAPPT: sie ist zum Speichern da. Aufgeklappte
 // Kacheln drängten auf dem Handy den Nachrichtentext auf einen Streifen zusammen.
+// Die Dateinamen stehen trotzdem immer da (Zeile darüber), und ein Klick darauf
+// öffnet den Betrachter — angehängte Fotos stehen sonst nirgends im Text.
+
+// --- Bild-Betrachter --------------------------------------------------------
+function lightboxOffen() { return !document.getElementById('lightbox').classList.contains('hide'); }
+
+async function zeigeBild(i) {
+  const a = (S.bilder || [])[i];
+  if (!a || !S.cur) return;
+  S.lbIndex = i;
+  const lb = document.getElementById('lightbox');
+  const img = document.getElementById('lbimg');
+  const warte = document.getElementById('lbwarte');
+  document.getElementById('lbname').textContent = a.filename || 'Bild';
+  document.getElementById('lbgr').textContent = fmtSize(a.size);
+  document.getElementById('lbprev').disabled = i <= 0;
+  document.getElementById('lbnext').disabled = i >= S.bilder.length - 1;
+  img.removeAttribute('src'); img.alt = a.filename || '';
+  warte.classList.remove('hide');
+  if (!lightboxOffen()) { lb.classList.remove('hide'); pushLayer('bild'); }
+  const uid = S.cur.uid;
+  try {
+    const blob = await holeStueck(uid, a);
+    if (S.lbIndex !== i || !S.cur || S.cur.uid !== uid || !lightboxOffen()) return;
+    if (S.lbUrl) URL.revokeObjectURL(S.lbUrl);
+    S.lbUrl = URL.createObjectURL(blob);
+    img.src = S.lbUrl;
+  } catch (e) {
+    toast('Konnte nicht laden: ' + e.message);
+  } finally {
+    if (S.lbIndex === i) warte.classList.add('hide');
+  }
+}
+
+function lightboxBlaettern(richtung) {
+  const ziel = (S.lbIndex || 0) + richtung;
+  if (ziel >= 0 && ziel < (S.bilder || []).length) zeigeBild(ziel);
+}
+
+async function lightboxSpeichern() {
+  if (S.lbIndex != null) await dlPart(S.lbIndex, 'bild');
+}
+
+// Nur ausblenden — der Ebenenstapel wird von closeTop gepflegt.
+function lightboxAus() {
+  document.getElementById('lightbox').classList.add('hide');
+  document.getElementById('lbimg').removeAttribute('src');
+  if (S.lbUrl) { URL.revokeObjectURL(S.lbUrl); S.lbUrl = null; }
+  S.lbIndex = null;
+}
+
+function lightboxZu() {
+  if (S.layers[S.layers.length - 1] === 'bild') zurueck(); else lightboxAus();
+}
 async function renderImages(m, bilder) {
   const box = document.getElementById('rimgs');
   S.bilder = bilder;
@@ -746,6 +822,8 @@ async function renderImages(m, bilder) {
       <span style="color:var(--dim);font-weight:400">${fmtSize(gesamt)}</span>
       <button class="btn sec sm" id="bkacheln" onclick="bilderUmschalten()">Speichern…</button>
       ${bilder.length > 1 ? '<button class="btn sec sm" onclick="alleBilder()">Alle speichern</button>' : ''}</div>
+    <div class="namen">${bilder.map((a, i) => `<div class="att" onclick="zeigeBild(${i})" title="Anklicken zum Anschauen">
+      🖼️ ${esc(a.filename)} <small>${fmtSize(a.size)}</small></div>`).join('')}</div>
     <div class="raster hide" id="rraster">${bilder.map((a, i) => `<div class="bild" onclick="dlPart(${i},'bild')" title="${esc(a.filename)} — zum Speichern anklicken">
       <div class="vor" id="vor${i}">🖼️</div>
       <div class="nm">${esc(a.filename)}</div><div class="gr">${fmtSize(a.size)}</div></div>`).join('')}</div>`;
@@ -1983,6 +2061,11 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (e.key === 'Escape') zurueck();     // schließt genau die oberste Ebene
+  if (lightboxOffen()) {
+    if (e.key === 'ArrowLeft') lightboxBlaettern(-1);
+    if (e.key === 'ArrowRight') lightboxBlaettern(1);
+    return;
+  }
   if (e.key === 'n') compose();
   if (e.key === 'r' && S.cur) reply(false);
   if (e.key === 'Delete' && S.cur) delCurrent();
