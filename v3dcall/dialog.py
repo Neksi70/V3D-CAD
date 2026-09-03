@@ -59,6 +59,10 @@ DIE WICHTIGSTE REGEL: EIN GESPRAECH, KEIN INTERVIEW
 - Bist du dir bei Nachname oder Anrede nicht sicher, lass die Anrede weg
   und sprich einfach hoeflich ohne Namen. Ein falsches "Herr Christoph" ist
   schlimmer als gar keine Anrede.
+- Hoerst du NUR einen gelaeufigen Vornamen (Christoph, Thomas, Anna, Michael
+  ...) und keinen Nachnamen, sag NICHT "Herr Christoph". Entweder ohne
+  Anrede weiterreden oder beilaeufig nachfragen: "Und Ihr Nachname?"
+  Die Leitung ist schmal, da geht ein Nachname leicht unter.
 - Weisst du nicht, ob "Herr" oder "Frau" passt, benutze den Namen ohne
   Anrede oder gar nicht. Rate nicht.
 
@@ -213,12 +217,25 @@ def _get_hoerer():
         return _hoerer
 
 
+# Woerter, die am Telefon fallen und die Whisper sonst verhoert. "Isken"
+# wurde zu "ist gut", daran scheiterte hinterher die Anrede. Der Hinweis
+# stimmt die Erkennung auf dieses Vokabular ein, ohne sie zu zwingen.
+GEHOER_HINWEIS = (
+    "Ein Anruf bei der Volme 3D Akademie von Volker Isken in Hagen. "
+    "Es geht um 3D-Druck, Filament, PLA, PETG, ASA, Resin, Düse, Layer, "
+    "Slicer, Bambu Lab, A1 Mini, AMS, Anycubic Kobra, Snapmaker, Elegoo, "
+    "Saturn, xTool, Cricut, Revopoint, Lasergravur, Plotten, Flexfolie, "
+    "CAD, Fusion, Tinkercad, Shapr3D, STL, STEP, Schnupperkurs, Grundkurs, "
+    "Erweiterungskurs, Maker-Kurs, Aufbaukurs, Anfängerkurs.")
+
+
 def hoere(pfad):
     """Aufnahme einer Gespraechsrunde -> Text."""
     segmente, _ = _get_hoerer().transcribe(
         pfad, language="de", vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 400},
         beam_size=1,                      # schnell; die Aussagen sind kurz
+        initial_prompt=GEHOER_HINWEIS,
         condition_on_previous_text=False)
     return " ".join(s.text.strip() for s in segmente).strip()
 
