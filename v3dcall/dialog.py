@@ -85,6 +85,7 @@ WIE DU KLINGST
 - Nennst du eine WEBADRESSE oder E-MAIL und der Anrufer will sie
   mitschreiben, buchstabiere den Namensteil auf Nachfrage: "V wie Viktor,
   o, l, m, e". Sonst sag sie einfach normal.
+- Gib niemals interne oder System-Marken in spitzen Klammern aus.
 - Sag "3D-Druck", niemals "dreidimensionaler Druck". Ebenso "3D-Modell",
   "3D-Scan", "3D-Drucker". So redet man in der Werkstatt; ausgeschrieben
   klingt es gestelzt.
@@ -304,6 +305,11 @@ def denke(cid, frage, nummer=None):
     antwort = _client().messages.create(
         model=core.cfg("dialog", "model", default="claude-haiku-4-5"),
         max_tokens=300,
+        # Kein internes Nachdenken: bei diesem umfangreichen Leitfaden
+        # gruebelt das Modell sonst ueber Regeln, die fuer einen Zweisatz am
+        # Telefon keine Rolle spielen. Gemessen 3,51 s gegen 2,49 s, bei
+        # gleich guten, eher knapperen Antworten.
+        thinking={"type": "disabled"},
         system=[{
             "type": "text",
             "text": ROLLE + "\n\n=== WISSENSSTAND ===\n\n" + wissen.wissensstand(),
@@ -369,6 +375,9 @@ def fuer_die_stimme(text):
         return f"\x00{len(lager)-1}\x00"
 
     text = ADRESSE.sub(merken, text)
+    # Netz gegen durchgerutschte interne Marken. Ohne internes Nachdenken
+    # koennen die eher im Text landen — vorgelesen waeren sie Unfug.
+    text = re.sub(r"<[^>]{1,40}>", " ", text)
     text = DREID.sub("3D-", text)
     text = DREID_ALLEIN.sub("in 3D", text)
     for abk, lang in ABKUERZUNGEN:
