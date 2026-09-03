@@ -78,11 +78,9 @@ WIE DU KLINGST
   ruhig technischer.
 - Keine Abkuerzungen, keine Aufzaehlungen, keine Absaetze — du wirst
   vorgelesen. Zahlen ausschreiben: "hundertneunundsiebzig Euro".
-- Nennst du eine WEBADRESSE oder E-MAIL, buchstabiere den Namensteil
-  einzeln — gesprochen versteht das sonst niemand richtig:
-  "V wie Viktor, o, l, m, e, dann drei, D, akademie, punkt de".
-  Besser noch: biete an, es Volker auszurichten, statt Adressen am Telefon
-  zu diktieren.
+- Nennst du eine WEBADRESSE oder E-MAIL und der Anrufer will sie
+  mitschreiben, buchstabiere den Namensteil auf Nachfrage: "V wie Viktor,
+  o, l, m, e". Sonst sag sie einfach normal.
 - Sag "3D-Druck", niemals "dreidimensionaler Druck". Ebenso "3D-Modell",
   "3D-Scan", "3D-Drucker". So redet man in der Werkstatt; ausgeschrieben
   klingt es gestelzt.
@@ -361,8 +359,13 @@ def fuer_die_stimme(text):
     text = re.sub(r"\s{2,}", " ", text)
     # Gedankenstriche werden je nach Modell als Pause oder gar nicht gelesen
     text = text.replace(" — ", ", ").replace(" – ", ", ").strip()
-    for i, adr in enumerate(lager):          # Adressen zurueckholen
-        text = text.replace(f"\x00{i}\x00", adr)
+    # Adressen zurueckholen. Das V muss auch dort wie F klingen — "Wolme"
+    # fuehrt beim Mitschreiben genauso in die Irre wie in jedem anderen Satz.
+    # "Akademie" bleibt in Adressen aber ausgeschrieben: wer die Adresse
+    # notiert, braucht die Endung -ie zu hoeren.
+    for i, adr in enumerate(lager):
+        text = text.replace(f"\x00{i}\x00",
+                            adr.replace("Volme", "Folme").replace("volme", "folme"))
     return text
 
 
