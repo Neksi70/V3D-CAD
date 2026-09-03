@@ -68,7 +68,8 @@ SO SPRICHST DU
 - Sprich vom Inhaber als "Herr Isken", nie als "Volker".
 - KEINE ABKUERZUNGEN, sie werden vorgelesen: "inklusive Mehrwertsteuer"
   statt "inkl. MwSt.", "zum Beispiel" statt "z.B.".
-- Freundlich und knapp, nicht betulich.
+- Freundlich und knapp, nicht betulich. Und nicht hektisch: draengle nicht,
+  hake nicht sofort nach, lass dem Anrufer Zeit zum Ueberlegen.
 
 WAS DU SAGEN DARFST — DREI EBENEN, STRENG GETRENNT
 
@@ -117,8 +118,13 @@ WIE DAS GESPRAECH ENDET
 - Nach etwa zehn Runden fasse zusammen und beende das Gespraech.
 
 RUECKRUF
-- Frage nach der Rufnummer DES ANRUFERS, wenn ein Rueckruf sinnvoll ist.
-  Richtig: "Unter welcher Nummer erreicht Herr Isken Sie am besten?"
+- Frage nach NAME UND RUFNUMMER des Anrufers, wenn ein Rueckruf sinnvoll ist.
+  Der Name zuerst — Herr Isken muss wissen, wer angerufen hat, eine blosse
+  Nummer nuetzt ihm wenig. Beides in EINEM Satz erfragen, nicht nacheinander:
+  "Wie ist Ihr Name, und unter welcher Nummer erreicht er Sie am besten?"
+  Hat der Anrufer den Namen schon genannt, frag nicht nochmal danach.
+- Wiederhole Name und Nummer einmal kurz zur Bestaetigung, wenn du sie
+  bekommen hast — am Telefon verhoert man sich leicht.
   Falsch:  "Wie kann ich ihn am besten erreichen?" — das dreht es um und
   verwirrt. Der Anrufer will erreicht WERDEN, nicht erreichen.
 - Die Nummer des Anrufers wird meist mituebertragen, aber nicht immer.
@@ -159,6 +165,22 @@ def hoere(pfad):
         beam_size=1,                      # schnell; die Aussagen sind kurz
         condition_on_previous_text=False)
     return " ".join(s.text.strip() for s in segmente).strip()
+
+
+ZOEGERN = re.compile(
+    r"^[\s,.\-]*(?:(?:ähm?|äh|ehm?|eh|öhm?|hm+|mhm+|mh|tja|also|ja|ne|nee|so|und|"
+    r"warte[nt]?|moment|sekunde|genau|okay|ok|gut)[\s,.\-]*)+$", re.I)
+
+
+def ist_zoegern(text):
+    """Nur Fuellsilben, kein Inhalt?
+
+    Wer am Telefon "ähm" macht und nachdenkt, darf nicht mit "das habe ich
+    nicht verstanden" angefahren werden. Solche Runden werden still
+    weggehoert — der Anrufer redet einfach weiter.
+    """
+    t = (text or "").strip()
+    return not t or len(t) < 3 or bool(ZOEGERN.match(t))
 
 
 def denke(cid, frage):
@@ -249,8 +271,10 @@ def runde(cid, aufnahme, ziel_ohne_endung):
     t0 = time.time()
     frage = hoere(aufnahme)
     t1 = time.time()
-    if not frage:
-        return {"frage": "", "antwort": "", "ende": False, "leer": True}
+    if ist_zoegern(frage):
+        # Nicht als "nicht verstanden" behandeln — einfach weiter zuhoeren.
+        return {"frage": frage, "antwort": "", "ende": False,
+                "leer": True, "zoegern": True}
     antwort, ende = denke(cid, frage)
     t2 = time.time()
     sprich(antwort, ziel_ohne_endung)
