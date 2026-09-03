@@ -78,6 +78,11 @@ WIE DU KLINGST
   ruhig technischer.
 - Keine Abkuerzungen, keine Aufzaehlungen, keine Absaetze — du wirst
   vorgelesen. Zahlen ausschreiben: "hundertneunundsiebzig Euro".
+- Nennst du eine WEBADRESSE oder E-MAIL, buchstabiere den Namensteil
+  einzeln — gesprochen versteht das sonst niemand richtig:
+  "V wie Viktor, o, l, m, e, dann drei, D, akademie, punkt de".
+  Besser noch: biete an, es Volker auszurichten, statt Adressen am Telefon
+  zu diktieren.
 - Sag "3D-Druck", niemals "dreidimensionaler Druck". Ebenso "3D-Modell",
   "3D-Scan", "3D-Drucker". So redet man in der Werkstatt; ausgeschrieben
   klingt es gestelzt.
@@ -314,6 +319,11 @@ ABKUERZUNGEN = [
     # schiebt ein R ein. Mit Bindestrich trifft sie es.
     ("Makerkurs", "Maker-Kurs"), ("Makerkurse", "Maker-Kurse"),
     ("makerkurs", "Maker-Kurs"),
+    # Firmenname: die Stimme liest "Volme" als "Wolme" — im Deutschen ist V
+    # mal f, mal w. Mit F erzwingen. "Akademie" wird sonst gedehnt.
+    # Gilt NUR fuers Sprechen; in Mitschrift und E-Mail bleibt es richtig.
+    ("Volme", "Folme"), ("volme", "Folme"), ("VOLME", "Folme"),
+    ("Akademie", "Akademi"), ("akademie", "Akademi"),
 ]
 
 
@@ -323,19 +333,37 @@ DREID = re.compile(r"\bdreidimensionale[nrsm]?\b\s+", re.I)
 DREID_ALLEIN = re.compile(r"\bdreidimensional\b", re.I)
 
 
+# Adressen duerfen NICHT durch die Ersetzungen laufen: aus
+# "volme3dakademie.de" wuerde sonst "Folme3dAkademi.de", und wer das
+# mitschreibt, tippt Unsinn. Sie werden vorher herausgenommen.
+ADRESSE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b"
+                     r"|\b[\w-]+(?:\.[\w-]+)*\.(?:de|com|net|org|eu|io)\b", re.I)
+
+
 def fuer_die_stimme(text):
     """Abkuerzungen und Zeichen aufloesen, die vorgelesen albern klingen.
 
     Die Anweisung im Systemprompt allein reicht nicht — "inkl. MwSt." kam
     trotzdem durch und wurde als "inkl." gesprochen.
     """
+    # Adressen zwischenlagern
+    lager = []
+
+    def merken(m):
+        lager.append(m.group(0))
+        return f"\x00{len(lager)-1}\x00"
+
+    text = ADRESSE.sub(merken, text)
     text = DREID.sub("3D-", text)
     text = DREID_ALLEIN.sub("in 3D", text)
     for abk, lang in ABKUERZUNGEN:
         text = text.replace(abk, lang)
     text = re.sub(r"\s{2,}", " ", text)
     # Gedankenstriche werden je nach Modell als Pause oder gar nicht gelesen
-    return text.replace(" — ", ", ").replace(" – ", ", ").strip()
+    text = text.replace(" — ", ", ").replace(" – ", ", ").strip()
+    for i, adr in enumerate(lager):          # Adressen zurueckholen
+        text = text.replace(f"\x00{i}\x00", adr)
+    return text
 
 
 def sprich(text, ziel_ohne_endung):
