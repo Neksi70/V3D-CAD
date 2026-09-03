@@ -73,6 +73,13 @@ for n in ansage danke beep dialog-begruessung nachfrage stoerung fueller1 fuelle
   fi
 done
 
+# Ansagen, die es nicht mehr gibt, vom Server raeumen — sonst spielt das
+# AGI weiter alte Begruessungen, die hier laengst geloescht sind.
+for w in "$SOUNDS"/*.wav; do
+  [ -e "$w" ] || continue
+  [ -f "$BASE/data/sounds/$(basename "$w")" ] || { echo "    entferne veraltet: $(basename "$w")"; rm -f "$w"; }
+done
+
 echo "==> 5/6  Konfiguration schreiben"
 cp -n "$ETC/pjsip.conf"      "$ETC/pjsip.conf.vor-v3dcall"      2>/dev/null || true
 cp -n "$ETC/extensions.conf" "$ETC/extensions.conf.vor-v3dcall" 2>/dev/null || true
