@@ -4,7 +4,7 @@ Asterisk mag am liebsten 8 kHz mono 16-bit PCM als .wav — genau das
 liefert die Umwandlung hier ab. Zusaetzlich bleibt eine mp3 fuer die
 Vorschau in der Weboberflaeche liegen.
 """
-import os, subprocess, sys, requests
+import json, os, re, subprocess, sys, requests
 import core
 
 API = "https://api.elevenlabs.io/v1"
@@ -51,13 +51,43 @@ def sprich(text, ziel_mp3):
     return ziel_mp3
 
 
+ZIEL_LAUTHEIT = -16.0      # LUFS, wie bei Rundfunk ueblich
+ZIEL_SPITZE = -1.5         # dBFS
+
+
+def _lautheit(quelle):
+    """Gemessene Lautheit in LUFS, oder None."""
+    p = subprocess.run(["ffmpeg", "-hide_banner", "-i", quelle,
+                        "-af", "ebur128", "-f", "null", "-"],
+                       capture_output=True, text=True)
+    treffer = re.findall(r"I:\s*(-?\d+\.\d+)\s*LUFS", p.stderr)
+    return float(treffer[-1]) if treffer else None
+
+
 def nach_asterisk(quelle, ziel_wav):
-    """Beliebiges Audio -> 8 kHz mono PCM16 .wav, leicht normalisiert."""
-    subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-i", quelle,
-         "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "8000", "-ac", "1",
-         "-acodec", "pcm_s16le", ziel_wav],
-        check=True)
+    """Beliebiges Audio -> 8 kHz mono PCM16 .wav, auf gleiche Lautheit gebracht.
+
+    KEIN loudnorm: bei kurzem Material (unter ~3 s) misst es keinen
+    Dynamikumfang (input_lra = 0) und verrechnet sich massiv — die
+    Fuellwoerter landeten bei -35 LUFS statt -16, also fast 20 dB unter der
+    Begruessung und im Telefonat kaum hoerbar.
+
+    Stattdessen schlicht: Lautheit messen, Differenz als Verstaerkung
+    anwenden, Begrenzer dahinter gegen Uebersteuern. Funktioniert bei einer
+    Sekunde genauso wie bei einer Minute.
+    """
+    gemessen = _lautheit(quelle)
+    filt = []
+    if gemessen is not None:
+        verstaerkung = ZIEL_LAUTHEIT - gemessen
+        verstaerkung = max(-20.0, min(20.0, verstaerkung))   # Notbremse
+        filt.append(f"volume={verstaerkung:.2f}dB")
+        filt.append(f"alimiter=limit={10 ** (ZIEL_SPITZE / 20):.4f}")
+    befehl = ["ffmpeg", "-y", "-loglevel", "error", "-i", quelle]
+    if filt:
+        befehl += ["-af", ",".join(filt)]
+    befehl += ["-ar", "8000", "-ac", "1", "-acodec", "pcm_s16le", ziel_wav]
+    subprocess.run(befehl, check=True)
     return ziel_wav
 
 

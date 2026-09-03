@@ -8,7 +8,7 @@ ein kleineres Whisper-Modell beim Zuhoeren.
 import os, re, subprocess, threading, time
 import anthropic
 import requests
-import core, wissen
+import core, tts, wissen
 
 # Dauerhafte Verbindung zu ElevenLabs: der TLS-Handschlag kostet sonst pro
 # Runde ueber eine Sekunde — mehr als das Sprechen selbst.
@@ -298,9 +298,10 @@ def sprich(text, ziel_ohne_endung):
     mp3 = ziel_ohne_endung + ".mp3"
     with open(mp3, "wb") as fh:
         fh.write(r.content)
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", mp3,
-                    "-ar", "8000", "-ac", "1", "-acodec", "pcm_s16le",
-                    ziel_ohne_endung + ".wav"], check=True)
+    # Dieselbe Lautheits-Angleichung wie bei den festen Ansagen. Ohne sie
+    # lagen die Antworten bei -18 LUFS, die Ansagen bei -15 — hoerbar
+    # ungleich, und der Wechsel mitten im Gespraech irritiert.
+    tts.nach_asterisk(mp3, ziel_ohne_endung + ".wav")
     os.remove(mp3)
     return ziel_ohne_endung + ".wav"
 
