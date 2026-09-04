@@ -52,6 +52,9 @@ PROTOKOLL = "/var/spool/v3dcall/agi.log"
 # Aufnahmen unter dieser Groesse gelten als kurze Bestaetigung.
 # 8 kHz mono 16 bit = 16000 Bytes je Sekunde.
 KURZ_GRENZE = @@KURZGRENZE@@
+# Darunter ist es praktisch Stille: reine Stille wird von Asterisk auf
+# rund eine Sekunde zusammengeschnitten, das sind ~16 kB.
+STILLE_GRENZE = 20000
 
 
 def sag(text):
@@ -203,13 +206,16 @@ def main():
         # laeuft aber parallel. Also entscheiden wir aus dem, was VORHER
         # bekannt ist: Rundennummer und Laenge der Aufnahme.
         try:
-            kurz = os.path.getsize(aufnahme) < KURZ_GRENZE
+            groesse = os.path.getsize(aufnahme)
         except OSError:
-            kurz = False
-        if runde == 1:
-            # Die Begruessung hat nach dem Namen gefragt, hier kommt die
-            # Antwort darauf. Ein "Moment, ich schaue nach" waere unpassend.
-            spiele("/var/lib/asterisk/sounds/v3d/dank%d" % (runde % 4 + 1))
+            groesse = 0
+        kurz = groesse < KURZ_GRENZE
+        if groesse < STILLE_GRENZE:
+            # Reine Stille — der Anrufer denkt nach oder holt Luft. Da gehoert
+            # KEIN Fuellwort hin, das wirkt hektisch und faellt ins Wort.
+            # (Asterisk schneidet die Nachlaufstille weg; bleibt fast nichts
+            # uebrig, wurde auch fast nichts gesagt.)
+            pass
         elif kurz:
             spiele("/var/lib/asterisk/sounds/v3d/kurz%d" % ((runde * 2) % 5 + 1))
         else:
