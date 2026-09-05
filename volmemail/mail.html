@@ -75,11 +75,22 @@ a{color:var(--acc-d)}
 #side .foot button:hover{background:#3a4053}
 
 /* --- Nachrichtenliste --- */
-#list{width:380px;flex-shrink:0;border-right:1px solid var(--line);background:#fff;display:flex;flex-direction:column}
+#list{width:380px;flex-shrink:0;border-right:1px solid var(--line);background:#fff;display:flex;flex-direction:column;position:relative}
 #list .top{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center}
 #list .top input{padding:7px 10px;font-size:14px}
 #list .bar{padding:6px 12px;border-bottom:1px solid var(--line);display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--mid);flex-wrap:wrap}
 #items{flex:1;overflow-y:auto}
+/* Ziehen zum Aktualisieren (Handy): der Ring haengt ueber der Liste und wird
+   beim Ziehen mit heruntergeschoben. */
+#ptr{position:absolute;left:0;right:0;height:0;display:flex;justify-content:center;
+  pointer-events:none;z-index:5;opacity:0}
+#ptr .ring{width:32px;height:32px;margin-top:-38px;border-radius:50%;background:#fff;
+  border:1px solid var(--line);box-shadow:0 2px 8px rgba(0,0,0,.14);
+  display:flex;align-items:center;justify-content:center;font-size:16px;color:var(--acc)}
+#ptr.laeuft .ring{animation:sp .7s linear infinite}
+#ptr.laeuft .ring::before{content:'';width:15px;height:15px;border:2px solid var(--line);
+  border-top-color:var(--acc);border-radius:50%}
+#ptr.laeuft .pfeil{display:none}
 .item{padding:10px 13px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:9px}
 .item:hover{background:#fafbff}
 .item.act{background:#fff6ee;border-left:3px solid var(--acc);padding-left:10px}
@@ -238,6 +249,7 @@ a{color:var(--acc-d)}
       <button class="btn sec sm" onclick="sendenEmpfangen()" title="Senden/Empfangen — alle Postfächer prüfen">⟳</button>
     </div>
     <div class="bar" id="listbar"></div>
+    <div id="ptr"><div class="ring"><span class="pfeil">↓</span></div></div>
     <div id="items"></div>
   </section>
 
@@ -382,6 +394,7 @@ async function boot() {
   const last = localStorage.getItem('v3dmail.acc');
   S.acc = S.accounts.find(a => a.id === last) || S.accounts[0];
   renderAccounts();
+  initPullToRefresh();
   await loadFolders();
   if (!await uebergabeAbholen()) starteAusAdresse();
   sendenEmpfangen(true);
@@ -531,6 +544,79 @@ function renderList() {
 }
 
 function doSearch() { S.q = document.getElementById('q').value.trim(); loadMessages(S.folder, 0); }
+
+// --- Ziehen zum Aktualisieren ----------------------------------------------
+// Am oberen Ende der Liste nach unten wischen prueft alle Postfaecher, genau
+// wie der ⟳-Knopf. Nur mit Finger — Maus/Trackpad scrollen weiter normal.
+const PTR_SCHWELLE = 64;   // ab hier loest das Loslassen aus
+const PTR_MAX = 96;        // weiter laesst sich nicht ziehen
+function initPullToRefresh() {
+  const items = document.getElementById('items');
+  const ptr = document.getElementById('ptr');
+  if (!items || !ptr || items.dataset.ptr) return;   // nur einmal verdrahten
+  items.dataset.ptr = '1';
+  // In einem Flex-Container liegt der "automatische" Platz eines absoluten
+  // Kindes ganz oben — der Ring muss von Hand an den Listenanfang gesetzt werden.
+  const setzeOben = () => { ptr.style.top = items.offsetTop + 'px'; };
+  setzeOben();
+  window.addEventListener('resize', setzeOben);
+  let y0 = 0, x0 = 0, zieht = false, entschieden = false, weg = 0, laeuft = false;
+
+  const zeichne = (d) => {
+    items.style.transform = d ? `translateY(${d}px)` : '';
+    ptr.style.opacity = d ? Math.min(1, d / PTR_SCHWELLE) : 0;
+    ptr.style.transform = d ? `translateY(${d}px)` : '';
+    ptr.querySelector('.ring').style.transform = `rotate(${Math.min(180, d / PTR_SCHWELLE * 180)}deg)`;
+  };
+  const zurueckfedern = () => {
+    items.style.transition = ptr.style.transition = 'transform .2s, opacity .2s';
+    zeichne(0);
+    setTimeout(() => { items.style.transition = ptr.style.transition = ''; }, 220);
+  };
+
+  items.addEventListener('touchstart', (e) => {
+    if (laeuft || e.touches.length !== 1) return;
+    // Nur wenn die Liste schon ganz oben steht — sonst gehoert die Geste dem Scrollen.
+    if (items.scrollTop > 0) return;
+    y0 = e.touches[0].clientY; x0 = e.touches[0].clientX;
+    zieht = true; entschieden = false; weg = 0;
+    items.style.transition = ptr.style.transition = '';
+  }, { passive: true });
+
+  items.addEventListener('touchmove', (e) => {
+    if (!zieht) return;
+    const dy = e.touches[0].clientY - y0, dx = e.touches[0].clientX - x0;
+    if (!entschieden) {
+      if (Math.abs(dy) < 8 && Math.abs(dx) < 8) return;
+      // Waagerechte Wische oder Hochziehen: Geste abgeben.
+      if (dy <= 0 || Math.abs(dx) > Math.abs(dy)) { zieht = false; return; }
+      entschieden = true;
+    }
+    if (dy <= 0) { weg = 0; zeichne(0); return; }
+    e.preventDefault();                       // kein Gummiband der Seite
+    weg = PTR_MAX * (1 - Math.exp(-dy / PTR_MAX));   // Widerstand nimmt zu
+    zeichne(weg);
+  }, { passive: false });
+
+  const loslassen = async () => {
+    if (!zieht) return;
+    zieht = false;
+    if (weg < PTR_SCHWELLE) return zurueckfedern();
+    laeuft = true;
+    ptr.classList.add('laeuft');
+    items.style.transition = ptr.style.transition = 'transform .2s';
+    zeichne(PTR_SCHWELLE);
+    ptr.style.opacity = 1;
+    try { await sendenEmpfangen(); }
+    finally {
+      ptr.classList.remove('laeuft');
+      laeuft = false; weg = 0;
+      zurueckfedern();
+    }
+  };
+  items.addEventListener('touchend', loslassen, { passive: true });
+  items.addEventListener('touchcancel', () => { zieht = false; weg = 0; zurueckfedern(); }, { passive: true });
+}
 
 // --- Senden/Empfangen ------------------------------------------------------
 async function sendenEmpfangen(leise) {

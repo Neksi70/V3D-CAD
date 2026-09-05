@@ -17,6 +17,7 @@ ganz normal IMAP und SMTP.
 | `test_server.py` | 41 Tests ohne echtes Postfach (IMAP wird gestubbt) |
 | `smoke_ui.py` | Browser-Durchlauf am Rechner: Anmeldung, Postfächer, Lesen, Bilder |
 | `smoke_handy.py` | Browser-Durchlauf im Handy-Format: Zurück-Knopf und Zurück-Geste |
+| `smoke_ziehen.py` | Ziehen zum Aktualisieren: Fingergeste auf der Nachrichtenliste |
 | `smoke_windows.py` | Installierbarkeit als Windows-App und mailto-Anbindung |
 | `smoke_signatur.py` | Signatur-Editor und Aufbau der versendeten Nachricht |
 | `smoke_bilder.py` | Bilder im Text: Anzeige (cid und verlinkt) und Speichern |
@@ -114,11 +115,25 @@ wartet auf einen Ladevorgang, den es bei Sprüngen im selben Dokument nicht gibt
 
 ## Senden/Empfangen
 
-Zwei Wege, dieselbe Wirkung: der orange umrandete Knopf in der Seitenleiste
-unter „Neue Nachricht" und das **⟳** oben neben dem Suchfeld. Beides prüft **alle Postfächer gleichzeitig** (Thread-Pool,
+Drei Wege, dieselbe Wirkung: der orange umrandete Knopf in der Seitenleiste
+unter „Neue Nachricht", das **⟳** oben neben dem Suchfeld und — auf dem Handy —
+**Ziehen nach unten** am oberen Ende der Nachrichtenliste. Beides prüft **alle Postfächer gleichzeitig** (Thread-Pool,
 drei Konten in ~0,2 s) und zeigt die Zahl der Ungelesenen als Marke am jeweiligen
 Konto; ein nicht erreichbares Postfach bekommt ein ⚠ mit dem Fehler als Tooltip.
 Die offene Nachrichtenliste wird gleich mitgezogen.
+
+**Ziehen zum Aktualisieren:** steht die Liste ganz oben, folgt sie dem Finger
+nach unten und ein Ring erscheint darüber; ab 64 px löst das Loslassen dieselbe
+Prüfung aus, darunter federt sie folgenlos zurück. Der Widerstand wächst
+(`PTR_MAX * (1 - exp(-dy / PTR_MAX))`), bei 96 px ist Schluss. Die Geste wird
+erst beansprucht, wenn klar nach unten gezogen wird — waagerechte Wische und
+Hochziehen bleiben beim Scrollen, und bei `scrollTop > 0` fasst sie gar nicht
+erst an. Ohne `preventDefault` im `touchmove` würde das Gummiband des Browsers
+dazwischenfunken, deshalb hängt der Zuhörer dort mit `passive: false`.
+
+Der Ring liegt absolut über `#items`, sein `top` wird beim Start gesetzt:
+in einem Flex-Container landet ein absolutes Kind sonst am Kopf des Containers
+(über dem Suchfeld) statt am Listenanfang.
 
 Gezählt wird per IMAP-`STATUS` — das fragt den Posteingang ab, ohne die aktuell
 gewählte Ordneransicht umzubiegen. Zusätzlich läuft die Prüfung alle drei Minuten
