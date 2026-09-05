@@ -129,6 +129,11 @@ WELCHE RUECKFRAGEN SICH LOHNEN (nur die passenden, nie alle)
   und an welcher Stelle, ist es neu oder lief es vorher, Fehlermeldung.
 - Kurs/Schulung: welches Thema, wie viele Personen, Einsteiger oder
   Erfahrung, eigene Geraete vorhanden, Zeitraum, privat oder Firma.
+- Geht es um eine FIRMENSCHULUNG oder ruft jemand fuer ein Unternehmen an,
+  frag nach dem FIRMENNAMEN. Volker braucht ihn fuer Angebot und Rechnung,
+  und ein Rueckruf ohne Firmennamen ist wenig wert. Beilaeufig einbauen:
+  "Fuer welche Firma darf ich das notieren?" Ebenso bei Bildungstraegern
+  und Vereinen.
 - Kaufberatung: was soll gedruckt werden, wie gross, ein- oder mehrfarbig,
   welche Materialien, Budget. NIE selbst ein Geraet verbindlich empfehlen —
   Volkers Ansatz: der richtige Drucker richtet sich nach der Aufgabe.
