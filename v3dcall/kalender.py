@@ -36,16 +36,50 @@ def termine(tage=14):
     return sorted(ev, key=lambda e: str(e.get("start") or ""))
 
 
+def _ics_termine(url, tage):
+    """Einen Abo-Kalender (ICS) lesen. Wiederkehrende Termine werden aufgeklappt."""
+    import datetime
+    import icalendar
+    import recurring_ical_events
+    r = urllib.request.Request(url, headers={"User-Agent": "V3D-Anrufannahme"})
+    with urllib.request.urlopen(r, timeout=25, context=_ctx) as a:
+        kal = icalendar.Calendar.from_ical(a.read())
+    heute = datetime.date.today()
+    raus = []
+    for e in recurring_ical_events.of(kal).between(heute, heute + datetime.timedelta(days=tage)):
+        d = e.get("DTSTART").dt
+        ganztags = not isinstance(d, datetime.datetime)
+        raus.append({
+            "start": (d.strftime("%Y-%m-%d") if ganztags
+                      else d.strftime("%Y-%m-%dT%H:%M:%S")),
+            "summary": str(e.get("SUMMARY") or "belegt").strip(),
+            "quelle": "abo",
+        })
+    return raus
+
+
+def termine_alle(tage=14):
+    """Eigener Kalender plus alle Abo-Kalender, zusammengefuehrt."""
+    raus = []
+    try:
+        raus += termine(tage)
+    except Exception:
+        pass
+    for url in (core.cfg("kalender", "icsQuellen", default=[]) or []):
+        try:
+            raus += _ics_termine(url, tage)
+        except Exception:
+            pass          # eine unerreichbare Quelle darf den Anruf nicht stoeren
+    return sorted(raus, key=lambda e: str(e.get("start") or ""))
+
+
 def belegung_text(tage=14):
     """Kurzfassung fuer den Systemprompt — was in den naechsten Tagen ansteht.
 
     Bewusst knapp: das geht in JEDE erste Aeusserung ein und kostet dort
     Zeit. Nur Tag, Uhrzeit und Titel, keine Beschreibungen.
     """
-    try:
-        ev = termine(tage)
-    except Exception:
-        return ""
+    ev = termine_alle(tage)
     if not ev:
         return ("Im Kalender stehen fuer die naechsten zwei Wochen KEINE Termine. "
                 "Das heisst NICHT, dass Volker frei ist — der Kalender ist "
@@ -69,12 +103,22 @@ def belegung_text(tage=14):
             + "\n".join(zeilen))
 
 
+def kalenderliste():
+    """Alle Kalender des Kontos neu ermitteln (nach dem Hinzufuegen eines Abos)."""
+    return (_ruf("/cal/setup", {}) or {}).get("calendars") or []
+
+
 def vormerken(start_iso, ende_iso, titel, notiz=""):
     """Unverbindlichen Wunschtermin eintragen.
 
     Deutlich als Vorschlag gekennzeichnet — Volker bestaetigt oder verwirft.
+
+    Das Ziel ist FEST hinterlegt (kalender.schreibkalender). Abo-Kalender
+    sind nur lesbar — landete eines davon an erster Stelle, wuerde das
+    Eintragen sonst fehlschlagen.
     """
-    return _ruf("/cal/save", {"ev": {
+    ziel = core.cfg("kalender", "schreibkalender", default="")
+    return _ruf("/cal/save", {"calendar": ziel, "ev": {
         "start": start_iso, "end": ende_iso,
         "summary": "VORSCHLAG: " + titel,
         "description": (notiz + "\n\nUnverbindlich vom Telefonassistenten "
