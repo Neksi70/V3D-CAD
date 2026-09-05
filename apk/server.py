@@ -21,16 +21,40 @@ def dateityp(name):
     return TYPEN.get(os.path.splitext(name)[1].lower())
 
 
+def _schluessel(name):
+    """Gross-/Kleinschreibung und Trennzeichen sind beim Tippen egal."""
+    return ''.join(c for c in name.lower() if c.isalnum() or c == '.')
+
+
+def finde(name):
+    """Passende Datei suchen — exakt, sonst unscharf (V3D-Familie == v3dfamilie)."""
+    voll = os.path.join(ROOT, name)
+    if dateityp(name) and os.path.isfile(voll):
+        return name
+    gesucht = _schluessel(name)
+    if not gesucht:
+        return None
+    treffer = [d for d in sorted(os.listdir(ROOT)) if dateityp(d)]
+    for d in treffer:                       # gleicher Name, andere Schreibweise
+        if _schluessel(d) == gesucht:
+            return d
+    ohne = gesucht.rsplit('.', 1)[0]
+    for d in treffer:                       # ohne Versionsnummer/Endung getippt
+        if ohne and _schluessel(d).startswith(ohne):
+            return d
+    return None
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         pfad = self.path.split('?', 1)[0].lstrip('/')
         if pfad in ('', 'index.html'):
             return self.uebersicht()
-        name = os.path.basename(pfad)  # keine Unterordner, kein ..
-        voll = os.path.join(ROOT, name)
-        if not dateityp(name) or not os.path.isfile(voll):
+        name = finde(os.path.basename(pfad))  # keine Unterordner, kein ..
+        if not name:
             self.send_error(404)
             return
+        voll = os.path.join(ROOT, name)
         with open(voll, 'rb') as f:
             daten = f.read()
         self.send_response(200)
