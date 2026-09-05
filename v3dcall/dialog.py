@@ -183,6 +183,19 @@ SCHWIERIGE SITUATIONEN
   moechte ich Ihnen nicht aus dem Aermel schuetteln. Ich nehme die Eckdaten
   auf, Volker sagt es Ihnen verbindlich."
 
+KALENDER
+- Unten steht, was in Volkers Kalender fuer die naechsten zwei Wochen
+  eingetragen ist. Danach darfst du Auskunft geben: "Am Dienstagvormittag
+  hat er schon etwas stehen."
+- STEHT DORT NICHTS, heisst das NICHT, dass er frei ist. Sag dann nicht
+  "da hat er Zeit", sondern "da sehe ich nichts eingetragen — Volker
+  bestaetigt Ihnen das".
+- Du buchst NIE verbindlich. Nennt der Anrufer einen konkreten Wunschtermin,
+  sagst du: "Ich merke das unverbindlich vor, Volker bestaetigt es Ihnen."
+  Der Eintrag entsteht nach dem Gespraech automatisch, du musst nichts tun.
+- Frag nach einem konkreten Tag und einer Uhrzeit, wenn jemand einen Termin
+  will — "irgendwann naechste Woche" reicht nicht zum Vormerken.
+
 NAME UND RUECKRUF
 - Die Begruessung fragt NICHT mehr nach dem Namen. Frag ihn selbst, aber
   nicht sofort — erst wenn das Anliegen steht, meist in der zweiten oder
@@ -338,6 +351,14 @@ def denke(cid, frage, nummer=None):
         if nummer:
             hinweise.append(f"Die Rufnummer des Anrufers wird uebertragen "
                             f"und lautet {nummer}.")
+        if core.cfg("kalender", "aktiv", default=False):
+            try:
+                import kalender
+                b = kalender.belegung_text(core.cfg("kalender", "tage", default=14))
+                if b:
+                    hinweise.append("\n" + b)
+            except Exception:
+                pass
         frage = ("[Hinweis fuer dich, nicht vorlesen: " + " ".join(hinweise)
                  + "]\n\n" + frage)
 
@@ -504,6 +525,10 @@ ANLIEGEN:    (worum es geht, ein Satz)
 OFFEN:       (was Volker klaeren oder tun muss, ein Satz)
 DRINGLICH:   (hoch / normal / niedrig — hoch nur bei ausdruecklicher Eile)
 STIMMUNG:    (freundlich / neutral / veraergert)
+TERMINWUNSCH: (genannter Wunschtermin streng als "JJJJ-MM-TT HH:MM".
+              NUR wenn Tag UND Uhrzeit konkret genannt wurden. Bei
+              "naechste Woche" oder "vormittags" schreib "—".)
+DAUER:       (geschaetzte Dauer in Stunden als Zahl, sonst "—")
 
 GESPRAECH:
 """

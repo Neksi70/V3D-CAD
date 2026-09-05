@@ -1,5 +1,5 @@
 """Aufnahme -> Text -> E-Mail -> Push."""
-import json, os, smtplib, ssl, subprocess, threading, time, traceback
+import json, os, re, smtplib, ssl, subprocess, threading, time, traceback
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid, parseaddr
 
@@ -240,8 +240,52 @@ def _gespraech_einsammeln(cid):
         kurzfassung = dialog.auswertung(cid, (core.get_call(cid) or {}).get("caller"))
     except Exception:
         pass
+    if kurzfassung:
+        kurzfassung += _termin_vormerken(kurzfassung, cid)
     dialog.beende(cid)
     return mitschrift, zusammen, kurzfassung
+
+
+def _termin_vormerken(auswertung, cid):
+    """Aus der Auswertung einen Wunschtermin in den Kalender vormerken.
+
+    Laeuft NACH dem Anruf — kostet also keine Gespraechszeit. Eingetragen
+    wird ausdruecklich als VORSCHLAG; bestaetigen muss Volker.
+    """
+    if not core.cfg("kalender", "aktiv", default=False):
+        return ""
+    m = re.search(r"TERMINWUNSCH:\s*(\d{4}-\d{2}-\d{2})[ T](\d{1,2}):(\d{2})",
+                  auswertung)
+    if not m:
+        return ""
+    try:
+        import datetime
+        import kalender
+        tag, std, minute = m.group(1), int(m.group(2)), int(m.group(3))
+        d = datetime.datetime.strptime(tag, "%Y-%m-%d").replace(hour=std, minute=minute)
+        # Ortszeit -> UTC. Deutschland liegt im Sommer 2, im Winter 1 Stunde vor.
+        versatz = 2 if time.localtime().tm_isdst else 1
+        start = d - datetime.timedelta(hours=versatz)
+
+        md = re.search(r"DAUER:\s*([\d.,]+)", auswertung)
+        stunden = float(md.group(1).replace(",", ".")) if md else 2.0
+        stunden = min(max(stunden, 0.5), 10.0)
+
+        mn = re.search(r"NAME:\s*(.+)", auswertung)
+        name = (mn.group(1).strip() if mn else "").strip("— ") or "Anrufer"
+        ma = re.search(r"ANLIEGEN:\s*(.+)", auswertung)
+        anliegen = (ma.group(1).strip() if ma else "")[:120]
+
+        f = "%Y-%m-%dT%H:%M:%SZ"
+        kalender.vormerken(start.strftime(f),
+                           (start + datetime.timedelta(hours=stunden)).strftime(f),
+                           f"{name} — {anliegen}"[:70],
+                           f"Aus dem Telefonat vom {time.strftime('%d.%m.%Y %H:%M')}.\n"
+                           f"{auswertung}")
+        return (f"\n\nIm Kalender vorgemerkt: {d.strftime('%a %d.%m.%Y, %H:%M')} "
+                f"({stunden:g} h) — als VORSCHLAG, bitte bestätigen oder löschen.")
+    except Exception as e:
+        return f"\n\n(Termin konnte nicht vorgemerkt werden: {str(e)[:90]})"
 
 
 def verarbeite(cid):
