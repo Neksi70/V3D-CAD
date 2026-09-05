@@ -64,7 +64,7 @@ chmod 0755 /usr/share/asterisk/agi-bin/v3dcall-agi
 
 echo "==> 4/6  Ansagen bereitstellen ($SOUNDS)"
 install -d -o asterisk -g asterisk -m 0755 "$SOUNDS"
-for n in ansage danke beep dialog-begruessung nachfrage stoerung fueller1 fueller2 fueller3 fueller4 fueller5 fueller6 fueller7 fueller8 kurz1 kurz2 kurz3 kurz4 kurz5 dank1 dank2 dank3 dank4 gruss1 gruss2 gruss3 gruss4 gruss5 gruss6 gruss7 gruss8 gruss9; do
+for n in ansage danke beep dialog-begruessung nachfrage stoerung fueller1 fueller2 fueller3 fueller4 fueller5 fueller6 fueller7 fueller8 kurz1 kurz2 kurz3 kurz4 kurz5 dank1 dank2 dank3 dank4 wa1 wa2 wa3 wm1 wm2 wm3 wf1 wf2 wf3 we1 we2 we3 gruss1 gruss2 gruss3 gruss4 gruss5 gruss6 gruss7 gruss8 gruss9; do
   if [ -f "$BASE/data/sounds/$n.wav" ]; then
     install -o asterisk -g asterisk -m 0644 "$BASE/data/sounds/$n.wav" "$SOUNDS/$n.wav"
     echo "    $n.wav uebernommen"
