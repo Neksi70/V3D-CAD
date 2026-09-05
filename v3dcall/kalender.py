@@ -1,10 +1,12 @@
-"""Kalender-Anbindung über V3D Mail.
+"""Kalender-Anbindung an V3D Familie.
 
-V3D Mail spricht bereits CalDAV mit goneo — das bauen wir nicht nochmal,
-sondern rufen dessen Schnittstelle auf 127.0.0.1:8783 auf.
+Volker pflegt seine Termine in seinem eigenen Familien-Organizer auf Port
+8787 — nicht bei goneo. Gelesen wird dessen ICS-Feed, geschrieben ueber
+dessen Schnittstelle.
 """
 import datetime
 import json
+import time
 import urllib.request
 import ssl
 
@@ -13,27 +15,6 @@ import core
 _ctx = ssl.create_default_context()
 _ctx.check_hostname = False
 _ctx.verify_mode = ssl.CERT_NONE          # eigenes Zertifikat auf localhost
-
-
-def _ruf(pfad, nutzlast):
-    basis = core.cfg("kalender", "basis", default="https://127.0.0.1:8783/api")
-    nutzlast = dict(nutzlast, acc=core.cfg("kalender", "konto", default=""))
-    r = urllib.request.Request(
-        basis + pfad, data=json.dumps(nutzlast).encode(),
-        headers={"Content-Type": "application/json",
-                 "Cookie": "v3dmail_sid=" + core.cfg("kalender", "sid", default="")})
-    with urllib.request.urlopen(r, timeout=25, context=_ctx) as a:
-        return json.loads(a.read().decode())
-
-
-def termine(tage=14):
-    """Termine der naechsten Tage, aufsteigend."""
-    jetzt = datetime.datetime.now(datetime.timezone.utc)
-    d = _ruf("/cal/events", {
-        "start": jetzt.strftime("%Y%m%dT000000Z"),
-        "end": (jetzt + datetime.timedelta(days=tage)).strftime("%Y%m%dT235959Z")})
-    ev = d.get("events") or []
-    return sorted(ev, key=lambda e: str(e.get("start") or ""))
 
 
 def _ics_termine(url, tage):
@@ -49,22 +30,25 @@ def _ics_termine(url, tage):
     for e in recurring_ical_events.of(kal).between(heute, heute + datetime.timedelta(days=tage)):
         d = e.get("DTSTART").dt
         ganztags = not isinstance(d, datetime.datetime)
+        titel = str(e.get("SUMMARY") or "belegt").strip()
+        # Familienkalender: fremde Termine machen nur die Zeit belegt, ihr
+        # INHALT geht den Telefonassistenten nichts an. "Neurologe Sylvia"
+        # darf er nicht kennen — er soll nur wissen, dass die Zeit weg ist.
+        wem = core.cfg("kalender", "nurPerson", default="")
+        if wem and f"({wem})" not in titel:
+            titel = "privat belegt"
         raus.append({
             "start": (d.strftime("%Y-%m-%d") if ganztags
                       else d.strftime("%Y-%m-%dT%H:%M:%S")),
-            "summary": str(e.get("SUMMARY") or "belegt").strip(),
+            "summary": titel,
             "quelle": "abo",
         })
     return raus
 
 
 def termine_alle(tage=14):
-    """Eigener Kalender plus alle Abo-Kalender, zusammengefuehrt."""
+    """Alle angebundenen Kalender, zusammengefuehrt."""
     raus = []
-    try:
-        raus += termine(tage)
-    except Exception:
-        pass
     for url in (core.cfg("kalender", "icsQuellen", default=[]) or []):
         try:
             raus += _ics_termine(url, tage)
@@ -109,18 +93,37 @@ def kalenderliste():
 
 
 def vormerken(start_iso, ende_iso, titel, notiz=""):
-    """Unverbindlichen Wunschtermin eintragen.
+    """Unverbindlichen Wunschtermin in V3D Familie eintragen.
 
-    Deutlich als Vorschlag gekennzeichnet — Volker bestaetigt oder verwirft.
+    Nicht mehr bei goneo — dort schaut niemand hin. V3D Familie ist der
+    Kalender, der tatsaechlich gepflegt wird, und der Eintrag erscheint
+    damit sofort auf dem Handy.
 
-    Das Ziel ist FEST hinterlegt (kalender.schreibkalender). Abo-Kalender
-    sind nur lesbar — landete eines davon an erster Stelle, wuerde das
-    Eintragen sonst fehlschlagen.
+    Deutlich als Vorschlag gekennzeichnet; bestaetigen muss Volker.
     """
-    ziel = core.cfg("kalender", "schreibkalender", default="")
-    return _ruf("/cal/save", {"calendar": ziel, "ev": {
-        "start": start_iso, "end": ende_iso,
-        "summary": "VORSCHLAG: " + titel,
-        "description": (notiz + "\n\nUnverbindlich vom Telefonassistenten "
-                        "vorgemerkt. Bitte bestaetigen oder loeschen.").strip(),
-    }})
+    basis = core.cfg("kalender", "familieBasis", default="http://127.0.0.1:8787")
+    sid = core.cfg("kalender", "familieSid", default="")
+    if not sid:
+        raise RuntimeError("Keine Sitzung fuer V3D Familie hinterlegt")
+
+    def ortszeit(iso):
+        """UTC-ISO -> Ortszeit ohne Zone, so wie V3D Familie sie speichert."""
+        import datetime
+        d = datetime.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")
+        return (d + datetime.timedelta(hours=2 if time.localtime().tm_isdst else 1)
+                ).strftime("%Y-%m-%dT%H:%M")
+
+    r = urllib.request.Request(
+        basis + "/api/termin",
+        data=json.dumps({
+            "titel": "VORSCHLAG: " + titel,
+            "start": ortszeit(start_iso),
+            "ende": ortszeit(ende_iso),
+            "mid": core.cfg("kalender", "familieMid", default=1),
+            "notiz": (notiz + "\n\nUnverbindlich vom Telefonassistenten "
+                      "vorgemerkt. Bitte bestaetigen oder loeschen.").strip(),
+        }).encode(),
+        headers={"Content-Type": "application/json",
+                 "Cookie": "v3dfam_sid=" + sid})
+    with urllib.request.urlopen(r, timeout=25) as a:
+        return json.loads(a.read().decode())
