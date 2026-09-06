@@ -174,6 +174,9 @@ ALLOW = {
     '/abstimmung.html':                   ('abstimmung.html', 'text/html; charset=utf-8'),
     '/ansehen.html':                      ('ansehen.html', 'text/html; charset=utf-8'),
     '/mitsehen.html':                     ('mitsehen.html', 'text/html; charset=utf-8'),
+    # Bestaetigt Android, dass Links auf /familie von der V3D-Familie-App
+    # geoeffnet werden duerfen (App Links, sonst landet alles im Browser).
+    '/.well-known/assetlinks.json':       ('assetlinks.json', 'application/json'),
     '/favicon.svg':                       ('favicon.svg', 'image/svg+xml'),
     '/logo.svg':                          ('logo.svg', 'image/svg+xml'),
     '/volme3d-occt.js':                   ('volme3d-occt.js', 'text/javascript; charset=utf-8'),
