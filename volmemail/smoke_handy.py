@@ -56,8 +56,10 @@ with sync_playwright() as p:
     page.on('pageerror', lambda e: errors.append(str(e)))
 
     page.goto(URL, wait_until='networkidle')
-    page.fill('#lkey', KEY)
-    page.click('text=Anmelden')
+    # Steht "offenerZugang" in der Konfiguration, gibt es gar keine Anmeldemaske.
+    if page.is_visible('#login'):
+        page.fill('#lkey', KEY)
+        page.click('text=Anmelden')
     page.wait_for_timeout(7000)
     check('Angemeldet', not page.is_visible('#login'))
     check('Liste ist die Startansicht', 'v-list' in page.evaluate('document.body.className'))

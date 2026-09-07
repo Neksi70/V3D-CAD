@@ -91,10 +91,22 @@ a{color:var(--acc-d)}
 #ptr.laeuft .ring::before{content:'';width:15px;height:15px;border:2px solid var(--line);
   border-top-color:var(--acc);border-radius:50%}
 #ptr.laeuft .pfeil{display:none}
-.item{padding:10px 13px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:9px}
+.item{padding:10px 13px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:9px;
+  user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .item:hover{background:#fafbff}
 .item.act{background:#fff6ee;border-left:3px solid var(--acc);padding-left:10px}
 .item .dot{width:8px;height:8px;border-radius:50%;background:var(--acc);flex-shrink:0;margin-top:7px}
+/* Auswahlkaestchen: immer da, aber unaufdringlich — angehakt wird es orange. */
+.item .pick{width:22px;height:22px;flex-shrink:0;margin-top:1px;background:#fff;
+  border:1.5px solid #ccd1de;border-radius:6px;display:flex;align-items:center;justify-content:center;
+  font-size:14px;line-height:1;color:transparent;cursor:pointer;padding:0}
+.item .pick:hover{border-color:var(--acc)}
+.item.sel{background:#fff1e2}
+.item.sel .pick{background:var(--acc);border-color:var(--acc);color:#fff}
+#listbar.aus{background:#fff6ee;border-bottom-color:#ffd7ad}
+#listbar .aw{font-weight:700;color:var(--acc-d)}
+/* In der schmalen Listenspalte muessen die drei Sammelbefehle in eine Zeile. */
+#listbar.aus .btn{padding:5px 8px;font-size:12.5px}
 .item.seen .dot{background:transparent}
 .item .body{flex:1;min-width:0}
 .item .r1{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
@@ -347,7 +359,8 @@ a{color:var(--acc-d)}
 'use strict';
 const API = (p) => p;                       // Pfade sind relativ — funktioniert auch unter /mail/
 const S = { accounts: [], acc: null, folder: 'INBOX', folders: [], page: 0, total: 0,
-            msgs: [], cur: null, q: '', reply: null, atts: [] };
+            msgs: [], cur: null, q: '', reply: null, atts: [],
+            sel: new Set(), selAnker: null };
 
 function toast(msg, ms) {
   let t = document.getElementById('toast');
@@ -399,6 +412,7 @@ async function boot() {
   S.acc = S.accounts.find(a => a.id === last) || S.accounts[0];
   renderAccounts();
   initPullToRefresh();
+  initAuswahlGesten();
   await loadFolders();
   if (!await uebergabeAbholen()) starteAusAdresse();
   sendenEmpfangen(true);
@@ -507,6 +521,9 @@ function fmtSize(n) {
 }
 
 async function loadMessages(folder, page, quiet) {
+  // Ordner- oder Seitenwechsel verwirft die Auswahl; ein stiller Neuabruf
+  // behaelt sie, soweit die Nachrichten noch da sind.
+  if (folder !== S.folder || (page || 0) !== S.page) auswahlLeeren(true);
   S.folder = folder; S.page = page || 0;
   const items = document.getElementById('items');
   if (!quiet) items.innerHTML = '<div style="padding:20px;text-align:center"><span class="spin"></span></div>';
@@ -516,6 +533,7 @@ async function loadMessages(folder, page, quiet) {
   try { r = await api(url); }
   catch (e) { items.innerHTML = `<div style="padding:20px;color:var(--red)">${esc(e.message)}</div>`; return; }
   S.msgs = r.messages || []; S.total = r.total || 0;
+  S.sel = new Set(S.msgs.filter(m => S.sel.has(m.uid)).map(m => m.uid));
   renderList();
 }
 
@@ -525,17 +543,32 @@ function renderList() {
   const from = S.total ? S.page * 50 + 1 : 0;
   const to = Math.min(S.total, (S.page + 1) * 50);
   const fname = foldName(S.folders.find(f => f.path === S.folder)) || S.folder;
-  bar.innerHTML = `<b>${esc(fname)}</b><span>${from}–${to} von ${S.total}</span>` +
-    (S.q ? `<span>· Suche „${esc(S.q)}"</span>` : '') +
-    `<span style="margin-left:auto;display:flex;gap:4px">
-      <button class="btn sec sm" ${S.page ? '' : 'disabled'} onclick="loadMessages(S.folder,${S.page - 1})">‹</button>
-      <button class="btn sec sm" ${to < S.total ? '' : 'disabled'} onclick="loadMessages(S.folder,${S.page + 1})">›</button></span>`;
+  bar.classList.toggle('aus', S.sel.size > 0);
+  if (S.sel.size) {
+    // Bei aktiver Auswahl uebernimmt die Leiste die Sammelbefehle.
+    const alle = S.msgs.length && S.msgs.every(m => S.sel.has(m.uid));
+    const ungelesen = S.msgs.some(m => S.sel.has(m.uid) && !m.seen);
+    bar.innerHTML = `<button class="btn sec sm" onclick="auswahlLeeren()" title="Auswahl aufheben">✕</button>
+      <span class="aw">${S.sel.size} ausgewählt</span>
+      <button class="btn sec sm" style="margin-left:auto" onclick="auswahlAlle()">${alle ? 'Keine' : 'Alle'}</button>
+      <span style="display:flex;gap:4px;flex-wrap:wrap;width:100%">
+        <button class="btn sec sm" onclick="auswahlGelesen(${ungelesen})" title="${ungelesen ? 'Als gelesen markieren' : 'Als ungelesen markieren'}">${ungelesen ? '✉️ Gelesen' : '📩 Ungelesen'}</button>
+        <button class="btn sec sm" onclick="auswahlVerschieben()">📁 Verschieben</button>
+        <button class="btn danger sm" onclick="auswahlLoeschen()">🗑 Löschen</button></span>`;
+  } else {
+    bar.innerHTML = `<b>${esc(fname)}</b><span>${from}–${to} von ${S.total}</span>` +
+      (S.q ? `<span>· Suche „${esc(S.q)}"</span>` : '') +
+      `<span style="margin-left:auto;display:flex;gap:4px">
+        <button class="btn sec sm" ${S.page ? '' : 'disabled'} onclick="loadMessages(S.folder,${S.page - 1})">‹</button>
+        <button class="btn sec sm" ${to < S.total ? '' : 'disabled'} onclick="loadMessages(S.folder,${S.page + 1})">›</button></span>`;
+  }
   if (!S.msgs.length) { items.innerHTML = '<div style="padding:30px;text-align:center;color:var(--dim)">Keine Nachrichten</div>'; return; }
   items.innerHTML = S.msgs.map(m => {
     const who = S.folder.toLowerCase().includes('sent') || (S.folders.find(f => f.path === S.folder) || {}).kind === 'sent'
       ? (m.to[0] ? (m.to[0].name || m.to[0].email) : '—')
       : (m.from[0] ? (m.from[0].name || m.from[0].email) : '—');
-    return `<div class="item${m.seen ? ' seen' : ''}${S.cur && S.cur.uid === m.uid ? ' act' : ''}" data-uid="${m.uid}" onclick="openMsg(${m.uid})">
+    return `<div class="item${m.seen ? ' seen' : ''}${S.cur && S.cur.uid === m.uid ? ' act' : ''}${S.sel.has(m.uid) ? ' sel' : ''}" data-uid="${m.uid}" onclick="itemKlick(event,${m.uid})">
+      <button class="pick" aria-pressed="${S.sel.has(m.uid)}" title="Auswählen" onclick="event.stopPropagation();pickKlick(event,${m.uid})">✓</button>
       <div class="dot"></div>
       <div class="body">
         <div class="r1"><div class="who">${esc(who)}</div><div class="when">${fmtDate(m.ts, m.date)}</div></div>
@@ -547,7 +580,128 @@ function renderList() {
   }).join('');
 }
 
-function doSearch() { S.q = document.getElementById('q').value.trim(); loadMessages(S.folder, 0); }
+function doSearch() {
+  S.q = document.getElementById('q').value.trim();
+  auswahlLeeren(true);
+  loadMessages(S.folder, 0);
+}
+
+// --- Mehrfachauswahl -------------------------------------------------------
+// Kästchen anhaken, mit Umschalt einen Bereich greifen, auf dem Handy lange
+// tippen. Sobald etwas ausgewählt ist, wird aus der Kopfzeile die Befehlsleiste
+// und ein einfacher Klick hakt an, statt die Mail zu öffnen.
+function auswahlUids() { return S.msgs.filter(m => S.sel.has(m.uid)).map(m => m.uid); }
+
+function auswahlLeeren(still) {
+  if (!S.sel.size && S.selAnker == null) return;
+  S.sel.clear(); S.selAnker = null;
+  if (!still) renderList();
+}
+
+function auswahlAlle() {
+  const alle = S.msgs.length && S.msgs.every(m => S.sel.has(m.uid));
+  if (alle) { S.sel.clear(); S.selAnker = null; }
+  else S.msgs.forEach(m => S.sel.add(m.uid));
+  renderList();
+}
+
+function auswahlUmschalten(uid) {
+  if (S.sel.has(uid)) S.sel.delete(uid); else S.sel.add(uid);
+  S.selAnker = uid;
+  renderList();
+}
+
+function auswahlBereich(uid) {
+  const a = S.msgs.findIndex(m => m.uid === S.selAnker);
+  const b = S.msgs.findIndex(m => m.uid === uid);
+  if (a < 0 || b < 0) return auswahlUmschalten(uid);
+  for (let i = Math.min(a, b); i <= Math.max(a, b); i++) S.sel.add(S.msgs[i].uid);
+  renderList();
+}
+
+function pickKlick(ev, uid) {
+  if (ev.shiftKey && S.selAnker != null) return auswahlBereich(uid);
+  auswahlUmschalten(uid);
+}
+
+function itemKlick(ev, uid) {
+  // Nach langem Tippen kommt noch ein Klick hinterher — der darf die eben
+  // getroffene Auswahl nicht gleich wieder umdrehen.
+  if (S.langerDruck) { S.langerDruck = false; return; }
+  if (ev.shiftKey && S.selAnker != null) return auswahlBereich(uid);
+  if (ev.ctrlKey || ev.metaKey || S.sel.size) return auswahlUmschalten(uid);
+  openMsg(uid);
+}
+
+// Langes Tippen (Handy) hakt an und schaltet damit in die Auswahl.
+function initAuswahlGesten() {
+  const items = document.getElementById('items');
+  if (!items || items.dataset.langdruck) return;
+  items.dataset.langdruck = '1';
+  let t = null, x0 = 0, y0 = 0;
+  const stop = () => { clearTimeout(t); t = null; };
+  items.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return stop();
+    const zeile = e.target.closest && e.target.closest('.item');
+    if (!zeile || (e.target.closest('.pick') || e.target.closest('.star'))) return;
+    const uid = +zeile.dataset.uid;
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY;
+    t = setTimeout(() => {
+      t = null; S.langerDruck = true;
+      if (navigator.vibrate) navigator.vibrate(15);
+      auswahlUmschalten(uid);
+    }, 500);
+  }, { passive: true });
+  items.addEventListener('touchmove', (e) => {
+    if (!t) return;
+    const p = e.touches[0];
+    if (Math.abs(p.clientX - x0) > 8 || Math.abs(p.clientY - y0) > 8) stop();  // gescrollt
+  }, { passive: true });
+  items.addEventListener('touchend', stop, { passive: true });
+  items.addEventListener('touchcancel', stop, { passive: true });
+  items.addEventListener('scroll', stop, { passive: true });
+  items.addEventListener('contextmenu', (e) => {
+    // Auf dem Handy folgt dem langen Tippen sonst das Browser-Menü.
+    if (S.langerDruck) e.preventDefault();
+  });
+}
+
+async function auswahlLoeschen() {
+  const uids = auswahlUids();
+  if (!uids.length) return;
+  const imPapierkorb = (S.folders.find(f => f.path === S.folder) || {}).kind === 'trash';
+  const was = uids.length === 1 ? 'Diese Nachricht' : uids.length + ' Nachrichten';
+  if (!confirm(was + (imPapierkorb ? ' endgültig löschen?' : ' in den Papierkorb verschieben?'))) return;
+  toast('Lösche ' + uids.length + ' …', 60000);
+  let r;
+  try { r = await post('delete', { acc: S.acc.id, folder: S.folder, uids }); }
+  catch (e) { return toast(e.message, 5000); }
+  toast((r.toTrash ? 'In den Papierkorb: ' : 'Endgültig gelöscht: ') + uids.length);
+  if (S.cur && uids.indexOf(S.cur.uid) >= 0) {
+    S.cur = null;
+    document.getElementById('readinner').classList.add('hide');
+    document.getElementById('empty').classList.remove('hide');
+    verlasseMail();
+  }
+  S.sel.clear(); S.selAnker = null;
+  await loadMessages(S.folder, S.page, true);
+}
+
+async function auswahlGelesen(gelesen) {
+  const uids = auswahlUids();
+  if (!uids.length) return;
+  S.msgs.forEach(m => { if (S.sel.has(m.uid)) m.seen = gelesen; });
+  renderList();
+  try { await post('flag', { acc: S.acc.id, folder: S.folder, uids, flag: '\\Seen', on: gelesen }); }
+  catch (e) { return toast(e.message, 5000); }
+  toast(uids.length + (gelesen ? ' als gelesen' : ' als ungelesen') + ' markiert');
+  sendenEmpfangen(true);   // Ungelesen-Marken an den Konten nachziehen
+}
+
+function auswahlVerschieben() {
+  if (!auswahlUids().length) return;
+  moveDialog(auswahlUids());
+}
 
 // --- Ziehen zum Aktualisieren ----------------------------------------------
 // Am oberen Ende der Liste nach unten wischen prueft alle Postfaecher, genau
@@ -1096,8 +1250,9 @@ async function delCurrent() {
   loadMessages(S.folder, S.page, true);
 }
 
-function moveDialog() {
-  if (!S.cur) return;
+function moveDialog(uids) {
+  S.mvUids = (uids && uids.length) ? uids.slice() : (S.cur ? [S.cur.uid] : []);
+  if (!S.mvUids.length) return;
   const opts = S.folders.filter(f => f.path !== S.folder)
     .map(f => `<option value="${esc(f.path)}">${esc(f.path)}</option>`).join('');
   modal(`<h3>Verschieben</h3><p class="muted" style="font-size:13.5px">Zielordner wählen</p>
@@ -1108,14 +1263,21 @@ function moveDialog() {
 }
 async function doMove() {
   const target = document.getElementById('mvsel').value;
+  const uids = (S.mvUids || []).slice();
   closeModal();
-  try { await post('move', { acc: S.acc.id, folder: S.folder, uids: [S.cur.uid], target }); }
+  if (!uids.length) return;
+  try { await post('move', { acc: S.acc.id, folder: S.folder, uids, target }); }
   catch (e) { return toast(e.message); }
-  toast('Verschoben nach ' + target);
-  S.cur = null;
-  document.getElementById('readinner').classList.add('hide');
-  document.getElementById('empty').classList.remove('hide');
-  verlasseMail(); loadMessages(S.folder, S.page, true);
+  toast(uids.length === 1 ? 'Verschoben nach ' + target
+                          : uids.length + ' verschoben nach ' + target);
+  if (S.cur && uids.indexOf(S.cur.uid) >= 0) {
+    S.cur = null;
+    document.getElementById('readinner').classList.add('hide');
+    document.getElementById('empty').classList.remove('hide');
+    verlasseMail();
+  }
+  S.sel.clear(); S.selAnker = null; S.mvUids = null;
+  loadMessages(S.folder, S.page, true);
 }
 
 // --- Verfassen -------------------------------------------------------------
@@ -2229,7 +2391,8 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Escape') e.target.blur();
     return;
   }
-  if (e.key === 'Escape') zurueck();     // schließt genau die oberste Ebene
+  // Escape räumt zuerst die Auswahl weg, erst dann die oberste Ebene.
+  if (e.key === 'Escape') { if (S.sel.size && !S.layers.length) return auswahlLeeren(); zurueck(); }
   if (lightboxOffen()) {
     if (e.key === 'ArrowLeft') lightboxBlaettern(-1);
     if (e.key === 'ArrowRight') lightboxBlaettern(1);
@@ -2237,7 +2400,7 @@ document.addEventListener('keydown', e => {
   }
   if (e.key === 'n') compose();
   if (e.key === 'r' && S.cur) reply(false);
-  if (e.key === 'Delete' && S.cur) delCurrent();
+  if (e.key === 'Delete') { if (S.sel.size) auswahlLoeschen(); else if (S.cur) delCurrent(); }
   if (e.key === 'j' || e.key === 'k') {
     const i = S.msgs.findIndex(m => S.cur && m.uid === S.cur.uid);
     const nx = S.msgs[Math.max(0, Math.min(S.msgs.length - 1, i + (e.key === 'j' ? 1 : -1)))];

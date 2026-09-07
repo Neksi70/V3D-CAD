@@ -32,19 +32,22 @@ with sync_playwright() as p:
 
     page.goto(URL, wait_until='networkidle')
     check('Seite lädt', page.title() == 'V3D Mail', page.title())
-    check('Anmeldemaske sichtbar', page.is_visible('#login'))
+    # Mit "offenerZugang" in der Konfiguration entfaellt die Anmeldung ganz —
+    # dann sind die beiden Schluessel-Pruefungen gegenstandslos.
+    if page.is_visible('#login'):
+        # Falscher Schlüssel
+        page.fill('#lkey', 'falsch')
+        page.click('text=Anmelden')
+        page.wait_for_timeout(900)
+        check('Falscher Schlüssel wird abgewiesen', 'Falscher Schlüssel' in page.inner_text('#lerr'),
+              page.inner_text('#lerr'))
 
-    # Falscher Schlüssel
-    page.fill('#lkey', 'falsch')
-    page.click('text=Anmelden')
-    page.wait_for_timeout(900)
-    check('Falscher Schlüssel wird abgewiesen', 'Falscher Schlüssel' in page.inner_text('#lerr'),
-          page.inner_text('#lerr'))
-
-    # Richtiger Schlüssel
-    page.fill('#lkey', KEY)
-    page.click('text=Anmelden')
-    page.wait_for_timeout(1200)
+        # Richtiger Schlüssel
+        page.fill('#lkey', KEY)
+        page.click('text=Anmelden')
+        page.wait_for_timeout(1200)
+    else:
+        print('  (offener Zugang — Anmeldeprüfungen übersprungen)')
     check('Anmeldung erfolgreich', not page.is_visible('#login'))
 
     hat_konto = page.evaluate('S.accounts.length > 0')

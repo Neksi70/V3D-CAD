@@ -18,6 +18,7 @@ ganz normal IMAP und SMTP.
 | `smoke_ui.py` | Browser-Durchlauf am Rechner: Anmeldung, Postfächer, Lesen, Bilder |
 | `smoke_handy.py` | Browser-Durchlauf im Handy-Format: Zurück-Knopf und Zurück-Geste |
 | `smoke_ziehen.py` | Ziehen zum Aktualisieren: Fingergeste auf der Nachrichtenliste |
+| `smoke_auswahl.py` | Mehrfachauswahl und Sammel-Löschen (schreibende Aufrufe abgefangen) |
 | `smoke_windows.py` | Installierbarkeit als Windows-App und mailto-Anbindung |
 | `smoke_signatur.py` | Signatur-Editor und Aufbau der versendeten Nachricht |
 | `smoke_bilder.py` | Bilder im Text: Anzeige (cid und verlinkt) und Speichern |
@@ -112,6 +113,36 @@ Eintrag im Verlauf des Browsers anlegt. Zwei Stolpersteine stecken darin:
 `smoke_handy.py` prüft beides im Handy-Format und steuert die Zurück-Taste über
 das Browser-Protokoll (`Page.navigateToHistoryEntry`) — Playwrights `go_back()`
 wartet auf einen Ladevorgang, den es bei Sprüngen im selben Dokument nicht gibt.
+
+## Mehrere Nachrichten auf einmal
+
+Jede Zeile hat links ein Kästchen. Sobald eines angehakt ist, wird aus der
+Kopfzeile der Liste eine Befehlsleiste — **✕ · N ausgewählt · Alle** und darunter
+**Ungelesen/Gelesen · Verschieben · Löschen**. Alles geht als *ein* Aufruf mit
+allen UIDs an den Server (`/api/delete`, `/api/move`, `/api/flag` nehmen seit
+jeher ein `uids`-Feld), nicht als Schleife über Einzelmails.
+
+| Geste | Wirkung |
+|---|---|
+| Klick aufs Kästchen | einzeln an-/abhaken |
+| Umschalt + Klick | Bereich vom zuletzt Angehakten bis hierher |
+| Strg/⌘ + Klick auf die Zeile | einzeln an-/abhaken |
+| Langes Tippen (Handy, 0,5 s) | hakt an und schaltet in die Auswahl |
+| Klick auf die Zeile, wenn schon etwas gewählt ist | hakt an, statt zu öffnen |
+| `Entf` | löscht die Auswahl, sonst die offene Mail |
+| `Esc` | hebt die Auswahl auf |
+
+Gelöscht wird nach einer Rückfrage; im Papierkorb heißt sie „endgültig löschen",
+sonst „in den Papierkorb verschieben" — welcher Weg genommen wird, entscheidet
+der Server anhand des Sonderordners. Ordner- und Seitenwechsel verwerfen die
+Auswahl, ein stiller Neuabruf (Senden/Empfangen, Ziehen) behält sie, soweit die
+Nachrichten noch da sind.
+
+**Falle beim Testen:** `post` und `api` sind in `mail.html` als `const`
+deklariert. Ein Stub per `window.post = …` greift deshalb **nicht** — der Aufruf
+geht am Stub vorbei ans echte Postfach und löscht wirklich. `smoke_auswahl.py`
+fängt schreibende Aufrufe daher auf Netzwerkebene mit `page.route()` ab und
+bricht ab, wenn die Sperre nachweislich nicht greift.
 
 ## Senden/Empfangen
 
