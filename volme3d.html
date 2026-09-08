@@ -19676,6 +19676,7 @@ canvas.addEventListener('mousedown', e => {
         dragData = selectedObjs.map(o => ({
           px: o.position.x, py: o.position.y, pz: o.position.z,
           rx: o.rotation.x, ry: o.rotation.y, rz: o.rotation.z,
+          q:  o.quaternion.clone(),
           sx: o.scale.x, sy: o.scale.y, sz: o.scale.z
         }));
         saveUndo();
@@ -19790,10 +19791,19 @@ window.addEventListener('mousemove', e => {
         o.position.z = snapV(d.pz + xzRight.z * dx * scale - xzFwd.z * dy * scale);
         o.position.y = d.py;
       } else if (editMode === 'rotate') {
+        // Plattenteller: waagerecht = um die Welt-Hochachse, senkrecht = um die
+        // waagerechte Kamera-Achse. Ueber o.rotation.<a> wuerde ein schon
+        // gekipptes Teil wegkippen statt sich zu drehen ("Ueberschlag").
         const snap45 = e.shiftKey;
-        const ry = d.ry + dx * 0.02;
-        o.rotation.y = snap45 ? Math.round(ry / (Math.PI / 4)) * (Math.PI / 4) : ry;
-        o.rotation.x = d.rx + dy * 0.02;
+        let yaw = dx * 0.02;
+        if (snap45) yaw = Math.round((d.ry + yaw) / (Math.PI / 4)) * (Math.PI / 4) - d.ry;
+        const camDirR = camera.getWorldDirection(new THREE.Vector3());
+        const pitchAx = new THREE.Vector3(-camDirR.z, 0, camDirR.x);
+        if (pitchAx.lengthSq() < 1e-8) pitchAx.set(1, 0, 0);
+        pitchAx.normalize();
+        o.quaternion.copy(d.q)
+          .premultiply(new THREE.Quaternion().setFromAxisAngle(pitchAx, dy * 0.02))
+          .premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw));
         // Auf Buildplate halten
         o.updateMatrixWorld(true);
         const _drBB = getMeshBox(o);
@@ -22332,6 +22342,11 @@ let rh_on      = false;   // drag in progress
 let rh_axis    = null;    // 'x'|'y'|'z'
 let rh_obj     = null;
 let rh_rot0    = null;    // {x,y,z} euler at drag start
+let rh_quat0   = null;    // THREE.Quaternion beim Drag-Start (Basis fuer die Weltachsen-Drehung)
+let rh_axisV   = null;    // THREE.Vector3 Weltachse des angefassten Rings
+let rh_sign    = 1;       // +1/-1: Blickrichtung auf die Achse (Ring muss der Maus folgen)
+let rh_plane   = null;    // {pl,u,v} Drehebene + Basis, um den Mauszeiger IN der Ringebene zu messen
+let rh_pa0     = null;    // Startwinkel in der Drehebene (rad), null = Ebene zu flach im Bild
 let rh_center  = null;    // {x,y} vp-relative screen centre
 let rh_r       = 80;      // approx screen ring radius
 let rh_a0      = 0;       // screen angle at drag start (rad)
@@ -22428,6 +22443,25 @@ function updateRotHandles() {
   _rhPos('rhz0', _rhRingPt('z', zt0)); _rhPos('rhz1', _rhRingPt('z', zt1));
 }
 
+// ── Mauszeiger in die Ringebene werfen → Winkel IN der Ebene ───────────
+// Der reine Bildschirmwinkel um den Ringmittelpunkt stimmt nur bei einem Ring,
+// der frontal im Bild liegt. Schraege Ringe sind Ellipsen — da laeuft der Griff
+// sonst der Maus davon. Darum den Strahl mit der Drehebene schneiden.
+function _rhPlaneAngle(mx, my) {
+  if (!rh_plane || !rh_piv) return null;
+  const vr = vpEl.getBoundingClientRect();
+  const nd = new THREE.Vector2((mx / vr.width) * 2 - 1, -(my / vr.height) * 2 + 1);
+  const rc = new THREE.Raycaster();
+  rc.setFromCamera(nd, camera);
+  // Fast parallel zur Ebene? Dann ist der Schnittpunkt unbrauchbar weit weg.
+  if (Math.abs(rh_axisV.dot(rc.ray.direction)) < 0.12) return null;
+  const p = rc.ray.intersectPlane(rh_plane.pl, new THREE.Vector3());
+  if (!p) return null;
+  const d = p.sub(rh_piv);
+  if (d.lengthSq() < 1e-9) return null;
+  return Math.atan2(d.dot(rh_plane.v), d.dot(rh_plane.u));
+}
+
 // ── Begin drag ─────────────────────────────────────────────────────────
 function _rhStartDrag(axis, event) {
   event.preventDefault(); event.stopPropagation();
@@ -22438,7 +22472,17 @@ function _rhStartDrag(axis, event) {
   rh_axis  = axis;
   rh_obj   = o;
   rh_rot0  = { x: o.rotation.x, y: o.rotation.y, z: o.rotation.z };
+  rh_quat0 = o.quaternion.clone();
   camera.updateMatrixWorld(true); o.updateMatrixWorld(true);
+  // Die Ringe sind WELTACHSEN-Kreise (siehe _rhRingPt) — also muss auch um die
+  // Weltachse gedreht werden, nicht ueber o.rotation.<a>. Ein Euler-Anteil ist
+  // nur bei ungedrehtem Objekt die Weltachse; sonst kippt das Teil weg
+  // ("Ueberschlag", Ralf 8.9.26).
+  rh_axisV = new THREE.Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
+  // Bildschirmwinkel wachsen um die Blickrichtung (y zeigt nach unten). Zeigt die
+  // Achse vom Betrachter weg, dreht sich das Teil sonst genau andersherum.
+  const _camF = camera.getWorldDirection(new THREE.Vector3());
+  rh_sign = rh_axisV.dot(_camF) < 0 ? -1 : 1;
   const box = getMeshBox(o);
   rh_c3    = box.getCenter(new THREE.Vector3());
   rh_piv   = rh_c3.clone();
@@ -22451,6 +22495,11 @@ function _rhStartDrag(axis, event) {
   rh_r = s0 ? Math.hypot(s0.x - rh_center.x, s0.y - rh_center.y) : 80;
   const vr = vpEl.getBoundingClientRect();
   rh_a0 = Math.atan2(event.clientY - vr.top - rh_center.y, event.clientX - vr.left - rh_center.x);
+  // Drehebene (rechtshaendige Basis u,v mit u x v = Achse) fuer das Mitlaufen
+  const _u = axis === 'x' ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0);
+  rh_plane = { pl: new THREE.Plane().setFromNormalAndCoplanarPoint(rh_axisV, rh_piv),
+               u: _u, v: new THREE.Vector3().crossVectors(rh_axisV, _u) };
+  rh_pa0 = _rhPlaneAngle(event.clientX - vr.left, event.clientY - vr.top);
   // Highlight active ring
   ['x','y','z'].forEach(a => document.getElementById('rot-ring-'+a).classList.toggle('rot-ring-active', a === axis));
   document.getElementById('rot-sector').setAttribute('d', '');
@@ -22464,18 +22513,21 @@ function _rhMove(event) {
   event.preventDefault();
   const vr = vpEl.getBoundingClientRect();
   const mx = event.clientX - vr.left, my = event.clientY - vr.top;
-  let delta = Math.atan2(my - rh_center.y, mx - rh_center.x) - rh_a0;
-  while (delta >  Math.PI) delta -= 2 * Math.PI;
-  while (delta < -Math.PI) delta += 2 * Math.PI;
+  const pa1 = (rh_pa0 === null) ? null : _rhPlaneAngle(mx, my);
+  const inPlane = pa1 !== null;
+  // Winkel in der Ringebene (exakt) — sonst Notweg ueber den Bildschirmwinkel
+  let turn = inPlane ? (pa1 - rh_pa0)
+                     : (Math.atan2(my - rh_center.y, mx - rh_center.x) - rh_a0) * rh_sign;
+  while (turn >  Math.PI) turn -= 2 * Math.PI;
+  while (turn < -Math.PI) turn += 2 * Math.PI;
   const dist = Math.hypot(mx - rh_center.x, my - rh_center.y);
   const snap = dist < rh_r * 1.15;
-  if (snap) delta = Math.round(delta / RH_SNAP) * RH_SNAP;
-  // Apply — delta ist absolut zur Startlage, darum Position jedes Mal frisch
+  if (snap) turn = Math.round(turn / RH_SNAP) * RH_SNAP;
+  // Apply — turn ist absolut zur Startlage, darum Position jedes Mal frisch
   const o = rh_obj;
   o.position.copy(rh_pos0);
-  if      (rh_axis === 'y') o.rotation.y = rh_rot0.y + delta;
-  else if (rh_axis === 'x') o.rotation.x = rh_rot0.x + delta;
-  else                      o.rotation.z = rh_rot0.z + delta;
+  o.quaternion.copy(rh_quat0).premultiply(
+    new THREE.Quaternion().setFromAxisAngle(rh_axisV, turn));
   // Um die Objektmitte drehen: rotation.* dreht um den Geometrie-Ursprung,
   // der bei Importen weit neben der Mitte liegen kann → Mitte zurückschieben
   o.updateMatrixWorld(true);
@@ -22492,7 +22544,7 @@ function _rhMove(event) {
     o.position.y -= _rotBB.min.y;
   }
   // Angle label
-  const deg = delta * 180 / Math.PI;
+  const deg = turn * 180 / Math.PI;
   const axCol = {x:'#e03030', y:'#0078ff', z:'#00b96b'}[rh_axis];
   const lbl   = document.getElementById('rot-angle-lbl');
   lbl.textContent = (deg >= 0 ? '+' : '') + deg.toFixed(snap ? 0 : 1) + '°  ' + rh_axis.toUpperCase();
@@ -22500,12 +22552,28 @@ function _rhMove(event) {
   lbl.style.top    = (my - 30) + 'px';
   lbl.style.borderLeftColor = axCol;
   lbl.style.display = 'block';
-  // Sector arc
-  const r  = rh_r;
-  const sx = rh_center.x + Math.cos(rh_a0) * r, sy = rh_center.y + Math.sin(rh_a0) * r;
-  const ex = rh_center.x + Math.cos(rh_a0 + delta) * r, ey = rh_center.y + Math.sin(rh_a0 + delta) * r;
+  // Sector arc — im Ebenenfall der echte Bogen auf dem Ring, sonst Kreisausschnitt
   const sec = document.getElementById('rot-sector');
-  sec.setAttribute('d', `M ${rh_center.x} ${rh_center.y} L ${sx} ${sy} A ${r} ${r} 0 ${Math.abs(delta)>Math.PI?1:0} ${delta>=0?1:0} ${ex} ${ey} Z`);
+  let secD = '';
+  if (inPlane) {
+    const cP = _rhPrj(rh_piv.x, rh_piv.y, rh_piv.z);
+    const N = Math.max(2, Math.min(72, Math.ceil(Math.abs(turn) / (Math.PI / 36))));
+    const pts = [];
+    for (let i = 0; i <= N; i++) {
+      const ang = rh_pa0 + turn * (i / N);
+      const p = rh_piv.clone().addScaledVector(rh_plane.u, Math.cos(ang) * rh_3dR)
+                              .addScaledVector(rh_plane.v, Math.sin(ang) * rh_3dR);
+      const sp = _rhPrj(p.x, p.y, p.z);
+      if (sp) pts.push(`${sp.x.toFixed(1)},${sp.y.toFixed(1)}`);
+    }
+    if (cP && pts.length > 1) secD = `M ${cP.x.toFixed(1)} ${cP.y.toFixed(1)} L ` + pts.join(' L ') + ' Z';
+  } else {
+    const r  = rh_r, sw = turn * rh_sign;
+    const sx = rh_center.x + Math.cos(rh_a0) * r, sy = rh_center.y + Math.sin(rh_a0) * r;
+    const ex = rh_center.x + Math.cos(rh_a0 + sw) * r, ey = rh_center.y + Math.sin(rh_a0 + sw) * r;
+    secD = `M ${rh_center.x} ${rh_center.y} L ${sx} ${sy} A ${r} ${r} 0 0 ${sw>=0?1:0} ${ex} ${ey} Z`;
+  }
+  sec.setAttribute('d', secD);
   sec.setAttribute('fill',   snap ? 'rgba(255,140,0,.22)' : 'rgba(0,120,255,.13)');
   sec.setAttribute('stroke', snap ? 'rgba(255,140,0,.85)' : 'rgba(0,120,255,.65)');
   sec.setAttribute('stroke-width', '1.5');
@@ -37939,8 +38007,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.79';
+const VOLME3D_VERSION = '1.15.80';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.80', date:'2026-09-08', changes:[
+    ['\u{1F41B}','<b>Drehen f\u00fchlt sich jetzt logisch an.</b> Zwei Fehler steckten in den Drehringen. Erstens: Ein Ring drehte den K\u00f6rper nicht um die Achse, die er im Bild zeigt, sondern verstellte nur einen von drei Winkelwerten. Solange ein Teil noch gerade stand, sah das richtig aus \u2014 war es schon gekippt, machte es beim Ziehen am <b>blauen Ring pl\u00f6tzlich einen \u00dcberschlag</b>, statt sich einfach zu drehen. Jetzt dreht der blaue Ring immer um die Hochachse, der rote und der gr\u00fcne um ihre Achse, egal wie das Teil gerade liegt. Zweitens: Der angefasste Griff lief der Maus davon \u2014 je nachdem, von wo man auf den Ring schaute, drehte sich das Teil sogar genau andersherum. Der Griff bleibt jetzt unter dem Mauszeiger kleben, auch bei schr\u00e4g im Bild stehenden Ringen. Und der farbige Winkel-Ausschnitt liegt jetzt sauber auf dem Ring statt daneben. Auch das freie Ziehen im Dreh-Modus arbeitet jetzt wie ein Plattenteller: waagerecht ziehen dreht um die Hochachse, senkrecht kippt \u2014 ohne dass ein schon geneigtes Teil zus\u00e4tzlich wegkippt. Gemeldet von Ralf.'],
+  ]},
   { version:'1.15.79', date:'2026-08-25', changes:[
     ['🎂','Tortentopper: <b>Pins und Stege lassen sich jetzt direkt verlängern</b>. Nach dem „Aufheben" einen Pin oder Steg anklicken — in den Eigenschaften steht jetzt ganz oben <b>„Pin-Länge"</b> bzw. „Steg-Länge". Der Pin wächst dabei an der SPITZE: der Ansatz bleibt im Schriftzug liegen, Breite und Dicke bleiben unverändert — nichts verzerrt, nichts verrutscht. Ein Steg wächst symmetrisch aus der Mitte, damit beide Enden weiter ihre Buchstaben treffen. Bisher musste man dafür über „Länge X / Tiefe Y / Höhe Z" skalieren — bei so dünnen Teilen war kaum zu treffen, welches der drei Maße die Länge ist, je nachdem wie das Teil gerade liegt. Gemeldet von Ralf.'],
   ]},
