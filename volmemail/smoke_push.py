@@ -67,27 +67,27 @@ with sync_playwright() as p:
     check('Service Worker läuft',
           page.evaluate("async () => !!(await navigator.serviceWorker.getRegistration())"))
 
-    # --- Einschalten über den Dialog ---
-    page.evaluate('() => meldungsDialog()')
-    page.wait_for_timeout(500)
-    check('Dialog zeigt „aus"', 'aus' in page.inner_text('#pushstand'), page.inner_text('#pushstand'))
-    page.click('#pushknopf')
-    # Beim ersten Mal baut Firefox erst die Leitung zum Push-Dienst auf — das
-    # dauert im frischen Profil gern eine halbe Minute.
+    # --- Erlaubnis liegt vor: die App meldet das Gerät von selbst an ---
     for _ in range(120):
-        if 'Auf diesem Gerät an' in page.inner_text('#pushstand'):
+        if page.evaluate("async () => (await api('push/key')).geraete") >= 1:
             break
         page.wait_for_timeout(500)
-    check('Gerät ist angemeldet', 'Auf diesem Gerät an' in page.inner_text('#pushstand'),
+    check('Meldet sich bei erteilter Erlaubnis von selbst an',
+          page.evaluate("async () => (await api('push/key')).geraete") >= 1)
+    check('Abo liegt im Browser', page.evaluate("async () => !!(await pushAbo())"))
+
+    page.evaluate('() => meldungsDialog()')
+    page.wait_for_timeout(800)
+    check('Dialog zeigt „an"', 'Auf diesem Gerät an' in page.inner_text('#pushstand'),
           page.inner_text('#pushstand'))
-    check('Abo liegt im Browser',
-          page.evaluate("async () => !!(await pushAbo())"))
-    check('Server kennt das Gerät', page.evaluate("async () => (await api('push/key')).geraete") >= 1)
-    check('Knopf heißt jetzt „Ausschalten"', page.inner_text('#pushknopf').strip() == 'Ausschalten')
+    check('Knopf heißt „Ausschalten"', page.inner_text('#pushknopf').strip() == 'Ausschalten')
 
     # --- Probe: der ganze Weg über den Push-Dienst ---
-    page.evaluate("() => navigator.serviceWorker.getRegistration()"
-                  ".then(r => r.getNotifications()).then(n => n.forEach(x => x.close()))")
+    def leeren():
+        page.evaluate("() => navigator.serviceWorker.getRegistration()"
+                      ".then(r => r.getNotifications()).then(n => n.forEach(x => x.close()))")
+
+    leeren()
     page.evaluate('() => pushProbe()')
     m = warte_auf_meldung(page)
     check('Probe-Meldung kommt an', len(m) == 1, str(m))
@@ -96,8 +96,7 @@ with sync_playwright() as p:
         check('Text stimmt', 'funktioniert' in (m[0]['text'] or ''), str(m[0]))
 
     # --- Wie bei echter Post: mit Konto und UID, damit der Klick zur Mail führt ---
-    page.evaluate("() => navigator.serviceWorker.getRegistration()"
-                  ".then(r => r.getNotifications()).then(n => n.forEach(x => x.close()))")
+    leeren()
     page.evaluate("""() => post('push/test', {art: 'mail', titel: 'Frank Finkeldei',
                                               text: 'Kurs 3D-Druck', acc: 'k1', uid: 4711, offen: 3})""")
     m = warte_auf_meldung(page)
@@ -109,8 +108,8 @@ with sync_playwright() as p:
         check('Eigener Merkname je Nachricht', m[0]['tag'] == 'v3dmail-k1-4711', str(m[0]))
 
     # --- Ausschalten ---
-    page.evaluate('() => pushAus()')
-    for _ in range(20):
+    page.click('#pushknopf')
+    for _ in range(40):
         if 'Auf diesem Gerät aus' in page.inner_text('#pushstand'):
             break
         page.wait_for_timeout(500)
@@ -118,6 +117,24 @@ with sync_playwright() as p:
           page.inner_text('#pushstand'))
     check('Abo im Browser weg', page.evaluate("async () => !(await pushAbo())"))
     check('Server hat das Gerät vergessen',
+          page.evaluate("async () => (await api('push/key')).geraete") == 0)
+
+    # --- Und wieder von Hand an ---
+    check('Knopf heißt wieder „Einschalten"', page.inner_text('#pushknopf').strip() == 'Einschalten')
+    page.click('#pushknopf')
+    for _ in range(120):
+        if 'Auf diesem Gerät an' in page.inner_text('#pushstand'):
+            break
+        page.wait_for_timeout(500)
+    check('Von Hand eingeschaltet', 'Auf diesem Gerät an' in page.inner_text('#pushstand'),
+          page.inner_text('#pushstand'))
+    check('Server kennt das Gerät wieder',
+          page.evaluate("async () => (await api('push/key')).geraete") >= 1)
+
+    # Aufräumen: dieses Testgerät soll nicht dauerhaft mitgemeldet werden.
+    page.evaluate('() => pushAus()')
+    page.wait_for_timeout(1500)
+    check('Testgerät wieder abgemeldet',
           page.evaluate("async () => (await api('push/key')).geraete") == 0)
 
     check('Keine JS-Fehler', not errors, '; '.join(errors[:3]))

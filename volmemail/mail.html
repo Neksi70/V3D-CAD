@@ -414,7 +414,7 @@ async function boot() {
   renderAccounts();
   initPullToRefresh();
   initAuswahlGesten();
-  if (SW_DA) swBereit().catch(() => {});   // still: erst der Dialog fragt nach Erlaubnis
+  if (SW_DA) swBereit().then(pushNachholen).catch(() => {});   // ohne Erlaubnis passiert nichts
   await loadFolders();
   if (!await uebergabeAbholen()) { starteAusAdresse(); starteAusMeldung(); }
   sendenEmpfangen(true);
@@ -2426,6 +2426,22 @@ async function pushAbo() {
   if (!SW_DA) return null;
   const reg = await navigator.serviceWorker.getRegistration();
   return reg ? await reg.pushManager.getSubscription() : null;
+}
+
+// Erlaubnis erteilt, aber kein Abo? Dann still nachholen. Das passiert, wenn
+// jemand die Benachrichtigungen im Browser zulaesst, ohne den Schalter zu
+// druecken — und wenn der Browser ein Abo von sich aus wegwirft.
+async function pushNachholen() {
+  if (!SW_DA || Notification.permission !== 'granted') return false;
+  try {
+    if (await pushAbo()) return false;
+    const { key } = await api('push/key');
+    const reg = await swBereit();
+    const sub = await reg.pushManager.subscribe(
+      { userVisibleOnly: true, applicationServerKey: b64zuBytes(key) });
+    await post('push/anmelden', { sub: sub.toJSON() });
+    return true;
+  } catch (e) { return false; }
 }
 
 async function pushEin() {

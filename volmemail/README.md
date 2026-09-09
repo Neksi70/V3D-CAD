@@ -137,6 +137,10 @@ Der Weg läuft ohne offenes Fenster:
 4. `sw.js` zeigt die Meldung und setzt das Zeichen am Symbol. Ein Klick öffnet
    V3D Mail auf `?mail=<konto>:<uid>`, also direkt bei der Nachricht.
 
+Ist die Erlaubnis im Browser einmal erteilt, meldet sich das Gerät beim nächsten
+Laden **von selbst** an (`pushNachholen()`): „zugelassen" und „angemeldet" sind
+zwei Dinge, und ein Browser wirft ein Abo auch mal von sich aus weg.
+
 Beim allerersten Lauf wird nur der Stand gemerkt (`push_state.json`), sonst käme
 das ganze Postfach als „neu" an. Nach einem Neustart des Dienstes wird von dort
 weitergezählt.
