@@ -15,6 +15,9 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8779
 TYPEN = {
     '.apk': 'application/vnd.android.package-archive',
     '.exe': 'application/octet-stream',
+    # Chrome bleibt bei APKs gern in der Play-Protect-Pruefung haengen; als ZIP
+    # laedt es durch, entpacken und antippen geht in "Eigene Dateien".
+    '.zip': 'application/zip',
 }
 
 
