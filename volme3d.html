@@ -14025,7 +14025,10 @@ function buildObjectFromData(data) {
     if (data.geometry) {
       geo = new THREE.BufferGeometryLoader().parse(data.geometry);
     } else if (data.type === 'svg' && data._svgPathData) {
-      geo = _svgRebuildGeo(data);   // SVG-Mesh aus Pfaddaten neu bauen (statt fettes Mesh zu speichern)
+      // Gewickelt? Dann direkt gebogen neu bauen — sonst läge das Motiv nach
+      // Undo/Laden wieder flach neben der Rundung.
+      geo = data._svgWrap ? _svgWrapBuildGeo(data, data._svgWrap)
+                          : _svgRebuildGeo(data);   // aus Pfaddaten neu bauen (statt fettes Mesh zu speichern)
     } else {
       geo = buildGeo(data.type || 'box');
     }
@@ -14084,6 +14087,7 @@ function buildObjectFromData(data) {
     obj.userData.svgMode        = data.svgMode;
     obj.userData.svgDepth       = data.svgDepth;
     obj.userData.svgSize        = data.svgSize;
+    if (data._svgWrap) obj.userData._svgWrap = data._svgWrap;
   }
   // Skizzen-/Loft-/Sweep-Rebuild-Parameter zurück (Regler nach Undo/Laden)
   if (data._skProfiles)     obj.userData._skProfiles     = data._skProfiles;
@@ -14292,6 +14296,7 @@ function objectToData(o) {
     d.svgMode        = o.userData.svgMode;
     d.svgDepth       = o.userData.svgDepth;
     d.svgSize        = o.userData.svgSize;
+    if (o.userData._svgWrap) d._svgWrap = o.userData._svgWrap;   // Biege-Parameter (Radius, Tiefe, Skalierung)
   } else if (o.isMesh && (o.userData.isSubtract || !o.userData.type || ['custom','text','import','revolve','flower',
       'sphericalshell','spring','bentpipe','thread','svg','lantern','screw','gear','rack','enclosure',
       'laserbox','gfbin','gfplate','gfcut','gardena','pipeclip','sketch','loft','sweep','loft3d'].includes(o.userData.type))) {
@@ -17892,6 +17897,34 @@ async function subtractHoles() {
                             if (svgThrough) return;
                             h.userData.svgDepth = depth;     // negativ = erhaben
                             h.userData.svgWantInlay = wantInlay; });
+
+    // Gewickelte Motive: die Tiefe steckt in der gebogenen Geometrie, nicht in einem
+    // Extrusionsparameter → mit der neuen Tiefe neu biegen. Erhaben lässt sich nicht
+    // abziehen; der Körper wird nach außen aufgebaut und zum Vereinen stehengelassen.
+    const wrapped = svgHoles.filter(h => h.userData._svgWrap);
+    if (wrapped.length) {
+      const raised = [];
+      for (const h of wrapped) {
+        if (!svgThrough && depth < -0.05) {
+          _svgWrapReshape(h, depth);
+          h.userData.isHole = false;
+          h.userData.color = currentColor;
+          if (h.material) {
+            h.material.transparent = false; h.material.opacity = 1;
+            h.material.color.set(currentColor);
+          }
+          raised.push(h);
+        } else {
+          _svgWrapReshape(h, svgThrough ? 'through' : depth);
+        }
+      }
+      if (raised.length) {
+        raised.forEach(h => { const i = holes.indexOf(h); if (i >= 0) holes.splice(i, 1); });
+        updateTree();
+        notify('Erhabenes Motiv liegt auf der Wand — jetzt „Vereinen" klicken', 'ok');
+        if (!holes.length) return;
+      }
+    }
   }
 
   _progressShow(hasSvg && !svgThrough ? 'Gravur wird abgezogen…' : 'Abziehen läuft…');
@@ -17950,7 +17983,7 @@ async function _doSubtractHoles(solids, holes) {
     // _cutThrough (Dialog-Modus „Durchbruch") übergeht die Gravur-Pipeline —
     // die schneidet nur eine feste Tiefe ab der Oberfläche ein und liefert bei
     // einem komplett eingetauchten Text einen unsichtbaren Hohlraum im Inneren.
-    if (hole.userData.type === 'svg' && !hole.userData._cutThrough) {
+    if (hole.userData.type === 'svg' && !hole.userData._cutThrough && !hole.userData._svgWrap) {
       hole.updateMatrixWorld(true);
 
       // ── SVG Gravur ────────────────────────────────────────────────────────────
@@ -18012,6 +18045,22 @@ async function _doSubtractHoles(solids, holes) {
         continue;
       }
       notify('SVG Gravur fehlgeschlagen', 'w');
+      continue;
+    }
+
+    // ── Gewickeltes SVG: fertig geformter Keil in der Wand ───────────────────
+    // Er sitzt schon exakt zwischen Außenfläche und Zieltiefe — weder Strecken
+    // entlang der lokalen Y (das ist hier die Zylinderachse!) noch der Koplanar-
+    // Fix dürfen daran rühren, sonst verzieht sich die Gravur.
+    if (hole.userData.type === 'svg' && hole.userData._svgWrap) {
+      hole.updateWorldMatrix(true, true);
+      const wProxy = new THREE.Mesh(hole.geometry, new THREE.MeshStandardMaterial());
+      wProxy.position.copy(hole.position);
+      wProxy.quaternion.copy(hole.quaternion);
+      wProxy.scale.copy(hole.scale);
+      wProxy.updateWorldMatrix(true, true);
+      wProxy.userData = { _noBspFallback: true, _wrapTool: true };   // getrennte Konturen → BSP liefert Müll
+      _genericTools.push(wProxy);
       continue;
     }
 
@@ -18097,7 +18146,11 @@ async function _doSubtractHoles(solids, holes) {
     // ── Schnellweg: große/löchrige Netze gehen an Manifold statt an OCCT ─────
     // (OCCT-Sewing skaliert auf solchen Netzen nicht — siehe _mfSubtractWorld.)
     const _nTris = _countTris([solidMesh, ...solids.slice(1)]) + _countTris(_genericTools);
-    if (_nTris >= _MF_SUBTRACT_MIN_TRIS) {
+    // Gewickelte Motive sind zwangsläufig fein tesselliert (Bogen in ~3°-Schritten).
+    // Daran verschluckt sich das OCCT-Sewing (Minuten bis nie) — Manifold macht es
+    // in Sekunden. Siehe auch _MF_SUBTRACT_MIN_TRIS.
+    const _hasWrapTool = _genericTools.some(t => t.userData && t.userData._wrapTool);
+    if (_nTris >= _MF_SUBTRACT_MIN_TRIS || _hasWrapTool) {
       try {
         const t0 = performance.now();
         const geo = await _mfSubtractWorld([solidMesh, ...solids.slice(1)], _genericTools);
@@ -38902,8 +38955,19 @@ function _svgSnapDetect(svgMesh, mouseEvent) {
     _svgSnapHit = hit;
     let obj = hit.object;
     while (obj && !objects.includes(obj)) obj = obj.parent;
-    _textSnapTarget = { obj: obj || hit.object, type: 'surface' };
-    hint.textContent = '📌 Auf Fläche heften';
+    // Gekrümmte Mantelfläche? Dann biegen statt tangential aufkleben — sonst wird
+    // die Gravur zu den Rändern hin flacher (bei Windlichtern deutlich sichtbar).
+    const probe = _svgWrapProbe(hit.object, hit.point);
+    let wrap = null;
+    if (probe) {
+      const c0 = probe.axisPt.clone()
+        .addScaledVector(probe.axisDir, hit.point.clone().sub(probe.axisPt).dot(probe.axisDir));
+      const radial = hit.point.clone().sub(c0).normalize();
+      const nW = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+      if (Math.abs(nW.dot(radial)) > 0.8) wrap = probe;   // Mantel, nicht Deckel/Boden
+    }
+    _textSnapTarget = { obj: obj || hit.object, type: wrap ? 'wrap' : 'surface', wrap };
+    hint.textContent = wrap ? '↩ Um Rundung wickeln' : '📌 Auf Fläche heften';
     hint.style.display = 'block';
     hint.style.left = (mouseEvent.clientX + 14) + 'px';
     hint.style.top  = (mouseEvent.clientY - 24) + 'px';
@@ -38944,9 +39008,20 @@ function _faceCenterWorld(mesh, hitFace) {
   return acc.divideScalar(wSum).applyMatrix4(mesh.matrixWorld);
 }
 
-function _applySvgSnap(svgMesh, {obj}) {
+function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   const hit = _svgSnapHit;
   if (!hit || !hit.face) return;
+
+  // Rundung: Motiv um die Achse biegen statt tangential aufheften
+  if (type === 'wrap' && wrap) {
+    const done = _svgWrapApply(svgMesh, wrap, hit.point);
+    _svgSnapHit = null;
+    if (done) {
+      updateTFInputs(); updateTree();
+      notify('↩ SVG um die Rundung gewickelt', 'ok');
+      return;
+    }
+  }
 
   // Geometry-local normal (= STL-Koordinaten) + Klickpunkt für Server speichern
   svgMesh.userData._snapNormal = hit.face.normal.clone();
@@ -39009,6 +39084,259 @@ function _applySvgSnap(svgMesh, {obj}) {
   updateTFInputs(); updateTree();
   notify('📌 SVG auf Fläche geheftet', 'ok');
 }
+// ===== SVG UM RUNDUNG WICKELN ==============================================
+// Ein flaches SVG-Prisma tangential auf einen Zylinder zu heften macht die
+// Gravur in der Mitte tief und an den Rändern flach (Windlicht!). Hier wird das
+// Motiv stattdessen um die Rotationsachse gebogen: die Tiefe bleibt über die
+// ganze Breite gleich, weil jeder Punkt denselben radialen Abstand zur Wand hat.
+let _svgWrapCache = null;   // Probe läuft über alle Vertices → nicht pro Mausbewegung
+
+// Erkennt, ob die geklickte Stelle auf einer Mantelfläche liegt, die um die
+// lokale Y-Achse des Meshes rotationssymmetrisch ist. Liefert Achse + Radius
+// AM TREFFERPUNKT (nicht gemittelt — bei Hohlkörpern lägen sonst Innen- und
+// Außenwand im selben Topf und der Radius wäre um die halbe Wandstärke daneben).
+function _svgWrapProbe(mesh, hitPointWorld) {
+  if (!mesh || !mesh.isMesh || !mesh.geometry) return null;
+  const geo = mesh.geometry;
+  const pos = geo.attributes && geo.attributes.position;
+  if (!pos || pos.count < 24) return null;
+  const idx = geo.index ? geo.index.array : null;
+  const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
+  if (nTri > 300000) return null;             // Riesennetz nicht bei jedem Zug scannen
+  mesh.updateMatrixWorld(true);
+  const pL = mesh.worldToLocal(hitPointWorld.clone());
+  const rHit = Math.hypot(pL.x, pL.z);
+  if (rHit < 1e-3) return null;
+  const key = mesh.uuid + '|' + Math.round(pL.y * 100) + '|' + Math.round(rHit * 100)
+            + '|' + mesh.matrixWorld.elements.map(v => Math.round(v * 1e4)).join(',');
+  if (_svgWrapCache && _svgWrapCache.key === key) return _svgWrapCache.res;
+
+  // Querschnitt in der Ebene y = Trefferhöhe: Kanten schneiden statt Vertices sammeln.
+  // Ein Zylindermantel hat nur oben und unten Vertices — ein Vertex-Band fände nichts.
+  const y0 = pL.y, tol = rHit * 0.035;   // enger als die dünnste sinnvolle Wand
+  const sect = new Set();
+  let n = 0, rMin = Infinity, rMax = -Infinity;
+  const tri = [0, 0, 0];
+  for (let t = 0; t < nTri; t++) {
+    tri[0] = idx ? idx[t*3] : t*3; tri[1] = idx ? idx[t*3+1] : t*3+1; tri[2] = idx ? idx[t*3+2] : t*3+2;
+    for (let e = 0; e < 3; e++) {
+      const a = tri[e], b = tri[(e+1) % 3];
+      const ya = pos.getY(a), yb = pos.getY(b);
+      if ((ya - y0) * (yb - y0) > 0 || ya === yb) continue;   // Kante schneidet die Ebene nicht
+      const f = (y0 - ya) / (yb - ya);
+      const x = pos.getX(a) + (pos.getX(b) - pos.getX(a)) * f;
+      const z = pos.getZ(a) + (pos.getZ(b) - pos.getZ(a)) * f;
+      const r = Math.hypot(x, z);
+      if (Math.abs(r - rHit) > tol) continue;   // nur die getroffene Wandseite
+      n++; if (r < rMin) rMin = r; if (r > rMax) rMax = r;
+      sect.add(Math.floor((Math.atan2(z, x) + Math.PI) / (Math.PI / 6)));   // 30°-Sektoren
+    }
+  }
+  let res = null;
+  // Rund = genug Schnittpunkte auf gleichem Radius über mindestens ein Drittel des Umfangs
+  if (n >= 16 && sect.size >= 5) {
+    const sx = Math.abs(mesh.scale.x), sz = Math.abs(mesh.scale.z);
+    if (Math.abs(sx - sz) <= 0.02 * Math.max(sx, sz)) {   // oval lässt sich nicht sauber wickeln
+      const f = (sx + sz) / 2;
+      res = {
+        axisDir: new THREE.Vector3(0, 1, 0).transformDirection(mesh.matrixWorld).normalize(),
+        axisPt:  mesh.localToWorld(new THREE.Vector3(0, y0, 0)),
+        R:       rHit * f,
+        // Grobe Facettierung: der Kantenkreis liegt weiter außen als der Trefferpunkt.
+        // Der Überstand muss das mitnehmen, sonst sinkt das Motiv an den Ecken ein.
+        epsMm:   0.2 + Math.max(0, rMax - rHit) * f * 10
+      };
+    }
+  }
+  _svgWrapCache = { key, res };
+  return res;
+}
+
+// Netz an festen Ebenen u = k·du zerschneiden, damit der Bogen fein genug wird.
+// Die Ebenen sind global und jeder Kantenschnitt wird gecacht → Nachbardreiecke
+// bekommen exakt denselben Punkt, das Netz bleibt wasserdicht. (Die Längste-Kante-
+// Teilung aus _tessellateForWarp hinterlässt T-Stöße; Manifold quittiert das mit
+// „Not manifold" und OCCT verschluckt sich beim Sewing.)
+function _svgWrapSliceU(geo, du) {
+  const posAttr = geo.attributes.position;
+  const P = Array.from(posAttr.array);
+  const idxArr = geo.index ? geo.index.array : null;
+  const nTri = Math.floor((idxArr ? idxArr.length : posAttr.count) / 3);
+  const U = i => P[i * 3];
+  const cache = new Map();
+  const cut = (a, b, k) => {
+    const lo = Math.min(a, b), hi = Math.max(a, b);   // immer gleiche Rechenrichtung
+    const key = lo + '_' + hi + '_' + k;
+    let v = cache.get(key);
+    if (v !== undefined) return v;
+    const t = (k * du - U(lo)) / (U(hi) - U(lo));
+    v = P.length / 3;
+    P.push(P[lo*3]     + (P[hi*3]     - P[lo*3])     * t,
+           P[lo*3 + 1] + (P[hi*3 + 1] - P[lo*3 + 1]) * t,
+           P[lo*3 + 2] + (P[hi*3 + 2] - P[lo*3 + 2]) * t);
+    cache.set(key, v);
+    return v;
+  };
+  // Auf welcher Original-Kante liegt die Polygonkante p→q? (null = Schnittkante,
+  // die liegt in einer u-Ebene und kann keine weitere Ebene schneiden)
+  const origEdge = (p, q) => {
+    if (!p.e && !q.e) return [p.i, q.i];
+    if (p.e && !q.e)  return (q.i === p.e[0] || q.i === p.e[1]) ? p.e : null;
+    if (!p.e && q.e)  return (p.i === q.e[0] || p.i === q.e[1]) ? q.e : null;
+    return (p.e[0] === q.e[0] && p.e[1] === q.e[1]) ? p.e : null;
+  };
+  const outIdx = [];
+  for (let t = 0; t < nTri; t++) {
+    const A = idxArr ? idxArr[t*3] : t*3;
+    const B = idxArr ? idxArr[t*3 + 1] : t*3 + 1;
+    const C = idxArr ? idxArr[t*3 + 2] : t*3 + 2;
+    const uA = U(A), uB = U(B), uC = U(C);
+    const kLo = Math.floor(Math.min(uA, uB, uC) / du) + 1;
+    const kHi = Math.ceil(Math.max(uA, uB, uC) / du) - 1;
+    if (kHi < kLo) { outIdx.push(A, B, C); continue; }        // liegt ganz in einem Streifen
+    let poly = [{ i: A, e: null }, { i: B, e: null }, { i: C, e: null }];
+    const parts = [];
+    for (let k = kLo; k <= kHi && poly.length >= 3; k++) {
+      const c = k * du, below = [], above = [];
+      for (let j = 0; j < poly.length; j++) {
+        const pp = poly[j], qq = poly[(j + 1) % poly.length];
+        const up = U(pp.i), uq = U(qq.i);
+        if (up <= c) below.push(pp);
+        if (up >= c) above.push(pp);
+        if ((up < c && uq > c) || (up > c && uq < c)) {
+          const oe = origEdge(pp, qq);
+          if (!oe) continue;
+          const np = { i: cut(oe[0], oe[1], k), e: [Math.min(oe[0], oe[1]), Math.max(oe[0], oe[1])] };
+          below.push(np); above.push(np);
+        }
+      }
+      if (below.length >= 3) parts.push(below);
+      poly = above.length >= 3 ? above : [];
+    }
+    if (poly.length >= 3) parts.push(poly);
+    for (const pl of parts)
+      for (let j = 1; j + 1 < pl.length; j++) {
+        const a = pl[0].i, b = pl[j].i, c2 = pl[j + 1].i;
+        if (a !== b && b !== c2 && a !== c2) outIdx.push(a, b, c2);
+      }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  g.setIndex(outIdx);
+  return g;
+}
+
+// Baut die gebogene Geometrie im Zylinder-Frame (lokal X = radial zum Anker,
+// Y = Achse, Z = tangential). spec: { R, depthMm, epsMm, s:{x,y,z} }
+// depthMm > 0 = vertieft (Gravur), < 0 = erhaben (steht aus der Wand raus).
+function _svgWrapBuildGeo(ud, spec) {
+  const flat = _svgRebuildGeo({
+    type: 'svg', _svgPathData: ud._svgPathData, _svgTransformM: ud._svgTransformM,
+    svgSize: ud.svgSize, svgMode: 'extrude', isHole: true,
+    svgDepth: Math.max(0.5, Math.abs(ud.svgDepth || 3))   // Dialog kann negativ (= erhaben) sein
+  });
+  // SVG-lokal: X = Motivbreite, -Z = Motiv-oben, Y = Extrusion/Normale (s. _applySvgSnap)
+  // → Zwischen-Frame: x = u (Bogenlänge), y = h (Achse), z = d (radial). Det > 0.
+  flat.applyMatrix4(new THREE.Matrix4().set(
+    spec.s.x, 0, 0, 0,
+    0, 0, -spec.s.z, 0,
+    0, spec.s.y, 0, 0,
+    0, 0, 0, 1));
+  flat.computeBoundingBox();
+  const bb = flat.boundingBox;
+  const uMid = (bb.min.x + bb.max.x) / 2, hMid = (bb.min.y + bb.max.y) / 2;
+  const d0 = bb.min.z, dSpan = Math.max(1e-6, bb.max.z - bb.min.z);
+  // Dicke neu abbilden: Außenfläche steht eps über der Wand (sauberer Boolean),
+  // Innenfläche liegt exakt depthMm tief → Gravurtiefe unabhängig von der SVG-Dicke.
+  const eps = (spec.epsMm != null ? spec.epsMm : 0.2) / 10;
+  const dIn  = spec.depthMm >= 0 ? -spec.depthMm / 10 : -0.02;
+  const dOut = spec.depthMm >= 0 ? eps : -spec.depthMm / 10;
+  const P = flat.attributes.position;
+  for (let i = 0; i < P.count; i++) {
+    P.setXYZ(i, P.getX(i) - uMid, P.getY(i) - hMid,
+             dIn + (P.getZ(i) - d0) / dSpan * (dOut - dIn));
+  }
+  flat.deleteAttribute('normal'); flat.deleteAttribute('uv');
+  // Nur in Umfangsrichtung unterteilen — in Höhe und Tiefe ist der Warp linear.
+  const R = Math.max(1e-4, spec.R);
+  const tess = _svgWrapSliceU(flat, R * Math.PI / 60);   // ~3° pro Streifen
+  flat.dispose();
+  const src = tess.attributes.position;
+  const out = new Float32Array(src.count * 3);
+  for (let i = 0; i < src.count; i++) {
+    const th = src.getX(i) / R, rr = R + src.getZ(i);
+    out[i * 3]     = rr * Math.cos(th);
+    out[i * 3 + 1] = src.getY(i);
+    out[i * 3 + 2] = rr * Math.sin(th);
+  }
+  const bent = new THREE.BufferGeometry();
+  bent.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+  if (tess.index) bent.setIndex(new THREE.BufferAttribute(tess.index.array.slice(), 1));
+  tess.dispose();
+  const result = _computeCreasedNormals(bent, Math.PI / 3);
+  bent.dispose();
+  result.computeBoundingBox(); result.computeBoundingSphere();
+  return result;
+}
+
+// Nachträgliches Skalieren eines gewickelten Motivs in die Biege-Parameter
+// übernehmen: lokal ist X = radial, Y = Achse, Z = Umfang. Die radiale Skalierung
+// bleibt außen vor — die Tiefe kommt aus dem Gravur-Dialog, nicht aus dem Griff.
+function _svgWrapAbsorbScale(mesh, s) {
+  const sc = mesh.scale;
+  const out = { x: s.x * Math.abs(sc.z), y: s.y, z: s.z * Math.abs(sc.y) };
+  mesh.scale.set(1, 1, 1);
+  return out;
+}
+
+// Motiv an den Klickpunkt der Rundung legen und biegen.
+function _svgWrapApply(svgMesh, probe, hitPointWorld) {
+  const a = probe.axisDir;
+  const c0 = probe.axisPt.clone().addScaledVector(a, hitPointWorld.clone().sub(probe.axisPt).dot(a));
+  const e1 = hitPointWorld.clone().sub(c0);
+  if (e1.lengthSq() < 1e-12) return false;
+  e1.normalize();
+  const e3 = new THREE.Vector3().crossVectors(e1, a);   // rechtshändig: z = x × y
+  // Skalierung wandert in die Geometrie (der Warp ist keine lineare Abbildung mehr)
+  const w0 = svgMesh.userData._svgWrap;
+  const s = w0 ? _svgWrapAbsorbScale(svgMesh, w0.s)
+               : { x: svgMesh.scale.x, y: svgMesh.scale.y, z: svgMesh.scale.z };
+  const spec = { R: probe.R, depthMm: svgMesh.userData.svgDepth || 3,
+                 epsMm: probe.epsMm != null ? probe.epsMm : 0.2, s };
+  const geo = _svgWrapBuildGeo(svgMesh.userData, spec);
+  svgMesh.geometry.dispose();
+  svgMesh.geometry = geo;
+  svgMesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(e1, a, e3));
+  svgMesh.position.copy(c0);   // Ursprung auf der Achse → Drehen schiebt das Motiv um den Körper
+  svgMesh.scale.set(1, 1, 1);
+  svgMesh.userData._svgWrap = spec;
+  _updateObjEdgeLines(svgMesh);
+  // Der Prisma-Gravurweg (feste Tiefe entlang einer Normalen) gilt hier nicht mehr
+  delete svgMesh.userData._snapNormal;
+  delete svgMesh.userData._snapHitPoint;
+  delete svgMesh.userData._snapSolid;
+  delete svgMesh.userData._snapSurfaceLocal;
+  svgMesh.updateMatrixWorld(true);
+  return true;
+}
+
+// Gewickeltes Motiv mit neuer Tiefe neu biegen. 'through' = sicher durch die Wand
+// (Keil bis kurz vor die Achse — trifft die gegenüberliegende Wand nicht).
+function _svgWrapReshape(svgMesh, depthMm) {
+  const w = svgMesh.userData._svgWrap;
+  if (!w) return;
+  const spec = { R: w.R, epsMm: w.epsMm != null ? w.epsMm : 0.2,
+                 s: _svgWrapAbsorbScale(svgMesh, w.s),
+                 depthMm: depthMm === 'through' ? w.R * 9.8 : depthMm };
+  const geo = _svgWrapBuildGeo(svgMesh.userData, spec);
+  svgMesh.geometry.dispose();
+  svgMesh.geometry = geo;
+  svgMesh.userData._svgWrap = spec;
+  _updateObjEdgeLines(svgMesh);
+  svgMesh.updateMatrixWorld(true);
+}
+// ===== END SVG UM RUNDUNG WICKELN ==========================================
+
 // ===== END SVG MAGNET-SNAP =====
 
 // ===== DEV MODE =====
