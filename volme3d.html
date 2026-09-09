@@ -13375,21 +13375,32 @@ function updateDimHandles() {
       curO.updateMatrixWorld(true); const cb = getMeshBox(curO);
       const cs = cb.getSize(new THREE.Vector3());
       // Screen-Richtung einmalig bei Start berechnen (verhindert Umschwingen beim Skalieren)
-      let screenDirX = 1, screenDirY = 0;
-      if (def.axis !== 'lift' && def.axis !== 'uniform') {
+      // "Nach aussen" haengt daran, WELCHEN Griff man gefasst hat: die Richtung
+      // von der Objektmitte zum Griff, einmalig beim Anfassen bestimmt (fest,
+      // damit die Richtung waehrend des Ziehens nicht umschwingt).
+      // Notfall-Richtung fuer die Ecken = die alte feste Diagonale oben-rechts.
+      let screenDirX = Math.SQRT1_2, screenDirY = -Math.SQRT1_2;
+      if (def.axis !== 'lift') {
         const cR2 = canvas.getBoundingClientRect();
         const W2 = cR2.width, H2 = cR2.height;
         const p2ds = v => { const p=v.clone().project(camera); return {x:(p.x+1)/2*W2,y:(-p.y+1)/2*H2}; };
         const mn=cb.min, mx=cb.max;
         const cx2=(mn.x+mx.x)/2, cy2=(mn.y+mx.y)/2, cz2=(mn.z+mx.z)/2;
-        let c3,e3;
-        if (def.axis==='sw')       { c3=new THREE.Vector3(cx2,cy2,cz2); e3=new THREE.Vector3(def.side>0?mx.x:mn.x,cy2,cz2); }
-        else if (def.axis==='sd')  { c3=new THREE.Vector3(cx2,cy2,cz2); e3=new THREE.Vector3(cx2,cy2,def.side>0?mx.z:mn.z); }
-        else                       { c3=new THREE.Vector3(cx2,cy2,cz2); e3=new THREE.Vector3(cx2,def.side>0?mx.y:mn.y,cz2); }
+        const c3=new THREE.Vector3(cx2,cy2,cz2);
+        let e3;
+        if (def.axis==='sw')       e3=new THREE.Vector3(def.side>0?mx.x:mn.x,cy2,cz2);
+        else if (def.axis==='sd')  e3=new THREE.Vector3(cx2,cy2,def.side>0?mx.z:mn.z);
+        else if (def.axis==='sh')  e3=new THREE.Vector3(cx2,def.side>0?mx.y:mn.y,cz2);
+        // Weisse Ecke: Richtung Mitte -> genau diese Ecke. Frueher stand hier eine
+        // FESTE Diagonale (oben-rechts = groesser) — wer die Ecke links unten nach
+        // aussen zog, zog damit in die "kleiner"-Richtung (Ralf 9.9.26).
+        else                       e3=new THREE.Vector3(...getHandlePos3D(def.key, mn, mx, cx2, cy2, cz2));
         const pc2=p2ds(c3), pe2=p2ds(e3);
         const sdx2=pe2.x-pc2.x, sdy2=pe2.y-pc2.y;
-        const len2=Math.sqrt(sdx2*sdx2+sdy2*sdy2)||1;
-        screenDirX=sdx2/len2; screenDirY=sdy2/len2;
+        const len2=Math.sqrt(sdx2*sdx2+sdy2*sdy2);
+        // Griff fast auf der Mitte (Blick genau die Diagonale entlang) → Notrichtung
+        if (len2 > 6) { screenDirX=sdx2/len2; screenDirY=sdy2/len2; }
+        else if (def.axis !== 'uniform') { screenDirX = 1; screenDirY = 0; }
       }
       _dragHandle = {
         axis: def.axis, handleKey: def.key, side: def.side || 0,
@@ -13456,8 +13467,11 @@ function updateDimHandles() {
         _dragHandle.tip.textContent = `Y: ${r2(o2.position.y*10)} mm`;
 
       } else if (axis === 'uniform') {
-        // Diagonale Bewegung: oben-rechts = größer, unten-links = kleiner (stabile Richtung)
-        const delta = (dx - dy) * sensitivity;
+        // Nach aussen (weg von der Objektmitte) = groesser, nach innen = kleiner —
+        // gemessen entlang der beim Anfassen gemerkten Richtung. Das SQRT2 haelt
+        // das Ziehtempo genau so, wie es die frueherer feste Diagonale hatte.
+        const delta = (dx * _dragHandle.screenDirX + dy * _dragHandle.screenDirY)
+                      * Math.SQRT2 * sensitivity;
         const nw = Math.max(0.5, sv.sw + delta);
         const nh = Math.max(0.5, sv.sh + delta);
         const nd = Math.max(0.5, sv.sd + delta);
@@ -38007,8 +38021,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.80';
+const VOLME3D_VERSION = '1.15.81';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.81', date:'2026-09-09', changes:[
+    ['\u{1F41B}','<b>Gr\u00f6\u00dfe ziehen geht jetzt in alle Richtungen richtig.</b> An den wei\u00dfen Eckpunkten galt bisher eine feste Regel: nach oben-rechts ziehen = gr\u00f6\u00dfer, nach unten-links = kleiner \u2014 <b>egal, welche Ecke man angefasst hatte</b>. Bei den vier Ecken, die im Bild nach unten oder links zeigen, war das damit genau verkehrt herum: man zog den Kasten nach au\u00dfen und das Modell wurde kleiner. Jetzt z\u00e4hlt, wohin man die angefasste Ecke zieht \u2014 von der Mitte weg macht gr\u00f6\u00dfer, zur Mitte hin kleiner, an allen acht Ecken gleich. Die Richtung wird beim Anfassen einmal festgelegt und kippt w\u00e4hrend des Ziehens nicht mehr um; das Ziehtempo ist unver\u00e4ndert. Gemeldet von Ralf.'],
+  ]},
   { version:'1.15.80', date:'2026-09-08', changes:[
     ['\u{1F41B}','<b>Drehen f\u00fchlt sich jetzt logisch an.</b> Zwei Fehler steckten in den Drehringen. Erstens: Ein Ring drehte den K\u00f6rper nicht um die Achse, die er im Bild zeigt, sondern verstellte nur einen von drei Winkelwerten. Solange ein Teil noch gerade stand, sah das richtig aus \u2014 war es schon gekippt, machte es beim Ziehen am <b>blauen Ring pl\u00f6tzlich einen \u00dcberschlag</b>, statt sich einfach zu drehen. Jetzt dreht der blaue Ring immer um die Hochachse, der rote und der gr\u00fcne um ihre Achse, egal wie das Teil gerade liegt. Zweitens: Der angefasste Griff lief der Maus davon \u2014 je nachdem, von wo man auf den Ring schaute, drehte sich das Teil sogar genau andersherum. Der Griff bleibt jetzt unter dem Mauszeiger kleben, auch bei schr\u00e4g im Bild stehenden Ringen. Und der farbige Winkel-Ausschnitt liegt jetzt sauber auf dem Ring statt daneben. Auch das freie Ziehen im Dreh-Modus arbeitet jetzt wie ein Plattenteller: waagerecht ziehen dreht um die Hochachse, senkrecht kippt \u2014 ohne dass ein schon geneigtes Teil zus\u00e4tzlich wegkippt. Gemeldet von Ralf.'],
   ]},
