@@ -697,6 +697,194 @@ class TestNachrichtenaufbau(unittest.TestCase):
         self.assertIn('<abc@x.de>', msg['References'])
 
 
+class PushConn(FakeConn):
+    """IMAP-Stub mit UIDNEXT im STATUS und steuerbarer Suche."""
+
+    def __init__(self, raw, uidnext=8, treffer=b'5 7'):
+        super().__init__(raw)
+        self.uidnext = uidnext
+        self.treffer = treffer
+        self.suchen = []
+
+    def status(self, folder, items):
+        return ('OK', [('"INBOX" (UIDNEXT %d UNSEEN 3)' % self.uidnext).encode()])
+
+    def uid(self, cmd, *args):
+        if cmd == 'SEARCH':
+            self.suchen.append(args)
+            return ('OK', [self.treffer])
+        if cmd == 'FETCH':
+            # Kopfzeilen fuer GENAU die angefragten UIDs zurueckgeben, sonst
+            # laesst sich nicht pruefen, wie viele wirklich geholt wurden.
+            self.geholt = [int(u) for u in str(args[0]).split(',')]
+            antwort = []
+            for u in self.geholt:
+                antwort.append((b'1 (UID %d FLAGS () RFC822.SIZE 4096 BODYSTRUCTURE ("x")' % u,
+                                self.raw))
+                antwort.append(b')')
+            return ('OK', antwort)
+        return super().uid(cmd, *args)
+
+
+class TestPush(unittest.TestCase):
+    """Benachrichtigungen: Schlüssel, Abos und das Erkennen neuer Post."""
+
+    def setUp(self):
+        self.acc = {'id': 'p1', 'email': 'a@volme3dakademie.de', 'imapHost': 'h', 'password': 'p'}
+        self.box = fake_box(build_mail().as_bytes())
+        self.box.acc = self.acc
+        self.box.conn = PushConn(build_mail().as_bytes())
+        server._boxes['p1'] = self.box
+        self.alte_konten = server.CFG.get('accounts')
+        server.CFG['accounts'] = [self.acc]
+        self.gesendet = []
+        self.echt_senden = server.push_senden
+        server.push_senden = lambda n: (self.gesendet.append(n), 1)[1]
+
+    def tearDown(self):
+        server.push_senden = self.echt_senden
+        server._boxes.pop('p1', None)
+        server.CFG['accounts'] = self.alte_konten
+        try:
+            os.remove(server.SUBS_FILE)
+        except OSError:
+            pass
+
+    # --- Schlüssel ---
+    def test_vapid_keys_are_generated_once(self):
+        a = server.push_keys()
+        b = server.push_keys()
+        self.assertEqual(a['vapidPublic'], b['vapidPublic'])
+        # Browser-Format: unkomprimierter Punkt (65 Byte) bzw. roher Skalar (32 Byte)
+        self.assertEqual(len(a['vapidPublic']), 87)
+        self.assertEqual(len(a['vapidPrivate']), 43)
+        self.assertTrue(a['vapidPublic'].startswith('B'))
+
+    # --- Abos ---
+    def test_subscription_roundtrip(self):
+        sub = {'endpoint': 'https://push.example/abc', 'keys': {'p256dh': 'x', 'auth': 'y'}}
+        self.assertEqual(server.subs_merken(sub, 'Testbrowser'), 1)
+        self.assertIn('https://push.example/abc', server.subs_alle())
+        self.assertEqual(server.subs_merken(sub, 'Testbrowser'), 1)   # kein Doppeleintrag
+        self.assertEqual(server.subs_entfernen(['https://push.example/abc']), 0)
+
+    def test_subscription_without_endpoint_is_refused(self):
+        with self.assertRaises(server.MailError):
+            server.subs_merken({'keys': {}})
+
+    # --- Erkennen neuer Post ---
+    def test_first_round_only_remembers(self):
+        """Beim ersten Lauf darf nicht das ganze Postfach als neu gemeldet werden."""
+        zustand = {}
+        server.push_runde(zustand)
+        self.assertEqual(self.gesendet, [])
+        self.assertEqual(zustand['p1']['uidnext'], 8)
+
+    def test_new_mail_triggers_one_push(self):
+        zustand = {'p1': {'uidnext': 7, 'unseen': 2}}
+        self.box.conn.uidnext = 9
+        server.push_runde(zustand)
+        self.assertEqual(len(self.gesendet), 1, self.gesendet)
+        meldung = self.gesendet[0]
+        self.assertEqual(meldung['art'], 'mail')
+        self.assertEqual(meldung['acc'], 'p1')
+        self.assertEqual(meldung['uid'], 7)
+        self.assertTrue(meldung['titel'])
+        self.assertEqual(zustand['p1']['uidnext'], 9)
+
+    def test_summary_counts_all_new_not_just_fetched(self):
+        """Kopfzeilen holt der Prüfer nur für die jüngsten drei — die Sammel-
+        meldung muss trotzdem alle übrigen zählen."""
+        self.box.conn.treffer = b'7 8 9 10 11 12'
+        self.box.conn.uidnext = 13
+        zustand = {'p1': {'uidnext': 7, 'unseen': 2}}
+        server.push_runde(zustand)
+        sammel = [m for m in self.gesendet if 'weitere' in m['text']]
+        self.assertEqual(len(sammel), 1, self.gesendet)
+        self.assertEqual(self.box.conn.geholt, [10, 11, 12])   # nur die juengsten drei
+        self.assertEqual(sammel[0]['text'], '3 weitere neue Nachrichten')
+
+    def test_summary_uses_singular_for_one(self):
+        self.box.conn.treffer = b'7 8 9 10'
+        self.box.conn.uidnext = 11
+        zustand = {'p1': {'uidnext': 7, 'unseen': 2}}
+        server.push_runde(zustand)
+        sammel = [m for m in self.gesendet if 'weitere' in m['text']]
+        self.assertEqual(sammel[0]['text'], '1 weitere neue Nachricht')
+
+    def test_three_new_need_no_summary(self):
+        self.box.conn.treffer = b'7 8 9'
+        self.box.conn.uidnext = 10
+        zustand = {'p1': {'uidnext': 7, 'unseen': 2}}
+        server.push_runde(zustand)
+        self.assertEqual(len(self.gesendet), 3, self.gesendet)
+        self.assertFalse([m for m in self.gesendet if 'weitere' in m['text']])
+
+    def test_badge_counts_all_accounts(self):
+        """Das Zeichen am Symbol zeigt die Ungelesenen ALLER Postfächer —
+        auch die der Konten, die erst nach dem meldenden geprüft werden."""
+        zweit = {'id': 'p2', 'email': 'b@volme3dakademie.de', 'imapHost': 'h', 'password': 'p'}
+        box2 = fake_box(build_mail().as_bytes())
+        box2.acc = zweit
+        box2.conn = PushConn(build_mail().as_bytes())
+        server._boxes['p2'] = box2
+        server.CFG['accounts'] = [self.acc, zweit]
+        try:
+            self.box.conn.uidnext = 9
+            zustand = {'p1': {'uidnext': 7, 'unseen': 3}, 'p2': {'uidnext': 8, 'unseen': 3}}
+            server.push_runde(zustand)
+            self.assertTrue(self.gesendet)
+            self.assertEqual(self.gesendet[0]['offen'], 6)   # 3 + 3, nicht nur 3
+        finally:
+            server._boxes.pop('p2', None)
+
+    def test_unchanged_mailbox_stays_quiet(self):
+        zustand = {'p1': {'uidnext': 8, 'unseen': 3}}
+        server.push_runde(zustand)
+        self.assertEqual(self.gesendet, [])
+
+    def test_search_asks_only_for_unseen_above_the_mark(self):
+        zustand = {'p1': {'uidnext': 7, 'unseen': 2}}
+        self.box.conn.uidnext = 9
+        server.push_runde(zustand)
+        self.assertEqual(self.box.conn.suchen[0], (None, 'UNSEEN', 'UID', '7:*'))
+
+    def test_lower_uids_from_open_range_are_dropped(self):
+        """IMAP liefert bei 'n:*' immer die letzte Nachricht mit — auch wenn
+        ihre UID kleiner ist. Die darf keine Meldung auslösen."""
+        self.box.conn.treffer = b'3'
+        uids = server._neue_uids(self.box, 'INBOX', 7)
+        self.assertEqual(uids, [])
+
+    def test_broken_account_does_not_kill_the_round(self):
+        def kaputt(*a, **kw):
+            raise OSError('Verbindung abgelehnt')
+        self.box.conn.status = kaputt
+        zustand = {}
+        server.push_runde(zustand)          # darf nicht werfen
+        self.assertEqual(self.gesendet, [])
+
+    def test_dead_subscription_is_dropped(self):
+        server.push_senden = self.echt_senden
+        sub = {'endpoint': 'https://push.example/tot', 'keys': {'p256dh': 'x', 'auth': 'y'}}
+        server.subs_merken(sub)
+        import pywebpush
+
+        class Antwort:
+            status_code = 410
+
+        def weg(*a, **kw):
+            raise pywebpush.WebPushException('weg', response=Antwort())
+
+        echt = pywebpush.webpush
+        pywebpush.webpush = weg
+        try:
+            self.assertEqual(server.push_senden({'titel': 't', 'text': 'x'}), 0)
+        finally:
+            pywebpush.webpush = echt
+        self.assertEqual(server.subs_alle(), {})
+
+
 class TestReadableError(unittest.TestCase):
     def test_bytes_repr_unwrapped(self):
         e = Exception("b'[AUTHENTICATIONFAILED] Authentication failed.'")

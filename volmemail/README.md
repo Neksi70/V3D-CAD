@@ -19,6 +19,8 @@ ganz normal IMAP und SMTP.
 | `smoke_handy.py` | Browser-Durchlauf im Handy-Format: Zurück-Knopf und Zurück-Geste |
 | `smoke_ziehen.py` | Ziehen zum Aktualisieren: Fingergeste auf der Nachrichtenliste |
 | `smoke_auswahl.py` | Mehrfachauswahl und Sammel-Löschen (schreibende Aufrufe abgefangen) |
+| `smoke_push.py` | Benachrichtigungen von Anfang bis Ende — mit **Firefox** |
+| `sw.js` | Service Worker: zeigt die Push-Meldung, auch ohne offenes Fenster |
 | `smoke_windows.py` | Installierbarkeit als Windows-App und mailto-Anbindung |
 | `smoke_signatur.py` | Signatur-Editor und Aufbau der versendeten Nachricht |
 | `smoke_bilder.py` | Bilder im Text: Anzeige (cid und verlinkt) und Speichern |
@@ -113,6 +115,51 @@ Eintrag im Verlauf des Browsers anlegt. Zwei Stolpersteine stecken darin:
 `smoke_handy.py` prüft beides im Handy-Format und steuert die Zurück-Taste über
 das Browser-Protokoll (`Page.navigateToHistoryEntry`) — Playwrights `go_back()`
 wartet auf einen Ladevorgang, den es bei Sprüngen im selben Dokument nicht gibt.
+
+## Benachrichtigungen
+
+Wie in Outlook: eine Meldung, sobald neue Post da ist — und die Zahl der
+Ungelesenen als Zeichen am App-Symbol und im Fenstertitel („(3) V3D Mail").
+Einschalten unter **🔔 Meldungen** in der Seitenleiste, pro Gerät einmal.
+
+Der Weg läuft ohne offenes Fenster:
+
+1. `push_pruefer()` im Dienst schaut jede Minute per IMAP-`STATUS (UIDNEXT UNSEEN)`
+   in jeden Posteingang — aber **nur, wenn überhaupt ein Gerät angemeldet ist**,
+   sonst schweigt er und macht keine IMAP-Last.
+2. Ist `UIDNEXT` gestiegen, sucht er `UNSEEN UID <alt>:*`. Achtung: IMAP liefert
+   bei `n:*` immer auch die letzte Nachricht mit, selbst wenn ihre UID kleiner
+   ist — deshalb wird nachgefiltert.
+3. Für die jüngsten drei holt er die Kopfzeilen und schickt je eine Meldung
+   (Absender als Titel, Betreff als Text); der Rest kommt als „N weitere neue
+   Nachrichten". Gezählt wird dabei über alle gefundenen UIDs, nicht nur über
+   die geholten Kopfzeilen.
+4. `sw.js` zeigt die Meldung und setzt das Zeichen am Symbol. Ein Klick öffnet
+   V3D Mail auf `?mail=<konto>:<uid>`, also direkt bei der Nachricht.
+
+Beim allerersten Lauf wird nur der Stand gemerkt (`push_state.json`), sonst käme
+das ganze Postfach als „neu" an. Nach einem Neustart des Dienstes wird von dort
+weitergezählt.
+
+| Datei / Feld | Zweck |
+|---|---|
+| `~/.config/v3dmail/config.json` → `push` | VAPID-Schlüsselpaar, `subject`, optional `intervalSec` |
+| `~/.config/v3dmail/push_subs.json` | angemeldete Geräte (Endpunkt + Schlüssel) |
+| `~/.config/v3dmail/push_state.json` | zuletzt gesehener `UIDNEXT` je Konto |
+
+**Handy:** die APK ist eine reine WebView-Hülle und kann kein Web Push. Dafür
+V3D Mail im Chrome über „Zum Startbildschirm hinzufügen" installieren und dort
+einschalten.
+
+**Abhängigkeit:** `pywebpush` (holt `py-vapid`, `http-ece` und ein neueres
+`cryptography` nach `~/.local`). Ohne die Bibliothek laufen alle anderen Wege
+weiter — nur `push/key` und das Versenden gehen dann nicht.
+
+**Testen:** `smoke_push.py` braucht **Firefox** (`p.firefox.launch`). Die
+Playwright-Chromium hat keinen Push-Dienst („push service not available", im
+Inkognito-Kontext ohnehin gesperrt), Firefox spricht mit Mozillas Autopush. Der
+Test geht wirklich über das Internet und prüft mit
+`registration.getNotifications()`, was der Service Worker angezeigt hat.
 
 ## Mehrere Nachrichten auf einmal
 

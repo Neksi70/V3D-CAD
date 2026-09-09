@@ -252,6 +252,7 @@ a{color:var(--acc-d)}
     <div id="folders"></div>
     <div class="foot">
       <button onclick="accountDialog()">⚙️ Konten</button>
+      <button onclick="meldungsDialog()">🔔 Meldungen</button>
       <button onclick="kiDialog()">✨ KI</button>
       <button onclick="logout()">Abmelden</button>
     </div>
@@ -413,8 +414,9 @@ async function boot() {
   renderAccounts();
   initPullToRefresh();
   initAuswahlGesten();
+  if (SW_DA) swBereit().catch(() => {});   // still: erst der Dialog fragt nach Erlaubnis
   await loadFolders();
-  if (!await uebergabeAbholen()) starteAusAdresse();
+  if (!await uebergabeAbholen()) { starteAusAdresse(); starteAusMeldung(); }
   sendenEmpfangen(true);
   // Im Hintergrund alle drei Minuten nachsehen — ohne Meldung, außer es kommt
   // wirklich etwas Neues an.
@@ -801,6 +803,7 @@ async function sendenEmpfangen(leise) {
     if (alt && typeof alt.unread === 'number' && st.unread > alt.unread) neue += st.unread - alt.unread;
   }
   renderAccounts();
+  zaehlerAnzeigen(Object.values(S.status).reduce((s, x) => s + (x.unread || 0), 0));
   // Sichtbare Liste mitziehen, damit neue Nachrichten gleich auftauchen.
   await loadMessages(S.folder, S.page, true);
 
@@ -1379,6 +1382,20 @@ function starteAusAdresse() {
   const eigen = S.acc && S.acc.signature ? '\n\n' + S.acc.signature : '';
   compose(Object.assign({ title: 'Neue Nachricht' }, pre,
                         pre.text !== undefined ? { text: pre.text + eigen } : {}));
+}
+
+// Klick auf eine Benachrichtigung landet auf ?mail=<konto>:<uid>.
+async function starteAusMeldung() {
+  const wert = new URLSearchParams(location.search).get('mail');
+  if (!wert) return;
+  history.replaceState(history.state, '', location.pathname);
+  const [accId, uid] = wert.split(':');
+  const konto = S.accounts.find(a => a.id === accId);
+  if (konto && konto.id !== (S.acc || {}).id) {
+    S.acc = konto; localStorage.setItem('v3dmail.acc', konto.id);
+    renderAccounts(); await loadFolders();
+  }
+  if (+uid) openMsg(+uid);
 }
 
 function fromChanged() {
@@ -2383,6 +2400,134 @@ function diktat() {
   _diktat = rec;
   btn.textContent = '🔴 Aufnahme läuft — Klick stoppt';
   rec.start();
+}
+
+// --- Benachrichtigungen ----------------------------------------------------
+// Der Dienst schaut selbst nach neuer Post (siehe push_pruefer in server.py)
+// und schickt eine Web-Push-Meldung. Hier steht nur die Anmeldung des Geraets
+// und der Zaehler am App-Symbol.
+const SW_DA = 'serviceWorker' in navigator && 'PushManager' in window;
+
+function b64zuBytes(s) {
+  const p = '='.repeat((4 - s.length % 4) % 4);
+  const roh = atob((s + p).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from([...roh].map(c => c.charCodeAt(0)));
+}
+
+async function swBereit() {
+  if (!SW_DA) return null;
+  // Relativer Pfad: unter /mail/ ist der Geltungsbereich dann auch /mail/.
+  const reg = await navigator.serviceWorker.register('sw.js');
+  await navigator.serviceWorker.ready;
+  return reg;
+}
+
+async function pushAbo() {
+  if (!SW_DA) return null;
+  const reg = await navigator.serviceWorker.getRegistration();
+  return reg ? await reg.pushManager.getSubscription() : null;
+}
+
+async function pushEin() {
+  const el = document.getElementById('pushstand');
+  try {
+    if (Notification.permission === 'denied') {
+      el.innerHTML = 'Der Browser hat Benachrichtigungen für diese Seite <b>gesperrt</b> — '
+        + 'im Schloss-Symbol der Adresszeile wieder erlauben.';
+      return;
+    }
+    if (Notification.permission !== 'granted'
+        && await Notification.requestPermission() !== 'granted') {
+      el.textContent = 'Benachrichtigungen wurden abgelehnt.';
+      return;
+    }
+    el.innerHTML = '<span class="spin"></span> melde das Gerät an …';
+    const { key } = await api('push/key');
+    const reg = await swBereit();
+    const sub = await reg.pushManager.subscribe(
+      { userVisibleOnly: true, applicationServerKey: b64zuBytes(key) });
+    const r = await post('push/anmelden', { sub: sub.toJSON() });
+    toast('Benachrichtigungen sind an');
+    meldungsStand(r.geraete);
+  } catch (e) {
+    el.textContent = 'Hat nicht geklappt: ' + e.message;
+  }
+}
+
+async function pushAus() {
+  const el = document.getElementById('pushstand');
+  try {
+    const sub = await pushAbo();
+    if (sub) {
+      await post('push/abmelden', { endpoint: sub.endpoint });
+      await sub.unsubscribe();
+    }
+    if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => {});
+    toast('Benachrichtigungen sind aus');
+    meldungsStand();
+  } catch (e) { el.textContent = 'Hat nicht geklappt: ' + e.message; }
+}
+
+async function pushProbe() {
+  const el = document.getElementById('pushstand');
+  el.innerHTML = '<span class="spin"></span> schicke eine Probe …';
+  try {
+    const r = await post('push/test', {});
+    el.textContent = r.zugestellt
+      ? 'Probe an ' + r.zugestellt + ' Gerät(e) geschickt — sie sollte gleich aufpoppen.'
+      : 'Kein Gerät angemeldet.';
+  } catch (e) { el.textContent = 'Hat nicht geklappt: ' + e.message; }
+}
+
+async function meldungsStand(geraete) {
+  const el = document.getElementById('pushstand');
+  const knopf = document.getElementById('pushknopf');
+  if (!el) return;
+  if (!SW_DA) {
+    el.textContent = 'Dieser Browser kann keine Benachrichtigungen empfangen.';
+    if (knopf) knopf.classList.add('hide');
+    return;
+  }
+  const sub = await pushAbo();
+  if (geraete === undefined) {
+    try { geraete = (await api('push/key')).geraete; } catch (e) { geraete = null; }
+  }
+  const andere = (geraete || 0) - (sub ? 1 : 0);
+  el.innerHTML = (sub
+    ? '<b style="color:var(--acc-d)">Auf diesem Gerät an.</b>'
+    : 'Auf diesem Gerät aus.')
+    + (andere > 0 ? ' Außerdem ' + andere + ' weitere(s) Gerät(e) angemeldet.' : '');
+  if (knopf) {
+    knopf.textContent = sub ? 'Ausschalten' : 'Einschalten';
+    knopf.className = sub ? 'btn sec' : 'btn';
+    knopf.setAttribute('onclick', sub ? 'pushAus()' : 'pushEin()');
+  }
+}
+
+function meldungsDialog() {
+  modal(`<h3>🔔 Benachrichtigungen</h3>
+    <p class="muted" style="font-size:13.5px;margin-top:6px">
+      Der Server sieht jede Minute selbst nach neuer Post und meldet sich —
+      auch wenn V3D Mail gerade nicht offen ist.</p>
+    <p id="pushstand" style="font-size:13.5px;margin-top:12px">
+      <span class="spin"></span> prüfe …</p>
+    <p class="muted" style="font-size:12.5px;margin-top:12px">
+      Auf dem Handy zuerst über das Browser-Menü „Zum Startbildschirm hinzufügen",
+      dann hier einschalten. Jedes Gerät meldet sich einzeln an.</p>
+    <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;flex-wrap:wrap">
+      <button class="btn sec" onclick="pushProbe()">Probe schicken</button>
+      <button class="btn" id="pushknopf" onclick="pushEin()">Einschalten</button>
+      <button class="btn sec" onclick="closeModal()">Schließen</button></div>`);
+  meldungsStand();
+}
+
+// Zahl der Ungelesenen ans App-Symbol und in den Fenstertitel — das kleine
+// Zeichen, das Outlook in der Leiste zeigt.
+function zaehlerAnzeigen(offen) {
+  document.title = offen ? '(' + offen + ') V3D Mail' : 'V3D Mail';
+  if (navigator.setAppBadge) {
+    (offen ? navigator.setAppBadge(offen) : navigator.clearAppBadge()).catch(() => {});
+  }
 }
 
 // --- Tastatur --------------------------------------------------------------

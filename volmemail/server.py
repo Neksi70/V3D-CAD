@@ -2273,6 +2273,224 @@ def readable_error(exc, kind):
     return '%s-Fehler: %s' % (kind, text)
 
 
+# --- Benachrichtigungen (Web Push) ------------------------------------------
+# Der Dienst sieht selbst nach neuer Post und schickt eine Push-Meldung an alle
+# angemeldeten Geraete. Deshalb kommt sie auch an, wenn kein V3D-Mail-Fenster
+# offen ist — am Handy reicht der installierte Web-App-Eintrag, am Rechner der
+# laufende Browser. Abos und Merkstand liegen als JSON neben der Konfiguration.
+
+SUBS_FILE = os.path.join(CONF_DIR, 'push_subs.json')
+PUSH_STATE_FILE = os.path.join(CONF_DIR, 'push_state.json')
+PUSH_INTERVAL = 60          # Sekunden zwischen zwei Blicken ins Postfach
+_subs_lock = threading.Lock()
+
+
+def _json_lesen(pfad, standard):
+    try:
+        with open(pfad, 'r', encoding='utf-8') as fh:
+            return json.load(fh)
+    except Exception:
+        return standard
+
+
+def _json_schreiben(pfad, daten):
+    os.makedirs(CONF_DIR, mode=0o700, exist_ok=True)
+    tmp = pfad + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(daten, fh, ensure_ascii=False)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, pfad)
+
+
+def _b64u(roh):
+    return base64.urlsafe_b64encode(roh).rstrip(b'=').decode('ascii')
+
+
+def push_keys():
+    """VAPID-Schluesselpaar — beim ersten Aufruf erzeugt und gespeichert.
+
+    Format wie bei der Anrufannahme: oeffentlich als unkomprimierter Punkt,
+    privat als roher 32-Byte-Skalar, beide base64url. pywebpush und der
+    Browser verstehen genau das.
+    """
+    with _conf_lock:
+        p = CFG.setdefault('push', {})
+        if p.get('vapidPublic') and p.get('vapidPrivate'):
+            return dict(p)
+        from py_vapid import Vapid01
+        from cryptography.hazmat.primitives import serialization
+        v = Vapid01()
+        v.generate_keys()
+        p['vapidPublic'] = _b64u(v.public_key.public_bytes(
+            serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint))
+        p['vapidPrivate'] = _b64u(
+            v.private_key.private_numbers().private_value.to_bytes(32, 'big'))
+        p.setdefault('subject', 'mailto:%s' % (
+            (CFG.get('accounts') or [{}])[0].get('email') or 'admin@localhost'))
+        save_conf(CFG)
+        return dict(p)
+
+
+def subs_alle():
+    with _subs_lock:
+        return _json_lesen(SUBS_FILE, {})
+
+
+def subs_merken(sub, geraet=''):
+    ep = (sub or {}).get('endpoint')
+    if not ep:
+        raise MailError('Anmeldung ohne Endpunkt')
+    with _subs_lock:
+        alle = _json_lesen(SUBS_FILE, {})
+        alle[ep] = {'sub': sub, 'ts': int(time.time()), 'geraet': geraet[:120]}
+        _json_schreiben(SUBS_FILE, alle)
+    return len(alle)
+
+
+def subs_entfernen(endpunkte):
+    with _subs_lock:
+        alle = _json_lesen(SUBS_FILE, {})
+        for ep in endpunkte:
+            alle.pop(ep, None)
+        _json_schreiben(SUBS_FILE, alle)
+        return len(alle)
+
+
+def push_senden(nutzlast):
+    """An alle angemeldeten Geraete schicken; tote Abos raeumt es dabei weg."""
+    alle = subs_alle()
+    if not alle:
+        return 0
+    schluessel = push_keys()
+    from pywebpush import webpush, WebPushException
+    daten = json.dumps(nutzlast, ensure_ascii=False)
+    tot, zugestellt = [], 0
+    for ep, eintrag in list(alle.items()):
+        try:
+            webpush(subscription_info=eintrag['sub'], data=daten,
+                    vapid_private_key=schluessel['vapidPrivate'],
+                    # pywebpush ergaenzt aud/exp und veraendert das Wortverzeichnis,
+                    # deshalb pro Empfaenger ein frisches.
+                    vapid_claims={'sub': schluessel.get('subject') or 'mailto:admin@localhost'},
+                    timeout=10)
+            zugestellt += 1
+        except WebPushException as e:
+            code = getattr(getattr(e, 'response', None), 'status_code', 0)
+            if code in (403, 404, 410):     # Abo vom Browser verworfen
+                tot.append(ep)
+            else:
+                sys.stderr.write('Push fehlgeschlagen (%s): %r\n' % (code, e))
+        except Exception as e:
+            sys.stderr.write('Push fehlgeschlagen: %r\n' % (e,))
+    if tot:
+        subs_entfernen(tot)
+    return zugestellt
+
+
+def _inbox_stand(acc):
+    """Posteingang per STATUS abfragen — ohne den gewaehlten Ordner zu wechseln."""
+    box = get_box(acc)
+    inbox = find_special(box, 'inbox') or 'INBOX'
+    with box.lock:
+        box.ensure()
+        typ, data = box.conn.status('"%s"' % utf7_encode(inbox), '(UIDNEXT UNSEEN)')
+        box.last_used = time.time()
+    if typ != 'OK' or not data:
+        raise MailError('Postfach meldet keinen Zustand')
+    roh = data[0].decode('utf-8', 'replace') if isinstance(data[0], bytes) else str(data[0])
+    uidnext = re.search(r'UIDNEXT (\d+)', roh)
+    unseen = re.search(r'UNSEEN (\d+)', roh)
+    return (box, inbox,
+            int(uidnext.group(1)) if uidnext else 0,
+            int(unseen.group(1)) if unseen else 0)
+
+
+def _neue_uids(box, inbox, ab):
+    """Ungelesene UIDs ab einer Grenze. IMAP liefert bei 'n:*' immer auch die
+    letzte Nachricht, selbst wenn ihre UID kleiner ist — daher nachfiltern."""
+    with box.lock:
+        box.select(inbox, readonly=True)
+        typ, data = box.conn.uid('SEARCH', None, 'UNSEEN', 'UID', '%d:*' % ab)
+        box.last_used = time.time()
+    if typ != 'OK':
+        return []
+    return sorted(int(u) for u in (data[0] or b'').split() if int(u) >= ab)
+
+
+def _absender(m):
+    a = (m.get('from') or [{}])[0]
+    return a.get('name') or a.get('email') or 'Unbekannt'
+
+
+def push_runde(zustand):
+    """Ein Blick in alle Postfaecher; meldet, was seit dem letzten Mal dazukam."""
+    geaendert = False
+    offen_gesamt = 0
+    # Erst alles einsammeln, dann schicken: das Zeichen am App-Symbol soll die
+    # Ungelesenen ALLER Postfaecher zeigen, nicht nur der schon geprueften.
+    meldungen = []
+    for acc in list(CFG.get('accounts') or []):
+        kid = acc.get('id')
+        try:
+            box, inbox, uidnext, unseen = _inbox_stand(acc)
+        except Exception as e:
+            sys.stderr.write('Push-Prüfung %s: %r\n' % (acc.get('email'), e))
+            continue
+        offen_gesamt += unseen
+        merk = zustand.get(kid) or {}
+        if not merk.get('uidnext'):
+            # Erster Lauf: nur den Stand merken, sonst kaeme das ganze Postfach
+            # als "neu" an.
+            zustand[kid] = {'uidnext': uidnext, 'unseen': unseen}
+            geaendert = True
+            continue
+        if uidnext > merk['uidnext']:
+            try:
+                uids = _neue_uids(box, inbox, merk['uidnext'])
+                # Kopfzeilen nur fuer die juengsten drei — genannt wird trotzdem,
+                # wie viele es insgesamt sind.
+                msgs = fetch_list(box, inbox, uids[-3:]) if uids else []
+            except Exception as e:
+                sys.stderr.write('Push-Abruf %s: %r\n' % (acc.get('email'), e))
+                uids, msgs = [], []
+            for m in msgs:
+                meldungen.append({'art': 'mail', 'titel': _absender(m),
+                                  'text': m.get('subject') or '(kein Betreff)',
+                                  'acc': kid, 'uid': m.get('uid')})
+            rest = len(uids) - len(msgs)
+            if rest > 0:
+                meldungen.append({'art': 'mail', 'titel': acc.get('email') or 'Posteingang',
+                                  'text': '%d weitere neue Nachricht%s' % (rest, '' if rest == 1 else 'en'),
+                                  'acc': kid})
+        zustand[kid] = {'uidnext': uidnext, 'unseen': unseen}
+        geaendert = True
+    for m in meldungen:
+        m['offen'] = offen_gesamt
+        push_senden(m)
+    if geaendert:
+        _json_schreiben(PUSH_STATE_FILE, zustand)
+    return offen_gesamt
+
+
+def push_pruefer():
+    """Hintergrundfaden: schaut nur nach, wenn ueberhaupt jemand angemeldet ist."""
+    zustand = _json_lesen(PUSH_STATE_FILE, {})
+    takt = int((CFG.get('push') or {}).get('intervalSec') or PUSH_INTERVAL)
+    while True:
+        try:
+            if subs_alle():
+                push_runde(zustand)
+        except Exception as e:
+            sys.stderr.write('Push-Prüfer: %r\n' % (e,))
+        time.sleep(max(20, takt))
+
+
+def push_start():
+    t = threading.Thread(target=push_pruefer, name='push', daemon=True)
+    t.start()
+    return t
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'V3DMail'
     sys_version = ''
@@ -2532,6 +2750,38 @@ class Handler(BaseHTTPRequestHandler):
         if route == '/check':
             return self._send(200, {'accounts': check_all(CFG.get('accounts', []))})
 
+        # --- Benachrichtigungen ---
+        if route == '/push/key' and method == 'GET':
+            return self._send(200, {'key': push_keys()['vapidPublic'],
+                                    'geraete': len(subs_alle()),
+                                    'takt': int((CFG.get('push') or {}).get('intervalSec')
+                                                or PUSH_INTERVAL)})
+
+        if route == '/push/anmelden' and method == 'POST':
+            b = self._body()
+            sub = b.get('sub') or b
+            anzahl = subs_merken(sub, self.headers.get('User-Agent') or '')
+            return self._send(200, {'ok': True, 'geraete': anzahl})
+
+        if route == '/push/abmelden' and method == 'POST':
+            ep = (self._body().get('endpoint') or '').strip()
+            if not ep:
+                raise MailError('Kein Endpunkt angegeben')
+            return self._send(200, {'ok': True, 'geraete': subs_entfernen([ep])})
+
+        if route == '/push/test' and method == 'POST':
+            # Felder duerfen ueberschrieben werden, damit sich auch der Weg einer
+            # echten Mail-Meldung (mit Konto und UID) pruefen laesst.
+            b = self._body()
+            meldung = {'art': 'test', 'titel': 'V3D Mail',
+                       'text': 'Probe-Benachrichtigung — es funktioniert.'}
+            for k in ('art', 'titel', 'text', 'acc', 'uid', 'offen'):
+                if b.get(k) is not None:
+                    meldung[k] = b[k]
+            n = push_senden(meldung)
+            return self._send(200, {'ok': True, 'zugestellt': n,
+                                    'geraete': len(subs_alle())})
+
         # --- KI ---
         if route == '/ai/settings' and method == 'GET':
             return self._send(200, {'hasKey': bool((ai_conf().get('key') or '').strip()),
@@ -2701,6 +2951,7 @@ def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else int(CFG.get('port') or DEFAULT_PORT)
     srv = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     srv.daemon_threads = True
+    push_start()
     try:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(CERT_FILE, KEY_FILE)
