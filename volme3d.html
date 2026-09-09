@@ -19577,7 +19577,14 @@ function getNorm(e) {
 function pickObjects(e) {
   getNorm(e);
   raycaster.setFromCamera(mousev, camera);
-  return raycaster.intersectObjects(objects, true);
+  const hits = raycaster.intersectObjects(objects, true);
+  // Kantenlinien haben einen Fangradius von 1 Einheit — und der wird mit der
+  // Skalierung des Körpers multipliziert (Quader ×3 = 30 mm Halo um jede Kante).
+  // Ein Klick auf eine flach anliegende SVG traf so zuerst die Kante des Körpers
+  // dahinter und zog den Quader statt des Motivs. Flächentreffer zuerst; die
+  // Linien bleiben nur als Notnagel für haarfeine Objekte ohne Flächentreffer.
+  const solid = hits.filter(h => !(h.object.userData && h.object.userData.isEdgeLines));
+  return solid.length ? solid : hits;
 }
 
 // preventDefault auf vpEl-Ebene, damit auch Rechtsklick auf Overlays (rov/sel-box/dim-handles) kein natives Menü zeigt
@@ -38074,8 +38081,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.83';
+const VOLME3D_VERSION = '1.15.84';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.84', date:'2026-09-09', changes:[
+    ['\u{1F41B}','<b>SVG l\u00e4sst sich wieder greifen und heften \u2014 auch nach dem Wickeln.</b> Zwei Fehler steckten dahinter. Erstens: Lag ein Motiv flach auf einem K\u00f6rper (oder gewickelt in der Wand), griff der Klick darauf oft <b>den K\u00f6rper dahinter</b> \u2014 die schwarzen Kantenlinien haben einen unsichtbaren Fangbereich, der mit der Gr\u00f6\u00dfe des K\u00f6rpers w\u00e4chst (bei einem 60-mm-Quader 30 mm um jede Kante). Man zog dann Quader oder Rohr statt der SVG, und kein Magnet-Hinweis erschien. Jetzt z\u00e4hlt zuerst die Fl\u00e4che unter dem Zeiger, die Kanten nur noch als Notnagel f\u00fcr haarfeine Teile. Zweitens: Ein <b>gewickeltes</b> Motiv, das man anschlie\u00dfend auf eine ebene Fl\u00e4che zog, blieb gebogen und sa\u00df schief daneben. Es wird jetzt wieder flach gebaut und mittig geheftet; zur\u00fcck auf die Rundung wickelt es sich erneut.'],
+  ]},
   { version:'1.15.83', date:'2026-09-09', changes:[
     ['\u{1F56F}\uFE0F','<b>Wickeln geht jetzt auch auf eigenen STLs und auf schr\u00e4gen W\u00e4nden.</b> Zwei L\u00fccken sind weg. Erstens: Bei <b>selbst hochgeladenen STL-Dateien</b> erschien nur \u201eAuf Fl\u00e4che heften\u201c, nie \u201eUm Rundung wickeln\u201c. Grund: solche Modelle bringen die Koordinaten aus ihrer Datei mit, ihre Drehachse liegt also irgendwo im Raum \u2014 gesucht wurde sie aber immer in der Mitte. Jetzt wird die Achse aus der Form selbst berechnet, egal wo das Modell steht; auch <b>liegende</b> Rohre und sehr fein aufgel\u00f6ste Modelle (\u00fcber eine Million Dreiecke) werden erkannt. Zweitens: Auf einer <b>konischen Wand</b> \u2014 Becher, Vase, alles was oben weiter ist als unten \u2014 lag das Motiv vorher nur zur H\u00e4lfte an, weil es einer geraden Dose folgte. Jetzt wird die Wand \u00fcber die H\u00f6he des Motivs abgetastet: die Gravur ist oben, unten und in der Mitte <b>gleich tief</b>, auch auf bauchigen Formen. Gemeldet von Josy.'],
   ]},
@@ -39027,6 +39037,19 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
       notify('↩ SVG um die Rundung gewickelt', 'ok');
       return;
     }
+  }
+
+  // Vorher gewickelt? Beim Heften auf eine ebene Fläche wieder flach bauen —
+  // sonst läge der gebogene Keil als Bogen auf dem Quader und der Abzug nähme
+  // weiter den Wickel-Weg. Die Skalierung wandert aus der Biegung zurück.
+  if (svgMesh.userData._svgWrap) {
+    const s = _svgWrapAbsorbScale(svgMesh, svgMesh.userData._svgWrap.s);
+    const flat = _svgRebuildGeo(svgMesh.userData);
+    svgMesh.geometry.dispose();
+    svgMesh.geometry = flat;
+    svgMesh.scale.set(s.x, s.y, s.z);
+    delete svgMesh.userData._svgWrap;
+    _updateObjEdgeLines(svgMesh);   // sonst zentriert die BBox unten auf den alten, gebogenen Kanten
   }
 
   // Geometry-local normal (= STL-Koordinaten) + Klickpunkt für Server speichern
