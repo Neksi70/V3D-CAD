@@ -38074,8 +38074,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.82';
+const VOLME3D_VERSION = '1.15.83';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.83', date:'2026-09-09', changes:[
+    ['\u{1F56F}\uFE0F','<b>Wickeln geht jetzt auch auf eigenen STLs und auf schr\u00e4gen W\u00e4nden.</b> Zwei L\u00fccken sind weg. Erstens: Bei <b>selbst hochgeladenen STL-Dateien</b> erschien nur \u201eAuf Fl\u00e4che heften\u201c, nie \u201eUm Rundung wickeln\u201c. Grund: solche Modelle bringen die Koordinaten aus ihrer Datei mit, ihre Drehachse liegt also irgendwo im Raum \u2014 gesucht wurde sie aber immer in der Mitte. Jetzt wird die Achse aus der Form selbst berechnet, egal wo das Modell steht; auch <b>liegende</b> Rohre und sehr fein aufgel\u00f6ste Modelle (\u00fcber eine Million Dreiecke) werden erkannt. Zweitens: Auf einer <b>konischen Wand</b> \u2014 Becher, Vase, alles was oben weiter ist als unten \u2014 lag das Motiv vorher nur zur H\u00e4lfte an, weil es einer geraden Dose folgte. Jetzt wird die Wand \u00fcber die H\u00f6he des Motivs abgetastet: die Gravur ist oben, unten und in der Mitte <b>gleich tief</b>, auch auf bauchigen Formen. Gemeldet von Josy.'],
+  ]},
   { version:'1.15.82', date:'2026-09-09', changes:[
     ['\u{1F56F}\uFE0F','<b>Motive lassen sich jetzt um Rundungen wickeln \u2014 f\u00fcr Windlichter, Vasen und Becher.</b> Ein SVG auf einen runden K\u00f6rper zu legen hat es bisher <b>flach angeklebt</b>, wie ein Aufkleber auf einer Dose: in der Mitte lag es an, zu den R\u00e4ndern hin stand es ab. Beim Gravieren wurde die Vertiefung deshalb in der Mitte tief und lief au\u00dfen aus \u2014 bei breiten Motiven fehlten die R\u00e4nder ganz. Jetzt wird das Motiv <b>um die Rundung gebogen</b>: die Gravur ist \u00fcberall gleich tief. So geht es: SVG einf\u00fcgen, mit der Maus auf die runde Wand ziehen \u2014 sobald <b>\u21a9 Um Rundung wickeln</b> erscheint, loslassen. Dann das Motiv als <b>Bohrung</b> markieren, beides ausw\u00e4hlen und <b>Abziehen</b> klicken. Im Fenster <i>Gravur einstellen</i> die Tiefe w\u00e4hlen: bei 2 mm Wand sind 1,2 mm ein guter Wert \u2014 dann bleiben 0,8 mm stehen, die das Licht durchscheinen lassen. Wer lieber ein echtes Fenster will, nimmt <b>Durchbruch</b>; mit dem Regler nach links steht das Motiv erhaben aus der Wand (dann anschlie\u00dfend <i>Vereinen</i> klicken). Das Ausschneiden passiert komplett hier \u2014 der Slicer bekommt ein fertiges, dichtes Modell und muss die SVG gar nicht mehr anfassen. Gew\u00fcnscht von Josy und Ralf.'],
   ]},
@@ -39091,12 +39094,114 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
 // Ein flaches SVG-Prisma tangential auf einen Zylinder zu heften macht die
 // Gravur in der Mitte tief und an den Rändern flach (Windlicht!). Hier wird das
 // Motiv stattdessen um die Rotationsachse gebogen: die Tiefe bleibt über die
-// ganze Breite gleich, weil jeder Punkt denselben radialen Abstand zur Wand hat.
-let _svgWrapCache = null;   // Probe läuft über alle Vertices → nicht pro Mausbewegung
+// ganze Breite gleich, weil jeder Punkt denselben Abstand zur Wand hat.
+// Der Radius wird dabei über die Höhe mitgeführt — auf einem Becher, der sich
+// nach unten verjüngt, liegt das Motiv sonst nur zur Hälfte an.
+let _svgWrapCache = null;   // Probe läuft über alle Dreiecke → nicht pro Mausbewegung
 
-// Erkennt, ob die geklickte Stelle auf einer Mantelfläche liegt, die um die
-// lokale Y-Achse des Meshes rotationssymmetrisch ist. Liefert Achse + Radius
-// AM TREFFERPUNKT (nicht gemittelt — bei Hohlkörpern lägen sonst Innen- und
+// Querschnitt: alle Kanten mit der Ebene (Achse ax = h) schneiden. Vertices
+// allein reichen nicht — ein Zylindermantel hat sie nur oben und unten.
+// Liefert ein flaches Array [a1,a2, a1,a2, …] in den beiden anderen Achsen.
+function _svgWrapSection(pos, idx, nTri, ax, h) {
+  const c1 = (ax + 1) % 3, c2 = (ax + 2) % 3;
+  const g = (i, c) => c === 0 ? pos.getX(i) : c === 1 ? pos.getY(i) : pos.getZ(i);
+  const out = [];
+  const tri = [0, 0, 0];
+  // Feine Kunst-STLs haben schnell Millionen Dreiecke. Für einen Querschnitt
+  // reichen ein paar Dutzend Punkte — also nur jedes n-te Dreieck ansehen,
+  // statt das Wickeln bei großen Netzen ganz zu verweigern.
+  const step = Math.max(1, Math.ceil(nTri / 150000));
+  for (let t = 0; t < nTri; t += step) {
+    tri[0] = idx ? idx[t*3] : t*3; tri[1] = idx ? idx[t*3+1] : t*3+1; tri[2] = idx ? idx[t*3+2] : t*3+2;
+    for (let e = 0; e < 3; e++) {
+      const a = tri[e], b = tri[(e+1) % 3];
+      const ha = g(a, ax), hb = g(b, ax);
+      if ((ha - h) * (hb - h) > 0 || ha === hb) continue;
+      const f = (h - ha) / (hb - ha);
+      out.push(g(a, c1) + (g(b, c1) - g(a, c1)) * f,
+               g(a, c2) + (g(b, c2) - g(a, c2)) * f);
+    }
+  }
+  return out;
+}
+
+// Kreismittelpunkt per Least-Squares (Kåsa). Nötig, weil bei importierten STLs
+// die Drehachse NICHT durch den lokalen Ursprung geht — das Modell behält die
+// Koordinaten aus der Datei. Genau daran scheiterte „Um Rundung wickeln“ bei
+// eigenen STLs, während vorgegebene Formen (um 0 gebaut) funktionierten.
+function _fitCircle2D(P) {
+  const n = P.length / 2;
+  if (n < 3) return null;
+  let mx = 0, my = 0;
+  for (let i = 0; i < P.length; i += 2) { mx += P[i]; my += P[i+1]; }
+  mx /= n; my /= n;
+  let suu = 0, svv = 0, suv = 0, suuu = 0, svvv = 0, suvv = 0, svuu = 0;
+  for (let i = 0; i < P.length; i += 2) {
+    const u = P[i] - mx, v = P[i+1] - my;
+    suu += u*u; svv += v*v; suv += u*v;
+    suuu += u*u*u; svvv += v*v*v; suvv += u*v*v; svuu += v*u*u;
+  }
+  const det = 2 * (suu * svv - suv * suv);
+  if (Math.abs(det) < 1e-12) return null;
+  const uc = (svv * (suuu + suvv) - suv * (svvv + svuu)) / det;
+  const vc = (suu * (svvv + svuu) - suv * (suuu + suvv)) / det;
+  return { x: mx + uc, y: my + vc };
+}
+
+// Ring an einer Höhe: Achse (Zentrum) und Radius am Trefferpunkt bestimmen.
+// Startpunkt ist der Schwerpunkt des Querschnitts — bei rotationssymmetrischen
+// Körpern liegt der schon auf der Achse, auch wenn Innenwand und Boden mitreden.
+function _svgWrapRing(pos, idx, nTri, ax, h, q1, q2) {
+  let pts = _svgWrapSection(pos, idx, nTri, ax, h);
+  if (pts.length < 32) return null;
+  let c = _fitCircle2D(pts) || { x: 0, y: 0 };
+  let rHit = 0;
+  for (let it = 0; it < 2; it++) {
+    rHit = Math.hypot(q1 - c.x, q2 - c.y);
+    if (!(rHit > 1e-4)) return null;
+    const tol = rHit * 0.035;              // enger als die dünnste sinnvolle Wand
+    const keep = [];
+    for (let i = 0; i < pts.length; i += 2)
+      if (Math.abs(Math.hypot(pts[i] - c.x, pts[i+1] - c.y) - rHit) <= tol)
+        keep.push(pts[i], pts[i+1]);
+    if (keep.length < 32) return null;     // getroffene Wandseite zu dünn besetzt
+    pts = keep;
+    const c2 = _fitCircle2D(pts);
+    if (c2) c = c2;
+  }
+  rHit = Math.hypot(q1 - c.x, q2 - c.y);
+  const sect = new Set();
+  let n = 0, rMax = -Infinity;
+  for (let i = 0; i < pts.length; i += 2) {
+    const dx = pts[i] - c.x, dy = pts[i+1] - c.y;
+    const r = Math.hypot(dx, dy);
+    if (Math.abs(r - rHit) > rHit * 0.035) continue;
+    n++; if (r > rMax) rMax = r;
+    sect.add(Math.floor((Math.atan2(dy, dx) + Math.PI) / (Math.PI / 6)));   // 30°-Sektoren
+  }
+  // Rund = genug Schnittpunkte auf gleichem Radius über mindestens ein Drittel des Umfangs
+  if (n < 16 || sect.size < 5) return null;
+  return { c1: c.x, c2: c.y, R: rHit, rMax };
+}
+
+// Radius allein an einer Höhe (fürs Profil) — verfolgt die Wand ausgehend vom
+// zuletzt bekannten Radius, damit bei Hohlkörpern nicht auf die Innenwand
+// gesprungen wird. Median statt Mittelwert: robust gegen Ausreißer an Kanten.
+function _svgWrapRadiusAt(pos, idx, nTri, ax, h, c1, c2, rPrev) {
+  const pts = _svgWrapSection(pos, idx, nTri, ax, h);
+  const rs = [];
+  for (let i = 0; i < pts.length; i += 2) {
+    const r = Math.hypot(pts[i] - c1, pts[i+1] - c2);
+    if (Math.abs(r - rPrev) <= rPrev * 0.15) rs.push(r);
+  }
+  if (rs.length < 8) return null;
+  rs.sort((a, b) => a - b);
+  return rs[rs.length >> 1];
+}
+
+// Erkennt, ob die geklickte Stelle auf einer Mantelfläche liegt, die sich um
+// eine der drei lokalen Achsen dreht. Liefert Achse, Achsenpunkt und Radius AM
+// TREFFERPUNKT (nicht gemittelt — bei Hohlkörpern lägen sonst Innen- und
 // Außenwand im selben Topf und der Radius wäre um die halbe Wandstärke daneben).
 function _svgWrapProbe(mesh, hitPointWorld) {
   if (!mesh || !mesh.isMesh || !mesh.geometry) return null;
@@ -39105,67 +39210,83 @@ function _svgWrapProbe(mesh, hitPointWorld) {
   if (!pos || pos.count < 24) return null;
   const idx = geo.index ? geo.index.array : null;
   const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
-  if (nTri > 300000) return null;             // Riesennetz nicht bei jedem Zug scannen
+  if (nTri > 4000000) return null;            // jenseits davon wird auch das Abtasten zäh
   mesh.updateMatrixWorld(true);
   const pL = mesh.worldToLocal(hitPointWorld.clone());
-  const rHit = Math.hypot(pL.x, pL.z);
-  if (rHit < 1e-3) return null;
-  const key = mesh.uuid + '|' + Math.round(pL.y * 100) + '|' + Math.round(rHit * 100)
+  const key = mesh.uuid + '|' + [pL.x, pL.y, pL.z].map(v => Math.round(v * 100)).join(',')
             + '|' + mesh.matrixWorld.elements.map(v => Math.round(v * 1e4)).join(',');
   if (_svgWrapCache && _svgWrapCache.key === key) return _svgWrapCache.res;
 
-  // Querschnitt in der Ebene y = Trefferhöhe: Kanten schneiden statt Vertices sammeln.
-  // Ein Zylindermantel hat nur oben und unten Vertices — ein Vertex-Band fände nichts.
-  const y0 = pL.y, tol = rHit * 0.035;   // enger als die dünnste sinnvolle Wand
-  const sect = new Set();
-  let n = 0, rMin = Infinity, rMax = -Infinity;
-  const tri = [0, 0, 0];
-  for (let t = 0; t < nTri; t++) {
-    tri[0] = idx ? idx[t*3] : t*3; tri[1] = idx ? idx[t*3+1] : t*3+1; tri[2] = idx ? idx[t*3+2] : t*3+2;
-    for (let e = 0; e < 3; e++) {
-      const a = tri[e], b = tri[(e+1) % 3];
-      const ya = pos.getY(a), yb = pos.getY(b);
-      if ((ya - y0) * (yb - y0) > 0 || ya === yb) continue;   // Kante schneidet die Ebene nicht
-      const f = (y0 - ya) / (yb - ya);
-      const x = pos.getX(a) + (pos.getX(b) - pos.getX(a)) * f;
-      const z = pos.getZ(a) + (pos.getZ(b) - pos.getZ(a)) * f;
-      const r = Math.hypot(x, z);
-      if (Math.abs(r - rHit) > tol) continue;   // nur die getroffene Wandseite
-      n++; if (r < rMin) rMin = r; if (r > rMax) rMax = r;
-      sect.add(Math.floor((Math.atan2(z, x) + Math.PI) / (Math.PI / 6)));   // 30°-Sektoren
-    }
-  }
+  const sc = [Math.abs(mesh.scale.x), Math.abs(mesh.scale.y), Math.abs(mesh.scale.z)];
+  const loc = [pL.x, pL.y, pL.z];
   let res = null;
-  // Rund = genug Schnittpunkte auf gleichem Radius über mindestens ein Drittel des Umfangs
-  if (n >= 16 && sect.size >= 5) {
-    const sx = Math.abs(mesh.scale.x), sz = Math.abs(mesh.scale.z);
-    if (Math.abs(sx - sz) <= 0.02 * Math.max(sx, sz)) {   // oval lässt sich nicht sauber wickeln
-      const f = (sx + sz) / 2;
-      res = {
-        axisDir: new THREE.Vector3(0, 1, 0).transformDirection(mesh.matrixWorld).normalize(),
-        axisPt:  mesh.localToWorld(new THREE.Vector3(0, y0, 0)),
-        R:       rHit * f,
-        // Grobe Facettierung: der Kantenkreis liegt weiter außen als der Trefferpunkt.
-        // Der Überstand muss das mitnehmen, sonst sinkt das Motiv an den Ecken ein.
-        epsMm:   0.2 + Math.max(0, rMax - rHit) * f * 10
-      };
-    }
+  // Y zuerst: aufrecht stehende Körper sind der Normalfall. Liegende Rohre
+  // (importierte STLs stehen nicht immer) werden über X/Z noch gefunden.
+  for (const ax of [1, 0, 2]) {
+    const c1 = (ax + 1) % 3, c2 = (ax + 2) % 3;
+    if (Math.abs(sc[c1] - sc[c2]) > 0.02 * Math.max(sc[c1], sc[c2])) continue;   // oval
+    const ring = _svgWrapRing(pos, idx, nTri, ax, loc[ax], loc[c1], loc[c2]);
+    if (!ring) continue;
+    const f = (sc[c1] + sc[c2]) / 2;
+    const axisL = new THREE.Vector3(ax === 0 ? 1 : 0, ax === 1 ? 1 : 0, ax === 2 ? 1 : 0);
+    const ptL = new THREE.Vector3();
+    ptL.setComponent(ax, loc[ax]); ptL.setComponent(c1, ring.c1); ptL.setComponent(c2, ring.c2);
+    res = {
+      mesh, ax, cen: [ring.c1, ring.c2], scaleF: f,
+      axisDir: axisL.transformDirection(mesh.matrixWorld).normalize(),
+      axisPt:  mesh.localToWorld(ptL.clone()),
+      R:       ring.R * f,
+      // Grobe Facettierung: der Kantenkreis liegt weiter außen als der Trefferpunkt.
+      // Der Überstand muss das mitnehmen, sonst sinkt das Motiv an den Ecken ein.
+      epsMm:   0.2 + Math.max(0, ring.rMax - ring.R) * f * 10
+    };
+    break;
   }
   _svgWrapCache = { key, res };
   return res;
 }
 
-// Netz an festen Ebenen u = k·du zerschneiden, damit der Bogen fein genug wird.
-// Die Ebenen sind global und jeder Kantenschnitt wird gecacht → Nachbardreiecke
-// bekommen exakt denselben Punkt, das Netz bleibt wasserdicht. (Die Längste-Kante-
-// Teilung aus _tessellateForWarp hinterlässt T-Stöße; Manifold quittiert das mit
-// „Not manifold" und OCCT verschluckt sich beim Sewing.)
-function _svgWrapSliceU(geo, du) {
+// Radiusverlauf über die Motivhöhe abtasten (Kegel, Becher, Vase). Ohne das
+// folgt das Motiv einem geraden Zylinder und steht auf einer konischen Wand
+// oben oder unten ab — Josys „nur halb drauf“.
+// Rückgabe: [[h, R], …] in Szene-Einheiten, h relativ zum Anker.
+function _svgWrapSampleProfile(probe, halfHeightU, steps) {
+  const mesh = probe.mesh;
+  if (!mesh || !mesh.geometry) return null;
+  const pos = mesh.geometry.attributes.position;
+  const idx = mesh.geometry.index ? mesh.geometry.index.array : null;
+  const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
+  const ax = probe.ax, f = probe.scaleF;
+  const hAxis = mesh.worldToLocal(probe.axisPt.clone()).getComponent(ax);
+  const rLocal = probe.R / f;
+  const spanL = (halfHeightU * 1.15) / (f || 1);      // lokale Halbhöhe des Motivs
+  const out = [[0, probe.R]];
+  for (const dir of [1, -1]) {
+    let rPrev = rLocal;
+    for (let i = 1; i <= steps; i++) {
+      const dh = dir * spanL * i / steps;
+      const r = _svgWrapRadiusAt(pos, idx, nTri, ax, hAxis + dh, probe.cen[0], probe.cen[1], rPrev);
+      if (r == null) break;                            // Rand des Körpers erreicht
+      rPrev = r;
+      out.push([dh * f, r * f]);
+    }
+  }
+  out.sort((a, b) => a[0] - b[0]);
+  return out.length >= 3 ? out : null;
+}
+
+// Netz an festen Ebenen zerschneiden (ci = 0 → Umfang u, 1 → Höhe h), damit der
+// Bogen fein genug wird. Die Ebenen sind global und jeder Kantenschnitt wird
+// gecacht → Nachbardreiecke bekommen exakt denselben Punkt, das Netz bleibt
+// wasserdicht. (Die Längste-Kante-Teilung aus _tessellateForWarp hinterlässt
+// T-Stöße; Manifold quittiert das mit „Not manifold“, OCCT verschluckt sich
+// beim Sewing.)
+function _svgWrapSlice(geo, du, ci) {
   const posAttr = geo.attributes.position;
   const P = Array.from(posAttr.array);
   const idxArr = geo.index ? geo.index.array : null;
   const nTri = Math.floor((idxArr ? idxArr.length : posAttr.count) / 3);
-  const U = i => P[i * 3];
+  const U = i => P[i * 3 + ci];
   const cache = new Map();
   const cut = (a, b, k) => {
     const lo = Math.min(a, b), hi = Math.max(a, b);   // immer gleiche Rechenrichtung
@@ -39181,7 +39302,7 @@ function _svgWrapSliceU(geo, du) {
     return v;
   };
   // Auf welcher Original-Kante liegt die Polygonkante p→q? (null = Schnittkante,
-  // die liegt in einer u-Ebene und kann keine weitere Ebene schneiden)
+  // die liegt in einer Ebene und kann keine weitere schneiden)
   const origEdge = (p, q) => {
     if (!p.e && !q.e) return [p.i, q.i];
     if (p.e && !q.e)  return (q.i === p.e[0] || q.i === p.e[1]) ? p.e : null;
@@ -39230,7 +39351,7 @@ function _svgWrapSliceU(geo, du) {
 }
 
 // Baut die gebogene Geometrie im Zylinder-Frame (lokal X = radial zum Anker,
-// Y = Achse, Z = tangential). spec: { R, depthMm, epsMm, s:{x,y,z} }
+// Y = Achse, Z = tangential). spec: { R, depthMm, epsMm, s:{x,y,z}, profile }
 // depthMm > 0 = vertieft (Gravur), < 0 = erhaben (steht aus der Wand raus).
 function _svgWrapBuildGeo(ud, spec) {
   const flat = _svgRebuildGeo({
@@ -39249,6 +39370,7 @@ function _svgWrapBuildGeo(ud, spec) {
   const bb = flat.boundingBox;
   const uMid = (bb.min.x + bb.max.x) / 2, hMid = (bb.min.y + bb.max.y) / 2;
   const d0 = bb.min.z, dSpan = Math.max(1e-6, bb.max.z - bb.min.z);
+  const halfH = (bb.max.y - bb.min.y) / 2;
   // Dicke neu abbilden: Außenfläche steht eps über der Wand (sauberer Boolean),
   // Innenfläche liegt exakt depthMm tief → Gravurtiefe unabhängig von der SVG-Dicke.
   const eps = (spec.epsMm != null ? spec.epsMm : 0.2) / 10;
@@ -39260,22 +39382,57 @@ function _svgWrapBuildGeo(ud, spec) {
              dIn + (P.getZ(i) - d0) / dSpan * (dOut - dIn));
   }
   flat.deleteAttribute('normal'); flat.deleteAttribute('uv');
-  // Nur in Umfangsrichtung unterteilen — in Höhe und Tiefe ist der Warp linear.
-  const R = Math.max(1e-4, spec.R);
-  const tess = _svgWrapSliceU(flat, R * Math.PI / 60);   // ~3° pro Streifen
+
+  // Radius über die Höhe: konstanter Zylinder oder abgetastetes Profil
+  const prof = (spec.profile && spec.profile.length >= 2) ? spec.profile : null;
+  const R0 = Math.max(1e-4, spec.R);
+  const radiusAt = h => {
+    if (!prof) return R0;
+    if (h <= prof[0][0]) return prof[0][1];
+    const last = prof[prof.length - 1];
+    if (h >= last[0]) return last[1];
+    for (let i = 1; i < prof.length; i++) {
+      if (h <= prof[i][0]) {
+        const [h0, r0] = prof[i-1], [h1, r1] = prof[i];
+        return r0 + (r1 - r0) * (h - h0) / Math.max(1e-9, h1 - h0);
+      }
+    }
+    return last[1];
+  };
+  // Wandneigung: bei einer schrägen Wand ist der radiale Abstand größer als der
+  // senkrechte → Tiefe entsprechend strecken, sonst graviert es zu flach.
+  const slopeAt = h => {
+    if (!prof) return 0;
+    const e = Math.max(1e-4, Math.abs(prof[prof.length-1][0] - prof[0][0]) / 64);
+    return (radiusAt(h + e) - radiusAt(h - e)) / (2 * e);
+  };
+  let rMinProf = R0;
+  if (prof) for (const p of prof) rMinProf = Math.min(rMinProf, p[1]);
+
+  // In Umfangsrichtung immer unterteilen (~3°), in der Höhe nur bei schräger
+  // oder gewölbter Wand — dort ist der Warp sonst eine Sehne durch die Krümmung.
+  let work = _svgWrapSlice(flat, Math.max(1e-4, rMinProf) * Math.PI / 60, 0);
   flat.dispose();
-  const src = tess.attributes.position;
+  if (prof) {
+    const sliced = _svgWrapSlice(work, Math.max(1e-4, halfH * 2) / 16, 1);
+    work.dispose(); work = sliced;
+  }
+  const src = work.attributes.position;
   const out = new Float32Array(src.count * 3);
   for (let i = 0; i < src.count; i++) {
-    const th = src.getX(i) / R, rr = R + src.getZ(i);
+    const u = src.getX(i), h = src.getY(i), d = src.getZ(i);
+    const Rh = radiusAt(h);
+    const k = slopeAt(h);
+    const th = u / Rh;
+    const rr = Rh + d * Math.sqrt(1 + k * k);
     out[i * 3]     = rr * Math.cos(th);
-    out[i * 3 + 1] = src.getY(i);
+    out[i * 3 + 1] = h;
     out[i * 3 + 2] = rr * Math.sin(th);
   }
   const bent = new THREE.BufferGeometry();
   bent.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
-  if (tess.index) bent.setIndex(new THREE.BufferAttribute(tess.index.array.slice(), 1));
-  tess.dispose();
+  if (work.index) bent.setIndex(new THREE.BufferAttribute(work.index.array.slice(), 1));
+  work.dispose();
   const result = _computeCreasedNormals(bent, Math.PI / 3);
   bent.dispose();
   result.computeBoundingBox(); result.computeBoundingSphere();
@@ -39304,8 +39461,11 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
   const w0 = svgMesh.userData._svgWrap;
   const s = w0 ? _svgWrapAbsorbScale(svgMesh, w0.s)
                : { x: svgMesh.scale.x, y: svgMesh.scale.y, z: svgMesh.scale.z };
+  // Motivhöhe abschätzen, um das Wandprofil über genau diesen Bereich abzutasten
+  const halfH = _svgWrapHalfHeight(svgMesh.userData, s);
+  const profile = probe.mesh ? _svgWrapSampleProfile(probe, halfH, 6) : null;
   const spec = { R: probe.R, depthMm: svgMesh.userData.svgDepth || 3,
-                 epsMm: probe.epsMm != null ? probe.epsMm : 0.2, s };
+                 epsMm: probe.epsMm != null ? probe.epsMm : 0.2, s, profile };
   const geo = _svgWrapBuildGeo(svgMesh.userData, spec);
   svgMesh.geometry.dispose();
   svgMesh.geometry = geo;
@@ -39323,13 +39483,27 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
   return true;
 }
 
+// Halbe Motivhöhe in Szene-Einheiten (ohne die Geometrie zu bauen)
+function _svgWrapHalfHeight(ud, s) {
+  const flat = _svgRebuildGeo({
+    type: 'svg', _svgPathData: ud._svgPathData, _svgTransformM: ud._svgTransformM,
+    svgSize: ud.svgSize, svgMode: 'extrude', isHole: true,
+    svgDepth: Math.max(0.5, Math.abs(ud.svgDepth || 3))
+  });
+  flat.computeBoundingBox();
+  const bb = flat.boundingBox;
+  const h = (bb.max.z - bb.min.z) * Math.abs(s.z) / 2;   // SVG-lokal: Z = Motivhöhe
+  flat.dispose();
+  return Math.max(0.05, h);
+}
+
 // Gewickeltes Motiv mit neuer Tiefe neu biegen. 'through' = sicher durch die Wand
 // (Keil bis kurz vor die Achse — trifft die gegenüberliegende Wand nicht).
 function _svgWrapReshape(svgMesh, depthMm) {
   const w = svgMesh.userData._svgWrap;
   if (!w) return;
   const spec = { R: w.R, epsMm: w.epsMm != null ? w.epsMm : 0.2,
-                 s: _svgWrapAbsorbScale(svgMesh, w.s),
+                 s: _svgWrapAbsorbScale(svgMesh, w.s), profile: w.profile,
                  depthMm: depthMm === 'through' ? w.R * 9.8 : depthMm };
   const geo = _svgWrapBuildGeo(svgMesh.userData, spec);
   svgMesh.geometry.dispose();
