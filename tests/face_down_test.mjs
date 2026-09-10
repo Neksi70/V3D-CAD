@@ -261,6 +261,54 @@ for (const deg of [31, 17.5, 63.2]) {
   ok('bleibt an seiner Stelle', Math.abs(cxA - cxB) < 1e-3, { dx: +(cxA - cxB).toFixed(5) });
 }
 
+// ── 7) Nach dem Absetzen muss man das Teil SOFORT weiter bearbeiten können ──
+// Ralf (10.9.2026, 22:41): „Das drehen funktioniert, nur wenn ich jetzt die
+// Größe verändern möchte, dann verschwinden einfach die Punkte, wo ich dran
+// ziehen möchte." Der Modus blendet die Griffe aus (sie verdecken sonst die
+// Flächen) — beim Verlassen müssen sie wieder DA sein, nicht erst nach einem
+// erneuten Anklicken des Teils.
+{
+  console.log('\n— Griffe nach dem Absetzen —');
+  const cnt = () => pg.evaluate(() => {
+    const wrap = document.getElementById('dim-handles');
+    const all = [...wrap.children];
+    return { total: all.length,
+             sichtbar: all.filter(e => e.style.visibility !== 'hidden').length,
+             weiss: all.filter(e => e.className.includes('h-white')).length };
+  });
+
+  await pg.evaluate(() => {
+    objects.slice().forEach(o => scene.remove(o)); objects.length = 0;
+    const o = window._fdT.ramp(31);
+    selectObjs([o]);
+    _doRepositionDimHandles();
+  });
+  const vorher = await cnt();
+  ok('vor dem Werkzeug sind Griffe da', vorher.total > 0, vorher);
+
+  // Modus per Knopf, dann per Esc verlassen (Abbruch-Weg)
+  await pg.click('button[onclick="toggleFaceDown()"]');
+  await pg.keyboard.press('Escape');
+  await pg.evaluate(() => _doRepositionDimHandles());
+  const nachEsc = await cnt();
+  ok('nach Abbruch mit Esc sind die Griffe wieder da', nachEsc.total > 0, nachEsc);
+  ok('nach Abbruch sind auch Eck-Griffe zum Skalieren da', nachEsc.weiss > 0, nachEsc);
+
+  // Und jetzt der Weg, den Ralf gegangen ist: Fläche wirklich anklicken
+  await pg.evaluate(() => {
+    const o = objects[objects.length - 1];
+    selectObjs([o]);
+    toggleFaceDown();
+    window._fdPlaceOnFace(o, new THREE.Vector3(1, 0, 0));  // irgendeine Seitenfläche
+    updateTFInputs(); _doRepositionDimHandles(); exitFaceDownMode();
+    _doRepositionDimHandles();
+  });
+  const nachKlick = await cnt();
+  ok('nach dem Absetzen sind die Griffe wieder da', nachKlick.total > 0, nachKlick);
+  ok('nach dem Absetzen kann man sofort skalieren (weiße Ecken da)', nachKlick.weiss > 0, nachKlick);
+  ok('nach dem Absetzen sind Griffe auch SICHTBAR', nachKlick.sichtbar > 0, nachKlick);
+}
+
 ok('keine JS-Fehler auf der Seite', pageErrors.length === 0, pageErrors.slice(0, 3));
 
 await b.close();
