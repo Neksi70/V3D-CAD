@@ -25370,6 +25370,16 @@ function _applyTextSnapOnDrop() {
     const st = selectedObjs[0].userData.shapeType;
     if (st === 'text')     _applyTextConform(selectedObjs[0], _textSnapTarget);
     else if (st === 'svg') _applySvgSnap(selectedObjs[0], _textSnapTarget);
+  } else if (selectedObjs.length === 1) {
+    // Gewickeltes Motiv vom Körper heruntergezogen: wieder flach bauen. Sonst
+    // behält es die Rundung des alten Körpers, und beim nächsten Auflegen steht
+    // es ab (gemeldet von Josy 10.9.).
+    const o = selectedObjs[0];
+    if (o.userData.shapeType === 'svg' && o.userData._svgWrap && !o.userData.locked
+        && !_svgWrapOnWall(o) && _svgWrapFlatten(o)) {
+      updateTFInputs(); updateTree(); updateCtxPopup();
+      notify('SVG wieder flach — es liegt auf keiner Rundung mehr', 'ok');
+    }
   }
   _textSnapTarget = null;
   const hint = document.getElementById('text-snap-hint');
@@ -38122,8 +38132,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.88';
+const VOLME3D_VERSION = '1.15.89';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.89', date:'2026-09-10', changes:[
+    ['\u{1F41B}','<b>Ein gewickeltes Motiv l\u00e4sst sich wieder herunternehmen \u2014 und liegt danach flach.</b> Wer ein Motiv einmal um eine Rundung gewickelt hatte, bekam es kaum mehr davon herunter: Beim Ziehen glitt es einfach weiter <b>auf</b> dem K\u00f6rper. Und blieb es doch einmal liegen, war es <b>immer noch gebogen</b> \u2014 mit der Rundung des ersten K\u00f6rpers. Legte man es dann erneut auf, <b>stand es ab</b>, weil die alte Kr\u00fcmmung nicht zur neuen Wand passte. Jetzt gilt: Ziehst du das Motiv <b>deutlich neben den K\u00f6rper</b> (oder weit \u00fcber die Kante einer Fl\u00e4che hinaus), l\u00f6st es sich und liegt wieder <b>flach</b> vor dir \u2014 bereit f\u00fcr die n\u00e4chste Stelle. Kleine Bewegungen \u00fcber die Kante halten es weiterhin am Rand fest, und beim Drehen um einen Zylinder darfst du den Zeiger \u00fcber den Umriss hinausziehen, ohne dass es abrei\u00dft. Legst du es wieder auf, nimmt es die Rundung des neuen K\u00f6rpers an \u2014 auch wenn es derselbe ist wie vorher. Gemeldet von Josy.'],
+  ]},
   { version:'1.15.88', date:'2026-09-10', changes:[
     ['\u{1F56F}\uFE0F','<b>Auf Bechern und Vasen bleibt das Motiv jetzt an der Wand, egal auf welcher H\u00f6he \u2014 und es liegt von Anfang an ganz drauf.</b> Bei einer <b>konischen</b> Wand ist der Umfang oben ein anderer als unten. Verschob man das gewickelte Motiv in der H\u00f6he \u2014 mit <i>Exakt versetzen</i>, \u00fcber die Positionsfelder, mit den Pfeiltasten oder am Pfeil-Gizmo \u2014, behielt es aber den Radius der alten Stelle: Es <b>versank in der Wand</b> oder stand mit einer <b>sichtbaren L\u00fccke</b> davor (nachgemessen: 35 mm h\u00f6her = 5,4 mm zu tief). Jetzt wird die Wand an der neuen H\u00f6he nachgemessen und das Motiv umgebogen; bei geraden Rohren \u00e4ndert sich nichts, da wird auch nichts neu gerechnet. <b>Zweitens:</b> Klickte man beim Wickeln nah an den oberen oder unteren Rand, ragte das Motiv zur H\u00e4lfte \u00fcber die Kante hinaus und man musste es umst\u00e4ndlich zurechtschieben. Es r\u00fcckt jetzt automatisch so weit ein, dass es <b>komplett auf dem K\u00f6rper</b> sitzt (ist das Motiv h\u00f6her als der K\u00f6rper, wird es mittig gesetzt). Gemeldet von Josy.'],
   ]},
@@ -39142,7 +39155,8 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
     // Liegt es schon auf GENAU dieser Rundung (z. B. Zug am Pfeil-Gizmo)? Dann
     // nur die Wand neu abtasten — sonst sprang das Motiv auf den Klickpunkt und
     // verlor jede selbst gesetzte Drehung.
-    if (svgMesh.userData._svgWrap && svgMesh.userData._wrapTarget === wrap.mesh) {
+    if (svgMesh.userData._svgWrap && svgMesh.userData._wrapTarget === wrap.mesh
+        && _svgWrapOnWall(svgMesh)) {
       _svgWrapRefresh(svgMesh, wrap);
       _svgSnapHit = null;
       updateTFInputs(); updateTree(); updateCtxPopup();
@@ -39161,16 +39175,7 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   // Vorher gewickelt? Beim Heften auf eine ebene Fläche wieder flach bauen —
   // sonst läge der gebogene Keil als Bogen auf dem Quader und der Abzug nähme
   // weiter den Wickel-Weg. Die Skalierung wandert aus der Biegung zurück.
-  if (svgMesh.userData._svgWrap) {
-    const s = _svgWrapAbsorbScale(svgMesh, svgMesh.userData._svgWrap.s);
-    const flat = _svgRebuildGeo(svgMesh.userData);
-    svgMesh.geometry.dispose();
-    svgMesh.geometry = flat;
-    svgMesh.scale.set(s.x, s.y, s.z);
-    delete svgMesh.userData._svgWrap;
-    delete svgMesh.userData._wrapTarget;
-    _updateObjEdgeLines(svgMesh);   // sonst zentriert die BBox unten auf den alten, gebogenen Kanten
-  }
+  _svgWrapFlatten(svgMesh);   // vorher gewickelt? Wieder flach bauen
 
   // Geometry-local normal (= STL-Koordinaten) + Klickpunkt für Server speichern
   svgMesh.userData._snapNormal = hit.face.normal.clone();
@@ -39404,6 +39409,21 @@ function _rayPlanePoint(ray, planePt, planeN) {
 
 // Schnitt mit dem unendlichen Zylinder. Zeigt die Maus neben den Körper, wird der
 // nächstgelegene Punkt genommen — sonst würde das Motiv am Rand hängenbleiben.
+// Wie weit verfehlt der Strahl den Zylinder? (0 = trifft) — fürs Loslassen
+function _rayCylinderMiss(ray, axisPt, axis, R) {
+  const o = ray.origin.clone().sub(axisPt), d = ray.direction;
+  const dp = d.clone().addScaledVector(axis, -axis.dot(d));
+  const op = o.clone().addScaledVector(axis, -axis.dot(o));
+  const A = dp.lengthSq();
+  if (A < 1e-12) return 0;
+  const B = 2 * dp.dot(op), C = op.lengthSq() - R * R;
+  const disc = B * B - 4 * A * C;
+  if (disc >= 0) return 0;
+  const t = -B / (2 * A);
+  const p = op.clone().addScaledVector(dp, t);        // achsnächster Punkt, radial
+  return Math.max(0, p.length() - R);
+}
+
 function _rayCylinderPoint(ray, axisPt, axis, R) {
   const o = ray.origin.clone().sub(axisPt), d = ray.direction;
   const dPar = axis.dot(d), oPar = axis.dot(o);
@@ -39449,9 +39469,37 @@ function _svgGlideEscaped(e) {
   const hits = raycaster.intersectObjects(
     objects.filter(o => o !== G.obj && !o.userData.isEdgeLines), true);
   const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines);
-  if (!hit) return false;                       // nichts im Blick → weitergleiten
   const rootOf = m => { let p = m; while (p && !objects.includes(p)) p = p.parent; return p || m; };
   const own = G.kind === 'flat' ? (G.fr.solid && G.fr.solid.mesh) : G.fr.target;
+  if (!hit) {
+    // Nichts im Blick: zieht der Nutzer deutlich neben den Körper, will er das
+    // Motiv HERUNTERNEHMEN — sonst klebte es unentrinnbar an seiner Rundung.
+    if (G.kind === 'wrap') {
+      // Großzügig: beim Drehen um den Körper verlässt der Zeiger dessen Umriss
+      // ständig kurz — erst ein deutlicher Zug daneben heißt "herunternehmen".
+      if (_rayCylinderMiss(raycaster.ray, G.fr.axisPt, G.fr.axis, G.fr.R) > Math.max(G.fr.R * 1.5, 2))
+        return true;
+      if (G.span) {   // weit über oder unter den Körper hinaus gezogen
+        const pz = _rayCylinderPoint(raycaster.ray, G.fr.axisPt, G.fr.axis, G.fr.R);
+        if (pz) {
+          const hz = _svgGlideCyl(pz, G.fr).h;
+          const luft = Math.max(G.span.half * 2, 0.5);
+          if (hz > G.span.hi + luft || hz < G.span.lo - luft) return true;
+        }
+      }
+      return false;
+    }
+    if (G.face && G.face.uMin != null) {
+      const p = _rayPlanePoint(raycaster.ray, G.fr.point, G.fr.n);
+      if (!p) return false;
+      const du = p.clone().sub(G.face.center).dot(G.fr.u);
+      const dv = p.clone().sub(G.face.center).dot(G.fr.v);
+      const luft = 0.5 * Math.max(G.face.uMax - G.face.uMin, G.face.vMax - G.face.vMin);
+      return du < G.face.uMin - luft || du > G.face.uMax + luft
+          || dv < G.face.vMin - luft || dv > G.face.vMax + luft;
+    }
+    return false;
+  }
   if (!own) return false;                       // Ziel unbekannt → beim Gleiten bleiben
   if (rootOf(hit.object) !== rootOf(own)) return true;
   if (G.kind === 'flat') {
@@ -40082,6 +40130,40 @@ function _svgWrapRefresh(svgMesh, probe) {
   return true;
 }
 
+// Ein gewickeltes Motiv wieder flach bauen. Die Skalierung wandert aus der
+// Biegung zurück in den Mesh-Scale.
+function _svgWrapFlatten(svgMesh) {
+  if (!svgMesh || !svgMesh.userData || !svgMesh.userData._svgWrap) return false;
+  const s = _svgWrapAbsorbScale(svgMesh, svgMesh.userData._svgWrap.s);
+  const flat = _svgRebuildGeo(svgMesh.userData);
+  svgMesh.geometry.dispose();
+  svgMesh.geometry = flat;
+  svgMesh.scale.set(s.x, s.y, s.z);
+  delete svgMesh.userData._svgWrap;
+  delete svgMesh.userData._wrapTarget;
+  _updateObjEdgeLines(svgMesh);   // sonst rechnet die BBox mit den alten, gebogenen Kanten
+  svgMesh.updateMatrixWorld(true);
+  return true;
+}
+
+// Sitzt das gewickelte Motiv überhaupt noch an seiner Wand? Liefert den Wandpunkt
+// oder null (heruntergezogen). Ohne diese Prüfung behielte ein weggezogenes Motiv
+// die Rundung des alten Körpers und stünde beim nächsten Auflegen ab (Josy 10.9.).
+function _svgWrapOnWall(o) {
+  const w = o && o.userData && o.userData._svgWrap;
+  const tgt = w && o.userData._wrapTarget;
+  if (!w || !tgt || !tgt.parent) return null;
+  const e1 = _svgWrapRadialDir(o);
+  const rc = new THREE.Raycaster();
+  rc.set(o.position.clone().addScaledVector(e1, w.R * 4 + 20), e1.clone().negate());
+  for (const h of rc.intersectObject(tgt, true)) {
+    if (!h.face || h.object.userData.isEdgeLines) continue;
+    const r = h.point.clone().sub(o.position).dot(e1);
+    return Math.abs(r - w.R) < Math.max(0.2, w.R * 0.25) ? h.point.clone() : null;
+  }
+  return null;
+}
+
 // Nach einer Höhenänderung OHNE Maus-Gleiten (exakt versetzen, Eingabefelder,
 // Pfeil-Gizmo, Pfeiltasten) die Wand an der neuen Stelle neu abtasten. Auf einer
 // konischen Wand (Becher, Vase, Windlicht) ändert sich der Radius mit der Höhe —
@@ -40094,7 +40176,9 @@ function _svgWrapFollowWall(o) {
   if (!w || o.userData.locked) return false;
   const tgt = _svgWrapTarget(o);
   if (!tgt) return false;
-  const probe = _svgWrapProbe(tgt, _svgWrapWallPoint(o, tgt, w.R));
+  const wandPunkt = _svgWrapOnWall(o);
+  if (!wandPunkt) return false;        // heruntergezogen — hier gibt es nichts nachzuführen
+  const probe = _svgWrapProbe(tgt, wandPunkt);
   if (!probe) return false;
   // Gerades Rohr: Radius bleibt gleich → nichts neu bauen. Sonst kostete jeder
   // Klick auf den Versetzen-Pfeil einen kompletten Neuaufbau der Geometrie.

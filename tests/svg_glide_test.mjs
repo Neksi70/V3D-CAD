@@ -74,12 +74,23 @@ const sp = await pg.evaluate(() => {
 console.log('   Oberflächenpunkt fürs Gravieren:', JSON.stringify(sp));
 check(Math.abs(sp.dz) < 0.01 && sp.dxy < 0.01, 'Gravur-Ankerpunkt sitzt nicht mehr unter dem Motiv');
 
-// 3) Randstopp: weit über die Kante hinausziehen
+// 3) Randstopp: etwas über die Kante hinausziehen — Motiv bleibt auf der Fläche
 await pg.mouse.click(cr.x, cr.y); await pg.waitForTimeout(120);
-h = await drag(await scr(s.c), await scr([-30, 20, 3]), 18);
-s = await state(); line('3. über die Kante ziehen', h, s);
+h = await drag(await scr(s.c), await scr([-11.8, 6.5, 3]), 14);
+s = await state(); line('3. knapp über die Kante', h, s);
 check(s.inFace, 'über die Flächenkante hinausgewandert');
 check(Math.abs(s.dzFront - dz0) < 0.01, 'Wandabstand verändert');
+
+// 3b) DEUTLICH wegziehen = herunternehmen (Josy: Motiv wieder abnehmen)
+await pg.mouse.click(cr.x, cr.y); await pg.waitForTimeout(120);
+h = await drag(await scr(s.c), await scr([-16, 9, 3]), 16);
+let sOff = await state(); line('3b. weit wegziehen', h, sOff);
+check(Math.abs(sOff.dzFront - dz0) > 0.3, 'klebt trotz weitem Zug an der Fläche');
+// und wieder anheften für die folgenden Schritte
+await pg.mouse.click(cr.x, cr.y); await pg.waitForTimeout(120);
+await drag(await scr(sOff.c), await scr([-8, 3, 3]));
+s = await state();
+check(s.snapped && Math.abs(s.dzFront - dz0) < 0.01, 'heftet danach nicht wieder sauber an');
 
 // 4) Zentrier-Knopf
 check(s.btn, 'Zentrier-Knopf nicht sichtbar');
