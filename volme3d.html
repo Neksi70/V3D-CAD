@@ -12776,6 +12776,7 @@ function applyTF(changed) {
   const g = id => parseFloat(document.getElementById(id).value) || 0;
   o.position.set(snapV(g('px')), snapV(g('py')), snapV(g('pz')));
   o.rotation.set(g('rx') * DEG, g('ry') * DEG, g('rz') * DEG);
+  _svgWrapFollowSel();          // gewickeltes Motiv folgt der Wand an der neuen Höhe
   if (_edgeMode && _edgeObj === o) {
     if (o.userData._occtParams) {
       const b = getMeshBox(o);
@@ -13870,6 +13871,7 @@ function _nudgeMove(ax, sign) {
   const v = parseFloat((document.getElementById('nudge-mm').value || '').replace(',', '.'));
   if (!isFinite(v) || v <= 0) { notify('Bitte gültige Schrittweite in mm eingeben (z. B. 3,5)', 'w'); return; }
   objs.forEach(o => { o.position[ax] += v / 10 * sign; });
+  _svgWrapFollowSel();          // gewickeltes Motiv folgt der Wand an der neuen Höhe
   updateTFInputs(); _doRepositionDimHandles();
   if (selectedObjs.length === 1) _fpPositionPanel();
 }
@@ -20634,16 +20636,16 @@ window.addEventListener('keydown', e => {
     if (k === '+' || k === '=') { e.preventDefault(); sph.r = Math.max(1.5, sph.r * 0.85); sph2cam(); return; }
     if (k === '-')              { e.preventDefault(); sph.r = Math.min(200, sph.r * 1.18); sph2cam(); return; }
     // Arrow up/down = move on Y axis (offenes Versetzen-Panel liefert die Schrittweite)
-    if (k === 'ArrowUp')   { e.preventDefault(); const s=_nudgeStep() ?? (snapGrid || 1); selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.y += s); updateTFInputs(); _doRepositionDimHandles(); return; }
-    if (k === 'ArrowDown') { e.preventDefault(); const s=_nudgeStep() ?? (snapGrid || 1); selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.y -= s); updateTFInputs(); _doRepositionDimHandles(); return; }
+    if (k === 'ArrowUp')   { e.preventDefault(); const s=_nudgeStep() ?? (snapGrid || 1); selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.y += s); _svgWrapFollowSel(); updateTFInputs(); _doRepositionDimHandles(); return; }
+    if (k === 'ArrowDown') { e.preventDefault(); const s=_nudgeStep() ?? (snapGrid || 1); selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.y -= s); _svgWrapFollowSel(); updateTFInputs(); _doRepositionDimHandles(); return; }
     return;
   }
 
   const mv = _nudgeStep() ?? (e.shiftKey ? 0.1 : (snapGrid || 1));
   if (k === 'ArrowLeft')  { selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.x -= mv); updateTFInputs(); _doRepositionDimHandles(); return; }
   if (k === 'ArrowRight') { selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.x += mv); updateTFInputs(); _doRepositionDimHandles(); return; }
-  if (k === 'ArrowUp')    { selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.z -= mv); updateTFInputs(); _doRepositionDimHandles(); return; }
-  if (k === 'ArrowDown')  { selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.z += mv); updateTFInputs(); _doRepositionDimHandles(); return; }
+  if (k === 'ArrowUp')    { selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.z -= mv); _svgWrapFollowSel(); updateTFInputs(); _doRepositionDimHandles(); return; }
+  if (k === 'ArrowDown')  { selectedObjs.filter(o=>!o.userData.locked).forEach(o => o.position.z += mv); _svgWrapFollowSel(); updateTFInputs(); _doRepositionDimHandles(); return; }
 
   switch (k.toLowerCase()) {
     case 'p':   toggleWorkplane(); break;
@@ -23155,6 +23157,7 @@ function _mgUp(e) {
   _mg.hover = 'reset'; _mgSetHover(null);   // Farben/Deckkraft zurücksetzen
   _mgMuteHandles(false);
   _applyTextSnapOnDrop();                  // Text/SVG ans Ziel schmiegen
+  _svgWrapFollowSel(0);                    // Wand an der neuen Höhe nachmessen
   updateTFInputs();
 }
 
@@ -38119,8 +38122,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.87';
+const VOLME3D_VERSION = '1.15.88';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.88', date:'2026-09-10', changes:[
+    ['\u{1F56F}\uFE0F','<b>Auf Bechern und Vasen bleibt das Motiv jetzt an der Wand, egal auf welcher H\u00f6he \u2014 und es liegt von Anfang an ganz drauf.</b> Bei einer <b>konischen</b> Wand ist der Umfang oben ein anderer als unten. Verschob man das gewickelte Motiv in der H\u00f6he \u2014 mit <i>Exakt versetzen</i>, \u00fcber die Positionsfelder, mit den Pfeiltasten oder am Pfeil-Gizmo \u2014, behielt es aber den Radius der alten Stelle: Es <b>versank in der Wand</b> oder stand mit einer <b>sichtbaren L\u00fccke</b> davor (nachgemessen: 35 mm h\u00f6her = 5,4 mm zu tief). Jetzt wird die Wand an der neuen H\u00f6he nachgemessen und das Motiv umgebogen; bei geraden Rohren \u00e4ndert sich nichts, da wird auch nichts neu gerechnet. <b>Zweitens:</b> Klickte man beim Wickeln nah an den oberen oder unteren Rand, ragte das Motiv zur H\u00e4lfte \u00fcber die Kante hinaus und man musste es umst\u00e4ndlich zurechtschieben. Es r\u00fcckt jetzt automatisch so weit ein, dass es <b>komplett auf dem K\u00f6rper</b> sitzt (ist das Motiv h\u00f6her als der K\u00f6rper, wird es mittig gesetzt). Gemeldet von Josy.'],
+  ]},
   { version:'1.15.87', date:'2026-09-10', changes:[
     ['\u{1F41B}','<b>Gewickelte Motive standen seitenverkehrt, auf hochgeladenen STLs sogar kopf\u00fcber \u2014 und sprangen beim Verschieben zur\u00fcck.</b> Vier Fehler auf einmal, alle beim Wickeln um eine Rundung, alle von Josy gemeldet. <b>Erstens:</b> Das Motiv wurde beim Biegen <b>gespiegelt</b> \u2014 von au\u00dfen betrachtet stand die Gravur seitenverkehrt. Bei symmetrischen Formen f\u00e4llt das nicht auf, bei einem Apfel mit Blatt oder bei Schrift sofort. <b>Zweitens:</b> Bei <b>selbst hochgeladenen STLs</b> stand das Motiv h\u00e4ufig <b>auf dem Kopf</b>. Grund: Solche Modelle bringen ihre Lage aus der Datei mit, ihre Drehachse zeigt dann nach unten statt nach oben \u2014 und das Motiv folgte ihr blind. Die Achse wird jetzt immer nach oben ausgerichtet (bei liegenden Rohren nach der Blickrichtung). Genau deshalb ging es bei den eingebauten K\u00f6rpern und bei eigenen STLs nicht. <b>Drittens:</b> Beim Verschieben auf der Rundung lief das Motiv der Maus <b>entgegen</b> \u2014 nach rechts gezogen wanderte es nach links (nachgemessen: 112 Pixel Zug \u2192 61 Pixel in die falsche Richtung). <b>Viertens:</b> Hatte man das Motiv selbst <b>schr\u00e4g gedreht</b>, sprang es beim n\u00e4chsten Verschieben in die aufrechte Lage zur\u00fcck \u2014 jedes Anfassen baute die Ausrichtung neu auf. Jetzt bleibt die Drehung, wie du sie gesetzt hast; nachgemessen wird nur noch die Wandst\u00e4rke an der neuen H\u00f6he. Gemeldet von Josy.'],
   ]},
@@ -39294,26 +39300,51 @@ function _svgFlatTarget(o) {
   return null;
 }
 
+// Radiale Richtung des Motivs (lokal X zeigt bei gewickelten Motiven nach außen)
+function _svgWrapRadialDir(o) {
+  o.updateMatrixWorld(true);
+  return new THREE.Vector3(1, 0, 0)
+    .applyQuaternion(o.getWorldQuaternion(new THREE.Quaternion())).normalize();
+}
+
 // Den umwickelten Körper wiederfinden (Referenz überlebt das Speichern nicht):
-// von der Drehachse nach außen strahlen, der Treffer muss beim Wickelradius liegen.
+// von AUSSEN auf die Wand strahlen. Von der Achse nach außen geht nicht — dort
+// zeigt die Wand dem Strahl ihre Rückseite, und die ignoriert der Raycaster.
 function _svgWrapTarget(o) {
   const ud = o.userData;
   if (ud._wrapTarget && ud._wrapTarget.parent) return ud._wrapTarget;
-  o.updateMatrixWorld(true);
-  const q = o.getWorldQuaternion(new THREE.Quaternion());
-  const e1 = new THREE.Vector3(1, 0, 0).applyQuaternion(q).normalize();
+  const e1 = _svgWrapRadialDir(o);
   const R = (ud._svgWrap && ud._svgWrap.R) || 1;
   const rc = new THREE.Raycaster();
-  rc.set(o.position.clone(), e1);
+  rc.set(o.position.clone().addScaledVector(e1, R * 4 + 20), e1.clone().negate());
   for (const h of rc.intersectObjects(objects.filter(x => x !== o), true)) {
     if (!h.face || h.object.userData.isEdgeLines || !h.object.isMesh) continue;
     let root = h.object; while (root && !objects.includes(root)) root = root.parent;
     if (root === o) continue;
-    if (Math.abs(h.distance - R) > Math.max(0.3, R * 0.5)) continue;
+    const rTreffer = h.point.clone().sub(o.position).length();
+    if (Math.abs(rTreffer - R) > Math.max(0.3, R * 0.6)) continue;
     ud._wrapTarget = h.object;
     return h.object;
   }
   return null;
+}
+
+// Punkt auf der Wand in Höhe des Motivs. Der gespeicherte Wickelradius taugt
+// dafür nicht: auf einer konischen Wand liegt er je nach Höhe daneben, und
+// _svgWrapRing wirft dann alles weg, was mehr als 3,5 % vom Trefferradius
+// abweicht (gemessen: 35 mm höher = 6,5 mm daneben → gar keine Erkennung mehr).
+function _svgWrapWallPointAt(achsPunkt, e1, tgt, R) {
+  const rc = new THREE.Raycaster();
+  rc.set(achsPunkt.clone().addScaledVector(e1, R * 4 + 20), e1.clone().negate());
+  for (const h of rc.intersectObject(tgt, true)) {
+    if (!h.face || h.object.userData.isEdgeLines) continue;
+    return h.point.clone();
+  }
+  return achsPunkt.clone().addScaledVector(e1, R);    // Notnagel: alter Radius
+}
+
+function _svgWrapWallPoint(o, tgt, R) {
+  return _svgWrapWallPointAt(o.position, _svgWrapRadialDir(o), tgt, R);
 }
 
 // Auf welcher Fläche/Rundung sitzt das Motiv? null = es klebt nirgends.
@@ -39544,11 +39575,7 @@ function _svgGlideEnd() {
   if (!G || !G.moved) return false;
   const o = G.obj;
   if (G.kind === 'wrap' && G.fr.target) {
-    o.updateMatrixWorld(true);
-    const e1 = new THREE.Vector3(1, 0, 0)
-      .applyQuaternion(o.getWorldQuaternion(new THREE.Quaternion())).normalize();
-    const onWall = o.position.clone().addScaledVector(e1, G.fr.R);
-    const probe = _svgWrapProbe(G.fr.target, onWall);
+    const probe = _svgWrapProbe(G.fr.target, _svgWrapWallPoint(o, G.fr.target, G.fr.R));
     if (probe) _svgWrapRefresh(o, probe);
   }
   updateTFInputs(); updateTree(); _doRepositionDimHandles();
@@ -39973,9 +40000,34 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
                : { x: svgMesh.scale.x, y: svgMesh.scale.y, z: svgMesh.scale.z };
   // Motivhöhe abschätzen, um das Wandprofil über genau diesen Bereich abzutasten
   const halfH = _svgWrapHalfHeight(svgMesh.userData, s);
-  const profile = probe.mesh ? _svgWrapSampleProfile(probe, halfH, 6) : null;
-  const spec = { R: probe.R, depthMm: svgMesh.userData.svgDepth || 3,
-                 epsMm: probe.epsMm != null ? probe.epsMm : 0.2, s, profile };
+  // Klick nah an der Kante: das Motiv würde zur Hälfte über den Rand hinausragen
+  // ("ist er ja nur halb", Josy 10.9.). Auf die Körperhöhe begrenzen, damit es
+  // ganz auf der Wand sitzt; ist der Körper kürzer als das Motiv, mittig setzen.
+  let pr = probe;
+  if (probe.mesh) {
+    const bb = new THREE.Box3().setFromObject(probe.mesh);
+    if (!bb.isEmpty()) {
+      let lo = Infinity, hi = -Infinity;
+      const cw = new THREE.Vector3();
+      for (let i = 0; i < 8; i++) {
+        cw.set(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z);
+        const t = cw.sub(c0).dot(a);
+        if (t < lo) lo = t;
+        if (t > hi) hi = t;
+      }
+      const dLo = lo + halfH, dHi = hi - halfH;
+      const dh = (dHi >= dLo) ? Math.max(dLo, Math.min(dHi, 0)) : (lo + hi) / 2;
+      if (Math.abs(dh) > 1e-4) {
+        c0.addScaledVector(a, dh);
+        // an der verschobenen Höhe ist die Wand ggf. weiter/enger → neu abtasten
+        const p2 = _svgWrapProbe(probe.mesh, _svgWrapWallPointAt(c0, e1, probe.mesh, probe.R));
+        if (p2) pr = p2;
+      }
+    }
+  }
+  const profile = pr.mesh ? _svgWrapSampleProfile(pr, halfH, 6) : null;
+  const spec = { R: pr.R, depthMm: svgMesh.userData.svgDepth || 3,
+                 epsMm: pr.epsMm != null ? pr.epsMm : 0.2, s, profile };
   const geo = _svgWrapBuildGeo(svgMesh.userData, spec);
   svgMesh.geometry.dispose();
   svgMesh.geometry = geo;
@@ -39983,7 +40035,7 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
   svgMesh.position.copy(c0);   // Ursprung auf der Achse → Drehen schiebt das Motiv um den Körper
   svgMesh.scale.set(1, 1, 1);
   svgMesh.userData._svgWrap = spec;
-  svgMesh.userData._wrapTarget = probe.mesh || null;   // für Gleiten/Zentrieren auf der Rundung
+  svgMesh.userData._wrapTarget = pr.mesh || probe.mesh || null;   // für Gleiten/Zentrieren
   _updateObjEdgeLines(svgMesh);
   // Der Prisma-Gravurweg (feste Tiefe entlang einer Normalen) gilt hier nicht mehr
   delete svgMesh.userData._snapNormal;
@@ -40028,6 +40080,37 @@ function _svgWrapRefresh(svgMesh, probe) {
   _updateObjEdgeLines(svgMesh);
   svgMesh.updateMatrixWorld(true);
   return true;
+}
+
+// Nach einer Höhenänderung OHNE Maus-Gleiten (exakt versetzen, Eingabefelder,
+// Pfeil-Gizmo, Pfeiltasten) die Wand an der neuen Stelle neu abtasten. Auf einer
+// konischen Wand (Becher, Vase, Windlicht) ändert sich der Radius mit der Höhe —
+// das Motiv steckte sonst in der Wand oder schwebte mit sichtbarer Lücke davor
+// (gemessen: 35 mm höher = 5,4 mm zu tief; Josy 10.9.).
+let _svgWrapFollowTimer = null;
+
+function _svgWrapFollowWall(o) {
+  const w = o && o.userData && o.userData._svgWrap;
+  if (!w || o.userData.locked) return false;
+  const tgt = _svgWrapTarget(o);
+  if (!tgt) return false;
+  const probe = _svgWrapProbe(tgt, _svgWrapWallPoint(o, tgt, w.R));
+  if (!probe) return false;
+  // Gerades Rohr: Radius bleibt gleich → nichts neu bauen. Sonst kostete jeder
+  // Klick auf den Versetzen-Pfeil einen kompletten Neuaufbau der Geometrie.
+  if (Math.abs(probe.R - w.R) < Math.max(0.002, w.R * 0.002)) return false;
+  return _svgWrapRefresh(o, probe);
+}
+
+// Sammelaufruf für die Auswahl, entprellt (gedrückte Taste, schnelle Klickfolge)
+function _svgWrapFollowSel(delay) {
+  if (_svgWrapFollowTimer) clearTimeout(_svgWrapFollowTimer);
+  _svgWrapFollowTimer = setTimeout(() => {
+    _svgWrapFollowTimer = null;
+    let n = 0;
+    selectedObjs.forEach(o => { if (o.userData && o.userData._svgWrap && _svgWrapFollowWall(o)) n++; });
+    if (n) { _doRepositionDimHandles(); updateTFInputs(); }
+  }, delay == null ? 130 : delay);
 }
 
 // Gewickeltes Motiv mit neuer Tiefe neu biegen. 'through' = sicher durch die Wand
