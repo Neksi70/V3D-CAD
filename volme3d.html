@@ -1226,6 +1226,7 @@ const firebaseConfig = {
       <button class="btn" onclick="centerOnPlate()" title="Objekt mittig auf die Bauplatte legen">⊕ Mitte</button>
       <button class="btn" onclick="rotate225('y',1)" title="Drehen — 22,5° im Uhrzeigersinn (steht aufrecht, bleibt am Boden)">↻ Drehen</button>
       <button class="btn" onclick="rotate225('x',1)" title="Kippen — 22,5° um die Querachse (bleibt am Boden)">⤵ Kippen</button>
+      <button class="btn" onclick="toggleFaceDown()" title="Fläche unten — Objekt wählen, dann die Fläche anklicken, die flach auf der Platte liegen soll. Spart das Drehen von Hand.">⬓ Fläche unten</button>
       <button class="btn" onclick="linearPatternTool()" title="Lineares Muster — Objekt mehrfach in einer Richtung kopieren">⋮ Linear</button>
       <button class="btn" onclick="circularPatternTool()" title="Kreismuster — Objekt kreisförmig anordnen">⊙ Kreis</button>
       <button class="btn" onclick="hexPatternTool()" title="Wabenmuster — Sechskant-Löcher in den Boden des gewählten Körpers stanzen">⬡ Waben</button>
@@ -5012,7 +5013,7 @@ function _ovClearHover() {
 }
 canvas.addEventListener('mousemove', e => {
   if (!_ovFaces.visible || isOrbit || isPan || isDrag || isRubber ||
-      workplaneMode || _shellMode || _edgeMode || _revolveMode || _sk.active) { _ovClearHover(); return; }
+      workplaneMode || _shellMode || _edgeMode || _revolveMode || _fdMode || _sk.active) { _ovClearHover(); return; }
   getNorm(e); raycaster.setFromCamera(mousev, camera);
   const hit = raycaster.intersectObjects(_ovFaces.children, false)[0];
   const m = hit ? hit.object : null;
@@ -12506,6 +12507,7 @@ function selectObjs(objs) {
 }
 
 function deselect() {
+  if (_fdMode) exitFaceDownMode();
   if (_shellMode) exitShellMode();
   if (specialMode === 'align') exitSpecialMode();
   clearSelLines();
@@ -18689,6 +18691,171 @@ function rotate225(axis, dir) {
 // Rückwärtskompatibler Alias (Y-Achse)
 function rotate225cw(dir) { rotate225('y', dir); }
 
+// ═══ FLÄCHE UNTEN — Teil auf eine angeklickte Fläche stellen (_fd*) ═══════
+// Ralf (10.9.2026): „Ich möchte das Teil auf die flache Stelle absetzen. Beim
+// Klicken auf Drehen dreht er nicht stufenlos sondern rastet." Stimmt: Drehen
+// und Kippen gehen in 22,5°-Schritten, eine schräge Fläche treffen sie damit
+// nie. Hier klickt man stattdessen die Fläche AN, die unten liegen soll — das
+// Teil dreht sich so, dass sie plan auf der Platte aufliegt.
+//
+// Die Vorschau leuchtet über alle Dreiecke, die in DERSELBEN EBENE liegen wie
+// das getroffene (gleiche Normale + gleicher Ebenenabstand). Bewusst ohne
+// Nachbarschafts-Prüfung: was koplanar ist, landet auch gemeinsam auf dem
+// Bett. Nebeneffekt mit Wert — leuchtet nur ein Splitter auf, ist die Stelle in
+// Wahrheit nicht flach, und das sieht man VOR dem Drehen statt danach.
+let _fdMode = false, _fdObj = null, _fdHL = null, _fdHitKey = '';
+
+const _FD_MAX_TRI = 400000;   // darüber nur das getroffene Dreieck zeigen (Zeitbremse)
+const _FD_NDOT    = 0.9995;   // ~1,8° Winkeltoleranz
+const _FD_PLANE   = 0.004;    // 0,04 mm Ebenen-Toleranz (Scene-Units, 1 = 10 mm)
+
+// Wurzel-Objekt zu einem getroffenen (evtl. verschachtelten) Mesh
+function _fdRoot(obj) {
+  let o = obj;
+  while (o && objects.indexOf(o) < 0) o = o.parent;
+  return o || null;
+}
+
+// Alle koplanaren Dreiecke des getroffenen Meshes als Geometrie (lokale Koordinaten)
+function _fdCoplanarGeo(mesh, hit) {
+  const g = mesh.geometry, pos = g && g.attributes && g.attributes.position;
+  if (!pos || !hit.face) return null;
+  const idx = g.index, triN = (idx ? idx.count : pos.count) / 3;
+  const n0 = hit.face.normal.clone().normalize();
+  const a0 = new THREE.Vector3().fromBufferAttribute(pos, hit.face.a);
+  const d0 = n0.dot(a0);
+  const only = triN > _FD_MAX_TRI ? hit.faceIndex : -1;
+  const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), nn = new THREE.Vector3();
+  const out = [];
+  for (let t = 0; t < triN; t++) {
+    if (only >= 0 && t !== only) continue;
+    const i0 = idx ? idx.getX(t*3) : t*3, i1 = idx ? idx.getX(t*3+1) : t*3+1, i2 = idx ? idx.getX(t*3+2) : t*3+2;
+    va.fromBufferAttribute(pos, i0); vb.fromBufferAttribute(pos, i1); vc.fromBufferAttribute(pos, i2);
+    e1.subVectors(vb, va); e2.subVectors(vc, va); nn.crossVectors(e1, e2);
+    const l = nn.length(); if (l < 1e-12) continue;
+    nn.divideScalar(l);
+    if (nn.dot(n0) < _FD_NDOT) continue;              // andere Richtung
+    if (Math.abs(nn.dot(va) - d0) > _FD_PLANE) continue;  // parallel, aber andere Ebene
+    out.push(va.x,va.y,va.z, vb.x,vb.y,vb.z, vc.x,vc.y,vc.z);
+  }
+  if (!out.length) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+  return geo;
+}
+
+function _fdClearHL() {
+  if (!_fdHL) return;
+  scene.remove(_fdHL);
+  _fdHL.geometry.dispose(); _fdHL.material.dispose();
+  _fdHL = null; _fdHitKey = '';
+}
+
+// Welt-Normale der getroffenen Fläche, immer vom Körper weg (zum Betrachter)
+function _fdWorldNormal(hit) {
+  const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+  if (n.dot(raycaster.ray.direction) > 0) n.negate();
+  return n;
+}
+
+function _fdHover(e) {
+  const hits = pickObjects(e);
+  const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines &&
+                             _fdRoot(h.object) === _fdObj);
+  if (!hit) { _fdClearHL(); canvas.style.cursor = 'crosshair'; return; }
+  canvas.style.cursor = 'pointer';
+  const key = hit.object.uuid + ':' + hit.faceIndex;
+  if (key === _fdHitKey && _fdHL) {          // gleiche Fläche → Highlight nur mitführen
+    hit.object.updateMatrixWorld(true);
+    _fdHL.matrix.copy(hit.object.matrixWorld);
+    return;
+  }
+  const geo = _fdCoplanarGeo(hit.object, hit);
+  _fdClearHL();
+  if (!geo) return;
+  _fdHL = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: 0xff7a18, transparent: true, opacity: 0.55, side: THREE.DoubleSide,
+    depthTest: false, depthWrite: false }));
+  _fdHL.renderOrder = 999;
+  _fdHL.matrixAutoUpdate = false;
+  hit.object.updateMatrixWorld(true);
+  _fdHL.matrix.copy(hit.object.matrixWorld);
+  scene.add(_fdHL);
+  _fdHitKey = key;
+}
+
+// Objekt so drehen, dass worldN nach unten zeigt; Standort und Bodenkontakt bleiben
+function _fdPlaceOnFace(o, worldN) {
+  const b0 = getMeshBox(o);
+  const cx0 = (b0.min.x + b0.max.x) / 2, cz0 = (b0.min.z + b0.max.z) / 2;
+  const q = new THREE.Quaternion().setFromUnitVectors(
+    worldN.clone().normalize(), new THREE.Vector3(0, -1, 0));
+  o.quaternion.premultiply(q);
+  o.updateMatrixWorld(true);
+  // Wie beim Dreh-Gizmo um die MITTE drehen: rotation.* dreht um den
+  // Geometrie-Ursprung, der bei Importen weit daneben liegen kann
+  const b1 = getMeshBox(o);
+  o.position.x += cx0 - (b1.min.x + b1.max.x) / 2;
+  o.position.z += cz0 - (b1.min.z + b1.max.z) / 2;
+  o.updateMatrixWorld(true);
+  const b2 = getMeshBox(o);
+  o.position.y -= b2.min.y;                 // wieder auf die Platte setzen
+  o.updateMatrixWorld(true);
+}
+
+function _fdClick(e) {
+  const hits = pickObjects(e);
+  const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines &&
+                             _fdRoot(h.object) === _fdObj);
+  if (!hit) return;
+  const wn = _fdWorldNormal(hit);
+  const tilt = Math.acos(Math.max(-1, Math.min(1, wn.dot(new THREE.Vector3(0, -1, 0))))) * 180 / Math.PI;
+  saveUndo();
+  _fdPlaceOnFace(_fdObj, wn);
+  updateTFInputs();
+  _doRepositionDimHandles();
+  notify(tilt < 0.05 ? 'Diese Fläche liegt schon unten' :
+         'Fläche liegt jetzt unten (' + tilt.toFixed(1).replace('.', ',') + '° gedreht)', 'ok');
+  exitFaceDownMode();
+}
+
+function toggleFaceDown() {
+  if (_fdMode) { exitFaceDownMode(); return; }
+  const o = selectedObjs.length === 1 ? selectedObjs[0] : null;
+  if (!o) { notify('Bitte genau ein Objekt wählen', 'w'); return; }
+  if (_shellMode)   exitShellMode();
+  if (_edgeMode)    exitEdgeMode();
+  if (_revolveMode) exitRevolveMode();
+  if (specialMode)  exitSpecialMode();
+  _fdMode = true; _fdObj = o;
+  canvas.style.cursor = 'crosshair';
+  clearDimHandles();
+  updateRotHandles();
+  const h = document.getElementById('hint');
+  h.innerHTML = '<b>Fläche unten:</b> Die Fläche anklicken, die auf der Platte liegen soll' +
+                ' — <span style="font-size:10px">orange = was mit auf die Platte kommt · Esc = Abbrechen</span>';
+  h.classList.add('show');
+  notify('Fläche anklicken, die unten liegen soll', 'ok');
+}
+
+// Prüf-Hook für Headless-Tests (let-Variablen hängen nicht am window)
+function _fdDbg() {
+  return { mode: _fdMode, obj: _fdObj ? (_fdObj.userData && _fdObj.userData.name) : null,
+           highlight: !!_fdHL, hlTris: _fdHL ? _fdHL.geometry.attributes.position.count / 3 : 0 };
+}
+
+function exitFaceDownMode() {
+  if (!_fdMode) return;
+  _fdMode = false; _fdObj = null;
+  _fdClearHL();
+  canvas.style.cursor = '';
+  const h = document.getElementById('hint');
+  h.classList.remove('show'); h.innerHTML = '';
+  _doRepositionDimHandles();
+  updateRotHandles();
+}
+
 function mirrorObj(axis) {
   if (!selectedObjs.length) { notify('Nichts ausgewählt', 'w'); return; }
   saveUndo();
@@ -19008,6 +19175,7 @@ const _pp = { active:false, obj:null, locked:false, idxs:null, base:null,
 function enterPushPull(){
   if (_pp.active){ exitPushPull(); return; }
   if (_sk.active) exitSketchMode();
+  if (_fdMode) exitFaceDownMode();
   if (_shellMode) exitShellMode();
   if (_edgeMode) exitEdgeMode();
   if (_revolveMode) exitRevolveMode();
@@ -19126,6 +19294,7 @@ function enterLoftMode(){
   if (_lf.active){ exitLoftMode(); return; }
   if (_sk.active)   exitSketchMode();
   if (_pp.active)   exitPushPull();
+  if (_fdMode)      exitFaceDownMode();
   if (_shellMode)   exitShellMode();
   if (_edgeMode)    exitEdgeMode();
   if (_revolveMode) exitRevolveMode();
@@ -19710,6 +19879,7 @@ canvas.addEventListener('mousedown', e => {
     else { _wpSetFloorBase(); }   // Leerraum ohne gesetzte Ebene → Boden als Basis (z.B. für "20 mm über der Platte")
     return;
   }
+  if (_fdMode) { _fdClick(e); return; }
   if (_shellMode) {
     const hits = pickObjects(e);
     const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines && h.object === _shellObj);
@@ -19809,6 +19979,7 @@ window.addEventListener('mousemove', e => {
       _wpHL.visible = true;
     } else { _wpHL.visible = false; }
   }
+  if (_fdMode) _fdHover(e);
   if (_shellMode) {
     const hits = pickObjects(e);
     const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines && h.object === _shellObj);
@@ -20582,6 +20753,7 @@ window.addEventListener('keydown', e => {
       return;
     }
     if (_revolveMode) { exitRevolveMode(); return; }
+    if (_fdMode) { exitFaceDownMode(); return; }
     if (_shellMode) { exitShellMode(); return; }
     if (_edgeMode) { exitEdgeMode(); return; }
     if (workplaneMode) { toggleWorkplane(); return; }
@@ -22663,7 +22835,10 @@ function _rhMove(event) {
   const deg = turn * 180 / Math.PI;
   const axCol = {x:'#e03030', y:'#0078ff', z:'#00b96b'}[rh_axis];
   const lbl   = document.getElementById('rot-angle-lbl');
-  lbl.textContent = (deg >= 0 ? '+' : '') + deg.toFixed(snap ? 0 : 1) + '°  ' + rh_axis.toUpperCase();
+  // Beim Rasten dazuschreiben, wie man da wieder rauskommt — dass der Zeiger
+  // dafür nur nach AUSSEN muss, hat sonst niemand gefunden (Ralf, 10.9.2026).
+  lbl.textContent = (deg >= 0 ? '+' : '') + deg.toFixed(snap ? 0 : 1) + '°  ' + rh_axis.toUpperCase() +
+                    (snap ? '   ⟨22,5°-Raster — weiter nach außen ziehen = stufenlos⟩' : '   ⟨frei⟩');
   lbl.style.left   = (mx + 18) + 'px';
   lbl.style.top    = (my - 30) + 'px';
   lbl.style.borderLeftColor = axCol;
@@ -22971,7 +23146,7 @@ function _mgBuild() {
 // stehen sie noch in der temporalen Todeszone, deshalb der Schutz.
 function _mgBusy() {
   if (_sk.active || _pp.active || _lf.active) return true;
-  if (workplaneMode || _edgeMode || _shellMode || _revolveMode || _plugMode) return true;
+  if (workplaneMode || _edgeMode || _shellMode || _revolveMode || _plugMode || _fdMode) return true;
   if (_measureMode || specialMode === 'align') return true;
   try {
     if (_cut.active || _eraser.active || _sculpt.active || _paint.active || _mmu.active) return true;
@@ -38137,6 +38312,10 @@ function _closeSceneSettings(){
 const VOLME3D_VERSION = '1.15.92';
 const VOLME3D_CHANGELOG = [
   { version:'1.15.92', date:'2026-09-10', changes:[
+    ['\u2B13','<b>Neu: \u201eFl\u00e4che unten\u201c \u2014 ein Klick, und das Teil steht auf der Fl\u00e4che, die du ausgesucht hast.</b> Bisher musste man ein Teil mit <i>Drehen</i> und <i>Kippen</i> so lange herumwuchten, bis die gew\u00fcnschte Stelle unten lag. Das konnte gar nicht klappen: beide Kn\u00f6pfe gehen in <b>22,5\u00b0-Schritten</b>, eine schr\u00e4ge Fl\u00e4che treffen sie damit so gut wie nie. Jetzt w\u00e4hlst du das Teil aus, klickst in <i>Anordnen</i> auf <b>\u2B13 Fl\u00e4che unten</b> und tippst die Fl\u00e4che an, die auf der Platte liegen soll \u2014 das Teil dreht sich von allein in genau diese Lage, bleibt an seinem Platz stehen und sitzt sauber auf der Platte. W\u00e4hrend du mit der Maus dar\u00fcber f\u00e4hrst, leuchtet <b>orange auf, was mit auf die Platte kommt</b>. Leuchtet dabei nur ein schmaler Zipfel statt der ganzen Stelle, ist sie in Wahrheit gar nicht eben \u2014 das siehst du jetzt vorher statt hinterher am Druck. Gemeldet von Ralf.'],
+    ['\u{1F504}','<b>Der Dreh-Ring verr\u00e4t jetzt, wie man stufenlos dreht.</b> Am Dreh-Ring rastete die Drehung in 22,5\u00b0-Stufen, und es sah so aus, als ginge es gar nicht anders. Es ging schon: Wer den Zeiger beim Ziehen <b>weiter nach au\u00dfen</b> schiebt, dreht v\u00f6llig frei. Nur stand das nirgends. Die Winkelanzeige schreibt es jetzt dazu \u2014 im Raster steht <i>\u201e22,5\u00b0-Raster \u2014 weiter nach au\u00dfen ziehen = stufenlos\u201c</i>, drau\u00dfen einfach <i>\u201efrei\u201c</i>. Gemeldet von Ralf.'],
+  ]},
+  { version:'1.15.92', date:'2026-09-10', changes:[
     ['\u{1F504}','<b>Ein aufgesetztes Motiv l\u00e4sst sich jetzt auf seiner Fl\u00e4che drehen \u2014 zum Geradestellen.</b> Wer ein Motiv (etwa einen Baum) auf einem K\u00f6rper hatte und es im <b>Dreh-Modus</b> gerade ausrichten wollte, kam nicht weiter: Der allgemeine Dreh-Zug kippt ein Teil um die Raumachsen und setzt es anschlie\u00dfend auf die Bauplatte \u2014 das Motiv l\u00f6ste sich also von der Wand oder rutschte nach unten, und beim Loslassen sprang es zur\u00fcck in die Senkrechte. Jetzt dreht sich ein geheftetes Motiv im Dreh-Modus <b>in seiner Fl\u00e4che</b>, wie eine Scheibe auf dem Tisch: anfassen, im Bogen ziehen, der Winkel steht am Zeiger. Mit <b>Umschalt</b> rastet es in 15\u00b0-Schritten. Es bleibt dabei sauber an der Wand, f\u00e4llt nicht auf die Platte, und die Drehung bleibt auch beim sp\u00e4teren Verschieben erhalten. Gr\u00f6\u00dfe ziehen und Verschieben arbeiten unver\u00e4ndert weiter. Gemeldet von Josy.'],
   ]},
   { version:'1.15.91', date:'2026-09-10', changes:[
@@ -45306,6 +45485,7 @@ const CMDK = [
   {i:'🖇️',g:'Bearbeiten',t:'Stege neu berechnen',k:'steg stege bruecke bridge verbinden topper buchstaben schweben zusammenhang',run:()=>_ttRebridge()},
   {i:'⊿',g:'Bearbeiten',t:'Spiegeln',k:'mirror',run:()=>mirrorTool()},
   {i:'⊜',g:'Bearbeiten',t:'Ausrichten',k:'align',run:()=>alignTool()},
+  {i:'⬓',g:'Bearbeiten',t:'Fläche unten',k:'flaeche flache stelle unten absetzen hinlegen aufstellen platte bett ausrichten kippen drehen liegen plan schraeg abflachung standflaeche place on face',run:()=>toggleFaceDown()},
   {i:'⋮',g:'Bearbeiten',t:'Lineares Muster',k:'array pattern',run:()=>linearPatternTool()},
   {i:'⊙',g:'Bearbeiten',t:'Kreismuster',k:'circular array',run:()=>circularPatternTool()},
   {i:'✂',g:'Bearbeiten',t:'Schneiden',k:'cut split zerteilen',run:()=>openCutTool()},
