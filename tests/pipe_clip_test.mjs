@@ -194,6 +194,21 @@ const run = async (params, label) => {
   ok('Begrenzung: Bogen ≤ Halbkreis', r.arc.sag <= 60/Math.PI + 0.01, r.arc);
 }
 
+// ── 5b) Dicke Rohre: Ralf braucht > 80 mm (HT-Rohr DN100 = Ø110) ────────────
+for (const dia of [100, 120]) {
+  const r = await run({ dia, len: 200, sag: 6 }, 'Dickes Rohr (\u00d8' + dia + ')');
+  ok('\u00d8' + dia + ': wasserdicht', r.wt.badEdges === 0 && r.wt.degen === 0, r.wt);
+  ok('\u00d8' + dia + ': Volumen > 0', r.vol > 0);
+  const ri = dia/2 + 0.4, ro = ri + 2.4;
+  const soll = (245/360) * Math.PI * (ro*ro - ri*ri) * 200;
+  ok('\u00d8' + dia + ': Materialmenge passt (\u00b18 %)', Math.abs(r.vol - soll)/soll < 0.08,
+     { ist: Math.round(r.vol), soll: Math.round(soll) });
+  ok('\u00d8' + dia + ': Rohr passt hinein (Nasenspitze = \u00d8+Spiel \u2212 Nase)',
+     Math.abs(r.minAxis - (ri - 0.6)) < 0.02, { minAbstand: Math.round(r.minAxis*100)/100 });
+  ok('\u00d8' + dia + ': \u00d6ffnung offen', r.probe.open === false);
+  ok('\u00d8' + dia + ': gegen\u00fcber Material', r.probe.back === true);
+}
+
 // ── 6) Erstellen legt ein Objekt in die Szene ────────────────────────────────
 {
   const res = await pg.evaluate(() => {
@@ -207,6 +222,11 @@ const run = async (params, label) => {
   ok('Erstellen legt genau ein Objekt an', res.added === 1, res);
   ok('Typ ist pipeclip', res.type === 'pipeclip', res.type);
   ok('steht auf der Arbeitsebene (min Y = 0)', Math.abs(res.minY) < 1e-6, res.minY);
+}
+
+{
+  const mx = await pg.evaluate(() => +document.getElementById('rk-dia').max);
+  ok('Rohr-\u00d8-Regler geht bis mindestens 110 mm', mx >= 110, mx);
 }
 
 ok('keine JS-Fehler auf der Seite', pageErrors.length === 0, pageErrors.slice(0, 3));
