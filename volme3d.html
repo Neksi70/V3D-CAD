@@ -38119,8 +38119,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.86';
+const VOLME3D_VERSION = '1.15.87';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.87', date:'2026-09-10', changes:[
+    ['\u{1F41B}','<b>Gewickelte Motive standen seitenverkehrt, auf hochgeladenen STLs sogar kopf\u00fcber \u2014 und sprangen beim Verschieben zur\u00fcck.</b> Vier Fehler auf einmal, alle beim Wickeln um eine Rundung, alle von Josy gemeldet. <b>Erstens:</b> Das Motiv wurde beim Biegen <b>gespiegelt</b> \u2014 von au\u00dfen betrachtet stand die Gravur seitenverkehrt. Bei symmetrischen Formen f\u00e4llt das nicht auf, bei einem Apfel mit Blatt oder bei Schrift sofort. <b>Zweitens:</b> Bei <b>selbst hochgeladenen STLs</b> stand das Motiv h\u00e4ufig <b>auf dem Kopf</b>. Grund: Solche Modelle bringen ihre Lage aus der Datei mit, ihre Drehachse zeigt dann nach unten statt nach oben \u2014 und das Motiv folgte ihr blind. Die Achse wird jetzt immer nach oben ausgerichtet (bei liegenden Rohren nach der Blickrichtung). Genau deshalb ging es bei den eingebauten K\u00f6rpern und bei eigenen STLs nicht. <b>Drittens:</b> Beim Verschieben auf der Rundung lief das Motiv der Maus <b>entgegen</b> \u2014 nach rechts gezogen wanderte es nach links (nachgemessen: 112 Pixel Zug \u2192 61 Pixel in die falsche Richtung). <b>Viertens:</b> Hatte man das Motiv selbst <b>schr\u00e4g gedreht</b>, sprang es beim n\u00e4chsten Verschieben in die aufrechte Lage zur\u00fcck \u2014 jedes Anfassen baute die Ausrichtung neu auf. Jetzt bleibt die Drehung, wie du sie gesetzt hast; nachgemessen wird nur noch die Wandst\u00e4rke an der neuen H\u00f6he. Gemeldet von Josy.'],
+  ]},
   { version:'1.15.86', date:'2026-09-10', spots:[{id:'svg-center-btn',sel:'#ctx-svgcenter'}], changes:[
     ['\u{1F4CC}','<b>SVG-Motive lassen sich jetzt frei auf der Fl\u00e4che verschieben \u2014 auf ebenen W\u00e4nden wie auf Rundungen.</b> Bisher sprang ein geheftetes Motiv beim kleinsten Nachschieben <b>immer wieder in die Mitte der Fl\u00e4che</b>, und an einer senkrechten Wand kam man mit der Maus \u00fcberhaupt nicht hoch oder runter \u2014 der freie Zug schiebt nur waagerecht. Jetzt <b>gleitet</b> das Motiv in seiner Fl\u00e4che mit: einfach anfassen und ziehen. Es bleibt dabei sauber aufgesetzt (Gravurtiefe unver\u00e4ndert), <b>h\u00e4lt an der Kante an</b>, statt halb dar\u00fcber hinauszurutschen, und w\u00e4hrend des Ziehens steht der Abstand zur Fl\u00e4chenmitte in Millimetern am Zeiger. Kommt es der Mitte nahe, <b>rastet es ein</b> \u2014 waagerecht, senkrecht oder beides (\u201e\u2295 mittig auf der Fl\u00e4che\u201c). Auf einer <b>Rundung</b> dreht das Ziehen das Motiv um den K\u00f6rper und schiebt es in der H\u00f6he; der Wandradius wird an der neuen H\u00f6he neu gemessen, damit es auf Bechern und Vasen weiter \u00fcberall anliegt. Zum Zentrieren gibt es den neuen Knopf <b>\u2295</b> in der Auswahl-Leiste unten links (auf einer Rundung: mittig auf die H\u00f6he, der Winkel bleibt). Auf eine <b>andere Fl\u00e4che</b> kommt das Motiv weiterhin einfach dadurch, dass man es dorthin zieht \u2014 dann erscheint wie gewohnt \u201e\u{1F4CC} Auf Fl\u00e4che heften\u201c bzw. \u201e\u21a9 Um Rundung wickeln\u201c; mit gedr\u00fcckter <b>Alt-Taste</b> l\u00f6st es sich ganz von der Fl\u00e4che. Geht auch mit dem Finger auf dem Tablet. Gew\u00fcnscht von Ralf und Josy.'],
   ]},
@@ -39130,6 +39133,16 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
 
   // Rundung: Motiv um die Achse biegen statt tangential aufheften
   if (type === 'wrap' && wrap) {
+    // Liegt es schon auf GENAU dieser Rundung (z. B. Zug am Pfeil-Gizmo)? Dann
+    // nur die Wand neu abtasten — sonst sprang das Motiv auf den Klickpunkt und
+    // verlor jede selbst gesetzte Drehung.
+    if (svgMesh.userData._svgWrap && svgMesh.userData._wrapTarget === wrap.mesh) {
+      _svgWrapRefresh(svgMesh, wrap);
+      _svgSnapHit = null;
+      updateTFInputs(); updateTree(); updateCtxPopup();
+      notify('↩ SVG auf der Rundung verschoben', 'ok');
+      return;
+    }
     const done = _svgWrapApply(svgMesh, wrap, hit.point);
     _svgSnapHit = null;
     if (done) {
@@ -39505,7 +39518,10 @@ function _svgGlideMove(e) {
       dh = Math.abs(hC - ctr) < tol ? (mid = 'v', ctr) : hC;
     }
     o.position.copy(G.pos0).addScaledVector(G.fr.axis, dh);
-    o.quaternion.copy(G.q0).premultiply(new THREE.Quaternion().setFromAxisAngle(G.fr.axis, dAng));
+    // −dAng: die Basis dreht um die Achse, der gemessene Winkel liegt im festen
+    // Frame — mit +dAng lief das Motiv der Maus davon (gemessen: 112 px Zug nach
+    // rechts → Motiv 61 px nach links).
+    o.quaternion.copy(G.q0).premultiply(new THREE.Quaternion().setFromAxisAngle(G.fr.axis, -dAng));
     label = (mid ? '↕ mittig auf der Höhe   ' : '↕ ' + _svgGlideMm(dh) + '   ')
           + '↻ ' + Math.round(dAng * 180 / Math.PI) + '°';
   }
@@ -39533,7 +39549,7 @@ function _svgGlideEnd() {
       .applyQuaternion(o.getWorldQuaternion(new THREE.Quaternion())).normalize();
     const onWall = o.position.clone().addScaledVector(e1, G.fr.R);
     const probe = _svgWrapProbe(G.fr.target, onWall);
-    if (probe) _svgWrapApply(o, probe, onWall);
+    if (probe) _svgWrapRefresh(o, probe);
   }
   updateTFInputs(); updateTree(); _doRepositionDimHandles();
   return true;
@@ -39901,7 +39917,11 @@ function _svgWrapBuildGeo(ud, spec) {
     const u = src.getX(i), h = src.getY(i), d = src.getZ(i);
     const Rh = radiusAt(h);
     const k = slopeAt(h);
-    const th = u / Rh;
+    // −u statt u: der Warp (u,h,d) → (d,h,u) vertauscht zwei Achsen und SPIEGELT
+    // damit das Motiv (von außen betrachtet stand die Gravur seitenverkehrt —
+    // bei Text/Logos sofort sichtbar, gemeldet von Josy 10.9.). Mit −u ist die
+    // Abbildung eine echte Drehung, die Windung bleibt korrekt.
+    const th = -u / Rh;
     const rr = Rh + d * Math.sqrt(1 + k * k);
     out[i * 3]     = rr * Math.cos(th);
     out[i * 3 + 1] = h;
@@ -39928,8 +39948,20 @@ function _svgWrapAbsorbScale(mesh, s) {
 }
 
 // Motiv an den Klickpunkt der Rundung legen und biegen.
+// Die erkannte Drehachse zeigt mal nach oben, mal nach unten — je nachdem, wie
+// das Modell in seiner Datei liegt. Ungeprüft übernommen stünde das Motiv bei
+// gedrehten/importierten STLs auf dem Kopf. Deshalb immer nach oben ausrichten;
+// bei liegenden Rohren entscheidet die Blickrichtung.
+function _svgWrapAxisUp(axisDir) {
+  const a = axisDir.clone().normalize();
+  if (a.y > 1e-3) return a;
+  if (a.y < -1e-3) return a.negate();
+  const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+  return a.dot(camUp) < 0 ? a.negate() : a;
+}
+
 function _svgWrapApply(svgMesh, probe, hitPointWorld) {
-  const a = probe.axisDir;
+  const a = _svgWrapAxisUp(probe.axisDir);
   const c0 = probe.axisPt.clone().addScaledVector(a, hitPointWorld.clone().sub(probe.axisPt).dot(a));
   const e1 = hitPointWorld.clone().sub(c0);
   if (e1.lengthSq() < 1e-12) return false;
@@ -39974,6 +40006,28 @@ function _svgWrapHalfHeight(ud, s) {
   const h = (bb.max.z - bb.min.z) * Math.abs(s.z) / 2;   // SVG-lokal: Z = Motivhöhe
   flat.dispose();
   return Math.max(0.05, h);
+}
+
+// Wandradius/-profil an der aktuellen Stelle neu abtasten und die Geometrie
+// nachziehen — Lage und Drehung bleiben, wie der Nutzer sie gesetzt hat.
+// (Früher lief dafür _svgWrapApply, das die Ausrichtung neu aus der Achse baute:
+// jede selbst gedrehte Lage sprang beim nächsten Verschieben zurück. Josy 10.9.)
+function _svgWrapRefresh(svgMesh, probe) {
+  const w = svgMesh.userData._svgWrap;
+  if (!w || !probe) return false;
+  const s = _svgWrapAbsorbScale(svgMesh, w.s);
+  const halfH = _svgWrapHalfHeight(svgMesh.userData, s);
+  const spec = { R: probe.R, depthMm: w.depthMm,
+                 epsMm: probe.epsMm != null ? probe.epsMm : 0.2, s,
+                 profile: probe.mesh ? _svgWrapSampleProfile(probe, halfH, 6) : null };
+  const geo = _svgWrapBuildGeo(svgMesh.userData, spec);
+  svgMesh.geometry.dispose();
+  svgMesh.geometry = geo;
+  svgMesh.userData._svgWrap = spec;
+  svgMesh.userData._wrapTarget = probe.mesh || svgMesh.userData._wrapTarget;
+  _updateObjEdgeLines(svgMesh);
+  svgMesh.updateMatrixWorld(true);
+  return true;
 }
 
 // Gewickeltes Motiv mit neuer Tiefe neu biegen. 'through' = sicher durch die Wand
