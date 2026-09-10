@@ -17,6 +17,7 @@ import binascii
 import concurrent.futures
 import email.header
 import email.utils
+import hashlib
 import hmac
 import html
 import imaplib
@@ -26,10 +27,13 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import smtplib
 import socket
 import ssl
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -54,6 +58,14 @@ PAGE_SIZE = 50
 MAX_BILD_BYTES = 12 * 1024 * 1024   # Obergrenze fuer nachgeladene Bilder aus dem Netz
 
 imaplib._MAXLINE = 10 * 1024 * 1024
+
+# Der pdf.js-Betrachter wird als ES-Modul geladen; Python kennt .mjs nicht von
+# sich aus und liefert sonst octet-stream — dann verweigert der Browser das
+# Modul. Die Schriften des Betrachters liegen als .pfb daneben.
+mimetypes.add_type('text/javascript', '.mjs')
+mimetypes.add_type('application/octet-stream', '.pfb')
+
+MAX_VORSCHAU_BYTES = 40 * 1024 * 1024   # Obergrenze fuer die Office-Umwandlung
 
 
 # --- Konfiguration ----------------------------------------------------------
@@ -833,6 +845,82 @@ def load_attachment(box, folder, uid, part_idx):
         name = decode_header(name) if name else 'anhang'
         return payload, p.get_content_type(), name
     raise MailError('Anhang nicht gefunden')
+
+
+# --- Vorschau von Office-Dateien -------------------------------------------
+# Der Browser kann DOCX/XLSX nicht anzeigen, pdf.js aber schon PDF. Also wandelt
+# LibreOffice den Anhang hier einmal um; angezeigt wird dann wie bei jedem PDF.
+
+OFFICE_TYPEN = {
+    'application/msword', 'application/vnd.ms-excel', 'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/vnd.oasis.opendocument.text',
+    'application/vnd.oasis.opendocument.spreadsheet',
+    'application/vnd.oasis.opendocument.presentation',
+    'application/rtf', 'text/rtf',
+}
+OFFICE_ENDUNGEN = ('.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+                   '.odt', '.ods', '.odp', '.rtf')
+
+_office_lock = threading.Lock()
+_office_cache = {}          # sha256 -> PDF-Bytes
+_OFFICE_CACHE_MAX = 8       # nur die letzten paar; die Dinger sind gross
+
+
+def ist_office(ctype, name):
+    return ((ctype or '').lower() in OFFICE_TYPEN or
+            (name or '').lower().endswith(OFFICE_ENDUNGEN))
+
+
+def office_zu_pdf(daten, name):
+    """Anhang durch LibreOffice nach PDF schicken. Ergebnis wird kurz gemerkt."""
+    if not daten:
+        raise MailError('Anhang ist leer')
+    if len(daten) > MAX_VORSCHAU_BYTES:
+        raise MailError('Datei ist zu gross fuer die Vorschau (%d MB)' % (len(daten) // (1024 * 1024)))
+    soffice = shutil.which('soffice') or shutil.which('libreoffice')
+    if not soffice:
+        raise MailError('Auf diesem Server ist LibreOffice nicht installiert — '
+                        'Office-Dateien lassen sich nur herunterladen.')
+
+    schluessel = hashlib.sha256(daten).hexdigest()
+    with _office_lock:
+        if schluessel in _office_cache:
+            return _office_cache[schluessel]
+
+    endung = os.path.splitext(name or '')[1].lower() or '.doc'
+    if endung not in OFFICE_ENDUNGEN:
+        endung = '.doc'
+    # LibreOffice stolpert ueber Sonderzeichen im Namen und ueber parallele
+    # Laeufe im selben Profil — deshalb eigener Ordner und eigenes Profil je Lauf.
+    with tempfile.TemporaryDirectory(prefix='v3dmail-vorschau-') as tmp:
+        quelle = os.path.join(tmp, 'datei' + endung)
+        with open(quelle, 'wb') as fh:
+            fh.write(daten)
+        profil = os.path.join(tmp, 'profil')
+        try:
+            lauf = subprocess.run(
+                [soffice, '-env:UserInstallation=file://' + profil,
+                 '--headless', '--norestore', '--nolockcheck', '--nodefault',
+                 '--convert-to', 'pdf:writer_pdf_Export', '--outdir', tmp, quelle],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+        except subprocess.TimeoutExpired:
+            raise MailError('Umwandlung hat zu lange gedauert')
+        ziel = os.path.join(tmp, 'datei.pdf')
+        if not os.path.isfile(ziel):
+            melde = (lauf.stdout or b'').decode('utf-8', 'replace').strip()[-300:]
+            sys.stderr.write('LibreOffice-Umwandlung fehlgeschlagen: %s\n' % melde)
+            raise MailError('Datei liess sich nicht in eine Vorschau umwandeln')
+        with open(ziel, 'rb') as fh:
+            pdf = fh.read()
+
+    with _office_lock:
+        _office_cache[schluessel] = pdf
+        while len(_office_cache) > _OFFICE_CACHE_MAX:
+            _office_cache.pop(next(iter(_office_cache)))
+    return pdf
 
 
 def _adresse_erlaubt(host):
@@ -2824,6 +2912,7 @@ class Handler(BaseHTTPRequestHandler):
         acc = account_by_id((q or {}).get('acc') or (self._body_cached() or {}).get('acc'))
         if route.startswith('/folders') or route.startswith('/messages') or \
            route.startswith('/message') or route.startswith('/attachment') or \
+           route.startswith('/vorschau') or \
            route in ('/flag', '/move', '/delete', '/send'):
             if not acc:
                 raise MailError('Kein Konto ausgewählt')
@@ -2869,6 +2958,21 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import quote
             return self._send(200, payload, ctype, extra=[
                 ('Content-Disposition', "%s; filename*=UTF-8''%s" % (disp, quote(name))),
+            ])
+
+        if route == '/vorschau':
+            # Office-Anhang als PDF, damit der eingebaute Betrachter ihn zeigen
+            # kann. Nur umwandeln, was auch wirklich eine Office-Datei ist.
+            folder = q.get('folder') or 'INBOX'
+            uid = int(q.get('uid'))
+            payload, ctype, name = load_attachment(box, folder, uid, q.get('part'))
+            if not ist_office(ctype, name):
+                raise MailError('Fuer diesen Anhang gibt es keine Vorschau')
+            pdf = office_zu_pdf(payload, name)
+            from urllib.parse import quote
+            zielname = (os.path.splitext(name or 'anhang')[0] or 'anhang') + '.pdf'
+            return self._send(200, pdf, 'application/pdf', extra=[
+                ('Content-Disposition', "inline; filename*=UTF-8''%s" % quote(zielname)),
             ])
 
         if route == '/bild':

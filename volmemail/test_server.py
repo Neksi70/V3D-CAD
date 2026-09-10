@@ -1390,5 +1390,65 @@ class TestMcp(unittest.TestCase):
         self.assertEqual(len(data), 1)
 
 
+class TestVorschau(unittest.TestCase):
+    """Office-Anhaenge werden fuer die Vorschau nach PDF gewandelt."""
+
+    def test_erkennung_am_typ_und_an_der_endung(self):
+        self.assertTrue(server.ist_office(
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'ohne-endung'))
+        self.assertTrue(server.ist_office('application/octet-stream', 'Liste.XLSX'))
+        self.assertFalse(server.ist_office('application/pdf', 'rechnung.pdf'))
+        self.assertFalse(server.ist_office('application/zip', 'archiv.zip'))
+
+    def test_leerer_anhang(self):
+        with self.assertRaises(server.MailError):
+            server.office_zu_pdf(b'', 'leer.docx')
+
+    def test_zu_gross(self):
+        alt = server.MAX_VORSCHAU_BYTES
+        server.MAX_VORSCHAU_BYTES = 10
+        try:
+            with self.assertRaises(server.MailError):
+                server.office_zu_pdf(b'x' * 20, 'gross.docx')
+        finally:
+            server.MAX_VORSCHAU_BYTES = alt
+
+    def test_ohne_libreoffice_klare_meldung(self):
+        alt = server.shutil.which
+        server.shutil.which = lambda name: None
+        try:
+            with self.assertRaises(server.MailError) as f:
+                server.office_zu_pdf(b'irgendwas', 'brief.docx')
+            self.assertIn('LibreOffice', str(f.exception))
+        finally:
+            server.shutil.which = alt
+
+    def test_kaputte_datei_wird_nicht_zu_pdf(self):
+        if not (server.shutil.which('soffice') or server.shutil.which('libreoffice')):
+            self.skipTest('LibreOffice fehlt auf diesem Rechner')
+        # Als .docx deklarierter Muell: LibreOffice liefert kein PDF, das muss
+        # als saubere Meldung ankommen statt als 500er.
+        with self.assertRaises(server.MailError):
+            server.office_zu_pdf(b'\x00\x01kein Dokument', 'kaputt.docx')
+
+    def test_umwandlung_und_zwischenspeicher(self):
+        if not (server.shutil.which('soffice') or server.shutil.which('libreoffice')):
+            self.skipTest('LibreOffice fehlt auf diesem Rechner')
+        # Minimales RTF — braucht keine weiteren Werkzeuge zum Erzeugen.
+        rtf = rb'{\rtf1\ansi Moin Welt\par}'
+        server._office_cache.clear()
+        pdf = server.office_zu_pdf(rtf, 'brief.rtf')
+        self.assertTrue(pdf.startswith(b'%PDF-'))
+        self.assertEqual(len(server._office_cache), 1)
+        # Zweiter Aufruf kommt aus dem Zwischenspeicher — gleiche Bytes, kein Lauf.
+        alt = server.subprocess.run
+        server.subprocess.run = lambda *a, **k: self.fail('LibreOffice trotz Zwischenspeicher gestartet')
+        try:
+            self.assertEqual(server.office_zu_pdf(rtf, 'brief.rtf'), pdf)
+        finally:
+            server.subprocess.run = alt
+        server._office_cache.clear()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

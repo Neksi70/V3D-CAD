@@ -14,7 +14,7 @@ ganz normal IMAP und SMTP.
 |---|---|
 | `server.py` | Dienst: HTTP-API, IMAP-Verbindungen, SMTP-Versand, HTML-Säuberung |
 | `mail.html` | Oberfläche, eine Datei, Vanilla JS |
-| `test_server.py` | 41 Tests ohne echtes Postfach (IMAP wird gestubbt) |
+| `test_server.py` | 142 Tests ohne echtes Postfach (IMAP wird gestubbt) |
 | `smoke_ui.py` | Browser-Durchlauf am Rechner: Anmeldung, Postfächer, Lesen, Bilder |
 | `smoke_handy.py` | Browser-Durchlauf im Handy-Format: Zurück-Knopf und Zurück-Geste |
 | `smoke_ziehen.py` | Ziehen zum Aktualisieren: Fingergeste auf der Nachrichtenliste |
@@ -24,6 +24,9 @@ ganz normal IMAP und SMTP.
 | `smoke_windows.py` | Installierbarkeit als Windows-App und mailto-Anbindung |
 | `smoke_signatur.py` | Signatur-Editor und Aufbau der versendeten Nachricht |
 | `smoke_bilder.py` | Bilder im Text: Anzeige (cid und verlinkt) und Speichern |
+| `smoke_betrachter.py` | Bild-Betrachter: Klick auf den Dateinamen, Blättern, Speichern |
+| `smoke_dateivorschau.py` | Datei-Betrachter: PDF, Text und Office **in** der App |
+| `vendor/pdfjs/` | pdf.js (Apache-2.0), zeigt PDF-Anhänge — siehe `HERKUNFT.txt` |
 | `werkzeug/icons_bauen.py` | erzeugt die PNG-Symbole für das Manifest |
 
 Zugangsdaten liegen **nicht** hier, sondern in `~/.config/v3dmail/config.json`
@@ -292,6 +295,36 @@ Die Weiterleitung nimmt nur `http`/`https` und nur öffentliche Adressen an —
 Adressen im eigenen Netz (localhost, 10.x, 192.168.x, …) werden abgewiesen, auch
 wenn erst eine Umleitung dorthin zeigt. Obergrenze 12 MB, Inhalt muss ein Bild
 sein (Content-Type oder Dateikennung).
+
+### Anhänge in der App anschauen
+
+Ein Klick auf eine Anhang-Zeile **öffnet die Datei im Betrachter**, statt sie
+stumm in den Download-Ordner zu legen; zum Speichern sitzt ein ⬇ rechts in der
+Zeile und noch einmal im Kopf des Betrachters.
+
+| Art | Weg |
+|---|---|
+| PDF | `pdf.js` zeichnet die Seiten in Leinwände, mit − / + zoomen |
+| DOCX, XLSX, PPTX, ODT, ODS, ODP, RTF, DOC, XLS, PPT | **LibreOffice auf dem Server** wandelt einmal in PDF um (`/api/vorschau`), angezeigt wird wie bei jedem PDF |
+| TXT, CSV, JSON, XML, LOG, ICS, YAML … | roher Text; JSON wird eingerückt, ab 400 000 Zeichen gekürzt |
+| Bilder | landen in der Bilderleiste, auch wenn der Absender sie als `application/octet-stream` deklariert hat (Erkennung an der Endung) |
+| alles andere (ZIP, EXE …) | Meldung „kann V3D Mail nicht anzeigen" mit Speichern-Knopf |
+
+**Warum pdf.js und nicht einfach ein `<iframe>`:** die Android-App ist ein reiner
+WebView, und der hat **keinen** eingebauten PDF-Betrachter — ein iframe bliebe dort
+leer. pdf.js zeichnet selbst und läuft deshalb überall gleich.
+
+Die Seiten werden **erst gezeichnet, wenn sie in Sichtweite kommen**
+(`IntersectionObserver`); ein 40-seitiges Angebot würde sonst auf dem Handy
+Sekunden kosten. Bis dahin hält ein Platzhalter im Seitenverhältnis der ersten
+Seite die Höhe, damit beim Scrollen nichts springt.
+
+Office-Umwandlungen dauern gut eine Sekunde und werden im Server nach
+Datei-Prüfsumme gemerkt (die letzten 8). Jeder Lauf bekommt ein eigenes
+LibreOffice-Profil in einem Temp-Ordner — parallele Läufe im selben Profil
+blockieren sich sonst gegenseitig. **Auf einem anderen Server** (netcup) müsste
+dafür `libreoffice` nachinstalliert werden; fehlt es, sagt die App das im
+Betrachter und bietet nur noch Speichern an.
 
 ## Mehrere Postfächer
 

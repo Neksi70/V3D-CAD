@@ -153,6 +153,31 @@ a{color:var(--acc-d)}
 #lightbox .lb-pfeil:disabled{opacity:.2;cursor:default}
 #lightbox .lb-l{left:8px}#lightbox .lb-r{right:8px}
 #lightbox .lb-warte{color:#a4a9b8;font-size:15px}
+
+/* --- Datei-Betrachter (PDF, Text, Office) --- */
+/* Anhaenge sollen in der App lesbar sein, nicht erst im Download-Ordner.
+   PDF zeichnet pdf.js in Leinwaende, Office wandelt der Server vorher um. */
+#dviewer{position:fixed;inset:0;z-index:65;background:#2a2d38;display:flex;flex-direction:column}
+#dviewer .dv-kopf{display:flex;align-items:center;gap:9px;padding:8px 12px;background:#1c1f28;color:#e8eaf0;
+  font-size:13.5px;flex-wrap:nowrap;overflow:hidden}
+#dviewer .dv-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+#dviewer .dv-kopf small{color:#a4a9b8;flex-shrink:0}
+#dviewer .dv-x{background:none;border:0;color:#e8eaf0;font-size:26px;line-height:1;cursor:pointer;padding:0 4px;flex-shrink:0}
+/* align-items bleibt bewusst flex-start: bei align-items:center laesst sich eine
+   herausgezoomte Seite nicht mehr bis zum linken Rand schieben. Mittig sitzt
+   sie trotzdem, solange sie passt — darum margin-inline:auto an den Kindern. */
+#dviewer .dv-inhalt{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;align-items:flex-start;gap:14px}
+#dviewer .dv-inhalt > *{margin-left:auto;margin-right:auto;flex-shrink:0}
+#dviewer canvas{background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.4);border-radius:3px}
+#dviewer .dv-text{background:#fff;color:#1a1d26;border-radius:8px;padding:16px 18px;font:13px/1.55 ui-monospace,Menlo,Consolas,monospace;
+  white-space:pre-wrap;word-break:break-word;max-width:900px;width:100%;box-sizing:border-box}
+#dviewer .dv-melde{color:#c9cddb;text-align:center;max-width:420px;margin:auto;display:flex;flex-direction:column;gap:12px;align-items:center}
+#dviewer .dv-melde .gross{font-size:44px}
+#dviewer .dv-melde small{color:#8f95a6;line-height:1.5}
+#dviewer img.dv-bild{max-width:100%;background:#fff;border-radius:4px}
+/* Auf dem Handy ist im Kopf kein Platz fuer alles — die Dateigroesse fliegt raus.
+   Die Zoomknoepfe bleiben: auf einer Leinwand greift die Finger-Lupe nicht. */
+@media(max-width:640px){#dviewer .dv-kopf #dvgr{display:none}}
 #frame{flex:1;width:100%;border:0;background:#fff}
 #empty{flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:var(--dim)}
 #empty .big{font-size:40px}
@@ -315,6 +340,20 @@ a{color:var(--acc-d)}
   <div class="lb-info"><span id="lbname"></span><small id="lbgr"></small>
     <button class="btn sm" onclick="lightboxSpeichern()">⬇ Speichern</button></div>
   <button class="lb-pfeil lb-r" id="lbnext" onclick="lightboxBlaettern(1)">›</button>
+</div>
+
+<div id="dviewer" class="hide">
+  <div class="dv-kopf">
+    <span class="dv-name" id="dvname"></span>
+    <small id="dvgr"></small>
+    <small id="dvseiten"></small>
+    <span style="flex:1"></span>
+    <button class="btn sec sm dv-zoom" onclick="vorschauZoom(-1)" title="Kleiner">−</button>
+    <button class="btn sec sm dv-zoom" onclick="vorschauZoom(1)" title="Größer">+</button>
+    <button class="btn sm" onclick="vorschauSpeichern()">⬇ Speichern</button>
+    <button class="dv-x" onclick="vorschauZu()" title="Schließen">✕</button>
+  </div>
+  <div class="dv-inhalt" id="dvinhalt"></div>
 </div>
 
 <div id="compose" class="hide">
@@ -848,6 +887,7 @@ function closeTop() {
   else if (top === 'modal') document.getElementById('modal').classList.add('hide');
   else if (top === 'cal') document.getElementById('cal').classList.add('hide');
   else if (top === 'bild') lightboxAus();
+  else if (top === 'datei') vorschauAus();
   else if (top === 'msg') showList();
 }
 
@@ -924,14 +964,20 @@ async function openMsg(uid, withImages) {
   } else warn.classList.add('hide');
 
   // Bilder bekommen eine eigene Leiste mit Vorschau, alles andere bleibt Anhang.
-  const bilder = m.attachments.filter(a => (a.type || '').startsWith('image/'));
-  const dateien = m.attachments.filter(a => !(a.type || '').startsWith('image/'));
+  const bilder = m.attachments.filter(istBildDatei);
+  const dateien = m.attachments.filter(a => !istBildDatei(a));
 
   const ab = document.getElementById('ratts');
   if (dateien.length) {
     ab.classList.remove('hide');
-    ab.innerHTML = dateien.map((a, i) => `<div class="att" onclick="dlPart(${i},'datei')">
-      📎 ${esc(a.filename)} <small>${fmtSize(a.size)}</small></div>`).join('');
+    ab.innerHTML = dateien.map((a, i) => {
+      const art = dateiArt(a);
+      const titel = art ? 'Anklicken zum Anschauen' : 'Keine Vorschau möglich — zum Speichern anklicken';
+      return `<div class="att" onclick="zeigeDatei(${i})" title="${titel}">
+        ${DATEI_SYMBOLE[art] || '📎'} ${esc(a.filename)} <small>${fmtSize(a.size)}</small>
+        <button class="btn sec sm" style="padding:2px 7px" title="Speichern"
+                onclick="event.stopPropagation();dlPart(${i},'datei')">⬇</button></div>`;
+    }).join('');
     S.dateien = dateien;
   } else { ab.classList.add('hide'); ab.innerHTML = ''; S.dateien = []; }
 
@@ -1063,6 +1109,262 @@ function lightboxAus() {
 function lightboxZu() {
   if (S.layers[S.layers.length - 1] === 'bild') zurueck(); else lightboxAus();
 }
+// --- Datei-Betrachter -------------------------------------------------------
+// Anhaenge sollen sich in der App ansehen lassen, ohne den Umweg ueber den
+// Download-Ordner. PDF zeichnet pdf.js selbst (die eingebauten Betrachter der
+// Browser fehlen in der Android-App komplett), Text kommt roh in ein <pre>,
+// und Office-Dateien wandelt der Server vorher in ein PDF um.
+
+const BILD_ENDUNGEN = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.avif', '.ico'];
+const TEXT_ENDUNGEN = ['.txt', '.csv', '.md', '.json', '.xml', '.log', '.ini', '.cfg',
+                       '.conf', '.yml', '.yaml', '.srt', '.ics', '.vcf', '.tsv', '.sql'];
+const OFFICE_ENDUNGEN = ['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+                         '.odt', '.ods', '.odp', '.rtf'];
+const OFFICE_TYPEN = ['application/msword', 'application/vnd.ms-excel',
+  'application/vnd.ms-powerpoint', 'application/rtf', 'text/rtf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.presentation'];
+const DATEI_SYMBOLE = { pdf: '📕', text: '📄', office: '📘', bild: '🖼️' };
+
+function endungVon(name) {
+  const t = /\.[a-z0-9]{1,5}$/i.exec(name || '');
+  return t ? t[0].toLowerCase() : '';
+}
+
+// Manche Absender haengen Fotos als "application/octet-stream" an. Die gehoeren
+// trotzdem in die Bilderleiste, sonst sieht man sie nirgends.
+function istBildDatei(a) {
+  return (a.type || '').startsWith('image/') || BILD_ENDUNGEN.includes(endungVon(a.filename));
+}
+
+function dateiArt(a) {
+  const typ = (a.type || '').toLowerCase(), end = endungVon(a.filename);
+  if (typ === 'application/pdf' || typ === 'application/x-pdf' || end === '.pdf') return 'pdf';
+  if (istBildDatei(a)) return 'bild';
+  if (OFFICE_TYPEN.includes(typ) || OFFICE_ENDUNGEN.includes(end)) return 'office';
+  if (typ.startsWith('text/') || typ === 'application/json' || typ === 'application/xml' ||
+      TEXT_ENDUNGEN.includes(end)) return 'text';
+  return null;
+}
+
+function vorschauOffen() { return !document.getElementById('dviewer').classList.contains('hide'); }
+
+// Zwischen "lädt…" und dem fertigen Bild kann der Nutzer laengst weitergeklickt
+// haben — dann darf das Ergebnis nicht mehr in den Betrachter geschrieben werden.
+function vorschauAktuell(uid, i) {
+  return vorschauOffen() && S.dvIndex === i && S.cur && S.cur.uid === uid;
+}
+
+// Arbeiter und Schriften des Betrachters liegen neben der Seite. Absolute
+// Adressen ableiten, sonst sucht pdf.js sie unter der falschen Ebene, sobald
+// die App hinter dem Funnel unter /mail/ statt unter / laeuft.
+const PDFJS_PFAD = (datei) => new URL('./vendor/pdfjs/' + datei, document.baseURI).href;
+
+let _pdfjs = null;
+async function pdfLib() {
+  if (!_pdfjs) {
+    const mod = await import(PDFJS_PFAD('pdf.min.mjs'));
+    mod.GlobalWorkerOptions.workerSrc = PDFJS_PFAD('pdf.worker.min.mjs');
+    _pdfjs = mod;
+  }
+  return _pdfjs;
+}
+
+// Office-Datei einmal vom Server als PDF holen; die Umwandlung dauert, deshalb
+// landet das Ergebnis im selben Zwischenspeicher wie die Anhaenge.
+async function holeVorschauPdf(uid, a) {
+  const key = uid + ':' + a.part + ':pdf';
+  if (!S.blobs) S.blobs = new Map();
+  if (S.blobs.has(key)) return S.blobs.get(key);
+  const r = await fetch(API(`api/vorschau?acc=${S.acc.id}&folder=${encodeURIComponent(S.folder)}&uid=${uid}&part=${a.part}`),
+                        { credentials: 'same-origin' });
+  if (!r.ok) {
+    let text = 'Umwandlung fehlgeschlagen';
+    try { text = (await r.json()).error || text; } catch (_) { /* kein JSON */ }
+    throw new Error(text);
+  }
+  const blob = await r.blob();
+  S.blobs.set(key, blob);
+  return blob;
+}
+
+async function zeigeDatei(i) {
+  const a = (S.dateien || [])[i];
+  if (!a || !S.cur) return;
+  const art = dateiArt(a);
+  S.dvIndex = i;
+  S.dvSkala = 1;
+  vorschauAufraeumen();
+  const inhalt = document.getElementById('dvinhalt');
+  document.getElementById('dvname').textContent = a.filename || 'Datei';
+  document.getElementById('dvgr').textContent = fmtSize(a.size);
+  document.getElementById('dvseiten').textContent = '';
+  document.querySelectorAll('#dviewer .dv-zoom').forEach(b => b.classList.toggle('hide', art !== 'pdf' && art !== 'office'));
+  if (!vorschauOffen()) { document.getElementById('dviewer').classList.remove('hide'); pushLayer('datei'); }
+
+  if (!art) return vorschauMeldung('📎', 'Diese Dateiart kann V3D Mail nicht anzeigen.',
+                                   'Zum Öffnen bitte speichern und mit einem passenden Programm aufmachen.');
+  inhalt.innerHTML = `<div class="dv-melde"><span class="spin"></span>
+    <span>${art === 'office' ? 'wird umgewandelt — das dauert ein paar Sekunden…' : 'lädt…'}</span></div>`;
+
+  const uid = S.cur.uid;
+  try {
+    const blob = art === 'office' ? await holeVorschauPdf(uid, a) : await holePart(uid, a.part);
+    if (!vorschauAktuell(uid, i)) return;
+    if (art === 'pdf' || art === 'office') await zeichnePdf(blob, uid, i);
+    else if (art === 'bild') zeigeVorschauBild(blob);
+    else await zeigeVorschauText(blob, a, uid, i);
+  } catch (e) {
+    if (!vorschauAktuell(uid, i)) return;
+    vorschauMeldung('⚠️', 'Vorschau nicht möglich', e.message);
+  }
+}
+
+function vorschauMeldung(symbol, titel, klein) {
+  document.getElementById('dvinhalt').innerHTML =
+    `<div class="dv-melde"><span class="gross">${symbol}</span><span>${esc(titel)}</span>
+     ${klein ? `<small>${esc(klein)}</small>` : ''}
+     <button class="btn" onclick="vorschauSpeichern()">⬇ Speichern</button></div>`;
+}
+
+function zeigeVorschauBild(blob) {
+  const inhalt = document.getElementById('dvinhalt');
+  S.dvUrl = URL.createObjectURL(blob);
+  inhalt.innerHTML = '';
+  const img = document.createElement('img');
+  img.className = 'dv-bild';
+  img.src = S.dvUrl;
+  inhalt.appendChild(img);
+}
+
+async function zeigeVorschauText(blob, a, uid, i) {
+  let text = await blob.text();
+  if (!vorschauAktuell(uid, i)) return;
+  // Riesige Protokolldateien wuerden den Browser lahmlegen — abschneiden reicht.
+  const GRENZE = 400000;
+  const gekuerzt = text.length > GRENZE;
+  if (gekuerzt) text = text.slice(0, GRENZE);
+  if (endungVon(a.filename) === '.json') {
+    try { text = JSON.stringify(JSON.parse(text), null, 2); } catch (_) { /* dann eben roh */ }
+  }
+  const inhalt = document.getElementById('dvinhalt');
+  inhalt.innerHTML = '';
+  const pre = document.createElement('pre');
+  pre.className = 'dv-text';
+  pre.textContent = text + (gekuerzt ? '\n\n… gekürzt, die Datei ist zu lang für die Vorschau.' : '');
+  inhalt.appendChild(pre);
+}
+
+// --- PDF ---
+// Die Seiten werden erst gezeichnet, wenn sie in Sichtweite kommen: ein Angebot
+// mit 40 Seiten wuerde sonst auf dem Handy Sekunden kosten und Speicher fressen.
+function pdfBreite() {
+  const inhalt = document.getElementById('dvinhalt');
+  const platz = Math.max(240, inhalt.clientWidth - 28);
+  return Math.round(Math.min(platz, 1100) * (S.dvSkala || 1));
+}
+
+async function zeichnePdf(blob, uid, i) {
+  const pdfjs = await pdfLib();
+  if (!vorschauAktuell(uid, i)) return;
+  const doc = await pdfjs.getDocument({
+    data: new Uint8Array(await blob.arrayBuffer()),
+    standardFontDataUrl: PDFJS_PFAD('standard_fonts/'),
+    isEvalSupported: false,
+  }).promise;
+  if (!vorschauAktuell(uid, i)) { doc.destroy(); return; }
+  S.dvDoc = doc;
+  document.getElementById('dvseiten').textContent = doc.numPages + (doc.numPages === 1 ? ' Seite' : ' Seiten');
+  // Seitenverhaeltnis der ersten Seite als Platzhalter — sonst springt beim
+  // Scrollen alles, weil die Leinwaende erst beim Zeichnen ihre Hoehe bekommen.
+  const erste = await doc.getPage(1);
+  const vp1 = erste.getViewport({ scale: 1 });
+  S.dvSeitenVerhaeltnis = vp1.width + ' / ' + vp1.height;
+  if (!vorschauAktuell(uid, i) || S.dvDoc !== doc) return;
+  pdfSeitenAnlegen();
+}
+
+function pdfSeitenAnlegen() {
+  const inhalt = document.getElementById('dvinhalt');
+  const breite = pdfBreite();
+  inhalt.innerHTML = '';
+  if (S.dvBeobachter) S.dvBeobachter.disconnect();
+  S.dvBeobachter = new IntersectionObserver((eintraege) => {
+    for (const e of eintraege) if (e.isIntersecting) zeichneSeite(e.target);
+  }, { root: inhalt, rootMargin: '400px 0px' });
+  for (let n = 1; n <= S.dvDoc.numPages; n++) {
+    const c = document.createElement('canvas');
+    c.dataset.seite = String(n);
+    c.style.width = breite + 'px';
+    c.style.aspectRatio = S.dvSeitenVerhaeltnis || '1 / 1.414';
+    inhalt.appendChild(c);
+    S.dvBeobachter.observe(c);
+  }
+}
+
+async function zeichneSeite(c) {
+  if (c.dataset.fertig === '1' || c.dataset.laeuft === '1') return;
+  const doc = S.dvDoc;
+  if (!doc) return;
+  c.dataset.laeuft = '1';
+  try {
+    const seite = await doc.getPage(Number(c.dataset.seite));
+    if (S.dvDoc !== doc || !c.isConnected) return;
+    const roh = seite.getViewport({ scale: 1 });
+    const breite = pdfBreite();
+    // Auf feinen Bildschirmen doppelt so viele Bildpunkte zeichnen, sonst ist
+    // die Schrift matschig; mehr als das Doppelte lohnt den Speicher nicht.
+    const dicht = Math.min(window.devicePixelRatio || 1, 2);
+    const vp = seite.getViewport({ scale: (breite / roh.width) * dicht });
+    c.width = Math.round(vp.width);
+    c.height = Math.round(vp.height);
+    c.style.width = breite + 'px';
+    c.style.height = Math.round(vp.height / dicht) + 'px';
+    c.style.aspectRatio = '';
+    await seite.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+    if (S.dvDoc === doc) c.dataset.fertig = '1';
+  } catch (e) {
+    // Eine kaputte Seite darf den Rest des Dokuments nicht mitreissen.
+    console.warn('Seite konnte nicht gezeichnet werden', e);
+  } finally {
+    c.dataset.laeuft = '';
+  }
+}
+
+function vorschauZoom(richtung) {
+  if (!S.dvDoc) return;
+  const neu = Math.min(3, Math.max(0.5, Math.round(((S.dvSkala || 1) + richtung * 0.25) * 100) / 100));
+  if (neu === S.dvSkala) return;
+  S.dvSkala = neu;
+  pdfSeitenAnlegen();
+}
+
+async function vorschauSpeichern() {
+  if (S.dvIndex != null) await dlPart(S.dvIndex, 'datei');
+}
+
+function vorschauAufraeumen() {
+  if (S.dvBeobachter) { S.dvBeobachter.disconnect(); S.dvBeobachter = null; }
+  if (S.dvDoc) { try { S.dvDoc.destroy(); } catch (_) { /* schon weg */ } S.dvDoc = null; }
+  if (S.dvUrl) { URL.revokeObjectURL(S.dvUrl); S.dvUrl = null; }
+  document.getElementById('dvinhalt').innerHTML = '';
+}
+
+// Nur ausblenden — der Ebenenstapel wird von closeTop gepflegt.
+function vorschauAus() {
+  document.getElementById('dviewer').classList.add('hide');
+  vorschauAufraeumen();
+  S.dvIndex = null;
+}
+
+function vorschauZu() {
+  if (S.layers[S.layers.length - 1] === 'datei') zurueck(); else vorschauAus();
+}
+
 async function renderImages(m, bilder) {
   const box = document.getElementById('rimgs');
   S.bilder = bilder;
@@ -2557,6 +2859,11 @@ document.addEventListener('keydown', e => {
   if (lightboxOffen()) {
     if (e.key === 'ArrowLeft') lightboxBlaettern(-1);
     if (e.key === 'ArrowRight') lightboxBlaettern(1);
+    return;
+  }
+  if (vorschauOffen()) {
+    if (e.key === '+') vorschauZoom(1);
+    if (e.key === '-') vorschauZoom(-1);
     return;
   }
   if (e.key === 'n') compose();
