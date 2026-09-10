@@ -38132,8 +38132,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.89';
+const VOLME3D_VERSION = '1.15.90';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.90', date:'2026-09-10', changes:[
+    ['\u{1F41B}','<b>Motiv l\u00e4sst sich wieder mit der Maus auf einen K\u00f6rper ziehen \u2014 auch nachdem man Tiefe oder Gr\u00f6\u00dfe ver\u00e4ndert hat.</b> Ein Motiv, das schon einmal an einer Wand hing (oder bei dem beim Gravieren die Fl\u00e4che ermittelt wurde), merkte sich diese Fl\u00e4che \u2014 und zwar auch dann noch, wenn es l\u00e4ngst frei im Raum lag. Beim Ziehen glitt es dann in einer <b>Ebene, die gar nicht mehr da war</b>: Es lie\u00df sich weder frei bewegen noch auf ein anderes Teil legen, nur die Pfeile im Gizmo gingen noch. Jetzt wird vor jedem Zug nachgesehen, ob unter dem Motiv <b>wirklich</b> eine Wand liegt \u2014 wenn nicht, bewegt es sich frei wie jedes andere Teil und heftet sich normal an, sobald du auf einen K\u00f6rper zielst. Zweitens: Nimmt man ein geheftetes Motiv herunter und legt es sp\u00e4ter wieder auf, wird es wieder <b>mittig aufgesetzt</b>, statt seitlich neben dem K\u00f6rper liegen zu bleiben. Gemeldet von Josy.'],
+  ]},
   { version:'1.15.89', date:'2026-09-10', changes:[
     ['\u{1F41B}','<b>Ein gewickeltes Motiv l\u00e4sst sich wieder herunternehmen \u2014 und liegt danach flach.</b> Wer ein Motiv einmal um eine Rundung gewickelt hatte, bekam es kaum mehr davon herunter: Beim Ziehen glitt es einfach weiter <b>auf</b> dem K\u00f6rper. Und blieb es doch einmal liegen, war es <b>immer noch gebogen</b> \u2014 mit der Rundung des ersten K\u00f6rpers. Legte man es dann erneut auf, <b>stand es ab</b>, weil die alte Kr\u00fcmmung nicht zur neuen Wand passte. Jetzt gilt: Ziehst du das Motiv <b>deutlich neben den K\u00f6rper</b> (oder weit \u00fcber die Kante einer Fl\u00e4che hinaus), l\u00f6st es sich und liegt wieder <b>flach</b> vor dir \u2014 bereit f\u00fcr die n\u00e4chste Stelle. Kleine Bewegungen \u00fcber die Kante halten es weiterhin am Rand fest, und beim Drehen um einen Zylinder darfst du den Zeiger \u00fcber den Umriss hinausziehen, ohne dass es abrei\u00dft. Legst du es wieder auf, nimmt es die Rundung des neuen K\u00f6rpers an \u2014 auch wenn es derselbe ist wie vorher. Gemeldet von Josy.'],
   ]},
@@ -39142,13 +39145,22 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   // Sonst sprang es bei jedem Nachschieben (Pfeil-Gizmo, exakt versetzen, kurzer
   // Zug) zurück in die Mitte — freies Positionieren war damit unmöglich.
   const _planeD = _facePlaneD(hit.object, hit.face);
-  const _sameFace = svgMesh.userData._snapSolid === hit.object
+  let _sameFace = svgMesh.userData._snapSolid === hit.object
     && !!svgMesh.userData._snapNormal
     && svgMesh.userData._snapNormal.clone().normalize()
          .dot(hit.face.normal.clone().normalize()) > 0.999
     && svgMesh.userData._snapFaceD != null && _planeD != null
     && Math.abs(svgMesh.userData._snapFaceD - _planeD) < 0.05;
-  const _prevCenterW = _sameFace ? _svgCenterWorld(svgMesh) : null;
+  let _prevCenterW = _sameFace ? _svgCenterWorld(svgMesh) : null;
+  if (_sameFace) {
+    // "War mal auf dieser Fläche" genügt nicht: nach dem Herunternehmen liegt das
+    // Motiv frei im Raum und würde sonst seitlich neben dem Körper liegen bleiben,
+    // statt sauber mittig aufzusetzen. Nur wenn es noch AUF der Wand sitzt.
+    const _nW = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+    if (Math.abs(_prevCenterW.clone().sub(hit.point).dot(_nW)) > 0.35) {
+      _sameFace = false; _prevCenterW = null;
+    }
+  }
 
   // Rundung: Motiv um die Achse biegen statt tangential aufheften
   if (type === 'wrap' && wrap) {
@@ -39278,28 +39290,31 @@ function _svgGlideHalfExtent(o) {
 
 // Das geheftete Solid samt Flächenebene wiederfinden. Nach Speichern/Laden ist
 // die Referenz weg — dann von oberhalb des Motivs auf die Wand strahlen.
+// Die gemerkte Fläche (_snapSolid/_snapNormal) überlebt auch dann, wenn das Motiv
+// längst weggezogen wurde oder die Normale nur fürs Gravieren abgeleitet war. Blind
+// übernommen glitt das Motiv anschließend in einer Ebene, die gar nicht mehr da ist
+// — man bekam es mit der Maus auf gar nichts mehr drauf (Josy 10.9.). Deshalb wird
+// IMMER nachgesehen, ob unter dem Motiv wirklich eine passende Wand liegt.
 function _svgFlatTarget(o) {
   const ud = o.userData;
-  if (ud._snapSolid && ud._snapSolid.parent && ud._snapSolid.geometry
-      && ud._snapNormal && ud._snapFaceD != null)
-    return { mesh: ud._snapSolid, nLocal: ud._snapNormal.clone(), planeD: ud._snapFaceD };
+  const START = 5;                                     // 50 mm über der Motivmitte
   o.updateMatrixWorld(true);
   const q = o.getWorldQuaternion(new THREE.Quaternion());
   const n = new THREE.Vector3(0, 1, 0).applyQuaternion(q).normalize();
   const c = _svgCenterWorld(o);
   const rc = new THREE.Raycaster();
-  rc.set(c.clone().addScaledVector(n, 5), n.clone().negate());
+  rc.set(c.clone().addScaledVector(n, START), n.clone().negate());
   for (const h of rc.intersectObjects(objects.filter(x => x !== o), true)) {
     if (!h.face || h.object.userData.isEdgeLines || !h.object.isMesh) continue;
     let root = h.object; while (root && !objects.includes(root)) root = root.parent;
     if (root === o) continue;
-    if (h.distance > 6.5) break;                       // liegt nicht mehr auf der Wand
+    if (Math.abs(h.distance - START) > 1.0) break;      // Motiv sitzt nicht auf dieser Wand
     const nW = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
-    if (Math.abs(nW.dot(n)) < 0.9) continue;           // andere Wand, nicht die darunter
+    if (Math.abs(nW.dot(n)) < 0.9) continue;            // andere Wand, nicht die darunter
     const d = _facePlaneD(h.object, h.face);
     if (d == null) continue;
     ud._snapSolid = h.object; ud._snapNormal = h.face.normal.clone(); ud._snapFaceD = d;
-    if (!ud._snapSurfaceLocal) ud._snapSurfaceLocal = o.worldToLocal(h.point.clone());
+    ud._snapSurfaceLocal = o.worldToLocal(h.point.clone());
     return { mesh: h.object, nLocal: h.face.normal.clone(), planeD: d };
   }
   return null;
@@ -39368,12 +39383,10 @@ function _svgGlideFrame(o) {
              target: _svgWrapTarget(o) };
   }
   const solid = _svgFlatTarget(o);
-  if (!solid && !(o.userData._snapNormal && o.userData._snapSurfaceLocal)) return null;
+  if (!solid) return null;        // hängt an keiner Wand → frei bewegen, nicht gleiten
   // Flach: lokal Y = Flächennormale, X = Motivbreite, Z = Motivhöhe (nach unten)
   const n = new THREE.Vector3(0, 1, 0).applyQuaternion(q).normalize();
-  const pt = o.userData._snapSurfaceLocal
-    ? o.localToWorld(o.userData._snapSurfaceLocal.clone())
-    : _svgCenterWorld(o);
+  const pt = o.localToWorld(o.userData._snapSurfaceLocal.clone());
   return { kind: 'flat', n,
            u: new THREE.Vector3(1, 0, 0).applyQuaternion(q).normalize(),
            v: new THREE.Vector3(0, 0, 1).applyQuaternion(q).normalize(),
@@ -39500,7 +39513,7 @@ function _svgGlideEscaped(e) {
     }
     return false;
   }
-  if (!own) return false;                       // Ziel unbekannt → beim Gleiten bleiben
+  if (!own) return true;                        // Ziel unbekannt, aber etwas im Blick → loslassen
   if (rootOf(hit.object) !== rootOf(own)) return true;
   if (G.kind === 'flat') {
     const d = _facePlaneD(hit.object, hit.face);
