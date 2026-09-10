@@ -1750,6 +1750,7 @@ const firebaseConfig = {
     <div class="cb" onclick="dropToGround()" title="D">▽</div>
     <div class="cb" onclick="addBohrung()" title="Bohrung setzen (vertikal, durchgehend)" style="color:var(--red)">⊙</div>
     <div class="cb" onclick="plugHoles()" title="Löcher verschließen/öffnen — grün: Loch bekommt Stopfen · rot: Stopfen oder geplante Bohrung wird entfernt">🩹</div>
+    <div class="cb" id="ctx-svgcenter" onclick="svgCenterOnFace()" title="Motiv mittig auf seine Flaeche setzen (auf einer Rundung: mittig auf die Hoehe)" style="display:none">⊕</div>
     <div class="cb" id="nudge-btn" onclick="toggleNudge()" title="Exakt versetzen — Auswahl um X mm in eine Richtung schieben">✥</div>
     <div class="cb" onclick="deleteSelected()" title="Del" style="color:var(--red)">🗑</div>
   </div>
@@ -13821,6 +13822,13 @@ const ctxEl = document.getElementById('ctx');
 
 function updateCtxPopup() {
   const o = getFirst();
+  const svgC = document.getElementById('ctx-svgcenter');
+  if (svgC) {
+    // Nur zeigen, wenn genau ein Motiv gewaehlt ist, das auf etwas klebt
+    const one = selectedObjs.length === 1 ? selectedObjs[0] : null;
+    svgC.style.display = (one && one.userData.shapeType === 'svg'
+      && (one.userData._svgWrap || one.userData._snapNormal)) ? '' : 'none';
+  }
   if (!o) { ctxEl.style.display = 'none'; _nudgeHide(); return; }
   ctxEl.style.display = 'flex';
   // Always fixed at bottom-left of viewport, never floating on object
@@ -19754,6 +19762,10 @@ canvas.addEventListener('mousedown', e => {
           sx: o.scale.x, sy: o.scale.y, sz: o.scale.z
         }));
         saveUndo();
+        // Geheftetes SVG: auf seiner Fläche gleiten statt frei durch den Raum
+        if (selectedObjs.length === 1 && selectedObjs[0] === hitObj && !e.altKey)
+          _svgGlideBegin(hitObj, e);
+        else _svgGlide = null;
       }
     } else {
       // Clicked on empty space — start rubber-band
@@ -19847,6 +19859,16 @@ window.addEventListener('mousemove', e => {
       sb.style.width  = Math.abs(cx - rubberStart.x) + 'px';
       sb.style.height = Math.abs(cy - rubberStart.y) + 'px';
     }
+  }
+  // Geheftetes SVG gleitet in seiner Flaeche/Rundung (Alt = frei durch den Raum)
+  if (isDrag && _svgGlide) {
+    if (e.altKey || _svgGlideEscaped(e)) {
+      // zurück auf die Ausgangslage — ab hier gilt wieder der freie Zug + Magnet
+      _svgGlide.obj.position.copy(_svgGlide.pos0);
+      _svgGlide.obj.quaternion.copy(_svgGlide.q0);
+      _svgGlide.obj.updateMatrixWorld(true);
+      _svgGlide = null; _svgGlideHint(null);
+    } else { _svgGlideMove(e); return; }
   }
   // Object drag (left-click drag on object)
   if (isDrag && dragData && selectedObjs.length > 0) {
@@ -19949,6 +19971,8 @@ window.addEventListener('mouseup', e => {
   if (e.button === 2 || e.button === 1) { isOrbit = false; isPan = false; }
   if (e.button === 0) {
     isDrag = false; dragData = null;
+    // Auf der Flaeche geglitten? Dann NICHT neu heften — das wuerde zentrieren.
+    if (_svgGlideEnd()) _textSnapTarget = null;
     // Text/SVG auf Ziel heften wenn Snap-Ziel vorhanden
     _applyTextSnapOnDrop();
     // Mitten-Snap-Kreis ausblenden
@@ -20163,6 +20187,10 @@ canvas.addEventListener('touchstart', e => {
         px: o.position.x, py: o.position.y, pz: o.position.z
       }));
       dragStart = { x: tx, y: ty };
+      // Geheftetes SVG: mit dem Finger auf der Flaeche verschieben
+      if (selectedObjs.length === 1 && selectedObjs[0] === hitObj)
+        _svgGlideBegin(hitObj, { clientX: tx, clientY: ty });
+      else _svgGlide = null;
     } else {
       _touchDrag = false; _touchOrbit = true; _touchPan = false;
     }
@@ -20183,7 +20211,12 @@ canvas.addEventListener('touchmove', e => {
   }
   const n = Object.keys(_touches).length;
 
-  if (n === 1 && _touchDrag && _touchDragData && selectedObjs.length > 0) {
+  if (n === 1 && _touchDrag && _svgGlide) {
+    // 1-Finger: geheftetes SVG gleitet in seiner Flaeche/Rundung
+    const id = Object.keys(_touches)[0];
+    _svgGlideMove({ clientX: _touches[id].x, clientY: _touches[id].y });
+
+  } else if (n === 1 && _touchDrag && _touchDragData && selectedObjs.length > 0) {
     // 1-Finger Objekt-Drag
     const id = Object.keys(_touches)[0];
     const cx = _touches[id].x, cy = _touches[id].y;
@@ -20284,6 +20317,7 @@ canvas.addEventListener('touchend', e => {
   }
 
   if (n === 0) {
+    _svgGlideEnd();
     _touchOrbit = false; _touchPan = false; _touchDrag = false;
     _touchDragData = null; _pinchDist0 = 0;
   }
@@ -38085,8 +38119,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.85';
+const VOLME3D_VERSION = '1.15.86';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.86', date:'2026-09-10', spots:[{id:'svg-center-btn',sel:'#ctx-svgcenter'}], changes:[
+    ['\u{1F4CC}','<b>SVG-Motive lassen sich jetzt frei auf der Fl\u00e4che verschieben \u2014 auf ebenen W\u00e4nden wie auf Rundungen.</b> Bisher sprang ein geheftetes Motiv beim kleinsten Nachschieben <b>immer wieder in die Mitte der Fl\u00e4che</b>, und an einer senkrechten Wand kam man mit der Maus \u00fcberhaupt nicht hoch oder runter \u2014 der freie Zug schiebt nur waagerecht. Jetzt <b>gleitet</b> das Motiv in seiner Fl\u00e4che mit: einfach anfassen und ziehen. Es bleibt dabei sauber aufgesetzt (Gravurtiefe unver\u00e4ndert), <b>h\u00e4lt an der Kante an</b>, statt halb dar\u00fcber hinauszurutschen, und w\u00e4hrend des Ziehens steht der Abstand zur Fl\u00e4chenmitte in Millimetern am Zeiger. Kommt es der Mitte nahe, <b>rastet es ein</b> \u2014 waagerecht, senkrecht oder beides (\u201e\u2295 mittig auf der Fl\u00e4che\u201c). Auf einer <b>Rundung</b> dreht das Ziehen das Motiv um den K\u00f6rper und schiebt es in der H\u00f6he; der Wandradius wird an der neuen H\u00f6he neu gemessen, damit es auf Bechern und Vasen weiter \u00fcberall anliegt. Zum Zentrieren gibt es den neuen Knopf <b>\u2295</b> in der Auswahl-Leiste unten links (auf einer Rundung: mittig auf die H\u00f6he, der Winkel bleibt). Auf eine <b>andere Fl\u00e4che</b> kommt das Motiv weiterhin einfach dadurch, dass man es dorthin zieht \u2014 dann erscheint wie gewohnt \u201e\u{1F4CC} Auf Fl\u00e4che heften\u201c bzw. \u201e\u21a9 Um Rundung wickeln\u201c; mit gedr\u00fcckter <b>Alt-Taste</b> l\u00f6st es sich ganz von der Fl\u00e4che. Geht auch mit dem Finger auf dem Tablet. Gew\u00fcnscht von Ralf und Josy.'],
+  ]},
   { version:'1.15.85', date:'2026-09-10', changes:[
     ['\u{1F41B}','<b>Zwei-Finger-Verschieben auf dem Touchscreen folgt wieder dem Finger.</b> Die Bauplatte lief beim Wischen mit zwei Fingern genau entgegen der Wischrichtung. Maus (mittlere Taste) und Touchpad waren richtig, nur der Touch-Weg hatte das Vorzeichen verkehrt. Alle drei Wege werden jetzt gemeinsam nachgemessen, damit das nicht wieder auseinanderl\u00e4uft.'],
   ]},
@@ -39004,19 +39041,35 @@ function _svgSnapDetect(svgMesh, mouseEvent) {
 // Mittelpunkt der geklickten Fläche (Welt): flächengewichteter Schwerpunkt aller
 // Dreiecke des Meshes, die ~gleich ausgerichtet sind wie das Klick-Dreieck und auf
 // derselben Ebene liegen. So snappt die SVG automatisch in die Flächen-Mitte.
-function _faceCenterWorld(mesh, hitFace) {
-  const geo = mesh.geometry, pos = geo.attributes.position;
-  if (!pos) return null;
-  const idx = geo.index?.array;
-  const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
+// Mit uW/vW zusätzlich die Ausdehnung der Fläche entlang dieser beiden Achsen —
+// damit ein aufgesetztes Motiv beim Schieben nicht über die Kante hinauswandert.
+
+// Ebenenabstand der geklickten Fläche im Mesh-lokalen Frame (n·p = d). Zusammen
+// mit der Flächennormale beschreibt er die Fläche auch ohne den Raycast-Treffer,
+// überlebt also den Klick und wandert mit dem Motiv mit.
+function _facePlaneD(mesh, hitFace) {
+  const pos = mesh.geometry && mesh.geometry.attributes.position;
+  if (!pos || !hitFace) return null;
   const nL = hitFace.normal.clone().normalize();
   const va = new THREE.Vector3().fromBufferAttribute(pos, hitFace.a);
-  const planeD = nL.dot(va);
+  return nL.dot(va);
+}
+
+function _faceInfoWorld(mesh, nLocal, planeD, uW, vW) {
+  const geo = mesh && mesh.geometry, pos = geo && geo.attributes.position;
+  if (!pos || planeD == null || !nLocal) return null;
+  const idx = geo.index?.array;
+  const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
+  if (nTri > 2000000) return null;                   // Riesen-Scan: das Absuchen würde hängen
+  const nL = nLocal.clone().normalize();
   const TOL = 1.0;  // mm: streng koplanar → nur die tatsächlich angeklickte Wand,
                     // keine vorstehenden Lippen/Absätze/Nachbarflächen
   const A=new THREE.Vector3(),B=new THREE.Vector3(),C=new THREE.Vector3();
   const e1=new THREE.Vector3(),e2=new THREE.Vector3(),cr=new THREE.Vector3(),ctr=new THREE.Vector3();
   const acc=new THREE.Vector3(); let wSum=0;
+  const wantBox = !!(uW && vW), wp = new THREE.Vector3(), tri = [A,B,C];
+  let uMin=Infinity,uMax=-Infinity,vMin=Infinity,vMax=-Infinity;
+  mesh.updateMatrixWorld(true);
   for (let t=0;t<nTri;t++){
     const ia=idx?idx[t*3]:t*3, ib=idx?idx[t*3+1]:t*3+1, ic=idx?idx[t*3+2]:t*3+2;
     A.fromBufferAttribute(pos,ia); B.fromBufferAttribute(pos,ib); C.fromBufferAttribute(pos,ic);
@@ -39026,14 +39079,54 @@ function _faceCenterWorld(mesh, hitFace) {
     ctr.copy(A).add(B).add(C).divideScalar(3);
     if (Math.abs(nL.dot(ctr)-planeD) > TOL) continue;  // gleiche Ebene (±1mm)
     acc.addScaledVector(ctr, a2); wSum += a2;
+    if (wantBox) for (const P of tri) {
+      wp.copy(P).applyMatrix4(mesh.matrixWorld);
+      const u = wp.dot(uW), v = wp.dot(vW);
+      if (u<uMin) uMin=u; if (u>uMax) uMax=u;
+      if (v<vMin) vMin=v; if (v>vMax) vMax=v;
+    }
   }
   if (wSum < 1e-9) return null;
-  return acc.divideScalar(wSum).applyMatrix4(mesh.matrixWorld);
+  const center = acc.divideScalar(wSum).applyMatrix4(mesh.matrixWorld);
+  const out = { center, n: nL.clone().transformDirection(mesh.matrixWorld).normalize() };
+  if (wantBox && uMin < uMax) {   // Grenzen relativ zur Flächenmitte
+    out.uMin = uMin - center.dot(uW); out.uMax = uMax - center.dot(uW);
+    out.vMin = vMin - center.dot(vW); out.vMax = vMax - center.dot(vW);
+  }
+  return out;
+}
+
+function _faceCenterWorld(mesh, hitFace) {
+  const d = _facePlaneD(mesh, hitFace);
+  const info = d == null ? null : _faceInfoWorld(mesh, hitFace.normal, d);
+  return info ? info.center : null;
+}
+
+// Mitte des Motivs in Weltkoordinaten (echte Geometrie-Mitte, nicht die
+// achsparallele Hülle — die wandert bei gedrehten Motiven).
+function _svgCenterWorld(o) {
+  const g = o.geometry;
+  o.updateMatrixWorld(true);
+  if (!g) return o.getWorldPosition(new THREE.Vector3());
+  if (!g.boundingBox) g.computeBoundingBox();
+  return o.localToWorld(g.boundingBox.getCenter(new THREE.Vector3()));
 }
 
 function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   const hit = _svgSnapHit;
   if (!hit || !hit.face) return;
+
+  // Sitzt das Motiv schon auf GENAU dieser Fläche? Dann NICHT wieder zentrieren.
+  // Sonst sprang es bei jedem Nachschieben (Pfeil-Gizmo, exakt versetzen, kurzer
+  // Zug) zurück in die Mitte — freies Positionieren war damit unmöglich.
+  const _planeD = _facePlaneD(hit.object, hit.face);
+  const _sameFace = svgMesh.userData._snapSolid === hit.object
+    && !!svgMesh.userData._snapNormal
+    && svgMesh.userData._snapNormal.clone().normalize()
+         .dot(hit.face.normal.clone().normalize()) > 0.999
+    && svgMesh.userData._snapFaceD != null && _planeD != null
+    && Math.abs(svgMesh.userData._snapFaceD - _planeD) < 0.05;
+  const _prevCenterW = _sameFace ? _svgCenterWorld(svgMesh) : null;
 
   // Rundung: Motiv um die Achse biegen statt tangential aufheften
   if (type === 'wrap' && wrap) {
@@ -39056,6 +39149,7 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
     svgMesh.geometry = flat;
     svgMesh.scale.set(s.x, s.y, s.z);
     delete svgMesh.userData._svgWrap;
+    delete svgMesh.userData._wrapTarget;
     _updateObjEdgeLines(svgMesh);   // sonst zentriert die BBox unten auf den alten, gebogenen Kanten
   }
 
@@ -39063,6 +39157,7 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   svgMesh.userData._snapNormal = hit.face.normal.clone();
   svgMesh.userData._snapHitPoint = hit.point.clone();   // world space, app-units
   svgMesh.userData._snapSolid   = hit.object;           // referenz auf geklicktes Solid
+  svgMesh.userData._snapFaceD   = _planeD;             // Ebene der Fläche (mesh-lokal)
   // Flächennormale (outward, world-space für Browser-Positionierung)
   let n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
   if (n.dot(raycaster.ray.direction) > 0) n.negate();
@@ -39090,11 +39185,13 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   // Ziel: in-plane zur MITTE der geklickten Fläche verschieben, der Normalen-
   // Abstand bleibt aber exakt wie am Klickpunkt (der sauber auf der Oberfläche
   // sitzt) → Tiefe/Durchbruch-Verhalten unverändert.
-  const _fc = _faceCenterWorld(hit.object, hit.face);
   const _target = hit.point.clone();
-  if (_fc) {
-    const _d = _fc.clone().sub(hit.point);
-    _target.add(_d).addScaledVector(n, -_d.dot(n));  // nur In-Flächen-Anteil von (fc - hit)
+  const _anchor = _sameFace && _prevCenterW
+    ? _prevCenterW                                   // schon drauf: Lage in der Fläche behalten
+    : _faceCenterWorld(hit.object, hit.face);        // neu drauf: in die Flächenmitte
+  if (_anchor) {
+    const _d = _anchor.clone().sub(hit.point);
+    _target.add(_d).addScaledVector(n, -_d.dot(n));  // nur In-Flächen-Anteil von (anker - hit)
   }
   // Position: Geometrie-Mitte auf Fläche (halfDepth innen + außen)
   svgMesh.position.copy(_target).addScaledVector(n, -halfDepth);
@@ -39117,9 +39214,360 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
 
   _svgSnapHit = null;
   _updateObjEdgeLines(svgMesh);
-  updateTFInputs(); updateTree();
-  notify('📌 SVG auf Fläche geheftet', 'ok');
+  updateTFInputs(); updateTree(); updateCtxPopup();   // ⊕-Knopf erscheint sofort
+  notify(_sameFace ? '📌 SVG auf der Fläche verschoben' : '📌 SVG auf Fläche geheftet', 'ok');
 }
+// ===== SVG AUF DER FLÄCHE VERSCHIEBEN ("Gleiten") ==========================
+// Ein geheftetes Motiv ließ sich danach kaum noch bewegen: Der freie Objekt-Zug
+// schiebt nur in X/Z — an einer senkrechten Wand also gar nicht IN der Fläche —
+// und beim Loslassen zog der Magnet es zurück in die Mitte. Hier gleitet die SVG
+// stattdessen in ihrer Fläche bzw. um ihre Rundung: sie bleibt exakt aufgesetzt,
+// hält am Flächenrand an und rastet in der Mitte ein. Alt = frei durch den Raum.
+let _svgGlide = null;
+
+function _svgGlideMm(v) {
+  const mm = v * 10;   // 1 Szene-Einheit = 10 mm
+  return (mm < -0.05 ? '−' : '') + Math.abs(mm).toFixed(1).replace('.', ',') + ' mm';
+}
+
+function _svgGlideHint(txt) {
+  const hint = document.getElementById('text-snap-hint');
+  if (!hint) return;
+  if (!txt) { hint.style.display = 'none'; return; }
+  hint.textContent = txt;
+  hint.style.display = 'block';
+  if (_svgGlide && _svgGlide.ev) {
+    hint.style.left = (_svgGlide.ev.x + 14) + 'px';
+    hint.style.top  = (_svgGlide.ev.y - 24) + 'px';
+  }
+}
+
+// Halbe Motiv-Ausdehnung in der Fläche (lokal X = Breite, Z = Höhe des Motivs)
+function _svgGlideHalfExtent(o) {
+  const g = o.geometry;
+  if (!g) return { u: 0, v: 0 };
+  if (!g.boundingBox) g.computeBoundingBox();
+  const bb = g.boundingBox;
+  return { u: (bb.max.x - bb.min.x) / 2 * Math.abs(o.scale.x),
+           v: (bb.max.z - bb.min.z) / 2 * Math.abs(o.scale.z) };
+}
+
+// Das geheftete Solid samt Flächenebene wiederfinden. Nach Speichern/Laden ist
+// die Referenz weg — dann von oberhalb des Motivs auf die Wand strahlen.
+function _svgFlatTarget(o) {
+  const ud = o.userData;
+  if (ud._snapSolid && ud._snapSolid.parent && ud._snapSolid.geometry
+      && ud._snapNormal && ud._snapFaceD != null)
+    return { mesh: ud._snapSolid, nLocal: ud._snapNormal.clone(), planeD: ud._snapFaceD };
+  o.updateMatrixWorld(true);
+  const q = o.getWorldQuaternion(new THREE.Quaternion());
+  const n = new THREE.Vector3(0, 1, 0).applyQuaternion(q).normalize();
+  const c = _svgCenterWorld(o);
+  const rc = new THREE.Raycaster();
+  rc.set(c.clone().addScaledVector(n, 5), n.clone().negate());
+  for (const h of rc.intersectObjects(objects.filter(x => x !== o), true)) {
+    if (!h.face || h.object.userData.isEdgeLines || !h.object.isMesh) continue;
+    let root = h.object; while (root && !objects.includes(root)) root = root.parent;
+    if (root === o) continue;
+    if (h.distance > 6.5) break;                       // liegt nicht mehr auf der Wand
+    const nW = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
+    if (Math.abs(nW.dot(n)) < 0.9) continue;           // andere Wand, nicht die darunter
+    const d = _facePlaneD(h.object, h.face);
+    if (d == null) continue;
+    ud._snapSolid = h.object; ud._snapNormal = h.face.normal.clone(); ud._snapFaceD = d;
+    if (!ud._snapSurfaceLocal) ud._snapSurfaceLocal = o.worldToLocal(h.point.clone());
+    return { mesh: h.object, nLocal: h.face.normal.clone(), planeD: d };
+  }
+  return null;
+}
+
+// Den umwickelten Körper wiederfinden (Referenz überlebt das Speichern nicht):
+// von der Drehachse nach außen strahlen, der Treffer muss beim Wickelradius liegen.
+function _svgWrapTarget(o) {
+  const ud = o.userData;
+  if (ud._wrapTarget && ud._wrapTarget.parent) return ud._wrapTarget;
+  o.updateMatrixWorld(true);
+  const q = o.getWorldQuaternion(new THREE.Quaternion());
+  const e1 = new THREE.Vector3(1, 0, 0).applyQuaternion(q).normalize();
+  const R = (ud._svgWrap && ud._svgWrap.R) || 1;
+  const rc = new THREE.Raycaster();
+  rc.set(o.position.clone(), e1);
+  for (const h of rc.intersectObjects(objects.filter(x => x !== o), true)) {
+    if (!h.face || h.object.userData.isEdgeLines || !h.object.isMesh) continue;
+    let root = h.object; while (root && !objects.includes(root)) root = root.parent;
+    if (root === o) continue;
+    if (Math.abs(h.distance - R) > Math.max(0.3, R * 0.5)) continue;
+    ud._wrapTarget = h.object;
+    return h.object;
+  }
+  return null;
+}
+
+// Auf welcher Fläche/Rundung sitzt das Motiv? null = es klebt nirgends.
+function _svgGlideFrame(o) {
+  if (!o || o.userData.shapeType !== 'svg' || o.userData.locked) return null;
+  o.updateMatrixWorld(true);
+  const q = o.getWorldQuaternion(new THREE.Quaternion());
+  if (o.userData._svgWrap) {
+    // gewickelt: lokal X = radial, Y = Drehachse; der Ursprung liegt AUF der Achse
+    return { kind: 'wrap',
+             axis: new THREE.Vector3(0, 1, 0).applyQuaternion(q).normalize(),
+             e1:   new THREE.Vector3(1, 0, 0).applyQuaternion(q).normalize(),
+             e3:   new THREE.Vector3(0, 0, 1).applyQuaternion(q).normalize(),
+             axisPt: o.position.clone(),
+             R: Math.max(1e-3, o.userData._svgWrap.R),
+             target: _svgWrapTarget(o) };
+  }
+  const solid = _svgFlatTarget(o);
+  if (!solid && !(o.userData._snapNormal && o.userData._snapSurfaceLocal)) return null;
+  // Flach: lokal Y = Flächennormale, X = Motivbreite, Z = Motivhöhe (nach unten)
+  const n = new THREE.Vector3(0, 1, 0).applyQuaternion(q).normalize();
+  const pt = o.userData._snapSurfaceLocal
+    ? o.localToWorld(o.userData._snapSurfaceLocal.clone())
+    : _svgCenterWorld(o);
+  return { kind: 'flat', n,
+           u: new THREE.Vector3(1, 0, 0).applyQuaternion(q).normalize(),
+           v: new THREE.Vector3(0, 0, 1).applyQuaternion(q).normalize(),
+           point: pt, solid };
+}
+
+// Erlaubter Höhenbereich auf der Rundung (Achsenkoordinate relativ zum Ursprung)
+function _svgGlideWrapSpan(o, fr) {
+  if (!fr.target) return null;
+  const bb = new THREE.Box3().setFromObject(fr.target);
+  if (bb.isEmpty()) return null;
+  let lo = Infinity, hi = -Infinity;
+  const c = new THREE.Vector3();
+  for (let i = 0; i < 8; i++) {
+    c.set(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z);
+    const t = c.sub(fr.axisPt).dot(fr.axis);
+    lo = Math.min(lo, t); hi = Math.max(hi, t);
+  }
+  const g = o.geometry;
+  if (g && !g.boundingBox) g.computeBoundingBox();
+  const half = (g && g.boundingBox)
+    ? (g.boundingBox.max.y - g.boundingBox.min.y) / 2 * Math.abs(o.scale.y) : 0;
+  return { lo, hi, half };
+}
+
+function _rayPlanePoint(ray, planePt, planeN) {
+  const denom = planeN.dot(ray.direction);
+  if (Math.abs(denom) < 1e-6) return null;             // Blick streift die Fläche
+  const t = planeN.dot(planePt.clone().sub(ray.origin)) / denom;
+  if (t <= 0) return null;
+  return ray.origin.clone().addScaledVector(ray.direction, t);
+}
+
+// Schnitt mit dem unendlichen Zylinder. Zeigt die Maus neben den Körper, wird der
+// nächstgelegene Punkt genommen — sonst würde das Motiv am Rand hängenbleiben.
+function _rayCylinderPoint(ray, axisPt, axis, R) {
+  const o = ray.origin.clone().sub(axisPt), d = ray.direction;
+  const dPar = axis.dot(d), oPar = axis.dot(o);
+  const dp = d.clone().addScaledVector(axis, -dPar);
+  const op = o.clone().addScaledVector(axis, -oPar);
+  const A = dp.lengthSq();
+  if (A < 1e-12) return null;                          // Blick genau entlang der Achse
+  const B = 2 * dp.dot(op), C = op.lengthSq() - R * R;
+  const disc = B * B - 4 * A * C;
+  let t;
+  if (disc < 0) t = -B / (2 * A);
+  else {
+    const sq = Math.sqrt(disc);
+    t = (-B - sq) / (2 * A);
+    if (t <= 0) t = (-B + sq) / (2 * A);
+  }
+  if (!isFinite(t)) return null;
+  return ray.origin.clone().addScaledVector(d, t);
+}
+
+// Punkt auf der Rundung → Winkel (in der Motiv-Basis) und Höhe auf der Achse
+function _svgGlideCyl(p, fr) {
+  const d = p.clone().sub(fr.axisPt);
+  const h = d.dot(fr.axis);
+  const rad = d.addScaledVector(fr.axis, -h);
+  return { h, ang: Math.atan2(rad.dot(fr.e3), rad.dot(fr.e1)) };
+}
+
+// Am Rand anhalten; ist die Fläche schmaler als das Motiv, bleibt es mittig.
+function _svgGlideClamp(c, lo, hi, half) {
+  const a = lo + half, b = hi - half;
+  if (b < a) return (lo + hi) / 2;
+  return Math.max(a, Math.min(b, c));
+}
+
+// Zielt der Zeiger auf einen ANDEREN Körper oder eine andere Fläche? Dann will
+// der Nutzer umheften, nicht gleiten — Gleiten aufgeben und den normalen Zug
+// übernehmen lassen (sonst klebte das Motiv unentrinnbar an seiner Fläche).
+function _svgGlideEscaped(e) {
+  const G = _svgGlide;
+  if (!G) return false;
+  getNorm(e); raycaster.setFromCamera(mousev, camera);
+  const hits = raycaster.intersectObjects(
+    objects.filter(o => o !== G.obj && !o.userData.isEdgeLines), true);
+  const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines);
+  if (!hit) return false;                       // nichts im Blick → weitergleiten
+  const rootOf = m => { let p = m; while (p && !objects.includes(p)) p = p.parent; return p || m; };
+  const own = G.kind === 'flat' ? (G.fr.solid && G.fr.solid.mesh) : G.fr.target;
+  if (!own) return false;                       // Ziel unbekannt → beim Gleiten bleiben
+  if (rootOf(hit.object) !== rootOf(own)) return true;
+  if (G.kind === 'flat') {
+    const d = _facePlaneD(hit.object, hit.face);
+    if (d == null) return false;
+    const same = hit.face.normal.clone().normalize().dot(G.fr.solid.nLocal.clone().normalize()) > 0.99
+              && Math.abs(d - G.fr.solid.planeD) < 1.0;
+    return !same;                               // andere Wand desselben Körpers
+  }
+  // Rundung: Deckel/Boden statt Mantel getroffen
+  const nW = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+  return Math.abs(nW.dot(G.fr.axis)) > 0.7;
+}
+
+function _svgGlideBegin(o, e) {
+  _svgGlide = null;
+  const fr = _svgGlideFrame(o);
+  if (!fr) return false;
+  getNorm(e); raycaster.setFromCamera(mousev, camera);
+  const ray = raycaster.ray.clone();
+  const G = { kind: fr.kind, obj: o, fr, moved: false,
+              ev: { x: e.clientX, y: e.clientY },
+              pos0: o.position.clone(), q0: o.quaternion.clone() };
+  if (fr.kind === 'flat') {
+    const p0 = _rayPlanePoint(ray, fr.point, fr.n);
+    if (!p0) return false;
+    G.p0 = p0;
+    G.c0 = _svgCenterWorld(o);
+    G.half = _svgGlideHalfExtent(o);
+    G.face = fr.solid ? _faceInfoWorld(fr.solid.mesh, fr.solid.nLocal, fr.solid.planeD, fr.u, fr.v) : null;
+    if (G.face) G.off0 = { u: G.c0.clone().sub(G.face.center).dot(fr.u),
+                           v: G.c0.clone().sub(G.face.center).dot(fr.v) };
+  } else {
+    const p0 = _rayCylinderPoint(ray, fr.axisPt, fr.axis, fr.R);
+    if (!p0) return false;
+    const t0 = _svgGlideCyl(p0, fr);
+    G.ang0 = t0.ang; G.h0 = t0.h;
+    G.span = _svgGlideWrapSpan(o, fr);
+  }
+  _svgGlide = G;
+  _textSnapTarget = null;
+  return true;
+}
+
+function _svgGlideMove(e) {
+  const G = _svgGlide;
+  if (!G) return;
+  const o = G.obj;
+  G.ev = { x: e.clientX, y: e.clientY };
+  getNorm(e); raycaster.setFromCamera(mousev, camera);
+  const ray = raycaster.ray;
+  const free = !!e.altKey;          // Alt: ohne Mitten-Magnet und ohne Randstopp
+  let label = '';
+
+  if (G.kind === 'flat') {
+    const p = _rayPlanePoint(ray, G.fr.point, G.fr.n);
+    if (!p) return;
+    const d = p.clone().sub(G.p0);
+    let du = d.dot(G.fr.u), dv = d.dot(G.fr.v);
+    if (G.face && G.off0) {
+      let cu = G.off0.u + du, cv = G.off0.v + dv;
+      if (!free && G.face.uMin != null) {
+        cu = _svgGlideClamp(cu, G.face.uMin, G.face.uMax, G.half.u);
+        cv = _svgGlideClamp(cv, G.face.vMin, G.face.vMax, G.half.v);
+      }
+      let mid = '';
+      if (!free) {
+        const spanU = G.face.uMin != null ? G.face.uMax - G.face.uMin : 4;
+        const spanV = G.face.vMin != null ? G.face.vMax - G.face.vMin : 4;
+        const tolU = Math.max(0.03, Math.min(0.25, spanU * 0.03));
+        const tolV = Math.max(0.03, Math.min(0.25, spanV * 0.03));
+        if (Math.abs(cu) < tolU) { cu = 0; mid += 'u'; }
+        if (Math.abs(cv) < tolV) { cv = 0; mid += 'v'; }
+      }
+      du = cu - G.off0.u; dv = cv - G.off0.v;
+      label = mid === 'uv' ? '⊕ mittig auf der Fläche'
+            : (mid === 'u' ? '↕ senkrecht mittig'
+            : (mid === 'v' ? '↔ waagerecht mittig'
+            : '↔ ' + _svgGlideMm(cu) + '   ↕ ' + _svgGlideMm(-cv)));
+    }
+    o.position.copy(G.pos0).addScaledVector(G.fr.u, du).addScaledVector(G.fr.v, dv);
+  } else {
+    const p = _rayCylinderPoint(ray, G.fr.axisPt, G.fr.axis, G.fr.R);
+    if (!p) return;
+    const t = _svgGlideCyl(p, G.fr);
+    let dAng = t.ang - G.ang0;
+    while (dAng >  Math.PI) dAng -= 2 * Math.PI;
+    while (dAng < -Math.PI) dAng += 2 * Math.PI;
+    let dh = t.h - G.h0;
+    let mid = '';
+    if (G.span && !free) {
+      const hC = _svgGlideClamp(dh, G.span.lo, G.span.hi, G.span.half);
+      const ctr = (G.span.lo + G.span.hi) / 2;
+      const tol = Math.max(0.03, Math.min(0.25, (G.span.hi - G.span.lo) * 0.03));
+      dh = Math.abs(hC - ctr) < tol ? (mid = 'v', ctr) : hC;
+    }
+    o.position.copy(G.pos0).addScaledVector(G.fr.axis, dh);
+    o.quaternion.copy(G.q0).premultiply(new THREE.Quaternion().setFromAxisAngle(G.fr.axis, dAng));
+    label = (mid ? '↕ mittig auf der Höhe   ' : '↕ ' + _svgGlideMm(dh) + '   ')
+          + '↻ ' + Math.round(dAng * 180 / Math.PI) + '°';
+  }
+
+  G.moved = true;
+  o.updateMatrixWorld(true);
+  updateTFInputs(); updateCtxPopup();
+  _doRepositionDimHandles();
+  if (selectedObjs.length === 1) _fpPositionPanel();
+  _svgGlideHint(label || '📌 auf der Fläche');
+}
+
+// Loslassen. Rückgabe true = es wurde geglitten → NICHT neu heften (das würde
+// wieder zentrieren). Auf einer Rundung wird der Wandradius an der neuen Höhe
+// nachgemessen, damit das Motiv auf Bechern und Vasen weiter überall anliegt.
+function _svgGlideEnd() {
+  const G = _svgGlide;
+  _svgGlide = null;
+  _svgGlideHint(null);
+  if (!G || !G.moved) return false;
+  const o = G.obj;
+  if (G.kind === 'wrap' && G.fr.target) {
+    o.updateMatrixWorld(true);
+    const e1 = new THREE.Vector3(1, 0, 0)
+      .applyQuaternion(o.getWorldQuaternion(new THREE.Quaternion())).normalize();
+    const onWall = o.position.clone().addScaledVector(e1, G.fr.R);
+    const probe = _svgWrapProbe(G.fr.target, onWall);
+    if (probe) _svgWrapApply(o, probe, onWall);
+  }
+  updateTFInputs(); updateTree(); _doRepositionDimHandles();
+  return true;
+}
+
+// Knopf in der Auswahl-Leiste: Motiv wieder mittig auf seine Fläche setzen
+// (auf einer Rundung: mittig auf die Höhe, der Winkel bleibt wie eingestellt).
+function svgCenterOnFace() {
+  const o = selectedObjs.length === 1 ? selectedObjs[0] : null;
+  if (!o || o.userData.shapeType !== 'svg') { notify('Erst ein SVG-Motiv auswählen', 'w'); return; }
+  if (o.userData.locked) { notify('Objekt ist gesperrt', 'w'); return; }
+  const fr = _svgGlideFrame(o);
+  if (!fr) { notify('Motiv erst auf eine Fläche ziehen (heften)', 'w'); return; }
+  if (fr.kind === 'flat') {
+    const face = fr.solid ? _faceInfoWorld(fr.solid.mesh, fr.solid.nLocal, fr.solid.planeD) : null;
+    if (!face) { notify('Fläche nicht gefunden — Motiv neu auf die Fläche ziehen', 'w'); return; }
+    saveUndo();
+    const d = face.center.clone().sub(_svgCenterWorld(o));
+    d.addScaledVector(fr.n, -d.dot(fr.n));        // nur IN der Fläche verschieben
+    o.position.add(d);
+    notify('⊕ Motiv auf der Fläche zentriert', 'ok');
+  } else {
+    const span = _svgGlideWrapSpan(o, fr);
+    if (!span) { notify('Körper nicht gefunden — Motiv neu aufwickeln', 'w'); return; }
+    saveUndo();
+    o.position.addScaledVector(fr.axis, (span.lo + span.hi) / 2);
+    notify('⊕ Motiv auf halber Höhe zentriert', 'ok');
+  }
+  o.updateMatrixWorld(true);
+  updateTFInputs(); updateTree(); _doRepositionDimHandles();
+  if (selectedObjs.length === 1) _fpPositionPanel();
+}
+// ===== END SVG AUF DER FLÄCHE VERSCHIEBEN ==================================
+
 // ===== SVG UM RUNDUNG WICKELN ==============================================
 // Ein flaches SVG-Prisma tangential auf einen Zylinder zu heften macht die
 // Gravur in der Mitte tief und an den Rändern flach (Windlicht!). Hier wird das
@@ -39503,6 +39951,7 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
   svgMesh.position.copy(c0);   // Ursprung auf der Achse → Drehen schiebt das Motiv um den Körper
   svgMesh.scale.set(1, 1, 1);
   svgMesh.userData._svgWrap = spec;
+  svgMesh.userData._wrapTarget = probe.mesh || null;   // für Gleiten/Zentrieren auf der Rundung
   _updateObjEdgeLines(svgMesh);
   // Der Prisma-Gravurweg (feste Tiefe entlang einer Normalen) gilt hier nicht mehr
   delete svgMesh.userData._snapNormal;
