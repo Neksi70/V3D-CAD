@@ -382,10 +382,12 @@ async function schreibeIndex() {
     const id = f.slice(0, -4);
     let titel = id;
     let modal = null;
+    let hdrSel = null;
     try {
       const mod = await import(path.join(HERE, 'scripts', id + '.mjs'));
       titel = mod.default.title || id;
       modal = mod.default.modal || null;
+      hdrSel = mod.default.hdrSel || null;   // Dialoge ohne .g3hdr-Kopfzeile
     } catch {
       /* Video ohne Drehbuch — Titel bleibt die Kennung */
     }
@@ -393,7 +395,7 @@ async function schreibeIndex() {
       '-v', 'error', '-show_entries', 'format=duration',
       '-of', 'default=nw=1:nk=1', path.join(OUT, f),
     ]);
-    eintraege.push({ id, titel, modal, dauer: Math.round(parseFloat(stdout)) });
+    eintraege.push({ id, titel, modal, hdrSel, dauer: Math.round(parseFloat(stdout)) });
   }
   eintraege.sort((a, b) => a.id.localeCompare(b.id));
   await fs.writeFile(
