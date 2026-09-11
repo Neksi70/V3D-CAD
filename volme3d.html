@@ -186,6 +186,10 @@ body.mit-marking #vp{cursor:crosshair}
 #dev-badge{display:none;align-items:center;gap:4px;padding:3px 8px;background:#7c3aed;color:#fff;font-size:10px;font-weight:800;border-radius:12px;margin-left:8px;cursor:pointer;user-select:none}
 #beta-fb{display:none;align-items:center;gap:4px;padding:3px 9px;background:#F97316;color:#fff;font-size:10px;font-weight:800;border-radius:12px;cursor:pointer;user-select:none;transition:filter .12s;white-space:nowrap}
 #beta-fb:hover{filter:brightness(1.07)}
+/* Video-Knopf in der Kopfleiste: bleibt versteckt, bis _howtoInit weiss, dass
+   es ueberhaupt Videos gibt — tote Knoepfe gibt es hier keine. */
+#howto-tb{display:none;align-items:center;gap:4px;padding:3px 9px;background:transparent;color:#fff;font-size:10px;font-weight:800;border:1.5px solid rgba(255,255,255,.45);border-radius:12px;cursor:pointer;user-select:none;transition:all .12s;white-space:nowrap}
+#howto-tb:hover{background:rgba(255,255,255,.14);border-color:#fff}
 #dev-badge.on{display:flex}
 .dev-only{display:none!important}
 body.devmode .dev-only{display:flex!important}
@@ -1176,6 +1180,7 @@ const firebaseConfig = {
     <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.53<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="r0-spacer"></div>
+    <div id="howto-tb" onclick="_howtoMenu()" title="Kurze Howto-Videos: zeigen Schritt für Schritt, wie ein Werkzeug bedient wird">🎬 Videos</div>
     <div id="beta-fb" onclick="_betaOpen()" title="Beta-Feedback: Fehler oder Idee melden">💬 Feedback</div>
     <div class="sep" id="auth-sep" style="display:none"></div>
     <div id="auth-user-chip"><span></span></div>
@@ -34924,6 +34929,19 @@ async function _howtoInit(){
     if(!r.ok) return;
     _howtoListe = await r.json();
   }catch(e){ return; }   // keine Videos ausgeliefert: still nichts tun
+  if(_howtoListe.length){
+    const tb = document.getElementById('howto-tb');
+    if(tb) tb.style.display = 'flex';
+    // Jedes Video auch einzeln auffindbar machen: wer "svg" oder "vase" sucht,
+    // soll das passende Video angeboten bekommen, ohne es zu erraten.
+    if(typeof CMDK !== 'undefined') for(const v of _howtoListe){
+      if(CMDK.some(c => c._howto === v.id)) continue;
+      CMDK.push({ i:'🎬', g:'Video', t:'Video: ' + v.titel, _howto: v.id,
+                   k:'video anleitung howto hilfe film tutorial erklaerung zeigen lernen ' +
+                     v.titel.toLowerCase() + ' ' + v.id.replace(/-/g,' '),
+                   run:()=>_howtoOpen(v.id) });
+    }
+  }
   for(const v of _howtoListe){
     if(!v.modal && !v.hdrSel) continue;
     const hdr = document.querySelector(v.hdrSel || ('#'+v.modal+' .g3hdr'));
@@ -34941,6 +34959,57 @@ async function _howtoInit(){
     if(x){ hdr.insertBefore(b, x); x.style.marginLeft = '10px'; }
     else hdr.appendChild(b);
   }
+}
+
+// Zentrale Video-Uebersicht. Der Knopf in der Kopfzeile eines Generator-Fensters
+// hilft nur dem, der das Fenster schon offen hat — und manche Werkzeuge (SVG-,
+// DXF-Import) oeffnen zuerst die Dateiauswahl, das Fenster mit dem Knopf kommt
+// erst danach. Ohne diese Liste kann man also nicht einmal SEHEN, dass es
+// Videos gibt (Josy, 11.9.26: "Ich finde es nicht").
+function _howtoMenu(){
+  if(!_howtoListe.length){
+    notify('Es sind gerade keine Videos verfügbar', 'w');
+    return;
+  }
+  let ov = document.getElementById('howto-menu-ov');
+  if(!ov){
+    ov = document.createElement('div');
+    ov.id = 'howto-menu-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:98900;background:rgba(0,0,0,.6);'+
+      'display:flex;align-items:center;justify-content:center;padding:20px';
+    ov.onclick = (e)=>{ if(e.target===ov) _howtoMenuClose(); };
+    document.body.appendChild(ov);
+  }
+  const mm = s => Math.floor(s/60)+':'+String(Math.round(s%60)).padStart(2,'0');
+  ov.innerHTML =
+    '<div style="background:var(--panel,#fff);border-radius:16px;max-width:520px;width:100%;'+
+      'max-height:86vh;overflow:auto;box-shadow:0 18px 60px rgba(0,0,0,.35)">'+
+      '<div style="display:flex;align-items:center;gap:10px;padding:15px 18px 10px;font-size:16px;font-weight:800">'+
+        '🎬 Videos'+
+        '<span style="margin-left:auto;cursor:pointer;font-size:22px;padding:0 4px;opacity:.6" '+
+          'onclick="_howtoMenuClose()" title="Schließen (Esc)">&times;</span>'+
+      '</div>'+
+      '<div style="padding:0 18px 6px;font-size:12.5px;color:#777;line-height:1.45">'+
+        'Kurze Filme mit Ton und Untertiteln, die zeigen, wie ein Werkzeug bedient wird. '+
+        'Einfach anklicken — du musst vorher nichts öffnen.</div>'+
+      '<div style="padding:10px 12px 16px;display:flex;flex-direction:column;gap:6px">'+
+      _howtoListe.map(v =>
+        '<div onclick="_howtoMenuClose();_howtoOpen(\''+v.id+'\')" '+
+          'style="display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:11px;'+
+          'cursor:pointer;border:1.5px solid var(--border,#e3e3e3)" '+
+          'onmouseover="this.style.background=\'rgba(249,115,22,.09)\';this.style.borderColor=\'#F97316\'" '+
+          'onmouseout="this.style.background=\'\';this.style.borderColor=\'var(--border,#e3e3e3)\'">'+
+          '<span style="font-size:19px">▶</span>'+
+          '<span style="flex:1;font-size:14px;font-weight:650">'+v.titel+'</span>'+
+          '<span style="font-size:12px;color:#888;white-space:nowrap">'+mm(v.dauer)+' min</span>'+
+        '</div>').join('')+
+      '</div>'+
+    '</div>';
+  ov.style.display = 'flex';
+}
+function _howtoMenuClose(){
+  const ov = document.getElementById('howto-menu-ov');
+  if(ov){ ov.style.display = 'none'; ov.innerHTML = ''; }
 }
 
 function _howtoOpen(id){
@@ -34980,7 +35049,9 @@ function _howtoClose(){
 document.addEventListener('keydown', (e)=>{
   if(e.key==='Escape'){
     const ov = document.getElementById('howto-ov');
-    if(ov && ov.style.display!=='none'){ e.stopPropagation(); _howtoClose(); }
+    if(ov && ov.style.display!=='none'){ e.stopPropagation(); _howtoClose(); return; }
+    const mv = document.getElementById('howto-menu-ov');
+    if(mv && mv.style.display!=='none'){ e.stopPropagation(); _howtoMenuClose(); }
   }
 }, true);
 
@@ -38804,8 +38875,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.97';
+const VOLME3D_VERSION = '1.15.98';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.98', date:'2026-09-11', spots:[{id:'howto-menu',sel:'#howto-tb'}], changes:[
+    ['\u{1F3AC}','<b>Die Videos haben jetzt einen festen Platz: oben rechts \u201e\u{1F3AC} Videos\u201c.</b> Bisher sa\u00df der Knopf nur in der Kopfzeile des jeweiligen Fensters \u2014 das half nur dem, der das Fenster schon offen hatte. Beim <i>SVG-Import</i> ging das gar nicht: Der \u00f6ffnet zuerst die Dateiauswahl, das Fenster mit dem Knopf kommt erst <b>danach</b>. Wer keine Datei zur Hand hatte, konnte also nicht einmal <b>sehen</b>, dass es \u00fcberhaupt Videos gibt. Jetzt sitzt oben in der schwarzen Leiste ein Knopf, der <b>alle</b> Filme auflistet \u2014 mit Laufzeit, einfach anklicken, vorher nichts \u00f6ffnen. Und die <b>Suche</b> findet sie auch: \u201eVideo\u201c, \u201eAnleitung\u201c oder \u201eHilfe\u201c eintippen, oder gleich das Thema (\u201eSVG\u201c, \u201eVase\u201c, \u201eLithophane\u201c). Gemeldet von Josy \u2014 \u201eIch finde es nicht\u201c war v\u00f6llig berechtigt, die Wegbeschreibung war eine Sackgasse.'],
+  ]},
   { version:'1.15.97', date:'2026-09-11', changes:[
     ['\u{1F9F1}','<b>Neu: Klemmbaustein-Look \u2014 aus jedem Modell wird ein Teil aus Noppensteinen.</b> W\u00e4hle ein Modell aus (ein eigenes, ein importiertes STL oder eines aus den anderen Generatoren) und klicke im Eigenschaften-Feld auf <b>\u{1F9F1} Klemmbaustein-Look</b> \u2014 oder such in der Suche einfach nach \u201eLego\u201c. Das Modell wird aufs <b>echte Noppenraster</b> gelegt (8 mm Teilung, Stein 9,6 mm oder Platte 3,2 mm f\u00fcr feinere Rundungen) und daraus <b>ein druckbares Teil</b> gebaut: mit <b>Noppen oben</b>, <b>Aufnahmen unten</b> (das Ergebnis l\u00e4sst sich also auf gekaufte Steine und Bauplatten stecken) und den <b>Fugen zwischen den Steinen</b>. Du bestimmst nur, wie <b>breit in Noppen</b> es werden soll \u2014 alles andere folgt ma\u00dfst\u00e4blich, und die fertigen Millimeter stehen daneben. \u00dcber den <b>F\u00fcllgrad</b> stellst du ein, ob es lieber pummelig werden soll (d\u00fcnne Stellen bleiben erhalten) oder schlank. Steine, die sich nur an einer Ecke ber\u00fchren, werden automatisch verbunden, damit nichts abbricht. Das Original bleibt erhalten und wird nur ausgeblendet.'],
   ]},
@@ -46116,6 +46190,7 @@ const CMDK = [
   {i:'🗳',g:'Seite',t:'Abstimmung',k:'poll umfrage',run:()=>window.open('abstimmung.html','_blank')},
   {i:'⚙️',g:'Seite',t:'Szene-Einstellungen',k:'settings bett platte',run:()=>_openSceneSettings()},
   {i:'📝',g:'Seite',t:'Was ist neu?',k:'changelog version',run:()=>_openChangelog()},
+  {i:'🎬',g:'Seite',t:'Videos (Howto-Filme)',k:'video videos anleitung howto hilfe film tutorial erklaerung zeigen lernen kurs schulung',run:()=>_howtoMenu()},
   {i:'◪',g:'Ansicht',t:'Schnittansicht (Modell aufschneiden)',k:'schnitt section querschnitt clipping wandstaerke innen',run:()=>sectionTool()},
   {i:'🛟',g:'Datei',t:'Sicherungen (ältere Stände)',k:'backup sicherung wiederherstellen restore version',run:()=>_bakOpen()},
   {i:'📱',g:'Ansicht',t:'Ansehen-Modus (mobil)',k:'mobile view vorschau',run:()=>_mviewToggle()},
