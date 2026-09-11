@@ -38320,8 +38320,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.93';
+const VOLME3D_VERSION = '1.15.94';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.94', date:'2026-09-11', changes:[
+    ['\u{1F41B}','<b>Ein gewickeltes Motiv l\u00e4sst sich jetzt schr\u00e4g stellen, ohne dass es von der Rundung absteht.</b> Drehte man ein um einen K\u00f6rper gebogenes Motiv, wurde das <b>fertig gebogene Netz gekippt</b> \u2014 die W\u00f6lbung lag dann quer zur Wand und das Motiv stand ab (gemessen: 2,3 mm). Beim n\u00e4chsten Verschieben fiel es deshalb ganz von der Rundung und lag pl\u00f6tzlich flach da (\u201eauch die Form ist wieder ver\u00e4ndert\u201c). Jetzt wird die Drehung <b>vor dem Biegen</b> eingerechnet: Das Motiv wird schr\u00e4g gestellt und dann frisch um den K\u00f6rper gelegt \u2014 es liegt \u00fcberall mit denselben 0,2 mm an, und die Schr\u00e4glage bleibt beim Verschieben erhalten. Zweitens l\u00e4uft beim Verschieben auf der Rundung nichts mehr durcheinander: Die Drehachse wird jetzt beim Wickeln festgehalten, statt sie aus der Lage des Motivs abzuleiten \u2014 die kippt n\u00e4mlich mit, sobald du das Motiv drehst. Drittens: Wer zum Drehen <b>genau in die Mitte</b> fasst, bekommt keinen Sprung mehr \u2014 der Winkel z\u00e4hlt ab dem Moment, in dem du herausziehst. Gemeldet von Josy.'],
+  ]},
   { version:'1.15.93', date:'2026-09-10', changes:[
     ['\u{1F41B}','<b>Die wei\u00dfen Anfasser zum Gr\u00f6\u00dfe-\u00c4ndern sind nach <i>Fl\u00e4che unten</i>, <i>Geh\u00e4use</i> und <i>Ziehen</i> wieder da.</b> Diese drei Werkzeuge lassen dich Fl\u00e4chen anklicken und blenden die Anfasser daf\u00fcr aus \u2014 sie w\u00fcrden einem sonst genau die Fl\u00e4chen verdecken, die man treffen soll. Nur kamen sie hinterher <b>nicht zur\u00fcck</b>: Das Teil stand richtig da, aber die Punkte zum Ziehen waren weg, und man musste es erst wieder anklicken, um sie zur\u00fcckzuholen. Das war beim <i>Geh\u00e4use</i> und beim <i>Ziehen</i> schon l\u00e4nger so und ist jetzt bei allen dreien behoben. Gemeldet von Ralf.'],
   ]},
@@ -39526,9 +39529,27 @@ function _svgFlatTarget(o) {
   return null;
 }
 
-// Radiale Richtung des Motivs (lokal X zeigt bei gewickelten Motiven nach außen)
+// Die beim Wickeln festgehaltene Drehachse (Welt). Ohne sie müsste man auf die
+// lokale Y-Achse zurückfallen — die stimmt aber nur, solange das Motiv nicht
+// gedreht wurde.
+function _svgWrapAxis(o) {
+  const w = o.userData && o.userData._svgWrap;
+  if (w && w.axis) return new THREE.Vector3(w.axis[0], w.axis[1], w.axis[2]).normalize();
+  o.updateMatrixWorld(true);
+  return new THREE.Vector3(0, 1, 0)
+    .applyQuaternion(o.getWorldQuaternion(new THREE.Quaternion())).normalize();
+}
+
+// Radiale Richtung (Achse → Motiv). Auch das aus der Wicklung, nicht aus lokal X.
 function _svgWrapRadialDir(o) {
   o.updateMatrixWorld(true);
+  const w = o.userData && o.userData._svgWrap;
+  if (w && w.axis && w.axisPt) {
+    const a = _svgWrapAxis(o);
+    const c = _svgCenterWorld(o).sub(new THREE.Vector3(w.axisPt[0], w.axisPt[1], w.axisPt[2]));
+    const r = c.addScaledVector(a, -c.dot(a));
+    if (r.lengthSq() > 1e-10) return r.normalize();
+  }
   return new THREE.Vector3(1, 0, 0)
     .applyQuaternion(o.getWorldQuaternion(new THREE.Quaternion())).normalize();
 }
@@ -39579,12 +39600,13 @@ function _svgGlideFrame(o) {
   o.updateMatrixWorld(true);
   const q = o.getWorldQuaternion(new THREE.Quaternion());
   if (o.userData._svgWrap) {
-    // gewickelt: lokal X = radial, Y = Drehachse; der Ursprung liegt AUF der Achse
-    return { kind: 'wrap',
-             axis: new THREE.Vector3(0, 1, 0).applyQuaternion(q).normalize(),
-             e1:   new THREE.Vector3(1, 0, 0).applyQuaternion(q).normalize(),
-             e3:   new THREE.Vector3(0, 0, 1).applyQuaternion(q).normalize(),
-             axisPt: o.position.clone(),
+    // gewickelt: Achse und radiale Richtung kommen aus der Wicklung selbst —
+    // die lokalen Achsen kippen mit, sobald der Nutzer das Motiv dreht.
+    const a  = _svgWrapAxis(o);
+    const e1 = _svgWrapRadialDir(o);
+    return { kind: 'wrap', axis: a, e1,
+             e3: new THREE.Vector3().crossVectors(e1, a).normalize(),
+             axisPt: o.position.clone().addScaledVector(a, 0),
              R: Math.max(1e-3, o.userData._svgWrap.R),
              target: _svgWrapTarget(o) };
   }
@@ -39753,7 +39775,12 @@ function _svgGlideBegin(o, e) {
     _svgGlide = { kind: 'rot', obj: o, fr, moved: false,
                   ev: { x: e.clientX, y: e.clientY },
                   axis: fr.kind === 'flat' ? fr.n.clone() : _svgWrapRadialDir(o),
-                  cW, a0: Math.atan2(e.clientY - sc.y, e.clientX - sc.x),
+                  cW,
+                  // Genau in der Mitte angefasst? Dann steht der Bezugswinkel noch
+                  // nicht fest (atan2(0,0)) — sonst spränge das Motiv beim ersten
+                  // Mucks auf den absoluten Zeigerwinkel. Wird beim Herausziehen gesetzt.
+                  a0: Math.hypot(e.clientX - sc.x, e.clientY - sc.y) < 12
+                      ? null : Math.atan2(e.clientY - sc.y, e.clientX - sc.x),
                   pos0: o.position.clone(), q0: o.quaternion.clone() };
     _textSnapTarget = null;
     return true;
@@ -39792,12 +39819,20 @@ function _svgGlideMove(e) {
 
   if (G.kind === 'rot') {
     const sc = _svgGlideScreenPt(G.cW);
+    if (G.a0 == null) {                       // Bezugswinkel nachholen
+      if (Math.hypot(e.clientX - sc.x, e.clientY - sc.y) < 12) return;
+      G.a0 = Math.atan2(e.clientY - sc.y, e.clientX - sc.x);
+      return;
+    }
     let ang = Math.atan2(e.clientY - sc.y, e.clientX - sc.x) - G.a0;
+    while (ang >  Math.PI) ang -= 2 * Math.PI;
+    while (ang < -Math.PI) ang += 2 * Math.PI;
     if (e.shiftKey) ang = Math.round(ang / (Math.PI / 12)) * (Math.PI / 12);   // 15°-Raster
     // Schaut die Achse zur Kamera, ist "im Uhrzeigersinn auf dem Schirm" eine
     // negative Drehung um sie herum — sonst liefe das Motiv der Maus entgegen.
     const zurKamera = camera.position.clone().sub(G.cW).dot(G.axis) >= 0 ? -1 : 1;
     const q = new THREE.Quaternion().setFromAxisAngle(G.axis, ang * zurKamera);
+    G.ang = ang * zurKamera;            // fürs Einrechnen in eine Wicklung
     o.quaternion.copy(G.q0).premultiply(q);
     // um die Motivmitte drehen, nicht um den Objekt-Ursprung
     o.position.copy(G.cW).add(G.pos0.clone().sub(G.cW).applyQuaternion(q));
@@ -39882,7 +39917,24 @@ function _svgGlideEnd() {
   _svgGlideHint(null);
   if (!G || !G.moved) return false;
   const o = G.obj;
-  if (G.kind === 'rot') {   // Drehung steht, Lage unveraendert
+  if (G.kind === 'rot') {
+    // Gewickelt? Dann die gezogene Drehung in die Wicklung einrechnen und das
+    // Motiv neu biegen — nur so bleibt es sauber an der Rundung.
+    const w = o.userData._svgWrap;
+    if (w && G.ang) {
+      o.quaternion.copy(G.q0);           // zurück auf die Wickel-Ausrichtung
+      o.position.copy(G.pos0);
+      const spec = Object.assign({}, w, { rotRad: (w.rotRad || 0) + G.ang,
+                                          s: _svgWrapAbsorbScale(o, w.s) });
+      const geo = _svgWrapBuildGeo(o.userData, spec);
+      o.geometry.dispose();
+      o.geometry = geo;
+      o.userData._svgWrap = spec;
+      _updateObjEdgeLines(o);
+      o.updateMatrixWorld(true);
+      const probe = _svgWrapOnWall(o) && _svgWrapProbe(_svgWrapTarget(o), _svgWrapOnWall(o));
+      if (probe) _svgWrapRefresh(o, probe);   // Wand an der neuen Motivhöhe nachmessen
+    }
     updateTFInputs(); updateTree(); _doRepositionDimHandles();
     return true;
   }
@@ -40199,6 +40251,10 @@ function _svgWrapBuildGeo(ud, spec) {
     0, 0, -spec.s.z, 0,
     0, spec.s.y, 0, 0,
     0, 0, 0, 1));
+  // Eigene Drehung des Nutzers: hier im FLACHEN Zustand drehen, dann biegen.
+  // Ein bereits gebogenes Netz zu kippen legt die Wölbung quer zur Wand — das
+  // Motiv stand dann 2 mm ab ("dann ist auch die Form verändert", Josy 11.9.).
+  if (spec.rotRad) flat.applyMatrix4(new THREE.Matrix4().makeRotationZ(spec.rotRad));
   flat.computeBoundingBox();
   const bb = flat.boundingBox;
   const uMid = (bb.min.x + bb.max.x) / 2, hMid = (bb.min.y + bb.max.y) / 2;
@@ -40311,7 +40367,7 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
   const s = w0 ? _svgWrapAbsorbScale(svgMesh, w0.s)
                : { x: svgMesh.scale.x, y: svgMesh.scale.y, z: svgMesh.scale.z };
   // Motivhöhe abschätzen, um das Wandprofil über genau diesen Bereich abzutasten
-  const halfH = _svgWrapHalfHeight(svgMesh.userData, s);
+  const halfH = _svgWrapHalfHeight(svgMesh.userData, s, w0 ? w0.rotRad : 0);
   // Klick nah an der Kante: das Motiv würde zur Hälfte über den Rand hinausragen
   // ("ist er ja nur halb", Josy 10.9.). Auf die Körperhöhe begrenzen, damit es
   // ganz auf der Wand sitzt; ist der Körper kürzer als das Motiv, mittig setzen.
@@ -40339,7 +40395,12 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
   }
   const profile = pr.mesh ? _svgWrapSampleProfile(pr, halfH, 6) : null;
   const spec = { R: pr.R, depthMm: svgMesh.userData.svgDepth || 3,
-                 epsMm: pr.epsMm != null ? pr.epsMm : 0.2, s, profile };
+                 epsMm: pr.epsMm != null ? pr.epsMm : 0.2, s, profile,
+                 // Achse in Weltkoordinaten festhalten: nach einer Drehung des
+                 // Motivs zeigt seine lokale Y-Achse NICHT mehr entlang des
+                 // Zylinders — daraus abgeleitet rechnete alles Weitere falsch.
+                 axis: [a.x, a.y, a.z], axisPt: [c0.x, c0.y, c0.z],
+                 rotRad: w0 ? (w0.rotRad || 0) : 0 };
   const geo = _svgWrapBuildGeo(svgMesh.userData, spec);
   svgMesh.geometry.dispose();
   svgMesh.geometry = geo;
@@ -40359,7 +40420,7 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
 }
 
 // Halbe Motivhöhe in Szene-Einheiten (ohne die Geometrie zu bauen)
-function _svgWrapHalfHeight(ud, s) {
+function _svgWrapHalfHeight(ud, s, rotRad) {
   const flat = _svgRebuildGeo({
     type: 'svg', _svgPathData: ud._svgPathData, _svgTransformM: ud._svgTransformM,
     svgSize: ud.svgSize, svgMode: 'extrude', isHole: true,
@@ -40367,9 +40428,12 @@ function _svgWrapHalfHeight(ud, s) {
   });
   flat.computeBoundingBox();
   const bb = flat.boundingBox;
-  const h = (bb.max.z - bb.min.z) * Math.abs(s.z) / 2;   // SVG-lokal: Z = Motivhöhe
+  const w = (bb.max.x - bb.min.x) * Math.abs(s.x);       // SVG-lokal: X = Breite
+  const hh = (bb.max.z - bb.min.z) * Math.abs(s.z);      // SVG-lokal: Z = Höhe
   flat.dispose();
-  return Math.max(0.05, h);
+  // Gedreht wächst die Höhe des Motivs (schräg gestellt braucht es mehr Wand)
+  const c = Math.abs(Math.cos(rotRad || 0)), si = Math.abs(Math.sin(rotRad || 0));
+  return Math.max(0.05, (hh * c + w * si) / 2);
 }
 
 // Wandradius/-profil an der aktuellen Stelle neu abtasten und die Geometrie
@@ -40380,10 +40444,11 @@ function _svgWrapRefresh(svgMesh, probe) {
   const w = svgMesh.userData._svgWrap;
   if (!w || !probe) return false;
   const s = _svgWrapAbsorbScale(svgMesh, w.s);
-  const halfH = _svgWrapHalfHeight(svgMesh.userData, s);
+  const halfH = _svgWrapHalfHeight(svgMesh.userData, s, w.rotRad || 0);
   const spec = { R: probe.R, depthMm: w.depthMm,
                  epsMm: probe.epsMm != null ? probe.epsMm : 0.2, s,
-                 profile: probe.mesh ? _svgWrapSampleProfile(probe, halfH, 6) : null };
+                 profile: probe.mesh ? _svgWrapSampleProfile(probe, halfH, 6) : null,
+                 axis: w.axis, axisPt: w.axisPt, rotRad: w.rotRad || 0 };
   const geo = _svgWrapBuildGeo(svgMesh.userData, spec);
   svgMesh.geometry.dispose();
   svgMesh.geometry = geo;
@@ -40468,6 +40533,7 @@ function _svgWrapReshape(svgMesh, depthMm) {
   if (!w) return;
   const spec = { R: w.R, epsMm: w.epsMm != null ? w.epsMm : 0.2,
                  s: _svgWrapAbsorbScale(svgMesh, w.s), profile: w.profile,
+                 axis: w.axis, axisPt: w.axisPt, rotRad: w.rotRad || 0,
                  depthMm: depthMm === 'through' ? w.R * 9.8 : depthMm };
   const geo = _svgWrapBuildGeo(svgMesh.userData, spec);
   svgMesh.geometry.dispose();
