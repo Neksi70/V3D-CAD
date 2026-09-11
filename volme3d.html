@@ -38875,8 +38875,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.98';
+const VOLME3D_VERSION = '1.15.99';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.99', date:'2026-09-11', changes:[
+    ['\u{1F41B}','<b>Motive lassen sich jetzt auch um Eier, Kugeln und Kuppeln wickeln \u2014 und bleiben beim Verschieben dran.</b> Zwei Dinge standen im Weg. <b>Erstens</b> hat die App gepr\u00fcft, ob dein K\u00f6rper rund genug ist \u2014 und war dabei viel zu streng: War der Querschnitt auch nur <b>3 % unrund</b>, galt er schon nicht mehr als Rundung. Dann gab es kein \u201e\u21a9 Um Rundung wickeln\u201c mehr, nur noch flaches Aufheften, und zwar <b>ohne ein Wort der Erkl\u00e4rung</b> \u2014 es sah einfach so aus, als w\u00fcrde nichts passieren. Jetzt wird der Radius am echten K\u00f6rper gemessen statt gesch\u00e4tzt, leicht unrunde Formen gehen problemlos, und wenn ein K\u00f6rper wirklich zu oval ist, steht das jetzt am Zeiger: \u201eAuf Fl\u00e4che heften (zu oval zum Wickeln)\u201c. <b>Zweitens</b> h\u00f6rte das Motiv beim Verschieben auf, der Wand zu folgen. Bei einem Rohr ist das egal \u2014 der Radius bleibt ja gleich. Bei einem <b>Ei oder einer Kugel</b> \u00e4ndert er sich mit jedem Millimeter, und nach kurzer Strecke gab die Nachf\u00fchrung auf: Das Motiv behielt seinen alten Bogen und <b>schwebte vor dem K\u00f6rper</b> (gemessen: 18 mm h\u00f6her auf einer Kugel \u00d846 = 6,6 mm Luft) \u2014 und es erholte sich nie wieder, weil der Fehler mit jedem Zug wuchs. Jetzt wird an jeder neuen Stelle frisch nachgemessen; das Motiv liegt \u00fcber die ganze H\u00f6he mit <b>0,2 mm</b> an. Gemeldet von Josy an ihrem eigenen STL.'],
+  ]},
   { version:'1.15.98', date:'2026-09-11', spots:[{id:'howto-menu',sel:'#howto-tb'}], changes:[
     ['\u{1F3AC}','<b>Die Videos haben jetzt einen festen Platz: oben rechts \u201e\u{1F3AC} Videos\u201c.</b> Bisher sa\u00df der Knopf nur in der Kopfzeile des jeweiligen Fensters \u2014 das half nur dem, der das Fenster schon offen hatte. Beim <i>SVG-Import</i> ging das gar nicht: Der \u00f6ffnet zuerst die Dateiauswahl, das Fenster mit dem Knopf kommt erst <b>danach</b>. Wer keine Datei zur Hand hatte, konnte also nicht einmal <b>sehen</b>, dass es \u00fcberhaupt Videos gibt. Jetzt sitzt oben in der schwarzen Leiste ein Knopf, der <b>alle</b> Filme auflistet \u2014 mit Laufzeit, einfach anklicken, vorher nichts \u00f6ffnen. Und die <b>Suche</b> findet sie auch: \u201eVideo\u201c, \u201eAnleitung\u201c oder \u201eHilfe\u201c eintippen, oder gleich das Thema (\u201eSVG\u201c, \u201eVase\u201c, \u201eLithophane\u201c). Gemeldet von Josy \u2014 \u201eIch finde es nicht\u201c war v\u00f6llig berechtigt, die Wegbeschreibung war eine Sackgasse.'],
   ]},
@@ -39823,7 +39826,11 @@ function _svgSnapDetect(svgMesh, mouseEvent) {
       if (Math.abs(nW.dot(radial)) > 0.8) wrap = probe;   // Mantel, nicht Deckel/Boden
     }
     _textSnapTarget = { obj: obj || hit.object, type: wrap ? 'wrap' : 'surface', wrap };
-    hint.textContent = wrap ? '↩ Um Rundung wickeln' : '📌 Auf Fläche heften';
+    // Ovale Körper lassen sich nicht sauber um eine Achse wickeln. Das vorher
+    // kommentarlos als „Auf Fläche heften" abzutun, sah nach einem Fehler aus.
+    hint.textContent = wrap ? '↩ Um Rundung wickeln'
+      : (!probe && _svgWrapReason === 'oval' ? '📌 Auf Fläche heften (zu oval zum Wickeln)'
+                                             : '📌 Auf Fläche heften');
     hint.style.display = 'block';
     hint.style.left = (mouseEvent.clientX + 14) + 'px';
     hint.style.top  = (mouseEvent.clientY - 24) + 'px';
@@ -40670,6 +40677,8 @@ function _svgWrapRadiusAt(pos, idx, nTri, ax, h, c1, c2, rPrev) {
 // eine der drei lokalen Achsen dreht. Liefert Achse, Achsenpunkt und Radius AM
 // TREFFERPUNKT (nicht gemittelt — bei Hohlkörpern lägen sonst Innen- und
 // Außenwand im selben Topf und der Radius wäre um die halbe Wandstärke daneben).
+let _svgWrapReason = null;        // 'oval' | 'flach' | null — Grund der letzten Fehlanzeige
+const _SVGWRAP_OVAL_MAX = 0.08;   // bis 8 % unrund noch als Rundung behandeln
 function _svgWrapProbe(mesh, hitPointWorld) {
   if (!mesh || !mesh.isMesh || !mesh.geometry) return null;
   const geo = mesh.geometry;
@@ -40686,29 +40695,50 @@ function _svgWrapProbe(mesh, hitPointWorld) {
 
   const sc = [Math.abs(mesh.scale.x), Math.abs(mesh.scale.y), Math.abs(mesh.scale.z)];
   const loc = [pL.x, pL.y, pL.z];
-  let res = null;
+  let res = null, zuOval = false;
   // Y zuerst: aufrecht stehende Körper sind der Normalfall. Liegende Rohre
   // (importierte STLs stehen nicht immer) werden über X/Z noch gefunden.
   for (const ax of [1, 0, 2]) {
     const c1 = (ax + 1) % 3, c2 = (ax + 2) % 3;
-    if (Math.abs(sc[c1] - sc[c2]) > 0.02 * Math.max(sc[c1], sc[c2])) continue;   // oval
+    // Vorfilter gegen offensichtlich ovale Querschnitte. Er stand auf 2 % — das
+    // war so eng, dass ein Körper, der nur 3 % unrund skaliert war, GAR NICHT
+    // mehr als Rundung erkannt wurde: kein „↩ Um Rundung wickeln", nur noch
+    // flaches Aufheften, und zwar kommentarlos (Josy 11.9., Ei 46×47,5×56,6).
+    // Der Radius wird unten ohnehin am echten Körper gemessen, der Filter muss
+    // nur noch das aussortieren, was als Zylinder wirklich nicht mehr taugt.
+    if (Math.abs(sc[c1] - sc[c2]) > _SVGWRAP_OVAL_MAX * Math.max(sc[c1], sc[c2])) { zuOval = true; continue; }
     const ring = _svgWrapRing(pos, idx, nTri, ax, loc[ax], loc[c1], loc[c2]);
     if (!ring) continue;
-    const f = (sc[c1] + sc[c2]) / 2;
     const axisL = new THREE.Vector3(ax === 0 ? 1 : 0, ax === 1 ? 1 : 0, ax === 2 ? 1 : 0);
     const ptL = new THREE.Vector3();
     ptL.setComponent(ax, loc[ax]); ptL.setComponent(c1, ring.c1); ptL.setComponent(c2, ring.c2);
+    const axisDir = axisL.transformDirection(mesh.matrixWorld).normalize();
+    const axisPt  = mesh.localToWorld(ptL.clone());
+    // Radius am Trefferpunkt in WELT-Maßen messen, statt den lokalen Radius mit
+    // einem gemittelten Skalierungsfaktor hochzurechnen. Bei ungleich skalierten
+    // Körpern (Ei, gestauchte Vase) lag der Mittelwert daneben und das Motiv
+    // schwebte gleichmäßig vor der Wand (gemessen: 3 % unrund = 0,35 mm Spalt,
+    // 12 % = 1,5 mm).
+    const dW = hitPointWorld.clone().sub(axisPt);
+    const rW = dW.addScaledVector(axisDir, -dW.dot(axisDir)).length();
+    // Radialer und AXIALER Maßstab sind bei ungleicher Skalierung verschieden.
+    // Vorher wurde für beides derselbe Faktor benutzt — das Höhenprofil (Kegel,
+    // Vase, Ei) wurde dadurch in der Höhe gestaucht oder gestreckt abgetastet.
+    const f   = ring.R > 1e-6 && rW > 1e-6 ? rW / ring.R : (sc[c1] + sc[c2]) / 2;
+    const axF = new THREE.Vector3().setFromMatrixColumn(mesh.matrixWorld, ax).length() || f;
     res = {
-      mesh, ax, cen: [ring.c1, ring.c2], scaleF: f,
-      axisDir: axisL.transformDirection(mesh.matrixWorld).normalize(),
-      axisPt:  mesh.localToWorld(ptL.clone()),
-      R:       ring.R * f,
+      mesh, ax, cen: [ring.c1, ring.c2], scaleF: f, axF,
+      axisDir, axisPt,
+      R:       rW > 1e-6 ? rW : ring.R * f,
       // Grobe Facettierung: der Kantenkreis liegt weiter außen als der Trefferpunkt.
       // Der Überstand muss das mitnehmen, sonst sinkt das Motiv an den Ecken ein.
       epsMm:   0.2 + Math.max(0, ring.rMax - ring.R) * f * 10
     };
     break;
   }
+  // Warum es nicht geklappt hat, für den Hinweis am Zeiger festhalten: „nichts
+  // passiert" ohne Begründung war der Punkt, an dem Josy aufgegeben hat.
+  _svgWrapReason = res ? null : (zuOval ? 'oval' : 'flach');
   _svgWrapCache = { key, res };
   return res;
 }
@@ -40724,9 +40754,10 @@ function _svgWrapSampleProfile(probe, halfHeightU, steps) {
   const idx = mesh.geometry.index ? mesh.geometry.index.array : null;
   const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
   const ax = probe.ax, f = probe.scaleF;
+  const axF = probe.axF || f;                          // Höhe skaliert anders als der Radius
   const hAxis = mesh.worldToLocal(probe.axisPt.clone()).getComponent(ax);
   const rLocal = probe.R / f;
-  const spanL = (halfHeightU * 1.15) / (f || 1);      // lokale Halbhöhe des Motivs
+  const spanL = (halfHeightU * 1.15) / (axF || 1);     // lokale Halbhöhe des Motivs
   const out = [[0, probe.R]];
   for (const dir of [1, -1]) {
     let rPrev = rLocal;
@@ -40735,7 +40766,7 @@ function _svgWrapSampleProfile(probe, halfHeightU, steps) {
       const r = _svgWrapRadiusAt(pos, idx, nTri, ax, hAxis + dh, probe.cen[0], probe.cen[1], rPrev);
       if (r == null) break;                            // Rand des Körpers erreicht
       rPrev = r;
-      out.push([dh * f, r * f]);
+      out.push([dh * axF, r * f]);
     }
   }
   out.sort((a, b) => a[0] - b[0]);
@@ -41062,7 +41093,16 @@ function _svgWrapFlatten(svgMesh) {
 // Sitzt das gewickelte Motiv überhaupt noch an seiner Wand? Liefert den Wandpunkt
 // oder null (heruntergezogen). Ohne diese Prüfung behielte ein weggezogenes Motiv
 // die Rundung des alten Körpers und stünde beim nächsten Auflegen ab (Josy 10.9.).
-function _svgWrapOnWall(o) {
+// tolFactor: wie weit der Wandradius vom gespeicherten Wickelradius abweichen
+// darf, damit das Motiv noch als „auf der Wand" gilt. Für die Frage „hat der
+// Nutzer es heruntergezogen?" muss das eng sein (Vorgabe). Zum NACHFÜHREN darf
+// es das nicht: Auf einer Kugel oder einem Ei ändert sich der Wandradius mit
+// der Höhe sehr schnell, und genau dann soll nachgemessen werden. Mit den
+// starren 25 % gab das Nachführen dort auf — das Motiv behielt den alten Radius
+// und schwebte in der Luft (gemessen: 18 mm höher auf Ø46 = 6,6 mm Spalt, und
+// es erholte sich nie wieder, weil die Abweichung mit jedem Zug größer wurde).
+// Das ist Josys „es liegt nie wirklich drauf" (11.9.).
+function _svgWrapOnWall(o, tolFactor) {
   const w = o && o.userData && o.userData._svgWrap;
   const tgt = w && o.userData._wrapTarget;
   if (!w || !tgt || !tgt.parent) return null;
@@ -41071,8 +41111,10 @@ function _svgWrapOnWall(o) {
   rc.set(o.position.clone().addScaledVector(e1, w.R * 4 + 20), e1.clone().negate());
   for (const h of rc.intersectObject(tgt, true)) {
     if (!h.face || h.object.userData.isEdgeLines) continue;
+    if (tolFactor === Infinity) return h.point.clone();
     const r = h.point.clone().sub(o.position).dot(e1);
-    return Math.abs(r - w.R) < Math.max(0.2, w.R * 0.25) ? h.point.clone() : null;
+    const tol = tolFactor == null ? 0.25 : tolFactor;
+    return Math.abs(r - w.R) < Math.max(0.2, w.R * tol) ? h.point.clone() : null;
   }
   return null;
 }
@@ -41088,8 +41130,10 @@ function _svgWrapFollowWall(o) {
   const w = o && o.userData && o.userData._svgWrap;
   if (!w || o.userData.locked) return false;
   const tgt = _svgWrapTarget(o);
-  if (!tgt) return false;
-  const wandPunkt = _svgWrapOnWall(o);
+  if (!tgt) return false;              // hängt an keinem Körper mehr
+  // Infinity: der Körper steht über _svgWrapTarget schon fest, jeder Treffer auf
+  // ihm IST die Wand. Ob die Stelle rund genug ist, entscheidet danach die Probe.
+  const wandPunkt = _svgWrapOnWall(o, Infinity);
   if (!wandPunkt) return false;        // heruntergezogen — hier gibt es nichts nachzuführen
   const probe = _svgWrapProbe(tgt, wandPunkt);
   if (!probe) return false;
