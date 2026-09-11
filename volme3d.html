@@ -2880,6 +2880,41 @@ const firebaseConfig = {
   </div>
 </div>
 
+<!-- Klemmbaustein-Look ("Lego-Look"): bestehendes Modell aufs Noppenraster rastern.
+     Rein client-seitig, keine Boolean-Bibliothek — die Voxel-Oberfläche wird direkt
+     wasserdicht vermascht (Noppen oben, Aufnahmen unten, Fugen an den Steinkanten). -->
+<div id="lego-modal" class="g3dm" onclick="if(event.target===this)_lgoClose()">
+  <div class="g3box">
+    <div class="g3hdr">🧱 Klemmbaustein-Look<span class="vx" onclick="_lgoClose()">✕</span></div>
+    <div class="g3body">
+      <div class="g3ctrl" style="min-width:320px">
+        <div class="g3info" id="lgo-dim" style="margin-bottom:2px"></div>
+        <span class="vsec" title="Höhe einer Rasterstufe. Steine sind 9,6 mm hoch (3 Platten), Platten 3,2 mm — Platten geben mehr Höhendetail, machen aber mehr Stufen und mehr Dreiecke.">Rasterhöhe</span>
+        <div class="vbg" id="lgo-grid-bg">
+          <button class="vtb on" onclick="_lgoSetGrid('brick')" title="Eine Rasterstufe = ein Stein (9,6 mm) — grobe, typische Klemmbaustein-Treppe">Stein 9,6 mm</button>
+          <button class="vtb" onclick="_lgoSetGrid('plate')" title="Eine Rasterstufe = eine Platte (3,2 mm) — dreifache Höhenauflösung, feinere Rundungen">Platte 3,2 mm</button>
+        </div>
+        <span class="vsec">Größe &amp; Auflösung</span>
+        <div class="vrow"><label title="Wie viele Noppen das Modell in der Breite (X) bekommt. Alles andere folgt maßstäblich.">Breite</label> <input type="range" id="lgo-studs" min="3" max="60" value="14" step="1" oninput="_lgoInfo()"><span class="vv" id="lgov-studs">14</span><span class="vu">Noppen</span></div>
+        <div class="vrow"><label></label><button class="btn" style="flex:1;font-size:12px;padding:5px 8px" onclick="_lgoOrigSize()" title="Modell nicht skalieren — das 8-mm-Raster direkt über die echten Maße legen">📏 Originalgröße behalten</button></div>
+        <div class="vrow"><label title="Ab wie viel Füllung eine Rasterzelle zum Stein wird. Klein = pummeliger, dünne Details überleben. Groß = schlanker, Details fallen weg.">Füllgrad</label> <input type="range" id="lgo-fill" min="10" max="85" value="40" step="5" oninput="document.getElementById('lgov-fill').textContent=this.value"><span class="vv" id="lgov-fill">40</span><span class="vu">%</span></div>
+        <span class="vsec">Steindetails</span>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:2px" title="Noppen auf allen nach oben freiliegenden Flächen — das, was den Klemmbaustein-Look ausmacht"><input type="checkbox" id="lgo-studs-on" checked> Noppen oben (Ø4,8 × 1,8 mm)</label>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Aufnahmelöcher in allen nach unten freiliegenden Flächen — das Ergebnis lässt sich auf echte Steine oder eine Bauplatte setzen"><input type="checkbox" id="lgo-sockets" checked onchange="document.getElementById('lgo-row-clear').style.display=this.checked?'':'none'"> Aufnahme unten (aufsteckbar)</label>
+        <div class="vrow" id="lgo-row-clear"><label title="Luft zwischen Noppe und Aufnahme. Zu wenig = klemmt fest, zu viel = hält nicht. 0,2 mm passt für die meisten FDM-Drucker.">Spiel</label> <input type="range" id="lgo-clear" min="0" max="0.5" value="0.2" step="0.05" oninput="document.getElementById('lgov-clear').textContent=this.value"><span class="vv" id="lgov-clear">0.2</span><span class="vu">mm</span></div>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Steine, die sich nur an einer Kante oder Ecke berühren, hängen nur an einem Punkt zusammen — das bricht beim Drucken ab und macht das Netz für spätere Boolean-Schritte unbrauchbar. Die Lücke wird mit dem Nachbarstein geschlossen, der am meisten Modell enthält."><input type="checkbox" id="lgo-weld" checked> Berührungen auffüllen (druckbar am Stück)</label>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Jede Steinfläche wird leicht vertieft — zwischen den Steinen bleiben schmale Stege stehen, wie die Fugen an einer echten Steinmauer. Kostet Dreiecke."><input type="checkbox" id="lgo-seams" checked> Fugen zwischen den Steinen</label>
+        <div class="g3info">Rastert das ausgewählte Modell aufs Noppenraster und erzeugt EIN druckbares Teil im Klemmbaustein-Look. Das Original bleibt erhalten (nur ausgeblendet). Tipp: Bei filigranen Modellen erst die Breite erhöhen oder auf „Platte 3,2 mm" umstellen.</div>
+        <div class="g3info" id="lgo-est"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_lgoClose()">Abbrechen</button>
+      <button class="btn pri" id="lgo-go" onclick="_lgoCreate()">✓ Erzeugen</button>
+    </div>
+  </div>
+</div>
+
 <div id="qr-modal" class="g3dm" onclick="if(event.target===this)_closeQRModal()">
   <div class="g3box">
     <div class="g3hdr">📇 QR-Code-Generator<span class="vx" onclick="_closeQRModal()">✕</span></div>
@@ -16480,6 +16515,454 @@ function _moldSceneMesh(outGeo, name) {
   return mesh;
 }
 
+// ═══ KLEMMBAUSTEIN-LOOK („Lego-Look") ══════════════════════════════════════
+// Bestehendes Modell → Noppenraster. Ablauf:
+//   1. Dreiecke in Welt-mm einsammeln (_moldCollectTris, Z-up)
+//   2. Solide Voxelisierung per Strahl-Paritaet: pro Rasterzelle sub×sub
+//      senkrechte Strahlen, Schnitt-z sortieren, paarweise fuellen. Statt
+//      „drin/draussen" wird der FUELLGRAD je Voxel gemittelt — darum ueberleben
+//      duenne Details (Finger, Ohren), die ein Mittelpunkt-Test verschluckt.
+//   3. Aussenluft per Flutfuellung vom Rand — nur daran grenzende Flaechen
+//      bekommen Noppen/Aufnahmen (eingeschlossene Hohlraeume bleiben glatt).
+//   4. Direkte Vermaschung der freiliegenden Voxelflaechen. Das Ergebnis ist
+//      per Konstruktion wasserdicht (jede Flaeche genau einmal, keine
+//      T-Stoesse) — deshalb braucht es hier KEINE Boolean-Bibliothek.
+// Masse in mm, Z-up (wie der Server-STL-Pfad und die Giessform).
+const _LGO = {
+  pitch: 8.0,     // Noppenraster (Mitte zu Mitte)
+  brick: 9.6,     // Steinhoehe
+  plate: 3.2,     // Plattenhoehe
+  studD: 4.8,     // Noppen-Durchmesser
+  studH: 1.8,     // Noppenhoehe
+  seg:   16,      // Segmente je Noppe (MUSS durch 4 teilbar sein, s. _lgoRing)
+  seamW: 0.6,     // Breite des stehenbleibenden Fugenstegs
+  seamD: 0.35     // Tiefe der Flaechenvertiefung
+};
+const _lgoP = { grid: 'brick' };
+let _lgoSrc = null;             // { sx, sy, sz } Bbox-Masse des gewaehlten Modells in mm
+let _lgoBusy = false;
+const _lgoTick = () => new Promise(r => setTimeout(r, 0));
+
+function _lgoSetGrid(g) {
+  _lgoP.grid = g;
+  document.querySelectorAll('#lgo-grid-bg .vtb').forEach((b, i) => b.classList.toggle('on', i === (g === 'brick' ? 0 : 1)));
+  _lgoInfo();
+}
+const _lgoLayerH = () => _lgoP.grid === 'brick' ? _LGO.brick : _LGO.plate;
+
+// Rasterabmessungen aus Bbox + gewuenschter Noppenzahl. Der Massstab ist
+// gleichmaessig (keine Verzerrung); die Hoehe rastert danach auf die Stufenhoehe.
+function _lgoDims() {
+  if (!_lgoSrc) return null;
+  const n = Math.max(1, Math.round(parseFloat(document.getElementById('lgo-studs').value)));
+  const s = (n * _LGO.pitch) / _lgoSrc.sx;              // Massstab Original → Ergebnis
+  const h = _lgoLayerH();
+  const ny = Math.max(1, Math.ceil(_lgoSrc.sy * s / _LGO.pitch - 1e-6));
+  const nz = Math.max(1, Math.ceil(_lgoSrc.sz * s / h - 1e-6));
+  return { nx: n, ny, nz, scale: s, h };
+}
+
+function _lgoOrigSize() {
+  if (!_lgoSrc) return;
+  const el = document.getElementById('lgo-studs');
+  el.value = Math.min(+el.max, Math.max(+el.min, Math.round(_lgoSrc.sx / _LGO.pitch)));
+  _lgoInfo();
+}
+
+function _lgoInfo() {
+  const d = _lgoDims(); if (!d) return;
+  document.getElementById('lgov-studs').textContent = d.nx;
+  const f = v => Math.round(v * 10) / 10;
+  const studH = document.getElementById('lgo-studs-on')?.checked ? _LGO.studH : 0;
+  const cells = d.nx * d.ny * d.nz;
+  document.getElementById('lgo-est').innerHTML =
+    'Raster: <b>' + d.nx + ' × ' + d.ny + ' Noppen, ' + d.nz + ' Stufe' + (d.nz !== 1 ? 'n' : '') + '</b> à ' +
+    f(d.h) + ' mm<br>Ergebnis ca. <b>' + f(d.nx * _LGO.pitch) + ' × ' + f(d.ny * _LGO.pitch) + ' × ' + f(d.nz * d.h + studH) + ' mm</b>' +
+    (Math.abs(d.scale - 1) > 0.005 ? ' (Massstab ' + f(d.scale * 100) + ' %)' : ' (Originalgröße)') +
+    (cells > 1.5e6 ? '<br><span style="color:#d33;font-weight:700">⚠️ ' + Math.round(cells / 1e3) + 'k Rasterzellen — das dauert und wird sehr dreieckslastig. Breite verringern.</span>'
+     : d.nx < 5 ? '<br><span style="color:#c80">So grob bleibt vom Modell kaum etwas übrig — Breite erhöhen.</span>' : '');
+}
+
+function _lgoOpen() {
+  const o = getFirst();
+  if (!o) { notify('Bitte zuerst das Modell auswählen, das im Klemmbaustein-Look entstehen soll', 'w'); return; }
+  o.updateMatrixWorld(true);
+  const s = new THREE.Box3().setFromObject(o).getSize(new THREE.Vector3()).multiplyScalar(10);   // → mm
+  if (!(s.x > 0 && s.y > 0 && s.z > 0)) { notify('Das gewählte Objekt hat keine räumliche Ausdehnung', 'w'); return; }
+  _lgoSrc = { sx: s.x, sy: s.z, sz: s.y };              // Editor Y-up → mm Z-up
+  const f = v => Math.round(v * 10) / 10;
+  const maxDim = Math.max(_lgoSrc.sx, _lgoSrc.sy, _lgoSrc.sz);
+  document.getElementById('lgo-dim').innerHTML =
+    'Modell: <b>' + f(_lgoSrc.sx) + ' × ' + f(_lgoSrc.sy) + ' × ' + f(_lgoSrc.sz) + ' mm</b> (B × T × H)' +
+    (maxDim < 5 ? '<br><span style="color:#d33;font-weight:700">⚠️ Winzig — vermutlich falsche Import-Einheit (Zoll/Meter). Erst im Eigenschaften-Panel auf die echte Größe skalieren!</span>' : '');
+  _lgoInfo();
+  document.getElementById('lego-modal').classList.add('show');
+}
+function _lgoClose() { document.getElementById('lego-modal').classList.remove('show'); }
+
+// ── Solide Voxelisierung ───────────────────────────────────────────────────
+// Dreiecke werden nach XY-Zelle in eine CSR-Liste einsortiert, dann je Zelle
+// sub×sub Strahlen nach oben geschossen. acc[] = mittlerer Fuellgrad je Voxel.
+function _lgoVoxelize(tris, ox, oy, oz, nx, ny, nz, hz, sub) {
+  const pitch = _LGO.pitch, nTri = tris.length / 9, nCell = nx * ny;
+  const cnt = new Int32Array(nCell + 1);
+  const tb = new Int32Array(nTri * 4);
+  for (let t = 0; t < nTri; t++) {
+    const i = t * 9;
+    const x0 = Math.min(tris[i], tris[i+3], tris[i+6]), x1 = Math.max(tris[i], tris[i+3], tris[i+6]);
+    const y0 = Math.min(tris[i+1], tris[i+4], tris[i+7]), y1 = Math.max(tris[i+1], tris[i+4], tris[i+7]);
+    const ci0 = Math.max(0, Math.floor((x0 - ox) / pitch)), ci1 = Math.min(nx - 1, Math.floor((x1 - ox) / pitch));
+    const cj0 = Math.max(0, Math.floor((y0 - oy) / pitch)), cj1 = Math.min(ny - 1, Math.floor((y1 - oy) / pitch));
+    tb[t*4] = ci0; tb[t*4+1] = ci1; tb[t*4+2] = cj0; tb[t*4+3] = cj1;
+    if (ci1 < ci0 || cj1 < cj0) continue;
+    for (let j = cj0; j <= cj1; j++) for (let i2 = ci0; i2 <= ci1; i2++) cnt[j*nx + i2 + 1]++;
+  }
+  for (let c = 0; c < nCell; c++) cnt[c+1] += cnt[c];
+  const lst = new Int32Array(cnt[nCell]);
+  const cur = cnt.slice(0, nCell);
+  for (let t = 0; t < nTri; t++) {
+    const ci0 = tb[t*4], ci1 = tb[t*4+1], cj0 = tb[t*4+2], cj1 = tb[t*4+3];
+    if (ci1 < ci0 || cj1 < cj0) continue;
+    for (let j = cj0; j <= cj1; j++) for (let i2 = ci0; i2 <= ci1; i2++) lst[cur[j*nx + i2]++] = t;
+  }
+
+  const acc = new Float32Array(nx * ny * nz);
+  const inv = 1 / (sub * sub), zs = [];
+  // Winzige irrationale Ablage der Abtastpunkte: Strahlen sollen nicht exakt auf
+  // Dreieckskanten landen — dort zaehlt die Paritaet sonst doppelt oder gar nicht.
+  const jit = pitch * 0.00731;
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const c = j*nx + i, s0 = cnt[c], e0 = cnt[c+1];
+    if (s0 === e0) continue;
+    for (let sy = 0; sy < sub; sy++) for (let sx = 0; sx < sub; sx++) {
+      const px = ox + (i + (sx + 0.5) / sub) * pitch + jit;
+      const py = oy + (j + (sy + 0.5) / sub) * pitch - jit;
+      zs.length = 0;
+      for (let q = s0; q < e0; q++) {
+        const k = lst[q] * 9;
+        const ax = tris[k],   ay = tris[k+1], az = tris[k+2];
+        const bx = tris[k+3], by = tris[k+4], bz = tris[k+5];
+        const cx = tris[k+6], cy = tris[k+7], cz = tris[k+8];
+        const area = (bx-ax)*(cy-ay) - (by-ay)*(cx-ax);
+        if (area === 0) continue;
+        const wa = ((cx-bx)*(py-by) - (cy-by)*(px-bx)) / area;
+        if (wa < 0 || wa > 1) continue;
+        const wb = ((ax-cx)*(py-cy) - (ay-cy)*(px-cx)) / area;
+        if (wb < 0 || wb > 1) continue;
+        const wc = 1 - wa - wb;
+        if (wc < 0) continue;
+        zs.push(wa*az + wb*bz + wc*cz);
+      }
+      if (zs.length < 2) continue;
+      zs.sort((p, q) => p - q);
+      for (let m = 0; m + 1 < zs.length; m += 2) {
+        const a = zs[m], b = zs[m+1];
+        if (b <= a) continue;
+        const k0 = Math.max(0, Math.floor((a - oz) / hz)), k1 = Math.min(nz - 1, Math.floor((b - oz) / hz));
+        for (let k = k0; k <= k1; k++) {
+          const lo = oz + k*hz, ov = Math.min(b, lo + hz) - Math.max(a, lo);
+          if (ov > 0) acc[(k*ny + j)*nx + i] += ov / hz * inv;
+        }
+      }
+    }
+  }
+  return acc;
+}
+
+// Aussenluft: Flutfuellung (6er-Nachbarschaft) vom Rand eines um 1 gepolsterten
+// Gitters. Nur Flaechen zur Aussenluft bekommen Noppen bzw. Aufnahmen —
+// eingeschlossene Hohlraeume bleiben glatt (und sparen Dreiecke).
+function _lgoOutside(filled, nx, ny, nz) {
+  const NX = nx + 2, NY = ny + 2, NZ = nz + 2, N = NX*NY*NZ;
+  const out = new Uint8Array(N);
+  const stack = new Int32Array(N);
+  let sp = 0;
+  out[0] = 1; stack[sp++] = 0;
+  const solid = (i, j, k) => (i >= 1 && i <= nx && j >= 1 && j <= ny && k >= 1 && k <= nz) &&
+                             filled[((k-1)*ny + (j-1))*nx + (i-1)] === 1;
+  while (sp) {
+    const c = stack[--sp];
+    const i = c % NX, j = ((c / NX) | 0) % NY, k = (c / (NX*NY)) | 0;
+    for (let d = 0; d < 6; d++) {
+      const ni = i + (d === 0 ? -1 : d === 1 ? 1 : 0);
+      const nj = j + (d === 2 ? -1 : d === 3 ? 1 : 0);
+      const nk = k + (d === 4 ? -1 : d === 5 ? 1 : 0);
+      if (ni < 0 || nj < 0 || nk < 0 || ni >= NX || nj >= NY || nk >= NZ) continue;
+      const nc = (nk*NY + nj)*NX + ni;
+      if (out[nc] || solid(ni, nj, nk)) continue;
+      out[nc] = 1; stack[sp++] = nc;
+    }
+  }
+  return { out, at: (i, j, k) => out[((k+1)*NY + (j+1))*NX + (i+1)] === 1 };
+}
+
+// Berührungen auffüllen: Zwei Steine, die sich nur an einer KANTE oder ECKE
+// berühren, sind nicht nur bruchgefährdet — an so einer Kante treffen vier
+// Flächen aufeinander, das Netz ist dort nicht mannigfaltig und spätere
+// Boolean-Schritte (Vereinen/Abziehen) verweigern es. Darum wird der Spalt mit
+// dem Nachbarvoxel geschlossen, das am meisten Modell enthält (acc) — so bleibt
+// die Form dem Original am nächsten. Wiederholen, bis sich nichts mehr ändert:
+// eine aufgefüllte Ecke wird zur Kante, die im nächsten Durchgang drankommt.
+function _lgoWeld(filled, acc, nx, ny, nz) {
+  const at = (i, j, k) => (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) ? 0 : filled[(k*ny + j)*nx + i];
+  const sc = (i, j, k) => (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) ? -1 : acc[(k*ny + j)*nx + i];
+  const put = (i, j, k) => { filled[(k*ny + j)*nx + i] = 1; };
+  // Nur „vorwärts" gerichtete Diagonalen prüfen, sonst jedes Paar doppelt
+  const diag = [];
+  for (let dz = 0; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const n = Math.abs(dx) + Math.abs(dy) + Math.abs(dz);
+    if (n < 2) continue;
+    if (dz === 0 && (dy < 0 || (dy === 0 && dx < 0))) continue;   // Gegenrichtung überspringen
+    diag.push([dx, dy, dz]);
+  }
+  let added = 0;
+  for (let pass = 0; pass < 8; pass++) {
+    let ch = 0;
+    for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      if (!at(i, j, k)) continue;
+      for (const [dx, dy, dz] of diag) {
+        const i2 = i + dx, j2 = j + dy, k2 = k + dz;
+        if (!at(i2, j2, k2)) continue;
+        // Brücken = die Flächennachbarn auf dem Weg zwischen beiden Voxeln
+        const br = [];
+        if (dx) br.push([i + dx, j, k], [i2 - dx, j2, k2]);
+        if (dy) br.push([i, j + dy, k], [i2, j2 - dy, k2]);
+        if (dz) br.push([i, j, k + dz], [i2, j2, k2 - dz]);
+        let best = -1, bi = -1;
+        for (let b = 0; b < br.length; b++) {
+          const [a, c, e] = br[b];
+          if (at(a, c, e)) { bi = -1; break; }                    // schon verbunden → nichts zu tun
+          const v = sc(a, c, e);
+          if (v > best) { best = v; bi = b; }
+        }
+        if (bi < 0) continue;
+        put(br[bi][0], br[bi][1], br[bi][2]); ch++; added++;
+      }
+    }
+    if (!ch) break;
+  }
+  return added;
+}
+
+// ── Dreiecks-Puffer ────────────────────────────────────────────────────────
+function _lgoBuf() {
+  return {
+    a: new Float32Array(1 << 16), n: 0,
+    v(x, y, z) {
+      if (this.n + 3 > this.a.length) { const b = new Float32Array(this.a.length * 2); b.set(this.a); this.a = b; }
+      this.a[this.n++] = x; this.a[this.n++] = y; this.a[this.n++] = z;
+    },
+    tri(p, q, r) { this.v(p[0],p[1],p[2]); this.v(q[0],q[1],q[2]); this.v(r[0],r[1],r[2]); },
+    quad(p, q, r, s) { this.tri(p, q, r); this.tri(p, r, s); },
+    done() { return this.a.slice(0, this.n); }
+  };
+}
+
+// Kreispunkte fuer Noppe/Aufnahme. Start bei 45°, Segmentzahl durch 4 teilbar:
+// dann faellt je ein Viertel des Kreises genau zwischen zwei Quadratecken —
+// das macht die Ringflaeche (Quadrat mit Loch) ohne Sonderfaelle triangulierbar.
+function _lgoRing(cx, cy, r) {
+  const M = _LGO.seg, p = new Array(M);
+  for (let m = 0; m < M; m++) {
+    const a = Math.PI / 4 + 2 * Math.PI * m / M;
+    p[m] = [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  }
+  return p;
+}
+
+// Quadrat mit kreisrundem Loch, waagerecht auf Hoehe z. up = Normale nach +Z.
+// Die vier Quadratecken liegen bei 45/135/225/315° — genau auf den Sektorgrenzen.
+function _lgoAnnulus(B, x0, y0, x1, y1, z, ring, up) {
+  const M = _LGO.seg, q = M / 4;
+  const corner = [[x1,y1], [x0,y1], [x0,y0], [x1,y0]];           // 45°,135°,225°,315°
+  const T = up ? (p, a, b) => B.tri(p, a, b) : (p, a, b) => B.tri(p, b, a);
+  for (let s = 0; s < 4; s++) {
+    const A = [corner[s][0], corner[s][1], z], Bc = [corner[(s+1)%4][0], corner[(s+1)%4][1], z];
+    for (let m = 0; m < q; m++) {
+      const p0 = ring[(s*q + m) % M], p1 = ring[(s*q + m + 1) % M];
+      T(A, [p1[0], p1[1], z], [p0[0], p0[1], z]);
+    }
+    const pn = ring[(s*q + q) % M];
+    T(A, Bc, [pn[0], pn[1], z]);
+  }
+}
+
+// Zylindermantel zwischen zwei Hoehen. outward = Normale radial nach aussen
+// (Noppe) bzw. nach innen (Aufnahme-Hohlraum).
+function _lgoTube(B, ring, zLo, zHi, outward) {
+  const M = _LGO.seg;
+  for (let m = 0; m < M; m++) {
+    const p = ring[m], q = ring[(m+1) % M];
+    if (outward) B.quad([p[0],p[1],zLo], [q[0],q[1],zLo], [q[0],q[1],zHi], [p[0],p[1],zHi]);
+    else         B.quad([p[0],p[1],zLo], [p[0],p[1],zHi], [q[0],q[1],zHi], [q[0],q[1],zLo]);
+  }
+}
+
+// Kreisscheibe als Faecher, up = Normale nach +Z.
+function _lgoDisc(B, cx, cy, z, ring, up) {
+  const M = _LGO.seg, C = [cx, cy, z];
+  for (let m = 0; m < M; m++) {
+    const p = ring[m], q = ring[(m+1) % M];
+    if (up) B.tri(C, [p[0],p[1],z], [q[0],q[1],z]);
+    else    B.tri(C, [q[0],q[1],z], [p[0],p[1],z]);
+  }
+}
+
+// Seitenflaeche mit Fuge: Rand bleibt in der Aussenebene stehen, die Flaeche
+// sinkt um seamD zurueck. Zwischen zwei Steinen entsteht so ein schmaler Steg —
+// die Fuge einer echten Steinmauer. Der Rand bleibt deckungsgleich mit den
+// Nachbarflaechen, darum bleibt das Netz wasserdicht.
+function _lgoFace(B, p0, p1, p2, p3, seam, nrm) {
+  if (!seam) { B.quad(p0, p1, p2, p3); return; }
+  const w = _LGO.seamW, d = _LGO.seamD;
+  const mid = [(p0[0]+p2[0])/2, (p0[1]+p2[1])/2, (p0[2]+p2[2])/2];
+  const inner = [p0, p1, p2, p3].map(p => {
+    const q = [0, 0, 0];
+    for (let a = 0; a < 3; a++) {
+      const t = mid[a] - p[a];
+      q[a] = p[a] + (Math.abs(t) > 1e-9 ? Math.sign(t) * w : 0) - nrm[a] * d;
+    }
+    return q;
+  });
+  for (let s = 0; s < 4; s++) B.quad([p0,p1,p2,p3][s], [p0,p1,p2,p3][(s+1)%4], inner[(s+1)%4], inner[s]);
+  B.quad(inner[0], inner[1], inner[2], inner[3]);
+}
+
+// ── Vermaschung des Voxelkoerpers ──────────────────────────────────────────
+function _lgoMesh(filled, air, nx, ny, nz, ox, oy, oz, hz, opt) {
+  const B = _lgoBuf(), P = _LGO.pitch;
+  const rStud = _LGO.studD / 2;
+  const rSock = _LGO.studD / 2 + opt.clear;
+  // Aufnahme nie bis zur Oberkante durchbrechen: mindestens 1 mm Decke stehen lassen
+  const sockH = Math.min(_LGO.studH, hz - 1.0);
+  const doSock = opt.sockets && sockH > 0.6;
+  const F = (i, j, k) => (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) ? 0 : filled[(k*ny + j)*nx + i];
+  let studs = 0, bricks = 0;
+  for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    if (!F(i, j, k)) continue;
+    bricks++;
+    const x0 = ox + i*P, x1 = x0 + P, y0 = oy + j*P, y1 = y0 + P, z0 = oz + k*hz, z1 = z0 + hz;
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    // Oben
+    if (!F(i, j, k+1)) {
+      if (opt.studs && air.at(i, j, k+1)) {
+        const ring = _lgoRing(cx, cy, rStud);
+        _lgoAnnulus(B, x0, y0, x1, y1, z1, ring, true);
+        _lgoTube(B, ring, z1, z1 + _LGO.studH, true);
+        _lgoDisc(B, cx, cy, z1 + _LGO.studH, ring, true);
+        studs++;
+      } else B.quad([x0,y0,z1], [x1,y0,z1], [x1,y1,z1], [x0,y1,z1]);
+    }
+    // Unten
+    if (!F(i, j, k-1)) {
+      if (doSock && air.at(i, j, k-1)) {
+        const ring = _lgoRing(cx, cy, rSock);
+        _lgoAnnulus(B, x0, y0, x1, y1, z0, ring, false);
+        _lgoTube(B, ring, z0, z0 + sockH, false);
+        _lgoDisc(B, cx, cy, z0 + sockH, ring, false);
+      } else B.quad([x0,y0,z0], [x0,y1,z0], [x1,y1,z0], [x1,y0,z0]);
+    }
+    // Seiten — Fuge nur auf den von aussen sichtbaren Flaechen
+    const sm = d => opt.seams && air.at(i + (d === 0 ? 1 : d === 1 ? -1 : 0), j + (d === 2 ? 1 : d === 3 ? -1 : 0), k);
+    if (!F(i+1, j, k)) _lgoFace(B, [x1,y0,z0], [x1,y1,z0], [x1,y1,z1], [x1,y0,z1], sm(0), [1,0,0]);
+    if (!F(i-1, j, k)) _lgoFace(B, [x0,y0,z0], [x0,y0,z1], [x0,y1,z1], [x0,y1,z0], sm(1), [-1,0,0]);
+    if (!F(i, j+1, k)) _lgoFace(B, [x1,y1,z0], [x0,y1,z0], [x0,y1,z1], [x1,y1,z1], sm(2), [0,1,0]);
+    if (!F(i, j-1, k)) _lgoFace(B, [x0,y0,z0], [x1,y0,z0], [x1,y0,z1], [x0,y0,z1], sm(3), [0,-1,0]);
+  }
+  return { pos: B.done(), studs, bricks };
+}
+
+async function _lgoCreate() {
+  if (_lgoBusy) return;
+  const btn = document.getElementById('lgo-go');
+  _lgoBusy = true; if (btn) { btn.disabled = true; btn.textContent = '… rechnet'; }
+  try {
+    const o = getFirst();
+    if (!o) { notify('Kein Objekt gewählt', 'w'); return; }
+    const d = _lgoDims();
+    if (!d) { notify('Kein Modell vermessen — Dialog neu öffnen', 'w'); return; }
+    const opt = {
+      studs:   document.getElementById('lgo-studs-on').checked,
+      sockets: document.getElementById('lgo-sockets').checked,
+      seams:   document.getElementById('lgo-seams').checked,
+      weld:    document.getElementById('lgo-weld').checked,
+      clear:   parseFloat(document.getElementById('lgo-clear').value),
+      thresh:  parseFloat(document.getElementById('lgo-fill').value) / 100
+    };
+    const cells = d.nx * d.ny * d.nz;
+    if (cells > 4e6) { notify('Zu fein gerastert (' + Math.round(cells/1e6) + ' Mio Zellen) — Breite verringern', 'e'); return; }
+    _lgoClose();
+    _progressShow('Klemmbaustein-Look wird gerechnet…'); _progressSet(5); await _lgoTick();
+
+    let tris = _moldCollectTris(o);
+    if (!tris.length) { _progressHide(); notify('Keine Geometrie im gewählten Objekt', 'e'); return; }
+
+    // Bbox in mm/Z-up, danach maßstäblich skalieren (um die Bbox-Mitte in XY,
+    // Unterkante bleibt Unterkante — das Ergebnis steht wie das Original).
+    let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < tris.length; i += 3) {
+      if (tris[i] < minX) minX = tris[i];     if (tris[i] > maxX) maxX = tris[i];
+      if (tris[i+1] < minY) minY = tris[i+1]; if (tris[i+1] > maxY) maxY = tris[i+1];
+      if (tris[i+2] < minZ) minZ = tris[i+2]; if (tris[i+2] > maxZ) maxZ = tris[i+2];
+    }
+    const s = d.scale;
+    if (Math.abs(s - 1) > 1e-6) {
+      const cx0 = (minX+maxX)/2, cy0 = (minY+maxY)/2;
+      for (let i = 0; i < tris.length; i += 3) {
+        tris[i]   = cx0 + (tris[i]   - cx0) * s;
+        tris[i+1] = cy0 + (tris[i+1] - cy0) * s;
+        tris[i+2] = minZ + (tris[i+2] - minZ) * s;
+      }
+      minX = cx0 + (minX-cx0)*s; maxX = cx0 + (maxX-cx0)*s;
+      minY = cy0 + (minY-cy0)*s; maxY = cy0 + (maxY-cy0)*s;
+      maxZ = minZ + (maxZ - minZ) * s;
+    }
+    // Raster mittig über das Modell legen, Unterkante auf die Modellunterkante
+    const ox = (minX+maxX)/2 - d.nx * _LGO.pitch / 2;
+    const oy = (minY+maxY)/2 - d.ny * _LGO.pitch / 2;
+    const oz = minZ;
+    console.log('[lego]', (tris.length/9)|0, 'Dreiecke →', d.nx+'×'+d.ny+'×'+d.nz, 'Zellen à',
+                _LGO.pitch+'×'+_LGO.pitch+'×'+d.h.toFixed(1), 'mm');
+
+    _progressSet(20, 'Modell wird gerastert…'); await _lgoTick();
+    const sub = cells > 6e5 ? 2 : 3;                 // grobe Raster feiner abtasten
+    const acc = _lgoVoxelize(tris, ox, oy, oz, d.nx, d.ny, d.nz, d.h, sub);
+    tris = null;
+
+    _progressSet(55, 'Steine werden gesetzt…'); await _lgoTick();
+    const filled = new Uint8Array(acc.length);
+    let nFilled = 0;
+    for (let i = 0; i < acc.length; i++) if (acc[i] >= opt.thresh) { filled[i] = 1; nFilled++; }
+    if (!nFilled) {
+      _progressHide();
+      notify('Kein einziger Stein entstanden — Füllgrad verringern oder Breite erhöhen', 'e');
+      return;
+    }
+    const welded = opt.weld ? _lgoWeld(filled, acc, d.nx, d.ny, d.nz) : 0;
+    if (welded) console.log('[lego]', welded, 'Zellen zum Verschweißen von Kanten-/Eckberührungen ergänzt');
+    const air = _lgoOutside(filled, d.nx, d.ny, d.nz);
+
+    _progressSet(72, 'Noppen und Fugen werden gebaut…'); await _lgoTick();
+    const r = _lgoMesh(filled, air, d.nx, d.ny, d.nz, ox, oy, oz, d.h, opt);
+    console.log('[lego]', r.bricks, 'Zellen gefüllt,', r.studs, 'Noppen,', (r.pos.length/9)|0, 'Dreiecke');
+
+    _progressSet(90, 'Netz wird erzeugt…'); await _lgoTick();
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(r.pos, 3));
+    _moldNormals(geo);
+    saveUndo();
+    const mesh = _moldSceneMesh(geo, (o.userData.name || 'Modell') + ' — Klemmbaustein');
+    o.visible = false;                   // Original behalten (Undo/Vergleich), nur ausblenden
+    selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
+    _progressDone();
+    notify('Klemmbaustein-Look erzeugt ✓ — ' + r.bricks + ' Steine, ' + r.studs + ' Noppen', 'ok');
+  } catch (e) {
+    _progressHide();
+    console.error('[lego]', e); notify('Klemmbaustein-Look fehlgeschlagen: ' + (e.message || e), 'e');
+  } finally {
+    _lgoBusy = false; if (btn) { btn.disabled = false; btn.textContent = '✓ Erzeugen'; }
+  }
+}
 // ═══ ALLES ABRUNDEN (Kanten brechen an beliebigen Netzen) ═══════════════════
 // Für importierte Teile gibt es keine Kantenliste, an der man einzeln runden
 // könnte — also wird über die FORM gerundet: erst um den Radius schrumpfen,
@@ -24333,6 +24816,7 @@ const _STARTERS = [
   {i:'🍷',t:'Glas-Marker',d:'Party-Clips für Gläser & Flaschen',run:()=>_gmkOpen()},
   {i:'⬡',t:'Muster-Generator',d:'Waben, Asanoha & Co. als SVG',run:()=>_pgOpen()},
   {i:'🫗',t:'Silikon-Gießform',d:'Gießrahmen um dein Modell',run:()=>_openMoldModal()},
+  {i:'🧱',t:'Klemmbaustein-Look',d:'Modell aufs Noppenraster rastern',run:()=>_lgoOpen()},
   {i:'🍪',t:'Keksausstecher',d:'Bild → Ausstecher mit Schneide',run:()=>_ckOpen()},
   {i:'🧰',t:'Werkzeug-Einleger',d:'Foto → Gridfinity-Einsatz',run:()=>_wzOpen()},
   {i:'⚔️',t:'Tabletop-Figur',d:'Grimdark-Mini im Trench-Stil',run:()=>_tfgOpen()},
@@ -38320,8 +38804,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.96';
+const VOLME3D_VERSION = '1.15.97';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.97', date:'2026-09-11', changes:[
+    ['\u{1F9F1}','<b>Neu: Klemmbaustein-Look \u2014 aus jedem Modell wird ein Teil aus Noppensteinen.</b> W\u00e4hle ein Modell aus (ein eigenes, ein importiertes STL oder eines aus den anderen Generatoren) und klicke im Eigenschaften-Feld auf <b>\u{1F9F1} Klemmbaustein-Look</b> \u2014 oder such in der Suche einfach nach \u201eLego\u201c. Das Modell wird aufs <b>echte Noppenraster</b> gelegt (8 mm Teilung, Stein 9,6 mm oder Platte 3,2 mm f\u00fcr feinere Rundungen) und daraus <b>ein druckbares Teil</b> gebaut: mit <b>Noppen oben</b>, <b>Aufnahmen unten</b> (das Ergebnis l\u00e4sst sich also auf gekaufte Steine und Bauplatten stecken) und den <b>Fugen zwischen den Steinen</b>. Du bestimmst nur, wie <b>breit in Noppen</b> es werden soll \u2014 alles andere folgt ma\u00dfst\u00e4blich, und die fertigen Millimeter stehen daneben. \u00dcber den <b>F\u00fcllgrad</b> stellst du ein, ob es lieber pummelig werden soll (d\u00fcnne Stellen bleiben erhalten) oder schlank. Steine, die sich nur an einer Ecke ber\u00fchren, werden automatisch verbunden, damit nichts abbricht. Das Original bleibt erhalten und wird nur ausgeblendet.'],
+  ]},
   { version:'1.15.96', date:'2026-09-11', spots:[{id:'svg-howto',sel:'#svg-modal-hdr'}], changes:[
     ['\u{1F3AC}','<b>Neues Howto-Video: Motive auf einen K\u00f6rper setzen.</b> Gut zwei Minuten, in denen der ganze Ablauf einmal vorgemacht wird: das Motiv <b>hinziehen und heften</b>, es auf der Fl\u00e4che <b>genau positionieren</b> (mit der Millimeter-Anzeige am Zeiger und dem Einrasten in der Mitte), im Dreh-Modus <b>gerade stellen</b>, mit dem Knopf \u2295 <b>mittig setzen</b>, um eine <b>Rundung wickeln</b> und am Ende wieder <b>abnehmen</b>. Du findest es im Fenster <i>SVG importieren</i> oben rechts unter \u201e? Video\u201c. Entstanden aus den Fragen von Josy \u2014 danke f\u00fcrs geduldige Ausprobieren!'],
   ]},
@@ -41639,6 +42126,8 @@ function _fpBuildRows(type, o) {
     : '';
   // Silikon-Gießform: druckbarer Gießrahmen um das gewählte Modell (jeder Typ)
   const moldBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_openMoldModal()">🫗 Silikon-Gießform</button></div>`;
+  // Klemmbaustein-Look: Modell aufs Noppenraster rastern (jeder Typ)
+  const legoBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_lgoOpen()" title="Rastert das Modell aufs 8-mm-Noppenraster und baut daraus ein druckbares Teil im Klemmbaustein-Look — mit Noppen oben und Aufnahmen unten.">🧱 Klemmbaustein-Look</button></div>`;
   // Alles abrunden: Kanten brechen ohne Kantenliste — auch für Importe (jeder Typ)
   const roundBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_openRoundModal()" title="Bricht ALLE scharfen Außenkanten auf einmal — auch bei importierten Modellen, wo es keine einzeln anklickbaren Kanten gibt. Gut für die Haptik und für Kinderspielzeug.">⬤ Alles abrunden</button></div>`;
 
@@ -42021,7 +42510,7 @@ function _fpBuildRows(type, o) {
              `<div class="fp-lbl" style="display:block;margin-bottom:3px;color:var(--dim);font-size:10px">Ober-/Unterkante</div>` +
              row('Radius',      'fp-sk-fil', o.userData.fillet||0,  "_skApplyBevel(this.value, 0)", 'mm', 0, skMax, 0.1) +
              row('Abschrägung', 'fp-sk-cha', o.userData.chamfer||0, "_skApplyBevel(0, this.value)", 'mm', 0, skMax, 0.1) +
-             '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn + roundBtn + moldBtn +
+             '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn + roundBtn + moldBtn + legoBtn +
              _dispRows();
     }
     case 'loft':
@@ -42059,7 +42548,7 @@ function _fpBuildRows(type, o) {
              propLock() +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
-             '<div class="fp-sep"></div>' + svgBtns + edgeBtn + shellBtn + hollowLidBtn + roundBtn + moldBtn +
+             '<div class="fp-sep"></div>' + svgBtns + edgeBtn + shellBtn + hollowLidBtn + roundBtn + moldBtn + legoBtn +
              _dispRows();
     }
     default:
@@ -42067,7 +42556,7 @@ function _fpBuildRows(type, o) {
              propLock() +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
-             '<div class="fp-sep"></div>' + edgeBtn + shellBtn + hollowLidBtn + roundBtn + moldBtn +
+             '<div class="fp-sep"></div>' + edgeBtn + shellBtn + hollowLidBtn + roundBtn + moldBtn + legoBtn +
              _dispRows();
   }
 }
@@ -45579,6 +46068,7 @@ const CMDK = [
   {i:'⬡',g:'Generator',t:'Muster-Generator',k:'muster pattern waben wabe honeycomb hexagon asanoha hanfblatt japanisch dreieck quadrat raute voronoi wellen linien gitter lattice svg laser lasercut plotter lesezeichen untersetzer gitterblende lüftungsgitter lampenschirm einsatz',run:()=>_pgOpen()},
   {i:'⬤',g:'Bearbeiten',t:'Alles abrunden',k:'abrunden rundung kanten brechen weich haptik fillet radius import stl spielzeug',run:()=>_openRoundModal()},
   {i:'🫗',g:'Generator',t:'Silikon-Gießform',k:'silikon gießform gussform mold form casting negativform silikonform tray eiswürfel schokolade',run:()=>_openMoldModal()},
+  {i:'🧱',g:'Generator',t:'Klemmbaustein-Look',k:'lego klemmbaustein klemmbausteine baustein bausteine noppen noppenraster duplo pixel voxel verpixelt raster klotz klötzchen bauklotz brick bricks studs blocky minecraft blockig legoisieren spielzeug bauplatte stapelbar',run:()=>_lgoOpen()},
   {i:'🍪',g:'Generator',t:'Keksausstecher',k:'keks ausstecher plätzchen cookie cutter backen förmchen',run:()=>_ckOpen()},
   {i:'🧰',g:'Generator',t:'Werkzeug-Einleger',k:'werkzeug einleger organizer gridfinity shadowboard schaum inlay einsatz tasche foto sortierung koffer',run:()=>_wzOpen()},
   {i:'∪',g:'Bearbeiten',t:'Vereinen',k:'union merge',run:()=>unionSelected()},
