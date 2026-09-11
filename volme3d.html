@@ -38320,8 +38320,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.15.94';
+const VOLME3D_VERSION = '1.15.95';
 const VOLME3D_CHANGELOG = [
+  { version:'1.15.95', date:'2026-09-11', changes:[
+    ['\u{1F41B}','<b>Du bestimmst wieder, wo das Motiv sitzt \u2014 und wie es steht.</b> Zwei Dinge haben sich gegenseitig in die Quere gekommen. <b>Erstens:</b> Ist das Motiv <b>gr\u00f6\u00dfer als die Fl\u00e4che</b>, auf der es liegt (oder h\u00f6her als der K\u00f6rper, um den es gewickelt ist), hielt der Randstopp es <b>in der Mitte fest</b> \u2014 es lie\u00df sich dann gar nicht mehr verschieben (\u201eer bleibt da oben, ich kriege ihn nicht weiter nach unten\u201c). Der Randstopp greift jetzt nur noch, wenn das Motiv \u00fcberhaupt auf die Fl\u00e4che passt; sonst entscheidest du. <b>Zweitens:</b> Eine selbst gesetzte <b>Schr\u00e4glage</b> ging verloren, sobald das Motiv neu aufgesetzt wurde \u2014 etwa nachdem man es kurz heruntergenommen oder weiter gezogen hatte. Der Winkel wird jetzt gemessen und auf die neue Lage \u00fcbertragen: Einmal gerade gestellt bleibt gerade, auch nach dem Verschieben. Gemeldet von Josy.'],
+  ]},
   { version:'1.15.94', date:'2026-09-11', changes:[
     ['\u{1F41B}','<b>Ein gewickeltes Motiv l\u00e4sst sich jetzt schr\u00e4g stellen, ohne dass es von der Rundung absteht.</b> Drehte man ein um einen K\u00f6rper gebogenes Motiv, wurde das <b>fertig gebogene Netz gekippt</b> \u2014 die W\u00f6lbung lag dann quer zur Wand und das Motiv stand ab (gemessen: 2,3 mm). Beim n\u00e4chsten Verschieben fiel es deshalb ganz von der Rundung und lag pl\u00f6tzlich flach da (\u201eauch die Form ist wieder ver\u00e4ndert\u201c). Jetzt wird die Drehung <b>vor dem Biegen</b> eingerechnet: Das Motiv wird schr\u00e4g gestellt und dann frisch um den K\u00f6rper gelegt \u2014 es liegt \u00fcberall mit denselben 0,2 mm an, und die Schr\u00e4glage bleibt beim Verschieben erhalten. Zweitens l\u00e4uft beim Verschieben auf der Rundung nichts mehr durcheinander: Die Drehachse wird jetzt beim Wickeln festgehalten, statt sie aus der Lage des Motivs abzuleiten \u2014 die kippt n\u00e4mlich mit, sobald du das Motiv drehst. Drittens: Wer zum Drehen <b>genau in die Mitte</b> fasst, bekommt keinen Sprung mehr \u2014 der Winkel z\u00e4hlt ab dem Moment, in dem du herausziehst. Gemeldet von Josy.'],
   ]},
@@ -39414,12 +39417,24 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   const _colY = n.clone();
   const _colX = new THREE.Vector3().crossVectors(_colY, _colZ).normalize();
   const _snapMat = new THREE.Matrix4().makeBasis(_colX, _colY, _colZ);
-  // Liegt das Motiv schon richtig an der Wand, bleibt seine Drehung erhalten —
-  // sonst sprang eine in der Fläche gedrehte Gravur beim Loslassen zurück in die
-  // Senkrechte ("der Baum steht wieder schief", Josy).
+  // Selbst gesetzte Drehung IN der Fläche übernehmen: Zeigt das Motiv noch grob
+  // in die Fläche, wird sein Winkel gemessen und auf die neue Ausrichtung
+  // übertragen. Ohne das sprang eine schräg gestellte Gravur bei jedem erneuten
+  // Aufsetzen zurück in die Senkrechte ("dann fällt sie wieder um", Josy 11.9.).
   const _nSvg = new THREE.Vector3(0, 1, 0).applyQuaternion(svgMesh.quaternion).normalize();
-  if (!(_sameFace && Math.abs(_nSvg.dot(n)) > 0.99))
-    svgMesh.quaternion.setFromRotationMatrix(_snapMat);
+  let _keepAng = 0;
+  if (Math.abs(_nSvg.dot(n)) > 0.9) {
+    const _upNow = new THREE.Vector3(0, 0, -1).applyQuaternion(svgMesh.quaternion);
+    const _pUp = _upNow.sub(n.clone().multiplyScalar(_upNow.dot(n)));
+    if (_pUp.lengthSq() > 1e-8) {
+      _pUp.normalize();
+      _keepAng = Math.atan2(new THREE.Vector3().crossVectors(_projUp, _pUp).dot(n),
+                            _projUp.dot(_pUp));
+    }
+  }
+  svgMesh.quaternion.setFromRotationMatrix(_snapMat);
+  if (Math.abs(_keepAng) > 1e-4)
+    svgMesh.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(n, _keepAng));
 
   // Tiefe aus userData (svgDepth in mm)
   const depthMm = svgMesh.userData.svgDepth || 5;
@@ -39693,10 +39708,12 @@ function _svgGlideCyl(p, fr) {
   return { h, ang: Math.atan2(rad.dot(fr.e3), rad.dot(fr.e1)) };
 }
 
-// Am Rand anhalten; ist die Fläche schmaler als das Motiv, bleibt es mittig.
+// Am Rand anhalten. ABER: Ist das Motiv größer als die Fläche, darf der Randstopp
+// es nicht in der Mitte festnageln — dann ließ es sich gar nicht mehr bewegen
+// ("er bleibt da oben, ich kann ihn nicht weiter nach unten machen", Josy 11.9.).
 function _svgGlideClamp(c, lo, hi, half) {
   const a = lo + half, b = hi - half;
-  if (b < a) return (lo + hi) / 2;
+  if (b < a) return c;          // passt nicht drauf → der Nutzer entscheidet
   return Math.max(a, Math.min(b, c));
 }
 
@@ -39885,7 +39902,7 @@ function _svgGlideMove(e) {
     while (dAng < -Math.PI) dAng += 2 * Math.PI;
     let dh = t.h - G.h0;
     let mid = '';
-    if (G.span && !free) {
+    if (G.span && !free && G.span.hi - G.span.lo > 2 * G.span.half) {
       const hC = _svgGlideClamp(dh, G.span.lo, G.span.hi, G.span.half);
       const ctr = (G.span.lo + G.span.hi) / 2;
       const tol = Math.max(0.03, Math.min(0.25, (G.span.hi - G.span.lo) * 0.03));
@@ -40384,7 +40401,9 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
         if (t > hi) hi = t;
       }
       const dLo = lo + halfH, dHi = hi - halfH;
-      const dh = (dHi >= dLo) ? Math.max(dLo, Math.min(dHi, 0)) : (lo + hi) / 2;
+      // Passt das Motiv nicht auf die Höhe des Körpers, bleibt es da, wo geklickt
+      // wurde — hineinzuzwingen nimmt dem Nutzer die Wahl der Stelle.
+      const dh = (dHi >= dLo) ? Math.max(dLo, Math.min(dHi, 0)) : 0;
       if (Math.abs(dh) > 1e-4) {
         c0.addScaledVector(a, dh);
         // an der verschobenen Höhe ist die Wand ggf. weiter/enger → neu abtasten
