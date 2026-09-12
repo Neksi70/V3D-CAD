@@ -37,15 +37,23 @@ const neu = parseFloat((await p.textContent('#m_wert')).replace(/\./g, '').repla
 console.log('Messwert nach Kalibrierung:', neu, '(Fake-Kamera schwankt stark)');
 if (!(neu > 0)) fehler.push('Nach Kalibrierung kein Messwert mehr');
 
-// Messpunkt merken -> Protokoll
-await p.fill('#i_punktName', 'Schreibtisch');
+// Messwert landet im gewaehlten Feld, danach springt die App weiter
+const feldVor = await p.textContent('#b_feld');
 await p.evaluate(() => punktMerken());
 const zeilen = await p.$$eval('#punkteBody tr', r => r.length);
 if (zeilen !== 1) fehler.push('Messpunkt nicht im Protokoll');
-await p.evaluate(() => rasterVorschlag());
+const feldNach = await p.textContent('#b_feld');
+console.log('Feld vor/nach dem Eintragen:', feldVor, '->', feldNach);
+if (feldVor === feldNach) fehler.push('Feld springt nach dem Eintragen nicht weiter');
+const eingetragen = await p.evaluate(f => {
+  const [ix, iy] = [parseInt(f.slice(1)) - 1, f.charCodeAt(0) - 65];
+  const m = window._licht.messungIn(ix, iy);
+  return m ? m.v : null;
+}, feldVor);
+console.log('Wert in', feldVor + ':', eingetragen, 'lx');
+if (!eingetragen) fehler.push('Messwert steht nicht im angezeigten Feld');
 const raster = await p.textContent('#rasterInfo');
-console.log('Rastervorschlag:', raster.slice(0, 100));
-if (!/Messpunkte/.test(raster)) fehler.push('Rastervorschlag fehlt');
+if (!/Raster \d+ × \d+/.test(raster)) fehler.push('Rasterangabe fehlt');
 await p.evaluate(() => kameraStop());
 
 // Screenshots aller Reiter

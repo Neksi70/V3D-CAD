@@ -250,6 +250,16 @@ canvas{max-width:100%;border-radius:14px;background:#0a0e14;display:block}
 .lampitem .nm{font-weight:620;font-size:14.5px}
 .lampitem .ds{font-size:12px;color:var(--tx2);margin-top:2px}
 
+/* ---------- Messraster ---------- */
+.messfuss{display:flex;flex-wrap:wrap;gap:5px 14px;align-items:center;margin-top:9px;
+  font-size:11.5px;color:var(--tx2)}
+.messfuss .pkt{width:11px;height:11px;border-radius:3px;display:inline-block;margin-right:2px;
+  vertical-align:-1px}
+.messfuss .leer{background:rgba(255,255,255,.09);border:1px dashed var(--line2)}
+.messfuss .gut{background:#3fd68a} .messfuss .knapp{background:#ffb03d}
+.messfuss .schwach{background:#ff6b6b}
+#b_merken b{color:inherit;font-weight:800}
+
 /* ---------- Luxmeter ---------- */
 .messring{position:relative;width:min(74vw,268px);margin:6px auto 2px;aspect-ratio:1}
 .messring svg{width:100%;height:100%;transform:rotate(-90deg)}
@@ -647,20 +657,44 @@ nav button{position:relative}
 
     <div id="handBox" style="display:none">
       <div class="row">
-        <div><label>Gemessener Wert (lx)</label><input id="i_handWert" type="number" step="1" placeholder="z. B. 430"></div>
-        <div class="nogrow"><button class="btn" onclick="punktMerken()">Messpunkt merken</button></div>
+        <div><label>Gemessener Wert (lx)</label>
+          <input id="i_handWert" type="number" step="1" inputmode="numeric" placeholder="z. B. 430"
+                 onkeydown="if(event.key==='Enter') punktMerken()"></div>
+        <div class="nogrow"><button class="btn" onclick="punktMerken()">📍 Feld <b id="b_feld2">A1</b></button></div>
       </div>
+      <div class="hint">Eingabetaste trägt ein und springt zum nächsten Feld.</div>
     </div>
   </div>
 
   <div class="card">
-    <h2>Messprotokoll</h2>
-    <div class="row">
-      <div><label>Bezeichnung / Ort</label><input id="i_punktName" placeholder="z. B. Arbeitsplatz 1"></div>
-      <div><label>Messhöhe (m)</label><input id="i_punktH" type="number" step="0.05" value="0.75"></div>
-      <div class="nogrow"><button class="btn sec" onclick="rasterVorschlag()">Messraster vorschlagen</button></div>
+    <h2>Messraster im Raum <span class="tag" id="rasterZahl">–</span></h2>
+    <canvas id="messC" onclick="messKlick(event)"></canvas>
+    <div class="messfuss">
+      <span class="pkt leer"></span> offen
+      <span class="pkt gut"></span> ≥ Soll
+      <span class="pkt knapp"></span> 70–100 %
+      <span class="pkt schwach"></span> &lt; 70 %
     </div>
     <div id="rasterInfo" class="hint"></div>
+    <div class="row" style="margin-top:11px">
+      <button class="btn" id="b_merken" onclick="punktMerken()">📍 In Feld <b id="b_feld">A1</b> eintragen</button>
+      <button class="btn sec nogrow" onclick="feldWeiter(1)" title="Feld überspringen">⏭️</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <div><label>Rasterweite</label><select id="i_rasterWeite" onchange="rasterBauen(true)">
+        <option value="auto" selected>nach Norm (automatisch)</option>
+        <option value="0.5">0,5 m — sehr fein</option>
+        <option value="1">1 m</option>
+        <option value="2">2 m</option>
+        <option value="3">3 m — grob</option></select></div>
+      <div><label>Messhöhe (m)</label><input id="i_punktH" type="number" step="0.05" value="0.75"></div>
+      <div class="nogrow"><button class="btn sec" onclick="rasterBauen(true)">Raster neu</button></div>
+    </div>
+    <input id="i_punktName" type="hidden">
+  </div>
+
+  <div class="card">
+    <h2>Messprotokoll</h2>
     <div style="overflow-x:auto"><table id="punkteTab" style="margin-top:10px"><thead><tr>
       <th>#</th><th>Ort</th><th class="num">lx</th><th class="num">Soll</th><th></th></tr></thead>
       <tbody id="punkteBody"><tr><td colspan="5" class="hint">Noch keine Messpunkte.</td></tr></tbody></table></div>
@@ -800,8 +834,10 @@ nav button{position:relative}
   <div class="card"><h2>Leuchtenanordnung &amp; Lichtverteilung</h2>
     <img id="b_plan" style="width:100%;border-radius:8px;display:block;margin-bottom:8px" alt="Grundriss">
     <img id="b_map" style="width:100%;border-radius:8px;display:block" alt="Beleuchtungsstärke">
+    <img id="b_mess" style="width:100%;border-radius:8px;display:none;margin-top:8px" alt="Messraster">
     <div class="hint">Oben: Leuchtenraster mit Abständen. Unten: Beleuchtungsstärke auf der Nutzebene
-      (Wartungswerte), gestrichelt die Bewertungsfläche ohne Randzone.</div>
+      (Wartungswerte), gestrichelt die Bewertungsfläche ohne Randzone. Darunter — sofern gemessen
+      wurde — das Messraster vor Ort mit den abgelesenen Werten.</div>
   </div>
   <div class="card"><h2>Prüfliste für die Abnahme</h2><div id="pruefliste"></div></div>
   <div class="card"><h2>Grundlagen &amp; Haftung</h2>
@@ -1031,7 +1067,9 @@ function rechne(){
   S.ergebnis = {L,B,H,A,hm,k,eta,MF,E,phiGes,n,l,typ,reihen,spalten,aL,aB,eIst,pGes,dim,karte,rD,rW,rB};
 
   zeigeRaum(); zeigeLeuchten(); zeigeVerteilung(); zeigeEnergie(); zeigeElektro(); zeigeBericht();
-  zeichnePlan(); zeichneKarte(); zeichneEnergie(); messAuswertung(); berichtBilder();
+  zeichnePlan(); zeichneKarte(); zeichneEnergie();
+  rasterBauen(false); zeichneMessRaster();
+  messAuswertung(); berichtBilder();
   planAnstupsen();
   navStand(); reglerAbgleich();
 }
@@ -1799,6 +1837,9 @@ function berichtBilder(){
   try{
     $('b_plan').src = $('planC').toDataURL('image/png');
     $('b_map').src  = $('mapC').toDataURL('image/png');
+    const mb=$('b_mess');
+    if(S.punkte.filter(punktFeld).length){ mb.src = $('messC').toDataURL('image/png'); mb.style.display='block'; }
+    else mb.style.display='none';
   }catch(e){}
 }
 function zeile(a,b){ return '<tr><td style="color:#9aa8ba;width:38%">'+a+'</td><td>'+b+'</td></tr>'; }
@@ -1967,16 +2008,25 @@ function punktMerken(){
   else if(S.sensor==='als') wert = ALS_K.wert;
   else wert = camLetzt;
   if(!isFinite(wert)||wert<=0){ alert('Kein Messwert vorhanden.'); return; }
-  const name = $('i_punktName').value || ('Punkt '+(S.punkte.length+1));
-  S.punkte.push({n:name, v:Math.round(wert), h:z('i_punktH',.75)});
-  $('i_punktName').value=''; $('i_handWert') && ($('i_handWert').value='');
+  const f = S.feld || {ix:0, iy:0};
+  const mitte = feldMitte(f.ix, f.iy);
+  const name = feldName(f.ix, f.iy);
+  // was in diesem Feld schon stand, wird ersetzt
+  S.punkte = S.punkte.filter(p => { const q = punktFeld(p); return !(q && q.ix===f.ix && q.iy===f.iy); });
+  S.punkte.push({n:name, v:Math.round(wert), h:z('i_punktH',.75), x:mitte.x, y:mitte.y});
+  $('i_handWert') && ($('i_handWert').value='');
   messAuswertung(); speichernStill(); navStand();
   tipp([8,26,8]);
-  meldung('📍 '+name+': '+fmt(Math.round(wert))+' lx gespeichert');
+  meldung('📍 Feld '+name+': '+fmt(Math.round(wert))+' lx');
+  feldWeiter();
+  if(S.raster && S.punkte.filter(punktFeld).length >= S.raster.nx*S.raster.ny)
+    jubel('rasterVoll'+S.raster.nx+'x'+S.raster.ny);
 }
-function punktLoeschen(i){ S.punkte.splice(i,1); messAuswertung(); speichernStill(); }
+function punktLoeschen(i){ S.punkte.splice(i,1); messAuswertung(); zeichneMessRaster();
+  rasterText(); navStand(); speichernStill(); }
 function punkteLeeren(){ if(S.punkte.length && confirm('Alle Messpunkte löschen?')){
-  S.punkte=[]; messAuswertung(); speichernStill(); } }
+  S.punkte=[]; S.feld={ix:0,iy:0}; messAuswertung(); zeichneMessRaster(); rasterText();
+  navStand(); speichernStill(); } }
 function messAuswertung(){
   const tb=$('punkteBody'), soll=sollLux(), nz=aktNutz();
   if(!S.punkte.length){
@@ -1996,26 +2046,183 @@ function messAuswertung(){
   const okE = mit>=soll, okU = uo>=nz.uo;
   setKpi('k_mUrteil', (okE&&okU)?'bestanden':'nicht erfüllt');
   $('k_mUrteil').parentElement.className='kpi '+((okE&&okU)?'ok':'bad');
+  const verortet = S.punkte.filter(punktFeld);
+  const offen = S.raster ? S.raster.nx*S.raster.ny - verortet.length : 0;
   let t='<div class="note '+((okE&&okU)?'':'warn')+'">Gemessen: Ē = '+fmt(mit)+' lx (Soll '+fmt(soll)+' lx), '
     +'U₀ = '+uo.toFixed(2).replace('.',',')+' (Soll ≥ '+nz.uo.toFixed(2).replace('.',',')+') aus '
-    +vs.length+' Punkten. ';
-  if(!okE) t+='Es fehlen '+fmt(soll-mit)+' lx — das sind rund '+fmt((soll/mit-1)*100)+' % mehr Licht, '
-    +'also etwa '+Math.ceil(S.ergebnis.n*(soll/mit-1))+' Leuchten zusätzlich (oder stärkere Modelle). ';
+    +vs.length+' Punkten'+(offen>0 ? ' — noch '+offen+' Feld'+(offen>1?'er':'')+' offen. ' : '. ');
+  if(verortet.length >= 3 && S.ergebnis.karte){
+    const planMit = verortet.reduce((a,p)=>a+planWertBei(p.x,p.y),0)/verortet.length;
+    const messMit = verortet.reduce((a,p)=>a+p.v,0)/verortet.length;
+    const dif = (messMit/planMit-1)*100;
+    t += 'Gegenüber der Berechnung ('+fmt(planMit)+' lx an denselben Stellen) liegt die Messung '
+      + (Math.abs(dif)<8 ? 'praktisch gleichauf' : (dif<0 ? fmt(-dif,0)+' % darunter' : fmt(dif,0)+' % darüber'))
+      + (dif < -15 ? ' — Leuchten verschmutzt oder gealtert, Reflexionsgrade dunkler als angenommen, '
+                   + 'oder die Kamera ist nicht kalibriert.' : '.') + ' ';
+  }
+  if(!okE){
+    const mehr = Math.ceil(S.ergebnis.n*(soll/mit-1));
+    t+='Es fehlen '+fmt(soll-mit)+' lx — das sind rund '+fmt((soll/mit-1)*100)+' % mehr Licht, '
+      +'also etwa '+(mehr===1 ? 'eine Leuchte' : mehr+' Leuchten')+' zusätzlich (oder stärkere Modelle). ';
+  }
   if(!okU) t+='Die Verteilung ist zu ungleichmäßig — Leuchten enger setzen oder in den dunklen Bereich ergänzen. ';
   if(okE&&okU){ t+='Anforderung erfüllt. '; jubel('mess'+vs.length); }
   t+='Messung bitte bei Dunkelheit bzw. ohne Tageslichteinfall und mit 30 min vorgewärmten Leuchten wiederholen, '
     +'wenn das Protokoll zur Abnahme gehört.</div>';
   $('messUrteil').innerHTML=t;
 }
-function rasterVorschlag(){
-  // Messraster nach DIN EN 12464 / CIE: p = 0,2·5^(lg d), max 10 m; Zellverhältnis ≤ 2
-  const e=S.ergebnis;
-  const d=Math.max(e.L,e.B);
-  let p=0.2*Math.pow(5, Math.log10(d)); p=Math.min(10,p);
-  const nx=Math.max(3, Math.ceil(e.L/p)), ny=Math.max(3, Math.ceil(e.B/p));
-  $('rasterInfo').innerHTML = 'Vorschlag: <b>'+nx+' × '+ny+' = '+(nx*ny)+' Messpunkte</b>, Rasterweite ca. '
-    + fmt(e.L/nx,2)+' × '+fmt(e.B/ny,2)+' m, erster Punkt jeweils eine halbe Rasterweite von der Wand entfernt. '
-    + 'Messhöhe = Nutzebene ('+fmt(z('i_NE',.75),2)+' m). Messgerät waagerecht, eigenen Schatten vermeiden.';
+/* ====================== Messraster im Grundriss ======================
+   Die Messpunkte liegen als Weltkoordinaten (Meter) vor, nicht als Indizes —
+   so überleben sie eine geänderte Rasterweite oder andere Raummaße.        */
+function feldName(ix, iy){
+  return String.fromCharCode(65 + (iy % 26)) + (ix + 1);
+}
+function rasterBauen(neuStarten){
+  const e = S.ergebnis;
+  const rand = Math.max(0, Math.min(Math.min(e.L, e.B)/2 - 0.25, z('i_rand', .5)));
+  const Lb = Math.max(0.5, e.L - 2*rand), Bb = Math.max(0.5, e.B - 2*rand);
+  const wahl = ($('i_rasterWeite')||{}).value || 'auto';
+  let weite;
+  if(wahl === 'auto'){
+    // Rasterweite nach DIN EN 12464-1 Anhang: p = 0,2 · 5^(lg d), höchstens 10 m
+    const d = Math.max(Lb, Bb);
+    weite = Math.min(10, 0.2*Math.pow(5, Math.log10(d)));
+  } else weite = parseFloat(wahl);
+  const nx = Math.max(2, Math.min(14, Math.round(Lb/weite)));
+  const ny = Math.max(2, Math.min(14, Math.round(Bb/weite)));
+  S.raster = {nx, ny, rand, zx: Lb/nx, zy: Bb/ny, L:e.L, B:e.B};
+  if(neuStarten || !S.feld || S.feld.ix>=nx || S.feld.iy>=ny) S.feld = naechstesOffenes(0,0) || {ix:0, iy:0};
+  rasterText();
+}
+/* Mitte eines Feldes in Metern */
+function feldMitte(ix, iy){
+  const r = S.raster;
+  return {x: r.rand + (ix+0.5)*r.zx, y: r.rand + (iy+0.5)*r.zy};
+}
+/* zu welchem Feld gehört ein gemessener Punkt? */
+function punktFeld(p){
+  const r = S.raster;
+  if(!r || p.x===undefined) return null;
+  const ix = Math.floor((p.x - r.rand)/r.zx), iy = Math.floor((p.y - r.rand)/r.zy);
+  if(ix<0 || iy<0 || ix>=r.nx || iy>=r.ny) return null;
+  return {ix, iy};
+}
+function messungIn(ix, iy){
+  let treffer = null;
+  S.punkte.forEach(p => { const f = punktFeld(p); if(f && f.ix===ix && f.iy===iy) treffer = p; });
+  return treffer;
+}
+/* im Schlangenmuster weiter — so läuft man den Raum in einem Zug ab */
+function naechstesOffenes(startIx, startIy){
+  const r = S.raster; if(!r) return null;
+  for(let n=0; n<r.nx*r.ny; n++){
+    const iy = Math.floor(n/r.nx);
+    const ix = (iy % 2 === 0) ? (n % r.nx) : (r.nx - 1 - (n % r.nx));
+    if(!messungIn(ix, iy)) return {ix, iy};
+  }
+  return null;
+}
+function feldWeiter(){
+  const r=S.raster; if(!r) return;
+  const jetzt = S.feld || {ix:0, iy:0};
+  const lauf = (iy, ix) => (iy % 2 === 0) ? iy*r.nx + ix : iy*r.nx + (r.nx-1-ix);
+  const n = lauf(jetzt.iy, jetzt.ix) + 1;
+  if(n < r.nx*r.ny){
+    const iy = Math.floor(n/r.nx);
+    const ix = (iy % 2 === 0) ? (n % r.nx) : (r.nx - 1 - (n % r.nx));
+    S.feld = {ix, iy};
+  } else S.feld = naechstesOffenes(0,0) || jetzt;
+  rasterText(); zeichneMessRaster(); tipp(5);
+}
+function messKlick(ev){
+  const c = $('messC'), r = S.raster; if(!r) return;
+  const kasten = c.getBoundingClientRect();
+  const mx = (ev.clientX - kasten.left) / kasten.width;
+  const my = (ev.clientY - kasten.top) / kasten.height;
+  const geo = S.messGeo; if(!geo) return;
+  const x = (mx*geo.W - geo.ox)/geo.sc, y = (my*geo.H - geo.oy)/geo.sc;   // zurück in Meter
+  const ix = Math.floor((x - r.rand)/r.zx), iy = Math.floor((y - r.rand)/r.zy);
+  if(ix<0 || iy<0 || ix>=r.nx || iy>=r.ny){
+    meldung('Außerhalb des Messbereichs — die Randzone wird nicht bewertet.');
+    return;
+  }
+  S.feld = {ix, iy}; tipp(6);
+  rasterText(); zeichneMessRaster();
+  const vorhanden = messungIn(ix, iy);
+  if(vorhanden) meldung('Feld '+feldName(ix,iy)+': '+fmt(vorhanden.v)+' lx — neu messen überschreibt');
+}
+/* berechneter Wert an einer Stelle im Raum — für den Soll/Ist-Vergleich */
+function planWertBei(x, y){
+  const e=S.ergebnis, kr=e && e.karte;
+  if(!kr) return NaN;
+  const ix=Math.min(kr.NX-1, Math.max(0, Math.floor(x/e.L*kr.NX)));
+  const iy=Math.min(kr.NY-1, Math.max(0, Math.floor(y/e.B*kr.NY)));
+  return kr.werte[iy][ix];
+}
+function rasterText(){
+  const r=S.raster; if(!r) return;
+  const gemessen = S.punkte.filter(p => punktFeld(p)).length;
+  const ganz = r.nx*r.ny;
+  $('rasterZahl').textContent = gemessen+' / '+ganz+' Felder';
+  const f = S.feld || {ix:0,iy:0};
+  const nm = feldName(f.ix, f.iy);
+  if($('b_feld')) $('b_feld').textContent = nm;
+  if($('b_feld2')) $('b_feld2').textContent = nm;
+  $('rasterInfo').innerHTML = 'Raster '+r.nx+' × '+r.ny+' = '+ganz+' Felder à '+fmt(r.zx,2)+' × '+fmt(r.zy,2)
+    + ' m, Randzone '+fmt(r.rand,2)+' m bleibt außen vor (DIN EN 12464-1). Messhöhe '
+    + fmt(z('i_punktH',.75),2)+' m, Gerät waagerecht, eigenen Schatten vermeiden. '
+    + '<b>Feld antippen</b> wählt aus, danach messen und eintragen — die App springt selbst weiter.';
+}
+/* Zeichnen: Raum, Leuchten zur Orientierung, Felder nach Soll-Erreichung eingefärbt */
+function zeichneMessRaster(){
+  const c = $('messC'), e = S.ergebnis, r = S.raster;
+  if(!c || !r) return;
+  const f = flaeche(c, Math.max(.55, Math.min(1.1, e.B/e.L*1.2)), 210, 520);
+  const g = f.g, W = f.W, H = f.H, pad = Math.max(16, W*0.05);
+  g.clearRect(0,0,W,H); g.fillStyle='#0a0e14'; g.fillRect(0,0,W,H);
+  const sc = Math.min((W-2*pad)/e.L, (H-2*pad)/e.B);
+  const ox = (W-e.L*sc)/2, oy = (H-e.B*sc)/2;
+  S.messGeo = {W, H, sc, ox, oy};
+  // Raum
+  g.fillStyle='#141b25'; g.fillRect(ox,oy,e.L*sc,e.B*sc);
+  g.strokeStyle='#4a5a70'; g.lineWidth=2.5; g.strokeRect(ox,oy,e.L*sc,e.B*sc);
+  // vorhandene Leuchten zur Orientierung
+  g.fillStyle='rgba(255,194,51,.30)';
+  e.karte.pos.forEach(p => { g.beginPath(); g.arc(ox+p.x*sc, oy+p.y*sc, Math.max(3, sc*0.09), 0, 7); g.fill(); });
+  // Felder
+  const soll = sollLux();
+  const schrift = Math.max(8, Math.min(14, r.zx*sc*0.30));
+  g.textAlign='center'; g.textBaseline='middle';
+  for(let iy=0; iy<r.ny; iy++) for(let ix=0; ix<r.nx; ix++){
+    const x = ox+(r.rand+ix*r.zx)*sc, y = oy+(r.rand+iy*r.zy)*sc;
+    const b = r.zx*sc, h = r.zy*sc;
+    const m = messungIn(ix, iy);
+    if(m){
+      const v = m.v/Math.max(1,soll);
+      g.fillStyle = v>=1 ? 'rgba(63,214,138,.80)' : v>=0.7 ? 'rgba(255,176,61,.80)' : 'rgba(255,107,107,.78)';
+      g.fillRect(x+1,y+1,b-2,h-2);
+      g.fillStyle='#0b1018'; g.font='600 '+schrift+'px system-ui';
+      g.fillText(fmt(m.v), x+b/2, y+h/2);
+    } else {
+      g.fillStyle='rgba(255,255,255,.05)'; g.fillRect(x+1,y+1,b-2,h-2);
+      g.strokeStyle='rgba(255,255,255,.16)'; g.lineWidth=1; g.setLineDash([3,3]);
+      g.strokeRect(x+1.5,y+1.5,b-3,h-3); g.setLineDash([]);
+      g.fillStyle='rgba(255,255,255,.28)'; g.font=Math.max(7,schrift*0.8)+'px system-ui';
+      g.fillText(feldName(ix,iy), x+b/2, y+h/2);
+    }
+  }
+  // gewähltes Feld
+  const sf = S.feld;
+  if(sf){
+    const x = ox+(r.rand+sf.ix*r.zx)*sc, y = oy+(r.rand+sf.iy*r.zy)*sc;
+    g.strokeStyle='#ffc233'; g.lineWidth=3;
+    g.strokeRect(x+1,y+1,r.zx*sc-2,r.zy*sc-2);
+    g.shadowColor='rgba(255,194,51,.8)'; g.shadowBlur=12;
+    g.strokeRect(x+1,y+1,r.zx*sc-2,r.zy*sc-2); g.shadowBlur=0;
+  }
+  g.textBaseline='alphabetic';
+  g.fillStyle='#7f8ea0'; g.font='11px system-ui'; g.textAlign='left';
+  g.fillText(fmt(e.L,2)+' × '+fmt(e.B,2)+' m · Soll '+fmt(soll)+' lx', ox, Math.max(12, oy-6));
 }
 function messungAlsBestand(){
   if(!S.punkte.length){ alert('Noch keine Messwerte vorhanden.'); return; }
@@ -2217,7 +2424,8 @@ function init(){
 }
 window.addEventListener('DOMContentLoaded', init);
 /* Testhaken fuer automatisierte Tests */
-window._licht = {S, rechne, sollLux, setKpi, jubel, ringStand, navStand, aktLeuchte, beleuchtungsKarte, interp, ETA_TAB, NUTZ, LEUCHTEN,
+window._licht = {S, rechne, sollLux, setKpi, rasterBauen, zeichneMessRaster, feldMitte,
+                 punktFeld, messungIn, feldName, planWertBei, jubel, ringStand, navStand, aktLeuchte, beleuchtungsKarte, interp, ETA_TAB, NUTZ, LEUCHTEN,
                  besteAufteilung, expAusBeam};
 </script>
 <canvas id="konfetti"></canvas>

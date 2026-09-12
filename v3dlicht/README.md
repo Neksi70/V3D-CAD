@@ -22,13 +22,24 @@ im `localStorage` des Geräts.
 2. **Leuchten** — Katalog mit Richtwerten oder eigene Leuchte aus dem Datenblatt;
    Stückzahl, Raster, Plausibilitätswarnungen (Abstand/Höhe, UGR, IP, lm/W, W/m²)
 3. **Verteilung** — Beleuchtungsstärke-Karte auf der Nutzebene, Ē/Emin/Emax/Uo
-4. **Messen** — Handy als Luxmeter (Kamera bzw. Umgebungslichtsensor), Kalibrierung,
-   Messraster-Vorschlag, Protokoll mit Uo-Bewertung
+4. **Messen** — Handy als Luxmeter (Kamera bzw. Umgebungslichtsensor), Kalibrierung und
+   **Messraster im Grundriss**: Feld antippen, messen, eintragen — die App springt im
+   Schlangenmuster weiter. Felder färben sich nach Soll-Erreichung (grün / gelb / rot),
+   der gemessene Wert steht drin, die vorhandenen Leuchten liegen zur Orientierung darunter.
+   Auswertung mit Ē, Emin, Uo, offenen Feldern und Abgleich gegen die Berechnung an
+   denselben Stellen. Das Raster liegt auf der Bewertungsfläche (Randzone bleibt außen vor),
+   Weite nach DIN EN 12464-1 (p = 0,2 · 5^lg d) oder von Hand
 5. **Energie** — Bestand vs. Neuanlage, kWh/a, Kosten, CO₂, Amortisation
 6. **Elektro** — Betriebsstrom, Leuchten je LS-Schalter (Einschaltstrom), Stromkreise,
    Spannungsfall, Steuerungsvorschläge, Notbeleuchtung
 7. **Bericht** — druckbare Zusammenfassung mit Grafiken, Stückliste, Prüfliste,
    JSON-Export/-Import
+
+## Messpunkte
+Punkte werden als **Weltkoordinaten in Metern** gespeichert (`{n, v, h, x, y}`), nicht als
+Rasterindizes — so überleben sie eine geänderte Rasterweite oder andere Raummaße. Die
+Zuordnung zum Feld macht `punktFeld()` beim Zeichnen. Ältere Protokolle ohne `x`/`y`
+zählen weiter in Ē/Uo mit, erscheinen aber nicht im Grundriss.
 
 ## Rechenwege
 - **Lichtstromverfahren**: Φ = (Ē · A) / (η_R · MF), η_R aus tabellierten Raumwirkungs-
@@ -64,4 +75,5 @@ node tests/rechnung_test.mjs    # Rechenkern, Raster, Bericht
 node tests/kamera_test.mjs      # Messweg mit simulierter Kamera, Kalibrierung
 node tests/handy_test.mjs       # Handy-Layout, Druckansicht, Speichern
 node tests/oberflaeche_test.mjs # Startkarte, Regler, Ergebniszeile, Wischen, App-Dateien
+node tests/raster_test.mjs      # Messraster: Antippen, Eintragen, Ueberschreiben, Rasterwechsel
 ```
