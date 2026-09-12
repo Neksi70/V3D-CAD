@@ -14913,7 +14913,7 @@ async function _mfSubtractWorld(solidObjs, toolObjs) {
   // und die kaputten überspringen. Vorher riss ein schlechtes Motiv den ganzen
   // Abzug mit sich, und der Rückfall auf OCCT lief bei importierten Netzen in
   // die 600-Sekunden-Notbremse (Balken blieb bei 93 % stehen).
-  let res = null; const uebersprungen = [];
+  let res = null; const uebersprungen = [], repariert = [];
   try {
     const tool = _mfUnionObjs(w, toolObjs);
     if (!tool) throw new Error('kein gültiges Werkzeug');
@@ -14926,7 +14926,19 @@ async function _mfSubtractWorld(solidObjs, toolObjs) {
       try {
         const tris = _moldCollectTris(t);
         if (!tris.length) continue;
-        res = w.Manifold.difference(res, _mfFromSoup(w, tris));
+        let mf;
+        try { mf = _mfFromSoup(w, tris); }
+        catch (eRoh) {
+          // Nicht abzieh-tauglich? Erst selbst reparieren, statt den Nutzer mit
+          // "bitte Reparieren anwenden" wegzuschicken — genau da blieb Josy
+          // hängen (13.9.): Reparieren meldete Erfolg, Abziehen scheiterte weiter.
+          const geheilt = _healTrisForBool(tris);
+          if (!geheilt) throw eRoh;
+          mf = _mfFromSoup(w, geheilt);
+          console.log('[subtract] Motiv automatisch repariert:', (t.userData && t.userData.name) || '?');
+          repariert.push((t.userData && t.userData.name) || 'ohne Namen');
+        }
+        res = w.Manifold.difference(res, mf);
         ok++;
       } catch (e2) {
         uebersprungen.push((t.userData && t.userData.name) || 'ohne Namen');
@@ -14935,6 +14947,7 @@ async function _mfSubtractWorld(solidObjs, toolObjs) {
     }
     if (!ok) throw new Error('kein gültiges Werkzeug');
   }
+  if (repariert.length) notify('Automatisch repariert: ' + repariert.join(', '), 'ok');
   if (uebersprungen.length) {
     notify('Übersprungen (nicht wasserdicht): ' + uebersprungen.join(', ') +
            '. Der Rest ist abgezogen — mit „Reparieren" lassen sich solche Motive oft retten.', 'w');
@@ -16169,6 +16182,30 @@ function _mfInit() {
 // Sicherheitsnetz: Bei negativem Gesamtvolumen (invertierte Wicklung — Manifold
 // akzeptiert das stillschweigend als Negativ-Körper, der bei Union AUSSTANZT
 // statt hinzuzufügen!) wird die Wicklung global umgedreht.
+/**
+ * Letzte Rettung für ein Netz, das Manifold nicht annimmt: entartete Dreiecke
+ * (Fläche ~0) raus, offene Ränder schließen. Damit fallen die typischen Reste aus
+ * SVG- und Schriftkonturen weg — doppelte Punkte, Nadeln, haarfeine Streifen —
+ * und Löcher werden gefüllt. Gibt null zurück, wenn nichts zu reparieren war.
+ */
+function _healTrisForBool(tris) {
+  const arr = tris instanceof Float32Array ? tris : new Float32Array(tris);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(arr.slice(), 3));
+  const tmp = new THREE.Mesh(geo, new THREE.MeshBasicMaterial());
+  let weg = 0, loops = 0;
+  try { weg = _dropDegenerateTris(tmp); } catch (e) { /* dann eben ohne */ }
+  try { loops = _fillHoles(tmp); } catch (e) { /* dito */ }
+  if (!weg && !loops) { tmp.geometry.dispose(); return null; }
+  const g = tmp.geometry.index ? tmp.geometry.toNonIndexed() : tmp.geometry;
+  const p = g.attributes.position;
+  const out = new Float32Array(p.count * 3);
+  for (let i = 0; i < p.count; i++) { out[i*3] = p.getX(i); out[i*3+1] = p.getY(i); out[i*3+2] = p.getZ(i); }
+  if (g !== tmp.geometry) g.dispose();
+  tmp.geometry.dispose();
+  return out;
+}
+
 function _mfFromSoup(w, tris) {
   let vol = 0;
   for (let i = 0; i < tris.length; i += 9) {
@@ -40881,8 +40918,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.16.7';
+const VOLME3D_VERSION = '1.16.8';
 const VOLME3D_CHANGELOG = [
+  { version:'1.16.8', date:'2026-09-13', changes:[
+    ['\u{1F527}','<b>Abziehen repariert sperrige Motive jetzt selbst \u2014 und \u201eReparieren\u201c wirkt auch auf Bohrungen.</b> Wer ein Motiv abziehen wollte, landete bisher schnell in einer Sackgasse: Das Abziehen brach mit <i>\u201ekein g\u00fcltiges Werkzeug \u2014 bitte Reparieren anwenden\u201c</i> ab, aber <b>Reparieren \u00fcbersprang Bohrungen</b> \u2014 also genau die Motive, um die es ging. Man musste sie erst auf <i>Volumenk\u00f6rper</i> umstellen, reparieren, zur\u00fcckstellen \u2014 und danach scheiterte das Abziehen oft trotzdem. Drei \u00c4nderungen: <b>Erstens</b> repariert der Knopf jetzt auch Bohrungen, ohne Umschalten. <b>Zweitens</b> entfernt er zus\u00e4tzlich <b>Dreiecke ohne Fl\u00e4che</b> \u2014 die Nadeln und doppelten Punkte, die aus verschachtelten SVG- und Schriftkonturen \u00fcbrig bleiben und ein Netz unbrauchbar machen, obwohl es \u201ekeine L\u00f6cher\u201c hat. <b>Drittens</b> sagt er hinterher klar, woran man ist: \u201eMotiv ist zum Abziehen bereit\u201c oder welches Teil noch klemmt. Und wenn beim Abziehen doch ein Motiv sperrt, <b>repariert die App es selbst</b> und zieht es ab, statt einen wegzuschicken. Gemeldet von Josy.'],
+  ]},
   { version:'1.16.7', date:'2026-09-12', changes:[
     ['\u{1F41B}','<b>Download in Safari: \u201eSafari kann die Seite blob:\u2026 nicht \u00f6ffnen\u201c beim STL-Export.</b> Auf dem Mac kam statt der Datei eine Fehlerseite. Der Grund liegt in Safaris strenger Regel, wann ein Download noch zum Klick geh\u00f6rt: Vor dem eigentlichen Speichern lief bei uns erst eine Abfrage (Ordner-Zugriff bzw. Suche nach dem Druck-Helfer) und danach ein kurzer Zeitgeber \u2014 damit z\u00e4hlte der Klick nicht mehr, und Safari versuchte die Datei als <b>Seite zu \u00f6ffnen</b> statt sie zu sichern. Dazu wurde die Datei nach vier Sekunden wieder freigegeben, was den zweiten Teil der Meldung erkl\u00e4rt. Jetzt startet der Download sofort mit dem Klick (die Ordner-Abfrage entf\u00e4llt dort, wo der Browser sie gar nicht kann), und die Datei bleibt eine Minute lang verf\u00fcgbar. Gilt f\u00fcr STL, 3MF, OBJ, DXF, SVG und gespeicherte Designs. Gemeldet von Josy.'],
   ]},
@@ -48995,18 +49035,71 @@ addEventListener('load', () => {
 });
 // ===== END MITARBEITEN =====
 
-function repairSelected() {
+async function repairSelected() {
   const meshes = [];
+  // Bohrungen ausdruecklich MIT reparieren: gerade die Gravur-Motive sind es,
+  // die beim Abziehen als "kein gueltiges Werkzeug" abgelehnt werden. Vorher
+  // musste man dafuer erst auf Volumenkoerper umschalten und wieder zurueck.
   (selectedObjs || []).forEach(o => {
-    if (o.traverse) o.traverse(c => { if (c.isMesh && !c.userData.isHole && !c.userData.isEdgeLines) meshes.push(c); });
+    if (o.traverse) o.traverse(c => { if (c.isMesh && !c.userData.isEdgeLines) meshes.push(c); });
     else if (o.isMesh) meshes.push(o);
   });
   if (!meshes.length) { notify('Erst ein Objekt auswählen', 'w'); return; }
   saveUndo();
-  let loops = 0;
-  meshes.forEach(m => { loops += _fillHoles(m); if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(m); });
+  let loops = 0, entartet = 0;
+  meshes.forEach(m => {
+    entartet += _dropDegenerateTris(m);
+    loops += _fillHoles(m);
+    if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(m);
+  });
   updateTree();
-  notify(loops ? `${loops} Loch/Löcher geschlossen ✓` : 'Keine offenen Ränder gefunden', loops ? 'ok' : 'w');
+  // Ehrliche Rueckmeldung: taugt das Teil jetzt zum Abziehen oder nicht? Sonst
+  // schickt die Fehlermeldung beim Abziehen einen im Kreis ("bitte reparieren").
+  const kaputt = [];
+  try {
+    const w = await _mfInit();
+    for (const m of meshes) {
+      try { _mfFromSoup(w, _moldCollectTris(m)); }
+      catch (e) { kaputt.push(m.userData?.name || 'ohne Namen'); }
+    }
+  } catch (e) { /* Manifold nicht da: dann eben ohne Pruefung */ }
+  const teile = [];
+  if (loops) teile.push(`${loops} Loch/Löcher geschlossen`);
+  if (entartet) teile.push(`${entartet} entartete Dreiecke entfernt`);
+  if (kaputt.length)
+    notify((teile.length ? teile.join(', ') + ' — ' : '') +
+           'aber noch nicht abzieh-tauglich: ' + kaputt.join(', ') +
+           '. Meist liegt es an sich überschneidenden Linien im SVG.', 'w');
+  else
+    notify((teile.length ? teile.join(', ') + ' ✓' : 'Nichts zu reparieren') +
+           ' — Motiv ist zum Abziehen bereit', 'ok');
+}
+
+// Entfernt Dreiecke ohne Flaeche (Nadeln, doppelte Punkte). Solche Reste kommen
+// aus Schrift- und SVG-Konturen und machen ein Netz fuer den Boolean unbrauchbar,
+// obwohl es "keine Loecher" hat.
+function _dropDegenerateTris(mesh) {
+  const g0 = mesh.geometry;
+  const g = g0.index ? g0.toNonIndexed() : g0;
+  const pos = g.attributes.position;
+  const out = [];
+  let weg = 0;
+  const ax = new THREE.Vector3(), bx = new THREE.Vector3(), cx = new THREE.Vector3(),
+        e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), cr = new THREE.Vector3();
+  for (let t = 0; t < pos.count; t += 3) {
+    ax.fromBufferAttribute(pos, t); bx.fromBufferAttribute(pos, t + 1); cx.fromBufferAttribute(pos, t + 2);
+    e1.subVectors(bx, ax); e2.subVectors(cx, ax); cr.crossVectors(e1, e2);
+    if (cr.length() < 1e-12) { weg++; continue; }
+    out.push(ax.x, ax.y, ax.z, bx.x, bx.y, bx.z, cx.x, cx.y, cx.z);
+  }
+  if (!weg) { if (g !== g0) g.dispose(); return 0; }
+  const neu = new THREE.BufferGeometry();
+  neu.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+  neu.computeVertexNormals(); neu.computeBoundingBox(); neu.computeBoundingSphere();
+  mesh.geometry.dispose();
+  mesh.geometry = neu;
+  if (g !== g0) g.dispose();
+  return weg;
 }
 
 // Schließt offene Ränder (Löcher) aller in dieser Sitzung radierten Meshes
