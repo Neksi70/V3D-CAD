@@ -2944,6 +2944,36 @@ const firebaseConfig = {
   </div>
 </div>
 
+<div id="bend-modal" class="g3dm" onclick="if(event.target===this)_bndClose(true)">
+  <div class="g3box">
+    <div class="g3hdr">🪄 Biegen<span class="vx" onclick="_bndClose(true)">✕</span></div>
+    <div class="g3body">
+      <div class="g3ctrl" style="min-width:330px">
+        <div class="g3info" id="bnd-dim" style="margin-bottom:2px"></div>
+        <span class="vsec" title="Rundung = um eine Achse, wie ein Blech ums Rohr. Kuppel = in beide Richtungen, für Kugeln — eine ebene Fläche lässt sich dabei nicht verzerrungsfrei anlegen, sie wird vom Mittelpunkt aus abstandstreu aufgezogen.">Wie soll gebogen werden?</span>
+        <div class="vbg" id="bnd-modus-bg">
+          <button class="vtb on" onclick="_bndSetModus('zyl')" title="Um EINE Achse biegen — für Rohre, Tassen, Vasen, Dosen">↩ Rundung</button>
+          <button class="vtb" onclick="_bndSetModus('kugel')" title="In BEIDE Richtungen wölben — für Kugeln und Kuppeln">◠ Kuppel</button>
+        </div>
+        <div class="vrow"><label title="Radius der Mittelfläche des Teils. Beim Anlegen an einen Körper wird er gemessen und die halbe Dicke aufgeschlagen, damit die Innenseite anliegt.">Radius</label> <input type="range" id="bnd-r" min="5" max="1000" value="50" step="1" oninput="_bndSetR(this.value)"><span class="vv" id="bndv-r">50</span><span class="vu">mm</span></div>
+        <div class="vrow" id="bnd-row-achse"><label title="Entlang welcher Achse des Körpers gebogen wird. „Von selbst“ nimmt die längste Kante quer zur Dicke.">Biegen entlang</label> <select id="bnd-u" onchange="_bndSetU(this.value)" style="flex:1;padding:4px 6px"><option value="auto">von selbst wählen</option><option value="0">X</option><option value="1">Y</option><option value="2">Z</option></select></div>
+        <div class="vrow"><label></label><button class="btn" style="flex:1;font-size:12px;padding:5px 8px" onclick="_bndFlip()" title="Wölbung umdrehen — nach oben statt nach unten">⇅ Wölbung umdrehen</button></div>
+        <div class="vrow"><label title="Wie viele Segmente ein Vollkreis hätte. Mehr = glatter, aber mehr Dreiecke. Unterteilt wird nur so fein, wie die Biegung es braucht.">Feinheit</label> <input type="range" id="bnd-seg" min="16" max="192" value="64" step="8" oninput="_bndSetSeg(this.value)"><span class="vv" id="bndv-seg">64</span><span class="vu">Segm.</span></div>
+        <div class="g3info" id="bnd-achse"></div>
+        <span class="vsec">An einen Körper anlegen</span>
+        <div class="vrow"><label></label><button class="btn" style="flex:1;font-size:12px;padding:5px 8px" onclick="_bndZielStart()" title="Den runden Körper anklicken, an den sich das Teil schmiegen soll. Radius wird gemessen, das Teil gebogen, gedreht und angelegt.">🎯 Runde Wand anklicken</button></div>
+        <div class="g3info" id="bnd-ziel" style="display:none">Am Zielkörper angelegt. Zum Gravieren: Teil als <b>Bohrung</b> markieren, beides auswählen und <b>Abziehen</b>.</div>
+        <div class="g3info">Verformt das NETZ des Körpers — geht mit jedem Teil, auch mit importierten STLs. Das Teil wird dabei so fein unterteilt, wie die Rundung es braucht; die Maße in Biegerichtung sind danach Bogenlängen, kein Quadermaß mehr.</div>
+        <div class="g3info" id="bnd-est"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_bndClose(true)">Abbrechen</button>
+      <button class="btn pri" onclick="_bndApply()">✓ Übernehmen</button>
+    </div>
+  </div>
+</div>
+
 <div id="qr-modal" class="g3dm" onclick="if(event.target===this)_closeQRModal()">
   <div class="g3box">
     <div class="g3hdr">📇 QR-Code-Generator<span class="vx" onclick="_closeQRModal()">✕</span></div>
@@ -17705,6 +17735,414 @@ async function _lgoCreate() {
     _lgoBusy = false; if (btn) { btn.disabled = false; btn.textContent = '✓ Erzeugen'; }
   }
 }
+// ═══ BIEGEN — beliebige Körper auf einen Radius (_bnd*) ════════════════════
+// Ralf (1.9.2026: „Druck auf Tassenradius biegen"; 12.9.2026: „Mir ist nicht
+// klar, wie sich die Platte an die Kugel anschmiegt … mit einer SVG funktioniert
+// es, wie ist es mit anderen Körpern?"). Wickeln konnte bisher NUR SVG und
+// Text, weil dort die Kontur komplett neu aufgebaut wird (_svgWrapBuildGeo).
+// Hier wird stattdessen das NETZ verformt — das geht mit jedem Körper.
+//
+// Zwei Dinge entscheiden über Ergebnis oder Schrott:
+//  1. Das Netz muss QUER zur Biegerichtung fein genug sein. Ein Quader hat in
+//     der Länge genau zwei Dreiecke; „gebogen" bleibt er ein Quader mit schräg
+//     stehenden Enden. Also wird vorher unterteilt — aber nur so weit, wie die
+//     Biegung es braucht (Kantenlänge ≤ Bogenlänge eines Segments).
+//  2. Die Unterteilung darf keine Risse reißen. Die Entscheidung „diese Kante
+//     wird geteilt" hängt deshalb ALLEIN an der Kante (Länge > Toleranz), und
+//     geteilt wird im Mittelwert ihrer beiden Ecken. Der Nachbar teilt dieselbe
+//     Kante damit identisch — keine T-Stöße, das Netz bleibt dicht.
+//
+// Gerechnet wird in Geometrie-Einheiten (1 = 10 mm) und in den LOKALEN Achsen
+// des Körpers. Die Skalierung wird vorher eingebacken, sonst zieht ein ungleich
+// skalierter Körper die Rundung zur Ellipse.
+const _bndP = { modus: 'zyl', R: 50, seg: 64, s: 1, uWahl: 'auto' };
+let _bndObj  = null;     // Körper im Dialog
+let _bndSrc  = null;     // Ausgangsnetz (Float32Array, Skalierung eingebacken)
+let _bndBack = null;     // Zustand vor dem Biegen (für Abbrechen)
+let _bndPick = false;    // wartet auf Klick auf den Zielkörper
+let _bndZiel = null;     // gemessener Zielkörper { modus, R, N, A, C }
+const _bndAchsName = ['X', 'Y', 'Z'];
+
+// Geometrie → flache Dreiecksliste in Geometrie-Einheiten, Skalierung eingebacken.
+// Gespiegelte Körper (negative Determinante) drehen dabei die Wicklung um —
+// sonst zeigen hinterher alle Normalen nach innen.
+function _bndBake(o) {
+  const g0 = o.geometry;
+  const g  = g0.index ? g0.toNonIndexed() : g0.clone();
+  const p  = new Float32Array(g.attributes.position.array);
+  const sx = o.scale.x, sy = o.scale.y, sz = o.scale.z;
+  for (let i = 0; i < p.length; i += 3) { p[i] *= sx; p[i+1] *= sy; p[i+2] *= sz; }
+  if (sx * sy * sz < 0) for (let i = 0; i < p.length; i += 9) {
+    for (let k = 0; k < 3; k++) { const t = p[i+3+k]; p[i+3+k] = p[i+6+k]; p[i+6+k] = t; }
+  }
+  if (g !== g0) g.dispose();
+  return p;
+}
+
+function _bndExtent(pos) {
+  const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < pos.length; i += 3) for (let k = 0; k < 3; k++) {
+    if (pos[i+k] < mn[k]) mn[k] = pos[i+k];
+    if (pos[i+k] > mx[k]) mx[k] = pos[i+k];
+  }
+  return { mn, mx, size: [mx[0]-mn[0], mx[1]-mn[1], mx[2]-mn[2]] };
+}
+
+// w = dünnste Achse (in ihre Richtung geht die Wölbung), u = Biegerichtung,
+// a = Biegeachse. Ohne Vorgabe ist u die längere der beiden übrigen.
+function _bndAxes(size, uWahl) {
+  let u;
+  if (uWahl === 'auto') {
+    let w = 0; for (let i = 1; i < 3; i++) if (size[i] < size[w]) w = i;
+    const r = [0,1,2].filter(i => i !== w);
+    u = size[r[0]] >= size[r[1]] ? r[0] : r[1];
+  } else u = +uWahl;
+  const rest = [0,1,2].filter(i => i !== u);
+  const w = size[rest[0]] <= size[rest[1]] ? rest[0] : rest[1];
+  const a = rest[0] === w ? rest[1] : rest[0];
+  return { u, a, w };
+}
+
+// Dreiecke halbieren, bis keine Kante mehr länger als `tol` ist — gemessen mit
+// `dist`, also nur in der Richtung, die die Biegung überhaupt verzerrt.
+// Rückgabe null = Notbremse (zu viele Dreiecke).
+function _bndSubdivide(pos, tol, dist, maxTri) {
+  const out = [], stack = [];
+  for (let i = 0; i < pos.length; i += 9)
+    stack.push([pos[i],pos[i+1],pos[i+2],pos[i+3],pos[i+4],pos[i+5],pos[i+6],pos[i+7],pos[i+8]]);
+  while (stack.length) {
+    const t = stack.pop();
+    let best = -1, bl = tol;
+    for (let e = 0; e < 3; e++) {
+      const a = e*3, b = ((e+1)%3)*3;
+      const d = dist(t[a],t[a+1],t[a+2], t[b],t[b+1],t[b+2]);
+      if (d > bl) { bl = d; best = e; }
+    }
+    if (best < 0) { out.push(t); continue; }
+    if (out.length + stack.length > maxTri) return null;
+    const a = best*3, b = ((best+1)%3)*3, c = ((best+2)%3)*3;
+    // Mittelwert der beiden Ecken — bitweise derselbe Punkt wie beim Nachbarn
+    const m0 = (t[a]+t[b])/2, m1 = (t[a+1]+t[b+1])/2, m2 = (t[a+2]+t[b+2])/2;
+    stack.push([t[a],t[a+1],t[a+2], m0,m1,m2, t[c],t[c+1],t[c+2]]);
+    stack.push([m0,m1,m2, t[b],t[b+1],t[b+2], t[c],t[c+1],t[c+2]]);
+  }
+  const arr = new Float32Array(out.length * 9);
+  for (let n = 0; n < out.length; n++) arr.set(out[n], n*9);
+  return arr;
+}
+
+// Der eigentliche Biegeschritt. R in Geometrie-Einheiten.
+// Zylinder: Bogenlänge u/R um eine Achse parallel zu `a`.
+// Kuppel:   dasselbe in BEIDE Richtungen (azimutal abstandstreu) — für Kugeln.
+//           Eine ebene Platte lässt sich nicht verzerrungsfrei auf eine Kugel
+//           legen (Kartografie); abstandstreu vom Mittelpunkt aus ist die
+//           Variante, bei der die Platte weder reißt noch sich staut.
+function _bndBuildGeo(srcPos, spec) {
+  const { u, a, w, R, s, modus, seg } = spec;
+  const e = _bndExtent(srcPos);
+  const u0 = (e.mn[u]+e.mx[u])/2, v0 = (e.mn[a]+e.mx[a])/2, w0 = (e.mn[w]+e.mx[w])/2;
+  const tol = Math.max(1e-4, 2*Math.PI*R/Math.max(8, seg));
+  const K = (x,y,z,i) => i === 0 ? x : i === 1 ? y : z;
+  const dist = modus === 'zyl'
+    ? (ax,ay,az,bx,by,bz) => Math.abs(K(ax,ay,az,u) - K(bx,by,bz,u))
+    : (ax,ay,az,bx,by,bz) => Math.hypot(K(ax,ay,az,u) - K(bx,by,bz,u),
+                                        K(ax,ay,az,a) - K(bx,by,bz,a));
+  const arr = _bndSubdivide(srcPos, tol, dist, 400000);
+  if (!arr) return null;
+  for (let i = 0; i < arr.length; i += 3) {
+    const du = arr[i+u] - u0, dw = (arr[i+w] - w0) * s;
+    const rr = R + dw;
+    if (modus === 'zyl') {
+      const th = du / R;
+      arr[i+u] = u0 + rr * Math.sin(th);
+      arr[i+w] = w0 + s * (rr * Math.cos(th) - R);
+    } else {
+      const dv = arr[i+a] - v0;
+      const d  = Math.hypot(du, dv), th = d / R;
+      const k  = d > 1e-9 ? rr * Math.sin(th) / d : rr / R;
+      arr[i+u] = u0 + du * k;
+      arr[i+a] = v0 + dv * k;
+      arr[i+w] = w0 + s * (rr * Math.cos(th) - R);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  _moldNormals(geo);
+  return geo;
+}
+
+// ── Dialog ─────────────────────────────────────────────────────────────────
+function _bndSpec() {
+  const e = _bndExtent(_bndSrc);
+  const ax = _bndAxes(e.size, _bndP.uWahl);
+  return Object.assign({}, ax, { R: Math.max(0.05, _bndP.R / 10), s: _bndP.s,
+                                 modus: _bndP.modus, seg: _bndP.seg, ext: e });
+}
+
+// Kleinster sinnvoller Radius: die Innenfläche darf sich nicht selbst
+// durchdringen. Sie liegt eine halbe Dicke innen — darunter faltet sich das
+// Teil in sich zusammen.
+function _bndRmin(e, w) { return Math.max(1, Math.round(e.size[w] * 10 / 2 * 1.05)); }
+
+function _bndInfo() {
+  if (!_bndObj || !_bndSrc) return;
+  const sp = _bndSpec(), e = sp.ext;
+  const L = e.size[sp.u] * 10, B = e.size[sp.a] * 10, D = e.size[sp.w] * 10;
+  const winkel = L / (sp.R * 10) * 180 / Math.PI;
+  const el = id => document.getElementById(id);
+  if (el('bnd-achse'))
+    el('bnd-achse').innerHTML = 'Gebogen wird entlang <b>' + _bndAchsName[sp.u] + '</b> (' +
+      Math.round(L) + ' mm), Biegeachse <b>' + _bndAchsName[sp.a] + '</b> (' + Math.round(B) +
+      ' mm), Dicke <b>' + _bndAchsName[sp.w] + '</b> (' + (Math.round(D*10)/10) + ' mm)';
+  if (el('bndv-r'))   el('bndv-r').textContent = _bndP.R;
+  if (el('bndv-seg')) el('bndv-seg').textContent = _bndP.seg;
+  const warn = winkel > 350
+    ? '<br><span style="color:#d33;font-weight:700">⚠️ ' + Math.round(winkel) + '° — das Teil überholt sich selbst. Radius vergrößern.</span>'
+    : (_bndP.R < _bndRmin(e, sp.w)
+       ? '<br><span style="color:#d33;font-weight:700">⚠️ Radius kleiner als die halbe Dicke — die Innenseite faltet sich.</span>' : '');
+  if (el('bnd-est'))
+    el('bnd-est').innerHTML = (_bndP.modus === 'zyl'
+        ? 'Bogen: <b>' + Math.round(winkel) + '°</b> bei Radius ' + _bndP.R + ' mm'
+        : 'Kuppel über <b>' + Math.round(winkel) + '°</b> in beide Richtungen') + warn;
+  if (el('bnd-ziel'))
+    el('bnd-ziel').style.display = _bndZiel ? '' : 'none';
+}
+
+function _bndSetModus(m) {
+  _bndP.modus = m;
+  document.querySelectorAll('#bnd-modus-bg .vtb').forEach((b, i) => b.classList.toggle('on', i === (m === 'zyl' ? 0 : 1)));
+  const r = document.getElementById('bnd-row-achse');
+  if (r) r.style.display = m === 'zyl' ? '' : 'none';   // Kuppel biegt in beide Richtungen
+  _bndPreview();
+}
+function _bndSetU(v) { _bndP.uWahl = v; _bndPreview(); }
+function _bndSetR(v) { _bndP.R = Math.max(1, parseFloat(v) || 1); _bndPreview(); }
+function _bndSetSeg(v) { _bndP.seg = Math.max(8, Math.round(parseFloat(v) || 64)); _bndPreview(); }
+function _bndFlip()  { _bndP.s = -_bndP.s; _bndPreview(); }
+
+function _bndOpen() {
+  const o = getFirst();
+  if (!o) { notify('Bitte zuerst den Körper auswählen, der gebogen werden soll', 'w'); return; }
+  if (o.userData.locked) { notify('Der Körper ist gesperrt — erst entsperren', 'w'); return; }
+  if (!o.geometry || !o.geometry.attributes || !o.geometry.attributes.position) {
+    notify('Dieser Körper hat kein Netz, das sich biegen ließe', 'w'); return; }
+  if (_bndObj) _bndClose(true);
+  _bndObj = o;
+  _bndSrc = _bndBake(o);
+  o.updateMatrixWorld(true);
+  const bb0 = getMeshBox(o);
+  _bndBack = { geo: o.geometry, scale: o.scale.clone(), pos: o.position.clone(),
+               aufPlatte: Math.abs(bb0.min.y) < 0.05,
+               ud: { shapeType: o.userData.shapeType, type: o.userData.type,
+                     occtShape: o.userData.occtShape, _occtParams: o.userData._occtParams,
+                     _origGeo: o.userData._origGeo, _origStlBuf: o.userData._origStlBuf } };
+  _bndZiel = null;
+  const e = _bndExtent(_bndSrc);
+  const ax = _bndAxes(e.size, 'auto');
+  _bndP.uWahl = 'auto';
+  // Vorgabe: 60°-Bogen über die Länge — sichtbar gebogen, aber nichts überholt sich
+  const vorgabe = Math.round(e.size[ax.u] * 10 / (Math.PI / 3));
+  _bndP.R = Math.min(1000, Math.max(_bndRmin(e, ax.w), vorgabe));
+  const el = id => document.getElementById(id);
+  if (el('bnd-r'))   { el('bnd-r').min = _bndRmin(e, ax.w); el('bnd-r').value = _bndP.R; }
+  if (el('bnd-seg')) el('bnd-seg').value = _bndP.seg;
+  if (el('bnd-dim')) el('bnd-dim').innerHTML = 'Körper: <b>' +
+      [0,1,2].map(i => Math.round(e.size[i]*10)).join(' × ') + ' mm</b> (X × Y × Z)';
+  const us = el('bnd-u'); if (us) us.value = 'auto';
+  _bndSetModus(_bndP.modus);
+  saveUndo();
+  el('bend-modal').classList.add('show');
+  _bndPreview();
+}
+
+function _bndClose(abbruch) {
+  const m = document.getElementById('bend-modal');
+  if (m) m.classList.remove('show');
+  const o = _bndObj;
+  if (o && abbruch && _bndBack) {
+    if (o.geometry !== _bndBack.geo) { try { o.geometry.dispose(); } catch (_) {} }
+    o.geometry = _bndBack.geo;
+    o.scale.copy(_bndBack.scale);
+    o.position.copy(_bndBack.pos);
+    Object.keys(_bndBack.ud).forEach(k => {
+      if (_bndBack.ud[k] === undefined) delete o.userData[k]; else o.userData[k] = _bndBack.ud[k];
+    });
+    o.updateMatrixWorld(true);
+    _updateObjEdgeLines(o);
+    if (selectedObjs.length) updateDimHandles();
+    updateTFInputs();
+  }
+  _bndObj = null; _bndSrc = null; _bndBack = null; _bndZiel = null;
+}
+
+// Lag der Körper auf der Platte, soll er das auch gebogen tun. Liegt er an
+// einem Zielkörper an, darf er sich NICHT bewegen — sonst rutscht er von der
+// Rundung, an die er gerade gelegt wurde.
+function _bndAufPlatte() {
+  if (!_bndObj || !_bndBack || !_bndBack.aufPlatte || _bndZiel) return;
+  _bndObj.updateMatrixWorld(true);
+  const bb = getMeshBox(_bndObj);
+  if (!bb.isEmpty()) _bndObj.position.y -= bb.min.y;
+}
+
+function _bndPreview() {
+  if (!_bndObj || !_bndSrc) return;
+  const sp = _bndSpec();
+  const geo = _bndBuildGeo(_bndSrc, sp);
+  if (!geo) { notify('Das Netz würde zu fein — Feinheit verringern oder Radius vergrößern', 'w'); return; }
+  const o = _bndObj;
+  if (o.geometry !== _bndBack.geo) { try { o.geometry.dispose(); } catch (_) {} }
+  o.geometry = geo;
+  o.scale.set(1, 1, 1);
+  o.updateMatrixWorld(true);
+  _bndAufPlatte();
+  _updateObjEdgeLines(o);
+  if (selectedObjs.length) updateDimHandles();
+  updateTFInputs();
+  _bndInfo();
+}
+
+function _bndApply() {
+  const o = _bndObj;
+  if (!o) return;
+  const sp = _bndSpec();
+  // Ab hier ist es kein Quader/Zylinder mehr, sondern ein freies Netz. Würde
+  // shapeType stehen bleiben, baute die nächste Maßänderung die URFORM neu auf
+  // und die Biegung wäre weg. Auch die OCCT-Form muss weg — sonst rechnet der
+  // Server das nächste Boolean mit dem UNGEBOGENEN Körper.
+  o.userData.shapeType = 'import';
+  o.userData.type = 'import';
+  delete o.userData.occtShape;
+  delete o.userData._occtParams;
+  o.userData._origStlBuf = null;
+  o.userData._origGeo = o.geometry.clone();
+  o.userData._bend = { modus: sp.modus, R: _bndP.R, seg: _bndP.seg, s: _bndP.s,
+                       u: sp.u, a: sp.a, w: sp.w };
+  const winkel = Math.round(sp.ext.size[sp.u] / sp.R * 180 / Math.PI);
+  _bndClose(false);
+  updateTree(); updateTFInputs();
+  updateFP();
+  notify('Gebogen ✓ — Radius ' + _bndP.R + ' mm, Bogen ' + winkel + '°', 'ok');
+}
+
+// ── „An Körper anlegen" ────────────────────────────────────────────────────
+// Radius am Zielkörper MESSEN statt raten. Für Rundungen um eine Achse nimmt
+// das dieselbe Messung wie das SVG-Wickeln (_svgWrapProbe); bei rundum
+// gleich großen Körpern (Kugel, Ei) gibt es keine Vorzugsachse — dort zählt
+// der Abstand zum Mittelpunkt.
+function _bndMessen(mesh, hitWorld) {
+  const root = _fdRoot(mesh) || mesh;
+  const bb = new THREE.Box3().setFromObject(root);
+  if (bb.isEmpty()) return null;
+  const sz = bb.getSize(new THREE.Vector3());
+  const gr = Math.max(sz.x, sz.y, sz.z), kl = Math.min(sz.x, sz.y, sz.z);
+  if (kl > gr * 0.72) {
+    const C = bb.getCenter(new THREE.Vector3());
+    const N = hitWorld.clone().sub(C);
+    const R = N.length();
+    if (R < 1e-3) return null;
+    return { modus: 'kugel', R, N: N.normalize(), A: null, C };
+  }
+  const probe = _svgWrapProbe(mesh, hitWorld);
+  if (!probe) return null;
+  const A = probe.axisDir.clone().normalize();
+  const N = hitWorld.clone().sub(probe.axisPt);
+  N.addScaledVector(A, -N.dot(A));
+  if (N.lengthSq() < 1e-8) return null;
+  const R = N.length();
+  return { modus: 'zyl', R, N: N.normalize(), A, C: probe.axisPt.clone() };
+}
+
+// Biegen, drehen und hinsetzen, sodass die Innenseite überall an der Wand liegt.
+function _bndAnlegen(z) {
+  const o = _bndObj;
+  if (!o || !z) return false;
+  _bndZiel = z;
+  _bndP.modus = z.modus;
+  _bndSetModus(z.modus);
+  const e = _bndExtent(_bndSrc);
+  const ax = _bndAxes(e.size, _bndP.uWahl);
+  const dicke = e.size[ax.w];
+  _bndP.s = 1;                                   // Wölbung nach außen
+  _bndP.R = Math.max(1, Math.round((z.R + dicke / 2) * 10 * 10) / 10);
+  const rEl = document.getElementById('bnd-r');
+  if (rEl) { rEl.min = 1; rEl.max = Math.max(1000, Math.ceil(_bndP.R)); rEl.value = _bndP.R; }
+
+  // Ausrichten: lokale Dickenachse → radial nach außen, Biegeachse → Körperachse
+  const N = z.N.clone().normalize();
+  let A = z.A ? z.A.clone() : new THREE.Vector3(0, 1, 0);
+  A.addScaledVector(N, -A.dot(N));
+  if (A.lengthSq() < 1e-6) {
+    A = new THREE.Vector3(1, 0, 0).addScaledVector(N, -N.x);
+    if (A.lengthSq() < 1e-6) A = new THREE.Vector3(0, 0, 1).addScaledVector(N, -N.z);
+  }
+  A.normalize();
+  // Die Reihenfolge (u,a,w) kann links- oder rechtshändig sein; wird das nicht
+  // ausgeglichen, spiegelt die Drehmatrix den Körper (Determinante −1).
+  const gerade = ((ax.u + 1) % 3 === ax.a) && ((ax.a + 1) % 3 === ax.w);
+  const T = gerade ? new THREE.Vector3().crossVectors(A, N)
+                   : new THREE.Vector3().crossVectors(N, A);
+  const cols = [];
+  cols[ax.u] = T.normalize(); cols[ax.a] = A; cols[ax.w] = N;
+  o.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(cols[0], cols[1], cols[2]));
+
+  // Der Krümmungsmittelpunkt der Biegung muss auf die Achse bzw. den Kugel-
+  // mittelpunkt fallen — dann liegt die Innenseite überall auf der Wand.
+  const Rg = _bndP.R / 10;
+  const mitte = new THREE.Vector3();
+  mitte.setComponent(ax.u, (e.mn[ax.u] + e.mx[ax.u]) / 2);
+  mitte.setComponent(ax.a, (e.mn[ax.a] + e.mx[ax.a]) / 2);
+  mitte.setComponent(ax.w, (e.mn[ax.w] + e.mx[ax.w]) / 2 - _bndP.s * Rg);
+  o.scale.set(1, 1, 1);
+  o.position.copy(z.C).sub(mitte.applyQuaternion(o.quaternion));
+  o.updateMatrixWorld(true);
+  _bndPreview();
+  return true;
+}
+
+function _bndZielStart() {
+  if (!_bndObj) return;
+  _bndPick = true;
+  document.getElementById('bend-modal').classList.remove('show');
+  canvas.style.cursor = 'crosshair';
+  const h = document.getElementById('hint');
+  if (h) {
+    h.innerHTML = '<b>Anlegen:</b> Jetzt die runde Wand anklicken, an die sich das Teil ' +
+                  'schmiegen soll — <span style="font-size:10px">Esc = Abbrechen</span>';
+    h.classList.add('show');
+  }
+  notify('Runde Wand anklicken', 'ok');
+}
+
+function _bndZielEnde() {
+  _bndPick = false;
+  canvas.style.cursor = '';
+  const h = document.getElementById('hint');
+  if (h) h.classList.remove('show');
+  const m = document.getElementById('bend-modal');
+  if (m && _bndObj) m.classList.add('show');
+}
+
+function _bndZielKlick(e) {
+  const hits = pickObjects(e);
+  const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines &&
+                             _fdRoot(h.object) !== _bndObj);
+  if (!hit) { notify('Da war kein anderer Körper — bitte auf die runde Wand klicken', 'w'); return; }
+  const z = _bndMessen(hit.object, hit.point);
+  _bndZielEnde();
+  if (!z) { notify('An dieser Stelle ist keine Rundung zu messen — eine gewölbte Wand anklicken', 'w'); return; }
+  _bndAnlegen(z);
+  notify((z.modus === 'kugel' ? 'An die Kugel gelegt' : 'An die Rundung gelegt') +
+         ' — Radius ' + (Math.round(z.R * 100) / 10) + ' mm gemessen', 'ok');
+}
+
+// Prüf-Hook für Headless-Tests (let-Variablen hängen nicht am window)
+function _bndDbg() {
+  return { offen: !!_bndObj, pick: _bndPick, modus: _bndP.modus, R: _bndP.R, seg: _bndP.seg,
+           s: _bndP.s, ziel: _bndZiel ? { modus: _bndZiel.modus, R: _bndZiel.R } : null,
+           tris: _bndObj ? _bndObj.geometry.attributes.position.count / 3 : 0 };
+}
+
 // ═══ ALLES ABRUNDEN (Kanten brechen an beliebigen Netzen) ═══════════════════
 // Für importierte Teile gibt es keine Kantenliste, an der man einzeln runden
 // könnte — also wird über die FORM gerundet: erst um den Radius schrumpfen,
@@ -21119,6 +21557,7 @@ canvas.addEventListener('mousedown', e => {
     else { _wpSetFloorBase(); }   // Leerraum ohne gesetzte Ebene → Boden als Basis (z.B. für "20 mm über der Platte")
     return;
   }
+  if (_bndPick) { _bndZielKlick(e); return; }
   if (_fdMode) { _fdClick(e); return; }
   if (_shellMode) {
     const hits = pickObjects(e);
@@ -21993,6 +22432,7 @@ window.addEventListener('keydown', e => {
       return;
     }
     if (_revolveMode) { exitRevolveMode(); return; }
+    if (_bndPick) { _bndZielEnde(); notify('Anlegen abgebrochen', 'ok'); return; }
     if (_fdMode) { exitFaceDownMode(); return; }
     if (_shellMode) { exitShellMode(); return; }
     if (_edgeMode) { exitEdgeMode(); return; }
@@ -24387,6 +24827,7 @@ function _mgBuild() {
 function _mgBusy() {
   if (_sk.active || _pp.active || _lf.active) return true;
   if (workplaneMode || _edgeMode || _shellMode || _revolveMode || _plugMode || _fdMode) return true;
+  if (_bndPick) return true;
   if (_measureMode || specialMode === 'align') return true;
   try {
     if (_cut.active || _eraser.active || _sculpt.active || _paint.active || _mmu.active) return true;
@@ -40322,8 +40763,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.16.3';
+const VOLME3D_VERSION = '1.16.4';
 const VOLME3D_CHANGELOG = [
+  { version:'1.16.4', date:'2026-09-12', spots:[{id:'bend',sel:'#fp-body'}], changes:[
+    ['\u{1FA84}','<b>Neu: <i>Biegen</i> — jetzt lässt sich JEDER Körper auf einen Radius biegen, nicht nur ein SVG.</b> Ralf hat zweimal danach gefragt: erst „Druck auf Tassenradius biegen", dann „mir ist nicht klar, wie sich die Platte an die Kugel anschmiegt — mit einer SVG funktioniert es, wie ist es mit anderen Körpern?". Bis jetzt konnte sich nur ein <b>Motiv</b> um eine Rundung legen, weil dafür seine Kontur neu aufgebaut wurde. Beim Biegen wird stattdessen das <b>Netz selbst verformt</b> — das geht mit Quadern, Skizzen-Körpern, Text und auch mit hochgeladenen STLs. Den Knopf <b>🪄 Biegen</b> findest du im Eigenschaften-Fenster (oder über die Suche). Zwei Arten: <b>↩ Rundung</b> biegt um eine Achse, wie ein Blech ums Rohr — für Tassen, Vasen, Dosen. <b>◠ Kuppel</b> wölbt in beide Richtungen, für Kugeln. Dazu Radius, Wölbungsrichtung und Feinheit; es steht dabei, über wie viel Grad sich das Teil legt, und die App warnt, wenn es sich selbst überholen würde. <b>Der eigentliche Trick steckt im Knopf „🎯 Runde Wand anklicken":</b> Danach klickst du einfach den Körper an, an den sich das Teil schmiegen soll. Der Radius wird am Modell <b>gemessen</b> (dieselbe Messung wie beim SVG-Wickeln), die halbe Dicke aufgeschlagen, und das Teil wird gebogen, gedreht und so hingesetzt, dass die Innenseite <b>überall</b> anliegt — an einem Rohr genauso wie an einer Kugel (nachgemessen: kein Spalt, die Dicke bleibt auf 0,1 mm genau erhalten). Damit aus dem Quader keine Treppe wird, unterteilt die App das Netz vorher genau so fein, wie die Rundung es braucht — und zwar so, dass dabei keine Risse entstehen: Das Ergebnis ist <b>wasserdicht</b> und taugt weiter für <i>Vereinen</i> und <i>Abziehen</i>. So kannst du zum Beispiel eine Platte an die Tasse legen und dann als Bohrung abziehen — Gravur auf der Rundung, ganz ohne SVG. <b>Zu beachten:</b> Nach dem Übernehmen ist das Teil ein freies Netz; Breite/Tiefe/Höhe bauen dann nicht mehr die Urform neu auf (sonst wäre die Biegung beim nächsten Maß wieder weg). Gewünscht von Ralf.'],
+  ]},
   { version:'1.16.3', date:'2026-09-12', changes:[
     ['\u{1F41B}','<b>Motive auf importierten Kuppeln und Hohlk\u00f6rpern: Die W\u00f6lbung springt nicht mehr.</b> Beim Verschieben eines Motivs auf einer Lichth\u00fclle \u00e4nderte sich der Bogen sprunghaft \u2014 das Motiv stand pl\u00f6tzlich weit ab oder steckte tief in der Wand (gemessen: bis <b>34 mm</b> daneben). Der Grund ist eine T\u00fccke, die man erst sieht, wenn man sie kennt: Um die Rundung zu finden, schneidet die App den K\u00f6rper waagerecht durch. Bei einer <b>Kuppel</b> sieht aber auch ein <b>senkrechter</b> Schnitt kreisrund aus \u2014 bei einer Kugel ist er sogar ein exakter Kreis. Stellenweise gewann deshalb die falsche Richtung, und das Motiv wurde um eine gedachte <i>Querachse</i> gebogen. Betroffen waren vor allem <b>importierte STL-Dateien</b>, weil die anders im Raum liegen als selbst gebaute K\u00f6rper. Jetzt werden alle drei Richtungen gepr\u00fcft und die echte Drehachse daran erkannt, dass sie <b>durch die Mitte</b> des K\u00f6rpers geht. Nachgemessen an einer 120 mm breiten Lichth\u00fclle: Der Bogen passt \u00fcber die ganze H\u00f6he auf <b>0,02 mm</b> zur Wand. Danke an Josy f\u00fcrs Schicken der Datei \u2014 daran war es \u00fcberhaupt erst zu fassen.'],
   ]},
@@ -43787,6 +44231,8 @@ function _fpBuildRows(type, o) {
   const moldBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_openMoldModal()">🫗 Silikon-Gießform</button></div>`;
   // Klemmbaustein-Look: Modell aufs Noppenraster rastern (jeder Typ)
   const legoBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_lgoOpen()" title="Rastert das Modell aufs 8-mm-Noppenraster und baut daraus ein druckbares Teil im Klemmbaustein-Look — mit Noppen oben und Aufnahmen unten.">🧱 Klemmbaustein-Look</button></div>`;
+  // Biegen: Netz auf einen Radius verformen — auch an einen anderen Körper anlegen
+  const bendBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_bndOpen()" title="Biegt den Körper auf einen Radius — als Rundung um eine Achse oder als Kuppel. Mit „Runde Wand anklicken" wird der Radius am Zielkörper gemessen und das Teil gleich angelegt.">🪄 Biegen</button></div>`;
   // Alles abrunden: Kanten brechen ohne Kantenliste — auch für Importe (jeder Typ)
   const roundBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_openRoundModal()" title="Bricht ALLE scharfen Außenkanten auf einmal — auch bei importierten Modellen, wo es keine einzeln anklickbaren Kanten gibt. Gut für die Haptik und für Kinderspielzeug.">⬤ Alles abrunden</button></div>`;
 
@@ -44169,7 +44615,7 @@ function _fpBuildRows(type, o) {
              `<div class="fp-lbl" style="display:block;margin-bottom:3px;color:var(--dim);font-size:10px">Ober-/Unterkante</div>` +
              row('Radius',      'fp-sk-fil', o.userData.fillet||0,  "_skApplyBevel(this.value, 0)", 'mm', 0, skMax, 0.1) +
              row('Abschrägung', 'fp-sk-cha', o.userData.chamfer||0, "_skApplyBevel(0, this.value)", 'mm', 0, skMax, 0.1) +
-             '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn + roundBtn + moldBtn + legoBtn +
+             '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn + roundBtn + bendBtn + moldBtn + legoBtn +
              _dispRows();
     }
     case 'loft':
@@ -44207,7 +44653,7 @@ function _fpBuildRows(type, o) {
              propLock() +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
-             '<div class="fp-sep"></div>' + svgBtns + edgeBtn + shellBtn + hollowLidBtn + roundBtn + moldBtn + legoBtn +
+             '<div class="fp-sep"></div>' + svgBtns + edgeBtn + shellBtn + hollowLidBtn + roundBtn + bendBtn + moldBtn + legoBtn +
              _dispRows();
     }
     default:
@@ -44215,7 +44661,7 @@ function _fpBuildRows(type, o) {
              propLock() +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
-             '<div class="fp-sep"></div>' + edgeBtn + shellBtn + hollowLidBtn + roundBtn + moldBtn + legoBtn +
+             '<div class="fp-sep"></div>' + edgeBtn + shellBtn + hollowLidBtn + roundBtn + bendBtn + moldBtn + legoBtn +
              _dispRows();
   }
 }
@@ -47727,6 +48173,7 @@ const CMDK = [
   {i:'⬡',g:'Generator',t:'Muster-Generator',k:'muster pattern waben wabe honeycomb hexagon asanoha hanfblatt japanisch dreieck quadrat raute voronoi wellen linien gitter lattice svg laser lasercut plotter lesezeichen untersetzer gitterblende lüftungsgitter lampenschirm einsatz',run:()=>_pgOpen()},
   {i:'🧩',g:'Generator',t:'Puzzle',k:'puzzle puzzel jigsaw steckpuzzle legespiel teile stecken verzahnung nasen foto fotopuzzle bild motiv kinder kinderpuzzle spiel geschenk tablett wanne rahmen mehrfarbig mmu ams filament',run:()=>_pzlOpen()},
   {i:'⬤',g:'Bearbeiten',t:'Alles abrunden',k:'abrunden rundung kanten brechen weich haptik fillet radius import stl spielzeug',run:()=>_openRoundModal()},
+  {i:'🪄',g:'Bearbeiten',t:'Biegen',k:'biegen bend beugen woelben wölben kruemmen krümmen rundung radius zylinder rohr tasse becher kugel kuppel dome anschmiegen anlegen wickeln umwickeln bogen schale platte blech verformen',run:()=>_bndOpen()},
   {i:'🫗',g:'Generator',t:'Silikon-Gießform',k:'silikon gießform gussform mold form casting negativform silikonform tray eiswürfel schokolade',run:()=>_openMoldModal()},
   {i:'🧱',g:'Generator',t:'Klemmbaustein-Look',k:'lego klemmbaustein klemmbausteine baustein bausteine noppen noppenraster duplo pixel voxel verpixelt raster klotz klötzchen bauklotz brick bricks studs blocky minecraft blockig legoisieren spielzeug bauplatte stapelbar',run:()=>_lgoOpen()},
   {i:'🍪',g:'Generator',t:'Keksausstecher',k:'keks ausstecher plätzchen cookie cutter backen förmchen',run:()=>_ckOpen()},
