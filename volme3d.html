@@ -2925,7 +2925,7 @@ const firebaseConfig = {
           <button class="vtb on" onclick="_lgoSetOut('built')" title="Alle Steine an ihrem Platz — du siehst das fertige Modell und kannst einzelne Steine anfassen">Zusammengebaut</button>
           <button class="vtb" onclick="_lgoSetOut('plate')" title="Steine nach Sorte geordnet nebeneinander auf der Platte — direkt so exportieren und drucken">Druckplatte</button>
         </div>
-        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Öffnet nach dem Erzeugen eine Seite mit Stückliste und Schicht-für-Schicht-Plan zum Ausdrucken."><input type="checkbox" id="lgo-guide" checked> Bauanleitung öffnen</label>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Zeigt nach dem Erzeugen die Stückliste und den Schicht-für-Schicht-Plan — zum Ausdrucken oder als Datei speichern."><input type="checkbox" id="lgo-guide" checked> Bauanleitung öffnen</label>
         </div>
         <span class="vsec">Steindetails</span>
         <label id="lgo-row-look1" style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:2px" title="Noppen auf allen nach oben freiliegenden Flächen — das, was den Klemmbaustein-Look ausmacht"><input type="checkbox" id="lgo-studs-on" checked> Noppen oben (Ø4,8 × 1,8 mm)</label>
@@ -17630,12 +17630,64 @@ function _lgoGuideHtml(bricks, nx, ny, nz, hz, titel) {
 }
 
 function _lgoGuideOpen(html) {
-  // Blob statt document.write: der Tab bekommt eine eigene, speicherbare Seite
-  const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
-  const tab = window.open(url, '_blank');
-  if (!tab) { notify('Bauanleitung: bitte Pop-ups für diese Seite erlauben', 'w'); URL.revokeObjectURL(url); return false; }
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  // KEIN neuer Tab und KEINE blob:-Adresse. Safari verweigert beides
+  // gelegentlich („Safari kann die Seite blob:… nicht öffnen —
+  // WebKitBlobResource-Fehler 1", Josy am Mac, 12.9.26): Eine blob:-URL lebt nur
+  // solange die erzeugende Seite sie hält, und ein verworfener Hintergrund-Tab
+  // holt sie danach vergeblich. Dazu kommen Pop-up-Blocker — window.open nach
+  // einer langen Rechnung gilt vielen Browsern nicht mehr als Nutzer-Klick.
+  // Die Anleitung läuft deshalb in einem iframe per srcdoc: kein Laden, kein
+  // Ablaufen, kein Blockieren. Drucken und Speichern gehen von dort aus.
+  let ov = document.getElementById('lgo-guide-ov');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'lgo-guide-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:99100;background:rgba(0,0,0,.6);' +
+      'display:flex;align-items:center;justify-content:center;padding:18px';
+    ov.onclick = e => { if (e.target === ov) _lgoGuideClose(); };
+    document.body.appendChild(ov);
+  }
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--panel,#fff);border-radius:14px;width:min(900px,96vw);' +
+    'height:min(90vh,1100px);display:flex;flex-direction:column;overflow:hidden;' +
+    'box-shadow:0 18px 60px rgba(0,0,0,.35)';
+  const kopf = document.createElement('div');
+  kopf.style.cssText = 'display:flex;align-items:center;gap:9px;padding:11px 14px;border-bottom:1px solid var(--border,#e3e3e3)';
+  kopf.innerHTML = '<span style="font-size:15px;font-weight:800">🧱 Bauanleitung</span>' +
+    '<span style="margin-left:auto"></span>';
+  const frame = document.createElement('iframe');
+  frame.style.cssText = 'flex:1;border:0;width:100%;background:#fafafa';
+  frame.srcdoc = html;
+  const mk = (txt, titel, fn) => {
+    const b = document.createElement('button');
+    b.className = 'btn'; b.textContent = txt; b.title = titel;
+    b.style.cssText = 'font-size:12px;padding:5px 10px';
+    b.onclick = fn;
+    return b;
+  };
+  kopf.appendChild(mk('🖨 Drucken', 'Anleitung ausdrucken oder als PDF sichern',
+    () => { try { frame.contentWindow.focus(); frame.contentWindow.print(); }
+            catch (e) { notify('Drucken hat nicht geklappt — bitte „Als Datei speichern" nutzen', 'w'); } }));
+  kopf.appendChild(mk('💾 Als Datei', 'Als HTML-Datei speichern (lässt sich später im Browser öffnen)',
+    () => {
+      // Download über a.download — DAS funktioniert in Safari zuverlässig,
+      // anders als eine blob:-Seite im Tab.
+      const u = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      const a = document.createElement('a');
+      a.href = u; a.download = 'bauanleitung.html';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(u), 30000);
+    }));
+  kopf.appendChild(mk('✕', 'Schließen (Esc)', () => _lgoGuideClose()));
+  box.appendChild(kopf); box.appendChild(frame);
+  ov.innerHTML = ''; ov.appendChild(box);
+  ov.style.display = 'flex';
   return true;
+}
+
+function _lgoGuideClose() {
+  const ov = document.getElementById('lgo-guide-ov');
+  if (ov) { ov.style.display = 'none'; ov.innerHTML = ''; }
 }
 
 async function _lgoCreate() {
@@ -17735,7 +17787,7 @@ async function _lgoCreate() {
       _progressDone();
       if (opt.guide) _lgoGuideOpen(_lgoGuideHtml(bricks, d.nx, d.ny, d.nz, d.h, o.userData.name || 'Modell'));
       notify('Bausatz erzeugt ✓ — ' + bricks.length + ' Steine in ' + liste.length + ' Sorten' +
-             (opt.guide ? ', Bauanleitung im neuen Tab' : ''), 'ok');
+             (opt.guide ? ', Bauanleitung ist offen' : ''), 'ok');
       return;
     }
 
@@ -37001,6 +37053,8 @@ function _howtoClose(){
 // Esc schliesst zuerst das Video, nicht das Generator-Fenster dahinter.
 document.addEventListener('keydown', (e)=>{
   if(e.key==='Escape'){
+    const gv = document.getElementById('lgo-guide-ov');
+    if(gv && gv.style.display!=='none'){ e.stopPropagation(); _lgoGuideClose(); return; }
     const ov = document.getElementById('howto-ov');
     if(ov && ov.style.display!=='none'){ e.stopPropagation(); _howtoClose(); return; }
     const mv = document.getElementById('howto-menu-ov');
@@ -40828,8 +40882,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.16.5';
+const VOLME3D_VERSION = '1.16.6';
 const VOLME3D_CHANGELOG = [
+  { version:'1.16.6', date:'2026-09-12', changes:[
+    ['\u{1F41B}','<b>Die Bauanleitung öffnet sich jetzt zuverlässig \u2014 auch in Safari.</b> Sie ging bisher in einem neuen Tab auf, und zwar über eine Kurzzeit-Adresse (<i>blob:</i>). Am Mac kam dabei \u201eSafari kann die Seite nicht öffnen\u201c heraus: So eine Adresse lebt nur, solange die App sie festhält \u2014 legt Safari den Tab im Hintergrund schlafen und lädt ihn später neu, ist sie weg. Dazu kommen Pop-up-Blocker, die einen Tab nach langer Rechnung nicht mehr durchlassen. Die Anleitung erscheint jetzt <b>direkt im Fenster</b>, mit <b>🖨 Drucken</b> und <b>💾 Als Datei</b> obendrauf \u2014 kein neuer Tab, nichts, was ablaufen kann. Mit Esc wieder zu. Gemeldet von Josy.'],
+  ]},
   { version:'1.16.5', date:'2026-09-12', changes:[
     ['\u{1F41B}','<b>Abziehen bleibt nicht mehr bei 93 % stehen.</b> Wer mehrere Motive auf ein importiertes Modell gesetzt und dann abgezogen hat, sah den Balken bei <b>93 %</b> h\u00e4ngen \u2014 und wartete vergeblich. Dahinter steckten zwei Dinge. <b>Erstens</b>: Ist auch nur <b>ein</b> Motiv nicht sauber geschlossen (kommt bei aus Bildern nachgezeichneten Motiven leicht vor), scheiterte der schnelle Rechenweg \u2014 und zwar f\u00fcr <b>alle</b> Motive auf einmal, weil sie zusammen verrechnet werden. Jetzt werden sie in so einem Fall <b>einzeln</b> abgezogen: Das kaputte wird \u00fcbersprungen, alle anderen sind da, und du erf\u00e4hrst <b>welches</b> es war. <b>Zweitens</b>: Als Ausweichweg lief dann der Server-Rechner an \u2014 und der ist f\u00fcr importierte Netze der langsamste denkbare Weg. Gemessen an einer Lichth\u00fclle mit 19.528 Dreiecken und <b>einem</b> Motiv: schneller Weg <b>0,7 Sekunden</b>, Server-Weg <b>146 Sekunden</b>. Bei sieben Motiven lief er in die 10-Minuten-Notbremse. Importierte Modelle gehen jetzt immer den schnellen Weg \u2014 der Server bringt dort ohnehin nichts, weil ein STL keine exakten Kanten hat, die er bewahren k\u00f6nnte. Gemeldet von Josy.'],
   ]},
