@@ -7,8 +7,10 @@ const fehler = [];
 p.on('pageerror', e => fehler.push('PAGEERROR: ' + e.message));
 p.on('console', m => { if (m.type() === 'error') fehler.push('CONSOLE: ' + m.text()); });
 await p.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
+await p.evaluate(() => { const k = document.getElementById('start'); if (k) k.style.display = 'none'; });
 await p.evaluate(() => localStorage.clear());
 await p.reload({ waitUntil: 'networkidle' });
+await p.evaluate(() => { const k = document.getElementById('start'); if (k) k.style.display = 'none'; });
 
 const pruef = (name, ist, soll, tol) => {
   const ok = Math.abs(ist - soll) <= tol;

@@ -8,6 +8,7 @@ const p = await ctx.newPage();
 const fehler = [];
 p.on('pageerror', e => fehler.push('PAGEERROR: ' + e.message));
 await p.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
+await p.evaluate(() => { const k = document.getElementById('start'); if (k) k.style.display = 'none'; });
 await p.evaluate(() => zeigeTab('messen'));
 await p.click('#b_cam');
 await p.waitForFunction(() => {

@@ -8,8 +8,10 @@ const p = await ctx.newPage();
 const fehler = [];
 p.on('pageerror', e => fehler.push('PAGEERROR: ' + e.message));
 await p.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
+await p.evaluate(() => { const k = document.getElementById('start'); if (k) k.style.display = 'none'; });
 await p.evaluate(() => localStorage.clear());
 await p.reload({ waitUntil: 'networkidle' });
+await p.evaluate(() => { const k = document.getElementById('start'); if (k) k.style.display = 'none'; });
 
 // Waagerechtes Scrollen waere auf dem Handy ein Fehler
 const ueberbreit = await p.evaluate(() =>
@@ -52,6 +54,7 @@ await p.fill('#i_kunde', 'Elektro Testkunde');
 await p.evaluate(() => { document.getElementById('i_L').value = '9';
   document.getElementById('i_L').dispatchEvent(new Event('input')); speichern(); });
 await p.reload({ waitUntil: 'networkidle' });
+await p.evaluate(() => { const k = document.getElementById('start'); if (k) k.style.display = 'none'; });
 const kunde = await p.inputValue('#i_kunde');
 const laenge = await p.inputValue('#i_L');
 console.log('Nach Neuladen:', kunde, '/', laenge, 'm');

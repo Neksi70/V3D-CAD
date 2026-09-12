@@ -5,6 +5,17 @@ Einzelne HTML-Datei (`app.html`), ausgeliefert von `server.py` auf Port **8793**
 Kein Netzzugriff, keine Abhängigkeiten — alles rechnet im Browser, Projekte liegen
 im `localStorage` des Geräts.
 
+## Bedienung auf dem Handy
+- Untere Leiste mit Sinnbildern, **Wischen** wechselt den Schritt, grüner Punkt = erledigt
+- Raummaße per Schieberegler (Grundriss wächst live mit), Zahl direkt daneben eintippbar
+- Im Leuchten-Blatt läuft oben eine **Ergebniszeile** mit (Stückzahl · erreichte Lux), während
+  man Typen durchprobiert; die Leuchtenzahl erscheint als Reihe aufleuchtender Lampen
+- Luxmeter als **Rundinstrument**: Ring füllt sich bis zum Sollwert, kurze Vibration beim Treffer
+- „Zum Startbildschirm hinzufügen" liefert Symbol + Vollbild (`manifest.webmanifest`, `icon.svg`);
+  ein Service Worker (`sw.js`, Netz zuerst, Kopie als Rückfall) hält die App **offline** nutzbar —
+  wichtig im Keller und im Rohbau. Alle drei liefert `server.py` direkt aus.
+- `prefers-reduced-motion` schaltet sämtliche Bewegung ab
+
 ## Reiter
 1. **Raum** — Maße, Nutzungsart (Katalog nach DIN EN 12464-1: Soll-Lux, UGR, Ra, Uo),
    Reflexionsgrade, Wartungsfaktor → Raumindex k, Raumwirkungsgrad, Lichtstrombedarf
@@ -52,4 +63,5 @@ tailscale funnel --bg --https=443 --set-path /licht http://127.0.0.1:8793
 node tests/rechnung_test.mjs    # Rechenkern, Raster, Bericht
 node tests/kamera_test.mjs      # Messweg mit simulierter Kamera, Kalibrierung
 node tests/handy_test.mjs       # Handy-Layout, Druckansicht, Speichern
+node tests/oberflaeche_test.mjs # Startkarte, Regler, Ergebniszeile, Wischen, App-Dateien
 ```
