@@ -17,13 +17,17 @@ await p.evaluate(() => { localStorage.clear(); });
 await p.reload({ waitUntil: 'networkidle' });
 
 // Begruessung erscheint beim ersten Besuch und verschwindet nach der Wahl
-pruef('Startkarte beim ersten Besuch', await p.isVisible('#start'));
-await p.click('text=Neuen Raum planen');
+pruef('Projektuebersicht beim ersten Besuch', await p.isVisible('#start'));
+await p.click('#start button:has-text("Neues Projekt")');
 await p.waitForTimeout(450);
-pruef('Startkarte weg nach Auswahl', !(await p.isVisible('#start')));
+pruef('Uebersicht weg nach Auswahl', !(await p.isVisible('#start')));
+// etwas eintragen, damit es ein Projekt zum Weiterfuehren gibt
+await p.fill('#i_raum', 'Testraum');
+await p.waitForTimeout(1600);            // laufendes Sichern abwarten
 await p.reload({ waitUntil: 'networkidle' });
-await p.waitForTimeout(300);
-pruef('Begruessung kommt nicht jedes Mal', !(await p.isVisible('#start')));
+await p.waitForTimeout(500);
+pruef('Beim Neuladen geht es im Projekt weiter', !(await p.evaluate(() => window._licht.menuOffen())));
+pruef('Projekt ist wieder da', (await p.inputValue('#i_raum')) === 'Testraum');
 
 // Schieberegler zieht die Rechnung mit
 await p.evaluate(() => zeigeTab('raum'));

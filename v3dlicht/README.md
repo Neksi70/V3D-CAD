@@ -5,6 +5,16 @@ Einzelne HTML-Datei (`app.html`), ausgeliefert von `server.py` auf Port **8793**
 Kein Netzzugriff, keine Abhängigkeiten — alles rechnet im Browser, Projekte liegen
 im `localStorage` des Geräts.
 
+## Navigation und Projekte
+- **Zurück** links in der Kopfzeile: im Schritt 1 wird daraus 🗂️ und öffnet die Projektübersicht.
+  Die **Zurück-Taste des Handys** tut dasselbe — jeder Schritt liegt im Verlauf (`history.pushState`).
+- **Projektübersicht**: neues Projekt, „erst mal messen", oder eines der gespeicherten weiterführen
+  (Titel, Zeit, Kurzfassung „8× LED-Panel · 628 lx · 12 Messpunkte"), einzeln löschbar.
+- Bis zu 30 Projekte in `localStorage` (`v3dlicht_projekte`, aktives in `v3dlicht_aktiv`);
+  gesichert wird **von selbst** 1,2 s nach der letzten Änderung. Ein unberührtes Projekt landet
+  nicht in der Liste (`projektLeer()`), sonst sammeln sich leere Einträge.
+- Der alte Einzelplatz-Schlüssel `v3dlicht_projekt` wird beim ersten Start übernommen.
+
 ## Bedienung auf dem Handy
 - Untere Leiste mit Sinnbildern, **Wischen** wechselt den Schritt, grüner Punkt = erledigt
 - Raummaße per Schieberegler (Grundriss wächst live mit), Zahl direkt daneben eintippbar
@@ -76,4 +86,5 @@ node tests/kamera_test.mjs      # Messweg mit simulierter Kamera, Kalibrierung
 node tests/handy_test.mjs       # Handy-Layout, Druckansicht, Speichern
 node tests/oberflaeche_test.mjs # Startkarte, Regler, Ergebniszeile, Wischen, App-Dateien
 node tests/raster_test.mjs      # Messraster: Antippen, Eintragen, Ueberschreiben, Rasterwechsel
+node tests/projekte_test.mjs    # Zurueck-Weg, Projekte anlegen/wechseln/loeschen
 ```
