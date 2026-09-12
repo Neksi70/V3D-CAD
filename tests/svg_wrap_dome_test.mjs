@@ -46,6 +46,7 @@ await pg.evaluate(() => {
     const pts = [];
     for (let i = 0; i <= N; i++) { const z = H * i / N; pts.push(new THREE.Vector2(rAussen(z), z)); }
     for (let i = N; i >= 0; i--) { const z = H * i / N; pts.push(new THREE.Vector2(Math.max(0.5, rAussen(z) - wand), z)); }
+    pts.push(pts[0].clone());   // Profil schliessen — sonst nicht wasserdicht
     const lathe = new THREE.LatheGeometry(pts, SEG);
     const geo = lathe.toNonIndexed();
     // WICHTIG: genau wie ein importiertes STL aufsetzen. Ein STL steht Z-up, und

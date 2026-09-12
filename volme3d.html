@@ -14867,6 +14867,18 @@ function _meshWorldToStls(obj) {
 // Darunter bleibt OCCT zuständig (exaktere Kanten, echte B-Rep-Flächen).
 const _MF_SUBTRACT_MIN_TRIS = 50000;
 
+// „Nur ein Netz" — aus STL/OBJ/3MF importiert, ohne B-Rep dahinter. Für solche
+// Körper bringt OCCT keinen Genauigkeitsvorteil (es näht das Netz nur zusammen
+// und triangalisiert am Ende wieder), kostet aber Minuten statt Sekunden.
+// STEP-Importe (_brepStep) und in der App gebaute Körper (occtShape/_occtParams)
+// haben echte Flächen und Kanten — die gehören weiter zu OCCT.
+function _istNetzImport(o) {
+  const ud = o && o.userData;
+  if (!ud) return false;
+  if (ud._brepStep || ud.occtShape || ud._occtParams) return false;
+  return ud.shapeType === 'import' || ud.type === 'import';
+}
+
 function _countTris(objs) {
   let n = 0;
   for (const o of objs) o.traverse(ch => {
@@ -14898,9 +14910,37 @@ async function _mfSubtractWorld(solidObjs, toolObjs) {
   const w = await _mfInit();
   const solid = _mfUnionObjs(w, solidObjs);
   if (!solid) throw new Error('kein gültiger Körper');
-  const tool = _mfUnionObjs(w, toolObjs);
-  if (!tool) throw new Error('kein gültiges Werkzeug');
-  const res = w.Manifold.difference(solid, tool);
+  // Werkzeuge erst gemeinsam versuchen (schnellster Weg). Klappt das nicht —
+  // ein einziges nicht wasserdichtes Motiv reicht dafür —, dann EINZELN abziehen
+  // und die kaputten überspringen. Vorher riss ein schlechtes Motiv den ganzen
+  // Abzug mit sich, und der Rückfall auf OCCT lief bei importierten Netzen in
+  // die 600-Sekunden-Notbremse (Balken blieb bei 93 % stehen).
+  let res = null; const uebersprungen = [];
+  try {
+    const tool = _mfUnionObjs(w, toolObjs);
+    if (!tool) throw new Error('kein gültiges Werkzeug');
+    res = w.Manifold.difference(solid, tool);
+  } catch (e) {
+    console.warn('[subtract] Werkzeuge gemeinsam gescheitert → einzeln:', e.message || e);
+    res = solid;
+    let ok = 0;
+    for (const t of toolObjs) {
+      try {
+        const tris = _moldCollectTris(t);
+        if (!tris.length) continue;
+        res = w.Manifold.difference(res, _mfFromSoup(w, tris));
+        ok++;
+      } catch (e2) {
+        uebersprungen.push((t.userData && t.userData.name) || 'ohne Namen');
+        console.warn('[subtract] Motiv übersprungen:', uebersprungen[uebersprungen.length-1], e2.message || e2);
+      }
+    }
+    if (!ok) throw new Error('kein gültiges Werkzeug');
+  }
+  if (uebersprungen.length) {
+    notify('Übersprungen (nicht wasserdicht): ' + uebersprungen.join(', ') +
+           '. Der Rest ist abgezogen — mit „Reparieren" lassen sich solche Motive oft retten.', 'w');
+  }
   if (res.isEmpty()) throw new Error('Ergebnis ist leer — trifft die Bohrung den Körper?');
   // Manifold gibt indiziert zurück; _creaseNormals steigt darauf aus (siehe
   // Definition weiter unten) → vorher auflösen, sonst bleibt alles flat-shaded.
@@ -19738,7 +19778,7 @@ async function _doSubtractHoles(solids, holes) {
       wProxy.quaternion.copy(hole.quaternion);
       wProxy.scale.copy(hole.scale);
       wProxy.updateWorldMatrix(true, true);
-      wProxy.userData = { _noBspFallback: true, _wrapTool: true };   // getrennte Konturen → BSP liefert Müll
+      wProxy.userData = { _noBspFallback: true, _wrapTool: true, name: hole.userData.name };   // getrennte Konturen → BSP liefert Müll
       _genericTools.push(wProxy);
       continue;
     }
@@ -19810,6 +19850,10 @@ async function _doSubtractHoles(solids, holes) {
       }
     }
 
+    // Namen mitgeben: Wird ein Werkzeug später übersprungen (nicht wasserdicht),
+    // soll in der Meldung stehen WELCHES — sonst sucht der Nutzer im Blindflug.
+    if (csgProxy !== hole && csgProxy.userData && !csgProxy.userData.name)
+      csgProxy.userData.name = hole.userData.name;
     _genericTools.push(csgProxy);   // erst sammeln → EIN OCCT-Cut (BSP nur Fallback)
   }
 
@@ -19829,7 +19873,16 @@ async function _doSubtractHoles(solids, holes) {
     // Daran verschluckt sich das OCCT-Sewing (Minuten bis nie) — Manifold macht es
     // in Sekunden. Siehe auch _MF_SUBTRACT_MIN_TRIS.
     const _hasWrapTool = _genericTools.some(t => t.userData && t.userData._wrapTool);
-    if (_nTris >= _MF_SUBTRACT_MIN_TRIS || _hasWrapTool) {
+    // Importiertes Netz ohne echte B-Rep? Dann hat OCCT gar nichts zu bewahren:
+    // Es muss das STL erst zu einem Shell zusammennähen und gibt am Ende ohnehin
+    // wieder ein Netz zurück. Das kostet aber ein Vielfaches — an Josys
+    // Lichthülle gemessen (19.528 Dreiecke, EIN Motiv mit 2.334):
+    // Manifold 0,7 s, OCCT 146 s. Bei ihren ~15 Motiven lief der Auftrag in die
+    // 600-Sekunden-Notbremse des Arbeiterpools, und der Balken stand bei 93 %.
+    // STEP-Importe und in der App gebaute Körper (occtShape/_occtParams) haben
+    // eine echte B-Rep mit exakten Kanten — die bleiben bei OCCT.
+    const _meshImport = [solidMesh, ...solids.slice(1)].some(o => _istNetzImport(o));
+    if (_nTris >= _MF_SUBTRACT_MIN_TRIS || _hasWrapTool || _meshImport) {
       try {
         const t0 = performance.now();
         const geo = await _mfSubtractWorld([solidMesh, ...solids.slice(1)], _genericTools);
@@ -19842,7 +19895,18 @@ async function _doSubtractHoles(solids, holes) {
         occtOk = true;   // OCCT/BSP überspringen
         solids.slice(1).forEach(s => consumedSolids.add(s));
       } catch (e) {
-        console.warn('[subtract] Manifold-Schnellweg fehlgeschlagen → OCCT:', e.message || e);
+        console.warn('[subtract] Manifold-Schnellweg fehlgeschlagen:', e.message || e);
+        // Bei importierten Netzen ist OCCT als Rückfall keine Hilfe, sondern eine
+        // Falle: Es braucht dafür Minuten pro Werkzeug und lief bei Josy in die
+        // 600-Sekunden-Notbremse des Arbeiterpools — der Balken stand bei 93 %
+        // und es kam nie etwas zurück. Lieber sofort ehrlich abbrechen.
+        if (_meshImport) {
+          _progressHide();
+          notify('Abziehen nicht möglich: ' + (e.message || e) +
+                 '. Tipp: „Reparieren" auf die Motive anwenden.', 'e');
+          return;
+        }
+        console.warn('[subtract] → OCCT');
       }
     }
     if (!occtOk) try {
@@ -40764,8 +40828,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.16.4';
+const VOLME3D_VERSION = '1.16.5';
 const VOLME3D_CHANGELOG = [
+  { version:'1.16.5', date:'2026-09-12', changes:[
+    ['\u{1F41B}','<b>Abziehen bleibt nicht mehr bei 93 % stehen.</b> Wer mehrere Motive auf ein importiertes Modell gesetzt und dann abgezogen hat, sah den Balken bei <b>93 %</b> h\u00e4ngen \u2014 und wartete vergeblich. Dahinter steckten zwei Dinge. <b>Erstens</b>: Ist auch nur <b>ein</b> Motiv nicht sauber geschlossen (kommt bei aus Bildern nachgezeichneten Motiven leicht vor), scheiterte der schnelle Rechenweg \u2014 und zwar f\u00fcr <b>alle</b> Motive auf einmal, weil sie zusammen verrechnet werden. Jetzt werden sie in so einem Fall <b>einzeln</b> abgezogen: Das kaputte wird \u00fcbersprungen, alle anderen sind da, und du erf\u00e4hrst <b>welches</b> es war. <b>Zweitens</b>: Als Ausweichweg lief dann der Server-Rechner an \u2014 und der ist f\u00fcr importierte Netze der langsamste denkbare Weg. Gemessen an einer Lichth\u00fclle mit 19.528 Dreiecken und <b>einem</b> Motiv: schneller Weg <b>0,7 Sekunden</b>, Server-Weg <b>146 Sekunden</b>. Bei sieben Motiven lief er in die 10-Minuten-Notbremse. Importierte Modelle gehen jetzt immer den schnellen Weg \u2014 der Server bringt dort ohnehin nichts, weil ein STL keine exakten Kanten hat, die er bewahren k\u00f6nnte. Gemeldet von Josy.'],
+  ]},
   { version:'1.16.4', date:'2026-09-12', spots:[{id:'bend',sel:'#fp-body'}], changes:[
     ['\u{1FA84}','<b>Neu: <i>Biegen</i> — jetzt lässt sich JEDER Körper auf einen Radius biegen, nicht nur ein SVG.</b> Ralf hat zweimal danach gefragt: erst „Druck auf Tassenradius biegen", dann „mir ist nicht klar, wie sich die Platte an die Kugel anschmiegt — mit einer SVG funktioniert es, wie ist es mit anderen Körpern?". Bis jetzt konnte sich nur ein <b>Motiv</b> um eine Rundung legen, weil dafür seine Kontur neu aufgebaut wurde. Beim Biegen wird stattdessen das <b>Netz selbst verformt</b> — das geht mit Quadern, Skizzen-Körpern, Text und auch mit hochgeladenen STLs. Den Knopf <b>🪄 Biegen</b> findest du im Eigenschaften-Fenster (oder über die Suche). Zwei Arten: <b>↩ Rundung</b> biegt um eine Achse, wie ein Blech ums Rohr — für Tassen, Vasen, Dosen. <b>◠ Kuppel</b> wölbt in beide Richtungen, für Kugeln. Dazu Radius, Wölbungsrichtung und Feinheit; es steht dabei, über wie viel Grad sich das Teil legt, und die App warnt, wenn es sich selbst überholen würde. <b>Der eigentliche Trick steckt im Knopf „🎯 Runde Wand anklicken":</b> Danach klickst du einfach den Körper an, an den sich das Teil schmiegen soll. Der Radius wird am Modell <b>gemessen</b> (dieselbe Messung wie beim SVG-Wickeln), die halbe Dicke aufgeschlagen, und das Teil wird gebogen, gedreht und so hingesetzt, dass die Innenseite <b>überall</b> anliegt — an einem Rohr genauso wie an einer Kugel (nachgemessen: kein Spalt, die Dicke bleibt auf 0,1 mm genau erhalten). Damit aus dem Quader keine Treppe wird, unterteilt die App das Netz vorher genau so fein, wie die Rundung es braucht — und zwar so, dass dabei keine Risse entstehen: Das Ergebnis ist <b>wasserdicht</b> und taugt weiter für <i>Vereinen</i> und <i>Abziehen</i>. So kannst du zum Beispiel eine Platte an die Tasse legen und dann als Bohrung abziehen — Gravur auf der Rundung, ganz ohne SVG. <b>Zu beachten:</b> Nach dem Übernehmen ist das Teil ein freies Netz; Breite/Tiefe/Höhe bauen dann nicht mehr die Urform neu auf (sonst wäre die Biegung beim nächsten Maß wieder weg). Gewünscht von Ralf.'],
   ]},
