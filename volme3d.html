@@ -2913,6 +2913,7 @@ const firebaseConfig = {
         <div class="vrow"><label title="Wie viele Noppen das Modell in der Breite (X) bekommt. Alles andere folgt maßstäblich.">Breite</label> <input type="range" id="lgo-studs" min="3" max="60" value="14" step="1" oninput="_lgoInfo()"><span class="vv" id="lgov-studs">14</span><span class="vu">Noppen</span></div>
         <div class="vrow"><label></label><button class="btn" style="flex:1;font-size:12px;padding:5px 8px" onclick="_lgoOrigSize()" title="Modell nicht skalieren — das 8-mm-Raster direkt über die echten Maße legen">📏 Originalgröße behalten</button></div>
         <div class="vrow"><label title="Ab wie viel Füllung eine Rasterzelle zum Stein wird. Klein = pummeliger, dünne Details überleben. Groß = schlanker, Details fallen weg.">Füllgrad</label> <input type="range" id="lgo-fill" min="10" max="85" value="40" step="5" oninput="document.getElementById('lgov-fill').textContent=this.value"><span class="vv" id="lgov-fill">40</span><span class="vu">%</span></div>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:4px" title="Der eckige Treppenkörper wird mit deinem Originalmodell verschnitten: Was aus der Form herausragt, fällt weg. Eine Kugel bleibt dadurch außen rund, innen bleibt alles blockig. Im Bausatz werden daraus lauter Sondersteine — jeder Außenstein ein Einzelstück."><input type="checkbox" id="lgo-skin" onchange="_lgoInfo()"> Form folgen — Außenhaut glatt (Kugel bleibt rund)</label>
         <div id="lgo-kit-rows" style="display:none">
         <span class="vsec">Bausatz</span>
         <div class="g3info" id="lgo-kit-info" style="margin-bottom:2px"></div>
@@ -2932,6 +2933,7 @@ const firebaseConfig = {
         <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Steine, die sich nur an einer Kante oder Ecke berühren, hängen nur an einem Punkt zusammen — das bricht beim Drucken ab und macht das Netz für spätere Boolean-Schritte unbrauchbar. Die Lücke wird mit dem Nachbarstein geschlossen, der am meisten Modell enthält."><input type="checkbox" id="lgo-weld" checked> Berührungen auffüllen (druckbar am Stück)</label>
         <label id="lgo-row-look3" style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Jede Steinfläche wird leicht vertieft — zwischen den Steinen bleiben schmale Stege stehen, wie die Fugen an einer echten Steinmauer. Kostet Dreiecke."><input type="checkbox" id="lgo-seams" checked> Fugen zwischen den Steinen</label>
         <div class="g3info">Rastert das ausgewählte Modell aufs Noppenraster und erzeugt EIN druckbares Teil im Klemmbaustein-Look. Das Original bleibt erhalten (nur ausgeblendet). Tipp: Bei filigranen Modellen erst die Breite erhöhen oder auf „Platte 3,2 mm" umstellen.</div>
+        <div class="g3info" id="lgo-skin-info" style="display:none"></div>
         <div class="g3info" id="lgo-est"></div>
       </div>
     </div>
@@ -13602,9 +13604,15 @@ function updateDimHandles() {
         // das Ziehtempo genau so, wie es die frueherer feste Diagonale hatte.
         const delta = (dx * _dragHandle.screenDirX + dy * _dragHandle.screenDirY)
                       * Math.SQRT2 * sensitivity;
-        const nw = Math.max(0.5, sv.sw + delta);
-        const nh = Math.max(0.5, sv.sh + delta);
-        const nd = Math.max(0.5, sv.sd + delta);
+        // Proportional heisst: alle drei Kanten mit DEMSELBEN FAKTOR. Frueher
+        // bekam jede Kante denselben Millimeter-Zuschlag — eine 100×100×10-Platte
+        // wurde damit bei +50 mm zu 150×150×60, also gestaucht statt vergroessert
+        // (Ralf 12.9.26). Bezug ist die laengste Kante; ein Wuerfel zieht sich
+        // dadurch genau so schnell wie vorher.
+        const ref     = Math.max(sv.sw, sv.sh, sv.sd, 1e-3);
+        const minSide = Math.max(1e-3, Math.min(sv.sw, sv.sh, sv.sd));
+        const f  = Math.max(0.5 / minSide, 1 + delta / ref);
+        const nw = sv.sw * f, nh = sv.sh * f, nd = sv.sd * f;
         const startBottom = _dragHandle.startPosY - sv.sh/20;
         o2.scale.x = (nw/20)*sv._fx; o2.scale.z = (nd/20)*sv._fz; o2.scale.y = (nh/20)*sv._fy;
         o2.position.y = Math.max(nh/20, startBottom + nh/20);
@@ -16681,6 +16689,18 @@ function _lgoInfo() {
       (Math.round(_lgoWallFor(cl) * 100) / 100) + ' mm</b> ergibt sich aus dem Spiel — ' +
       'dicker ginge nicht, dann passt keine Noppe mehr hinein.';
   }
+  const skinEl = document.getElementById('lgo-skin');
+  const skinInfo = document.getElementById('lgo-skin-info');
+  if (skinInfo) {
+    skinInfo.style.display = skinEl && skinEl.checked ? '' : 'none';
+    skinInfo.innerHTML = _lgoP.mode === 'kit'
+      ? 'Außenhaut glatt: Jeder Stein, der außen anliegt, wird einzeln an die Form ' +
+        'geschnitten — ein <b>Sonderstein</b>, den es nur einmal gibt. Zusammenstecken geht ' +
+        'weiter (Noppen und Röhrchen bleiben), aber das Rechnen dauert merklich länger.'
+      : 'Außenhaut glatt: Der Treppenkörper wird mit dem Original verschnitten — ' +
+        'außen folgt die Form dem Modell, die Noppen bleiben ganz. Das Modell muss dafür ' +
+        '<b>wasserdicht</b> sein.';
+  }
   document.getElementById('lgov-studs').textContent = d.nx;
   const f = v => Math.round(v * 10) / 10;
   const studH = document.getElementById('lgo-studs-on')?.checked ? _LGO.studH : 0;
@@ -16982,6 +17002,123 @@ function _lgoMesh(filled, air, nx, ny, nz, ox, oy, oz, hz, opt) {
   return { pos: B.done(), studs, bricks };
 }
 
+// ── Aussenhaut der Form folgen („die Kugel bleibt rund") ───────────────────
+// Ralf 12.9.26: „Ein Ball soll seine Form behalten — die aeusseren Steine
+// muessten die Kugel abbilden. Also glatt."
+// Rezept fuer BEIDE Modi: Der eckige Koerper wird mit dem ORIGINALMODELL
+// verschnitten. Was aus der Form herausragt, faellt weg; innen bleibt alles
+// blockig. Denselben Schnitt wuerden die NOPPEN aber nicht ueberleben — sie
+// stehen ja per Definition ueber der Oberflaeche und wuerden zu Linsen
+// abgeschliffen. Darum werden sie danach als volle Zylinder wieder aufgesetzt,
+// und zwar mit einem tiefen Zapfen im Koerper: So haengen sie nie frei in der
+// Luft, auch wenn die Form unter ihnen weggeschnitten wurde.
+// Wie tief der Zapfen unter der Noppe sitzt. Er darf NIE bis in den Hohlraum
+// reichen, in den die Noppe des Steins darunter greift — sonst laesst sich der
+// Stein nicht mehr aufstecken. Im Bausatz ist das genau die Deckenstaerke,
+// im Look-Modus (massiver Koerper) darf er tiefer, muss aber ueber der
+// Aufnahmevertiefung bleiben.
+const _lgoSkinDach = hz => Math.max(1.0, Math.min(1.6, hz - _LGO.studH - 0.8));
+const _lgoSkinTief = (hz, kit) => kit ? _lgoSkinDach(hz)
+                                      : Math.max(0.8, Math.min(hz * 0.6, 5.5, hz - 2.2));
+
+// Noppen-Zylinder fuer eine Liste von Zellen (Weltmitte + Deckelhoehe).
+function _lgoSkinStuds(M, T, zellen, r, tief, seg) {
+  return zellen.map(([x, y, zTop]) =>
+    T(M.cylinder(tief + _LGO.studH, r, r, seg, false)).translate([x, y, zTop - tief]));
+}
+
+// Look-Modus: EIN Netz, ein Verschnitt.
+async function _lgoSkinLook(filled, air, d, ox, oy, oz, opt, tris) {
+  const W = await _mfInit(), M = W.Manifold;
+  const tmp = [], T = m => { tmp.push(m); return m; };
+  try {
+    // Block OHNE Noppen bauen — die kommen nach dem Schnitt wieder drauf
+    const roh = _lgoMesh(filled, air, d.nx, d.ny, d.nz, ox, oy, oz, d.h,
+                         Object.assign({}, opt, { studs: false }));
+    const mBlock = T(_mfFromSoup(W, roh.pos));
+    const mModel = T(_mfFromSoup(W, tris));
+    let m = T(mBlock.intersect(mModel));
+    let nStud = 0;
+    if (opt.studs) {
+      const P = _LGO.pitch, hz = d.h;
+      const F = (i, j, k) => (i < 0 || j < 0 || k < 0 || i >= d.nx || j >= d.ny || k >= d.nz)
+                             ? 0 : filled[(k*d.ny + j)*d.nx + i];
+      const zellen = [];
+      for (let k = 0; k < d.nz; k++) for (let j = 0; j < d.ny; j++) for (let i = 0; i < d.nx; i++) {
+        if (!F(i, j, k) || F(i, j, k+1) || !air.at(i, j, k+1)) continue;
+        zellen.push([ox + (i + 0.5) * P, oy + (j + 0.5) * P, oz + (k + 1) * hz]);
+      }
+      nStud = zellen.length;
+      if (nStud) m = T(m.add(T(M.union(_lgoSkinStuds(M, T, zellen, _LGO.studD / 2,
+                                                     _lgoSkinTief(hz, false), _LGO.seg)))));
+    }
+    return { geo: _mfToGeo(m).toNonIndexed(), studs: nStud, bricks: roh.bricks };
+  } finally { for (const x of tmp) { try { x && x.delete && x.delete(); } catch (_) {} } }
+}
+
+// Bausatz-Modus: derselbe Schnitt, aber EINZELN je Stein, der aussen anliegt.
+// Jeder so beschnittene Stein ist ein Einzelstueck — genau die „sehr vielen
+// Sondersteine", die Ralf sich vorgestellt hat. Innenliegende Steine bleiben
+// Normsteine (und damit im Sorten-Cache), sonst waere kein Stein mehr gleich.
+async function _lgoSkinBrick(W, M, mModel, soup, at, b, d, opt) {
+  const tmp = [], T = m => { tmp.push(m); return m; };
+  try {
+    const mB = T(T(_mfFromSoup(W, soup)).translate(at));
+    const vAlt = typeof mB.volume === 'function' ? mB.volume() : 0;
+    let m = T(mB.intersect(mModel));
+    if (vAlt && !(m.volume() > 1)) return null;      // nichts uebrig
+    // Noppen auf ALLEN Zellen wieder aufsetzen. Auch dort, wo ein Stein darueber
+    // sitzt, kann der Schnitt sie erwischen — naemlich wenn der obere Stein
+    // ueber die Form hinaussteht. Genau an so einer Stelle wird die Noppe aber
+    // zum Klemmen gebraucht; ohne sie liegt der Stein darueber nur lose auf.
+    const P = _LGO.pitch, hz = d.h;
+    const zellen = [];
+    for (let q = 0; q < b.d; q++) for (let pq = 0; pq < b.w; pq++)
+      zellen.push([at[0] + (pq - (b.w - 1) / 2) * P, at[1] + (q - (b.d - 1) / 2) * P, at[2] + hz]);
+    if (zellen.length)
+      m = T(m.add(T(M.union(_lgoSkinStuds(M, T, zellen, _LGO.studD / 2 - opt.clear / 2,
+                                          _lgoSkinTief(hz, true), 24)))));
+    // Nichts abgeschnitten (gerade Wand, Boden, Deckel)? Dann bleibt es ein
+    // NORMSTEIN aus dem Sorten-Cache. Sonst waere bei einem Quader jeder
+    // Aussenstein ein "Sonderstein", obwohl er der Norm millimetergenau
+    // entspricht — und die Stueckliste waere nicht mehr zu gebrauchen.
+    if (vAlt && m.volume() > vAlt * 0.995) return null;
+    // Der Schnitt kann einen Stein zerlegen — etwa wenn die Form ihn in der
+    // Mitte durchtrennt oder eine Noppe ueber einer weggeschnittenen Decke
+    // stehen bleibt. Lose Kruemel (unter einem Viertel des groessten Teils)
+    // fallen weg, statt spaeter als unsichtbarer Splitter im Druck zu landen.
+    // Was danach noch mehrteilig ist, wird gezaehlt und gemeldet.
+    let teile = 1;
+    if (typeof m.decompose === 'function') {
+      const stuecke = m.decompose();
+      if (stuecke.length > 1) {
+        const vol = stuecke.map(x => x.volume());
+        const vMax = Math.max.apply(null, vol);
+        const behalten = stuecke.filter((x, n) => vol[n] >= Math.max(vMax * 0.25, 20));
+        teile = behalten.length;
+        m = T(M.union(behalten));
+      }
+      for (const x of stuecke) { try { x.delete && x.delete(); } catch (_) {} }
+    }
+    const geo = _mfToGeo(T(m.translate([-at[0], -at[1], -at[2]]))).toNonIndexed();
+    geo.userData = { teile };
+    _moldNormals(geo);
+    return geo;
+  } catch (e) { console.warn('[lego] Sonderstein fehlgeschlagen', e); return null; }
+  finally { for (const x of tmp) { try { x && x.delete && x.delete(); } catch (_) {} } }
+}
+
+// Liegt der Stein aussen an? Nur solche werden beschnitten — das spart bei
+// einem massiven Modell den Grossteil der Booleans.
+function _lgoBrickAussen(b, air) {
+  for (let q = 0; q < b.d; q++) for (let p = 0; p < b.w; p++) {
+    const i = b.i + p, j = b.j + q, k = b.k;
+    if (air.at(i+1,j,k) || air.at(i-1,j,k) || air.at(i,j+1,k) ||
+        air.at(i,j-1,k) || air.at(i,j,k+1) || air.at(i,j,k-1)) return true;
+  }
+  return false;
+}
+
 // ═══ ECHTER BAUSATZ ════════════════════════════════════════════════════════
 // Der Look-Modus baut EIN Teil. Hier entstehen stattdessen einzelne, echte
 // Steine zum Zusammenstecken — mit Wänden, Noppen und Röhrchen.
@@ -17097,7 +17234,9 @@ function _lgoStueckliste(bricks) {
   const m = new Map();
   for (const b of bricks) {
     const a = Math.min(b.w, b.d), c = Math.max(b.w, b.d);
-    const key = a + '×' + c;
+    // Sondersteine sind KEINE Sorte im eigentlichen Sinn — jeder ist ein
+    // Einzelstueck. Sie werden nur nach Grundriss zusammengefasst gezaehlt.
+    const key = a + '×' + c + (b.sonder ? ' (Sonderstein)' : '');
     m.set(key, (m.get(key) || 0) + 1);
   }
   return [...m.entries()]
@@ -17229,20 +17368,55 @@ function _lgoPlateFlow(sorten, hz, luft) {
   return { plaetze, breite, tiefe: y, plateW };
 }
 
-async function _lgoBuildKit(bricks, nx, ny, nz, ox, oy, oz, hz, opt, o) {
+async function _lgoBuildKit(bricks, nx, ny, nz, ox, oy, oz, hz, opt, o, skin) {
   const P = _LGO.pitch;
   // Geometrie je Sorte einmal rechnen
   const sorten = new Map();
   for (const b of bricks) sorten.set(b.w + 'x' + b.d, [b.w, b.d]);
   let done = 0;
   for (const [key, [w, d]] of sorten) {
-    _progressSet(74 + Math.round(18 * done / sorten.size),
+    _progressSet(70 + Math.round(8 * done / sorten.size),
                  'Steinsorte ' + w + '×' + d + ' wird gebaut…');
     await _lgoTick();
     sorten.set(key, await _lgoBrickGeo(w, d, hz, opt));
     done++;
   }
-  const geoVon = b => sorten.get(b.w + 'x' + b.d);
+
+  // Aussen anliegende Steine an die Form anschmiegen → Sondersteine
+  if (opt.skin && skin) {
+    const W = await _mfInit(), M = W.Manifold;
+    let mModel = null;
+    try { mModel = _mfFromSoup(W, skin.tris); }
+    catch (e) {
+      console.warn('[lego] Modell nicht wasserdicht — Aussenhaut bleibt eckig', e);
+      notify('Außenhaut konnte nicht angeschmiegt werden — das Modell ist nicht wasserdicht. ' +
+             'Der Bausatz entsteht eckig.', 'w');
+    }
+    if (mModel) {
+      const aussen = bricks.filter(b => _lgoBrickAussen(b, skin.air));
+      let n = 0, fertig = 0, zweiteilig = 0;
+      for (const b of aussen) {
+        if ((n % 5) === 0) {
+          _progressSet(78 + Math.round(14 * n / Math.max(1, aussen.length)),
+                       'Sondersteine werden angeschmiegt… ' + n + '/' + aussen.length);
+          await _lgoTick();
+        }
+        const at = [ox + (b.i + b.w/2) * P, oy + (b.j + b.d/2) * P, oz + b.k * hz];
+        const g = await _lgoSkinBrick(W, M, mModel,
+                                      sorten.get(b.w + 'x' + b.d).attributes.position.array,
+                                      at, b, skin.d, opt);
+        if (g) { b._geo = g; b.sonder = true; fertig++; if (g.userData && g.userData.teile > 1) zweiteilig++; }
+        n++;
+      }
+      try { mModel.delete && mModel.delete(); } catch (_) {}
+      console.log('[lego]', fertig, 'von', aussen.length, 'Aussensteinen angeschmiegt,',
+                  zweiteilig, 'davon mehrteilig');
+      if (zweiteilig) notify(zweiteilig + ' Sonderstein' + (zweiteilig === 1 ? ' ist' : 'e sind') +
+        ' durch die Form in mehrere Stücke geteilt — die zusammengehörenden Teile liegen ' +
+        'auf der Druckplatte nebeneinander und werden beim Bauen an dieselbe Stelle gesetzt.', 'w');
+    }
+  }
+  const geoVon = b => b._geo || sorten.get(b.w + 'x' + b.d);
 
   const gruppen = [];
   if (opt.out === 'built') {
@@ -17263,16 +17437,28 @@ async function _lgoBuildKit(bricks, nx, ny, nz, ox, oy, oz, hz, opt, o) {
     // im Baum, also ein Druckauftrag, den man einzeln ein-/ausblenden kann.
     const jeSorte = new Map();
     for (const b of bricks) {
-      const a = Math.min(b.w, b.d), c = Math.max(b.w, b.d), key = a + '×' + c;
-      if (!jeSorte.has(key)) jeSorte.set(key, { a, c, anzahl: 0 });
-      jeSorte.get(key).anzahl++;
+      // Sondersteine lassen sich nicht drehen (ihre Form haengt an der Lage im
+      // Modell) und sind Einzelstuecke — darum nach ECHTEM Grundriss w×d
+      // gruppiert, waehrend Normsteine drehlagenunabhaengig zusammenfallen.
+      const a = b.sonder ? b.w : Math.min(b.w, b.d);
+      const c = b.sonder ? b.d : Math.max(b.w, b.d);
+      const key = a + '×' + c + (b.sonder ? ' ✚Sonder' : '');
+      if (!jeSorte.has(key)) jeSorte.set(key, { a, c, anzahl: 0, sonder: !!b.sonder, liste: [] });
+      const eintrag = jeSorte.get(key);
+      eintrag.anzahl++;
+      if (b.sonder) eintrag.liste.push(b);
     }
     const sortiert = new Map([...jeSorte.entries()].sort((p, q) => q[1].a * q[1].c - p[1].a * p[1].c));
     const flow = _lgoPlateFlow(sortiert, hz, 3);
     for (const [key, info] of sortiert) {
-      let geo = sorten.get(info.a + 'x' + info.c) || sorten.get(info.c + 'x' + info.a);
-      if (!geo) { geo = await _lgoBrickGeo(info.a, info.c, hz, opt); sorten.set(info.a + 'x' + info.c, geo); }
-      const teile = flow.plaetze.get(key).map(([x, y]) => ({ geo, at: [x, y, 0] }));
+      let teile;
+      if (info.sonder) {
+        teile = flow.plaetze.get(key).map(([x, y], n) => ({ geo: info.liste[n]._geo, at: [x, y, 0] }));
+      } else {
+        let geo = sorten.get(info.a + 'x' + info.c) || sorten.get(info.c + 'x' + info.a);
+        if (!geo) { geo = await _lgoBrickGeo(info.a, info.c, hz, opt); sorten.set(info.a + 'x' + info.c, geo); }
+        teile = flow.plaetze.get(key).map(([x, y]) => ({ geo, at: [x, y, 0] }));
+      }
       gruppen.push({ name: key + ' — ' + info.anzahl + ' Stück', geo: _lgoMergeGeos(teile) });
     }
     // Block mittig auf die Platte schieben
@@ -17315,13 +17501,20 @@ function _lgoGuideHtml(bricks, nx, ny, nz, hz, titel) {
              '" fill="none" stroke="#ccc" stroke-width="1" stroke-dasharray="3,3"/>';
     }
     for (const b of drin) {
-      const a = Math.min(b.w, b.d), c = Math.max(b.w, b.d), sorte = a + '×' + c;
+      const a = Math.min(b.w, b.d), c = Math.max(b.w, b.d);
+      // Schluessel GENAU wie in der Stueckliste bilden — sonst findet der Plan
+      // fuer Sondersteine keine Farbe und zeichnet sie schwarz.
+      const sorte = a + '×' + c + (b.sonder ? ' (Sonderstein)' : '');
       svg += '<rect x="' + (b.i*Z+1.5) + '" y="' + (b.j*Z+1.5) + '" width="' + (b.w*Z-1) + '" height="' + (b.d*Z-1) +
-             '" rx="3" fill="' + farbe[sorte] + '" fill-opacity="0.82" stroke="#fff" stroke-width="1.5"/>';
+             '" rx="3" fill="' + (farbe[sorte] || '#868e96') + '" fill-opacity="0.82" stroke="#fff" stroke-width="1.5"/>';
       for (let p = 0; p < b.w; p++) for (let q = 0; q < b.d; q++) {
         svg += '<circle cx="' + ((b.i+p)*Z+Z/2+1) + '" cy="' + ((b.j+q)*Z+Z/2+1) + '" r="' + (Z*0.21) +
                '" fill="#fff" fill-opacity="0.5"/>';
       }
+      // Sondersteine kenntlich machen: sie sind Einzelstuecke und passen nur an
+      // genau diese Stelle — verwechseln waere fatal.
+      if (b.sonder) svg += '<text x="' + (b.i*Z+4) + '" y="' + (b.j*Z+Z*0.62) + '" font-size="' + (Z*0.5) +
+                           '" fill="#fff" font-weight="700">✚</text>';
     }
     svg += '</svg>';
     const zaehl = _lgoStueckliste(drin)
@@ -17351,6 +17544,12 @@ function _lgoGuideHtml(bricks, nx, ny, nz, hz, titel) {
     '<div class="hint">Von unten nach oben bauen. Die <b>gestrichelten Linien</b> zeigen die Schicht darunter — daran' +
     ' siehst du, dass die Stoßfugen versetzt liegen. Die Draufsicht ist so gedreht wie das Modell im Editor' +
     ' (Blick von oben).</div>' +
+    (bricks.some(b => b.sonder)
+      ? '<div class="hint"><b>✚ Sondersteine:</b> Diese Steine sind an die Form des Modells angeschnitten — ' +
+        'jeder ist ein <b>Einzelstück</b> und passt nur an genau die Stelle, an der er im Plan steht. ' +
+        'Am besten schichtweise drucken und gleich einbauen. Aufstecken geht wie bei jedem anderen Stein: ' +
+        'Noppen und Aufnahmen bleiben vollständig.</div>'
+      : '') +
     '<h2>Stückliste</h2><table><thead><tr><th>Stein</th><th>Anzahl</th></tr></thead><tbody>' +
     liste.map(z => '<tr><td><span class="sw" style="background:' + farbe[z.sorte] + '"></span>' + z.sorte +
                    '</td><td>' + z.anzahl + '</td></tr>').join('') +
@@ -17388,7 +17587,8 @@ async function _lgoCreate() {
       out:     _lgoP.out,
       maxLen:  Math.round(parseFloat(document.getElementById('lgo-maxlen').value)),
       stagger: document.getElementById('lgo-stagger').checked,
-      guide:   document.getElementById('lgo-guide').checked
+      guide:   document.getElementById('lgo-guide').checked,
+      skin:    document.getElementById('lgo-skin').checked
     };
     const cells = d.nx * d.ny * d.nz;
     if (cells > 4e6) { notify('Zu fein gerastert (' + Math.round(cells/1e6) + ' Mio Zellen) — Breite verringern', 'e'); return; }
@@ -17429,7 +17629,7 @@ async function _lgoCreate() {
     _progressSet(20, 'Modell wird gerastert…'); await _lgoTick();
     const sub = cells > 6e5 ? 2 : 3;                 // grobe Raster feiner abtasten
     const acc = _lgoVoxelize(tris, ox, oy, oz, d.nx, d.ny, d.nz, d.h, sub);
-    tris = null;
+    if (!opt.skin) tris = null;          // beim Anschmiegen noch gebraucht
 
     _progressSet(55, 'Steine werden gesetzt…'); await _lgoTick();
     const filled = new Uint8Array(acc.length);
@@ -17454,7 +17654,8 @@ async function _lgoCreate() {
                'Breite verringern oder auf „Ein Stück" umstellen.', 'e');
         return;
       }
-      const neu = await _lgoBuildKit(bricks, d.nx, d.ny, d.nz, ox, oy, oz, d.h, opt, o);
+      const neu = await _lgoBuildKit(bricks, d.nx, d.ny, d.nz, ox, oy, oz, d.h, opt, o,
+                                     opt.skin ? { tris, air, d } : null);
       const liste = _lgoStueckliste(bricks);
       console.log('[lego] Bausatz:', bricks.length, 'Steine in', neu.length, 'Gruppen,',
                   liste.map(z => z.sorte + '×' + z.anzahl).join(', '));
@@ -17468,12 +17669,27 @@ async function _lgoCreate() {
     }
 
     _progressSet(72, 'Noppen und Fugen werden gebaut…'); await _lgoTick();
-    const r = _lgoMesh(filled, air, d.nx, d.ny, d.nz, ox, oy, oz, d.h, opt);
-    console.log('[lego]', r.bricks, 'Zellen gefüllt,', r.studs, 'Noppen,', (r.pos.length/9)|0, 'Dreiecke');
+    let r = null, geo = null;
+    if (opt.skin) {
+      _progressSet(76, 'Außenhaut wird an die Form angeschmiegt…'); await _lgoTick();
+      try {
+        const sk = await _lgoSkinLook(filled, air, d, ox, oy, oz, opt, tris);
+        geo = sk.geo; r = { bricks: sk.bricks, studs: sk.studs };
+      } catch (e) {
+        console.warn('[lego] Anschmiegen fehlgeschlagen', e);
+        notify('Außenhaut ließ sich nicht anschmiegen (' + (e.message || e) +
+               ') — meist ist das Modell nicht wasserdicht. Es entsteht die eckige Fassung.', 'w');
+      }
+    }
+    if (!geo) {
+      r = _lgoMesh(filled, air, d.nx, d.ny, d.nz, ox, oy, oz, d.h, opt);
+      geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(r.pos, 3));
+    }
+    console.log('[lego]', r.bricks, 'Zellen gefüllt,', r.studs, 'Noppen,',
+                (geo.attributes.position.count / 3) | 0, 'Dreiecke');
 
     _progressSet(90, 'Netz wird erzeugt…'); await _lgoTick();
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(r.pos, 3));
     _moldNormals(geo);
     saveUndo();
     const mesh = _moldSceneMesh(geo, (o.userData.name || 'Modell') + ' — Klemmbaustein');
@@ -20740,9 +20956,13 @@ function setMode(m) {
   document.querySelectorAll('.lt[id^="lt-"]').forEach(b => b.classList.remove('active'));
   const btn = document.getElementById('lt-' + m);
   if (btn) btn.classList.add('active');
-  // In move/rotate/scale: disable handle clicks so canvas drag works
+  // In move/rotate: disable handle clicks so canvas drag works.
+  // Im Groesse-Modus bleiben die Kaestchen ANFASSBAR — genau dort erwartet man
+  // sie ja (Ralf 12.9.26: "beim Umstellen auf skalieren verschwinden wieder die
+  // Schiebekaestchen beim anklicken"). Die weissen Ecken ziehen proportional,
+  // die schwarzen je eine Kante; freies Ziehen auf der Flaeche skaliert weiter.
   const dh = document.getElementById('dim-handles');
-  if (dh) dh.classList.toggle('handles-off', m !== 'select');
+  if (dh) dh.classList.toggle('handles-off', m === 'move' || m === 'rotate');
   // Der ▲-Hebe-Anfasser haengt am Modus (siehe _liftHandleHidden) → neu aufbauen
   if (selectedObjs.length) updateDimHandles();
   updateRotHandles();  // show/hide rings based on new mode
@@ -40102,8 +40322,13 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.16.1';
+const VOLME3D_VERSION = '1.16.2';
 const VOLME3D_CHANGELOG = [
+  { version:'1.16.2', date:'2026-09-12', spots:[{id:'lego-skin',sel:'#lgo-skin'}], changes:[
+    ['\u{1F9F1}','<b>Klemmbausteine: Die Kugel bleibt jetzt eine Kugel — neue Einstellung „Form folgen — Außenhaut glatt".</b> Bisher endete jedes Modell als Treppe aus Würfeln; bei einem Ball sah man die Kugel nur noch erahnen. Mit dem neuen Haken wird der eckige Körper <b>mit deinem Originalmodell verschnitten</b>: Was aus der Form herausragt, fällt weg, innen bleibt alles blockig — außen folgt die Haut exakt dem Modell. Die <b>Noppen bleiben dabei vollständig</b> (sie werden nach dem Schnitt wieder aufgesetzt), das Netz bleibt wasserdicht und damit druckbar. Im <i>echten Bausatz</i> wird daraus genau das, was Ralf sich vorgestellt hat: Jeder Stein, der außen anliegt, wird einzeln an die Form geschnitten — ein <b>Sonderstein</b>, den es nur einmal gibt, quasi ein 3D-Puzzle. <b>Zusammenstecken geht weiter:</b> Die Aufnahme unten bleibt frei und die Noppen stehen auch dort, wo der Schnitt sie erwischt hätte (nachgemessen an 291 Steckstellen einer Kugel: keine einzige blockiert, keine Noppe fehlt). Steine, die der Schnitt in mehrere Teile zerlegt, werden erkannt und gemeldet; lose Krümel fallen weg statt als Splitter im Druck zu landen. In der <b>Bauanleitung</b> sind Sondersteine mit <b>✚</b> markiert — sie passen nur an genau die Stelle, an der sie im Plan stehen. Ein Quader erzeugt übrigens keine Sondersteine: Dort schneidet die Form nichts ab, also bleiben es Normsteine. Das Modell muss für den Schnitt <b>wasserdicht</b> sein; ist es das nicht, sagt die App Bescheid und baut die eckige Fassung. Gewünscht von Ralf.'],
+    ['\u{1F41B}','<b>Die weißen Eck-Anfasser skalieren wieder proportional statt zu stauchen.</b> Sie sollten das Teil gleichmäßig größer und kleiner ziehen — taten es aber nur bei würfelähnlichen Körpern. Dahinter steckte, dass jeder Kante derselbe <b>Millimeter-Zuschlag</b> gegeben wurde statt derselbe <b>Faktor</b>: Aus einer 100 × 100 × 10 mm flachen Platte wurde beim Aufziehen 150 × 150 × <b>60</b> mm — die Platte wurde also nicht größer, sondern dick und gestaucht. Jetzt wachsen alle drei Kanten mit demselben Faktor (nachgemessen: 100 × 10 × 100 → 133,9 × 13,4 × 133,9 mm, Seitenverhältnis unverändert). Für Würfel bleibt das Ziehtempo wie gewohnt. Einzelne Kanten ziehst du weiter mit den <b>schwarzen</b> Anfassern in der Mitte der Kanten. Gemeldet von Ralf.'],
+    ['\u{1F41B}','<b>Im Modus „Größe" verschwinden die Anfasser nicht mehr.</b> Wer auf <i>Skalieren</i> umstellte und dann das Teil anklickte, stand ohne die weißen und schwarzen Kästchen da — ausgerechnet in dem Modus, in dem man sie erwartet. Sie waren dort absichtlich abgeschaltet, damit das freie Ziehen auf der Fläche nicht gestört wird. Jetzt sind sie im Größe-Modus <b>anfassbar</b> (weiße Ecke = proportional, schwarze Kante = eine Richtung), und das freie Ziehen auf der Fläche skaliert weiter wie bisher. In <i>Verschieben</i> und <i>Drehen</i> bleiben sie wie gehabt stumm, sonst käme man dort beim Ziehen ständig an ein Kästchen. Gemeldet von Ralf.'],
+  ]},
   { version:'1.16.1', date:'2026-09-11', changes:[
     ['\u{1F9E9}','<b>Neu: der Puzzle-Generator \u2014 aus einem Foto wird ein echtes Steckpuzzle.</b> Du findest ihn im Startfenster als Kachel \u201e\u{1F9E9} Puzzle\u201c, \u00fcber die Suche (\u201ePuzzle\u201c) oder indem du ein Bild einf\u00fcgst und dort <b>\u{1F9E9} Foto-Puzzle</b> w\u00e4hlst. Du stellst Gr\u00f6\u00dfe, Dicke und die Teilung ein (Spalten \u00d7 Zeilen), den Rest macht die App: Jede Innenkante bekommt eine <b>Nase mit Hinterschnitt</b> \u2014 die Teile halten also wirklich aneinander, statt nur nebeneinander zu liegen. \u00dcber <b>Unregelm\u00e4\u00dfig</b> wandern die Ecken, damit der Schnitt nicht wie mit dem Lineal gezogen aussieht, und <b>\u{1F3B2} Schnitt neu w\u00fcrfeln</b> gibt bei gleichen Ma\u00dfen jedes Mal ein anderes Puzzle. <b>Zum Drucken</b> wird jedes Teil einzeln ausgegeben und vorher um das eingestellte <b>Spiel</b> (voreingestellt 0,25 mm) schmaler gerechnet \u2014 ohne diese Luft klemmen gedruckte Teile fest ineinander. Du bekommst sie wahlweise <b>zusammengesteckt</b> (dann siehst du das fertige Bild und kannst einzelne Teile anfassen) oder gleich <b>nebeneinander auf der Druckplatte</b>. <b>Das Foto</b> wird auf ein Kachelraster gerechnet und auf 2\u20138 Farben reduziert \u2014 und zwar so, dass die Deckfl\u00e4che jedes Teils genau in diesen Kacheln vernetzt wird und jede Kachel ihre Farbe als <b>Filament-Zuordnung</b> mitbringt. Was in der Vorschau zu sehen ist, kommt also auch aus dem Drucker: <b>\u2b07 3MF</b> exportieren, im Slicer \u00f6ffnen, fertig. Ohne Bild werden es schlicht einfarbige Teile zum Bemalen. Dazu gibt es <b>Rechteck, Oval und Herz</b> als Umriss \u2014 die Randteile werden sauber am Umriss abgeschnitten \u2014 und auf Wunsch ein <b>Tablett</b>: eine Wanne mit Boden und Rand, in die das fertige Puzzle genau hineinpasst, f\u00fcr Kinder und zum Aufbewahren. Idee von Ralf.'],
   ]},
