@@ -40322,8 +40322,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.16.2';
+const VOLME3D_VERSION = '1.16.3';
 const VOLME3D_CHANGELOG = [
+  { version:'1.16.3', date:'2026-09-12', changes:[
+    ['\u{1F41B}','<b>Motive auf importierten Kuppeln und Hohlk\u00f6rpern: Die W\u00f6lbung springt nicht mehr.</b> Beim Verschieben eines Motivs auf einer Lichth\u00fclle \u00e4nderte sich der Bogen sprunghaft \u2014 das Motiv stand pl\u00f6tzlich weit ab oder steckte tief in der Wand (gemessen: bis <b>34 mm</b> daneben). Der Grund ist eine T\u00fccke, die man erst sieht, wenn man sie kennt: Um die Rundung zu finden, schneidet die App den K\u00f6rper waagerecht durch. Bei einer <b>Kuppel</b> sieht aber auch ein <b>senkrechter</b> Schnitt kreisrund aus \u2014 bei einer Kugel ist er sogar ein exakter Kreis. Stellenweise gewann deshalb die falsche Richtung, und das Motiv wurde um eine gedachte <i>Querachse</i> gebogen. Betroffen waren vor allem <b>importierte STL-Dateien</b>, weil die anders im Raum liegen als selbst gebaute K\u00f6rper. Jetzt werden alle drei Richtungen gepr\u00fcft und die echte Drehachse daran erkannt, dass sie <b>durch die Mitte</b> des K\u00f6rpers geht. Nachgemessen an einer 120 mm breiten Lichth\u00fclle: Der Bogen passt \u00fcber die ganze H\u00f6he auf <b>0,02 mm</b> zur Wand. Danke an Josy f\u00fcrs Schicken der Datei \u2014 daran war es \u00fcberhaupt erst zu fassen.'],
+  ]},
   { version:'1.16.2', date:'2026-09-12', spots:[{id:'lego-skin',sel:'#lgo-skin'}], changes:[
     ['\u{1F9F1}','<b>Klemmbausteine: Die Kugel bleibt jetzt eine Kugel — neue Einstellung „Form folgen — Außenhaut glatt".</b> Bisher endete jedes Modell als Treppe aus Würfeln; bei einem Ball sah man die Kugel nur noch erahnen. Mit dem neuen Haken wird der eckige Körper <b>mit deinem Originalmodell verschnitten</b>: Was aus der Form herausragt, fällt weg, innen bleibt alles blockig — außen folgt die Haut exakt dem Modell. Die <b>Noppen bleiben dabei vollständig</b> (sie werden nach dem Schnitt wieder aufgesetzt), das Netz bleibt wasserdicht und damit druckbar. Im <i>echten Bausatz</i> wird daraus genau das, was Ralf sich vorgestellt hat: Jeder Stein, der außen anliegt, wird einzeln an die Form geschnitten — ein <b>Sonderstein</b>, den es nur einmal gibt, quasi ein 3D-Puzzle. <b>Zusammenstecken geht weiter:</b> Die Aufnahme unten bleibt frei und die Noppen stehen auch dort, wo der Schnitt sie erwischt hätte (nachgemessen an 291 Steckstellen einer Kugel: keine einzige blockiert, keine Noppe fehlt). Steine, die der Schnitt in mehrere Teile zerlegt, werden erkannt und gemeldet; lose Krümel fallen weg statt als Splitter im Druck zu landen. In der <b>Bauanleitung</b> sind Sondersteine mit <b>✚</b> markiert — sie passen nur an genau die Stelle, an der sie im Plan stehen. Ein Quader erzeugt übrigens keine Sondersteine: Dort schneidet die Form nichts ab, also bleiben es Normsteine. Das Modell muss für den Schnitt <b>wasserdicht</b> sein; ist es das nicht, sagt die App Bescheid und baut die eckige Fassung. Gewünscht von Ralf.'],
     ['\u{1F41B}','<b>Die weißen Eck-Anfasser skalieren wieder proportional statt zu stauchen.</b> Sie sollten das Teil gleichmäßig größer und kleiner ziehen — taten es aber nur bei würfelähnlichen Körpern. Dahinter steckte, dass jeder Kante derselbe <b>Millimeter-Zuschlag</b> gegeben wurde statt derselbe <b>Faktor</b>: Aus einer 100 × 100 × 10 mm flachen Platte wurde beim Aufziehen 150 × 150 × <b>60</b> mm — die Platte wurde also nicht größer, sondern dick und gestaucht. Jetzt wachsen alle drei Kanten mit demselben Faktor (nachgemessen: 100 × 10 × 100 → 133,9 × 13,4 × 133,9 mm, Seitenverhältnis unverändert). Für Würfel bleibt das Ziehtempo wie gewohnt. Einzelne Kanten ziehst du weiter mit den <b>schwarzen</b> Anfassern in der Mitte der Kanten. Gemeldet von Ralf.'],
@@ -42083,6 +42086,33 @@ function _fitCircle2D(P) {
 // Ring an einer Höhe: Achse (Zentrum) und Radius am Trefferpunkt bestimmen.
 // Startpunkt ist der Schwerpunkt des Querschnitts — bei rotationssymmetrischen
 // Körpern liegt der schon auf der Achse, auch wenn Innenwand und Boden mitreden.
+// Nur die MITTE des Schnittkreises in einer Höhe — ohne Radius-Vorgabe. Für die
+// Achsprobe ist der Radius uninteressant, und ein Radiusfilter wäre dort sogar
+// schädlich: An einer Kugel ändert sich der Radius von Höhe zu Höhe so schnell,
+// dass _svgWrapRing in der Nachbarhöhe nichts mehr findet — ausgerechnet für die
+// RICHTIGE Achse. Die falsche (Schnitt quer durch die Kugel) liefert dagegen
+// immer denselben Großkreis und gewänne jedes Mal.
+// Ausreißer (Innenwand eines Hohlkörpers, Kanten) werden nach einem ersten Fit
+// verworfen und die Mitte neu bestimmt.
+function _svgWrapCenterAt(pos, idx, nTri, ax, h) {
+  const pts = _svgWrapSection(pos, idx, nTri, ax, h);
+  if (pts.length < 24) return null;
+  let c = _fitCircle2D(pts);
+  if (!c) return null;
+  const rs = [];
+  for (let i = 0; i < pts.length; i += 2) rs.push(Math.hypot(pts[i] - c.x, pts[i+1] - c.y));
+  rs.sort((a, b) => a - b);
+  const rMed = rs[rs.length >> 1];
+  if (!(rMed > 1e-6)) return null;
+  const keep = [];
+  for (let i = 0; i < pts.length; i += 2) {
+    const r = Math.hypot(pts[i] - c.x, pts[i+1] - c.y);
+    if (Math.abs(r - rMed) <= rMed * 0.25) keep.push(pts[i], pts[i+1]);
+  }
+  if (keep.length < 24) return c;
+  return _fitCircle2D(keep) || c;
+}
+
 function _svgWrapRing(pos, idx, nTri, ax, h, q1, q2) {
   let pts = _svgWrapSection(pos, idx, nTri, ax, h);
   if (pts.length < 32) return null;
@@ -42156,6 +42186,25 @@ function _svgWrapProbe(mesh, hitPointWorld) {
   let res = null, zuOval = false;
   // Y zuerst: aufrecht stehende Körper sind der Normalfall. Liegende Rohre
   // (importierte STLs stehen nicht immer) werden über X/Z noch gefunden.
+  // Alle drei Achsen bewerten und die BESTE nehmen, statt die erste zu greifen.
+  // Grund: Ein Schnitt senkrecht zur echten Achse sieht durch eine Kuppel
+  // ebenfalls kreisrund aus — bei einer Kugel ist er sogar ein exakter Kreis.
+  // Unterscheidungsmerkmal ist die Wanderung der Kreismitte: Bei der ECHTEN
+  // Achse liegt sie in jeder Höhe an derselben Stelle, bei einer falschen nicht
+  // (an einer Lichthülle gemessen: echte Achse 0,01 — falsche 2,6 Einheiten).
+  // Ohne diese Bewertung gewann stellenweise die falsche Achse und der
+  // Wickelradius sprang beim Verschieben (58 → 46 → 70 mm).
+  // Mitte der Hüllbox: Die Drehachse eines Rotationskörpers geht IMMER durch sie
+  // hindurch — quer zur Achse ist die Hüllbox ja ein Quadrat um die Achse herum.
+  // Das ist das belastbare Merkmal. Die Wanderung der Kreismitte allein reichte
+  // nicht: An einem sauber gedrehten Körper liefert auch ein senkrechter Schnitt
+  // von Höhe zu Höhe fast dieselbe Mitte (gemessen: 0,002 Abweichung) — damit
+  // war die falsche Achse nicht zu widerlegen.
+  if (!geo.boundingBox) geo.computeBoundingBox();
+  const bbMid = [(geo.boundingBox.min.x + geo.boundingBox.max.x) / 2,
+                 (geo.boundingBox.min.y + geo.boundingBox.max.y) / 2,
+                 (geo.boundingBox.min.z + geo.boundingBox.max.z) / 2];
+  let best = null;
   for (const ax of [1, 0, 2]) {
     const c1 = (ax + 1) % 3, c2 = (ax + 2) % 3;
     // Vorfilter gegen offensichtlich ovale Querschnitte. Er stand auf 2 % — das
@@ -42167,6 +42216,40 @@ function _svgWrapProbe(mesh, hitPointWorld) {
     if (Math.abs(sc[c1] - sc[c2]) > _SVGWRAP_OVAL_MAX * Math.max(sc[c1], sc[c2])) { zuOval = true; continue; }
     const ring = _svgWrapRing(pos, idx, nTri, ax, loc[ax], loc[c1], loc[c2]);
     if (!ring) continue;
+    // Kreismitte in zwei Nachbarhöhen nachmessen und die beiden GEGENEINANDER
+    // halten — nicht gegen die Trefferhöhe. Deren Fit ist stellenweise selbst
+    // verrauscht (an einer Lichthülle gemessen: 0,57 statt 0,00), und damit
+    // gewann dort die falsche Achse um Haaresbreite. Die beiden Nachbarhöhen
+    // sind davon unabhängig: bei der echten Achse liegen sie aufeinander
+    // (0,01), bei der falschen nicht (0,43).
+    // Findet sich nur EINE Nachbarhöhe, bleibt der Vergleich mit der Trefferhöhe;
+    // findet sich keine (Kegelspitze, Rand des Körpers), gilt die Achse als
+    // unbestätigt statt als widerlegt — sie verliert dann nur gegen eine bestätigte.
+    const nachbarn = [];
+    for (const sgn of [1, -1]) {
+      const c = _svgWrapCenterAt(pos, idx, nTri, ax, loc[ax] + sgn * ring.R * 0.15);
+      if (c) nachbarn.push(c);
+    }
+    const drift = nachbarn.length >= 2
+      ? Math.hypot(nachbarn[0].x - nachbarn[1].x, nachbarn[0].y - nachbarn[1].y)
+      : (nachbarn.length === 1
+          ? Math.hypot(nachbarn[0].x - ring.c1, nachbarn[0].y - ring.c2)
+          : null);
+    // Wie weit liegt die gefundene Kreismitte neben der Hüllbox-Mitte? Bei der
+    // echten Achse: null. Bei einem senkrechten Schnitt durch eine Kuppel deutlich
+    // daneben (gemessen: 15 % des Radius) — genau daran scheitert sie hier.
+    const ausMitte = Math.hypot(ring.c1 - bbMid[c1], ring.c2 - bbMid[c2]) / Math.max(1e-6, ring.R);
+    const score = ausMitte + (drift == null ? 0.02 : drift / Math.max(1e-6, ring.R));
+    if (score > 0.25) continue;                       // eindeutig keine Rotationsachse
+    // Die Reihenfolge [1,0,2] bleibt der Vorrang (aufrecht stehende Körper sind
+    // der Normalfall); gewechselt wird nur bei DEUTLICH besserem Wert. Sonst
+    // entscheidet bei einer Kugel — wo jede Achse eine gültige Drehachse ist —
+    // das Messrauschen, und das Motiv wickelt sich plötzlich um die Querachse.
+    if (!best || score < best.score - 0.004) best = { ax, c1, c2, ring, score };
+  }
+
+  if (best) {
+    const { ax, c1, c2, ring } = best;
     const axisL = new THREE.Vector3(ax === 0 ? 1 : 0, ax === 1 ? 1 : 0, ax === 2 ? 1 : 0);
     const ptL = new THREE.Vector3();
     ptL.setComponent(ax, loc[ax]); ptL.setComponent(c1, ring.c1); ptL.setComponent(c2, ring.c2);
@@ -42192,8 +42275,8 @@ function _svgWrapProbe(mesh, hitPointWorld) {
       // Der Überstand muss das mitnehmen, sonst sinkt das Motiv an den Ecken ein.
       epsMm:   0.2 + Math.max(0, ring.rMax - ring.R) * f * 10
     };
-    break;
   }
+
   // Warum es nicht geklappt hat, für den Hinweis am Zeiger festhalten: „nichts
   // passiert" ohne Begründung war der Punkt, an dem Josy aufgegeben hat.
   _svgWrapReason = res ? null : (zuOval ? 'oval' : 'flach');
