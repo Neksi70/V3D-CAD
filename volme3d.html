@@ -8076,10 +8076,8 @@ function _skExportDXF(){
   }
   g(0,'ENDSEC'); g(0,'EOF');
   const blob=new Blob([L.join('\r\n')+'\r\n'],{type:'application/dxf'});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
-  a.download=(document.getElementById('cur-design-lbl')?.textContent||'Skizze').replace(/[^a-zA-Z0-9_\- ]/g,'_')+'.dxf';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+  _downloadBlob(blob, (document.getElementById('cur-design-lbl')?.textContent||'Skizze')
+    .replace(/[^a-zA-Z0-9_\- ]/g,'_')+'.dxf');
   notify('⬇ DXF gespeichert ('+_sk.ents.length+' Elemente)','ok');
 }
 function _skDxfFileSelected(e){
@@ -22757,7 +22755,31 @@ async function _clearOutputFolder() {
 // Zentral: mehrere Blobs speichern. In den Ausgabeordner schreiben (Chromium, mit
 // Schreibrecht), sonst Standard-Download (gestaffelt). files = [{blob, name}].
 // Rückgabe: { wrote:bool, ok:int, err:int, dir:string }
+/**
+ * Datei herunterladen. Safari ist hier streng: Der Klick muss noch zur
+ * Nutzergeste gehören (kein setTimeout, möglichst kein await davor), sonst
+ * behandelt WebKit die blob:-Adresse als SEITE und meldet
+ * „Safari kann die Seite blob:… nicht öffnen (WebKitBlobResource-Fehler 1)".
+ * Und der Blob muss lange genug leben — 4 Sekunden reichten nicht.
+ */
+function _downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.rel = 'noopener';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 60000);
+}
+
 async function _saveExportMany(files) {
+  // Ohne Ordner-Schreibrecht (Safari, Firefox) gibt es nichts abzuwarten —
+  // sofort herunterladen, solange der Klick des Nutzers noch zählt.
+  if (!_canWriteDir) {
+    files.forEach((f, i) => (i === 0 ? _downloadBlob(f.blob, f.name)
+                                     : setTimeout(() => _downloadBlob(f.blob, f.name), i * 250)));
+    return { wrote: false, ok: files.length, err: 0 };
+  }
   await _outDirLoad();
   if (_canWriteDir && _outDirHandle) {
     const perm = await _outDirPerm(_outDirHandle, true);
@@ -22777,13 +22799,9 @@ async function _saveExportMany(files) {
       notify('Ordner-Zugriff nicht erteilt — wird heruntergeladen', 'w');
     }
   }
-  // Fallback: Standard-Download (Firefox/Safari, kein Ordner, oder Schreibfehler)
-  files.forEach((f, i) => setTimeout(() => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(f.blob); a.download = f.name;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-  }, i * 200));
+  // Fallback: Standard-Download (kein Ordner gewählt oder Schreibfehler)
+  files.forEach((f, i) => (i === 0 ? _downloadBlob(f.blob, f.name)
+                                   : setTimeout(() => _downloadBlob(f.blob, f.name), i * 250)));
   return { wrote: false, ok: files.length, err: 0 };
 }
 async function _saveExport(blob, filename) { return _saveExportMany([{ blob, name: filename }]); }
@@ -22818,10 +22836,7 @@ function exportToBumpMesh() {
   if (!o) { notify('Kein Objekt ausgewählt', 'w'); return; }
   const r = _buildStlBlob([o]);
   if (!r) return;
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(r.blob);
-  a.download = (o.userData.name || 'objekt').replace(/[^a-z0-9_-]/gi, '_') + '.stl';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  _downloadBlob(r.blob, (o.userData.name || 'objekt').replace(/[^a-z0-9_-]/gi, '_') + '.stl');
   window.open('https://bumpmesh.com', '_blank');
   notify('STL exportiert → BumpMesh geöffnet', 'ok');
 }
@@ -23319,7 +23334,10 @@ async function _sendCurrentToSlicer(preferSlicer) {
     const r = _buildStlBlob(); if (!r) return;
     blob = r.blob; fname = _designFilename('stl');
   }
-  await _stlPingHelper();
+  // Nur auffrischen, wenn zuletzt ein Helfer da war. Auf Rechnern ohne Helfer
+  // (Mac!) liefe der Ping ins Leere und die Nutzergeste wäre verbraucht — Safari
+  // macht daraus keinen Download mehr, sondern versucht die blob:-Seite zu öffnen.
+  if (_stlHelperOk) await _stlPingHelper();
   if (_stlHelperOk && _stlHelperSlicers.length) {
     const slicer = (preferSlicer && _stlHelperSlicers.includes(preferSlicer)) ? preferSlicer : (_stlHelperSlicers[0] || '');
     try {
@@ -23331,9 +23349,7 @@ async function _sendCurrentToSlicer(preferSlicer) {
     } catch (e) { notify('Druck-Helfer nicht erreichbar — lade ' + fmt + ' herunter', 'w'); }
   }
   // Fallback: Download (Doppelklick öffnet sie im Slicer)
-  const dl = document.createElement('a');
-  dl.href = URL.createObjectURL(blob); dl.download = fname;
-  document.body.appendChild(dl); dl.click(); document.body.removeChild(dl);
+  _downloadBlob(blob, fname);
   notify(fmt.replace(/ \(.*/,'') + ' heruntergeladen' + (_stlHelperOk ? '' : ' — für 1-Klick-Öffnen den Druck-Helfer einrichten (in „STL-Bibliothek")'), 'ok');
 }
 
@@ -23677,10 +23693,8 @@ async function _localSave() {
     }
   } else {
     // Fallback: Download
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = (document.getElementById('cur-design-lbl')?.textContent || 'Design').replace(/[^a-zA-Z0-9_\- ]/g,'_') + '.v3d';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    _downloadBlob(blob, (document.getElementById('cur-design-lbl')?.textContent || 'Design')
+      .replace(/[^a-zA-Z0-9_\- ]/g,'_') + '.v3d');
     notify('💾 Heruntergeladen', 'ok');
   }
 }
@@ -23826,10 +23840,7 @@ function saveScene() {
   };
   const json = JSON.stringify(data, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'volme3d_szene.v3d';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  _downloadBlob(blob, 'volme3d_szene.v3d');
   notify('Szene gespeichert ✓', 'ok');
 }
 
@@ -30201,11 +30212,7 @@ function _vecInfo(){
 function _vecSave(){
   const svg = _vecSvgText();
   if(!svg){ notify('Noch nichts zu speichern','w'); return; }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([svg], {type:'image/svg+xml'}));
-  a.download = _vec.name + '.svg';
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+  _downloadBlob(new Blob([svg], {type:'image/svg+xml'}), _vec.name + '.svg');
   notify('SVG gespeichert — nutzbar in V3D CAD, im Slicer und im Schneideplotter','ok');
 }
 
@@ -33606,11 +33613,7 @@ function _pgSvgText(){
 function _pgSaveSvg(){
   const svg=_pgSvgText();
   if(!svg){ notify('Noch nichts zu speichern','w'); return; }
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([svg],{type:'image/svg+xml'}));
-  a.download='muster-'+_pgP.pat+'.svg';
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+  _downloadBlob(new Blob([svg],{type:'image/svg+xml'}), 'muster-'+_pgP.pat+'.svg');
   notify('SVG gespeichert — für Laser/Plotter, im Slicer und in V3D CAD nutzbar','ok');
 }
 
@@ -40153,11 +40156,7 @@ ${eng.join('\n')}
 function _lbExportSVG(){
   if(!_lbValidate()){ notify('Ungültige Box – bitte roten Hinweis beachten','w'); return; }
   let svg; try{ svg=_lbBuildSVG(_lbParams()); }catch(e){ console.error('Laser-Box SVG:',e); notify('SVG-Export fehlgeschlagen','w'); return; }
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([svg],{type:'image/svg+xml'}));
-  a.download=`laserbox_${_lbP.B}x${_lbP.T}x${_lbP.H}_${_lbP.t}mm.svg`;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+  _downloadBlob(new Blob([svg],{type:'image/svg+xml'}), `laserbox_${_lbP.B}x${_lbP.T}x${_lbP.H}_${_lbP.t}mm.svg`);
   notify('SVG exportiert (cut + engrave)','ok');
 }
 
@@ -40882,8 +40881,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.16.6';
+const VOLME3D_VERSION = '1.16.7';
 const VOLME3D_CHANGELOG = [
+  { version:'1.16.7', date:'2026-09-12', changes:[
+    ['\u{1F41B}','<b>Download in Safari: \u201eSafari kann die Seite blob:\u2026 nicht \u00f6ffnen\u201c beim STL-Export.</b> Auf dem Mac kam statt der Datei eine Fehlerseite. Der Grund liegt in Safaris strenger Regel, wann ein Download noch zum Klick geh\u00f6rt: Vor dem eigentlichen Speichern lief bei uns erst eine Abfrage (Ordner-Zugriff bzw. Suche nach dem Druck-Helfer) und danach ein kurzer Zeitgeber \u2014 damit z\u00e4hlte der Klick nicht mehr, und Safari versuchte die Datei als <b>Seite zu \u00f6ffnen</b> statt sie zu sichern. Dazu wurde die Datei nach vier Sekunden wieder freigegeben, was den zweiten Teil der Meldung erkl\u00e4rt. Jetzt startet der Download sofort mit dem Klick (die Ordner-Abfrage entf\u00e4llt dort, wo der Browser sie gar nicht kann), und die Datei bleibt eine Minute lang verf\u00fcgbar. Gilt f\u00fcr STL, 3MF, OBJ, DXF, SVG und gespeicherte Designs. Gemeldet von Josy.'],
+  ]},
   { version:'1.16.6', date:'2026-09-12', changes:[
     ['\u{1F41B}','<b>Die Bauanleitung öffnet sich jetzt zuverlässig \u2014 auch in Safari.</b> Sie ging bisher in einem neuen Tab auf, und zwar über eine Kurzzeit-Adresse (<i>blob:</i>). Am Mac kam dabei \u201eSafari kann die Seite nicht öffnen\u201c heraus: So eine Adresse lebt nur, solange die App sie festhält \u2014 legt Safari den Tab im Hintergrund schlafen und lädt ihn später neu, ist sie weg. Dazu kommen Pop-up-Blocker, die einen Tab nach langer Rechnung nicht mehr durchlassen. Die Anleitung erscheint jetzt <b>direkt im Fenster</b>, mit <b>🖨 Drucken</b> und <b>💾 Als Datei</b> obendrauf \u2014 kein neuer Tab, nichts, was ablaufen kann. Mit Esc wieder zu. Gemeldet von Josy.'],
   ]},
@@ -44154,10 +44156,7 @@ function _exportDesignFile(id) {
   if (!data) return;
   const meta = dsGetMeta(id);
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = (meta?.name || 'design').replace(/[^a-zA-Z0-9_\-]/g, '_') + '.v3d';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  _downloadBlob(blob, (meta?.name || 'design').replace(/[^a-zA-Z0-9_\-]/g, '_') + '.v3d');
   notify('Design exportiert ✓', 'ok');
 }
 
