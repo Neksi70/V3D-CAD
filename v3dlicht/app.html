@@ -328,6 +328,28 @@ nav button{position:relative}
 #konfetti{position:fixed;inset:0;pointer-events:none;z-index:95;display:none;
   background:none!important;border-radius:0}
 
+/* ---------- Prüf-Overlay ---------- */
+#pruefBox{position:fixed;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;
+  padding:20px;background:rgba(8,11,17,.88);backdrop-filter:blur(10px)}
+.pruefkarte{background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,.03));
+  border:1px solid var(--line2);border-radius:20px;padding:20px;max-width:400px;width:100%;
+  box-shadow:0 18px 50px rgba(0,0,0,.6)}
+.pruefkarte h2{color:var(--acc)}
+.pr_zahl{font-size:40px;font-weight:700;text-align:center;margin:6px 0 2px;
+  font-variant-numeric:tabular-nums}
+.pr_zahl small{font-size:15px;color:var(--tx2);font-weight:400}
+.pr_balken{height:6px;border-radius:4px;background:rgba(255,255,255,.1);overflow:hidden;margin:12px 0}
+.pr_balken i{display:block;height:100%;background:linear-gradient(90deg,var(--acc-d),var(--acc));
+  transition:width .2s linear}
+.pruefkarte p{font-size:14px;line-height:1.5;color:#cfdcec;margin:10px 0 16px}
+.guete{display:flex;gap:11px;align-items:flex-start;border-radius:14px;padding:12px;margin-top:10px;
+  border:1px solid var(--line);background:rgba(0,0,0,.22);font-size:13.5px;line-height:1.45}
+.guete .z{font-size:21px;flex:0 0 26px}
+.guete.gut{border-color:rgba(63,214,138,.4);background:rgba(63,214,138,.09)}
+.guete.mittel{border-color:rgba(255,176,61,.4);background:rgba(255,176,61,.09)}
+.guete.schlecht{border-color:rgba(255,107,107,.45);background:rgba(255,107,107,.09)}
+.guete b{display:block;margin-bottom:3px}
+
 /* ---------- Startkarte ---------- */
 #start{position:fixed;inset:0;z-index:60;overflow-y:auto;-webkit-overflow-scrolling:touch;
   background:radial-gradient(90% 45% at 50% 12%, rgba(255,194,51,.2), transparent 60%), rgba(11,15,22,.98);
@@ -648,7 +670,8 @@ nav button{position:relative}
         <button class="btn" id="b_cam" onclick="kameraStart()">▶︎ Kamera starten</button>
         <button class="btn sec nogrow" id="b_camStop" style="display:none" onclick="kameraStop()">■</button>
       </div>
-      <button class="btn weit" style="margin-top:9px" onclick="punktMerken()">📍 Messpunkt merken</button>
+      <button class="btn weit" style="margin-top:9px" onclick="punktMerken()">
+        📍 In Feld <b id="b_feld3">A1</b> eintragen</button>
       <div class="row" style="margin-top:10px">
         <div><label>Messfläche</label><select id="i_flaeche" onchange="messEinstellung()">
           <option value="0.85">weißes Blatt Papier (ρ 0,85)</option>
@@ -658,6 +681,9 @@ nav button{position:relative}
           <option value="0.18">Graukarte 18 % (ρ 0,18)</option></select></div>
         <div><label>Kalibrierfaktor</label><input id="i_kal" type="number" step="0.01" value="1.00" onchange="messEinstellung()"></div>
       </div>
+      <div id="gueteBox"></div>
+      <button class="btn sec weit" style="margin-top:9px" onclick="pruefStart()">
+        🔬 Kamera auf diesem Gerät prüfen</button>
       <details>
         <summary>Kalibrieren (einmal pro Gerät)</summary>
         <p class="hint">Leg ein weißes Blatt unter eine Leuchte, halte das Handy ca. 30 cm senkrecht darüber
@@ -714,8 +740,8 @@ nav button{position:relative}
   <div class="card">
     <h2>Messprotokoll</h2>
     <div style="overflow-x:auto"><table id="punkteTab" style="margin-top:10px"><thead><tr>
-      <th>#</th><th>Ort</th><th class="num">lx</th><th class="num">Soll</th><th></th></tr></thead>
-      <tbody id="punkteBody"><tr><td colspan="5" class="hint">Noch keine Messpunkte.</td></tr></tbody></table></div>
+      <th>#</th><th>Ort</th><th class="num">lx</th><th>Quelle</th><th class="num">Soll</th><th></th></tr></thead>
+      <tbody id="punkteBody"><tr><td colspan="6" class="hint">Noch keine Messpunkte.</td></tr></tbody></table></div>
     <div class="kpis" style="margin-top:12px">
       <div class="kpi"><div class="v" id="k_mMittel">–</div><div class="l">Ē gemessen</div></div>
       <div class="kpi"><div class="v" id="k_mMin">–</div><div class="l">E min</div></div>
@@ -1875,7 +1901,9 @@ function zeigeBericht(){
    +zeile('Anschlussleistung', fmt(e.pGes,0)+' W = '+fmt(e.pGes/e.A,1)+' W/m²')
    +(S.bestandLux ? zeile('Messung Bestand vor Ort', fmt(S.bestandLux)+' lx (gemessen, '
         +S.punkte.length+' Punkte)') : '')
-   +(S.punkte.length ? zeile('Messprotokoll', S.punkte.map((p,i)=>(i+1)+'. '+p.n+': '+fmt(p.v)+' lx').join(' · ')) : '')
+   +(S.punkte.length ? zeile('Messprotokoll',
+        S.punkte.map((p,i)=>(i+1)+'. '+p.n+': '+fmt(p.v)+' lx').join(' · ')) : '')
+   +(S.punkte.length ? zeile('Herkunft der Messwerte', messHerkunft()) : '')
    +'</tbody></table>';
 
   const stk = e.n*(e.l.preis), mont = e.n*z('i_montage',35);
@@ -1906,6 +1934,10 @@ function zeigeBericht(){
   p.push('Messung der Beleuchtungsstärke im Raster (Reiter 4) — Ē ≥ '+fmt(soll)+' lx, U₀ ≥ '
     +nz.uo.toFixed(2).replace('.',',')+'; Messung bei Dunkelheit oder mit abgedunkelten Fenstern, '
     +'Leuchten 30 min vorgewärmt');
+  if(S.punkte.some(x => (x.q||'').indexOf('kamera')===0))
+    p.push('<b>Achtung:</b> Das vorliegende Messprotokoll stammt ganz oder teilweise aus der '
+      +'Handykamera und ersetzt keine Abnahmemessung — vor Übergabe mit einem Messgerät '
+      +'(Klasse C oder besser) nachmessen');
   p.push('Prüfung nach DIN VDE 0100-600: Durchgängigkeit Schutzleiter, Isolationswiderstand, '
     +'Schleifenimpedanz, RCD-Auslösung, Drehfeld');
   p.push('Einschaltstrom prüfen: alle Kreise gleichzeitig zuschalten — löst kein Automat aus?');
@@ -1927,6 +1959,25 @@ function berichtBilder(){
     else mb.style.display='none';
   }catch(e){}
 }
+/* Kurzfassung, woher die Messwerte stammen — gehört in jeden Bericht */
+function messHerkunft(){
+  if(!S.punkte.length) return '—';
+  const zaehl = {};
+  S.punkte.forEach(p => { const k=p.q||'hand'; zaehl[k]=(zaehl[k]||0)+1; });
+  const teile = Object.entries(zaehl).map(([k,n]) => n+' × '+(QUELLE[k]||QUELLE.hand).t);
+  const g = geraetLesen();
+  const kamera = (zaehl['kamera-ev']||0) + (zaehl['kamera-hell']||0);
+  let t = teile.join(', ');
+  if(kamera){
+    t += '. <b>Kamerabasierte Werte sind keine geeichte Messung</b> nach DIN EN 12464-1/ASR A3.4';
+    t += g.kalZeit ? ' (Gerät kalibriert am '+new Date(g.kalZeit).toLocaleDateString('de-DE')
+                     +' gegen '+fmt(g.kalRef||0)+' lx).'
+                   : ' und dieses Gerät wurde <b>nicht kalibriert</b> — nur als Richtwert verwendbar.';
+    if(g.guete) t += ' Selbsttest: '+g.guete.kopf+' (Reaktion '+String(g.guete.v).replace('.',',')+':1).';
+    t += ' Für die Abnahme ist eine Messung mit geeignetem Messgerät (Klasse C oder besser) nötig.';
+  }
+  return t;
+}
 function zeile(a,b){ return '<tr><td style="color:#9aa8ba;width:38%">'+a+'</td><td>'+b+'</td></tr>'; }
 function pos(nr,txt,menge,preis){
   const sum=menge*preis;
@@ -1934,7 +1985,16 @@ function pos(nr,txt,menge,preis){
     +'</td><td class="num">'+fmt(preis,2)+'</td><td class="num">'+fmt(sum,2)+'</td></tr>';
 }
 
-/* ====================== Messen: Handy als Luxmeter ====================== */
+/* ====================== Messen: Handy als Luxmeter ======================
+   Kalibrierfaktor und Güteprüfung hängen am GERÄT, nicht am Projekt —
+   sonst müsste man für jeden Raum neu kalibrieren.                        */
+function geraetLesen(){
+  try{ const t=localStorage.getItem(GKEY); return t ? JSON.parse(t) : {}; }catch(e){ return {}; }
+}
+function geraetSchreiben(d){
+  try{ localStorage.setItem(GKEY, JSON.stringify(Object.assign(geraetLesen(), d))); }catch(e){}
+}
+
 let camStream=null, camTimer=null, camLetzt=0, camGlatt=0, camInfo='', camHist=[];
 const BLENDE = 1.8;          // Annahme f/1.8 — steckt sonst im Kalibrierfaktor
 const ALS_K  = {sensor:null, wert:null};
@@ -2042,6 +2102,7 @@ function messSchritt(){
     lux = 3000*Y/rho;
     weg = 'Bildhelligkeit (kalibrieren!)';
   }
+  S.camRoh = {Y, lux, ev: !!(st.exposureTime && st.iso), ueber: ueber/Math.max(1,n), zeit:performance.now()};
   lux *= S.kal;
   camGlatt = camGlatt ? camGlatt*0.7 + lux*0.3 : lux;   // Glättung gegen Zappeln
   camLetzt = camGlatt;
@@ -2070,7 +2131,23 @@ function ringStand(wert, soll){
   if(treffer && !box.classList.contains('treffer')){ tipp([10,30,10]); }
   box.classList.toggle('treffer', treffer);
 }
-function messEinstellung(){ S.kal = Math.max(0.01, z('i_kal',1)); speichernStill(); }
+/* Woher stammt ein Messwert? Steht später im Protokoll und im Bericht. */
+const QUELLE = {
+  'hand':       {ic:'⌨️', t:'von Hand eingetragen (z. B. Luxmeter)', gut:true},
+  'sensor':     {ic:'🔆', t:'Umgebungslichtsensor des Geräts', gut:true},
+  'kamera-ev':  {ic:'📷', t:'Kamera mit Belichtungsdaten', gut:false},
+  'kamera-hell':{ic:'📸', t:'Kamera, nur Bildhelligkeit — ohne Kalibrierung unsicher', gut:false}
+};
+function messQuelle(){
+  if(S.sensor==='hand') return 'hand';
+  if(S.sensor==='als') return 'sensor';
+  return (S.camRoh && S.camRoh.ev) ? 'kamera-ev' : 'kamera-hell';
+}
+function messEinstellung(){
+  S.kal = Math.max(0.01, z('i_kal',1));
+  geraetSchreiben({kal:S.kal, flaeche:$('i_flaeche').value});
+  speichernStill();
+}
 function kalibrieren(){
   const ref=z('i_ref',NaN);
   if(!isFinite(ref)||ref<=0){ alert('Bitte den Vergleichswert in Lux eintragen.'); return; }
@@ -2079,11 +2156,155 @@ function kalibrieren(){
   const h=[...camHist].sort((a,b)=>a-b);
   const basis = h.length ? h[Math.floor(h.length/2)] : camLetzt;
   S.kal = S.kal * ref/basis;
+  geraetSchreiben({kal:S.kal, kalZeit:Date.now(), kalRef:ref});
   camGlatt = 0; camHist=[];
   $('i_kal').value = S.kal.toFixed(3);
   $('kalInfo').textContent = 'Kalibriert: Faktor '+S.kal.toFixed(3).replace('.',',')
     +' (Referenz '+fmt(ref)+' lx bei Rohwert '+fmt(basis)+' lx). Gilt ab jetzt für dieses Gerät.';
   speichernStill();
+}
+
+/* ====================== Selbsttest der Kamera ======================
+   Prüft zwei Dinge, die über die Brauchbarkeit entscheiden:
+   1. Gibt das Gerät Belichtungszeit und ISO heraus? Dann rechnet die App
+      physikalisch statt nur über die Bildhelligkeit.
+   2. Reagiert der Messwert überhaupt auf unterschiedliche Helligkeit? Viele
+      Kameras regeln jede Szene auf mittleres Grau — dann misst man nichts.  */
+let PR = {schritt:0, hell:[], dunkel:[], uhr:null, t0:0};
+
+function pruefStart(){
+  if(!camStream){ meldung('Erst die Kamera starten'); kameraStart(); return; }
+  document.querySelector('.pr_zahl').style.display='';
+  document.querySelector('#pruefBox .btn.sec').style.display='';
+  PR = {schritt:0, hell:[], dunkel:[], uhr:null, t0:0};
+  $('pruefBox').style.display='flex';
+  pruefAnzeige('Kamera prüfen',
+    'Der Test dauert etwa 15 Sekunden und sagt dir, wie belastbar die Messung auf '
+    + '<b>diesem</b> Gerät ist. Du brauchst dafür eine beleuchtete Fläche — Schreibtisch, '
+    + 'Werkbank, Fußboden unter einer Leuchte.', 'Los geht\'s', 0);
+}
+function pruefAnzeige(titel, text, knopf, fortschritt){
+  $('pr_titel').innerHTML = titel;
+  $('pr_text').innerHTML = text;
+  $('pr_knopf').textContent = knopf;
+  $('pr_knopf').style.display = knopf ? '' : 'none';
+  $('pr_fort').style.width = (fortschritt||0)+'%';
+}
+function pruefWeiter(){
+  tipp(8);
+  if(PR.schritt === 0){
+    PR.schritt = 1;
+    pruefSammeln('hell', 4000,
+      '<b>Schritt 1 von 2:</b> Halte das Handy waagerecht über die beleuchtete Fläche, '
+      + 'etwa 30 cm hoch — so, wie du auch messen würdest. Nicht bewegen.',
+      'Helligkeit wird gemessen …');
+  } else if(PR.schritt === 2){
+    PR.schritt = 3;
+    pruefSammeln('dunkel', 4000,
+      '<b>Schritt 2 von 2:</b> Jetzt die Fläche abschatten — halte die freie Hand '
+      + 'flach etwa 20 cm über die Messstelle, sodass es dort deutlich dunkler wird. '
+      + 'Die Kamera dabei <b>nicht</b> zuhalten.',
+      'Abgeschattet wird gemessen …');
+  } else if(PR.schritt === 4){
+    pruefEnde();
+  }
+}
+function pruefSammeln(was, dauer, anleitung, laufText){
+  pruefAnzeige(laufText, anleitung, '', 0);
+  PR.t0 = performance.now();
+  clearInterval(PR.uhr);
+  PR.uhr = setInterval(() => {
+    const t = performance.now() - PR.t0;
+    $('pr_fort').style.width = Math.min(100, t/dauer*100)+'%';
+    if(S.camRoh) $('pr_wert').textContent = fmt(camGlatt);
+    if(t > dauer*0.35 && S.camRoh) PR[was].push(S.camRoh);   // erste Sekunde ist Einschwingen
+    if(t >= dauer){
+      clearInterval(PR.uhr); PR.uhr=null; tipp([10,40,10]);
+      if(was === 'hell'){
+        PR.schritt = 2;
+        pruefAnzeige('Erster Wert steht',
+          'Gemessen: <b>'+fmt(mittelVon(PR.hell,'lux')*S.kal)+' lx</b>. '
+          + 'Weiter mit dem zweiten Teil.', 'Weiter', 50);
+      } else { PR.schritt = 4; pruefErgebnis(); }
+    }
+  }, 150);
+}
+function mittelVon(liste, feld){
+  if(!liste.length) return 0;
+  return liste.reduce((a,b)=>a+b[feld],0)/liste.length;
+}
+function pruefErgebnis(){
+  const hell = mittelVon(PR.hell,'lux'), dunkel = mittelVon(PR.dunkel,'lux');
+  const evDa = PR.hell.concat(PR.dunkel).every(r => r.ev) && PR.hell.length > 0;
+  const ueber = mittelVon(PR.hell,'ueber') > 0.15;
+  const v = dunkel > 0 ? hell/dunkel : 0;
+  const g = geraetLesen();
+  let stufe, zeichen, kopf, text;
+
+  if(!PR.hell.length || !PR.dunkel.length){
+    stufe='schlecht'; zeichen='❓'; kopf='Test unvollständig';
+    text='Es kamen keine Messwerte an. Kamera neu starten und noch einmal versuchen.';
+  } else if(v < 1.25){
+    stufe='schlecht'; zeichen='⛔'; kopf='Auf diesem Gerät nicht verwertbar';
+    text='Abgeschattet wurden '+fmt(dunkel*S.kal)+' lx statt '+fmt(hell*S.kal)+' lx gemessen — '
+      +'praktisch derselbe Wert, obwohl deutlich weniger Licht da war. Die Kamera gleicht die '
+      +'Helligkeit selbst aus, damit misst sie keine Beleuchtungsstärke. '
+      +'<b>Nimm hier Werte von Hand</b> (Reiter „Von Hand") oder ein Luxmeter.';
+  } else if(v < 1.8){
+    stufe='mittel'; zeichen='⚠️'; kopf='Reagiert nur schwach';
+    text='Der Unterschied zwischen hell und abgeschattet betrug nur das '+v.toFixed(1).replace('.',',')
+      +'-fache. Für „hier ist es dunkler als dort" reicht das, für Zahlen im Angebot nicht. '
+      +'Unbedingt gegen ein Luxmeter kalibrieren und die Werte als Richtwerte kennzeichnen.';
+  } else if(evDa){
+    stufe='gut'; zeichen='✅'; kopf='Brauchbar — mit Kalibrierung';
+    text='Das Gerät liefert Belichtungszeit und ISO, die App rechnet damit physikalisch '
+      +'(Belichtungswert → Leuchtdichte → Beleuchtungsstärke). Der Test zeigte sauberes '
+      +'Verhältnis '+v.toFixed(1).replace('.',',')+':1 zwischen hell und abgeschattet. '
+      +(g.kalZeit ? 'Kalibriert ist das Gerät bereits — damit taugen die Werte als Richtwerte '
+                  +'für Planung und Kundengespräch.'
+                  : '<b>Jetzt noch einmal gegen ein Luxmeter kalibrieren</b>, dann stimmt auch der '
+                  +'absolute Wert. Ohne das ist die Blendenzahl geschätzt, das kann um die Hälfte danebenliegen.');
+  } else {
+    stufe='mittel'; zeichen='🟡'; kopf='Reagiert, aber ohne Belichtungsdaten';
+    text='Die Kamera folgt der Helligkeit (Verhältnis '+v.toFixed(1).replace('.',',')+':1), gibt aber '
+      +'Belichtungszeit und ISO nicht heraus. Die App rechnet dann nur über die Bildhelligkeit — '
+      +'<b>ohne Kalibrierung sind das keine Lux, sondern Hausnummern.</b> '
+      +'Einmal gegen ein Luxmeter kalibrieren, danach Messfläche und Abstand immer gleich halten.';
+  }
+  if(ueber) text += ' <br><br>Hinweis: Das Bild war teils überstrahlt — nicht in die Leuchte halten, '
+    + 'sondern auf die beleuchtete Fläche.';
+
+  geraetSchreiben({guete:{stufe, kopf, v:Math.round(v*100)/100, ev:evDa, zeit:Date.now()}});
+  gueteAnzeigen();
+  // im Ergebnis gibt es nichts mehr abzubrechen und nichts mehr live zu messen
+  document.querySelector('.pr_zahl').style.display='none';
+  document.querySelector('#pruefBox .btn.sec').style.display='none';
+  pruefAnzeige(kopf, '<div class="guete '+stufe+'"><span class="z">'+zeichen+'</span><span>'+text+'</span></div>',
+               'Verstanden', 100);
+}
+function pruefEnde(){
+  clearInterval(PR.uhr); PR.uhr=null;
+  $('pruefBox').style.display='none';
+  gueteAnzeigen();
+}
+/* Dauerhafte Anzeige im Mess-Reiter */
+function gueteAnzeigen(){
+  const g = geraetLesen(), box = $('gueteBox');
+  if(!box) return;
+  if(!g.guete){
+    box.innerHTML = '<div class="guete"><span class="z">🔬</span><span><b>Noch nicht geprüft</b>'
+      + 'Wie gut dein Handy Licht messen kann, ist von Modell zu Modell verschieden. '
+      + 'Der Selbsttest sagt es dir in 15 Sekunden.</span></div>';
+    return;
+  }
+  const d = new Date(g.guete.zeit).toLocaleDateString('de-DE');
+  const z = {gut:'✅', mittel:'⚠️', schlecht:'⛔'}[g.guete.stufe] || '❓';
+  box.innerHTML = '<div class="guete '+g.guete.stufe+'"><span class="z">'+z+'</span><span><b>'
+    + g.guete.kopf+'</b>Geprüft am '+d+' · Reaktion '+String(g.guete.v).replace('.',',')+':1 · '
+    + (g.guete.ev ? 'mit Belichtungsdaten' : 'ohne Belichtungsdaten')
+    + (g.kalZeit ? ' · kalibriert am '+new Date(g.kalZeit).toLocaleDateString('de-DE')
+                 : ' · <b>noch nicht kalibriert</b>')
+    + '</span></div>';
 }
 
 /* --- Messpunkte --- */
@@ -2098,7 +2319,8 @@ function punktMerken(){
   const name = feldName(f.ix, f.iy);
   // was in diesem Feld schon stand, wird ersetzt
   S.punkte = S.punkte.filter(p => { const q = punktFeld(p); return !(q && q.ix===f.ix && q.iy===f.iy); });
-  S.punkte.push({n:name, v:Math.round(wert), h:z('i_punktH',.75), x:mitte.x, y:mitte.y});
+  S.punkte.push({n:name, v:Math.round(wert), h:z('i_punktH',.75), x:mitte.x, y:mitte.y,
+                 q:messQuelle(), kal:(messQuelle().indexOf('kamera')===0 ? S.kal : null)});
   $('i_handWert') && ($('i_handWert').value='');
   messAuswertung(); speichernStill(); navStand();
   tipp([8,26,8]);
@@ -2115,14 +2337,17 @@ function punkteLeeren(){ if(S.punkte.length && confirm('Alle Messpunkte löschen
 function messAuswertung(){
   const tb=$('punkteBody'), soll=sollLux(), nz=aktNutz();
   if(!S.punkte.length){
-    tb.innerHTML='<tr><td colspan="5" class="hint">Noch keine Messpunkte.</td></tr>';
+    tb.innerHTML='<tr><td colspan="6" class="hint">Noch keine Messpunkte.</td></tr>';
     ['k_mMittel','k_mMin','k_mUo','k_mUrteil'].forEach(id=>$(id).textContent='–');
     $('messUrteil').innerHTML=''; return;
   }
-  tb.innerHTML = S.punkte.map((p,i)=>'<tr><td>'+(i+1)+'</td><td>'+p.n+'</td>'
+  tb.innerHTML = S.punkte.map((p,i)=>{ const q=QUELLE[p.q]||QUELLE['hand'];
+    return '<tr><td>'+(i+1)+'</td><td>'+p.n+'</td>'
     +'<td class="num">'+fmt(p.v)+'</td>'
+    +'<td title="'+q.t+'">'+q.ic+'</td>'
     +'<td class="num"><span class="tag '+(p.v>=soll?'ok':'bad')+'">'+(p.v>=soll?'ok':'−'+fmt(soll-p.v))+'</span></td>'
-    +'<td class="num"><button class="btn sec" style="padding:3px 8px" onclick="punktLoeschen('+i+')">✕</button></td></tr>').join('');
+    +'<td class="num"><button class="btn sec" style="padding:3px 8px" onclick="punktLoeschen('+i+')">✕</button></td></tr>';
+  }).join('');
   const vs=S.punkte.map(p=>p.v);
   const mit=vs.reduce((a,b)=>a+b,0)/vs.length, mn=Math.min(...vs), uo=mn/mit;
   setKpi('k_mMittel', fmt(mit)+' lx');
@@ -2154,6 +2379,20 @@ function messAuswertung(){
   if(okE&&okU){ t+='Anforderung erfüllt. '; jubel('mess'+vs.length); }
   t+='Messung bitte bei Dunkelheit bzw. ohne Tageslichteinfall und mit 30 min vorgewärmten Leuchten wiederholen, '
     +'wenn das Protokoll zur Abnahme gehört.</div>';
+  const kamera = S.punkte.filter(x => (x.q||'').indexOf('kamera')===0).length;
+  const g = geraetLesen();
+  if(kamera){
+    const roh = !g.kalZeit;
+    t += '<div class="note '+(roh?'warn':'')+'">'+(roh?'⚠️ ':'ℹ️ ')+kamera+' von '+S.punkte.length
+      + ' Werten stammen aus der Kamera'
+      + (roh ? ' und dieses Gerät ist <b>nicht kalibriert</b> — die Zahlen sind Richtwerte, keine Messung. '
+             + 'Einmal gegen ein Luxmeter kalibrieren (oben im Kamera-Block), danach stimmen sie deutlich besser.'
+             : ' (Gerät kalibriert am '+new Date(g.kalZeit).toLocaleDateString('de-DE')+').')
+      + (g.guete ? ' Selbsttest dieses Geräts: <b>'+g.guete.kopf+'</b>.'
+                 : ' <b>Selbsttest noch nicht gelaufen</b> — er sagt dir in 15 s, ob deine Kamera '
+                   +'überhaupt auf Helligkeit reagiert.')
+      + '</div>';
+  }
   $('messUrteil').innerHTML=t;
 }
 /* ====================== Messraster im Grundriss ======================
@@ -2253,6 +2492,7 @@ function rasterText(){
   const nm = feldName(f.ix, f.iy);
   if($('b_feld')) $('b_feld').textContent = nm;
   if($('b_feld2')) $('b_feld2').textContent = nm;
+  if($('b_feld3')) $('b_feld3').textContent = nm;
   $('rasterInfo').innerHTML = 'Raster '+r.nx+' × '+r.ny+' = '+ganz+' Felder à '+fmt(r.zx,2)+' × '+fmt(r.zy,2)
     + ' m, Randzone '+fmt(r.rand,2)+' m bleibt außen vor (DIN EN 12464-1). Messhöhe '
     + fmt(z('i_punktH',.75),2)+' m, Gerät waagerecht, eigenen Schatten vermeiden. '
@@ -2442,7 +2682,10 @@ function uebernimm(d){
   if(!d || !d.felder) return;
   Object.entries(d.felder).forEach(([id,v])=>{ const e=$(id); if(e && e.type!=='file') e.value=v; });
   S.nutz=d.nutz||S.nutz; S.leuchte=d.leuchte||S.leuchte; S.eigene=d.eigene||null;
-  S.punkte=d.punkte||[]; S.kal=d.kal||1; S.anzManuell=!!d.anzManuell; S.rasterManuell=!!d.rasterManuell;
+  S.punkte=d.punkte||[]; S.anzManuell=!!d.anzManuell;
+  const g=geraetLesen();
+  S.kal = (g.kal!==undefined) ? g.kal : (d.kal||1);      // Kalibrierung gehört zum Gerät
+  if($('i_kal')) $('i_kal').value = S.kal.toFixed(3); S.rasterManuell=!!d.rasterManuell;
   S.reihen=d.reihen||2; S.spalten=d.spalten||2; S.bestandLux=d.bestandLux||null;
   S.eigeneWahl=true;
   bauNutzListe(); $('i_nutz').value=S.nutz; zeigeLampListe(); rechne();
@@ -2450,7 +2693,7 @@ function uebernimm(d){
 /* ---------- Projektablage: mehrere Räume nebeneinander ----------------
    Alle Projekte liegen in einer Liste, das zuletzt geöffnete ist das aktive.
    Gespeichert wird laufend von selbst — niemand soll Arbeit verlieren.    */
-const PKEY='v3dlicht_projekte', AKEY='v3dlicht_aktiv';
+const PKEY='v3dlicht_projekte', AKEY='v3dlicht_aktiv', GKEY='v3dlicht_geraet';
 let STANDARD = null;                       // Ausgangszustand für neue Projekte
 
 function alleProjekte(){
@@ -2585,6 +2828,10 @@ function meldung(t){
 /* ====================== Start ====================== */
 function init(){
   bauNutzListe(); zeigeLampListe(); sensorWaehlen('kamera');
+  const g0 = geraetLesen();
+  if(g0.kal !== undefined){ S.kal = g0.kal; $('i_kal').value = S.kal.toFixed(3); }
+  if(g0.flaeche) $('i_flaeche').value = g0.flaeche;
+  gueteAnzeigen();
   ['i_L','i_B','i_H','i_NE','i_AB','i_kunde','i_raum'].forEach(id=>{
     const e=$(id); if(e) e.addEventListener('input', ()=>{ S.anzManuell=false; S.rasterManuell=false; rechne(); });
   });
@@ -2615,11 +2862,24 @@ function init(){
 }
 window.addEventListener('DOMContentLoaded', init);
 /* Testhaken fuer automatisierte Tests */
-window._licht = {S, rechne, sollLux, setKpi, alleProjekte, projektLeer, projektNeu, projektOeffnen,
+window._licht = {S, rechne, sollLux, setKpi, alleProjekte, projektLeer, QUELLE, messQuelle,
+                 geraetLesen, geraetSchreiben, pruefErgebnis, PR:()=>PR, projektNeu, projektOeffnen,
                  menuOffen, zurueck, rasterBauen, zeichneMessRaster, feldMitte,
                  punktFeld, messungIn, feldName, planWertBei, jubel, ringStand, navStand, aktLeuchte, beleuchtungsKarte, interp, ETA_TAB, NUTZ, LEUCHTEN,
                  besteAufteilung, expAusBeam};
 </script>
+<div id="pruefBox" style="display:none">
+  <div class="pruefkarte">
+    <h2 id="pr_titel">Kamera prüfen</h2>
+    <div class="pr_zahl"><span id="pr_wert">–</span><small> lx</small></div>
+    <div class="pr_balken"><i id="pr_fort" style="width:0%"></i></div>
+    <p id="pr_text">…</p>
+    <div class="row">
+      <button class="btn" id="pr_knopf" onclick="pruefWeiter()">Los geht's</button>
+      <button class="btn sec nogrow" onclick="pruefEnde()">Abbrechen</button>
+    </div>
+  </div>
+</div>
 <canvas id="konfetti"></canvas>
 <div id="start">
   <div class="menuinhalt">

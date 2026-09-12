@@ -62,6 +62,29 @@ zählen weiter in Ē/Uo mit, erscheinen aber nicht im Grundriss.
 - **Einschaltstrom**: Richtwert aus Impulsladung (A·µs) je LS-Charakteristik,
   an Hersteller-Tabellen angeglichen. Datenblatt hat Vorrang.
 
+## Selbsttest der Kamera
+Knopf **„🔬 Kamera auf diesem Gerät prüfen"** im Mess-Reiter. Zwei Messungen (beleuchtete
+Fläche / abgeschattet, je 4 s) beantworten die beiden Fragen, die über die Brauchbarkeit
+entscheiden:
+1. Liefert das Gerät `exposureTime` + `iso`? Dann rechnet die App physikalisch statt nur
+   über die Bildhelligkeit.
+2. Reagiert der Messwert überhaupt auf unterschiedliche Helligkeit? Viele Kameras regeln
+   jede Szene auf mittleres Grau — dann misst man nichts.
+
+Bewertung über das Verhältnis hell/abgeschattet: **< 1,25 → unbrauchbar** (Werte von Hand
+eintragen), **< 1,8 → nur relativ**, darüber je nach Belichtungsdaten „mittel" oder „gut".
+Das Ergebnis liegt im Gerätespeicher (`v3dlicht_geraet`), steht dauerhaft im Mess-Reiter
+und geht in den Bericht ein.
+
+**Kalibrierfaktor und Prüfergebnis hängen am Gerät, nicht am Projekt** — sonst müsste man
+für jeden Raum neu kalibrieren.
+
+## Herkunft der Messwerte
+Jeder Messpunkt merkt sich, woher er stammt (`q`): `hand`, `sensor`, `kamera-ev`
+(mit Belichtungsdaten) oder `kamera-hell` (nur Bildhelligkeit). Das Protokoll zeigt das
+Zeichen je Zeile, der Bericht die Zusammenfassung samt Klartext-Warnung, dass kamerabasierte
+Werte keine geeichte Messung sind; die Prüfliste fordert dann das Nachmessen vor der Übergabe.
+
 ## Luxmeter-Genauigkeit
 Liefert das Gerät `exposureTime` und `iso`, wird über den Belichtungswert gerechnet
 (EV → Leuchtdichte → Beleuchtungsstärke über den Reflexionsgrad der Messfläche).
@@ -87,4 +110,5 @@ node tests/handy_test.mjs       # Handy-Layout, Druckansicht, Speichern
 node tests/oberflaeche_test.mjs # Startkarte, Regler, Ergebniszeile, Wischen, App-Dateien
 node tests/raster_test.mjs      # Messraster: Antippen, Eintragen, Ueberschreiben, Rasterwechsel
 node tests/projekte_test.mjs    # Zurueck-Weg, Projekte anlegen/wechseln/loeschen
+node tests/guete_test.mjs       # Kamera-Selbsttest (alle vier Stufen), Herkunft im Bericht
 ```
