@@ -42109,8 +42109,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.2';
+const VOLME3D_VERSION = '1.18.3';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.3', date:'2026-09-13', changes:[
+    ['\u{1F4CF}','<b>Wenn ein Motiv nicht dort bleibt, wo du es hinsetzt, steht jetzt dabei warum.</b> Setzt du ein Motiv <b>unten</b> an eine Vase oder Lichth\u00fclle, r\u00fcckt die App es nach oben \u2014 sonst h\u00e4ngt die untere H\u00e4lfte \u00fcber die Kante hinaus (genau das war im September die Meldung \u201eer ist ja nur halb drauf\u201c). Richtig ist das, nur passierte es <b>wortlos</b>: Gemessen springt ein 100 mm hohes Motiv, das man bei 10 mm ansetzt, auf 50 mm hoch \u2014 <b>40 mm</b> weiter oben, als man geklickt hat. Das sieht aus, als ließe es sich nicht hinlegen. Jetzt steht da: <i>\u201eMotiv 40 mm nach oben ger\u00fcckt, damit es ganz auf der Wand liegt \u2014 kleiner ziehen, dann passt es tiefer\u201c</i>. Und beim <b>Ziehen</b> meldet der Zeiger, wenn der Rand erreicht ist: <i>\u201e\u22a5 Rand des K\u00f6rpers \u2014 Alt-Taste geht dar\u00fcber hinaus\u201c</i>. Vorher z\u00e4hlte dort nur stumm eine Millimeterzahl weiter, die sich nicht mehr \u00e4nderte. Gemeldet von Josy.'],
+  ]},
   { version:'1.18.2', date:'2026-09-13', changes:[
     ['\u{1F4CC}','<b>Der Zeiger sagt jetzt, warum ein Motiv sich nicht wickeln lässt.</b> Auf einer Vase oder Lichth\u00fclle legt sich ein Motiv normalerweise um die Rundung. <b>Ganz oben</b>, wo sich der K\u00f6rper zur Kuppel wegw\u00f6lbt, geht das nicht \u2014 um eine Achse wickeln l\u00e4sst sich nur der <i>Bauch</i>. Dort wurde das Motiv bisher <b>kommentarlos flach aufgeheftet</b>, und flach auf einer W\u00f6lbung liegt es nun einmal nur in der Mitte auf: \u201eEs ist nicht ganz drauf, l\u00e4sst sich nicht ganz drauf legen.\u201c Jetzt steht der Grund am Zeiger: <i>\u201eAuf Fl\u00e4che heften (W\u00f6lbung \u2014 hier weiter unten am Bauch wickeln)\u201c</i>. Damit siehst du sofort, dass du das Motiv nur ein St\u00fcck tiefer setzen musst, statt an ihm herumzuziehen. Gemeldet von Josy.'],
   ]},
@@ -43755,19 +43758,24 @@ function _svgGlideMove(e) {
     while (dAng >  Math.PI) dAng -= 2 * Math.PI;
     while (dAng < -Math.PI) dAng += 2 * Math.PI;
     let dh = t.h - G.h0;
-    let mid = '';
+    let mid = '', amRand = false;
     if (G.span && !free && G.span.hi - G.span.lo > 2 * G.span.half) {
+      const dhRoh = dh;
       const hC = _svgGlideClamp(dh, G.span.lo, G.span.hi, G.span.half);
       const ctr = (G.span.lo + G.span.hi) / 2;
       const tol = Math.max(0.03, Math.min(0.25, (G.span.hi - G.span.lo) * 0.03));
       dh = Math.abs(hC - ctr) < tol ? (mid = 'v', ctr) : hC;
+      // Der Randstopp hält an — ohne Hinweis sieht das aus, als klemme das
+      // Ziehen. Also sagen, dass der Rand erreicht ist UND wie man drüber kommt.
+      amRand = !mid && Math.abs(dh - dhRoh) > 1e-6;
     }
     o.position.copy(G.pos0).addScaledVector(G.fr.axis, dh);
     // −dAng: die Basis dreht um die Achse, der gemessene Winkel liegt im festen
     // Frame — mit +dAng lief das Motiv der Maus davon (gemessen: 112 px Zug nach
     // rechts → Motiv 61 px nach links).
     o.quaternion.copy(G.q0).premultiply(new THREE.Quaternion().setFromAxisAngle(G.fr.axis, -dAng));
-    label = (mid ? '↕ mittig auf der Höhe   ' : '↕ ' + _svgGlideMm(dh) + '   ')
+    label = (amRand ? '⊥ Rand des Körpers — Alt-Taste geht darüber hinaus   '
+          : (mid ? '↕ mittig auf der Höhe   ' : '↕ ' + _svgGlideMm(dh) + '   '))
           + '↻ ' + Math.round(dAng * 180 / Math.PI) + '°';
   }
 
@@ -44363,6 +44371,15 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
       // Passt das Motiv nicht auf die Höhe des Körpers, bleibt es da, wo geklickt
       // wurde — hineinzuzwingen nimmt dem Nutzer die Wahl der Stelle.
       const dh = (dHi >= dLo) ? Math.max(dLo, Math.min(dHi, 0)) : 0;
+      // Das Rücken ist richtig (sonst hinge das Motiv über die Kante), aber es
+      // muss auch ANKOMMEN: Wer unten an einer Lichthülle aufsetzt, sieht das
+      // Motiv sonst wortlos 10–40 mm nach oben springen und denkt, es ließe sich
+      // nicht hinlegen („es ist nicht ganz drauf, lässt sich nicht ganz drauf
+      // legen", Josy 12.9. — gemessen: Klick bei 10 mm, gelandet bei 50 mm).
+      if (Math.abs(dh) * 10 > 2) {
+        notify('Motiv ' + Math.round(Math.abs(dh) * 10) + ' mm nach ' + (dh > 0 ? 'oben' : 'unten') +
+               ' gerückt, damit es ganz auf der Wand liegt — kleiner ziehen, dann passt es tiefer', 'ok');
+      }
       if (Math.abs(dh) > 1e-4) {
         c0.addScaledVector(a, dh);
         // an der verschobenen Höhe ist die Wand ggf. weiter/enger → neu abtasten
