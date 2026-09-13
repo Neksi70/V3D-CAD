@@ -153,8 +153,11 @@ const kaputt = await pg.evaluate(async (svgs) => {
 ok('kaputtes Motiv reißt den Abzug nicht mehr mit', kaputt.ok, kaputt);
 ok('die anderen Motive sind trotzdem graviert',
    kaputt.ergebnis_tris > kaputt.koerper_tris, kaputt);
-ok('der Nutzer wird auf das übersprungene Motiv hingewiesen',
-   kaputt.meldungen.some(t => t.includes('Übersprungen (nicht wasserdicht): Motiv 1')), kaputt.meldungen);
+// Seit v1.16.8 wird ein sperriges Motiv zuerst automatisch repariert; klappt das
+// nicht, wird es übersprungen. Beides ist in Ordnung — entscheidend ist, dass der
+// Abzug durchläuft und der Nutzer erfährt, welches Motiv betroffen war.
+ok('der Nutzer erfährt, welches Motiv geklemmt hat',
+   kaputt.meldungen.some(t => /(Übersprungen|repariert)/i.test(t) && /Motiv 1/.test(t)), kaputt.meldungen);
 
 // ── 4) Der echte Weg über die Oberfläche: nimmt subtractHoles den Schnellweg? ─
 // Das ist der Punkt, an dem Josy hängen blieb. Ohne die Weiche ginge der Auftrag
@@ -243,9 +246,9 @@ ok('Josys Fall: kein Rückfall auf OCCT',
    !konsole2.some(t => /Manifold-Schnellweg fehlgeschlagen[\s\S]*OCCT/.test(t)) &&
    !konsole2.some(t => /→ OCCT/.test(t)),
    konsole2.filter(t => /subtract/i.test(t)).slice(0, 4));
-ok('Josys Fall: das kaputte Motiv wurde übersprungen, der Rest geschnitten',
-   konsole2.some(t => /Motiv übersprungen: Motiv 3/.test(t)),
-   konsole2.filter(t => /übersprungen/i.test(t)).slice(0, 2));
+ok('Josys Fall: das kaputte Motiv wurde geheilt oder übersprungen — nicht ignoriert',
+   konsole2.some(t => /(übersprungen|repariert)/i.test(t) && /Motiv 3/.test(t)),
+   konsole2.filter(t => /(übersprungen|repariert)/i.test(t)).slice(0, 3));
 
 ok('keine JS-Fehler', errs.length === 0, errs.slice(0, 3));
 await b.close();

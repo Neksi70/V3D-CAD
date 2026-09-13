@@ -42109,8 +42109,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.1';
+const VOLME3D_VERSION = '1.18.2';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.2', date:'2026-09-13', changes:[
+    ['\u{1F4CC}','<b>Der Zeiger sagt jetzt, warum ein Motiv sich nicht wickeln lässt.</b> Auf einer Vase oder Lichth\u00fclle legt sich ein Motiv normalerweise um die Rundung. <b>Ganz oben</b>, wo sich der K\u00f6rper zur Kuppel wegw\u00f6lbt, geht das nicht \u2014 um eine Achse wickeln l\u00e4sst sich nur der <i>Bauch</i>. Dort wurde das Motiv bisher <b>kommentarlos flach aufgeheftet</b>, und flach auf einer W\u00f6lbung liegt es nun einmal nur in der Mitte auf: \u201eEs ist nicht ganz drauf, l\u00e4sst sich nicht ganz drauf legen.\u201c Jetzt steht der Grund am Zeiger: <i>\u201eAuf Fl\u00e4che heften (W\u00f6lbung \u2014 hier weiter unten am Bauch wickeln)\u201c</i>. Damit siehst du sofort, dass du das Motiv nur ein St\u00fcck tiefer setzen musst, statt an ihm herumzuziehen. Gemeldet von Josy.'],
+  ]},
   { version:'1.18.1', date:'2026-09-13', changes:[
     ['\u{1F5B1}','<b>SpaceMouse: ältere 3Dconnexion-Modelle laufen jetzt mit — und es gibt ein eigenes Einrichtungs-Fenster.</b> Bisher war die Unterstützung auf die neueren SpaceMäuse zugeschnitten. Die ältere Generation aus der Logitech-Zeit (<b>SpaceExplorer</b>, SpaceNavigator, SpacePilot, Spaceball) meldet ihre Bewegung anders: Verschieben und Drehen kommen in <b>zwei getrennten Meldungen</b>, die Tasten in einer dritten, und der Vollausschlag liegt nicht bei jedem Modell gleich. V3D CAD nimmt jetzt nichts mehr als gegeben an, sondern liest Achsenzahl und Wertebereich aus dem Gerät — der Knauf fühlt sich dadurch auf jedem Modell gleich schnell an. Neu ist das Fenster <b>„\u{1F5B1} SpaceMouse“</b> in der oberen Leiste (auch unter <i>Einstellungen</i>). Darin: <b>Verbinden</b> mit Klartext-Status statt Rateraum; ein <b>Nullpunkt-Abgleich</b> gegen den Drift, den gebrauchte Geräte gerne haben (die Ansicht wandert dann von allein, obwohl niemand den Knauf anfasst) — einmal abgleichen, und sie steht wieder still; <b>sechs Balken</b>, an denen du beim Bewegen siehst, welche Achse gerade arbeitet, jede einzeln <b>umkehrbar</b>, falls sich eine Richtung verkehrt anfühlt; und Schalter, um <b>Drehen</b> oder <b>Schwenken/Zoomen</b> stillzulegen. Die <b>Tasten am Gerät</b> lassen sich zum ersten Mal nutzen — Ansicht einpassen, Ansicht von oben/vorn/rechts, Perspektive umschalten, Rückgängig und so weiter. Weil jedes Modell seine Tasten anders nummeriert, werden sie <b>angelernt</b>: Aktion wählen, „Taste lernen“ klicken, Taste drücken — fertig, und es bleibt gespeichert. Zwei Grenzen, die bleiben: Eine SpaceMouse direkt ansprechen können nur <b>Chrome und Edge</b> (Firefox und Safari bieten die nötige Schnittstelle nicht an), und unter Windows hält der 3Dconnexion-Treiber das Gerät manchmal exklusiv fest — dann kommt jetzt statt „Verbindung fehlgeschlagen“ der Hinweis, 3DxWare in der Taskleiste zu beenden. Für den Notfall gibt es im Fenster einen Knopf <b>Diagnose kopieren</b>, dessen Text man einfach in eine Mail einfügen kann. Gewünscht von Sebastian.'],
   ]},
@@ -43089,20 +43092,28 @@ function _svgSnapDetect(svgMesh, mouseEvent) {
     // Gekrümmte Mantelfläche? Dann biegen statt tangential aufkleben — sonst wird
     // die Gravur zu den Rändern hin flacher (bei Windlichtern deutlich sichtbar).
     const probe = _svgWrapProbe(hit.object, hit.point);
-    let wrap = null;
+    let wrap = null, kuppel = false;
     if (probe) {
       const c0 = probe.axisPt.clone()
         .addScaledVector(probe.axisDir, hit.point.clone().sub(probe.axisPt).dot(probe.axisDir));
       const radial = hit.point.clone().sub(c0).normalize();
       const nW = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
-      if (Math.abs(nW.dot(radial)) > 0.8) wrap = probe;   // Mantel, nicht Deckel/Boden
+      // Mantel (Normale zeigt radial weg) oder Deckel/Boden/Kuppel?
+      if (Math.abs(nW.dot(radial)) > 0.8) wrap = probe;
+      else kuppel = true;
     }
     _textSnapTarget = { obj: obj || hit.object, type: wrap ? 'wrap' : 'surface', wrap };
-    // Ovale Körper lassen sich nicht sauber um eine Achse wickeln. Das vorher
-    // kommentarlos als „Auf Fläche heften" abzutun, sah nach einem Fehler aus.
+    // Wird nicht gewickelt, muss der Grund dranstehen. Kommentarlos „Auf Fläche
+    // heften" sah nach einem Fehler aus: Auf einer Wölbung liegt ein flaches
+    // Motiv nun einmal nur in der Mitte auf („es ist nicht ganz drauf, lässt
+    // sich nicht ganz drauf legen", Josy 12.9.). Zwei Fälle:
+    //  • kuppel: Der Körper IST rund, aber hier wölbt er sich weg (Deckel, Boden,
+    //    Kuppelspitze). Um eine Achse wickeln geht dort grundsätzlich nicht.
+    //  • oval: Der Querschnitt ist zu unrund für eine Wickelachse.
     hint.textContent = wrap ? '↩ Um Rundung wickeln'
+      : (kuppel ? '📌 Auf Fläche heften (Wölbung — hier weiter unten am Bauch wickeln)'
       : (!probe && _svgWrapReason === 'oval' ? '📌 Auf Fläche heften (zu oval zum Wickeln)'
-                                             : '📌 Auf Fläche heften');
+                                             : '📌 Auf Fläche heften'));
     hint.style.display = 'block';
     hint.style.left = (mouseEvent.clientX + 14) + 'px';
     hint.style.top  = (mouseEvent.clientY - 24) + 'px';
