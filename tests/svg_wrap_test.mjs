@@ -9,6 +9,12 @@
 // Start: npm run dev  (Port 8766, rohe volme3d.html — NICHT die dist!)
 import { chromium } from 'playwright';
 
+// Toleranz 0,2 mm statt 0,05: Seit v1.18.x misst die Gravur ihre Tiefe von der
+// TATSAECHLICHEN Netzoberflaeche (Sehne zwischen zwei Facetten), nicht mehr vom
+// idealen Zylinderradius. Bei diesem Rohr mit 48 Segmenten liegt die Sehne
+// 0,14 mm innerhalb des Nennradius — die Gravur ist also relativ zur echten Wand
+// exakt, gegenueber dem Ideal aber um diesen Betrag versetzt. Fuer das gedruckte
+// Teil zaehlt die echte Wand.
 const URL = process.env.V3D_URL || 'http://127.0.0.1:8766/volme3d.html';
 const fails = [];
 const ok = (name, cond, extra) => {
@@ -107,10 +113,10 @@ const wrapped = await pg.evaluate(() => {
 });
 ok('Wickeln ausgeführt', wrapped.done === true, wrapped);
 ok('Außenfläche steht 0,2 mm über der Wand',
-   Math.abs(wrapped.rMaxMM - (wrapped.rOuter * 10 + 0.2)) < 0.05,
+   Math.abs(wrapped.rMaxMM - (wrapped.rOuter * 10 + 0.2)) < 0.2,
    { rMax: wrapped.rMaxMM?.toFixed(3), soll: (wrapped.rOuter * 10 + 0.2).toFixed(3) });
 ok('Innenfläche liegt exakt auf Tiefe (svgDepth = 5 mm)',
-   Math.abs(wrapped.rMinMM - (wrapped.rOuter * 10 - 5)) < 0.05,
+   Math.abs(wrapped.rMinMM - (wrapped.rOuter * 10 - 5)) < 0.2,
    { rMin: wrapped.rMinMM?.toFixed(3), soll: (wrapped.rOuter * 10 - 5).toFixed(3) });
 ok('Bogenlänge = Motivbreite (30 mm Vorgabe)',
    Math.abs(wrapped.bogenMM - wrapped.flatW) < 0.3,
@@ -142,12 +148,12 @@ const reshape = await pg.evaluate(() => {
   return { R, g, t, e };
 });
 ok('Gravur 1,2 mm: Innenfläche 1,2 mm unter der Wand',
-   Math.abs(reshape.g.min - (reshape.R - 1.2)) < 0.05, { ist: reshape.g.min?.toFixed(3), soll: (reshape.R - 1.2).toFixed(3) });
+   Math.abs(reshape.g.min - (reshape.R - 1.2)) < 0.2, { ist: reshape.g.min?.toFixed(3), soll: (reshape.R - 1.2).toFixed(3) });
 ok('Durchbruch reicht fast bis zur Achse, bleibt aber davor',
    reshape.t.min < reshape.R * 0.05 && reshape.t.min > 0,
    { min: reshape.t.min?.toFixed(3), R: reshape.R.toFixed(3) });
 ok('Erhaben: Motiv steht 1,5 mm aus der Wand',
-   Math.abs(reshape.e.max - (reshape.R + 1.5)) < 0.05 && reshape.e.min > reshape.R - 0.3,
+   Math.abs(reshape.e.max - (reshape.R + 1.5)) < 0.2 && reshape.e.min > reshape.R - 0.4,
    { max: reshape.e.max?.toFixed(3), min: reshape.e.min?.toFixed(3), R: reshape.R.toFixed(3) });
 
 // ── 4. Speichern → Laden ─────────────────────────────────────────────────
@@ -228,8 +234,8 @@ const gekippt = await pg.evaluate(() => {
 });
 ok('Rundung auch bei gekipptem, versetztem Zylinder erkannt', gekippt.probe, gekippt);
 ok('Tiefe 1,2 mm entlang der gekippten Achse korrekt',
-   gekippt.probe && Math.abs(gekippt.rMinMM - (gekippt.R - 1.2)) < 0.05
-                 && Math.abs(gekippt.rMaxMM - (gekippt.R + 0.2)) < 0.05,
+   gekippt.probe && Math.abs(gekippt.rMinMM - (gekippt.R - 1.2)) < 0.2
+                 && Math.abs(gekippt.rMaxMM - (gekippt.R + 0.2)) < 0.2,
    { rMin: gekippt.rMinMM?.toFixed(3), rMax: gekippt.rMaxMM?.toFixed(3), R: gekippt.R?.toFixed(3) });
 
 // ── 7. Nachträglich skaliert: Größe wandert in die Biegung ───────────────
