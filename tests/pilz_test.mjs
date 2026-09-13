@@ -191,6 +191,77 @@ for (const v of [{ name: 'Standard', p: {} }, { name: 'Flacher Hut', p: { capH: 
   ok(v.name + ': hohler Stiel spart Material', !r.canHollow || r.anteil < 0.6, { anteilVomVollen: +r.anteil.toFixed(2) });
 }
 
+// ── 4c: Leuchtmittel-Einsatz und bauchiger Stiel ───────────────────────────
+for (const v of [{ name: 'LED-Einsatz', p: { lamp: 1, stemDia: 42 } },
+                 { name: 'LED + Bauch', p: { lamp: 1, stemDia: 42, belly: 45 } },
+                 { name: 'LED + Taille', p: { lamp: 1, stemDia: 48, belly: -25 } },
+                 { name: 'LED groß', p: { lamp: 1, stemDia: 60, lampD: 45, lampH: 30 } }]) {
+  const r = await pg.evaluate(({ over }) => {
+    const bak = { ..._pilzP };
+    Object.assign(_pilzP, over);
+    const d = _pilzDims(_pilzP);
+    const g = _pilzStemGeo(_pilzP, 160);
+    const w = window._plzT.watertight(g);
+    const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+    mesh.updateMatrixWorld(true);
+    // Passt der Puck hinein? Zylinder 0,4 mm unter Nennmaß abtasten — die drei
+    // Klemmnasen dürfen greifen, sonst muss alles frei sein.
+    const rp = (_pilzP.lampD / 20) - 0.04, hp = _pilzP.lampH / 10;
+    let kollision = 0, punkte = 0;
+    for (let a = 0; a < 48; a++) for (let j = 0; j <= 12; j++) {
+      const th = a / 48 * Math.PI * 2, y = 0.02 + (j / 12) * (hp - 0.04);
+      punkte++;
+      if (window._plzT.inside(mesh, new THREE.Vector3(rp * Math.cos(th), y, rp * Math.sin(th)))) kollision++;
+    }
+    // Klemmung: engste Stelle der Tasche muss unter dem Puck-Ø liegen
+    const pos = g.attributes.position;
+    let rMinTasche = 1e9;
+    for (let i = 0; i < pos.count; i++) {
+      const y = pos.getY(i); if (y > d.puckTop - 0.02 || y < 0.02) continue;
+      rMinTasche = Math.min(rMinTasche, Math.hypot(pos.getX(i), pos.getZ(i)));
+    }
+    const standRing = d.rStem(0) - d.ribAmp - d.rPuck;
+    const res = { offen: w.offen, vol: window._plzT.vol(g), kollision, punkte,
+             klemmMm: (_pilzP.lampD / 2) - rMinTasche * 10, stopMm: (_pilzP.lampD / 2) - d.rStop * 10,
+             standMm: standRing * 10, lampOk: d.lampOk, bauchMm: d.rStem(d.SH * 0.38) * 20 };
+    g.dispose(); Object.assign(_pilzP, bak);
+    return res;
+  }, { over: v.p });
+  ok(v.name + ': Stiel wasserdicht', r.offen === 0 && r.vol > 0, { offen: r.offen });
+  ok(v.name + ': Einsatz passt hinein', r.kollision === 0, { kollisionen: r.kollision, von: r.punkte });
+  ok(v.name + ': Nasen klemmen (0,2–0,6 mm)', r.klemmMm > 0.15 && r.klemmMm < 0.7, { klemmMm: +r.klemmMm.toFixed(2) });
+  ok(v.name + ': Anschlag hält ihn oben', r.stopMm > 0.8, { ueberstandMm: +r.stopMm.toFixed(2) });
+  ok(v.name + ': Stiel steht auf einem Ring', r.standMm >= 1.5, { ringMm: +r.standMm.toFixed(2) });
+}
+
+// Bauch wirkt in beide Richtungen und bleibt dicht
+for (const [name, belly, erwartet] of [['Bauchig', 60, 'dicker'], ['Taille', -30, 'dünner']]) {
+  const r = await pg.evaluate(({ b }) => {
+    const bak = { ..._pilzP };
+    Object.assign(_pilzP, { belly: b });
+    const d = _pilzDims(_pilzP);
+    const g = _pilzStemGeo(_pilzP, 120);
+    const w = window._plzT.watertight(g);
+    const mitte = d.rStem(d.SH * 0.38) * 20, gerade = (d.rS0 + (d.rS1 - d.rS0) * 0.38) * 20;
+    g.dispose(); Object.assign(_pilzP, bak);
+    return { offen: w.offen, mitte, gerade };
+  }, { b: belly });
+  ok(name + ': Stiel wasserdicht', r.offen === 0, { offen: r.offen });
+  ok(name + ': Kontur wird ' + erwartet, erwartet === 'dicker' ? r.mitte > r.gerade + 2 : r.mitte < r.gerade - 1,
+     { mitteMm: +r.mitte.toFixed(1), geradeMm: +r.gerade.toFixed(1) });
+}
+
+// Zu dünner Stiel für den Einsatz wird gemeldet, nicht still gebaut
+const zuDuenn = await pg.evaluate(() => {
+  const bak = { ..._pilzP };
+  Object.assign(_pilzP, { lamp: 1, stemDia: 24 });
+  const d = _pilzDims(_pilzP);
+  const res = { lampOk: d.lampOk, minDia: d.lampMinDia };
+  Object.assign(_pilzP, bak);
+  return res;
+});
+ok('Zu dünner Stiel: Einsatz wird gemeldet', zuDuenn.lampOk === false && zuDuenn.minDia > 24, zuDuenn);
+
 // ── 5: zu flacher Hut wird gemeldet, nicht stillschweigend durchbohrt ───────
 const flach = await pg.evaluate(() => {
   const bak = { ..._pilzP };
@@ -220,6 +291,59 @@ ok('Dialog öffnet', created.sichtbar);
 ok('Erstellen legt zwei Teile an', created.n === 2, created.namen);
 ok('Beide Teile stehen auf der Platte (y=0)', created.boxen.every(b => Math.abs(b.yMin) < 0.02), created.boxen);
 ok('Dialog schließt nach dem Erstellen', created.zu);
+
+// ── 7: Textur lässt sich auflegen, ohne das Gewinde zu verformen ───────────
+const tex = await pg.evaluate(() => {
+  objects.slice().forEach(o => { scene.remove(o); });
+  objects.length = 0;
+  Object.assign(_pilzP, _PILZ_DEF);
+  _pilzP.lamp = 1; _pilzP.stemDia = 44;
+  _pilzOpen(); _pilzCreate();
+  const stem = objects.find(o => o.userData.name.startsWith('Pilz-Stiel'));
+  const hut  = objects.find(o => o.userData.name.startsWith('Pilz-Hut'));
+  const d = _pilzDims(stem.userData.pilzParams);
+  const knopfDa = !!stem.userData._origGeo;
+  // Ausgangslage: Radius über der Schulter (Gewinde) und an der Stielmitte
+  const mess = (o, yMin, yMax) => {
+    const p = o.geometry.attributes.position;
+    let rMax = 0, n = 0;
+    for (let i = 0; i < p.count; i++) { const y = p.getY(i);
+      if (y >= yMin && y <= yMax) { rMax = Math.max(rMax, Math.hypot(p.getX(i), p.getZ(i))); n++; } }
+    return { rMax, n };
+  };
+  const vorGewinde = mess(stem, d.SH + 0.02, d.SH + d.Ht);
+  const vorMitte   = mess(stem, d.SH * 0.3, d.SH * 0.6);
+  // Tasche = die INNERE Fläche im selben Höhenband; rMax würde dort die
+  // (absichtlich texturierte) Außenwand erwischen
+  const messInnen = (o, yMin, yMax, rLimit) => {
+    const p = o.geometry.attributes.position;
+    let rMin = 1e9, n = 0;
+    for (let i = 0; i < p.count; i++) { const y = p.getY(i), r = Math.hypot(p.getX(i), p.getZ(i));
+      if (y >= yMin && y <= yMax && r <= rLimit) { rMin = Math.min(rMin, r); n++; } }
+    return { rMax: rMin, n };
+  };
+  const vorTasche  = messInnen(stem, 0.05, d.puckTop - 0.05, d.rPuck + 0.1);
+  selectObjs([stem]);
+  applyDisplacement('pattern', 'waben');
+  applyDisplacement('amp', 1.2);
+  applyDisplacement('where', 'alle');
+  const nachGewinde = mess(stem, d.SH + 0.02, d.SH + d.Ht);
+  const nachMitte   = mess(stem, d.SH * 0.3, d.SH * 0.6);
+  const nachTasche  = messInnen(stem, 0.05, d.puckTop - 0.05, d.rPuck + 0.1);
+  const w = window._plzT.watertight(stem.geometry);
+  const box = new THREE.Box3().setFromObject(stem);
+  return { knopfDa,
+    gewindeDeltaMm: (nachGewinde.rMax - vorGewinde.rMax) * 10,
+    taschenDeltaMm: (nachTasche.rMax - vorTasche.rMax) * 10,
+    mitteDeltaMm: (nachMitte.rMax - vorMitte.rMax) * 10,
+    offen: w.offen, yMin: box.min.y, hutKnopf: !!hut.userData._origGeo };
+});
+ok('Textur-Knopf steht für beide Teile bereit', tex.knopfDa && tex.hutKnopf);
+ok('Textur verändert die Außenhaut', tex.mitteDeltaMm > 0.3, { deltaMm: +tex.mitteDeltaMm.toFixed(2) });
+ok('Textur lässt das Gewinde in Ruhe', Math.abs(tex.gewindeDeltaMm) < 0.02, { deltaMm: +tex.gewindeDeltaMm.toFixed(3) });
+ok('Textur lässt die Einsatz-Tasche in Ruhe', Math.abs(tex.taschenDeltaMm) < 0.02, { deltaMm: +tex.taschenDeltaMm.toFixed(3) });
+ok('Teil bleibt nach der Textur wasserdicht', tex.offen === 0, { offen: tex.offen });
+ok('Teil steht nach der Textur weiter auf der Platte', Math.abs(tex.yMin) < 0.02, { yMin: tex.yMin });
 
 ok('Keine JS-Fehler auf der Seite', pageErrors.length === 0, pageErrors.slice(0, 3));
 
