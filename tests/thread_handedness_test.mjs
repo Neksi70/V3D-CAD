@@ -89,6 +89,12 @@ const res = await pg.evaluate(() => {
   { const d = _pilzDims(_pilzP);
     add('Pilz-Stiel', 'rechts', hand(_pilzStemGeo(_pilzP, 180), _pilzP.pitch, d.SH + d.P * 0.6, d.SH + d.Ht - d.P * 0.6, d.rCore - 0.01, d.rThreadOut + 0.01));
     add('Pilz-Hut', 'rechts', hand(_pilzCapGeo(_pilzP, 180), _pilzP.pitch, d.yb + d.P * 0.7, d.holeTop - d.P * 0.7, 0, d.rThreadOut + d.clr + 0.01)); }
+  // Pilzlampe: Fuß (außen) und Schirm-Kragen (innen), glatt damit das Relief nicht mitzählt
+  { const bak = { ..._plpP }; Object.assign(_plpP, { motif: 'glatt' });
+    const d = _plpDims(_plpP);
+    add('Pilzlampe-Fuß', 'rechts', hand(_plpStemGeo(_plpP, 'normal'), _plpP.pitch, d.SH + d.P * 0.6, d.yTop - d.P * 0.6, d.rCore - 0.01, d.rThreadOut + 0.01));
+    add('Pilzlampe-Schirm', 'rechts', hand(_plpShadeGeo(_plpP, 'normal'), _plpP.pitch, d.P * 0.7, d.fem.holeTop - d.P * 0.7, 0, d.rThreadOut + d.clr + 0.01));
+    Object.assign(_plpP, bak); }
   // Schneiden: Doppelgewindebolzen (die Bohrung nutzt dieselbe _buildThreadGeo)
   { const spec = SCREW_SPECS.M8;
     const bolt = _cutThreadBoltGeo(spec, 20, false); bolt.computeBoundingBox(); const bb = bolt.boundingBox, h = bb.max.y - bb.min.y;
