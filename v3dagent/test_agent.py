@@ -55,6 +55,13 @@ ok('ENTWURF mit Empfänger', A.deuten('ENTWURF Ralf\nHallo Ralf') == ('entwurf',
 ok('ENTWURF „an Ralf:"', A.deuten('ENTWURF an Ralf: Hallo\nZeile zwei') == ('entwurf', 'ralf', 'Hallo\nZeile zwei'))
 ok('Ohne Kennzeichen gilt es als Antwort an Volker',
    A.deuten('Einfach nur Text') == ('antwort', None, 'Einfach nur Text'))
+ok('Vorwort vor dem Kennzeichen fliegt raus',
+   A.deuten('Ich habe nachgesehen.\n\nANTWORT\nDas Bord hat keinen Preis.')
+   == ('antwort', None, 'Das Bord hat keinen Preis.'))
+ok('Vorwort vor ENTWURF fliegt auch raus',
+   A.deuten('Kurz überlegt:\n**ENTWURF Ralf**\nMoin Ralf!') == ('entwurf', 'ralf', 'Moin Ralf!'))
+ok('Nacktes Kennzeichen ohne Inhalt zählt nicht als Nachricht',
+   A.deuten('ANTWORT')[2] == 'ANTWORT')
 ok('Ja/Nein-Erkennung ist tolerant', A.schlicht(' Ja! ') in A.JA and A.schlicht('Nö.') in A.NEIN)
 
 # ── 1. Volker stellt eine Frage → Antwort an Volker, sonst nichts ────────────

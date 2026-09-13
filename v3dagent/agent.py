@@ -115,26 +115,33 @@ def sichern(pfad, daten):
 def deuten(antwort):
     """Claudes Ausgabe → ('antwort'|'entwurf', empfänger, text).
 
-    Das Modell soll mit ANTWORT oder ENTWURF <name> beginnen. Hält es sich nicht
-    daran, gilt der ganze Text als Antwort an Volker — lieber eine Nachricht zu
-    viel an ihn selbst als ein ungewollter Entwurf an einen Dritten.
+    Die Kennzeichen-Zeile (ANTWORT / ENTWURF <name>) soll die erste sein, in der
+    Praxis stellt das Modell aber gern noch einen Gedanken davor. Darum gilt die
+    ERSTE Zeile, die genau ein Kennzeichen ist — alles davor fliegt raus, alles
+    danach ist die Nachricht.
+
+    Findet sich gar kein Kennzeichen, gilt der ganze Text als Antwort an Volker:
+    lieber eine Nachricht zu viel an ihn selbst als ein ungewollter Entwurf an
+    einen Dritten.
     """
     text = (antwort or '').strip()
     if not text:
         return ('antwort', None, '')
     zeilen = text.split('\n')
-    kopf = zeilen[0].strip()
-    rest = '\n'.join(zeilen[1:]).strip()
-    m = re.match(r'^\**\s*ENTWURF\b\s*(?:an\s+)?([A-Za-zÄÖÜäöüß][\wÄÖÜäöüß-]*)?\s*:?\s*(.*)$', kopf, re.I)
-    if m:
-        gleich = (m.group(2) or '').strip()
-        koerper = (gleich + ('\n' + rest if rest else '')).strip()
-        if koerper:
-            return ('entwurf', (m.group(1) or '').lower() or None, koerper)
-    m = re.match(r'^\**\s*ANTWORT\b\s*:?\s*(.*)$', kopf, re.I)
-    if m:
-        gleich = (m.group(1) or '').strip()
-        return ('antwort', None, (gleich + ('\n' + rest if rest else '')).strip())
+    for i, zeile in enumerate(zeilen):
+        kopf = zeile.strip()
+        rest = '\n'.join(zeilen[i + 1:]).strip()
+        m = re.match(r'^[*_#\s]*ENTWURF\b\s*(?:an\s+)?([A-Za-zÄÖÜäöüß][\wÄÖÜäöüß-]*)?[*_\s]*:?\s*(.*)$', kopf, re.I)
+        if m:
+            koerper = ((m.group(2) or '').strip() + ('\n' + rest if rest else '')).strip()
+            if koerper:
+                return ('entwurf', (m.group(1) or '').lower() or None, koerper)
+            continue
+        m = re.match(r'^[*_#\s]*ANTWORT\b[*_\s]*:?\s*(.*)$', kopf, re.I)
+        if m:
+            koerper = ((m.group(1) or '').strip() + ('\n' + rest if rest else '')).strip()
+            if koerper:
+                return ('antwort', None, koerper)
     return ('antwort', None, text)
 
 
@@ -184,7 +191,7 @@ class Bruecke:
             'Du bist Volkers Werkstatt-Assistent für V3D CAD (Volme 3D Akademie) und antwortest über WhatsApp.\n'
             'Schreib KURZ und auf Deutsch — WhatsApp, keine Aufsätze. Keine Überschriften, keine Aufzählungssternchen; '
             'WhatsApp kann nur *fett* und _kursiv_.\n'
-            'Deine Ausgabe MUSS mit genau einer dieser Zeilen beginnen:\n'
+            'Deine Ausgabe MUSS mit genau einer dieser Zeilen ANFANGEN — kein Vorwort, keine Einleitung davor:\n'
             'ANTWORT\n'
             '  — alles Weitere geht an Volker selbst.\n'
             'ENTWURF <Name>\n'
