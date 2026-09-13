@@ -80,6 +80,18 @@ Ergebnis je Konto/Ordner/UID. Fallen dabei:
 
 Abschalten: **🖼 Ansicht** in der Seitenleiste.
 
+## Dunkelmodus
+
+**🖼 Ansicht → Farbschema**: ☀️ Hell, 🌙 Dunkel oder 📱 Gerät (Standard, folgt
+Handy/Windows und schaltet live mit). Je Gerät gespeichert (`v3dmail.opt.thema`),
+gesetzt von einem Kopfskript vor dem ersten Zeichnen — kein weißes Aufblitzen.
+Umgesetzt nur über CSS-Variablen (`:root[data-theme="dunkel"]`).
+
+* Reine Textmails werden dunkel dargestellt.
+* **HTML-Mails bleiben auf weißem Papier**: sie bringen eigene Farben mit, meist
+  dunkle Schrift ohne Hintergrund — umgefärbt wäre vieles unlesbar.
+* Aus demselben Grund steht die Signatur-Vorschau beim Verfassen auf Weiß.
+
 ## Unter Windows (und am Rechner allgemein)
 
 Adresse in Edge oder Chrome öffnen → **Als App installieren**. Danach eigenes
@@ -394,6 +406,7 @@ python3 test_server.py                         # Tests
 python3 smoke_ui.py                            # Browser-Durchlauf am Rechner
 python3 smoke_bilder.py                        # Bilder anzeigen und speichern
 python3 smoke_handy.py                         # Handy-Ansicht
+python3 smoke_dunkel.py                        # Dunkelmodus (Schreibaufrufe gesperrt)
 python3 smoke_windows.py                       # Installation als Windows-App
 tailscale funnel --set-path=/mail off          # öffentlichen Zugang abschalten
 ```
