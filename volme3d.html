@@ -13252,7 +13252,10 @@ function applyLocalDimChange(o, axes, val) {
   // bei Breitenänderung ohne „aus der Mitte" die rechte Welt-Kante festhalten.
   const _postBox = getMeshBox(o);
   o.position.y += _preBox.min.y - _postBox.min.y;
-  if (!scaleFromCenter && axes !== 'y') o.position.x += _preBox.max.x - _postBox.max.x;
+  for (const k of ['x', 'z']) {    // Mitte X/Z festhalten (Ursprung kann neben dem Körper liegen)
+    if (!scaleFromCenter && k === 'x' && axes !== 'y') o.position.x += _preBox.max.x - _postBox.max.x;
+    else o.position[k] += (_preBox.min[k] + _preBox.max[k]) / 2 - (_postBox.min[k] + _postBox.max[k]) / 2;
+  }
   { const _b0 = getMeshBox(o); if (_b0.min.y < -1e-4) o.position.y -= _b0.min.y; }
   _dimChangePost(o);
 }
@@ -13312,15 +13315,17 @@ function applyDimChange(axis, val) {
   if (axis === 'sh' || (axis === 'uniform' && scaleLocked)) {
     o.position.y += _preBox.min.y - _postBox.min.y;
   }
-  // Breite/Tiefe (X/Z): nur verschieben, wenn nicht aus der Mitte skaliert wird
-  if (!scaleFromCenter) {
-    if (axis === 'sw' || (axis === 'uniform' && scaleLocked)) {
-      o.position.x += _preBox.max.x - _postBox.max.x;
-    }
-    if (axis === 'sd' || (axis === 'uniform' && scaleLocked)) {
-      o.position.z += _preBox.max.z - _postBox.max.z;
-    }
-  }
+  // Breite/Tiefe (X/Z): „Vom Zentrum" hält die BBox-Mitte fest, sonst die +Kante der
+  // geänderten Achse. Mitte EXPLIZIT verankern: scale wirkt um den Geometrie-Ursprung,
+  // und der liegt bei Schnittteilen (C-Segment eines Rohrs) neben dem Körper → das
+  // Teil wanderte beim Breiten-Regler seitlich weg (Ralf 13.9.26).
+  const _xz = (k, changed) => {
+    if (!scaleFromCenter && changed) o.position[k] += _preBox.max[k] - _postBox.max[k];
+    else o.position[k] += (_preBox.min[k] + _preBox.max[k]) / 2 - (_postBox.min[k] + _postBox.max[k]) / 2;
+  };
+  const _all = axis === 'uniform' || scaleLocked;
+  _xz('x', axis === 'sw' || _all);
+  _xz('z', axis === 'sd' || _all);
   // Sicherheitsnetz: Unterkante nie unter die Buildplate (y = 0)
   {
     const _b0 = getMeshBox(o);
@@ -43714,8 +43719,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.15';
+const VOLME3D_VERSION = '1.18.16';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.16', date:'2026-09-13', changes:[
+    ['\u{1F4CF}','<b>Maß-Regler lassen das Teil an seinem Platz.</b> Bei manchen Teilen ist das Teil beim Ziehen an <b>Breite X</b> oder <b>Tiefe Y</b> zusätzlich zur Seite gewandert, bei <b>Höhe Z</b> nicht. Betroffen waren vor allem Teile, die aus einem größeren Körper herausgeschnitten wurden, z. B. ein Stück von einem Rohr. Jetzt wächst das Teil bei „Vom Zentrum“ gleichmäßig nach beiden Seiten und seine Mitte bleibt stehen. Die Unterkante bleibt wie bisher auf der Platte.'],
+  ]},
   { version:'1.18.15', date:'2026-09-13', changes:[
     ['\u{1F9FD}','<b>Neu im Radierer: der Ring.</b> Um ein Teil herum alles wegmachen ging bisher nur mühsam mit dem Kreis-Pinsel. Jetzt gibt es im 🧽 <b>Radierer</b> oben den Umschalter <b>◎ Ring</b>. Du stellst einen <b>Innen-Ø</b> ein (Feld, Schieberegler oder Mausrad). Am Mauszeiger siehst du dann einen grünen Kreis, das ist der geschützte Bereich. Lege ihn um dein Teil, drücke auf die Mitte und <b>zieh den roten Ring nach außen auf</b>, das Maß „innen Ø … · außen Ø …“ läuft live mit. Beim Loslassen wird <b>alles im roten Ring gelöscht</b>, durchgehend in Blickrichtung, also Ober- und Unterseite. Was im Innenkreis liegt, bleibt unangetastet. Die Dreiecke werden <b>sauber am Kreis zerschnitten</b>, es bleiben keine Zacken und keine Schnittfugen. Mit „nur das angeklickte Objekt“ bleiben andere Körper verschont. Esc bricht das Aufziehen ab, Strg+Z macht rückgängig.'],
   ]},
@@ -45524,10 +45532,14 @@ let _svgWrapCache = null;   // Probe läuft über alle Dreiecke → nicht pro Ma
 // Querschnitt: alle Kanten mit der Ebene (Achse ax = h) schneiden. Vertices
 // allein reichen nicht — ein Zylindermantel hat sie nur oben und unten.
 // Liefert ein flaches Array [a1,a2, a1,a2, …] in den beiden anderen Achsen.
-function _svgWrapSection(pos, idx, nTri, ax, h) {
+// mitNormale=true: zusätzlich out.ns = [n1,n2, …] — der Anteil der Dreiecksnormale
+// in der Schnittebene, um Innen- von Außenwand zu unterscheiden (siehe _svgWrapWandSeite).
+function _svgWrapSection(pos, idx, nTri, ax, h, mitNormale) {
   const c1 = (ax + 1) % 3, c2 = (ax + 2) % 3;
   const g = (i, c) => c === 0 ? pos.getX(i) : c === 1 ? pos.getY(i) : pos.getZ(i);
   const out = [];
+  const ns = mitNormale ? [] : null;
+  if (ns) out.ns = ns;
   const tri = [0, 0, 0];
   // Feine Kunst-STLs haben schnell Millionen Dreiecke. Für einen Querschnitt
   // reichen ein paar Dutzend Punkte — also nur jedes n-te Dreieck ansehen,
@@ -45535,6 +45547,7 @@ function _svgWrapSection(pos, idx, nTri, ax, h) {
   const step = Math.max(1, Math.ceil(nTri / 150000));
   for (let t = 0; t < nTri; t += step) {
     tri[0] = idx ? idx[t*3] : t*3; tri[1] = idx ? idx[t*3+1] : t*3+1; tri[2] = idx ? idx[t*3+2] : t*3+2;
+    let n1 = 0, n2 = 0, nDone = false;
     for (let e = 0; e < 3; e++) {
       const a = tri[e], b = tri[(e+1) % 3];
       const ha = g(a, ax), hb = g(b, ax);
@@ -45542,6 +45555,16 @@ function _svgWrapSection(pos, idx, nTri, ax, h) {
       const f = (h - ha) / (hb - ha);
       out.push(g(a, c1) + (g(b, c1) - g(a, c1)) * f,
                g(a, c2) + (g(b, c2) - g(a, c2)) * f);
+      if (ns) {
+        if (!nDone) {
+          // Normale = (B−A) × (C−A), nur die Anteile quer zur Achse
+          const A = [g(tri[0],0), g(tri[0],1), g(tri[0],2)], B = [g(tri[1],0), g(tri[1],1), g(tri[1],2)], C = [g(tri[2],0), g(tri[2],1), g(tri[2],2)];
+          const u = [B[0]-A[0], B[1]-A[1], B[2]-A[2]], v = [C[0]-A[0], C[1]-A[1], C[2]-A[2]];
+          const nx = u[1]*v[2] - u[2]*v[1], ny = u[2]*v[0] - u[0]*v[2], nz = u[0]*v[1] - u[1]*v[0];
+          const N = [nx, ny, nz]; n1 = N[c1]; n2 = N[c2]; nDone = true;
+        }
+        ns.push(n1, n2);
+      }
     }
   }
   return out;
@@ -45634,55 +45657,45 @@ function _svgWrapRing(pos, idx, nTri, ax, h, q1, q2) {
 }
 
 // Bei Hohlkörpern liefert ein Ebenenschnitt Innen- UND Außenwand. Der Median über
-// alle Punkte springt dann zufällig zwischen beiden — an Josys Lichthülle (2 mm
+// alle Punkte sprang dann zufällig zwischen beiden — an Josys Lichthülle (2 mm
 // Wand) lagen 29 von 105 Feldzellen auf der Innenwand, das Motiv sank fleckweise
-// bis 2 mm ein und sah zerstückelt aus, egal wie klein es war (13.9.). Deshalb:
-// Radien clustern (Lücke > 1 % des Radius trennt die Wände) und den Cluster der
-// getroffenen Seite nehmen — außen, wenn von außen gewickelt wird.
-function _svgWrapClusterRadius(rs, seite, gap) {
-  if (!rs.length) return null;
-  rs.sort((a, b) => a - b);
-  let k;
-  if (seite === 'innen') {
-    k = 0;
-    while (k + 1 < rs.length && rs[k + 1] - rs[k] <= gap) k++;
-    const c = rs.slice(0, k + 1);
-    return c[c.length >> 1];
-  }
-  k = rs.length - 1;
-  while (k > 0 && rs[k] - rs[k - 1] <= gap) k--;
-  const c = rs.slice(k);
-  return c[c.length >> 1];
+// bis 2 mm ein und sah zerstückelt aus, egal wie klein es war (13.9.). Radius
+// allein trennt die Wände nicht (Zellen feiner als das Netz, wellige Wände);
+// die Dreiecksnormale schon: außen zeigt sie von der Achse weg, innen zur Achse.
+// Vorzeichen am Trefferpunkt bestimmen (Punkt mit dem exakten Trefferradius), dann
+// überall nur Punkte mit demselben Vorzeichen zählen — das ist auch bei innen
+// gewickelten Bechern und bei umgestülpten STLs in sich stimmig.
+function _svgWrapPunktSeite(pts, i, c1, c2) {
+  const ns = pts.ns; if (!ns) return 0;
+  const d = ns[i] * (pts[i] - c1) + ns[i+1] * (pts[i+1] - c2);
+  return d > 0 ? 1 : d < 0 ? -1 : 0;
 }
-
-// Welche Wandseite wurde getroffen? Der Trefferradius ist exakt (am Klickpunkt
-// gemessen), also entscheidet, ob er näher am äußeren oder inneren Cluster liegt.
 function _svgWrapWandSeite(pos, idx, nTri, ax, h, c1, c2, rLocal) {
-  const pts = _svgWrapSection(pos, idx, nTri, ax, h);
-  const rs = [];
+  const pts = _svgWrapSection(pos, idx, nTri, ax, h, true);
+  let best = Infinity, seite = 1;
   for (let i = 0; i < pts.length; i += 2) {
-    const r = Math.hypot(pts[i] - c1, pts[i+1] - c2);
-    if (Math.abs(r - rLocal) <= rLocal * 0.35) rs.push(r);
+    const dr = Math.abs(Math.hypot(pts[i] - c1, pts[i+1] - c2) - rLocal);
+    if (dr < best) { const sg = _svgWrapPunktSeite(pts, i, c1, c2); if (sg) { best = dr; seite = sg; } }
   }
-  if (rs.length < 8) return 'aussen';
-  const gap = rLocal * 0.01;
-  const ra = _svgWrapClusterRadius(rs.slice(), 'aussen', gap);
-  const ri = _svgWrapClusterRadius(rs.slice(), 'innen', gap);
-  return Math.abs(rLocal - ra) <= Math.abs(rLocal - ri) ? 'aussen' : 'innen';
+  return seite;
 }
 
 // Radius allein an einer Höhe (fürs Profil) — verfolgt die Wand ausgehend vom
-// zuletzt bekannten Radius, damit bei Hohlkörpern nicht auf die Innenwand
-// gesprungen wird; innerhalb des Bandes zählt der Cluster der getroffenen Seite.
+// zuletzt bekannten Radius; mit seite (±1) zählen nur Punkte der getroffenen
+// Wandseite. Median statt Mittelwert: robust gegen Ausreißer an Kanten.
 function _svgWrapRadiusAt(pos, idx, nTri, ax, h, c1, c2, rPrev, seite) {
-  const pts = _svgWrapSection(pos, idx, nTri, ax, h);
-  const rs = [];
+  const pts = _svgWrapSection(pos, idx, nTri, ax, h, !!seite);
+  const rs = [], alle = [];
   for (let i = 0; i < pts.length; i += 2) {
     const r = Math.hypot(pts[i] - c1, pts[i+1] - c2);
-    if (Math.abs(r - rPrev) <= rPrev * 0.15) rs.push(r);
+    if (Math.abs(r - rPrev) > rPrev * 0.15) continue;
+    alle.push(r);
+    if (!seite || _svgWrapPunktSeite(pts, i, c1, c2) === seite) rs.push(r);
   }
-  if (rs.length < 8) return null;
-  return _svgWrapClusterRadius(rs, seite || 'aussen', rPrev * 0.01);
+  const use = rs.length >= 8 ? rs : alle;          // ohne brauchbare Normalen: wie bisher
+  if (use.length < 8) return null;
+  use.sort((a, b) => a - b);
+  return use[use.length >> 1];
 }
 
 // Erkennt, ob die geklickte Stelle auf einer Mantelfläche liegt, die sich um
@@ -45893,7 +45906,7 @@ function _svgWrapSampleField(probe, halfHeightU, halfWidthU, e1W, e3W, aW, nH, n
   const hs = [], data = [];
   for (let i = 0; i < nH; i++) {
     const dh = nH === 1 ? 0 : (-1 + 2 * i / (nH - 1)) * spanH;
-    const pts = _svgWrapSection(pos, idx, nTri, ax, hAxis + dh);
+    const pts = _svgWrapSection(pos, idx, nTri, ax, hAxis + dh, true);
     const reihe = new Array(nA).fill(null);
     if (pts && pts.length >= 32) {
       // Punkte der getroffenen Wandseite nach Winkel einsortieren
@@ -45901,7 +45914,9 @@ function _svgWrapSampleField(probe, halfHeightU, halfWidthU, e1W, e3W, aW, nH, n
       for (let k = 0; k < pts.length; k += 2) {
         const dx = pts[k] - probe.cen[0], dy = pts[k + 1] - probe.cen[1];
         const r = Math.hypot(dx, dy);
-        if (Math.abs(r - rLocal) > rLocal * 0.35) continue;      // andere Wand (innen/außen)
+        if (Math.abs(r - rLocal) > rLocal * 0.35) continue;      // weit weg: Deckel, Henkel
+        const sg = _svgWrapPunktSeite(pts, k, probe.cen[0], probe.cen[1]);
+        if (sg && sg !== seite) continue;                         // andere Wand (innen/außen)
         let a = (Math.atan2(dy, dx) - th0) * sinn;                // Winkel im Motiv-Sinn
         while (a > Math.PI) a -= 2 * Math.PI;
         while (a < -Math.PI) a += 2 * Math.PI;
@@ -45911,9 +45926,8 @@ function _svgWrapSampleField(probe, halfHeightU, halfWidthU, e1W, e3W, aW, nH, n
       }
       for (let b = 0; b < nA; b++) {
         if (!bins[b].length) continue;
-        // Cluster der getroffenen Wandseite (Median darin → robust gegen Ausreißer);
-        // der Median über ALLE Punkte landete bei Hohlkörpern auf der Innenwand
-        reihe[b] = _svgWrapClusterRadius(bins[b], seite, rLocal * 0.01) * f;
+        bins[b].sort((x, y) => x - y);
+        reihe[b] = bins[b][bins[b].length >> 1] * f;              // Median → robust gegen Ausreißer
       }
     }
     // Lücken zwischen bekannten Werten linear schließen (nicht mit dem letzten
