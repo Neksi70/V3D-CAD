@@ -590,6 +590,144 @@ def fetch_list(box, folder, uids):
     return [msgs[u] for u in uids if u in msgs]
 
 
+# --- Text-Vorschau fuer die Liste -----------------------------------------
+# Kopfzeilen allein sagen nicht, worum es geht. Deshalb holen wir je Nachricht
+# die ersten Kilobyte und dampfen den Textanfang auf eine Zeile ein. Das ist der
+# teure Teil eines Listenaufbaus, also einmal je Nachricht und dann gemerkt.
+PREVIEW_LEN = 200
+PREVIEW_BYTES = 16384
+PREVIEW_BYTES_MAX = 98304
+PREVIEW_MAX = 4000
+_preview_cache = {}
+_preview_lock = threading.Lock()
+
+
+# Sieht ein Textteil so aus, als steckten Tags drin? Manche Absender (PayPal)
+# stopfen auch in den text/plain-Teil rohes HTML.
+MARKUP_RE = re.compile(r'(?is)<(?:table|div|p|br|a|span|img|html|tr|td|style|font)\b')
+
+
+def _text_aus_html(roh):
+    # Reihenfolge zaehlt: Kommentare zuerst, sonst bleibt der Inhalt von
+    # <!--[if mso]>-Bloecken stehen. Das \Z in den Mustern fasst den Fall, dass
+    # das Fenster mitten im Kopf endet — dann faellt der Rest weg statt als
+    # CSS-Brei in der Vorschau zu landen.
+    t = re.sub(r'(?s)<!--.*?(?:-->|\Z)', ' ', roh or '')
+    t = re.sub(r'(?is)<(script|style)\b[^>]*>.*?(?:</\1>|\Z)', ' ', t)
+    t = re.sub(r'(?is)<head\b[^>]*>.*?(?:</head>|\Z)', ' ', t)
+    t = re.sub(r'(?is)<br\s*/?>|</(p|div|tr|li|h[1-6]|table)>', '\n', t)
+    t = re.sub(r'(?s)<[^>]*>', ' ', t)
+    t = re.sub(r'(?s)<[^>]*\Z', ' ', t)     # angeschnittenes Tag am Fensterrand
+    return html.unescape(t)
+
+
+def _schnipsel(text):
+    """Mailtext auf eine knappe Vorschauzeile eindampfen."""
+    zeilen = []
+    laenge = 0
+    for z in (text or '').splitlines():
+        z = z.strip()
+        if z in ('--', '---'):
+            break               # ab hier kommt nur noch die Signatur
+        # Leerzeilen, Zitate und Trennlinien tragen zur Vorschau nichts bei.
+        if not z or z.startswith('>') or set(z) <= set('-=_*~+#| '):
+            continue
+        zeilen.append(z)
+        laenge += len(z)
+        if laenge > PREVIEW_LEN + 80:
+            break
+    s = re.sub(r'\s+', ' ', ' '.join(zeilen)).strip()
+    return s[:PREVIEW_LEN].rstrip() + ('…' if len(s) > PREVIEW_LEN else '')
+
+
+def _vorschau_aus_roh(raw):
+    """Textanfang aus einem (absichtlich abgeschnittenen) Rohbrief ziehen."""
+    try:
+        # compat32 statt policy.default: der abgeschnittene Brief hat kein
+        # Schluss-Trennzeichen mehr, der strenge Parser stolpert darueber.
+        msg = BytesParser(policy=policy.compat32).parsebytes(raw or b'')
+    except Exception:
+        return ''
+    plain = html_teil = ''
+    for part in msg.walk():
+        if part.get_content_maintype() == 'multipart':
+            continue
+        ctype = (part.get_content_type() or '').lower()
+        if ctype not in ('text/plain', 'text/html'):
+            continue
+        if (part.get_content_disposition() or '') == 'attachment' or part.get_filename():
+            continue
+        try:
+            roh = part.get_payload(decode=True) or b''
+        except Exception:
+            continue
+        lade = part.get_content_charset() or 'utf-8'
+        try:
+            text = roh.decode(lade, 'replace')
+        except (LookupError, UnicodeDecodeError, TypeError):
+            text = roh.decode('utf-8', 'replace')
+        if ctype == 'text/plain':
+            # Reintext ist die beste Quelle — aber Newsletter legen gern einen
+            # LEEREN text/plain-Teil davor. Dann zaehlt doch das HTML.
+            if text.strip():
+                plain = text
+                break
+            continue
+        if not html_teil:
+            html_teil = text
+    text = plain or html_teil
+    if text and (not plain or MARKUP_RE.search(text)):
+        text = _text_aus_html(text)
+    return _schnipsel(text)
+
+
+def fetch_previews(box, folder, uids):
+    """Vorschauzeilen einer UID-Liste — ein Abruf, nur die ersten Kilobyte."""
+    acc_id = (box.acc or {}).get('id')
+    fertig, fehlt = {}, []
+    with _preview_lock:
+        for u in uids:
+            key = (acc_id, folder, u)
+            if key in _preview_cache:
+                fertig[u] = _preview_cache[key]
+            else:
+                fehlt.append(u)
+    if not fehlt:
+        return fertig
+
+    def hole(liste, groesse):
+        with box.lock:
+            box.select(folder, readonly=True)
+            typ, data = box.conn.uid('FETCH', ','.join(str(u) for u in liste),
+                                     '(UID BODY.PEEK[]<0.%d>)' % groesse)
+            box.last_used = time.time()
+        if typ != 'OK':
+            return {}
+        raus = {}
+        for item in data:
+            if not isinstance(item, tuple) or len(item) < 2:
+                continue
+            m = FETCH_UID_RE.search(item[0])
+            if m:
+                raus[int(m.group(1))] = _vorschau_aus_roh(item[1])
+        return raus
+
+    frisch = hole(fehlt, PREVIEW_BYTES)
+    # Manche Absender (Newsletter-Versender) packen so viele Kopfzeilen davor,
+    # dass im ersten Fenster noch gar kein Rumpf steckt. Nur fuer die wenigen
+    # leeren Treffer noch einmal mit groesserem Fenster nachfassen.
+    nochmal = [u for u, s in frisch.items() if not s]
+    if nochmal:
+        frisch.update(hole(nochmal, PREVIEW_BYTES_MAX))
+    with _preview_lock:
+        if len(_preview_cache) > PREVIEW_MAX:
+            _preview_cache.clear()
+        for u, s in frisch.items():
+            _preview_cache[(acc_id, folder, u)] = s
+    fertig.update(frisch)
+    return fertig
+
+
 def search_uids(box, folder, query, unseen=False):
     vor = ['UNSEEN'] if unseen else []
     with box.lock:
@@ -2912,7 +3050,7 @@ class Handler(BaseHTTPRequestHandler):
         acc = account_by_id((q or {}).get('acc') or (self._body_cached() or {}).get('acc'))
         if route.startswith('/folders') or route.startswith('/messages') or \
            route.startswith('/message') or route.startswith('/attachment') or \
-           route.startswith('/vorschau') or \
+           route.startswith('/vorschau') or route.startswith('/previews') or \
            route in ('/flag', '/move', '/delete', '/send'):
             if not acc:
                 raise MailError('Kein Konto ausgewählt')
@@ -2933,6 +3071,15 @@ class Handler(BaseHTTPRequestHandler):
             msgs.sort(key=lambda m: m['ts'], reverse=True)
             return self._send(200, {'messages': msgs, 'total': total, 'page': page,
                                     'pageSize': PAGE_SIZE, 'folder': folder})
+
+        if route == '/previews':
+            # Vorschauzeilen fuer eine Liste. Die Oberflaeche holt sie getrennt
+            # nach, damit die Liste sofort steht und nicht auf die Rumpfe wartet.
+            folder = q.get('folder') or 'INBOX'
+            uids = [int(u) for u in (q.get('uids') or '').split(',') if u.strip().isdigit()]
+            uids = uids[:PAGE_SIZE]
+            vor = fetch_previews(box, folder, uids) if uids else {}
+            return self._send(200, {'previews': {str(u): t for u, t in vor.items()}})
 
         if route == '/message':
             folder = q.get('folder') or 'INBOX'

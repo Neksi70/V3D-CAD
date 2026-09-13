@@ -56,6 +56,30 @@ eigener DNS-Client in `server.py` — die Standardbibliothek kann nur A/AAAA.
 
 Tastatur: `n` neue Nachricht, `r` antworten, `j`/`k` blättern, `Entf` löschen, `Esc` schließen.
 
+### Vorschautext in der Liste
+
+Unter dem Betreff stehen die ersten beiden Zeilen der Nachricht. Sie kommen
+**getrennt nach** (`/api/previews`): die Liste steht sofort, die Texte trudeln
+Sekundenbruchteile später ein und werden in die vorhandenen Zeilen eingesetzt —
+ohne Neuaufbau, damit Scrollstand und Auswahl erhalten bleiben.
+
+Der Server holt dafür je Nachricht nur die **ersten 16 kB** (`BODY.PEEK[]<0.16384>`,
+alle UIDs einer Seite in einem Abruf, ~0,3 s für 50 Mails) und merkt sich das
+Ergebnis je Konto/Ordner/UID. Fallen dabei:
+
+* Newsletter legen gern einen **leeren** `text/plain`-Teil vor das HTML — ist der
+  Reintext leer, zählt doch das HTML.
+* Manche Absender (PayPal) stopfen **rohes HTML in den `text/plain`-Teil**; sieht
+  ein Textteil nach Markup aus, wird er ebenfalls entkernt.
+* Beim Entkernen zuerst die Kommentare (`<!--[if mso]>`), dann `<style>`/`<script>`
+  und `<head>` — jeweils auch **ohne schließendes Tag**, sonst landet bei einer am
+  Fensterrand abgeschnittenen Mail der CSS-Block in der Vorschau. Ein am Ende
+  angeschnittenes Tag fällt zusätzlich weg.
+* Steckt im ersten Fenster wegen riesiger Kopfzeilen noch gar kein Rumpf, fasst
+  der Server für genau diese Nachrichten mit 96 kB nach.
+
+Abschalten: **🖼 Ansicht** in der Seitenleiste.
+
 ## Unter Windows (und am Rechner allgemein)
 
 Adresse in Edge oder Chrome öffnen → **Als App installieren**. Danach eigenes
@@ -283,13 +307,20 @@ Jeder Teil wird nur einmal vom Server geholt und für die geöffnete Nachricht
 behalten — Vorschau, Einbettung im Text und Herunterladen teilen sich denselben
 Zwischenspeicher, der beim Wechsel auf eine andere Mail freigegeben wird.
 
-Verlinkte Bilder (Newsletter-Grafiken) bleiben zunächst blockiert. Nach „Bilder
-anzeigen" holt sie **der Server stellvertretend** (`/api/bild`) und reicht sie
+Verlinkte Bilder (Newsletter-Grafiken) werden **standardmäßig sofort mitgeladen**
+(Schalter „Bilder immer laden" unter **🖼 Ansicht**, je Gerät gespeichert). Ist er
+aus, bleiben sie blockiert, bis man „Bilder anzeigen" klickt. In beiden Fällen
+holt sie **der Server stellvertretend** (`/api/bild`) und reicht sie
 als `data:`-URL in die Nachricht — der Absender sieht dadurch weder IP noch
 Lesezeitpunkt des Lesers, und das abgeschottete iframe muss selbst nie ins Netz.
 Auch Hintergrundbilder aus `style="…url(…)"` laufen über diesen Weg. Anschließend
 stehen diese Bilder ebenfalls als Kacheln in der Leiste und lassen sich einzeln
 speichern; Winzlinge unter 1 kB (Abstandshalter, Zählpixel) bleiben draußen.
+
+Weil beim automatischen Laden jede Newsletter-Grafik in der Leiste landen würde,
+sind **Bilder aus dem Text** (verlinkt oder eingebettet) dort eingeklappt: eine
+Zeile „10 Bilder aus dem Text anzeigen". Echte Anhang-Bilder bleiben offen
+stehen — die sieht man im Text ja nicht.
 
 Die Weiterleitung nimmt nur `http`/`https` und nur öffentliche Adressen an —
 Adressen im eigenen Netz (localhost, 10.x, 192.168.x, …) werden abgewiesen, auch

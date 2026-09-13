@@ -116,7 +116,11 @@ a{color:var(--acc-d)}
 .item .subj{font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .item.seen .subj{color:var(--mid)}
 .item .meta{font-size:11.5px;color:var(--dim);display:flex;gap:7px;margin-top:1px}
-.item .star{cursor:pointer;color:var(--dim);flex-shrink:0;font-size:15px;background:none;border:0;padding:0 2px}
+.item .prev{font-size:12.5px;color:var(--dim);line-height:1.42;margin-top:2px;overflow:hidden;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;max-height:2.9em}
+.item .prev:empty{display:none}
+.item .star{cursor:pointer;color:var(--dim);flex-shrink:0;font-size:15px;background:none;border:0;padding:0 2px;
+  align-self:flex-start;margin-top:1px}
 .item .star.on{color:var(--acc)}
 
 /* --- Leseansicht --- */
@@ -277,6 +281,7 @@ a{color:var(--acc-d)}
     <div id="folders"></div>
     <div class="foot">
       <button onclick="accountDialog()">⚙️ Konten</button>
+      <button onclick="ansichtDialog()">🖼 Ansicht</button>
       <button onclick="meldungsDialog()">🔔 Meldungen</button>
       <button onclick="kiDialog()">✨ KI</button>
       <button onclick="logout()">Abmelden</button>
@@ -400,7 +405,8 @@ a{color:var(--acc-d)}
 const API = (p) => p;                       // Pfade sind relativ — funktioniert auch unter /mail/
 const S = { accounts: [], acc: null, folder: 'INBOX', folders: [], page: 0, total: 0,
             msgs: [], cur: null, q: '', reply: null, atts: [],
-            sel: new Set(), selAnker: null };
+            sel: new Set(), selAnker: null, opt: null };
+S.opt = optLaden();                         // Funktionsdeklaration ist hochgezogen
 
 function toast(msg, ms) {
   let t = document.getElementById('toast');
@@ -576,6 +582,7 @@ async function loadMessages(folder, page, quiet) {
   S.msgs = r.messages || []; S.total = r.total || 0;
   S.sel = new Set(S.msgs.filter(m => S.sel.has(m.uid)).map(m => m.uid));
   renderList();
+  ladeSchnipsel();
 }
 
 function renderList() {
@@ -614,11 +621,71 @@ function renderList() {
       <div class="body">
         <div class="r1"><div class="who">${esc(who)}</div><div class="when">${fmtDate(m.ts, m.date)}</div></div>
         <div class="subj">${esc(m.subject)}</div>
+        ${S.opt.vorschau ? `<div class="prev" data-prev="${m.uid}">${esc(m.preview || '')}</div>` : ''}
         <div class="meta">${m.hasAttachments ? '<span>📎</span>' : ''}<span>${fmtSize(m.size)}</span></div>
       </div>
       <button class="star${m.flagged ? ' on' : ''}" onclick="event.stopPropagation();star(${m.uid},${!m.flagged})">${m.flagged ? '★' : '☆'}</button>
     </div>`;
   }).join('');
+}
+
+// --- Ansicht-Einstellungen (je Gerät) --------------------------------------
+// Beide Schalter stehen bewusst auf „an": eine Liste ohne Vorschautext und
+// Mails mit leeren Bildrahmen waren genau das, was unübersichtlich wirkte.
+function optLaden() {
+  // Standard steht hier direkt im Rumpf: die Funktion laeuft schon beim Aufbau
+  // von S, also bevor Konstanten weiter unten im Skript existieren.
+  const std = { vorschau: true, bilder: true };
+  try { return Object.assign(std, JSON.parse(localStorage.getItem('v3dmail.opt') || '{}')); }
+  catch (e) { return std; }
+}
+function optSetzen(name, an) {
+  S.opt[name] = !!an;
+  localStorage.setItem('v3dmail.opt', JSON.stringify(S.opt));
+  if (name === 'vorschau') {
+    renderList();
+    if (an) ladeSchnipsel();
+  }
+}
+
+function ansichtDialog() {
+  const ja = (n) => S.opt[n] ? 'checked' : '';
+  modal(`<h3>🖼 Ansicht</h3>
+    <label class="zeile" style="display:flex;gap:9px;align-items:flex-start;margin-top:14px;cursor:pointer">
+      <input type="checkbox" ${ja('vorschau')} onchange="optSetzen('vorschau',this.checked)" style="margin-top:3px">
+      <span><b>Vorschautext in der Liste</b><br>
+      <small class="muted">Zeigt die ersten Zeilen jeder Nachricht unter dem Betreff.</small></span></label>
+    <label class="zeile" style="display:flex;gap:9px;align-items:flex-start;margin-top:14px;cursor:pointer">
+      <input type="checkbox" ${ja('bilder')} onchange="optSetzen('bilder',this.checked)" style="margin-top:3px">
+      <span><b>Bilder immer laden</b><br>
+      <small class="muted">Kein Klick auf „Bilder anzeigen" mehr. Die Bilder holt weiter der
+      Server, nicht dein Gerät — der Absender sieht also deine Adresse und dein Gerät nicht,
+      erfährt aber, dass die Mail geöffnet wurde.</small></span></label>
+    <div style="display:flex;gap:8px;margin-top:18px;justify-content:flex-end">
+      <button class="btn" onclick="closeModal()">Fertig</button></div>`);
+}
+
+// Vorschautexte kommen getrennt nach: die Liste selbst steht damit sofort,
+// und der teure Griff nach den Rümpfen hält sie nicht auf.
+async function ladeSchnipsel() {
+  if (!S.opt.vorschau || !S.acc) return;
+  const folder = S.folder, acc = S.acc.id;
+  const offen = S.msgs.filter(m => m.preview === undefined).map(m => m.uid);
+  if (!offen.length) return;
+  let r;
+  try {
+    r = await api(`previews?acc=${acc}&folder=${encodeURIComponent(folder)}&uids=${offen.join(',')}`);
+  } catch (e) { return; }
+  // Zwischenzeitlicher Ordner- oder Kontowechsel: Antwort verwerfen.
+  if (S.folder !== folder || !S.acc || S.acc.id !== acc) return;
+  const p = r.previews || {};
+  S.msgs.forEach(m => { if (m.preview === undefined) m.preview = p[String(m.uid)] || ''; });
+  // Nur die Textzeilen nachtragen — ein neues renderList() würde Scrollstand
+  // und offene Gesten zerreißen.
+  document.querySelectorAll('#items .prev').forEach(el => {
+    const t = p[el.dataset.prev];
+    if (t) el.textContent = t;
+  });
 }
 
 function doSearch() {
@@ -920,6 +987,8 @@ function verlasseMail() {
 }
 
 async function openMsg(uid, withImages) {
+  // Ohne ausdrückliche Angabe entscheidet die Einstellung „Bilder immer laden".
+  if (withImages === undefined) withImages = !!S.opt.bilder;
   // Beim Wechsel auf eine andere Nachricht die zwischengespeicherten Anhänge
   // und Vorschaubilder freigeben, sonst wächst der Speicher mit jeder Mail.
   if (S.cur && S.cur.uid !== uid) {
@@ -1372,15 +1441,33 @@ async function renderImages(m, bilder) {
   if (!bilder.length) { box.classList.add('hide'); box.innerHTML = ''; return; }
   box.classList.remove('hide');
   const gesamt = bilder.reduce((s, a) => s + (a.size || 0), 0);
+  // Grafiken, die im Text ohnehin zu sehen sind (Newsletter-Kopf, Signaturbild),
+  // brauchen oben keine eigene Namenszeile — sonst steht vor jeder Werbemail
+  // erst ein Dutzend Dateinamen. Echte Anhänge bleiben sichtbar.
+  const echte = [], deko = [];
+  bilder.forEach((a, i) => ((a.url || a.inline) ? deko : echte).push(i));
+  const chip = (idx) => idx.map(i => `<div class="att" onclick="zeigeBild(${i})" title="Anklicken zum Anschauen">
+      🖼️ ${esc(bilder[i].filename)} <small>${fmtSize(bilder[i].size)}</small></div>`).join('');
   box.innerHTML = `<div class="kopf"><span>🖼️ ${bilder.length} ${bilder.length === 1 ? 'Bild' : 'Bilder'} in dieser Nachricht</span>
       <span style="color:var(--dim);font-weight:400">${fmtSize(gesamt)}</span>
       <button class="btn sec sm" id="bkacheln" onclick="bilderUmschalten()">Speichern…</button>
       ${bilder.length > 1 ? '<button class="btn sec sm" onclick="alleBilder()">Alle speichern</button>' : ''}</div>
-    <div class="namen">${bilder.map((a, i) => `<div class="att" onclick="zeigeBild(${i})" title="Anklicken zum Anschauen">
-      🖼️ ${esc(a.filename)} <small>${fmtSize(a.size)}</small></div>`).join('')}</div>
+    <div class="namen">${chip(echte)}</div>
+    ${deko.length ? `<div class="namen"><button class="btn sec sm" id="bdeko" onclick="dekoUmschalten()">
+      ${deko.length} ${deko.length === 1 ? 'Bild' : 'Bilder'} aus dem Text anzeigen</button></div>
+      <div class="namen hide" id="rdeko">${chip(deko)}</div>` : ''}
     <div class="raster hide" id="rraster">${bilder.map((a, i) => `<div class="bild" onclick="dlPart(${i},'bild')" title="${esc(a.filename)} — zum Speichern anklicken">
       <div class="vor" id="vor${i}">🖼️</div>
       <div class="nm">${esc(a.filename)}</div><div class="gr">${fmtSize(a.size)}</div></div>`).join('')}</div>`;
+}
+
+function dekoUmschalten() {
+  const el = document.getElementById('rdeko');
+  const knopf = document.getElementById('bdeko');
+  if (!el) return;
+  const auf = el.classList.toggle('hide');
+  if (knopf) knopf.textContent = auf ? knopf.textContent.replace('verbergen', 'anzeigen')
+                                     : knopf.textContent.replace('anzeigen', 'verbergen');
 }
 
 function bilderUmschalten() {
