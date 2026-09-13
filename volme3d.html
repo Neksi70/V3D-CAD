@@ -43714,8 +43714,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.14';
+const VOLME3D_VERSION = '1.18.15';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.15', date:'2026-09-13', changes:[
+    ['\u{1F9FD}','<b>Neu im Radierer: der Ring.</b> Um ein Teil herum alles wegmachen ging bisher nur mühsam mit dem Kreis-Pinsel. Jetzt gibt es im 🧽 <b>Radierer</b> oben den Umschalter <b>◎ Ring</b>. Du stellst einen <b>Innen-Ø</b> ein (Feld, Schieberegler oder Mausrad). Am Mauszeiger siehst du dann einen grünen Kreis, das ist der geschützte Bereich. Lege ihn um dein Teil, drücke auf die Mitte und <b>zieh den roten Ring nach außen auf</b>, das Maß „innen Ø … · außen Ø …“ läuft live mit. Beim Loslassen wird <b>alles im roten Ring gelöscht</b>, durchgehend in Blickrichtung, also Ober- und Unterseite. Was im Innenkreis liegt, bleibt unangetastet. Die Dreiecke werden <b>sauber am Kreis zerschnitten</b>, es bleiben keine Zacken und keine Schnittfugen. Mit „nur das angeklickte Objekt“ bleiben andere Körper verschont. Esc bricht das Aufziehen ab, Strg+Z macht rückgängig.'],
+  ]},
   { version:'1.18.14', date:'2026-09-13', changes:[
     ['\u{1F344}','<b>Neu: Pilzlampe — bauchiger Schirm mit Ähren-Relief auf geripptem Fuß.</b> Unter „Generatoren“ steht jetzt \u{1F344}\u{1F4A1} <b>Pilzlampe</b>, nach dem Vorbild der beliebten Herbstlampe. Der <b>Schirm</b> ist eine dünnwandige Schale mit Öffnung oben, das Licht scheint durch die Wand. Außen wachsen <b>Ähren, Grashalme und Rispen</b> als Relief (oder nur Gräser, oder glatt); Dichte, Wuchshöhe und Relief-Höhe sind einstellbar, \u{1F3B2} würfelt neue Halme. Der <b>Fuß</b> ist fein gerippt und leicht bauchig. Oben im Gewindehals liegt ein <b>LED-Puck</b> in einem Napf und leuchtet in den Schirm — zum Einschalten den Schirm abschrauben. Das Gewinde ist dasselbe wie beim Pilz: rechtsgängig, mit offenem Eingang. <b>Beide Teile drucken aufrecht ohne Stützen:</b> Die Schirmform wird auf den eingestellten Überhang (Standard 55°) begrenzt und danach geglättet, der Napf im Fuß steht auf einem 45°-Kegel. Nachgemessen: beide Teile wasserdicht, Überhang und Wandstärke eingehalten, der Schirm lässt sich auf dem ganzen Weg eindrehen, der Puck liegt rundum auf.'],
   ]},
@@ -45630,10 +45633,48 @@ function _svgWrapRing(pos, idx, nTri, ax, h, q1, q2) {
   return { c1: c.x, c2: c.y, R: rHit, rMax };
 }
 
+// Bei Hohlkörpern liefert ein Ebenenschnitt Innen- UND Außenwand. Der Median über
+// alle Punkte springt dann zufällig zwischen beiden — an Josys Lichthülle (2 mm
+// Wand) lagen 29 von 105 Feldzellen auf der Innenwand, das Motiv sank fleckweise
+// bis 2 mm ein und sah zerstückelt aus, egal wie klein es war (13.9.). Deshalb:
+// Radien clustern (Lücke > 1 % des Radius trennt die Wände) und den Cluster der
+// getroffenen Seite nehmen — außen, wenn von außen gewickelt wird.
+function _svgWrapClusterRadius(rs, seite, gap) {
+  if (!rs.length) return null;
+  rs.sort((a, b) => a - b);
+  let k;
+  if (seite === 'innen') {
+    k = 0;
+    while (k + 1 < rs.length && rs[k + 1] - rs[k] <= gap) k++;
+    const c = rs.slice(0, k + 1);
+    return c[c.length >> 1];
+  }
+  k = rs.length - 1;
+  while (k > 0 && rs[k] - rs[k - 1] <= gap) k--;
+  const c = rs.slice(k);
+  return c[c.length >> 1];
+}
+
+// Welche Wandseite wurde getroffen? Der Trefferradius ist exakt (am Klickpunkt
+// gemessen), also entscheidet, ob er näher am äußeren oder inneren Cluster liegt.
+function _svgWrapWandSeite(pos, idx, nTri, ax, h, c1, c2, rLocal) {
+  const pts = _svgWrapSection(pos, idx, nTri, ax, h);
+  const rs = [];
+  for (let i = 0; i < pts.length; i += 2) {
+    const r = Math.hypot(pts[i] - c1, pts[i+1] - c2);
+    if (Math.abs(r - rLocal) <= rLocal * 0.35) rs.push(r);
+  }
+  if (rs.length < 8) return 'aussen';
+  const gap = rLocal * 0.01;
+  const ra = _svgWrapClusterRadius(rs.slice(), 'aussen', gap);
+  const ri = _svgWrapClusterRadius(rs.slice(), 'innen', gap);
+  return Math.abs(rLocal - ra) <= Math.abs(rLocal - ri) ? 'aussen' : 'innen';
+}
+
 // Radius allein an einer Höhe (fürs Profil) — verfolgt die Wand ausgehend vom
 // zuletzt bekannten Radius, damit bei Hohlkörpern nicht auf die Innenwand
-// gesprungen wird. Median statt Mittelwert: robust gegen Ausreißer an Kanten.
-function _svgWrapRadiusAt(pos, idx, nTri, ax, h, c1, c2, rPrev) {
+// gesprungen wird; innerhalb des Bandes zählt der Cluster der getroffenen Seite.
+function _svgWrapRadiusAt(pos, idx, nTri, ax, h, c1, c2, rPrev, seite) {
   const pts = _svgWrapSection(pos, idx, nTri, ax, h);
   const rs = [];
   for (let i = 0; i < pts.length; i += 2) {
@@ -45641,8 +45682,7 @@ function _svgWrapRadiusAt(pos, idx, nTri, ax, h, c1, c2, rPrev) {
     if (Math.abs(r - rPrev) <= rPrev * 0.15) rs.push(r);
   }
   if (rs.length < 8) return null;
-  rs.sort((a, b) => a - b);
-  return rs[rs.length >> 1];
+  return _svgWrapClusterRadius(rs, seite || 'aussen', rPrev * 0.01);
 }
 
 // Erkennt, ob die geklickte Stelle auf einer Mantelfläche liegt, die sich um
@@ -45849,6 +45889,7 @@ function _svgWrapSampleField(probe, halfHeightU, halfWidthU, e1W, e3W, aW, nH, n
   // dort die Stützstellen und wurden mit dem Randwert aufgefüllt — genau die
   // Ecken standen dann ab (Josy 13.9.).
   const thSpan = Math.min(Math.PI * 0.95, (halfWidthU * 1.9) / Math.max(1e-4, probe.R * 0.75));
+  const seite = probe.seite || (probe.seite = _svgWrapWandSeite(pos, idx, nTri, ax, hAxis, probe.cen[0], probe.cen[1], rLocal));
   const hs = [], data = [];
   for (let i = 0; i < nH; i++) {
     const dh = nH === 1 ? 0 : (-1 + 2 * i / (nH - 1)) * spanH;
@@ -45870,8 +45911,9 @@ function _svgWrapSampleField(probe, halfHeightU, halfWidthU, e1W, e3W, aW, nH, n
       }
       for (let b = 0; b < nA; b++) {
         if (!bins[b].length) continue;
-        bins[b].sort((x, y) => x - y);
-        reihe[b] = bins[b][bins[b].length >> 1] * f;              // Median → robust gegen Ausreißer
+        // Cluster der getroffenen Wandseite (Median darin → robust gegen Ausreißer);
+        // der Median über ALLE Punkte landete bei Hohlkörpern auf der Innenwand
+        reihe[b] = _svgWrapClusterRadius(bins[b], seite, rLocal * 0.01) * f;
       }
     }
     // Lücken zwischen bekannten Werten linear schließen (nicht mit dem letzten
@@ -45931,12 +45973,13 @@ function _svgWrapSampleProfile(probe, halfHeightU, steps) {
   // Reserve: auf einer stark gewölbten Wand (Kugelvase) ist der Bogen deutlich
   // länger als die Achsenstrecke — sonst reicht das Profil oben und unten nicht.
   const spanL = (halfHeightU * 2.2) / (axF || 1);
+  const seite = probe.seite || (probe.seite = _svgWrapWandSeite(pos, idx, nTri, ax, hAxis, probe.cen[0], probe.cen[1], rLocal));
   const out = [[0, probe.R]];
   for (const dir of [1, -1]) {
     let rPrev = rLocal;
     for (let i = 1; i <= steps; i++) {
       const dh = dir * spanL * i / steps;
-      const r = _svgWrapRadiusAt(pos, idx, nTri, ax, hAxis + dh, probe.cen[0], probe.cen[1], rPrev);
+      const r = _svgWrapRadiusAt(pos, idx, nTri, ax, hAxis + dh, probe.cen[0], probe.cen[1], rPrev, seite);
       if (r == null) break;                            // Rand des Körpers erreicht
       rPrev = r;
       out.push([dh * axF, r * f]);
@@ -49972,7 +50015,11 @@ function _cutClose() {
 // ═══ RADIERER (Flächen wegpinseln) ═══════════════════════════════════════════
 // Über das Modell fahren löscht Dreiecke im Pinselradius. Robust (kein CSG),
 // funktioniert auf jedem Mesh inkl. importierter STL. Radius per Slider + Mausrad.
-const _eraser = { active:false, radiusMm:8, ind:null, brushing:false, panel:null, didErase:false };
+// Modus „Ring": Innen-Ø bleibt geschützt, Außenring wird vom Mittelpunkt aus
+// aufgezogen; beim Loslassen fällt alles zwischen den Kreisen weg — durchgehend
+// entlang der Blickrichtung, Dreiecke auf der Grenze werden am Kreis zerteilt.
+const _eraser = { active:false, radiusMm:8, ind:null, brushing:false, panel:null, didErase:false,
+                  mode:'circle', innerMm:20, ringOnlyHit:false, ring:null, ringInd:null, ringLbl:null };
 
 function openEraserTool() {
   if (_eraser.active) { _eraserClose(); return; }
@@ -49987,12 +50034,16 @@ function openEraserTool() {
   window.addEventListener('mousemove', _eraserMove, true);
   window.addEventListener('mouseup', _eraserUp, true);
   canvas.addEventListener('wheel', _eraserWheel, { passive:false, capture:true });
+  window.addEventListener('keydown', _eraserKey, true);
   notify('Radierer aktiv — über das Modell fahren zum Löschen (Radius per Mausrad)', 'ok');
 }
 
 function _eraserClose() {
-  _eraser.active = false; _eraser.brushing = false;
+  _eraser.active = false; _eraser.brushing = false; _eraser.ring = null;
   if (_eraser.ind) { _eraser.ind.remove(); _eraser.ind = null; }
+  if (_eraser.ringInd) { _eraser.ringInd.remove(); _eraser.ringInd = null; }
+  if (_eraser.ringLbl) { _eraser.ringLbl.remove(); _eraser.ringLbl = null; }
+  window.removeEventListener('keydown', _eraserKey, true);
   if (_eraser.panel) { _eraser.panel.remove(); _eraser.panel = null; }
   canvas.style.cursor = '';
   canvas.removeEventListener('mousedown', _eraserDown, true);
@@ -50013,17 +50064,62 @@ function _eraserBuildPanel() {
       <b style="font-size:13px">🧽 Radierer</b>
       <span onclick="_eraserClose()" style="cursor:pointer;color:#9aa0a8;font-size:16px;line-height:1">✕</span>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-      <span style="width:48px;color:#9aa0a8">Radius</span>
-      <input id="eraser-range" type="range" min="1" max="50" step="0.5" value="${_eraser.radiusMm}" style="flex:1" oninput="_eraserSetRadius(this.value)">
-      <input id="eraser-num" type="number" min="0.5" step="0.5" value="${_eraser.radiusMm}" style="width:54px;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px" oninput="_eraserSetRadius(this.value)">
-      <span style="color:#9aa0a8">mm</span>
+    <div style="display:flex;gap:6px;margin-bottom:12px">
+      <button id="eraser-mode-circle" onclick="_eraserSetMode('circle')" title="Kreis-Pinsel: über das Modell fahren" style="flex:1;border-radius:6px;padding:6px;cursor:pointer;color:#e6e8eb">● Kreis</button>
+      <button id="eraser-mode-ring" onclick="_eraserSetMode('ring')" title="Ring: Innen bleibt stehen, außen herum wird alles gelöscht" style="flex:1;border-radius:6px;padding:6px;cursor:pointer;color:#e6e8eb">◎ Ring</button>
     </div>
-    <div style="color:#9aa0a8;font-size:11px;margin-bottom:12px">Mit gedrückter Maus über das Modell fahren löscht Flächen im Pinsel. Radius auch per Mausrad. Strg+Z macht rückgängig.</div>
+    <div id="eraser-sec-circle">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span style="width:48px;color:#9aa0a8">Radius</span>
+        <input id="eraser-range" type="range" min="1" max="50" step="0.5" value="${_eraser.radiusMm}" style="flex:1" oninput="_eraserSetRadius(this.value)">
+        <input id="eraser-num" type="number" min="0.5" step="0.5" value="${_eraser.radiusMm}" style="width:54px;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px" oninput="_eraserSetRadius(this.value)">
+        <span style="color:#9aa0a8">mm</span>
+      </div>
+      <div style="color:#9aa0a8;font-size:11px;margin-bottom:12px">Mit gedrückter Maus über das Modell fahren löscht Flächen im Pinsel. Radius auch per Mausrad. Strg+Z macht rückgängig.</div>
+    </div>
+    <div id="eraser-sec-ring">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="width:48px;color:#9aa0a8">Innen-Ø</span>
+        <input id="eraser-inner-range" type="range" min="0" max="200" step="1" value="${_eraser.innerMm}" style="flex:1" oninput="_eraserSetInner(this.value)">
+        <input id="eraser-inner-num" type="number" min="0" step="0.5" value="${_eraser.innerMm}" style="width:54px;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px" oninput="_eraserSetInner(this.value)">
+        <span style="color:#9aa0a8">mm</span>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;color:#c9cdd2;margin-bottom:8px;cursor:pointer">
+        <input id="eraser-ring-hit" type="checkbox" ${_eraser.ringOnlyHit ? 'checked' : ''} onchange="_eraser.ringOnlyHit=this.checked"> nur das angeklickte Objekt
+      </label>
+      <div style="color:#9aa0a8;font-size:11px;margin-bottom:12px">Grünen Kreis um das Teil legen, das stehen bleiben soll (Innen-Ø auch per Mausrad). Auf die Mitte drücken und nach außen ziehen — beim Loslassen wird alles im roten Ring gelöscht, durchgehend in Blickrichtung. Esc bricht ab, Strg+Z macht rückgängig.</div>
+    </div>
     <button onclick="_eraserCloseHoles()" style="width:100%;background:#2a2f37;border:1px solid #3a3f47;color:#e6e8eb;border-radius:6px;padding:8px;cursor:pointer;margin-bottom:8px">🩹 Reparieren (Löcher schließen)</button>
     <button onclick="_eraserClose()" style="width:100%;background:#F97316;border:none;color:#fff;border-radius:6px;padding:8px;font-weight:700;cursor:pointer">Fertig</button>`;
   document.body.appendChild(p);
   _eraser.panel = p;
+  _eraserSetMode(_eraser.mode);
+}
+
+function _eraserSetMode(mode) {
+  _eraser.mode = mode === 'ring' ? 'ring' : 'circle';
+  _eraser.ring = null; _eraser.brushing = false;
+  const ring = _eraser.mode === 'ring';
+  const paint = (el, act) => { if (!el) return;
+    el.style.background = act ? '#F97316' : '#2a2f37'; el.style.border = '1px solid ' + (act ? '#F97316' : '#3a3f47'); };
+  paint(document.getElementById('eraser-mode-circle'), !ring);
+  paint(document.getElementById('eraser-mode-ring'), ring);
+  const sc = document.getElementById('eraser-sec-circle'), sr = document.getElementById('eraser-sec-ring');
+  if (sc) sc.style.display = ring ? 'none' : '';
+  if (sr) sr.style.display = ring ? '' : 'none';
+  if (_eraser.ringInd) _eraser.ringInd.style.display = 'none';
+  if (_eraser.ringLbl) _eraser.ringLbl.style.display = 'none';
+  if (_eraser.lastClient) _eraserUpdateCursor(_eraser.lastClient, false);
+}
+
+function _eraserSetInner(mm) {
+  const v = parseFloat(mm);
+  _eraser.innerMm = Math.max(0, Math.min(1000, isFinite(v) ? v : 20));
+  const r = document.getElementById('eraser-inner-range'), n = document.getElementById('eraser-inner-num');
+  if (r) r.value = Math.min(200, _eraser.innerMm);
+  if (n && document.activeElement !== n) n.value = _eraser.innerMm;
+  if (_eraser.ring) _eraserRingDrag(_eraser.lastClient || _eraser.ring.screen);
+  else if (_eraser.lastClient) _eraserUpdateCursor(_eraser.lastClient, false);
 }
 
 function _eraserSetRadius(mm) {
@@ -50044,23 +50140,279 @@ function _eraserBuildIndicator() {
   document.body.appendChild(d);
   _eraser.ind = d;
   _eraser.lastPoint = new THREE.Vector3();
+  // Ring-Anzeige: roter Ring (Verlauf innen durchsichtig) + Maß-Beschriftung
+  const r = document.createElement('div');
+  r.id = 'eraser-ring';
+  r.style.cssText = 'position:fixed;border:2px solid #ff3b3b;border-radius:50%;pointer-events:none;z-index:6499;' +
+    'transform:translate(-50%,-50%);box-shadow:0 0 0 1px rgba(255,255,255,.55);display:none';
+  document.body.appendChild(r);
+  _eraser.ringInd = r;
+  const l = document.createElement('div');
+  l.style.cssText = 'position:fixed;pointer-events:none;z-index:6501;background:rgba(20,22,26,.85);color:#fff;' +
+    'font:11px/1.3 system-ui,sans-serif;padding:3px 7px;border-radius:5px;white-space:nowrap;display:none';
+  document.body.appendChild(l);
+  _eraser.ringLbl = l;
+}
+
+// Pixel pro Welt-Einheit an einem Weltpunkt (quer zur Blickrichtung)
+function _eraserPxPerUnit(c) {
+  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  const rect = vpEl.getBoundingClientRect();
+  const proj = (v) => { const p = v.clone().project(camera);
+    return { x: (p.x*0.5+0.5)*rect.width + rect.left, y: (-p.y*0.5+0.5)*rect.height + rect.top }; };
+  const a = proj(c), bp = proj(c.clone().add(right));
+  return Math.max(1e-6, Math.hypot(bp.x - a.x, bp.y - a.y));
 }
 
 // Bildschirm-Pixelradius aus Welt-Radius an der zuletzt getroffenen Tiefe
 function _eraserUpdateCursor(e, onModel) {
   const el = _eraser.ind; if (!el) return;
-  const rw = _eraser.radiusMm / 10;
-  const c = _eraser.lastPoint;
-  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
-  const rect = vpEl.getBoundingClientRect();
-  const proj = (v) => { const p = v.clone().project(camera);
-    return { x: (p.x*0.5+0.5)*rect.width + rect.left, y: (-p.y*0.5+0.5)*rect.height + rect.top }; };
-  const a = proj(c), bp = proj(c.clone().addScaledVector(right, rw));
-  const pr = Math.max(4, Math.hypot(bp.x - a.x, bp.y - a.y));
+  const ringMode = _eraser.mode === 'ring';
+  // Ring-Modus: vor dem Drücken zeigt der Cursor den geschützten Innenkreis (grün)
+  const rw = ringMode ? _eraser.innerMm / 20 : _eraser.radiusMm / 10;
+  const pr = Math.max(4, rw * _eraserPxPerUnit(_eraser.lastPoint));
   el.style.left = e.clientX + 'px'; el.style.top = e.clientY + 'px';
   el.style.width = el.style.height = (2 * pr) + 'px';
-  el.style.borderColor = onModel ? '#ff3b3b' : 'rgba(255,90,90,.45)';
+  if (ringMode) {
+    el.style.borderStyle = 'dashed';
+    el.style.borderColor = onModel ? '#22c55e' : 'rgba(34,197,94,.5)';
+  } else {
+    el.style.borderStyle = 'solid';
+    el.style.borderColor = onModel ? '#ff3b3b' : 'rgba(255,90,90,.45)';
+  }
   el.style.display = 'block';
+}
+
+// ── Ring-Modus ─────────────────────────────────────────────────────────
+function _eraserRingStart(e) {
+  const hit = _eraserPick(e);
+  const axis = new THREE.Vector3(); camera.getWorldDirection(axis);
+  let center;
+  if (hit) { center = hit.point.clone(); _eraser.lastPoint.copy(hit.point); }
+  else {
+    // Daneben gedrückt: Mitte auf der Ebene quer zur Blickrichtung durch die letzte Trefftiefe
+    getNorm(e); raycaster.setFromCamera(mousev, camera);
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(axis, _eraser.lastPoint);
+    center = raycaster.ray.intersectPlane(plane, new THREE.Vector3()) || _eraser.lastPoint.clone();
+  }
+  if (_eraser.ringOnlyHit && !hit) { notify('Auf das Objekt drücken — „nur das angeklickte Objekt" ist an', 'w'); return; }
+  let root = null;
+  if (hit) { root = hit.object; while (root && !objects.includes(root)) root = root.parent; }
+  _eraser.ring = { center, axis, screen:{ clientX:e.clientX, clientY:e.clientY }, outerMm:_eraser.innerMm / 2,
+                   pxPerUnit:_eraserPxPerUnit(center), root };
+  if (_eraser.ind) _eraser.ind.style.display = 'none';
+  _eraserRingDrag(e);
+}
+
+function _eraserRingDrag(e) {
+  const R = _eraser.ring, el = _eraser.ringInd; if (!R || !el) return;
+  const px = Math.hypot(e.clientX - R.screen.clientX, e.clientY - R.screen.clientY);
+  const riMm = _eraser.innerMm / 2;
+  R.outerMm = Math.max(riMm, px / R.pxPerUnit * 10);
+  const ro = R.outerMm / 10 * R.pxPerUnit, ri = riMm / 10 * R.pxPerUnit;
+  const pct = ro > 0 ? Math.min(100, ri / ro * 100) : 100;
+  el.style.left = R.screen.clientX + 'px'; el.style.top = R.screen.clientY + 'px';
+  el.style.width = el.style.height = (2 * Math.max(ro, 2)) + 'px';
+  el.style.background = `radial-gradient(circle closest-side, rgba(34,197,94,.10) 0 ${pct.toFixed(2)}%, ` +
+    `#22c55e ${pct.toFixed(2)}% calc(${pct.toFixed(2)}% + 2px), rgba(255,59,59,.30) calc(${pct.toFixed(2)}% + 2px))`;
+  el.style.display = 'block';
+  const lbl = _eraser.ringLbl;
+  if (lbl) {
+    lbl.textContent = `innen Ø ${(_eraser.innerMm).toFixed(1)} mm · außen Ø ${(2 * R.outerMm).toFixed(1)} mm`;
+    lbl.style.left = (e.clientX + 14) + 'px'; lbl.style.top = (e.clientY + 14) + 'px';
+    lbl.style.display = 'block';
+  }
+}
+
+function _eraserRingCancel() {
+  _eraser.ring = null;
+  if (_eraser.ringInd) _eraser.ringInd.style.display = 'none';
+  if (_eraser.ringLbl) _eraser.ringLbl.style.display = 'none';
+}
+
+function _eraserRingApply() {
+  const R = _eraser.ring; _eraserRingCancel();
+  if (!R) return;
+  const ri = _eraser.innerMm / 20, ro = R.outerMm / 10;
+  if (ro - ri < 0.01) { notify('Ring aufziehen: auf die Mitte drücken und nach außen ziehen', 'w'); return; }
+  const meshes = [];
+  const roots = R.root && _eraser.ringOnlyHit ? [R.root] : objects.filter(o => o.visible !== false && !o.userData.isHole);
+  roots.forEach(o => o.traverse(m => {
+    if (m.isMesh && m.geometry && m.geometry.attributes.position && !m.userData.isEdgeLines &&
+        !m.userData.isHole && m.visible !== false) meshes.push(m);
+  }));
+  _eraser.touched = new Set();
+  let did = false, saved = false;
+  for (const m of meshes) {
+    const keep = _eraserRingKeep(m, R.center, R.axis, ri, ro);
+    if (!keep) continue;
+    if (!saved) { saveUndo(); saved = true; }
+    _eraserReplaceGeometry(m, keep);
+    did = true;
+  }
+  if (!did) { notify('Im Ring lag nichts zum Löschen', 'w'); return; }
+  _eraser.touched.forEach(m => { if (objects.includes(m) && typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(m); });
+  updateTree();
+  notify(`Ring radiert (innen Ø ${_eraser.innerMm.toFixed(1)} mm geschützt, außen Ø ${(2 * R.outerMm).toFixed(1)} mm)`, 'ok');
+}
+
+// Liefert die übrig bleibenden Dreiecke (lokale Koordinaten, flach) oder null,
+// wenn der Ring das Mesh nicht berührt. Abstand = senkrecht zur Achse durch die Mitte.
+// Grenz-Dreiecke werden am Kreis (einbeschriebenes N-Eck) zerschnitten.
+function _eraserRingKeep(mesh, center, axis, ri, ro) {
+  mesh.updateMatrixWorld(true);
+  const geo = mesh.geometry, pos = geo.attributes.position, idx = geo.index;
+  const triN = idx ? idx.count / 3 : pos.count / 3;
+  const mw = mesh.matrixWorld, inv = mw.clone().invert();
+  // 2D-Basis quer zur Achse
+  const u = new THREE.Vector3(), v = new THREE.Vector3();
+  u.set(Math.abs(axis.y) < 0.9 ? 0 : 1, Math.abs(axis.y) < 0.9 ? 1 : 0, 0).cross(axis).normalize();
+  v.crossVectors(axis, u).normalize();
+  const N = 128, ang = [];
+  for (let i = 0; i < N; i++) { const t = (i + 0.5) * 2 * Math.PI / N; ang.push([Math.cos(t), Math.sin(t)]); }
+  const cosH = Math.cos(Math.PI / N);
+  const P = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  const d2 = (p) => { const x = p.x - center.x, y = p.y - center.y, z = p.z - center.z;
+    return [x*u.x + y*u.y + z*u.z, x*v.x + y*v.y + z*v.z]; };
+  // Abstand Ursprung → 2D-Dreieck (0 wenn drin)
+  const segDist = (ax, ay, bx, by) => { const dx = bx-ax, dy = by-ay, L = dx*dx + dy*dy;
+    let t = L > 0 ? -(ax*dx + ay*dy) / L : 0; t = Math.max(0, Math.min(1, t));
+    return Math.hypot(ax + t*dx, ay + t*dy); };
+  // Konvexes Polygon (Liste [Vector3, s, t]) an Halbebene s*cx + t*cy (<= h ? innen : außen) schneiden
+  const clip = (poly, cx, cy, h, keepInside) => {
+    const out = [], n = poly.length; if (!n) return out;
+    for (let i = 0; i < n; i++) {
+      const A = poly[i], B = poly[(i + 1) % n];
+      const fa = (A.s*cx + A.t*cy - h) * (keepInside ? 1 : -1), fb = (B.s*cx + B.t*cy - h) * (keepInside ? 1 : -1);
+      if (fa <= 0) out.push(A);
+      if ((fa < 0 && fb > 0) || (fa > 0 && fb < 0)) {
+        const k = fa / (fa - fb);
+        out.push({ p: A.p.clone().lerp(B.p, k), s: A.s + (B.s - A.s)*k, t: A.t + (B.t - A.t)*k });
+      }
+    }
+    return out;
+  };
+  const keep = []; let changed = false;
+  const tmp = new THREE.Vector3();
+  const emit = (poly) => {   // Fächer-Triangulation, zurück in lokale Koordinaten
+    if (poly.length < 3) return;
+    const l = poly.map(q => tmp.copy(q.p).applyMatrix4(inv).toArray());
+    for (let i = 1; i < l.length - 1; i++) {
+      const A = poly[0], B = poly[i], C = poly[i + 1];            // Null-Flächen (Sektorspitze) auslassen
+      if (Math.abs((B.s - A.s)*(C.t - A.t) - (B.t - A.t)*(C.s - A.s)) < 1e-12 &&
+          tmp.subVectors(B.p, A.p).cross(new THREE.Vector3().subVectors(C.p, A.p)).lengthSq() < 1e-16) continue;
+      keep.push(...l[0], ...l[i], ...l[i + 1]);
+    }
+  };
+  for (let tIdx = 0; tIdx < triN; tIdx++) {
+    for (let k = 0; k < 3; k++) {
+      const vi = idx ? idx.getX(tIdx*3 + k) : tIdx*3 + k;
+      P[k].fromBufferAttribute(pos, vi).applyMatrix4(mw);
+    }
+    const q = P.map(p => d2(p));
+    const dmax = Math.max(...q.map(([s, t]) => Math.hypot(s, t)));
+    // Ursprung im 2D-Dreieck?
+    const cr = (a, b) => a[0]*b[1] - a[1]*b[0];
+    const c0 = cr(q[0], q[1]), c1 = cr(q[1], q[2]), c2 = cr(q[2], q[0]);
+    const inside = (c0 >= 0 && c1 >= 0 && c2 >= 0) || (c0 <= 0 && c1 <= 0 && c2 <= 0);
+    const dmin = inside ? 0 : Math.min(segDist(...q[0], ...q[1]), segDist(...q[1], ...q[2]), segDist(...q[2], ...q[0]));
+    const orig = () => { for (let k = 0; k < 3; k++) keep.push(...tmp.copy(P[k]).applyMatrix4(inv).toArray()); };
+    if (dmin >= ro || dmax <= ri * cosH) { orig(); continue; }          // ganz außerhalb / ganz geschützt
+    changed = true;
+    if (dmin >= ri && dmax <= ro * cosH) continue;                       // ganz im Ring → weg
+    const tri = P.map((p, k) => ({ p: p.clone(), s: q[k][0], t: q[k][1] }));
+    // Je Kreissektor: Dreieck ∩ Sektor ist konvex; darin trennen die beiden
+    // Sehnen innen (bleibt) / Ring (weg) / außen (bleibt). Benachbarte Sektoren
+    // teilen sich die Schnittpunkte auf dem Strahl → keine T-Stöße untereinander.
+    for (let i = 0; i < N; i++) {
+      const a0 = i * 2 * Math.PI / N, a1 = (i + 1) * 2 * Math.PI / N;
+      // links vom Strahl a0: -sin·s + cos·t >= 0  ⇔  (sin, -cos)·(s,t) <= 0
+      let w = clip(tri, Math.sin(a0), -Math.cos(a0), 0, true);
+      if (w.length < 3) continue;
+      w = clip(w, -Math.sin(a1), Math.cos(a1), 0, true);
+      if (w.length < 3) continue;
+      const [cx, cy] = ang[i];
+      if (ri > 0) emit(clip(w, cx, cy, ri * cosH, true));
+      emit(clip(w, cx, cy, ro * cosH, false));
+    }
+  }
+  return changed ? _eraserFixTJunctions(keep) : null;
+}
+
+// Schließt T-Stöße: liegt eine fremde Ecke mitten auf einer nur einmal benutzten
+// Kante, wird das Dreieck vom Schwerpunkt aus neu aufgefächert. Sonst zeichnen
+// die Kantenlinien jede Schnittfuge und „Löcher schließen" findet falsche Ränder.
+function _eraserFixTJunctions(tris) {
+  const Q = 1e4, key = (x, y, z) => Math.round(x*Q) + ',' + Math.round(y*Q) + ',' + Math.round(z*Q);
+  const n = tris.length / 9, vk = new Array(n * 3);
+  for (let i = 0; i < n * 3; i++) vk[i] = key(tris[i*3], tris[i*3+1], tris[i*3+2]);
+  const ek = (a, b) => a < b ? a + '|' + b : b + '|' + a;
+  const cnt = new Map();
+  for (let t = 0; t < n; t++) for (let k = 0; k < 3; k++) {
+    const e = ek(vk[t*3+k], vk[t*3+(k+1)%3]); cnt.set(e, (cnt.get(e) || 0) + 1);
+  }
+  // Kandidaten: Ecken aller Dreiecke mit offener Kante, im Raster einsortiert
+  const open = [];
+  for (let t = 0; t < n; t++) for (let k = 0; k < 3; k++)
+    if (cnt.get(ek(vk[t*3+k], vk[t*3+(k+1)%3])) === 1) { open.push(t); break; }
+  if (!open.length) return tris;
+  let ext = 0;
+  for (const t of open) for (let k = 0; k < 3; k++) {
+    const a = t*9 + k*3, b = t*9 + ((k+1)%3)*3;
+    ext = Math.max(ext, Math.hypot(tris[a]-tris[b], tris[a+1]-tris[b+1], tris[a+2]-tris[b+2]));
+  }
+  const cell = Math.max(ext / 8, 1e-3), grid = new Map(), seen = new Set();
+  const gk = (x, y, z) => Math.floor(x/cell) + ',' + Math.floor(y/cell) + ',' + Math.floor(z/cell);
+  for (const t of open) for (let k = 0; k < 3; k++) {
+    const i = t*3 + k; if (seen.has(vk[i])) continue; seen.add(vk[i]);
+    const g = gk(tris[i*3], tris[i*3+1], tris[i*3+2]);
+    if (!grid.has(g)) grid.set(g, []);
+    grid.get(g).push(i);
+  }
+  const out = []; let fixed = 0;
+  const push3 = (v) => out.push(v[0], v[1], v[2]);
+  for (let t = 0; t < n; t++) {
+    const V = [0, 1, 2].map(k => [tris[t*9+k*3], tris[t*9+k*3+1], tris[t*9+k*3+2]]);
+    const ring = []; let extra = false;
+    for (let k = 0; k < 3; k++) {
+      ring.push(V[k]);
+      const A = V[k], B = V[(k+1)%3];
+      if (cnt.get(ek(vk[t*3+k], vk[t*3+(k+1)%3])) !== 1) continue;
+      const dx = B[0]-A[0], dy = B[1]-A[1], dz = B[2]-A[2], L2 = dx*dx + dy*dy + dz*dz;
+      if (L2 < 1e-12) continue;
+      const L = Math.sqrt(L2), steps = Math.ceil(L / (cell * 0.5)) + 1, found = new Map();
+      for (let s = 0; s <= steps; s++) {
+        const px = A[0] + dx*s/steps, py = A[1] + dy*s/steps, pz = A[2] + dz*s/steps;
+        const cx = Math.floor(px/cell), cy = Math.floor(py/cell), cz = Math.floor(pz/cell);
+        for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) for (let oz = -1; oz <= 1; oz++) {
+          const lst = grid.get((cx+ox) + ',' + (cy+oy) + ',' + (cz+oz)); if (!lst) continue;
+          for (const i of lst) {
+            if (found.has(i)) continue;
+            const x = tris[i*3], y = tris[i*3+1], z = tris[i*3+2];
+            const u = ((x-A[0])*dx + (y-A[1])*dy + (z-A[2])*dz) / L2;
+            if (u <= 1e-6 || u >= 1 - 1e-6) { found.set(i, null); continue; }
+            const ex = A[0] + dx*u - x, ey = A[1] + dy*u - y, ez = A[2] + dz*u - z;
+            const k2 = vk[i];
+            found.set(i, (ex*ex + ey*ey + ez*ez < 1e-10 && k2 !== vk[t*3+k] && k2 !== vk[t*3+(k+1)%3]) ? u : null);
+          }
+        }
+      }
+      const pts = [...found].filter(([, u]) => u !== null).sort((p, q) => p[1] - q[1]);
+      for (const [i] of pts) { ring.push([tris[i*3], tris[i*3+1], tris[i*3+2]]); extra = true; }
+    }
+    if (!extra) { for (const v of V) push3(v); continue; }
+    fixed++;
+    const c = [(V[0][0]+V[1][0]+V[2][0])/3, (V[0][1]+V[1][1]+V[2][1])/3, (V[0][2]+V[1][2]+V[2][2])/3];
+    for (let j = 0; j < ring.length; j++) { push3(c); push3(ring[j]); push3(ring[(j+1) % ring.length]); }
+  }
+  return fixed ? out : tris;
+}
+
+function _eraserKey(e) {
+  if (!_eraser.active || e.key !== 'Escape' || !_eraser.ring) return;
+  e.preventDefault(); e.stopPropagation();
+  _eraserRingCancel(); _eraser.brushing = false;
+  notify('Ring abgebrochen', 'ok');
 }
 
 function _eraserPick(e) {
@@ -50081,6 +50433,11 @@ function _eraserMove(e) {
   _eraser.lastClient = { clientX: e.clientX, clientY: e.clientY };
   const hit = _eraserPick(e);
   if (hit) _eraser.lastPoint.copy(hit.point);
+  if (_eraser.mode === 'ring') {
+    if (_eraser.ring) { e.preventDefault(); e.stopPropagation(); _eraserRingDrag(e); }
+    else _eraserUpdateCursor(e, !!hit);
+    return;
+  }
   _eraserUpdateCursor(e, !!hit);
   if (_eraser.brushing) {
     e.preventDefault(); e.stopPropagation();
@@ -50091,6 +50448,7 @@ function _eraserMove(e) {
 function _eraserDown(e) {
   if (!_eraser.active || e.button !== 0) return;
   e.preventDefault(); e.stopPropagation();   // im Radierer-Modus NIE das Auswahl-Rechteck starten
+  if (_eraser.mode === 'ring') { _eraser.brushing = true; _eraserRingStart(e); return; }
   _eraser.brushing = true; _eraser.didErase = false; _eraser.savedUndo = false; _eraser.touched = new Set();
   const hit = _eraserPick(e);
   if (hit) { _eraser.lastPoint.copy(hit.point); _eraserStroke(hit); }
@@ -50099,6 +50457,11 @@ function _eraserDown(e) {
 function _eraserUp() {
   if (!_eraser.brushing) return;
   _eraser.brushing = false;
+  if (_eraser.mode === 'ring') {
+    _eraserRingApply();
+    if (_eraser.lastClient) _eraserUpdateCursor(_eraser.lastClient, false);
+    return;
+  }
   if (_eraser.didErase) {
     // Schwarze Kantenlinien an die radierte Geometrie anpassen (Geisterlinien weg)
     if (_eraser.touched && typeof _updateObjEdgeLines === 'function')
@@ -50111,6 +50474,7 @@ function _eraserWheel(e) {
   if (!_eraser.active) return;
   e.preventDefault(); e.stopPropagation();
   const step = e.shiftKey ? 0.5 : 2;
+  if (_eraser.mode === 'ring') { _eraserSetInner(_eraser.innerMm + (e.deltaY < 0 ? 2*step : -2*step)); return; }
   _eraserSetRadius(_eraser.radiusMm + (e.deltaY < 0 ? step : -step));
 }
 
@@ -50132,11 +50496,16 @@ function _eraserEraseAt(mesh, pw) {
         b.distanceToSquared(pw) < r2 || c.distanceToSquared(pw) < r2) { removed++; continue; }
     for (let v = 0; v < 3; v++) keep.push(pos.getX(t*3+v), pos.getY(t*3+v), pos.getZ(t*3+v));
   }
-  if (!removed) { if (wasIndexed) work.dispose(); return false; }
+  if (wasIndexed) work.dispose();
+  if (!removed) return false;
+  _eraserReplaceGeometry(mesh, keep);
+  return true;
+}
 
-  // Ganzes Objekt weg, wenn nichts übrig bleibt
+// Ersetzt die Geometrie durch die übrigen Dreiecke (flach, lokal) bzw. entfernt
+// das Objekt, wenn nichts übrig bleibt. Parametrische Daten werden verworfen.
+function _eraserReplaceGeometry(mesh, keep) {
   if (keep.length === 0) {
-    if (wasIndexed) work.dispose();
     scene.remove(mesh); objects = objects.filter(o => o !== mesh);
     if (_eraser.ind) _eraser.ind.style.display = 'none';
     updateTree();
@@ -50147,7 +50516,6 @@ function _eraserEraseAt(mesh, pw) {
   ng.setAttribute('position', new THREE.Float32BufferAttribute(keep, 3));
   ng.computeVertexNormals();
   mesh.geometry.dispose();
-  if (wasIndexed) work.dispose();
   mesh.geometry = ng;
   if (_eraser.touched) _eraser.touched.add(mesh);   // Kantenlinien am Strich-Ende neu bauen
   if (_eraser.session) _eraser.session.add(mesh);   // für „Löcher schließen"
