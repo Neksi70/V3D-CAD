@@ -11,7 +11,7 @@ import { chromium } from 'playwright';
 
 // Toleranz 0,2 mm statt 0,05: Seit v1.18.x misst die Gravur ihre Tiefe von der
 // TATSAECHLICHEN Netzoberflaeche (Sehne zwischen zwei Facetten), nicht mehr vom
-// idealen Zylinderradius. Bei diesem Rohr mit 48 Segmenten liegt die Sehne
+// idealen Zylinderradius. Bei diesem Rohr mit 32 Segmenten liegt die Sehne
 // 0,14 mm innerhalb des Nennradius — die Gravur ist also relativ zur echten Wand
 // exakt, gegenueber dem Ideal aber um diesen Betrag versetzt. Fuer das gedruckte
 // Teil zaehlt die echte Wand.
