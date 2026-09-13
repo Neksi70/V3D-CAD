@@ -22249,7 +22249,7 @@ window.addEventListener('mouseup', e => {
     // Auf der Flaeche geglitten? Dann NICHT neu heften — das wuerde zentrieren.
     if (_svgGlideEnd()) _textSnapTarget = null;
     // Text/SVG auf Ziel heften wenn Snap-Ziel vorhanden
-    _applyTextSnapOnDrop();
+    _applyTextSnapOnDrop(true);
     // Mitten-Snap-Kreis ausblenden
     _snapSticky = null; _magnetBypass = false;
     if (_centerSnapTarget) {
@@ -27906,20 +27906,28 @@ let _textSnapTarget = null;
 // Beim Loslassen anschmiegen. Wird von BEIDEN Zieh-Wegen gerufen: freies Ziehen
 // am Objekt und Ziehen an einem Gizmo-Pfeil — sonst wäre das Anschmiegen mit
 // den neuen Pfeilen gar nicht mehr erreichbar.
-function _applyTextSnapOnDrop() {
+function _applyTextSnapOnDrop(freierZug) {
   if (_textSnapTarget && selectedObjs.length === 1) {
     const st = selectedObjs[0].userData.shapeType;
     if (st === 'text')     _applyTextConform(selectedObjs[0], _textSnapTarget);
     else if (st === 'svg') _applySvgSnap(selectedObjs[0], _textSnapTarget);
   } else if (selectedObjs.length === 1) {
-    // Gewickeltes Motiv vom Körper heruntergezogen: wieder flach bauen. Sonst
-    // behält es die Rundung des alten Körpers, und beim nächsten Auflegen steht
-    // es ab (gemeldet von Josy 10.9.).
+    // Motiv vom Körper heruntergezogen: wieder flach hinlegen. Ein gewickeltes
+    // behielte sonst die alte Rundung, ein flach geheftetes bliebe senkrecht in
+    // der Luft stehen (Josy 10./13.9.). Nur beim freien Zug — am Pfeil-Gizmo
+    // positioniert man bewusst, da darf nichts von selbst umfallen.
     const o = selectedObjs[0];
-    if (o.userData.shapeType === 'svg' && o.userData._svgWrap && !o.userData.locked
-        && !_svgWrapOnWall(o) && _svgWrapFlatten(o)) {
-      updateTFInputs(); updateTree(); updateCtxPopup();
-      notify('SVG wieder flach — es liegt auf keiner Rundung mehr', 'ok');
+    if (freierZug && o.userData.shapeType === 'svg' && !o.userData.locked) {
+      if (o.userData._svgWrap) {
+        if (!_svgWrapOnWall(o) && _svgWrapFlatten(o)) {
+          updateTFInputs(); updateTree(); updateCtxPopup();
+          notify('SVG wieder flach — es liegt auf keiner Rundung mehr', 'ok');
+        }
+      } else if (o.userData._snapNormal && !_svgFlatTarget(o)) {
+        _svgLegeFlachHin(o);
+        updateTFInputs(); updateTree(); updateCtxPopup();
+        notify('SVG liegt wieder flach auf der Platte', 'ok');
+      }
     }
   }
   _textSnapTarget = null;
@@ -42600,8 +42608,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.7';
+const VOLME3D_VERSION = '1.18.8';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.8', date:'2026-09-13', changes:[
+    ['\u{1F41B}','<b>Vom K\u00f6rper weggezogene Motive legen sich wieder flach auf die Platte \u2014 und behalten ihre Drehung.</b> Zog man ein Motiv von einer <b>senkrechten Wand</b> herunter, blieb es hochkant in der Luft stehen, statt sich hinzulegen (bei gewickelten Motiven war das schon behoben, bei aufgeklebten noch nicht). Jetzt legt es sich in beiden F\u00e4llen wieder hin wie frisch eingef\u00fcgt: flach, aufrecht, auf der Platte. Der einmal eingestellte <b>Drehwinkel bleibt dabei erhalten</b> \u2014 auch wenn du es zwischendurch ganz woanders hinlegst: Wer sein Motiv einmal gerade gestellt hat, muss das nicht wieder tun. Am Pfeil-Gizmo \u00e4ndert sich nichts, dort positionierst du weiter frei \u2014 auch schwebend, wenn du das brauchst. Gemeldet von Josy.'],
+  ]},
   { version:'1.18.7', date:'2026-09-13', changes:[
     ['\u{1F56F}\uFE0F','<b>Motive liegen jetzt auch auf welligen und handgeformten Vasen ganz an \u2014 und nach dem Abnehmen liegen sie wieder flach.</b> Auf einer nicht exakt runden Wand standen die <b>Ecken</b> des Motivs ab (nachgemessen: 2,9 mm). Zwei Ursachen: Die Wand wurde nur \u00fcber die <b>H\u00f6he</b> vermessen, nicht \u00fcber den <b>Umfang</b> \u2014 eine Delle neben der Klickstelle kannte das Motiv also gar nicht. Und der Sicherheitsabstand nach au\u00dfen wuchs mit der Unrundheit mit, wodurch das Motiv zus\u00e4tzlich heraussta\u00dfte. Jetzt wird die Wand als <b>Raster \u00fcber H\u00f6he und Umfang</b> abgetastet und das Motiv folgt ihr Punkt f\u00fcr Punkt; gemessen bleiben <b>0,4 statt 2,9 mm</b>. <b>Zweitens:</b> Nahm man ein gewickeltes Motiv wieder herunter, blieb es schr\u00e4g in der Luft stehen und heftete sich anschlie\u00dfend schief an. Es legt sich jetzt wieder <b>flach auf die Platte</b>, genau wie frisch eingef\u00fcgt, und eine Schr\u00e4glage wird nur noch von Motiven \u00fcbernommen, die vorher wirklich auflagen. Gemeldet von Josy.'],
   ]},
@@ -43785,7 +43796,14 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   let _keepAng = 0;
   // Nur von einem Motiv übernehmen, das vorher auf einer Fläche lag. Schwebt es
   // frei im Raum, ist sein Winkel Zufall — und das Motiv heftete sich schief an.
-  const _lagAuf = !!(svgMesh.userData._snapNormal || svgMesh.userData._svgWrap);
+  const _lagAuf = !!(svgMesh.userData._snapNormal || svgMesh.userData._svgWrap
+                     || svgMesh.userData._svgLageOk);
+  // Liegt das Motiv schon grob in der Zielebene, wird der Winkel gemessen. Kommt
+  // es aus einer ganz anderen Lage (z. B. flach von der Platte an eine senkrechte
+  // Wand), lässt er sich nicht ableiten — dann gilt der zuletzt gesetzte Winkel,
+  // damit "einmal gerade gestellt" auch über Umwege erhalten bleibt.
+  if (_lagAuf && Math.abs(_nSvg.dot(n)) <= 0.9 && svgMesh.userData._svgFlaechenAng != null)
+    _keepAng = svgMesh.userData._svgFlaechenAng;
   if (_lagAuf && Math.abs(_nSvg.dot(n)) > 0.9) {
     const _upNow = new THREE.Vector3(0, 0, -1).applyQuaternion(svgMesh.quaternion);
     const _pUp = _upNow.sub(n.clone().multiplyScalar(_upNow.dot(n)));
@@ -43798,6 +43816,7 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   svgMesh.quaternion.setFromRotationMatrix(_snapMat);
   if (Math.abs(_keepAng) > 1e-4)
     svgMesh.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(n, _keepAng));
+  svgMesh.userData._svgFlaechenAng = _keepAng;   // für den nächsten Ortswechsel merken
 
   // Tiefe aus userData (svgDepth in mm)
   const depthMm = svgMesh.userData.svgDepth || 5;
@@ -44153,6 +44172,7 @@ function _svgGlideBegin(o, e) {
     const cW = _svgCenterWorld(o);
     const sc = _svgGlideScreenPt(cW);
     _svgGlide = { kind: 'rot', obj: o, fr, moved: false,
+                  angBasis: o.userData._svgFlaechenAng || 0,
                   ev: { x: e.clientX, y: e.clientY },
                   axis: fr.kind === 'flat' ? fr.n.clone() : _svgWrapRadialDir(o),
                   cW,
@@ -44213,6 +44233,8 @@ function _svgGlideMove(e) {
     const zurKamera = camera.position.clone().sub(G.cW).dot(G.axis) >= 0 ? -1 : 1;
     const q = new THREE.Quaternion().setFromAxisAngle(G.axis, ang * zurKamera);
     G.ang = ang * zurKamera;            // fürs Einrechnen in eine Wicklung
+    if (!o.userData._svgWrap)
+      o.userData._svgFlaechenAng = (G.angBasis || 0) + G.ang;   // gedrehte Lage merken
     o.quaternion.copy(G.q0).premultiply(q);
     // um die Motivmitte drehen, nicht um den Objekt-Ursprung
     o.position.copy(G.cW).add(G.pos0.clone().sub(G.cW).applyQuaternion(q));
@@ -45115,18 +45137,46 @@ function _svgWrapFlatten(svgMesh) {
   svgMesh.scale.set(s.x, s.y, s.z);
   delete svgMesh.userData._svgWrap;
   delete svgMesh.userData._wrapTarget;
-  // Wieder hinlegen wie nach dem Einfügen: flach auf die Platte, aufrecht lesbar.
-  // Vorher blieb die Ausrichtung der Wicklung stehen — das Motiv stand dann
-  // „schief in der Luft" und heftete sich anschließend schief an (Josy 13.9.).
+  _updateObjEdgeLines(svgMesh);   // sonst rechnet die BBox mit den alten, gebogenen Kanten
+  _svgLegeFlachHin(svgMesh);
+  return true;
+}
+
+/**
+ * Motiv hinlegen wie frisch eingefügt: flach, aufrecht lesbar, auf der Platte.
+ * Genommen wird das, sobald ein Motiv von seinem Körper heruntergezogen wird —
+ * vorher blieb es „schief in der Luft" stehen und heftete sich beim nächsten Mal
+ * schief an (Josy 13.9.).
+ */
+function _svgLegeFlachHin(svgMesh) {
+  // Die Drehung IN der Fläche bleibt erhalten — wer sein Motiv einmal gerade
+  // gestellt hat, will es nach dem Abnehmen nicht wieder ausrichten müssen.
+  let ang = 0;
+  const q = svgMesh.quaternion;
+  const nAlt = new THREE.Vector3(0, 1, 0).applyQuaternion(q).normalize();
+  const obenAlt = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
+  const faceUp = Math.abs(nAlt.y) > 0.85 ? new THREE.Vector3(0, 0, -1) : new THREE.Vector3(0, 1, 0);
+  const projUp = faceUp.clone().sub(nAlt.clone().multiplyScalar(faceUp.dot(nAlt)));
+  const pUp = obenAlt.clone().sub(nAlt.clone().multiplyScalar(obenAlt.dot(nAlt)));
+  if (projUp.lengthSq() > 1e-8 && pUp.lengthSq() > 1e-8) {
+    projUp.normalize(); pUp.normalize();
+    ang = Math.atan2(new THREE.Vector3().crossVectors(projUp, pUp).dot(nAlt), projUp.dot(pUp));
+  }
   svgMesh.quaternion.identity();
   svgMesh.rotation.set(0, 0, 0);
-  _updateObjEdgeLines(svgMesh);   // sonst rechnet die BBox mit den alten, gebogenen Kanten
+  if (Math.abs(ang) > 1e-4)
+    svgMesh.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ang));
+  delete svgMesh.userData._snapNormal;
+  delete svgMesh.userData._snapSolid;
+  delete svgMesh.userData._snapFaceD;
+  delete svgMesh.userData._snapSurfaceLocal;
+  // Merker: Diese Lage ist gewollt (flach hingelegt, Winkel behalten). Ohne ihn
+  // gälte das Motiv beim nächsten Heften als "schwebt zufällig herum" und seine
+  // Drehung würde verworfen.
+  svgMesh.userData._svgLageOk = true;
   svgMesh.updateMatrixWorld(true);
-  // auf die Platte absetzen — nicht nur anheben: nach dem Abnehmen von einer
-  // hohen Vase schwebte das Motiv sonst in Kopfhöhe („er ist schief und in der
-  // Luft", Josy 13.9.).
   const bb = new THREE.Box3().setFromObject(svgMesh);
-  if (!bb.isEmpty()) svgMesh.position.y += 0.05 - bb.min.y;
+  if (!bb.isEmpty()) svgMesh.position.y += 0.05 - bb.min.y;   // absetzen, nicht schweben
   svgMesh.updateMatrixWorld(true);
   return true;
 }
