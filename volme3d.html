@@ -11184,8 +11184,8 @@ function _buildThreadGeo(diamMM, pitchMM, turns, segsPerTurn, leftHand) {
     // Kappen-Zone: voller Außendurchmesser → kein Deckel nach CSG-Abziehen
     if (y < yBot + guard || y > yTop - guard) return rOuter;
     let d = Infinity;
-    for (let t = -1; t <= turns; t++) {
-      const yg = yBot + (hand * theta / (Math.PI * 2) + t) * pitch; // Helix-Mitte
+    for (let t = -1; t <= turns + 1; t++) {
+      const yg = yBot + (t - hand * theta / (Math.PI * 2)) * pitch; // Helix-Mitte
       const di = Math.abs(y - yg);
       if (di < d) d = di;
     }
@@ -11251,6 +11251,13 @@ function _buildThreadVisualGeo(diamMM, pitchMM, turns, segsPerTurn, yClipMin, yC
   const totalH  = pitch * turns;
   const origBot = -totalH / 2, origTop = totalH / 2;
   // Effektive Grenzen: natürliche Thread-Grenzen, beschnitten auf Solid-Grenzen
+  // Händigkeit: Vertices liegen bei (r·cosθ, y, r·sinθ). θ läuft damit von +X nach
+  // +Z, von oben gesehen IM Uhrzeigersinn. Steigt y mit θ, ist das ein LINKS-
+  // gewinde — bis v1.18.11 stand hier „+θ" und jede DIN-Schraube, Mutter und jedes
+  // G-Gewinde kam gespiegelt heraus (Ralf am Pilz: „sieht wie Linksgewinde aus").
+  // Darum überall „t − hand·θ/2π": hand=+1 ist rechtsgängig. Alle Gewinde der App
+  // (Mutter, Gardena, Schraubdose, Pilz) folgen derselben Regel, sonst passen
+  // Gegenstücke nicht mehr. Prüfung: tests/thread_handedness_test.mjs.
   const yBot = (yClipMin !== undefined) ? Math.max(origBot, yClipMin) : origBot;
   const yTop = (yClipMax !== undefined) ? Math.min(origTop, yClipMax) : origTop;
   if (yTop <= yBot) return new THREE.BufferGeometry();
@@ -11265,8 +11272,8 @@ function _buildThreadVisualGeo(diamMM, pitchMM, turns, segsPerTurn, yClipMin, yC
   function profR(y, theta) {
     if (y < origBot + guard || y > origTop - guard) return rOuter;
     let d = Infinity;
-    for (let t = -1; t <= turns; t++) {
-      const yg = origBot + (hand * theta / (Math.PI * 2) + t) * pitch;
+    for (let t = -1; t <= turns + 1; t++) {
+      const yg = origBot + (t - hand * theta / (Math.PI * 2)) * pitch;
       const di = Math.abs(y - yg); if (di < d) d = di;
     }
     if (d <= ht) return rOuter;
@@ -28220,7 +28227,7 @@ function _buildNutGeometry(s, clearance, leftHand){
   const nturns= Math.ceil(nutH/pitchU)+2;
   function innerR(y,th){
     let d=Infinity;
-    for(let t=-1;t<=nturns;t++){ const yg=(hand*th/(2*Math.PI)+t)*pitchU; const di=Math.abs(y-yg); if(di<d)d=di; }
+    for(let t=-1;t<=nturns+1;t++){ const yg=(t-hand*th/(2*Math.PI))*pitchU; const di=Math.abs(y-yg); if(di<d)d=di; }
     if(d<=ht) return rOut;
     if(d<=hp) return rOut-(rOut-rMin)*(d-ht)/(hp-ht);
     return rMin;
@@ -28582,7 +28589,7 @@ function _gThreadProfile(majorMM, pitchMM, heightU, leftHand){
   const rO=(majorMM/10)/2, rMin=Math.max(0.05,rO-depth);
   const ht=pitch*0.06, hp=pitch*0.44, guard=pitch-hp, turns=heightU/pitch;
   return (y,th)=>{ if(y<guard||y>heightU-guard) return rO; let d=Infinity;
-    for(let t=-1;t<=turns+1;t++){ const yg=(hand*th/(2*Math.PI)+t)*pitch; const di=Math.abs(y-yg); if(di<d)d=di; }
+    for(let t=-1;t<=turns+1;t++){ const yg=(t-hand*th/(2*Math.PI))*pitch; const di=Math.abs(y-yg); if(di<d)d=di; }
     if(d<=ht) return rO; if(d<=hp) return rO-(rO-rMin)*(d-ht)/(hp-ht); return rMin; };
 }
 // Universeller Gardena-Klick-Stecker, Bund-Basis bei y=0, Pilz-Kuppe oben.
@@ -35205,7 +35212,7 @@ function _jarThreadR(y, theta, yBot, yTop, rCore, rOut, pitch, hand) {
   const turns = (yTop - yBot) / pitch;
   let d = Infinity;
   for (let t = -1; t <= turns + 1; t++) {
-    const yg = yBot + (hand * theta / (Math.PI * 2) + t) * pitch;
+    const yg = yBot + (t - hand * theta / (Math.PI * 2)) * pitch;
     const di = Math.abs(y - yg);
     if (di < d) d = di;
   }
@@ -35421,7 +35428,7 @@ function _pilzThreadR(y, theta, yBot, yTop, rCore, rOut, pitch, dil){
   const turns = (yTop - yBot) / pitch;
   let d = Infinity;
   for (let t = -1; t <= turns + 1; t++) {
-    const di = Math.abs(y - (yBot + (theta / (Math.PI * 2) + t) * pitch));
+    const di = Math.abs(y - (yBot + (t - theta / (Math.PI * 2)) * pitch));   // rechtsgängig
     if (di < d) d = di;
   }
   d = Math.max(0, d - d0);
@@ -42628,7 +42635,7 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.11';
+const VOLME3D_VERSION = '1.18.12';
 const VOLME3D_CHANGELOG = [
   { version:'1.18.11', date:'2026-09-13', changes:[
     ['\u{1F344}','<b>Pilz: Der Hut lässt sich jetzt wirklich aufschrauben.</b> Bisher ließ sich der gedruckte Hut nur aufstecken und frei drehen — das Gewinde griff nie. Ursache: Am <b>Eingang</b> des Innengewindes lief das Profil zu einem geschlossenen Ring aus, der genau so eng war wie der Gewindekern. Fertig verschraubt hätte alles gepasst, aber beim <b>Eindrehen</b> stieß der Gewindegang des Stiels gegen diesen Ring (nachgerechnet 1,35 mm Überdeckung) und kam nie in die Rille. Der Eingang ist jetzt auf den vollen Gewinde-Ø plus Spiel aufgeweitet, so findet der Gang von selbst hinein. <b>Alte Pilze bitte neu erzeugen und den Hut neu drucken</b>, der Stiel bleibt unverändert. Gemeldet von Ralf.'],
@@ -43241,6 +43248,9 @@ const VOLME3D_CHANGELOG = [
   ]},
   { version:'1.14.38', date:'2026-06-14', changes:[
     ['🔧','Schrauben/Muttern/Scheiben: Seiten-Anfasser (Breite/Tiefe) sind jetzt gesperrt — kein Verzerren/Oval-Ziehen mehr. Bei Mutter und Scheibe ist auch der Höhen-Anfasser gesperrt (Format über die Größe definiert); bei Außen-/Innen-/Schloss bleibt die Höhe aktiv und ändert die Länge'],
+  ]},
+  { version:'1.18.12', date:'2026-09-13', changes:[
+    ['\u{1F529}','<b>Alle Gewinde sind jetzt Rechtsgewinde \u2014 vorher kamen sie gespiegelt heraus.</b> Schrauben, Muttern, Gewindest\u00e4be, das Gewinde-Werkzeug, die Gardena-G-Gewinde, die Schraubdose, der Pilz und die Gewindebolzen beim Schneiden waren alle <b>linksg\u00e4ngig</b>, und die Option \u201eLinksgewinde\u201c lieferte ausgerechnet ein Rechtsgewinde. Untereinander passten die Teile, deshalb fiel es lange nicht auf \u2014 aber eine gedruckte M8-Schraube ging nicht in eine gekaufte Mutter, und ein G\u00be\u2033-Anschluss nicht auf den Wasserhahn. Jetzt ist <b>Rechtsgewinde der Standard</b> (im Uhrzeigersinn festdrehen), und \u201eLinksgewinde\u201c ist wirklich links. Nachgemessen an allen Generatoren im exportierten STL. <b>Wichtig:</b> Bereits gedruckte Gewindeteile passen nicht mehr zu neu erzeugten Gegenst\u00fccken \u2014 immer beide Teile neu erzeugen. Gemeldet von Ralf (\u201esieht wie Linksgewinde aus\u201c).'],
   ]},
   { version:'1.14.37', date:'2026-06-14', changes:[
     ['🐛','Schrauben: Beim Längermachen mit dem Höhen-Anfasser wurde das Gewinde mitgestreckt (Steigung änderte sich). Jetzt passt der Anfasser stattdessen die Länge an und baut die Schraube mit konstanter Steigung neu — Kopf bleibt auf der Druckplatte'],

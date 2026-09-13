@@ -157,7 +157,7 @@ for (const v of [{ name: 'Standard', p: {} }, { name: 'Grob', p: { pitch: 5, thr
 // kollisionsfrei, während ein geschlossener Ring am Buchsen-Eingang den Gang beim
 // Eindrehen blockierte (Ralf: „aufstecken und drehen geht, Gewinde greift nicht").
 // Darum hier den Schraubweg abfahren: Zapfen um e abgesenkt und um 2π·e/P
-// zurückgedreht — analytisch fein UND stichprobenhaft am echten Netz.
+// gegen die Einschraubrichtung zurückgedreht (Rechtsgewinde) — analytisch fein UND stichprobenhaft am echten Netz.
 for (const v of [{ name: 'Standard', p: {} }, { name: 'Grob', p: { pitch: 5, threadH: 14, clr: 0.2 } },
                  { name: 'Fein/eng', p: { pitch: 2, clr: 0.1, bossPct: 75 } }]) {
   const r = await pg.evaluate(({ over }) => {
@@ -171,7 +171,7 @@ for (const v of [{ name: 'Standard', p: {} }, { name: 'Grob', p: { pitch: 5, thr
     for (let e = 0; e <= d.Ht + 0.05; e += 0.01)
       for (let yc = d.yb; yc <= d.holeTop; yc += 0.004)
         for (let a = 0; a < 90; a++) {
-          const th = a / 90 * TAU, ths = ((th + TAU * e / d.P) % TAU + TAU) % TAU;
+          const th = a / 90 * TAU, ths = ((th - TAU * e / d.P) % TAU + TAU) % TAU;
           const g = _pilzFemR(d, yc, th) - male(yc + d.SH - d.yb + e, ths);
           if (g < minWeg) { minWeg = g; wo = { eMm: +(e * 10).toFixed(2), hMm: +((yc - d.yb) * 10).toFixed(2) }; }
         }
@@ -196,8 +196,8 @@ for (const v of [{ name: 'Standard', p: {} }, { name: 'Grob', p: { pitch: 5, thr
         const yc = y - d.SH + d.yb - e - 0.002;
         if (yc < d.yb) continue;
         netzGeprueft++;
-        // Zapfenwinkel ths = th + 2πe/P  →  im Hut th = ths - 2πe/P
-        const Pt = new THREE.Vector3(x * c + z * sn, yc, -x * sn + z * c);
+        // Zapfenwinkel ths = th − 2πe/P  →  im Hut th = ths + 2πe/P
+        const Pt = new THREE.Vector3(x * c - z * sn, yc, x * sn + z * c);
         if (window._plzT.inside(capMesh, Pt)) netzStecken++;
       }
     }
