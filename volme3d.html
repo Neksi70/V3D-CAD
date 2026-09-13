@@ -3858,6 +3858,17 @@ Patrick</textarea>
         <span class="vsec">Kabel</span>
         <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-bottom:4px" title="Waagerechter Schlitz knapp über dem Fuß, nach hinten offen — die Lichterkette läuft damit von Zeichen zu Zeichen, ohne hinten herauszuhängen"><input type="checkbox" id="lbs-kabel" checked onchange="_lbsFlag('kabel',this.checked)"> Kabel-Kerbe unten</label>
         <div class="vrow" id="lbs-row-kabelD"><label title="Höhe der Kerbe — etwas mehr als der Kabeldurchmesser">Kerbe</label> <input type="range" id="lbs-kabelD" min="2" max="10" value="4" step="0.5" oninput="_lbsSet('kabelD',this.value)"><span class="vv" id="lbsv-kabelD">4</span><span class="vu">mm</span></div>
+        <span class="vsec" title="Die Rückwand schließt den Buchstaben hinten und trägt den LED-Streifen. Sie liegt in einem Falz und lässt sich zum Wechseln der Beleuchtung wieder herausnehmen.">Rückwand &amp; LED-Streifen</span>
+        <div class="vtbrow" id="lbs-rueck-bg" style="display:flex;gap:4px;margin-bottom:6px">
+          <button class="vtb on" data-v="0" title="Hinten ganz offen — für eine Mini-Lichterkette, die man einfach hineinlegt" onclick="_lbsFlag('rueck',0)">Offen lassen</button>
+          <button class="vtb" data-v="1" title="Einlegbare Rückwand mit Falz: schließt den Buchstaben, hält den LED-Streifen in Richtung Vorderseite und geht zum Wechseln wieder heraus" onclick="_lbsFlag('rueck',1)">Rückwand einlegen</button>
+        </div>
+        <div class="vrow" id="lbs-row-plattenD"><label title="Dicke der Rückwand. 2 mm sind stabil genug und lassen sich noch gut herausdrücken">Rückwand</label> <input type="range" id="lbs-plattenD" min="1.2" max="4" value="2" step="0.2" oninput="_lbsSet('plattenD',this.value)"><span class="vv" id="lbsv-plattenD">2</span><span class="vu">mm</span></div>
+        <div class="vtbrow" id="lbs-fuehr-bg" style="display:flex;gap:4px;margin-bottom:6px">
+          <button class="vtb on" data-v="1" title="Zwei Rippen auf der Innenseite der Rückwand: der Streifen wird dazwischen geklemmt und strahlt nach vorn durch den Diffusor" onclick="_lbsFlag('fuehrung',1)">Streifen-Kanal</button>
+          <button class="vtb" data-v="0" title="Glatte Rückwand — Streifen selbst aufkleben oder Lichterkette lose einlegen" onclick="_lbsFlag('fuehrung',0)">Glatt</button>
+        </div>
+        <div class="vrow" id="lbs-row-streifenB"><label title="Breite deines LED-Streifens. Üblich sind 8 mm (COB/2835) oder 10 mm (5050). Etwas Luft rechne ich dazu">Streifen</label> <input type="range" id="lbs-streifenB" min="5" max="16" value="10" step="0.5" oninput="_lbsSet('streifenB',this.value)"><span class="vv" id="lbsv-streifenB">10</span><span class="vu">mm</span></div>
         <span class="vsec">Bauart</span>
         <div class="vtbrow" id="lbs-bau-bg" style="display:flex;gap:4px;margin-bottom:6px">
           <button class="vtb on" data-v="0" title="Jedes Zeichen wird ein eigenes Teil — frei aufstellen, einzeln drucken, Farben mischen" onclick="_lbsFlag('verbund',0)">Getrennt</button>
@@ -35504,8 +35515,13 @@ function _pilzCreate(){
 // Ganze in Ansichtslage (Vorderseite zur Kamera, Fuß auf der Platte).
 const _LBS_NUT = 6;          // Nut-Tiefe im Bord
 const _LBS_SW  = 3;          // Wandstärke des Bords neben der Nut
+const _LBS_FALZ = 1.2;       // Breite der Schulter, auf der die Rückwand aufliegt
+const _LBS_SPIEL_R = 0.25;   // Luft ringsum, damit die Rückwand hineingeht
+const _LBS_RIPPE_H = 3.5;    // Höhe der Kanalrippen (LED-Streifen + Klebeband)
+const _LBS_RIPPE_B = 1.2;    // Wandstärke der Kanalrippen
 let _lbsP = { text:'18', font:'helvetiker_bold', hoehe:150, tiefe:25, wall:2,
               diff:0.8, offen:0, track:0, verbund:0, kabel:1, kabelD:4,
+              rueck:0, plattenD:2, fuehrung:1, streifenB:10,
               sockel:0, sockelH:14, flach:1 };
 const _LBS_DEFAULTS = { ..._lbsP };
 let _lbsRT = null, _lbsLast = null;
@@ -35567,6 +35583,44 @@ function _lbsGlyphs(){
 // Ein Konturenbündel (ein Zeichen oder der ganze Zug) → Hohlkörper im Bauraum.
 // Gibt {geo, hohl} oder null. hohl=false heißt: der Strich ist schmaler als
 // 2 × Wandstärke, der Versatz verschwindet — das Zeichen wird massiv.
+// Maße eines Umriss-Bündels: Fläche, Umfang und daraus die mittlere Strichbreite.
+// Damit lässt sich der LED-Kanal mittig in den Strich legen, ohne die Mittelachse
+// ausrechnen zu müssen.
+//
+// Die naheliegende Näherung Breite ≈ 2·A/U stimmt nur für einen geschlossenen
+// Ring. Ein gerader Strich hat zwei kurze Enden, die im Umfang mitzählen — beim
+// „I" (20 × 150 mm) kämen so 17,6 statt 20 mm heraus, und der Kanal wurde 4,4 mm
+// zu breit. Mit A = B·L und U = 2L + 2B ist B exakt die kleinere Wurzel von
+// 2B² − U·B + 2A = 0; für den Ring (keine Enden) fällt das auf 2·A/U zurück.
+function _lbsBandMass(polys){
+  let A = 0, U = 0;
+  for(const lp of polys){
+    let a = 0;
+    for(let i = 0, n = lp.length; i < n; i++){
+      const p = lp[i], q = lp[(i + 1) % n];
+      a += p[0] * q[1] - q[0] * p[1];
+      U += Math.hypot(q[0] - p[0], q[1] - p[1]);
+    }
+    A += a / 2;
+  }
+  A = Math.abs(A);
+  if(U <= 1e-6) return { A, U, breite: 0 };
+  const disk = U * U - 16 * A;
+  const breite = disk > 0 ? (U - Math.sqrt(disk)) / 4 : 2 * A / U;
+  return { A, U, breite };
+}
+
+// Die Kabel-Kerbe als Manifold-Quader — Buchstabe und Rückwand schneiden sich
+// dieselbe, damit das Kabel durch beide durchgeht.
+function _lbsKabelSchnitt(w, bb, P, z0){
+  return w.Manifold.cube([bb.max[0] - bb.min[0] + 8, Math.max(1.5, P.kabelD), P.tiefe - z0 + 2])
+          .translate([bb.min[0] - 4, bb.min[1] + P.wall + 0.2, z0]);
+}
+
+// Ein Konturenbündel (ein Zeichen oder der ganze Zug) → Hohlkörper im Bauraum.
+// Gibt {geo, hohl, platte} oder null. hohl=false heißt: der Strich ist schmaler
+// als 2 × Wandstärke, der Versatz verschwindet — das Zeichen wird massiv.
+// platte = Umriss der Rückwand (falls sie hineinpasst), fertig mit Spiel.
 function _lbsShellGeo(w, loops, P){
   const CS = w.CrossSection, M = w.Manifold, tmp = [];
   const keep = x => { tmp.push(x); return x; };
@@ -35578,21 +35632,99 @@ function _lbsShellGeo(w, loops, P){
     const inner = keep(cs.offset(-P.wall, 'Round', 2, 16));
     const hohl = inner.toPolygons().length > 0 && (P.tiefe - fr) > 0.6;
     let solid = keep(cs.extrude(P.tiefe));
+    let platte = null;
     if(hohl){
       const cav = keep(keep(inner.extrude(P.tiefe - fr + 1)).translate([0, 0, fr]));
       solid = keep(solid.subtract(cav));
+      // Rückwand: Falz am hinteren Ende. Die letzten Millimeter werden bis auf
+      // eine schmale Schulter aufgeweitet — darauf liegt die Platte auf und
+      // schließt bündig mit der Rückkante ab.
+      if(P.rueck && _lbsFalzBreite(P) >= 0.6 && P.tiefe > fr + P.plattenD + 1.5){
+        const weit = keep(cs.offset(-(P.wall - _lbsFalzBreite(P)), 'Round', 2, 16));
+        if(weit.toPolygons().length){
+          const tasche = keep(keep(weit.extrude(P.plattenD + 0.05)).translate([0, 0, P.tiefe - P.plattenD]));
+          const t = keep(solid.subtract(tasche));
+          if(!t.isEmpty()){
+            solid = t;
+            platte = keep(weit.offset(-_LBS_SPIEL_R, 'Round', 2, 16)).toPolygons();
+            if(!platte.length) platte = null;
+          }
+        }
+      }
       // Kabel-Kerbe: waagerechter Schlitz knapp über dem Fuß, von hinten offen.
       // Vorn bleiben 1,2 mm stehen, damit die Front geschlossen bleibt.
       if(P.kabel){
         const z0 = Math.min(fr + 1.2, P.tiefe - 0.8);
-        const cut = keep(keep(M.cube([bb.max[0] - bb.min[0] + 8, Math.max(1.5, P.kabelD), P.tiefe - z0 + 2]))
-                          .translate([bb.min[0] - 4, bb.min[1] + P.wall + 0.2, z0]));
-        const t = keep(solid.subtract(cut));
+        const t = keep(solid.subtract(keep(_lbsKabelSchnitt(w, bb, P, z0))));
         if(!t.isEmpty()) solid = t;
       }
     }
     if(solid.isEmpty()) return null;
-    return { geo: _mfToGeo(solid).toNonIndexed(), hohl };
+    return { geo: _mfToGeo(solid).toNonIndexed(), hohl, platte, bb: { min: [bb.min[0], bb.min[1]], max: [bb.max[0], bb.max[1]] } };
+  } finally {
+    for(const o of tmp){ try{ o && o.delete && o.delete(); }catch(e){} }
+  }
+}
+
+// Wie breit darf die Schulter sein? Hinter ihr muss noch echte Wand stehen
+// bleiben — unter 1 mm bricht der Rand beim Einsetzen der Platte weg.
+function _lbsFalzBreite(P){
+  return Math.max(0, Math.min(_LBS_FALZ, P.wall - 1.0));
+}
+
+// Rückwand im Einbau-Bezug: Körper bei z = Tiefe-Plattenstärke … Tiefe, die
+// Kanalrippen stehen davor IN den Hohlraum hinein. Der LED-Streifen wird
+// zwischen sie geklemmt und strahlt damit nach vorn durch den Diffusor —
+// liegt er lose im Buchstaben, leuchtet er nach hinten heraus.
+function _lbsPlatteGeo(w, platteLoops, P, bb){
+  const CS = w.CrossSection, M = w.Manifold, tmp = [];
+  const keep = x => { tmp.push(x); return x; };
+  try{
+    const pl = keep(new CS(platteLoops, 'EvenOdd'));
+    if(!pl.toPolygons().length) return null;
+    const z0 = P.tiefe - P.plattenD;
+    let koerper = keep(keep(pl.extrude(P.plattenD)).translate([0, 0, z0]));
+    // Kanal: Band der Streifenbreite mittig im Strich, die Rippen säumen es.
+    let kanal = false;
+    if(P.fuehrung){
+      const mass = _lbsBandMass(pl.toPolygons());
+      const a = (mass.breite - P.streifenB) / 2;
+      if(a >= 0.6){
+        let band = keep(pl.offset(-a, 'Round', 2, 12));
+        const innen = keep(pl.offset(-(a + P.streifenB), 'Round', 2, 12));
+        if(innen.toPolygons().length) band = keep(band.subtract(innen));
+        if(band.toPolygons().length){
+          let rippen = keep(keep(band.offset(_LBS_RIPPE_B, 'Miter', 3)).subtract(band));
+          // Nur dort Rippen, wo der Strich sie UND den Streifen trägt: erst
+          // schrumpfen, dann wieder aufblasen (Öffnen) lässt genau die Bereiche
+          // übrig, die breit genug sind. Ohne das quetschen die Rippen an den
+          // Engstellen — beim „8" blieben so 5,8 statt 10 mm Durchgang, und ein
+          // Streifen lässt sich in seiner Ebene nicht um die Enge herumbiegen.
+          // Maßgeblich ist, ab wann der Kanal die volle Streifenbreite hat:
+          // bei örtlicher Strichbreite W bleibt min(Streifen, W − 2a) übrig,
+          // also braucht es W ≥ 2a + Streifen — Öffnen mit genau diesem Radius.
+          const noetig = a + P.streifenB / 2;
+          const breitGenug = keep(keep(pl.offset(-noetig, 'Round', 2, 12)).offset(noetig + 0.02, 'Round', 2, 12));
+          if(breitGenug.toPolygons().length) rippen = keep(rippen.intersect(breitGenug));
+          rippen = keep(rippen.intersect(keep(pl.offset(-0.6, 'Round', 2, 12))));
+          if(rippen.toPolygons().length){
+            const h = Math.min(_LBS_RIPPE_H, Math.max(1, P.tiefe - P.plattenD - 1));
+            const koerperR = keep(keep(rippen.extrude(h)).translate([0, 0, z0 - h]));
+            const v = keep(koerper.add(koerperR));
+            if(!v.isEmpty()){ koerper = v; kanal = true; }
+          }
+        }
+      }
+    }
+    // Kabelausgang: derselbe Schnitt wie im Buchstaben, damit das Kabel durchgeht.
+    if(P.kabel){
+      const fr = P.offen ? 0 : Math.max(0, Math.min(P.diff, P.tiefe - 1));
+      const zk = Math.min(fr + 1.2, P.tiefe - 0.8);
+      const t = keep(koerper.subtract(keep(_lbsKabelSchnitt(w, { min: bb.min, max: bb.max }, P, zk))));
+      if(!t.isEmpty()) koerper = t;
+    }
+    if(koerper.isEmpty()) return null;
+    return { geo: _mfToGeo(koerper).toNonIndexed(), kanal };
   } finally {
     for(const o of tmp){ try{ o && o.delete && o.delete(); }catch(e){} }
   }
@@ -35625,12 +35757,20 @@ function _lbsParts(P, lage){
   const groups = P.verbund
     ? [{ ch: (P.text || '').trim(), loops: G.letters.reduce((a, L) => a.concat(L.loops), []) }]
     : G.letters;
-  const parts = [], massiv = [];
+  const parts = [], massiv = [], ohneRueck = [], ohneKanal = [];
   for(const g of groups){
     const r = _lbsShellGeo(w, g.loops, P);
     if(!r) continue;
     if(!r.hohl) massiv.push(g.ch);
-    parts.push({ geo: r.geo, name: P.verbund ? 'Schriftzug' : 'Buchstabe ' + g.ch });
+    const bez = P.verbund ? 'Schriftzug' : 'Buchstabe ' + g.ch;
+    parts.push({ geo: r.geo, name: bez });
+    if(P.rueck){
+      if(!r.platte){ if(r.hohl) ohneRueck.push(g.ch); continue; }
+      const pg = _lbsPlatteGeo(w, r.platte, P, r.bb);
+      if(!pg){ ohneRueck.push(g.ch); continue; }
+      if(P.fuehrung && !pg.kanal) ohneKanal.push(g.ch);
+      parts.push({ geo: pg.geo, name: 'Rückwand ' + (P.verbund ? '' : g.ch).trim(), platte: true });
+    }
   }
   if(!parts.length) return null;
   if(P.sockel){
@@ -35720,12 +35860,17 @@ function _lbsSync(){
   const mark = (sel, val) => document.querySelectorAll(sel + ' .vtb').forEach(b =>
     b.classList.toggle('on', b.getAttribute('data-v') === String(val)));
   mark('#lbs-front-bg', _lbsP.offen);
+  mark('#lbs-rueck-bg', _lbsP.rueck);
+  mark('#lbs-fuehr-bg', _lbsP.fuehrung);
   mark('#lbs-bau-bg', _lbsP.verbund);
   mark('#lbs-sockel-bg', _lbsP.sockel);
   mark('#lbs-lage-bg', _lbsP.flach);
   const show = (id, on) => { const e = document.getElementById(id); if(e) e.style.display = on ? '' : 'none'; };
   show('lbs-row-diff', !_lbsP.offen);
   show('lbs-row-kabelD', !!_lbsP.kabel);
+  show('lbs-row-plattenD', !!_lbsP.rueck);
+  show('lbs-fuehr-bg', !!_lbsP.rueck);
+  show('lbs-row-streifenB', !!(_lbsP.rueck && _lbsP.fuehrung));
   show('lbs-row-sockelH', !!_lbsP.sockel);
   const cb = document.getElementById('lbs-kabel'); if(cb) cb.checked = !!_lbsP.kabel;
   _lbsInfo();
@@ -35746,6 +35891,15 @@ function _lbsInfo(){
     : 'Diffusor vorn ' + P.diff + ' mm (' + Math.max(1, Math.round(P.diff / 0.2)) + ' Lagen bei 0,2 mm) — weißes oder naturfarbenes Filament leuchtet am schönsten durch.';
   s += '<br>';
   if(P.kabel) s += 'Kabel-Kerbe ' + P.kabelD + ' mm knapp über dem Fuß, nach hinten offen — damit läuft eine Lichterkette von Zeichen zu Zeichen.<br>';
+  if(P.rueck){
+    const falz = _lbsFalzBreite(P);
+    s += 'Rückwand ' + P.plattenD + ' mm, liegt auf einer ' + falz.toFixed(1) + ' mm breiten Schulter und schließt bündig ab — '
+       + 'zum Wechseln der Beleuchtung geht sie wieder heraus (' + _LBS_SPIEL_R + ' mm Luft ringsum).<br>';
+    if(P.fuehrung) s += 'Der LED-Streifen (' + P.streifenB + ' mm) wird auf der Innenseite der Rückwand zwischen zwei Rippen geklemmt und '
+       + 'strahlt nach vorn: ' + Math.max(0, P.tiefe - P.plattenD - fr).toFixed(0) + ' mm bis zum Diffusor. '
+       + 'Lose im Buchstaben würde er nach hinten leuchten.<br>';
+    s += 'Zum Drucken liegt die Rückwand flach, Rippen nach oben — keine Stützen.<br>';
+  }
   if(P.sockel && r) s += 'Bord ' + Math.round(r.breite + 20) + ' × ' + (P.tiefe + 0.6 + 2 * _LBS_SW).toFixed(1) + ' × ' +
                          Math.max(6, P.sockelH) + ' mm mit ' + _LBS_NUT + ' mm Nut — sichtbare Zeichenhöhe ' +
                          Math.round(P.hoehe - _LBS_NUT) + ' mm.<br>';
@@ -35756,6 +35910,12 @@ function _lbsInfo(){
   if(r && r.massiv.length) warn.push('Zu schmal für einen Hohlraum: ' + r.massiv.map(c => '„' + c + '"').join(', ') +
     ' — diese Zeichen werden massiv. Höhe größer, Wandstärke kleiner oder eine fettere Schrift nehmen.');
   if(P.tiefe < 2 * P.wall + 2) warn.push('Die Tiefe ist knapp: unter ' + (2 * P.wall + 2).toFixed(1) + ' mm bleibt kaum Platz für das Licht.');
+  if(P.rueck && _lbsFalzBreite(P) < 0.6)
+    warn.push('Für die Rückwand braucht die Wand mindestens 1,6 mm — hinter dem Falz muss noch 1 mm Wand stehen bleiben. Wandstärke erhöhen.');
+  if(r && r.ohneRueck && r.ohneRueck.length)
+    warn.push('Keine Rückwand möglich bei: ' + r.ohneRueck.map(c => '„' + c + '"').join(', ') + ' — dort ist der Strich zu schmal oder die Tiefe zu klein.');
+  if(r && r.ohneKanal && r.ohneKanal.length)
+    warn.push('Der Streifen-Kanal passt nicht in: ' + r.ohneKanal.map(c => '„' + c + '"').join(', ') + ' — dort ist der Strich schmaler als der Streifen. Schmaleren Streifen wählen oder Höhe erhöhen.');
   if(P.verbund) warn.push('„Verbunden" gibt EIN Teil — die Zeichen müssen sich berühren (Laufweite verkleinern oder Schreibschrift wählen), sonst fällt der Druck auseinander.');
   if(P.sockel && P.sockelH <= _LBS_NUT + 2) warn.push('Das Bord ist kaum höher als die Nut — Bord-Höhe erhöhen.');
   if(warn.length) s += '<br><b style="color:#ffb455">⚠ ' + warn.join('<br>⚠ ') + '</b>';
@@ -42109,8 +42269,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.3';
+const VOLME3D_VERSION = '1.18.4';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.4', date:'2026-09-13', changes:[
+    ['\u{1F524}','<b>Leucht-Buchstaben: R\u00fcckwand zum Einlegen und ein Kanal f\u00fcr den LED-Streifen.</b> Ralf hat nachgefragt, was mit R\u00fcckwand und Streifenf\u00fchrung ist \u2014 zu Recht, denn <b>ein Streifen, der lose im Buchstaben liegt, leuchtet nach hinten heraus</b> statt nach vorn durch den Diffusor. Deshalb geh\u00f6ren beide Sachen zusammen. Unter <i>R\u00fcckwand &amp; LED-Streifen</i> kannst du jetzt eine <b>R\u00fcckwand einlegen</b>: Der Buchstabe bekommt hinten einen Falz, die Platte liegt auf einer schmalen Schulter auf und schlie\u00dft b\u00fcndig mit der R\u00fcckkante ab (0,25 mm Luft ringsum, damit sie hineingeht und zum Wechseln der Beleuchtung wieder heraus). Auf ihrer Innenseite l\u00e4uft der <b>Streifen-Kanal</b>: zwei Rippen, zwischen die der Streifen geklemmt wird \u2014 er zeigt damit nach vorn und strahlt durch die Diffusor-Haut. Die Streifenbreite stellst du ein (5\u201316 mm, voreingestellt 10; \u00fcblich sind 8 mm bei COB/2835 und 10 mm bei 5050), der Kanal wird auf den Millimeter genau so breit. Wo ein Strich daf\u00fcr zu schmal ist, l\u00e4sst die App die Rippen weg, statt den Durchgang zuzuquetschen \u2014 dort liegt der Streifen frei, und im Fenster steht, welche Zeichen das betrifft. Der Kabelausgang sitzt in der R\u00fcckwand an derselben Stelle wie die Kerbe im Buchstaben, das Kabel geht also durch beide. <b>Gedruckt wird weiter ohne St\u00fctzen</b>: Die R\u00fcckw\u00e4nde liegen flach in einer eigenen Reihe, Rippen nach oben. F\u00fcr den Falz braucht die Wand mindestens 1,6 mm \u2014 ist sie d\u00fcnner, sagt die App es, statt einen Rand zu bauen, der beim Einsetzen wegbricht. F\u00fcr eine Mini-Lichterkette bleibt alles wie gehabt: R\u00fcckwand auf <i>Offen lassen</i>, Kette hineinlegen, fertig. Gew\u00fcnscht von Ralf.'],
+  ]},
   { version:'1.18.3', date:'2026-09-13', changes:[
     ['\u{1F4CF}','<b>Wenn ein Motiv nicht dort bleibt, wo du es hinsetzt, steht jetzt dabei warum.</b> Setzt du ein Motiv <b>unten</b> an eine Vase oder Lichth\u00fclle, r\u00fcckt die App es nach oben \u2014 sonst h\u00e4ngt die untere H\u00e4lfte \u00fcber die Kante hinaus (genau das war im September die Meldung \u201eer ist ja nur halb drauf\u201c). Richtig ist das, nur passierte es <b>wortlos</b>: Gemessen springt ein 100 mm hohes Motiv, das man bei 10 mm ansetzt, auf 50 mm hoch \u2014 <b>40 mm</b> weiter oben, als man geklickt hat. Das sieht aus, als ließe es sich nicht hinlegen. Jetzt steht da: <i>\u201eMotiv 40 mm nach oben ger\u00fcckt, damit es ganz auf der Wand liegt \u2014 kleiner ziehen, dann passt es tiefer\u201c</i>. Und beim <b>Ziehen</b> meldet der Zeiger, wenn der Rand erreicht ist: <i>\u201e\u22a5 Rand des K\u00f6rpers \u2014 Alt-Taste geht dar\u00fcber hinaus\u201c</i>. Vorher z\u00e4hlte dort nur stumm eine Millimeterzahl weiter, die sich nicht mehr \u00e4nderte. Gemeldet von Josy.'],
   ]},

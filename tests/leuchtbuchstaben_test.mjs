@@ -208,6 +208,129 @@ ok('Kabel-Kerbe nimmt Material weg', !kerbe.err && kerbe.vM < kerbe.vO - 10,
 ok('Kabel-Kerbe lässt die Front unberührt', kerbe.fM === kerbe.fO, { mit: kerbe.fM, ohne: kerbe.fO });
 ok('Kabel-Kerbe bleibt wasserdicht', kerbe.wM === 0, { offen: kerbe.wM });
 
+// ── 5b: Rückwand — Falz, Passung, Kanal ────────────────────────────────────
+const rueck = await pg.evaluate(() => {
+  const T = window._lbsT;
+  const base = { text: '8', hoehe: 150, tiefe: 25, wall: 2.5, diff: 0.8, kabel: 1,
+                 rueck: 1, plattenD: 2, fuehrung: 1, streifenB: 10 };
+  // Buchstabe MIT Falz und die zugehörige Platte
+  const bak = { ..._lbsP };
+  Object.assign(_lbsP, base);
+  const sh = _lbsShellGeo(_mfWasm, _lbsGlyphs().letters[0].loops, _lbsP);
+  let out = { falz: _lbsFalzBreite(_lbsP), hatPlatte: !!(sh && sh.platte) };
+  if (sh && sh.platte) {
+    const pg2 = _lbsPlatteGeo(_mfWasm, sh.platte, _lbsP, sh.bb);
+    out.kanal = pg2 && pg2.kanal;
+    if (pg2) {
+      const g = pg2.geo;
+      out.platte = { ...T.watertight(g), vol: T.vol(g) };
+      g.computeBoundingBox();
+      const bb = g.boundingBox;
+      out.zVon = +bb.min.z.toFixed(2); out.zBis = +bb.max.z.toFixed(2);
+      // Rippen stehen VOR der Platte (Richtung Vorderseite = kleineres z)
+      out.rippenTief = +(25 - 2 - bb.min.z).toFixed(2);
+      const m = T.mesh(g);
+      // Kanalbreite messen: waagerechter Strahl in Rippenhöhe quer durch den Kanal
+      const zR = 25 - 2 - 1.0;
+      let luecken = [];
+      for (let y = bb.min.y + 5; y < bb.max.y - 5; y += 2.5) {
+        const rc = new THREE.Raycaster(new THREE.Vector3(bb.min.x - 10, y, zR), new THREE.Vector3(1, 0, 0), 0, 500);
+        const hits = rc.intersectObject(m, false).map(h => h.point.x);
+        for (let i = 1; i + 1 < hits.length; i += 2) {
+          const w2 = hits[i + 1] - hits[i];
+          if (w2 > 3 && w2 < 30) luecken.push(+w2.toFixed(2));
+        }
+      }
+      luecken = luecken.filter(v => v > 5).sort((a, b) => a - b);
+      out.kanalBreite = luecken.length ? luecken[0] : null;      // senkrechter Durchgang
+      out.kanalBreitMax = luecken.length ? luecken[luecken.length - 1] : null;
+      out.messungen = luecken.length;
+    }
+  }
+  // Buchstabe OHNE Rückwand zum Vergleich (Falz muss Material kosten)
+  Object.assign(_lbsP, { ...base, rueck: 0 });
+  const sh0 = _lbsShellGeo(_mfWasm, _lbsGlyphs().letters[0].loops, _lbsP);
+  out.volMitFalz = sh ? T.vol(sh.geo) : null;
+  out.volOhneFalz = sh0 ? T.vol(sh0.geo) : null;
+  // Zu dünne Wand: kein Falz, keine Platte
+  Object.assign(_lbsP, { ...base, wall: 1.4 });
+  const shD = _lbsShellGeo(_mfWasm, _lbsGlyphs().letters[0].loops, _lbsP);
+  out.duenneWandFalz = _lbsFalzBreite(_lbsP);
+  out.duenneWandPlatte = !!(shD && shD.platte);
+  if (sh) sh.geo.dispose(); if (sh0) sh0.geo.dispose(); if (shD) shD.geo.dispose();
+  Object.assign(_lbsP, bak);
+  return out;
+});
+ok('Rückwand: Falz wird ausgefräst', rueck.hatPlatte && rueck.falz > 0.6, rueck.falz);
+ok('Rückwand: Platte ist wasserdicht', rueck.platte && rueck.platte.offen === 0 && rueck.platte.vol > 0,
+   rueck.platte && { offen: rueck.platte.offen, volMm3: Math.round(rueck.platte.vol) });
+ok('Rückwand: sitzt hinten und schließt bündig ab', Math.abs(rueck.zBis - 25) < 0.01, { zVon: rueck.zVon, zBis: rueck.zBis });
+ok('Rückwand: Rippen stehen nach vorn in den Hohlraum', rueck.rippenTief > 1 && rueck.rippenTief <= 3.6, { mm: rueck.rippenTief });
+ok('Rückwand: Kanal entsteht auch am runden Zeichen', rueck.kanal === true);
+
+const kanalI = await pg.evaluate(() => {
+  const T = window._lbsT;
+  const bak = { ..._lbsP };
+  const messe = (breite) => {
+    Object.assign(_lbsP, { text: 'I', hoehe: 150, tiefe: 25, wall: 2.5, rueck: 1, plattenD: 2,
+                           fuehrung: 1, streifenB: breite, kabel: 0 });
+    const sh = _lbsShellGeo(_mfWasm, _lbsGlyphs().letters[0].loops, _lbsP);
+    if (!sh || !sh.platte) return null;
+    const pg2 = _lbsPlatteGeo(_mfWasm, sh.platte, _lbsP, sh.bb);
+    sh.geo.dispose();
+    if (!pg2) return null;
+    const g = pg2.geo; g.computeBoundingBox();
+    const bb = g.boundingBox, m = T.mesh(g);
+    const zR = 25 - 2 - 1.0;                     // mitten in der Rippenhöhe
+    const w = [];
+    for (let y = bb.min.y + 20; y < bb.max.y - 20; y += 5) {
+      const rc = new THREE.Raycaster(new THREE.Vector3(bb.min.x - 10, y, zR), new THREE.Vector3(1, 0, 0), 0, 500);
+      const hits = rc.intersectObject(m, false).map(h => h.point.x);
+      if (hits.length === 4) w.push(+(hits[2] - hits[1]).toFixed(2));   // Rippe | KANAL | Rippe
+    }
+    g.dispose();
+    w.sort((a, b) => a - b);
+    return { n: w.length, min: w[0], max: w[w.length - 1], kanal: pg2.kanal };
+  };
+  const out = { z10: messe(10), z6: messe(6) };
+  Object.assign(_lbsP, bak);
+  return out;
+});
+ok('Rückwand: Kanal am geraden Strich ist genau streifenbreit', kanalI.z10 && kanalI.z10.n > 10
+   && kanalI.z10.min >= 10 && kanalI.z10.max <= 10.6, kanalI.z10);
+ok('Rückwand: schmalerer Streifen gibt schmaleren Kanal', kanalI.z6 && kanalI.z6.min >= 6 && kanalI.z6.max <= 6.6, kanalI.z6);
+ok('Rückwand: der Falz kostet Material im Buchstaben', rueck.volMitFalz < rueck.volOhneFalz - 50,
+   { mit: Math.round(rueck.volMitFalz || 0), ohne: Math.round(rueck.volOhneFalz || 0) });
+ok('Rückwand: zu dünne Wand → gar kein Falz statt brüchiger Rand',
+   rueck.duenneWandFalz < 0.6 && rueck.duenneWandPlatte === false, rueck.duenneWandFalz);
+
+// ── 5c: Platte passt wirklich in die Tasche (Spiel, kein Übermaß) ──────────
+const passung = await pg.evaluate(() => {
+  const T = window._lbsT;
+  const bak = { ..._lbsP };
+  Object.assign(_lbsP, { text: '8', hoehe: 150, tiefe: 25, wall: 2.5, rueck: 1, plattenD: 2, fuehrung: 0, kabel: 0 });
+  const loops = _lbsGlyphs().letters[0].loops;
+  const sh = _lbsShellGeo(_mfWasm, loops, _lbsP);
+  const pg2 = _lbsPlatteGeo(_mfWasm, sh.platte, _lbsP, sh.bb);
+  const buchstabe = T.mesh(sh.geo);
+  const platte = pg2.geo; platte.computeBoundingBox();
+  // Jeder Punkt der Platte muss im Buchstaben LEER sein (sonst klemmt sie)
+  const pos = platte.getAttribute('position');
+  let drin = 0, geprueft = 0;
+  for (let i = 0; i < pos.count; i += 7) {
+    const z = pos.getZ(i);
+    if (z < 25 - 2 - 0.1 || z > 25 + 0.1) continue;           // nur der Plattenkörper
+    // auf halbe Plattenhöhe gezogen: dort MUSS die Tasche frei sein
+    const P2 = new THREE.Vector3(pos.getX(i), pos.getY(i), 25 - 1);
+    geprueft++;
+    if (T.inside(buchstabe, P2)) drin++;
+  }
+  sh.geo.dispose(); platte.dispose();
+  Object.assign(_lbsP, bak);
+  return { drin, geprueft };
+});
+ok('Rückwand: steckt nirgends im Buchstaben-Material', passung.drin === 0 && passung.geprueft > 50, passung);
+
 // ── 6: Bord hat eine Nut ───────────────────────────────────────────────────
 const bord = await pg.evaluate(() => {
   const T = window._lbsT;
@@ -302,21 +425,29 @@ const dialog = await pg.evaluate(async () => {
   for (let i = 0; i < 80 && !(_gpv['lbs'] && _gpv['lbs'].group); i++) await new Promise(r => setTimeout(r, 100));
   const vorschau = !!(_gpv['lbs'] && _gpv['lbs'].group);
   const info = (document.getElementById('lbs-info').textContent || '').length;
-  Object.assign(_lbsP, { text: 'A1', sockel: 1, flach: 1 });
+  Object.assign(_lbsP, { text: 'A1', sockel: 1, flach: 1, rueck: 1, fuehrung: 1, wall: 2.5 });
   const vor = objects.length;
   await _lbsCreate();
   const neu = objects.slice(vor);
   const alle = [];
   neu.forEach(o => o.traverse ? o.traverse(c => { if (c.isMesh) alle.push(c); }) : alle.push(o));
   const box = o => { const b2 = new THREE.Box3().setFromObject(o); return +b2.min.y.toFixed(3); };
-  return { sichtbar, vorschau, info, n: neu.length, teile: alle.length,
+  const kiste = o => { const b2 = new THREE.Box3().setFromObject(o);
+    return { x0: +b2.min.x.toFixed(2), x1: +b2.max.x.toFixed(2), z0: +b2.min.z.toFixed(2), z1: +b2.max.z.toFixed(2) }; };
+  return { sichtbar, vorschau, info, n: neu.length, teile: alle.length, kisten: alle.map(kiste),
            namen: alle.map(o => o.userData.name), yMin: alle.map(box),
            zu: !document.getElementById('lbs-modal').classList.contains('show') };
 });
 ok('Dialog öffnet', dialog.sichtbar);
 ok('Vorschau baut ein Modell', dialog.vorschau);
 ok('Hinweistext ist gefüllt', dialog.info > 80, { zeichen: dialog.info });
-ok('Erstellen legt 2 Buchstaben + Bord an', dialog.teile === 3, dialog.namen);
+ok('Erstellen legt 2 Buchstaben + 2 Rückwände + Bord an', dialog.teile === 5, dialog.namen);
+ok('Erstellen: die Rückwände heißen nach ihrem Buchstaben',
+   dialog.namen.filter(n => /^Rückwand [A1]/.test(n)).length === 2, dialog.namen);
+ok('Druck-Lage: nichts überlagert sich (jedes Teil hat seinen Platz)',
+   dialog.kisten && dialog.kisten.every((a, i) => dialog.kisten.every((b, j) => i === j ||
+     a.x1 <= b.x0 + 0.01 || a.x0 >= b.x1 - 0.01 || a.z1 <= b.z0 + 0.01 || a.z0 >= b.z1 - 0.01)),
+   dialog.kisten);
 ok('Alles liegt auf der Platte', dialog.yMin.every(y => Math.abs(y) < 0.02), dialog.yMin);
 ok('Dialog schließt nach dem Erstellen', dialog.zu);
 
