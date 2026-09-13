@@ -11218,15 +11218,18 @@ function _buildThreadGeo(diamMM, pitchMM, turns, segsPerTurn, leftHand) {
       idx.push(a, b, c);   idx.push(b, d, c);
     }
   }
-  // Unterdeckel
+  // Unterdeckel (Normale −Y) und Oberdeckel (+Y). Die Umlaufrichtung muss zu den
+  // Seitenflächen passen: beide Deckel liefen früher andersherum. Sichtbar war das
+  // kaum (Normalen werden gemittelt, BSP-CSG verzeiht es), aber ein solches Netz
+  // ist nicht konsistent orientiert — Manifold lehnt es als „not manifold" ab,
+  // und im STL zeigen die Stirnflächen nach innen.
   for (let i = 0; i < nA; i++) {
     const i1 = (i + 1) % nA;
-    idx.push(cBot, i1 * nH, i * nH);
+    idx.push(cBot, i * nH, i1 * nH);
   }
-  // Oberdeckel
   for (let i = 0; i < nA; i++) {
     const i1 = (i + 1) % nA;
-    idx.push(cTop, i * nH + nH - 1, i1 * nH + nH - 1);
+    idx.push(cTop, i1 * nH + nH - 1, i * nH + nH - 1);
   }
 
   const geo = new THREE.BufferGeometry();
@@ -28238,10 +28241,14 @@ function _buildNutGeometry(s, clearance, leftHand){
       I.push(A,B,C); I.push(B,D,C);
     }
     const i1b=(i+1)%nA;
+    // Ringdeckel unten (Normale −Y) und oben (+Y) — die Umlaufrichtung muss zu
+    // Innenwand und Sechskant passen, sonst ist das Netz zwar geschlossen, aber
+    // nicht konsistent orientiert (Manifold lehnt es ab, im STL zeigen die
+    // Stirnflächen nach innen). Gemessen: 144 offene Kanten je Mutter.
     const ib=i*nH, ib1=i1b*nH, obi=ob+i*nH, obi1=ob+i1b*nH;          // Unterdeckel
-    I.push(ib,ib1,obi); I.push(ib1,obi1,obi);
+    I.push(ib,obi,ib1); I.push(ib1,obi,obi1);
     const it=i*nH+nH-1, it1=i1b*nH+nH-1, oti=ob+i*nH+nH-1, oti1=ob+i1b*nH+nH-1; // Oberdeckel
-    I.push(it,oti,it1); I.push(it1,oti,oti1);
+    I.push(it,it1,oti); I.push(it1,oti1,oti);
   }
   const g=new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(V,3));
@@ -42608,8 +42615,13 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.8';
+const VOLME3D_VERSION = '1.18.9';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.9', date:'2026-09-13', changes:[
+    ['\u2728',"<b>Beim \u2702 Schneiden lassen sich die Teile jetzt auch verschrauben \u2014 neben dem Passstift gibt es Schwalbenschwanz und Gewindebolzen.</b> Wer ein gro\u00dfes Teil zerlegt, um es besser drucken zu k\u00f6nnen, musste es bisher zwangsl\u00e4ufig kleben. \u00dcber den Parametern stehen jetzt drei Kn\u00f6pfe zur Wahl: <b>\u2300 Stift</b> (der runde Passstift wie bisher), <b>\u25e4 Schwalbe</b> und <b>\ud83d\udd29 Gewinde</b>. Jeder gesetzte Verbinder merkt sich seinen eigenen Typ \u2014 Stifte und Gewinde lassen sich also frei mischen. <b>Der Schwalbenschwanz</b> ist ein Zapfen mit trapezf\u00f6rmigem Grundriss: Er h\u00e4lt zus\u00e4tzlich gegen Verdrehen und Verrutschen, l\u00e4sst sich aber weiterhin senkrecht zusammenstecken (Breite, L\u00e4nge, H\u00f6he, Ausrichtung und Spiel frei einstellbar). Formschluss gegen Abheben ist das nicht \u2014 geklebt wird also weiterhin, das Teil sitzt nur von allein an der richtigen Stelle. <b>Der Gewindebolzen</b> macht die Verbindung <b>l\u00f6sbar</b>: Beide H\u00e4lften bekommen ein Innengewinde-Sackloch, und der passende <b>Doppelgewindebolzen</b> wird als eigenes Teil mit auf die Platte gelegt. Das ist bewusst so und nicht als angeformtes Au\u00dfengewinde gebaut \u2014 sonst st\u00fcnde die eine H\u00e4lfte auf einem Zapfen, l\u00e4ge nicht mehr flach auf und br\u00e4uchte St\u00fctzen mitten im Gewinde. So bleiben <b>beide H\u00e4lften flach liegen</b> und der Bolzen wird stehend gedruckt. W\u00e4hlbar sind M4 bis M10, die Einschraubtiefe je H\u00e4lfte und das Spiel; der Bolzen wird 1,5 mm k\u00fcrzer als beide L\u00f6cher zusammen, damit er nicht am Lochgrund aufsetzt, bevor die Schnittfl\u00e4chen aufeinanderliegen. <b>Wichtig dabei:</b> Ein Bolzen allein l\u00e4sst die H\u00e4lften beim Festziehen gegeneinander verdrehen \u2014 wo genau sie stehenbleiben, ist Zufall. <b>\u26a1 Auto</b> setzt im Gewinde-Modus deshalb <b>genau einen Bolzen in die Mitte und Passstifte drumherum</b>: Der Bolzen zieht zusammen, die Stifte halten die Drehlage. Wer von Hand nur Gewinde setzt, bekommt einen Hinweis."],
+    ['\ud83d\udd27',"<b>Die Verbinder beim Schneiden kommen jetzt wasserdicht aus der Maschine.</b> Zapfen und Taschen wurden bisher mit dem alten BSP-Verfahren gerechnet, das die Netze dabei aufrei\u00dft: An einem 40-mm-W\u00fcrfel mit einem einzigen Passstift waren <b>182 bzw. 275 Kanten offen</b>, in Kombination mit einer Gewindebohrung sogar \u00fcber 14 000 \u2014 solche Teile muss der Slicer erst reparieren. Gerechnet wird jetzt mit Manifold: <b>nachgemessen 0 offene Kanten</b>, und die Teile haben nebenbei rund ein Drittel weniger Dreiecke. Netze, die Manifold nicht annimmt (kaputte Importe), fallen weiter auf den alten Weg zur\u00fcck, damit nichts h\u00e4ngenbleibt."],
+    ['\ud83d\udc1b',"<b>Stirnfl\u00e4chen von Gewinden und Muttern zeigten im STL nach innen.</b> Bei Gewindest\u00e4ben, Schrauben und Sechskantmuttern waren die Deckelfl\u00e4chen oben und unten verkehrt herum gewickelt. Am Bildschirm fiel das kaum auf, im Export war es ein Netz mit widerspr\u00fcchlicher Orientierung \u2014 Slicer und Boolean-Werkzeuge m\u00f6gen das nicht. Bei der Mutter waren dadurch 144 Kanten offen und das gemeldete Volumen falsch (105 statt 315 mm\u00b3). Behoben."],
+  ]},
   { version:'1.18.8', date:'2026-09-13', changes:[
     ['\u{1F41B}','<b>Vom K\u00f6rper weggezogene Motive legen sich wieder flach auf die Platte \u2014 und behalten ihre Drehung.</b> Zog man ein Motiv von einer <b>senkrechten Wand</b> herunter, blieb es hochkant in der Luft stehen, statt sich hinzulegen (bei gewickelten Motiven war das schon behoben, bei aufgeklebten noch nicht). Jetzt legt es sich in beiden F\u00e4llen wieder hin wie frisch eingef\u00fcgt: flach, aufrecht, auf der Platte. Der einmal eingestellte <b>Drehwinkel bleibt dabei erhalten</b> \u2014 auch wenn du es zwischendurch ganz woanders hinlegst: Wer sein Motiv einmal gerade gestellt hat, muss das nicht wieder tun. Am Pfeil-Gizmo \u00e4ndert sich nichts, dort positionierst du weiter frei \u2014 auch schwebend, wenn du das brauchst. Gemeldet von Josy.'],
   ]},
@@ -47641,7 +47653,12 @@ window._testOCCTSequential = async function(ops) {
 // Ebenen-Normale n = Basisachse · q; Pivot = bbox-Zentrum mit Basisachs-Koord = posU.
 const _cut = { active:false, axis:'y', posU:0, rot:{x:0,y:0,z:0}, q:new THREE.Quaternion(),
   target:null, bbox:null, plane:null, panel:null,
-  connectorMode:false, connectors:[], markers:[], cParams:{ d:5, L:6, clr:0.15 },
+  connectorMode:false, connectors:[], markers:[],
+  // cParams.type = 'pin' | 'dove' | 'thread'; jeder Verbinder merkt sich seinen
+  // eigenen Typ (kind), damit sich Gewinde und Stifte mischen lassen.
+  cParams:{ type:'pin', d:5, L:6, clr:0.15,
+            dW:12, dL:9, dH:5, dA:0, dClr:0.2,
+            tSize:'M6', tDepth:8, tClr:0.4 },
   gizmo:null, drag:null };
 
 function _cutBaseNormal() {
@@ -47748,11 +47765,12 @@ function _cutBuildPanel() {
         <span id="cut-conn-cnt" style="color:#9aa0a8">0</span>
         <span onclick="_cutClearConnectors()" title="Alle Verbinder entfernen" style="cursor:pointer;color:#9aa0a8;font-size:15px">🗑</span>
       </div>
-      <div style="display:flex;gap:6px;margin-bottom:4px">
-        <label style="flex:1;color:#9aa0a8">Ø mm<input id="cut-cd" type="number" step="0.5" value="5" style="width:100%;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px;margin-top:2px" oninput="_cut.cParams.d=parseFloat(this.value)||5;_cutRenderMarkers()"></label>
-        <label style="flex:1;color:#9aa0a8">Länge<input id="cut-cl" type="number" step="0.5" value="6" style="width:100%;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px;margin-top:2px" oninput="_cut.cParams.L=parseFloat(this.value)||6;_cutRenderMarkers()"></label>
-        <label style="flex:1;color:#9aa0a8">Spiel<input id="cut-cc" type="number" step="0.05" value="0.15" style="width:100%;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px;margin-top:2px" oninput="_cut.cParams.clr=parseFloat(this.value)||0.15"></label>
+      <div style="display:flex;gap:4px;margin-bottom:6px">
+        <button class="cut-ct" data-ct="pin" onclick="_cutSetConnType('pin')" title="Runder Passstift: Zapfen im einen Teil, Loch im anderen. Zum Ausrichten und Kleben">⌀ Stift</button>
+        <button class="cut-ct" data-ct="dove" onclick="_cutSetConnType('dove')" title="Schwalbenschwanz-Zapfen: hält zusätzlich gegen Verdrehen und Verrutschen. Senkrecht zusammensteckbar, zum Kleben">◤ Schwalbe</button>
+        <button class="cut-ct" data-ct="thread" onclick="_cutSetConnType('thread')" title="Gewindebolzen: beide Hälften bekommen ein Gewindeloch, der Bolzen wird als eigenes Teil mitgedruckt. Verschraubt statt geklebt">🔩 Gewinde</button>
       </div>
+      <div id="cut-conn-params"></div>
       <div id="cut-conn-hint" style="display:none;color:#F97316;font-size:11px;margin-top:4px">Auf die orange Ebene klicken, um Verbinder zu setzen</div>
     </div>
     <label style="display:flex;align-items:center;gap:7px;margin-bottom:8px;cursor:pointer">
@@ -47771,7 +47789,11 @@ function _cutBuildPanel() {
   p.querySelectorAll('.cut-ax').forEach(b => {
     b.style.cssText += ';background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;padding:6px 0;cursor:pointer;font-weight:700';
   });
+  p.querySelectorAll('.cut-ct').forEach(b => {
+    b.style.cssText += ';flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:6px 0;cursor:pointer;font-weight:700;font-size:11px';
+  });
   _cutHighlightAxis();
+  _cutRenderConnParams();
 }
 
 function _cutHighlightAxis() {
@@ -47853,20 +47875,239 @@ function _cutConnCyl(r, len, worldPos) {
   return m;
 }
 
+// ── Verbinder-Bauarten ───────────────────────────────────────────────────────
+// Alle drei sitzen mittig auf der Schnittebene, Achse = Ebenennormale:
+//   pin    – runder Passstift: Zapfen in Teil A, Loch mit Spiel in Teil B.
+//   dove   – Schwalbenschwanz: Zapfen mit trapezfoermigem GRUNDRISS. Ein Trapez
+//            im Grundriss haelt nicht gegen Abheben (in Achsrichtung laesst sich
+//            jedes Prisma herausziehen), aber gegen Verdrehen und Verrutschen —
+//            genau wie in den ueblichen Slicern. Klebehilfe, kein Formschluss.
+//   thread – Gewindebolzen: BEIDE Haelften bekommen ein Innengewinde-Sackloch,
+//            der Doppelgewindebolzen entsteht als eigenes Druckteil. Ein
+//            angeformtes Aussengewinde wuerde das Teil auf einen Zapfen stellen
+//            (Stuetzen, Schnittflaeche nicht mehr flach); so bleiben beide
+//            Haelften flach liegen und der Bolzen wird stehend gedruckt.
+const _CUT_CONN_TYPES = { pin:'Stift', dove:'Schwalbe', thread:'Gewinde' };
+const _CUT_THREAD_SIZES = ['M4','M5','M6','M8','M10'];
+
+// Dreiecks-Soup (Welt) mit garantiert nach aussen zeigender Wicklung
+function _cutFixWind(a) {
+  let v6 = 0;
+  for (let i = 0; i < a.length; i += 9) {
+    const ax=a[i],ay=a[i+1],az=a[i+2], bx=a[i+3],by=a[i+4],bz=a[i+5], cx=a[i+6],cy=a[i+7],cz=a[i+8];
+    v6 += ax*(by*cz - bz*cy) - ay*(bx*cz - bz*cx) + az*(bx*cy - by*cx);
+  }
+  if (v6 < 0) for (let i = 0; i < a.length; i += 9) {
+    for (let k = 0; k < 3; k++) { const t = a[i+3+k]; a[i+3+k] = a[i+6+k]; a[i+6+k] = t; }
+  }
+  return a;
+}
+
+// Prisma aus einem Polygon in Ebenen-Koordinaten (u,v), extrudiert entlang der
+// Normalen von -h/2 bis +h/2 um worldPos. Liefert ein Mesh in Weltkoordinaten.
+function _cutPrismMesh(ptsUV, hU, worldPos) {
+  const n = _cutNormal(), { U, V } = _cutBasis(n);
+  const P = (uv, s) => worldPos.clone()
+    .add(U.clone().multiplyScalar(uv[0]))
+    .add(V.clone().multiplyScalar(uv[1]))
+    .add(n.clone().multiplyScalar(s));
+  const lo = -hU / 2, hi = hU / 2, N = ptsUV.length, a = [];
+  const push = (p, q, r) => a.push(p.x,p.y,p.z, q.x,q.y,q.z, r.x,r.y,r.z);
+  for (let i = 0; i < N; i++) {
+    const j = (i + 1) % N;
+    const p0 = P(ptsUV[i], lo), p1 = P(ptsUV[j], lo), p2 = P(ptsUV[j], hi), p3 = P(ptsUV[i], hi);
+    push(p0, p1, p2); push(p0, p2, p3);
+  }
+  for (let i = 2; i < N; i++) {            // Deckel oben
+    push(P(ptsUV[0], hi), P(ptsUV[i-1], hi), P(ptsUV[i], hi));
+  }
+  for (let i = 2; i < N; i++) {            // Boden
+    push(P(ptsUV[0], lo), P(ptsUV[i], lo), P(ptsUV[i-1], lo));
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(_cutFixWind(a), 3));
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial());
+  m.updateWorldMatrix(true, true);
+  return m;
+}
+
+// Schwalbenschwanz-Zapfen. wMm = breite Seite, lMm = Laenge in Einschubrichtung,
+// hMm = Hoehe senkrecht zur Schnittflaeche, angDeg = Ausrichtung in der Ebene,
+// growMm = allseitige Aufweitung (Spiel fuer die Tasche in Teil B).
+function _cutDoveMesh(worldPos, wMm, lMm, hMm, angDeg, hExtraMm, growMm) {
+  const g = (growMm || 0) / 10;
+  const w = wMm / 20 + g, wb = wMm * 0.55 / 20 + g, L = lMm / 20 + g;
+  const ca = Math.cos(angDeg * Math.PI / 180), sa = Math.sin(angDeg * Math.PI / 180);
+  const rot = (e, q) => [e * ca - q * sa, e * sa + q * ca];   // Trapez in der Ebene drehen
+  const pts = [rot(-L, -wb), rot(L, -w), rot(L, w), rot(-L, wb)];
+  return _cutPrismMesh(pts, hMm / 10 + (hExtraMm || 0) / 10, worldPos);
+}
+
+// Schneidwerkzeug fuers Gewinde: EIN durchgehender Gewindestab mit Spiel auf dem
+// Nenn-Durchmesser, mittig auf der Schnittebene. Er wird VOR dem Schnitt aus dem
+// ganzen Koerper gebohrt — die Trennebene zerlegt ihn dann von selbst in die zwei
+// Sackloecher. Das spart einen Boolean und haelt die Helix ueber die Fuge hinweg
+// durchgehend, sodass die Haelften in der Drehlage zueinander stehen, in der sie
+// geschnitten wurden. Rechnen VOR dem Schnitt ist ausserdem der einzige robuste
+// Weg: die geclippten Haelften sind nicht immer wasserdicht, und Manifold nimmt
+// nur geschlossene Netze an. nH bleibt ganzzahlig (turns auf 0,1 gerastert),
+// sonst laufen die Gitterindizes in _buildThreadGeo auf Bruchzahlen.
+function _cutThreadCutterGeo(spec, depthMm, clrMm, leftHand) {
+  const turns = Math.max(2, Math.round((depthMm * 2) / spec.pitch * 10) / 10);
+  return _buildThreadGeo(spec.d + (clrMm || 0), spec.pitch, turns, 36, leftHand);
+}
+
+// Anschnitt am UNTEREN Ende (Gegenstueck zu _chamferTip) — der Bolzen soll sich
+// von beiden Seiten einfaedeln lassen.
+function _cutChamferBase(geo, Rmaj, cUnits) {
+  const pos = geo.attributes.position; let botY = 1e9;
+  for (let i = 0; i < pos.count; i++) { const y = pos.getY(i); if (y < botY) botY = y; }
+  const inner = Math.max(0.02, Rmaj - cUnits);
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i), d = y - botY;
+    if (d >= 0 && d <= cUnits) {
+      const x = pos.getX(i), z = pos.getZ(i), r = Math.sqrt(x*x + z*z), maxR = inner + d;
+      if (r > maxR && r > 1e-6) { const f = maxR / r; pos.setX(i, x*f); pos.setZ(i, z*f); }
+    }
+  }
+  pos.needsUpdate = true;
+}
+
+// Doppelgewindebolzen, Basis bei y=0 (steht auf der Platte), beidseits angefast.
+function _cutThreadBoltGeo(spec, lenMm, leftHand) {
+  const turns = Math.max(2, Math.round(lenMm / spec.pitch * 10) / 10);
+  const totalU = spec.pitch * turns / 10;
+  const g = _buildThreadGeo(spec.d, spec.pitch, turns, 36, leftHand);
+  g.translate(0, totalU / 2, 0);
+  const ch = Math.max((spec.pitch * 0.6495) / 10, 0.045);
+  const R = (spec.d / 10) / 2;
+  _chamferTip(g, R, ch); _cutChamferBase(g, R, ch);
+  g.computeVertexNormals();
+  return g;
+}
+
+// Werkzeug-Mesh (Welt) zu einem Verbinder — grow = Aufmass fuer die Gegenseite
+function _cutConnTool(c, grow) {
+  const p = _cut.cParams, wp = _cutInPlaneToWorld(c);
+  if (c.kind === 'dove')
+    return _cutDoveMesh(wp, p.dW, p.dL, p.dH, p.dA, grow ? 4 : 0, grow ? p.dClr : 0);
+  const r = (p.d / 10) / 2 + (grow ? p.clr / 10 : 0);
+  return _cutConnCyl(r, p.L / 10 + (grow ? 0.4 : 0), wp);
+}
+
+// ── Verbinder-Typ + Parameterzeile ───────────────────────────────────────────
+const _CUT_CONN_COL = { pin:0xffaa33, dove:0x60a5fa, thread:0x4ade80 };
+
+function _cutSetConnType(t) {
+  if (!_CUT_CONN_TYPES[t]) return;
+  _cut.cParams.type = t;
+  _cutRenderConnParams();
+}
+
+function _cutSetCParam(key, val) {
+  const p = _cut.cParams;
+  if (key === 'tSize') { p.tSize = val; _cutRenderConnParams(); _cutRenderMarkers(); return; }
+  const v = parseFloat(val);
+  if (!isFinite(v)) return;
+  const min = { d:0.5, L:0.5, clr:0, dW:2, dL:2, dH:1, dClr:0, tDepth:2, tClr:0 }[key];
+  p[key] = (min !== undefined) ? Math.max(min, v) : v;
+  if (key === 'tDepth' || key === 'tSize') _cutRenderConnParams();
+  _cutRenderMarkers();
+}
+
+function _cutFld(label, id, val, step, key, title) {
+  return '<label style="flex:1;color:#9aa0a8"' + (title ? ' title="' + title + '"' : '') + '>' + label +
+    '<input id="' + id + '" type="number" step="' + step + '" value="' + val + '" ' +
+    'style="width:100%;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px;margin-top:2px" ' +
+    'oninput="_cutSetCParam(\'' + key + '\',this.value)"></label>';
+}
+
+// Bolzenlänge: beide Sacklöcher zusammen, minus Luft, damit der Bolzen nicht am
+// Lochgrund aufsetzt, bevor die Schnittflächen aufeinander liegen.
+function _cutBoltLen() { return Math.max(4, _cut.cParams.tDepth * 2 - 1.5); }
+
+function _cutRenderConnParams() {
+  const box = document.getElementById('cut-conn-params');
+  const p = _cut.cParams;
+  document.querySelectorAll('.cut-ct').forEach(b => {
+    const on = b.dataset.ct === p.type;
+    b.style.background = on ? '#3a2a1a' : '#2a2f37';
+    b.style.borderColor = on ? '#F97316' : '#3a3f47';
+    b.style.color = on ? '#F97316' : '#e6e8eb';
+  });
+  if (!box) return;
+  const row = inner => '<div style="display:flex;gap:6px;margin-bottom:4px">' + inner + '</div>';
+  if (p.type === 'pin') {
+    box.innerHTML = row(
+      _cutFld('Ø mm', 'cut-cd', p.d, '0.5', 'd') +
+      _cutFld('Länge', 'cut-cl', p.L, '0.5', 'L') +
+      _cutFld('Spiel', 'cut-cc', p.clr, '0.05', 'clr'));
+  } else if (p.type === 'dove') {
+    box.innerHTML = row(
+      _cutFld('Breite', 'cut-dw', p.dW, '0.5', 'dW', 'Breite der breiten Seite') +
+      _cutFld('Länge', 'cut-dl', p.dL, '0.5', 'dL', 'Länge in Einschubrichtung') +
+      _cutFld('Höhe', 'cut-dh', p.dH, '0.5', 'dH', 'Höhe des Zapfens über der Schnittfläche')) +
+      row(
+      _cutFld('Winkel°', 'cut-da', p.dA, '5', 'dA', 'Ausrichtung des Schwalbenschwanzes in der Schnittfläche') +
+      _cutFld('Spiel', 'cut-dc', p.dClr, '0.05', 'dClr'));
+  } else {
+    const opts = _CUT_THREAD_SIZES.map(m =>
+      '<option value="' + m + '"' + (m === p.tSize ? ' selected' : '') + '>' + m + '</option>').join('');
+    box.innerHTML = row(
+      '<label style="flex:1;color:#9aa0a8" title="Gewindegröße nach Norm">Größe' +
+      '<select id="cut-ts" style="width:100%;background:#2a2f37;border:1px solid #3a3f47;border-radius:5px;color:#e6e8eb;padding:4px 6px;margin-top:2px" ' +
+      'onchange="_cutSetCParam(\'tSize\',this.value)">' + opts + '</select></label>' +
+      _cutFld('Tiefe', 'cut-td', p.tDepth, '0.5', 'tDepth', 'Einschraubtiefe je Hälfte (mm)') +
+      _cutFld('Spiel', 'cut-tc', p.tClr, '0.05', 'tClr', 'Spiel im Gewindeloch (mm)')) +
+      '<div style="color:#4ade80;font-size:11px;margin-top:2px">Bolzen ' + p.tSize + ' × ' +
+      _cutBoltLen().toFixed(1) + ' mm wird als eigenes Teil mitgedruckt</div>';
+  }
+}
+
+// Hinweis, wenn Gewinde ohne Verdrehsicherung gesetzt sind
+function _cutConnNote() {
+  const hasThread = _cut.connectors.some(c => c.kind === 'thread');
+  const hasAnti   = _cut.connectors.some(c => c.kind !== 'thread');
+  return (hasThread && !hasAnti)
+    ? 'Nur Gewinde gesetzt: Beim Festschrauben können sich die Teile gegeneinander verdrehen — mindestens einen Stift oder Schwalbenschwanz dazusetzen.'
+    : '';
+}
+
 function _cutRenderMarkers() {
   _cut.markers.forEach(m => { scene.remove(m); m.geometry.dispose(); });
   _cut.markers = [];
   if (!_cut.active) return;
-  const r = (_cut.cParams.d / 10) / 2, len = _cut.cParams.L / 10;
+  const p = _cut.cParams;
   _cut.connectors.forEach(c => {
-    const mk = _cutConnCyl(r, len, _cutInPlaneToWorld(c));
-    mk.material = new THREE.MeshBasicMaterial({ color: 0xffaa33, transparent: true, opacity: 0.9 });
+    const kind = c.kind || 'pin';
+    let mk;
+    if (kind === 'thread') {
+      const sp = SCREW_SPECS[p.tSize] || SCREW_SPECS.M6;
+      mk = _cutConnCyl((sp.d / 10) / 2, (p.tDepth * 2) / 10, _cutInPlaneToWorld(c));
+    } else if (kind === 'dove') {
+      mk = _cutDoveMesh(_cutInPlaneToWorld(c), p.dW, p.dL, p.dH, p.dA, 0, 0);
+    } else {
+      mk = _cutConnCyl((p.d / 10) / 2, p.L / 10, _cutInPlaneToWorld(c));
+    }
+    mk.material = new THREE.MeshBasicMaterial({ color: _CUT_CONN_COL[kind] || 0xffaa33, transparent: true, opacity: 0.9 });
     mk.renderOrder = 1000;
     scene.add(mk);
     _cut.markers.push(mk);
   });
   const cnt = document.getElementById('cut-conn-cnt');
-  if (cnt) cnt.textContent = _cut.connectors.length;
+  if (cnt) {
+    const n = { pin:0, dove:0, thread:0 };
+    _cut.connectors.forEach(c => n[c.kind || 'pin']++);
+    cnt.textContent = _cut.connectors.length;
+    cnt.title = n.pin + ' Stift · ' + n.dove + ' Schwalbe · ' + n.thread + ' Gewinde';
+  }
+  const hint = document.getElementById('cut-conn-hint');
+  if (hint && !_cut.connectorMode) {
+    const note = _cutConnNote();
+    hint.textContent = note;
+    hint.style.display = note ? 'block' : 'none';
+  }
 }
 
 function _cutToggleConnMode() {
@@ -47874,7 +48115,14 @@ function _cutToggleConnMode() {
   const btn = document.getElementById('cut-conn-btn');
   const hint = document.getElementById('cut-conn-hint');
   if (btn) { btn.style.outline = _cut.connectorMode ? '2px solid #F97316' : 'none'; btn.style.background = _cut.connectorMode ? '#3a2a1a' : '#2a2f37'; }
-  if (hint) hint.style.display = _cut.connectorMode ? 'block' : 'none';
+  if (hint) {
+    const note = _cutConnNote();
+    hint.textContent = _cut.connectorMode
+      ? ('Auf die orange Ebene klicken, um einen ' + _CUT_CONN_TYPES[_cut.cParams.type] + '-Verbinder zu setzen')
+      : note;
+    hint.style.color = _cut.connectorMode ? '#F97316' : '#fbbf24';
+    hint.style.display = (_cut.connectorMode || note) ? 'block' : 'none';
+  }
   canvas.style.cursor = _cut.connectorMode ? 'crosshair' : '';
   if (_cut.gizmo) _cut.gizmo.visible = !_cut.connectorMode;   // Gizmo im Connector-Modus ausblenden
 }
@@ -47895,10 +48143,22 @@ function _cutAutoConnectors() {
   const n = _cutNormal();
   const { U, V } = _cutBasis(n);
   const diag = _cut.bbox.min.distanceTo(_cut.bbox.max);
-  const r = (_cut.cParams.d / 10) / 2;
-  const L = _cut.cParams.L / 10;
+  // Platzbedarf je Bauart: Gewinde braucht die volle Einschraubtiefe auf BEIDEN
+  // Seiten, Stift/Schwalbe nur die halbe Zapfenlänge.
+  const cp = _cut.cParams;
+  let r, needDepth;
+  if (cp.type === 'thread') {
+    const sp = SCREW_SPECS[cp.tSize] || SCREW_SPECS.M6;
+    r = ((sp.d + cp.tClr) / 10) / 2;
+    needDepth = cp.tDepth / 10 + 0.15;        // Tiefe + 1,5 mm Restmaterial
+  } else if (cp.type === 'dove') {
+    r = Math.hypot(cp.dL, cp.dW) / 20;        // halbe Diagonale des Grundrisses
+    needDepth = cp.dH / 20 + 0.1;
+  } else {
+    r = (cp.d / 10) / 2;
+    needDepth = cp.L / 20 + 0.1;              // je Seite: halbe Pin-Länge + 1 mm
+  }
   const margin = Math.max(0.2, r + 0.15);     // ≥ 2 mm bzw. Radius + 1,5 mm
-  const needDepth = L / 2 + 0.1;              // je Seite: halbe Pin-Länge + 1 mm
 
   const ray = new THREE.Raycaster();
   ray.far = diag * 2;
@@ -47964,9 +48224,25 @@ function _cutAutoConnectors() {
     notify('Keine geeignete Stelle gefunden — Pin kleiner wählen oder Ebene verschieben', 'w');
     return;
   }
+  // Beim Gewinde bekommt der mittigste Punkt den Bolzen, alle anderen werden
+  // Passstifte — ein einzelner Bolzen allein lässt die Hälften beim Festziehen
+  // gegeneinander verdrehen.
+  if (cp.type === 'thread') {
+    const cu = (uMin + uMax) / 2, cv = (vMin + vMax) / 2;
+    let bi = 0, bd = Infinity;
+    chosen.forEach((c, i) => { const d = Math.hypot(c.u - cu, c.v - cv); if (d < bd) { bd = d; bi = i; } });
+    chosen.forEach((c, i) => { c.kind = (i === bi) ? 'thread' : 'pin'; });
+  } else {
+    chosen.forEach(c => { c.kind = cp.type; });
+  }
   _cut.connectors = chosen;
   _cutRenderMarkers();
-  notify(chosen.length + ' Passstift(e) gesetzt ✓ — Position per „+ Verbinder" ergänzbar, 🗑 löscht alle', 'ok');
+  const nT = chosen.filter(c => c.kind === 'thread').length;
+  notify(nT
+    ? (nT + ' Gewinde + ' + (chosen.length - nT) + (chosen.length - nT === 1 ? ' Passstift' : ' Passstifte') +
+       ' gesetzt ✓ — der Stift hält die Hälften beim Schrauben auf Position'
+       + (chosen.length === 1 ? ' (hier war kein Platz für einen zweiten Punkt — von Hand ergänzen)' : ''))
+    : (chosen.length + ' ' + _CUT_CONN_TYPES[cp.type] + '-Verbinder gesetzt ✓ — Position per „+ Verbinder" ergänzbar, 🗑 löscht alle'), 'ok');
 }
 
 // Klick auf die Vorschau-Ebene → Verbinder setzen (Capture-Phase, blockt Auswahl)
@@ -47979,7 +48255,7 @@ function _cutPlaneClick(e) {
   const pt = new THREE.Vector3();
   if (!raycaster.ray.intersectPlane(mplane, pt)) return;
   const { U, V } = _cutBasis(n), rel = pt.sub(pivot);
-  _cut.connectors.push({ u: rel.dot(U), v: rel.dot(V) });
+  _cut.connectors.push({ u: rel.dot(U), v: rel.dot(V), kind: _cut.cParams.type });
   _cutRenderMarkers();
   e.preventDefault();
   e.stopPropagation();
@@ -48262,36 +48538,167 @@ function _cutBuildCap(segs, N) {
   return tris;
 }
 
-function _cutExecute() {
+// Welt-Dreiecke eines Verbinder-Werkzeugs in mm (Manifold-Toleranzen haengen an
+// der Bauteilgroesse; ein M4-Gewinde misst in App-Units nur 0,2 Einheiten).
+function _cutSoupMm(geo, matrix) {
+  const g0 = matrix ? geo.clone().applyMatrix4(matrix) : geo;
+  const g = g0.index ? g0.toNonIndexed() : g0;
+  const src = g.attributes.position.array;
+  const t = new Float32Array(src.length);
+  for (let i = 0; i < src.length; i++) t[i] = src[i] * 10;
+  if (g !== g0) g.dispose();
+  if (g0 !== geo) g0.dispose();
+  return t;
+}
+// Soup → Manifold, mit der gleichen Rettung wie beim Abziehen
+function _cutMf(w, tris) {
+  try { return _mfFromSoup(w, tris); }
+  catch (e) {
+    const geheilt = _healTrisForBool(tris);
+    if (!geheilt) throw e;
+    return _mfFromSoup(w, geheilt);
+  }
+}
+function _cutGeoFromMf(mf) {
+  const idx = _mfToGeo(mf), g = idx.toNonIndexed();
+  idx.dispose();
+  g.scale(0.1, 0.1, 0.1);
+  g.computeVertexNormals();
+  return g;
+}
+
+// Stift/Schwalbenschwanz in die geschnittenen Haelften setzen: Zapfen an Teil A,
+// Tasche mit Spiel aus Teil B. Ueber Manifold statt ThreeCSG — der BSP-Abzug
+// hinterlaesst hier messbar zerrissene Netze (an einem 40-mm-Wuerfel mit einem
+// Passstift 182 bzw. 275 offene Kanten, mit vorgebohrtem Gewinde ueber 14 000).
+// Gibt null zurueck, wenn Manifold die Netze nicht annimmt — dann faellt der
+// Aufrufer auf ThreeCSG zurueck, damit kaputte Importe weiter funktionieren.
+async function _cutMechConnectors(below, above, conns) {
+  const tools = conns.map(c => {
+    const zapfen = _cutConnTool(c, false), tasche = _cutConnTool(c, true);
+    const z = _cutSoupMm(zapfen.geometry, zapfen.matrixWorld);
+    const t = _cutSoupMm(tasche.geometry, tasche.matrixWorld);
+    zapfen.geometry.dispose(); tasche.geometry.dispose();
+    return { z, t };
+  });
+  let w;
+  try { w = await _mfInit(); } catch (e) { return null; }
+  let mfB = null, mfA = null;
+  try {
+    mfB = _cutMf(w, _cutSoupMm(below.geometry, null));
+    mfA = _cutMf(w, _cutSoupMm(above.geometry, null));
+    tools.forEach(({ z, t }) => {
+      const mz = _cutMf(w, z), mt = _cutMf(w, t);
+      const nb = w.Manifold.union(mfB, mz);      mfB.delete(); mz.delete(); mfB = nb;
+      const na = w.Manifold.difference(mfA, mt); mfA.delete(); mt.delete(); mfA = na;
+    });
+    const gB = _cutGeoFromMf(mfB), gA = _cutGeoFromMf(mfA);
+    mfB.delete(); mfA.delete();
+    below.geometry.dispose(); above.geometry.dispose();
+    below.geometry = gB; above.geometry = gA;
+    return true;
+  } catch (e) {
+    console.warn('[Cut] Verbinder über Manifold gescheitert → ThreeCSG:', e.message || e);
+    try { mfB && mfB.delete(); mfA && mfA.delete(); } catch (e2) { /* egal */ }
+    return null;
+  }
+}
+
+// Gewindeloecher in den Koerper bohren — VOR dem Trennschnitt. Bewusst ueber
+// Manifold statt ThreeCSG: ein Gewindeloch ist ein blindes Loch mit sehr feiner
+// Geometrie, genau der Fall, bei dem der BSP-Abzug den Koerper ueber dem Loch
+// wegfrisst. Manifold rechnet in mm (x10), weil seine Toleranzen an der
+// Bauteilgroesse haengen und ein M4-Gewinde in App-Units nur 0,2 Einheiten misst.
+// Liefert eine Geometrie in WELT-Koordinaten.
+async function _cutBoreThreads(target, conns) {
+  const p = _cut.cParams;
+  const spec = SCREW_SPECS[p.tSize] || SCREW_SPECS.M6;
+  const q = _cutAlignQuat(_cutNormal());
+  const one = new THREE.Vector3(1, 1, 1);
+  // Werkzeuge VOR dem await bauen — danach darf sich _cut nicht mehr aendern
+  const tools = conns.map(c => {
+    const g = _cutThreadCutterGeo(spec, p.tDepth, p.tClr, false);
+    g.applyMatrix4(new THREE.Matrix4().compose(_cutInPlaneToWorld(c), q, one));
+    return g;
+  });
+  target.updateMatrixWorld(true);
+  const gw = target.geometry.clone().applyMatrix4(target.matrixWorld);
+
+  let w;
+  try { w = await _mfInit(); }
+  catch (e) { throw new Error('Gewinde-Verbinder brauchen die Manifold-Engine, die sich nicht laden liess'); }
+  let mf;
+  try { mf = _cutMf(w, _cutSoupMm(gw, null)); }
+  catch (e) {
+    throw new Error('Der Körper ist nicht wasserdicht — Gewindelöcher brauchen ein geschlossenes Netz. ' +
+      'Erst „Reparieren" anwenden oder Stift/Schwalbenschwanz statt Gewinde nehmen');
+  }
+  finally { gw.dispose(); }
+  tools.forEach(g => {
+    const t = _cutMf(w, _cutSoupMm(g, null));
+    const r = w.Manifold.difference(mf, t);
+    mf.delete(); t.delete();
+    mf = r;
+    g.dispose();
+  });
+  if (mf.isEmpty()) { mf.delete(); throw new Error('Die Gewindelöcher ließen nichts vom Körper übrig'); }
+  const out = _cutGeoFromMf(mf);
+  mf.delete();
+  return out;
+}
+
+async function _cutExecute() {
   const target = _cut.target;
   if (!target) { _cutClose(); return; }
   const axis = _cut.axis;
   const layFlat = document.getElementById('cut-lay')?.checked;
   const flipTop = document.getElementById('cut-flip')?.checked;
+  const srcBox = _cut.bbox.clone();          // _cut wird am Ende zurückgesetzt
+  const boltSize = _cut.cParams.tSize, boltLen = _cutBoltLen();
+  const kindOf = c => c.kind || 'pin';
+  const ohneSicherung = _cut.connectors.some(c => kindOf(c) === 'thread') &&
+                        !_cut.connectors.some(c => kindOf(c) !== 'thread');
   notify('Schneide…', 'ok');
   saveUndo();
   const cutN = _cutNormal();   // Schnittebenen-Normale (Welt) — vor Transform-Reset sichern
   try {
     // Robuster planarer Schnitt (Dreieck-Clipping statt BSP → stabil bei Importen)
     const _mat = () => (target.material && target.material.clone()) || new THREE.MeshStandardMaterial();
-    const clip = _cutClipMesh(target, _cutPivot(), cutN);
+    const _mech = _cut.connectors.filter(c => (c.kind || 'pin') !== 'thread');
+    const _thr  = _cut.connectors.filter(c => c.kind === 'thread');
+
+    // Gewinde zuerst: durchgehend in den ganzen Körper bohren. Der Trennschnitt
+    // macht daraus von selbst zwei Sacklöcher — eins je Hälfte.
+    let quelle = target, tmp = null, boltGeos = [];
+    if (_thr.length) {
+      notify('Bohre Gewinde…', 'ok');
+      const gBored = await _cutBoreThreads(target, _thr);
+      tmp = new THREE.Mesh(gBored, _mat());
+      tmp.updateMatrixWorld(true);
+      quelle = tmp;
+      const spec = SCREW_SPECS[boltSize] || SCREW_SPECS.M6;
+      boltGeos = _thr.map(() => _cutThreadBoltGeo(spec, boltLen, false));
+    }
+
+    const clip = _cutClipMesh(quelle, _cutPivot(), cutN);
+    if (tmp) tmp.geometry.dispose();
     let keepBelow = new THREE.Mesh(clip.below, _mat());  // −N-Seite
     let keepAbove = new THREE.Mesh(clip.above, _mat());  // +N-Seite
 
-    // Verbinder: Pin (Dübel) in Teil A einfügen, passendes Loch (mit Spiel) aus Teil B
-    if (_cut.connectors.length &&
-        (keepBelow.geometry.attributes.position?.count || 0) >= 3 &&
-        (keepAbove.geometry.attributes.position?.count || 0) >= 3) {
-      const r = (_cut.cParams.d / 10) / 2;
-      const L = _cut.cParams.L / 10;
-      const clr = (_cut.cParams.clr || 0) / 10;
-      _cut.connectors.forEach(c => {
-        const wp = _cutInPlaneToWorld(c);
-        const pin  = _cutConnCyl(r, L, wp);
-        const sock = _cutConnCyl(r + clr, L + 0.4, wp);   // etwas länger → sauberer Durchstoß
-        const nb = ThreeCSG.union(keepBelow, pin);
-        const na = ThreeCSG.subtract(keepAbove, sock);
-        pin.geometry.dispose(); sock.geometry.dispose();
+    // Stift und Schwalbenschwanz: Zapfen in Teil A, Tasche mit Spiel aus Teil B
+    const _hasGeo = () => (keepBelow.geometry.attributes.position?.count || 0) >= 3 &&
+                          (keepAbove.geometry.attributes.position?.count || 0) >= 3;
+    // Auch ohne Stift einmal durch Manifold, sobald Gewinde im Spiel ist: die
+    // Deckel-Triangulierung des Schnitts lässt rund um die Bohrung ein paar
+    // Kanten offen (gemessen 36 je Hälfte), Manifold verschweißt sie.
+    if ((_mech.length || _thr.length) && _hasGeo()) {
+      const viaMf = await _cutMechConnectors(keepBelow, keepAbove, _mech);
+      if (!viaMf) _mech.forEach(c => {          // Rückfallebene für Netze, die Manifold ablehnt
+        const zapfen = _cutConnTool(c, false);
+        const tasche = _cutConnTool(c, true);   // aufgeweitet + länger → sauberer Durchstoß
+        const nb = ThreeCSG.union(keepBelow, zapfen);
+        const na = ThreeCSG.subtract(keepAbove, tasche);
+        zapfen.geometry.dispose(); tasche.geometry.dispose();
         keepBelow.geometry.dispose(); keepAbove.geometry.dispose();
         keepBelow = nb; keepAbove = na;
       });
@@ -48309,6 +48716,16 @@ function _cutExecute() {
       parts.push({ mesh, role });
     });
     if (!parts.length) { notify('Schnittebene liegt außerhalb des Objekts', 'w'); return; }
+
+    // Gewindebolzen als eigene Druckteile dazulegen (stehend, ohne Stützen)
+    boltGeos.forEach(g => {
+      const m = new THREE.Mesh(g, _mat());
+      m.userData = { id: idCtr++, name: 'Bolzen ' + boltSize + ' × ' + boltLen.toFixed(1) + ' mm',
+                     color: baseColor, isHole: false, type: 'custom' };
+      if (m.material && baseColor) m.material.color.set(baseColor);
+      m.castShadow = true; m.receiveShadow = true;
+      parts.push({ mesh: m, role: 'bolt' });
+    });
 
     if (layFlat) {
       let cursorX = 0; const gap = 0.8;
@@ -48328,6 +48745,17 @@ function _cutExecute() {
         mesh.geometry.computeVertexNormals();
         _geoJsonCache.delete(mesh.geometry);   // in-place mutiert → Cache-Eintrag verwerfen
       });
+    } else if (boltGeos.length) {
+      // Teile bleiben in Originallage — die Bolzen aber nicht mitten im Modell
+      let bx = srcBox.max.x + 0.5;
+      parts.filter(q => q.role === 'bolt').forEach(({ mesh }) => {
+        mesh.geometry.computeBoundingBox();
+        const bb = mesh.geometry.boundingBox;
+        mesh.geometry.translate(bx - bb.min.x, -bb.min.y, -(bb.min.z + bb.max.z) / 2 + srcBox.getCenter(new THREE.Vector3()).z);
+        bx += (bb.max.x - bb.min.x) + 0.3;
+        mesh.geometry.computeVertexNormals();
+        _geoJsonCache.delete(mesh.geometry);
+      });
     }
 
     // Original entfernen, Teile einsetzen
@@ -48337,7 +48765,11 @@ function _cutExecute() {
     _cutClose();
     selectObjs(parts.map(p => p.mesh));
     updateTree();
-    notify(`In ${parts.length} Teil(e) zerteilt ✓`, 'ok');
+    const nBolt = parts.filter(q => q.role === 'bolt').length;
+    notify(`In ${parts.length - nBolt} Teil(e) zerteilt ✓` +
+           (nBolt ? ` + ${nBolt} Gewindebolzen (${boltSize} × ${boltLen.toFixed(1)} mm) zum Mitdrucken` : ''), 'ok');
+    if (ohneSicherung) notify('Nur Gewinde ohne Stift: Die Hälften können sich beim Festschrauben ' +
+                              'gegeneinander verdrehen — beim nächsten Mal einen Stift oder Schwalbenschwanz dazusetzen', 'w');
   } catch (e) {
     console.error('[Cut] Fehler:', e);
     notify('Schnitt fehlgeschlagen: ' + (e.message || e), 'w');
