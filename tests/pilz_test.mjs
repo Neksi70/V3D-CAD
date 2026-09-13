@@ -152,6 +152,65 @@ for (const v of [{ name: 'Standard', p: {} }, { name: 'Grob', p: { pitch: 5, thr
   ok(v.name + ': Auflagering trägt (≥0,5 mm breit)', r.auflage >= 0.5, { auflageMm: +r.auflage.toFixed(2) });
 }
 
+// ── 2b: lässt sich der Hut EINDREHEN, und greift das Gewinde dann auch? ──────
+// Der Test oben prüft nur den fertig verschraubten Zustand. Genau da war alles
+// kollisionsfrei, während ein geschlossener Ring am Buchsen-Eingang den Gang beim
+// Eindrehen blockierte (Ralf: „aufstecken und drehen geht, Gewinde greift nicht").
+// Darum hier den Schraubweg abfahren: Zapfen um e abgesenkt und um 2π·e/P
+// zurückgedreht — analytisch fein UND stichprobenhaft am echten Netz.
+for (const v of [{ name: 'Standard', p: {} }, { name: 'Grob', p: { pitch: 5, threadH: 14, clr: 0.2 } },
+                 { name: 'Fein/eng', p: { pitch: 2, clr: 0.1, bossPct: 75 } }]) {
+  const r = await pg.evaluate(({ over }) => {
+    const bak = { ..._pilzP };
+    Object.assign(_pilzP, over);
+    const d = _pilzDims(_pilzP);
+    const male = (ys, th) => (ys < d.SH || ys > d.SH + d.Ht) ? 0
+      : _pilzThreadR(ys, th, d.SH, d.SH + d.Ht, d.rCore, d.rThreadOut, d.P, 0);
+    const TAU = Math.PI * 2;
+    let minWeg = 1e9, wo = null;
+    for (let e = 0; e <= d.Ht + 0.05; e += 0.01)
+      for (let yc = d.yb; yc <= d.holeTop; yc += 0.004)
+        for (let a = 0; a < 90; a++) {
+          const th = a / 90 * TAU, ths = ((th + TAU * e / d.P) % TAU + TAU) % TAU;
+          const g = _pilzFemR(d, yc, th) - male(yc + d.SH - d.yb + e, ths);
+          if (g < minWeg) { minWeg = g; wo = { eMm: +(e * 10).toFixed(2), hMm: +((yc - d.yb) * 10).toFixed(2) }; }
+        }
+    // Eingriff: Zapfen-Außen-Ø gegen engsten Loch-Ø. Ist das Loch nirgends enger
+    // als der Zapfen, rutscht er axial durch.
+    let lochMin = 1e9;
+    for (let yc = d.yb; yc <= d.holeTop; yc += 0.004) for (let a = 0; a < 90; a++) lochMin = Math.min(lochMin, _pilzFemR(d, yc, a / 90 * TAU));
+    const eingriff = d.rThreadOut - lochMin;
+    // Netz-Stichprobe: Zapfen-Vertices an ein paar Schraubstellungen gegen den Hut
+    const stemG = _pilzStemGeo(_pilzP, 120), capG = _pilzCapGeo(_pilzP, 120);
+    const capMesh = new THREE.Mesh(capG, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+    capMesh.updateMatrixWorld(true);
+    const pos = stemG.attributes.position;
+    let netzStecken = 0, netzGeprueft = 0;
+    for (let s = 1; s <= 6; s++) {
+      const e = d.Ht * s / 7, rot = TAU * e / d.P, c = Math.cos(rot), sn = Math.sin(rot);
+      for (let i = 0; i < pos.count; i += 3) {
+        const y = pos.getY(i);
+        if (y <= d.SH + 0.01 || y > d.SH + d.Ht) continue;
+        const x = pos.getX(i), z = pos.getZ(i);
+        if (Math.hypot(x, z) < d.rCore + 0.005) continue;                 // nur die Gewindeflanken
+        const yc = y - d.SH + d.yb - e - 0.002;
+        if (yc < d.yb) continue;
+        netzGeprueft++;
+        // Zapfenwinkel ths = th + 2πe/P  →  im Hut th = ths - 2πe/P
+        const Pt = new THREE.Vector3(x * c + z * sn, yc, -x * sn + z * c);
+        if (window._plzT.inside(capMesh, Pt)) netzStecken++;
+      }
+    }
+    stemG.dispose(); capG.dispose();
+    Object.assign(_pilzP, bak);
+    return { minWegMm: +(minWeg * 10).toFixed(3), wo, eingriffMm: +(eingriff * 10).toFixed(2),
+             tiefeMm: +(d.depth * 10).toFixed(2), netzStecken, netzGeprueft };
+  }, { over: v.p });
+  ok(v.name + ': Hut lässt sich auf dem ganzen Weg eindrehen', r.minWegMm >= -0.001, r);
+  ok(v.name + ': Gewinde greift (Eingriff ≥ halbe Gangtiefe)', r.eingriffMm >= r.tiefeMm * 0.5, r);
+  ok(v.name + ': Netz — Zapfen streift beim Eindrehen nicht', r.netzStecken === 0 && r.netzGeprueft > 50, r);
+}
+
 // ── 4b: nirgends dünner als eingestellt (sonst bricht das Teil beim Drucken) ─
 for (const v of [{ name: 'Standard', p: {} }, { name: 'Flacher Hut', p: { capH: 32, capForm: 95 } },
                  { name: 'Spitzer Hut', p: { capH: 100, capForm: 0 } }, { name: 'Dünne Wand', p: { wall: 1.2 } }]) {
