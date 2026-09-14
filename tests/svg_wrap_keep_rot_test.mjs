@@ -37,11 +37,15 @@ async function drag(from, to, steps = 12) {
   console.log('   [drag]', hint, JSON.stringify(sel));
 }
 const ctrW = () => pg.evaluate(() => _svgCenterWorld(objects.find(o => o.userData.shapeType === 'svg')).toArray());
-// Kippwinkel des Motivs gegen die Rohrachse (0° = aufrecht)
+// Drehung des Motivs auf der Wand (0° = aufrecht). Seit v1.18.18 wandert eine
+// Quaternion-Drehung um die Wandnormale beim naechsten Nachfuehren in die Wicklung
+// (rotRad) — das Quaternion steht dann wieder auf der Grundlage. Beides zaehlt.
 const kipp = () => pg.evaluate(() => {
   const m = objects.find(o => o.userData.shapeType === 'svg');
   const up = new THREE.Vector3(0, 1, 0).applyQuaternion(m.quaternion);   // Motiv-Hochachse
-  return +(Math.acos(Math.min(1, Math.abs(up.dot(new THREE.Vector3(0, 1, 0))))) * 180 / Math.PI).toFixed(1);
+  const q = Math.acos(Math.min(1, Math.abs(up.dot(new THREE.Vector3(0, 1, 0))))) * 180 / Math.PI;
+  const w = m.userData._svgWrap;
+  return +(q + Math.abs((w && w.rotRad || 0) * 180 / Math.PI)).toFixed(1);
 });
 
 await pg.mouse.click(cr.x, cr.y); await pg.waitForTimeout(150);

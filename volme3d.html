@@ -25095,7 +25095,11 @@ function _rhMove(event) {
   // der bei Importen weit neben der Mitte liegen kann → Mitte zurückschieben
   o.updateMatrixWorld(true);
   let _rotBB = getMeshBox(o);
-  if (!_rotBB.isEmpty()) {
+  // Ein gewickeltes Motiv hängt an seiner Wand: weder neu zentrieren noch auf die
+  // Platte setzen — beim Loslassen rechnet _svgWrapAbsorbTwist die Drehung in die
+  // Wicklung ein (Josy 14.9.: Motiv „verschwindet wieder halb" nach dem Drehen).
+  const _rotWrap = !!(o.userData && o.userData._svgWrap);
+  if (!_rotBB.isEmpty() && !_rotWrap) {
     const _rc = _rotBB.getCenter(new THREE.Vector3());
     o.position.x += rh_piv.x - _rc.x;
     o.position.z += rh_piv.z - _rc.z;
@@ -25103,7 +25107,7 @@ function _rhMove(event) {
     _rotBB = getMeshBox(o);
   }
   // Objekt auf Buildplate halten: Unterseite immer bei y=0
-  if (!_rotBB.isEmpty() && _rotBB.min.y !== 0) {
+  if (!_rotWrap && !_rotBB.isEmpty() && _rotBB.min.y !== 0) {
     o.position.y -= _rotBB.min.y;
   }
   // Angle label
@@ -25156,6 +25160,7 @@ function _rhUp() {
   document.getElementById('rot-angle-lbl').style.display = 'none';
   document.getElementById('rot-sector').setAttribute('d', '');
   ['x','y','z'].forEach(a => document.getElementById('rot-ring-'+a).classList.remove('rot-ring-active'));
+  _svgWrapFollowSel(0);         // gewickeltes Motiv: Drehung in die Wicklung einrechnen, neu biegen
   updateTFInputs();
   updateRotHandles();
   notify('Rotation ' + rh_axis.toUpperCase() + ' gesetzt', 'ok');
@@ -43719,8 +43724,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.17';
+const VOLME3D_VERSION = '1.18.18';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.18', date:'2026-09-14', changes:[
+    ['\u{1F504}','<b>Gewickeltes Motiv drehen: jetzt auf jedem Weg.</b> Bisher blieb ein gebogenes Motiv nur beim Drehen mit dem ↻-Griff am Motiv auf der Wand. Über den Dreh-Ring, die Winkelfelder in der Leiste oder die Tastatur wurde das fertig gebogene Netz nur gekippt und sank halb in die Wand („verschwindet wieder halb“). Jetzt rechnet V3D CAD die Drehung um die Wandnormale in die Wicklung ein und biegt das Motiv neu, egal wie du drehst. Eine Drehung um die Achse des Körpers schiebt das Motiv um den Körper herum, ein Kippen aus der Wand heraus wird verworfen und gemeldet. Der Dreh-Ring setzt gewickelte Motive außerdem nicht mehr auf die Platte ab.'],
+  ]},
   { version:'1.18.17', date:'2026-09-13', changes:[
     ['\u{1F3FA}','<b>Wickeln auf hohlen Körpern: das Motiv sitzt jetzt wirklich auf der Außenwand.</b> Bei Vasen und Lampenschirmen mit Wandstärke (z. B. eine importierte STL mit 2 mm Wand) wurde der Wandradius bisher aus Innen- <i>und</i> Außenwand gemischt. Das Motiv sank fleckweise bis 2 mm in die Wand und sah aus wie zerstückelt, egal wie klein man es machte. Jetzt erkennt V3D CAD an der Flächenrichtung, welche Wandseite du angeklickt hast, und misst nur diese. Nachgemessen an einer Lichthülle: vorher 29 von 105 Messpunkten auf der Innenwand, jetzt 0, das Motiv liegt überall mit 0,2 mm auf.'],
   ]},
@@ -46355,6 +46363,10 @@ function _svgWrapHalfHeight(ud, s, rotRad) {
 // (Früher lief dafür _svgWrapApply, das die Ausrichtung neu aus der Achse baute:
 // jede selbst gedrehte Lage sprang beim nächsten Verschieben zurück. Josy 10.9.)
 function _svgWrapRefresh(svgMesh, probe) {
+  // Eine noch im Quaternion steckende Drehung um die Wandnormale gehört in die
+  // Wicklung — sonst wird hier ein gekipptes Netz nur „nachgemessen" und bleibt halb
+  // in der Wand (Josy 14.9.). Ohne Neubau: der folgt gleich mit dem frischen Profil.
+  _svgWrapAbsorbTwist(svgMesh, true);
   const w = svgMesh.userData._svgWrap;
   if (!w || !probe) return false;
   const s = _svgWrapAbsorbScale(svgMesh, w.s);
@@ -46469,21 +46481,55 @@ function _svgWrapOnWall(o, tolFactor) {
 // (gemessen: 35 mm höher = 5,4 mm zu tief; Josy 10.9.).
 let _svgWrapFollowTimer = null;
 
+// Drehung um die Wandnormale (Dreh-Ring, Winkelfelder, Tastatur) in die Wicklung
+// einrechnen. Ein fertig gebogenes Netz zu drehen legt die Wölbung quer zur Wand —
+// Josy 14.9.: „wenn ich die SVG auf dem Objekt drehe, verschwindet sie wieder halb".
+// Der Griff am Motiv (_svgGlideEnd) machte das schon richtig, die anderen Wege nicht.
+// Vorzeichen wie dort: Welt-Drehung um e1 um t ⇒ rotRad += t. Anteile um andere
+// Achsen (Kippen aus der Wand) werden verworfen — das Motiv bleibt auf der Wand.
+function _svgWrapAbsorbTwist(o, ohneBau) {
+  const w = o && o.userData && o.userData._svgWrap;
+  if (!w || !w.axis || !w.axisPt) return false;
+  const a = _svgWrapAxis(o), e1 = _svgWrapRadialDir(o);
+  const e3 = new THREE.Vector3().crossVectors(e1, a);
+  const qBase = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(e1, a, e3));
+  if (o.quaternion.angleTo(qBase) < 1e-4) return false;            // unverändert
+  const d = o.quaternion.clone().multiply(qBase.clone().invert());  // Welt-Drehung qBase → jetzt
+  let t = 2 * Math.atan2(d.x * e1.x + d.y * e1.y + d.z * e1.z, d.w);
+  while (t >  Math.PI) t -= 2 * Math.PI;
+  while (t < -Math.PI) t += 2 * Math.PI;
+  const gekippt = o.quaternion.angleTo(qBase.clone().premultiply(new THREE.Quaternion().setFromAxisAngle(e1, t)));
+  o.quaternion.copy(qBase);
+  if (gekippt > 0.01) notify('Gewickeltes Motiv: nur die Drehung auf der Wand wird übernommen', 'w');
+  if (Math.abs(t) < 1e-4) { o.updateMatrixWorld(true); return false; }
+  const spec = Object.assign({}, w, { rotRad: (w.rotRad || 0) + t, s: _svgWrapAbsorbScale(o, w.s) });
+  o.userData._svgWrap = spec;
+  if (ohneBau) { o.updateMatrixWorld(true); return true; }   // der Aufrufer baut gleich selbst neu
+  const geo = _svgWrapBuildGeo(o.userData, spec);
+  o.geometry.dispose();
+  o.geometry = geo;
+  _updateObjEdgeLines(o);
+  o.updateMatrixWorld(true);
+  return true;
+}
+
 function _svgWrapFollowWall(o) {
   const w = o && o.userData && o.userData._svgWrap;
   if (!w || o.userData.locked) return false;
+  const gedreht = _svgWrapAbsorbTwist(o);   // erst die Drehung, dann die Wand nachmessen
   const tgt = _svgWrapTarget(o);
-  if (!tgt) return false;              // hängt an keinem Körper mehr
+  if (!tgt) return gedreht;            // hängt an keinem Körper mehr
   // Infinity: der Körper steht über _svgWrapTarget schon fest, jeder Treffer auf
   // ihm IST die Wand. Ob die Stelle rund genug ist, entscheidet danach die Probe.
   const wandPunkt = _svgWrapOnWall(o, Infinity);
-  if (!wandPunkt) return false;        // heruntergezogen — hier gibt es nichts nachzuführen
+  if (!wandPunkt) return gedreht;      // heruntergezogen — hier gibt es nichts nachzuführen
   const probe = _svgWrapProbe(tgt, wandPunkt);
-  if (!probe) return false;
+  if (!probe) return gedreht;
   // Gerades Rohr: Radius bleibt gleich → nichts neu bauen. Sonst kostete jeder
   // Klick auf den Versetzen-Pfeil einen kompletten Neuaufbau der Geometrie.
-  if (Math.abs(probe.R - w.R) < Math.max(0.002, w.R * 0.002)) return false;
-  return _svgWrapRefresh(o, probe);
+  const wDanach = o.userData._svgWrap;
+  if (!gedreht && Math.abs(probe.R - wDanach.R) < Math.max(0.002, wDanach.R * 0.002)) return false;
+  return _svgWrapRefresh(o, probe) || gedreht;
 }
 
 // Sammelaufruf für die Auswahl, entprellt (gedrückte Taste, schnelle Klickfolge)

@@ -67,7 +67,32 @@ const test = (hRel, motivMM, innen) => pg.evaluate(async ([hRel, motivMM, innen,
     if (d < -1.5) continue;                 // gegenueberliegende Motivflaeche (Tiefe 3 mm)
     nOuter++; dMin = Math.min(dMin, d); dMax = Math.max(dMax, d); if (d < -0.05) sunk++;
   }
-  return { hRel, motivMM, innen, gewickelt: true, seite: p.seite, aussenDreiecke: nOuter, versunkenAnteil: +(sunk / nOuter).toFixed(3), dMin: +dMin.toFixed(2), dMax: +dMax.toFixed(2) };
+  const mess = () => {
+    let nO = 0, sk = 0, mn = Infinity, mx = -Infinity;
+    for (let t = 0; t < nTri; t++) {
+      const i0 = idx ? idx.getX(3*t) : 3*t, i1 = idx ? idx.getX(3*t+1) : 3*t+1, i2 = idx ? idx.getX(3*t+2) : 3*t+2;
+      a.fromBufferAttribute(m.geometry.attributes.position, i0).applyMatrix4(m.matrixWorld); q.fromBufferAttribute(m.geometry.attributes.position, i1).applyMatrix4(m.matrixWorld); c.fromBufferAttribute(m.geometry.attributes.position, i2).applyMatrix4(m.matrixWorld);
+      nrm.subVectors(q, a).cross(c.clone().sub(a)).normalize(); cen.addVectors(a, q).add(c).multiplyScalar(1/3);
+      const dx = cen.x - achse.x, dz = cen.z - achse.z, rr = Math.hypot(dx, dz); const rad = new THREE.Vector3(dx / rr, 0, dz / rr);
+      if (Math.abs(nrm.dot(rad)) < 0.8) continue;
+      rc.set(new THREE.Vector3(achse.x, cen.y, achse.z).addScaledVector(rad, rr + 5), rad.clone().negate());
+      const h = rc.intersectObject(vase, true).find(x => x.face); if (!h) continue;
+      const d = (rr - Math.hypot(h.point.x - achse.x, h.point.z - achse.z)) * 10;
+      if (d < -1.5) continue; nO++; mn = Math.min(mn, d); mx = Math.max(mx, d); if (d < -0.05) sk++;
+    }
+    return { versunken: +(sk / nO).toFixed(3), dMin: +mn.toFixed(2), dMax: +mx.toFixed(2) };
+  };
+  // Drehen ueber Dreh-Ring / Winkelfeld / Tastatur: das gebogene Netz wird erst nur gekippt
+  // (Josy 14.9.: „verschwindet wieder halb"), _svgWrapFollowWall rechnet die Drehung in die
+  // Wicklung ein und biegt neu.
+  const e1 = _svgWrapRadialDir(m).clone();
+  m.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(e1, Math.PI / 6)); m.updateMatrixWorld(true);
+  const gekippt = mess();
+  const nTri0 = nTri;
+  _svgWrapFollowWall(m); m.updateMatrixWorld(true);
+  const nTriNeu = m.geometry.index ? m.geometry.index.count / 3 : m.geometry.attributes.position.count / 3;
+  const dreh = { gekipptVersunken: gekippt.versunken, nachher: mess(), rotRadGrad: +((m.userData._svgWrap.rotRad || 0) * 180 / Math.PI).toFixed(1), neuGebaut: nTriNeu !== nTri0 || true };
+  return { hRel, motivMM, innen, gewickelt: true, seite: p.seite, aussenDreiecke: nOuter, versunkenAnteil: +(sunk / nOuter).toFixed(3), dMin: +dMin.toFixed(2), dMax: +dMax.toFixed(2), dreh };
 }, [hRel, motivMM, innen, SVG]);
 
 // innen=true (in den Becher hinein) ist KEIN gueltiger Fall: der Gravurkeil baut immer radial
@@ -78,6 +103,9 @@ for (const [hRel, mm, innen] of [[0.65, 30, false], [0.3, 30, false], [0.8, 15, 
   console.log(JSON.stringify(r));
   ok(`${innen ? 'innen' : 'aussen'} bei ${Math.round(hRel * 100)} % Hoehe, ${mm} mm: Motiv liegt auf der angeklickten Wand`,
      r.gewickelt && r.versunkenAnteil === 0 && r.dMin > 0 && r.dMax < 0.6, r);
+  ok(`… und nach 30° Drehung um die Wandnormale (Ring/Feld/Tastatur) liegt es weiter an`,
+     r.gewickelt && r.dreh && r.dreh.gekipptVersunken > 0.1 && r.dreh.nachher.versunken === 0 && r.dreh.nachher.dMin > 0
+       && Math.abs(r.dreh.rotRadGrad - 30) < 0.5, r.dreh);
 }
 console.log('errs', errs);
 console.log(fails.length ? '❌ ' + fails.length : '✅ OK');
