@@ -44126,8 +44126,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.21';
+const VOLME3D_VERSION = '1.18.22';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.22', date:'2026-09-14', changes:[
+    ['\u{1F3AF}','<b>Motiv auf der Kugel verschieben: bleibt jetzt überall dran.</b> Zog man ein gewickeltes Motiv auf einer Kugel nach oben oder unten, hielt V3D CAD die obere und untere Kugelhälfte für einen Deckel, brach das Gleiten ab und heftete das Motiv beim Loslassen irgendwo neu an, meist schwebend. Jetzt gleitet das Motiv über die ganze Kugel; beim Loslassen wird die passende Wickelachse neu gewählt (um die Mitte senkrecht, oben und unten quer) und das Motiv neu gebogen, aufrecht und mit deiner Drehung. Das gilt auch für die Positionsfelder und die Pfeiltasten.'],
+  ]},
   { version:'1.18.21', date:'2026-09-14', changes:[
     ['\u{1F310}','<b>Kugeln: Wickeln jetzt auch oben und unten, nicht nur am Äquator.</b> Auf einer Kugel oder Kugelschale gab es „Um Rundung wickeln“ bisher nur im Band um die Mitte, weiter oben und unten nur „Auf Fläche heften“, und ein flaches Motiv liegt auf einer Wölbung eben nur in der Mitte auf. Grund: Die Rundungserkennung nahm immer die senkrechte Achse, und dazu steht die Wand dort nicht mehr radial. Eine Kugel ist aber um jede Achse rund. Jetzt wählt V3D CAD die Achse, um die sich an der angeklickten Stelle wickeln lässt, und stellt das Motiv trotzdem aufrecht. Bei Vasen und Lampenschirmen mit nur einer Drehachse bleibt oben an der Kuppel der Hinweis wie bisher.'],
   ]},
@@ -45708,9 +45711,12 @@ function _svgGlideEscaped(e) {
               && Math.abs(d - G.fr.solid.planeD) < 1.0;
     return !same;                               // andere Wand desselben Körpers
   }
-  // Rundung: Deckel/Boden statt Mantel getroffen
+  // Rundung: flacher Deckel/Boden statt Mantel getroffen (Normale parallel zur
+  // Achse). Gewölbte Schultern und Kugeln (0,7–0,98) bleiben im Gleiten — beim
+  // Loslassen wird dort um die passende Achse neu gewickelt (Josy 14.9.: das Motiv
+  // flog auf der Kugel ab, sobald der Zug über 45° hinaus ging).
   const nW = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
-  return Math.abs(nW.dot(G.fr.axis)) > 0.7;
+  return Math.abs(nW.dot(G.fr.axis)) > 0.98;
 }
 
 function _svgGlideScreenPt(w) {
@@ -45906,8 +45912,12 @@ function _svgGlideEnd() {
     return true;
   }
   if (G.kind === 'wrap' && G.fr.target) {
-    const probe = _svgWrapProbe(G.fr.target, _svgWrapWallPoint(o, G.fr.target, G.fr.R), { axisW: G.fr.axis || null });
-    if (probe) _svgWrapRefresh(o, probe);
+    // Achse neu wählen (Kugel: oben/unten quer); klappt das nicht, wie bisher mit
+    // der alten Achse nachmessen.
+    if (!_svgWrapNachwickeln(o)) {
+      const probe = _svgWrapProbe(G.fr.target, _svgWrapWallPoint(o, G.fr.target, G.fr.R), { axisW: G.fr.axis || null });
+      if (probe) _svgWrapRefresh(o, probe);
+    }
   }
   updateTFInputs(); updateTree(); updateCtxPopup(); _doRepositionDimHandles();
   return true;
@@ -46708,8 +46718,22 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
   const w0 = svgMesh.userData._svgWrap;
   const s = w0 ? _svgWrapAbsorbScale(svgMesh, w0.s)
                : { x: svgMesh.scale.x, y: svgMesh.scale.y, z: svgMesh.scale.z };
+  // Drehwinkel VOR dem Abtasten festlegen: Profil und Feld müssen die Motivhöhe und
+  // -breite in der ENDGÜLTIGEN Lage abdecken (nach einem Achswechsel auf der Kugel
+  // steht das Motiv um 90° anders — mit dem alten Winkel reichte das Feld nicht bis
+  // zu den Enden, gemessen: 2,56 mm Überstand statt 0,2).
+  // Auch bei einer schon gewickelten Vorlage neu bestimmen: beim Gleiten über eine
+  // Kugel wechselt die Achse (senkrecht ↔ quer), und die Nutzerdrehung ist immer
+  // RELATIV zu „aufrecht" gemeint (w0.rotRad − w0.rot0).
+  let rot0 = 0;
+  if (Math.abs(a.y) < 0.7) {
+    const upT = new THREE.Vector3(0, 1, 0); upT.addScaledVector(e1, -upT.dot(e1));
+    if (upT.lengthSq() > 1e-6) { upT.normalize(); rot0 = _SVGWRAP_ROT0_SIGN * Math.atan2(upT.dot(e3), upT.dot(a)); }
+  }
+  const userTwist = w0 ? ((w0.rotRad || 0) - (w0.rot0 || 0)) : 0;
+  const rotNeu = rot0 + userTwist;
   // Motivhöhe abschätzen, um das Wandprofil über genau diesen Bereich abzutasten
-  const halfH = _svgWrapHalfHeight(svgMesh.userData, s, w0 ? w0.rotRad : 0);
+  const halfH = _svgWrapHalfHeight(svgMesh.userData, s, rotNeu);
   // Klick nah an der Kante: das Motiv würde zur Hälfte über den Rand hinausragen
   // ("ist er ja nur halb", Josy 10.9.). Auf die Körperhöhe begrenzen, damit es
   // ganz auf der Wand sitzt; ist der Körper kürzer als das Motiv, mittig setzen.
@@ -46747,23 +46771,18 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
     }
   }
   const profile = pr.mesh ? _svgWrapSampleProfile(pr, halfH, 24) : null;
-  const halfW = _svgWrapHalfWidth(svgMesh.userData, s, w0 ? w0.rotRad : 0);
+  const halfW = _svgWrapHalfWidth(svgMesh.userData, s, rotNeu);
   const feld = pr.mesh ? _svgWrapSampleField(pr, halfH, halfW, e1, e3, a, 15, 61) : null;
   // Querachse (Kugel oben/unten): die Motiv-Hochachse liefe sonst entlang der Achse,
   // also seitwärts. Startwinkel so wählen, dass „oben“ im Motiv zur Welt-Hochachse
   // zeigt (in die Wandebene projiziert). Ab dann gilt die Nutzerdrehung wie immer.
-  let rot0 = 0;
-  if (!w0 && Math.abs(a.y) < 0.7) {
-    const upT = new THREE.Vector3(0, 1, 0); upT.addScaledVector(e1, -upT.dot(e1));
-    if (upT.lengthSq() > 1e-6) { upT.normalize(); rot0 = _SVGWRAP_ROT0_SIGN * Math.atan2(upT.dot(e3), upT.dot(a)); }
-  }
   const spec = { R: pr.R, depthMm: svgMesh.userData.svgDepth || 3, feld,
                  epsMm: pr.epsMm != null ? pr.epsMm : 0.2, s, profile,
                  // Achse in Weltkoordinaten festhalten: nach einer Drehung des
                  // Motivs zeigt seine lokale Y-Achse NICHT mehr entlang des
                  // Zylinders — daraus abgeleitet rechnete alles Weitere falsch.
                  axis: [a.x, a.y, a.z], axisPt: [c0.x, c0.y, c0.z],
-                 rotRad: w0 ? (w0.rotRad || 0) : rot0 };
+                 rotRad: rotNeu, rot0 };
   const geo = _svgWrapBuildGeo(svgMesh.userData, spec);
   svgMesh.geometry.dispose();
   svgMesh.geometry = geo;
@@ -46835,7 +46854,7 @@ function _svgWrapRefresh(svgMesh, probe) {
                          _svgWrapRadialDir(svgMesh),
                          new THREE.Vector3().crossVectors(_svgWrapRadialDir(svgMesh), _svgWrapAxis(svgMesh)),
                          _svgWrapAxis(svgMesh), 15, 61) : (w.feld || null),
-                 axis: w.axis, axisPt: w.axisPt, rotRad: w.rotRad || 0 };
+                 axis: w.axis, axisPt: w.axisPt, rotRad: w.rotRad || 0, rot0: w.rot0 || 0 };
   const geo = _svgWrapBuildGeo(svgMesh.userData, spec);
   svgMesh.geometry.dispose();
   svgMesh.geometry = geo;
@@ -46969,10 +46988,37 @@ function _svgWrapAbsorbTwist(o, ohneBau) {
   return true;
 }
 
+// Nach einer Ortsänderung die Wand am Motiv neu treffen und die Achse NEU wählen:
+// Auf einer Kugel trägt am Äquator die senkrechte, oben und unten die Querachse.
+// Bleibt die Achse, reicht das Nachmessen (Drehung bleibt); wechselt sie, wird
+// neu gewickelt — die Nutzerdrehung bleibt relativ zu „aufrecht" erhalten (rot0).
+// false = Achse bleibt (dann misst der Aufrufer wie bisher nach), hier lässt sich
+// nicht wickeln (Kuppelspitze, Deckel) oder kein Treffer.
+function _svgWrapNachwickeln(o) {
+  const w = o && o.userData && o.userData._svgWrap;
+  const tgt = w && _svgWrapTarget(o);
+  if (!w || !tgt) return false;
+  const e1 = _svgWrapRadialDir(o);
+  const rc = new THREE.Raycaster();
+  rc.set(o.position.clone().addScaledVector(e1, w.R * 4 + 20), e1.clone().negate());
+  let hit = null;
+  for (const h of rc.intersectObject(tgt, true)) { if (h.face && !h.object.userData.isEdgeLines) { hit = h; break; } }
+  if (!hit) return false;
+  const nW = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+  const probe = _svgWrapProbe(tgt, hit.point, { normalW: nW });
+  if (!probe) return false;
+  const c0 = probe.axisPt.clone().addScaledVector(probe.axisDir, hit.point.clone().sub(probe.axisPt).dot(probe.axisDir));
+  const radial = hit.point.clone().sub(c0);
+  if (radial.lengthSq() < 1e-12 || Math.abs(nW.dot(radial.normalize())) <= 0.8) return false;
+  if (Math.abs(probe.axisDir.dot(_svgWrapAxis(o))) > 0.95) return false;   // gleiche Achse: alter Weg
+  return _svgWrapApply(o, probe, hit.point) !== false;
+}
+
 function _svgWrapFollowWall(o) {
   const w = o && o.userData && o.userData._svgWrap;
   if (!w || o.userData.locked) return false;
   const gedreht = _svgWrapAbsorbTwist(o);   // erst die Drehung, dann die Wand nachmessen
+  if (_svgWrapNachwickeln(o)) return true;  // Achse ggf. gewechselt und neu gewickelt
   const tgt = _svgWrapTarget(o);
   if (!tgt) return gedreht;            // hängt an keinem Körper mehr
   // Infinity: der Körper steht über _svgWrapTarget schon fest, jeder Treffer auf
