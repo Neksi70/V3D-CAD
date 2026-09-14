@@ -54,6 +54,7 @@ class Projekt:
                 "id": s.id, "name": s.name, "anzahl": len(s), "rev": s.rev,
                 "farbe": s.farbe, "sichtbar": s.sichtbar, "fest": s.fest,
                 "hat_farbe": s.rgb is not None, "hat_normalen": s.nrm is not None,
+                "dreiecke": 0 if s.tri is None else len(s.tri),
             } for s in self.scans.values()],
             "undo": self.undo[-1][0] if self.undo else None,
             "redo": self.redo[-1][0] if self.redo else None,
@@ -122,9 +123,9 @@ class Projekt:
         teile = []
         for sid in ids:
             s, m = self.scans[sid], masken[sid]
-            teile.append(Scan(s.name, s.xyz[m],
-                              None if s.rgb is None else s.rgb[m],
-                              None if s.nrm is None else s.nrm[m]))
+            teil = s.kopie()
+            teil.behalte(m)
+            teile.append(teil)
         neu = verbinden(teile, "Abgetrennt aus " + self.scans[ids[0]].name)
         self._merke("Auswahl abgetrennt", ids)
         for sid in ids:
@@ -141,7 +142,8 @@ class Projekt:
         s = self.scan(sid)
         self._merke(text, [s.id])
         if neuer_scan is not None:
-            s.xyz, s.rgb, s.nrm = neuer_scan.xyz, neuer_scan.rgb, neuer_scan.nrm
+            s.xyz, s.rgb, s.nrm, s.tri = \
+                neuer_scan.xyz, neuer_scan.rgb, neuer_scan.nrm, neuer_scan.tri
         if xyz is not None:
             s.xyz = xyz
         if rgb is not None:
@@ -186,7 +188,7 @@ class Projekt:
                 eintrag = {"id": s.id, "name": s.name, "farbe": s.farbe,
                            "sichtbar": s.sichtbar, "fest": s.fest}
                 info["scans"].append(eintrag)
-                for teil in ("xyz", "rgb", "nrm"):
+                for teil in ("xyz", "rgb", "nrm", "tri"):
                     arr = getattr(s, teil)
                     if arr is not None:
                         b = io.BytesIO()
@@ -207,7 +209,7 @@ class Projekt:
                 def teil(t):
                     n = "scan_%d_%s.npy" % (e["id"], t)
                     return np.load(io.BytesIO(z.read(n))) if n in namen else None
-                s = Scan(e["name"], teil("xyz"), teil("rgb"), teil("nrm"))
+                s = Scan(e["name"], teil("xyz"), teil("rgb"), teil("nrm"), teil("tri"))
                 s.id, s.farbe = e["id"], e.get("farbe", FARBEN[0])
                 s.sichtbar, s.fest = e.get("sichtbar", True), e.get("fest", False)
                 p.scans[s.id] = s
@@ -216,10 +218,15 @@ class Projekt:
 
 
 def verbinden(teile, name):
-    """Scans aneinanderhaengen. Farbe/Normalen nur, wenn ALLE Teile sie haben."""
+    """Scans aneinanderhaengen. Farbe/Normalen/Dreiecke nur, wenn ALLE Teile
+    sie haben (Netz + Punktwolke ergibt eine Punktwolke)."""
     xyz = np.concatenate([t.xyz for t in teile])
+    tri = None
+    if all(t.tri is not None for t in teile):
+        versatz = np.cumsum([0] + [len(t) for t in teile[:-1]])
+        tri = np.concatenate([t.tri + v for t, v in zip(teile, versatz)])
     rgb = np.concatenate([t.rgb for t in teile]) \
         if all(t.rgb is not None for t in teile) else None
     nrm = np.concatenate([t.nrm for t in teile]) \
         if all(t.nrm is not None for t in teile) else None
-    return Scan(name, xyz, rgb, nrm)
+    return Scan(name, xyz, rgb, nrm, tri)

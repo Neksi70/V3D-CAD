@@ -118,9 +118,37 @@ def erzeugen(ziel, punkte=250000, seed=42):
 
     netz_datei = os.path.join(ziel, "objekt_netz.stl")
     o3d.io.write_triangle_mesh(netz_datei, netz)
+    scan_netz_erzeugen(ziel, rng)
     with open(os.path.join(ziel, "soll.json"), "w") as f:
         json.dump(soll, f, indent=1)
     return soll
+
+
+def scan_netz_erzeugen(ziel, rng):
+    """Netz wie aus dem Scanner: geschlossene Kugel-Kappe-Figur, fein
+    unterteilt, verrauscht, mit 3 Loechern, doppelten Dreiecken und einem
+    losen Splitter."""
+    m = o3d.geometry.TriangleMesh.create_sphere(25, 90)
+    zyl = o3d.geometry.TriangleMesh.create_cylinder(10, 40, 60, 20)
+    zyl.translate((0, 0, -35))
+    m += zyl
+    m.remove_duplicated_vertices()
+    xyz = np.asarray(m.vertices) + rng.normal(0, 0.08, (len(m.vertices), 3))
+    tri = np.asarray(m.triangles)
+    mitte = xyz[tri].mean(1)
+    loch = (np.linalg.norm(mitte - [0, 0, 25], axis=1) < 6) | \
+        (np.linalg.norm(mitte - [25, 0, 0], axis=1) < 4) | \
+        (np.linalg.norm(mitte - [0, -25, 0], axis=1) < 3)
+    tri = np.vstack([tri[~loch], tri[:40]])
+    n = len(xyz)
+    splitter = np.array([[40, 40, 40], [42, 40, 40], [40, 42, 40], [40, 40, 42]], float)
+    xyz = np.vstack([xyz, splitter])
+    tri = np.vstack([tri, [[n, n + 1, n + 2], [n, n + 2, n + 3], [n, n + 3, n + 1]]])
+    netz = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(xyz),
+                                     o3d.utility.Vector3iVector(tri))
+    netz.compute_vertex_normals()
+    o3d.io.write_triangle_mesh(os.path.join(ziel, "scan_netz.ply"), netz)
+    print("scan_netz.ply: %d Dreiecke" % len(tri))
 
 
 if __name__ == "__main__":

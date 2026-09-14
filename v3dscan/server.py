@@ -24,21 +24,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
-FASSUNG = "0.1.0"
+FASSUNG = "0.2.0"
 HIER = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, "frozen", False):
     HIER = getattr(sys, "_MEIPASS", HIER)
 WEB = os.path.join(HIER, "web")
 
+from kern import netz as nz  # noqa: E402
 from kern import registrierung as rg  # noqa: E402
 from kern import werkzeuge as wz  # noqa: E402
 from kern.projekt import Projekt  # noqa: E402
-from kern.wolke import AUSGEBBAR, einlesen, ausgeben  # noqa: E402
+from kern.wolke import AUSGEBBAR, AUSGEBBAR_NETZ, einlesen, ausgeben  # noqa: E402
 
 projekt = Projekt()
 sperre = threading.Lock()
 letzter_puls = [0.0]
 vorschau_cache = {}
+netz_vorschau = {}          # id -> (schluessel, Scan, bericht)
 
 
 class Fehler(Exception):
@@ -84,16 +86,67 @@ def ziel_scans(d):
 
 
 def _punkte_binaer(s):
-    """uint32 n, uint32 flags (1=Farbe, 2=Normalen), xyz float32*3n,
-    rgb uint8*3n auf 4 Byte aufgefuellt, nrm float32*3n."""
-    flags = (1 if s.rgb is not None else 0) | (2 if s.nrm is not None else 0)
+    """uint32 n, uint32 flags (1=Farbe, 2=Normalen, 4=Dreiecke), xyz float32*3n,
+    rgb uint8*3n auf 4 Byte aufgefuellt, nrm float32*3n,
+    [uint32 m, int32*3m]."""
+    flags = (1 if s.rgb is not None else 0) | (2 if s.nrm is not None else 0) \
+        | (4 if s.tri is not None else 0)
     teile = [struct.pack("<II", len(s), flags), s.xyz.tobytes()]
     if s.rgb is not None:
         b = s.rgb.tobytes()
         teile.append(b + b"\0" * (-len(b) % 4))
     if s.nrm is not None:
         teile.append(s.nrm.tobytes())
+    if s.tri is not None:
+        teile.append(struct.pack("<I", len(s.tri)))
+        teile.append(s.tri.astype(np.int32).tobytes())
     return b"".join(teile)
+
+
+# --- Netz -------------------------------------------------------------------------
+def netz_rechnen(d):
+    """Ergebnis eines Netz-Werkzeugs als neuer Scan (noch nicht uebernommen)."""
+    s = projekt.scan(d.get("id"))
+    w = d.get("werkzeug")
+    schluessel = json.dumps([d, s.id, s.rev], sort_keys=True)
+    alt = netz_vorschau.get(s.id)
+    if alt and alt[0] == schluessel:
+        return s, alt[1], alt[2]
+    if w == "reparieren":
+        neu, bericht = nz.reparieren(s, zahl(d, "verschweissen", 0), zahl(d, "kleine_teile", 0),
+                                     bool(d.get("schnitte")))
+    elif w == "loecher":
+        nummern = d.get("nummern")
+        neu, bericht = nz.loecher_fuellen(s, nummern=[int(x) for x in nummern]
+                                          if nummern is not None else None,
+                                          max_umfang=d.get("max_umfang"),
+                                          art=d.get("art", "gewoelbt"))
+    elif w == "glaetten":
+        neu, bericht = nz.glaetten(s, int(zahl(d, "iterationen", 5)), d.get("art", "taubin"),
+                                   zahl(d, "staerke", 0.5))
+    elif w == "vereinfachen":
+        ziel = int(len(s.tri) * zahl(d, "prozent") / 100.0) if s.ist_netz else 0
+        neu, bericht = nz.vereinfachen(s, ziel)
+    elif w == "beschneiden":
+        p = d.get("punkte") or []
+        if len(p) != 3:
+            raise Fehler("Bitte genau 3 Punkte für die Schnittebene setzen.")
+        n, dd = wz.ebene_aus_punkten(*p)
+        if d.get("umdrehen"):
+            n = -n
+        mitte = np.mean(np.asarray(p, float), axis=0) + n * zahl(d, "versatz", 0)
+        neu, bericht = nz.beschneiden(s, mitte, n)
+    elif w == "erzeugen":
+        neu, bericht = nz.netz_erzeugen(s, d.get("verfahren", "poisson"),
+                                        int(zahl(d, "tiefe", 9)), zahl(d, "dichte", 5),
+                                        normalen_neu=bool(d.get("normalen_neu")))
+    else:
+        raise Fehler("Unbekanntes Netz-Werkzeug %s" % w)
+    bericht = dict(bericht, dreiecke=len(neu.tri) if neu.ist_netz else 0,
+                   eckpunkte=len(neu))
+    netz_vorschau.clear()
+    netz_vorschau[s.id] = (schluessel, neu, bericht)
+    return s, neu, bericht
 
 
 # --- Bereinigen -----------------------------------------------------------------
@@ -212,9 +265,42 @@ def befehl(name, d):
 
     if name == "normalen":
         for s in ziel_scans(d):
+            if s.ist_netz:
+                m = s.zu_o3d_netz(farbe=False)
+                m.compute_vertex_normals()
+                p.ersetzen(s.id, nrm=np.asarray(m.vertex_normals, np.float32),
+                           text="Normalen berechnet")
+                continue
             nrm = wz.normalen_berechnen(s, zahl(d, "radius"), int(zahl(d, "nachbarn", 30)),
                                         d.get("ausrichtung", "aussen"))
             p.ersetzen(s.id, nrm=nrm, text="Normalen berechnet")
+        return {}
+
+    if name == "netz/analyse":
+        s = p.scan(d["id"])
+        ergebnis, marken = nz.analyse(s)
+        schleifen = nz.randschleifen(s)
+        info = nz.loch_info(s, schleifen)
+        for i, sch in zip(info, schleifen):
+            i["indizes"] = sch.tolist() if len(sch) <= 20000 else sch[::len(sch) // 20000 + 1].tolist()
+        return {"analyse": ergebnis, "loecher": info,
+                "problem": maske_b64(marken["problem"]) if "problem" in marken else None}
+    if name == "netz/vorschau":
+        _, neu, bericht = netz_rechnen(d)
+        return {"bericht": bericht}
+    if name == "netz/anwenden":
+        s, neu, bericht = netz_rechnen(d)
+        netz_vorschau.clear()
+        texte = {"reparieren": "Netz repariert", "loecher": "Löcher geschlossen",
+                 "glaetten": "Netz geglättet", "vereinfachen": "Netz vereinfacht",
+                 "beschneiden": "Netz beschnitten"}
+        if d.get("werkzeug") == "erzeugen":
+            p.hinzufuegen(neu)
+            return {"bericht": bericht, "neu": neu.id}
+        p.ersetzen(s.id, neuer_scan=neu, text=texte.get(d.get("werkzeug"), "Netz geändert"))
+        return {"bericht": bericht}
+    if name == "netz/verwerfen":
+        netz_vorschau.clear()
         return {}
 
     if name.startswith("ausrichten/"):
@@ -327,13 +413,21 @@ class Handler(BaseHTTPRequestHandler):
             if pfad == "/api/zustand":
                 with sperre:
                     return self._senden(200, dict(projekt.zustand(), fassung=FASSUNG,
-                                                  formate=list(AUSGEBBAR)))
+                                                  formate=list(AUSGEBBAR),
+                                                  formate_netz=list(AUSGEBBAR_NETZ)))
             if pfad.startswith("/api/punkte/"):
                 with sperre:
                     s = projekt.scan(pfad.rsplit("/", 1)[1])
                     daten = _punkte_binaer(s)
                 return self._senden(200, daten, "application/octet-stream",
                                     {"X-Rev": str(s.rev)})
+            if pfad.startswith("/api/vorschau/"):
+                with sperre:
+                    sid = int(pfad.rsplit("/", 1)[1])
+                    if sid not in netz_vorschau:
+                        raise Fehler("Keine Vorschau vorhanden.")
+                    daten = _punkte_binaer(netz_vorschau[sid][1])
+                return self._senden(200, daten, "application/octet-stream")
             if pfad.startswith("/api/export/"):
                 fmt = q.get("format", "ply")
                 with sperre:
@@ -393,6 +487,7 @@ class Handler(BaseHTTPRequestHandler):
                 with sperre:
                     projekt = neu
                     vorschau_cache.clear()
+                    netz_vorschau.clear()
                     return self._senden(200, projekt.zustand())
             if pfad == "/api/projekt/neu":
                 with sperre:

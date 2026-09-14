@@ -26,6 +26,7 @@ const S = {
   punktGroesse: 2,
   schattierung: true,
   oben: 'y',
+  netzAnsicht: 'flaeche',
   vorschau: null,          // {art:'bereinigen', werkzeug, parameter}
   ebenePunkte: [],         // Schnittebene: bis zu 3 Weltpunkte
   ebeneUmdrehen: false,
@@ -158,6 +159,41 @@ const PUNKT_FS = `
     if (dot(p, p) > 1.0) discard;
     gl_FragColor = vec4(vFarbe, 1.0);
   }`;
+const NETZ_VS = `
+  attribute vec3 farbe;
+  attribute float mark;
+  attribute vec3 normale;
+  varying vec3 vFarbe;
+  varying vec3 vNormale;
+  varying vec3 vSicht;
+  varying float vMark;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mv;
+    vFarbe = farbe;
+    vNormale = normalMatrix * normale;
+    vSicht = -mv.xyz;
+    vMark = mark;
+  }`;
+const NETZ_FS = `
+  varying vec3 vFarbe;
+  varying vec3 vNormale;
+  varying vec3 vSicht;
+  varying float vMark;
+  void main() {
+    vec3 n = normalize(vNormale);
+    vec3 v = normalize(vSicht);
+    // Rueckseiten dunkler-blaeulich: zeigt verdrehte Normalen und Loecher
+    float vorne = gl_FrontFacing ? 1.0 : 0.0;
+    float l = abs(dot(n, v));
+    vec3 c = vFarbe * (0.28 + 0.78 * l);
+    vec3 h = normalize(v + vec3(0.3, 0.5, 0.2));
+    c += vec3(0.12) * pow(max(dot(n * (vorne * 2.0 - 1.0), h), 0.0), 24.0);
+    if (vorne < 0.5) c = mix(c, vec3(0.25, 0.3, 0.55), 0.6);
+    if (vMark > 1.5) c = vec3(1.0, 0.18, 0.12);
+    else if (vMark > 0.5) c = mix(c, vec3(1.0, 0.62, 0.0), 0.8);
+    gl_FragColor = vec4(c, 1.0);
+  }`;
 const TIEFE_VS = `
   uniform float groesse;
   uniform float nah;
@@ -178,6 +214,17 @@ const TIEFE_FS = `
     e -= e.yzww * vec4(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 0.0);
     gl_FragColor = e;
   }`;
+const TIEFE_NETZ_FS = `
+  varying float vTiefe;
+  void main() {
+    vec4 e = fract(vec4(1.0, 255.0, 65025.0, 16581375.0) * vTiefe);
+    e -= e.yzww * vec4(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 0.0);
+    gl_FragColor = e;
+  }`;
+const tiefeNetzMaterial = new THREE.ShaderMaterial({
+  vertexShader: TIEFE_VS, fragmentShader: TIEFE_NETZ_FS, side: THREE.DoubleSide,
+  uniforms: { groesse: { value: 1 }, nah: { value: 0.1 }, fern: { value: 1000 } },
+});
 const tiefeMaterial = new THREE.ShaderMaterial({
   vertexShader: TIEFE_VS, fragmentShader: TIEFE_FS,
   uniforms: { groesse: { value: 2 }, nah: { value: 0.1 }, fern: { value: 1000 } },
@@ -188,46 +235,91 @@ function groesseUniform() { return S.punktGroesse * renderer.getPixelRatio(); }
 // ---------------------------------------------------------------------------
 // Scans
 // ---------------------------------------------------------------------------
-async function scanLaden(meta) {
-  const r = await fetch('/api/punkte/' + meta.id);
-  if (!r.ok) throw new Error('Punkte von Scan ' + meta.id + ' nicht ladbar');
-  const puffer = await r.arrayBuffer();
+function datenLesen(puffer) {
   const kopf = new Uint32Array(puffer, 0, 2);
   const n = kopf[0], flags = kopf[1];
   let o = 8;
   const xyz = new Float32Array(puffer, o, n * 3); o += n * 12;
-  let rgb = null, nrm = null;
+  let rgb = null, nrm = null, tri = null;
   if (flags & 1) { rgb = new Uint8Array(puffer, o, n * 3); o += Math.ceil(n * 3 / 4) * 4; }
-  if (flags & 2) { nrm = new Float32Array(puffer, o, n * 3); }
+  if (flags & 2) { nrm = new Float32Array(puffer, o, n * 3); o += n * 12; }
+  if (flags & 4) { const m = new Uint32Array(puffer, o, 1)[0]; o += 4; tri = new Uint32Array(puffer, o, m * 3); }
+  return { n, xyz, rgb, nrm, tri };
+}
 
-  let e = S.scans.get(meta.id);
-  if (e) { szene.remove(e.obj); e.geo.dispose(); e.obj.material.dispose(); }
+function objektBauen(d, farbeHex) {
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(xyz, 3));
-  const farbe = new Uint8Array(n * 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(d.xyz, 3));
+  const farbe = new Uint8Array(d.n * 3);
   geo.setAttribute('farbe', new THREE.BufferAttribute(farbe, 3, true));
-  const mark = new Uint8Array(n);
+  const mark = new Uint8Array(d.n);
   geo.setAttribute('mark', new THREE.BufferAttribute(mark, 1));
   // Ohne Normalen liest der Shader das Attribut nicht (hatNormalen=0), WebGL
   // verlangt aber trotzdem eines in voller Länge.
-  geo.setAttribute('normale', new THREE.BufferAttribute(nrm || new Float32Array(n * 3), 3));
+  geo.setAttribute('normale', new THREE.BufferAttribute(d.nrm || new Float32Array(d.n * 3), 3));
   geo.computeBoundingSphere();
   geo.computeBoundingBox();
-  const mat = new THREE.ShaderMaterial({
-    vertexShader: PUNKT_VS, fragmentShader: PUNKT_FS,
-    uniforms: {
-      groesse: { value: groesseUniform() }, hatNormalen: { value: nrm ? 1 : 0 },
-      schatten: { value: S.schattierung ? 1 : 0 },
-    },
-  });
-  const obj = new THREE.Points(geo, mat);
+  let obj;
+  if (d.tri && S.netzAnsicht !== 'punkte') {
+    geo.setIndex(new THREE.BufferAttribute(d.tri, 1));
+    const mat = new THREE.ShaderMaterial({ vertexShader: NETZ_VS, fragmentShader: NETZ_FS, side: THREE.DoubleSide,
+      wireframe: S.netzAnsicht === 'draht', uniforms: {} });
+    obj = new THREE.Mesh(geo, mat);
+    obj.userData.tiefe = tiefeNetzMaterial;
+  } else {
+    const mat = new THREE.ShaderMaterial({
+      vertexShader: PUNKT_VS, fragmentShader: PUNKT_FS,
+      uniforms: { groesse: { value: groesseUniform() }, hatNormalen: { value: d.nrm ? 1 : 0 }, schatten: { value: S.schattierung ? 1 : 0 } },
+    });
+    obj = new THREE.Points(geo, mat);
+    obj.userData.tiefe = tiefeMaterial;
+  }
   obj.matrixAutoUpdate = false;
+  return { obj, geo, farbe, mark };
+}
+
+async function scanLaden(meta) {
+  const r = await fetch('/api/punkte/' + meta.id);
+  if (!r.ok) throw new Error('Punkte von Scan ' + meta.id + ' nicht ladbar');
+  const d = datenLesen(await r.arrayBuffer());
+  let e = S.scans.get(meta.id);
+  if (e) objektWeg(e);
+  const { obj, geo, farbe, mark } = objektBauen(d, meta.farbe);
   obj.userData.scanId = meta.id;
   szene.add(obj);
-  e = { id: meta.id, meta, n, xyz, rgb, nrm, geo, obj, farbe, mark,
-        sel: new Uint8Array(n), vor: new Uint8Array(n), rev: meta.rev };
+  e = { id: meta.id, meta, n: d.n, xyz: d.xyz, rgb: d.rgb, nrm: d.nrm, tri: d.tri, geo, obj, farbe, mark,
+        sel: new Uint8Array(d.n), vor: new Uint8Array(d.n), rev: meta.rev };
   S.scans.set(meta.id, e);
   return e;
+}
+
+function objektWeg(e) {
+  szene.remove(e.obj); e.geo.dispose(); e.obj.material.dispose();
+  if (e.vorschau) { szene.remove(e.vorschau.obj); e.vorschau.geo.dispose(); e.vorschau.obj.material.dispose(); e.vorschau = null; }
+}
+
+// Netz-Vorschau: Ergebnis vom Dienst anzeigen, Original ausblenden.
+async function netzVorschauZeigen(id) {
+  const e = S.scans.get(id);
+  const r = await fetch('/api/vorschau/' + id);
+  if (!r.ok) throw new Error('Vorschau nicht abrufbar');
+  const d = datenLesen(await r.arrayBuffer());
+  netzVorschauWeg(id);
+  const v = objektBauen(d, e.meta.farbe);
+  const eigen = hexZuRgb(e.meta.farbe);
+  if (d.rgb && S.farbModus === 'rgb') v.farbe.set(d.rgb);
+  else for (let i = 0; i < d.n; i++) { v.farbe[i * 3] = eigen[0] * 0.8 + 50; v.farbe[i * 3 + 1] = eigen[1] * 0.8 + 50; v.farbe[i * 3 + 2] = eigen[2] * 0.8 + 50; }
+  szene.add(v.obj);
+  e.vorschau = v;
+  e.obj.visible = false;
+}
+
+function netzVorschauWeg(id) {
+  const e = S.scans.get(id);
+  if (!e || !e.vorschau) return;
+  szene.remove(e.vorschau.obj); e.vorschau.geo.dispose(); e.vorschau.obj.material.dispose();
+  e.vorschau = null;
+  e.obj.visible = e.meta.sichtbar;
 }
 
 async function zustandUebernehmen(z) {
@@ -236,7 +328,7 @@ async function zustandUebernehmen(z) {
   const ids = new Set(z.scans.map((s) => s.id));
   for (const [id, e] of S.scans) {
     if (!ids.has(id)) {
-      szene.remove(e.obj); e.geo.dispose(); e.obj.material.dispose();
+      objektWeg(e);
       S.scans.delete(id);
     }
   }
@@ -250,7 +342,10 @@ async function zustandUebernehmen(z) {
     } else {
       e.meta = meta;
     }
-    S.scans.get(meta.id).obj.visible = meta.sichtbar;
+    const eintrag = S.scans.get(meta.id);
+    eintrag.obj.visible = meta.sichtbar && !eintrag.vorschau;
+    if (eintrag.vorschau) eintrag.vorschau.obj.visible = meta.sichtbar;
+    if (S.loecher && S.loecher.id === meta.id && S.loecher.rev !== meta.rev) S.loecher = null;
   }
   if (neuGeladen) {
     // Geometrie geändert: alte Vorschauen passen nicht mehr.
@@ -269,6 +364,7 @@ async function zustandUebernehmen(z) {
   $('#knopfRedo').title = z.redo ? 'Wiederholen: ' + z.redo + ' (Strg+Y)' : 'Nichts zu wiederholen';
   $('#leerHinweis').hidden = z.scans.length > 0;
   if (erstesMal && z.scans.length) einpassen();
+  hilfenZeichnen();
   kameraGrenzen();
   punkteInfo();
 }
@@ -287,7 +383,7 @@ function listeZeichnen() {
         ${meta.fest ? '<span class="fest-marke" title="Referenz beim Ausrichten">FEST</span>' : ''}
         <button class="weg" title="Scan entfernen">✕</button>
       </span>
-      <span class="zahl">${meta.anzahl.toLocaleString('de-DE')} Punkte${meta.hat_farbe ? ' · Farbe' : ''}${meta.hat_normalen ? ' · Normalen' : ''}</span>`;
+      <span class="zahl">${meta.dreiecke ? `Netz · ${meta.dreiecke.toLocaleString('de-DE')} Dreiecke` : `${meta.anzahl.toLocaleString('de-DE')} Punkte`}${meta.hat_farbe ? ' · Farbe' : ''}${!meta.dreiecke && meta.hat_normalen ? ' · Normalen' : ''}</span>`;
     el.querySelector('.name').textContent = meta.name;
     el.addEventListener('click', () => { S.aktiv = meta.id; listeZeichnen(); auswahlListenFuellen(); });
     el.querySelector('.auge').addEventListener('click', (ev) => {
@@ -308,15 +404,36 @@ function listeZeichnen() {
   eigenschaftenZeichnen();
 }
 
+function exportFormateSetzen() {
+  const e = S.scans.get(S.aktiv);
+  const liste = e && e.tri ? S.formateNetz : S.formate;
+  if (!liste) return;
+  const el = $('#exportFormat');
+  const schluessel = liste.join();
+  if (el.dataset.liste === schluessel) return;
+  el.dataset.liste = schluessel;
+  el.innerHTML = liste.map((f) => `<option value="${f}">${f.toUpperCase()}</option>`).join('');
+}
+
 function eigenschaftenZeichnen() {
   const e = S.scans.get(S.aktiv);
+  exportFormateSetzen();
+  $('#netzHinweis').textContent = !e ? 'Kein Scan aktiv.' : e.tri ? `Aktiv: ${e.meta.name} (Netz)` : `Aktiv: ${e.meta.name} – Punktwolke: erst „Netz aus Punktwolke“.`;
+  // Analyse und Lochliste gehören zu genau einem Scan-Stand
+  const analyseTab = $('#analyseTabelle');
+  if (analyseTab.dataset.fuer && analyseTab.dataset.fuer !== `${S.aktiv}:${e ? e.meta.rev : ''}`) {
+    analyseTab.innerHTML = '';
+    analyseTab.dataset.fuer = '';
+    $('#lochListe').innerHTML = '';
+  }
   $('#eigenschaften').hidden = !e;
   if (!e) return;
   const bb = e.geo.boundingBox, groesse = bb.getSize(new THREE.Vector3()), mitte = bb.getCenter(new THREE.Vector3());
   const f = (v) => v.toLocaleString('de-DE', { maximumFractionDigits: 1, minimumFractionDigits: 1 });
   const zeilen = [
     ['Name', e.meta.name],
-    ['Punkte', e.n.toLocaleString('de-DE')],
+    ['Art', e.tri ? 'Dreiecksnetz' : 'Punktwolke'],
+    [e.tri ? 'Eckpunkte / Dreiecke' : 'Punkte', e.tri ? `${e.n.toLocaleString('de-DE')} / ${(e.tri.length / 3).toLocaleString('de-DE')}` : e.n.toLocaleString('de-DE')],
     ['Farbe / Normalen', `${e.rgb ? 'ja' : 'nein'} / ${e.nrm ? 'ja' : 'nein'}`],
     ['Größe X × Y × Z', `${f(groesse.x)} × ${f(groesse.y)} × ${f(groesse.z)} mm`],
     ['Mitte', `${f(mitte.x)} ; ${f(mitte.y)} ; ${f(mitte.z)}`],
@@ -348,7 +465,7 @@ function auswahlListenFuellen() {
   }
 }
 
-function sichtbareScans() { return [...S.scans.values()].filter((e) => e.obj.visible); }
+function sichtbareScans() { return [...S.scans.values()].filter((e) => e.meta.sichtbar); }
 
 function zielIds() {
   const art = document.querySelector('input[name=ziel]:checked').value;
@@ -407,7 +524,7 @@ function farbenSetzen(e, min, max, achse) {
     for (let i = 0; i < n; i++) { f[i * 3] = eigen[0]; f[i * 3 + 1] = eigen[1]; f[i * 3 + 2] = eigen[2]; }
   }
   e.geo.getAttribute('farbe').needsUpdate = true;
-  e.obj.material.uniforms.schatten.value = S.schattierung && S.farbModus !== 'normalen' ? 1 : 0;
+  if (e.obj.material.uniforms.schatten) e.obj.material.uniforms.schatten.value = S.schattierung && S.farbModus !== 'normalen' ? 1 : 0;
 }
 
 function legendeZeichnen() {
@@ -534,7 +651,7 @@ new ResizeObserver(groesseAnpassen).observe(leinwand);
 function zeichnen() {
   requestAnimationFrame(zeichnen);
   const g = groesseUniform();
-  for (const e of S.scans.values()) e.obj.material.uniforms.groesse.value = g;
+  for (const e of S.scans.values()) if (e.obj.material.uniforms.groesse) e.obj.material.uniforms.groesse.value = g;
   markerGroesse();
   renderer.render(szene, kamera);
   achsenZeichnen();
@@ -564,9 +681,12 @@ function tiefenbild() {
   tiefeMaterial.uniforms.groesse.value = groesseUniform();
   tiefeMaterial.uniforms.nah.value = kamera.near;
   tiefeMaterial.uniforms.fern.value = kamera.far;
+  tiefeNetzMaterial.uniforms.nah.value = kamera.near;
+  tiefeNetzMaterial.uniforms.fern.value = kamera.far;
   const altHilfe = hilfsGruppe.visible, altGitter = gitter ? gitter.visible : false;
   hilfsGruppe.visible = false; if (gitter) gitter.visible = false;
-  szene.overrideMaterial = tiefeMaterial;
+  const getauscht = [];
+  for (const e of S.scans.values()) { getauscht.push([e.obj, e.obj.material]); e.obj.material = e.obj.userData.tiefe; }
   const altFarbe = renderer.getClearColor(new THREE.Color()), altAlpha = renderer.getClearAlpha();
   renderer.setClearColor(0xffffff, 1);
   renderer.setRenderTarget(ziel);
@@ -576,7 +696,7 @@ function tiefenbild() {
   renderer.readRenderTargetPixels(ziel, 0, 0, w, h, pixel);
   renderer.setRenderTarget(null);
   renderer.setClearColor(altFarbe, altAlpha);
-  szene.overrideMaterial = null;
+  for (const [o, m] of getauscht) o.material = m;
   hilfsGruppe.visible = altHilfe; if (gitter) gitter.visible = altGitter;
   ziel.dispose();
   const tiefe = new Float32Array(w * h);
@@ -764,7 +884,7 @@ function auswahlAnwenden(z) {
     if (!form[((H - 1 - iy) * W + ix) * 4 + 3]) return;
     if (tb) {
       const vorne = tb.tiefe[iy * W + ix];
-      if (t - vorne > tiefenToleranz(t)) return;
+      if (t - vorne > (e.tri ? tiefenToleranz(t) * 0.35 : tiefenToleranz(t))) return;
     }
     if (e.sel[i] !== wert) { e.sel[i] = wert; anzahl++; }
   });
@@ -852,6 +972,7 @@ function hilfenZeichnen() {
     if (paar.bewegt) marker(new THREE.Vector3(...paar.bewegtWelt), String(i + 1), '#e0914f');
   });
   if (S.ebenePunkte.length === 3) ebeneZeichnen();
+  lochLinienZeichnen();
   paarListeZeichnen();
 }
 
@@ -1017,6 +1138,177 @@ async function punktabstandMessen() {
   setze('#normRadius', a * 6);
   setze('#verbundenAbstand', a * 4);
   return a;
+}
+
+// ---------------------------------------------------------------------------
+// Netz
+// ---------------------------------------------------------------------------
+function aktivesNetz(pflicht = true) {
+  const e = S.scans.get(S.aktiv);
+  if (!e) throw new Error('Kein Scan aktiv.');
+  if (pflicht && !e.tri) throw new Error(`„${e.meta.name}“ ist eine Punktwolke – erst „Netz aus Punktwolke“.`);
+  return e;
+}
+
+function netzParameter(block) {
+  const w = block.dataset.netz;
+  const e = aktivesNetz(w !== 'erzeugen');
+  const d = { werkzeug: w, id: e.id };
+  block.querySelectorAll('[data-p]').forEach((el) => {
+    d[el.dataset.p] = el.type === 'checkbox' ? el.checked : el.tagName === 'SELECT' ? el.value : Number(el.value);
+  });
+  if (w === 'loecher') {
+    if (!S.loecher || S.loecher.id !== e.id) throw new Error('Erst „Analysieren“, dann Löcher wählen.');
+    d.nummern = S.loecher.liste.filter((l) => l.gewaehlt).map((l) => l.nr);
+    if (!d.nummern.length) throw new Error('Kein Loch gewählt.');
+  }
+  if (w === 'beschneiden') {
+    if (S.ebenePunkte.length !== 3) throw new Error('Erst 3 Punkte für die Schnittebene setzen.');
+    d.punkte = S.ebenePunkte;
+    d.umdrehen = S.ebeneUmdrehen;
+  }
+  return d;
+}
+
+function berichtText(b) {
+  const teile = [];
+  if (b.dreiecke !== undefined) teile.push(`${b.dreiecke.toLocaleString('de-DE')} Dreiecke`);
+  if (b.dreiecke_vorher !== undefined) teile.push(`vorher ${b.dreiecke_vorher.toLocaleString('de-DE')}`);
+  if (b.gefuellt !== undefined) teile.push(`${b.gefuellt} Löcher gefüllt`);
+  return teile.join(' · ');
+}
+
+async function netzVorschau(block) {
+  const d = netzParameter(block);
+  const j = await api('netz/vorschau', d, 'Rechne Vorschau…');
+  await netzVorschauZeigen(d.id);
+  $$('section.laeuft').forEach((x) => x.classList.remove('laeuft'));
+  block.classList.add('laeuft');
+  const el = $('#netzErgebnis');
+  el.hidden = false;
+  el.className = 'ergebnis';
+  el.innerHTML = `<b>Vorschau</b><br>${berichtText(j.bericht)}<br><small>${j.dauer} s · „Anwenden“ übernimmt</small>`;
+}
+
+async function netzAnwenden(block) {
+  const d = netzParameter(block);
+  netzVorschauWeg(d.id);
+  const j = await api('netz/anwenden', d, 'Übernehme…');
+  $$('section.laeuft').forEach((x) => x.classList.remove('laeuft'));
+  $('#netzErgebnis').hidden = true;
+  if (j.neu) { S.aktiv = j.neu; listeZeichnen(); }
+  meldung(`Übernommen: ${berichtText(j.bericht)}`, 'ok');
+  if (d.werkzeug === 'loecher' || d.werkzeug === 'reparieren') await netzAnalyse();
+}
+
+async function netzZuruecksetzen() {
+  for (const e of S.scans.values()) netzVorschauWeg(e.id);
+  $$('section.laeuft').forEach((x) => x.classList.remove('laeuft'));
+  $('#netzErgebnis').hidden = true;
+  await api('netz/verwerfen', {});
+}
+
+$$('[data-netz]').forEach((block) => {
+  block.querySelector('[data-vorschau]').addEventListener('click', () => sicher(() => netzVorschau(block)));
+  block.querySelector('[data-anwenden]').addEventListener('click', () => sicher(() => netzAnwenden(block)));
+  block.querySelector('[data-zuruecksetzen]').addEventListener('click', () => sicher(netzZuruecksetzen));
+});
+
+const ANALYSE_ZEILEN = [
+  ['eckpunkte', 'Eckpunkte'], ['dreiecke', 'Dreiecke'], ['teile', 'Teile', (v) => v > 1],
+  ['loecher', 'Löcher / offene Ränder', (v) => v > 0], ['entartet', 'entartete Dreiecke', (v) => v > 0],
+  ['doppelt', 'doppelte Dreiecke', (v) => v > 0], ['nicht_mannigfaltige_kanten', 'nicht-mannigfaltige Kanten', (v) => v > 0],
+  ['nicht_mannigfaltige_punkte', 'nicht-mannigfaltige Punkte', (v) => v > 0], ['selbstschnitte', 'sich schneidende Dreiecke', (v) => v > 0],
+  ['orientierbar', 'einheitlich orientierbar', (v) => v === false], ['wasserdicht', 'wasserdicht (druckbar)', (v) => v === false],
+  ['flaeche', 'Oberfläche mm²'], ['volumen', 'Volumen mm³'],
+];
+
+async function netzAnalyse() {
+  const e = aktivesNetz();
+  const j = await api('netz/analyse', { id: e.id }, 'Analysiere Netz…');
+  const tab = $('#analyseTabelle');
+  tab.innerHTML = '';
+  tab.dataset.fuer = `${e.id}:${e.meta.rev}`;
+  for (const [k, text, schlecht] of ANALYSE_ZEILEN) {
+    if (j.analyse[k] === undefined || j.analyse[k] === null) continue;
+    const tr = tab.insertRow();
+    let v = j.analyse[k];
+    if (schlecht) tr.className = schlecht(v) ? 'schlecht' : 'gut';
+    if (typeof v === 'boolean') v = v ? 'ja' : 'nein';
+    else if (typeof v === 'number') v = v.toLocaleString('de-DE');
+    tr.insertCell().textContent = text;
+    tr.insertCell().textContent = v;
+  }
+  S.problem = j.problem ? { id: e.id, maske: b64.maske(j.problem, e.n) } : null;
+  const liste = j.loecher.map((l) => ({ ...l, gewaehlt: false }));
+  S.loecher = { id: e.id, rev: e.meta.rev, liste };
+  const regler = $('#lochGrenze');
+  const groesste = liste.reduce((m, l) => Math.max(m, l.umfang), 0);
+  regler.max = Math.max(1, Math.ceil(groesste));
+  // Standard: alle Löcher. Ist der größte Rand aber deutlich größer als der
+  // Rest (> 3×), ist es bei offenen Scans der Außenrand – der bleibt offen.
+  const sortiert = liste.map((l) => l.umfang).sort((a, b) => b - a);
+  const aussenrand = sortiert.length > 1 && sortiert[0] > 3 * sortiert[1];
+  regler.value = aussenrand ? Math.ceil(sortiert[1]) : Math.ceil(groesste);
+  lochAuswahlNachGrenze();
+  status(`Analyse: ${j.analyse.loecher} Löcher, ${j.analyse.teile} Teile, ${j.analyse.wasserdicht ? 'wasserdicht' : 'nicht wasserdicht'}.`);
+}
+
+function lochAuswahlNachGrenze() {
+  if (!S.loecher) return;
+  const g = Number($('#lochGrenze').value);
+  $('#lochGrenzeText').textContent = g;
+  for (const l of S.loecher.liste) l.gewaehlt = l.umfang <= g;
+  lochListeZeichnen();
+}
+
+function lochListeZeichnen() {
+  const box = $('#lochListe');
+  box.innerHTML = '';
+  if (!S.loecher) return;
+  if (!S.loecher.liste.length) { box.textContent = 'Keine offenen Ränder.'; hilfenZeichnen(); return; }
+  S.loecher.liste.slice().sort((a, b) => a.umfang - b.umfang).forEach((l) => {
+    const lab = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = l.gewaehlt;
+    cb.addEventListener('change', () => { l.gewaehlt = cb.checked; lochListeZeichnen(); });
+    const t = document.createElement('span');
+    t.className = l.gewaehlt ? 'gruen' : 'rot';
+    t.textContent = `Umfang ${l.umfang.toLocaleString('de-DE', { maximumFractionDigits: 1 })} mm · ${l.punkte} Randpunkte`;
+    lab.append(cb, t);
+    box.appendChild(lab);
+  });
+  hilfenZeichnen();
+}
+$('#lochGrenze').addEventListener('input', lochAuswahlNachGrenze);
+
+function lochLinienZeichnen() {
+  if (!S.loecher) return;
+  const e = S.scans.get(S.loecher.id);
+  if (!e || !e.meta.sichtbar) return;
+  for (const l of S.loecher.liste) {
+    const pos = new Float32Array((l.indizes.length + 1) * 3);
+    l.indizes.forEach((idx, i) => { pos[i * 3] = e.xyz[idx * 3]; pos[i * 3 + 1] = e.xyz[idx * 3 + 1]; pos[i * 3 + 2] = e.xyz[idx * 3 + 2]; });
+    pos.set(pos.subarray(0, 3), l.indizes.length * 3);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const linie = new THREE.Line(g, new THREE.LineBasicMaterial({ color: l.gewaehlt ? 0x5cbf6a : 0xe0584f, depthTest: false }));
+    linie.renderOrder = 5;
+    linie.matrixAutoUpdate = false;
+    linie.matrix.copy(e.obj.matrix);
+    hilfsGruppe.add(linie);
+  }
+}
+
+function netzProblemeMarkieren() {
+  if (!S.problem) throw new Error('Erst „Analysieren“.');
+  const e = S.scans.get(S.problem.id);
+  if (!e) return;
+  let n = 0;
+  for (let i = 0; i < e.n; i++) { e.vor[i] = S.problem.maske[i]; n += e.vor[i]; }
+  alleMarkierungen();
+  status(n ? `${n.toLocaleString('de-DE')} Eckpunkte an Problemstellen rot markiert – z. B. mit Auswahl löschen und Löcher schließen.` : 'Keine Problemstellen gefunden.');
 }
 
 // ---------------------------------------------------------------------------
@@ -1281,6 +1573,8 @@ const AKTIONEN = {
   abweichung: { text: 'Abweichungskarte', fn: abweichungZeigen },
   abweichungAus: { text: 'Abweichungskarte aus', fn: () => { S.abweichung = null; alleFarbenSetzen(); } },
   zusammenfuehren: { text: 'Zusammenführen', fn: zusammenfuehren },
+  netzAnalyse: { text: 'Netz analysieren', fn: netzAnalyse },
+  netzProbleme: { text: 'Problemstellen markieren', fn: netzProblemeMarkieren },
   tasten: { text: 'Tastenkürzel', fn: tastenDialog },
   tastenZu: { text: '', fn: () => $('#tastenDialog').close() },
   tastenStandard: { text: '', fn: () => { localStorage.removeItem('v3dscan.tasten'); tastenLaden(); tastenTabelle(); } },
@@ -1378,6 +1672,20 @@ function punktGroesseSetzen(v) {
 $('#punktGroesse').addEventListener('input', (ev) => punktGroesseSetzen(Number(ev.target.value)));
 $('#farbModus').addEventListener('change', (ev) => { S.farbModus = ev.target.value; alleFarbenSetzen(); einstellungenMerken(); });
 $('#schattierung').addEventListener('change', (ev) => { S.schattierung = ev.target.checked; alleFarbenSetzen(); einstellungenMerken(); });
+$('#netzAnsicht').addEventListener('change', (ev) => {
+  S.netzAnsicht = ev.target.value;
+  for (const e of S.scans.values()) {
+    if (!e.tri) continue;
+    const alt = e.obj;
+    const neu = objektBauen({ n: e.n, xyz: e.xyz, rgb: e.rgb, nrm: e.nrm, tri: e.tri }, e.meta.farbe);
+    szene.remove(alt); alt.material.dispose(); e.geo.dispose();
+    Object.assign(e, { obj: neu.obj, geo: neu.geo, farbe: neu.farbe, mark: neu.mark });
+    neu.obj.userData.scanId = e.id;
+    neu.obj.visible = e.meta.sichtbar && !e.vorschau;
+    szene.add(neu.obj);
+  }
+  alleFarbenSetzen(); alleMarkierungen(); einstellungenMerken();
+});
 $('#obenAchse').addEventListener('change', (ev) => { S.oben = ev.target.value; blick(achsenRichtung('iso')); alleFarbenSetzen(); einstellungenMerken(); });
 $('#durchWahl').addEventListener('change', (ev) => durchSetzen(ev.target.checked));
 $('#wahlBewegt').addEventListener('change', () => { S.paare = []; S.paarRest = null; hilfenZeichnen(); regZuruecksetzen(false); });
@@ -1387,7 +1695,7 @@ $('#wahlFest').addEventListener('change', () => {
 });
 
 function einstellungenMerken() {
-  localStorage.setItem('v3dscan.ansicht', JSON.stringify({ punktGroesse: S.punktGroesse, farbModus: S.farbModus, schattierung: S.schattierung, oben: S.oben }));
+  localStorage.setItem('v3dscan.ansicht', JSON.stringify({ punktGroesse: S.punktGroesse, farbModus: S.farbModus, schattierung: S.schattierung, oben: S.oben, netzAnsicht: S.netzAnsicht }));
 }
 function einstellungenLaden() {
   try {
@@ -1399,6 +1707,7 @@ function einstellungenLaden() {
   $('#farbModus').value = S.farbModus;
   $('#schattierung').checked = S.schattierung;
   $('#obenAchse').value = S.oben;
+  $('#netzAnsicht').value = S.netzAnsicht;
 }
 
 // ---------------------------------------------------------------------------
@@ -1413,7 +1722,9 @@ async function start() {
   const r = await fetch('/api/zustand');
   const z = await r.json();
   $('#fassung').textContent = 'V3D Scan ' + z.fassung;
-  $('#exportFormat').innerHTML = z.formate.map((f) => `<option value="${f}">${f.toUpperCase()}</option>`).join('');
+  S.formate = z.formate;
+  S.formateNetz = z.formate_netz;
+  exportFormateSetzen();
   await zustandUebernehmen(z);
   if (z.scans.length) blick(achsenRichtung('iso'));
   else gitterSetzen(new THREE.Sphere(new THREE.Vector3(), 100));

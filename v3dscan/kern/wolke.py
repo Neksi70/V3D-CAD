@@ -13,12 +13,15 @@ from .o3d import o3d
 
 EINLESBAR = (".ply", ".pcd", ".xyz", ".xyzn", ".xyzrgb", ".pts", ".asc", ".txt",
              ".csv", ".obj", ".stl", ".off", ".gltf", ".glb")
-AUSGEBBAR = ("ply", "pcd", "xyz", "asc")
+AUSGEBBAR = ("ply", "pcd", "xyz", "asc")            # Punktwolke
+AUSGEBBAR_NETZ = ("stl", "obj", "ply", "off", "glb")  # Netz
 NETZ_ENDUNGEN = (".obj", ".stl", ".off", ".gltf", ".glb")
 
 
 class Scan:
-    def __init__(self, name, xyz, rgb=None, nrm=None):
+    """Punktwolke oder - mit tri (M x 3 Eckpunkt-Indizes) - Dreiecksnetz."""
+
+    def __init__(self, name, xyz, rgb=None, nrm=None, tri=None):
         self.id = 0
         self.name = name
         self.xyz = np.ascontiguousarray(xyz, dtype=np.float32).reshape(-1, 3)
@@ -27,6 +30,8 @@ class Scan:
             np.ascontiguousarray(rgb, dtype=np.uint8).reshape(n, 3)
         self.nrm = None if nrm is None else \
             np.ascontiguousarray(nrm, dtype=np.float32).reshape(n, 3)
+        self.tri = None if tri is None else \
+            np.ascontiguousarray(tri, dtype=np.int32).reshape(-1, 3)
         self.rev = 1              # steigt bei jeder Datenaenderung
         self.sichtbar = True
         self.fest = False         # Referenz beim Ausrichten
@@ -35,24 +40,36 @@ class Scan:
     def __len__(self):
         return len(self.xyz)
 
+    @property
+    def ist_netz(self):
+        return self.tri is not None
+
     def kopie(self):
         s = Scan(self.name, self.xyz.copy(),
                  None if self.rgb is None else self.rgb.copy(),
-                 None if self.nrm is None else self.nrm.copy())
+                 None if self.nrm is None else self.nrm.copy(),
+                 None if self.tri is None else self.tri.copy())
         s.id, s.rev, s.sichtbar, s.fest, s.farbe = \
             self.id, self.rev, self.sichtbar, self.fest, self.farbe
         return s
 
     def bytes(self):
         return self.xyz.nbytes + (0 if self.rgb is None else self.rgb.nbytes) \
-            + (0 if self.nrm is None else self.nrm.nbytes)
+            + (0 if self.nrm is None else self.nrm.nbytes) \
+            + (0 if self.tri is None else self.tri.nbytes)
 
     def geaendert(self):
         self.rev += 1
 
     # --- Datenaenderungen -------------------------------------------------
     def behalte(self, maske):
-        """Nur die Punkte mit maske==True behalten."""
+        """Nur die Punkte mit maske==True behalten. Beim Netz fallen alle
+        Dreiecke weg, die einen geloeschten Eckpunkt benutzen."""
+        maske = np.asarray(maske, bool)
+        if self.tri is not None:
+            neu_index = np.cumsum(maske, dtype=np.int64) - 1
+            bleibt = maske[self.tri].all(axis=1)
+            self.tri = np.ascontiguousarray(neu_index[self.tri[bleibt]].astype(np.int32))
         self.xyz = np.ascontiguousarray(self.xyz[maske])
         if self.rgb is not None:
             self.rgb = np.ascontiguousarray(self.rgb[maske])
@@ -77,6 +94,26 @@ class Scan:
         if farbe and self.rgb is not None:
             p.colors = o3d.utility.Vector3dVector(self.rgb / 255.0)
         return p
+
+    def zu_o3d_netz(self, farbe=True):
+        m = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(self.xyz.astype(np.float64)),
+            o3d.utility.Vector3iVector(self.tri.astype(np.int32)))
+        if farbe and self.rgb is not None:
+            m.vertex_colors = o3d.utility.Vector3dVector(self.rgb / 255.0)
+        if self.nrm is not None:
+            m.vertex_normals = o3d.utility.Vector3dVector(self.nrm.astype(np.float64))
+        return m
+
+    @staticmethod
+    def aus_o3d_netz(name, m, normalen=True):
+        if normalen:
+            m.compute_vertex_normals()
+        xyz = np.asarray(m.vertices)
+        rgb = (np.clip(np.asarray(m.vertex_colors), 0, 1) * 255 + 0.5).astype(np.uint8) \
+            if m.has_vertex_colors() else None
+        nrm = np.asarray(m.vertex_normals) if m.has_vertex_normals() else None
+        return Scan(name, xyz, rgb, nrm, np.asarray(m.triangles))
 
     @staticmethod
     def aus_o3d(name, p):
@@ -173,16 +210,12 @@ def einlesen(pfad, name=None):
         if not netz.has_triangles():
             netz = None
     if netz is not None:
-        # Scanner-Netze sind dicht genug: die Eckpunkte sind die Punktwolke.
+        # STL hat keine gemeinsamen Eckpunkte - erst verschweissen, sonst ist
+        # jedes Dreieck eine eigene Insel.
         netz.remove_duplicated_vertices()
-        if not netz.has_vertex_normals():
-            netz.compute_vertex_normals()
-        xyz = np.asarray(netz.vertices)
-        if len(xyz) == 0:
+        if len(netz.vertices) == 0:
             raise ValueError("Die Datei enthält keine Punkte.")
-        rgb = (np.clip(np.asarray(netz.vertex_colors), 0, 1) * 255 + 0.5) \
-            .astype(np.uint8) if netz.has_vertex_colors() else None
-        return Scan(name, xyz, rgb, np.asarray(netz.vertex_normals))
+        return Scan.aus_o3d_netz(name, netz, normalen=True)
 
     p = o3d.io.read_point_cloud(pfad)
     if not p.has_points():
@@ -193,6 +226,15 @@ def einlesen(pfad, name=None):
 # --- Ausgeben -------------------------------------------------------------
 def ausgeben(scan, pfad, fmt):
     fmt = fmt.lower()
+    if scan.ist_netz and fmt in AUSGEBBAR_NETZ:
+        m = scan.zu_o3d_netz()
+        if fmt == "stl":
+            m.compute_triangle_normals()
+        ok = o3d.io.write_triangle_mesh(pfad, m, write_ascii=False,
+                                        write_vertex_colors=scan.rgb is not None)
+        if not ok:
+            raise IOError("Schreiben fehlgeschlagen: %s" % pfad)
+        return
     if fmt not in AUSGEBBAR:
         raise ValueError("Unbekanntes Ausgabeformat %s" % fmt)
     if fmt in ("ply", "pcd"):
