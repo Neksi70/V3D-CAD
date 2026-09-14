@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>V3D Scan</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="favicon.png">
+<script type="importmap">{"imports": {"three": "./lib/three.module.min.js"}}</script>
+</head>
+<body>
+<header id="kopf">
+  <div class="marke">V3D <b>Scan</b></div>
+  <button data-aktion="neu" title="Neues Projekt">Neu</button>
+  <button data-aktion="importieren" title="Scans oder Projekt öffnen (Strg+O)">Öffnen / Importieren…</button>
+  <button data-aktion="speichern" title="Projekt speichern (Strg+S)">Projekt speichern</button>
+  <span class="trenner"></span>
+  <label class="klein">Export
+    <select id="exportFormat"></select>
+  </label>
+  <button data-aktion="exportieren" title="Aktiven Scan exportieren">Exportieren</button>
+  <span class="trenner"></span>
+  <button data-aktion="rueckgaengig" id="knopfUndo" title="Rückgängig (Strg+Z)">↶</button>
+  <button data-aktion="wiederholen" id="knopfRedo" title="Wiederholen (Strg+Y)">↷</button>
+  <span class="platz"></span>
+  <button data-aktion="tasten" title="Tastenkürzel anpassen">⌨ Tasten</button>
+  <input type="file" id="dateiWahl" multiple hidden
+         accept=".ply,.pcd,.xyz,.xyzn,.xyzrgb,.pts,.asc,.txt,.csv,.obj,.stl,.off,.gltf,.glb,.v3dscan">
+</header>
+
+<main>
+  <aside id="links">
+    <h2>Scans</h2>
+    <div id="scanListe"></div>
+    <div id="leerHinweis">
+      Dateien hierher ziehen oder <a href="#" data-aktion="importieren">öffnen</a>.<br>
+      <small>PLY, OBJ, STL, ASC/XYZ, PCD – z.&nbsp;B. Exporte aus Revo Scan oder CrealityScan.</small>
+    </div>
+    <div id="eigenschaften" hidden>
+      <h2>Eigenschaften</h2>
+      <table id="eigenschaftenTabelle"></table>
+    </div>
+  </aside>
+
+  <section id="ansicht">
+    <canvas id="leinwand"></canvas>
+    <div id="werkzeugleiste">
+      <button data-werkzeug="orbit" title="Drehen (V)">✥</button>
+      <button data-werkzeug="rechteck" title="Rechteck-Auswahl (M)">▭</button>
+      <button data-werkzeug="polygon" title="Polygon-Auswahl (P) – Ecken klicken, Doppelklick/Enter schließt">⬠</button>
+      <button data-werkzeug="lasso" title="Lasso-Auswahl (L)">◌</button>
+      <button data-werkzeug="verbunden" title="Zusammenhängendes wählen (B)">⛓</button>
+      <span class="trenner"></span>
+      <button id="knopfDurch" data-aktion="durch" title="Durch das Modell wählen (T)">⧉</button>
+      <span class="trenner"></span>
+      <button data-aktion="alles" title="Alles wählen (Strg+A)">Alle</button>
+      <button data-aktion="invertieren" title="Auswahl umkehren (Strg+I)">⇄</button>
+      <button data-aktion="nichts" title="Auswahl aufheben (Esc)">✕</button>
+      <button data-aktion="loeschen" class="gefahr" title="Gewählte Punkte löschen (Entf)">🗑</button>
+    </div>
+    <svg id="zeichnung"></svg>
+    <svg id="achsen" viewBox="-40 -40 80 80"></svg>
+    <div id="legende" hidden></div>
+    <div id="beschaeftigt" hidden><div class="rad"></div><span id="beschaeftigtText">Rechne…</span></div>
+    <div id="ablage" hidden>Dateien loslassen zum Importieren</div>
+  </section>
+
+  <aside id="rechts">
+    <nav id="reiter">
+      <button data-reiter="auswahl" class="an">Auswahl</button>
+      <button data-reiter="bereinigen">Bereinigen</button>
+      <button data-reiter="ausrichten">Ausrichten</button>
+      <button data-reiter="ansichtR">Ansicht</button>
+    </nav>
+
+    <!-- AUSWAHL ------------------------------------------------------- -->
+    <div class="seite an" id="s-auswahl">
+      <section>
+        <h3>Werkzeuge</h3>
+        <p class="hilfe">Ziehen = zur Auswahl hinzufügen, <kbd>Strg</kbd> + Ziehen = abwählen.
+          Rechte Maustaste dreht immer, mittlere verschiebt, Rad zoomt.</p>
+        <div class="reihe knoepfe">
+          <button data-werkzeug="rechteck">▭ Rechteck</button>
+          <button data-werkzeug="polygon">⬠ Polygon</button>
+          <button data-werkzeug="lasso">◌ Lasso</button>
+          <button data-werkzeug="verbunden">⛓ Verbunden</button>
+        </div>
+        <label class="reihe"><input type="checkbox" id="durchWahl"> Durch das Modell wählen (auch verdeckte Punkte)</label>
+        <label class="reihe">Abstand „Verbunden“ <input type="number" id="verbundenAbstand" value="1" step="0.1" min="0.01"> mm</label>
+      </section>
+      <section>
+        <h3>Gewählte Punkte</h3>
+        <div id="auswahlInfo" class="info">Nichts gewählt.</div>
+        <div class="reihe knoepfe">
+          <button data-aktion="loeschen" class="gefahr">Löschen</button>
+          <button data-aktion="abtrennen">Als neuen Scan abtrennen</button>
+        </div>
+        <div class="reihe knoepfe">
+          <button data-aktion="alles">Alle</button>
+          <button data-aktion="invertieren">Umkehren</button>
+          <button data-aktion="nichts">Keine</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- BEREINIGEN ---------------------------------------------------- -->
+    <div class="seite" id="s-bereinigen">
+      <section>
+        <div class="reihe">Wirkt auf:
+          <label><input type="radio" name="ziel" value="aktiv" checked> aktiven Scan</label>
+          <label><input type="radio" name="ziel" value="sichtbar"> alle sichtbaren</label>
+        </div>
+        <div class="reihe"><button data-aktion="punktabstand">Punktabstand messen</button>
+          <span id="abstandInfo" class="info"></span></div>
+      </section>
+
+      <section data-werkzeug-block="tisch">
+        <h3>Tisch / Boden entfernen</h3>
+        <p class="hilfe">Sucht die größte Ebene (meist der Tisch) und löscht sie – auf Wunsch samt allem darunter.</p>
+        <label class="reihe">Toleranz <input type="number" data-p="toleranz" value="0.8" step="0.1" min="0.01"> mm</label>
+        <label class="reihe"><input type="checkbox" data-p="darunter" checked> auch alles unter der Ebene</label>
+        <div class="reihe knoepfe">
+          <button data-vorschau>Vorschau</button>
+          <button data-naechste title="Nicht der Tisch? Nächstgrößere Ebene nehmen">Andere Ebene</button>
+          <button data-anwenden class="haupt">Anwenden</button>
+          <button data-zuruecksetzen>Zurücksetzen</button>
+        </div>
+      </section>
+
+      <section data-werkzeug-block="ebene3">
+        <h3>Schnittebene aus 3 Punkten</h3>
+        <p class="hilfe">Drei Punkte anklicken – alles auf der markierten Seite fällt weg.</p>
+        <div class="reihe knoepfe">
+          <button data-aktion="ebenePunkte" id="knopfEbenePunkte">3 Punkte setzen</button>
+          <button data-aktion="ebeneUmdrehen">Seite umdrehen</button>
+        </div>
+        <label class="reihe">Versatz <input type="range" data-p="versatz" min="-20" max="20" step="0.1" value="0"><output>0</output> mm</label>
+        <div class="reihe knoepfe">
+          <button data-vorschau>Vorschau</button>
+          <button data-anwenden class="haupt">Anwenden</button>
+          <button data-zuruecksetzen>Zurücksetzen</button>
+        </div>
+      </section>
+
+      <section data-werkzeug-block="statistisch">
+        <h3>Ausreißer (statistisch)</h3>
+        <p class="hilfe">Punkte, deren Nachbarn im Schnitt weiter weg liegen als üblich.</p>
+        <label class="reihe">Nachbarn <input type="number" data-p="nachbarn" value="20" min="3" max="200"></label>
+        <label class="reihe">Strenge σ <input type="number" data-p="sigma" value="2.0" step="0.1" min="0.1"> <small>(kleiner = mehr weg)</small></label>
+        <div class="reihe knoepfe">
+          <button data-vorschau>Vorschau</button>
+          <button data-anwenden class="haupt">Anwenden</button>
+          <button data-zuruecksetzen>Zurücksetzen</button>
+        </div>
+      </section>
+
+      <section data-werkzeug-block="inseln">
+        <h3>Kleine Inseln entfernen</h3>
+        <p class="hilfe">Abgetrennte Bereiche (Hand, Staub, Halter), die kleiner als der Anteil sind.</p>
+        <label class="reihe">Lücke ab <input type="number" data-p="abstand" value="1.0" step="0.1" min="0.01"> mm</label>
+        <label class="reihe">kleiner als <input type="number" data-p="anteil" value="5" step="0.5" min="0.01" max="100"> % der Punkte</label>
+        <div class="reihe knoepfe">
+          <button data-vorschau>Vorschau</button>
+          <button data-anwenden class="haupt">Anwenden</button>
+          <button data-zuruecksetzen>Zurücksetzen</button>
+        </div>
+      </section>
+
+      <section data-werkzeug-block="radius">
+        <h3>Ausreißer (Radius)</h3>
+        <label class="reihe">Radius <input type="number" data-p="radius" value="1.0" step="0.1" min="0.01"> mm</label>
+        <label class="reihe">mind. <input type="number" data-p="min_punkte" value="6" min="1"> Nachbarn</label>
+        <div class="reihe knoepfe">
+          <button data-vorschau>Vorschau</button>
+          <button data-anwenden class="haupt">Anwenden</button>
+          <button data-zuruecksetzen>Zurücksetzen</button>
+        </div>
+      </section>
+
+      <section>
+        <h3>Ausdünnen</h3>
+        <p class="hilfe">Höchstens ein Punkt je Würfel der Kantenlänge.</p>
+        <label class="reihe">Würfel <input type="number" id="duennVoxel" value="0.5" step="0.05" min="0.01"> mm</label>
+        <div class="reihe knoepfe">
+          <button data-aktion="duennVorschau">Vorschau</button>
+          <button data-aktion="duennAnwenden" class="haupt">Anwenden</button>
+        </div>
+        <div id="duennInfo" class="info"></div>
+      </section>
+
+      <section>
+        <h3>Normalen berechnen</h3>
+        <label class="reihe">Radius <input type="number" id="normRadius" value="1.5" step="0.1" min="0.01"> mm</label>
+        <label class="reihe">Ausrichtung
+          <select id="normAusrichtung">
+            <option value="aussen">nach außen</option>
+            <option value="konsistent">konsistent (langsam, bis 400 000 Punkte)</option>
+            <option value="innen">nach innen</option>
+          </select></label>
+        <div class="reihe knoepfe"><button data-aktion="normalen" class="haupt">Berechnen</button></div>
+      </section>
+    </div>
+
+    <!-- AUSRICHTEN ---------------------------------------------------- -->
+    <div class="seite" id="s-ausrichten">
+      <section>
+        <label class="reihe">Fest (Referenz) <select id="wahlFest"></select></label>
+        <label class="reihe">Bewegt <select id="wahlBewegt"></select></label>
+        <div class="reihe"><button data-aktion="vorschlagWerte">Werte vorschlagen</button>
+          <span class="info" id="vorschlagInfo"></span></div>
+        <label class="reihe">Auflösung <input type="number" id="regVoxel" value="3" step="0.1" min="0.05"> mm</label>
+        <label class="reihe">Fangabstand <input type="number" id="regFang" value="2" step="0.1" min="0.01"> mm</label>
+      </section>
+
+      <section>
+        <h3>1 · Automatisch (Merkmale + ICP)</h3>
+        <p class="hilfe">Braucht etwa 30 % gemeinsame Fläche. Vorher Tisch und Inseln entfernen.</p>
+        <div class="reihe knoepfe">
+          <button data-aktion="regAuto">Vorschau</button>
+          <button data-aktion="regAnwenden" class="haupt">Anwenden</button>
+          <button data-aktion="regZurueck">Zurücksetzen</button>
+        </div>
+      </section>
+
+      <section>
+        <h3>2 · Manuell mit Punktpaaren</h3>
+        <p class="hilfe">Abwechselnd klicken: erst Stelle auf dem <b>festen</b>, dann dieselbe Stelle auf dem <b>bewegten</b> Scan. Mindestens 3 Paare, gut verteilt.</p>
+        <div class="reihe knoepfe">
+          <button data-aktion="paareSetzen" id="knopfPaare">Paare setzen</button>
+          <button data-aktion="paarWeg">Letzten Punkt weg</button>
+          <button data-aktion="paareLeeren">Alle weg</button>
+        </div>
+        <ol id="paarListe" class="info"></ol>
+        <label class="reihe"><input type="checkbox" id="paareIcp" checked> danach fein nachziehen (ICP)</label>
+        <div class="reihe knoepfe">
+          <button data-aktion="paareRechnen">Berechnen</button>
+          <button data-aktion="regAnwenden" class="haupt">Anwenden</button>
+          <button data-aktion="regZurueck">Zurücksetzen</button>
+        </div>
+      </section>
+
+      <section>
+        <h3>3 · Feinregistrierung (ICP)</h3>
+        <p class="hilfe">Zieht eine schon ungefähr passende Lage nach (3 Stufen, robust gegen Punkte ohne Gegenstück).</p>
+        <label class="reihe">Methode
+          <select id="icpMethode"><option value="ebene">Punkt zu Ebene</option><option value="punkt">Punkt zu Punkt</option></select></label>
+        <label class="reihe">Iterationen je Stufe <input type="number" id="icpIter" value="60" min="5" max="500"></label>
+        <div class="reihe knoepfe">
+          <button data-aktion="regIcp">Vorschau</button>
+          <button data-aktion="regAnwenden" class="haupt">Anwenden</button>
+          <button data-aktion="regZurueck">Zurücksetzen</button>
+        </div>
+      </section>
+
+      <div id="regErgebnis" class="ergebnis" hidden></div>
+
+      <section>
+        <h3>Abweichungskarte</h3>
+        <p class="hilfe">Färbt den bewegten Scan nach Abstand zum festen (in der aktuellen Vorschau-Lage).</p>
+        <label class="reihe">Skala bis <input type="number" id="abwMax" value="1" step="0.1" min="0.01"> mm</label>
+        <div class="reihe knoepfe">
+          <button data-aktion="abweichung">Anzeigen</button>
+          <button data-aktion="abweichungAus">Aus</button>
+        </div>
+      </section>
+
+      <section>
+        <h3>4 · Alle sichtbaren gemeinsam</h3>
+        <p class="hilfe">Verteilt den Restfehler über alle Scans (Posen-Graph). Scans müssen schon grob liegen; der feste bleibt stehen.</p>
+        <div class="reihe knoepfe">
+          <button data-aktion="regGlobal">Vorschau</button>
+          <button data-aktion="regAnwenden" class="haupt">Anwenden</button>
+          <button data-aktion="regZurueck">Zurücksetzen</button>
+        </div>
+      </section>
+
+      <section>
+        <h3>5 · Zusammenführen</h3>
+        <p class="hilfe">Alle sichtbaren Scans werden ein Scan; die Originale werden ausgeblendet.</p>
+        <label class="reihe">Doppelschichten ausdünnen <input type="number" id="mergeVoxel" value="0" step="0.05" min="0"> mm <small>(0 = aus)</small></label>
+        <div class="reihe knoepfe"><button data-aktion="zusammenfuehren" class="haupt">Zusammenführen</button></div>
+      </section>
+    </div>
+
+    <!-- ANSICHT ------------------------------------------------------- -->
+    <div class="seite" id="s-ansichtR">
+      <section>
+        <h3>Darstellung</h3>
+        <label class="reihe">Färbung
+          <select id="farbModus">
+            <option value="rgb">Scanfarbe (RGB)</option>
+            <option value="scan">je Scan eine Farbe</option>
+            <option value="hoehe">Höhe</option>
+            <option value="normalen">Normalen</option>
+          </select></label>
+        <label class="reihe">Punktgröße <input type="range" id="punktGroesse" min="1" max="10" step="0.5" value="2"><output>2</output> px</label>
+        <label class="reihe"><input type="checkbox" id="schattierung" checked> Schattierung (mit Normalen)</label>
+        <label class="reihe">Oben ist
+          <select id="obenAchse"><option value="y">Y</option><option value="z">Z</option></select></label>
+      </section>
+      <section>
+        <h3>Blickrichtung</h3>
+        <div class="reihe knoepfe">
+          <button data-aktion="blickVorne">Vorne (1)</button>
+          <button data-aktion="blickOben">Oben (2)</button>
+          <button data-aktion="blickRechts">Rechts (3)</button>
+          <button data-aktion="blickIso">Schräg (4)</button>
+          <button data-aktion="einpassen">Einpassen (F)</button>
+        </div>
+      </section>
+    </div>
+  </aside>
+</main>
+
+<footer id="fuss">
+  <span id="statusText">Bereit.</span>
+  <span class="platz"></span>
+  <span id="punkteInfo"></span>
+  <span id="fassung"></span>
+</footer>
+
+<dialog id="tastenDialog">
+  <h3>Tastenkürzel</h3>
+  <p class="hilfe">Auf eine Taste klicken und die neue Kombination drücken. <kbd>Esc</kbd> bricht ab.</p>
+  <table id="tastenTabelle"></table>
+  <div class="reihe knoepfe">
+    <button data-aktion="tastenStandard">Standard wiederherstellen</button>
+    <span class="platz"></span>
+    <button data-aktion="tastenZu" class="haupt">Fertig</button>
+  </div>
+</dialog>
+
+<div id="meldungen"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
