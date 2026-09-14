@@ -23282,7 +23282,18 @@ async function _clearOutputFolder() {
  * „Safari kann die Seite blob:… nicht öffnen (WebKitBlobResource-Fehler 1)".
  * Und der Blob muss lange genug leben — 4 Sekunden reichten nicht.
  */
+// Safari (Mac/iPad) laedt blob:-Adressen je nach Kontext nicht herunter, sondern
+// navigiert hin und zeigt „Safari kann die Seite nicht öffnen" (angeheftete Tabs,
+// Web-App im Dock, WebKitBlobResource-Fehler; Josy 14.9., Mac). Dort geht die Datei
+// deshalb kurz zum Server und kommt als echte URL mit Content-Disposition:
+// attachment zurück — das versteht jeder Browser, ganz ohne blob:. Schlägt der
+// Server-Weg fehl, bleibt der direkte Blob-Download als Rückfall.
+const _isSafari = /apple/i.test(navigator.vendor || '') && !/CriOS|FxiOS|Chrome|Chromium|Edg\//.test(navigator.userAgent);
 function _downloadBlob(blob, name) {
+  if (_isSafari) { _downloadViaServer(blob, name).catch(() => _downloadBlobDirekt(blob, name)); return; }
+  _downloadBlobDirekt(blob, name);
+}
+function _downloadBlobDirekt(blob, name) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = name; a.rel = 'noopener';
@@ -23290,6 +23301,20 @@ function _downloadBlob(blob, name) {
   document.body.appendChild(a);
   a.click();
   setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 60000);
+}
+async function _downloadViaServer(blob, name) {
+  const res = await fetch('/api/export-file', { method: 'POST', body: blob,
+    headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(name) } });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const { url } = await res.json();
+  if (!url) throw new Error('keine URL');
+  // Unsichtbarer Rahmen statt location.href: ein Fehler bleibt im Rahmen, die App
+  // bleibt stehen. Pro Datei ein eigener Rahmen — ein zweiter src-Wechsel würde
+  // den laufenden Download abbrechen.
+  const fr = document.createElement('iframe');
+  fr.style.display = 'none'; fr.src = url;
+  document.body.appendChild(fr);
+  setTimeout(() => fr.remove(), 120000);
 }
 
 async function _saveExportMany(files) {
@@ -44101,8 +44126,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.19';
+const VOLME3D_VERSION = '1.18.20';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.20', date:'2026-09-14', changes:[
+    ['\u{1F34E}','<b>Herunterladen in Safari (Mac, iPad) repariert.</b> Safari lud Exporte je nach Situation nicht herunter, sondern sprang auf eine Fehlerseite („Safari kann die Seite nicht öffnen“). Der Browser kann die internen blob-Adressen, über die Downloads sonst laufen, nicht als Seite öffnen. In Safari geht die Datei jetzt kurz über den Server und kommt als normaler Download zurück, mit richtigem Dateinamen. Alle anderen Browser laden wie bisher direkt.'],
+  ]},
   { version:'1.18.19', date:'2026-09-14', changes:[
     ['\u{1F344}','<b>Pilz und K\u00fcrbis bekommen die Leucht-Extras der Eichel: Lichtpunkte und Schriftzug.</b> Beide Generatoren haben jetzt die Abschnitte <b>Lichtpunkte</b> (Anzahl und Loch-\u00d8) und <b>Schriftzug</b> (eine oder zwei Zeilen, jede mit eigener Schrift, <b>erhaben</b> oder <b>vertieft</b>, H\u00f6he, Lage und Tiefe einstellbar). <b>Beim Pilz</b> sitzt beides auf dem Stiel. Die Lichtpunkte gibt es nur im hohlen Stiel \u2014 zusammen mit dem <b>LED-Einsatz</b> leuchten sie. Gewinde, Schulter und Einsatz-Tasche bleiben dabei unber\u00fchrt. Au\u00dferdem kann der Hut jetzt die <b>Schuppen</b>-Haut der Eichel tragen. <b>Beim K\u00fcrbis</b> gibt es Lichtpunkte bei \u201eHohl + Deckel\u201c und \u201eSchale\u201c. Den Schriftzug kannst du <b>vorne oder hinten</b> setzen (z. B. Gesicht vorne, \u201eHERBST Licht\u201c hinten). Beides bleibt immer unter der Deckelfuge, der Deckel wird also nicht zerschnitten, und die Lichtpunkte halten Abstand zum Gesicht. Alles ist standardm\u00e4\u00dfig aus \u2014 bestehende Pilze und K\u00fcrbisse sehen genauso aus wie vorher.'],
   ]},

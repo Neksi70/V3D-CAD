@@ -136,6 +136,29 @@ def _ki_run(job, prompt, img_path):
 
 
 TMP_STL = '/tmp/volme3d-export.stl'
+# Export-Ablage fuer Safari: Der Browser laedt blob:-Adressen je nach Kontext nicht
+# herunter, sondern navigiert hin und zeigt "Safari kann die Seite nicht oeffnen"
+# (Josy, Mac, 14.9.2026). Deshalb legt der Client die Datei kurz hier ab und laedt
+# sie ueber eine echte URL mit Content-Disposition: attachment. Token = Dateiname,
+# Aufraeumen nach EXPORT_TTL Sekunden. Nur mit Sitzung.
+EXPORT_DIR = '/tmp/v3d-exports'
+EXPORT_TTL = 900
+EXPORT_MAX = 300 * 1024 * 1024
+EXPORT_TOKEN_RE = re.compile(r'^[0-9a-f]{32}$')
+EXPORT_TYPES = {'stl': 'model/stl', '3mf': 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml',
+                'obj': 'text/plain; charset=utf-8', 'svg': 'image/svg+xml', 'json': 'application/json',
+                'v3d': 'application/octet-stream', 'html': 'text/html; charset=utf-8', 'zip': 'application/zip'}
+
+
+def _export_cleanup():
+    try:
+        now = time.time()
+        for fn in os.listdir(EXPORT_DIR):
+            fp = os.path.join(EXPORT_DIR, fn)
+            if now - os.path.getmtime(fp) > EXPORT_TTL:
+                os.unlink(fp)
+    except OSError:
+        pass
 WASM_GZ = 'volme3d-occt.wasm.gz'
 # Gehaertete Auslieferungs-Version (von build.js erzeugt). Liegt sie vor,
 # wird sie statt der Arbeitskopie volme3d.html ausgeliefert.
@@ -425,6 +448,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._ki_generate()
             return
+        if self.path == '/api/export-file':
+            if not self._need_session():
+                return
+            self._export_store()
+            return
         if self.path != '/volme3d-export.stl':
             self.send_error(404)
             return
@@ -439,6 +467,45 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'text/plain')
         self.end_headers()
         self.wfile.write(b'ok')
+
+    def _export_store(self):
+        """POST /api/export-file: rohe Bytes + X-Filename -> {url}."""
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        if length <= 0 or length > EXPORT_MAX:
+            self._json(413, {'error': 'Datei fehlt oder ist zu gross'})
+            return
+        name = urllib.parse.unquote(self.headers.get('X-Filename', '') or '')
+        name = os.path.basename(name).strip()[:120] or 'export.bin'
+        os.makedirs(EXPORT_DIR, exist_ok=True)
+        _export_cleanup()
+        token = uuid.uuid4().hex
+        data = self.rfile.read(length)
+        with open(os.path.join(EXPORT_DIR, token + '.bin'), 'wb') as f:
+            f.write(data)
+        with open(os.path.join(EXPORT_DIR, token + '.name'), 'w', encoding='utf-8') as f:
+            f.write(name)
+        self._json(200, {'url': '/api/export-file/' + token})
+
+    def _export_send(self, token):
+        """GET /api/export-file/<token>: als Anhang ausliefern (Safari-Download)."""
+        if not EXPORT_TOKEN_RE.match(token):
+            self.send_error(404)
+            return
+        fp = os.path.join(EXPORT_DIR, token + '.bin')
+        if not os.path.isfile(fp):
+            self.send_error(404, 'Export abgelaufen')
+            return
+        try:
+            with open(os.path.join(EXPORT_DIR, token + '.name'), encoding='utf-8') as f:
+                name = f.read().strip() or 'export.bin'
+        except OSError:
+            name = 'export.bin'
+        ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+        ctype = EXPORT_TYPES.get(ext, 'application/octet-stream')
+        ascii_name = re.sub(r'[^A-Za-z0-9._-]', '_', name) or 'export.bin'
+        disp = ('attachment; filename="%s"; filename*=UTF-8\'\'%s'
+                % (ascii_name, urllib.parse.quote(name)))
+        self._send_file(fp, ctype, disp)
 
     def _send_file(self, fname, ctype, disposition=None):
         if not os.path.isfile(fname):
@@ -561,6 +628,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith('/videos/'):
             self._send_video(path)
+            return
+
+        if path.startswith('/api/export-file/'):
+            if not self._need_session():
+                return
+            self._export_send(path[len('/api/export-file/'):])
             return
 
         if path == '/volme3d-export.stl':
