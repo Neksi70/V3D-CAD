@@ -119,9 +119,40 @@ def erzeugen(ziel, punkte=250000, seed=42):
     netz_datei = os.path.join(ziel, "objekt_netz.stl")
     o3d.io.write_triangle_mesh(netz_datei, netz)
     scan_netz_erzeugen(ziel, rng)
+    soll["bauteil.ply"] = bauteil_erzeugen(ziel, rng)
     with open(os.path.join(ziel, "soll.json"), "w") as f:
         json.dump(soll, f, indent=1)
     return soll
+
+
+def bauteil_erzeugen(ziel, rng):
+    """Technisches Teil wie vom MIRACO: Platte 60 x 40 x 15 mm mit Bohrung
+    Ø 10,03 mm bei X 35 / Y 20 (Z nach oben, Ursprung Plattenecke unten),
+    als verrauschte Punktwolke schraeg im Raum. Soll-Matrix bringt den Scan
+    zurueck ins Bauteil-System."""
+    n = 120000
+    teile = []
+    # Deckel und Boden ohne Bohrung, 4 Seiten, Bohrungswand
+    for z in (0.0, 15.0):
+        p = np.column_stack([rng.uniform(0, 60, n // 4), rng.uniform(0, 40, n // 4), np.full(n // 4, z)])
+        p = p[np.hypot(p[:, 0] - 35, p[:, 1] - 20) > 5.015]
+        teile.append((p, np.tile([0, 0, 1 if z else -1], (len(p), 1))))
+    for achse, wert, normale in ((0, 0, [-1, 0, 0]), (0, 60, [1, 0, 0]), (1, 0, [0, -1, 0]), (1, 40, [0, 1, 0])):
+        m = n // 16
+        p = np.column_stack([rng.uniform(0, 60, m), rng.uniform(0, 40, m), rng.uniform(0, 15, m)])
+        p[:, achse] = wert
+        teile.append((p, np.tile(normale, (m, 1))))
+    phi = rng.uniform(0, 2 * np.pi, n // 10)
+    wand = np.column_stack([35 + 5.015 * np.cos(phi), 20 + 5.015 * np.sin(phi), rng.uniform(0, 15, len(phi))])
+    teile.append((wand, np.column_stack([-np.cos(phi), -np.sin(phi), np.zeros(len(phi))])))
+    xyz = np.vstack([t[0] for t in teile]) + rng.normal(0, 0.02, (sum(len(t[0]) for t in teile), 3))
+    nrm = np.vstack([t[1] for t in teile])
+    T = zufalls_matrix(rng, 60, 80)
+    xyz = xyz @ T[:3, :3].T + T[:3, 3]
+    nrm = nrm @ T[:3, :3].T
+    ausgeben(Scan("bauteil", xyz, None, nrm), os.path.join(ziel, "bauteil.ply"), "ply")
+    print("bauteil.ply: %d Punkte" % len(xyz))
+    return {"matrix": np.linalg.inv(T).tolist(), "punkte": len(xyz)}
 
 
 def scan_netz_erzeugen(ziel, rng):

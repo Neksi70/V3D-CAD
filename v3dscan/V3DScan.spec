@@ -24,7 +24,7 @@ a = Analysis(
     binaries=collect_dynamic_libs("open3d"),
     datas=[("web", "web")],
     hiddenimports=["server", "kern", "kern.o3d", "kern.wolke", "kern.werkzeuge",
-                   "kern.registrierung", "kern.projekt", "kern.netz", "open3d.visualization.draw_plotly",
+                   "kern.registrierung", "kern.projekt", "kern.netz", "kern.formen", "kern.koordinaten", "open3d.visualization.draw_plotly",
                    "open3d.visualization.to_mitsuba"] + open3d_module
                   + [m for m in collect_submodules("numpy") if ".tests" not in m],
     hookspath=[NUMPY_HOOKS],

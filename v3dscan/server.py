@@ -24,12 +24,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
-FASSUNG = "0.2.0"
+FASSUNG = "0.3.0"
 HIER = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, "frozen", False):
     HIER = getattr(sys, "_MEIPASS", HIER)
 WEB = os.path.join(HIER, "web")
 
+from kern import formen as fo  # noqa: E402
+from kern import koordinaten as ko  # noqa: E402
 from kern import netz as nz  # noqa: E402
 from kern import registrierung as rg  # noqa: E402
 from kern import werkzeuge as wz  # noqa: E402
@@ -305,12 +307,94 @@ def befehl(name, d):
 
     if name.startswith("ausrichten/"):
         return ausrichten(name.split("/", 1)[1], d)
+    if name.startswith("koord/"):
+        return koordinaten(name.split("/", 1)[1], d)
 
     if name == "zusammenfuehren":
         neu = p.zusammenfuehren([int(i) for i in d.get("ids") or []],
                                 zahl(d, "voxel", 0))
         return {"neu": neu.id, "anzahl": len(neu)}
     raise Fehler("Unbekannter Befehl %s" % name)
+
+
+def _gewaehlte_punkte(d):
+    """Punkte (und Normalen, falls alle Teile welche haben) der Auswahl."""
+    xyz, nrm, alle_nrm = [], [], True
+    for sid, m in masken_lesen(d).items():
+        s = projekt.scan(sid)
+        xyz.append(s.xyz[m])
+        if s.nrm is None:
+            alle_nrm = False
+        else:
+            nrm.append(s.nrm[m])
+    if not xyz or sum(len(x) for x in xyz) == 0:
+        raise Fehler("Erst Punkte auswählen (z. B. mit dem Lasso), dann die Form einpassen.")
+    return np.concatenate(xyz).astype(np.float64), \
+        (np.concatenate(nrm).astype(np.float64) if alle_nrm and nrm else None)
+
+
+def _alle_punkte(ids):
+    teile = [projekt.scan(i).xyz for i in ids]
+    if not teile:
+        raise Fehler("Kein sichtbarer Scan.")
+    return np.concatenate(teile)
+
+
+def koordinaten(was, d):
+    ids = [int(i) for i in d.get("ids") or []]
+    oben = d.get("oben", "z")
+    if was == "form":
+        art = d.get("art")
+        punkte = d.get("punkte")
+        if art == "ebene3":
+            if not punkte or len(punkte) != 3:
+                raise Fehler("Bitte 3 Punkte setzen.")
+            form = fo.ebene(np.asarray(punkte, float))
+        elif art == "linie2":
+            if not punkte or len(punkte) != 2:
+                raise Fehler("Bitte 2 Punkte setzen.")
+            form = {"art": "linie", "von": np.asarray(punkte[0], float),
+                    "bis": np.asarray(punkte[1], float), "rms": 0.0}
+        elif art == "punkt":
+            if not punkte:
+                raise Fehler("Bitte einen Punkt setzen.")
+            form = {"art": "punkt", "punkt": np.asarray(punkte[0], float), "rms": 0.0}
+        elif art == "schwerpunkt":
+            xyz, _ = _gewaehlte_punkte(d)
+            form = {"art": "punkt", "punkt": xyz.mean(0), "rms": 0.0}
+        else:
+            xyz, nrm = _gewaehlte_punkte(d)
+            form = ko.form_aus_punkten(art, xyz, nrm)
+            form["punkte"] = int(len(xyz))
+            if art == "ebene" and ids:
+                # Normale vom Bauteil weg: Deckflaeche -> "oben", Seitenflaeche -> "aussen"
+                schwer = _alle_punkte(ids).mean(0)
+                if (form["punkt"] - schwer) @ form["normale"] < 0:
+                    form["normale"] = -form["normale"]
+        return {"form": fo.als_json(form)}
+    if was == "auto":
+        xyz = _alle_punkte(ids)
+        if d.get("art") == "ebene":
+            from kern.wolke import Scan
+            probe = Scan("probe", xyz[np.random.default_rng(3).choice(len(xyz), min(len(xyz), 300000), replace=False)])
+            n, dd, auf = wz.tisch_finden(probe, zahl(d, "toleranz", 0.5))
+            eb = fo.ebene(probe.xyz[auf])
+            T = ko.auf_ebene(xyz, eb, d.get("ursprung", "unten"), oben)
+        else:
+            T = ko.hauptachsen(xyz, d.get("ursprung", "mitte"), oben)
+        return {"matrix": T.tolist()}
+    if was == "elemente":
+        prim, sek = d.get("primaer"), d.get("sekundaer")
+        if not prim or not sek:
+            raise Fehler("Primär- und Sekundärelement festlegen.")
+        schwer = _alle_punkte(ids).mean(0)
+        T = ko.aus_elementen(prim, sek, d.get("ursprung"), schwer,
+                             d.get("ziel1", oben), d.get("ziel2", "x"))
+        return {"matrix": T.tolist()}
+    if was == "werte":
+        T = ko.aus_werten(d.get("verschieben") or (0, 0, 0), d.get("drehen") or (0, 0, 0))
+        return {"matrix": T.tolist()}
+    raise Fehler("Unbekannter Koordinaten-Befehl %s" % was)
 
 
 def ausrichten(was, d):

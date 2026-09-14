@@ -33,6 +33,8 @@ const S = {
   pickModus: null,         // 'ebene3' | 'paare' | null
   paare: [],               // [{fest:[x,y,z], bewegt:[x,y,z]|null}]
   regMatrizen: null,       // {id: 4x4} Vorschau-Ausrichtung
+  koord: { primaer: null, sekundaer: null, ursprung: null },
+  koordPick: null,         // {slot, art, anzahl, punkte:[]}
   abweichung: null,        // {id, werte:Float32Array, max}
   beschaeftigt: false,
 };
@@ -637,6 +639,8 @@ function gitterSetzen(k) {
   const o = obenVektor();
   if (!unten.isEmpty()) gitter.position.copy(k.center).sub(o.clone().multiplyScalar(k.center.dot(o) - unten.min.dot(o)));
   szene.add(gitter);
+  if (!S.weltAchsen) { S.weltAchsen = new THREE.AxesHelper(1); S.weltAchsen.renderOrder = 4; szene.add(S.weltAchsen); }
+  S.weltAchsen.scale.setScalar(Math.max(k.radius * 0.3, 1));
 }
 
 function groesseAnpassen() {
@@ -685,6 +689,7 @@ function tiefenbild() {
   tiefeNetzMaterial.uniforms.fern.value = kamera.far;
   const altHilfe = hilfsGruppe.visible, altGitter = gitter ? gitter.visible : false;
   hilfsGruppe.visible = false; if (gitter) gitter.visible = false;
+  if (S.weltAchsen) S.weltAchsen.visible = false;
   const getauscht = [];
   for (const e of S.scans.values()) { getauscht.push([e.obj, e.obj.material]); e.obj.material = e.obj.userData.tiefe; }
   const altFarbe = renderer.getClearColor(new THREE.Color()), altAlpha = renderer.getClearAlpha();
@@ -698,6 +703,7 @@ function tiefenbild() {
   renderer.setClearColor(altFarbe, altAlpha);
   for (const [o, m] of getauscht) o.material = m;
   hilfsGruppe.visible = altHilfe; if (gitter) gitter.visible = altGitter;
+  if (S.weltAchsen) S.weltAchsen.visible = true;
   ziel.dispose();
   const tiefe = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) {
@@ -957,14 +963,13 @@ function marker(pos, text, farbe) {
 function markerGroesse() {
   const h = leinwand.clientHeight || 1;
   const skala = 26 / h * 2 * Math.tan(THREE.MathUtils.degToRad(kamera.fov / 2));
-  hilfsGruppe.children.forEach((c) => { if (c.isSprite) c.scale.set(skala, skala, 1); });
+  hilfsGruppe.traverse((c) => { if (c.isSprite) c.scale.set(skala, skala, 1); });
 }
 
 function hilfenZeichnen() {
   hilfsGruppe.children.slice().forEach((c) => {
     hilfsGruppe.remove(c);
-    if (c.material) { c.material.dispose(); }
-    if (c.geometry) c.geometry.dispose();
+    c.traverse((o) => { if (o.material) o.material.dispose(); if (o.geometry) o.geometry.dispose(); });
   });
   S.ebenePunkte.forEach((p, i) => marker(new THREE.Vector3(...p), String(i + 1), '#e3b341'));
   S.paare.forEach((paar, i) => {
@@ -973,6 +978,7 @@ function hilfenZeichnen() {
   });
   if (S.ebenePunkte.length === 3) ebeneZeichnen();
   lochLinienZeichnen();
+  koordElementeZeichnen();
   paarListeZeichnen();
 }
 
@@ -996,6 +1002,7 @@ function pickModusSetzen(modus) {
   S.pickModus = modus;
   $('#knopfEbenePunkte').classList.toggle('an', modus === 'ebene3');
   $('#knopfPaare').classList.toggle('an', modus === 'paare');
+  if (modus !== 'koord') S.koordPick = null;
   if (modus) {
     if (S.werkzeug !== 'orbit') werkzeugSetzen('orbit');
     S.pickModus = modus;
@@ -1011,6 +1018,10 @@ function pickModusSetzen(modus) {
 }
 
 function pickHinweis() {
+  if (S.pickModus === 'koord') {
+    const k = S.koordPick;
+    status(`${{ primaer: 'Primär', sekundaer: 'Sekundär', ursprung: 'Ursprung' }[k.slot]}: Punkt ${k.punkte.length + 1} von ${k.anzahl} anklicken (Esc bricht ab).`);
+  }
   if (S.pickModus === 'ebene3') status(`Schnittebene: Punkt ${S.ebenePunkte.length + 1} von 3 anklicken (rechte Maustaste dreht).`);
   if (S.pickModus === 'paare') {
     const offen = S.paare.length && !S.paare[S.paare.length - 1].bewegt;
@@ -1019,6 +1030,17 @@ function pickHinweis() {
 }
 
 function pickKlick(x, y) {
+  if (S.pickModus === 'koord') {
+    const p = punktAn(x, y);
+    if (!p) { status('Kein Punkt getroffen.'); return; }
+    const k = S.koordPick;
+    k.punkte.push(p.welt.toArray());
+    hilfenZeichnen();
+    if (k.punkte.length < k.anzahl) { pickHinweis(); return; }
+    pickModusSetzen(null);
+    sicher(() => koordFormHolen(k.slot, k.art, k.punkte));
+    return;
+  }
   if (S.pickModus === 'ebene3') {
     const p = punktAn(x, y);
     if (!p) { status('Kein Punkt getroffen.'); return; }
@@ -1312,6 +1334,163 @@ function netzProblemeMarkieren() {
 }
 
 // ---------------------------------------------------------------------------
+// Achsen (Koordinatensystem)
+// ---------------------------------------------------------------------------
+const SLOT_FARBE = { primaer: 0x3d9be9, sekundaer: 0x5cbf6a, ursprung: 0xe0914f };
+const zahlText = (v, st = 3) => Number(v).toLocaleString('de-DE', { maximumFractionDigits: st });
+
+function sichtbareIds() {
+  const ids = sichtbareScans().map((e) => e.id);
+  if (!ids.length) throw new Error('Kein sichtbarer Scan.');
+  return ids;
+}
+
+async function koordFormHolen(slot, art, punkte = null) {
+  if (art === 'schnitt') {
+    S.koord.ursprung = { art: 'schnitt' };
+    koordSlotsZeichnen();
+    return;
+  }
+  const d = { art, punkte, ids: sichtbareIds() };
+  if (!punkte) {
+    d.masken = auswahlMasken();
+    if (!Object.keys(d.masken).length) throw new Error('Erst Punkte auswählen (Lasso/Polygon), dann einpassen.');
+  }
+  const j = await api('koord/form', d, 'Passe Form ein…');
+  const f = j.form;
+  if (slot === 'ursprung') {
+    if (f.art === 'kugel') S.koord.ursprung = { art: 'kugel', mitte: f.mitte, info: f };
+    else if (f.art === 'zylinder') S.koord.ursprung = { art: 'zylinder', punkt: f.punkt, info: f };
+    else S.koord.ursprung = { art: 'punkt', punkt: f.punkt, info: f };
+  } else {
+    S.koord[slot] = f;
+  }
+  if (!punkte) auswahlAlle(0);
+  koordSlotsZeichnen();
+}
+
+function formText(f) {
+  if (!f) return '– noch nicht festgelegt';
+  const i = f.info || f;
+  const rms = i.rms !== undefined && i.punkte ? ` · RMS ${zahlText(i.rms)} mm · ${i.punkte.toLocaleString('de-DE')} Pkt.` : '';
+  switch (i.art) {
+    case 'ebene': return `Ebene${rms}`;
+    case 'zylinder': return `Zylinder Ø ${zahlText(i.radius * 2)} mm, Höhe ${zahlText(i.hoehe, 1)}${rms}`;
+    case 'kugel': return `Kugel Ø ${zahlText(i.radius * 2)} mm${rms}`;
+    case 'linie': return 'Linie aus 2 Punkten';
+    case 'punkt': return `Punkt (${i.punkt.map((v) => zahlText(v, 2)).join(' ; ')})`;
+    case 'schnitt': return 'Schnittpunkt Ebene/Achse';
+    default: return i.art;
+  }
+}
+
+function koordSlotsZeichnen() {
+  for (const el of $$('#s-achsen .element')) {
+    const f = S.koord[el.dataset.slot];
+    el.classList.toggle('gesetzt', !!f);
+    el.querySelector('[data-info]').textContent = formText(f);
+  }
+  hilfenZeichnen();
+}
+
+$$('#s-achsen .element').forEach((el) => {
+  const slot = el.dataset.slot;
+  el.querySelectorAll('[data-form]').forEach((b) => b.addEventListener('click', () => {
+    const art = b.dataset.form;
+    const anzahl = { ebene3: 3, linie2: 2, punkt: 1 }[art];
+    if (anzahl) {
+      S.koordPick = { slot, art, anzahl, punkte: [] };
+      pickModusSetzen('koord');
+      S.koordPick = { slot, art, anzahl, punkte: [] };
+      pickHinweis();
+    } else {
+      sicher(() => koordFormHolen(slot, art));
+    }
+  }));
+  el.querySelector('[data-umdrehen]').addEventListener('click', () => {
+    const f = S.koord[slot];
+    if (!f) return;
+    if (f.normale) f.normale = f.normale.map((v) => -v);
+    if (f.achse) f.achse = f.achse.map((v) => -v);
+    if (f.art === 'linie') [f.von, f.bis] = [f.bis, f.von];
+    koordSlotsZeichnen();
+  });
+});
+
+function koordElementeZeichnen() {
+  const k = szenenKugel();
+  const r = k.radius;
+  // Elemente liegen in Scan-Koordinaten: bei einer Vorschau mitbewegen
+  const gruppe = new THREE.Group();
+  gruppe.matrixAutoUpdate = false;
+  const vorschau = S.regMatrizen && Object.values(S.regMatrizen)[0];
+  if (vorschau) gruppe.matrix.set(...vorschau.flat());
+  hilfsGruppe.add(gruppe);
+  const hilfsZiel = { add: (o) => gruppe.add(o) };
+  if (S.koordPick) S.koordPick.punkte.forEach((p, i) => marker(new THREE.Vector3(...p), String(i + 1), '#e0914f'));
+  for (const slot of ['primaer', 'sekundaer', 'ursprung']) {
+    const f = S.koord[slot];
+    if (!f) continue;
+    const farbe = SLOT_FARBE[slot];
+    const i = f.info || f;
+    if (slot !== 'ursprung' && i.art === 'ebene') {
+      const n = new THREE.Vector3(...i.normale);
+      const flaeche = new THREE.Mesh(new THREE.PlaneGeometry(r * 1.4, r * 1.4),
+        new THREE.MeshBasicMaterial({ color: farbe, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }));
+      flaeche.position.set(...i.punkt);
+      flaeche.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+      hilfsZiel.add(flaeche);
+      hilfsZiel.add(new THREE.ArrowHelper(n, new THREE.Vector3(...i.punkt), r * 0.35, farbe, r * 0.07, r * 0.04));
+    } else if (i.art === 'zylinder' || i.art === 'linie') {
+      const a = i.art === 'linie' ? new THREE.Vector3(...i.bis).sub(new THREE.Vector3(...i.von)) : new THREE.Vector3(...(f.achse || i.achse));
+      const laenge = i.art === 'linie' ? a.length() : Math.max(i.hoehe * 1.6, r * 0.5);
+      a.normalize();
+      const mitte = i.art === 'linie' ? new THREE.Vector3(...i.von) : new THREE.Vector3(...i.punkt).addScaledVector(a, -laenge / 2);
+      if (slot !== 'ursprung') hilfsZiel.add(new THREE.ArrowHelper(a, mitte, laenge, farbe, r * 0.06, r * 0.035));
+      if (i.art === 'zylinder') {
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(i.radius, Math.max(i.radius * 0.03, r * 0.003), 8, 48),
+          new THREE.MeshBasicMaterial({ color: farbe, depthTest: false }));
+        ring.position.set(...i.punkt);
+        ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), a);
+        ring.renderOrder = 6;
+        hilfsZiel.add(ring);
+      }
+    }
+    const punkt = f.art === 'kugel' ? f.mitte : f.art === 'punkt' || f.art === 'zylinder' ? f.punkt : null;
+    if (slot === 'ursprung' && punkt) marker(new THREE.Vector3(...punkt).applyMatrix4(gruppe.matrix), '0', '#e0914f');
+  }
+}
+
+async function koordVorschau(anfrage, daten, titel) {
+  const ids = sichtbareIds();
+  const j = await api(anfrage, { ...daten, ids, oben: S.oben }, 'Berechne Koordinatensystem…');
+  const matrizen = Object.fromEntries(ids.map((id) => [id, j.matrix]));
+  regVorschauSetzen(matrizen, `<b>${titel}</b><br><small>Vorschau – „Anwenden“ legt alle sichtbaren Scans ins neue Koordinatensystem.</small>`, 'gut', '#koordErgebnis');
+  S.koordAktiv = true;
+  einpassen();
+}
+
+async function koordAnwenden() {
+  if (!S.regMatrizen) throw new Error('Erst eine Vorschau rechnen.');
+  const matrizen = S.regMatrizen;
+  S.regMatrizen = null;
+  await api('ausrichten/anwenden', { matrizen, text: 'Koordinatensystem ausgerichtet' }, 'Wende an…');
+  regZuruecksetzen(false);
+  // Elemente liegen jetzt im alten System -> verwerfen
+  S.koord = { primaer: null, sekundaer: null, ursprung: null };
+  koordSlotsZeichnen();
+  einpassen();
+  meldung('Koordinatensystem übernommen.', 'ok');
+}
+
+function koordZiele() {
+  const z1 = $('#s-achsen [data-slot=primaer] [data-ziel]').value;
+  const z2 = $('#s-achsen [data-slot=sekundaer] [data-ziel]').value;
+  if (z1 === z2) throw new Error('Primär- und Sekundärachse müssen verschieden sein.');
+  return { ziel1: z1, ziel2: z2 };
+}
+
+// ---------------------------------------------------------------------------
 // Ausrichten
 // ---------------------------------------------------------------------------
 function regParameter() {
@@ -1326,14 +1505,14 @@ function matrixSetzen(e, T) {
   e.obj.matrixWorldNeedsUpdate = true;
 }
 
-function regVorschauSetzen(matrizen, ergebnisHtml, guete) {
+function regVorschauSetzen(matrizen, ergebnisHtml, guete, ziel = '#regErgebnis') {
   regZuruecksetzen(false);
   S.regMatrizen = matrizen;
   for (const [id, T] of Object.entries(matrizen)) {
     const e = S.scans.get(Number(id));
     if (e) matrixSetzen(e, T);
   }
-  const el = $('#regErgebnis');
+  const el = $(ziel);
   el.hidden = false;
   el.className = 'ergebnis ' + (guete || '');
   el.innerHTML = ergebnisHtml;
@@ -1344,7 +1523,9 @@ function regZuruecksetzen(meldungZeigen = true) {
   S.regMatrizen = null;
   for (const e of S.scans.values()) matrixSetzen(e, null);
   $('#regErgebnis').hidden = true;
+  $('#koordErgebnis').hidden = true;
   if (S.abweichung) { S.abweichung = null; alleFarbenSetzen(); }
+  hilfenZeichnen();
   if (meldungZeigen) status('Ausrichtung zurückgesetzt.');
 }
 
@@ -1574,6 +1755,19 @@ const AKTIONEN = {
   abweichungAus: { text: 'Abweichungskarte aus', fn: () => { S.abweichung = null; alleFarbenSetzen(); } },
   zusammenfuehren: { text: 'Zusammenführen', fn: zusammenfuehren },
   netzAnalyse: { text: 'Netz analysieren', fn: netzAnalyse },
+  koordEbene: { text: 'Auf größte Ebene stellen', fn: () => koordVorschau('koord/auto', { art: 'ebene', ursprung: $('#autoUrsprung').value }, 'Auf größte Ebene gestellt') },
+  koordHaupt: { text: 'Hauptachsen ausrichten', fn: () => koordVorschau('koord/auto', { art: 'hauptachsen', ursprung: $('#autoUrsprung').value === 'unten' ? 'unten' : $('#autoUrsprung').value }, 'Hauptachsen') },
+  koordElemente: { text: '3-2-1 Vorschau', fn: () => {
+    if (!S.koord.primaer || !S.koord.sekundaer) throw new Error('Primär- und Sekundärelement festlegen.');
+    return koordVorschau('koord/elemente', { primaer: S.koord.primaer, sekundaer: S.koord.sekundaer, ursprung: S.koord.ursprung, ...koordZiele() }, '3-2-1-Ausrichtung');
+  } },
+  koordWerte: { text: 'Um Werte verschieben/drehen', fn: () => koordVorschau('koord/werte', {
+    verschieben: ['#wertVX', '#wertVY', '#wertVZ'].map((q) => Number($(q).value)),
+    drehen: ['#wertDX', '#wertDY', '#wertDZ'].map((q) => Number($(q).value)),
+  }, 'Verschoben/gedreht') },
+  koordAnwenden: { text: 'Koordinatensystem anwenden', fn: koordAnwenden },
+  koordZurueck: { text: 'Koordinaten-Vorschau zurücksetzen', fn: () => regZuruecksetzen() },
+  koordLeeren: { text: 'Elemente leeren', fn: () => { S.koord = { primaer: null, sekundaer: null, ursprung: null }; koordSlotsZeichnen(); } },
   netzProbleme: { text: 'Problemstellen markieren', fn: netzProblemeMarkieren },
   tasten: { text: 'Tastenkürzel', fn: tastenDialog },
   tastenZu: { text: '', fn: () => $('#tastenDialog').close() },
