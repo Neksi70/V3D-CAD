@@ -100,6 +100,19 @@ const courses = store('courses', []); // Kurse mit Teilnehmerliste (Akademie)
 const expenses = store('expenses', []); // Eingangsbelege/Ausgaben
 
 // --- Nummernkreise: RE-2026-0001 / AN-2026-0001, jahresweise, lückenlos ----
+// Festgeschriebene Rechnung darf nur zurück zum Entwurf, wenn sie nachweislich nicht raus ist
+// und ihre Nummer die zuletzt vergebene ist (sonst Loch bzw. doppelte Nummer im Kreis).
+function unfinalizeSperre(doc) {
+  const n = settings.data.nummern;
+  const letzte = `RE-${n.jahr}-${String(n.rechnung - 1).padStart(4, '0')}`;
+  if (doc.nummer !== letzte) return 'nicht die zuletzt vergebene Rechnungsnummer';
+  if (doc.status !== 'offen') return 'Status ist „' + doc.status + '"';
+  if (doc.mahnstufe) return 'es wurde schon gemahnt';
+  if (doc.shareToken) return 'Versand-Link wurde schon erzeugt';
+  if (doc.uebergebenAm) return 'wurde schon an V3D Mail übergeben';
+  return '';
+}
+
 function nextNumber(art) {
   const n = settings.data.nummern;
   const jahr = new Date().getFullYear();
@@ -643,6 +656,7 @@ Positionen:\n${liste.slice(0, 2000)}`;
       if (!doc.festgeschrieben) return send(res, 400, { error: 'Erst festschreiben — dann kann der Beleg verschickt werden' });
       const body = await readBody(req).catch(() => ({}));
       let pdf;
+      doc.uebergebenAm = now(); docs.save();
       try { pdf = belegPdf(doc); }
       catch (e) { return send(res, 500, { error: 'PDF-Erzeugung fehlgeschlagen: ' + e.message }); }
       for (const [k, v] of uebergaben) if (Date.now() - v.t > UEBERGABE_TTL) uebergaben.delete(k);
@@ -710,6 +724,15 @@ Positionen:\n${liste.slice(0, 2000)}`;
           });
           doc.festgeschrieben = false;
           doc.status = 'entwurf';
+          break;
+        }
+        case 'unfinalize': { // Rechnung zurück zum Entwurf — nur solange sie das Haus nicht verlassen hat
+          if (doc.art !== 'rechnung' || !doc.festgeschrieben) return send(res, 400, { error: 'Nur festgeschriebene Rechnungen' });
+          const grund = unfinalizeSperre(doc);
+          if (grund) return send(res, 400, { error: 'Festschreibung kann nicht zurückgenommen werden: ' + grund + ' — bitte stornieren oder duplizieren' });
+          settings.data.nummern.rechnung--; settings.save(); // Nummer geht zurück in den Kreis, keine Lücke
+          (doc.historie = doc.historie || []).push({ am: now(), was: 'Festschreibung zurückgenommen', nummer: doc.nummer, brutto: (doc.totals || calcTotals(doc)).brutto });
+          doc.nummer = null; doc.festgeschrieben = false; doc.status = 'entwurf'; delete doc.totals;
           break;
         }
         case 'cancel': { // Storno: Beleg bleibt, Gegenbeleg entsteht nicht (einfaches Kennzeichen)

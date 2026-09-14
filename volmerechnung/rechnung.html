@@ -126,6 +126,14 @@ table.list tr.click{cursor:pointer}
 /* Bildschirm-Vorschau des Druckbogens */
 #preview{position:fixed;inset:0;background:#2a2f3d;z-index:60;display:none;overflow:auto;-webkit-overflow-scrolling:touch}
 #preview.on{display:block}
+/* Großes Schreibfenster für Textfelder (Handy: kein Scrollen im Mini-Feld) */
+#bigText{position:fixed;inset:0;z-index:70;background:rgba(20,24,36,.55);display:none;padding:12px}
+#bigText.on{display:flex}
+#bigText .bx{background:#fff;border-radius:12px;flex:1;display:flex;flex-direction:column;max-width:760px;margin:0 auto;overflow:hidden}
+#bigText .bb{display:flex;gap:8px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line)}
+#bigText .bb b{margin-right:auto;font-size:15px}
+#bigText textarea{flex:1;border:0;border-radius:0;font-size:17px;line-height:1.45;padding:14px;resize:none}
+#bigText textarea:focus{outline:none}
 #pvBar{position:sticky;top:0;z-index:2;background:#1c2030;color:#fff;padding:9px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 #pvBar b{margin-right:auto;font-size:14px}
 #pvStage{padding:14px 0 40px;display:flex;justify-content:center}
@@ -222,6 +230,12 @@ table.list tr.click{cursor:pointer}
 </div>
 
 <div id="printArea"></div>
+<div id="bigText" onclick="if(event.target===this)bigTextClose()">
+  <div class="bx">
+    <div class="bb"><b id="bigTitle">Text</b><button class="btn sm" onclick="bigTextClose()">✔ Fertig</button></div>
+    <textarea id="bigTa"></textarea>
+  </div>
+</div>
 <div id="preview" onclick="pvBackdrop(event)">
   <div id="pvBar">
     <b>👁️ Vorschau</b>
@@ -291,7 +305,7 @@ function nav(v){
 }
 function toast(msg,err){ // schlicht: kurze Statuszeile oben
   let t=$('#toast');
-  if(!t){t=document.createElement('div');t.id='toast';t.style.cssText='position:fixed;top:14px;right:16px;z-index:99;padding:10px 16px;border-radius:10px;color:#fff;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.25);transition:opacity .4s';document.body.appendChild(t);}
+  if(!t){t=document.createElement('div');t.id='toast';t.style.cssText='position:fixed;top:14px;right:16px;z-index:99;padding:10px 16px;border-radius:10px;color:#fff;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.25);transition:opacity .4s;pointer-events:none';document.body.appendChild(t);}
   t.style.background=err?'var(--red)':'var(--green)';t.textContent=msg;t.style.opacity=1;
   clearTimeout(t._h);t._h=setTimeout(()=>t.style.opacity=0,2500);
 }
@@ -497,12 +511,12 @@ function renderEditor(m){
       const moveBtns=fest?'':`<button class="btn sm sec" title="hoch" ${i===0?'disabled':''} onclick="edMovePos(${i},-1)">▲</button><button class="btn sm sec" title="runter" ${i===d.positionen.length-1?'disabled':''} onclick="edMovePos(${i},1)">▼</button><button class="btn sm danger" onclick="edDelPos(${i})">✕</button>`;
       if(p.typ==='text')return `<tr style="background:#fafbff">
         <td><input value="${esc(p.name)}" ${fest?'disabled':''} onchange="edPos(${i},'name',this.value)" placeholder="Überschrift (optional)"></td>
-        <td colspan="${S.settings.steuer.modus==='klein'?6:7}"><textarea rows="2" ${fest?'disabled':''} onchange="edPos(${i},'beschreibung',this.value)" placeholder="Freier Text auf dem Beleg">${esc(p.beschreibung)}</textarea></td>
+        <td colspan="${S.settings.steuer.modus==='klein'?6:7}"><textarea rows="2" data-big="Textzeile ${i+1}" ${fest?'disabled':''} onchange="edPos(${i},'beschreibung',this.value)" placeholder="Freier Text auf dem Beleg">${esc(p.beschreibung)}</textarea></td>
         <td style="white-space:nowrap">${moveBtns}</td></tr>`;
       return `<tr>
       <td><input value="${esc(p.name)}" ${fest?'disabled':''} onchange="edPos(${i},'name',this.value)" placeholder="Leistung">
           ${fest?'':`<select style="margin-top:3px;font-size:12px;color:var(--dim)" onchange="edPosArtikel(${i},this.value)">${artOpts}</select>`}</td>
-      <td><textarea rows="2" ${fest?'disabled':''} onchange="edPos(${i},'beschreibung',this.value)">${esc(p.beschreibung)}</textarea></td>
+      <td><textarea rows="2" data-big="Beschreibung Position ${i+1}" ${fest?'disabled':''} onchange="edPos(${i},'beschreibung',this.value)">${esc(p.beschreibung)}</textarea></td>
       <td><input value="${p.menge}" ${fest?'disabled':''} onchange="edPos(${i},'menge',this.value)"></td>
       <td><input value="${esc(p.einheit)}" ${fest?'disabled':''} onchange="edPos(${i},'einheit',this.value)"></td>
       <td><input value="${p.preis}" ${fest?'disabled':''} onchange="edPos(${i},'preis',this.value)"></td>
@@ -535,11 +549,12 @@ function renderEditor(m){
       <button class="btn" style="background:var(--green)" onclick="convertDoc()">➡️ In Rechnung umwandeln</button>
       <button class="btn sec" onclick="docAction('status',{status:'abgelehnt'})">Abgelehnt</button>`:''}
     ${fest&&!re&&d.status!=='storniert'?`<button class="btn sec" onclick="reopenDoc()">🔓 Wieder bearbeiten</button>`:''}
+    ${fest&&re&&kannZurueck(d)?`<button class="btn sec" onclick="unfinalizeDoc()">🔓 Festschreibung zurücknehmen</button>`:''}
     ${fest&&d.status!=='storniert'?`<button class="btn danger" onclick="if(confirm('Beleg wirklich stornieren?'))docAction('cancel')">Stornieren</button>`:''}
     ${!fest&&d.id&&!d.unsaved?`<button class="btn danger" onclick="if(confirm('Entwurf löschen?'))deleteDoc()">🗑️ Löschen</button>`:''}
   </div>
   ${fest?shareCardHtml(d):''}
-  ${fest?'<p style="color:var(--dim);font-size:13px">Dieser Beleg ist festgeschrieben (GoBD) und kann nicht mehr geändert werden — nur Status/Storno.</p>':''}`;
+  ${fest?'<p style="color:var(--dim);font-size:13px">Dieser Beleg ist festgeschrieben (GoBD) und kann nicht mehr geändert werden — nur Status/Storno'+(re&&kannZurueck(d)?' oder „Festschreibung zurücknehmen“, solange sie noch nicht beim Kunden ist':'')+'.</p>':''}`;
 }
 // --- Versand mit Lesebestätigung (öffentlicher Beleg-Link über den Funnel)
 function shareUrl(d){return d.shareToken?'https://v3da.tailf05fe9.ts.net/beleg/'+d.shareToken:null;}
@@ -692,6 +707,18 @@ async function reopenDoc(){
   if(d.status==='angenommen')w+='\n\n⚠️ Dieses Angebot wurde bereits in eine Rechnung umgewandelt. Die Rechnung ändert sich dadurch NICHT.';
   if(!confirm(w))return;
   try{editDoc=await api('docs/'+d.id+'/reopen','POST',{});await loadAll();toast('Angebot ist wieder bearbeitbar');render();}
+  catch(e){toast(e.message,true);}
+}
+// Spiegelt unfinalizeSperre() im Server: nicht raus, nicht gemahnt, letzte vergebene Nummer
+function kannZurueck(d){
+  if(d.status!=='offen'||d.mahnstufe||d.shareToken||d.uebergebenAm||!d.nummer)return false;
+  const letzte=S.docs.filter(x=>x.art==='rechnung'&&x.nummer).map(x=>x.nummer).sort().pop();
+  return d.nummer===letzte;
+}
+async function unfinalizeDoc(){
+  const d=editDoc;
+  if(!confirm('Festschreibung von Rechnung '+d.nummer+' zurücknehmen?\n\nDie Rechnung wird wieder ein Entwurf, die Nummer '+d.nummer+' geht zurück in den Nummernkreis und wird beim nächsten Festschreiben neu vergeben.\n\nNur machen, wenn die Rechnung noch NICHT beim Kunden ist (auch nicht gedruckt oder als PDF verschickt).'))return;
+  try{editDoc=await api('docs/'+d.id+'/unfinalize','POST',{});await loadAll();toast('Rechnung ist wieder ein Entwurf');render();}
   catch(e){toast(e.message,true);}
 }
 async function convertDoc(){
@@ -1189,6 +1216,27 @@ async function printFromPreview(){ // Bogen aus der Vorschau übernehmen (#pvSca
 }
 addEventListener('resize',()=>{if($('#preview').classList.contains('on'))pvFit();});
 addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#preview').classList.contains('on'))closePreview();});
+// Tipp in ein Textfeld öffnet es groß: Positions-Beschreibungen immer (Tabellenspalte ist schmal),
+// alle anderen Textfelder auf dem Handy. „Fertig“ schreibt zurück und löst das normale change aus.
+let bigSrc=null;
+document.addEventListener('focusin',e=>{
+  const t=e.target;
+  if(t.tagName!=='TEXTAREA'||t.id==='bigTa'||t.disabled||t.readOnly)return;
+  if(!t.dataset.big&&!matchMedia('(max-width:700px)').matches)return;
+  bigSrc=t;
+  const lab=t.dataset.big||t.previousElementSibling?.tagName==='LABEL'&&t.previousElementSibling.textContent||'Text';
+  $('#bigTitle').textContent=lab;
+  const ta=$('#bigTa');ta.value=t.value;ta.placeholder=t.placeholder||'';
+  t.blur();$('#bigText').classList.add('on');
+  setTimeout(()=>{ta.focus();ta.setSelectionRange(ta.value.length,ta.value.length);},30);
+});
+function bigTextClose(){
+  $('#bigText').classList.remove('on');
+  const t=bigSrc;bigSrc=null;if(!t)return;
+  const v=$('#bigTa').value;
+  if(v!==t.value){t.value=v;t.dispatchEvent(new Event('change',{bubbles:true}));}
+}
+addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#bigText').classList.contains('on'))bigTextClose();});
 async function printMahnung(id){
   const d=S.docs.find(x=>x.id===id);if(!d)return;
   try{editDoc=await api('docs/'+id+'/remind','POST',{});await loadAll();}catch(e){toast(e.message,true);return;}
