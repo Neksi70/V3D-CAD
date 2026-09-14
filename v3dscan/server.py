@@ -24,12 +24,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
-FASSUNG = "0.3.0"
+FASSUNG = "0.4.0"
 HIER = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, "frozen", False):
     HIER = getattr(sys, "_MEIPASS", HIER)
 WEB = os.path.join(HIER, "web")
 
+from kern import erkennung as er  # noqa: E402
 from kern import formen as fo  # noqa: E402
 from kern import koordinaten as ko  # noqa: E402
 from kern import netz as nz  # noqa: E402
@@ -309,12 +310,101 @@ def befehl(name, d):
         return ausrichten(name.split("/", 1)[1], d)
     if name.startswith("koord/"):
         return koordinaten(name.split("/", 1)[1], d)
+    if name.startswith("formen/"):
+        return formen_befehl(name.split("/", 1)[1], d)
 
     if name == "zusammenfuehren":
         neu = p.zusammenfuehren([int(i) for i in d.get("ids") or []],
                                 zahl(d, "voxel", 0))
         return {"neu": neu.id, "anzahl": len(neu)}
     raise Fehler("Unbekannter Befehl %s" % name)
+
+
+def _erkennung_senden(sid):
+    erk = projekt.erkennung.get(sid)
+    s = projekt.scan(sid)
+    if not erk or erk["rev"] != s.rev:
+        return {"erkennung": None}
+    return {"erkennung": {
+        "id": sid, "rev": s.rev, "elemente": erk["elemente"], "freiform": erk["freiform"],
+        "zusammenfassung": erk["zusammenfassung"], "toleranz": erk.get("toleranz"),
+        "labels": base64.b64encode(erk["labels"].astype(np.int16).tobytes()).decode()}}
+
+
+def formen_befehl(was, d):
+    s = projekt.scan(d.get("id"))
+    if was == "erkennen":
+        arten = [a for a in (d.get("arten") or er.ARTEN) if a in er.ARTEN]
+        if not arten:
+            raise Fehler("Mindestens eine Formart wählen.")
+        tol = d.get("toleranz")
+        ergebnis = er.erkennen(s, toleranz=float(tol) if tol else None,
+                               winkel_grad=zahl(d, "winkel", 20), min_anteil=zahl(d, "min_anteil", 0.08),
+                               arten=arten)
+        projekt.erkennung[s.id] = {
+            "rev": s.rev, "labels": ergebnis["labels"],
+            "elemente": [er.als_json(e) for e in ergebnis["elemente"]],
+            "freiform": ergebnis["freiform"], "zusammenfassung": ergebnis["zusammenfassung"],
+            "toleranz": ergebnis["toleranz"]}
+        return _erkennung_senden(s.id)
+    if was == "laden":
+        return _erkennung_senden(s.id)
+    erk = projekt.erkennung.get(s.id)
+    if was == "auswahl":
+        if not erk or erk["rev"] != s.rev:
+            erk = projekt.erkennung[s.id] = {"rev": s.rev, "labels": np.full(len(s), -1, np.int32),
+                                             "elemente": [], "freiform": 0, "zusammenfassung": ""}
+        maske = masken_lesen(d).get(s.id)
+        if maske is None or not maske.any():
+            raise Fehler("Erst Punkte dieses Scans auswählen.")
+        el = er.aus_auswahl(s, maske, d.get("art", "auto"), erk["elemente"])
+        erk["labels"][maske] = el["id"]
+        erk["elemente"].append(er.als_json(el))
+        _zusammenfassung_neu(erk)
+        return _erkennung_senden(s.id)
+    if not erk or erk["rev"] != s.rev:
+        raise Fehler("Keine aktuelle Erkennung – bitte neu analysieren.")
+    if was == "entfernen":
+        eid = int(d.get("element"))
+        erk["elemente"] = [e for e in erk["elemente"] if e["id"] != eid]
+        erk["labels"][erk["labels"] == eid] = -1
+        _zusammenfassung_neu(erk)
+        return _erkennung_senden(s.id)
+    if was == "nennmass":
+        eid, feld = int(d.get("element")), d.get("feld")
+        el = next((e for e in erk["elemente"] if e["id"] == eid), None)
+        if el is None or feld not in ("durchmesser_nenn", "radius_nenn", "winkel_nenn"):
+            raise Fehler("Element oder Maß unbekannt.")
+        el[feld] = round(zahl(d, "wert"), 4)
+        el["nenn_von_hand"] = True
+        el["text"] = er.beschreibung({k: (np.asarray(v) if isinstance(v, list) and k in ("punkt", "mitte", "achse", "normale") else v)
+                                      for k, v in el.items()})
+        _zusammenfassung_neu(erk)
+        return _erkennung_senden(s.id)
+    raise Fehler("Unbekannter Formen-Befehl %s" % was)
+
+
+def _zusammenfassung_neu(erk):
+    erk["zusammenfassung"] = er.zusammenfassung(erk["elemente"], erk["freiform"])
+
+
+def elementliste_csv(sid):
+    erk = projekt.erkennung.get(sid)
+    s = projekt.scan(sid)
+    if not erk or erk["rev"] != s.rev:
+        raise Fehler("Keine aktuelle Erkennung.")
+    zeilen = ["Nr;Typ;Nennmaß;gemessen;Länge/Tiefe;Achse;X;Y;Z;RMS;Punkte;Beschreibung"]
+
+    def z(v):
+        return "" if v is None else ("%.4f" % v).replace(".", ",")
+    for e in erk["elemente"]:
+        nenn = e.get("durchmesser_nenn", e.get("radius_nenn", e.get("winkel_nenn")))
+        gem = e.get("durchmesser", e.get("radius") if "radius_nenn" in e else e.get("winkel_grad"))
+        p = e.get("punkt", e.get("mitte")) or [None, None, None]
+        zeilen.append(";".join([str(e["id"] + 1), er.TYP_NAMEN[e["typ"]][0], z(nenn), z(gem), z(e.get("hoehe")),
+                                e.get("achse_name") or "", z(p[0]), z(p[1]), z(p[2]), z(e["rms"]),
+                                str(e["punkte"]), e["text"]]))
+    return ("\ufeff" + "\r\n".join(zeilen) + "\r\n").encode("utf-8")
 
 
 def _gewaehlte_punkte(d):
@@ -525,6 +615,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._senden(200, daten, "application/octet-stream", {
                     "Content-Disposition": "attachment; filename*=UTF-8''"
                     + urllib.parse.quote(name)})
+            if pfad.startswith("/api/formen/csv/"):
+                with sperre:
+                    sid = int(pfad.rsplit("/", 1)[1])
+                    daten = elementliste_csv(sid)
+                    name = os.path.splitext(projekt.scan(sid).name)[0] + "_formen.csv"
+                return self._senden(200, daten, "text/csv; charset=utf-8", {
+                    "Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
             if pfad == "/api/projekt/speichern":
                 with sperre:
                     daten = projekt.speichern()

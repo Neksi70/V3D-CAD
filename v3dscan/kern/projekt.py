@@ -24,6 +24,9 @@ class Projekt:
         self.naechste_id = 1
         self.undo = []            # [(text, {id: Scan-Kopie oder None})]
         self.redo = []
+        # Geometrieerkennung je Scan: {"rev", "elemente" (JSON), "labels" (int32),
+        # "zusammenfassung", "freiform"} - gilt nur fuer genau diesen Datenstand
+        self.erkennung = {}
 
     # --- Verwaltung ---------------------------------------------------------
     def hinzufuegen(self, scan, merken=True):
@@ -194,6 +197,12 @@ class Projekt:
                         b = io.BytesIO()
                         np.save(b, arr)
                         z.writestr("scan_%d_%s.npy" % (s.id, teil), b.getvalue())
+                erk = self.erkennung.get(s.id)
+                if erk and erk["rev"] == s.rev:
+                    b = io.BytesIO()
+                    np.save(b, erk["labels"])
+                    z.writestr("scan_%d_labels.npy" % s.id, b.getvalue())
+                    eintrag["erkennung"] = {k: v for k, v in erk.items() if k not in ("labels", "rev")}
             z.writestr("projekt.json", json.dumps(info, ensure_ascii=False, indent=1))
         return puffer.getvalue()
 
@@ -213,6 +222,9 @@ class Projekt:
                 s.id, s.farbe = e["id"], e.get("farbe", FARBEN[0])
                 s.sichtbar, s.fest = e.get("sichtbar", True), e.get("fest", False)
                 p.scans[s.id] = s
+                if e.get("erkennung") and "scan_%d_labels.npy" % e["id"] in namen:
+                    p.erkennung[s.id] = dict(e["erkennung"], rev=s.rev,
+                                             labels=np.load(io.BytesIO(z.read("scan_%d_labels.npy" % e["id"]))))
                 p.naechste_id = max(p.naechste_id, s.id + 1)
         return p
 

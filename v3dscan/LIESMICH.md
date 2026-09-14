@@ -2,8 +2,8 @@
 
 Windows-Programm zum Nachbearbeiten von 3D-Scans (Punktwolken), gedacht für
 Exporte aus Revo Scan (Revopoint MIRACO/POP) und CrealityScan (PiKa).
-Stand 0.3.0 = Punktwolke (Grundgerüst, Bereinigen, Zusammenführen) + Scan→CAD Etappe 1
-(Netzbearbeitung) + Etappe 2 (Ausrichten am Koordinatensystem). Ziel: Scan → Geometrieerkennung → parametrisches CAD → STEP/IGES,
+Stand 0.4.0 = Punktwolke (Grundgerüst, Bereinigen, Zusammenführen) + Scan→CAD Etappe 1
+(Netzbearbeitung), Etappe 2 (Ausrichten am Koordinatensystem), Etappe 3 (Geometrieerkennung). Ziel: Scan → Geometrieerkennung → parametrisches CAD → STEP/IGES,
 Geometriekern dafür wird OpenCASCADE (OCP) – Entscheidung des Users 14.09.2026 (Variante A).
 
 ## Aufbau
@@ -15,6 +15,10 @@ Geometriekern dafür wird OpenCASCADE (OCP) – Entscheidung des Users 14.09.202
     Reparieren, Löcher schließen flach/gewölbt (Ringe + Laplace/Bi-Laplace per CG), Glätten (Taubin/Laplace),
     Vereinfachen (Quadrik), Beschneiden (exakter Ebenenschnitt), Netz aus Punktwolke (Poisson/Kugel-Abrollen)
   - `formen.py` robuste Einpassung Ebene/Kugel/Zylinder/Kreis (Zylinder: Startachse aus Normalen, Gauss-Newton)
+  - `erkennung.py` RANSAC mit Normalen (Ebene/Kugel/Zylinder/Kegel aus Minimalstichproben, größter
+    zusammenhängender Bereich, exakt nachgepasst), Deutung Bohrung/Zapfen/Rundung/Hohlkehle/Kugel/Kegel/Senkung,
+    Nennmaß-Rundung, Achsen einrasten, Zusammenfassung „Erkannt: …“; ohne Normalen werden sie geschätzt und
+    konsistent ausgerichtet (sonst sind Bohrung und Zapfen nicht unterscheidbar); Netze werden gleichmäßig abgetastet
   - `koordinaten.py` Hauptachsen, auf größte Ebene stellen, 3-2-1 aus Elementen (rechtshändig für jede
     Achsenzuordnung), Verschieben/Drehen um Werte – Matrix gilt für alle sichtbaren Scans
   - `projekt.py` Scans, Rückgängig/Wiederholen (Kopien, max. 30 Schritte / 3 GB), Projektdatei `.v3dscan` (ZIP mit .npy)
@@ -38,6 +42,9 @@ wegfallenden Punkte rot, erst „Anwenden“ ändert Daten (rückgängig machbar
 - `python3 tests/test_oberflaeche_netz.py` Netz-Reiter per Playwright (auch gegen EXE)
 - `python3 tests/test_koordinaten.py` Formen + Koordinatensystem (Bohrung Ø 10,03 schräg im Raum)
 - `python3 tests/test_oberflaeche_achsen.py` Bauteil per 3-2-1 ins Bauteil-System (0,002° / 0,004 mm)
+- `python3 tests/cad_testteil.py` baut mit OCP ein Testteil (Platte mit Bohrungen, Zapfen, Kuppel, Kegel, R5)
+  und tastet es als Scan ab; `tests/test_erkennung.py` prüft die Erkennung (schräg, verrauscht, ohne Normalen, als Netz)
+- `python3 tests/test_oberflaeche_formen.py` Formen-Reiter (auch gegen EXE)
 - `python3 tests/test_oberflaeche.py` Playwright-Durchlauf über echte Maus-/Tastatureingaben
   (gegen die EXE: `V3DSCAN_TEST_PORT=8797`, EXE vorher mit `V3DSCAN_KEIN_FENSTER=1` starten)
 

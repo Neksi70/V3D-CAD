@@ -35,6 +35,8 @@ const S = {
   regMatrizen: null,       // {id: 4x4} Vorschau-Ausrichtung
   koord: { primaer: null, sekundaer: null, ursprung: null },
   koordPick: null,         // {slot, art, anzahl, punkte:[]}
+  erkennung: null,         // {id, rev, elemente, labels:Int16Array, zusammenfassung}
+  formAktiv: null,         // gewähltes Element
   abweichung: null,        // {id, werte:Float32Array, max}
   beschaeftigt: false,
 };
@@ -348,6 +350,7 @@ async function zustandUebernehmen(z) {
     eintrag.obj.visible = meta.sichtbar && !eintrag.vorschau;
     if (eintrag.vorschau) eintrag.vorschau.obj.visible = meta.sichtbar;
     if (S.loecher && S.loecher.id === meta.id && S.loecher.rev !== meta.rev) S.loecher = null;
+    if (S.erkennung && S.erkennung.id === meta.id && S.erkennung.rev !== meta.rev) { S.erkennung = null; formListeZeichnen(); }
   }
   if (neuGeladen) {
     // Geometrie geändert: alte Vorschauen passen nicht mehr.
@@ -387,7 +390,10 @@ function listeZeichnen() {
       </span>
       <span class="zahl">${meta.dreiecke ? `Netz · ${meta.dreiecke.toLocaleString('de-DE')} Dreiecke` : `${meta.anzahl.toLocaleString('de-DE')} Punkte`}${meta.hat_farbe ? ' · Farbe' : ''}${!meta.dreiecke && meta.hat_normalen ? ' · Normalen' : ''}</span>`;
     el.querySelector('.name').textContent = meta.name;
-    el.addEventListener('click', () => { S.aktiv = meta.id; listeZeichnen(); auswahlListenFuellen(); });
+    el.addEventListener('click', () => {
+      S.aktiv = meta.id; listeZeichnen(); auswahlListenFuellen();
+      sicher(() => formenLaden(meta.id));
+    });
     el.querySelector('.auge').addEventListener('click', (ev) => {
       ev.stopPropagation();
       sicher(() => api('scan/setzen', { id: meta.id, sichtbar: !meta.sichtbar }));
@@ -514,6 +520,18 @@ function farbenSetzen(e, min, max, achse) {
     for (let i = 0; i < n; i++) {
       const w = abw.werte[i];
       if (w > abw.max * 1.5) { f[i * 3] = f[i * 3 + 1] = f[i * 3 + 2] = grau; } else farbskala(w / abw.max, f, i * 3);
+    }
+  } else if (S.farbModus === 'segmente') {
+    const erk = S.erkennung && S.erkennung.id === e.id && S.erkennung.rev === e.meta.rev ? S.erkennung : null;
+    if (!erk) {
+      for (let i = 0; i < n * 3; i++) f[i] = 95;
+    } else {
+      const tabelle = new Map(erk.elemente.map((el) => [el.id, formFarbe(el)]));
+      for (let i = 0; i < n; i++) {
+        const l = erk.labels[i];
+        const c = l >= 0 ? (tabelle.get(l) || [90, 90, 90]) : l === -1 ? [70, 72, 78] : [205, 150, 175];
+        f[i * 3] = c[0]; f[i * 3 + 1] = c[1]; f[i * 3 + 2] = c[2];
+      }
     }
   } else if (S.farbModus === 'rgb' && e.rgb) {
     f.set(e.rgb);
@@ -1491,6 +1509,157 @@ function koordZiele() {
 }
 
 // ---------------------------------------------------------------------------
+// Formen (Geometrieerkennung)
+// ---------------------------------------------------------------------------
+const TYP_FARBTON = { ebene: 210, bohrung: 2, zapfen: 125, rundung: 275, hohlkehle: 300, zylinder: 25,
+  zylinderflaeche: 35, kugel: 48, kugelmulde: 38, kegel: 185, senkung: 170 };
+const TYP_GRUPPE = { ebene: 'Ebenen', bohrung: 'Bohrungen', zapfen: 'Zapfen / Wellen', zylinder: 'Zylinder',
+  zylinderflaeche: 'Zylinderflächen', rundung: 'Rundungen', hohlkehle: 'Hohlkehlen', kugel: 'Kugeln',
+  kugelmulde: 'Kugelmulden', kegel: 'Kegel', senkung: 'Senkungen' };
+
+function hslZuRgb(h, s, l) {
+  const a = s * Math.min(l, 1 - l);
+  const k = (n) => { const x = (n + h / 30) % 12; return l - a * Math.max(-1, Math.min(x - 3, 9 - x, 1)); };
+  return [k(0) * 255, k(8) * 255, k(4) * 255];
+}
+
+function formFarbe(el) {
+  const ton = TYP_FARBTON[el.typ] ?? 0;
+  const streu = (el.id * 0.618034) % 1;
+  if (el.typ === 'ebene') return hslZuRgb(ton + streu * 30 - 15, 0.25 + streu * 0.2, 0.42 + streu * 0.25);
+  return hslZuRgb(ton + streu * 16 - 8, 0.75, 0.48 + streu * 0.14);
+}
+
+function erkennungUebernehmen(erk) {
+  if (!erk) { S.erkennung = null; formListeZeichnen(); return; }
+  const bin = atob(erk.labels);
+  const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  S.erkennung = { ...erk, labels: new Int16Array(u.buffer) };
+  S.formAktiv = null;
+  if (S.farbModus !== 'segmente') { S.farbModus = 'segmente'; $('#farbModus').value = 'segmente'; }
+  alleFarbenSetzen();
+  formListeZeichnen();
+}
+
+async function formenErkennen() {
+  const e = S.scans.get(S.aktiv);
+  if (!e) throw new Error('Kein Scan aktiv.');
+  const arten = $$('#s-formen [data-art]').filter((c) => c.checked).map((c) => c.dataset.art);
+  const tol = $('#formToleranz').value;
+  const j = await api('formen/erkennen', { id: e.id, arten, toleranz: tol ? Number(tol) : null,
+    winkel: Number($('#formWinkel').value), min_anteil: Number($('#formMin').value) }, 'Analysiere Geometrie…');
+  erkennungUebernehmen(j.erkennung);
+  status(`${j.erkennung.zusammenfassung} (${j.dauer} s, Toleranz ${j.erkennung.toleranz} mm)`);
+}
+
+async function formenLaden(id) {
+  if (S.erkennung && S.erkennung.id === id) return;
+  const j = await api('formen/laden', { id });
+  if (j.erkennung) erkennungUebernehmen(j.erkennung);
+  else { S.erkennung = null; formListeZeichnen(); if (S.farbModus === 'segmente') alleFarbenSetzen(); }
+}
+
+function formListeZeichnen() {
+  const box = $('#formListe');
+  const zus = $('#formZusammenfassung');
+  const erk = S.erkennung;
+  const e = erk && S.scans.get(erk.id);
+  if (!erk || !e || e.meta.rev !== erk.rev) {
+    box.innerHTML = '<span class="info">Noch nicht analysiert.</span>';
+    zus.hidden = true;
+    return;
+  }
+  zus.hidden = false;
+  zus.className = 'ergebnis gut';
+  zus.textContent = erk.zusammenfassung;
+  box.innerHTML = '';
+  const gruppen = {};
+  for (const el of erk.elemente) (gruppen[el.typ] = gruppen[el.typ] || []).push(el);
+  for (const typ of Object.keys(TYP_GRUPPE)) {
+    const liste = gruppen[typ];
+    if (!liste) continue;
+    const kopf = document.createElement('div');
+    kopf.className = 'gruppe';
+    kopf.textContent = `${TYP_GRUPPE[typ]} (${liste.length})`;
+    box.appendChild(kopf);
+    for (const el of liste) {
+      const zeile = document.createElement('div');
+      zeile.className = 'el' + (S.formAktiv === el.id ? ' an' : '');
+      const c = formFarbe(el).map((v) => Math.round(v));
+      zeile.innerHTML = `<span class="farbe" style="background:rgb(${c})"></span><span class="text"></span><button title="Element verwerfen">✕</button>`;
+      const text = zeile.querySelector('.text');
+      const feld = 'durchmesser_nenn' in el ? 'durchmesser_nenn' : 'radius_nenn' in el ? 'radius_nenn' : 'winkel_nenn' in el ? 'winkel_nenn' : null;
+      if (feld) {
+        // Nennmaß im Text anklickbar machen
+        const nenn = Number(el[feld]).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 3 });
+        const teile = el.text.split(nenn);
+        text.append(teile[0]);
+        const span = document.createElement('span');
+        span.className = 'nenn';
+        span.textContent = nenn;
+        span.title = 'Nennmaß ändern';
+        span.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const neu = prompt('Nennmaß:', String(el[feld]).replace('.', ','));
+          if (neu) sicher(async () => erkennungUebernehmen((await api('formen/nennmass', { id: erk.id, element: el.id, feld, wert: Number(neu.replace(',', '.')) })).erkennung));
+        });
+        text.append(span, teile.slice(1).join(nenn));
+      } else {
+        text.textContent = el.text;
+      }
+      const rms = document.createElement('div');
+      rms.className = 'rms';
+      rms.textContent = `RMS ${Number(el.rms).toLocaleString('de-DE', { maximumFractionDigits: 3 })} mm · ${el.punkte.toLocaleString('de-DE')} Punkte${el.manuell ? ' · von Hand' : ''}`;
+      text.appendChild(rms);
+      zeile.addEventListener('click', () => formWaehlen(el));
+      zeile.querySelector('button').addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        sicher(async () => erkennungUebernehmen((await api('formen/entfernen', { id: erk.id, element: el.id })).erkennung));
+      });
+      box.appendChild(zeile);
+    }
+  }
+}
+
+function formWaehlen(el) {
+  const erk = S.erkennung;
+  const e = S.scans.get(erk.id);
+  if (!e) return;
+  S.formAktiv = el.id;
+  const box = new THREE.Box3();
+  const v = new THREE.Vector3();
+  for (const x of S.scans.values()) x.sel.fill(0);
+  let n = 0;
+  for (let i = 0; i < e.n; i++) {
+    if (erk.labels[i] === el.id) { e.sel[i] = 1; box.expandByPoint(v.set(e.xyz[i * 3], e.xyz[i * 3 + 1], e.xyz[i * 3 + 2])); n++; }
+  }
+  alleMarkierungen();
+  formListeZeichnen();
+  if (!n) return;
+  const k = box.getBoundingSphere(new THREE.Sphere());
+  const richtung = kamera.position.clone().sub(steuerung.target).normalize();
+  const dist = Math.max(k.radius, 2) / Math.sin(THREE.MathUtils.degToRad(kamera.fov / 2)) * 1.6;
+  steuerung.target.copy(k.center);
+  kamera.position.copy(k.center).addScaledVector(richtung, dist);
+  steuerung.update();
+  kameraGrenzen();
+  status(el.text);
+}
+
+$$('[data-form-auswahl]').forEach((b) => b.addEventListener('click', () => sicher(async () => {
+  const e = S.scans.get(S.aktiv);
+  if (!e) throw new Error('Kein Scan aktiv.');
+  const masken = auswahlMasken();
+  if (!masken[e.id]) throw new Error('Erst Punkte im aktiven Scan auswählen.');
+  const j = await api('formen/auswahl', { id: e.id, masken: { [e.id]: masken[e.id] }, art: b.dataset.formAuswahl }, 'Passe Form ein…');
+  auswahlAlle(0);
+  erkennungUebernehmen(j.erkennung);
+  const neu = j.erkennung.elemente[j.erkennung.elemente.length - 1];
+  meldung(neu.text, 'ok');
+})));
+
+// ---------------------------------------------------------------------------
 // Ausrichten
 // ---------------------------------------------------------------------------
 function regParameter() {
@@ -1755,6 +1924,11 @@ const AKTIONEN = {
   abweichungAus: { text: 'Abweichungskarte aus', fn: () => { S.abweichung = null; alleFarbenSetzen(); } },
   zusammenfuehren: { text: 'Zusammenführen', fn: zusammenfuehren },
   netzAnalyse: { text: 'Netz analysieren', fn: netzAnalyse },
+  formenErkennen: { text: 'Formen erkennen', taste: 'Ctrl+R', fn: formenErkennen },
+  formenCsv: { text: 'Elementliste als CSV', fn: () => {
+    if (!S.erkennung) throw new Error('Erst analysieren.');
+    herunterladen('/api/formen/csv/' + S.erkennung.id);
+  } },
   koordEbene: { text: 'Auf größte Ebene stellen', fn: () => koordVorschau('koord/auto', { art: 'ebene', ursprung: $('#autoUrsprung').value }, 'Auf größte Ebene gestellt') },
   koordHaupt: { text: 'Hauptachsen ausrichten', fn: () => koordVorschau('koord/auto', { art: 'hauptachsen', ursprung: $('#autoUrsprung').value === 'unten' ? 'unten' : $('#autoUrsprung').value }, 'Hauptachsen') },
   koordElemente: { text: '3-2-1 Vorschau', fn: () => {
