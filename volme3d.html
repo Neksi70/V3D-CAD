@@ -44126,8 +44126,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.20';
+const VOLME3D_VERSION = '1.18.21';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.21', date:'2026-09-14', changes:[
+    ['\u{1F310}','<b>Kugeln: Wickeln jetzt auch oben und unten, nicht nur am Äquator.</b> Auf einer Kugel oder Kugelschale gab es „Um Rundung wickeln“ bisher nur im Band um die Mitte, weiter oben und unten nur „Auf Fläche heften“, und ein flaches Motiv liegt auf einer Wölbung eben nur in der Mitte auf. Grund: Die Rundungserkennung nahm immer die senkrechte Achse, und dazu steht die Wand dort nicht mehr radial. Eine Kugel ist aber um jede Achse rund. Jetzt wählt V3D CAD die Achse, um die sich an der angeklickten Stelle wickeln lässt, und stellt das Motiv trotzdem aufrecht. Bei Vasen und Lampenschirmen mit nur einer Drehachse bleibt oben an der Kuppel der Hinweis wie bisher.'],
+  ]},
   { version:'1.18.20', date:'2026-09-14', changes:[
     ['\u{1F34E}','<b>Herunterladen in Safari (Mac, iPad) repariert.</b> Safari lud Exporte je nach Situation nicht herunter, sondern sprang auf eine Fehlerseite („Safari kann die Seite nicht öffnen“). Der Browser kann die internen blob-Adressen, über die Downloads sonst laufen, nicht als Seite öffnen. In Safari geht die Datei jetzt kurz über den Server und kommt als normaler Download zurück, mit richtigem Dateinamen. Alle anderen Browser laden wie bisher direkt.'],
   ]},
@@ -45164,13 +45167,13 @@ function _svgSnapDetect(svgMesh, mouseEvent) {
     while (obj && !objects.includes(obj)) obj = obj.parent;
     // Gekrümmte Mantelfläche? Dann biegen statt tangential aufkleben — sonst wird
     // die Gravur zu den Rändern hin flacher (bei Windlichtern deutlich sichtbar).
-    const probe = _svgWrapProbe(hit.object, hit.point);
+    const nW = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+    const probe = _svgWrapProbe(hit.object, hit.point, { normalW: nW });
     let wrap = null, kuppel = false;
     if (probe) {
       const c0 = probe.axisPt.clone()
         .addScaledVector(probe.axisDir, hit.point.clone().sub(probe.axisPt).dot(probe.axisDir));
       const radial = hit.point.clone().sub(c0).normalize();
-      const nW = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
       // Mantel (Normale zeigt radial weg) oder Deckel/Boden/Kuppel?
       if (Math.abs(nW.dot(radial)) > 0.8) wrap = probe;
       else kuppel = true;
@@ -45896,14 +45899,14 @@ function _svgGlideEnd() {
       o.userData._svgWrap = spec;
       _updateObjEdgeLines(o);
       o.updateMatrixWorld(true);
-      const probe = _svgWrapOnWall(o) && _svgWrapProbe(_svgWrapTarget(o), _svgWrapOnWall(o));
+      const probe = _svgWrapOnWall(o) && _svgWrapProbe(_svgWrapTarget(o), _svgWrapOnWall(o), { axisW: _svgWrapAxis(o) });
       if (probe) _svgWrapRefresh(o, probe);   // Wand an der neuen Motivhöhe nachmessen
     }
     updateTFInputs(); updateTree(); _doRepositionDimHandles();
     return true;
   }
   if (G.kind === 'wrap' && G.fr.target) {
-    const probe = _svgWrapProbe(G.fr.target, _svgWrapWallPoint(o, G.fr.target, G.fr.R));
+    const probe = _svgWrapProbe(G.fr.target, _svgWrapWallPoint(o, G.fr.target, G.fr.R), { axisW: G.fr.axis || null });
     if (probe) _svgWrapRefresh(o, probe);
   }
   updateTFInputs(); updateTree(); updateCtxPopup(); _doRepositionDimHandles();
@@ -46072,7 +46075,7 @@ function _svgWrapRing(pos, idx, nTri, ax, h, q1, q2) {
   }
   // Rund = genug Schnittpunkte auf gleichem Radius über mindestens ein Drittel des Umfangs
   if (n < 16 || sect.size < 5) return null;
-  return { c1: c.x, c2: c.y, R: rHit, rMax };
+  return { c1: c.x, c2: c.y, R: rHit, rMax, sekt: sect.size };   // sekt: belegte 30°-Sektoren (max 12)
 }
 
 // Bei Hohlkörpern liefert ein Ebenenschnitt Innen- UND Außenwand. Der Median über
@@ -46123,8 +46126,16 @@ function _svgWrapRadiusAt(pos, idx, nTri, ax, h, c1, c2, rPrev, seite) {
 // Außenwand im selben Topf und der Radius wäre um die halbe Wandstärke daneben).
 let _svgWrapReason = null;        // 'oval' | 'flach' | null — Grund der letzten Fehlanzeige
 const _SVGWRAP_OVAL_MAX = 0.08;   // bis 8 % unrund noch als Rundung behandeln
-function _svgWrapProbe(mesh, hitPointWorld) {
+// opts.normalW: Flächennormale am Treffer (Welt). Achsen, zu denen die Wand dort
+//   nicht radial steht, verlieren gegen jede radiale — auf einer Kugel ist jede Achse
+//   rund, aber oben und unten trägt nur die QUERachse (Josy 14.9.: Kugelschale, nur
+//   am Äquator „Um Rundung wickeln", sonst „Auf Fläche heften").
+// opts.axisW: Achse eines schon gewickelten Motivs (Welt) — beim Nachmessen darf
+//   die Probe nicht plötzlich eine andere Achse wählen, sonst passen Profil und
+//   Feld nicht mehr zur Wicklung.
+function _svgWrapProbe(mesh, hitPointWorld, opts) {
   if (!mesh || !mesh.isMesh || !mesh.geometry) return null;
+  const normalW = opts && opts.normalW || null, axisW = opts && opts.axisW || null;
   const geo = mesh.geometry;
   const pos = geo.attributes && geo.attributes.position;
   if (!pos || pos.count < 24) return null;
@@ -46134,7 +46145,9 @@ function _svgWrapProbe(mesh, hitPointWorld) {
   mesh.updateMatrixWorld(true);
   const pL = mesh.worldToLocal(hitPointWorld.clone());
   const key = mesh.uuid + '|' + [pL.x, pL.y, pL.z].map(v => Math.round(v * 100)).join(',')
-            + '|' + mesh.matrixWorld.elements.map(v => Math.round(v * 1e4)).join(',');
+            + '|' + mesh.matrixWorld.elements.map(v => Math.round(v * 1e4)).join(',')
+            + '|' + (normalW ? [normalW.x, normalW.y, normalW.z].map(v => Math.round(v * 100)).join(',') : '')
+            + '|' + (axisW ? [axisW.x, axisW.y, axisW.z].map(v => Math.round(v * 100)).join(',') : '');
   if (_svgWrapCache && _svgWrapCache.key === key) return _svgWrapCache.res;
 
   const sc = [Math.abs(mesh.scale.x), Math.abs(mesh.scale.y), Math.abs(mesh.scale.z)];
@@ -46161,7 +46174,17 @@ function _svgWrapProbe(mesh, hitPointWorld) {
                  (geo.boundingBox.min.y + geo.boundingBox.max.y) / 2,
                  (geo.boundingBox.min.z + geo.boundingBox.max.z) / 2];
   let best = null;
+  // Feste Achse: die lokale Achse, die der gespeicherten Weltachse am nächsten kommt
+  let axFest = -1;
+  if (axisW) {
+    let bd = 0;
+    for (let i = 0; i < 3; i++) {
+      const d = Math.abs(new THREE.Vector3().setFromMatrixColumn(mesh.matrixWorld, i).normalize().dot(axisW));
+      if (d > bd) { bd = d; axFest = i; }
+    }
+  }
   for (const ax of [1, 0, 2]) {
+    if (axFest >= 0 && ax !== axFest) continue;
     const c1 = (ax + 1) % 3, c2 = (ax + 2) % 3;
     // Vorfilter gegen offensichtlich ovale Querschnitte. Er stand auf 2 % — das
     // war so eng, dass ein Körper, der nur 3 % unrund skaliert war, GAR NICHT
@@ -46172,6 +46195,12 @@ function _svgWrapProbe(mesh, hitPointWorld) {
     if (Math.abs(sc[c1] - sc[c2]) > _SVGWRAP_OVAL_MAX * Math.max(sc[c1], sc[c2])) { zuOval = true; continue; }
     const ring = _svgWrapRing(pos, idx, nTri, ax, loc[ax], loc[c1], loc[c2]);
     if (!ring) continue;
+    // Querachse nur mit (fast) geschlossenem Ring: Ein Drittel Umfang reicht sonst
+    // auch für die SILHOUETTE einer Lampe (Schnitt quer durch den ganzen Körper,
+    // R 75 mm) — die Wicklung darum war Müll (gemessen: 98 % versunken, bis 101 mm
+    // daneben). Kugel und liegender Zylinder haben quer einen vollen Ring.
+    const axDw = new THREE.Vector3(ax === 0 ? 1 : 0, ax === 1 ? 1 : 0, ax === 2 ? 1 : 0).transformDirection(mesh.matrixWorld).normalize();
+    if (normalW && Math.abs(axDw.y) < 0.7 && ring.sekt < 10) continue;
     // Kreismitte in zwei Nachbarhöhen nachmessen und die beiden GEGENEINANDER
     // halten — nicht gegen die Trefferhöhe. Deren Fit ist stellenweise selbst
     // verrauscht (an einer Lichthülle gemessen: 0,57 statt 0,00), und damit
@@ -46195,8 +46224,18 @@ function _svgWrapProbe(mesh, hitPointWorld) {
     // echten Achse: null. Bei einem senkrechten Schnitt durch eine Kuppel deutlich
     // daneben (gemessen: 15 % des Radius) — genau daran scheitert sie hier.
     const ausMitte = Math.hypot(ring.c1 - bbMid[c1], ring.c2 - bbMid[c2]) / Math.max(1e-6, ring.R);
-    const score = ausMitte + (drift == null ? 0.02 : drift / Math.max(1e-6, ring.R));
+    let score = ausMitte + (drift == null ? 0.02 : drift / Math.max(1e-6, ring.R));
     if (score > 0.25) continue;                       // eindeutig keine Rotationsachse
+    // Steht die Wand am Treffer radial zu dieser Achse? Sonst nur Notnagel: eine
+    // Achse, um die sich hier wickeln lässt, gewinnt immer (Kugel: oben/unten quer).
+    if (normalW) {
+      const axL = new THREE.Vector3(ax === 0 ? 1 : 0, ax === 1 ? 1 : 0, ax === 2 ? 1 : 0);
+      const axD = axL.transformDirection(mesh.matrixWorld).normalize();
+      const cL = new THREE.Vector3(); cL.setComponent(ax, loc[ax]); cL.setComponent(c1, ring.c1); cL.setComponent(c2, ring.c2);
+      const dW = hitPointWorld.clone().sub(mesh.localToWorld(cL));
+      const rad = dW.addScaledVector(axD, -dW.dot(axD));
+      if (rad.lengthSq() > 1e-12 && Math.abs(normalW.dot(rad.normalize())) < 0.8) score += 1;
+    }
     // Die Reihenfolge [1,0,2] bleibt der Vorrang (aufrecht stehende Körper sind
     // der Normalfall); gewechselt wird nur bei DEUTLICH besserem Wert. Sonst
     // entscheidet bei einer Kugel — wo jede Achse eine gültige Drehachse ist —
@@ -46657,6 +46696,7 @@ function _svgWrapAxisUp(axisDir) {
   return a.dot(camUp) < 0 ? a.negate() : a;
 }
 
+const _SVGWRAP_ROT0_SIGN = 1;   // Vorzeichen des Startwinkels bei Querachse (im Test bestimmt)
 function _svgWrapApply(svgMesh, probe, hitPointWorld) {
   const a = _svgWrapAxisUp(probe.axisDir);
   const c0 = probe.axisPt.clone().addScaledVector(a, hitPointWorld.clone().sub(probe.axisPt).dot(a));
@@ -46701,7 +46741,7 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
       if (Math.abs(dh) > 1e-4) {
         c0.addScaledVector(a, dh);
         // an der verschobenen Höhe ist die Wand ggf. weiter/enger → neu abtasten
-        const p2 = _svgWrapProbe(probe.mesh, _svgWrapWallPointAt(c0, e1, probe.mesh, probe.R));
+        const p2 = _svgWrapProbe(probe.mesh, _svgWrapWallPointAt(c0, e1, probe.mesh, probe.R), { axisW: probe.axisDir });
         if (p2) pr = p2;
       }
     }
@@ -46709,13 +46749,21 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
   const profile = pr.mesh ? _svgWrapSampleProfile(pr, halfH, 24) : null;
   const halfW = _svgWrapHalfWidth(svgMesh.userData, s, w0 ? w0.rotRad : 0);
   const feld = pr.mesh ? _svgWrapSampleField(pr, halfH, halfW, e1, e3, a, 15, 61) : null;
+  // Querachse (Kugel oben/unten): die Motiv-Hochachse liefe sonst entlang der Achse,
+  // also seitwärts. Startwinkel so wählen, dass „oben“ im Motiv zur Welt-Hochachse
+  // zeigt (in die Wandebene projiziert). Ab dann gilt die Nutzerdrehung wie immer.
+  let rot0 = 0;
+  if (!w0 && Math.abs(a.y) < 0.7) {
+    const upT = new THREE.Vector3(0, 1, 0); upT.addScaledVector(e1, -upT.dot(e1));
+    if (upT.lengthSq() > 1e-6) { upT.normalize(); rot0 = _SVGWRAP_ROT0_SIGN * Math.atan2(upT.dot(e3), upT.dot(a)); }
+  }
   const spec = { R: pr.R, depthMm: svgMesh.userData.svgDepth || 3, feld,
                  epsMm: pr.epsMm != null ? pr.epsMm : 0.2, s, profile,
                  // Achse in Weltkoordinaten festhalten: nach einer Drehung des
                  // Motivs zeigt seine lokale Y-Achse NICHT mehr entlang des
                  // Zylinders — daraus abgeleitet rechnete alles Weitere falsch.
                  axis: [a.x, a.y, a.z], axisPt: [c0.x, c0.y, c0.z],
-                 rotRad: w0 ? (w0.rotRad || 0) : 0 };
+                 rotRad: w0 ? (w0.rotRad || 0) : rot0 };
   const geo = _svgWrapBuildGeo(svgMesh.userData, spec);
   svgMesh.geometry.dispose();
   svgMesh.geometry = geo;
@@ -46931,7 +46979,7 @@ function _svgWrapFollowWall(o) {
   // ihm IST die Wand. Ob die Stelle rund genug ist, entscheidet danach die Probe.
   const wandPunkt = _svgWrapOnWall(o, Infinity);
   if (!wandPunkt) return gedreht;      // heruntergezogen — hier gibt es nichts nachzuführen
-  const probe = _svgWrapProbe(tgt, wandPunkt);
+  const probe = _svgWrapProbe(tgt, wandPunkt, { axisW: _svgWrapAxis(o) });
   if (!probe) return gedreht;
   // Gerades Rohr: Radius bleibt gleich → nichts neu bauen. Sonst kostete jeder
   // Klick auf den Versetzen-Pfeil einen kompletten Neuaufbau der Geometrie.
