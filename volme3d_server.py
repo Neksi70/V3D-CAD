@@ -9,6 +9,8 @@ import ssl
 import json
 import uuid
 import time
+import select
+import socket
 import base64
 import tempfile
 import threading
@@ -263,8 +265,15 @@ class Handler(BaseHTTPRequestHandler):
             if ct:
                 headers['Content-Type'] = ct
             conn.request(method, backend_path, body=body, headers=headers)
-            resp = conn.getresponse()
-            data = resp.read()
+            antwort = self._occt_wait(conn)
+            if antwort is None:
+                # Browser hat aufgelegt (✕ Abbrechen): Verbindung zum Backend
+                # schliessen — der Arbeiterpool raeumt den Auftrag dann ab,
+                # statt minutenlang fuer niemanden weiterzurechnen.
+                conn.close()
+                self.close_connection = True
+                return
+            resp, data = antwort
             self.send_response(resp.status)
             self._cors()
             self.send_header('Content-Type',
@@ -282,6 +291,44 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Length', str(len(msg)))
             self.end_headers()
             self.wfile.write(msg)
+
+    def _occt_wait(self, conn):
+        """Holt die Backend-Antwort und achtet dabei auf den Browser.
+        Rueckgabe (resp, data) oder None, wenn der Browser aufgelegt hat.
+        Gelesen wird in einem Nebenfaden: select() auf dem TLS-Socket taugt
+        nicht, TLS 1.3 schickt nach dem Handshake Session-Tickets, und die
+        sahen wie der Antwortbeginn aus."""
+        box = {}
+        def lesen():
+            try:
+                r = conn.getresponse()
+                box['ok'] = (r, r.read())
+            except Exception as e:
+                box['err'] = e
+        t = threading.Thread(target=lesen, daemon=True)
+        t.start()
+        while t.is_alive():
+            t.join(0.5)
+            if not t.is_alive():
+                break
+            r, _, _ = select.select([self.connection], [], [], 0)
+            if not r:
+                continue
+            try:
+                daten = self.connection.recv(1, socket.MSG_PEEK)
+            except OSError:
+                daten = b''
+            if not daten:
+                try:
+                    conn.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                t.join(5)
+                return None
+            t.join()   # Browser schickt schon Neues hinterher → normal warten
+        if 'err' in box:
+            raise box['err']
+        return box['ok']
 
     def _json(self, code, obj, cookie=None):
         data = json.dumps(obj).encode()

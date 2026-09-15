@@ -7465,13 +7465,15 @@ async function _applyRimBevel(o, rims, chamferDist) {
   const cutters = rims.map(rim => _rimBevelCutter(o, rim, mm / 10, useFil));
   _progressShow(useFil ? 'Lochkante wird abgerundet…' : 'Lochkante wird angefast…');
   _progressSet(8); _progressCreep(93);
+  const ctl = _progressCancelable();
   try {
     const solidStls = _meshWorldToStls(o);
     const toolStls  = cutters.flatMap(c => _meshWorldToStls(c));
     if (!solidStls.length || !toolStls.length) throw new Error('keine Geometrie');
     const resp = await fetch(_OCCT_BASE + '/api/occt-subtract-mesh', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ solidStls: solidStls.map(_bufToBase64), toolStls: toolStls.map(_bufToBase64) })
+      body: JSON.stringify({ solidStls: solidStls.map(_bufToBase64), toolStls: toolStls.map(_bufToBase64) }),
+      signal: ctl.signal
     });
     const data = await resp.json();
     if (data.error || !data.stlBase64) throw new Error(data.error || 'kein Ergebnis');
@@ -7500,6 +7502,7 @@ async function _applyRimBevel(o, rims, chamferDist) {
     notify(rims.length + ' Lochkante(n) ' + (useFil ? 'abgerundet' : 'angefast') + ' (' + mm.toFixed(1) + ' mm)', 'ok');
   } catch (e) {
     _progressHide();
+    if (_progUserAborted(ctl)) { notify('Kantenbearbeitung abgebrochen — der Körper ist unverändert', 'ok'); return; }
     console.warn('[rim-bevel]', e);
     notify('Kantenbearbeitung fehlgeschlagen: ' + (e.message || e), 'w');
   }
@@ -15530,7 +15533,9 @@ async function unionSelected() {
   _progressSet(8);
   _progressCreep(85, 0.5);   // kriecht, solange der Server rechnet
   // Notbremse: ohne sie wartet fetch endlos und die Anzeige klebt bei 85 %.
-  const ctl = new AbortController();
+  // Zusätzlich darf der Nutzer selbst abbrechen (Ralf, 15.9.26: „ich bin dem
+  // Balken ausgeliefert").
+  const ctl = _progressCancelable();
   const bail = setTimeout(() => ctl.abort(), Math.min(300000, estMs * 4 + 20000));
   try {
     const resp = await fetch(_OCCT_BASE + '/api/occt-union', {
@@ -15557,6 +15562,7 @@ async function unionSelected() {
     notify('Verschmolzen (wasserdicht) ✓', 'ok');
   } catch (e) {
     _progressHide();
+    if (_progUserAborted(ctl)) { notify('Vereinen abgebrochen — die Teile sind unverändert', 'ok'); return; }
     console.warn('[union] Backend fehlgeschlagen → Gruppierung:', e.message || e);
     const abbruch = e && (e.name === 'AbortError' || /abort/i.test(e.message || ''));
     notify(abbruch
@@ -15595,10 +15601,12 @@ async function fitCheckTool() {
   }
   _progressShow('Passung wird geprüft…'); _progressSet(10);
   _progressCreep(85, 0.6);
+  const ctl = _progressCancelable();
   try {
     const resp = await fetch(_OCCT_BASE + '/api/occt-fit-check', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ aStls: aStls.map(_bufToBase64), bStls: bStls.map(_bufToBase64) })
+      body: JSON.stringify({ aStls: aStls.map(_bufToBase64), bStls: bStls.map(_bufToBase64) }),
+      signal: ctl.signal
     });
     _progressStopCreep(); _progressSet(92, 'Ergebnis…');
     const d = await resp.json();
@@ -15637,6 +15645,7 @@ async function fitCheckTool() {
     if (_fitVis.length) _fitVisTimer = setTimeout(_fitClear, 15000);   // Anzeige nach 15 s aufräumen
   } catch (e) {
     _progressHide();
+    if (_progUserAborted(ctl)) { notify('Passungsprüfung abgebrochen', 'ok'); return; }
     notify('Passungsprüfung fehlgeschlagen: ' + (e.message || e), 'e');
   }
 }
@@ -16560,6 +16569,7 @@ async function _createHollowLid() {
   if (_hollowLidBusy) { console.warn('[hollow-lid] bereits aktiv (busy) — Klick ignoriert'); return; }
   const btn = document.getElementById('hl-go');
   _hollowLidBusy = true; if (btn) { btn.disabled = true; btn.textContent = '… rechnet'; }
+  let ctl = null;
   try {
     const o = getFirst();
     console.log('[hollow-lid] Start, Objekt:', o?.userData?.name, 'shapeType:', o?.userData?.shapeType, 'isMesh:', o?.isMesh);
@@ -16586,10 +16596,12 @@ async function _createHollowLid() {
     if (!_progEl) _progressShow('Hohlkörper + Deckel wird berechnet…');
     _progressSet(8, 'Hohlkörper + Deckel wird berechnet…');
     _progressCreep(85, 0.5);   // kriecht, solange der Server rechnet (unbekannte Dauer)
+    ctl = _progressCancelable();
 
     const resp = await fetch(_OCCT_BASE + '/api/occt-hollow-lid', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stlBase64: _bufToBase64(stlBuf), ...params })
+      body: JSON.stringify({ stlBase64: _bufToBase64(stlBuf), ...params }),
+      signal: ctl.signal
     });
     console.log('[hollow-lid] HTTP', resp.status);
     _progressStopCreep(); _progressSet(90, 'Ergebnis wird geladen…');
@@ -16609,6 +16621,7 @@ async function _createHollowLid() {
     notify('Hohlkörper + Deckel erzeugt ✓', 'ok');
   } catch (e) {
     _progressHide();
+    if (_progUserAborted(ctl)) { notify('Hohlkörper abgebrochen — das Modell ist unverändert', 'ok'); return; }
     console.error('[hollow-lid]', e); notify('Hohlkörper fehlgeschlagen: ' + (e.message || e), 'e');
   } finally {
     _hollowLidBusy = false; if (btn) { btn.disabled = false; btn.textContent = '✓ Erzeugen'; }
@@ -19953,7 +19966,7 @@ function _autoSnapSvgToSolid(svgHole, solid) {
   return true;
 }
 
-async function _occtFullBooleanCut(solid, svgHole) {
+async function _occtFullBooleanCut(solid, svgHole, signal) {
   const oc = await _loadOCCT().catch(() => null);
   if (!oc) return null;
 
@@ -20036,7 +20049,8 @@ async function _occtFullBooleanCut(solid, svgHole) {
       const resp = await fetch(_OCCT_BASE + '/api/occt-subtract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: _body
+        body: _body,
+        signal
       });
       const data = await resp.json();
       console.log('data keys:', Object.keys(data));
@@ -20219,18 +20233,26 @@ async function subtractHoles() {
   _progressShow(hasSvg && !svgThrough ? 'Gravur wird abgezogen…' : 'Abziehen läuft…');
   _progressSet(8);
   _progressCreep(93);   // kriecht während OCCT rechnet; springt am Ende auf 100%
+  const ctl = _progressCancelable();
 
-  _doSubtractHoles(solids, holes)
+  _doSubtractHoles(solids, holes, ctl)
     .then(() => _progressDone())
     .catch(err => {
       _progressHide();
+      if (_progUserAborted(ctl)) { notify('Abziehen abgebrochen — die Teile sind unverändert', 'ok'); return; }
       console.error('CSG Fehler:', err);
       notify('CSG Fehler: ' + err.message, 'w');
     });
 }
 
-async function _doSubtractHoles(solids, holes) {
+async function _doSubtractHoles(solids, holes, ctl) {
   await new Promise(r => setTimeout(r, 30)); // Kurze Pause damit Notify sichtbar wird
+  // Abbruch per Knopf: die Rechenwege unten schlucken Fehler und fallen weiter
+  // (OCCT → Manifold → BSP). Nach jedem Warten deshalb ausdrücklich nachsehen,
+  // sonst rechnet nach dem Abbruch still der nächste Rückfall los.
+  const _stopIfAborted = () => {
+    if (ctl && ctl.signal.aborted) throw new DOMException('Abziehen abgebrochen', 'AbortError');
+  };
   // Operations-Journal: Ausgangsteile VOR der Mutation sichern (inkl. Geometrie).
   // Wird bei Erfolg ans Ergebnis gehängt → „✎ Operation bearbeiten" stellt die
   // Teile wieder her (Parametrik-Stufe 1: Bohrung nachträglich ändern).
@@ -20283,8 +20305,9 @@ async function _doSubtractHoles(solids, holes) {
         solidMesh.userData.shapeType || solidMesh.userData.occtShape || '');
       let newResult = null;
       if (hole.userData._svgPathData?.length) {
-        try { newResult = await _occtFullBooleanCut(solidMesh, hole); }
+        try { newResult = await _occtFullBooleanCut(solidMesh, hole, ctl && ctl.signal); }
         catch(e) { console.warn('OCCT Full Cut Fehler:', e); }
+        _stopIfAborted();
       }
       if (newResult) {
         const { geo, stlBuf, inlayGeo, inlayStlBuf } = newResult;
@@ -20321,6 +20344,7 @@ async function _doSubtractHoles(solids, holes) {
       if (!newGeo && hole.userData._svgPathData?.length) {
         try { newGeo = await _occtFaceOnlyCut(solidMesh, hole); }
         catch(e) { console.warn('Face-Only Fehler:', e); }
+        _stopIfAborted();
       }
       if (newGeo) {
         const prev = solidMesh;
@@ -20456,6 +20480,7 @@ async function _doSubtractHoles(solids, holes) {
       try {
         const t0 = performance.now();
         const geo = await _mfSubtractWorld([solidMesh, ...solids.slice(1)], _genericTools);
+        _stopIfAborted();
         console.log(`[subtract] Manifold-Schnellweg: ${_nTris} Dreiecke in ${Math.round(performance.now()-t0)} ms`);
         solidMesh = new THREE.Mesh(geo, mat);
         // Kein Ergebnis-STL vom Server → der Buffer des AUSGANGS-Objekts darf
@@ -20465,6 +20490,7 @@ async function _doSubtractHoles(solids, holes) {
         occtOk = true;   // OCCT/BSP überspringen
         solids.slice(1).forEach(s => consumedSolids.add(s));
       } catch (e) {
+        _stopIfAborted();
         console.warn('[subtract] Manifold-Schnellweg fehlgeschlagen:', e.message || e);
         // Bei importierten Netzen ist OCCT als Rückfall keine Hilfe, sondern eine
         // Falle: Es braucht dafür Minuten pro Werkzeug und lief bei Josy in die
@@ -20492,7 +20518,8 @@ async function _doSubtractHoles(solids, holes) {
           body: JSON.stringify({
             solidStls: solidStls.map(_bufToBase64),
             toolStls:  toolStls.map(_bufToBase64)
-          })
+          }),
+          signal: ctl && ctl.signal
         });
         const data = await resp.json();
         if (data.error || !data.stlBase64) throw new Error(data.error || 'kein Ergebnis');
@@ -20508,6 +20535,7 @@ async function _doSubtractHoles(solids, holes) {
         solids.slice(1).forEach(s => consumedSolids.add(s));   // alle eingeflossen
       }
     } catch (e) {
+      _stopIfAborted();
       console.warn('[subtract-mesh] OCCT fehlgeschlagen → BSP-Fallback:', e.message || e);
     }
     if (!occtOk) {
@@ -20526,6 +20554,8 @@ async function _doSubtractHoles(solids, holes) {
     solidMesh.scale.set(1, 1, 1);
     solidMesh.updateWorldMatrix(true, true);
   }
+
+  _stopIfAborted();
 
   // ── Leeres Ergebnis abfangen ───────────────────────────────────────────────
   // Ein Gravur-Schnitt gegen eine Schrift, die komplett IM Körper steckt, kann
@@ -21459,12 +21489,14 @@ async function _applyHexPattern(cellMm, wallMm, marginMm, depthMm) {
   _progressShow('⬡ Wabenmuster wird gestanzt…');
   _progressSet(8);
   _progressCreep(93);
+  const ctl = _progressCancelable();
   try {
-    await _doSubtractHoles([target], [holeMesh]);
+    await _doSubtractHoles([target], [holeMesh], ctl);
     _progressDone();
     notify(`⬡ ${accepted.length} Waben-Löcher gestanzt ✓`, 'ok');
   } catch (err) {
     _progressHide();
+    if (_progUserAborted(ctl)) { notify('Wabenmuster abgebrochen — der Körper ist unverändert', 'ok'); return; }
     console.error('Wabenmuster CSG Fehler:', err);
     notify('CSG Fehler: ' + err.message, 'w');
   }
@@ -24853,11 +24885,39 @@ function notify(msg, type, ms) {
 // am Ende die Objekte, die sie am START erfasst haben — klickt der Nutzer
 // währenddessen weiter (verschieben, zentrieren, nochmal Abziehen…), geht das
 // verloren oder trifft schon gelöschte Körper → „jedes Mal passiert was anderes".
-let _progEl = null, _progTimer = null, _progVal = 0, _progBlockEl = null;
+let _progEl = null, _progTimer = null, _progVal = 0, _progBlockEl = null, _progCtl = null;
 function _progKeyBlock(e) {
+  if (e.key === 'Escape' && _progCtl) { e.stopPropagation(); e.preventDefault(); _progressCancel(); return; }
   if (e.key === 'Escape' || (e.key && e.key.length > 1 && e.key[0] === 'F')) return; // F5/F12 etc. durchlassen
   e.stopPropagation();
 }
+// Macht den sichtbaren Balken abbrechbar („✕ Abbrechen" + Esc) und liefert den
+// AbortController: signal an fetch geben, vor dem Übernehmen des Ergebnisses
+// _progUserAborted(ctl) prüfen. Ein Abbruch durch den Nutzer setzt ctl._byUser —
+// so bleibt er von einer Zeit-Notbremse (ctl.abort() ohne Nutzer) unterscheidbar.
+function _progressCancelable() {
+  const ctl = new AbortController();
+  if (!_progEl) return ctl;
+  _progCtl = ctl;
+  const b = document.createElement('button');
+  b.className = '_pc';
+  b.textContent = '✕ Abbrechen';
+  b.title = 'Vorgang abbrechen (Esc) — die Teile bleiben unverändert';
+  b.style.cssText = 'display:block;margin:10px auto 0;padding:5px 14px;border-radius:7px;cursor:pointer;'
+    + 'border:1px solid rgba(255,255,255,.35);background:rgba(255,255,255,.08);color:#fff;font:inherit';
+  b.addEventListener('click', e => { e.stopPropagation(); _progressCancel(); });
+  b.addEventListener('dblclick', e => e.stopPropagation());
+  _progEl.appendChild(b);
+  return ctl;
+}
+function _progressCancel() {
+  const ctl = _progCtl;
+  if (!ctl || ctl.signal.aborted) return;
+  ctl._byUser = true;
+  _progressHide();
+  ctl.abort();
+}
+function _progUserAborted(ctl) { return !!(ctl && ctl._byUser); }
 function _progressShow(label) {
   _progressHide();
   _progBlockEl = document.createElement('div');
@@ -24903,6 +24963,7 @@ function _progressHide() {
   _progressStopCreep();
   if (_progEl) { _progEl.remove(); _progEl = null; }
   if (_progBlockEl) { _progBlockEl.remove(); _progBlockEl = null; }
+  _progCtl = null;
   window.removeEventListener('keydown', _progKeyBlock, true);
 }
 
@@ -44126,8 +44187,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.22';
+const VOLME3D_VERSION = '1.18.23';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.23', date:'2026-09-15', changes:[
+    ['\u270B','<b>Lange Berechnungen abbrechen.</b> Beim <b>Vereinen</b>, <b>Abziehen</b>, Wabenmuster, Hohlkörper mit Deckel, Passungsprüfung und Lochkanten-Rundung gibt es unter dem Fortschrittsbalken jetzt den Knopf <b>✕ Abbrechen</b> (oder die Taste <b>Esc</b>). Dauert es zu lange, brichst du einfach ab: Deine Teile bleiben genau so, wie sie vorher waren, und die Berechnung auf dem Server wird ebenfalls beendet.']
+  ]},
   { version:'1.18.22', date:'2026-09-14', changes:[
     ['\u{1F3AF}','<b>Motiv auf der Kugel verschieben: bleibt jetzt überall dran.</b> Zog man ein gewickeltes Motiv auf einer Kugel nach oben oder unten, hielt V3D CAD die obere und untere Kugelhälfte für einen Deckel, brach das Gleiten ab und heftete das Motiv beim Loslassen irgendwo neu an, meist schwebend. Jetzt gleitet das Motiv über die ganze Kugel; beim Loslassen wird die passende Wickelachse neu gewählt (um die Mitte senkrecht, oben und unten quer) und das Motiv neu gebogen, aufrecht und mit deiner Drehung. Das gilt auch für die Positionsfelder und die Pfeiltasten.'],
   ]},
