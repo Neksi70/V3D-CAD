@@ -28235,7 +28235,7 @@ function _applyTextSnapOnDrop(freierZug) {
           notify('SVG wieder flach — es liegt auf keiner Rundung mehr', 'ok');
         }
       } else if (o.userData._svgSchmieg) {
-        if (_svgSchmiegFlatten(o)) {
+        if (!_svgSchmiegAufWand(o) && _svgSchmiegFlatten(o)) {
           updateTFInputs(); updateTree(); updateCtxPopup();
           notify('SVG wieder flach — es liegt auf keiner Wölbung mehr', 'ok');
         }
@@ -44196,8 +44196,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.24';
+const VOLME3D_VERSION = '1.18.25';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.25', date:'2026-09-16', changes:[
+    ['\u{1FAE7}','<b>Angeschmiegte Motive lassen sich jetzt auf der Wölbung verschieben.</b> Zog man ein angeschmiegtes Motiv weiter nach unten oder oben, ließ es sich dort nicht befestigen: Es sprang an die Deckel- oder Bodenebene des Körpers und lag danach nicht mehr an. Jetzt gleitet das Motiv beim Ziehen über die Wölbung, folgt dem Zeiger auf der Wand und wird beim Loslassen an der neuen Stelle neu angeschmiegt. Erst ein Zug deutlich neben den Körper nimmt es herunter und legt es wieder flach.'],
+  ]},
   { version:'1.18.24', date:'2026-09-16', changes:[
     ['\u{1FAE7}','<b>Neu: Motive schmiegen sich an Kuppeln und Schultern an.</b> Auf Stellen, die um keine Achse rund sind (Scheitel einer Lampe, die gerundete Schulter einer Vase, ein Ei), konnte V3D CAD bisher nur flach aufheften, und ein flaches Motiv liegt auf einer Wölbung nur in der Mitte auf („nicht ganz drauf“). Jetzt steht dort am Zeiger <b>🫧 An die Wölbung anschmiegen</b>: Das Motiv legt sich wie ein angedrückter Aufkleber auf die Fläche, mit gleichbleibender Gravurtiefe senkrecht zur Wand. Drehen über den ↻-Griff, den Dreh-Ring oder die Winkelfelder geht wie gewohnt, Verschieben durch Ziehen an eine neue Stelle. Gravieren und Durchbruch funktionieren wie beim Wickeln. Ab etwa 20° Wandneigung wird angeschmiegt statt gewickelt, weil das Wickeln um eine Achse dort nicht mehr ganz folgt.'],
   ]},
@@ -45776,6 +45779,12 @@ function _svgGlideEscaped(e) {
   if (!hit) {
     // Nichts im Blick: zieht der Nutzer deutlich neben den Körper, will er das
     // Motiv HERUNTERNEHMEN — sonst klebte es unentrinnbar an seiner Rundung.
+    if (G.kind === 'schmieg') {
+      const t = G.fr.target;
+      if (!t) return true;
+      const bs = new THREE.Box3().setFromObject(t).getBoundingSphere(new THREE.Sphere());
+      return raycaster.ray.distanceToPoint(bs.center) > bs.radius * 1.3;
+    }
     if (G.kind === 'wrap') {
       // Großzügig: beim Drehen um den Körper verlässt der Zeiger dessen Umriss
       // ständig kurz — erst ein deutlicher Zug daneben heißt "herunternehmen".
@@ -45811,6 +45820,7 @@ function _svgGlideEscaped(e) {
               && Math.abs(d - G.fr.solid.planeD) < 1.0;
     return !same;                               // andere Wand desselben Körpers
   }
+  if (G.kind === 'schmieg') return false;      // auf dem eigenen Körper: überall weiter gleiten
   // Rundung: flacher Deckel/Boden statt Mantel getroffen (Normale parallel zur
   // Achse). Gewölbte Schultern und Kugeln (0,7–0,98) bleiben im Gleiten — beim
   // Loslassen wird dort um die passende Achse neu gewickelt (Josy 14.9.: das Motiv
@@ -45850,7 +45860,16 @@ function _svgGlideBegin(o, e) {
     _textSnapTarget = null;
     return true;
   }
-  if (fr.kind === 'schmieg') return false;     // Verschieben: freier Zug, beim Loslassen neu anschmiegen
+  if (fr.kind === 'schmieg') {
+    // Angeschmiegt: das Motiv folgt dem Wandpunkt unter dem Zeiger, beim Loslassen
+    // wird es dort neu angeschmiegt. Ohne eigenes Gleiten griff der allgemeine
+    // Andock-Magnet und setzte es an Deckel- oder Bodenebene des Körpers (Josy 16.9.:
+    // „springt ganz hoch oder ganz runter, und dann ist er nicht ganz drauf").
+    _svgGlide = { kind: 'schmieg', obj: o, fr, moved: false, ev: { x: e.clientX, y: e.clientY },
+                  pos0: o.position.clone(), q0: o.quaternion.clone() };
+    _textSnapTarget = null;
+    return true;
+  }
   getNorm(e); raycaster.setFromCamera(mousev, camera);
   const ray = raycaster.ray.clone();
   const G = { kind: fr.kind, obj: o, fr, moved: false,
@@ -45917,7 +45936,24 @@ function _svgGlideMove(e) {
   const free = !!e.altKey;          // Alt: ohne Mitten-Magnet und ohne Randstopp
   let label = '';
 
-  if (G.kind === 'flat') {
+  if (G.kind === 'schmieg') {
+    const tgt = G.fr.target;
+    const hit = tgt ? raycaster.intersectObject(tgt, true).find(h => h.face && !h.object.userData.isEdgeLines) : null;
+    if (!hit) return;                           // Zeiger neben dem Körper: stehen bleiben
+    const ec = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+    const cB = new THREE.Box3().setFromObject(tgt).getCenter(new THREE.Vector3());
+    if (ec.dot(hit.point.clone().sub(cB)) < 0) ec.negate();
+    const faceUp = Math.abs(ec.y) > 0.85 ? new THREE.Vector3(0, 0, -1) : new THREE.Vector3(0, 1, 0);
+    const eb = faceUp.clone().addScaledVector(ec, -faceUp.dot(ec));
+    if (eb.lengthSq() < 1e-8) return;
+    eb.normalize();
+    const ea = new THREE.Vector3().crossVectors(eb, ec).normalize();
+    // Geometrie bleibt vorerst die alte (Feld vom Startpunkt) — sie wird beim
+    // Loslassen neu gebaut; bis dahin nur Ursprung und Ausrichtung nachführen.
+    o.position.copy(hit.point);
+    o.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(ea, eb, ec));
+    label = '🫧 auf der Wölbung — beim Loslassen wird neu angeschmiegt';
+  } else if (G.kind === 'flat') {
     const p = _rayPlanePoint(ray, G.fr.point, G.fr.n);
     if (!p) return;
     const d = p.clone().sub(G.p0);
@@ -46016,6 +46052,18 @@ function _svgGlideEnd() {
       if (probe) _svgWrapRefresh(o, probe);   // Wand an der neuen Motivhöhe nachmessen
     }
     updateTFInputs(); updateTree(); _doRepositionDimHandles();
+    return true;
+  }
+  if (G.kind === 'schmieg') {
+    const tgt = G.fr.target;
+    if (tgt && o.userData._svgSchmieg) {
+      const ec = new THREE.Vector3(0, 0, 1).applyQuaternion(o.quaternion).normalize();
+      const rc = new THREE.Raycaster();
+      rc.set(o.position.clone().addScaledVector(ec, 5), ec.clone().negate());
+      const hit = rc.intersectObject(tgt, true).find(h => h.face && !h.object.userData.isEdgeLines);
+      if (hit) _svgSchmiegApply(o, hit);
+    }
+    updateTFInputs(); updateTree(); updateCtxPopup(); _doRepositionDimHandles();
     return true;
   }
   if (G.kind === 'wrap' && G.fr.target) {
@@ -47397,6 +47445,23 @@ function _svgSchmiegApply(svgMesh, hit) {
   _updateObjEdgeLines(svgMesh);
   svgMesh.updateMatrixWorld(true);
   return true;
+}
+
+// Sitzt das angeschmiegte Motiv noch auf seiner Wand? Strahl von außen entlang der
+// eigenen Normale: die Wand muss nahe am Ursprung (= Klickpunkt) liegen.
+function _svgSchmiegAufWand(o) {
+  const w = o && o.userData && o.userData._svgSchmieg;
+  if (!w) return false;
+  const tgt = o.userData._schmiegTarget && o.userData._schmiegTarget.parent ? [o.userData._schmiegTarget]
+            : objects.filter(x => x !== o && x.isMesh && !x.userData.isEdgeLines);
+  const ec = new THREE.Vector3(0, 0, 1).applyQuaternion(o.quaternion).normalize();
+  const rc = new THREE.Raycaster();
+  rc.set(o.position.clone().addScaledVector(ec, 5), ec.clone().negate());
+  for (const h of rc.intersectObjects(tgt, true)) {
+    if (!h.face || h.object.userData.isEdgeLines) continue;
+    return Math.abs(h.distance - 5) < 0.5;          // Wand innerhalb 5 mm um den Ursprung
+  }
+  return false;
 }
 
 function _svgSchmiegRebuild(svgMesh, patch) {

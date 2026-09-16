@@ -111,9 +111,9 @@ const prep = await pg.evaluate((svg) => {
   const w = m.userData._svgSchmieg; if (!w) return { fehler: 'nicht angeschmiegt' };
   const ea = new THREE.Vector3().fromArray(w.ea), eb = new THREE.Vector3().fromArray(w.eb), ec = new THREE.Vector3().fromArray(w.ec), P0 = new THREE.Vector3().fromArray(w.P0);
   const rc = new THREE.Raycaster();
-  window._messe = (obj, aMM, bMM) => { const p2 = P0.clone().addScaledVector(ea, aMM / 10).addScaledVector(eb, bMM / 10); rc.set(p2.clone().addScaledVector(ec, 8), ec.clone().negate()); return rc.intersectObject(obj, true).filter(x => x.face).slice(0, 2).map(h => +((8 - h.distance) * 10).toFixed(2)); };
+  window._messeTiefe = (obj, aMM, bMM) => { const p2 = P0.clone().addScaledVector(ea, aMM / 10).addScaledVector(eb, bMM / 10); rc.set(p2.clone().addScaledVector(ec, 8), ec.clone().negate()); return rc.intersectObject(obj, true).filter(x => x.face).slice(0, 2).map(h => +((8 - h.distance) * 10).toFixed(2)); };
   window._punkte = { balken: [0, 11], stamm: [0, -5], daneben: [-9, -8], weit: [-16, -16] };
-  const vorher = {}; for (const [n2, [x, y]] of Object.entries(window._punkte)) vorher[n2] = _messe(k, x, y);
+  const vorher = {}; for (const [n2, [x, y]] of Object.entries(window._punkte)) vorher[n2] = _messeTiefe(k, x, y);
   window._engraveDepthDialog = () => Promise.resolve({ depth: 1.2, wantInlay: false, through: false });
   selectObjs([k, m]);
   subtractHoles();
@@ -124,7 +124,7 @@ await pg.waitForFunction(() => objects.length === 1 && !objects[0].userData.isHo
 const cut = await pg.evaluate(() => {
   if (objects.length !== 1) return { n: objects.length };
   const o = objects[0]; o.updateMatrixWorld(true);
-  const nachher = {}; for (const [n2, [x, y]] of Object.entries(window._punkte)) nachher[n2] = _messe(o, x, y);
+  const nachher = {}; for (const [n2, [x, y]] of Object.entries(window._punkte)) nachher[n2] = _messeTiefe(o, x, y);
   return { n: 1, nachher };
 });
 console.log('cut', JSON.stringify(cut));
@@ -138,6 +138,52 @@ for (const name of ['stamm', 'balken']) {
 }
 for (const name of ['daneben', 'weit'])
   ok(`${name}: Wand unberuehrt`, cut.n === 1 && prep.vorher[name] && cut.nachher[name] && Math.abs(prep.vorher[name][0] - cut.nachher[name][0]) < 0.05, { vorher: prep.vorher[name], nachher: cut.nachher[name] });
+// ── 3) Verschieben per Maus: das Motiv gleitet auf der Woelbung und wird beim
+//       Loslassen neu angeschmiegt (Josy 16.9.: „springt ganz hoch oder ganz runter") ──
+await pg.evaluate((svg) => {
+  objects.slice().forEach(o => { scene.remove(o); objects.splice(objects.indexOf(o), 1); });
+  const m = _importSvgConfirm({ svgText: svg, mode: 'extrude', depthMM: 3, targetMM: 30, name: 'T' }); m.userData.isHole = true;
+  const k = _huelle(); window._K = () => k; window._M = () => objects.find(o => o.userData.shapeType === 'svg');
+  _setzeAn(m, k, 0.93); selectObjs([]);
+  const bb = new THREE.Box3().setFromObject(k); const C = bb.getCenter(new THREE.Vector3());
+  orbitTarget.copy(C); sph.theta = Math.PI / 2; sph.phi = 1.25; sph.r = 30; sph2cam(); camera.updateMatrixWorld(true);
+}, SVG);
+const griff = () => pg.evaluate(() => {
+  const m = _M(); m.updateMatrixWorld(true);
+  const c = _svgCenterWorld(m).project(camera); const r = renderer.domElement.getBoundingClientRect();
+  const bx = Math.round(r.left + (c.x * 0.5 + 0.5) * r.width), by = Math.round(r.top + (-c.y * 0.5 + 0.5) * r.height);
+  const top = (x, y) => { const h = pickObjects({ clientX: x, clientY: y }); if (!h.length) return null; let p = h[0].object; while (p && !objects.includes(p)) p = p.parent; return p; };
+  for (let rad = 0; rad <= 80; rad++) for (let ox = -rad; ox <= rad; ox++) for (const oy of [-rad, rad]) for (const [x, y] of [[bx + ox, by + oy], [bx + oy, by + ox]]) {
+    if ([[0,0],[1,0],[-1,0],[0,1],[0,-1]].every(([dx, dy]) => top(x + dx, y + dy) === m)) return { x, y };
+  }
+  return null;
+});
+async function drag(from, to, steps = 14) {
+  await pg.mouse.move(from.x, from.y); await pg.mouse.down(); await pg.waitForTimeout(30);
+  const glide0 = await pg.evaluate(() => typeof _svgGlide !== 'undefined' && _svgGlide ? _svgGlide.kind : null);
+  for (let i = 1; i <= steps; i++) { await pg.mouse.move(from.x + (to.x - from.x) * i / steps, from.y + (to.y - from.y) * i / steps); await pg.waitForTimeout(25); }
+  const glide1 = await pg.evaluate(() => typeof _svgGlide !== 'undefined' && _svgGlide ? _svgGlide.kind : null);
+  await pg.mouse.up(); await pg.waitForTimeout(300);
+  return { glide0, glide1 };
+}
+const lage = () => pg.evaluate(() => { const m = _M(), k = _K(); const w = m.userData._svgSchmieg; const bb = new THREE.Box3().setFromObject(k); const mess = w ? _messe(m, k) : null; return { schmieg: !!w, hoeheProzent: w ? +(((w.P0[1] - bb.min.y) / (bb.max.y - bb.min.y)) * 100).toFixed(0) : null, mess, hatNormalen: !!m.geometry.attributes.normal, nVert: m.geometry.attributes.position.count, scale: +m.scale.x.toFixed(2) }; });
+let vor = await lage();
+for (const [name, dy] of [['runter1', 60], ['runter2', 60], ['hoch1', -70]]) {
+  await pg.evaluate(() => selectObjs([]));
+  const g = await griff();
+  ok(`${name}: Motiv ist greifbar`, !!g, g);
+  if (!g) continue;
+  const d = await drag(g, { x: g.x, y: g.y + dy });
+  const nach = await lage();
+  ok(`${name}: gleitet auf der Woelbung (kein freier Zug, kein Andock-Magnet)`, d.glide0 === 'schmieg' && d.glide1 === 'schmieg', d);
+  ok(`${name}: bleibt angeschmiegt und liegt an`, nach.schmieg && nach.mess && nach.mess.aussen && Math.abs(nach.mess.aussen.median - 0.2) < 0.1 && nach.mess.aussen.max < 0.6 && nach.mess.aussen.unter0 < 0.03, nach);
+  ok(`${name}: Hoehe folgt dem Zug (${vor.hoeheProzent} % → ${nach.hoeheProzent} %)`, nach.schmieg && (dy > 0 ? nach.hoeheProzent < vor.hoeheProzent - 3 : nach.hoeheProzent > vor.hoeheProzent + 3) && Math.abs(nach.hoeheProzent - vor.hoeheProzent) < 40, { vorher: vor.hoeheProzent, nachher: nach.hoeheProzent });
+  vor = nach;
+}
+await pg.evaluate(() => selectObjs([]));
+const gW = await griff();
+if (gW) { await drag(gW, { x: gW.x + 500, y: gW.y + 200 }); const nach = await lage(); ok('weit neben den Koerper gezogen: wieder flach (Skalierung zurueck)', !nach.schmieg && Math.abs(nach.scale - 1.5) < 0.01, nach); }
+
 console.log('errs', errs);
 ok('keine JS-Fehler', errs.length === 0, errs.slice(0, 3));
 console.log(fails.length ? '❌ ' + fails.length : '✅ OK');
