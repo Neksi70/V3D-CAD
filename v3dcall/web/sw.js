@@ -2,6 +2,12 @@
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 
+/* Chrome haelt die Seite nur dann fuer installierbar, wenn der Service
+   Worker ein fetch-Ereignis behandelt. Wir reichen alles unveraendert
+   durch — nichts wird zwischengespeichert, damit nie ein alter Stand
+   der Oberflaeche ausgeliefert wird. */
+self.addEventListener('fetch', () => {});
+
 self.addEventListener('push', event => {
   let d = {title: 'Neuer Anruf', body: 'Es liegt eine Nachricht vor.'};
   try { if (event.data) d = {...d, ...event.data.json()}; } catch (_) {}

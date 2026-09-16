@@ -100,6 +100,15 @@ def icon():
     return send_file(os.path.join(WEB, "icon.svg"), mimetype="image/svg+xml")
 
 
+@app.get("/icon-<int:groesse>.png")
+def icon_png(groesse):
+    # Chrome bietet "Installieren" nur mit einem PNG-Symbol ab 192 px an,
+    # ein SVG allein reicht nicht.
+    if groesse not in (192, 512):
+        return "", 404
+    return send_file(os.path.join(WEB, f"icon-{groesse}.png"), mimetype="image/png")
+
+
 @app.post("/api/login")
 def login():
     daten = request.get_json(silent=True) or {}
