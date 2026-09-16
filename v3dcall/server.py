@@ -175,7 +175,8 @@ def anrufe():
         a["hatAudio"] = bool(a.get("audio") and os.path.exists(a["audio"]))
         a.pop("audio", None)
         a.pop("fehler", None)
-    return jsonify(calls=liste, ungelesen=sum(1 for a in liste if not a["gelesen"]))
+    return jsonify(calls=liste, ungelesen=sum(1 for a in liste if not a["gelesen"]),
+                   pushAbos=pipeline.push_abos())
 
 
 @app.get("/api/calls/<cid>/audio")

@@ -67,6 +67,58 @@ def _nummer_lesbar(nummer):
     return nummer
 
 
+def _auswertung(text):
+    """Die Kopfzeilen der Gespraechs-Auswertung (NAME:, ANLIEGEN: …) einlesen.
+
+    Der Gespraechsassistent stellt der Mitschrift eine Kurzfassung in
+    festen Zeilen voran. Daraus wird der Betreff gebaut — eine nackte
+    Rufnummer im Posteingang uebersieht man zwischen Newslettern.
+    """
+    felder = {}
+    for zeile in (text or "").split("\n"):
+        if zeile.startswith("=") or not zeile.strip():
+            if felder:
+                break
+            continue
+        t = re.match(r"^([A-ZÄÖÜ]{4,14}):\s+(.*)$", zeile)
+        if t:
+            felder[t.group(1)] = t.group(2).strip()
+        elif not felder:
+            continue
+        else:
+            break
+    return felder
+
+
+def _kuerze(text, laenge):
+    text = " ".join((text or "").split())
+    if len(text) <= laenge:
+        return text
+    return text[:laenge].rsplit(" ", 1)[0] + "…"
+
+
+def _betreff_aus_auswertung(text, nummer, vorgabe):
+    f = _auswertung(text)
+    name = f.get("NAME", "")
+    if not name or name in ("—", "-", "unbekannt"):
+        return vorgabe
+    anliegen = _kuerze(f.get("ANLIEGEN", ""), 70)
+    eilig = f.get("DRINGLICH", "").lower().startswith(("hoch", "dringend", "eilig"))
+    kopf = f"{'‼️ ' if eilig else '📞 '}{name}"
+    if nummer and not nummer.startswith("unbekannt"):
+        kopf += f" ({nummer})"
+    return f"{kopf} — {anliegen}" if anliegen else kopf
+
+
+def push_abos():
+    """Wieviele Geraete bekommen Meldungen? 0 heisst: stilles Loch."""
+    try:
+        with core.db() as con:
+            return con.execute("SELECT COUNT(*) FROM subs").fetchone()[0]
+    except Exception:
+        return 0
+
+
 def sende_mail(anruf):
     m = core.cfg("mail", default={}) or {}
     if not m.get("to") or not m.get("pass"):
@@ -78,13 +130,14 @@ def sende_mail(anruf):
 
     gespraech = "\nAnrufer:" in ("\n" + text) and "Assistent:" in text
     if gespraech:
-        betreff = f"Gespräch mit {nummer}"
+        betreff = _betreff_aus_auswertung(text, nummer, f"Gespräch mit {nummer}")
         koerper = (
             f"Anruf am {wann}\n"
             f"Von: {nummer}\n"
             f"Dauer: {anruf.get('seconds', 0):.0f} Sekunden\n"
             f"\n{'-' * 52}\n\n{text}\n\n{'-' * 52}\n\n"
-            "Die Aufnahme der Anruferseite hängt an dieser E-Mail.\n")
+            "Die Aufnahme der Anruferseite hängt an dieser E-Mail.\n"
+            + _push_hinweis())
         msg = EmailMessage()
         name, adresse = parseaddr(m.get("from") or m["user"])
         absender = adresse or m["user"]
@@ -99,20 +152,27 @@ def sende_mail(anruf):
         return betreff
 
     if text:
-        betreff = f"Neue Nachricht von {nummer}"
+        # Ohne Gespraechsauswertung wenigstens den Anfang der Nachricht
+        # in den Betreff heben.
+        betreff = f"📞 Nachricht von {nummer}"
+        anfang = _kuerze(text, 60)
+        if anfang:
+            betreff += f" — {anfang}"
         koerper = (
             f"Anruf am {wann}\n"
             f"Von: {nummer}\n"
             + (f"Name: {anruf['name']}\n" if anruf.get("name") else "")
             + f"Länge: {anruf.get('seconds', 0):.0f} Sekunden\n"
             f"\n{'-' * 52}\n\n{text}\n\n{'-' * 52}\n\n"
-            "Die Aufnahme hängt an dieser E-Mail.\n")
+            "Die Aufnahme hängt an dieser E-Mail.\n"
+            + _push_hinweis())
     else:
-        betreff = f"Anruf von {nummer} — ohne Nachricht"
+        betreff = f"📞 Anruf von {nummer} — ohne Nachricht"
         koerper = (
             f"Anruf am {wann}\n"
             f"Von: {nummer}\n\n"
-            "Es wurde keine verständliche Nachricht hinterlassen.\n")
+            "Es wurde keine verständliche Nachricht hinterlassen.\n"
+            + _push_hinweis())
 
     msg = EmailMessage()
     name, adresse = parseaddr(m.get("from") or m["user"])
@@ -132,6 +192,20 @@ def sende_mail(anruf):
     _haenge_audio_an(msg, m, anruf, wann)
     _versende(m, msg)
     return betreff
+
+
+def _push_hinweis():
+    """Steht in der Mail, wenn kein Handy angemeldet ist.
+
+    Sonst faellt monatelang nicht auf, dass die Meldung aufs Handy
+    stillschweigend an niemanden geht — genau das ist am 16.9.2026
+    passiert.
+    """
+    if push_abos():
+        return ""
+    return ("\n⚠ Hinweis: Für diese Nachricht wurde kein Handy benachrichtigt — "
+            "es ist kein Gerät für Push angemeldet.\n"
+            "Einschalten unter „Einstellungen → Benachrichtigung aufs Handy“.\n")
 
 
 def _haenge_audio_an(msg, m, anruf, wann):
