@@ -32,7 +32,17 @@ try {
   // fehlen dann natuerlich, ohne dass am Minifying etwas kaputt ist.
   if (new URL(page.url()).pathname !== '/volme3d.html')
     pageErrors.push('GATE: umgeleitet auf ' + page.url() + ' — Sitzungs-Cookie nicht akzeptiert');
-  await page.waitForTimeout(3500); // Init/Module laufen lassen
+  // Nicht blind warten: das Firebase-SDK kommt vom CDN und war schon mal
+  // nach 3,5 s noch nicht da → _authGoogleLogin fehlte, und der Test meldete
+  // einen Minify-Schaden, den es nie gab. Also auf die Globals warten.
+  try {
+    await page.waitForFunction(
+      () => typeof window.newScene === 'function' && typeof window._authGoogleLogin === 'function',
+      { timeout: 20000 });
+  } catch (e) {
+    pageErrors.push('WARTEN: Globals kamen nicht innerhalb von 20 s');
+  }
+  await page.waitForTimeout(500); // Rest der Init nachlaufen lassen
 } catch (e) {
   pageErrors.push('GOTO: ' + e.message);
 }
