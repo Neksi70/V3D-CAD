@@ -14687,7 +14687,8 @@ function buildObjectFromData(data) {
       // Gewickelt? Dann direkt gebogen neu bauen — sonst läge das Motiv nach
       // Undo/Laden wieder flach neben der Rundung.
       geo = data._svgWrap ? _svgWrapBuildGeo(data, data._svgWrap)
-                          : _svgRebuildGeo(data);   // aus Pfaddaten neu bauen (statt fettes Mesh zu speichern)
+          : (data._svgSchmieg ? _svgSchmiegBuildGeo(data, data._svgSchmieg)
+                              : _svgRebuildGeo(data));   // aus Pfaddaten neu bauen (statt fettes Mesh zu speichern)
     } else {
       geo = buildGeo(data.type || 'box');
     }
@@ -14747,6 +14748,7 @@ function buildObjectFromData(data) {
     obj.userData.svgDepth       = data.svgDepth;
     obj.userData.svgSize        = data.svgSize;
     if (data._svgWrap) obj.userData._svgWrap = data._svgWrap;
+    if (data._svgSchmieg) obj.userData._svgSchmieg = data._svgSchmieg;
   }
   // Skizzen-/Loft-/Sweep-Rebuild-Parameter zurück (Regler nach Undo/Laden)
   if (data._skProfiles)     obj.userData._skProfiles     = data._skProfiles;
@@ -14957,6 +14959,7 @@ function objectToData(o) {
     d.svgDepth       = o.userData.svgDepth;
     d.svgSize        = o.userData.svgSize;
     if (o.userData._svgWrap) d._svgWrap = o.userData._svgWrap;   // Biege-Parameter (Radius, Tiefe, Skalierung)
+    if (o.userData._svgSchmieg) d._svgSchmieg = o.userData._svgSchmieg;   // Anschmieg-Feld
   } else if (o.isMesh && (o.userData.isSubtract || !o.userData.type || ['custom','text','import','revolve','flower',
       'sphericalshell','spring','bentpipe','thread','svg','lantern','screw','gear','rack','enclosure',
       'laserbox','gfbin','gfplate','gfcut','gardena','pipeclip','sketch','loft','sweep','loft3d'].includes(o.userData.type))) {
@@ -20204,12 +20207,13 @@ async function subtractHoles() {
     // Gewickelte Motive: die Tiefe steckt in der gebogenen Geometrie, nicht in einem
     // Extrusionsparameter → mit der neuen Tiefe neu biegen. Erhaben lässt sich nicht
     // abziehen; der Körper wird nach außen aufgebaut und zum Vereinen stehengelassen.
-    const wrapped = svgHoles.filter(h => h.userData._svgWrap);
+    const wrapped = svgHoles.filter(h => h.userData._svgWrap || h.userData._svgSchmieg);
     if (wrapped.length) {
       const raised = [];
       for (const h of wrapped) {
+        const reshape = h.userData._svgWrap ? _svgWrapReshape : _svgSchmiegReshape;
         if (!svgThrough && depth < -0.05) {
-          _svgWrapReshape(h, depth);
+          reshape(h, depth);
           h.userData.isHole = false;
           h.userData.color = currentColor;
           if (h.material) {
@@ -20218,7 +20222,7 @@ async function subtractHoles() {
           }
           raised.push(h);
         } else {
-          _svgWrapReshape(h, svgThrough ? 'through' : depth);
+          reshape(h, svgThrough ? 'through' : depth);
         }
       }
       if (raised.length) {
@@ -20294,7 +20298,7 @@ async function _doSubtractHoles(solids, holes, ctl) {
     // _cutThrough (Dialog-Modus „Durchbruch") übergeht die Gravur-Pipeline —
     // die schneidet nur eine feste Tiefe ab der Oberfläche ein und liefert bei
     // einem komplett eingetauchten Text einen unsichtbaren Hohlraum im Inneren.
-    if (hole.userData.type === 'svg' && !hole.userData._cutThrough && !hole.userData._svgWrap) {
+    if (hole.userData.type === 'svg' && !hole.userData._cutThrough && !hole.userData._svgWrap && !hole.userData._svgSchmieg) {
       hole.updateMatrixWorld(true);
 
       // ── SVG Gravur ────────────────────────────────────────────────────────────
@@ -20365,7 +20369,7 @@ async function _doSubtractHoles(solids, holes, ctl) {
     // Er sitzt schon exakt zwischen Außenfläche und Zieltiefe — weder Strecken
     // entlang der lokalen Y (das ist hier die Zylinderachse!) noch der Koplanar-
     // Fix dürfen daran rühren, sonst verzieht sich die Gravur.
-    if (hole.userData.type === 'svg' && hole.userData._svgWrap) {
+    if (hole.userData.type === 'svg' && (hole.userData._svgWrap || hole.userData._svgSchmieg)) {
       hole.updateWorldMatrix(true, true);
       const wProxy = new THREE.Mesh(hole.geometry, new THREE.MeshStandardMaterial());
       wProxy.position.copy(hole.position);
@@ -25237,7 +25241,7 @@ function _rhMove(event) {
   // Ein gewickeltes Motiv hängt an seiner Wand: weder neu zentrieren noch auf die
   // Platte setzen — beim Loslassen rechnet _svgWrapAbsorbTwist die Drehung in die
   // Wicklung ein (Josy 14.9.: Motiv „verschwindet wieder halb" nach dem Drehen).
-  const _rotWrap = !!(o.userData && o.userData._svgWrap);
+  const _rotWrap = !!(o.userData && (o.userData._svgWrap || o.userData._svgSchmieg));
   if (!_rotBB.isEmpty() && !_rotWrap) {
     const _rc = _rotBB.getCenter(new THREE.Vector3());
     o.position.x += rh_piv.x - _rc.x;
@@ -28229,6 +28233,11 @@ function _applyTextSnapOnDrop(freierZug) {
         if (!_svgWrapOnWall(o) && _svgWrapFlatten(o)) {
           updateTFInputs(); updateTree(); updateCtxPopup();
           notify('SVG wieder flach — es liegt auf keiner Rundung mehr', 'ok');
+        }
+      } else if (o.userData._svgSchmieg) {
+        if (_svgSchmiegFlatten(o)) {
+          updateTFInputs(); updateTree(); updateCtxPopup();
+          notify('SVG wieder flach — es liegt auf keiner Wölbung mehr', 'ok');
         }
       } else if (o.userData._snapNormal && !_svgFlatTarget(o)) {
         _svgLegeFlachHin(o);
@@ -44187,8 +44196,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.23';
+const VOLME3D_VERSION = '1.18.24';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.24', date:'2026-09-16', changes:[
+    ['\u{1FAE7}','<b>Neu: Motive schmiegen sich an Kuppeln und Schultern an.</b> Auf Stellen, die um keine Achse rund sind (Scheitel einer Lampe, die gerundete Schulter einer Vase, ein Ei), konnte V3D CAD bisher nur flach aufheften, und ein flaches Motiv liegt auf einer Wölbung nur in der Mitte auf („nicht ganz drauf“). Jetzt steht dort am Zeiger <b>🫧 An die Wölbung anschmiegen</b>: Das Motiv legt sich wie ein angedrückter Aufkleber auf die Fläche, mit gleichbleibender Gravurtiefe senkrecht zur Wand. Drehen über den ↻-Griff, den Dreh-Ring oder die Winkelfelder geht wie gewohnt, Verschieben durch Ziehen an eine neue Stelle. Gravieren und Durchbruch funktionieren wie beim Wickeln. Ab etwa 20° Wandneigung wird angeschmiegt statt gewickelt, weil das Wickeln um eine Achse dort nicht mehr ganz folgt.'],
+  ]},
   { version:'1.18.23', date:'2026-09-15', changes:[
     ['\u270B','<b>Lange Berechnungen abbrechen.</b> Beim <b>Vereinen</b>, <b>Abziehen</b>, Wabenmuster, Hohlkörper mit Deckel, Passungsprüfung und Lochkanten-Rundung gibt es unter dem Fortschrittsbalken jetzt den Knopf <b>✕ Abbrechen</b> (oder die Taste <b>Esc</b>). Dauert es zu lange, brichst du einfach ab: Deine Teile bleiben genau so, wie sie vorher waren, und die Berechnung auf dem Server wird ebenfalls beendet.']
   ]},
@@ -45241,11 +45253,19 @@ function _svgSnapDetect(svgMesh, mouseEvent) {
       const c0 = probe.axisPt.clone()
         .addScaledVector(probe.axisDir, hit.point.clone().sub(probe.axisPt).dot(probe.axisDir));
       const radial = hit.point.clone().sub(c0).normalize();
-      // Mantel (Normale zeigt radial weg) oder Deckel/Boden/Kuppel?
-      if (Math.abs(nW.dot(radial)) > 0.8) wrap = probe;
+      // Mantel (Normale zeigt radial weg) oder Deckel/Boden/Kuppel? Ab ~20° Neigung
+      // gegen die Achse (Schulter, Kuppelansatz) ist die Wand doppelt gekrümmt —
+      // dort schmiegt das Motiv besser an, als es sich um die Achse wickeln lässt
+      // (gemessen: 45-mm-Motiv bei 90 % Höhe der Lichthülle 2,2 mm am Ende).
+      if (Math.abs(nW.dot(radial)) > 0.94) wrap = probe;
       else kuppel = true;
     }
-    _textSnapTarget = { obj: obj || hit.object, type: wrap ? 'wrap' : 'surface', wrap };
+    // Gewölbt, aber um keine Achse rund (Kuppel, Schulter, Ei): anschmiegen statt
+    // flach heften — ein flaches Motiv liegt auf einer Wölbung nur in der Mitte auf.
+    // Nur auf wirklich GEWÖLBTEN Flächen: Der Deckel eines Rohrs oder die Wand eines
+    // ungleich skalierten Quaders lösen „Kuppel"/„oval" aus, sind aber eben.
+    const schmieg = !wrap && (kuppel || (!probe && _svgWrapReason === 'oval')) && !_svgSnapIstEben(hit, svgMesh);
+    _textSnapTarget = { obj: obj || hit.object, type: wrap ? 'wrap' : (schmieg ? 'schmieg' : 'surface'), wrap };
     // Wird nicht gewickelt, muss der Grund dranstehen. Kommentarlos „Auf Fläche
     // heften" sah nach einem Fehler aus: Auf einer Wölbung liegt ein flaches
     // Motiv nun einmal nur in der Mitte auf („es ist nicht ganz drauf, lässt
@@ -45254,9 +45274,7 @@ function _svgSnapDetect(svgMesh, mouseEvent) {
     //    Kuppelspitze). Um eine Achse wickeln geht dort grundsätzlich nicht.
     //  • oval: Der Querschnitt ist zu unrund für eine Wickelachse.
     hint.textContent = wrap ? '↩ Um Rundung wickeln'
-      : (kuppel ? '📌 Auf Fläche heften (Wölbung — hier weiter unten am Bauch wickeln)'
-      : (!probe && _svgWrapReason === 'oval' ? '📌 Auf Fläche heften (zu oval zum Wickeln)'
-                                             : '📌 Auf Fläche heften'));
+      : (schmieg ? '🫧 An die Wölbung anschmiegen' : '📌 Auf Fläche heften');
     hint.style.display = 'block';
     hint.style.left = (mouseEvent.clientX + 14) + 'px';
     hint.style.top  = (mouseEvent.clientY - 24) + 'px';
@@ -45344,6 +45362,16 @@ function _svgCenterWorld(o) {
 function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   const hit = _svgSnapHit;
   if (!hit || !hit.face) return;
+  // Wölbung ohne Drehachse (Kuppel, Schulter, Ei): anschmiegen
+  if (type === 'schmieg') {
+    _svgWrapFlatten(svgMesh);
+    if (_svgSchmiegApply(svgMesh, hit)) {
+      _svgSnapHit = null;
+      updateTFInputs(); updateTree(); updateCtxPopup();
+      notify('🫧 SVG an die Wölbung angeschmiegt', 'ok');
+      return;
+    }
+  }
 
   // Sitzt das Motiv schon auf GENAU dieser Fläche? Dann NICHT wieder zentrieren.
   // Sonst sprang es bei jedem Nachschieben (Pfeil-Gizmo, exakt versetzen, kurzer
@@ -45379,6 +45407,7 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
       notify('↩ SVG auf der Rundung verschoben', 'ok');
       return;
     }
+    _svgSchmiegFlatten(svgMesh);   // vorher angeschmiegt? Erst flach, dann wickeln (Skalierung!)
     const done = _svgWrapApply(svgMesh, wrap, hit.point);
     _svgSnapHit = null;
     if (done) {
@@ -45392,6 +45421,7 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   // sonst läge der gebogene Keil als Bogen auf dem Quader und der Abzug nähme
   // weiter den Wickel-Weg. Die Skalierung wandert aus der Biegung zurück.
   _svgWrapFlatten(svgMesh);   // vorher gewickelt? Wieder flach bauen
+  _svgSchmiegFlatten(svgMesh);
 
   // Geometry-local normal (= STL-Koordinaten) + Klickpunkt für Server speichern
   svgMesh.userData._snapNormal = hit.face.normal.clone();
@@ -45422,7 +45452,7 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   let _keepAng = 0;
   // Nur von einem Motiv übernehmen, das vorher auf einer Fläche lag. Schwebt es
   // frei im Raum, ist sein Winkel Zufall — und das Motiv heftete sich schief an.
-  const _lagAuf = !!(svgMesh.userData._snapNormal || svgMesh.userData._svgWrap
+  const _lagAuf = !!(svgMesh.userData._snapNormal || svgMesh.userData._svgWrap || svgMesh.userData._svgSchmieg
                      || svgMesh.userData._svgLageOk);
   // Liegt das Motiv schon grob in der Zielebene, wird der Winkel gemessen. Kommt
   // es aus einer ganz anderen Lage (z. B. flach von der Platte an eine senkrechte
@@ -45622,6 +45652,12 @@ function _svgGlideFrame(o) {
   if (!o || o.userData.shapeType !== 'svg' || o.userData.locked) return null;
   o.updateMatrixWorld(true);
   const q = o.getWorldQuaternion(new THREE.Quaternion());
+  if (o.userData._svgSchmieg) {
+    // angeschmiegt: Drehen um die Wandnormale geht, Verschieben ist ein freier Zug
+    // mit Neu-Anschmiegen beim Loslassen
+    return { kind: 'schmieg', n: new THREE.Vector3(0, 0, 1).applyQuaternion(q).normalize(),
+             target: o.userData._schmiegTarget || null };
+  }
   if (o.userData._svgWrap) {
     // gewickelt: Achse und radiale Richtung kommen aus der Wicklung selbst —
     // die lokalen Achsen kippen mit, sobald der Nutzer das Motiv dreht.
@@ -45803,7 +45839,7 @@ function _svgGlideBegin(o, e) {
     _svgGlide = { kind: 'rot', obj: o, fr, moved: false,
                   angBasis: o.userData._svgFlaechenAng || 0,
                   ev: { x: e.clientX, y: e.clientY },
-                  axis: fr.kind === 'flat' ? fr.n.clone() : _svgWrapRadialDir(o),
+                  axis: fr.kind === 'wrap' ? _svgWrapRadialDir(o) : fr.n.clone(),
                   cW,
                   // Genau in der Mitte angefasst? Dann steht der Bezugswinkel noch
                   // nicht fest (atan2(0,0)) — sonst spränge das Motiv beim ersten
@@ -45814,6 +45850,7 @@ function _svgGlideBegin(o, e) {
     _textSnapTarget = null;
     return true;
   }
+  if (fr.kind === 'schmieg') return false;     // Verschieben: freier Zug, beim Loslassen neu anschmiegen
   getNorm(e); raycaster.setFromCamera(mousev, camera);
   const ray = raycaster.ray.clone();
   const G = { kind: fr.kind, obj: o, fr, moved: false,
@@ -45957,6 +45994,12 @@ function _svgGlideEnd() {
     updateCtxPopup();
     // Gewickelt? Dann die gezogene Drehung in die Wicklung einrechnen und das
     // Motiv neu biegen — nur so bleibt es sauber an der Rundung.
+    if (o.userData._svgSchmieg && G.ang) {
+      o.quaternion.copy(G.q0); o.position.copy(G.pos0);
+      _svgSchmiegRebuild(o, { rotRad: (o.userData._svgSchmieg.rotRad || 0) + G.ang });
+      updateTFInputs(); updateTree(); _doRepositionDimHandles();
+      return true;
+    }
     const w = o.userData._svgWrap;
     if (w && G.ang) {
       o.quaternion.copy(G.q0);           // zurück auf die Wickel-Ausrichtung
@@ -45995,6 +46038,7 @@ function svgCenterOnFace() {
   if (o.userData.locked) { notify('Objekt ist gesperrt', 'w'); return; }
   const fr = _svgGlideFrame(o);
   if (!fr) { notify('Motiv erst auf eine Fläche ziehen (heften)', 'w'); return; }
+  if (fr.kind === 'schmieg') { notify('Angeschmiegtes Motiv: zum Verschieben einfach an eine andere Stelle ziehen', 'w'); return; }
   if (fr.kind === 'flat') {
     const face = fr.solid ? _faceInfoWorld(fr.solid.mesh, fr.solid.nLocal, fr.solid.planeD) : null;
     if (!face) { notify('Fläche nicht gefunden — Motiv neu auf die Fläche ziehen', 'w'); return; }
@@ -47104,7 +47148,10 @@ function _svgWrapFollowSel(delay) {
   _svgWrapFollowTimer = setTimeout(() => {
     _svgWrapFollowTimer = null;
     let n = 0;
-    selectedObjs.forEach(o => { if (o.userData && o.userData._svgWrap && _svgWrapFollowWall(o)) n++; });
+    selectedObjs.forEach(o => {
+      if (o.userData && o.userData._svgWrap && _svgWrapFollowWall(o)) n++;
+      else if (o.userData && o.userData._svgSchmieg && _svgSchmiegAbsorbTwist(o)) n++;
+    });
     if (n) { _doRepositionDimHandles(); updateTFInputs(); }
   }, delay == null ? 130 : delay);
 }
@@ -47126,6 +47173,301 @@ function _svgWrapReshape(svgMesh, depthMm) {
   svgMesh.updateMatrixWorld(true);
 }
 // ===== END SVG UM RUNDUNG WICKELN ==========================================
+
+// ===== SVG AN WÖLBUNG ANSCHMIEGEN ===========================================
+// Kuppeln, Schultern, Eier: dort ist die Wand um KEINE Achse rund, Wickeln geht
+// nicht, und ein flach aufgeheftetes Motiv liegt nur in der Mitte auf (Josy 16.9.:
+// Motive auf Scheitel und Schulter ihrer Lampe „nicht ganz drauf"). Hier wird die
+// Wand als Höhenfeld über der Tangentialebene am Klickpunkt abgetastet (alle
+// Dreiecke hineingerastert, das dem Betrachter zugewandte Maximum gewinnt), das
+// Motiv nach Bogenlänge zeilen-/spaltenweise darauf gelegt und entlang der
+// LOKALEN Normale in die Tiefe gezogen — wie ein Aufkleber, den man andrückt.
+// Das Feld steckt im Spec (_svgSchmieg): Laden/Undo bauen ohne den Körper neu.
+// Objekt-Frame: Ursprung = Klickpunkt, X = ea (Breite), Y = eb (oben), Z = ec (Normale).
+const _SCHMIEG_N = 81;
+
+function _svgSchmiegFeld(target, P0, ea, eb, ec, halbA, halbB) {
+  const n = _SCHMIEG_N;
+  const A = halbA * 1.35 + 0.05, B = halbB * 1.35 + 0.05;   // Reserve über die Motivmaße hinaus
+  const da = 2 * A / (n - 1), db = 2 * B / (n - 1);
+  target.updateMatrixWorld(true);
+  const geo = target.geometry, pos = geo.attributes.position;
+  if (!pos) return null;
+  const idx = geo.index ? geo.index.array : null;
+  const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
+  const M = target.matrixWorld, v = new THREE.Vector3();
+  const la = [0, 0, 0], lb = [0, 0, 0], lc = [0, 0, 0];
+  const raster = (nurVorne) => {
+    const z = new Float32Array(n * n).fill(NaN);
+    let belegt = 0;
+    for (let t = 0; t < nTri; t++) {
+      for (let k = 0; k < 3; k++) {
+        v.fromBufferAttribute(pos, idx ? idx[t * 3 + k] : t * 3 + k).applyMatrix4(M).sub(P0);
+        la[k] = v.dot(ea); lb[k] = v.dot(eb); lc[k] = v.dot(ec);
+      }
+      const det = (la[1] - la[0]) * (lb[2] - lb[0]) - (lb[1] - lb[0]) * (la[2] - la[0]);
+      if (Math.abs(det) < 1e-12) continue;            // steht quer zur Blickrichtung
+      if (nurVorne && det <= 0) continue;              // Rückseite: Innenwand, abgewandte Seite
+      const i0 = Math.max(0, Math.floor((Math.min(la[0], la[1], la[2]) + A) / da));
+      const i1 = Math.min(n - 1, Math.ceil((Math.max(la[0], la[1], la[2]) + A) / da));
+      const j0 = Math.max(0, Math.floor((Math.min(lb[0], lb[1], lb[2]) + B) / db));
+      const j1 = Math.min(n - 1, Math.ceil((Math.max(lb[0], lb[1], lb[2]) + B) / db));
+      if (i0 > i1 || j0 > j1) continue;
+      for (let j = j0; j <= j1; j++) {
+        const b = -B + j * db;
+        for (let i = i0; i <= i1; i++) {
+          const a = -A + i * da;
+          const w0 = ((lb[1] - lb[2]) * (a - la[2]) + (la[2] - la[1]) * (b - lb[2])) / det;
+          const w1 = ((lb[2] - lb[0]) * (a - la[2]) + (la[0] - la[2]) * (b - lb[2])) / det;
+          const w2 = 1 - w0 - w1;
+          if (w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6) continue;
+          const c = w0 * lc[0] + w1 * lc[1] + w2 * lc[2];
+          // Viel tiefer als die Feldbreite = eine ANDERE Wand (durch die Öffnung
+          // hindurch die gegenüberliegende Innenwand): dort lieber Lücke lassen,
+          // die vom Rand her aufgefüllt wird — das Motiv tauchte sonst in die
+          // Öffnung ab (gemessen am Scheitel der Lichthülle).
+          if (c < -Math.max(A, B)) continue;
+          const q = j * n + i;
+          if (!(z[q] >= c)) { if (isNaN(z[q])) belegt++; z[q] = c; }
+        }
+      }
+    }
+    return { z, belegt };
+  };
+  let r = raster(true);
+  if (r.belegt < n * n * 0.3) {                        // umgestülpte STL? Dann ohne Seitenfilter
+    const r2 = raster(false);
+    if (r2.belegt > r.belegt) r = r2;
+  }
+  // Lücken (Öffnung, Silhouette) vom Rand her auffüllen — Motivteile darüber
+  // schweben in der Luft, folgen aber wenigstens der Fortsetzung der Wand.
+  const z = r.z;
+  for (let pass = 0; pass < n; pass++) {
+    let offen = 0;
+    const neu = z.slice();
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      const q = j * n + i;
+      if (!isNaN(z[q])) continue;
+      let sum = 0, m = 0;
+      if (i > 0 && !isNaN(z[q - 1]))     { sum += z[q - 1]; m++; }
+      if (i < n - 1 && !isNaN(z[q + 1])) { sum += z[q + 1]; m++; }
+      if (j > 0 && !isNaN(z[q - n]))     { sum += z[q - n]; m++; }
+      if (j < n - 1 && !isNaN(z[q + n])) { sum += z[q + n]; m++; }
+      if (m) neu[q] = sum / m; else offen++;
+    }
+    z.set(neu);
+    if (!offen) break;
+  }
+  for (let q = 0; q < z.length; q++) if (isNaN(z[q])) z[q] = 0;
+  return { n, A, B, z: Array.from(z), belegt: r.belegt };
+}
+
+// Bogenlängen je Zeile (a-Richtung) und Spalte (b-Richtung), vom Klickpunkt aus gezählt
+function _svgSchmiegBogen(feld) {
+  const { n, A, B, z } = feld;
+  const da = 2 * A / (n - 1), db = 2 * B / (n - 1), ic = (n - 1) / 2;
+  const sA = new Float32Array(n * n), sB = new Float32Array(n * n);
+  for (let j = 0; j < n; j++) {
+    sA[j * n + ic] = 0;
+    for (let i = ic + 1; i < n; i++) sA[j * n + i] = sA[j * n + i - 1] + Math.hypot(da, z[j * n + i] - z[j * n + i - 1]);
+    for (let i = ic - 1; i >= 0; i--) sA[j * n + i] = sA[j * n + i + 1] - Math.hypot(da, z[j * n + i] - z[j * n + i + 1]);
+  }
+  for (let i = 0; i < n; i++) {
+    sB[ic * n + i] = 0;
+    for (let j = ic + 1; j < n; j++) sB[j * n + i] = sB[(j - 1) * n + i] + Math.hypot(db, z[j * n + i] - z[(j - 1) * n + i]);
+    for (let j = ic - 1; j >= 0; j--) sB[j * n + i] = sB[(j + 1) * n + i] - Math.hypot(db, z[j * n + i] - z[(j + 1) * n + i]);
+  }
+  return { sA, sB };
+}
+
+// Bogenlänge → gleitender Gitterindex (linear zwischen Stützstellen, außen fortgesetzt)
+function _svgSchmiegInv(tab, base, stride, n, sWert) {
+  const at = k => tab[base + k * stride];
+  if (sWert <= at(0)) return (sWert - at(0)) / Math.max(1e-9, at(1) - at(0));
+  if (sWert >= at(n - 1)) return (n - 1) + (sWert - at(n - 1)) / Math.max(1e-9, at(n - 1) - at(n - 2));
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (at(mid) <= sWert) lo = mid; else hi = mid; }
+  return lo + (sWert - at(lo)) / Math.max(1e-9, at(hi) - at(lo));
+}
+
+function _svgSchmiegBuildGeo(ud, spec) {
+  const flat = _svgRebuildGeo({
+    type: 'svg', _svgPathData: ud._svgPathData, _svgTransformM: ud._svgTransformM,
+    svgSize: ud.svgSize, svgMode: 'extrude', isHole: true,
+    svgDepth: Math.max(0.5, Math.abs(ud.svgDepth || 3))
+  });
+  // wie beim Wickeln: x = Breite, y = oben, z = Normale/Tiefe (Det > 0)
+  flat.applyMatrix4(new THREE.Matrix4().set(
+    spec.s.x, 0, 0, 0,
+    0, 0, -spec.s.z, 0,
+    0, spec.s.y, 0, 0,
+    0, 0, 0, 1));
+  if (spec.rotRad) flat.applyMatrix4(new THREE.Matrix4().makeRotationZ(spec.rotRad));
+  flat.computeBoundingBox();
+  const bb = flat.boundingBox;
+  const uMid = (bb.min.x + bb.max.x) / 2, hMid = (bb.min.y + bb.max.y) / 2;
+  const d0 = bb.min.z, dSpan = Math.max(1e-6, bb.max.z - bb.min.z);
+  const eps = (spec.epsMm != null ? spec.epsMm : 0.2) / 10;
+  const dIn  = spec.depthMm >= 0 ? -spec.depthMm / 10 : -0.02;
+  const dOut = spec.depthMm >= 0 ? eps : -spec.depthMm / 10;
+  const P = flat.attributes.position;
+  for (let i = 0; i < P.count; i++)
+    P.setXYZ(i, P.getX(i) - uMid, P.getY(i) - hMid, dIn + (P.getZ(i) - d0) / dSpan * (dOut - dIn));
+  flat.deleteAttribute('normal'); flat.deleteAttribute('uv');
+  const ext = Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y, 1e-3);
+  let work = _svgWrapSlice(flat, ext / 40, 0);
+  flat.dispose();
+  const sliced = _svgWrapSlice(work, ext / 40, 1);
+  work.dispose(); work = sliced;
+
+  const feld = spec.feld, n = feld.n, A = feld.A, B = feld.B, z = feld.z;
+  const da = 2 * A / (n - 1), db = 2 * B / (n - 1), ic = (n - 1) / 2;
+  const { sA, sB } = _svgSchmiegBogen(feld);
+  const cl = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+  const zAt = (fi, fj) => {
+    const i0 = cl(Math.floor(fi), 0, n - 2), j0 = cl(Math.floor(fj), 0, n - 2);
+    const ti = cl(fi - i0, 0, 1), tj = cl(fj - j0, 0, 1);
+    return (z[j0 * n + i0] * (1 - ti) + z[j0 * n + i0 + 1] * ti) * (1 - tj)
+         + (z[(j0 + 1) * n + i0] * (1 - ti) + z[(j0 + 1) * n + i0 + 1] * ti) * tj;
+  };
+  const src = work.attributes.position;
+  const out = new Float32Array(src.count * 3);
+  const N = new THREE.Vector3();
+  for (let i = 0; i < src.count; i++) {
+    const u = src.getX(i), h = src.getY(i), d = src.getZ(i);
+    // Spalte aus der Bogenlänge in der Mittelzeile, Zeile aus der Bogenlänge dieser Spalte
+    const fi = _svgSchmiegInv(sA, ic * n, 1, n, u);
+    const iN = cl(Math.round(fi), 0, n - 1);
+    const fj = _svgSchmiegInv(sB, iN, n, n, h);
+    const a = -A + fi * da, b = -B + fj * db, c = zAt(fi, fj);
+    const dca = (zAt(fi + 1, fj) - zAt(fi - 1, fj)) / (2 * da);
+    const dcb = (zAt(fi, fj + 1) - zAt(fi, fj - 1)) / (2 * db);
+    N.set(-dca, -dcb, 1).normalize();                  // Normale aus dem Gefälle des Feldes
+    out[i * 3]     = a + d * N.x;
+    out[i * 3 + 1] = b + d * N.y;
+    out[i * 3 + 2] = c + d * N.z;
+  }
+  const bent = new THREE.BufferGeometry();
+  bent.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+  if (work.index) bent.setIndex(new THREE.BufferAttribute(work.index.array.slice(), 1));
+  work.dispose();
+  const result = _computeCreasedNormals(bent, Math.PI / 3);
+  bent.dispose();
+  result.computeBoundingBox(); result.computeBoundingSphere();
+  return result;
+}
+
+// Motiv am Raycast-Treffer (hit: object, point, face) an die Wölbung legen.
+function _svgSchmiegApply(svgMesh, hit) {
+  const target = hit && hit.object;
+  if (!target || !target.isMesh || !hit.face) return false;
+  target.updateMatrixWorld(true);
+  const P0 = hit.point.clone();
+  const ec = hit.face.normal.clone().transformDirection(target.matrixWorld).normalize();
+  // nach außen: vom Körperschwerpunkt weg (umgestülpte STLs zeigen sonst nach innen)
+  const cB = new THREE.Box3().setFromObject(target).getCenter(new THREE.Vector3());
+  if (ec.dot(P0.clone().sub(cB)) < 0) ec.negate();
+  const faceUp = Math.abs(ec.y) > 0.85 ? new THREE.Vector3(0, 0, -1) : new THREE.Vector3(0, 1, 0);
+  const eb = faceUp.clone().addScaledVector(ec, -faceUp.dot(ec));
+  if (eb.lengthSq() < 1e-8) return false;
+  eb.normalize();
+  const ea = new THREE.Vector3().crossVectors(eb, ec).normalize();
+  const w0 = svgMesh.userData._svgSchmieg, wr = svgMesh.userData._svgWrap;
+  const s = w0 ? _svgWrapAbsorbScale(svgMesh, w0.s)
+          : (wr ? _svgWrapAbsorbScale(svgMesh, wr.s)
+                : { x: svgMesh.scale.x, y: svgMesh.scale.y, z: svgMesh.scale.z });
+  const rotRad = w0 ? (w0.rotRad || 0)
+               : (wr ? ((wr.rotRad || 0) - (wr.rot0 || 0)) : (svgMesh.userData._svgFlaechenAng || 0));
+  const halbA = _svgWrapHalfWidth(svgMesh.userData, s, rotRad);
+  const halbB = _svgWrapHalfHeight(svgMesh.userData, s, rotRad);
+  const feld = _svgSchmiegFeld(target, P0, ea, eb, ec, halbA, halbB);
+  if (!feld || feld.belegt < 20) return false;
+  const spec = { P0: P0.toArray(), ea: ea.toArray(), eb: eb.toArray(), ec: ec.toArray(), s, rotRad,
+                 depthMm: svgMesh.userData.svgDepth || 3, epsMm: 0.2, feld };
+  const geo = _svgSchmiegBuildGeo(svgMesh.userData, spec);
+  svgMesh.geometry.dispose();
+  svgMesh.geometry = geo;
+  svgMesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(ea, eb, ec));
+  svgMesh.position.copy(P0);
+  svgMesh.scale.set(1, 1, 1);
+  delete svgMesh.userData._svgWrap; delete svgMesh.userData._wrapTarget;
+  delete svgMesh.userData._snapNormal; delete svgMesh.userData._snapSolid; delete svgMesh.userData._snapFaceD;
+  svgMesh.userData._svgSchmieg = spec;
+  svgMesh.userData._schmiegTarget = target;
+  _updateObjEdgeLines(svgMesh);
+  svgMesh.updateMatrixWorld(true);
+  return true;
+}
+
+function _svgSchmiegRebuild(svgMesh, patch) {
+  const w = svgMesh.userData._svgSchmieg;
+  if (!w) return false;
+  const spec = Object.assign({}, w, patch || {}, { s: _svgWrapAbsorbScale(svgMesh, w.s) });
+  const geo = _svgSchmiegBuildGeo(svgMesh.userData, spec);
+  svgMesh.geometry.dispose();
+  svgMesh.geometry = geo;
+  svgMesh.userData._svgSchmieg = spec;
+  _updateObjEdgeLines(svgMesh);
+  svgMesh.updateMatrixWorld(true);
+  return true;
+}
+function _svgSchmiegReshape(svgMesh, depthMm) {
+  return _svgSchmiegRebuild(svgMesh, { depthMm: depthMm === 'through' ? 80 : depthMm });
+}
+function _svgSchmiegFlatten(svgMesh) {
+  if (!svgMesh || !svgMesh.userData || !svgMesh.userData._svgSchmieg) return false;
+  const s = _svgWrapAbsorbScale(svgMesh, svgMesh.userData._svgSchmieg.s);
+  const flat = _svgRebuildGeo(svgMesh.userData);
+  svgMesh.geometry.dispose();
+  svgMesh.geometry = flat;
+  svgMesh.scale.set(s.x, s.y, s.z);
+  delete svgMesh.userData._svgSchmieg;
+  delete svgMesh.userData._schmiegTarget;
+  _updateObjEdgeLines(svgMesh);
+  _svgLegeFlachHin(svgMesh);
+  return true;
+}
+// Drehung um die Wandnormale (Dreh-Ring, Winkelfelder) ins Anschmiegen einrechnen —
+// analog zu _svgWrapAbsorbTwist; Kippen aus der Wand heraus wird verworfen.
+function _svgSchmiegAbsorbTwist(o) {
+  const w = o && o.userData && o.userData._svgSchmieg;
+  if (!w) return false;
+  const ea = new THREE.Vector3().fromArray(w.ea), eb = new THREE.Vector3().fromArray(w.eb), ec = new THREE.Vector3().fromArray(w.ec);
+  const qBase = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(ea, eb, ec));
+  if (o.quaternion.angleTo(qBase) < 1e-4) return false;
+  const d = o.quaternion.clone().multiply(qBase.clone().invert());
+  let t = 2 * Math.atan2(d.x * ec.x + d.y * ec.y + d.z * ec.z, d.w);
+  while (t >  Math.PI) t -= 2 * Math.PI;
+  while (t < -Math.PI) t += 2 * Math.PI;
+  const gekippt = o.quaternion.angleTo(qBase.clone().premultiply(new THREE.Quaternion().setFromAxisAngle(ec, t)));
+  o.quaternion.copy(qBase);
+  if (gekippt > 0.01) notify('Angeschmiegtes Motiv: nur die Drehung auf der Wand wird übernommen', 'w');
+  if (Math.abs(t) < 1e-4) { o.updateMatrixWorld(true); return false; }
+  return _svgSchmiegRebuild(o, { rotRad: (w.rotRad || 0) + t });
+}
+// Ist die getroffene Fläche rund um den Klickpunkt eben? Sechs Strahlen im Umkreis
+// der halben Motivgröße; weicht ein Treffer mehr als 0,2 mm aus der Ebene, ist die
+// Fläche gewölbt. Strahlen ins Leere (Flächenrand) zählen nicht dagegen.
+function _svgSnapIstEben(hit, svgMesh) {
+  const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+  const g = svgMesh.geometry;
+  if (g && !g.boundingBox) g.computeBoundingBox();
+  const sz = g && g.boundingBox ? g.boundingBox.getSize(new THREE.Vector3()) : new THREE.Vector3(1, 1, 1);
+  const r = Math.max(0.3, Math.max(sz.x * Math.abs(svgMesh.scale.x), sz.y * Math.abs(svgMesh.scale.y), sz.z * Math.abs(svgMesh.scale.z)) * 0.45);
+  const t1 = Math.abs(n.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+  t1.addScaledVector(n, -t1.dot(n)).normalize();
+  const t2 = new THREE.Vector3().crossVectors(n, t1);
+  const rc = new THREE.Raycaster();
+  for (const [a, b] of [[r, 0], [-r, 0], [0, r], [0, -r], [r * 0.7, r * 0.7], [-r * 0.7, -r * 0.7]]) {
+    const p = hit.point.clone().addScaledVector(t1, a).addScaledVector(t2, b);
+    rc.set(p.clone().addScaledVector(n, 5), n.clone().negate());
+    const h = rc.intersectObject(hit.object, true).find(x => x.face);
+    if (!h) continue;
+    if (Math.abs(h.point.clone().sub(hit.point).dot(n)) > 0.02) return false;
+  }
+  return true;
+}
+// ===== END SVG AN WÖLBUNG ANSCHMIEGEN =======================================
 
 // ===== END SVG MAGNET-SNAP =====
 

@@ -91,13 +91,13 @@ const r1 = await pg.evaluate(async (svg) => {
 }, SVG);
 ok('Bauch unten: bietet Wickeln an', /Um Rundung wickeln/.test(r1.bauch_30.text), r1.bauch_30);
 ok('Bauch oben: bietet Wickeln an', /Um Rundung wickeln/.test(r1.bauch_60.text), r1.bauch_60);
+// Seit v1.18.24 wird auf der Wölbung nicht mehr kommentarlos geheftet, sondern
+// ANGESCHMIEGT (Höhenfeld der Wand, Bogenlängen) — der Hinweis nennt das.
 const woelbung = [r1.schulter, r1.scheitel].filter(x => x && !/Um Rundung wickeln/.test(x.text));
 ok('Wölbung oben: dort wird nicht gewickelt (richtig so)', woelbung.length > 0,
    { schulter: r1.schulter, scheitel: r1.scheitel });
-ok('Wölbung: sagt WARUM statt kommentarlos aufzuheften',
-   woelbung.length > 0 && woelbung.every(x => /Wölbung/.test(x.text)), woelbung);
-ok('Wölbung: verweist auf den Bauch als Ausweg',
-   woelbung.length > 0 && woelbung.every(x => /Bauch/.test(x.text)), woelbung);
+ok('Wölbung: bietet Anschmiegen an statt flach zu heften',
+   woelbung.length > 0 && woelbung.every(x => /anschmiegen/.test(x.text) && x.art === 'schmieg'), woelbung);
 
 // ── 2) Zu ovaler Körper sagt weiterhin „zu oval" ───────────────────────────
 const r2 = await pg.evaluate(async (svg) => {
@@ -111,7 +111,7 @@ const r2 = await pg.evaluate(async (svg) => {
   const h = rc.intersectObject(k, true).find(x => x.face);
   return h ? _hinweisAn(m, h.point.clone()) : null;
 }, SVG);
-ok('zu ovaler Körper: sagt „zu oval"', r2 && /zu oval/.test(r2.text), r2);
+ok('zu ovaler Körper: bietet Anschmiegen an (statt „zu oval" zu heften)', r2 && /anschmiegen/.test(r2.text) && r2.art === 'schmieg', r2);
 
 // ── 3) Flache Wand bleibt schlicht „Auf Fläche heften" ─────────────────────
 const r3 = await pg.evaluate(async (svg) => {
