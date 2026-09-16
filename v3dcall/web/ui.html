@@ -190,6 +190,13 @@ legend{padding:0 8px;color:var(--schwach);font-size:13px}
 </div>
 
 <script>
+/* Ohne Schraegstrich am Ende (…/anrufe statt …/anrufe/) liegt das
+   Dokument ausserhalb des Geltungsbereichs des Hintergrunddienstes —
+   serviceWorker.ready wird dann nie fertig und Push laesst sich nicht
+   einschalten. Deshalb einmal sauber umleiten. */
+if (!location.pathname.endsWith('/')) {
+  location.replace(location.pathname + '/' + location.search + location.hash);
+}
 const B = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
 const $ = s => document.querySelector(s);
 let cfgZwischen = null, letzteIds = new Set();
@@ -368,22 +375,64 @@ async function pushZustand(){
   el.innerHTML = sub ? '<span class="punkt gut"></span> Push ist eingeschaltet.'
                      : '<span class="punkt"></span> Push ist aus.';
 }
+/* Jeder Schritt meldet sich und hat eine Frist. Ohne das blieb die
+   Zeile bei einem haengenden await stumm stehen — man sah nicht, ob
+   die Berechtigung fehlt, der Dienst klemmt oder der Server schweigt. */
+function mitFrist(versprechen, sekunden, was){
+  return Promise.race([versprechen, new Promise((_, weg) =>
+    setTimeout(() => weg(new Error(was + ' antwortet nicht (' + sekunden + ' s)')),
+               sekunden * 1000))]);
+}
+function warteAufAktiv(reg){
+  if (reg.active) return Promise.resolve();
+  const neu = reg.installing || reg.waiting;
+  if (!neu) return Promise.resolve();
+  return new Promise(fertig => neu.addEventListener('statechange', function h(){
+    if (neu.state === 'activated' || neu.state === 'redundant'){
+      neu.removeEventListener('statechange', h); fertig();
+    }
+  }));
+}
 async function pushAnmelden(){
   const el = $('#pushStatus');
+  const sag = t => { el.textContent = t; };
   try{
-    if (Notification.permission !== 'granted'
-        && await Notification.requestPermission() !== 'granted'){
-      el.textContent = 'Benachrichtigungen wurden abgelehnt.'; return;
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)){
+      sag('Dieser Browser kann keine Push-Nachrichten.'); return;
     }
-    const {key} = await jget('api/push/key');
-    if (!key){ el.textContent = 'Noch kein Push-Schlüssel auf dem Server erzeugt.'; return; }
-    const reg = await navigator.serviceWorker.register(B + 'sw.js', {scope: B});
-    await navigator.serviceWorker.ready;
-    const sub = await reg.pushManager.subscribe(
-      {userVisibleOnly:true, applicationServerKey: b64(key)});
-    await jpost('api/push/anmelden', sub.toJSON());
+    if (!window.isSecureContext){
+      sag('Nur über https möglich — diese Seite läuft unverschlüsselt.'); return;
+    }
+    if (typeof Notification === 'undefined'){
+      sag('Dieser Browser kennt keine Benachrichtigungen.'); return;
+    }
+    sag('Frage die Erlaubnis ab …');
+    let erlaubnis = Notification.permission;
+    if (erlaubnis !== 'granted')
+      erlaubnis = await mitFrist(Notification.requestPermission(), 60, 'Die Abfrage');
+    if (erlaubnis !== 'granted'){
+      sag(erlaubnis === 'denied'
+        ? 'Benachrichtigungen sind für diese Seite gesperrt. In Chrome: Schloss-Symbol '
+          + 'in der Adresszeile → Berechtigungen → Benachrichtigungen erlauben.'
+        : 'Die Erlaubnis wurde nicht erteilt.');
+      return;
+    }
+    sag('Hole den Schlüssel vom Server …');
+    const {key} = await mitFrist(jget('api/push/key'), 20, 'Der Server');
+    if (!key){ sag('Noch kein Push-Schlüssel auf dem Server erzeugt.'); return; }
+    sag('Richte den Hintergrunddienst ein …');
+    const reg = await mitFrist(navigator.serviceWorker.register(B + 'sw.js', {scope: B}),
+                               30, 'Die Anmeldung des Hintergrunddienstes');
+    // Auf genau diese Registrierung warten, nicht auf serviceWorker.ready:
+    // ready meldet sich nur, wenn der Dienst auch dieses Dokument steuert.
+    await mitFrist(warteAufAktiv(reg), 30, 'Der Hintergrunddienst');
+    sag('Melde das Gerät an …');
+    const sub = await mitFrist(reg.pushManager.subscribe(
+      {userVisibleOnly:true, applicationServerKey: b64(key)}), 30, 'Der Push-Dienst');
+    sag('Trage das Gerät auf dem Server ein …');
+    await mitFrist(jpost('api/push/anmelden', sub.toJSON()), 20, 'Der Server');
     pushZustand();
-  } catch(e){ el.textContent = 'Fehler: ' + e.message; }
+  } catch(e){ sag('Hier klemmt es: ' + (e && e.message ? e.message : e)); }
 }
 async function pushTesten(){
   const d = await jpost('api/push/test');
