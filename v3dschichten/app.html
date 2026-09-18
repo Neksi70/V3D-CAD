@@ -49,6 +49,10 @@
   #magicCard ul { margin: .3rem 0 .45rem; padding-left: 0; list-style: none; }
   #magicCard li { margin: .18rem 0; }
   #magicCard .row2 { display: flex; justify-content: space-between; gap: .5rem; align-items: center; }
+  .seg { display: flex; align-items: center; gap: .3rem; margin-bottom: .4rem; font-size: .78rem; color: var(--dim); }
+  .seg button { padding: .2rem .55rem; font-size: .78rem; }
+  .seg button.on { border-color: var(--blue); background: #1f3a4d; color: #fff; }
+  .legend .grad { display: inline-block; width: 9rem; height: .7rem; border-radius: 3px; vertical-align: -1px; margin: 0 .3rem; }
   #plot { width: 100%; height: 190px; display: block; background: #12161b; border-radius: 8px; }
   .legend { display: flex; flex-wrap: wrap; gap: .25rem .7rem; font-size: .78rem; margin: .4rem 0; color: var(--dim); }
   .legend i { display: inline-block; width: .75rem; height: .75rem; border-radius: 2px; vertical-align: -2px; margin-right: .2rem; }
@@ -106,6 +110,7 @@
 
   <h2>Ergebnis</h2>
   <select id="objSel" hidden></select>
+  <div class="seg" id="colorMode"><span>Farbe:</span><button data-c="height">Schichthöhe</button><button data-c="reason">Grund</button></div>
   <canvas id="plot"></canvas>
   <div class="legend" id="legend"></div>
   <div id="stats" class="dim">Noch kein Modell geladen.</div>
@@ -428,7 +433,18 @@ new ResizeObserver(resize).observe(canvas);
 // Schichtband-Shader: Farbe = Grund der Schicht auf Welt-Höhe z, dunkle Schichtlinien
 const REASON_COLORS = ['#8a96a3', '#2ea2d8', '#f07c1e', '#b36be0', '#5a6570'];
 const REASON_RGB = REASON_COLORS.map(c => new THREE.Color(c));
-function bandTexture(plan) {
+// Färbung: 'height' = nach Schichthöhe auf fester Skala Min…Max (Magic/Regler sichtbar),
+// 'reason' = nach Grund (Schräge, Überhang, Relief, Grundhöhe)
+let colorMode = lsGet('v3dsch-color', 'height') === 'reason' ? 'reason' : 'height';
+const HEAT = ['#6a3fd6', '#2e7fd8', '#2fb6a0', '#e9c54a', '#f07c1e'].map(c => new THREE.Color(c));
+const HEAT_CSS = 'linear-gradient(90deg,#6a3fd6,#2e7fd8,#2fb6a0,#e9c54a,#f07c1e)';
+function heatColor(h, T) {
+  const t = Math.min(1, Math.max(0, (h - T.hMin) / Math.max(1e-6, T.hMax - T.hMin))) * (HEAT.length - 1);
+  const i = Math.min(HEAT.length - 2, Math.floor(t));
+  return HEAT[i].clone().lerp(HEAT[i + 1], t - i);
+}
+function layerColor(L, T) { return colorMode === 'height' ? heatColor(L.h, T) : REASON_RGB[L.r]; }
+function bandTexture(plan, T) {
   const maxW = Math.min(8192, renderer.capabilities.maxTextureSize || 4096);
   const W = Math.max(64, Math.min(maxW, Math.ceil(plan.height / 0.01)));
   const data = new Uint8Array(W * 4), px = plan.height / W;
@@ -436,7 +452,7 @@ function bandTexture(plan) {
   for (let i = 0; i < W; i++) {
     const z = (i + 0.5) * px;
     while (li < plan.layers.length - 1 && z >= plan.layers[li].z0 + plan.layers[li].h) li++;
-    const L = plan.layers[li], c = REASON_RGB[L.r];
+    const L = plan.layers[li], c = layerColor(L, T);
     // Schichtgrenze: letzter Texel der Schicht dunkler, wenn die Schicht ≥ 3 Texel hat
     const edge = L.h / px >= 3 && (z + px > L.z0 + L.h);
     const k = edge ? 0.72 : 1;
@@ -508,8 +524,9 @@ function recalc() {
     catch (e) { console.warn(e); o.plan = null; }
     const m = o.mesh.material;
     if (m.uniforms.bands.value) m.uniforms.bands.value.dispose();
-    if (o.plan) { m.uniforms.bands.value = bandTexture(o.plan); m.uniforms.height.value = o.plan.height; }
-    else { m.uniforms.bands.value = bandTexture({ height: 1, layers: [{ z0: 0, h: 1, r: 0 }] }); m.uniforms.height.value = 1e9; }
+    const T = layerTargets(opts);
+    if (o.plan) { m.uniforms.bands.value = bandTexture(o.plan, T); m.uniforms.height.value = o.plan.height; }
+    else { m.uniforms.bands.value = bandTexture({ height: 1, layers: [{ z0: 0, h: 1, r: 0 }] }, T); m.uniforms.height.value = 1e9; }
   }
   window._schLast = { ms: performance.now() - t0 };
   showResults();
@@ -524,7 +541,8 @@ function showResults() {
   if (objects.length > 1 && sel.options.length !== objects.length)
     sel.innerHTML = objects.map((o, i) => `<option value="${i}">${i + 1}: ${o.name.replace(/</g, '&lt;')}</option>`).join('');
   const cur = objects[+sel.value || 0] || objects[0];
-  drawPlot($('plot'), cur && cur.plan, T);
+  drawPlot($('plot'), cur && cur.plan, T, cur && cur.prevPlan);
+  renderLegend(T);
   $('firstHint').textContent = fmt(opts.hFirst);
   if (!withPlan.length) {
     $('stats').innerHTML = '<span class="dim">Modell zu flach für eine adaptive Schichthöhe.</span>';
@@ -542,7 +560,7 @@ function showResults() {
   $('export').disabled = false;
 }
 
-function drawPlot(cv, plan, T) {
+function drawPlot(cv, plan, T, prev) {
   const dpr = window.devicePixelRatio || 1, W = cv.clientWidth || 290, H = cv.clientHeight || 190;
   cv.width = W * dpr; cv.height = H * dpr;
   const g = cv.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
@@ -559,15 +577,33 @@ function drawPlot(cv, plan, T) {
   g.setLineDash([]);
   g.fillText(fmt(plan.height, 1) + ' mm', 0, 16); g.fillText('0', padL - 10, 8 + ph);
   for (const L of plan.layers) {
-    g.fillStyle = REASON_COLORS[L.r];
+    g.fillStyle = '#' + layerColor(L, T).getHexString();
     const y0 = Y(L.z0), y1 = Y(L.z0 + L.h);
     g.fillRect(padL, y1, Math.max(1, X(L.h) - padL), Math.max(0.6, y0 - y1 - 0.3));
+  }
+  // Vorher (vor ✨ Magic) als gestrichelte Linie
+  if (prev && Math.abs(prev.height - plan.height) < 1e-6) {
+    g.strokeStyle = 'rgba(255,255,255,.85)'; g.lineWidth = 1.3; g.setLineDash([4, 3]);
+    g.beginPath();
+    prev.layers.forEach((L, i) => { const x = X(L.h); if (i) g.lineTo(x, Y(L.z0)); else g.moveTo(x, Y(L.z0)); g.lineTo(x, Y(L.z0 + L.h)); });
+    g.stroke(); g.setLineDash([]); g.lineWidth = 1;
+    g.fillStyle = 'rgba(255,255,255,.85)'; g.fillText('- - vorher', W - 58, 16);
   }
   g.fillStyle = '#e8c547';
   for (const z of plan.snaps) g.fillRect(padL - 6, Y(z) - 1, 5, 2);
 }
-$('legend').innerHTML = [1, 2, 3, 0].map(r => `<span><i style="background:${REASON_COLORS[r]}"></i>${REASON_NAMES[r]}</span>`).join('')
-  + '<span><i style="background:#e8c547;height:.22rem;vertical-align:2px"></i>Kante exakt</span>';
+function renderLegend(T) {
+  const edge = '<span><i style="background:#e8c547;height:.22rem;vertical-align:2px"></i>Kante exakt</span>';
+  $('legend').innerHTML = colorMode === 'height'
+    ? `<span>fein ${fmt(T.hMin)}<i class="grad" style="background:${HEAT_CSS}"></i>${fmt(T.hMax)} grob</span>${edge}`
+    : [1, 2, 3, 0].map(r => `<span><i style="background:${REASON_COLORS[r]}"></i>${REASON_NAMES[r]}</span>`).join('') + edge;
+  document.querySelectorAll('#colorMode button').forEach(b => b.classList.toggle('on', b.dataset.c === colorMode));
+}
+document.querySelectorAll('#colorMode button').forEach(b => b.onclick = () => {
+  colorMode = b.dataset.c; lsSet('v3dsch-color', colorMode);
+  if (objects.length) recalc(); else renderLegend(layerTargets(layerOpts()));
+});
+renderLegend(layerTargets(layerOpts()));
 
 // ---------- Laden ----------
 async function openFile(file) {
@@ -615,7 +651,7 @@ presetSel.onchange = () => { dropMagic(); applyPreset(presetSel.value); buildBed
 for (const k of FIELDS) $(k).addEventListener('input', () => { presetSel.value = 'custom'; saveSettings(); scheduleRecalc(); });
 $('quality').addEventListener('input', () => { saveSettings(); scheduleRecalc(); });
 $('objSel').onchange = () => showResults();
-function dropMagic() { magicRes = null; magicUndo = null; $('magicCard').hidden = true; }
+function dropMagic() { magicRes = null; magicUndo = null; $('magicCard').hidden = true; for (const o of objects) o.prevPlan = null; }
 function relayout() { const { maxZ } = rebuildGeometry(); orbit.target.z = maxZ / 2; recalc(); updateCam(); }
 function rotateAll(ax) {
   for (const o of objects) o.R = matMul(ax === 0 ? ROT_X90 : ROT_Y90, o.R);
@@ -637,7 +673,7 @@ $('magic').onclick = async () => {
     const t0 = performance.now(), opts = layerOpts();
     const res = objects.map(o => magicAnalyze(o.pos0, o.index, { ...opts, current: o.R }));
     if (!res.some(Boolean)) { setStatus('Modell zu flach für eine Analyse', true); return; }
-    if (!magicUndo) magicUndo = { R: objects.map(o => o.R), q: $('quality').value };
+    if (!magicUndo) { magicUndo = { R: objects.map(o => o.R), q: $('quality').value }; for (const o of objects) o.prevPlan = o.plan; }
     magicRes = res;
     applyVariant('best');
     setStatus(`✨ Fertig in ${Math.round(performance.now() - t0)} ms — optimale Schichthöhe eingestellt`);
@@ -693,7 +729,7 @@ function showMagic() {
     if (!magicUndo) return;
     objects.forEach((o, i) => { o.R = magicUndo.R[i]; });
     $('quality').value = magicUndo.q; saveSettings();
-    magicUndo = null; magicRes = null; card.hidden = true; relayout();
+    magicUndo = null; magicRes = null; card.hidden = true; for (const o of objects) o.prevPlan = null; relayout();
     setStatus('Magic zurückgenommen');
   };
 }
