@@ -217,6 +217,235 @@ export function computeLayerPlan(pos, index, opts) {
   };
 }
 
+// ---------------- ✨ Magic: optimale Schichthöhe (+ Lage-Tipp) ----------------
+// Kern: Qualitätsstufen durchrechnen, mittleren Stufenfehler h·|nz| auf Schrägen messen.
+//  • Beste Qualität = niedrigste Stufe, die höchstens 10 % hinter dem Optimum liegt
+//  • Ausgewogen     = niedrigste Stufe innerhalb 35 %
+//  • Schnell        = niedrigste Stufe
+// Die Lage bleibt (opts.orient = true dreht mit). Eine deutlich bessere Lage (weniger
+// Stützen/Stufen; Kandidaten: 6 Achsen + flächenstärkste Facetten nach unten) kommt
+// nur als Vorschlag zurück (betterOrientation).
+// Matrizen: 3×3 zeilenweise, wirken auf Spaltenvektoren (p' = R·p).
+
+export const MAT_I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+export function matMul(a, b) {
+  const r = new Array(9);
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++)
+    r[i * 3 + j] = a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j];
+  return r;
+}
+export const ROT_X90 = [1, 0, 0, 0, 0, -1, 0, 1, 0];
+export const ROT_Y90 = [0, 0, 1, 0, 1, 0, -1, 0, 0];
+// Drehung, die den Einheitsvektor n auf t abbildet (Rodrigues)
+function rotFromTo(n, t) {
+  const c = n[0] * t[0] + n[1] * t[1] + n[2] * t[2];
+  if (c > 1 - 1e-9) return MAT_I.slice();
+  if (c < -1 + 1e-9) {   // 180° um eine zu n senkrechte Achse
+    const ax = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    let k = [n[1] * ax[2] - n[2] * ax[1], n[2] * ax[0] - n[0] * ax[2], n[0] * ax[1] - n[1] * ax[0]];
+    const l = Math.hypot(...k); k = k.map(v => v / l);
+    return [2 * k[0] * k[0] - 1, 2 * k[0] * k[1], 2 * k[0] * k[2],
+            2 * k[1] * k[0], 2 * k[1] * k[1] - 1, 2 * k[1] * k[2],
+            2 * k[2] * k[0], 2 * k[2] * k[1], 2 * k[2] * k[2] - 1];
+  }
+  const v = [n[1] * t[2] - n[2] * t[1], n[2] * t[0] - n[0] * t[2], n[0] * t[1] - n[1] * t[0]];
+  const K = [0, -v[2], v[1], v[2], 0, -v[0], -v[1], v[0], 0], K2 = matMul(K, K), f = 1 / (1 + c);
+  return MAT_I.map((e, i) => e + K[i] + K2[i] * f);
+}
+// Positionen drehen und aufs Bett setzen (z ab 0); XY bleibt, wo die Drehung es hinlegt
+export function rotateToBed(pos, R) {
+  const out = new Float32Array(pos.length);
+  let zmin = Infinity;
+  for (let i = 0; i < pos.length; i += 3) {
+    const x = pos[i], y = pos[i + 1], z = pos[i + 2];
+    out[i] = R[0] * x + R[1] * y + R[2] * z;
+    out[i + 1] = R[3] * x + R[4] * y + R[5] * z;
+    const zz = out[i + 2] = R[6] * x + R[7] * y + R[8] * z;
+    if (zz < zmin) zmin = zz;
+  }
+  for (let i = 2; i < out.length; i += 3) out[i] -= zmin;
+  return out;
+}
+
+// Dreiecke einmal vorbereiten (bei großen Netzen gleichmäßig ausgedünnt)
+function triTable(pos, index, maxTris = 250000) {
+  const n = index ? Math.floor(index.length / 3) : Math.floor(pos.length / 9);
+  const step = Math.max(1, Math.ceil(n / maxTris)), m = Math.ceil(n / step);
+  const T = new Float64Array(m * 13);   // nx ny nz area | x0 y0 z0 x1 y1 z1 x2 y2 z2
+  let k = 0, atot = 0;
+  for (let t = 0; t < n; t += step) {
+    const vi = [0, 1, 2].map(j => index ? index[t * 3 + j] : t * 3 + j);
+    const p = vi.map(v => [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]]);
+    const u = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
+    const w = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
+    const c = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+    const len = Math.hypot(c[0], c[1], c[2]);
+    if (len < 1e-12) continue;
+    const o = k * 13;
+    T[o] = c[0] / len; T[o + 1] = c[1] / len; T[o + 2] = c[2] / len; T[o + 3] = len * 0.5 * step;
+    for (let j = 0; j < 3; j++) { T[o + 4 + j * 3] = p[j][0]; T[o + 5 + j * 3] = p[j][1]; T[o + 6 + j * 3] = p[j][2]; }
+    atot += T[o + 3]; k++;
+  }
+  return { T, m: k, atot };
+}
+
+// Kennzahlen einer Lage R: Stufenfläche, Überhang (braucht Stützen), Standfläche, Höhe
+function orientMetrics(tt, R) {
+  const { T, m, atot } = tt;
+  let zmin = Infinity, zmax = -Infinity;
+  for (let k = 0; k < m; k++) for (let j = 0; j < 3; j++) {
+    const o = k * 13 + 4 + j * 3, z = R[6] * T[o] + R[7] * T[o + 1] + R[8] * T[o + 2];
+    if (z < zmin) zmin = z; if (z > zmax) zmax = z;
+  }
+  const rx = (q) => R[0] * T[q] + R[1] * T[q + 1] + R[2] * T[q + 2];
+  const ry = (q) => R[3] * T[q] + R[4] * T[q + 1] + R[5] * T[q + 2];
+  const rz = (q) => R[6] * T[q] + R[7] * T[q + 1] + R[8] * T[q + 2];
+  // Nach oben zeigende ebene Dreiecke im Raster: eine nach unten zeigende Fläche, die
+  // genau darauf liegt (Böden von Schrift/Kuppel auf einer Platte = mehrere Teilkörper),
+  // ist gestützt — kein Überhang
+  const CELL = 4, ups = new Map();
+  const cellKey = (x, y, z) => `${Math.floor(x / CELL)},${Math.floor(y / CELL)},${Math.round(z / 0.05)}`;
+  for (let k = 0; k < m; k++) {
+    const o = k * 13;
+    if (rz(o) <= FLAT_NZ) continue;
+    const xs = [0, 1, 2].map(j => rx(o + 4 + j * 3)), ys = [0, 1, 2].map(j => ry(o + 4 + j * 3));
+    const z = rz(o + 4), tri = [xs[0], ys[0], xs[1], ys[1], xs[2], ys[2]];
+    for (let cx = Math.floor(Math.min(...xs) / CELL); cx <= Math.floor(Math.max(...xs) / CELL); cx++)
+      for (let cy = Math.floor(Math.min(...ys) / CELL); cy <= Math.floor(Math.max(...ys) / CELL); cy++) {
+        const key = `${cx},${cy},${Math.round(z / 0.05)}`;
+        const l = ups.get(key); if (l) l.push(tri); else ups.set(key, [tri]);
+      }
+  }
+  const inTri = (px, py, t) => {
+    const d1 = (px - t[2]) * (t[1] - t[3]) - (t[0] - t[2]) * (py - t[3]);
+    const d2 = (px - t[4]) * (t[3] - t[5]) - (t[2] - t[4]) * (py - t[5]);
+    const d3 = (px - t[0]) * (t[5] - t[1]) - (t[4] - t[0]) * (py - t[1]);
+    return !((d1 < -1e-9 || d2 < -1e-9 || d3 < -1e-9) && (d1 > 1e-9 || d2 > 1e-9 || d3 > 1e-9));
+  };
+  const resting = (o) => {
+    const px = (rx(o + 4) + rx(o + 7) + rx(o + 10)) / 3, py = (ry(o + 4) + ry(o + 7) + ry(o + 10)) / 3;
+    const pz = (rz(o + 4) + rz(o + 7) + rz(o + 10)) / 3;
+    for (const dz of [0, -1, 1]) {
+      const l = ups.get(cellKey(px, py, pz + dz * 0.05));
+      if (l && l.some(t => inTri(px, py, t))) return true;
+    }
+    return false;
+  };
+  let stair = 0, over = 0, bed = 0, slopeA = 0;
+  for (let k = 0; k < m; k++) {
+    const o = k * 13, a = T[o + 3];
+    const nz = rz(o), anz = Math.abs(nz);
+    const tz = Math.min(rz(o + 4), rz(o + 7), rz(o + 10));
+    const onBed = tz - zmin < 0.1;
+    if (nz < -FLAT_NZ && onBed) { bed += a; continue; }
+    if (anz > VERT_NZ && anz < FLAT_NZ) { stair += a * anz; slopeA += a; }
+    if (nz < -0.7071 && !onBed && !(nz < -FLAT_NZ && resting(o)))
+      over += a * (nz < -FLAT_NZ ? 0.7 : 1);   // flache Decken lassen sich teils überbrücken
+  }
+  return { stair: stair / atot, over, overShare: over / atot, bed, slopeShare: slopeA / atot, height: zmax - zmin };
+}
+function orientScore(M, atot) {
+  const tinyBed = M.bed < Math.max(20, 0.01 * atot);
+  return M.stair + 4 * M.overShare + (tinyBed ? 0.25 : 0) + 0.02 * Math.min(5, M.height / Math.sqrt(atot));
+}
+
+// Mittlerer Stufenfehler (mm) auf Schrägen für einen Schichtplan (oder feste Höhe hFixed)
+function stairError(tt, plan, hFixed) {
+  const { T, m } = tt, L = plan && plan.layers;
+  let sum = 0, area = 0, atMin = 0;
+  for (let k = 0; k < m; k++) {
+    const o = k * 13, anz = Math.abs(T[o + 2]), a = T[o + 3];
+    if (anz <= VERT_NZ || anz >= FLAT_NZ) continue;
+    let h = hFixed;
+    if (L) {
+      const zc = (T[o + 6] + T[o + 9] + T[o + 12]) / 3;
+      let lo = 0, hi = L.length - 1;
+      while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (L[mid].z0 <= zc) lo = mid; else hi = mid - 1; }
+      h = L[lo].h;
+      if (h <= plan.targets.hMin + 1e-6) atMin += a;
+    }
+    sum += a * h * anz; area += a;
+  }
+  return { err: area ? sum / area : 0, slopeArea: area, atMinShare: area ? atMin / area : 0 };
+}
+
+// opts: wie computeLayerPlan + current (aktuelle Drehung R), onProgress(text)
+export function magicAnalyze(pos, index, opts) {
+  const cur = opts.current || MAT_I;
+  const tt = triTable(pos, index);
+  if (!tt.m) return null;
+  // Kandidaten: aktuelle Lage, 6 Achsen, flächenstärkste Facetten-Richtungen (~10°-Kübel)
+  const buckets = new Map();
+  for (let k = 0; k < tt.m; k++) {
+    const o = k * 13, key = `${Math.round(tt.T[o] * 12)},${Math.round(tt.T[o + 1] * 12)},${Math.round(tt.T[o + 2] * 12)}`;
+    const b = buckets.get(key);
+    if (b) { b.a += tt.T[o + 3]; b.n[0] += tt.T[o] * tt.T[o + 3]; b.n[1] += tt.T[o + 1] * tt.T[o + 3]; b.n[2] += tt.T[o + 2] * tt.T[o + 3]; }
+    else buckets.set(key, { a: tt.T[o + 3], n: [tt.T[o] * tt.T[o + 3], tt.T[o + 1] * tt.T[o + 3], tt.T[o + 2] * tt.T[o + 3]] });
+  }
+  const dirs = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  for (const b of [...buckets.values()].sort((x, y) => y.a - x.a).slice(0, 14)) {
+    const l = Math.hypot(...b.n); if (l > 1e-9) dirs.push(b.n.map(v => v / l));
+  }
+  const cands = [{ R: cur, name: 'aktuelle Lage' }];
+  for (const d of dirs) {
+    const R = rotFromTo(d, [0, 0, -1]);
+    if (cands.some(c => Math.abs(c.R[6] - R[6]) + Math.abs(c.R[7] - R[7]) + Math.abs(c.R[8] - R[8]) < 0.02)) continue;   // gleiche „unten"-Richtung
+    cands.push({ R, name: 'Fläche nach unten' });
+  }
+  for (const c of cands) { c.M = orientMetrics(tt, c.R); c.score = orientScore(c.M, tt.atot); }
+  const curC = cands[0];
+  let top = curC;
+  for (const c of cands) if (c.score < top.score) top = c;
+  // nur vorschlagen/umdrehen, wenn es sich spürbar lohnt
+  if (top !== curC && !(top.score < curC.score * 0.95 - 0.005)) top = curC;
+  const best = opts.orient ? top : curC;
+
+  // Qualitätsstufe in der gewählten Lage
+  const rp = rotateToBed(pos, best.R);
+  const ttR = triTable(rp, index);
+  const qs = tt.m > 150000 ? [0.4, 0.6, 0.8, 1] : [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1];
+  const runs = qs.map(q => {
+    const plan = computeLayerPlan(rp, index, { ...opts, quality: q });
+    return { q, plan, ...(plan ? stairError(ttR, plan) : { err: 0, slopeArea: 0, atMinShare: 0 }) };
+  }).filter(r => r.plan);
+  if (!runs.length) return null;
+  const bestErr = Math.min(...runs.map(r => r.err));
+  const slopeShare = runs[0].slopeArea / ttR.atot;
+  const within = (f) => runs.find(r => r.err <= bestErr * f + 1e-4) || runs[runs.length - 1];
+  // kaum Schrägen: der Stufenfehler sagt nichts → Wände sauber (0,7), ohne Übermaß
+  const near = (q) => runs.reduce((a, r) => Math.abs(r.q - q) < Math.abs(a.q - q) ? r : a);
+  const variants = slopeShare < 0.01
+    ? { best: near(0.7), balanced: near(0.5), fast: runs[0] }
+    : { best: within(1.1), balanced: within(1.35), fast: runs[0] };
+  const pick = variants.best;
+  const T0 = layerTargets(opts);
+  const summarize = (r) => {
+    const hs = r.plan.layers.slice(1).map(L => L.h);
+    return { q: r.q, err: r.err, nLayers: r.plan.nLayers, hMin: Math.min(...hs), hMax: Math.max(...hs),
+             hAvg: (r.plan.height - r.plan.layers[0].h) / Math.max(1, hs.length) };
+  };
+  const fixed = stairError(ttR, null, T0.hBase);
+
+  // Hinweise
+  const M = best.M, tips = [];
+  if (M.over > 25 && M.overShare > 0.01)
+    tips.push({ icon: '⚠️', text: `Stützen nötig: ~${Math.round(M.over / 100)} cm² Überhang steiler als 45°` });
+  else tips.push({ icon: '✅', text: 'Ohne Stützen druckbar' });
+  const foot = Math.sqrt(Math.max(M.bed, 1));
+  if (M.bed < 50 || M.height / foot > 4) tips.push({ icon: '🧷', text: `Brim empfohlen — kleine Standfläche (${Math.round(M.bed)} mm²) für ${Math.round(M.height)} mm Höhe` });
+  if (pick.plan.snaps.length) tips.push({ icon: '📏', text: `${pick.plan.snaps.length} waagerechte Kante${pick.plan.snaps.length > 1 ? 'n' : ''} (Schrift, Stufen) liegen exakt auf Schichtgrenzen` });
+  if (pick.atMinShare > 0.3 && T0.hMin >= 0.07 && slopeShare > 0.05)
+    tips.push({ icon: '🔬', text: `${Math.round(pick.atMinShare * 100)} % der Schrägen laufen schon mit Minimum ${T0.hMin.toFixed(2).replace('.', ',')} mm — noch feiner nur mit kleinerer Düse (0,2 mm)` });
+
+  return {
+    R: best.R, rotated: best !== curC, orientation: { chosen: M, before: curC.M, tested: cands.length },
+    betterOrientation: !opts.orient && top !== curC ? { R: top.R, before: curC.M, after: top.M } : null,
+    quality: pick.q, plan: pick.plan, err: pick.err, errBest: bestErr, errFixed: fixed.err,
+    variants: { best: summarize(variants.best), balanced: summarize(variants.balanced), fast: summarize(variants.fast) },
+    hFixed: T0.hBase, nUniform: pick.plan.nUniform, slopeShare, tips,
+  };
+}
+
 // ---------------- 3MF mit Schichtprofil (Bambu Studio / OrcaSlicer / Prusa) --------------
 // objects: [{ name, pos (xyz, Druck-Koordinaten), index?, profile? }]
 

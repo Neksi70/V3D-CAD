@@ -102,6 +102,46 @@ if (existsSync(STEP)) {
   ok(/Online-Seite/.test(r.status), 'index.html offline: STEP-Hinweis statt Fehler');
 }
 
+// 9) ✨ Magic: auf dem Kopf liegender Körper → umdrehen, Qualität hoch, Rückgängig
+{
+  const { rotateToBed, matMul, ROT_X90 } = await import('/home/v3da/orca-wasm/web/adaptive-layers.js');
+  const stl = readFileSync(T + 'adaptive-relief.stl'), nt = stl.readUInt32LE(80);
+  const p = new Float32Array(nt * 9);
+  for (let t = 0; t < nt; t++) for (let k = 0; k < 9; k++) p[t * 9 + k] = stl.readFloatLE(84 + t * 50 + 12 + k * 4);
+  const q = rotateToBed(p, matMul(ROT_X90, ROT_X90));
+  const out = Buffer.alloc(84 + nt * 50);
+  for (let t = 0; t < nt; t++) { out.writeFloatLE(-1, 84 + t * 50 + 8); for (let k = 0; k < 9; k++) out.writeFloatLE(q[t * 9 + k], 84 + t * 50 + 12 + k * 4); }
+  out.writeUInt32LE(nt, 80);
+  const flipped = `${OUT}/relief-kopfueber.stl`;
+  writeFileSync(flipped, out);
+  const s5 = await session(URL_);
+  r = await load(s5.page, flipped);
+  const before = r.dbg.objects[0];
+  await s5.page.click('#magic');
+  await s5.page.waitForFunction(() => window._schDebug().magic, null, { timeout: 60000 });
+  let after = await s5.page.evaluate(() => window._schDebug());
+  let card = await s5.page.locator('#magicCard').innerText();
+  console.log('Magic:', JSON.stringify({ q: after.quality, n: after.objects[0].nLayers }), '\n' + card.split('\n').map(l => '    ' + l).join('\n'));
+  ok(/Optimale Schichthöhe/.test(card) && after.quality >= 0.8, `Magic stellt hohe Qualitätsstufe ein (${after.quality})`);
+  ok(JSON.stringify(after.objects[0].snaps) === JSON.stringify(before.snaps), 'Magic lässt die Lage in Ruhe');
+  ok(/Lage-Tipp/.test(card), 'bessere Lage kommt als Tipp');
+  await s5.page.locator('#magicCard').screenshot({ path: `${OUT}/schichten-magic.png` });
+  await s5.page.click('#magicCard [data-v="fast"]');
+  const fast = await s5.page.evaluate(() => window._schDebug());
+  ok(fast.quality < after.quality && fast.objects[0].nLayers < after.objects[0].nLayers, `Variante „Schnell" (${fast.quality}, ${fast.objects[0].nLayers} Schichten)`);
+  await s5.page.click('#magicOrient');
+  await s5.page.waitForFunction(() => window._schDebug().magic && window._schDebug().objects[0].snaps.includes(3.6), null, { timeout: 60000 });
+  after = await s5.page.evaluate(() => window._schDebug());
+  card = await s5.page.locator('#magicCard').innerText();
+  ok(after.objects[0].snaps.includes(3) && /Ohne Stützen/.test(card) && !/Lage-Tipp/.test(card), 'Lage-Tipp übernommen → Platte unten, ohne Stützen');
+  await s5.page.screenshot({ path: `${OUT}/schichten-magic-voll.png` });
+  await s5.page.click('#magicUndo');
+  const undone = await s5.page.evaluate(() => window._schDebug());
+  ok(!undone.magic && JSON.stringify(undone.objects[0].snaps) === JSON.stringify(before.snaps) && undone.quality === r.dbg.quality,
+     'Rückgängig stellt Lage und Qualität wieder her');
+  ok(!s5.errors.length, 'Magic ohne JS-Fehler ' + (s5.errors.length ? JSON.stringify(s5.errors) : ''));
+}
+
 await browser.close();
 console.log(fails ? `SCHICHTEN-UI-TEST FEHLGESCHLAGEN ❌ (${fails})` : 'SCHICHTEN-UI-TEST OK ✅');
 process.exit(fails ? 1 : 0);

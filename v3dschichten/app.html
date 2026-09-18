@@ -41,6 +41,14 @@
   button:disabled { opacity: .45; cursor: default; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; width: 100%; padding: .6rem; }
   button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+  button.magic { width: 100%; margin-top: .7rem; padding: .65rem; font-weight: 700; font-size: .98rem; color: #fff; border: 0;
+                 background: linear-gradient(100deg, #8a4fd8, #f07c1e); box-shadow: 0 2px 10px rgba(240,124,30,.25); }
+  button.magic:hover:not(:disabled) { filter: brightness(1.1); }
+  #magicCard { margin-top: .6rem; background: var(--panel2); border: 1px solid #5b3f86; border-radius: 9px; padding: .6rem .7rem; font-size: .84rem; }
+  #magicCard h3 { margin: 0 0 .35rem; font-size: .9rem; }
+  #magicCard ul { margin: .3rem 0 .45rem; padding-left: 0; list-style: none; }
+  #magicCard li { margin: .18rem 0; }
+  #magicCard .row2 { display: flex; justify-content: space-between; gap: .5rem; align-items: center; }
   #plot { width: 100%; height: 190px; display: block; background: #12161b; border-radius: 8px; }
   .legend { display: flex; flex-wrap: wrap; gap: .25rem .7rem; font-size: .78rem; margin: .4rem 0; color: var(--dim); }
   .legend i { display: inline-block; width: .75rem; height: .75rem; border-radius: 2px; vertical-align: -2px; margin-right: .2rem; }
@@ -76,6 +84,8 @@
     <div id="fileName"></div>
   </div>
   <input type="file" id="file" accept=".stl,.obj,.3mf,.step,.stp" hidden>
+  <button class="magic" id="magic" disabled title="Analysiert Schrägen, Überhänge und Details und stellt die optimale Schichthöhe ein — Beste Qualität, Ausgewogen oder Schnell">✨ Magic: optimale Schichthöhe</button>
+  <div id="magicCard" hidden></div>
 
   <h2>Drucker &amp; Düse</h2>
   <select id="preset"></select>
@@ -117,7 +127,7 @@
 
 <script src="three.min.js"></script>
 <script type="module">
-import { computeLayerPlan, build3mf, REASON_NAMES, layerTargets } from './adaptive-layers.js';
+import { computeLayerPlan, build3mf, REASON_NAMES, layerTargets, magicAnalyze, rotateToBed, matMul, MAT_I, ROT_X90, ROT_Y90 } from './adaptive-layers.js';
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
@@ -456,20 +466,9 @@ function bandMaterial() {
 let objects = [];      // { name, pos0 (Original), index, rot: [rx,ry], pos (aktuell), mesh, plan }
 let fileBase = 'modell';
 
-function rotated(o) {
-  const [rx, ry] = o.rot, p = o.pos0, out = new Float32Array(p.length);
-  const cx = Math.cos(rx), sx = Math.sin(rx), cy = Math.cos(ry), sy = Math.sin(ry);
-  for (let i = 0; i < p.length; i += 3) {
-    let x = p[i], y = p[i + 1], z = p[i + 2];
-    const y1 = y * cx - z * sx, z1 = y * sx + z * cx; y = y1; z = z1;        // um X
-    const x2 = x * cy + z * sy, z2 = -x * sy + z * cy; x = x2; z = z2;       // um Y
-    out[i] = x; out[i + 1] = y; out[i + 2] = z;
-  }
-  // aufs Bett (z ab 0) — jedes Objekt für sich, wie in den Slicern
-  let zmin = Infinity; for (let i = 2; i < out.length; i += 3) if (out[i] < zmin) zmin = out[i];
-  for (let i = 2; i < out.length; i += 3) out[i] -= zmin;
-  return out;
-}
+// Drehung je Objekt als 3×3-Matrix R (beliebige Lagen für ✨ Magic); aufs Bett (z ab 0)
+// — jedes Objekt für sich, wie in den Slicern
+function rotated(o) { return rotateToBed(o.pos0, o.R); }
 // gemeinsame XY-Mitte aller Objekte auf (cx, cy) legen
 function centerXY(list, cx, cy) {
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
@@ -583,11 +582,12 @@ async function openFile(file) {
     else if (ext === 'step' || ext === 'stp') list = await loadStep(buf, base);
     else list = loadStl(buf, base);
     if (!list.length) throw new Error('Keine Objekte gefunden');
-    objects = list.map(o => ({ ...o, pos0: o.pos, rot: [0, 0] }));
+    objects = list.map(o => ({ ...o, pos0: o.pos, R: MAT_I.slice() }));
     fileBase = base.replace(/_adaptiv$/, '');
     $('fileName').textContent = `✅ ${file.name} · ${objects.length} Objekt${objects.length > 1 ? 'e' : ''}`;
     $('objSel').innerHTML = '';
-    for (const id of ['rotX', 'rotY', 'rotReset']) $(id).disabled = false;
+    for (const id of ['rotX', 'rotY', 'rotReset', 'magic']) $(id).disabled = false;
+    $('magicCard').hidden = true; magicUndo = null; magicRes = null;
     $('hint').hidden = true;
     const { maxZ, maxR } = rebuildGeometry();
     orbit.target.set(0, 0, maxZ / 2); orbit.r = Math.max(60, Math.max(maxR, maxZ) * 3.2);
@@ -611,17 +611,92 @@ for (const el of [drop, canvas]) {
 }
 
 // ---------- Bedienung ----------
-presetSel.onchange = () => { applyPreset(presetSel.value); buildBed(...currentPreset().bed.map(v => Math.max(v, 200))); saveSettings(); scheduleRecalc(); render(); };
+presetSel.onchange = () => { dropMagic(); applyPreset(presetSel.value); buildBed(...currentPreset().bed.map(v => Math.max(v, 200))); saveSettings(); scheduleRecalc(); render(); };
 for (const k of FIELDS) $(k).addEventListener('input', () => { presetSel.value = 'custom'; saveSettings(); scheduleRecalc(); });
 $('quality').addEventListener('input', () => { saveSettings(); scheduleRecalc(); });
 $('objSel').onchange = () => showResults();
+function dropMagic() { magicRes = null; magicUndo = null; $('magicCard').hidden = true; }
+function relayout() { const { maxZ } = rebuildGeometry(); orbit.target.z = maxZ / 2; recalc(); updateCam(); }
 function rotateAll(ax) {
-  for (const o of objects) o.rot[ax] = (o.rot[ax] + Math.PI / 2) % (2 * Math.PI);
-  const { maxZ } = rebuildGeometry(); orbit.target.z = maxZ / 2; recalc(); updateCam();
+  for (const o of objects) o.R = matMul(ax === 0 ? ROT_X90 : ROT_Y90, o.R);
+  dropMagic(); relayout();
 }
 $('rotX').onclick = () => rotateAll(0);
 $('rotY').onclick = () => rotateAll(1);
-$('rotReset').onclick = () => { for (const o of objects) o.rot = [0, 0]; const { maxZ } = rebuildGeometry(); orbit.target.z = maxZ / 2; recalc(); updateCam(); };
+$('rotReset').onclick = () => { for (const o of objects) o.R = MAT_I.slice(); dropMagic(); relayout(); };
+
+// ---------- ✨ Magic: optimale Schichthöhe (Lage nur als Tipp) ----------
+let magicUndo = null, magicRes = null, magicVariant = 'best';
+const VARIANTS = [['best', 'Beste Qualität'], ['balanced', 'Ausgewogen'], ['fast', 'Schnell']];
+$('magic').onclick = async () => {
+  if (!objects.length) return;
+  $('magic').disabled = true;
+  setStatus('✨ Analysiere Schrägen, Details und Qualitätsstufen …');
+  await new Promise(r => setTimeout(r, 30));
+  try {
+    const t0 = performance.now(), opts = layerOpts();
+    const res = objects.map(o => magicAnalyze(o.pos0, o.index, { ...opts, current: o.R }));
+    if (!res.some(Boolean)) { setStatus('Modell zu flach für eine Analyse', true); return; }
+    if (!magicUndo) magicUndo = { R: objects.map(o => o.R), q: $('quality').value };
+    magicRes = res;
+    applyVariant('best');
+    setStatus(`✨ Fertig in ${Math.round(performance.now() - t0)} ms — optimale Schichthöhe eingestellt`);
+  } catch (e) { console.error(e); setStatus('Analyse fehlgeschlagen: ' + e.message, true); }
+  finally { $('magic').disabled = false; }
+};
+// Variante anwenden: bei mehreren Objekten die strengste (höchste) Stufe
+function applyVariant(key) {
+  magicVariant = key;
+  $('quality').value = Math.max(...magicRes.filter(Boolean).map(r => r.variants[key].q));
+  saveSettings();
+  recalc();
+  showMagic();
+}
+function showMagic() {
+  const esc = (t) => String(t).replace(/[<&]/g, c => ({ '<': '&lt;', '&': '&amp;' }[c]));
+  const res = magicRes, cm2 = (a) => fmt(a / 100, 1);
+  const main = res.map((r, i) => {
+    if (!r) return '';
+    const v = r.variants[magicVariant], o = objects[i];
+    const n = o.plan ? o.plan.nLayers : v.nLayers, nu = o.plan ? o.plan.nUniform : r.nUniform;
+    const stair = r.slopeShare < 0.01
+      ? '📐 kaum Schrägen — gleichmäßig, Wände sauber'
+      : `📐 Stufen auf Schrägen Ø <b>${fmt(v.err, 3)} mm</b> statt ${fmt(r.errFixed, 3)} mm bei fest ${fmt(r.hFixed)}`;
+    return `${res.length > 1 ? `<div class="dim" style="margin-top:.35rem">${i + 1}: ${esc(o.name)}</div>` : ''}
+      <div style="font-size:1.05rem;margin:.15rem 0"><b>${fmt(v.hMin)} – ${fmt(v.hMax)} mm</b> <span class="dim">Ø ${fmt(v.hAvg, 3)} mm</span></div>
+      <ul><li>${stair}</li><li>🧮 ${n} Schichten <span class="dim">(fest ${fmt(r.hFixed)}: ${nu})</span></li>
+      ${r.tips.map(t => `<li>${t.icon} ${esc(t.text)}</li>`).join('')}</ul>`;
+  }).join('');
+  const r0 = res.find(Boolean);
+  const chips = VARIANTS.map(([k, label]) => {
+    const v = r0.variants[k];
+    return `<button data-v="${k}" style="flex:1;padding:.35rem .3rem;font-size:.78rem;line-height:1.25;${k === magicVariant ? 'border-color:#b48cf0;background:#3a2d55' : ''}">
+      <b>${label}</b><br><span class="dim">${v.nLayers} Sch. · ${r0.slopeShare < 0.01 ? 'Ø ' + fmt(v.hAvg, 2) + ' mm' : 'Stufe ' + fmt(v.err, 3) + ' mm'}</span></button>`;
+  }).join('');
+  const better = res.map((r, i) => r && r.betterOrientation && { i, b: r.betterOrientation }).filter(Boolean);
+  const tip = better.length ? `<div class="note" style="margin-top:.45rem">💡 <b>Lage-Tipp:</b> anders hingelegt sinkt der Überhang
+      ${cm2(better[0].b.before.over)} → ${cm2(better[0].b.after.over)} cm² (weniger Stützen).
+      <button id="magicOrient" style="margin-top:.35rem">🔄 Lage übernehmen</button></div>` : '';
+  const card = $('magicCard');
+  card.innerHTML = `<div class="row2"><h3>✨ Optimale Schichthöhe</h3><button id="magicUndo">↶ Rückgängig</button></div>
+    <div style="display:flex;gap:.35rem;margin:.35rem 0">${chips}</div>${main}${tip}`;
+  card.hidden = false;
+  card.querySelectorAll('[data-v]').forEach(b => b.onclick = () => applyVariant(b.dataset.v));
+  const ob = $('magicOrient');
+  if (ob) ob.onclick = () => {
+    for (const { i, b } of better) objects[i].R = b.R;
+    card.hidden = true;   // bis die Neubewertung in der neuen Lage steht (Rückgängig bleibt erhalten)
+    relayout();
+    $('magic').click();   // in der neuen Lage neu bewerten
+  };
+  $('magicUndo').onclick = () => {
+    if (!magicUndo) return;
+    objects.forEach((o, i) => { o.R = magicUndo.R[i]; });
+    $('quality').value = magicUndo.q; saveSettings();
+    magicUndo = null; magicRes = null; card.hidden = true; relayout();
+    setStatus('Magic zurückgenommen');
+  };
+}
 
 $('export').onclick = async () => {
   try {
@@ -650,7 +725,7 @@ if (location.protocol.startsWith('http')) {
 
 buildBed(...currentPreset().bed.map(v => Math.max(v, 200)));
 updateCam(); resize();
-window._schDebug = () => ({ objects: objects.map(o => o.plan && { name: o.name, height: o.plan.height, nLayers: o.plan.nLayers,
+window._schDebug = () => ({ quality: +$('quality').value, magic: !$('magicCard').hidden, objects: objects.map(o => o.plan && { name: o.name, height: o.plan.height, nLayers: o.plan.nLayers,
   nUniform: o.plan.nUniform, snaps: o.plan.snaps }), opts: layerOpts() });
 </script>
 </body>
