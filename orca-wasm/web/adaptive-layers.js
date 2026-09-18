@@ -467,7 +467,7 @@ export function magicAnalyze(pos, index, opts) {
   if (M.bed < 50 || M.height / foot > 4) tips.push({ icon: '🧷', text: `Brim empfohlen — kleine Standfläche (${Math.round(M.bed)} mm²) für ${Math.round(M.height)} mm Höhe` });
   if (pick.plan.snaps.length) tips.push({ icon: '📏', text: `${pick.plan.snaps.length} waagerechte Kante${pick.plan.snaps.length > 1 ? 'n' : ''} (Schrift, Stufen) liegen exakt auf Schichtgrenzen` });
   if (pick.atMinShare > 0.3 && T0.hMin >= 0.07 && slopeShare > 0.05)
-    tips.push({ icon: '🔬', text: `${Math.round(pick.atMinShare * 100)} % der Schrägen laufen schon mit Minimum ${T0.hMin.toFixed(2).replace('.', ',')} mm — noch feiner nur mit kleinerer Düse (0,2 mm)` });
+    tips.push({ icon: '🔬', text: `${Math.round(pick.atMinShare * 100)} % der Schrägen laufen schon mit Minimum ${T0.hMin.toFixed(2).replace('.', ',')} mm — noch feiner nur mit kleinerer Düse: 0,2-mm-Düse EINBAUEN und dann die Vorlage umstellen` });
 
   return {
     R: best.R, rotated: best !== curC, orientation: { chosen: M, before: curC.M, tested: cands.length },

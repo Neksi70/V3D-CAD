@@ -106,6 +106,8 @@
 
   <h2>Drucker &amp; Düse</h2>
   <select id="preset"></select>
+  <div class="note" style="margin:.2rem 0 .4rem">⚠️ Muss zur <b>eingebauten Düse</b> passen, die auch in Bambu Studio/Orca
+    eingestellt ist — sonst verwirft der Slicer das Profil („Schichthöhen überschreiten den zulässigen Bereich der Düse").</div>
   <label class="row">Schichthöhe (Profil) <input type="number" id="hBase" step="0.01" min="0.02"></label>
   <label class="row">Erste Schicht <input type="number" id="hFirst" step="0.01" min="0.02"></label>
   <label class="row">Minimum <input type="number" id="hMin" step="0.01" min="0.02"></label>
@@ -131,6 +133,7 @@
 
   <h2>Export</h2>
   <button class="primary" id="export" disabled>📦 3MF mit Schichtprofil speichern</button>
+  <div class="dim" id="exportFor" style="font-size:.8rem;margin-top:.3rem"></div>
   <div class="note">
     Öffnen in <b>Bambu Studio</b>, <b>OrcaSlicer</b> oder <b>PrusaSlicer</b> — das Profil erscheint dort als variable
     Schichthöhe. Wichtig: im Slicer dieselbe <b>Erste Schicht</b> (<span id="firstHint">0,2</span> mm) einstellen,
@@ -737,6 +740,7 @@ function showResults() {
   drawPlot($('plot'), cur && cur.plan, T, cur && cur.prevPlan);
   renderLegend(T);
   $('firstHint').textContent = fmt(opts.hFirst);
+  $('exportFor').innerHTML = `für <b>${fmt(currentPreset().nozzle, 1)}-mm-Düse</b> · Schichten ${fmt(T.hMin)}–${fmt(T.hMax)} mm · Erste Schicht ${fmt(opts.hFirst)} mm`;
   if (!withPlan.length) {
     $('stats').innerHTML = '<span class="dim">Modell zu flach für eine adaptive Schichthöhe.</span>';
     $('export').disabled = true; return;
@@ -814,7 +818,7 @@ async function openFile(file) {
     else list = loadStl(buf, base);
     if (!list.length) throw new Error('Keine Objekte gefunden');
     objects = list.map(o => ({ ...o, pos0: o.pos, R: MAT_I.slice() }));
-    fileBase = base.replace(/_adaptiv$/, '');
+    fileBase = base.replace(/_adaptiv(_[\d,.]+mm)?$/, '');
     $('fileName').textContent = `✅ ${file.name} · ${objects.length} Objekt${objects.length > 1 ? 'e' : ''}`;
     $('objSel').innerHTML = '';
     for (const id of ['rotX', 'rotY', 'rotReset', 'magic']) $(id).disabled = false;
@@ -981,14 +985,18 @@ $('export').onclick = async () => {
     setStatus('3MF wird gebaut …');
     const bed = currentPreset().bed;
     const placed = centerXY(objects.map(o => o.pos), bed[0] / 2, bed[1] / 2);
-    const blob = await build3mf(objects.map((o, i) => ({ name: o.name, pos: placed[i], index: o.index, profile: o.plan ? o.plan.profile : null })),
+    // Slicer prüfen die Höhen gegen min/max der Düse und verwerfen sonst das GANZE Profil →
+    // hart begrenzen (auch gegen Rundungsreste); Erstschicht (Index 1) bleibt exakt
+    const T = layerTargets(layerOpts()), lo = +T.hMin.toFixed(6), hi = +T.hMax.toFixed(6);
+    const safe = (pr) => pr && pr.map((v, k) => k % 2 && k !== 1 ? Math.min(hi, Math.max(lo, +v.toFixed(6))) : v);
+    const blob = await build3mf(objects.map((o, i) => ({ name: o.name, pos: placed[i], index: o.index, profile: o.plan ? safe(o.plan.profile) : null })),
                                 { title: fileBase });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = fileBase + '_adaptiv.3mf';
+    a.download = `${fileBase}_adaptiv_${fmt(currentPreset().nozzle, 1)}mm.3mf`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
-    setStatus(`Gespeichert: ${fileBase}_adaptiv.3mf — im Slicer Erste Schicht ${fmt(layerOpts().hFirst)} mm einstellen`);
+    setStatus(`Gespeichert: ${a.download} — im Slicer ${fmt(currentPreset().nozzle, 1)}-mm-Düse und Erste Schicht ${fmt(layerOpts().hFirst)} mm`);
   } catch (e) { setStatus('Export fehlgeschlagen: ' + e.message, true); }
   finally { $('export').disabled = false; }
 };

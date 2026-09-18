@@ -51,8 +51,16 @@ await page.screenshot({ path: `${OUT}/schichten-app.png` });
 const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#export')]);
 const f3 = `${OUT}/${dl.suggestedFilename()}`;
 await dl.saveAs(f3);
-ok(dl.suggestedFilename() === 'adaptive-relief_adaptiv.3mf', 'Dateiname ' + dl.suggestedFilename());
+ok(dl.suggestedFilename() === 'adaptive-relief_adaptiv_0,4mm.3mf', 'Dateiname mit Düse: ' + dl.suggestedFilename());
 
+// Wie Bambu Studio prüfen: jede Höhe im Bereich der Düse (0,4: 0,08–0,28), Erstschicht exakt 0,2
+{
+  const { execFileSync } = await import('node:child_process');
+  const txt = execFileSync('python3', ['-c', 'import sys,zipfile;print(zipfile.ZipFile(sys.argv[1]).read("Metadata/layer_heights_profile.txt").decode())', f3]).toString();
+  const v = txt.trim().split('|')[1].split(';').map(Number), hs = v.filter((_, k) => k % 2 === 1);
+  const bad = hs.slice(1).filter(h => h < 0.08 - 1e-9 || h > 0.28 + 1e-9);
+  ok(v[1] === 0.2 && !bad.length, `Studio-Bereichsprüfung: ${hs.length} Höhen in 0,08–0,28, Erstschicht ${v[1]}${bad.length ? ' — außerhalb: ' + bad.slice(0, 5) : ''}`);
+}
 // Export mit orca_native slicen (Bambu-0,4-Werte wie in der App)
 const BIN = '/home/v3da/orca-wasm/OrcaSlicer/build-native/src/wasm/orca_native';
 const job = { id: 1, model: f3, filename: 'x.3mf', profiles: [], transforms: null, filament_chains: [], paints: null, cuts: [], adaptive: null,
