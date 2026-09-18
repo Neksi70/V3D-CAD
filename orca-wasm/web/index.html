@@ -52,6 +52,7 @@
   #toolbar button.active { background: #fdebd7; color: #c85f08; }
   #toolbar button.active:hover { background: #fbdfc0; }
   /* Zahlen-Panel unter der Werkzeugleiste (Studio-Look) */
+  #tbAdapt.adaptOn { box-shadow: inset 0 -3px 0 #2ea2d8; }
   #toolPanel { position: absolute; top: 60px; left: 130px; z-index: 6;
                background: #fff; border: 1px solid var(--border); border-radius: 10px;
                box-shadow: 0 8px 24px rgba(15,23,42,.12); padding: .65rem .9rem;
@@ -664,6 +665,7 @@
 <script src="./three.min.js"></script>
 <script src="./transform-controls.js"></script>
 <script type="module">
+import { computeLayerPlan, build3mf, REASON_NAMES } from './adaptive-layers.js';
 const $ = id => document.getElementById(id);
 const status = $('status');
 
@@ -1524,6 +1526,8 @@ async function refreshSettings() {
     if ($('support').checked) setSupportEnabled(true);
   } catch { return; }   // unvollstaendige Auswahl -> Panel unveraendert
   renderSettings();
+  // Adaptiv-Panel hängt an Schichthöhe/Min/Max des Profils → neu zeichnen
+  try { if (activeTool === 'adapt') renderToolPanel(); } catch {}
 }
 
 function fieldHtml(key) {
@@ -3719,14 +3723,124 @@ function paintB64(ta) {
 
 // ---- Schnitte & adaptive Schichthöhe (an den Kern via ops) ----
 let cutOps = [];            // angewandte Schnitte (Reihenfolge = Kern-Reihenfolge)
-let adaptiveParams = null;  // { quality, radius, keepMin } oder null
+let adaptiveParams = null;  // Orca-Modus: { quality, radius, keepMin } oder null
 let cutDraft = null;        // aktueller, noch nicht ausgeführter Schnitt (Ebene sichtbar)
+// Adaptive Schichthöhe: 'auto' (eigener Rechenkern, Krümmung + Details — Standard),
+// 'orca' (Orca-Adaptiv mit Reglern, manuell anwenden) oder 'off'
+const lsGet = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+let adaptMode = lsGet('vs-adapt-mode', 'auto');
+let adaptQuality = parseFloat(lsGet('vs-adapt-q', '0.5'));
+if (!Number.isFinite(adaptQuality)) adaptQuality = 0.5;
 
 function currentOps() {
   const o = {};
   if (cutOps.length) o.cuts = cutOps;
-  if (adaptiveParams) o.adaptive = adaptiveParams;
+  if (adaptMode === 'orca' && adaptiveParams) o.adaptive = adaptiveParams;
+  if (adaptMode === 'auto') {
+    const plans = autoLayerPlans();
+    if (plans.some(Boolean))
+      o.adaptive = { mode: 'auto', profiles: plans.map(p => p && p.profile.map(v => +v.toFixed(6))) };
+  }
   return Object.keys(o).length ? o : undefined;
+}
+
+// Schichtplan je (Objekt,Instanz) aus der Welt-Geometrie (inkl. Drehen/Skalieren),
+// gecacht über Geometrie + Matrix + Profilwerte
+let _planCache = new Map();
+function layerOptsFor(st) {
+  const g = k => {
+    const v = st && st.objConfig && st.objConfig.has(k) ? st.objConfig.get(k)
+      : changedValues.has(k) ? changedValues.get(k) : effVal(k);
+    return parseFloat(String(v).split(',')[0]);
+  };
+  return { hBase: g('layer_height'), hFirst: g('initial_layer_print_height'),
+           hMin: g('min_layer_height'), hMax: g('max_layer_height'),
+           nozzle: g('nozzle_diameter'), quality: adaptQuality };
+}
+function worldPositions(st) {
+  const geo = st.mesh.geometry, pa = geo.attributes.position;
+  st.mesh.updateMatrixWorld(true);
+  const e = st.mesh.matrixWorld.elements, out = new Float32Array(pa.count * 3);
+  for (let i = 0; i < pa.count; i++) {
+    const x = pa.getX(i), y = pa.getY(i), z = pa.getZ(i);
+    out[i * 3] = e[0] * x + e[4] * y + e[8] * z + e[12];
+    out[i * 3 + 1] = e[1] * x + e[5] * y + e[9] * z + e[13];
+    out[i * 3 + 2] = e[2] * x + e[6] * y + e[10] * z + e[14];
+  }
+  return out;
+}
+function autoLayerPlans() {
+  const next = new Map();
+  const plans = objectStates.map((st, i) => {
+    if (!st || st.deleted || !st.mesh) return null;
+    st.mesh.updateMatrixWorld(true);
+    const opts = layerOptsFor(st);
+    const geo = st.mesh.geometry;
+    const key = [geo.uuid, geo.attributes.position.count, geo.attributes.position.version,
+                 st.mesh.matrixWorld.elements.map(v => v.toFixed(5)).join(','), JSON.stringify(opts)].join('|');
+    let plan = _planCache.get(i);
+    if (!plan || plan.key !== key) {
+      try { plan = { key, ...computeLayerPlan(worldPositions(st), geo.index ? geo.index.array : null, opts) }; }
+      catch (e) { console.warn('Schichtplan fehlgeschlagen:', e); plan = { key, profile: null }; }
+    }
+    next.set(i, plan);
+    return plan.profile ? plan : null;
+  });
+  _planCache = next;
+  return plans;
+}
+window._adaptDebug = () => ({ mode: adaptMode, quality: adaptQuality, opts: layerOptsFor(null), cfgKeys: Object.keys(effectiveConfig).length,
+  plans: autoLayerPlans().map(p => p && { height: p.height, nLayers: p.nLayers, nUniform: p.nUniform, snaps: p.snaps,
+    reasons: p.layers.reduce((m, L) => (m[REASON_NAMES[L.r]] = (m[REASON_NAMES[L.r]] || 0) + 1, m), {}) }) });
+
+// Diagramm: Höhe (senkrecht) gegen Schichthöhe (waagerecht), Farbe = Grund
+const REASON_COLORS = ['#8a96a3', '#2ea2d8', '#f07c1e', '#b36be0', '#5a6570'];
+function drawLayerPlan(cv, plan) {
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth || 260, Hc = cv.clientHeight || 170;
+  cv.width = W * dpr; cv.height = Hc * dpr;
+  const g = cv.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, W, Hc);
+  if (!plan) return;
+  const T = plan.targets, padL = 34, padB = 16, pw = W - padL - 6, ph = Hc - padB - 6;
+  const X = h => padL + (h - T.hMin) / (T.hMax - T.hMin) * pw, Y = z => 6 + ph - z / plan.height * ph;
+  g.font = '10px system-ui'; g.fillStyle = '#8a96a3'; g.strokeStyle = 'rgba(138,150,163,.35)';
+  for (const h of [T.hMin, T.hBase, T.hMax]) {
+    g.beginPath(); g.setLineDash(h === T.hBase ? [3, 3] : []); g.moveTo(X(h), 6); g.lineTo(X(h), 6 + ph); g.stroke();
+    const lbl = h.toFixed(2).replace('.', ','), tw = g.measureText(lbl).width;
+    g.fillText(lbl, Math.min(W - tw - 1, Math.max(padL - 4, X(h) - tw / 2)), Hc - 3);
+  }
+  g.setLineDash([]);
+  g.fillText(plan.height.toFixed(1).replace('.', ',') + ' mm', 0, 14); g.fillText('0', padL - 10, 6 + ph);
+  for (const L of plan.layers) {
+    g.fillStyle = REASON_COLORS[L.r];
+    const y0 = Y(L.z0), y1 = Y(L.z0 + L.h);
+    g.fillRect(padL, y1, Math.max(1, X(L.h) - padL), Math.max(0.6, y0 - y1 - 0.3));
+  }
+  g.fillStyle = '#e8c547';
+  for (const z of plan.snaps) g.fillRect(padL - 6, Y(z) - 1, 5, 2);
+}
+
+async function exportAdaptive3mf() {
+  const plans = autoLayerPlans();
+  const [aox, aoy] = plateOffset(activePlate);
+  const objs = [];
+  objectStates.forEach((st, i) => {
+    if (!st || st.deleted || !st.mesh) return;
+    const pos = worldPositions(st);
+    for (let k = 0; k < pos.length; k += 3) { pos[k] -= aox; pos[k + 1] -= aoy; }
+    objs.push({ name: st.name, pos, index: st.mesh.geometry.index ? st.mesh.geometry.index.array : null,
+                profile: plans[i] ? plans[i].profile : null });
+  });
+  if (!objs.length) return;
+  status.textContent = '3MF wird gebaut …';
+  const blob = await build3mf(objs, { title: modelName });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (modelName || 'modell').replace(/\.[^.]+$/, '') + '_adaptiv.3mf';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+  const hf = layerOptsFor(null).hFirst;
+  status.innerHTML = `<span class="ok">3MF mit Schichtprofil gespeichert — in Bambu Studio/Orca öffnen (Erstschicht dort ${String(hf).replace('.', ',')} mm lassen)</span>`;
 }
 
 // Sichtbare Schnittebene (halbtransparent, folgt der Höhe/Kippung im Panel)
@@ -3802,8 +3916,33 @@ function renderToolPanel() {
   if (activeTool === 'adapt') {
     p.hidden = false;
     const a = adaptiveParams || { quality: 0.5, radius: 5, keepMin: false };
-    p.innerHTML = `<div class="tpHead">Adaptive Schichthöhe [A]</div>
-      <table>
+    const radio = (v, l) => `<label style="display:flex;align-items:center;gap:.35rem;opacity:1;margin:.1rem 0">
+      <input type="radio" name="adMode" data-tp="amode" value="${v}" style="width:auto"${adaptMode === v ? ' checked' : ''}> ${l}</label>`;
+    let body = '';
+    if (adaptMode === 'auto') {
+      const plans = autoLayerPlans();
+      const pi = plans[selectedIdx] ? selectedIdx : plans.findIndex(Boolean);
+      const plan = plans[pi];
+      const tot = plans.reduce((s, q) => s + (q ? q.nLayers : 0), 0), uni = plans.reduce((s, q) => s + (q ? q.nUniform : 0), 0);
+      const diff = uni ? Math.round((tot / uni - 1) * 100) : 0;
+      const hb = plan ? plan.targets.hBase : layerOptsFor(null).hBase;
+      body = `<div style="display:flex;align-items:center;gap:.4rem;margin:.35rem 0">
+          <small style="opacity:.7">schneller</small>
+          <input type="range" data-tp="aauto" min="0" max="1" step="0.05" value="${adaptQuality}" style="width:9rem">
+          <small style="opacity:.7">feiner</small></div>
+        <canvas id="adPlot" style="width:260px;height:170px;display:block;background:rgba(0,0,0,.18);border-radius:6px"></canvas>
+        <div style="display:flex;flex-wrap:wrap;gap:.2rem .6rem;margin:.3rem 0;font-size:.75rem">${
+          [1, 2, 3, 0].map(r => `<span><i style="display:inline-block;width:.7rem;height:.7rem;border-radius:2px;background:${REASON_COLORS[r]};vertical-align:-1px"></i> ${REASON_NAMES[r]}</span>`).join('')
+        }<span><i style="display:inline-block;width:.7rem;height:.2rem;background:#e8c547;vertical-align:2px"></i> Kante exakt</span></div>
+        <div class="tpDim" style="max-width:270px">${plan
+          ? `${plans.filter(Boolean).length > 1 ? `Objekt ${pi + 1}: ` : ''}${plan.nLayers} Schichten · alle Objekte ${tot} statt ${uni} bei fest ${String(hb).replace('.', ',')} mm (${diff > 0 ? '+' : ''}${diff} %)${
+            plan.snaps.length ? `<br>Kanten exakt bei ${plan.snaps.slice(0, 6).map(z => z.toFixed(2).replace('.', ',')).join(' · ')}${plan.snaps.length > 6 ? ' …' : ''} mm` : ''}`
+          : Object.keys(effectiveConfig).length ? 'Objekt zu flach für ein Profil' : 'Profile werden geladen …'}</div>
+        <div style="display:flex;gap:.5rem;margin-top:.4rem">
+          <button data-tp="a3mf" class="secondary" style="padding:.3rem .7rem" title="3MF mit eingebettetem Schichthöhen-Profil — Bambu Studio / OrcaSlicer übernehmen es beim Öffnen">📦 3MF für Bambu Studio / Orca</button></div>`;
+      setTimeout(() => { const cv = $('adPlot'); if (cv) drawLayerPlan(cv, plan); }, 0);
+    } else if (adaptMode === 'orca') {
+      body = `<table>
       <tr><td>Qualität / Geschwindigkeit</td>
         <td><input type="range" data-tp="aq" min="0" max="1" step="0.05" value="${a.quality}" style="width:9rem"></td>
         <td><input type="number" data-tp="aqn" min="0" max="1" step="0.05" value="${a.quality}"></td></tr>
@@ -3816,9 +3955,16 @@ function renderToolPanel() {
         <button data-tp="aapply" class="secondary" style="padding:.3rem .7rem">Anwenden</button>
         <button data-tp="areset" class="secondary" style="padding:.3rem .7rem">Zurücksetzen</button>
         <span data-tp="astat" style="opacity:.7;align-self:center">${adaptiveParams ? '✅ aktiv' : ''}</span></div>`;
+    } else body = '<div class="tpDim">Feste Schichthöhe aus dem Prozessprofil</div>';
+    p.innerHTML = `<div class="tpHead">Adaptive Schichthöhe [A]</div>
+      ${radio('auto', 'Automatisch — Krümmung + Details')}${radio('orca', 'Orca-Adaptiv (manuell)')}${radio('off', 'Aus')}
+      ${body}`;
     p.querySelectorAll('input[data-tp],button[data-tp]').forEach(el => {
       const h = () => applyAdaptInput(el);
-      if (el.tagName === 'BUTTON') el.onclick = h; else el.oninput = h;
+      if (el.tagName === 'BUTTON' || el.type === 'radio') el.onclick = h;
+      else if (el.dataset.tp === 'aauto') { el.oninput = () => { adaptQuality = parseFloat(el.value); const pl = autoLayerPlans();
+        const cv = $('adPlot'); if (cv) drawLayerPlan(cv, pl[selectedIdx] || pl.find(Boolean)); }; el.onchange = h; }
+      else el.oninput = h;
     });
     return;
   }
@@ -4049,12 +4195,17 @@ function reloadAfterOps() {
 
 function applyAdaptInput(el) {
   const k = el.dataset.tp;
+  if (k === 'amode') { adaptMode = el.value; lsSet('vs-adapt-mode', adaptMode); markAdaptiveButton();
+    status.textContent = { auto: 'Adaptive Schichthöhe automatisch — beim Slicen wirksam', orca: 'Orca-Adaptiv: Regler einstellen und „Anwenden"', off: 'Adaptive Schichthöhe aus' }[adaptMode];
+    renderToolPanel(); return; }
+  if (k === 'aauto') { adaptQuality = parseFloat(el.value); lsSet('vs-adapt-q', String(adaptQuality)); renderToolPanel(); return; }
+  if (k === 'a3mf') { exportAdaptive3mf().catch(e => { status.innerHTML = `<span class="err">3MF-Export: ${e.message}</span>`; }); return; }
   const cur = adaptiveParams || { quality: 0.5, radius: 5, keepMin: false };
   if (k === 'aq' || k === 'aqn') { cur.quality = parseFloat(el.value); adaptiveParams && (adaptiveParams.quality = cur.quality); renderToolPanel(); }
   else if (k === 'ar' || k === 'arn') { cur.radius = parseInt(el.value); adaptiveParams && (adaptiveParams.radius = cur.radius); renderToolPanel(); }
   else if (k === 'akeep') { cur.keepMin = el.checked; adaptiveParams && (adaptiveParams.keepMin = cur.keepMin); }
-  else if (k === 'aapply') { adaptiveParams = { quality: cur.quality, radius: cur.radius, keepMin: cur.keepMin }; status.innerHTML = '<span class="ok">Adaptive Schichthöhe aktiv — beim Slicen wirksam</span>'; renderToolPanel(); }
-  else if (k === 'areset') { adaptiveParams = null; status.textContent = 'Adaptive Schichthöhe zurückgesetzt'; renderToolPanel(); }
+  else if (k === 'aapply') { adaptiveParams = { quality: cur.quality, radius: cur.radius, keepMin: cur.keepMin }; status.innerHTML = '<span class="ok">Adaptive Schichthöhe aktiv — beim Slicen wirksam</span>'; markAdaptiveButton(); renderToolPanel(); }
+  else if (k === 'areset') { adaptiveParams = null; status.textContent = 'Adaptive Schichthöhe zurückgesetzt'; markAdaptiveButton(); renderToolPanel(); }
 }
 
 function currentTransforms() {
@@ -4127,6 +4278,12 @@ $('tbScale').onclick = () => setTool('scale');
 $('tbPaint').onclick = () => setTool('paint');
 $('tbCut').onclick = () => setTool('cut');
 $('tbAdapt').onclick = () => setTool('adapt');
+function markAdaptiveButton() {
+  const on = adaptMode === 'auto' || (adaptMode === 'orca' && adaptiveParams);
+  $('tbAdapt').classList.toggle('adaptOn', Boolean(on));
+  $('tbAdapt').title = `Adaptive Schichthöhe [A] — ${adaptMode === 'auto' ? 'automatisch aktiv' : adaptMode === 'orca' ? (adaptiveParams ? 'Orca-Adaptiv aktiv' : 'Orca-Adaptiv (nicht angewandt)') : 'aus'}`;
+}
+markAdaptiveButton();
 
 $('tbOpen').onclick = () => $('file').click();
 // Neues Projekt: Modell + Schnitte + Bemalung + Slice-Ergebnis verwerfen.
@@ -4401,6 +4558,7 @@ function handleMessage(e) {
       `<b>${layers.length}</b> Layer in <b>${dt}s</b>`,
       `Druckzeit: <b>${grab(/; total estimated time: (.*)/) || '–'}</b>`,
       `Filament: <b>${grab(/; filament used \[g\] = ([\d.]+)/) || grab(/; total filament used \[g\] = ([\d.]+)/) || '–'} g</b>`,
+      `Schichthöhe: <b>${adaptMode === 'auto' ? 'adaptiv (automatisch)' : adaptMode === 'orca' && adaptiveParams ? 'adaptiv (Orca)' : 'fest'}</b>`,
     ].join('<br>');
     // Slicing-Ergebnis-Panel (Studio-Look): Länge/Gewicht summiert, Gesamtzeit
     const nums = re => ((lastGcode.match(re) || [,''])[1]).split(',').map(parseFloat).filter(Number.isFinite);
