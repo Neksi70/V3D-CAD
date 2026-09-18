@@ -1,6 +1,6 @@
 // Headless-Check „Adaptive Schichthöhe automatisch": Standard aktiv, Panel mit
 // Diagramm, 3MF-Export mit Schichtprofil, Slice nutzt das Profil (Kanten exakt).
-// Aufruf: node test/adaptive-ui-test.mjs [--no-slice]
+// Aufruf: node test/adaptive-ui-test.mjs [--no-slice] [--local]
 import { chromium } from 'playwright';
 import { writeFileSync } from 'node:fs';
 
@@ -12,7 +12,11 @@ page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
 let fails = 0;
 const ok = (c, m) => { console.log((c ? '  ✓ ' : '  ✗ ') + m); if (!c) fails++; };
 
-await page.addInitScript(() => { try { localStorage.removeItem('vs-adapt-mode'); localStorage.removeItem('vs-adapt-q'); } catch {} });
+const LOCAL = process.argv.includes('--local');   // Browser-Kern (WASM) statt Server-Slice
+await page.addInitScript((local) => { try {
+  localStorage.removeItem('vs-adapt-mode'); localStorage.removeItem('vs-adapt-q');
+  if (local) localStorage.setItem('vs-srv-slice', '0');
+} catch {} }, LOCAL);
 await page.goto('http://127.0.0.1:8778/app/', { waitUntil: 'load' });
 await page.setInputFiles('#file', new URL('./adaptive-relief.stl', import.meta.url).pathname);
 await page.waitForFunction(() => !document.getElementById('tbAdapt').disabled, null, { timeout: 120000 });
