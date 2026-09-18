@@ -106,8 +106,7 @@
 
   <h2>Drucker &amp; Düse</h2>
   <select id="preset"></select>
-  <div class="note" style="margin:.2rem 0 .4rem">⚠️ Muss zur <b>eingebauten Düse</b> passen, die auch in Bambu Studio/Orca
-    eingestellt ist — sonst verwirft der Slicer das Profil („Schichthöhen überschreiten den zulässigen Bereich der Düse").</div>
+  <div class="note" id="presetNote" style="margin:.2rem 0 .4rem"></div>
   <label class="row">Schichthöhe (Profil) <input type="number" id="hBase" step="0.01" min="0.02"></label>
   <label class="row">Erste Schicht <input type="number" id="hFirst" step="0.01" min="0.02"></label>
   <label class="row">Minimum <input type="number" id="hMin" step="0.01" min="0.02"></label>
@@ -167,10 +166,15 @@ const fmt = (v, d = 2) => Number(v).toFixed(d).replace('.', ',');
 // ---------- Drucker-Vorlagen ----------
 // bed = Druckbett (für die Platzierung im 3MF), Werte wie in den Hersteller-Profilen
 const PRESETS = [
-  { id: 'bbl04', name: 'Bambu Lab · 0,4 mm Düse', hBase: 0.20, hFirst: 0.20, hMin: 0.08, hMax: 0.28, nozzle: 0.4, bed: [256, 256] },
-  { id: 'bbl02', name: 'Bambu Lab · 0,2 mm Düse', hBase: 0.10, hFirst: 0.10, hMin: 0.04, hMax: 0.14, nozzle: 0.2, bed: [256, 256] },
-  { id: 'bbl06', name: 'Bambu Lab · 0,6 mm Düse', hBase: 0.30, hFirst: 0.30, hMin: 0.12, hMax: 0.42, nozzle: 0.6, bed: [256, 256] },
-  { id: 'bbl08', name: 'Bambu Lab · 0,8 mm Düse', hBase: 0.40, hFirst: 0.40, hMin: 0.16, hMax: 0.56, nozzle: 0.8, bed: [256, 256] },
+  // studio = passende Bambu-Studio-Prozesse (Werte aus den BBL-Profilen, A1 … H2C/X2D identisch)
+  { id: 'bbl04', name: 'Bambu Lab · 0,4 mm Düse', hBase: 0.20, hFirst: 0.20, hMin: 0.08, hMax: 0.28, nozzle: 0.4, bed: [256, 256],
+    studio: 'Prozesse ohne Düsen-Zusatz, z. B. „0.20mm Standard @BBL H2C“' },
+  { id: 'bbl02', name: 'Bambu Lab · 0,2 mm Düse', hBase: 0.10, hFirst: 0.10, hMin: 0.04, hMax: 0.14, nozzle: 0.2, bed: [256, 256],
+    studio: 'Prozesse „… 0.2 nozzle“, z. B. „0.08mm High Quality @BBL H2C 0.2 nozzle“' },
+  { id: 'bbl06', name: 'Bambu Lab · 0,6 mm Düse', hBase: 0.30, hFirst: 0.30, hMin: 0.12, hMax: 0.42, nozzle: 0.6, bed: [256, 256],
+    studio: 'Prozesse „… 0.6 nozzle“' },
+  { id: 'bbl08', name: 'Bambu Lab · 0,8 mm Düse', hBase: 0.40, hFirst: 0.40, hMin: 0.16, hMax: 0.56, nozzle: 0.8, bed: [256, 256],
+    studio: 'Prozesse „… 0.8 nozzle“' },
   { id: 'prusa04', name: 'Prusa MK4 / Core One · 0,4 mm', hBase: 0.20, hFirst: 0.20, hMin: 0.07, hMax: 0.30, nozzle: 0.4, bed: [250, 210] },
   { id: 'kobra04', name: 'Anycubic Kobra · 0,4 mm', hBase: 0.20, hFirst: 0.20, hMin: 0.08, hMax: 0.32, nozzle: 0.4, bed: [250, 250] },
   { id: 'custom', name: 'Eigene Werte', hBase: 0.20, hFirst: 0.20, hMin: 0.08, hMax: 0.28, nozzle: 0.4, bed: [256, 256] },
@@ -182,6 +186,15 @@ function applyPreset(id, keepValues) {
   const p = PRESETS.find(x => x.id === id) || PRESETS[0];
   presetSel.value = p.id;
   if (!keepValues) for (const k of FIELDS) $(k).value = p[k].toFixed(2);
+}
+// Passt die Vorlage zu Studio? Düse + Erste Schicht müssen gleich sein, sonst verwirft Studio das
+// Profil (Höhe außerhalb min/max der Düse → Warnung; andere Erste Schicht → still)
+function renderPresetNote() {
+  const p = currentPreset(), o = layerOpts();
+  $('presetNote').innerHTML = `⚠️ Muss zu Bambu Studio/Orca passen: <b>${fmt(p.nozzle, 1)}-mm-Düse</b> im Drucker, `
+    + `Schichten dort ${fmt(o.hMin)}–${fmt(o.hMax)} mm, <b>Erste Schicht ${fmt(o.hFirst)} mm</b>`
+    + (p.studio ? `<br><span class="dim">Passende Studio-Prozesse: ${p.studio}</span>` : '')
+    + '<br><span class="dim">Sonst setzt Studio das Profil zurück („…überschreiten den zulässigen Bereich der Düse").</span>';
 }
 function currentPreset() { return PRESETS.find(x => x.id === presetSel.value) || PRESETS[0]; }
 function layerOpts() {
@@ -740,6 +753,7 @@ function showResults() {
   drawPlot($('plot'), cur && cur.plan, T, cur && cur.prevPlan);
   renderLegend(T);
   $('firstHint').textContent = fmt(opts.hFirst);
+  renderPresetNote();
   $('exportFor').innerHTML = `für <b>${fmt(currentPreset().nozzle, 1)}-mm-Düse</b> · Schichten ${fmt(T.hMin)}–${fmt(T.hMax)} mm · Erste Schicht ${fmt(opts.hFirst)} mm`;
   if (!withPlan.length) {
     $('stats').innerHTML = '<span class="dim">Modell zu flach für eine adaptive Schichthöhe.</span>';
@@ -847,8 +861,8 @@ for (const el of [drop, canvas]) {
 }
 
 // ---------- Bedienung ----------
-presetSel.onchange = () => { dropMagic(); applyPreset(presetSel.value); buildBed(...currentPreset().bed.map(v => Math.max(v, 200))); saveSettings(); scheduleRecalc(); render(); };
-for (const k of FIELDS) $(k).addEventListener('input', () => { presetSel.value = 'custom'; saveSettings(); scheduleRecalc(); });
+presetSel.onchange = () => { dropMagic(); applyPreset(presetSel.value); renderPresetNote(); buildBed(...currentPreset().bed.map(v => Math.max(v, 200))); saveSettings(); scheduleRecalc(); render(); };
+for (const k of FIELDS) $(k).addEventListener('input', () => { presetSel.value = 'custom'; saveSettings(); renderPresetNote(); scheduleRecalc(); });
 $('quality').addEventListener('input', () => { saveSettings(); scheduleRecalc(); });
 $('objSel').onchange = () => { showResults(); renderOrient(); };
 function dropMagic() { magicRes = null; magicUndo = null; $('magicCard').hidden = true; for (const o of objects) o.prevPlan = null; }
@@ -1009,6 +1023,7 @@ if (location.protocol.startsWith('http')) {
 }
 
 buildBed(...currentPreset().bed.map(v => Math.max(v, 200)));
+renderPresetNote();
 updateCam(); resize();
 window._schDebug = () => ({ view: viewMode, previewPending, preview: printGroup.children.map(m => m.geometry.attributes.position.count), previewMs: window._schPreviewMs, quality: +$('quality').value, magic: !$('magicCard').hidden, banner: !$('orientBanner').hidden,
   orient: orientSug.map(sg => sg && sg.list.map(c => ({ top: c.isTop, over: Math.round(c.M.over), h: +c.M.height.toFixed(1) }))), objects: objects.map(o => o.plan && { name: o.name, height: o.plan.height, nLayers: o.plan.nLayers,
