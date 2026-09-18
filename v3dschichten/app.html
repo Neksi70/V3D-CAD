@@ -124,7 +124,7 @@
 
   <h2>Ergebnis</h2>
   <select id="objSel" hidden></select>
-  <div class="seg" id="colorMode"><span>Farbe:</span><button data-c="height">Schichthöhe</button><button data-c="reason">Grund</button></div>
+  <div class="seg" id="colorMode"><span>Farbe:</span><button data-c="filament" title="Einheitlich wie gedruckt — Treppen erscheinen als feine Linien">Filament</button><button data-c="height">Schichthöhe</button><button data-c="reason">Grund</button></div>
   <canvas id="plot"></canvas>
   <div class="legend" id="legend"></div>
   <div id="stats" class="dim">Noch kein Modell geladen.</div>
@@ -455,9 +455,12 @@ new ResizeObserver(resize).observe(canvas);
 // Schichtband-Shader: Farbe = Grund der Schicht auf Welt-Höhe z, dunkle Schichtlinien
 const REASON_COLORS = ['#8a96a3', '#2ea2d8', '#f07c1e', '#b36be0', '#5a6570'];
 const REASON_RGB = REASON_COLORS.map(c => new THREE.Color(c));
-// Färbung: 'height' = nach Schichthöhe auf fester Skala Min…Max (Magic/Regler sichtbar),
-// 'reason' = nach Grund (Schräge, Überhang, Relief, Grundhöhe)
-let colorMode = lsGet('v3dsch-color', 'height') === 'reason' ? 'reason' : 'height';
+// Färbung: 'filament' = einheitlich wie gedruckt (Standard — Treppen nur durchs Licht, wie in echt;
+// bunte Schichten übertreiben jede Terrasse), 'height' = nach Schichthöhe auf fester Skala
+// Min…Max, 'reason' = nach Grund (Schräge, Überhang, Relief, Grundhöhe)
+const COLOR_MODES = ['filament', 'height', 'reason'];
+let colorMode = COLOR_MODES.includes(lsGet('v3dsch-color2', '')) ? lsGet('v3dsch-color2', '') : 'filament';
+const FILAMENT_RGB = new THREE.Color('#d6d2ca');
 const HEAT = ['#6a3fd6', '#2e7fd8', '#2fb6a0', '#e9c54a', '#f07c1e'].map(c => new THREE.Color(c));
 const HEAT_CSS = 'linear-gradient(90deg,#6a3fd6,#2e7fd8,#2fb6a0,#e9c54a,#f07c1e)';
 function heatColor(h, T) {
@@ -465,7 +468,7 @@ function heatColor(h, T) {
   const i = Math.min(HEAT.length - 2, Math.floor(t));
   return HEAT[i].clone().lerp(HEAT[i + 1], t - i);
 }
-function layerColor(L, T) { return colorMode === 'height' ? heatColor(L.h, T) : REASON_RGB[L.r]; }
+function layerColor(L, T) { return colorMode === 'height' ? heatColor(L.h, T) : colorMode === 'reason' ? REASON_RGB[L.r] : FILAMENT_RGB; }
 function bandTexture(plan, T) {
   const maxW = Math.min(8192, renderer.capabilities.maxTextureSize || 4096);
   const W = Math.max(64, Math.min(maxW, Math.ceil(plan.height / 0.01)));
@@ -705,7 +708,7 @@ $('zoomWorst').onclick = () => {
       const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx, len = Math.hypot(cx, cy, cz);
       if (len < 0.1) continue;   // Fläche < 0,05 mm²
       const anz = Math.abs(cz / len);
-      if (anz < 0.02 || anz > 0.996) continue;
+      if (anz < 0.02 || anz > 0.99985) continue;   // wie der Rechenkern: erst ≤ 1° gilt als waagerecht
       const zc = (v[0][2] + v[1][2] + v[2][2]) / 3;
       let lo = 0, hi = L.length - 1;
       while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (L[mid].z0 <= zc) lo = mid; else hi = mid - 1; }
@@ -767,7 +770,7 @@ function drawPlot(cv, plan, T, prev) {
   g.setLineDash([]);
   g.fillText(fmt(plan.height, 1) + ' mm', 0, 16); g.fillText('0', padL - 10, 8 + ph);
   for (const L of plan.layers) {
-    g.fillStyle = '#' + layerColor(L, T).getHexString();
+    g.fillStyle = '#' + (colorMode === 'filament' ? heatColor(L.h, T) : layerColor(L, T)).getHexString();
     const y0 = Y(L.z0), y1 = Y(L.z0 + L.h);
     g.fillRect(padL, y1, Math.max(1, X(L.h) - padL), Math.max(0.6, y0 - y1 - 0.3));
   }
@@ -784,13 +787,15 @@ function drawPlot(cv, plan, T, prev) {
 }
 function renderLegend(T) {
   const edge = '<span><i style="background:#e8c547;height:.22rem;vertical-align:2px"></i>Kante exakt</span>';
-  $('legend').innerHTML = colorMode === 'height'
+  $('legend').innerHTML = colorMode === 'filament'
+    ? '<span>Einheitlich wie gedruckt — die Treppen zeigt das Licht (Diagramm: Farbe nach Schichthöhe)</span>'
+    : colorMode === 'height'
     ? `<span>fein ${fmt(T.hMin)}<i class="grad" style="background:${HEAT_CSS}"></i>${fmt(T.hMax)} grob</span>${edge}`
     : [1, 2, 3, 0].map(r => `<span><i style="background:${REASON_COLORS[r]}"></i>${REASON_NAMES[r]}</span>`).join('') + edge;
   document.querySelectorAll('#colorMode button').forEach(b => b.classList.toggle('on', b.dataset.c === colorMode));
 }
 document.querySelectorAll('#colorMode button').forEach(b => b.onclick = () => {
-  colorMode = b.dataset.c; lsSet('v3dsch-color', colorMode);
+  colorMode = b.dataset.c; lsSet('v3dsch-color2', colorMode);
   if (objects.length) recalc(); else renderLegend(layerTargets(layerOpts()));
 });
 renderLegend(layerTargets(layerOpts()));

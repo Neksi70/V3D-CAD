@@ -27,10 +27,11 @@ export const REASON_NAMES = ['Grundhöhe', 'Schräge', 'Überhang', 'Relief/Schr
 const PE = 1e-3;            // Abstand des Schicht-End-Stützpunkts (übersteht Studios %f)
 const BIN = 0.05;           // Auflösung der Höhenanalyse in mm
 const LEVELS = 24;          // Quantisierung der erlaubten Höhen je Band
-const FLAT_NZ = 0.9962;     // |nz| darüber = waagerecht (≤ 5°)
+const FLAT_NZ = 0.99985;    // |nz| darüber = waagerecht (≤ 1°). NICHT 5°: flach abgeschrägte Deckflächen
+                            // (Logos, 1–5°) sind die schlimmsten Treppen und brauchen die feinsten Schichten
 const VERT_NZ = 0.0175;     // |nz| darunter = senkrecht (≤ 1°)
 const RELIEF_MAX = 3.0;     // Relief-Band: waagerechte Flächen höchstens so weit auseinander
-const MIN_KEY_AREA = 0.3;   // mm² — kleinere waagerechte Flächen sind Rauschen
+const MIN_KEY_AREA = 1.0;   // mm² — kleinere waagerechte Flächen sind Rauschen (Tessellation)
 const SMOOTH_K = 0.1;       // max. Höhenänderung je mm z (0,08 → 0,28 in 2 mm)
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -186,11 +187,11 @@ export function computeLayerPlan(pos, index, opts) {
     while (ki < keys.length && keys[ki].z <= z + EPS) ki++;
     const target = ki < keys.length ? keys[ki].z : H;
     const d = target - z;
-    // Auf die nächste Kante (oder das Dach) zulaufen: die letzten ≤ 3 Schichten
-    // gleichmäßig teilen statt einer dünnen Restschicht am Ende
+    // Auf die nächste Kante (oder das Dach) zulaufen: die letzten ≤ 8 Schichten
+    // gleichmäßig teilen statt einer dünnen/dicken Restschicht am Ende
     let snap = false;
     let n = Math.ceil(d / h - 1e-9);
-    if (n <= 3) {
+    if (n <= 8) {
       if (d / n < hMin) n = Math.max(1, Math.floor(d / hMin + 1e-9));
       h = Math.min(d / n, hMax);
       snap = n === 1 && ki < keys.length;

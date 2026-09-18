@@ -12,6 +12,11 @@ const T = '/home/v3da/orca-wasm/test/';
 let fails = 0;
 const ok = (c, m) => { console.log((c ? '  ✓ ' : '  ✗ ') + m); if (!c) fails++; };
 
+// Erwartete Schichtzahl direkt aus dem Rechenkern (Bambu 0,4, Qualität 0,5) statt fester Zahl
+const { computeLayerPlan: _plan } = await import('/home/v3da/orca-wasm/web/adaptive-layers.js');
+const EXP = (() => { const b = readFileSync(T + 'adaptive-relief.stl'), n = b.readUInt32LE(80), p = new Float32Array(n * 9);
+  for (let t = 0; t < n; t++) for (let k = 0; k < 9; k++) p[t * 9 + k] = b.readFloatLE(84 + t * 50 + 12 + k * 4);
+  return _plan(p, null, { hBase: 0.2, hFirst: 0.2, hMin: 0.08, hMax: 0.28, nozzle: 0.4, quality: 0.5 }).nLayers; })();
 const browser = await chromium.launch();
 async function session(url) {
   const page = await browser.newPage({ viewport: { width: 1300, height: 850 }, acceptDownloads: true });
@@ -32,7 +37,7 @@ const { page, errors } = await session(URL_);
 let r = await load(page, T + 'adaptive-relief.stl');
 console.log('STL:', r.file, '|', r.status);
 const pl = r.dbg.objects[0];
-ok(pl && pl.nLayers === 60 && pl.snaps.includes(3) && pl.snaps.includes(3.6), `Plan wie im Slicer (60 Schichten, Kanten 3/3,6) → ${pl && pl.nLayers}`);
+ok(pl && pl.nLayers === EXP && pl.snaps.includes(3) && pl.snaps.includes(3.6), `Plan wie im Rechenkern (${EXP} Schichten, Kanten 3/3,6) → ${pl && pl.nLayers}`);
 await page.waitForFunction(() => !window._schDebug().previewPending && window._schDebug().preview.length === 1, null, { timeout: 30000 });
 const pv1 = await page.evaluate(() => window._schDebug());
 ok(pv1.view === 'print' && pv1.preview[0] > 1000, `Druckvorschau steht (${pv1.preview[0]} Punkte, ${Math.round(pv1.previewMs)} ms)`);
@@ -59,12 +64,12 @@ await new Promise(res => proc.on('exit', res));
 const done = so.split('\n').map(l => { try { return JSON.parse(l); } catch { return null; } }).find(l => l && (l.done || l.error));
 if (done && done.gcode && existsSync(done.gcode)) {
   const zs = [...readFileSync(done.gcode, 'utf8').matchAll(/^;Z:([\d.]+)/gm)].map(m => +m[1]);
-  ok(zs.length === 60 && [3, 3.6].every(k => zs.some(z => Math.abs(z - k) < 1e-6)), `Orca slict den Export mit dem Profil (${zs.length} Schichten)`);
+  ok(zs.length === EXP && [3, 3.6].every(k => zs.some(z => Math.abs(z - k) < 1e-6)), `Orca slict den Export mit dem Profil (${zs.length} Schichten)`);
 } else ok(false, 'Orca-Slice des Exports: ' + JSON.stringify(done));
 
 // 2) Rundreise: eigener Export wieder laden
 r = await load(page, f3);
-ok(r.dbg.objects[0] && r.dbg.objects[0].nLayers === 60, 'eigenes 3MF wieder geladen → gleicher Plan');
+ok(r.dbg.objects[0] && r.dbg.objects[0].nLayers === EXP, 'eigenes 3MF wieder geladen → gleicher Plan');
 // 3) fremde 3MF (Slicer-Testdateien)
 for (const f of ['cube20.3mf', 'double.3mf']) {
   if (!existsSync(T + f)) continue;
@@ -83,7 +88,7 @@ ok(!errors.length, 'keine JS-Fehler ' + (errors.length ? JSON.stringify(errors) 
 // 5) Offline per file://
 const s2 = await session('file:///home/v3da/v3dschichten/index.html');
 r = await load(s2.page, T + 'adaptive-relief.stl');
-ok(r.dbg.objects[0] && r.dbg.objects[0].nLayers === 60, 'file:// (offline) rechnet genauso');
+ok(r.dbg.objects[0] && r.dbg.objects[0].nLayers === EXP, 'file:// (offline) rechnet genauso');
 ok(await s2.page.evaluate(() => document.getElementById('offline').hidden), 'Offline-Link im Offline-Modus ausgeblendet');
 ok(!s2.errors.length, 'offline keine JS-Fehler ' + (s2.errors.length ? JSON.stringify(s2.errors) : ''));
 
