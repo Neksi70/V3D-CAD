@@ -53,6 +53,16 @@
   .seg button { padding: .2rem .55rem; font-size: .78rem; }
   .seg button.on { border-color: var(--blue); background: #1f3a4d; color: #fff; }
   .legend .grad { display: inline-block; width: 9rem; height: .7rem; border-radius: 3px; vertical-align: -1px; margin: 0 .3rem; }
+  #orientList { display: flex; flex-direction: column; gap: .35rem; margin-top: .5rem; }
+  #orientList button { text-align: left; padding: .45rem .55rem; font-size: .8rem; line-height: 1.35; }
+  #orientList button.cur { border-color: var(--blue); background: #1f3a4d; }
+  #orientList .tag { display: inline-block; font-size: .7rem; padding: 0 .35rem; border-radius: 4px; margin-left: .25rem; }
+  #orientList .top { background: #5b3f86; color: #fff; } #orientList .now { background: #1f5a7d; color: #fff; }
+  #orientBanner { position: absolute; top: .7rem; left: 50%; transform: translateX(-50%); max-width: calc(100% - 1.6rem);
+                  background: rgba(38,28,58,.95); border: 1px solid #8a4fd8; border-radius: 9px; padding: .45rem .6rem;
+                  display: flex; gap: .6rem; align-items: center; font-size: .85rem; box-shadow: 0 4px 18px rgba(0,0,0,.35); }
+  #orientBanner button { padding: .3rem .6rem; }
+  #orientBanner .x { background: transparent; border: 0; color: var(--dim); padding: .2rem .35rem; }
   #plot { width: 100%; height: 190px; display: block; background: #12161b; border-radius: 8px; }
   .legend { display: flex; flex-wrap: wrap; gap: .25rem .7rem; font-size: .78rem; margin: .4rem 0; color: var(--dim); }
   .legend i { display: inline-block; width: .75rem; height: .75rem; border-radius: 2px; vertical-align: -2px; margin-right: .2rem; }
@@ -107,6 +117,7 @@
     <button id="rotY" disabled title="Um die Y-Achse kippen">↻ Y 90°</button>
     <button id="rotReset" disabled>Zurücksetzen</button>
   </div>
+  <div id="orientList"></div>
 
   <h2>Ergebnis</h2>
   <select id="objSel" hidden></select>
@@ -125,6 +136,7 @@
 </aside>
 <div id="viewWrap">
   <canvas id="view"></canvas>
+  <div id="orientBanner" hidden></div>
   <div id="hint">Modell laden — die Schichthöhen erscheinen als farbige Bänder</div>
   <div id="status"></div>
 </div>
@@ -132,7 +144,7 @@
 
 <script src="three.min.js"></script>
 <script type="module">
-import { computeLayerPlan, build3mf, REASON_NAMES, layerTargets, magicAnalyze, rotateToBed, matMul, MAT_I, ROT_X90, ROT_Y90 } from './adaptive-layers.js';
+import { computeLayerPlan, build3mf, REASON_NAMES, layerTargets, magicAnalyze, orientationSuggestions, rotateToBed, matMul, MAT_I, ROT_X90, ROT_Y90 } from './adaptive-layers.js';
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
@@ -629,6 +641,7 @@ async function openFile(file) {
     orbit.target.set(0, 0, maxZ / 2); orbit.r = Math.max(60, Math.max(maxR, maxZ) * 3.2);
     updateCam();
     recalc();
+    bannerDismissed = false; scheduleOrient();
     const tris = objects.reduce((s, o) => s + (o.index ? o.index.length : o.pos.length / 3) / 3, 0);
     setStatus(`${Math.round(tris).toLocaleString('de-DE')} Dreiecke · Profil in ${Math.round(window._schLast.ms)} ms`);
   } catch (e) {
@@ -650,18 +663,74 @@ for (const el of [drop, canvas]) {
 presetSel.onchange = () => { dropMagic(); applyPreset(presetSel.value); buildBed(...currentPreset().bed.map(v => Math.max(v, 200))); saveSettings(); scheduleRecalc(); render(); };
 for (const k of FIELDS) $(k).addEventListener('input', () => { presetSel.value = 'custom'; saveSettings(); scheduleRecalc(); });
 $('quality').addEventListener('input', () => { saveSettings(); scheduleRecalc(); });
-$('objSel').onchange = () => showResults();
+$('objSel').onchange = () => { showResults(); renderOrient(); };
 function dropMagic() { magicRes = null; magicUndo = null; $('magicCard').hidden = true; for (const o of objects) o.prevPlan = null; }
 function relayout() { const { maxZ } = rebuildGeometry(); orbit.target.z = maxZ / 2; recalc(); updateCam(); }
 function rotateAll(ax) {
   for (const o of objects) o.R = matMul(ax === 0 ? ROT_X90 : ROT_Y90, o.R);
-  dropMagic(); relayout();
+  dropMagic(); relayout(); scheduleOrient();
 }
 $('rotX').onclick = () => rotateAll(0);
 $('rotY').onclick = () => rotateAll(1);
-$('rotReset').onclick = () => { for (const o of objects) o.R = MAT_I.slice(); dropMagic(); relayout(); };
+$('rotReset').onclick = () => { for (const o of objects) o.R = MAT_I.slice(); dropMagic(); relayout(); scheduleOrient(); };
 
-// ---------- ✨ Magic: optimale Schichthöhe (Lage nur als Tipp) ----------
+// ---------- 🧭 Ausrichtung: automatisch vorschlagen ----------
+// Nach dem Laden (und nach manuellem Drehen) alle sinnvollen Lagen bewerten: Stützen-
+// Fläche (Überhang > 45°), Standfläche, Höhe, Treppenstufen. Klick legt das Teil so hin.
+let orientSug = [], orientT = 0, bannerDismissed = false;
+const sameDown = (a, b) => Math.abs(a[6] - b[6]) + Math.abs(a[7] - b[7]) + Math.abs(a[8] - b[8]) < 0.02;
+function scheduleOrient() {
+  clearTimeout(orientT);
+  $('orientList').innerHTML = '<span class="dim" style="font-size:.8rem">🧭 suche beste Ausrichtung …</span>';
+  orientT = setTimeout(() => {
+    const t0 = performance.now();
+    orientSug = objects.map(o => { try { return orientationSuggestions(o.pos0, o.index, { current: o.R }); } catch (e) { console.warn(e); return null; } });
+    window._schOrientMs = performance.now() - t0;
+    renderOrient();
+  }, 40);
+}
+function orientIdx() { return objects.length > 1 ? (+$('objSel').value || 0) : 0; }
+function renderOrient() {
+  const i = orientIdx(), sug = orientSug[i], o = objects[i], box = $('orientList'), banner = $('orientBanner');
+  if (!sug || !o) { box.innerHTML = ''; banner.hidden = true; return; }
+  const cm2 = (a) => fmt(a / 100, 1);
+  const stairsDiffer = sug.list.some(c => !c.lessStairs);
+  if (sug.list.length === 1) {
+    box.innerHTML = '<span class="dim" style="font-size:.8rem">✅ Liegt optimal — alle Lagen sind gleichwertig</span>';
+  } else {
+    box.innerHTML = sug.list.map((c, k) => {
+      const cur = sameDown(c.R, o.R);
+      const sup = c.M.over > 25 ? `⚠️ ${cm2(c.M.over)} cm² Stützen` : '✅ ohne Stützen';
+      return `<button data-k="${k}" class="${cur ? 'cur' : ''}">
+        <b>${c.isTop ? '⭐ Empfohlen' : `Lage ${k + 1}`}</b>${cur ? '<span class="tag now">aktuell</span>' : ''}<br>
+        ${sup} · Standfläche ${cm2(c.M.bed)} cm²<br>
+        <span class="dim">Höhe ${fmt(c.M.height, 1)} mm${stairsDiffer ? ` · ${c.lessStairs ? 'wenig Treppenstufen' : 'mehr Treppenstufen'}` : ''}</span></button>`;
+    }).join('');
+    box.querySelectorAll('[data-k]').forEach(b => b.onclick = () => applyOrientation(i, sug.list[+b.dataset.k].R));
+  }
+  const rec = sug.recommended, cur = sug.list.find(c => sameDown(c.R, o.R));
+  if (rec && !sameDown(rec.R, o.R) && !bannerDismissed) {
+    const why = [];
+    const curOver = cur ? cur.M.over : sug.list.find(c => c.isCurrent)?.M.over ?? 0;
+    if (curOver - rec.M.over > 25) why.push(rec.M.over <= 25 ? 'ohne Stützen' : `${cm2(curOver - rec.M.over)} cm² weniger Stützen`);
+    const curBed = cur ? cur.M.bed : 0;
+    if (rec.M.bed > curBed * 1.5 + 20) why.push('stabiler Stand');
+    if (!why.length) why.push('weniger Treppenstufen');
+    banner.innerHTML = `<span>🧭 <b>Bessere Ausrichtung:</b> ${why.join(' · ')}</span>
+      <button id="orientAdopt">Übernehmen</button><button class="x" id="orientX" title="Ausblenden">✕</button>`;
+    banner.hidden = false;
+    $('orientAdopt').onclick = () => applyOrientation(i, rec.R);
+    $('orientX').onclick = () => { bannerDismissed = true; banner.hidden = true; };
+  } else banner.hidden = true;
+}
+function applyOrientation(i, R) {
+  objects[i].R = R;
+  dropMagic(); relayout();
+  renderOrient();
+  setStatus('🧭 Ausrichtung übernommen — die Farben zeigen die neuen Schichthöhen');
+}
+
+// ---------- ✨ Magic: optimale Schichthöhe ----------
 let magicUndo = null, magicRes = null, magicVariant = 'best';
 const VARIANTS = [['best', 'Beste Qualität'], ['balanced', 'Ausgewogen'], ['fast', 'Schnell']];
 $('magic').onclick = async () => {
@@ -709,27 +778,16 @@ function showMagic() {
     return `<button data-v="${k}" style="flex:1;padding:.35rem .3rem;font-size:.78rem;line-height:1.25;${k === magicVariant ? 'border-color:#b48cf0;background:#3a2d55' : ''}">
       <b>${label}</b><br><span class="dim">${v.nLayers} Sch. · ${r0.slopeShare < 0.01 ? 'Ø ' + fmt(v.hAvg, 2) + ' mm' : 'Stufe ' + fmt(v.err, 3) + ' mm'}</span></button>`;
   }).join('');
-  const better = res.map((r, i) => r && r.betterOrientation && { i, b: r.betterOrientation }).filter(Boolean);
-  const tip = better.length ? `<div class="note" style="margin-top:.45rem">💡 <b>Lage-Tipp:</b> anders hingelegt sinkt der Überhang
-      ${cm2(better[0].b.before.over)} → ${cm2(better[0].b.after.over)} cm² (weniger Stützen).
-      <button id="magicOrient" style="margin-top:.35rem">🔄 Lage übernehmen</button></div>` : '';
   const card = $('magicCard');
   card.innerHTML = `<div class="row2"><h3>✨ Optimale Schichthöhe</h3><button id="magicUndo">↶ Rückgängig</button></div>
-    <div style="display:flex;gap:.35rem;margin:.35rem 0">${chips}</div>${main}${tip}`;
+    <div style="display:flex;gap:.35rem;margin:.35rem 0">${chips}</div>${main}`;
   card.hidden = false;
   card.querySelectorAll('[data-v]').forEach(b => b.onclick = () => applyVariant(b.dataset.v));
-  const ob = $('magicOrient');
-  if (ob) ob.onclick = () => {
-    for (const { i, b } of better) objects[i].R = b.R;
-    card.hidden = true;   // bis die Neubewertung in der neuen Lage steht (Rückgängig bleibt erhalten)
-    relayout();
-    $('magic').click();   // in der neuen Lage neu bewerten
-  };
   $('magicUndo').onclick = () => {
     if (!magicUndo) return;
     objects.forEach((o, i) => { o.R = magicUndo.R[i]; });
     $('quality').value = magicUndo.q; saveSettings();
-    magicUndo = null; magicRes = null; card.hidden = true; for (const o of objects) o.prevPlan = null; relayout();
+    magicUndo = null; magicRes = null; card.hidden = true; for (const o of objects) o.prevPlan = null; relayout(); renderOrient();
     setStatus('Magic zurückgenommen');
   };
 }
@@ -761,7 +819,8 @@ if (location.protocol.startsWith('http')) {
 
 buildBed(...currentPreset().bed.map(v => Math.max(v, 200)));
 updateCam(); resize();
-window._schDebug = () => ({ quality: +$('quality').value, magic: !$('magicCard').hidden, objects: objects.map(o => o.plan && { name: o.name, height: o.plan.height, nLayers: o.plan.nLayers,
+window._schDebug = () => ({ quality: +$('quality').value, magic: !$('magicCard').hidden, banner: !$('orientBanner').hidden,
+  orient: orientSug.map(sg => sg && sg.list.map(c => ({ top: c.isTop, over: Math.round(c.M.over), h: +c.M.height.toFixed(1) }))), objects: objects.map(o => o.plan && { name: o.name, height: o.plan.height, nLayers: o.plan.nLayers,
   nUniform: o.plan.nUniform, snaps: o.plan.snaps }), opts: layerOpts() });
 </script>
 </body>

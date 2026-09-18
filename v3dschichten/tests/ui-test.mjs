@@ -117,28 +117,34 @@ if (existsSync(STEP)) {
   const s5 = await session(URL_);
   r = await load(s5.page, flipped);
   const before = r.dbg.objects[0];
+  // 🧭 Ausrichtung wird OHNE Knopfdruck vorgeschlagen
+  await s5.page.waitForFunction(() => window._schDebug().banner, null, { timeout: 30000 });
+  let d = await s5.page.evaluate(() => window._schDebug());
+  const list = await s5.page.locator('#orientList').innerText();
+  console.log('Ausrichtung:', JSON.stringify(d.orient[0]), '|', (await s5.page.locator('#orientBanner').innerText()).replace(/\n/g, ' '));
+  ok(d.orient[0][0].top && d.orient[0][0].over === 0 && /Empfohlen/.test(list) && /aktuell/.test(list), 'Lage-Vorschläge direkt nach dem Laden, Empfehlung ohne Stützen');
+  await s5.page.screenshot({ path: `${OUT}/schichten-orient.png` });
+  // ✨ Magic ändert die Lage nicht
   await s5.page.click('#magic');
   await s5.page.waitForFunction(() => window._schDebug().magic, null, { timeout: 60000 });
   let after = await s5.page.evaluate(() => window._schDebug());
-  let card = await s5.page.locator('#magicCard').innerText();
-  console.log('Magic:', JSON.stringify({ q: after.quality, n: after.objects[0].nLayers }), '\n' + card.split('\n').map(l => '    ' + l).join('\n'));
+  const card = await s5.page.locator('#magicCard').innerText();
   ok(/Optimale Schichthöhe/.test(card) && after.quality >= 0.8, `Magic stellt hohe Qualitätsstufe ein (${after.quality})`);
-  ok(JSON.stringify(after.objects[0].snaps) === JSON.stringify(before.snaps), 'Magic lässt die Lage in Ruhe');
-  ok(/Lage-Tipp/.test(card), 'bessere Lage kommt als Tipp');
+  ok(JSON.stringify(after.objects[0].snaps) === JSON.stringify(before.snaps) && after.banner, 'Magic lässt die Lage in Ruhe, Hinweis bleibt');
   await s5.page.locator('#magicCard').screenshot({ path: `${OUT}/schichten-magic.png` });
   await s5.page.click('#magicCard [data-v="fast"]');
   const fast = await s5.page.evaluate(() => window._schDebug());
   ok(fast.quality < after.quality && fast.objects[0].nLayers < after.objects[0].nLayers, `Variante „Schnell" (${fast.quality}, ${fast.objects[0].nLayers} Schichten)`);
-  await s5.page.click('#magicOrient');
-  await s5.page.waitForFunction(() => window._schDebug().magic && window._schDebug().objects[0].snaps.includes(3.6), null, { timeout: 60000 });
-  after = await s5.page.evaluate(() => window._schDebug());
-  card = await s5.page.locator('#magicCard').innerText();
-  ok(after.objects[0].snaps.includes(3) && /Ohne Stützen/.test(card) && !/Lage-Tipp/.test(card), 'Lage-Tipp übernommen → Platte unten, ohne Stützen');
-  await s5.page.screenshot({ path: `${OUT}/schichten-magic-voll.png` });
   await s5.page.click('#magicUndo');
   const undone = await s5.page.evaluate(() => window._schDebug());
-  ok(!undone.magic && JSON.stringify(undone.objects[0].snaps) === JSON.stringify(before.snaps) && undone.quality === r.dbg.quality,
-     'Rückgängig stellt Lage und Qualität wieder her');
+  ok(!undone.magic && undone.quality === r.dbg.quality, 'Rückgängig stellt die Qualität wieder her');
+  // Hinweis „Übernehmen" → Platte unten, Hinweis weg, Liste markiert Empfehlung als aktuell
+  await s5.page.click('#orientAdopt');
+  await s5.page.waitForFunction(() => window._schDebug().objects[0].snaps.includes(3.6), null, { timeout: 30000 });
+  d = await s5.page.evaluate(() => window._schDebug());
+  const cur = await s5.page.locator('#orientList button.cur').innerText();
+  ok(d.objects[0].snaps.includes(3) && !d.banner && /Empfohlen/.test(cur), 'Empfehlung übernommen → Platte unten, Hinweis weg');
+  await s5.page.screenshot({ path: `${OUT}/schichten-magic-voll.png` });
   ok(!s5.errors.length, 'Magic ohne JS-Fehler ' + (s5.errors.length ? JSON.stringify(s5.errors) : ''));
 }
 

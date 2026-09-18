@@ -370,11 +370,11 @@ function stairError(tt, plan, hFixed) {
 }
 
 // opts: wie computeLayerPlan + current (aktuelle Drehung R), onProgress(text)
-export function magicAnalyze(pos, index, opts) {
-  const cur = opts.current || MAT_I;
+// Alle sinnvollen Lagen bewerten: aktuelle, 6 Achsen, flächenstärkste Facetten-Richtungen
+// (~10°-Kübel) nach unten. top = beste Lage, aber nur wenn sie spürbar besser ist als die aktuelle.
+export function orientationCandidates(pos, index, { current = MAT_I } = {}) {
   const tt = triTable(pos, index);
   if (!tt.m) return null;
-  // Kandidaten: aktuelle Lage, 6 Achsen, flächenstärkste Facetten-Richtungen (~10°-Kübel)
   const buckets = new Map();
   for (let k = 0; k < tt.m; k++) {
     const o = k * 13, key = `${Math.round(tt.T[o] * 12)},${Math.round(tt.T[o + 1] * 12)},${Math.round(tt.T[o + 2] * 12)}`;
@@ -386,18 +386,49 @@ export function magicAnalyze(pos, index, opts) {
   for (const b of [...buckets.values()].sort((x, y) => y.a - x.a).slice(0, 14)) {
     const l = Math.hypot(...b.n); if (l > 1e-9) dirs.push(b.n.map(v => v / l));
   }
-  const cands = [{ R: cur, name: 'aktuelle Lage' }];
+  const cands = [{ R: current, isCurrent: true }];
   for (const d of dirs) {
     const R = rotFromTo(d, [0, 0, -1]);
     if (cands.some(c => Math.abs(c.R[6] - R[6]) + Math.abs(c.R[7] - R[7]) + Math.abs(c.R[8] - R[8]) < 0.02)) continue;   // gleiche „unten"-Richtung
-    cands.push({ R, name: 'Fläche nach unten' });
+    cands.push({ R, isCurrent: false });
   }
   for (const c of cands) { c.M = orientMetrics(tt, c.R); c.score = orientScore(c.M, tt.atot); }
   const curC = cands[0];
   let top = curC;
   for (const c of cands) if (c.score < top.score) top = c;
-  // nur vorschlagen/umdrehen, wenn es sich spürbar lohnt
   if (top !== curC && !(top.score < curC.score * 0.95 - 0.005)) top = curC;
+  return { cands, current: curC, top, atot: tt.atot, tt };
+}
+
+// Bis zu `limit` UNTERSCHIEDLICHE Lagen (gleichwertige wie die 6 Würfelseiten zusammengefasst),
+// beste zuerst; die aktuelle ist immer dabei. recommended = die zu empfehlende Lage.
+export function orientationSuggestions(pos, index, { current = MAT_I, limit = 3 } = {}) {
+  const oc = orientationCandidates(pos, index, { current });
+  if (!oc) return null;
+  const sig = (c) => [Math.round(c.M.over / 20), Math.round(c.M.bed / 20), Math.round(c.M.height * 2), Math.round(c.M.stair * 200)].join('|');
+  const sorted = [...oc.cands].sort((a, b) => a.score - b.score);
+  const seen = new Map(), list = [];
+  for (const c of sorted) {
+    const k = sig(c);
+    if (seen.has(k)) { if (c.isCurrent) { const j = list.indexOf(seen.get(k)); list[j] = c; seen.set(k, c); } continue; }
+    seen.set(k, c); list.push(c);
+  }
+  let out = list.slice(0, limit);
+  const curIn = out.find(c => c.isCurrent || sig(c) === sig(oc.current));
+  if (!curIn) out.push(oc.current);
+  const minStair = Math.min(...out.map(c => c.M.stair));
+  return {
+    recommended: oc.top.isCurrent || sig(oc.top) === sig(oc.current) ? null : oc.top,
+    list: out.map(c => ({ R: c.R, M: c.M, score: c.score,
+      isCurrent: c.isCurrent || sig(c) === sig(oc.current), isTop: sig(c) === sig(oc.top),
+      lessStairs: c.M.stair <= minStair * 1.1 + 1e-4 })),
+  };
+}
+
+export function magicAnalyze(pos, index, opts) {
+  const oc = orientationCandidates(pos, index, { current: opts.current || MAT_I });
+  if (!oc) return null;
+  const { tt, current: curC, top, cands } = oc;
   const best = opts.orient ? top : curC;
 
   // Qualitätsstufe in der gewählten Lage
