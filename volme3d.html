@@ -3973,6 +3973,11 @@ Patrick</textarea>
             <button class="vtb" data-v="stumpen" title="Stumpenkerze Ø 60 mm" onclick="_krzKerze('stumpen')">Stumpen</button>
           </div>
           <div class="vrow" id="krz-row-anzahl"><label title="Wie viele Kerzen im Kranz sitzen — vier für den Advent">Anzahl</label> <input type="range" id="krz-anzahl" min="1" max="8" value="4" step="1" oninput="_krzSet('anzahl',this.value)"><span class="vv" id="krzv-anzahl">4</span></div>
+          <div class="vtbrow" id="krz-vert-bg" style="display:flex;gap:4px;margin-bottom:7px">
+            <button class="vtb on" data-v="ring" title="Gleichmäßig rund um den Kranz verteilt" onclick="_krzStr('verteilung','ring')">Ringsum</button>
+            <button class="vtb" data-v="gruppe" title="Alle Kerzen dicht beieinander an einer Stelle — moderner, asymmetrischer Look" onclick="_krzStr('verteilung','gruppe')">Als Gruppe</button>
+          </div>
+          <div class="vrow" id="krz-row-abstand"><label title="Luft zwischen zwei Kerzen in der Gruppe (Rand zu Rand)">Abstand</label> <input type="range" id="krz-abstand" min="2" max="40" value="6" step="1" oninput="_krzSet('abstand',this.value)"><span class="vv" id="krzv-abstand">6</span><span class="vu">mm</span></div>
           <div class="vrow"><label title="Durchmesser der Mulde — Kerzen-Ø plus etwas Luft">Mulden-Ø</label> <input type="range" id="krz-kerzeD" min="10" max="80" value="22.5" step="0.5" oninput="_krzSet('kerzeD',this.value)"><span class="vv" id="krzv-kerzeD">22.5</span><span class="vu">mm</span></div>
           <div class="vrow"><label title="Wie tief die Kerze im Kranz steckt">Tiefe</label> <input type="range" id="krz-tiefe" min="4" max="30" value="15" step="0.5" oninput="_krzSet('tiefe',this.value)"><span class="vv" id="krzv-tiefe">15</span><span class="vu">mm</span></div>
           <div class="vrow"><label title="Wo die Mulden quer auf dem Zopf sitzen: links an der Innenkante, Mitte mittig, rechts an der Außenkante">Lage</label> <input type="range" id="krz-lage" min="-100" max="100" value="0" step="5" oninput="_krzSet('lage',this.value)"><span class="vv" id="krzv-lage">0</span><span class="vu">innen/außen</span></div>
@@ -38173,6 +38178,7 @@ const _krzP = {
   dia: 240, strang: 36, weite: 85, woelb: 130, dichte: 95,
   haut: 'strick', masche: 9, mascheT: 1.6,
   kerzen: 'kranz', anzahl: 4, kerzeD: 22.5, tiefe: 15, lage: 0,
+  verteilung: 'ring', abstand: 6,
   mitteD: 61, mitteT: 10
 };
 const _KRZ_DEF = { ..._krzP };
@@ -38184,7 +38190,10 @@ function _krzDims(p){
   const r = p.strang / 2, A = r * p.weite / 100, h = r * p.woelb / 100, B = h * 0.3;
   const imKranz = p.kerzen === 'kranz' || p.kerzen === 'beides', mitte = p.kerzen === 'mitte' || p.kerzen === 'beides';
   const Ro = p.dia / 2, N = imKranz ? Math.max(0, Math.round(p.anzahl)) : 0;
-  const step = Math.max(1, N);
+  // Ringsum: Gliederzahl = Vielfaches der Kerzenzahl, damit jede Mulde an
+  // derselben Stelle im Muster sitzt. Als Gruppe geht das nicht — egal.
+  const gruppe = p.verteilung === 'gruppe';
+  const step = gruppe ? 1 : Math.max(1, N);
   // Zopfmitte R so, dass die äußerste Kante genau auf Außen-Ø liegt. Schräg
   // laufende Stränge sind radial etwas breiter (r / cos α) — darum iterieren.
   let R = Ro - A - r, m = 1, nG = 3;
@@ -38209,21 +38218,39 @@ function _krzDims(p){
   // Muldenlage quer über den Zopf: 0 = mittig wie der Zopf, −100 = an die
   // Innenkante, +100 = an die Außenkante. Grenzen aus den Zopfkanten über die
   // GANZE Breite der Mulde (nicht nur in ihrer Mitte), mit 2,5 mm Restwand.
-  const rc = p.kerzeD / 2, spanne = Math.atan2(rc + 1, Math.max(10, R));
-  let inMax = -Infinity, outMin = Infinity;
-  if (N > 0) for (let k = -12; k <= 12; k++) {
-    const e = f.edges(spanne * k / 12);
-    inMax = Math.max(inMax, e[0]); outMin = Math.min(outMin, e[1]);
+  // Als Gruppe sitzen alle Kerzen dicht an dicht um φ = 90° (+Z, vorn),
+  // Mitte-zu-Mitte = Mulden-Ø + Abstand als Sehne auf dem Muldenradius. Die
+  // Winkel hängen am Radius und der Radius an den Zopfkanten unter den
+  // Mulden — darum zweimal rechnen. Alle Mulden bekommen EINEN Radius (die
+  // engste Stelle zählt), damit die Reihe sauber auf einer Linie steht.
+  const rc = p.kerzeD / 2, lg = Math.max(-100, Math.min(100, p.lage || 0));
+  const winkel = rad => {
+    if (!gruppe) return Array.from({ length: N }, (_, i) => 2 * Math.PI * i / N);
+    const d = 2 * Math.asin(Math.min(1, (p.kerzeD + Math.max(0, p.abstand)) / (2 * Math.max(10, rad))));
+    return Array.from({ length: N }, (_, i) => Math.PI / 2 + (i - (N - 1) / 2) * d);
+  };
+  let Rc = R, phs = winkel(R), inMax = -Infinity, outMin = Infinity;
+  for (let pass = 0; pass < 2; pass++) {
+    const spanne = Math.atan2(rc + 1, Math.max(10, Rc));
+    inMax = -Infinity; outMin = Infinity;
+    for (const ph of (gruppe ? phs : phs.slice(0, 1)))
+      for (let k = -12; k <= 12; k++) {
+        const e = f.edges(ph + spanne * k / 12);
+        inMax = Math.max(inMax, e[0]); outMin = Math.min(outMin, e[1]);
+      }
+    const lo = inMax + rc + 2.5, hi = outMin - rc - 2.5;
+    const mitteR = Math.max(lo, Math.min(hi, R));
+    Rc = hi < lo ? R : (lg <= 0 ? mitteR + (mitteR - lo) * lg / 100 : mitteR + (hi - mitteR) * lg / 100);
+    phs = winkel(Rc);
   }
-  const lo = inMax + rc + 2.5, hi = outMin - rc - 2.5, lg = Math.max(-100, Math.min(100, p.lage || 0));
-  const mitteR = Math.max(lo, Math.min(hi, R));
-  const Rc = hi < lo ? R : (lg <= 0 ? mitteR + (mitteR - lo) * lg / 100 : mitteR + (hi - mitteR) * lg / 100);
+  // Passt die Gruppe überhaupt auf den Ring? (sonst überlappen sich die ersten und letzten)
+  const gruppeZuLang = gruppe && N > 1 && (phs[N - 1] - phs[0]) + (phs[1] - phs[0]) > 2 * Math.PI;
 
   // Boden unter der Oberkante in der Muldenmitte, Halt = tiefster Randpunkt über dem Boden
   const cand = [];
   let halt = Infinity, wandMin = Infinity, bodenMin = Infinity;
   for (let i = 0; i < N; i++) {
-    const ph = 2 * Math.PI * i / N;
+    const ph = phs[i];
     const floor = Math.max(2.4, f.H(ph, Rc) - p.tiefe);
     let rimMin = Infinity;
     for (let k = 0; k < 48; k++) {
@@ -38237,10 +38264,10 @@ function _krzDims(p){
     cand.push({ ph, x: Rc * Math.cos(ph), z: Rc * Math.sin(ph), floor });
   }
   const rm = p.mitteD / 2;
-  return { r, A, h, B, R, m, nG, N, Ro, rIn, rOut, hMax, cand, halt, wandMin, bodenMin, mitte, imKranz, Rc, rc, rm,
+  return { r, A, h, B, R, m, nG, N, Ro, rIn, rOut, hMax, cand, halt, wandMin, bodenMin, mitte, imKranz, Rc, rc, rm, gruppe, gruppeZuLang,
            breite: rOut - rIn, boden: 3, sockelR: rm + 3, mitteT: p.mitteT,
            okLoch: rIn > (mitte ? rm + 8 : 8),
-           okKerze: N === 0 || (wandMin >= 2.5 && halt >= 4) };
+           okKerze: N === 0 || (wandMin >= 2.5 && halt >= 4 && !gruppeZuLang) };
 }
 
 // Höhenfeld des Zopfs. Mit tex = true inklusive Maschen/Kordel. Die Bogenlänge
@@ -38423,7 +38450,7 @@ function _krzMitte(t){ Object.assign(_krzP, _KRZ_MITTE[t]); _krzSync(); _krzRepa
 function _krzReset(){ Object.assign(_krzP, _KRZ_DEF); _krzSync(); _krzRepaint(); }
 
 function _krzSync(){
-  for (const k of ['dia','strang','weite','woelb','dichte','masche','mascheT','anzahl','kerzeD','tiefe','lage','mitteD','mitteT']) {
+  for (const k of ['dia','strang','weite','woelb','dichte','masche','mascheT','anzahl','kerzeD','tiefe','lage','abstand','mitteD','mitteT']) {
     const s = document.getElementById('krz-' + k), t = document.getElementById('krzv-' + k);
     if (s) s.value = _krzP[k];
     if (t) t.textContent = _krzP[k];
@@ -38431,6 +38458,7 @@ function _krzSync(){
   const mark = (sel, val) => document.querySelectorAll(sel + ' .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === String(val)));
   mark('#krz-haut-bg', _krzP.haut);
   mark('#krz-kerzen-bg', _krzP.kerzen);
+  mark('#krz-vert-bg', _krzP.verteilung);
   mark('#krz-typ-bg', Object.keys(_KRZ_KERZE).find(t => _KRZ_KERZE[t].kerzeD === _krzP.kerzeD && _KRZ_KERZE[t].tiefe === _krzP.tiefe) || '');
   mark('#krz-mtyp-bg', Object.keys(_KRZ_MITTE).find(t => _KRZ_MITTE[t].mitteD === _krzP.mitteD && _KRZ_MITTE[t].mitteT === _krzP.mitteT) || '');
   const show = (id, on) => { const e = document.getElementById(id); if (e) e.style.display = on ? '' : 'none'; };
@@ -38438,6 +38466,7 @@ function _krzSync(){
   show('krz-row-mascheT', _krzP.haut !== 'glatt');
   show('krz-kranzbox', _krzP.kerzen === 'kranz' || _krzP.kerzen === 'beides');
   show('krz-mittebox', _krzP.kerzen === 'mitte' || _krzP.kerzen === 'beides');
+  show('krz-row-abstand', _krzP.verteilung === 'gruppe');
   const el = document.getElementById('krz-info');
   if (!el) return;
   const d = _krzDims(_krzP);
@@ -38448,11 +38477,12 @@ function _krzSync(){
   const warn = [];
   if (!d.okLoch) warn.push(d.mitte ? 'In der Mitte ist kein Platz für die Kerze — Kranz größer, Strang dünner oder Kerze schmaler machen.'
                                    : 'Der Kranz ist zu klein für so dicke Stränge — Außen-Ø vergrößern oder Strang dünner.');
+  if (d.gruppeZuLang) warn.push('So viele Kerzen passen nicht als Gruppe auf den Ring — weniger Kerzen, kleinerer Abstand oder „Ringsum“.');
   if (d.N > 0 && d.wandMin < 2.5) warn.push('Die Mulde bricht seitlich aus dem Zopf — Lage näher zur Mitte, Strang dicker, Weite größer oder Kerze schmaler.');
   else if (d.N > 0 && d.halt < 4) warn.push('Die Mulde hält die Kerze kaum (' + Math.max(0, d.halt).toFixed(1) + ' mm) — Muldentiefe erhöhen oder Wölbung vergrößern.');
   if (warn.length) s += '<br><b style="color:#ffb455">⚠ ' + warn.join('<br>⚠ ') + '</b>';
   if (_krzP.kerzen !== 'keine') {
-    if (d.N > 0 && d.okKerze) s += '<br>' + d.N + ' Mulden Ø ' + _krzP.kerzeD + ' mm, halten die Kerze ' + d.halt.toFixed(0) + '–' + _krzP.tiefe + ' mm tief' +
+    if (d.N > 0 && d.okKerze) s += '<br>' + d.N + ' Mulden Ø ' + _krzP.kerzeD + ' mm' + (d.gruppe ? ' als Gruppe vorn (Abstand ' + _krzP.abstand + ' mm)' : '') + ', halten die Kerze ' + d.halt.toFixed(0) + '–' + _krzP.tiefe + ' mm tief' +
       (Math.abs(_krzP.lage) > 3 ? ', ' + Math.abs(Math.round(d.Rc - d.R)) + ' mm ' + (_krzP.lage < 0 ? 'nach innen' : 'nach außen') + ' versetzt' : '') + '.';
     if (d.mitte) s += '<br>Mitte: Mulde Ø ' + _krzP.mitteD + ' mm, ' + _krzP.mitteT + ' mm tief, auf ' + d.boden + ' mm Boden.';
     s += '<br><i>Echte Kerzen nur mit Kerzenteller oder Metall-Tülle — Kunststoff brennt und wird weich. Am sichersten: LED-Kerzen.</i>';
@@ -45263,8 +45293,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.28';
+const VOLME3D_VERSION = '1.18.29';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.29', date:'2026-09-18', spots:[{id:'gen-kranz-gruppe',sel:'#gen-dd-btn'}], changes:[
+    ['\u{1F56F}','<b>Geflochtener Kranz: Kerzen auch als Gruppe an einer Stelle.</b> Unter <b>Verteilung</b> wählst du jetzt zwischen <b>Ringsum</b> (wie bisher, eine Kerze je Abschnitt) und <b>Als Gruppe</b>: Alle Kerzen stehen dicht beieinander vorn am Kranz, der Rest bleibt frei für Deko. Der Regler <b>Abstand</b> bestimmt die Luft zwischen zwei Kerzen, und <b>Lage</b> schiebt die ganze Reihe nach innen oder außen. Passen zu viele Kerzen nicht als Gruppe auf den Ring, sagt das Fenster Bescheid.'],
+  ]},
   { version:'1.18.28', date:'2026-09-18', spots:[{id:'gen-bausatz-rahmen',sel:'#gen-dd-btn'}], changes:[
     ['\u{1F6E9}','<b>Neu: Bausatz-Rahmen — deine Teile im Gussrahmen wie beim Plastikmodell.</b> Wähle alle Teile aus (z. B. die Einzelteile einer Pumpe) und starte <b>🛩️ Bausatz-Rahmen</b> (Generatoren oder Eigenschaften-Panel). Jedes Teil bekommt ein eigenes Fach in einem Rahmen aus runden Stäben und hängt an <b>dünnen Angüssen</b>, die zum Teil hin schmaler werden — dort knipst du es mit dem Seitenschneider ab. Über jedem Teil sitzt ein <b>Fähnchen mit erhabener Nummer</b>. Alles liegt unten auf dem Druckbett und druckt ohne Stützen. Passt nicht alles auf ein Bett, entstehen mehrere Rahmen <b>A, B, …</b>. Dazu öffnet sich eine <b>Teileliste mit Rahmenplan</b> und einem Bild je Teil, zum Ausdrucken oder Speichern — die Grundlage für deine eigene Bauanleitung. Mehrteilige STL-Importe werden auf Wunsch automatisch in ihre Einzelteile getrennt.']
   ]},

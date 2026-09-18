@@ -40,6 +40,8 @@ const varianten = [
   { name: 'Beides: 4 im Kranz + Mitte',     p: { kerzen: 'beides' } },
   { name: 'Mulden an der Außenkante',       p: { lage: 100 } },
   { name: 'Mulden an der Innenkante',       p: { lage: -100 } },
+  { name: 'Vier als Gruppe',                p: { verteilung: 'gruppe' } },
+  { name: 'Gruppe außen + Mitte',           p: { verteilung: 'gruppe', kerzen: 'beides', lage: 60, abstand: 12 } },
   { name: 'Ohne Kerzen, klein',             p: { kerzen: 'keine', dia: 140, strang: 24 } },
   { name: 'Weit + flach, 8 Kerzen',         p: { weite: 120, woelb: 60, anzahl: 8, kerzeD: 15, tiefe: 8 } },
 ];
@@ -67,7 +69,8 @@ for (const v of varianten) {
     geo.dispose();
     return { ms: Math.round(ms), tris: geo.index.count / 3, genus, vol, parts, minY: bb.min.y, maxY: bb.max.y,
              dia: bb.max.x - bb.min.x, rOut: d.rOut, nG: d.nG, N: d.N, mitte: d.mitte, mulden,
-             okLoch: d.okLoch, okKerze: d.okKerze, halt: d.halt, wand: d.wandMin, Rc: d.Rc, R: d.R, rIn: d.rIn, rOut: d.rOut };
+             okLoch: d.okLoch, okKerze: d.okKerze, halt: d.halt, wand: d.wandMin, Rc: d.Rc, R: d.R, rIn: d.rIn, rOut: d.rOut,
+             gruppe: d.gruppe, zuLang: d.gruppeZuLang, pts: d.cand.map(c => [c.x, c.z]) };
   }, v.p);
   console.log(v.name, JSON.stringify({ ms: r.ms, tris: r.tris, genus: r.genus, nG: r.nG, dia: +r.dia.toFixed(1), h: +r.maxY.toFixed(1), halt: +r.halt.toFixed(1), wand: +r.wand.toFixed(1) }));
   ok(v.name + ': ein Stück, Volumen > 0', r.parts === 1 && r.vol > 0, { parts: r.parts, vol: Math.round(r.vol) });
@@ -76,6 +79,13 @@ for (const v of varianten) {
   ok(v.name + ': Außen-Ø', Math.abs(r.dia - 2 * r.rOut) < 1.5, [r.dia, 2 * r.rOut]);
   if (r.N > 0) ok(v.name + ': Glieder Vielfaches der Kerzen', r.nG % r.N === 0, r.nG);
   for (const m of r.mulden) ok(v.name + ': Mulde offen bis zum Boden', m.ersterTreffer !== null && Math.abs(m.ersterTreffer - m.floor) < 0.05, m);
+  if (r.gruppe) {
+    const ab = (v.p.abstand ?? 6), D = 22.5;
+    const dist = r.pts.slice(1).map((q, i) => Math.hypot(q[0] - r.pts[i][0], q[1] - r.pts[i][1]));
+    const ang = r.pts.map(q => Math.atan2(q[1], q[0]) * 180 / Math.PI);
+    ok(v.name + ': Kerzen dicht an dicht, ohne Überlappung', dist.every(x => Math.abs(x - (D + ab)) < 0.5) && !r.zuLang, dist.map(x => +x.toFixed(1)));
+    ok(v.name + ': Gruppe sitzt an EINER Stelle (vorn)', Math.max(...ang) - Math.min(...ang) < 90 && Math.abs((Math.max(...ang) + Math.min(...ang)) / 2 - 90) < 1, ang.map(a => +a.toFixed(1)));
+  }
   const lage = (v.p.lage || 0);
   if (lage) {
     ok(v.name + ': Mulden versetzt', lage > 0 ? r.Rc > r.R + 2 : r.Rc < r.R - 2, { Rc: +r.Rc.toFixed(1), R: +r.R.toFixed(1) });
