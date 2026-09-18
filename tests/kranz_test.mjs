@@ -36,7 +36,10 @@ const varianten = [
   { name: 'Standard (4 Stabkerzen, Strick)', p: {} },
   { name: 'Teelichter, Kordel',             p: { haut: 'kordel', kerzeD: 39.5, tiefe: 12, strang: 48, dia: 250 } },
   { name: 'Glatt, 5 Kerzen',                p: { haut: 'glatt', anzahl: 5 } },
-  { name: 'Mitte Stumpen',                  p: { kerzen: 'mitte', kerzeD: 61, tiefe: 10 } },
+  { name: 'Mitte Stumpen',                  p: { kerzen: 'mitte' } },
+  { name: 'Beides: 4 im Kranz + Mitte',     p: { kerzen: 'beides' } },
+  { name: 'Mulden an der Außenkante',       p: { lage: 100 } },
+  { name: 'Mulden an der Innenkante',       p: { lage: -100 } },
   { name: 'Ohne Kerzen, klein',             p: { kerzen: 'keine', dia: 140, strang: 24 } },
   { name: 'Weit + flach, 8 Kerzen',         p: { weite: 120, woelb: 60, anzahl: 8, kerzeD: 15, tiefe: 8 } },
 ];
@@ -55,7 +58,7 @@ for (const v of varianten) {
     const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
     const rc = new THREE.Raycaster();
     const mulden = [];
-    const spots = d.mitte ? [{ x: 0, z: 0, floor: d.boden }] : d.cand;
+    const spots = d.cand.concat(d.mitte ? [{ x: 0, z: 0, floor: d.boden }] : []);
     for (const c of spots) {
       rc.set(new THREE.Vector3(c.x, 500, c.z), new THREE.Vector3(0, -1, 0));
       const hits = rc.intersectObject(mesh, false);
@@ -64,7 +67,7 @@ for (const v of varianten) {
     geo.dispose();
     return { ms: Math.round(ms), tris: geo.index.count / 3, genus, vol, parts, minY: bb.min.y, maxY: bb.max.y,
              dia: bb.max.x - bb.min.x, rOut: d.rOut, nG: d.nG, N: d.N, mitte: d.mitte, mulden,
-             okLoch: d.okLoch, okKerze: d.okKerze, halt: d.halt, wand: d.wandMin };
+             okLoch: d.okLoch, okKerze: d.okKerze, halt: d.halt, wand: d.wandMin, Rc: d.Rc, R: d.R, rIn: d.rIn, rOut: d.rOut };
   }, v.p);
   console.log(v.name, JSON.stringify({ ms: r.ms, tris: r.tris, genus: r.genus, nG: r.nG, dia: +r.dia.toFixed(1), h: +r.maxY.toFixed(1), halt: +r.halt.toFixed(1), wand: +r.wand.toFixed(1) }));
   ok(v.name + ': ein Stück, Volumen > 0', r.parts === 1 && r.vol > 0, { parts: r.parts, vol: Math.round(r.vol) });
@@ -73,6 +76,11 @@ for (const v of varianten) {
   ok(v.name + ': Außen-Ø', Math.abs(r.dia - 2 * r.rOut) < 1.5, [r.dia, 2 * r.rOut]);
   if (r.N > 0) ok(v.name + ': Glieder Vielfaches der Kerzen', r.nG % r.N === 0, r.nG);
   for (const m of r.mulden) ok(v.name + ': Mulde offen bis zum Boden', m.ersterTreffer !== null && Math.abs(m.ersterTreffer - m.floor) < 0.05, m);
+  const lage = (v.p.lage || 0);
+  if (lage) {
+    ok(v.name + ': Mulden versetzt', lage > 0 ? r.Rc > r.R + 2 : r.Rc < r.R - 2, { Rc: +r.Rc.toFixed(1), R: +r.R.toFixed(1) });
+    ok(v.name + ': Restwand bleibt', r.wand >= 2.4, +r.wand.toFixed(2));
+  }
 }
 
 // Erstellen
