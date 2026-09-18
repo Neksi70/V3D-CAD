@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>V3D Schichthöhe</title>
+<style>
+  :root { --bg: #14181d; --panel: #1d232a; --panel2: #252c35; --line: #333c47; --text: #e6ebf0; --dim: #8a96a3;
+          --accent: #f07c1e; --blue: #2ea2d8; --ok: #3fb96b; --err: #e0584f; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
+               font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: .8rem; padding: .55rem 1rem; background: #0f1216;
+           border-bottom: 1px solid var(--line); padding-top: max(.55rem, env(safe-area-inset-top)); }
+  header h1 { font-size: 1.05rem; margin: 0; letter-spacing: .01em; }
+  header h1 b { color: var(--accent); }
+  header .sub { color: var(--dim); font-size: .85rem; flex: 1; }
+  header a { color: var(--accent); text-decoration: none; font-size: .85rem; white-space: nowrap; }
+  main { display: grid; grid-template-columns: 330px 1fr; height: calc(100% - 46px); }
+  aside { background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; padding: .8rem 1rem 1.5rem; }
+  #viewWrap { position: relative; min-height: 300px; }
+  #view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 1.1rem 0 .45rem; }
+  #drop { border: 2px dashed var(--line); border-radius: 10px; padding: 1rem; text-align: center; cursor: pointer;
+          transition: border-color .15s, background .15s; }
+  #drop:hover, #drop.over { border-color: var(--accent); background: rgba(240,124,30,.07); }
+  #drop b { display: block; margin-bottom: .2rem; }
+  #drop small { color: var(--dim); }
+  #fileName { margin-top: .4rem; font-size: .85rem; word-break: break-all; }
+  label.row { display: grid; grid-template-columns: 1fr 5.2rem; align-items: center; gap: .5rem; margin: .3rem 0; }
+  select, input[type=number] { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+          border-radius: 6px; padding: .35rem .45rem; font: inherit; }
+  select { margin-bottom: .2rem; }
+  input[type=range] { width: 100%; accent-color: var(--blue); }
+  .slider { display: grid; grid-template-columns: auto 1fr auto; gap: .5rem; align-items: center; font-size: .8rem; color: var(--dim); }
+  .btns { display: flex; flex-wrap: wrap; gap: .4rem; }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 7px;
+           padding: .42rem .7rem; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--dim); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; width: 100%; padding: .6rem; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+  #plot { width: 100%; height: 190px; display: block; background: #12161b; border-radius: 8px; }
+  .legend { display: flex; flex-wrap: wrap; gap: .25rem .7rem; font-size: .78rem; margin: .4rem 0; color: var(--dim); }
+  .legend i { display: inline-block; width: .75rem; height: .75rem; border-radius: 2px; vertical-align: -2px; margin-right: .2rem; }
+  #stats { font-size: .86rem; }
+  #stats .big { font-size: 1.35rem; font-weight: 700; }
+  #stats .dim, .dim { color: var(--dim); }
+  .note { font-size: .8rem; color: var(--dim); background: var(--panel2); border-radius: 8px; padding: .55rem .65rem; margin-top: .6rem; }
+  .note b { color: var(--text); }
+  #status { position: absolute; left: .8rem; bottom: .7rem; font-size: .82rem; color: var(--dim);
+            background: rgba(15,18,22,.8); padding: .3rem .55rem; border-radius: 6px; max-width: calc(100% - 1.6rem); }
+  #status.err { color: var(--err); }
+  #hint { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); pointer-events: none; text-align: center; }
+  #objSel { margin-top: .3rem; }
+  @media (max-width: 760px) {
+    main { grid-template-columns: 1fr; grid-template-rows: 46vh auto; height: auto; }
+    #viewWrap { grid-row: 1; height: 46vh; }
+    aside { grid-row: 2; border-right: 0; border-top: 1px solid var(--line); }
+    header .sub { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><b>V3D</b> Schichthöhe</h1>
+  <span class="sub">Adaptive Schichthöhe automatisch — für Bambu Studio, OrcaSlicer, PrusaSlicer</span>
+  <a id="offline" href="#" hidden title="Diese Seite als einzelne Datei speichern — läuft danach ohne Internet">⬇ Offline-Version</a>
+</header>
+<main>
+<aside>
+  <div id="drop" tabindex="0">
+    <b>📂 Modell hierher ziehen</b>
+    <small>oder klicken · STL · OBJ · 3MF</small>
+    <div id="fileName"></div>
+  </div>
+  <input type="file" id="file" accept=".stl,.obj,.3mf" hidden>
+
+  <h2>Drucker &amp; Düse</h2>
+  <select id="preset"></select>
+  <label class="row">Schichthöhe (Profil) <input type="number" id="hBase" step="0.01" min="0.02"></label>
+  <label class="row">Erste Schicht <input type="number" id="hFirst" step="0.01" min="0.02"></label>
+  <label class="row">Minimum <input type="number" id="hMin" step="0.01" min="0.02"></label>
+  <label class="row">Maximum <input type="number" id="hMax" step="0.01" min="0.02"></label>
+
+  <h2>Qualität</h2>
+  <div class="slider"><span>schneller</span><input type="range" id="quality" min="0" max="1" step="0.05" value="0.5"><span>feiner</span></div>
+
+  <h2>Ausrichtung</h2>
+  <div class="btns">
+    <button id="rotX" disabled title="Um die X-Achse kippen">↻ X 90°</button>
+    <button id="rotY" disabled title="Um die Y-Achse kippen">↻ Y 90°</button>
+    <button id="rotReset" disabled>Zurücksetzen</button>
+  </div>
+
+  <h2>Ergebnis</h2>
+  <select id="objSel" hidden></select>
+  <canvas id="plot"></canvas>
+  <div class="legend" id="legend"></div>
+  <div id="stats" class="dim">Noch kein Modell geladen.</div>
+
+  <h2>Export</h2>
+  <button class="primary" id="export" disabled>📦 3MF mit Schichtprofil speichern</button>
+  <div class="note">
+    Öffnen in <b>Bambu Studio</b>, <b>OrcaSlicer</b> oder <b>PrusaSlicer</b> — das Profil erscheint dort als variable
+    Schichthöhe. Wichtig: im Slicer dieselbe <b>Erste Schicht</b> (<span id="firstHint">0,2</span> mm) einstellen,
+    sonst verwirft er das Profil und druckt mit fester Höhe.
+  </div>
+</aside>
+<div id="viewWrap">
+  <canvas id="view"></canvas>
+  <div id="hint">Modell laden — die Schichthöhen erscheinen als farbige Bänder</div>
+  <div id="status"></div>
+</div>
+</main>
+
+<script src="three.min.js"></script>
+<script type="module">
+import { computeLayerPlan, build3mf, REASON_NAMES, layerTargets } from './adaptive-layers.js';
+
+const $ = (id) => document.getElementById(id);
+const statusEl = $('status');
+function setStatus(t, err = false) { statusEl.textContent = t; statusEl.classList.toggle('err', err); }
+const lsGet = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+const fmt = (v, d = 2) => Number(v).toFixed(d).replace('.', ',');
+
+// ---------- Drucker-Vorlagen ----------
+// bed = Druckbett (für die Platzierung im 3MF), Werte wie in den Hersteller-Profilen
+const PRESETS = [
+  { id: 'bbl04', name: 'Bambu Lab · 0,4 mm Düse', hBase: 0.20, hFirst: 0.20, hMin: 0.08, hMax: 0.28, nozzle: 0.4, bed: [256, 256] },
+  { id: 'bbl02', name: 'Bambu Lab · 0,2 mm Düse', hBase: 0.10, hFirst: 0.10, hMin: 0.04, hMax: 0.14, nozzle: 0.2, bed: [256, 256] },
+  { id: 'bbl06', name: 'Bambu Lab · 0,6 mm Düse', hBase: 0.30, hFirst: 0.30, hMin: 0.12, hMax: 0.42, nozzle: 0.6, bed: [256, 256] },
+  { id: 'bbl08', name: 'Bambu Lab · 0,8 mm Düse', hBase: 0.40, hFirst: 0.40, hMin: 0.16, hMax: 0.56, nozzle: 0.8, bed: [256, 256] },
+  { id: 'prusa04', name: 'Prusa MK4 / Core One · 0,4 mm', hBase: 0.20, hFirst: 0.20, hMin: 0.07, hMax: 0.30, nozzle: 0.4, bed: [250, 210] },
+  { id: 'kobra04', name: 'Anycubic Kobra · 0,4 mm', hBase: 0.20, hFirst: 0.20, hMin: 0.08, hMax: 0.32, nozzle: 0.4, bed: [250, 250] },
+  { id: 'custom', name: 'Eigene Werte', hBase: 0.20, hFirst: 0.20, hMin: 0.08, hMax: 0.28, nozzle: 0.4, bed: [256, 256] },
+];
+const presetSel = $('preset');
+presetSel.innerHTML = PRESETS.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+const FIELDS = ['hBase', 'hFirst', 'hMin', 'hMax'];
+function applyPreset(id, keepValues) {
+  const p = PRESETS.find(x => x.id === id) || PRESETS[0];
+  presetSel.value = p.id;
+  if (!keepValues) for (const k of FIELDS) $(k).value = p[k].toFixed(2);
+}
+function currentPreset() { return PRESETS.find(x => x.id === presetSel.value) || PRESETS[0]; }
+function layerOpts() {
+  const p = currentPreset(), o = { nozzle: p.nozzle, quality: parseFloat($('quality').value) };
+  for (const k of FIELDS) { const v = parseFloat(String($(k).value).replace(',', '.')); o[k] = Number.isFinite(v) && v > 0 ? v : p[k]; }
+  if (o.hMax < o.hMin) o.hMax = o.hMin;
+  return o;
+}
+// gemerkte Einstellungen
+{
+  const saved = (() => { try { return JSON.parse(lsGet('v3dsch-set', 'null')); } catch { return null; } })();
+  applyPreset(saved?.preset || 'bbl04');
+  if (saved?.values) for (const k of FIELDS) if (saved.values[k]) $(k).value = saved.values[k];
+  if (saved?.quality != null) $('quality').value = saved.quality;
+}
+function saveSettings() {
+  lsSet('v3dsch-set', JSON.stringify({ preset: presetSel.value, quality: $('quality').value,
+    values: Object.fromEntries(FIELDS.map(k => [k, $(k).value])) }));
+}
+
+// ---------- Datei-Import ----------
+async function readZip(buf) {
+  const u8 = new Uint8Array(buf), dv = new DataView(buf);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--)
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('Keine gültige 3MF/ZIP-Datei');
+  const n = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const files = new Map(), dec = new TextDecoder();
+  for (let k = 0; k < n; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+    const nlen = dv.getUint16(p + 28, true), xlen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+    const loff = dv.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nlen));
+    p += 46 + nlen + xlen + clen;
+    const lnl = dv.getUint16(loff + 26, true), lxl = dv.getUint16(loff + 28, true);
+    const start = loff + 30 + lnl + lxl;
+    files.set(name.replace(/^\//, '').toLowerCase(), { name, method, data: u8.subarray(start, start + csize) });
+  }
+  return {
+    has: (nm) => files.has(nm.replace(/^\//, '').toLowerCase()),
+    names: () => [...files.values()].map(f => f.name),
+    async text(nm) {
+      const f = files.get(nm.replace(/^\//, '').toLowerCase());
+      if (!f) return null;
+      if (f.method === 0) return dec.decode(f.data);
+      if (f.method !== 8) throw new Error('Unbekannte Kompression in ' + nm);
+      if (typeof DecompressionStream === 'undefined') throw new Error('Browser kann 3MF nicht entpacken (zu alt)');
+      const s = new Blob([f.data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      return new Response(s).text();
+    },
+  };
+}
+
+// 3MF-Matrix "m00 m01 m02 m10 m11 m12 m20 m21 m22 m30 m31 m32" (Zeilenvektor · M)
+const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
+function parseMat(s) { if (!s) return I3; const v = s.trim().split(/\s+/).map(Number); return v.length === 12 && v.every(Number.isFinite) ? v : I3; }
+function mulMat(a, b) {   // erst a, dann b
+  const r = new Array(12);
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) r[i * 3 + j] = a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j];
+  for (let j = 0; j < 3; j++) r[9 + j] = a[9] * b[j] + a[10] * b[3 + j] + a[11] * b[6 + j] + b[9 + j];
+  return r;
+}
+const UNIT = { micron: 0.001, millimeter: 1, centimeter: 10, inch: 25.4, foot: 304.8, meter: 1000 };
+
+async function load3mf(buf) {
+  const zip = await readZip(buf);
+  const docs = new Map();   // Pfad → { objects: Map(id → el), unit }
+  async function doc(path) {
+    path = path.replace(/^\//, '');
+    if (docs.has(path)) return docs.get(path);
+    const txt = await zip.text(path);
+    if (txt == null) throw new Error('Fehlt im 3MF: ' + path);
+    const xml = new DOMParser().parseFromString(txt, 'application/xml');
+    const model = xml.getElementsByTagNameNS('*', 'model')[0];
+    const objects = new Map();
+    for (const o of xml.getElementsByTagNameNS('*', 'object')) objects.set(o.getAttribute('id'), o);
+    const d = { xml, objects, unit: UNIT[(model && model.getAttribute('unit')) || 'millimeter'] || 1 };
+    docs.set(path, d);
+    return d;
+  }
+  let root = '3D/3dmodel.model';
+  if (!zip.has(root)) {
+    const rels = await zip.text('_rels/.rels');
+    const m = rels && rels.match(/Target="([^"]+\.model)"/i);
+    root = m ? m[1] : zip.names().find(n => /\.model$/i.test(n));
+    if (!root) throw new Error('Kein 3D-Modell im 3MF gefunden');
+  }
+  const rootDoc = await doc(root);
+  const out = [];
+  // Objekt (evtl. mit Komponenten, auch in anderen Dateien) in eine Dreiecksliste auflösen
+  async function collect(d, id, mat, pos, idx, depth) {
+    if (depth > 16) return;
+    const el = d.objects.get(id);
+    if (!el) return;
+    const mesh = el.getElementsByTagNameNS('*', 'mesh')[0];
+    if (mesh && mesh.parentNode === el) {
+      const base = pos.length / 3, s = d.unit;
+      for (const v of mesh.getElementsByTagNameNS('*', 'vertex')) {
+        const x = +v.getAttribute('x') * s, y = +v.getAttribute('y') * s, z = +v.getAttribute('z') * s;
+        pos.push(x * mat[0] + y * mat[3] + z * mat[6] + mat[9] * s,
+                 x * mat[1] + y * mat[4] + z * mat[7] + mat[10] * s,
+                 x * mat[2] + y * mat[5] + z * mat[8] + mat[11] * s);
+      }
+      for (const t of mesh.getElementsByTagNameNS('*', 'triangle'))
+        idx.push(base + +t.getAttribute('v1'), base + +t.getAttribute('v2'), base + +t.getAttribute('v3'));
+    }
+    const comps = el.getElementsByTagNameNS('*', 'component');
+    for (const c of comps) {
+      const path = c.getAttribute('p:path') || c.getAttributeNS('http://schemas.microsoft.com/3dmanufacturing/production/2015/06', 'path');
+      const d2 = path ? await doc(path) : d;
+      await collect(d2, c.getAttribute('objectid'), mulMat(parseMat(c.getAttribute('transform')), mat), pos, idx, depth + 1);
+    }
+  }
+  const items = [...rootDoc.xml.getElementsByTagNameNS('*', 'item')];
+  const ids = items.length ? items.map(it => [it.getAttribute('objectid'), parseMat(it.getAttribute('transform'))])
+                           : [...rootDoc.objects.keys()].map(id => [id, I3]);
+  for (const [id, m] of ids) {
+    const pos = [], idx = [];
+    await collect(rootDoc, id, m, pos, idx, 0);
+    if (idx.length >= 3) {
+      const el = rootDoc.objects.get(id);
+      out.push({ name: (el && el.getAttribute('name')) || `Objekt ${out.length + 1}`, pos: new Float32Array(pos), index: new Uint32Array(idx) });
+    }
+  }
+  return out;
+}
+
+function loadStl(buf, name) {
+  const dv = new DataView(buf);
+  const n = buf.byteLength >= 84 ? dv.getUint32(80, true) : 0;
+  if (buf.byteLength === 84 + n * 50 && n > 0) {
+    const pos = new Float32Array(n * 9);
+    for (let t = 0; t < n; t++) for (let k = 0; k < 9; k++) pos[t * 9 + k] = dv.getFloat32(84 + t * 50 + 12 + k * 4, true);
+    return [{ name, pos, index: null }];
+  }
+  const txt = new TextDecoder().decode(buf), pos = [];
+  const re = /vertex\s+([-+\d.eE]+)\s+([-+\d.eE]+)\s+([-+\d.eE]+)/g;
+  let m; while ((m = re.exec(txt))) pos.push(+m[1], +m[2], +m[3]);
+  if (pos.length < 9) throw new Error('STL enthält keine Dreiecke');
+  return [{ name, pos: new Float32Array(pos.slice(0, pos.length - pos.length % 9)), index: null }];
+}
+
+function loadObj(buf, name) {
+  const txt = new TextDecoder().decode(buf), v = [], idx = [];
+  for (const line of txt.split('\n')) {
+    const p = line.trim().split(/\s+/);
+    if (p[0] === 'v') v.push(+p[1], +p[2], +p[3]);
+    else if (p[0] === 'f') {
+      const f = p.slice(1).map(s => { const i = parseInt(s, 10); return i < 0 ? v.length / 3 + i : i - 1; });
+      for (let k = 1; k + 1 < f.length; k++) idx.push(f[0], f[k], f[k + 1]);
+    }
+  }
+  if (!idx.length) throw new Error('OBJ enthält keine Flächen');
+  return [{ name, pos: new Float32Array(v), index: new Uint32Array(idx) }];
+}
+
+// ---------- Szene ----------
+const canvas = $('view');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+renderer.setClearColor(0x1a1f25);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 5000);
+camera.up.set(0, 0, 1);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x404850, 0.9));
+const bedGroup = new THREE.Group(); scene.add(bedGroup);
+const modelGroup = new THREE.Group(); scene.add(modelGroup);
+
+function buildBed(w, d) {
+  bedGroup.clear();
+  const plate = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshBasicMaterial({ color: 0x2a313a }));
+  plate.position.z = -0.05; bedGroup.add(plate);
+  const g = [];
+  for (let x = -w / 2; x <= w / 2 + 1e-6; x += 10) g.push(x, -d / 2, 0, x, d / 2, 0);
+  for (let y = -d / 2; y <= d / 2 + 1e-6; y += 10) g.push(-w / 2, y, 0, w / 2, y, 0);
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(g, 3));
+  bedGroup.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x3a434e })));
+}
+
+// Orbit (Z oben): links drehen, rechts/Shift verschieben, Rad/Pinch zoomen
+const orbit = { target: new THREE.Vector3(0, 0, 10), r: 260, theta: -Math.PI / 2 + 0.6, phi: 1.05 };
+function updateCam() {
+  const { target: t, r, theta, phi } = orbit;
+  camera.position.set(t.x + r * Math.sin(phi) * Math.cos(theta), t.y + r * Math.sin(phi) * Math.sin(theta), t.z + r * Math.cos(phi));
+  camera.lookAt(t);
+  render();
+}
+{
+  const ptrs = new Map(); let last = null, pinch = 0;
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  canvas.addEventListener('pointerdown', e => { canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.clientX, e.clientY]); last = [e.clientX, e.clientY, e.button, e.shiftKey]; pinch = 0; });
+  canvas.addEventListener('pointerup', e => { ptrs.delete(e.pointerId); last = null; pinch = 0; });
+  canvas.addEventListener('pointercancel', e => { ptrs.delete(e.pointerId); last = null; });
+  canvas.addEventListener('pointermove', e => {
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    if (ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()], dd = Math.hypot(a[0] - b[0], a[1] - b[1]);
+      if (pinch) orbit.r = Math.min(3000, Math.max(10, orbit.r * pinch / dd));
+      pinch = dd; updateCam(); return;
+    }
+    if (!last) return;
+    const dx = e.clientX - last[0], dy = e.clientY - last[1];
+    if (last[2] === 2 || last[3] || e.shiftKey) {
+      const s = orbit.r * 0.0016;
+      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0), up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1);
+      orbit.target.addScaledVector(right, -dx * s).addScaledVector(up, dy * s);
+    } else {
+      orbit.theta -= dx * 0.008;
+      orbit.phi = Math.min(Math.PI - 0.05, Math.max(0.05, orbit.phi - dy * 0.008));
+    }
+    last[0] = e.clientX; last[1] = e.clientY;
+    updateCam();
+  });
+  canvas.addEventListener('wheel', e => { e.preventDefault(); orbit.r = Math.min(3000, Math.max(10, orbit.r * Math.exp(e.deltaY * 0.001))); updateCam(); }, { passive: false });
+}
+function resize() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w || !h) return;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  render();
+}
+let rq = 0;
+function render() { if (rq) return; rq = requestAnimationFrame(() => { rq = 0; renderer.render(scene, camera); }); }
+new ResizeObserver(resize).observe(canvas);
+
+// Schichtband-Shader: Farbe = Grund der Schicht auf Welt-Höhe z, dunkle Schichtlinien
+const REASON_COLORS = ['#8a96a3', '#2ea2d8', '#f07c1e', '#b36be0', '#5a6570'];
+const REASON_RGB = REASON_COLORS.map(c => new THREE.Color(c));
+function bandTexture(plan) {
+  const maxW = Math.min(8192, renderer.capabilities.maxTextureSize || 4096);
+  const W = Math.max(64, Math.min(maxW, Math.ceil(plan.height / 0.01)));
+  const data = new Uint8Array(W * 4), px = plan.height / W;
+  let li = 0;
+  for (let i = 0; i < W; i++) {
+    const z = (i + 0.5) * px;
+    while (li < plan.layers.length - 1 && z >= plan.layers[li].z0 + plan.layers[li].h) li++;
+    const L = plan.layers[li], c = REASON_RGB[L.r];
+    // Schichtgrenze: letzter Texel der Schicht dunkler, wenn die Schicht ≥ 3 Texel hat
+    const edge = L.h / px >= 3 && (z + px > L.z0 + L.h);
+    const k = edge ? 0.72 : 1;
+    data[i * 4] = c.r * 255 * k; data[i * 4 + 1] = c.g * 255 * k; data[i * 4 + 2] = c.b * 255 * k; data[i * 4 + 3] = 255;
+  }
+  const tex = new THREE.DataTexture(data, W, 1, THREE.RGBAFormat);
+  tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter; tex.needsUpdate = true;
+  return tex;
+}
+function bandMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: { bands: { value: null }, z0: { value: 0 }, height: { value: 1 }, lightDir: { value: new THREE.Vector3(0.35, -0.5, 0.8).normalize() } },
+    vertexShader: `varying vec3 vPos; void main() { vec4 w = modelMatrix * vec4(position, 1.0); vPos = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+    fragmentShader: `uniform sampler2D bands; uniform float z0; uniform float height; uniform vec3 lightDir; varying vec3 vPos;
+      void main() {
+        vec3 n = normalize(cross(dFdx(vPos), dFdy(vPos)));
+        float t = clamp((vPos.z - z0) / height, 0.0005, 0.9995);
+        vec3 c = texture2D(bands, vec2(t, 0.5)).rgb;
+        float l = 0.38 + 0.62 * abs(dot(n, lightDir));
+        gl_FragColor = vec4(c * l, 1.0);
+      }`,
+    extensions: { derivatives: true },
+  });
+}
+
+// ---------- Zustand ----------
+let objects = [];      // { name, pos0 (Original), index, rot: [rx,ry], pos (aktuell), mesh, plan }
+let fileBase = 'modell';
+
+function rotated(o) {
+  const [rx, ry] = o.rot, p = o.pos0, out = new Float32Array(p.length);
+  const cx = Math.cos(rx), sx = Math.sin(rx), cy = Math.cos(ry), sy = Math.sin(ry);
+  for (let i = 0; i < p.length; i += 3) {
+    let x = p[i], y = p[i + 1], z = p[i + 2];
+    const y1 = y * cx - z * sx, z1 = y * sx + z * cx; y = y1; z = z1;        // um X
+    const x2 = x * cy + z * sy, z2 = -x * sy + z * cy; x = x2; z = z2;       // um Y
+    out[i] = x; out[i + 1] = y; out[i + 2] = z;
+  }
+  // aufs Bett (z ab 0) — jedes Objekt für sich, wie in den Slicern
+  let zmin = Infinity; for (let i = 2; i < out.length; i += 3) if (out[i] < zmin) zmin = out[i];
+  for (let i = 2; i < out.length; i += 3) out[i] -= zmin;
+  return out;
+}
+// gemeinsame XY-Mitte aller Objekte auf (cx, cy) legen
+function centerXY(list, cx, cy) {
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const p of list) for (let i = 0; i < p.length; i += 3) {
+    if (p[i] < x0) x0 = p[i]; if (p[i] > x1) x1 = p[i]; if (p[i + 1] < y0) y0 = p[i + 1]; if (p[i + 1] > y1) y1 = p[i + 1];
+  }
+  const dx = cx - (x0 + x1) / 2, dy = cy - (y0 + y1) / 2;
+  return list.map(p => { const q = new Float32Array(p); for (let i = 0; i < q.length; i += 3) { q[i] += dx; q[i + 1] += dy; } return q; });
+}
+
+function rebuildGeometry() {
+  modelGroup.clear();
+  const placed = centerXY(objects.map(rotated), 0, 0);
+  let maxZ = 1, maxR = 20;
+  objects.forEach((o, i) => {
+    o.pos = placed[i];
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(o.pos, 3));
+    if (o.index) geo.setIndex(new THREE.BufferAttribute(o.index, 1));
+    geo.computeBoundingBox(); geo.computeBoundingSphere();
+    maxZ = Math.max(maxZ, geo.boundingBox.max.z);
+    maxR = Math.max(maxR, Math.hypot(geo.boundingBox.max.x, geo.boundingBox.max.y), Math.hypot(geo.boundingBox.min.x, geo.boundingBox.min.y));
+    o.mesh = new THREE.Mesh(geo, bandMaterial());
+    modelGroup.add(o.mesh);
+  });
+  return { maxZ, maxR };
+}
+
+let recalcT = 0;
+function scheduleRecalc() { clearTimeout(recalcT); recalcT = setTimeout(recalc, 60); }
+function recalc() {
+  if (!objects.length) return;
+  const opts = layerOpts();
+  const t0 = performance.now();
+  for (const o of objects) {
+    try { o.plan = computeLayerPlan(o.pos, o.index, opts); }
+    catch (e) { console.warn(e); o.plan = null; }
+    const m = o.mesh.material;
+    if (m.uniforms.bands.value) m.uniforms.bands.value.dispose();
+    if (o.plan) { m.uniforms.bands.value = bandTexture(o.plan); m.uniforms.height.value = o.plan.height; }
+    else { m.uniforms.bands.value = bandTexture({ height: 1, layers: [{ z0: 0, h: 1, r: 0 }] }); m.uniforms.height.value = 1e9; }
+  }
+  window._schLast = { ms: performance.now() - t0 };
+  showResults();
+  render();
+}
+
+function showResults() {
+  const opts = layerOpts(), T = layerTargets(opts);
+  const withPlan = objects.filter(o => o.plan);
+  const sel = $('objSel');
+  sel.hidden = objects.length < 2;
+  if (objects.length > 1 && sel.options.length !== objects.length)
+    sel.innerHTML = objects.map((o, i) => `<option value="${i}">${i + 1}: ${o.name.replace(/</g, '&lt;')}</option>`).join('');
+  const cur = objects[+sel.value || 0] || objects[0];
+  drawPlot($('plot'), cur && cur.plan, T);
+  $('firstHint').textContent = fmt(opts.hFirst);
+  if (!withPlan.length) {
+    $('stats').innerHTML = '<span class="dim">Modell zu flach für eine adaptive Schichthöhe.</span>';
+    $('export').disabled = true; return;
+  }
+  const tot = withPlan.reduce((s, o) => s + o.plan.nLayers, 0), uni = withPlan.reduce((s, o) => s + o.plan.nUniform, 0);
+  const diff = Math.round((tot / uni - 1) * 100);
+  const hs = withPlan.flatMap(o => o.plan.layers.slice(1).map(L => L.h));
+  const snaps = cur && cur.plan ? cur.plan.snaps : [];
+  $('stats').innerHTML = `
+    <div><span class="big">${tot}</span> Schichten <span class="dim">statt ${uni} bei fest ${fmt(T.hBase)} mm</span></div>
+    <div>${diff <= 0 ? `≈ <b>${-diff} % weniger</b> Schichten` : `≈ <b>${diff} % mehr</b> Schichten für die Details`}</div>
+    <div class="dim">Höhen ${fmt(Math.min(...hs), 3)} – ${fmt(Math.max(...hs), 3)} mm · Objekthöhe ${fmt(cur.plan ? cur.plan.height : 0, 1)} mm</div>
+    ${snaps.length ? `<div class="dim">Kanten exakt bei ${snaps.slice(0, 8).map(z => fmt(z)).join(' · ')}${snaps.length > 8 ? ' …' : ''} mm</div>` : ''}`;
+  $('export').disabled = false;
+}
+
+function drawPlot(cv, plan, T) {
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth || 290, H = cv.clientHeight || 190;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
+  g.font = '10px system-ui'; g.fillStyle = '#8a96a3';
+  if (!plan) { g.fillText('— kein Profil —', W / 2 - 36, H / 2); return; }
+  const padL = 38, padB = 16, pw = W - padL - 8, ph = H - padB - 8;
+  const X = h => padL + (h - T.hMin) / (T.hMax - T.hMin) * pw, Y = z => 8 + ph - z / plan.height * ph;
+  g.strokeStyle = 'rgba(138,150,163,.3)';
+  for (const h of [T.hMin, T.hBase, T.hMax]) {
+    g.beginPath(); g.setLineDash(h === T.hBase ? [3, 3] : []); g.moveTo(X(h), 8); g.lineTo(X(h), 8 + ph); g.stroke();
+    const lbl = fmt(h), tw = g.measureText(lbl).width;
+    g.fillText(lbl, Math.min(W - tw - 1, Math.max(padL - 4, X(h) - tw / 2)), H - 3);
+  }
+  g.setLineDash([]);
+  g.fillText(fmt(plan.height, 1) + ' mm', 0, 16); g.fillText('0', padL - 10, 8 + ph);
+  for (const L of plan.layers) {
+    g.fillStyle = REASON_COLORS[L.r];
+    const y0 = Y(L.z0), y1 = Y(L.z0 + L.h);
+    g.fillRect(padL, y1, Math.max(1, X(L.h) - padL), Math.max(0.6, y0 - y1 - 0.3));
+  }
+  g.fillStyle = '#e8c547';
+  for (const z of plan.snaps) g.fillRect(padL - 6, Y(z) - 1, 5, 2);
+}
+$('legend').innerHTML = [1, 2, 3, 0].map(r => `<span><i style="background:${REASON_COLORS[r]}"></i>${REASON_NAMES[r]}</span>`).join('')
+  + '<span><i style="background:#e8c547;height:.22rem;vertical-align:2px"></i>Kante exakt</span>';
+
+// ---------- Laden ----------
+async function openFile(file) {
+  try {
+    setStatus('Lese ' + file.name + ' …');
+    const buf = await file.arrayBuffer();
+    const ext = (file.name.match(/\.([^.]+)$/) || [, ''])[1].toLowerCase();
+    const base = file.name.replace(/\.[^.]+$/, '');
+    let list;
+    if (ext === '3mf') list = await load3mf(buf);
+    else if (ext === 'obj') list = loadObj(buf, base);
+    else list = loadStl(buf, base);
+    if (!list.length) throw new Error('Keine Objekte gefunden');
+    objects = list.map(o => ({ ...o, pos0: o.pos, rot: [0, 0] }));
+    fileBase = base.replace(/_adaptiv$/, '');
+    $('fileName').textContent = `✅ ${file.name} · ${objects.length} Objekt${objects.length > 1 ? 'e' : ''}`;
+    $('objSel').innerHTML = '';
+    for (const id of ['rotX', 'rotY', 'rotReset']) $(id).disabled = false;
+    $('hint').hidden = true;
+    const { maxZ, maxR } = rebuildGeometry();
+    orbit.target.set(0, 0, maxZ / 2); orbit.r = Math.max(60, Math.max(maxR, maxZ) * 3.2);
+    updateCam();
+    recalc();
+    const tris = objects.reduce((s, o) => s + (o.index ? o.index.length : o.pos.length / 3) / 3, 0);
+    setStatus(`${Math.round(tris).toLocaleString('de-DE')} Dreiecke · Profil in ${Math.round(window._schLast.ms)} ms`);
+  } catch (e) {
+    console.error(e);
+    setStatus('Fehler: ' + e.message, true);
+  }
+}
+const drop = $('drop');
+drop.onclick = () => $('file').click();
+drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') $('file').click(); };
+$('file').onchange = () => { if ($('file').files[0]) openFile($('file').files[0]); $('file').value = ''; };
+for (const el of [drop, canvas]) {
+  el.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+  el.addEventListener('dragleave', () => drop.classList.remove('over'));
+  el.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); const f = e.dataTransfer.files[0]; if (f) openFile(f); });
+}
+
+// ---------- Bedienung ----------
+presetSel.onchange = () => { applyPreset(presetSel.value); buildBed(...currentPreset().bed.map(v => Math.max(v, 200))); saveSettings(); scheduleRecalc(); render(); };
+for (const k of FIELDS) $(k).addEventListener('input', () => { presetSel.value = 'custom'; saveSettings(); scheduleRecalc(); });
+$('quality').addEventListener('input', () => { saveSettings(); scheduleRecalc(); });
+$('objSel').onchange = () => showResults();
+function rotateAll(ax) {
+  for (const o of objects) o.rot[ax] = (o.rot[ax] + Math.PI / 2) % (2 * Math.PI);
+  const { maxZ } = rebuildGeometry(); orbit.target.z = maxZ / 2; recalc(); updateCam();
+}
+$('rotX').onclick = () => rotateAll(0);
+$('rotY').onclick = () => rotateAll(1);
+$('rotReset').onclick = () => { for (const o of objects) o.rot = [0, 0]; const { maxZ } = rebuildGeometry(); orbit.target.z = maxZ / 2; recalc(); updateCam(); };
+
+$('export').onclick = async () => {
+  try {
+    $('export').disabled = true;
+    setStatus('3MF wird gebaut …');
+    const bed = currentPreset().bed;
+    const placed = centerXY(objects.map(o => o.pos), bed[0] / 2, bed[1] / 2);
+    const blob = await build3mf(objects.map((o, i) => ({ name: o.name, pos: placed[i], index: o.index, profile: o.plan ? o.plan.profile : null })),
+                                { title: fileBase });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fileBase + '_adaptiv.3mf';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    setStatus(`Gespeichert: ${fileBase}_adaptiv.3mf — im Slicer Erste Schicht ${fmt(layerOpts().hFirst)} mm einstellen`);
+  } catch (e) { setStatus('Export fehlgeschlagen: ' + e.message, true); }
+  finally { $('export').disabled = false; }
+};
+
+// Offline-Version: nur wenn die Seite von einem Server kommt
+if (location.protocol.startsWith('http')) {
+  const a = $('offline');
+  a.hidden = false;
+  // Funnel-Pfad /schichten kommt oft OHNE Schrägstrich → relative Links liefen ins Leere
+  const p = location.pathname;
+  a.href = /\/$/.test(p) ? p + 'v3d-schichten.html' : /\.html$/.test(p) ? p.replace(/[^/]*$/, 'v3d-schichten.html') : p + '/v3d-schichten.html';
+}
+
+buildBed(...currentPreset().bed.map(v => Math.max(v, 200)));
+updateCam(); resize();
+window._schDebug = () => ({ objects: objects.map(o => o.plan && { name: o.name, height: o.plan.height, nLayers: o.plan.nLayers,
+  nUniform: o.plan.nUniform, snaps: o.plan.snaps }), opts: layerOpts() });
+</script>
+</body>
+</html>
