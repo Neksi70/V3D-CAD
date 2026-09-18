@@ -72,10 +72,10 @@
 <aside>
   <div id="drop" tabindex="0">
     <b>📂 Modell hierher ziehen</b>
-    <small>oder klicken · STL · OBJ · 3MF</small>
+    <small>oder klicken · STL · OBJ · 3MF · STEP</small>
     <div id="fileName"></div>
   </div>
-  <input type="file" id="file" accept=".stl,.obj,.3mf" hidden>
+  <input type="file" id="file" accept=".stl,.obj,.3mf,.step,.stp" hidden>
 
   <h2>Drucker &amp; Düse</h2>
   <select id="preset"></select>
@@ -301,6 +301,47 @@ function loadObj(buf, name) {
   }
   if (!idx.length) throw new Error('OBJ enthält keine Flächen');
   return [{ name, pos: new Float32Array(v), index: new Uint32Array(idx) }];
+}
+
+// STEP: Offline-Version hat occt-import-js eingebettet (OCCT als WASM im Browser),
+// die Online-Seite schickt die Datei an den Server (OCCT-Backend von V3D CAD).
+// Beide vernetzen fein (0,02 mm / 0,1 rad), damit Rundungen als Krümmung erkannt werden.
+function appBase() {
+  const p = location.pathname;   // Funnel-Pfad /schichten kommt oft OHNE Schrägstrich
+  return /\/$/.test(p) ? p : /\.html$/.test(p) ? p.replace(/[^/]*$/, '') : p + '/';
+}
+let occtPromise = null;
+async function loadStep(buf, name) {
+  if (typeof occtimportjs === 'function' && window.OCCT_WASM_B64) {
+    setStatus('STEP wird im Browser gelesen … (erstes Mal ein paar Sekunden)');
+    await new Promise(r => setTimeout(r, 30));
+    if (!occtPromise) {
+      const bin = atob(window.OCCT_WASM_B64), wasm = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) wasm[i] = bin.charCodeAt(i);
+      occtPromise = occtimportjs({ wasmBinary: wasm });
+    }
+    const occt = await occtPromise;
+    const res = occt.ReadStepFile(new Uint8Array(buf),
+      { linearUnit: 'millimeter', linearDeflectionType: 'absolute_value', linearDeflection: 0.02, angularDeflection: 0.1 });
+    if (!res || !res.success || !res.meshes.length) throw new Error('STEP-Datei nicht lesbar');
+    // alle Körper zu EINEM Objekt (wie die Online-Umwandlung)
+    let nv = 0, ni = 0;
+    for (const m of res.meshes) { nv += m.attributes.position.array.length; ni += m.index.array.length; }
+    const pos = new Float32Array(nv), index = new Uint32Array(ni);
+    let ov = 0, oi = 0;
+    for (const m of res.meshes) {
+      const p = m.attributes.position.array, ix = m.index.array, base = ov / 3;
+      pos.set(p, ov); for (let k = 0; k < ix.length; k++) index[oi + k] = ix[k] + base;
+      ov += p.length; oi += ix.length;
+    }
+    return [{ name, pos, index }];
+  }
+  if (!location.protocol.startsWith('http'))
+    throw new Error('STEP geht in dieser Datei nicht — bitte die Online-Seite nutzen oder dort die Offline-Version neu laden');
+  setStatus('STEP wird auf dem Server umgewandelt …');
+  const r = await fetch(appBase() + 'api/step', { method: 'POST', body: buf, headers: { 'Content-Type': 'application/octet-stream' } });
+  if (!r.ok) { let m = ''; try { m = (await r.json()).error; } catch {} throw new Error(m || 'STEP-Umwandlung fehlgeschlagen (HTTP ' + r.status + ')'); }
+  return loadStl(await r.arrayBuffer(), name);
 }
 
 // ---------- Szene ----------
@@ -539,6 +580,7 @@ async function openFile(file) {
     let list;
     if (ext === '3mf') list = await load3mf(buf);
     else if (ext === 'obj') list = loadObj(buf, base);
+    else if (ext === 'step' || ext === 'stp') list = await loadStep(buf, base);
     else list = loadStl(buf, base);
     if (!list.length) throw new Error('Keine Objekte gefunden');
     objects = list.map(o => ({ ...o, pos0: o.pos, rot: [0, 0] }));
@@ -603,9 +645,7 @@ $('export').onclick = async () => {
 if (location.protocol.startsWith('http')) {
   const a = $('offline');
   a.hidden = false;
-  // Funnel-Pfad /schichten kommt oft OHNE Schrägstrich → relative Links liefen ins Leere
-  const p = location.pathname;
-  a.href = /\/$/.test(p) ? p + 'v3d-schichten.html' : /\.html$/.test(p) ? p.replace(/[^/]*$/, 'v3d-schichten.html') : p + '/v3d-schichten.html';
+  a.href = appBase() + 'v3d-schichten.html';
 }
 
 buildBed(...currentPreset().bed.map(v => Math.max(v, 200)));

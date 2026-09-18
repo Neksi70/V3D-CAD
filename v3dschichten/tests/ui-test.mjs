@@ -79,6 +79,29 @@ ok(r.dbg.objects[0] && r.dbg.objects[0].nLayers === 60, 'file:// (offline) rechn
 ok(await s2.page.evaluate(() => document.getElementById('offline').hidden), 'Offline-Link im Offline-Modus ausgeblendet');
 ok(!s2.errors.length, 'offline keine JS-Fehler ' + (s2.errors.length ? JSON.stringify(s2.errors) : ''));
 
+// 6) STEP online (Server → OCCT-Backend) über den Funnel-Pfad OHNE Schrägstrich
+const STEP = '/home/v3da/projekte/cad/step_export/zylinder_fillet.step';
+let stepOnline = null;
+if (existsSync(STEP)) {
+  const s3 = await session(URL_.replace(/\/$/, '') + '/schichten');
+  r = await load(s3.page, STEP);
+  stepOnline = r.dbg.objects[0];
+  console.log('STEP online:', r.file, '|', r.status, '|', JSON.stringify(stepOnline));
+  ok(stepOnline && stepOnline.height > 1 && stepOnline.nLayers > 5, 'STEP online gelesen und geplant');
+  ok(!s3.errors.length, 'STEP online ohne JS-Fehler ' + (s3.errors.length ? JSON.stringify(s3.errors) : ''));
+  // 7) STEP offline (occt-import-js eingebettet, file://)
+  const s4 = await session('file:///home/v3da/v3dschichten/offline.html');
+  r = await load(s4.page, STEP);
+  const so = r.dbg.objects[0];
+  console.log('STEP offline:', r.file, '|', r.status, '|', JSON.stringify(so));
+  ok(so && Math.abs(so.height - stepOnline.height) < 0.01 && Math.abs(so.nLayers - stepOnline.nLayers) <= 3,
+     `STEP offline ≈ online (${so && so.nLayers} / ${stepOnline.nLayers} Schichten)`);
+  ok(!s4.errors.length, 'STEP offline ohne JS-Fehler ' + (s4.errors.length ? JSON.stringify(s4.errors) : ''));
+  // 8) Online-Datei per file:// → verständliche Meldung statt Absturz
+  r = await load(s2.page, STEP);
+  ok(/Online-Seite/.test(r.status), 'index.html offline: STEP-Hinweis statt Fehler');
+}
+
 await browser.close();
 console.log(fails ? `SCHICHTEN-UI-TEST FEHLGESCHLAGEN ❌ (${fails})` : 'SCHICHTEN-UI-TEST OK ✅');
 process.exit(fails ? 1 : 0);

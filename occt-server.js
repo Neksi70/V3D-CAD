@@ -533,8 +533,9 @@ function buildSvgSolid(oc, pathInfo, scale, cx, cy, normF, yStart, yEnd, simplif
 // fürs FDM-Drucken (Düse/Schicht 0.2–0.4 mm) praktisch unsichtbar.
 const MESH_DEFLECTION_MM = 0.2;
 // ── OCCT Shape → binäres STL (manuell aus Triangulierung) ────────────────────
-function solidToSTLBuffer(oc, shape) {
-  new oc.BRepMesh_IncrementalMesh_2(shape, MESH_DEFLECTION_MM, false, 0.5, false);
+// linDefl/angDefl optional (z. B. feinere Vernetzung für V3D Schichthöhe); ohne Angabe wie bisher
+function solidToSTLBuffer(oc, shape, linDefl = MESH_DEFLECTION_MM, angDefl = 0.5) {
+  new oc.BRepMesh_IncrementalMesh_2(shape, linDefl, false, angDefl, false);
   const FACE  = oc.TopAbs_ShapeEnum.TopAbs_FACE;
   const SHAPE = oc.TopAbs_ShapeEnum.TopAbs_SHAPE;
   const REV   = oc.TopAbs_Orientation.TopAbs_REVERSED;
@@ -1280,7 +1281,10 @@ app.post('/api/occt-step2stl', async (req, res) => {
     const shape = reader.OneShape();   // mehrere Roots → Compound
     reader.delete();
     console.log('[step2stl] roots:', nRoots, 'bbox:', getBBox(oc, shape));
-    const outBuf = solidToSTLBuffer(oc, shape);
+    // optionale Feinheit (V3D Schichthöhe braucht feine Krümmung), sonst Standard
+    const lin = Number(b.linDeflection), ang = Number(b.angDeflection);
+    const outBuf = solidToSTLBuffer(oc, shape,
+      lin >= 0.005 && lin <= 1 ? lin : MESH_DEFLECTION_MM, ang >= 0.02 && ang <= 1 ? ang : 0.5);
     console.log(`[step2stl] OK — ${outBuf.length} B STL in ${Date.now()-t0} ms`);
     res.json({ stlBase64: outBuf.toString('base64'), roots: nRoots });
   } catch (e) {
