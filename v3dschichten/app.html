@@ -58,7 +58,10 @@
   #orientList button.cur { border-color: var(--blue); background: #1f3a4d; }
   #orientList .tag { display: inline-block; font-size: .7rem; padding: 0 .35rem; border-radius: 4px; margin-left: .25rem; }
   #orientList .top { background: #5b3f86; color: #fff; } #orientList .now { background: #1f5a7d; color: #fff; }
-  #orientBanner { position: absolute; top: .7rem; left: 50%; transform: translateX(-50%); max-width: calc(100% - 1.6rem);
+  #viewBar { position: absolute; left: .8rem; top: .7rem; display: flex; gap: .3rem; align-items: center; font-size: .8rem; z-index: 2; }
+  #viewBar button { padding: .3rem .6rem; font-size: .8rem; background: rgba(37,44,53,.92); }
+  #viewBar button.on { border-color: var(--blue); background: #1f3a4d; color: #fff; }
+  #orientBanner { position: absolute; top: 3.2rem; left: 50%; transform: translateX(-50%); max-width: calc(100% - 1.6rem);
                   background: rgba(38,28,58,.95); border: 1px solid #8a4fd8; border-radius: 9px; padding: .45rem .6rem;
                   display: flex; gap: .6rem; align-items: center; font-size: .85rem; box-shadow: 0 4px 18px rgba(0,0,0,.35); }
   #orientBanner button { padding: .3rem .6rem; }
@@ -136,6 +139,11 @@
 </aside>
 <div id="viewWrap">
   <canvas id="view"></canvas>
+  <div id="viewBar" hidden>
+    <button data-view="print" title="Das Modell so, wie der Drucker es in Schichten aufbaut — mit echten Treppenstufen">🧱 Druckvorschau</button>
+    <button data-view="model" title="Glattes Original-Modell, eingefärbt">Modell</button>
+    <button id="zoomWorst" title="Zur Stelle mit den größten Treppenstufen zoomen">🔍 Kritischste Stelle</button>
+  </div>
   <div id="orientBanner" hidden></div>
   <div id="hint">Modell laden — die Schichthöhen erscheinen als farbige Bänder</div>
   <div id="status"></div>
@@ -379,9 +387,11 @@ renderer.setClearColor(0x1a1f25);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 5000);
 camera.up.set(0, 0, 1);
-scene.add(new THREE.HemisphereLight(0xffffff, 0x404850, 0.9));
+scene.add(new THREE.HemisphereLight(0xffffff, 0x404850, 0.75));
+{ const sun = new THREE.DirectionalLight(0xffffff, 0.75); sun.position.set(0.5, -0.8, 1.1); scene.add(sun); }   // Kontrast für die Treppenstufen
 const bedGroup = new THREE.Group(); scene.add(bedGroup);
 const modelGroup = new THREE.Group(); scene.add(modelGroup);
+const printGroup = new THREE.Group(); scene.add(printGroup);
 
 function buildBed(w, d) {
   bedGroup.clear();
@@ -512,7 +522,7 @@ function rebuildGeometry() {
   const placed = centerXY(objects.map(rotated), 0, 0);
   let maxZ = 1, maxR = 20;
   objects.forEach((o, i) => {
-    o.pos = placed[i];
+    o.pos = placed[i]; o.w = null;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(o.pos, 3));
     if (o.index) geo.setIndex(new THREE.BufferAttribute(o.index, 1));
@@ -520,6 +530,7 @@ function rebuildGeometry() {
     maxZ = Math.max(maxZ, geo.boundingBox.max.z);
     maxR = Math.max(maxR, Math.hypot(geo.boundingBox.max.x, geo.boundingBox.max.y), Math.hypot(geo.boundingBox.min.x, geo.boundingBox.min.y));
     o.mesh = new THREE.Mesh(geo, bandMaterial());
+    o.mesh.visible = viewMode === 'model';
     modelGroup.add(o.mesh);
   });
   return { maxZ, maxR };
@@ -541,9 +552,176 @@ function recalc() {
     else { m.uniforms.bands.value = bandTexture({ height: 1, layers: [{ z0: 0, h: 1, r: 0 }] }, T); m.uniforms.height.value = 1e9; }
   }
   window._schLast = { ms: performance.now() - t0 };
+  schedulePreview(opts);
   showResults();
   render();
 }
+
+// ---------- 🧱 Druckvorschau: Modell in den berechneten Schichten nachbauen ----------
+// Je Schicht Schnitt auf halber Höhe (wie der Slicer), Konturen zu Schleifen verketten,
+// als Scheibe mit senkrechter Wand + Deckel/Boden aufbauen → echte Treppenstufen.
+let viewMode = lsGet('v3dsch-view', 'print') === 'model' ? 'model' : 'print';
+const PREVIEW_MAX_SEGS = 2500000;
+function weldMesh(o) {
+  if (o.w) return o.w;
+  const p = o.pos, n = o.index ? o.index.length : p.length / 3, map = new Map(), v = [], t = new Uint32Array(n);
+  for (let i = 0; i < n; i++) {
+    const vi = o.index ? o.index[i] : i, x = p[vi * 3], y = p[vi * 3 + 1], z = p[vi * 3 + 2];
+    const k = Math.round(x * 1e4) + ',' + Math.round(y * 1e4) + ',' + Math.round(z * 1e4);
+    let id = map.get(k);
+    if (id === undefined) { id = v.length / 3; map.set(k, id); v.push(x, y, z); }
+    t[i] = id;
+  }
+  const V = new Float64Array(v), nt = n / 3, zlo = new Float64Array(nt), zhi = new Float64Array(nt);
+  let top = 0;
+  for (let k = 0; k < nt; k++) {
+    const a = V[t[k * 3] * 3 + 2], b = V[t[k * 3 + 1] * 3 + 2], c = V[t[k * 3 + 2] * 3 + 2];
+    zlo[k] = Math.min(a, b, c); zhi[k] = Math.max(a, b, c); top = Math.max(top, zhi[k]);
+  }
+  // Dreiecke nach Höhe in 1-mm-Fächer, damit je Schicht nur Kandidaten geprüft werden
+  const bins = Array.from({ length: Math.ceil(top) + 2 }, () => []);
+  for (let k = 0; k < nt; k++) for (let b = Math.floor(zlo[k]); b <= Math.floor(zhi[k]); b++) bins[b].push(k);
+  return (o.w = { V, t, zlo, zhi, bins });
+}
+function sliceLayer(W, zc) {
+  const { V, t, zlo, zhi, bins } = W, segs = [];
+  const cand = bins[Math.max(0, Math.min(bins.length - 1, Math.floor(zc)))] || [];
+  for (const k of cand) {
+    if (zlo[k] > zc || zhi[k] < zc) continue;
+    const ids = [t[k * 3], t[k * 3 + 1], t[k * 3 + 2]], pts = [], keys = [];
+    for (let e = 0; e < 3; e++) {
+      const a = ids[e], b = ids[(e + 1) % 3], za = V[a * 3 + 2] - zc, zb = V[b * 3 + 2] - zc;
+      if ((za < 0) === (zb < 0)) continue;
+      const u = za / (za - zb);
+      pts.push([V[a * 3] + (V[b * 3] - V[a * 3]) * u, V[a * 3 + 1] + (V[b * 3 + 1] - V[a * 3 + 1]) * u]);
+      keys.push(a < b ? a + '_' + b : b + '_' + a);
+    }
+    if (pts.length !== 2) continue;
+    // Richtung so, dass das Material links liegt (Außenkontur gegen den Uhrzeigersinn)
+    const A = ids.map(i => [V[i * 3], V[i * 3 + 1], V[i * 3 + 2]]);
+    const nx = (A[1][1] - A[0][1]) * (A[2][2] - A[0][2]) - (A[1][2] - A[0][2]) * (A[2][1] - A[0][1]);
+    const ny = (A[1][2] - A[0][2]) * (A[2][0] - A[0][0]) - (A[1][0] - A[0][0]) * (A[2][2] - A[0][2]);
+    let [p, q] = pts, [kp, kq] = keys;
+    if ((q[1] - p[1]) * nx - (q[0] - p[0]) * ny < 0) { [p, q] = [q, p]; [kp, kq] = [kq, kp]; }
+    segs.push({ p, q, kp, kq });
+  }
+  return segs;
+}
+function loopsOf(segs) {
+  const byStart = new Map();
+  segs.forEach((s, i) => byStart.set(s.kp, i));
+  const used = new Uint8Array(segs.length), loops = [];
+  for (let i = 0; i < segs.length; i++) {
+    if (used[i]) continue;
+    const loop = []; let j = i, ok = false;
+    for (let guard = 0; guard <= segs.length; guard++) {
+      used[j] = 1; loop.push(segs[j].p);
+      const nx = byStart.get(segs[j].kq);
+      if (nx === undefined) break;
+      if (nx === i) { ok = true; break; }
+      if (used[nx]) break;
+      j = nx;
+    }
+    if (ok && loop.length >= 3) loops.push(loop);
+  }
+  return loops;
+}
+const areaOf = (l) => { let a = 0; for (let i = 0; i < l.length; i++) { const p = l[i], q = l[(i + 1) % l.length]; a += p[0] * q[1] - q[0] * p[1]; } return a / 2; };
+function inPoly(pt, l) {
+  let c = false;
+  for (let i = 0, j = l.length - 1; i < l.length; j = i++)
+    if ((l[i][1] > pt[1]) !== (l[j][1] > pt[1]) && pt[0] < (l[j][0] - l[i][0]) * (pt[1] - l[i][1]) / (l[j][1] - l[i][1]) + l[i][0]) c = !c;
+  return c;
+}
+function buildPrintPreview(o, T) {
+  if (!o.plan) return null;
+  const W = weldMesh(o), P = [], N = [], C = [];
+  let segCount = 0;
+  const push = (x, y, z, nx, ny, nz, c) => { P.push(x, y, z); N.push(nx, ny, nz); C.push(c.r, c.g, c.b); };
+  for (const L of o.plan.layers) {
+    const z0 = L.z0, z1 = L.z0 + L.h, zc = z0 + L.h * 0.5 + 1e-7, c = layerColor(L, T);
+    const segs = sliceLayer(W, zc);
+    segCount += segs.length;
+    if (segCount > PREVIEW_MAX_SEGS) return 'zu groß';
+    for (const { p, q } of segs) {   // Wand
+      let nx = q[1] - p[1], ny = p[0] - q[0]; const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
+      push(p[0], p[1], z0, nx, ny, 0, c); push(q[0], q[1], z0, nx, ny, 0, c); push(q[0], q[1], z1, nx, ny, 0, c);
+      push(p[0], p[1], z0, nx, ny, 0, c); push(q[0], q[1], z1, nx, ny, 0, c); push(p[0], p[1], z1, nx, ny, 0, c);
+    }
+    // Deckel/Boden: Außenkonturen mit ihren Löchern triangulieren
+    const loops = loopsOf(segs), outers = [], holes = [];
+    for (const l of loops) (areaOf(l) > 0 ? outers : holes).push(l);
+    const groups = outers.map(l => ({ l, holes: [], a: areaOf(l) })).sort((a, b) => a.a - b.a);
+    for (const h of holes) { const g = groups.find(g => inPoly(h[0], g.l)); if (g) g.holes.push(h); }
+    for (const g of groups) {
+      const shape = g.l.map(p => new THREE.Vector2(p[0], p[1])), hv = g.holes.map(h => h.map(p => new THREE.Vector2(p[0], p[1])));
+      let faces; try { faces = THREE.ShapeUtils.triangulateShape(shape, hv); } catch { continue; }
+      const all = shape.concat(...hv);
+      for (const f of faces) for (const [z, nz] of [[z1, 1], [z0, -1]])
+        for (const i of f) push(all[i].x, all[i].y, z, 0, 0, nz, c);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(C, 3));
+  return new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+}
+// Plan/Zahlen sofort, die Scheiben erst wenn der Regler kurz ruht (große Netze: ~1 s)
+let previewT = 0, previewPending = false;
+function schedulePreview(opts) {
+  clearTimeout(previewT); previewPending = true;
+  previewT = setTimeout(() => { previewPending = false; buildPrintPreviews(opts); render(); }, 160);
+}
+function buildPrintPreviews(opts) {
+  for (const m of printGroup.children) { m.geometry.dispose(); m.material.dispose(); }
+  printGroup.clear();
+  let tooBig = false;
+  if (viewMode === 'print') {
+    const T = layerTargets(opts), t0 = performance.now();
+    for (const o of objects) {
+      const m = buildPrintPreview(o, T);
+      if (m === 'zu groß') { tooBig = true; o.mesh.visible = true; continue; }
+      o.mesh.visible = !m;
+      if (m) printGroup.add(m);
+    }
+    window._schPreviewMs = performance.now() - t0;
+  } else for (const o of objects) o.mesh.visible = true;
+  if (tooBig) setStatus('Druckvorschau für dieses Modell zu groß — zeige das Modell', true);
+  document.querySelectorAll('#viewBar [data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === viewMode));
+}
+document.querySelectorAll('#viewBar [data-view]').forEach(b => b.onclick = () => {
+  viewMode = b.dataset.view; lsSet('v3dsch-view', viewMode); buildPrintPreviews(layerOpts()); render();
+});
+// 🔍 Stelle mit der größten Treppenstufe (h · |nz| auf Schrägen) heranholen
+$('zoomWorst').onclick = () => {
+  let best = null;
+  for (const o of objects) {
+    if (!o.plan) continue;
+    const L = o.plan.layers, p = o.pos, n = o.index ? o.index.length / 3 : p.length / 9, step = Math.max(1, Math.floor(n / 200000));
+    for (let k = 0; k < n; k += step) {
+      const v = [0, 1, 2].map(j => { const i = o.index ? o.index[k * 3 + j] : k * 3 + j; return [p[i * 3], p[i * 3 + 1], p[i * 3 + 2]]; });
+      const ux = v[1][0] - v[0][0], uy = v[1][1] - v[0][1], uz = v[1][2] - v[0][2], wx = v[2][0] - v[0][0], wy = v[2][1] - v[0][1], wz = v[2][2] - v[0][2];
+      const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx, len = Math.hypot(cx, cy, cz);
+      if (len < 0.1) continue;   // Fläche < 0,05 mm²
+      const anz = Math.abs(cz / len);
+      if (anz < 0.02 || anz > 0.996) continue;
+      const zc = (v[0][2] + v[1][2] + v[2][2]) / 3;
+      let lo = 0, hi = L.length - 1;
+      while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (L[mid].z0 <= zc) lo = mid; else hi = mid - 1; }
+      const cusp = L[lo].h * anz;
+      if (!best || cusp > best.cusp) best = { cusp, x: (v[0][0] + v[1][0] + v[2][0]) / 3, y: (v[0][1] + v[1][1] + v[2][1]) / 3, z: zc, nx: cx / len, ny: cy / len };
+    }
+  }
+  if (!best) { setStatus('Keine Schrägen — keine Treppenstufen'); return; }
+  orbit.target.set(best.x, best.y, best.z);
+  orbit.r = 14;
+  if (Math.hypot(best.nx, best.ny) > 0.05) orbit.theta = Math.atan2(best.ny, best.nx);
+  orbit.phi = 1.25;
+  if (viewMode !== 'print') { viewMode = 'print'; lsSet('v3dsch-view', viewMode); buildPrintPreviews(layerOpts()); }
+  updateCam();
+  setStatus(`🔍 Größte Treppenstufe hier: ${fmt(best.cusp, 3)} mm (Höhe ${fmt(best.z, 1)} mm) — Regler/Magic ändern sie sichtbar`);
+};
 
 function showResults() {
   const opts = layerOpts(), T = layerTargets(opts);
@@ -636,7 +814,7 @@ async function openFile(file) {
     $('objSel').innerHTML = '';
     for (const id of ['rotX', 'rotY', 'rotReset', 'magic']) $(id).disabled = false;
     $('magicCard').hidden = true; magicUndo = null; magicRes = null;
-    $('hint').hidden = true;
+    $('hint').hidden = true; $('viewBar').hidden = false;
     const { maxZ, maxR } = rebuildGeometry();
     orbit.target.set(0, 0, maxZ / 2); orbit.r = Math.max(60, Math.max(maxR, maxZ) * 3.2);
     updateCam();
@@ -819,7 +997,7 @@ if (location.protocol.startsWith('http')) {
 
 buildBed(...currentPreset().bed.map(v => Math.max(v, 200)));
 updateCam(); resize();
-window._schDebug = () => ({ quality: +$('quality').value, magic: !$('magicCard').hidden, banner: !$('orientBanner').hidden,
+window._schDebug = () => ({ view: viewMode, previewPending, preview: printGroup.children.map(m => m.geometry.attributes.position.count), previewMs: window._schPreviewMs, quality: +$('quality').value, magic: !$('magicCard').hidden, banner: !$('orientBanner').hidden,
   orient: orientSug.map(sg => sg && sg.list.map(c => ({ top: c.isTop, over: Math.round(c.M.over), h: +c.M.height.toFixed(1) }))), objects: objects.map(o => o.plan && { name: o.name, height: o.plan.height, nLayers: o.plan.nLayers,
   nUniform: o.plan.nUniform, snaps: o.plan.snaps }), opts: layerOpts() });
 </script>
