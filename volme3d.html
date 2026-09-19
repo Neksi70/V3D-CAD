@@ -1786,6 +1786,7 @@ const firebaseConfig = {
     <div class="cb" onclick="dropToGround()" title="D">▽</div>
     <div class="cb" onclick="addBohrung()" title="Bohrung setzen (vertikal, durchgehend)" style="color:var(--red)">⊙</div>
     <div class="cb" onclick="plugHoles()" title="Löcher verschließen/öffnen — grün: Loch bekommt Stopfen · rot: Stopfen oder geplante Bohrung wird entfernt">🩹</div>
+    <div class="cb" id="ctx-textedit" onclick="editTextObj()" title="Text ändern (oder Doppelklick auf den Text) — Lage, Tiefe und Farbe bleiben" style="display:none">✏️</div>
     <div class="cb" id="ctx-svgcenter" onclick="svgCenterOnFace()" title="Motiv mittig auf seine Flaeche setzen (auf einer Rundung: mittig auf die Hoehe)" style="display:none">⊕</div>
     <div class="cb" id="nudge-btn" onclick="toggleNudge()" title="Exakt versetzen — Auswahl um X mm in eine Richtung schieben">✥</div>
     <div class="cb" onclick="deleteSelected()" title="Del" style="color:var(--red)">🗑</div>
@@ -4893,7 +4894,7 @@ Patrick</textarea>
     </div>
     <div id="text3d-footer">
       <button class="btn" onclick="_closeText3d()">Abbrechen</button>
-      <button class="btn pri" onclick="_confirmText3d()">✓ Erstellen</button>
+      <button class="btn pri" id="text3d-ok" onclick="_confirmText3d()">✓ Erstellen</button>
     </div>
   </div>
 </div>
@@ -12433,15 +12434,156 @@ let _text3dMode = 'free';
 let _text3dFace = 'top';
 
 function addTextShape() {
+  _text3dEditObj = null;
+  _text3dDialogLook(false);
   document.getElementById('text3d-input').value = '';
   _text3dSetMode(_text3dMode);
   document.getElementById('text3d-modal').classList.add('show');
   setTimeout(() => document.getElementById('text3d-input').focus(), 80);
 }
-function _closeText3d() { document.getElementById('text3d-modal').classList.remove('show'); }
+function _closeText3d() { document.getElementById('text3d-modal').classList.remove('show'); _text3dEditObj = null; }
 
-function _text3dSetMode(m) {
-  _text3dMode = m;
+// ── Text nachträglich ändern ─────────────────────────────────────────────
+// Frei-/Bogen-Text wird beim Erzeugen zum SVG-Objekt und kannte danach seinen
+// Wortlaut nicht mehr — wer auf einer Box nur die Beschriftung tauschen wollte,
+// musste löschen, neu anlegen und neu ausrichten (Ralf 19.9.). Jetzt merkt sich
+// das Objekt die Eingaben (userData.textEdit); Doppelklick oder ✏️ öffnet den
+// Dialog vorbefüllt, und nur die Buchstaben werden ausgetauscht: Lage, Drehung,
+// Tiefe/erhaben, Farbe, Bohrung und Biegung auf Rundungen bleiben.
+let _text3dEditObj = null;
+
+function _text3dDialogLook(edit) {
+  const box = document.getElementById('text3d-box');
+  box.querySelector('h3').textContent = edit ? '✏️ Text ändern' : '✏️ 3D-Text';
+  document.getElementById('text3d-mode-bg').style.display = edit ? 'none' : '';
+  document.getElementById('text3d-ok').textContent = edit ? '✓ Übernehmen' : '✓ Erstellen';
+}
+
+function _textEditable(o) {
+  return !!(o && o.userData && o.userData.textEdit && o.userData.type === 'svg' && o.userData._svgPathData);
+}
+
+function editTextObj(o) {
+  o = o || (selectedObjs.length === 1 ? selectedObjs[0] : null);
+  if (!_textEditable(o)) {
+    notify(o && o.userData && o.userData.type === 'text'
+      ? 'Um einen Zylinder gelegter Text lässt sich nicht nachträglich ändern — bitte neu erstellen'
+      : 'Nur Texte lassen sich so ändern (ab v1.18.33 erstellt)', 'w');
+    return;
+  }
+  if (o.userData.locked) { notify('Objekt ist gesperrt', 'w'); return; }
+  const m = o.userData.textEdit;
+  _text3dEditObj = o;
+  _text3dDialogLook(true);
+  document.getElementById('text3d-input').value = m.str || '';
+  const fs = document.getElementById('text3d-font');
+  if ([...fs.options].some(op => op.value === m.font)) fs.value = m.font;
+  const sz = document.getElementById('text3d-size');
+  sz.value = m.size; document.getElementById('text3d-sv').textContent = m.size;
+  _text3dSetMode(m.mode === 'arc' ? 'arc' : 'free', true);
+  if (m.mode === 'arc') {
+    document.getElementById('text3d-arcr').value = m.arcR || 40;
+    document.getElementById('text3d-arcr-v').textContent = m.arcR || 40;
+    _text3dSetArcDir(m.arcDir || 'up');
+  }
+  document.getElementById('text3d-modal').classList.add('show');
+  setTimeout(() => { const i = document.getElementById('text3d-input'); i.focus(); i.select(); }, 80);
+}
+
+// Text → SVG-Konturen samt Zielgröße, wie beim Erzeugen (Höhe = eingestellte Größe;
+// beim Bogen bestimmt die Größe die Buchstaben, der Bogen die Gesamtbreite).
+function _textEditBuildSvg(font, m) {
+  const sizeU = m.size / 10;
+  if (m.mode === 'arc') {
+    const ts = _textArcSvg(font, m.str, sizeU, (m.arcR || 40) / 10, m.arcDir || 'up');
+    return (ts.w && ts.h) ? { svg: ts.svg, targetMM: Math.max(ts.w, ts.h) * 10 } : null;
+  }
+  const ts = _textToSvg(font, m.str, sizeU);
+  return (ts.w && ts.h) ? { svg: ts.svg, targetMM: m.size * Math.max(ts.w, ts.h) / ts.h } : null;
+}
+
+// Pfaddaten + Transform wie in _importSvgConfirm (Maßstab, Zentrierung) — bei
+// Änderungen dort mitziehen, _svgRebuildGeo baut daraus die Geometrie.
+function _textEditPathData(svgText, targetMM) {
+  const data = new THREE.SVGLoader().parse(svgText);
+  const shapes = [];
+  for (const path of data.paths)
+    for (const sh of (THREE.SVGLoader.createShapes ? THREE.SVGLoader.createShapes(path) : path.toShapes(true))) shapes.push(sh);
+  if (!shapes.length) return null;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const sh of shapes)
+    for (const c of [sh, ...(sh.holes || [])])
+      for (const p of c.getPoints(8)) {
+        if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+      }
+  const ext = Math.max(maxX - minX, maxY - minY);
+  if (!(ext > 1e-6)) return null;
+  return {
+    pathData: shapes.map(sh => ({
+      pts:   sh.getPoints(12).map(p => [p.x, p.y]),
+      holes: (sh.holes || []).map(h => h.getPoints(12).map(p => [p.x, p.y]))
+    })),
+    scale: targetMM / ext, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2
+  };
+}
+
+function _textEditApply(o, m, font) {
+  const built = _textEditBuildSvg(font, m);
+  const pd = built && _textEditPathData(built.svg, built.targetMM);
+  if (!pd) { notify('Text ohne Kontur', 'w'); return false; }
+  saveUndo();
+  const ud = o.userData;
+  // Geometrie ist auf svgSize normiert (2 Einheiten breit), der Maßstab steckt in
+  // o.scale bzw. im Biege-Faktor s. Um denselben Faktor f nachführen, dann bleiben
+  // Buchstabenhöhe, Tiefe und eine eigene Skalierung des Nutzers erhalten.
+  const f = built.targetMM / (ud.svgSize || 50);
+  const oldStr = ud.textEdit && ud.textEdit.str;
+  const tm0 = ud._svgTransformM || {};
+  ud._svgPathData = pd.pathData;
+  ud._svgTransformM = { scale: pd.scale, cx: pd.cx, cy: pd.cy, depthMM: tm0.depthMM != null ? tm0.depthMM : ud.svgDepth };
+  ud.svgSize = built.targetMM;
+  delete ud._svgShapeGeosFinal;
+  ud.textEdit = Object.assign({}, m);
+  if (oldStr && typeof ud.name === 'string' && ud.name.indexOf(oldStr) === 0)
+    ud.name = m.str + ud.name.slice(oldStr.length);
+  const mulS = s => ({ x: s.x * f, y: s.y * f, z: s.z * f });
+  const swap = geo => { o.geometry.dispose(); o.geometry = geo; };
+  if (ud._svgWrap) {
+    ud._svgWrap = Object.assign({}, ud._svgWrap, { s: mulS(ud._svgWrap.s) });
+    // neu an die Wand legen: das abgetastete Wandfeld deckt sonst nur die alte Breite ab
+    const tgt = _svgWrapTarget(o);
+    if (tgt) ud._wrapTarget = tgt;
+    const p = tgt && _svgWrapOnWall(o, Infinity);
+    const probe = p && _svgWrapProbe(tgt, p, { axisW: _svgWrapAxis(o) });
+    if (!(probe && _svgWrapApply(o, probe, p) !== false)) swap(_svgWrapBuildGeo(ud, ud._svgWrap));
+  } else if (ud._svgSchmieg) {
+    ud._svgSchmieg = Object.assign({}, ud._svgSchmieg, { s: mulS(ud._svgSchmieg.s) });
+    const tgt = ud._schmiegTarget && ud._schmiegTarget.parent ? ud._schmiegTarget : null;
+    let hit = null;
+    if (tgt) {
+      const ec = new THREE.Vector3(0, 0, 1).applyQuaternion(o.quaternion).normalize();
+      const rc = new THREE.Raycaster();
+      rc.set(o.position.clone().addScaledVector(ec, 5), ec.clone().negate());
+      hit = rc.intersectObject(tgt, true).find(h => h.face && !h.object.userData.isEdgeLines) || null;
+    }
+    if (!(hit && _svgSchmiegApply(o, hit) !== false)) _svgSchmiegRebuild(o);
+  } else {
+    o.scale.multiplyScalar(f);
+    swap(_svgRebuildGeo(ud));
+    const sl = ud._snapSurfaceLocal;
+    if (sl && sl.isVector3) sl.divideScalar(f);
+  }
+  _updateObjEdgeLines(o);
+  o.updateMatrixWorld(true);
+  selectObjs([o]); updateTree(); updateTFInputs();
+  if (selectedObjs.length) _doRepositionDimHandles();
+  notify('Text geändert: "' + m.str + '"', 'ok');
+  return true;
+}
+
+function _text3dSetMode(m, nurAnzeige) {
+  if (!nurAnzeige) _text3dMode = m;   // Ändern-Dialog soll die Wahl fürs nächste Erstellen nicht verstellen
   ['free','surface','cylinder','arc'].forEach((x,i) => {
     const b = document.querySelector(`#text3d-mode-bg .vtb:nth-child(${i+1})`);
     if (b) b.classList.toggle('on', x===m);
@@ -12542,7 +12684,13 @@ function _confirmText3d() {
   if (!txt) { notify('Bitte Text eingeben', 'w'); return; }
   const fontKey  = document.getElementById('text3d-font').value;
   const sizeMm   = parseFloat(document.getElementById('text3d-size').value) || 8;
-  const mode     = _text3dMode;
+  const editObj  = _text3dEditObj;
+  const mode     = editObj ? (editObj.userData.textEdit.mode === 'arc' ? 'arc' : 'free') : _text3dMode;
+  const meta     = { str: txt, font: fontKey, size: sizeMm, mode: mode === 'arc' ? 'arc' : 'free' };
+  if (meta.mode === 'arc') {
+    meta.arcR = parseFloat(document.getElementById('text3d-arcr').value) || 40;
+    meta.arcDir = _text3dArcDir;
+  }
   _closeText3d();
 
   const isHole = shapeMode === 'hole';
@@ -12550,6 +12698,7 @@ function _confirmText3d() {
   const sizeU  = sizeMm / 10; // Three.js units (1 unit ≈ 10mm)
 
   function _create(font) {
+    if (editObj) { if (editObj.parent) _textEditApply(editObj, meta, font); return; }
     // Zylinder-Wickeln braucht echtes 3D-Text-Mesh → alter TextGeometry-Weg
     if (mode === 'cylinder' && selectedObjs.length > 0) {
       saveUndo();
@@ -12570,21 +12719,14 @@ function _confirmText3d() {
       return;
     }
     // Bogen-Text: gebogene Konturen als SVG → gleiche Pipeline wie 'free'
-    if (mode === 'arc') {
-      const radiusU = (parseFloat(document.getElementById('text3d-arcr').value) || 40) / 10;
-      const ts2 = _textArcSvg(font, txt, sizeU, radiusU, _text3dArcDir);
-      if (!ts2.w || !ts2.h) { notify('Text ohne Kontur', 'w'); return; }
-      _importSvgConfirm({ svgText: ts2.svg, mode: 'extrude', depthMM: Math.max(1, sizeMm * 0.25),
-                          targetMM: Math.max(ts2.w, ts2.h) * 10, name: txt + ' (Bogen)' });
-      return;
-    }
-    // Sonst: Text aus Font-Konturen als SVG-Objekt bauen → erbt die komplette
-    // Gravur-Maschinerie (Snap, Schieberegler erhaben/vertieft, Wandklemmung,
-    // Zweifarb-Inlay, 3MF-Export) genau wie ein importiertes SVG.
-    const ts = _textToSvg(font, txt, sizeU);
-    if (!ts.w || !ts.h) { notify('Text ohne Kontur', 'w'); return; }
-    const targetMM = sizeMm * Math.max(ts.w, ts.h) / ts.h;   // Höhe = eingestellte Größe
-    _importSvgConfirm({ svgText: ts.svg, mode: 'extrude', depthMM: Math.max(1, sizeMm * 0.25), targetMM, name: txt });
+    // Sonst (Frei/Bogen): Text aus Font-Konturen als SVG-Objekt bauen → erbt die
+    // komplette Gravur-Maschinerie (Snap, Schieberegler erhaben/vertieft, Wand-
+    // klemmung, Zweifarb-Inlay, 3MF-Export) genau wie ein importiertes SVG.
+    const built = _textEditBuildSvg(font, meta);
+    if (!built) { notify('Text ohne Kontur', 'w'); return; }
+    const mesh = _importSvgConfirm({ svgText: built.svg, mode: 'extrude', depthMM: Math.max(1, sizeMm * 0.25),
+                                     targetMM: built.targetMM, name: meta.mode === 'arc' ? txt + ' (Bogen)' : txt });
+    if (mesh) mesh.userData.textEdit = meta;   // für „Text ändern"
   }
 
   const cacheKey = '_threeFont_' + fontKey;
@@ -14586,6 +14728,8 @@ function updateCtxPopup() {
     svgC.style.display = (one && one.userData.shapeType === 'svg'
       && (one.userData._svgWrap || one.userData._snapNormal)) ? '' : 'none';
   }
+  const txC = document.getElementById('ctx-textedit');
+  if (txC) txC.style.display = (selectedObjs.length === 1 && _textEditable(selectedObjs[0])) ? '' : 'none';
   if (!o) { ctxEl.style.display = 'none'; _nudgeHide(); return; }
   ctxEl.style.display = 'flex';
   // Always fixed at bottom-left of viewport, never floating on object
@@ -14856,6 +15000,7 @@ function buildObjectFromData(data) {
     obj.userData.svgSize        = data.svgSize;
     if (data._svgWrap) obj.userData._svgWrap = data._svgWrap;
     if (data._svgSchmieg) obj.userData._svgSchmieg = data._svgSchmieg;
+    if (data.textEdit) obj.userData.textEdit = Object.assign({}, data.textEdit);
   }
   // Skizzen-/Loft-/Sweep-Rebuild-Parameter zurück (Regler nach Undo/Laden)
   if (data._skProfiles)     obj.userData._skProfiles     = data._skProfiles;
@@ -15002,6 +15147,7 @@ function objectToData(o) {
   if (o.userData.rackModule) { d.rackModule = o.userData.rackModule; d.rackLength = o.userData.rackLength; d.rackWidth = o.userData.rackWidth; }
   if (o.userData.encType) { d.encType = o.userData.encType; d.encW = o.userData.encW; d.encD = o.userData.encD; d.encH = o.userData.encH; d.encWall = o.userData.encWall; d.encBosses = o.userData.encBosses; d.encBossSize = o.userData.encBossSize; }
   if (o.userData.textStr)    d.textStr    = o.userData.textStr;
+  if (o.userData.textEdit)   d.textEdit   = Object.assign({}, o.userData.textEdit);
   if (o.userData.fillet)     d.fillet     = o.userData.fillet;
   if (o.userData.chamfer)    d.chamfer    = o.userData.chamfer;
   if (o.userData.segments)   d.segments   = o.userData.segments;
@@ -23701,6 +23847,7 @@ canvas.addEventListener('dblclick', e => {
   if (_sk.active) { _skFinishCurrent(); return; }
   if (_revolveMode) { finishRevolve(); return; }
   const hits = pickObjects(e);
+  if (hits.length > 0 && _textEditable(hits[0].object)) { editTextObj(hits[0].object); return; }
   if (hits.length > 0) {
     hits[0].object.getWorldPosition(orbitTarget);
     sph2cam();
@@ -45352,8 +45499,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.32';
+const VOLME3D_VERSION = '1.18.33';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.33', date:'2026-09-19', changes:[
+    ['\u270F\uFE0F','<b>Text nachträglich ändern.</b> Einen Text einfach <b>doppelt anklicken</b> (oder markieren und unten links auf <b>✏️</b> tippen): Das Text-Fenster öffnet sich mit dem alten Wortlaut, du tippst den neuen ein und drückst <b>Übernehmen</b>. Lage, Drehung, Tiefe, erhaben/vertieft, Farbe und die Biegung auf einer Rundung bleiben erhalten — ideal für Beschriftungen, bei denen sich nur das Wort ändert, etwa Boxen für Ersatzteile. Schrift und Größe lassen sich dabei ebenfalls umstellen. Gilt für Texte, die ab dieser Version erstellt werden.'],
+  ]},
   { version:'1.18.32', date:'2026-09-19', changes:[
     ['\u{1F9E9}','<b>Mehrteilige Generatoren: jedes Teil lässt sich einzeln greifen.</b> Wie schon beim Kürbis kommen jetzt auch <b>Übertopf + Untersetzer</b>, <b>Push-Lampe</b> (Basis + Schirm), <b>Bilderrahmen</b> (Rahmen, Standfuß, Rückwand, Stützbein) und die <b>Foto-Requisite</b> (Rahmen + Schriftzug) als eigene Teile statt als Gruppe in die Szene. Ein Klick greift nur das Teil darunter — abheben, verschieben, einzeln exportieren. Nach dem Erstellen sind alle Teile gewählt und lassen sich so zusammen verschieben.'],
   ]},
