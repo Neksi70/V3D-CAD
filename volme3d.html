@@ -2996,7 +2996,7 @@ const firebaseConfig = {
         <span class="vsec">Druckbett</span>
         <div class="vrow"><label title="Passt nicht alles auf ein Bett, entstehen mehrere Rahmen A, B, …">Breite × Tiefe</label> <input type="number" id="spr-bedw" value="256" min="60" max="1000" step="1" style="width:68px;padding:4px 6px" oninput="_sprInfo()"> × <input type="number" id="spr-bedd" value="256" min="60" max="1000" step="1" style="width:68px;padding:4px 6px" oninput="_sprInfo()"><span class="vu">mm</span></div>
         <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Teile, die tiefer als breit sind, werden um 90° gedreht (nur um die senkrechte Achse — die Drucklage bleibt). Spart meist Platz."><input type="checkbox" id="spr-turn" checked onchange="_sprInfo()"> Teile drehen, wenn es Platz spart</label>
-        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Ist ein gewähltes Objekt ein Mehrteil-Import (mehrere lose Stücke in einer STL), wird jedes Stück ein eigenes Teil mit eigener Nummer. Innenwände von Hohlkörpern bleiben beim Teil."><input type="checkbox" id="spr-split" checked> Lose Teile einzeln einsetzen</label>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Ist ein gewähltes Objekt ein Mehrteil-Import (mehrere lose Stücke in einer STL), wird jedes Stück ein eigenes Teil mit eigener Nummer. Körper, die sich berühren oder ineinanderstecken (z. B. Rohr mit angesetzten Platten), bleiben EIN Teil. Aus = jedes gewählte Objekt bleibt genau ein Teil."><input type="checkbox" id="spr-split" checked onchange="_sprInfo()"> Lose Teile einzeln einsetzen</label>
         <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Zeigt nach dem Erzeugen die Teileliste mit Bild je Teil und den Rahmenplan mit allen Nummern — zum Ausdrucken oder Speichern, als Grundlage für die Bauanleitung."><input type="checkbox" id="spr-guide" checked> Teileliste mit Rahmenplan öffnen</label>
         <div class="g3info">Setzt alle gewählten Teile in ihrer jetzigen Lage (= Drucklage) in einen druckbaren Gussrahmen, wie bei einem Plastikmodell. Tipp: Teile vorher mit <b>⬓ Fläche unten</b> auf eine flache Seite legen — die Angüsse sitzen unten am Druckbett. Die Originale bleiben erhalten (nur ausgeblendet).</div>
         <div class="g3info" id="spr-est"></div>
@@ -18697,9 +18697,17 @@ function _sprText(W, label, h) {
   return { cs: new W.CrossSection(t.loops, 'EvenOdd'), w: t.box[1] - t.box[0] };
 }
 // Ein Objekt mit mehreren losen Stücken (typischer Mehrteil-STL-Import) in
-// Einzelteile trennen. Zusammenhang über verschweißte Eckpunkte; eine Hülle, die
-// ganz in einer anderen steckt (Innenwand eines Hohlkörpers), bleibt bei ihr.
-function _sprSplitShells(tris) {
+// Einzelteile trennen. Zuerst Zusammenhang über verschweißte Eckpunkte — das
+// allein reicht NICHT: Ein zusammengebautes Teil besteht oft aus mehreren
+// Körpern, die sich nur berühren oder ineinanderstecken (Rohr + angesetzte
+// Platten mit Bohrungen, Ralf 19.9.26 — der Generator hatte sie zerlegt).
+// Darum werden Stücke wieder zusammengefasst, wenn sie sich berühren, bis auf
+// SPR_TOUCH mm nahekommen oder überschneiden (Manifold: minGap/intersect).
+// Nicht wasserdichte Stücke: Rückfall auf die Bbox — überschneiden sich die
+// Bboxen, bleiben sie zusammen. Im Zweifel lieber ein Teil zu wenig trennen:
+// ein zerlegtes Bauteil ist schlimmer als zwei Teile in einem Fach.
+const SPR_TOUCH = 0.1;
+function _sprSplitShells(tris, W) {
   const nT = tris.length / 9, q = 1e3, vid = new Map(), tv = new Int32Array(nT * 3);
   for (let i = 0; i < nT * 3; i++) {
     const k = Math.round(tris[i * 3] * q) + ',' + Math.round(tris[i * 3 + 1] * q) + ',' + Math.round(tris[i * 3 + 2] * q);
@@ -18723,24 +18731,86 @@ function _sprSplitShells(tris) {
       if (x < c.bb[ax]) c.bb[ax] = x; if (x > c.bb[ax + 3]) c.bb[ax + 3] = x;
     }
   }
-  let list = [...comp.values()];
+  const list = [...comp.values()];
   if (list.length < 2) return [tris];
-  // Krümel (< 0,5 % der größten Diagonale³) gar nicht erst als eigenes Teil
-  const diag = c => Math.hypot(c.bb[3] - c.bb[0], c.bb[4] - c.bb[1], c.bb[5] - c.bb[2]);
-  list.sort((a, b) => diag(b) - diag(a));
-  const inside = (a, b) => a.bb[0] >= b.bb[0] - 1e-3 && a.bb[1] >= b.bb[1] - 1e-3 && a.bb[2] >= b.bb[2] - 1e-3 &&
-                           a.bb[3] <= b.bb[3] + 1e-3 && a.bb[4] <= b.bb[4] + 1e-3 && a.bb[5] <= b.bb[5] + 1e-3;
-  const top = [];
-  for (const c of list) {
-    const host = top.find(h => inside(c, h));
-    if (host) { for (const t of c.tris) host.tris.push(t); } else top.push(c);
-  }
-  if (top.length < 2) return [tris];
-  return top.map(c => {
+  const soup = c => {
     const out = new Float32Array(c.tris.length * 9);
     c.tris.forEach((t, k) => out.set(tris.subarray(t * 9, t * 9 + 9), k * 9));
     return out;
+  };
+  // Stücke gruppieren (Union-Find über die Stücke)
+  const n = list.length, grp = new Int32Array(n); for (let i = 0; i < n; i++) grp[i] = i;
+  const gf = x => { while (grp[x] !== x) { grp[x] = grp[grp[x]]; x = grp[x]; } return x; };
+  const nah = (a, b, e) => a.bb[0] <= b.bb[3] + e && b.bb[0] <= a.bb[3] + e && a.bb[1] <= b.bb[4] + e &&
+                           b.bb[1] <= a.bb[4] + e && a.bb[2] <= b.bb[5] + e && b.bb[2] <= a.bb[5] + e;
+  const mf = new Array(n);
+  const mfVon = i => {
+    if (mf[i] === undefined) {
+      mf[i] = null;
+      if (W) try { const m = _mfFromSoup(W, soup(list[i])); if (m.numTri()) mf[i] = m; else m.delete(); } catch (e) { /* offen */ }
+    }
+    return mf[i];
+  };
+  try {
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+      if (gf(i) === gf(j) || !nah(list[i], list[j], SPR_TOUCH)) continue;
+      const a = mfVon(i), b = mfVon(j);
+      let dazu = false;
+      if (a && b) {
+        if (a.minGap(b, SPR_TOUCH * 2) <= SPR_TOUCH) dazu = true;
+        else {
+          // Ganz im Inneren, ohne dass sich die Oberflächen nahekommen
+          // (Innenwand eines Hohlkörpers, Stift in einer Bohrung mit Presssitz)
+          const I = a.intersect(b); dazu = I.volume() > 1e-6; I.delete();
+        }
+      } else dazu = true;             // Bboxen berühren sich (nah) — s. o.
+      if (dazu) grp[gf(j)] = gf(i);
+    }
+  } finally { for (const m of mf) if (m) try { m.delete(); } catch (_) {} }
+  const gruppen = new Map();
+  list.forEach((c, i) => { const r = gf(i); if (!gruppen.has(r)) gruppen.set(r, []); gruppen.get(r).push(c); });
+  if (gruppen.size < 2) return [tris];
+  return [...gruppen.values()].map(cs => {
+    const out = new Float32Array(cs.reduce((s2, c) => s2 + c.tris.length * 9, 0));
+    let o = 0;
+    for (const c of cs) for (const t of c.tris) { out.set(tris.subarray(t * 9, t * 9 + 9), o); o += 9; }
+    return out;
   });
+}
+// Gewählte Objekte → Teile in Welt-mm (Z-up), bei Bedarf getrennt. Das Trennen
+// kostet bei großen Netzen eine Sekunde — darum für Dialog und Erzeugen
+// gemeinsam zwischengespeichert, solange sich Auswahl und Lage nicht ändern.
+let _sprPrepCache = null;
+function _sprPrepKey(objs, split) {
+  return (split ? 'S|' : 'G|') + objs.map(o => {
+    o.updateMatrixWorld(true);
+    let g = '';
+    o.traverse(ch => { if (ch.isMesh && ch.geometry) g += ch.geometry.uuid + ch.matrixWorld.elements.map(v => v.toFixed(4)).join(','); });
+    return o.uuid + ':' + g;
+  }).join('|');
+}
+async function _sprPrepare(objs, split) {
+  const key = _sprPrepKey(objs, split);
+  if (_sprPrepCache && _sprPrepCache.key === key) return _sprPrepCache.teile;
+  const W = split ? await _mfInit() : null;
+  const teile = [];
+  for (const o of objs) {
+    const all = _moldCollectTris(o);
+    if (!all.length) continue;
+    const stuecke = split ? _sprSplitShells(all, W) : [all];
+    stuecke.forEach((t, k) => {
+      let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+      for (let i = 0; i < t.length; i += 3) {
+        const x = t[i], y = t[i + 1], z = t[i + 2];
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; if (z < z0) z0 = z; if (z > z1) z1 = z;
+      }
+      teile.push({ o, raw: t, bb: [x0, y0, z0, x1, y1, z1], von: stuecke.length,
+                   name: ((o.userData && o.userData.name) || 'Teil') + (stuecke.length > 1 ? ' · Stück ' + (k + 1) : '') });
+    });
+    await _lgoTick();
+  }
+  _sprPrepCache = { key, teile };
+  return teile;
 }
 // Konvexe Hülle (Andrew) der Draufsicht — für den Rahmenplan in der Teileliste
 function _sprHull2d(tris) {
@@ -18756,8 +18826,19 @@ function _sprHull2d(tris) {
 
 // ── Dialog ─────────────────────────────────────────────────────────────────
 function _sprSizes(objs, opt) {
-  // Schätzung aus den Welt-Bboxen (Editor Y-up → mm Z-up); beim Erzeugen wird
-  // aus den echten Dreiecken gerechnet
+  const c = _sprPrepCache;
+  if (c && c.key === _sprPrepKey(objs, opt.split)) return c.teile.map(t => {
+    const dx = t.bb[3] - t.bb[0], dy = t.bb[4] - t.bb[1], turn = opt.turn && dy > dx * 1.05;
+    return { bw: turn ? dy : dx, bd: turn ? dx : dy, h: t.bb[5] - t.bb[2], name: t.name, von: t.von };
+  });
+  // Noch nicht getrennt: Schätzung aus den Welt-Bboxen (Editor Y-up → mm Z-up),
+  // die genaue Liste kommt nach, sobald _sprPrepare fertig ist
+  if (!_sprSizes._laeuft) {
+    _sprSizes._laeuft = true;
+    _sprPrepare(objs, opt.split).catch(e => console.warn('[bausatz]', e))
+      .finally(() => { _sprSizes._laeuft = false;
+        if (document.getElementById('spr-modal').classList.contains('show')) _sprInfo(); });
+  }
   return objs.map(o => {
     const s = new THREE.Box3().setFromObject(o).getSize(new THREE.Vector3()).multiplyScalar(10);
     const turn = opt.turn && s.z > s.x * 1.05;
@@ -18772,11 +18853,13 @@ function _sprInfo() {
   document.getElementById('spr-row-numh').style.display = opt.nums ? '' : 'none';
   document.getElementById('spr-row-prefix').style.display = opt.nums ? '' : 'none';
   const sizes = _sprSizes(objs, opt);
+  const getrennt = sizes.filter(s => s.von > 1).length;
   const liste = sizes.slice(0, 14).map(s => '<li>' + String(s.name).replace(/[&<>]/g, '') + ' <span style="color:#888">' +
     Math.round(s.bw) + ' × ' + Math.round(s.bd) + ' × ' + Math.round(s.h) + ' mm</span></li>').join('');
-  document.getElementById('spr-list').innerHTML = '<b>' + objs.length + ' Teil' + (objs.length !== 1 ? 'e' : '') +
-    ' gewählt</b><ul style="margin:4px 0 0 18px;padding:0">' + liste + (sizes.length > 14 ? '<li>…</li>' : '') + '</ul>' +
-    (objs.length === 1 ? '<div style="margin-top:5px;color:#c80">Nur ein Objekt gewählt. Besteht es aus mehreren losen Teilen ' +
+  document.getElementById('spr-list').innerHTML = '<b>' + sizes.length + ' Teil' + (sizes.length !== 1 ? 'e' : '') +
+    (sizes.length !== objs.length ? ' aus ' + objs.length + ' Objekt' + (objs.length !== 1 ? 'en' : '') : ' gewählt') + '</b>' +
+    (getrennt ? ' <span style="color:#888">(' + getrennt + ' davon aus Mehrteil-Import getrennt — Körper, die sich berühren, bleiben zusammen)</span>' : '') + '<ul style="margin:4px 0 0 18px;padding:0">' + liste + (sizes.length > 14 ? '<li>…</li>' : '') + '</ul>' +
+    (objs.length === 1 && sizes.length === 1 ? '<div style="margin-top:5px;color:#c80">Nur ein Objekt gewählt. Besteht es aus mehreren losen Teilen ' +
       '(Mehrteil-STL), trennt „Lose Teile einzeln einsetzen" sie auf. Sonst mit Umschalt+Klick alle Teile wählen.</div>' : '');
   if (!objs.length) { document.getElementById('spr-est').innerHTML = ''; return; }
   const L = _sprLayout(sizes, opt), n = L.frames.length;
@@ -18824,25 +18907,19 @@ async function _sprCreate() {
 
     // 1) Teile einsammeln, auf die Mitte und aufs Bett stellen, ggf. drehen
     const items = [];
-    for (const o of objs) {
-      const all = _moldCollectTris(o);
-      if (!all.length) continue;
-      const stuecke = opt.split ? _sprSplitShells(all) : [all];
-      stuecke.forEach((t, k) => {
-        let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
-        for (let i = 0; i < t.length; i += 3) {
-          const x = t[i], y = t[i + 1], z = t[i + 2];
-          if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; if (z < z0) z0 = z; if (z > z1) z1 = z;
-        }
+    _progressSet(5, opt.split ? 'Teile werden erkannt…' : 'Teile werden eingesammelt…'); await _lgoTick();
+    for (const tl of await _sprPrepare(objs, opt.split)) {
+      {
+        const o = tl.o, t = new Float32Array(tl.raw);
+        const [x0, y0, z0, x1, y1, z1] = tl.bb;
         const turn = opt.turn && (y1 - y0) > (x1 - x0) * 1.05, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
         for (let i = 0; i < t.length; i += 3) {
           const x = t[i] - cx, y = t[i + 1] - cy;
           // +90° um Z ist eine echte Drehung — die Dreieckswicklung bleibt gültig
           t[i] = turn ? -y : x; t[i + 1] = turn ? x : y; t[i + 2] -= z0;
         }
-        const name = ((o.userData && o.userData.name) || 'Teil') + (stuecke.length > 1 ? ' · Stück ' + (k + 1) : '');
-        items.push({ o, tris: t, name, bw: turn ? y1 - y0 : x1 - x0, bd: turn ? x1 - x0 : y1 - y0, h: z1 - z0 });
-      });
+        items.push({ o, tris: t, name: tl.name, bw: turn ? y1 - y0 : x1 - x0, bd: turn ? x1 - x0 : y1 - y0, h: z1 - z0 });
+      }
     }
     if (!items.length) { _progressHide(); notify('Die gewählten Objekte enthalten keine Geometrie', 'e'); return; }
     if (items.length > 150) { _progressHide(); notify(items.length + ' Teile sind zu viele für einen Bausatz — bitte weniger wählen', 'e'); return; }
@@ -45293,8 +45370,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.29';
+const VOLME3D_VERSION = '1.18.30';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.30', date:'2026-09-19', changes:[
+    ['\u{1F6E9}','<b>Bausatz-Rahmen: zusammengebaute Teile bleiben ganz.</b> Bestand ein Bauteil aus mehreren Körpern, etwa ein Rohr mit angesetzten Platten mit Bohrungen, hat der Generator es in lauter Einzelteile zerlegt. Jetzt bleiben Körper, die sich berühren, ineinanderstecken oder bis auf 0,1 mm nahekommen, <b>ein Teil</b>. Nur wirklich lose Teile einer Mehrteil-STL bekommen eigene Nummern. Schon im Fenster steht vorab, wie viele Teile entstehen (z. B. „9 Teile aus 1 Objekt“). Ohne Haken bei <b>Lose Teile einzeln einsetzen</b> bleibt jedes gewählte Objekt genau ein Teil.']
+  ]},
   { version:'1.18.29', date:'2026-09-18', spots:[{id:'gen-kranz-gruppe',sel:'#gen-dd-btn'}], changes:[
     ['\u{1F56F}','<b>Geflochtener Kranz: Kerzen auch als Gruppe an einer Stelle.</b> Unter <b>Verteilung</b> wählst du jetzt zwischen <b>Ringsum</b> (wie bisher, eine Kerze je Abschnitt) und <b>Als Gruppe</b>: Alle Kerzen stehen dicht beieinander vorn am Kranz, der Rest bleibt frei für Deko. Der Regler <b>Abstand</b> bestimmt die Luft zwischen zwei Kerzen, und <b>Lage</b> schiebt die ganze Reihe nach innen oder außen. Passen zu viele Kerzen nicht als Gruppe auf den Ring, sagt das Fenster Bescheid.'],
   ]},

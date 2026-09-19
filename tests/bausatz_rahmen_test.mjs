@@ -121,7 +121,8 @@ for (const [t, r] of Object.entries(neck)) {
 }
 
 // ── 4) Mehrteil-Import trennen, Innenwand bleibt beim Teil ─────────────────
-const split = await pg.evaluate(() => {
+const split = await pg.evaluate(async () => {
+  const W = await _mfInit();
   const box = (x, y, z, s, inv) => {
     const g = new THREE.BoxGeometry(s, s, s).toNonIndexed(); g.translate(x, y, z);
     const p = g.attributes.position.array.slice();
@@ -131,9 +132,65 @@ const split = await pg.evaluate(() => {
   const teile = [box(0,0,0,10), box(30,0,0,10), box(0,0,0,6,true), box(60,0,0,4)];
   const all = new Float32Array(teile.reduce((s, t) => s + t.length, 0)); let o = 0;
   for (const t of teile) { all.set(t, o); o += t.length; }
-  return _sprSplitShells(all).map(t => t.length / 9).sort((a, b) => a - b);
+  return _sprSplitShells(all, W).map(t => t.length / 9).sort((a, b) => a - b);
 });
 ok('Mehrteil-Import: 3 Teile (Hohlwürfel bleibt ein Teil)', JSON.stringify(split) === JSON.stringify([12, 12, 24]), split);
+
+// ── 4b) Ralf, 19.9.26: zusammengebautes Teil aus mehreren Körpern ──────────
+// Rohr + Platten, die nur anliegen, eingesteckt sind oder einen Haarspalt
+// haben, gehören zusammen (Rohr 24 + 3 × 12 = 60 Dreiecke); echte Einzelteile
+// daneben (auch 1 mm entfernt) nicht.
+const ralf = await pg.evaluate(async () => {
+  const W = await _mfInit();
+  const quader = (x0, y0, z0, x1, y1, z1) => {
+    const g = new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0).toNonIndexed();
+    g.translate((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+    return Array.from(g.attributes.position.array);
+  };
+  const rohr = [ // hohles Vierkantrohr als EIN Netz: Außen + umgedrehte Innenwand
+    ...quader(0, 0, 0, 20, 20, 60),
+    ...(() => { const p = quader(2, 2, -0.001, 18, 18, 60.001); for (let i = 0; i < p.length; i += 9) for (let k = 0; k < 3; k++) { const q = p[i+3+k]; p[i+3+k] = p[i+6+k]; p[i+6+k] = q; } return p; })()];
+  const teile = {
+    rohr,
+    platteBuendig:  quader(20, 5, 10, 22, 15, 50),       // liegt flach an
+    platteSteckt:   quader(-3, 5, 10, 1, 15, 50),        // steckt 1 mm in der Wand
+    platteSpalt:    quader(4, 20.05, 10, 16, 22, 50),    // 0,05 mm Haarspalt
+    einzelteil:     quader(40, 0, 0, 50, 10, 10),        // loses Einzelteil
+    nachbar:        quader(51, 0, 0, 61, 10, 10)         // 1 mm neben dem Einzelteil
+  };
+  const all = new Float32Array(Object.values(teile).flat());
+  const erg = _sprSplitShells(all, W).map(t => t.length / 9).sort((a, b) => a - b);
+  // Ohne Manifold (nicht wasserdicht) greift die Bbox-Regel
+  const offen = _sprSplitShells(new Float32Array([...teile.rohr, ...teile.platteSteckt.slice(0, 9 * 10)]), null).length;
+  return { erg, offen };
+});
+ok('zusammengebautes Rohr bleibt EIN Teil, Einzelteile getrennt', JSON.stringify(ralf.erg) === JSON.stringify([12, 12, 60]), ralf.erg);
+ok('offenes Netz im Rohr (Bbox-Rückfall) bleibt dran', ralf.offen === 1, ralf.offen);
+
+// ── 4c) Ganzer Ablauf mit dem Mehrteil-Import als EIN Objekt ───────────────
+const ganz = await pg.evaluate(async () => {
+  for (const o of [...objects]) { scene.remove(o); objects.splice(objects.indexOf(o), 1); }
+  const quader = (x0, y0, z0, x1, y1, z1) => {
+    const g = new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0).toNonIndexed();
+    g.translate((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2); return Array.from(g.attributes.position.array);
+  };
+  // Editor-Einheiten (1 = 10 mm), Y-up: Rohr mit Platte + zwei Einzelteile
+  const pos = new Float32Array([...quader(0, 0, 0, 2, 6, 2), ...quader(2, 0.5, 0.5, 2.2, 5.5, 1.5),
+                                ...quader(4, 0, 0, 5, 1, 1), ...quader(6, 0, 0, 7, 2, 1)]);
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.computeVertexNormals();
+  const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial());
+  m.userData = { id: idCtr++, type: 'import', shapeType: 'import', name: 'Pumpe.stl' };
+  scene.add(m); objects.push(m); selectObjs([m]);
+  _sprOpen();
+  await new Promise(r => setTimeout(r, 1500));      // Trennen läuft im Hintergrund
+  const liste = document.getElementById('spr-list').textContent;
+  await _sprCreate();
+  const r = objects.find(o => o.userData.bausatz);
+  document.getElementById('lgo-guide-ov') && _lgoGuideClose();
+  return { liste, teile: r ? r.userData.bausatz.teile.length : 0 };
+});
+ok('Dialog zeigt vorab „3 Teile aus 1 Objekt"', /3 Teile aus 1 Objekt/.test(ganz.liste), ganz.liste.slice(0, 120));
+ok('Rahmen hat 3 Teile (Rohr+Platte zusammen)', ganz.teile === 3, ganz.teile);
 
 ok('keine Seitenfehler', errs.length === 0, errs.slice(0, 3));
 
