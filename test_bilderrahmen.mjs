@@ -3,7 +3,7 @@
 import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
 
-const PORT = 8793;
+const PORT = +process.env.PORT || 8796;   // 8793 gehört inzwischen V3D Licht
 const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { cwd: '/home/v3da', stdio: 'inherit' });
 await new Promise(r => setTimeout(r, 800));
 
@@ -40,14 +40,16 @@ const res = await page.evaluate(async () => {
   }
   const bboxMM = geo => { geo.computeBoundingBox(); const s = new THREE.Vector3(); geo.boundingBox.getSize(s); return [s.x*10, s.y*10, s.z*10]; };
 
-  // ── Lauf 1: Schlüsselloch + Standfuß → Gruppe aus Rahmen + Standfuß ──
+  // Seit v1.18.32 legen die Generatoren mehrteilige Ergebnisse als EIGENE
+  // Objekte an (keine Gruppe) — die Teile sind alles ab objects[nBefore].
+  const neu = n0 => objects.slice(n0).filter(o => o.isMesh);
+  // ── Lauf 1: Schlüsselloch + Standfuß → Rahmen + Standfuß als zwei Objekte ──
   Object.assign(_bfrP, { iB:102, iH:152, aB:146, aH:196, tiefe:10, eTiefe:4, lippe:3, spiel:0.3, hang:true, stand:'fuss' });
   let nBefore = objects.length;
   await _bfrCreate();
-  out.run1created = objects.length === nBefore + 1;
-  const grp = objects[objects.length-1];
-  out.run1isGroup = !!grp.userData.isGroup;
-  const kids = grp.children.filter(o => o.isMesh);
+  const kids = neu(nBefore);
+  out.run1created = objects.length === nBefore + 2;
+  out.run1noGroup = !objects.slice(nBefore).some(o => o.userData.isGroup);
   out.run1parts = kids.length;
   const frame = kids.find(k => /Bilderrahmen/.test(k.userData.name));
   const foot  = kids.find(k => /Standfuß/.test(k.userData.name));
@@ -74,9 +76,8 @@ const res = await page.evaluate(async () => {
   Object.assign(_bfrP, { iB:102, iH:152, aB:146, aH:196, tiefe:10, eTiefe:4, lippe:3, spiel:0.3, hang:false, stand:'bein' });
   nBefore = objects.length;
   await _bfrCreate();
-  out.run3created = objects.length === nBefore + 1;
-  const grp3 = objects[objects.length-1];
-  const kids3 = grp3.children ? grp3.children.filter(o => o.isMesh) : [];
+  out.run3created = objects.length === nBefore + 3;
+  const kids3 = neu(nBefore);
   out.run3parts = kids3.length;
   out.run3names = kids3.map(k => k.userData.name);
   out.run3stats = kids3.map(k => meshStats(k.geometry));
@@ -89,12 +90,11 @@ const res = await page.evaluate(async () => {
   nBefore = objects.length;
   await new Promise(res => { _fppCreate(); const t0=Date.now();
     (function poll(){ if(objects.length>nBefore || Date.now()-t0>15000) res(); else setTimeout(poll,150); })(); });
-  out.run4created = objects.length === nBefore + 1;
-  const grp4 = objects[objects.length-1];
-  const kids4 = grp4.children ? grp4.children.filter(o => o.isMesh) : [];
+  out.run4created = objects.length === nBefore + 2;
+  const kids4 = neu(nBefore);
   out.run4names = kids4.map(k => k.userData.name);
-  const prFrame = kids4.find(k => k.userData.name==='Rahmen');
-  const prDeko  = kids4.find(k => k.userData.name==='Schriftzug');
+  const prFrame = kids4.find(k => /^Foto-Rahmen/.test(k.userData.name));
+  const prDeko  = kids4.find(k => /^Foto-Schriftzug/.test(k.userData.name));
   out.propFrameBox = prFrame && bboxMM(prFrame.geometry).map(v => Math.round(v*10)/10);
   out.propDekoTris = prDeko && prDeko.geometry.attributes.position.count/3;
   // Verbundenheit: Deko-Inseln (Buchstaben/Stege/Herz) müssen Rahmen ODER einander berühren —
@@ -109,7 +109,7 @@ console.log('pageErrors:', errs.length, errs.slice(0,3));
 
 let fail = 0;
 const check = (name, ok) => { console.log((ok?'✓ ':'✗ ')+name); if(!ok) fail++; };
-check('Lauf1: Gruppe mit 2 Teilen', res.run1created && res.run1isGroup && res.run1parts === 2);
+check('Lauf1: 2 eigene Objekte (keine Gruppe)', res.run1created && res.run1noGroup && res.run1parts === 2);
 check('Rahmen wasserdicht (open=0, over=0)', res.frameStats && res.frameStats.open===0 && res.frameStats.over===0);
 check('Rahmen Volumen > 0', res.frameStats && res.frameStats.vol > 0);
 check('Rahmen Volumen ≈ Erwartung (−Schlüsselloch)', res.frameStats && res.frameStats.vol < res.expFrameVol && res.frameStats.vol > res.expFrameVol*0.97);
@@ -122,7 +122,7 @@ check('Lauf2: Einzelmesh, wasserdicht', res.run2created && res.run2isMesh && res
 check('Lauf3: Stützbein → 3 Teile (Rahmen, Rückwand, Stützbein)', res.run3created && res.run3parts === 3 && res.run3names.some(n=>/Rückwand/.test(n)) && res.run3names.some(n=>/Stützbein/.test(n)));
 check('Lauf3: alle 3 Teile wasserdicht, Volumen > 0', res.run3stats && res.run3stats.every(s=>s.open===0 && s.over===0 && s.vol>0));
 check('Lauf3: Rückwand-BBox ≈ 101.8 × 18 × 151.8 mm (mit Keilblock)', res.rueckBox && Math.abs(res.rueckBox[0]-101.8)<0.5 && res.rueckBox[1]>15 && res.rueckBox[1]<19 && Math.abs(res.rueckBox[2]-151.8)<0.5);
-check('Lauf4: Foto-Requisite → Gruppe mit Rahmen + Schriftzug', res.run4created && res.run4names && res.run4names.includes('Rahmen') && res.run4names.includes('Schriftzug'));
+check('Lauf4: Foto-Requisite → Rahmen + Schriftzug als eigene Objekte', res.run4created && res.run4names && res.run4names.some(n=>/^Foto-Rahmen #/.test(n)) && res.run4names.some(n=>/^Foto-Schriftzug #/.test(n)));
 check('Lauf4: Rahmen-BBox ≈ 110 × 3 × 132 mm', res.propFrameBox && Math.abs(res.propFrameBox[0]-110)<0.5 && Math.abs(res.propFrameBox[1]-3)<0.3 && Math.abs(res.propFrameBox[2]-132)<0.5);
 check('Lauf4: Schriftzug hat Substanz (>2000 Dreiecke) und ragt über die Oberkante', res.propDekoTris > 2000 && res.propDekoBox && res.propDekoBox[2] > 10);
 check('keine pageErrors', errs.length === 0);

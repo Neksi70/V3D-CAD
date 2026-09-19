@@ -32394,12 +32394,7 @@ function _createLamp(){
       baseMesh.userData={id:idCtr++,type:'lampbase',shapeType:'lampbase',name:'Lampen-Basis #'+n,...common};
       const shadeMesh=new THREE.Mesh(shadeGeo,mkMat()); shadeMesh.castShadow=shadeMesh.receiveShadow=true;
       shadeMesh.userData={id:idCtr++,type:'lampshade',shapeType:'lampshade',name:'Lampenschirm #'+n,...shadeUD};
-      const grp=new THREE.Group();
-      grp.userData={id:idCtr++,name:'Push-Lampe #'+n,isGroup:true};
-      grp.add(baseMesh); grp.add(shadeMesh);
-      grp.quaternion.copy(_wpMakeQuat(workplaneNormal)); grp.position.copy(workplanePoint);
-      scene.add(grp); objects.push(grp);
-      selectObjs([grp]); updateTree(); fitToObjects([grp]);
+      _genAddParts([baseMesh,shadeMesh]);
       notify('Push-Lampe erstellt — Basis + Schirm SEPARAT drucken, dann zusammenschnappen','ok'); _closeLampModal(); return;
     }
     const geo=_buildLampShadeGeo(_lampP);
@@ -32729,12 +32724,7 @@ function _createOplPlanter(){
       potGeo.translate(0, sCfg.fl, 0); potGeo.computeBoundingBox();
       const sau=new THREE.Mesh(sauGeo,mkMat()); sau.castShadow=sau.receiveShadow=true;
       sau.userData={id:idCtr++,type:'saucer',shapeType:'planter',name:'Untersetzer #'+n,...common};
-      const grp=new THREE.Group();
-      grp.userData={id:idCtr++,name:'Übertopf-Set #'+n,isGroup:true};
-      grp.add(sau); grp.add(pot);
-      grp.quaternion.copy(_wpMakeQuat(workplaneNormal)); grp.position.copy(workplanePoint);
-      scene.add(grp); objects.push(grp);
-      selectObjs([grp]); updateTree(); fitToObjects([grp]);
+      _genAddParts([sau,pot]);
       notify('Übertopf + Untersetzer erstellt — beide Teile EINZELN aufrecht drucken','ok');
     } else {
       pot.quaternion.copy(_wpMakeQuat(workplaneNormal)); pot.position.copy(workplanePoint);
@@ -33378,6 +33368,20 @@ function _kbsLitPrep(){
 }
 function _kbsStr(k, v){ _kbsP[k] = v; _kbsSyncUI(); if (_gpv['kbs']) _gpvUpdate('kbs'); _kbsLitPrep(); }
 
+// Mehrteilige Generator-Ergebnisse (Körper + Deckel, Topf + Untersetzer …) als
+// EIGENE Objekte in die Szene — nie als Gruppe: In einer Gruppe greift jeder
+// Klick das ganze Set, ein Deckel ließ sich nicht abheben (User 19.9.26).
+// Alle Teile bekommen dieselbe Lage auf der Arbeitsebene und sind danach gewählt.
+function _genAddParts(meshes){
+  const q=_wpMakeQuat(workplaneNormal);
+  for(const m of meshes){
+    m.quaternion.copy(q); m.position.copy(workplanePoint);
+    scene.add(m); objects.push(m); _updateObjEdgeLines(m);
+  }
+  selectObjs(meshes); updateTree(); fitToObjects(meshes);
+  return meshes;
+}
+
 async function _kbsCreate(){
   const p={..._kbsP};
   _progressShow('Kürbis wird geschnitzt…'); _progressSet(6); _progressCreep(88,0.7);
@@ -33450,15 +33454,7 @@ async function _kbsCreate(){
       m.userData={id:idCtr++,type:'kuerbis',shapeType:'kuerbis',name:pt.name+' #'+n,...common,kbs:{...p}};
       return m;
     });
-    // Körper und Deckel als EIGENE Objekte, nicht als Gruppe: In einer Gruppe
-    // greift jeder Klick das ganze Set — der Deckel ließ sich nicht abheben
-    // (User 19.9.26). Der Deckel sitzt aufgesetzt; anklicken + hochziehen.
-    const q=_wpMakeQuat(workplaneNormal);
-    for(const m of meshes){
-      m.quaternion.copy(q); m.position.copy(workplanePoint);
-      scene.add(m); objects.push(m); _updateObjEdgeLines(m);
-    }
-    selectObjs(meshes); updateTree(); fitToObjects(meshes);
+    _genAddParts(meshes);   // Deckel sitzt aufgesetzt — anklicken und abheben
     _progressDone();
     notify(p.modus==='hohl' ? 'Kürbis + Deckel erstellt — zwei Teile: Deckel anklicken und abheben, LED-Teelicht hinein (keine echte Kerze!)'
          : p.modus==='schale' ? 'Kürbis-Schale erstellt — aufrecht drucken, Rand folgt den Rippen'
@@ -33775,16 +33771,7 @@ async function _bfrCreate(){
       m.userData={id:idCtr++,type:'bilderrahmen',shapeType:'bilderrahmen',name:pt.name+' #'+n,...common,bfr:{...p}};
       return m;
     });
-    let rootObj;
-    if(meshes.length>1){
-      const grp=new THREE.Group();
-      grp.userData={id:idCtr++,name:'Bilderrahmen-Set #'+n,isGroup:true};
-      meshes.forEach(m=>grp.add(m));
-      rootObj=grp;
-    } else rootObj=meshes[0];
-    rootObj.quaternion.copy(_wpMakeQuat(workplaneNormal)); rootObj.position.copy(workplanePoint);
-    scene.add(rootObj); objects.push(rootObj);
-    selectObjs([rootObj]); updateTree(); fitToObjects([rootObj]);
+    _genAddParts(meshes);
     _progressDone();
     let msg='Bilderrahmen erstellt — Sichtseite nach unten drucken';
     if(kh) msg+=', Schlüsselloch sitzt hinten oben';
@@ -33962,14 +33949,10 @@ function _fppCreate(){
         m.userData={id:idCtr++,type:'custom',shapeType:'custom',name,color:col,isHole:false,fillet:0,chamfer:0};
         return m;
       };
-      const frameMesh=mkMesh(frameGeo,'Rahmen','#f2efe9');
-      const grp=new THREE.Group();
-      grp.userData={id:idCtr++,name:'Foto-Requisite #'+n,isGroup:true};
-      grp.add(frameMesh);
-      if(dekoGeo) grp.add(mkMesh(dekoGeo,'Schriftzug','#232323'));
-      grp.quaternion.copy(_wpMakeQuat(workplaneNormal)); grp.position.copy(workplanePoint);
-      scene.add(grp); objects.push(grp);
-      selectObjs([grp]); updateTree(); fitToObjects([grp]);
+      // eigene Objekte (keine Gruppe) — darum die Nummer im Namen
+      const parts=[mkMesh(frameGeo,'Foto-Rahmen #'+n,'#f2efe9')];
+      if(dekoGeo) parts.push(mkMesh(dekoGeo,'Foto-Schriftzug #'+n,'#232323'));
+      _genAddParts(parts);
       notify('Foto-Requisite erstellt — flach drucken, Schriftzug in Kontrastfarbe','ok');
       _fppClose();
     }catch(e){
@@ -45369,8 +45352,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.31';
+const VOLME3D_VERSION = '1.18.32';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.32', date:'2026-09-19', changes:[
+    ['\u{1F9E9}','<b>Mehrteilige Generatoren: jedes Teil lässt sich einzeln greifen.</b> Wie schon beim Kürbis kommen jetzt auch <b>Übertopf + Untersetzer</b>, <b>Push-Lampe</b> (Basis + Schirm), <b>Bilderrahmen</b> (Rahmen, Standfuß, Rückwand, Stützbein) und die <b>Foto-Requisite</b> (Rahmen + Schriftzug) als eigene Teile statt als Gruppe in die Szene. Ein Klick greift nur das Teil darunter — abheben, verschieben, einzeln exportieren. Nach dem Erstellen sind alle Teile gewählt und lassen sich so zusammen verschieben.'],
+  ]},
   { version:'1.18.31', date:'2026-09-19', changes:[
     ['\u{1F383}','<b>Kürbis: Der Deckel lässt sich wieder abnehmen.</b> Bei <b>Hohl + Deckel</b> kamen Körper und Deckel zusammen als ein „Kürbis-Set" in die Szene — jeder Klick griff das ganze Set, der Deckel ließ sich nicht einzeln abheben. Jetzt sind es zwei eigene Teile: Deckel anklicken und nach oben ziehen, beide getrennt exportieren oder drucken.'],
   ]},
