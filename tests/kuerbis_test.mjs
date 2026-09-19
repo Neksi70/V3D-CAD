@@ -66,10 +66,10 @@ await pg.evaluate(() => {
       Object.assign(_kbsP, _KBS_DEFAULTS, over);
       const n0 = objects.length;
       try { await _kbsCreate(); } finally { Object.assign(_kbsP, bak); }
-      const root = objects[objects.length - 1];
       if (objects.length === n0) return { err: 'nichts erstellt' };
-      const meshes = root.isGroup ? root.children.slice() : [root];
-      return { meshes, root };
+      // seit v1.18.31 Körper und Deckel als eigene Objekte (keine Gruppe)
+      const meshes = objects.slice(n0);
+      return { meshes, root: meshes[0] };
     }
   };
 });

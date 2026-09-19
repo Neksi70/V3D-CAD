@@ -103,11 +103,11 @@ async function kbs(over){
     const n0 = objects.length;
     await _kbsCreate();
     Object.assign(_kbsP, bak);
-    const root = objects[objects.length - 1];
     if (objects.length === n0) return { err: 'nichts erstellt' };
-    const meshes = root.isGroup ? root.children : [root], out = {};
+    const meshes = objects.slice(n0), out = {};
     for (const m of meshes) out[/Deckel/.test(m.userData.name) ? 'lid' : 'body'] = _lt(m.geometry);
-    scene.remove(root); objects.pop();
+    for (const m of meshes) scene.remove(m);
+    objects.length = n0;
     return out;
   }, over);
 }
