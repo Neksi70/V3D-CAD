@@ -15,6 +15,23 @@
 
 Modi: KI-Tiefe · Helligkeit als Tiefe (Logos, Grafik; Ersatz, wenn die KI nicht erreichbar ist) · Flach 2D.
 
+## Maschinenprofile (⑨ Export → Maschine)
+
+| | xTool F2 Ultra UV | WeCreat Lumos Ultra |
+|---|---|---|
+| Software | xTool Studio, Modus „Innengravur", PLY → „Punktwolke" | WeCreat MakeIt (oder LightBurn), PLY/STL/OBJ/GLB |
+| Arbeitsraum X×Y×Z | 70 × 70 × 150 mm | 70 × 70 × 135 mm |
+| Datei-Grenze | PLY < 30 MB (Erfahrungswert) | unbekannt |
+| Tempo | ~875 Pkt/s (630k Punkte in 12 min, Erfahrungswert) | unbekannt |
+
+Beide lasern von oben: Block steht, Bild in X/Z (Z = Höhe), Tiefe = Y, Betrachterseite = −Y.
+Standard-Export: **PLY als Text** (am sichersten lesbar; ~23 Byte/Punkt → 30 MB ≈ 1,3 Mio. Punkte).
+Zeigt das Motiv in der Software nach hinten: „Vorder- und Rückseite tauschen" (180°-Drehung, keine Spiegelung).
+DXF lesen beide nur als 2D-Zeichnung.
+
+Quellen: support.xtool.com/article/2716 und /2708, wecreat.com (Lumos-Ultra-Produktseite),
+MIT-Fab-Projekt Yufeng Zhao (30-MB-Grenze, Tempo).
+
 ## Modelle (nicht im Git, 125 MB)
 
 ```

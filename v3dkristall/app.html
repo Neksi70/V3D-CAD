@@ -178,9 +178,16 @@ button:disabled{opacity:.45;cursor:default}
   </div></details>
 
   <details open><summary>⑨ Export für die Laser-Software</summary><div class="inhalt">
+    <label class="zeile2"><span>Maschine</span><select id="maschine">
+      <option value="xtool">xTool F2 Ultra UV</option>
+      <option value="wecreat">WeCreat Lumos Ultra</option>
+      <option value="eigen">Andere / frei einstellen</option>
+    </select></label>
+    <p class="hinweis" id="maschinenInfo"></p>
     <label class="zeile2"><span>Format</span><select data-k="format">
-      <option value="dxf">DXF – Punktwolke (POINT)</option>
+      <option value="plytext">PLY – Punktwolke (Text)</option>
       <option value="ply">PLY – Punktwolke (binär, klein)</option>
+      <option value="dxf">DXF – Punktwolke (POINT)</option>
       <option value="xyz">XYZ – Punktwolke (Text)</option>
       <option value="stl">STL – Relief-Fläche (Software setzt Punkte)</option>
     </select></label>
@@ -192,6 +199,7 @@ button:disabled{opacity:.45;cursor:default}
       <option value="mitte">Blockmitte</option>
       <option value="ecke">Blockecke (alles positiv)</option>
     </select></label>
+    <label class="haken"><input type="checkbox" data-k="gedreht"> Vorder- und Rückseite tauschen (180° drehen)</label>
     <div class="knoepfe">
       <button class="haupt" id="export" disabled>⬇ Herunterladen</button>
       <button id="exportTiefe" disabled title="Graustufen-Tiefenbild (hell = vorne), für Software mit eigener 2D→3D-Funktion">Tiefenkarte PNG</button>
@@ -238,9 +246,9 @@ const STANDARD = {
   frei: 'person', tiefeSchwelle: 0.3, kanteWeich: 0.8, form: 'keine', formWeich: 6,
   fuellen: false, zoom: 1, vx: 0, vy: 0,
   autoTon: true, hell: 0, kontrast: 0.15, gamma: 1, schaerfe: 0.8, schwelle: 0.06, invert: false,
-  abstand: 0.1, schichten: 3, schichtAbstand: 0.3, streuung: 0.3, maxPunkte: 2000000, rate: 8000,
+  abstand: 0.1, schichten: 3, schichtAbstand: 0.3, streuung: 0.3, maxPunkte: 1200000, rate: 875,
   text: '', schrift: "Georgia, 'Times New Roman', serif", textGroesse: 5, textFett: false, textLage: 'unten', textEbene: 'vorne',
-  format: 'dxf', achsen: 'xy', nullpunkt: 'mitte',
+  maschine: 'xtool', format: 'plytext', achsen: 'xz', nullpunkt: 'mitte', gedreht: false,
 };
 // gängige K9-Blöcke: Breite × Höhe × Tiefe
 const VORLAGEN = [
@@ -255,6 +263,16 @@ const VORLAGEN = [
   ['80x80x80', 'Würfel 80', 80, 80, 80],
   ['eigen', 'Eigene Maße', 0, 0, 0],
 ];
+// Maschinenprofile. Beide Geräte lasern von oben (Z = Höhe): der Block steht, das Bild liegt in X/Z,
+// die Tiefe ist Y. feld = Innengravur-Arbeitsraum X×Y×Z in mm laut Hersteller.
+// xTool: PLY → Bearbeitung „Punktwolke"; Grenze 30 MB und ~875 Pkt/s aus einem veröffentlichten
+// Versuch (630k Punkte, 19,1 MB, 12 min). WeCreat: PLY laut Hersteller unterstützt, Grenzen unbekannt.
+const MASCHINEN = {
+  xtool: { name: 'xTool F2 Ultra UV', feld: [70, 70, 150], maxMB: 30, rate: 875, maxPunkte: 1200000,
+    info: 'xTool Studio: Modus „Innengravur" → Material K9 → PLY importieren → Bearbeitung „Punktwolke" (alternativ „3D-Foto" probieren). Arbeitsraum 70 × 70 × 150 mm, Z = Höhe. PLY höchstens 30 MB.' },
+  wecreat: { name: 'WeCreat Lumos Ultra', feld: [70, 70, 135], maxMB: 0, rate: 0, maxPunkte: 1200000,
+    info: 'WeCreat MakeIt: 3D-Innengravur → PLY importieren (STL/OBJ gehen auch, dann setzt MakeIt die Punkte selbst). Arbeitsraum 70 × 70 × 135 mm, Z = Höhe. Laserzeit nach dem ersten Auftrag unter ⑦ eintragen.' },
+};
 const SPEICHER = 'v3dkristall_einst';
 let S = { ...STANDARD };
 try { Object.assign(S, JSON.parse(localStorage.getItem(SPEICHER) || '{}')); } catch (e) {}
@@ -607,14 +625,18 @@ function erzeugen() {
   }
   // in den Block klemmen (Rand in der Tiefe) und Tiefenumfang messen
   const zGrenze = S.T / 2 - S.rand;
-  let zMin = Infinity, zMax = -Infinity, geklemmt = 0;
+  let zMin = Infinity, zMax = -Infinity, geklemmt = 0, xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+  for (let i = 0; i < ziel.n * 3; i += 3) {
+    const x = ziel.pos[i], y = ziel.pos[i + 1];
+    if (x < xMin) xMin = x; if (x > xMax) xMax = x; if (y < yMin) yMin = y; if (y > yMax) yMax = y;
+  }
   for (let i = 2; i < ziel.n * 3; i += 3) {
     let z = ziel.pos[i];
     if (z > zGrenze) { z = zGrenze; geklemmt++; } else if (z < -zGrenze) { z = -zGrenze; geklemmt++; }
     ziel.pos[i] = z;
     if (z < zMin) zMin = z; if (z > zMax) zMax = z;
   }
-  PKT = { pos: ziel.pos, n: ziel.n, cap: ziel.cap, P, zMin, zMax, voll: ziel.voll, geklemmt, tk, mk, tn };
+  PKT = { pos: ziel.pos, n: ziel.n, cap: ziel.cap, P, zMin, zMax, xMin, xMax, yMin, yMax, voll: ziel.voll, geklemmt, tk, mk, tn };
 }
 
 // ───────────────────────── 3D-Ansicht ─────────────────────────
@@ -728,6 +750,17 @@ function statistik() {
   if (PKT.geklemmt > 0) melde(`Relief + Schichten passen nicht ganz in die Tiefe (${zahl(PKT.geklemmt)} Punkte an den Rand gesetzt).`);
   if (S.abstand < 0.06) melde('Sehr enger Punktabstand – Rissgefahr im Glas.');
   if (S.rand * 2 >= Math.min(S.B, S.H, S.T)) melde('Rand ist größer als der Block.', 'fehler');
+  const M = MASCHINEN[S.maschine];
+  if (M) {
+    const [fx, fy, fz] = M.feld;
+    if (S.H > fz) melde(`Block ${S.H} mm hoch – ${M.name} schafft höchstens ${fz} mm.`, 'fehler');
+    if (PKT.n && PKT.xMax - PKT.xMin > fx) melde(`Motiv ${mm(PKT.xMax - PKT.xMin)} mm breit – Arbeitsraum nur ${fx} mm. Rand vergrößern oder kleineren Block wählen.`, 'fehler');
+    if (PKT.n && PKT.zMax - PKT.zMin > fy) melde(`Motiv ${mm(PKT.zMax - PKT.zMin)} mm tief – Arbeitsraum nur ${fy} mm.`, 'fehler');
+    const mb = dateiBytes() / 1048576;
+    if (M.maxMB && S.format.startsWith('ply') && mb > M.maxMB) melde(`PLY ca. ${mm(mb)} MB – ${M.name} nimmt höchstens ${M.maxMB} MB. Punktabstand vergrößern oder Schichten verringern.`, 'fehler');
+    if (S.format === 'dxf' || S.format === 'xyz') melde(`${M.name} liest DXF nur als 2D-Zeichnung – für 3D „PLY" wählen.`);
+    if (S.achsen !== 'xz') melde(`${M.name} lasert von oben: Achsen „Bild in X/Z (Z oben)" wählen, sonst liegt das Bild flach.`);
+  }
   $('meldungen').innerHTML = meldungenListe.join('');
   meldungenListe.length = 0;
   $('export').disabled = !PKT.n;
@@ -737,8 +770,16 @@ function statistik() {
 function exportInfo() {
   const f = S.format;
   if (f === 'stl') return 'STL: nur die Fläche des Motivs (ohne Helligkeitsstufen). Für Fotos ist die Punktwolke besser.';
-  const bytes = f === 'ply' ? PKT.n * 12 : f === 'xyz' ? PKT.n * 25 : PKT.n * 50;
-  return `Datei ca. ${mm(bytes / 1048576, 1)} MB`;
+  return `Datei ca. ${mm(dateiBytes() / 1048576, 1)} MB`;
+}
+function dateiBytes() {
+  const f = S.format, n = PKT.n;
+  return f === 'ply' ? n * 12 : f === 'plytext' || f === 'xyz' ? n * 23 : f === 'dxf' ? n * 50 : 0;
+}
+function maschineAnzeigen() {
+  const M = MASCHINEN[S.maschine];
+  $('maschine').value = S.maschine;
+  $('maschinenInfo').textContent = M ? M.info : 'Format, Achsen und Nullpunkt nach Vorgabe der Laser-Software wählen.';
 }
 
 // ───────────────────────── Neu rechnen (entprellt) ─────────────────────────
@@ -760,8 +801,11 @@ function neu(sofort) {
 // ───────────────────────── Export ─────────────────────────
 function umrechnen() {
   const B2 = S.B / 2, H2 = S.H / 2, T2 = S.T / 2, ecke = S.nullpunkt === 'ecke';
-  if (S.achsen === 'xz') return ecke ? (x, y, z) => [x + B2, T2 - z, y + H2] : (x, y, z) => [x, -z, y];
-  return ecke ? (x, y, z) => [x + B2, y + H2, z + T2] : (x, y, z) => [x, y, z];
+  let u;
+  // X/Z: Blick von vorne = aus −Y (übliche „Vorderansicht" in CAD mit Z oben)
+  if (S.achsen === 'xz') u = ecke ? (x, y, z) => [x + B2, T2 - z, y + H2] : (x, y, z) => [x, -z, y];
+  else u = ecke ? (x, y, z) => [x + B2, y + H2, z + T2] : (x, y, z) => [x, y, z];
+  return S.gedreht ? (x, y, z) => u(-x, y, -z) : u;   // Drehung, keine Spiegelung
 }
 function dateiname(endung) {
   const basis = (Q.name || 'kristall').replace(/\.[^.]+$/, '').replace(/[^\wäöüÄÖÜß-]+/g, '_').slice(0, 40);
@@ -783,6 +827,7 @@ function exportieren() {
   }
   if (f === 'stl') return herunterladen([stlBauen(u)], dateiname('stl'), 'model/stl');
   const dxf = f === 'dxf';
+  if (f === 'plytext') teile.push(`ply\nformat ascii 1.0\ncomment V3D Kristall, Einheit mm, K9 ${S.B}x${S.H}x${S.T}\nelement vertex ${n}\nproperty float x\nproperty float y\nproperty float z\nend_header\n`);
   if (dxf) teile.push('0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSBASE\n10\n0.0\n20\n0.0\n30\n0.0\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n');
   const BLOCK = 50000;
   for (let s = 0; s < n; s += BLOCK) {
@@ -795,7 +840,7 @@ function exportieren() {
     teile.push(t);
   }
   if (dxf) teile.push('0\nENDSEC\n0\nEOF\n');
-  herunterladen(teile, dateiname(f), dxf ? 'application/dxf' : 'text/plain');
+  herunterladen(teile, dateiname(f === 'plytext' ? 'ply' : f), dxf ? 'application/dxf' : 'text/plain');
 }
 // Relief-Fläche als Dreiecksnetz: Raster über dem Motiv, nur wo die Maske greift; Text als flache Kacheln
 function stlBauen(u) {
@@ -866,6 +911,7 @@ function formularFuellen() {
     ausgabe(el);
   }
   $('vorlage').value = S.vorlage;
+  maschineAnzeigen();
   document.querySelectorAll('#modusWahl button').forEach((b) => b.classList.toggle('an', b.dataset.modus === S.modus));
   sichtbarkeit();
 }
@@ -896,10 +942,19 @@ for (const el of eingaben) {
     if (k === 'rand') glasBauen();
     if (k === 'fein' && alt !== v && Q.da) kiHolen();
     if (k === 'format') { statistik(); return; }
-    if (k === 'achsen' || k === 'nullpunkt' || k === 'rate') { statistik(); return; }
+    if (k === 'achsen' || k === 'nullpunkt' || k === 'rate' || k === 'gedreht' || k === 'maxPunkte') { statistik(); return; }
     neu();
   });
 }
+$('maschine').addEventListener('change', (e) => {
+  S.maschine = e.target.value;
+  const M = MASCHINEN[S.maschine];
+  if (M) {
+    Object.assign(S, { format: 'plytext', achsen: 'xz', nullpunkt: 'mitte', maxPunkte: M.maxPunkte });
+    if (M.rate) S.rate = M.rate;
+  }
+  speichern(); formularFuellen(); statistik();
+});
 document.querySelectorAll('#modusWahl button').forEach((b) => b.addEventListener('click', () => {
   S.modus = b.dataset.modus;
   if (S.modus === 'flach' && S.schichten < 2) S.schichten = 2;

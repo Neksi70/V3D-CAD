@@ -29,6 +29,9 @@ await seite.waitForFunction(() => window._kristall);
 await seite.setInputFiles('#datei', BILD);
 await seite.waitForFunction(() => window._kristall.Q.tiefe && window._kristall.Q.person, null, { timeout: 60000 });
 await seite.waitForTimeout(1500);
+// Maschinenprofil xTool: Standard = PLY-Text, X/Z, Blockmitte
+const profil = await seite.evaluate(() => { const S = window._kristall.einst; return [S.maschine, S.format, S.achsen, S.nullpunkt].join(','); });
+pruefe(profil === 'xtool,plytext,xz,mitte', `Standardprofil xTool (${profil})`);
 const st = await seite.evaluate(() => ({ n: window._kristall.PKT.n, zMin: window._kristall.PKT.zMin, zMax: window._kristall.PKT.zMax, zeit: window._kristallZeit, P: window._kristall.PKT.P }));
 console.log('Punkte', st.n, 'z', st.zMin.toFixed(2), '…', st.zMax.toFixed(2), 'Rechenzeit', Math.round(st.zeit), 'ms');
 pruefe(st.n > 50000 && st.n < 2000000, 'Punktzahl plausibel');
@@ -93,6 +96,39 @@ pruefe(fs.readFileSync(xyz, 'utf8').trim().split('\n').length === n, 'XYZ: eine 
 const stl = await lade('stl');
 const sb = fs.readFileSync(stl), nt = sb.readUInt32LE(80);
 pruefe(nt > 10000 && sb.length === 84 + nt * 50, `STL: ${nt} Dreiecke, Länge stimmt`);
+
+const plyt = await lade('plytext', 'xz', 'mitte');
+const zeilen = fs.readFileSync(plyt, 'utf8').split('\n');
+const kEnde = zeilen.indexOf('end_header');
+const pts = zeilen.slice(kEnde + 1).filter(Boolean).map((z) => z.split(' ').map(Number));
+pruefe(zeilen[1] === 'format ascii 1.0' && zeilen.includes(`element vertex ${n}`) && pts.length === n, 'PLY-Text: Kopf und Zeilenzahl passen');
+const ext = (k) => [Math.min(...pts.map((q) => q[k])), Math.max(...pts.map((q) => q[k]))];
+const [ex, ey, ez] = [ext(0), ext(1), ext(2)];
+pruefe(ez[1] - ez[0] > 50 && ey[1] - ey[0] < 25 && ex[1] - ex[0] <= 40.5, `PLY-Text: Z = Höhe (${(ez[1] - ez[0]).toFixed(1)}), Y = Tiefe (${(ey[1] - ey[0]).toFixed(1)}), X = Breite (${(ex[1] - ex[0]).toFixed(1)})`);
+// intern z = zum Betrachter → Export Y = −z (vorne = −Y), Z = Höhe
+const intern = await seite.evaluate(() => Array.from(window._kristall.PKT.pos.subarray(0, 3)));
+pruefe(Math.abs(pts[0][0] - intern[0]) < 1e-3 && Math.abs(pts[0][1] + intern[2]) < 1e-3 && Math.abs(pts[0][2] - intern[1]) < 1e-3, 'X/Z-Achsen: Betrachterseite = −Y, Bildhöhe = Z');
+await seite.check('[data-k=gedreht]');
+const plyd = await lade('plytext', 'xz', 'mitte');
+const zd = fs.readFileSync(plyd, 'utf8').split('\n'), p0 = zeilen[kEnde + 1].split(' ').map(Number), d0 = zd[kEnde + 1].split(' ').map(Number);
+pruefe(Math.abs(p0[0] + d0[0]) < 1e-3 && Math.abs(p0[1] + d0[1]) < 1e-3 && Math.abs(p0[2] - d0[2]) < 1e-3, '180°-Drehung: X und Y gewendet, Z bleibt (keine Spiegelung)');
+await seite.uncheck('[data-k=gedreht]');
+await seite.selectOption('[data-k=format]', 'plytext');
+await seite.selectOption('#vorlage', '120x80x80');
+await seite.evaluate(() => document.querySelector('[data-k=fuellen]').closest('details').open = true);
+await seite.check('[data-k=fuellen]');
+await seite.waitForTimeout(1200);
+const mel = await seite.locator('#meldungen').innerText();
+pruefe(/Arbeitsraum nur 70/.test(mel), 'Warnung: Motiv (110 mm, Fläche füllen) breiter als 70 mm Arbeitsraum');
+await seite.uncheck('[data-k=fuellen]');
+await seite.selectOption('#maschine', 'wecreat');
+await seite.selectOption('#vorlage', '60x100x60');
+await seite.waitForTimeout(1200);
+const mel2 = await seite.locator('#meldungen').innerText(), info = await seite.locator('#maschinenInfo').innerText();
+pruefe(!/Arbeitsraum nur/.test(mel2) && /MakeIt/.test(info), 'WeCreat-Profil: 60×100×60 passt, Hinweis zu MakeIt');
+await seite.selectOption('#maschine', 'xtool');
+await seite.selectOption('#vorlage', '50x80x50');
+await seite.waitForTimeout(1200);
 
 // Text + Modi
 await seite.evaluate(() => document.querySelector('[data-k=text]').closest('details').open = true);
