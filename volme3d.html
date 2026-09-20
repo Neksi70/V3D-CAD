@@ -8737,8 +8737,7 @@ function _skExportDXF(){
   }
   g(0,'ENDSEC'); g(0,'EOF');
   const blob=new Blob([L.join('\r\n')+'\r\n'],{type:'application/dxf'});
-  _downloadBlob(blob, (document.getElementById('cur-design-lbl')?.textContent||'Skizze')
-    .replace(/[^a-zA-Z0-9_\- ]/g,'_')+'.dxf');
+  _downloadBlob(blob, _designFilename('dxf').replace(/^volme3d\./, 'Skizze.'));
   notify('⬇ DXF gespeichert ('+_sk.ents.length+' Elemente)','ok');
 }
 function _skDxfFileSelected(e){
@@ -25097,9 +25096,22 @@ function _buildStlBlob(objs) {
   return { blob: new Blob([buf], { type: 'application/octet-stream' }), count: triangles.length };
 }
 
+// Der Dateiname eines Exports ist der Design-Name (der Zufalls-„Fantasyname“).
+// Wahrheit ist der Design-Index, nicht der versteckte Toolbar-Span: der ist nur
+// Anzeige und steht direkt nach dem Start noch auf „Unbenannt“. Wer in den ersten
+// 30 Sekunden — vor dem ersten Auto-Save — exportierte, bekam deshalb „volme3d.stl“
+// statt seines Entwurfsnamens (Ralf, 20.9.). Darum hier notfalls sofort sichern:
+// das legt Design samt Namen an, und der Export heißt wie der Entwurf.
+function _designName() {
+  if (!currentDesignId && objects.length) {
+    try { _doAutoSave(); } catch(e) { console.warn('[export] Auto-Save vor Export:', e); }
+  }
+  const raw = (dsGetMeta(currentDesignId)?.name
+               || document.getElementById('cur-design-lbl')?.textContent || '').trim();
+  return raw === 'Unbenannt' ? '' : raw;
+}
 function _designFilename(ext) {
-  const raw = document.getElementById('cur-design-lbl')?.textContent?.trim() || 'volme3d';
-  const safe = raw === 'Unbenannt' ? 'volme3d' : raw;
+  const safe = _designName() || 'volme3d';
   return safe.replace(/[^a-zA-Z0-9_\-äöüÄÖÜß ]/g, '').trim().replace(/\s+/g, '_') + '.' + ext;
 }
 
@@ -25245,8 +25257,9 @@ function exportSTL() {
   const r = _buildStlBlob(_exportSrc()); if (!r) return;
   if (typeof _tutorExported !== 'undefined') _tutorExported = true;   // Kurs-Modus: STL-Export erkannt
   const sel = _exportIsSel() ? ' [nur Auswahl]' : '';
-  _saveExport(r.blob, _designFilename('stl')).then(res =>
-    notify(`STL ${res.wrote ? '→ ' + res.dir : 'exportiert'} ✓ (${r.count} Dreiecke)${sel}`, 'ok'));
+  const fname = _designFilename('stl');
+  _saveExport(r.blob, fname).then(res =>
+    notify(`„${fname}“ ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓ (${r.count.toLocaleString('de')} Dreiecke)${sel}`, 'ok'));
 }
 
 function exportToBumpMesh() {
@@ -25332,7 +25345,7 @@ function exportOBJ() {
   const objBlob = new Blob([lines.join('\n')], { type: 'text/plain' });
   const mtlBlob = new Blob([mtl.join('\n')], { type: 'text/plain' });
   _saveExportMany([{ blob: objBlob, name: base + '.obj' }, { blob: mtlBlob, name: mtlName }]).then(res =>
-    notify(`OBJ + MTL ${res.wrote ? '→ ' + res.dir : 'exportiert'} (${mats.size} Material/Farbe) ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok'));
+    notify(`„${base}.obj“ + MTL ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} (${mats.size} Material/Farbe) ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok'));
 }
 
 // Jeden Körper (Teil + Gravur-Inlay) als EIGENE STL-Datei → in Bambu/Prusa beide
@@ -25357,7 +25370,7 @@ function exportPartsSTL() {
     return { blob: new Blob([buf], { type: 'application/octet-stream' }), name: `${base}_${nm}.stl` };
   });
   _saveExportMany(files).then(res =>
-    notify(`${res.ok} STL-Dateien (pro Körper) ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok'));
+    notify(`${res.ok} STL-Dateien „${base}_…“ ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok'));
 }
 
 // 3MF mit getrennten, farbigen Körpern → Bambu/Orca öffnet sie deckungsgleich
@@ -26092,7 +26105,7 @@ async function _localSave() {
       // Beim ersten Mal oder explizitem "Speichern unter": Dateiauswahl
       if (!_localFileHandle) {
         _localFileHandle = await window.showSaveFilePicker({
-          suggestedName: (document.getElementById('cur-design-lbl')?.textContent || 'Design') + '.v3d',
+          suggestedName: _designFilename('v3d'),
           types: [{ description:'V3D CAD Design', accept:{'application/json':['.v3d','.json']} }]
         });
       }
@@ -26113,8 +26126,7 @@ async function _localSave() {
     }
   } else {
     // Fallback: Download
-    _downloadBlob(blob, (document.getElementById('cur-design-lbl')?.textContent || 'Design')
-      .replace(/[^a-zA-Z0-9_\- ]/g,'_') + '.v3d');
+    _downloadBlob(blob, _designFilename('v3d'));
     notify('💾 Heruntergeladen', 'ok');
   }
 }
@@ -46726,8 +46738,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.37';
+const VOLME3D_VERSION = '1.18.38';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.38', date:'2026-09-20', changes:[
+    ['⬇️','<b>Export heißt wieder wie der Entwurf.</b> Die exportierte Datei bekommt den Namen des Entwurfs aus der Tab-Leiste (z. B. <i>Zesty_Ferret.stl</i>). Wer gleich nach dem Start exportierte, bekam bisher <i>volme3d.stl</i>: Der Entwurfsname entsteht erst beim ersten automatischen Speichern, und das läuft alle 30 Sekunden. Jetzt wird vor dem Export sofort gespeichert — der Name steht damit immer fest. Gilt für <b>STL</b>, <b>OBJ</b>, <b>3MF</b>, <b>STEP</b>, den Export <b>pro Körper</b> und das Speichern als <b>.v3d</b>-Datei. Die Meldung nach dem Export nennt jetzt außerdem den <b>Dateinamen</b>, nicht nur die Anzahl Dreiecke (danke Ralf).'],
+  ]},
   { version:'1.18.37', date:'2026-09-20', changes:[
     ['\u26A1','<b>KI-Modelle blockieren nicht mehr.</b> Ein mit <b>\u2728 KI</b> erzeugter K\u00f6rper lie\u00df sich praktisch nicht weiterverarbeiten: Beim <b>Schneiden</b>, <b>Vereinen</b>, <b>Abziehen</b>, beim <b>Steckbausatz</b> und bei der <b>Gie\u00dfform</b> blieb V3D CAD minutenlang stehen, oft ganz. Grund waren <b>entartete Dreiecke</b> \u2014 Fl\u00e4chen ohne Ausdehnung, die der KI-Dienst mitliefert; an einem Beispiel waren das 187.652 von 439.692. Die werden jetzt gleich beim Einlesen aussortiert. Dasselbe Modell: vorher <b>\u00fcber 25 Minuten ohne Ergebnis</b>, jetzt <b>gut eine Sekunde</b>. Am Modell selbst \u00e4ndert sich nichts \u2014 die aussortierten Dreiecke waren ohnehin unsichtbar.'],
   ]},
