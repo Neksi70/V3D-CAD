@@ -168,6 +168,8 @@ button:disabled{opacity:.45;cursor:default}
   </div></details>
 
   <details open><summary>⑦ Helligkeit → Punktdichte</summary><div class="inhalt">
+    <label class="zeile"><span>Aus der Form</span><input type="range" data-k="formAnteil" min="0" max="1" step="0.05"><output></output></label>
+    <p class="hinweis">„Aus der Form" nimmt die Punktdichte aus der Beleuchtung des 3D-Körpers statt aus der Foto-Helligkeit. Gegen weiße Gesichtsflächen und zerfaserte dunkle Kleidung.</p>
     <label class="haken"><input type="checkbox" data-k="autoTon"> Tonwerte automatisch angleichen</label>
     <label class="zeile"><span>Helligkeit</span><input type="range" data-k="hell" min="-0.5" max="0.5" step="0.01"><output></output></label>
     <label class="zeile"><span>Kontrast</span><input type="range" data-k="kontrast" min="-0.8" max="2" step="0.01"><output></output></label>
@@ -270,7 +272,7 @@ const STANDARD = {
   rueck: 'koerper', rueckTiefe: 10, rueckDichte: 0.2, rueckRundung: 0.18,
   frei: 'person', tiefeSchwelle: 0.3, kanteWeich: 0.8, form: 'keine', formWeich: 6,
   fuellen: false, zoom: 1, vx: 0, vy: 0,
-  autoTon: true, hell: 0, kontrast: 0.15, gamma: 1, schaerfe: 0.8, schwelle: 0.06, invert: false,
+  formAnteil: 0, autoTon: true, hell: 0, kontrast: 0.15, gamma: 1, schaerfe: 0.8, schwelle: 0.06, invert: false,
   abstand: 0.1, schichten: 3, schichtAbstand: 0.3, streuung: 0.3, maxPunkte: 1200000, rate: 875,
   text: '', schrift: "Georgia, 'Times New Roman', serif", textGroesse: 5, textFett: false, textLage: 'unten', textEbene: 'vorne',
   maschine: 'xtool', format: 'plytext', achsen: 'xz', nullpunkt: 'mitte', gedreht: false,
@@ -455,7 +457,7 @@ async function koerperHolen(erzwingen) {
       if (nr !== Q.nr) { Q.koerperLaeuft = false; return; }
       const st = await (await fetch('api/koerper?id=' + j.id)).json().catch(() => ({ status: 'laeuft' }));
       Q.koerperPhase = st.phase || ''; koerperStatus();
-      if (st.status === 'fertig') { Q.koerper = koerperEntpacken(st.koerper); cache.clear(); erzeugen(); echteTiefe(); break; }
+      if (st.status === 'fertig') { Q.koerper = koerperEntpacken(st.koerper); cache.clear(); erzeugen(); koerperVoreinstellung(); break; }
       if (st.status === 'fehler') throw new Error(st.error || 'unbekannter Fehler');
     }
     if (!Q.koerper) throw new Error('Zeitüberschreitung – der Space antwortet nicht');
@@ -464,7 +466,13 @@ async function koerperHolen(erzwingen) {
   }
   Q.koerperLaeuft = false; cache.clear(); koerperStatus(); neu();
 }
-// Beim ersten Modell die Relief-Tiefe auf die echte Tiefe des Körpers stellen
+// Voreinstellung für einen frischen Körper: echte Tiefe, EINE Schicht (eine Skulptur ist eine
+// Oberfläche — drei Schichten machen jedes Gesicht zur weißen Fläche) und Dichte aus der Form.
+function koerperVoreinstellung() {
+  S.schichten = 1;
+  S.formAnteil = 0.6;
+  return echteTiefe();
+}
 function echteTiefe() {
   const kz = koerperZugriff(PKT.P);
   if (!kz || !(kz.dickeMm > 0.5)) return false;
@@ -481,7 +489,7 @@ function koerperStatus() {
   else if (Q.koerperFehler) el.innerHTML = `<span class="fehler">${esc(Q.koerperFehler)}</span> – solange gilt die Foto-Tiefe.`;
   else if (Q.koerper) {
     const K = Q.koerper;
-    el.innerHTML = `✓ Körper steht (${zahl(K.dreiecke)} Dreiecke, Ansicht „${esc(K.drehung)}", Umriss-Passung ${Math.round(K.passung * 100)} %)`
+    el.innerHTML = `✓ Körper steht (${zahl(K.dreiecke)} Dreiecke, Umriss-Passung ${Math.round(K.passung * 100)} %). Eingestellt: 1 Schicht, Dichte aus der Form, echte Tiefe.`
       + (K.passung < 0.45 || K.tiefenpassung < 0.15 ? ' <span class="warn">– Passung mäßig: Freistellen prüfen, dann neu berechnen.</span>' : '');
   } else el.innerHTML = 'Noch kein Modell. <button id="koerperStart" style="padding:2px 8px">Jetzt berechnen</button>';
   const b = $('koerperStart'); if (b) b.onclick = () => koerperHolen(true);
@@ -607,6 +615,25 @@ function kuppelKarte(mk) {
     return karte(w, h, unschaerfe(d, w, h, Math.max(1, Math.round(Math.max(w, h) / 300))));
   });
 }
+// Beleuchtete Form: Normalen aus dem Höhenfeld der Vorderseite → Punktdichte wie bei einer Skulptur.
+// steigung = Millimeter Tiefe je Kartenpixel-Schritt, damit die Neigung stimmt.
+const LICHT = (() => { const v = [-0.45, 0.55, 0.72], l = Math.hypot(...v); return v.map((x) => x / l); })();
+function schattierung(hoehe, steigung, schluessel) {
+  return gemerkt(`schatten|${schluessel}|${Math.round(steigung * 1000) / 1000}`, () => {
+    const { w, h, d } = hoehe, g = unschaerfe(d, w, h, Math.max(1, Math.round(Math.max(w, h) / 220)));
+    const a = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const gx = (g[i + (x < w - 1 ? 1 : 0)] - g[i - (x > 0 ? 1 : 0)]) * steigung / (x > 0 && x < w - 1 ? 2 : 1);
+      const gy = (g[i + (y < h - 1 ? w : 0)] - g[i - (y > 0 ? w : 0)]) * steigung / (y > 0 && y < h - 1 ? 2 : 1);
+      const l = Math.hypot(gx, gy, 1);
+      const punkt = (-gx * LICHT[0] - gy * LICHT[1] + LICHT[2]) / l;
+      a[i] = clamp(0.08 + 1.05 * Math.pow(clamp(punkt, 0, 1), 1.3), 0, 1);   // kleiner Sockel, kräftige Modellierung
+    }
+    return karte(w, h, a);
+  });
+}
+
 // Tonwert: Helligkeit → Punktdichte 0..1; TON = Angleich-Grenzen aus dem Motiv (1.–99. Perzentil)
 let TON = { lo: 0, hi: 1 };
 function tonGrenzen(tn, mk) {
@@ -767,14 +794,34 @@ function erzeugen() {
     tn = tonKarte();
     TON = tonGrenzen(tn, mk);
     const sx = tk ? tk.w / Q.w : 0, sy = tk ? tk.h / Q.h : 0;
+    kz = S.modus === 'koerper' ? koerperZugriff(P) : null;
+    // Schattierung: beim KI-Körper aus dessen Vorderseite, sonst aus der Foto-Tiefe
+    let schatten = null, schattenXY = null;
+    if (S.formAnteil > 0) {
+      const R = kz ? koerperRaster() : null;
+      if (R) {
+        // Licht auf die ECHTE Form des Modells, nicht auf die im Block gestauchte Tiefe —
+        // sonst sind alle Neigungen winzig und das Gesicht wird eine weiße Fläche.
+        schatten = schattierung(R.K.vorn, -1, 'koerper');
+        schattenXY = (u, v) => [R.rx(u), R.ry(v)];
+      } else if (tk) {
+        // Foto-Tiefe 0…1 so deuten, als reichte sie über ein Viertel der Bildbreite in die Tiefe
+        schatten = schattierung(tk, tk.w * 0.25, 'foto');
+        schattenXY = (u, v) => [u * tk.w / Q.w - 0.5, v * tk.h / Q.h - 0.5];
+      }
+    }
     const wert = (x, y) => {
       const u = (x - P.ix0) / P.k - 0.5, v = (P.iy1 - y) / P.k - 0.5;
       if (u < -0.5 || v < -0.5 || u > Q.w - 0.5 || v > Q.h - 0.5) return 0;
       const m = lies(mk, u, v);
       if (m < 0.004) return 0;
-      return ton(lies(tn, u, v)) * m * formFaktor(P, x, y);
+      let t = ton(lies(tn, u, v));
+      if (schatten) {
+        const [sx2, sy2] = schattenXY(u + 0.5, v + 0.5);
+        t = t * (1 - S.formAnteil) + lies(schatten, sx2, sy2) * S.formAnteil;
+      }
+      return t * m * formFaktor(P, x, y);
     };
-    kz = S.modus === 'koerper' ? koerperZugriff(P) : null;
     const foto = (u, v) => tk ? lies(tk, u * sx - 0.5, v * sy - 0.5) - 0.5 : 0;   // −0,5 … +0,5
     const zAus = kz ? (x, y) => {
       // Vorderseite aus dem KI-Modell (die Karten sind bis zum Rand aufgefüllt),
@@ -1114,7 +1161,7 @@ const FORMAT = {
   rand: (v) => mm(v) + ' mm', relief: (v) => mm(v) + ' mm', zVersatz: (v) => mm(v) + ' mm', kanteWeich: (v) => mm(v) + ' mm',
   formWeich: (v) => mm(v) + ' mm', textGroesse: (v) => mm(v) + ' mm', abstand: (v) => mm(v, 3) + ' mm', schichtAbstand: (v) => mm(v, 2) + ' mm',
   tiefeSchwelle: (v) => Math.round(v * 100) + ' %', streuung: (v) => Math.round(v * 100) + ' %', schwelle: (v) => Math.round(v * 100) + ' %',
-  detail: (v) => mm(v) + ' mm', rueckTiefe: (v) => mm(v) + ' mm', rueckDichte: (v) => Math.round(v * 100) + ' %',
+  formAnteil: (v) => Math.round(v * 100) + ' %', detail: (v) => mm(v) + ' mm', rueckTiefe: (v) => mm(v) + ' mm', rueckDichte: (v) => Math.round(v * 100) + ' %',
   rueckRundung: (v) => Math.round(v * 100) + ' %', zoom: (v) => mm(v, 2) + '×', vx: (v) => v + ' %', vy: (v) => v + ' %', schichten: (v) => String(v),
 };
 const eingaben = [...document.querySelectorAll('[data-k]')];
@@ -1210,7 +1257,8 @@ $('beispiel').addEventListener('click', () => {
 });
 
 // Testzugang für Headless-Prüfungen
-window._kristall = { S, Q, get PKT() { return PKT; }, neu, erzeugen, exportieren, stlBauen, umrechnen, bildLaden, get einst() { return S; } };
+window._kristall = { S, Q, get PKT() { return PKT; }, neu, erzeugen, exportieren, stlBauen, umrechnen, bildLaden,
+  schattierung, koerperRaster, koerperZugriff, lies, karte, maskenKarte, tiefenKarte, get einst() { return S; } };
 
 formularFuellen(); glasBauen(); groesse(); sichtSetzen('vorne'); kiStatus(); neu(true);
 </script>

@@ -30,6 +30,12 @@ Fallen, die beim Bauen aufgefallen sind:
 - **Maßstab über robuste Perzentile** (0,5 / 99,5 %), sonst bestimmt ein einzelner Zipfel des Netzes
   die Tiefe des ganzen Motivs.
 - Gemälde ergeben korrekterweise eine flache Platte (Mona Lisa: 0,15 von 2,0 Einheiten tief).
+- **Punktdichte aus der Form, nicht aus der Helligkeit.** Bei Porträts wird sonst das Gesicht eine
+  weiße Fläche (helle Haut = volle Dichte) und dunkle Kleidung zerfasert. Regler „Aus der Form"
+  (⑦) beleuchtet stattdessen das Höhenfeld der Vorderseite. Wichtig: Das Licht muss auf die
+  **echte** Form des Modells fallen, nicht auf die im Block gestauchte Tiefe — sonst ist wieder alles flach.
+- **Eine Schicht reicht.** Eine Skulptur ist eine Oberfläche; bei 3 Schichten sieht auch 60 % Dichte
+  weiß aus. Beim Eintreffen des Körpers stellt die App darum 1 Schicht, 60 % Form und echte Tiefe ein.
 - Die Foto-Tiefe bleibt als **Feindetail** (Regler, Standard 1,5 mm) auf dem Modell liegen — das
   erzeugte Netz ist glatter als das Foto.
 
