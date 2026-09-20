@@ -3885,6 +3885,21 @@ Patrick</textarea>
         <div class="vrow"><label title="Löcher in der Nuss, durch die das Licht fällt. 0 = keine">Anzahl</label> <input type="range" id="eic-holes" min="0" max="60" value="16" step="1" oninput="_eicSet('holes',this.value)"><span class="vv" id="eicv-holes">16</span></div>
         <div class="vrow"><label>Loch-Ø</label> <input type="range" id="eic-holeD" min="1.5" max="10" value="3.5" step="0.5" oninput="_eicSet('holeD',this.value)"><span class="vv" id="eicv-holeD">3.5</span><span class="vu">mm</span></div>
 
+        <span class="vsec">Motiv</span>
+        <div class="vrow"><label title="Ein großes Bild in der Nuss — zum Beispiel ein Herz, durch das das Licht fällt">Form</label> <select id="eic-symbol" onchange="_eicStr('symbol',this.value)" style="flex:1;font-family:var(--font);font-size:12px;border:1.5px solid var(--border);border-radius:9px;padding:5px 8px;background:#fff;cursor:pointer"><option value="keine">ohne</option></select></div>
+        <div id="eic-symbox" style="display:none">
+          <div class="vtbrow" id="eic-symMode-bg" style="display:flex;gap:4px;margin-bottom:7px">
+            <button class="vtb on" data-v="fenster" title="Das Motiv ist ganz durchbrochen — das Licht fällt frei hindurch" onclick="_eicStr('symMode','fenster')">Fenster</button>
+            <button class="vtb" data-v="gravur" title="Nur eingetieft — die Wand bleibt dort dünn und leuchtet heller" onclick="_eicStr('symMode','gravur')">Vertieft</button>
+            <button class="vtb" data-v="relief" title="Das Motiv steht heraus und erscheint beim Leuchten dunkler" onclick="_eicStr('symMode','relief')">Erhaben</button>
+          </div>
+          <div class="vrow"><label title="Höhe des Motivs">Größe</label> <input type="range" id="eic-symH" min="8" max="90" value="30" step="1" oninput="_eicSet('symH',this.value)"><span class="vv" id="eicv-symH">30</span><span class="vu">mm</span></div>
+          <div class="vrow"><label title="Wie weit unter dem Hut das Motiv sitzt, in % der Nusslänge">Lage</label> <input type="range" id="eic-symPos" min="0" max="70" value="45" step="1" oninput="_eicSet('symPos',this.value)"><span class="vv" id="eicv-symPos">45</span><span class="vu">%</span></div>
+          <div class="vrow" id="eic-row-symT"><label title="Wie tief das Motiv eingetieft ist bzw. heraussteht">Tiefe</label> <input type="range" id="eic-symT" min="0.4" max="2.5" value="1.2" step="0.1" oninput="_eicSet('symT',this.value)"><span class="vv" id="eicv-symT">1.2</span><span class="vu">mm</span></div>
+          <div class="vrow"><label title="Wie oft das Motiv rund um die Nuss wiederholt wird">Anzahl</label> <input type="range" id="eic-symN" min="1" max="4" value="1" step="1" oninput="_eicSet('symN',this.value)"><span class="vv" id="eicv-symN">1</span></div>
+          <div class="vrow"><label title="Dreht das Motiv um die Nuss — damit es nicht auf dem Schriftzug liegt">Drehung</label> <input type="range" id="eic-symRot" min="0" max="350" value="0" step="10" oninput="_eicSet('symRot',this.value)"><span class="vv" id="eicv-symRot">0</span><span class="vu">°</span></div>
+        </div>
+
         <span class="vsec">Schriftzug</span>
         <div class="vtbrow" id="eic-text-bg" style="display:flex;gap:4px;margin-bottom:7px">
           <button class="vtb on" data-v="relief" title="Schrift steht heraus — beim Leuchten erscheint sie dunkler" onclick="_eicStr('textMode','relief')">Erhaben</button>
@@ -37851,6 +37866,42 @@ function _litTextLoops(c, h, yc, maxW){
   return { loops, box: [bx0, bx1, by0, by1], shrunk };
 }
 
+// Motiv (Herz, Stern, Blatt …) aus der Glas-Marker-Bibliothek als Konturen in mm,
+// Blick von +Z, Mitte bei (0, yc), Höhe h, Breite höchstens maxW (sonst wird das
+// ganze Motiv proportional kleiner). Die Vorlagen sind SVG — deren y zeigt nach
+// unten, darum gespiegelt.
+// nurUmriss: bei einem Durchbruch MÜSSEN die Detaillöcher weg, sonst fällt die
+// Insel darin (Katzenaugen, Käferpunkte) als loses Plättchen heraus.
+function _litSymLoops(key, h, yc, maxW, nurUmriss){
+  const sy = (typeof _GMK_SYM !== 'undefined') && _GMK_SYM[key];
+  if (!sy) return null;
+  let raw = null;
+  try { raw = sy.f ? sy.f() : _gmkPath(sy.d); } catch (e) {}
+  if (!raw || !raw.length || raw[0].length < 3) return null;
+  const rest = nurUmriss ? [] : raw.slice(1).concat(sy.h ? sy.h() : []);
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+  for (const q of raw[0]) { x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]); }
+  let k = h / Math.max(1e-6, y1 - y0), shrunk = false;
+  if ((x1 - x0) * k > maxW) { k = maxW / Math.max(1e-6, x1 - x0); shrunk = true; }
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, eps = h * 4e-4;
+  const tf = lp => {
+    const out = [];
+    for (const q of lp) {
+      const v = [(q[0] - cx) * k, yc - (q[1] - cy) * k], pr = out[out.length - 1];
+      if (pr && Math.abs(pr[0] - v[0]) < eps && Math.abs(pr[1] - v[1]) < eps) continue;
+      out.push(v);
+    }
+    return out;
+  };
+  const aussen = tf(raw[0]);
+  if (aussen.length < 3) return null;
+  const loops = [aussen];
+  for (const lp of rest) { const o = tf(lp || []); if (o.length >= 3) loops.push(o); }
+  let bx0 = 1e9, bx1 = -1e9, by0 = 1e9, by1 = -1e9;
+  for (const v of aussen) { bx0 = Math.min(bx0, v[0]); bx1 = Math.max(bx1, v[0]); by0 = Math.min(by0, v[1]); by1 = Math.max(by1, v[1]); }
+  return { loops, box: [bx0, bx1, by0, by1], shrunk, name: sy.n };
+}
+
 // Schuppen: Zellen in Reihen entlang der Bogenlänge sv (vom Rand aus), pro Reihe
 // so viele, wie der Umfang dort hergibt, versetzt wie Dachziegel. Höhe aus dem
 // Abstand zur nächsten Zellgrenze (d2 − d1) als Kreisbogen → runde Kuppen mit
@@ -37918,6 +37969,7 @@ const _eicP = {
   capDia: 78, capH: 44, capForm: 50, skin: 'schuppen', scale: 7, scaleD: 2,
   haenger: 'oese', oeseD: 7,
   holes: 16, holeD: 3.5,
+  symbol: 'keine', symMode: 'fenster', symH: 30, symPos: 45, symT: 1.2, symN: 1, symRot: 0,
   textMode: 'relief', text1: 'HERBST', font1: 'helvetiker_bold', text2: 'Licht', font2: 'pacifico_local',
   textH: 26, textPos: 30, textT: 1,
   wall: 2, pitch: 3, threadH: 8, clr: 0.3, lampD: 38, seed: 20260913
@@ -38126,9 +38178,43 @@ function _eicTextLoops(p, d){
   return _litTextLoops(p, p.textH, yc, (a, b) => 2 * Math.min(d.nutR(Math.min(a, d.yJ - 1)), d.nutR(Math.max(b, d.yTip))) * 0.62);
 }
 
+// Motiv in mm, Blick von +Z, Mitte in „Lage“ % der Nusslänge unter dem Hut.
+// winkel = die Stellen rund um die Nuss, an denen es wiederholt wird.
+function _eicSymLoops(p, d){
+  if (!p.symbol || p.symbol === 'keine') return null;
+  const h = Math.min(p.symH, Math.max(6, d.Lb - 8));
+  const yc = Math.max(d.yJ - Math.max(h / 2 + 3, d.Lb * p.symPos / 100), d.yTip + h / 2 + 1.5);
+  const maxW = 2 * Math.min(d.nutR(Math.min(yc + h / 2, d.yJ - 1)), d.nutR(Math.max(yc - h / 2, d.yTip))) * 0.66;
+  const r = _litSymLoops(p.symbol, h, yc, maxW, p.symMode === 'fenster');
+  if (!r) return null;
+  const N = Math.max(1, Math.min(4, Math.round(p.symN)));
+  r.yc = yc;
+  r.winkel = [];
+  for (let i = 0; i < N; i++) r.winkel.push(((p.symRot || 0) + i * 360 / N) % 360);
+  return r;
+}
+
+// Wie tief die Motiv-Schale nach innen reichen muss, damit ein Fenster im
+// ganzen Motivfeld hinter der Innenwand endet — kopfüber gedruckt ist die Wand
+// unten dicker als die Wandstärke (Überhang-Regel), eine feste Tiefe lässt dort
+// ein Sackloch stehen. durch = false: dort ist die Nuss massiv, kein Fenster.
+function _eicSymTiefe(p, d, sym){
+  let tief = d.W + 3, durch = true;
+  for (let y = sym.box[2]; y <= sym.box[3] + 1e-9; y += 0.5) {
+    const t = (d.yJ - y) / d.Lb;
+    if (t < 0 || t > 0.99) continue;
+    const rIn = d.nutIn(y);
+    if (rIn <= 0.3) { durch = false; continue; }
+    let lo = 0, hi = d.Rb;
+    for (let i = 0; i < 24; i++) { const m = (lo + hi) / 2; if (d.nutOff(t, -m)[0] > rIn - 0.3) lo = m; else hi = m; }
+    if (hi >= d.Rb - 1e-6) durch = false; else tief = Math.max(tief, hi + 0.5);
+  }
+  return { tief, durch };
+}
+
 // Lichtpunkte: gleichmäßig verteilt (Mindestabstand), nie im Schriftfeld, nie im
 // Kegelsitz und nicht so weit unten, dass das Loch die Spitze durchschießt.
-function _eicHolePts(p, d, box){
+function _eicHolePts(p, d, zonen){
   const N = Math.max(0, Math.round(p.holes)); if (!N) return [];
   const yHi = d.yJ - Math.max(5, p.holeD * 1.5);
   let yLo = yHi;
@@ -38146,10 +38232,17 @@ function _eicHolePts(p, d, box){
     const t = (d.yJ - y) / d.Lb, q = d.nutOff(t, 0);
     if (_pilzHash(i, 9, p.seed) > q[0] / d.Rb) continue;                   // Fläche ∝ Radius
     const c = [q[0] * Math.cos(th), q[1], q[0] * Math.sin(th)];
-    if (box && c[2] > 0) {
-      const m = p.holeD + 2.5;
-      if (c[0] > box[0] - m && c[0] < box[1] + m && c[1] > box[2] - m && c[1] < box[3] + m) continue;
+    // Sperrflächen (Schrift, Motiv) liegen jeweils vor ihrer eigenen Drehung —
+    // den Punkt dorthin zurückdrehen und gegen das Rechteck prüfen.
+    let imWeg = false;
+    for (const z of (zonen || [])) {
+      const a = (z.ang || 0) * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+      const zx = c[0] * ca - c[2] * sa, zz = c[0] * sa + c[2] * ca;
+      if (zz <= 0) continue;
+      const m = p.holeD + 2.5, b = z.box;
+      if (zx > b[0] - m && zx < b[1] + m && c[1] > b[2] - m && c[1] < b[3] + m) { imWeg = true; break; }
     }
+    if (imWeg) continue;
     if (pts.some(o => Math.hypot(o.c[0] - c[0], o.c[1] - c[1], o.c[2] - c[2]) < minD)) continue;
     pts.push({ c, a: [q[2] * Math.cos(th), q[3], q[2] * Math.sin(th)], tief: wand(y) / Math.max(0.3, q[2]) + p.textT + 2 });
   }
@@ -38196,7 +38289,33 @@ function _eicBuild(w, p, q){
         nut = keep(M.union(nut, keep(M.intersection(prism, band(p.textT, -d.W * 0.5)))));
       }
     }
-    const holes = _eicHolePts(p, d, txt && txt.box);
+    // ── Motiv (Herz, Stern …) ──
+    // Wie die Schrift: Prisma aus den Konturen, mit einer dünnen Schale der
+    // Nussform verschnitten. Beim Fenster reicht die Schale unter die Innenwand,
+    // dann ist das Motiv wirklich durchbrochen. Die Schale ist rund um die Achse
+    // gleich — für jede Wiederholung wird nur das Prisma gedreht.
+    const sym = _eicSymLoops(p, d);
+    let symDurch = true;
+    if (sym) {
+      const cs = keep(new w.CrossSection(sym.loops, 'EvenOdd'));
+      const prism0 = keep(cs.extrude(d.Rb + 12));
+      const [, , sy0, sy1] = sym.box, nS = fine ? 240 : 110;
+      const sBand = (a, b) => keep(M.difference(fromGrid(_eicNutBand(d, a, sy0 - 2, sy1 + 2, nS)), fromGrid(_eicNutBand(d, b, sy0 - 2, sy1 + 2, nS))));
+      const fenster = p.symMode === 'fenster' ? _eicSymTiefe(p, d, sym) : null;
+      const schale = p.symMode === 'gravur' ? sBand(1, -Math.min(p.symT, d.W - 0.6))
+                   : p.symMode === 'relief' ? sBand(p.symT, -d.W * 0.5)
+                   : sBand(2, -fenster.tief);
+      for (const a of sym.winkel) {
+        const prism = a ? keep(prism0.rotate([0, a, 0])) : prism0;
+        const teil = keep(M.intersection(prism, schale));
+        nut = p.symMode === 'relief' ? keep(M.union(nut, teil)) : keep(M.difference(nut, teil));
+      }
+      if (fenster) symDurch = fenster.durch;
+    }
+    const zonen = [];
+    if (txt) zonen.push({ ang: 0, box: txt.box });
+    if (sym) for (const a of sym.winkel) zonen.push({ ang: a, box: sym.box });
+    const holes = _eicHolePts(p, d, zonen);
     if (holes.length) {
       const cyl = holes.map(h => keep(_mfFromSoup(w, _eicCylSoup(h.c, h.a, p.holeD / 2, h.tief * 2, fine ? 20 : 10))));
       nut = keep(M.difference(nut, keep(M.union(cyl))));
@@ -38224,7 +38343,7 @@ function _eicBuild(w, p, q){
     }
     if (nut.isEmpty() || cap.isEmpty()) throw new Error('leerer Körper');
     const nutGeo = _mfToGeo(nut), capGeo = _mfToGeo(cap);
-    return { d, nutGeo, capGeo, txt, holes: holes.length };
+    return { d, nutGeo, capGeo, txt, sym, symDurch, holes: holes.length };
   } finally {
     for (const x of tmp) { try { x.delete(); } catch (e) {} }
   }
@@ -38249,9 +38368,28 @@ function _eicPreviewGeo(){
   return geo;
 }
 
+// Motivliste aus der Glas-Marker-Bibliothek — einmal beim ersten Öffnen
+function _eicFillSym(){
+  const sel = document.getElementById('eic-symbol');
+  if (!sel || sel.dataset.voll || typeof _GMK_SETS === 'undefined') return;
+  const titel = { symbole: 'Symbole', natur: 'Natur', tiere: 'Tiere' };
+  for (const satz of ['symbole', 'natur', 'tiere']) {
+    const g = document.createElement('optgroup');
+    g.label = titel[satz];
+    for (const k of (_GMK_SETS[satz] || [])) {
+      const o = document.createElement('option');
+      o.value = k; o.textContent = _GMK_SYM[k].n;
+      g.appendChild(o);
+    }
+    sel.appendChild(g);
+  }
+  sel.dataset.voll = '1';
+}
+
 function _eicLoadFonts(cb){ _litLoadFonts(_eicP, cb); }
 function _eicOpen(){
   document.getElementById('eic-modal').classList.add('show');
+  _eicFillSym();
   _eicSync();
   _mfInit().then(() => _eicLoadFonts(_eicBoot))
            .catch(() => notify('Rechenkern für Löcher und Schrift konnte nicht geladen werden', 'w'));
@@ -38273,12 +38411,12 @@ function _eicStr(k, v){ _eicP[k] = v; _eicSync(); _eicRepaint(); }
 function _eicShuffle(){ _eicP.seed = (Math.random() * 4294967296) >>> 0 || 1; _eicSync(); _eicRepaint(); }
 function _eicReset(){
   Object.assign(_eicP, _EIC_DEF);
-  for (const k of ['text1', 'text2', 'font1', 'font2']) { const e = document.getElementById('eic-' + k); if (e) e.value = _eicP[k]; }
+  for (const k of ['text1', 'text2', 'font1', 'font2', 'symbol']) { const e = document.getElementById('eic-' + k); if (e) e.value = _eicP[k]; }
   _eicSync(); _eicRepaint();
 }
 
 function _eicSync(){
-  for (const k of ['nutDia','nutH','spitze','zipfel','capDia','capH','capForm','scale','scaleD','oeseD','holes','holeD','textH','textPos','textT','wall','pitch','threadH','clr','lampD']) {
+  for (const k of ['nutDia','nutH','spitze','zipfel','capDia','capH','capForm','scale','scaleD','oeseD','holes','holeD','symH','symPos','symT','symN','symRot','textH','textPos','textT','wall','pitch','threadH','clr','lampD']) {
     const s = document.getElementById('eic-' + k), t = document.getElementById('eicv-' + k);
     if (s) s.value = _eicP[k];
     if (t) t.textContent = _eicP[k];
@@ -38287,11 +38425,16 @@ function _eicSync(){
   mark('#eic-skin-bg', _eicP.skin);
   mark('#eic-haenger-bg', _eicP.haenger);
   mark('#eic-text-bg', _eicP.textMode);
+  mark('#eic-symMode-bg', _eicP.symMode);
+  const symSel = document.getElementById('eic-symbol');
+  if (symSel && symSel.value !== _eicP.symbol) symSel.value = _eicP.symbol;
   const show = (id, on) => { const e = document.getElementById(id); if (e) e.style.display = on ? '' : 'none'; };
   show('eic-row-scale', _eicP.skin === 'schuppen');
   show('eic-row-scaleD', _eicP.skin === 'schuppen');
   show('eic-row-oeseD', _eicP.haenger === 'oese');
   show('eic-textbox', _eicP.textMode !== 'keine');
+  show('eic-symbox', _eicP.symbol !== 'keine');
+  show('eic-row-symT', _eicP.symbol !== 'keine' && _eicP.symMode !== 'fenster');
   const el = document.getElementById('eic-info');
   if (!el) return;
   const d = _eicDims(_eicP);
@@ -38309,6 +38452,20 @@ function _eicSync(){
     for (const f of [_eicP.font1, _eicP.font2]) if (!_eicFont(f)) { s += '<br><i>Schrift wird geladen …</i>'; break; }
     const t = _eicFont(_eicP.font1) || _eicFont(_eicP.font2) ? _eicTextLoops(_eicP, d) : null;
     if (t && t.shrunk) s += '<br>Der Schriftzug wurde schmaler gesetzt, damit er auf der Rundung lesbar bleibt.';
+  }
+  if (_eicP.symbol !== 'keine') {
+    const sm = _eicSymLoops(_eicP, d);
+    if (!sm) s += '<br><i>Dieses Motiv lässt sich nicht zeichnen.</i>';
+    else {
+      s += '<br>Motiv <b>' + sm.name + '</b> ' + (sm.box[1] - sm.box[0]).toFixed(0) + ' × ' + (sm.box[3] - sm.box[2]).toFixed(0) + ' mm' +
+           (sm.winkel.length > 1 ? ', ' + sm.winkel.length + '× rund um die Nuss' : '') +
+           (sm.shrunk ? ' — verkleinert, damit es auf die Rundung passt' : '');
+      if (_eicP.symMode === 'fenster' && !_eicSymTiefe(_eicP, d, sm).durch)
+        warn.push('Das Motiv reicht in den massiven Teil der Spitze — dort bricht es nicht durch. Lage kleiner oder Motiv kleiner wählen.');
+      const tx = _eicP.textMode !== 'keine' ? _eicTextLoops(_eicP, d) : null;
+      if (tx && sm.winkel.some(a => Math.min(a, 360 - a) < 45) && sm.box[2] < tx.box[3] + 3 && sm.box[3] > tx.box[2] - 3)
+        warn.push('Motiv und Schriftzug liegen übereinander — Motiv drehen, Lage ändern oder den Schriftzug abschalten.');
+    }
   }
   if (warn.length) s += '<br><b style="color:#ffb455">⚠ ' + warn.join('<br>⚠ ') + '</b>';
   else s += '<br>Spiel ' + _eicP.clr + ' mm — klemmt der Hut, erhöhen; wackelt er, verringern.';
@@ -38354,6 +38511,7 @@ async function _eicCreate(){
     selectObjs([nut, cap]); updateTree(); fitToObjects([nut, cap]);
     _progressDone();
     notify('Eichel erstellt ✓ Nuss kopfüber drucken, LED-Teelicht hinein, Hut aufschrauben' + (r.holes < p.holes ? ' (' + r.holes + ' Lichtpunkte hatten Platz)' : ''), 'ok');
+    if (r.sym && !r.symDurch) notify('Das Motiv sitzt so tief, dass die Nuss dort massiv ist — es bricht nicht ganz durch', 'w');
     _eicClose();
   } catch (e) {
     console.error('Eichel:', e);
@@ -45499,8 +45657,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.33';
+const VOLME3D_VERSION = '1.18.34';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.34', date:'2026-09-20', changes:[
+    ['\u{1F330}','<b>Eichel: gro\u00dfes Motiv in der Nuss \u2014 zum Beispiel ein leuchtendes Herz.</b> Im Eichel-Fenster gibt es die neue Gruppe <b>Motiv</b>: W\u00e4hle unter <b>Form</b> ein Bild aus (Herz, Stern, Blatt, Kleeblatt, Blume, Mond, Katze, Eule \u2026 \u2014 dieselben Motive wie bei den Glas-Markern). <b>Fenster</b> bricht das Motiv ganz durch, das Licht f\u00e4llt frei hindurch; <b>Vertieft</b> l\u00e4sst die Wand dort nur d\u00fcnner (leuchtet heller, bleibt dicht); <b>Erhaben</b> l\u00e4sst es vorstehen. Dazu <b>Gr\u00f6\u00dfe</b>, <b>Lage</b>, <b>Anzahl</b> (bis zu 4\u00d7 rund um die Nuss) und <b>Drehung</b>. Die Lichtpunkte weichen dem Motiv von selbst aus, und das Fenster warnt, wenn Motiv und Schriftzug \u00fcbereinander liegen.'],
+  ]},
   { version:'1.18.33', date:'2026-09-19', changes:[
     ['\u270F\uFE0F','<b>Text nachträglich ändern.</b> Einen Text einfach <b>doppelt anklicken</b> (oder markieren und unten links auf <b>✏️</b> tippen): Das Text-Fenster öffnet sich mit dem alten Wortlaut, du tippst den neuen ein und drückst <b>Übernehmen</b>. Lage, Drehung, Tiefe, erhaben/vertieft, Farbe und die Biegung auf einer Rundung bleiben erhalten — ideal für Beschriftungen, bei denen sich nur das Wort ändert, etwa Boxen für Ersatzteile. Schrift und Größe lassen sich dabei ebenfalls umstellen. Gilt für Texte, die ab dieser Version erstellt werden.'],
   ]},

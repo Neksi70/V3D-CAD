@@ -2,10 +2,25 @@
 // ob das Minifying die JS-Ausfuehrung oder bekannte Globals zerstoert hat.
 import { chromium } from '@playwright/test';
 import { spawn, execFileSync } from 'node:child_process';
+import { createServer } from 'node:net';
 
-const PORT = 8799;
+// Freien Port vom Betriebssystem holen: 8799 war fest verdrahtet und gehoert
+// inzwischen V3D Kristall. Der Testserver startete dann gar nicht, der Test las
+// die fremde Seite und meldete "Globals fehlen" statt des Portkonflikts.
+const PORT = Number(process.env.SMOKE_PORT) || await new Promise((res, rej) => {
+  const s = createServer();
+  s.on('error', rej);
+  s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); });
+});
 const srv = spawn('python3', ['volme3d_server.py', String(PORT)], { cwd: process.cwd() });
+const srvLog = [];
+srv.stdout.on('data', d => srvLog.push(String(d)));
+srv.stderr.on('data', d => srvLog.push(String(d)));
 await new Promise(r => setTimeout(r, 800));
+if (srv.exitCode !== null) {
+  console.log('Testserver auf Port ' + PORT + ' beendet mit ' + srv.exitCode + ':\n' + srvLog.join('').slice(-600));
+  process.exit(1);
+}
 
 // Der Server liefert den Editor nur noch gegen ein gueltiges Sitzungs-Cookie
 // aus. Fuers Smoke-Testen stellen wir uns eins selbst aus (gleicher HMAC-
