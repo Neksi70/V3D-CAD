@@ -17137,10 +17137,34 @@ function _healTrisForBool(tris) {
 }
 
 function _mfFromSoup(w, tris) {
-  let vol = 0;
-  for (let i = 0; i < tris.length; i += 9) {
+  // Entartete Dreiecke VORHER aussortieren. _healTrisForBool tut das auch,
+  // greift aber erst, nachdem Manifold ein Netz abgelehnt hat — und genau
+  // das passiert hier nicht: Manifold nimmt sie an und rechnet sich fest.
+  // Gemessen an einem Hunyuan3D-Netz (439.692 Dreiecke, davon 187.652 mit
+  // doppelter Ecke): mit den Entarteten >25 min ohne Ergebnis, ohne sie
+  // 1,1 s. Der Rest des Netzes war sauber (F/V = 2,0, keine offene Kante).
+  // Bewusst nur EXAKTE Entartung (zwei gleiche Ecken oder Kreuzprodukt
+  // genau 0) — ein Epsilon würde echte feine Geometrie mitnehmen.
+  let vol = 0, gut = 0;
+  const behalten = new Uint8Array(tris.length / 9);
+  for (let i = 0, t = 0; i < tris.length; i += 9, t++) {
     const ax=tris[i],ay=tris[i+1],az=tris[i+2], bx=tris[i+3],by=tris[i+4],bz=tris[i+5], cx=tris[i+6],cy=tris[i+7],cz=tris[i+8];
+    if ((ax===bx&&ay===by&&az===bz) || (bx===cx&&by===cy&&bz===cz) || (ax===cx&&ay===cy&&az===cz)) continue;
+    const ux=bx-ax,uy=by-ay,uz=bz-az, vx=cx-ax,vy=cy-ay,vz=cz-az;
+    const nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    if (nx===0 && ny===0 && nz===0) continue;
+    behalten[t] = 1; gut++;
     vol += ax*(by*cz - bz*cy) - ay*(bx*cz - bz*cx) + az*(bx*cy - by*cx);
+  }
+  if (!gut) throw new Error('Netz besteht nur aus entarteten Dreiecken');
+  if (gut < behalten.length) {
+    console.warn('[mf] ' + (behalten.length - gut) + ' entartete Dreiecke übersprungen (von ' + behalten.length + ')');
+    const rein = new Float32Array(gut * 9);
+    for (let t = 0, w2 = 0; t < behalten.length; t++) {
+      if (!behalten[t]) continue;
+      for (let q = 0; q < 9; q++) rein[w2++] = tris[t * 9 + q];
+    }
+    tris = rein;
   }
   const nVert = tris.length / 3;
   const idx = new Uint32Array(nVert);
@@ -46702,8 +46726,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.36';
+const VOLME3D_VERSION = '1.18.37';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.37', date:'2026-09-20', changes:[
+    ['\u26A1','<b>KI-Modelle blockieren nicht mehr.</b> Ein mit <b>\u2728 KI</b> erzeugter K\u00f6rper lie\u00df sich praktisch nicht weiterverarbeiten: Beim <b>Schneiden</b>, <b>Vereinen</b>, <b>Abziehen</b>, beim <b>Steckbausatz</b> und bei der <b>Gie\u00dfform</b> blieb V3D CAD minutenlang stehen, oft ganz. Grund waren <b>entartete Dreiecke</b> \u2014 Fl\u00e4chen ohne Ausdehnung, die der KI-Dienst mitliefert; an einem Beispiel waren das 187.652 von 439.692. Die werden jetzt gleich beim Einlesen aussortiert. Dasselbe Modell: vorher <b>\u00fcber 25 Minuten ohne Ergebnis</b>, jetzt <b>gut eine Sekunde</b>. Am Modell selbst \u00e4ndert sich nichts \u2014 die aussortierten Dreiecke waren ohnehin unsichtbar.'],
+  ]},
   { version:'1.18.36', date:'2026-09-20', changes:[
     ['\u{1F9E9}','<b>Steckbausatz \u2014 aus mehreren K\u00f6rpern wird ein Bausatz zum Zusammenstecken.</b> Alle Teile ausw\u00e4hlen, die zusammengeh\u00f6ren, und auf <b>\u{1F9E9} Steckbausatz</b> klicken: V3D CAD sucht selbst die Stellen, an denen sich die Teile ber\u00fchren, und setzt dort einen <b>Zapfen</b> ins kleinere und eine passende <b>Buchse</b> ins gr\u00f6\u00dfere Teil. Jedes Teil l\u00e4sst sich danach einzeln flach drucken und von Hand zusammenstecken \u2014 ohne Kleber. Die Stelle f\u00fcr den Zapfen wird so gew\u00e4hlt, dass er vom Rand der Kontaktfl\u00e4che am weitesten weg sitzt; <b>zwei Zapfen je Stelle</b> sind voreingestellt, damit sich nichts verdreht. <b>Spiel</b> steht auf 0,2 mm \u2014 der bew\u00e4hrte Wert f\u00fcr PLA mit 0,4-mm-D\u00fcse.'],
     ['\u{1F9F2}','<b>Durchdringungen werden vorher aufgel\u00f6st.</b> Stecken zwei K\u00f6rper ineinander, geh\u00f6rt der gemeinsame Bereich beim Drucken genau einem von beiden \u2014 sonst drucken sich die Teile gegenseitig zu und passen hinterher nicht zusammen. Beschnitten wird das Teil, das <b>st\u00e4rker in das andere eindringt</b> (meist das kleinere), und h\u00f6chstens um ein Viertel seines Volumens, damit nichts verschwindet.'],

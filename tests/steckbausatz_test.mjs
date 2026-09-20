@@ -193,6 +193,34 @@ ok('Randabstand passt zur Scheibe (≈ 40 mm)',
    !!(r.dbg && r.dbg.verb[0] && r.dbg.verb[0].margin > 30), r.dbg && r.dbg.verb.map(v => Math.round(v.margin)));
 ok('unter 20 s durchgerechnet', r.ms < 20000, r.ms);
 
+console.log('\n── (9) Entartete Dreiecke bremsen Manifold nicht mehr aus ──');
+// Gefunden an einem Hunyuan3D-Netz: 439.692 Dreiecke, davon 187.652 mit
+// doppelter Ecke. Manifold LEHNT die nicht ab (dann griffe _healTrisForBool),
+// es rechnet sich daran fest — >25 min ohne Ergebnis statt 1,1 s.
+r = await pg.evaluate(async () => {
+  const W = await _mfInit();
+  const w = M => { const g = new THREE.BoxGeometry(20, 20, 20).toNonIndexed();
+                   return g.attributes.position.array; };
+  const rein = w();
+  const n = rein.length / 9;
+  // dieselbe Geometrie, aber hinter jedes Dreieck ein entartetes gehängt
+  const dreck = new Float32Array(rein.length * 2);
+  for (let i = 0; i < n; i++) {
+    dreck.set(rein.subarray(i * 9, i * 9 + 9), i * 18);
+    // entartet: dritte Ecke = erste
+    for (let q = 0; q < 6; q++) dreck[i * 18 + 9 + q] = rein[i * 9 + q];
+    for (let q = 0; q < 3; q++) dreck[i * 18 + 15 + q] = rein[i * 9 + q];
+  }
+  const zeit = o => { const t = performance.now(); const m = _mfFromSoup(W, o);
+                      const v = m.volume(), tri = m.numTri(); m.delete();
+                      return { ms: Math.round(performance.now() - t), v: Math.round(v), tri }; };
+  return { sauber: zeit(rein), verdreckt: zeit(dreck), nRein: n, nDreck: dreck.length / 9 };
+});
+ok('entartete Dreiecke werden verworfen', r.verdreckt.tri === r.sauber.tri,
+   { sauber: r.sauber.tri, verdreckt: r.verdreckt.tri, eingespeist: r.nDreck });
+ok('Volumen bleibt richtig', Math.abs(r.verdreckt.v - r.sauber.v) < 1, [r.sauber.v, r.verdreckt.v]);
+ok('kein Zeitverlust', r.verdreckt.ms < Math.max(500, r.sauber.ms * 20), [r.sauber.ms, r.verdreckt.ms]);
+
 ok('keine JS-Fehler', errs.length === 0, errs.slice(0, 3));
 await b.close();
 console.log(fails.length ? '\n✗ ' + fails.length + ' Fehler: ' + fails.join(', ') : '\n✓ alle Prüfungen bestanden');
