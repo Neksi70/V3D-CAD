@@ -6,7 +6,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const HIER = path.dirname(fileURLToPath(import.meta.url));
-const BASIS = process.argv[2] || 'http://127.0.0.1:8799/';
+const ARG = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+const BASIS = ARG[0] || 'http://127.0.0.1:8799/';
 const BILD = path.join(HIER, 'mona.jpg');
 const AUS = path.join(HIER, 'ausgabe');
 fs.mkdirSync(AUS, { recursive: true });
@@ -176,6 +177,48 @@ await handy.waitForFunction(() => window._kristall);
 const breit = await handy.evaluate(() => document.documentElement.scrollWidth);
 pruefe(breit <= 392, `Handy: keine Überbreite (${breit}px)`);
 await handy.screenshot({ path: path.join(AUS, 'handy.png') });
+
+// KI-Körper nur auf Wunsch: jeder Lauf kostet GPU-Kontingent bei Hugging Face
+if (process.argv.includes('--koerper')) {
+  const kp = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+  await kp.goto(BASIS);
+  await kp.waitForFunction(() => window._kristall);
+  await kp.setInputFiles('#datei', path.join(HIER, 'hund.jpg'));
+  await kp.waitForFunction(() => window._kristall.Q.tiefe, null, { timeout: 60000 });
+  await kp.selectOption('[data-k=frei]', 'tiefe');
+  await kp.waitForTimeout(800);
+  const t0 = Date.now();
+  await kp.click('[data-modus=koerper]');
+  await kp.waitForFunction(() => window._kristall.Q.koerper || window._kristall.Q.koerperFehler, null, { timeout: 300000 });
+  await kp.waitForTimeout(2500);
+  const k = await kp.evaluate(() => ({ fehler: window._kristall.Q.koerperFehler, K: window._kristall.Q.koerper,
+    P: { n: window._kristall.PKT.n, zMin: window._kristall.PKT.zMin, zMax: window._kristall.PKT.zMax, geklemmt: window._kristall.PKT.geklemmt },
+    relief: window._kristall.einst.relief, meldungen: document.getElementById('meldungen').innerText }));
+  pruefe(!k.fehler, `KI-Körper gebaut in ${Math.round((Date.now() - t0) / 1000)} s` + (k.fehler ? ': ' + k.fehler : ''));
+  if (k.K) {
+    pruefe(k.K.drehung === 'vorne' && k.K.passung > 0.6, `Ausrichtung ${k.K.drehung}, Umriss-Passung ${k.K.passung}`);
+    pruefe(k.K.tiefenpassung > 0.3, `Tiefe passt zur Foto-Tiefe (${k.K.tiefenpassung})`);
+    pruefe(k.relief > 15, `Relief-Tiefe automatisch auf echte Proportion (${k.relief} mm)`);
+    pruefe(k.P.zMax - k.P.zMin > 25, `Körper nutzt die Tiefe (${(k.P.zMax - k.P.zMin).toFixed(1)} mm)`);
+    pruefe(!/liegen am Rand/.test(k.meldungen), 'nichts wird am Blockrand geklemmt');
+    // Streifen quer durch den Block? Tiefe je Punkt darf nicht wild springen
+    const ausreisser = await kp.evaluate(() => {
+      const { pos, n } = window._kristall.PKT;
+      const raster = new Map(); let schlimm = 0;
+      for (let i = 0; i < n; i++) {
+        const sx = Math.round(pos[i * 3] * 2), sy = Math.round(pos[i * 3 + 1] * 2), z = pos[i * 3 + 2];
+        const s = sx + ',' + sy, v = raster.get(s);
+        if (!v) raster.set(s, [z, z]); else { if (z < v[0]) v[0] = z; if (z > v[1]) v[1] = z; }
+      }
+      for (const v of raster.values()) if (v[1] - v[0] > 30) schlimm++;
+      return schlimm;
+    });
+    pruefe(ausreisser < 20, `keine Punktschleier quer durch den Block (${ausreisser} Stellen mit >30 mm Sprung)`);
+  }
+  await kp.click('[data-sicht=seite]');
+  await kp.waitForTimeout(600);
+  await kp.screenshot({ path: path.join(AUS, 'koerper-seite.png') });
+}
 
 pruefe(konsole.length === 0, 'keine Konsolenfehler' + (konsole.length ? ': ' + konsole.join(' | ') : ''));
 await browser.close();

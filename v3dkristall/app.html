@@ -42,6 +42,7 @@ button.an{background:#1d3a55;border-color:var(--akzent)}
 button.haupt{background:#1f6fae;border-color:#3d97dc;font-weight:600}
 button:disabled{opacity:.45;cursor:default}
 .seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin:6px 0}
+.seg.vier{grid-template-columns:repeat(2,1fr)}
 .seg button{padding:7px 4px;font-size:13px}
 #ablage{display:block;border:2px dashed var(--rand);border-radius:10px;padding:16px;text-align:center;color:var(--leise);cursor:pointer;transition:border-color .15s}
 #ablage.drueber,#ablage:hover{border-color:var(--akzent);color:var(--text)}
@@ -105,10 +106,19 @@ button:disabled{opacity:.45;cursor:default}
   </div></details>
 
   <details open><summary>③ Aus 2D wird 3D</summary><div class="inhalt">
-    <div class="seg" id="modusWahl">
+    <div class="seg vier" id="modusWahl">
       <button data-modus="ki" title="KI schätzt die räumliche Tiefe aus dem Foto">KI-Tiefe</button>
+      <button data-modus="koerper" title="KI baut ein vollständiges 3D-Modell — mit Hinterkopf">KI-Körper 🧠</button>
       <button data-modus="hell" title="Helle Stellen kommen nach vorne (für Logos, Grafiken)">Helligkeit</button>
       <button data-modus="flach" title="Klassisch 2D in Ebenen">Flach 2D</button>
+    </div>
+    <div id="koerperZeilen">
+      <p class="hinweis" id="koerperStatus"></p>
+      <label class="zeile"><span>Feindetail Foto</span><input type="range" data-k="detail" min="0" max="5" step="0.1"><output></output></label>
+      <div class="knoepfe">
+        <button id="koerperEcht" title="Relief-Tiefe auf die vom Modell berechnete echte Tiefe setzen">Echte Proportion</button>
+        <button id="koerperNeu" title="Modell noch einmal berechnen lassen (kostet GPU-Kontingent)">Neu berechnen</button>
+      </div>
     </div>
     <div id="kiZeilen">
       <label class="haken"><input type="checkbox" data-k="fein"> Feinere Tiefe (langsamer, mehr Details)</label>
@@ -121,6 +131,7 @@ button:disabled{opacity:.45;cursor:default}
 
   <details open><summary>④ Rückseite (Volumen im Glas)</summary><div class="inhalt">
     <label class="zeile2"><span>Rückseite</span><select data-k="rueck">
+      <option value="koerper">Aus dem KI-Körper (echter Hinterkopf)</option>
       <option value="gerundet">Gerundet – geschlossener Körper</option>
       <option value="gespiegelt">Gespiegelt – Relief auch hinten</option>
       <option value="aus">Offen – nur Vorderseite</option>
@@ -135,6 +146,7 @@ button:disabled{opacity:.45;cursor:default}
     <label class="zeile2"><span>Hintergrund</span><select data-k="frei">
       <option value="person">Person freistellen (KI)</option>
       <option value="tiefe">Nach Tiefe (Hinteres weg)</option>
+      <option value="koerperUmriss">Umriss des KI-Körpers</option>
       <option value="aus">Nicht freistellen</option>
     </select></label>
     <label class="zeile" id="zeileSchwelleT"><span>Tiefen-Schwelle</span><input type="range" data-k="tiefeSchwelle" min="0" max="0.9" step="0.01"><output></output></label>
@@ -254,8 +266,8 @@ import { OrbitControls } from './lib/OrbitControls.js';
 // ───────────────────────── Einstellungen ─────────────────────────
 const STANDARD = {
   vorlage: '50x80x50', B: 50, H: 80, T: 50, rand: 5, relief: 20, zVersatz: 0,
-  modus: 'ki', fein: false, tiefeUmkehren: false, woelbung: 1, glaetten: 2,
-  rueck: 'gerundet', rueckTiefe: 10, rueckDichte: 0.2, rueckRundung: 0.18,
+  modus: 'ki', fein: false, tiefeUmkehren: false, woelbung: 1, glaetten: 2, detail: 1.5,
+  rueck: 'koerper', rueckTiefe: 10, rueckDichte: 0.2, rueckRundung: 0.18,
   frei: 'person', tiefeSchwelle: 0.3, kanteWeich: 0.8, form: 'keine', formWeich: 6,
   fuellen: false, zoom: 1, vx: 0, vy: 0,
   autoTon: true, hell: 0, kontrast: 0.15, gamma: 1, schaerfe: 0.8, schwelle: 0.06, invert: false,
@@ -299,7 +311,9 @@ const mm = (v, d = 1) => v.toLocaleString('de-DE', { minimumFractionDigits: d, m
 
 // ───────────────────────── Bilddaten ─────────────────────────
 // Q = Quelle: Helligkeit/Alpha in Arbeitsauflösung, KI-Karten in ihrer eigenen Auflösung
-const Q = { da: false, w: 0, h: 0, lum: null, alpha: null, hatAlpha: false, rgba: null, tiefe: null, person: null, kiLaeuft: false, kiFehler: '', nr: 0, sendeBlob: null };
+const Q = { da: false, w: 0, h: 0, lum: null, alpha: null, hatAlpha: false, rgba: null, tiefe: null, person: null,
+  kiLaeuft: false, kiFehler: '', nr: 0, sendeBlob: null, sendeW: 0, sendeH: 0,
+  koerper: null, koerperLaeuft: false, koerperFehler: '', koerperPhase: '' };
 
 function karte(w, h, daten) { return { w, h, d: daten }; }
 // bilinear an Pixelkoordinaten (x,y) einer Karte lesen
@@ -355,12 +369,14 @@ async function bildLaden(quelle, name) {
     alpha[i] = a;
     if (a < 0.97) transparent++;
   }
-  Object.assign(Q, { da: true, w, h, lum, alpha, hatAlpha: transparent > w * h * 0.01, rgba: px, tiefe: null, person: null, kiFehler: '', nr: Q.nr + 1, name: name || 'bild' });
+  Object.assign(Q, { da: true, w, h, lum, alpha, hatAlpha: transparent > w * h * 0.01, rgba: px, tiefe: null, person: null,
+    kiFehler: '', nr: Q.nr + 1, name: name || 'bild', koerper: null, koerperLaeuft: false, koerperFehler: '', koerperPhase: '' });
   // für die KI: max. 1024 px, PNG nur bei Transparenz
   const fs = Math.min(1, 1024 / Math.max(w, h));
   const c2 = document.createElement('canvas'); c2.width = Math.round(w * fs); c2.height = Math.round(h * fs);
   c2.getContext('2d').drawImage(c, 0, 0, c2.width, c2.height);
   Q.sendeBlob = await new Promise((ok) => c2.toBlob(ok, Q.hatAlpha ? 'image/png' : 'image/jpeg', 0.92));
+  Q.sendeW = c2.width; Q.sendeH = c2.height;
   $('leer').style.display = 'none';
   $('bilder').classList.add('da');
   $('ablageText').innerHTML = `<b>${esc(Q.name)}</b> (${Q.w}×${Q.h})<br><small>anderes Foto: hierher ziehen oder tippen</small>`;
@@ -368,6 +384,7 @@ async function bildLaden(quelle, name) {
   sichtSetzen('vorne');
   neu();
   kiHolen();
+  koerperStatus();
 }
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -391,6 +408,83 @@ async function kiHolen() {
     Q.kiFehler = e.name === 'AbortError' ? 'Zeitüberschreitung' : e.message;
   }
   Q.kiLaeuft = false; cache.clear(); kiStatus(); neu();
+}
+// ── KI-Körper: Foto → vollständiges 3D-Modell (Hunyuan3D auf HF-ZeroGPU) ──
+const KOERPER_FRIST = 360000;
+function b64(bytes) {
+  let t = '';
+  for (let i = 0; i < bytes.length; i += 4096) t += String.fromCharCode.apply(null, bytes.subarray(i, i + 4096));
+  return btoa(t);
+}
+// Maske in der Größe des gesendeten Bildes — daran richtet der Server das Modell aus
+async function maskePng() {
+  const mk = maskenKarte(0), c = document.createElement('canvas');
+  c.width = Q.sendeW; c.height = Q.sendeH;
+  const g = c.getContext('2d'), img = g.createImageData(c.width, c.height);
+  for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+    const v = lies(mk, (x + 0.5) * Q.w / c.width - 0.5, (y + 0.5) * Q.h / c.height - 0.5) * 255, o = (y * c.width + x) * 4;
+    img.data[o] = img.data[o + 1] = img.data[o + 2] = v; img.data[o + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  return new Promise((ok) => c.toBlob(ok, 'image/png'));
+}
+function koerperEntpacken(k) {
+  const u16 = (t) => { const b = atob(t), n = b.length >> 1, a = new Float32Array(n);
+    for (let i = 0; i < n; i++) a[i] = (b.charCodeAt(2 * i) | (b.charCodeAt(2 * i + 1) << 8)) / 65535 * k.spanne + k.lo;
+    return a; };
+  const bits = atob(k.belegt), n = k.raster * k.raster, bel = new Float32Array(n);
+  for (let i = 0; i < n; i++) bel[i] = (bits.charCodeAt(i >> 3) >> (7 - (i & 7))) & 1;
+  return { raster: k.raster, feld: k.feld, dicke: k.dicke, passung: k.passung, tiefenpassung: k.tiefenpassung,
+           drehung: k.drehung, dreiecke: k.dreiecke,
+           vorn: karte(k.raster, k.raster, u16(k.vorn)), hinten: karte(k.raster, k.raster, u16(k.hinten)),
+           belegt: karte(k.raster, k.raster, bel) };
+}
+async function koerperHolen(erzwingen) {
+  if (!Q.da || Q.koerperLaeuft || (Q.koerper && !erzwingen)) return;
+  const nr = Q.nr;
+  Q.koerperLaeuft = true; Q.koerperFehler = ''; Q.koerperPhase = 'Auftrag wird gesendet…'; koerperStatus();
+  try {
+    const [bildB, maskeB] = await Promise.all([Q.sendeBlob.arrayBuffer(), (await maskePng()).arrayBuffer()]);
+    const r = await fetch('api/koerper', { method: 'POST', body: JSON.stringify({
+      bild: b64(new Uint8Array(bildB)), maske: b64(new Uint8Array(maskeB)) }) });
+    const j = await r.json().catch(() => ({ error: 'Antwort unlesbar (' + r.status + ')' }));
+    if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+    const ende = Date.now() + KOERPER_FRIST;
+    while (Date.now() < ende) {
+      await new Promise((ok) => setTimeout(ok, 2000));
+      if (nr !== Q.nr) { Q.koerperLaeuft = false; return; }
+      const st = await (await fetch('api/koerper?id=' + j.id)).json().catch(() => ({ status: 'laeuft' }));
+      Q.koerperPhase = st.phase || ''; koerperStatus();
+      if (st.status === 'fertig') { Q.koerper = koerperEntpacken(st.koerper); cache.clear(); erzeugen(); echteTiefe(); break; }
+      if (st.status === 'fehler') throw new Error(st.error || 'unbekannter Fehler');
+    }
+    if (!Q.koerper) throw new Error('Zeitüberschreitung – der Space antwortet nicht');
+  } catch (e) {
+    if (nr === Q.nr) Q.koerperFehler = e.message;
+  }
+  Q.koerperLaeuft = false; cache.clear(); koerperStatus(); neu();
+}
+// Beim ersten Modell die Relief-Tiefe auf die echte Tiefe des Körpers stellen
+function echteTiefe() {
+  const kz = koerperZugriff(PKT.P);
+  if (!kz || !(kz.dickeMm > 0.5)) return false;
+  // Schichten, Feindetail und Streuung brauchen auch Luft
+  const platz = S.T - 2 * S.rand - (S.schichten - 1 + S.streuung) * S.schichtAbstand - S.detail - 0.5;
+  S.relief = Math.min(Math.round(kz.dickeMm * 2) / 2, Math.max(1, Math.round(platz * 2) / 2));
+  speichern(); formularFuellen();
+  return true;
+}
+function koerperStatus() {
+  const el = $('koerperStatus'); if (!el) return;
+  if (!Q.da) el.textContent = 'Erst ein Foto laden.';
+  else if (Q.koerperLaeuft) el.innerHTML = `⏳ ${esc(Q.koerperPhase || 'läuft…')} <small>(dauert etwa eine halbe Minute)</small>`;
+  else if (Q.koerperFehler) el.innerHTML = `<span class="fehler">${esc(Q.koerperFehler)}</span> – solange gilt die Foto-Tiefe.`;
+  else if (Q.koerper) {
+    const K = Q.koerper;
+    el.innerHTML = `✓ Körper steht (${zahl(K.dreiecke)} Dreiecke, Ansicht „${esc(K.drehung)}", Umriss-Passung ${Math.round(K.passung * 100)} %)`
+      + (K.passung < 0.45 || K.tiefenpassung < 0.15 ? ' <span class="warn">– Passung mäßig: Freistellen prüfen, dann neu berechnen.</span>' : '');
+  } else el.innerHTML = 'Noch kein Modell. <button id="koerperStart" style="padding:2px 8px">Jetzt berechnen</button>';
+  const b = $('koerperStart'); if (b) b.onclick = () => koerperHolen(true);
 }
 function kiStatus() {
   const el = $('kiStatus');
@@ -422,6 +516,7 @@ function tonKarte() {
 function freiArt() {
   if (S.frei === 'person' && Q.person) return 'person';
   if (S.frei === 'tiefe' && Q.tiefe) return 'tiefe';
+  if (S.frei === 'koerperUmriss' && Q.koerper) return 'koerper';
   return 'aus';
 }
 // Maske in Arbeitsauflösung (0..1), weiche Kante in Pixeln
@@ -433,6 +528,7 @@ function maskenKarte(weichPx) {
     for (let y = 0, i = 0; y < h; y++) for (let x = 0; x < w; x++, i++) {
       let v = hatAlpha ? alpha[i] : 1;
       if (art === 'person') v *= lies(Q.person, (x + 0.5) * Q.person.w / w - 0.5, (y + 0.5) * Q.person.h / h - 0.5);
+      else if (art === 'koerper') { const R = koerperRaster(); v *= R ? lies(R.K.belegt, R.rx(x), R.ry(y)) : 1; }
       else if (art === 'tiefe') {
         let d = lies(Q.tiefe, (x + 0.5) * Q.tiefe.w / w - 0.5, (y + 0.5) * Q.tiefe.h / h - 0.5);
         if (S.tiefeUmkehren) d = 1 - d;
@@ -446,7 +542,7 @@ function maskenKarte(weichPx) {
 }
 // Tiefe 0..1 (1 = vorne), innerhalb der Maske normiert, geglättet, gewölbt
 function tiefenKarte(maske) {
-  const quelle = S.modus === 'ki' && Q.tiefe ? 'ki' : S.modus === 'flach' ? 'flach' : 'hell';
+  const quelle = (S.modus === 'ki' || S.modus === 'koerper') && Q.tiefe ? 'ki' : S.modus === 'flach' ? 'flach' : 'hell';
   if (quelle === 'flach') return null;
   return gemerkt(`tiefe|${quelle}|${S.glaetten}|${S.woelbung}|${S.tiefeUmkehren}|${S.invert}|${S.schaerfe}|${cacheSchluesselMaske}|${Q.tiefe ? Q.tiefe.fein : ''}`, () => {
     let k;
@@ -530,6 +626,27 @@ function ton(l) {
   l = (l - 0.5) * (1 + S.kontrast) + 0.5 + S.hell;
   l = Math.pow(clamp(l, 0, 1), 1 / S.gamma);
   return l <= S.schwelle ? 0 : (l - S.schwelle) / (1 - S.schwelle);
+}
+
+// Zuordnung Arbeits-Pixel → Raster des KI-Körpers
+function koerperRaster() {
+  const K = Q.koerper; if (!K || !Q.sendeW) return null;
+  const sk = Q.w / Q.sendeW, x0 = K.feld[0] * sk, y0 = K.feld[1] * sk, kante = K.feld[2] * sk;
+  const f = K.raster / kante;
+  return { K, kante, rx: (u) => (u - x0) * f - 0.5, ry: (v) => (v - y0) * f - 0.5 };
+}
+// … und in Millimeter: „Relief-Tiefe" ist im Körper-Modus die Gesamttiefe des Körpers
+function koerperZugriff(P) {
+  const R = koerperRaster(); if (!R || !P || !P.bild) return null;
+  const mmProRaster = (R.kante / R.K.raster) * P.k;
+  const dickeMm = R.K.dicke * mmProRaster;
+  const skala = dickeMm > 0.1 ? S.relief / dickeMm : 1;
+  return {
+    dickeMm,
+    belegt: (u, v) => lies(R.K.belegt, R.rx(u), R.ry(v)),
+    vorn: (u, v) => -lies(R.K.vorn, R.rx(u), R.ry(v)) * mmProRaster * skala,
+    hinten: (u, v) => -lies(R.K.hinten, R.rx(u), R.ry(v)) * mmProRaster * skala,
+  };
 }
 
 // ───────────────────────── Platzierung im Block ─────────────────────────
@@ -641,7 +758,7 @@ function erzeugen() {
   const P = platz();
   const ziel = { pos: PKT.pos.length ? PKT.pos : new Float32Array(600000), n: 0, cap: PKT.pos.length ? PKT.pos.length / 3 : 200000, voll: false };
   const zc = 0;   // erst um 0 bauen, danach mittig in den Block schieben (+ „Lage in der Tiefe")
-  let tk = null, mk = null, tn = null;
+  let tk = null, mk = null, tn = null, kz = null;
   if (Q.da && P.bild) {
     const weichPx = S.kanteWeich / P.k;
     mk = maskenKarte(weichPx);
@@ -657,25 +774,35 @@ function erzeugen() {
       if (m < 0.004) return 0;
       return ton(lies(tn, u, v)) * m * formFaktor(P, x, y);
     };
-    const zAus = tk ? (x, y) => {
+    kz = S.modus === 'koerper' ? koerperZugriff(P) : null;
+    const foto = (u, v) => tk ? lies(tk, u * sx - 0.5, v * sy - 0.5) - 0.5 : 0;   // −0,5 … +0,5
+    const zAus = kz ? (x, y) => {
+      // Vorderseite aus dem KI-Modell (die Karten sind bis zum Rand aufgefüllt),
+      // Feindetail (Augen, Fell) aus der Foto-Tiefe darüber
       const u = (x - P.ix0) / P.k, v = (P.iy1 - y) / P.k;
-      return zc + (lies(tk, u * sx - 0.5, v * sy - 0.5) - 0.5) * S.relief;
-    } : () => zc;
+      return zc + kz.vorn(u, v) + foto(u, v) * S.detail;
+    } : tk ? (x, y) => zc + foto((x - P.ix0) / P.k, (P.iy1 - y) / P.k) * S.relief : () => zc;
     rastern(P.vx0, P.vx1, P.vy0, P.vy1, wert, zAus, ziel);
   }
   // Rückseite: geschlossener Körper statt flacher Abbruchkante
-  if (Q.da && P.bild && mk && S.modus !== 'flach' && S.rueck !== 'aus' && S.rueckTiefe > 0 && S.rueckDichte > 0 && !ziel.voll) {
-    const kuppel = S.rueck === 'gerundet' ? kuppelKarte(mk) : null;
+  const rueckArt = S.rueck === 'koerper' && !Q.koerper ? 'gerundet' : S.rueck;   // ohne Modell: Kuppel
+  if (Q.da && P.bild && mk && S.modus !== 'flach' && rueckArt !== 'aus' && S.rueckDichte > 0 &&
+      (rueckArt === 'koerper' || S.rueckTiefe > 0) && !ziel.voll) {
+    const kuppel = rueckArt !== 'gespiegelt' ? kuppelKarte(mk) : null;
+    const kzR = rueckArt === 'koerper' ? (kz || koerperZugriff(P)) : null;
     const zBasis = zc - S.relief / 2, sx = tk ? tk.w / Q.w : 0, sy = tk ? tk.h / Q.h : 0;
     const wertR = (x, y) => {
       const u = (x - P.ix0) / P.k - 0.5, v = (P.iy1 - y) / P.k - 0.5;
       if (u < -0.5 || v < -0.5 || u > Q.w - 0.5 || v > Q.h - 0.5) return 0;
-      return S.rueckDichte * glatt(0.35, 0.65, lies(mk, u, v)) * formFaktor(P, x, y);
+      let w = S.rueckDichte * glatt(0.35, 0.65, lies(mk, u, v)) * formFaktor(P, x, y);
+      // Beim KI-Körper nur innerhalb des Modells — sonst steht hinter dem Kopf eine flache Platte
+      if (kzR) w *= glatt(0.3, 0.7, kzR.belegt(u + 0.5, v + 0.5));
+      return w;
     };
     const zR = (x, y) => {
       const u = (x - P.ix0) / P.k, v = (P.iy1 - y) / P.k;
-      const w = kuppel ? lies(kuppel, u - 0.5, v - 0.5)
-                       : tk ? lies(tk, u * sx - 0.5, v * sy - 0.5) : 0.5;
+      if (kzR) return zc + kzR.hinten(u, v);
+      const w = kuppel ? lies(kuppel, u - 0.5, v - 0.5) : tk ? lies(tk, u * sx - 0.5, v * sy - 0.5) : 0.5;
       return zBasis - S.rueckTiefe * w;
     };
     rastern(P.vx0, P.vx1, P.vy0, P.vy1, wertR, zR, ziel);
@@ -807,6 +934,15 @@ function statistik() {
   const sek = PKT.n / Math.max(1, S.rate);
   $('stZeit').textContent = PKT.n ? (sek < 90 ? `${Math.round(sek)} s` : `${Math.round(sek / 60)} min`) : '–';
   if (Q.da && S.modus === 'ki' && !Q.tiefe && !Q.kiLaeuft) melde('Keine KI-Tiefe – Helligkeit wird als Tiefe genommen.');
+  if (S.modus === 'koerper') {
+    if (Q.koerperLaeuft) melde('KI baut den Körper – Vorschau zeigt noch die Foto-Tiefe.', 'leise');
+    else if (!Q.koerper && !Q.koerperFehler) melde('Noch kein KI-Körper – unter ③ „Jetzt berechnen".', 'leise');
+    else if (Q.koerper) {
+      const kz = koerperZugriff(PKT.P);
+      if (kz && Math.abs(kz.dickeMm - S.relief) > 1)
+        melde(`Echte Tiefe des Körpers wäre ${mm(kz.dickeMm)} mm (eingestellt: ${mm(S.relief)} mm).`, 'leise');
+    }
+  }
   if (Q.da && S.modus === 'ki' && Q.kiLaeuft) melde('KI rechnet – Vorschau zunächst nach Helligkeit.', 'leise');
   if (Q.da && S.frei === 'person' && Q.person) {
     let s = 0; const d = Q.person.d; for (let i = 0; i < d.length; i += 7) s += d[i];
@@ -817,7 +953,10 @@ function statistik() {
   }
   if (PKT.voll) melde(`Obergrenze von ${zahl(HARTGRENZE)} Punkten erreicht – Punktabstand vergrößern.`, 'fehler');
   else if (PKT.n > S.maxPunkte) melde(`Mehr als ${zahl(S.maxPunkte)} Punkte – Punktabstand vergrößern oder Schichten verringern.`, 'fehler');
-  if (PKT.geklemmt > 0) melde(`Relief ${mm(S.relief)} mm + Rücken ${mm(S.rueck === 'aus' ? 0 : S.rueckTiefe)} mm passen nicht in die nutzbare Tiefe (${mm(S.T - 2 * S.rand)} mm) – ${zahl(PKT.geklemmt)} Punkte liegen am Rand.`);
+  if (PKT.geklemmt > Math.max(20, PKT.n * 0.002)) {
+    const rueckMm = S.rueck === 'aus' || S.rueck === 'koerper' ? 0 : S.rueckTiefe;
+    melde(`Relief ${mm(S.relief)} mm${rueckMm ? ` + Rücken ${mm(rueckMm)} mm` : ''} passt nicht in die nutzbare Tiefe (${mm(S.T - 2 * S.rand)} mm) – ${zahl(PKT.geklemmt)} Punkte liegen am Rand.`);
+  }
   if (S.abstand < 0.06) melde('Sehr enger Punktabstand – Rissgefahr im Glas.');
   if (PKT.n && !PKT.geklemmt) {
     const frei = (S.T - 2 * S.rand) - (PKT.zMax - PKT.zMin);
@@ -975,7 +1114,7 @@ const FORMAT = {
   rand: (v) => mm(v) + ' mm', relief: (v) => mm(v) + ' mm', zVersatz: (v) => mm(v) + ' mm', kanteWeich: (v) => mm(v) + ' mm',
   formWeich: (v) => mm(v) + ' mm', textGroesse: (v) => mm(v) + ' mm', abstand: (v) => mm(v, 3) + ' mm', schichtAbstand: (v) => mm(v, 2) + ' mm',
   tiefeSchwelle: (v) => Math.round(v * 100) + ' %', streuung: (v) => Math.round(v * 100) + ' %', schwelle: (v) => Math.round(v * 100) + ' %',
-  rueckTiefe: (v) => mm(v) + ' mm', rueckDichte: (v) => Math.round(v * 100) + ' %',
+  detail: (v) => mm(v) + ' mm', rueckTiefe: (v) => mm(v) + ' mm', rueckDichte: (v) => Math.round(v * 100) + ' %',
   rueckRundung: (v) => Math.round(v * 100) + ' %', zoom: (v) => mm(v, 2) + '×', vx: (v) => v + ' %', vy: (v) => v + ' %', schichten: (v) => String(v),
 };
 const eingaben = [...document.querySelectorAll('[data-k]')];
@@ -996,7 +1135,10 @@ function ausgabe(el) {
 }
 function sichtbarkeit() {
   $('zeileSchwelleT').style.display = S.frei === 'tiefe' ? '' : 'none';
-  $('kiZeilen').style.display = S.modus === 'ki' ? '' : 'none';
+  $('kiZeilen').style.display = S.modus === 'ki' || S.modus === 'koerper' ? '' : 'none';
+  $('koerperZeilen').style.display = S.modus === 'koerper' ? '' : 'none';
+  const koerperRueck = S.rueck === 'koerper';
+  document.querySelector('[data-k=rueckTiefe]').closest('label').style.display = koerperRueck ? 'none' : '';
   $('zeileTextEbene').style.display = S.modus === 'flach' ? 'none' : '';
   document.querySelector('[data-k=rueck]').closest('details').style.display = S.modus === 'flach' ? 'none' : '';
   const rueckAn = S.rueck !== 'aus';
@@ -1038,7 +1180,10 @@ document.querySelectorAll('#modusWahl button').forEach((b) => b.addEventListener
   S.modus = b.dataset.modus;
   if (S.modus === 'flach' && S.schichten < 2) S.schichten = 2;
   speichern(); formularFuellen(); neu();
+  if (S.modus === 'koerper') koerperHolen();
 }));
+$('koerperEcht').addEventListener('click', () => { if (echteTiefe()) neu(true); });
+$('koerperNeu').addEventListener('click', () => koerperHolen(true));
 document.querySelectorAll('[data-sicht]').forEach((b) => b.addEventListener('click', () => sichtSetzen(b.dataset.sicht)));
 $('glasAn').addEventListener('click', () => { $('glasAn').classList.toggle('an'); glas.visible = $('glasAn').classList.contains('an'); zeichnen(); });
 $('export').addEventListener('click', () => { $('export').disabled = true; setTimeout(() => { try { exportieren(); } finally { $('export').disabled = false; } }, 20); });

@@ -13,6 +13,26 @@
 3. Export: DXF (POINT, R12), PLY (binär), XYZ, STL (Relieffläche + Text als Kacheln), Tiefenkarte PNG.
    Achsen wählbar (Bild in X/Y oder X/Z), Nullpunkt Blockmitte oder -ecke. Einheit mm.
 
+## KI-Körper (Modus ③ „KI-Körper")
+
+Foto → **Hunyuan3D-2** (Hugging-Face-ZeroGPU-Space, Token aus `~/.config/volme3d/hf_token`,
+derselbe wie bei V3D CAD) → GLB → Server rechnet daraus zwei Tiefenkarten im Raster des Fotos:
+Vorderseite und Rückseite. Damit hat der Hinterkopf echte Form statt geratener Kuppel.
+Dauer ~20 s, Auftrag mit Warteschlange (`POST /api/koerper`, `GET /api/koerper?id=`).
+
+Fallen, die beim Bauen aufgefallen sind:
+- **Ausrichtung ist nicht garantiert.** Der Server probiert 6 Achsdrehungen und nimmt die beste aus
+  Umriss-Überdeckung **plus** Korrelation mit der Foto-Tiefenkarte. Der Tiefenteil ist Pflicht:
+  Umriss allein kann Vorder- und Rückseite nicht unterscheiden (180°-Drehung + Spiegelung ergibt
+  denselben Umriss). Deshalb sind Spiegelungen als Kandidaten ausgeschlossen.
+- **Karten müssen bis zum Bildrand aufgefüllt werden** (`fuellen()`, Flutfüllung mit Nachbarwerten).
+  Sonst mischt die Interpolation im Browser echte Tiefen mit Nullen → Punktschleier quer durch den Block.
+- **Maßstab über robuste Perzentile** (0,5 / 99,5 %), sonst bestimmt ein einzelner Zipfel des Netzes
+  die Tiefe des ganzen Motivs.
+- Gemälde ergeben korrekterweise eine flache Platte (Mona Lisa: 0,15 von 2,0 Einheiten tief).
+- Die Foto-Tiefe bleibt als **Feindetail** (Regler, Standard 1,5 mm) auf dem Modell liegen — das
+  erzeugte Netz ist glatter als das Foto.
+
 **Rückseite** (Abschnitt ④): Ohne sie endet das Motiv hinten als flache Wand (Rückmeldung
 Kristina, 20.09.2026). „Gerundet" legt eine Wölbung dahinter — Abstand zum Umriss per
 Chamfer-Distanztransformation, Kreisprofil, dadurch echte Kuppel statt Plateau. „Gespiegelt"
@@ -55,6 +75,7 @@ nicht einfach „größeres Modell" einsetzen.
 cd ~ && node v3dkristall/tests/ui-test.mjs [basis-url]
 ```
 
+`--koerper` prüft zusätzlich die ganze Hunyuan3D-Kette (kostet GPU-Kontingent).
 Prüft KI-Anfrage, Punkte im Block, Freistellung, alle Exporte (Inhalt nachgerechnet),
 Text, Flach-Modus, gespeicherte Einstellungen und Handy-Breite. Testbild: Mona Lisa (gemeinfrei).
 

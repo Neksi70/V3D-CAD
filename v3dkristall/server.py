@@ -6,11 +6,14 @@ GET  /lib/…            → Three.js + OrbitControls
 POST /api/tiefe        → Bild (Rohbytes, JPEG/PNG) → JSON mit Tiefenkarte
                          (Depth Anything V2 Small) und optional Personen-Maske (MODNet)
                          Query: fein=1 (höhere Auflösung), person=1 (Maske mitrechnen)
+POST /api/koerper      → JSON {bild, maske} → Auftrag für den KI-Körper (Hunyuan3D-2 auf
+                         Hugging-Face-ZeroGPU): liefert {id}
+GET  /api/koerper?id=… → Stand des Auftrags, fertig = Tiefenkarten vorn/hinten
 
 Beide Modelle laufen per onnxruntime auf der CPU, Lizenz Apache-2.0.
 Läuft nur auf 127.0.0.1 (öffentlich über den Funnel-Pfad /kristall).
 Start: python3 server.py [port]"""
-import base64, http.server, io, json, os, sys, threading
+import base64, http.server, io, json, os, sys, tempfile, threading, time, uuid
 
 import numpy as np
 from PIL import Image
@@ -25,6 +28,58 @@ TYPEN = {".js": "text/javascript; charset=utf-8", ".txt": "text/plain; charset=u
 
 _sitzungen = {}
 _lade_lock = threading.Lock()
+
+# ── KI-Körper (Hunyuan3D-2 über Hugging Face) ────────────────────────
+# Eine Generierung zur Zeit (GPU-Kontingent!), Tagesbremse, fertige Aufträge
+# nach 30 min vergessen. Der Token liegt bei V3D CAD: ~/.config/volme3d/hf_token
+KOERPER_MAX_TAG = 60
+KOERPER_TTL = 1800
+_koerper_auftraege = {}
+_koerper_lock = threading.Lock()      # nur einer rechnet
+_koerper_tag = ['', 0]
+
+
+def _koerper_kontingent():
+    heute = time.strftime('%Y-%m-%d')
+    if _koerper_tag[0] != heute:
+        _koerper_tag[0], _koerper_tag[1] = heute, 0
+    if _koerper_tag[1] >= KOERPER_MAX_TAG:
+        return False
+    _koerper_tag[1] += 1
+    return True
+
+
+def _koerper_lauf(auftrag, bild_bytes, maske_bytes):
+    import numpy as np
+    import koerper
+    pfad = os.path.join(tempfile.gettempdir(), 'v3dkristall_%s.jpg' % auftrag['id'])
+    try:
+        bild = Image.open(io.BytesIO(bild_bytes)).convert('RGB')
+        bild.save(pfad, 'JPEG', quality=92)
+        maske = np.asarray(Image.open(io.BytesIO(maske_bytes)).convert('L'), np.float32) / 255.0
+        if maske.shape != (bild.height, bild.width):
+            maske = np.asarray(Image.fromarray(maske).resize(bild.size, Image.BILINEAR), np.float32)
+        auftrag['phase'] = 'Tiefe wird geschätzt…'
+        tw, th, d = tiefe(bild, False)
+        d = np.asarray(Image.fromarray(d).resize(bild.size, Image.BILINEAR), np.float32)
+        auftrag['phase'] = 'Warten auf freie GPU…'
+        with _koerper_lock:
+            auftrag['phase'] = 'KI baut das 3D-Modell…'
+            k = koerper.bauen(pfad, maske, d)
+        auftrag['ergebnis'] = koerper.als_json(k)
+        auftrag['status'] = 'fertig'
+    except Exception as e:
+        text = str(e).replace('\n', ' ')[:300]
+        if 'quota' in text.lower() or 'exceeded' in text.lower():
+            text = 'Das GPU-Kontingent bei Hugging Face ist gerade aufgebraucht – später noch einmal.'
+        auftrag['fehler'] = text
+        auftrag['status'] = 'fehler'
+    finally:
+        auftrag['ts'] = time.time()
+        try:
+            os.remove(pfad)
+        except OSError:
+            pass
 
 
 def sitzung(name):
@@ -91,11 +146,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(404, {"error": "unbekannt"})
             with open(datei, "rb") as f:
                 return self._send(200, f.read(), TYPEN.get(os.path.splitext(name)[1], "application/octet-stream"))
+        if pfad.endswith("/api/koerper"):
+            return self._koerper_stand(self.path.partition("?")[2])
         with open(os.path.join(BASE, "app.html"), "rb") as f:
             self._send(200, f.read(), "text/html; charset=utf-8")
 
     def do_POST(self):
         pfad, _, query = self.path.partition("?")
+        if pfad.endswith("/api/koerper"):
+            return self._koerper_start()
         if not pfad.endswith("/api/tiefe"):
             return self._json(404, {"error": "unbekannt"})
         n = int(self.headers.get("Content-Length") or 0)
@@ -129,6 +188,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(500, {"error": "Tiefenschätzung fehlgeschlagen: %s" % e})
         finally:
             SLOTS.release()
+        self._json(200, antwort)
+
+    def _koerper_start(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0 or n > 2 * MAX_BILD:
+            return self._json(400, {"error": "Kein oder zu großes Bild"})
+        try:
+            j = json.loads(self.rfile.read(n))
+            bild = base64.b64decode(j["bild"])
+            maske = base64.b64decode(j["maske"])
+        except Exception:
+            return self._json(400, {"error": "Anfrage unlesbar"})
+        for jid, a in [(k, v) for k, v in _koerper_auftraege.items() if v["ts"] < time.time() - KOERPER_TTL]:
+            del _koerper_auftraege[jid]
+        if not _koerper_kontingent():
+            return self._json(429, {"error": "Heute sind schon %d KI-Körper gerechnet worden." % KOERPER_MAX_TAG})
+        jid = uuid.uuid4().hex[:12]
+        auftrag = {"id": jid, "status": "laeuft", "phase": "Auftrag angenommen…", "ts": time.time()}
+        _koerper_auftraege[jid] = auftrag
+        threading.Thread(target=_koerper_lauf, args=(auftrag, bild, maske), daemon=True).start()
+        self._json(200, {"id": jid})
+
+    def _koerper_stand(self, query):
+        q = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
+        a = _koerper_auftraege.get(q.get("id", ""))
+        if not a:
+            return self._json(404, {"error": "Auftrag unbekannt (zu alt?)"})
+        antwort = {"status": a["status"], "phase": a.get("phase", "")}
+        if a["status"] == "fertig":
+            antwort["koerper"] = a["ergebnis"]
+        elif a["status"] == "fehler":
+            antwort["error"] = a.get("fehler", "unbekannter Fehler")
         self._json(200, antwort)
 
     def log_message(self, fmt, *args):
