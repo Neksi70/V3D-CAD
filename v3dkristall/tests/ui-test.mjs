@@ -102,9 +102,9 @@ const zeilen = fs.readFileSync(plyt, 'utf8').split('\n');
 const kEnde = zeilen.indexOf('end_header');
 const pts = zeilen.slice(kEnde + 1).filter(Boolean).map((z) => z.split(' ').map(Number));
 pruefe(zeilen[1] === 'format ascii 1.0' && zeilen.includes(`element vertex ${n}`) && pts.length === n, 'PLY-Text: Kopf und Zeilenzahl passen');
-const ext = (k) => [Math.min(...pts.map((q) => q[k])), Math.max(...pts.map((q) => q[k]))];
+const ext = (k) => pts.reduce((a, q) => [Math.min(a[0], q[k]), Math.max(a[1], q[k])], [Infinity, -Infinity]);
 const [ex, ey, ez] = [ext(0), ext(1), ext(2)];
-pruefe(ez[1] - ez[0] > 50 && ey[1] - ey[0] < 25 && ex[1] - ex[0] <= 40.5, `PLY-Text: Z = Höhe (${(ez[1] - ez[0]).toFixed(1)}), Y = Tiefe (${(ey[1] - ey[0]).toFixed(1)}), X = Breite (${(ex[1] - ex[0]).toFixed(1)})`);
+pruefe(ez[1] - ez[0] > 50 && ey[1] - ey[0] < 35 && ex[1] - ex[0] <= 40.5, `PLY-Text: Z = Höhe (${(ez[1] - ez[0]).toFixed(1)}), Y = Tiefe (${(ey[1] - ey[0]).toFixed(1)}), X = Breite (${(ex[1] - ex[0]).toFixed(1)})`);
 // intern z = zum Betrachter → Export Y = −z (vorne = −Y), Z = Höhe
 const intern = await seite.evaluate(() => Array.from(window._kristall.PKT.pos.subarray(0, 3)));
 pruefe(Math.abs(pts[0][0] - intern[0]) < 1e-3 && Math.abs(pts[0][1] + intern[2]) < 1e-3 && Math.abs(pts[0][2] - intern[1]) < 1e-3, 'X/Z-Achsen: Betrachterseite = −Y, Bildhöhe = Z');
@@ -130,6 +130,21 @@ await seite.selectOption('#maschine', 'xtool');
 await seite.selectOption('#vorlage', '50x80x50');
 await seite.waitForTimeout(1200);
 
+// Rückseite: geschlossener Körper, mittig in der Tiefe
+const rueck = {};
+for (const art of ['aus', 'gerundet', 'gespiegelt']) {
+  await seite.selectOption('[data-k=rueck]', art);
+  await seite.waitForTimeout(900);
+  rueck[art] = await seite.evaluate(() => { const K = window._kristall.PKT; return { n: K.n, zMin: K.zMin, zMax: K.zMax, geklemmt: K.geklemmt }; });
+}
+pruefe(rueck.gerundet.n > rueck.aus.n * 1.5, `Rückseite bringt Punkte dazu (${rueck.aus.n} → ${rueck.gerundet.n})`);
+pruefe(rueck.gerundet.zMax - rueck.gerundet.zMin > rueck.aus.zMax - rueck.aus.zMin + 5, `Rücken vertieft das Motiv (${(rueck.aus.zMax - rueck.aus.zMin).toFixed(1)} → ${(rueck.gerundet.zMax - rueck.gerundet.zMin).toFixed(1)} mm)`);
+pruefe(rueck.gerundet.geklemmt === 0 && Math.abs(rueck.gerundet.zMin + rueck.gerundet.zMax) < 1.5, 'Tiefe automatisch mittig, nichts geklemmt');
+const tiefe = (r) => r.zMax - r.zMin;
+pruefe(tiefe(rueck.gespiegelt) > tiefe(rueck.aus) + 5, `Gespiegelte Rückseite vertieft ebenfalls (${tiefe(rueck.aus).toFixed(1)} → ${tiefe(rueck.gespiegelt).toFixed(1)} mm)`);
+await seite.selectOption('[data-k=rueck]', 'gerundet');
+await seite.waitForTimeout(900);
+
 // Text + Modi
 await seite.evaluate(() => document.querySelector('[data-k=text]').closest('details').open = true);
 await seite.fill('[data-k=text]', 'Mona Lisa\n1503');
@@ -146,7 +161,7 @@ await seite.screenshot({ path: path.join(AUS, 'mit-text.png') });
 await seite.click('[data-modus=flach]');
 await seite.waitForTimeout(900);
 const flach = await seite.evaluate(() => { const { PKT } = window._kristall; return PKT.zMax - PKT.zMin; });
-pruefe(flach < 3, `Flach 2D: Tiefe nur Schichten (${flach.toFixed(2)} mm)`);
+pruefe(flach < 3, `Flach 2D: keine Rückseite, Tiefe nur Schichten (${flach.toFixed(2)} mm)`);
 
 // Einstellungen bleiben nach Neuladen
 await seite.reload();

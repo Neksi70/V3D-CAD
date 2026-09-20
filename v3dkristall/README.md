@@ -13,6 +13,12 @@
 3. Export: DXF (POINT, R12), PLY (binär), XYZ, STL (Relieffläche + Text als Kacheln), Tiefenkarte PNG.
    Achsen wählbar (Bild in X/Y oder X/Z), Nullpunkt Blockmitte oder -ecke. Einheit mm.
 
+**Rückseite** (Abschnitt ④): Ohne sie endet das Motiv hinten als flache Wand (Rückmeldung
+Kristina, 20.09.2026). „Gerundet" legt eine Wölbung dahinter — Abstand zum Umriss per
+Chamfer-Distanztransformation, Kreisprofil, dadurch echte Kuppel statt Plateau. „Gespiegelt"
+setzt das Relief seitenverkehrt nach hinten. Die Tiefe wird danach automatisch mittig in den
+Block geschoben, „Lage in der Tiefe" verschiebt relativ dazu.
+
 Modi: KI-Tiefe · Helligkeit als Tiefe (Logos, Grafik; Ersatz, wenn die KI nicht erreichbar ist) · Flach 2D.
 
 ## Maschinenprofile (⑨ Export → Maschine)
