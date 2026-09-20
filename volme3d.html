@@ -2898,6 +2898,36 @@ const firebaseConfig = {
   </div>
 </div>
 
+<!-- Steckbausatz: mehrere Körper → Zapfen/Buchse an den Kontaktflächen (client-seitig, Manifold-WASM) -->
+<div id="snp-modal" class="g3dm" onclick="if(event.target===this)_snpClose()">
+  <div class="g3box">
+    <div class="g3hdr">🧩 Steckbausatz<span class="vx" onclick="_snpClose()">✕</span></div>
+    <div class="g3body">
+      <div class="g3ctrl" style="min-width:340px">
+        <span class="vsec" title="Der Zapfen sitzt am kleineren Teil, die passende Buchse wird ins größere gefräst.">Zapfen</span>
+        <div class="vrow"><label title="Durchmesser des Zapfens. Wird automatisch kleiner, wenn die Kontaktfläche zu schmal ist.">Durchmesser</label> <input type="range" id="snp-d" min="2" max="12" value="4" step="0.5" oninput="_snpInfo()"><span class="vv" id="snpv-d">4</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Wie tief der Zapfen im anderen Teil steckt. Faustregel: etwa 1,5× Durchmesser.">Einstecktiefe</label> <input type="range" id="snp-l" min="2" max="20" value="6" step="0.5" oninput="_snpInfo()"><span class="vv" id="snpv-l">6</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Luft zwischen Zapfen und Buchse. 0,2 mm ist der übliche Wert für PLA mit 0,4-mm-Düse: fest genug zum Halten, locker genug zum Zusammenstecken von Hand. Weniger = strammer, mehr = leichtgängiger.">Spiel</label> <input type="range" id="snp-clr" min="0.05" max="0.5" value="0.2" step="0.05" oninput="_snpInfo()"><span class="vv" id="snpv-clr">0.2</span><span class="vu">mm</span></div>
+        <div class="vbg" id="snp-anz-bg" title="Wie viele Zapfen an einer Kontaktstelle gesetzt werden">
+          <button class="vtb" onclick="_snpSetAnz(1)" title="Ein Zapfen je Stelle. Das Teil lässt sich dann noch um den Zapfen drehen — nur sinnvoll, wenn das gewollt ist (bewegliches Gelenk).">1 Zapfen</button>
+          <button class="vtb on" onclick="_snpSetAnz(2)" title="Zwei Zapfen je Stelle — verdrehsicher. Das ist der Normalfall.">2 Zapfen</button>
+          <button class="vtb" onclick="_snpSetAnz(3)" title="Drei Zapfen je Stelle — für große Kontaktflächen und schwere Teile">3 Zapfen</button>
+        </div>
+        <span class="vsec">Prüfungen</span>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Stecken zwei Teile ineinander, gehört das gemeinsame Volumen genau einem von beiden. Ohne das Auflösen drucken sich die Teile gegenseitig zu und passen hinterher nicht zusammen. Beschnitten wird das Teil, das stärker in das andere eindringt — meist das kleinere."><input type="checkbox" id="snp-loesen" checked onchange="_snpInfo()"> Durchdringungen auflösen</label>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Schätzt aus Gewicht und Hebelarm des hängenden Teils ab, ob der Zapfen hält, und macht ihn bei Bedarf dicker (höchstens 3× der eingestellte Wert). Abschätzung für PLA, keine Festigkeitsrechnung — Druckrichtung und Füllgrad gehen nicht ein."><input type="checkbox" id="snp-tragen" checked onchange="_snpInfo()"> Zapfen bei Bedarf verstärken</label>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer" title="Prüft, ob ein drittes Teil im Weg steht, wenn man zwei Teile zusammensteckt. Meldet das als Hinweis — die Verbinder entstehen trotzdem."><input type="checkbox" id="snp-pruefen" checked onchange="_snpInfo()"> Zusammenbau auf Sperrung prüfen</label>
+        <div class="g3info">Macht aus mehreren Körpern, die sich berühren oder ineinanderstecken, einen <b>steckbaren Bausatz</b>: An jeder echten Kontaktfläche entsteht ein Zapfen im kleineren und eine passende Buchse im größeren Teil. Jedes Teil lässt sich danach einzeln drucken und von Hand zusammenstecken — ohne Kleber. Die Ausgangskörper werden dabei <b>ersetzt</b> (Rückgängig stellt sie wieder her).</div>
+        <div class="g3info" id="snp-est"></div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_snpClose()">Abbrechen</button>
+      <button class="btn pri" id="snp-go" onclick="_snpCreate()">✓ Erzeugen</button>
+    </div>
+  </div>
+</div>
+
 <!-- Silikon-Gießform: druckbarer Gießrahmen um ein gewähltes Modell (client-seitig, Manifold-WASM) -->
 <div id="mold-modal" class="g3dm" onclick="if(event.target===this)_closeMoldModal()">
   <div class="g3box">
@@ -19870,6 +19900,688 @@ function _bndDbg() {
            tris: _bndObj ? _bndObj.geometry.attributes.position.count / 3 : 0 };
 }
 
+// ═══ STECKBAUSATZ (Kontaktflächen finden, Zapfen/Buchse setzen) ════════════
+// Mehrere Körper, die sich berühren oder ineinanderstecken, werden zu einem
+// steckbaren Bausatz: Durchdringungen werden aufgelöst, an jeder echten
+// Kontaktfläche entsteht ein Zapfen im kleineren und eine Buchse im größeren
+// Teil. Idee nach SNAP3D (Tuan u. a., CMU, arXiv 2609.13146) — dort kommen die
+// Teile aus einer KI-Zerlegung und die Verbinder werden mit einer
+// Starrkörper-Simulation nachoptimiert. Beides fehlt hier bewusst:
+//   • Die Teile kommen aus der Szene (importiert, geschnitten, selbst gebaut).
+//   • Statt der Simulation rechnen wir die Tragfähigkeit statisch nach —
+//     Gewicht des hängenden Teils × Hebelarm gegen Schub und Biegung am
+//     Zapfenfuß. Das ist eine Abschätzung, keine Festigkeitsrechnung, aber es
+//     fängt genau den Fall ab, für den SNAP3D die Simulation braucht: ein zu
+//     dünner Zapfen unter einem schweren, weit auskragenden Teil.
+// Alles in mm, Z-up, Booleans über Manifold (Netz-Importe → nie OCCT, siehe
+// _istNetzImport). Erzeugt Objekte mit userData._snp, damit Tests drankommen.
+const _SNP = {
+  delta:   0.4,     // mm — bis hierhin gelten zwei Flächen als in Kontakt
+  lambda:  0.0012,  // Mindest-Kontaktfläche als Anteil von D² (D = Diagonale der Baugruppe)
+  maxLoss: 0.25,    // Volumenanteil, den ein Teil beim Entflechten höchstens verlieren darf
+  minOv:   1e-5,    // relativer Überlappungsanteil, ab dem überhaupt entflochten wird
+  face:   -0.35,    // Normalen müssen sich gegenüberstehen: na·nb unter diesem Wert
+  seg:     32,      // Umfangssegmente des Zapfens
+  tip:     0.7,     // Fase an der Zapfenspitze (mm), erleichtert das Einfädeln
+  luft:    0.35,    // Luft am Buchsengrund, damit der Zapfen nie aufsetzt
+  probe:   0.97,    // geforderter Materialanteil entlang der Steckachse
+  rand:    1.0,     // mm, die der Zapfen rundum weniger Platz braucht als vorhanden
+  dichte:  1.24e-3, // PLA in g/mm³
+  tauZul:  4.0,     // zulässige Schubspannung PLA mit Sicherheit ≈5 (N/mm²)
+  sigZul:  8.0,     // zulässige Biegespannung (N/mm²)
+  maxTri:  60000,   // so viele Dreiecke werden je Teil für die Kontaktsuche abgetastet
+};
+let _snpBusy = false;
+let _snpAnalyse = null;   // letztes Ergebnis von _snpScan, für Info-Zeile und Tests
+
+function _snpObjs() {
+  return (selectedObjs || []).filter(o => o && o.visible !== false && !(o.userData && o.userData.isHole));
+}
+function _snpOpt() {
+  const el = id => document.getElementById(id), n = id => parseFloat(el(id).value);
+  return {
+    d: n('snp-d'), L: n('snp-l'), clr: n('snp-clr'),
+    anz: _snpP.anz, loesen: el('snp-loesen').checked,
+    tragen: el('snp-tragen').checked, pruefen: el('snp-pruefen').checked
+  };
+}
+const _snpP = { anz: 2 };
+function _snpSetAnz(n) {
+  _snpP.anz = n;
+  document.querySelectorAll('#snp-anz-bg .vtb').forEach((b, i) => b.classList.toggle('on', i === n - 1));
+  _snpInfo();
+}
+
+// ── Dreiecks-Raster für Nähe-Abfragen ──────────────────────────────────────
+// Eine Kontaktsuche über alle Dreieckspaare wäre quadratisch (zwei Teile mit je
+// 100k Dreiecken = 10¹⁰ Vergleiche). Stattdessen kommen die Dreiecke des einen
+// Teils in ein gleichmäßiges Raster mit Zellweite ≥ delta; dann liegt jeder
+// Treffer garantiert in der eigenen oder einer der 26 Nachbarzellen.
+function _snpGrid(tris, delta) {
+  const n = tris.length / 9;
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (let i = 0; i < tris.length; i += 3) {
+    const x = tris[i], y = tris[i + 1], z = tris[i + 2];
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+    if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  const c = Math.max(delta, Math.cbrt(((x1 - x0) * (y1 - y0) * (z1 - z0)) / Math.max(1, n)) || delta);
+  const map = new Map();
+  const key = (a, b, d) => a + ',' + b + ',' + d;
+  for (let t = 0; t < n; t++) {
+    const o = t * 9;
+    let a0 = Infinity, b0 = Infinity, d0 = Infinity, a1 = -Infinity, b1 = -Infinity, d1 = -Infinity;
+    for (let k = 0; k < 3; k++) {
+      const x = tris[o + k * 3], y = tris[o + k * 3 + 1], z = tris[o + k * 3 + 2];
+      if (x < a0) a0 = x; if (x > a1) a1 = x;
+      if (y < b0) b0 = y; if (y > b1) b1 = y;
+      if (z < d0) d0 = z; if (z > d1) d1 = z;
+    }
+    const ia0 = Math.floor((a0 - x0) / c), ia1 = Math.floor((a1 - x0) / c);
+    const ib0 = Math.floor((b0 - y0) / c), ib1 = Math.floor((b1 - y0) / c);
+    const id0 = Math.floor((d0 - z0) / c), id1 = Math.floor((d1 - z0) / c);
+    // Sehr große Dreiecke (grobe Grundplatten) würden hunderte Zellen belegen —
+    // die kommen in eine Sammelliste, die bei jeder Abfrage mitgeprüft wird.
+    if ((ia1 - ia0 + 1) * (ib1 - ib0 + 1) * (id1 - id0 + 1) > 64) {
+      let big = map.get('*'); if (!big) map.set('*', big = []);
+      big.push(t); continue;
+    }
+    for (let a = ia0; a <= ia1; a++) for (let b = ib0; b <= ib1; b++) for (let d = id0; d <= id1; d++) {
+      const k = key(a, b, d); let arr = map.get(k); if (!arr) map.set(k, arr = []); arr.push(t);
+    }
+  }
+  return { tris, map, c, x0, y0, z0, gross: map.get('*') || [] };
+}
+
+// Abstand Punkt → Dreieck (Ebenenfall, sonst nächste Kante/Ecke)
+function _snpPtTri(px, py, pz, t, o) {
+  const ax = t[o], ay = t[o + 1], az = t[o + 2];
+  const bx = t[o + 3], by = t[o + 4], bz = t[o + 5];
+  const cx = t[o + 6], cy = t[o + 7], cz = t[o + 8];
+  const abx = bx - ax, aby = by - ay, abz = bz - az;
+  const acx = cx - ax, acy = cy - ay, acz = cz - az;
+  const apx = px - ax, apy = py - ay, apz = pz - az;
+  const d1 = abx * apx + aby * apy + abz * apz, d2 = acx * apx + acy * apy + acz * apz;
+  if (d1 <= 0 && d2 <= 0) return Math.hypot(apx, apy, apz);
+  const bpx = px - bx, bpy = py - by, bpz = pz - bz;
+  const d3 = abx * bpx + aby * bpy + abz * bpz, d4 = acx * bpx + acy * bpy + acz * bpz;
+  if (d3 >= 0 && d4 <= d3) return Math.hypot(bpx, bpy, bpz);
+  const cpx = px - cx, cpy = py - cy, cpz = pz - cz;
+  const d5 = abx * cpx + aby * cpy + abz * cpz, d6 = acx * cpx + acy * cpy + acz * cpz;
+  if (d6 >= 0 && d5 <= d6) return Math.hypot(cpx, cpy, cpz);
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) { const v = d1 / (d1 - d3);
+    return Math.hypot(apx - abx * v, apy - aby * v, apz - abz * v); }
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) { const w = d2 / (d2 - d6);
+    return Math.hypot(apx - acx * w, apy - acy * w, apz - acz * w); }
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) {
+    const w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+    return Math.hypot(px - (bx + (cx - bx) * w), py - (by + (cy - by) * w), pz - (bz + (cz - bz) * w));
+  }
+  const den = 1 / (va + vb + vc), v = vb * den, w = vc * den;
+  return Math.hypot(px - (ax + abx * v + acx * w), py - (ay + aby * v + acy * w), pz - (az + abz * v + acz * w));
+}
+
+// Nächstes Dreieck im Raster innerhalb delta — liefert {d, nx, ny, nz} oder null
+function _snpNear(g, px, py, pz, delta) {
+  const t = g.tris, c = g.c;
+  const ia = Math.floor((px - g.x0) / c), ib = Math.floor((py - g.y0) / c), id = Math.floor((pz - g.z0) / c);
+  let bd = delta, bt = -1;
+  const pruefe = idx => {
+    const o = idx * 9, d = _snpPtTri(px, py, pz, t, o);
+    if (d < bd) { bd = d; bt = idx; }
+  };
+  for (let a = ia - 1; a <= ia + 1; a++) for (let b = ib - 1; b <= ib + 1; b++) for (let e = id - 1; e <= id + 1; e++) {
+    const arr = g.map.get(a + ',' + b + ',' + e); if (!arr) continue;
+    for (let i = 0; i < arr.length; i++) pruefe(arr[i]);
+  }
+  for (let i = 0; i < g.gross.length; i++) pruefe(g.gross[i]);
+  if (bt < 0) return null;
+  const o = bt * 9;
+  const ux = t[o + 3] - t[o], uy = t[o + 4] - t[o + 1], uz = t[o + 5] - t[o + 2];
+  const vx = t[o + 6] - t[o], vy = t[o + 7] - t[o + 1], vz = t[o + 8] - t[o + 2];
+  let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+  const len = Math.hypot(nx, ny, nz) || 1;
+  return { d: bd, nx: nx / len, ny: ny / len, nz: nz / len };
+}
+
+// Schwerpunkt, Normale und Fläche eines Dreiecks
+function _snpTri(t, o) {
+  const ux = t[o + 3] - t[o], uy = t[o + 4] - t[o + 1], uz = t[o + 5] - t[o + 2];
+  const vx = t[o + 6] - t[o], vy = t[o + 7] - t[o + 1], vz = t[o + 8] - t[o + 2];
+  const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+  const len = Math.hypot(nx, ny, nz);
+  return { cx: (t[o] + t[o + 3] + t[o + 6]) / 3, cy: (t[o + 1] + t[o + 4] + t[o + 7]) / 3,
+           cz: (t[o + 2] + t[o + 5] + t[o + 8]) / 3,
+           nx: nx / (len || 1), ny: ny / (len || 1), nz: nz / (len || 1), A: len / 2 };
+}
+
+// ── Kontaktfläche zweier Teile ─────────────────────────────────────────────
+// Eine Kante im Kontaktgraphen entsteht nur, wenn sich die Flächen nahe SIND,
+// einander GEGENÜBERSTEHEN und das über eine Mindestfläche hinweg. Ohne die
+// letzten beiden Bedingungen zählt jede Ecke, die einer anderen zufällig
+// nahekommt, als Verbindung — und der Zapfen landet auf einer Kante.
+function _snpKontakt(A, B, delta, minA, s) {
+  const t = A.tris, n = t.length / 9, schritt = Math.max(1, Math.ceil(n / _SNP.maxTri));
+  // Ein Teilepaar berührt sich oft auf MEHREREN Flächen — ein Quader in einer
+  // Tasche liegt auf dem Boden und an vier Wänden. Über alles gemittelt zeigt
+  // die Normale irgendwohin und der Ankerpunkt liegt mitten in der Luft.
+  // Darum werden die Abtastpunkte nach ihrer Normalenrichtung gruppiert; jede
+  // Gruppe ist eine eigene Kontaktfläche mit eigener Steckachse.
+  const gr = [];
+  const MIN_COS = 0.9;   // ≈25° — so viel darf eine Fläche in sich gekrümmt sein
+  for (let i = 0; i < n; i += schritt) {
+    const o = i * 9, tri = _snpTri(t, o);
+    if (!(tri.A > 0)) continue;
+    // Flächentreu abtasten statt nur den Schwerpunkt nehmen: eine Quaderfläche
+    // besteht aus ZWEI Dreiecken — über Schwerpunkte gäbe das zwei Punkte, und
+    // die Kontaktfläche wäre weder messbar noch als Fläche auswertbar.
+    // Unterteilung an der längsten Kante, nicht an der Wurzel der Fläche:
+    // Schnittflächen sind oft als lange, dünne Dreiecke vermascht, bei denen
+    // die Fläche nichts über die Ausdehnung sagt.
+    const e1 = Math.hypot(t[o+3]-t[o], t[o+4]-t[o+1], t[o+5]-t[o+2]);
+    const e2 = Math.hypot(t[o+6]-t[o], t[o+7]-t[o+1], t[o+8]-t[o+2]);
+    const e3 = Math.hypot(t[o+6]-t[o+3], t[o+7]-t[o+4], t[o+8]-t[o+5]);
+    let k = Math.ceil(Math.max(e1, e2, e3) / s);
+    k = Math.max(1, Math.min(16, k));
+    const w = tri.A * schritt / (k * k);
+    let g = null;
+    for (let a = 0; a < k; a++) for (let b = 0; b + a < k; b++) {
+      for (let f = 0; f < (b + a < k - 1 ? 2 : 1); f++) {
+        const u = f ? (a + 2 / 3) / k : (a + 1 / 3) / k;
+        const v = f ? (b + 2 / 3) / k : (b + 1 / 3) / k;
+        const px = t[o] + (t[o + 3] - t[o]) * u + (t[o + 6] - t[o]) * v;
+        const py = t[o + 1] + (t[o + 4] - t[o + 1]) * u + (t[o + 7] - t[o + 1]) * v;
+        const pz = t[o + 2] + (t[o + 5] - t[o + 2]) * u + (t[o + 8] - t[o + 2]) * v;
+        const nah = _snpNear(B.grid, px, py, pz, delta);
+        if (!nah) continue;
+        // Gegenüberstehen: A zeigt nach außen, B muss zurückzeigen
+        if (tri.nx * nah.nx + tri.ny * nah.ny + tri.nz * nah.nz > _SNP.face) continue;
+        if (!g) {
+          for (const c of gr) {
+            const l = Math.hypot(c.nx, c.ny, c.nz) || 1;
+            if ((tri.nx * c.nx + tri.ny * c.ny + tri.nz * c.nz) / l > MIN_COS) { g = c; break; }
+          }
+          if (!g) gr.push(g = { A: 0, cx: 0, cy: 0, cz: 0, nx: 0, ny: 0, nz: 0, pts: [], tri: [] });
+          for (let q = 0; q < 9; q++) g.tri.push(t[o + q]);
+        }
+        g.A += w;
+        g.cx += px * w; g.cy += py * w; g.cz += pz * w;
+        g.nx += tri.nx * w; g.ny += tri.ny * w; g.nz += tri.nz * w;
+        g.pts.push(px, py, pz);
+      }
+    }
+  }
+  return gr.filter(g => g.A >= minA && g.pts.length >= 9)
+           .sort((a, b) => b.A - a.A)
+           .map(g => {
+             const nl = Math.hypot(g.nx, g.ny, g.nz) || 1;
+             return {
+               A: g.A,
+               // Mittelpunkt und mittlere Normale der Kontaktfläche (flächengewichtet)
+               c: [g.cx / g.A, g.cy / g.A, g.cz / g.A],
+               n: [g.nx / nl, g.ny / nl, g.nz / nl],   // aus A heraus = nach B hinein
+               pts: new Float32Array(g.pts),
+               // die beteiligten Dreiecke selbst — daraus wird die Fläche für die
+               // Ankersuche gerastert, statt sie aus Punkten zu erraten
+               tri: new Float32Array(g.tri)
+             };
+           });
+}
+// ── Ankerpunkt: die Stelle mit dem größten Abstand zum Rand ────────────────
+// Die Kontaktpunkte werden in die Kontaktebene projiziert und auf ein Raster
+// gelegt; eine Distanztransformation (zwei Chamfer-Durchgänge) sagt für jede
+// belegte Zelle, wie weit die nächste freie Zelle entfernt ist. Das Maximum ist
+// der Punkt, an dem ein Zapfen vom Rand am weitesten weg sitzt — genau das
+// Kriterium, das _cutAutoConnectors mit seinem Margin-Kreis prüft, nur eben für
+// eine beliebig geformte Fläche statt für eine ebene Schnittfläche.
+function _snpAnker(k, anzahl, minMargin) {
+  const N = new THREE.Vector3(k.n[0], k.n[1], k.n[2]);
+  const U = new THREE.Vector3(1, 0, 0);
+  if (Math.abs(N.x) > 0.8) U.set(0, 1, 0);
+  U.crossVectors(U, N).normalize();
+  const V = new THREE.Vector3().crossVectors(N, U).normalize();
+  const C = new THREE.Vector3(k.c[0], k.c[1], k.c[2]);
+  // Die Kontaktfläche wird aus ihren DREIECKEN gerastert, nicht aus Abtast-
+  // punkten. Eine Punktwolke lässt in lang-dünnen Dreiecken Lücken, und jede
+  // Lücke sieht für die Distanztransformation aus wie ein Rand — der Zapfen
+  // rückt dann an eine Stelle, an der gar kein Rand ist.
+  const TR = k.tri, m = TR.length / 9;
+  const uu = new Float64Array(m * 3), vv = new Float64Array(m * 3);
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  const p = new THREE.Vector3();
+  for (let i = 0; i < m * 3; i++) {
+    p.set(TR[i * 3] - C.x, TR[i * 3 + 1] - C.y, TR[i * 3 + 2] - C.z);
+    const u = p.dot(U), v = p.dot(V);
+    uu[i] = u; vv[i] = v;
+    if (u < u0) u0 = u; if (u > u1) u1 = u; if (v < v0) v0 = v; if (v > v1) v1 = v;
+  }
+  const span = Math.max(u1 - u0, v1 - v0, 1e-6);
+  const zelle = Math.max(0.25, span / 110);
+  const nu = Math.max(3, Math.ceil((u1 - u0) / zelle) + 3), nv = Math.max(3, Math.ceil((v1 - v0) / zelle) + 3);
+  const belegt = new Uint8Array(nu * nv);
+  const setz = (x, y) => { if (x >= 0 && y >= 0 && x < nu && y < nv) belegt[y * nu + x] = 1; };
+  for (let t = 0; t < m; t++) {
+    const a = t * 3, b = a + 1, c = a + 2;
+    const P = [[(uu[a] - u0) / zelle + 1, (vv[a] - v0) / zelle + 1],
+               [(uu[b] - u0) / zelle + 1, (vv[b] - v0) / zelle + 1],
+               [(uu[c] - u0) / zelle + 1, (vv[c] - v0) / zelle + 1]];
+    // (1) Kanten abschreiten. Eine Fächer-Vermaschung (wie sie beim Kappen
+    // eines Netzes entsteht) besteht großenteils aus Dreiecken, die dünner
+    // sind als eine Rasterzelle — ein Test auf den Zellmittelpunkt verliert
+    // die komplett, und die Fläche sieht am Ende löchrig aus.
+    for (let e = 0; e < 3; e++) {
+      const p0 = P[e], p1 = P[(e + 1) % 3];
+      const n2 = Math.max(1, Math.ceil(Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) * 2));
+      for (let i = 0; i <= n2; i++) {
+        const f = i / n2;
+        setz(Math.round(p0[0] + (p1[0] - p0[0]) * f), Math.round(p0[1] + (p1[1] - p0[1]) * f));
+      }
+    }
+    // (2) Inneres zeilenweise füllen
+    const ys = P.map(q => q[1]);
+    const y0 = Math.max(0, Math.ceil(Math.min(...ys))), y1 = Math.min(nv - 1, Math.floor(Math.max(...ys)));
+    for (let y = y0; y <= y1; y++) {
+      let xa = Infinity, xb = -Infinity;
+      for (let e = 0; e < 3; e++) {
+        const p0 = P[e], p1 = P[(e + 1) % 3];
+        if ((p0[1] <= y && p1[1] >= y) || (p1[1] <= y && p0[1] >= y)) {
+          const dv = p1[1] - p0[1];
+          const x = Math.abs(dv) < 1e-9 ? p0[0] : p0[0] + (p1[0] - p0[0]) * (y - p0[1]) / dv;
+          if (x < xa) xa = x; if (x > xb) xb = x;
+          if (Math.abs(dv) < 1e-9) { if (p1[0] < xa) xa = p1[0]; if (p1[0] > xb) xb = p1[0]; }
+        }
+      }
+      if (xa > xb) continue;
+      for (let x = Math.max(0, Math.ceil(xa)); x <= Math.min(nu - 1, Math.floor(xb)); x++) setz(x, y);
+    }
+  }
+  // Chamfer-Distanztransformation (3-4-Gewichte), Einheit: Zellen/3
+  const INF = 1e9, dt = new Float64Array(nu * nv);
+  for (let i = 0; i < dt.length; i++) dt[i] = belegt[i] ? INF : 0;
+  for (let b = 0; b < nv; b++) for (let a = 0; a < nu; a++) {
+    const i = b * nu + a; if (!dt[i]) continue;
+    let best = dt[i];
+    if (a > 0) best = Math.min(best, dt[i - 1] + 3);
+    if (b > 0) best = Math.min(best, dt[i - nu] + 3);
+    if (a > 0 && b > 0) best = Math.min(best, dt[i - nu - 1] + 4);
+    if (a < nu - 1 && b > 0) best = Math.min(best, dt[i - nu + 1] + 4);
+    dt[i] = best;
+  }
+  for (let b = nv - 1; b >= 0; b--) for (let a = nu - 1; a >= 0; a--) {
+    const i = b * nu + a; if (!dt[i]) continue;
+    let best = dt[i];
+    if (a < nu - 1) best = Math.min(best, dt[i + 1] + 3);
+    if (b < nv - 1) best = Math.min(best, dt[i + nu] + 3);
+    if (a < nu - 1 && b < nv - 1) best = Math.min(best, dt[i + nu + 1] + 4);
+    if (a > 0 && b < nv - 1) best = Math.min(best, dt[i + nu - 1] + 4);
+    dt[i] = best;
+  }
+  const out = [];
+  for (let k2 = 0; k2 < anzahl; k2++) {
+    let bi = -1, bd = 0;
+    for (let i = 0; i < dt.length; i++) if (dt[i] > bd && dt[i] < INF) { bd = dt[i]; bi = i; }
+    const margin = bd / 3 * zelle;
+    if (bi < 0 || margin < minMargin) break;
+    const a = bi % nu, b = (bi - a) / nu;
+    const u = u0 + (a - 1) * zelle, v = v0 + (b - 1) * zelle;
+    out.push({
+      p: C.clone().addScaledVector(U, u).addScaledVector(V, v),
+      margin, n: N.clone(), U: U.clone(), V: V.clone()
+    });
+    // Umkreis des gesetzten Zapfens sperren, damit der nächste Abstand hält.
+    // Maßgeblich ist die ZAPFENGRÖSSE, nicht der Randabstand des Fundstücks —
+    // sonst sperrt ein Zapfen mitten auf einer großen Fläche die ganze Fläche.
+    const sperre = minMargin * 3 / zelle;
+    const sp = Math.ceil(sperre);
+    for (let db = -sp; db <= sp; db++) for (let da = -sp; da <= sp; da++) {
+      const aa = a + da, bb = b + db;
+      if (aa < 0 || bb < 0 || aa >= nu || bb >= nv) continue;
+      if (Math.hypot(da, db) <= sperre) dt[bb * nu + aa] = 0;
+    }
+  }
+  return out;
+}
+// ── Zapfen- und Buchsen-Körper ─────────────────────────────────────────────
+// Manifold baut Zylinder entlang +Z; Drehung und Verschiebung gehen als
+// Matrix an .transform(). Bewusst NICHT über .rotate([x,y,z]): Manifold dreht
+// dort um die globalen Achsen in der Reihenfolge X→Y→Z, THREE-Euler 'XYZ'
+// meint die umgekehrte Reihenfolge — eine Verwechslung, die nur bei schrägen
+// Achsen auffällt und dann Zapfen quer durchs Teil legt. Matrix4.elements ist
+// spaltenweise abgelegt, genau wie Manifolds Mat4.
+function _snpZyl(M, keep, r0, r1, len, von, achse) {
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), achse.clone().normalize());
+  const m = new THREE.Matrix4().compose(von.clone(), q, new THREE.Vector3(1, 1, 1));
+  return keep(keep(M.cylinder(len, r0, r1, _SNP.seg, false)).transform(m.elements));
+}
+// Zapfen: Schaft plus angefaste Spitze, damit er sich beim Zusammenbau fängt
+function _snpZapfen(M, keep, r, L, fuss, achse) {
+  const fase = Math.min(_SNP.tip, L * 0.3, r * 0.6);
+  const schaft = _snpZyl(M, keep, r, r, L - fase, fuss, achse);
+  const spitze = _snpZyl(M, keep, r, Math.max(0.2, r - fase), fase,
+                         fuss.clone().addScaledVector(achse, L - fase), achse);
+  return keep(M.union(schaft, spitze));
+}
+
+// Sitzt an dieser Stelle genug Material? Der Probekörper wird mit dem Teil
+// geschnitten; bleibt fast das ganze Volumen übrig, trägt die Stelle. Das ist
+// verlässlicher als ein Strahl, weil es die ganze Zapfendicke prüft und nicht
+// nur die Achse (dünne Wände fallen sonst durch).
+function _snpMaterial(M, keep, teil, r, len, von, achse) {
+  const probe = _snpZyl(M, keep, r, r, len, von, achse);
+  const soll = Math.PI * r * r * len;
+  if (!(soll > 0)) return 0;
+  let v = 0;
+  try { const s = keep(M.intersection(teil, probe)); v = s.volume(); } catch (e) { return 0; }
+  return v / soll;
+}
+
+// ── Tragfähigkeit (Ersatz für SNAP3Ds Physik-Schleife) ─────────────────────
+// Das hängende Teil zieht mit seinem Gewicht am Zapfen: Schub quer zur Achse
+// und Biegung über den Hebelarm zum Schwerpunkt. Daraus folgt ein Mindest-
+// radius. Bewusst konservativ und bewusst nur eine ABSCHÄTZUNG — Druckrichtung,
+// Schichthaftung und Füllgrad gehen nicht ein.
+function _snpTragRadius(volMm3, schwerpunkt, anker, anzahl) {
+  const F = volMm3 * _SNP.dichte / 1000 * 9.81 / Math.max(1, anzahl);   // N je Zapfen
+  if (!(F > 0)) return 0;
+  // Die Schwerkraft zieht in −Z (mm, Z-up). Der Hebel ist damit der WAAGERECHTE
+  // Abstand zwischen Anker und Schwerpunkt — nicht der Abstand quer zur
+  // Steckachse. Ein Ausleger, der in Richtung seiner eigenen Steckachse steht,
+  // hat quer zur Achse fast keinen Versatz, biegt den Zapfen aber am stärksten.
+  const hebel = Math.max(Math.hypot(schwerpunkt.x - anker.x, schwerpunkt.y - anker.y), 0.5);
+  const rSchub  = Math.sqrt(F / (Math.PI * _SNP.tauZul));
+  const rBiege  = Math.cbrt(4 * F * hebel / (Math.PI * _SNP.sigZul));
+  return Math.max(rSchub, rBiege);
+}
+// ── Analyse: Teile einsammeln, entflechten, Kontaktgraph, Verbinder ────────
+async function _snpScan(objs, opt, melde) {
+  const W = await _mfInit(), M = W.Manifold;
+  const tmp = [], keep = m => { tmp.push(m); return m; };
+  const aufraeumen = () => { for (const m of tmp) { try { m.delete(); } catch (e) {} } tmp.length = 0; };
+  const ergebnis = { teile: [], verb: [], warn: [], offen: [], keep, aufraeumen, W, M };
+  try {
+    // 1) Teile als Manifold — nur geschlossene Netze können Booleans
+    melde && melde(8, 'Teile werden geprüft…');
+    for (const o of objs) {
+      const soup = _moldCollectTris(o);
+      if (!soup.length) continue;
+      let mf = null;
+      try { mf = keep(_mfFromSoup(W, soup)); if (!mf.numTri()) mf = null; } catch (e) { mf = null; }
+      if (!mf) { ergebnis.offen.push((o.userData && o.userData.name) || 'Teil'); continue; }
+      ergebnis.teile.push({ o, mf, name: (o.userData && o.userData.name) || 'Teil', vol: mf.volume() });
+      await _lgoTick();
+    }
+    const T = ergebnis.teile;
+    if (T.length < 2) return ergebnis;
+
+    // Diagonale der ganzen Baugruppe — daran hängt die Mindest-Kontaktfläche
+    let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const t of T) {
+      const b = t.mf.boundingBox();
+      for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], b.min[i]); hi[i] = Math.max(hi[i], b.max[i]); }
+    }
+    const D = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1;
+    // Wer unten aufsteht, trägt sich selbst — an der Verbindung hängt nur,
+    // was den Boden NICHT erreicht. Das ist der Ersatz für SNAP3Ds
+    // „ground-contacting parts pinned" beim Fallenlassen in der Simulation.
+    for (const t of T) { const b = t.mf.boundingBox(); t.bb = b; t.amBoden = b.min[2] <= lo[2] + 0.5; }
+    const minA = _SNP.lambda * D * D;
+    // Abtastweite: fein genug für kleine Kontaktflächen, grob genug,
+    // dass ein großes Import-Netz nicht Millionen Punkte erzeugt
+    const abtast = Math.max(0.3, Math.min(2, D / 200));
+
+    // 2) Durchdringungen auflösen — das stärker eindringende Teil wird
+    //    beschnitten, gedeckelt auf _SNP.maxLoss seines Volumens.
+    if (opt.loesen) {
+      melde && melde(20, 'Durchdringungen werden aufgelöst…');
+      const paare = [];
+      for (let i = 0; i < T.length; i++) for (let j = i + 1; j < T.length; j++) {
+        let ov = 0;
+        try { const s = keep(M.intersection(T[i].mf, T[j].mf)); ov = s.volume(); } catch (e) { ov = 0; }
+        if (ov <= 0) continue;
+        const fi = ov / (T[i].vol || 1), fj = ov / (T[j].vol || 1);
+        if (fi < _SNP.minOv && fj < _SNP.minOv) continue;
+        // Eindring-Bewertung: wie viel vom eigenen Volumen steckt im anderen,
+        // gewichtet mit der Größe des Gegenübers. Das kleine Teil, das tief im
+        // großen steckt, wird beschnitten — das große behält seine Form.
+        const si = fi * (T[j].vol / (T[i].vol + T[j].vol));
+        const sj = fj * (T[i].vol / (T[i].vol + T[j].vol));
+        paare.push({ i, j, ov, si, sj, opfer: si > sj ? i : j, rand: Math.abs(si - sj) });
+      }
+      // Deckel: verliert ein Teil zu viel, kippen die knappsten Paare
+      const verlust = new Array(T.length).fill(0);
+      paare.sort((a, b) => b.rand - a.rand);
+      for (const p of paare) {
+        const andere = p.opfer === p.i ? p.j : p.i;
+        if (verlust[p.opfer] + p.ov > _SNP.maxLoss * T[p.opfer].vol &&
+            verlust[andere] + p.ov <= _SNP.maxLoss * T[andere].vol) p.opfer = andere;
+        verlust[p.opfer] += p.ov;
+      }
+      const abzug = T.map(() => []);
+      for (const p of paare) abzug[p.opfer].push(p.opfer === p.i ? T[p.j].mf : T[p.i].mf);
+      for (let i = 0; i < T.length; i++) {
+        if (!abzug[i].length) continue;
+        try {
+          const neu = keep(M.difference(T[i].mf, keep(M.union(abzug[i]))));
+          if (neu.numTri() && neu.volume() > T[i].vol * (1 - _SNP.maxLoss - 0.05)) {
+            T[i].mf = neu; T[i].beschnitten = true;
+          } else ergebnis.warn.push(T[i].name + ': Durchdringung ließ sich nicht auflösen, ohne das Teil zu zerstören');
+        } catch (e) { ergebnis.warn.push(T[i].name + ': Durchdringung ließ sich nicht auflösen'); }
+        await _lgoTick();
+      }
+    }
+
+    // 3) Kontaktgraph — je Paar die gemeinsame Fläche suchen
+    melde && melde(42, 'Kontaktflächen werden gesucht…');
+    for (const t of T) { t.soup = _mfToSoup(t.mf); t.grid = _snpGrid(t.soup, _SNP.delta); t.tris = t.soup; }
+    const kanten = [];
+    for (let i = 0; i < T.length; i++) for (let j = i + 1; j < T.length; j++) {
+      // Vom kleineren Teil aus abtasten: weniger Dreiecke, feinere Fläche
+      const klein = T[i].vol <= T[j].vol ? i : j, gross = klein === i ? j : i;
+      // NUR die größte Fläche je Paar. Verschiedene Flächen desselben Paares
+      // haben verschiedene Normalen und damit verschiedene Steckrichtungen —
+      // ein Zapfen im Taschenboden und einer in der Seitenwand schließen sich
+      // gegenseitig aus, das Teil ließe sich gar nicht mehr einsetzen.
+      for (const k of _snpKontakt(T[klein], T[gross], _SNP.delta, minA, abtast).slice(0, 1))
+        kanten.push({ klein, gross, k });
+      await _lgoTick();
+    }
+    ergebnis.kanten = kanten;
+    if (!kanten.length) return ergebnis;
+
+    // 4) Verbinder setzen: Zapfen ans kleinere Teil, Buchse ins größere
+    melde && melde(58, 'Verbinder werden gesetzt…');
+    let rWunsch = opt.d / 2;
+    for (const e of kanten) {
+      const geber = T[e.klein], nehmer = T[e.gross];
+      // Achse: aus dem kleinen Teil heraus = in das große hinein
+      const achse = new THREE.Vector3(e.k.n[0], e.k.n[1], e.k.n[2]).normalize();
+      let r = rWunsch;
+      if (opt.tragen) {
+        const anker0 = new THREE.Vector3(e.k.c[0], e.k.c[1], e.k.c[2]);
+        // Die hängende Seite ist die, die den Boden nicht erreicht. Stehen beide
+        // auf, trägt der Boden und die Verbindung hält nur sich selbst; hängen
+        // beide, zählt die schwerere.
+        const frei = [geber, nehmer].filter(t => !t.amBoden);
+        const last = frei.length ? frei.reduce((a, b) => (a.mf.volume() >= b.mf.volume() ? a : b))
+                                 : (geber.vol <= nehmer.vol ? geber : nehmer);
+        const bb = last.bb || last.mf.boundingBox();
+        const sp = new THREE.Vector3((bb.min[0] + bb.max[0]) / 2, (bb.min[1] + bb.max[1]) / 2, (bb.min[2] + bb.max[2]) / 2);
+        const rNoetig = _snpTragRadius(last.mf.volume(), sp, anker0, opt.anz);
+        if (rNoetig > r) { r = Math.min(rNoetig, rWunsch * 3); e.verstaerkt = true; }
+      }
+      const anker = _snpAnker(e.k, opt.anz, r + _SNP.rand);
+      if (!anker.length) {
+        ergebnis.warn.push(geber.name + ' ↔ ' + nehmer.name + ': Kontaktfläche ist für Ø ' +
+                           (Math.round(r * 20) / 10) + ' mm zu schmal');
+        continue;
+      }
+      for (const a of anker) {
+        // Radius notfalls auf das zurücknehmen, was die Fläche hergibt
+        const rMax = Math.max(0.6, a.margin - _SNP.rand);
+        const rr = Math.min(r, rMax);
+        const L = Math.min(opt.L, rr * 6);
+        const tiefe = _snpMaterial(M, keep, nehmer.mf, rr + opt.clr / 2, L + _SNP.luft,
+                                   a.p, achse);
+        const fuss = _snpMaterial(M, keep, geber.mf, rr, L * 0.6,
+                                  a.p.clone().addScaledVector(achse, -L * 0.6), achse);
+        if (tiefe < _SNP.probe || fuss < _SNP.probe) {
+          ergebnis.warn.push(geber.name + ' ↔ ' + nehmer.name + ': zu wenig Material für den Zapfen (' +
+            (tiefe < _SNP.probe ? 'Buchse' : 'Zapfenfuß') + ' ' + Math.round(Math.min(tiefe, fuss) * 100) + ' %)');
+          continue;
+        }
+        ergebnis.verb.push({ geber: e.klein, nehmer: e.gross, p: a.p, n: achse, r: rr, L,
+                             margin: a.margin, verstaerkt: !!e.verstaerkt,
+                             namen: geber.name + ' ↔ ' + nehmer.name });
+      }
+      await _lgoTick();
+    }
+    return ergebnis;
+  } catch (err) {
+    aufraeumen();
+    throw err;
+  }
+}
+
+// Steckt ein DRITTES Teil im Weg? SNAP3D lässt die Montagereihenfolge offen —
+// ein Zapfen kann im fertigen Zustand passen und sich beim Zusammenstecken
+// trotzdem verkeilen. Geprüft wird der Korridor, durch den der Zapfen kommt.
+// Das ist keine vollständige Reihenfolge-Analyse, sondern der häufigste Fall.
+function _snpBlockiert(M, keep, verb, T) {
+  const warn = [];
+  for (const v of verb) {
+    const len = v.L * 2;
+    const korridor = _snpZyl(M, keep, v.r, v.r, len, v.p.clone().addScaledVector(v.n, -len), v.n);
+    const soll = Math.PI * v.r * v.r * len;
+    for (let i = 0; i < T.length; i++) {
+      if (i === v.geber || i === v.nehmer) continue;
+      let ov = 0;
+      try { const s = keep(M.intersection(T[i].mf, korridor)); ov = s.volume(); } catch (e) { continue; }
+      if (ov > soll * 0.05) { warn.push(T[i].name + ' steht beim Zusammenstecken von ' + v.namen + ' im Weg'); break; }
+    }
+  }
+  return warn;
+}
+
+// ── Erzeugen ───────────────────────────────────────────────────────────────
+async function _snpCreate() {
+  if (_snpBusy) return;
+  const objs = _snpObjs().sort((a, b) => objects.indexOf(a) - objects.indexOf(b));
+  if (objs.length < 2) { notify('Bitte mindestens zwei Teile auswählen', 'w'); return; }
+  const opt = _snpOpt();
+  const btn = document.getElementById('snp-go');
+  _snpBusy = true; if (btn) { btn.disabled = true; btn.textContent = '… rechnet'; }
+  let res = null;
+  try {
+    _snpClose();
+    _progressShow('Steckbausatz wird gebaut…'); _progressSet(3); await _lgoTick();
+    res = await _snpScan(objs, opt, (p, t) => _progressSet(p, t));
+    const { M, keep, teile: T, verb } = res;
+    if (res.offen.length) res.warn.push(res.offen.join(', ') + ': Netz ist nicht geschlossen — Teil bleibt unverändert');
+    if (T.length < 2) {
+      _progressHide();
+      notify('Für einen Steckbausatz braucht es mindestens zwei geschlossene Körper', 'e');
+      return;
+    }
+    // Ohne Verbinder ist das Auflösen der Durchdringungen für sich genommen
+    // schon etwas wert (die Teile drucken sich sonst gegenseitig zu) — dann
+    // wird es angewandt und gesagt, warum kein Zapfen entstand.
+    const beschnitten = T.some(t => t.beschnitten);
+    if (!verb.length && !beschnitten) {
+      _progressHide();
+      notify(res.warn.length ? res.warn[0]
+        : 'Keine Kontaktfläche gefunden — die Teile müssen sich berühren oder ineinanderstecken', 'w');
+      return;
+    }
+
+    if (opt.pruefen) {
+      _progressSet(72, 'Zusammenbau wird geprüft…'); await _lgoTick();
+      for (const w of _snpBlockiert(M, keep, verb, T)) res.warn.push(w);
+    }
+
+    // Zapfen anbauen, Buchsen ausfräsen
+    _progressSet(80, 'Zapfen und Buchsen werden eingerechnet…'); await _lgoTick();
+    const zapfen = T.map(() => []), buchsen = T.map(() => []);
+    for (const v of verb) {
+      zapfen[v.geber].push(_snpZapfen(M, keep, v.r, v.L, v.p, v.n));
+      // Buchse: Radius plus halbes Spiel, etwas tiefer als der Zapfen lang ist,
+      // damit er nie am Grund aufsetzt statt an der Trennfuge.
+      const rB = v.r + opt.clr / 2;
+      buchsen[v.nehmer].push(_snpZyl(M, keep, rB, rB, v.L + _SNP.luft, v.p, v.n));
+    }
+    saveUndo();
+    const neu = [];
+    for (let i = 0; i < T.length; i++) {
+      let m = T[i].mf;
+      try {
+        if (zapfen[i].length)  m = keep(M.union([m, ...zapfen[i]]));
+        if (buchsen[i].length) m = keep(M.difference(m, keep(M.union(buchsen[i]))));
+      } catch (e) {
+        console.warn('[steckbausatz] Verbinder an', T[i].name, 'fehlgeschlagen', e);
+        res.warn.push(T[i].name + ': Verbinder ließen sich nicht einrechnen');
+        m = T[i].mf;
+      }
+      let geo = _mfToGeo(m).toNonIndexed();
+      _moldNormals(geo);
+      const anz = zapfen[i].length + buchsen[i].length;
+      const mesh = _moldSceneMesh(geo, T[i].name + (anz ? ' · steckbar' : ''));
+      mesh.userData._snp = { zapfen: zapfen[i].length, buchsen: buchsen[i].length,
+                             beschnitten: !!T[i].beschnitten };
+      neu.push(mesh);
+      _progressSet(80 + Math.round(15 * (i + 1) / T.length)); await _lgoTick();
+    }
+    // Ausgangskörper ersetzen (die unveränderten offenen Netze bleiben stehen)
+    for (const t of T) { scene.remove(t.o); objects = objects.filter(x => x !== t.o); }
+    selectObjs(neu); updateTree();
+    _progressSet(100); _progressHide();
+
+    const nV = verb.length, nVerst = verb.filter(v => v.verstaerkt).length;
+    const stellen = new Set(verb.map(v => v.geber + '-' + v.nehmer)).size;
+    let msg = nV + ' Verbinder an ' + stellen + ' Kontaktstelle' + (stellen === 1 ? '' : 'n') + ' gesetzt';
+    if (nVerst) msg += ' · ' + nVerst + ' davon verstärkt (Tragfähigkeit)';
+    notify(msg, 'ok');
+    if (res.warn.length) setTimeout(() => notify(res.warn.slice(0, 3).join(' · '), 'w'), 900);
+    _snpAnalyse = { verb: verb.map(v => ({ namen: v.namen, r: v.r, L: v.L, margin: v.margin })), warn: res.warn };
+  } catch (e) {
+    console.error('[steckbausatz]', e);
+    _progressHide();
+    notify('Steckbausatz fehlgeschlagen: ' + (e && e.message ? e.message : e), 'e');
+  } finally {
+    if (res) res.aufraeumen();
+    _snpBusy = false;
+    if (btn) { btn.disabled = false; btn.textContent = '✓ Erzeugen'; }
+  }
+}
+
+// ── Dialog ─────────────────────────────────────────────────────────────────
+function _snpOpen() {
+  const objs = _snpObjs();
+  if (objs.length < 2) {
+    notify('Bitte mindestens zwei Teile auswählen, die zusammengesteckt werden sollen (Umschalt+Klick oder Strg+A)', 'w');
+    return;
+  }
+  _snpInfo();
+  document.getElementById('snp-modal').classList.add('show');
+}
+function _snpClose() { document.getElementById('snp-modal').classList.remove('show'); }
+function _snpInfo() {
+  const o = _snpOpt(), n = _snpObjs().length;
+  ['d', 'l', 'clr'].forEach(k => {
+    const el = document.getElementById('snpv-' + k), inp = document.getElementById('snp-' + k);
+    if (el && inp) el.textContent = inp.value;
+  });
+  const est = document.getElementById('snp-est');
+  if (est) est.innerHTML =
+    '<b>' + n + ' Teile</b> gewählt · Zapfen Ø ' + o.d + ' mm, ' + o.L + ' mm tief, ' +
+    o.clr + ' mm Spiel · bis zu ' + o.anz + ' Verbinder je Kontaktstelle.' +
+    (o.anz === 1 ? '<br><b>Achtung:</b> Ein einzelner Zapfen lässt das Teil sich verdrehen.' : '');
+}
+// Prüf-Hook für Headless-Tests (let-Variablen hängen nicht am window)
+function _snpDbg() { return _snpAnalyse; }
+
 // ═══ ALLES ABRUNDEN (Kanten brechen an beliebigen Netzen) ═══════════════════
 // Für importierte Teile gibt es keine Kantenliste, an der man einzeln runden
 // könnte — also wird über die FORM gerundet: erst um den Radius schrumpfen,
@@ -28103,6 +28815,7 @@ const _STARTERS = [
   {i:'🫗',t:'Silikon-Gießform',d:'Gießrahmen um dein Modell',run:()=>_openMoldModal()},
   {i:'🧱',t:'Klemmbaustein-Look',d:'Modell aufs Noppenraster rastern',run:()=>_lgoOpen()},
   {i:'🛩️',t:'Bausatz-Rahmen',d:'Teile im Gussrahmen mit Nummern-Fähnchen, wie beim Plastikmodell',run:()=>_sprOpen()},
+  {i:'🧩',t:'Steckbausatz',d:'Berührende Körper bekommen Zapfen und Buchse — einzeln drucken, zusammenstecken',run:()=>_snpOpen()},
   {i:'🍪',t:'Keksausstecher',d:'Bild → Ausstecher mit Schneide',run:()=>_ckOpen()},
   {i:'🧰',t:'Werkzeug-Einleger',d:'Foto → Gridfinity-Einsatz',run:()=>_wzOpen()},
   {i:'⚔️',t:'Tabletop-Figur',d:'Grimdark-Mini im Trench-Stil',run:()=>_tfgOpen()},
@@ -45989,8 +46702,13 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.35';
+const VOLME3D_VERSION = '1.18.36';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.36', date:'2026-09-20', changes:[
+    ['\u{1F9E9}','<b>Steckbausatz \u2014 aus mehreren K\u00f6rpern wird ein Bausatz zum Zusammenstecken.</b> Alle Teile ausw\u00e4hlen, die zusammengeh\u00f6ren, und auf <b>\u{1F9E9} Steckbausatz</b> klicken: V3D CAD sucht selbst die Stellen, an denen sich die Teile ber\u00fchren, und setzt dort einen <b>Zapfen</b> ins kleinere und eine passende <b>Buchse</b> ins gr\u00f6\u00dfere Teil. Jedes Teil l\u00e4sst sich danach einzeln flach drucken und von Hand zusammenstecken \u2014 ohne Kleber. Die Stelle f\u00fcr den Zapfen wird so gew\u00e4hlt, dass er vom Rand der Kontaktfl\u00e4che am weitesten weg sitzt; <b>zwei Zapfen je Stelle</b> sind voreingestellt, damit sich nichts verdreht. <b>Spiel</b> steht auf 0,2 mm \u2014 der bew\u00e4hrte Wert f\u00fcr PLA mit 0,4-mm-D\u00fcse.'],
+    ['\u{1F9F2}','<b>Durchdringungen werden vorher aufgel\u00f6st.</b> Stecken zwei K\u00f6rper ineinander, geh\u00f6rt der gemeinsame Bereich beim Drucken genau einem von beiden \u2014 sonst drucken sich die Teile gegenseitig zu und passen hinterher nicht zusammen. Beschnitten wird das Teil, das <b>st\u00e4rker in das andere eindringt</b> (meist das kleinere), und h\u00f6chstens um ein Viertel seines Volumens, damit nichts verschwindet.'],
+    ['\u2696\uFE0F','<b>Zapfen werden bei Bedarf dicker.</b> H\u00e4ngt ein schweres Teil weit auskragend an einer Verbindung, sch\u00e4tzt V3D CAD aus <b>Gewicht und Hebelarm</b> ab, ob der Zapfen h\u00e4lt, und vergr\u00f6\u00dfert ihn, solange die Kontaktfl\u00e4che daf\u00fcr Platz hat. Au\u00dferdem gibt es eine Warnung, wenn ein <b>drittes Teil im Weg steht</b>, sobald man zwei Teile zusammensteckt. Beides sind Absch\u00e4tzungen \u2014 der Druck entscheidet.'],
+  ]},
   { version:'1.18.35', date:'2026-09-20', changes:[
     ['\u22C2','<b>Schnittmenge \u2014 die dritte Grundoperation neben Vereinen und Abziehen.</b> Zwei (oder mehr) K\u00f6rper ausw\u00e4hlen und in der Gruppe <b>Kombinieren</b> auf <b>\u22C2 Schnittmenge</b> klicken: \u00dcbrig bleibt nur der Bereich, in dem sich <b>alle</b> \u00fcberlappen \u2014 alles andere f\u00e4llt weg. Damit l\u00e4sst sich ein Teil sauber <b>zurechtstutzen</b> (K\u00f6rper mit einer Kugel schneiden = ballige Oberseite), ein Motiv auf die Form eines anderen Teils <b>beschneiden</b>, oder aus zwei Rissen \u2014 einer von vorn, einer von der Seite hochgezogen \u2014 ein echter 3D-K\u00f6rper bilden. Die Rechnung l\u00e4uft komplett im Browser, funktioniert also auch dann, wenn der Server gerade nicht erreichbar ist. \u00dcberlappen sich die Teile gar nicht, sagt V3D CAD das und l\u00e4sst alles unver\u00e4ndert stehen.'],
     ['\u{1F573}\uFE0F','<b>Schraubenl\u00f6cher nach Norm \u2014 als fertiger Bohrungs-K\u00f6rper.</b> Im Fenster <b>\u{1F529} Schrauben &amp; Muttern</b> gibt es den neuen Typ <b>Loch</b>. Gr\u00f6\u00dfe w\u00e4hlen (M2 bis M12), dann die <b>Art</b>: <b>Durchgang</b> (die Schraube geht frei hindurch, Reihe mittel nach DIN EN 20273 \u2014 M6 also \u00d8 6,6 mm), <b>Kernloch</b> (zum Gewindeschneiden von Hand, \u00d8 = Nenn-\u00d8 minus Steigung) oder <b>Gewinde</b> (fertiges gedrucktes Innengewinde, die Schraube wird direkt eingedreht). Dazu auf Wunsch eine <b>Senkung</b> f\u00fcr den Kopf: 90\u00b0 f\u00fcr Senkkopfschrauben oder zylindrisch f\u00fcr Innensechskant- und Torx-K\u00f6pfe \u2014 der Kopf verschwindet dann b\u00fcndig im Bauteil. Das Loch kommt gleich <b>als Bohrung markiert</b> in die Szene: ins Bauteil schieben, beides w\u00e4hlen, <b>\u2296 Abziehen</b> \u2014 fertig. Tiefe, Art und Senkung lassen sich auch nachtr\u00e4glich noch \u00e4ndern.'],
@@ -50432,6 +51150,8 @@ function _fpBuildRows(type, o) {
   const legoBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_lgoOpen()" title="Rastert das Modell aufs 8-mm-Noppenraster und baut daraus ein druckbares Teil im Klemmbaustein-Look — mit Noppen oben und Aufnahmen unten.">🧱 Klemmbaustein-Look</button></div>`;
   // Bausatz-Rahmen: alle gewählten Teile in einen Gussrahmen mit Nummern-Fähnchen
   const sprBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_sprOpen()" title="Setzt ALLE gewählten Teile in einen druckbaren Gussrahmen wie beim Plastikmodell — mit dünnen Angüssen zum Abknipsen und einem Fähnchen mit Nummer an jedem Teil. Dazu gibt es eine Teileliste mit Rahmenplan.">🛩️ Bausatz-Rahmen</button></div>`;
+  // Steckbausatz: berührende Körper bekommen Zapfen und Buchse an der Kontaktfläche
+  const snpBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_snpOpen()" title="Macht aus mehreren Körpern, die sich berühren oder ineinanderstecken, einen steckbaren Bausatz: Zapfen im kleineren Teil, passende Buchse im größeren. Einzeln drucken, von Hand zusammenstecken — ohne Kleber.">🧩 Steckbausatz</button></div>`;
   // Biegen: Netz auf einen Radius verformen — auch an einen anderen Körper anlegen
   const bendBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_bndOpen()" title="Biegt den Körper auf einen Radius — als Rundung um eine Achse oder als Kuppel. Mit „Runde Wand anklicken" wird der Radius am Zielkörper gemessen und das Teil gleich angelegt.">🪄 Biegen</button></div>`;
   // Alles abrunden: Kanten brechen ohne Kantenliste — auch für Importe (jeder Typ)
@@ -50833,7 +51553,7 @@ function _fpBuildRows(type, o) {
              `<div class="fp-lbl" style="display:block;margin-bottom:3px;color:var(--dim);font-size:10px">Ober-/Unterkante</div>` +
              row('Radius',      'fp-sk-fil', o.userData.fillet||0,  "_skApplyBevel(this.value, 0)", 'mm', 0, skMax, 0.1) +
              row('Abschrägung', 'fp-sk-cha', o.userData.chamfer||0, "_skApplyBevel(0, this.value)", 'mm', 0, skMax, 0.1) +
-             '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn + roundBtn + bendBtn + moldBtn + legoBtn + sprBtn +
+             '<div class="fp-sep"></div>' + shellBtn + hollowLidBtn + roundBtn + bendBtn + moldBtn + legoBtn + sprBtn + snpBtn +
              _dispRows();
     }
     case 'loft':
@@ -50871,7 +51591,7 @@ function _fpBuildRows(type, o) {
              propLock() +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
-             '<div class="fp-sep"></div>' + svgBtns + edgeBtn + shellBtn + hollowLidBtn + roundBtn + bendBtn + moldBtn + legoBtn + sprBtn +
+             '<div class="fp-sep"></div>' + svgBtns + edgeBtn + shellBtn + hollowLidBtn + roundBtn + bendBtn + moldBtn + legoBtn + sprBtn + snpBtn +
              _dispRows();
     }
     default:
@@ -50879,7 +51599,7 @@ function _fpBuildRows(type, o) {
              propLock() +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',   'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
-             '<div class="fp-sep"></div>' + edgeBtn + shellBtn + hollowLidBtn + roundBtn + bendBtn + moldBtn + legoBtn + sprBtn +
+             '<div class="fp-sep"></div>' + edgeBtn + shellBtn + hollowLidBtn + roundBtn + bendBtn + moldBtn + legoBtn + sprBtn + snpBtn +
              _dispRows();
   }
 }
@@ -55143,6 +55863,7 @@ const CMDK = [
   {i:'🫗',g:'Generator',t:'Silikon-Gießform',k:'silikon gießform gussform mold form casting negativform silikonform tray eiswürfel schokolade',run:()=>_openMoldModal()},
   {i:'🧱',g:'Generator',t:'Klemmbaustein-Look',k:'lego klemmbaustein klemmbausteine baustein bausteine noppen noppenraster duplo pixel voxel verpixelt raster klotz klötzchen bauklotz brick bricks studs blocky minecraft blockig legoisieren spielzeug bauplatte stapelbar',run:()=>_lgoOpen()},
   {i:'🛩️',g:'Generator',t:'Bausatz-Rahmen',k:'bausatz rahmen gussrahmen spritzling spritzguss gussast angguss anguss angüsse plastikmodell modellbau revell airfix gitter teile nummer nummern fähnchen faehnchen stückliste teileliste bauanleitung verschenken geschenk ausschneiden abknipsen seitenschneider mehrteilig kit sprue',run:()=>_sprOpen()},
+  {i:'🧩',g:'Generator',t:'Steckbausatz',k:'steckbausatz stecken steckbar zapfen buchse passstift stift duebel dübel verbinder verbindung kontaktflaeche kontaktfläche zusammenstecken zerlegen mehrteilig montage bausatz kleben ohne kleber durchdringung snap3d steckverbindung',run:()=>_snpOpen()},
   {i:'🍪',g:'Generator',t:'Keksausstecher',k:'keks ausstecher plätzchen cookie cutter backen förmchen',run:()=>_ckOpen()},
   {i:'🧰',g:'Generator',t:'Werkzeug-Einleger',k:'werkzeug einleger organizer gridfinity shadowboard schaum inlay einsatz tasche foto sortierung koffer',run:()=>_wzOpen()},
   {i:'∪',g:'Bearbeiten',t:'Vereinen',k:'union merge',run:()=>unionSelected()},
