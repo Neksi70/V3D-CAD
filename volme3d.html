@@ -1324,6 +1324,8 @@ const firebaseConfig = {
           <div class="sli-item" onclick="exportPartsSTL()">⬇ STL pro Körper</div>
           <div class="sli-item" onclick="exportOBJ()">⬇ OBJ</div>
           <div class="sli-item" onclick="exportSTEP()" title="STEP-Datei fürs CAD (Fusion, FreeCAD, …)">⬇ STEP</div>
+          <div class="sli-sep"></div>
+          <div class="sli-item" onclick="_cncOpen()" title="G-Code für eine CNC-Fräse (GRBL) aus der aktuellen Skizze — erst den Skizzen-Modus öffnen">🔧 CNC-Fräsen (G-Code)</div>
         </div>
       </div>
     </div>
@@ -1583,6 +1585,7 @@ const firebaseConfig = {
     <button class="skbtn" onclick="document.getElementById('sk-dxf-file').click()" title="DXF-Datei (Linien/Kreise/Bögen) als Skizze laden">⬆ DXF laden</button>
     <button class="skbtn" onclick="document.getElementById('sk-svg-file').click()" title="SVG-Datei als Skizze laden — Konturen beschneiden, teilen, ändern und neu extrudieren">⬆ SVG laden</button>
     <button class="skbtn" onclick="_skExportDXF()" title="Skizze als DXF speichern (für Lasercutter/Plotter)">⬇ DXF speichern</button>
+    <button class="skbtn" onclick="_cncOpen()" title="Aus der Skizze G-Code für eine CNC-Fräse erzeugen (GRBL): ausschneiden, Tasche, gravieren, bohren">🔧 CNC-Fräsen</button>
     <input type="file" id="sk-dxf-file" accept=".dxf" style="display:none" onchange="_skDxfFileSelected(event)">
     <input type="file" id="sk-svg-file" accept=".svg,image/svg+xml" style="display:none" onchange="_skSvgFileSelected(event)">
     <div class="sksep"></div>
@@ -2924,6 +2927,62 @@ const firebaseConfig = {
     <div class="g3foot">
       <button class="btn" onclick="_snpClose()">Abbrechen</button>
       <button class="btn pri" id="snp-go" onclick="_snpCreate()">✓ Erzeugen</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- CNC-Fräsen: 2,5D-CAM — aus der Skizze wird GRBL-G-Code (client-seitig, Manifold-WASM) -->
+<div id="cnc-modal" class="g3dm" onclick="if(event.target===this)_cncClose()">
+  <div class="g3box">
+    <div class="g3hdr">🔧 CNC-Fräsen (G-Code)<span class="vx" onclick="_cncClose()">✕</span></div>
+    <div class="g3body">
+      <div class="g3ctrl" style="min-width:400px">
+        <span class="vsec" title="Was die Fräse mit der Skizze machen soll">Bearbeitung</span>
+        <div class="vbg" id="cnc-bg-op">
+          <button class="vtb on" data-v="aus" onclick="_cncSetzen('op','aus','cnc-bg-op')" title="Das Teil wird ganz durch das Werkstück geschnitten — die Fräsermitte läuft außen um die Kontur herum und innen in den Löchern. Haltestege halten das Teil bis zum Schluss fest.">✂ Ausschneiden</button>
+          <button class="vtb" data-v="tasche" onclick="_cncSetzen('op','tasche','cnc-bg-op')" title="Die Fläche wird bis zur angegebenen Tiefe ausgeräumt — in Ringen von innen nach außen, der letzte Ring schlichtet die Wand.">▣ Tasche</button>
+          <button class="vtb" data-v="grav" onclick="_cncSetzen('op','grav','cnc-bg-op')" title="Der Fräser fährt genau auf der gezeichneten Linie, ohne Versatz. Für Beschriftungen und Rillen. Offene Linien werden im Pendelgang gefahren — es wird nie gestochen.">✎ Gravieren</button>
+          <button class="vtb" data-v="bohr" onclick="_cncSetzen('op','bohr','cnc-bg-op')" title="Bohrt in der Mitte jedes gezeichneten Kreises, der nicht größer als der Fräser ist. Mit Entspanen: jeder Abstich fährt ganz heraus.">⊙ Bohren</button>
+        </div>
+
+        <span class="vsec">Werkzeug</span>
+        <div class="vrow"><label title="Durchmesser des Fräsers. Bestimmt den Versatz der Werkzeugmitte zur Kontur — Löcher, die schmaler sind, lassen sich nicht fräsen.">Fräser-Ø</label> <input type="number" id="cnc-d" value="3" min="0.5" max="20" step="0.5" style="width:68px;padding:4px 6px" oninput="_cncInfo()"><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Anzahl der Schneiden. Geht direkt in den Vorschub ein: Vorschub = Drehzahl × Schneiden × Span je Zahn. Für Holz meist 2, für Acryl und Alu lieber 1 (Einschneider räumt den Span besser aus).">Schneiden</label> <input type="number" id="cnc-z" value="2" min="1" max="4" step="1" style="width:68px;padding:4px 6px" oninput="_cncInfo()"><span class="vu">Zähne</span></div>
+
+        <span class="vsec" title="Legt Drehzahl, Vorschub und Zustellung fest — alles Startwerte, keine Garantie">Material</span>
+        <div class="vbg" id="cnc-bg-mat">
+          <button class="vtb on" data-v="sperrholz" onclick="_cncSetzen('mat','sperrholz','cnc-bg-mat')" title="Sperrholz, Kiefer, Fichte — gutmütig, verträgt volle Zustellung">Sperrholz</button>
+          <button class="vtb" data-v="mdf" onclick="_cncSetzen('mat','mdf','cnc-bg-mat')" title="MDF — schneidet sich sehr gut, staubt stark (Absaugung!)">MDF</button>
+          <button class="vtb" data-v="hartholz" onclick="_cncSetzen('mat','hartholz','cnc-bg-mat')" title="Buche, Eiche, Esche — halbe Zustellung, sonst brennt die Kante">Hartholz</button>
+          <button class="vtb" data-v="acryl" onclick="_cncSetzen('mat','acryl','cnc-bg-mat')" title="Acryl/PMMA — niedrige Drehzahl, sonst schmilzt der Span an der Kante fest">Acryl</button>
+          <button class="vtb" data-v="alu" onclick="_cncSetzen('mat','alu','cnc-bg-mat')" title="Aluminium — nur mit stabilem Portal, sehr kleine Zustellung und Schmierung (Brennspiritus/Schneidöl)">Alu</button>
+        </div>
+
+        <span class="vsec">Werkstück</span>
+        <div class="vrow" id="cnc-r-dicke"><label title="Dicke des Materials. Z=0 liegt OBEN auf dem Werkstück — so wird auch der Nullpunkt an der Maschine angetastet.">Dicke</label> <input type="number" id="cnc-dicke" value="10" min="0.2" max="200" step="0.5" style="width:68px;padding:4px 6px" oninput="_cncInfo()"><span class="vu">mm</span></div>
+        <div class="vrow" id="cnc-r-tiefe"><label title="Wie tief gefräst bzw. graviert wird">Tiefe</label> <input type="number" id="cnc-tiefe" value="3" min="0.1" max="200" step="0.5" style="width:68px;padding:4px 6px" oninput="_cncInfo()"><span class="vu">mm</span></div>
+        <div class="vrow" id="cnc-r-zugabe"><label title="Wie weit der Fräser unter das Werkstück fährt, damit der Schnitt wirklich durch ist. Geht in die Opferplatte — ohne Opferplatte auf 0 stellen und das Teil von Hand herausbrechen.">Durchbruch</label> <input type="number" id="cnc-zugabe" value="0.3" min="0" max="5" step="0.1" style="width:68px;padding:4px 6px" oninput="_cncInfo()"><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Höhe, auf der zwischen den Bahnen im Eilgang verfahren wird. Muss über Spannpratzen und Schraubzwingen liegen.">Sicherheitshöhe</label> <input type="number" id="cnc-safe" value="5" min="1" max="100" step="1" style="width:68px;padding:4px 6px" oninput="_cncInfo()"><span class="vu">mm</span></div>
+
+        <span class="vsec" id="cnc-r-stege-t">Haltestege</span>
+        <div class="vrow" id="cnc-r-stege"><label title="Kleine Brücken, die das ausgeschnittene Teil bis zum Schluss im Rest halten. Ohne Stege reißt das Teil im letzten Durchgang los und fliegt unter dem laufenden Fräser weg. 0 = keine Stege.">Anzahl × Breite × Höhe</label> <input type="number" id="cnc-stege" value="4" min="0" max="20" step="1" style="width:52px;padding:4px 6px" oninput="_cncInfo()"> × <input type="number" id="cnc-stegb" value="6" min="1" max="40" step="0.5" style="width:56px;padding:4px 6px" oninput="_cncInfo()"> × <input type="number" id="cnc-stegh" value="1.2" min="0.2" max="10" step="0.1" style="width:56px;padding:4px 6px" oninput="_cncInfo()"><span class="vu">mm</span></div>
+
+        <span class="vsec" id="cnc-r-lauf-t">Eintauchen &amp; Laufrichtung</span>
+        <div class="vrow" id="cnc-r-rampe"><label title="Auf dieser Weglänge taucht der Fräser schräg auf die nächste Tiefe ein, statt senkrecht zu stechen. Senkrechtes Stechen bricht Zweischneidern die Spitze ab. 0 = senkrecht eintauchen.">Rampenlänge</label> <input type="number" id="cnc-rampe" value="15" min="0" max="200" step="1" style="width:68px;padding:4px 6px" oninput="_cncInfo()"><span class="vu">mm</span></div>
+        <div class="vbg" id="cnc-bg-lauf">
+          <button class="vtb on" data-v="gleich" onclick="_cncSetzen('lauf','gleich','cnc-bg-lauf')" title="Gleichlauf: Material rechts der Fahrtrichtung, außen im Uhrzeigersinn. Saubere Kante, wenig Ausriss — braucht aber ein spielfreies Portal, sonst zieht sich der Fräser ins Material.">Gleichlauf</button>
+          <button class="vtb" data-v="gegen" onclick="_cncSetzen('lauf','gegen','cnc-bg-lauf')" title="Gegenlauf: Material links der Fahrtrichtung. Verzeiht Spiel in Spindeln und Führungen, reißt die Oberkante aber leichter aus. Bei älteren oder leichten Maschinen die sichere Wahl.">Gegenlauf</button>
+        </div>
+
+        <div class="g3info" id="cnc-werte"></div>
+        <div class="g3info">Erzeugt <b>G-Code für GRBL</b> aus der aktuellen Skizze (1 Einheit = 10 mm, wie beim DXF-Export). <b>Z=0 liegt oben auf dem Werkstück</b>, der X/Y-Nullpunkt dort, wo in der Skizze der Ursprung liegt.<br><b>Vor dem ersten Schnitt:</b> Werkzeugweg mit <b>👁 Vorschau</b> ansehen (grün = Schnitt, rot = Eilgang), dann den G-Code einmal mit angehobenem Z trocken abfahren. Drehzahl und Vorschub sind <b>Startwerte</b> — hört es sich falsch an, ist es falsch.</div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_cncClose()">Schließen</button>
+      <button class="btn" onclick="_cncVorschau()">👁 Vorschau</button>
+      <button class="btn pri" onclick="_cncExport()">⬇ G-Code speichern</button>
     </div>
   </div>
 </div>
@@ -8240,6 +8299,7 @@ function exitSketchMode() {
   if (_sk.group) { scene.remove(_sk.group); _skDisposeGroup(); _sk.group = null; }
   _sk.ents = []; _sk.pending = []; _sk.dimLock = false;
   _skRefClear();
+  if (typeof _cncPrevClear === 'function') _cncPrevClear();
   document.getElementById('sketch-bar').style.display = 'none';
   document.getElementById('sk-dim').style.display = 'none';
   if (_sk.savedCam) {
@@ -46798,9 +46858,535 @@ function _closeSceneSettings(){
 }
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
+// ===== CNC-FRÄSEN — 2,5D-CAM (Skizze → GRBL-G-Code) =====
+// Aus einer 2D-Skizze werden Werkzeugwege und daraus G-Code für eine GRBL-
+// Fräse. Vier Bearbeitungen: Ausschneiden, Tasche ausräumen, Gravieren, Bohren.
+//
+// KOORDINATEN — die wichtigste Falle:
+// Gerechnet wird durchgehend in Maschinen-Millimetern mit
+//     X = u * 10,  Y = -v * 10
+// also derselben Abbildung wie in _skExportDXF (1 Unit = 10 mm, v gespiegelt).
+// Die Spiegelung wird BEWUSST ganz am Anfang angewandt und nicht erst beim
+// Schreiben des G-Codes: Eine Spiegelung dreht den Umlaufsinn um, und der
+// Umlaufsinn entscheidet über Gleichlauf oder Gegenlauf. Würde man erst am
+// Ende spiegeln, käme aus jedem Gleichlauf-Weg ein Gegenlauf-Weg — auf einer
+// Hobbyfräse der Unterschied zwischen sauberer Kante und rupfendem Fräser.
+//
+// Z=0 liegt oben auf dem Werkstück, Schnitttiefen sind also negativ.
+
+const _CNC_U2MM = 10;                 // 1 Skizzen-Unit = 10 mm
+
+// Materialvorgaben. Statt fester Vorschub-Tabellen (die nur für einen
+// Fräserdurchmesser stimmen) steht hier die Spanungsdicke pro Zahn `fz`;
+// Vorschub = Drehzahl × Zähne × fz. Das skaliert mit Werkzeug und Zähnezahl.
+//   fz    – mm pro Zahn, Richtwert für Ø6 mm (wird mit dem Durchmesser skaliert)
+//   apF   – Zustellung je Durchgang als Vielfaches des Fräserdurchmessers.
+//           Bewusst zahm: Ausschneiden ist immer ein Vollnutschnitt, da
+//           liegt die Umschlingung bei 100 %.
+//   aeF   – Bahnabstand beim Taschen-Ausräumen, ebenfalls × Durchmesser
+//   tauch – Eintauchvorschub als Anteil des XY-Vorschubs
+const _CNC_MAT = {
+  sperrholz: { n:'Sperrholz',  rpm:18000, fz:0.070, apF:0.70, aeF:0.45, tauch:0.33 },
+  mdf:       { n:'MDF',        rpm:18000, fz:0.090, apF:0.60, aeF:0.45, tauch:0.33 },
+  hartholz:  { n:'Hartholz',   rpm:16000, fz:0.055, apF:0.40, aeF:0.40, tauch:0.30 },
+  acryl:     { n:'Acryl',      rpm:14000, fz:0.060, apF:0.35, aeF:0.40, tauch:0.30 },
+  alu:       { n:'Aluminium',  rpm:12000, fz:0.030, apF:0.06, aeF:0.35, tauch:0.25 },
+};
+
+const _CNC_VORSCHUB_MAX = 3000;       // mm/min — Deckel für Hobbyportale
+
+const _cncP = { op:'aus', mat:'sperrholz', lauf:'gleich' };
+let _cncPrevGrp = null;               // Vorschau-Linien in der Szene
+let _cncLetzter = null;               // letztes Ergebnis von _cncBuild, für Export und Tests
+
+// ── Kleinkram ────────────────────────────────────────────────────────────
+function _cncPt(p){ return [p.u * _CNC_U2MM, -p.v * _CNC_U2MM]; }
+function _cncDist(a, b){ return Math.hypot(b[0]-a[0], b[1]-a[1]); }
+
+// Vorzeichenbehaftete Fläche (Gaußsche Trapezformel). > 0 = gegen den
+// Uhrzeigersinn. Gilt im Maschinen-Frame, weil hier schon gespiegelt wurde.
+function _cncArea(lp){
+  let a = 0;
+  for(let i=0;i<lp.length;i++){ const p=lp[i], q=lp[(i+1)%lp.length]; a += p[0]*q[1] - q[0]*p[1]; }
+  return a/2;
+}
+function _cncLaenge(lp, closed){
+  let L = 0;
+  for(let i=1;i<lp.length;i++) L += _cncDist(lp[i-1], lp[i]);
+  if(closed && lp.length>1) L += _cncDist(lp[lp.length-1], lp[0]);
+  return L;
+}
+
+// Umlaufsinn für Gleich- oder Gegenlauf setzen.
+//
+// Gleichlauf heißt: das Material liegt RECHTS der Fahrtrichtung (die Schneide
+// greift mit voller Spandicke an und läuft auf null aus — bessere Kante, aber
+// die Maschine muss spielfrei sein). Daraus folgt:
+//   Außenkontur → im Uhrzeigersinn (Fläche < 0)
+//   Loch/Tasche → gegen den Uhrzeigersinn (Fläche > 0)
+// Gegenlauf ist jeweils umgekehrt und verzeiht Spiel in den Spindeln — darum
+// bei alten oder spielbehafteten Portalen die sicherere Wahl.
+function _cncWicklung(lp, gleichlauf, istLoch){
+  const willCW = gleichlauf ? !istLoch : istLoch;
+  const istCW  = _cncArea(lp) < 0;
+  return (willCW === istCW) ? lp.slice() : lp.slice().reverse();
+}
+
+// Punkt auf einem Polyzug bei Bogenlänge s (L = kumulierte Bogenlängen)
+function _cncAuf(pfad, L, s){
+  let i = 1;
+  while(i < L.length-1 && L[i] < s) i++;
+  const d = L[i] - L[i-1];
+  const t = d > 1e-9 ? (s - L[i-1]) / d : 0;
+  return [ pfad[i-1][0] + (pfad[i][0]-pfad[i-1][0])*t,
+           pfad[i-1][1] + (pfad[i][1]-pfad[i-1][1])*t ];
+}
+
+// ── Tiefenstaffel ────────────────────────────────────────────────────────
+// Gleichmäßig aufteilen statt „volle Schritte + Rest": ein 0,2-mm-Restschnitt
+// am Ende bringt nichts und kostet eine ganze Umrundung.
+function _cncTiefen(zStart, zEnd, ap){
+  const ges = zStart - zEnd;
+  if(ges <= 1e-6) return [zEnd];
+  const n = Math.max(1, Math.ceil(ges / Math.max(0.05, ap)));
+  const out = [];
+  for(let i=1;i<=n;i++) out.push(zStart - ges*i/n);
+  return out;
+}
+
+// ── Haltestege, Rampe, Tiefenwege ───────────────────────────────────────
+// Z-Verlauf über die Haltestege. Stege lassen an n Stellen eine dünne Brücke
+// stehen, damit das fertige Teil im letzten Durchgang nicht losbricht und
+// unter dem laufenden Fräser wegfliegt. An beiden Steg-Enden liegt eine kurze
+// Anlauframpe, sonst fährt der Fräser senkrecht gegen die Steg-Flanke.
+function _cncZSteg(ges, zZiel, stege, stegB, stegZ){
+  if(!stege || stegB <= 0 || stegZ <= zZiel) return () => zZiel;
+  const anl = 1.5;
+  return s => {
+    const su = ((s % ges) + ges) % ges;
+    let z = zZiel;
+    for(let k=0;k<stege;k++){
+      const c = (k + 0.5) * ges / stege;
+      let d = Math.abs(su - c);
+      if(d > ges/2) d = ges - d;                    // zyklischer Abstand auf dem Ring
+      if(d <= stegB/2) return stegZ;
+      if(d <= stegB/2 + anl) z = Math.max(z, zZiel + (stegZ - zZiel) * (1 - (d - stegB/2)/anl));
+    }
+    return z;
+  };
+}
+
+// Eine Umrundung eines geschlossenen Weges. Taucht über `rampe` mm Weglänge
+// schräg von zVon auf zZiel ein, statt senkrecht zu stechen — ein Zweischneider
+// stirbt im MDF genau am senkrechten Stechen. Zusätzliche Stützpunkte entstehen
+// nur dort, wo sich die Höhe ändert; der Rest behält die Originalpunkte, sonst
+// bläht sich der G-Code auf.
+function _cncRingWeg(lp, zVon, zZiel, rampe, stege, stegB, stegZ){
+  const ring = lp.concat([lp[0]]);
+  const L = [0];
+  for(let i=1;i<ring.length;i++) L.push(L[i-1] + _cncDist(ring[i-1], ring[i]));
+  const ges = L[L.length-1];
+  if(ges < 1e-6) return [];
+
+  const stegeOk = stege > 0 && stegB > 0 && ges > stege * (stegB + 4) * 1.5;
+  const zSteg = _cncZSteg(ges, zZiel, stegeOk ? stege : 0, stegB, stegZ);
+  const rmp = Math.min(Math.max(0, rampe), ges * 0.45);
+  const zRamp = s => (rmp > 1e-6 && s < rmp) ? (zVon + (zZiel - zVon) * (s/rmp)) : zZiel;
+
+  const marken = new Set(L);
+  if(rmp > 1e-6) for(const f of [0.25, 0.5, 0.75, 1]) marken.add(rmp*f);
+  if(stegeOk){
+    for(let k=0;k<stege;k++){
+      const c = (k + 0.5) * ges / stege;
+      for(const off of [-stegB/2-1.5, -stegB/2, stegB/2, stegB/2+1.5]){
+        marken.add((((c+off) % ges) + ges) % ges);
+      }
+    }
+  }
+  const ss = Array.from(marken).filter(s => s >= -1e-9 && s <= ges + 1e-9).sort((a,b)=>a-b);
+  return ss.map(s => { const p = _cncAuf(ring, L, s); return [p[0], p[1], Math.max(zRamp(s), zSteg(s))]; });
+}
+
+// Geschlossene Kontur über alle Tiefen: ohne Zwischen-Rückzug, jede Lage rampt
+// aus der vorigen heraus weiter nach unten. Zum Schluss eine flache Umrundung
+// auf Endtiefe — die schneidet die Rampe weg, die sonst als Schräge stehen
+// bliebe. Haltestege gibt es nur in der letzten Lage und im Schlichtlauf.
+function _cncKonturWeg(lp, tiefen, rampe, stege, stegB, stegZ){
+  let weg = [], zVon = 0;
+  for(let i=0;i<tiefen.length;i++){
+    const letzte = i === tiefen.length - 1;
+    weg = weg.concat(_cncRingWeg(lp, zVon, tiefen[i], rampe, letzte ? stege : 0, stegB, stegZ));
+    zVon = tiefen[i];
+  }
+  return weg.concat(_cncRingWeg(lp, zVon, zVon, 0, stege, stegB, stegZ));
+}
+
+// Offener Pfad (Gravur): Pendeln statt Eintauchen. Jede Lage läuft einmal über
+// den ganzen Pfad und fällt dabei gleichmäßig auf die nächste Tiefe, die
+// nächste Lage zurück. So wird nie gestochen und nie leer gefahren; zum Schluss
+// ein flacher Zug, der die Schräge entfernt.
+function _cncPendelWeg(pts, tiefen){
+  const L = [0];
+  for(let i=1;i<pts.length;i++) L.push(L[i-1] + _cncDist(pts[i-1], pts[i]));
+  const ges = L[L.length-1];
+  if(ges < 1e-6) return [];
+  const weg = []; let zVon = 0, vor = true;
+  for(const zZ of tiefen){
+    for(let i=0;i<pts.length;i++){
+      const j = vor ? i : pts.length-1-i;
+      const s = vor ? L[i] : (ges - L[j]);
+      weg.push([pts[j][0], pts[j][1], zVon + (zZ - zVon) * (s/ges)]);
+    }
+    zVon = zZ; vor = !vor;
+  }
+  const zE = tiefen[tiefen.length-1];
+  for(let i=0;i<pts.length;i++){ const j = vor ? i : pts.length-1-i; weg.push([pts[j][0], pts[j][1], zE]); }
+  return weg;
+}
+
+// ── Konturen aus der Skizze ──────────────────────────────────────────────
+// _skBuildShapes liefert Außenkontur + enthaltene Löcher in Skizzen-Units.
+function _cncFormen(){
+  return _skBuildShapes().map(s => ({
+    outer: s.outer.map(_cncPt),
+    holes: (s.holes || []).map(h => h.map(_cncPt))
+  })).filter(s => s.outer.length >= 3);
+}
+function _cncOffenePfade(){
+  return _skBuildOpenPaths().map(c => c.map(_cncPt)).filter(c => c.length >= 2);
+}
+// Kreis-Elemente der Skizze → Bohrpunkte {x, y, d}
+function _cncKreise(){
+  return _sk.ents.filter(e => e.type === 'circle')
+    .map(e => ({ x: e.c.u*_CNC_U2MM, y: -e.c.v*_CNC_U2MM, d: e.r*2*_CNC_U2MM }));
+}
+
+function _cncCS(W, form){ return new W.CrossSection([form.outer, ...form.holes], 'EvenOdd'); }
+
+// CrossSection → Ringe mit Kennzeichnung „Loch". Manifold liefert Außenringe
+// gegen und Löcher im Uhrzeigersinn; verlassen wird sich darauf aber nicht,
+// entschieden wird über das Vorzeichen der Fläche.
+function _cncRinge(cs){
+  return cs.toPolygons()
+    .filter(p => p.length >= 3)
+    .map(p => ({ lp: p, loch: _cncArea(p) < 0 }))
+    .filter(r => _cncLaenge(r.lp, true) > 0.5);
+}
+
+// ── Werte ────────────────────────────────────────────────────────────────
+function _cncWerte(P){
+  const m = _CNC_MAT[P.mat];
+  // fz gilt für Ø6; dünnere Fräser vertragen weniger Span, dickere mehr.
+  const fz = m.fz * Math.min(1.6, Math.max(0.5, P.d/6));
+  const vorschub = Math.min(_CNC_VORSCHUB_MAX, Math.round(m.rpm * P.z * fz));
+  return {
+    rpm: m.rpm,
+    fz: Math.round(fz*1000)/1000,
+    vorschub,
+    tauchen: Math.max(40, Math.round(vorschub * m.tauch)),
+    ap: Math.max(0.1, Math.round(P.d * m.apF * 10)/10),
+    ae: Math.max(0.2, Math.round(P.d * m.aeF * 10)/10)
+  };
+}
+
+// ── Taschen ──────────────────────────────────────────────────────────────
+// Konzentrische Ringe von der Wand nach innen. Gefahren wird von innen nach
+// außen, damit der letzte Durchgang die Wand schlichtet — er nimmt dann nur
+// noch den Bahnabstand ab und hinterlässt keine Stufen.
+function _cncTaschenLagen(cs, r, ae, tmp){
+  const lagen = [];
+  for(let i=0;i<500;i++){
+    const o = cs.offset(-(r + i*ae), 'Round', 2, 24); tmp.push(o);
+    const ringe = _cncRinge(o);
+    if(!ringe.length) break;
+    lagen.push(ringe);
+  }
+  return lagen.reverse();
+}
+
+// ── Werkzeugwege bauen ───────────────────────────────────────────────────
+// Ergebnis: { moves, w, stats, warn }. moves ist eine Liste
+// {g:0|1, x?, y?, z?, f?} — daraus entstehen G-Code und Vorschau gleichermaßen.
+async function _cncBuild(P){
+  const w = _cncWerte(P);
+  const r = P.d / 2;
+  const moves = [], warn = [];
+  const zSafe = P.zSafe, zClear = 1.0;      // Eiltempo bis 1 mm über dem Material
+  let schnitt = 0, eil = 0;
+
+  const fahre = weg => {                    // eine Bahn anfahren und abfahren
+    if(weg.length < 2) return;
+    moves.push({ g:0, z:zSafe });
+    moves.push({ g:0, x:weg[0][0], y:weg[0][1] });
+    moves.push({ g:0, z:Math.max(zClear, weg[0][2] + 0.5) });
+    moves.push({ g:1, z:weg[0][2], f:w.tauchen });
+    for(let i=1;i<weg.length;i++) moves.push({ g:1, x:weg[i][0], y:weg[i][1], z:weg[i][2], f:w.vorschub });
+  };
+
+  const W = await _mfInit();
+  const tmp = [];
+  const keep = x => { tmp.push(x); return x; };
+  try{
+    if(P.op === 'bohr'){
+      const kreise = _cncKreise();
+      if(!kreise.length) throw new Error('Keine Kreise in der Skizze — Bohrungen als Kreis zeichnen');
+      const zEnd = -(P.dicke + P.zugabe);
+      const peck = Math.max(0.3, w.ap);
+      let gross = 0;
+      for(const k of kreise){
+        if(k.d > P.d + 0.3){ gross++; continue; }   // zu groß zum Bohren → ausfräsen
+        moves.push({ g:0, z:zSafe });
+        moves.push({ g:0, x:k.x, y:k.y });
+        // GRBL kennt keine Bohrzyklen (kein G83) — entspant wird von Hand:
+        // jeder Abstich fährt ganz heraus, damit der Span mitkommt.
+        let z = 0;
+        while(z > zEnd + 1e-6){
+          z = Math.max(zEnd, z - peck);
+          moves.push({ g:0, z:zClear });
+          moves.push({ g:1, z, f:w.tauchen });
+        }
+        moves.push({ g:0, z:zSafe });
+      }
+      if(gross) warn.push(gross + ' Kreis' + (gross>1?'e sind':' ist') + ' größer als der Fräser — dafür „Kontur/Tasche" statt „Bohren" nehmen');
+      if(gross === kreise.length) throw new Error('Alle Kreise sind größer als der Fräser');
+    }
+
+    else if(P.op === 'grav'){
+      const tiefen = _cncTiefen(0, -P.tiefe, w.ap);
+      let n = 0;
+      for(const f of _cncFormen()){
+        for(const lp of [f.outer, ...f.holes]){ fahre(_cncKonturWeg(lp, tiefen, P.rampe, 0, 0, 0)); n++; }
+      }
+      for(const pf of _cncOffenePfade()){ fahre(_cncPendelWeg(pf, tiefen)); n++; }
+      if(!n) throw new Error('Skizze ist leer');
+    }
+
+    else {
+      const formen = _cncFormen();
+      if(!formen.length) throw new Error('Keine geschlossene Kontur — Profil schließen oder Kreis/Rechteck nutzen');
+
+      if(P.op === 'aus'){
+        const zEnd  = -(P.dicke + P.zugabe);
+        const tiefen = _cncTiefen(0, zEnd, w.ap);
+        const stegZ = -Math.max(0, P.dicke - P.stegH);
+        let weg = 0;
+        for(const f of formen){
+          const cs  = keep(_cncCS(W, f));
+          // Beim Ausschneiden läuft die Mitte des Fräsers AUSSEN um das Teil
+          // herum und INNEN in den Löchern — beides liefert derselbe Versatz
+          // um +r, weil ein Loch die Umkehrung von Material ist.
+          const off = keep(cs.offset(r, 'Round', 2, 24));
+          const ringe = _cncRinge(off);
+          const vorher = 1 + f.holes.length;
+          if(ringe.length < vorher) weg += vorher - ringe.length;
+          for(const rg of ringe){
+            const lp = _cncWicklung(rg.lp, P.lauf === 'gleich', rg.loch);
+            fahre(_cncKonturWeg(lp, tiefen, P.rampe, P.stege, P.stegB, stegZ));
+          }
+        }
+        if(weg) warn.push(weg + ' Loch/Löcher sind schmaler als der Fräser (Ø' + P.d + ' mm) und fallen weg');
+      }
+
+      else {  // Tasche
+        const tiefen = _cncTiefen(0, -P.tiefe, w.ap);
+        let leer = 0;
+        for(const f of formen){
+          const cs = keep(_cncCS(W, f));
+          const lagen = _cncTaschenLagen(cs, r, w.ae, tmp);
+          if(!lagen.length){ leer++; continue; }
+          for(const lage of lagen) for(const rg of lage){
+            const lp = _cncWicklung(rg.lp, P.lauf === 'gleich', rg.loch);
+            fahre(_cncKonturWeg(lp, tiefen, P.rampe, 0, 0, 0));
+          }
+        }
+        if(leer) warn.push(leer + ' Fläche(n) sind schmaler als der Fräser (Ø' + P.d + ' mm) — dort entsteht keine Tasche');
+      }
+    }
+  } finally {
+    for(const t of tmp){ try{ t.delete(); }catch(_){} }
+  }
+
+  if(!moves.length) throw new Error('Nichts zu fräsen');
+  moves.push({ g:0, z:zSafe });
+
+  // Weglängen und Zeitschätzung
+  let x=0, y=0, z=zSafe, zeit=0;
+  for(const m of moves){
+    const nx = m.x===undefined?x:m.x, ny = m.y===undefined?y:m.y, nz = m.z===undefined?z:m.z;
+    const d = Math.hypot(nx-x, ny-y, nz-z);
+    if(m.g === 1){ schnitt += d; zeit += d / Math.max(1, m.f || w.vorschub); }
+    else { eil += d; zeit += d / 4000; }
+    x=nx; y=ny; z=nz;
+  }
+  return { moves, w, warn, stats:{ schnitt, eil, min: zeit } };
+}
+
+// ── G-Code (GRBL) ────────────────────────────────────────────────────────
+// Nur G0/G1 — alles ist durch den Versatz ohnehin zu Polyzügen geworden, und
+// GRBL braucht keine Zyklen, die es nicht kennt.
+function _cncGcode(erg, P){
+  const w = erg.w, m = _CNC_MAT[P.mat];
+  const nz = v => { let s = (+v).toFixed(3); if(s.indexOf('.') >= 0) s = s.replace(/0+$/,'').replace(/\.$/,''); return s; };
+  const opN = { aus:'Ausschneiden', tasche:'Tasche ausräumen', grav:'Gravieren', bohr:'Bohren' }[P.op];
+  const L = [];
+  L.push('(V3D CAD ' + VOLME3D_VERSION + ' — CNC 2,5D)');
+  L.push('(Entwurf: ' + (_designName() || 'ohne Namen') + ')');
+  L.push('(Bearbeitung: ' + opN + ', ' + (P.lauf === 'gleich' ? 'Gleichlauf' : 'Gegenlauf') + ')');
+  L.push('(Material: ' + m.n + ', Dicke ' + nz(P.dicke) + ' mm)');
+  L.push('(Werkzeug: Fraeser Durchmesser ' + nz(P.d) + ' mm, ' + P.z + ' Schneiden)');
+  L.push('(Drehzahl ' + w.rpm + ' 1/min, Vorschub ' + w.vorschub + ' mm/min, Eintauchen ' + w.tauchen + ' mm/min)');
+  L.push('(Zustellung ' + nz(w.ap) + ' mm je Durchgang, Spanungsdicke ' + nz(w.fz) + ' mm je Zahn)');
+  L.push('(Nullpunkt: X/Y wie in der Skizze, Z=0 OBEN auf dem Werkstueck)');
+  L.push('(Werte sind Startwerte — vor dem ersten Schnitt pruefen und trocken abfahren)');
+  L.push('G21 G90 G17 G94');
+  L.push('G0 Z' + nz(P.zSafe));
+  L.push('M3 S' + w.rpm);
+  L.push('G4 P2');                                  // Spindel hochlaufen lassen
+  let lx, ly, lf, lz = P.zSafe;                     // der Kopf steht schon auf Sicherheitshöhe
+  for(const mv of erg.moves){
+    const ax = [];
+    if(mv.x !== undefined && mv.x !== lx) ax.push('X' + nz(mv.x));
+    if(mv.y !== undefined && mv.y !== ly) ax.push('Y' + nz(mv.y));
+    if(mv.z !== undefined && mv.z !== lz) ax.push('Z' + nz(mv.z));
+    if(!ax.length) continue;                        // Bewegung ohne Weg — weglassen
+    const t = ['G' + mv.g];
+    t.push.apply(t, ax);
+    if(mv.g === 1 && mv.f && mv.f !== lf){ t.push('F' + Math.round(mv.f)); lf = mv.f; }
+    if(mv.x !== undefined) lx = mv.x;
+    if(mv.y !== undefined) ly = mv.y;
+    if(mv.z !== undefined) lz = mv.z;
+    L.push(t.join(' '));
+  }
+  if(lz !== P.zSafe) L.push('G0 Z' + nz(P.zSafe));
+  L.push('M5');
+  L.push('G0 X0 Y0');
+  L.push('M30');
+  return L.join('\n') + '\n';
+}
+
+// ── Vorschau im 3D-Fenster ───────────────────────────────────────────────
+// Maschine → Szene: X = camX/10, Z = -camY/10 (die Skizzenebene liegt in der
+// Welt-XZ-Ebene), Y = camZ/10. Schnitttiefen sind negativ, die Wege liegen
+// also unter der Platte — genau da, wo später auch das Werkstück liegt.
+function _cncPrevClear(){
+  if(!_cncPrevGrp) return;
+  scene.remove(_cncPrevGrp);
+  _cncPrevGrp.traverse(o => { if(o.geometry) o.geometry.dispose(); if(o.material) o.material.dispose(); });
+  _cncPrevGrp = null;
+}
+function _cncPrevZeichnen(erg){
+  _cncPrevClear();
+  const S = p => [p[0]/10, p[2]/10, -p[1]/10];
+  const schnitt = [], eil = [];
+  let x = 0, y = 0, z = erg.moves.length ? 50 : 0;
+  for(const m of erg.moves){
+    const nx = m.x===undefined?x:m.x, ny = m.y===undefined?y:m.y, nz = m.z===undefined?z:m.z;
+    const a = S([x,y,z]), b = S([nx,ny,nz]);
+    (m.g === 1 ? schnitt : eil).push(a[0],a[1],a[2], b[0],b[1],b[2]);
+    x=nx; y=ny; z=nz;
+  }
+  const g = new THREE.Group(); g.name = '_cncPrev';
+  const mach = (arr, farbe, op) => {
+    if(!arr.length) return;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+    g.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
+      color: farbe, transparent: op < 1, opacity: op, depthTest: false
+    })));
+  };
+  mach(eil, 0xff6b6b, 0.35);        // Eilgang — blass, nur zur Orientierung
+  mach(schnitt, 0x2ecc71, 1.0);     // Schnitt — das, was wirklich Material holt
+  g.renderOrder = 999;
+  _cncPrevGrp = g; scene.add(g);
+}
+
+// ── Bedienung ────────────────────────────────────────────────────────────
+function _cncOpen(){
+  if(!_sk.active){ notify('Erst den Skizzen-Modus öffnen — gefräst wird aus einer 2D-Skizze','w'); return; }
+  if(!_sk.ents.length){ notify('Skizze ist leer — erst zeichnen','w'); return; }
+  document.getElementById('cnc-modal').classList.add('show');
+  _cncInfo();
+}
+function _cncClose(){
+  document.getElementById('cnc-modal').classList.remove('show');
+  _cncPrevClear();
+  _cncLetzter = null;
+}
+function _cncSetzen(feld, wert, gruppe){
+  _cncP[feld] = wert;
+  const bg = document.getElementById(gruppe);
+  if(bg) Array.from(bg.children).forEach(b => b.classList.toggle('on', b.dataset.v === wert));
+  _cncInfo();
+}
+function _cncParams(){
+  const el = id => document.getElementById(id), n = id => parseFloat(el(id).value) || 0;
+  return {
+    op: _cncP.op, mat: _cncP.mat, lauf: _cncP.lauf,
+    d: Math.max(0.5, n('cnc-d')), z: Math.max(1, Math.round(n('cnc-z'))),
+    dicke: Math.max(0.2, n('cnc-dicke')), tiefe: Math.max(0.1, n('cnc-tiefe')),
+    zugabe: Math.max(0, n('cnc-zugabe')), zSafe: Math.max(1, n('cnc-safe')),
+    rampe: Math.max(0, n('cnc-rampe')),
+    stege: Math.max(0, Math.round(n('cnc-stege'))),
+    stegB: Math.max(0, n('cnc-stegb')), stegH: Math.max(0, n('cnc-stegh'))
+  };
+}
+function _cncInfo(){
+  const P = _cncParams(), w = _cncWerte(P), m = _CNC_MAT[P.mat];
+  const zeig = (id, an) => { const e = document.getElementById(id); if(e) e.style.display = an ? '' : 'none'; };
+  zeig('cnc-r-dicke',  P.op === 'aus' || P.op === 'bohr');
+  zeig('cnc-r-tiefe',  P.op === 'tasche' || P.op === 'grav');
+  zeig('cnc-r-zugabe', P.op === 'aus' || P.op === 'bohr');
+  zeig('cnc-r-stege',  P.op === 'aus');
+  zeig('cnc-r-stege-t', P.op === 'aus');
+  zeig('cnc-bg-lauf',  P.op !== 'bohr');
+  zeig('cnc-r-lauf-t', P.op !== 'bohr');
+  zeig('cnc-r-rampe',  P.op !== 'bohr');
+  const e = document.getElementById('cnc-werte');
+  if(e) e.innerHTML =
+    'Daraus errechnet: <b>' + w.rpm + ' min⁻¹</b>, Vorschub <b>' + w.vorschub + ' mm/min</b>, ' +
+    'Eintauchen <b>' + w.tauchen + ' mm/min</b>, Zustellung <b>' + w.ap.toFixed(1).replace('.', ',') + ' mm</b>' +
+    (P.op === 'tasche' ? ', Bahnabstand <b>' + w.ae.toFixed(1).replace('.', ',') + ' mm</b>' : '') +
+    ' — bei ' + w.fz.toFixed(3).replace('.', ',') + ' mm Span je Zahn in ' + m.n + '.';
+}
+async function _cncLauf(exportieren){
+  const P = _cncParams();
+  try{
+    _progressShow('Werkzeugwege werden berechnet …'); _progressSet(10);
+    const erg = await _cncBuild(P);
+    _cncLetzter = erg;
+    _progressSet(80);
+    _cncPrevZeichnen(erg);
+    _progressHide();
+    for(const wn of erg.warn) notify(wn, 'w', 7000);
+    const s = erg.stats;
+    const dauer = s.min < 1 ? '< 1 min' : Math.round(s.min) + ' min';
+    if(exportieren){
+      const blob = new Blob([_cncGcode(erg, P)], { type:'text/plain' });
+      const res = await _saveExport(blob, _designFilename('nc'));
+      notify('G-Code ' + (res.wrote ? '→ ' + res.dir : 'gespeichert') + ' ✓ — ' +
+             Math.round(s.schnitt) + ' mm Schnittweg, geschätzt ' + dauer, 'ok', 8000);
+    } else {
+      notify('Vorschau: ' + Math.round(s.schnitt) + ' mm Schnittweg, geschätzt ' + dauer +
+             ' — grün = Schnitt, rot = Eilgang', 'ok', 8000);
+    }
+  }catch(err){
+    _progressHide();
+    notify('CNC: ' + (err && err.message ? err.message : err), 'e', 7000);
+  }
+}
+function _cncVorschau(){ _cncLauf(false); }
+function _cncExport(){ _cncLauf(true); }
+
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.41';
+const VOLME3D_VERSION = '1.18.42';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.42', date:'2026-09-21', changes:[
+    ['\u{1F527}','<b>CNC-Fr\u00e4sen \u2014 aus der Skizze wird G-Code f\u00fcr die Fr\u00e4se.</b> Im <b>Skizzen-Modus</b> gibt es den neuen Knopf <b>\u{1F527} CNC-Fr\u00e4sen</b> (auch im Export-Men\u00fc). Vier Bearbeitungen: <b>\u2702 Ausschneiden</b> schneidet das Teil ganz durch \u2014 der Fr\u00e4ser l\u00e4uft dabei au\u00dfen um die Kontur und innen in den L\u00f6chern herum, jeweils um seinen halben Durchmesser versetzt. <b>\u25A3 Tasche</b> r\u00e4umt eine Fl\u00e4che bis zur eingestellten Tiefe aus, in Ringen von innen nach au\u00dfen \u2014 der letzte Ring schlichtet die Wand. <b>\u270E Gravieren</b> f\u00e4hrt genau auf der gezeichneten Linie. <b>\u2299 Bohren</b> bohrt in der Mitte jedes gezeichneten Kreises. Heraus kommt eine <b>.nc-Datei f\u00fcr GRBL</b> \u2014 die Steuerung, die in 3018-Fr\u00e4sen, Shapeoko und den meisten Eigenbau-Portalen steckt. Ma\u00dfstab und Nullpunkt sind dieselben wie beim DXF-Export.'],
+    ['\u{1F6E1}\uFE0F','<b>Haltestege, damit das Teil nicht wegfliegt.</b> Beim Ausschneiden bleiben \u2014 voreingestellt \u2014 <b>vier kleine Br\u00fccken</b> von 6 mm Breite und 1,2 mm H\u00f6he stehen, gleichm\u00e4\u00dfig \u00fcber die Kontur verteilt. Ohne sie rei\u00dft sich das fertige Teil im letzten Durchgang los und fliegt unter dem laufenden Fr\u00e4ser weg. Die Stege bekommen an beiden Enden eine kurze Anlauframpe, damit der Fr\u00e4ser nicht senkrecht gegen die Steg-Flanke f\u00e4hrt. Nach dem Fr\u00e4sen bricht man das Teil heraus und verschleift die vier Stellen.'],
+    ['\u{1F53D}','<b>Schr\u00e4g eintauchen statt stechen.</b> Der Fr\u00e4ser f\u00e4hrt nicht senkrecht ins Material, sondern taucht \u00fcber eine einstellbare <b>Rampenl\u00e4nge</b> (15 mm voreingestellt) schr\u00e4g auf die n\u00e4chste Tiefe \u2014 genau am senkrechten Stechen bricht einem Zweischneider sonst die Spitze ab. Zwischen den Tiefen wird gar nicht mehr hochgefahren: Jede Lage rampt aus der vorigen weiter nach unten, zum Schluss l\u00e4uft eine flache Runde, die die Schr\u00e4ge wieder wegschneidet. Gravierte <b>offene Linien</b> laufen im <b>Pendelgang</b> \u2014 hin, tiefer, zur\u00fcck \u2014 da wird \u00fcberhaupt nie gestochen.'],
+    ['\u2699\uFE0F','<b>Drehzahl und Vorschub werden gerechnet, nicht geraten.</b> Material w\u00e4hlen (Sperrholz, MDF, Hartholz, Acryl, Alu), Fr\u00e4ser-Durchmesser und Zahl der Schneiden eintragen \u2014 den Rest rechnet V3D CAD aus der <b>Spanungsdicke je Zahn</b>: Vorschub = Drehzahl \u00d7 Schneiden \u00d7 Span je Zahn. Darum stimmen die Werte auch dann noch, wenn man von einem 3-mm-Zweischneider auf einen 6-mm-Einschneider wechselt. Die Zustellung je Durchgang h\u00e4ngt am Durchmesser und ist bewusst zahm gew\u00e4hlt \u2014 <b>70 %</b> des Durchmessers in Sperrholz, 40 % in Hartholz, 6 % in Alu \u2014 denn Ausschneiden ist immer ein <b>Vollnutschnitt</b>, bei dem der Fr\u00e4ser rundum im Material steckt. Alle Werte stehen als Kommentar oben in der .nc-Datei. <b>Es sind Startwerte</b> \u2014 h\u00f6rt es sich falsch an, ist es falsch.'],
+    ['\u{1F441}\uFE0F','<b>Werkzeugweg vorher ansehen.</b> <b>\u{1F441} Vorschau</b> zeichnet den kompletten Weg in die Szene: <b>gr\u00fcn</b>, wo geschnitten wird, <b>blassrot</b> die Eilg\u00e4nge dazwischen. Dazu Schnittwegl\u00e4nge und Zeitsch\u00e4tzung. So sieht man vor dem ersten Span, ob Stege, Tiefen und Laufrichtung stimmen. <b>Gleichlauf</b> (au\u00dfen im Uhrzeigersinn) gibt die sauberere Kante, <b>Gegenlauf</b> verzeiht Spiel in \u00e4lteren Portalen \u2014 beides ist umschaltbar.'],
+  ]},
   { version:'1.18.41', date:'2026-09-21', changes:[
     ['⬤','<b>„Alles abrunden“ auch bei geschnittenen und kombinierten Teilen.</b> Nach <b>✂ Schneiden</b>, <b>Vereinen</b>, <b>Abziehen</b> oder <b>⊟ Aufheben</b> fehlte der Knopf <b>⬤ Alles abrunden</b> im Eigenschaften-Feld — es gab nur „⬡ Kanten bearbeiten“. Jetzt ist er da, und auch im Kanten-Modus gibt es ihn. Dort heißt der Winkel-Regler jetzt <b>„Kante ab Knick“</b>: Er legt nur fest, welche Kanten anklickbar sind, und rundet selbst nichts. Gerundet wird eine einzelne Kante, indem man sie anklickt und den Griff zieht (danke Ralf).'],
   ]},
@@ -56009,6 +56595,7 @@ const CMDK = [
   {i:'⤧',g:'Bearbeiten',t:'Loft (Flächen verbinden)',k:'loft übergang flächen verbinden shapr',run:()=>{ if(!_lf.active) enterLoftMode(); }},
   {i:'🔻',g:'Bearbeiten',t:'Vereinfachen (Dreiecke)',k:'simplify decimate reduzieren',run:()=>openSimplifyModal()},
   {i:'⬇',g:'Export',t:'Skizze als DXF',k:'dxf laser export skizze',run:()=>{ if(_sk.active) _skExportDXF(); else notify('Erst Skizzen-Modus öffnen','w'); }},
+  {i:'🔧',g:'Export',t:'CNC-Fräsen (G-Code)',k:'cnc fraese fräse fraesen fräsen gcode g-code grbl nc cam werkzeugweg ausschneiden tasche gravieren bohren haltesteg estlcam portalfraese portalfräse oberfraese',run:()=>_cncOpen()},
   {i:'✎',g:'Skizze',t:'Freihand zeichnen',k:'freihand lasso stift zeichnen malen kurve kontur nachzeichnen abpausen coreldraw frei ziehen strich umriss',run:()=>{ if(!_sk.active) enterSketchMode(); _skSetTool('free'); }},
   {i:'🔗',g:'Bearbeiten',t:'Freiform-Auswahl (Lasso)',k:'lasso freiform auswahl markieren umkreisen mehrere teile coreldraw rahmen schlaufe',run:()=>toggleLasso()},
   {i:'📐',g:'Datei',t:'Bild-Vorlage zum Nachzeichnen',k:'vorlage nachzeichnen abpausen pausen durchpausen nachfahren nachbauen referenz referenzbild hintergrundbild unterlegen skizze bild foto zeichnung plan skizzieren umriss abzeichnen',run:()=>{ if(!_sk.active) enterSketchMode(); document.getElementById('sk-ref-file').click(); }},
