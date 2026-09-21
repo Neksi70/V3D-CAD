@@ -1,8 +1,9 @@
 """Client-IP und Rate-Limit.
 
 Der Dienst lauscht nur auf 127.0.0.1; von außen kommt man ausschließlich über
-den Reverse Proxy auf netcup (→ Tailscale → hier). Deshalb zählt die erste
-Adresse in X-Forwarded-For, die nginx auf netcup hart setzt (nicht anhängt).
+den Reverse Proxy auf netcup (→ Tailscale → hier). nginx auf netcup setzt
+X-Real-IP hart; `tailscale serve` reicht ihn durch, ersetzt aber
+X-Forwarded-For durch die Tailnet-IP von netcup — deshalb X-Real-IP zuerst.
 """
 import time
 from collections import defaultdict, deque
@@ -22,9 +23,10 @@ REGELN = [
 
 
 def client_ip(scope):
-    for k, v in scope.get('headers') or []:
-        if k == b'x-forwarded-for':
-            erste = v.decode('latin-1').split(',')[0].strip()
+    kopf = dict(scope.get('headers') or [])
+    for name in (b'x-real-ip', b'x-forwarded-for'):
+        if name in kopf:
+            erste = kopf[name].decode('latin-1').split(',')[0].strip()
             if erste:
                 return erste[:64]
     c = scope.get('client')
