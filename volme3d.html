@@ -1251,7 +1251,7 @@ const firebaseConfig = {
       <button class="btn sub" onclick="subtractHoles()" title="Abziehen: 1. Objekt als Bohrung ○ markieren  2. Beide auswählen  3. Abziehen">⊖ Abziehen</button>
       <button class="btn" onclick="intersectSelected()" title="Schnittmenge: Mind. 2 Objekte auswählen → übrig bleibt nur der Bereich, in dem sich ALLE überlappen. Zum Zurechtstutzen eines Körpers mit einer Form (z.B. Kugel) oder um aus zwei Rissen einen Körper zu bilden.">⋂ Schnittmenge</button>
       <button class="btn" onclick="groupSelected()" title="Strg+G">⊞ Gruppe</button>
-      <button class="btn" onclick="ungroupSelected()" title="Strg+Shift+G">⊟ Aufheben</button>
+      <button class="btn" onclick="ungroupSelected()" title="Gruppe auflösen — oder ein Teil aus mehreren getrennten Stücken (z. B. STL mit zwei Böcken) in diese Stücke zerlegen (Strg+Shift+G)">⊟ Aufheben</button>
       <button class="btn" onclick="_ttRebridge()" title="Stege neu berechnen: flache Teile (z. B. Topper-Buchstaben nach dem Aufheben) auswählen → verbindet alles, was frei schweben würde, über kürzeste Stege. Alte Stege in der Auswahl werden dabei ersetzt. Steg-Breite kommt aus dem Tortentopper.">🖇️ Stege</button>
       <button class="btn" onclick="fitCheckTool()" title="Passung prüfen: 2 Objekte auswählen → zeigt Überschneidung (rot) oder kleinsten Abstand">⧉ Passung</button>
     </div></div>
@@ -15598,7 +15598,14 @@ function groupSelected() {
 
 function ungroupSelected() {
   const grp = selectedObjs.find(o => o.isGroup || o.userData.isGroup);
-  if (!grp) { notify('Keine Gruppe', 'w'); return; }
+  if (!grp) {
+    // Keine Gruppe, aber ein Netz aus mehreren getrennten Teilen (STL-Import,
+    // Vereinen-Ergebnis) → in diese Teile zerlegen. Ralf (21.9.2026): „Wann sind
+    // die zwei Böcke eine Gruppe? Um sie auszurichten muss ich erst schneiden."
+    const m = selectedObjs.find(o => o.isMesh && o.geometry?.attributes?.position);
+    if (m) { _splitMeshParts(m); return; }
+    notify('Keine Gruppe', 'w'); return;
+  }
   saveUndo();
   grp.updateMatrixWorld(true);
   const freed = [];
@@ -15616,6 +15623,45 @@ function ungroupSelected() {
   });
   scene.remove(grp); objects = objects.filter(x => x !== grp);
   selectObjs(freed); updateTree(); notify('Aufgelöst', 'ok');
+}
+
+// Ein Netz in seine getrennten Teile zerlegen (für „Aufheben" ohne Gruppe).
+// Trennung wie beim Bausatz-Rahmen (_sprSplitShells): Stücke, die sich berühren,
+// überschneiden oder ineinander liegen (Innenwand eines Hohlkörpers), bleiben
+// zusammen — zerlegt wird nur, was auch getrennt gedruckt würde.
+async function _splitMeshParts(o) {
+  const tris = _moldCollectTris(o);              // Welt-mm, Z-up, Wicklung korrigiert
+  if (!tris.length) { notify('Keine Gruppe', 'w'); return; }
+  let W = null;
+  try { W = await _mfInit(); } catch (_) { /* ohne Manifold: nur Bbox-Kriterium */ }
+  const stuecke = _sprSplitShells(tris, W);
+  if (stuecke.length < 2) {
+    notify('Keine Gruppe — und das Teil besteht aus einem zusammenhängenden Stück, darum gibt es nichts zu trennen. Zum Teilen: ✂ Schneiden.', 'w', 6000);
+    return;
+  }
+  if (!objects.includes(o)) return;               // inzwischen gelöscht/ersetzt
+  saveUndo();
+  const baseColor = o.userData.color || (o.material && o.material.color && '#' + o.material.color.getHexString()) || currentColor;
+  const baseName = o.userData.name || 'Teil';
+  const neu = stuecke.map((t, k) => {
+    // mm/Z-up → App-Units/Y-up (Umkehr von _moldCollectTris)
+    const pos = new Float32Array(t.length);
+    for (let i = 0; i < t.length; i += 3) { pos[i] = t[i] / 10; pos[i + 1] = t[i + 2] / 10; pos[i + 2] = -t[i + 1] / 10; }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.computeVertexNormals();
+    const mat = (o.material && !Array.isArray(o.material) && o.material.clone()) || new THREE.MeshStandardMaterial();
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.userData = { id: idCtr++, name: baseName + ' · ' + (k + 1), color: baseColor, isHole: false, type: 'custom' };
+    if (mesh.material.color && baseColor) mesh.material.color.set(baseColor);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    return mesh;
+  });
+  objects = objects.filter(x => x !== o);
+  scene.remove(o);
+  neu.forEach(mesh => { scene.add(mesh); objects.push(mesh); });
+  selectObjs(neu); updateTree();
+  notify(`In ${neu.length} getrennte Teile zerlegt ✓ — jetzt einzeln verschieben/ausrichten`, 'ok');
 }
 
 // Jedes sichtbare Blatt-Mesh der gewählten Objekte als EIGENES binäres STL
@@ -46753,8 +46799,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.39';
+const VOLME3D_VERSION = '1.18.40';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.40', date:'2026-09-21', changes:[
+    ['⊟','<b>„Aufheben“ trennt jetzt auch Teile, die keine Gruppe sind.</b> Eine importierte STL mit zwei Böcken ist <i>ein</i> Netz, keine Gruppe — bisher kam darum nur „Keine Gruppe“, und man musste schneiden. Jetzt zerlegt <b>⊟ Aufheben</b> so ein Teil in seine getrennten Stücke, danach lassen sie sich einzeln verschieben und ausrichten. Was sich berührt oder ineinander liegt (z. B. die Innenwand eines Hohlkörpers), bleibt zusammen. Rückgängig geht wie gewohnt (danke Ralf).'],
+  ]},
   { version:'1.18.39', date:'2026-09-21', changes:[
     ['↻','<b>Drehen und Kippen tanzen nicht mehr.</b> Die Knöpfe <b>↻ Drehen</b> und <b>⤵ Kippen</b> (und X±/Y±/Z± im Eigenschaften-Feld) drehen jetzt immer um die Achse der <b>Druckplatte</b>: Drehen um die Hochachse, Kippen um die Querachse — egal, wie das Teil gerade liegt. Bisher drehte ein schon gekipptes Teil bei „Drehen“ um seine eigene, mitgekippte Achse und schlug dabei Haken. Und wer ein Teil vorher am Dreh-Ring oder mit <b>Fläche unten</b> gedreht hatte, bei dem sprang die Lage beim ersten Klick auf ein Raster. Jeder Klick ist jetzt genau 22,5°, das Teil bleibt an seinem Platz und auf der Platte (danke Ralf).'],
   ]},
