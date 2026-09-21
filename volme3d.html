@@ -22825,36 +22825,51 @@ function alignObjects(type) {
   if (specialMode === 'align') repositionAlignHandles();
 }
 
+// Schritt-Drehung um eine WELTACHSE (Knöpfe Drehen/Kippen/X±/Y±/Z±).
+// Ralf (21.9.2026): „Drehen und Kippen machen je nach Lage tanzende Bewegungen."
+// Früher: o.rotation[axis] += Schritt, dann jeden Euler-Anteil auf das Raster
+// gerundet. Zwei Fehler, beide bei gerade stehendem Teil unsichtbar:
+//  1. Bei Euler-Order XYZ ist nur rotation.x eine Weltachse — ein gekipptes Teil
+//     drehte bei „Drehen" um seine mitgekippte Achse statt um die Hochachse.
+//  2. Lagen aus Dreh-Ring / Fläche unten haben krumme Euler-Winkel; das Runden
+//     riss dann ALLE Anteile gleichzeitig auf das 22,5°-Raster (Sprung).
+// Jetzt: Quaternion um die Weltachse vormultiplizieren (wie der Dreh-Ring, siehe
+// _rh*), Drehpunkt = feste Körpermitte (lokale BBox-Mitte), danach auf den Boden.
+function _rotStepWorld(o, axis, angle) {
+  // Körpermitte im (skalierten) Objektrahmen — wandert mit dem Teil mit, darum
+  // kreist es bei wiederholten Klicks nicht um einen wechselnden Punkt.
+  const p0 = o.position.clone(), q0 = o.quaternion.clone();
+  o.position.set(0, 0, 0); o.quaternion.identity();
+  const bl = getMeshBox(o);
+  o.position.copy(p0); o.quaternion.copy(q0);
+  if (bl.isEmpty()) return;
+  const cLoc = bl.getCenter(new THREE.Vector3());
+  const pivot = cLoc.clone().applyQuaternion(q0).add(p0);
+  const ax = new THREE.Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
+  o.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(ax, angle)).normalize();
+  // Rundungsrauschen wegputzen (0,99999 → 1), ohne echte Lagen anzufassen
+  ['x','y','z'].forEach(k => {
+    const r = o.rotation[k], g = Math.round(r / (Math.PI / 8)) * (Math.PI / 8);
+    if (Math.abs(r - g) < 1e-9) o.rotation[k] = g;
+  });
+  o.position.copy(pivot).sub(cLoc.applyQuaternion(o.quaternion));
+  o.updateMatrixWorld(true);
+}
+
 function rotate90(axis, dir) {
   if (!selectedObjs.length) { notify('Objekt wählen', 'w'); return; }
   saveUndo();
-  const angle = dir * Math.PI / 2;
-  selectedObjs.forEach(o => {
-    if (axis === 'x') o.rotation.x = Math.round((o.rotation.x + angle) / (Math.PI / 2)) * (Math.PI / 2);
-    if (axis === 'y') o.rotation.y = Math.round((o.rotation.y + angle) / (Math.PI / 2)) * (Math.PI / 2);
-    if (axis === 'z') o.rotation.z = Math.round((o.rotation.z + angle) / (Math.PI / 2)) * (Math.PI / 2);
-  });
+  selectedObjs.forEach(o => _rotStepWorld(o, axis, dir * Math.PI / 2));
   updateTFInputs();
 }
 
-// 22,5°-Schritte, gerastert. axis: 'y' = Drehen (Teller, von oben), 'x' = Kippen.
+// 22,5°-Schritte um die Weltachse. axis: 'y' = Drehen (Teller, von oben), 'x' = Kippen.
 // dir=1 → Uhrzeigersinn / vorwärts, dir=-1 → andersrum. Objekt bleibt danach am Boden.
 function rotate225(axis, dir) {
   if (!selectedObjs.length) { notify('Objekt wählen', 'w'); return; }
   saveUndo();
-  const step = Math.PI / 8;            // 22,5°
-  const angle = -dir * step;           // Uhrzeigersinn / vorwärts = negative Drehung
-  selectedObjs.forEach(o => {
-    // Horizontale Mitte vor dem Drehen merken, damit das Objekt an Ort und Stelle
-    // bleibt (sonst wandert es beim Kippen seitlich weg).
-    const b0 = getMeshBox(o);
-    const cx0 = (b0.min.x + b0.max.x) / 2, cz0 = (b0.min.z + b0.max.z) / 2;
-    o.rotation[axis] = Math.round((o.rotation[axis] + angle) / step) * step;
-    o.updateMatrixWorld(true);
-    const b1 = getMeshBox(o);
-    o.position.x += cx0 - (b1.min.x + b1.max.x) / 2;
-    o.position.z += cz0 - (b1.min.z + b1.max.z) / 2;
-  });
+  const angle = -dir * Math.PI / 8;    // Uhrzeigersinn / vorwärts = negative Drehung
+  selectedObjs.forEach(o => _rotStepWorld(o, axis, angle));
   _dropSelectedToGround();             // nach dem Drehen wieder auf die Platte setzen
   updateTFInputs();
 }
@@ -46738,8 +46753,11 @@ function _closeSceneSettings(){
 // ===== END ARBEITSBEREICH-EINSTELLUNGEN =====
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.38';
+const VOLME3D_VERSION = '1.18.39';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.39', date:'2026-09-21', changes:[
+    ['↻','<b>Drehen und Kippen tanzen nicht mehr.</b> Die Knöpfe <b>↻ Drehen</b> und <b>⤵ Kippen</b> (und X±/Y±/Z± im Eigenschaften-Feld) drehen jetzt immer um die Achse der <b>Druckplatte</b>: Drehen um die Hochachse, Kippen um die Querachse — egal, wie das Teil gerade liegt. Bisher drehte ein schon gekipptes Teil bei „Drehen“ um seine eigene, mitgekippte Achse und schlug dabei Haken. Und wer ein Teil vorher am Dreh-Ring oder mit <b>Fläche unten</b> gedreht hatte, bei dem sprang die Lage beim ersten Klick auf ein Raster. Jeder Klick ist jetzt genau 22,5°, das Teil bleibt an seinem Platz und auf der Platte (danke Ralf).'],
+  ]},
   { version:'1.18.38', date:'2026-09-20', changes:[
     ['⬇️','<b>Export heißt wieder wie der Entwurf.</b> Die exportierte Datei bekommt den Namen des Entwurfs aus der Tab-Leiste (z. B. <i>Zesty_Ferret.stl</i>). Wer gleich nach dem Start exportierte, bekam bisher <i>volme3d.stl</i>: Der Entwurfsname entsteht erst beim ersten automatischen Speichern, und das läuft alle 30 Sekunden. Jetzt wird vor dem Export sofort gespeichert — der Name steht damit immer fest. Gilt für <b>STL</b>, <b>OBJ</b>, <b>3MF</b>, <b>STEP</b>, den Export <b>pro Körper</b> und das Speichern als <b>.v3d</b>-Datei. Die Meldung nach dem Export nennt jetzt außerdem den <b>Dateinamen</b>, nicht nur die Anzahl Dreiecke (danke Ralf).'],
   ]},
