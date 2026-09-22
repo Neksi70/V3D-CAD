@@ -847,3 +847,33 @@ def update_event(href, title=None, start=None, end=None, all_day=None, location=
     vm._dav_check(status, 'Termin ändern')
     return {'ok': True, 'account': acc['email'], 'uid': alt['uid'], 'href': href, 'title': titel,
             'status': 'TENTATIVE', 'cancelled': abgesagt, 'start': ev['start'], 'end': ev['end'], 'all_day': ev['allDay']}
+
+
+def delete_event(href, account=None):
+    """Vorläufigen Termin endgültig löschen (CalDAV DELETE).
+
+    Dieselbe Grenze wie update_event: nur Termine, deren Titel mit
+    "vorläufig: " beginnt — von Claude angelegte also. Echte Termine des
+    Postfachs bleiben unangetastet, Serientermine ebenso."""
+    acc = _kalender_konto(account)
+    href = _href_pruefen(acc, href)
+    status, kopf, daten = vm._dav_http(acc, 'GET', href)
+    if status == 404:
+        raise MailError('Termin nicht gefunden')
+    vm._dav_check(status, 'Termin lesen')
+    events = vm.ics_parse_events(daten.decode('utf-8', 'replace'))
+    if len(events) != 1 or events[0].get('recurring'):
+        raise MailError('Serientermine werden nicht gelöscht')
+    alt = events[0]
+    titel = alt.get('summary') or ''
+    if not titel.lower().startswith(PRAEFIX_VORLAEUFIG.strip().lower()):
+        raise MailError('Nur vorläufige Termine (Titel "vorläufig: …") dürfen gelöscht werden')
+    extra = {}
+    etag = kopf.get('ETag') or kopf.get('Etag') or kopf.get('etag')
+    if etag:
+        extra['If-Match'] = etag       # nicht löschen, wenn inzwischen geändert
+    status, _, _ = vm._dav_http(acc, 'DELETE', href, extra=extra)
+    if status not in (200, 204, 404):
+        vm._dav_check(status, 'Termin löschen')
+    return {'ok': True, 'account': acc['email'], 'uid': alt['uid'], 'href': href,
+            'title': titel, 'deleted': True}

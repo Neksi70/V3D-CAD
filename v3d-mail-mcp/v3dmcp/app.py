@@ -35,7 +35,8 @@ ANLEITUNG = (
     'Eine Nachricht ist eindeutig durch folder + uid; beides liefert search_messages. '
     'Löschen heißt: move_message nach target="trash" (endgültiges Löschen gibt es nicht). '
     'Termine legt Claude nur vorläufig an (Titel "vorläufig: …", Status TENTATIVE); '
-    'absagen per update_event(cancel=true). Zeiten ohne Zone gelten als Europe/Berlin. '
+    'absagen per update_event(cancel=true), endgültig weg per delete_event (nur vorläufige Termine). '
+    'Zeiten ohne Zone gelten als Europe/Berlin. '
     'Vor send_message den Text mit dem Nutzer abstimmen; im Zweifel create_draft.'
 )
 
@@ -59,6 +60,8 @@ LESEN = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 AENDERN = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
 SENDEN = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False,
                          open_world_hint=True)
+LOESCHEN = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True,
+                           open_world_hint=False)
 
 Konto = Annotated[str | None, Field(description='Postfach-Adresse oder ID (Standard: %s)'
                                     % (mail.standard_konto() or 'erstes Konto'))]
@@ -246,6 +249,14 @@ def update_event(href: Annotated[str, Field(description='href aus list_events/cr
                  account: Konto = None) -> CallToolResult:
     """Vorläufigen Termin ändern oder absagen. Echte (nicht vorläufige) Termine bleiben unangetastet."""
     return mail.update_event(href, title, start, end, all_day, location, description, cancel, account)
+
+
+@werkzeug(LOESCHEN)
+def delete_event(href: Annotated[str, Field(description='href aus list_events/create_event')],
+                 account: Konto = None) -> CallToolResult:
+    """Vorläufigen Termin endgültig löschen. Nur nach ausdrücklicher Zustimmung;
+    echte (nicht vorläufige) Termine bleiben unangetastet."""
+    return mail.delete_event(href, account)
 
 
 # --- HTTP ----------------------------------------------------------------------
