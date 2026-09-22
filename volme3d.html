@@ -15093,7 +15093,9 @@ function buildObjectFromData(data) {
       side: THREE.DoubleSide
     });
     let geo;
-    if (data.geometry) {
+    if (data.geometry && data.geometry.__snap) {
+      geo = _geoFromSnap(data.geometry.__snap);          // Rückgängig: volle Auflösung
+    } else if (data.geometry) {
       geo = new THREE.BufferGeometryLoader().parse(data.geometry);
     } else if (data.type === 'svg' && data._svgPathData) {
       // Gewickelt? Dann direkt gebogen neu bauen — sonst läge das Motiv nach
@@ -15177,7 +15179,9 @@ function buildObjectFromData(data) {
     if (data._mmuSlots) obj.userData._mmuSlots = data._mmuSlots;
   }
   if (data._dispKeep) obj.userData._dispKeep = data._dispKeep;
-  if (data._origGeoData) obj.userData._origGeo = new THREE.BufferGeometryLoader().parse(data._origGeoData);
+  if (data._origGeoData) obj.userData._origGeo = data._origGeoData.__snap
+    ? _geoFromSnap(data._origGeoData.__snap)
+    : new THREE.BufferGeometryLoader().parse(data._origGeoData);
   else if (data._origSameAsGeo && obj.isMesh && obj.geometry) obj.userData._origGeo = obj.geometry;
   // Rohr aus Parametern neu bauen (Geometrie nicht als JSON gespeichert):
   // Parametrische Primitive, deren Geometrie NICHT als JSON gebacken wird (Maße/Param
@@ -15211,6 +15215,82 @@ function buildObjectFromData(data) {
 // Geometrien werden beim Bearbeiten ersetzt (neues Objekt → Cache-Miss), nicht
 // in-place mutiert; die 2 Ausnahmen (Zerteilen) leeren ihren Cache-Eintrag selbst.
 const _geoJsonCache = new WeakMap();
+// Rückgängig braucht die VOLLE Geometrie (die gespeicherte Fassung darf
+// vereinfacht sein, die Arbeitsfassung nie): ein feines Relief kam sonst als
+// grober Klumpen zurück und die Arbeit war hin (Ralf, 22.09.2026). Deshalb für
+// Riesen-Netze ein kompakter Schnappschuss statt JSON — Position als Float32,
+// Normalen/Farben quantisiert (16 Bit, feiner als die 3 Nachkommastellen, auf
+// die die JSON-Fassung ohnehin rundet). Unveränderte Arrays teilen sich die
+// Schnappschüsse (Bemalen ändert nur die Farben) — sonst kostet jeder
+// Pinselstrich eine volle Kopie.
+const _UNDO_SNAP_BUDGET = 400 * 1024 * 1024;   // Obergrenze über alle Schnappschüsse
+const _geoSnapPrev = new WeakMap();            // Geometrie → letzter Schnappschuss
+function _snapArrEq(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+function _geoSnapMake(g) {
+  const pos = g.attributes.position;
+  if (!pos || pos.isInterleavedBufferAttribute) return null;
+  const prev = _geoSnapPrev.get(g);
+  const n = pos.count;
+  const s = { n };
+  const take = (attr, prevArr, quant) => {
+    if (!attr || attr.isInterleavedBufferAttribute) return null;
+    const src = attr.array;
+    if (!quant) {
+      if (prevArr && _snapArrEq(prevArr, src)) return prevArr;    // unverändert → teilen
+      return new Float32Array(src);
+    }
+    const out = new Int16Array(src.length);
+    for (let i = 0; i < src.length; i++)
+      out[i] = Math.max(-32767, Math.min(32767, Math.round(src[i] * quant)));
+    if (prevArr && _snapArrEq(prevArr, out)) return prevArr;
+    return out;
+  };
+  s.pos = take(pos, prev && prev.pos, 0);
+  s.nrm = take(g.attributes.normal, prev && prev.nrm, 32767);      // Einheitsvektoren
+  s.col = take(g.attributes.color,  prev && prev.col,  32767);     // 0…1
+  s.uv  = take(g.attributes.uv,     prev && prev.uv,   0);
+  if (g.index) {
+    const ia = g.index.array;
+    s.idx = (prev && prev.idx && _snapArrEq(prev.idx, ia)) ? prev.idx
+          : (ia.BYTES_PER_ELEMENT === 4 ? new Uint32Array(ia) : new Uint16Array(ia));
+  }
+  const own = new Set();
+  s.bytes = 0;
+  for (const k of ['pos','nrm','col','uv','idx']) {
+    const a = s[k]; if (!a || own.has(a)) continue;
+    own.add(a);
+    if (!prev || (prev.pos !== a && prev.nrm !== a && prev.col !== a && prev.uv !== a && prev.idx !== a))
+      s.bytes += a.byteLength;                   // geteilte Arrays zählen nur einmal (beim Ersten)
+  }
+  _geoSnapPrev.set(g, s);
+  return s;
+}
+function _geoFromSnap(s) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(s.pos), 3));
+  if (s.idx) g.setIndex(new THREE.BufferAttribute(new s.idx.constructor(s.idx), 1));
+  const deq = (a) => { const o = new Float32Array(a.length);
+    for (let i = 0; i < a.length; i++) o[i] = a[i] / 32767; return o; };
+  if (s.nrm) g.setAttribute('normal', new THREE.BufferAttribute(deq(s.nrm), 3));
+  else g.computeVertexNormals();
+  if (s.col) g.setAttribute('color', new THREE.BufferAttribute(deq(s.col), 3));
+  if (s.uv)  g.setAttribute('uv',   new THREE.BufferAttribute(new Float32Array(s.uv), 2));
+  return g;
+}
+// Summe aller Schnappschuss-Bytes in einem Zustands-Array
+function _snapBytesOfState(st) {
+  let b = 0;
+  const walk = (d) => { if (!d) return;
+    if (d.geometry && d.geometry.__snap) b += d.geometry.__snap.bytes || 0;
+    if (d._origGeoData && d._origGeoData.__snap) b += d._origGeoData.__snap.bytes || 0;
+    (d.children || []).forEach(walk); };
+  (st || []).forEach(walk);
+  return b;
+}
 // Float-Arrays der Geometrie auf wenige Nachkommastellen runden → die JSON-Zahlen
 // werden kurz und komprimieren ~2× besser, ohne sichtbaren Unterschied (Position
 // 0.001, Normalen/UV 0.001). Spart bei großen Meshes massiv Speicher (Cloud-Limit).
@@ -15226,7 +15306,23 @@ function _roundGeoJSON(j){
   if (j.data.boundingSphere) delete j.data.boundingSphere; // wird beim Laden neu berechnet
   return j;
 }
-function _cachedGeoJSON(geo){
+function _cachedGeoJSON(geo, modus){
+  // Rückgängig/Wiederholen: volle Treue per Schnappschuss (nur Riesen-Netze
+  // brauchen ihn — kleine Netze bleiben beim gecachten JSON).
+  if (modus === 'undo') {
+    const posC = geo.attributes && geo.attributes.position;
+    const nT = posC ? (geo.index ? geo.index.count : posC.count) / 3 : 0;
+    if (nT > 400000) {
+      const e = _geoJsonCache.get(geo);
+      if (e && e.__undoSnapData) return e.__undoSnapData;
+      const snap = _geoSnapMake(geo.type === 'BufferGeometry' ? geo : new THREE.BufferGeometry().copy(geo));
+      if (snap) {
+        const data = { __snap: snap };
+        if (e) e.__undoSnapData = data;
+        return data;
+      }
+    }
+  }
   let j = _geoJsonCache.get(geo);
   if (!j) {
     // Parametrische Geometrien (Extrude/Lathe/…) serialisieren sich als
@@ -15277,14 +15373,21 @@ function _cachedGeoJSON(geo){
         }
         dec.setAttribute('color', new THREE.BufferAttribute(ca, 3));
       }
-      console.warn('[geoJSON] Riesen-Netz (' + nTri + ' Dreiecke) → Undo/Speichern nutzen reduzierte Kopie (' + dec.attributes.position.count/3 + ')');
+      console.warn('[geoJSON] Riesen-Netz (' + nTri + ' Dreiecke) → gespeicherte Fassung reduziert (' + dec.attributes.position.count/3 + ')');
+      // Einmal pro Sitzung sagen, was da passiert: im Editor bleibt das Netz
+      // fein, die GESPEICHERTE Fassung wird gröber. Wer das feine Netz behalten
+      // will, exportiert es (STL/3MF) — stilles Vereinfachen hat schon Arbeit gekostet.
+      if (!window._geoDecWarned && typeof notify === 'function') {
+        window._geoDecWarned = 1;
+        notify('Sehr feines Netz (' + Math.round(nTri/1000) + 'k Dreiecke): die gespeicherte Fassung wird vereinfacht. Im Editor und beim Export bleibt es fein.', 'w');
+      }
       src = dec;
     }
     j = _roundGeoJSON(src.toJSON()); _geoJsonCache.set(geo, j);
   }
   return j;
 }
-function objectToData(o) {
+function objectToData(o, modus) {
   const d = {
     id: o.userData.id, name: o.userData.name, color: o.userData.color,
     isHole: o.userData.isHole, type: o.userData.type, shapeType: o.userData.shapeType,
@@ -15362,7 +15465,7 @@ function objectToData(o) {
     if (o.userData.texOrient && o.userData.texOrient !== 'laengs') d.texOrient = o.userData.texOrient;
     if (o.userData.texWhere && o.userData.texWhere !== 'alle')     d.texWhere  = o.userData.texWhere;
     d.texProfile = o.userData.texProfile || 'kantig';
-    if (o.isMesh && o.geometry) d.geometry = _cachedGeoJSON(o.geometry);   // Gruppen haben keine eigene Geometrie
+    if (o.isMesh && o.geometry) d.geometry = _cachedGeoJSON(o.geometry, modus);   // Gruppen haben keine eigene Geometrie
   } else if (o.userData.type === 'svg' && o.userData._svgPathData &&
              (!o.userData.displacementPattern || o.userData.displacementPattern === 'keine')) {
     // SVG: nur Pfaddaten + Parameter speichern (KEINE Geometrie) → beim Laden neu
@@ -15377,15 +15480,15 @@ function objectToData(o) {
   } else if (o.isMesh && (o.userData.isSubtract || !o.userData.type || ['custom','text','import','revolve','flower',
       'sphericalshell','spring','bentpipe','thread','svg','lantern','screw','gear','rack','enclosure',
       'laserbox','gfbin','gfplate','gfcut','gardena','pipeclip','sketch','loft','sweep','loft3d'].includes(o.userData.type))) {
-    d.geometry = _cachedGeoJSON(o.geometry);
+    d.geometry = _cachedGeoJSON(o.geometry, modus);
   }
   if (o.userData._dispKeep) d._dispKeep = o.userData._dispKeep;
   if (o.userData._origGeo) {
     if (o.userData._origGeo === o.geometry) d._origSameAsGeo = true;  // Doppelspeicherung vermeiden
-    else d._origGeoData = _cachedGeoJSON(o.userData._origGeo);        // gerundet wie d.geometry
+    else d._origGeoData = _cachedGeoJSON(o.userData._origGeo, modus);  // gerundet wie d.geometry
   }
   if (o.isGroup || o.userData.isGroup) {
-    d.children = o.children.map(objectToData);
+    d.children = o.children.map(c => objectToData(c, modus));
   }
   return d;
 }
@@ -23943,15 +24046,28 @@ function _l3ApplySmooth(on){
 
 // ═══ UNDO / REDO ══════════════════════════════════════════════════════
 function saveUndo() {
-  undoStack.push(objects.map(objectToData));
+  undoStack.push(objects.map(o => objectToData(o, 'undo')));
   if (undoStack.length > 50) undoStack.shift();
   redoStack = [];
+  _trimUndoBudget();
   // Laufende Debounce-Geste beenden: ein expliziter Checkpoint (Add/Delete/
   // Handle-Drag …) ist eine eigene Aktion. Sonst würde die NÄCHSTE debounced-
   // Änderung (Slider/Zahlenfeld) verschluckt und ein Undo spränge mehrere
   // Schritte zurück (alte/gelöschte Objekte tauchen wieder auf).
   if (_undoDebTimer !== null) { clearTimeout(_undoDebTimer); _undoDebTimer = null; }
   updateUndoRedoButtons();
+}
+
+// Riesen-Netze liegen als voller Schnappschuss im Verlauf. Damit der Speicher
+// nicht davonläuft, fallen die ÄLTESTEN Schritte weg (der Verlauf wird kürzer)
+// — lieber weniger Schritte als ein Schritt, der ein kaputtes Modell zurückgibt.
+function _trimUndoBudget() {
+  let b = 0;
+  for (const st of undoStack) b += _snapBytesOfState(st);
+  for (const st of redoStack) b += _snapBytesOfState(st);
+  while (b > _UNDO_SNAP_BUDGET && undoStack.length > 1) {
+    b -= _snapBytesOfState(undoStack.shift());
+  }
 }
 
 // Für kontinuierliche Slider-Gesten: speichert beim ERSTEN Aufruf,
@@ -23985,7 +24101,7 @@ function restoreState(stateArr) {
 function undo() {
   if (!undoStack.length) { notify('Nichts mehr', 'w'); return; }
   if (_undoDebTimer !== null) { clearTimeout(_undoDebTimer); _undoDebTimer = null; }
-  redoStack.push(objects.map(objectToData));
+  redoStack.push(objects.map(o => objectToData(o, 'undo')));
   restoreState(undoStack.pop());
   notify('Undo', 'ok');
 }
@@ -23993,7 +24109,7 @@ function undo() {
 function redo() {
   if (!redoStack.length) { notify('Nichts', 'w'); return; }
   if (_undoDebTimer !== null) { clearTimeout(_undoDebTimer); _undoDebTimer = null; }
-  undoStack.push(objects.map(objectToData));
+  undoStack.push(objects.map(o => objectToData(o, 'undo')));
   restoreState(redoStack.pop());
   notify('Redo', 'ok');
 }
@@ -47682,8 +47798,13 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.45';
+const VOLME3D_VERSION = '1.18.46';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.46', date:'2026-09-22', changes:[
+    ['\u21A9\uFE0F','<b>R\u00fcckg\u00e4ngig gibt das Modell zur\u00fcck \u2014 nicht eine vereinfachte Fassung davon.</b> Bei sehr feinen Netzen (\u00fcber 400\u202f000 Dreiecke, z.\u202fB. eine Visitenkarte/ein Schild mit Foto-Relief bei hoher Aufl\u00f6sung) legte der Verlauf bisher eine <b>reduzierte Kopie</b> ab. Wer nach dem Bemalen einen Schritt zur\u00fcckging, bekam einen groben Klumpen statt seines Schildes \u2014 und musste von vorne anfangen. Gemessen an einem 110\u00d760-Schild: <b>659\u202f996 Dreiecke rein, 106\u202f658 zur\u00fcck</b>. Jetzt kommt Punkt f\u00fcr Punkt dasselbe Netz zur\u00fcck, samt Bemalung. (Danke Ralf!)'],
+    ['\u26A1','<b>Und es geht nebenbei zehnmal fl\u00fcssiger.</b> F\u00fcr jeden Pinselstrich wurde das Riesen-Netz bisher neu vereinfacht \u2014 gemessen <b>1,2\u202fs pro Strich</b>. Der neue Verlaufs-Schnappschuss braucht <b>0,11\u202fs</b> und teilt sich unver\u00e4nderte Daten zwischen den Schritten, statt sie zu kopieren. Damit der Speicher nicht davonl\u00e4uft, wird bei solchen Netzen die <b>Verlaufsl\u00e4nge</b> gek\u00fcrzt: lieber ein paar Schritte weniger als ein Schritt, der ein kaputtes Modell zur\u00fcckgibt.'],
+    ['\u{1F4BE}','<b>Beim Speichern wird jetzt gesagt, was passiert.</b> Die <b>gespeicherte</b> Fassung eines solchen Netzes wird weiterhin vereinfacht (sonst sprengt ein Entwurf jedes Speicherlimit) \u2014 das sagt jetzt ein Hinweis, statt es stillschweigend zu tun. Im Editor und beim <b>Export (STL/3MF)</b> bleibt das Netz in voller Feinheit.'],
+  ]},
   { version:'1.18.45', date:'2026-09-22', changes:[
     ['\u{1F382}','<b>Tortentopper: Pin und i-Punkte sehen jetzt sauber aus.</b> Der Steckpin endete oben bisher als flaches Rechteck \u2014 bei d\u00fcnnen Schreibschrift-Strichen stand dessen Kante sichtbar zwischen den Buchstaben heraus (z. B. als Balken zwischen \u201eh\u201c und \u201ei\u201c). Jetzt sucht sich der Pin eine Stelle, an der \u00fcber seine ganze Breite Buchstabe sitzt, und seine Oberkante folgt dem Strich \u2014 er verschwindet komplett im Schriftzug. Und die <b>i-Punkte</b> (auch \u00e4/\u00f6/\u00fc-P\u00fcnktchen) h\u00e4ngen nicht mehr an einem geraden Steg, der den Stamm optisch verl\u00e4ngert hat (das \u201ei\u201c las sich wie ein \u201el\u201c): Der Punkt r\u00fcckt stattdessen direkt auf seinen Buchstaben und bleibt als runder Kopf erkennbar.'],
   ]},
