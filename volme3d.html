@@ -13726,8 +13726,45 @@ function applyLocalDimChange(o, axes, val) {
   _dimChangePost(o);
 }
 
+// Flach eingefügtes SVG (Modus „Flach 2D") hat KEINE Dicke. Der Höhen-Regler
+// kann daraus nichts dehnen: der Maßstab wird durch die Division durch ~0 absurd
+// groß (gemessen 2,6e16) und die Buchstaben kippen als entartetes Blatt weg
+// (Ralf, 22.09.2026). Richtig ist, die Kontur mit echter Tiefe neu zu extrudieren.
+function _svgGiveDepth(o, mm) {
+  const ud = o.userData;
+  if (!ud._svgPathData || !ud._svgTransformM) return false;
+  const tiefe = Math.max(0.2, mm);
+  const g = _svgRebuildGeo({ type:'svg', _svgPathData: ud._svgPathData, _svgTransformM: ud._svgTransformM,
+                             svgSize: ud.svgSize, svgDepth: tiefe, svgMode: 'extrude', isHole: !!ud.isHole });
+  if (!g || !g.attributes || !g.attributes.position) return false;
+  const vorher = getMeshBox(o);
+  o.geometry.dispose(); o.geometry = g;
+  if (typeof _geoJsonCache !== 'undefined') _geoJsonCache.delete(g);
+  ud.svgMode = 'extrude'; ud.svgDepth = tiefe;
+  if (ud._svgTransformM) ud._svgTransformM.depthMM = tiefe;
+  // Das Objekt trägt einen eigenen Maßstab — Höhe darüber exakt auf den Wunsch setzen
+  g.computeBoundingBox();
+  const hGeo = g.boundingBox.max.y - g.boundingBox.min.y;
+  if (hGeo > 1e-9) o.scale.y = (mm / 10) / hGeo;
+  o.updateMatrixWorld(true);
+  const nachher = getMeshBox(o);
+  o.position.y += vorher.min.y - nachher.min.y;          // Unterkante bleibt liegen
+  { const b = getMeshBox(o); if (b.min.y < -1e-4) o.position.y -= b.min.y; }
+  _updateObjEdgeLines(o);
+  return true;
+}
+
 function applyDimChange(axis, val) {
   const o = getFirst(); if (!o) return;
+  // Flaches SVG + Höhe → extrudieren statt skalieren (siehe _svgGiveDepth)
+  if (axis === 'sh' && o.userData.type === 'svg' && o.userData._svgPathData) {
+    const hMM = getMeshBox(o).getSize(new THREE.Vector3()).y * 10;
+    if (hMM < 0.05 && _svgGiveDepth(o, val)) {
+      notify('Flaches SVG bekommt Tiefe — jetzt ' + r2(val) + ' mm dick', 'ok');
+      _dimChangePost(o);
+      return;
+    }
+  }
   // Schrauben (mit Gewinde): Höhen-Anfasser ändert die LÄNGE (Geometrie neu bauen,
   // Steigung konstant) statt das Mesh zu strecken → kein Verzerren des Gewindes.
   if (o.userData.shapeType === 'screw' && axis === 'sh' && _screwLenProp(o)) {
@@ -13771,8 +13808,39 @@ function applyDimChange(axis, val) {
   } else {
     // Nicht-proportional: die LOKALE Achse skalieren, die auf die geänderte WELT-Achse
     // zeigt (Importe sind rotiert!) — sonst ändert "Höhe" die Tiefe statt der Höhe.
+    // Hat das Teil in dieser Richtung gar keine Ausdehnung (flaches Blatt), gibt es
+    // nichts zu strecken: jeder Faktor wäre absurd groß und macht das Teil kaputt.
+    if (!(curMM[axis] > 0.05)) {
+      notify('Dieses Teil hat in der Richtung keine Dicke — Größe lässt sich hier nicht ziehen', 'w');
+      _dimChangePost(o);
+      return;
+    }
     const la = _dimLocalAxis(o, axis === 'sw' ? 'x' : axis === 'sh' ? 'y' : 'z');
-    o.scale[la] = Math.max(0.01, o.scale[la] * val / (curMM[axis] || 0.1));
+    const wk = axis === 'sw' ? 'x' : axis === 'sh' ? 'y' : 'z';
+    const schraeg = Math.abs(o.quaternion.w) < 0.99999;
+    if (!schraeg) {
+      o.scale[la] = Math.max(0.01, o.scale[la] * val / curMM[axis]);
+    } else {
+      // Schräg im Raum liegendes Teil: an der Welt-Ausdehnung hängen ALLE drei
+      // lokalen Achsen mit, der einfache Dreisatz trifft das Maß also nicht.
+      // Bisher blieb die Höhe scheinbar stehen, während der Regler das Teil
+      // immer weiter zusammenstauchte (Ralf, 22.09.2026). Die Welt-Ausdehnung
+      // ist linear im Maßstab (Eck-Punkte!) → aus zwei Messungen exakt lösen.
+      const s0 = o.scale[la], E0 = curMM[axis];
+      const s1 = s0 * 1.5 + 0.001;
+      o.scale[la] = s1;
+      const E1 = getMeshBox(o).getSize(new THREE.Vector3())[wk] * 10;
+      const B = (E1 - E0) / (s1 - s0);                 // mm pro Maßstab-Schritt
+      const A = E0 - B * s0;                           // Anteil der anderen Achsen
+      const ziel = (val - A) / (B || 1e-9);
+      if (!isFinite(ziel) || ziel < 1e-4) {
+        o.scale[la] = s0;                              // unerreichbar → nichts kaputt machen
+        notify('So schräg im Raum lässt sich dieses Maß nicht einstellen (kleiner als ' +
+               r2(Math.max(0, A)) + ' mm geht nicht) — Teil erst gerade stellen', 'w');
+      } else {
+        o.scale[la] = ziel;
+      }
+    }
   }
   // Position über die Welt-BBox verankern (statt scale-Deltas — die stimmen bei
   // rotierten Objekten nicht): Verhalten für unrotierte Körper bleibt identisch.
@@ -47798,8 +47866,12 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.46';
+const VOLME3D_VERSION = '1.18.47';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.47', date:'2026-09-22', changes:[
+    ['\u{1F524}','<b>Flach eingef\u00fcgtes SVG: „H\u00f6he Z" gibt den Buchstaben jetzt wirklich Dicke.</b> Wer ein SVG als <b>Flach (2D)</b> einf\u00fcgt, hat ein Blatt <b>ohne jede Dicke</b>. Der H\u00f6hen-Regler konnte daran nichts strecken \u2014 er rechnete mit einer Dicke von quasi null und blies den Ma\u00dfstab ins Unendliche (gemessen: Faktor 26\u202f000\u202f000\u202f000\u202f000\u202f000). Die H\u00f6he blieb stehen, und die Buchstaben <b>kippten</b> als entartetes Blatt weg \u2014 auch im Slicer, weil das Teil selbst kaputt war. Jetzt wird die Kontur mit der gew\u00fcnschten Tiefe <b>neu extrudiert</b>: 8 mm eingeben hei\u00dft 8 mm dick, sp\u00e4tere \u00c4nderungen gehen weiter, und es \u00fcberlebt Speichern und Laden. (Danke Ralf!)'],
+    ['\u{1F4D0}','<b>Ma\u00dfe an schr\u00e4g liegenden Teilen stimmen jetzt.</b> Liegt ein Teil gedreht im Raum, h\u00e4ngen an seiner H\u00f6he im Raum alle drei eigenen Achsen mit. Der Regler rechnete trotzdem simplen Dreisatz: das Ma\u00df blieb fast stehen, w\u00e4hrend das Teil mit jedem Zug weiter <b>zusammengestaucht</b> wurde. Jetzt wird das Ma\u00df sauber gel\u00f6st (Breite 160 mm ist auch schr\u00e4g exakt 160 mm) \u2014 und wenn ein Wunschma\u00df in dieser Lage gar nicht erreichbar ist, bleibt das Teil unver\u00e4ndert und sagt, ab wo es ginge, statt sich platt zu dr\u00fccken.'],
+  ]},
   { version:'1.18.46', date:'2026-09-22', changes:[
     ['\u21A9\uFE0F','<b>R\u00fcckg\u00e4ngig gibt das Modell zur\u00fcck \u2014 nicht eine vereinfachte Fassung davon.</b> Bei sehr feinen Netzen (\u00fcber 400\u202f000 Dreiecke, z.\u202fB. eine Visitenkarte/ein Schild mit Foto-Relief bei hoher Aufl\u00f6sung) legte der Verlauf bisher eine <b>reduzierte Kopie</b> ab. Wer nach dem Bemalen einen Schritt zur\u00fcckging, bekam einen groben Klumpen statt seines Schildes \u2014 und musste von vorne anfangen. Gemessen an einem 110\u00d760-Schild: <b>659\u202f996 Dreiecke rein, 106\u202f658 zur\u00fcck</b>. Jetzt kommt Punkt f\u00fcr Punkt dasselbe Netz zur\u00fcck, samt Bemalung. (Danke Ralf!)'],
     ['\u26A1','<b>Und es geht nebenbei zehnmal fl\u00fcssiger.</b> F\u00fcr jeden Pinselstrich wurde das Riesen-Netz bisher neu vereinfacht \u2014 gemessen <b>1,2\u202fs pro Strich</b>. Der neue Verlaufs-Schnappschuss braucht <b>0,11\u202fs</b> und teilt sich unver\u00e4nderte Daten zwischen den Schritten, statt sie zu kopieren. Damit der Speicher nicht davonl\u00e4uft, wird bei solchen Netzen die <b>Verlaufsl\u00e4nge</b> gek\u00fcrzt: lieber ein paar Schritte weniger als ein Schritt, der ein kaputtes Modell zur\u00fcckgibt.'],
