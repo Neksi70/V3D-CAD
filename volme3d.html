@@ -44229,9 +44229,78 @@ function _ttBridgeGeo(seg, webU, thickU, roundU, roundBoth, st){
   return _ttExtrude(sh, thickU, roundU, roundBoth, 4, st);
 }
 
-// Steckpins: an ~25 %/75 % (bzw. mittig) der Breite den tiefsten Konturpunkt in der
-// Nähe suchen und dort einen unten spitz zulaufenden Spieß ansetzen. Beide Spitzen
-// enden auf gleicher Höhe (Text-Unterkante − Pin-Länge), damit der Topper gerade steckt.
+// i-/Umlaut-Punkte auf den eigenen Buchstaben setzen: ein gerader Steg in derselben
+// Farbe verlängert den Stamm optisch — Punkt + Steg + Stamm lasen sich wie ein „l"
+// (Great Vibes) bzw. wie ein Haken (Lobster). Stattdessen rückt der Punkt entlang
+// der kürzesten Verbindung heran, bis er den Buchstaben knapp überlappt; er bleibt
+// als runder Kopf erkennbar, und ein Steg ist gar nicht mehr nötig. Nur für kleine
+// Konturen OBERHALB der Buchstabenmitte (i, j, ä, é …), nicht für „!", „:" oder „=".
+function _ttSeatDots(parts, sizeU){
+  const byKey = new Map();
+  for(const p of parts){
+    if(!p.key || p.key[0] !== 'g') continue;
+    let a = byKey.get(p.key); if(!a){ a = []; byKey.set(p.key, a); } a.push(p);
+  }
+  const bbox = pts => {
+    let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+    for(const q of pts){ if(q.x<x0)x0=q.x; if(q.x>x1)x1=q.x; if(q.y<y0)y0=q.y; if(q.y>y1)y1=q.y; }
+    return {x0,x1,y0,y1, area:(x1-x0)*(y1-y0)};
+  };
+  for(const grp of byKey.values()){
+    if(grp.length < 2) continue;
+    const bbs = grp.map(p=>bbox(p.pts));
+    let mi = 0; bbs.forEach((b,i)=>{ if(b.area > bbs[mi].area) mi = i; });
+    const main = grp[mi], mb = bbs[mi];
+    grp.forEach((p, i)=>{
+      if(i === mi) return;
+      const b = bbs[i];
+      if(b.area > mb.area*0.35) return;                          // kein Punkt, eigener Teil
+      if((b.y0+b.y1)/2 < (mb.y0+mb.y1)/2) return;                // unten (!, ?) → Steg wie bisher
+      if(p.pts.some(q=>_ttInPoly(main.pts, q.x, q.y))) return;   // berührt schon
+      const c = _ttClosest(p.pts, main.pts);
+      if(!(c.d > 1e-6) || c.d > sizeU*0.3) return;                // weit weg → Steg
+      // Überlappung: genug zum sicheren Verschweißen, aber der Punkt soll Punkt bleiben
+      const ov = Math.min(0.05, Math.min(b.x1-b.x0, b.y1-b.y0)*0.3);
+      const k = (c.d + ov)/c.d;
+      const mx = (c.bx-c.ax)*k, my = (c.by-c.ay)*k;
+      p.dx += mx; p.dy = (p.dy||0) + my;
+      for(const q of p.pts){ q.x += mx; q.y += my; }
+    });
+  }
+}
+
+// Materialspalte senkrecht durch x: alle Konturen (inkl. Löcher) schneiden, je Teil
+// gerade/ungerade paaren, über alle Teile vereinigen. Liefert sortierte [y0,y1].
+function _ttColumn(loops, x){
+  const iv = [];
+  for(const L of loops){
+    const ys = [];
+    for(const pts of L){
+      for(let i=0, n=pts.length; i<n; i++){
+        const a = pts[i], b = pts[(i+1)%n];
+        if((a.x <= x) === (b.x <= x)) continue;
+        ys.push(a.y + (x-a.x)*(b.y-a.y)/(b.x-a.x));
+      }
+    }
+    ys.sort((u,v)=>u-v);
+    for(let i=0; i+1<ys.length; i+=2) iv.push([ys[i], ys[i+1]]);
+  }
+  iv.sort((u,v)=>u[0]-v[0]);
+  const out = [];
+  for(const s of iv){
+    const l = out[out.length-1];
+    if(l && s[0] <= l[1]) l[1] = Math.max(l[1], s[1]); else out.push([s[0], s[1]]);
+  }
+  return out;
+}
+
+// Steckpins: an ~25 %/75 % (bzw. mittig) der Breite eine Stelle suchen, an der über
+// die GANZE Pin-Breite Buchstabenmaterial ansetzt, und dort einen unten spitz
+// zulaufenden Spieß anbringen. Die Oberkante folgt dem Strich: sie steigt in jeder
+// Spalte nur bis knapp unter dessen Oberkante (max. 2,8 mm tief). Früher war sie ein
+// flaches Rechteck 2,8 mm über dem tiefsten Punkt — bei dünnen Schreibschrift-
+// Strichen stand es sichtbar zwischen den Buchstaben heraus. Beide Spitzen enden auf
+// gleicher Höhe (Text-Unterkante − Pin-Länge), damit der Topper gerade steckt.
 function _ttPinGeos(parts, nPins, pinLenU, pinWU, thickU){
   if(!nPins || !parts.length) return [];
   const all = [];
@@ -44243,24 +44312,55 @@ function _ttPinGeos(parts, nPins, pinLenU, pinWU, thickU){
   const W = maxX-minX;
   const targets = nPins===1 ? [minX+W/2] : [minX+W*0.25, minX+W*0.75];
   const tipY = minY - pinLenU;
+  const w = pinWU/2, tip = 0.06, DEEP = 0.28, NC = 9;
+  const loops = parts.map(p=>{
+    const L = [p.pts];
+    for(const h of (p.shape && p.shape.holes) || []){
+      const hp = h.getPoints(28);
+      if(hp.length >= 3) L.push(hp.map(q=>({x:q.x+p.dx, y:q.y+(p.dy||0)})));
+    }
+    return L;
+  });
   const geos = [];
   const used = [];
   for(const tx of targets){
-    // tiefster Punkt nahe der Zielposition: niedrig UND nah gewinnt
-    let best=null, bs=Infinity;
-    for(const q of all){
-      const s = (q.y-minY) + 0.55*Math.abs(q.x-tx);
-      if(s<bs){ bs=s; best=q; }
+    // Kandidaten rund um die Zielposition: tief, nah, und oben überall im Material
+    const R = nPins===1 ? W*0.3 : W*0.15, step = Math.max(0.01, W/300);
+    let best = null;
+    for(let px = tx-R; px <= tx+R; px += step){
+      if(used.some(u=>Math.abs(u-px) < pinWU*2)) continue;   // Pins nicht übereinander
+      const tops = [];
+      let lo = -Infinity, bot = Infinity, ok = true;
+      for(let k=0; k<NC; k++){
+        const cx = px - w + (2*w)*k/(NC-1);
+        const col = _ttColumn(loops, cx);
+        if(!col.length){ ok = false; break; }
+        const [y0, y1] = col[0];                            // unterster Strich der Spalte
+        tops.push({x:cx, y: y0 + Math.min(DEEP, (y1-y0)*0.75)});
+        if(y0 > lo) lo = y0; if(y0 < bot) bot = y0;
+      }
+      if(!ok) continue;
+      // lo−bot: so weit läuft der Pin in einer Spalte durch Luft, bevor er auf
+      // Material trifft — das sähe man als Zacke unter dem Schriftzug.
+      const s = (lo-minY) + 0.55*Math.abs(px-tx) + 2*(lo-bot);
+      if(!best || s < best.s) best = {s, px, tops};
     }
-    if(!best) continue;
-    let px = best.x;
-    if(used.some(u=>Math.abs(u-px) < pinWU*2)) continue;  // Pins nicht übereinander
+    if(!best){
+      // Nirgends durchgehend Material (z. B. Motiv mit Lücken): Ansatz wie früher
+      let bq=null, bs=Infinity;
+      for(const q of all){
+        const s = (q.y-minY) + 0.55*Math.abs(q.x-tx);
+        if(s<bs){ bs=s; bq=q; }
+      }
+      if(!bq || used.some(u=>Math.abs(u-bq.x) < pinWU*2)) continue;
+      best = { px:bq.x, tops:[{x:bq.x-w, y:bq.y+DEEP}, {x:bq.x+w, y:bq.y+DEEP}] };
+    }
+    const px = best.px, tops = best.tops;
     used.push(px);
-    const topY = best.y + 0.28;                        // 2,8 mm ins Buchstabenmaterial
     const taperY = tipY + pinLenU*0.42;
-    const w = pinWU/2, tip = 0.06;
     const sh = new THREE.Shape();
-    sh.moveTo(px-w, topY); sh.lineTo(px+w, topY);
+    sh.moveTo(tops[0].x, tops[0].y);
+    for(let k=1; k<tops.length; k++) sh.lineTo(tops[k].x, tops[k].y);
     sh.lineTo(px+w, taperY); sh.lineTo(px+tip, tipY);
     sh.lineTo(px-tip, tipY); sh.lineTo(px-w, taperY);
     sh.closePath();
@@ -44478,6 +44578,7 @@ function _ttGeo(font, o, split){
   const overlap= Math.min(0.35, Math.max(0, (o.overlap||0)/100));
   const lineStepU = sizeU * Math.max(0.3, (o.lineGap||85)/100);
   const parts  = _ttLayoutParts(font, _ttAmpText(o), sizeU, overlap, lineStepU, o);
+  _ttSeatDots(parts, sizeU);                           // i-Punkte aufsetzen statt Steg
   if(!parts.length && !_ttMotif) return null;
   // Trennlinie zuerst: Datums-Herz und Motiv richten sich nach dem Gesamtblock
   if(parts.length) parts.push(..._ttDividerParts(parts, o, sizeU));
@@ -47581,8 +47682,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.44';
+const VOLME3D_VERSION = '1.18.45';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.45', date:'2026-09-22', changes:[
+    ['\u{1F382}','<b>Tortentopper: Pin und i-Punkte sehen jetzt sauber aus.</b> Der Steckpin endete oben bisher als flaches Rechteck \u2014 bei d\u00fcnnen Schreibschrift-Strichen stand dessen Kante sichtbar zwischen den Buchstaben heraus (z. B. als Balken zwischen \u201eh\u201c und \u201ei\u201c). Jetzt sucht sich der Pin eine Stelle, an der \u00fcber seine ganze Breite Buchstabe sitzt, und seine Oberkante folgt dem Strich \u2014 er verschwindet komplett im Schriftzug. Und die <b>i-Punkte</b> (auch \u00e4/\u00f6/\u00fc-P\u00fcnktchen) h\u00e4ngen nicht mehr an einem geraden Steg, der den Stamm optisch verl\u00e4ngert hat (das \u201ei\u201c las sich wie ein \u201el\u201c): Der Punkt r\u00fcckt stattdessen direkt auf seinen Buchstaben und bleibt als runder Kopf erkennbar.'],
+  ]},
   { version:'1.18.44', date:'2026-09-22', changes:[
     ['\u{1F4B3}','<b>3D-Visitenkarte: Schrift aus dem Bild erhaben statt eingelassen.</b> Das Relief hebt helle Stellen an. Ein Schild oder Logo mit <b>dunkler Schrift auf hellem Grund</b> kam deshalb mit vertiefter Schrift heraus. Das H\u00e4kchen zum Umdrehen gab es schon, es hie\u00df aber \u201eHohlform (Blick folgt)\u201c und war nur f\u00fcr Portr\u00e4ts gedacht. Jetzt hei\u00dft es <b>\u201eRelief umkehren (Dunkles erhaben)\u201c</b>. Ein Haken, und die Schrift steht heraus. (Danke Ralf!)'],
   ]},
