@@ -27,7 +27,9 @@ Rate-Limit im Dienst und in nginx. Audit-Log `~/.local/share/v3d-mail-mcp/audit.
 ## Werkzeuge
 Lesen: list_accounts, list_folders, search_messages, get_message, get_thread, get_attachment, list_events.
 Schreiben: create_draft, send_message (destructiveHint), move_message, set_flags, create_event, update_event.
-Kein endgültiges Löschen, kein delete_event. Termine nur „vorläufig: …“ (TENTATIVE).
+Löschen: delete_event (destructiveHint) — nur Termine mit Titel „vorläufig: …“, keine Serientermine,
+CalDAV DELETE mit `If-Match`. Mails kennen kein endgültiges Löschen (move_message nach trash).
+Termine legt der Connector nur „vorläufig: …“ (TENTATIVE) an.
 **goneo-Falle:** ein PUT mit `STATUS:CANCELLED` löscht den Termin sofort — Absagen setzt
 deshalb Titel „… (abgesagt)“ + `TRANSP:TRANSPARENT` und lässt den Termin stehen.
 
