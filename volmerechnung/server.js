@@ -564,6 +564,15 @@ function felderAusText(zeilen) {
       const m = z.match(/(?:rechnungs?\s*-?\s*(?:nr|nummer|no)|beleg\s*-?\s*(?:nr|nummer)|invoice\s*(?:no|number)|rg\.?\s*-?\s*nr)\.?\s*:?\s*([A-Z0-9][A-Z0-9\-\/_.]{2,})/i);
       if (m) r.nummer = m[1].replace(/[.,]$/, '');
     }
+    if (!r.kundennr) {
+      const m = z.match(/(?:kunden\s*-?\s*(?:nr|nummer)|kd\.?\s*-?\s*nr|customer\s*(?:no|number|id))\.?\s*:?\s*([A-Z0-9][A-Z0-9\-\/_.]{1,})/i);
+      if (m) r.kundennr = m[1].replace(/[.,]$/, '');
+    }
+    // ausdrücklich verlangter Verwendungszweck ("Bitte geben Sie als Verwendungszweck ... an")
+    if (!r.verwendungszweck) {
+      const m = z.match(/verwendungszweck\s*:?\s*(.{3,140})$/i);
+      if (m && !/^(an|angeben)\b/i.test(m[1].trim())) r.verwendungszweck = m[1].trim().replace(/[.]$/, '');
+    }
     if (!r.datum && /(rechnungs)?datum|date/i.test(z) && !/liefer|fällig|faellig|zahlbar|leistung/i.test(z)) r.datum = isoDatum(z.match(DATUM_RE));
     if (!r.lieferdatum && /liefer|leistungs/i.test(z)) r.lieferdatum = isoDatum(z.match(DATUM_RE));
     if (!r.faellig && /zahlbar|fällig|faellig|zahlungsziel/i.test(z)) r.faellig = isoDatum(z.match(DATUM_RE));
@@ -626,12 +635,12 @@ Der OCR-Text kann Lesefehler enthalten (fehlende Leerzeichen/Umlaute) — korrig
 Der LIEFERANT ist der Absender der Rechnung (meist Briefkopf oben, hat USt-IdNr./Bankverbindung). Der Empfänger ("${f.name || 'Volme 3D'}", ${f.strasse || ''} ${f.plz || ''} ${f.ort || ''}) ist NICHT der Lieferant.
 Antworte NUR mit JSON nach genau diesem Schema, unbekannte Werte = null, nichts erfinden:
 {"lieferant":{"name":string,"strasse":string|null,"plz":string|null,"ort":string|null,"ustId":string|null,"steuernummer":string|null},
- "nummer":string|null,"datum":string|null,"lieferdatum":string|null,"faellig":string|null,
+ "nummer":string|null,"kundennr":string|null,"verwendungszweck":string|null,"datum":string|null,"lieferdatum":string|null,"faellig":string|null,
  "steuern":[{"satz":number,"netto":number,"ust":number}],"brutto":number|null,
  "iban":string|null,"bic":string|null,
  "positionen":[{"name":string,"menge":number,"preis":number,"satz":number}],
  "beschreibung":string,"kategorie":"Material"|"Maschinen/Werkzeug"|"Strom/Miete"|"Software/IT"|"Versand"|"Marketing"|"Sonstiges"}
-"steuern": eine Zeile je USt-Satz in Prozent (19 statt 0.19) mit Netto und USt-Betrag. "preis" = Netto-Einzelpreis. "beschreibung": 3-8 Wörter, was gekauft wurde.
+"steuern": eine Zeile je USt-Satz in Prozent (19 statt 0.19) mit Netto und USt-Betrag. "preis" = Netto-Einzelpreis. "beschreibung": 3-8 Wörter, was gekauft wurde. "verwendungszweck" NUR, wenn die Rechnung ausdrücklich einen Verwendungszweck für die Überweisung vorgibt, sonst null.
 OCR-Text:
 ${zeilen.join('\n').slice(0, 6000)}`;
   const j = await ollama(prompt);
@@ -639,7 +648,8 @@ ${zeilen.join('\n').slice(0, 6000)}`;
   const L = j.lieferant || {};
   for (const x of ['name', 'strasse', 'plz', 'ort', 'ustId', 'steuernummer']) if (L[x]) k.lieferant[x] = String(L[x]).slice(0, 120);
   if (k.lieferant.name) k.lieferant.name = spaces(k.lieferant.name);
-  for (const x of ['nummer', 'bic']) if (j[x]) k[x] = String(j[x]).slice(0, 60);
+  for (const x of ['nummer', 'bic', 'kundennr']) if (j[x]) k[x] = String(j[x]).slice(0, 60);
+  if (j.verwendungszweck) k.verwendungszweck = String(j.verwendungszweck).slice(0, 140);
   for (const x of ['datum', 'lieferdatum', 'faellig']) if (/^\d{4}-\d{2}-\d{2}$/.test(j[x] || '')) k[x] = j[x];
   if (j.iban) { const i = String(j.iban).replace(/\s/g, '').toUpperCase(); if (ibanOk(i)) k.iban = i; }
   if (Number.isFinite(Number(j.brutto)) && j.brutto !== null) k.brutto = r2(Number(j.brutto));
@@ -657,7 +667,7 @@ ${zeilen.join('\n').slice(0, 6000)}`;
   // und ist bei Namen/Beschreibung/Positionen besser.
   const r = JSON.parse(JSON.stringify(basis || { lieferant: {}, steuern: [] }));
   r.lieferant = Object.assign({}, r.lieferant, Object.fromEntries(Object.entries(k.lieferant).filter(([x, v]) => v && (x === 'name' || !r.lieferant[x]))));
-  for (const x of ['nummer', 'datum', 'lieferdatum', 'faellig', 'iban', 'bic', 'brutto']) if (r[x] == null && k[x] != null) r[x] = k[x];
+  for (const x of ['nummer', 'kundennr', 'verwendungszweck', 'datum', 'lieferdatum', 'faellig', 'iban', 'bic', 'brutto']) if (r[x] == null && k[x] != null) r[x] = k[x];
   const stimmig = (st, b) => st.length && (b == null || Math.abs(r2(st.reduce((x, s) => x + s.netto + s.ust, 0)) - b) < 0.015);
   if (!stimmig(r.steuern || [], r.brutto) && stimmig(k.steuern, r.brutto)) r.steuern = k.steuern;
   // Positionen nur übernehmen, wenn sie je Steuersatz exakt die Netto-Summe ergeben — die KI

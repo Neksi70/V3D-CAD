@@ -967,24 +967,25 @@ function renderAusgaben(m){
       <label class="btn" style="margin:0;color:#fff">📷 Fotografieren<input type="file" accept="image/*" capture="environment" hidden onchange="erfassenDatei(this.files[0]);this.value=''"></label>
       <label class="btn sec" style="margin:0">📄 Foto/PDF hochladen<input type="file" accept="image/*,application/pdf" hidden onchange="erfassenDatei(this.files[0]);this.value=''"></label>
     </div>
-    <p style="color:var(--mid);font-size:13px;margin-top:8px">Rechnung flach auf einen dunklen Untergrund legen und von oben fotografieren (oder Datei hierher ziehen). Danach Felder prüfen, speichern — „⬇ SumUp" liefert ein ZUGFeRD-PDF (E-Rechnung + Scan) zum Hochladen in SumUp.</p>
+    <p style="color:var(--mid);font-size:13px;margin-top:8px">Rechnung flach auf einen dunklen Untergrund legen und von oben fotografieren (oder Datei hierher ziehen). Danach Felder prüfen und „💶 Speichern &amp; überweisen" — dort kopierst du Empfänger, IBAN, Betrag &amp; Verwendungszweck einzeln in deine Banking-App.</p>
   </div>
   <div id="ausgabeForm"></div>
   <div class="card"><table class="list"><tr><th>Datum</th><th>Lieferant</th><th>Beschreibung</th><th>Kategorie</th><th class="num">Brutto</th><th></th></tr>
   ${[...S.expenses].sort((a,b)=>(b.datum||'').localeCompare(a.datum||'')).map(a=>`<tr class="click" onclick="editAusgabe('${a.id}')">
     <td>${dtDE(a.datum)}</td><td><b>${esc(a.lieferant||'')}</b>${a.nummer?`<br><small style="color:var(--dim)">${esc(a.nummer)}</small>`:''}</td><td>${esc(a.beschreibung||'')}</td>
     <td>${esc(a.kategorie||'')}</td><td class="num">${eur(a.betrag)}</td>
-    <td style="white-space:nowrap">${a.belegId?`<a class="btn sm sec" title="ZUGFeRD-PDF für SumUp" href="${ROOTP}/api/expenses/${a.id}/zugferd${kq}" onclick="event.stopPropagation()">⬇ SumUp</a> `:''}<button class="btn sm danger" onclick="event.stopPropagation();delAusgabe('${a.id}')">✕</button></td></tr>`).join('')||'<tr><td colspan="6" style="color:var(--dim)">Noch keine Ausgaben erfasst — z. B. Filament-Bestellung, Strom, Werkzeug.</td></tr>'}
+    <td style="white-space:nowrap">${a.bezahltAm?`<span class="badge b-bezahlt" title="bezahlt am ${dtDE(a.bezahltAm)}">✓ bezahlt</span> `:a.iban?`<button class="btn sm" onclick="event.stopPropagation();ueberweisenDlg('${a.id}')">💶 Überweisen</button> `:''}<button class="btn sm danger" onclick="event.stopPropagation();delAusgabe('${a.id}')">✕</button></td></tr>`).join('')||'<tr><td colspan="6" style="color:var(--dim)">Noch keine Ausgaben erfasst — z. B. Filament-Bestellung, Strom, Werkzeug.</td></tr>'}
   </table></div>`;
 }
 
+const vzVorschlag=(nr,kd)=>[nr,kd?'Kd-Nr. '+kd:''].filter(Boolean).join(' ');
 // Erkannte Felder (Server) -> Ausgabe-Datensatz
 function felderZuAusgabe(f,belegId){
   const L=f.lieferant||{};
   const st=(f.steuern||[]).map(s=>({satz:s.satz,netto:s.netto,ust:s.ust}));
   const brutto=f.brutto!=null?f.brutto:(st.length?Math.round(st.reduce((x,s)=>x+(+s.netto||0)+(+s.ust||0),0)*100)/100:null);
   return {datum:f.datum||today(),lieferant:L.name||'',betrag:brutto,kategorie:f.kategorie||'Material',beschreibung:f.beschreibung||'',
-    nummer:f.nummer||'',faellig:f.faellig||'',lieferdatum:f.lieferdatum||'',iban:f.iban||'',bic:f.bic||'',
+    nummer:f.nummer||'',kundennr:f.kundennr||'',verwendungszweck:f.verwendungszweck||vzVorschlag(f.nummer,f.kundennr),faellig:f.faellig||'',lieferdatum:f.lieferdatum||'',iban:f.iban||'',bic:f.bic||'',
     lieferantAdr:{strasse:L.strasse||'',plz:L.plz||'',ort:L.ort||'',ustId:L.ustId||'',steuernummer:L.steuernummer||''},
     steuern:st,positionen:f.positionen||[],belegId};
 }
@@ -1025,7 +1026,7 @@ async function erfassenKi(){
     // nur Felder füllen, die der Nutzer noch nicht angefasst hat
     const setze=(sel,v)=>{const el=$(sel);if(el&&!el.dataset.t&&v!=null&&v!=='')el.value=v;};
     setze('#aLief',a.lieferant);setze('#aNr',a.nummer);setze('#aDatum',a.datum);setze('#aFaellig',a.faellig);
-    setze('#aBeschrE',a.beschreibung);setze('#aKat',a.kategorie);setze('#aIban',a.iban);setze('#aBic',a.bic);
+    setze('#aBeschrE',a.beschreibung);setze('#aKat',a.kategorie);setze('#aIban',a.iban);setze('#aBic',a.bic);setze('#aKdNr',a.kundennr);setze('#aVz',a.verwendungszweck);
     for(const k of ['strasse','plz','ort','ustId','steuernummer'])setze('#aL_'+k,a.lieferantAdr[k]);
     if(![...document.querySelectorAll('#aSteuern input')].some(el=>el.dataset.t)&&a.steuern.length){
       AUS_ST=a.steuern;steuernZeichnen();setze('#aBetrag',fmt2(a.betrag));
@@ -1086,47 +1087,94 @@ function editAusgabe(id,vorlage,hinweise){
     <div><label>Fällig am</label><input id="aFaellig" ${t} type="date" value="${esc(a.faellig||'')}"></div>
     <div><label>Kategorie</label><select id="aKat" onchange="this.dataset.t=1">${KATEGORIEN.map(k=>`<option ${a.kategorie===k?'selected':''}>${k}</option>`).join('')}</select></div>
     <div style="grid-column:span 3"><label>Beschreibung</label><input id="aBeschrE" ${t} value="${esc(a.beschreibung||'')}"></div>
+    <div style="grid-column:span 2"><label>IBAN (Empfänger)</label><input id="aIban" ${t} value="${esc(a.iban||'')}"></div>
+    <div><label>BIC</label><input id="aBic" ${t} value="${esc(a.bic||'')}"></div>
+    <div><label>Kunden-Nr.</label><input id="aKdNr" ${t} value="${esc(a.kundennr||'')}"></div>
+    <div style="grid-column:span 2"><label>Verwendungszweck</label><input id="aVz" ${t} value="${esc(a.verwendungszweck||'')}"></div>
   </div>
   <label>Steuer je Satz <small style="font-weight:400">(Satz % · Netto € · USt €)</small></label><div id="aSteuern"></div>
   <div class="grid3"><div><label>Betrag (brutto, €)</label><input id="aBetrag" oninput="this.dataset.t=1;ausgabeCheck()" value="${fmt2(a.betrag)}"></div>
     <div style="grid-column:span 2;align-self:end;padding-bottom:10px;font-size:13px" id="aCheck"></div></div>
   <div id="aPos" style="margin-top:6px"></div>
-  <details style="margin-top:10px" ${a.belegId?'':''}><summary style="cursor:pointer;font-weight:600;font-size:13.5px;color:var(--mid)">Lieferanten-Anschrift, Steuer-Nr., Bank</summary>
+  <details style="margin-top:10px" ${a.belegId?'':''}><summary style="cursor:pointer;font-weight:600;font-size:13.5px;color:var(--mid)">Lieferanten-Anschrift, Steuer-Nr.</summary>
   <div class="grid3">
     <div style="grid-column:span 2"><label>Straße</label><input id="aL_strasse" ${t} value="${esc(L.strasse||'')}"></div>
     <div><label>PLZ</label><input id="aL_plz" ${t} value="${esc(L.plz||'')}"></div>
     <div><label>Ort</label><input id="aL_ort" ${t} value="${esc(L.ort||'')}"></div>
     <div><label>USt-IdNr.</label><input id="aL_ustId" ${t} value="${esc(L.ustId||'')}"></div>
     <div><label>Steuernummer</label><input id="aL_steuernummer" ${t} value="${esc(L.steuernummer||'')}"></div>
-    <div style="grid-column:span 2"><label>IBAN</label><input id="aIban" ${t} value="${esc(a.iban||'')}"></div>
-    <div><label>BIC</label><input id="aBic" ${t} value="${esc(a.bic||'')}"></div>
   </div></details>
   <div id="aHinw"></div>
   </div></div>
   <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
-    <button class="btn" onclick="saveAusgabe('${id||''}')">💾 Speichern</button>
-    ${id&&a.belegId?`<a class="btn sec" href="${ROOTP}/api/expenses/${id}/zugferd${kq}">⬇ ZUGFeRD für SumUp</a>`:''}
+    <button class="btn" onclick="saveAusgabe('${id||''}',true)">💶 Speichern &amp; überweisen</button>
+    <button class="btn sec" onclick="saveAusgabe('${id||''}')">💾 Nur speichern</button>
+    ${id&&a.belegId?`<a class="btn sec" href="${ROOTP}/api/expenses/${id}/zugferd${kq}" title="ZUGFeRD-PDF (Scan + E-Rechnungsdaten), z. B. für Steuerberater/DATEV">⬇ E-Rechnung</a>`:''}
     <button class="btn sec" onclick="ERF=null;$('#ausgabeForm').innerHTML=''">Abbrechen</button>
   </div></div>`;
   steuernZeichnen();posZeichnen();hinweiseZeigen(hinweise);ausgabeCheck();
   if(!vorlage)$('#aLief').focus();
 }
-async function saveAusgabe(id){
+async function saveAusgabe(id,ueberweisen){
   const alt=id?S.expenses.find(x=>x.id===id):null;
   const steuern=AUS_ST.filter(s=>s.netto!=null||s.ust!=null).map(s=>({satz:s.satz||0,netto:s.netto||0,ust:s.ust||0}));
   let betrag=zahlDE($('#aBetrag').value);
   if(betrag==null&&steuern.length)betrag=Math.round(steuern.reduce((x,s)=>x+s.netto+s.ust,0)*100)/100;
   const v=sel=>$(sel).value.trim();
   const rec={datum:$('#aDatum').value,lieferant:v('#aLief'),betrag:betrag||0,kategorie:$('#aKat').value,beschreibung:v('#aBeschrE'),
-    nummer:v('#aNr'),faellig:$('#aFaellig').value,iban:v('#aIban').replace(/\s/g,'').toUpperCase(),bic:v('#aBic').replace(/\s/g,'').toUpperCase(),
+    nummer:v('#aNr'),kundennr:v('#aKdNr'),verwendungszweck:v('#aVz'),faellig:$('#aFaellig').value,iban:v('#aIban').replace(/\s/g,'').toUpperCase(),bic:v('#aBic').replace(/\s/g,'').toUpperCase(),
     lieferantAdr:{strasse:v('#aL_strasse'),plz:v('#aL_plz'),ort:v('#aL_ort'),ustId:v('#aL_ustId').replace(/\s/g,''),steuernummer:v('#aL_steuernummer')},
     steuern,positionen:AUS_POS,lieferdatum:alt?alt.lieferdatum||'':(ERF?ERF.felder.lieferdatum||'':''),
     belegId:alt?alt.belegId:(ERF?ERF.belegId:undefined)};
   if(!rec.lieferant&&!rec.beschreibung){toast('Lieferant oder Beschreibung angeben',true);return;}
   try{
-    if(id)await api('expenses/'+id,'PUT',rec);else await api('expenses','POST',rec);
+    const neu=id?await api('expenses/'+id,'PUT',rec):await api('expenses','POST',rec);
     ERF=null;await loadAll();toast('Gespeichert');render();
+    if(ueberweisen)ueberweisenDlg(neu.id);
   }catch(e){toast(e.message,true);}
+}
+// Überweisen: jedes Feld einzeln kopieren, zwischen den Apps hin und her
+function ueberweisenDlg(id){
+  const a=S.expenses.find(x=>x.id===id);if(!a)return;
+  $('#uebDlg')?.remove();
+  const dlg=document.createElement('div');dlg.id='uebDlg';
+  dlg.style.cssText='position:fixed;inset:0;background:rgba(20,24,35,.5);display:flex;align-items:center;justify-content:center;z-index:60;padding:10px';
+  dlg.onclick=e=>{if(e.target===dlg)dlg.remove();};
+  const iban=String(a.iban||'').replace(/\s/g,'');
+  const felder=[
+    ['Empfänger',a.lieferant||''],
+    ['IBAN',iban,iban.replace(/(.{4})/g,'$1 ').trim()],
+    ['BIC',a.bic||''],
+    ['Betrag',(Number(a.betrag)||0).toFixed(2).replace('.',','),eur(a.betrag)],
+    ['Verwendungszweck',a.verwendungszweck||vzVorschlag(a.nummer,a.kundennr)],
+  ];
+  dlg.innerHTML=`<div class="card" style="width:460px;max-width:100%;max-height:94vh;overflow-y:auto;margin:0">
+    <h3 style="margin-bottom:4px">💶 Überweisen</h3>
+    <p style="color:var(--mid);font-size:13px;margin-bottom:10px">Tippe ein Feld zum Kopieren, füge es in der Banking-App ein, komm zurück — erledigte Felder bleiben grün.${a.faellig?` Fällig am <b>${dtDE(a.faellig)}</b>.`:''}</p>
+    ${felder.map(([l,wert,anzeige],i)=>`<button class="uebFeld" data-i="${i}" ${wert?'':'disabled'} onclick="kopiere(this,${esc(JSON.stringify(wert))})"
+      style="display:flex;width:100%;align-items:center;gap:10px;text-align:left;background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:8px;cursor:pointer;font:inherit;color:var(--text)">
+      <span style="flex:1;min-width:0"><small style="display:block;color:var(--dim);font-weight:600;font-size:12px">${l}</small>
+      <b style="font-size:${l==='IBAN'?'15.5px;font-family:ui-monospace,monospace':'16px'};word-break:break-word">${wert?esc(anzeige||wert):'<span style="color:var(--dim);font-weight:400">— nicht erkannt —</span>'}</b></span>
+      <span class="uebIco" style="font-size:20px">📋</span></button>`).join('')}
+    ${a.belegId?`<a href="${ROOTP}/api/belege/${a.belegId}?key=${encodeURIComponent(KEY)}" target="_blank" style="font-size:13px">🧾 Rechnung ansehen (zum Gegenprüfen)</a>`:''}
+    <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">
+      <button class="btn" onclick="alsBezahlt('${a.id}')">✓ Überwiesen — als bezahlt markieren</button>
+      <button class="btn sec" onclick="$('#uebDlg').remove()">Schließen</button>
+    </div></div>`;
+  document.body.appendChild(dlg);
+}
+async function kopiere(btn,text){
+  try{await navigator.clipboard.writeText(text);}
+  catch(e){ // Fallback für ältere Browser/ohne Clipboard-API
+    const ta=document.createElement('textarea');ta.value=text;ta.style.cssText='position:fixed;opacity:0';document.body.appendChild(ta);ta.select();
+    const ok=document.execCommand('copy');ta.remove();if(!ok){toast('Kopieren nicht möglich — bitte Text lange antippen',true);return;}
+  }
+  btn.style.background='#f0fdf4';btn.style.borderColor='#86efac';btn.querySelector('.uebIco').textContent='✅';
+  toast('Kopiert: '+(text.length>40?text.slice(0,40)+'…':text));
+}
+async function alsBezahlt(id){
+  try{await api('expenses/'+id,'PUT',{bezahltAm:today()});$('#uebDlg')?.remove();await loadAll();toast('Als bezahlt markiert');render();}
+  catch(e){toast(e.message,true);}
 }
 async function delAusgabe(id){
   if(!confirm('Ausgabe löschen?'))return;
