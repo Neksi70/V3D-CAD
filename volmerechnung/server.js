@@ -535,18 +535,24 @@ function ibanOk(iban) {
   return rest === 1;
 }
 function ibanSuchen(text, eigene) {
-  const flach = text.toUpperCase().replace(/[\s.]/g, '');
-  const re = /([A-Z]{2})(\d{2})([A-Z0-9]{11,30})/g;
-  let m;
-  while ((m = re.exec(flach))) {
-    const land = m[1];
-    const lens = IBAN_LEN[land] ? [IBAN_LEN[land]] : [];
-    for (let l = Math.min(34, m[0].length); l >= 15; l--) if (!lens.includes(l)) lens.push(l);
-    for (const l of lens) {
-      const kand = m[0].slice(0, l);
-      if (kand.length === l && ibanOk(kand) && kand !== eigene) return kand;
+  // Zeilenweise und nur über Leerzeichen innerhalb der Nummer hinweg — früher wurde der ganze Text
+  // plattgedrückt und jede Länge 15–34 probiert: dann besteht irgendein Wortsalat die Prüfziffer
+  // (1:97 je Versuch), z. B. „…58135 Hagen Lieferdatum 22.09…" -> „EN58135HAGENLIEFERDATUM2209".
+  const zeilen = text.toUpperCase().split('\n');
+  const reihe = [...zeilen.filter((z) => /IBAN/.test(z)), ...zeilen.filter((z) => !/IBAN/.test(z))];
+  for (const z0 of reihe) {
+    const z = z0.replace(/IBAN\s*[:.]?\s*/g, ' ');
+    const re = /(?<![A-Z0-9])([A-Z]{2})(\d{2})((?:\s?[A-Z0-9]){10,30})/g;
+    let m;
+    while ((m = re.exec(z))) {
+      const land = m[1], len = IBAN_LEN[land];
+      if (!len) continue;
+      const kand = m[0].replace(/\s/g, '').slice(0, len);
+      if (kand.length !== len) continue;
+      // Länder mit rein numerischer IBAN: Buchstaben dahinter = Wortsalat, keine IBAN
+      if (['DE', 'AT', 'BE', 'LU', 'DK', 'FI', 'PL', 'CZ', 'SE', 'EE', 'LT', 'PT', 'ES'].includes(land) && !/^\d+$/.test(kand.slice(2))) continue;
+      if (ibanOk(kand) && kand !== eigene) return kand;
     }
-    re.lastIndex = m.index + 1;
   }
   return null;
 }
@@ -560,10 +566,9 @@ function satzNorm(s) {
   return r2(x);
 }
 
-// Leerzeichen, die schwache OCR verschluckt ("PLAFilamentschwarz1kg") — nur bei Text ganz ohne
-// Leerzeichen, sonst zerlegt die Regel echte Wörter wie "GmbH" oder "McFit"
-const spaces = (s) => /\s/.test(String(s || '').trim()) ? String(s).replace(/\s+/g, ' ').trim() : String(s || '').replace(/([a-zäöüß])([A-ZÄÖÜ])/g, '$1 $2')
-  .replace(/([A-ZÄÖÜ]{2,})([A-ZÄÖÜ][a-zäöüß])/g, '$1 $2').replace(/([a-zäöüß])(\d)/g, '$1 $2').replace(/(G mb H|Gmb H)\b/g, 'GmbH').trim();
+// Nur Leerraum glätten. Früher wurden hier fehlende Leerzeichen geraten (für das alte chinesische
+// OCR-Modell) — das zerlegte echte Namen: „Ruhr3D" -> „Ruhr 3D", „GmbH" -> „Gmb H".
+const spaces = (s) => String(s || '').replace(/\s+/g, ' ').trim();
 
 function felderAusText(zeilen) {
   const f = settings.data.firma || {};
@@ -582,12 +587,22 @@ function felderAusText(zeilen) {
   const rf0 = /(^|\s)(GmbH|gGmbH|AG|KG|OHG|UG|GbR|SE|Ltd\.?|Inc\.?|e\.\s?K\.|e\.\s?Kfm\.|e\.\s?V\.|S\.A\.R\.L\.?)(?=[\s,&)]|$)/;
   const betragDrin = new RegExp(BETRAG_RE.source); // ohne /g: kein lastIndex-Zustand
   const rf = { test: (z) => rf0.test(z) && !betragDrin.test(z) };
-  const nameZ = kopf.find((z) => rf.test(z) && !eigen(z) && z.length < 80 && !/rechnung/i.test(z))
-    || kopf.find((z) => /[a-zäöü]{3}/i.test(z) && !eigen(z) && !/^(rechnung|invoice|seite|page|datum|tel|fax|www|e-?mail)/i.test(z) && z.length < 60);
-  if (nameZ) r.lieferant.name = nameZ.split(/\s{3,}| - | · | \| /)[0].trim();
+  // Absenderzeile (klein über dem Anschriftenfeld): „Firma - Straße 70 - 58285 Ort"
+  const absender = kopf.map((z) => z.match(/^(.{2,60}?)\s+[-–·•|,]\s+(.{3,60}?\d+\s*[a-z]?)\s+[-–·•|,]\s+(\d{5})\s+(\S.*)$/i)).find((m) => m && !eigen(m[0]));
+  // Ansichts-App-Leisten (Screenshot eines PDFs) sind kein Lieferant
+  const appZeile = /^(pdf[- ]?reader|adobe|acrobat|drive|dateien|files|gmail|outlook|\d{1,2}:\d{1,2}|[\d\s%:]+)$/i;
+  const nameZ = (absender && absender[1]) || kopf.find((z) => rf.test(z) && !appZeile.test(z) && !eigen(z) && z.length < 80 && !/rechnung/i.test(z))
+    || kopf.find((z) => /[a-zäöü]{3}/i.test(z) && !appZeile.test(z) && !/^RE[-\s]?\d/i.test(z) && !eigen(z) && !/^(rechnung|invoice|seite|page|datum|tel|fax|www|e-?mail)/i.test(z) && z.length < 60);
+  if (nameZ) {
+    let n = nameZ.split(/\s{3,}| - | · | \| /)[0].replace(/[®©™]/g, '').trim();
+    // OCR liest „®" gern als „8": „Ruhr3D8" -> „Ruhr3D", wenn die Form ohne 8 (Logo) auch vorkommt
+    if (/[A-Za-z]8$/.test(n) && zeilen.some((z) => z.trim() === n.slice(0, -1))) n = n.slice(0, -1);
+    r.lieferant.name = n;
+  }
+  if (absender) { r.lieferant.strasse = absender[2].trim(); r.lieferant.plz = absender[3]; r.lieferant.ort = absender[4].trim(); }
   // Anschrift: erste PLZ-Zeile, die nicht unsere ist; Straße darüber
   const eigenePlz = String(f.plz || '');
-  for (let i = 0; i < Math.min(zeilen.length, 30); i++) {
+  for (let i = 0; i < Math.min(zeilen.length, 30) && !absender; i++) {
     const m = zeilen[i].match(/\b(\d{5})\s+([A-ZÄÖÜ][\wäöüß.\- ]{1,40})/);
     if (!m || m[1] === eigenePlz || eigen(zeilen[i]) || (i > 0 && eigen(zeilen[i - 1]))) continue;
     r.lieferant.plz = m[1]; r.lieferant.ort = m[2].split(/\s{3,}/)[0].trim();
@@ -620,6 +635,12 @@ function felderAusText(zeilen) {
     if (!r.faellig && /zahlbar|fällig|faellig|zahlungsziel/i.test(z)) r.faellig = isoDatum(z.match(DATUM_RE));
   }
   if (!r.datum) r.datum = isoDatum(text.match(DATUM_RE));
+  // Verwendungszweck: was die Rechnung verlangt; üblich ist die Rechnungsnummer allein
+  if (!r.verwendungszweck && (r.nummer || r.kundennr)) {
+    const hinweis = zeilen.filter((z) => /überweis|ueberweis|zahlung|verwendungszweck|angabe/i.test(z)).join(' ');
+    const mitKd = /kunden-?\s?(nr|nummer)/i.test(hinweis), mitRe = /rechnungs-?\s?(nr|nummer)/i.test(hinweis);
+    r.verwendungszweck = [(!mitKd || mitRe || !r.kundennr) ? r.nummer : null, mitKd && r.kundennr ? 'Kd-Nr. ' + r.kundennr : null].filter(Boolean).join(' ');
+  }
 
   r.iban = ibanSuchen(text, eigeneIban);
   const bic = text.toUpperCase().match(/BIC\s*[:.]?\s*([A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b/);
