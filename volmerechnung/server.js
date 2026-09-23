@@ -798,6 +798,7 @@ try {
   console.warn('Kein TLS-Zertifikat gefunden — starte unverschlüsselt (HTTP):', e.message);
 }
 
+const STATIC_FILES = new Set(['rechnung.html', 'logo.svg', 'manifest.webmanifest']);
 const BASE = '/rechnung'; // öffentlicher Funnel-Pfad; direkt auf :8782 läuft alles weiter unter /
 
 const handler = async (req, res) => {
@@ -828,14 +829,11 @@ const handler = async (req, res) => {
       }
       return send(res, 200, belegHtml(doc), 'text/html; charset=utf-8');
     }
-    // statisch
-    let file = url.pathname === '/' ? '/rechnung.html' : url.pathname;
-    file = path.normalize(file).replace(/^([.][.][/\\])+/, '');
-    const full = path.join(ROOT, file);
-    if (!full.startsWith(ROOT) || !fs.existsSync(full) || fs.statSync(full).isDirectory()) {
-      return send(res, 404, 'nicht gefunden', 'text/plain; charset=utf-8');
-    }
-    return send(res, 200, fs.readFileSync(full), MIME[path.extname(full)] || 'application/octet-stream');
+    // statisch — NUR diese Dateien. Früher lieferte der Server alles unter ROOT aus,
+    // also auch config.json (adminKey!) und data/ — öffentlich über den Funnel.
+    const file = url.pathname === '/' ? 'rechnung.html' : url.pathname.slice(1);
+    if (!STATIC_FILES.has(file)) return send(res, 404, 'nicht gefunden', 'text/plain; charset=utf-8');
+    return send(res, 200, fs.readFileSync(path.join(ROOT, file)), MIME[path.extname(file)] || 'application/octet-stream');
   } catch (e) {
     console.error(e);
     return send(res, 500, { error: String(e.message || e) });
