@@ -475,7 +475,8 @@ function totalsHtml(d){
 function renderEditor(m){
   const d=editDoc,re=d.art==='rechnung';
   const fest=d.festgeschrieben;
-  const artOpts=`<option value="">— Artikel übernehmen —</option>`+S.items.map(a=>`<option value="${a.id}">${esc(a.name)} (${eur(a.preis)})</option>`).join('');
+  const artOpt=a=>`<option value="${a.id}">${a.kuerzel?esc(a.kuerzel)+' · ':''}${esc(a.name)} (${eur(a.preis)})</option>`;
+  const artOpts=`<option value="">— Artikel übernehmen —</option>`+artikelGruppen().map(([g,l])=>g?`<optgroup label="${esc(g)}">${l.map(artOpt).join('')}</optgroup>`:l.map(artOpt).join('')).join('');
   m.innerHTML=`
   <h1>${re?'🧾 Rechnung':'📝 Angebot'} ${esc(d.nummer||'(Entwurf)')} ${d.id?badge(d):''}
     <span class="spacer"></span>
@@ -783,13 +784,19 @@ async function delKunde(id){
 }
 
 // --- Artikel
+// Artikel nach Leistungsgruppe: ohne Gruppe zuerst (wie bisher), dann Gruppen alphabetisch
+function artikelGruppen(){
+  const g=new Map([['',[]]]);
+  for(const a of S.items){const k=(a.gruppe||'').trim();if(!g.has(k))g.set(k,[]);g.get(k).push(a);}
+  return [...g].filter(([,l])=>l.length).sort((x,y)=>x[0]?y[0]?x[0].localeCompare(y[0],'de'):1:-1);
+}
 function renderArtikel(m){
   m.innerHTML=`<h1>Artikel &amp; Leistungen<span class="spacer"></span><button class="btn" onclick="editArtikel()">+ Artikel</button></h1>
   <div class="card"><table class="list"><tr><th>Name</th><th>Beschreibung</th><th class="num">Preis</th><th>Einheit</th><th class="num">USt</th><th></th></tr>
-  ${S.items.map(a=>`<tr class="click" onclick="editArtikel('${a.id}')">
-    <td><b>${esc(a.name)}</b></td><td style="color:var(--mid)">${esc((a.beschreibung||'').slice(0,60))}</td>
+  ${artikelGruppen().map(([g,liste])=>(g?`<tr><td colspan="6" style="background:#fff8f2;font-weight:700;color:var(--acc-d)">${esc(g)}</td></tr>`:'')+liste.map(a=>`<tr class="click" onclick="editArtikel('${a.id}')">
+    <td>${a.kuerzel?`<small style="color:var(--dim)">${esc(a.kuerzel)}</small> `:''}<b>${esc(a.name)}</b></td><td style="color:var(--mid)">${esc((a.beschreibung||'').slice(0,60))}</td>
     <td class="num">${eur(a.preis)}</td><td>${esc(a.einheit||'Stk.')}</td><td class="num">${a.ust??19} %</td>
-    <td><button class="btn sm danger" onclick="event.stopPropagation();delArtikel('${a.id}')">✕</button></td></tr>`).join('')||'<tr><td colspan="6" style="color:var(--dim)">Noch keine Artikel — z. B. „3D-Druck PLA (je Stunde)“ oder „Konstruktion (je Stunde)“.</td></tr>'}
+    <td><button class="btn sm danger" onclick="event.stopPropagation();delArtikel('${a.id}')">✕</button></td></tr>`).join('')).join('')||'<tr><td colspan="6" style="color:var(--dim)">Noch keine Artikel — z. B. „3D-Druck PLA (je Stunde)“ oder „Konstruktion (je Stunde)“.</td></tr>'}
   </table></div>
   <div id="artikelForm"></div>`;
 }
@@ -801,6 +808,9 @@ function editArtikel(id){
     <div><label>Preis (netto, €)</label><input id="aPreis" value="${a.preis??''}"></div>
     <div class="grid2"><div><label>Einheit</label><input id="aEinheit" value="${esc(a.einheit||'Stk.')}"></div>
     <div><label>USt %</label><input id="aUst" value="${a.ust??19}"></div></div>
+    <div><label>Kürzel (optional)</label><input id="aKuerzel" value="${esc(a.kuerzel||'')}" placeholder="z. B. GA-VOR"></div>
+    <div><label>Leistungsgruppe (optional)</label><input id="aGruppe" list="aGruppen" value="${esc(a.gruppe||'')}">
+      <datalist id="aGruppen">${[...new Set(S.items.map(x=>x.gruppe).filter(Boolean))].map(x=>`<option value="${esc(x)}">`).join('')}</datalist></div>
   </div>
   <label>Beschreibung</label><textarea id="aBeschr" rows="2">${esc(a.beschreibung||'')}</textarea>
   <div style="margin-top:12px;display:flex;gap:10px">
@@ -811,7 +821,8 @@ function editArtikel(id){
 }
 async function saveArtikel(id){
   const rec={name:$('#aName').value.trim(),preis:parseFloat($('#aPreis').value.replace(',','.'))||0,
-    einheit:$('#aEinheit').value.trim()||'Stk.',ust:parseFloat($('#aUst').value)||0,beschreibung:$('#aBeschr').value.trim()};
+    einheit:$('#aEinheit').value.trim()||'Stk.',ust:parseFloat($('#aUst').value)||0,beschreibung:$('#aBeschr').value.trim(),
+    kuerzel:$('#aKuerzel').value.trim(),gruppe:$('#aGruppe').value.trim()};
   if(!rec.name){toast('Name angeben',true);return;}
   try{
     if(id)await api('items/'+id,'PUT',rec);else await api('items','POST',rec);
