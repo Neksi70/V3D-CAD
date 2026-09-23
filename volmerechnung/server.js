@@ -427,6 +427,274 @@ function ollama(prompt) {
   });
 }
 
+// --- Eingangsrechnungen erfassen (Papier -> Felder -> ZUGFeRD für SumUp) -----
+// Foto/PDF -> erfassen.py scan (Blatt zuschneiden/entzerren) -> ocr (lokal, RapidOCR)
+// -> Suchmuster (sofort) -> optional KI (Ollama, ~30 s) -> Nutzer prüft -> Ausgabe.
+const BELEG_DIR = path.join(DATA_DIR, 'belege');
+fs.mkdirSync(BELEG_DIR, { recursive: true });
+const PY = path.join(ROOT, '.venv', 'bin', 'python');
+const ERFASSEN = path.join(ROOT, 'erfassen.py');
+const belegPfad = (bid, orig) => {
+  if (!/^[a-f0-9]{16}$/.test(String(bid))) return null;
+  if (!orig) return path.join(BELEG_DIR, bid + '.jpg');
+  for (const e of ['.pdf', '.bild']) if (fs.existsSync(path.join(BELEG_DIR, bid + e))) return path.join(BELEG_DIR, bid + e);
+  return null;
+};
+
+function py(args, stdin) {
+  return new Promise((resolve, reject) => {
+    const p = require('child_process').execFile(PY, [ERFASSEN, ...args], { timeout: 180000, maxBuffer: 8 * 1024 * 1024 }, (err, out, errOut) => {
+      if (err) return reject(new Error((String(errOut).trim().split('\n').pop() || err.message).slice(0, 300)));
+      try { resolve(JSON.parse(out)); } catch (e) { reject(new Error('erfassen.py: unerwartete Ausgabe')); }
+    });
+    if (stdin !== undefined) p.stdin.end(JSON.stringify(stdin));
+  });
+}
+
+function readRaw(req, limit) {
+  return new Promise((resolve, reject) => {
+    let len = 0; const chunks = [];
+    req.on('data', (c) => {
+      len += c.length;
+      if (len > limit) { reject(new Error('Datei zu groß (max. ' + Math.round(limit / 1048576) + ' MB)')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+// Deutsche Beträge: "1.234,56" / "1234,56" / "189.00" -> Zahl
+const BETRAG_RE = /-?\d{1,3}(?:[.\s]\d{3})+,\d{2}(?!\d)|-?\d+,\d{2}(?!\d)|-?\d+\.\d{2}(?!\d)/g;
+const zahl = (s) => {
+  s = String(s).replace(/\s/g, '');
+  if (/,\d{2}$/.test(s)) s = s.replace(/\./g, '').replace(',', '.');
+  return Math.round(parseFloat(s) * 100) / 100;
+};
+const betraege = (z) => (z.match(BETRAG_RE) || []).map(zahl).filter(Number.isFinite);
+const DATUM_RE = /(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4}|\d{2})(?!\d)/;
+const isoDatum = (m) => {
+  if (!m) return null;
+  let [, d, mo, j] = m;
+  if (j.length === 2) j = '20' + j;
+  if (+mo < 1 || +mo > 12 || +d < 1 || +d > 31) return null;
+  return `${j}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`;
+};
+const r2 = (x) => Math.round(x * 100) / 100;
+
+const IBAN_LEN = { DE: 22, AT: 20, CH: 21, NL: 18, BE: 16, FR: 27, IT: 27, ES: 24, LU: 20, IE: 22, GB: 22, PL: 28, DK: 18, SE: 24, CZ: 24, LT: 20, EE: 20, FI: 18, PT: 25 };
+function ibanOk(iban) {
+  const s = iban.slice(4) + iban.slice(0, 4);
+  let rest = 0;
+  for (const ch of s) {
+    const v = /\d/.test(ch) ? ch : String(ch.charCodeAt(0) - 55);
+    for (const d of v) rest = (rest * 10 + +d) % 97;
+  }
+  return rest === 1;
+}
+function ibanSuchen(text, eigene) {
+  const flach = text.toUpperCase().replace(/[\s.]/g, '');
+  const re = /([A-Z]{2})(\d{2})([A-Z0-9]{11,30})/g;
+  let m;
+  while ((m = re.exec(flach))) {
+    const land = m[1];
+    const lens = IBAN_LEN[land] ? [IBAN_LEN[land]] : [];
+    for (let l = Math.min(34, m[0].length); l >= 15; l--) if (!lens.includes(l)) lens.push(l);
+    for (const l of lens) {
+      const kand = m[0].slice(0, l);
+      if (kand.length === l && ibanOk(kand) && kand !== eigene) return kand;
+    }
+    re.lastIndex = m.index + 1;
+  }
+  return null;
+}
+
+// Satz auf gängige Werte ziehen (KI liefert gern 0.19 statt 19)
+function satzNorm(s) {
+  let x = Number(s);
+  if (!Number.isFinite(x)) return null;
+  if (x > 0 && x < 1) x *= 100;
+  for (const g of [0, 5, 7, 10, 13, 16, 19, 20, 21, 25]) if (Math.abs(x - g) < 0.6) return g;
+  return r2(x);
+}
+
+// Leerzeichen, die schwache OCR verschluckt ("PLAFilamentschwarz1kg") — nur bei Text ganz ohne
+// Leerzeichen, sonst zerlegt die Regel echte Wörter wie "GmbH" oder "McFit"
+const spaces = (s) => /\s/.test(String(s || '').trim()) ? String(s).replace(/\s+/g, ' ').trim() : String(s || '').replace(/([a-zäöüß])([A-ZÄÖÜ])/g, '$1 $2')
+  .replace(/([A-ZÄÖÜ]{2,})([A-ZÄÖÜ][a-zäöüß])/g, '$1 $2').replace(/([a-zäöüß])(\d)/g, '$1 $2').replace(/(G mb H|Gmb H)\b/g, 'GmbH').trim();
+
+function felderAusText(zeilen) {
+  const f = settings.data.firma || {};
+  const eigeneIban = String((settings.data.bank || {}).iban || '').replace(/\s/g, '').toUpperCase();
+  const eigen = (z) => {
+    const l = z.toLowerCase();
+    return [f.name, f.inhaber, f.strasse].filter((x) => x && x.length > 3).some((x) => l.includes(x.toLowerCase()))
+      || /volme\s*3d/i.test(z);
+  };
+  const text = zeilen.join('\n');
+  const r = { lieferant: {}, steuern: [], positionen: [] };
+
+  // Lieferant: erste Zeile mit Rechtsform, sonst erste sinnvolle Textzeile, die nicht wir sind
+  const kopf = zeilen.slice(0, 25);
+  // Rechtsform case-sensitiv und ohne Beträge in der Zeile — sonst ist "10 × 1 kg" eine KG
+  const rf0 = /(^|\s)(GmbH|gGmbH|AG|KG|OHG|UG|GbR|SE|Ltd\.?|Inc\.?|e\.\s?K\.|e\.\s?Kfm\.|e\.\s?V\.|S\.A\.R\.L\.?)(?=[\s,&)]|$)/;
+  const betragDrin = new RegExp(BETRAG_RE.source); // ohne /g: kein lastIndex-Zustand
+  const rf = { test: (z) => rf0.test(z) && !betragDrin.test(z) };
+  const nameZ = kopf.find((z) => rf.test(z) && !eigen(z) && z.length < 80 && !/rechnung/i.test(z))
+    || kopf.find((z) => /[a-zäöü]{3}/i.test(z) && !eigen(z) && !/^(rechnung|invoice|seite|page|datum|tel|fax|www|e-?mail)/i.test(z) && z.length < 60);
+  if (nameZ) r.lieferant.name = nameZ.split(/\s{3,}| - | · | \| /)[0].trim();
+  // Anschrift: erste PLZ-Zeile, die nicht unsere ist; Straße darüber
+  const eigenePlz = String(f.plz || '');
+  for (let i = 0; i < Math.min(zeilen.length, 30); i++) {
+    const m = zeilen[i].match(/\b(\d{5})\s+([A-ZÄÖÜ][\wäöüß.\- ]{1,40})/);
+    if (!m || m[1] === eigenePlz || eigen(zeilen[i]) || (i > 0 && eigen(zeilen[i - 1]))) continue;
+    r.lieferant.plz = m[1]; r.lieferant.ort = m[2].split(/\s{3,}/)[0].trim();
+    const s = (zeilen[i].slice(0, m.index).match(/([A-ZÄÖÜ][\wäöüß.\- ]*(?:str\.?|straße|weg|platz|allee|ring|gasse|damm|ufer|chaussee)\s*\d+\s*[a-z]?)\s*[,-]?\s*$/i) || [])[1]
+      || (i > 0 && /(str\.?|straße|weg|platz|allee|ring|gasse|damm)\s*\d|\s\d+\s*[a-z]?$/i.test(zeilen[i - 1]) && !eigen(zeilen[i - 1]) ? zeilen[i - 1].split(/\s{3,}/).pop() : null);
+    if (s) r.lieferant.strasse = s.trim();
+    break;
+  }
+  const ust = text.match(/\b(DE)\s?(\d{3})\s?(\d{3})\s?(\d{3})\b|\bATU\s?\d{8}\b/);
+  if (ust && !(settings.data.steuer.ustId && ust[0].replace(/\s/g, '') === settings.data.steuer.ustId.replace(/\s/g, ''))) r.lieferant.ustId = ust[0].replace(/\s/g, '');
+  const stnr = text.match(/steuer-?\s?(?:nr|nummer)\.?\s*:?\s*(\d{2,3}\/\d{3,4}\/\d{4,5}|\d{10,13})/i);
+  if (stnr && stnr[1] !== settings.data.steuer.steuernummer) r.lieferant.steuernummer = stnr[1];
+
+  for (const z of zeilen) {
+    if (!r.nummer) {
+      const m = z.match(/(?:rechnungs?\s*-?\s*(?:nr|nummer|no)|beleg\s*-?\s*(?:nr|nummer)|invoice\s*(?:no|number)|rg\.?\s*-?\s*nr)\.?\s*:?\s*([A-Z0-9][A-Z0-9\-\/_.]{2,})/i);
+      if (m) r.nummer = m[1].replace(/[.,]$/, '');
+    }
+    if (!r.datum && /(rechnungs)?datum|date/i.test(z) && !/liefer|fällig|faellig|zahlbar|leistung/i.test(z)) r.datum = isoDatum(z.match(DATUM_RE));
+    if (!r.lieferdatum && /liefer|leistungs/i.test(z)) r.lieferdatum = isoDatum(z.match(DATUM_RE));
+    if (!r.faellig && /zahlbar|fällig|faellig|zahlungsziel/i.test(z)) r.faellig = isoDatum(z.match(DATUM_RE));
+  }
+  if (!r.datum) r.datum = isoDatum(text.match(DATUM_RE));
+
+  r.iban = ibanSuchen(text, eigeneIban);
+  const bic = text.toUpperCase().match(/BIC\s*[:.]?\s*([A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b/);
+  if (bic && bic[1] !== String((settings.data.bank || {}).bic || '').toUpperCase()) r.bic = bic[1];
+
+  // Beträge: Brutto/Netto/USt-Zeilen
+  const brutto = /(rechnungsbetrag|gesamtbetrag|endbetrag|bruttobetrag|brutto|zu zahlen|zahlbetrag|gesamtsumme|rechnungssumme|total|summe)/i;
+  for (const z of zeilen) {
+    const b = betraege(z.replace(DATUM_RE, ''));
+    if (!b.length) continue;
+    if (/(mwst|ust\b|u\.?st\.|umsatzsteuer|mehrwertsteuer|vat)/i.test(z) && !/ust-?id/i.test(z)) {
+      const p = z.match(/(\d{1,2}(?:[,.]\d{1,2})?)\s*%/);
+      const bb = p ? betraege(z.replace(p[0], '')) : b;
+      // "19 % MwSt. auf 195,90 €   37,22 €" -> erste Zahl = Basis (Netto), letzte = Steuer
+      if (p && bb.length) r.steuern.push({ satz: satzNorm(zahl(p[1].replace('.', ','))), ust: bb[bb.length - 1], ...(bb.length >= 2 ? { netto: bb[0] } : {}) });
+      continue;
+    }
+    if (/netto|zwischensumme|nettobetrag/i.test(z) && r.netto == null) { r.netto = b[b.length - 1]; continue; }
+    if (brutto.test(z)) r.brutto = b[b.length - 1]; // letzte passende Zeile gewinnt (Endsumme steht unten)
+  }
+  // Netto je Satz herleiten
+  if (r.steuern.length === 1 && r.steuern[0].netto == null) {
+    const s = r.steuern[0];
+    s.netto = r.netto != null ? r.netto : (r.brutto != null ? r2(r.brutto - s.ust) : (s.satz ? r2(s.ust * 100 / s.satz) : null));
+  } else if (r.steuern.length > 1) {
+    for (const s of r.steuern) if (s.netto == null) s.netto = s.satz ? r2(s.ust * 100 / s.satz) : null;
+  } else if (r.brutto != null && r.netto != null && Math.abs(r.brutto - r.netto) < 0.005) {
+    r.steuern.push({ satz: 0, netto: r.netto, ust: 0 });
+  }
+  delete r.netto;
+  for (const k of Object.keys(r.lieferant)) if (k === 'name') r.lieferant[k] = spaces(r.lieferant[k]);
+  return r;
+}
+
+// Plausibilität: was sollte der Nutzer sich genauer ansehen?
+function erfassenHinweise(r) {
+  const h = [];
+  const st = r.steuern || [];
+  const summe = r2(st.reduce((x, s) => x + (Number(s.netto) || 0) + (Number(s.ust) || 0), 0));
+  if (!st.length) h.push('Keine USt-Zeile erkannt — Netto/USt bitte eintragen.');
+  if (r.brutto != null && st.length && Math.abs(summe - r.brutto) > 0.015) h.push(`Netto + USt (${summe.toFixed(2)}) ≠ Brutto (${Number(r.brutto).toFixed(2)}) — Beträge prüfen.`);
+  for (const s of st) {
+    if (s.satz && s.netto != null && s.ust != null && Math.abs(r2(s.netto * s.satz / 100) - s.ust) > 0.02 * Math.max(1, st.length)) h.push(`USt ${s.satz} % von ${Number(s.netto).toFixed(2)} wäre ${r2(s.netto * s.satz / 100).toFixed(2)}, gelesen: ${Number(s.ust).toFixed(2)}.`);
+  }
+  if (!r.datum) h.push('Kein Rechnungsdatum erkannt.');
+  if (!r.nummer) h.push('Keine Rechnungsnummer erkannt.');
+  if (!(r.lieferant || {}).name) h.push('Lieferant nicht erkannt.');
+  return h;
+}
+
+async function erfassenKi(zeilen, basis) {
+  const f = settings.data.firma || {};
+  const prompt = `Du liest den OCR-Text einer deutschen Eingangsrechnung (Rechnung, die "${f.name || 'Volme 3D'}"${f.inhaber ? ' / ' + f.inhaber : ''} von einem Lieferanten bekommen hat) und extrahierst die Rechnungsdaten.
+Der OCR-Text kann Lesefehler enthalten (fehlende Leerzeichen/Umlaute) — korrigiere sie beim Übernehmen. Deutsche Zahlen haben Dezimal-KOMMA: "1.234,56" = 1234.56. Datumsangaben als JJJJ-MM-TT.
+Der LIEFERANT ist der Absender der Rechnung (meist Briefkopf oben, hat USt-IdNr./Bankverbindung). Der Empfänger ("${f.name || 'Volme 3D'}", ${f.strasse || ''} ${f.plz || ''} ${f.ort || ''}) ist NICHT der Lieferant.
+Antworte NUR mit JSON nach genau diesem Schema, unbekannte Werte = null, nichts erfinden:
+{"lieferant":{"name":string,"strasse":string|null,"plz":string|null,"ort":string|null,"ustId":string|null,"steuernummer":string|null},
+ "nummer":string|null,"datum":string|null,"lieferdatum":string|null,"faellig":string|null,
+ "steuern":[{"satz":number,"netto":number,"ust":number}],"brutto":number|null,
+ "iban":string|null,"bic":string|null,
+ "positionen":[{"name":string,"menge":number,"preis":number,"satz":number}],
+ "beschreibung":string,"kategorie":"Material"|"Maschinen/Werkzeug"|"Strom/Miete"|"Software/IT"|"Versand"|"Marketing"|"Sonstiges"}
+"steuern": eine Zeile je USt-Satz in Prozent (19 statt 0.19) mit Netto und USt-Betrag. "preis" = Netto-Einzelpreis. "beschreibung": 3-8 Wörter, was gekauft wurde.
+OCR-Text:
+${zeilen.join('\n').slice(0, 6000)}`;
+  const j = await ollama(prompt);
+  const k = { lieferant: {}, steuern: [], positionen: [] };
+  const L = j.lieferant || {};
+  for (const x of ['name', 'strasse', 'plz', 'ort', 'ustId', 'steuernummer']) if (L[x]) k.lieferant[x] = String(L[x]).slice(0, 120);
+  if (k.lieferant.name) k.lieferant.name = spaces(k.lieferant.name);
+  for (const x of ['nummer', 'bic']) if (j[x]) k[x] = String(j[x]).slice(0, 60);
+  for (const x of ['datum', 'lieferdatum', 'faellig']) if (/^\d{4}-\d{2}-\d{2}$/.test(j[x] || '')) k[x] = j[x];
+  if (j.iban) { const i = String(j.iban).replace(/\s/g, '').toUpperCase(); if (ibanOk(i)) k.iban = i; }
+  if (Number.isFinite(Number(j.brutto)) && j.brutto !== null) k.brutto = r2(Number(j.brutto));
+  k.steuern = (Array.isArray(j.steuern) ? j.steuern : []).map((s) => ({ satz: satzNorm(s.satz), netto: r2(Number(s.netto) || 0), ust: r2(Number(s.ust) || 0) }))
+    .filter((s) => s.satz != null && (s.netto || s.ust));
+  const einSatz = k.steuern.length === 1 ? k.steuern[0].satz : null;
+  k.positionen = (Array.isArray(j.positionen) ? j.positionen : []).slice(0, 50).map((p) => ({
+    name: spaces(String(p.name || '').slice(0, 200)), menge: Number(p.menge) || 1, preis: Number(p.preis) || 0,
+    satz: einSatz != null ? einSatz : satzNorm(p.satz) ?? 19,
+  })).filter((p) => p.name);
+  if (j.beschreibung) k.beschreibung = spaces(String(j.beschreibung).slice(0, 200));
+  if (['Material', 'Maschinen/Werkzeug', 'Strom/Miete', 'Software/IT', 'Versand', 'Marketing', 'Sonstiges'].includes(j.kategorie)) k.kategorie = j.kategorie;
+
+  // Zusammenführen: Suchmuster sind bei Zahlen/IBAN exakt -> behalten; KI füllt Lücken
+  // und ist bei Namen/Beschreibung/Positionen besser.
+  const r = JSON.parse(JSON.stringify(basis || { lieferant: {}, steuern: [] }));
+  r.lieferant = Object.assign({}, r.lieferant, Object.fromEntries(Object.entries(k.lieferant).filter(([x, v]) => v && (x === 'name' || !r.lieferant[x]))));
+  for (const x of ['nummer', 'datum', 'lieferdatum', 'faellig', 'iban', 'bic', 'brutto']) if (r[x] == null && k[x] != null) r[x] = k[x];
+  const stimmig = (st, b) => st.length && (b == null || Math.abs(r2(st.reduce((x, s) => x + s.netto + s.ust, 0)) - b) < 0.015);
+  if (!stimmig(r.steuern || [], r.brutto) && stimmig(k.steuern, r.brutto)) r.steuern = k.steuern;
+  // Positionen nur übernehmen, wenn sie je Steuersatz exakt die Netto-Summe ergeben — die KI
+  // verwechselt gern Menge und Packungsgröße ("10 × 1 kg" -> Menge 1). Sonst Sammelzeile im ZUGFeRD.
+  const aufgehen = (ps, st) => ps.length && st.length && st.every((s) => Math.abs(r2(ps.filter((p) => p.satz === s.satz).reduce((x, p) => x + r2(p.menge * p.preis), 0)) - s.netto) < 0.005);
+  r.positionen = aufgehen(k.positionen, r.steuern || []) ? k.positionen : [];
+  if (k.beschreibung) r.beschreibung = k.beschreibung;
+  if (k.kategorie) r.kategorie = k.kategorie;
+  return r;
+}
+
+// Ausgabe -> Daten für die ZUGFeRD-Erzeugung (Verkäufer = Lieferant, Käufer = wir)
+function zugferdDaten(a) {
+  const f = settings.data.firma || {};
+  const st = settings.data.steuer || {};
+  return {
+    nummer: a.nummer || '', datum: a.datum, lieferdatum: a.lieferdatum, faellig: a.faellig,
+    lieferant: Object.assign({ name: a.lieferant }, a.lieferantAdr || {}),
+    kaeufer: { name: f.name, strasse: f.strasse, plz: f.plz, ort: f.ort, ustId: st.ustId },
+    iban: a.iban, bic: a.bic,
+    steuern: (a.steuern && a.steuern.length) ? a.steuern : [{ satz: 0, netto: Number(a.betrag) || 0, ust: 0 }],
+    positionen: a.positionen || [],
+  };
+}
+
+// Verwaiste Belege (Erfassung abgebrochen) nach einem Tag aufräumen
+function belegeAufraeumen() {
+  const benutzt = new Set(expenses.data.map((a) => a.belegId).filter(Boolean));
+  for (const n of fs.readdirSync(BELEG_DIR)) {
+    const bid = n.split('.')[0];
+    const p = path.join(BELEG_DIR, n);
+    if (!benutzt.has(bid) && Date.now() - fs.statSync(p).mtimeMs > 86400000) fs.unlinkSync(p);
+  }
+}
+belegeAufraeumen();
+setInterval(belegeAufraeumen, 6 * 3600000).unref();
+
 // Kunden-Namen aus KI-Antwort einem angelegten Kunden zuordnen (unscharf)
 function matchKunde(name) {
   if (!name) return null;
@@ -594,6 +862,68 @@ Positionen:\n${liste.slice(0, 2000)}`;
     docs.data.push(...neu); docs.save();
     kurs.abgerechnetAm = now().slice(0, 10); courses.save();
     return send(res, 200, { anzahl: neu.length });
+  }
+
+  // Papierrechnung erfassen: Rohdaten (Foto/PDF) hochladen -> Scan + erkannte Felder
+  if (col === 'erfassen' && m === 'POST' && !docId) {
+    const buf = await readRaw(req, 25 * 1024 * 1024);
+    const istPdf = buf.slice(0, 5).toString('latin1') === '%PDF-';
+    const istBild = /^(\xff\xd8\xff|\x89PNG|RIFF....WEBP|GIF8)/s.test(buf.slice(0, 12).toString('latin1')) || /^....ftyp(heic|heix|mif1)/s.test(buf.slice(0, 12).toString('latin1'));
+    if (!istPdf && !istBild) return send(res, 400, { error: 'Bitte ein Foto (JPG/PNG) oder ein PDF hochladen' });
+    const bid = crypto.randomBytes(8).toString('hex');
+    const orig = path.join(BELEG_DIR, bid + (istPdf ? '.pdf' : '.bild'));
+    fs.writeFileSync(orig, buf);
+    try {
+      const sc = await py(['scan', orig, belegPfad(bid)]);
+      const { zeilen } = await py(['ocr', belegPfad(bid)]);
+      const felder = felderAusText(zeilen);
+      return send(res, 200, { belegId: bid, zugeschnitten: sc.zugeschnitten, zeilen, felder, hinweise: erfassenHinweise(felder) });
+    } catch (e) {
+      for (const p of [orig, belegPfad(bid)]) fs.rmSync(p, { force: true });
+      return send(res, 500, { error: 'Beleg konnte nicht gelesen werden: ' + e.message });
+    }
+  }
+  if (col === 'erfassen' && docId === 'ki' && m === 'POST') {
+    const { zeilen, felder } = await readBody(req);
+    if (!Array.isArray(zeilen) || !zeilen.length) return send(res, 400, { error: 'Kein Text' });
+    try {
+      const r = await erfassenKi(zeilen.map(String).slice(0, 300), felder);
+      return send(res, 200, { felder: r, hinweise: erfassenHinweise(r) });
+    } catch (e) { return send(res, 502, { error: e.message }); }
+  }
+  // Scan-Bild (Vorschau) bzw. ?orig=1 das hochgeladene Original
+  if (col === 'belege' && docId && m === 'GET') {
+    const p = belegPfad(docId, url.searchParams.get('orig') === '1');
+    if (!p || !fs.existsSync(p)) return send(res, 404, { error: 'Beleg nicht gefunden' });
+    const typ = p.endsWith('.pdf') ? 'application/pdf' : p.endsWith('.jpg') ? 'image/jpeg' : 'application/octet-stream';
+    res.writeHead(200, { 'Content-Type': typ, 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
+    return res.end(fs.readFileSync(p));
+  }
+  // Ausgabe als ZUGFeRD-PDF (Factur-X EN 16931) — für den Upload bei SumUp
+  if (col === 'expenses' && docId && action === 'zugferd' && m === 'GET') {
+    const a = expenses.data.find((x) => x.id === docId);
+    if (!a) return send(res, 404, { error: 'nicht gefunden' });
+    const quelle = belegPfad(a.belegId, true);
+    if (!quelle) return send(res, 400, { error: 'Zu dieser Ausgabe gibt es keinen erfassten Beleg' });
+    const basis = quelle.endsWith('.pdf') ? quelle : belegPfad(a.belegId);
+    const out = path.join(require('os').tmpdir(), 'zf-' + crypto.randomBytes(6).toString('hex') + '.pdf');
+    try {
+      await py(['zugferd', basis, out], zugferdDaten(a));
+      const pdf = fs.readFileSync(out);
+      const name = `${a.datum || ''}_${a.lieferant || 'Rechnung'}_${a.nummer || ''}`.replace(/[^\wäöüÄÖÜß-]+/g, '_').replace(/_+$/, '') + '.pdf';
+      res.writeHead(200, {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="${name.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+        'Cache-Control': 'no-store',
+      });
+      return res.end(pdf);
+    } catch (e) {
+      return send(res, 500, { error: 'ZUGFeRD-Erzeugung fehlgeschlagen: ' + e.message });
+    } finally { fs.rmSync(out, { force: true }); }
+  }
+  if (col === 'expenses' && docId && m === 'DELETE') {
+    const a = expenses.data.find((x) => x.id === docId);
+    if (a && a.belegId) for (const p of [belegPfad(a.belegId), belegPfad(a.belegId, true)]) if (p) fs.rmSync(p, { force: true });
   }
 
   if (col === 'customers' || col === 'items' || col === 'courses' || col === 'expenses') {

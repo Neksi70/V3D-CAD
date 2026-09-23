@@ -45,6 +45,7 @@ h1 .spacer{flex:1}
 .btn.sec:hover{border-color:var(--acc);color:var(--acc-d)}
 .btn.danger{background:#fff;color:var(--red);border:1px solid var(--line)}
 .btn.sm{padding:5px 10px;font-size:13px;border-radius:7px}
+#erfZone.drop{outline:3px dashed var(--acc);outline-offset:-6px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 16px}
 
@@ -99,6 +100,9 @@ table.list tr.click{cursor:pointer}
   h1{font-size:18px;gap:8px}
   h1 input#suche{width:100%!important;order:5}
   .grid2,.grid3{grid-template-columns:1fr}
+  .grid2>*,.grid3>*{grid-column:auto!important} /* inline span 2/3 würde sonst Spalten erzwingen */
+  .erfBild{flex-basis:100%!important}
+  .erfBild img{max-height:45vh;object-fit:contain;background:#fff}
   .kpis{grid-template-columns:1fr 1fr;gap:10px}
   .kpi .v{font-size:19px}
   .totals{width:100%}
@@ -951,41 +955,177 @@ async function kursRechnungen(id){
 }
 
 // --- Ausgaben
+const KATEGORIEN=['Material','Maschinen/Werkzeug','Strom/Miete','Software/IT','Versand','Marketing','Sonstiges'];
 function renderAusgaben(m){
   const jahr=new Date().getFullYear();
   const summe=S.expenses.filter(a=>(a.datum||'').startsWith(jahr)).reduce((x,a)=>x+(Number(a.betrag)||0),0);
-  m.innerHTML=`<h1>💸 Ausgaben<span class="spacer"></span><span style="font-size:15px;color:var(--mid)">Summe ${jahr}: <b>${eur(summe)}</b></span><button class="btn" onclick="editAusgabe()">+ Ausgabe</button></h1>
+  const kq='?key='+encodeURIComponent(KEY);
+  m.innerHTML=`<h1>💸 Ausgaben<span class="spacer"></span><span style="font-size:15px;color:var(--mid)">Summe ${jahr}: <b>${eur(summe)}</b></span><button class="btn sec" onclick="editAusgabe()">+ Ausgabe</button></h1>
+  <div class="card" id="erfZone" ondragover="event.preventDefault();this.classList.add('drop')" ondragleave="this.classList.remove('drop')" ondrop="event.preventDefault();this.classList.remove('drop');erfassenDatei(event.dataTransfer.files[0])">
+    <b>🧾 Papierrechnung erfassen</b> <small style="color:var(--dim)">(Texterkennung läuft auf deinem Server — nichts verlässt die Maschine)</small>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      <label class="btn" style="margin:0;color:#fff">📷 Fotografieren<input type="file" accept="image/*" capture="environment" hidden onchange="erfassenDatei(this.files[0]);this.value=''"></label>
+      <label class="btn sec" style="margin:0">📄 Foto/PDF hochladen<input type="file" accept="image/*,application/pdf" hidden onchange="erfassenDatei(this.files[0]);this.value=''"></label>
+    </div>
+    <p style="color:var(--mid);font-size:13px;margin-top:8px">Rechnung flach auf einen dunklen Untergrund legen und von oben fotografieren (oder Datei hierher ziehen). Danach Felder prüfen, speichern — „⬇ SumUp" liefert ein ZUGFeRD-PDF (E-Rechnung + Scan) zum Hochladen in SumUp.</p>
+  </div>
+  <div id="ausgabeForm"></div>
   <div class="card"><table class="list"><tr><th>Datum</th><th>Lieferant</th><th>Beschreibung</th><th>Kategorie</th><th class="num">Brutto</th><th></th></tr>
   ${[...S.expenses].sort((a,b)=>(b.datum||'').localeCompare(a.datum||'')).map(a=>`<tr class="click" onclick="editAusgabe('${a.id}')">
-    <td>${dtDE(a.datum)}</td><td><b>${esc(a.lieferant||'')}</b></td><td>${esc(a.beschreibung||'')}</td>
+    <td>${dtDE(a.datum)}</td><td><b>${esc(a.lieferant||'')}</b>${a.nummer?`<br><small style="color:var(--dim)">${esc(a.nummer)}</small>`:''}</td><td>${esc(a.beschreibung||'')}</td>
     <td>${esc(a.kategorie||'')}</td><td class="num">${eur(a.betrag)}</td>
-    <td><button class="btn sm danger" onclick="event.stopPropagation();delAusgabe('${a.id}')">✕</button></td></tr>`).join('')||'<tr><td colspan="6" style="color:var(--dim)">Noch keine Ausgaben erfasst — z. B. Filament-Bestellung, Strom, Werkzeug.</td></tr>'}
-  </table></div>
-  <div id="ausgabeForm"></div>`;
+    <td style="white-space:nowrap">${a.belegId?`<a class="btn sm sec" title="ZUGFeRD-PDF für SumUp" href="${ROOTP}/api/expenses/${a.id}/zugferd${kq}" onclick="event.stopPropagation()">⬇ SumUp</a> `:''}<button class="btn sm danger" onclick="event.stopPropagation();delAusgabe('${a.id}')">✕</button></td></tr>`).join('')||'<tr><td colspan="6" style="color:var(--dim)">Noch keine Ausgaben erfasst — z. B. Filament-Bestellung, Strom, Werkzeug.</td></tr>'}
+  </table></div>`;
 }
-function editAusgabe(id){
-  const a=id?S.expenses.find(x=>x.id===id):{datum:today()};
-  $('#ausgabeForm').innerHTML=`<div class="card"><h3>${id?'Ausgabe bearbeiten':'Neue Ausgabe'}</h3>
+
+// Erkannte Felder (Server) -> Ausgabe-Datensatz
+function felderZuAusgabe(f,belegId){
+  const L=f.lieferant||{};
+  const st=(f.steuern||[]).map(s=>({satz:s.satz,netto:s.netto,ust:s.ust}));
+  const brutto=f.brutto!=null?f.brutto:(st.length?Math.round(st.reduce((x,s)=>x+(+s.netto||0)+(+s.ust||0),0)*100)/100:null);
+  return {datum:f.datum||today(),lieferant:L.name||'',betrag:brutto,kategorie:f.kategorie||'Material',beschreibung:f.beschreibung||'',
+    nummer:f.nummer||'',faellig:f.faellig||'',lieferdatum:f.lieferdatum||'',iban:f.iban||'',bic:f.bic||'',
+    lieferantAdr:{strasse:L.strasse||'',plz:L.plz||'',ort:L.ort||'',ustId:L.ustId||'',steuernummer:L.steuernummer||''},
+    steuern:st,positionen:f.positionen||[],belegId};
+}
+let ERF=null; // laufende Erfassung {belegId, zeilen, felder, hinweise}
+async function erfassenDatei(file){
+  if(!file)return;
+  const box=$('#ausgabeForm');
+  box.innerHTML='<div class="card">⏳ Lese Rechnung … <small style="color:var(--dim)">(Zuschneiden + Texterkennung, wenige Sekunden)</small></div>';
+  box.scrollIntoView({behavior:'smooth',block:'start'});
+  let body=file;
+  // Handyfotos verkleinern (12 MP -> max. 3000 px): schneller Upload, OCR braucht nicht mehr
+  if(file.type.startsWith('image/')){
+    try{
+      const bm=await createImageBitmap(file,{imageOrientation:'from-image'});
+      const f=Math.min(1,3000/Math.max(bm.width,bm.height));
+      const c=document.createElement('canvas');c.width=Math.round(bm.width*f);c.height=Math.round(bm.height*f);
+      c.getContext('2d').drawImage(bm,0,0,c.width,c.height);
+      body=await new Promise(r=>c.toBlob(r,'image/jpeg',0.9));
+    }catch(e){body=file;} // Browser kann das Format nicht dekodieren -> Original schicken
+  }
+  try{
+    const r=await fetch(ROOTP+'/api/erfassen',{method:'POST',headers:{'X-Key':KEY},body});
+    if(r.status===401){showLogin();throw new Error('Login nötig');}
+    const j=await r.json();
+    if(!r.ok)throw new Error(j.error||('HTTP '+r.status));
+    ERF=j;
+    editAusgabe(null,felderZuAusgabe(j.felder,j.belegId),j.hinweise);
+    erfassenKi();
+  }catch(e){box.innerHTML='';toast(e.message,true);}
+}
+async function erfassenKi(){
+  const erf=ERF;if(!erf)return;
+  const st=$('#erfKi');if(st)st.innerHTML='✨ KI liest mit und ergänzt Lücken … <small>(ca. ½–1 min, du kannst schon prüfen)</small>';
+  try{
+    const j=await api('erfassen/ki','POST',{zeilen:erf.zeilen,felder:erf.felder});
+    if(ERF!==erf||!$('#aLief'))return; // inzwischen gespeichert/abgebrochen
+    const a=felderZuAusgabe(j.felder,erf.belegId);
+    // nur Felder füllen, die der Nutzer noch nicht angefasst hat
+    const setze=(sel,v)=>{const el=$(sel);if(el&&!el.dataset.t&&v!=null&&v!=='')el.value=v;};
+    setze('#aLief',a.lieferant);setze('#aNr',a.nummer);setze('#aDatum',a.datum);setze('#aFaellig',a.faellig);
+    setze('#aBeschrE',a.beschreibung);setze('#aKat',a.kategorie);setze('#aIban',a.iban);setze('#aBic',a.bic);
+    for(const k of ['strasse','plz','ort','ustId','steuernummer'])setze('#aL_'+k,a.lieferantAdr[k]);
+    if(![...document.querySelectorAll('#aSteuern input')].some(el=>el.dataset.t)&&a.steuern.length){
+      AUS_ST=a.steuern;steuernZeichnen();setze('#aBetrag',fmt2(a.betrag));
+    }
+    AUS_POS=a.positionen;posZeichnen();
+    hinweiseZeigen(j.hinweise);ausgabeCheck();
+    if($('#erfKi'))$('#erfKi').innerHTML='✨ KI hat ergänzt — bitte kurz gegenlesen.';
+  }catch(e){if($('#erfKi'))$('#erfKi').innerHTML='KI nicht verfügbar ('+esc(e.message)+') — Felder aus der Texterkennung bleiben.';}
+}
+
+let AUS_ST=[],AUS_POS=[];
+const zahlDE=v=>{v=String(v??'').trim().replace(/\s|€/g,'');if(!v)return null;if(v.includes(','))v=v.replace(/\./g,'').replace(',','.');const n=parseFloat(v);return Number.isFinite(n)?n:null;};
+const fmt2=v=>v==null||v===''?'':Number(v).toFixed(2).replace('.',',');
+function steuernZeichnen(){
+  $('#aSteuern').innerHTML=AUS_ST.map((s,i)=>`<div class="stRow" style="display:grid;grid-template-columns:90px 1fr 1fr 34px;gap:8px;margin-bottom:6px">
+    <input value="${s.satz??''}" placeholder="%" oninput="this.dataset.t=1;AUS_ST[${i}].satz=zahlDE(this.value);ausgabeCheck()">
+    <input value="${fmt2(s.netto)}" placeholder="Netto" oninput="this.dataset.t=1;AUS_ST[${i}].netto=zahlDE(this.value);ausgabeCheck()">
+    <input value="${fmt2(s.ust)}" placeholder="USt" oninput="this.dataset.t=1;AUS_ST[${i}].ust=zahlDE(this.value);ausgabeCheck()">
+    <button class="btn sm danger" onclick="AUS_ST.splice(${i},1);steuernZeichnen();ausgabeCheck()">✕</button></div>`).join('')
+    +`<button class="btn sm sec" onclick="AUS_ST.push({satz:19,netto:null,ust:null});steuernZeichnen()">+ Steuersatz</button>`;
+}
+function posZeichnen(){
+  const el=$('#aPos');if(!el)return;
+  el.innerHTML=AUS_POS.length?`<details><summary style="cursor:pointer;color:var(--mid);font-size:13px">✓ ${AUS_POS.length} Positionen erkannt (gehen in der Summe auf)</summary>
+    <table class="list" style="font-size:13px">${AUS_POS.map(p=>`<tr><td>${esc(p.name)}</td><td class="num">${p.menge}</td><td class="num">${eur(p.preis)}</td><td class="num">${p.satz} %</td></tr>`).join('')}</table></details>`:'';
+}
+function hinweiseZeigen(h){
+  const el=$('#aHinw');if(!el)return;
+  el.innerHTML=(h||[]).length?`<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:8px 12px;font-size:13px;margin-top:10px">⚠️ ${h.map(esc).join('<br>⚠️ ')}</div>`:'';
+}
+// Live-Prüfung: Netto + USt = Brutto?
+function ausgabeCheck(){
+  const el=$('#aCheck');if(!el)return;
+  const b=zahlDE($('#aBetrag').value);
+  if(!AUS_ST.length){el.innerHTML='';return;}
+  const s=Math.round(AUS_ST.reduce((x,t)=>x+(t.netto||0)+(t.ust||0),0)*100)/100;
+  el.innerHTML=b==null?`Summe Netto + USt: <b>${eur(s)}</b>`
+    :Math.abs(s-b)<0.015?`<span style="color:#15803d">✓ Netto + USt = Brutto (${eur(b)})</span>`
+    :`<span style="color:#b91c1c">✗ Netto + USt = ${eur(s)}, Brutto ${eur(b)} — Differenz ${eur(b-s)}</span>`;
+}
+
+function editAusgabe(id,vorlage,hinweise){
+  if(id)ERF=null;
+  const a=id?S.expenses.find(x=>x.id===id):(vorlage||{datum:today(),kategorie:'Material'});
+  const L=a.lieferantAdr||{};
+  AUS_ST=JSON.parse(JSON.stringify(a.steuern||[]));AUS_POS=a.positionen||[];
+  const kq='?key='+encodeURIComponent(KEY);
+  const t='oninput="this.dataset.t=1"';
+  const bild=a.belegId?`<div class="erfBild" style="flex:0 0 260px;max-width:100%"><a href="${ROOTP}/api/belege/${a.belegId}${kq}" target="_blank" title="Scan in voller Größe"><img src="${ROOTP}/api/belege/${a.belegId}${kq}" style="width:100%;border:1px solid var(--line);border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.08)"></a>
+    <div style="font-size:12px;color:var(--dim);margin-top:4px">${ERF&&ERF.zugeschnitten===false?'Blattrand nicht gefunden — Foto unverändert übernommen.':'Tippen = volle Größe'} · <a href="${ROOTP}/api/belege/${a.belegId}${kq}&orig=1" target="_blank">Original</a></div></div>`:'';
+  $('#ausgabeForm').innerHTML=`<div class="card"><h3>${id?'Ausgabe bearbeiten':vorlage?'Erkannte Rechnung prüfen':'Neue Ausgabe'}</h3>
+  ${vorlage?'<div id="erfKi" style="font-size:13px;color:var(--mid);margin-bottom:6px"></div>':''}
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">${bild}<div style="flex:1 1 300px;min-width:0">
   <div class="grid3">
-    <div><label>Datum</label><input id="aDatum" type="date" value="${esc(a.datum||today())}"></div>
-    <div><label>Lieferant</label><input id="aLief" value="${esc(a.lieferant||'')}"></div>
-    <div><label>Betrag (brutto, €)</label><input id="aBetrag" value="${a.betrag??''}"></div>
-    <div><label>Kategorie</label><select id="aKat">${['Material','Maschinen/Werkzeug','Strom/Miete','Software/IT','Versand','Marketing','Sonstiges'].map(k=>`<option ${a.kategorie===k?'selected':''}>${k}</option>`).join('')}</select></div>
-    <div style="grid-column:span 2"><label>Beschreibung</label><input id="aBeschrE" value="${esc(a.beschreibung||'')}"></div>
+    <div style="grid-column:span 2"><label>Lieferant</label><input id="aLief" ${t} value="${esc(a.lieferant||'')}"></div>
+    <div><label>Rechnungs-Nr.</label><input id="aNr" ${t} value="${esc(a.nummer||'')}"></div>
+    <div><label>Rechnungsdatum</label><input id="aDatum" ${t} type="date" value="${esc(a.datum||today())}"></div>
+    <div><label>Fällig am</label><input id="aFaellig" ${t} type="date" value="${esc(a.faellig||'')}"></div>
+    <div><label>Kategorie</label><select id="aKat" onchange="this.dataset.t=1">${KATEGORIEN.map(k=>`<option ${a.kategorie===k?'selected':''}>${k}</option>`).join('')}</select></div>
+    <div style="grid-column:span 3"><label>Beschreibung</label><input id="aBeschrE" ${t} value="${esc(a.beschreibung||'')}"></div>
   </div>
-  <div style="margin-top:12px;display:flex;gap:10px">
+  <label>Steuer je Satz <small style="font-weight:400">(Satz % · Netto € · USt €)</small></label><div id="aSteuern"></div>
+  <div class="grid3"><div><label>Betrag (brutto, €)</label><input id="aBetrag" oninput="this.dataset.t=1;ausgabeCheck()" value="${fmt2(a.betrag)}"></div>
+    <div style="grid-column:span 2;align-self:end;padding-bottom:10px;font-size:13px" id="aCheck"></div></div>
+  <div id="aPos" style="margin-top:6px"></div>
+  <details style="margin-top:10px" ${a.belegId?'':''}><summary style="cursor:pointer;font-weight:600;font-size:13.5px;color:var(--mid)">Lieferanten-Anschrift, Steuer-Nr., Bank</summary>
+  <div class="grid3">
+    <div style="grid-column:span 2"><label>Straße</label><input id="aL_strasse" ${t} value="${esc(L.strasse||'')}"></div>
+    <div><label>PLZ</label><input id="aL_plz" ${t} value="${esc(L.plz||'')}"></div>
+    <div><label>Ort</label><input id="aL_ort" ${t} value="${esc(L.ort||'')}"></div>
+    <div><label>USt-IdNr.</label><input id="aL_ustId" ${t} value="${esc(L.ustId||'')}"></div>
+    <div><label>Steuernummer</label><input id="aL_steuernummer" ${t} value="${esc(L.steuernummer||'')}"></div>
+    <div style="grid-column:span 2"><label>IBAN</label><input id="aIban" ${t} value="${esc(a.iban||'')}"></div>
+    <div><label>BIC</label><input id="aBic" ${t} value="${esc(a.bic||'')}"></div>
+  </div></details>
+  <div id="aHinw"></div>
+  </div></div>
+  <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
     <button class="btn" onclick="saveAusgabe('${id||''}')">💾 Speichern</button>
-    <button class="btn sec" onclick="$('#ausgabeForm').innerHTML=''">Abbrechen</button>
+    ${id&&a.belegId?`<a class="btn sec" href="${ROOTP}/api/expenses/${id}/zugferd${kq}">⬇ ZUGFeRD für SumUp</a>`:''}
+    <button class="btn sec" onclick="ERF=null;$('#ausgabeForm').innerHTML=''">Abbrechen</button>
   </div></div>`;
-  $('#aLief').focus();
+  steuernZeichnen();posZeichnen();hinweiseZeigen(hinweise);ausgabeCheck();
+  if(!vorlage)$('#aLief').focus();
 }
 async function saveAusgabe(id){
-  const rec={datum:$('#aDatum').value,lieferant:$('#aLief').value.trim(),betrag:parseFloat(String($('#aBetrag').value).replace(',','.'))||0,
-    kategorie:$('#aKat').value,beschreibung:$('#aBeschrE').value.trim()};
+  const alt=id?S.expenses.find(x=>x.id===id):null;
+  const steuern=AUS_ST.filter(s=>s.netto!=null||s.ust!=null).map(s=>({satz:s.satz||0,netto:s.netto||0,ust:s.ust||0}));
+  let betrag=zahlDE($('#aBetrag').value);
+  if(betrag==null&&steuern.length)betrag=Math.round(steuern.reduce((x,s)=>x+s.netto+s.ust,0)*100)/100;
+  const v=sel=>$(sel).value.trim();
+  const rec={datum:$('#aDatum').value,lieferant:v('#aLief'),betrag:betrag||0,kategorie:$('#aKat').value,beschreibung:v('#aBeschrE'),
+    nummer:v('#aNr'),faellig:$('#aFaellig').value,iban:v('#aIban').replace(/\s/g,'').toUpperCase(),bic:v('#aBic').replace(/\s/g,'').toUpperCase(),
+    lieferantAdr:{strasse:v('#aL_strasse'),plz:v('#aL_plz'),ort:v('#aL_ort'),ustId:v('#aL_ustId').replace(/\s/g,''),steuernummer:v('#aL_steuernummer')},
+    steuern,positionen:AUS_POS,lieferdatum:alt?alt.lieferdatum||'':(ERF?ERF.felder.lieferdatum||'':''),
+    belegId:alt?alt.belegId:(ERF?ERF.belegId:undefined)};
   if(!rec.lieferant&&!rec.beschreibung){toast('Lieferant oder Beschreibung angeben',true);return;}
   try{
     if(id)await api('expenses/'+id,'PUT',rec);else await api('expenses','POST',rec);
-    await loadAll();toast('Gespeichert');render();
+    ERF=null;await loadAll();toast('Gespeichert');render();
   }catch(e){toast(e.message,true);}
 }
 async function delAusgabe(id){
