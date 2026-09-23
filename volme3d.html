@@ -1325,6 +1325,7 @@ const firebaseConfig = {
           <div class="sli-item" onclick="exportOBJ()">⬇ OBJ</div>
           <div class="sli-item" onclick="exportSTEP()" title="STEP-Datei fürs CAD (Fusion, FreeCAD, …)">⬇ STEP</div>
           <div class="sli-sep"></div>
+          <div class="sli-item" onclick="_lzOpen()" title="Umriss des gewählten Objekts von oben als SVG oder DXF — für Lasercutter, Plotter und Schneideplotter">✂ Laservorlage (Draufsicht, SVG/DXF)</div>
           <div class="sli-item" onclick="_cncOpen()" title="G-Code für eine CNC-Fräse (GRBL) aus der aktuellen Skizze — erst den Skizzen-Modus öffnen">🔧 CNC-Fräsen (G-Code)</div>
         </div>
       </div>
@@ -4954,6 +4955,37 @@ Patrick</textarea>
     <div class="g3foot">
       <button class="btn" onclick="_closeSlotModal()">Abbrechen</button>
       <button class="btn pri" onclick="_createSlotBody()">✓ Erstellen</button>
+    </div>
+  </div>
+</div>
+
+<div id="lz-modal" class="g3dm" onclick="if(event.target===this)_lzClose()">
+  <div class="g3box">
+    <div class="g3hdr">✂ Laservorlage – Draufsicht<span class="vx" onclick="_lzClose()">✕</span></div>
+    <div class="g3body">
+      <canvas id="lz-canvas" width="400" height="400" style="width:240px;height:240px;align-self:center;background:#fff;border-right:1px solid #eee"></canvas>
+      <div class="g3ctrl">
+        <span class="vsec">Format</span>
+        <div class="vbg" id="lz-fmt">
+          <button class="vtb on" onclick="_lzSet('fmt','svg')">SVG</button>
+          <button class="vtb"    onclick="_lzSet('fmt','dxf')">DXF</button>
+        </div>
+        <div id="lz-art-sec">
+          <span class="vsec">Art</span>
+          <div class="vbg" id="lz-art">
+            <button class="vtb on" onclick="_lzSet('art','cut')" title="Nur die Kontur als rote Haarlinie — die meisten Laser-Programme schneiden das">Schneiden (Linie)</button>
+            <button class="vtb"    onclick="_lzSet('art','fill')" title="Schwarz gefüllte Fläche — zum Flächengravieren">Gravieren (Fläche)</button>
+          </div>
+        </div>
+        <span class="vsec">Kontur</span>
+        <label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer"><input type="checkbox" id="lz-holes" checked onchange="_lzSet('holes',this.checked)"> Durchgehende Löcher mitnehmen</label>
+        <div class="vrow"><label title="Schnittfuge des Lasers: die Außenkontur wird um die halbe Fuge größer, Löcher um die halbe Fuge kleiner — das Teil kommt maßhaltig heraus">Kerf-Ausgleich</label> <input type="range" id="lz-kerf" min="0" max="0.5" value="0" step="0.05" oninput="_lzSet('kerf',this.value)"><span class="vv" id="lz-kerfv">0</span><span class="vu">mm</span></div>
+        <div class="g3info" id="lz-info">Berechne …</div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_lzClose()">Abbrechen</button>
+      <button class="btn pri" id="lz-btn" onclick="_lzSave()">⬇ Speichern</button>
     </div>
   </div>
 </div>
@@ -25593,6 +25625,171 @@ function exportToBumpMesh() {
   _downloadBlob(r.blob, (o.userData.name || 'objekt').replace(/[^a-z0-9_-]/gi, '_') + '.stl');
   window.open('https://bumpmesh.com', '_blank');
   notify('STL exportiert → BumpMesh geöffnet', 'ok');
+}
+
+// ── Laservorlage: Umriss von oben als SVG/DXF ─────────────────────────────
+// Alle Dreiecke der Auswahl werden in die Draufsicht (mm, Z-up wie beim
+// STL-Pfad: X rechts, Y = -Welt-Z nach „hinten“) gelegt und per Clipper
+// (Manifold CrossSection, Füllregel Positive) vereint. Das braucht KEIN
+// wasserdichtes Netz — auch zerrissene Importe liefern ihren Schattenriss.
+// Durchgehende Löcher bleiben frei, Sacklöcher/Taschen gehören zur Fläche.
+const _lzP = { fmt:'svg', art:'cut', holes:true, kerf:0 };
+let _lzPolys = null, _lzBusy = false;
+
+function _lzSrc() {
+  const src = (typeof selectedObjs !== 'undefined' && selectedObjs.length) ? selectedObjs : objects;
+  return src.filter(o => o && o.visible !== false && !o.userData?.isHole);
+}
+
+async function _lzOpen() {
+  document.getElementById('stl-menu')?.classList.remove('show');
+  const src = _lzSrc();
+  if (!src.length) { notify('Kein Objekt da — erst ein Objekt anlegen oder auswählen', 'w'); return; }
+  document.getElementById('lz-modal').classList.add('show');
+  _lzSync();
+  await _lzCompute();
+}
+function _lzClose() { document.getElementById('lz-modal').classList.remove('show'); _lzPolys = null; }
+
+function _lzSet(k, v) {
+  if (k === 'kerf') v = Math.max(0, Math.min(0.5, parseFloat(v) || 0));
+  _lzP[k] = v; _lzSync();
+  if (k === 'holes' || k === 'kerf') _lzCompute();
+}
+function _lzSync() {
+  const on = (id, val) => document.querySelectorAll('#' + id + ' .vtb').forEach(b =>
+    b.classList.toggle('on', b.getAttribute('onclick').includes("'" + val + "'")));
+  on('lz-fmt', _lzP.fmt); on('lz-art', _lzP.art);
+  document.getElementById('lz-art-sec').style.display = _lzP.fmt === 'svg' ? '' : 'none';
+  document.getElementById('lz-kerfv').textContent = String(_lzP.kerf).replace('.', ',');
+  _lzDraw();
+}
+
+// Draufsicht-Kontur in mm → [{pts:[[x,y],…], hole:bool}], Y nach oben
+async function _lzOutline(objs, holes, kerf) {
+  const w = await _mfInit(), CS = w.CrossSection;
+  const keep = [];
+  try {
+    const parts = [];
+    for (const o of objs) {
+      const t = _moldCollectTris(o);
+      let batch = [];
+      const flush = () => { if (batch.length) { parts.push(keep[keep.push(new CS(batch, 'Positive')) - 1]); batch = []; } };
+      for (let i = 0; i < t.length; i += 9) {
+        const ax = t[i], ay = t[i+1], bx = t[i+3], by = t[i+4], cx = t[i+6], cy = t[i+7];
+        const a2 = (bx-ax)*(cy-ay) - (by-ay)*(cx-ax);
+        if (Math.abs(a2) < 1e-8) continue;            // senkrechte Wände: keine Fläche von oben
+        batch.push(a2 > 0 ? [[ax,ay],[bx,by],[cx,cy]] : [[ax,ay],[cx,cy],[bx,by]]);
+        if (batch.length >= 40000) { flush(); await new Promise(r => setTimeout(r)); }
+      }
+      flush();
+    }
+    if (!parts.length) return [];
+    let cs = parts.length === 1 ? parts[0] : keep[keep.push(CS.union(parts)) - 1];
+    // Haarfugen zwischen Nachbardreiecken (Rundungsfehler, T-Stöße) schließen,
+    // Ecken per Miter scharf halten
+    cs = keep[keep.push(cs.offset(0.01, 'Miter', 4)) - 1];
+    cs = keep[keep.push(cs.offset(-0.01, 'Miter', 4)) - 1];
+    if (!holes) {
+      const outer = cs.toPolygons().filter(p => _lzArea(p) > 0);
+      cs = keep[keep.push(new CS(outer, 'Positive')) - 1];
+    }
+    if (kerf > 0) cs = keep[keep.push(cs.offset(kerf / 2, 'Miter', 4)) - 1];
+    cs = keep[keep.push(cs.simplify(0.005)) - 1];
+    return cs.toPolygons()
+      .filter(p => p.length >= 3 && Math.abs(_lzArea(p)) > 0.01)   // Krümel < 0,01 mm² weg
+      .map(p => ({ pts: p.map(q => [q[0], q[1]]), hole: _lzArea(p) < 0 }));
+  } finally {
+    for (const k of keep) { try { k.delete(); } catch (e) {} }
+  }
+}
+function _lzArea(p) { let a = 0; for (let i = 0, j = p.length - 1; i < p.length; j = i++) a += (p[j][0] - p[i][0]) * (p[j][1] + p[i][1]); return a / 2; }
+
+async function _lzCompute() {
+  if (_lzBusy) { _lzBusy = 'again'; return; }
+  _lzBusy = true;
+  const info = document.getElementById('lz-info'), btn = document.getElementById('lz-btn');
+  info.textContent = 'Berechne Umriss …'; btn.disabled = true;
+  try {
+    do {
+      if (_lzBusy === 'again') _lzBusy = true;
+      _lzPolys = await _lzOutline(_lzSrc(), _lzP.holes, _lzP.kerf);
+    } while (_lzBusy === 'again');
+  } catch (e) {
+    console.error('[laser]', e); _lzPolys = null;
+    info.textContent = 'Umriss ließ sich nicht berechnen: ' + e.message;
+  }
+  _lzBusy = false;
+  if (_lzPolys) {
+    if (!_lzPolys.length) info.innerHTML = 'Von oben ist <b>keine Fläche</b> zu sehen — liegt das Objekt vielleicht hochkant?';
+    else {
+      const b = _lzBounds(_lzPolys), f = v => v.toFixed(1).replace('.', ',');
+      const nOut = _lzPolys.filter(p => !p.hole).length, nHole = _lzPolys.length - nOut;
+      info.innerHTML = `Größe <b>${f(b.w)} × ${f(b.h)} mm</b> (1:1) · ${nOut} Kontur${nOut === 1 ? '' : 'en'}${nHole ? ', ' + nHole + ' Loch' + (nHole === 1 ? '' : 'er') : ''}<br>`
+        + 'Gezeigt wird, was man <b>von oben</b> sieht (wie die Ansicht „Oben“) — bei mehreren Objekten alle zusammen. Sacklöcher und Gravuren gehören zur Fläche; nur <b>durchgehende</b> Löcher bleiben frei. Nullpunkt = linke untere Ecke.';
+      btn.disabled = false;
+    }
+  }
+  _lzDraw();
+}
+
+function _lzBounds(polys) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of polys) for (const [x, y] of p.pts) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 };
+}
+
+function _lzDraw() {
+  const cv = document.getElementById('lz-canvas'); if (!cv) return;
+  const c = cv.getContext('2d'); c.clearRect(0, 0, cv.width, cv.height);
+  if (!_lzPolys || !_lzPolys.length) return;
+  const b = _lzBounds(_lzPolys), m = 24;
+  const sc = Math.min((cv.width - 2*m) / (b.w || 1), (cv.height - 2*m) / (b.h || 1));
+  const ox = (cv.width - b.w * sc) / 2, oy = (cv.height - b.h * sc) / 2;
+  c.beginPath();
+  for (const p of _lzPolys) {
+    p.pts.forEach(([x, y], i) => {
+      const X = ox + (x - b.x0) * sc, Y = cv.height - oy - (y - b.y0) * sc;
+      i ? c.lineTo(X, Y) : c.moveTo(X, Y);
+    });
+    c.closePath();
+  }
+  if (_lzP.fmt === 'svg' && _lzP.art === 'fill') { c.fillStyle = '#222'; c.fill('evenodd'); }
+  else { c.strokeStyle = '#e00'; c.lineWidth = 1.5; c.stroke(); }
+}
+
+function _lzSvg(polys) {
+  const b = _lzBounds(polys), n = v => (+v.toFixed(3)).toString();
+  const d = polys.map(p => 'M' + p.pts.map(([x, y]) => n(x - b.x0) + ',' + n(b.y1 - y)).join('L') + 'Z').join('');
+  const W = n(b.w), H = n(b.h);
+  const st = _lzP.art === 'fill' ? 'fill="#000000" fill-rule="evenodd" stroke="none"'
+                                 : 'fill="none" stroke="#ff0000" stroke-width="0.1"';
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${W}mm" height="${H}mm" viewBox="0 0 ${W} ${H}">\n`
+       + `<!-- V3D CAD – Laservorlage (Draufsicht), Maße in mm 1:1 -->\n<path ${st} d="${d}"/>\n</svg>\n`;
+}
+
+// DXF R12-ASCII in mm, Y nach oben (wie die Draufsicht) — Stil wie _skExportDXF
+function _lzDxf(polys) {
+  const b = _lzBounds(polys), L = [], g = (c, v) => { L.push(c, v); };
+  g(0,'SECTION'); g(2,'HEADER'); g(9,'$INSUNITS'); g(70,4); g(0,'ENDSEC');
+  g(0,'SECTION'); g(2,'ENTITIES');
+  for (const p of polys) {
+    g(0,'LWPOLYLINE'); g(8, p.hole ? 'LOECHER' : 'KONTUR'); g(90, p.pts.length); g(70, 1);
+    for (const [x, y] of p.pts) { g(10, (x - b.x0).toFixed(4)); g(20, (y - b.y0).toFixed(4)); }
+  }
+  g(0,'ENDSEC'); g(0,'EOF');
+  return L.join('\r\n') + '\r\n';
+}
+
+function _lzSave() {
+  if (!_lzPolys || !_lzPolys.length) return;
+  const svg = _lzP.fmt === 'svg';
+  const blob = svg ? new Blob([_lzSvg(_lzPolys)], { type: 'image/svg+xml' })
+                   : new Blob([_lzDxf(_lzPolys)], { type: 'application/dxf' });
+  const fname = _designFilename(svg ? 'svg' : 'dxf').replace(/(\.[a-z]+)$/, '_laser$1');
+  _saveExport(blob, fname).then(res =>
+    notify(`„${fname}“ ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓`, 'ok'));
+  _lzClose();
 }
 
 function exportOBJ() {
@@ -47866,8 +48063,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.47';
+const VOLME3D_VERSION = '1.18.48';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.48', date:'2026-09-23', changes:[
+    ['\u2702\uFE0F','<b>Neu: Laservorlage aus jedem Objekt \u2014 Umriss von oben als SVG oder DXF.</b> Im Export-Men\u00fc (Pfeil \u25BE neben \u201e\u2B07 Export\u201c) gibt es jetzt <b>\u2702 Laservorlage (Draufsicht, SVG/DXF)</b>. Es nimmt das gew\u00e4hlte Objekt (oder alle, wenn nichts gew\u00e4hlt ist) und zeichnet genau das, was man in der Ansicht <b>\u201eOben\u201c</b> sieht: die Au\u00dfenkontur plus alle <b>durchgehenden</b> L\u00f6cher, <b>1:1 in Millimetern</b>. Als SVG wahlweise als <b>rote Haarlinie zum Schneiden</b> oder als <b>schwarze Fl\u00e4che zum Gravieren</b>; als DXF liegen Kontur und L\u00f6cher auf eigenen Ebenen. Ein <b>Kerf-Ausgleich</b> macht das Teil um die Schnittfuge des Lasers gr\u00f6\u00dfer, damit es ma\u00dfhaltig herauskommt. Funktioniert mit allen K\u00f6rpern \u2014 auch mit importierten STLs und Booleschen Ergebnissen.'],
+  ]},
   { version:'1.18.47', date:'2026-09-22', changes:[
     ['\u{1F524}','<b>Flach eingef\u00fcgtes SVG: „H\u00f6he Z" gibt den Buchstaben jetzt wirklich Dicke.</b> Wer ein SVG als <b>Flach (2D)</b> einf\u00fcgt, hat ein Blatt <b>ohne jede Dicke</b>. Der H\u00f6hen-Regler konnte daran nichts strecken \u2014 er rechnete mit einer Dicke von quasi null und blies den Ma\u00dfstab ins Unendliche (gemessen: Faktor 26\u202f000\u202f000\u202f000\u202f000\u202f000). Die H\u00f6he blieb stehen, und die Buchstaben <b>kippten</b> als entartetes Blatt weg \u2014 auch im Slicer, weil das Teil selbst kaputt war. Jetzt wird die Kontur mit der gew\u00fcnschten Tiefe <b>neu extrudiert</b>: 8 mm eingeben hei\u00dft 8 mm dick, sp\u00e4tere \u00c4nderungen gehen weiter, und es \u00fcberlebt Speichern und Laden. (Danke Ralf!)'],
     ['\u{1F4D0}','<b>Ma\u00dfe an schr\u00e4g liegenden Teilen stimmen jetzt.</b> Liegt ein Teil gedreht im Raum, h\u00e4ngen an seiner H\u00f6he im Raum alle drei eigenen Achsen mit. Der Regler rechnete trotzdem simplen Dreisatz: das Ma\u00df blieb fast stehen, w\u00e4hrend das Teil mit jedem Zug weiter <b>zusammengestaucht</b> wurde. Jetzt wird das Ma\u00df sauber gel\u00f6st (Breite 160 mm ist auch schr\u00e4g exakt 160 mm) \u2014 und wenn ein Wunschma\u00df in dieser Lage gar nicht erreichbar ist, bleibt das Teil unver\u00e4ndert und sagt, ab wo es ginge, statt sich platt zu dr\u00fccken.'],
@@ -57112,6 +57312,7 @@ const CMDK = [
   {i:'⬆',g:'Datei',t:'DXF in Skizze laden',k:'dxf laser import skizze',run:()=>{ if(!_sk.active) enterSketchMode(); document.getElementById('sk-dxf-file').click(); }},
   {i:'⬆',g:'Datei',t:'SVG in Skizze laden',k:'svg import skizze kontur beschneiden teilen',run:()=>{ if(!_sk.active) enterSketchMode(); document.getElementById('sk-svg-file').click(); }},
   {i:'⬇',g:'Export',t:'STL exportieren',k:'export stl',run:()=>exportSTL()},
+  {i:'✂',g:'Export',t:'Laservorlage (Draufsicht) als SVG/DXF',k:'laser svg dxf umriss kontur draufsicht plotter schneiden gravieren',run:()=>_lzOpen()},
   {i:'⬇',g:'Export',t:'STL pro Körper',k:'parts stl',run:()=>exportPartsSTL()},
   {i:'⬇',g:'Export',t:'OBJ exportieren',k:'export obj',run:()=>exportOBJ()},
   {i:'⬇',g:'Export',t:'STEP exportieren',k:'export step',run:()=>exportSTEP()},
