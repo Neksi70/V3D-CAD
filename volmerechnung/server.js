@@ -299,7 +299,7 @@ td{padding:8px;border-bottom:1px solid #eceef4;vertical-align:top;font-size:14px
 <div><b>${hesc(s.firma.name)}</b><span>${hesc(s.firma.slogan || '')}</span></div></div>
 <div class="card">
 <h1>${re ? 'Rechnung' : 'Angebot'} <em>${hesc(doc.nummer)}</em>${doc.status === 'storniert' ? ' — STORNIERT' : ''}</h1>
-<div class="meta">für ${hesc(k.firma || k.name || '')} · Datum: ${new Date(doc.datum).toLocaleDateString('de-DE')} · ${re ? 'zahlbar bis' : 'gültig bis'}: <b>${zielStr}</b></div>
+<div class="meta">${doc.betreff ? `<b>${hesc(doc.betreff)}</b><br>` : ''}für ${hesc(k.firma || k.name || '')} · Datum: ${new Date(doc.datum).toLocaleDateString('de-DE')}${doc.leistungszeitraum ? ` · Leistungszeitraum: ${hesc(doc.leistungszeitraum)}` : ''} · ${re ? 'zahlbar bis' : 'gültig bis'}: <b>${zielStr}</b></div>
 <div class="tbl"><table><tr><th style="width:30px">Pos.</th><th>Leistung</th><th class="n">Menge</th><th class="n">Einzelpreis</th><th class="n">Gesamt</th></tr>${zeilen}</table></div>
 <div class="sums">
 <div><span>${t.rabatt ? 'Summe der Leistungen' : 'Nettobetrag'}</span><b>${eurS(t.netto)}</b></div>
@@ -311,7 +311,8 @@ ${ustZeilen}
 ${klein ? '<div class="hin">Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.</div>' : ''}
 ${re && !['bezahlt', 'storniert'].includes(doc.status) ? `<div class="hin">Bitte überweisen Sie den Betrag bis zum <b>${zielStr}</b> unter Angabe der Rechnungsnummer${s.bank.iban ? ` auf:<br><b>IBAN ${hesc(s.bank.iban)}</b>${s.bank.bic ? ' · BIC ' + hesc(s.bank.bic) : ''} (${hesc(s.firma.name)})` : '.'}</div>` : ''}
 ${giro ? `<div class="giro">${giro}<div><b>Mit Banking-App zahlen:</b><br>GiroCode scannen — Empfänger, Betrag und Verwendungszweck sind schon ausgefüllt.</div></div>` : ''}
-${doc.status === 'bezahlt' ? '<div class="hin">✅ Diese Rechnung ist bereits bezahlt — vielen Dank!</div>' : ''}
+${doc.fusstext ? `<div class="hin" style="white-space:pre-wrap">${hesc(doc.fusstext)}</div>
+` : ''}${doc.status === 'bezahlt' ? '<div class="hin">✅ Diese Rechnung ist bereits bezahlt — vielen Dank!</div>' : ''}
 <button class="btn" onclick="window.print()">🖨️ Drucken / als PDF speichern</button>
 <div class="fuss">
 <span><b>${hesc(s.firma.name)}</b>${s.firma.inhaber ? ' · ' + hesc(s.firma.inhaber) : ''}</span>
@@ -1110,6 +1111,7 @@ Positionen:\n${liste.slice(0, 2000)}`;
             festgeschrieben: false, mahnstufe: 0, kundeId: doc.kundeId, kunde: doc.kunde,
             positionen: JSON.parse(JSON.stringify(doc.positionen || [])),
             rabattProzent: doc.rabattProzent || 0, rabattArt: doc.rabattArt, rabattBetrag: doc.rabattBetrag, rabattText: doc.rabattText,
+            betreff: doc.betreff, fusstext: doc.fusstext,
             quelleAngebot: doc.nummer || doc.id,
             datum: now().slice(0, 10),
           };
@@ -1124,6 +1126,7 @@ Positionen:\n${liste.slice(0, 2000)}`;
             festgeschrieben: false, mahnstufe: 0, kundeId: doc.kundeId, kunde: doc.kunde,
             positionen: JSON.parse(JSON.stringify(doc.positionen || [])),
             rabattProzent: doc.rabattProzent || 0, rabattArt: doc.rabattArt, rabattBetrag: doc.rabattBetrag, rabattText: doc.rabattText,
+            betreff: doc.betreff, fusstext: doc.fusstext, leistungszeitraum: doc.leistungszeitraum,
             zahlungszielTage: doc.zahlungszielTage,
             leitwegId: doc.leitwegId, datum: now().slice(0, 10),
           };
