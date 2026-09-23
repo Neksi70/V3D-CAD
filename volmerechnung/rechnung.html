@@ -276,7 +276,7 @@ let KEY=(()=>{
   history.replaceState(null,'',u.pathname+(u.search||'')+u.hash);
   return k;
 })();
-let S={settings:null,customers:[],items:[],docs:[],courses:[],expenses:[]};
+let S={settings:null,customers:[],items:[],docs:[],courses:[],expenses:[],gutachten:[]};
 let view='dash', editDoc=null; // editDoc = gerade offener Beleg-Editor
 
 async function api(path,method='GET',body){
@@ -287,8 +287,8 @@ async function api(path,method='GET',body){
   return j;
 }
 async function loadAll(){
-  [S.settings,S.customers,S.items,S.docs,S.courses,S.expenses]=await Promise.all([
-    api('settings'),api('customers'),api('items'),api('docs'),api('courses'),api('expenses')]);
+  [S.settings,S.customers,S.items,S.docs,S.courses,S.expenses,S.gutachten]=await Promise.all([
+    api('settings'),api('customers'),api('items'),api('docs'),api('courses'),api('expenses'),api('gutachten')]);
 }
 function showLogin(){$('#login').style.display='flex';$('#app').style.display='none';$('#loginKey').focus();}
 async function doLogin(){
@@ -342,6 +342,7 @@ function calcTotals(doc){
   for(const k of Object.keys(ust)){ust[k]=ust[k]*(netto?nn/netto:1);us+=ust[k];}
   return {netto,rabatt,nettoNachRabatt:nn,ust,brutto:nn+us};
 }
+const bezugText=b=>b.titel+(b.datum?' vom '+new Date(b.datum+'T12:00:00').toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric'}):'');
 function rabattLabel(d){
   const txt=String(d.rabattText||'').trim()||(d.rabattArt==='betrag'?'Partnerrabatt':'Rabatt');
   return d.rabattArt==='betrag'?txt:`${txt} (${d.rabattProzent} %)`;
@@ -472,6 +473,10 @@ function edMovePos(i,dir){
   const j=i+dir;if(j<0||j>=editDoc.positionen.length)return;
   const a=editDoc.positionen;[a[i],a[j]]=[a[j],a[i]];render();
 }
+function edGutachten(gid){
+  const g=S.gutachten.find(x=>x.id===gid);
+  editDoc.gutachtenId=g?g.id:'';if(g)editDoc.bezug={titel:g.titel,datum:g.datum};else delete editDoc.bezug;
+}
 function edRabattArt(v){editDoc.rabattArt=v;if(v==='betrag')editDoc.rabattProzent=0;else editDoc.rabattBetrag=0;
   if(!editDoc.rabattText)editDoc.rabattText='Partnerrabatt';render();}
 function edRabattWert(v){const n=Math.max(parseFloat(String(v).replace(',','.'))||0,0);
@@ -521,6 +526,10 @@ function renderEditor(m){
       <div><label>${re?'Zahlungsziel (Tage)':'Gültig (Tage)'}</label>
         <input type="number" value="${d.zahlungszielTage??(re?S.settings.zahlungszielTage:S.settings.angebotGueltigTage)}" ${fest?'disabled':''} onchange="edSet('zahlungszielTage',parseInt(this.value)||14)"></div>
       <div style="grid-column:span 2"><label>Betreff (optional)</label><input value="${esc(d.betreff||'')}" ${fest?'disabled':''} onchange="edSet('betreff',this.value.trim())"></div>
+      ${re?`<div><label>Bezug: Gutachten / Analyse (optional)</label>
+        <select ${fest?'disabled':''} onchange="edGutachten(this.value)"><option value="">— keins —</option>
+        ${S.gutachten.filter(g=>g.kundeId===d.kundeId||g.id===d.gutachtenId).map(g=>`<option value="${g.id}" ${d.gutachtenId===g.id?'selected':''}>${esc(g.titel)} (${dtDE(g.datum)})</option>`).join('')}
+        </select></div>`:''}
       <div><label>Leistungszeitraum (optional)</label><input value="${esc(d.leistungszeitraum||'')}" placeholder="z. B. September 2026" ${fest?'disabled':''} onchange="edSet('leistungszeitraum',this.value.trim())"></div>
       ${re?`<div><label>Leitweg-ID / Käuferreferenz (für XRechnung an Firmen/Behörden, sonst leer)</label>
         <input value="${esc(d.leitwegId||'')}" ${fest?'disabled':''} onchange="edSet('leitwegId',this.value.trim())"></div>`:''}
@@ -790,8 +799,74 @@ function editKunde(id){
   <div style="margin-top:12px;display:flex;gap:10px">
     <button class="btn" onclick="saveKunde('${id||''}')">💾 Speichern</button>
     <button class="btn sec" onclick="$('#kundeForm').innerHTML=''">Abbrechen</button>
+  </div></div>${id?kundeBereiche(id):''}`;
+  if(id)$('#kundeForm').scrollIntoView({behavior:'smooth'});else $('#kFirma').focus();
+}
+// Kundenakte: Angebote, Rechnungen und Gutachten/Analysen dieses Kunden
+function kundeBereiche(kid){
+  const eigene=art=>S.docs.filter(d=>d.art===art&&d.kundeId===kid).sort((a,b)=>(b.created||'').localeCompare(a.created||''));
+  const bereich=(titel,list)=>`<div class="card"><h3>${titel}</h3>${list.length?docTable(list):'<p style="color:var(--dim)">Keine.</p>'}</div>`;
+  const ga=S.gutachten.filter(g=>g.kundeId===kid).sort((a,b)=>(b.datum||'').localeCompare(a.datum||''));
+  return bereich('📝 Angebote',eigene('angebot'))+bereich('🧾 Rechnungen',eigene('rechnung'))+
+  `<div class="card"><h3 style="display:flex;align-items:center">🔬 Gutachten / Analysen<button class="btn sm" style="margin-left:auto" onclick="editGutachten('','${kid}')">+ Gutachten</button></h3>
+  ${ga.length?`<table class="list"><tr><th>Titel</th><th>Datum</th><th>Status</th><th>Rechnung</th><th>PDF</th></tr>
+  ${ga.map(g=>{const re=S.docs.find(d=>d.id===g.rechnungId);return `<tr class="click" onclick="editGutachten('${g.id}','${kid}')">
+    <td><b>${esc(g.titel)}</b></td><td>${dtDE(g.datum)}</td>
+    <td><span class="badge b-${g.status==='versendet'?'bezahlt':'entwurf'}">${g.status==='versendet'?'Versendet':'Entwurf'}</span></td>
+    <td>${re?`<a href="#" onclick="event.stopPropagation();openDoc('${re.id}');return false">${esc(re.nummer||'Entwurf')}</a>`:'—'}</td>
+    <td>${g.datei?`<a href="${gaPdfUrl(g)}" onclick="event.stopPropagation()" download>⬇ ${esc(g.datei.name)}</a>`:'<span style="color:var(--dim)">fehlt</span>'}</td></tr>`;}).join('')}</table>`
+  :'<p style="color:var(--dim)">Noch keine Gutachten.</p>'}<div id="gaForm"></div></div>`;
+}
+const gaPdfUrl=g=>`${ROOTP}/api/gutachten/${g.id}/pdf?key=${encodeURIComponent(KEY)}`;
+async function editGutachten(gid,kid){
+  const g=gid?S.gutachten.find(x=>x.id===gid):{status:'entwurf',datum:today()};
+  let eingang=[];try{eingang=await api('gutachten/eingang');}catch(e){}
+  const rechnungen=S.docs.filter(d=>d.art==='rechnung'&&d.kundeId===kid);
+  $('#gaForm').innerHTML=`<div class="card" style="background:#fafbff;margin-top:12px"><h3>${gid?'Gutachten bearbeiten':'Neues Gutachten'}</h3>
+  <div class="grid3">
+    <div style="grid-column:span 2"><label>Titel</label><input id="gTitel" value="${esc(g.titel||'')}"></div>
+    <div><label>Datum</label><input id="gDatum" type="date" value="${esc(g.datum||today())}"></div>
+    <div><label>Status</label><select id="gStatus">${['entwurf','versendet'].map(x=>`<option value="${x}" ${g.status===x?'selected':''}>${x==='versendet'?'Versendet':'Entwurf'}</option>`).join('')}</select></div>
+    <div style="grid-column:span 2"><label>Verknüpfte Rechnung</label><select id="gRechnung"><option value="">— keine —</option>
+      ${rechnungen.map(d=>`<option value="${d.id}" ${g.rechnungId===d.id?'selected':''}>${esc(d.nummer||'Entwurf')} · ${dtDE(d.datum)} · ${eur(calcTotals(d).brutto)}${d.betreff?' · '+esc(d.betreff):''}</option>`).join('')}</select></div>
+  </div>
+  <label>PDF</label>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    ${g.datei?`<a class="btn sm sec" style="text-decoration:none" href="${gaPdfUrl(g)}" download>⬇ ${esc(g.datei.name)}</a>`:'<span style="color:var(--dim)">noch keine PDF</span>'}
+    <label class="btn sm sec" style="margin:0">📄 PDF hochladen<input type="file" accept="application/pdf" hidden onchange="gaUpload('${gid}','${kid}',this.files[0])"></label>
+    ${eingang.length?`<select id="gEingang" style="width:auto"><option value="">— aus Server-Eingang übernehmen —</option>${eingang.map(f=>`<option>${esc(f.name)}</option>`).join('')}</select>`:''}
+  </div>
+  <div style="margin-top:12px;display:flex;gap:10px">
+    <button class="btn" onclick="saveGutachten('${gid}','${kid}')">💾 Speichern</button>
+    <button class="btn sec" onclick="$('#gaForm').innerHTML=''">Abbrechen</button>
+    ${gid?`<button class="btn danger" onclick="delGutachten('${gid}','${kid}')">🗑️ Löschen</button>`:''}
   </div></div>`;
-  $('#kFirma').focus();
+}
+async function saveGutachten(gid,kid,still){
+  const rec={kundeId:kid,titel:$('#gTitel').value.trim(),datum:$('#gDatum').value,status:$('#gStatus').value,rechnungId:$('#gRechnung').value};
+  if(!rec.titel){toast('Titel angeben',true);return null;}
+  try{
+    const g=gid?await api('gutachten/'+gid,'PUT',rec):await api('gutachten','POST',rec);
+    const ein=$('#gEingang')&&$('#gEingang').value;
+    if(ein)await api('gutachten/'+g.id+'/pdf','POST',{eingang:ein});
+    await loadAll();if(!still){toast('Gespeichert');editKunde(kid);}
+    return g;
+  }catch(e){toast(e.message,true);return null;}
+}
+async function gaUpload(gid,kid,file){
+  if(!file)return;
+  const g=gid?{id:gid}:await saveGutachten('',kid,true); // neues Gutachten erst anlegen
+  if(!g)return;
+  try{
+    const r=await fetch(ROOTP+'/api/gutachten/'+g.id+'/pdf',{method:'POST',body:file,
+      headers:{'X-Key':KEY,'Content-Type':'application/pdf','X-Dateiname':encodeURIComponent(file.name)}});
+    const j=await r.json();if(!r.ok)throw new Error(j.error||('HTTP '+r.status));
+    await loadAll();toast('PDF angehängt');editKunde(kid);editGutachten(g.id,kid);
+  }catch(e){toast(e.message,true);}
+}
+async function delGutachten(gid,kid){
+  if(!confirm('Gutachten samt PDF löschen?'))return;
+  try{await api('gutachten/'+gid,'DELETE');await loadAll();editKunde(kid);}catch(e){toast(e.message,true);}
 }
 async function saveKunde(id){
   const rec={firma:$('#kFirma').value.trim(),name:$('#kName').value.trim(),anrede:$('#kAnrede').value,strasse:$('#kStrasse').value.trim(),
@@ -1350,7 +1425,7 @@ function sheetHtml(d,mahnung,girocode){
       ${d.quelleAngebot?`<tr><td>Ihr Angebot</td><td>${esc(d.quelleAngebot)}</td></tr>`:''}${d.leistungszeitraum&&!mahnung?`<tr><td>Leistungszeitraum</td><td>${esc(d.leistungszeitraum)}</td></tr>`:''}
     </table>
   </div>
-  <h2 class="dtitel">${titel}</h2>${d.betreff?`<div class="betreff">${mahnung?'Rechnung: ':''}${esc(d.betreff)}</div>`:''}
+  <h2 class="dtitel">${titel}</h2>${d.betreff?`<div class="betreff">${mahnung?'Rechnung: ':''}${esc(d.betreff)}</div>`:''}${d.bezug&&!mahnung?`<div class="bezug">Bezug: ${esc(bezugText(d.bezug))}</div>`:''}
   <div class="intro">${anrede}\n\n${esc(intro)}</div>
   ${mahnung?`<table class="pos"><tr><th>Rechnung</th><th>Datum</th><th class="num">Betrag</th></tr>
     <tr><td>${esc(d.nummer)}</td><td>${dtDE(d.datum)}</td><td class="num"><b>${eur(t.brutto)}</b></td></tr></table>`

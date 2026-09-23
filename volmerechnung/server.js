@@ -98,6 +98,27 @@ const items = store('items', []);
 const docs = store('docs', []); // Angebote + Rechnungen gemeinsam, Feld "art": 'angebot'|'rechnung'
 const courses = store('courses', []); // Kurse mit Teilnehmerliste (Akademie)
 const expenses = store('expenses', []); // Eingangsbelege/Ausgaben
+// Gutachten / technische Analysen je Kunde: Metadaten hier, PDF unter data/gutachten/<id>.pdf.
+// data/gutachten/eingang/ nimmt per scp hochgeladene PDFs auf (Übernahme im Gutachten-Dialog).
+const gutachten = store('gutachten', []);
+const GA_DIR = path.join(DATA_DIR, 'gutachten');
+const GA_EINGANG = path.join(GA_DIR, 'eingang');
+fs.mkdirSync(GA_EINGANG, { recursive: true });
+const gaPdf = (gid) => path.join(GA_DIR, gid + '.pdf');
+
+// Rechnung verweist auf ein Gutachten: Titel+Datum als Schnappschuss am Beleg
+// (wie der Kunde) — spätere Umbenennung ändert festgeschriebene Rechnungen nicht.
+function bezugSync(doc) {
+  if (doc.festgeschrieben) return;
+  const g = doc.gutachtenId && gutachten.data.find((x) => x.id === doc.gutachtenId);
+  if (!g) {
+    delete doc.gutachtenId; delete doc.bezug;
+    for (const x of gutachten.data) if (x.rechnungId === doc.id) { x.rechnungId = ''; gutachten.save(); }
+    return;
+  }
+  doc.bezug = { titel: g.titel, datum: g.datum };
+  if (g.rechnungId !== doc.id) { g.rechnungId = doc.id; gutachten.save(); }
+}
 
 // --- Nummernkreise: RE-2026-0001 / AN-2026-0001, jahresweise, lückenlos ----
 // Festgeschriebene Rechnung darf nur zurück zum Entwurf, wenn sie nachweislich nicht raus ist
@@ -180,6 +201,8 @@ function calcTotals(doc) {
   }
   return { netto, rabatt, nettoNachRabatt, ust, brutto: nettoNachRabatt + ustSumme };
 }
+
+const bezugText = (b) => b.titel + (b.datum ? ' vom ' + new Date(b.datum + 'T12:00:00').toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '');
 
 // Bezeichnung der Rabattzeile: frei wählbar, Prozent wird angehängt
 function rabattLabel(doc) {
@@ -299,7 +322,7 @@ td{padding:8px;border-bottom:1px solid #eceef4;vertical-align:top;font-size:14px
 <div><b>${hesc(s.firma.name)}</b><span>${hesc(s.firma.slogan || '')}</span></div></div>
 <div class="card">
 <h1>${re ? 'Rechnung' : 'Angebot'} <em>${hesc(doc.nummer)}</em>${doc.status === 'storniert' ? ' — STORNIERT' : ''}</h1>
-<div class="meta">${doc.betreff ? `<b>${hesc(doc.betreff)}</b><br>` : ''}für ${hesc(k.firma || k.name || '')} · Datum: ${new Date(doc.datum).toLocaleDateString('de-DE')}${doc.leistungszeitraum ? ` · Leistungszeitraum: ${hesc(doc.leistungszeitraum)}` : ''} · ${re ? 'zahlbar bis' : 'gültig bis'}: <b>${zielStr}</b></div>
+<div class="meta">${doc.betreff ? `<b>${hesc(doc.betreff)}</b><br>` : ''}${doc.bezug ? `Bezug: ${hesc(bezugText(doc.bezug))}<br>` : ''}für ${hesc(k.firma || k.name || '')} · Datum: ${new Date(doc.datum).toLocaleDateString('de-DE')}${doc.leistungszeitraum ? ` · Leistungszeitraum: ${hesc(doc.leistungszeitraum)}` : ''} · ${re ? 'zahlbar bis' : 'gültig bis'}: <b>${zielStr}</b></div>
 <div class="tbl"><table><tr><th style="width:30px">Pos.</th><th>Leistung</th><th class="n">Menge</th><th class="n">Einzelpreis</th><th class="n">Gesamt</th></tr>${zeilen}</table></div>
 <div class="sums">
 <div><span>${t.rabatt ? 'Summe der Leistungen' : 'Nettobetrag'}</span><b>${eurS(t.netto)}</b></div>
@@ -960,6 +983,79 @@ Positionen:\n${liste.slice(0, 2000)}`;
     if (a && a.belegId) for (const p of [belegPfad(a.belegId), belegPfad(a.belegId, true)]) if (p) fs.rmSync(p, { force: true });
   }
 
+  if (col === 'gutachten') {
+    // per scp abgelegte PDFs, die noch keinem Gutachten gehören
+    if (docId === 'eingang' && m === 'GET') {
+      const liste = fs.readdirSync(GA_EINGANG).filter((f) => /\.pdf$/i.test(f))
+        .map((f) => ({ name: f, size: fs.statSync(path.join(GA_EINGANG, f)).size }));
+      return send(res, 200, liste);
+    }
+    if (m === 'GET' && !docId) return send(res, 200, gutachten.data);
+    const felder = (b) => {
+      const r = {};
+      for (const k of ['kundeId', 'titel', 'datum', 'rechnungId']) if (k in b) r[k] = String(b[k] || '').trim();
+      if ('status' in b) r.status = b.status === 'versendet' ? 'versendet' : 'entwurf';
+      return r;
+    };
+    // verknüpfte Rechnung: Entwurf bekommt den Bezug gleich mit, festgeschriebene bleibt unangetastet
+    const verknuepfen = (g) => {
+      for (const d of docs.data) if (d.gutachtenId === g.id && d.id !== g.rechnungId && !d.festgeschrieben) { delete d.gutachtenId; delete d.bezug; }
+      const d = g.rechnungId && docs.data.find((x) => x.id === g.rechnungId);
+      if (d && !d.festgeschrieben) { d.gutachtenId = g.id; bezugSync(d); }
+      docs.save();
+    };
+    if (m === 'POST' && !docId) {
+      const g = Object.assign({ status: 'entwurf', datum: now().slice(0, 10) }, felder(await readBody(req)), { id: id(), created: now() });
+      if (!g.titel || !g.kundeId) return send(res, 400, { error: 'Titel und Kunde angeben' });
+      gutachten.data.push(g); gutachten.save(); verknuepfen(g);
+      return send(res, 200, g);
+    }
+    const g = gutachten.data.find((x) => x.id === docId);
+    if (!g) return send(res, 404, { error: 'Gutachten nicht gefunden' });
+    if (m === 'PUT' && !action) {
+      Object.assign(g, felder(await readBody(req))); gutachten.save(); verknuepfen(g);
+      return send(res, 200, g);
+    }
+    if (m === 'DELETE' && !action) {
+      if (docs.data.some((d) => d.gutachtenId === g.id && d.festgeschrieben)) {
+        return send(res, 409, { error: 'Eine festgeschriebene Rechnung verweist auf dieses Gutachten' });
+      }
+      g.rechnungId = ''; verknuepfen(g);
+      fs.rmSync(gaPdf(g.id), { force: true });
+      gutachten.data.splice(gutachten.data.indexOf(g), 1); gutachten.save();
+      return send(res, 200, { ok: true });
+    }
+    if (action === 'pdf' && m === 'GET') {
+      if (!g.datei || !fs.existsSync(gaPdf(g.id))) return send(res, 404, { error: 'Noch keine PDF angehängt' });
+      res.writeHead(200, {
+        'Content-Type': 'application/pdf', 'Cache-Control': 'no-store',
+        'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(g.datei.name)}`,
+      });
+      return res.end(fs.readFileSync(gaPdf(g.id)));
+    }
+    // PDF anhängen: Rohdaten (Upload) ODER {eingang: "<datei>.pdf"} aus dem scp-Ordner
+    if (action === 'pdf' && m === 'POST') {
+      let buf, name;
+      if (String(req.headers['content-type'] || '').startsWith('application/json')) {
+        const b = await readBody(req);
+        name = path.basename(String(b.eingang || ''));
+        const quelle = path.join(GA_EINGANG, name);
+        if (!/\.pdf$/i.test(name) || !fs.existsSync(quelle)) return send(res, 404, { error: 'Datei nicht im Eingang' });
+        buf = fs.readFileSync(quelle);
+        if (buf.subarray(0, 5).toString() !== '%PDF-') return send(res, 400, { error: 'Keine PDF-Datei' });
+        fs.writeFileSync(gaPdf(g.id), buf); fs.rmSync(quelle);
+      } else {
+        buf = await readRaw(req, 50 * 1024 * 1024);
+        if (buf.subarray(0, 5).toString() !== '%PDF-') return send(res, 400, { error: 'Keine PDF-Datei' });
+        name = path.basename(decodeURIComponent(String(req.headers['x-dateiname'] || 'gutachten.pdf'))).replace(/[\x00-\x1f"]/g, '') || 'gutachten.pdf';
+        fs.writeFileSync(gaPdf(g.id), buf);
+      }
+      g.datei = { name, size: buf.length, am: now() }; gutachten.save();
+      return send(res, 200, g);
+    }
+    return send(res, 400, { error: 'unbekannte Aktion' });
+  }
+
   if (col === 'customers' || col === 'items' || col === 'courses' || col === 'expenses') {
     const st = { customers, items, courses, expenses }[col];
     if (m === 'GET') return send(res, 200, st.data);
@@ -996,6 +1092,7 @@ Positionen:\n${liste.slice(0, 2000)}`;
         id: id(), created: now(), status: 'entwurf', nummer: null, festgeschrieben: false,
         mahnstufe: 0, art: body.art === 'rechnung' ? 'rechnung' : 'angebot',
       });
+      bezugSync(doc);
       docs.data.push(doc); docs.save();
       return send(res, 200, doc);
     }
@@ -1047,6 +1144,7 @@ Positionen:\n${liste.slice(0, 2000)}`;
       if (doc.festgeschrieben) return send(res, 409, { error: 'Beleg ist festgeschrieben und kann nicht mehr geändert werden' });
       const body = await readBody(req);
       Object.assign(doc, body, { id: doc.id, nummer: doc.nummer, festgeschrieben: doc.festgeschrieben, art: doc.art });
+      bezugSync(doc);
       docs.save();
       return send(res, 200, doc);
     }
