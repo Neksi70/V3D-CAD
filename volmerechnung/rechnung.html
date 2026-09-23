@@ -607,7 +607,7 @@ function shareCardHtml(d){
     <p style="color:var(--mid);font-size:13.5px;margin-bottom:10px">Verschicke den persönlichen Beleg-Link — sobald der Kunde ihn öffnet, siehst du es hier. Funktioniert per E-Mail und WhatsApp.</p>
     ${!url?`<button class="btn" onclick="shareDoc()">🔗 Versand-Link erzeugen</button>`
     :`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <button class="btn" id="v3dmBtn" onclick="v3dMailShare()">📨 Mit V3D Mail senden</button>
+        <button class="btn" id="v3dmBtn" onclick="v3dMailShare()" ${gaZuBeleg(d)?`title="Anhänge: Rechnung + ${esc(gaZuBeleg(d).datei.name)}"`:''}>📨 Mit V3D Mail senden${gaZuBeleg(d)?' <small>(+ Gutachten)</small>':''}</button>
         <button class="btn sec" onclick="mailShare()">📧 Anderes Mail-Programm</button>
         <button class="btn" style="background:#25D366" onclick="waShare()">💬 Per WhatsApp</button>
         <button class="btn sec" onclick="copyShare()">📋 Link kopieren</button>
@@ -652,10 +652,11 @@ async function v3dMailShare(){
   const btn=$('#v3dmBtn');if(btn)btn.disabled=true;
   try{
     toast('PDF wird erstellt …');
-    const s=S.settings,t=calcTotals(d);
+    const s=S.settings,t=calcTotals(d),ga=gaZuBeleg(d);
     const text=`Guten Tag${d.kunde&&d.kunde.name?' '+d.kunde.name:''},\n\n`+
       (re?`anbei erhalten Sie Ihre Rechnung ${d.nummer} über ${eur(t.brutto)} als PDF.`:
           `anbei erhalten Sie unser Angebot ${d.nummer} über ${eur(t.brutto)} als PDF.`)+
+      (ga?`\n\nZusätzlich erhalten Sie im Anhang den Bericht „${ga.titel}“ als PDF.`:'')+
       `\n\nSie können den Beleg auch online abrufen:\n${shareUrl(d)}\n\n`+
       (re?`Der Link enthält alle Zahlungsinformationen inkl. QR-Code zum Scannen.\n\n`:'')+
       // Kurzer Gruß reicht: V3D Mail hängt beim Senden die Konto-Signatur an.
@@ -666,6 +667,7 @@ async function v3dMailShare(){
       text,
     });
     window.open(r.url,'_blank');
+    if(ga){await loadAll();toast('Gutachten als versendet markiert');}
   }catch(e){toast(e.message,true);}
   finally{if(btn)btn.disabled=false;}
 }
@@ -817,6 +819,8 @@ function kundeBereiche(kid){
     <td>${g.datei?`<a href="${gaPdfUrl(g)}" onclick="event.stopPropagation()" download>⬇ ${esc(g.datei.name)}</a>`:'<span style="color:var(--dim)">fehlt</span>'}</td></tr>`;}).join('')}</table>`
   :'<p style="color:var(--dim)">Noch keine Gutachten.</p>'}<div id="gaForm"></div></div>`;
 }
+// wie server.js: Gutachten mit PDF zu diesem Beleg (reist beim V3D-Mail-Versand mit)
+const gaZuBeleg=d=>S.gutachten.find(g=>g.datei&&(g.id===d.gutachtenId||g.rechnungId===d.id))||null;
 const gaPdfUrl=g=>`${ROOTP}/api/gutachten/${g.id}/pdf?key=${encodeURIComponent(KEY)}`;
 async function editGutachten(gid,kid){
   const g=gid?S.gutachten.find(x=>x.id===gid):{status:'entwurf',datum:today()};

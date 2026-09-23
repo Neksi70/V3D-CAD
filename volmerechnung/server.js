@@ -106,6 +106,12 @@ const GA_EINGANG = path.join(GA_DIR, 'eingang');
 fs.mkdirSync(GA_EINGANG, { recursive: true });
 const gaPdf = (gid) => path.join(GA_DIR, gid + '.pdf');
 
+// Gutachten mit angehängter PDF, das zu diesem Beleg gehört (für den Mail-Versand)
+function gaZuBeleg(doc) {
+  const g = gutachten.data.find((x) => x.id === doc.gutachtenId) || gutachten.data.find((x) => x.rechnungId === doc.id);
+  return g && g.datei && fs.existsSync(gaPdf(g.id)) ? g : null;
+}
+
 // Rechnung verweist auf ein Gutachten: Titel+Datum als Schnappschuss am Beleg
 // (wie der Kunde) — spätere Umbenennung ändert festgeschriebene Rechnungen nicht.
 function bezugSync(doc) {
@@ -1123,9 +1129,17 @@ Positionen:\n${liste.slice(0, 2000)}`;
       for (const [k, v] of uebergaben) if (Date.now() - v.t > UEBERGABE_TTL) uebergaben.delete(k);
       const token = crypto.randomBytes(24).toString('base64url');
       const name = `${doc.art === 'rechnung' ? 'Rechnung' : 'Angebot'}_${String(doc.nummer || doc.id).replace(/[^\w-]/g, '_')}.pdf`;
+      const attachments = [{ name, type: 'application/pdf', data: pdf.toString('base64'), size: pdf.length }];
+      // Verknüpftes Gutachten reist mit und gilt ab der Übergabe als versendet
+      const g = gaZuBeleg(doc);
+      if (g) {
+        const gpdf = fs.readFileSync(gaPdf(g.id));
+        attachments.push({ name: g.datei.name, type: 'application/pdf', data: gpdf.toString('base64'), size: gpdf.length });
+        g.status = 'versendet'; g.versendetAm = now(); gutachten.save();
+      }
       uebergaben.set(token, { t: Date.now(), draft: {
         to: String(body.to || ''), subject: String(body.subject || ''), text: String(body.text || ''),
-        attachments: [{ name, type: 'application/pdf', data: pdf.toString('base64'), size: pdf.length }],
+        attachments,
       } });
       // Mail-App hängt am selben Funnel wie die Beleg-Links (publicBase)
       const mailBase = String(CFG.publicBase).replace(/\/beleg\/?$/, '/mail/');
