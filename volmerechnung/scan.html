@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#F97316">
+<title>V3D Beleg</title>
+<link rel="icon" href="logo.svg">
+<style>
+:root{--acc:#F97316;--acc-d:#EA6000;--bg:#f4f5f9;--card:#fff;--text:#1c2030;--mid:#5b6172;--dim:#8a90a3;--line:#e3e6ef;--green:#16a34a;--red:#ef4444}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{background:var(--acc);color:#fff;padding:14px 18px;display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px}
+header button{margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:0;border-radius:8px;padding:6px 10px;font:inherit;font-size:14px}
+main{padding:16px;max-width:560px;margin:0 auto}
+.gross{display:flex;align-items:center;justify-content:center;gap:12px;width:100%;border:0;border-radius:16px;padding:26px 16px;font:inherit;font-size:21px;font-weight:700;cursor:pointer;margin-bottom:12px}
+.gross.p{background:var(--acc);color:#fff;box-shadow:0 6px 18px rgba(249,115,22,.35)}
+.gross.s{background:#fff;color:var(--text);border:1px solid var(--line);font-size:17px;padding:18px}
+.btn{border:0;border-radius:12px;padding:14px 16px;font:inherit;font-weight:700;cursor:pointer;background:var(--acc);color:#fff}
+.btn.s{background:#fff;color:var(--text);border:1px solid var(--line)}
+.btn.g{background:var(--green)}
+h2{font-size:15px;color:var(--mid);margin:22px 0 8px}
+.feld{display:flex;width:100%;align-items:center;gap:10px;text-align:left;background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 14px;margin-bottom:10px;font:inherit;color:var(--text);cursor:pointer}
+.feld small{display:block;color:var(--dim);font-weight:600;font-size:12.5px}
+.feld b{font-size:18px;word-break:break-word}
+.feld.ok{background:#f0fdf4;border-color:#86efac}
+.feld .ico{font-size:24px}
+.feld .edit{font-size:18px;padding:8px;margin:-8px;opacity:.55}
+.leer{color:var(--dim);font-weight:400}
+.eintrag{display:flex;justify-content:space-between;gap:10px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px;cursor:pointer}
+.hinw{background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
+.lade{text-align:center;padding:60px 10px;color:var(--mid)}
+.lade .kreis{width:46px;height:46px;border:5px solid #fed7aa;border-top-color:var(--acc);border-radius:50%;animation:dreh 1s linear infinite;margin:0 auto 16px}
+@keyframes dreh{to{transform:rotate(360deg)}}
+input{font:inherit;width:100%;border:1px solid var(--line);border-radius:10px;padding:12px}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--green);color:#fff;padding:12px 18px;border-radius:12px;font-weight:700;opacity:0;transition:opacity .3s;pointer-events:none;max-width:90vw;z-index:9}
+.leiste{display:flex;gap:10px;margin-top:6px}
+.leiste .btn{flex:1}
+</style>
+</head>
+<body>
+<header>🧾 V3D Beleg<button id="kopfZurueck" hidden onclick="start()">← Übersicht</button></header>
+<main id="m"></main>
+<div id="toast"></div>
+<script>
+'use strict';
+// Schlanke Handy-Seite zu VolmeRechnung: Papierrechnung scannen -> Zahlungsdaten
+// einzeln kopieren -> in der Banking-App (SumUp) einfügen. Läuft im Browser und
+// in der Android-Hülle „V3D Beleg" (AndroidBruecke: kopieren, appOeffnen, kamera).
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const eur=v=>(Number(v)||0).toLocaleString('de-DE',{style:'currency',currency:'EUR'});
+const dtDE=s=>s?new Date(s+'T12:00:00').toLocaleDateString('de-DE'):'';
+const today=()=>new Date().toISOString().slice(0,10);
+const ROOTP=location.pathname.startsWith('/rechnung')?'/rechnung':'';
+const APP=window.AndroidBruecke||null;
+let KEY=(()=>{const u=new URL(location.href),k=u.searchParams.get('key');
+  if(!k)return localStorage.getItem('vrKey')||'';
+  localStorage.setItem('vrKey',k);u.searchParams.delete('key');history.replaceState(null,'',u);return k;})();
+
+function toast(t,err){const e=$('#toast');e.textContent=t;e.style.background=err?'var(--red)':'var(--green)';e.style.opacity=1;clearTimeout(e._h);e._h=setTimeout(()=>e.style.opacity=0,2200);}
+async function api(p,method='GET',body){
+  const r=await fetch(ROOTP+'/api/'+p,{method,headers:{'X-Key':KEY,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+  if(r.status===401){login();throw new Error('Bitte anmelden');}
+  const j=await r.json();if(!r.ok)throw new Error(j.error||'Fehler '+r.status);return j;
+}
+
+function login(){
+  $('#kopfZurueck').hidden=true;
+  $('#m').innerHTML=`<h2>Anmelden</h2><p style="color:var(--mid);font-size:14px;margin-bottom:10px">Einmalig den Login-Schlüssel von VolmeRechnung eingeben — die App merkt ihn sich.</p>
+    <input id="k" type="password" placeholder="Login-Schlüssel" autocomplete="off"><div style="height:10px"></div>
+    <button class="btn" style="width:100%" onclick="KEY=$('#k').value.trim();localStorage.setItem('vrKey',KEY);start()">Weiter</button>`;
+}
+
+// ---------------------------------------------------------------- Übersicht
+async function start(){
+  $('#kopfZurueck').hidden=true;
+  if(!KEY)return login();
+  $('#m').innerHTML=`
+    <button class="gross p" onclick="waehle(true)">📷 Rechnung scannen</button>
+    <button class="gross s" onclick="waehle(false)">📄 PDF oder Bild wählen</button>
+    <p style="color:var(--dim);font-size:13px;text-align:center">Tipp: PDF aus Gmail/Dateien per „Teilen → V3D Beleg" schicken.</p>
+    <div id="offen"></div>`;
+  try{
+    const alle=await api('expenses');
+    const offen=alle.filter(a=>a.iban&&!a.bezahltAm).sort((a,b)=>(b.created||'').localeCompare(a.created||'')).slice(0,15);
+    const bezahlt=alle.filter(a=>a.bezahltAm).sort((a,b)=>(b.bezahltAm||'').localeCompare(a.bezahltAm||'')).slice(0,3);
+    $('#offen').innerHTML=(offen.length?'<h2>Noch zu überweisen</h2>'+offen.map(eintrag).join(''):'')
+      +(bezahlt.length?'<h2>Zuletzt bezahlt</h2>'+bezahlt.map(eintrag).join(''):'');
+  }catch(e){if(KEY)toast(e.message,true);}
+}
+const eintrag=a=>`<div class="eintrag" onclick="zeige('${a.id}')"><span><b>${esc(a.lieferant||'?')}</b><br><small style="color:var(--dim)">${esc(a.nummer||'')} ${a.faellig&&!a.bezahltAm?'· fällig '+dtDE(a.faellig):''}${a.bezahltAm?'· ✓ bezahlt '+dtDE(a.bezahltAm):''}</small></span><b>${eur(a.betrag)}</b></div>`;
+
+// Kamera/Datei: im Browser über <input>, in der App übernimmt Android (onShowFileChooser)
+function waehle(kamera){
+  const i=document.createElement('input');i.type='file';
+  i.accept=kamera?'image/*':'image/*,application/pdf';
+  if(kamera)i.capture='environment';
+  i.onchange=()=>i.files[0]&&hochladen(i.files[0]);
+  i.click();
+}
+// Aufruf aus der Android-Hülle beim „Teilen → V3D Beleg"
+window.belegVonApp=function(b64,typ){
+  const bin=atob(b64),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);
+  hochladen(new Blob([u],{type:typ||'application/octet-stream'}));
+};
+
+// ---------------------------------------------------------------- Erfassen
+async function hochladen(file){
+  if(!KEY)return login();
+  $('#kopfZurueck').hidden=true;
+  $('#m').innerHTML='<div class="lade"><div class="kreis"></div><b>Rechnung wird gelesen …</b><br><small>ein paar Sekunden</small></div>';
+  let body=file;
+  if(file.type.startsWith('image/')){ // 12-MP-Foto -> max. 3000 px: schneller Upload
+    try{const bm=await createImageBitmap(file,{imageOrientation:'from-image'});const f=Math.min(1,3000/Math.max(bm.width,bm.height));
+      const c=document.createElement('canvas');c.width=Math.round(bm.width*f);c.height=Math.round(bm.height*f);
+      c.getContext('2d').drawImage(bm,0,0,c.width,c.height);body=await new Promise(r=>c.toBlob(r,'image/jpeg',0.9));}catch(e){body=file;}
+  }
+  try{
+    const r=await fetch(ROOTP+'/api/erfassen',{method:'POST',headers:{'X-Key':KEY},body});
+    if(r.status===401){login();return;}
+    const j=await r.json();if(!r.ok)throw new Error(j.error||'Fehler');
+    const f=j.felder,L=f.lieferant||{};
+    const st=f.steuern||[];
+    const brutto=f.brutto!=null?f.brutto:(st.length?Math.round(st.reduce((x,s)=>x+(+s.netto||0)+(+s.ust||0),0)*100)/100:0);
+    // sofort als Ausgabe speichern — taucht damit auch in VolmeRechnung auf
+    const a=await api('expenses','POST',{datum:f.datum||today(),lieferant:L.name||'',betrag:brutto,kategorie:'Material',beschreibung:'',
+      nummer:f.nummer||'',kundennr:f.kundennr||'',verwendungszweck:f.verwendungszweck||[f.nummer,f.kundennr?'Kd-Nr. '+f.kundennr:''].filter(Boolean).join(' '),
+      faellig:f.faellig||'',lieferdatum:f.lieferdatum||'',iban:f.iban||'',bic:f.bic||'',
+      lieferantAdr:{strasse:L.strasse||'',plz:L.plz||'',ort:L.ort||'',ustId:L.ustId||'',steuernummer:L.steuernummer||''},
+      steuern:st,positionen:f.positionen||[],belegId:j.belegId,quelle:'scan-app'});
+    await zeige(a.id,j.hinweise);
+    if(j.quelle!=='zugferd')nachbessern(a.id,j);
+  }catch(e){toast(e.message,true);start();}
+}
+// KI im Hintergrund: Name/Beschreibung/Kategorie; Zahlungsfelder nur, wo noch leer
+async function nachbessern(id,erf){
+  try{
+    const j=await api('erfassen/ki','POST',{zeilen:erf.zeilen,felder:erf.felder});
+    const a=(await api('expenses')).find(x=>x.id===id);if(!a)return;
+    const f=j.felder,L=f.lieferant||{},upd={};
+    if(!a.lieferant&&L.name)upd.lieferant=L.name;
+    if(L.name&&a.lieferant&&!BEARB.has('lieferant')&&!KOPIERT.has('lieferant')&&a.lieferant!==L.name&&a.lieferant.length<4)upd.lieferant=L.name;
+    if(!a.iban&&f.iban)upd.iban=f.iban;
+    if(!a.bic&&f.bic)upd.bic=f.bic;
+    if(!a.nummer&&f.nummer)upd.nummer=f.nummer;
+    if(!a.verwendungszweck&&(f.verwendungszweck||f.nummer))upd.verwendungszweck=f.verwendungszweck||f.nummer;
+    if(!a.betrag&&f.brutto)upd.betrag=f.brutto;
+    if(f.beschreibung)upd.beschreibung=f.beschreibung;
+    if(f.kategorie)upd.kategorie=f.kategorie;
+    if(!Object.keys(upd).length)return;
+    await api('expenses/'+id,'PUT',upd);
+    if(AKTIV===id)zeige(id,j.hinweise,true);
+  }catch(e){/* KI ist Beiwerk — Felder aus Text/OCR bleiben */}
+}
+
+// ---------------------------------------------------------------- Kopieransicht
+let AKTIV=null,KOPIERT=new Set(),BEARB=new Set();
+const FELDER=[['lieferant','Empfänger'],['iban','IBAN'],['bic','BIC'],['betrag','Betrag'],['verwendungszweck','Verwendungszweck']];
+function wert(a,k){
+  if(k==='iban')return String(a.iban||'').replace(/\s/g,'');
+  if(k==='betrag')return a.betrag?Number(a.betrag).toFixed(2).replace('.',','):'';
+  return String(a[k]||'');
+}
+function anzeige(a,k){
+  const w=wert(a,k);if(!w)return '<span class="leer">— nicht erkannt, ✏️ zum Eintragen —</span>';
+  if(k==='iban')return `<span style="font-family:ui-monospace,monospace;font-size:16.5px">${esc(w.replace(/(.{4})/g,'$1 ').trim())}</span>`;
+  if(k==='betrag')return esc(eur(a.betrag));
+  return esc(w);
+}
+async function zeige(id,hinweise,still){
+  const a=(await api('expenses')).find(x=>x.id===id);if(!a){start();return;}
+  if(AKTIV!==id){KOPIERT=new Set();BEARB=new Set();}
+  AKTIV=id;
+  $('#kopfZurueck').hidden=false;
+  const kq='?key='+encodeURIComponent(KEY);
+  $('#m').innerHTML=`
+    ${(hinweise||[]).filter(h=>!/Rechnungsdatum|Rechnungsnummer|USt-Zeile|USt \d/.test(h)).map(h=>`<div class="hinw">⚠️ ${esc(h)}</div>`).join('')}
+    <p style="color:var(--mid);font-size:14px;margin-bottom:12px">Feld antippen = kopiert. Dann in SumUp einfügen und zurückkommen.${a.faellig&&!a.bezahltAm?` Fällig am <b>${dtDE(a.faellig)}</b>.`:''}${a.bezahltAm?' <b style="color:var(--green)">✓ bezahlt am '+dtDE(a.bezahltAm)+'</b>':''}</p>
+    ${FELDER.map(([k,l])=>`<div class="feld ${KOPIERT.has(k)?'ok':''}" id="f_${k}" onclick="kopiere('${k}')">
+      <span style="flex:1;min-width:0"><small>${l}</small><b>${anzeige(a,k)}</b></span>
+      <span class="edit" onclick="event.stopPropagation();bearbeite('${k}')">✏️</span>
+      <span class="ico">${KOPIERT.has(k)?'✅':'📋'}</span></div>`).join('')}
+    ${APP?`<button class="btn s" style="width:100%;margin:4px 0 10px" onclick="APP.appOeffnen('com.kaching.merchant','com.sumup.pay')">↗️ SumUp öffnen</button>`:''}
+    <div class="leiste">
+      ${a.bezahltAm?`<button class="btn s" onclick="bezahlt(false)">Doch nicht bezahlt</button>`:`<button class="btn g" onclick="bezahlt(true)">✓ Überwiesen</button>`}
+      <button class="btn s" style="flex:0 0 auto" onclick="verwerfen()">🗑 Verwerfen</button>
+    </div>
+    ${a.belegId?`<p style="text-align:center;margin-top:16px"><a href="${ROOTP}/api/belege/${a.belegId}${kq}" target="_blank" style="color:var(--acc-d)">🧾 Rechnung ansehen</a></p>`:''}`;
+  window.AKT=a;
+  if(!still)window.scrollTo(0,0);
+}
+function kopiere(k){
+  const w=wert(window.AKT,k);if(!w){bearbeite(k);return;}
+  const fertig=()=>{KOPIERT.add(k);const el=$('#f_'+k);el.classList.add('ok');el.querySelector('.ico').textContent='✅';toast('Kopiert: '+(w.length>34?w.slice(0,34)+'…':w));};
+  if(APP&&APP.kopieren){APP.kopieren(w);fertig();return;}
+  (navigator.clipboard?navigator.clipboard.writeText(w):Promise.reject()).then(fertig).catch(()=>{
+    const t=document.createElement('textarea');t.value=w;t.style.cssText='position:fixed;opacity:0';document.body.appendChild(t);t.select();
+    const ok=document.execCommand('copy');t.remove();ok?fertig():toast('Kopieren nicht möglich',true);});
+}
+async function bearbeite(k){
+  const a=window.AKT,l=FELDER.find(f=>f[0]===k)[1];
+  let v=prompt(l+':',k==='betrag'?wert(a,k):(a[k]||''));
+  if(v===null)return;v=v.trim();
+  const upd={};
+  if(k==='betrag'){const n=parseFloat(v.replace(/\s|€/g,'').replace(/\.(?=\d{3}(\D|$))/g,'').replace(',','.'));if(!Number.isFinite(n)){toast('Betrag nicht lesbar',true);return;}upd.betrag=Math.round(n*100)/100;}
+  else if(k==='iban'||k==='bic')upd[k]=v.replace(/\s/g,'').toUpperCase();
+  else upd[k]=v;
+  BEARB.add(k);KOPIERT.delete(k);
+  try{await api('expenses/'+a.id,'PUT',upd);zeige(a.id,null,true);}catch(e){toast(e.message,true);}
+}
+async function verwerfen(){
+  if(!confirm('Diesen Beleg löschen? (z. B. Fehlschuss oder doppelt gescannt)'))return;
+  try{await api('expenses/'+AKTIV,'DELETE');toast('Gelöscht');start();}catch(e){toast(e.message,true);}
+}
+async function bezahlt(ja){
+  try{await api('expenses/'+AKTIV,'PUT',{bezahltAm:ja?today():''});toast(ja?'Als bezahlt markiert':'Wieder offen');start();}catch(e){toast(e.message,true);}
+}
+start();
+</script>
+</body>
+</html>

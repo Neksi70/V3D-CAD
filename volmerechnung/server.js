@@ -153,7 +153,7 @@ function nextNumber(art) {
 }
 
 // --- HTTP ------------------------------------------------------------------
-const MIME = { '.html': 'text/html; charset=utf-8', '.svg': 'image/svg+xml', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.webmanifest': 'application/manifest+json' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.svg': 'image/svg+xml', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.apk': 'application/vnd.android.package-archive' };
 
 function send(res, code, body, type) {
   const buf = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
@@ -1278,7 +1278,7 @@ try {
   console.warn('Kein TLS-Zertifikat gefunden — starte unverschlüsselt (HTTP):', e.message);
 }
 
-const STATIC_FILES = new Set(['rechnung.html', 'logo.svg', 'manifest.webmanifest']);
+const STATIC_FILES = new Set(['rechnung.html', 'scan.html', 'logo.svg', 'manifest.webmanifest', 'V3D-Beleg.apk']);
 const BASE = '/rechnung'; // öffentlicher Funnel-Pfad; direkt auf :8782 läuft alles weiter unter /
 
 const handler = async (req, res) => {
