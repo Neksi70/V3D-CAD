@@ -153,7 +153,7 @@ function nextNumber(art) {
 }
 
 // --- HTTP ------------------------------------------------------------------
-const MIME = { '.html': 'text/html; charset=utf-8', '.svg': 'image/svg+xml', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.apk': 'application/vnd.android.package-archive' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.svg': 'image/svg+xml', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.apk': 'application/vnd.android.package-archive', '.zip': 'application/zip' };
 
 function send(res, code, body, type) {
   const buf = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
@@ -1278,7 +1278,7 @@ try {
   console.warn('Kein TLS-Zertifikat gefunden — starte unverschlüsselt (HTTP):', e.message);
 }
 
-const STATIC_FILES = new Set(['rechnung.html', 'scan.html', 'logo.svg', 'manifest.webmanifest', 'V3D-Beleg.apk']);
+const STATIC_FILES = new Set(['rechnung.html', 'scan.html', 'logo.svg', 'manifest.webmanifest', 'V3D-Beleg.apk', 'V3D-Beleg.zip']);
 const BASE = '/rechnung'; // öffentlicher Funnel-Pfad; direkt auf :8782 läuft alles weiter unter /
 
 const handler = async (req, res) => {
@@ -1313,6 +1313,16 @@ const handler = async (req, res) => {
     // also auch config.json (adminKey!) und data/ — öffentlich über den Funnel.
     const file = url.pathname === '/' ? 'rechnung.html' : url.pathname.slice(1);
     if (!STATIC_FILES.has(file)) return send(res, 404, 'nicht gefunden', 'text/plain; charset=utf-8');
+    // App-Download: ausdrücklich als Datei (Chrome/Android blockt .apk sonst gern still) —
+    // die ZIP ist der Ausweg, wenn der Browser die APK trotzdem verweigert.
+    if (/\.(apk|zip)$/.test(file)) {
+      const buf = fs.readFileSync(path.join(ROOT, file));
+      res.writeHead(200, {
+        'Content-Type': MIME[path.extname(file)], 'Content-Length': buf.length,
+        'Content-Disposition': `attachment; filename="${file}"`, 'Cache-Control': 'no-store',
+      });
+      return res.end(buf);
+    }
     return send(res, 200, fs.readFileSync(path.join(ROOT, file)), MIME[path.extname(file)] || 'application/octet-stream');
   } catch (e) {
     console.error(e);
