@@ -885,9 +885,20 @@ Positionen:\n${liste.slice(0, 2000)}`;
     fs.writeFileSync(orig, buf);
     try {
       const sc = await py(['scan', orig, belegPfad(bid)]);
-      const { zeilen } = await py(['ocr', belegPfad(bid)]);
-      const felder = felderAusText(zeilen);
-      return send(res, 200, { belegId: bid, zugeschnitten: sc.zugeschnitten, zeilen, felder, hinweise: erfassenHinweise(felder) });
+      // Digitales PDF: eingebettete E-Rechnung (exakt) > Textlayer > Texterkennung (nur Scans)
+      let zeilen = [], zf = null, quelle = 'ocr';
+      if (istPdf) ({ zeilen, zugferd: zf } = await py(['pdftext', orig]));
+      if (zeilen.length) quelle = 'pdftext';
+      else ({ zeilen } = await py(['ocr', belegPfad(bid)]));
+      let felder = felderAusText(zeilen);
+      if (zf) {
+        quelle = 'zugferd';
+        const txt = felder;
+        felder = Object.assign({}, zf, { lieferant: Object.assign({}, txt.lieferant, zf.lieferant) });
+        for (const k of Object.keys(txt)) if (felder[k] == null) felder[k] = txt[k]; // Lücken aus dem Text
+        felder.positionen = zf.positionen || [];
+      }
+      return send(res, 200, { belegId: bid, quelle, zugeschnitten: sc.zugeschnitten, zeilen, felder, hinweise: erfassenHinweise(felder) });
     } catch (e) {
       for (const p of [orig, belegPfad(bid)]) fs.rmSync(p, { force: true });
       return send(res, 500, { error: 'Beleg konnte nicht gelesen werden: ' + e.message });

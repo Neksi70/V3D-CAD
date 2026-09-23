@@ -3,6 +3,7 @@
 
   erfassen.py scan <eingang> <ausgang.jpg>   Foto/PDF -> zugeschnittener, entzerrter Scan (JPEG)
   erfassen.py ocr <bild>                      Texterkennung -> JSON {"zeilen": [...]} auf stdout
+  erfassen.py pdftext <eingang.pdf>          digitales PDF: {"zeilen": [...], "zugferd": {...}|null}
   erfassen.py zugferd <scan> <ausgang.pdf>    stdin: JSON mit Rechnungsdaten -> ZUGFeRD-PDF (EN 16931)
 
 Alles lokal (RapidOCR/ONNX, kein Cloud-Dienst) — Rechnungsdaten verlassen den Server nicht.
@@ -13,6 +14,7 @@ import math
 import os
 import subprocess
 import sys
+import re
 import tempfile
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
@@ -319,12 +321,97 @@ def zugferd(scan_pfad, ausgang):
     print(json.dumps({'ok': True, 'bytes': len(out)}))
 
 
+# --- Digitale PDFs: Textlayer + eingebettete E-Rechnung ----------------------
+def _cii_felder(xml):
+    """Eingebettete ZUGFeRD/Factur-X-Daten (CII) -> Felder wie felderAusText im Server."""
+    from lxml import etree
+    t = etree.fromstring(xml)
+    ns = {'rsm': 'urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100',
+          'ram': 'urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100',
+          'udt': 'urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100'}
+    if t.tag != '{%s}CrossIndustryInvoice' % ns['rsm']:
+        return None
+
+    def txt(pfad, basis=t):
+        e = basis.find(pfad, ns)
+        return e.text.strip() if e is not None and e.text else None
+
+    def dat(pfad):
+        v = txt(pfad)
+        return f'{v[:4]}-{v[4:6]}-{v[6:8]}' if v and len(v) >= 8 and v[:8].isdigit() else None
+
+    def num(v):
+        try:
+            return round(float(v), 2)
+        except (TypeError, ValueError):
+            return None
+    tr = './/rsm:SupplyChainTradeTransaction/'
+    sel = t.find(tr + 'ram:ApplicableHeaderTradeAgreement/ram:SellerTradeParty', ns)
+    st = tr + 'ram:ApplicableHeaderTradeSettlement/'
+    L = {}
+    if sel is not None:
+        L = {'name': txt('ram:Name', sel), 'strasse': txt('ram:PostalTradeAddress/ram:LineOne', sel),
+             'plz': txt('ram:PostalTradeAddress/ram:PostcodeCode', sel), 'ort': txt('ram:PostalTradeAddress/ram:CityName', sel)}
+        for reg in sel.findall('ram:SpecifiedTaxRegistration/ram:ID', ns):
+            L['ustId' if reg.get('schemeID') == 'VA' else 'steuernummer'] = (reg.text or '').strip()
+    steuern = []
+    for g in t.findall(st + 'ram:ApplicableTradeTax', ns):
+        steuern.append({'satz': num(txt('ram:RateApplicablePercent', g)) or 0,
+                        'netto': num(txt('ram:BasisAmount', g)), 'ust': num(txt('ram:CalculatedAmount', g))})
+    summe = st + 'ram:SpecifiedTradeSettlementHeaderMonetarySummation/'
+    pos = []
+    for li in t.findall(tr + 'ram:IncludedSupplyChainTradeLineItem', ns):
+        pos.append({'name': txt('ram:SpecifiedTradeProduct/ram:Name', li) or 'Position',
+                    'menge': num(txt('ram:SpecifiedLineTradeDelivery/ram:BilledQuantity', li)) or 1,
+                    'preis': num(txt('ram:SpecifiedLineTradeAgreement/ram:NetPriceProductTradePrice/ram:ChargeAmount', li)) or 0,
+                    'satz': num(txt('ram:SpecifiedLineTradeSettlement/ram:ApplicableTradeTax/ram:RateApplicablePercent', li)) or 0})
+    return {
+        'lieferant': {k: v for k, v in L.items() if v},
+        'nummer': txt('rsm:ExchangedDocument/ram:ID'),
+        'datum': dat('rsm:ExchangedDocument/ram:IssueDateTime/udt:DateTimeString'),
+        'lieferdatum': dat(tr + 'ram:ApplicableHeaderTradeDelivery/ram:ActualDeliverySupplyChainEvent/ram:OccurrenceDateTime/udt:DateTimeString'),
+        'faellig': dat(st + 'ram:SpecifiedTradePaymentTerms/ram:DueDateDateTime/udt:DateTimeString'),
+        'iban': (txt(st + 'ram:SpecifiedTradeSettlementPaymentMeans/ram:PayeePartyCreditorFinancialAccount/ram:IBANID') or '').replace(' ', '').upper() or None,
+        'bic': txt(st + 'ram:SpecifiedTradeSettlementPaymentMeans/ram:PayeeSpecifiedCreditorFinancialInstitution/ram:BICID'),
+        'verwendungszweck': txt(st + 'ram:PaymentReference'),
+        'kundennr': txt(tr + 'ram:ApplicableHeaderTradeAgreement/ram:BuyerTradeParty/ram:ID'),
+        # zu zahlen = DuePayable (berücksichtigt Anzahlungen), sonst Gesamtbetrag
+        'brutto': num(txt(summe + 'ram:DuePayableAmount')) if txt(summe + 'ram:DuePayableAmount') else num(txt(summe + 'ram:GrandTotalAmount')),
+        'steuern': steuern,
+        'positionen': pos,
+    }
+
+
+def pdftext(pfad):
+    r = subprocess.run(['pdftotext', '-layout', '-f', '1', '-l', '3', pfad, '-'], capture_output=True, timeout=60)
+    zeilen = []
+    for z in r.stdout.decode('utf-8', 'replace').splitlines():
+        z = z.strip()
+        if z:
+            zeilen.append(re.sub(r' {3,}', '   ', z))
+    # zu wenig Text = gescanntes PDF -> Server nimmt die Texterkennung
+    if sum(len(z) for z in zeilen) < 80:
+        zeilen = []
+    zf = None
+    try:
+        from facturx import get_xml_from_pdf
+        with open(pfad, 'rb') as f:
+            _, xml = get_xml_from_pdf(f.read(), check_xsd=False)
+        if xml:
+            zf = _cii_felder(xml)
+    except Exception:
+        zf = None
+    print(json.dumps({'zeilen': zeilen, 'zugferd': zf}, ensure_ascii=False))
+
+
 if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else ''
     if cmd == 'scan':
         scan(sys.argv[2], sys.argv[3])
     elif cmd == 'ocr':
         ocr(sys.argv[2])
+    elif cmd == 'pdftext':
+        pdftext(sys.argv[2])
     elif cmd == 'zugferd':
         zugferd(sys.argv[2], sys.argv[3])
     elif cmd == 'xml':  # nur zum Testen: XML auf stdout
