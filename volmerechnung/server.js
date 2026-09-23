@@ -167,7 +167,11 @@ function calcTotals(doc) {
     const satz = settings.data.steuer.modus === 'klein' ? 0 : (Number(p.ust) || 0);
     ust[satz] = (ust[satz] || 0) + zeile * satz / 100;
   }
-  const rabatt = netto * (Number(doc.rabattProzent) || 0) / 100;
+  // Beleg-Rabatt: Prozent (rabattProzent, Altbestand) ODER fester Betrag (rabattArt 'betrag').
+  // Die USt wird unten anteilig auf den Betrag nach Rabatt umgerechnet.
+  const rabatt = doc.rabattArt === 'betrag'
+    ? Math.min(Math.max(Number(doc.rabattBetrag) || 0, 0), Math.max(netto, 0))
+    : netto * (Number(doc.rabattProzent) || 0) / 100;
   const nettoNachRabatt = netto - rabatt;
   let ustSumme = 0;
   for (const satz of Object.keys(ust)) {
@@ -175,6 +179,12 @@ function calcTotals(doc) {
     ustSumme += ust[satz];
   }
   return { netto, rabatt, nettoNachRabatt, ust, brutto: nettoNachRabatt + ustSumme };
+}
+
+// Bezeichnung der Rabattzeile: frei wählbar, Prozent wird angehängt
+function rabattLabel(doc) {
+  const txt = String(doc.rabattText || '').trim() || (doc.rabattArt === 'betrag' ? 'Partnerrabatt' : 'Rabatt');
+  return doc.rabattArt === 'betrag' ? txt : `${txt} (${doc.rabattProzent} %)`;
 }
 
 // --- GiroCode-SVG (EPC069-12 Version 002) -----------------------------------
@@ -273,6 +283,7 @@ td{padding:8px;border-bottom:1px solid #eceef4;vertical-align:top;font-size:14px
 .txt td{color:#555;font-size:13px}
 .sums{margin-left:auto;max-width:300px}
 .sums div{display:flex;justify-content:space-between;padding:2px 0;font-size:14.5px}
+.sums .rab{color:#15803d}
 .sums .end{border-top:2px solid #1c2030;font-weight:700;font-size:17px;margin-top:4px;padding-top:6px;color:#EA6000}
 .hin{font-size:13px;color:#555;margin:12px 0;padding:10px 12px;background:#fff8f2;border:1px solid #ffe4cc;border-radius:10px}
 .giro{display:flex;gap:14px;align-items:center;margin:12px 0;padding:12px;background:#fafbfd;border:1px solid #e3e6ef;border-radius:10px}
@@ -291,8 +302,9 @@ td{padding:8px;border-bottom:1px solid #eceef4;vertical-align:top;font-size:14px
 <div class="meta">für ${hesc(k.firma || k.name || '')} · Datum: ${new Date(doc.datum).toLocaleDateString('de-DE')} · ${re ? 'zahlbar bis' : 'gültig bis'}: <b>${zielStr}</b></div>
 <div class="tbl"><table><tr><th style="width:30px">Pos.</th><th>Leistung</th><th class="n">Menge</th><th class="n">Einzelpreis</th><th class="n">Gesamt</th></tr>${zeilen}</table></div>
 <div class="sums">
-<div><span>Nettobetrag</span><b>${eurS(t.netto)}</b></div>
-${t.rabatt ? `<div><span>Rabatt (${doc.rabattProzent} %)</span><b>−${eurS(t.rabatt)}</b></div>` : ''}
+<div><span>${t.rabatt ? 'Summe der Leistungen' : 'Nettobetrag'}</span><b>${eurS(t.netto)}</b></div>
+${t.rabatt ? `<div class="rab"><span>${hesc(rabattLabel(doc))}</span><b>−${eurS(t.rabatt)}</b></div>
+<div><span>Nettobetrag</span><b>${eurS(t.nettoNachRabatt)}</b></div>` : ''}
 ${ustZeilen}
 <div class="end"><span>${re ? 'Rechnungsbetrag' : 'Gesamtbetrag'}</span><span>${eurS(t.brutto)}</span></div>
 </div>
@@ -358,7 +370,7 @@ function xrechnungXml(doc) {
 
   const rabattXml = t.rabatt > 0 ? `<cac:AllowanceCharge>
     <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
-    <cbc:AllowanceChargeReason>Rabatt</cbc:AllowanceChargeReason>
+    <cbc:AllowanceChargeReason>${xesc(String(doc.rabattText || '').trim() || 'Rabatt')}</cbc:AllowanceChargeReason>
     <cbc:Amount currencyID="EUR">${geld(t.rabatt)}</cbc:Amount>
     <cac:TaxCategory><cbc:ID>${catId}</cbc:ID><cbc:Percent>${klein ? '0.00' : '19.00'}</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory>
   </cac:AllowanceCharge>` : '';
@@ -1097,7 +1109,8 @@ Positionen:\n${liste.slice(0, 2000)}`;
             id: id(), created: now(), art: 'rechnung', status: 'entwurf', nummer: null,
             festgeschrieben: false, mahnstufe: 0, kundeId: doc.kundeId, kunde: doc.kunde,
             positionen: JSON.parse(JSON.stringify(doc.positionen || [])),
-            rabattProzent: doc.rabattProzent || 0, quelleAngebot: doc.nummer || doc.id,
+            rabattProzent: doc.rabattProzent || 0, rabattArt: doc.rabattArt, rabattBetrag: doc.rabattBetrag, rabattText: doc.rabattText,
+            quelleAngebot: doc.nummer || doc.id,
             datum: now().slice(0, 10),
           };
           docs.data.push(re);
@@ -1110,7 +1123,8 @@ Positionen:\n${liste.slice(0, 2000)}`;
             id: id(), created: now(), art: doc.art, status: 'entwurf', nummer: null,
             festgeschrieben: false, mahnstufe: 0, kundeId: doc.kundeId, kunde: doc.kunde,
             positionen: JSON.parse(JSON.stringify(doc.positionen || [])),
-            rabattProzent: doc.rabattProzent || 0, zahlungszielTage: doc.zahlungszielTage,
+            rabattProzent: doc.rabattProzent || 0, rabattArt: doc.rabattArt, rabattBetrag: doc.rabattBetrag, rabattText: doc.rabattText,
+            zahlungszielTage: doc.zahlungszielTage,
             leitwegId: doc.leitwegId, datum: now().slice(0, 10),
           };
           docs.data.push(kopie); docs.save();

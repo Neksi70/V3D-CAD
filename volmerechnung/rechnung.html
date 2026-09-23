@@ -78,6 +78,7 @@ table.list tr.click{cursor:pointer}
 .pos-table input,.pos-table select{padding:6px 8px}
 .totals{margin-left:auto;width:300px;margin-top:14px}
 .totals div{display:flex;justify-content:space-between;padding:3px 0}
+.totals .rab{color:#15803d}
 .totals .sum{border-top:2px solid var(--text);font-weight:700;font-size:17px;margin-top:4px;padding-top:6px}
 
 /* Tablet (bis 1000px): schmalere Seitenleiste, engere Abstände */
@@ -187,6 +188,7 @@ table.list tr.click{cursor:pointer}
 .sheet table.pos .beschr{font-size:9pt;color:#666;white-space:pre-wrap}
 .sheet .sumBlock{margin-left:auto;width:70mm;margin-bottom:6mm}
 .sheet .sumBlock div{display:flex;justify-content:space-between;padding:.7mm 0}
+.sheet .sumBlock .rab{color:#15803d}
 .sheet .sumBlock .endsum{border-top:1.2pt solid #1c2030;font-weight:700;font-size:12pt;margin-top:1mm;padding-top:1.5mm;color:var(--acc-d)}
 .sheet .hinweis{font-size:9pt;color:#555;margin-bottom:4mm;white-space:pre-wrap}
 .sheet .schluss{margin-top:2mm;white-space:pre-wrap}
@@ -332,10 +334,15 @@ function calcTotals(doc){
     const satz=S.settings.steuer.modus==='klein'?0:(Number(p.ust)||0);
     ust[satz]=(ust[satz]||0)+zeile*satz/100;
   }
-  const rabatt=netto*(Number(doc.rabattProzent)||0)/100;
+  // wie server.js: Prozent (Altbestand) oder fester Betrag
+  const rabatt=doc.rabattArt==='betrag'?Math.min(Math.max(Number(doc.rabattBetrag)||0,0),Math.max(netto,0)):netto*(Number(doc.rabattProzent)||0)/100;
   const nn=netto-rabatt;let us=0;
   for(const k of Object.keys(ust)){ust[k]=ust[k]*(netto?nn/netto:1);us+=ust[k];}
   return {netto,rabatt,nettoNachRabatt:nn,ust,brutto:nn+us};
+}
+function rabattLabel(d){
+  const txt=String(d.rabattText||'').trim()||(d.rabattArt==='betrag'?'Partnerrabatt':'Rabatt');
+  return d.rabattArt==='betrag'?txt:`${txt} (${d.rabattProzent} %)`;
 }
 function kundeName(d){return d.kunde?(d.kunde.firma||d.kunde.name||'—'):'—';}
 
@@ -463,11 +470,15 @@ function edMovePos(i,dir){
   const j=i+dir;if(j<0||j>=editDoc.positionen.length)return;
   const a=editDoc.positionen;[a[i],a[j]]=[a[j],a[i]];render();
 }
+function edRabattArt(v){editDoc.rabattArt=v;if(v==='betrag')editDoc.rabattProzent=0;else editDoc.rabattBetrag=0;
+  if(!editDoc.rabattText)editDoc.rabattText='Partnerrabatt';render();}
+function edRabattWert(v){const n=Math.max(parseFloat(String(v).replace(',','.'))||0,0);
+  if(editDoc.rabattArt==='betrag')editDoc.rabattBetrag=n;else editDoc.rabattProzent=n;renderTotalsOnly();}
 function renderTotalsOnly(){const t=$('#edTotals');if(t)t.innerHTML=totalsHtml(editDoc);}
 function totalsHtml(d){
   const t=calcTotals(d);const klein=S.settings.steuer.modus==='klein';
-  return `<div><span>Netto</span><b>${eur(t.netto)}</b></div>
-  ${t.rabatt?`<div><span>Rabatt (${d.rabattProzent} %)</span><b>−${eur(t.rabatt)}</b></div>`:''}
+  return `<div><span>${t.rabatt?'Summe der Leistungen':'Netto'}</span><b>${eur(t.netto)}</b></div>
+  ${t.rabatt?`<div class="rab"><span>${esc(rabattLabel(d))}</span><b>−${eur(t.rabatt)}</b></div><div><span>Nettobetrag</span><b>${eur(t.nettoNachRabatt)}</b></div>`:''}
   ${klein?'':Object.entries(t.ust).map(([s,v])=>`<div><span>USt ${s} %</span><b>${eur(v)}</b></div>`).join('')}
   <div class="sum"><span>Gesamt</span><b>${eur(t.brutto)}</b></div>
   ${klein?'<div style="color:var(--dim);font-size:12px">Kleinunternehmer — keine USt (§ 19 UStG)</div>':''}`;
@@ -537,7 +548,14 @@ function renderEditor(m){
       <button class="btn sm sec" onclick="kalkOpen()">🖨️ 3D-Druck kalkulieren</button>
     </div>`}
     <div style="display:flex;gap:20px;align-items:flex-start">
-      <div style="flex:1"><label>Rabatt (%)</label><input style="width:110px" type="number" value="${d.rabattProzent||0}" ${fest?'disabled':''} onchange="edSet('rabattProzent',parseFloat(this.value)||0);renderTotalsOnly()"></div>
+      <div style="flex:1"><label>Rabatt auf die Summe</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <select style="width:auto" ${fest?'disabled':''} onchange="edRabattArt(this.value)">
+            <option value="prozent" ${d.rabattArt!=='betrag'?'selected':''}>in %</option>
+            <option value="betrag" ${d.rabattArt==='betrag'?'selected':''}>fester Betrag €</option></select>
+          <input style="width:110px" value="${d.rabattArt==='betrag'?(d.rabattBetrag||0):(d.rabattProzent||0)}" ${fest?'disabled':''} onchange="edRabattWert(this.value)">
+          <input style="width:180px" value="${esc(d.rabattText||'')}" placeholder="Bezeichnung (Partnerrabatt)" ${fest?'disabled':''} onchange="edSet('rabattText',this.value.trim());renderTotalsOnly()">
+        </div></div>
       <div class="totals" id="edTotals">${totalsHtml(d)}</div>
     </div>
   </div>
@@ -1343,8 +1361,8 @@ function sheetHtml(d,mahnung,girocode){
     </tr>`;}).join('');})()}
   </table>
   <div class="sumBlock">
-    <div><span>Nettobetrag</span><span>${eur(t.netto)}</span></div>
-    ${t.rabatt?`<div><span>Rabatt (${d.rabattProzent} %)</span><span>−${eur(t.rabatt)}</span></div>`:''}
+    <div><span>${t.rabatt?'Summe der Leistungen':'Nettobetrag'}</span><span>${eur(t.netto)}</span></div>
+    ${t.rabatt?`<div class="rab"><span>${esc(rabattLabel(d))}</span><span>−${eur(t.rabatt)}</span></div><div><span>Nettobetrag</span><span>${eur(t.nettoNachRabatt)}</span></div>`:''}
     ${klein?'':Object.entries(t.ust).map(([sz,v])=>`<div><span>zzgl. ${sz} % USt</span><span>${eur(v)}</span></div>`).join('')}
     <div class="endsum"><span>${re?'Rechnungsbetrag':'Gesamtbetrag'}</span><span>${eur(t.brutto)}</span></div>
   </div>`}
