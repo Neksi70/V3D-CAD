@@ -43,12 +43,34 @@ async function build() {
     matches.push({ full: m[0], attrs: m[1], code: m[2], index: m.index });
   }
 
-  for (const match of matches) {
+  for (let match of matches) {
     parts.push(html.slice(lastIndex, match.index));
     lastIndex = match.index + match.full.length;
 
     blocks++;
-    const hasSrc = /\bsrc\s*=/.test(match.attrs);
+    let hasSrc = /\bsrc\s*=/.test(match.attrs);
+
+    // Ausgewaehlte lokale Dateien werden EINGEBETTET statt verlinkt: die
+    // Auslieferung soll eine einzige Datei bleiben. Nur was hier steht —
+    // lib/three.min.js & Co. bleiben absichtlich draussen, die sind gross
+    // und aendern sich nie.
+    const EINBETTEN = ['cam-kern.js'];
+    if (hasSrc) {
+      const m2 = /\bsrc\s*=\s*["']([^"']+)["']/.exec(match.attrs);
+      const datei = m2 && m2[1];
+      if (datei && EINBETTEN.includes(datei)) {
+        const pfad = path.join(path.dirname(SRC), datei);
+        if (!fs.existsSync(pfad)) {
+          errors++;
+          console.error(`  \u2717 ${datei} fehlt \u2014 kann nicht eingebettet werden`);
+          parts.push(match.full);
+          continue;
+        }
+        match = { ...match, attrs: '', code: fs.readFileSync(pfad, 'utf8') };
+        hasSrc = false;
+        console.log(`  \u2192 ${datei} eingebettet (${(match.code.length / 1024).toFixed(0)} KB)`);
+      }
+    }
     const isModule = /\btype\s*=\s*["']module["']/.test(match.attrs);
 
     if (hasSrc || match.code.trim() === '') {

@@ -5490,6 +5490,7 @@ Patrick</textarea>
 <script src="lib/GLTFLoader.js"></script>
 <script src="lib/SVGLoader.js"></script>
 <script src="lib/BufferGeometryUtils.js"></script>
+<script src="cam-kern.js"></script>
 <script src="lib/fflate.min.js"></script>
 <script src="lib/SimplifyModifier.js"></script>
 <script src="lib/qrcode.min.js"></script>
@@ -15242,6 +15243,7 @@ function buildObjectFromData(data) {
   if (data._hollowFlip) obj.userData._hollowFlip = true;
   if (data.varExprs) obj.userData.varExprs = { ...data.varExprs };
   if (data.opJournal) obj.userData.opJournal = data.opJournal;
+  if (data.bausatz) obj.userData.bausatz = data.bausatz;
   if (data.tubePoly)  obj.userData.tubePoly  = true;
   if (data.tubeTwist) obj.userData.tubeTwist = data.tubeTwist;
   if (data.tubeFloor) obj.userData.tubeFloor = true;
@@ -15556,6 +15558,7 @@ function objectToData(o, modus) {
   // Mehrfarb-Bemalung: Farben stecken im Geometrie-Attribut, hier nur Flag+Palette
   if (o.userData._mmuPaint) { d._mmuPaint = 1; d._mmuBase = o.userData._mmuBase; d._mmuSlots = o.userData._mmuSlots; }
   if (o.userData._hollowFlip)  d._hollowFlip = true;
+  if (o.userData.bausatz)      d.bausatz = o.userData.bausatz;   // Rahmen kennt seine Originale (Teile freigeben)
   if (o.userData.displacementPattern && o.userData.displacementPattern !== 'keine') {
     d.displacementPattern   = o.userData.displacementPattern;
     d.displacementAmp       = o.userData.displacementAmp;
@@ -19304,16 +19307,24 @@ function _sprOuterPath(W, D, R, rc) {
 // Anguss entlang Achse a (0 = x, 1 = y) an der Querlage c: vom Stab (s0, Mitte)
 // zum Teil (s1, schon inkl. Eindringtiefe). Am Stab breit, vorm Teil auf gateT
 // verjüngt, die letzten neckL mm gleich dünn — dort knipst man ab.
-function _sprGate(M, a, c, s0, s1, opt) {
+// zc > 0: Kontaktstelle liegt höher (schräges Teil) — dann steht der Anguss
+// als Keil auf dem Bett, die Sollbruchstelle sitzt oben in Höhe zc.
+function _sprGate(M, a, c, s0, s1, opt, zc = 0) {
   const sg = Math.sign(s1 - s0), t = opt.gateT;
   const w0 = Math.max(1.6, t * 1.7), h0 = Math.min(opt.runH * 0.85, t + 0.9);
   const sN = s1 - sg * (_SPR.pen + _SPR.neckL);
-  const P = (s, w, h) => {
+  const P = (s, w, h, zu = 0) => {
     const out = [];
-    for (const q of [-w / 2, w / 2]) for (const z of [0, h]) out.push(a === 0 ? [s, c + q, z] : [c + q, s, z]);
+    for (const q of [-w / 2, w / 2]) for (const z of [zu, h]) out.push(a === 0 ? [s, c + q, z] : [c + q, s, z]);
     return out;
   };
   const res = [];
+  if (zc > t) {
+    const zu = zc - t / 2, zo = zc + t / 2;
+    res.push(M.hull([...P(s0, w0, h0), ...P(sN, t, zo)]));
+    res.push(M.hull([...P(sN, t, zo, zu), ...P(s1, t, zo, zu)]));
+    return res;
+  }
   if ((sN - s0) * sg > 0.3) res.push(M.hull([...P(s0, w0, h0), ...P(sN, t, t)]));
   res.push(M.hull([...P(sN, t, t), ...P(s1, t, t)]));
   return res;
@@ -19351,16 +19362,43 @@ function _sprRay(seg, a, c, s0, sign) {
   return best;
 }
 // Kontaktstelle auf einer Seite suchen: kurzer Anguss, aber lieber mittig
-function _sprContact(seg, side, avoid) {
+function _sprContact(seg, side, avoid, band = 0.6, n = 4) {
   const mid = (side.lo + side.hi) / 2, half = (side.hi - side.lo) / 2;
   let best = null;
-  for (let k = -4; k <= 4; k++) {
-    const c = mid + (k / 4) * half * 0.6 + 0.0137;
+  for (let k = -n; k <= n; k++) {
+    const c = mid + (k / n) * half * band + 0.0137;
     if (avoid && c > avoid[0] && c < avoid[1]) continue;
     const d = _sprRay(seg, side.a, c, side.s0, side.sign);
     if (!Number.isFinite(d)) continue;
     const score = d + 0.08 * Math.abs(c - mid);
     if (!best || score < best.score) best = { c, d, score };
+  }
+  return best;
+}
+// Anguss-Stelle je Seite. Zuerst flach am Bett, mittig, dann über die ganze
+// Seite. Ein schräg gestellter Teil (Ralfs Deckel, 24.9.26) berührt das Bett
+// nur an einer Kante oder Ecke — flach findet sich dann nichts oder nur ein
+// langer Anguss quer unter dem Teil durch. Dann höher ansetzen: Der Anguss
+// wird ein Keil, der auf dem Bett steht und das Teil in Höhe z trifft.
+// nah: Abstand Stabmitte → Bbox-Kante, bis zu dem ein Anguss als kurz gilt.
+function _sprFindGate(schnitt, s, t, h, nah) {
+  let flach = null;
+  for (const [band, n] of [[0.6, 4], [0.97, 16]]) {
+    for (const f of [0.5, 0.25, 0.8]) {
+      const k = _sprContact(schnitt(t * f + 0.0071), s, s.avoid, band, n);
+      if (k) { flach = { c: k.c, d: k.d, z: 0, score: k.d }; break; }
+    }
+    if (flach) break;
+  }
+  if (flach && flach.d <= nah + 10) return flach;
+  let best = flach;
+  const zMax = Math.min(h - t / 2, 40), dz = Math.max(0.5, zMax / 40);
+  for (let z = t * 1.5; z <= zMax + 1e-6; z += dz) {
+    const k = _sprContact(schnitt(z + 0.0071), s, s.avoid, 0.97, 16);
+    if (!k) continue;
+    const score = k.d + 2 * z;             // hohe Keile nur, wenn's deutlich kürzer wird
+    if (!best || score < best.score) best = { c: k.c, d: k.d, z, score };
+    if (k.d <= nah) break;                 // höher wird's nur noch teurer
   }
   return best;
 }
@@ -19546,7 +19584,37 @@ function _sprInfo() {
     L.zuGross.map(i => sizes[i].name).join(', ') + '</span>';
   document.getElementById('spr-est').innerHTML = h;
 }
+// Fertiger Rahmen gewählt → Teile wieder freigeben: alle Rahmen desselben
+// Laufs (A, B, …) verschwinden, die Originale kommen unverändert zurück und
+// sind gewählt. Lage korrigieren, noch einmal 🛩️ — fertig (Ralf, 24.9.26).
+function _sprRahmenSel() {
+  const sel = (selectedObjs || []).filter(o => o && o.visible !== false);
+  return sel.length && sel.every(o => o.userData && o.userData.bausatz) ? sel : null;
+}
+function _sprRelease(frames) {
+  const saetze = new Set(frames.map(f => f.userData.bausatz.satz).filter(Boolean));
+  const alle = objects.filter(o => frames.includes(o) ||
+    (o.userData && o.userData.bausatz && saetze.has(o.userData.bausatz.satz)));
+  const ids = new Set();
+  for (const f of alle) for (const id of (f.userData.bausatz.quellen || [])) ids.add(id);
+  const quellen = objects.filter(o => o.userData && ids.has(o.userData.id) && !o.userData.bausatz);
+  if (!quellen.length) {
+    notify('Zu diesem Rahmen sind keine Originale mehr da (Rahmen aus einer älteren Version oder Originale gelöscht). ' +
+           'Ausgeblendete Teile findest du in der Objektliste.', 'w');
+    return false;
+  }
+  saveUndo();
+  for (const f of alle) { scene.remove(f); objects = objects.filter(x => x !== f); }
+  for (const o of quellen) { o.visible = true; o.userData.hidden = false; }
+  _sprPrepCache = null;
+  selectObjs(quellen); updateTree(); fitToObjects(quellen);
+  notify('Teile freigegeben ✓ — ' + quellen.length + ' Objekt' + (quellen.length !== 1 ? 'e' : '') +
+         ' wieder da und gewählt, Rahmen entfernt. Lage korrigieren, dann nochmal 🛩️ Bausatz-Rahmen.', 'ok');
+  return true;
+}
 function _sprOpen() {
+  const rahmen = _sprRahmenSel();
+  if (rahmen) { _sprRelease(rahmen); return; }
   const objs = _sprObjs();
   if (!objs.length) {
     notify('Bitte zuerst alle Teile auswählen, die in den Bausatz-Rahmen sollen (Umschalt+Klick oder Strg+A)', 'w');
@@ -19613,6 +19681,8 @@ async function _sprCreate() {
     const plaene = [], neu = [], ohneAnguss = [], lose = [];
     const breiteGesamt = L.frames.reduce((s, fr) => s + fr.W + L.tagD, 0) + 20 * (L.frames.length - 1);
     let xOff = -breiteGesamt / 2;
+    // Rahmen merkt sich seine Originale — „Teile freigeben" holt sie zurück
+    const satz = Date.now().toString(36), quellen = objs.map(o => o.userData.id);
     saveUndo();
     for (let fi = 0; fi < L.frames.length; fi++) {
       const fr = L.frames[fi], buchstabe = String.fromCharCode(65 + fi);
@@ -19673,13 +19743,10 @@ async function _sprCreate() {
         const schnitt = zc => { if (!schnitte.has(zc)) schnitte.set(zc, _sprSlice(t, zc)); return schnitte.get(zc); };
         let angebunden = 0;
         for (const s of seiten) {
-          let k = null;
-          // Erst mittig in der Anguss-Höhe schneiden; trifft das nichts (Teil
-          // steht dort nur auf einem Rand), tiefer und höher versuchen.
-          for (const f of [0.5, 0.25, 0.8]) { k = _sprContact(schnitt(opt.gateT * f + 0.0071), s, s.avoid); if (k) break; }
+          const k = _sprFindGate(schnitt, s, opt.gateT, it.h, L.gap + R / 2 + 3);
           if (!k) continue;
           const s1 = s.s0 + s.sign * (k.d + _SPR.pen);
-          for (const g of _sprGate(M, s.a, k.c, s.s0, s1, opt)) pieces.push(keep(g));
+          for (const g of _sprGate(M, s.a, k.c, s.s0, s1, opt, k.z)) pieces.push(keep(g));
           plan.gates.push(s.a === 0 ? [s.s0, k.c, s1, k.c] : [k.c, s.s0, k.c, s1]);
           angebunden++;
         }
@@ -19733,7 +19800,7 @@ async function _sprCreate() {
       xOff += fr.W + L.tagD + 20;
       _moldNormals(geo);
       const mesh = _moldSceneMesh(geo, 'Bausatz-' + plan.name + ' — ' + hier.length + ' Teil' + (hier.length !== 1 ? 'e' : ''));
-      mesh.userData.bausatz = { rahmen: multi ? buchstabe : '', teile: hier.map(i => ({ nr: items[i].label, name: items[i].name })) };
+      mesh.userData.bausatz = { satz, quellen, rahmen: multi ? buchstabe : '', teile: hier.map(i => ({ nr: items[i].label, name: items[i].name })) };
       neu.push(mesh);
       plaene.push(plan);
     }
@@ -19750,9 +19817,9 @@ async function _sprCreate() {
     notify('Bausatz-Rahmen erzeugt ✓ — ' + items.length + ' Teile, ' +
       (multi ? L.frames.length + ' Rahmen (' + L.frames.map((fr, k) => String.fromCharCode(65 + k) + ' ' + fmt(fr.W + L.tagD) + '×' + fmt(fr.D)).join(', ') + ' mm)'
              : '1 Rahmen ' + fmt(L.frames[0].W + L.tagD) + ' × ' + fmt(L.frames[0].D) + ' mm') +
-      '. Die Originale sind nur ausgeblendet.', 'ok');
+      '. Die Originale sind nur ausgeblendet — Rahmen wählen und 🛩️ Bausatz-Rahmen gibt sie wieder frei.', 'ok');
     if (ohneAnguss.length) notify('Kein Anguss möglich bei: ' + ohneAnguss.join(', ') +
-      ' — das Teil berührt das Druckbett unten kaum. Erst mit ⬓ Fläche unten auf eine flache Seite legen.', 'w');
+      ' — von den Seiten ist das Teil nicht erreichbar. Mit „4 Angüsse" versuchen oder mit ⬓ Fläche unten anders hinlegen.', 'w');
     if (lose.length) notify('Nicht wasserdicht, darum nur überlappend angesetzt: ' + lose.join(', ') +
       '. Beim Drucken hält es trotzdem (der Slicer vereint überlappende Teile).', 'w');
     if (L.zuGross.length) notify('Mindestens ein Teil ist größer als das Druckbett — der Rahmen passt so nicht drauf.', 'w');
@@ -47385,191 +47452,22 @@ const _CNC_U2MM = 10;                 // 1 Skizzen-Unit = 10 mm
 //           liegt die Umschlingung bei 100 %.
 //   aeF   – Bahnabstand beim Taschen-Ausräumen, ebenfalls × Durchmesser
 //   tauch – Eintauchvorschub als Anteil des XY-Vorschubs
-// Maschinen. Was sich unterscheidet, ist nicht nur der Dialekt: eine
-// Robodrill steht auf Guss, hat Kühlmittel und Werkzeugwechsler, ein
-// Hobbyportal hat nichts davon. Darum entscheidet die Maschine auch, wie
-// tief in Metall zugestellt werden darf.
-//   nMin/nMax – Drehzahlbereich der Spindel (nMax ist im Fenster änderbar)
-//   eil       – Eilganggeschwindigkeit, nur für die Zeitschätzung
-//   vfMax     – Deckel für den Bahnvorschub
-const _CNC_MASCHINE = {
-  grbl:  { n:'GRBL-Portal',      post:'grbl',  nMin:5000, nMax:24000, eil:3000,  vfMax:3000,  kuehl:false },
-  fanuc: { n:'Fanuc / Robodrill',post:'fanuc', nMin:100,  nMax:10000, eil:48000, vfMax:10000, kuehl:true  },
-};
 
-// Materialien. Statt einer festen Drehzahl steht hier die
-// SCHNITTGESCHWINDIGKEIT vc in m/min — daraus wird n = vc·1000/(π·D).
-// Eine feste Drehzahl gilt immer nur für einen Durchmesser; vc gilt für
-// alle. Genauso ist fz (Span je Zahn) auf Ø6 bezogen und wird skaliert.
-//   apF   – Zustellung je Durchgang × Durchmesser auf einer STEIFEN Maschine
-//   apHob – dasselbe auf einem Hobbyportal; 0 heißt „geht dort nicht"
-//   aeF   – Bahnabstand beim Taschen-Ausräumen × Durchmesser
-//   kuehl – 1 = will Kühlmittel, wenn die Maschine welches hat
-//   vcB   – Schnittgeschwindigkeit beim BOHREN. Ein Bohrer ist kein Fräser:
-//           in der Mitte schneidet er mit vc≈0, räumt schlecht aus und läuft
-//           darum viel langsamer. Ø5 in Alu will ~4500 min⁻¹, nicht 10.000.
-//   fU    – Bohrvorschub je UMDREHUNG (nicht je Zahn), bezogen auf Ø6
-//   peckF – Abstichtiefe × Durchmesser beim Entspanen
-const _CNC_MAT = {
-  sperrholz: { n:'Sperrholz',  vc:330, fz:0.070, apF:0.70, apHob:0.70, aeF:0.45, tauch:0.33, kuehl:0 , vcB:90, fU:0.2, peckF:3 },
-  mdf:       { n:'MDF',        vc:330, fz:0.090, apF:0.60, apHob:0.60, aeF:0.45, tauch:0.33, kuehl:0 , vcB:90, fU:0.2, peckF:3 },
-  hartholz:  { n:'Hartholz',   vc:300, fz:0.055, apF:0.40, apHob:0.40, aeF:0.40, tauch:0.30, kuehl:0 , vcB:70, fU:0.15, peckF:2.5 },
-  acryl:     { n:'Acryl',      vc:250, fz:0.060, apF:0.35, apHob:0.35, aeF:0.40, tauch:0.30, kuehl:0 , vcB:60, fU:0.1, peckF:2 },
-  kunst:     { n:'POM / PA',   vc:400, fz:0.080, apF:0.50, apHob:0.50, aeF:0.45, tauch:0.35, kuehl:0 , vcB:90, fU:0.18, peckF:3 },
-  alu:       { n:'Aluminium',  vc:300, fz:0.055, apF:0.40, apHob:0.06, aeF:0.40, tauch:0.30, kuehl:1 , vcB:70, fU:0.12, peckF:2 },
-  messing:   { n:'Messing',    vc:200, fz:0.050, apF:0.40, apHob:0.06, aeF:0.40, tauch:0.30, kuehl:1 , vcB:50, fU:0.12, peckF:2 },
-  stahl:     { n:'Stahl',      vc:110, fz:0.040, apF:0.25, apHob:0,    aeF:0.30, tauch:0.25, kuehl:1 , vcB:25, fU:0.1, peckF:1.5 },
-  edelstahl: { n:'Edelstahl',  vc:75,  fz:0.030, apF:0.20, apHob:0,    aeF:0.25, tauch:0.20, kuehl:1 , vcB:12, fU:0.06, peckF:1 },
-};
+
+// Die generischen Teile stehen seit v1.18.49 in cam-kern.js: Maschinen- und
+// Materialtabellen, Schnittwerte, Bahn-Mathematik und beide Postprozessoren.
+// Eine Quelle fuer V3D CAD und V3D CAM (~/v3dcam) — siehe Kopf jener Datei.
+// Hier bleibt nur, was den Skizzen-Editor und die Oberflaeche kennt.
+
+// 1 Unit = 10 mm, v gespiegelt — dieselbe Abbildung wie in _skExportDXF.
+// Eine V3D-CAD-Eigenheit, die im gemeinsamen Kern nichts zu suchen hat.
+function _cncPt(p){ return [p.u * _CNC_U2MM, -p.v * _CNC_U2MM]; }
 
 const _cncP = { op:'aus', mat:'alu', lauf:'gleich', mas:'fanuc', kuehl:'m8' };
 let _cncPrevGrp = null;               // Vorschau-Linien in der Szene
 let _cncLetzter = null;               // letztes Ergebnis von _cncBuild, für Export und Tests
 
-// ── Kleinkram ────────────────────────────────────────────────────────────
-function _cncPt(p){ return [p.u * _CNC_U2MM, -p.v * _CNC_U2MM]; }
-function _cncDist(a, b){ return Math.hypot(b[0]-a[0], b[1]-a[1]); }
 
-// Vorzeichenbehaftete Fläche (Gaußsche Trapezformel). > 0 = gegen den
-// Uhrzeigersinn. Gilt im Maschinen-Frame, weil hier schon gespiegelt wurde.
-function _cncArea(lp){
-  let a = 0;
-  for(let i=0;i<lp.length;i++){ const p=lp[i], q=lp[(i+1)%lp.length]; a += p[0]*q[1] - q[0]*p[1]; }
-  return a/2;
-}
-function _cncLaenge(lp, closed){
-  let L = 0;
-  for(let i=1;i<lp.length;i++) L += _cncDist(lp[i-1], lp[i]);
-  if(closed && lp.length>1) L += _cncDist(lp[lp.length-1], lp[0]);
-  return L;
-}
-
-// Umlaufsinn für Gleich- oder Gegenlauf setzen.
-//
-// Gleichlauf heißt: das Material liegt RECHTS der Fahrtrichtung (die Schneide
-// greift mit voller Spandicke an und läuft auf null aus — bessere Kante, aber
-// die Maschine muss spielfrei sein). Daraus folgt:
-//   Außenkontur → im Uhrzeigersinn (Fläche < 0)
-//   Loch/Tasche → gegen den Uhrzeigersinn (Fläche > 0)
-// Gegenlauf ist jeweils umgekehrt und verzeiht Spiel in den Spindeln — darum
-// bei alten oder spielbehafteten Portalen die sicherere Wahl.
-function _cncWicklung(lp, gleichlauf, istLoch){
-  const willCW = gleichlauf ? !istLoch : istLoch;
-  const istCW  = _cncArea(lp) < 0;
-  return (willCW === istCW) ? lp.slice() : lp.slice().reverse();
-}
-
-// Punkt auf einem Polyzug bei Bogenlänge s (L = kumulierte Bogenlängen)
-function _cncAuf(pfad, L, s){
-  let i = 1;
-  while(i < L.length-1 && L[i] < s) i++;
-  const d = L[i] - L[i-1];
-  const t = d > 1e-9 ? (s - L[i-1]) / d : 0;
-  return [ pfad[i-1][0] + (pfad[i][0]-pfad[i-1][0])*t,
-           pfad[i-1][1] + (pfad[i][1]-pfad[i-1][1])*t ];
-}
-
-// ── Tiefenstaffel ────────────────────────────────────────────────────────
-// Gleichmäßig aufteilen statt „volle Schritte + Rest": ein 0,2-mm-Restschnitt
-// am Ende bringt nichts und kostet eine ganze Umrundung.
-function _cncTiefen(zStart, zEnd, ap){
-  const ges = zStart - zEnd;
-  if(ges <= 1e-6) return [zEnd];
-  const n = Math.max(1, Math.ceil(ges / Math.max(0.05, ap)));
-  const out = [];
-  for(let i=1;i<=n;i++) out.push(zStart - ges*i/n);
-  return out;
-}
-
-// ── Haltestege, Rampe, Tiefenwege ───────────────────────────────────────
-// Z-Verlauf über die Haltestege. Stege lassen an n Stellen eine dünne Brücke
-// stehen, damit das fertige Teil im letzten Durchgang nicht losbricht und
-// unter dem laufenden Fräser wegfliegt. An beiden Steg-Enden liegt eine kurze
-// Anlauframpe, sonst fährt der Fräser senkrecht gegen die Steg-Flanke.
-function _cncZSteg(ges, zZiel, stege, stegB, stegZ){
-  if(!stege || stegB <= 0 || stegZ <= zZiel) return () => zZiel;
-  const anl = 1.5;
-  return s => {
-    const su = ((s % ges) + ges) % ges;
-    let z = zZiel;
-    for(let k=0;k<stege;k++){
-      const c = (k + 0.5) * ges / stege;
-      let d = Math.abs(su - c);
-      if(d > ges/2) d = ges - d;                    // zyklischer Abstand auf dem Ring
-      if(d <= stegB/2) return stegZ;
-      if(d <= stegB/2 + anl) z = Math.max(z, zZiel + (stegZ - zZiel) * (1 - (d - stegB/2)/anl));
-    }
-    return z;
-  };
-}
-
-// Eine Umrundung eines geschlossenen Weges. Taucht über `rampe` mm Weglänge
-// schräg von zVon auf zZiel ein, statt senkrecht zu stechen — ein Zweischneider
-// stirbt im MDF genau am senkrechten Stechen. Zusätzliche Stützpunkte entstehen
-// nur dort, wo sich die Höhe ändert; der Rest behält die Originalpunkte, sonst
-// bläht sich der G-Code auf.
-function _cncRingWeg(lp, zVon, zZiel, rampe, stege, stegB, stegZ){
-  const ring = lp.concat([lp[0]]);
-  const L = [0];
-  for(let i=1;i<ring.length;i++) L.push(L[i-1] + _cncDist(ring[i-1], ring[i]));
-  const ges = L[L.length-1];
-  if(ges < 1e-6) return [];
-
-  const stegeOk = stege > 0 && stegB > 0 && ges > stege * (stegB + 4) * 1.5;
-  const zSteg = _cncZSteg(ges, zZiel, stegeOk ? stege : 0, stegB, stegZ);
-  const rmp = Math.min(Math.max(0, rampe), ges * 0.45);
-  const zRamp = s => (rmp > 1e-6 && s < rmp) ? (zVon + (zZiel - zVon) * (s/rmp)) : zZiel;
-
-  const marken = new Set(L);
-  if(rmp > 1e-6) for(const f of [0.25, 0.5, 0.75, 1]) marken.add(rmp*f);
-  if(stegeOk){
-    for(let k=0;k<stege;k++){
-      const c = (k + 0.5) * ges / stege;
-      for(const off of [-stegB/2-1.5, -stegB/2, stegB/2, stegB/2+1.5]){
-        marken.add((((c+off) % ges) + ges) % ges);
-      }
-    }
-  }
-  const ss = Array.from(marken).filter(s => s >= -1e-9 && s <= ges + 1e-9).sort((a,b)=>a-b);
-  return ss.map(s => { const p = _cncAuf(ring, L, s); return [p[0], p[1], Math.max(zRamp(s), zSteg(s))]; });
-}
-
-// Geschlossene Kontur über alle Tiefen: ohne Zwischen-Rückzug, jede Lage rampt
-// aus der vorigen heraus weiter nach unten. Zum Schluss eine flache Umrundung
-// auf Endtiefe — die schneidet die Rampe weg, die sonst als Schräge stehen
-// bliebe. Haltestege gibt es nur in der letzten Lage und im Schlichtlauf.
-function _cncKonturWeg(lp, tiefen, rampe, stege, stegB, stegZ){
-  let weg = [], zVon = 0;
-  for(let i=0;i<tiefen.length;i++){
-    const letzte = i === tiefen.length - 1;
-    weg = weg.concat(_cncRingWeg(lp, zVon, tiefen[i], rampe, letzte ? stege : 0, stegB, stegZ));
-    zVon = tiefen[i];
-  }
-  return weg.concat(_cncRingWeg(lp, zVon, zVon, 0, stege, stegB, stegZ));
-}
-
-// Offener Pfad (Gravur): Pendeln statt Eintauchen. Jede Lage läuft einmal über
-// den ganzen Pfad und fällt dabei gleichmäßig auf die nächste Tiefe, die
-// nächste Lage zurück. So wird nie gestochen und nie leer gefahren; zum Schluss
-// ein flacher Zug, der die Schräge entfernt.
-function _cncPendelWeg(pts, tiefen){
-  const L = [0];
-  for(let i=1;i<pts.length;i++) L.push(L[i-1] + _cncDist(pts[i-1], pts[i]));
-  const ges = L[L.length-1];
-  if(ges < 1e-6) return [];
-  const weg = []; let zVon = 0, vor = true;
-  for(const zZ of tiefen){
-    for(let i=0;i<pts.length;i++){
-      const j = vor ? i : pts.length-1-i;
-      const s = vor ? L[i] : (ges - L[j]);
-      weg.push([pts[j][0], pts[j][1], zVon + (zZ - zVon) * (s/ges)]);
-    }
-    zVon = zZ; vor = !vor;
-  }
-  const zE = tiefen[tiefen.length-1];
-  for(let i=0;i<pts.length;i++){ const j = vor ? i : pts.length-1-i; weg.push([pts[j][0], pts[j][1], zE]); }
-  return weg;
-}
 
 // ── Konturen aus der Skizze ──────────────────────────────────────────────
 // _skBuildShapes liefert Außenkontur + enthaltene Löcher in Skizzen-Units.
@@ -47588,76 +47486,11 @@ function _cncKreise(){
     .map(e => ({ x: e.c.u*_CNC_U2MM, y: -e.c.v*_CNC_U2MM, d: e.r*2*_CNC_U2MM }));
 }
 
-function _cncCS(W, form){ return new W.CrossSection([form.outer, ...form.holes], 'EvenOdd'); }
 
-// CrossSection → Ringe mit Kennzeichnung „Loch". Manifold liefert Außenringe
-// gegen und Löcher im Uhrzeigersinn; verlassen wird sich darauf aber nicht,
-// entschieden wird über das Vorzeichen der Fläche.
-function _cncRinge(cs){
-  return cs.toPolygons()
-    .filter(p => p.length >= 3)
-    .map(p => ({ lp: p, loch: _cncArea(p) < 0 }))
-    .filter(r => _cncLaenge(r.lp, true) > 0.5);
-}
 
-// ── Werte ────────────────────────────────────────────────────────────────
-function _cncWerte(P){
-  const m = _CNC_MAT[P.mat], ma = _CNC_MASCHINE[P.mas] || _CNC_MASCHINE.grbl;
-  const nMax = Math.max(ma.nMin, Math.min(P.nMax || ma.nMax, 60000));
-  // fz gilt für Ø6; dünnere Fräser vertragen weniger Span, dickere mehr.
-  const fz = m.fz * Math.min(1.6, Math.max(0.5, P.d/6));
-  const nRoh = m.vc * 1000 / (Math.PI * P.d);
-  const rpm = Math.round(Math.min(nMax, Math.max(ma.nMin, nRoh)) / 10) * 10;
-  const vorschub = Math.min(ma.vfMax, Math.max(20, Math.round(rpm * P.z * fz)));
-  const apF = (ma.post === 'grbl') ? m.apHob : m.apF;
-  const o = {
-    rpm, fz: Math.round(fz*1000)/1000, vorschub,
-    tauchen: Math.max(20, Math.round(vorschub * m.tauch)),
-    ap: Math.max(0.05, Math.round(P.d * apF * 100)/100),
-    ae: Math.max(0.2, Math.round(P.d * m.aeF * 10)/10),
-    kuehl: (ma.kuehl && m.kuehl) ? 1 : 0,
-    nRoh: Math.round(nRoh),
-    gedeckelt: nRoh > nMax + 1,
-    geht: apF > 0,
-    warum: apF > 0 ? '' : 'das braucht eine steife Maschine mit Kühlung',
-    ma
-  };
-  if(P.op === 'bohr'){
-    // Bohren rechnet komplett anders: eigene Schnittgeschwindigkeit und
-    // Vorschub je Umdrehung statt je Zahn. Mit den Fräswerten würde ein
-    // Ø5-Bohrer in Alu bei 10.000 min⁻¹ laufen und wäre nach zwei Löchern hin.
-    const nB = Math.min(nMax, Math.max(ma.nMin, m.vcB * 1000 / (Math.PI * P.d)));
-    const fU = m.fU * Math.min(2, Math.max(0.4, P.d/6));
-    o.rpm = Math.round(nB / 10) * 10;
-    o.vorschub = o.tauchen = Math.min(ma.vfMax, Math.max(10, Math.round(o.rpm * fU)));
-    o.ap = Math.max(0.3, Math.round(P.d * m.peckF * 10) / 10);   // Abstichtiefe
-    o.nRoh = Math.round(m.vcB * 1000 / (Math.PI * P.d));
-    o.gedeckelt = o.nRoh > nMax + 1;
-    // Beim Bohren ist nicht die Zustellung das Problem, sondern die MINDEST-
-    // drehzahl: eine Frässpindel geht nach unten oft nicht unter 5000 min⁻¹,
-    // ein Ø5-Bohrer in Stahl will aber 1600. Zu schnell heißt hier: Bohrer hin.
-    o.geht = o.nRoh >= ma.nMin * 0.7;
-    o.warum = o.geht ? '' : 'die Spindel dreht nicht langsam genug (' + o.nRoh +
-              ' min⁻¹ wären nötig, sie geht nur bis ' + ma.nMin + ' hinunter)';
-    o.fU = Math.round(fU * 1000) / 1000;
-  }
-  return o;
-}
 
-// ── Taschen ──────────────────────────────────────────────────────────────
-// Konzentrische Ringe von der Wand nach innen. Gefahren wird von innen nach
-// außen, damit der letzte Durchgang die Wand schlichtet — er nimmt dann nur
-// noch den Bahnabstand ab und hinterlässt keine Stufen.
-function _cncTaschenLagen(cs, r, ae, tmp){
-  const lagen = [];
-  for(let i=0;i<500;i++){
-    const o = cs.offset(-(r + i*ae), 'Round', 2, 24); tmp.push(o);
-    const ringe = _cncRinge(o);
-    if(!ringe.length) break;
-    lagen.push(ringe);
-  }
-  return lagen.reverse();
-}
+
+
 
 // ── Werkzeugwege bauen ───────────────────────────────────────────────────
 // Ergebnis: { moves, w, stats, warn }. moves ist eine Liste
@@ -47780,147 +47613,7 @@ async function _cncBuild(P){
   return { moves, w, warn, bohr, stats:{ schnitt, eil, min: zeit } };
 }
 
-// ── G-Code ───────────────────────────────────────────────────────────────
-// Zwei Dialekte. Gemeinsam ist beiden, dass die Bahnen durch den Versatz
-// ohnehin Polyzüge sind — Kreisinterpolation braucht es nirgends.
-function _cncGcode(erg, P){
-  return (_CNC_MASCHINE[P.mas] || _CNC_MASCHINE.grbl).post === 'fanuc'
-    ? _cncGcodeFanuc(erg, P) : _cncGcodeGrbl(erg, P);
-}
 
-// ── Fanuc (Robodrill und Verwandte) ──────────────────────────────────────
-// Die Unterschiede zu GRBL, die wirklich zählen:
-//
-//  * DER DEZIMALPUNKT IST PFLICHT. Eine Zahl ohne Punkt liest Fanuc in
-//    kleinsten Eingabeschritten — „Z5" ist dort 0,005 mm, nicht 5 mm.
-//    Der GRBL-Schreiber kürzt „5.000" genau zu „Z5"; auf der Robodrill
-//    wäre das eine Kollision. Hier bekommt jede Koordinate einen Punkt,
-//    notfalls als nachgestellter „5.".
-//  * Das Programm steht zwischen zwei %-Zeilen und braucht eine O-Nummer.
-//  * Der sichere Startsatz G0 G17 G40 G49 G80 G90 löscht Radiuskorrektur,
-//    Längenkorrektur und einen noch aktiven Bohrzyklus. Ohne ihn startet
-//    man in dem Zustand, den das Programm davor hinterlassen hat.
-//  * Werkzeug über T/M6, Werkzeuglänge über G43 H.
-//  * Gebohrt wird mit dem Zyklus G83 — das kann die Steuerung selbst, und
-//    der Satz ist ein Bruchteil so lang wie ausgeschriebene Abstiche.
-//  * Kommentare nur in Klammern und in ASCII-Großbuchstaben. Umlaute und
-//    Sonderzeichen bringen ältere Steuerungen zum Alarm.
-
-// Zahl mit garantiertem Dezimalpunkt
-function _cncFa(v){
-  const r = Math.abs(v) < 5e-4 ? 0 : v;
-  return r.toFixed(3).replace(/0+$/, '');       // 5.000→"5."  2.100→"2.1"  0→"0."
-}
-// Kommentar: Klammern auf, ASCII-Großbuchstaben, nichts Exotisches
-function _cncFaKom(t){
-  return '(' + String(t).toUpperCase()
-    .replace(/Ä/g,'AE').replace(/Ö/g,'OE').replace(/Ü/g,'UE').replace(/ß/g,'SS')
-    .replace(/[^A-Z0-9 .,:;\/+\-=_]/g, ' ')
-    .replace(/\s+/g, ' ').trim().slice(0, 64) + ')';
-}
-
-function _cncGcodeFanuc(erg, P){
-  const w = erg.w, m = _CNC_MAT[P.mat], F = _cncFa, K = _cncFaKom;
-  const opN = { aus:'AUSSCHNEIDEN', tasche:'TASCHE', grav:'GRAVUR', bohr:'BOHREN' }[P.op];
-  const L = [];
-  L.push('%');
-  L.push('O' + String(Math.max(1, Math.min(9999, P.oNr))).padStart(4, '0') + ' ' + K('V3D CAD ' + VOLME3D_VERSION + ' ' + opN));
-  L.push(K('ENTWURF: ' + (_designName() || 'OHNE NAMEN')));
-  L.push(K('MATERIAL: ' + m.n + ', DICKE ' + F(P.dicke) + ' MM'));
-  L.push(K('WERKZEUG T' + P.tNr + ' H' + P.hNr + ': ' + (P.op === 'bohr' ? 'BOHRER D' + F(P.d) + ' MM'
-           : 'FRAESER D' + F(P.d) + ' MM, ' + P.z + ' SCHNEIDEN')));
-  L.push(K('S' + w.rpm + ' F' + w.vorschub + ' AP' + F(w.ap) + ' VC' + Math.round(m.vc * Math.min(1, w.rpm / Math.max(1, w.nRoh)))));
-  L.push(K('NULLPUNKT ' + P.g54 + ', Z0 OBEN AUF DEM WERKSTUECK'));
-  L.push(K('WERTE PRUEFEN. ERSTEN LAUF EINZELSATZ UND MIT OVERRIDE FAHREN'));
-  // Sicherer Ausgangszustand, bevor irgendetwas verfährt
-  L.push('G0 G17 G40 G49 G80 G90');
-  L.push('G21');
-  L.push('T' + P.tNr + ' M6');
-  L.push(P.g54);
-  L.push('S' + w.rpm + ' M3');
-  L.push('G43 H' + P.hNr + ' Z' + F(P.zSafe));
-  if(P.kuehl !== 'aus') L.push(P.kuehl === 'm7' ? 'M7' : 'M8');
-
-  if(erg.bohr && erg.bohr.punkte.length){
-    // G98: nach jedem Loch zurück auf die Ausgangshöhe — sicher über
-    // Spannmitteln. G83 ist der Zyklus MIT vollem Ausfahren (entspanen).
-    const b = erg.bohr, pt = b.punkte;
-    L.push('G0 X' + F(pt[0][0]) + ' Y' + F(pt[0][1]));
-    L.push('G98 G83 X' + F(pt[0][0]) + ' Y' + F(pt[0][1]) + ' Z' + F(b.zEnd) +
-           ' R' + F(b.r) + ' Q' + F(b.peck) + ' F' + F(b.f));
-    for(let i=1;i<pt.length;i++) L.push('X' + F(pt[i][0]) + ' Y' + F(pt[i][1]));
-    L.push('G80');
-  } else {
-    let lx, ly, lf, lz = P.zSafe;
-    for(const mv of erg.moves){
-      const ax = [];
-      if(mv.x !== undefined && mv.x !== lx) ax.push('X' + F(mv.x));
-      if(mv.y !== undefined && mv.y !== ly) ax.push('Y' + F(mv.y));
-      if(mv.z !== undefined && mv.z !== lz) ax.push('Z' + F(mv.z));
-      if(!ax.length) continue;
-      const t = ['G' + mv.g];
-      t.push.apply(t, ax);
-      if(mv.g === 1 && mv.f && mv.f !== lf){ t.push('F' + F(mv.f)); lf = mv.f; }
-      if(mv.x !== undefined) lx = mv.x;
-      if(mv.y !== undefined) ly = mv.y;
-      if(mv.z !== undefined) lz = mv.z;
-      L.push(t.join(' '));
-    }
-  }
-  L.push('G0 Z' + F(P.zSafe));
-  if(P.kuehl !== 'aus') L.push('M9');
-  L.push('M5');
-  L.push('G91 G28 Z0.');            // Z auf Referenz — erst dann darf X/Y fahren
-  L.push('G28 X0. Y0.');
-  L.push('G90');
-  L.push('M30');
-  L.push('%');
-  return L.join('\n') + '\n';
-}
-
-// ── GRBL ─────────────────────────────────────────────────────────────────
-// ── G-Code (GRBL) ────────────────────────────────────────────────────────
-// Nur G0/G1 — alles ist durch den Versatz ohnehin zu Polyzügen geworden, und
-// GRBL braucht keine Zyklen, die es nicht kennt.
-function _cncGcodeGrbl(erg, P){
-  const w = erg.w, m = _CNC_MAT[P.mat];
-  const nz = v => { let s = (+v).toFixed(3); if(s.indexOf('.') >= 0) s = s.replace(/0+$/,'').replace(/\.$/,''); return s; };
-  const opN = { aus:'Ausschneiden', tasche:'Tasche ausräumen', grav:'Gravieren', bohr:'Bohren' }[P.op];
-  const L = [];
-  L.push('(V3D CAD ' + VOLME3D_VERSION + ' — CNC 2,5D)');
-  L.push('(Entwurf: ' + (_designName() || 'ohne Namen') + ')');
-  L.push('(Bearbeitung: ' + opN + ', ' + (P.lauf === 'gleich' ? 'Gleichlauf' : 'Gegenlauf') + ')');
-  L.push('(Material: ' + m.n + ', Dicke ' + nz(P.dicke) + ' mm)');
-  L.push('(Werkzeug: Fraeser Durchmesser ' + nz(P.d) + ' mm, ' + P.z + ' Schneiden)');
-  L.push('(Drehzahl ' + w.rpm + ' 1/min, Vorschub ' + w.vorschub + ' mm/min, Eintauchen ' + w.tauchen + ' mm/min)');
-  L.push('(Zustellung ' + nz(w.ap) + ' mm je Durchgang, Spanungsdicke ' + nz(w.fz) + ' mm je Zahn)');
-  L.push('(Nullpunkt: X/Y wie in der Skizze, Z=0 OBEN auf dem Werkstueck)');
-  L.push('(Werte sind Startwerte — vor dem ersten Schnitt pruefen und trocken abfahren)');
-  L.push('G21 G90 G17 G94');
-  L.push('G0 Z' + nz(P.zSafe));
-  L.push('M3 S' + w.rpm);
-  L.push('G4 P2');                                  // Spindel hochlaufen lassen
-  let lx, ly, lf, lz = P.zSafe;                     // der Kopf steht schon auf Sicherheitshöhe
-  for(const mv of erg.moves){
-    const ax = [];
-    if(mv.x !== undefined && mv.x !== lx) ax.push('X' + nz(mv.x));
-    if(mv.y !== undefined && mv.y !== ly) ax.push('Y' + nz(mv.y));
-    if(mv.z !== undefined && mv.z !== lz) ax.push('Z' + nz(mv.z));
-    if(!ax.length) continue;                        // Bewegung ohne Weg — weglassen
-    const t = ['G' + mv.g];
-    t.push.apply(t, ax);
-    if(mv.g === 1 && mv.f && mv.f !== lf){ t.push('F' + Math.round(mv.f)); lf = mv.f; }
-    if(mv.x !== undefined) lx = mv.x;
-    if(mv.y !== undefined) ly = mv.y;
-    if(mv.z !== undefined) lz = mv.z;
-    L.push(t.join(' '));
-  }
-  if(lz !== P.zSafe) L.push('G0 Z' + nz(P.zSafe));
-  L.push('M5');
-  L.push('G0 X0 Y0');
-  L.push('M30');
-  return L.join('\n') + '\n';
-}
 
 // ── Vorschau im 3D-Fenster ───────────────────────────────────────────────
 // Maschine → Szene: X = camX/10, Z = -camY/10 (die Skizzenebene liegt in der
@@ -47986,6 +47679,8 @@ function _cncParams(){
   const el = id => document.getElementById(id), n = id => parseFloat(el(id).value) || 0;
   return {
     op: _cncP.op, mat: _cncP.mat, lauf: _cncP.lauf, mas: _cncP.mas, kuehl: _cncP.kuehl,
+    // Der gemeinsame Kern kennt das Programm nicht — beides kommt von hier.
+    app: 'V3D CAD ' + VOLME3D_VERSION, entwurf: _designName() || '',
     nMax: Math.max(1000, n('cnc-nmax')),
     oNr: Math.max(1, Math.round(n('cnc-onr'))), tNr: Math.max(1, Math.round(n('cnc-tnr'))),
     hNr: Math.max(1, Math.round(n('cnc-hnr'))),
@@ -48063,8 +47758,15 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.48';
+const VOLME3D_VERSION = '1.18.49';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.49', date:'2026-09-24', changes:[
+    ['\u{1F527}','<b>Am CNC-Fr\u00e4sen \u00e4ndert sich nichts \u2014 unter der Haube schon.</b> Die Rechnerei hinter <b>\u{1F527} CNC-Fr\u00e4sen</b> (Maschinen- und Materialtabellen, Drehzahl und Vorschub, die Bahn-Mathematik und die beiden G-Code-Dialekte f\u00fcr Fanuc und GRBL) steht jetzt in einer eigenen Datei, die sich V3D CAD mit dem entstehenden <b>V3D CAM</b> teilt \u2014 dem gr\u00f6\u00dferen Werkzeug f\u00fcr Rohteil und Schruppen aus STEP-Dateien. <b>Eine Quelle f\u00fcr beide:</b> W\u00fcrde etwa die Fanuc-Regel, dass jede Zahl einen Dezimalpunkt braucht, in zwei Kopien liegen, w\u00e4re sie in einem halben Jahr in der einen korrigiert und in der anderen nicht \u2014 und das ist der Fehler, der eine Maschine zerlegt. F\u00fcr dich sieht und rechnet alles genau wie vorher; die 48 Pr\u00fcfungen dazu laufen unver\u00e4ndert durch.'],
+  ]},
+  { version:'1.18.49', date:'2026-09-24', changes:[
+    ['\u{1F6E9}\uFE0F','<b>Bausatz-Rahmen: Teile wieder freigeben.</b> Beim Nachschauen f\u00e4llt auf, dass ein Teil falsch liegt? Einfach den fertigen <b>Rahmen anklicken</b> und nochmal auf <b>\u{1F6E9}\uFE0F Bausatz-Rahmen</b> (im Eigenschaften-Feld hei\u00dft der Knopf dann <b>\u201eTeile freigeben\u201c</b>). Der Rahmen verschwindet, alle Original-Teile sind wieder da \u2014 <b>schon ausgew\u00e4hlt</b>, kein Suchen in der Objektliste. Teil drehen oder hinlegen, dann erneut \u{1F6E9}\uFE0F: fertig. Waren es mehrere Rahmen (A, B, \u2026), kommen alle zusammen zur\u00fcck. Klappt auch nach Speichern und Neuladen; R\u00fcckg\u00e4ngig holt den Rahmen wieder.'],
+    ['\u{1F4D0}','<b>Bausatz-Rahmen: schr\u00e4g gestellte Teile bekommen jetzt Angüsse.</b> Ein leicht gekippter Deckel (druckt oft sauberer) ber\u00fchrt das Bett nur an einer Kante oder Ecke \u2014 bisher fand der Generator dort keine Stelle und meldete <b>\u201eKein Anguss m\u00f6glich\u201c</b>. Jetzt sucht er zuerst \u00fcber die ganze Seite an der aufliegenden Kante und setzt den Anguss sonst h\u00f6her an: Er steht dann als schmaler <b>Keil auf dem Bett</b> und trifft das Teil in der passenden H\u00f6he, die Sollbruchstelle bleibt so d\u00fcnn wie eingestellt.']
+  ]},
   { version:'1.18.48', date:'2026-09-23', changes:[
     ['\u2702\uFE0F','<b>Neu: Laservorlage aus jedem Objekt \u2014 Umriss von oben als SVG oder DXF.</b> Im Export-Men\u00fc (Pfeil \u25BE neben \u201e\u2B07 Export\u201c) gibt es jetzt <b>\u2702 Laservorlage (Draufsicht, SVG/DXF)</b>. Es nimmt das gew\u00e4hlte Objekt (oder alle, wenn nichts gew\u00e4hlt ist) und zeichnet genau das, was man in der Ansicht <b>\u201eOben\u201c</b> sieht: die Au\u00dfenkontur plus alle <b>durchgehenden</b> L\u00f6cher, <b>1:1 in Millimetern</b>. Als SVG wahlweise als <b>rote Haarlinie zum Schneiden</b> oder als <b>schwarze Fl\u00e4che zum Gravieren</b>; als DXF liegen Kontur und L\u00f6cher auf eigenen Ebenen. Ein <b>Kerf-Ausgleich</b> macht das Teil um die Schnittfuge des Lasers gr\u00f6\u00dfer, damit es ma\u00dfhaltig herauskommt. Funktioniert mit allen K\u00f6rpern \u2014 auch mit importierten STLs und Booleschen Ergebnissen.'],
   ]},
@@ -52561,7 +52263,9 @@ function _fpBuildRows(type, o) {
   // Klemmbaustein-Look: Modell aufs Noppenraster rastern (jeder Typ)
   const legoBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_lgoOpen()" title="Rastert das Modell aufs 8-mm-Noppenraster und baut daraus ein druckbares Teil im Klemmbaustein-Look — mit Noppen oben und Aufnahmen unten.">🧱 Klemmbaustein-Look</button></div>`;
   // Bausatz-Rahmen: alle gewählten Teile in einen Gussrahmen mit Nummern-Fähnchen
-  const sprBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_sprOpen()" title="Setzt ALLE gewählten Teile in einen druckbaren Gussrahmen wie beim Plastikmodell — mit dünnen Angüssen zum Abknipsen und einem Fähnchen mit Nummer an jedem Teil. Dazu gibt es eine Teileliste mit Rahmenplan.">🛩️ Bausatz-Rahmen</button></div>`;
+  const sprBtn = o && o.userData && o.userData.bausatz
+    ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_sprOpen()" title="Entfernt diesen Rahmen und holt die Original-Teile zurück (sichtbar und gewählt) — z. B. um ein Teil anders hinzulegen. Danach mit 🛩️ Bausatz-Rahmen neu erzeugen.">🛩️ Teile freigeben</button></div>`
+    : `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_sprOpen()" title="Setzt ALLE gewählten Teile in einen druckbaren Gussrahmen wie beim Plastikmodell — mit dünnen Angüssen zum Abknipsen und einem Fähnchen mit Nummer an jedem Teil. Dazu gibt es eine Teileliste mit Rahmenplan.">🛩️ Bausatz-Rahmen</button></div>`;
   // Steckbausatz: berührende Körper bekommen Zapfen und Buchse an der Kontaktfläche
   const snpBtn = `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_snpOpen()" title="Macht aus mehreren Körpern, die sich berühren oder ineinanderstecken, einen steckbaren Bausatz: Zapfen im kleineren Teil, passende Buchse im größeren. Einzeln drucken, von Hand zusammenstecken — ohne Kleber.">🧩 Steckbausatz</button></div>`;
   // Biegen: Netz auf einen Radius verformen — auch an einen anderen Körper anlegen

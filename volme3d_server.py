@@ -205,6 +205,7 @@ ALLOW = {
     '/favicon.svg':                       ('favicon.svg', 'image/svg+xml'),
     '/logo.svg':                          ('logo.svg', 'image/svg+xml'),
     '/volme3d-occt.js':                   ('volme3d-occt.js', 'text/javascript; charset=utf-8'),
+    '/cam-kern.js':                       ('cam-kern.js', 'text/javascript; charset=utf-8'),
     '/lib/three.min.js':                  ('lib/three.min.js', 'text/javascript; charset=utf-8'),
     # Liest TTF/OTF, die Nutzer selbst laden ("Eigene Schrift") — wird erst bei Bedarf geholt
     '/lib/opentype.min.js':               ('lib/opentype.min.js', 'text/javascript; charset=utf-8'),
