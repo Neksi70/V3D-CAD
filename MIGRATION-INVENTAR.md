@@ -14,6 +14,7 @@ Ziel: Parallel-Instanz (Produktion nach Rollout; getestet wird auf V3DA) auf `v2
 Auslieferung produktiv: **Tailscale Funnel** `https://v3da.tailf05fe9.ts.net/` → `127.0.0.1:8765` (nicht nginx!). nginx :18790 bedient v. a. OCCT-Endpunkte + openclaw (:18789).
 
 Auf netcup ersetzt nginx (443, Let's Encrypt) den Funnel: `/` → proxy 8765, OCCT-Pfade → proxy 3001.
+**Seit 24.09.2026:** `/api/occt-*` laeuft auf netcup NICHT mehr direkt zu 3001, sondern ueber `/` → 8765 (volme3d_server.py: Login-Pruefung + Nutzungsmessung; direkt war es ohne Anmeldung aufrufbar). `location /` hat dafuer `proxy_read_timeout 600s`. Sicherung der alten Konfig: `/root/v3d-cad.nginx.bak-*`. Nur `/occt-health` geht noch direkt.
 
 ## 2. Versionen (netcup identisch installieren)
 
