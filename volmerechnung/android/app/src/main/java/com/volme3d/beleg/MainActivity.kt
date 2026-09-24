@@ -37,7 +37,7 @@ const val BASIS = "https://v3da.tailf05fe9.ts.net/rechnung/scan.html"
  *     sonst Dateiauswahl für Bild/PDF.
  *   - „Teilen → V3D Beleg": geteilte PDFs/Bilder gehen als Base64 an die Seite.
  *   - Kopieren über den Android-ClipboardManager (zuverlässiger als die
- *     Clipboard-API im WebView) und Sprung in die SumUp-App.
+ *     Clipboard-API im WebView) und Sprung in die Banking-App (SumUp oder bunq).
  */
 class MainActivity : AppCompatActivity() {
 
@@ -74,6 +74,17 @@ class MainActivity : AppCompatActivity() {
                 val i = listOf(paket1, paket2).firstNotNullOfOrNull { packageManager.getLaunchIntentForPackage(it) }
                 if (i != null) startActivity(i)
                 else Toast.makeText(this@MainActivity, "SumUp-App nicht gefunden.", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        /** Wie appOeffnen, aber beliebig viele Pakete (Komma-Liste) und passende Meldung. */
+        @JavascriptInterface
+        fun appOeffnenListe(pakete: String, name: String) {
+            runOnUiThread {
+                val i = pakete.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+                    .firstNotNullOfOrNull { packageManager.getLaunchIntentForPackage(it) }
+                if (i != null) startActivity(i)
+                else Toast.makeText(this@MainActivity, "$name-App nicht gefunden.", Toast.LENGTH_SHORT).show()
             }
         }
     }

@@ -36,6 +36,10 @@ input{font:inherit;width:100%;border:1px solid var(--line);border-radius:10px;pa
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--green);color:#fff;padding:12px 18px;border-radius:12px;font-weight:700;opacity:0;transition:opacity .3s;pointer-events:none;max-width:90vw;z-index:9}
 .leiste{display:flex;gap:10px;margin-top:6px}
 .leiste .btn{flex:1}
+.bankwahl{display:flex;align-items:center;gap:8px;margin:0 0 12px}
+.bankwahl small{color:var(--mid);font-size:13px;margin-right:2px}
+.bankwahl button{flex:1;border:1px solid var(--line);background:#fff;color:var(--text);border-radius:10px;padding:9px;font:inherit;font-weight:700;font-size:15px;cursor:pointer}
+.bankwahl button.an{background:var(--acc);border-color:var(--acc);color:#fff}
 </style>
 </head>
 <body>
@@ -45,8 +49,8 @@ input{font:inherit;width:100%;border:1px solid var(--line);border-radius:10px;pa
 <script>
 'use strict';
 // Schlanke Handy-Seite zu VolmeRechnung: Papierrechnung scannen -> Zahlungsdaten
-// einzeln kopieren -> in der Banking-App (SumUp) einfügen. Läuft im Browser und
-// in der Android-Hülle „V3D Beleg" (AndroidBruecke: kopieren, appOeffnen, kamera).
+// einzeln kopieren -> in der Banking-App (SumUp oder bunq) einfügen. Läuft im Browser
+// und in der Android-Hülle „V3D Beleg" (AndroidBruecke: kopieren, appOeffnen, kamera).
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const eur=v=>(Number(v)||0).toLocaleString('de-DE',{style:'currency',currency:'EUR'});
@@ -54,6 +58,15 @@ const dtDE=s=>s?new Date(s+'T12:00:00').toLocaleDateString('de-DE'):'';
 const today=()=>new Date().toISOString().slice(0,10);
 const ROOTP=location.pathname.startsWith('/rechnung')?'/rechnung':'';
 const APP=window.AndroidBruecke||null;
+// Banking-Apps zum Einfügen; die zuletzt gewählte merkt sich das Handy
+const BANKEN={sumup:{name:'SumUp',pakete:['com.kaching.merchant','com.sumup.pay']},bunq:{name:'bunq',pakete:['com.bunq.android']}};
+let BANK=BANKEN[localStorage.getItem('vrBank')]?localStorage.getItem('vrBank'):'sumup';
+function bankWahl(b){BANK=b;localStorage.setItem('vrBank',b);zeige(AKTIV,null,true);}
+function bankOeffnen(){
+  const b=BANKEN[BANK];
+  if(APP.appOeffnenListe)APP.appOeffnenListe(b.pakete.join(','),b.name);
+  else APP.appOeffnen(b.pakete[0],b.pakete[1]||b.pakete[0]); // ältere App-Fassung
+}
 let KEY=(()=>{const u=new URL(location.href),k=u.searchParams.get('key');
   if(!k)return localStorage.getItem('vrKey')||'';
   localStorage.setItem('vrKey',k);u.searchParams.delete('key');history.replaceState(null,'',u);return k;})();
@@ -89,7 +102,7 @@ async function start(){
       +(bezahlt.length?'<h2>Zuletzt bezahlt</h2>'+bezahlt.map(eintrag).join(''):'');
   }catch(e){if(KEY)toast(e.message,true);}
 }
-const eintrag=a=>`<div class="eintrag" onclick="zeige('${a.id}')"><span><b>${esc(a.lieferant||'?')}</b><br><small style="color:var(--dim)">${esc(a.nummer||'')} ${a.faellig&&!a.bezahltAm?'· fällig '+dtDE(a.faellig):''}${a.bezahltAm?'· ✓ bezahlt '+dtDE(a.bezahltAm):''}</small></span><b>${eur(a.betrag)}</b></div>`;
+const eintrag=a=>`<div class="eintrag" onclick="zeige('${a.id}')"><span><b>${esc(a.lieferant||'?')}</b><br><small style="color:var(--dim)">${esc(a.nummer||'')} ${a.faellig&&!a.bezahltAm?'· fällig '+dtDE(a.faellig):''}${a.bezahltAm?'· ✓ bezahlt '+dtDE(a.bezahltAm)+(BANKEN[a.bezahltVia]?' via '+BANKEN[a.bezahltVia].name:''):''}</small></span><b>${eur(a.betrag)}</b></div>`;
 
 // Kamera/Datei: im Browser über <input>, in der App übernimmt Android (onShowFileChooser)
 function waehle(kamera){
@@ -176,12 +189,13 @@ async function zeige(id,hinweise,still){
   const kq='?key='+encodeURIComponent(KEY);
   $('#m').innerHTML=`
     ${(hinweise||[]).filter(h=>!/Rechnungsdatum|Rechnungsnummer|USt-Zeile|USt \d/.test(h)).map(h=>`<div class="hinw">⚠️ ${esc(h)}</div>`).join('')}
-    <p style="color:var(--mid);font-size:14px;margin-bottom:12px">Feld antippen = kopiert. Dann in SumUp einfügen und zurückkommen.${a.faellig&&!a.bezahltAm?` Fällig am <b>${dtDE(a.faellig)}</b>.`:''}${a.bezahltAm?' <b style="color:var(--green)">✓ bezahlt am '+dtDE(a.bezahltAm)+'</b>':''}</p>
+    <p style="color:var(--mid);font-size:14px;margin-bottom:12px">Feld antippen = kopiert. Dann in ${BANKEN[BANK].name} einfügen und zurückkommen.${a.faellig&&!a.bezahltAm?` Fällig am <b>${dtDE(a.faellig)}</b>.`:''}${a.bezahltAm?' <b style="color:var(--green)">✓ bezahlt am '+dtDE(a.bezahltAm)+(BANKEN[a.bezahltVia]?' via '+BANKEN[a.bezahltVia].name:'')+'</b>':''}</p>
+    <div class="bankwahl"><small>Bezahlen mit</small>${Object.entries(BANKEN).map(([k,b])=>`<button class="${k===BANK?'an':''}" onclick="bankWahl('${k}')">${b.name}</button>`).join('')}</div>
     ${FELDER.map(([k,l])=>`<div class="feld ${KOPIERT.has(k)?'ok':''}" id="f_${k}" onclick="kopiere('${k}')">
       <span style="flex:1;min-width:0"><small>${l}</small><b>${anzeige(a,k)}</b></span>
       <span class="edit" onclick="event.stopPropagation();bearbeite('${k}')">✏️</span>
       <span class="ico">${KOPIERT.has(k)?'✅':'📋'}</span></div>`).join('')}
-    ${APP?`<button class="btn s" style="width:100%;margin:4px 0 10px" onclick="APP.appOeffnen('com.kaching.merchant','com.sumup.pay')">↗️ SumUp öffnen</button>`:''}
+    ${APP?`<button class="btn s" style="width:100%;margin:4px 0 10px" onclick="bankOeffnen()">↗️ ${BANKEN[BANK].name} öffnen</button>`:''}
     <div class="leiste">
       ${a.bezahltAm?`<button class="btn s" onclick="bezahlt(false)">Doch nicht bezahlt</button>`:`<button class="btn g" onclick="bezahlt(true)">✓ Überwiesen</button>`}
       <button class="btn s" style="flex:0 0 auto" onclick="verwerfen()">🗑 Verwerfen</button>
@@ -214,7 +228,7 @@ async function verwerfen(){
   try{await api('expenses/'+AKTIV,'DELETE');toast('Gelöscht');start();}catch(e){toast(e.message,true);}
 }
 async function bezahlt(ja){
-  try{await api('expenses/'+AKTIV,'PUT',{bezahltAm:ja?today():''});toast(ja?'Als bezahlt markiert':'Wieder offen');start();}catch(e){toast(e.message,true);}
+  try{await api('expenses/'+AKTIV,'PUT',ja?{bezahltAm:today(),bezahltVia:BANK}:{bezahltAm:'',bezahltVia:''});toast(ja?'Als bezahlt markiert':'Wieder offen');start();}catch(e){toast(e.message,true);}
 }
 start();
 </script>
