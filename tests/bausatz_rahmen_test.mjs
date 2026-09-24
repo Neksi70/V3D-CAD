@@ -192,6 +192,61 @@ const ganz = await pg.evaluate(async () => {
 ok('Dialog zeigt vorab „3 Teile aus 1 Objekt"', /3 Teile aus 1 Objekt/.test(ganz.liste), ganz.liste.slice(0, 120));
 ok('Rahmen hat 3 Teile (Rohr+Platte zusammen)', ganz.teile === 3, ganz.teile);
 
+// ── 5) Ralf, 24.9.26: schräg gestellter Deckel bekommt trotzdem Angüsse ────
+for (const [name, rx, rz] of [['um X gekippt', 0.26, 0], ['um Z gekippt', 0, 0.26], ['über Eck', 0.2, 0.2], ['steil', 0.6, 0]]) {
+  const sch = await pg.evaluate(async ([rx, rz]) => {
+    for (const o of [...objects]) { scene.remove(o); objects.splice(objects.indexOf(o), 1); }
+    addShape('box'); const o = objects[objects.length - 1];
+    o.scale.set(3, 0.2, 2); o.rotation.set(rx, 0, rz); o.updateMatrixWorld(true);
+    addShape('box'); const q = objects[objects.length - 1]; q.position.set(5, q.position.y, 0); q.updateMatrixWorld(true);
+    selectObjs([o, q]); _sprOpen(); _sprSetGates(2); _sprInfo();
+    const msgs = []; const alt = window.notify; window.notify = (m, t) => { msgs.push(m); return alt(m, t); };
+    try { await _sprCreate(); } finally { window.notify = alt; }
+    document.getElementById('lgo-guide-ov') && _lgoGuideClose();
+    const r = objects.find(x => x.userData.bausatz);
+    // Zusammenhang über verschweißte Eckpunkte (unabhängig davon, ob Manifold
+    // das zurückgelesene Netz noch als dicht akzeptiert)
+    const t = _moldCollectTris(r), vid = new Map(), par = [];
+    const f = x => { while (par[x] !== x) x = par[x] = par[par[x]]; return x; };
+    for (let i = 0; i < t.length; i += 9) {
+      const ids = [0, 3, 6].map(k => { const key = [0, 1, 2].map(a => Math.round(t[i + k + a] * 1e3)).join(',');
+        if (!vid.has(key)) { vid.set(key, par.length); par.push(par.length); } return vid.get(key); });
+      par[f(ids[1])] = f(ids[0]); par[f(ids[2])] = f(ids[0]);
+    }
+    const n = new Set(par.map((_, i) => f(i))).size;
+    return { stuecke: n, ohne: msgs.filter(x => /Kein Anguss/.test(x)) };
+  }, [rx, rz]);
+  ok('schräger Deckel (' + name + '): angebunden, EIN Stück', sch.stuecke === 1 && !sch.ohne.length, sch);
+}
+
+// ── 6) Rahmen wählen → Teile freigeben, auch nach Rückgängig-Kreislauf ─────
+const frei = await pg.evaluate(async () => {
+  for (const o of [...objects]) { scene.remove(o); objects.splice(objects.indexOf(o), 1); }
+  const teile = [];
+  for (const x of [0, 4, 8]) { addShape('box'); const o = objects[objects.length - 1]; o.position.set(x, o.position.y, 0); o.rotation.x = 0.3; teile.push(o); }
+  const ids = teile.map(o => o.userData.id);
+  selectObjs(teile); _sprOpen(); await _sprCreate();
+  document.getElementById('lgo-guide-ov') && _lgoGuideClose();
+  const rahmen = objects.filter(o => o.userData.bausatz);
+  const vorher = { rahmen: rahmen.length, sichtbar: objects.filter(o => o.visible).length };
+  // Speicher-Rundlauf: userData.bausatz muss objectToData überleben
+  const rund = buildObjectFromData(objectToData(rahmen[0]));
+  const rundOk = !!(rund.userData.bausatz && rund.userData.bausatz.quellen && rund.userData.bausatz.quellen.length === 3);
+  selectObjs(rahmen); _sprOpen();
+  const nachher = {
+    rahmen: objects.filter(o => o.userData.bausatz).length,
+    sichtbar: objects.filter(o => o.visible).map(o => o.userData.id).sort(),
+    gewaehlt: selectedObjs.map(o => o.userData.id).sort(),
+    dialog: document.getElementById('spr-modal').classList.contains('show')
+  };
+  return { vorher, rundOk, nachher, ids: ids.sort() };
+});
+ok('Rahmen erzeugt, Originale weg', frei.vorher.rahmen === 1 && frei.vorher.sichtbar === 1, frei.vorher);
+ok('Quellen überleben Speichern/Laden', frei.rundOk);
+ok('Freigeben: Rahmen weg, Originale sichtbar und gewählt, kein Dialog',
+   frei.nachher.rahmen === 0 && JSON.stringify(frei.nachher.sichtbar) === JSON.stringify(frei.ids) &&
+   JSON.stringify(frei.nachher.gewaehlt) === JSON.stringify(frei.ids) && !frei.nachher.dialog, frei.nachher);
+
 ok('keine Seitenfehler', errs.length === 0, errs.slice(0, 3));
 
 // Bild zum Anschauen (Draufsicht + Schräg)
@@ -215,6 +270,20 @@ await pg.evaluate(() => { const r = objects.filter(o => o.userData.bausatz); sel
 await pg.mouse.click(5, 300);
 await pg.waitForTimeout(800);
 await pg.screenshot({ path: '/tmp/spr_scene.png' });
+
+// Schräger Deckel im Rahmen (Ralf 24.9.26) — Keil-Angüsse ansehen
+await pg.evaluate(async () => {
+  for (const o of [...objects]) { scene.remove(o); objects.splice(objects.indexOf(o), 1); }
+  addShape('box'); const o = objects[objects.length - 1]; o.scale.set(3, 0.2, 2); o.rotation.set(0.6, 0, 0.15);
+  addShape('box'); const q = objects[objects.length - 1]; q.position.set(5, q.position.y, 0);
+  selectObjs([o, q]); _sprOpen(); _sprSetGates(2);
+  document.getElementById('spr-guide').checked = false;
+  await _sprCreate();
+  const r = objects.filter(x => x.userData.bausatz); selectObjs([]); fitToObjects(r);
+});
+await pg.mouse.click(5, 300);
+await pg.waitForTimeout(800);
+await pg.screenshot({ path: '/tmp/spr_schraeg.png' });
 
 await b.close();
 console.log(fails.length ? '\n' + fails.length + ' FEHLER' : '\nAlles OK');
