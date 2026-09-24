@@ -30,8 +30,15 @@ git fetch -q /tmp/ausrollen.bundle master:refs/remotes/v3da/master
 git merge -q --ff-only v3da/master
 rm /tmp/ausrollen.bundle
 npm run build 2>&1 | tail -2
+# volme3d_server.py & Co. laufen als System-Dienst weiter — ohne Neustart
+# bliebe der alte Python-Code aktiv (dist/HTML liest er dagegen frisch).
+if ! git diff --quiet $REMOTE_HEAD HEAD -- '*.py'; then
+  sudo systemctl restart volme3d.service
+  echo 'volme3d.service neu gestartet (Python geaendert)'
+  sleep 2
+fi
 echo '— Gesundheitscheck —'
-curl -s -o /dev/null -w 'App:  HTTP %{http_code}\n' https://v3dcad.volme3dakademie.de/
+curl -sL -o /dev/null -w 'App:  HTTP %{http_code}\n' https://v3dcad.volme3dakademie.de/
 curl -s https://v3dcad.volme3dakademie.de/occt-health | head -c 40; echo
 git log --oneline -1
 "
