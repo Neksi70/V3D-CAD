@@ -210,6 +210,10 @@ body.mit-marking #vp{cursor:crosshair}
 #dev-badge{display:none;align-items:center;gap:4px;padding:3px 8px;background:#7c3aed;color:#fff;font-size:10px;font-weight:800;border-radius:12px;margin-left:8px;cursor:pointer;user-select:none}
 #beta-fb{display:none;align-items:center;gap:4px;padding:3px 9px;background:#F97316;color:#fff;font-size:10px;font-weight:800;border-radius:12px;cursor:pointer;user-select:none;transition:filter .12s;white-space:nowrap}
 #beta-fb:hover{filter:brightness(1.07)}
+/* Beta-Schild: kostenlose Beta bis mind. 31.03.2027, verlinkt die Bedingungen (/beta) */
+#beta-badge{display:flex;align-items:center;padding:2px 8px;margin-left:8px;border:1.5px solid #F97316;border-radius:12px;color:#F97316;font-size:10px;font-weight:800;letter-spacing:.4px;text-decoration:none;white-space:nowrap;user-select:none;transition:background .12s}
+#beta-badge:hover{background:rgba(249,115,22,.15)}
+@media (max-width:820px){#beta-badge .bb-lang{display:none}}
 /* Video-Knopf in der Kopfleiste: bleibt versteckt, bis _howtoInit weiss, dass
    es ueberhaupt Videos gibt — tote Knoepfe gibt es hier keine. */
 #howto-tb{display:none;align-items:center;gap:4px;padding:3px 9px;background:transparent;color:#fff;font-size:10px;font-weight:800;border:1.5px solid rgba(255,255,255,.45);border-radius:12px;cursor:pointer;user-select:none;transition:all .12s;white-space:nowrap}
@@ -1210,6 +1214,7 @@ const firebaseConfig = {
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
     <div class="r0-spacer"></div>
     <div id="howto-tb" onclick="_howtoMenu()" title="Kurze Howto-Videos: zeigen Schritt für Schritt, wie ein Werkzeug bedient wird">🎬 Videos</div>
+    <a id="beta-badge" href="/beta" target="_blank" rel="noopener" title="V3D CAD ist in der Beta-Phase und bis mindestens 31.03.2027 kostenlos — Bedingungen und Datenschutz">BETA<span class="bb-lang">&nbsp;· kostenlos</span></a>
     <div id="beta-fb" onclick="_betaOpen()" title="Beta-Feedback: Fehler oder Idee melden">💬 Feedback</div>
     <div class="sep" id="auth-sep" style="display:none"></div>
     <div id="auth-user-chip"><span></span></div>
@@ -25555,7 +25560,18 @@ async function _clearOutputFolder() {
 // attachment zurück — das versteht jeder Browser, ganz ohne blob:. Schlägt der
 // Server-Weg fehl, bleibt der direkte Blob-Download als Rückfall.
 const _isSafari = /apple/i.test(navigator.vendor || '') && !/CriOS|FxiOS|Chrome|Chromium|Edg\//.test(navigator.userAgent);
+// Beta-Nutzungsmessung: Exporte sieht nur der Browser — Dateiendung an den
+// Server melden (zählt pro Konto, keine Inhalte). sendBeacon überlebt auch
+// einen Seitenwechsel direkt nach dem Klick; Fehler sind egal.
+function _nutzungExport(name) {
+  try {
+    const ext = (String(name || '').match(/\.([a-z0-9]{1,8})$/i) || [, ''])[1].toLowerCase();
+    navigator.sendBeacon?.('/api/nutzung', new Blob([JSON.stringify({ art: 'export', detail: ext })],
+      { type: 'application/json' }));
+  } catch (e) {}
+}
 function _downloadBlob(blob, name) {
+  _nutzungExport(name);
   if (_isSafari) { _downloadViaServer(blob, name).catch(() => _downloadBlobDirekt(blob, name)); return; }
   _downloadBlobDirekt(blob, name);
 }
@@ -25601,6 +25617,7 @@ async function _saveExportMany(files) {
           const fh = await _outDirHandle.getFileHandle(f.name, { create: true });
           const w = await fh.createWritable();
           await w.write(f.blob); await w.close();
+          _nutzungExport(f.name);
           ok++;
         } catch(e) { console.warn('Ordner-Schreiben ' + f.name + ' fehlgeschlagen:', e); err++; }
       }
@@ -47717,8 +47734,12 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.49';
+const VOLME3D_VERSION = '1.18.50';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.50', date:'2026-09-24', changes:[
+    ['\u{1F9EA}','<b>V3D CAD ist offiziell in der Beta \u2014 und bleibt bis mindestens 31.\u202fM\u00e4rz\u202f2027 kostenlos.</b> Oben neben der Versionsnummer steht jetzt <b>BETA \u00b7 kostenlos</b>. Ein Klick darauf zeigt, was \u201eBeta\u201c hei\u00dft, was danach kommt (eine kostenlose Stufe bleibt, Bescheid gibt es mindestens vier Wochen vorher, Beta-Nutzer bekommen ein Vorzugsangebot) und welche Daten gespeichert werden.'],
+    ['\u{1F4CA}','<b>Neu: Nutzungsmessung pro Konto.</b> Damit die Tarife nach der Beta fair werden, z\u00e4hlt V3D CAD, wie oft der Editor ge\u00f6ffnet wird, wie viele Server-Operationen (samt Rechenzeit) und KI-Auftr\u00e4ge anfallen und in welchem Format exportiert wird. <b>Modell-Inhalte werden dabei nicht erfasst</b>, die Eintr\u00e4ge werden nach 13 Monaten gel\u00f6scht. Details stehen auf der Beta-Seite.'],
+  ]},
   { version:'1.18.49', date:'2026-09-24', changes:[
     ['\u{1F527}','<b>Am CNC-Fr\u00e4sen \u00e4ndert sich nichts \u2014 unter der Haube schon.</b> Die Rechnerei hinter <b>\u{1F527} CNC-Fr\u00e4sen</b> (Maschinen- und Materialtabellen, Drehzahl und Vorschub, die Bahn-Mathematik und die beiden G-Code-Dialekte f\u00fcr Fanuc und GRBL) steht jetzt in einer eigenen Datei, die sich V3D CAD mit dem entstehenden <b>V3D CAM</b> teilt \u2014 dem gr\u00f6\u00dferen Werkzeug f\u00fcr Rohteil und Schruppen aus STEP-Dateien. <b>Eine Quelle f\u00fcr beide:</b> W\u00fcrde etwa die Fanuc-Regel, dass jede Zahl einen Dezimalpunkt braucht, in zwei Kopien liegen, w\u00e4re sie in einem halben Jahr in der einen korrigiert und in der anderen nicht \u2014 und das ist der Fehler, der eine Maschine zerlegt. F\u00fcr dich sieht und rechnet alles genau wie vorher; die 48 Pr\u00fcfungen dazu laufen unver\u00e4ndert durch.'],
   ]},

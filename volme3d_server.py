@@ -21,6 +21,8 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 # Serverseitige Anmeldung: Firebase-ID-Token pruefen, eigenes Sitzungs-
 # Cookie ausstellen. Ohne das war das Login-Fenster reine Kosmetik.
 import v3d_auth
+# Nutzungsmessung pro Konto (Beta): Grundlage fuer die spaeteren Tarife.
+import v3d_nutzung
 
 # OCCT-Backend (occt-server.js) laeuft lokal auf HTTPS:3001 (self-signed).
 # Wir reichen /api/occt* + /occt-health dorthin durch, damit die Server-CAD-
@@ -196,6 +198,8 @@ ALLOW = {
     '/':                                  ('start.html', 'text/html; charset=utf-8'),
     '/volme3d.html':                      ('volme3d.html', 'text/html; charset=utf-8'),
     '/start.html':                        ('start.html', 'text/html; charset=utf-8'),
+    '/beta':                              ('beta.html', 'text/html; charset=utf-8'),
+    '/beta.html':                         ('beta.html', 'text/html; charset=utf-8'),
     '/volmedraw/volmedraw.html':          ('volmedraw/volmedraw.html', 'text/html; charset=utf-8'),
     '/volmedraw/lib/opentype.min.js':     ('volmedraw/lib/opentype.min.js', 'text/javascript; charset=utf-8'),
     '/volmedraw/lib/imagetracer.js':      ('volmedraw/lib/imagetracer.js', 'text/javascript; charset=utf-8'),
@@ -246,6 +250,67 @@ ALLOW = {
 }
 
 
+def _nutzung_html(b, monate):
+    """Auswertungsseite der Nutzungsmessung (schlicht, auch am Handy lesbar)."""
+    from html import escape as e
+    s = b['summe']
+    def zahl(x):
+        return f'{x:,}'.replace(',', '.') if isinstance(x, int) else \
+            f'{x:,.1f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
+    wahl = ''.join(
+        f'<option{" selected" if m == b["monat"] else ""}>{e(m)}</option>'
+        for m in (monate or [b['monat']]))
+    zeilen = ''.join(
+        '<tr><td>' + (e(k['email']) if k['email'] else '<i>Gast</i>') +
+        '</td><td>' + zahl(k['tage']) + '</td><td>' + zahl(k['starts']) +
+        '</td><td>' + zahl(k['occt']) + '</td><td>' + zahl(k['occt_s']) +
+        '</td><td>' + zahl(k['occt_fehler']) + '</td><td>' + zahl(k['ki']) +
+        '</td><td>' + zahl(k['exporte']) + '</td><td>' +
+        time.strftime('%d.%m. %H:%M', time.localtime(k['zuletzt'])) +
+        '</td></tr>' for k in b['konten']) or \
+        '<tr><td colspan="9">Noch keine Daten in diesem Monat.</td></tr>'
+    ops = ''.join(
+        f'<tr><td>{e(o["art"])}</td><td>{zahl(o["anzahl"])}</td>'
+        f'<td>{zahl(o["sekunden"])}</td></tr>' for o in b['operationen']) or \
+        '<tr><td colspan="3">—</td></tr>'
+    kacheln = ''.join(
+        f'<div class="k"><b>{zahl(w)}</b><span>{t}</span></div>' for w, t in (
+            (s['konten'], 'Konten aktiv'), (s['gaeste'], 'Gäste'),
+            (s['starts'], 'Editor-Starts'), (s['occt'], 'Server-Operationen'),
+            (s['occt_s'], 'Rechenzeit (s)'), (s['ki'], 'KI-Aufträge'),
+            (s['exporte'], 'Exporte')))
+    return f"""<!doctype html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>V3D CAD – Nutzung</title>
+<style>
+:root{{color-scheme:dark;--bg:#0f1115;--card:#171a21;--line:#2a2f3a;--mut:#9aa3b2;--acc:#F97316}}
+body{{margin:0;background:var(--bg);color:#e6e8ec;font:14px/1.5 system-ui,sans-serif}}
+main{{max-width:1100px;margin:0 auto;padding:20px 16px}}
+h1{{font-size:20px;margin:0 0 4px}} h2{{font-size:15px;margin:24px 0 8px}}
+p.m{{color:var(--mut);margin:0 0 16px}}
+form{{margin:0 0 16px}} select{{background:var(--card);color:inherit;border:1px solid var(--line);border-radius:6px;padding:4px 8px}}
+.ks{{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}}
+.k{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}}
+.k b{{display:block;font-size:20px;color:var(--acc)}} .k span{{color:var(--mut);font-size:12px}}
+.t{{overflow-x:auto;border:1px solid var(--line);border-radius:10px}}
+table{{border-collapse:collapse;width:100%;min-width:640px}}
+th,td{{padding:6px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}}
+th:first-child,td:first-child{{text-align:left}} th{{color:var(--mut);font-weight:600;background:var(--card)}}
+</style></head><body><main>
+<h1>V3D CAD – Nutzung</h1>
+<p class="m">Beta-Messung pro Konto. Rechenzeit = Wartezeit der Server-Operationen (OCCT).
+Exporte meldet der Browser selbst.</p>
+<form><select name="monat" onchange="this.form.submit()">{wahl}</select></form>
+<div class="ks">{kacheln}</div>
+<h2>Konten</h2>
+<div class="t"><table><tr><th>Konto</th><th>Tage aktiv</th><th>Starts</th>
+<th>Server-Op.</th><th>Rechenzeit (s)</th><th>davon Fehler</th><th>KI</th>
+<th>Exporte</th><th>zuletzt</th></tr>{zeilen}</table></div>
+<h2>Server-Operationen nach Art</h2>
+<div class="t"><table><tr><th>Operation</th><th>Anzahl</th><th>Rechenzeit (s)</th></tr>{ops}</table></div>
+</main></body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -257,9 +322,21 @@ class Handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
-    def _proxy_occt(self, method):
-        """Reicht die Anfrage an das lokale OCCT-Backend (HTTPS:3001) durch."""
+    def _proxy_occt(self, method, sess=None):
+        """Reicht die Anfrage an das lokale OCCT-Backend (HTTPS:3001) durch.
+
+        Mit sess wird der Aufruf samt Rechenzeit fuer das Konto gezaehlt.
+        """
         path = self.path.split('?', 1)[0]
+        t0 = time.monotonic()
+        gezaehlt = []
+        def zaehlen(ok):
+            # Ein Fehler beim Zurueckschreiben darf nicht doppelt zaehlen
+            if sess and not gezaehlt:
+                gezaehlt.append(1)
+                v3d_nutzung.erfassen(
+                    sess, 'occt', path.rsplit('/', 1)[-1],
+                    (time.monotonic() - t0) * 1000, ok)
         backend_path = '/health' if path == '/occt-health' else self.path
         body = None
         if method == 'POST':
@@ -280,8 +357,11 @@ class Handler(BaseHTTPRequestHandler):
                 # statt minutenlang fuer niemanden weiterzurechnen.
                 conn.close()
                 self.close_connection = True
+                zaehlen(False)
                 return
             resp, data = antwort
+            # Das Backend meldet manche Fehler mit 200 + {"error": ...}
+            zaehlen(resp.status < 400 and b'"error"' not in data[:300])
             self.send_response(resp.status)
             self._cors()
             self.send_header('Content-Type',
@@ -291,6 +371,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
             conn.close()
         except Exception as e:
+            zaehlen(False)
             msg = ('{"error":"OCCT-Backend nicht erreichbar: '
                    + str(e).replace('"', "'") + '"}').encode()
             self.send_response(502)
@@ -484,6 +565,8 @@ class Handler(BaseHTTPRequestHandler):
         _ki_jobs[jid] = job
         threading.Thread(target=_ki_run, args=(job, prompt, img_path),
                          daemon=True).start()
+        v3d_nutzung.erfassen(self._session(), 'ki',
+                             'bild' if img_path else 'text')
         self._json(200, {'job': jid})
 
     def do_POST(self):
@@ -496,7 +579,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/occt'):
             if not self._need_session():
                 return
-            self._proxy_occt('POST')
+            self._proxy_occt('POST', self._session())
+            return
+        if self.path == '/api/nutzung':
+            if not self._need_session():
+                return
+            self._nutzung_melden()
             return
         if self.path == '/ki/generate':
             if not self._need_session(ki=True):
@@ -640,6 +728,57 @@ class Handler(BaseHTTPRequestHandler):
                     return  # Zuschauer hat weggeklickt
                 rest -= len(chunk)
 
+    def _nutzung_melden(self):
+        """POST /api/nutzung — {art, detail}: was nur der Browser sieht (Exporte)."""
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        if length > 2048:
+            self._json(413, {'error': 'Anfrage zu gross'})
+            return
+        try:
+            body = json.loads(self.rfile.read(length) or b'{}')
+        except ValueError:
+            body = {}
+        art = body.get('art')
+        if art not in v3d_nutzung.CLIENT_ARTEN:
+            self._json(400, {'error': 'Unbekannte Art'})
+            return
+        detail = re.sub(r'[^a-z0-9._-]', '', str(body.get('detail', '')).lower())
+        v3d_nutzung.erfassen(self._session(), art, detail[:16])
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
+
+    def _nutzung_bericht(self, als_json):
+        """GET /nutzung[.json]?monat=YYYY-MM — nur fuer Admins (Liste in
+        ~/.config/volme3d/admins). Allen anderen: 404, die Seite gibt es nicht."""
+        sess = self._session()
+        if not sess:
+            self.send_response(302)
+            self.send_header('Location', '/login?weiter=' +
+                             urllib.parse.quote(self.path, safe=''))
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        if not v3d_nutzung.ist_admin(sess):
+            self.send_error(404, 'Not found')
+            return
+        query = self.path.split('?', 1)[1] if '?' in self.path else ''
+        monat = (urllib.parse.parse_qs(query).get('monat') or [''])[0]
+        alle = v3d_nutzung.monate()
+        if not re.fullmatch(r'\d{4}-\d{2}', monat):
+            monat = alle[0] if alle else time.strftime('%Y-%m')
+        b = v3d_nutzung.bericht(monat)
+        if als_json:
+            self._json(200, b)
+            return
+        data = _nutzung_html(b, alle).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
         path = self.path.split('?', 1)[0]
 
@@ -665,6 +804,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == '/occt-health':
             self._proxy_occt('GET')
+            return
+
+        if path in ('/nutzung', '/nutzung.json'):
+            self._nutzung_bericht(path.endswith('.json'))
             return
 
         if path.startswith('/ki/status/') or path.startswith('/ki/result/'):
@@ -723,6 +866,8 @@ class Handler(BaseHTTPRequestHandler):
         if path in APP_PATHS:
             if path in GATED_PATHS and not self._gate_app(path):
                 return
+            if not DEV_MODE:
+                v3d_nutzung.erfassen(self._session(), 'start')
             if DEV_MODE:
                 # Dev: rohe Arbeitskopie ausliefern und das Firebase-Login-Gate
                 # ausschalten (USE_FIREBASE=false -> Editor startet ohne Login).
