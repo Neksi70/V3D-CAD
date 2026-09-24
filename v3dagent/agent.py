@@ -52,6 +52,7 @@ STANDARD = {
     'sitzung_max_s': 43200,      # nach 12 h ein frischer Faden
     'laeufe_pro_stunde': 30,     # Notbremse gegen Endlosschleifen/Kosten
     'max_zeichen': 3500,         # WhatsApp bricht bei ~4096
+    'auto_max_zeichen': 600,     # Auto-Modus: 3500 Zeichen sind vorgelesen Minuten am Stück
 }
 
 JA = {'ja', 'jo', 'jau', 'jep', 'jupp', 'ok', 'okay', 'oki', 'passt', 'senden', 'sende',
@@ -62,6 +63,28 @@ NEIN = {'nein', 'ne', 'nee', 'nö', 'noe', 'verwerfen', 'verwirf', 'abbrechen', 
 
 # Meta-Fehlercodes, die „24-Stunden-Fenster ist zu" bedeuten
 FENSTER_CODES = {131047, 470}
+
+# Auto-Modus: Volker sitzt am Steuer und lässt sich die Antwort von Android Auto
+# vorlesen. Die Schaltworte sind bewusst so gewählt, dass sie beim Diktieren heil
+# ankommen — am Steuer tippt niemand, und die Spracherkennung macht aus „auto an"
+# zuverlässig genau das.
+AUTO_AN = {'auto an', 'automodus an', 'auto modus an', 'autohaltung an', 'sprachmodus an',
+           'vorlesen an', 'kurzfassung an', 'ich fahre', 'ich fahre los', 'im auto', 'bin im auto'}
+AUTO_AUS = {'auto aus', 'automodus aus', 'auto modus aus', 'autohaltung aus', 'sprachmodus aus',
+            'vorlesen aus', 'kurzfassung aus', 'bin da', 'ich bin da', 'angekommen', 'bin angekommen'}
+
+# Was im Auto anders gilt. Hängt nur dann am Systemtext, wenn der Modus an ist.
+AUTO_HALTUNG = (
+    '\n\nVolker SITZT GERADE IM AUTO und lässt sich das vorlesen. Für ANTWORT an ihn gilt darum:\n'
+    '- Höchstens drei bis vier Sätze, das Wichtigste zuerst.\n'
+    '- Gesprochene Sprache, ganze Sätze. Keine Aufzählungen, keine Überschriften, keine Sternchen.\n'
+    '- KEINE Dateipfade, Zeilennummern, Versionsnummern, Codeschnipsel oder Zahlenkolonnen. '
+    'Vorgelesen ist das wertlos — sag stattdessen, dass du die Einzelheiten schriftlich nachreichst.\n'
+    '- Höchstens EINE Rückfrage, und nichts zum Abwägen. Am Steuer kann er keine Möglichkeiten '
+    'vergleichen; schlag das vor, was du für richtig hältst.\n'
+    'Das gilt NUR für ANTWORT an Volker. Ein ENTWURF an jemand anderen wird ganz normal '
+    'geschrieben — der wird nicht vorgelesen, sondern später verschickt.'
+)
 
 
 def jetzt():
@@ -88,6 +111,20 @@ def schlicht(text):
     t = unicodedata.normalize('NFKC', str(text or '')).strip().lower()
     t = ''.join(c for c in t if not unicodedata.combining(c) and c != '\ufe0f')
     return re.sub(r'[\s.!?,;:]+', ' ', t).strip()
+
+
+def kuerzen(text, grenze):
+    """Auf die Grenze kürzen, aber am Satzende. Ein mitten im Wort abgeschnittener
+    Satz klingt vorgelesen wie ein Aussetzer der Verbindung."""
+    t = (text or '').strip()
+    if len(t) <= grenze:
+        return t
+    schnitt = t[:grenze]
+    p = max(schnitt.rfind(z) for z in '.!?')
+    if p > grenze * 0.5:
+        return schnitt[:p + 1].strip()
+    p = schnitt.rfind(' ')
+    return (schnitt[:p] if p > grenze * 0.5 else schnitt).strip() + ' …'
 
 
 def laden(pfad, standard):
@@ -201,6 +238,7 @@ class Bruecke:
             'Volker gibt jeden Entwurf vorher frei — schreib also nicht dazu, dass er ihn noch prüfen soll.\n'
             'Du darfst im Projektordner lesen (Read/Grep/Glob), aber nichts ändern und nichts ausrollen. '
             'Soll etwas gebaut werden, sag kurz, was du tun würdest, und dass es eine richtige Sitzung braucht.'
+            + (AUTO_HALTUNG if self.z.get('auto') else '')
         )
 
     def claude(self, prompt, sitzung):
@@ -258,12 +296,18 @@ class Bruecke:
             return
         self.z.setdefault('sitzungen', {})[schluessel] = {'id': sid, 'ts': jetzt()}
 
-    def an_admin(self, text):
+    def an_admin(self, text, voll=False):
         """Nachricht an Volker. Klappt sie nicht (Fenster zu), wird sie
-        aufgehoben und beim nächsten Lebenszeichen nachgereicht."""
+        aufgehoben und beim nächsten Lebenszeichen nachgereicht.
+
+        voll=True hebt die Auto-Kürzung auf. Einen Entwurf, den er freigeben soll,
+        muss er ganz hören — sonst gibt er etwas frei, das er nur halb kennt."""
         offen = self.z.get('notizen') or []
-        voll = ('\n\n'.join(offen + [text])).strip()
-        r = self._senden(self.admin, voll[:self.conf.get('max_zeichen', 3500)])
+        ganz = ('\n\n'.join(offen + [text])).strip()
+        grenze = self.conf.get('max_zeichen', 3500)
+        if self.z.get('auto') and not voll:
+            grenze = self.conf.get('auto_max_zeichen', 600)
+        r = self._senden(self.admin, kuerzen(ganz, grenze))
         if r.get('ok'):
             self.z['notizen'] = []
             return True
@@ -311,7 +355,7 @@ class Bruecke:
         wer = (name or nummer).capitalize()
         self.an_admin((vorspann + '\n\n' if vorspann else '')
                       + 'Entwurf an %s:\n———\n%s\n———\n„ja" schickt ihn, „nein" verwirft ihn — '
-                        'oder sag mir, was anders soll.' % (wer, text))
+                        'oder sag mir, was anders soll.' % (wer, text), voll=True)
 
     # ---- Kern --------------------------------------------------------------
     def verarbeite(self, n):
@@ -340,6 +384,17 @@ class Bruecke:
     def vom_admin(self, text):
         e = self.z.get('entwurf')
         k = schlicht(text)
+
+        # Umschalten geht immer — auch mitten in einer offenen Entwurfs-Freigabe.
+        if k in AUTO_AN or k in AUTO_AUS:
+            an = k in AUTO_AN
+            self.z['auto'] = an
+            notieren('[agent] Auto-Modus %s' % ('an' if an else 'aus'))
+            self.an_admin('Auto-Modus an. Ich fasse mich kurz und lasse Pfade und Zahlen weg. '
+                          'Sag „Auto aus“, wenn du wieder am Schreibtisch bist.' if an else
+                          'Auto-Modus aus. Ich antworte wieder ausführlich.', voll=True)
+            return
+
         if e:
             if k in JA:
                 self.entwurf_senden()
@@ -435,6 +490,7 @@ def main():
         print('Offener Entwurf: %s' % (('an %s: %s' % (e.get('name'), e['text'][:120])) if e else 'keiner'))
         print('Geparkt: %s' % (', '.join(b.z.get('geparkt') or {}) or 'nichts'))
         print('Aufgehobene Notizen: %d' % len(b.z.get('notizen') or []))
+        print('Auto-Modus: %s' % ('an' if b.z.get('auto') else 'aus'))
         return 0
     if '--einmal' in sys.argv:
         print('%d Nachricht(en) verarbeitet.' % b.runde())

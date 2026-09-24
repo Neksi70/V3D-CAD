@@ -147,5 +147,57 @@ ok('Nachreichen: beide Antworten in einer Nachricht',
    gesendet and 'erste' in gesendet[-1][1] and 'zweite' in gesendet[-1][1], gesendet[-1:])
 ok('Nachreichen: Notizen sind geleert', b.z['notizen'] == [])
 
+# ── 11. Auto-Modus: kurz vorlesen, aber Entwuerfe trotzdem ganz ─────────────
+# Worum es geht: Volker laesst sich die Antwort im Auto von Android Auto
+# vorlesen. Eine 3500-Zeichen-Antwort sind vorgelesen Minuten am Stueck.
+
+ok('Kuerzen schneidet am Satzende',
+   A.kuerzen('Satz eins. Satz zwei. Satz drei ist zu lang.', 35) == 'Satz eins. Satz zwei.',
+   A.kuerzen('Satz eins. Satz zwei. Satz drei ist zu lang.', 35))
+# Liegt das letzte Satzende so frueh, dass mehr als die halbe erlaubte Laenge
+# wegfiele, wird stattdessen an der Wortgrenze geschnitten — sonst bliebe von
+# einer 600-Zeichen-Antwort wegen eines fruehen Punktes ein Dreizeiler uebrig.
+ok('Zu frueher Punkt wird verworfen, dann Wortgrenze',
+   A.kuerzen('Erster Satz. Zweiter Satz laeuft ueber die Grenze hinaus.', 30)
+   == 'Erster Satz. Zweiter Satz …',
+   A.kuerzen('Erster Satz. Zweiter Satz laeuft ueber die Grenze hinaus.', 30))
+ok('Kuerzen schneidet nie mitten im Wort',
+   ' ' not in A.kuerzen('Erster Satz. Zweiter Satz laeuft ueber die Grenze hinaus.', 30)[-6:-2])
+ok('Kuerzen laesst Kurzes in Ruhe', A.kuerzen('Passt schon.', 600) == 'Passt schon.')
+
+b, gesendet, prompts = frisch([])
+b.verarbeite({'id': 20, 'von': VOLKER, 'text': 'Auto an'})
+ok('„Auto an" schaltet um', b.z.get('auto') is True)
+ok('„Auto an" fragt Claude gar nicht erst', prompts == [], prompts)
+ok('„Auto an" wird bestaetigt', gesendet and 'Auto-Modus an' in gesendet[-1][1], gesendet[-1:])
+ok('Auto-Haltung haengt jetzt am Systemtext', 'IM AUTO' in b.systemtext())
+
+lang = 'Satz eins ist fertig. ' * 60
+b._denken = lambda prompt, sitzung: {'text': 'ANTWORT\n' + lang, 'sitzung': 'sid-1', 'fehler': ''}
+b.verarbeite({'id': 21, 'von': VOLKER, 'text': 'und nun?'})
+ok('Im Auto wird die Antwort gekuerzt',
+   0 < len(gesendet[-1][1]) <= CONF.get('auto_max_zeichen', 600), len(gesendet[-1][1]))
+ok('Gekuerzt wird sauber am Satzende', gesendet[-1][1].endswith('.'), gesendet[-1][1][-40:])
+
+# Der wichtigste Fall: einen Entwurf muss er GANZ hoeren, sonst gibt er etwas
+# frei, das er nur halb kennt.
+entwurf = 'Moin Ralf! ' + ('Das ist eine lange Erklaerung. ' * 40)
+b._denken = lambda prompt, sitzung: {'text': 'ENTWURF Ralf\n' + entwurf, 'sitzung': 'sid-1', 'fehler': ''}
+b.verarbeite({'id': 22, 'von': VOLKER, 'text': 'schreib Ralf'})
+ok('Entwurf wird trotz Auto-Modus ganz gezeigt',
+   len(gesendet[-1][1]) > CONF.get('auto_max_zeichen', 600) and entwurf.strip() in gesendet[-1][1],
+   len(gesendet[-1][1]))
+
+# Umschalten muss auch mitten in einer offenen Freigabe gehen
+ok('Entwurf liegt noch an', b.z.get('entwurf') is not None)
+b.verarbeite({'id': 23, 'von': VOLKER, 'text': 'Bin da'})
+ok('„Bin da" schaltet wieder aus', b.z.get('auto') is False)
+ok('Umschalten laesst den offenen Entwurf stehen', b.z.get('entwurf') is not None)
+ok('Auto-Haltung ist wieder weg', 'IM AUTO' not in b.systemtext())
+
+# Und der Entwurf laesst sich danach normal freigeben
+b.verarbeite({'id': 24, 'von': VOLKER, 'text': 'ja'})
+ok('Freigabe nach dem Umschalten geht an Ralf', gesendet[-2][0] == RALF, gesendet[-2][0])
+
 print('\n' + ('%d FEHLER: %s' % (len(fehler), ', '.join(fehler)) if fehler else 'Alles grün.'))
 sys.exit(1 if fehler else 0)
