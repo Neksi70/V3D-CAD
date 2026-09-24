@@ -175,6 +175,13 @@ DEV_MODE = False
 # (geteilte Modelle), abstimmung.html und mitsehen.html bleiben bewusst
 # oeffentlich — die brauchen kein Konto.
 GATED_PATHS = {'/volme3d.html'}
+
+# Auf dem reinen CAD-Server (netcup) gibt es nur V3D CAD: Startseite und die
+# Nebenwerkzeuge leiten direkt in den Editor. Die Bibliotheken unter
+# /volmedraw/lib/ bleiben erreichbar, der Editor laedt dort opentype.js nach.
+CAD_ONLY_HOSTS = {'v3dcad.volme3dakademie.de'}
+CAD_ONLY_REDIRECT = {'/', '/start.html', '/volmedraw/volmedraw.html',
+                     '/volmeslice/volmeslice.html'}
 KI_MAX_PER_USER = 10     # KI-Generierungen pro Nutzer und Tag
 _ki_user_day = {}        # uid -> [YYYY-MM-DD, Zaehler]
 _ki_user_lock = threading.Lock()
@@ -635,6 +642,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split('?', 1)[0]
+
+        host = (self.headers.get('Host') or '').split(':', 1)[0].lower()
+        if host in CAD_ONLY_HOSTS and path in CAD_ONLY_REDIRECT:
+            query = self.path[len(path):]
+            self.send_response(302)
+            self.send_header('Location', '/volme3d.html' + query)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
 
         if path in ('/login', '/login.html'):
             self._send_file('login.html', 'text/html; charset=utf-8')
