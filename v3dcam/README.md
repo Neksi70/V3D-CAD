@@ -66,5 +66,29 @@ STEP läuft über `POST /api/step` ans lokale OCCT-Backend (HTTPS:3001, dasselbe
 wie V3D CAD). Höchstens zwei Aufträge gleichzeitig, damit der Editor dort
 nicht warten muss.
 
-**Noch nicht im Funnel** — bisher nur lokal erreichbar. Das ist Absicht,
-solange kein echtes Teil damit gefräst wurde.
+## Auslieferung
+
+Zwei Stellen, beide mit demselben Code aus dem Git:
+
+| Wo | Adresse | Dienst |
+|---|---|---|
+| netcup (Produktion) | `https://v3dcad.volme3dakademie.de/cam/` | `v3dcam.service` (System-Unit) |
+| V3DA (Test) | `http://127.0.0.1:8803` | `v3dcam.service` (User-Unit) |
+
+Auf netcup hängt der Pfad in `/etc/nginx/sites-available/v3d-cad`, weil der
+dortige Zertifikatsname schon steht. **`location = /cam` leitet auf `/cam/`
+um** — ohne Schluss-Schrägstrich lösen sich die relativen Pfade der App gegen
+`/` auf und der Kern wird nicht gefunden.
+
+Rollout wie beim CAD über `~/ausrollen.sh`; danach auf netcup
+`sudo systemctl restart v3dcam`, wenn sich hier etwas geändert hat.
+
+**ACHTUNG — keine Anmeldung.** V3D CAD steckt hinter dem Sitzungs-Cookie von
+`volme3d_server.py`; V3D CAM läuft daran vorbei und ist für jeden erreichbar,
+der die Adresse kennt. Auch `POST /api/step` (OCCT) steht offen, begrenzt nur
+durch die zwei Plätze. Für ein internes Werkzeug vertretbar, aber es ist eine
+bewusste Entscheidung, keine Nachlässigkeit.
+
+Eine eigene Subdomain `v3dcam.volme3dakademie.de` wäre schöner und würde zum
+Muster der anderen Werkzeuge passen; dafür braucht es einen A- und einen
+AAAA-Eintrag im goneo-DNS und danach certbot.
