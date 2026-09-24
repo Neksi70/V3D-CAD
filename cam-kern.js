@@ -209,6 +209,53 @@ function _cncRinge(cs){
     .filter(r => _cncLaenge(r.lp, true) > 0.5);
 }
 
+// ── Netz → Manifold ─────────────────────────────────────────────────────
+// Braucht jede App, die aus einem importierten Netz rechnen will: V3D CAD
+// beim Verbinden und Schneiden, V3D CAM beim Schruppen gegen das Teil.
+function _mfFromSoup(w, tris) {
+  // Entartete Dreiecke VORHER aussortieren. _healTrisForBool tut das auch,
+  // greift aber erst, nachdem Manifold ein Netz abgelehnt hat — und genau
+  // das passiert hier nicht: Manifold nimmt sie an und rechnet sich fest.
+  // Gemessen an einem Hunyuan3D-Netz (439.692 Dreiecke, davon 187.652 mit
+  // doppelter Ecke): mit den Entarteten >25 min ohne Ergebnis, ohne sie
+  // 1,1 s. Der Rest des Netzes war sauber (F/V = 2,0, keine offene Kante).
+  // Bewusst nur EXAKTE Entartung (zwei gleiche Ecken oder Kreuzprodukt
+  // genau 0) — ein Epsilon würde echte feine Geometrie mitnehmen.
+  let vol = 0, gut = 0;
+  const behalten = new Uint8Array(tris.length / 9);
+  for (let i = 0, t = 0; i < tris.length; i += 9, t++) {
+    const ax=tris[i],ay=tris[i+1],az=tris[i+2], bx=tris[i+3],by=tris[i+4],bz=tris[i+5], cx=tris[i+6],cy=tris[i+7],cz=tris[i+8];
+    if ((ax===bx&&ay===by&&az===bz) || (bx===cx&&by===cy&&bz===cz) || (ax===cx&&ay===cy&&az===cz)) continue;
+    const ux=bx-ax,uy=by-ay,uz=bz-az, vx=cx-ax,vy=cy-ay,vz=cz-az;
+    const nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    if (nx===0 && ny===0 && nz===0) continue;
+    behalten[t] = 1; gut++;
+    vol += ax*(by*cz - bz*cy) - ay*(bx*cz - bz*cx) + az*(bx*cy - by*cx);
+  }
+  if (!gut) throw new Error('Netz besteht nur aus entarteten Dreiecken');
+  if (gut < behalten.length) {
+    console.warn('[mf] ' + (behalten.length - gut) + ' entartete Dreiecke übersprungen (von ' + behalten.length + ')');
+    const rein = new Float32Array(gut * 9);
+    for (let t = 0, w2 = 0; t < behalten.length; t++) {
+      if (!behalten[t]) continue;
+      for (let q = 0; q < 9; q++) rein[w2++] = tris[t * 9 + q];
+    }
+    tris = rein;
+  }
+  const nVert = tris.length / 3;
+  const idx = new Uint32Array(nVert);
+  if (vol < 0) { console.warn('[mold] Netz invertiert (Volumen ' + (vol/6).toFixed(0) + ') — Wicklung wird umgedreht');
+    for (let t = 0; t < nVert; t += 3) { idx[t] = t; idx[t+1] = t+2; idx[t+2] = t+1; } }
+  else for (let t = 0; t < nVert; t++) idx[t] = t;
+  const soup = new w.Mesh({
+    numProp: 3,
+    vertProperties: tris instanceof Float32Array ? tris : new Float32Array(tris),
+    triVerts: idx
+  });
+  soup.merge();
+  return new w.Manifold(soup);
+}
+
 // ── Werte ────────────────────────────────────────────────────────────────
 function _cncWerte(P){
   const m = _CNC_MAT[P.mat], ma = _CNC_MASCHINE[P.mas] || _CNC_MASCHINE.grbl;
@@ -313,7 +360,8 @@ function _cncFaKom(t){
 
 function _cncGcodeFanuc(erg, P){
   const w = erg.w, m = _CNC_MAT[P.mat], F = _cncFa, K = _cncFaKom;
-  const opN = { aus:'AUSSCHNEIDEN', tasche:'TASCHE', grav:'GRAVUR', bohr:'BOHREN' }[P.op];
+  const opN = { aus:'AUSSCHNEIDEN', tasche:'TASCHE', grav:'GRAVUR', bohr:'BOHREN',
+                schrupp:'SCHRUPPEN' }[P.op] || 'FRAESEN';
   const L = [];
   L.push('%');
   L.push('O' + String(Math.max(1, Math.min(9999, P.oNr))).padStart(4, '0') + ' ' + K(_cncApp(P) + ' ' + opN));
@@ -377,7 +425,8 @@ function _cncGcodeFanuc(erg, P){
 function _cncGcodeGrbl(erg, P){
   const w = erg.w, m = _CNC_MAT[P.mat];
   const nz = v => { let s = (+v).toFixed(3); if(s.indexOf('.') >= 0) s = s.replace(/0+$/,'').replace(/\.$/,''); return s; };
-  const opN = { aus:'Ausschneiden', tasche:'Tasche ausräumen', grav:'Gravieren', bohr:'Bohren' }[P.op];
+  const opN = { aus:'Ausschneiden', tasche:'Tasche ausräumen', grav:'Gravieren', bohr:'Bohren',
+                schrupp:'Schruppen' }[P.op] || 'Fräsen';
   const L = [];
   L.push('(' + _cncApp(P) + ' — CNC 2,5D)');
   L.push('(Entwurf: ' + (P.entwurf || 'ohne Namen') + ')');

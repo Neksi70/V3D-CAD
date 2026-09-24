@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V3D CAM</title>
+<style>
+:root{--bg:#f4f6f8;--fl:#fff;--li:#e3e8ee;--tx:#1d2733;--tx2:#63727f;--ak:#ff7a1a;--gr:#2ecc71}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--tx);background:var(--bg);display:flex;height:100vh;overflow:hidden}
+#buehne{flex:1;position:relative;min-width:0}
+#buehne canvas{display:block}
+#leiste{width:330px;flex:none;background:var(--fl);border-left:1px solid var(--li);overflow-y:auto;padding:14px}
+h1{font-size:17px;margin:0 0 2px;font-weight:600}
+h1 small{font-weight:400;color:var(--tx2);font-size:12px}
+h2{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--tx2);margin:18px 0 7px;font-weight:600}
+.z{display:flex;align-items:center;gap:8px;margin:6px 0}
+.z label{flex:1;min-width:0}
+input[type=number]{width:76px;padding:4px 6px;border:1px solid var(--li);border-radius:7px;font:inherit;text-align:right}
+.eh{color:var(--tx2);font-size:12px;width:34px}
+.kn{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
+.kn button{flex:1;min-width:66px;padding:6px 8px;border:1px solid var(--li);background:var(--fl);border-radius:8px;font:inherit;cursor:pointer;color:var(--tx)}
+.kn button.an{background:var(--ak);border-color:var(--ak);color:#fff}
+.gross{width:100%;padding:10px;border:0;border-radius:9px;font:inherit;font-weight:600;cursor:pointer;margin-top:8px;background:var(--li);color:var(--tx)}
+.gross.pri{background:var(--ak);color:#fff}
+.gross:disabled{opacity:.45;cursor:default}
+.info{background:#f0f3f7;border-radius:9px;padding:9px 11px;font-size:12.5px;color:var(--tx2);margin-top:10px;line-height:1.55}
+.info b{color:var(--tx)}
+.warn{background:#fff4e5;color:#8a4b00}
+.fehl{background:#ffeaea;color:#a11}
+#drop{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(244,246,248,.94);font-size:15px;color:var(--tx2);text-align:center;padding:30px}
+#drop.weg{display:none}
+#stand{position:absolute;left:12px;bottom:10px;font-size:12px;color:var(--tx2);background:rgba(255,255,255,.85);padding:4px 9px;border-radius:7px}
+</style>
+</head>
+<body>
+<div id="buehne">
+  <div id="drop">STL- oder STEP-Datei hierher ziehen<br><small>oder unten „Teil laden"</small></div>
+  <div id="stand"></div>
+</div>
+
+<div id="leiste">
+  <h1>V3D CAM <small>3D-Fräsen</small></h1>
+
+  <h2>Teil</h2>
+  <button class="gross" onclick="document.getElementById('datei').click()">📂 Teil laden (STL / STEP)</button>
+  <input type="file" id="datei" accept=".stl,.step,.stp" style="display:none" onchange="_camDatei(event)">
+  <div class="info" id="teil-info">Noch nichts geladen.</div>
+
+  <h2>Rohteil</h2>
+  <div class="kn" id="kn-roh">
+    <button class="an" data-v="auto" onclick="_camSetz('roh','auto','kn-roh')">Automatisch</button>
+    <button data-v="hand" onclick="_camSetz('roh','hand','kn-roh')">Von Hand</button>
+  </div>
+  <div class="z"><label title="Wie viel Material rings um das Teil im Klotz steckt. Bei „Automatisch" wird die Hüllbox des Teils darum vergrößert.">Zugabe X / Y</label><input type="number" id="r-zu" value="2" min="0" max="200" step="0.5" oninput="_camRohNeu()"><span class="eh">mm</span></div>
+  <div class="z"><label title="Zugabe nach oben. Nach unten wird nicht zugegeben — die Teilunterseite liegt auf dem Rohteilboden auf.">Zugabe oben</label><input type="number" id="r-zuz" value="0" min="0" max="200" step="0.5" oninput="_camRohNeu()"><span class="eh">mm</span></div>
+  <div class="z"><label>Maße X / Y / Z</label></div>
+  <div class="z"><input type="number" id="r-x" step="0.5" oninput="_camRohHand()"><input type="number" id="r-y" step="0.5" oninput="_camRohHand()"><input type="number" id="r-z" step="0.5" oninput="_camRohHand()"></div>
+
+  <h2>Maschine</h2>
+  <div class="kn" id="kn-mas">
+    <button class="an" data-v="fanuc" onclick="_camSetz('mas','fanuc','kn-mas')">Fanuc</button>
+    <button data-v="grbl" onclick="_camSetz('mas','grbl','kn-mas')">GRBL</button>
+  </div>
+  <div class="z"><label title="Höchstdrehzahl der Spindel. Die Drehzahl kommt aus der Schnittgeschwindigkeit des Materials und wird hier gedeckelt.">Spindel max.</label><input type="number" id="nmax" value="10000" min="1000" max="60000" step="500" oninput="_camInfo()"><span class="eh">1/min</span></div>
+  <div class="z" id="z-fanuc"><label title="Programmnummer, Werkzeugplatz und Nummer der Längenkorrektur">O / T / H</label><input type="number" id="onr" value="1" min="1" max="9999" style="width:52px" oninput="_camInfo()"><input type="number" id="tnr" value="1" min="1" max="99" style="width:44px" oninput="_camInfo()"><input type="number" id="hnr" value="1" min="1" max="99" style="width:44px" oninput="_camInfo()"></div>
+  <div class="z" id="z-g54"><label>Nullpunkt G</label><input type="number" id="g54" value="54" min="54" max="59" oninput="_camInfo()"></div>
+  <div class="kn" id="kn-kuehl">
+    <button data-v="aus" onclick="_camSetz('kuehl','aus','kn-kuehl')">Trocken</button>
+    <button class="an" data-v="m8" onclick="_camSetz('kuehl','m8','kn-kuehl')">Flut M8</button>
+    <button data-v="m7" onclick="_camSetz('kuehl','m7','kn-kuehl')">Nebel M7</button>
+  </div>
+
+  <h2>Werkzeug &amp; Material</h2>
+  <div class="z"><label>Fräser-Ø</label><input type="number" id="d" value="10" min="1" max="40" step="0.5" oninput="_camInfo()"><span class="eh">mm</span></div>
+  <div class="z"><label>Schneiden</label><input type="number" id="zz" value="3" min="1" max="6" step="1" oninput="_camInfo()"><span class="eh">Z</span></div>
+  <div class="kn" id="kn-mat"></div>
+
+  <h2>Schruppen</h2>
+  <div class="z"><label title="Wie viel Material für das spätere Schlichten stehen bleibt — rundum und nach unten.">Aufmaß</label><input type="number" id="auf" value="0.4" min="0" max="10" step="0.1" oninput="_camInfo()"><span class="eh">mm</span></div>
+  <div class="z"><label title="Höhe, auf der zwischen den Bahnen im Eilgang verfahren wird. Muss über Schraubstock und Pratzen liegen.">Sicherheitshöhe</label><input type="number" id="safe" value="50" min="1" max="300" step="1" oninput="_camInfo()"><span class="eh">mm</span></div>
+  <div class="z"><label title="Auf dieser Weglänge taucht der Fräser schräg auf die nächste Ebene ein, statt senkrecht zu stechen.">Rampenlänge</label><input type="number" id="rampe" value="25" min="0" max="300" step="1" oninput="_camInfo()"><span class="eh">mm</span></div>
+
+  <div class="info" id="werte"></div>
+  <button class="gross" id="b-vor" onclick="_camRechnen(false)" disabled>👁 Werkzeugweg berechnen</button>
+  <button class="gross pri" id="b-exp" onclick="_camRechnen(true)" disabled>⬇ G-Code speichern</button>
+  <div class="info" id="hinweis">Z = 0 liegt <b>oben auf dem Rohteil</b>, X/Y im Nullpunkt der Hüllbox. Vor dem ersten Schnitt: Weg ansehen, dann einmal mit angehobenem Z trocken abfahren. Die Werte sind <b>Startwerte</b>.</div>
+</div>
+
+<script src="lib/three.min.js"></script>
+<script src="cam-kern.js"></script>
+<script>
+// ═══ V3D CAM — Rohteil und Schruppen ════════════════════════════════════
+//
+// EIN Koordinatensystem überall: Maschinen-Millimeter, Z nach oben. Auch die
+// Anzeige läuft darin (camera.up = Z). Damit entfällt jede Umrechnung — und
+// mit ihr die Klasse von Fehlern, bei denen ein Werkzeugweg gespiegelt oder
+// um 90° verdreht herauskommt, ohne dass man es der Vorschau ansieht.
+//
+// Die Rechnerei (Schnittwerte, Bahn-Mathematik, G-Code) kommt aus
+// cam-kern.js — dieselbe Datei, die V3D CAD benutzt. Kein Abzug.
+
+const _camP = { roh:'auto', mas:'fanuc', kuehl:'m8', mat:'alu' };
+let _teil = null;        // { tris: Float32Array, box: {min,max} }
+let _mf = null, _mfLaden = null;
+let _erg = null;
+let szene, kamera, renderer, teilNetz = null, rohNetz = null, wegGrp = null;
+
+// ── Manifold ────────────────────────────────────────────────────────────
+function _mfInit(){
+  if(_mf) return Promise.resolve(_mf);
+  if(!_mfLaden) _mfLaden = import('./lib/manifold.js').then(m => m.default())
+    .then(w => { w.setup(); _mf = w; return w; })
+    .catch(e => { _mfLaden = null; throw e; });
+  return _mfLaden;
+}
+
+function stand(t){ document.getElementById('stand').textContent = t || ''; }
+function el(id){ return document.getElementById(id); }
+function n(id){ return parseFloat(el(id).value) || 0; }
+
+// ── Anzeige ─────────────────────────────────────────────────────────────
+function _camSzene(){
+  const b = el('buehne');
+  szene = new THREE.Scene(); szene.background = new THREE.Color(0xf4f6f8);
+  kamera = new THREE.PerspectiveCamera(45, b.clientWidth / b.clientHeight, 1, 20000);
+  kamera.up.set(0, 0, 1);                       // Z ist oben — wie an der Maschine
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+  renderer.setSize(b.clientWidth, b.clientHeight);
+  b.appendChild(renderer.domElement);
+  szene.add(new THREE.HemisphereLight(0xffffff, 0x888899, 1.15));
+  const s = new THREE.DirectionalLight(0xffffff, 0.75); s.position.set(1, -1.4, 2); szene.add(s);
+  kamera.position.set(180, -260, 190); kamera.lookAt(0, 0, 0);
+  addEventListener('resize', () => {
+    kamera.aspect = b.clientWidth / b.clientHeight; kamera.updateProjectionMatrix();
+    renderer.setSize(b.clientWidth, b.clientHeight);
+  });
+  // Drehen und Zoomen von Hand — für drei Achsen braucht es kein Orbit-Modul
+  let zieh = false, px = 0, py = 0, theta = -0.9, phi = 1.0, rad = 380, ziel = new THREE.Vector3();
+  const setzen = () => {
+    kamera.position.set(ziel.x + rad * Math.sin(phi) * Math.cos(theta),
+                        ziel.y + rad * Math.sin(phi) * Math.sin(theta),
+                        ziel.z + rad * Math.cos(phi));
+    kamera.lookAt(ziel);
+  };
+  renderer.domElement.addEventListener('pointerdown', e => { zieh = true; px = e.clientX; py = e.clientY; });
+  addEventListener('pointerup', () => zieh = false);
+  addEventListener('pointermove', e => {
+    if(!zieh) return;
+    theta -= (e.clientX - px) * 0.008;
+    phi = Math.max(0.05, Math.min(3.09, phi - (e.clientY - py) * 0.008));
+    px = e.clientX; py = e.clientY; setzen();
+  });
+  renderer.domElement.addEventListener('wheel', e => {
+    e.preventDefault(); rad = Math.max(20, Math.min(9000, rad * (e.deltaY > 0 ? 1.12 : 0.89))); setzen();
+  }, { passive: false });
+  window._camBlick = (z, r) => { ziel.copy(z); rad = r; setzen(); };
+  setzen();
+  (function schleife(){ requestAnimationFrame(schleife); renderer.render(szene, kamera); })();
+}
+
+function _camZeigeTeil(){
+  if(teilNetz){ szene.remove(teilNetz); teilNetz.geometry.dispose(); teilNetz.material.dispose(); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(_teil.tris, 3));
+  g.computeVertexNormals();
+  teilNetz = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ color: 0x9fb4c7 }));
+  szene.add(teilNetz);
+  const b = _teil.box, m = new THREE.Vector3((b.min[0]+b.max[0])/2, (b.min[1]+b.max[1])/2, (b.min[2]+b.max[2])/2);
+  const gr = Math.max(b.max[0]-b.min[0], b.max[1]-b.min[1], b.max[2]-b.min[2]);
+  window._camBlick(m, gr * 2.6 + 60);
+}
+
+function _camZeigeRoh(){
+  if(rohNetz){ szene.remove(rohNetz); rohNetz.geometry.dispose(); rohNetz.material.dispose(); rohNetz = null; }
+  const R = _camRoh(); if(!R) return;
+  const g = new THREE.BoxGeometry(R.sx, R.sy, R.sz);
+  g.translate(R.x0 + R.sx/2, R.y0 + R.sy/2, R.z0 + R.sz/2);
+  rohNetz = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xff7a1a, wireframe: true, transparent: true, opacity: .35 }));
+  szene.add(rohNetz);
+}
+// ── STL lesen ───────────────────────────────────────────────────────────
+// Binär oder ASCII. Entschieden wird über die LÄNGE (84 + 50·n), nicht über
+// „solid" am Anfang: manche Programme schreiben das auch in Binärdateien.
+function _camSTL(buf){
+  const dv = new DataView(buf);
+  let binaer = false;
+  if(buf.byteLength >= 84) binaer = (84 + dv.getUint32(80, true) * 50 === buf.byteLength);
+  if(binaer){
+    const anz = dv.getUint32(80, true), tris = new Float32Array(anz * 9);
+    let o = 84, k = 0;
+    for(let i = 0; i < anz; i++){
+      o += 12;                                   // Normale überspringen, wir rechnen selbst
+      for(let v = 0; v < 9; v++){ tris[k++] = dv.getFloat32(o, true); o += 4; }
+      o += 2;                                    // Attributbytes
+    }
+    return tris;
+  }
+  const txt = new TextDecoder().decode(buf), zahlen = [];
+  const re = /vertex\s+(-?[\d.eE+-]+)\s+(-?[\d.eE+-]+)\s+(-?[\d.eE+-]+)/g;
+  let m; while((m = re.exec(txt))) zahlen.push(+m[1], +m[2], +m[3]);
+  if(zahlen.length < 9) throw new Error('Keine Dreiecke in der STL-Datei gefunden');
+  return new Float32Array(zahlen);
+}
+
+function _camBox(tris){
+  const mn = [1e30, 1e30, 1e30], mx = [-1e30, -1e30, -1e30];
+  for(let i = 0; i < tris.length; i += 3)
+    for(let a = 0; a < 3; a++){ const v = tris[i+a]; if(v < mn[a]) mn[a] = v; if(v > mx[a]) mx[a] = v; }
+  return { min: mn, max: mx };
+}
+
+async function _camDatei(ev){
+  const f = ev.target.files && ev.target.files[0]; if(!f) return;
+  ev.target.value = '';
+  await _camLaden(f);
+}
+async function _camLaden(f){
+  try{
+    stand('lese ' + f.name + ' …');
+    let buf = await f.arrayBuffer();
+    if(/\.(step|stp)$/i.test(f.name)){
+      stand('STEP wird umgewandelt … (OCCT)');
+      const a = await fetch('api/step', { method:'POST', body: buf });
+      if(!a.ok){ const j = await a.json().catch(()=>({})); throw new Error(j.error || ('STEP-Umwandlung fehlgeschlagen (' + a.status + ')')); }
+      buf = await a.arrayBuffer();
+    }
+    const tris = _camSTL(buf);
+    _teil = { tris, box: _camBox(tris), name: f.name.replace(/\.[^.]+$/, '') };
+    document.getElementById('drop').classList.add('weg');
+    _camZeigeTeil(); _camRohNeu();
+    const b = _teil.box, mm = v => v.toFixed(1).replace('.', ',');
+    el('teil-info').className = 'info';
+    el('teil-info').innerHTML = '<b>' + _teil.name + '</b><br>' +
+      (tris.length/9).toLocaleString('de') + ' Dreiecke · ' +
+      mm(b.max[0]-b.min[0]) + ' × ' + mm(b.max[1]-b.min[1]) + ' × ' + mm(b.max[2]-b.min[2]) + ' mm';
+    el('b-vor').disabled = el('b-exp').disabled = false;
+    stand('');
+  }catch(e){
+    el('teil-info').className = 'info fehl';
+    el('teil-info').textContent = 'Ging nicht: ' + (e && e.message ? e.message : e);
+    stand('');
+  }
+}
+
+// ── Rohteil ─────────────────────────────────────────────────────────────
+// Z=0 liegt OBEN auf dem Rohteil, X/Y im Nullpunkt seiner vorderen linken
+// Ecke. So wird auch an der Maschine angetastet: Kante, Kante, Oberfläche.
+function _camRoh(){
+  if(!_teil) return null;
+  const b = _teil.box;
+  let x0, x1, y0, y1, z0, z1;
+  if(_camP.roh === 'auto'){
+    const zu = n('r-zu'), zz = n('r-zuz');
+    x0 = b.min[0]-zu; x1 = b.max[0]+zu; y0 = b.min[1]-zu; y1 = b.max[1]+zu;
+    z0 = b.min[2];    z1 = b.max[2]+zz;
+  } else {
+    const sx = Math.max(1, n('r-x')), sy = Math.max(1, n('r-y')), sz = Math.max(1, n('r-z'));
+    const cx = (b.min[0]+b.max[0])/2, cy = (b.min[1]+b.max[1])/2;
+    x0 = cx-sx/2; x1 = cx+sx/2; y0 = cy-sy/2; y1 = cy+sy/2; z0 = b.min[2]; z1 = b.min[2]+sz;
+  }
+  return { x0, x1, y0, y1, z0, z1, sx: x1-x0, sy: y1-y0, sz: z1-z0 };
+}
+function _camRohNeu(){
+  const R = _camRoh(); if(!R) return;
+  if(_camP.roh === 'auto'){
+    el('r-x').value = R.sx.toFixed(1); el('r-y').value = R.sy.toFixed(1); el('r-z').value = R.sz.toFixed(1);
+  }
+  _camZeigeRoh(); _camInfo();
+}
+function _camRohHand(){ if(_camP.roh === 'hand'){ _camZeigeRoh(); _camInfo(); } }
+
+// ── Bedienung ───────────────────────────────────────────────────────────
+function _camSetz(feld, wert, gruppe){
+  _camP[feld] = wert;
+  const g = el(gruppe);
+  if(g) Array.from(g.children).forEach(b => b.classList.toggle('an', b.dataset.v === wert));
+  if(feld === 'mas'){ el('nmax').value = _CNC_MASCHINE[wert].nMax;
+                      _camSetz('kuehl', _CNC_MASCHINE[wert].kuehl ? 'm8' : 'aus', 'kn-kuehl'); return; }
+  if(feld === 'roh') _camRohNeu(); else _camInfo();
+}
+function _camParams(){
+  return {
+    op: 'schrupp', mat: _camP.mat, mas: _camP.mas, kuehl: _camP.kuehl, lauf: 'gleich',
+    d: Math.max(0.5, n('d')), z: Math.max(1, Math.round(n('zz'))),
+    nMax: Math.max(1000, n('nmax')),
+    oNr: Math.max(1, Math.round(n('onr'))), tNr: Math.max(1, Math.round(n('tnr'))),
+    hNr: Math.max(1, Math.round(n('hnr'))),
+    g54: 'G' + Math.min(59, Math.max(54, Math.round(n('g54')))),
+    auf: Math.max(0, n('auf')), zSafe: Math.max(1, n('safe')), rampe: Math.max(0, n('rampe')),
+    dicke: _camRoh() ? _camRoh().sz : 0,
+    app: 'V3D CAM', entwurf: (_teil && _teil.name) || ''
+  };
+}
+function _camInfo(){
+  const P = _camParams(), m = _CNC_MAT[P.mat], w = _cncWerte(P);
+  const fanuc = w.ma.post === 'fanuc';
+  for(const id of ['z-fanuc','z-g54']) el(id).style.display = fanuc ? '' : 'none';
+  el('kn-kuehl').style.display = fanuc ? '' : 'none';
+  const e = el('werte'); if(!e) return;
+  if(!w.geht){ e.className = 'info fehl';
+    e.innerHTML = '<b>' + m.n + ' geht auf „' + w.ma.n + '" nicht:</b> ' + w.warum + '.'; return; }
+  const k = v => v.toFixed(v < 1 ? 2 : 1).replace('.', ',');
+  e.className = 'info';
+  e.innerHTML = '<b>' + w.rpm + ' min⁻¹</b>, Vorschub <b>' + w.vorschub + ' mm/min</b>, Zustellung <b>' +
+    k(w.ap) + ' mm</b>, Bahnabstand <b>' + k(w.ae) + ' mm</b> — aus ' + m.vc +
+    ' m/min Schnittgeschwindigkeit und ' + w.fz.toFixed(3).replace('.', ',') + ' mm Span je Zahn in ' + m.n + '.' +
+    (w.gedeckelt ? ' <b>Die Spindel ist der Engpass</b> (' + w.nRoh + ' min⁻¹ wären ideal).' : '');
+}
+
+// ── Schruppen ───────────────────────────────────────────────────────────
+// Der Kerngedanke: Weg muss, was zwischen Rohteil und Fertigteil liegt.
+// Je Z-Ebene wird gefragt, wo der Fräser überhaupt hindarf — und das ist
+// NICHT der Querschnitt des Teils auf dieser Höhe, sondern der SCHATTENRISS
+// von allem, was darüber steht. Der Fräser kommt von oben; was über ihm
+// liegt, ist im Weg, auch wenn auf seiner Höhe gerade Luft ist.
+//
+// Der Schatten wächst nach unten nur an, nie ab. Darum wird er scheibenweise
+// aufsummiert statt für jede Ebene neu aus dem ganzen Teil gerechnet: Jede
+// Scheibe kommt genau einmal dran, das Ergebnis ist trotzdem exakt.
+async function _camSchruppen(P){
+  const W = await _mfInit(), M = W.Manifold, CS = W.CrossSection;
+  const tmp = [], keep = x => { tmp.push(x); return x; };
+  const w = _cncWerte(P);
+  if(!w.geht) throw new Error(_CNC_MAT[P.mat].n + ' auf „' + w.ma.n + '" geht nicht — ' + w.warum);
+  const r = P.d / 2, R = _camRoh(), warn = [], moves = [];
+  const MX = x => x - R.x0, MY = y => y - R.y0, MZ = z => z - R.z1;
+  const zSafeM = P.zSafe;                          // über der Rohteil-Oberkante
+
+  const fahre = weg => {
+    if(weg.length < 2) return;
+    moves.push({ g:0, z: zSafeM });
+    moves.push({ g:0, x: weg[0][0], y: weg[0][1] });
+    moves.push({ g:0, z: Math.min(zSafeM, weg[0][2] + 2) });
+    moves.push({ g:1, z: weg[0][2], f: w.tauchen });
+    for(let i = 1; i < weg.length; i++)
+      moves.push({ g:1, x: weg[i][0], y: weg[i][1], z: weg[i][2], f: w.vorschub });
+  };
+
+  try{
+    const teil = keep(_mfFromSoup(W, _teil.tris));
+    const rohCS = keep(new CS([[[MX(R.x0), MY(R.y0)], [MX(R.x1), MY(R.y0)],
+                               [MX(R.x1), MY(R.y1)], [MX(R.x0), MY(R.y1)]]], 'EvenOdd'));
+    // Der Fräser soll über die Rohteilkante hinausfahren, sonst bleibt rundum
+    // ein Rand stehen, den er nie erreicht.
+    const rohWeit = keep(rohCS.offset(r, 'Round', 2, 16));
+
+    const zUnten = Math.max(R.z0, _teil.box.min[2]);
+    const tiefen = _cncTiefen(0, MZ(zUnten), w.ap);
+    if(!tiefen.length) throw new Error('Nichts abzutragen — Rohteil ist nicht höher als das Teil');
+
+    let schatten = null, zVon = 0, ebenen = 0, leer = 0;
+    // Der Kasten schneidet gegen das TEIL, und das steht in Weltkoordinaten —
+    // die Maschinen-Verschiebung kommt erst beim Schattenriss dazu.
+    const bx = R.sx + 4 * P.d + 60, by = R.sy + 4 * P.d + 60;
+    const wcx = (R.x0 + R.x1) / 2, wcy = (R.y0 + R.y1) / 2;
+
+    for(const zM of tiefen){
+      // Scheibe zwischen der vorigen und dieser Ebene auf den Schatten legen
+      const dicke = Math.max(0.01, zVon - zM);
+      const wuerfel = keep(M.cube([bx, by, dicke], true));
+      const kasten = keep(wuerfel.translate([wcx, wcy, (zM + zVon) / 2 + R.z1]));
+      const scheibe = keep(teil.intersect(kasten));
+      if(!scheibe.isEmpty()){
+        const p = keep(keep(scheibe.project()).translate([-R.x0, -R.y0]));
+        schatten = keep(schatten ? schatten.add(p) : p);
+      }
+      const verboten = schatten && P.auf > 0
+        ? keep(schatten.offset(P.auf, 'Round', 2, 16)) : schatten;
+      const frei = keep(verboten ? rohWeit.subtract(verboten) : rohWeit);
+      const lagen = frei.isEmpty() ? [] : _cncTaschenLagen(frei, r, w.ae, tmp);
+      if(!lagen.length){ leer++; zVon = zM; continue; }
+      for(const lage of lagen) for(const rg of lage){
+        const lp = _cncWicklung(rg.lp, P.lauf !== 'gegen', rg.loch);
+        fahre(_cncRingWeg(lp, zVon, zM, P.rampe, 0, 0, 0));
+      }
+      ebenen++; zVon = zM;
+    }
+    if(!moves.length) throw new Error('Nichts zu fräsen — Teil füllt das Rohteil schon aus');
+    if(leer) warn.push(leer + ' Ebene(n) ohne Arbeit übersprungen (dort steht nur noch das Teil)');
+    warn.push('Aufspannung wird NICHT geprüft: V3D CAM weiß nichts von Schraubstock, Pratzen ' +
+              'oder davon, woran das Teil unten hängt. Das musst du selbst überlegen.');
+  } finally {
+    for(const t of tmp){ try{ t.delete(); }catch(_){} }
+  }
+
+  moves.push({ g:0, z: zSafeM });
+  let x = 0, y = 0, z = zSafeM, schnitt = 0, eil = 0, zeit = 0;
+  for(const m of moves){
+    const nx = m.x === undefined ? x : m.x, ny = m.y === undefined ? y : m.y, nz = m.z === undefined ? z : m.z;
+    const d = Math.hypot(nx - x, ny - y, nz - z);
+    if(m.g === 1){ schnitt += d; zeit += d / Math.max(1, m.f || w.vorschub); }
+    else { eil += d; zeit += d / w.ma.eil; }
+    x = nx; y = ny; z = nz;
+  }
+  return { moves, w, warn, bohr: null, stats: { schnitt, eil, min: zeit } };
+}
+
+// ── Vorschau ────────────────────────────────────────────────────────────
+// Maschinen-Koordinaten zurück in die Anzeige: X/Y um die Rohteilecke, Z um
+// die Oberkante versetzt. Grün schneidet, blassrot fährt nur.
+function _camZeigeWeg(erg){
+  if(wegGrp){ szene.remove(wegGrp); wegGrp.traverse(o => { if(o.geometry) o.geometry.dispose(); if(o.material) o.material.dispose(); }); }
+  const R = _camRoh(), schnitt = [], eil = [];
+  let x = 0, y = 0, z = erg.moves[0] ? erg.moves[0].z : 0;
+  for(const m of erg.moves){
+    const nx = m.x === undefined ? x : m.x, ny = m.y === undefined ? y : m.y, nz = m.z === undefined ? z : m.z;
+    const A = [x + R.x0, y + R.y0, z + R.z1], B = [nx + R.x0, ny + R.y0, nz + R.z1];
+    (m.g === 1 ? schnitt : eil).push(A[0],A[1],A[2], B[0],B[1],B[2]);
+    x = nx; y = ny; z = nz;
+  }
+  const g = new THREE.Group(); g.name = '_camWeg';
+  const mach = (arr, farbe, op) => {
+    if(!arr.length) return;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+    g.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: farbe, transparent: op < 1, opacity: op })));
+  };
+  mach(eil, 0xff6b6b, .28);
+  mach(schnitt, 0x2ecc71, 1);
+  wegGrp = g; szene.add(g);
+}
+
+async function _camRechnen(exportieren){
+  const P = _camParams();
+  el('b-vor').disabled = el('b-exp').disabled = true;
+  stand('rechne Werkzeugwege …');
+  try{
+    const t0 = performance.now();
+    const erg = await _camSchruppen(P);
+    _erg = erg;
+    _camZeigeWeg(erg);
+    const s = erg.stats, dauer = s.min < 1 ? '< 1 min' : Math.round(s.min) + ' min';
+    const hin = el('hinweis');
+    hin.className = 'info warn';
+    hin.innerHTML = '<b>' + Math.round(s.schnitt).toLocaleString('de') + ' mm Schnittweg, geschätzt ' + dauer + '</b> ' +
+      '(gerechnet in ' + ((performance.now()-t0)/1000).toFixed(1).replace('.', ',') + ' s)<br>' +
+      erg.warn.map(x => '· ' + x).join('<br>');
+    if(exportieren){
+      const txt = _cncGcode(erg, P);
+      const blob = new Blob([txt], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = ((_teil && _teil.name) || 'v3dcam').replace(/[^\w\-]+/g, '_') + '.nc';
+      a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }
+    stand('');
+  }catch(e){
+    el('hinweis').className = 'info fehl';
+    el('hinweis').textContent = 'Ging nicht: ' + (e && e.message ? e.message : e);
+    stand('');
+  }
+  el('b-vor').disabled = el('b-exp').disabled = false;
+}
+
+// ── Start ───────────────────────────────────────────────────────────────
+(function(){
+  _camSzene();
+  // Materialknöpfe aus dem gemeinsamen Kern — eine Liste, kein zweiter Satz
+  el('kn-mat').innerHTML = Object.keys(_CNC_MAT).map(k =>
+    '<button data-v="' + k + '"' + (k === _camP.mat ? ' class="an"' : '') +
+    ' onclick="_camSetz(\'mat\',\'' + k + '\',\'kn-mat\')">' + _CNC_MAT[k].n + '</button>').join('');
+  const b = el('buehne');
+  b.addEventListener('dragover', e => { e.preventDefault(); });
+  b.addEventListener('drop', e => {
+    e.preventDefault();
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if(f) _camLaden(f);
+  });
+  _camInfo();
+})();
+
+</script>
+</body>
+</html>
