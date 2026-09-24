@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>V3D Bank</title>
+<link rel="icon" href="/logo.svg">
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f4f4f1; --surface-1: #fcfcfb; --surface-2: #ecebe6; --line: #dddcd5;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #7a7973;
+  --accent: #2a78d6; --good: #1a7f37; --bad: #c23b3a; --warn: #9a6700;
+  --series-in: #2a78d6; --series-out: #eb6834;
+  --radius: 12px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #111110; --surface-1: #1a1a19; --surface-2: #252523; --line: #33322f;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
+    --accent: #3987e5; --good: #4ac26b; --bad: #ff7b72; --warn: #d29922;
+    --series-in: #3987e5; --series-out: #d95926;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--text-primary); -webkit-font-smoothing: antialiased; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; border: 1px solid var(--line); background: var(--surface-1); border-radius: 8px;
+  padding: 7px 14px; }
+button.primaer { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button:disabled { opacity: .55; cursor: default; }
+input, select, textarea { background: var(--surface-1); border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 10px; min-width: 0; }
+textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
+a { color: var(--accent); }
+.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pos { color: var(--good); } .neg { color: var(--text-primary); }
+.muted { color: var(--text-muted); } .klein { font-size: 13px; }
+.versteckt { display: none !important; }
+
+header { position: sticky; top: 0; z-index: 5; background: var(--surface-1); border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 16px; padding: 10px 20px; padding-top: max(10px, env(safe-area-inset-top)); }
+header .marke { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+header .marke img { width: 26px; height: 26px; }
+nav { display: flex; gap: 4px; flex: 1; overflow-x: auto; }
+nav button { border: 0; background: none; padding: 7px 12px; color: var(--text-secondary); white-space: nowrap; }
+nav button.aktiv { background: var(--surface-2); color: var(--text-primary); font-weight: 600; }
+main { max-width: 1100px; margin: 0 auto; padding: 20px; padding-bottom: 60px; }
+h2 { font-size: 17px; margin: 28px 0 10px; }
+h2:first-child { margin-top: 0; }
+.karte { background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+.raster { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.zeile { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* Anmeldung */
+#tor { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+#tor .karte { width: 100%; max-width: 380px; display: grid; gap: 12px; }
+#tor h1 { font-size: 20px; margin: 0; display: flex; gap: 10px; align-items: center; }
+#tor img { width: 34px; }
+
+/* Übersicht */
+.hero { display: flex; flex-wrap: wrap; gap: 12px 40px; align-items: flex-end; }
+.hero .wert { font-size: 34px; font-weight: 700; letter-spacing: -.02em; }
+.hero .label { color: var(--text-secondary); font-size: 13px; }
+.konto .bank { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+.konto .name { font-weight: 600; margin: 2px 0 8px; }
+.konto .saldo { font-size: 22px; font-weight: 700; }
+.konto .iban { font-size: 12px; color: var(--text-muted); font-family: ui-monospace, monospace; margin-top: 4px; }
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+.status.ok::before { background: var(--good); } .status.fehler::before { background: var(--bad); }
+
+/* Umsätze */
+.filter { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.filter input[type=search] { flex: 1 1 200px; }
+.liste { background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.umsatz { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 10px 14px;
+  border-top: 1px solid var(--line); cursor: pointer; }
+.umsatz:first-child { border-top: 0; }
+.umsatz:hover { background: var(--surface-2); }
+.umsatz .wer { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.umsatz .was { color: var(--text-secondary); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.umsatz .betrag { font-weight: 600; text-align: right; }
+.umsatz .meta { text-align: right; font-size: 12px; color: var(--text-muted); }
+.chip { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--surface-2);
+  color: var(--text-secondary); margin-left: 6px; font-weight: 500; }
+.chip.vorgemerkt { color: var(--warn); } .chip.abgelehnt, .chip.storniert, .chip.fehlgeschlagen { color: var(--bad); }
+.tag-kopf { padding: 6px 14px; background: var(--surface-2); font-size: 12px; font-weight: 600;
+  color: var(--text-secondary); border-top: 1px solid var(--line); }
+.tag-kopf:first-child { border-top: 0; }
+.leer { padding: 30px; text-align: center; color: var(--text-muted); }
+
+/* Dialog */
+dialog { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-1);
+  color: var(--text-primary); width: min(460px, calc(100vw - 24px)); padding: 20px; }
+dialog::backdrop { background: rgba(0,0,0,.45); }
+dialog h3 { margin: 0 0 4px; }
+dialog label { display: grid; gap: 4px; margin-top: 12px; font-size: 13px; color: var(--text-secondary); }
+dialog .knoepfe { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+dl.details { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin: 12px 0 0; }
+dl.details dt { color: var(--text-muted); } dl.details dd { margin: 0; word-break: break-word; }
+
+/* Auswertung */
+.viz-root { position: relative; }
+.viz-root svg { display: block; width: 100%; height: auto; overflow: visible; }
+.viz-root .achse { font-size: 11px; fill: var(--text-muted); }
+.viz-root .gitter { stroke: var(--line); stroke-width: 1; }
+.viz-root .null { stroke: var(--text-muted); stroke-width: 1; }
+.legende { display: flex; gap: 16px; font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; }
+.legende span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+  margin-right: 6px; vertical-align: -1px; background: var(--c); }
+.tip { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.15);
+  white-space: nowrap; z-index: 3; }
+.tip b { display: block; margin-bottom: 2px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { padding: 7px 10px; text-align: left; border-top: 1px solid var(--line); }
+th { font-size: 12px; color: var(--text-muted); font-weight: 600; border-top: 0; }
+td.r, th.r { text-align: right; }
+.balken { height: 6px; border-radius: 3px; background: var(--series-out); min-width: 2px; }
+.balken.ein { background: var(--series-in); }
+
+/* Einstellungen */
+.schritt { display: grid; gap: 8px; margin-top: 14px; }
+.schritt b { font-size: 13px; }
+.hinweis { font-size: 13px; color: var(--text-secondary); background: var(--surface-2); border-radius: 8px; padding: 10px 12px; }
+.meldung { font-size: 13px; margin-top: 8px; }
+.meldung.ok { color: var(--good); } .meldung.fehler { color: var(--bad); }
+.regel { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.regel:first-child { border-top: 0; }
+.regel button { padding: 2px 8px; font-size: 12px; }
+
+#toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--text-primary);
+  color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 20; max-width: 90vw; }
+
+@media (max-width: 640px) {
+  header { padding: 8px 12px; gap: 8px; flex-wrap: wrap; } header .marke { flex: 1; }
+  nav { order: 3; flex-basis: 100%; }
+  nav button { flex: 1; padding: 7px 6px; font-size: 14px; }
+  .umsatz { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "wer betrag" "was was" "meta meta"; }
+  .umsatz .wer { grid-area: wer; } .umsatz .betrag { grid-area: betrag; }
+  .umsatz .was { grid-area: was; } .umsatz .meta { grid-area: meta; text-align: left; }
+  main { padding: 14px 10px 60px; } .hero .wert { font-size: 28px; }
+}
+</style>
+</head>
+<body>
+
+<div id="tor" class="versteckt">
+  <form class="karte" id="tor-form">
+    <h1><img src="/logo.svg" alt="">V3D Bank</h1>
+    <div id="tor-text" class="muted klein"></div>
+    <input type="password" id="tor-pw" autocomplete="current-password" placeholder="Master-Passwort" required>
+    <input type="password" id="tor-pw2" class="versteckt" autocomplete="new-password" placeholder="Passwort wiederholen">
+    <button class="primaer" id="tor-knopf">Entsperren</button>
+    <div id="tor-fehler" class="meldung fehler"></div>
+  </form>
+</div>
+
+<div id="app" class="versteckt">
+  <header>
+    <div class="marke"><img src="/logo.svg" alt=""><span>V3D Bank</span></div>
+    <nav id="nav">
+      <button data-seite="uebersicht" class="aktiv">Übersicht</button>
+      <button data-seite="umsaetze">Umsätze</button>
+      <button data-seite="auswertung">Auswertung</button>
+      <button data-seite="einstellungen">Einstellungen</button>
+    </nav>
+    <button id="abrufen-knopf" title="Alle Banken jetzt abfragen">↻ Abrufen</button>
+  </header>
+  <main>
+    <section id="s-uebersicht"></section>
+    <section id="s-umsaetze" class="versteckt">
+      <div class="filter">
+        <input type="search" id="f-suche" placeholder="Suche: Name, Zweck, Betrag, Notiz">
+        <select id="f-zeit">
+          <option value="30">Letzte 30 Tage</option><option value="monat">Dieser Monat</option>
+          <option value="vormonat">Letzter Monat</option><option value="jahr" selected>Dieses Jahr</option>
+          <option value="vorjahr">Letztes Jahr</option><option value="alles">Alles</option>
+        </select>
+        <select id="f-konto"><option value="">Alle Konten</option></select>
+        <select id="f-kategorie"><option value="">Alle Kategorien</option></select>
+        <a id="f-export" class="klein" href="#" style="align-self:center">CSV-Export</a>
+      </div>
+      <div id="u-summe" class="muted klein" style="margin:0 0 8px 2px"></div>
+      <div id="u-liste" class="liste"></div>
+    </section>
+    <section id="s-auswertung" class="versteckt"></section>
+    <section id="s-einstellungen" class="versteckt"></section>
+  </main>
+</div>
+
+<dialog id="dlg-umsatz">
+  <form method="dialog" id="dlg-form">
+    <h3 id="d-wer"></h3>
+    <div id="d-betrag" class="num" style="font-size:22px;font-weight:700"></div>
+    <dl class="details" id="d-details"></dl>
+    <label>Kategorie <input id="d-kategorie" list="kat-liste" autocomplete="off"></label>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:8px;color:var(--text-primary)">
+      <input type="checkbox" id="d-regel"> <span>Künftig alles mit „<span id="d-regel-muster"></span>“ so einordnen</span>
+    </label>
+    <label>Notiz <textarea id="d-notiz" rows="2" style="font-family:inherit;font-size:14px"></textarea></label>
+    <div class="knoepfe"><button value="abbruch">Abbrechen</button><button class="primaer" value="ok">Speichern</button></div>
+  </form>
+</dialog>
+<datalist id="kat-liste"></datalist>
+<div id="toast" class="versteckt"></div>
+
+<script>
+"use strict";
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[c]);
+const BANKNAME = {bunq: "bunq", revolut: "Revolut Business", sumup: "SumUp", csv: "CSV-Import"};
+const MONATE = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
+
+function geld(v, w = "EUR", vorzeichen = false) {
+  if (v == null) return "–";
+  const s = new Intl.NumberFormat("de-DE", {style: "currency", currency: w || "EUR"}).format(v);
+  return vorzeichen && v > 0 ? "+" + s : s;
+}
+function datumText(iso, mitZeit) {
+  const d = new Date(iso.replace(" ", "T"));
+  const t = d.toLocaleDateString("de-DE", {day: "2-digit", month: "2-digit", year: "numeric"});
+  return mitZeit ? t + " " + d.toLocaleTimeString("de-DE", {hour: "2-digit", minute: "2-digit"}) : t;
+}
+function vorWann(ts) {
+  if (!ts) return "noch nie";
+  const s = Date.now() / 1000 - ts;
+  if (s < 90) return "gerade eben";
+  if (s < 3600) return `vor ${Math.round(s / 60)} min`;
+  if (s < 86400) return `vor ${Math.round(s / 3600)} h`;
+  return new Date(ts * 1000).toLocaleString("de-DE", {dateStyle: "short", timeStyle: "short"});
+}
+function toast(t, ms = 3500) {
+  const el = $("#toast"); el.textContent = t; el.classList.remove("versteckt");
+  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add("versteckt"), ms);
+}
+
+async function api(pfad, daten) {
+  const opt = daten === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json", "X-V3D": "1"},
+                                          body: JSON.stringify(daten)};
+  const r = await fetch(pfad, opt);
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401 && !pfad.startsWith("/api/anmelden")) { zeigeTor(); throw new Error(j.fehler || "Bitte anmelden"); }
+  if (!r.ok) throw new Error(j.fehler || `Fehler ${r.status}`);
+  return j;
+}
+
+// ------------------------------------------------------------------ Anmeldung
+let torModus = "anmelden";
+async function start() {
+  const s = await api("/api/status");
+  if (s.angemeldet) return zeigeApp();
+  zeigeTor(s);
+}
+async function zeigeTor(s) {
+  s = s || await fetch("/api/status").then(r => r.json());
+  $("#app").classList.add("versteckt"); $("#tor").classList.remove("versteckt");
+  torModus = s.angelegt ? "anmelden" : "einrichten";
+  $("#tor-pw2").classList.toggle("versteckt", torModus !== "einrichten");
+  $("#tor-knopf").textContent = torModus === "einrichten" ? "Tresor anlegen" : "Entsperren";
+  $("#tor-text").textContent = torModus === "einrichten"
+    ? "Lege ein Master-Passwort fest (mind. 10 Zeichen). Es verschlüsselt alle Bank-Zugänge auf dem Server und lässt sich nicht wiederherstellen."
+    : s.offen ? "Sitzung abgelaufen — bitte erneut anmelden." : "Der Tresor ist verschlossen (z. B. nach einem Neustart).";
+  $("#tor-pw").value = ""; $("#tor-pw2").value = ""; $("#tor-pw").focus();
+}
+$("#tor-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  $("#tor-fehler").textContent = "";
+  const pw = $("#tor-pw").value;
+  if (torModus === "einrichten" && pw !== $("#tor-pw2").value) { $("#tor-fehler").textContent = "Passwörter stimmen nicht überein"; return; }
+  $("#tor-knopf").disabled = true;
+  try {
+    await api(torModus === "einrichten" ? "/api/einrichten" : "/api/anmelden", {passwort: pw});
+    zeigeApp();
+  } catch (err) { $("#tor-fehler").textContent = err.message; }
+  finally { $("#tor-knopf").disabled = false; }
+});
+
+function zeigeApp() {
+  $("#tor").classList.add("versteckt"); $("#app").classList.remove("versteckt");
+  seite(location.hash.slice(1) || "uebersicht");
+}
+
+// ------------------------------------------------------------------ Navigation
+const SEITEN = {uebersicht: ladeUebersicht, umsaetze: ladeUmsaetze, auswertung: ladeAuswertung, einstellungen: ladeEinstellungen};
+function seite(name) {
+  if (!SEITEN[name]) name = "uebersicht";
+  for (const b of $("#nav").children) b.classList.toggle("aktiv", b.dataset.seite === name);
+  for (const n in SEITEN) $("#s-" + n).classList.toggle("versteckt", n !== name);
+  if (location.hash.slice(1) !== name) history.replaceState(null, "", "#" + name);
+  SEITEN[name]().catch(e => toast(e.message));
+}
+$("#nav").addEventListener("click", e => { const b = e.target.closest("button"); if (b) seite(b.dataset.seite); });
+
+$("#abrufen-knopf").addEventListener("click", async () => {
+  const k = $("#abrufen-knopf"); k.disabled = true; k.textContent = "↻ Läuft …";
+  try {
+    const {ergebnis} = await api("/api/abrufen", {});
+    if (ergebnis.fehler) throw new Error(ergebnis.fehler);
+    const teile = Object.entries(ergebnis).map(([b, r]) => r.ok ? `${BANKNAME[b]}: ${r.neu} neu` : `${BANKNAME[b]}: ${r.meldung}`);
+    toast(teile.length ? teile.join(" · ") : "Noch keine Bank eingerichtet", 6000);
+    seite(location.hash.slice(1));
+  } catch (e) { toast(e.message); }
+  finally { k.disabled = false; k.textContent = "↻ Abrufen"; }
+});
+
+// ------------------------------------------------------------------ Übersicht
+async function ladeUebersicht() {
+  const d = await api("/api/uebersicht");
+  const el = $("#s-uebersicht");
+  const summen = {};
+  for (const k of d.konten) if (k.saldo != null) summen[k.waehrung] = (summen[k.waehrung] || 0) + k.saldo;
+  let ein = 0, aus = 0;
+  for (const z of d.monat) if (z.waehrung === "EUR" || !z.waehrung) { ein += z.ein; aus += z.aus; }
+  const eingerichtet = d.banken.filter(b => b.eingerichtet);
+
+  let h = "";
+  if (!eingerichtet.length && !d.konten.length) {
+    h += `<div class="karte"><h2>Willkommen</h2><p>Noch ist keine Bank verbunden. Unter
+      <a href="#einstellungen" data-geh="einstellungen">Einstellungen</a> bunq, Revolut Business und SumUp einrichten
+      oder einen Kontoauszug als CSV einlesen.</p></div>`;
+  }
+  const waehrungen = Object.keys(summen).sort((a, b) => (b === "EUR") - (a === "EUR"));
+  h += `<div class="karte hero">`;
+  for (const w of waehrungen) h += `<div><div class="label">Gesamt ${esc(w)}</div><div class="wert num">${geld(summen[w], w)}</div></div>`;
+  if (!waehrungen.length) h += `<div><div class="label">Gesamt</div><div class="wert">–</div></div>`;
+  const monat = new Date().toLocaleDateString("de-DE", {month: "long"});
+  h += `<div><div class="label">Einnahmen ${esc(monat)}</div><div class="num" style="font-size:20px;font-weight:600">${geld(ein, "EUR", true)}</div></div>
+        <div><div class="label">Ausgaben ${esc(monat)}</div><div class="num" style="font-size:20px;font-weight:600">${geld(aus)}</div></div></div>`;
+
+  h += `<h2>Konten</h2><div class="raster">`;
+  for (const k of d.konten) {
+    h += `<div class="karte konto" data-konto="${esc(k.id)}" style="cursor:pointer">
+      <div class="bank">${esc(BANKNAME[k.bank] || k.bank)}</div><div class="name">${esc(k.name)}</div>
+      <div class="saldo num">${k.saldo == null ? '<span class="muted" style="font-size:14px;font-weight:400">kein Saldo über die API</span>' : geld(k.saldo, k.waehrung)}</div>
+      ${k.iban ? `<div class="iban">${esc(k.iban.replace(/(.{4})/g, "$1 ").trim())}</div>` : ""}</div>`;
+  }
+  if (!d.konten.length) h += `<div class="muted">Noch keine Konten.</div>`;
+  h += `</div>`;
+
+  if (eingerichtet.length) {
+    h += `<h2>Abruf</h2><div class="karte" style="display:grid;gap:6px">`;
+    for (const b of eingerichtet) {
+      const cls = b.ok == null ? "" : b.ok ? "ok" : "fehler";
+      h += `<div class="status ${cls}"><b>${esc(b.name)}</b>&nbsp;<span class="muted">${vorWann(b.zuletzt)}${b.meldung ? " · " + esc(b.meldung) : ""}</span></div>`;
+    }
+    h += `</div>`;
+  }
+  if (d.neueste.length) {
+    h += `<h2>Neueste Umsätze</h2><div class="liste">${d.neueste.map(umsatzZeile).join("")}</div>`;
+  }
+  el.innerHTML = h;
+  merkeUmsaetze(d.neueste);
+  el.querySelectorAll("[data-konto]").forEach(k => k.addEventListener("click", () => {
+    $("#f-konto").dataset.wunsch = k.dataset.konto; $("#f-zeit").value = "alles"; seite("umsaetze");
+  }));
+  el.querySelectorAll("[data-geh]").forEach(a => a.addEventListener("click", e => { e.preventDefault(); seite(a.dataset.geh); }));
+}
+
+// ------------------------------------------------------------------ Umsätze
+const UMSAETZE = new Map();
+function merkeUmsaetze(l) { for (const u of l) UMSAETZE.set(u.id, u); }
+function umsatzZeile(u) {
+  const status = u.status && u.status !== "gebucht" ? `<span class="chip ${esc(u.status)}">${esc(u.status)}</span>` : "";
+  const kat = u.kategorie ? `<span class="chip">${esc(u.kategorie)}</span>` : "";
+  return `<div class="umsatz" data-id="${u.id}">
+    <div class="wer">${esc(u.gegenpartei || u.art || "Umsatz")}${kat}${status}</div>
+    <div class="betrag num ${u.betrag > 0 ? "pos" : "neg"}">${geld(u.betrag, u.waehrung, true)}</div>
+    <div class="was">${esc([u.text, u.notiz && "📝 " + u.notiz].filter(Boolean).join(" · ") || u.art || "")}</div>
+    <div class="meta">${esc(datumText(u.datum))} · ${esc(u.konto_name || BANKNAME[u.bank])}</div></div>`;
+}
+function zeitraum(w) {
+  const h = new Date(), f = d => d.toISOString().slice(0, 10);
+  const lok = (y, m, t) => f(new Date(Date.UTC(y, m, t)));
+  const y = h.getFullYear(), m = h.getMonth();
+  switch (w) {
+    case "30": return {von: f(new Date(Date.now() - 30 * 864e5))};
+    case "monat": return {von: lok(y, m, 1)};
+    case "vormonat": return {von: lok(y, m - 1, 1), bis: lok(y, m, 1)};
+    case "jahr": return {von: `${y}-01-01`};
+    case "vorjahr": return {von: `${y - 1}-01-01`, bis: `${y}-01-01`};
+    default: return {};
+  }
+}
+function filterQuery() {
+  const q = new URLSearchParams(zeitraum($("#f-zeit").value));
+  if ($("#f-konto").value) q.set("konto", $("#f-konto").value);
+  if ($("#f-kategorie").value) q.set("kategorie", $("#f-kategorie").value);
+  if ($("#f-suche").value.trim()) q.set("suche", $("#f-suche").value.trim());
+  return q;
+}
+let kontenGeladen = false;
+async function ladeUmsaetze() {
+  if (!kontenGeladen || $("#f-konto").dataset.wunsch) {
+    const d = await api("/api/uebersicht");
+    const sel = $("#f-konto"), alt = sel.dataset.wunsch || sel.value;
+    sel.innerHTML = `<option value="">Alle Konten</option>` + d.konten.map(k =>
+      `<option value="${esc(k.id)}">${esc(BANKNAME[k.bank] || k.bank)} · ${esc(k.name)}</option>`).join("");
+    sel.value = alt; delete sel.dataset.wunsch; kontenGeladen = true;
+  }
+  const q = filterQuery();
+  $("#f-export").href = "/api/export.csv?" + q;
+  const d = await api("/api/umsaetze?" + q);
+  const ksel = $("#f-kategorie"), kalt = ksel.value;
+  ksel.innerHTML = `<option value="">Alle Kategorien</option><option value="(ohne)">(ohne Kategorie)</option>` +
+    d.kategorien.map(k => `<option>${esc(k)}</option>`).join("");
+  ksel.value = kalt;
+  $("#kat-liste").innerHTML = d.kategorien.map(k => `<option value="${esc(k)}">`).join("");
+  merkeUmsaetze(d.umsaetze);
+  let ein = 0, aus = 0;
+  for (const u of d.umsaetze) if (u.waehrung === "EUR" && u.kategorie !== "Umbuchung") u.betrag > 0 ? ein += u.betrag : aus += u.betrag;
+  $("#u-summe").innerHTML = `${d.umsaetze.length}${d.umsaetze.length >= 500 ? "+" : ""} Umsätze · Einnahmen <span class="num">${geld(ein)}</span> · Ausgaben <span class="num">${geld(aus)}</span> <span title="Umbuchungen zwischen eigenen Konten nicht mitgezählt">(ohne Umbuchungen)</span>`;
+  if (!d.umsaetze.length) { $("#u-liste").innerHTML = `<div class="leer">Keine Umsätze in diesem Zeitraum.</div>`; return; }
+  let h = "", tag = "";
+  for (const u of d.umsaetze) {
+    const t = u.datum.slice(0, 10);
+    if (t !== tag) { tag = t; h += `<div class="tag-kopf">${new Date(t + "T12:00").toLocaleDateString("de-DE", {weekday: "long", day: "numeric", month: "long", year: "numeric"})}</div>`; }
+    h += umsatzZeile(u);
+  }
+  $("#u-liste").innerHTML = h;
+}
+let suchTimer;
+$("#f-suche").addEventListener("input", () => { clearTimeout(suchTimer); suchTimer = setTimeout(() => ladeUmsaetze().catch(e => toast(e.message)), 250); });
+for (const id of ["#f-zeit", "#f-konto", "#f-kategorie"]) $(id).addEventListener("change", () => ladeUmsaetze().catch(e => toast(e.message)));
+
+document.addEventListener("click", e => {
+  const z = e.target.closest(".umsatz"); if (!z) return;
+  oeffneUmsatz(UMSAETZE.get(+z.dataset.id));
+});
+function vorschlagMuster(u) {
+  return (u.gegenpartei && !/^(SumUp-Kunde|Eigenes Bankkonto)$/.test(u.gegenpartei) ? u.gegenpartei : u.text || "").trim().slice(0, 40);
+}
+function oeffneUmsatz(u) {
+  if (!u) return;
+  const dlg = $("#dlg-umsatz");
+  $("#d-wer").textContent = u.gegenpartei || u.art || "Umsatz";
+  $("#d-betrag").textContent = geld(u.betrag, u.waehrung, true);
+  $("#d-betrag").className = "num " + (u.betrag > 0 ? "pos" : "");
+  const zeilen = [["Datum", datumText(u.datum, true)], ["Konto", `${BANKNAME[u.bank] || u.bank} · ${u.konto_name || ""}`],
+    ["Zweck", u.text], ["Art", u.art], ["Status", u.status]];
+  $("#d-details").innerHTML = zeilen.filter(z => z[1]).map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
+  $("#d-kategorie").value = u.kategorie || "";
+  $("#d-notiz").value = u.notiz || "";
+  const muster = vorschlagMuster(u);
+  $("#d-regel").checked = false; $("#d-regel").disabled = !muster;
+  $("#d-regel-muster").textContent = muster || "–";
+  dlg.returnValue = ""; dlg.showModal();
+  dlg.onclose = async () => {
+    if (dlg.returnValue !== "ok") return;
+    try {
+      const kat = $("#d-kategorie").value.trim();
+      await api("/api/umsatz", {id: u.id, kategorie: kat, notiz: $("#d-notiz").value});
+      if ($("#d-regel").checked && kat) await api("/api/regel", {muster, kategorie: kat});
+      toast("Gespeichert");
+      seite(location.hash.slice(1));
+    } catch (e) { toast(e.message); }
+  };
+}
+
+// ------------------------------------------------------------------ Auswertung
+let auswJahr = new Date().getFullYear();
+async function ladeAuswertung() {
+  const d = await api("/api/auswertung?jahr=" + auswJahr);
+  const eur = d.zeilen.filter(z => !z.waehrung || z.waehrung === "EUR");
+  const fremd = [...new Set(d.zeilen.filter(z => z.waehrung && z.waehrung !== "EUR").map(z => z.waehrung))];
+  const monate = MONATE.map((n, i) => ({n, key: `${d.jahr}-${String(i + 1).padStart(2, "0")}`, ein: 0, aus: 0}));
+  const kat = {};
+  for (const z of eur) {
+    const m = monate.find(m => m.key === z.monat); if (m) { m.ein += z.ein; m.aus += z.aus; }
+    const k = kat[z.kategorie] ||= {name: z.kategorie, ein: 0, aus: 0, anzahl: 0};
+    k.ein += z.ein; k.aus += z.aus; k.anzahl += z.anzahl;
+  }
+  const sumEin = monate.reduce((s, m) => s + m.ein, 0), sumAus = monate.reduce((s, m) => s + m.aus, 0);
+  const el = $("#s-auswertung");
+  el.innerHTML = `
+    <div class="zeile" style="justify-content:space-between;margin-bottom:12px">
+      <div class="zeile"><button id="a-vor">‹</button><b style="font-size:18px">${d.jahr}</b><button id="a-nach">›</button></div>
+      <div class="muted klein">Nur EUR, ohne Umbuchungen zwischen eigenen Konten${fremd.length ? ` · Fremdwährung (${esc(fremd.join(", "))}) nicht enthalten` : ""}</div>
+    </div>
+    <div class="karte hero" style="margin-bottom:12px">
+      <div><div class="label">Einnahmen</div><div class="wert num" style="font-size:26px">${geld(sumEin)}</div></div>
+      <div><div class="label">Ausgaben</div><div class="wert num" style="font-size:26px">${geld(sumAus)}</div></div>
+      <div><div class="label">Ergebnis</div><div class="wert num" style="font-size:26px">${geld(sumEin + sumAus, "EUR", true)}</div></div>
+    </div>
+    <div class="karte"><div class="legende"><span style="--c:var(--series-in)">Einnahmen</span><span style="--c:var(--series-out)">Ausgaben</span></div>
+      <div class="viz-root" id="a-chart"></div></div>
+    <h2>Nach Kategorie</h2>
+    <div class="karte" style="padding:6px 6px;overflow-x:auto"><table id="a-kat"></table></div>
+    <h2>Nach Monat</h2>
+    <div class="karte" style="padding:6px 6px;overflow-x:auto"><table>
+      <tr><th>Monat</th><th class="r">Einnahmen</th><th class="r">Ausgaben</th><th class="r">Ergebnis</th></tr>
+      ${monate.map(m => `<tr><td>${m.n}</td><td class="r num">${geld(m.ein)}</td><td class="r num">${geld(m.aus)}</td><td class="r num">${geld(m.ein + m.aus, "EUR", true)}</td></tr>`).join("")}
+    </table></div>`;
+  $("#a-vor").onclick = () => { auswJahr--; ladeAuswertung(); };
+  $("#a-nach").onclick = () => { auswJahr++; ladeAuswertung(); };
+  zeichneMonate($("#a-chart"), monate);
+  const liste = Object.values(kat).sort((a, b) => a.aus - b.aus || b.ein - a.ein);  // größte Ausgaben zuerst
+  const maxBetrag = Math.max(1, ...liste.map(k => Math.max(k.ein, -k.aus)));
+  $("#a-kat").innerHTML = `<tr><th>Kategorie</th><th class="r">Einnahmen</th><th class="r">Ausgaben</th><th style="width:30%"></th><th class="r">Anzahl</th></tr>` +
+    liste.map(k => `<tr data-kat="${esc(k.name)}" style="cursor:pointer"><td>${esc(k.name)}</td>
+      <td class="r num">${k.ein ? geld(k.ein) : ""}</td><td class="r num">${k.aus ? geld(k.aus) : ""}</td>
+      <td>${k.ein ? `<div class="balken ein" style="width:${k.ein / maxBetrag * 100}%"></div>` : ""}${k.aus ? `<div class="balken" style="width:${-k.aus / maxBetrag * 100}%;margin-top:2px"></div>` : ""}</td>
+      <td class="r num muted">${k.anzahl}</td></tr>`).join("");
+  $("#a-kat").querySelectorAll("[data-kat]").forEach(tr => tr.addEventListener("click", () => {
+    $("#f-zeit").value = auswJahr === new Date().getFullYear() ? "jahr" : auswJahr === new Date().getFullYear() - 1 ? "vorjahr" : "alles";
+    // Option vorab anlegen, damit filterQuery() sie schon beim ersten Laden sieht
+    const ksel = $("#f-kategorie"), o = document.createElement("option");
+    o.value = o.textContent = tr.dataset.kat; ksel.append(o); ksel.value = tr.dataset.kat;
+    seite("umsaetze");
+  }));
+}
+
+function zeichneMonate(root, monate) {
+  const W = 760, H = 260, L = 64, R = 8, T = 10, B = 26;
+  const max = Math.max(1, ...monate.map(m => m.ein)), min = Math.min(-1, ...monate.map(m => m.aus));
+  const schritt = schoeneSchritte(max - min);
+  const oben = Math.ceil(max / schritt) * schritt, unten = Math.floor(min / schritt) * schritt;
+  const y = v => T + (oben - v) / (oben - unten) * (H - T - B);
+  const bw = (W - L - R) / 12, balken = Math.min(22, bw * .32);
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Einnahmen und Ausgaben pro Monat">`;
+  for (let v = unten; v <= oben + 1e-6; v += schritt) {
+    s += `<line class="${Math.abs(v) < 1e-6 ? "null" : "gitter"}" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/>`;
+    s += `<text class="achse" x="${L - 8}" y="${y(v) + 4}" text-anchor="end">${kurzGeld(v)}</text>`;
+  }
+  monate.forEach((m, i) => {
+    const cx = L + bw * i + bw / 2;
+    s += `<text class="achse" x="${cx}" y="${H - 6}" text-anchor="middle">${m.n}</text>`;
+    // Einnahmen nach oben, Ausgaben nach unten — beide vom Nullstrich aus, runde Enden nur außen
+    if (m.ein > 0) s += balkenPfad(cx - balken - 1, y(m.ein), balken, y(0) - y(m.ein), "var(--series-in)", true);
+    if (m.aus < 0) s += balkenPfad(cx + 1, y(0), balken, y(m.aus) - y(0), "var(--series-out)", false);
+    s += `<rect x="${L + bw * i}" y="${T}" width="${bw}" height="${H - T - B}" fill="transparent" data-i="${i}"/>`;
+  });
+  s += `</svg><div class="tip versteckt"></div>`;
+  root.innerHTML = s;
+  const tip = $(".tip", root);
+  root.querySelectorAll("rect[data-i]").forEach(r => {
+    r.addEventListener("pointerenter", () => {
+      const m = monate[+r.dataset.i];
+      tip.innerHTML = `<b>${m.n}</b><span style="color:var(--text-secondary)">Einnahmen</span> <span class="num">${geld(m.ein)}</span><br>
+        <span style="color:var(--text-secondary)">Ausgaben</span> <span class="num">${geld(m.aus)}</span><br>
+        <span style="color:var(--text-secondary)">Ergebnis</span> <span class="num">${geld(m.ein + m.aus, "EUR", true)}</span>`;
+      tip.classList.remove("versteckt");
+      const box = root.getBoundingClientRect(), rb = r.getBoundingClientRect();
+      const x = rb.left - box.left + rb.width / 2;
+      tip.style.left = Math.min(Math.max(0, x - tip.offsetWidth / 2), box.width - tip.offsetWidth) + "px";
+      tip.style.top = "0px";
+      r.setAttribute("fill", "rgba(127,127,127,.08)");
+    });
+    r.addEventListener("pointerleave", () => { tip.classList.add("versteckt"); r.setAttribute("fill", "transparent"); });
+  });
+}
+function balkenPfad(x, y, w, h, farbe, nachOben) {
+  if (h < .5) return "";
+  const r = Math.min(4, h, w / 2);
+  const d = nachOben
+    ? `M${x},${y + h} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + h} Z`
+    : `M${x},${y} V${y + h - r} Q${x},${y + h} ${x + r},${y + h} H${x + w - r} Q${x + w},${y + h} ${x + w},${y + h - r} V${y} Z`;
+  return `<path d="${d}" fill="${farbe}"/>`;
+}
+function schoeneSchritte(spanne) {
+  const roh = spanne / 5, p = 10 ** Math.floor(Math.log10(roh));
+  return [1, 2, 2.5, 5, 10].map(f => f * p).find(s => s >= roh);
+}
+function kurzGeld(v) {
+  const a = Math.abs(v);
+  const t = a >= 1e6 ? (v / 1e6).toLocaleString("de-DE", {maximumFractionDigits: 1}) + " Mio"
+    : a >= 1e3 ? (v / 1e3).toLocaleString("de-DE", {maximumFractionDigits: 1}) + " T" : Math.round(v).toLocaleString("de-DE");
+  return t + " €";
+}
+
+// ------------------------------------------------------------------ Einstellungen
+async function ladeEinstellungen() {
+  const [e, r] = await Promise.all([api("/api/einstellungen"), api("/api/regeln")]);
+  const el = $("#s-einstellungen");
+  const status = ok => ok ? `<span class="status ok">verbunden</span>` : `<span class="status">nicht verbunden</span>`;
+  el.innerHTML = `
+  <div class="hinweis">Nur Lesezugriff: V3D Bank kann Kontostände und Umsätze sehen, aber kein Geld bewegen.
+    Alle Schlüssel liegen verschlüsselt auf dem Server und werden nie wieder angezeigt.</div>
+
+  <h2>bunq</h2>
+  <div class="karte">
+    <div class="zeile" style="justify-content:space-between">${status(e.bunq.eingerichtet)}
+      ${e.bunq.eingerichtet ? `<span class="muted klein">Schlüssel …${esc(e.bunq.schluessel_ende)}${e.bunq.sandbox ? " · Sandbox (Testgeld)" : ""}</span>` : ""}</div>
+    <div class="schritt">
+      <div class="klein muted">In der bunq-App: Profil → Einstellungen → Entwickler → API-Schlüssel → „API-Schlüssel hinzufügen“.
+        Am besten „Alle IP-Adressen erlauben“ einschalten, sonst ist der Schlüssel an die aktuelle IP des Servers gebunden.</div>
+      <input id="b-key" placeholder="API-Schlüssel" autocomplete="off" spellcheck="false">
+      <div class="zeile"><button class="primaer" id="b-speichern">Verbinden</button>
+        <button id="b-sandbox" title="Legt einen bunq-Testnutzer mit Spielgeld an — zum Ausprobieren">Mit Testkonto ausprobieren</button>
+        ${e.bunq.eingerichtet ? `<button data-entfernen="bunq">Trennen</button>` : ""}</div>
+      <div class="meldung" id="b-meldung"></div>
+    </div>
+  </div>
+
+  <h2>Revolut Business</h2>
+  <div class="karte">
+    <div class="zeile" style="justify-content:space-between">${status(e.revolut.eingerichtet)}
+      ${e.revolut.eingerichtet ? `<span class="muted klein">Client-ID ${esc(e.revolut.client_id)}${e.revolut.sandbox ? " · Sandbox" : ""}</span>` : ""}</div>
+    <div class="schritt"><b>1. Zertifikat</b>
+      ${e.revolut.zertifikat
+        ? `<textarea rows="4" readonly id="r-cert">${esc(e.revolut.zertifikat)}</textarea>
+           <div class="zeile"><button id="r-kopieren">Kopieren</button><button id="r-herunterladen">Als publiccert.cer speichern</button>
+           <button id="r-neu" title="Macht die bisherige Verbindung ungültig">Neues Zertifikat</button></div>`
+        : `<div><button id="r-erzeugen">Zertifikat erzeugen</button></div>`}
+    </div>
+    <div class="schritt"><b>2. Bei Revolut eintragen</b>
+      <div class="klein muted">Revolut Business im Browser → Einstellungen → APIs → Business API → „Hinzufügen“.
+        Das Zertifikat oben hochladen und als OAuth-Weiterleitungs-URL eine https-Adresse angeben, z. B. <code>https://example.com</code>.
+        Revolut zeigt danach die Client-ID.</div>
+      <input id="r-client" placeholder="Client-ID" value="${esc(e.revolut.client_id || "")}" autocomplete="off" spellcheck="false">
+      <input id="r-redirect" placeholder="Weiterleitungs-URL (genau wie bei Revolut)" value="${esc(e.revolut.redirect_uri || "https://example.com")}">
+      <label class="klein" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="r-sandbox" ${e.revolut.sandbox ? "checked" : ""}> Sandbox (Testumgebung)</label>
+      <div><button id="r-speichern">Speichern</button></div>
+    </div>
+    <div class="schritt ${e.revolut.link ? "" : "versteckt"}" id="r-schritt3"><b>3. Zugriff freigeben</b>
+      <div class="klein muted">Link öffnen, in Revolut bestätigen. Danach landet der Browser auf der Weiterleitungs-URL —
+        die <b>komplette Adresse</b> aus der Adresszeile kopieren und hier einfügen. Der Code gilt nur 2 Minuten.</div>
+      <div><a id="r-link" href="${esc(e.revolut.link || "#")}" target="_blank" rel="noopener noreferrer">Freigabe bei Revolut öffnen ↗</a></div>
+      <input id="r-code" placeholder="https://example.com/?code=…" autocomplete="off" spellcheck="false">
+      <div class="zeile"><button class="primaer" id="r-verbinden">Verbinden</button>
+        ${e.revolut.eingerichtet || e.revolut.client_id ? `<button data-entfernen="revolut">Trennen</button>` : ""}</div>
+    </div>
+    <div class="meldung" id="r-meldung"></div>
+  </div>
+
+  <h2>SumUp</h2>
+  <div class="karte">
+    <div class="zeile" style="justify-content:space-between">${status(e.sumup.eingerichtet)}
+      ${e.sumup.eingerichtet ? `<span class="muted klein">Händler ${esc(e.sumup.haendler || "")} · Schlüssel …${esc(e.sumup.schluessel_ende)}</span>` : ""}</div>
+    <div class="schritt">
+      <div class="klein muted">me.sumup.com → Einstellungen → Für Entwickler → API-Schlüssel → „Schlüssel erstellen“
+        (beginnt mit <code>sup_sk_</code>). Damit kommen Kartenverkäufe, Erstattungen und Auszahlungen.</div>
+      <input id="s-key" placeholder="sup_sk_…" autocomplete="off" spellcheck="false">
+      <div class="zeile"><button class="primaer" id="s-speichern">Verbinden</button>
+        ${e.sumup.eingerichtet ? `<button data-entfernen="sumup">Trennen</button>` : ""}</div>
+      <div class="hinweis">Das <b>SumUp-Geschäftskonto</b> selbst hat keine öffentliche Schnittstelle. Dessen Umsätze:
+        me.sumup.com → Geschäftskonto → Herunterladen → CSV, dann unten einlesen.</div>
+      <div class="meldung" id="s-meldung"></div>
+    </div>
+  </div>
+
+  <h2>Kontoauszug einlesen (CSV)</h2>
+  <div class="karte">
+    <div class="schritt">
+      <div class="klein muted">Für das SumUp-Geschäftskonto oder ältere Auszüge. Doppelt eingelesene Zeilen werden erkannt.</div>
+      <input id="c-konto" placeholder="Kontoname, z. B. SumUp Geschäftskonto" list="c-konten">
+      <datalist id="c-konten"></datalist>
+      <input id="c-saldo" placeholder="Aktueller Kontostand (optional, z. B. 1234,56)" inputmode="decimal">
+      <input type="file" id="c-datei" accept=".csv,text/csv,text/plain">
+      <div><button class="primaer" id="c-einlesen">Einlesen</button></div>
+      <div class="meldung" id="c-meldung"></div>
+    </div>
+  </div>
+
+  <h2>Kategorie-Regeln</h2>
+  <div class="karte">
+    <div class="klein muted" style="margin-bottom:8px">Enthält Name, Zweck oder Art den Text, bekommt der Umsatz die Kategorie. Längster Treffer gewinnt; von Hand gesetzte Kategorien bleiben.</div>
+    <div class="zeile" style="margin-bottom:10px"><input id="g-muster" placeholder="Text, z. B. Stadtwerke"><input id="g-kat" placeholder="Kategorie" list="kat-liste"><button id="g-neu">Hinzufügen</button></div>
+    <div id="g-liste">${r.regeln.slice().sort((a, b) => a.kategorie.localeCompare(b.kategorie) || a.muster.localeCompare(b.muster)).map(g =>
+      `<div class="regel"><span>„${esc(g.muster)}“ → <b>${esc(g.kategorie)}</b></span><button data-regel="${g.id}">Löschen</button></div>`).join("")}</div>
+  </div>
+
+  <h2>Sicherheit</h2>
+  <div class="karte">
+    <div class="schritt"><b>Master-Passwort ändern</b>
+      <div class="zeile"><input type="password" id="p-alt" placeholder="Bisheriges" autocomplete="current-password">
+        <input type="password" id="p-neu" placeholder="Neues (mind. 10 Zeichen)" autocomplete="new-password">
+        <button id="p-aendern">Ändern</button></div>
+      <div class="meldung" id="p-meldung"></div>
+    </div>
+    <div class="schritt"><b>Tresor sperren</b>
+      <div class="klein muted">Schließt den Tresor sofort. Danach ruft der Server nichts mehr ab, bis jemand das Master-Passwort eingibt.</div>
+      <div><button id="p-sperren">Jetzt sperren</button></div>
+    </div>
+  </div>`;
+  $("#kat-liste").innerHTML = r.kategorien.map(k => `<option value="${esc(k)}">`).join("");
+  api("/api/uebersicht").then(d => {
+    $("#c-konten").innerHTML = d.konten.filter(k => k.bank === "csv").map(k => `<option value="${esc(k.name)}">`).join("");
+  }).catch(() => {});
+  verdrahteEinstellungen();
+}
+
+function meldung(id, text, ok) { const m = $(id); m.textContent = text; m.className = "meldung " + (ok ? "ok" : "fehler"); }
+function abrufText(a) {
+  if (!a) return "";
+  return Object.values(a).map(r => r.ok ? `${r.neu} Umsätze geladen` : r.meldung).join(" · ");
+}
+async function knopf(btn, fn) {
+  btn.disabled = true;
+  try { await fn(); } finally { btn.disabled = false; }
+}
+function verdrahteEinstellungen() {
+  const on = (id, fn) => { const b = $(id); if (b) b.onclick = () => knopf(b, fn); };
+  on("#b-speichern", async () => {
+    try { const r = await api("/api/bank/bunq", {api_key: $("#b-key").value}); meldung("#b-meldung", "Verbunden. " + abrufText(r.abruf), true); setTimeout(ladeEinstellungen, 1500); }
+    catch (e) { meldung("#b-meldung", e.message); }
+  });
+  on("#b-sandbox", async () => {
+    if (!confirm("bunq-Testkonto mit Spielgeld anlegen? Ein echter bunq-Zugang wird dabei ersetzt.")) return;
+    try { const r = await api("/api/bank/bunq/sandbox", {}); meldung("#b-meldung", "Testkonto verbunden. " + abrufText(r.abruf), true); setTimeout(ladeEinstellungen, 1500); }
+    catch (e) { meldung("#b-meldung", e.message); }
+  });
+  const zert = async neu => {
+    if (neu && !confirm("Neues Zertifikat erzeugen? Die bestehende Revolut-Verbindung wird damit ungültig und muss bei Revolut neu eingerichtet werden.")) return;
+    try { await api("/api/bank/revolut/zertifikat", {neu}); ladeEinstellungen(); } catch (e) { meldung("#r-meldung", e.message); }
+  };
+  on("#r-erzeugen", () => zert(false));
+  on("#r-neu", () => zert(true));
+  on("#r-kopieren", async () => { await navigator.clipboard.writeText($("#r-cert").value).catch(() => { $("#r-cert").select(); document.execCommand("copy"); }); toast("Zertifikat kopiert"); });
+  on("#r-herunterladen", async () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([$("#r-cert").value], {type: "application/x-x509-ca-cert"}));
+    a.download = "publiccert.cer"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+  on("#r-speichern", async () => {
+    try {
+      const r = await api("/api/bank/revolut", {client_id: $("#r-client").value, redirect_uri: $("#r-redirect").value, sandbox: $("#r-sandbox").checked});
+      $("#r-link").href = r.link; $("#r-schritt3").classList.remove("versteckt");
+      meldung("#r-meldung", "Gespeichert — jetzt Schritt 3.", true);
+    } catch (e) { meldung("#r-meldung", e.message); }
+  });
+  on("#r-verbinden", async () => {
+    try { const r = await api("/api/bank/revolut/code", {code: $("#r-code").value}); meldung("#r-meldung", "Verbunden. " + abrufText(r.abruf), true); setTimeout(ladeEinstellungen, 1500); }
+    catch (e) { meldung("#r-meldung", e.message); }
+  });
+  on("#s-speichern", async () => {
+    try { const r = await api("/api/bank/sumup", {api_key: $("#s-key").value}); meldung("#s-meldung", "Verbunden. " + abrufText(r.abruf), true); setTimeout(ladeEinstellungen, 1500); }
+    catch (e) { meldung("#s-meldung", e.message); }
+  });
+  document.querySelectorAll("[data-entfernen]").forEach(b => b.onclick = () => knopf(b, async () => {
+    if (!confirm(`Verbindung zu ${BANKNAME[b.dataset.entfernen]} trennen? Die gespeicherten Umsätze bleiben erhalten.`)) return;
+    await api("/api/bank/entfernen", {bank: b.dataset.entfernen}); ladeEinstellungen();
+  }));
+  on("#c-einlesen", async () => {
+    const f = $("#c-datei").files[0];
+    if (!f) return meldung("#c-meldung", "Bitte eine CSV-Datei wählen");
+    const puffer = await f.arrayBuffer();
+    let text = new TextDecoder("utf-8").decode(puffer);
+    if (text.includes("�")) text = new TextDecoder("windows-1252").decode(puffer);  // ältere Bank-Exporte
+    const s = $("#c-saldo").value.trim();
+    const saldo = s ? Number(s.includes(",") ? s.replace(/\./g, "").replace(",", ".") : s) : null;
+    try {
+      const r = await api("/api/import", {konto: $("#c-konto").value, text, saldo: Number.isFinite(saldo) ? saldo : null});
+      meldung("#c-meldung", `${r.gelesen} Zeilen gelesen, ${r.neu} neu${r.uebersprungen ? `, ${r.uebersprungen} übersprungen` : ""}. Erkannte Spalten: ${Object.entries(r.spalten).map(([k, v]) => `${k}=„${v}“`).join(", ")}`, true);
+    } catch (e) { meldung("#c-meldung", e.message); }
+  });
+  on("#g-neu", async () => {
+    try { await api("/api/regel", {muster: $("#g-muster").value, kategorie: $("#g-kat").value}); ladeEinstellungen(); }
+    catch (e) { toast(e.message); }
+  });
+  document.querySelectorAll("[data-regel]").forEach(b => b.onclick = () => knopf(b, async () => {
+    await api("/api/regel/loeschen", {id: +b.dataset.regel}); b.closest(".regel").remove();
+  }));
+  on("#p-aendern", async () => {
+    try { await api("/api/passwort", {alt: $("#p-alt").value, neu: $("#p-neu").value}); meldung("#p-meldung", "Passwort geändert", true); $("#p-alt").value = $("#p-neu").value = ""; }
+    catch (e) { meldung("#p-meldung", e.message); }
+  });
+  on("#p-sperren", async () => {
+    if (!confirm("Tresor jetzt sperren?")) return;
+    await api("/api/sperren", {}); zeigeTor();
+  });
+}
+
+start().catch(e => { document.body.textContent = "Server nicht erreichbar: " + e.message; });
+</script>
+</body>
+</html>
