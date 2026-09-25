@@ -1273,6 +1273,7 @@ const firebaseConfig = {
       <button class="btn" onclick="linearPatternTool()" title="Lineares Muster — Objekt mehrfach in einer Richtung kopieren">⋮ Linear</button>
       <button class="btn" onclick="circularPatternTool()" title="Kreismuster — Objekt kreisförmig anordnen">⊙ Kreis</button>
       <button class="btn" onclick="hexPatternTool()" title="Wabenmuster — Sechskant-Löcher in den Boden des gewählten Körpers stanzen">⬡ Waben</button>
+      <button class="btn" onclick="fillPlateTool()" title="Platte füllen — Grundplatte + Teil wählen: so viele Kopien des Teils wie möglich auf die Platte verteilen (gleiche Höhe, ineinander verschachtelt)">▦ Füllen</button>
     </div></div>
     <div class="tbg"><span class="tbg-l">Form ändern</span><div class="tbg-row">
       <button class="btn" onclick="_bndOpen()" title="Biegen — Körper auf einen Radius biegen (Rundung oder Kuppel). Mit „Runde Wand anklicken" wird der Radius am Zielkörper gemessen und das Teil gleich angelegt.">🪄 Biegen</button>
@@ -2468,6 +2469,27 @@ const firebaseConfig = {
         <div style="font-size:11px;color:var(--dim);margin-top:6px">
           Stanzt Sechskant-Löcher in den Boden des gewählten Körpers. Zellen werden nur
           platziert, wo der Boden frei liegt — Wände und Randabstand bleiben stehen.
+        </div>
+      </div>
+      <!-- Platte füllen -->
+      <div id="pat-fill" style="display:none">
+        <div class="pat-row">
+          <label class="pat-lbl">Abstand zwischen den Teilen (mm)</label>
+          <input id="pat-fill-gap" class="pat-inp" type="number" min="0" max="100" value="3" step="0.5">
+        </div>
+        <div class="pat-row">
+          <label class="pat-lbl">Randabstand zur Plattenkante (mm)</label>
+          <input id="pat-fill-margin" class="pat-inp" type="number" min="0" max="100" value="5" step="0.5">
+        </div>
+        <div class="pat-row">
+          <label class="pat-lbl" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input id="pat-fill-rot" type="checkbox" checked> Drehen erlauben (0 / 90 / 180 / 270°)
+          </label>
+        </div>
+        <div style="font-size:11px;color:var(--dim);margin-top:6px">
+          Verteilt so viele Kopien des Teils wie möglich auf der Grundplatte — nach dem
+          echten Umriss verschachtelt, auf derselben Höhe wie das Original. Danach alles
+          markieren und <b>⊖ Abziehen</b>.
         </div>
       </div>
     </div>
@@ -23488,6 +23510,7 @@ function linearPatternTool() {
   document.getElementById('pat-lin').style.display = '';
   document.getElementById('pat-cir').style.display = 'none';
   document.getElementById('pat-hex').style.display = 'none';
+  document.getElementById('pat-fill').style.display = 'none';
   document.getElementById('pat-title').textContent = '⋮ Lineares Muster';
   document.getElementById('pat-modal').classList.add('show');
 }
@@ -23498,6 +23521,7 @@ function circularPatternTool() {
   document.getElementById('pat-lin').style.display = 'none';
   document.getElementById('pat-cir').style.display = '';
   document.getElementById('pat-hex').style.display = 'none';
+  document.getElementById('pat-fill').style.display = 'none';
   document.getElementById('pat-title').textContent = '⊙ Kreismuster';
   document.getElementById('pat-modal').classList.add('show');
 }
@@ -23509,8 +23533,266 @@ function hexPatternTool() {
   document.getElementById('pat-lin').style.display = 'none';
   document.getElementById('pat-cir').style.display = 'none';
   document.getElementById('pat-hex').style.display = '';
+  document.getElementById('pat-fill').style.display = 'none';
   document.getElementById('pat-title').textContent = '⬡ Wabenmuster';
   document.getElementById('pat-modal').classList.add('show');
+}
+
+// ═══ PLATTE FÜLLEN ══════════════════════════════════════════════════════
+// Grundplatte + ein Teil gewählt → so viele Kopien des Teils wie möglich auf
+// der Platte (gleiche Höhe). Verschachtelt wird nach dem echten Umriss von
+// oben, nicht nach dem Hüllrechteck: Platte und Teil werden auf ein Raster
+// (0,5 mm, bei großen Platten gröber) projiziert, dann füllt ein First-Fit
+// von der Ecke aus Platz für Platz, jede erlaubte Drehung wird probiert.
+function _fillPickPair() {
+  if (selectedObjs.length !== 2) return null;
+  const area = o => { const b = getMeshBox(o); return (b.max.x - b.min.x) * (b.max.z - b.min.z); };
+  const [a, b] = selectedObjs;
+  return area(a) >= area(b) ? { plate: a, part: b } : { plate: b, part: a };
+}
+
+function fillPlateTool() {
+  if (!_fillPickPair()) { notify('Grundplatte und das Teil auswählen (genau 2 Objekte)', 'w'); return; }
+  _patternType = 'fill';
+  ['pat-lin', 'pat-cir', 'pat-hex'].forEach(id => document.getElementById(id).style.display = 'none');
+  document.getElementById('pat-fill').style.display = '';
+  document.getElementById('pat-title').textContent = '▦ Platte füllen';
+  document.getElementById('pat-modal').classList.add('show');
+}
+
+// Umriss von oben (XZ, App-Units) als Dreiecksliste [x0,z0,x1,z1,x2,z2,…]
+function _fillFootTris(o) {
+  o.updateMatrixWorld(true);
+  const out = [];
+  const v = new THREE.Vector3();
+  o.traverse(ch => {
+    if (!ch.isMesh || !ch.geometry?.attributes?.position) return;
+    if (ch.userData && ch.userData.isEdgeLines) return;
+    const pos = ch.geometry.attributes.position, idx = ch.geometry.index?.array;
+    const n = Math.floor((idx ? idx.length : pos.count) / 3);
+    for (let i = 0; i < n * 3; i++) {
+      v.fromBufferAttribute(pos, idx ? idx[i] : i).applyMatrix4(ch.matrixWorld);
+      out.push(v.x, v.z);
+    }
+  });
+  return out;
+}
+
+// Dreiecke auf ein Raster (w×h, Zelle hC, Ursprung x0/z0) stempeln: Zellmitten
+// im Dreieck + die Zellen der Ecken (damit dünne Stege nicht durchrutschen).
+function _fillRaster(tris, x0, z0, hC, w, h) {
+  const m = new Uint8Array(w * h);
+  const put = (i, j) => { if (i >= 0 && j >= 0 && i < w && j < h) m[j * w + i] = 1; };
+  for (let t = 0; t < tris.length; t += 6) {
+    const ax = tris[t], az = tris[t+1], bx = tris[t+2], bz = tris[t+3], cx = tris[t+4], cz = tris[t+5];
+    put(Math.floor((ax - x0) / hC), Math.floor((az - z0) / hC));
+    put(Math.floor((bx - x0) / hC), Math.floor((bz - z0) / hC));
+    put(Math.floor((cx - x0) / hC), Math.floor((cz - z0) / hC));
+    const d = (bx - ax) * (cz - az) - (bz - az) * (cx - ax);
+    if (Math.abs(d) < 1e-12) continue;           // senkrechte Wand: Fläche 0 von oben
+    const i0 = Math.max(0, Math.floor((Math.min(ax, bx, cx) - x0) / hC));
+    const i1 = Math.min(w - 1, Math.floor((Math.max(ax, bx, cx) - x0) / hC));
+    const j0 = Math.max(0, Math.floor((Math.min(az, bz, cz) - z0) / hC));
+    const j1 = Math.min(h - 1, Math.floor((Math.max(az, bz, cz) - z0) / hC));
+    for (let j = j0; j <= j1; j++) {
+      const pz = z0 + (j + 0.5) * hC;
+      for (let i = i0; i <= i1; i++) {
+        const px = x0 + (i + 0.5) * hC;
+        const w0 = ((bx - px) * (cz - pz) - (bz - pz) * (cx - px)) / d;
+        const w1 = ((cx - px) * (az - pz) - (cz - pz) * (ax - px)) / d;
+        if (w0 >= -1e-9 && w1 >= -1e-9 && 1 - w0 - w1 >= -1e-9) m[j * w + i] = 1;
+      }
+    }
+  }
+  return m;
+}
+
+// Maske um r Zellen (kreisförmig, Chamfer-Abstand) wachsen lassen.
+function _fillDilate(m, w, h, r) {
+  if (r <= 0) return m;
+  const INF = 1e9, D = new Float32Array(w * h);
+  for (let k = 0; k < m.length; k++) D[k] = m[k] ? 0 : INF;
+  const a = 1, b = Math.SQRT2;
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    let d = D[j*w+i]; if (!d) continue;
+    if (i > 0) d = Math.min(d, D[j*w+i-1] + a);
+    if (j > 0) { d = Math.min(d, D[(j-1)*w+i] + a);
+      if (i > 0) d = Math.min(d, D[(j-1)*w+i-1] + b);
+      if (i < w-1) d = Math.min(d, D[(j-1)*w+i+1] + b); }
+    D[j*w+i] = d;
+  }
+  for (let j = h - 1; j >= 0; j--) for (let i = w - 1; i >= 0; i--) {
+    let d = D[j*w+i]; if (!d) continue;
+    if (i < w-1) d = Math.min(d, D[j*w+i+1] + a);
+    if (j < h-1) { d = Math.min(d, D[(j+1)*w+i] + a);
+      if (i < w-1) d = Math.min(d, D[(j+1)*w+i+1] + b);
+      if (i > 0) d = Math.min(d, D[(j+1)*w+i-1] + b); }
+    D[j*w+i] = d;
+  }
+  const o = new Uint8Array(w * h);
+  for (let k = 0; k < o.length; k++) o[k] = D[k] <= r + 1e-6 ? 1 : 0;
+  return o;
+}
+
+// Kern (ohne Szene): liefert die Platzierungen {rot, tx, tz} für das Teil.
+function _fillPlan(plate, part, gapMm, marginMm, allowRot) {
+  const pb = getMeshBox(plate), qb = getMeshBox(part);
+  const W = pb.max.x - pb.min.x, D = pb.max.z - pb.min.z;
+  // Raster: 0,5 mm, aber höchstens ~1,2 Mio. Zellen auf der Platte
+  let hC = 0.05;
+  while ((W / hC) * (D / hC) > 1.2e6) hC *= 1.5;
+  const pad = Math.ceil(Math.max(marginMm / 10 / hC, 1)) + 1;
+  const gw = Math.ceil(W / hC) + 2 * pad, gh = Math.ceil(D / hC) + 2 * pad;
+  const gx0 = pb.min.x - pad * hC, gz0 = pb.min.z - pad * hC;
+  // Frei = auf der Platte und mindestens Randabstand von der Kante entfernt
+  const plateM = _fillRaster(_fillFootTris(plate), gx0, gz0, hC, gw, gh);
+  const outside = new Uint8Array(gw * gh);
+  for (let k = 0; k < outside.length; k++) outside[k] = plateM[k] ? 0 : 1;
+  const occ = _fillDilate(outside, gw, gh, marginMm / 10 / hC);
+
+  // Teil-Masken je Drehung (um die Mitte des Hüllrechtecks)
+  const c0 = new THREE.Vector3((qb.min.x + qb.max.x) / 2, 0, (qb.min.z + qb.max.z) / 2);
+  const tris0 = _fillFootTris(part);
+  const gapC = gapMm / 10 / hC;
+  const rots = allowRot ? [0, 1, 2, 3] : [0];
+  const shapes = rots.map(r => {
+    const th = r * Math.PI / 2, co = Math.round(Math.cos(th)), si = Math.round(Math.sin(th));
+    // gleiche Drehung wie applyAxisAngle(Y, th): x' = x·cos + z·sin, z' = −x·sin + z·cos
+    const t = new Float64Array(tris0.length);
+    let mnx = Infinity, mnz = Infinity, mxx = -Infinity, mxz = -Infinity;
+    for (let k = 0; k < tris0.length; k += 2) {
+      const x = tris0[k] - c0.x, z = tris0[k+1] - c0.z;
+      const X = x * co + z * si, Z = -x * si + z * co;
+      t[k] = X; t[k+1] = Z;
+      if (X < mnx) mnx = X; if (X > mxx) mxx = X; if (Z < mnz) mnz = Z; if (Z > mxz) mxz = Z;
+    }
+    const e = Math.ceil(gapC) + 1;                        // Rand für die Abstands-Hülle
+    const w = Math.ceil((mxx - mnx) / hC) + 1 + 2 * e, h = Math.ceil((mxz - mnz) / hC) + 1 + 2 * e;
+    const ox = mnx - e * hC, oz = mnz - e * hC;
+    const m = _fillRaster(t, ox, oz, hC, w, h);
+    const halo = _fillDilate(m, w, h, gapC);
+    const cells = [];
+    let ancX = null, ancZ = null;                          // erste Zelle je Scanrichtung
+    for (let k = 0; k < m.length; k++) if (m[k]) {
+      const i = k % w, j = (k / w) | 0; cells.push(i, j);
+      if (!ancX) ancX = [i, j];
+      if (!ancZ || i < ancZ[0] || (i === ancZ[0] && j < ancZ[1])) ancZ = [i, j];
+    }
+    // Prüfreihenfolge gestreut: Kollisionen fallen so meist nach wenigen Zellen auf
+    const n = cells.length / 2, order = new Int32Array(n);
+    for (let k = 0, s = 0, step = 7919 % n || 1; k < n; k++) { order[k] = s; s = (s + step) % n; }
+    const cs = new Int32Array(n * 2);
+    for (let k = 0; k < n; k++) { cs[k*2] = cells[order[k]*2]; cs[k*2+1] = cells[order[k]*2+1]; }
+    return { rot: r, w, h, ox, oz, cells: cs, halo, ancX, ancZ };
+  });
+
+  // First-Fit in zwei Scanrichtungen (Zeilen längs X bzw. längs Z), das bessere gewinnt
+  const run = (zeilenX) => {
+    const o = occ.slice(), res = [];
+    const fits = (S, gi, gj) => {
+      if (gi < 0 || gj < 0 || gi + S.w > gw || gj + S.h > gh) return false;
+      const c = S.cells;
+      for (let k = 0; k < c.length; k += 2) if (o[(gj + c[k+1]) * gw + gi + c[k]]) return false;
+      return true;
+    };
+    const A = zeilenX ? gh : gw, B = zeilenX ? gw : gh;
+    for (let u = 0; u < A; u++) for (let v = 0; v < B; v++) {
+      const ci = zeilenX ? v : u, cj = zeilenX ? u : v;
+      if (o[cj * gw + ci]) continue;
+      for (const S of shapes) {
+        // Anker: erste belegte Zelle der Maske soll auf (ci,cj) liegen
+        const an = zeilenX ? S.ancX : S.ancZ;
+        const gi = ci - an[0], gj = cj - an[1];
+        if (!fits(S, gi, gj)) continue;
+        for (let y = 0; y < S.h; y++) for (let x = 0; x < S.w; x++)
+          if (S.halo[y * S.w + x]) { const ii = gi + x, jj = gj + y;
+            if (ii >= 0 && jj >= 0 && ii < gw && jj < gh) o[jj * gw + ii] = 1; }
+        res.push({ rot: S.rot, tx: gx0 + gi * hC - S.ox, tz: gz0 + gj * hC - S.oz });
+        if (res.length >= 500) return res;
+        break;
+      }
+    }
+    return res;
+  };
+  // Regelmäßige Gitter je Drehung: engster Spaltenabstand px, Reihen um sx
+  // versetzt mit engstem Reihenabstand pz. Schlägt das First-Fit oft bei
+  // gleichförmigen Teilen (ohne Drehen: 12 statt 11 auf 400 × 300).
+  const hits = (S, dx, dz) => {        // Teil bei (dx,dz) trifft Hülle eines Teils bei (0,0)?
+    const c = S.cells;
+    for (let k = 0; k < c.length; k += 2) {
+      const x = c[k] + dx, y = c[k+1] + dz;
+      if (x >= 0 && y >= 0 && x < S.w && y < S.h && S.halo[y * S.w + x]) return true;
+    }
+    return false;
+  };
+  // Freie Fläche: erste freie Spalte/Zeile → Gitter bündig dort anlegen
+  let fx0 = gw, fz0 = gh;
+  for (let j = 0; j < gh; j++) for (let i = 0; i < gw; i++)
+    if (!occ[j * gw + i]) { if (i < fx0) fx0 = i; if (j < fz0) fz0 = j; }
+  const lattice = (S, px, sx, pz) => {
+    const o = occ.slice(), res = [];
+    let mi = S.w, mj = S.h;                               // linke/obere belegte Zelle der Maske
+    for (let k = 0; k < S.cells.length; k += 2) { mi = Math.min(mi, S.cells[k]); mj = Math.min(mj, S.cells[k+1]); }
+    const gi0 = fx0 - mi, gj0 = fz0 - mj;
+    for (let row = 0, gj = gj0; gj < gh; row++, gj += pz) {
+      let gi = gi0 + ((row * sx) % px) - px;
+      for (; gi < gw; gi += px) {
+        if (gi < 0 || gj < 0 || gi + S.w > gw || gj + S.h > gh) continue;
+        const c = S.cells; let ok = true;
+        for (let k = 0; k < c.length; k += 2) if (o[(gj + c[k+1]) * gw + gi + c[k]]) { ok = false; break; }
+        if (!ok) continue;
+        for (let y = 0; y < S.h; y++) for (let x = 0; x < S.w; x++)
+          if (S.halo[y * S.w + x]) o[(gj + y) * gw + gi + x] = 1;
+        res.push({ rot: S.rot, tx: gx0 + gi * hC - S.ox, tz: gz0 + gj * hC - S.oz });
+        if (res.length >= 500) return res;
+      }
+    }
+    return res;
+  };
+  let best = run(true);
+  const b2 = run(false); if (b2.length > best.length) best = b2;
+  for (const S of shapes) {
+    let px = 1; while (px < S.w && hits(S, px, 0)) px++;
+    const step = Math.max(1, Math.round(px / 16));
+    for (let sx = 0; sx < px; sx += step) {
+      let pz = 1; while (pz < S.h && (hits(S, sx, pz) || hits(S, sx - px, pz))) pz++;
+      const r = lattice(S, px, sx, pz);
+      if (r.length > best.length) best = r;
+    }
+  }
+  return { c0, places: best };
+}
+
+function _applyFillPlate(gapMm, marginMm, allowRot) {
+  const pair = _fillPickPair(); if (!pair) return;
+  const { plate, part } = pair;
+  const t0 = performance.now();
+  const { c0, places } = _fillPlan(plate, part, gapMm, marginMm, allowRot);
+  if (!places.length) { notify('Das Teil passt mit diesen Abständen nicht auf die Platte', 'w'); return; }
+  saveUndo();
+  const Y = new THREE.Vector3(0, 1, 0);
+  const q0 = part.quaternion.clone(), p0 = part.position.clone();
+  const place = (o, pl) => {
+    const th = pl.rot * Math.PI / 2;
+    const rel = new THREE.Vector3(p0.x - c0.x, 0, p0.z - c0.z).applyAxisAngle(Y, th);
+    o.quaternion.copy(new THREE.Quaternion().setFromAxisAngle(Y, th).multiply(q0));
+    o.position.set(rel.x + pl.tx, p0.y, rel.z + pl.tz);   // Höhe bleibt
+    o.updateMatrixWorld(true);
+  };
+  const data = objectToData(part);
+  const all = [part];
+  place(part, places[0]);                                  // Original wird Kopie Nr. 1
+  for (let k = 1; k < places.length; k++) {
+    const d = Object.assign({}, data, { id: idCtr++ });
+    const cl = buildObjectFromData(d);
+    place(cl, places[k]);
+    scene.add(cl); objects.push(cl); all.push(cl);
+  }
+  selectObjs([plate, ...all]);
+  updateTree();
+  console.log(`[fill] ${places.length} Teile in ${Math.round(performance.now() - t0)} ms`);
+  notify(`▦ ${places.length} × ${part.userData.name || 'Teil'} auf der Platte` +
+         (part.userData.isHole ? ' — jetzt ⊖ Abziehen' : ''), 'ok');
 }
 
 function _closePat() {
@@ -23524,6 +23806,13 @@ function _applyPat() {
     const dy    = parseFloat(document.getElementById('pat-lin-dy').value) || 0;
     const dz    = parseFloat(document.getElementById('pat-lin-dz').value) || 0;
     _applyLinearPattern(count, dx / 10, dy / 10, dz / 10);
+  } else if (_patternType === 'fill') {
+    const gap    = Math.max(0, parseFloat(document.getElementById('pat-fill-gap').value) || 0);
+    const margin = Math.max(0, parseFloat(document.getElementById('pat-fill-margin').value) || 0);
+    const rot    = document.getElementById('pat-fill-rot').checked;
+    _closePat();
+    _applyFillPlate(gap, margin, rot);
+    return;
   } else if (_patternType === 'hex') {
     const cell   = Math.max(2,   parseFloat(document.getElementById('pat-hex-cell').value)   || 8);
     const wall   = Math.max(0.8, parseFloat(document.getElementById('pat-hex-wall').value)   || 2.5);
@@ -47805,8 +48094,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.54';
+const VOLME3D_VERSION = '1.18.55';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.55', date:'2026-09-25', spots:['[onclick="fillPlateTool()"]'], changes:[
+    ['\u25A6','<b>Neu: \u25A6 Platte f\u00fcllen.</b> Grundplatte und ein Teil ausw\u00e4hlen, unter <i>Anordnen</i> auf <b>\u25A6 F\u00fcllen</b> \u2014 V3D CAD verteilt so viele Kopien des Teils wie m\u00f6glich auf der Platte, alle auf derselben H\u00f6he wie das Original. Einstellbar sind der Abstand zwischen den Teilen, der Randabstand zur Plattenkante und ob die Teile gedreht werden d\u00fcrfen (0/90/180/270\u00b0). Verschachtelt wird nach dem <b>echten Umriss</b>, nicht nach dem umgebenden Rechteck: Gebogene oder hakenf\u00f6rmige Teile greifen ineinander. Nachgemessen an einem 120\u00d764-mm-Halter auf 400\u00d7300\u00a0mm: <b>14 St\u00fcck</b>, ein einfaches Raster schafft dort 12. Ist das Teil als Bohrung markiert, sind die Kopien es auch \u2014 danach einfach alles markieren und <b>\u2296 Abziehen</b>.'],
+  ]},
   { version:'1.18.54', date:'2026-09-25', changes:[
     ['\u2296','<b>Importierte Teile lassen sich wieder abziehen \u2014 auch nach R\u00fcckg\u00e4ngig und Verschieben.</b> Manche STL-Dateien enthalten winzige \u201eNadel-Dreiecke\u201c (drei Punkte auf einer Linie). Die sortierte V3D CAD vor dem Rechnen aus \u2014 dabei riss aber ein Loch in das sonst geschlossene Netz, und das Abziehen brach mit <i>\u201ekein g\u00fcltiges Werkzeug\u201c</i> ab. Jetzt bleiben solche Dreiecke drin, wenn das Netz sonst undicht w\u00fcrde. Nachgemessen am gemeldeten Bauteil (33.600 Dreiecke): Abziehen, R\u00fcckg\u00e4ngig, 10\u202fmm tiefer setzen, erneut Abziehen \u2014 klappt jedes Mal in unter einer halben Sekunde.'],
     ['\u26A0\uFE0F','Ber\u00fchrt die Bohrung den K\u00f6rper gar nicht (z.\u202fB. zu weit hochgezogen), verschwand sie beim Abziehen bisher trotzdem, und der K\u00f6rper blieb unver\u00e4ndert. Jetzt kommt ein Hinweis, und beide Teile bleiben stehen.'],
