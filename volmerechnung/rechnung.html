@@ -110,6 +110,7 @@ table.list tr.click{cursor:pointer}
   /* Tabellen wischbar statt gequetscht */
   .card{overflow-x:auto}
   table.list{min-width:560px}
+  table.list.fit{min-width:0}
   .pos-table{min-width:760px}
   #kalkDlg>.card{width:94vw!important;max-height:92vh;overflow-y:auto}
   .btn{padding:9px 12px}
@@ -230,6 +231,7 @@ table.list tr.click{cursor:pointer}
     <button data-v="artikel" onclick="nav('artikel')">📦 Artikel</button>
     <button data-v="kurse" onclick="nav('kurse')">🎓 Kurse</button>
     <button data-v="ausgaben" onclick="nav('ausgaben')">💸 Ausgaben</button>
+    <button data-v="ust" onclick="nav('ust')">🏦 Umsatzsteuer</button>
     <button data-v="einstellungen" onclick="nav('einstellungen')">⚙️ Einstellungen</button>
     <button id="mailBtn" onclick="oeffneMail()">📧 V3D Mail</button>
     <div class="foot">VolmeRechnung · Tailnet-intern<br>Port 8782</div>
@@ -361,6 +363,7 @@ function render(){
     case 'artikel':return renderArtikel(m);
     case 'kurse':return renderKurse(m);
     case 'ausgaben':return renderAusgaben(m);
+    case 'ust':return renderUst(m);
     case 'einstellungen':return renderSettings(m);
   }
 }
@@ -387,6 +390,7 @@ function renderDash(m){
     <div class="kpi"><div class="l">Offene Angebote</div><div class="v">${angOffen.length}</div></div>
     <div class="kpi"><div class="l">Ausgaben ${jahr}</div><div class="v">${eur(ausgaben)}</div></div>
     <div class="kpi ${umsatz-ausgaben>=0?'ok':'warn'}"><div class="l">Gewinn ${jahr} (grob)</div><div class="v">${eur(umsatz-ausgaben)}</div></div>
+    ${S.settings.steuer.modus==='klein'?'':`<div class="kpi warn click" style="cursor:pointer" onclick="nav('ust')" title="Umsatzsteuer abzüglich Vorsteuer, noch nicht als überwiesen markiert"><div class="l">🏦 Noch ans Finanzamt (USt)</div><div class="v">${eur(ustOffen().summe)}</div></div>`}
   </div>
   <div class="card"><h3 style="margin-bottom:8px">Zuletzt bearbeitet</h3>
   ${letzten.length?docTable(letzten,true):'<p style="color:var(--dim)">Noch keine Belege. Leg mit einem Angebot oder einer Rechnung los!</p>'}
@@ -1295,6 +1299,187 @@ async function alsBezahlt(id){
 async function delAusgabe(id){
   if(!confirm('Ausgabe löschen?'))return;
   try{await api('expenses/'+id,'DELETE');await loadAll();render();}catch(e){toast(e.message,true);}
+}
+
+// --- Umsatzsteuer (Voranmeldung + was davon dem Finanzamt gehört)
+// Rein rechnerisch aus Rechnungen (USt) und Ausgaben (Vorsteuer). Gespeichert wird nur
+// die Einstellung und ob ein Zeitraum gemeldet/überwiesen ist: settings.ustva.
+const UST_DEF={zeitraum:'monat',versteuerung:'soll',dfv:false,erledigt:{}};
+function ustCfg(){return Object.assign({},UST_DEF,S.settings.ustva||{},{erledigt:Object.assign({},(S.settings.ustva||{}).erledigt)});}
+const r2=v=>Math.round((Number(v)||0)*100)/100;
+// '2026-09-14' -> '2026-09' bzw. '2026-Q3'
+function ustKey(datum,zr){
+  if(!datum)return null;const j=datum.slice(0,4),mo=+datum.slice(5,7);
+  return zr==='quartal'?`${j}-Q${Math.ceil(mo/3)}`:`${j}-${String(mo).padStart(2,'0')}`;
+}
+function ustKeyText(k){
+  if(k.includes('Q'))return k.slice(5,7).replace('Q','')+'. Quartal '+k.slice(0,4);
+  return new Date(k+'-15T12:00:00').toLocaleDateString('de-DE',{month:'long',year:'numeric'});
+}
+function ustKeyEnde(k){ // letzter Tag des Zeitraums als Date
+  const j=+k.slice(0,4),m=k.includes('Q')?+k.slice(6)*3:+k.slice(5,7);
+  return new Date(j,m,0,12);
+}
+// Fällig am 10. nach Ablauf (Dauerfristverlängerung: einen Monat später); Wochenende -> Montag
+function ustFaellig(k,dfv){
+  const e=ustKeyEnde(k),d=new Date(e.getFullYear(),e.getMonth()+1+(dfv?1:0),10,12);
+  while(d.getDay()===0||d.getDay()===6)d.setDate(d.getDate()+1);
+  return d;
+}
+const isoD=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+// Netto und USt je Steuersatz eines Belegs (Beleg-Rabatt anteilig wie calcTotals)
+function ustSaetze(doc){
+  const t=calcTotals(doc),f=t.netto?t.nettoNachRabatt/t.netto:1,out={};
+  for(const p of doc.positionen||[]){
+    if(p.typ==='text')continue;
+    const satz=S.settings.steuer.modus==='klein'?0:(Number(p.ust)||0);
+    const zeile=(Number(p.menge)||0)*(Number(p.preis)||0)*(1-(Number(p.rabatt)||0)/100)*f;
+    (out[satz]=out[satz]||{netto:0,ust:0}).netto+=zeile;
+  }
+  for(const s in out){out[s].netto=r2(out[s].netto);out[s].ust=r2(out[s].netto*s/100);}
+  return out;
+}
+// Alle Zeiträume berechnen: {key:{saetze,ust,vorsteuer,zahllast,rechnungen,ausgaben,ohneUst,eingangBrutto,eingangUst,ausgabenBrutto,ausgabenVSt}}
+function ustBerechnen(cfg){
+  const P={},per=k=>P[k]=P[k]||{key:k,saetze:{},ust:0,vorsteuer:0,rechnungen:[],ausgaben:[],ohneUst:0,
+    eingangBrutto:0,eingangUst:0,ausgabenBrutto:0,ausgabenVSt:0};
+  for(const d of S.docs){
+    if(d.art!=='rechnung'||!d.festgeschrieben||d.status==='storniert')continue;
+    const st=ustSaetze(d),brutto=r2(Object.values(st).reduce((x,s)=>x+s.netto+s.ust,0));
+    const ustSum=r2(Object.values(st).reduce((x,s)=>x+s.ust,0));
+    // Meldung: Soll = Rechnungsdatum, Ist = Zahlungseingang
+    const mk=ustKey(cfg.versteuerung==='ist'?(d.status==='bezahlt'?d.bezahltAm:null):d.datum,cfg.zeitraum);
+    if(mk){const p=per(mk);p.rechnungen.push(d);p.ust+=ustSum;
+      for(const s in st){const z=p.saetze[s]=p.saetze[s]||{netto:0,ust:0};z.netto+=st[s].netto;z.ust+=st[s].ust;}}
+    // Geldfluss: immer nach Zahlungseingang
+    const gk=d.status==='bezahlt'?ustKey(d.bezahltAm,cfg.zeitraum):null;
+    if(gk){const p=per(gk);p.eingangBrutto+=brutto;p.eingangUst+=ustSum;}
+  }
+  for(const a of S.expenses){
+    const k=ustKey(a.datum,cfg.zeitraum);if(!k)continue;
+    const p=per(k),vst=r2((a.steuern||[]).reduce((x,s)=>x+(Number(s.ust)||0),0));
+    p.ausgaben.push(a);p.vorsteuer+=vst;p.ausgabenBrutto+=Number(a.betrag)||0;p.ausgabenVSt+=vst;
+    if(!vst&&(Number(a.betrag)||0)>0)p.ohneUst++;
+  }
+  for(const p of Object.values(P)){
+    for(const f of ['ust','vorsteuer','eingangBrutto','eingangUst','ausgabenBrutto','ausgabenVSt'])p[f]=r2(p[f]);
+    p.zahllast=r2(p.ust-p.vorsteuer);
+  }
+  return P;
+}
+// Für die Übersicht: was liegt noch beim Finanzamt an (nicht als überwiesen markiert)?
+function ustOffen(){
+  const cfg=ustCfg(),P=ustBerechnen(cfg),jetzt=ustKey(today(),cfg.zeitraum);
+  let offen=0,laufend=0;
+  for(const p of Object.values(P)){
+    if(p.key>jetzt||cfg.erledigt[p.key]?.bezahltAm)continue;
+    if(p.key===jetzt)laufend+=p.zahllast;else offen+=p.zahllast;
+  }
+  return {offen:r2(offen),laufend:r2(laufend),summe:r2(offen+laufend),jetzt};
+}
+let ustJahr=null,ustAuf=null;
+function renderUst(m){
+  const cfg=ustCfg(),P=ustBerechnen(cfg),jetzt=ustKey(today(),cfg.zeitraum);
+  if(S.settings.steuer.modus==='klein'){
+    m.innerHTML=`<h1>🏦 Umsatzsteuer</h1><div class="card">In den Einstellungen ist <b>Kleinunternehmer (§ 19 UStG)</b> eingestellt — du weist keine Umsatzsteuer aus und musst keine Voranmeldung abgeben.</div>`;return;
+  }
+  const jahre=[...new Set([String(new Date().getFullYear()),...Object.keys(P).map(k=>k.slice(0,4)).filter(j=>j>='2026')])].sort().reverse();
+  const jahr=ustJahr&&jahre.includes(ustJahr)?ustJahr:jahre[0];
+  // alle Zeiträume des Jahres bis heute, auch leere (auch leere Monate müssen gemeldet werden)
+  const keys=[];const n=cfg.zeitraum==='quartal'?4:12;
+  // erst ab dem ersten Zeitraum mit Belegen (vor dem Geschäftsstart gibt es nichts zu melden)
+  const start=Object.keys(P).filter(k=>k.startsWith(jahr)).sort()[0]||jetzt;
+  for(let i=1;i<=n;i++){const k=cfg.zeitraum==='quartal'?`${jahr}-Q${i}`:`${jahr}-${String(i).padStart(2,'0')}`;if(k>=start&&k<=jetzt)keys.push(k);}
+  keys.reverse();
+  const leer=k=>({key:k,saetze:{},ust:0,vorsteuer:0,zahllast:0,rechnungen:[],ausgaben:[],ohneUst:0,eingangBrutto:0,eingangUst:0,ausgabenBrutto:0,ausgabenVSt:0});
+  const rows=keys.map(k=>P[k]||leer(k));
+  const o=ustOffen();
+  // Geld-Sicht des Jahres: was kam rein, was davon gehört dem Finanzamt
+  const J=rows.reduce((x,p)=>({ein:x.ein+p.eingangBrutto,einUst:x.einUst+p.eingangUst,aus:x.aus+p.ausgabenBrutto,vst:x.vst+p.ausgabenVSt}),{ein:0,einUst:0,aus:0,vst:0});
+  const bezahltJahr=rows.reduce((x,p)=>x+(cfg.erledigt[p.key]?.bezahltAm?Number(cfg.erledigt[p.key].betrag??p.zahllast):0),0);
+  const frei=r2((J.ein-J.einUst)-(J.aus-J.vst));
+  const zr=cfg.zeitraum==='quartal'?'Quartal':'Monat';
+  m.innerHTML=`<h1>🏦 Umsatzsteuer<span class="spacer"></span>
+    <select style="width:auto" onchange="ustJahr=this.value;render()">${jahre.map(j=>`<option ${j===jahr?'selected':''}>${j}</option>`).join('')}</select></h1>
+  <div class="kpis">
+    <div class="kpi ${o.offen>0?'warn':''}"><div class="l">Noch ans Finanzamt (abgeschlossene Zeiträume)</div><div class="v">${eur(Math.max(o.offen,0))}</div></div>
+    <div class="kpi acc"><div class="l">Laufender ${zr} (wächst noch)</div><div class="v">${eur(o.laufend)}</div></div>
+    <div class="kpi"><div class="l">An Finanzamt überwiesen ${jahr}</div><div class="v">${eur(bezahltJahr)}</div></div>
+    <div class="kpi ok"><div class="l">Frei verfügbar ${jahr} <small>(ohne USt, vor Einkommensteuer)</small></div><div class="v">${eur(frei)}</div></div>
+  </div>
+  <div class="card"><h3 style="margin-bottom:6px">💶 Dein Geld vs. Geld vom Finanzamt — ${jahr}</h3>
+    <table class="list fit" style="max-width:620px">
+      <tr><td>Zahlungseingänge (brutto, bezahlte Rechnungen)</td><td class="num"><b>${eur(J.ein)}</b></td></tr>
+      <tr><td style="color:var(--red)">− darin enthaltene Umsatzsteuer (gehört dem Finanzamt)</td><td class="num" style="color:var(--red)">${eur(-J.einUst)}</td></tr>
+      <tr><td>− Ausgaben (brutto)</td><td class="num">${eur(-J.aus)}</td></tr>
+      <tr><td style="color:var(--green)">+ darin enthaltene Vorsteuer (bekommst du verrechnet)</td><td class="num" style="color:var(--green)">${eur(J.vst)}</td></tr>
+      <tr><td><b>= frei verfügbar</b> <small style="color:var(--dim)">(davon geht noch Einkommensteuer ab)</small></td><td class="num"><b>${eur(frei)}</b></td></tr>
+    </table>
+    <p style="color:var(--mid);font-size:13px;margin-top:8px">Tipp: Leg die „Noch ans Finanzamt“-Summe gleich beim Zahlungseingang auf ein Unterkonto (z. B. bunq-Unterkonto „Finanzamt“) — dann ist sie nicht aus Versehen ausgegeben.</p>
+  </div>
+  <div class="card"><h3 style="margin-bottom:8px">📅 Voranmeldungen ${jahr}</h3>
+  <table class="list"><tr><th>Zeitraum</th><th class="num">Umsatz netto</th><th class="num">Umsatzsteuer</th><th class="num">Vorsteuer</th><th class="num">Zahllast</th><th>Fällig</th><th>Status</th></tr>
+  ${rows.map(p=>{
+    const e=cfg.erledigt[p.key]||{},laufend=p.key===jetzt,f=ustFaellig(p.key,cfg.dfv),ueber=!e.gemeldetAm&&!laufend&&f<new Date();
+    const netto=r2(Object.values(p.saetze).reduce((x,s)=>x+s.netto,0));
+    const abw=e.bezahltAm&&e.betrag!=null&&Math.abs(e.betrag-p.zahllast)>=0.01;
+    const status=laufend?'<span class="badge b-entwurf">läuft noch</span>'
+      :`${e.gemeldetAm?`<span class="badge b-bezahlt" title="gemeldet am ${dtDE(e.gemeldetAm)}">✓ gemeldet</span>`:`<button class="btn sm ${ueber?'danger':'sec'}" onclick="event.stopPropagation();ustMarkiere('${p.key}','gemeldetAm')">melden ✓</button>`}
+        ${p.zahllast>0?(e.bezahltAm?`<span class="badge b-bezahlt" title="überwiesen am ${dtDE(e.bezahltAm)}: ${eur(e.betrag)}">✓ überwiesen</span>`:`<button class="btn sm sec" onclick="event.stopPropagation();ustMarkiere('${p.key}','bezahltAm')">überwiesen ✓</button>`):''}
+        ${abw?`<br><small style="color:var(--red)">⚠ überwiesen ${eur(e.betrag)}, jetzt ${eur(p.zahllast)} — Berichtigung nötig</small>`:''}`;
+    return `<tr class="click" onclick="ustAuf=ustAuf==='${p.key}'?null:'${p.key}';render()">
+      <td><b>${ustKeyText(p.key)}</b></td><td class="num">${eur(netto)}</td><td class="num">${eur(p.ust)}</td><td class="num">${eur(p.vorsteuer)}</td>
+      <td class="num"><b style="color:${p.zahllast>0?'var(--red)':'var(--green)'}">${eur(p.zahllast)}</b>${p.zahllast<0?'<br><small>Erstattung</small>':''}</td>
+      <td style="${ueber?'color:var(--red);font-weight:600':''}">${laufend?'<small>ab Zeitraumende</small><br>':''}${f.toLocaleDateString('de-DE')}</td><td style="white-space:nowrap">${status}</td></tr>
+      ${ustAuf===p.key?`<tr><td colspan="7" style="background:#fafbfd">${ustDetail(p,cfg)}</td></tr>`:''}`;
+  }).join('')||'<tr><td colspan="7" style="color:var(--dim)">Keine Zeiträume.</td></tr>'}
+  </table>
+  <p style="color:var(--dim);font-size:12.5px;margin-top:8px">Zeile antippen = Kennzahlen für ELSTER und die einzelnen Belege.</p></div>
+  <div class="card"><h3>⚙️ Einstellungen Voranmeldung</h3>
+  <div class="grid3">
+    <div><label>Zeitraum</label><select id="uZr"><option value="monat" ${cfg.zeitraum==='monat'?'selected':''}>monatlich</option><option value="quartal" ${cfg.zeitraum==='quartal'?'selected':''}>vierteljährlich</option></select></div>
+    <div><label>Versteuerung</label><select id="uVs"><option value="soll" ${cfg.versteuerung==='soll'?'selected':''}>Soll (nach Rechnungsdatum)</option><option value="ist" ${cfg.versteuerung==='ist'?'selected':''}>Ist (nach Zahlungseingang)</option></select></div>
+    <div><label>Dauerfristverlängerung</label><select id="uDfv"><option value="0" ${!cfg.dfv?'selected':''}>nein — fällig am 10.</option><option value="1" ${cfg.dfv?'selected':''}>ja — einen Monat später</option></select></div>
+  </div>
+  <p style="color:var(--mid);font-size:13px;margin-top:8px">Welche Versteuerung für dich gilt, steht im Schreiben des Finanzamts zur Steuernummer („Ist-Versteuerung genehmigt“ → Ist). Ohne Genehmigung gilt Soll.</p>
+  <button class="btn" style="margin-top:6px" onclick="ustSpeichern()">💾 Speichern</button></div>`;
+}
+function ustDetail(p,cfg){
+  const S19=p.saetze[19]||{netto:0,ust:0},S7=p.saetze[7]||{netto:0,ust:0};
+  const sonst=Object.entries(p.saetze).filter(([s])=>s!=='19'&&s!=='7');
+  const ganz=v=>Math.floor(v).toLocaleString('de-DE')+' €'; // ELSTER: Bemessungsgrundlage in vollen Euro
+  const kz=(nr,txt,wert)=>`<tr><td style="width:60px;white-space:nowrap"><b>Kz ${nr}</b></td><td>${txt}</td><td class="num">${wert}</td></tr>`;
+  return `<div style="display:flex;gap:24px;flex-wrap:wrap">
+  <div style="flex:1 1 320px"><b>Für ELSTER (Umsatzsteuer-Voranmeldung)</b>
+    <table class="list fit" style="margin-top:4px">
+      ${kz(81,'Umsätze 19 % (Bemessungsgrundlage)',ganz(S19.netto))}
+      ${S7.netto?kz(86,'Umsätze 7 % (Bemessungsgrundlage)',ganz(S7.netto)):''}
+      ${sonst.map(([s,v])=>`<tr><td>—</td><td>Umsätze ${s} % <small style="color:var(--red)">(Kennzahl selbst prüfen)</small></td><td class="num">${eur(v.netto)}</td></tr>`).join('')}
+      ${kz(66,'Vorsteuer aus Rechnungen anderer',eur(p.vorsteuer))}
+      ${kz(83,p.zahllast>=0?'Vorauszahlung (Zahllast)':'Erstattung',eur(p.zahllast))}
+    </table>
+    <p style="color:var(--dim);font-size:12px;margin-top:4px">ELSTER rechnet die Steuer aus Kz 81/86 selbst aus — Abweichungen von ein paar Cent durch Rundung sind normal.</p>
+    ${p.ohneUst?`<p style="color:var(--acc-d);font-size:13px">⚠ ${p.ohneUst} Ausgabe(n) ohne ausgewiesene USt — falls die Rechnung USt enthält, in den Ausgaben unter „Steuer je Satz“ nachtragen, sonst verschenkst du Vorsteuer.</p>`:''}
+  </div>
+  <div style="flex:1 1 320px"><b>Rechnungen</b> <small style="color:var(--dim)">(${cfg.versteuerung==='ist'?'nach Zahlungseingang':'nach Rechnungsdatum'})</small>
+    ${p.rechnungen.map(d=>`<div style="display:flex;gap:8px;font-size:13.5px;padding:3px 0;cursor:pointer" onclick="event.stopPropagation();openDoc('${d.id}')"><b>${esc(d.nummer)}</b><span style="flex:1;color:var(--mid)">${esc(kundeName(d))}</span><span>USt ${eur(Object.values(ustSaetze(d)).reduce((x,s)=>x+s.ust,0))}</span></div>`).join('')||'<div style="color:var(--dim);font-size:13px">keine</div>'}
+    <b style="display:block;margin-top:8px">Ausgaben</b>
+    ${p.ausgaben.map(a=>`<div style="display:flex;gap:8px;font-size:13.5px;padding:3px 0"><span>${dtDE(a.datum)}</span><span style="flex:1;color:var(--mid)">${esc(a.lieferant||a.beschreibung||'')}</span><span>VSt ${eur((a.steuern||[]).reduce((x,s)=>x+(Number(s.ust)||0),0))}</span></div>`).join('')||'<div style="color:var(--dim);font-size:13px">keine</div>'}
+  </div></div>`;
+}
+async function ustSpeichern(){
+  const cfg=ustCfg();
+  const neu=Object.assign(cfg,{zeitraum:$('#uZr').value,versteuerung:$('#uVs').value,dfv:$('#uDfv').value==='1'});
+  try{S.settings=await api('settings','PUT',{ustva:neu});toast('Gespeichert');render();}catch(e){toast(e.message,true);}
+}
+async function ustMarkiere(k,feld){
+  const cfg=ustCfg(),p=ustBerechnen(cfg)[k]||{zahllast:0};
+  const frage=feld==='gemeldetAm'?`Voranmeldung ${ustKeyText(k)} als an ELSTER übermittelt markieren?`
+    :`Zahllast ${eur(p.zahllast)} für ${ustKeyText(k)} als ans Finanzamt überwiesen markieren?`;
+  if(!confirm(frage))return;
+  const e=Object.assign({},cfg.erledigt[k]);e[feld]=today();if(feld==='bezahltAm')e.betrag=p.zahllast;
+  cfg.erledigt[k]=e;
+  try{S.settings=await api('settings','PUT',{ustva:cfg});toast('Gespeichert');render();}catch(e2){toast(e2.message,true);}
 }
 
 // --- Einstellungen
