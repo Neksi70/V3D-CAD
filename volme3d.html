@@ -25239,14 +25239,54 @@ function setWorkplaneFromFace(hit) {
   workplaneMode = false; _wpHL.visible = false; canvas.style.cursor = '';
   const btn = document.getElementById('lt-workplane');
   btn.classList.remove('pick-mode'); btn.classList.add('wp-set');
-  _wpGrid.position.copy(workplanePoint);
-  _wpGrid.quaternion.copy(_wpMakeQuat(n));
-  _wpGrid.visible = true;
   // Konstruktionsebenen-Panel: Basis merken, Versatz/Kippen zurücksetzen
   _wpBaseN = n.clone(); _wpBaseP = hit.point.clone();
+  _wpFitGrid(hit.object);
   _wpSetPanelValues(0, 0, 0);
+  _wpAdjust();
   document.getElementById('wp-panel').classList.add('show');
   notify('Arbeitsebene gesetzt ✓ — Versatz/Kippen im Panel, erneut klicken zum Verschieben', 'ok');
+}
+
+// Gitter der Arbeitsebene auf das angeklickte Bauteil zuschneiden: Größe und
+// Mitte aus der auf die Ebene projizierten Hülle des Körpers, 10-mm-Kästchen.
+// Ohne Körper (Boden-Basis) deckt es die Bauplatte ab. Vorher war es fest
+// 200 mm um den Klickpunkt — auf einer großen Platte nur ein Eckchen.
+let _wpGridOff = new THREE.Vector3();   // Klickpunkt → Gitter-Mitte (Welt, in der Ebene)
+let _wpGridSize = 20;
+function _wpFitGrid(obj) {
+  const n = _wpBaseN, p0 = _wpBaseP;
+  let size, off = new THREE.Vector3();
+  if (obj) {
+    const qInv = _wpMakeQuat(n).invert();
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    obj.updateMatrixWorld(true);
+    obj.traverse(ch => {
+      if (!ch.isMesh || !ch.geometry || !ch.geometry.attributes.position) return;
+      if (ch.userData && ch.userData.isEdgeLines) return;
+      const lb = new THREE.Box3().setFromBufferAttribute(ch.geometry.attributes.position);
+      for (let i = 0; i < 8; i++) {
+        const v = new THREE.Vector3(i & 1 ? lb.max.x : lb.min.x, i & 2 ? lb.max.y : lb.min.y, i & 4 ? lb.max.z : lb.min.z)
+          .applyMatrix4(ch.matrixWorld).sub(p0).applyQuaternion(qInv);
+        x0 = Math.min(x0, v.x); x1 = Math.max(x1, v.x); z0 = Math.min(z0, v.z); z1 = Math.max(z1, v.z);
+      }
+    });
+    if (!isFinite(x0)) { size = 20; }
+    else {
+      size = Math.max(x1 - x0, z1 - z0);
+      off.set((x0 + x1) / 2, 0, (z0 + z1) / 2).applyQuaternion(_wpMakeQuat(n));
+    }
+  } else {
+    size = Math.max(buildplateW, buildplateH) / 10;
+  }
+  size = Math.min(Math.max(Math.ceil(size), 2), 400);   // ganze cm, 10-mm-Raster bleibt deckungsgleich
+  _wpGridOff.copy(off);
+  if (size !== _wpGridSize) {
+    const g = new THREE.GridHelper(size, size, 0x2299ff, 0x66bbff);
+    _wpGrid.geometry.dispose(); _wpGrid.geometry = g.geometry;
+    g.material.dispose();
+    _wpGridSize = size;
+  }
 }
 
 function resetWorkplane() {
@@ -25281,6 +25321,7 @@ function _wpSetFloorBase() {
   const btn = document.getElementById('lt-workplane');
   btn.classList.remove('pick-mode'); btn.classList.add('wp-set');
   _wpBaseN = new THREE.Vector3(0, 1, 0); _wpBaseP = new THREE.Vector3(0, 0, 0);
+  _wpFitGrid(null);
   _wpSetPanelValues(0, 0, 0);
   _wpAdjust();
   document.getElementById('wp-panel').classList.add('show');
@@ -25302,7 +25343,11 @@ function _wpAdjust() {
     .normalize();
   const p = _wpBaseP.clone().addScaledVector(n, offMm / 10);   // mm → Units
   workplaneNormal.copy(n); workplanePoint.copy(p);
-  _wpGrid.position.copy(p); _wpGrid.quaternion.copy(_wpMakeQuat(n));
+  // Gitter-Mitte liegt in der Ebene versetzt zum Klickpunkt; beim Kippen dreht
+  // der Versatz mit, damit das Gitter auf dem Bauteil bleibt.
+  const tilt = new THREE.Quaternion().setFromUnitVectors(n0, n);
+  _wpGrid.position.copy(p).add(_wpGridOff.clone().applyQuaternion(tilt));
+  _wpGrid.quaternion.copy(_wpMakeQuat(n));
   _wpGrid.visible = true;
   document.getElementById('lt-workplane').classList.add('wp-set');
 }
@@ -47749,8 +47794,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.51';
+const VOLME3D_VERSION = '1.18.52';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.52', date:'2026-09-25', changes:[
+    ['\u{1F4D0}','<b>Das Gitter der Arbeitsebene passt sich dem Bauteil an.</b> Bisher war es immer 200\u202f\u00d7\u202f200\u202fmm gro\u00df und lag um die angeklickte Stelle \u2014 auf einer gro\u00dfen Platte sah man nur ein Eckchen, auf einem kleinen Teil ragte es weit heraus. Jetzt bekommt es die Gr\u00f6\u00dfe der angeklickten Fl\u00e4che bzw. des Bauteils und sitzt auf dessen Mitte (weiter mit 10-mm-K\u00e4stchen). Beim Versetzen und Kippen wandert es mit; die Boden-Ebene deckt die ganze Bauplatte ab.'],
+  ]},
   { version:'1.18.51', date:'2026-09-25', changes:[
     ['\u{1F4D0}','<b>Arbeitsebene l\u00e4sst sich wieder auf ein ausgew\u00e4hltes Teil legen.</b> War das Teil markiert, landete der Klick im Arbeitsebenen-Modus auf einem seiner Anfasser statt auf der Fl\u00e4che \u2014 die Ebene wurde nicht gesetzt, und der Modus blieb h\u00e4ngen. Ein Klick daneben setzte die Ebene dann auf den Boden zur\u00fcck, sodass <b>\u25bd Fallen lassen (D)</b> das Teil in die Platte darunter schob statt obendrauf. Solange die Arbeitsebene (oder Schale, Fl\u00e4che verschieben, Biegen-Ziel) auf einen Fl\u00e4chen-Klick wartet, lassen die Anfasser die Maus jetzt durch.'],
   ]},

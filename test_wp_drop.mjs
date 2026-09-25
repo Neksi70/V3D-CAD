@@ -25,7 +25,7 @@ const proj = (which, dy) => page.evaluate(([w, dy]) => {
   const v = c.clone().project(camera); const r = canvas.getBoundingClientRect();
   return [r.left + (v.x+1)/2*r.width, r.top + (1-v.y)/2*r.height];
 }, [which, dy]);
-const state = () => page.evaluate(() => ({ n: workplaneNormal.toArray().map(x=>+x.toFixed(3)), p: workplanePoint.toArray().map(x=>+x.toFixed(2)), mode: workplaneMode, partMinY: +getMeshBox(_T.part).min.y.toFixed(3), sel: selectedObjs.map(o=>objects.indexOf(o)) }));
+const state = () => page.evaluate(() => ({ grid: [_wpGridSize, _wpGrid.position.toArray().map(x=>+x.toFixed(2))], n: workplaneNormal.toArray().map(x=>+x.toFixed(3)), p: workplanePoint.toArray().map(x=>+x.toFixed(2)), mode: workplaneMode, partMinY: +getMeshBox(_T.part).min.y.toFixed(3), sel: selectedObjs.map(o=>objects.indexOf(o)) }));
 // 1) Arbeitsebene auf Platte
 await page.keyboard.press('p');
 let [x,y] = await proj('plate'); await page.mouse.move(x,y); await page.mouse.click(x,y);
@@ -42,5 +42,11 @@ await page.keyboard.press('p');
 [x,y] = await proj('part'); await page.mouse.click(x,y);
 await page.keyboard.press('d');
 console.log('nach D', await state());
+await page.screenshot({ path: '/tmp/claude-1000/-home-v3da/30fb767c-29bb-42d8-b218-07978e08748b/scratchpad/wp.png' });
+// Kippen: Gitter bleibt auf dem Teil
+const tilt = await page.evaluate(() => { document.getElementById('wp-ta').value = 30; _wpAdjust();
+  const c = getMeshBox(_T.plate).getCenter(new THREE.Vector3()); return [_wpGrid.position.toArray().map(x=>+x.toFixed(2)), c.toArray()]; });
+console.log('gekippt', JSON.stringify(tilt));
+await page.evaluate(() => { document.getElementById('wp-ta').value = 0; _wpAdjust(); });
 await page.screenshot({ path: '/tmp/claude-1000/-home-v3da/30fb767c-29bb-42d8-b218-07978e08748b/scratchpad/wp.png' });
 await browser.close(); srv.kill();
