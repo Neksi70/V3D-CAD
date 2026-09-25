@@ -221,6 +221,19 @@ function _mfFromSoup(w, tris) {
   // 1,1 s. Der Rest des Netzes war sauber (F/V = 2,0, keine offene Kante).
   // Bewusst nur EXAKTE Entartung (zwei gleiche Ecken oder Kreuzprodukt
   // genau 0) — ein Epsilon würde echte feine Geometrie mitnehmen.
+  try { return _mfAusSuppe(w, tris, true); }
+  catch (e) {
+    // Ein „Nadel"-Dreieck (drei VERSCHIEDENE Ecken auf einer Linie) ist Teil
+    // der geschlossenen Hülle: Seine drei Kanten teilt es mit Nachbarn. Fliegt
+    // es raus, klafft ein Loch → „Not manifold". So an einem importierten
+    // Bauteil (33.600 Dreiecke, 3 Nadeln, sonst dicht) — Abziehen scheiterte
+    // mit „kein gültiges Werkzeug". Dann nur die mit doppelter Ecke aussortieren.
+    try { return _mfAusSuppe(w, tris, false); }
+    catch (_) { throw e; }
+  }
+}
+
+function _mfAusSuppe(w, tris, nadelnWeg) {
   let vol = 0, gut = 0;
   const behalten = new Uint8Array(tris.length / 9);
   for (let i = 0, t = 0; i < tris.length; i += 9, t++) {
@@ -228,13 +241,13 @@ function _mfFromSoup(w, tris) {
     if ((ax===bx&&ay===by&&az===bz) || (bx===cx&&by===cy&&bz===cz) || (ax===cx&&ay===cy&&az===cz)) continue;
     const ux=bx-ax,uy=by-ay,uz=bz-az, vx=cx-ax,vy=cy-ay,vz=cz-az;
     const nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
-    if (nx===0 && ny===0 && nz===0) continue;
+    if (nadelnWeg && nx===0 && ny===0 && nz===0) continue;
     behalten[t] = 1; gut++;
     vol += ax*(by*cz - bz*cy) - ay*(bx*cz - bz*cx) + az*(bx*cy - by*cx);
   }
   if (!gut) throw new Error('Netz besteht nur aus entarteten Dreiecken');
   if (gut < behalten.length) {
-    console.warn('[mf] ' + (behalten.length - gut) + ' entartete Dreiecke übersprungen (von ' + behalten.length + ')');
+    console.warn('[mf] ' + (behalten.length - gut) + ' entartete Dreiecke übersprungen (von ' + behalten.length + ')' + (nadelnWeg ? '' : ' — Nadeln behalten'));
     const rein = new Float32Array(gut * 9);
     for (let t = 0, w2 = 0; t < behalten.length; t++) {
       if (!behalten[t]) continue;

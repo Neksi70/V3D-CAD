@@ -1,0 +1,40 @@
+// Abziehen → Rückgängig → Teil verschieben → nochmal Abziehen (Box minus Import-Loch)
+import { chromium } from '@playwright/test';
+import { spawn } from 'node:child_process';
+const PORT = 8844;
+const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { cwd: '/home/v3da', stdio: 'ignore' });
+await new Promise(r => setTimeout(r, 900));
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+const logs = [];
+page.on('console', m => logs.push(m.type() + ': ' + m.text()));
+page.on('request', r => { if (r.url().includes('/api/occt')) logs.push('REQ ' + r.url()); });
+page.on('pageerror', e => logs.push('PAGEERR ' + String(e)));
+await page.goto(`http://localhost:${PORT}/volme3d.html`, { waitUntil: 'load' });
+await page.waitForTimeout(3500);
+await page.evaluate(() => {
+  hideStarter?.();
+  addShape('box'); const plate = objects[objects.length-1];
+  plate.scale.set(25, 2, 22); selectedObjs.length=0; selectedObjs.push(plate); _dropSelectedToGround();
+  const g = new THREE.TorusKnotGeometry(60, 15, 700, 24).toNonIndexed();
+  _addImportedGeo(g, 'teil.stl', false, null, false);
+  const part = objects[objects.length-1];
+  part.position.y = 2; part.updateMatrixWorld(true);
+  deselect(); if (!selectedObjs.includes(part)) selectedObjs.push(part); setObjMode('hole');
+});
+const info = () => page.evaluate(() => objects.map(o => ({ name: o.userData.name, st: o.userData.shapeType, type: o.userData.type, hole: !!o.userData.isHole, occt: o.userData.occtShape || null, y: +o.position.y.toFixed(2), tris: _countTris([o]) })));
+const sub = async (label) => {
+  const n0 = await page.evaluate(() => { deselect(); selectedObjs.push(...objects); return objects.length; });
+  const t0 = Date.now(); const L0 = logs.length;
+  await page.evaluate(() => subtractHoles());
+  await page.waitForFunction(n0 => objects.length < n0, n0, { timeout: 30000 }).catch(() => {});
+  console.log(label, Date.now() - t0, 'ms', JSON.stringify(await info()));
+  console.log(logs.slice(L0).filter(l => !/GET|favicon/.test(l)).slice(0, 15).join('\n'));
+};
+console.log('start', JSON.stringify(await info()));
+await sub('1. Abziehen');
+await page.evaluate(() => undo());
+console.log('nach Undo', JSON.stringify(await info()));
+await page.evaluate(() => { const p = objects.find(o => o.userData.isHole); p.position.y += 1; p.updateMatrixWorld(true); });
+await sub('2. Abziehen');
+await browser.close(); srv.kill();

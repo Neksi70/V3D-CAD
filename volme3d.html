@@ -16116,6 +16116,13 @@ async function _mfSubtractWorld(solidObjs, toolObjs) {
            '. Der Rest ist abgezogen — mit „Reparieren" lassen sich solche Motive oft retten.', 'w');
   }
   if (res.isEmpty()) throw new Error('Ergebnis ist leer — trifft die Bohrung den Körper?');
+  // Kein Treffer: Das Ergebnis wäre der unveränderte Körper, die Bohrung aber
+  // verschwände trotzdem (Teil nach Rückgängig zu weit hochgezogen) — lieber
+  // melden und alles stehen lassen.
+  if (Math.abs(res.volume() - solid.volume()) <= 1e-6 * Math.max(1, solid.volume())) {
+    const e = new Error('Die Bohrung berührt den Körper nicht — nichts abzuziehen');
+    e.keinTreffer = true; throw e;
+  }
   // Manifold gibt indiziert zurück; _creaseNormals steigt darauf aus (siehe
   // Definition weiter unten) → vorher auflösen, sonst bleibt alles flat-shaded.
   const geo = _mfToGeo(res).toNonIndexed();
@@ -22699,8 +22706,9 @@ async function _doSubtractHoles(solids, holes, ctl) {
         // Falle: Es braucht dafür Minuten pro Werkzeug und lief bei Josy in die
         // 600-Sekunden-Notbremse des Arbeiterpools — der Balken stand bei 93 %
         // und es kam nie etwas zurück. Lieber sofort ehrlich abbrechen.
-        if (_meshImport) {
+        if (_meshImport || e.keinTreffer) {
           _progressHide();
+          if (e.keinTreffer) { notify(e.message + '. Bohrung so verschieben, dass sie in den Körper ragt.', 'w'); return; }
           notify('Abziehen nicht möglich: ' + (e.message || e) +
                  '. Tipp: „Reparieren" auf die Motive anwenden.', 'e');
           return;
@@ -47797,8 +47805,12 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.53';
+const VOLME3D_VERSION = '1.18.54';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.54', date:'2026-09-25', changes:[
+    ['\u2296','<b>Importierte Teile lassen sich wieder abziehen \u2014 auch nach R\u00fcckg\u00e4ngig und Verschieben.</b> Manche STL-Dateien enthalten winzige \u201eNadel-Dreiecke\u201c (drei Punkte auf einer Linie). Die sortierte V3D CAD vor dem Rechnen aus \u2014 dabei riss aber ein Loch in das sonst geschlossene Netz, und das Abziehen brach mit <i>\u201ekein g\u00fcltiges Werkzeug\u201c</i> ab. Jetzt bleiben solche Dreiecke drin, wenn das Netz sonst undicht w\u00fcrde. Nachgemessen am gemeldeten Bauteil (33.600 Dreiecke): Abziehen, R\u00fcckg\u00e4ngig, 10\u202fmm tiefer setzen, erneut Abziehen \u2014 klappt jedes Mal in unter einer halben Sekunde.'],
+    ['\u26A0\uFE0F','Ber\u00fchrt die Bohrung den K\u00f6rper gar nicht (z.\u202fB. zu weit hochgezogen), verschwand sie beim Abziehen bisher trotzdem, und der K\u00f6rper blieb unver\u00e4ndert. Jetzt kommt ein Hinweis, und beide Teile bleiben stehen.'],
+  ]},
   { version:'1.18.53', date:'2026-09-25', changes:[
     ['\u2296','<b>Abziehen eines importierten Bauteils bleibt nicht mehr bei 93\u202f% h\u00e4ngen.</b> War der Grundk\u00f6rper ein in der App gebauter K\u00f6rper (z.\u202fB. eine Platte) und das Loch ein importiertes STL, ging der Schnitt an den Server, der das Netz erst zusammenn\u00e4hen muss \u2014 bei einem Teil mit 33.600 Dreiecken minutenlang, der Balken stand bei 93\u202f%. Jetzt wird auch dieser Fall direkt im Browser gerechnet: nachgemessen unter einer Sekunde statt nach \u00fcber einer Minute noch ohne Ergebnis.'],
   ]},
