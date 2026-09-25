@@ -18,6 +18,8 @@ TYPEN = {
     # Chrome bleibt bei APKs gern in der Play-Protect-Pruefung haengen; als ZIP
     # laedt es durch, entpacken und antippen geht in "Eigene Dateien".
     '.zip': 'application/zip',
+    # Versionsdateien für die In-App-Update-Prüfung (z. B. v3d-dateimanager-latest.json)
+    '.json': 'application/json',
 }
 
 
@@ -93,7 +95,10 @@ class Handler(BaseHTTPRequestHandler):
         laenge = bis - von + 1
         self.send_response(code)
         self.send_header('Content-Type', dateityp(name))
-        self.send_header('Content-Disposition', f'attachment; filename="{name}"')
+        if not name.endswith('.json'):
+            self.send_header('Content-Disposition', f'attachment; filename="{name}"')
+        else:
+            self.send_header('Cache-Control', 'no-cache')
         self.send_header('Content-Length', str(laenge))
         self.send_header('Accept-Ranges', 'bytes')
         if code == 206:
@@ -114,7 +119,7 @@ class Handler(BaseHTTPRequestHandler):
     def uebersicht(self, nur_kopf=False):
         zeilen = []
         for name in sorted(os.listdir(ROOT)):
-            if not dateityp(name):
+            if not dateityp(name) or name.endswith('.json'):
                 continue
             mb = os.path.getsize(os.path.join(ROOT, name)) / 1e6
             n = html.escape(name)
