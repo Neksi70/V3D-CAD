@@ -13817,6 +13817,34 @@ function _svgGiveDepth(o, mm) {
   return true;
 }
 
+// Welt-Ausdehnung entlang wk ('x'|'y'|'z') auf `val` mm bringen, indem die LOKALE
+// Achse skaliert wird, die dorthin zeigt (Importe sind rotiert!). curMM = aktuelle
+// Ausdehnung in mm. Liefert null bei Erfolg, sonst den nicht unterschreitbaren
+// Rest in mm (Teil bleibt dann unverändert). `measure` misst die Welt-Box —
+// beim Ziehen eine schnelle Eckpunkt-Variante statt getMeshBox.
+function _dimSetWorldExtent(o, wk, val, curMM, measure) {
+  const la = _dimLocalAxis(o, wk);
+  if (Math.abs(o.quaternion.w) >= 0.99999) {
+    o.scale[la] = Math.max(0.01, o.scale[la] * val / curMM);
+    return null;
+  }
+  // Schräg im Raum liegendes Teil: an der Welt-Ausdehnung hängen ALLE drei
+  // lokalen Achsen mit, der einfache Dreisatz trifft das Maß also nicht.
+  // Bisher blieb die Höhe scheinbar stehen, während der Regler das Teil
+  // immer weiter zusammenstauchte (Ralf, 22.09.2026). Die Welt-Ausdehnung
+  // ist linear im Maßstab (Eck-Punkte!) → aus zwei Messungen exakt lösen.
+  const s0 = o.scale[la], E0 = curMM;
+  const s1 = s0 * 1.5 + 0.001;
+  o.scale[la] = s1;
+  const E1 = (measure || getMeshBox)(o).getSize(new THREE.Vector3())[wk] * 10;
+  const B = (E1 - E0) / (s1 - s0);                 // mm pro Maßstab-Schritt
+  const A = E0 - B * s0;                           // Anteil der anderen Achsen
+  const ziel = (val - A) / (B || 1e-9);
+  if (!isFinite(ziel) || ziel < 1e-4) { o.scale[la] = s0; return A; }   // unerreichbar → nichts kaputt machen
+  o.scale[la] = ziel;
+  return null;
+}
+
 function applyDimChange(axis, val) {
   const o = getFirst(); if (!o) return;
   // Flaches SVG + Höhe → extrudieren statt skalieren (siehe _svgGiveDepth)
@@ -13878,32 +13906,11 @@ function applyDimChange(axis, val) {
       _dimChangePost(o);
       return;
     }
-    const la = _dimLocalAxis(o, axis === 'sw' ? 'x' : axis === 'sh' ? 'y' : 'z');
     const wk = axis === 'sw' ? 'x' : axis === 'sh' ? 'y' : 'z';
-    const schraeg = Math.abs(o.quaternion.w) < 0.99999;
-    if (!schraeg) {
-      o.scale[la] = Math.max(0.01, o.scale[la] * val / curMM[axis]);
-    } else {
-      // Schräg im Raum liegendes Teil: an der Welt-Ausdehnung hängen ALLE drei
-      // lokalen Achsen mit, der einfache Dreisatz trifft das Maß also nicht.
-      // Bisher blieb die Höhe scheinbar stehen, während der Regler das Teil
-      // immer weiter zusammenstauchte (Ralf, 22.09.2026). Die Welt-Ausdehnung
-      // ist linear im Maßstab (Eck-Punkte!) → aus zwei Messungen exakt lösen.
-      const s0 = o.scale[la], E0 = curMM[axis];
-      const s1 = s0 * 1.5 + 0.001;
-      o.scale[la] = s1;
-      const E1 = getMeshBox(o).getSize(new THREE.Vector3())[wk] * 10;
-      const B = (E1 - E0) / (s1 - s0);                 // mm pro Maßstab-Schritt
-      const A = E0 - B * s0;                           // Anteil der anderen Achsen
-      const ziel = (val - A) / (B || 1e-9);
-      if (!isFinite(ziel) || ziel < 1e-4) {
-        o.scale[la] = s0;                              // unerreichbar → nichts kaputt machen
-        notify('So schräg im Raum lässt sich dieses Maß nicht einstellen (kleiner als ' +
-               r2(Math.max(0, A)) + ' mm geht nicht) — Teil erst gerade stellen', 'w');
-      } else {
-        o.scale[la] = ziel;
-      }
-    }
+    const rest = _dimSetWorldExtent(o, wk, val, curMM[axis]);
+    if (rest !== null)
+      notify('So schräg im Raum lässt sich dieses Maß nicht einstellen (kleiner als ' +
+             r2(Math.max(0, rest)) + ' mm geht nicht) — Teil erst gerade stellen', 'w');
   }
   // Position über die Welt-BBox verankern (statt scale-Deltas — die stimmen bei
   // rotierten Objekten nicht): Verhalten für unrotierte Körper bleibt identisch.
@@ -14026,6 +14033,25 @@ function toggleHole() { const o=getFirst(); if(!o) return; setObjMode(o.userData
 
 let _dimHandleData = [];
 let _dragHandle    = null;
+
+// Lage nach einem Anfasser-Zug über die WELT-Box festhalten (wie applyDimChange):
+// Unterkante bleibt, bei Breite/Tiefe steht die Gegenkante des gefassten Griffs,
+// sonst bleibt die Mitte. Skalieren wirkt um den Geometrie-Ursprung — der liegt
+// bei Schnitt-/Importteilen neben dem Körper, darum die Lage nie aus scale ableiten.
+function _handleAnchor(o, axis) {
+  const d = _dragHandle, b0 = d.startBox;
+  o.position.copy(d.startPos);
+  const b1 = d.measure(o);
+  o.position.y += b0.min.y - b1.min.y;
+  for (const k of ['x', 'z']) {
+    const einseitig = (axis === 'sw' && k === 'x') || (axis === 'sd' && k === 'z');
+    if (einseitig && d.side > 0)      o.position[k] += b0.min[k] - b1.min[k];
+    else if (einseitig && d.side < 0) o.position[k] += b0.max[k] - b1.max[k];
+    else o.position[k] += (b0.min[k] + b0.max[k]) / 2 - (b1.min[k] + b1.max[k]) / 2;
+  }
+  const b2 = d.measure(o);
+  if (b2.min.y < -1e-4) o.position.y -= b2.min.y;          // nie unter die Platte
+}
 
 function clearDimHandles() {
   document.getElementById('dim-handles').innerHTML = '';
@@ -14588,18 +14614,28 @@ function updateDimHandles() {
         if (len2 > 6) { screenDirX=sdx2/len2; screenDirY=sdy2/len2; }
         else if (def.axis !== 'uniform') { screenDirX = 1; screenDirY = 0; }
       }
+      // Welt-Box beim Ziehen schnell messen: lokale Geometrie-Boxen einmal jetzt,
+      // danach nur noch 8 Ecken je Teil transformieren (Riesen-Netze!).
+      const _lbs = [];
+      curO.traverse(ch => {
+        if (ch.isMesh && ch.geometry && ch.geometry.attributes.position)
+          _lbs.push({ ch, lb: new THREE.Box3().setFromBufferAttribute(ch.geometry.attributes.position) });
+      });
+      const measure = _lbs.length ? (ob => {
+        ob.updateMatrixWorld(true);
+        const bx = new THREE.Box3(), v = new THREE.Vector3();
+        for (const { ch, lb } of _lbs)
+          for (const x of [lb.min.x, lb.max.x]) for (const y of [lb.min.y, lb.max.y]) for (const z of [lb.min.z, lb.max.z])
+            bx.expandByPoint(v.set(x, y, z).applyMatrix4(ch.matrixWorld));
+        return bx;
+      }) : getMeshBox;
       _dragHandle = {
         axis: def.axis, handleKey: def.key, side: def.side || 0,
         startX: e.clientX, startY: e.clientY,
         screenDirX, screenDirY,   // fest gespeichert – ändert sich nicht mehr
-        startVals: {
-          sw:r2(cs.x*10), sh:r2(cs.y*10), sd:r2(cs.z*10),
-          // Korrekturfaktor scale↔Größe pro Achse: für Box(2 Units)=1, für Generator-Objekte mit echten Maßen ≠1
-          _fx: (cs.x*10)>0 ? curO.scale.x*20/(cs.x*10) : 1,
-          _fy: (cs.y*10)>0 ? curO.scale.y*20/(cs.y*10) : 1,
-          _fz: (cs.z*10)>0 ? curO.scale.z*20/(cs.z*10) : 1,
-          _px: curO.position.x, _pz: curO.position.z
-        },
+        startVals: { sw:r2(cs.x*10), sh:r2(cs.y*10), sd:r2(cs.z*10) },
+        // Ausgangslage: jeder Zug rechnet von hier aus neu (kein Aufschaukeln)
+        startPos: curO.position.clone(), startScale: curO.scale.clone(), startBox: cb.clone(), measure,
         startPosY: curO.position.y, tip, el,
       };
       // Highlight active handle
@@ -14667,54 +14703,43 @@ function updateDimHandles() {
         const minSide = Math.max(1e-3, Math.min(sv.sw, sv.sh, sv.sd));
         const f  = Math.max(0.5 / minSide, 1 + delta / ref);
         const nw = sv.sw * f, nh = sv.sh * f, nd = sv.sd * f;
-        const startBottom = _dragHandle.startPosY - sv.sh/20;
-        o2.scale.x = (nw/20)*sv._fx; o2.scale.z = (nd/20)*sv._fz; o2.scale.y = (nh/20)*sv._fy;
-        o2.position.y = Math.max(nh/20, startBottom + nh/20);
+        // Faktor auf den AUSGANGS-Maßstab, Lage danach über die Welt-Box verankern
+        // (Unterkante + Mitte X/Z). Früher wurde die Lage aus einem zentrierten
+        // 2-Unit-Würfel abgeleitet — Teile mit Ursprung neben dem Körper (Schnitt,
+        // Import) sprangen dabei weg (Ralf 26.9.26: „wird verschoben").
+        o2.scale.copy(_dragHandle.startScale).multiplyScalar(f);
+        _handleAnchor(o2, 'uniform');
         _dragHandle.tip.textContent = `B:${r2(nw)}  H:${r2(nh)}  T:${r2(nd)} mm`;
 
-      } else {
+      } else if (!(axis === 'sh' && o2.userData.shapeType === 'thread')) {
         // Gespeicherte Screen-Richtung verwenden (stabil, kein Umschwingen)
         const dot = dx * _dragHandle.screenDirX + dy * _dragHandle.screenDirY;
-        const delta = dot * sensitivity;
-        const nv = Math.max(0.5, sv[axis] + delta);
+        const nv = Math.max(0.5, sv[axis] + dot * sensitivity);
+        // Die WELT-Achse des Griffs ändern — über die lokale Achse, die dorthin
+        // zeigt. Früher war es stumpf scale.x/y/z: bei Importen (Z-up, gekippt)
+        // änderte der Höhen-Griff die Tiefe und der Tiefen-Griff gar nichts
+        // (Ralf 26.9.26: „Richtungen beim Ziehen stimmen nicht überein").
+        const wk = axis === 'sw' ? 'x' : axis === 'sh' ? 'y' : 'z';
+        o2.position.copy(_dragHandle.startPos); o2.scale.copy(_dragHandle.startScale);
+        if (sv[axis] > 0.05) _dimSetWorldExtent(o2, wk, nv, sv[axis], _dragHandle.measure);
+        _handleAnchor(o2, axis);
+        const lbl = axis==='sw'?'Breite':axis==='sh'?'Höhe':'Tiefe';
+        _dragHandle.tip.textContent = `${lbl}: ${r2(_dragHandle.measure(o2).getSize(new THREE.Vector3())[wk] * 10)} mm`;
 
-        // One-sided: opposite edge stays fixed, this edge moves
-        const oldSc = sv[axis] / 20;
-        const newSc = nv / 20;
-        const shift = (newSc - oldSc) * _dragHandle.side; // one-sided: gegenüberliegende Kante fix (kein *0.5)
-
-        if (axis === 'sw') {
-          o2.scale.x = newSc * sv._fx;
-          o2.position.x = _dragHandle.startVals._px + shift;
+      } else {
+        // Gewinde: Steigung halten, Gangzahl anpassen + Geometrie neu bauen
+        // (statt Y-Skalierung, die die Steigung stauchen/strecken würde)
+        const dot = dx * _dragHandle.screenDirX + dy * _dragHandle.screenDirY;
+        const nv = Math.max(0.5, sv[axis] + dot * sensitivity);
+        const pitchMM  = o2.userData.threadPitch || 1.75;
+        const newTurns = Math.max(1, Math.round(nv / pitchMM));
+        if (newTurns !== o2.userData.threadTurns) {
+          o2.userData.threadTurns = newTurns;
+          _fpRebuildThread(o2);
         }
-        if (axis === 'sd') {
-          o2.scale.z = newSc * sv._fz;
-          o2.position.z = _dragHandle.startVals._pz + shift;
-        }
-        if (axis === 'sh') {
-          const startBottom = _dragHandle.startPosY - oldSc;
-          if (o2.userData.shapeType === 'thread') {
-            // Gewinde: Steigung halten, Gangzahl anpassen + Geometrie neu bauen
-            // (statt Y-Skalierung, die die Steigung stauchen/strecken würde)
-            const pitchMM  = o2.userData.threadPitch || 1.75;
-            const newTurns = Math.max(1, Math.round(nv / pitchMM));
-            if (newTurns !== o2.userData.threadTurns) {
-              o2.userData.threadTurns = newTurns;
-              _fpRebuildThread(o2);
-            }
-            const halfH = (newTurns * pitchMM / 10) / 2;   // halbe Höhe in cm
-            o2.scale.y = 1;
-            o2.position.y = Math.max(halfH, startBottom + halfH);
-            _dragHandle.tip.textContent = `Höhe: ${r2(newTurns * pitchMM)} mm (${newTurns} Gänge)`;
-          } else {
-            o2.scale.y = newSc * sv._fy;
-            o2.position.y = Math.max(newSc, startBottom + newSc);
-          }
-        }
-        if (!(axis === 'sh' && o2.userData.shapeType === 'thread')) {
-          const lbl = axis==='sw'?'Breite':axis==='sh'?'Höhe':'Tiefe';
-          _dragHandle.tip.textContent = `${lbl}: ${r2(nv)} mm`;
-        }
+        o2.scale.y = 1;
+        o2.position.y += _dragHandle.startBox.min.y - getMeshBox(o2).min.y;   // Unterkante bleibt
+        _dragHandle.tip.textContent = `Höhe: ${r2(newTurns * pitchMM)} mm (${newTurns} Gänge)`;
       }
       updateTFInputs();
     });
@@ -48094,8 +48119,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.55';
+const VOLME3D_VERSION = '1.18.56';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.56', date:'2026-09-26', changes:[
+    ['\u2922','<b>Anfasser \u00e4ndern nur noch die Gr\u00f6\u00dfe \u2014 das Teil springt nicht mehr weg.</b> Beim Ziehen an den wei\u00dfen Ecken oder schwarzen Kanten wurde ein Teil manchmal verschoben, angehoben oder in die falsche Richtung verzerrt statt gr\u00f6\u00dfer oder kleiner. Betroffen waren Schnittteile, Importe (STL/3MF) und gedrehte oder gekippte Teile: Bei einem Import \u00e4nderte der H\u00f6hen-Griff die Tiefe, und der Tiefen-Griff tat gar nichts. Jetzt gilt immer: die Kante, die man zieht, bewegt sich \u2014 die gegen\u00fcberliegende bleibt stehen, das Teil bleibt auf der Platte und kippt nicht.'],
+  ]},
   { version:'1.18.55', date:'2026-09-25', spots:[{id:'fill-plate',sel:'[onclick="fillPlateTool()"]'}], changes:[
     ['\u25A6','<b>Neu: \u25A6 Platte f\u00fcllen.</b> Grundplatte und ein Teil ausw\u00e4hlen, unter <i>Anordnen</i> auf <b>\u25A6 F\u00fcllen</b> \u2014 V3D CAD verteilt so viele Kopien des Teils wie m\u00f6glich auf der Platte, alle auf derselben H\u00f6he wie das Original. Einstellbar sind der Abstand zwischen den Teilen, der Randabstand zur Plattenkante und ob die Teile gedreht werden d\u00fcrfen (0/90/180/270\u00b0). Verschachtelt wird nach dem <b>echten Umriss</b>, nicht nach dem umgebenden Rechteck: Gebogene oder hakenf\u00f6rmige Teile greifen ineinander. Nachgemessen an einem 120\u00d764-mm-Halter auf 400\u00d7300\u00a0mm: <b>14 St\u00fcck</b>, ein einfaches Raster schafft dort 12. Ist das Teil als Bohrung markiert, sind die Kopien es auch \u2014 danach einfach alles markieren und <b>\u2296 Abziehen</b>.'],
   ]},
