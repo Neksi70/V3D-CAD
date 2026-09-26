@@ -729,6 +729,10 @@ body.devmode .dev-only{display:flex!important}
 .img-opt .io-i{font-size:17px;line-height:1.1;flex:none}
 .img-opt .io-t{font-size:12px;font-weight:800;color:var(--text)}
 .img-opt .io-d{font-size:10.5px;font-weight:600;color:var(--dim);line-height:1.35;margin-top:2px}
+#plate-bar{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);z-index:60;display:flex;gap:4px;background:rgba(255,255,255,.92);border:1px solid #cfd8e3;border-radius:8px;padding:3px;box-shadow:0 1px 4px rgba(0,0,0,.12);font-family:var(--font)}
+.pb-btn{border:1px solid transparent;background:none;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700;color:#4a5b70;cursor:pointer;white-space:nowrap}
+.pb-btn:hover{background:#eef3f8}
+.pb-btn.on{background:#F97316;color:#fff}
 #img-drop-hint{position:absolute;inset:0;z-index:70;display:none;align-items:center;justify-content:center;background:rgba(124,58,237,.13);border:3px dashed #8b5cf6;border-radius:var(--rs);pointer-events:none;font-family:var(--font);font-size:15px;font-weight:800;color:#6d28d9}
 #img-drop-hint.show{display:flex}
 .g3dm .g3foot{display:flex;justify-content:flex-end;gap:8px;padding:11px 18px;border-top:1px solid var(--border);flex-shrink:0}
@@ -1542,6 +1546,7 @@ const firebaseConfig = {
   <div id="sel-box"></div>
   <svg id="lasso-svg"><path d=""></path></svg>
   <div id="img-drop-hint">🖼️ Bild hier ablegen</div>
+  <div id="plate-bar"></div>
   <div id="text-snap-hint"></div>
   <div id="vp-ctxmenu">
     <div class="sli-item" id="ctx-measure">📐 Messen (Abstand / Ø)</div>
@@ -5768,7 +5773,7 @@ scene.add(fill);
 // ═══ GRID / GROUND ═══════════════════════════════════════════════════
 let gridMesh, gridMeshSub, groundMesh, gridOn = true;
 let _selectedPrinterName = localStorage.getItem('printerName') || '';
-function _makeBuildplateTex(w, h) {
+function _makeBuildplateTex(w, h, label) {
   const RES = 1024;
   const cw = RES, ch = Math.max(64, Math.round(RES * h / w));
   const cv = document.createElement('canvas');
@@ -5791,12 +5796,164 @@ function _makeBuildplateTex(w, h) {
   ctx.font = `${fsD}px Arial, sans-serif`;
   ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
   ctx.fillText(w + ' × ' + h + ' mm', cw * 0.98, ch - ch * 0.02);
+  // Plattenname oben links (nur wenn es mehrere Druckplatten gibt)
+  if (label) {
+    const fsL = Math.max(18, Math.round(ch * 0.06));
+    ctx.font = `bold ${fsL}px Arial, sans-serif`;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(label, cw * 0.02, ch * 0.02);
+  }
   const tex = new THREE.CanvasTexture(cv);
   tex.needsUpdate = true;
   return tex;
 }
 
 let _farGrid = null, _farGround = null;
+
+// ═══ MEHRERE DRUCKPLATTEN ════════════════════════════════════════════
+// Platte 1 ist die gewohnte Druckplatte um den Ursprung; weitere Platten liegen
+// rechts daneben (+X), gleich groß, mit Abstand. Zu welcher Platte ein Teil
+// gehört, ergibt sich allein aus seiner LAGE (Mitte der Welt-Box) — so muss nichts
+// am Teil gespeichert werden, und Verschieben auf eine andere Platte „ist" schon
+// der Umzug. Gespeichert wird nur die Anzahl (Snapshot: plates).
+// Wunsch Ralf 26.9.26: „Gibt es eigentlich die Funktion 2 oder mehrere Platten?"
+let plateCount = 1, _activePlate = 0, _plateExtras = null, _plateLastPitch = 0;
+function _platePitchU() { return buildplateW / 10 + Math.max(2, buildplateW / 100); }   // Plattenbreite + Abstand
+function _plateCenterX(k) { return k * _platePitchU(); }
+function _plateIndexAtX(x, pitch) {
+  return Math.max(0, Math.min(plateCount - 1, Math.round(x / (pitch || _platePitchU()))));
+}
+function _plateOf(o, pitch) { const b = getMeshBox(o); return _plateIndexAtX((b.min.x + b.max.x) / 2, pitch); }
+function _plateObjs(k) { return objects.filter(o => _plateOf(o) === k); }
+function _plateMesh(k) {
+  if (!k) return groundMesh;
+  return _plateExtras ? _plateExtras.children.find(c => c.isMesh && c.userData.plateIdx === k) : null;
+}
+function _plateLabel(k) { return plateCount > 1 ? 'Platte ' + (k + 1) : ''; }
+
+// Zusatz-Platten (2 … n) als eigene Gruppe neu aufbauen. Ändert sich die
+// Plattengröße, rücken die Teile auf Platte 2+ mit, damit sie auf IHRER Platte bleiben.
+function _buildExtraPlates() {
+  const pitch = _platePitchU();
+  if (_plateLastPitch && Math.abs(pitch - _plateLastPitch) > 1e-6 && plateCount > 1 && typeof objects !== 'undefined') {
+    objects.forEach(o => { const k = _plateOf(o, _plateLastPitch); if (k) o.position.x += k * (pitch - _plateLastPitch); });
+  }
+  _plateLastPitch = pitch;
+  if (_plateExtras) {
+    scene.remove(_plateExtras);
+    _plateExtras.traverse(c => { c.geometry && c.geometry.dispose(); if (c.material) { c.material.map && c.material.map.dispose(); c.material.dispose(); } });
+    _plateExtras = null;
+  }
+  if (plateCount < 2) return;
+  const gw = buildplateW / 10, gh = buildplateH / 10, size = Math.max(gw, gh);
+  const cellMm = gridCellMm > 0 ? gridCellMm : 10;
+  const divs = Math.min(1600, Math.max(4, Math.round(size * 10 / cellMm)));
+  _plateExtras = new THREE.Group();
+  for (let k = 1; k < plateCount; k++) {
+    const cx = _plateCenterX(k);
+    const g = new THREE.Mesh(new THREE.PlaneGeometry(gw, gh),
+      new THREE.MeshBasicMaterial({ map: _makeBuildplateTex(buildplateW, buildplateH, _plateLabel(k)) }));
+    g.rotation.x = -Math.PI / 2; g.position.x = cx; g.renderOrder = -5;
+    g.userData.isGround = true; g.userData.plateIdx = k;
+    _plateExtras.add(g);
+    const grid = new THREE.GridHelper(size, divs, 0x9ab0c8, 0xb8ccd8);
+    grid.scale.set(gw / size, 1, gh / size); grid.position.x = cx; grid.frustumCulled = false;
+    grid.visible = gridOn; grid.userData.isPlateGrid = true;
+    _plateExtras.add(grid);
+    const brd = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(gw, gh)),
+      new THREE.LineBasicMaterial({ color: 0x4a90c4 }));
+    brd.rotation.x = -Math.PI / 2; brd.position.set(cx, 0.01, 0); brd.renderOrder = 2;
+    _plateExtras.add(brd);
+  }
+  scene.add(_plateExtras);
+}
+
+// Leiste unten im Arbeitsbereich: „Platte 1 · Platte 2 · ＋ · 🗑 · ⤓"
+function _plateBarRender() {
+  const bar = document.getElementById('plate-bar'); if (!bar) return;
+  if (_activePlate >= plateCount) _activePlate = plateCount - 1;
+  let h = '';
+  for (let k = 0; k < plateCount; k++)
+    h += `<button class="pb-btn${k === _activePlate ? ' on' : ''}" onclick="plateGo(${k})" title="Zu Platte ${k + 1} springen und ihre Teile auswählen (Export nimmt dann nur diese Platte)">▭ Platte ${k + 1}</button>`;
+  h += `<button class="pb-btn" onclick="plateAdd()" title="Weitere Druckplatte daneben anlegen">＋ Platte</button>`;
+  if (plateCount > 1) {
+    h += `<button class="pb-btn" onclick="plateRemove(_activePlate)" title="Aktive Platte entfernen (nur wenn leer)">🗑</button>`;
+    h += `<button class="pb-btn" onclick="plateExportAll()" title="Jede Platte als eigene STL-Datei speichern">⤓ je Platte</button>`;
+  }
+  bar.innerHTML = h;
+}
+
+function _plateRebuild() { _buildExtraPlates(); _updateBuildplateHUD(); _plateBarRender(); }
+
+function plateAdd() {
+  plateCount++;
+  _plateRebuild();
+  plateGo(plateCount - 1, true);
+  notify(`▭ Platte ${plateCount} angelegt — Teile einfach hinüberziehen`, 'ok');
+  if (typeof _doAutoSave === 'function') _doAutoSave();
+}
+
+function plateRemove(k) {
+  if (plateCount < 2) return;
+  const n = _plateObjs(k).length;
+  if (n) { notify(`Platte ${k + 1} ist nicht leer (${n} Teile) — erst verschieben oder löschen`, 'w'); return; }
+  const pitch = _platePitchU();
+  objects.forEach(o => { if (_plateOf(o) > k) o.position.x -= pitch; });   // rechte Platten rücken nach
+  plateCount--;
+  _plateLastPitch = pitch;
+  _plateRebuild();
+  plateGo(Math.min(k, plateCount - 1), true);
+  updateTFInputs(); _svgDirty = true;
+  notify(`Platte ${k + 1} entfernt`, 'ok');
+  if (typeof _doAutoSave === 'function') _doAutoSave();
+}
+
+// Ansicht auf Platte k, Teile dieser Platte auswählen (→ Export/Füllen nur dort)
+function plateGo(k, noSelect) {
+  _activePlate = Math.max(0, Math.min(plateCount - 1, k));
+  orbitTarget.set(_plateCenterX(_activePlate), 0, 0);
+  sph2cam();
+  _plateBarRender();
+  if (noSelect) return;
+  const objs = _plateObjs(_activePlate);
+  if (objs.length) {
+    selectObjs(objs);
+    if (plateCount > 1) notify(`Platte ${_activePlate + 1}: ${objs.length} Teil${objs.length > 1 ? 'e' : ''} ausgewählt — Export nimmt nur diese Platte`, 'ok');
+  } else { deselect(); if (plateCount > 1) notify(`Platte ${_activePlate + 1} ist leer`, 'ok'); }
+}
+
+// Liegt eine Export-Quelle komplett auf EINER Platte ≥ 2, wird sie beim Export
+// auf die Plattenmitte zurückgerückt — im Slicer liegt sie dann mittig auf dem Bett.
+let _expShiftX = 0;
+function _plateShiftOf(src) {
+  if (plateCount < 2 || !src || !src.length) return 0;
+  const ks = new Set(src.map(o => _plateOf(o)));
+  return ks.size === 1 ? _plateCenterX([...ks][0]) : 0;
+}
+function _withPlateShift(src, fn) {
+  _expShiftX = _plateShiftOf(src);
+  try { return fn(); } finally { _expShiftX = 0; }
+}
+// Quelle für „an den Slicer senden": bei mehreren Platten nur die aktive Platte
+// (bzw. die Platte der Auswahl) — ein Slicer-Bett ist eine Platte.
+function _slicerSrc() {
+  if (plateCount < 2) return objects;
+  const k = selectedObjs.length ? _plateOf(selectedObjs[0]) : _activePlate;
+  return _plateObjs(k);
+}
+
+function plateExportAll() {
+  const base = _designFilename('stl').replace(/\.stl$/i, '');
+  const files = [];
+  for (let k = 0; k < plateCount; k++) {
+    const objs = _plateObjs(k); if (!objs.length) continue;
+    const r = _withPlateShift(objs, () => _buildStlBlob(objs));
+    if (r) files.push({ blob: r.blob, name: `${base}_platte${k + 1}.stl` });
+  }
+  if (!files.length) { notify('Alle Platten sind leer', 'w'); return; }
+  _saveExportMany(files).then(res =>
+    notify(`${res.ok} STL-Dateien (je Platte) ${res.wrote ? '→ ' + res.dir : 'heruntergeladen'} ✓`, 'ok'));
+}
 let buildplateW = parseFloat(localStorage.getItem('buildplateW') ?? '800') || 800;
 let buildplateH = parseFloat(localStorage.getItem('buildplateH') ?? '800') || 800;
 let snapGrid = parseFloat(localStorage.getItem('snapGrid') ?? '1') || 0;
@@ -5868,6 +6025,7 @@ function buildGrid() {
   window._bpCross.visible = gridOn;
   scene.add(window._bpCross);
 
+  _buildExtraPlates();
   // HUD-Labels aktualisieren
   _updateBuildplateHUD();
 }
@@ -5876,7 +6034,7 @@ function _updateBuildplateHUD() {
   // Textur der Grundplatte neu zeichnen (Text direkt auf Platte)
   if (groundMesh) {
     if (groundMesh.material.map) groundMesh.material.map.dispose();
-    groundMesh.material.map = _makeBuildplateTex(buildplateW, buildplateH);
+    groundMesh.material.map = _makeBuildplateTex(buildplateW, buildplateH, _plateLabel(0));
     groundMesh.material.needsUpdate = true;
   }
   // HTML-Labels ausblenden (nicht mehr nötig)
@@ -5886,6 +6044,7 @@ function _updateBuildplateHUD() {
   if (prnLbl) prnLbl.style.display = 'none';
 }
 buildGrid();
+_plateBarRender();
 let workplaneMode = false;
 let workplaneNormal = new THREE.Vector3(0, 1, 0);
 let workplanePoint  = new THREE.Vector3(0, 0, 0);
@@ -6037,6 +6196,7 @@ function toggleGrid(force) {
   gridMesh.visible   = gridOn;
   if (gridMeshSub) gridMeshSub.visible = gridOn;
   if (window._bpCross) window._bpCross.visible = gridOn;
+  if (_plateExtras) _plateExtras.children.forEach(c => { if (c.userData.isPlateGrid) c.visible = gridOn; });
   if (_farGrid)   _farGrid.visible   = gridOn;
   if (_farGround) _farGround.visible = gridOn;
   document.getElementById('lt-grid').classList.toggle('on', gridOn);
@@ -17235,6 +17395,7 @@ function _meshToStlBuf(mesh) {
   const geo = mesh.geometry.clone();
   mesh.updateMatrixWorld(true);
   geo.applyMatrix4(mesh.matrixWorld);
+  if (_expShiftX) geo.translate(-_expShiftX, 0, 0);   // Platte 2+ → Plattenmitte
   geo.scale(10, 10, 10);
   geo.rotateX(Math.PI / 2);                       // Y-up (Editor) → Z-up (Slicer)
   if (!geo.attributes.normal) geo.computeVertexNormals();
@@ -23577,7 +23738,11 @@ function _fillPickPair() {
   // Nur ein Teil gewählt → die Druckplatte selbst füllen. Ralf 26.9.26: „Wie kann
   // ich beim Füllen die Platte markieren?" — die Druckplatte ist kein Objekt und
   // ließ sich darum nie mit auswählen.
-  if (selectedObjs.length === 1 && groundMesh) return { plate: groundMesh, part: selectedObjs[0], bed: true };
+  // Bei mehreren Druckplatten: die Platte, auf der das Teil liegt.
+  if (selectedObjs.length === 1 && groundMesh) {
+    const k = _plateOf(selectedObjs[0]);
+    return { plate: _plateMesh(k) || groundMesh, part: selectedObjs[0], bed: true, plateIdx: k };
+  }
   if (selectedObjs.length !== 2) return null;
   const area = o => { const b = getMeshBox(o); return (b.max.x - b.min.x) * (b.max.z - b.min.z); };
   const [a, b] = selectedObjs;
@@ -23591,7 +23756,7 @@ function fillPlateTool() {
   ['pat-lin', 'pat-cir', 'pat-hex'].forEach(id => document.getElementById(id).style.display = 'none');
   document.getElementById('pat-fill').style.display = '';
   document.getElementById('pat-title').textContent = pair.bed
-    ? `▦ Druckplatte füllen (${r2(buildplateW)} × ${r2(buildplateH)} mm)` : '▦ Platte füllen';
+    ? `▦ ${plateCount > 1 ? 'Platte ' + (pair.plateIdx + 1) : 'Druckplatte'} füllen (${r2(buildplateW)} × ${r2(buildplateH)} mm)` : '▦ Platte füllen';
   document.getElementById('pat-modal').classList.add('show');
 }
 
@@ -24610,6 +24775,8 @@ function _newCreate(save) {
   deselect(); objects.forEach(o => scene.remove(o)); objects = [];
   undoStack = []; redoStack = [];
   designVars = [];
+  plateCount = 1; _activePlate = 0; _plateRebuild();
+  orbitTarget.set(0, 0, 0); sph2cam();
   if (document.getElementById('vars-panel').classList.contains('show')) _varsRender();
   updateUndoRedoButtons(); updateTree();
   const name = _randomDesignName();
@@ -25821,6 +25988,7 @@ function _buildStlBlob(objs) {
     const geo = mesh.geometry.clone();
     mesh.updateMatrixWorld(true);
     geo.applyMatrix4(mesh.matrixWorld);
+    if (_expShiftX) geo.translate(-_expShiftX, 0, 0);   // Platte 2+ → Plattenmitte
     geo.rotateX(Math.PI / 2);                     // Y-up (Editor) → Z-up (Slicer)
     if (!geo.attributes.normal) geo.computeVertexNormals();
     const pos = geo.attributes.position;
@@ -26034,7 +26202,9 @@ async function _refreshOutDirMenu() {
   await _outDirLoad();
 }
 
-function exportSTL() {
+// Mehrere Platten: liegt die Quelle auf EINER Platte ≥ 2, auf deren Mitte zurückrücken
+function exportSTL() { return _withPlateShift(_exportSrc(), _exportSTL); }
+function _exportSTL() {
   const r = _buildStlBlob(_exportSrc()); if (!r) return;
   if (typeof _tutorExported !== 'undefined') _tutorExported = true;   // Kurs-Modus: STL-Export erkannt
   const sel = _exportIsSel() ? ' [nur Auswahl]' : '';
@@ -26218,7 +26388,9 @@ function _lzSave() {
   _lzClose();
 }
 
-function exportOBJ() {
+// Mehrere Platten: liegt die Quelle auf EINER Platte ≥ 2, auf deren Mitte zurückrücken
+function exportOBJ() { return _withPlateShift(_exportSrc(), _exportOBJ); }
+function _exportOBJ() {
   document.getElementById('stl-menu').classList.remove('show');
   const expSrc = _exportSrc();
   if (!expSrc.length) { notify('Keine Objekte', 'w'); return; }
@@ -26246,6 +26418,7 @@ function exportOBJ() {
       ? _mmuTriStatesGeo(geo, mesh.userData) : null;
     mesh.updateMatrixWorld(true);
     geo.applyMatrix4(mesh.matrixWorld);
+    if (_expShiftX) geo.translate(-_expShiftX, 0, 0);   // Platte 2+ → Plattenmitte
     geo.rotateX(Math.PI / 2);                     // Y-up (Editor) → Z-up (Slicer)
     if (!geo.attributes.normal) geo.computeVertexNormals();
     const pos = geo.attributes.position, norm = geo.attributes.normal, count = pos.count;
@@ -26296,7 +26469,9 @@ function exportOBJ() {
 
 // Jeden Körper (Teil + Gravur-Inlay) als EIGENE STL-Datei → in Bambu/Prusa beide
 // laden (gleicher Ursprung = deckungsgleich), pro Objekt ein Filament zuweisen.
-function exportPartsSTL() {
+// Mehrere Platten: liegt die Quelle auf EINER Platte ≥ 2, auf deren Mitte zurückrücken
+function exportPartsSTL() { return _withPlateShift(_exportSrc(), _exportPartsSTL); }
+function _exportPartsSTL() {
   document.getElementById('stl-menu').classList.remove('show');
   const expSrc = _exportSrc();
   if (!expSrc.length) { notify('Keine Objekte', 'w'); return; }
@@ -26322,7 +26497,9 @@ function exportPartsSTL() {
 // 3MF mit getrennten, farbigen Körpern → Bambu/Orca öffnet sie deckungsgleich
 // als zwei zuweisbare Objekte (kein Dreieck-Bemalen). Geometrie verschweißt =
 // wasserdicht (keine "open edges").
-function export3MF() {
+// Mehrere Platten: liegt die Quelle auf EINER Platte ≥ 2, auf deren Mitte zurückrücken
+function export3MF() { return _withPlateShift(_exportSrc(), _export3MF); }
+function _export3MF() {
   document.getElementById('stl-menu').classList.remove('show');
   if (typeof fflate === 'undefined') { notify('Zip-Bibliothek lädt noch — kurz warten, erneut versuchen', 'w'); return; }
   const expSrc = _exportSrc();
@@ -26390,6 +26567,7 @@ function _build3mfBlob(expSrc) {
       }
       m.updateMatrixWorld(true);
       geo.applyMatrix4(m.matrixWorld);
+      if (_expShiftX) geo.translate(-_expShiftX, 0, 0);       // Platte 2+ → Plattenmitte
       geo.scale(10, 10, 10);                                  // App-Einheiten → mm
       geo.rotateX(Math.PI / 2);                               // Y-up (Editor) → Z-up (Slicer)
       for (const n in geo.attributes) if (n !== 'position') geo.deleteAttribute(n);
@@ -26585,7 +26763,9 @@ async function _stepExportLocal(stlBuf) {
 
 // STEP-Export: erst lokal (Browser-OCCT), bei Fehlern übers Backend
 // (/api/occt-stl2step). Ergebnis ist in beiden Fällen ein facettiertes BRep.
-async function exportSTEP() {
+// Mehrere Platten: liegt die Quelle auf EINER Platte ≥ 2, auf deren Mitte zurückrücken
+function exportSTEP() { return _withPlateShift(_exportSrc(), _exportSTEP); }
+async function _exportSTEP() {
   document.getElementById('stl-menu').classList.remove('show');
   const r = _buildStlBlob(_exportSrc()); if (!r) return;
   notify('STEP wird erzeugt … (Vernähen kann bei großen Modellen dauern)', 'i');
@@ -26652,20 +26832,21 @@ const _V3D_SLICER_URL = location.hostname.endsWith('.ts.net')
   : 'https://v3da.tailf05fe9.ts.net:10000/app/';
 async function _openInV3DSlicer() {
   document.getElementById('stl-menu')?.classList.remove('show');
+  const src = _slicerSrc();   // mehrere Platten: nur die aktive
   const colors = new Set();
   (function tr(list){ list.forEach(o => {
     if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false && o.material?.color) colors.add(o.material.color.getHexString());
     if (o.children) tr(o.children);
-  }); })(objects);
+  }); })(src);
   let blob = null, fname;
   if (colors.size > 1 && typeof fflate !== 'undefined') {
     try {
-      const r3 = _build3mfBlob(objects);
+      const r3 = _withPlateShift(src, () => _build3mfBlob(src));
       if (r3) { blob = r3.blob; fname = _designFilename('3mf'); }
     } catch (e) { console.error('3MF für V3D Slicer fehlgeschlagen, nehme STL:', e); }
   }
   if (!blob) {
-    const r = _buildStlBlob(); if (!r) { notify('Keine Objekte zum Slicen', 'w'); return; }
+    const r = _withPlateShift(src, () => _buildStlBlob(src)); if (!r) { notify('Keine Objekte zum Slicen', 'w'); return; }
     blob = r.blob; fname = _designFilename('stl');
   }
   notify('Übergebe an den V3D Slicer …', 'ok');
@@ -26695,20 +26876,21 @@ async function _openInV3DSlicer() {
 // Zuordnung bleiben erhalten), einfarbige weiter als STL.
 async function _sendCurrentToSlicer(preferSlicer) {
   document.getElementById('stl-menu')?.classList.remove('show');
+  const src = _slicerSrc();   // mehrere Platten: nur die aktive
   const colors = new Set();
   (function tr(list){ list.forEach(o => {
     if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false && o.material?.color) colors.add(o.material.color.getHexString());
     if (o.children) tr(o.children);
-  }); })(objects);
+  }); })(src);
   let blob = null, fname, fmt = 'STL';
   if (colors.size > 1 && typeof fflate !== 'undefined') {
     try {
-      const r3 = _build3mfBlob(objects);
+      const r3 = _withPlateShift(src, () => _build3mfBlob(src));
       if (r3) { blob = r3.blob; fname = _designFilename('3mf'); fmt = '3MF (' + r3.colors + ' Farben)'; }
     } catch (e) { console.error('3MF für Slicer fehlgeschlagen, nehme STL:', e); }
   }
   if (!blob) {
-    const r = _buildStlBlob(); if (!r) return;
+    const r = _withPlateShift(src, () => _buildStlBlob(src)); if (!r) return;
     blob = r.blob; fname = _designFilename('stl');
   }
   // Nur auffrischen, wenn zuletzt ein Helfer da war. Auf Rechnern ohne Helfer
@@ -29302,7 +29484,8 @@ function dsRenameDesign(id, name) {
 
 // ── Scene serialization helpers ────────────────────────────────────────────
 function _sceneSnapshot() {
-  return { version: 1, objects: objects.map(objectToData), idCtr, currentColor, shapeMode, vars: designVars };
+  return { version: 1, objects: objects.map(objectToData), idCtr, currentColor, shapeMode, vars: designVars,
+           plates: plateCount };
 }
 
 function _applySnapshot(data) {
@@ -29312,6 +29495,9 @@ function _applySnapshot(data) {
   if (data.currentColor) { currentColor = data.currentColor; }
   designVars = Array.isArray(data.vars) ? data.vars : [];
   if (document.getElementById('vars-panel').classList.contains('show')) _varsRender();
+  // Plattenzahl VOR den Teilen setzen (Teile liegen schon auf ihren Platten)
+  plateCount = Math.max(1, Math.min(50, parseInt(data.plates) || 1)); _activePlate = 0;
+  _plateLastPitch = _platePitchU(); _plateRebuild();
   (data.objects || []).forEach(d => {
     const obj = buildObjectFromData(d);
     scene.add(obj); objects.push(obj);
@@ -48129,8 +48315,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.57';
+const VOLME3D_VERSION = '1.18.58';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.58', date:'2026-09-26', spots:[{id:'plates',sel:'#plate-bar'}], changes:[
+    ['\u25AD','<b>Neu: mehrere Druckplatten.</b> Unten im Arbeitsbereich sitzt jetzt die Platten-Leiste: <b>\uFF0B Platte</b> legt eine weitere Druckplatte daneben an. Teile einfach hin\u00fcberziehen \u2014 auf welcher Platte ein Teil liegt, ergibt sich aus seiner Lage. Ein Klick auf <b>\u25AD Platte 2</b> springt dorthin und w\u00e4hlt ihre Teile aus; <b>Export</b> und <b>An den Slicer</b> nehmen dann genau diese Platte, mittig wie auf einem eigenen Druckbett. <b>\u2913 je Platte</b> speichert jede Platte als eigene STL-Datei. <b>\u25A6 F\u00fcllen</b> f\u00fcllt die Platte, auf der das Teil liegt. Leere Platten entfernt der Knopf 🗑. Die Platten werden mit dem Design gespeichert.'],
+  ]},
   { version:'1.18.57', date:'2026-09-26', spots:[{id:'fill-bed',sel:'[onclick="fillPlateTool()"]'}], changes:[
     ['\u{1F529}','<b>Schrauben ab M10 ohne Kerbe im Gewinde.</b> Bei manchen Gr\u00f6\u00dfen (M4, M10, M12) hatte das Au\u00dfengewinde eine Macke \u2014 immer dann, wenn die L\u00e4nge kein glattes Vielfaches der Steigung war (z.\u202fB. M10\u00d720 = 13\u2153 G\u00e4nge). Das Netz war dort sogar undicht. Betraf alle Kopfformen (Au\u00dfen, Innen, Torx, Schloss, Senk). Jetzt sind alle Gr\u00f6\u00dfen sauber und wasserdicht. <i>Schon erzeugte Schrauben bitte neu erstellen.</i>'],
     ['\u25A6','<b>\u25A6 F\u00fcllen geht jetzt auch direkt auf der Druckplatte.</b> Einfach nur das Teil ausw\u00e4hlen und unter <i>Anordnen</i> auf <b>\u25A6 F\u00fcllen</b> \u2014 V3D CAD verteilt die Kopien auf der eingestellten Druckplatte. Wer eine eigene Grundplatte f\u00fcllen will, w\u00e4hlt wie bisher Platte + Teil.'],
