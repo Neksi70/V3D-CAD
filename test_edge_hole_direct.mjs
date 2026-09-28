@@ -66,6 +66,7 @@ try {
   });
   await pg.waitForTimeout(600);
   const a = await zug(-3.5, +40);          // Loch links: Rundung
+  await pg.keyboard.press('Escape');       // Maßfeld (_ebVal) schließen — es liegt sonst über dem Nachbarloch
   await pg.waitForTimeout(300);
   console.log(await pg.evaluate(() => JSON.stringify({ edgeMode: _edgeMode, sel: selectedObjs.length, selIsObj: selectedObjs[0] === objects[0], blocked: _dedBlocked(), rims: _dedRims(objects[0]).map(r => r.cW.map(v => +v.toFixed(2)).concat([+r.axisW[1].toFixed(2)])), analytic: _dedAnalytic(objects[0]) })));
   const c = await zug(-1.5, -40);          // Loch rechts, NACH dem ersten Bevel: Fase
