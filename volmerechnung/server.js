@@ -576,7 +576,8 @@ function felderAusText(zeilen) {
   const eigen = (z) => {
     const l = z.toLowerCase();
     return [f.name, f.inhaber, f.strasse].filter((x) => x && x.length > 3).some((x) => l.includes(x.toLowerCase()))
-      || /volme\s*3d/i.test(z);
+      || /volme\s*3d/i.test(z)
+      || (f.plz && f.ort && l.trim().split(/\s{3,}/)[0].replace(/\s+/g, ' ') === (f.plz + ' ' + f.ort).toLowerCase()); // eigene PLZ/Ort-Zeile
   };
   const text = zeilen.join('\n');
   const r = { lieferant: {}, steuern: [], positionen: [] };
@@ -591,8 +592,11 @@ function felderAusText(zeilen) {
   const absender = kopf.map((z) => z.match(/^(.{2,60}?)\s+[-–·•|,]\s+(.{3,60}?\d+\s*[a-z]?)\s+[-–·•|,]\s+(\d{5})\s+(\S.*)$/i)).find((m) => m && !eigen(m[0]));
   // Ansichts-App-Leisten (Screenshot eines PDFs) sind kein Lieferant
   const appZeile = /^(pdf[- ]?reader|adobe|acrobat|drive|dateien|files|gmail|outlook|\d{1,2}:\d{1,2}|[\d\s%:]+)$/i;
-  const nameZ = (absender && absender[1]) || kopf.find((z) => rf.test(z) && !appZeile.test(z) && !eigen(z) && z.length < 80 && !/rechnung/i.test(z))
-    || kopf.find((z) => /[a-zäöü]{3}/i.test(z) && !appZeile.test(z) && !/^RE[-\s]?\d/i.test(z) && !eigen(z) && !/^(rechnung|invoice|seite|page|datum|tel|fax|www|e-?mail)/i.test(z) && z.length < 60);
+  const nameSicher = (absender && absender[1]) || kopf.find((z) => rf.test(z) && !appZeile.test(z) && !eigen(z) && z.length < 80 && !/rechnung/i.test(z));
+  if (!nameSicher) r.nameGeraten = true; // nur „erste sinnvolle Zeile" — beim Mail-Import zählt dann der Absender
+  const nameZ = nameSicher
+    || kopf.find((z) => /[a-zäöü]{3}/i.test(z) && !appZeile.test(z) && !/^RE[-\s]?\d/i.test(z) && !eigen(z) && !/^(rechnung|invoice|seite|page|datum|tel|fax|www|e-?mail)/i.test(z)
+      && !/^(firma|herrn?|frau|an|z\.?\s*hd\.?)$/i.test(z.trim()) && !/^\d{5}\s+\S+(\s{3,}|$)/.test(z.trim()) && !/:\s*\S*\d/.test(z) && z.length < 60); // Anrede-Zeile der eigenen Anschrift
   if (nameZ) {
     let n = nameZ.split(/\s{3,}| - | · | \| /)[0].replace(/[®©™]/g, '').trim();
     // OCR liest „®" gern als „8": „Ruhr3D8" -> „Ruhr3D", wenn die Form ohne 8 (Logo) auch vorkommt
@@ -681,6 +685,7 @@ function erfassenHinweise(r) {
   const h = [];
   const st = r.steuern || [];
   const summe = r2(st.reduce((x, s) => x + (Number(s.netto) || 0) + (Number(s.ust) || 0), 0));
+  if (r.nameGeraten) h.push('Empfänger nur geraten (kein Firmenname im Beleg gefunden) — bitte prüfen.');
   if (!st.length) h.push('Keine USt-Zeile erkannt — Netto/USt bitte eintragen.');
   if (r.brutto != null && st.length && Math.abs(summe - r.brutto) > 0.015) h.push(`Netto + USt (${summe.toFixed(2)}) ≠ Brutto (${Number(r.brutto).toFixed(2)}) — Beträge prüfen.`);
   for (const s of st) {
@@ -1068,6 +1073,32 @@ Positionen:\n${liste.slice(0, 2000)}`;
     const q = new URLSearchParams({ acc: b.acc || '', folder: 'INBOX', uid: String(b.uid || ''), part: String(b.part || '') });
     const buf = await mailApi('/api/attachment?' + q, true);
     const r = await erfassenPuffer(buf);
+    if (!r.status) {
+      // Lücken aus dem Mailtext füllen: dexxIT schickt die Proforma-PDF ohne Bankdaten
+      // und mit Bild-Briefkopf — IBAN, BIC und Firmenname stehen nur in der Mail.
+      try {
+        const msg = await mailApi('/api/message?' + new URLSearchParams({ acc: b.acc || '', folder: 'INBOX', uid: String(b.uid || ''), markSeen: '0' }));
+        const text = msg.plain || String(msg.html || '').replace(/<(br|\/p|\/div|\/tr)[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
+        const zeilen = text.split(/\r?\n/).map((z) => z.trim()).filter(Boolean).slice(0, 300);
+        if (zeilen.length) {
+          const mf = felderAusText(zeilen), f = r.felder, ergaenzt = [];
+          for (const k of ['iban', 'bic', 'nummer', 'kundennr', 'verwendungszweck', 'faellig', 'brutto']) {
+            if (f[k] == null && mf[k] != null) { f[k] = mf[k]; ergaenzt.push(k); }
+          }
+          // Firmenname: in der PDF nur geraten -> Firma aus der Mail (Grußzeile/Fußzeile
+          // mit Rechtsform, nicht die Bank), sonst der Anzeigename des Absenders
+          if (!f.lieferant.name || f.nameGeraten) {
+            const rfZ = zeilen.find((z) => /(^|\s)(GmbH|AG|KG|OHG|UG|GbR|SE|Ltd\.?|Inc\.?|e\.\s?K\.)(?=[\s,&)|]|$)/.test(z) && z.length < 90
+              && !/bank|sparkasse|kasse\b|registergericht|haftende|verwaltung|volme\s*3d/i.test(z));
+            const vonName = [...new Set(String(b.vonName || '').split('|').map((x) => x.trim()).filter(Boolean))][0];
+            const n = rfZ ? rfZ.split(/\s+\|\s+|\s{3,}| - /)[0].trim() : vonName;
+            if (n) { f.lieferant = Object.assign({}, f.lieferant, { name: n }); f.nameGeraten = false; ergaenzt.push('lieferant'); }
+          }
+          r.ausMail = ergaenzt;
+          r.hinweise = erfassenHinweise(f);
+        }
+      } catch (e) { /* Mailtext ist Beiwerk */ }
+    }
     return send(res, r.status || 200, r);
   }
 
