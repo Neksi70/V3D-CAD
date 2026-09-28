@@ -92,6 +92,7 @@ async function start(){
   $('#m').innerHTML=`
     <button class="gross p" onclick="waehle(true)">📷 Rechnung scannen</button>
     <button class="gross s" onclick="waehle(false)">📄 PDF oder Bild wählen</button>
+    <button class="gross s" onclick="mailListe()">📨 Aus V3D Mail</button>
     <p style="color:var(--dim);font-size:13px;text-align:center">Tipp: PDF aus Gmail/Dateien per „Teilen → V3D Beleg" schicken.</p>
     <div id="offen"></div>`;
   try{
@@ -133,18 +134,68 @@ async function hochladen(file){
     const r=await fetch(ROOTP+'/api/erfassen',{method:'POST',headers:{'X-Key':KEY},body});
     if(r.status===401){login();return;}
     const j=await r.json();if(!r.ok)throw new Error(j.error||'Fehler');
+    await speichern(j);
+  }catch(e){toast(e.message,true);start();}
+}
+// Erkannte Felder sofort als Ausgabe speichern — taucht damit auch in VolmeRechnung auf.
+// extra: Zusatzfelder (Mail-Herkunft), fallbackName: Lieferant, falls nichts erkannt
+async function speichern(j,extra,fallbackName){
     const f=j.felder,L=f.lieferant||{};
     const st=f.steuern||[];
     const brutto=f.brutto!=null?f.brutto:(st.length?Math.round(st.reduce((x,s)=>x+(+s.netto||0)+(+s.ust||0),0)*100)/100:0);
-    // sofort als Ausgabe speichern — taucht damit auch in VolmeRechnung auf
-    const a=await api('expenses','POST',{datum:f.datum||today(),lieferant:L.name||'',betrag:brutto,kategorie:'Material',beschreibung:'',
+    const a=await api('expenses','POST',{datum:f.datum||today(),lieferant:L.name||fallbackName||'',betrag:brutto,kategorie:'Material',beschreibung:'',
       nummer:f.nummer||'',kundennr:f.kundennr||'',verwendungszweck:f.verwendungszweck||[f.nummer,f.kundennr?'Kd-Nr. '+f.kundennr:''].filter(Boolean).join(' '),
       faellig:f.faellig||'',lieferdatum:f.lieferdatum||'',iban:f.iban||'',bic:f.bic||'',
       lieferantAdr:{strasse:L.strasse||'',plz:L.plz||'',ort:L.ort||'',ustId:L.ustId||'',steuernummer:L.steuernummer||''},
-      steuern:st,positionen:f.positionen||[],belegId:j.belegId,quelle:'scan-app'});
+      steuern:st,positionen:f.positionen||[],belegId:j.belegId,quelle:'scan-app',...(extra||{})});
     await zeige(a.id,j.hinweise);
     if(j.quelle!=='zugferd')nachbessern(a.id,j);
+}
+
+// ---------------------------------------------------------------- Aus V3D Mail
+// Posteingang: Mails mit Anhang -> Anhang wählen -> erfassen wie ein Scan
+let MAILKONTO=localStorage.getItem('vrMailKonto')||'',MAILKONTEN=null;
+async function mailListe(suche){
+  $('#kopfZurueck').hidden=false;
+  $('#m').innerHTML='<div class="lade"><div class="kreis"></div><b>Posteingang wird geladen …</b></div>';
+  try{
+    if(!MAILKONTEN)MAILKONTEN=(await api('mail/konten')).konten;
+    if(!MAILKONTEN.length)throw new Error('In V3D Mail ist kein Konto eingerichtet');
+    if(!MAILKONTEN.some(k=>k.id===MAILKONTO))MAILKONTO=MAILKONTEN[0].id;
+    const {liste}=await api('mail/liste?'+new URLSearchParams({acc:MAILKONTO,q:suche||''}));
+    $('#m').innerHTML=`
+      <select id="mk" onchange="MAILKONTO=this.value;localStorage.setItem('vrMailKonto',MAILKONTO);mailListe()" style="font:inherit;width:100%;border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;background:#fff">
+        ${MAILKONTEN.map(k=>`<option value="${esc(k.id)}" ${k.id===MAILKONTO?'selected':''}>${esc(k.email)}</option>`).join('')}</select>
+      <form onsubmit="event.preventDefault();mailListe($('#ms').value.trim())" style="display:flex;gap:8px;margin-bottom:6px">
+        <input id="ms" placeholder="Suchen (Absender, Betreff …)" value="${esc(suche||'')}"><button class="btn s">🔍</button></form>
+      <h2>${suche?'Treffer mit Anhang':'Neueste Mails mit Anhang'}</h2>
+      ${liste.length?liste.map(x=>`<div class="eintrag" onclick="${x.erfasst?`zeige('${x.erfasst}')`:`mailOeffnen(${x.uid})`}">
+        <span style="min-width:0"><b style="${x.gelesen?'font-weight:600':''}">${esc(x.von.name||x.von.email||'?')}</b><br>
+        <small style="color:var(--dim)">${esc(x.betreff)}</small></span>
+        <small style="color:${x.erfasst?'var(--green)':'var(--dim)'};white-space:nowrap;font-weight:700">${x.erfasst?'✓ erfasst':new Date(x.ts*1000).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'})}</small></div>`).join('')
+      :'<p style="color:var(--dim);text-align:center;padding:20px">Keine Mails mit Anhang gefunden.</p>'}`;
   }catch(e){toast(e.message,true);start();}
+}
+async function mailOeffnen(uid){
+  $('#m').innerHTML='<div class="lade"><div class="kreis"></div><b>Mail wird geöffnet …</b></div>';
+  try{
+    const r=await api('mail/anhaenge?'+new URLSearchParams({acc:MAILKONTO,uid}));
+    window.MAILAKT={uid,betreff:r.betreff,von:r.von};
+    if(r.anhaenge.length===1)return mailErfassen(r.anhaenge[0].part); // der Normalfall: eine Rechnungs-PDF
+    $('#m').innerHTML=`<h2>${esc(r.von.name||r.von.email||'')}</h2><p style="margin-bottom:12px">${esc(r.betreff)}</p>
+      ${r.anhaenge.length?'<h2>Welcher Anhang ist die Rechnung?</h2>'+r.anhaenge.map(x=>`<div class="eintrag" onclick="mailErfassen('${esc(x.part)}')">
+        <span>${x.typ==='application/pdf'?'📄':'🖼️'} <b>${esc(x.name)}</b></span><small style="color:var(--dim)">${Math.max(1,Math.round(x.groesse/1024))} KB</small></div>`).join('')
+      :'<div class="hinw">In dieser Mail steckt keine PDF und kein Bild.</div>'}
+      <button class="btn s" style="width:100%;margin-top:8px" onclick="mailListe()">← Zurück zum Posteingang</button>`;
+  }catch(e){toast(e.message,true);mailListe();}
+}
+async function mailErfassen(part){
+  const M=window.MAILAKT;
+  $('#m').innerHTML='<div class="lade"><div class="kreis"></div><b>Rechnung wird gelesen …</b><br><small>ein paar Sekunden</small></div>';
+  try{
+    const j=await api('mail/erfassen','POST',{acc:MAILKONTO,uid:M.uid,part});
+    await speichern(j,{quelle:'mail',mail:{acc:MAILKONTO,folder:'INBOX',uid:M.uid,part,betreff:M.betreff,von:M.von.email||''}},M.von.name||'');
+  }catch(e){toast(e.message,true);mailListe();}
 }
 // KI im Hintergrund: Name/Beschreibung/Kategorie; Zahlungsfelder nur, wo noch leer
 async function nachbessern(id,erf){

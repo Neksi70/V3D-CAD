@@ -756,6 +756,82 @@ function zugferdDaten(a) {
   };
 }
 
+// Foto/PDF -> Scan + erkannte Felder (Upload aus der App ODER Mail-Anhang)
+async function erfassenPuffer(buf) {
+  const istPdf = buf.slice(0, 5).toString('latin1') === '%PDF-';
+  const istBild = /^(\xff\xd8\xff|\x89PNG|RIFF....WEBP|GIF8)/s.test(buf.slice(0, 12).toString('latin1')) || /^....ftyp(heic|heix|mif1)/s.test(buf.slice(0, 12).toString('latin1'));
+  if (!istPdf && !istBild) return { status: 400, error: 'Bitte ein Foto (JPG/PNG) oder ein PDF hochladen' };
+  const bid = crypto.randomBytes(8).toString('hex');
+  const orig = path.join(BELEG_DIR, bid + (istPdf ? '.pdf' : '.bild'));
+  fs.writeFileSync(orig, buf);
+  try {
+    const sc = await py(['scan', orig, belegPfad(bid)]);
+    // Digitales PDF: eingebettete E-Rechnung (exakt) > Textlayer > Texterkennung (nur Scans)
+    let zeilen = [], zf = null, quelle = 'ocr';
+    if (istPdf) ({ zeilen, zugferd: zf } = await py(['pdftext', orig]));
+    if (zeilen.length) quelle = 'pdftext';
+    else ({ zeilen } = await py(['ocr', belegPfad(bid)]));
+    let felder = felderAusText(zeilen);
+    if (zf) {
+      quelle = 'zugferd';
+      const txt = felder;
+      felder = Object.assign({}, zf, { lieferant: Object.assign({}, txt.lieferant, zf.lieferant) });
+      for (const k of Object.keys(txt)) if (felder[k] == null) felder[k] = txt[k]; // Lücken aus dem Text
+      felder.positionen = zf.positionen || [];
+    }
+    return { belegId: bid, quelle, zugeschnitten: sc.zugeschnitten, zeilen, felder, hinweise: erfassenHinweise(felder) };
+  } catch (e) {
+    for (const p of [orig, belegPfad(bid)]) fs.rmSync(p, { force: true });
+    return { status: 500, error: 'Beleg konnte nicht gelesen werden: ' + e.message };
+  }
+}
+
+// --- V3D Mail anzapfen (gleiche Maschine) ---------------------------------------
+// Anmeldung mit dem Schlüssel aus der V3D-Mail-Konfiguration; die Sitzung bleibt
+// im RAM und wird bei 401 einmal erneuert.
+const MAIL_URL = CFG.mailUrl || 'https://127.0.0.1:8783';
+const MAIL_CONF = CFG.mailConfig || path.join(require('os').homedir(), '.config', 'v3dmail', 'config.json');
+let mailSid = null;
+function mailRoh(method, pfad, body) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(pfad, MAIL_URL);
+    const mod = u.protocol === 'https:' ? require('https') : http;
+    const daten = body ? Buffer.from(JSON.stringify(body)) : null;
+    const req = mod.request(u, {
+      method, rejectUnauthorized: false, timeout: 60000, // Zertifikat gilt für den ts.net-Namen, nicht 127.0.0.1
+      headers: Object.assign({ Cookie: mailSid ? 'v3dmail_sid=' + mailSid : '' },
+        daten ? { 'Content-Type': 'application/json', 'Content-Length': daten.length } : {}),
+    }, (r) => {
+      const chunks = [];
+      r.on('data', (c) => chunks.push(c));
+      r.on('end', () => resolve({ status: r.statusCode, headers: r.headers, buf: Buffer.concat(chunks) }));
+    });
+    req.on('timeout', () => req.destroy(new Error('V3D Mail antwortet nicht')));
+    req.on('error', (e) => reject(new Error('V3D Mail nicht erreichbar: ' + e.message)));
+    req.end(daten);
+  });
+}
+async function mailAnmelden() {
+  let key;
+  try { key = JSON.parse(fs.readFileSync(MAIL_CONF, 'utf8')).adminKey; } catch (e) { throw new Error('V3D-Mail-Konfiguration nicht lesbar'); }
+  mailSid = null;
+  const r = await mailRoh('POST', '/api/login', { key });
+  const m = String(r.headers['set-cookie'] || '').match(/v3dmail_sid=([^;]+)/);
+  if (r.status !== 200 || !m) throw new Error('Anmeldung bei V3D Mail fehlgeschlagen (' + r.status + ')');
+  mailSid = m[1];
+}
+async function mailApi(pfad, roh) {
+  if (!mailSid) await mailAnmelden();
+  let r = await mailRoh('GET', pfad);
+  if (r.status === 401) { await mailAnmelden(); r = await mailRoh('GET', pfad); }
+  if (r.status !== 200) {
+    let msg = 'V3D Mail: Fehler ' + r.status;
+    try { msg = 'V3D Mail: ' + JSON.parse(r.buf).error; } catch (e) { /* kein JSON */ }
+    throw new Error(msg);
+  }
+  return roh ? r.buf : JSON.parse(r.buf);
+}
+
 // Verwaiste Belege (Erfassung abgebrochen) nach einem Tag aufräumen
 function belegeAufraeumen() {
   const benutzt = new Set(expenses.data.map((a) => a.belegId).filter(Boolean));
@@ -940,33 +1016,40 @@ Positionen:\n${liste.slice(0, 2000)}`;
   // Papierrechnung erfassen: Rohdaten (Foto/PDF) hochladen -> Scan + erkannte Felder
   if (col === 'erfassen' && m === 'POST' && !docId) {
     const buf = await readRaw(req, 25 * 1024 * 1024);
-    const istPdf = buf.slice(0, 5).toString('latin1') === '%PDF-';
-    const istBild = /^(\xff\xd8\xff|\x89PNG|RIFF....WEBP|GIF8)/s.test(buf.slice(0, 12).toString('latin1')) || /^....ftyp(heic|heix|mif1)/s.test(buf.slice(0, 12).toString('latin1'));
-    if (!istPdf && !istBild) return send(res, 400, { error: 'Bitte ein Foto (JPG/PNG) oder ein PDF hochladen' });
-    const bid = crypto.randomBytes(8).toString('hex');
-    const orig = path.join(BELEG_DIR, bid + (istPdf ? '.pdf' : '.bild'));
-    fs.writeFileSync(orig, buf);
-    try {
-      const sc = await py(['scan', orig, belegPfad(bid)]);
-      // Digitales PDF: eingebettete E-Rechnung (exakt) > Textlayer > Texterkennung (nur Scans)
-      let zeilen = [], zf = null, quelle = 'ocr';
-      if (istPdf) ({ zeilen, zugferd: zf } = await py(['pdftext', orig]));
-      if (zeilen.length) quelle = 'pdftext';
-      else ({ zeilen } = await py(['ocr', belegPfad(bid)]));
-      let felder = felderAusText(zeilen);
-      if (zf) {
-        quelle = 'zugferd';
-        const txt = felder;
-        felder = Object.assign({}, zf, { lieferant: Object.assign({}, txt.lieferant, zf.lieferant) });
-        for (const k of Object.keys(txt)) if (felder[k] == null) felder[k] = txt[k]; // Lücken aus dem Text
-        felder.positionen = zf.positionen || [];
-      }
-      return send(res, 200, { belegId: bid, quelle, zugeschnitten: sc.zugeschnitten, zeilen, felder, hinweise: erfassenHinweise(felder) });
-    } catch (e) {
-      for (const p of [orig, belegPfad(bid)]) fs.rmSync(p, { force: true });
-      return send(res, 500, { error: 'Beleg konnte nicht gelesen werden: ' + e.message });
-    }
+    const r = await erfassenPuffer(buf);
+    return send(res, r.status || 200, r);
   }
+
+  // Rechnungen direkt aus V3D Mail holen (V3D Beleg: „📨 Aus V3D Mail")
+  if (col === 'mail' && m === 'GET' && docId === 'konten') {
+    const st = await mailApi('/api/state');
+    return send(res, 200, { konten: (st.accounts || []).map((a) => ({ id: a.id, email: a.email, name: a.name })) });
+  }
+  if (col === 'mail' && m === 'GET' && docId === 'liste') {
+    const acc = url.searchParams.get('acc') || '', q = url.searchParams.get('q') || '';
+    const r = await mailApi('/api/messages?' + new URLSearchParams({ acc, folder: 'INBOX', page: '0', q }));
+    const liste = (r.messages || []).filter((x) => x.hasAttachments).map((x) => {
+      const a = expenses.data.find((e) => e.mail && e.mail.acc === acc && e.mail.folder === 'INBOX' && e.mail.uid === x.uid);
+      return { uid: x.uid, betreff: x.subject, von: (x.from || [])[0] || {}, ts: x.ts, gelesen: x.seen, erfasst: a ? a.id : null };
+    });
+    return send(res, 200, { liste });
+  }
+  if (col === 'mail' && m === 'GET' && docId === 'anhaenge') {
+    const acc = url.searchParams.get('acc') || '', uid = url.searchParams.get('uid') || '';
+    const r = await mailApi('/api/message?' + new URLSearchParams({ acc, folder: 'INBOX', uid, markSeen: '0' }));
+    // Nur was nach Rechnung aussieht: PDFs und angehängte Bilder (keine Logos aus der Signatur)
+    const anhaenge = (r.attachments || []).filter((x) => x.type === 'application/pdf' || /\.pdf$/i.test(x.filename)
+      || (/^image\//.test(x.type) && !x.cid && x.size > 30000)).map((x) => ({ part: x.part, name: x.filename, typ: x.type, groesse: x.size }));
+    return send(res, 200, { betreff: r.subject, von: (r.from || [])[0] || {}, anhaenge });
+  }
+  if (col === 'mail' && m === 'POST' && docId === 'erfassen') {
+    const b = await readBody(req);
+    const q = new URLSearchParams({ acc: b.acc || '', folder: 'INBOX', uid: String(b.uid || ''), part: String(b.part || '') });
+    const buf = await mailApi('/api/attachment?' + q, true);
+    const r = await erfassenPuffer(buf);
+    return send(res, r.status || 200, r);
+  }
+
   if (col === 'erfassen' && docId === 'ki' && m === 'POST') {
     const { zeilen, felder } = await readBody(req);
     if (!Array.isArray(zeilen) || !zeilen.length) return send(res, 400, { error: 'Kein Text' });
