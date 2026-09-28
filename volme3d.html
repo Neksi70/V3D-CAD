@@ -10597,7 +10597,7 @@ function _formatBevelVal(mm) {
     const ok = _ebPrev.lastOk;
     s += (ok && Math.sign(ok) === Math.sign(mm) && Math.abs(ok) >= 0.05)
       ? ' – zu groß, max. ~' + (Math.abs(ok) * 10).toFixed(1).replace('.', ',') + ' mm'
-      : ' – zu groß';
+      : ' – geht hier nicht';
   }
   return s;
 }
@@ -10810,13 +10810,19 @@ function _ebPrevRelease(dragVal) {
   const v = dragVal / 10;
   const round = _edgeBevelRightIsRound(_edgeObj) && v > 0;
   const f = _ebPrevFinalVal(v);
+  // Fase + Rundung an derselben Ecke kann OCCT kaum (Würfel-Ecke: 3× Rundung
+  // und 3× Fase gehen immer, gemischt fast nie) → das als Grund nennen
+  const ops = (_edgeObj && _edgeObj.userData._occtParams && _edgeObj.userData._occtParams.ops) || [];
+  const mixed = ops.some(op => op.type === (round ? 'chamfer' : 'fillet'));
+  const tip = mixed ? ' Vermutlich treffen hier Fase und Rundung an einer Ecke zusammen — das kann der Geometrie-Kern kaum. '
+    + 'Tipp: an einer Ecke nur Rundungen oder nur Fasen verwenden.' : '';
   _ebPrevEnd();
   if (f == null) {
-    notify((round ? 'Rundung' : 'Fase') + ' ist an dieser Kante zu groß — nichts geändert', 'w');
+    notify((round ? 'Rundung' : 'Fase') + ' geht an dieser Kante nicht — nichts geändert.' + tip, 'w');
     return null;
   }
   if (f !== v) notify((round ? 'Rundung' : 'Fase') + ' zu groß — auf das Machbare begrenzt: '
-    + (Math.abs(f) * 10).toFixed(1).replace('.', ',') + ' mm', 'ok');
+    + (Math.abs(f) * 10).toFixed(1).replace('.', ',') + ' mm.' + tip, 'ok');
   return _applyEdgeHandleValue(f);
 }
 
@@ -11192,6 +11198,19 @@ function _mergeOCCTOps(prevOps, newOps, dim) {
   return out;
 }
 
+// OCCT meldet bei Rundung/Fase manchmal IsDone, liefert aber eine kaputte
+// Form (fehlende Flächen → Körper innen offen, Volker 28.9.; ~1–2 % zufälliger
+// Würfel-Kombinationen). BRepCheck_Analyzer erkennt genau diese Fälle.
+function _occtShapeValid(oc, shape) {
+  let an = null;
+  try {
+    an = new oc.BRepCheck_Analyzer(shape, true);
+    const f = an.IsValid_2 || an.IsValid_1 || an.IsValid;
+    return f ? !!f.call(an) : true;
+  } catch (e) { return true; }   // Prüfer fehlt/stolpert → nicht blockieren
+  finally { if (an) { try { an.delete(); } catch (e) {} } }
+}
+
 function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz, noSeq) {
   const chamferOps = ops.filter(op => op.type === 'chamfer');
   const filletOps  = ops.filter(op => op.type === 'fillet');
@@ -11247,7 +11266,8 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz, noSeq) {
       // ___cxa_can_catch an) → wie „nicht geklappt" behandeln
       try {
         for (const x of r) for (const e of x.edges) ch.Add_2(x.op.dist, e);
-        ch.Build(); opOk = ch.IsDone(); if (opOk) curShape = ch.Shape();
+        ch.Build(); opOk = ch.IsDone();
+        if (opOk) { const res = ch.Shape(); opOk = _occtShapeValid(oc, res); if (opOk) curShape = res; }
       } catch (e) { opOk = false; }
       finally { try { ch.delete(); } catch (e) {} }
     }
@@ -11261,7 +11281,8 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz, noSeq) {
       const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
       try {
         for (const x of r) for (const e of x.edges) fi.Add_2(x.op.dist, e);
-        fi.Build(); opOk = fi.IsDone(); if (opOk) curShape = fi.Shape();
+        fi.Build(); opOk = fi.IsDone();
+        if (opOk) { const res = fi.Shape(); opOk = _occtShapeValid(oc, res); if (opOk) curShape = res; }
       } catch (e) { opOk = false; }
       finally { try { fi.delete(); } catch (e) {} }
     }
@@ -11952,6 +11973,15 @@ async function _applyEdgeHandleValue(chamferDist) {
           selectObjs([result]);
           notify(allOps.length + ' Kante(n) bearbeitet (OCCT)', 'ok');
           updateTree();
+          return;
+        }
+        // Schon bearbeiteter Körper, OCCT lief, die Form geht aber nicht
+        // (zu groß oder ungültig): KEIN ThreeCSG-Ersatz — der baut aus den
+        // Grundkörper-Maßen neu und reißt dabei Löcher in die vorhandenen
+        // Rundungen. Lieber ehrlich nichts ändern.
+        if (o.userData._occtParams) {
+          selectObjs([o]);
+          notify((isPos ? 'Fase' : 'Rundung') + ' ist an dieser Kante so nicht möglich — nichts geändert', 'w');
           return;
         }
       } catch(err) {
@@ -48903,8 +48933,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.66';
+const VOLME3D_VERSION = '1.18.67';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.67', date:'2026-09-28', changes:[
+    ['🛡️','<b>Keine löchrigen Körper mehr nach Rundung/Fase.</b> In seltenen Fällen meldete der Geometrie-Kern „fertig“, lieferte aber einen Körper mit fehlenden Flächen — man konnte hineinschauen, gedruckt wäre das Müll. Jetzt wird jedes Ergebnis geprüft; ist es kaputt, gilt der Schritt als „geht nicht“ und V3D CAD nimmt den größten sauberen Wert oder lässt den Körper unverändert. Wichtig zu wissen: Wo an einer Ecke Fase UND Rundung zusammentreffen, schafft der Kern oft nur kleine Werte oder gar nichts; drei Rundungen oder drei Fasen an einer Ecke gehen dagegen fast immer. Die Meldung sagt das dann auch. Außerdem baut V3D CAD an schon bearbeiteten Körpern keinen Notbehelf mehr, der Löcher in vorhandene Rundungen reißen konnte.'],
+  ]},
   { version:'1.18.66', date:'2026-09-28', changes:[
     ['🧊','<b>Rundung an Ecken, wo schon Fase und Rundung zusammenstoßen.</b> Beispiel Würfel: oben vorn gefast, oben rechts gerundet — dann ließ sich die senkrechte Kante vorn rechts gar nicht mehr runden, es hieß „zu groß“, selbst bei 1 mm. V3D CAD hat alle Rundungen in einem Rutsch gerechnet, und daran scheitert der Geometrie-Kern an so einer Ecke. Jetzt rechnet V3D CAD in diesem Fall die Schritte einzeln nacheinander und probiert dabei mehrere Reihenfolgen. Damit gehen solche Ecken fast immer; nur sehr große Rundungen direkt neben einer schmalen Fase werden weiterhin auf das Machbare begrenzt.'],
   ]},
