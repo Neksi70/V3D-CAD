@@ -1403,6 +1403,9 @@ try {
   console.warn('Kein TLS-Zertifikat gefunden — starte unverschlüsselt (HTTP):', e.message);
 }
 
+const appVersion = () => {
+  try { return fs.readFileSync(path.join(ROOT, 'android', 'app', 'build.gradle.kts'), 'utf8').match(/versionName\s*=\s*"([^"]+)"/)[1]; } catch (e) { return 'neu'; }
+};
 const STATIC_FILES = new Set(['rechnung.html', 'scan.html', 'logo.svg', 'manifest.webmanifest', 'V3D-Beleg.apk', 'V3D-Beleg.zip']);
 const BASE = '/rechnung'; // öffentlicher Funnel-Pfad; direkt auf :8782 läuft alles weiter unter /
 
@@ -1444,7 +1447,9 @@ const handler = async (req, res) => {
       const buf = fs.readFileSync(path.join(ROOT, file));
       res.writeHead(200, {
         'Content-Type': MIME[path.extname(file)], 'Content-Length': buf.length,
-        'Content-Disposition': `attachment; filename="${file}"`, 'Cache-Control': 'no-store',
+        // Versionsnummer im Dateinamen: sonst öffnet das Handy gern die alte gleichnamige
+        // Datei aus „Downloads" (am 28.9. wollte Android deshalb auf 1.0 herabstufen)
+        'Content-Disposition': `attachment; filename="${file.replace(/\.(apk|zip)$/, '-' + appVersion() + '.$1')}"`, 'Cache-Control': 'no-store',
       });
       return res.end(buf);
     }
