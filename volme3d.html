@@ -11006,13 +11006,19 @@ function _ebValCapture(val) {
   if (!o || !o.userData || !_edgeSel.size || !_edgeBevelHandlePos) return null;
   const pts = [..._edgeSel].map(i => _ebEdgePoint(o, i));
   if (pts.some(p => !p)) return null;
+  // Obersten Undo-Eintrag merken statt der Länge: der Verlauf ist auf 50
+  // Schritte (und ein Speicherbudget) gedeckelt — ist er voll, bleibt die
+  // Länge beim Sichern gleich, und das Feld erschien nie (Volker 28.9.).
   return { id: o.userData.id, pts, pw: _edgeBevelHandlePos.clone(),
-           undoLen: undoStack.length, val, canRound: _edgeBevelRightIsRound(o) };
+           topBefore: undoStack[undoStack.length - 1] || null, entry: null,
+           val, canRound: _edgeBevelRightIsRound(o) };
 }
 
 function _ebValShow(ctx) {
-  // Nur wenn genau dieser Schritt gesichert wurde (sonst passt der Undo-Stand nicht)
-  if (!ctx || undoStack.length !== ctx.undoLen + 1 || !objects.some(x => x.userData.id === ctx.id)) return;
+  // Nur wenn dieser Schritt einen neuen Undo-Stand gesichert hat
+  const top = undoStack[undoStack.length - 1];
+  if (!ctx || !top || top === ctx.topBefore || !objects.some(x => x.userData.id === ctx.id)) return;
+  ctx.entry = top;
   _ebVal.ctx = ctx;
   _ebVal.round = ctx.canRound && ctx.val > 0;
   const el = document.getElementById('ebv'), inp = document.getElementById('ebv-in');
@@ -11057,7 +11063,7 @@ async function _ebValApply() {
   const c = _ebVal.ctx; if (!c) return;
   const mm = parseFloat(String(document.getElementById('ebv-in').value).replace(',', '.'));
   if (!(mm > 0) || mm > 1000) { notify('Bitte ein Maß in mm eingeben, z. B. 2 oder 1,5', 'w'); return; }
-  if (undoStack.length !== c.undoLen + 1) {
+  if (undoStack[undoStack.length - 1] !== c.entry) {
     notify('Inzwischen wurde etwas anderes geändert — bitte die Kante neu ziehen', 'w'); _ebValHide(); return;
   }
   const round = c.canRound && _ebVal.round;
@@ -49595,8 +49601,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.73';
+const VOLME3D_VERSION = '1.18.74';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.74', date:'2026-09-28', changes:[
+    ['📏','<b>Maßfeld nach dem Kantenziehen erscheint jetzt immer.</b> Nach längerem Arbeiten (voller Rückgängig-Verlauf) tauchte das Feld zum Eintippen von Fase/Rundung gar nicht auf. Jetzt steht es nach jedem Ziehen direkt neben der Kante.'],
+  ]},
   { version:'1.18.73', date:'2026-09-28', changes:[
     ['📏','<b>Fase und Rundung aufs Maß genau.</b> Nach dem Ziehen einer Kante steht direkt daneben ein kleines Feld mit dem gezogenen Wert — einfach die gewünschte Zahl tippen (z. B. <b>2</b> oder <b>1,5</b>) und Enter. Mit den Knöpfen <b>Fase</b> / <b>Rundung</b> lässt sich die Art noch umschalten. Das Feld bleibt stehen, bis man daneben klickt oder Esc drückt, so kann man auch mehrmals nachbessern; Rückgängig nimmt die Kante in einem Schritt zurück. Geht für alle Kanten: Quader, Zylinder, Lochränder, importierte STEP-Teile.'],
     ['🛠️','<b>Abgezogene Körper bleiben nach Rückgängig/Laden, was sie sind.</b> Ein Quader mit abgezogenem Loch wurde nach Rückgängig oder beim Öffnen einer gespeicherten Datei intern wieder für einen einfachen Quader gehalten — dann ließ sich der Lochrand im Kanten-Modus nicht mehr greifen. Behoben, auch für schon gespeicherte Entwürfe.'],

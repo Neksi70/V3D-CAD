@@ -43,6 +43,8 @@ try {
   const rimW = await pg.evaluate(() => { const rim = _dedRims(objects[0]).find(r => r.axisW[1] > 0.9);
     const c = new THREE.Vector3(...rim.cW), d = camera.position.clone().sub(c); d.y = 0; d.normalize();
     return c.addScaledVector(d, rim.rW).toArray(); });
+  // Verlauf VOLL machen wie in einer langen Sitzung (Deckel 50) — daran scheiterte das Feld
+  await pg.evaluate(() => { while (undoStack.length < 50) saveUndo(); });
   const undo0 = await pg.evaluate(() => undoStack.length);
   await drag(await scr(rimW), -40);
   check('Feld erscheint nach dem Ziehen', await waitFeld());
@@ -57,7 +59,7 @@ try {
   const r1 = await pg.evaluate(v0 => ({ dV: +(v0 - __vol(objects[0].geometry)).toFixed(1), n: objects.length, undo: undoStack.length,
     feld: document.getElementById('ebv').style.display, wert: document.getElementById('ebv-in').value }), v0);
   check('exakt 2-mm-Fase (≈59 mm³)', Math.abs(r1.dV - 59) < 1.5 && r1.n === 1, r1);
-  check('nur EIN Undo-Schritt dazu', r1.undo === undo0 + 1, { undo0, undo: r1.undo });
+  check('nur EIN Undo-Schritt dazu (Verlauf voll: bleibt 50)', r1.undo === Math.min(50, undo0 + 1), { undo0, undo: r1.undo });
   check('Feld bleibt mit neuem Wert', r1.feld === 'flex' && r1.wert === '2,0', r1);
   await pg.keyboard.press('Escape'); await pg.waitForTimeout(100);
   check('Esc schließt Feld', await pg.evaluate(() => document.getElementById('ebv').style.display === 'none'));
