@@ -93,6 +93,7 @@ async function start(){
     <button class="gross p" onclick="waehle(true)">📷 Rechnung scannen</button>
     <button class="gross s" onclick="waehle(false)">📄 PDF oder Bild wählen</button>
     <button class="gross s" onclick="mailListe()">📨 Aus V3D Mail</button>
+    <button class="gross s" onclick="rechnungenSuchen()">🔎 Rechnungen suchen<br><small style="font-weight:400;font-size:13px;color:var(--dim)">in allen Postfächern</small></button>
     <p style="color:var(--dim);font-size:13px;text-align:center">Tipp: PDF aus Gmail/Dateien per „Teilen → V3D Beleg" schicken.</p>
     <div id="offen"></div>`;
   try{
@@ -156,6 +157,7 @@ async function speichern(j,extra,fallbackName){
 // Posteingang: Mails mit Anhang -> Anhang wählen -> erfassen wie ein Scan
 let MAILKONTO=localStorage.getItem('vrMailKonto')||'',MAILKONTEN=null;
 async function mailListe(suche){
+  MAILHER='liste';
   $('#kopfZurueck').hidden=false;
   $('#m').innerHTML='<div class="lade"><div class="kreis"></div><b>Posteingang wird geladen …</b></div>';
   try{
@@ -168,34 +170,57 @@ async function mailListe(suche){
         ${MAILKONTEN.map(k=>`<option value="${esc(k.id)}" ${k.id===MAILKONTO?'selected':''}>${esc(k.email)}</option>`).join('')}</select>
       <form onsubmit="event.preventDefault();mailListe($('#ms').value.trim())" style="display:flex;gap:8px;margin-bottom:6px">
         <input id="ms" placeholder="Suchen (Absender, Betreff …)" value="${esc(suche||'')}"><button class="btn s">🔍</button></form>
+      <button class="btn s" style="width:100%;margin:4px 0 2px" onclick="rechnungenSuchen()">🔎 Rechnungen in allen Postfächern suchen</button>
       <h2>${suche?'Treffer mit Anhang':'Neueste Mails mit Anhang'}</h2>
-      ${liste.length?liste.map(x=>`<div class="eintrag" onclick="${x.erfasst?`zeige('${x.erfasst}')`:`mailOeffnen(${x.uid})`}">
+      ${liste.length?liste.map(x=>`<div class="eintrag" onclick="${x.erfasst?`zeige('${x.erfasst}')`:`mailOeffnen(${x.uid},'${esc(MAILKONTO)}')`}">
         <span style="min-width:0"><b style="${x.gelesen?'font-weight:600':''}">${esc(x.von.name||x.von.email||'?')}</b><br>
         <small style="color:var(--dim)">${esc(x.betreff)}</small></span>
         <small style="color:${x.erfasst?'var(--green)':'var(--dim)'};white-space:nowrap;font-weight:700">${x.erfasst?'✓ erfasst':new Date(x.ts*1000).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'})}</small></div>`).join('')
       :'<p style="color:var(--dim);text-align:center;padding:20px">Keine Mails mit Anhang gefunden.</p>'}`;
   }catch(e){toast(e.message,true);start();}
 }
-async function mailOeffnen(uid){
+async function mailOeffnen(uid,acc){
   $('#m').innerHTML='<div class="lade"><div class="kreis"></div><b>Mail wird geöffnet …</b></div>';
   try{
-    const r=await api('mail/anhaenge?'+new URLSearchParams({acc:MAILKONTO,uid}));
-    window.MAILAKT={uid,betreff:r.betreff,von:r.von};
+    const r=await api('mail/anhaenge?'+new URLSearchParams({acc,uid}));
+    window.MAILAKT={acc,uid,betreff:r.betreff,von:r.von};
     if(r.anhaenge.length===1)return mailErfassen(r.anhaenge[0].part); // der Normalfall: eine Rechnungs-PDF
     $('#m').innerHTML=`<h2>${esc(r.von.name||r.von.email||'')}</h2><p style="margin-bottom:12px">${esc(r.betreff)}</p>
       ${r.anhaenge.length?'<h2>Welcher Anhang ist die Rechnung?</h2>'+r.anhaenge.map(x=>`<div class="eintrag" onclick="mailErfassen('${esc(x.part)}')">
         <span>${x.typ==='application/pdf'?'📄':'🖼️'} <b>${esc(x.name)}</b></span><small style="color:var(--dim)">${Math.max(1,Math.round(x.groesse/1024))} KB</small></div>`).join('')
       :'<div class="hinw">In dieser Mail steckt keine PDF und kein Bild.</div>'}
-      <button class="btn s" style="width:100%;margin-top:8px" onclick="mailListe()">← Zurück zum Posteingang</button>`;
-  }catch(e){toast(e.message,true);mailListe();}
+      <button class="btn s" style="width:100%;margin-top:8px" onclick="mailZurueck()">← Zurück zur Liste</button>`;
+  }catch(e){toast(e.message,true);mailZurueck();}
 }
 async function mailErfassen(part){
   const M=window.MAILAKT;
   $('#m').innerHTML='<div class="lade"><div class="kreis"></div><b>Rechnung wird gelesen …</b><br><small>ein paar Sekunden</small></div>';
   try{
-    const j=await api('mail/erfassen','POST',{acc:MAILKONTO,uid:M.uid,part});
-    await speichern(j,{quelle:'mail',mail:{acc:MAILKONTO,folder:'INBOX',uid:M.uid,part,betreff:M.betreff,von:M.von.email||''}},M.von.name||'');
-  }catch(e){toast(e.message,true);mailListe();}
+    const j=await api('mail/erfassen','POST',{acc:M.acc,uid:M.uid,part});
+    await speichern(j,{quelle:'mail',mail:{acc:M.acc,folder:'INBOX',uid:M.uid,part,betreff:M.betreff,von:M.von.email||''}},M.von.name||'');
+  }catch(e){toast(e.message,true);mailZurueck();}
+}
+// Zurück dorthin, woher die Mail kam: Posteingang eines Kontos oder Suchergebnis
+let MAILHER='liste';
+const mailZurueck=()=>MAILHER==='suche'?rechnungenSuchen():mailListe();
+async function rechnungenSuchen(){
+  MAILHER='suche';
+  $('#kopfZurueck').hidden=false;
+  $('#m').innerHTML='<div class="lade"><div class="kreis"></div><b>Suche Rechnungen in allen Postfächern …</b><br><small>ein paar Sekunden</small></div>';
+  try{
+    const r=await api('mail/rechnungen');
+    const offen=r.liste.filter(x=>!x.erfasst),erledigt=r.liste.filter(x=>x.erfasst);
+    const zeile=x=>`<div class="eintrag" onclick="${x.erfasst?`zeige('${x.erfasst}')`:`mailOeffnen(${x.uid},'${esc(x.acc)}')`}">
+        <span style="min-width:0"><b style="${x.gelesen?'font-weight:600':''}">${esc(x.von.name||x.von.email||'?')}</b><br>
+        <small style="color:var(--dim)">${esc(x.betreff)}</small><br><small style="color:var(--acc-d);font-size:12px">📥 ${esc(x.konto)}</small></span>
+        <small style="color:${x.erfasst?'var(--green)':'var(--dim)'};white-space:nowrap;font-weight:700;text-align:right">${new Date(x.ts*1000).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'})}${x.erfasst?'<br>'+(x.bezahlt?'✓ bezahlt':'✓ erfasst'):''}</small></div>`;
+    $('#m').innerHTML=`
+      <p style="color:var(--mid);font-size:14px;margin-bottom:8px">${r.konten} Postfächer durchsucht nach „Rechnung“, „Invoice“, „Quittung“ — nur Mails mit Anhang.</p>
+      ${r.fehler.length?`<div class="hinw">⚠️ Nicht erreichbar: ${r.fehler.map(esc).join('; ')}</div>`:''}
+      <h2>Noch nicht erfasst (${offen.length})</h2>
+      ${offen.length?offen.map(zeile).join(''):'<p style="color:var(--dim);text-align:center;padding:14px">Nichts Neues gefunden. 🎉</p>'}
+      ${erledigt.length?`<h2>Schon erfasst (${erledigt.length})</h2>`+erledigt.map(zeile).join(''):''}`;
+  }catch(e){toast(e.message,true);start();}
 }
 // KI im Hintergrund: Name/Beschreibung/Kategorie; Zahlungsfelder nur, wo noch leer
 async function nachbessern(id,erf){

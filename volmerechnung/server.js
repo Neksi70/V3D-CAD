@@ -628,7 +628,8 @@ function felderAusText(zeilen) {
     // ausdrücklich verlangter Verwendungszweck ("Bitte geben Sie als Verwendungszweck ... an")
     if (!r.verwendungszweck) {
       const m = z.match(/verwendungszweck\s*:?\s*(.{3,140})$/i);
-      if (m && !/^(an|angeben)\b/i.test(m[1].trim())) r.verwendungszweck = m[1].trim().replace(/[.]$/, '');
+      // Hinweissätze („… als Verwendungszweck für Ihre Überweisung!“) sind kein Wert
+      if (m && !/^(an|angeben|für|fuer|bei|bitte|der|die|ihrer?)\b/i.test(m[1].trim()) && !/überweisung|ueberweisung|zahlung\b/i.test(m[1])) r.verwendungszweck = m[1].trim().replace(/[.]$/, '');
     }
     if (!r.datum && /(rechnungs)?datum|date/i.test(z) && !/liefer|fällig|faellig|zahlbar|leistung/i.test(z)) r.datum = isoDatum(z.match(DATUM_RE));
     if (!r.lieferdatum && /liefer|leistungs/i.test(z)) r.lieferdatum = isoDatum(z.match(DATUM_RE));
@@ -792,6 +793,8 @@ async function erfassenPuffer(buf) {
 const MAIL_URL = CFG.mailUrl || 'https://127.0.0.1:8783';
 const MAIL_CONF = CFG.mailConfig || path.join(require('os').homedir(), '.config', 'v3dmail', 'config.json');
 let mailSid = null;
+// Suchwörter der aktiven Rechnungssuche (IMAP-Suche = Teilwort, Betreff/Absender/Text)
+const MAIL_SUCHWORTE = CFG.mailSuchworte || ['Rechnung', 'Invoice', 'Quittung'];
 function mailRoh(method, pfad, body) {
   return new Promise((resolve, reject) => {
     const u = new URL(pfad, MAIL_URL);
@@ -1033,6 +1036,24 @@ Positionen:\n${liste.slice(0, 2000)}`;
       return { uid: x.uid, betreff: x.subject, von: (x.from || [])[0] || {}, ts: x.ts, gelesen: x.seen, erfasst: a ? a.id : null };
     });
     return send(res, 200, { liste });
+  }
+  // Aktive Suche: alle Postfächer nach Rechnungs-Mails mit Anhang durchkämmen
+  if (col === 'mail' && m === 'GET' && docId === 'rechnungen') {
+    const konten = (await mailApi('/api/state')).accounts || [];
+    const funde = new Map(), fehler = [];
+    await Promise.all(konten.map(async (k) => {
+      for (const q of MAIL_SUCHWORTE) { // je Konto nacheinander — V3D Mail sperrt pro Postfach ohnehin
+        try {
+          const r = await mailApi('/api/messages?' + new URLSearchParams({ acc: k.id, folder: 'INBOX', page: '0', q }));
+          for (const x of r.messages || []) if (x.hasAttachments) funde.set(k.id + ':' + x.uid, { k, x });
+        } catch (e) { fehler.push(k.email + ': ' + e.message); break; }
+      }
+    }));
+    const liste = [...funde.values()].sort((a, b) => b.x.ts - a.x.ts).slice(0, 80).map(({ k, x }) => {
+      const a = expenses.data.find((e) => e.mail && e.mail.acc === k.id && e.mail.folder === 'INBOX' && e.mail.uid === x.uid);
+      return { acc: k.id, konto: k.email, uid: x.uid, betreff: x.subject, von: (x.from || [])[0] || {}, ts: x.ts, gelesen: x.seen, erfasst: a ? a.id : null, bezahlt: !!(a && a.bezahltAm) };
+    });
+    return send(res, 200, { liste, konten: konten.length, fehler });
   }
   if (col === 'mail' && m === 'GET' && docId === 'anhaenge') {
     const acc = url.searchParams.get('acc') || '', uid = url.searchParams.get('uid') || '';
