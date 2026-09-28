@@ -8017,38 +8017,82 @@ function _rimBevelCutter(o, rim, bevU, useFil) {
   return m;
 }
 
+// Lochrand-Rundung/-Fase in Manifold: Körper (nur das Netz selbst, ohne
+// Kinder wie Inlays) minus Drehkörper-Schneider. val = Zieh-Wert in Szene-
+// Einheiten (> 0 Rundung, < 0 Fase). Liefert Welt-Geometrie (Identität).
+// cache (optional): hält die Körper-Dreiecke über mehrere Vorschau-Schritte.
+function _rimBevelMfGeo(o, rims, val, cache) {
+  const w = _mfWasm; if (!w) throw new Error('Manifold nicht geladen');
+  const useFil = val > 0, bev = Math.abs(val);
+  if (bev < 0.005) throw new Error('zu klein');
+  let tris = cache && cache.solidTris;
+  if (!tris) {
+    o.updateMatrixWorld(true);
+    const px = new THREE.Mesh(o.geometry);
+    px.matrixAutoUpdate = false; px.matrixWorld.copy(o.matrixWorld);
+    tris = _moldCollectTris(px);
+    if (cache) cache.solidTris = tris;
+  }
+  const cutters = rims.map(rim => _rimBevelCutter(o, rim, bev, useFil));
+  let solid = null, tool = null, res = null;
+  try {
+    solid = _mfFromSoup(w, tris);
+    for (const c of cutters) {
+      const t = _mfFromSoup(w, _moldCollectTris(c));
+      if (tool) { const u = w.Manifold.union(tool, t); tool.delete(); t.delete(); tool = u; } else tool = t;
+    }
+    res = w.Manifold.difference(solid, tool);
+    if (res.isEmpty()) throw new Error('Ergebnis leer');
+    const geo = _mfToGeo(res).toNonIndexed();
+    geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);   // mm/Z-up → App-Units/Y-up
+    return _moldNormals(geo);
+  } finally {
+    [solid, tool, res].forEach(m => { try { if (m && m.delete) m.delete(); } catch (e) {} });
+    cutters.forEach(c => { try { c.geometry.dispose(); c.material.dispose(); } catch (e) {} });
+  }
+}
+
 // Rundung/Fase auf gewählte Kreiskanten anwenden: Schneider bauen → EIN OCCT-Cut
 // → Ergebnis-Mesh ersetzt den Körper (wie _doSubtractHoles), Kanten-Modus bleibt an.
 async function _applyRimBevel(o, rims, chamferDist) {
   const useFil = chamferDist > 0;              // Konvention wie Zylinder: → Rundung, ← Fase
   const mm = Math.abs(chamferDist) * 10;
   if (mm < 0.05) return;
-  const cutters = rims.map(rim => _rimBevelCutter(o, rim, mm / 10, useFil));
-  _progressShow(useFil ? 'Lochkante wird abgerundet…' : 'Lochkante wird angefast…');
-  _progressSet(8); _progressCreep(93);
-  const ctl = _progressCancelable();
+  // Erst im Browser (Manifold) — sofort da und genau das, was die Vorschau
+  // gezeigt hat. Der Server-Cut (OCCT) bleibt als Rückfall.
+  let geo = null, bytes = null;
+  try { await _mfInit(); geo = _rimBevelMfGeo(o, rims, chamferDist); }
+  catch (e) { console.warn('[rim-bevel] Manifold → OCCT-Server:', e.message || e); geo = null; }
+  const cutters = geo ? [] : rims.map(rim => _rimBevelCutter(o, rim, mm / 10, useFil));
+  if (!geo) { _progressShow(useFil ? 'Lochkante wird abgerundet…' : 'Lochkante wird angefast…');
+              _progressSet(8); _progressCreep(93); }
+  const ctl = geo ? null : _progressCancelable();
   try {
-    const solidStls = _meshWorldToStls(o);
-    const toolStls  = cutters.flatMap(c => _meshWorldToStls(c));
-    if (!solidStls.length || !toolStls.length) throw new Error('keine Geometrie');
-    const resp = await fetch(_OCCT_BASE + '/api/occt-subtract-mesh', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ solidStls: solidStls.map(_bufToBase64), toolStls: toolStls.map(_bufToBase64) }),
-      signal: ctl.signal
-    });
-    const data = await resp.json();
-    if (data.error || !data.stlBase64) throw new Error(data.error || 'kein Ergebnis');
-    const bytes = Uint8Array.from(atob(data.stlBase64), ch => ch.charCodeAt(0));
-    const geo = parseSTL(bytes.buffer);
-    geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);
-    _creaseNormals(geo);
+    if (!geo) {
+      const solidStls = _meshWorldToStls(o);
+      const toolStls  = cutters.flatMap(c => _meshWorldToStls(c));
+      if (!solidStls.length || !toolStls.length) throw new Error('keine Geometrie');
+      const resp = await fetch(_OCCT_BASE + '/api/occt-subtract-mesh', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ solidStls: solidStls.map(_bufToBase64), toolStls: toolStls.map(_bufToBase64) }),
+        signal: ctl.signal
+      });
+      const data = await resp.json();
+      if (data.error || !data.stlBase64) throw new Error(data.error || 'kein Ergebnis');
+      bytes = Uint8Array.from(atob(data.stlBase64), ch => ch.charCodeAt(0));
+      geo = parseSTL(bytes.buffer);
+      geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);
+      _creaseNormals(geo);
+    }
     const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(o.userData.color || currentColor),
       roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide
     });
     const nm = new THREE.Mesh(geo, mat);
     nm.castShadow = true; nm.receiveShadow = true;
-    nm.userData = { ...o.userData, _origStlBuf: bytes.buffer };
+    // Manifold-Weg hat kein Ergebnis-STL → alten Puffer NICHT weitererben
+    // (zeigte sonst auf die ungerundete Form)
+    nm.userData = { ...o.userData, _origStlBuf: bytes ? bytes.buffer : null };
     delete nm.userData._dynamicEdges;
     exitEdgeMode();
     // Kinder (z.B. Gravur-Inlays) mit Welt-Transform übernehmen; Kantenlinien neu
@@ -8059,11 +8103,11 @@ async function _applyRimBevel(o, rims, chamferDist) {
     _updateObjEdgeLines(nm);
     selectObjs([nm]);
     enterEdgeMode(true);   // direkt weiterbearbeiten (nächste Kante anklicken)
-    _progressDone();
+    if (ctl) _progressDone();
     notify(rims.length + ' Lochkante(n) ' + (useFil ? 'abgerundet' : 'angefast') + ' (' + mm.toFixed(1) + ' mm)', 'ok');
   } catch (e) {
-    _progressHide();
-    if (_progUserAborted(ctl)) { notify('Kantenbearbeitung abgebrochen — der Körper ist unverändert', 'ok'); return; }
+    if (ctl) _progressHide();
+    if (ctl && _progUserAborted(ctl)) { notify('Kantenbearbeitung abgebrochen — der Körper ist unverändert', 'ok'); return; }
     console.warn('[rim-bevel]', e);
     notify('Kantenbearbeitung fehlgeschlagen: ' + (e.message || e), 'w');
   }
@@ -10672,8 +10716,8 @@ function _formatBevelVal(mm) {
 // mitgerechnet: OCCT-Körper (Quader, Pyramide, Keil, Vieleck, weitergeführte
 // STEP-Formen) über denselben Replay wie beim Anwenden, Zylinder/Kegel/Rohr
 // über ihre parametrischen Builder. Beim Loslassen wird der Vorschau-Zustand
-// verworfen und regulär angewendet (Undo bleibt sauber). Lochränder und
-// Netz-Körper zeigen weiter nur den Wert.
+// verworfen und regulär angewendet (Undo bleibt sauber). Lochränder an
+// Netz-Körpern (nach ⊖ Abziehen) rechnen live in Manifold (kind 'rim').
 let _ebPrev = null;   // { o, kind, mesh, hidden, want, done, busy, slow, fail, timer, cyl }
 
 function _ebPrevOcctParams(o) {
@@ -10705,10 +10749,15 @@ function _ebPrevStart() {
   const o = _edgeObj;
   if (!o || !_edgeMode || !_edgeSel.size) return;
   const dyn = o.userData._dynamicEdges || [];
-  if ([..._edgeSel].some(i => dyn[i] && dyn[i].rim)) return;
   const st = o.userData.shapeType;
   const p = { o, want: 0, done: 0, busy: false, slow: false, fail: false, timer: 0, mesh: null, hidden: null };
-  if (st === 'cylinder' || st === 'cone' || st === 'tube') {
+  const rimSel = [..._edgeSel].map(i => dyn[i]).filter(d => d && d.rim).map(d => d.rim);
+  if (rimSel.length) {
+    // Lochrand an Netz-Körpern: Körper minus Drehkörper-Schneider, live in
+    // Manifold (Millisekunden) — vorher gab es hier gar keine Vorschau.
+    p.kind = 'rim'; p.rims = rimSel;
+    if (!_mfWasm) _mfInit().catch(() => {});
+  } else if (st === 'cylinder' || st === 'cone' || st === 'tube') {
     p.kind = 'cyl';
     const ud = o.userData;
     p.cyl = { capBevel: ud.capBevel ? { ...ud.capBevel } : undefined,
@@ -10767,6 +10816,25 @@ function _ebPrevCylRestore(p) {
   ud.fillet = b.fillet; ud.chamfer = b.chamfer;
 }
 
+// Vorschau-Netz zeigen (anlegen oder Geometrie tauschen), Original verstecken
+function _ebPrevShowMesh(p, geo) {
+  const o = p.o;
+  if (!p.mesh) {
+    const src = Array.isArray(o.material) ? o.material[0] : o.material;
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(o.userData.color || (src && src.color ? '#' + src.color.getHexString() : '#0078ff')),
+      roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide });
+    p.mesh = new THREE.Mesh(geo, mat);
+    p.mesh.userData._ebPreview = true;
+    scene.add(p.mesh);
+  } else {
+    p.mesh.geometry.dispose(); p.mesh.geometry = geo;
+  }
+  _updateObjEdgeLines(p.mesh);
+  p.mesh.visible = true;
+  _ebPrevHideOrig(p);
+}
+
 function _ebPrevCompute(p, val) {
   const o = p.o;
   if (p.kind === 'cyl') {
@@ -10780,6 +10848,12 @@ function _ebPrevCompute(p, val) {
   if (Math.abs(val) < 0.005) {
     if (p.mesh) p.mesh.visible = false;
     _ebPrevShowOrig(p); p.fail = false;
+    return;
+  }
+  if (p.kind === 'rim') {
+    if (!_mfWasm) return;
+    try { _ebPrevShowMesh(p, _rimBevelMfGeo(o, p.rims, val, p)); p.fail = false; p.lastOk = val; }
+    catch (e) { p.fail = true; }
     return;
   }
   const oc = _oc; if (!oc) return;
@@ -10798,21 +10872,7 @@ function _ebPrevCompute(p, val) {
     const r = _replayOCCTOps(oc, base, allOps, q.sx, q.sy, q.sz);
     cur = r.shape;
     if (!r.opOk) { p.fail = true; return; }
-    const geo = _occtShapeToThreeGeo(oc, cur, q.geoOff);
-    if (!p.mesh) {
-      const src = Array.isArray(o.material) ? o.material[0] : o.material;
-      const mat = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(o.userData.color || (src && src.color ? '#' + src.color.getHexString() : '#0078ff')),
-        roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide });
-      p.mesh = new THREE.Mesh(geo, mat);
-      p.mesh.userData._ebPreview = true;
-      scene.add(p.mesh);
-    } else {
-      p.mesh.geometry.dispose(); p.mesh.geometry = geo;
-    }
-    _updateObjEdgeLines(p.mesh);
-    p.mesh.visible = true;
-    _ebPrevHideOrig(p);
+    _ebPrevShowMesh(p, _occtShapeToThreeGeo(oc, cur, q.geoOff));
     p.fail = false;
     p.lastOk = val;
   } catch (e) {
@@ -10832,6 +10892,7 @@ function _ebPrevRequest(val) {
   const run = () => {
     if (_ebPrev !== p || p.busy) return;
     if (p.kind === 'occt' && !_oc) { p.timer = setTimeout(run, 120); return; }
+    if (p.kind === 'rim' && !_mfWasm) { p.timer = setTimeout(run, 120); return; }
     if (Math.abs(p.want - p.done) < 1e-4 && (p.mesh || p.kind === 'cyl')) return;
     p.busy = true;
     const v = p.want, t0 = performance.now();
@@ -10853,6 +10914,11 @@ function _ebPrevRequest(val) {
 // Fehlschlag), statt stillschweigend gar nichts zu tun. null = nichts machbar.
 function _ebPrevFinalVal(v) {
   const p = _ebPrev;
+  if (p && p.kind === 'rim' && _mfWasm) {
+    if (Math.abs(p.done - v) > 1e-4) { _ebPrevCompute(p, v); p.done = v; }
+    if (!p.fail) return v;
+    return (p.lastOk && Math.sign(p.lastOk) === Math.sign(v)) ? p.lastOk : null;
+  }
   if (!p || p.kind !== 'occt' || !_oc) return v;
   if (Math.abs(p.done - v) > 1e-4) { try { _ebPrevCompute(p, v); } catch (e) {} p.done = v; }
   if (!p.fail) return v;
@@ -29552,24 +29618,28 @@ _ebh.addEventListener('pointercancel', () => {
 // Der Verschiebe-Gizmo (_mgDown) hat Vorrang: er ist vorher registriert.
 const _ded = { hl: null, cursorSet: false, raf: 0, lastEv: null, drag: false };
 
-function _dedEligible(o) {
+// Körper mit echten (analytischen) Kanten — deren Kantenlinien sind greifbar
+function _dedAnalytic(o) {
   if (!o || !o.isMesh || !o.userData || o.userData.locked) return false;
   const ud = o.userData, st = ud.shapeType;
   return !!(ud._occtParams || ud.occtShape || _brepOk(o) ||
-    ['box', 'cylinder', 'cone', 'tube', 'pyramid', 'wedge'].includes(st)) ||
-    _dedRims(o).length > 0;
+    ['box', 'cylinder', 'cone', 'tube', 'pyramid', 'wedge'].includes(st));
+}
+function _dedEligible(o) {
+  return _dedAnalytic(o) || _dedRims(o).length > 0;
 }
 
-// Netz-Körper ohne Kantenlinien (z. B. nach ⊖ Abziehen): die Lochränder sind
+// Netz-Körper (z. B. nach ⊖ Abziehen): die Lochränder sind
 // trotzdem bearbeitbar (_rimDetectCircles → _applyRimBevel), waren aber nur
 // über „⬡ Kanten bearbeiten" erreichbar — den Direktgriff gab es für sie nicht
 // (Volker 28.9.: „Zylinder abgezogen, will den Lochrand abrunden"). Die
 // Erkennung kostet bei großen Netzen spürbar → pro Geometrie merken.
+// Kantenlinien am Körper sind KEIN Ausschluss: nach der ersten Rundung hat das
+// Ergebnis welche — bis 1.18.70 ließ sich dann kein weiterer Rand mehr greifen.
 const _dedRimCache = new WeakMap();
 function _dedRims(o) {
-  if (!o || !o.isMesh || !o.geometry || o.userData.locked) return [];
-  if (o.children.some(c => c.userData && c.userData.isEdgeLines)) return [];
-  if (_brepOk(o)) return [];
+  if (!o || !o.isMesh || !o.geometry || !o.userData || o.userData.locked) return [];
+  if (_dedAnalytic(o)) return [];
   let r = _dedRimCache.get(o.geometry);
   if (!r) {
     try { r = _rimDetectCircles(o); } catch (e) { r = []; }
@@ -29590,45 +29660,46 @@ function _dedBlocked() {
 function _dedPick(e, obj) {
   const o = obj || selectedObjs[0];
   if (!obj && !_dedEligible(o)) return null;
+  // Pick-Segmente sammeln (Welt): Kantenlinien bei analytischen Körpern bzw.
+  // im Kanten-Modus, dazu die erkannten Lochränder von Netz-Körpern.
+  const W = [], rimOf = [];
+  const v = new THREE.Vector3();
   const el = o.children.find(c => c.userData && c.userData.isEdgeLines);
-  let pos, mw, rimOf = null;
-  if (el && el.geometry.attributes.position) {
-    pos = el.geometry.attributes.position;
-    el.updateMatrixWorld(true); mw = el.matrixWorld;
-  } else {
-    // Ohne Kantenlinien: erkannte Lochränder als Linienzüge anbieten
-    const rims = _dedRims(o);
-    if (!rims.length) return null;
-    const seg = [];
-    rimOf = [];
+  if (el && el.geometry.attributes.position && (obj || _dedAnalytic(o))) {
+    const lp = el.geometry.attributes.position;
+    if (lp.count > 20000) return null;
+    el.updateMatrixWorld(true);
+    for (let i = 0; i < lp.count; i++) { W.push(v.fromBufferAttribute(lp, i).applyMatrix4(el.matrixWorld).clone()); rimOf.push(null); }
+  }
+  const rims = _dedRims(o);
+  if (rims.length) {
+    o.updateMatrixWorld(true);
     rims.forEach(rim => rim.pts.forEach((p, i) => {
       const q = rim.pts[(i + 1) % rim.pts.length];
-      seg.push(p.x, p.y, p.z, q.x, q.y, q.z);
+      W.push(p.clone().applyMatrix4(o.matrixWorld), q.clone().applyMatrix4(o.matrixWorld));
       rimOf.push(rim, rim);
     }));
-    pos = new THREE.Float32BufferAttribute(seg, 3);
-    o.updateMatrixWorld(true); mw = o.matrixWorld;
   }
-  if (pos.count > 20000) return null;
+  if (!W.length || W.length > 40000) return null;
+  const mw = o.matrixWorld;
   const rect = vpEl.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   const tolPx = e.pointerType === 'touch' ? 16 : 8;
-  const v = new THREE.Vector3();
-  const W = [], S = [];
-  for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i).applyMatrix4(mw);
-    W.push(v.clone());
+  const S = [];
+  for (let i = 0; i < W.length; i++) {
+    v.copy(W[i]);
     const p = v.clone().project(camera);
     S.push(p.z > 1 ? null : [(p.x + 1) / 2 * rect.width, (1 - p.y) / 2 * rect.height]);
   }
   const cands = [];
-  for (let i = 0; i + 1 < pos.count; i += 2) {
+  for (let i = 0; i + 1 < W.length; i += 2) {
     const a = S[i], b = S[i + 1];
     if (!a || !b) continue;
     const dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
     const t = L2 < 1e-6 ? 0 : Math.max(0, Math.min(1, ((mx - a[0]) * dx + (my - a[1]) * dy) / L2));
     const d = Math.hypot(a[0] + t * dx - mx, a[1] + t * dy - my);
-    if (d <= tolPx) cands.push({ d, i, t });
+    // Lochränder etwas großzügiger — ein Kreis ist leichter zu verfehlen als eine Gerade
+    if (d <= (rimOf[i] ? tolPx + 4 : tolPx)) cands.push({ d, i, t });
   }
   if (!cands.length) return null;
   cands.sort((p, q) => p.d - q.d);
@@ -29642,7 +29713,7 @@ function _dedPick(e, obj) {
     const hit = raycaster.intersectObject(o, false)[0];
     if (hit && hit.distance < dist - Math.max(0.02, size * 0.01)) continue;
     // Lochrand: den ganzen Kreis hervorheben, nicht nur das eine Segment
-    const loop = rimOf ? rimOf[c.i].pts.map(p => p.clone().applyMatrix4(mw)) : null;
+    const loop = rimOf[c.i] ? rimOf[c.i].pts.map(p => p.clone().applyMatrix4(mw)) : null;
     return { o, pw, a: W[c.i], b: W[c.i + 1], loop };
   }
   return null;
@@ -49366,8 +49437,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.70';
+const VOLME3D_VERSION = '1.18.71';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.71', date:'2026-09-28', changes:[
+    ['👀','<b>Lochrand: Rundung und Fase schon beim Ziehen sehen.</b> Wer den Rand eines Lochs anfasst und zieht, sieht jetzt live, wie die Kante rund (nach rechts) oder schräg (nach links) wird — beim Loslassen ist das Ergebnis sofort da, ohne Warten auf den Server. Außerdem lassen sich jetzt <b>mehrere Löcher nacheinander</b> bearbeiten: bisher war nach dem ersten gerundeten Rand kein weiterer mehr greifbar. Der Rand ist zudem etwas leichter zu treffen.'],
+  ]},
   { version:'1.18.70', date:'2026-09-28', changes:[
     ['⭕','<b>Lochränder direkt abrunden oder anfasen.</b> Nach dem Abziehen (z. B. Zylinder aus einem Quader) ließ sich der Rand des Lochs bisher nur über „Kanten bearbeiten“ erreichen — direkt am Körper passierte nichts. Jetzt genügt es, den Körper zu wählen und mit der Maus auf den Lochrand zu zeigen: der ganze Rand leuchtet orange. Drücken und <b>nach rechts ziehen = Rundung</b>, <b>nach links = Fase</b>.'],
   ]},
