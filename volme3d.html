@@ -10553,7 +10553,12 @@ function _formatBevelVal(mm) {
   if (Math.abs(mm) < 0.05) return '0 mm';
   const round = _edgeBevelRightIsRound(_edgeObj) && mm > 0;
   let s = (round ? 'Rundung R ' : 'Fase ') + Math.abs(mm).toFixed(1).replace('.', ',') + ' mm';
-  if (_ebPrev && _ebPrev.fail) s += ' – zu groß';
+  if (_ebPrev && _ebPrev.fail) {
+    const ok = _ebPrev.lastOk;
+    s += (ok && Math.sign(ok) === Math.sign(mm) && Math.abs(ok) >= 0.05)
+      ? ' – zu groß, max. ~' + (Math.abs(ok) * 10).toFixed(1).replace('.', ',') + ' mm'
+      : ' – zu groß';
+  }
   return s;
 }
 
@@ -10705,6 +10710,7 @@ function _ebPrevCompute(p, val) {
     p.mesh.visible = true;
     _ebPrevHideOrig(p);
     p.fail = false;
+    p.lastOk = val;
   } catch (e) {
     p.fail = true;
   } finally {
@@ -10736,6 +10742,42 @@ function _ebPrevRequest(val) {
     else requestAnimationFrame(run);
   };
   schedule();
+}
+
+// Wert fürs Loslassen: Ist der gezogene Wert zu groß für die Kante, den
+// größten noch machbaren nehmen (Halbierungssuche zwischen letztem Erfolg und
+// Fehlschlag), statt stillschweigend gar nichts zu tun. null = nichts machbar.
+function _ebPrevFinalVal(v) {
+  const p = _ebPrev;
+  if (!p || p.kind !== 'occt' || !_oc) return v;
+  if (Math.abs(p.done - v) > 1e-4) { try { _ebPrevCompute(p, v); } catch (e) {} p.done = v; }
+  if (!p.fail) return v;
+  let lo = (p.lastOk && Math.sign(p.lastOk) === Math.sign(v) && Math.abs(p.lastOk) < Math.abs(v)) ? p.lastOk : 0;
+  let hi = v;
+  const t0 = performance.now();
+  for (let i = 0; i < 7 && performance.now() - t0 < 1500 && Math.abs(hi - lo) > 0.005; i++) {
+    const mid = (lo + hi) / 2;
+    try { _ebPrevCompute(p, mid); } catch (e) { p.fail = true; }
+    if (p.fail) hi = mid; else lo = mid;
+  }
+  lo = Math.trunc(lo * 100) / 100;   // auf 0,1 mm abrunden (Richtung machbar)
+  return Math.abs(lo) >= 0.05 ? lo : null;
+}
+
+// Loslassen: gemeinsamer Abschluss für Griff und Direkt-Zug
+function _ebPrevRelease(dragVal) {
+  if (Math.abs(dragVal) <= 0.5) { _ebPrevEnd(); return null; }
+  const v = dragVal / 10;
+  const round = _edgeBevelRightIsRound(_edgeObj) && v > 0;
+  const f = _ebPrevFinalVal(v);
+  _ebPrevEnd();
+  if (f == null) {
+    notify((round ? 'Rundung' : 'Fase') + ' ist an dieser Kante zu groß — nichts geändert', 'w');
+    return null;
+  }
+  if (f !== v) notify((round ? 'Rundung' : 'Fase') + ' zu groß — auf das Machbare begrenzt: '
+    + (Math.abs(f) * 10).toFixed(1).replace('.', ',') + ' mm', 'ok');
+  return _applyEdgeHandleValue(f);
 }
 
 function _ebPrevEnd() {
@@ -29327,9 +29369,7 @@ _ebh.addEventListener('pointerup', e => {
   if (!_edgeBevelDragging) return;
   _edgeBevelDragging = false;
   canvas.style.cursor = 'crosshair';
-  const val = _edgeBevelDragVal;
-  _ebPrevEnd();   // Vorschau verwerfen, dann regulär (mit Undo) anwenden
-  if (Math.abs(val) > 0.5) _applyEdgeHandleValue(val / 10);
+  _ebPrevRelease(_edgeBevelDragVal);   // Vorschau verwerfen, regulär (mit Undo) anwenden
 });
 _ebh.addEventListener('pointercancel', () => {
   if (!_edgeBevelDragging) return;
@@ -29564,15 +29604,15 @@ function _dedDragUp(e) {
   _edgeBevelDragging = false;
   canvas.style.cursor = 'crosshair';
   const val = _edgeBevelDragVal;
-  _ebPrevEnd();
   // Nur geklickt: Kante bleibt gewählt, Griff steht bereit (Kanten-Modus offen)
   if (e && e.type !== 'pointercancel' && Math.abs(val) > 0.5) {
     // Nach dem Direkt-Zug zurück in die normale Auswahl (Zylinder-Pfad ließ
     // den Kanten-Modus sonst offen) — die nächste Kante greift man wieder direkt
-    Promise.resolve(_applyEdgeHandleValue(val / 10)).then(() => {
+    const r = _ebPrevRelease(val);
+    if (r) Promise.resolve(r).then(() => {
       if (_edgeMode) { const o = _edgeObj; exitEdgeMode(); if (o && objects.includes(o)) selectObjs([o]); _fpCurType = null; updateFP(); }
     });
-  } else _edgeBevelDragVal = 0;
+  } else { _ebPrevEnd(); _edgeBevelDragVal = 0; }
 }
 
 // Maus-Ersatzereignis nach dem Kanten-Griff schlucken (sonst startet das freie Ziehen)
@@ -48793,8 +48833,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.63';
+const VOLME3D_VERSION = '1.18.64';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.64', date:'2026-09-28', changes:[
+    ['📏','<b>Zu große Rundung/Fase: jetzt das Machbare statt gar nichts.</b> Zieht man an einer Kante weiter, als die Form hergibt — z. B. neben einer schon gefasten Kante —, stand bisher „zu groß“ am Griff, und beim Loslassen passierte nichts. Jetzt zeigt das Schild schon beim Ziehen, wo ungefähr Schluss ist („max. ~10,5 mm“), und beim Loslassen wird der größte noch mögliche Wert übernommen. Eine Meldung sagt dann, auf wie viel Millimeter begrenzt wurde.'],
+  ]},
   { version:'1.18.63', date:'2026-09-28', changes:[
     ['🎯','<b>Kanten-Modus trifft jetzt die Kante, die du anklickst.</b> Bisher sprang der orange Punkt zwar an die Klickstelle, bearbeitet wurde aber oft eine ganz andere Kante — die vorher gewählte oder eine auf der Rückseite. Deshalb „ließ er die alte Seite nicht los“, brauchte mehrere Klicks, und manchmal tauchte eine Schräge oder Rundung auf der falschen Seite auf. Grund: Jede Kante hatte einen unsichtbaren Klickbereich von 10 mm Dicke, der auch durch den Körper hindurch griff. Jetzt zählt, was du auf dem Bildschirm siehst: die Kante direkt unter dem Mauszeiger, verdeckte Kanten gar nicht. Außerdem kannst du im Kanten-Modus eine Kante direkt drücken und ziehen, statt erst den Punkt zu treffen; drückst du auf eine von mehreren gewählten Kanten, werden alle zusammen gezogen.'],
   ]},
