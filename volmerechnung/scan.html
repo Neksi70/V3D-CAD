@@ -39,6 +39,7 @@ input{font:inherit;width:100%;border:1px solid var(--line);border-radius:10px;pa
 .bankwahl{display:flex;align-items:center;gap:8px;margin:0 0 12px}
 .bankwahl small{color:var(--mid);font-size:13px;margin-right:2px}
 .bankwahl button{flex:1;border:1px solid var(--line);background:#fff;color:var(--text);border-radius:10px;padding:9px;font:inherit;font-weight:700;font-size:15px;cursor:pointer}
+.abhaken{margin-top:6px;border:1px solid #86efac;background:#f0fdf4;color:var(--green);border-radius:8px;padding:6px 9px;font:inherit;font-size:13px;font-weight:700;cursor:pointer}
 .bankwahl button.an{background:var(--acc);border-color:var(--acc);color:#fff}
 </style>
 </head>
@@ -175,7 +176,7 @@ async function mailListe(suche){
       ${liste.length?liste.map(x=>`<div class="eintrag" onclick="${x.erfasst?`zeige('${x.erfasst}')`:`mailOeffnen(${x.uid},'${esc(MAILKONTO)}')`}">
         <span style="min-width:0"><b style="${x.gelesen?'font-weight:600':''}">${esc(x.von.name||x.von.email||'?')}</b><br>
         <small style="color:var(--dim)">${esc(x.betreff)}</small></span>
-        <small style="color:${x.erfasst?'var(--green)':'var(--dim)'};white-space:nowrap;font-weight:700">${x.erfasst?'✓ erfasst':new Date(x.ts*1000).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'})}</small></div>`).join('')
+        <small style="color:${x.erfasst||x.abgehakt?'var(--green)':'var(--dim)'};white-space:nowrap;font-weight:700">${x.erfasst?'✓ erfasst':x.abgehakt?'✓ abgehakt':new Date(x.ts*1000).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'})}</small></div>`).join('')
       :'<p style="color:var(--dim);text-align:center;padding:20px">Keine Mails mit Anhang gefunden.</p>'}`;
   }catch(e){toast(e.message,true);start();}
 }
@@ -203,24 +204,36 @@ async function mailErfassen(part){
 // Zurück dorthin, woher die Mail kam: Posteingang eines Kontos oder Suchergebnis
 let MAILHER='liste';
 const mailZurueck=()=>MAILHER==='suche'?rechnungenSuchen():mailListe();
+// Abhaken = anderweitig schon bezahlt (Lastschrift, Karte …); Liste neu, Scrollstand bleibt
+async function abhaken(acc,uid,ja){
+  const x=(window.SUCHE||[]).find(e=>e.acc===acc&&e.uid===uid)||{};
+  try{await api('mail/abhaken','POST',{acc,uid,ja,betreff:x.betreff||'',von:(x.von||{}).email||''});
+    x.abgehakt=ja?today():null;toast(ja?'Abgehakt – schon bezahlt':'Wieder offen');
+    const y=window.scrollY;zeichneSuche(window.SUCHERG);window.scrollTo(0,y);}catch(e){toast(e.message,true);}
+}
 async function rechnungenSuchen(){
   MAILHER='suche';
   $('#kopfZurueck').hidden=false;
   $('#m').innerHTML='<div class="lade"><div class="kreis"></div><b>Suche Rechnungen in allen Postfächern …</b><br><small>ein paar Sekunden</small></div>';
   try{
-    const r=await api('mail/rechnungen');
-    const offen=r.liste.filter(x=>!x.erfasst),erledigt=r.liste.filter(x=>x.erfasst);
-    const zeile=x=>`<div class="eintrag" onclick="${x.erfasst?`zeige('${x.erfasst}')`:`mailOeffnen(${x.uid},'${esc(x.acc)}')`}">
+    zeichneSuche(await api('mail/rechnungen'));
+  }catch(e){toast(e.message,true);start();}
+}
+function zeichneSuche(r){
+    window.SUCHERG=r;
+    const offen=r.liste.filter(x=>!x.erfasst&&!x.abgehakt),erledigt=r.liste.filter(x=>x.erfasst),abgehakt=r.liste.filter(x=>!x.erfasst&&x.abgehakt);
+    window.SUCHE=r.liste;
+    const zeile=x=>`<div class="eintrag" style="${x.abgehakt&&!x.erfasst?'opacity:.6':''}" onclick="${x.erfasst?`zeige('${x.erfasst}')`:`mailOeffnen(${x.uid},'${esc(x.acc)}')`}">
         <span style="min-width:0"><b style="${x.gelesen?'font-weight:600':''}">${esc(x.von.name||x.von.email||'?')}</b><br>
         ${x.proforma?'<small style="background:#fef3c7;color:#92400e;border-radius:6px;padding:1px 6px;font-size:11px;font-weight:700;margin-right:4px">PROFORMA</small>':''}<small style="color:var(--dim)">${esc(x.betreff)}</small><br><small style="color:var(--acc-d);font-size:12px">📥 ${esc(x.konto)}</small></span>
-        <small style="color:${x.erfasst?'var(--green)':'var(--dim)'};white-space:nowrap;font-weight:700;text-align:right">${new Date(x.ts*1000).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'})}${x.erfasst?'<br>'+(x.bezahlt?'✓ bezahlt':'✓ erfasst'):''}</small></div>`;
+        <small style="color:${x.erfasst||x.abgehakt?'var(--green)':'var(--dim)'};white-space:nowrap;font-weight:700;text-align:right">${new Date(x.ts*1000).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'})}${x.erfasst?'<br>'+(x.bezahlt?'✓ bezahlt':'✓ erfasst'):''}${x.erfasst?'':`<br><button class="abhaken" onclick="event.stopPropagation();abhaken('${esc(x.acc)}',${x.uid},${!x.abgehakt})">${x.abgehakt?'↩ zurück':'✓ bezahlt'}</button>`}</small></div>`;
     $('#m').innerHTML=`
       <p style="color:var(--mid);font-size:14px;margin-bottom:8px">${r.konten} Postfächer durchsucht nach ${r.suchworte.map(w=>'„'+esc(w)+'“').join(', ')} — nur Mails mit Anhang.</p>
       ${r.fehler.length?`<div class="hinw">⚠️ Nicht erreichbar: ${r.fehler.map(esc).join('; ')}</div>`:''}
       <h2>Noch nicht erfasst (${offen.length})</h2>
       ${offen.length?offen.map(zeile).join(''):'<p style="color:var(--dim);text-align:center;padding:14px">Nichts Neues gefunden. 🎉</p>'}
-      ${erledigt.length?`<h2>Schon erfasst (${erledigt.length})</h2>`+erledigt.map(zeile).join(''):''}`;
-  }catch(e){toast(e.message,true);start();}
+      ${erledigt.length?`<h2>Schon erfasst (${erledigt.length})</h2>`+erledigt.map(zeile).join(''):''}
+      ${abgehakt.length?`<h2>Schon bezahlt – abgehakt (${abgehakt.length})</h2>`+abgehakt.map(zeile).join(''):''}`;
 }
 // KI im Hintergrund: Name/Beschreibung/Kategorie; Zahlungsfelder nur, wo noch leer
 async function nachbessern(id,erf){

@@ -98,6 +98,7 @@ const items = store('items', []);
 const docs = store('docs', []); // Angebote + Rechnungen gemeinsam, Feld "art": 'angebot'|'rechnung'
 const courses = store('courses', []); // Kurse mit Teilnehmerliste (Akademie)
 const expenses = store('expenses', []); // Eingangsbelege/Ausgaben
+const mailAbgehakt = store('mail-abgehakt', []); // Rechnungs-Mails, die anderweitig schon bezahlt sind {acc,uid,am,betreff,von}
 // Gutachten / technische Analysen je Kunde: Metadaten hier, PDF unter data/gutachten/<id>.pdf.
 // data/gutachten/eingang/ nimmt per scp hochgeladene PDFs auf (Übernahme im Gutachten-Dialog).
 const gutachten = store('gutachten', []);
@@ -1038,7 +1039,8 @@ Positionen:\n${liste.slice(0, 2000)}`;
     const r = await mailApi('/api/messages?' + new URLSearchParams({ acc, folder: 'INBOX', page: '0', q }));
     const liste = (r.messages || []).filter((x) => x.hasAttachments).map((x) => {
       const a = expenses.data.find((e) => e.mail && e.mail.acc === acc && e.mail.folder === 'INBOX' && e.mail.uid === x.uid);
-      return { uid: x.uid, betreff: x.subject, von: (x.from || [])[0] || {}, ts: x.ts, gelesen: x.seen, erfasst: a ? a.id : null };
+      const h = mailAbgehakt.data.find((e) => e.acc === acc && e.uid === x.uid);
+      return { uid: x.uid, betreff: x.subject, von: (x.from || [])[0] || {}, ts: x.ts, gelesen: x.seen, erfasst: a ? a.id : null, abgehakt: h ? h.am : null };
     });
     return send(res, 200, { liste });
   }
@@ -1056,7 +1058,8 @@ Positionen:\n${liste.slice(0, 2000)}`;
     }));
     const liste = [...funde.values()].sort((a, b) => b.x.ts - a.x.ts).slice(0, 80).map(({ k, x }) => {
       const a = expenses.data.find((e) => e.mail && e.mail.acc === k.id && e.mail.folder === 'INBOX' && e.mail.uid === x.uid);
-      return { acc: k.id, konto: k.email, uid: x.uid, betreff: x.subject, von: (x.from || [])[0] || {}, ts: x.ts, gelesen: x.seen, erfasst: a ? a.id : null, bezahlt: !!(a && a.bezahltAm), proforma: /pro[\s-]?forma/i.test(x.subject || '') };
+      const h = mailAbgehakt.data.find((e) => e.acc === k.id && e.uid === x.uid);
+      return { acc: k.id, konto: k.email, uid: x.uid, betreff: x.subject, von: (x.from || [])[0] || {}, ts: x.ts, gelesen: x.seen, erfasst: a ? a.id : null, bezahlt: !!(a && a.bezahltAm), abgehakt: h ? h.am : null, proforma: /pro[\s-]?forma/i.test(x.subject || '') };
     });
     return send(res, 200, { liste, konten: konten.length, fehler, suchworte: MAIL_SUCHWORTE });
   }
@@ -1067,6 +1070,16 @@ Positionen:\n${liste.slice(0, 2000)}`;
     const anhaenge = (r.attachments || []).filter((x) => x.type === 'application/pdf' || /\.pdf$/i.test(x.filename)
       || (/^image\//.test(x.type) && !x.cid && x.size > 30000)).map((x) => ({ part: x.part, name: x.filename, typ: x.type, groesse: x.size }));
     return send(res, 200, { betreff: r.subject, von: (r.from || [])[0] || {}, anhaenge });
+  }
+  // Abhaken: „schon bezahlt" ohne Erfassen (Lastschrift, Karte, anderweitig überwiesen) — oder zurücknehmen
+  if (col === 'mail' && m === 'POST' && docId === 'abhaken') {
+    const b = await readBody(req);
+    const acc = String(b.acc || ''), uid = Number(b.uid);
+    if (!acc || !Number.isInteger(uid)) return send(res, 400, { error: 'acc/uid fehlt' });
+    mailAbgehakt.data = mailAbgehakt.data.filter((e) => !(e.acc === acc && e.uid === uid));
+    if (b.ja !== false) mailAbgehakt.data.push({ acc, uid, am: now().slice(0, 10), betreff: String(b.betreff || '').slice(0, 200), von: String(b.von || '').slice(0, 200) });
+    mailAbgehakt.save();
+    return send(res, 200, { ok: true });
   }
   if (col === 'mail' && m === 'POST' && docId === 'erfassen') {
     const b = await readBody(req);
