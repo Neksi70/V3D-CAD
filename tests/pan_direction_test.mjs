@@ -55,6 +55,42 @@ await pg.evaluate(() => setView('iso')); await settle();
   await settle();
   report('Zwei-Finger-Touch', { x: 200, y: 100 }, a, await originScr());
 }
+// 4) NUR hoch/runter: muss in der Bildebene verschieben, nicht zur Platte hin/weg
+//    (bis 1.18.75 ging „hoch“ entlang Welt-Y → wirkte wie Heranfahren, Volker 29.9.)
+const tgt = () => pg.evaluate(() => { const d = camera.getWorldDirection(new THREE.Vector3());
+  return { t: orbitTarget.toArray(), d: d.toArray() }; });
+const planeCheck = (name, a, b2, o1, o2) => {
+  const dt = [0, 1, 2].map(i => b2.t[i] - a.t[i]);
+  const len = Math.hypot(...dt), along = Math.abs(dt[0] * a.d[0] + dt[1] * a.d[1] + dt[2] * a.d[2]);
+  const sy = o2.y - o1.y, sx = o2.x - o1.x;
+  const ok = len > 0.05 && along < 0.02 * len && sy > 20 && Math.abs(sx) < 0.1 * sy;
+  console.log((ok ? '  OK   ' : 'FEHLER ') + name.padEnd(28), `Ziel ${len.toFixed(2)} bewegt, davon in Blickrichtung ${along.toFixed(3)}; Platte dx=${sx.toFixed(0)} dy=${sy.toFixed(0)}`, ok ? 'in der Bildebene' : 'NICHT in der Bildebene');
+  if (!ok) fails++;
+};
+for (const view of ['iso', 'top']) {
+  await pg.evaluate(v => setView(v), view); await settle();
+  { const a = await tgt(), o1 = await originScr();
+    await pg.mouse.move(cr.x, cr.y); await pg.mouse.down({ button: 'middle' });
+    for (let i = 1; i <= 10; i++) await pg.mouse.move(cr.x, cr.y + 12 * i);
+    await pg.mouse.up({ button: 'middle' }); await settle();
+    planeCheck(`Maus nur runter (${view})`, a, await tgt(), o1, await originScr()); }
+  await pg.evaluate(v => setView(v), view); await settle();
+  { const a = await tgt(), o1 = await originScr();
+    await pg.evaluate((cr) => { for (let i = 0; i < 10; i++) canvas.dispatchEvent(new WheelEvent('wheel', { clientX: cr.x, clientY: cr.y, deltaX: 0, deltaY: -12, deltaMode: 0, bubbles: true, cancelable: true })); }, cr);
+    await settle();
+    planeCheck(`Touchpad nur runter (${view})`, a, await tgt(), o1, await originScr()); }
+  await pg.evaluate(v => setView(v), view); await settle();
+  { const a = await tgt(), o1 = await originScr();
+    await pg.evaluate((cr) => {
+      const mk = (id, x, y) => new Touch({ identifier: id, target: canvas, clientX: x, clientY: y });
+      const fire = (type, list) => canvas.dispatchEvent(new TouchEvent(type, { touches: list, changedTouches: list, targetTouches: list, bubbles: true, cancelable: true }));
+      fire('touchstart', [mk(1, cr.x - 40, cr.y)]); fire('touchstart', [mk(2, cr.x + 40, cr.y)]);
+      for (let i = 1; i <= 10; i++) fire('touchmove', [mk(1, cr.x - 40, cr.y + 12 * i), mk(2, cr.x + 40, cr.y + 12 * i)]);
+      fire('touchend', []);
+    }, cr);
+    await settle();
+    planeCheck(`Touch nur runter (${view})`, a, await tgt(), o1, await originScr()); }
+}
 await b.close();
 console.log(fails ? `\n${fails} FEHLER` : '\nAlles grün.');
 process.exit(fails ? 1 : 0);
