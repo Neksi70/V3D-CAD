@@ -10538,19 +10538,19 @@ function _projectWorldToScreen(worldPos) {
   return { x: r.left + (v.x+1)/2*r.width, y: r.top + (-v.y+1)/2*r.height };
 }
 
-// Zieh-Richtung je Körper: Zylinder/Kegel/Rohr und Lochränder runden nach
-// RECHTS (s. _applyEdgeHandleValue), alle anderen fasen nach rechts.
+// Zieh-Richtung: nach rechts = Rundung, nach links = Fase — für alle Körper.
+// Ausnahme Netz-Kanten ohne Grundkörper (Skizzen-Extrusion, s. BufferGeometry-
+// Chamfer in _applyEdgeHandleValue): dort wird in beide Richtungen gefast.
 function _edgeBevelRightIsRound(o) {
-  if (!o) return false;
-  const st = o.userData.shapeType;
-  if (st === 'cylinder' || st === 'cone' || st === 'tube') return true;
-  const dyn = o.userData._dynamicEdges || [];
-  return [..._edgeSel].some(i => dyn[i] && dyn[i].rim);
+  if (!o) return true;
+  const ud = o.userData, dyn = ud._dynamicEdges || [];
+  if ([..._edgeSel].some(i => dyn[i] && dyn[i].rim)) return true;
+  return !!(ud.occtShape || _brepOk(o) || (ud.shapeType && ud.shapeType !== 'sketch'));
 }
 
 function _formatBevelVal(mm) {
   if (Math.abs(mm) < 0.05) return '0 mm';
-  const round = _edgeBevelRightIsRound(_edgeObj) ? mm > 0 : mm < 0;
+  const round = _edgeBevelRightIsRound(_edgeObj) && mm > 0;
   let s = (round ? 'Rundung R ' : 'Fase ') + Math.abs(mm).toFixed(1).replace('.', ',') + ' mm';
   if (_ebPrev && _ebPrev.fail) s += ' – zu groß';
   return s;
@@ -10675,7 +10675,7 @@ function _ebPrevCompute(p, val) {
   const oc = _oc; if (!oc) return;
   const q = p.occt, dyn = o.userData._dynamicEdges;
   const toOcct = w => [w[0]-q.geoOff.x, w[1]-q.geoOff.y, w[2]-q.geoOff.z];
-  const isPos = val > 0, dist = Math.abs(val);
+  const isPos = val < 0, dist = Math.abs(val);   // links = Fase (s. _applyEdgeHandleValue)
   const newOps = [..._edgeSel].map(i => ({ idx: i, dist, type: isPos ? 'chamfer' : 'fillet',
     wa: toOcct(dyn[i].worldA), wb: toOcct(dyn[i].worldB) }));
   // Replay kanonisiert die Ops in-place → mit einer Kopie arbeiten
@@ -11749,7 +11749,9 @@ async function _applyEdgeHandleValue(chamferDist) {
     (o.userData.shapeType === 'sketch' ? null : o.userData.shapeType) || null;
 
   if (occtShape) {
-    const isPos = chamferDist > 0;
+    // isPos = Fase. Einheitlich für alle Körper: nach rechts = Rundung,
+    // nach links = Fase (wie Zylinder/Lochrand und der Hinweis im Panel)
+    const isPos = chamferDist < 0;
     const dist  = Math.abs(chamferDist);
     const edgeData = [..._edgeSel].map(i => ({
       idx: i,
@@ -29334,6 +29336,197 @@ _ebh.addEventListener('pointercancel', () => {
   canvas.style.cursor = 'crosshair';
   _ebPrevEnd();
 });
+
+// ═══ KANTE DIREKT ANFASSEN (ohne „⬡ Kanten bearbeiten") ═══════════════════
+// Wie in Shapr3D/Fusion: Ist ein Körper gewählt, reicht es, auf eine seiner
+// sichtbaren Kanten zu drücken und zu ziehen — der Kanten-Modus geht dabei
+// von selbst auf, die Kante ist gewählt und der Zug läuft wie am orangen
+// Griff (inkl. Live-Vorschau). Ein Klick ohne Ziehen wählt nur die Kante.
+// Getroffen wird in BILDSCHIRM-Pixeln an den schwarzen Kantenlinien (die
+// zeigen genau, was der Nutzer als Kante sieht); verdeckte Kanten zählen nicht.
+// Der Verschiebe-Gizmo (_mgDown) hat Vorrang: er ist vorher registriert.
+const _ded = { hl: null, cursorSet: false, raf: 0, lastEv: null, drag: false };
+
+function _dedEligible(o) {
+  if (!o || !o.isMesh || !o.userData || o.userData.locked) return false;
+  const ud = o.userData, st = ud.shapeType;
+  return !!(ud._occtParams || ud.occtShape || _brepOk(o) ||
+    ['box', 'cylinder', 'cone', 'tube', 'pyramid', 'wedge'].includes(st));
+}
+
+function _dedBlocked() {
+  return _edgeMode || _edgeBevelDragging || workplaneMode || _fdMode || _shellMode || _revolveMode ||
+    _sk.active || _plugMode || _lf.active || _pp.active || _bndPick || _measureMode ||
+    isDrag || isOrbit || isRubber || _mg.drag || _mg.hover ||
+    _cut.active || _eraser.active || _sculpt.active || _paint.active || _mmu.active ||
+    selectedObjs.length !== 1;
+}
+
+// Nächste sichtbare Kantenlinie des gewählten Körpers unter dem Zeiger
+function _dedPick(e) {
+  const o = selectedObjs[0];
+  if (!_dedEligible(o)) return null;
+  const el = o.children.find(c => c.userData && c.userData.isEdgeLines);
+  if (!el || !el.geometry.attributes.position) return null;
+  const pos = el.geometry.attributes.position;
+  if (pos.count > 20000) return null;
+  const rect = vpEl.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const tolPx = e.pointerType === 'touch' ? 16 : 8;
+  el.updateMatrixWorld(true);
+  const mw = el.matrixWorld, v = new THREE.Vector3();
+  const W = [], S = [];
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(mw);
+    W.push(v.clone());
+    const p = v.clone().project(camera);
+    S.push(p.z > 1 ? null : [(p.x + 1) / 2 * rect.width, (1 - p.y) / 2 * rect.height]);
+  }
+  const cands = [];
+  for (let i = 0; i + 1 < pos.count; i += 2) {
+    const a = S[i], b = S[i + 1];
+    if (!a || !b) continue;
+    const dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+    const t = L2 < 1e-6 ? 0 : Math.max(0, Math.min(1, ((mx - a[0]) * dx + (my - a[1]) * dy) / L2));
+    const d = Math.hypot(a[0] + t * dx - mx, a[1] + t * dy - my);
+    if (d <= tolPx) cands.push({ d, i, t });
+  }
+  if (!cands.length) return null;
+  cands.sort((p, q) => p.d - q.d);
+  // Verdeckung: vom Auge zum Kantenpunkt darf der Körper nicht davor liegen
+  const size = getMeshBox(o).getSize(new THREE.Vector3()).length();
+  for (const c of cands.slice(0, 6)) {
+    const pw = W[c.i].clone().lerp(W[c.i + 1], c.t);
+    const ndc = pw.clone().project(camera);
+    raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), camera);
+    const dist = raycaster.ray.origin.distanceTo(pw);
+    const hit = raycaster.intersectObject(o, false)[0];
+    if (hit && hit.distance < dist - Math.max(0.02, size * 0.01)) continue;
+    return { o, pw, a: W[c.i], b: W[c.i + 1] };
+  }
+  return null;
+}
+
+function _dedHover(pk) {
+  if (!pk) {
+    if (_ded.hl) _ded.hl.visible = false;
+    if (_ded.cursorSet) { canvas.style.cursor = _ded.prevCursor || ''; _ded.cursorSet = false; }
+    return;
+  }
+  if (!_ded.hl) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(6), 3));
+    _ded.hl = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0xF97316, depthTest: false }));
+    _ded.hl.renderOrder = 999;
+    _ded.hl.userData._dedHL = true;
+    scene.add(_ded.hl);
+  }
+  const p = _ded.hl.geometry.attributes.position;
+  p.setXYZ(0, pk.a.x, pk.a.y, pk.a.z); p.setXYZ(1, pk.b.x, pk.b.y, pk.b.z);
+  p.needsUpdate = true; _ded.hl.geometry.computeBoundingSphere();
+  _ded.hl.visible = true;
+  if (!_ded.cursorSet) _ded.prevCursor = canvas.style.cursor;
+  canvas.style.cursor = 'pointer'; _ded.cursorSet = true;
+}
+
+function _dedMoveHover(e) {
+  if (e.buttons) return;
+  _ded.lastEv = { clientX: e.clientX, clientY: e.clientY, pointerType: e.pointerType, target: e.target };
+  if (_ded.raf) return;
+  _ded.raf = requestAnimationFrame(() => {
+    _ded.raf = 0;
+    const ev = _ded.lastEv;
+    if (!ev || ev.target !== canvas || _dedBlocked()) { _dedHover(null); return; }
+    let pk = null;
+    try { pk = _dedPick(ev); } catch (err) {}
+    _dedHover(pk);
+  });
+}
+
+// Welche Kante im Kanten-Modus entspricht dem angefassten Punkt?
+function _dedEdgeIndex(e, pw) {
+  const idx = _findHoveredEdge(e);
+  if (idx >= 0) return idx;
+  const dyn = _edgeObj && _edgeObj.userData._dynamicEdges;
+  if (!dyn) return -1;
+  let best = -1, bd = Infinity;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), ab = new THREE.Vector3();
+  // Zylinder/Kegel/Rohr: Kreiskanten stehen als Deckel-Mittelpunkt drin →
+  // der Deckel, dessen Mitte dem angefassten Randpunkt am nächsten liegt
+  const st = _edgeObj.userData.shapeType;
+  if (st === 'cylinder' || st === 'cone' || st === 'tube') {
+    dyn.forEach((ed, i) => { const d = a.fromArray(ed.worldA).distanceTo(pw); if (d < bd) { bd = d; best = i; } });
+    return best;
+  }
+  dyn.forEach((ed, i) => {
+    a.fromArray(ed.worldA); b.fromArray(ed.worldB); ab.subVectors(b, a);
+    const L2 = ab.lengthSq(); if (L2 < 1e-6) return;
+    const t = Math.max(0, Math.min(1, pw.clone().sub(a).dot(ab) / L2));
+    const d = a.clone().addScaledVector(ab, t).distanceTo(pw);
+    if (d < bd) { bd = d; best = i; }
+  });
+  return bd < 0.3 ? best : -1;
+}
+
+function _dedDown(e) {
+  if (e.button !== 0 || e.target !== canvas) return;
+  if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+  let pk = null;
+  try { if (_dedBlocked()) return; pk = _dedPick(e); } catch (err) { return; }
+  if (!pk) return;
+  enterEdgeMode(true);
+  const idx = _dedEdgeIndex(e, pk.pw);
+  if (idx < 0) { exitEdgeMode(); return; }   // keine bearbeitbare Kante → normales Verhalten
+  e.stopPropagation(); e.preventDefault();
+  _dedHover(null);
+  _edgeSel.clear(); _edgeSel.add(idx); _edgeHover = -1;
+  _updateEdgeColors();
+  _edgeBevelHandlePos = pk.pw.clone();
+  _fpCurType = null; updateFP();
+  _edgeBevelDragging = true;
+  _edgeBevelDragStart = { x: e.clientX, y: e.clientY };
+  _edgeBevelDragVal = 0;
+  _ded.drag = true;
+  _ebPrevStart();
+  window.addEventListener('pointermove', _dedDragMove, true);
+  window.addEventListener('pointerup', _dedDragUp, true);
+  window.addEventListener('pointercancel', _dedDragUp, true);
+}
+
+function _dedDragMove(e) {
+  if (!_ded.drag) return;
+  e.stopPropagation();
+  const dx = e.clientX - _edgeBevelDragStart.x;
+  _edgeBevelDragVal = dx * 0.1;
+  canvas.style.cursor = 'ew-resize';
+  _ebPrevRequest(Math.abs(_edgeBevelDragVal) > 0.5 ? _edgeBevelDragVal / 10 : 0);
+}
+
+function _dedDragUp(e) {
+  if (!_ded.drag) return;
+  if (e) e.stopPropagation();
+  window.removeEventListener('pointermove', _dedDragMove, true);
+  window.removeEventListener('pointerup', _dedDragUp, true);
+  window.removeEventListener('pointercancel', _dedDragUp, true);
+  _ded.drag = false;
+  _edgeBevelDragging = false;
+  canvas.style.cursor = 'crosshair';
+  const val = _edgeBevelDragVal;
+  _ebPrevEnd();
+  // Nur geklickt: Kante bleibt gewählt, Griff steht bereit (Kanten-Modus offen)
+  if (e && e.type !== 'pointercancel' && Math.abs(val) > 0.5) {
+    // Nach dem Direkt-Zug zurück in die normale Auswahl (Zylinder-Pfad ließ
+    // den Kanten-Modus sonst offen) — die nächste Kante greift man wieder direkt
+    Promise.resolve(_applyEdgeHandleValue(val / 10)).then(() => {
+      if (_edgeMode) { const o = _edgeObj; exitEdgeMode(); if (o && objects.includes(o)) selectObjs([o]); _fpCurType = null; updateFP(); }
+    });
+  } else _edgeBevelDragVal = 0;
+}
+
+// Maus-Ersatzereignis nach dem Kanten-Griff schlucken (sonst startet das freie Ziehen)
+window.addEventListener('pointerdown', _dedDown, true);
+window.addEventListener('mousedown', e => { if (_ded.drag) { e.stopPropagation(); e.preventDefault(); } }, true);
+window.addEventListener('pointermove', _dedMoveHover);
 
 // ═══ SIZE & POSITION DIALOG ════════════════════════════════════════════════
 
@@ -48548,8 +48741,12 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.61';
+const VOLME3D_VERSION = '1.18.62';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.62', date:'2026-09-28', changes:[
+    ['⬡','<b>Kanten direkt anfassen — ohne „Kanten bearbeiten“.</b> Körper auswählen, mit der Maus über eine Kante fahren: sie leuchtet orange auf. Dann einfach draufdrücken und seitlich ziehen — die Rundung oder Fase wächst live mit, loslassen übernimmt sie. Ein Klick ohne Ziehen wählt nur die Kante, dann steht der orange Griff bereit. Mitten auf der Fläche verschiebst du den Körper weiterhin wie gewohnt. Geht bei Quader, Pyramide, Keil, Zylinder, Kegel, Rohr und schon bearbeiteten Körpern.'],
+    ['↔️','<b>Zieh-Richtung jetzt überall gleich:</b> nach rechts = Rundung, nach links = Fase. Beim Quader war es bisher andersherum als beim Zylinder und als der Hinweis im Panel sagte.'],
+  ]},
   { version:'1.18.61', date:'2026-09-28', changes:[
     ['⬡','<b>Kanten bearbeiten: Fase und Rundung schon beim Ziehen sehen.</b> Bisher stand beim Ziehen am orangen Punkt nur ein Wert wie „C 1.2 mm“ oder „R 1.2 mm“ daneben — der Körper blieb scharfkantig, bis man losließ. Jetzt wird die Kante während des Ziehens live mitgerechnet: Man sieht die Schräge bzw. die Rundung wachsen und lässt einfach los, wenn es passt. Das Schild sagt jetzt in Worten „Fase“ oder „Rundung“, und wenn der Wert für die Kante zu groß wird, steht „zu groß“ dabei. Beim Zylinder, Kegel und Rohr zeigte das Schild außerdem die falsche Art an (dort rundet Ziehen nach rechts) — auch das stimmt jetzt. Gilt für Quader, Pyramide, Keil, Zylinder, Kegel, Rohr und bereits bearbeitete Körper; bei Lochrändern bleibt es vorerst beim Wert am Griff.'],
   ]},
