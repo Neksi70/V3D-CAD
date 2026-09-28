@@ -8151,10 +8151,44 @@ function _applyBufferGeometryChamfer(mesh, edgeIndex, chamferDist) {
   return true;
 }
 
+// OCCT-Ergebnis (Kante schon gerundet/gefast): seine Geometrie steht in
+// WELT-Koordinaten, _occtParams.geoOff sagt, wo die Grundform liegt. Wurde der
+// Körper danach verschoben oder skaliert, steckt das nur in position/scale —
+// geoOff blieb alt, jede weitere Kante zielte ins Leere („zu groß“ schon bei
+// 1 mm, Volker 28.9.). Hier die Transformation in Geometrie + geoOff/sx..sz
+// einbacken, sodass der Körper wieder bei Identität steht wie frisch gebaut.
+// Gedrehte/gespiegelte Teile bleiben unangetastet (OCCT-Pfad kennt keine Drehung).
+function _occtBakeTransform(o) {
+  const ud = o.userData, P = ud._occtParams;
+  if (!o.isMesh || !ud.occtShape || !P || !P.geoOff) return false;
+  const q = o.quaternion, p = o.position, sc = o.scale;
+  if (Math.abs(q.x) + Math.abs(q.y) + Math.abs(q.z) > 1e-6) return false;
+  if (sc.x <= 0 || sc.y <= 0 || sc.z <= 0) return false;
+  if (Math.abs(p.x) + Math.abs(p.y) + Math.abs(p.z) < 1e-9 &&
+      Math.abs(sc.x - 1) + Math.abs(sc.y - 1) + Math.abs(sc.z - 1) < 1e-9) return false;
+  o.updateMatrix();
+  const M = o.matrix.clone();
+  o.geometry.applyMatrix4(M);
+  if (ud._origGeo && ud._origGeo !== o.geometry && ud._origGeo.isBufferGeometry) ud._origGeo.applyMatrix4(M);
+  if (ud._brepGeo && ud._brepGeo !== o.geometry && ud._brepGeo.isBufferGeometry) ud._brepGeo.applyMatrix4(M);
+  P.geoOff = { x: P.geoOff.x * sc.x + p.x, y: P.geoOff.y * sc.y + p.y, z: P.geoOff.z * sc.z + p.z };
+  P.sx *= sc.x; P.sy *= sc.y; P.sz *= sc.z;
+  if (Array.isArray(ud._brepEdges)) {
+    const v = new THREE.Vector3(), tf = a => v.fromArray(a).applyMatrix4(M).toArray();
+    ud._brepEdges = ud._brepEdges.map(e => ({ ...e, a: tf(e.a), b: tf(e.b) }));
+  }
+  o.children.filter(c => !(c.userData && c.userData.isEdgeLines)).forEach(c => c.applyMatrix4(M));
+  o.position.set(0, 0, 0); o.scale.set(1, 1, 1);
+  o.updateMatrixWorld(true);
+  _updateObjEdgeLines(o);
+  return true;
+}
+
 function enterEdgeMode(quiet = false) {
   const o = getFirst();
   if (!o || !o.userData) return;
   if (_lf.active) exitLoftMode();
+  _occtBakeTransform(o);
   if (o.userData._occtParams && !o.userData.occtShape) {
     const b = getMeshBox(o);
     const s = b.getSize(new THREE.Vector3());
@@ -8340,6 +8374,12 @@ function enterEdgeMode(quiet = false) {
     }
     o.userData._dynamicEdges = edges;
   }
+  // OCCT-Ergebnisse stehen bei Identität mit Welt-Geometrie → das Overlay aus
+  // den Welt-Kanten bauen, nicht aus dem ±1-Einheitswürfel (lag sonst neben
+  // dem Körper: orange Linie mitten auf der Fläche).
+  if (o.userData.occtShape && o.userData._occtParams && o.userData._dynamicEdges &&
+      o.userData._dynamicEdges.length === edges.length && o.matrixWorld.equals(new THREE.Matrix4()))
+    edges = o.userData._dynamicEdges;
   if (!o.userData.edgeBevels || o.userData.edgeBevels.length !== edges.length)
     o.userData.edgeBevels = Array.from({length: edges.length}, () => ({fillet:0, chamfer:0}));
   const verts = [];
@@ -48833,8 +48873,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.64';
+const VOLME3D_VERSION = '1.18.65';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.65', date:'2026-09-28', changes:[
+    ['🔧','<b>Weitere Kanten runden auch nach dem Verschieben.</b> Wer einen Körper nach der ersten Rundung oder Fase verschoben oder größer/kleiner gezogen hat, konnte danach keine weitere Kante mehr bearbeiten — es hieß „zu groß“, selbst bei 1 mm. Die bearbeitete Form hatte sich ihre alte Lage gemerkt und zielte an die falsche Stelle. Jetzt wird die neue Lage beim Bearbeiten übernommen. Außerdem sitzt die orange Markierung der gewählten Kante jetzt auf der echten Kante; vorher lag sie oft daneben mitten auf der Fläche.'],
+  ]},
   { version:'1.18.64', date:'2026-09-28', changes:[
     ['📏','<b>Zu große Rundung/Fase: jetzt das Machbare statt gar nichts.</b> Zieht man an einer Kante weiter, als die Form hergibt — z. B. neben einer schon gefasten Kante —, stand bisher „zu groß“ am Griff, und beim Loslassen passierte nichts. Jetzt zeigt das Schild schon beim Ziehen, wo ungefähr Schluss ist („max. ~10,5 mm“), und beim Loslassen wird der größte noch mögliche Wert übernommen. Eine Meldung sagt dann, auf wie viel Millimeter begrenzt wurde.'],
   ]},
