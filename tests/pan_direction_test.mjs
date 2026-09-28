@@ -28,12 +28,17 @@ const report = (name, ptr, a, b2) => {
   report('Maus Mitteltaste', { x: 200, y: 100 }, a, await originScr());
 }
 await pg.evaluate(() => setView('iso')); await settle();
-// 2) Touchpad-Wischen (wheel mit deltaX): Finger nach rechts/unten = deltaX/deltaY negativ? (natural) — wir melden beide Interpretationen
+// 2) Touchpad-Wischen: Finger nach rechts/unten. Ein wheel-Delta > 0 heißt
+// „nach rechts/unten SCROLLEN“ (Inhalt wandert nach links/oben) — beim
+// natürlichen Scrollen (Mac, Windows-Präzisions-Touchpad) schicken Finger nach
+// rechts/unten also deltaX/deltaY < 0. Die Platte muss wie Seiteninhalt den
+// Fingern folgen. (Bis 1.18.74 prüfte der Test Delta > 0 = Finger rechts —
+// dieselbe falsche Annahme wie der Code, darum blieb der Fehler grün.)
 {
   const a = await originScr();
-  await pg.evaluate((cr) => { for (let i = 0; i < 10; i++) canvas.dispatchEvent(new WheelEvent('wheel', { clientX: cr.x, clientY: cr.y, deltaX: 20, deltaY: 10, deltaMode: 0, bubbles: true, cancelable: true })); }, cr);
+  await pg.evaluate((cr) => { for (let i = 0; i < 10; i++) canvas.dispatchEvent(new WheelEvent('wheel', { clientX: cr.x, clientY: cr.y, deltaX: -20, deltaY: -10, deltaMode: 0, bubbles: true, cancelable: true })); }, cr);
   await settle();
-  report('Touchpad wheel deltaX/Y>0', { x: 200, y: 100 }, a, await originScr());
+  report('Touchpad Finger rechts/unten', { x: 200, y: 100 }, a, await originScr());
 }
 await pg.evaluate(() => setView('iso')); await settle();
 // 3) Zwei-Finger-Touch nach rechts + unten
