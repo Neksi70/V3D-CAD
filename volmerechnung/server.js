@@ -1059,7 +1059,7 @@ Positionen:\n${liste.slice(0, 2000)}`;
     const liste = [...funde.values()].sort((a, b) => b.x.ts - a.x.ts).slice(0, 80).map(({ k, x }) => {
       const a = expenses.data.find((e) => e.mail && e.mail.acc === k.id && e.mail.folder === 'INBOX' && e.mail.uid === x.uid);
       const h = mailAbgehakt.data.find((e) => e.acc === k.id && e.uid === x.uid);
-      return { acc: k.id, konto: k.email, uid: x.uid, betreff: x.subject, von: (x.from || [])[0] || {}, ts: x.ts, gelesen: x.seen, erfasst: a ? a.id : null, bezahlt: !!(a && a.bezahltAm), abgehakt: h ? h.am : null, proforma: /pro[\s-]?forma/i.test(x.subject || '') };
+      return { acc: k.id, konto: k.email, uid: x.uid, betreff: x.subject, von: (x.from || [])[0] || {}, ts: x.ts, gelesen: x.seen, erfasst: a ? a.id : null, bezahlt: !!(a && a.bezahltAm), bezahltAm: a ? a.bezahltAm || null : null, betrag: a ? a.betrag : null, abgehakt: h ? h.am : null, proforma: /pro[\s-]?forma/i.test(x.subject || '') };
     });
     return send(res, 200, { liste, konten: konten.length, fehler, suchworte: MAIL_SUCHWORTE });
   }

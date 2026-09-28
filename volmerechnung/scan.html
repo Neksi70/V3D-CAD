@@ -44,7 +44,7 @@ input{font:inherit;width:100%;border:1px solid var(--line);border-radius:10px;pa
 </style>
 </head>
 <body>
-<header>🧾 V3D Beleg<button id="kopfZurueck" hidden onclick="start()">← Übersicht</button></header>
+<header>🧾 V3D Beleg<button id="kopfZurueck" hidden onclick="kopfZurueck()">← Zurück</button></header>
 <main id="m"></main>
 <div id="toast"></div>
 <script>
@@ -87,26 +87,72 @@ function login(){
 }
 
 // ---------------------------------------------------------------- Übersicht
+// Übersicht = offene Rechnungen aus V3D Mail (alle Postfächer) + noch offene Scans.
+// Bezahlt (✓ Überwiesen) oder abgehakt -> Archiv.
+let DATEN=null; // {r: Suchergebnis, ausgaben}
 async function start(){
+  MAILHER='start';ANSICHT='start';
   $('#kopfZurueck').hidden=true;
   if(!KEY)return login();
-  $('#m').innerHTML=`
-    <button class="gross p" onclick="waehle(true)">📷 Rechnung scannen</button>
-    <button class="gross s" onclick="waehle(false)">📄 PDF oder Bild wählen</button>
-    <button class="gross s" onclick="mailListe()">📨 Aus V3D Mail</button>
-    <button class="gross s" onclick="rechnungenSuchen()">🔎 Rechnungen suchen<br><small style="font-weight:400;font-size:13px;color:var(--dim)">in allen Postfächern</small></button>
-    <p style="color:var(--dim);font-size:13px;text-align:center">Tipp: PDF aus Gmail/Dateien per „Teilen → V3D Beleg" schicken.</p>
-    <div id="offen"></div>`;
+  if(DATEN)zeichneStart(); // letzter Stand sofort, frischer kommt gleich
+  else $('#m').innerHTML='<div class="lade"><div class="kreis"></div><b>Suche Rechnungen in allen Postfächern …</b><br><small>ein paar Sekunden</small></div>';
   try{
-    const alle=await api('expenses');
-    const offen=alle.filter(a=>a.iban&&!a.bezahltAm).sort((a,b)=>(b.created||'').localeCompare(a.created||'')).slice(0,15);
-    const bezahlt=alle.filter(a=>a.bezahltAm).sort((a,b)=>(b.bezahltAm||'').localeCompare(a.bezahltAm||'')).slice(0,3);
-    $('#offen').innerHTML=(offen.length?'<h2>Noch zu überweisen</h2>'+offen.map(eintrag).join(''):'')
-      +(bezahlt.length?'<h2>Zuletzt bezahlt</h2>'+bezahlt.map(eintrag).join(''):'');
-  }catch(e){if(KEY)toast(e.message,true);}
+    const [r,ausgaben]=await Promise.all([api('mail/rechnungen'),api('expenses')]);
+    DATEN={r,ausgaben};
+    if(ANSICHT==='start')zeichneStart();
+    else if(ANSICHT==='archiv')zeichneArchiv(); // sonst nicht in eine offene Rechnung hineinmalen
+  }catch(e){if(KEY)toast(e.message,true);if(!DATEN)$('#m').innerHTML=`<div class="hinw">⚠️ ${esc(e.message)}</div>`+unten();}
 }
+const imArchiv=x=>x.abgehakt||(x.erfasst&&x.bezahlt);
+// Ausgaben, die nicht schon als Mail-Treffer dastehen (Scans, ältere Mail-Rechnungen)
+const scans=()=>DATEN.ausgaben.filter(a=>!DATEN.r.liste.some(x=>x.erfasst===a.id));
+const unten=()=>`<div style="display:flex;gap:8px;margin-top:22px">
+    <button class="btn s" style="flex:1;padding:10px 6px;font-size:14px" onclick="waehle(true)">📷 Scannen</button>
+    <button class="btn s" style="flex:1;padding:10px 6px;font-size:14px" onclick="waehle(false)">📄 Datei</button>
+    <button class="btn s" style="flex:1;padding:10px 6px;font-size:14px" onclick="mailListe()">📨 Postfach</button></div>`;
+const datum=ts=>new Date(ts*1000).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'});
+const schild=x=>x.proforma?'<small style="background:#fef3c7;color:#92400e;border-radius:6px;padding:1px 6px;font-size:11px;font-weight:700;margin-right:4px">PROFORMA</small>':'';
+// eine Mail-Rechnung als Zeile; rechts Datum/Betrag + Knopf (abhaken bzw. zurückholen)
+function mailZeile(x,archiv){
+  const knopf=x.erfasst?(archiv?'':'')
+    :`<br><button class="abhaken" onclick="event.stopPropagation();abhaken('${esc(x.acc)}',${x.uid},${!archiv})">${archiv?'↩ zurück':'✓ bezahlt'}</button>`;
+  const status=x.erfasst?(x.bezahlt?'<br>✓ bezahlt '+dtDE(x.bezahltAm):'<br><span style="color:var(--acc-d)">erfasst · '+eur(x.betrag)+'</span>'):archiv&&x.abgehakt?'<br>✓ abgehakt '+dtDE(x.abgehakt):'';
+  return `<div class="eintrag" onclick="${x.erfasst?`zeige('${x.erfasst}')`:`mailOeffnen(${x.uid},'${esc(x.acc)}')`}">
+    <span style="min-width:0"><b style="${x.gelesen?'font-weight:600':''}">${esc(x.von.name||x.von.email||'?')}</b><br>
+    ${schild(x)}<small style="color:var(--dim)">${esc(x.betreff)}</small><br><small style="color:var(--acc-d);font-size:12px">📥 ${esc(x.konto)}</small></span>
+    <small style="color:${archiv?'var(--green)':'var(--dim)'};white-space:nowrap;font-weight:700;text-align:right">${datum(x.ts)}${status}${knopf}</small></div>`;
+}
+function zeichneStart(){
+  const {r}=DATEN;
+  const offen=r.liste.filter(x=>!imArchiv(x));
+  const offeneScans=scans().filter(a=>a.iban&&!a.bezahltAm);
+  const nArchiv=r.liste.length-offen.length+scans().filter(a=>a.bezahltAm).length;
+  $('#m').innerHTML=`
+    ${r.fehler.length?`<div class="hinw">⚠️ Nicht erreichbar: ${r.fehler.map(esc).join('; ')}</div>`:''}
+    <h2 style="margin-top:4px">Offene Rechnungen aus V3D Mail (${offen.length})</h2>
+    ${offen.length?offen.map(x=>mailZeile(x,false)).join(''):'<p style="color:var(--dim);text-align:center;padding:14px">Alles bezahlt. 🎉</p>'}
+    ${offeneScans.length?'<h2>Weitere offene Rechnungen</h2>'+offeneScans.map(eintrag).join(''):''}
+    <button class="gross s" style="margin-top:14px;font-size:16px;padding:14px" onclick="archiv()">📦 Archiv – bezahlt (${nArchiv})</button>
+    <p style="color:var(--dim);font-size:12px;text-align:center">${r.konten} Postfächer · Suche nach ${r.suchworte.map(w=>'„'+esc(w)+'“').join(', ')} · nur Mails mit Anhang</p>
+    ${unten()}`;
+}
+function archiv(){
+  MAILHER='archiv';ANSICHT='archiv';
+  $('#kopfZurueck').hidden=false;
+  window.scrollTo(0,0);
+  zeichneArchiv();
+}
+function zeichneArchiv(){
+  const {r}=DATEN;
+  const mails=r.liste.filter(imArchiv);
+  const bez=scans().filter(a=>a.bezahltAm).sort((a,b)=>(b.bezahltAm||'').localeCompare(a.bezahltAm||''));
+  $('#m').innerHTML=`<h2 style="margin-top:4px">📦 Archiv – bezahlt</h2>
+    <p style="color:var(--mid);font-size:14px;margin-bottom:10px">Abgehakte und überwiesene Rechnungen. „↩ zurück" holt eine abgehakte Rechnung wieder in die Übersicht.</p>
+    ${mails.length?mails.map(x=>mailZeile(x,true)).join(''):'<p style="color:var(--dim);text-align:center;padding:14px">Noch nichts im Archiv.</p>'}
+    ${bez.length?'<h2>Weitere bezahlte Rechnungen</h2>'+bez.map(eintrag).join(''):''}`;
+}
+const rechnungenSuchen=start; // ältere Knöpfe
 const eintrag=a=>`<div class="eintrag" onclick="zeige('${a.id}')"><span><b>${esc(a.lieferant||'?')}</b><br><small style="color:var(--dim)">${esc(a.nummer||'')} ${a.faellig&&!a.bezahltAm?'· fällig '+dtDE(a.faellig):''}${a.bezahltAm?'· ✓ bezahlt '+dtDE(a.bezahltAm)+(BANKEN[a.bezahltVia]?' via '+BANKEN[a.bezahltVia].name:''):''}</small></span><b>${eur(a.betrag)}</b></div>`;
-
 // Kamera/Datei: im Browser über <input>, in der App übernimmt Android (onShowFileChooser)
 function waehle(kamera){
   const i=document.createElement('input');i.type='file';
@@ -158,7 +204,7 @@ async function speichern(j,extra,fallbackName){
 // Posteingang: Mails mit Anhang -> Anhang wählen -> erfassen wie ein Scan
 let MAILKONTO=localStorage.getItem('vrMailKonto')||'',MAILKONTEN=null;
 async function mailListe(suche){
-  MAILHER='liste';
+  MAILHER='liste';ANSICHT='liste';
   $('#kopfZurueck').hidden=false;
   $('#m').innerHTML='<div class="lade"><div class="kreis"></div><b>Posteingang wird geladen …</b></div>';
   try{
@@ -171,7 +217,6 @@ async function mailListe(suche){
         ${MAILKONTEN.map(k=>`<option value="${esc(k.id)}" ${k.id===MAILKONTO?'selected':''}>${esc(k.email)}</option>`).join('')}</select>
       <form onsubmit="event.preventDefault();mailListe($('#ms').value.trim())" style="display:flex;gap:8px;margin-bottom:6px">
         <input id="ms" placeholder="Suchen (Absender, Betreff …)" value="${esc(suche||'')}"><button class="btn s">🔍</button></form>
-      <button class="btn s" style="width:100%;margin:4px 0 2px" onclick="rechnungenSuchen()">🔎 Rechnungen in allen Postfächern suchen</button>
       <h2>${suche?'Treffer mit Anhang':'Neueste Mails mit Anhang'}</h2>
       ${liste.length?liste.map(x=>`<div class="eintrag" onclick="${x.erfasst?`zeige('${x.erfasst}')`:`mailOeffnen(${x.uid},'${esc(MAILKONTO)}')`}">
         <span style="min-width:0"><b style="${x.gelesen?'font-weight:600':''}">${esc(x.von.name||x.von.email||'?')}</b><br>
@@ -181,6 +226,7 @@ async function mailListe(suche){
   }catch(e){toast(e.message,true);start();}
 }
 async function mailOeffnen(uid,acc){
+  ANSICHT='mail';$('#kopfZurueck').hidden=false;
   $('#m').innerHTML='<div class="lade"><div class="kreis"></div><b>Mail wird geöffnet …</b></div>';
   try{
     const r=await api('mail/anhaenge?'+new URLSearchParams({acc,uid}));
@@ -201,39 +247,16 @@ async function mailErfassen(part){
     await speichern(j,{quelle:'mail',mail:{acc:M.acc,folder:'INBOX',uid:M.uid,part,betreff:M.betreff,von:M.von.email||''}},M.von.name||'');
   }catch(e){toast(e.message,true);mailZurueck();}
 }
-// Zurück dorthin, woher die Mail kam: Posteingang eines Kontos oder Suchergebnis
-let MAILHER='liste';
-const mailZurueck=()=>MAILHER==='suche'?rechnungenSuchen():mailListe();
-// Abhaken = anderweitig schon bezahlt (Lastschrift, Karte …); Liste neu, Scrollstand bleibt
+// Zurück dorthin, woher die Mail kam: Übersicht, Archiv oder Posteingang eines Kontos
+let MAILHER='start',ANSICHT='start'; // MAILHER: woher die Rechnung kam; ANSICHT: was gerade zu sehen ist
+function kopfZurueck(){ if(ANSICHT==='detail'||ANSICHT==='mail')return mailZurueck(); start(); }
+const mailZurueck=()=>MAILHER==='liste'?mailListe():MAILHER==='archiv'?archiv():start();
+// Abhaken = anderweitig schon bezahlt (Lastschrift, Karte …) -> Archiv; ↩ holt zurück
 async function abhaken(acc,uid,ja){
-  const x=(window.SUCHE||[]).find(e=>e.acc===acc&&e.uid===uid)||{};
+  const x=DATEN.r.liste.find(e=>e.acc===acc&&e.uid===uid)||{};
   try{await api('mail/abhaken','POST',{acc,uid,ja,betreff:x.betreff||'',von:(x.von||{}).email||''});
-    x.abgehakt=ja?today():null;toast(ja?'Abgehakt – schon bezahlt':'Wieder offen');
-    const y=window.scrollY;zeichneSuche(window.SUCHERG);window.scrollTo(0,y);}catch(e){toast(e.message,true);}
-}
-async function rechnungenSuchen(){
-  MAILHER='suche';
-  $('#kopfZurueck').hidden=false;
-  $('#m').innerHTML='<div class="lade"><div class="kreis"></div><b>Suche Rechnungen in allen Postfächern …</b><br><small>ein paar Sekunden</small></div>';
-  try{
-    zeichneSuche(await api('mail/rechnungen'));
-  }catch(e){toast(e.message,true);start();}
-}
-function zeichneSuche(r){
-    window.SUCHERG=r;
-    const offen=r.liste.filter(x=>!x.erfasst&&!x.abgehakt),erledigt=r.liste.filter(x=>x.erfasst),abgehakt=r.liste.filter(x=>!x.erfasst&&x.abgehakt);
-    window.SUCHE=r.liste;
-    const zeile=x=>`<div class="eintrag" style="${x.abgehakt&&!x.erfasst?'opacity:.6':''}" onclick="${x.erfasst?`zeige('${x.erfasst}')`:`mailOeffnen(${x.uid},'${esc(x.acc)}')`}">
-        <span style="min-width:0"><b style="${x.gelesen?'font-weight:600':''}">${esc(x.von.name||x.von.email||'?')}</b><br>
-        ${x.proforma?'<small style="background:#fef3c7;color:#92400e;border-radius:6px;padding:1px 6px;font-size:11px;font-weight:700;margin-right:4px">PROFORMA</small>':''}<small style="color:var(--dim)">${esc(x.betreff)}</small><br><small style="color:var(--acc-d);font-size:12px">📥 ${esc(x.konto)}</small></span>
-        <small style="color:${x.erfasst||x.abgehakt?'var(--green)':'var(--dim)'};white-space:nowrap;font-weight:700;text-align:right">${new Date(x.ts*1000).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'})}${x.erfasst?'<br>'+(x.bezahlt?'✓ bezahlt':'✓ erfasst'):''}${x.erfasst?'':`<br><button class="abhaken" onclick="event.stopPropagation();abhaken('${esc(x.acc)}',${x.uid},${!x.abgehakt})">${x.abgehakt?'↩ zurück':'✓ bezahlt'}</button>`}</small></div>`;
-    $('#m').innerHTML=`
-      <p style="color:var(--mid);font-size:14px;margin-bottom:8px">${r.konten} Postfächer durchsucht nach ${r.suchworte.map(w=>'„'+esc(w)+'“').join(', ')} — nur Mails mit Anhang.</p>
-      ${r.fehler.length?`<div class="hinw">⚠️ Nicht erreichbar: ${r.fehler.map(esc).join('; ')}</div>`:''}
-      <h2>Noch nicht erfasst (${offen.length})</h2>
-      ${offen.length?offen.map(zeile).join(''):'<p style="color:var(--dim);text-align:center;padding:14px">Nichts Neues gefunden. 🎉</p>'}
-      ${erledigt.length?`<h2>Schon erfasst (${erledigt.length})</h2>`+erledigt.map(zeile).join(''):''}
-      ${abgehakt.length?`<h2>Schon bezahlt – abgehakt (${abgehakt.length})</h2>`+abgehakt.map(zeile).join(''):''}`;
+    x.abgehakt=ja?today():null;toast(ja?'Ins Archiv verschoben':'Zurück in der Übersicht');
+    const y=window.scrollY;ANSICHT==='archiv'?zeichneArchiv():zeichneStart();window.scrollTo(0,y);}catch(e){toast(e.message,true);}
 }
 // KI im Hintergrund: Name/Beschreibung/Kategorie; Zahlungsfelder nur, wo noch leer
 async function nachbessern(id,erf){
@@ -273,6 +296,7 @@ function anzeige(a,k){
 async function zeige(id,hinweise,still){
   const a=(await api('expenses')).find(x=>x.id===id);if(!a){start();return;}
   if(AKTIV!==id){KOPIERT=new Set();BEARB=new Set();}
+  ANSICHT='detail';
   AKTIV=id;
   $('#kopfZurueck').hidden=false;
   const kq='?key='+encodeURIComponent(KEY);
@@ -317,7 +341,7 @@ async function verwerfen(){
   try{await api('expenses/'+AKTIV,'DELETE');toast('Gelöscht');start();}catch(e){toast(e.message,true);}
 }
 async function bezahlt(ja){
-  try{await api('expenses/'+AKTIV,'PUT',ja?{bezahltAm:today(),bezahltVia:BANK}:{bezahltAm:'',bezahltVia:''});toast(ja?'Als bezahlt markiert':'Wieder offen');start();}catch(e){toast(e.message,true);}
+  try{await api('expenses/'+AKTIV,'PUT',ja?{bezahltAm:today(),bezahltVia:BANK}:{bezahltAm:'',bezahltVia:''});toast(ja?'Bezahlt – ab ins Archiv':'Wieder offen');start();}catch(e){toast(e.message,true);}
 }
 start();
 </script>
