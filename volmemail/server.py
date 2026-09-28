@@ -520,6 +520,7 @@ def addr_list(value):
 
 
 FETCH_UID_RE = re.compile(rb'UID (\d+)')
+ANHANG_TYP_RE = re.compile(rb'\("application" "(?!(?:x-)?pkcs7-signature"|pgp-signature")', re.I)
 FETCH_FLAGS_RE = re.compile(rb'FLAGS \(([^)]*)\)')
 FETCH_SIZE_RE = re.compile(rb'RFC822\.SIZE (\d+)')
 
@@ -551,7 +552,10 @@ def fetch_list(box, folder, uids):
         size = FETCH_SIZE_RE.search(meta)
         head = BytesParser(policy=policy.compat32).parsebytes(raw or b'')
         # Anhänge grob aus der BODYSTRUCTURE ableiten, ohne die Mail zu laden.
-        has_att = b'"attachment"' in meta.lower() or b'"ATTACHMENT"' in meta
+        # Nicht jeder Absender schreibt "attachment" (dexxIT: "attachFile" mit
+        # application/octet-stream) — jeder application/*-Teil zaehlt deshalb mit,
+        # ausser digitalen Signaturen.
+        has_att = b'"attachment"' in meta.lower() or bool(ANHANG_TYP_RE.search(meta))
         date = decode_header(head.get('Date'))
         try:
             ts = email.utils.parsedate_to_datetime(date).timestamp()
