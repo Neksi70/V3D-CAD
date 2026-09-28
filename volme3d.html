@@ -8410,6 +8410,7 @@ function enterEdgeMode(quiet = false) {
 }
 
 function exitEdgeMode() {
+  _ebPrevEnd();
   if (_edgeLines) { _edgeObj.remove(_edgeLines); _edgeLines.geometry.dispose(); _edgeLines = null; }
   if (_edgeCircles) { _edgeObj.remove(_edgeCircles); _edgeCircles.geometry.dispose(); _edgeCircles = null; }
   if (_edgeMeshes.length > 0) {
@@ -10537,9 +10538,212 @@ function _projectWorldToScreen(worldPos) {
   return { x: r.left + (v.x+1)/2*r.width, y: r.top + (-v.y+1)/2*r.height };
 }
 
+// Zieh-Richtung je Körper: Zylinder/Kegel/Rohr und Lochränder runden nach
+// RECHTS (s. _applyEdgeHandleValue), alle anderen fasen nach rechts.
+function _edgeBevelRightIsRound(o) {
+  if (!o) return false;
+  const st = o.userData.shapeType;
+  if (st === 'cylinder' || st === 'cone' || st === 'tube') return true;
+  const dyn = o.userData._dynamicEdges || [];
+  return [..._edgeSel].some(i => dyn[i] && dyn[i].rim);
+}
+
 function _formatBevelVal(mm) {
   if (Math.abs(mm) < 0.05) return '0 mm';
-  return (mm > 0 ? 'C ' : 'R ') + Math.abs(mm).toFixed(1) + ' mm';
+  const round = _edgeBevelRightIsRound(_edgeObj) ? mm > 0 : mm < 0;
+  let s = (round ? 'Rundung R ' : 'Fase ') + Math.abs(mm).toFixed(1).replace('.', ',') + ' mm';
+  if (_ebPrev && _ebPrev.fail) s += ' – zu groß';
+  return s;
+}
+
+// ─── Live-Vorschau beim Ziehen des Kanten-Griffs ────────────────────────────
+// Bisher stand beim Ziehen nur „C 1.2 mm" am Griff, der Körper blieb scharf
+// bis zum Loslassen. Jetzt wird die Fase/Rundung während des Ziehens echt
+// mitgerechnet: OCCT-Körper (Quader, Pyramide, Keil, Vieleck, weitergeführte
+// STEP-Formen) über denselben Replay wie beim Anwenden, Zylinder/Kegel/Rohr
+// über ihre parametrischen Builder. Beim Loslassen wird der Vorschau-Zustand
+// verworfen und regulär angewendet (Undo bleibt sauber). Lochränder und
+// Netz-Körper zeigen weiter nur den Wert.
+let _ebPrev = null;   // { o, kind, mesh, hidden, want, done, busy, slow, fail, timer, cyl }
+
+function _ebPrevOcctParams(o) {
+  const ud = o.userData;
+  const hasBrep = _brepOk(o);
+  const occtShape = ud.occtShape || (hasBrep ? 'brep' : null) ||
+    (ud.shapeType === 'sketch' ? null : ud.shapeType) || null;
+  if (!occtShape) return null;
+  // Frischer STEP-Import: der erste Schritt legt _brep erst an → keine Vorschau
+  if (occtShape === 'brep' && !ud._occtParams) return null;
+  const qOk = ud._occtParams || hasBrep ||
+    Math.abs(o.quaternion.x) + Math.abs(o.quaternion.y) + Math.abs(o.quaternion.z) < 0.01;
+  if (!qOk) return null;
+  let sx, sy, sz, geoOff, prevOps;
+  if (ud._occtParams) {
+    ({ sx, sy, sz, geoOff, ops: prevOps } = ud._occtParams);
+  } else {
+    sx = o.scale.x; sy = o.scale.y; sz = o.scale.z;
+    geoOff = (occtShape === 'cylinder' || occtShape === 'tube' || occtShape === 'cone')
+      ? { x: o.position.x, y: o.position.y - sy, z: o.position.z }
+      : { x: o.position.x - sx, y: o.position.y - sy, z: o.position.z - sz };
+    prevOps = [];
+  }
+  return { occtShape, sx, sy, sz, geoOff, prevOps: prevOps || [] };
+}
+
+function _ebPrevStart() {
+  _ebPrevEnd();
+  const o = _edgeObj;
+  if (!o || !_edgeMode || !_edgeSel.size) return;
+  const dyn = o.userData._dynamicEdges || [];
+  if ([..._edgeSel].some(i => dyn[i] && dyn[i].rim)) return;
+  const st = o.userData.shapeType;
+  const p = { o, want: 0, done: 0, busy: false, slow: false, fail: false, timer: 0, mesh: null, hidden: null };
+  if (st === 'cylinder' || st === 'cone' || st === 'tube') {
+    p.kind = 'cyl';
+    const ud = o.userData;
+    p.cyl = { capBevel: ud.capBevel ? { ...ud.capBevel } : undefined,
+              tubeBevel: ud.tubeBevel ? { ...ud.tubeBevel } : undefined,
+              fillet: ud.fillet, chamfer: ud.chamfer };
+  } else {
+    p.occt = _ebPrevOcctParams(o);
+    if (!p.occt) return;
+    p.kind = 'occt';
+    if (!_oc) _loadOCCT().catch(() => {});
+  }
+  _ebPrev = p;
+}
+
+// Original ausblenden (nur das Material — Kinder wie Kantenlinien bleiben
+// steuerbar) und die eigenen Kanten-Overlays verstecken, die sonst die alte
+// scharfe Kante über die Vorschau zeichnen würden.
+function _ebPrevHideOrig(p) {
+  if (p.hidden) return;
+  const o = p.o, mats = Array.isArray(o.material) ? o.material : [o.material];
+  p.hidden = { mats: mats.map(m => [m, m.visible]), kids: o.children.map(c => [c, c.visible]) };
+  mats.forEach(m => { m.visible = false; });
+  o.children.forEach(c => { c.visible = false; });
+}
+function _ebPrevShowOrig(p) {
+  if (!p.hidden) return;
+  p.hidden.mats.forEach(([m, v]) => { m.visible = v; });
+  p.hidden.kids.forEach(([c, v]) => { c.visible = v; });
+  p.hidden = null;
+}
+
+function _ebPrevCylAssign(o, val) {
+  const isChamfer = val < 0, mm = Math.abs(val) * 10;
+  const setEdge = (bv, top) => {
+    if (isChamfer) { if (top) { bv.topChamfer = mm; bv.topRound = 0; } else { bv.botChamfer = mm; bv.botRound = 0; } }
+    else           { if (top) { bv.topRound = mm; bv.topChamfer = 0; } else { bv.botRound = mm; bv.botChamfer = 0; } }
+  };
+  const ud = o.userData;
+  if (ud.shapeType === 'tube') {
+    const bv = ud.tubeBevel || (ud.tubeBevel = { ..._tubeBevelOf(o) });
+    ud.fillet = 0; ud.chamfer = 0;
+    _edgeSel.forEach(i => setEdge(bv, i === 0));
+  } else {
+    const cb = ud.capBevel || (ud.capBevel = {
+      topRound: ud.fillet || 0, botRound: ud.fillet || 0,
+      topChamfer: ud.chamfer || 0, botChamfer: ud.chamfer || 0 });
+    _edgeSel.forEach(i => setEdge(cb, ud.shapeType === 'cylinder' ? (i === 0) : false));
+    ud.fillet = Math.max(cb.topRound, cb.botRound);
+    ud.chamfer = Math.max(cb.topChamfer, cb.botChamfer);
+  }
+}
+function _ebPrevCylRestore(p) {
+  const ud = p.o.userData, b = p.cyl;
+  if (b.capBevel === undefined) delete ud.capBevel; else ud.capBevel = { ...b.capBevel };
+  if (b.tubeBevel === undefined) delete ud.tubeBevel; else ud.tubeBevel = { ...b.tubeBevel };
+  ud.fillet = b.fillet; ud.chamfer = b.chamfer;
+}
+
+function _ebPrevCompute(p, val) {
+  const o = p.o;
+  if (p.kind === 'cyl') {
+    _ebPrevCylRestore(p);
+    if (Math.abs(val) >= 0.005) _ebPrevCylAssign(o, val);
+    _fpRebuildGeo(o);
+    _updateObjEdgeLines(o);
+    p.fail = false;
+    return;
+  }
+  if (Math.abs(val) < 0.005) {
+    if (p.mesh) p.mesh.visible = false;
+    _ebPrevShowOrig(p); p.fail = false;
+    return;
+  }
+  const oc = _oc; if (!oc) return;
+  const q = p.occt, dyn = o.userData._dynamicEdges;
+  const toOcct = w => [w[0]-q.geoOff.x, w[1]-q.geoOff.y, w[2]-q.geoOff.z];
+  const isPos = val > 0, dist = Math.abs(val);
+  const newOps = [..._edgeSel].map(i => ({ idx: i, dist, type: isPos ? 'chamfer' : 'fillet',
+    wa: toOcct(dyn[i].worldA), wb: toOcct(dyn[i].worldB) }));
+  // Replay kanonisiert die Ops in-place → mit einer Kopie arbeiten
+  const prevOps = JSON.parse(JSON.stringify(q.prevOps));
+  const allOps = _mergeOCCTOps(prevOps, newOps, { sx: q.sx, sy: q.sy, sz: q.sz });
+  let base = null, cur = null;
+  try {
+    base = _buildOCCTBaseShape(oc, q.occtShape, q.sx, q.sy, q.sz, null,
+      o.userData.coneTop || 0, o.userData.coneFlip, o.userData._brep);
+    const r = _replayOCCTOps(oc, base, allOps, q.sx, q.sy, q.sz);
+    cur = r.shape;
+    if (!r.opOk) { p.fail = true; return; }
+    const geo = _occtShapeToThreeGeo(oc, cur, q.geoOff);
+    if (!p.mesh) {
+      const src = Array.isArray(o.material) ? o.material[0] : o.material;
+      const mat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(o.userData.color || (src && src.color ? '#' + src.color.getHexString() : '#0078ff')),
+        roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide });
+      p.mesh = new THREE.Mesh(geo, mat);
+      p.mesh.userData._ebPreview = true;
+      scene.add(p.mesh);
+    } else {
+      p.mesh.geometry.dispose(); p.mesh.geometry = geo;
+    }
+    _updateObjEdgeLines(p.mesh);
+    p.mesh.visible = true;
+    _ebPrevHideOrig(p);
+    p.fail = false;
+  } catch (e) {
+    p.fail = true;
+  } finally {
+    // Brep-Grundform ist gecacht (_brepCache) → nicht freigeben
+    try { if (cur && cur !== base) cur.delete(); } catch (e) {}
+    try { if (base && q.occtShape !== 'brep') base.delete(); } catch (e) {}
+  }
+}
+
+// Zieh-Wert (Szene-Einheiten) anfordern. Schnelle Körper rechnen pro Frame,
+// langsame (>250 ms, z.B. große STEP-Teile) erst wenn der Zeiger kurz ruht.
+function _ebPrevRequest(val) {
+  const p = _ebPrev; if (!p) return;
+  p.want = val;
+  const run = () => {
+    if (_ebPrev !== p || p.busy) return;
+    if (p.kind === 'occt' && !_oc) { p.timer = setTimeout(run, 120); return; }
+    if (Math.abs(p.want - p.done) < 1e-4 && (p.mesh || p.kind === 'cyl')) return;
+    p.busy = true;
+    const v = p.want, t0 = performance.now();
+    try { _ebPrevCompute(p, v); } finally { p.busy = false; }
+    p.done = v;
+    if (performance.now() - t0 > 250) p.slow = true;
+    if (Math.abs(p.want - p.done) > 1e-4) schedule();
+  };
+  const schedule = () => {
+    clearTimeout(p.timer);
+    if (p.slow) p.timer = setTimeout(run, 250);
+    else requestAnimationFrame(run);
+  };
+  schedule();
+}
+
+function _ebPrevEnd() {
+  const p = _ebPrev; if (!p) return;
+  _ebPrev = null;
+  clearTimeout(p.timer);
+  if (p.kind === 'cyl') { _ebPrevCylRestore(p); _fpRebuildGeo(p.o); _updateObjEdgeLines(p.o); }
+  if (p.mesh) { scene.remove(p.mesh); p.mesh.geometry.dispose(); p.mesh.material.dispose(); }
+  _ebPrevShowOrig(p);
 }
 
 function _updateEdgeBevelHandleDOM() {
@@ -29107,19 +29311,28 @@ _ebh.addEventListener('pointerdown', e => {
   _edgeBevelDragStart = {x: e.clientX, y: e.clientY};
   _edgeBevelDragVal = 0;
   e.target.setPointerCapture(e.pointerId);
+  _ebPrevStart();
 });
 _ebh.addEventListener('pointermove', e => {
   if (!_edgeBevelDragging) return;
   const dx = e.clientX - (_edgeBevelDragStart ? _edgeBevelDragStart.x : 0);
   _edgeBevelDragVal = dx * 0.1;
   canvas.style.cursor = 'ew-resize';
+  _ebPrevRequest(Math.abs(_edgeBevelDragVal) > 0.5 ? _edgeBevelDragVal / 10 : 0);
 });
 _ebh.addEventListener('pointerup', e => {
   if (!_edgeBevelDragging) return;
   _edgeBevelDragging = false;
   canvas.style.cursor = 'crosshair';
   const val = _edgeBevelDragVal;
+  _ebPrevEnd();   // Vorschau verwerfen, dann regulär (mit Undo) anwenden
   if (Math.abs(val) > 0.5) _applyEdgeHandleValue(val / 10);
+});
+_ebh.addEventListener('pointercancel', () => {
+  if (!_edgeBevelDragging) return;
+  _edgeBevelDragging = false; _edgeBevelDragVal = 0;
+  canvas.style.cursor = 'crosshair';
+  _ebPrevEnd();
 });
 
 // ═══ SIZE & POSITION DIALOG ════════════════════════════════════════════════
@@ -48335,8 +48548,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.60';
+const VOLME3D_VERSION = '1.18.61';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.61', date:'2026-09-28', changes:[
+    ['⬡','<b>Kanten bearbeiten: Fase und Rundung schon beim Ziehen sehen.</b> Bisher stand beim Ziehen am orangen Punkt nur ein Wert wie „C 1.2 mm“ oder „R 1.2 mm“ daneben — der Körper blieb scharfkantig, bis man losließ. Jetzt wird die Kante während des Ziehens live mitgerechnet: Man sieht die Schräge bzw. die Rundung wachsen und lässt einfach los, wenn es passt. Das Schild sagt jetzt in Worten „Fase“ oder „Rundung“, und wenn der Wert für die Kante zu groß wird, steht „zu groß“ dabei. Beim Zylinder, Kegel und Rohr zeigte das Schild außerdem die falsche Art an (dort rundet Ziehen nach rechts) — auch das stimmt jetzt. Gilt für Quader, Pyramide, Keil, Zylinder, Kegel, Rohr und bereits bearbeitete Körper; bei Lochrändern bleibt es vorerst beim Wert am Griff.'],
+  ]},
   { version:'1.18.60', date:'2026-09-28', changes:[
     ['\u{1F6E9}\uFE0F','<b>Bausatz-Rahmen: klarer Hinweis bei eingelesenen Rahmen.</b> Wer einen als STL gespeicherten Rahmen wieder l\u00e4dt und auf \u{1F6E9}\uFE0F klickt, bekam bisher kommentarlos den Dialog f\u00fcr einen <i>neuen</i> Rahmen. So ein Rahmen ist ein einziges Netz und kennt seine Teile nicht mehr \u2014 <b>\u201eTeile freigeben\u201c</b> geht nur mit dem Rahmen, der im Entwurf mit \u{1F6E9}\uFE0F gebaut wurde. Der Dialog sagt das jetzt oben und nennt den Weg: unter <b>Meine Designs</b> den Entwurf mit dem Rahmen \u00f6ffnen, dort Rahmen anklicken, \u{1F6E9}\uFE0F.'],
   ]},
