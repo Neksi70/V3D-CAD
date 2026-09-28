@@ -11192,7 +11192,7 @@ function _mergeOCCTOps(prevOps, newOps, dim) {
   return out;
 }
 
-function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz) {
+function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz, noSeq) {
   const chamferOps = ops.filter(op => op.type === 'chamfer');
   const filletOps  = ops.filter(op => op.type === 'fillet');
   const diagLen = 2 * Math.hypot(sx, sy, sz);
@@ -11243,9 +11243,13 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz) {
     else {
       lebende = lebende.concat(r.map(x => x.op));
       const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
-      for (const x of r) for (const e of x.edges) ch.Add_2(x.op.dist, e);
-      ch.Build(); opOk = ch.IsDone(); if (opOk) curShape = ch.Shape();
-      ch.delete();
+      // Build kann eine C++-Ausnahme werfen (kommt im WASM als ReferenceError
+      // ___cxa_can_catch an) → wie „nicht geklappt" behandeln
+      try {
+        for (const x of r) for (const e of x.edges) ch.Add_2(x.op.dist, e);
+        ch.Build(); opOk = ch.IsDone(); if (opOk) curShape = ch.Shape();
+      } catch (e) { opOk = false; }
+      finally { try { ch.delete(); } catch (e) {} }
     }
   }
   if (filletOps.length > 0 && opOk) {
@@ -11255,9 +11259,35 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz) {
     else {
       lebende = lebende.concat(r.map(x => x.op));
       const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
-      for (const x of r) for (const e of x.edges) fi.Add_2(x.op.dist, e);
-      fi.Build(); opOk = fi.IsDone(); if (opOk) curShape = fi.Shape();
-      fi.delete();
+      try {
+        for (const x of r) for (const e of x.edges) fi.Add_2(x.op.dist, e);
+        fi.Build(); opOk = fi.IsDone(); if (opOk) curShape = fi.Shape();
+      } catch (e) { opOk = false; }
+      finally { try { fi.delete(); } catch (e) {} }
+    }
+  }
+  // Rückfall: Schritt für Schritt in Anlege-Reihenfolge. Alle Fasen, dann alle
+  // Rundungen GEMEINSAM scheitert, sobald sich an einer Ecke Fase und Rundungen
+  // treffen (Würfel: Fase oben vorn + Rundung oben rechts + senkrechte Kante
+  // vorn rechts → OCCT-Ausnahme bei jeder Größe, Volker 28.9.). Einzeln
+  // nacheinander, so wie der Nutzer sie angelegt hat, klappt es meist.
+  // Reicht die Anlege-Reihenfolge nicht, noch „Fasen zuerst" und „Rundungen
+  // zuerst" (je einzeln) — je nach Ecke gelingt nur eine davon.
+  if (!opOk && !noSeq && chamferOps.length + filletOps.length > 1) {
+    const edgeOps = ops.filter(op => op.type === 'chamfer' || op.type === 'fillet');
+    const orders = [edgeOps, [...chamferOps, ...filletOps], [...filletOps, ...chamferOps]];
+    const seen = new Set();
+    for (const order of orders) {
+      const key = order.map(op => edgeOps.indexOf(op)).join(',');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let sh = baseShape, ok = true, live = [];
+      for (const op of order) {
+        const r1 = _replayOCCTOps(oc, sh, [op], sx, sy, sz, true);
+        if (!r1.opOk) { ok = false; break; }
+        sh = r1.shape; live = live.concat(r1.ops);
+      }
+      if (ok) { curShape = sh; opOk = true; lebende = ops.filter(op => op.type === 'shell').concat(live); break; }
     }
   }
   // ─── Gehäuse / Shell: Solid aushöhlen (nach Fillet/Chamfer) ──────────
@@ -48873,8 +48903,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.65';
+const VOLME3D_VERSION = '1.18.66';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.66', date:'2026-09-28', changes:[
+    ['🧊','<b>Rundung an Ecken, wo schon Fase und Rundung zusammenstoßen.</b> Beispiel Würfel: oben vorn gefast, oben rechts gerundet — dann ließ sich die senkrechte Kante vorn rechts gar nicht mehr runden, es hieß „zu groß“, selbst bei 1 mm. V3D CAD hat alle Rundungen in einem Rutsch gerechnet, und daran scheitert der Geometrie-Kern an so einer Ecke. Jetzt rechnet V3D CAD in diesem Fall die Schritte einzeln nacheinander und probiert dabei mehrere Reihenfolgen. Damit gehen solche Ecken fast immer; nur sehr große Rundungen direkt neben einer schmalen Fase werden weiterhin auf das Machbare begrenzt.'],
+  ]},
   { version:'1.18.65', date:'2026-09-28', changes:[
     ['🔧','<b>Weitere Kanten runden auch nach dem Verschieben.</b> Wer einen Körper nach der ersten Rundung oder Fase verschoben oder größer/kleiner gezogen hat, konnte danach keine weitere Kante mehr bearbeiten — es hieß „zu groß“, selbst bei 1 mm. Die bearbeitete Form hatte sich ihre alte Lage gemerkt und zielte an die falsche Stelle. Jetzt wird die neue Lage beim Bearbeiten übernommen. Außerdem sitzt die orange Markierung der gewählten Kante jetzt auf der echten Kante; vorher lag sie oft daneben mitten auf der Fläche.'],
   ]},
