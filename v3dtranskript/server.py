@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """V3D Transkript - gesprochenes Wort aus Video/Sprachnachricht als Text.
+Videos ohne (hörbaren) Ton laufen im Bildmodus (bildmodus.py): Schlüsselbilder
++ erkannter Text, als Markdown/JSON/ZIP für die Auswertung mit Claude.
 
 Aufruf: python3 server.py [port]
+        V3DTR_DATEN=/anderer/ordner python3 server.py 8793   (z. B. für Tests)
 """
 import json
 import os
@@ -11,21 +14,27 @@ import shutil
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
+
+import bildmodus
 
 BASIS = os.path.dirname(os.path.abspath(__file__))
-DATEN = os.path.join(BASIS, "data")
+DATEN = os.environ.get("V3DTR_DATEN") or os.path.join(BASIS, "data")
 JOBS = os.path.join(DATEN, "jobs")
 MEDIEN = os.path.join(DATEN, "medien")
+BILDER = os.path.join(DATEN, "bilder")        # je Bildmodus-Job ein Ordner
 CONFIG_PFAD = os.path.join(BASIS, "config.json")
 MAX_BYTES = 800 * 1024 * 1024          # 800 MB
 AUFBEWAHRUNG = 14 * 24 * 3600          # alte Jobs nach 14 Tagen weg
+LAUFENDE_ZUSTAENDE = ("wartet", "pruefen", "ton", "transkribiert", "bilder", "ocr")
 
-for p in (DATEN, JOBS, MEDIEN):
+for p in (DATEN, JOBS, MEDIEN, BILDER):
     os.makedirs(p, exist_ok=True)
 
 
@@ -112,9 +121,20 @@ def jobs_liste():
         if job:
             raus.append({k: job.get(k) for k in
                          ("id", "name", "zustand", "prozent", "angelegt",
-                          "dauer", "modell", "sprache", "fehler")})
+                          "dauer", "modell", "sprache", "fehler", "modus")})
     raus.sort(key=lambda j: j.get("angelegt", 0), reverse=True)
     return raus
+
+
+def job_dateien_weg(jid):
+    """Hochgeladene Datei, Zwischenstände und Bildordner eines Jobs entfernen."""
+    for m in os.listdir(MEDIEN):
+        if m.startswith(jid):
+            try:
+                os.remove(os.path.join(MEDIEN, m))
+            except OSError:
+                pass
+    shutil.rmtree(os.path.join(BILDER, jid), ignore_errors=True)
 
 
 def aufraeumen():
@@ -123,13 +143,14 @@ def aufraeumen():
         pfad = os.path.join(JOBS, name)
         try:
             if os.path.getmtime(pfad) < grenze:
-                jid = name[:-5]
                 os.remove(pfad)
-                for m in os.listdir(MEDIEN):
-                    if m.startswith(jid):
-                        os.remove(os.path.join(MEDIEN, m))
+                job_dateien_weg(name[:-5])
         except OSError:
             pass
+    # Bildordner ohne Job (z. B. Absturz mitten im Löschen)
+    for jid in os.listdir(BILDER):
+        if not os.path.exists(job_pfad(jid)):
+            shutil.rmtree(os.path.join(BILDER, jid), ignore_errors=True)
 
 
 # ---------------------------------------------------------------- Ton + Whisper
@@ -188,16 +209,100 @@ def zeit_srt(sek):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+class JobGeloescht(Exception):
+    pass
+
+
+def bild_verarbeiten(jid, job, quelle, grund):
+    """Bildmodus: Schlüsselbilder + OCR nach data/bilder/<jid>/. Das Ergebnis
+    landet zusätzlich als Segmente/Text im Job - damit gehen auch .txt/.srt."""
+    ordner = os.path.join(BILDER, jid)
+    shutil.rmtree(ordner, ignore_errors=True)
+    opts = job.get("bild") or {}
+    job.update(modus="bild", modus_grund=grund, zustand="bilder", prozent=2)
+    job_schreiben(job)
+    letzte = [0.0]
+
+    def pruefen():
+        if job_lesen(jid) is None:
+            raise JobGeloescht()
+
+    def fortschritt(zustand, prozent, text):
+        if time.time() - letzte[0] < 1.0:
+            return
+        letzte[0] = time.time()
+        pruefen()
+        job.update(zustand=zustand, prozent=int(min(99, prozent)), schritt=text)
+        job_schreiben(job)
+
+    def echo(stufe, text):
+        print(f"[job {jid}] {'!! ' if stufe == 'warnung' else ''}{text}", flush=True)
+
+    erg = bildmodus.ausfuehren(
+        quelle, ordner, start=opts.get("start"), ende=opts.get("ende"),
+        schwelle=opts.get("schwelle", bildmodus.STANDARD["schwelle"]),
+        intervall=opts.get("intervall", bildmodus.STANDARD["intervall"]),
+        max_bilder=opts.get("max_bilder", bildmodus.STANDARD["max_bilder"]),
+        toleranz=opts.get("toleranz", bildmodus.STANDARD["toleranz"]),
+        entzerren_an=bool(opts.get("entzerren")), ocr_an=opts.get("ocr", True),
+        ocr_fehlt="ueberspringen", tesseract_cmd=CFG.get("tesseract") or None,
+        modus_grund=grund, quelle_name=job.get("name"),
+        protokoll=bildmodus.Protokoll(echo), fortschritt=fortschritt,
+        abbrechen_pruefen=pruefen, arbeitsordner=MEDIEN)
+    segmente = []
+    for i, b in enumerate(erg["bilder"]):
+        naechste = erg["bilder"][i + 1]["zeit"] if i + 1 < len(erg["bilder"]) else (
+            erg["ausschnitt"]["ende"] or b["zeit"] + 2)
+        text = ((b.get("ocr") or {}).get("text") or "").strip()
+        segmente.append({"start": b["zeit"], "ende": max(naechste, b["zeit"] + 0.5),
+                         "text": f"[Bild {b['nr']}] " + (text.replace("\n", " / ") or "(kein Text)")})
+    job = job_lesen(jid)
+    if job is None:
+        raise JobGeloescht()
+    job.update(
+        modus="bild", modus_grund=grund, segmente=segmente,
+        text="\n\n".join(f"[{bildmodus.zeit_text(b['zeit'])}] Bild {b['nr']}\n"
+                          + (((b.get("ocr") or {}).get("text") or "").strip() or "(kein Text)")
+                          for b in erg["bilder"]),
+        bilder=[{k: b.get(k) for k in ("nr", "zeit", "zeit_text", "datei", "breite", "hoehe",
+                                        "grund", "text_geaendert", "entzerrt", "ocr")}
+                for b in erg["bilder"]],
+        statistik=erg["statistik"], einstellungen=erg["einstellungen"],
+        hinweise=[e["text"] for e in erg["log"] if e["stufe"] == "warnung"],
+        dauer=erg["video"].get("dauer"), zustand="fertig", prozent=100,
+        beendet=time.time(), schritt=None)
+    job_schreiben(job)
+
+
 def verarbeiten(jid):
     job = job_lesen(jid)
     if not job:
         return
     try:
+        quelle = os.path.join(MEDIEN, job["datei"])
+        modus = job.get("modus_wunsch") or "auto"
+        opts = job.get("bild") or {}
+        if modus == "bild":
+            bild_verarbeiten(jid, job, quelle, "Bildmodus gewählt")
+            return
+        if modus == "auto":
+            job["zustand"] = "pruefen"
+            job["prozent"] = 1
+            job_schreiben(job)
+            erkannt, grund, info, _ = bildmodus.modus_erkennen(
+                quelle, bildmodus.zeit_lesen(opts.get("start")),
+                bildmodus.zeit_lesen(opts.get("ende")))
+            job["modus_grund"] = grund
+            if erkannt == "bild":
+                bild_verarbeiten(jid, job, quelle, "automatisch: " + grund)
+                return
+            job["hat_bildspur"] = info["video"] is not None
+
+        job["modus"] = "ton"
         job["zustand"] = "ton"
         job["prozent"] = 2
         job_schreiben(job)
 
-        quelle = os.path.join(MEDIEN, job["datei"])
         # nicht schlicht jid + ".wav": bei einem hochgeladenen .wav waere das
         # dieselbe Datei wie die Quelle und ffmpeg bricht ab
         wav = os.path.join(MEDIEN, jid + "_16k.wav")
@@ -237,6 +342,16 @@ def verarbeiten(jid):
             if job_lesen(jid) is None:      # Job wurde gelöscht
                 return
 
+        if not gesammelt and modus == "auto" and job.get("hat_bildspur"):
+            # Ton war da, aber nichts Gesprochenes (Rauschen, Musik ohne Text)
+            try:
+                os.remove(wav)
+            except OSError:
+                pass
+            bild_verarbeiten(jid, job, quelle,
+                             "automatisch: Tonspur ohne erkennbare Sprache ("
+                             + (job.get("modus_grund") or "") + ")")
+            return
         job["segmente"] = gesammelt
         job["text"] = " ".join(s["text"] for s in gesammelt).strip()
         job["zustand"] = "fertig"
@@ -247,7 +362,13 @@ def verarbeiten(jid):
             os.remove(wav)
         except OSError:
             pass
+    except JobGeloescht:
+        job_dateien_weg(jid)
+        print(f"[job {jid}] gelöscht während der Verarbeitung", flush=True)
     except Exception as e:                                   # noqa: BLE001
+        if job_lesen(jid) is None:                           # inzwischen gelöscht
+            job_dateien_weg(jid)
+            return
         job = job_lesen(jid) or job
         job["zustand"] = "fehler"
         job["fehler"] = str(e)[:500]
@@ -274,6 +395,47 @@ def sicherer_name(name):
     return name[:120] or "aufnahme"
 
 
+def bild_optionen(q):
+    """Upload-Parameter für den Bildmodus prüfen. -> (optionen, fehler)"""
+    def zahl(name, standard, typ, lo, hi):
+        roh = (q.get(name) or [""])[0].strip().replace(",", ".")
+        if not roh:
+            return standard
+        wert = typ(float(roh))
+        if not lo <= wert <= hi:
+            raise ValueError(f"{name} muss zwischen {lo} und {hi} liegen")
+        return wert
+
+    try:
+        std = bildmodus.STANDARD
+        opts = {
+            "entzerren": (q.get("entzerren") or ["0"])[0] == "1",
+            "ocr": (q.get("ocr") or ["1"])[0] != "0",
+            "schwelle": zahl("schwelle", std["schwelle"], float, 0.001, 1.0),
+            "intervall": zahl("intervall", std["intervall"], float, 0.5, 3600),
+            "max_bilder": zahl("max_bilder", std["max_bilder"], int, 1, 500),
+            "toleranz": zahl("toleranz", std["toleranz"], int, 0, 128),
+        }
+        for k in ("start", "ende"):
+            roh = (q.get(k) or [""])[0].strip()
+            if roh:
+                bildmodus.zeit_lesen(roh)            # nur prüfen
+                opts[k] = roh
+        s_, e_ = bildmodus.zeit_lesen(opts.get("start")), bildmodus.zeit_lesen(opts.get("ende"))
+        if s_ is not None and e_ is not None and e_ <= s_:
+            raise ValueError("Endzeit muss nach der Startzeit liegen")
+        return opts, None
+    except ValueError as e:
+        return None, str(e)
+
+
+def bild_ordner(job):
+    if not job or job.get("modus") != "bild" or job.get("zustand") != "fertig":
+        return None
+    ordner = os.path.join(BILDER, job["id"])
+    return ordner if os.path.isdir(ordner) else None
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "V3DTranskript/1.0"
     protocol_version = "HTTP/1.1"
@@ -289,7 +451,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", typ)
         self.send_header("Content-Length", str(len(koerper)))
-        self.send_header("Cache-Control", "no-store")
+        if "Cache-Control" not in (extra or {}):
+            self.send_header("Cache-Control", "no-store")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -298,6 +461,37 @@ class Handler(BaseHTTPRequestHandler):
 
     def json_raus(self, obj, code=200, extra=None):
         self.sende(code, json.dumps(obj, ensure_ascii=False), extra=extra)
+
+    @staticmethod
+    def anhang(dateiname):
+        """HTTP-Header sind latin-1: Umlaute nur über filename* (RFC 5987)."""
+        ascii_name = dateiname.encode("ascii", "replace").decode().replace("?", "_")
+        return (f'attachment; filename="{ascii_name}"; '
+                f"filename*=UTF-8''{quote(dateiname)}")
+
+    def zip_senden(self, ordner, wurzel):
+        """Ordner so packen, wie das Markdown ihn erwartet: <wurzel>/bildprotokoll.md
+        + <wurzel>/bilder/*.png. PNGs sind schon komprimiert -> nur speichern."""
+        with tempfile.TemporaryFile() as tmp:
+            with zipfile.ZipFile(tmp, "w") as z:
+                for datei in ("bildprotokoll.md", "bildprotokoll.json", "bildmodus.log"):
+                    pfad = os.path.join(ordner, datei)
+                    if os.path.exists(pfad):
+                        z.write(pfad, f"{wurzel}/{datei}", compress_type=zipfile.ZIP_DEFLATED)
+                bilder = os.path.join(ordner, "bilder")
+                for name in sorted(os.listdir(bilder)):
+                    z.write(os.path.join(bilder, name), f"{wurzel}/bilder/{name}",
+                            compress_type=zipfile.ZIP_STORED)
+            groesse = tmp.tell()
+            tmp.seek(0)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(groesse))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Disposition", self.anhang(wurzel + ".zip"))
+            self.end_headers()
+            if self.command != "HEAD":
+                shutil.copyfileobj(tmp, self.wfile, 1 << 20)
 
     def angemeldet(self):
         if offen():
@@ -353,6 +547,40 @@ class Handler(BaseHTTPRequestHandler):
             self.json_raus(job)
             return
 
+        if pfad == "/api/bild":
+            job = job_lesen((q.get("id") or [""])[0])
+            name = (q.get("datei") or [""])[0]
+            ordner = bild_ordner(job)
+            if not ordner or not re.fullmatch(r"bild_\d+_t[\d-]+\.png", name):
+                self.json_raus({"fehler": "unbekannt"}, 404)
+                return
+            try:
+                with open(os.path.join(ordner, "bilder", name), "rb") as f:
+                    self.sende(200, f.read(), "image/png",
+                               {"Cache-Control": "private, max-age=86400"})
+            except OSError:
+                self.json_raus({"fehler": "unbekannt"}, 404)
+            return
+
+        if pfad in ("/api/md", "/api/json", "/api/zip"):
+            job = job_lesen((q.get("id") or [""])[0])
+            ordner = bild_ordner(job)
+            if not ordner:
+                self.json_raus({"fehler": "kein Bildprotokoll"}, 404)
+                return
+            stamm = sicherer_name(os.path.splitext(job.get("name") or "video")[0])
+            if pfad == "/api/zip":
+                self.zip_senden(ordner, stamm + "_bildprotokoll")
+                return
+            endung = pfad.rsplit("/", 1)[1]
+            with open(os.path.join(ordner, "bildprotokoll." + endung), "rb") as f:
+                inhalt = f.read()
+            typ = ("text/markdown; charset=utf-8" if endung == "md"
+                   else "application/json; charset=utf-8")
+            self.sende(200, inhalt, typ, {"Content-Disposition": self.anhang(
+                f"{stamm}_bildprotokoll.{endung}")})
+            return
+
         if pfad in ("/api/txt", "/api/srt", "/api/zeit"):
             job = job_lesen((q.get("id") or [""])[0])
             if not job or job.get("zustand") != "fertig":
@@ -373,8 +601,7 @@ class Handler(BaseHTTPRequestHandler):
                                  f"{zeit_srt(s['ende'])}\n{s['text']}\n")
                 inhalt, endung = "\n".join(teile), "srt"
             self.sende(200, inhalt, "text/plain; charset=utf-8",
-                       {"Content-Disposition":
-                        f'attachment; filename="{sicherer_name(stamm)}.{endung}"'})
+                       {"Content-Disposition": self.anhang(f"{sicherer_name(stamm)}.{endung}")})
             return
 
         self.json_raus({"fehler": "unbekannter Pfad"}, 404)
@@ -422,6 +649,13 @@ class Handler(BaseHTTPRequestHandler):
             sprache = (q.get("sprache") or ["de"])[0]
             if sprache not in ("de", "en", "auto", "nl", "fr", "es", "it", "tr", "pl", "ru"):
                 sprache = "de"
+            modus_wunsch = (q.get("modus") or ["auto"])[0]
+            if modus_wunsch not in ("auto", "ton", "bild"):
+                modus_wunsch = "auto"
+            bild, fehler = bild_optionen(q)
+            if fehler:
+                self.json_raus({"fehler": "Bildmodus: " + fehler}, 400)
+                return
 
             jid = uuid.uuid4().hex
             endung = os.path.splitext(name)[1][:8] or ".bin"
@@ -448,7 +682,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             job = {"id": jid, "name": name, "datei": dateiname, "modell": modell,
-                   "sprache": sprache, "zustand": "wartet", "prozent": 0,
+                   "sprache": sprache, "modus_wunsch": modus_wunsch, "bild": bild,
+                   "zustand": "wartet", "prozent": 0,
                    "angelegt": time.time(), "groesse": gelesen,
                    "segmente": [], "text": ""}
             job_schreiben(job)
@@ -467,12 +702,9 @@ class Handler(BaseHTTPRequestHandler):
                 os.remove(job_pfad(jid))
             except OSError:
                 pass
-            for m in os.listdir(MEDIEN):
-                if m.startswith(jid):
-                    try:
-                        os.remove(os.path.join(MEDIEN, m))
-                    except OSError:
-                        pass
+            # läuft der Job gerade, räumt der Arbeiter beim nächsten Fortschritt
+            # selbst auf (JobGeloescht); hier schon mal alles Fertige weg
+            job_dateien_weg(jid)
             self.json_raus({"ok": True})
             return
 
@@ -483,10 +715,14 @@ def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8792
     if not shutil.which("ffmpeg"):
         print("!! ffmpeg fehlt - ohne das geht keine Tonspur", flush=True)
+    probleme = bildmodus.abhaengigkeiten_pruefen(tesseract_cmd=CFG.get("tesseract") or None)
+    if probleme:
+        print("!! Bildmodus: " + bildmodus.anleitung(probleme).replace("\n", "\n!! "),
+              flush=True)
     aufraeumen()
     # abgebrochene Jobs (Neustart mitten im Lauf) wieder einreihen
     for j in jobs_liste():
-        if j["zustand"] in ("wartet", "ton", "transkribiert"):
+        if j["zustand"] in LAUFENDE_ZUSTAENDE:
             WARTESCHLANGE.put(j["id"])
     threading.Thread(target=arbeiter, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
