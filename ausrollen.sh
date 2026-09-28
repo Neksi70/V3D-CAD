@@ -11,6 +11,16 @@ if ! git diff --quiet -- volme3d.html occt-server.js occt-pool.js volme3d_server
   exit 1
 fi
 
+# Sperre für die UI-Testversion (Branch ui-neu): volme3d-neu.html und alle
+# *-neu.*-Kopien dürfen nie nach netcup. Erst nach dem „Go" werden sie zu
+# volme3d.html umbenannt – solange sie auf master liegen, bricht der Rollout ab.
+NEU_DATEIEN=$(git ls-tree -r --name-only master | grep -E '(^|/)[^/]*-neu(\.[A-Za-z0-9]+)+$' || true)
+if [ -n "$NEU_DATEIEN" ]; then
+  echo "⚠ master enthält Testdateien der UI-Testversion — Rollout abgebrochen:" >&2
+  echo "$NEU_DATEIEN" | sed 's/^/   /' >&2
+  exit 1
+fi
+
 REMOTE_HEAD=$(ssh -o BatchMode=yes netcup "cd ~ && git rev-parse HEAD")
 LOCAL_HEAD=$(git rev-parse master)
 if [ "$REMOTE_HEAD" = "$LOCAL_HEAD" ]; then
