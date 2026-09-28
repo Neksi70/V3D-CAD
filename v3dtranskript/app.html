@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>V3D Transkript</title>
+<style>
+  :root{
+    --bg:#0f1216; --karte:#171c22; --rand:#252d36; --text:#e8edf2;
+    --grau:#96a2b0; --akzent:#3fa9f5; --gruen:#3ec78a; --rot:#e8635a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+  header{display:flex;align-items:center;gap:10px;padding:14px 18px;
+         border-bottom:1px solid var(--rand);position:sticky;top:0;
+         background:var(--bg);z-index:5}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  header .sub{color:var(--grau);font-size:13px}
+  main{max-width:860px;margin:0 auto;padding:18px}
+  .karte{background:var(--karte);border:1px solid var(--rand);border-radius:14px;
+         padding:16px;margin-bottom:16px}
+  .ablage{border:2px dashed var(--rand);border-radius:14px;padding:26px 16px;
+          text-align:center;color:var(--grau);cursor:pointer;transition:.15s}
+  .ablage:hover,.ablage.drueber{border-color:var(--akzent);color:var(--text);
+          background:rgba(63,169,245,.07)}
+  .ablage b{display:block;color:var(--text);font-size:17px;margin-bottom:4px}
+  .reihe{display:flex;gap:12px;flex-wrap:wrap;margin-top:14px}
+  label.feld{display:flex;flex-direction:column;gap:4px;font-size:13px;
+             color:var(--grau);flex:1;min-width:140px}
+  select,input[type=text],input[type=password]{background:#0d1116;color:var(--text);
+        border:1px solid var(--rand);border-radius:9px;padding:9px 10px;font-size:15px}
+  button{background:var(--akzent);color:#06121c;border:0;border-radius:9px;
+         padding:10px 16px;font-size:15px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.45;cursor:default}
+  button.still{background:transparent;color:var(--grau);border:1px solid var(--rand);
+               font-weight:500}
+  button.still:hover{color:var(--text);border-color:var(--akzent)}
+  .balken{height:8px;background:#0d1116;border-radius:99px;overflow:hidden;margin:10px 0 6px}
+  .balken i{display:block;height:100%;background:var(--akzent);width:0;transition:width .4s}
+  .klein{font-size:13px;color:var(--grau)}
+  .text{white-space:pre-wrap;line-height:1.65;background:#0d1116;border-radius:10px;
+        padding:14px;max-height:52vh;overflow:auto;border:1px solid var(--rand)}
+  .zeile{display:flex;gap:10px;padding:3px 0}
+  .zeile .t{color:var(--akzent);font-variant-numeric:tabular-nums;font-size:13px;
+            padding-top:3px;flex:none;cursor:default}
+  .job{display:flex;align-items:center;gap:10px;padding:10px 0;
+       border-top:1px solid var(--rand);cursor:pointer}
+  .job:first-child{border-top:0}
+  .job .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .punkt{width:9px;height:9px;min-height:9px;border-radius:99px;flex:none;
+       align-self:center;background:var(--grau)}
+  .punkt.fertig{background:var(--gruen)} .punkt.fehler{background:var(--rot)}
+  .punkt.laeuft{background:var(--akzent);animation:puls 1.2s infinite}
+  @keyframes puls{50%{opacity:.3}}
+  .tor{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;
+       justify-content:center;z-index:20;padding:20px}
+  .tor .karte{max-width:340px;width:100%;text-align:center}
+  .fehler{color:var(--rot);font-size:14px;margin-top:8px;min-height:20px}
+  .weg{display:none}
+</style>
+</head>
+<body>
+
+<div class="tor" id="tor">
+  <div class="karte">
+    <h1 style="margin:0 0 4px">V3D Transkript</h1>
+    <p class="klein" style="margin:0 0 16px">Gesprochenes aus Video und Sprachnachricht</p>
+    <input type="password" id="code" placeholder="Zugangscode" style="width:100%"
+           autocomplete="current-password" inputmode="text">
+    <button style="width:100%;margin-top:10px" onclick="anmelden()">Weiter</button>
+    <div class="fehler" id="torFehler"></div>
+  </div>
+</div>
+
+<header>
+  <span style="font-size:22px">📝</span>
+  <div><h1>V3D Transkript</h1><div class="sub">Video oder Sprachnachricht → Text</div></div>
+</header>
+
+<main>
+  <div class="karte">
+    <div class="ablage" id="ablage">
+      <b>Dateien auswählen oder hierher ziehen</b>
+      Video (.mp4), Sprachnachricht (.opus/.ogg/.amr), .m4a, .mp3, .wav, .aac …
+      <span style="display:block;margin-top:6px;font-size:13px">mehrere auf einmal
+      geht auch — sie kommen dann nacheinander dran</span>
+    </div>
+    <input type="file" id="datei" class="weg" multiple>
+    <div class="reihe">
+      <label class="feld">Sprache
+        <select id="sprache">
+          <option value="de" selected>Deutsch</option>
+          <option value="auto">automatisch erkennen</option>
+          <option value="en">Englisch</option>
+          <option value="nl">Niederländisch</option>
+          <option value="fr">Französisch</option>
+          <option value="es">Spanisch</option>
+          <option value="it">Italienisch</option>
+          <option value="tr">Türkisch</option>
+          <option value="pl">Polnisch</option>
+          <option value="ru">Russisch</option>
+        </select>
+      </label>
+      <label class="feld">Genauigkeit
+        <select id="modell">
+          <option value="base">schnell (base)</option>
+          <option value="small" selected>ausgewogen (small)</option>
+          <option value="medium">gründlich (medium, langsam)</option>
+        </select>
+      </label>
+    </div>
+    <div id="hochBereich" class="weg" style="margin-top:14px">
+      <div class="balken"><i id="hochBalken"></i></div>
+      <div class="klein" id="hochText">wird übertragen …</div>
+    </div>
+  </div>
+
+  <div class="karte weg" id="laufKarte">
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="punkt laeuft"></span>
+      <b id="laufName" style="flex:1;overflow:hidden;text-overflow:ellipsis;
+         white-space:nowrap"></b>
+      <span class="klein" id="laufProzent">0 %</span>
+    </div>
+    <div class="balken"><i id="laufBalken"></i></div>
+    <div class="klein" id="laufText">in der Warteschlange …</div>
+  </div>
+
+  <div class="karte weg" id="ergKarte">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <b id="ergName" style="flex:1;min-width:120px;overflow:hidden;
+         text-overflow:ellipsis;white-space:nowrap"></b>
+      <button class="still" id="umschalter" onclick="zeitmarkenUm()">Zeitmarken an</button>
+      <button class="still" onclick="kopieren(this)">Kopieren</button>
+      <button class="still" onclick="holen('txt')">.txt</button>
+      <button class="still" onclick="holen('srt')">.srt</button>
+    </div>
+    <div class="text" id="ergText"></div>
+    <div class="klein" id="ergInfo" style="margin-top:10px"></div>
+  </div>
+
+  <div class="karte" id="listeKarte">
+    <div class="klein" style="margin-bottom:6px">Frühere Transkripte</div>
+    <div id="liste"><div class="klein">noch nichts da</div></div>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let aktuell = null, zeitAn = false, ticker = null;
+
+/* Hinter dem Funnel kommt der Praefix (/transkript) nicht am Server an, und ohne
+   Schraegstrich am Ende wuerden relative Aufrufe auf / statt /transkript/ zeigen
+   - darum die Basis selbst aus dem Pfad ableiten. */
+const BASIS = (() => {
+  let p = location.pathname || '/';
+  if(/\.[a-z0-9]{2,5}$/i.test(p)) p = p.slice(0, p.lastIndexOf('/') + 1);
+  if(!p.endsWith('/')) p += '/';
+  return p;
+})();
+const u = pfad => BASIS + pfad;
+
+/* ---------------- Anmeldung ---------------- */
+async function anmelden(){
+  const code = $('#code').value.trim();
+  if(!code) return;
+  const a = await fetch(u('api/login'), {method:'POST', body: JSON.stringify({code})});
+  if(a.ok){ $('#tor').style.display='none'; jobsLaden(); }
+  else { $('#torFehler').textContent = 'Code stimmt nicht.'; $('#code').value=''; }
+}
+$('#code').addEventListener('keydown', e => { if(e.key==='Enter') anmelden(); });
+
+async function start(){
+  try{
+    const a = await (await fetch(u('api/ping'))).json();
+    if(a.angemeldet){ $('#tor').style.display='none'; jobsLaden(); }
+    else $('#code').focus();
+  }catch(e){ $('#torFehler').textContent = 'Server nicht erreichbar.'; }
+}
+
+/* ---------------- Datei annehmen ---------------- */
+const ablage = $('#ablage');
+ablage.onclick = () => $('#datei').click();
+ablage.ondragover = e => { e.preventDefault(); ablage.classList.add('drueber'); };
+ablage.ondragleave = () => ablage.classList.remove('drueber');
+ablage.ondrop = e => {
+  e.preventDefault(); ablage.classList.remove('drueber');
+  reihen(e.dataTransfer.files);
+};
+$('#datei').onchange = e => reihen(e.target.files);
+
+/* Dateien nacheinander hochladen - der Server arbeitet ohnehin einen nach dem
+   anderen ab, und so bleibt die Fortschrittsanzeige eindeutig. */
+async function reihen(liste){
+  const dateien = Array.from(liste || []);
+  if(!dateien.length) return;
+  for(let i = 0; i < dateien.length; i++){
+    if(dateien.length > 1)
+      $('#hochText').textContent = 'Datei ' + (i+1) + ' von ' + dateien.length;
+    try{ await hochladen(dateien[i], dateien.length > 1 ? (i+1) + '/' + dateien.length : ''); }
+    catch(e){ break; }
+  }
+}
+
+function hochladen(datei, zaehler){
+ return new Promise((fertig, schiefgegangen) => {
+  const url = u('api/upload') + '?name=' + encodeURIComponent(datei.name)
+            + '&modell=' + $('#modell').value + '&sprache=' + $('#sprache').value;
+  const x = new XMLHttpRequest();
+  x.open('POST', url);
+  x.setRequestHeader('Content-Type', 'application/octet-stream');
+  $('#hochBereich').classList.remove('weg');
+  $('#hochText').textContent = 'wird übertragen …';
+  x.upload.onprogress = e => {
+    if(!e.lengthComputable) return;
+    const p = Math.round(e.loaded / e.total * 100);
+    $('#hochBalken').style.width = p + '%';
+    $('#hochText').textContent = (zaehler ? zaehler + ' · ' : '')
+      + datei.name + ' — ' + p + ' % übertragen (' + mb(e.total) + ')';
+  };
+  x.onload = () => {
+    $('#hochBereich').classList.add('weg');
+    $('#hochBalken').style.width = '0';
+    $('#datei').value = '';
+    let a = {}; try{ a = JSON.parse(x.responseText); }catch(e){}
+    if(x.status === 200 && a.id){ aktuell = a.id; verfolgen(); jobsLaden(); fertig(a); }
+    else { meldung((a.fehler || ('Hochladen fehlgeschlagen (' + x.status + ')'))
+                   + ' — ' + datei.name);
+           schiefgegangen(new Error('upload')); }
+  };
+  x.onerror = () => { $('#hochBereich').classList.add('weg');
+                      meldung('Verbindung beim Hochladen verloren.');
+                      schiefgegangen(new Error('netz')); };
+  x.send(datei);
+ });
+}
+const mb = b => (b/1048576).toFixed(1).replace('.', ',') + ' MB';
+function meldung(t){ $('#laufKarte').classList.remove('weg');
+  $('#laufName').textContent = 'Fehler'; $('#laufText').textContent = t;
+  $('#laufText').style.color = 'var(--rot)'; }
+
+/* ---------------- Fortschritt verfolgen ---------------- */
+function verfolgen(){
+  clearInterval(ticker);
+  tick();
+  ticker = setInterval(tick, 2000);
+}
+async function tick(){
+  if(!aktuell) return;
+  let j;
+  try{ j = await (await fetch(u('api/job?id=' + aktuell))).json(); }catch(e){ return; }
+  if(j.fehler && !j.id){ clearInterval(ticker); return; }
+  zeigen(j);
+  if(j.zustand === 'fertig' || j.zustand === 'fehler'){
+    clearInterval(ticker); jobsLaden();
+  }
+}
+const ZUSTAND = {wartet:'in der Warteschlange …', ton:'Tonspur wird herausgelöst …',
+                 transkribiert:'wird verschriftlicht …', fertig:'fertig',
+                 fehler:'Fehler'};
+function zeigen(j){
+  aktuell = j.id;
+  if(j.zustand === 'fertig'){
+    $('#laufKarte').classList.add('weg');
+    $('#ergKarte').classList.remove('weg');
+    $('#ergName').textContent = j.name;
+    ergebnisMalen(j);
+    const dauer = j.dauer ? ' · ' + zeitKurz(j.dauer) + ' Ton' : '';
+    $('#ergInfo').textContent = (j.text ? j.text.split(/\s+/).length : 0)
+      + ' Wörter · ' + (j.segmente||[]).length + ' Abschnitte' + dauer
+      + (j.erkannte_sprache ? ' · Sprache: ' + j.erkannte_sprache : '');
+    return;
+  }
+  $('#ergKarte').classList.add('weg');
+  $('#laufKarte').classList.remove('weg');
+  $('#laufName').textContent = j.name || '';
+  $('#laufProzent').textContent = (j.prozent||0) + ' %';
+  $('#laufBalken').style.width = (j.prozent||0) + '%';
+  $('#laufText').style.color = j.zustand === 'fehler' ? 'var(--rot)' : '';
+  $('#laufText').textContent = j.zustand === 'fehler'
+    ? ('Fehler: ' + (j.fehler||'unbekannt'))
+    : (ZUSTAND[j.zustand] || j.zustand)
+      + ((j.segmente||[]).length ? ' (' + j.segmente.length + ' Abschnitte)' : '');
+}
+let letzterJob = null;
+function ergebnisMalen(j){
+  letzterJob = j;
+  const segs = j.segmente || [];
+  if(!zeitAn){ $('#ergText').textContent = j.text || '(nichts Gesprochenes gefunden)'; return; }
+  $('#ergText').innerHTML = segs.map(s =>
+    '<div class="zeile"><span class="t">' + zeitKurz(s.start) + '</span><span>'
+    + entschaerfen(s.text) + '</span></div>').join('') || '(nichts gefunden)';
+}
+const entschaerfen = t => t.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function zeitKurz(s){
+  s = Math.floor(s||0);
+  const h = Math.floor(s/3600), m = Math.floor(s%3600/60), r = s%60;
+  return (h ? h + ':' + String(m).padStart(2,'0') : m) + ':' + String(r).padStart(2,'0');
+}
+function datum(ts){
+  if(!ts) return '';
+  const d = new Date(ts * 1000), jetzt = new Date();
+  const uhr = String(d.getHours()).padStart(2,'0') + ':'
+            + String(d.getMinutes()).padStart(2,'0');
+  if(d.toDateString() === jetzt.toDateString()) return 'heute ' + uhr;
+  const gestern = new Date(jetzt); gestern.setDate(jetzt.getDate() - 1);
+  if(d.toDateString() === gestern.toDateString()) return 'gestern ' + uhr;
+  return String(d.getDate()).padStart(2,'0') + '.'
+       + String(d.getMonth()+1).padStart(2,'0') + '. ' + uhr;
+}
+function zeitmarkenUm(){
+  zeitAn = !zeitAn;
+  $('#umschalter').textContent = zeitAn ? 'Zeitmarken aus' : 'Zeitmarken an';
+  if(letzterJob) ergebnisMalen(letzterJob);
+}
+async function kopieren(knopf){
+  if(!letzterJob) return;
+  const t = zeitAn
+    ? (letzterJob.segmente||[]).map(s => '[' + zeitKurz(s.start) + '] ' + s.text).join('\n')
+    : (letzterJob.text || '');
+  try{ await navigator.clipboard.writeText(t); }
+  catch(e){
+    const ta = document.createElement('textarea');
+    ta.value = t; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); ta.remove();
+  }
+  const b = knopf; const alt = b.textContent;
+  b.textContent = 'kopiert ✓'; setTimeout(() => b.textContent = alt, 1500);
+}
+function holen(art){ if(aktuell) location.href = u('api/' + art + '?id=' + aktuell); }
+
+/* ---------------- Liste ---------------- */
+async function jobsLaden(){
+  let a;
+  try{ a = await (await fetch(u('api/jobs'))).json(); }catch(e){ return; }
+  const jobs = a.jobs || [];
+  const el = $('#liste');
+  if(!jobs.length){ el.innerHTML = '<div class="klein">noch nichts da</div>'; return; }
+  el.innerHTML = '';
+  jobs.forEach(j => {
+    const d = document.createElement('div');
+    d.className = 'job';
+    const klasse = j.zustand === 'fertig' ? 'fertig'
+                 : j.zustand === 'fehler' ? 'fehler' : 'laeuft';
+    d.innerHTML = '<span class="punkt ' + klasse + '"></span>'
+      + '<span class="n">' + entschaerfen(j.name || '') + '</span>'
+      + '<span class="klein">' + datum(j.angelegt) + '</span>';
+    const w = document.createElement('button');
+    w.className = 'still'; w.textContent = '×';
+    w.style.padding = '2px 9px';
+    w.onclick = async e => {
+      e.stopPropagation();
+      await fetch(u('api/loeschen'), {method:'POST', body: JSON.stringify({id: j.id})});
+      if(aktuell === j.id){ aktuell = null; $('#ergKarte').classList.add('weg');
+                            $('#laufKarte').classList.add('weg'); }
+      jobsLaden();
+    };
+    d.appendChild(w);
+    d.onclick = async () => {
+      aktuell = j.id;
+      const voll = await (await fetch(u('api/job?id=' + j.id))).json();
+      zeigen(voll);
+      if(voll.zustand !== 'fertig' && voll.zustand !== 'fehler') verfolgen();
+      window.scrollTo({top:0, behavior:'smooth'});
+    };
+    el.appendChild(d);
+  });
+  if(jobs.some(j => ['wartet','ton','transkribiert'].includes(j.zustand))
+     && !aktuell){ aktuell = jobs.find(j =>
+       ['wartet','ton','transkribiert'].includes(j.zustand)).id; verfolgen(); }
+}
+setInterval(() => { if(!document.hidden) jobsLaden(); }, 15000);
+start();
+</script>
+</body>
+</html>
