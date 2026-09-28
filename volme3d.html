@@ -8364,6 +8364,7 @@ function enterEdgeMode(quiet = false) {
     const _edgesWorld = (o.userData.shapeType === 'box' || _isFreshPyramid || _isFreshWedge ||
       _isOcctBox || _isOcctWasBox || o.userData.shapeType === 'cylinder' ||
       o.userData.shapeType === 'tube' || o.userData.shapeType === 'cone');
+    o.userData._dynEdgesWorld = _edgesWorld;
     o.updateMatrixWorld(true);
     const _b3 = getMeshBox(o);
     const _bsz = _b3.getSize(new THREE.Vector3());
@@ -25138,7 +25139,7 @@ canvas.addEventListener('mousedown', e => {
   if (!_edgeMode && _edgeBevelDragging) { _edgeBevelDragging = false; _edgeBevelDragStart = null; }
   if (_edgeMode) {
     if (!_edgeGlobal) {
-      const idx = _findHoveredEdge(e);
+      const _pick = _edgePickIdx(e), idx = _pick.idx;
       if (idx >= 0) {
         if (e.shiftKey) { if (_edgeSel.has(idx)) _edgeSel.delete(idx); else _edgeSel.add(idx); }
         else { _edgeSel.clear(); _edgeSel.add(idx); }
@@ -25164,7 +25165,7 @@ canvas.addEventListener('mousedown', e => {
               if (circleDir.lengthSq() > 0.01) edgeMid.addScaledVector(circleDir.normalize(), radius);
             }
           }
-          _edgeBevelHandlePos = edgeMid;
+          _edgeBevelHandlePos = _pick.pw ? _pick.pw.clone() : edgeMid;
           _edgeBevelDragVal = 0;
         }
         _fpCurType = null; updateFP();
@@ -25297,7 +25298,7 @@ window.addEventListener('mousemove', e => {
     } else { _wpHL.visible = false; canvas.style.cursor = 'crosshair'; }
   }
   if (_edgeMode && !_edgeGlobal) {
-    const h = _findHoveredEdge(e);
+    const h = _edgeBevelDragging ? _edgeHover : _edgePickIdx(e).idx;
     if (h !== _edgeHover) { _edgeHover = h; _updateEdgeColors(); }
     if (!_edgeBevelDragging) canvas.style.cursor = h >= 0 ? 'pointer' : 'crosshair';
   }
@@ -29363,9 +29364,9 @@ function _dedBlocked() {
 }
 
 // Nächste sichtbare Kantenlinie des gewählten Körpers unter dem Zeiger
-function _dedPick(e) {
-  const o = selectedObjs[0];
-  if (!_dedEligible(o)) return null;
+function _dedPick(e, obj) {
+  const o = obj || selectedObjs[0];
+  if (!obj && !_dedEligible(o)) return null;
   const el = o.children.find(c => c.userData && c.userData.isEdgeLines);
   if (!el || !el.geometry.attributes.position) return null;
   const pos = el.geometry.attributes.position;
@@ -29443,46 +29444,63 @@ function _dedMoveHover(e) {
   });
 }
 
-// Welche Kante im Kanten-Modus entspricht dem angefassten Punkt?
-function _dedEdgeIndex(e, pw) {
-  const idx = _findHoveredEdge(e);
-  if (idx >= 0) return idx;
-  const dyn = _edgeObj && _edgeObj.userData._dynamicEdges;
+// Welche Kante im Kanten-Modus entspricht dem angefassten Punkt (Welt)?
+// Bewusst NICHT über _findHoveredEdge: dessen unsichtbare Klick-Schläuche
+// haben bei Quadern ≥ 10 mm Radius und werden nicht verdeckt — ein Klick vorn
+// traf so oft eine Kante hinten oder die zuvor gewählte (Ralf/Volker 28.9.).
+function _dedEdgeIndex(pw) {
+  const o = _edgeObj, dyn = o && o.userData._dynamicEdges;
   if (!dyn) return -1;
-  let best = -1, bd = Infinity;
+  const st = o.userData.shapeType;
   const a = new THREE.Vector3(), b = new THREE.Vector3(), ab = new THREE.Vector3();
+  let best = -1, bd = Infinity;
   // Zylinder/Kegel/Rohr: Kreiskanten stehen als Deckel-Mittelpunkt drin →
   // der Deckel, dessen Mitte dem angefassten Randpunkt am nächsten liegt
-  const st = _edgeObj.userData.shapeType;
   if (st === 'cylinder' || st === 'cone' || st === 'tube') {
     dyn.forEach((ed, i) => { const d = a.fromArray(ed.worldA).distanceTo(pw); if (d < bd) { bd = d; best = i; } });
     return best;
   }
+  o.updateMatrixWorld(true);
+  const toW = !o.userData._dynEdgesWorld;
   dyn.forEach((ed, i) => {
-    a.fromArray(ed.worldA); b.fromArray(ed.worldB); ab.subVectors(b, a);
-    const L2 = ab.lengthSq(); if (L2 < 1e-6) return;
-    const t = Math.max(0, Math.min(1, pw.clone().sub(a).dot(ab) / L2));
-    const d = a.clone().addScaledVector(ab, t).distanceTo(pw);
+    let d;
+    if (ed.rim) {   // Lochrand: Abstand zum Kreis
+      const ax = new THREE.Vector3(...ed.rim.axisW).normalize();
+      const v = pw.clone().sub(a.fromArray(ed.rim.cW));
+      const h = v.dot(ax), rad = v.addScaledVector(ax, -h).length();
+      d = Math.hypot(h, rad - ed.rim.rW);
+    } else {
+      a.fromArray(ed.worldA); b.fromArray(ed.worldB);
+      if (toW && !ed.brep) { a.applyMatrix4(o.matrixWorld); b.applyMatrix4(o.matrixWorld); }
+      ab.subVectors(b, a);
+      const L2 = ab.lengthSq(); if (L2 < 1e-6) return;
+      const t = Math.max(0, Math.min(1, pw.clone().sub(a).dot(ab) / L2));
+      d = a.clone().addScaledVector(ab, t).distanceTo(pw);
+    }
     if (d < bd) { bd = d; best = i; }
   });
-  return bd < 0.3 ? best : -1;
+  const size = getMeshBox(o).getSize(new THREE.Vector3());
+  return bd < Math.max(0.3, 0.1 * Math.max(size.x, size.y, size.z)) ? best : -1;
 }
 
-function _dedDown(e) {
-  if (e.button !== 0 || e.target !== canvas) return;
-  if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+// Kante unter dem Zeiger im Kanten-Modus: zuerst pixelgenau an den sichtbaren
+// Kantenlinien (verdeckte zählen nicht), nur ohne Linien-Treffer der alte Weg.
+function _edgePickIdx(e) {
+  if (!_edgeObj || !_edgeMode) return { idx: -1, pw: null };
   let pk = null;
-  try { if (_dedBlocked()) return; pk = _dedPick(e); } catch (err) { return; }
-  if (!pk) return;
-  enterEdgeMode(true);
-  const idx = _dedEdgeIndex(e, pk.pw);
-  if (idx < 0) { exitEdgeMode(); return; }   // keine bearbeitbare Kante → normales Verhalten
-  e.stopPropagation(); e.preventDefault();
-  _dedHover(null);
-  _edgeSel.clear(); _edgeSel.add(idx); _edgeHover = -1;
-  _updateEdgeColors();
-  _edgeBevelHandlePos = pk.pw.clone();
-  _fpCurType = null; updateFP();
+  try { pk = _dedPick(e, _edgeObj); } catch (err) {}
+  if (pk) {
+    const idx = _dedEdgeIndex(pk.pw);
+    if (idx >= 0) return { idx, pw: pk.pw };
+    return { idx: -1, pw: null };   // sichtbare, aber nicht bearbeitbare Linie
+  }
+  const hasLines = _edgeObj.children.some(c => c.userData && c.userData.isEdgeLines);
+  return { idx: hasLines && _edgeObj.userData.shapeType !== 'cylinder' &&
+                 _edgeObj.userData.shapeType !== 'cone' && _edgeObj.userData.shapeType !== 'tube'
+                 && !_edgeObj.userData._rimList ? -1 : _findHoveredEdge(e), pw: null };
+}
+
+function _dedStartDrag(e) {
   _edgeBevelDragging = true;
   _edgeBevelDragStart = { x: e.clientX, y: e.clientY };
   _edgeBevelDragVal = 0;
@@ -29491,6 +29509,40 @@ function _dedDown(e) {
   window.addEventListener('pointermove', _dedDragMove, true);
   window.addEventListener('pointerup', _dedDragUp, true);
   window.addEventListener('pointercancel', _dedDragUp, true);
+}
+
+function _dedDown(e) {
+  if (e.button !== 0 || e.target !== canvas) return;
+  // Im Kanten-Modus: Kante drücken + ziehen geht direkt (ohne erst den Griff
+  // zu treffen). Auf eine schon gewählte Kante gedrückt → die ganze Auswahl
+  // wird gezogen. Shift-Klick (Mehrfachauswahl) macht der normale Handler.
+  if (_edgeMode) {
+    if (_edgeGlobal || _edgeBevelDragging || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+    if (_mg.drag) return;
+    const r = _edgePickIdx(e);
+    if (r.idx < 0 || !r.pw) return;
+    e.stopPropagation(); e.preventDefault();
+    if (!(_edgeSel.has(r.idx) && _edgeSel.size > 1)) { _edgeSel.clear(); _edgeSel.add(r.idx); }
+    _edgeHover = -1; _updateEdgeColors();
+    _edgeBevelHandlePos = r.pw.clone();
+    _fpCurType = null; updateFP();
+    _dedStartDrag(e);
+    return;
+  }
+  if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+  let pk = null;
+  try { if (_dedBlocked()) return; pk = _dedPick(e); } catch (err) { return; }
+  if (!pk) return;
+  enterEdgeMode(true);
+  const idx = _dedEdgeIndex(pk.pw);
+  if (idx < 0) { exitEdgeMode(); return; }   // keine bearbeitbare Kante → normales Verhalten
+  e.stopPropagation(); e.preventDefault();
+  _dedHover(null);
+  _edgeSel.clear(); _edgeSel.add(idx); _edgeHover = -1;
+  _updateEdgeColors();
+  _edgeBevelHandlePos = pk.pw.clone();
+  _fpCurType = null; updateFP();
+  _dedStartDrag(e);
 }
 
 function _dedDragMove(e) {
@@ -48741,8 +48793,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.62';
+const VOLME3D_VERSION = '1.18.63';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.63', date:'2026-09-28', changes:[
+    ['🎯','<b>Kanten-Modus trifft jetzt die Kante, die du anklickst.</b> Bisher sprang der orange Punkt zwar an die Klickstelle, bearbeitet wurde aber oft eine ganz andere Kante — die vorher gewählte oder eine auf der Rückseite. Deshalb „ließ er die alte Seite nicht los“, brauchte mehrere Klicks, und manchmal tauchte eine Schräge oder Rundung auf der falschen Seite auf. Grund: Jede Kante hatte einen unsichtbaren Klickbereich von 10 mm Dicke, der auch durch den Körper hindurch griff. Jetzt zählt, was du auf dem Bildschirm siehst: die Kante direkt unter dem Mauszeiger, verdeckte Kanten gar nicht. Außerdem kannst du im Kanten-Modus eine Kante direkt drücken und ziehen, statt erst den Punkt zu treffen; drückst du auf eine von mehreren gewählten Kanten, werden alle zusammen gezogen.'],
+  ]},
   { version:'1.18.62', date:'2026-09-28', changes:[
     ['⬡','<b>Kanten direkt anfassen — ohne „Kanten bearbeiten“.</b> Körper auswählen, mit der Maus über eine Kante fahren: sie leuchtet orange auf. Dann einfach draufdrücken und seitlich ziehen — die Rundung oder Fase wächst live mit, loslassen übernimmt sie. Ein Klick ohne Ziehen wählt nur die Kante, dann steht der orange Griff bereit. Mitten auf der Fläche verschiebst du den Körper weiterhin wie gewohnt. Geht bei Quader, Pyramide, Keil, Zylinder, Kegel, Rohr und schon bearbeiteten Körpern.'],
     ['↔️','<b>Zieh-Richtung jetzt überall gleich:</b> nach rechts = Rundung, nach links = Fase. Beim Quader war es bisher andersherum als beim Zylinder und als der Hinweis im Panel sagte.'],
