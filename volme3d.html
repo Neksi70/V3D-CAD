@@ -29556,7 +29556,26 @@ function _dedEligible(o) {
   if (!o || !o.isMesh || !o.userData || o.userData.locked) return false;
   const ud = o.userData, st = ud.shapeType;
   return !!(ud._occtParams || ud.occtShape || _brepOk(o) ||
-    ['box', 'cylinder', 'cone', 'tube', 'pyramid', 'wedge'].includes(st));
+    ['box', 'cylinder', 'cone', 'tube', 'pyramid', 'wedge'].includes(st)) ||
+    _dedRims(o).length > 0;
+}
+
+// Netz-Körper ohne Kantenlinien (z. B. nach ⊖ Abziehen): die Lochränder sind
+// trotzdem bearbeitbar (_rimDetectCircles → _applyRimBevel), waren aber nur
+// über „⬡ Kanten bearbeiten" erreichbar — den Direktgriff gab es für sie nicht
+// (Volker 28.9.: „Zylinder abgezogen, will den Lochrand abrunden"). Die
+// Erkennung kostet bei großen Netzen spürbar → pro Geometrie merken.
+const _dedRimCache = new WeakMap();
+function _dedRims(o) {
+  if (!o || !o.isMesh || !o.geometry || o.userData.locked) return [];
+  if (o.children.some(c => c.userData && c.userData.isEdgeLines)) return [];
+  if (_brepOk(o)) return [];
+  let r = _dedRimCache.get(o.geometry);
+  if (!r) {
+    try { r = _rimDetectCircles(o); } catch (e) { r = []; }
+    _dedRimCache.set(o.geometry, r);
+  }
+  return r;
 }
 
 function _dedBlocked() {
@@ -29572,14 +29591,29 @@ function _dedPick(e, obj) {
   const o = obj || selectedObjs[0];
   if (!obj && !_dedEligible(o)) return null;
   const el = o.children.find(c => c.userData && c.userData.isEdgeLines);
-  if (!el || !el.geometry.attributes.position) return null;
-  const pos = el.geometry.attributes.position;
+  let pos, mw, rimOf = null;
+  if (el && el.geometry.attributes.position) {
+    pos = el.geometry.attributes.position;
+    el.updateMatrixWorld(true); mw = el.matrixWorld;
+  } else {
+    // Ohne Kantenlinien: erkannte Lochränder als Linienzüge anbieten
+    const rims = _dedRims(o);
+    if (!rims.length) return null;
+    const seg = [];
+    rimOf = [];
+    rims.forEach(rim => rim.pts.forEach((p, i) => {
+      const q = rim.pts[(i + 1) % rim.pts.length];
+      seg.push(p.x, p.y, p.z, q.x, q.y, q.z);
+      rimOf.push(rim, rim);
+    }));
+    pos = new THREE.Float32BufferAttribute(seg, 3);
+    o.updateMatrixWorld(true); mw = o.matrixWorld;
+  }
   if (pos.count > 20000) return null;
   const rect = vpEl.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   const tolPx = e.pointerType === 'touch' ? 16 : 8;
-  el.updateMatrixWorld(true);
-  const mw = el.matrixWorld, v = new THREE.Vector3();
+  const v = new THREE.Vector3();
   const W = [], S = [];
   for (let i = 0; i < pos.count; i++) {
     v.fromBufferAttribute(pos, i).applyMatrix4(mw);
@@ -29607,7 +29641,9 @@ function _dedPick(e, obj) {
     const dist = raycaster.ray.origin.distanceTo(pw);
     const hit = raycaster.intersectObject(o, false)[0];
     if (hit && hit.distance < dist - Math.max(0.02, size * 0.01)) continue;
-    return { o, pw, a: W[c.i], b: W[c.i + 1] };
+    // Lochrand: den ganzen Kreis hervorheben, nicht nur das eine Segment
+    const loop = rimOf ? rimOf[c.i].pts.map(p => p.clone().applyMatrix4(mw)) : null;
+    return { o, pw, a: W[c.i], b: W[c.i + 1], loop };
   }
   return null;
 }
@@ -29626,9 +29662,11 @@ function _dedHover(pk) {
     _ded.hl.userData._dedHL = true;
     scene.add(_ded.hl);
   }
-  const p = _ded.hl.geometry.attributes.position;
-  p.setXYZ(0, pk.a.x, pk.a.y, pk.a.z); p.setXYZ(1, pk.b.x, pk.b.y, pk.b.z);
-  p.needsUpdate = true; _ded.hl.geometry.computeBoundingSphere();
+  const pts = [];
+  if (pk.loop) pk.loop.forEach((a, i) => { const b = pk.loop[(i + 1) % pk.loop.length]; pts.push(a.x, a.y, a.z, b.x, b.y, b.z); });
+  else pts.push(pk.a.x, pk.a.y, pk.a.z, pk.b.x, pk.b.y, pk.b.z);
+  _ded.hl.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  _ded.hl.geometry.computeBoundingSphere();
   _ded.hl.visible = true;
   if (!_ded.cursorSet) _ded.prevCursor = canvas.style.cursor;
   canvas.style.cursor = 'pointer'; _ded.cursorSet = true;
@@ -49328,8 +49366,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.69';
+const VOLME3D_VERSION = '1.18.70';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.70', date:'2026-09-28', changes:[
+    ['⭕','<b>Lochränder direkt abrunden oder anfasen.</b> Nach dem Abziehen (z. B. Zylinder aus einem Quader) ließ sich der Rand des Lochs bisher nur über „Kanten bearbeiten“ erreichen — direkt am Körper passierte nichts. Jetzt genügt es, den Körper zu wählen und mit der Maus auf den Lochrand zu zeigen: der ganze Rand leuchtet orange. Drücken und <b>nach rechts ziehen = Rundung</b>, <b>nach links = Fase</b>.'],
+  ]},
   { version:'1.18.69', date:'2026-09-28', changes:[
     ['🐆','<b>Neu: Windlicht mit Leo-Muster zum Schrauben.</b> Unter Generatoren → „Leo-Windlicht“: ein kegeliges Oberteil mit Leoparden-Rosetten als Relief und ein bauchiger Sockel. Die beiden Teile werden verschraubt. Im Sockel steht ein Podest mit Mulde für ein LED-Teelicht (Ø und Höhe einstellbar), so dass das Licht bis an die Kante reicht. Das Muster kann außen herausstehen oder innen sitzen; dann ist das Oberteil außen glatt, und die Flecken zeigen sich erst, wenn das Licht an ist. Statt Leo gehen auch Tupfen oder glatt. Beide Teile drucken aufrecht ohne Stützen — Oberteil hell, Sockel gern dunkel. „Neues Muster würfeln“ verteilt die Flecken neu.'],
   ]},
