@@ -332,8 +332,19 @@ def vorwaermen():
         return False
 
 
-def denke(cid, frage, nummer=None):
-    """Antwort auf eine Aeusserung. Liefert (text, gespraech_zu_ende)."""
+def _system():
+    return [{
+        "type": "text",
+        "text": ROLLE + "\n\n=== WISSENSSTAND ===\n\n" + wissen.wissensstand(),
+        # Der Wissensstand ist gross und aendert sich selten — zwischenspeichern
+        # spart Geld und ein paar Zehntelsekunden je Runde.
+        "cache_control": {"type": "ephemeral"},
+    }]
+
+
+def _frage_anhaengen(cid, frage, nummer):
+    """Aeusserung in den Verlauf haengen; in der ersten Runde mit Hinweisen
+    (Datum, Rufnummer, Kalender). Liefert den Verlauf."""
     with _lock:
         g = _gespraeche.setdefault(cid, {"verlauf": [], "start": time.time()})
         verlauf = g["verlauf"]
@@ -363,6 +374,12 @@ def denke(cid, frage, nummer=None):
                  + "]\n\n" + frage)
 
     verlauf.append({"role": "user", "content": frage})
+    return verlauf
+
+
+def denke(cid, frage, nummer=None):
+    """Antwort auf eine Aeusserung. Liefert (text, gespraech_zu_ende)."""
+    verlauf = _frage_anhaengen(cid, frage, nummer)
 
     def _frag(modell):
         return _client().messages.create(
@@ -373,13 +390,7 @@ def denke(cid, frage, nummer=None):
             # am Telefon keine Rolle spielen. Gemessen 3,51 s gegen 2,49 s,
             # bei gleich guten, eher knapperen Antworten.
             thinking={"type": "disabled"},
-            system=[{
-                "type": "text",
-                "text": ROLLE + "\n\n=== WISSENSSTAND ===\n\n" + wissen.wissensstand(),
-                # Der Wissensstand ist gross und aendert sich selten — zwischenspeichern
-                # spart Geld und ein paar Zehntelsekunden je Runde.
-                "cache_control": {"type": "ephemeral"},
-            }],
+            system=_system(),
             messages=verlauf[-20:])
 
     hauptmodell = core.cfg("dialog", "model", default="claude-haiku-4-5")
@@ -402,6 +413,69 @@ def denke(cid, frage, nummer=None):
     if len(verlauf) >= 24:            # Notbremse gegen Endlosgespraeche
         ende = True
     return text, ende
+
+
+def denke_strom(cid, frage, nummer=None, stueck=None, abbruch=None):
+    """Wie denke(), aber gestreamt: jedes Textstueck geht sofort an
+    stueck(text), damit der erste Satz gesprochen wird, waehrend der Rest
+    noch entsteht. abbruch() -> True bricht ab (Anrufer faellt ins Wort).
+    Liefert (text, gespraech_zu_ende)."""
+    verlauf = _frage_anhaengen(cid, frage, nummer)
+
+    def _frag(modell):
+        text = ""
+        with _client().messages.stream(
+                model=modell, max_tokens=300, thinking={"type": "disabled"},
+                system=_system(), messages=verlauf[-20:]) as s:
+            for d in s.text_stream:
+                text += d
+                if stueck:
+                    stueck(d)
+                if abbruch and abbruch():
+                    break
+        return text
+
+    hauptmodell = core.cfg("dialog", "model", default="claude-haiku-4-5")
+    ausweich = core.cfg("dialog", "ausweichModel", default="claude-haiku-4-5")
+    try:
+        text = _frag(hauptmodell)
+    except anthropic.APIStatusError as e:
+        # Ueberlastung kommt vor dem ersten Stueck — es ist also noch nichts
+        # gesprochen, der Wechsel aufs kleinere Modell bleibt unhoerbar.
+        if e.status_code not in (429, 500, 502, 503, 529) or ausweich == hauptmodell:
+            raise
+        text = _frag(ausweich)
+
+    text = text.strip()
+    verlauf.append({"role": "assistant", "content": text})
+    ende = ENDE_MARKE in text
+    if len(verlauf) >= 24:            # Notbremse gegen Endlosgespraeche
+        ende = True
+    return text.replace(ENDE_MARKE, "").strip(), ende
+
+
+def nimm_letzte_runde_zurueck(cid):
+    """Der Anrufer hat nur Luft geholt und weitergesprochen, bevor die
+    Antwort zu hoeren war: Frage und Antwort streichen. Der Satz kommt mit
+    seiner Fortsetzung als eine Aeusserung wieder."""
+    with _lock:
+        g = _gespraeche.get(cid)
+        if not g:
+            return
+        v = g["verlauf"]
+        if v and v[-1]["role"] == "assistant":
+            v.pop()
+        if v and v[-1]["role"] == "user":
+            v.pop()
+
+
+def kuerze_letzte_antwort(cid, gesprochen):
+    """Der Anrufer ist ins Wort gefallen: im Verlauf nur stehen lassen, was
+    wirklich zu hoeren war — sonst glaubt das Modell, er kenne den Rest."""
+    with _lock:
+        g = _gespraeche.get(cid)
+        if g and g["verlauf"] and g["verlauf"][-1]["role"] == "assistant":
+            g["verlauf"][-1]["content"] = (gesprochen.strip() + " … (unterbrochen)").strip()
 
 
 ABKUERZUNGEN = [

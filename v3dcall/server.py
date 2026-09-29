@@ -420,6 +420,31 @@ def dialog_vorwaermen():
     return jsonify(ok=True)
 
 
+@app.post("/api/strom/anmelden")
+def strom_anmelden():
+    """Das AGI-Skript fragt, ob der Datenstrom-Weg bereitsteht. Ja -> UUID
+    fuer AudioSocket; nein -> es fuehrt das Gespraech auf dem alten Weg."""
+    if not lokal():
+        return jsonify(fehler="nur lokal"), 403
+    import strom
+    d = request.get_json(silent=True) or {}
+    cid = re.sub(r"[^A-Za-z0-9._-]", "", (d.get("id") or ""))[:64]
+    nummer = (d.get("caller") or "").strip() or None
+    if nummer in ("unknown", "anonymous", "restricted"):
+        nummer = None
+    a = strom.anmelden(cid, nummer) if cid else None
+    return jsonify(**(a or {"aus": True}))
+
+
+@app.post("/api/strom/ergebnis")
+def strom_ergebnis():
+    if not lokal():
+        return jsonify(fehler="nur lokal"), 403
+    import strom
+    d = request.get_json(silent=True) or {}
+    return jsonify(ergebnis=strom.ergebnis(d.get("uuid") or ""))
+
+
 @app.post("/api/dialog/begruessung")
 def dialog_begruessung():
     """Begruessung fuer den Gespraechsmodus erzeugen (einmalig, gecacht)."""
@@ -660,5 +685,11 @@ def _modelle_vorwaermen():
 if __name__ == "__main__":
     if core.cfg("dialog", "aktiv", default=False):
         _modelle_vorwaermen()
+        if core.cfg("dialog", "strom", "aktiv", default=False):
+            import logging
+            import strom
+            logging.getLogger("strom").setLevel(logging.INFO)
+            logging.getLogger("strom").addHandler(logging.StreamHandler())
+            strom.starte()
     port = int(sys.argv[1]) if len(sys.argv) > 1 else core.cfg("port", default=8786)
     app.run(host="127.0.0.1", port=port, threaded=True)

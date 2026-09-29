@@ -146,6 +146,31 @@ def main():
     # Eine ganze Sekunde ist zu viel — der Anrufer wartet ohnehin schon.
     agi("EXEC Wait 0.4")
 
+    # Datenstrom-Gespraech (strom.py): der Dienst uebernimmt den Ton direkt
+    # ueber AudioSocket — Begruessung, Gespraech, Verabschiedung, bei einer
+    # Stoerung auch den Anrufbeantworter. Bietet er es nicht an (abgeschaltet,
+    # Dienst weg), laeuft unten der bewaehrte Weg Runde fuer Runde.
+    try:
+        strom = hole("/api/strom/anmelden",
+                     {"id": cid, "caller": umgebung.get("agi_callerid", "")})
+    except Exception as e:
+        strom = {}
+        sag("V3D Datenstrom nicht erreichbar: %s" % e)
+    if strom.get("uuid"):
+        sag("V3D Datenstrom %s" % strom["uuid"])
+        agi("EXEC AudioSocket %s,127.0.0.1:%d" % (strom["uuid"], int(strom["port"])))
+        try:
+            erg = hole("/api/strom/ergebnis", {"uuid": strom["uuid"]}).get("ergebnis")
+        except Exception:
+            erg = "unbekannt"
+        sag("V3D Datenstrom Ergebnis: %s" % erg)
+        if erg in ("angemeldet", "unbekannt"):
+            # Der Dienst hat den Anruf nie uebernommen — der Anrufer hat
+            # noch nichts gehoert. Dann wenigstens der Anrufbeantworter.
+            return rueckfall(cid)
+        agi("HANGUP")
+        return
+
     # Eine der neun Begruessungen, zufaellig — wer zweimal anruft, soll nicht
     # zweimal denselben Spruch hoeren.
     # Waehrend die Begruessung laeuft, im Hintergrund den Zwischenspeicher
