@@ -17037,6 +17037,18 @@ function _unionGroupFallback(sel) {
   scene.add(grp); objects.push(grp); selectObjs([grp]); updateTree(); notify('Gruppiert (nicht verschmolzen)', 'ok');
 }
 
+// Dreiecks-Suppe (mm, Z-up, 9 Floats je Dreieck) → Binär-STL
+function _trisToStlBuf(t) {
+  const nTri = t.length / 9, buf = new ArrayBuffer(84 + nTri * 50), dv = new DataView(buf);
+  dv.setUint32(80, nTri, true); let off = 84;
+  for (let i = 0; i < nTri; i++) {
+    off += 12;
+    for (let k = 0; k < 9; k++) { dv.setFloat32(off, t[i*9+k], true); off += 4; }
+    dv.setUint16(off, 0, true); off += 2;
+  }
+  return buf;
+}
+
 // Manifold-Ergebnis (mm, Z-up) → Binär-STL, wie es _objsToUnionStls liefert.
 function _mfToStlBuf(mf) {
   const m = mf.getMesh(), P = m.vertProperties, T = m.triVerts, np = m.numProp;
@@ -17061,6 +17073,12 @@ function _mfToStlBuf(mf) {
 // Ausdehnung der übrigen Körper entlang der Wickelachse. Angeschmiegte Motive
 // (Kuppel/Scheitel) bleiben außen vor: erhaben auf dem Scheitel ragen sie zu
 // Recht über den höchsten Punkt hinaus. Liefert Motiv → Ersatz-STL (mm, Z-up).
+function _unionMotivMeldung(ersatz) {
+  const teile = [];
+  if (ersatz.erhoben) teile.push('das vertiefte Motiv steht jetzt erhaben heraus (zum Eingravieren „Abziehen“ nehmen)');
+  if (ersatz.gestutzt) teile.push('was über den Rand ragte, ist abgeschnitten');
+  return teile.length ? 'Verschmolzen ✓ — ' + teile.join(', ') : 'Verschmolzen (wasserdicht) ✓';
+}
 async function _unionTrimMotive(sel) {
   const ersatz = new Map();
   const motive = sel.filter(o => o.userData.type === 'svg' && o.userData._svgWrap
@@ -17082,17 +17100,42 @@ async function _unionTrimMotive(sel) {
     };
     let lo = Infinity, hi = -Infinity;
     for (const k of koerper) { const s = spanne(_moldCollectTris(k)); lo = Math.min(lo, s[0]); hi = Math.max(hi, s[1]); }
-    const tris = _moldCollectTris(m);
+    // Ein „vertieftes“ Motiv reicht mit seiner Gravurtiefe IN die Wand und steht
+    // nur 0,2 mm heraus — zum Abziehen richtig. Beim Vereinen stach es durch
+    // dünne Wände nach innen (Josy 29.9.: Windlicht 1,2 mm Wand, 2 mm Motiv →
+    // „dann hat er innen auch was“), außen war es kaum zu sehen. Also für das
+    // Vereinen erhaben aufbauen: 0,2 mm in der Wand, die Tiefe als Höhe nach außen.
+    let tris = null;
+    const sp = m.userData._svgWrap;
+    if (sp && sp.depthMm >= 0) {
+      try {
+        const hMm = Math.min(3, Math.max(0.4, sp.depthMm));
+        const tmp = new THREE.Mesh(_svgWrapBuildGeo(m.userData, { ...sp, depthMm: -hMm }));
+        m.updateMatrixWorld(true);
+        tmp.matrixAutoUpdate = false; tmp.matrix.copy(m.matrixWorld);
+        tris = _moldCollectTris(tmp);
+        tmp.geometry.dispose();
+        ersatz.erhoben = (ersatz.erhoben || 0) + 1;
+      } catch (e) { console.warn('[union] Motiv nicht erhaben aufgebaut:', e.message || e); tris = null; }
+    }
+    const umgebaut = !!tris;
+    if (!tris) tris = _moldCollectTris(m);
     const ms = spanne(tris);
-    if (!isFinite(lo) || (ms[0] >= lo - 0.05 && ms[1] <= hi + 0.05)) continue;
+    const innerhalb = ms[0] >= lo - 0.05 && ms[1] <= hi + 0.05;
+    if (!isFinite(lo) || innerhalb) {
+      if (umgebaut) ersatz.set(m, _trisToStlBuf(tris));
+      continue;
+    }
     try {
       const mf = _mfFromSoup(w, tris)
         .trimByPlane(n, lo)
         .trimByPlane([-n[0], -n[1], -n[2]], -hi);
       if (mf.isEmpty()) continue;                     // liegt ganz daneben → unverändert lassen
       ersatz.set(m, _mfToStlBuf(mf));
+      ersatz.gestutzt = (ersatz.gestutzt || 0) + 1;
     } catch (e) {
       console.warn('[union] Motiv-Überstand nicht abgeschnitten:', m.userData.name, e.message || e);
+      if (umgebaut) ersatz.set(m, _trisToStlBuf(tris));
     }
   }
   return ersatz;
@@ -17141,8 +17184,7 @@ async function unionSelected() {
       mesh.userData.opJournal = _opJournal;
       sel.forEach(o => { objects = objects.filter(x => x !== o); scene.remove(o); });
       selectObjs([mesh]); updateTree();
-      notify(gestutzt.size ? 'Verschmolzen ✓ — was vom Motiv über den Rand ragte, ist abgeschnitten'
-                           : 'Verschmolzen (wasserdicht) ✓', 'ok');
+      notify(_unionMotivMeldung(gestutzt), 'ok');
       return;
     } catch (e) {
       console.warn('[union] Manifold-Weg für Motiv gescheitert → OCCT:', e.message || e);
@@ -17192,8 +17234,7 @@ async function unionSelected() {
     sel.forEach(o => { objects = objects.filter(x => x !== o); scene.remove(o); });
     selectObjs([mesh]); updateTree();
     _progressDone();
-    notify(gestutzt.size ? 'Verschmolzen ✓ — was vom Motiv über den Rand ragte, ist abgeschnitten'
-                         : 'Verschmolzen (wasserdicht) ✓', 'ok');
+    notify(_unionMotivMeldung(gestutzt), 'ok');
   } catch (e) {
     _progressHide();
     if (_progUserAborted(ctl)) { notify('Vereinen abgebrochen — die Teile sind unverändert', 'ok'); return; }
@@ -49711,8 +49752,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.77';
+const VOLME3D_VERSION = '1.18.78';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.78', date:'2026-09-29', changes:[
+    ['🦓','<b>Gewickelte Muster auf dünnen Windlichtern: nichts mehr innen, liegt bis zum Rand an.</b> Ein um einen Becher gewickeltes Motiv ist zunächst zum Eingravieren gedacht: Es reicht in die Wand hinein und steht außen kaum heraus. Wer es dann mit <b>∪ Vereinen</b> aufsetzte, bekam bei dünnen Wänden (z. B. 1,2 mm beim Leo-Windlicht) das Muster innen durch die Wand gedrückt, außen war es kaum zu sehen. Jetzt wird ein solches Motiv beim Vereinen erhaben aufgesetzt — mit der eingestellten Tiefe als Höhe, innen bleibt die Wand glatt. Zum Eingravieren weiter <b>Abziehen</b> nehmen. Außerdem liegt das Motiv auf kegeligen Bechern jetzt auch in den obersten Zentimetern an der Wand an; vorher stand es dort bis zu einem knappen Millimeter ab (danke Josy).'],
+  ]},
   { version:'1.18.77', date:'2026-09-29', changes:[
     ['✂️','<b>Muster um einen Becher gewickelt? Beim Vereinen wird jetzt abgeschnitten, was über den Rand ragt.</b> Wer ein eigenes Muster um ein Windlicht oder einen Becher legt, das höher ist als der Körper selbst, bekam nach <b>∪ Vereinen</b> Fransen oben über dem Rand (und unten unter dem Boden). Jetzt schneidet V3D CAD das Motiv beim Vereinen genau an der Ober- und Unterkante des Körpers ab — der Rand bleibt glatt, der Becher steht flach auf der Platte. Gilt für eingeprägte und erhabene Motive. Außerdem wird ein gewickeltes Motiv jetzt direkt im Browser verschmolzen: Vorher dauerte das oft so lange, dass am Ende nur gruppiert wurde. Rückgängig geht wie immer mit Strg+Z (danke Josy).'],
   ]},
@@ -52285,12 +52329,16 @@ function _svgWrapFieldR(feld, h, th) {
   let i = 0;
   while (i < hs.length - 2 && hs[i + 1] < h) i++;
   const h0 = hs[i], h1 = hs[i + 1];
-  const tH = h1 > h0 ? Math.max(0, Math.min(1, (h - h0) / (h1 - h0))) : 0;
+  // Über die letzte Abtastzeile hinaus linear weiter statt festhalten: die letzte
+  // brauchbare Zeile liegt bis zu einem Zeilenabstand (~7 mm) unter dem Rand, und
+  // ein konstanter Radius stand auf dem schmaler werdenden Kegel bis zum Rand ab
+  // (Josy 29.9.: „sie liegen nicht ganz dran“). Bis 2 Zeilen weit, dann konstant.
+  const tH = h1 > h0 ? Math.max(-2, Math.min(3, (h - h0) / (h1 - h0))) : 0;
   const x = Math.max(0, Math.min(1, (th + thSpan) / (2 * thSpan))) * (nA - 1);
   const j = Math.min(nA - 2, Math.floor(x)), tA = x - j;
   const r0 = data[i][j] + (data[i][j + 1] - data[i][j]) * tA;
   const r1 = data[i + 1][j] + (data[i + 1][j + 1] - data[i + 1][j]) * tA;
-  return r0 + (r1 - r0) * tH;
+  return Math.max(Math.min(r0, r1) * 0.5, r0 + (r1 - r0) * tH);
 }
 
 function _svgWrapSampleProfile(probe, halfHeightU, steps) {
@@ -52459,9 +52507,17 @@ function _svgWrapBuildGeo(ud, spec) {
   const R0 = Math.max(1e-4, spec.R);
   const radiusAt = h => {
     if (!prof) return R0;
-    if (h <= prof[0][0]) return prof[0][1];
+    // an den Enden mit der Randsteigung weiter (wie _svgWrapFieldR), höchstens
+    // zwei Stützabstände — darüber ist ohnehin kein Körper mehr
+    const ext = (pa, pb, hh) => {
+      const dh = pb[0] - pa[0];
+      if (Math.abs(dh) < 1e-9) return pb[1];
+      const t = Math.max(-2, Math.min(2, (hh - pb[0]) / dh));
+      return Math.max(pb[1] * 0.5, pb[1] + (pb[1] - pa[1]) * t);
+    };
+    if (h <= prof[0][0]) return ext(prof[1], prof[0], h);
     const last = prof[prof.length - 1];
-    if (h >= last[0]) return last[1];
+    if (h >= last[0]) return ext(prof[prof.length - 2], last, h);
     for (let i = 1; i < prof.length; i++) {
       if (h <= prof[i][0]) {
         const [h0, r0] = prof[i-1], [h1, r1] = prof[i];

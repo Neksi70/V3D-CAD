@@ -49,6 +49,9 @@ const spalt = () => pg.evaluate(() => {
   let maxLuecke = -Infinity, minLuecke = Infinity;
   for (let i = 0; i < pos.count; i++) {
     v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+    // nur wo Becher ist: über den Rand hinaus setzt das Wickeln seit v1.18.78 die
+    // Wandneigung fort, der Überstand wird beim Vereinen/Abziehen abgeschnitten
+    if (v.y > cup.position.y + 4 || v.y < cup.position.y - 4) continue;
     const r = Math.hypot(v.x - achse.x, v.z - achse.z);
     const d = r - R(v.y);                                   // >0: ausserhalb der Wand
     if (d > maxLuecke) maxLuecke = d;
