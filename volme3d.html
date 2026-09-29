@@ -17037,6 +17037,67 @@ function _unionGroupFallback(sel) {
   scene.add(grp); objects.push(grp); selectObjs([grp]); updateTree(); notify('Gruppiert (nicht verschmolzen)', 'ok');
 }
 
+// Manifold-Ergebnis (mm, Z-up) → Binär-STL, wie es _objsToUnionStls liefert.
+function _mfToStlBuf(mf) {
+  const m = mf.getMesh(), P = m.vertProperties, T = m.triVerts, np = m.numProp;
+  const nTri = T.length / 3;
+  const buf = new ArrayBuffer(84 + nTri * 50), dv = new DataView(buf);
+  dv.setUint32(80, nTri, true); let off = 84;
+  for (let i = 0; i < nTri; i++) {
+    off += 12;
+    for (let k = 0; k < 3; k++) {
+      const v = T[i*3+k] * np;
+      dv.setFloat32(off, P[v], true); dv.setFloat32(off+4, P[v+1], true); dv.setFloat32(off+8, P[v+2], true);
+      off += 12;
+    }
+    dv.setUint16(off, 0, true); off += 2;
+  }
+  return buf;
+}
+
+// Gewickeltes Motiv, das oben/unten über den Körper hinausragt, beim Vereinen
+// an Ober- und Unterkante abschneiden (Josy 29.9.26: eigenes Muster stand nach
+// „Vereinen" als Fransen über den Rand des Windlichts). Maßstab ist die
+// Ausdehnung der übrigen Körper entlang der Wickelachse. Angeschmiegte Motive
+// (Kuppel/Scheitel) bleiben außen vor: erhaben auf dem Scheitel ragen sie zu
+// Recht über den höchsten Punkt hinaus. Liefert Motiv → Ersatz-STL (mm, Z-up).
+async function _unionTrimMotive(sel) {
+  const ersatz = new Map();
+  const motive = sel.filter(o => o.userData.type === 'svg' && o.userData._svgWrap
+                                 && !o.userData.isHole && o.visible !== false);
+  const koerper = sel.filter(o => !motive.includes(o) && o.visible !== false);
+  if (!motive.length || !koerper.length) return ersatz;
+  let w;
+  try { w = await _mfInit(); } catch (e) { return ersatz; }
+  for (const m of motive) {
+    const a = _svgWrapAxis(m);
+    const n = [a.x, -a.z, a.y];                       // Y-up → Z-up wie _moldCollectTris
+    const spanne = t => {
+      let lo = Infinity, hi = -Infinity;
+      for (let i = 0; i < t.length; i += 3) {
+        const d = t[i]*n[0] + t[i+1]*n[1] + t[i+2]*n[2];
+        if (d < lo) lo = d; if (d > hi) hi = d;
+      }
+      return [lo, hi];
+    };
+    let lo = Infinity, hi = -Infinity;
+    for (const k of koerper) { const s = spanne(_moldCollectTris(k)); lo = Math.min(lo, s[0]); hi = Math.max(hi, s[1]); }
+    const tris = _moldCollectTris(m);
+    const ms = spanne(tris);
+    if (!isFinite(lo) || (ms[0] >= lo - 0.05 && ms[1] <= hi + 0.05)) continue;
+    try {
+      const mf = _mfFromSoup(w, tris)
+        .trimByPlane(n, lo)
+        .trimByPlane([-n[0], -n[1], -n[2]], -hi);
+      if (mf.isEmpty()) continue;                     // liegt ganz daneben → unverändert lassen
+      ersatz.set(m, _mfToStlBuf(mf));
+    } catch (e) {
+      console.warn('[union] Motiv-Überstand nicht abgeschnitten:', m.userData.name, e.message || e);
+    }
+  }
+  return ersatz;
+}
+
 // Echter, wasserdichter Boolean-Union via OCCT-Backend → EIN manifoltes Mesh
 // (druckbar, keine durchdringenden Hüllen). Fällt auf Gruppierung zurück, falls
 // das Backend tot ist oder das Fuse scheitert.
@@ -17050,10 +17111,43 @@ async function unionSelected() {
   // sie da. Wer eine Bohrung mit-vereint, bekommt sie als normalen Körper
   // (zum Ausstanzen gibt es „Abziehen").
   const holeSel = sel.filter(o => o.userData.isHole && o.visible !== false);
-  const stls = [..._objsToUnionStls(sel), ...holeSel.flatMap(o => _meshWorldToStls(o))];
+  const gestutzt = await _unionTrimMotive(sel);
+  const stls = [..._objsToUnionStls(sel.filter(o => !gestutzt.has(o))), ...gestutzt.values(),
+                ...holeSel.flatMap(o => _meshWorldToStls(o))];
   if (holeSel.length) notify('Bohrungs-Körper in der Auswahl werden als normales Material mitverschmolzen — zum Ausstanzen stattdessen „Abziehen" nutzen', 'w');
   const nTri = stls.reduce((s, b) => s + (b.byteLength - 84) / 50, 0);
   if (!stls.length) { notify('Keine druckbaren Flächen in der Auswahl', 'w'); return; }
+  // Gewickelte/angeschmiegte Motive: fein unterteilte Keile, an denen das
+  // OCCT-Sewing hängenbleibt (siehe _wrapTool beim Abziehen) — gemessen lief
+  // Becher + Streifenmuster (5k Dreiecke) in die 40-s-Notbremse und wurde nur
+  // gruppiert. Manifold rechnet das im Browser in Sekundenbruchteilen.
+  if (sel.some(o => o.userData._svgWrap || o.userData._svgSchmieg)) {
+    try {
+      const w = await _mfInit();
+      let acc = null;
+      for (const buf of stls) {
+        const dv = new DataView(buf), n = dv.getUint32(80, true), t = new Float32Array(n * 9);
+        for (let i = 0; i < n; i++) for (let k = 0; k < 9; k++) t[i*9+k] = dv.getFloat32(84 + i*50 + 12 + k*4, true);
+        let mf;
+        try { mf = _mfFromSoup(w, t); }
+        catch (eRoh) { const g = _healTrisForBool(t); if (!g) throw eRoh; mf = _mfFromSoup(w, g); }
+        acc = acc ? w.Manifold.union(acc, mf) : mf;
+      }
+      if (!acc || acc.isEmpty()) throw new Error('Ergebnis ist leer');
+      saveUndo();
+      const _opJournal = { op: 'union', parts: sel.map(objectToData) };
+      const mesh = _meshFromStlB64(_bufToBase64(_mfToStlBuf(acc)), 'Verschmolzen ' + idCtr, true);
+      if (!mesh) throw new Error('Ergebnis-STL nicht ladbar');
+      mesh.userData.opJournal = _opJournal;
+      sel.forEach(o => { objects = objects.filter(x => x !== o); scene.remove(o); });
+      selectObjs([mesh]); updateTree();
+      notify(gestutzt.size ? 'Verschmolzen ✓ — was vom Motiv über den Rand ragte, ist abgeschnitten'
+                           : 'Verschmolzen (wasserdicht) ✓', 'ok');
+      return;
+    } catch (e) {
+      console.warn('[union] Manifold-Weg für Motiv gescheitert → OCCT:', e.message || e);
+    }
+  }
   // Laufzeit VORHER abschätzen statt den Nutzer bei 85 % hängen zu lassen.
   // Gemessen (Kugeln 200…6272 Dreiecke gegen eine Box): der Fuse läuft mit rund
   // 1 ms je Dreieck, und jeder weitere Körper kostet einen weiteren Durchgang.
@@ -17098,7 +17192,8 @@ async function unionSelected() {
     sel.forEach(o => { objects = objects.filter(x => x !== o); scene.remove(o); });
     selectObjs([mesh]); updateTree();
     _progressDone();
-    notify('Verschmolzen (wasserdicht) ✓', 'ok');
+    notify(gestutzt.size ? 'Verschmolzen ✓ — was vom Motiv über den Rand ragte, ist abgeschnitten'
+                         : 'Verschmolzen (wasserdicht) ✓', 'ok');
   } catch (e) {
     _progressHide();
     if (_progUserAborted(ctl)) { notify('Vereinen abgebrochen — die Teile sind unverändert', 'ok'); return; }
@@ -49616,8 +49711,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.76';
+const VOLME3D_VERSION = '1.18.77';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.77', date:'2026-09-29', changes:[
+    ['✂️','<b>Muster um einen Becher gewickelt? Beim Vereinen wird jetzt abgeschnitten, was über den Rand ragt.</b> Wer ein eigenes Muster um ein Windlicht oder einen Becher legt, das höher ist als der Körper selbst, bekam nach <b>∪ Vereinen</b> Fransen oben über dem Rand (und unten unter dem Boden). Jetzt schneidet V3D CAD das Motiv beim Vereinen genau an der Ober- und Unterkante des Körpers ab — der Rand bleibt glatt, der Becher steht flach auf der Platte. Gilt für eingeprägte und erhabene Motive. Außerdem wird ein gewickeltes Motiv jetzt direkt im Browser verschmolzen: Vorher dauerte das oft so lange, dass am Ende nur gruppiert wurde. Rückgängig geht wie immer mit Strg+Z (danke Josy).'],
+  ]},
   { version:'1.18.76', date:'2026-09-29', changes:[
     ['↕️','<b>Hoch/Runter-Wischen verschiebt jetzt wirklich nach oben/unten.</b> Bisher fuhr die Ansicht beim senkrechten Wischen (Touchpad, zwei Finger, Maus-Mitteltaste) stur entlang der Höhenachse — schräg von oben sah das aus, als würde das Modell von der Platte abheben oder heranfahren, in der Draufsicht passierte fast nur ein Zoom. Jetzt wandert das Bild genau mit den Fingern bzw. der Maus, in jeder Ansicht.'],
   ]},
