@@ -793,6 +793,16 @@ body.devmode .dev-only{display:flex!important}
 #text3d-input{width:100%;box-sizing:border-box;padding:8px 10px;border:1.5px solid var(--border);border-radius:6px;font-size:15px;font-family:var(--font);outline:none}
 #text3d-input:focus{border-color:var(--acc)}
 #text3d-font{width:100%;box-sizing:border-box;padding:7px 9px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;font-family:var(--font);outline:none;background:#fff;cursor:pointer}
+#text3d-fprev{height:56px;border:1.5px solid var(--border);border-radius:6px;background:#fafafa;cursor:pointer;margin-top:-6px}
+#text3d-fprev:hover{border-color:var(--acc)}
+#text3d-fprev canvas,#text3d-fgrid canvas{display:block;width:100%;height:100%}
+#text3d-fgrid{max-height:260px;overflow-y:auto;border:1.5px solid var(--border);border-radius:6px;margin-top:-6px}
+#text3d-fgrid .fg-row{padding:4px 8px 2px;border-bottom:1px solid var(--border);cursor:pointer}
+#text3d-fgrid .fg-row:last-child{border-bottom:none}
+#text3d-fgrid .fg-row:hover{background:#fff4ec}
+#text3d-fgrid .fg-row.on{background:#ffe8d6}
+#text3d-fgrid .fg-row span{font-size:10px;color:#777}
+#text3d-fgrid .fg-row div{height:40px}
 #text3d-footer{display:flex;gap:8px;justify-content:flex-end}
 #flower-modal{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3100;display:none;align-items:center;justify-content:center}
 #flower-modal.show{display:flex}
@@ -5141,8 +5151,8 @@ Patrick</textarea>
 <div id="text3d-modal" onclick="if(event.target===this)_closeText3d()">
   <div id="text3d-box">
     <h3>✏️ 3D-Text</h3>
-    <input id="text3d-input" type="text" placeholder="Text eingeben…" maxlength="80" onkeydown="if(event.key==='Enter')_confirmText3d()">
-    <select id="text3d-font">
+    <input id="text3d-input" type="text" placeholder="Text eingeben…" maxlength="80" onkeydown="if(event.key==='Enter')_confirmText3d()" oninput="_text3dPreview()">
+    <select id="text3d-font" onchange="_text3dPreview()">
       <option value="helvetiker_bold">Helvetiker Bold (Standard)</option>
       <option value="helvetiker_regular">Helvetiker Regular</option>
       <option value="optimer_bold">Optimer Bold</option>
@@ -5154,8 +5164,11 @@ Patrick</textarea>
       <option value="droid/droid_serif_bold">Droid Serif Bold</option>
       <option value="droid/droid_serif_regular">Droid Serif Regular</option>
     </select>
+    <div id="text3d-fprev" title="Vorschau der gewählten Schrift — klicken, um alle Schriften zu vergleichen" onclick="_text3dFontGrid()"><canvas id="text3d-fprev-cv"></canvas></div>
+    <div id="text3d-fgrid" style="display:none"></div>
     <div style="display:flex;gap:5px;margin-top:4px">
-      <button class="btn" style="flex:1;padding:4px 8px;font-size:12px" onclick="_ufPick('text3d-font')" title="Eigene Schriftdatei (TTF oder OTF) von der Festplatte laden. Die Datei bleibt auf deinem Rechner und wird nur hier im Browser umgerechnet.">＋ Eigene Schrift (TTF/OTF)</button>
+      <button class="btn" style="padding:4px 9px;font-size:12px" id="text3d-fgrid-btn" onclick="_text3dFontGrid()" title="Alle Schriften mit deinem Text untereinander zeigen — Klick auf eine Zeile wählt sie aus">Aa Vergleichen</button>
+      <button class="btn" style="flex:1;padding:4px 8px;font-size:12px" onclick="_ufPick('text3d-font')" title="Eigene Schriftdatei (TTF oder OTF) von der Festplatte laden. Die Datei bleibt auf deinem Rechner und wird nur hier im Browser umgerechnet.">＋ Eigene Schrift</button>
       <button class="btn" style="padding:4px 9px;font-size:12px" onclick="_ufManage()" title="Geladene eigene Schriften anzeigen und entfernen">⚙</button>
     </div>
     <div class="vbg" id="text3d-mode-bg" style="margin-top:2px">
@@ -13471,6 +13484,7 @@ function addTextShape() {
   document.getElementById('text3d-input').value = '';
   _text3dSetMode(_text3dMode);
   document.getElementById('text3d-modal').classList.add('show');
+  _text3dFontGrid(false); _text3dPreview();
   setTimeout(() => document.getElementById('text3d-input').focus(), 80);
 }
 function _closeText3d() { document.getElementById('text3d-modal').classList.remove('show'); _text3dEditObj = null; }
@@ -13519,7 +13533,106 @@ function editTextObj(o) {
     _text3dSetArcDir(m.arcDir || 'up');
   }
   document.getElementById('text3d-modal').classList.add('show');
+  _text3dFontGrid(false); _text3dPreview();
   setTimeout(() => { const i = document.getElementById('text3d-input'); i.focus(); i.select(); }, 80);
+}
+
+// ── Schrift-Vorschau ─────────────────────────────────────────────────────
+// Die native Auswahlliste kann die typeface-Schriften nicht selbst darstellen
+// (es sind three.js-Konturen, keine Web-Fonts). Darum zeichnen wir den Text
+// aus denselben Glyphen-Konturen auf ein Canvas — so sieht man genau das,
+// was nachher als Körper entsteht. Laden läuft still (ohne „Lade Schriftart…"),
+// weil beim Durchblättern mit ↑/↓ sonst ein Hinweis nach dem anderen käme.
+function _fpLoadFont(key, cb) {
+  const ck = '_threeFont_' + key;
+  if (window[ck]) { cb(window[ck]); return; }
+  if (key.indexOf('user_') === 0) { cb(null); return; }
+  const w = _fpLoadFont._wait || (_fpLoadFont._wait = {});
+  if (w[key]) { w[key].push(cb); return; }
+  w[key] = [cb];
+  const done = f => { const q = w[key]; delete w[key]; q.forEach(fn => fn(f)); };
+  new THREE.FontLoader().load('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/fonts/' + key + '.typeface.json',
+    f => { window[ck] = f; done(f); }, undefined, () => done(null));
+}
+
+// Text in die Box einpassen (Höhe begrenzt, lange Texte schrumpfen in der Breite).
+function _fpDraw(cv, font, str) {
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth || 300, H = cv.clientHeight || 50;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  if (!font) {
+    g.fillStyle = '#999'; g.font = '12px ' + getComputedStyle(document.body).fontFamily;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(font === null ? 'Vorschau nicht verfügbar' : 'Lade Schrift…', W / 2, H / 2);
+    return;
+  }
+  let shapes;
+  try { shapes = font.generateShapes(str, 100); } catch (e) { shapes = []; }
+  const polys = [];
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const sh of shapes) {
+    const pts = sh.extractPoints(6);
+    for (const ring of [pts.shape, ...pts.holes]) {
+      if (ring.length < 3) continue;
+      polys.push(ring);
+      for (const p of ring) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
+    }
+  }
+  if (!polys.length) return;
+  const pad = 6, sc = Math.min((W - 2 * pad) / (x1 - x0 || 1), (H - 2 * pad) / (y1 - y0 || 1));
+  const ox = (W - (x1 - x0) * sc) / 2, oy = (H + (y1 - y0) * sc) / 2;   // y nach oben → Canvas nach unten
+  g.beginPath();
+  for (const ring of polys) {
+    ring.forEach((p, i) => { const X = ox + (p.x - x0) * sc, Y = oy - (p.y - y0) * sc; i ? g.lineTo(X, Y) : g.moveTo(X, Y); });
+    g.closePath();
+  }
+  g.fillStyle = '#222'; g.fill('evenodd');
+}
+
+function _fpSample() {
+  const v = (document.getElementById('text3d-input').value || '').trim();
+  return v ? v.slice(0, 40) : 'AaBbCc 123';
+}
+
+function _text3dPreview() {
+  const key = document.getElementById('text3d-font').value, str = _fpSample();
+  const cv = document.getElementById('text3d-fprev-cv');
+  const tok = _text3dPreview._tok = (_text3dPreview._tok || 0) + 1;
+  if (!window['_threeFont_' + key]) _fpDraw(cv, undefined);
+  _fpLoadFont(key, f => { if (tok === _text3dPreview._tok) _fpDraw(cv, f, str); });
+  const grid = document.getElementById('text3d-fgrid');
+  if (grid.style.display !== 'none') _text3dFontGridFill();
+}
+
+// Alle Schriften untereinander mit dem eigenen Text — Klick wählt aus.
+function _text3dFontGrid(show) {
+  const grid = document.getElementById('text3d-fgrid'), btn = document.getElementById('text3d-fgrid-btn');
+  if (show === undefined) show = grid.style.display === 'none';
+  grid.style.display = show ? '' : 'none';
+  document.getElementById('text3d-fprev').style.display = show ? 'none' : '';
+  btn.textContent = show ? '✕ Schließen' : 'Aa Vergleichen';
+  if (show) _text3dFontGridFill();
+}
+
+function _text3dFontGridFill() {
+  const sel = document.getElementById('text3d-font'), grid = document.getElementById('text3d-fgrid'), str = _fpSample();
+  const tok = _text3dFontGridFill._tok = (_text3dFontGridFill._tok || 0) + 1;
+  grid.innerHTML = '';
+  for (const op of sel.options) {
+    const row = document.createElement('div');
+    row.className = 'fg-row' + (op.value === sel.value ? ' on' : '');
+    row.innerHTML = '<span></span><div><canvas></canvas></div>';
+    row.firstChild.textContent = op.textContent;
+    row.onclick = () => { sel.value = op.value; _text3dFontGrid(false); _text3dPreview(); };
+    grid.appendChild(row);
+    const cv = row.querySelector('canvas');
+    _fpDraw(cv, window['_threeFont_' + op.value] || undefined, str);
+    if (!window['_threeFont_' + op.value])
+      _fpLoadFont(op.value, f => { if (tok === _text3dFontGridFill._tok) _fpDraw(cv, f, str); });
+  }
+  const on = grid.querySelector('.fg-row.on');
+  if (on) grid.scrollTop = on.offsetTop - grid.offsetTop - 4;
 }
 
 // Text → SVG-Konturen samt Zielgröße, wie beim Erzeugen (Höhe = eingestellte Größe;
@@ -49752,8 +49865,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.79';
+const VOLME3D_VERSION = '1.18.80';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.80', date:'2026-09-30', changes:[
+    ['🔤','<b>Schrift-Vorschau beim 3D-Text.</b> Unter der Schrift-Auswahl steht jetzt dein Text so, wie er in der gewählten Schrift aussehen wird. Das Feld zeigt ihn schon beim Tippen, und beim Durchblättern der Liste mit den Pfeiltasten wechselt die Vorschau gleich mit. Über <b>Aa Vergleichen</b> (oder einen Klick auf die Vorschau) siehst du alle Schriften untereinander, jeweils mit deinem Text. Ein Klick auf eine Zeile übernimmt die Schrift. Eigene Schriften (★) sind auch dabei.'],
+  ]},
   { version:'1.18.79', date:'2026-09-30', changes:[
     ['⬇️','<b>Motiv auf einer Rundung bis ganz an den unteren Rand ziehen.</b> Wer ein gewickeltes Motiv an den Rand eines Bechers oder Windlichts schieben wollte, zog dabei natürlich ein Stück über den Rand hinaus — und schon sprang das Motiv zurück auf die Höhe, von der es kam. Ebenso, wenn beim Ziehen ein anderes Teil unter dem Zeiger lag, etwa der Sockel direkt daneben. Die App hielt das für „vom Körper herunternehmen“. Jetzt bleibt das Motiv am Rand stehen, solange der Zeiger in der Nähe des Körpers bleibt. Wer es wirklich herunternehmen will, zieht es deutlich zur Seite weg (danke Josy).'],
   ]},
