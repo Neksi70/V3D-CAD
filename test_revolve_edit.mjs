@@ -1,7 +1,7 @@
 import { chromium } from '/home/v3da/node_modules/@playwright/test/index.mjs';
 import { spawn } from 'child_process';
 const PORT=8941;
-const srv=spawn('python3',['volme3d_server.py',String(PORT),'--dev'],{stdio:'inherit'});
+const srv=spawn('python3',['volme3d_server.py',String(PORT),'--dev'],{stdio:'ignore'});
 await new Promise(r=>setTimeout(r,1500));
 const b=await chromium.launch(); const pg=await b.newPage({viewport:{width:1300,height:850}});
 const errs=[]; pg.on('pageerror',e=>errs.push(e.message));
@@ -25,6 +25,24 @@ console.log('edit pts', await pg.evaluate(()=>[_revolveEditObj&&_revolveEditObj.
 let [x0,y0]=await scr(3,0); let [x1,y1]=await scr(5,0);
 await pg.mouse.move(x0,y0); await pg.mouse.down(); await pg.mouse.move((x0+x1)/2,y1,{steps:4}); await pg.mouse.move(x1,y1,{steps:4}); await pg.mouse.up();
 console.log('after drag', await pg.evaluate(()=>_revolvePoints.map(p=>[+p.r.toFixed(2),+p.h.toFixed(2)])));
+// Anfasser anklicken → Maßfeld, Ø tippen
+[x0,y0]=await scr(5,0); await pg.mouse.click(x0,y0);
+console.log('dimbox', await pg.evaluate(()=>[_revolveSel, getComputedStyle(document.getElementById('rev-dim')).display, document.getElementById('rev-dim-d').value, document.getElementById('rev-dim-h').value, selectedObjs.length]));
+await pg.fill('#rev-dim-d','120'); await pg.press('#rev-dim-d','Enter');
+console.log('typed', await pg.evaluate(()=>_revolvePoints[1].r));
+// Klick auf Linie zwischen P2 (4,3) und P3 (3,5) → Einfügen
+let [xa,ya]=await scr(4,3), [xb,yb]=await scr(3,5); await pg.mouse.click((xa+xb)/2,(ya+yb)/2);
+console.log('insert', await pg.evaluate(()=>_revolvePoints.length));
+await pg.keyboard.press('Delete');
+console.log('delete', await pg.evaluate(()=>_revolvePoints.length));
+// Klick ins Leere hängt nichts an
+await pg.mouse.click(1200,120); console.log('empty', await pg.evaluate(()=>_revolvePoints.length));
+await pg.click('#revolve-bar button:has-text("Zurück")'); console.log('undo1', await pg.evaluate(()=>_revolvePoints.length));
+await pg.click('#revolve-bar button:has-text("Zurück")'); console.log('undo2 (5 Punkte, r=6)', await pg.evaluate(()=>[_revolvePoints.length,_revolvePoints[1].r]));
+await pg.click('#revolve-bar button:has-text("Zurück")'); console.log('undo3 r=5', await pg.evaluate(()=>_revolvePoints[1].r));
+[x0,y0]=await scr(5,0); await pg.mouse.click(x0,y0);
+await pg.fill('#rev-dim-d','120'); await pg.press('#rev-dim-d','Enter');
+await pg.screenshot({path:'/tmp/claude-1000/-home-v3da-orca-wasm/4c66e8c5-f0c9-5ffe-a383-511e9eab8f4c/scratchpad/edit.png'});
 await pg.click('#revolve-bar button:has-text("Fertig")');
 const after=await pg.evaluate(()=>{const o=getFirst();const s=getMeshBox(o).getSize(new THREE.Vector3());return {n:objects.length,vis:o.visible,w:s.x,h:s.y,pos:o.position.toArray(),tw:o.userData.revolveTwist,mode:_revolveMode};});
 console.log('after',after);

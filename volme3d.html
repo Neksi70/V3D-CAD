@@ -1680,6 +1680,13 @@ const firebaseConfig = {
   </style>
 
   <!-- Maß-Eingabe beim Zeichnen (folgt dem Cursor) -->
+  <div id="rev-dim" style="display:none;position:fixed;z-index:8600;background:rgba(20,22,30,0.96);border:1px solid #F97316;border-radius:6px;padding:3px 6px;gap:4px;align-items:center;font-size:11px;color:#ffe2cc;box-shadow:0 3px 12px rgba(0,0,0,.45)">
+    <span style="color:#fb9" title="Durchmesser an diesem Punkt">Ø</span>
+    <input id="rev-dim-d" type="text" inputmode="decimal" autocomplete="off" style="width:52px;background:#11141c;border:1px solid #543;color:#fff;border-radius:3px;padding:2px 4px;font-size:11px">
+    <span style="color:#fb9" title="Höhe über der Druckplatte">H</span>
+    <input id="rev-dim-h" type="text" inputmode="decimal" autocomplete="off" style="width:52px;background:#11141c;border:1px solid #543;color:#fff;border-radius:3px;padding:2px 4px;font-size:11px">
+    <span style="color:#987">mm</span>
+  </div>
   <div id="sk-dim" style="display:none;position:fixed;z-index:8600;background:rgba(20,22,30,0.96);border:1px solid #3b82f6;border-radius:6px;padding:3px 6px;gap:4px;align-items:center;font-size:11px;color:#cfe2ff;box-shadow:0 3px 12px rgba(0,0,0,.45)">
     <span id="sk-dim-l1" style="color:#86a">L</span>
     <input id="sk-dim-1" type="text" inputmode="decimal" autocomplete="off" style="width:48px;background:#11141c;border:1px solid #345;color:#fff;border-radius:3px;padding:2px 4px;font-size:11px">
@@ -6295,6 +6302,9 @@ let _revolveGhostDot    = null;
 let _revolveOrigin      = new THREE.Vector3();   // Fußpunkt der Drehachse (y=0)
 let _revolveEditObj     = null;                  // bestehender Drehen-Körper, dessen Profil gerade bearbeitet wird
 let _revolveDrag        = -1;                    // Index des gezogenen Profilpunkts
+let _revolveSel         = -1;                    // gewählter Profilpunkt (Maßfeld Ø/H)
+let _revolveHover       = -1;
+let _revolveHist        = [];                    // Bearbeiten: Stände fürs „← Zurück"
 const EDGE_ENDPOINTS = [
   [[ 1, 1,-1],[ 1, 1, 1]],
   [[-1, 1,-1],[-1, 1, 1]],
@@ -8721,11 +8731,14 @@ function enterRevolveMode(editObj) {
       _revolvePushPoint(Math.max(0, q.x * sR), q.y * sH + edit.position.y));
     _revolveEditObj = edit;
     edit.visible = false;                     // Vorschau ersetzt den Körper während der Bearbeitung
+    selectObjs([]);                           // Auswahlrahmen/Gizmo würden die Punkte verdecken
+    _revolveHist = [];
     _revolveUpdatePreview();
   }
   _revolveUpdateBar();
+  _revolveWireDim();
   notify(edit
-    ? 'Profil bearbeiten: Punkte ziehen, Klick daneben = Punkt anhängen — ✓ Fertig übernimmt, ESC verwirft'
+    ? 'Profil bearbeiten: Anfasser ziehen oder anklicken und Ø/Höhe eintippen · Klick auf eine Linie = neuer Punkt · Entf löscht · ✓ Fertig übernimmt, ESC verwirft'
     : 'Profil-Punkte klicken — Y-Achse = Drehachse — Punkte lassen sich ziehen — Doppelklick: Fertig', 'ok');
 }
 
@@ -8741,7 +8754,9 @@ function exitRevolveMode() {
   _revolveDots = [];
   _revolvePoints = [];
   _revolvePlaneN = null; _revolveRight = null; _revolveDrag = -1;
-  if (_revolveEditObj) { _revolveEditObj.visible = true; _revolveEditObj = null; }
+  _revolveSel = -1; _revolveHover = -1; _revolveHist = [];
+  document.getElementById('rev-dim').style.display = 'none';
+  if (_revolveEditObj) { const eo = _revolveEditObj; eo.visible = true; _revolveEditObj = null; selectObjs([eo]); }
   if (_revolveSavedCam) {
     sph.theta = _revolveSavedCam.theta; sph.phi = _revolveSavedCam.phi; sph.r = _revolveSavedCam.r;
     orbitTarget.copy(_revolveSavedCam.target); sph2cam(); _revolveSavedCam = null;
@@ -10179,20 +10194,138 @@ function _revolveDragMove(e) {
   const ref = i > 0 ? _revolvePoints[i - 1] : (n > 1 ? _revolvePoints[1] : null);
   const p = _revolvePickPoint(e, ref, i === 0 || i === n - 1);
   if (!p) return;
-  Object.assign(_revolvePoints[i], { r: p.r, h: p.h, world: p.world });
-  if (_revolveDots[i]) {
-    _revolveDots[i].position.copy(p.world);
-    _revolveDots[i].material.color.setHex(p.ortho ? 0xff7a1a : 0x0088ff);
-  }
+  _revolveSetPoint(i, p.r, p.h);
+}
+function _revolveSetPoint(i, r, h) {
+  const world = _revolveWorld(r, h);
+  Object.assign(_revolvePoints[i], { r, h, world });
+  if (_revolveDots[i]) _revolveDots[i].position.copy(world);
   _revolveUpdatePreview();
+  _revolveDimSync();
 }
 window.addEventListener('mouseup', () => {
   if (_revolveDrag < 0) return;
-  const d = _revolveDots[_revolveDrag];
-  if (d) d.material.color.setHex(0x0088ff);
   _revolveDrag = -1;
-  if (_revolveMode) canvas.style.cursor = 'crosshair';
+  // Nur angeklickt, nicht bewegt → keinen leeren Zurück-Schritt behalten
+  const last = _revolveHist[_revolveHist.length - 1];
+  if (last && last.length === _revolvePoints.length &&
+      last.every((q, i) => q[0] === _revolvePoints[i].r && q[1] === _revolvePoints[i].h)) _revolveHist.pop();
+  if (_revolveMode) canvas.style.cursor = 'grab';
+  _revolveDotColors();
 });
+
+// ── Anfasser: gleich groß am Bildschirm, Farbe nach Zustand ──────────────
+function _revolveDotColors() {
+  _revolveDots.forEach((d, i) => d.material.color.setHex(
+    i === _revolveSel ? 0xF97316 : i === _revolveHover ? 0xffa45c : 0x0088ff));
+}
+function _revolveScaleDots() {
+  if (!_revolveDots.length) return;
+  const rect = vpEl.getBoundingClientRect();
+  const camR = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  const px = _revolveEditObj ? 7 : 5;   // Radius in Bildschirmpixeln
+  _revolveDots.forEach((d, i) => {
+    const a = d.position.clone().project(camera), b = d.position.clone().add(camR).project(camera);
+    const ppu = Math.abs(b.x - a.x) / 2 * rect.width || 1;       // Pixel pro Welt-Einheit
+    const k = (i === _revolveSel || i === _revolveHover ? px * 1.35 : px) / ppu / 0.12;
+    d.scale.setScalar(k);
+  });
+  _revolveDimPos();
+}
+
+// ── Maßfeld für den gewählten Punkt (Ø + Höhe über der Platte) ──────────
+function _revolveWireDim() {
+  const box = document.getElementById('rev-dim');
+  if (box._wired) return; box._wired = true;
+  ['rev-dim-d', 'rev-dim-h'].forEach(id => {
+    const el = document.getElementById(id);
+    el.addEventListener('keydown', ev => {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') { ev.preventDefault(); _revolveDimCommit(); el.select(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); el.blur(); _revolveDimSync(); }
+      else if (ev.key === 'Tab') { ev.preventDefault(); _revolveDimCommit();
+        const o = document.getElementById(id === 'rev-dim-d' ? 'rev-dim-h' : 'rev-dim-d'); o.focus(); o.select(); }
+    });
+    el.addEventListener('change', _revolveDimCommit);
+  });
+}
+function _revolveFmt(v) { return (Math.round(v * 10) / 10).toString().replace('.', ','); }
+function _revolveDimSync() {
+  const box = document.getElementById('rev-dim');
+  const p = _revolvePoints[_revolveSel];
+  if (!_revolveMode || !p) { box.style.display = 'none'; return; }
+  const dI = document.getElementById('rev-dim-d'), hI = document.getElementById('rev-dim-h');
+  if (document.activeElement !== dI) dI.value = _revolveFmt(p.r * 20);
+  if (document.activeElement !== hI) hI.value = _revolveFmt(p.h * 10);
+  box.style.display = 'flex';
+  _revolveDimPos();
+}
+function _revolveDimPos() {
+  const box = document.getElementById('rev-dim');
+  const p = _revolvePoints[_revolveSel];
+  if (!p || box.style.display === 'none') return;
+  const v = p.world.clone().project(camera), rect = vpEl.getBoundingClientRect();
+  box.style.left = (rect.left + (v.x + 1) / 2 * rect.width + 16) + 'px';
+  box.style.top  = (rect.top + (-v.y + 1) / 2 * rect.height - 12) + 'px';
+}
+function _revolveDimCommit() {
+  const p = _revolvePoints[_revolveSel]; if (!p) return;
+  const num = id => parseFloat(String(document.getElementById(id).value).replace(',', '.'));
+  const d = num('rev-dim-d'), h = num('rev-dim-h');
+  const r = d >= 0 ? d / 20 : p.r, hh = isFinite(h) ? h / 10 : p.h;
+  if (Math.abs(r - p.r) < 1e-6 && Math.abs(hh - p.h) < 1e-6) return;
+  _revolveHistPush();
+  _revolveSetPoint(_revolveSel, r, hh);
+  document.getElementById('rev-dim-d').value = _revolveFmt(r * 20);
+  document.getElementById('rev-dim-h').value = _revolveFmt(hh * 10);
+}
+function _revolveSelect(i) {
+  _revolveSel = i; _revolveDotColors(); _revolveDimSync();
+}
+
+// ── Bearbeiten-Verlauf („← Zurück") ─────────────────────────────────────
+function _revolveHistPush() {
+  if (!_revolveEditObj) return;
+  _revolveHist.push(_revolvePoints.map(p => [p.r, p.h]));
+  if (_revolveHist.length > 60) _revolveHist.shift();
+}
+function _revolveRebuildDots(list) {
+  _revolveDots.forEach(d => { scene.remove(d); d.geometry.dispose(); d.material.dispose(); });
+  _revolveDots = []; _revolvePoints = [];
+  list.forEach(([r, h]) => _revolvePushPoint(r, h));
+  if (_revolveSel >= _revolvePoints.length) _revolveSel = -1;
+  _revolveHover = -1;
+  _revolveDotColors(); _revolveUpdatePreview(); _revolveUpdateBar(); _revolveDimSync();
+}
+function _revolveDeletePoint(i) {
+  if (i < 0 || i >= _revolvePoints.length) return;
+  if (_revolvePoints.length <= 2) { notify('Mindestens 2 Punkte nötig', 'w'); return; }
+  _revolveHistPush();
+  const list = _revolvePoints.map(p => [p.r, p.h]); list.splice(i, 1);
+  _revolveSel = -1;
+  _revolveRebuildDots(list);
+}
+// Klick auf eine Profillinie → Index zum Einfügen (Punkt landet zwischen i-1 und i), sonst -1
+function _revolveSegAt(e) {
+  const rect = vpEl.getBoundingClientRect();
+  const sp = _revolvePoints.map(p => { const v = p.world.clone().project(camera);
+    return { x: rect.left + (v.x + 1) / 2 * rect.width, y: rect.top + (-v.y + 1) / 2 * rect.height }; });
+  let best = -1, bd = 8;
+  for (let i = 0; i < sp.length - 1; i++) {
+    const a = sp[i], b = sp[i + 1], dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((e.clientX - a.x) * dx + (e.clientY - a.y) * dy) / L2));
+    const d = Math.hypot(a.x + dx * t - e.clientX, a.y + dy * t - e.clientY);
+    if (d < bd && t > 0.02 && t < 0.98) { bd = d; best = i + 1; }
+  }
+  return best;
+}
+window.addEventListener('keydown', e => {
+  if (!_revolveMode || !_revolveEditObj || _revolveSel < 0) return;
+  const t = e.target; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    e.preventDefault(); e.stopImmediatePropagation(); _revolveDeletePoint(_revolveSel);
+  }
+}, true);
 
 // Gummiband-Vorschau: gestrichelte Linie vom letzten Punkt zum Cursor
 // + Geister-Punkt an der gesnappten Position des nächsten Klicks
@@ -10203,9 +10336,13 @@ function _revolveGhostMove(e) {
     if (_revolveGhostDot)  _revolveGhostDot.visible  = false;
     _revolveDragMove(e); return;
   }
-  const overDot = e.target === canvas && _revolveDotAt(e) >= 0;
-  canvas.style.cursor = overDot ? 'grab' : 'crosshair';
-  const p = e.target === canvas && !overDot ? _revolvePickPoint(e) : null;
+  const hov = e.target === canvas ? _revolveDotAt(e) : -1;
+  if (hov !== _revolveHover) { _revolveHover = hov; _revolveDotColors(); }
+  const overDot = hov >= 0;
+  const overSeg = !overDot && _revolveEditObj && e.target === canvas && _revolveSegAt(e) >= 0;
+  canvas.style.cursor = overDot ? 'grab' : overSeg ? 'copy' : _revolveEditObj ? 'default' : 'crosshair';
+  // Beim Bearbeiten kein Gummiband: Klick ins Leere hängt dort nichts an
+  const p = e.target === canvas && !overDot && !_revolveEditObj ? _revolvePickPoint(e) : null;
   if (!p) {
     if (_revolveGhostLine) _revolveGhostLine.visible = false;
     if (_revolveGhostDot)  _revolveGhostDot.visible  = false;
@@ -10234,7 +10371,22 @@ function _revolveAddPoint(e) {
   if (!_revolvePlaneN) return;
   // Vorhandenen Punkt angefasst → ziehen statt neuen Punkt setzen
   const hitDot = _revolveDotAt(e);
-  if (hitDot >= 0) { _revolveDrag = hitDot; canvas.style.cursor = 'grabbing'; return; }
+  if (hitDot >= 0) {
+    _revolveHistPush();
+    _revolveDrag = hitDot; canvas.style.cursor = 'grabbing';
+    _revolveSelect(hitDot); return;
+  }
+  if (_revolveEditObj) {
+    // Bearbeiten: Klick auf eine Linie setzt dort einen Punkt ein, sonst nur abwählen
+    const seg = _revolveSegAt(e);
+    if (seg < 0) { _revolveSelect(-1); return; }
+    const p = _revolvePickPoint(e, null, false); if (!p) return;
+    _revolveHistPush();
+    const list = _revolvePoints.map(q => [q.r, q.h]); list.splice(seg, 0, [p.r, p.h]);
+    _revolveRebuildDots(list);
+    _revolveDrag = seg; _revolveSelect(seg); canvas.style.cursor = 'grabbing';
+    return;
+  }
   const p = _revolvePickPoint(e);
   if (!p) return;
   _revolvePushPoint(p.r, p.h);
@@ -10256,6 +10408,10 @@ function _revolvePushPoint(r, h) {
 }
 
 function _revolveUndo() {
+  if (_revolveEditObj) {                      // Bearbeiten: letzten Schritt zurück statt Punkt löschen
+    if (!_revolveHist.length) { notify('Nichts mehr zurückzunehmen — ESC verwirft alles', 'ok'); return; }
+    _revolveRebuildDots(_revolveHist.pop()); return;
+  }
   if (_revolvePoints.length === 0) return;
   _revolvePoints.pop();
   const dot = _revolveDots.pop();
@@ -10294,7 +10450,7 @@ function _revolveUpdatePreview() {
 function _revolveUpdateBar() {
   const n = _revolvePoints.length;
   const el = document.getElementById('revolve-count');
-  if (el) el.textContent = n + (n === 1 ? ' Punkt' : ' Punkte');
+  if (el) el.textContent = (_revolveEditObj ? 'Profil bearbeiten · ' : '') + n + (n === 1 ? ' Punkt' : ' Punkte');
 }
 
 function _revolveInterpolate(pts, targetN) {
@@ -30124,6 +30280,7 @@ function _pickMuteHandles(on) {
 function animate() {
   requestAnimationFrame(animate);
   _smTick();
+  if (_revolveMode) _revolveScaleDots();
   if (_measureMode && ((_measureA && _measureB) || _measureCircle)) _measureUpdateLabel();   // Maßlabel der Kamera folgen lassen
   if (ttOn) { sph.theta += 0.005; sph2cam(); }
   if (window._updateVcube) window._updateVcube();
@@ -50216,8 +50373,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.85';
+const VOLME3D_VERSION = '1.18.86';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.86', date:'2026-10-01', changes:[
+    ['🎯','<b>Drehen-Profil bearbeiten mit richtigen Anfassern.</b> Nach <b>✏️ Profil bearbeiten</b> geht das Zeichnen nicht mehr einfach weiter. Jeder Profilpunkt ist jetzt ein gut greifbarer Anfasser, den du ziehen kannst. Klickst du einen Punkt an, erscheint daneben ein Feld für <b>Ø</b> und <b>Höhe</b> in mm: Zahl eintippen, Enter, und zum Beispiel der Boden hat genau den gewünschten Durchmesser. Ein Klick auf eine Linie setzt dort einen neuen Punkt ein, <b>Entf</b> löscht den gewählten Punkt. <b>← Zurück</b> nimmt den letzten Schritt zurück. Auswahlrahmen und Pfeile des Körpers sind beim Bearbeiten ausgeblendet, damit sie nicht im Weg sind.'],
+  ]},
   { version:'1.18.85', date:'2026-09-30', changes:[
     ['💻','<b>Installierte Schriften nutzen.</b> Im <b>🔎 Katalog</b> gibt es jetzt <b>💻 Auf diesem PC</b>: Dort stehen alle Schriften, die auf deinem Rechner installiert sind, jeweils mit deinem Text. Ein Klick übernimmt die Schrift in alle Text-Werkzeuge, wie bei den Google-Schriften. Beim ersten Mal fragt der Browser um Erlaubnis. Das geht in Chrome und Edge am Computer; in Firefox und Safari die Schrift über <b>＋ Eigene Datei</b> aus dem Schriftenordner laden. Die Schriftdatei verlässt deinen Rechner nicht.'],
   ]},
