@@ -49752,8 +49752,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.78';
+const VOLME3D_VERSION = '1.18.79';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.79', date:'2026-09-30', changes:[
+    ['⬇️','<b>Motiv auf einer Rundung bis ganz an den unteren Rand ziehen.</b> Wer ein gewickeltes Motiv an den Rand eines Bechers oder Windlichts schieben wollte, zog dabei natürlich ein Stück über den Rand hinaus — und schon sprang das Motiv zurück auf die Höhe, von der es kam. Ebenso, wenn beim Ziehen ein anderes Teil unter dem Zeiger lag, etwa der Sockel direkt daneben. Die App hielt das für „vom Körper herunternehmen“. Jetzt bleibt das Motiv am Rand stehen, solange der Zeiger in der Nähe des Körpers bleibt. Wer es wirklich herunternehmen will, zieht es deutlich zur Seite weg (danke Josy).'],
+  ]},
   { version:'1.18.78', date:'2026-09-29', changes:[
     ['🦓','<b>Gewickelte Muster auf dünnen Windlichtern: nichts mehr innen, liegt bis zum Rand an.</b> Ein um einen Becher gewickeltes Motiv ist zunächst zum Eingravieren gedacht: Es reicht in die Wand hinein und steht außen kaum heraus. Wer es dann mit <b>∪ Vereinen</b> aufsetzte, bekam bei dünnen Wänden (z. B. 1,2 mm beim Leo-Windlicht) das Muster innen durch die Wand gedrückt, außen war es kaum zu sehen. Jetzt wird ein solches Motiv beim Vereinen erhaben aufgesetzt — mit der eingestellten Tiefe als Höhe, innen bleibt die Wand glatt. Zum Eingravieren weiter <b>Abziehen</b> nehmen. Außerdem liegt das Motiv auf kegeligen Bechern jetzt auch in den obersten Zentimetern an der Wand an; vorher stand es dort bis zu einem knappen Millimeter ab (danke Josy).'],
   ]},
@@ -51515,6 +51518,22 @@ function _svgGlideEscaped(e) {
   const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines);
   const rootOf = m => { let p = m; while (p && !objects.includes(p)) p = p.parent; return p || m; };
   const own = G.kind === 'flat' ? (G.fr.solid && G.fr.solid.mesh) : G.fr.target;
+  // Gewickelt: Bleibt der Zeiger im Band um den Körper (seitlich nah dran, in der
+  // Höhe höchstens ein gutes Stück über den Rand hinaus), wird weiter geglitten —
+  // auch wenn er gerade ein anderes Teil oder nichts trifft. Wer ein Motiv an den
+  // unteren Rand setzt, zieht natürlich etwas darüber hinaus, und oft steht der
+  // Sockel direkt daneben. Vorher brach das Gleiten dort ab und das Motiv sprang
+  // auf die Starthöhe zurück (Josy 30.9.: „springt immer wieder nach oben“).
+  const imBand = () => {
+    if (_rayCylinderMiss(raycaster.ray, G.fr.axisPt, G.fr.axis, G.fr.R) > Math.max(G.fr.R * 1.5, 2)) return false;
+    if (!G.span) return true;
+    const pz = _rayCylinderPoint(raycaster.ray, G.fr.axisPt, G.fr.axis, G.fr.R);
+    if (!pz) return true;
+    const hz = _svgGlideCyl(pz, G.fr).h;
+    const luft = Math.max(G.span.half * 2, (G.span.hi - G.span.lo) / 3, 2.5);
+    return hz <= G.span.hi + luft && hz >= G.span.lo - luft;
+  };
+  if (G.kind === 'wrap' && imBand()) return false;
   if (!hit) {
     // Nichts im Blick: zieht der Nutzer deutlich neben den Körper, will er das
     // Motiv HERUNTERNEHMEN — sonst klebte es unentrinnbar an seiner Rundung.
@@ -51524,21 +51543,10 @@ function _svgGlideEscaped(e) {
       const bs = new THREE.Box3().setFromObject(t).getBoundingSphere(new THREE.Sphere());
       return raycaster.ray.distanceToPoint(bs.center) > bs.radius * 1.3;
     }
-    if (G.kind === 'wrap') {
-      // Großzügig: beim Drehen um den Körper verlässt der Zeiger dessen Umriss
-      // ständig kurz — erst ein deutlicher Zug daneben heißt "herunternehmen".
-      if (_rayCylinderMiss(raycaster.ray, G.fr.axisPt, G.fr.axis, G.fr.R) > Math.max(G.fr.R * 1.5, 2))
-        return true;
-      if (G.span) {   // weit über oder unter den Körper hinaus gezogen
-        const pz = _rayCylinderPoint(raycaster.ray, G.fr.axisPt, G.fr.axis, G.fr.R);
-        if (pz) {
-          const hz = _svgGlideCyl(pz, G.fr).h;
-          const luft = Math.max(G.span.half * 2, 0.5);
-          if (hz > G.span.hi + luft || hz < G.span.lo - luft) return true;
-        }
-      }
-      return false;
-    }
+    // Gewickelt und nichts im Blick: außerhalb des Bands (siehe imBand) heißt
+    // das "herunternehmen" — großzügig, beim Drehen um den Körper verlässt der
+    // Zeiger dessen Umriss ständig kurz.
+    if (G.kind === 'wrap') return true;
     if (G.face && G.face.uMin != null) {
       const p = _rayPlanePoint(raycaster.ray, G.fr.point, G.fr.n);
       if (!p) return false;
