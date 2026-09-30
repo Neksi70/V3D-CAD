@@ -6248,6 +6248,9 @@ let _revolveSavedCam    = null;
 let _revolvePreviewMesh = null;
 let _revolveGhostLine   = null;
 let _revolveGhostDot    = null;
+let _revolveOrigin      = new THREE.Vector3();   // Fußpunkt der Drehachse (y=0)
+let _revolveEditObj     = null;                  // bestehender Drehen-Körper, dessen Profil gerade bearbeitet wird
+let _revolveDrag        = -1;                    // Index des gezogenen Profilpunkts
 const EDGE_ENDPOINTS = [
   [[ 1, 1,-1],[ 1, 1, 1]],
   [[-1, 1,-1],[-1, 1, 1]],
@@ -8610,12 +8613,21 @@ function exitEdgeMode() {
 }
 
 // ═══ REVOLVE / SKETCH-DREHEN ════════════════════════════════════════════
-function enterRevolveMode() {
+function enterRevolveMode(editObj) {
+  if (_revolveMode) exitRevolveMode();
   if (_edgeMode) exitEdgeMode();
   if (_lf.active) exitLoftMode();
   _revolveSavedCam = { theta: sph.theta, phi: sph.phi, r: sph.r, target: orbitTarget.clone() };
-  setView('front');
-  const hDir = new THREE.Vector3(camera.position.x, 0, camera.position.z);
+  const edit = editObj && editObj.userData && editObj.userData.shapeType === 'revolve' ? editObj : null;
+  _revolveOrigin.set(edit ? edit.position.x : 0, 0, edit ? edit.position.z : 0);
+  if (edit) {
+    // Kamera frontal auf den Körper, damit das Profil formatfüllend liegt
+    const box = getMeshBox(edit), sz = box.getSize(new THREE.Vector3());
+    orbitTarget.set(edit.position.x, box.getCenter(new THREE.Vector3()).y, edit.position.z);
+    setView('front');
+    sph.r = Math.max(8, Math.max(sz.x, sz.y) * 2.2); sph2cam();
+  } else setView('front');
+  const hDir = new THREE.Vector3(camera.position.x - orbitTarget.x, 0, camera.position.z - orbitTarget.z);
   if (hDir.lengthSq() < 0.001) hDir.set(0, 0, 1);
   hDir.normalize();
   _revolvePlaneN = hDir.clone();
@@ -8626,7 +8638,7 @@ function enterRevolveMode() {
 
   const axMat = new THREE.LineDashedMaterial({color:0x2288ff, dashSize:0.6, gapSize:0.25, depthTest:false});
   _revolveAxisLine = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,-20,0), new THREE.Vector3(0,20,0)]),
+    new THREE.BufferGeometry().setFromPoints([_revolveOrigin.clone().setY(-20), _revolveOrigin.clone().setY(20)]),
     axMat
   );
   _revolveAxisLine.computeLineDistances();
@@ -8657,8 +8669,20 @@ function enterRevolveMode() {
 
   const bar = document.getElementById('revolve-bar');
   bar.style.display = 'flex';
+  if (edit) {
+    // Gespeichertes (normiertes) Profil zurück in Weltmaß: r·Radius, h·Halbhöhe + Mitte
+    const sR = (Math.abs(edit.scale.x) + Math.abs(edit.scale.z)) / 2 || 1;
+    const sH = Math.abs(edit.scale.y) || 1;
+    (edit.userData.revolveNormPts || []).forEach(q =>
+      _revolvePushPoint(Math.max(0, q.x * sR), q.y * sH + edit.position.y));
+    _revolveEditObj = edit;
+    edit.visible = false;                     // Vorschau ersetzt den Körper während der Bearbeitung
+    _revolveUpdatePreview();
+  }
   _revolveUpdateBar();
-  notify('Profil-Punkte klicken — Y-Achse = Drehachse — Doppelklick: Fertig', 'ok');
+  notify(edit
+    ? 'Profil bearbeiten: Punkte ziehen, Klick daneben = Punkt anhängen — ✓ Fertig übernimmt, ESC verwirft'
+    : 'Profil-Punkte klicken — Y-Achse = Drehachse — Punkte lassen sich ziehen — Doppelklick: Fertig', 'ok');
 }
 
 function exitRevolveMode() {
@@ -8672,7 +8696,8 @@ function exitRevolveMode() {
   _revolveDots.forEach(d => { scene.remove(d); d.geometry.dispose(); d.material.dispose(); });
   _revolveDots = [];
   _revolvePoints = [];
-  _revolvePlaneN = null; _revolveRight = null;
+  _revolvePlaneN = null; _revolveRight = null; _revolveDrag = -1;
+  if (_revolveEditObj) { _revolveEditObj.visible = true; _revolveEditObj = null; }
   if (_revolveSavedCam) {
     sph.theta = _revolveSavedCam.theta; sph.phi = _revolveSavedCam.phi; sph.r = _revolveSavedCam.r;
     orbitTarget.copy(_revolveSavedCam.target); sph2cam(); _revolveSavedCam = null;
@@ -10059,37 +10084,84 @@ function _sweepApplySides(nSides){
 }
 
 // Mausposition → gesnappter Profilpunkt (gemeinsame Logik für Klick & Vorschau)
-function _revolvePickPoint(e) {
+// ref = Bezugspunkt für die Ortho-Hilfe (Standard: letzter Punkt); axisSnap = nahe
+// der Achse auf r=0 ziehen (erster Punkt bzw. gezogene Endpunkte).
+function _revolvePickPoint(e, ref, axisSnap) {
   getNorm(e);
   raycaster.setFromCamera(mousev, camera);
-  const plane = new THREE.Plane(_revolvePlaneN, 0);
+  const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(_revolvePlaneN, _revolveOrigin);
   const hit = new THREE.Vector3();
   if (!raycaster.ray.intersectPlane(plane, hit)) return null;
-  let rawR = Math.abs(hit.dot(_revolveRight));
-  if (_revolvePoints.length === 0) {
+  let rawR = Math.abs(hit.clone().sub(_revolveOrigin).dot(_revolveRight));
+  if (ref === undefined) ref = _revolvePoints.length ? _revolvePoints[_revolvePoints.length - 1] : null;
+  if (axisSnap === undefined) axisSnap = _revolvePoints.length === 0;
+  if (axisSnap) {
     const visW = 2 * sph.r * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
     if (rawR < visW * 0.05) rawR = 0;
   }
   let r = snapV(rawR);
   let h = snapV(hit.y);
-  // Ortho-Hilfe: fast waagerecht/senkrecht zum letzten Punkt → einrasten
+  // Ortho-Hilfe: fast waagerecht/senkrecht zum Bezugspunkt → einrasten
   let ortho = null;
-  if (_revolvePoints.length > 0) {
-    const last = _revolvePoints[_revolvePoints.length - 1];
+  if (ref) {
+    const last = ref;
     const visW = 2 * sph.r * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
     const tol = visW * 0.015;
     const dh = Math.abs(h - last.h), dr = Math.abs(r - last.r);
     if (dh < tol && dr > dh)      { h = last.h; ortho = 'h'; }
     else if (dr < tol && dh > dr) { r = last.r; ortho = 'v'; }
   }
-  return { r, h, ortho, world: new THREE.Vector3(r * _revolveRight.x, h, r * _revolveRight.z) };
+  return { r, h, ortho, world: _revolveWorld(r, h) };
 }
+function _revolveWorld(r, h) {
+  return new THREE.Vector3(_revolveOrigin.x + r * _revolveRight.x, h, _revolveOrigin.z + r * _revolveRight.z);
+}
+
+// Profilpunkt unter dem Mauszeiger (Bildschirmabstand), sonst -1
+function _revolveDotAt(e) {
+  const rect = vpEl.getBoundingClientRect();
+  let best = -1, bd = 12;
+  _revolvePoints.forEach((p, i) => {
+    const v = p.world.clone().project(camera);
+    const d = Math.hypot(rect.left + (v.x + 1) / 2 * rect.width - e.clientX,
+                         rect.top + (-v.y + 1) / 2 * rect.height - e.clientY);
+    if (d < bd) { bd = d; best = i; }
+  });
+  return best;
+}
+
+function _revolveDragMove(e) {
+  const i = _revolveDrag, n = _revolvePoints.length;
+  const ref = i > 0 ? _revolvePoints[i - 1] : (n > 1 ? _revolvePoints[1] : null);
+  const p = _revolvePickPoint(e, ref, i === 0 || i === n - 1);
+  if (!p) return;
+  Object.assign(_revolvePoints[i], { r: p.r, h: p.h, world: p.world });
+  if (_revolveDots[i]) {
+    _revolveDots[i].position.copy(p.world);
+    _revolveDots[i].material.color.setHex(p.ortho ? 0xff7a1a : 0x0088ff);
+  }
+  _revolveUpdatePreview();
+}
+window.addEventListener('mouseup', () => {
+  if (_revolveDrag < 0) return;
+  const d = _revolveDots[_revolveDrag];
+  if (d) d.material.color.setHex(0x0088ff);
+  _revolveDrag = -1;
+  if (_revolveMode) canvas.style.cursor = 'crosshair';
+});
 
 // Gummiband-Vorschau: gestrichelte Linie vom letzten Punkt zum Cursor
 // + Geister-Punkt an der gesnappten Position des nächsten Klicks
 function _revolveGhostMove(e) {
   if (!_revolveMode || !_revolvePlaneN) return;
-  const p = e.target === canvas ? _revolvePickPoint(e) : null;
+  if (_revolveDrag >= 0) {
+    if (_revolveGhostLine) _revolveGhostLine.visible = false;
+    if (_revolveGhostDot)  _revolveGhostDot.visible  = false;
+    _revolveDragMove(e); return;
+  }
+  const overDot = e.target === canvas && _revolveDotAt(e) >= 0;
+  canvas.style.cursor = overDot ? 'grab' : 'crosshair';
+  const p = e.target === canvas && !overDot ? _revolvePickPoint(e) : null;
   if (!p) {
     if (_revolveGhostLine) _revolveGhostLine.visible = false;
     if (_revolveGhostDot)  _revolveGhostDot.visible  = false;
@@ -10116,11 +10188,19 @@ function _revolveGhostMove(e) {
 
 function _revolveAddPoint(e) {
   if (!_revolvePlaneN) return;
+  // Vorhandenen Punkt angefasst → ziehen statt neuen Punkt setzen
+  const hitDot = _revolveDotAt(e);
+  if (hitDot >= 0) { _revolveDrag = hitDot; canvas.style.cursor = 'grabbing'; return; }
   const p = _revolvePickPoint(e);
   if (!p) return;
-  const { r, h, world } = p;
-  _revolvePoints.push({ r, h, world });
+  _revolvePushPoint(p.r, p.h);
+  _revolveUpdatePreview();
+  _revolveUpdateBar();
+}
 
+function _revolvePushPoint(r, h) {
+  const world = _revolveWorld(r, h);
+  _revolvePoints.push({ r, h, world });
   const dot = new THREE.Mesh(
     new THREE.SphereGeometry(0.12, 7, 7),
     new THREE.MeshBasicMaterial({color:0x0088ff, depthTest:false})
@@ -10129,8 +10209,6 @@ function _revolveAddPoint(e) {
   dot.renderOrder = 1000;
   scene.add(dot);
   _revolveDots.push(dot);
-  _revolveUpdatePreview();
-  _revolveUpdateBar();
 }
 
 function _revolveUndo() {
@@ -10163,6 +10241,7 @@ function _revolveUpdatePreview() {
       side: THREE.DoubleSide, depthWrite: false
     });
     _revolvePreviewMesh = new THREE.Mesh(geo, mat);
+    _revolvePreviewMesh.position.copy(_revolveOrigin);
     _revolvePreviewMesh.renderOrder = 997;
     scene.add(_revolvePreviewMesh);
   }
@@ -10623,6 +10702,7 @@ function applyRevolveWall(mm) {
 
 function finishRevolve() {
   if (_revolvePoints.length < 2) { notify('Mindestens 2 Punkte nötig', 'w'); return; }
+  if (_revolveEditObj) _revolveEditObj.visible = true;   // Undo-Stand mit sichtbarem Körper
   saveUndo();
   const pts = _revolvePoints.map(p => new THREE.Vector2(p.r, p.h));
   const ptCount = _revolvePoints.length;
@@ -10639,6 +10719,22 @@ function finishRevolve() {
   const sH = 1 / (totalH / 2);                   // h   → -1 .. +1
 
   const normPts = pts.map(p => new THREE.Vector2(p.x * sR, (p.y - centerH) * sH));
+
+  if (_revolveEditObj) {
+    // Bestehenden Körper umbauen: Profil + Maßstab neu, alle Optionen
+    // (Verdrehen, Wand, Querschnitt, Oberfläche, Farbe …) bleiben erhalten.
+    const o = _revolveEditObj;
+    const ax = Math.abs(o.scale.x), az = Math.abs(o.scale.z), avg = (ax + az) / 2 || 1;
+    o.scale.set(Math.sign(o.scale.x || 1) * maxR * ax / avg, totalH / 2, Math.sign(o.scale.z || 1) * maxR * az / avg);
+    o.position.y = centerH;
+    o.userData.revolveNormPts = normPts.map(p => ({ x: p.x, y: p.y }));
+    _rebuildRevolveGeo(o);
+    exitRevolveMode();
+    selectObjs([o]); updateTree();
+    _fpCurType = null; updateFP();
+    notify('Profil übernommen (' + ptCount + ' Punkte)', 'ok');
+    return;
+  }
 
   // Display geometry — normalised coords, looks the same once scale is applied
   const geo = _buildRevolveGeo(normPts, {});
@@ -49865,8 +49961,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.80';
+const VOLME3D_VERSION = '1.18.81';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.81', date:'2026-09-30', changes:[
+    ['✏️','<b>Drehen-Körper nachträglich ändern.</b> Wer mit <b>Drehen</b> eine Vase oder Schale gezeichnet hat, kommt jetzt wieder an das Profil heran: Körper anklicken, im Eigenschaften-Fenster <b>✏️ Profil bearbeiten</b> wählen. Die Profilpunkte erscheinen wieder, und du kannst sie mit der Maus ziehen, um zum Beispiel den Boden zu verbreitern. Ein Klick daneben hängt einen Punkt an. <b>✓ Fertig</b> übernimmt das neue Profil, <b>ESC</b> lässt alles, wie es war. Verdrehen, Wandstärke, Querschnitt, Oberfläche und Farbe bleiben erhalten. Beim ersten Zeichnen lassen sich gesetzte Punkte jetzt ebenfalls verschieben.'],
+  ]},
   { version:'1.18.80', date:'2026-09-30', changes:[
     ['🔤','<b>Schrift-Vorschau beim 3D-Text.</b> Unter der Schrift-Auswahl steht jetzt dein Text so, wie er in der gewählten Schrift aussehen wird. Das Feld zeigt ihn schon beim Tippen, und beim Durchblättern der Liste mit den Pfeiltasten wechselt die Vorschau gleich mit. Über <b>Aa Vergleichen</b> (oder einen Klick auf die Vorschau) siehst du alle Schriften untereinander, jeweils mit deinem Text. Ein Klick auf eine Zeile übernimmt die Schrift. Eigene Schriften (★) sind auch dabei.'],
   ]},
@@ -54823,7 +54922,10 @@ function _fpBuildRows(type, o) {
           row('Tiefe',  'fp-str-d', stripsD, "_applyRevolveParam('revolveStripsD',this.value)", '%', 5, 60, 1)
         : '';
 
-      return row('Breite X',  'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
+      return (o.userData.vaseWall == null
+               ? `<button class="fp-btn" style="width:100%;margin:0 0 8px" title="Zurück ins Drehen-Werkzeug: Profilpunkte ziehen, z. B. den Boden verbreitern" onclick="enterRevolveMode(getFirst())">✏️ Profil bearbeiten</button>`
+               : '') +
+             row('Breite X',  'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
              propLock() +
              row('Tiefe Y',   'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
              row('Höhe Z',    'fph', h, "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
