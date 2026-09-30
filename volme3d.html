@@ -5186,7 +5186,7 @@ Patrick</textarea>
       <span style="flex:1;text-align:right">Klick auf eine Schrift übernimmt sie</span>
     </div>
     <div id="gf-list" onscroll="_gfScroll(this)"></div>
-    <div style="font-size:10px;color:#999;line-height:1.35">Google Fonts über Fontsource — frei nutzbar, auch für verkaufte Drucke (SIL Open Font License). Die Schrift wird einmal geladen und bleibt danach in allen Text-Werkzeugen (★) gespeichert. Für den Druck eignen sich kräftige Schriften besser als sehr dünne.</div>
+    <div style="font-size:10px;color:#999;line-height:1.35">Google Fonts über Fontsource — frei nutzbar, auch für verkaufte Drucke (SIL Open Font License). „Auf diesem PC“ zeigt deine installierten Schriften (Chrome/Edge) — deren Lizenz ist deine Sache, bei gekauften Schriften vorher prüfen, ob Drucke verkauft werden dürfen. Die Schrift wird einmal geladen und bleibt danach in allen Text-Werkzeugen (★) gespeichert. Für den Druck eignen sich kräftige Schriften besser als sehr dünne.</div>
   </div>
 </div>
 
@@ -45642,9 +45642,9 @@ const _GF_POP = ['Pacifico','Lobster','Dancing Script','Great Vibes','Kaushan Sc
   'Titan One','Luckiest Guy','Bangers','Lilita One','Chewy','Fredoka','Baloo 2','Comfortaa','Righteous','Bungee',
   'Cherry Bomb One','Sniglet','Black Ops One','Stardos Stencil','Saira Stencil One','Allerta Stencil','Cinzel',
   'Playfair Display','Abril Fatface','Montserrat','Poppins','Roboto','Open Sans','Lato','Raleway','Nunito','Rubik'];
-const _GF_CATS = [['pop','⭐ Beliebt'],['all','Alle'],['handwriting','Schreibschrift'],['display','Deko'],
+const _GF_CATS = [['pop','⭐ Beliebt'],['local','💻 Auf diesem PC'],['all','Alle'],['handwriting','Schreibschrift'],['display','Deko'],
   ['stencil','Schablone'],['sans-serif','Ohne Serifen'],['serif','Mit Serifen'],['monospace','Monospace']];
-let _gfList = null, _gfCat = 'pop', _gfBold = false, _gfShown = [], _gfN = 0, _gfObs = null, _gfBusy = false;
+let _gfLocal = null, _gfList = null, _gfCat = 'pop', _gfBold = false, _gfShown = [], _gfN = 0, _gfObs = null, _gfBusy = false;
 const _gfFaces = {};
 
 function _gfOpen(selectId){
@@ -45668,7 +45668,47 @@ function _gfClose(){ document.getElementById('gf-modal').classList.remove('show'
 function _gfSetCat(k){
   _gfCat = k;
   document.querySelectorAll('#gf-cats .vtb').forEach(b => b.classList.toggle('on', b.dataset.k === k));
+  if(k === 'local' && !_gfLocal){ _gfLoadLocal(); return; }
   _gfFilter();
+}
+
+// ── Installierte Schriften (Local Font Access API) ──────────────────────
+// Nur Chrome/Edge am Computer, nur über HTTPS, braucht einen Klick als Auslöser
+// (der Klick auf „Auf diesem PC" genügt) und fragt einmal um Erlaubnis. Die
+// Schriftdatei wird nur im Browser umgerechnet, nichts verlässt den Rechner.
+const _GF_WNAMES = [[/thin|hairline/i,100],[/extra ?light|ultra ?light/i,200],[/light/i,300],[/semi ?bold|demi ?bold/i,600],
+  [/extra ?bold|ultra ?bold/i,800],[/black|heavy/i,900],[/bold/i,700],[/medium/i,500]];
+function _gfStyleWeight(st){ for(const [re,w] of _GF_WNAMES) if(re.test(st)) return w; return 400; }
+
+function _gfLoadLocal(){
+  const box = document.getElementById('gf-list');
+  document.getElementById('gf-count').textContent = '';
+  if(typeof window.queryLocalFonts !== 'function'){
+    box.innerHTML = '<div class="gf-msg">Dieser Browser gibt die installierten Schriften nicht frei — das können nur <b>Chrome</b> und <b>Edge</b> am Computer.<br><br>'
+      + 'Alternativ die Schriftdatei direkt laden: <b>＋ Eigene Datei</b> und dort den Schriftenordner öffnen<br>(Windows: <code>C:\\Windows\\Fonts</code>, Mac: Schriftsammlung → Im Finder zeigen).</div>';
+    return;
+  }
+  box.innerHTML = '<div class="gf-msg">Frage installierte Schriften ab… (der Browser bittet ggf. um Erlaubnis)</div>';
+  window.queryLocalFonts().then(fonts => {
+    const fam = new Map();
+    for(const fd of fonts){
+      if(/italic|oblique|kursiv/i.test(fd.style)) continue;
+      const w = _gfStyleWeight(fd.style);
+      let f = fam.get(fd.family);
+      if(!f){ f = { id: 'local:' + fd.family, family: fd.family, category: 'local', weights: [], faces: {} }; fam.set(fd.family, f); }
+      if(!f.faces[w] || /^(regular|normal|book|roman)$/i.test(fd.style)){ f.faces[w] = fd; if(!f.weights.includes(w)) f.weights.push(w); }
+    }
+    _gfLocal = [...fam.values()].filter(f => f.weights.length).sort((a,b) => a.family.localeCompare(b.family, 'de'));
+    _gfLocal.forEach(f => f.weights.sort((a,b) => a-b));
+    if(!_gfLocal.length){
+      _gfLocal = null;
+      box.innerHTML = '<div class="gf-msg">Keine installierten Schriften freigegeben. Wenn du die Abfrage abgelehnt hast: links neben der Adresszeile auf das Schloss-Symbol → Schriftarten → Zulassen, dann erneut auf „💻 Auf diesem PC".</div>';
+      return;
+    }
+    if(_gfCat === 'local') _gfFilter();
+  }).catch(() => {
+    box.innerHTML = '<div class="gf-msg">Zugriff auf installierte Schriften nicht erlaubt. Links neben der Adresszeile auf das Schloss-Symbol → Schriftarten → Zulassen, dann erneut auf „💻 Auf diesem PC".</div>';
+  });
 }
 function _gfSetBold(b){
   _gfBold = b;
@@ -45682,12 +45722,14 @@ function _gfWeight(f){
 }
 
 function _gfFilter(){
-  if(!_gfList) return;
+  const local = _gfCat === 'local';
+  if(local ? !_gfLocal : !_gfList) return;
   const q = document.getElementById('gf-q').value.trim().toLowerCase();
-  let L = _gfList;
+  let L = local ? _gfLocal : _gfList;
   // Suche geht immer über alle Schriften — sonst findet „Pacifico" nichts, nur
-  // weil noch „Schablone" angeklickt ist.
+  // weil noch „Schablone" angeklickt ist. Ausnahme: „Auf diesem PC" sucht dort.
   if(q) L = L.filter(f => f.family.toLowerCase().includes(q));
+  else if(local) {}
   else if(_gfCat === 'pop') L = _GF_POP.map(n => _gfList.find(f => f.family === n)).filter(Boolean);
   else if(_gfCat === 'stencil') L = L.filter(f => /stencil/i.test(f.family));
   else if(_gfCat !== 'all') L = L.filter(f => f.category === _gfCat);
@@ -45703,7 +45745,7 @@ function _gfFilter(){
 function _gfMore(){
   const box = document.getElementById('gf-list'), txt = document.getElementById('gf-text').value || 'Volker Müller';
   if(!_gfObs) _gfObs = new IntersectionObserver(es => es.forEach(e => { if(e.isIntersecting){ _gfObs.unobserve(e.target); _gfFace(e.target); } }), { root: box, rootMargin: '200px' });
-  const catDe = { handwriting:'Schreibschrift', display:'Deko', 'sans-serif':'ohne Serifen', serif:'mit Serifen', monospace:'Monospace', other:'Sonstige' };
+  const catDe = { local:'installiert', handwriting:'Schreibschrift', display:'Deko', 'sans-serif':'ohne Serifen', serif:'mit Serifen', monospace:'Monospace', other:'Sonstige' };
   const end = Math.min(_gfShown.length, _gfN + 60);
   for(; _gfN < end; _gfN++){
     const f = _gfShown[_gfN], w = _gfWeight(f);
@@ -45724,12 +45766,15 @@ function _gfScroll(el){ if(el.scrollTop + el.clientHeight > el.scrollHeight - 30
 function _gfText(){ const t = document.getElementById('gf-text').value || 'Volker Müller'; document.querySelectorAll('#gf-list .gf-sample').forEach(e => e.textContent = t); }
 
 function _gfFace(row){
-  const id = row.dataset.id, w = row.dataset.w, fam = 'gf_' + id + '_' + w;
+  const id = row.dataset.id, w = row.dataset.w, fam = 'gf_' + id.replace(/[^\w-]/g, '_') + '_' + w;
   const sm = row.querySelector('.gf-sample');
   const apply = () => { sm.style.fontFamily = '"' + fam + '", sans-serif'; sm.classList.add('ok'); };
   if(_gfFaces[fam] === true){ apply(); return; }
   if(_gfFaces[fam]){ _gfFaces[fam].then(apply, () => {}); return; }
-  const ff = new FontFace(fam, 'url(' + _GF_CDN + id + '@latest/latin-' + w + '-normal.woff2)', { weight: String(w) });
+  const lf = id.indexOf('local:') === 0 && _gfLocal && (_gfLocal.find(f => f.id === id) || {}).faces;
+  const src = lf ? 'local("' + lf[w].postscriptName.replace(/"/g, '') + '")'
+                 : 'url(' + _GF_CDN + id + '@latest/latin-' + w + '-normal.woff2)';
+  const ff = new FontFace(fam, src, { weight: String(w) });
   _gfFaces[fam] = ff.load().then(x => { document.fonts.add(x); _gfFaces[fam] = true; });
   _gfFaces[fam].then(apply, () => { sm.classList.add('ok'); sm.style.color = '#b00'; sm.textContent = 'Vorschau nicht verfügbar'; });
 }
@@ -45737,14 +45782,15 @@ function _gfFace(row){
 function _gfAdopt(f, w){
   if(_gfBusy) return;
   _gfBusy = true;
-  const label = (f.family + (w >= 600 && f.weights.length > 1 ? ' Bold' : w <= 300 ? ' Light' : '')).slice(0, 40);
+  const face = f.faces && f.faces[w];
+  const label = (face ? face.fullName : f.family + (w >= 600 && f.weights.length > 1 ? ' Bold' : w <= 300 ? ' Light' : '')).slice(0, 40);
   notify('Lade Schrift „' + label + '" …', 'w');
   _ufOpentype(ot0 => {
     if(!ot0){ _gfBusy = false; return; }
-    fetch(_GF_CDN + f.id + '@latest/latin-' + w + '-normal.ttf')
-      .then(r => { if(!r.ok) throw 0; return r.arrayBuffer(); })
+    (face ? face.blob().then(b => b.arrayBuffer())
+          : fetch(_GF_CDN + f.id + '@latest/latin-' + w + '-normal.ttf').then(r => { if(!r.ok) throw 0; return r.arrayBuffer(); }))
       .then(buf => { const k = _ufRegister(ot0.parse(buf), label); if(k) _gfClose(); })
-      .catch(() => notify('Schrift „' + f.family + '" konnte nicht geladen werden', 'w'))
+      .catch(() => notify('Schrift „' + f.family + '" konnte nicht gelesen werden' + (face ? ' (manche Systemschriften sind geschützt oder als Sammeldatei abgelegt)' : ''), 'w'))
       .then(() => { _gfBusy = false; });
   });
 }
@@ -50170,8 +50216,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.84';
+const VOLME3D_VERSION = '1.18.85';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.85', date:'2026-09-30', changes:[
+    ['💻','<b>Installierte Schriften nutzen.</b> Im <b>🔎 Katalog</b> gibt es jetzt <b>💻 Auf diesem PC</b>: Dort stehen alle Schriften, die auf deinem Rechner installiert sind, jeweils mit deinem Text. Ein Klick übernimmt die Schrift in alle Text-Werkzeuge, wie bei den Google-Schriften. Beim ersten Mal fragt der Browser um Erlaubnis. Das geht in Chrome und Edge am Computer; in Firefox und Safari die Schrift über <b>＋ Eigene Datei</b> aus dem Schriftenordner laden. Die Schriftdatei verlässt deinen Rechner nicht.'],
+  ]},
   { version:'1.18.84', date:'2026-09-30', changes:[
     ['🔎','<b>Schriften-Katalog: rund 2000 freie Google-Schriften.</b> Beim 3D-Text, beim Namensschild, beim Tortentopper und bei den Leucht-Buchstaben sitzt unter der Schrift-Auswahl der Knopf <b>🔎 Katalog</b>. Dort lässt sich suchen oder nach Art stöbern (Schreibschrift, Deko, Schablone, mit/ohne Serifen), und jede Schrift zeigt gleich deinen Text. Normal oder fett umschalten, Schrift anklicken: Sie wird geladen, steht mit ★ in allen Text-Werkzeugen und bleibt gespeichert. Die Schriften stehen unter der SIL Open Font License und dürfen auch für verkaufte Drucke genutzt werden. Der Knopf für Schriftdateien vom eigenen Rechner heißt jetzt <b>＋ Eigene Datei</b>.'],
   ]},
