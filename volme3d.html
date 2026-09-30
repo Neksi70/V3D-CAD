@@ -1280,7 +1280,7 @@ const firebaseConfig = {
       <button class="btn" onclick="fitCheckTool()" title="Passung prüfen: 2 Objekte auswählen → zeigt Überschneidung (rot) oder kleinsten Abstand">⧉ Passung</button>
     </div></div>
     <div class="tbg"><span class="tbg-l">Anordnen</span><div class="tbg-row">
-      <button class="btn" onclick="alignTool()" title="L — Mind. 2 Objekte auswählen">⊜ Ausrichten</button>
+      <button class="btn" onclick="alignTool()" title="L — 1 Teil: an Achslinien/Nullpunkt · mehrere Teile: aneinander">⊜ Ausrichten</button>
       <button class="btn" onclick="mirrorTool()" title="M — Objekt auswählen dann X/Y/Z">⊿ Spiegeln</button>
       <button class="btn" onclick="centerOnPlate()" title="Objekt mittig auf die Bauplatte legen">⊕ Mitte</button>
       <button class="btn" onclick="rotate225('y',1)" title="Drehen — 22,5° im Uhrzeigersinn (steht aufrecht, bleibt am Boden)">↻ Drehen</button>
@@ -14616,8 +14616,8 @@ function clearSelLines() { selLines = []; }
 function rebuildSelLine(o) { /* selection shown via SVG overlay */ }
 
 function selectObjs(objs) {
-  // Ausricht-Modus braucht ≥2 Objekte — fällt die Auswahl darunter, Anfasser weg
-  if (specialMode === 'align' && objs.length < 2) exitSpecialMode();
+  // Ausricht-Modus braucht eine Auswahl — ist sie leer, Anfasser weg
+  if (specialMode === 'align' && objs.length < 1) exitSpecialMode();
   clearSelLines();
   selectedObjs = objs;
   objs.forEach(o => rebuildSelLine(o));
@@ -24239,10 +24239,12 @@ async function _kiImportGLB(url) {
 
 // ═══ ALIGN / MIRROR ═══════════════════════════════════════════════════
 function alignTool() {
-  if (selectedObjs.length < 2) { notify('Mind. 2 Objekte', 'w'); return; }
+  if (!selectedObjs.length) { notify('Objekt wählen', 'w'); return; }
   specialMode = 'align';
   const h = document.getElementById('hint');
-  h.innerHTML = '<b>Ausrichten:</b> Auf einen Punkt klicken (Tinkercad-Stil) — <span style="font-size:10px">X/Y/Z = mittig · Esc = Fertig</span>';
+  h.innerHTML = selectedObjs.length === 1
+    ? '<b>An Achsen ausrichten:</b> Punkt klicken → Kante/Mitte auf die Achslinie bzw. den Nullpunkt — <span style="font-size:10px">X/Y/Z = mittig auf Achse · Esc = Fertig</span>'
+    : '<b>Ausrichten:</b> Auf einen Punkt klicken (Tinkercad-Stil) — <span style="font-size:10px">X/Y/Z = mittig · Esc = Fertig</span>';
   h.classList.add('show');
   // Tinkercad-Stil: Resize-/Rotier-Griffe ausblenden, interaktive Ausricht-Punkte zeigen
   clearDimHandles();
@@ -24315,7 +24317,7 @@ function buildAlignHandles() {
   if (!wrap) return;
   wrap.innerHTML = '';
   _alignHandleData = [];
-  if (specialMode !== 'align' || selectedObjs.length < 2) return;
+  if (specialMode !== 'align' || !selectedObjs.length) return;
 
   _ALIGN_DEFS.forEach(def => {
     const el = document.createElement('div');
@@ -24390,7 +24392,7 @@ function repositionAlignHandles() {
 }
 
 function alignObjects(type) {
-  if (selectedObjs.length < 2) { notify('Mind. 2 Objekte', 'w'); return; }
+  if (!selectedObjs.length) { notify('Objekt wählen', 'w'); return; }
   const boxes = selectedObjs.map(o => getMeshBox(o));
   // Leere Box (±Infinity) oder NaN in der Rechnung → Positionen würden NaN und
   // die Objekte verschwinden spurlos. Passiert z.B. wenn ein gewähltes Objekt
@@ -24400,6 +24402,25 @@ function alignObjects(type) {
     return;
   }
   saveUndo();
+  // Ein einzelnes Teil hat keinen Partner → Bezug sind die Achslinien bzw. der
+  // Nullpunkt (Wert 0 je Achse): links/rechts = Kante auf die Achslinie, mittig
+  // = Mitte auf der Achse. „Mittig (alle Achsen)" legt es mittig auf den
+  // Nullpunkt, aber AUF die Platte statt halb darunter.
+  if (selectedObjs.length === 1) {
+    const o = selectedObjs[0], b = boxes[0];
+    const mid = ax => (b.min[ax] + b.max[ax]) / 2;
+    const m = /^([xyz])(min|max|center)$/.exec(type);
+    if (m) {
+      const ax = m[1], ref = m[2] === 'min' ? b.min[ax] : m[2] === 'max' ? b.max[ax] : mid(ax);
+      o.position[ax] -= ref;
+    } else if (type === 'center') {
+      o.position.x -= mid('x'); o.position.z -= mid('z'); o.position.y -= b.min.y;
+    }
+    o.updateMatrixWorld(true);
+    updateTFInputs(); notify('An Achse ausgerichtet ✓', 'ok');
+    if (specialMode === 'align') repositionAlignHandles();
+    return;
+  }
   const cx = i => (boxes[i].min.x + boxes[i].max.x) / 2;
   const cy = i => (boxes[i].min.y + boxes[i].max.y) / 2;
   const cz = i => (boxes[i].min.z + boxes[i].max.z) / 2;
@@ -30045,8 +30066,8 @@ function animate() {
   if (_measureMode && ((_measureA && _measureB) || _measureCircle)) _measureUpdateLabel();   // Maßlabel der Kamera folgen lassen
   if (ttOn) { sph.theta += 0.005; sph2cam(); }
   if (window._updateVcube) window._updateVcube();
-  if (specialMode === 'align' && selectedObjs.length < 2) {
-    exitSpecialMode();   // Sicherheitsnetz: Auswahl unter 2 → Ausricht-Anfasser weg
+  if (specialMode === 'align' && selectedObjs.length < 1) {
+    exitSpecialMode();   // Sicherheitsnetz: Auswahl leer → Ausricht-Anfasser weg
   }
   if (specialMode === 'align' && selectedObjs.length > 0) {
     repositionAlignHandles();
@@ -49961,8 +49982,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.81';
+const VOLME3D_VERSION = '1.18.82';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.82', date:'2026-09-30', changes:[
+    ['⊜','<b>Ein einzelnes Teil an den Achsen ausrichten.</b> <b>⊜ Ausrichten</b> ging bisher erst ab zwei Teilen. Jetzt reicht eines: Teil wählen, <b>Ausrichten</b> (Taste <b>L</b>) und einen der schwarzen Punkte anklicken. Das Teil setzt dann seine Kante oder Mitte genau auf die rote X-, grüne Y- oder blaue Z-Linie, also auf den Nullpunkt der jeweiligen Achse. Mit den Tasten <b>X</b>, <b>Y</b> und <b>Z</b> kommt die Mitte auf die Achse, und <b>Mittig (alle Achsen)</b> stellt das Teil mittig auf den Nullpunkt, ohne dass es in die Platte rutscht. Bei mehreren Teilen richten sie sich wie gewohnt aneinander aus.'],
+  ]},
   { version:'1.18.81', date:'2026-09-30', changes:[
     ['✏️','<b>Drehen-Körper nachträglich ändern.</b> Wer mit <b>Drehen</b> eine Vase oder Schale gezeichnet hat, kommt jetzt wieder an das Profil heran: Körper anklicken, im Eigenschaften-Fenster <b>✏️ Profil bearbeiten</b> wählen. Die Profilpunkte erscheinen wieder, und du kannst sie mit der Maus ziehen, um zum Beispiel den Boden zu verbreitern. Ein Klick daneben hängt einen Punkt an. <b>✓ Fertig</b> übernimmt das neue Profil, <b>ESC</b> lässt alles, wie es war. Verdrehen, Wandstärke, Querschnitt, Oberfläche und Farbe bleiben erhalten. Beim ersten Zeichnen lassen sich gesetzte Punkte jetzt ebenfalls verschieben.'],
   ]},
