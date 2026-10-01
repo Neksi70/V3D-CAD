@@ -17351,12 +17351,30 @@ function _countTris(objs) {
 // Objekte → EIN Manifold (mehrere Teile werden vereint). Wirft, wenn nichts
 // Brauchbares dabei ist; _mfFromSoup verschweißt via merge() auch Netze, die
 // der Druck-Check als „nicht wasserdicht" meldet.
+// Ein importiertes Bauteil besteht oft aus mehreren geschlossenen Hüllen, die
+// ineinander stecken (Baugruppen-Export: Platte + Bolzen + Haken, jede für sich
+// dicht). Manifold löst solche Selbst-Überlappungen NICHT von allein auf: wo zwei
+// Hüllen übereinander liegen, zählt das Volumen doppelt, und beim Abziehen
+// entsteht dort ein umgestülptes Stück — schwarze, zerfranste Flächen in der
+// Tasche (Volker 1.10.26, Halter in Grundplatte). Darum die Hüllen erst
+// miteinander vereinen. Hohlräume (Hülle mit negativem Volumen) bleiben, wie
+// sie sind — die würde das Vereinen zuschütten.
+function _mfSelfUnion(w, mf) {
+  let parts;
+  try { parts = mf.decompose(); } catch (_) { return mf; }
+  if (!parts || parts.length < 2 || parts.length > 400) return mf;
+  if (parts.some(p => !(p.volume() > 0))) return mf;
+  let acc = parts[0];
+  for (let i = 1; i < parts.length; i++) acc = w.Manifold.union(acc, parts[i]);
+  return acc;
+}
+
 function _mfUnionObjs(w, objs) {
   let acc = null;
   for (const o of objs) {
     const tris = _moldCollectTris(o);
     if (!tris.length) continue;
-    const part = _mfFromSoup(w, tris);
+    const part = _mfSelfUnion(w, _mfFromSoup(w, tris));
     acc = acc ? w.Manifold.union(acc, part) : part;
   }
   return acc;
@@ -17387,7 +17405,7 @@ async function _mfSubtractWorld(solidObjs, toolObjs) {
         const tris = _moldCollectTris(t);
         if (!tris.length) continue;
         let mf;
-        try { mf = _mfFromSoup(w, tris); }
+        try { mf = _mfSelfUnion(w, _mfFromSoup(w, tris)); }
         catch (eRoh) {
           // Nicht abzieh-tauglich? Erst selbst reparieren, statt den Nutzer mit
           // "bitte Reparieren anwenden" wegzuschicken — genau da blieb Josy
@@ -18059,6 +18077,7 @@ function _offsetMeshWorld(o, offMm) {
   const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), fn = new THREE.Vector3();
   const nTri = Math.floor(pos.count / 3);
   const keys = new Array(pos.count);
+  const flat = [];                       // Dreiecke ohne Fläche
   for (let t = 0; t < nTri; t++) {
     va.fromBufferAttribute(pos, t*3).applyMatrix4(world);
     vb.fromBufferAttribute(pos, t*3+1).applyMatrix4(world);
@@ -18066,15 +18085,44 @@ function _offsetMeshWorld(o, offMm) {
     e1.subVectors(vb, va); e2.subVectors(vc, va);
     fn.crossVectors(e1, e2);            // Länge = 2×Fläche
     const w = fn.length();
-    if (w < 1e-12) { for (const i of [t*3, t*3+1, t*3+2]) keys[i] = null; continue; }
+    // Dreieck ohne Fläche (Fächer-Splitter auf gerader Kante): hat keine Richtung,
+    // seine Ecken müssen aber MIT ihren Nachbarn wandern — sonst bleiben sie stehen
+    // und reißen eine Delle in die verschobene Fläche.
+    if (w < 1e-12) { keys[t*3] = key(va); keys[t*3+1] = key(vb); keys[t*3+2] = key(vc); flat.push(t); continue; }
     const nx = fn.x / w, ny = fn.y / w, nz = fn.z / w;
     for (const [i, v] of [[t*3, va], [t*3+1, vb], [t*3+2, vc]]) {
       const k = key(v); keys[i] = k;
       let a = acc.get(k);
-      if (!a) { a = { m: [0,0,0,0,0,0], s: new THREE.Vector3() }; acc.set(k, a); }
-      a.m[0] += w*nx*nx; a.m[1] += w*nx*ny; a.m[2] += w*nx*nz;
-      a.m[3] += w*ny*ny; a.m[4] += w*ny*nz; a.m[5] += w*nz*nz;
-      a.s.x += w*nx; a.s.y += w*ny; a.s.z += w*nz;
+      if (!a) { a = { m: [0,0,0,0,0,0], s: new THREE.Vector3(), ns: [] }; acc.set(k, a); }
+      // Jede anliegende EBENE zählt einmal — nicht nach Dreiecksfläche gewichtet.
+      // Sonst erschlägt eine große Wand einen spitzen Fächer-Splitter des Deckels
+      // (Flächenverhältnis > 1000:1), dessen Richtung geht in der Regularisierung
+      // unter, und der Boden wird wellig (gemessen: 0,3 mm bei 0,5 mm Aufmaß).
+      let neu = true;
+      for (let q = 0; q < a.ns.length; q += 3)
+        if (a.ns[q]*nx + a.ns[q+1]*ny + a.ns[q+2]*nz > 0.9995) { neu = false; break; }
+      if (!neu) continue;
+      a.ns.push(nx, ny, nz);
+      a.m[0] += nx*nx; a.m[1] += nx*ny; a.m[2] += nx*nz;
+      a.m[3] += ny*ny; a.m[4] += ny*nz; a.m[5] += nz*nz;
+      a.s.x += nx; a.s.y += ny; a.s.z += nz;
+    }
+  }
+  // Ecke, die nur über flächenlose Dreiecke an einer Fläche hängt (liegt mitten
+  // auf der Kante eines großen Nachbardreiecks): sie erbt die Ebenen, die BEIDE
+  // anderen Ecken des Splitters gemeinsam haben — das ist genau diese Fläche.
+  const hat = (a, x, y, z) => { for (let q = 0; q < a.ns.length; q += 3) if (a.ns[q]*x + a.ns[q+1]*y + a.ns[q+2]*z > 0.9995) return true; return false; };
+  for (let runde = 0; runde < 2 && flat.length; runde++) for (const t of flat) for (let e = 0; e < 3; e++) {
+    const kv = keys[t*3+e], P = acc.get(keys[t*3+(e+1)%3]), Q = acc.get(keys[t*3+(e+2)%3]);
+    if (!P || !Q) continue;
+    let V = acc.get(kv);
+    for (let q = 0; q < P.ns.length; q += 3) {
+      const x = P.ns[q], y = P.ns[q+1], z = P.ns[q+2];
+      if (!hat(Q, x, y, z) || (V && hat(V, x, y, z))) continue;
+      if (!V) { V = { m: [0,0,0,0,0,0], s: new THREE.Vector3(), ns: [] }; acc.set(kv, V); }
+      V.ns.push(x, y, z);
+      V.m[0] += x*x; V.m[1] += x*y; V.m[2] += x*z; V.m[3] += y*y; V.m[4] += y*z; V.m[5] += z*z;
+      V.s.x += x; V.s.y += y; V.s.z += z;
     }
   }
   // Verschiebung pro Position lösen (3×3 symmetrisch, Tikhonov-regularisiert)
@@ -50572,8 +50620,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.89';
+const VOLME3D_VERSION = '1.18.90';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.90', date:'2026-10-01', changes:[
+    ['🛠','<b>Abziehen: keine schwarzen, zerfransten Taschen mehr bei Baugruppen-Teilen.</b> Importierte Bauteile bestehen oft aus mehreren geschlossenen Hüllen, die ineinander stecken (Platte + Bolzen + Haken). Wo sich zwei Hüllen überlappten, zählte das Volumen beim Abziehen doppelt — in der Tasche entstand ein umgestülptes Stück: schwarze Flächen und Zacken. Jetzt werden die Hüllen eines Teils vor dem Abziehen miteinander verschmolzen. Außerdem bleibt der Taschenboden beim <b>Aufmaß in Millimetern</b> eben (vorher bis 0,3 mm wellig), das gilt auch für <b>⧈ Spielraum</b>.'],
+  ]},
   { version:'1.18.89', date:'2026-10-01', spots:[{id:'fit-grow',sel:'[onclick="subtractHoles()"]'}], changes:[
     ['⊖','<b>Abziehen mit Aufmaß — Taschen für Einleger.</b> Teile, die mit <b>▦ Füllen</b> auf einer Platte verteilt wurden, sind meist Einleger: Die Tasche muss etwas größer sein als das Teil, damit es sich einlegen und – etwa von einem Greifer – wieder herausnehmen lässt. Beim <b>⊖ Abziehen</b> fragt V3D CAD darum jetzt nach dem <b>Aufmaß</b>: in <b>Millimetern</b> (Luft ringsum, jede Seitenwand rückt um diesen Betrag nach außen) oder in <b>Prozent</b> (Tasche proportional größer). Die Eintauchtiefe bleibt in beiden Fällen, wie sie eingestellt war. 0 = genau passend; der letzte Wert wird gemerkt.'],
   ]},
