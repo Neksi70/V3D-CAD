@@ -18210,7 +18210,7 @@ function _fitDialog(n) {
       uEl.textContent = unit; inp.step = unit === 'mm' ? '0.1' : '0.5';
       const v = num();
       lbl.textContent = v <= 0 ? 'Ohne Aufmaß: Die Tasche ist genau so groß wie das Teil.'
-        : unit === 'mm' ? `Ringsum ${r2(v)} mm Luft: jede Seitenwand der Tasche rückt ${r2(v)} mm nach außen (Tasche insgesamt ${r2(2 * v)} mm breiter). Die Tiefe bleibt.`
+        : unit === 'mm' ? `Ringsum ${r2(v)} mm Luft: jede Seitenwand der Tasche rückt ${r2(v)} mm zur Seite nach außen (Tasche insgesamt ${r2(2 * v)} mm breiter). Die Tiefe bleibt.`
         : `Tasche ${r2(v)} % größer als das Teil (um die Mitte vergrößert). Die Tiefe bleibt. Bei Teilen mit Einbuchtungen oder Winkeln besser Millimeter nehmen.`;
     };
     btns.forEach(b => b.onclick = () => { unit = b.dataset.u; upd(); inp.focus(); });
@@ -18282,7 +18282,28 @@ function _mfOffsetPlanes(w, mf, distMm) {
   return new w.Manifold(new w.Mesh({ numProp:3, vertProperties:P2, triVerts:new Uint32Array(T) }));
 }
 
-// mm-Aufmaß über Manifold: Teil verschweißen, Hüllen vereinen, Flächen schieben,
+// Seitliches Aufmaß OHNE einen einzigen Netzpunkt zu verschieben: das Teil wird
+// in n Richtungen waagerecht um distMm versetzt und alles vereint (Minkowski-
+// Summe mit einem n-Eck). Jede Wand rückt so um distMm nach außen, Boden und
+// Deckel bleiben auf ihrer Höhe — genau das, was eine Einlege-Tasche braucht.
+// Braucht nur Vereinen; das Verschieben der Flächen (_mfOffsetPlanes) erzeugte an
+// Volkers Blech-Halter (dünn, feine Rundungen) weiter schwarze, zackige Taschen.
+function _mfGrowSideways(w, mf, distMm) {
+  const n = mf.numTri() > 60000 ? 8 : 16;
+  // Ecken des n-Ecks so weit hinaus, dass seine KANTEN distMm erreichen
+  const r = distMm / Math.cos(Math.PI / n);
+  let acc = mf;
+  for (let k = 0; k < n; k++) {
+    const a = (k + 0.5) * 2 * Math.PI / n;
+    acc = w.Manifold.union(acc, mf.translate([r * Math.cos(a), r * Math.sin(a), 0]));   // Z = oben
+  }
+  // Nähte der n Kopien wieder herausnehmen: sonst behält der ebene Boden jede
+  // Schnittlinie (gemessen 90.000 statt 4.700 Ecken). 1 µm Toleranz.
+  try { const v = acc.simplify(0.001); if (!v.isEmpty()) acc = v; } catch (_) {}
+  return acc;
+}
+
+// mm-Aufmaß über Manifold: Teil verschweißen, Hüllen vereinen, seitlich weiten,
 // Ergebnis als Welt-Netz zurück in den Körper (Lage steckt dann in der Geometrie).
 // false = ging nicht (kein dichtes Netz) → Aufrufer nimmt den alten Weg.
 async function _fitGrowMf(h, mm) {
@@ -18291,7 +18312,7 @@ async function _fitGrowMf(h, mm) {
     const tris = _moldCollectTris(h);
     if (!tris.length) return false;
     const mf = _mfSelfUnion(w, _mfFromSoup(w, tris));
-    const big = _mfOffsetPlanes(w, mf, mm);
+    const big = _mfGrowSideways(w, mf, mm);
     if (big.isEmpty() || !(big.volume() > mf.volume())) return false;
     let geo = _mfToGeo(big).toNonIndexed();
     geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);   // mm/Z-up → App-Units/Y-up
@@ -50696,8 +50717,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.91';
+const VOLME3D_VERSION = '1.18.92';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.92', date:'2026-10-01', changes:[
+    ['🛠','<b>Aufmaß in Millimetern neu gerechnet.</b> Bei dünnen Blechteilen mit feinen Rundungen wurde die Tasche mit mm-Aufmaß weiterhin schwarz und zackig. Das Aufmaß entsteht jetzt anders: Das Teil wird ringsum zur Seite versetzt und mit sich selbst vereint — kein Netzpunkt wird mehr verschoben. Jede Seitenwand der Tasche rückt um das Aufmaß nach außen, Boden und Tiefe bleiben exakt.'],
+  ]},
   { version:'1.18.91', date:'2026-10-01', changes:[
     ['🛠','<b>Aufmaß in Millimetern: Tasche bleibt sauber.</b> Bei importierten Bauteilen konnte das mm-Aufmaß beim Abziehen das Netz aufreißen — die Tasche wurde schwarz und zackig, obwohl sie ohne Aufmaß einwandfrei war. Das Aufmaß wird jetzt auf dem verschweißten Netz berechnet, in dem jede Ecke nur einmal vorkommt; aufreißen kann es damit nicht mehr. Der Taschenboden bleibt dabei exakt eben.'],
   ]},
