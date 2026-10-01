@@ -292,6 +292,7 @@ body.devmode .dev-only{display:flex!important}
 
 /* CTX POPUP */
 #ctx{position:absolute;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:4px;display:none;gap:3px;z-index:30}
+#lbl-pop{position:absolute;left:min(304px,calc(100vw - 250px));bottom:52px;width:214px;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:10px 12px;display:none;z-index:51}
 #nudge-pop{position:absolute;left:14px;bottom:96px;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:10px 12px;display:none;z-index:31}
 #nudge-pop .btn{width:30px;height:30px;padding:0;display:flex;align-items:center;justify-content:center;font-size:14px}
 .cb{width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:var(--bg);border:1.5px solid var(--border);border-radius:4px;cursor:pointer;font-size:14px;transition:all .12s}
@@ -1858,9 +1859,28 @@ const firebaseConfig = {
     <div class="cb" onclick="addBohrung()" title="Bohrung setzen (vertikal, durchgehend)" style="color:var(--red)">⊙</div>
     <div class="cb" onclick="plugHoles()" title="Löcher verschließen/öffnen — grün: Loch bekommt Stopfen · rot: Stopfen oder geplante Bohrung wird entfernt">🩹</div>
     <div class="cb" id="ctx-textedit" onclick="editTextObj()" title="Text ändern (oder Doppelklick auf den Text) — Lage, Tiefe und Farbe bleiben" style="display:none">✏️</div>
+    <div class="cb" id="ctx-label" onclick="toggleLbl()" title="Beschriftung anbringen — vertieft (eingeprägt) oder erhaben, mit Tiefe in mm. Zieht ab bzw. vereint selbst." style="display:none">🏷️</div>
     <div class="cb" id="ctx-svgcenter" onclick="svgCenterOnFace()" title="Motiv mittig auf seine Flaeche setzen (auf einer Rundung: mittig auf die Hoehe)" style="display:none">⊕</div>
     <div class="cb" id="nudge-btn" onclick="toggleNudge()" title="Exakt versetzen — Auswahl um X mm in eine Richtung schieben">✥</div>
     <div class="cb" onclick="deleteSelected()" title="Del" style="color:var(--red)">🗑</div>
+  </div>
+
+  <div id="lbl-pop">
+    <div style="font-size:10px;font-weight:800;letter-spacing:.05em;color:var(--dim);margin-bottom:6px">BESCHRIFTUNG ANBRINGEN</div>
+    <div class="vbg" style="margin-bottom:8px">
+      <button class="vtb on" id="lbl-tief" onclick="_lblSetArt('tief')" title="Text wird in die Wand eingeprägt">⬇ Vertieft</button>
+      <button class="vtb" id="lbl-hoch" onclick="_lblSetArt('hoch')" title="Text steht aus der Wand heraus">⬆ Erhaben</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+      <span id="lbl-mm-lbl" style="font-size:12px;color:var(--mid);width:38px">Tiefe</span>
+      <input id="lbl-mm" type="text" inputmode="decimal" value="0.6" onkeydown="event.stopPropagation();if(event.key==='Enter')_lblApply()" style="width:54px;padding:4px 6px;border:1.5px solid var(--border);border-radius:6px;font-family:var(--font);font-size:13px;text-align:right">
+      <span style="font-size:11px;color:var(--mid)">mm</span>
+    </div>
+    <div style="font-size:11px;color:var(--dim);line-height:1.35;margin-bottom:8px">Verschieben: den Text auf der Fläche ziehen.</div>
+    <div style="display:flex;gap:6px">
+      <button class="btn" onclick="svgCenterOnFace()" title="Mittig auf die Fläche setzen">⊕ Mitte</button>
+      <button class="btn pri" style="flex:1" onclick="_lblApply()">✓ Anbringen</button>
+    </div>
   </div>
 
   <div id="nudge-pop">
@@ -5239,20 +5259,14 @@ Patrick</textarea>
     </div>
     <div class="vbg" id="text3d-mode-bg" style="margin-top:2px">
       <button class="vtb on" onclick="_text3dSetMode('free')">Frei</button>
-      <button class="vtb"    onclick="_text3dSetMode('surface')">Auf Fläche</button>
+      <button class="vtb"    onclick="_text3dSetMode('surface')" title="Nach „Erstellen“ die Stelle am Bauteil anklicken — der Text setzt sich dort auf, auch um Rundungen. Danach vertieft oder erhaben anbringen.">Auf Bauteil</button>
       <button class="vtb"    onclick="_text3dSetMode('cylinder')">Um Zylinder</button>
       <button class="vtb"    onclick="_text3dSetMode('arc')">⌒ Bogen</button>
     </div>
     <div class="vrow"><label>Größe</label><input type="range" id="text3d-size" min="1" max="30" value="8" step="0.5" oninput="document.getElementById('text3d-sv').textContent=this.value"><span class="vv" id="text3d-sv">8</span><span class="vu">mm</span></div>
     <!-- Auf Fläche -->
     <div id="text3d-surf-opts" style="display:none">
-      <span class="vsec" style="display:block;margin-bottom:4px">Fläche (Objekt auswählen)</span>
-      <div class="vbg" id="text3d-face-bg">
-        <button class="vtb on" onclick="_text3dSetFace('top')">Oben</button>
-        <button class="vtb"    onclick="_text3dSetFace('front')">Vorne</button>
-        <button class="vtb"    onclick="_text3dSetFace('right')">Rechts</button>
-      </div>
-      <div class="vrow"><label>Abstand</label><input type="range" id="text3d-soff" min="0" max="5" value="0" step="0.1" oninput="document.getElementById('text3d-soff-v').textContent=this.value"><span class="vv" id="text3d-soff-v">0</span><span class="vu">mm</span></div>
+      <div style="font-size:11px;color:var(--dim);line-height:1.4">Nach <b>✓ Erstellen</b> die Stelle am Bauteil anklicken — der Text setzt sich dort auf (auch um Rundungen). Danach wählst du <b>vertieft</b> oder <b>erhaben</b> und die Tiefe.</div>
     </div>
     <!-- Um Zylinder -->
     <div id="text3d-cyl-opts" style="display:none">
@@ -13786,14 +13800,17 @@ function addThreadShape() {
 }
 
 // ═══ ADD TEXT SHAPE ═══════════════════════════════════════════════════════
-let _text3dMode = 'free';
+let _text3dMode = 'free', _text3dModeTouched = false;
 let _text3dFace = 'top';
 
 function addTextShape() {
   _text3dEditObj = null;
   _text3dDialogLook(false);
   document.getElementById('text3d-input').value = '';
-  _text3dSetMode(_text3dMode);
+  // Liegt schon ein Bauteil da, ist „Auf Bauteil" der naheliegende Weg — bis der
+  // Nutzer selbst einen Modus wählt.
+  if (!_text3dModeTouched) _text3dMode = _lblSolids().length ? 'surface' : 'free';
+  _text3dSetMode(_text3dMode, true);
   document.getElementById('text3d-modal').classList.add('show');
   _text3dFontGrid(false); _text3dPreview();
   setTimeout(() => document.getElementById('text3d-input').focus(), 80);
@@ -14056,7 +14073,7 @@ function _textEditApply(o, m, font) {
 }
 
 function _text3dSetMode(m, nurAnzeige) {
-  if (!nurAnzeige) _text3dMode = m;   // Ändern-Dialog soll die Wahl fürs nächste Erstellen nicht verstellen
+  if (!nurAnzeige) { _text3dMode = m; _text3dModeTouched = true; }   // Ändern-Dialog soll die Wahl fürs nächste Erstellen nicht verstellen
   ['free','surface','cylinder','arc'].forEach((x,i) => {
     const b = document.querySelector(`#text3d-mode-bg .vtb:nth-child(${i+1})`);
     if (b) b.classList.toggle('on', x===m);
@@ -14200,6 +14217,8 @@ function _confirmText3d() {
     const mesh = _importSvgConfirm({ svgText: built.svg, mode: 'extrude', depthMM: Math.max(1, sizeMm * 0.25),
                                      targetMM: built.targetMM, name: meta.mode === 'arc' ? txt + ' (Bogen)' : txt });
     if (mesh) mesh.userData.textEdit = meta;   // für „Text ändern"
+    if (mesh && mode === 'surface' && !_lblPickStart(mesh))
+      notify('Kein Bauteil in der Szene — der Text liegt frei auf der Platte', 'w');
   }
 
   const cacheKey = '_threeFont_' + fontKey;
@@ -14358,7 +14377,7 @@ function _placeTextSurface(mesh, target) {
   const cx = (wbb.min.x + wbb.max.x) / 2;
   const cy = (wbb.min.y + wbb.max.y) / 2;
   const cz = (wbb.min.z + wbb.max.z) / 2;
-  const offMm = parseFloat(document.getElementById('text3d-soff').value) || 0;
+  const offMm = 0;
   const offU  = offMm / 10;
 
   if (_text3dFace === 'top') {
@@ -16294,6 +16313,9 @@ function updateCtxPopup() {
     svgC.style.display = (one && one.userData.shapeType === 'svg'
       && (one.userData._svgWrap || one.userData._snapNormal)) ? '' : 'none';
   }
+  const lbC = document.getElementById('ctx-label');
+  if (lbC) lbC.style.display = (selectedObjs.length === 1 && _lblAttached(selectedObjs[0])) ? '' : 'none';
+  if (_lblObj && (selectedObjs.length !== 1 || selectedObjs[0] !== _lblObj)) _lblClose();
   const txC = document.getElementById('ctx-textedit');
   if (txC) txC.style.display = (selectedObjs.length === 1 && _textEditable(selectedObjs[0])) ? '' : 'none';
   if (!o) { ctxEl.style.display = 'none'; _nudgeHide(); return; }
@@ -17624,7 +17646,7 @@ async function unionSelected() {
   // OCCT-Sewing hängenbleibt (siehe _wrapTool beim Abziehen) — gemessen lief
   // Becher + Streifenmuster (5k Dreiecke) in die 40-s-Notbremse und wurde nur
   // gruppiert. Manifold rechnet das im Browser in Sekundenbruchteilen.
-  if (sel.some(o => o.userData._svgWrap || o.userData._svgSchmieg)) {
+  if (sel.some(o => o.userData._svgWrap || o.userData._svgSchmieg || o.userData._svgRaised)) {
     try {
       const w = await _mfInit();
       let acc = null;
@@ -24131,7 +24153,9 @@ async function subtractHoles() {
   if (hasSvg) {
     const svgHoles = holes.filter(h => h.userData.type === 'svg');
     const currentDepth = svgHoles[0].userData.svgDepth || 1;
-    const res = await _engraveDepthDialog(currentDepth);
+    // Vorgabe aus „Beschriftung anbringen" (_lblApply) erspart den Dialog
+    const res = _engravePreset || await _engraveDepthDialog(currentDepth);
+    _engravePreset = null;
     if (res === null) return;                             // Abbruch
     const { depth, wantInlay, through } = res;
     svgThrough = !!through;
@@ -24147,29 +24171,19 @@ async function subtractHoles() {
     // Extrusionsparameter → mit der neuen Tiefe neu biegen. Erhaben lässt sich nicht
     // abziehen; der Körper wird nach außen aufgebaut und zum Vereinen stehengelassen.
     const wrapped = svgHoles.filter(h => h.userData._svgWrap || h.userData._svgSchmieg);
-    if (wrapped.length) {
-      const raised = [];
-      for (const h of wrapped) {
-        const reshape = h.userData._svgWrap ? _svgWrapReshape : _svgSchmiegReshape;
-        if (!svgThrough && depth < -0.05) {
-          reshape(h, depth);
-          h.userData.isHole = false;
-          h.userData.color = currentColor;
-          if (h.material) {
-            h.material.transparent = false; h.material.opacity = 1;
-            h.material.color.set(currentColor);
-          }
-          raised.push(h);
-        } else {
-          reshape(h, svgThrough ? 'through' : depth);
-        }
-      }
+    if (!svgThrough && depth < -0.05) {
+      // Erhaben — auf Rundungen wie auf ebenen Flächen: Motiv als Körper auf die
+      // Wand stellen (0,2 mm darin verankert) und zum Vereinen stehenlassen.
+      const raised = svgHoles.filter(h => _svgRaise(h, -depth, solids[0]));
       if (raised.length) {
         raised.forEach(h => { const i = holes.indexOf(h); if (i >= 0) holes.splice(i, 1); });
         updateTree();
         notify('Erhabenes Motiv liegt auf der Wand — jetzt „Vereinen" klicken', 'ok');
         if (!holes.length) return;
       }
+    } else {
+      for (const h of wrapped)
+        (h.userData._svgWrap ? _svgWrapReshape : _svgSchmiegReshape)(h, svgThrough ? 'through' : depth);
     }
   }
 
@@ -24243,16 +24257,14 @@ async function _doSubtractHoles(solids, holes, ctl) {
       // ── SVG Gravur ────────────────────────────────────────────────────────────
       hole.updateMatrixWorld(true);
 
-      // Pfad 1: Vollständiger OCCT Boolean (nur für native OCCT-Körper: Box, Zylinder…)
-      const _isOCCTNative = ['box','cylinder','cone','wedge','pyramid','tube'].includes(
-        solidMesh.userData.shapeType || solidMesh.userData.occtShape || '');
+      // Importierte Netze: Server-Gravur (kann auch das Zweifarb-Inlay).
       let newResult = null;
-      if (hole.userData._svgPathData?.length) {
+      if (solidMesh.userData.type === 'import' && hole.userData._svgPathData?.length) {
         try { newResult = await _occtFullBooleanCut(solidMesh, hole, ctl && ctl.signal); }
         catch(e) { console.warn('OCCT Full Cut Fehler:', e); }
         _stopIfAborted();
       }
-      if (newResult) {
+      if (newResult && newResult.geo) {
         const { geo, stlBuf, inlayGeo, inlayStlBuf } = newResult;
         const prev = solidMesh;
         solidMesh = new THREE.Mesh(geo, mat);
@@ -24281,26 +24293,16 @@ async function _doSubtractHoles(solids, holes, ctl) {
         continue;
       }
 
-      // Pfad 2: Face-Only OCCT (für STL-Imports, Custom-Meshes, alles andere)
-      // Kein Sewing, kein ThreeCSG — direkt OCCT auf der extrahierten Fläche
-      let newGeo = null;
-      if (!newGeo && hole.userData._svgPathData?.length) {
-        try { newGeo = await _occtFaceOnlyCut(solidMesh, hole); }
-        catch(e) { console.warn('Face-Only Fehler:', e); }
-        _stopIfAborted();
-      }
-      if (newGeo) {
-        const prev = solidMesh;
-        solidMesh = new THREE.Mesh(newGeo, mat);
-        solidMesh.scale.set(0.1, 0.1, 0.1);
-        solidMesh.position.copy(prev.position);
-        solidMesh.quaternion.copy(prev.quaternion);
-        solidMesh.castShadow = true; solidMesh.receiveShadow = true;
-        solidMesh.updateMatrixWorld(true, true);
-        notify('✓ SVG Gravur fertig', 'ok');
-        continue;
-      }
-      notify('SVG Gravur fehlgeschlagen', 'w');
+      // Alle anderen Körper (Quader, Zylinder-Deckel, Verbund-/Abzugs-Ergebnisse):
+      // das Prisma des Motivs auf „Oberfläche → Gravurtiefe" bringen und wie ein
+      // gewickeltes Motiv als fertiges Werkzeug abziehen. Die früheren OCCT-Wege
+      // gaben hier ein Ergebnis in anderer Form zurück, als unten erwartet —
+      // jede Gravur auf einem Quader endete mit „leerer Körper".
+      if (hole.userData.svgWantInlay) notify('Zweifarb-Inlay gibt es nur bei importierten Teilen — graviert wird ohne', 'w');
+      const tiefeU = Math.max(0.1, Math.abs(hole.userData.svgDepth || 1)) / 10;
+      const fProxy = _svgFlatSpan(hole, tiefeU, 0.05, solidMesh, false);
+      fProxy.userData = { _noBspFallback: true, _wrapTool: true, name: hole.userData.name };
+      _genericTools.push(fProxy);
       continue;
     }
 
@@ -25022,6 +25024,11 @@ function rotate225cw(dir) { rotate225('y', dir); }
 // Bett. Nebeneffekt mit Wert — leuchtet nur ein Splitter auf, ist die Stelle in
 // Wahrheit nicht flach, und das sieht man VOR dem Drehen statt danach.
 let _fdMode = false, _fdObj = null, _fdHL = null, _fdHitKey = '';
+// Beschriftung anbringen (_lbl*, weiter unten): hier deklariert, weil animate()
+// _lblPick schon beim ersten Durchlauf liest.
+let _lblPick = null, _lblObj = null, _lblArt = 'tief';
+let _svgSnapAtHit = false;     // _applySvgSnap: an den Klickpunkt statt in die Flächenmitte
+let _engravePreset = null;     // subtractHoles: Tiefe ohne Dialog
 
 const _FD_MAX_TRI = 400000;   // darüber nur das getroffene Dreieck zeigen (Zeitbremse)
 const _FD_NDOT    = 0.9995;   // ~1,8° Winkeltoleranz
@@ -26672,6 +26679,7 @@ canvas.addEventListener('mousedown', e => {
     return;
   }
   if (_bndPick) { _bndZielKlick(e); return; }
+  if (_lblPick) { _lblPickClick(e); return; }
   if (_fdMode) { _fdClick(e); return; }
   if (_shellMode) {
     const hits = pickObjects(e);
@@ -26773,6 +26781,7 @@ window.addEventListener('mousemove', e => {
     } else { _wpHL.visible = false; }
   }
   if (_fdMode) _fdHover(e);
+  if (_lblPick) _lblPickHover(e);
   if (_shellMode) {
     const hits = pickObjects(e);
     const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines && h.object === _shellObj);
@@ -27608,6 +27617,7 @@ window.addEventListener('keydown', e => {
     }
     if (_revolveMode) { exitRevolveMode(); return; }
     if (_bndPick) { _bndZielEnde(); notify('Anlegen abgebrochen', 'ok'); return; }
+    if (_lblPick) { const m = _lblPick; _lblPickEnd(); if (m.parent) selectObjs([m]); notify('Text liegt frei — auf ein Bauteil ziehen heftet ihn an', 'ok'); return; }
     if (_fdMode) { exitFaceDownMode(); return; }
     if (_shellMode) { exitShellMode(); return; }
     if (_edgeMode) { exitEdgeMode(); return; }
@@ -30526,7 +30536,7 @@ function _mgBuild() {
 function _mgBusy() {
   if (_sk.active || _pp.active || _lf.active) return true;
   if (workplaneMode || _edgeMode || _shellMode || _revolveMode || _plugMode || _fdMode) return true;
-  if (_bndPick) return true;
+  if (_bndPick || _lblPick) return true;
   if (_measureMode || specialMode === 'align') return true;
   try {
     if (_cut.active || _eraser.active || _sculpt.active || _paint.active || _mmu.active) return true;
@@ -30773,7 +30783,7 @@ function animate() {
   _detectResizeForTexture();
   _updateEdgeBevelHandleDOM();
   _mgUpdate();
-  _pickMuteHandles(workplaneMode || _shellMode || _fdMode || _bndPick);
+  _pickMuteHandles(workplaneMode || _shellMode || _fdMode || _bndPick || _lblPick);
   renderer.render(scene, camera);
 }
 
@@ -30884,7 +30894,7 @@ function _dedRims(o) {
 
 function _dedBlocked() {
   return _edgeMode || _edgeBevelDragging || workplaneMode || _fdMode || _shellMode || _revolveMode ||
-    _sk.active || _plugMode || _lf.active || _pp.active || _bndPick || _measureMode ||
+    _sk.active || _plugMode || _lf.active || _pp.active || _bndPick || _lblPick || _measureMode ||
     isDrag || isOrbit || isRubber || _mg.drag || _mg.hover ||
     _cut.active || _eraser.active || _sculpt.active || _paint.active || _mmu.active ||
     selectedObjs.length !== 1;
@@ -49317,7 +49327,7 @@ const TUTOR_LESSONS = {
       { type:'info', title:'Text-Dialog öffnen', highlight:'[onclick="addTextShape()"]',
         text:'Klick links unter <b>Grundkörper</b> auf <b>A Text</b>. Es öffnet sich der <b>3D-Text</b>-Dialog.' },
       { type:'checkpoint', title:'Text erstellen', highlight:'#text3d-modal',
-        text:'Tipp deinen Text ein, wähle Schrift, Größe und Modus (Frei / Auf Fläche / Um Zylinder) und klick <b>✓ Erstellen</b>.',
+        text:'Tipp deinen Text ein, wähle Schrift, Größe und Modus (Frei / Auf Bauteil / Um Zylinder) und klick <b>✓ Erstellen</b>.',
         check:()=> objects.some(o=>o.userData && (o.userData.shapeType==='text' || o.userData.shapeType==='svg')) },
       { type:'info', title:'QR-Code-Generator öffnen', highlight:'[onclick="_openQRModal()"]',
         text:'Öffne links unter <b>Generatoren</b> den <b>📇 QR-Code</b>-Generator.' },
@@ -50844,8 +50854,12 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.96';
+const VOLME3D_VERSION = '1.18.97';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.97', date:'2026-10-01', changes:[
+    ['🏷️','<b>Beschriften in drei Schritten — Text direkt am Bauteil setzen und vertieft oder erhaben anbringen.</b> Bisher musste man den Text frei erzeugen, mit der Maus auf die Fläche ziehen, als Bohrung markieren, beide Teile auswählen, <i>Abziehen</i> klicken und im Dialog den Regler stellen. Jetzt: <b>1.</b> <i>A Text</i> öffnen und den Text eintippen — liegt schon ein Bauteil da, ist <b>Auf Bauteil</b> vorgewählt. <b>2.</b> Nach <i>✓ Erstellen</i> die Stelle am Bauteil <b>anklicken</b>: Der Text setzt sich genau dort auf, auf ebenen Flächen wie um Rundungen. Zum Nachschieben einfach auf der Fläche ziehen, <i>⊕ Mitte</i> setzt ihn mittig. <b>3.</b> Im kleinen Feld <b>⬇ Vertieft</b> oder <b>⬆ Erhaben</b> wählen, Tiefe bzw. Höhe in mm eintragen, <b>✓ Anbringen</b> — V3D CAD zieht ab oder vereint selbst, heraus kommt ein fertiges Teil. Das Feld gibt es auch nachträglich über den neuen Knopf <b>🏷️</b> unten links, sobald ein Text oder Motiv auf einem Bauteil sitzt. Der bisherige Weg über <i>Abziehen</i> bleibt unverändert.'],
+    ['🛠','<b>Gravieren auf ebenen Flächen funktioniert wieder.</b> Wer einen Text oder ein Motiv auf die Wand eines Quaders (oder eines anderen in V3D CAD gebauten Körpers) setzte und <i>Abziehen</i> klickte, bekam nur die Meldung „Gravur ergab einen leeren Körper“ — vertieft wie erhaben. Betroffen waren alle Körper außer importierten Dateien; auf Rundungen ging es. Jetzt wird die eingestellte Tiefe auf den Zehntelmillimeter genau eingehalten (nachgemessen: doppelte Tiefe = doppeltes Volumen), und <b>erhaben</b> gibt es im Regler jetzt auch auf ebenen Flächen.'],
+  ]},
   { version:'1.18.96', date:'2026-10-01', changes:[
     ['🔢','<b>Komma und Punkt gelten in Zahlenfeldern jetzt gleich.</b> Wer <b>1,3</b> statt 1.3 eintippte, bekam bisher einen falschen Wert: In den Maßfeldern wurde nur die Zahl vor dem Komma übernommen (aus 13,7 wurde 13), in Dialogen wie <i>▦ Füllen</i> fiel das Komma ganz weg (aus 1,3 wurde 13). Jetzt wird ein Komma in jedem Zahlenfeld der App sofort zum Punkt — beim Tippen und beim Einfügen. Namen und Beschriftungen bleiben unverändert.'],
   ]},
@@ -52114,6 +52128,151 @@ function _whatsNewApply(){
 })();
 // ===== END CHANGELOG =====
 
+// ===== BESCHRIFTUNG ANBRINGEN ==============================================
+// Geführter Weg für Text/Motive am Bauteil: Text-Dialog „Auf Bauteil" → Stelle
+// anklicken (_lblPick*) → Feld „Vertieft/Erhaben + mm" (#lbl-pop) → ✓ Anbringen
+// zieht ab bzw. vereint selbst. Vorher: Text frei erzeugen, auf die Fläche
+// ziehen, als Bohrung markieren, beides wählen, Abziehen, Regler im Dialog.
+// (Zustand _lblPick/_lblObj/_lblArt/_svgSnapAtHit/_engravePreset steht bei _fdMode —
+// animate() fragt _lblPick schon beim ersten, synchronen Durchlauf ab.)
+
+function _lblSolids() {
+  return objects.filter(o => o.isMesh && o.visible !== false && !o.userData.isHole
+    && o.userData.shapeType !== 'svg' && o.userData.shapeType !== 'text');
+}
+
+// Ebenes Motiv-Prisma entlang seiner Extrusionsachse (lokal Y = Flächennormale)
+// auf „innenU in der Wand … aussenU davor" bringen. inPlace: das Motiv selbst,
+// sonst ein Stellvertreter fürs Abziehen. Ohne bekannte Wand (nie geheftet und
+// kein Treffer am Körper) bleibt das Prisma, wie es liegt.
+function _svgFlatSpan(hole, innenU, aussenU, solid, inPlace) {
+  const ud = hole.userData, geo = hole.geometry;
+  hole.updateMatrixWorld(true);
+  if (!ud._snapSurfaceLocal && solid) _autoSnapSvgToSolid(hole, solid);
+  const p = inPlace ? hole : new THREE.Mesh(geo, new THREE.MeshStandardMaterial());
+  if (!inPlace) { p.position.copy(hole.position); p.quaternion.copy(hole.quaternion); p.scale.copy(hole.scale); }
+  if (!geo.boundingBox) geo.computeBoundingBox();
+  const gbb = geo.boundingBox, extL = gbb.max.y - gbb.min.y, cyL = (gbb.max.y + gbb.min.y) / 2;
+  const sl = ud._snapSurfaceLocal, sy = hole.scale.y;
+  if (!sl || extL < 1e-9 || Math.abs(sy) < 1e-9) { p.updateWorldMatrix(true, true); return inPlace ? null : p; }
+  const wandW = hole.localToWorld(sl.clone());
+  const mid0 = hole.localToWorld(new THREE.Vector3(0, sl.y + (aussenU - innenU) / 2 / sy, 0));
+  p.scale.y = Math.sign(sy) * (innenU + aussenU) / extL;
+  p.updateWorldMatrix(true, true);
+  p.position.add(mid0.sub(p.localToWorld(new THREE.Vector3(0, cyL, 0))));
+  p.updateWorldMatrix(true, true);
+  if (inPlace) { ud._snapSurfaceLocal = hole.worldToLocal(wandW); _updateObjEdgeLines(hole); }
+  return p;
+}
+
+// Motiv erhaben auf die Wand stellen (mm hoch) und zum Körper machen
+function _svgRaise(o, mm, solid) {
+  const ud = o.userData;
+  ud.svgDepth = -mm;
+  if (ud._svgWrap) _svgWrapReshape(o, -mm);
+  else if (ud._svgSchmieg) _svgSchmiegReshape(o, -mm);
+  else { if (!_svgFlatSpan(o, 0.02, mm / 10, solid, true)) return false; ud._svgRaised = true; }
+  ud.isHole = false; ud.color = currentColor;
+  if (o.material) {
+    o.material.transparent = false; o.material.opacity = 1;
+    o.material.color.set(currentColor); o.material.needsUpdate = true;
+  }
+  return true;
+}
+
+function _lblPickStart(mesh) {
+  if (!mesh || !_lblSolids().length) return false;
+  if (_fdMode) exitFaceDownMode();
+  if (_shellMode) exitShellMode();
+  if (_edgeMode) exitEdgeMode();
+  _lblClose();
+  deselect();
+  _lblPick = mesh;
+  canvas.style.cursor = 'crosshair';
+  const h = document.getElementById('hint');
+  h.innerHTML = '<b>Beschriftung setzen:</b> Die Stelle am Bauteil anklicken, an der der Text sitzen soll' +
+                ' — <span style="font-size:10px">Esc = Text bleibt frei liegen</span>';
+  h.classList.add('show');
+  return true;
+}
+function _lblPickEnd() {
+  if (!_lblPick) return;
+  _lblPick = null; _textSnapTarget = null;
+  canvas.style.cursor = '';
+  const h = document.getElementById('hint'); h.classList.remove('show'); h.innerHTML = '';
+  const sh = document.getElementById('text-snap-hint'); if (sh) sh.style.display = 'none';
+}
+function _lblPickHover(e) {
+  if (_lblPick && _lblPick.parent) _svgSnapDetect(_lblPick, e);
+}
+function _lblPickClick(e) {
+  const m = _lblPick;
+  if (!m || !m.parent) { _lblPickEnd(); return; }
+  _svgSnapDetect(m, e);
+  const tgt = _textSnapTarget;
+  if (!tgt) { notify('Bitte direkt auf das Bauteil klicken', 'w'); return; }
+  _svgSnapAtHit = true;
+  try { _applySvgSnap(m, tgt); } finally { _svgSnapAtHit = false; }
+  _lblPickEnd();
+  selectObjs([m]);
+  _lblOpen();
+}
+
+function _lblAttached(o) {
+  return !!(o && o.userData.shapeType === 'svg'
+    && (o.userData._svgWrap || o.userData._svgSchmieg || o.userData._snapNormal));
+}
+function _lblTargetOf(o) {
+  const ud = o.userData;
+  let t = ud._svgWrap ? ud._wrapTarget : ud._svgSchmieg ? ud._schmiegTarget : ud._snapSolid;
+  while (t && !objects.includes(t)) t = t.parent;
+  return t || null;
+}
+function _lblSetArt(a) {
+  _lblArt = a === 'hoch' ? 'hoch' : 'tief';
+  document.getElementById('lbl-tief').classList.toggle('on', _lblArt === 'tief');
+  document.getElementById('lbl-hoch').classList.toggle('on', _lblArt === 'hoch');
+  document.getElementById('lbl-mm-lbl').textContent = _lblArt === 'tief' ? 'Tiefe' : 'Höhe';
+}
+function _lblOpen() {
+  const o = selectedObjs.length === 1 ? selectedObjs[0] : null;
+  if (!_lblAttached(o)) { notify('Text oder Motiv erst auf ein Bauteil setzen', 'w'); return; }
+  _nudgeHide();
+  _lblObj = o;
+  _lblSetArt(_lblArt);
+  document.getElementById('lbl-pop').style.display = 'block';
+  const b = document.getElementById('ctx-label'); if (b) b.style.background = 'var(--alit)';
+}
+function _lblClose() {
+  _lblObj = null;
+  const p = document.getElementById('lbl-pop'); if (p) p.style.display = 'none';
+  const b = document.getElementById('ctx-label'); if (b) b.style.background = '';
+}
+function toggleLbl() { if (_lblObj) _lblClose(); else _lblOpen(); }
+
+async function _lblApply() {
+  const o = _lblObj;
+  if (!o || !o.parent) { _lblClose(); return; }
+  if (o.userData.locked) { notify('Objekt ist gesperrt', 'w'); return; }
+  const target = _lblTargetOf(o);
+  if (!target) { notify('Bauteil nicht gefunden — Text neu auf die Fläche setzen', 'w'); return; }
+  const roh = parseFloat(String(document.getElementById('lbl-mm').value).replace(',', '.'));
+  const mm = Math.min(20, Math.max(0.1, isFinite(roh) ? roh : 0.6));
+  _lblClose();
+  if (_lblArt === 'tief') {
+    o.userData.isHole = true;
+    selectObjs([target, o]);
+    _engravePreset = { depth: mm, wantInlay: false, through: false };
+    try { await subtractHoles(); } finally { _engravePreset = null; }
+  } else {
+    saveUndo();
+    if (!_svgRaise(o, mm, target)) { notify('Motiv liegt nicht auf dem Bauteil — neu auf die Fläche setzen', 'w'); return; }
+    selectObjs([target, o]);
+    await unionSelected();
+  }
+}
+// ===== END BESCHRIFTUNG ANBRINGEN ==========================================
+
 // ===== SVG MAGNET-SNAP =====
 let _svgSnapFaceNormal = null; // gemerkte Flächennormale beim Snap
 
@@ -52372,7 +52531,8 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   // Abstand bleibt aber exakt wie am Klickpunkt (der sauber auf der Oberfläche
   // sitzt) → Tiefe/Durchbruch-Verhalten unverändert.
   const _target = hit.point.clone();
-  const _anchor = _sameFace && _prevCenterW
+  const _anchor = _svgSnapAtHit ? null               // „Beschriftung setzen": genau an den Klickpunkt
+    : _sameFace && _prevCenterW
     ? _prevCenterW                                   // schon drauf: Lage in der Fläche behalten
     : _faceCenterWorld(hit.object, hit.face);        // neu drauf: in die Flächenmitte
   if (_anchor) {

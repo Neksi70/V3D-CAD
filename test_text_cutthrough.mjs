@@ -136,9 +136,10 @@ console.log('C) Oberfläche + Gravur    :', JSON.stringify(srf));
 await browser.close(); srv.kill();
 
 const checks = [
-  ['A leerer Körper wird abgefangen (nichts geht verloren)', !!grv.err && grv.err.includes('objects=2')],
+  // Seit v1.18.97 graviert der ebene Weg wirklich (vorher endete er mit „leerer Körper").
+  ['A eingetaucht + Gravur: an der nächsten Wand graviert, kein Durchbruch', !grv.err && grv.tris > 12 && grv.open === 0 && grv.solid > 0],
   ['B Durchbruch: Loch durchgehend + Körper intakt',          !thr.err && thr.tris > 12 && thr.open > 0 && thr.solid > 0],
-  ['C Gravur-Pfad unverändert (Originale bleiben, wie HEAD)', !!srf.err && srf.err.includes('objects=2')],
+  ['C Oberfläche + Gravur: graviert, kein Durchbruch',        !srf.err && srf.tris > 12 && srf.open === 0 && srf.solid > 0],
 ];
 console.log('');
 for (const [name, ok] of checks) console.log((ok ? '✓ ' : '❌ ') + name);
