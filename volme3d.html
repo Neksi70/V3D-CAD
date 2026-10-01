@@ -16521,7 +16521,7 @@ function buildObjectFromData(data) {
   obj.position.set(data.px || 0, data.py || 0, data.pz || 0);
   obj.rotation.set(data.rx || 0, data.ry || 0, data.rz || 0);
   obj.scale.set(data.sx || 1, data.sy || 1, data.sz || 1);
-  obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, opacity: data.opacity || 1.0, type: data.type, shapeType: data.shapeType || (data.isSubtract ? 'custom' : data.type), isGroup: !!data.isGroup, textStr: data.textStr || '', fillet: data.fillet || 0, chamfer: data.chamfer || 0, segments: data.segments, tubeRatio: data.tubeRatio, coneTop: data.coneTop, coneFlip: !!data.coneFlip, tubeWall: (data.tubeWall != null ? data.tubeWall : (data.shapeType==='tube'||data.type==='tube' ? 2 : undefined)), edgeBevels: data.edgeBevels, occtShape: data.occtShape || (data.wasBox ? 'box' : null), _occtParams: data._occtParams || null, displacementPattern: data.displacementPattern || 'keine', displacementAmp: data.displacementAmp || 0.5, displacementFreq: data.displacementFreq || 4, displacementInvert: !!data.displacementInvert, displacementSymmetric: !!data.displacementSymmetric, locked: !!data.locked, hidden: !!data.hidden, threadDiameter: data.threadDiameter, threadPitch: data.threadPitch, threadTurns: data.threadTurns, threadLeft: !!data.threadLeft, screwType: data.screwType, screwSize: data.screwSize, screwLength: data.screwLength, screwClearance: data.screwClearance, screwOuter: data.screwOuter, screwThread: data.screwThread, screwHead: data.screwHead, screwLeft: !!data.screwLeft, holeKind: data.holeKind, holeHead: data.holeHead, holeDepth: data.holeDepth, gearModule: data.gearModule, gearTeeth: data.gearTeeth, gearWidth: data.gearWidth, gearBore: data.gearBore, rackModule: data.rackModule, rackLength: data.rackLength, rackWidth: data.rackWidth, encType: data.encType, encW: data.encW, encD: data.encD, encH: data.encH, encWall: data.encWall, encBosses: data.encBosses, encBossSize: data.encBossSize };
+  obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, fillFit: data.fillFit || undefined, opacity: data.opacity || 1.0, type: data.type, shapeType: data.shapeType || (data.isSubtract ? 'custom' : data.type), isGroup: !!data.isGroup, textStr: data.textStr || '', fillet: data.fillet || 0, chamfer: data.chamfer || 0, segments: data.segments, tubeRatio: data.tubeRatio, coneTop: data.coneTop, coneFlip: !!data.coneFlip, tubeWall: (data.tubeWall != null ? data.tubeWall : (data.shapeType==='tube'||data.type==='tube' ? 2 : undefined)), edgeBevels: data.edgeBevels, occtShape: data.occtShape || (data.wasBox ? 'box' : null), _occtParams: data._occtParams || null, displacementPattern: data.displacementPattern || 'keine', displacementAmp: data.displacementAmp || 0.5, displacementFreq: data.displacementFreq || 4, displacementInvert: !!data.displacementInvert, displacementSymmetric: !!data.displacementSymmetric, locked: !!data.locked, hidden: !!data.hidden, threadDiameter: data.threadDiameter, threadPitch: data.threadPitch, threadTurns: data.threadTurns, threadLeft: !!data.threadLeft, screwType: data.screwType, screwSize: data.screwSize, screwLength: data.screwLength, screwClearance: data.screwClearance, screwOuter: data.screwOuter, screwThread: data.screwThread, screwHead: data.screwHead, screwLeft: !!data.screwLeft, holeKind: data.holeKind, holeHead: data.holeHead, holeDepth: data.holeDepth, gearModule: data.gearModule, gearTeeth: data.gearTeeth, gearWidth: data.gearWidth, gearBore: data.gearBore, rackModule: data.rackModule, rackLength: data.rackLength, rackWidth: data.rackWidth, encType: data.encType, encW: data.encW, encD: data.encD, encH: data.encH, encWall: data.encWall, encBosses: data.encBosses, encBossSize: data.encBossSize };
   if (data.shapeType === 'funnel' || data.type === 'funnel') {   // Trichter-Maße zurück (Geometrie wird unten neu gebaut)
     obj.userData.funnelTopDia   = data.funnelTopDia   != null ? data.funnelTopDia   : 40;
     obj.userData.funnelSpoutDia = data.funnelSpoutDia != null ? data.funnelSpoutDia : 12;
@@ -16797,6 +16797,7 @@ function objectToData(o, modus) {
   const d = {
     id: o.userData.id, name: o.userData.name, color: o.userData.color,
     isHole: o.userData.isHole, type: o.userData.type, shapeType: o.userData.shapeType,
+    fillFit: o.userData.fillFit || undefined,
     isGroup: o.userData.isGroup || o.isGroup,
     px: o.position.x, py: o.position.y, pz: o.position.z,
     rx: o.rotation.x, ry: o.rotation.y, rz: o.rotation.z,
@@ -18029,6 +18030,19 @@ function _offsetApply(offMm) {
   if (Math.abs(offMm) > 5) { notify('Maximal ±5 mm pro Schritt', 'w'); return; }
   saveUndo();
   const _preOffset = objectToData(o);   // Zustand vor der Op → Verlauf/Auflösen
+  _offsetMeshWorld(o, offMm);
+  o.userData._offsetSumMm = Math.round(((o.userData._offsetSumMm || 0) + offMm) * 100) / 100;
+  const sumEl = document.getElementById('offset-sum');
+  if (sumEl) sumEl.textContent = o.userData._offsetSumMm + ' mm';
+  if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(o);
+  o.userData.opJournal = { op: 'offset', mm: offMm, parts: [_preOffset] };
+  updateFP();
+  notify('Spielraum ' + (offMm > 0 ? '+' : '') + offMm + ' mm angewendet ✓', 'ok');
+}
+
+// Kern des Spielraums (ohne Undo/Anzeige): alle Flächen des Netzes um offMm nach
+// außen (+) bzw. innen (−) schieben. Auch vom Aufmaß beim Abziehen benutzt.
+function _offsetMeshWorld(o, offMm) {
   const d = offMm / 10;   // mm → Units (Welt)
   o.updateMatrixWorld(true);
   const geo = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry;
@@ -18101,13 +18115,99 @@ function _offsetApply(offMm) {
   if (geo !== o.geometry) { o.geometry.dispose(); o.geometry = geo; }
   if (typeof _geoJsonCache !== 'undefined') _geoJsonCache.delete(o.geometry);
   o.userData._origStlBuf = null;   // gebackene STL passt nicht mehr
-  o.userData._offsetSumMm = Math.round(((o.userData._offsetSumMm || 0) + offMm) * 100) / 100;
-  const sumEl = document.getElementById('offset-sum');
-  if (sumEl) sumEl.textContent = o.userData._offsetSumMm + ' mm';
-  if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(o);
-  o.userData.opJournal = { op: 'offset', mm: offMm, parts: [_preOffset] };
-  updateFP();
-  notify('Spielraum ' + (offMm > 0 ? '+' : '') + offMm + ' mm angewendet ✓', 'ok');
+}
+
+// ═══ AUFMASS BEIM ABZIEHEN (Einlege-Taschen) ════════════════════════════════
+// Teile, die mit ▦ Füllen verteilt wurden, sind meist Einleger: die Tasche soll
+// etwas größer sein als das Teil (Greifer muss es wieder herausholen können).
+// Vor dem Abziehen fragt darum ein Dialog nach dem Aufmaß — in mm (Spalt
+// ringsum, alle Seitenwände wandern nach außen) oder in % (proportional größer).
+// Die Unterkante bleibt in beiden Fällen stehen: die Eintauchtiefe ändert sich nicht.
+let _fitLast = { val: 0, unit: 'mm' };
+try { const j = JSON.parse(localStorage.getItem('v3d_fit_last') || 'null'); if (j && isFinite(j.val)) _fitLast = { val: +j.val, unit: j.unit === '%' ? '%' : 'mm' }; } catch(_) {}
+
+function _fitDialog(n) {
+  return new Promise(resolve => {
+    const ov = document.createElement('div');
+    ov.id = 'fit-dialog';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.4);'
+      + 'display:flex;align-items:center;justify-content:center;font:14px system-ui,-apple-system,sans-serif';
+    const ub = u => '<button class="_fit-unit" data-u="' + u + '" style="flex:1;padding:8px 6px;border:1px solid #ccc;'
+      + 'background:#f4f4f4;border-radius:9px;cursor:pointer;font:inherit">' + (u === 'mm' ? 'Millimeter' : 'Prozent') + '</button>';
+    ov.innerHTML =
+      '<div style="background:#fff;color:#222;padding:22px 24px;border-radius:14px;width:min(400px,90vw);'
+      + 'box-shadow:0 12px 44px rgba(0,0,0,.32)">'
+      + '<div style="font-weight:600;font-size:16px;margin-bottom:6px">Tasche mit Aufmaß?</div>'
+      + '<div style="color:#777;margin-bottom:14px">Die Aussparung für ' + (n > 1 ? 'die ' + n + ' Teile' : 'das Teil')
+      + ' größer machen als das Teil selbst — damit es sich einlegen und wieder herausnehmen lässt. 0 = genau passend.</div>'
+      + '<div style="display:flex;gap:6px;margin-bottom:12px">' + ub('mm') + ub('%') + '</div>'
+      + '<div style="display:flex;align-items:center;gap:8px">'
+      + '<input class="_fit-val" type="number" min="0" step="0.1" style="flex:1;padding:8px 10px;border:1px solid #ccc;border-radius:9px;font:inherit">'
+      + '<span class="_fit-u" style="min-width:26px;color:#555"></span></div>'
+      + '<div class="_fit-lbl" style="color:#777;font-size:12px;margin-top:10px;min-height:48px"></div>'
+      + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">'
+      + '<button class="_fit-cancel" style="padding:9px 16px;border:1px solid #ccc;background:#f4f4f4;'
+      + 'border-radius:9px;cursor:pointer">Abbrechen</button>'
+      + '<button class="_fit-ok" style="padding:9px 20px;border:none;background:#ff5e00;color:#fff;'
+      + 'border-radius:9px;cursor:pointer;font-weight:600">⊖ Abziehen</button></div></div>';
+    document.body.appendChild(ov);
+    const inp = ov.querySelector('._fit-val'), lbl = ov.querySelector('._fit-lbl'), uEl = ov.querySelector('._fit-u');
+    const btns = [...ov.querySelectorAll('._fit-unit')];
+    let unit = _fitLast.unit;
+    inp.value = _fitLast.val || 0;
+    const num = () => Math.max(0, parseFloat(String(inp.value).replace(',', '.')) || 0);
+    const upd = () => {
+      btns.forEach(b => { const on = b.dataset.u === unit;
+        b.style.background = on ? '#ff5e00' : '#f4f4f4'; b.style.color = on ? '#fff' : '#222'; b.style.borderColor = on ? '#ff5e00' : '#ccc'; });
+      uEl.textContent = unit; inp.step = unit === 'mm' ? '0.1' : '0.5';
+      const v = num();
+      lbl.textContent = v <= 0 ? 'Ohne Aufmaß: Die Tasche ist genau so groß wie das Teil.'
+        : unit === 'mm' ? `Ringsum ${r2(v)} mm Luft: jede Seitenwand der Tasche rückt ${r2(v)} mm nach außen (Tasche insgesamt ${r2(2 * v)} mm breiter). Die Tiefe bleibt.`
+        : `Tasche ${r2(v)} % größer als das Teil (um die Mitte vergrößert). Die Tiefe bleibt. Bei Teilen mit Einbuchtungen oder Winkeln besser Millimeter nehmen.`;
+    };
+    btns.forEach(b => b.onclick = () => { unit = b.dataset.u; upd(); inp.focus(); });
+    inp.oninput = upd; upd();
+    const done = val => { document.removeEventListener('keydown', onKey, true); ov.remove(); resolve(val); };
+    const ok = () => {
+      const v = num();
+      if (unit === 'mm' && v > 5)  { notify('Höchstens 5 mm Aufmaß', 'w'); return; }
+      if (unit === '%'  && v > 50) { notify('Höchstens 50 % Aufmaß', 'w'); return; }
+      _fitLast = { val: v, unit };
+      try { localStorage.setItem('v3d_fit_last', JSON.stringify(_fitLast)); } catch(_) {}
+      done({ val: v, unit });
+    };
+    const onKey = e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); ok(); }
+                         else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); } };
+    document.addEventListener('keydown', onKey, true);
+    ov.querySelector('._fit-ok').onclick = ok;
+    ov.querySelector('._fit-cancel').onclick = () => done(null);
+    setTimeout(() => { inp.focus(); inp.select(); }, 30);
+  });
+}
+
+// Bohrungs-Körper h um das Aufmaß vergrößern (Unterkante bleibt, Mitte bleibt).
+function _fitGrow(h, val, unit) {
+  if (!(val > 0)) return;
+  const b0 = getMeshBox(h);
+  const cx = (b0.min.x + b0.max.x) / 2, cz = (b0.min.z + b0.max.z) / 2, y0 = b0.min.y;
+  if (unit === 'mm' && h.isMesh && h.geometry?.attributes?.position) {
+    _offsetMeshWorld(h, val);                 // echte Flächen-Verschiebung
+    // Körper ist jetzt ein freies Netz — parametrische Herkunft passt nicht mehr
+    h.userData.occtShape = null; h.userData._occtParams = null;
+  } else {
+    // Prozent — oder Gruppe ohne eigenes Netz: gleichmäßig skalieren
+    const f = unit === '%' ? 1 + val / 100
+            : 1 + 2 * (val / 10) / Math.max(1e-6, Math.min(b0.max.x - b0.min.x, b0.max.z - b0.min.z));
+    h.scale.multiplyScalar(f);
+    h.userData._origStlBuf = null;
+  }
+  h.updateMatrixWorld(true);
+  const b1 = getMeshBox(h);
+  h.position.x += cx - (b1.min.x + b1.max.x) / 2;
+  h.position.z += cz - (b1.min.z + b1.max.z) / 2;
+  h.position.y += y0 - b1.min.y;
+  h.updateMatrixWorld(true);
+  if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(h);
 }
 
 // ═══ OCCT SVG-ABZUG HILFSFUNKTIONEN ════════════════════════════════════════
@@ -23836,7 +23936,16 @@ async function subtractHoles() {
     notify('Kein Volumenkörper ausgewählt', 'w'); return;
   }
 
+  // Mit ▦ Füllen verteilte Einleger: vorher nach dem Aufmaß der Tasche fragen
+  const fitHoles = holes.filter(h => h.userData.fillFit && h.userData.type !== 'svg');
+  let fit = null;
+  if (fitHoles.length) {
+    fit = await _fitDialog(fitHoles.length);
+    if (fit === null) return;                               // Abbruch
+  }
+
   saveUndo();
+  if (fit && fit.val > 0) fitHoles.forEach(h => _fitGrow(h, fit.val, fit.unit));
   const hasSvg = holes.some(h => h.userData.type === 'svg');
   let svgThrough = false;   // Durchbruch statt Gravur → normaler Boolean-Pfad
 
@@ -25307,6 +25416,7 @@ function _applyFillPlate(gapMm, marginMm, allowRot, count, even, depthMm) {
     o.position.set(rel.x + pl.tx, p0.y, rel.z + pl.tz);   // Höhe bleibt (bzw. Eintauchtiefe)
     o.updateMatrixWorld(true);
   };
+  part.userData.fillFit = true;                            // → Aufmaß-Frage beim Abziehen
   const data = objectToData(part);
   const all = [part];
   place(part, places[0]);                                  // Original wird Kopie Nr. 1
@@ -50462,8 +50572,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.88';
+const VOLME3D_VERSION = '1.18.89';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.89', date:'2026-10-01', spots:[{id:'fit-grow',sel:'[onclick="subtractHoles()"]'}], changes:[
+    ['⊖','<b>Abziehen mit Aufmaß — Taschen für Einleger.</b> Teile, die mit <b>▦ Füllen</b> auf einer Platte verteilt wurden, sind meist Einleger: Die Tasche muss etwas größer sein als das Teil, damit es sich einlegen und – etwa von einem Greifer – wieder herausnehmen lässt. Beim <b>⊖ Abziehen</b> fragt V3D CAD darum jetzt nach dem <b>Aufmaß</b>: in <b>Millimetern</b> (Luft ringsum, jede Seitenwand rückt um diesen Betrag nach außen) oder in <b>Prozent</b> (Tasche proportional größer). Die Eintauchtiefe bleibt in beiden Fällen, wie sie eingestellt war. 0 = genau passend; der letzte Wert wird gemerkt.'],
+  ]},
   { version:'1.18.88', date:'2026-10-01', spots:[{id:'fill-depth',sel:'[onclick="fillPlateTool()"]'}], changes:[
     ['▦','<b>Platte füllen: Eintauchtiefe.</b> Wer nach dem Füllen <b>⊖ Abziehen</b> benutzt, kann jetzt gleich im Dialog angeben, wie tief das Teil in die Grundplatte eintaucht — das ist die Tiefe der späteren Tasche. Die Unterkante aller Teile wird genau so weit unter die Oberseite der Platte gesetzt. Der Dialog zeigt dazu, wie tief das Teil im Moment sitzt und wie dick die Platte ist. Feld leer lassen = die Höhe bleibt wie bisher.'],
   ]},
