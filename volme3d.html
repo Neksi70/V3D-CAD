@@ -5270,6 +5270,10 @@ Patrick</textarea>
       <button class="vtb"    onclick="_text3dSetMode('arc')">⌒ Bogen</button>
     </div>
     <div class="vrow"><label>Größe</label><input type="range" id="text3d-size" min="1" max="30" value="8" step="0.5" oninput="document.getElementById('text3d-sv').textContent=this.value"><span class="vv" id="text3d-sv">8</span><span class="vu">mm</span></div>
+    <div id="text3d-weld-opts">
+      <div class="vrow" id="text3d-gap-row"><label title="Abstand zwischen den Buchstaben in Prozent der Schriftgröße. Negativ = enger — so berühren sich auch Druckbuchstaben und lassen sich verschweißen.">Abstand</label><input type="range" id="text3d-gap" min="-40" max="60" value="0" step="1" oninput="document.getElementById('text3d-gap-v').textContent=this.value;_text3dPreview()"><span class="vv" id="text3d-gap-v">0</span><span class="vu">%</span></div>
+      <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin:2px 0 4px" title="Buchstaben, die sich überlappen oder berühren (Schreibschrift, enger Abstand), werden zu EINEM Umriss verschmolzen — der Schriftzug wird ein zusammenhängendes Teil ohne innere Überschneidungen."><input type="checkbox" id="text3d-weld" checked onchange="_text3dPreview()"> 🔗 Buchstaben verschweißen</label>
+    </div>
     <!-- Auf Fläche -->
     <div id="text3d-surf-opts" style="display:none">
       <div style="font-size:11px;color:var(--dim);line-height:1.4">Nach <b>✓ Erstellen</b> die Stelle am Bauteil anklicken — der Text setzt sich dort auf (auch um Rundungen). Danach wählst du <b>vertieft</b> oder <b>erhaben</b> und die Tiefe.</div>
@@ -13816,6 +13820,7 @@ function addTextShape() {
   // Liegt schon ein Bauteil da, ist „Auf Bauteil" der naheliegende Weg — bis der
   // Nutzer selbst einen Modus wählt.
   if (!_text3dModeTouched) _text3dMode = _lblSolids().length ? 'surface' : 'free';
+  _mfInit().then(() => _text3dPreview(), () => {});   // fürs Verschweißen (Vorschau + Erstellen)
   _text3dSetMode(_text3dMode, true);
   document.getElementById('text3d-modal').classList.add('show');
   _text3dFontGrid(false); _text3dPreview();
@@ -13861,6 +13866,10 @@ function editTextObj(o) {
   const sz = document.getElementById('text3d-size');
   sz.value = m.size; document.getElementById('text3d-sv').textContent = m.size;
   _text3dSetMode(m.mode === 'arc' ? 'arc' : 'free', true);
+  document.getElementById('text3d-gap').value = m.gap || 0;
+  document.getElementById('text3d-gap-v').textContent = m.gap || 0;
+  document.getElementById('text3d-weld').checked = !!m.weld;   // alte Texte bleiben, wie sie sind
+  _mfInit().then(() => _text3dPreview(), () => {});
   if (m.mode === 'arc') {
     document.getElementById('text3d-arcr').value = m.arcR || 40;
     document.getElementById('text3d-arcr-v').textContent = m.arcR || 40;
@@ -13890,7 +13899,7 @@ function _fpLoadFont(key, cb) {
 }
 
 // Text in die Box einpassen (Höhe begrenzt, lange Texte schrumpfen in der Breite).
-function _fpDraw(cv, font, str) {
+function _fpDraw(cv, font, str, opt) {
   const dpr = window.devicePixelRatio || 1, W = cv.clientWidth || 300, H = cv.clientHeight || 50;
   cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
   const g = cv.getContext('2d');
@@ -13901,10 +13910,32 @@ function _fpDraw(cv, font, str) {
     g.fillText(font === null ? 'Vorschau nicht verfügbar' : 'Lade Schrift…', W / 2, H / 2);
     return;
   }
-  let shapes;
-  try { shapes = font.generateShapes(str, 100); } catch (e) { shapes = []; }
   const polys = [];
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  // Dialog-Vorschau mit Abstand/Verschweißen: dieselben Konturen wie der Körper,
+  // mit Umrisslinie — so sieht man, ob die Buchstaben EIN Teil werden.
+  if (opt && (opt.gap || opt.weld)) {
+    let svg = '';
+    try { const ts = _textToSvg(font, str, 100, (opt.gap || 0)); svg = (opt.weld && _textWeldSvg(ts.svg)) || ts.svg; } catch (e) {}
+    for (const loops of _textSvgRings(svg)) for (const l of loops) {
+      const ring = l.map(p => ({ x: p[0], y: -p[1] }));
+      polys.push(ring);
+      for (const p of ring) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
+    }
+    if (!polys.length) return;
+    const pad = 6, sc = Math.min((W - 2 * pad) / (x1 - x0 || 1), (H - 2 * pad) / (y1 - y0 || 1));
+    const ox = (W - (x1 - x0) * sc) / 2, oy = (H + (y1 - y0) * sc) / 2;
+    g.beginPath();
+    for (const ring of polys) {
+      ring.forEach((p, i) => { const X = ox + (p.x - x0) * sc, Y = oy - (p.y - y0) * sc; i ? g.lineTo(X, Y) : g.moveTo(X, Y); });
+      g.closePath();
+    }
+    g.fillStyle = '#c9ccd2'; g.fill('nonzero');
+    g.strokeStyle = '#222'; g.lineWidth = 1; g.lineJoin = 'round'; g.stroke();
+    return;
+  }
+  let shapes;
+  try { shapes = font.generateShapes(str, 100); } catch (e) { shapes = []; }
   for (const sh of shapes) {
     const pts = sh.extractPoints(6);
     for (const ring of [pts.shape, ...pts.holes]) {
@@ -13936,7 +13967,11 @@ function _text3dPreview() {
   document.getElementById('text3d-fname').textContent = op ? op.textContent : '';
   const tok = _text3dPreview._tok = (_text3dPreview._tok || 0) + 1;
   if (!window['_threeFont_' + key]) _fpDraw(cv, undefined);
-  _fpLoadFont(key, f => { if (tok === _text3dPreview._tok) _fpDraw(cv, f, str); });
+  const cyl = document.getElementById('text3d-weld-opts').style.display === 'none';
+  const arc = document.getElementById('text3d-gap-row').style.display === 'none';
+  const opt = cyl || arc ? null : { gap: parseFloat(document.getElementById('text3d-gap').value) || 0,
+                                    weld: document.getElementById('text3d-weld').checked };
+  _fpLoadFont(key, f => { if (tok === _text3dPreview._tok) _fpDraw(cv, f, str, opt); });
   const grid = document.getElementById('text3d-fgrid');
   if (grid.style.display !== 'none') _text3dFontGridFill();
 }
@@ -13992,10 +14027,10 @@ function _textEditBuildSvg(font, m) {
   const sizeU = m.size / 10;
   if (m.mode === 'arc') {
     const ts = _textArcSvg(font, m.str, sizeU, (m.arcR || 40) / 10, m.arcDir || 'up');
-    return (ts.w && ts.h) ? { svg: ts.svg, targetMM: Math.max(ts.w, ts.h) * 10 } : null;
+    return (ts.w && ts.h) ? { svg: (m.weld && _textWeldSvg(ts.svg)) || ts.svg, targetMM: Math.max(ts.w, ts.h) * 10 } : null;
   }
-  const ts = _textToSvg(font, m.str, sizeU);
-  return (ts.w && ts.h) ? { svg: ts.svg, targetMM: m.size * Math.max(ts.w, ts.h) / ts.h } : null;
+  const ts = _textToSvg(font, m.str, sizeU, (m.gap || 0) / 100 * sizeU);
+  return (ts.w && ts.h) ? { svg: (m.weld && _textWeldSvg(ts.svg)) || ts.svg, targetMM: m.size * Math.max(ts.w, ts.h) / ts.h } : null;
 }
 
 // Pfaddaten + Transform wie in _importSvgConfirm (Maßstab, Zentrierung) — bei
@@ -14087,6 +14122,10 @@ function _text3dSetMode(m, nurAnzeige) {
   document.getElementById('text3d-surf-opts').style.display = m==='surface' ? '' : 'none';
   document.getElementById('text3d-cyl-opts').style.display  = m==='cylinder' ? '' : 'none';
   document.getElementById('text3d-arc-opts').style.display  = m==='arc' ? '' : 'none';
+  // Um-Zylinder ist der alte Netz-Weg ohne Konturen; im Bogen stehen die Buchstaben einzeln
+  document.getElementById('text3d-weld-opts').style.display = m==='cylinder' ? 'none' : '';
+  document.getElementById('text3d-gap-row').style.display   = m==='arc' ? 'none' : '';
+  if (document.getElementById('text3d-modal').classList.contains('show')) _text3dPreview();
 }
 
 let _text3dArcDir = 'up';
@@ -14106,22 +14145,77 @@ function _text3dSetFace(f) {
 
 // Font-Konturen → SVG-String (Y-Flip: THREE-Y-up → SVG-Y-down; Löcher als Subpaths).
 // Liefert { svg, w, h } (w/h = Bounding-Box in Font-Einheiten, für die mm-Skalierung).
-function _textToSvg(font, txt, size) {
-  const shapes = font.generateShapes(txt, size);
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, paths = '';
-  for (const sh of shapes) {
-    const subs = [sh.getPoints(14), ...((sh.holes || []).map(h => h.getPoints(14)))];
-    let d = '';
-    for (const pts of subs) {
-      if (!pts || pts.length < 2) continue;
-      d += `M ${pts[0].x.toFixed(3)} ${(-pts[0].y).toFixed(3)} `;
-      for (let i = 1; i < pts.length; i++) d += `L ${pts[i].x.toFixed(3)} ${(-pts[i].y).toFixed(3)} `;
-      d += 'Z ';
-      for (const p of pts) { if (p.x<minX)minX=p.x; if (p.x>maxX)maxX=p.x; if (p.y<minY)minY=p.y; if (p.y>maxY)maxY=p.y; }
+function _textToSvg(font, txt, size, gapU) {
+  // Mit Buchstabenabstand wird Zeichen für Zeichen gesetzt (eigener Vorschub + gapU)
+  const res = font.data.resolution, chars = gapU ? [...txt] : [txt];
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, paths = '', x0 = 0;
+  for (const ch of chars) {
+    for (const sh of font.generateShapes(ch, size)) {
+      const subs = [sh.getPoints(14), ...((sh.holes || []).map(h => h.getPoints(14)))];
+      let d = '';
+      for (const pts of subs) {
+        if (!pts || pts.length < 2) continue;
+        d += `M ${(pts[0].x + x0).toFixed(3)} ${(-pts[0].y).toFixed(3)} `;
+        for (let i = 1; i < pts.length; i++) d += `L ${(pts[i].x + x0).toFixed(3)} ${(-pts[i].y).toFixed(3)} `;
+        d += 'Z ';
+        for (const p of pts) { const x = p.x + x0; if (x<minX)minX=x; if (x>maxX)maxX=x; if (p.y<minY)minY=p.y; if (p.y>maxY)maxY=p.y; }
+      }
+      if (d) paths += `<path d="${d}"/>`;
     }
-    if (d) paths += `<path d="${d}"/>`;
+    if (gapU) {
+      const g = font.data.glyphs[ch] || font.data.glyphs['?'];
+      x0 += (g && g.ha ? g.ha : res * 0.5) * size / res + gapU;
+    }
   }
   return { svg: `<svg xmlns="http://www.w3.org/2000/svg">${paths}</svg>`, w: maxX - minX, h: maxY - minY };
+}
+
+// Ringe eines selbst erzeugten Text-SVGs (nur M/L/Z): je <path> eine Liste von
+// Konturen [[x,y],…] — erste = Außenkontur, weitere = Löcher.
+function _textSvgRings(svg) {
+  const out = [];
+  for (const m of svg.matchAll(/<path d="([^"]*)"/g)) {
+    const loops = [];
+    for (const sub of m[1].split('Z')) {
+      const n = sub.match(/-?\d+(?:\.\d+)?/g);
+      if (!n || n.length < 6) continue;
+      const pts = [];
+      for (let i = 0; i + 1 < n.length; i += 2) pts.push([+n[i], +n[i+1]]);
+      loops.push(pts);
+    }
+    if (loops.length) out.push(loops);
+  }
+  return out;
+}
+
+// Buchstaben verschweißen: alle Konturen in 2D vereinen (Manifold CrossSection =
+// Clipper). Überlappende/berührende Buchstaben werden EIN Umriss; was sich nicht
+// berührt, bleibt unverändert einzeln. Braucht das geladene Manifold-Modul
+// (_mfInit vorab) — ohne gibt es null und der Text bleibt, wie er ist.
+function _textWeldSvg(svg) {
+  const w = _mfWasm;
+  if (!w) return null;
+  const CS = w.CrossSection, keep = [], K = 100;   // Font-Einheiten → 0,1-mm-Raster
+  try {
+    const parts = _textSvgRings(svg).map(loops =>
+      keep[keep.push(new CS(loops.map(l => l.map(p => [p[0] * K, p[1] * K])), 'EvenOdd')) - 1]);
+    if (parts.length < 2) return null;
+    const u = keep[keep.push(CS.union(parts)) - 1];
+    let d = '', n = 0;
+    for (const poly of u.toPolygons()) {
+      if (poly.length < 3) continue;
+      n++;
+      d += `M ${(poly[0][0] / K).toFixed(3)} ${(poly[0][1] / K).toFixed(3)} `;
+      for (let i = 1; i < poly.length; i++) d += `L ${(poly[i][0] / K).toFixed(3)} ${(poly[i][1] / K).toFixed(3)} `;
+      d += 'Z ';
+    }
+    return n ? `<svg xmlns="http://www.w3.org/2000/svg"><path d="${d}"/></svg>` : null;
+  } catch (e) {
+    console.warn('[text] Verschweißen fehlgeschlagen:', e.message || e);
+    return null;
+  } finally {
+    for (const k of keep) { try { k.delete(); } catch (e) {} }
+  }
 }
 
 // Bogen-Text → SVG: Buchstaben-Konturen einzeln entlang eines Kreisbogens
@@ -14186,14 +14280,15 @@ function _confirmText3d() {
   if (meta.mode === 'arc') {
     meta.arcR = parseFloat(document.getElementById('text3d-arcr').value) || 40;
     meta.arcDir = _text3dArcDir;
-  }
+  } else meta.gap = parseFloat(document.getElementById('text3d-gap').value) || 0;
+  meta.weld = document.getElementById('text3d-weld').checked;
   _closeText3d();
 
   const isHole = shapeMode === 'hole';
   const color  = isHole ? '#f03030' : currentColor;
   const sizeU  = sizeMm / 10; // Three.js units (1 unit ≈ 10mm)
 
-  function _create(font) {
+  let _create = function (font) {
     if (editObj) { if (editObj.parent) _textEditApply(editObj, meta, font); return; }
     // Zylinder-Wickeln braucht echtes 3D-Text-Mesh → alter TextGeometry-Weg
     if (mode === 'cylinder' && selectedObjs.length > 0) {
@@ -14225,8 +14320,12 @@ function _confirmText3d() {
     if (mesh) mesh.userData.textEdit = meta;   // für „Text ändern"
     if (mesh && mode === 'surface' && !_lblPickStart(mesh))
       notify('Kein Bauteil in der Szene — der Text liegt frei auf der Platte', 'w');
-  }
+  };
 
+  // Verschweißen rechnet mit dem Manifold-Modul — vorab laden (scheitert das,
+  // entsteht der Text unverschweißt)
+  const _create0 = _create;
+  _create = font => { meta.weld && !_mfWasm ? _mfInit().then(() => _create0(font), () => _create0(font)) : _create0(font); };
   const cacheKey = '_threeFont_' + fontKey;
   if (window[cacheKey]) { _create(window[cacheKey]); return; }
   if (fontKey.indexOf('user_') === 0) { notify('Diese eigene Schrift ist nicht mehr geladen — bitte über „＋ Eigene Schrift" neu wählen', 'w'); return; }
@@ -50860,8 +50959,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.98';
+const VOLME3D_VERSION = '1.18.99';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.99', date:'2026-10-02', changes:[
+    ['🔗','<b>Schrift verschweißen.</b> Im Text-Dialog (<i>A Text</i>) gibt es zwei neue Einstellungen. <b>Abstand</b> rückt die Buchstaben enger zusammen oder weiter auseinander (in Prozent der Schriftgröße). <b>🔗 Buchstaben verschweißen</b> verschmilzt alles, was sich überlappt oder berührt, zu <b>einem</b> Umriss — bei Schreibschriften von selbst, bei Druckschrift mit engerem Abstand. Der Schriftzug wird damit ein zusammenhängendes Teil ohne innere Überschneidungen (nachgemessen: ein Körper, wasserdicht). Die Vorschau im Dialog zeigt den Umriss, so sieht man sofort, ob die Buchstaben schon zusammenhängen. Was sich nicht berührt, bleibt einzeln. Beides lässt sich auch nachträglich über <i>✏️ Text ändern</i> einstellen und gilt auch für Bogen-Text (dort ohne Abstand-Regler).'],
+  ]},
   { version:'1.18.98', date:'2026-10-02', changes:[
     ['🏷️','<b>Beschriftung drehen.</b> Im Feld <i>Beschriftung anbringen</i> (Knopf 🏷️) gibt es jetzt eine Zeile <b>Drehen</b>: <b>↺ 15°</b>, <b>↻ 15°</b> und <b>90°</b>. Der Text dreht sich um seine Mitte in der Fläche — zum Beispiel senkrecht an einer schmalen Wand. Auf Rundungen wird er dabei neu um die Wand gebogen und liegt weiter überall an.'],
   ]},
