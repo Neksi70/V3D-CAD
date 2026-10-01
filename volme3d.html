@@ -18210,7 +18210,7 @@ function _fitDialog(n) {
       uEl.textContent = unit; inp.step = unit === 'mm' ? '0.1' : '0.5';
       const v = num();
       lbl.textContent = v <= 0 ? 'Ohne Aufmaß: Die Tasche ist genau so groß wie das Teil.'
-        : unit === 'mm' ? `Ringsum ${r2(v)} mm Luft: jede Seitenwand der Tasche rückt ${r2(v)} mm zur Seite nach außen (Tasche insgesamt ${r2(2 * v)} mm breiter). Die Tiefe bleibt.`
+        : unit === 'mm' ? `Ringsum ${r2(v)} mm Luft: jede Seitenwand der Tasche rückt ${r2(v)} mm zur Seite nach außen (Tasche insgesamt ${r2(2 * v)} mm breiter). Die Tiefe bleibt; die Tasche wird nach oben nie enger, das Teil lässt sich gerade herausheben.`
         : `Tasche ${r2(v)} % größer als das Teil (um die Mitte vergrößert). Die Tiefe bleibt. Bei Teilen mit Einbuchtungen oder Winkeln besser Millimeter nehmen.`;
     };
     btns.forEach(b => b.onclick = () => { unit = b.dataset.u; upd(); inp.focus(); });
@@ -18282,38 +18282,66 @@ function _mfOffsetPlanes(w, mf, distMm) {
   return new w.Manifold(new w.Mesh({ numProp:3, vertProperties:P2, triVerts:new Uint32Array(T) }));
 }
 
-// Seitliches Aufmaß OHNE einen einzigen Netzpunkt zu verschieben: das Teil wird
-// in n Richtungen waagerecht um distMm versetzt und alles vereint (Minkowski-
-// Summe mit einem n-Eck). Jede Wand rückt so um distMm nach außen, Boden und
-// Deckel bleiben auf ihrer Höhe — genau das, was eine Einlege-Tasche braucht.
-// Braucht nur Vereinen; das Verschieben der Flächen (_mfOffsetPlanes) erzeugte an
-// Volkers Blech-Halter (dünn, feine Rundungen) weiter schwarze, zackige Taschen.
-function _mfGrowSideways(w, mf, distMm) {
-  const n = mf.numTri() > 60000 ? 8 : 16;
-  // Ecken des n-Ecks so weit hinaus, dass seine KANTEN distMm erreichen
-  const r = distMm / Math.cos(Math.PI / n);
-  let acc = mf;
+// Seitliches Aufmaß für Einlege-Taschen, schichtweise in 2D gerechnet:
+// Das Teil wird vom tiefsten Punkt bis knapp über die Plattenoberseite in
+// dünne Scheiben geteilt. Je Scheibe: Umriss (Schnitt durch das Teil) nehmen,
+// mit allen Umrissen darunter vereinen (was unten breiter ist, muss oben auch
+// durchpassen — die Tasche bekommt keine Hinterschnitte), um distMm weiten
+// (Clipper, robust) und als flaches Prisma extrudieren. Teil + alle Prismen
+// vereint = Werkzeug. Der Boden bleibt, wo er ist.
+// Vorgänger: Flächen verschieben (riss Volkers Blech-Halter auf → schwarze
+// Tasche) und 16 versetzte Kopien vereinen (richtig, aber bei seinem feinen
+// Netz minutenlang — „Diese Seite antwortet nicht").
+function _mfGrowSlabs(w, mf, distMm, zTop) {
+  const bb = mf.boundingBox();
+  const z0 = bb.min[2], z1 = Math.min(bb.max[2], (zTop != null ? zTop : bb.max[2]) + 1);
+  const H = z1 - z0;
+  if (!(H > 1e-4)) return mf;
+  const n = Math.max(1, Math.min(60, Math.ceil(H / 0.25))), dz = H / n;
+  const CS = w.CrossSection, slabs = [];
+  const cut = z => { try { const c = mf.slice(Math.min(z1 - 1e-3, Math.max(z0 + 1e-3, z))); return c.isEmpty() ? null : c; } catch (_) { return null; } };
+  let cum = null, cumA = -1, last = null, prevA = -1;
   for (let k = 0; k < n; k++) {
-    const a = (k + 0.5) * 2 * Math.PI / n;
-    acc = w.Manifold.union(acc, mf.translate([r * Math.cos(a), r * Math.sin(a), 0]));   // Z = oben
+    const za = z0 + k * dz, zb = k === n - 1 ? z1 : za + dz;
+    for (const z of (k === 0 ? [za, za + dz / 2, zb] : [za + dz / 2, zb])) {
+      const c = cut(z); if (!c) continue;
+      // Gleicher Schnitt wie eben (Blechteil: überall derselbe Umriss) → das teure
+      // Vereinen sparen. Feine Netze haben tausende Umrisspunkte je Schnitt.
+      const a = c.area();
+      if (cum && Math.abs(a - prevA) <= 1e-9 * Math.max(1, a)) continue;
+      prevA = a;
+      cum = cum ? CS.union(cum, c) : c;
+    }
+    if (!cum) continue;
+    const A = cum.area();
+    if (last && Math.abs(A - cumA) <= 1e-7 * Math.max(1, A)) { last.zb = zb; continue; }   // Umriss unverändert → Scheibe verlängern
+    cumA = A;
+    // 5 µm Vereinfachung vor dem Weiten: nimmt überfeinen Bögen die Punkte, die
+    // das Weiten sonst alle einzeln abrundet (maß 43 s statt < 1 s bei 2 mm).
+    last = { cs: cum.simplify(0.005).offset(distMm, 'Round', 2, 72).simplify(0.005), za, zb };
+    slabs.push(last);
   }
-  // Nähte der n Kopien wieder herausnehmen: sonst behält der ebene Boden jede
-  // Schnittlinie (gemessen 90.000 statt 4.700 Ecken). 1 µm Toleranz.
-  try { const v = acc.simplify(0.001); if (!v.isEmpty()) acc = v; } catch (_) {}
+  if (!slabs.length) return mf;
+  const parts = [mf];
+  for (const sl of slabs) parts.push(sl.cs.extrude(sl.zb - sl.za).translate([0, 0, sl.za]));
+  let acc = parts[0];
+  for (let i = 1; i < parts.length; i++) acc = w.Manifold.union(acc, parts[i]);
   return acc;
 }
 
 // mm-Aufmaß über Manifold: Teil verschweißen, Hüllen vereinen, seitlich weiten,
 // Ergebnis als Welt-Netz zurück in den Körper (Lage steckt dann in der Geometrie).
 // false = ging nicht (kein dichtes Netz) → Aufrufer nimmt den alten Weg.
-async function _fitGrowMf(h, mm) {
+async function _fitGrowMf(h, mm, zTop) {
   try {
+    const t0 = performance.now();
     const w = await _mfInit();
     const tris = _moldCollectTris(h);
     if (!tris.length) return false;
     const mf = _mfSelfUnion(w, _mfFromSoup(w, tris));
-    const big = _mfGrowSideways(w, mf, mm);
+    const big = _mfGrowSlabs(w, mf, mm, zTop);
     if (big.isEmpty() || !(big.volume() > mf.volume())) return false;
+    console.log(`[fit] Aufmaß ${mm} mm: ${mf.numTri()} → ${big.numTri()} Dreiecke in ${Math.round(performance.now() - t0)} ms`);
     let geo = _mfToGeo(big).toNonIndexed();
     geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);   // mm/Z-up → App-Units/Y-up
     geo = _moldNormals(geo);
@@ -18330,12 +18358,12 @@ async function _fitGrowMf(h, mm) {
 }
 
 // Bohrungs-Körper h um das Aufmaß vergrößern (Unterkante bleibt, Mitte bleibt).
-async function _fitGrow(h, val, unit) {
+async function _fitGrow(h, val, unit, zTop) {
   if (!(val > 0)) return;
   const b0 = getMeshBox(h);
   const cx = (b0.min.x + b0.max.x) / 2, cz = (b0.min.z + b0.max.z) / 2, y0 = b0.min.y;
   if (unit === 'mm' && h.isMesh && h.geometry?.attributes?.position) {
-    if (!(h.parent === scene && await _fitGrowMf(h, val)))
+    if (!(h.parent === scene && await _fitGrowMf(h, val, zTop)))
       _offsetMeshWorld(h, val);               // Rückfall: Flächen-Verschiebung am rohen Netz
     // Körper ist jetzt ein freies Netz — parametrische Herkunft passt nicht mehr
     h.userData.occtShape = null; h.userData._occtParams = null;
@@ -24090,7 +24118,13 @@ async function subtractHoles() {
   }
 
   saveUndo();
-  if (fit && fit.val > 0) for (const h of fitHoles) await _fitGrow(h, fit.val, fit.unit);
+  if (fit && fit.val > 0) {
+    _progressShow('Aufmaß wird berechnet…'); _progressSet(4);
+    await new Promise(r => setTimeout(r, 30));              // Balken erst zeigen, dann rechnen
+    // Oberseite der Platte in mm (Manifold-Raum: Z = oben)
+    const zTop = Math.max(...solids.map(o => getMeshBox(o).max.y)) * 10;
+    for (const h of fitHoles) await _fitGrow(h, fit.val, fit.unit, zTop);
+  }
   const hasSvg = holes.some(h => h.userData.type === 'svg');
   let svgThrough = false;   // Durchbruch statt Gravur → normaler Boolean-Pfad
 
@@ -50717,8 +50751,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.92';
+const VOLME3D_VERSION = '1.18.93';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.93', date:'2026-10-01', changes:[
+    ['🛠','<b>Aufmaß in Millimetern: schnell statt „Seite antwortet nicht“.</b> Das Verfahren aus 1.18.92 war bei fein aufgelösten Bauteilen so rechenintensiv, dass der Browser einfror. Jetzt wird das Teil in dünne Scheiben geteilt und der Umriss jeder Scheibe in 2D geweitet. Die Tasche bekommt ringsum das Aufmaß, der Boden bleibt, und sie wird nach oben nie enger — das Teil lässt sich gerade herausheben.'],
+  ]},
   { version:'1.18.92', date:'2026-10-01', changes:[
     ['🛠','<b>Aufmaß in Millimetern neu gerechnet.</b> Bei dünnen Blechteilen mit feinen Rundungen wurde die Tasche mit mm-Aufmaß weiterhin schwarz und zackig. Das Aufmaß entsteht jetzt anders: Das Teil wird ringsum zur Seite versetzt und mit sich selbst vereint — kein Netzpunkt wird mehr verschoben. Jede Seitenwand der Tasche rückt um das Aufmaß nach außen, Boden und Tiefe bleiben exakt.'],
   ]},

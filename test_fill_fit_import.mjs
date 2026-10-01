@@ -23,8 +23,8 @@ await page.evaluate(() => {
     s.moveTo(0, 0); s.lineTo(55, 0); s.absarc(55, 14, 14, -Math.PI/2, Math.PI/2, false); s.lineTo(30, 28);
     s.lineTo(22, 28); s.absarc(15, 28, 7, 0, Math.PI, true);
     s.lineTo(0, 28); s.lineTo(0, 0);
-    for (const [x, y] of [[12, 14], [52, 14]]) { const h = new THREE.Path(); h.absarc(x, y, 3, 0, Math.PI * 2, true); s.holes.push(h); }
-    let geo = new THREE.ExtrudeGeometry(s, { depth: 8, bevelEnabled: false, curveSegments: 48 }).toNonIndexed();
+    for (const [x, y] of (window._tFein ? [[8,6],[8,14],[8,22],[18,8],[18,18],[28,6],[28,14],[28,22],[40,8],[40,20],[52,14],[60,14]] : [[12, 14], [52, 14]])) { const h = new THREE.Path(); h.absarc(x, y, window._tFein ? 2 : 3, 0, Math.PI * 2, true); s.holes.push(h); }
+    let geo = new THREE.ExtrudeGeometry(s, { depth: 8, bevelEnabled: false, curveSegments: window._tFein ? 700 : 48 }).toNonIndexed();
     if (window._tMulti) {
       // wie ein Baugruppen-Export: weitere geschlossene Hüllen, die IN die Platte hineinragen
       const b1 = new THREE.BoxGeometry(20, 12, 14).toNonIndexed(); b1.translate(35, 14, 7);      // Klotz, steckt 8 mm in der Platte
@@ -77,7 +77,7 @@ await page.evaluate(() => {
   };
 });
 const out = {};
-await page.evaluate(m => { window._tMulti = m !== 'single'; window._tJitter = m.startsWith('rebuilt'); if (m === 'rebuilt-alt') window._fitGrowMf = async () => false; }, process.argv[2] || 'multi');
+await page.evaluate(m => { window._tMulti = m !== 'single'; window._tJitter = m.startsWith('rebuilt'); window._tFein = m === 'fein'; if (m === 'fein') window._tMulti = false; if (m === 'rebuilt-alt') window._fitGrowMf = async () => false; }, process.argv[2] || 'multi');
 const run = async (tag, n, val, unit) => {
   await page.evaluate(n => _tSetup(n), n);
   page.evaluate(() => subtractHoles());
@@ -99,5 +99,5 @@ try {
   await run('p2', 2, 2, '%');
 } catch (e) { out.FEHLER = String(e).slice(0, 300); }
 out.partTri = await page.evaluate(() => _tPartTri);
-console.log(JSON.stringify({ ...out, errs, logs: logs.filter(l => !/transparent/.test(l)).slice(-25) }, null, 1));
+console.log(JSON.stringify({ ...out, errs, logs: logs.filter(l => /fit\]|subtract\]|fill\]/.test(l)).slice(-25) }, null, 1));
 await browser.close(); srv.kill();
