@@ -25746,16 +25746,25 @@ async function _applyHexPattern(cellMm, wallMm, marginMm, depthMm) {
   // Erstes Material-Intervall von unten: {t: Dicke, y0: Eintritt, y1: Austritt};
   // null = kein Material. y0/y1 sagen, WO die Platte liegt — bei gekippten
   // Körpern (Deckel: Boden oben) ist das NICHT die Unterkante des Objekts!
+  // Ein Strahl EXAKT auf einer Dreieckskante/-ecke (Deckel-Fächer eines
+  // Zylinders: Kanten laufen durch die Mitte, also genau durch Gitterpunkte)
+  // rutscht zwischen den Nachbardreiecken durch → kein oder nur ein Treffer,
+  // die Zelle galt als „neben dem Teil" und im Muster fehlte ein Loch. Darum bei
+  // Fehl-/ungeradem Treffer mit um ~0,003 mm versetztem Strahl nachmessen.
+  const nudges = [[0, 0], [3.1e-4, 1.7e-4], [-2.3e-4, 2.9e-4], [1.9e-4, -3.3e-4]];
   const thicknessAt = (px, pz) => {
-    ray.ray.origin.set(px, y0, pz);
     ray.ray.direction.set(0, 1, 0);
-    // NUR Mesh-Treffer: die Kantenlinien-Overlays (LineSegments) treffen mit
-    // Line.threshold=1 (=10mm!) weit neben der Kante und vergiften die Messung
-    // (Fake-Eintritt an der Randlinie → Plattendicke = fast volle Objekthöhe).
-    const raw = ray.intersectObject(target, true).filter(h => h.object.isMesh);
-    const ys = [];                                   // Doppel-Treffer an Kanten mergen
-    for (const h of raw) if (!ys.length || h.point.y - ys[ys.length - 1] > 1e-3) ys.push(h.point.y);
-    return ys.length >= 2 ? { t: ys[1] - ys[0], y0: ys[0], y1: ys[1] } : null;
+    for (const [nx, nz] of nudges) {
+      ray.ray.origin.set(px + nx, y0, pz + nz);
+      // NUR Mesh-Treffer: die Kantenlinien-Overlays (LineSegments) treffen mit
+      // Line.threshold=1 (=10mm!) weit neben der Kante und vergiften die Messung
+      // (Fake-Eintritt an der Randlinie → Plattendicke = fast volle Objekthöhe).
+      const raw = ray.intersectObject(target, true).filter(h => h.object.isMesh);
+      const ys = [];                                 // Doppel-Treffer an Kanten mergen
+      for (const h of raw) if (!ys.length || h.point.y - ys[ys.length - 1] > 1e-3) ys.push(h.point.y);
+      if (ys.length >= 2 && ys.length % 2 === 0) return { t: ys[1] - ys[0], y0: ys[0], y1: ys[1] };
+    }
+    return null;
   };
   // Testpunkte: Ecken bei R+margin (Winkel 30°+k·60°), Kantenmitten bei SW/2+margin
   // (Winkel k·60°) — CylinderGeometry(…,6) hat die Flanken genau in Gitterrichtung.
@@ -50751,8 +50760,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.93';
+const VOLME3D_VERSION = '1.18.94';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.94', date:'2026-10-01', changes:[
+    ['⬡','<b>Wabenmuster: kein fehlendes Loch mehr.</b> Bei runden Scheiben (z. B. Zylinder Ø 90 × 3 mm) blieb im Wabenraster ein einzelnes Loch aus, meist auf der Mittelachse. Die Dickenmessung traf dort genau auf eine Netzkante des Deckels und hielt die Stelle für „neben dem Teil“. Jetzt wird in so einem Fall minimal versetzt nachgemessen — das Raster ist wieder vollständig.']
+  ]},
   { version:'1.18.93', date:'2026-10-01', changes:[
     ['🛠','<b>Aufmaß in Millimetern: schnell statt „Seite antwortet nicht“.</b> Das Verfahren aus 1.18.92 war bei fein aufgelösten Bauteilen so rechenintensiv, dass der Browser einfror. Jetzt wird das Teil in dünne Scheiben geteilt und der Umriss jeder Scheibe in 2D geweitet. Die Tasche bekommt ringsum das Aufmaß, der Boden bleibt, und sie wird nach oben nie enger — das Teil lässt sich gerade herausheben.'],
   ]},
