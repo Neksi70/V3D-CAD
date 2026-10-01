@@ -2547,6 +2547,11 @@ const firebaseConfig = {
           <label class="pat-lbl">Randabstand zur Plattenkante (mm)</label>
           <input id="pat-fill-margin" class="pat-inp" type="number" min="0" max="100" value="5" step="0.5">
         </div>
+        <div class="pat-row" id="pat-fill-depth-row">
+          <label class="pat-lbl" title="So tief taucht das Teil von oben in die Grundplatte ein — wichtig fürs anschließende ⊖ Abziehen (Tiefe der Tasche). Leer = Höhe des Teils bleibt, wie sie ist.">Eintauchtiefe in die Platte (mm) — leer = Höhe bleibt</label>
+          <input id="pat-fill-depth" class="pat-inp" type="number" min="0" max="1000" step="0.1" placeholder="unverändert">
+          <div id="pat-fill-depth-info" style="font-size:11px;color:var(--dim);margin-top:3px"></div>
+        </div>
         <div class="pat-row">
           <label class="pat-lbl" style="display:flex;align-items:center;gap:6px;cursor:pointer">
             <input id="pat-fill-rot" type="checkbox" checked> Drehen erlauben (0 / 90 / 180 / 270°)
@@ -25012,6 +25017,15 @@ function fillPlateTool() {
   ['pat-lin', 'pat-cir', 'pat-hex'].forEach(id => document.getElementById(id).style.display = 'none');
   document.getElementById('pat-fill').style.display = '';
   _fillCountUi();
+  // Eintauchtiefe: nur bei eigener Grundplatte (in die Druckplatte taucht nichts ein)
+  document.getElementById('pat-fill-depth-row').style.display = pair.bed ? 'none' : '';
+  if (!pair.bed) {
+    const pb = getMeshBox(pair.plate), qb = getMeshBox(pair.part);
+    const cur = (pb.max.y - qb.min.y) * 10, dick = (pb.max.y - pb.min.y) * 10;
+    document.getElementById('pat-fill-depth-info').textContent =
+      (cur > 0.005 ? `Aktuell ${r2(cur)} mm tief` : cur < -0.005 ? `Aktuell ${r2(-cur)} mm über der Platte` : 'Aktuell: liegt auf der Platte auf') +
+      ` · Platte ist ${r2(dick)} mm dick`;
+  }
   document.getElementById('pat-title').textContent = pair.bed
     ? `▦ ${plateCount > 1 ? 'Platte ' + (pair.plateIdx + 1) : 'Druckplatte'} füllen (${r2(buildplateW)} × ${r2(buildplateH)} mm)` : '▦ Platte füllen';
   document.getElementById('pat-modal').classList.add('show');
@@ -25271,7 +25285,7 @@ function _fillPlanCount(plate, part, gapMm, marginMm, allowRot, n, even) {
   return Object.assign(plan, { places, max });
 }
 
-function _applyFillPlate(gapMm, marginMm, allowRot, count, even) {
+function _applyFillPlate(gapMm, marginMm, allowRot, count, even, depthMm) {
   const pair = _fillPickPair(); if (!pair) return;
   const { plate, part } = pair;
   const t0 = performance.now();
@@ -25282,11 +25296,15 @@ function _applyFillPlate(gapMm, marginMm, allowRot, count, even) {
   saveUndo();
   const Y = new THREE.Vector3(0, 1, 0);
   const q0 = part.quaternion.clone(), p0 = part.position.clone();
+  // Eintauchtiefe: Unterkante des Teils depthMm unter die Oberseite der Platte
+  // (Drehen um Y ändert die Höhe nicht → ein Versatz für alle Kopien).
+  if (depthMm != null && !pair.bed)
+    p0.y += getMeshBox(plate).max.y - depthMm / 10 - getMeshBox(part).min.y;
   const place = (o, pl) => {
     const th = pl.rot * Math.PI / 2;
     const rel = new THREE.Vector3(p0.x - c0.x, 0, p0.z - c0.z).applyAxisAngle(Y, th);
     o.quaternion.copy(new THREE.Quaternion().setFromAxisAngle(Y, th).multiply(q0));
-    o.position.set(rel.x + pl.tx, p0.y, rel.z + pl.tz);   // Höhe bleibt
+    o.position.set(rel.x + pl.tx, p0.y, rel.z + pl.tz);   // Höhe bleibt (bzw. Eintauchtiefe)
     o.updateMatrixWorld(true);
   };
   const data = objectToData(part);
@@ -25324,8 +25342,11 @@ function _applyPat() {
     const rot    = document.getElementById('pat-fill-rot').checked;
     const cnt    = Math.max(0, parseInt(document.getElementById('pat-fill-count').value) || 0);
     const even   = document.getElementById('pat-fill-even').checked;
+    const dEl    = document.getElementById('pat-fill-depth');
+    const dVal   = parseFloat(String(dEl.value).replace(',', '.'));
+    const depth  = dEl.value.trim() !== '' && isFinite(dVal) ? Math.max(0, dVal) : null;
     _closePat();
-    _applyFillPlate(gap, margin, rot, cnt, even);
+    _applyFillPlate(gap, margin, rot, cnt, even, depth);
     return;
   } else if (_patternType === 'hex') {
     const cell   = Math.max(2,   parseFloat(document.getElementById('pat-hex-cell').value)   || 8);
@@ -50441,8 +50462,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.87';
+const VOLME3D_VERSION = '1.18.88';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.88', date:'2026-10-01', spots:[{id:'fill-depth',sel:'[onclick="fillPlateTool()"]'}], changes:[
+    ['▦','<b>Platte füllen: Eintauchtiefe.</b> Wer nach dem Füllen <b>⊖ Abziehen</b> benutzt, kann jetzt gleich im Dialog angeben, wie tief das Teil in die Grundplatte eintaucht — das ist die Tiefe der späteren Tasche. Die Unterkante aller Teile wird genau so weit unter die Oberseite der Platte gesetzt. Der Dialog zeigt dazu, wie tief das Teil im Moment sitzt und wie dick die Platte ist. Feld leer lassen = die Höhe bleibt wie bisher.'],
+  ]},
   { version:'1.18.87', date:'2026-10-01', spots:[{id:'fill-count',sel:'[onclick="fillPlateTool()"]'}], changes:[
     ['▦','<b>Platte füllen: feste Anzahl.</b> Unter <i>Anordnen → ▦ Füllen</i> gibt es das Feld <b>Anzahl</b>. Leer bleibt alles wie bisher (so viele Teile wie passen); mit einer Zahl — etwa 3 oder 4 — landen genau so viele auf der Platte. Mit <b>Gleichmäßig verteilen</b> werden sie mit möglichst großem Abstand über die Platte verteilt und mittig gesetzt, ohne das Häkchen liegen sie dicht an dicht ab der Ecke. Passen weniger als gewünscht, sagt V3D CAD, wie viele es geworden sind.'],
   ]},
