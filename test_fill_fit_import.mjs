@@ -35,7 +35,11 @@ await page.evaluate(() => {
     }
     geo.computeVertexNormals();
     _addImportedGeo(geo, 'halter.stl', true, null, false);
-    const part = objects[objects.length-1];
+    let part = objects[objects.length-1];
+    if (window._tJitter) {   // wie nach Neuladen/Undo: Teil aus den gespeicherten Daten neu aufgebaut
+      const d = objectToData(part); scene.remove(part); objects.splice(objects.indexOf(part), 1);
+      part = buildObjectFromData(d); scene.add(part); objects.push(part);
+    }
     part.userData.isHole = true;
     window._tPartTri = part.geometry.attributes.position.count / 3;
     selectObjs([plate, part]);
@@ -73,7 +77,7 @@ await page.evaluate(() => {
   };
 });
 const out = {};
-await page.evaluate(m => { window._tMulti = m; }, process.argv[2] === 'multi');
+await page.evaluate(m => { window._tMulti = m !== 'single'; window._tJitter = m.startsWith('rebuilt'); if (m === 'rebuilt-alt') window._fitGrowMf = async () => false; }, process.argv[2] || 'multi');
 const run = async (tag, n, val, unit) => {
   await page.evaluate(n => _tSetup(n), n);
   page.evaluate(() => subtractHoles());
@@ -86,7 +90,7 @@ const run = async (tag, n, val, unit) => {
   out[tag] = await page.evaluate(() => _tMesh());
   await page.evaluate(() => { selectObjs([]); setView && 0; });
   await page.mouse.click(700, 500); await page.waitForTimeout(400);
-  await page.screenshot({ path: `/tmp/fit_${tag}.png` });
+  await page.screenshot({ path: `/tmp/fit_${process.argv[2] || 'multi'}_${tag}.png` });
 };
 try {
   await run('ohne', 2, 0, 'mm');

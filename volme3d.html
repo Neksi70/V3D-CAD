@@ -18233,13 +18233,89 @@ function _fitDialog(n) {
   });
 }
 
+// Alle Flächen eines Manifold-Körpers um distMm nach außen schieben — ebenen-treu:
+// je Ecke wird die Verschiebung gesucht, die JEDE anliegende Ebene um distMm
+// versetzt (wie _offsetMeshWorld). Arbeitet auf dem VERSCHWEISSTEN Netz von
+// Manifold: jede Ecke gibt es genau einmal, das Netz kann nicht aufreißen.
+// (Der Weg über die rohen Dreiecke riss Volkers Halter an Ecken auf, die im
+// Import nur fast deckungsgleich waren — die Tasche wurde schwarz und zackig.)
+function _mfOffsetPlanes(w, mf, distMm) {
+  const m = mf.getMesh(), P = m.vertProperties, T = m.triVerts, np = m.numProp;
+  const nv = P.length / np, NS = new Array(nv);
+  for (let i = 0; i < T.length; i += 3) {
+    const a = T[i], b = T[i+1], c = T[i+2];
+    const ax=P[a*np],ay=P[a*np+1],az=P[a*np+2];
+    const ux=P[b*np]-ax, uy=P[b*np+1]-ay, uz=P[b*np+2]-az;
+    const vx=P[c*np]-ax, vy=P[c*np+1]-ay, vz=P[c*np+2]-az;
+    let nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    const L = Math.hypot(nx, ny, nz);
+    if (L < 1e-12) continue;                      // Splitter ohne Fläche: keine Richtung
+    nx /= L; ny /= L; nz /= L;
+    for (const v of [a, b, c]) {
+      const ns = NS[v] || (NS[v] = []);
+      let neu = true;
+      for (let q = 0; q < ns.length; q += 3) if (ns[q]*nx + ns[q+1]*ny + ns[q+2]*nz > 0.9995) { neu = false; break; }
+      if (neu) ns.push(nx, ny, nz);
+    }
+  }
+  const P2 = new Float32Array(nv * 3), lim = Math.abs(distMm) * 3;
+  for (let i = 0; i < nv; i++) {
+    let dx = 0, dy = 0, dz = 0;
+    const ns = NS[i];
+    if (ns) {
+      let m00=0,m01=0,m02=0,m11=0,m12=0,m22=0, sx=0,sy=0,sz=0;
+      for (let q = 0; q < ns.length; q += 3) { const x=ns[q], y=ns[q+1], z=ns[q+2];
+        m00+=x*x; m01+=x*y; m02+=x*z; m11+=y*y; m12+=y*z; m22+=z*z; sx+=x; sy+=y; sz+=z; }
+      const eps = (m00 + m11 + m22) * 1e-3; m00 += eps; m11 += eps; m22 += eps;
+      const det = m00*(m11*m22 - m12*m12) - m01*(m01*m22 - m12*m02) + m02*(m01*m12 - m11*m02);
+      const bx = sx * distMm, by = sy * distMm, bz = sz * distMm;
+      if (Math.abs(det) > 1e-18) {
+        dx = (bx*(m11*m22 - m12*m12) - m01*(by*m22 - m12*bz) + m02*(by*m12 - m11*bz)) / det;
+        dy = (m00*(by*m22 - m12*bz) - bx*(m01*m22 - m12*m02) + m02*(m01*bz - by*m02)) / det;
+        dz = (m00*(m11*bz - by*m12) - m01*(m01*bz - by*m02) + bx*(m01*m12 - m11*m02)) / det;
+        const l = Math.hypot(dx, dy, dz);          // spitze Kerben → riesige 1/cos-Faktoren klemmen
+        if (l > lim) { dx *= lim / l; dy *= lim / l; dz *= lim / l; }
+      } else { const l = Math.hypot(sx, sy, sz) || 1; dx = sx/l*distMm; dy = sy/l*distMm; dz = sz/l*distMm; }
+    }
+    P2[i*3] = P[i*np] + dx; P2[i*3+1] = P[i*np+1] + dy; P2[i*3+2] = P[i*np+2] + dz;
+  }
+  return new w.Manifold(new w.Mesh({ numProp:3, vertProperties:P2, triVerts:new Uint32Array(T) }));
+}
+
+// mm-Aufmaß über Manifold: Teil verschweißen, Hüllen vereinen, Flächen schieben,
+// Ergebnis als Welt-Netz zurück in den Körper (Lage steckt dann in der Geometrie).
+// false = ging nicht (kein dichtes Netz) → Aufrufer nimmt den alten Weg.
+async function _fitGrowMf(h, mm) {
+  try {
+    const w = await _mfInit();
+    const tris = _moldCollectTris(h);
+    if (!tris.length) return false;
+    const mf = _mfSelfUnion(w, _mfFromSoup(w, tris));
+    const big = _mfOffsetPlanes(w, mf, mm);
+    if (big.isEmpty() || !(big.volume() > mf.volume())) return false;
+    let geo = _mfToGeo(big).toNonIndexed();
+    geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);   // mm/Z-up → App-Units/Y-up
+    geo = _moldNormals(geo);
+    h.geometry.dispose(); h.geometry = geo;
+    h.position.set(0, 0, 0); h.quaternion.identity(); h.scale.set(1, 1, 1);
+    h.updateMatrixWorld(true);
+    if (typeof _geoJsonCache !== 'undefined') _geoJsonCache.delete(geo);
+    h.userData._origStlBuf = null;
+    return true;
+  } catch (e) {
+    console.warn('[fit] Manifold-Aufmaß gescheitert → Netz-Offset:', e.message || e);
+    return false;
+  }
+}
+
 // Bohrungs-Körper h um das Aufmaß vergrößern (Unterkante bleibt, Mitte bleibt).
-function _fitGrow(h, val, unit) {
+async function _fitGrow(h, val, unit) {
   if (!(val > 0)) return;
   const b0 = getMeshBox(h);
   const cx = (b0.min.x + b0.max.x) / 2, cz = (b0.min.z + b0.max.z) / 2, y0 = b0.min.y;
   if (unit === 'mm' && h.isMesh && h.geometry?.attributes?.position) {
-    _offsetMeshWorld(h, val);                 // echte Flächen-Verschiebung
+    if (!(h.parent === scene && await _fitGrowMf(h, val)))
+      _offsetMeshWorld(h, val);               // Rückfall: Flächen-Verschiebung am rohen Netz
     // Körper ist jetzt ein freies Netz — parametrische Herkunft passt nicht mehr
     h.userData.occtShape = null; h.userData._occtParams = null;
   } else {
@@ -23993,7 +24069,7 @@ async function subtractHoles() {
   }
 
   saveUndo();
-  if (fit && fit.val > 0) fitHoles.forEach(h => _fitGrow(h, fit.val, fit.unit));
+  if (fit && fit.val > 0) for (const h of fitHoles) await _fitGrow(h, fit.val, fit.unit);
   const hasSvg = holes.some(h => h.userData.type === 'svg');
   let svgThrough = false;   // Durchbruch statt Gravur → normaler Boolean-Pfad
 
@@ -50620,8 +50696,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.90';
+const VOLME3D_VERSION = '1.18.91';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.91', date:'2026-10-01', changes:[
+    ['🛠','<b>Aufmaß in Millimetern: Tasche bleibt sauber.</b> Bei importierten Bauteilen konnte das mm-Aufmaß beim Abziehen das Netz aufreißen — die Tasche wurde schwarz und zackig, obwohl sie ohne Aufmaß einwandfrei war. Das Aufmaß wird jetzt auf dem verschweißten Netz berechnet, in dem jede Ecke nur einmal vorkommt; aufreißen kann es damit nicht mehr. Der Taschenboden bleibt dabei exakt eben.'],
+  ]},
   { version:'1.18.90', date:'2026-10-01', changes:[
     ['🛠','<b>Abziehen: keine schwarzen, zerfransten Taschen mehr bei Baugruppen-Teilen.</b> Importierte Bauteile bestehen oft aus mehreren geschlossenen Hüllen, die ineinander stecken (Platte + Bolzen + Haken). Wo sich zwei Hüllen überlappten, zählte das Volumen beim Abziehen doppelt — in der Tasche entstand ein umgestülptes Stück: schwarze Flächen und Zacken. Jetzt werden die Hüllen eines Teils vor dem Abziehen miteinander verschmolzen. Außerdem bleibt der Taschenboden beim <b>Aufmaß in Millimetern</b> eben (vorher bis 0,3 mm wellig), das gilt auch für <b>⧈ Spielraum</b>.'],
   ]},
