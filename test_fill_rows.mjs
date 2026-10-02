@@ -3,7 +3,7 @@
 // kein Teil ragt über die Platte (Randabstand), keine Überlappung; im Reihen-Modus
 // zusätzlich: alle Teile gleich gedreht, Spalten/Reihen auf gemeinsamen Linien,
 // konstante Teilung.
-//   MODE=dense|rows  COUNT=n  PW/PD=Plattenmaß  LOCH=1 (4 Eckbohrungen)  NOROT=1
+//   MODE=dense|rows  PX/PZ=Teilung mm  COUNT=n  PW/PD=Plattenmaß  LOCH=1 (4 Eckbohrungen)  NOROT=1
 import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -59,6 +59,8 @@ await page.click('button:has-text("▦ Füllen")');
 if (await page.locator('#pat-fill-mode').count()) await page.selectOption('#pat-fill-mode', MODE);
 else if (MODE === 'rows') { console.log('kein Anordnungs-Feld im Dialog'); }
 await page.fill('#pat-fill-count', COUNT);
+if (process.env.PX) await page.fill('#pat-fill-px', process.env.PX);
+if (process.env.PZ) await page.fill('#pat-fill-pz', process.env.PZ);
 await page.fill('#pat-fill-gap', process.env.GAP || '3'); await page.fill('#pat-fill-margin', String(MARGIN));
 if (process.env.NOROT) await page.uncheck('#pat-fill-rot');
 if (process.env.NOEVEN && COUNT) await page.uncheck('#pat-fill-even');
