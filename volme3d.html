@@ -882,9 +882,12 @@ body.devmode .dev-only{display:flex!important}
 .stl-empty .btn{margin-top:10px}
 .stl-folder-hdr{grid-column:1/-1;display:flex;align-items:center;gap:7px;margin:6px 0 -2px;padding:5px 4px 6px;border-bottom:1.5px solid var(--border);font-size:12px;font-weight:800;color:var(--mid);cursor:pointer;user-select:none}
 .stl-folder-hdr:first-child{margin-top:0}
-.stl-folder-hdr .stl-folder-arr{transition:transform .12s;font-size:10px;color:var(--dim)}
-.stl-folder-hdr.collapsed .stl-folder-arr{transform:rotate(-90deg)}
 .stl-folder-hdr .stl-folder-cnt{font-weight:600;color:var(--dim);font-size:11px}
+.stl-folder-hdr.crumbs{cursor:default;flex-wrap:wrap}
+.stl-crumb{cursor:pointer;color:var(--acc)}
+.stl-crumb:hover{text-decoration:underline}
+.stl-crumb.cur{cursor:default;color:var(--text);text-decoration:none}
+.stl-dir-th{width:100%;height:100%;display:flex;align-items:center;justify-content:center}
 .ds-folder-badge{position:absolute;left:6px;bottom:6px;max-width:80%;background:rgba(30,41,59,.78);color:#fff;font-size:9px;font-weight:700;padding:2px 6px;border-radius:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
 /* Toolbar design label */
 #cur-design-wrap{display:flex;align-items:center;gap:3px;padding:0 4px;max-width:140px;border-left:1px solid var(--border);margin-left:2px;padding-left:10px;flex-shrink:0}
@@ -5666,6 +5669,7 @@ Patrick</textarea>
         <button class="btn" data-fmt="3mf" onclick="_stlSetFmt('3mf')">3MF</button>
         <button class="btn" data-fmt="obj" onclick="_stlSetFmt('obj')">OBJ</button>
         <button class="btn" data-fmt="step" onclick="_stlSetFmt('step')">STEP</button>
+        <button class="btn" data-fmt="__dir" onclick="_stlSetFmt('__dir')" title="Ordner durchblättern (z. B. entpackte ZIP-Downloads)" style="margin-left:6px">📁 Ordner</button>
       </div>
       <label style="color:var(--dim)">Sortieren</label>
       <select id="stllib-sort" onchange="_stlSetSort(this.value)" style="padding:4px 6px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;font-family:var(--font)">
@@ -50004,7 +50008,7 @@ function _createLaserBox(){
 const STLLIB_HELPER = 'http://127.0.0.1:7777';
 const STLLIB_HELPER_LATEST = 11;   // aktuelle Helfer-Version; ältere -> Update-Knopf (v11: erlaubt v3dcad.volme3dakademie.de)
 let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0, _stlHelperCustom=false, _stlHelperDir='', _stlThumbObs=null, _stlThumbPending=[], _stlThumbBusy=false, _stlPollTimer=null, _stlListSig='', _stlFmtFilter='';
-let _stlSort='date_desc', _stlFavOnly=false, _stlFav=new Set(), _stlSel=new Set(), _stlCollapsed=new Set();
+let _stlSort='date_desc', _stlFavOnly=false, _stlFav=new Set(), _stlSel=new Set(), _stlDir='';   // _stlDir: geöffneter Ordner im Reiter „Ordner" ('' = Übersicht)
 const _stlCanPickDir = !!window.showDirectoryPicker;   // File System Access API: nur Chrome/Edge (nicht Firefox/Safari)
 function _stlStopPoll(){ if(_stlPollTimer){ clearInterval(_stlPollTimer); _stlPollTimer=null; } }
 function _stlStartPoll(){ _stlStopPoll(); _stlPollTimer=setInterval(_stlPoll,15000); }   // Galerie automatisch nachladen
@@ -50130,10 +50134,11 @@ function _stlSortApply(){
   _stlFiles.sort(cmp);
 }
 function _stlSetSort(v){ _stlSort=v; _stlIdbSet('kv','sort',v).catch(()=>{}); _stlRenderGrid(); }
-// Format-Reiter (Alle/STL/3MF/OBJ/STEP). '' = alle; stp zählt als step.
+// Reiter (Alle/STL/3MF/OBJ/STEP/Ordner). '' = alle; stp zählt als step; '__dir' = Ordner durchblättern.
 function _stlExt(name){ const e=(String(name).split('.').pop()||'').toLowerCase(); return e==='stp'?'step':e; }
 function _stlSetFmt(v){
   _stlFmtFilter=v;
+  if(v==='__dir') _stlDir='';   // Klick auf den Reiter führt immer zur Ordner-Übersicht
   document.querySelectorAll('#stllib-tabs .btn').forEach(b=>b.classList.toggle('pri',(b.dataset.fmt||'')===v));
   _stlRenderGrid();
 }
@@ -50164,7 +50169,6 @@ function _stlUpdateSelBar(){
   if(bar) bar.style.display=n>0?'flex':'none';
   if(cnt) cnt.textContent=n+(n===1?' markiert':' markiert');
 }
-function _stlToggleFolder(folder){ if(_stlCollapsed.has(folder)) _stlCollapsed.delete(folder); else _stlCollapsed.add(folder); _stlRenderGrid(); }
 function _stlMakeCard(f, grid){
   const idx=_stlFiles.indexOf(f);
   const card=document.createElement('div'); card.className='ds-card'; card.id='stlcard-'+idx;
@@ -50192,30 +50196,71 @@ function _stlRenderGrid(){
   const q=(document.getElementById('stllib-search')?.value||'').trim().toLowerCase();
   let list=q?_stlFiles.filter(f=>f.path.toLowerCase().includes(q)):_stlFiles.slice();
   if(_stlFavOnly) list=list.filter(f=>_stlFav.has(f.path));
-  if(_stlFmtFilter) list=list.filter(f=>_stlExt(f.name)===_stlFmtFilter);
+  const dirView=_stlFmtFilter==='__dir';
+  if(_stlFmtFilter && !dirView) list=list.filter(f=>_stlExt(f.name)===_stlFmtFilter);
   grid.innerHTML='';
-  if(!list.length){ grid.innerHTML='<div class="stl-empty">'+(_stlFavOnly?'Noch keine Favoriten — tippe auf den ☆ Stern einer Karte.':(_stlFmtFilter?'Keine '+_stlFmtFilter.toUpperCase()+'-Dateien'+(q?' für „'+_stlEsc(q)+'"':'')+' in der Bibliothek.':'Nichts gefunden für „'+_stlEsc(q)+'".'))+'</div>'; return; }
   if(_stlThumbObs) _stlThumbObs.disconnect();
   _stlThumbObs=new IntersectionObserver(es=>{ for(const e of es){ if(e.isIntersecting){ const f=e.target._stlF; _stlThumbObs.unobserve(e.target); if(f) _stlThumbEnqueue(f); } } },{root:grid,rootMargin:'300px'});
-  // Nach Unterordner gruppieren (Wurzel zuerst, dann Ordner alphabetisch). Sortier-Reihenfolge je Gruppe bleibt erhalten.
-  const groups=new Map();
-  list.forEach(f=>{ const fo=_stlFolder(f.path); if(!groups.has(fo)) groups.set(fo,[]); groups.get(fo).push(f); });
-  const hasFolders=[...groups.keys()].some(k=>k!=='');
-  const order=[...groups.keys()].sort((a,b)=> a===''?-1 : b===''?1 : a.localeCompare(b,'de'));
-  order.forEach(folder=>{
-    const items=groups.get(folder);
-    if(hasFolders){
-      const collapsed=_stlCollapsed.has(folder);
-      const hdr=document.createElement('div');
-      hdr.className='stl-folder-hdr'+(collapsed?' collapsed':'');
-      hdr.onclick=()=>_stlToggleFolder(folder);
-      const label = folder==='' ? '📄 Einzeldateien' : '📁 '+_stlEsc(folder);
-      hdr.innerHTML=`<span class="stl-folder-arr">▼</span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</span><span class="stl-folder-cnt">${items.length}</span>`;
-      grid.appendChild(hdr);
-      if(collapsed) return;
-    }
-    items.forEach(f=>_stlMakeCard(f, grid));
+  if(dirView){ _stlRenderDirs(list, grid, q); return; }
+  if(!list.length){ grid.innerHTML='<div class="stl-empty">'+(_stlFavOnly?'Noch keine Favoriten — tippe auf den ☆ Stern einer Karte.':(_stlFmtFilter?'Keine '+_stlFmtFilter.toUpperCase()+'-Dateien'+(q?' für „'+_stlEsc(q)+'"':'')+' in der Bibliothek.':'Nichts gefunden für „'+_stlEsc(q)+'".'))+'</div>'; return; }
+  // Durchgehende Liste in der gewählten Sortierung; Dateien aus Unterordnern tragen ein
+  // Ordner-Etikett. Die Ordner selbst blättert man im Reiter „Ordner" durch.
+  list.forEach(f=>_stlMakeCard(f, grid));
+}
+function _stlOpenDir(d){ _stlDir=d||''; _stlRenderGrid(); const g=document.getElementById('stllib-grid'); if(g) g.scrollTop=0; }
+// Reiter „Ordner": Ordner als Kacheln, Klick öffnet den Ordner (Unterordner wieder als Kacheln,
+// darunter die Dateien des Ordners). list = bereits nach Suche/Favoriten gefiltert und sortiert.
+function _stlRenderDirs(list, grid, q){
+  const inDir=(f,d)=>{ const fo=_stlFolder(f.path); return d==='' ? fo!=='' : (fo===d || fo.startsWith(d+'/')); };
+  if(_stlDir && !_stlFiles.some(f=>inDir(f,_stlDir))) _stlDir='';   // Ordner inzwischen leer/gelöscht → Übersicht
+  const dir=_stlDir;
+  if(dir){
+    const bar=document.createElement('div'); bar.className='stl-folder-hdr crumbs';
+    const parts=dir.split('/');
+    const back=document.createElement('button'); back.className='btn'; back.textContent='← Zurück'; back.style.marginRight='4px';
+    back.onclick=()=>_stlOpenDir(parts.slice(0,-1).join('/'));
+    bar.appendChild(back);
+    const crumb=(txt,target,cur)=>{ const c=document.createElement('span'); c.className='stl-crumb'+(cur?' cur':''); c.textContent=txt; if(!cur) c.onclick=()=>_stlOpenDir(target); bar.appendChild(c); };
+    crumb('📁 Ordner','',false);
+    parts.forEach((p,i)=>{ const sep=document.createElement('span'); sep.textContent='›'; sep.style.color='var(--dim)'; bar.appendChild(sep); crumb(p, parts.slice(0,i+1).join('/'), i===parts.length-1); });
+    grid.appendChild(bar);
+  }
+  const subs=new Map(), direct=[];
+  list.forEach(f=>{
+    if(!inDir(f,dir)) return;
+    const fo=_stlFolder(f.path);
+    if(fo===dir){ direct.push(f); return; }
+    const child=(dir?fo.slice(dir.length+1):fo).split('/')[0];
+    if(!subs.has(child)) subs.set(child,[]);
+    subs.get(child).push(f);
   });
+  if(!subs.size && !direct.length){
+    const msg = (q||_stlFavOnly)
+      ? (_stlFavOnly&&!q ? 'Keine Favoriten in '+(dir?'diesem Ordner.':'den Ordnern.') : 'Nichts gefunden für „'+_stlEsc(q)+'".')
+      : 'Noch keine Ordner — Downloads, die in einem Ordner lagen (z. B. entpackte ZIP-Dateien), erscheinen hier.';
+    const e=document.createElement('div'); e.className='stl-empty'; e.innerHTML=msg; grid.appendChild(e); return;
+  }
+  // Ordner-Kacheln in der gewählten Sortierung (Datum = neueste Datei, Größe = Summe)
+  const info=[...subs.entries()].map(([name,items])=>({name, items, mtime:Math.max(...items.map(f=>f.mtime||0)), size:items.reduce((a,f)=>a+(f.size||0),0)}));
+  const cmp={
+    date_desc:(a,b)=>b.mtime-a.mtime, date_asc:(a,b)=>a.mtime-b.mtime,
+    name_asc:(a,b)=>a.name.localeCompare(b.name,'de'), name_desc:(a,b)=>b.name.localeCompare(a.name,'de'),
+    size_desc:(a,b)=>b.size-a.size, size_asc:(a,b)=>a.size-b.size
+  }[_stlSort]||((a,b)=>b.mtime-a.mtime);
+  info.sort(cmp).forEach(d=>{
+    const full=dir?dir+'/'+d.name:d.name;
+    const f=d.items[0];   // Vorschau: erste Datei des Ordners
+    const card=document.createElement('div'); card.className='ds-card stl-dir-card'; card.title=full;
+    card.onclick=()=>_stlOpenDir(full);
+    const inner = f._thumbUrl ? `<img class="ds-thumb" src="${f._thumbUrl}">` : (f._thumbDone ? '<div class="ds-nothumb">📁</div>' : '<div class="ds-nothumb">⏳</div>');
+    const n=d.items.length;
+    card.innerHTML=`<div class="ds-thumb-wrap"><div class="stl-dir-th">${inner}</div><div class="ds-folder-badge">📁 ${n} ${n===1?'Datei':'Dateien'}</div></div>`+
+      `<div class="ds-info" style="padding-bottom:9px"><div class="ds-name">📁 ${_stlEsc(d.name)}</div><div class="ds-date">${n} ${n===1?'Datei':'Dateien'} · ${_stlFmtSize(d.size)} · ${new Date(d.mtime).toLocaleDateString()}</div></div>`;
+    grid.appendChild(card);
+    const th=card.querySelector('.stl-dir-th'); f._thumbEl=th;
+    if(!f._thumbUrl && !f._thumbDone){ th._stlF=f; _stlThumbObs.observe(th); }
+  });
+  direct.forEach(f=>_stlMakeCard(f, grid));
 }
 // Thumbnails nur für sichtbare Karten, sequenziell (ein Renderer, kein Ansturm bei hunderten Dateien)
 function _stlThumbEnqueue(f){ if(f._thumbDone||f._thumbQueued) return; f._thumbQueued=true; _stlThumbPending.push(f); _stlThumbPump(); }
@@ -50962,8 +51007,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.101';
+const VOLME3D_VERSION = '1.18.102';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.102', date:'2026-10-02', changes:[
+    ['📁','<b>Bibliothek: neuer Reiter „Ordner".</b> Ordner (z. B. aus entpackten ZIP-Downloads) hingen bisher ganz unten an der Liste — man musste jedes Mal bis zum Ende scrollen. Jetzt gibt es oben neben <i>Alle / STL / 3MF / OBJ / STEP</i> den Reiter <b>📁 Ordner</b>: Er zeigt alle Ordner als Kacheln mit Vorschau und Dateianzahl, ein Klick öffnet den Ordner, <i>← Zurück</i> oder die Pfadzeile führen wieder hinaus (Unterordner funktionieren genauso). Die übrigen Reiter zeigen jetzt eine durchgehende Liste in der gewählten Sortierung — Dateien aus Ordnern erkennt man dort weiter am Ordner-Etikett auf der Karte.'],
+  ]},
   { version:'1.18.101', date:'2026-10-02', changes:[
     ['✂️','<b>Schwalbenschwänze setzen sich beim Schneiden von selbst.</b> Wer im <i>✂ Schneiden</i>-Feld die Bauart <b>◤ Schwalbe</b> wählt, muss die Zapfen nicht mehr einzeln auf die orange Ebene klicken: Sie werden sofort gleichmäßig über die Schnittfläche verteilt und <b>wandern mit</b>, wenn die Ebene verschoben oder gedreht oder Breite/Länge geändert wird. Das klappt jetzt auch bei <b>dünnen Platten</b> — passt der Zapfen in der eingestellten Ausrichtung nicht in die Plattendicke, wird er um 90° gedreht; passt er gar nicht, kommt ein Hinweis, die Maße kleiner zu wählen. Lange Schnitte bekommen mehr Verbinder (bis zu 6). Von Hand geht weiterhin: <b>+ Verbinder</b> ergänzt einzelne Zapfen, 🗑 löscht alle — danach bleibt die Automatik aus, bis <b>⚡ Auto</b> oder erneut <b>◤ Schwalbe</b> gedrückt wird. Stift und Gewinde werden wie bisher per Klick oder ⚡ Auto gesetzt. Nebenbei findet ⚡ Auto jetzt auch für Stifte die Schnittfläche dünner Platten, die das grobe Raster bisher verfehlt hat.'],
   ]},
