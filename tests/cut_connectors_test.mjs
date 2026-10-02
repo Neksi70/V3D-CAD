@@ -430,6 +430,42 @@ await pg.evaluate(() => {
   ok('Puzzle: Spiel zwischen Zungenkopf und Öffnung', g.luft.every(Boolean), g.luft);
 }
 
+// ── Schwalbe ohne Klick auf den Bauart-Knopf + einseitiges Material ────────
+// (a) Bauart steht noch vom letzten Schnitt auf Schwalbe: Werkzeug öffnen + Achse
+//     wählen muss die Zungen setzen — sonst gibt es stillschweigend einen glatten Schnitt.
+// (b) Lochplatte mit FrontSide-Material: der Abtaster darf nicht vom Material abhängen.
+{
+  const r = await pg.evaluate(async () => {
+    const t = window._ctT, out = {};
+    const lauf = async mesh => {
+      selectObjs([mesh]); _cut.cParams.type = 'dove'; _cut.cParams.dW = 20; _cut.cParams.dL = 10;
+      openCutTool();
+      document.querySelector('.cut-ax[data-ax="x"]').click();
+      const x0 = _cutPivot().x;
+      document.getElementById('cut-lay').checked = false;
+      await _cutExecute();                       // ohne Wartezeit: ausstehende Automatik muss mitlaufen
+      const bA = new THREE.Box3().setFromObject(objects[0]);
+      return { teile: objects.length, ueberstand: +((bA.max.x - x0) * 10).toFixed(1),
+               offen: objects.map(o => t.watertight(o.geometry)) };
+    };
+    t.reset(); addShape('box');
+    const box = objects[0]; box.scale.multiply(new THREE.Vector3(31, 1, 21)); box.updateMatrixWorld(true);
+    out.a = await lauf(box);
+    t.reset();
+    const sh = new THREE.Shape(); sh.moveTo(-31,-21); sh.lineTo(31,-21); sh.lineTo(31,21); sh.lineTo(-31,21); sh.closePath();
+    [[-28,-18],[28,-18],[28,18],[-28,18],[0,10]].forEach(([x,y]) => { const h = new THREE.Path(); h.absarc(x, y, 0.4, 0, Math.PI*2, true); sh.holes.push(h); });
+    const g = new THREE.ExtrudeGeometry(sh, { depth: 2, bevelEnabled: false, curveSegments: 16 }).toNonIndexed();
+    g.rotateX(-Math.PI / 2);
+    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ side: THREE.FrontSide }));
+    m.userData = { id: idCtr++, name: 'Lochplatte', type: 'custom', isHole: false };
+    scene.add(m); objects.push(m); m.updateMatrixWorld(true);
+    out.b = await lauf(m);
+    return out;
+  });
+  ok('Gemerkte Schwalbe: Zungen ohne Klick auf den Knopf', r.a.teile === 2 && Math.abs(r.a.ueberstand - 10) < 0.2, r.a);
+  ok('Lochplatte (einseitiges Material): Zungen vorhanden', r.b.teile === 2 && Math.abs(r.b.ueberstand - 10) < 0.2, r.b);
+}
+
 ok('keine JS-Fehler', pageErrors.length === 0, pageErrors.slice(0, 3));
 await b.close();
 console.log(fails.length ? '\nFEHLGESCHLAGEN: ' + fails.join(', ') : '\nAlles grün.');

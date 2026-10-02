@@ -51141,8 +51141,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.107';
+const VOLME3D_VERSION = '1.18.108';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.108', date:'2026-10-02', changes:[
+    ['🐛','<b>Schwalbenschwanz fehlte manchmal ganz — es kam nur ein glatter Schnitt.</b> Zwei Ursachen: Stand die Bauart noch vom letzten Schnitt auf <b>◤ Schwalbe</b>, wurden beim erneuten Öffnen von <i>✂ Schneiden</i> keine Zungen gesetzt, obwohl der Knopf leuchtete. Und bei manchen Körpern (z. B. importierten Platten) erkannte die Automatik das Material an der Schnittlinie nicht. Beides ist behoben. Sollte an einer Schnittlinie wirklich kein Platz für eine Zunge sein, sagt das Programm das jetzt nach dem Schnitt ausdrücklich, statt still glatt zu schneiden.'],
+  ]},
   { version:'1.18.107', date:'2026-10-02', changes:[
     ['✂️','<b>Schwalbenschwanz beim Schneiden ist jetzt ein echter Schwalbenschwanz — wie beim Puzzle.</b> Bisher war <b>◤ Schwalbe</b> nur ein kleiner eckiger Zapfen, der aus der Schnittfläche herausstand. Jetzt bekommt das eine Teil <b>Zungen</b>, die über die Schnittkante hinausragen (am Hals schmal, am Kopf breit), und das andere Teil die passenden <b>Öffnungen</b>. Zungen und Öffnungen gehen <b>durch die ganze Materialdicke</b>: Eine geteilte Platte wird von oben ineinandergesteckt und lässt sich danach nicht mehr auseinanderziehen. Beide Hälften bleiben flach liegen und drucken ohne Stützen. Die Zungen werden weiterhin automatisch gleichmäßig entlang der Schnittlinie verteilt und wandern mit der Ebene mit. Einstellbar sind <b>Breite</b> (am Kopf), <b>Länge</b> (so weit ragt die Zunge ins andere Teil) und <b>Spiel</b>; Höhe und Winkel entfallen — die Richtung der Materialdicke erkennt das Programm selbst. Bei kleinen Teilen wird die Zunge automatisch verkleinert.'],
   ]},
@@ -57414,7 +57417,8 @@ function openCutTool() {
   if (!isFinite(bbox.min.x)) { notify('Objekt ohne Geometrie', 'w'); return; }
   _cut.active = true; _cut.target = target; _cut.bbox = bbox; _cut.axis = 'y';
   _cut.rot = { x:0, y:0, z:0 }; _cut.q = new THREE.Quaternion(); _cut.connectors = [];
-  _cut.doveAuto = false;
+  // Bauart steht noch vom letzten Schnitt auf Schwalbe → gleich wieder automatisch setzen
+  _cut.doveAuto = _cut.cParams.type === 'dove';
   const c = bbox.getCenter(new THREE.Vector3());
   _cut.posU = c.y;
   _cutBuildPanel();
@@ -57881,12 +57885,18 @@ function _cutClearConnectors() {
 // Abtaster für die Schnittebene: probe(u,v) → liegt der Punkt im Material und wie
 // viel Material steht beidseits der Ebene?
 function _cutMakeProbe() {
-  const target = _cut.target, n = _cutNormal(), nNeg = n.clone().negate();
+  const n = _cutNormal(), nNeg = n.clone().negate();
+  // Abtasten an einem beidseitigen Doppel des Netzes: Die Parität braucht auch die
+  // Treffer von innen, und die liefert der Raycaster nur bei DoubleSide-Material.
+  _cut.target.updateMatrixWorld(true);
+  const target = new THREE.Mesh(_cut.target.geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+  target.matrixAutoUpdate = false;
+  target.matrixWorld.copy(_cut.target.matrixWorld);
   const ray = new THREE.Raycaster();
   ray.far = _cut.bbox.min.distanceTo(_cut.bbox.max) * 2;
   const castAll = (wp, dir) => {
     ray.set(wp, dir);
-    return ray.intersectObject(target, true).filter(h => h.distance > 1e-4 && h.face);
+    return ray.intersectObject(target, false).filter(h => h.distance > 1e-4 && h.face);
   };
   return (u, v) => {
     const wp = _cutInPlaneToWorld({ u, v });
@@ -58528,6 +58538,7 @@ async function _cutExecute() {
   const srcBox = _cut.bbox.clone();          // _cut wird am Ende zurückgesetzt
   const boltSize = _cut.cParams.tSize, boltLen = _cutBoltLen();
   const kindOf = c => c.kind || 'pin';
+  const ohneSchwalbe = _cut.cParams.type === 'dove' && _cut.doveAuto && !_cut.connectors.length;
   const ohneSicherung = _cut.connectors.some(c => kindOf(c) === 'thread') &&
                         !_cut.connectors.some(c => kindOf(c) !== 'thread');
   notify('Schneide…', 'ok');
@@ -58648,6 +58659,8 @@ async function _cutExecute() {
     const nBolt = parts.filter(q => q.role === 'bolt').length;
     notify(`In ${parts.length - nBolt} Teil(e) zerteilt ✓` +
            (nBolt ? ` + ${nBolt} Gewindebolzen (${boltSize} × ${boltLen.toFixed(1)} mm) zum Mitdrucken` : ''), 'ok');
+    if (ohneSchwalbe) notify('Glatter Schnitt ohne Schwalbenschwanz: An dieser Schnittlinie war kein Platz für die Zunge — ' +
+                             'Rückgängig, dann Breite/Länge kleiner wählen oder die Ebene verschieben', 'w');
     if (ohneSicherung) notify('Nur Gewinde ohne Stift: Die Hälften können sich beim Festschrauben ' +
                               'gegeneinander verdrehen — beim nächsten Mal einen Stift oder Schwalbenschwanz dazusetzen', 'w');
   } catch (e) {
