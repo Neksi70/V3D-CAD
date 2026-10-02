@@ -18500,7 +18500,18 @@ async function _fitGrowMf(h, mm, zTop, zweiter) {
     const w = await _mfInit();
     const tris = _moldCollectTris(h);
     if (!tris.length) return false;
-    const mf = _mfSelfUnion(w, _mfFromSoup(w, tris));
+    // Netz mit kleinen Fehlern (entartete Dreiecke, offene Kante) erst flicken — sonst
+    // landet das Teil im Netz-Offset-Rückfall: Sekunden pro Teil und zackige Taschen.
+    let mf0;
+    try { mf0 = _mfFromSoup(w, tris); }
+    catch (eRoh) {
+      if (_mfEngineErr(eRoh)) throw eRoh;
+      const geheilt = _healTrisForBool(tris);
+      if (!geheilt) throw eRoh;
+      mf0 = _mfFromSoup(w, geheilt);
+      console.log('[fit] Teil vor dem Aufmaß automatisch repariert:', (h.userData && h.userData.name) || '?');
+    }
+    const mf = _mfSelfUnion(w, mf0);
     const big = _mfGrowSlabs(w, mf, mm, zTop);
     if (big.isEmpty() || !(big.volume() > mf.volume())) return false;
     console.log(`[fit] Aufmaß ${mm} mm: ${mf.numTri()} → ${big.numTri()} Dreiecke in ${Math.round(performance.now() - t0)} ms`);
@@ -18522,12 +18533,13 @@ async function _fitGrowMf(h, mm, zTop, zweiter) {
 
 // Bohrungs-Körper h um das Aufmaß vergrößern (Unterkante bleibt, Mitte bleibt).
 async function _fitGrow(h, val, unit, zTop) {
-  if (!(val > 0)) return;
+  if (!(val > 0)) return false;
+  let viaMf = false;
   const b0 = getMeshBox(h);
   const cx = (b0.min.x + b0.max.x) / 2, cz = (b0.min.z + b0.max.z) / 2, y0 = b0.min.y;
   if (unit === 'mm' && h.isMesh && h.geometry?.attributes?.position) {
-    if (!(h.parent === scene && await _fitGrowMf(h, val, zTop)))
-      _offsetMeshWorld(h, val);               // Rückfall: Flächen-Verschiebung am rohen Netz
+    viaMf = h.parent === scene && await _fitGrowMf(h, val, zTop);
+    if (!viaMf) _offsetMeshWorld(h, val);     // Rückfall: Flächen-Verschiebung am rohen Netz
     // Körper ist jetzt ein freies Netz — parametrische Herkunft passt nicht mehr
     h.userData.occtShape = null; h.userData._occtParams = null;
   } else {
@@ -18544,6 +18556,62 @@ async function _fitGrow(h, val, unit, zTop) {
   h.position.y += y0 - b1.min.y;
   h.updateMatrixWorld(true);
   if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(h);
+  return viaMf;
+}
+
+// Aufmaß für Kopien desselben Teils nur EINMAL rechnen. ▦ Füllen legt Kopien an, die
+// sich nur durch Verschiebung in der Ebene und Drehung um die Hochachse unterscheiden —
+// dagegen ist das Scheiben-Aufmaß unempfindlich (es weitet waagerechte Umrisse). Das
+// fertige Netz des ersten Teils wird deshalb mit der Lage-Differenz auf die Kopien
+// übertragen. Fingerabdruck = Netz (Eckenzahl + Koordinaten-Hash); alles andere
+// (gekippt, skaliert, gespiegelt, andere Höhe) wird wie bisher einzeln gerechnet.
+function _fitGeoKey(h) {
+  const g = h.geometry, a = g && g.attributes && g.attributes.position && g.attributes.position.array;
+  if (!h.isMesh || !a || h.parent !== scene) return null;
+  // Auf 1/1000 der Netz-Einheit gerundet: Original und Kopien unterscheiden sich
+  // sonst in letzten Bits (−0 gegen 0, Rundung beim Klonen) und fänden sich nicht.
+  let x = 0;
+  for (let i = 0; i < a.length; i++) x = (Math.imul(x, 31) + Math.round(a[i] * 1000)) | 0;
+  return a.length + ':' + (g.index ? g.index.count : 0) + ':' + x;
+}
+// Lage-Differenz M_kopie · M_muster⁻¹ — nur brauchbar, wenn sie eine reine Drehung um
+// die Hochachse plus waagerechte Verschiebung ist.
+function _fitRelMatrix(mMuster, mKopie) {
+  const R = new THREE.Matrix4().copy(mMuster).invert().premultiply(mKopie), e = R.elements, t = 1e-4;
+  const ok = Math.abs(e[5] - 1) < t && Math.abs(e[1]) < t && Math.abs(e[9]) < t && Math.abs(e[4]) < t && Math.abs(e[6]) < t &&
+             Math.abs(e[13]) < t * 10 && Math.abs(e[0] * e[0] + e[2] * e[2] - 1) < t && Math.abs(e[0] - e[10]) < t &&
+             Math.abs(e[2] + e[8]) < t && R.determinant() > 0;
+  return ok ? R : null;
+}
+async function _fitGrowAll(fitHoles, val, unit, zTop, onStep) {
+  const muster = new Map();        // Fingerabdruck → [{ m0: Lage vorher, h: fertig gerechnetes Teil }]
+  let kopiert = 0;
+  for (let i = 0; i < fitHoles.length; i++) {
+    const h = fitHoles[i];
+    if (onStep) await onStep(i);
+    h.updateMatrixWorld(true);
+    const key = unit === 'mm' ? _fitGeoKey(h) : null, m0 = h.matrixWorld.clone();
+    let fertig = false;
+    for (const mu of (key && muster.get(key)) || []) {
+      const R = _fitRelMatrix(mu.m0, m0);
+      if (!R) continue;
+      mu.h.updateMatrixWorld(true);
+      const geo = mu.h.geometry.clone().applyMatrix4(R.multiply(mu.h.matrixWorld));
+      h.geometry.dispose(); h.geometry = geo;
+      h.position.set(0, 0, 0); h.quaternion.identity(); h.scale.set(1, 1, 1);
+      h.updateMatrixWorld(true);
+      h.userData._origStlBuf = null; h.userData.occtShape = null; h.userData._occtParams = null;
+      if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(h);
+      fertig = true; kopiert++;
+      break;
+    }
+    if (fertig) continue;
+    const viaMf = await _fitGrow(h, val, unit, zTop);
+    // Nur das saubere Manifold-Ergebnis taugt als Muster (der Netz-Offset-Rückfall nicht)
+    if (key && viaMf) { if (!muster.has(key)) muster.set(key, []); muster.get(key).push({ m0, h }); }
+  }
+  if (kopiert) console.log(`[fit] Aufmaß für ${fitHoles.length - kopiert} Teil(e) gerechnet, für ${kopiert} Kopie(n) übernommen`);
+  return kopiert;
 }
 
 // ═══ OCCT SVG-ABZUG HILFSFUNKTIONEN ════════════════════════════════════════
@@ -24310,11 +24378,11 @@ async function subtractHoles() {
     const zTop = Math.max(...solids.map(o => getMeshBox(o).max.y)) * 10;
     // Nach jedem Teil kurz an den Browser abgeben: sonst rechnet die Seite bei vielen
     // feinen Teilen am Stück und der Browser meldet „Seite antwortet nicht".
-    for (let i = 0; i < fitHoles.length; i++) {
+    // Kopien desselben Teils übernehmen das Aufmaß des ersten (_fitGrowAll).
+    await _fitGrowAll(fitHoles, fit.val, fit.unit, zTop, async i => {
       _progressSet(4 + Math.round(36 * i / fitHoles.length), 'Aufmaß: Teil ' + (i + 1) + ' von ' + fitHoles.length + '…');
       await new Promise(r => setTimeout(r, 0));
-      await _fitGrow(fitHoles[i], fit.val, fit.unit, zTop);
-    }
+    });
   }
   const hasSvg = holes.some(h => h.userData.type === 'svg');
   let svgThrough = false;   // Durchbruch statt Gravur → normaler Boolean-Pfad
@@ -51194,8 +51262,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.112';
+const VOLME3D_VERSION = '1.18.113';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.113', date:'2026-10-02', changes:[
+    ['⚡','<b>Abziehen mit Aufmaß: gleiche Teile werden nur noch einmal gerechnet.</b> Wer mit <i>▦ Füllen</i> zehn Kopien desselben Bauteils auf die Platte setzt, wartete beim Abziehen zehnmal auf dasselbe Aufmaß. Jetzt wird es für das erste Teil gerechnet und für alle Kopien übernommen, die nur verschoben oder um die Hochachse gedreht sind (gekippte oder skalierte Teile rechnen weiter einzeln). Außerdem werden Bauteile mit kleinen Netzfehlern vor dem Aufmaß automatisch geflickt — bisher fielen sie auf ein Ersatzverfahren zurück, das pro Teil mehrere Sekunden brauchte und <b>zackige Taschenränder</b> hinterließ.'],
+  ]},
   { version:'1.18.112', date:'2026-10-02', changes:[
     ['⏳','<b>Abziehen mit Aufmaß bei vielen Teilen: Fortschritt statt „Seite antwortet nicht“.</b> Das Aufmaß wurde für alle Teile am Stück gerechnet; bei zehn feinen Bauteilen war die Seite so lange blockiert, dass der Browser nachfragte. Jetzt wird nach jedem Teil kurz abgegeben, und der Balken zeigt <i>Aufmaß: Teil 3 von 10</i>.'],
   ]},
