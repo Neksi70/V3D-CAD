@@ -466,6 +466,30 @@ await pg.evaluate(() => {
   ok('Lochplatte (einseitiges Material): Zungen vorhanden', r.b.teile === 2 && Math.abs(r.b.ueberstand - 10) < 0.2, r.b);
 }
 
+// ── Nie ein zerstörtes Teil abliefern ──────────────────────────────────────
+// Nimmt Manifold den Körper nicht an, darf der Schwalbenschwanz NICHT über den
+// alten BSP-Abzug laufen (der zerreißt Platten mit Bohrungen): Abbruch mit
+// Meldung, das Original bleibt unangetastet.
+{
+  const r = await pg.evaluate(async () => {
+    const t = window._ctT; t.reset(); addShape('box');
+    const box = objects[0]; box.scale.multiply(new THREE.Vector3(31, 1, 21)); box.updateMatrixWorld(true);
+    const v0 = t.vol(box);
+    const meld = []; const on = window.notify; window.notify = (m, k) => { meld.push(m); return on(m, k); };
+    const echt = _cutMechConnectors; _cutMechConnectors = async () => null;
+    selectObjs([box]); _cut.cParams.type = 'dove'; openCutTool();
+    document.querySelector('.cut-ax[data-ax="x"]').click();
+    const errs = console.error; console.error = () => {};      // erwarteter Fehler, nicht als JS-Fehler zählen
+    await _cutExecute();
+    console.error = errs; _cutMechConnectors = echt; window.notify = on;
+    const res = { n: objects.length, gleich: objects[0] === box, vol: Math.abs(t.vol(objects[0]) - v0) < 1,
+                  meldung: meld.some(m => /nicht wasserdicht/.test(m)) };
+    _cutClose(); _cut.cParams.type = 'pin';
+    return res;
+  });
+  ok('Rückfall: Schwalbe bricht ab statt zu zerstören', r.n === 1 && r.gleich && r.vol && r.meldung, r);
+}
+
 ok('keine JS-Fehler', pageErrors.length === 0, pageErrors.slice(0, 3));
 await b.close();
 console.log(fails.length ? '\nFEHLGESCHLAGEN: ' + fails.join(', ') : '\nAlles grün.');

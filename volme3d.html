@@ -51141,8 +51141,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.108';
+const VOLME3D_VERSION = '1.18.109';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.109', date:'2026-10-02', changes:[
+    ['🐛','<b>Schwalbenschwanz zerstörte bei manchen Platten eine Hälfte.</b> Nahm die saubere Rechen-Engine den Körper nicht an, sprang das Schneiden auf ein altes Ersatzverfahren um, das Platten mit Bohrungen zerreißt — übrig blieben nur Splitter. Jetzt trennt die saubere Engine den Körper selbst (statt zwei vorgeschnittene Hälften zu übernehmen, deren Schnittflächen an Bohrungen nicht immer dicht sind) und flickt kleine Netzfehler vorher. Das Ersatzverfahren wird für Schwalbenschwänze nicht mehr benutzt. Zusätzlich wird nach jedem Schnitt mit Verbindern das Volumen geprüft: Fehlt etwas, bricht der Schnitt mit einer Meldung ab und <b>das Original bleibt unverändert</b>.'],
+  ]},
   { version:'1.18.108', date:'2026-10-02', changes:[
     ['🐛','<b>Schwalbenschwanz fehlte manchmal ganz — es kam nur ein glatter Schnitt.</b> Zwei Ursachen: Stand die Bauart noch vom letzten Schnitt auf <b>◤ Schwalbe</b>, wurden beim erneuten Öffnen von <i>✂ Schneiden</i> keine Zungen gesetzt, obwohl der Knopf leuchtete. Und bei manchen Körpern (z. B. importierten Platten) erkannte die Automatik das Material an der Schnittlinie nicht. Beides ist behoben. Sollte an einer Schnittlinie wirklich kein Platz für eine Zunge sein, sagt das Programm das jetzt nach dem Schnitt ausdrücklich, statt still glatt zu schneiden.'],
   ]},
@@ -58436,7 +58439,19 @@ function _cutGeoFromMf(mf) {
 // Passstift 182 bzw. 275 offene Kanten, mit vorgebohrtem Gewinde ueber 14 000).
 // Gibt null zurueck, wenn Manifold die Netze nicht annimmt — dann faellt der
 // Aufrufer auf ThreeCSG zurueck, damit kaputte Importe weiter funktionieren.
-async function _cutMechConnectors(below, above, conns) {
+// body = { soup (Welt, mm), n, off }: der UNGETEILTE Koerper samt Ebene. Ist er
+// wasserdicht, trennt Manifold ihn selbst — die Deckel von _cutClipMesh sind an
+// Bohrungen nicht immer geschlossen, und daran scheiterte sonst der ganze Weg.
+// Volumen einer Dreiecks-Soup (Betrag)
+function _cutSoupVol(a) {
+  let v6 = 0;
+  for (let i = 0; i < a.length; i += 9) {
+    const ax=a[i],ay=a[i+1],az=a[i+2], bx=a[i+3],by=a[i+4],bz=a[i+5], cx=a[i+6],cy=a[i+7],cz=a[i+8];
+    v6 += ax*(by*cz - bz*cy) - ay*(bx*cz - bz*cx) + az*(bx*cy - by*cx);
+  }
+  return Math.abs(v6 / 6);
+}
+async function _cutMechConnectors(below, above, conns, body) {
   const tools = conns.map(c => {
     const zapfen = _cutConnTool(c, false), tasche = _cutConnTool(c, true);
     const z = _cutSoupMm(zapfen.geometry, zapfen.matrixWorld);
@@ -58448,8 +58463,21 @@ async function _cutMechConnectors(below, above, conns) {
   try { w = await _mfInit(); } catch (e) { return null; }
   let mfB = null, mfA = null, mfA0 = null;
   try {
-    mfB = _cutMf(w, _cutSoupMm(below.geometry, null));
-    mfA0 = _cutMf(w, _cutSoupMm(above.geometry, null));
+    let mfBody = null;
+    try {
+      mfBody = body && _cutMf(w, body.soup);
+      if (mfBody) {
+        mfA0 = mfBody.trimByPlane(body.n, body.off);
+        mfB  = mfBody.trimByPlane([-body.n[0], -body.n[1], -body.n[2]], -body.off);
+      }
+    } catch (e) {
+      try { mfA0 && mfA0.delete(); mfB && mfB.delete(); } catch (e2) { /* egal */ }
+      mfA0 = mfB = null;
+    } finally { try { mfBody && mfBody.delete(); } catch (e2) { /* egal */ } }
+    if (!mfA0 || !mfB) {
+      mfB = _cutMf(w, _cutSoupMm(below.geometry, null));
+      mfA0 = _cutMf(w, _cutSoupMm(above.geometry, null));
+    }
     mfA = mfA0;
     tools.forEach(({ z, t, dove }) => {
       let mz = _cutMf(w, z);
@@ -58563,6 +58591,10 @@ async function _cutExecute() {
       boltGeos = _thr.map(() => _cutThreadBoltGeo(spec, boltLen, false));
     }
 
+    quelle.updateMatrixWorld(true);
+    const bodySoup = _cutSoupMm(quelle.geometry, quelle.matrixWorld);
+    const body = { soup: bodySoup, n: cutN.toArray(), off: cutN.dot(_cutPivot()) * 10 };
+    const vol0 = _cutSoupVol(bodySoup);
     const clip = _cutClipMesh(quelle, _cutPivot(), cutN);
     if (tmp) tmp.geometry.dispose();
     let keepBelow = new THREE.Mesh(clip.below, _mat());  // −N-Seite
@@ -58575,26 +58607,33 @@ async function _cutExecute() {
     // Deckel-Triangulierung des Schnitts lässt rund um die Bohrung ein paar
     // Kanten offen (gemessen 36 je Hälfte), Manifold verschweißt sie.
     if ((_mech.length || _thr.length) && _hasGeo()) {
-      const viaMf = await _cutMechConnectors(keepBelow, keepAbove, _mech);
-      const above0 = viaMf ? null : new THREE.Mesh(keepAbove.geometry.clone(), keepAbove.material);
+      const viaMf = await _cutMechConnectors(keepBelow, keepAbove, _mech, body);
+      // Der alte BSP-Abzug zerreißt an den durchgehenden Schwalben-Schlitzen das Teil —
+      // lieber gar nicht schneiden als ein zerstörtes Ergebnis abliefern.
+      if (!viaMf && _mech.some(c => c.kind === 'dove'))
+        throw new Error('Der Körper ist nicht wasserdicht — der Schwalbenschwanz braucht ein geschlossenes Netz. ' +
+                        'Erst „Reparieren" anwenden. Es wurde nichts verändert');
       if (!viaMf) _mech.forEach(c => {          // Rückfallebene für Netze, die Manifold ablehnt
-        let zapfen = _cutConnTool(c, false);
+        const zapfen = _cutConnTool(c, false);
         const tasche = _cutConnTool(c, true);   // aufgeweitet + länger → sauberer Durchstoß
-        if (c.kind === 'dove') {                // Zunge = Werkzeug ∩ Teil B (ThreeCSG kennt nur − und ∪)
-          const rest = ThreeCSG.subtract(above0, zapfen);
-          zapfen.geometry.dispose();
-          zapfen = ThreeCSG.subtract(above0, rest);
-          rest.geometry.dispose();
-        }
         const nb = ThreeCSG.union(keepBelow, zapfen);
         const na = ThreeCSG.subtract(keepAbove, tasche);
         zapfen.geometry.dispose(); tasche.geometry.dispose();
         keepBelow.geometry.dispose(); keepAbove.geometry.dispose();
         keepBelow = nb; keepAbove = na;
       });
-      if (above0) above0.geometry.dispose();
     }
 
+    // Sicherheitsnetz: Beide Teile zusammen müssen etwa das Ausgangsvolumen haben.
+    // Fehlt deutlich etwas, hat ein Boolean das Netz zerstört → abbrechen, Original bleibt.
+    if (_mech.length && vol0 > 1) {
+      const vSum = _cutSoupVol(_cutSoupMm(keepBelow.geometry, null)) + _cutSoupVol(_cutSoupMm(keepAbove.geometry, null));
+      if (Math.abs(vSum - vol0) > vol0 * 0.08) {
+        keepBelow.geometry.dispose(); keepAbove.geometry.dispose();
+        throw new Error('Die Verbinder ließen sich an diesem Körper nicht sauber rechnen (Volumen stimmt nicht). ' +
+                        'Erst „Reparieren" anwenden oder Verbinder kleiner wählen. Es wurde nichts verändert');
+      }
+    }
     const baseColor = target.userData.color || (target.material && '#' + target.material.color.getHexString()) || currentColor;
     const parts = [];
     [['A', keepBelow, 'below'], ['B', keepAbove, 'above']].forEach(([tag, mesh, role]) => {
