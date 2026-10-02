@@ -17524,7 +17524,17 @@ function _mfUnionObjs(w, objs) {
   for (const o of objs) {
     const tris = _moldCollectTris(o);
     if (!tris.length) continue;
-    const part = _mfSelfUnion(w, _mfFromSoup(w, tris));
+    // Kleine Netzfehler (offene Kante, doppelte Fläche) erst flicken statt den
+    // ganzen Abzug mit „nicht wasserdicht" abzubrechen
+    let mf;
+    try { mf = _mfFromSoup(w, tris); }
+    catch (e) {
+      const geheilt = _healTrisForBool(tris);
+      if (!geheilt) throw e;
+      mf = _mfFromSoup(w, geheilt);
+      console.log('[mf] Körper automatisch repariert:', (o.userData && o.userData.name) || '?');
+    }
+    const part = _mfSelfUnion(w, mf);
     acc = acc ? w.Manifold.union(acc, part) : part;
   }
   return acc;
@@ -17547,6 +17557,7 @@ async function _mfSubtractWorld(solidObjs, toolObjs) {
     if (!tool) throw new Error('kein gültiges Werkzeug');
     res = w.Manifold.difference(solid, tool);
   } catch (e) {
+    if (_mfEngineErr(e)) throw e;          // Engine selbst gestört → _mfRetry startet sie neu
     console.warn('[subtract] Werkzeuge gemeinsam gescheitert → einzeln:', e.message || e);
     res = solid;
     let ok = 0;
@@ -17569,6 +17580,7 @@ async function _mfSubtractWorld(solidObjs, toolObjs) {
         res = w.Manifold.difference(res, mf);
         ok++;
       } catch (e2) {
+        if (_mfEngineErr(e2)) throw e2;
         uebersprungen.push((t.userData && t.userData.name) || 'ohne Namen');
         console.warn('[subtract] Motiv übersprungen:', uebersprungen[uebersprungen.length-1], e2.message || e2);
       }
@@ -18482,7 +18494,7 @@ function _mfGrowSlabs(w, mf, distMm, zTop) {
 // mm-Aufmaß über Manifold: Teil verschweißen, Hüllen vereinen, seitlich weiten,
 // Ergebnis als Welt-Netz zurück in den Körper (Lage steckt dann in der Geometrie).
 // false = ging nicht (kein dichtes Netz) → Aufrufer nimmt den alten Weg.
-async function _fitGrowMf(h, mm, zTop) {
+async function _fitGrowMf(h, mm, zTop, zweiter) {
   try {
     const t0 = performance.now();
     const w = await _mfInit();
@@ -18502,6 +18514,7 @@ async function _fitGrowMf(h, mm, zTop) {
     h.userData._origStlBuf = null;
     return true;
   } catch (e) {
+    if (!zweiter && _mfEngineErr(e)) { _mfReset(); return _fitGrowMf(h, mm, zTop, true); }
     console.warn('[fit] Manifold-Aufmaß gescheitert → Netz-Offset:', e.message || e);
     return false;
   }
@@ -19296,6 +19309,28 @@ function _meshFromStlB64(b64, name, keepWorld) {
 // Rechnet durchgehend in mm, Z-up (gleiche Konvention wie der Server-STL-Pfad).
 
 let _mfWasm = null, _mfLoading = null;
+// Interner Fehler der Engine selbst (nicht „Netz ist nicht wasserdicht"): Binding-
+// oder Laufzeitfehler, Speicher erschöpft. Danach ist die WASM-Instanz nicht mehr
+// vertrauenswürdig — und weil hier nirgends delete() gerufen wird, wächst ihr
+// Speicher über eine lange Sitzung ohnehin nur. Abhilfe: Instanz verwerfen, frisch
+// laden, EINMAL wiederholen (gesehen bei Volker: „parameter 0 has unknown type").
+function _mfEngineErr(e) {
+  if (!e) return false;
+  if (typeof e === 'number') return true;                       // roher C++-Ausnahmezeiger
+  if (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) return true;
+  if (e.name === 'BindingError' || e.name === 'RuntimeError' || e.name === 'RangeError') return true;
+  return /unknown type|unbound type|Aborted|out of memory|out of bounds|table index|deleted object|^\d+$/i.test(String(e.message || e));
+}
+function _mfReset() { _mfWasm = null; _mfLoading = null; }
+async function _mfRetry(fn) {
+  try { return await fn(); }
+  catch (e) {
+    if (!_mfEngineErr(e)) throw e;
+    console.warn('[mf] Engine-Fehler → frische Instanz, zweiter Versuch:', e.message || e);
+    _mfReset();
+    return await fn();
+  }
+}
 function _mfInit() {
   if (_mfWasm) return Promise.resolve(_mfWasm);
   if (!_mfLoading) {
@@ -24326,7 +24361,7 @@ async function subtractHoles() {
       _progressHide();
       if (_progUserAborted(ctl)) { notify('Abziehen abgebrochen — die Teile sind unverändert', 'ok'); return; }
       console.error('CSG Fehler:', err);
-      notify('CSG Fehler: ' + err.message, 'w');
+      notify('Abgebrochen — die Teile sind unverändert. Grund: ' + err.message, 'e');
     });
 }
 
@@ -24555,7 +24590,7 @@ async function _doSubtractHoles(solids, holes, ctl) {
     if (_nTris >= _MF_SUBTRACT_MIN_TRIS || _hasWrapTool || _meshImport) {
       try {
         const t0 = performance.now();
-        const geo = await _mfSubtractWorld([solidMesh, ...solids.slice(1)], _genericTools);
+        const geo = await _mfRetry(() => _mfSubtractWorld([solidMesh, ...solids.slice(1)], _genericTools));
         _stopIfAborted();
         console.log(`[subtract] Manifold-Schnellweg: ${_nTris} Dreiecke in ${Math.round(performance.now()-t0)} ms`);
         solidMesh = new THREE.Mesh(geo, mat);
@@ -26183,7 +26218,7 @@ async function _applyHexPattern(cellMm, wallMm, marginMm, depthMm) {
     _progressHide();
     if (_progUserAborted(ctl)) { notify('Wabenmuster abgebrochen — der Körper ist unverändert', 'ok'); return; }
     console.error('Wabenmuster CSG Fehler:', err);
-    notify('CSG Fehler: ' + err.message, 'w');
+    notify('Abgebrochen — die Teile sind unverändert. Grund: ' + err.message, 'e');
   }
 }
 
@@ -29838,6 +29873,18 @@ function notify(msg, type, ms) {
   const el = document.createElement('div');
   el.className = 'ni ' + (type || 'ok');
   el.textContent = msg;
+  // Fehler (rot) bleiben stehen, bis man sie wegklickt — eine Abbruch-Meldung, die
+  // nach ein paar Sekunden verschwindet, hat niemand gelesen.
+  if (type === 'e' && !ms) {
+    el.textContent = msg + '  ✕';
+    el.title = 'Klick schließt die Meldung';
+    el.style.cursor = 'pointer';
+    el.style.animation = 'nfi .14s ease';
+    document.getElementById('notif').appendChild(el);
+    el.addEventListener('click', () => el.remove());
+    console.warn('[Meldung]', msg);
+    return;
+  }
   const dur = ms || Math.min(20000, Math.max(2200, 1200 + String(msg).length * 45));
   el.style.animation = 'nfi .14s ease, nfo .25s ease ' + ((dur - 250) / 1000).toFixed(2) + 's forwards';
   if (dur > 4000) el.title = 'Zum Lesen mit der Maus draufbleiben · Klick schließt';
@@ -51141,8 +51188,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.110';
+const VOLME3D_VERSION = '1.18.111';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.111', date:'2026-10-02', changes:[
+    ['🔴','<b>Fehlermeldungen bleiben stehen, bis man sie wegklickt.</b> Brach z. B. das Abziehen ab, verschwand die rote Meldung nach wenigen Sekunden — oft, bevor man sie lesen konnte. Rote Meldungen bleiben jetzt oben rechts stehen (✕ bzw. Klick schließt). Ein abgebrochenes Abziehen sagt außerdem ausdrücklich, dass die Teile unverändert sind, und nennt den Grund. Nebenbei: Hat die Grundplatte beim Abziehen kleine Netzfehler, werden sie jetzt automatisch geflickt, statt den ganzen Abzug abzubrechen. Und meldet die Rechen-Engine einen internen Fehler (z. B. <i>parameter 0 has unknown type</i>), wird sie frisch gestartet und der Vorgang einmal wiederholt — beim Abziehen, beim Aufmaß und beim Schneiden mit Verbindern.'],
+  ]},
   { version:'1.18.110', date:'2026-10-02', changes:[
     ['⚡','<b>Schwalbenschwanz an importierten Platten: „Seite antwortet nicht“ behoben.</b> Um die Zungen zu verteilen, wurde das ganze Netz mit Tausenden Prüfstrahlen abgetastet — bei Importen mit vielen Dreiecken dauerte das rund zehn Sekunden, und zwar bei jeder Verschiebung der Schnittebene und noch einmal beim Schneiden. Jetzt wird der Querschnitt einmal berechnet und darin geprüft; das Setzen der Zungen ist auch bei großen Netzen sofort da.'],
   ]},
@@ -58498,7 +58548,7 @@ function _cutSoupVol(a) {
   }
   return Math.abs(v6 / 6);
 }
-async function _cutMechConnectors(below, above, conns, body) {
+async function _cutMechConnectors(below, above, conns, body, zweiter) {
   const tools = conns.map(c => {
     const zapfen = _cutConnTool(c, false), tasche = _cutConnTool(c, true);
     const z = _cutSoupMm(zapfen.geometry, zapfen.matrixWorld);
@@ -58541,6 +58591,7 @@ async function _cutMechConnectors(below, above, conns, body) {
   } catch (e) {
     console.warn('[Cut] Verbinder über Manifold gescheitert → ThreeCSG:', e.message || e);
     try { mfB && mfB.delete(); mfA && mfA !== mfA0 && mfA.delete(); mfA0 && mfA0.delete(); } catch (e2) { /* egal */ }
+    if (!zweiter && _mfEngineErr(e)) { _mfReset(); return _cutMechConnectors(below, above, conns, body, true); }
     return null;
   }
 }
