@@ -367,13 +367,15 @@ await pg.evaluate(() => {
   await pg.click('.cut-ct[data-ct="dove"]');
   const r = await pg.evaluate(async () => {
     const t = window._ctT, n0 = _cut.connectors.length;
-    document.getElementById('cut-lay').checked = false;
+    // Ablegen bleibt AN (Standard): keine Hälfte darf hochkant auf der Schnittkante stehen
     await _cutExecute();
     return { n0, teile: objects.length, offen: objects.map(o => t.watertight(o.geometry)),
+             hoehe: objects.map(o => { const b = new THREE.Box3().setFromObject(o); return +((b.max.y - b.min.y) * 10).toFixed(1); }),
              vol: objects.map(o => Math.round(t.vol(o))) };
   });
   ok('Platte: erneut Schwalbe wählen setzt wieder', r.n0 >= 2, r.n0);
   ok('Platte: Schnitt ergibt 2 wasserdichte Teile', r.teile === 2 && r.offen.every(o => o === 0), r);
+  ok('Platte: beide Hälften liegen flach (12 mm hoch)', r.hoehe.every(h => Math.abs(h - 12) < 0.5), r.hoehe);
   ok('Platte: Volumen bleibt bis auf das Spiel erhalten', Math.abs(r.vol[0] + r.vol[1] - 300*12*200) < 2000, r.vol);
 }
 

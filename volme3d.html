@@ -51007,8 +51007,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.102';
+const VOLME3D_VERSION = '1.18.103';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.103', date:'2026-10-02', changes:[
+    ['✂️','<b>Geschnittene Platten bleiben flach liegen.</b> Wer eine Platte senkrecht teilt, bekam bisher eine Hälfte <b>hochkant</b> hingestellt: Das Häkchen <i>Oberteil auf Schnittfläche legen</i> drehte sie auf ihre schmale Schnittkante. Jetzt wird nur noch umgelegt, wenn das Teil auf der Schnittfläche auch vernünftig liegt — würde es dadurch mehr als doppelt so hoch, bleibt es so liegen, wie es war. Bei waagerechten Schnitten (z. B. eine Figur in Ober- und Unterteil) ändert sich nichts.'],
+  ]},
   { version:'1.18.102', date:'2026-10-02', changes:[
     ['📁','<b>Bibliothek: neuer Reiter „Ordner".</b> Ordner (z. B. aus entpackten ZIP-Downloads) hingen bisher ganz unten an der Liste — man musste jedes Mal bis zum Ende scrollen. Jetzt gibt es oben neben <i>Alle / STL / 3MF / OBJ / STEP</i> den Reiter <b>📁 Ordner</b>: Er zeigt alle Ordner als Kacheln mit Vorschau und Dateianzahl, ein Klick öffnet den Ordner, <i>← Zurück</i> oder die Pfadzeile führen wieder hinaus (Unterordner funktionieren genauso). Die übrigen Reiter zeigen jetzt eine durchgehende Liste in der gewählten Sortierung — Dateien aus Ordnern erkennt man dort weiter am Ordner-Etikett auf der Karte.'],
   ]},
@@ -58280,6 +58283,21 @@ async function _cutBoreThreads(target, conns) {
   return out;
 }
 
+// Würde das Teil auf seiner Schnittfläche hochkant stehen? Dann bleibt es liegen:
+// Eine senkrecht geteilte Platte gehört flach aufs Bett, nicht auf die schmale
+// Schnittkante. Maß: Höhe nach dem Umlegen (Ausdehnung entlang der Normalen)
+// mehr als doppelt so groß wie die jetzige Höhe.
+function _cutFlipStandsUp(geo, n) {
+  const p = geo.attributes.position;
+  let yLo = Infinity, yHi = -Infinity, nLo = Infinity, nHi = -Infinity;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i), d = x*n.x + y*n.y + z*n.z;
+    if (y < yLo) yLo = y; if (y > yHi) yHi = y;
+    if (d < nLo) nLo = d; if (d > nHi) nHi = d;
+  }
+  return (nHi - nLo) > 2 * (yHi - yLo);
+}
+
 async function _cutExecute() {
   const target = _cut.target;
   if (!target) { _cutClose(); return; }
@@ -58364,7 +58382,7 @@ async function _cutExecute() {
     if (layFlat) {
       let cursorX = 0; const gap = 0.8;
       parts.forEach(({ mesh, role }) => {
-        if (flipTop && role === 'above') {
+        if (flipTop && role === 'above' && !_cutFlipStandsUp(mesh.geometry, cutN)) {
           // Schnittfläche (Außennormale -n) flach aufs Bett: drehe n → +Y
           const q = new THREE.Quaternion().setFromUnitVectors(cutN.clone(), new THREE.Vector3(0, 1, 0));
           mesh.geometry.applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(q));
