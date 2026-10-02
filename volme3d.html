@@ -51141,8 +51141,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.106';
+const VOLME3D_VERSION = '1.18.107';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.107', date:'2026-10-02', changes:[
+    ['✂️','<b>Schwalbenschwanz beim Schneiden ist jetzt ein echter Schwalbenschwanz — wie beim Puzzle.</b> Bisher war <b>◤ Schwalbe</b> nur ein kleiner eckiger Zapfen, der aus der Schnittfläche herausstand. Jetzt bekommt das eine Teil <b>Zungen</b>, die über die Schnittkante hinausragen (am Hals schmal, am Kopf breit), und das andere Teil die passenden <b>Öffnungen</b>. Zungen und Öffnungen gehen <b>durch die ganze Materialdicke</b>: Eine geteilte Platte wird von oben ineinandergesteckt und lässt sich danach nicht mehr auseinanderziehen. Beide Hälften bleiben flach liegen und drucken ohne Stützen. Die Zungen werden weiterhin automatisch gleichmäßig entlang der Schnittlinie verteilt und wandern mit der Ebene mit. Einstellbar sind <b>Breite</b> (am Kopf), <b>Länge</b> (so weit ragt die Zunge ins andere Teil) und <b>Spiel</b>; Höhe und Winkel entfallen — die Richtung der Materialdicke erkennt das Programm selbst. Bei kleinen Teilen wird die Zunge automatisch verkleinert.'],
+  ]},
   { version:'1.18.106', date:'2026-10-02', changes:[
     ['▦','<b>Füllen in Reihen: Bohrungen der Platte ergeben kein lückenhaftes Raster mehr.</b> Lag bei der Anordnung <i>In Reihen untereinander</i> ein Platz über einer Bohrung der Grundplatte (z. B. den Befestigungslöchern in den Ecken), fiel bisher genau dieses eine Teil weg — oben eine Reihe mit weniger Teilen als unten. Jetzt bleibt das Raster immer <b>vollständig und symmetrisch</b>: V3D CAD nimmt das größte lückenlose Raster, das mittig zwischen die Bohrungen passt, und lässt den Streifen daneben lieber frei. Mit „Drehen erlauben“ wird die Lage gewählt, in der so die meisten Teile passen.'],
   ]},
@@ -57366,7 +57369,7 @@ const _cut = { active:false, axis:'y', posU:0, rot:{x:0,y:0,z:0}, q:new THREE.Qu
   // cParams.type = 'pin' | 'dove' | 'thread'; jeder Verbinder merkt sich seinen
   // eigenen Typ (kind), damit sich Gewinde und Stifte mischen lassen.
   cParams:{ type:'pin', d:5, L:6, clr:0.15,
-            dW:12, dL:9, dH:5, dA:0, dClr:0.2,
+            dW:20, dL:10, dClr:0.2,
             tSize:'M6', tDepth:8, tClr:0.4 },
   gizmo:null, drag:null };
 
@@ -57477,7 +57480,7 @@ function _cutBuildPanel() {
       </div>
       <div style="display:flex;gap:4px;margin-bottom:6px">
         <button class="cut-ct" data-ct="pin" onclick="_cutSetConnType('pin')" title="Runder Passstift: Zapfen im einen Teil, Loch im anderen. Zum Ausrichten und Kleben">⌀ Stift</button>
-        <button class="cut-ct" data-ct="dove" onclick="_cutSetConnType('dove')" title="Schwalbenschwanz-Zapfen: hält zusätzlich gegen Verdrehen und Verrutschen. Senkrecht zusammensteckbar, zum Kleben. Wird automatisch gesetzt">◤ Schwalbe</button>
+        <button class="cut-ct" data-ct="dove" onclick="_cutSetConnType('dove')" title="Schwalbenschwanz wie beim Puzzle: ein Teil bekommt Zungen, das andere die passenden Öffnungen — durch die ganze Materialdicke. Zusammengesteckt lassen sich die Teile nicht mehr auseinanderziehen. Wird automatisch gesetzt">◤ Schwalbe</button>
         <button class="cut-ct" data-ct="thread" onclick="_cutSetConnType('thread')" title="Gewindebolzen: beide Hälften bekommen ein Gewindeloch, der Bolzen wird als eigenes Teil mitgedruckt. Verschraubt statt geklebt">🔩 Gewinde</button>
       </div>
       <div id="cut-conn-params"></div>
@@ -57589,10 +57592,13 @@ function _cutConnCyl(r, len, worldPos) {
 // ── Verbinder-Bauarten ───────────────────────────────────────────────────────
 // Alle drei sitzen mittig auf der Schnittebene, Achse = Ebenennormale:
 //   pin    – runder Passstift: Zapfen in Teil A, Loch mit Spiel in Teil B.
-//   dove   – Schwalbenschwanz: Zapfen mit trapezfoermigem GRUNDRISS. Ein Trapez
-//            im Grundriss haelt nicht gegen Abheben (in Achsrichtung laesst sich
-//            jedes Prisma herausziehen), aber gegen Verdrehen und Verrutschen —
-//            genau wie in den ueblichen Slicern. Klebehilfe, kein Formschluss.
+//   dove   – Schwalbenschwanz wie beim Puzzle: Teil A bekommt eine Zunge, die
+//            ueber die Schnittebene in Teil B hineinragt (schmaler Hals an der
+//            Ebene, breiter Kopf), Teil B die passende Oeffnung mit Spiel. Das
+//            Trapez liegt in der Flaeche der Platte und laeuft durch die GANZE
+//            Materialdicke — gesteckt wird quer zur Platte, auseinanderziehen
+//            laesst es sich danach nicht mehr. Sitzt auf der Mittellinie des
+//            Querschnitts; c.ang = Richtung der Schnittlinie in der Ebene.
 //   thread – Gewindebolzen: BEIDE Haelften bekommen ein Innengewinde-Sackloch,
 //            der Doppelgewindebolzen entsteht als eigenes Druckteil. Ein
 //            angeformtes Aussengewinde wuerde das Teil auf einen Zapfen stellen
@@ -57614,26 +57620,23 @@ function _cutFixWind(a) {
   return a;
 }
 
-// Prisma aus einem Polygon in Ebenen-Koordinaten (u,v), extrudiert entlang der
-// Normalen von -h/2 bis +h/2 um worldPos. Liefert ein Mesh in Weltkoordinaten.
-function _cutPrismMesh(ptsUV, hU, worldPos) {
-  const n = _cutNormal(), { U, V } = _cutBasis(n);
-  const P = (uv, s) => worldPos.clone()
-    .add(U.clone().multiplyScalar(uv[0]))
-    .add(V.clone().multiplyScalar(uv[1]))
-    .add(n.clone().multiplyScalar(s));
-  const lo = -hU / 2, hi = hU / 2, N = ptsUV.length, a = [];
+// Prisma aus einem konvexen Polygon in den Koordinaten (A,B), extrudiert entlang
+// E von e0 bis e1 um worldPos. Liefert ein Mesh in Weltkoordinaten.
+function _cutPrismMesh(pts, A, B, E, e0, e1, worldPos) {
+  const P = (q, s) => worldPos.clone()
+    .addScaledVector(A, q[0]).addScaledVector(B, q[1]).addScaledVector(E, s);
+  const N = pts.length, a = [];
   const push = (p, q, r) => a.push(p.x,p.y,p.z, q.x,q.y,q.z, r.x,r.y,r.z);
   for (let i = 0; i < N; i++) {
     const j = (i + 1) % N;
-    const p0 = P(ptsUV[i], lo), p1 = P(ptsUV[j], lo), p2 = P(ptsUV[j], hi), p3 = P(ptsUV[i], hi);
+    const p0 = P(pts[i], e0), p1 = P(pts[j], e0), p2 = P(pts[j], e1), p3 = P(pts[i], e1);
     push(p0, p1, p2); push(p0, p2, p3);
   }
   for (let i = 2; i < N; i++) {            // Deckel oben
-    push(P(ptsUV[0], hi), P(ptsUV[i-1], hi), P(ptsUV[i], hi));
+    push(P(pts[0], e1), P(pts[i-1], e1), P(pts[i], e1));
   }
   for (let i = 2; i < N; i++) {            // Boden
-    push(P(ptsUV[0], lo), P(ptsUV[i], lo), P(ptsUV[i-1], lo));
+    push(P(pts[0], e0), P(pts[i], e0), P(pts[i-1], e0));
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(_cutFixWind(a), 3));
@@ -57643,16 +57646,23 @@ function _cutPrismMesh(ptsUV, hU, worldPos) {
   return m;
 }
 
-// Schwalbenschwanz-Zapfen. wMm = breite Seite, lMm = Laenge in Einschubrichtung,
-// hMm = Hoehe senkrecht zur Schnittflaeche, angDeg = Ausrichtung in der Ebene,
-// growMm = allseitige Aufweitung (Spiel fuer die Tasche in Teil B).
-function _cutDoveMesh(worldPos, wMm, lMm, hMm, angDeg, hExtraMm, growMm) {
-  const g = (growMm || 0) / 10;
-  const w = wMm / 20 + g, wb = wMm * 0.55 / 20 + g, L = lMm / 20 + g;
-  const ca = Math.cos(angDeg * Math.PI / 180), sa = Math.sin(angDeg * Math.PI / 180);
-  const rot = (e, q) => [e * ca - q * sa, e * sa + q * ca];   // Trapez in der Ebene drehen
-  const pts = [rot(-L, -wb), rot(L, -w), rot(L, w), rot(-L, wb)];
-  return _cutPrismMesh(pts, hMm / 10 + (hExtraMm || 0) / 10, worldPos);
+// Schwalbenschwanz-Werkzeug zu einem Verbinder: Trapez in (Schnittlinie T, Normale n),
+// extrudiert quer durch die Dicke (D). cParams.dW = Breite am Kopf, dL = wie weit
+// die Zunge in Teil B ragt; growMm = Spiel fuer die Oeffnung. Das Werkzeug ragt
+// absichtlich weit ueber den Koerper hinaus und beginnt 2 mm hinter der Ebene —
+// die Zunge selbst entsteht erst als Schnittmenge mit Teil B (_cutMechConnectors),
+// so folgt sie jeder Aussenform. preview = nur die sichtbare Zunge (Marker).
+function _cutDoveMesh(c, growMm, preview) {
+  const p = _cut.cParams, n = _cutNormal(), { U, V } = _cutBasis(n);
+  const ca = Math.cos(c.ang || 0), sa = Math.sin(c.ang || 0);
+  const T = U.clone().multiplyScalar(ca).addScaledVector(V, sa);
+  const D = U.clone().multiplyScalar(-sa).addScaledVector(V, ca);
+  const g = (growMm || 0) / 10, w = p.dW / 20, wb = w * 0.55, L = p.dL / 10;
+  const s0 = preview ? 0 : -0.2;
+  const wAt = s => Math.max(0.01, wb + g + (w - wb) * s / L);
+  const pts = [[-wAt(s0), s0], [wAt(s0), s0], [w + g, L + g], [-(w + g), L + g]];
+  const half = preview ? (c.half || 0.5) : _cut.bbox.min.distanceTo(_cut.bbox.max) * 1.1 + 1;
+  return _cutPrismMesh(pts, T, n, D, -half, half, _cutInPlaneToWorld(c));
 }
 
 // Schneidwerkzeug fuers Gewinde: EIN durchgehender Gewindestab mit Spiel auf dem
@@ -57701,8 +57711,7 @@ function _cutThreadBoltGeo(spec, lenMm, leftHand) {
 // Werkzeug-Mesh (Welt) zu einem Verbinder — grow = Aufmass fuer die Gegenseite
 function _cutConnTool(c, grow) {
   const p = _cut.cParams, wp = _cutInPlaneToWorld(c);
-  if (c.kind === 'dove')
-    return _cutDoveMesh(wp, p.dW, p.dL, p.dH, p.dA, grow ? 4 : 0, grow ? p.dClr : 0);
+  if (c.kind === 'dove') return _cutDoveMesh(c, grow ? p.dClr : 0);
   const r = (p.d / 10) / 2 + (grow ? p.clr / 10 : 0);
   return _cutConnCyl(r, p.L / 10 + (grow ? 0.4 : 0), wp);
 }
@@ -57741,11 +57750,11 @@ function _cutSetCParam(key, val) {
   if (key === 'tSize') { p.tSize = val; _cutRenderConnParams(); _cutRenderMarkers(); return; }
   const v = parseFloat(val);
   if (!isFinite(v)) return;
-  const min = { d:0.5, L:0.5, clr:0, dW:2, dL:2, dH:1, dClr:0, tDepth:2, tClr:0 }[key];
+  const min = { d:0.5, L:0.5, clr:0, dW:2, dL:2, dClr:0, tDepth:2, tClr:0 }[key];
   p[key] = (min !== undefined) ? Math.max(min, v) : v;
   if (key === 'tDepth' || key === 'tSize') _cutRenderConnParams();
   _cutRenderMarkers();
-  if (key === 'dW' || key === 'dL' || key === 'dH' || key === 'dA') _cutDoveAutoSoon();
+  if (key === 'dW' || key === 'dL') _cutDoveAutoSoon();
 }
 
 function _cutFld(label, id, val, step, key, title) {
@@ -57777,12 +57786,10 @@ function _cutRenderConnParams() {
       _cutFld('Spiel', 'cut-cc', p.clr, '0.05', 'clr'));
   } else if (p.type === 'dove') {
     box.innerHTML = row(
-      _cutFld('Breite', 'cut-dw', p.dW, '0.5', 'dW', 'Breite der breiten Seite') +
-      _cutFld('Länge', 'cut-dl', p.dL, '0.5', 'dL', 'Länge in Einschubrichtung') +
-      _cutFld('Höhe', 'cut-dh', p.dH, '0.5', 'dH', 'Höhe des Zapfens über der Schnittfläche')) +
-      row(
-      _cutFld('Winkel°', 'cut-da', p.dA, '5', 'dA', 'Ausrichtung des Schwalbenschwanzes in der Schnittfläche') +
-      _cutFld('Spiel', 'cut-dc', p.dClr, '0.05', 'dClr'));
+      _cutFld('Breite', 'cut-dw', p.dW, '1', 'dW', 'Breite der Zunge am Kopf (mm) — am Hals ist sie gut halb so breit') +
+      _cutFld('Länge', 'cut-dl', p.dL, '1', 'dL', 'So weit ragt die Zunge in das andere Teil (mm)') +
+      _cutFld('Spiel', 'cut-dc', p.dClr, '0.05', 'dClr', 'Luft rundum zwischen Zunge und Öffnung (mm)')) +
+      '<div style="color:#60a5fa;font-size:11px;margin-top:2px">Zunge und Öffnung gehen durch die ganze Materialdicke</div>';
   } else {
     const opts = _CUT_THREAD_SIZES.map(m =>
       '<option value="' + m + '"' + (m === p.tSize ? ' selected' : '') + '>' + m + '</option>').join('');
@@ -57820,7 +57827,7 @@ function _cutRenderMarkers() {
       const sp = SCREW_SPECS[p.tSize] || SCREW_SPECS.M6;
       mk = _cutConnCyl((sp.d / 10) / 2, (p.tDepth * 2) / 10, _cutInPlaneToWorld(c));
     } else if (kind === 'dove') {
-      mk = _cutDoveMesh(_cutInPlaneToWorld(c), p.dW, p.dL, p.dH, p.dA, 0, 0);
+      mk = _cutDoveMesh(c, 0, true);
     } else {
       mk = _cutConnCyl((p.d / 10) / 2, p.L / 10, _cutInPlaneToWorld(c));
     }
@@ -57871,48 +57878,26 @@ function _cutClearConnectors() {
 // entlang der Normalen = innen/außen). Gültige Kandidaten brauchen beidseits
 // genug Materialtiefe (Pin-Länge/2 + 1 mm) und Randabstand (Radius + 1,5 mm).
 // Die Pins werden dann entlang der Hauptachse des Querschnitts verteilt.
-function _cutAutoConnectors(quiet) {
-  if (!_cut.active || !_cut.target) return;
-  clearTimeout(_cut.doveTimer); _cut.doveTimer = 0;
-  const target = _cut.target;
-  const n = _cutNormal();
-  const { U, V } = _cutBasis(n);
-  const diag = _cut.bbox.min.distanceTo(_cut.bbox.max);
-  // Platzbedarf je Bauart: Gewinde braucht die volle Einschraubtiefe auf BEIDEN
-  // Seiten, Stift/Schwalbe nur die halbe Zapfenlänge.
-  const cp = _cut.cParams;
-  let r, needDepth;
-  if (cp.type === 'thread') {
-    const sp = SCREW_SPECS[cp.tSize] || SCREW_SPECS.M6;
-    r = ((sp.d + cp.tClr) / 10) / 2;
-    needDepth = cp.tDepth / 10 + 0.15;        // Tiefe + 1,5 mm Restmaterial
-  } else if (cp.type === 'dove') {
-    r = Math.hypot(cp.dL, cp.dW) / 20;        // halbe Diagonale des Grundrisses
-    needDepth = cp.dH / 20 + 0.1;
-  } else {
-    r = (cp.d / 10) / 2;
-    needDepth = cp.L / 20 + 0.1;              // je Seite: halbe Pin-Länge + 1 mm
-  }
-  const margin = Math.max(0.2, r + 0.15);     // ≥ 2 mm bzw. Radius + 1,5 mm
-
+// Abtaster für die Schnittebene: probe(u,v) → liegt der Punkt im Material und wie
+// viel Material steht beidseits der Ebene?
+function _cutMakeProbe() {
+  const target = _cut.target, n = _cutNormal(), nNeg = n.clone().negate();
   const ray = new THREE.Raycaster();
-  ray.far = diag * 2;
+  ray.far = _cut.bbox.min.distanceTo(_cut.bbox.max) * 2;
   const castAll = (wp, dir) => {
     ray.set(wp, dir);
     return ray.intersectObject(target, true).filter(h => h.distance > 1e-4 && h.face);
   };
-  const probe = (u, v) => {
+  return (u, v) => {
     const wp = _cutInPlaneToWorld({ u, v });
-    const up = castAll(wp, n);
-    const dn = castAll(wp, n.clone().negate());
+    const up = castAll(wp, n), dn = castAll(wp, nNeg);
     const inside = up.length % 2 === 1 && dn.length % 2 === 1;
     return { u, v, inside, dUp: up.length ? up[0].distance : 0, dDn: dn.length ? dn[0].distance : 0 };
   };
-
-  // Raster über den Querschnitt: Ausdehnung aus den bbox-Ecken in Ebenen-
-  // Koordinaten, je Richtung eigene Schrittweite. Ein quadratisches Raster über
-  // die ganze Diagonale fiele bei dünnen Platten zwischen den Zeilen durch.
-  const piv = _cutPivot(), bb = _cut.bbox;
+}
+// Ausdehnung der bbox in Ebenen-Koordinaten
+function _cutPlaneExtent() {
+  const { U, V } = _cutBasis(_cutNormal()), piv = _cutPivot(), bb = _cut.bbox;
   let uLo = Infinity, uHi = -Infinity, vLo = Infinity, vHi = -Infinity;
   for (let i = 0; i < 8; i++) {
     const rel = new THREE.Vector3(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y,
@@ -57920,6 +57905,116 @@ function _cutAutoConnectors(quiet) {
     const u = rel.dot(U), v = rel.dot(V);
     uLo = Math.min(uLo, u); uHi = Math.max(uHi, u); vLo = Math.min(vLo, v); vHi = Math.max(vHi, v);
   }
+  return { uLo, uHi, vLo, vHi };
+}
+
+// Querschnitt an der Schnittebene vermessen (Schwalbenschwanz): lange Achse T =
+// Schnittlinie, kurze Achse D = Materialdicke. Hauptachsen aus der Streuung der
+// Rasterpunkte im Material, damit es auch bei gedrehter Ebene stimmt.
+// at(t) = Punkt auf der Mittellinie, half = halbe Dicke.
+function _cutSectionFrame(probe) {
+  const ex = _cutPlaneExtent(), N = 26;
+  const us = (ex.uHi - ex.uLo) / N, vs = (ex.vHi - ex.vLo) / N, pts = [];
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+    const p = probe(ex.uLo + (i + 0.5) * us, ex.vLo + (j + 0.5) * vs);
+    if (p.inside) pts.push(p);
+  }
+  if (!pts.length) return null;
+  let cu = 0, cv = 0;
+  pts.forEach(p => { cu += p.u / pts.length; cv += p.v / pts.length; });
+  let sxx = 0, syy = 0, sxy = 0;
+  pts.forEach(p => { const a = p.u - cu, b = p.v - cv; sxx += a*a; syy += b*b; sxy += a*b; });
+  const rund = Math.hypot(sxx - syy, 2 * sxy) < 0.05 * (sxx + syy);   // quadratisch/rund → keine Vorzugsrichtung
+  let ang = rund ? 0 : 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  const q90 = Math.round(ang / (Math.PI / 2)) * Math.PI / 2;
+  if (Math.abs(ang - q90) < 0.02) ang = q90;        // Rasterrauschen: knapp neben der Achse = auf der Achse
+  const ca = Math.cos(ang), sa = Math.sin(ang);
+  let tLo = Infinity, tHi = -Infinity, dLo = Infinity, dHi = -Infinity;
+  pts.forEach(p => {
+    const t = (p.u - cu) * ca + (p.v - cv) * sa, d = -(p.u - cu) * sa + (p.v - cv) * ca;
+    tLo = Math.min(tLo, t); tHi = Math.max(tHi, t); dLo = Math.min(dLo, d); dHi = Math.max(dHi, d);
+  });
+  const padT = (Math.abs(ca) * us + Math.abs(sa) * vs) / 2, padD = (Math.abs(sa) * us + Math.abs(ca) * vs) / 2;
+  const dMid = (dLo + dHi) / 2;
+  cu -= sa * dMid; cv += ca * dMid;                 // Mittellinie in die Mitte der Dicke
+  return { ang, ca, sa, tLo: tLo - padT, tHi: tHi + padT, half: (dHi - dLo) / 2 + padD,
+           at: t => ({ u: cu + t * ca, v: cv + t * sa }),
+           tOf: (u, v) => (u - cu) * ca + (v - cv) * sa };
+}
+
+// Schwalbenschwänze gleichmäßig entlang der Schnittlinie verteilen. Jede Zunge
+// braucht über ihre Kopfbreite (+2 mm Wand) Material und in Teil B genug Tiefe.
+function _cutAutoDoves(quiet) {
+  const cp = _cut.cParams, probe = _cutMakeProbe(), f = _cutSectionFrame(probe);
+  _cut.doveAuto = true;
+  const fail = () => {
+    _cut.connectors = _cut.connectors.filter(c => c.kind !== 'dove');   // veraltete nicht stehen lassen
+    _cutRenderMarkers();
+    if (!quiet) notify('Schwalbenschwanz passt nicht an die Schnittlinie — Breite/Länge kleiner wählen oder Ebene verschieben', 'w');
+  };
+  if (!f) { fail(); return; }
+  // Kleine Teile: Zunge höchstens 40 % der Schnittlinie breit, Länge halbe Breite
+  const maxW = Math.max(2, Math.floor((f.tHi - f.tLo) * 4));
+  if (cp.dW > maxW) {
+    cp.dW = maxW; cp.dL = Math.min(cp.dL, Math.max(2, maxW / 2));
+    const eW = document.getElementById('cut-dw'), eL = document.getElementById('cut-dl');
+    if (eW) eW.value = cp.dW; if (eL) eL.value = cp.dL;
+  }
+  const w = cp.dW / 20, wall = 0.2, need = cp.dL / 10 + 0.15;
+  // Prüflinie minimal neben der Mitte: genau mittig trifft der Strahl bei Quadern
+  // die Diagonale der Stirnfläche, und die Parität kippt.
+  const off = f.half * 0.0371;
+  const okAt = t => [t - w - wall, t, t + w + wall].every(q => {
+    const a = f.at(q), p = probe(a.u - f.sa * off, a.v + f.ca * off);
+    return p.inside && p.dUp >= need && p.dDn >= 0.15;
+  });
+  const span = f.tHi - f.tLo, M = 240, valid = [];
+  for (let i = 0; i <= M; i++) { const t = f.tLo + span * i / M; if (okAt(t)) valid.push(t); }
+  if (!valid.length) { fail(); return; }
+  // <60mm→2, <120mm→3, <300mm→4, <450mm→5, sonst 6 — aber Teilung ≥ 1,5 × Kopfbreite
+  let k = span < 6 ? 2 : span < 12 ? 3 : span < 30 ? 4 : span < 45 ? 5 : 6;
+  k = Math.max(1, Math.min(k, Math.floor(span / (w * 6))));
+  const chosen = [], minDist = w * 2 + wall * 2;
+  for (let i = 1; i <= k; i++) {
+    const ideal = f.tLo + span * i / (k + 1);
+    let best = null, bd = Infinity;
+    for (const t of valid) {
+      const d = Math.abs(t - ideal);
+      if (d < bd && !chosen.some(c => Math.abs(c - t) < minDist)) { best = t; bd = d; }
+    }
+    if (best !== null) chosen.push(best);
+  }
+  if (!chosen.length) { fail(); return; }
+  _cut.connectors = _cut.connectors.filter(c => c.kind !== 'dove')
+    .concat(chosen.map(t => ({ ...f.at(t), kind: 'dove', ang: f.ang, half: f.half })));
+  _cutRenderMarkers();
+  if (!quiet) notify(chosen.length + (chosen.length === 1 ? ' Schwalbenschwanz' : ' Schwalbenschwänze') +
+    ' gesetzt ✓ — durch die ganze Materialdicke, sie wandern mit der Schnittebene mit', 'ok');
+}
+
+function _cutAutoConnectors(quiet) {
+  if (!_cut.active || !_cut.target) return;
+  clearTimeout(_cut.doveTimer); _cut.doveTimer = 0;
+  if (_cut.cParams.type === 'dove') { _cutAutoDoves(quiet); return; }
+  // Platzbedarf je Bauart: Gewinde braucht die volle Einschraubtiefe auf BEIDEN
+  // Seiten, der Stift nur die halbe Zapfenlänge.
+  const cp = _cut.cParams;
+  let r, needDepth;
+  if (cp.type === 'thread') {
+    const sp = SCREW_SPECS[cp.tSize] || SCREW_SPECS.M6;
+    r = ((sp.d + cp.tClr) / 10) / 2;
+    needDepth = cp.tDepth / 10 + 0.15;        // Tiefe + 1,5 mm Restmaterial
+  } else {
+    r = (cp.d / 10) / 2;
+    needDepth = cp.L / 20 + 0.1;              // je Seite: halbe Pin-Länge + 1 mm
+  }
+  const margin = Math.max(0.2, r + 0.15);     // ≥ 2 mm bzw. Radius + 1,5 mm
+  const probe = _cutMakeProbe();
+
+  // Raster über den Querschnitt: Ausdehnung aus den bbox-Ecken in Ebenen-
+  // Koordinaten, je Richtung eigene Schrittweite. Ein quadratisches Raster über
+  // die ganze Diagonale fiele bei dünnen Platten zwischen den Zeilen durch.
+  const { uLo, uHi, vLo, vHi } = _cutPlaneExtent();
   const N = 26, uStep = (uHi - uLo) / N, vStep = (vHi - vLo) / N;
   // fits(u,v) = Randabstand eingehalten?
   const scan = fits => {
@@ -57931,46 +58026,18 @@ function _cutAutoConnectors(quiet) {
     }
     return out;
   };
-  let valid;
-  if (cp.type === 'dove') {
-    // Schwalbenschwanz: den gedrehten Grundriss (+1,2 mm Wand) prüfen statt eines
-    // Kreises — sonst passt er in keine Platte, die dünner ist als seine Diagonale.
-    // Passt er in der eingestellten Ausrichtung nicht, um 90° gedreht versuchen.
-    const m = 0.12, hl = cp.dL / 20 + m, hw = cp.dW / 20 + m;
-    const fitAt = deg => {
-      const ca = Math.cos(deg * Math.PI / 180), sa = Math.sin(deg * Math.PI / 180);
-      const pts = [[-hl,-hw],[hl,-hw],[hl,hw],[-hl,hw],[0,-hw],[0,hw],[-hl,0],[hl,0]];
-      return (u, v) => pts.every(q => probe(u + q[0]*ca - q[1]*sa, v + q[0]*sa + q[1]*ca).inside);
-    };
-    valid = scan(fitAt(cp.dA));
-    if (!valid.length) {
-      const alt = ((cp.dA + 90) % 360 + 360) % 360;
-      valid = scan(fitAt(alt));
-      if (valid.length) {
-        cp.dA = alt;
-        const el = document.getElementById('cut-da'); if (el) el.value = alt;
-      }
+  // Randabstand: 4 Punkte auf dem Margin-Kreis müssen ebenfalls innen liegen
+  const valid = scan((u, v) => {
+    for (let a = 0; a < 4; a++) {
+      const ang = a * Math.PI / 2;
+      if (!probe(u + Math.cos(ang) * margin, v + Math.sin(ang) * margin).inside) return false;
     }
-  } else {
-    // Randabstand: 4 Punkte auf dem Margin-Kreis müssen ebenfalls innen liegen
-    valid = scan((u, v) => {
-      for (let a = 0; a < 4; a++) {
-        const ang = a * Math.PI / 2;
-        if (!probe(u + Math.cos(ang) * margin, v + Math.sin(ang) * margin).inside) return false;
-      }
-      return true;
-    });
-  }
+    return true;
+  });
   const fail = () => {
-    if (cp.type === 'dove') {       // veraltete Schwalben nicht stehen lassen
-      _cut.connectors = _cut.connectors.filter(c => c.kind !== 'dove');
-      _cutRenderMarkers();
-    }
-    if (!quiet) notify(cp.type === 'dove'
-      ? 'Schwalbenschwanz passt nicht in die Schnittfläche — Breite/Länge kleiner wählen oder Ebene verschieben'
-      : 'Keine geeignete Stelle gefunden — Pin kleiner wählen oder Ebene verschieben', 'w');
+    if (!quiet) notify('Keine geeignete Stelle gefunden — Pin kleiner wählen oder Ebene verschieben', 'w');
   };
-  _cut.doveAuto = cp.type === 'dove';
+  _cut.doveAuto = false;
   if (!valid.length) { fail(); return; }
 
   // Hauptachse des gültigen Bereichs bestimmen, Pins gleichmäßig verteilen
@@ -58019,8 +58086,6 @@ function _cutAutoConnectors(quiet) {
     ? (nT + ' Gewinde + ' + (chosen.length - nT) + (chosen.length - nT === 1 ? ' Passstift' : ' Passstifte') +
        ' gesetzt ✓ — der Stift hält die Hälften beim Schrauben auf Position'
        + (chosen.length === 1 ? ' (hier war kein Platz für einen zweiten Punkt — von Hand ergänzen)' : ''))
-    : cp.type === 'dove'
-    ? (chosen.length + ' Schwalbenschwänze automatisch gesetzt ✓ — sie wandern mit der Schnittebene mit')
     : (chosen.length + ' ' + _CUT_CONN_TYPES[cp.type] + '-Verbinder gesetzt ✓ — Position per „+ Verbinder" ergänzbar, 🗑 löscht alle'), 'ok');
 }
 
@@ -58034,7 +58099,13 @@ function _cutPlaneClick(e) {
   const pt = new THREE.Vector3();
   if (!raycaster.ray.intersectPlane(mplane, pt)) return;
   const { U, V } = _cutBasis(n), rel = pt.sub(pivot);
-  _cut.connectors.push({ u: rel.dot(U), v: rel.dot(V), kind: _cut.cParams.type });
+  const conn = { u: rel.dot(U), v: rel.dot(V), kind: _cut.cParams.type };
+  if (conn.kind === 'dove') {       // Zunge sitzt immer auf der Mittellinie des Querschnitts
+    const f = _cutSectionFrame(_cutMakeProbe());
+    if (!f) { notify('Die Schnittebene trifft hier kein Material', 'w'); return; }
+    Object.assign(conn, f.at(f.tOf(conn.u, conn.v)), { ang: f.ang, half: f.half });
+  }
+  _cut.connectors.push(conn);
   _cut.doveAuto = false;   // von Hand gesetzt → nichts mehr automatisch umverteilen
   _cutRenderMarkers();
   e.preventDefault();
@@ -58348,7 +58419,9 @@ function _cutGeoFromMf(mf) {
 }
 
 // Stift/Schwalbenschwanz in die geschnittenen Haelften setzen: Zapfen an Teil A,
-// Tasche mit Spiel aus Teil B. Ueber Manifold statt ThreeCSG — der BSP-Abzug
+// Tasche mit Spiel aus Teil B. Beim Schwalbenschwanz ist der Zapfen die
+// Schnittmenge aus Werkzeug und (unveraendertem) Teil B — die Zunge ist also
+// genau das Material, das auf der anderen Seite der Ebene stand. Ueber Manifold statt ThreeCSG — der BSP-Abzug
 // hinterlaesst hier messbar zerrissene Netze (an einem 40-mm-Wuerfel mit einem
 // Passstift 182 bzw. 275 offene Kanten, mit vorgebohrtem Gewinde ueber 14 000).
 // Gibt null zurueck, wenn Manifold die Netze nicht annimmt — dann faellt der
@@ -58359,27 +58432,30 @@ async function _cutMechConnectors(below, above, conns) {
     const z = _cutSoupMm(zapfen.geometry, zapfen.matrixWorld);
     const t = _cutSoupMm(tasche.geometry, tasche.matrixWorld);
     zapfen.geometry.dispose(); tasche.geometry.dispose();
-    return { z, t };
+    return { z, t, dove: c.kind === 'dove' };
   });
   let w;
   try { w = await _mfInit(); } catch (e) { return null; }
-  let mfB = null, mfA = null;
+  let mfB = null, mfA = null, mfA0 = null;
   try {
     mfB = _cutMf(w, _cutSoupMm(below.geometry, null));
-    mfA = _cutMf(w, _cutSoupMm(above.geometry, null));
-    tools.forEach(({ z, t }) => {
-      const mz = _cutMf(w, z), mt = _cutMf(w, t);
+    mfA0 = _cutMf(w, _cutSoupMm(above.geometry, null));
+    mfA = mfA0;
+    tools.forEach(({ z, t, dove }) => {
+      let mz = _cutMf(w, z);
+      const mt = _cutMf(w, t);
+      if (dove) { const zi = w.Manifold.intersection(mfA0, mz); mz.delete(); mz = zi; }
       const nb = w.Manifold.union(mfB, mz);      mfB.delete(); mz.delete(); mfB = nb;
-      const na = w.Manifold.difference(mfA, mt); mfA.delete(); mt.delete(); mfA = na;
+      const na = w.Manifold.difference(mfA, mt); if (mfA !== mfA0) mfA.delete(); mt.delete(); mfA = na;
     });
     const gB = _cutGeoFromMf(mfB), gA = _cutGeoFromMf(mfA);
-    mfB.delete(); mfA.delete();
+    mfB.delete(); if (mfA !== mfA0) mfA.delete(); mfA0.delete();
     below.geometry.dispose(); above.geometry.dispose();
     below.geometry = gB; above.geometry = gA;
     return true;
   } catch (e) {
     console.warn('[Cut] Verbinder über Manifold gescheitert → ThreeCSG:', e.message || e);
-    try { mfB && mfB.delete(); mfA && mfA.delete(); } catch (e2) { /* egal */ }
+    try { mfB && mfB.delete(); mfA && mfA !== mfA0 && mfA.delete(); mfA0 && mfA0.delete(); } catch (e2) { /* egal */ }
     return null;
   }
 }
@@ -58489,15 +58565,23 @@ async function _cutExecute() {
     // Kanten offen (gemessen 36 je Hälfte), Manifold verschweißt sie.
     if ((_mech.length || _thr.length) && _hasGeo()) {
       const viaMf = await _cutMechConnectors(keepBelow, keepAbove, _mech);
+      const above0 = viaMf ? null : new THREE.Mesh(keepAbove.geometry.clone(), keepAbove.material);
       if (!viaMf) _mech.forEach(c => {          // Rückfallebene für Netze, die Manifold ablehnt
-        const zapfen = _cutConnTool(c, false);
+        let zapfen = _cutConnTool(c, false);
         const tasche = _cutConnTool(c, true);   // aufgeweitet + länger → sauberer Durchstoß
+        if (c.kind === 'dove') {                // Zunge = Werkzeug ∩ Teil B (ThreeCSG kennt nur − und ∪)
+          const rest = ThreeCSG.subtract(above0, zapfen);
+          zapfen.geometry.dispose();
+          zapfen = ThreeCSG.subtract(above0, rest);
+          rest.geometry.dispose();
+        }
         const nb = ThreeCSG.union(keepBelow, zapfen);
         const na = ThreeCSG.subtract(keepAbove, tasche);
         zapfen.geometry.dispose(); tasche.geometry.dispose();
         keepBelow.geometry.dispose(); keepAbove.geometry.dispose();
         keepBelow = nb; keepAbove = na;
       });
+      if (above0) above0.geometry.dispose();
     }
 
     const baseColor = target.userData.color || (target.material && '#' + target.material.color.getHexString()) || currentColor;

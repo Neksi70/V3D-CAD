@@ -3,8 +3,9 @@
 //
 // Geprüft wird, was beim Drucken und Zusammensetzen zählt:
 //   1. Passstift (Altbestand) funktioniert unverändert: 2 Teile, beide wasserdicht
-//   2. Schwalbenschwanz: Zapfen sitzt in Teil A, Tasche in Teil B — und die Tasche
-//      ist GRÖSSER als der Zapfen (sonst klemmt es)
+//   2. Schwalbenschwanz: Zunge an Teil A, Öffnung in Teil B, durch die GANZE
+//      Materialdicke, am Kopf breiter als am Hals (hält gegen Auseinanderziehen),
+//      und die Öffnung ist GRÖSSER als die Zunge (sonst klemmt es)
 //   3. Gewinde: es entstehen 3 Objekte (2 Hälften + Bolzen), in BEIDEN Hälften
 //      sitzt an der Verbinderstelle wirklich ein Loch (Punkt-im-Körper per
 //      Raycast), daneben steht Material, und der Bolzen hat Soll-Maß
@@ -135,7 +136,7 @@ await pg.evaluate(() => {
     typ: _cut.cParams.type,
     felder: [...document.querySelectorAll('#cut-conn-params input')].map(e => e.id),
   }));
-  ok('Panel: Klick auf Schwalbe schaltet um', nachDove.typ === 'dove' && nachDove.felder.includes('cut-da'), nachDove);
+  ok('Panel: Klick auf Schwalbe schaltet um', nachDove.typ === 'dove' && nachDove.felder.includes('cut-dw') && !nachDove.felder.includes('cut-da'), nachDove);
   // Schwalbenschwänze setzt die Bauart-Wahl von selbst — ohne Klick auf die Ebene
   const marker = await pg.evaluate(() => ({
     n: _cut.markers.length, kinds: _cut.connectors.map(c => c.kind), auto: _cut.doveAuto,
@@ -165,20 +166,33 @@ await pg.evaluate(() => {
 }
 
 // ── 2. Schwalbenschwanz ─────────────────────────────────────────────────────
+// Würfel waagerecht geschnitten: Zunge ragt 9 mm nach oben in Teil B, Kopf 12 mm
+// breit (Hals 6,6 mm), läuft in X durch den ganzen Würfel.
 {
   const r = await pg.evaluate(async () => {
     const t = window._ctT;
-    const res = await t.schneide([{ u: 0, v: 0, kind: 'dove' }],
-                                 { dW: 12, dL: 9, dH: 5, dA: 0, dClr: 0.2 });
+    const res = await t.schneide([{ u: 0, v: 0, kind: 'dove' }], { dW: 12, dL: 9, dClr: 0.2 });
+    const n = new THREE.Vector3(...res.n), wp = new THREE.Vector3(...res.wps[0]);
+    const { U, V } = _cutBasis(n);            // T = U (Schnittlinie), D = V (Dicke)
+    const P = (s, tt, d) => wp.clone().addScaledVector(n, s).addScaledVector(U, tt).addScaledVector(V, d).toArray();
+    const A = objects[0], B = objects[1];
     return { n: objects.length, offen: objects.map(o => t.watertight(o.geometry)),
-             vols: objects.map(o => t.vol(o)), v0: res.v0 };
+             vols: objects.map(o => t.vol(o)), v0: res.v0,
+             kopfA: t.inside(A, P(0.7, 0.45, 0.03)), kopfB: t.inside(B, P(0.7, 0.45, 0.03)),
+             halsA: t.inside(A, P(0.1, 0.45, 0.03)), halsB: t.inside(B, P(0.1, 0.45, 0.03)),
+             durch: [-1.8, 1.8].map(d => t.inside(A, P(0.5, 0.02, d))),
+             ueber: t.inside(A, P(1.1, 0.02, 0.03)) };
   });
   const halb = r.v0 / 2, zapfen = r.vols[0] - halb, tasche = halb - r.vols[1];
   ok('Schwalbe: 2 Teile', r.n === 2);
   ok('Schwalbe: beide wasserdicht', r.offen.every(x => x === 0), r.offen);
-  ok('Schwalbe: Zapfen vorhanden', zapfen > 100, { zapfen_mm3: Math.round(zapfen) });
-  ok('Schwalbe: Tasche größer als Zapfen (Spiel)', tasche > zapfen,
+  ok('Schwalbe: Zunge hat Soll-Volumen (Trapez × 40 mm)', Math.abs(zapfen - (6 + 3.3) * 9 * 40) < 150, { zapfen_mm3: Math.round(zapfen) });
+  ok('Schwalbe: Öffnung größer als Zunge (Spiel)', tasche > zapfen,
      { zapfen: Math.round(zapfen), tasche: Math.round(tasche) });
+  ok('Schwalbe: Kopf gehört zu Teil A, nicht zu B', r.kopfA && !r.kopfB, r);
+  ok('Schwalbe: neben dem Hals steht Teil B (Hinterschnitt)', r.halsB && !r.halsA, r);
+  ok('Schwalbe: Zunge läuft durch die ganze Dicke', r.durch.every(Boolean), r.durch);
+  ok('Schwalbe: Zunge endet nach 9 mm', !r.ueber);
 }
 
 // ── 3. Gewindebolzen ────────────────────────────────────────────────────────
@@ -318,44 +332,49 @@ await pg.evaluate(() => {
   ok('Gewinde-Werkzeug: wasserdicht', r.thread.offen === 0, r.thread);
 }
 
-// ── Schwalbenschwanz automatisch an einer dünnen Platte ────────────────────
-// 300 × 12 × 200 mm, senkrecht geschnitten (Achse X): Der Querschnitt ist ein
-// 12 mm hoher Streifen — der Zapfen passt nur um 90° gedreht. Geprüft: Klick auf „Schwalbe" setzt Zapfen ohne weiteres
-// Zutun, alle liegen im Material, sie wandern mit der Ebene mit, und der Schnitt
-// ergibt zwei wasserdichte Teile.
+// ── Schwalbenschwanz automatisch an einer großen Platte ────────────────────
+// 620 × 20 × 420 mm, in der Mitte geteilt (Achse X). Erwartet: Zungen wie beim
+// Puzzle — entlang der 420-mm-Schnittlinie verteilt, durch die 20 mm Dicke,
+// Teil A trägt die Zungen, Teil B die Öffnungen. Klick auf „Schwalbe" setzt sie
+// ohne weiteres Zutun, sie wandern mit der Ebene mit.
 {
-  await pg.evaluate(() => {
+  const platte = () => pg.evaluate(() => {
     const t = window._ctT; t.reset();
     addShape('box');
     const box = objects[objects.length - 1];
-    box.scale.multiply(new THREE.Vector3(15, 0.6, 10));
+    box.scale.multiply(new THREE.Vector3(31, 1, 21));
     box.updateMatrixWorld(true);
     selectObjs([box]); openCutTool();
-    _cut.cParams.type = 'pin'; _cut.cParams.dA = 0;
+    Object.assign(_cut.cParams, { type: 'pin', dW: 20, dL: 10, dClr: 0.2 });
     _cutSetAxis('x');
   });
+  await platte();
   await pg.click('.cut-ct[data-ct="dove"]');
   const lage = () => pg.evaluate(() => {
-    const t = window._ctT;
-    return { n: _cut.connectors.length, auto: _cut.doveAuto, dA: _cut.cParams.dA,
+    const c0 = _cut.bbox.getCenter(new THREE.Vector3());
+    const wp = _cut.connectors.map(c => _cutInPlaneToWorld(c));
+    const mb = _cut.markers.map(m => new THREE.Box3().setFromObject(m));
+    return { n: _cut.connectors.length, auto: _cut.doveAuto,
       kinds: _cut.connectors.map(c => c.kind),
-      // Quader: „im Material" = in der bbox mit 1 mm Rand (der Paritäts-Strahl
-      // trifft hier sonst gelegentlich genau eine Dreieckskante)
-      innen: _cut.connectors.map(c => _cut.bbox.clone().expandByScalar(-0.1).containsPoint(_cutInPlaneToWorld(c))),
-      x: _cut.connectors.map(c => +(_cutInPlaneToWorld(c).x * 10).toFixed(1)),
+      x: wp.map(p => +(p.x * 10).toFixed(1)),
+      yMitte: wp.map(p => +((p.y - c0.y) * 10).toFixed(2)),
+      z: wp.map(p => +((p.z - c0.z) * 10).toFixed(1)).sort((a, b) => a - b),
+      // Vorschau: 20 mm hoch (Dicke), 10 mm über die Ebene, 20 mm breit
+      marker: mb.map(b => [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z].map(v => +(v * 10).toFixed(1))),
       hinweis: document.getElementById('cut-conn-hint').textContent };
   });
   const a = await lage();
-  ok('Platte: Schwalben automatisch gesetzt', a.n >= 2 && a.auto && a.kinds.every(k => k === 'dove'), a);
-  ok('Platte: Zapfen um 90° gedreht, damit er in die Dicke passt', a.dA === 90, a.dA);
-  ok('Platte: alle Zapfen im Material', a.innen.length > 0 && a.innen.every(Boolean), a.innen);
+  ok('Platte: 5 Schwalben automatisch gesetzt', a.n === 5 && a.auto && a.kinds.every(k => k === 'dove'), a);
+  ok('Platte: Zungen mittig in der Dicke', a.yMitte.every(y => Math.abs(y) < 0.6), a.yMitte);
+  ok('Platte: gleichmäßig und symmetrisch über die 420 mm', a.z.every((z, i) => Math.abs(z - (-140 + 70 * i)) < 4), a.z);
+  ok('Platte: Vorschau zeigt Zunge 10 × 20 × 20 mm', a.marker.every(m => Math.abs(m[0] - 10) < 0.2 && Math.abs(m[1] - 20) < 1 && Math.abs(m[2] - 20) < 0.2), a.marker[0]);
   ok('Platte: Hinweis nennt die Automatik', /automatisch/.test(a.hinweis), a.hinweis);
-  // Ebene verschieben → Zapfen ziehen nach (verzögert)
+  // Ebene verschieben → Zungen ziehen nach (verzögert)
   await pg.evaluate(() => _cutOnSlider(String(parseFloat(document.getElementById('cut-num').value) + 40)));
   await pg.waitForTimeout(700);
   const b2 = await lage();
-  ok('Platte: Zapfen wandern mit der Ebene', b2.n === a.n && b2.innen.every(Boolean) &&
-     Math.abs(b2.x[0] - a.x[0] - 40) < 0.5, { vorher: a.x, nachher: b2.x, innen: b2.innen, n: b2.n });
+  ok('Platte: Zungen wandern mit der Ebene', b2.n === a.n && Math.abs(b2.x[0] - a.x[0] - 40) < 0.5,
+     { vorher: a.x, nachher: b2.x, n: b2.n });
   // 🗑 beendet die Automatik
   const aus = await pg.evaluate(async () => {
     _cutClearConnectors(); _cutOnSlider(document.getElementById('cut-num').value);
@@ -373,10 +392,42 @@ await pg.evaluate(() => {
              hoehe: objects.map(o => { const b = new THREE.Box3().setFromObject(o); return +((b.max.y - b.min.y) * 10).toFixed(1); }),
              vol: objects.map(o => Math.round(t.vol(o))) };
   });
-  ok('Platte: erneut Schwalbe wählen setzt wieder', r.n0 >= 2, r.n0);
+  ok('Platte: erneut Schwalbe wählen setzt wieder', r.n0 === 5, r.n0);
   ok('Platte: Schnitt ergibt 2 wasserdichte Teile', r.teile === 2 && r.offen.every(o => o === 0), r);
-  ok('Platte: beide Hälften liegen flach (12 mm hoch)', r.hoehe.every(h => Math.abs(h - 12) < 0.5), r.hoehe);
-  ok('Platte: Volumen bleibt bis auf das Spiel erhalten', Math.abs(r.vol[0] + r.vol[1] - 300*12*200) < 2000, r.vol);
+  ok('Platte: beide Hälften liegen flach (20 mm hoch)', r.hoehe.every(h => Math.abs(h - 20) < 0.5), r.hoehe);
+  ok('Platte: Volumen bleibt bis auf das Spiel erhalten', r.vol[0] + r.vol[1] < 620*20*420 &&
+     620*20*420 - r.vol[0] - r.vol[1] < 3000, r.vol);
+
+  // Form der Verbindung in Originallage (ohne Ablegen): Schnitt bei x = Mitte
+  await platte();
+  await pg.click('.cut-ct[data-ct="dove"]');
+  const g = await pg.evaluate(async () => {
+    const t = window._ctT;
+    const wps = _cut.connectors.map(c => _cutInPlaneToWorld(c));
+    const bb = _cut.bbox.clone();
+    document.getElementById('cut-lay').checked = false;
+    await _cutExecute();
+    const A = objects[0], B = objects[1];
+    const bA = new THREE.Box3().setFromObject(A), bB = new THREE.Box3().setFromObject(B);
+    const x0 = wps[0].x, yU = bb.min.y + 0.05, yO = bb.max.y - 0.05;
+    const P = (w, s, dz, y) => [w.x + s, y, w.z + dz];
+    return {
+      offen: objects.map(o => t.watertight(o.geometry)),
+      ueberstandA: +((bA.max.x - x0) * 10).toFixed(2),      // Zungen ragen 10 mm über die Ebene
+      kanteB: +((bB.min.x - x0) * 10).toFixed(2),           // Teil B beginnt an der Ebene
+      // je Zunge: Kopf (8 mm tief, 8 mm seitlich) gehört unten UND oben zu A …
+      kopf: wps.map(w => [yU, yO].every(y => t.inside(A, P(w, 0.8, 0.8, y)) && !t.inside(B, P(w, 0.8, 0.8, y)))),
+      // … am Hals (1 mm tief, 8 mm seitlich) steht dagegen Teil B → hält auf Zug
+      hals: wps.map(w => [yU, yO].every(y => t.inside(B, P(w, 0.1, 0.8, y)) && !t.inside(A, P(w, 0.1, 0.8, y)))),
+      // Spiel: knapp außerhalb der Zungenflanke ist Luft (weder A noch B)
+      luft: wps.map(w => !t.inside(A, P(w, 1.01, 0.03, yU)) && !t.inside(B, P(w, 1.01, 0.03, yU))),
+    };
+  });
+  ok('Puzzle: beide Teile wasserdicht', g.offen.every(o => o === 0), g.offen);
+  ok('Puzzle: Zungen ragen 10 mm über die Schnittkante', Math.abs(g.ueberstandA - 10) < 0.1 && Math.abs(g.kanteB) < 0.05, g);
+  ok('Puzzle: Zungen gehen durch die ganze Dicke (Kopf in A)', g.kopf.every(Boolean), g.kopf);
+  ok('Puzzle: Hinterschnitt — neben dem Hals steht Teil B', g.hals.every(Boolean), g.hals);
+  ok('Puzzle: Spiel zwischen Zungenkopf und Öffnung', g.luft.every(Boolean), g.luft);
 }
 
 ok('keine JS-Fehler', pageErrors.length === 0, pageErrors.slice(0, 3));
