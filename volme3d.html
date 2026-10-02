@@ -1314,7 +1314,7 @@ const firebaseConfig = {
       <button class="btn" onclick="linearPatternTool()" title="Lineares Muster — Objekt mehrfach in einer Richtung kopieren">⋮ Linear</button>
       <button class="btn" onclick="circularPatternTool()" title="Kreismuster — Objekt kreisförmig anordnen">⊙ Kreis</button>
       <button class="btn" onclick="hexPatternTool()" title="Wabenmuster — Sechskant-Löcher in den Boden des gewählten Körpers stanzen">⬡ Waben</button>
-      <button class="btn" onclick="fillPlateTool()" title="Platte füllen — nur das Teil wählen = Druckplatte füllen, oder eigene Grundplatte + Teil wählen: so viele Kopien des Teils wie möglich — oder eine feste Anzahl, z. B. 4 — auf die Platte verteilen (gleiche Höhe, ineinander verschachtelt)">▦ Füllen</button>
+      <button class="btn" onclick="fillPlateTool()" title="Platte füllen — nur das Teil wählen = Druckplatte füllen, oder eigene Grundplatte + Teil wählen: so viele Kopien des Teils wie möglich — oder eine feste Anzahl, z. B. 4 — auf die Platte verteilen (gleiche Höhe) — wahlweise dicht verschachtelt oder sauber in Reihen untereinander">▦ Füllen</button>
       <button class="btn" onclick="plateAdd()" title="Weitere Druckplatte daneben anlegen — umschalten, entfernen und je Platte exportieren über die Platten-Leiste unten in der Mitte">▭ ＋ Platte</button>
     </div></div>
     <div class="tbg"><span class="tbg-l">Form ändern</span><div class="tbg-row">
@@ -2560,6 +2560,13 @@ const firebaseConfig = {
       <!-- Platte füllen -->
       <div id="pat-fill" style="display:none">
         <div class="pat-row">
+          <label class="pat-lbl" title="Dicht verschachtelt: die meisten Teile, dafür gedreht und versetzt ineinander geschoben. In Reihen: alle Teile gleich ausgerichtet, sauber unter- und nebeneinander mit fester Teilung — z. B. für Ablagen, aus denen ein Roboter greift.">Anordnung</label>
+          <select id="pat-fill-mode" class="pat-sel">
+            <option value="dense">Dicht verschachtelt — die meisten Teile</option>
+            <option value="rows">In Reihen untereinander — gleiche Ausrichtung, feste Teilung</option>
+          </select>
+        </div>
+        <div class="pat-row">
           <label class="pat-lbl">Anzahl — leer = so viele wie passen</label>
           <input id="pat-fill-count" class="pat-inp" type="number" min="1" max="500" step="1" placeholder="max" oninput="_fillCountUi()">
         </div>
@@ -2588,8 +2595,8 @@ const firebaseConfig = {
         </div>
         <div style="font-size:11px;color:var(--dim);margin-top:6px">
           Verteilt so viele Kopien des Teils wie möglich auf der Grundplatte — oder genau
-          die gewünschte Anzahl — nach dem echten Umriss verschachtelt, auf derselben
-          Höhe wie das Original. Danach alles
+          die gewünschte Anzahl — dicht verschachtelt oder in Reihen untereinander,
+          immer nach dem echten Umriss und auf derselben Höhe wie das Original. Danach alles
           markieren und <b>⊖ Abziehen</b>.
         </div>
       </div>
@@ -25461,6 +25468,14 @@ function fillPlateTool() {
     document.getElementById('pat-fill-depth-info').textContent =
       (cur > 0.005 ? `Aktuell ${r2(cur)} mm tief` : cur < -0.005 ? `Aktuell ${r2(-cur)} mm über der Platte` : 'Aktuell: liegt auf der Platte auf') +
       ` · Platte ist ${r2(dick)} mm dick`;
+    // Schwebt das Teil über der Platte, sieht es von schräg oben so aus, als ragten
+    // die Kopien über den Rand (Perspektive) → Aufsetzen vorschlagen.
+    const dEl = document.getElementById('pat-fill-depth');
+    if (dEl.dataset.auto) { dEl.value = ''; delete dEl.dataset.auto; }   // Vorschlag vom letzten Mal nicht mitschleppen
+    if (cur < -0.05 && dEl.value.trim() === '') {
+      dEl.value = '0'; dEl.dataset.auto = '1';
+      document.getElementById('pat-fill-depth-info').textContent += ' — 0 setzt es auf die Platte';
+    }
   }
   document.getElementById('pat-title').textContent = pair.bed
     ? `▦ ${plateCount > 1 ? 'Platte ' + (pair.plateIdx + 1) : 'Druckplatte'} füllen (${r2(buildplateW)} × ${r2(buildplateH)} mm)` : '▦ Platte füllen';
@@ -25548,7 +25563,11 @@ function _fillDilate(m, w, h, r) {
 }
 
 // Kern (ohne Szene): liefert die Platzierungen {rot, tx, tz} für das Teil.
-function _fillPlan(plate, part, gapMm, marginMm, allowRot) {
+// opts.rows → statt zu verschachteln ein sauberes Raster: alle Teile gleich
+// gedreht, Spalten und Reihen auf gemeinsamen Linien, feste Teilung (aus dem
+// echten Umriss, so eng wie der Abstand erlaubt). opts.n = feste Anzahl,
+// opts.corner = ab der Ecke statt mittig.
+function _fillPlan(plate, part, gapMm, marginMm, allowRot, opts) {
   const pb = getMeshBox(plate), qb = getMeshBox(part);
   const W = pb.max.x - pb.min.x, D = pb.max.z - pb.min.z;
   // Raster: 0,5 mm, aber höchstens ~1,2 Mio. Zellen auf der Platte
@@ -25662,15 +25681,72 @@ function _fillPlan(plate, part, gapMm, marginMm, allowRot) {
     }
     return res;
   };
-  let best = run(true);
-  const b2 = run(false); if (b2.length > best.length) best = b2;
-  for (const S of shapes) {
-    let px = 1; while (px < S.w && hits(S, px, 0)) px++;
-    const step = Math.max(1, Math.round(px / 16));
-    for (let sx = 0; sx < px; sx += step) {
-      let pz = 1; while (pz < S.h && (hits(S, sx, pz) || hits(S, sx - px, pz))) pz++;
-      const r = lattice(S, px, sx, pz);
-      if (r.length > best.length) best = r;
+  // Reihen-Raster: Teilung px/pz so eng, dass kein Nachbar (auch kein übernächster
+  // oder schräger) in die Abstands-Hülle ragt; dann c × r Plätze mittig auf die
+  // freie Fläche. Plätze über Aussparungen der Platte fallen einzeln weg.
+  const rowGrid = () => {
+    const n = opts.n || 0;
+    let top = null;
+    for (const S of shapes) {
+      let mi = S.w, mj = S.h, Mi = 0, Mj = 0;
+      for (let k = 0; k < S.cells.length; k += 2) {
+        mi = Math.min(mi, S.cells[k]); Mi = Math.max(Mi, S.cells[k]);
+        mj = Math.min(mj, S.cells[k+1]); Mj = Math.max(Mj, S.cells[k+1]);
+      }
+      const sw = Mi - mi + 1, sh = Mj - mj + 1;
+      const rowOk = (p, dz) => {                         // Reihe im Abstand dz: alle Spalten-Vielfachen frei?
+        for (let k = dz ? Math.ceil(-S.w / p) + 1 : 1; k * p < S.w; k++) if (hits(S, k * p, dz)) return false;
+        return true;
+      };
+      let px = 1; while (px < S.w && !rowOk(px, 0)) px++;
+      const colOk = p => { for (let m = 1; m * p < S.h; m++) if (!rowOk(px, m * p)) return false; return true; };
+      let pz = 1; while (pz < S.h && !colOk(pz)) pz++;
+      const aw = fx1 - fx0 + 1, ah = fz1 - fz0 + 1;
+      const nx = Math.floor((aw - sw) / px) + 1, nz = Math.floor((ah - sh) / pz) + 1;
+      if (aw < sw || ah < sh || nx < 1 || nz < 1) continue;
+      const tries = [];
+      if (n) { for (let c = 1; c <= nx; c++) { const r = Math.ceil(n / c); if (r <= nz && (r - 1) * c < n) tries.push([c, r]); } }
+      if (!tries.length) tries.push([nx, nz]);
+      for (const [c, r] of tries) {
+        const slX = aw - ((c - 1) * px + sw), slZ = ah - ((r - 1) * pz + sh);
+        const oX = opts.corner ? 0 : slX >> 1, oZ = opts.corner ? 0 : slZ >> 1;
+        const res = []; let cells = 0;
+        for (let j = 0; j < r; j++) for (let i = 0; i < c; i++) {
+          const gi = fx0 - mi + oX + i * px, gj = fz0 - mj + oZ + j * pz;
+          if (gi < 0 || gj < 0 || gi + S.w > gw || gj + S.h > gh) continue;
+          const cs = S.cells; let ok = true;
+          for (let k = 0; k < cs.length; k += 2) if (occ[(gj + cs[k+1]) * gw + gi + cs[k]]) { ok = false; break; }
+          if (!ok) continue;
+          cells++;
+          if (res.length < (n || 500)) res.push({ rot: S.rot, tx: gx0 + gi * hC - S.ox, tz: gz0 + gj * hC - S.oz });
+        }
+        // Wertung: Stückzahl, dann lückenloses Raster, dann die breitesten Stege zum Rand
+        // (bei Gleichstand zwischen Drehungen bleibt das Teil, wie es liegt)
+        const cand = { res, rot: S.rot, full: cells === c * r && (!n || c * r === n) ? 1 : 0,
+                       steg: Math.min(slX / (c + 1), slZ / (r + 1)),
+                       grid: { cols: c, rows: r, px: px * hC * 10, pz: pz * hC * 10 } };
+        if (!top || cand.res.length > top.res.length ||
+            (cand.res.length === top.res.length && (cand.full > top.full || (cand.full === top.full && cand.rot === top.rot && cand.steg > top.steg + 1e-9))))
+          top = cand;
+      }
+    }
+    return top;
+  };
+  let best, grid = null;
+  if (opts && opts.rows) {
+    const g = rowGrid();
+    best = g ? g.res : []; grid = g ? g.grid : null;
+  } else {
+    best = run(true);
+    const b2 = run(false); if (b2.length > best.length) best = b2;
+    for (const S of shapes) {
+      let px = 1; while (px < S.w && hits(S, px, 0)) px++;
+      const step = Math.max(1, Math.round(px / 16));
+      for (let sx = 0; sx < px; sx += step) {
+        let pz = 1; while (pz < S.h && (hits(S, sx, pz) || hits(S, sx - px, pz))) pz++;
+        const r = lattice(S, px, sx, pz);
+        if (r.length > best.length) best = r;
+      }
     }
   }
   // Für das Verschieben fertiger Plätze (feste Anzahl, mittig setzen):
@@ -25684,7 +25760,7 @@ function _fillPlan(plate, part, gapMm, marginMm, allowRot) {
     return true;
   };
   const free = { x0: gx0 + fx0 * hC, x1: gx0 + (fx1 + 1) * hC, z0: gz0 + fz0 * hC, z1: gz0 + (fz1 + 1) * hC };
-  return { c0, places: best, onPlate, free };
+  return { c0, places: best, onPlate, free, grid };
 }
 
 // Gleichmäßiges Raster für n Teile (z. B. 3 Bohrungen in einem Werkstück):
@@ -25742,7 +25818,18 @@ function _fillEvenGrid(plate, part, gapMm, marginMm, allowRot, n, plan) {
 // (_fillEvenGrid); passt keines: Abstand so groß wie möglich
 // (Halbierungssuche, solange noch n Teile passen) und die Gruppe mittig auf die
 // freie Fläche schieben; sonst die ersten n des dichten Plans (ab der Ecke).
-function _fillPlanCount(plate, part, gapMm, marginMm, allowRot, n, even) {
+function _fillPlanCount(plate, part, gapMm, marginMm, allowRot, n, even, rows) {
+  if (rows) {
+    // In Reihen: „even" → gleichmäßiges Raster wie gehabt (Steg zum Rand = Steg
+    // zwischen den Teilen); sonst bzw. wenn keins passt: enges Reihen-Raster,
+    // mittig (even) oder ab der Ecke.
+    const full = _fillPlan(plate, part, gapMm, marginMm, allowRot, { rows: true });
+    const max = full.places.length;
+    if (max <= n) return Object.assign(full, { max });
+    const g = even && _fillEvenGrid(plate, part, gapMm, marginMm, allowRot, n, full);
+    if (g) return Object.assign(full, { places: g, max, grid: null });
+    return Object.assign(_fillPlan(plate, part, gapMm, marginMm, allowRot, { rows: true, n, corner: !even }), { max });
+  }
   let plan = _fillPlan(plate, part, gapMm, marginMm, allowRot);
   if (plan.places.length < n || !even) return Object.assign(plan, { places: plan.places.slice(0, n), max: plan.places.length });
   const max = plan.places.length;
@@ -25776,13 +25863,13 @@ function _fillPlanCount(plate, part, gapMm, marginMm, allowRot, n, even) {
   return Object.assign(plan, { places, max });
 }
 
-function _applyFillPlate(gapMm, marginMm, allowRot, count, even, depthMm) {
+function _applyFillPlate(gapMm, marginMm, allowRot, count, even, depthMm, rows) {
   const pair = _fillPickPair(); if (!pair) return;
   const { plate, part } = pair;
   const t0 = performance.now();
   const want = count > 0 ? Math.min(500, count) : 0;
-  const { c0, places } = want ? _fillPlanCount(plate, part, gapMm, marginMm, allowRot, want, even !== false)
-                              : _fillPlan(plate, part, gapMm, marginMm, allowRot);
+  const { c0, places, grid } = want ? _fillPlanCount(plate, part, gapMm, marginMm, allowRot, want, even !== false, rows)
+                              : _fillPlan(plate, part, gapMm, marginMm, allowRot, rows ? { rows: true } : null);
   if (!places.length) { notify('Das Teil passt mit diesen Abständen nicht auf die Platte', 'w'); return; }
   saveUndo();
   const Y = new THREE.Vector3(0, 1, 0);
@@ -25814,6 +25901,7 @@ function _applyFillPlate(gapMm, marginMm, allowRot, count, even, depthMm) {
   if (want && places.length < want)
     notify(`▦ Nur ${places.length} von ${want} × ${part.userData.name || 'Teil'} passen auf die Platte — Abstand oder Rand verkleinern`, 'w');
   else notify(`▦ ${places.length} × ${part.userData.name || 'Teil'} auf der Platte` +
+         (grid ? ` — ${grid.rows} ${grid.rows === 1 ? 'Reihe' : 'Reihen'} × ${grid.cols}, Teilung ${r2(grid.px)} × ${r2(grid.pz)} mm` : '') +
          (part.userData.isHole ? ' — jetzt ⊖ Abziehen' : ''), 'ok');
 }
 
@@ -25837,8 +25925,9 @@ function _applyPat() {
     const dEl    = document.getElementById('pat-fill-depth');
     const dVal   = parseFloat(String(dEl.value).replace(',', '.'));
     const depth  = dEl.value.trim() !== '' && isFinite(dVal) ? Math.max(0, dVal) : null;
+    const rows   = document.getElementById('pat-fill-mode').value === 'rows';
     _closePat();
-    _applyFillPlate(gap, margin, rot, cnt, even, depth);
+    _applyFillPlate(gap, margin, rot, cnt, even, depth, rows);
     return;
   } else if (_patternType === 'hex') {
     const cell   = Math.max(2,   parseFloat(document.getElementById('pat-hex-cell').value)   || 8);
@@ -51007,8 +51096,12 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.103';
+const VOLME3D_VERSION = '1.18.104';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.104', date:'2026-10-02', changes:[
+    ['▦','<b>Füllen in Reihen.</b> Unter <i>Anordnen → ▦ Füllen</i> gibt es oben das neue Feld <b>Anordnung</b>. <b>Dicht verschachtelt</b> ist das bisherige Verhalten: die meisten Teile, dafür gedreht und ineinander geschoben. <b>In Reihen untereinander</b> legt alle Teile gleich ausgerichtet in ein sauberes Raster — Spalten und Reihen auf gemeinsamen Linien, überall dieselbe Teilung, mittig auf der Platte. Das passt für Ablagen, aus denen ein Roboter oder Greifer die Teile holt. Die Meldung nennt danach <b>Reihen × Spalten und die Teilung in Millimetern</b> (z. B. „6 Reihen × 5, Teilung 118,5 × 58 mm“) — die Werte lassen sich direkt ins Greifprogramm übernehmen. Mit einer festen Anzahl funktioniert es genauso; Plätze über Bohrungen der Platte bleiben frei.'],
+    ['▦','<b>Schwebendes Teil wird aufgesetzt.</b> Liegt das Teil beim Füllen ein Stück über der Grundplatte, schlägt der Dialog jetzt die Eintauchtiefe 0 vor (Teil liegt auf). Schwebende Kopien sehen von schräg oben so aus, als ragten sie über den Plattenrand, obwohl sie von oben gesehen genau passen. Feld leeren = Höhe bleibt wie bisher.'],
+  ]},
   { version:'1.18.103', date:'2026-10-02', changes:[
     ['✂️','<b>Geschnittene Platten bleiben flach liegen.</b> Wer eine Platte senkrecht teilt, bekam bisher eine Hälfte <b>hochkant</b> hingestellt: Das Häkchen <i>Oberteil auf Schnittfläche legen</i> drehte sie auf ihre schmale Schnittkante. Jetzt wird nur noch umgelegt, wenn das Teil auf der Schnittfläche auch vernünftig liegt — würde es dadurch mehr als doppelt so hoch, bleibt es so liegen, wie es war. Bei waagerechten Schnitten (z. B. eine Figur in Ober- und Unterteil) ändert sich nichts.'],
   ]},
