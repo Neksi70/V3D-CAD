@@ -51141,8 +51141,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.109';
+const VOLME3D_VERSION = '1.18.110';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.110', date:'2026-10-02', changes:[
+    ['⚡','<b>Schwalbenschwanz an importierten Platten: „Seite antwortet nicht“ behoben.</b> Um die Zungen zu verteilen, wurde das ganze Netz mit Tausenden Prüfstrahlen abgetastet — bei Importen mit vielen Dreiecken dauerte das rund zehn Sekunden, und zwar bei jeder Verschiebung der Schnittebene und noch einmal beim Schneiden. Jetzt wird der Querschnitt einmal berechnet und darin geprüft; das Setzen der Zungen ist auch bei großen Netzen sofort da.'],
+  ]},
   { version:'1.18.109', date:'2026-10-02', changes:[
     ['🐛','<b>Schwalbenschwanz zerstörte bei manchen Platten eine Hälfte.</b> Nahm die saubere Rechen-Engine den Körper nicht an, sprang das Schneiden auf ein altes Ersatzverfahren um, das Platten mit Bohrungen zerreißt — übrig blieben nur Splitter. Jetzt trennt die saubere Engine den Körper selbst (statt zwei vorgeschnittene Hälften zu übernehmen, deren Schnittflächen an Bohrungen nicht immer dicht sind) und flickt kleine Netzfehler vorher. Das Ersatzverfahren wird für Schwalbenschwänze nicht mehr benutzt. Zusätzlich wird nach jedem Schnitt mit Verbindern das Volumen geprüft: Fehlt etwas, bricht der Schnitt mit einer Meldung ab und <b>das Original bleibt unverändert</b>.'],
   ]},
@@ -57908,6 +57911,49 @@ function _cutMakeProbe() {
     return { u, v, inside, dUp: up.length ? up[0].distance : 0, dDn: dn.length ? dn[0].distance : 0 };
   };
 }
+// Schneller Abtaster für den Schwalbenschwanz: statt Strahlen durchs ganze Netz
+// (bei Importen mit >100k Dreiecken Sekunden pro Durchlauf, der Browser meldet
+// „Seite antwortet nicht") wird der Querschnitt EINMAL als Streckenzug berechnet —
+// auf der Ebene sowie up/dn daneben — und dann in 2D per Parität geprüft.
+// „Tiefe reicht" heißt: der Punkt liegt auch im versetzten Querschnitt im Material.
+function _cutSectionProbe(up, dn) {
+  const tg = _cut.target, n = _cutNormal(), { U, V } = _cutBasis(n), piv = _cutPivot();
+  tg.updateMatrixWorld(true);
+  const pos = tg.geometry.attributes.position, idx = tg.geometry.index, M = tg.matrixWorld.elements;
+  const cnt = idx ? idx.count : pos.count, levels = [0, up, -dn], segs = [[], [], []];
+  const d = [0, 0, 0], pu = [0, 0, 0], pv = [0, 0, 0];
+  for (let t = 0; t < cnt; t += 3) {
+    for (let k = 0; k < 3; k++) {
+      const i = idx ? idx.getX(t + k) : t + k, x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      const wx = M[0]*x + M[4]*y + M[8]*z + M[12] - piv.x, wy = M[1]*x + M[5]*y + M[9]*z + M[13] - piv.y,
+            wz = M[2]*x + M[6]*y + M[10]*z + M[14] - piv.z;
+      d[k] = wx*n.x + wy*n.y + wz*n.z; pu[k] = wx*U.x + wy*U.y + wz*U.z; pv[k] = wx*V.x + wy*V.y + wz*V.z;
+    }
+    for (let L = 0; L < 3; L++) {
+      const s0 = d[0] >= levels[L], s1 = d[1] >= levels[L], s2 = d[2] >= levels[L];
+      if (s0 === s1 && s1 === s2) continue;
+      const seg = [];
+      for (let k = 0; k < 3; k++) {
+        const j = (k + 1) % 3, a = d[k] - levels[L], b = d[j] - levels[L];
+        if ((a >= 0) === (b >= 0)) continue;
+        const f = a / (a - b);
+        seg.push(pu[k] + (pu[j] - pu[k]) * f, pv[k] + (pv[j] - pv[k]) * f);
+      }
+      if (seg.length === 4) segs[L].push(seg[0], seg[1], seg[2], seg[3]);
+    }
+  }
+  const inside = (sg, u, v) => {
+    let c = 0;
+    for (let i = 0; i < sg.length; i += 4) {
+      const v1 = sg[i+1], v2 = sg[i+3];
+      if ((v1 > v) === (v2 > v)) continue;
+      if (sg[i] + (sg[i+2] - sg[i]) * (v - v1) / (v2 - v1) > u) c++;
+    }
+    return c % 2 === 1;
+  };
+  return (u, v) => ({ u, v, inside: inside(segs[0], u, v),
+                      dUp: inside(segs[1], u, v) ? Infinity : 0, dDn: inside(segs[2], u, v) ? Infinity : 0 });
+}
 // Ausdehnung der bbox in Ebenen-Koordinaten
 function _cutPlaneExtent() {
   const { U, V } = _cutBasis(_cutNormal()), piv = _cutPivot(), bb = _cut.bbox;
@@ -57958,7 +58004,7 @@ function _cutSectionFrame(probe) {
 // Schwalbenschwänze gleichmäßig entlang der Schnittlinie verteilen. Jede Zunge
 // braucht über ihre Kopfbreite (+2 mm Wand) Material und in Teil B genug Tiefe.
 function _cutAutoDoves(quiet) {
-  const cp = _cut.cParams, probe = _cutMakeProbe(), f = _cutSectionFrame(probe);
+  const cp = _cut.cParams, probe = _cutSectionProbe(cp.dL / 10 + 0.15, 0.15), f = _cutSectionFrame(probe);
   _cut.doveAuto = true;
   const fail = () => {
     _cut.connectors = _cut.connectors.filter(c => c.kind !== 'dove');   // veraltete nicht stehen lassen
@@ -58114,7 +58160,7 @@ function _cutPlaneClick(e) {
   const { U, V } = _cutBasis(n), rel = pt.sub(pivot);
   const conn = { u: rel.dot(U), v: rel.dot(V), kind: _cut.cParams.type };
   if (conn.kind === 'dove') {       // Zunge sitzt immer auf der Mittellinie des Querschnitts
-    const f = _cutSectionFrame(_cutMakeProbe());
+    const f = _cutSectionFrame(_cutSectionProbe(0.1, 0.1));
     if (!f) { notify('Die Schnittebene trifft hier kein Material', 'w'); return; }
     Object.assign(conn, f.at(f.tOf(conn.u, conn.v)), { ang: f.ang, half: f.half });
   }
