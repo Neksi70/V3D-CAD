@@ -25731,8 +25731,20 @@ function _fillPlan(plate, part, gapMm, marginMm, allowRot, opts) {
       if (aw < sw || ah < sh || nx < 1 || nz < 1) continue;
       const tries = [];
       if (n) { for (let c = 1; c <= nx; c++) { const r = Math.ceil(n / c); if (r <= nz && (r - 1) * c < n) tries.push([c, r]); } }
-      if (!tries.length) tries.push([nx, nz]);
+      // Ohne feste Anzahl: das Raster soll LÜCKENLOS bleiben. Liegt ein Platz über
+      // einer Bohrung der Platte, fällt nicht dieser eine Platz weg (ungleiche
+      // Reihen), sondern es gilt das größte vollständige Raster, das mittig
+      // zwischen die Bohrungen passt. Volle Fläche mit Lücken nur als Rückfall.
+      const lueckenlos = !tries.length;
+      if (lueckenlos) {
+        for (let c = 1; c <= nx; c++) for (let r = 1; r <= nz; r++) tries.push([c, r]);
+        const st = ([c, r]) => Math.min((aw - ((c - 1) * px + sw)) / (c + 1), (ah - ((r - 1) * pz + sh)) / (r + 1));
+        tries.sort((a, b) => b[0] * b[1] - a[0] * a[1] || st(b) - st(a));
+      }
+      let fertig = false;
       for (const [c, r] of tries) {
+        if (fertig) break;
+        const voll = lueckenlos && c === nx && r === nz;     // nur hier Lücken dulden (Rückfall)
         const slX = aw - ((c - 1) * px + sw), slZ = ah - ((r - 1) * pz + sh);
         const oX = opts.corner ? 0 : slX / 2, oZ = opts.corner ? 0 : slZ / 2;
         const res = []; let cells = 0;
@@ -25742,17 +25754,19 @@ function _fillPlan(plate, part, gapMm, marginMm, allowRot, opts) {
           if (gi < 0 || gj < 0 || gi + S.w > gw || gj + S.h > gh) continue;
           const cs = S.cells; let ok = true;
           for (let k = 0; k < cs.length; k += 2) if (occ[(gj + cs[k+1]) * gw + gi + cs[k]]) { ok = false; break; }
-          if (!ok) continue;
+          if (!ok) { if (lueckenlos && !voll) { cells = -1; j = r; break; } continue; }
           cells++;
           if (res.length < (n || 500)) res.push({ rot: S.rot, tx: gx0 + fi * hC - S.ox, tz: gz0 + fj * hC - S.oz });
         }
         // Wertung: Stückzahl, dann lückenloses Raster, dann die breitesten Stege zum Rand
         // (bei Gleichstand zwischen Drehungen bleibt das Teil, wie es liegt)
-        const cand = { res, rot: S.rot, full: cells === c * r && (!n || c * r === n) ? 1 : 0,
+        if (cells < 0) continue;
+        if (lueckenlos && cells === c * r) fertig = true;    // größtes lückenloses für diese Drehung
+        const cand = { res, rot: S.rot, wert: res.length * (lueckenlos && cells !== c * r ? 0.5 : 1), full: cells === c * r && (!n || c * r === n) ? 1 : 0,
                        steg: Math.min(slX / (c + 1), slZ / (r + 1)),
                        grid: { cols: c, rows: r, px: px * hC * 10, pz: pz * hC * 10, warn } };
-        if (!top || cand.res.length > top.res.length ||
-            (cand.res.length === top.res.length && (cand.full > top.full || (cand.full === top.full && cand.rot === top.rot && cand.steg > top.steg + 1e-9))))
+        if (!top || cand.wert > top.wert ||
+            (cand.wert === top.wert && (cand.full > top.full || (cand.full === top.full && cand.rot === top.rot && cand.steg > top.steg + 1e-9))))
           top = cand;
       }
     }
@@ -51127,8 +51141,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.105';
+const VOLME3D_VERSION = '1.18.106';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.106', date:'2026-10-02', changes:[
+    ['▦','<b>Füllen in Reihen: Bohrungen der Platte ergeben kein lückenhaftes Raster mehr.</b> Lag bei der Anordnung <i>In Reihen untereinander</i> ein Platz über einer Bohrung der Grundplatte (z. B. den Befestigungslöchern in den Ecken), fiel bisher genau dieses eine Teil weg — oben eine Reihe mit weniger Teilen als unten. Jetzt bleibt das Raster immer <b>vollständig und symmetrisch</b>: V3D CAD nimmt das größte lückenlose Raster, das mittig zwischen die Bohrungen passt, und lässt den Streifen daneben lieber frei. Mit „Drehen erlauben“ wird die Lage gewählt, in der so die meisten Teile passen.'],
+  ]},
   { version:'1.18.105', date:'2026-10-02', changes:[
     ['▦','<b>Füllen in Reihen: Teilung vorgeben.</b> Bei der Anordnung <i>In Reihen untereinander</i> gibt es jetzt die Felder <b>Teilung X</b> und <b>Y</b>. Wer dort zum Beispiel <b>120</b> und <b>60</b> einträgt, bekommt die Teile exakt in diesem Raster — glatte Werte fürs Greif- oder Palettierprogramm. Die Teilung ist der Abstand von Teil zu Teil, gemessen von gleicher Stelle zu gleicher Stelle (etwa Bohrung zu Bohrung). Leer bleibt alles wie bisher: so eng, wie der Abstand zwischen den Teilen erlaubt. Es kann auch nur eine Richtung vorgegeben werden. Ist ein Wert zu klein für das Teil samt Abstand, nimmt V3D CAD die kleinstmögliche Teilung und meldet das. Mit „Drehen erlauben“ wählt es die Lage, in der mit dieser Teilung die meisten Teile passen.'],
   ]},

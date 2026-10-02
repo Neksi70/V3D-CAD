@@ -88,6 +88,6 @@ await page.evaluate(() => { deselect(); setView('top'); fitToObjects(objects); }
 await page.mouse.move(5, 5); await page.mouse.click(700, 880).catch(() => {}); await page.waitForTimeout(700);
 await page.screenshot({ path: `${OUT}/fill_${MODE}_${COUNT || 'max'}${process.env.LOCH ? '_loch' : ''}.png` });
 await browser.close(); srv.kill();
-const ok = r.n >= 1 && r.raus === 0 && ov < 0.01 && (MODE !== 'rows' || (r.rots.length === 1 && r.teilungX.length <= 1 && r.teilungZ.length <= 1));
+const ok = r.n >= 1 && r.raus === 0 && ov < 0.01 && (MODE !== 'rows' || (r.rots.length === 1 && r.teilungX.length <= 1 && r.teilungZ.length <= 1 && (COUNT || r.n === r.spalten * r.reihen) && Math.abs(r.randL - r.randR) < 1.1 && (COUNT || Math.abs(r.randV - r.randH) < 1.1)));
 console.log(ok ? 'OK' : 'FEHLER');
 process.exit(ok ? 0 : 1);
