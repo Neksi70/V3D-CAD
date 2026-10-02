@@ -136,14 +136,12 @@ await pg.evaluate(() => {
     felder: [...document.querySelectorAll('#cut-conn-params input')].map(e => e.id),
   }));
   ok('Panel: Klick auf Schwalbe schaltet um', nachDove.typ === 'dove' && nachDove.felder.includes('cut-da'), nachDove);
-  // Ein gesetzter Verbinder bekommt den gewählten Typ und einen Marker
-  const marker = await pg.evaluate(() => {
-    _cut.connectors.push({ u: 0, v: 0, kind: _cut.cParams.type });
-    _cutRenderMarkers();
-    return { n: _cut.markers.length, kind: _cut.connectors[0].kind,
-             zaehler: document.getElementById('cut-conn-cnt').textContent };
-  });
-  ok('Panel: Marker + Zähler folgen dem Typ', marker.n === 1 && marker.kind === 'dove' && marker.zaehler === '1', marker);
+  // Schwalbenschwänze setzt die Bauart-Wahl von selbst — ohne Klick auf die Ebene
+  const marker = await pg.evaluate(() => ({
+    n: _cut.markers.length, kinds: _cut.connectors.map(c => c.kind), auto: _cut.doveAuto,
+    zaehler: document.getElementById('cut-conn-cnt').textContent }));
+  ok('Panel: Schwalbe wird automatisch gesetzt', marker.n >= 1 && marker.auto &&
+     marker.kinds.every(k => k === 'dove') && marker.zaehler === String(marker.n), marker);
   await pg.evaluate(() => _cutClose());
 }
 
@@ -318,6 +316,65 @@ await pg.evaluate(() => {
   ok('Schraube außen: Volumen plausibel', r.aussen.vol > 300 && r.aussen.vol < 2000, r.aussen);
   ok('Mutter: wasserdicht', r.mutter.offen === 0, r.mutter);
   ok('Gewinde-Werkzeug: wasserdicht', r.thread.offen === 0, r.thread);
+}
+
+// ── Schwalbenschwanz automatisch an einer dünnen Platte ────────────────────
+// 300 × 12 × 200 mm, senkrecht geschnitten (Achse X): Der Querschnitt ist ein
+// 12 mm hoher Streifen — der Zapfen passt nur um 90° gedreht. Geprüft: Klick auf „Schwalbe" setzt Zapfen ohne weiteres
+// Zutun, alle liegen im Material, sie wandern mit der Ebene mit, und der Schnitt
+// ergibt zwei wasserdichte Teile.
+{
+  await pg.evaluate(() => {
+    const t = window._ctT; t.reset();
+    addShape('box');
+    const box = objects[objects.length - 1];
+    box.scale.multiply(new THREE.Vector3(15, 0.6, 10));
+    box.updateMatrixWorld(true);
+    selectObjs([box]); openCutTool();
+    _cut.cParams.type = 'pin'; _cut.cParams.dA = 0;
+    _cutSetAxis('x');
+  });
+  await pg.click('.cut-ct[data-ct="dove"]');
+  const lage = () => pg.evaluate(() => {
+    const t = window._ctT;
+    return { n: _cut.connectors.length, auto: _cut.doveAuto, dA: _cut.cParams.dA,
+      kinds: _cut.connectors.map(c => c.kind),
+      // Quader: „im Material" = in der bbox mit 1 mm Rand (der Paritäts-Strahl
+      // trifft hier sonst gelegentlich genau eine Dreieckskante)
+      innen: _cut.connectors.map(c => _cut.bbox.clone().expandByScalar(-0.1).containsPoint(_cutInPlaneToWorld(c))),
+      x: _cut.connectors.map(c => +(_cutInPlaneToWorld(c).x * 10).toFixed(1)),
+      hinweis: document.getElementById('cut-conn-hint').textContent };
+  });
+  const a = await lage();
+  ok('Platte: Schwalben automatisch gesetzt', a.n >= 2 && a.auto && a.kinds.every(k => k === 'dove'), a);
+  ok('Platte: Zapfen um 90° gedreht, damit er in die Dicke passt', a.dA === 90, a.dA);
+  ok('Platte: alle Zapfen im Material', a.innen.length > 0 && a.innen.every(Boolean), a.innen);
+  ok('Platte: Hinweis nennt die Automatik', /automatisch/.test(a.hinweis), a.hinweis);
+  // Ebene verschieben → Zapfen ziehen nach (verzögert)
+  await pg.evaluate(() => _cutOnSlider(String(parseFloat(document.getElementById('cut-num').value) + 40)));
+  await pg.waitForTimeout(700);
+  const b2 = await lage();
+  ok('Platte: Zapfen wandern mit der Ebene', b2.n === a.n && b2.innen.every(Boolean) &&
+     Math.abs(b2.x[0] - a.x[0] - 40) < 0.5, { vorher: a.x, nachher: b2.x, innen: b2.innen, n: b2.n });
+  // 🗑 beendet die Automatik
+  const aus = await pg.evaluate(async () => {
+    _cutClearConnectors(); _cutOnSlider(document.getElementById('cut-num').value);
+    await new Promise(r => setTimeout(r, 600));
+    return _cut.connectors.length;
+  });
+  ok('Platte: nach 🗑 kommt nichts von selbst zurück', aus === 0, aus);
+  await pg.click('.cut-ct[data-ct="pin"]');
+  await pg.click('.cut-ct[data-ct="dove"]');
+  const r = await pg.evaluate(async () => {
+    const t = window._ctT, n0 = _cut.connectors.length;
+    document.getElementById('cut-lay').checked = false;
+    await _cutExecute();
+    return { n0, teile: objects.length, offen: objects.map(o => t.watertight(o.geometry)),
+             vol: objects.map(o => Math.round(t.vol(o))) };
+  });
+  ok('Platte: erneut Schwalbe wählen setzt wieder', r.n0 >= 2, r.n0);
+  ok('Platte: Schnitt ergibt 2 wasserdichte Teile', r.teile === 2 && r.offen.every(o => o === 0), r);
+  ok('Platte: Volumen bleibt bis auf das Spiel erhalten', Math.abs(r.vol[0] + r.vol[1] - 300*12*200) < 2000, r.vol);
 }
 
 ok('keine JS-Fehler', pageErrors.length === 0, pageErrors.slice(0, 3));

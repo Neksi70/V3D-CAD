@@ -50962,8 +50962,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.100';
+const VOLME3D_VERSION = '1.18.101';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.101', date:'2026-10-02', changes:[
+    ['✂️','<b>Schwalbenschwänze setzen sich beim Schneiden von selbst.</b> Wer im <i>✂ Schneiden</i>-Feld die Bauart <b>◤ Schwalbe</b> wählt, muss die Zapfen nicht mehr einzeln auf die orange Ebene klicken: Sie werden sofort gleichmäßig über die Schnittfläche verteilt und <b>wandern mit</b>, wenn die Ebene verschoben oder gedreht oder Breite/Länge geändert wird. Das klappt jetzt auch bei <b>dünnen Platten</b> — passt der Zapfen in der eingestellten Ausrichtung nicht in die Plattendicke, wird er um 90° gedreht; passt er gar nicht, kommt ein Hinweis, die Maße kleiner zu wählen. Lange Schnitte bekommen mehr Verbinder (bis zu 6). Von Hand geht weiterhin: <b>+ Verbinder</b> ergänzt einzelne Zapfen, 🗑 löscht alle — danach bleibt die Automatik aus, bis <b>⚡ Auto</b> oder erneut <b>◤ Schwalbe</b> gedrückt wird. Stift und Gewinde werden wie bisher per Klick oder ⚡ Auto gesetzt. Nebenbei findet ⚡ Auto jetzt auch für Stifte die Schnittfläche dünner Platten, die das grobe Raster bisher verfehlt hat.'],
+  ]},
   { version:'1.18.100', date:'2026-10-02', changes:[
     ['🖨️','<b>Neuer Drucker: Sovol SV08 Max.</b> Unter <i>⚙ Arbeitsbereich → Drucker</i> gibt es jetzt die Gruppe <b>Sovol</b> mit dem <b>SV08 Max</b>. Die Druckplatte stellt sich damit auf 500 × 500 mm ein (Bauraum des Druckers: 500 × 500 × 500 mm).'],
   ]},
@@ -57162,6 +57165,9 @@ window._testOCCTSequential = async function(ops) {
 const _cut = { active:false, axis:'y', posU:0, rot:{x:0,y:0,z:0}, q:new THREE.Quaternion(),
   target:null, bbox:null, plane:null, panel:null,
   connectorMode:false, connectors:[], markers:[],
+  // doveAuto: Schwalbenschwänze wurden automatisch gesetzt und wandern mit der
+  // Ebene mit (endet, sobald von Hand gesetzt oder gelöscht wird).
+  doveAuto:false, doveTimer:0,
   // cParams.type = 'pin' | 'dove' | 'thread'; jeder Verbinder merkt sich seinen
   // eigenen Typ (kind), damit sich Gewinde und Stifte mischen lassen.
   cParams:{ type:'pin', d:5, L:6, clr:0.15,
@@ -57210,6 +57216,7 @@ function openCutTool() {
   if (!isFinite(bbox.min.x)) { notify('Objekt ohne Geometrie', 'w'); return; }
   _cut.active = true; _cut.target = target; _cut.bbox = bbox; _cut.axis = 'y';
   _cut.rot = { x:0, y:0, z:0 }; _cut.q = new THREE.Quaternion(); _cut.connectors = [];
+  _cut.doveAuto = false;
   const c = bbox.getCenter(new THREE.Vector3());
   _cut.posU = c.y;
   _cutBuildPanel();
@@ -57269,13 +57276,13 @@ function _cutBuildPanel() {
     <div style="border-top:1px solid #3a3f47;margin:6px 0 10px;padding-top:10px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
         <button id="cut-conn-btn" onclick="_cutToggleConnMode()" style="flex:1;background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:7px;cursor:pointer;font-weight:700">+ Verbinder</button>
-        <button id="cut-conn-auto" onclick="_cutAutoConnectors()" title="Passstifte automatisch auf der Schnittfläche verteilen (Materialtiefe + Randabstand werden geprüft)" style="background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#F97316;padding:7px 10px;cursor:pointer;font-weight:700">⚡ Auto</button>
+        <button id="cut-conn-auto" onclick="_cutAutoConnectors()" title="Verbinder automatisch auf der Schnittfläche verteilen (Materialtiefe + Randabstand werden geprüft)" style="background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#F97316;padding:7px 10px;cursor:pointer;font-weight:700">⚡ Auto</button>
         <span id="cut-conn-cnt" style="color:#9aa0a8">0</span>
         <span onclick="_cutClearConnectors()" title="Alle Verbinder entfernen" style="cursor:pointer;color:#9aa0a8;font-size:15px">🗑</span>
       </div>
       <div style="display:flex;gap:4px;margin-bottom:6px">
         <button class="cut-ct" data-ct="pin" onclick="_cutSetConnType('pin')" title="Runder Passstift: Zapfen im einen Teil, Loch im anderen. Zum Ausrichten und Kleben">⌀ Stift</button>
-        <button class="cut-ct" data-ct="dove" onclick="_cutSetConnType('dove')" title="Schwalbenschwanz-Zapfen: hält zusätzlich gegen Verdrehen und Verrutschen. Senkrecht zusammensteckbar, zum Kleben">◤ Schwalbe</button>
+        <button class="cut-ct" data-ct="dove" onclick="_cutSetConnType('dove')" title="Schwalbenschwanz-Zapfen: hält zusätzlich gegen Verdrehen und Verrutschen. Senkrecht zusammensteckbar, zum Kleben. Wird automatisch gesetzt">◤ Schwalbe</button>
         <button class="cut-ct" data-ct="thread" onclick="_cutSetConnType('thread')" title="Gewindebolzen: beide Hälften bekommen ein Gewindeloch, der Bolzen wird als eigenes Teil mitgedruckt. Verschraubt statt geklebt">🔩 Gewinde</button>
       </div>
       <div id="cut-conn-params"></div>
@@ -57367,6 +57374,7 @@ function _cutUpdatePlane() {
   _cutRenderMarkers();
   // Beim Rotations-Drag den Gizmo NICHT neu bauen (Pivot fix) → Hervorhebung/Skala bleiben
   if (!(_cut.drag && _cut.drag.type === 'rot')) _cutBuildGizmo();
+  _cutDoveAutoSoon();
 }
 
 // In-Ebenen-Koordinaten {u,v} (relativ zum Pivot entlang Basis) → Weltpunkt
@@ -57511,6 +57519,26 @@ function _cutSetConnType(t) {
   if (!_CUT_CONN_TYPES[t]) return;
   _cut.cParams.type = t;
   _cutRenderConnParams();
+  // Schwalbenschwänze werden nicht von Hand gesetzt: Bauart wählen genügt.
+  if (t === 'dove' && _cut.active && !_cut.connectors.some(c => c.kind === 'dove')) {
+    if (_cut.connectorMode) _cutToggleConnMode();
+    _cutAutoConnectors();
+  } else {
+    _cutRenderMarkers();
+  }
+}
+
+// Automatisch gesetzte Schwalbenschwänze neu verteilen, sobald sich Ebene oder
+// Maße ändern — verzögert, weil das Abtasten bei großen Netzen spürbar rechnet.
+function _cutDoveAutoSoon() {
+  clearTimeout(_cut.doveTimer); _cut.doveTimer = 0;
+  if (!_cut.active || !_cut.doveAuto || _cut.cParams.type !== 'dove') return;
+  _cut.doveTimer = setTimeout(_cutDoveAutoNow, 250);
+}
+function _cutDoveAutoNow() {
+  const pending = !!_cut.doveTimer;
+  clearTimeout(_cut.doveTimer); _cut.doveTimer = 0;
+  if (pending && _cut.active && _cut.doveAuto && _cut.cParams.type === 'dove') _cutAutoConnectors(true);
 }
 
 function _cutSetCParam(key, val) {
@@ -57522,6 +57550,7 @@ function _cutSetCParam(key, val) {
   p[key] = (min !== undefined) ? Math.max(min, v) : v;
   if (key === 'tDepth' || key === 'tSize') _cutRenderConnParams();
   _cutRenderMarkers();
+  if (key === 'dW' || key === 'dL' || key === 'dH' || key === 'dA') _cutDoveAutoSoon();
 }
 
 function _cutFld(label, id, val, step, key, title) {
@@ -57577,6 +57606,8 @@ function _cutRenderConnParams() {
 function _cutConnNote() {
   const hasThread = _cut.connectors.some(c => c.kind === 'thread');
   const hasAnti   = _cut.connectors.some(c => c.kind !== 'thread');
+  if (_cut.doveAuto && _cut.cParams.type === 'dove' && !hasThread)
+    return 'Schwalbenschwänze werden automatisch gesetzt und wandern mit der Schnittebene mit.';
   return (hasThread && !hasAnti)
     ? 'Nur Gewinde gesetzt: Beim Festschrauben können sich die Teile gegeneinander verdrehen — mindestens einen Stift oder Schwalbenschwanz dazusetzen.'
     : '';
@@ -57636,7 +57667,7 @@ function _cutToggleConnMode() {
 }
 
 function _cutClearConnectors() {
-  _cut.connectors = [];
+  _cut.connectors = []; _cut.doveAuto = false;
   _cutRenderMarkers();
 }
 
@@ -57645,8 +57676,9 @@ function _cutClearConnectors() {
 // entlang der Normalen = innen/außen). Gültige Kandidaten brauchen beidseits
 // genug Materialtiefe (Pin-Länge/2 + 1 mm) und Randabstand (Radius + 1,5 mm).
 // Die Pins werden dann entlang der Hauptachse des Querschnitts verteilt.
-function _cutAutoConnectors() {
+function _cutAutoConnectors(quiet) {
   if (!_cut.active || !_cut.target) return;
+  clearTimeout(_cut.doveTimer); _cut.doveTimer = 0;
   const target = _cut.target;
   const n = _cutNormal();
   const { U, V } = _cutBasis(n);
@@ -57682,26 +57714,69 @@ function _cutAutoConnectors() {
     return { u, v, inside, dUp: up.length ? up[0].distance : 0, dDn: dn.length ? dn[0].distance : 0 };
   };
 
-  // Raster über die Ebenen-Ausdehnung (Ebene ist diag·1.1 groß, Raster 26×26)
-  const half = diag * 0.55, N = 26, step = (half * 2) / (N - 1);
-  const valid = [];
-  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
-    const u = -half + i * step, v = -half + j * step;
-    const p = probe(u, v);
-    if (!p.inside || p.dUp < needDepth || p.dDn < needDepth) continue;
-    // Randabstand: 4 Punkte auf dem Margin-Kreis müssen ebenfalls innen liegen
-    let ok = true;
-    for (let a = 0; a < 4 && ok; a++) {
-      const ang = a * Math.PI / 2;
-      const q = probe(u + Math.cos(ang) * margin, v + Math.sin(ang) * margin);
-      if (!q.inside) ok = false;
+  // Raster über den Querschnitt: Ausdehnung aus den bbox-Ecken in Ebenen-
+  // Koordinaten, je Richtung eigene Schrittweite. Ein quadratisches Raster über
+  // die ganze Diagonale fiele bei dünnen Platten zwischen den Zeilen durch.
+  const piv = _cutPivot(), bb = _cut.bbox;
+  let uLo = Infinity, uHi = -Infinity, vLo = Infinity, vHi = -Infinity;
+  for (let i = 0; i < 8; i++) {
+    const rel = new THREE.Vector3(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y,
+                                  i & 4 ? bb.max.z : bb.min.z).sub(piv);
+    const u = rel.dot(U), v = rel.dot(V);
+    uLo = Math.min(uLo, u); uHi = Math.max(uHi, u); vLo = Math.min(vLo, v); vHi = Math.max(vHi, v);
+  }
+  const N = 26, uStep = (uHi - uLo) / N, vStep = (vHi - vLo) / N;
+  // fits(u,v) = Randabstand eingehalten?
+  const scan = fits => {
+    const out = [];
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+      const p = probe(uLo + (i + 0.5) * uStep, vLo + (j + 0.5) * vStep);
+      if (!p.inside || p.dUp < needDepth || p.dDn < needDepth) continue;
+      if (fits(p.u, p.v)) out.push(p);
     }
-    if (ok) valid.push(p);
+    return out;
+  };
+  let valid;
+  if (cp.type === 'dove') {
+    // Schwalbenschwanz: den gedrehten Grundriss (+1,2 mm Wand) prüfen statt eines
+    // Kreises — sonst passt er in keine Platte, die dünner ist als seine Diagonale.
+    // Passt er in der eingestellten Ausrichtung nicht, um 90° gedreht versuchen.
+    const m = 0.12, hl = cp.dL / 20 + m, hw = cp.dW / 20 + m;
+    const fitAt = deg => {
+      const ca = Math.cos(deg * Math.PI / 180), sa = Math.sin(deg * Math.PI / 180);
+      const pts = [[-hl,-hw],[hl,-hw],[hl,hw],[-hl,hw],[0,-hw],[0,hw],[-hl,0],[hl,0]];
+      return (u, v) => pts.every(q => probe(u + q[0]*ca - q[1]*sa, v + q[0]*sa + q[1]*ca).inside);
+    };
+    valid = scan(fitAt(cp.dA));
+    if (!valid.length) {
+      const alt = ((cp.dA + 90) % 360 + 360) % 360;
+      valid = scan(fitAt(alt));
+      if (valid.length) {
+        cp.dA = alt;
+        const el = document.getElementById('cut-da'); if (el) el.value = alt;
+      }
+    }
+  } else {
+    // Randabstand: 4 Punkte auf dem Margin-Kreis müssen ebenfalls innen liegen
+    valid = scan((u, v) => {
+      for (let a = 0; a < 4; a++) {
+        const ang = a * Math.PI / 2;
+        if (!probe(u + Math.cos(ang) * margin, v + Math.sin(ang) * margin).inside) return false;
+      }
+      return true;
+    });
   }
-  if (!valid.length) {
-    notify('Keine geeignete Stelle gefunden — Pin kleiner wählen oder Ebene verschieben', 'w');
-    return;
-  }
+  const fail = () => {
+    if (cp.type === 'dove') {       // veraltete Schwalben nicht stehen lassen
+      _cut.connectors = _cut.connectors.filter(c => c.kind !== 'dove');
+      _cutRenderMarkers();
+    }
+    if (!quiet) notify(cp.type === 'dove'
+      ? 'Schwalbenschwanz passt nicht in die Schnittfläche — Breite/Länge kleiner wählen oder Ebene verschieben'
+      : 'Keine geeignete Stelle gefunden — Pin kleiner wählen oder Ebene verschieben', 'w');
+  };
+  _cut.doveAuto = cp.type === 'dove';
+  if (!valid.length) { fail(); return; }
 
   // Hauptachse des gültigen Bereichs bestimmen, Pins gleichmäßig verteilen
   let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
@@ -57710,7 +57785,8 @@ function _cutAutoConnectors() {
   const uRange = uMax - uMin, vRange = vMax - vMin;
   const alongU = uRange >= vRange;
   const major = alongU ? uRange : vRange;
-  const k = major < 6 ? 2 : major < 12 ? 3 : 4;   // <60mm→2, <120mm→3, sonst 4 Pins
+  // <60mm→2, <120mm→3, <300mm→4, <450mm→5, sonst 6
+  const k = major < 6 ? 2 : major < 12 ? 3 : major < 30 ? 4 : major < 45 ? 5 : 6;
 
   const chosen = [];
   const minDist = Math.max(margin * 2, major / (k + 1) * 0.5);
@@ -57728,10 +57804,7 @@ function _cutAutoConnectors() {
     }
     if (best) chosen.push({ u: best.u, v: best.v });
   }
-  if (!chosen.length) {
-    notify('Keine geeignete Stelle gefunden — Pin kleiner wählen oder Ebene verschieben', 'w');
-    return;
-  }
+  if (!chosen.length) { fail(); return; }
   // Beim Gewinde bekommt der mittigste Punkt den Bolzen, alle anderen werden
   // Passstifte — ein einzelner Bolzen allein lässt die Hälften beim Festziehen
   // gegeneinander verdrehen.
@@ -57745,11 +57818,14 @@ function _cutAutoConnectors() {
   }
   _cut.connectors = chosen;
   _cutRenderMarkers();
+  if (quiet) return;
   const nT = chosen.filter(c => c.kind === 'thread').length;
   notify(nT
     ? (nT + ' Gewinde + ' + (chosen.length - nT) + (chosen.length - nT === 1 ? ' Passstift' : ' Passstifte') +
        ' gesetzt ✓ — der Stift hält die Hälften beim Schrauben auf Position'
        + (chosen.length === 1 ? ' (hier war kein Platz für einen zweiten Punkt — von Hand ergänzen)' : ''))
+    : cp.type === 'dove'
+    ? (chosen.length + ' Schwalbenschwänze automatisch gesetzt ✓ — sie wandern mit der Schnittebene mit')
     : (chosen.length + ' ' + _CUT_CONN_TYPES[cp.type] + '-Verbinder gesetzt ✓ — Position per „+ Verbinder" ergänzbar, 🗑 löscht alle'), 'ok');
 }
 
@@ -57764,6 +57840,7 @@ function _cutPlaneClick(e) {
   if (!raycaster.ray.intersectPlane(mplane, pt)) return;
   const { U, V } = _cutBasis(n), rel = pt.sub(pivot);
   _cut.connectors.push({ u: rel.dot(U), v: rel.dot(V), kind: _cut.cParams.type });
+  _cut.doveAuto = false;   // von Hand gesetzt → nichts mehr automatisch umverteilen
   _cutRenderMarkers();
   e.preventDefault();
   e.stopPropagation();
@@ -58158,6 +58235,7 @@ async function _cutBoreThreads(target, conns) {
 async function _cutExecute() {
   const target = _cut.target;
   if (!target) { _cutClose(); return; }
+  _cutDoveAutoNow();   // ausstehende Neuverteilung der Schwalbenschwänze noch erledigen
   const axis = _cut.axis;
   const layFlat = document.getElementById('cut-lay')?.checked;
   const flipTop = document.getElementById('cut-flip')?.checked;
@@ -58294,6 +58372,7 @@ function _cutClose() {
   if (_cut.panel) { _cut.panel.remove(); _cut.panel = null; }
   _cut.active = false; _cut.target = null; _cut.bbox = null;
   _cut.connectorMode = false; _cut.connectors = [];
+  clearTimeout(_cut.doveTimer); _cut.doveTimer = 0; _cut.doveAuto = false;
   canvas.style.cursor = '';
 }
 
