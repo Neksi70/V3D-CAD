@@ -45,7 +45,12 @@ await pg.evaluate(() => {
 });
 
 // Langsamer Server: Anfragen an die Boolean-Routen hängen 60 s, reagieren aber auf abort
+// Vereinen/Abziehen rechnen seit v1.18.114/115 zuerst mit Manifold im Browser und
+// kämen gar nicht beim Server an — für die Abbruch-Prüfung des Server-Rückfalls
+// Manifold hier abschalten.
 const slowFetch = on => pg.evaluate(on => {
+  if (!window._mfInit0) window._mfInit0 = window._mfInit;
+  window._mfInit = on ? () => Promise.reject(new Error('Test: Manifold aus')) : window._mfInit0;
   if (!window._fetch0) window._fetch0 = window.fetch;
   window._slowHits = 0;
   window.fetch = !on ? window._fetch0 : function (url, opt) {
@@ -136,6 +141,7 @@ let idle = false;
 for (let i = 0; i < 60 && !idle; i++) { idle = (await busy()) === 0; if (!idle) await new Promise(r => setTimeout(r, 3000)); }
 ok('Pool vor dem Test frei', idle);
 ids0 = await fineSpheres();
+await pg.evaluate(() => { window._mfInit = () => Promise.reject(new Error('Test: Manifold aus')); });
 await pg.evaluate(() => { window._unionP = unionSelected(); });
 await pg.waitForSelector('._pc', { timeout: 5000 });
 let seenBusy = false;
@@ -147,6 +153,7 @@ let freed = false;
 for (let i = 0; i < 20 && !freed; i++) { await new Promise(r => setTimeout(r, 500)); freed = (await busy()) === 0; }
 ok('Arbeiter nach Abbruch binnen 10 s frei', freed);
 s = await state();
+await pg.evaluate(() => { window._mfInit = window._mfInit0; });
 ok('echter Server: Kugeln unverändert', JSON.stringify(s.ids) === JSON.stringify(ids0) && s.groups === 0, s);
 
 // ── 5. ohne Abbruch normal ───────────────────────────────────────────────────

@@ -17782,22 +17782,29 @@ async function unionSelected() {
   if (holeSel.length) notify('Bohrungs-Körper in der Auswahl werden als normales Material mitverschmolzen — zum Ausstanzen stattdessen „Abziehen" nutzen', 'w');
   const nTri = stls.reduce((s, b) => s + (b.byteLength - 84) / 50, 0);
   if (!stls.length) { notify('Keine druckbaren Flächen in der Auswahl', 'w'); return; }
-  // Gewickelte/angeschmiegte Motive: fein unterteilte Keile, an denen das
-  // OCCT-Sewing hängenbleibt (siehe _wrapTool beim Abziehen) — gemessen lief
-  // Becher + Streifenmuster (5k Dreiecke) in die 40-s-Notbremse und wurde nur
-  // gruppiert. Manifold rechnet das im Browser in Sekundenbruchteilen.
-  if (sel.some(o => o.userData._svgWrap || o.userData._svgSchmieg || o.userData._svgRaised)) {
+  // Manifold zuerst, im Browser — für JEDE Auswahl. Anfangs nur für gewickelte/
+  // angeschmiegte Motive (Becher + Streifenmuster, 5k Dreiecke, lief bei OCCT in
+  // die 40-s-Notbremse). Alles andere ging an OCCT und wurde ab ~40.000 Dreiecken
+  // gar nicht erst versucht, sondern nur gruppiert („Vorher Vereinfachen“) — Josy
+  // 3.10.: „vorher vereinfacht, vereint dann aber trotzdem nicht“. Der Server
+  // bekommt hier ohnehin nur STL-Netze, eine B-Rep kommt nie an; OCCT hat also
+  // nichts Exaktes zu bewahren (wie beim Abziehen seit v1.18.114) und bleibt
+  // Rückfall für Netze, die Manifold nicht annimmt.
+  {
     try {
-      const w = await _mfInit();
-      let acc = null;
-      for (const buf of stls) {
-        const dv = new DataView(buf), n = dv.getUint32(80, true), t = new Float32Array(n * 9);
-        for (let i = 0; i < n; i++) for (let k = 0; k < 9; k++) t[i*9+k] = dv.getFloat32(84 + i*50 + 12 + k*4, true);
-        let mf;
-        try { mf = _mfFromSoup(w, t); }
-        catch (eRoh) { const g = _healTrisForBool(t); if (!g) throw eRoh; mf = _mfFromSoup(w, g); }
-        acc = acc ? w.Manifold.union(acc, mf) : mf;
-      }
+      const acc = await _mfRetry(async () => {
+        const w = await _mfInit();
+        let acc = null;
+        for (const buf of stls) {
+          const dv = new DataView(buf), n = dv.getUint32(80, true), t = new Float32Array(n * 9);
+          for (let i = 0; i < n; i++) for (let k = 0; k < 9; k++) t[i*9+k] = dv.getFloat32(84 + i*50 + 12 + k*4, true);
+          let mf;
+          try { mf = _mfFromSoup(w, t); }
+          catch (eRoh) { if (_mfEngineErr(eRoh)) throw eRoh; const g = _healTrisForBool(t); if (!g) throw eRoh; mf = _mfFromSoup(w, g); }
+          acc = acc ? w.Manifold.union(acc, mf) : mf;
+        }
+        return acc;
+      });
       if (!acc || acc.isEmpty()) throw new Error('Ergebnis ist leer');
       saveUndo();
       const _opJournal = { op: 'union', parts: sel.map(objectToData) };
@@ -17809,7 +17816,7 @@ async function unionSelected() {
       notify(_unionMotivMeldung(gestutzt), 'ok');
       return;
     } catch (e) {
-      console.warn('[union] Manifold-Weg für Motiv gescheitert → OCCT:', e.message || e);
+      console.warn('[union] Manifold-Weg gescheitert → OCCT:', e.message || e);
     }
   }
   // Laufzeit VORHER abschätzen statt den Nutzer bei 85 % hängen zu lassen.
@@ -51265,8 +51272,12 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.114';
+const VOLME3D_VERSION = '1.18.115';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.115', date:'2026-10-03', changes:[
+    ['\u{1F41B}','<b>Rundum gewickelte Muster verschwinden auf runden Schultern nicht mehr.</b> Wer ein großes Muster (zum Beispiel Leo-Flecken) um einen Körper wickelt, der oben rund zuläuft, sah auf der Schulter zwei leere Ringe \u2014 dort lag das Muster in der Wand statt darauf, und nach dem Vereinen fehlte es an genau diesen Stellen. Die Rundung wird jetzt fein genug abgetastet: Das Muster liegt bis zur Öffnung überall gleichmäßig auf. Gemeldet von Josy.'],
+    ['\u{1F41B}','<b>Vereinen klappt jetzt auch bei feinen Netzen \u2014 ohne vorher zu vereinfachen.</b> Ab etwa 40.000 Dreiecken (zum Beispiel ein Körper mit Oberflächen-Textur) wurde bisher nur gruppiert, mit dem Rat \u201eVorher Vereinfachen\u201c \u2014 oft half auch das nicht. Vereinen rechnet jetzt immer zuerst direkt im Browser (wie Abziehen seit 1.18.114): Ein texturierter Zylinder mit Kugel (340.000 Dreiecke) wird in Sekunden zu einem wasserdichten Körper, und es geht auch dann, wenn der Rechen-Server gerade nicht erreichbar ist. Gemeldet von Josy.'],
+  ]},
   { version:'1.18.114', date:'2026-10-03', changes:[
     ['\u{1F41B}','<b>Abziehen bleibt bei Gewinden und Muttern nicht mehr bei 93\u202f% stehen.</b> Eine Scheibe mit aufgesetzter Mutter, aus der ein Gewindeloch abgezogen wird, ging an den Server-Rechner \u2014 und der kam mit den vielen schr\u00e4gen Gewindefl\u00e4chen nicht zurecht: Der Balken stand bei 93\u202f%, nach zehn Minuten brach der Server ab. Vereinfachen half nicht. Nachgestellt mit M12: Server <b>133 Sekunden</b>, jetzt im Browser <b>unter einer Sekunde</b>. Abziehen rechnet deshalb jetzt immer zuerst direkt im Browser; der Server springt nur noch ein, wenn ein Teil nicht geschlossen ist. Gemeldet von Ralf.'],
   ]},
@@ -54045,6 +54056,18 @@ function _svgWrapBogenY(tab, sWert) {
   return y[i] + (y[i + 1] - y[i]) * t;
 }
 
+// Wie viele Höhenzeilen das Profil braucht: feste 24 ergaben bei großen Motiven
+// ~4 mm Abstand, das Radiusfeld hat sogar nur 15 Zeilen (~13 mm). Dazwischen wird
+// linear überbrückt — auf einer gewölbten Schulter liegt diese Sehne bis 0,6 mm IN
+// der Wand, das Motiv steht aber nur 0,2 mm heraus. Josy 3.10.: Leo-Muster rundum
+// auf einer Glocke, auf der Schulter „zwei Ringe, wo er nichts rau setzt“,
+// dazwischen eine Reihe sichtbar. Profil auf ~2 mm, die Wölbung zwischen den
+// Feldzeilen holt sich _svgWrapBuildGeo daraus (das Feld selbst feiner abzutasten
+// brachte auf Kugeln mit Querachse Randzeilen mit falschem Radius ins Feld).
+function _svgWrapProfilSchritte(halfHeightU) {
+  return Math.max(24, Math.min(80, Math.ceil(halfHeightU * 2.2 / 0.2)));
+}
+
 function _svgWrapSampleField(probe, halfHeightU, halfWidthU, e1W, e3W, aW, nH, nA) {
   const mesh = probe.mesh;
   if (!mesh || !mesh.geometry) return null;
@@ -54350,13 +54373,28 @@ function _svgWrapBuildGeo(ud, spec) {
   };
   let rMinProf = R0;
   if (prof) for (const p of prof) rMinProf = Math.min(rMinProf, p[1]);
+  // Das Radiusfeld hat nur wenige Höhenzeilen und überbrückt dazwischen linear —
+  // auf einer gewölbten Schulter eine Sehne IN der Wand (Josy 3.10.: zwei leere
+  // Ringe). Das Profil ist fein abgetastet: seine Abweichung von derselben Sehne
+  // ist der Durchhang, der dem Feld fehlt. An den Feldzeilen selbst ist er 0.
+  const durchhang = h => {
+    if (!prof || !feld) return 0;
+    const hs = feld.hs;
+    if (h <= hs[0] || h >= hs[hs.length - 1]) return 0;
+    let i = 0;
+    while (i < hs.length - 2 && hs[i + 1] < h) i++;
+    const t = (h - hs[i]) / Math.max(1e-9, hs[i + 1] - hs[i]);
+    const r0 = radiusAt(hs[i]), r1 = radiusAt(hs[i + 1]);
+    return radiusAt(h) - (r0 + (r1 - r0) * t);
+  };
 
   // In Umfangsrichtung immer unterteilen (~3°), in der Höhe nur bei schräger
   // oder gewölbter Wand — dort ist der Warp sonst eine Sehne durch die Krümmung.
   let work = _svgWrapSlice(flat, Math.max(1e-4, rMinProf) * Math.PI / 60, 0);
   flat.dispose();
   if (prof) {
-    const sliced = _svgWrapSlice(work, Math.max(1e-4, halfH * 2) / 28, 1);
+    // Höhenschnitte höchstens 2 mm auseinander (Sehne auf der Schulter), max. 90
+    const sliced = _svgWrapSlice(work, Math.max(1e-4, halfH * 2 / 90, Math.min(0.2, halfH * 2 / 28)), 1);
     work.dispose(); work = sliced;
   }
   const src = work.attributes.position;
@@ -54373,11 +54411,12 @@ function _svgWrapBuildGeo(ud, spec) {
     // Radius an genau dieser Stelle nachbessern.
     let Rh = Rh0, th0 = -u / Math.max(1e-4, Rh0);
     if (feld) {
-      Rh = _svgWrapFieldR(feld, h, th0);
+      const dur = durchhang(h);
+      Rh = _svgWrapFieldR(feld, h, th0) + dur;
       th0 = -u / Math.max(1e-4, Rh);
-      Rh = _svgWrapFieldR(feld, h, th0);
+      Rh = _svgWrapFieldR(feld, h, th0) + dur;
       th0 = -u / Math.max(1e-4, Rh);
-      Rh = _svgWrapFieldR(feld, h, th0);
+      Rh = _svgWrapFieldR(feld, h, th0) + dur;
     }
     const k = slopeAt(h);
     // −u statt u: der Warp (u,h,d) → (d,h,u) vertauscht zwei Achsen und SPIEGELT
@@ -54488,7 +54527,7 @@ function _svgWrapApply(svgMesh, probe, hitPointWorld) {
       }
     }
   }
-  const profile = pr.mesh ? _svgWrapSampleProfile(pr, halfH, 24) : null;
+  const profile = pr.mesh ? _svgWrapSampleProfile(pr, halfH, _svgWrapProfilSchritte(halfH)) : null;
   const halfW = _svgWrapHalfWidth(svgMesh.userData, s, rotNeu);
   const feld = pr.mesh ? _svgWrapSampleField(pr, halfH, halfW, e1, e3, a, 15, 61) : null;
   // Querachse (Kugel oben/unten): die Motiv-Hochachse liefe sonst entlang der Achse,
@@ -54566,7 +54605,7 @@ function _svgWrapRefresh(svgMesh, probe) {
   const halfH = _svgWrapHalfHeight(svgMesh.userData, s, w.rotRad || 0);
   const spec = { R: probe.R, depthMm: w.depthMm,
                  epsMm: probe.epsMm != null ? probe.epsMm : 0.2, s,
-                 profile: probe.mesh ? _svgWrapSampleProfile(probe, halfH, 24) : null,
+                 profile: probe.mesh ? _svgWrapSampleProfile(probe, halfH, _svgWrapProfilSchritte(halfH)) : null,
                  feld: probe.mesh ? _svgWrapSampleField(probe, halfH,
                          _svgWrapHalfWidth(svgMesh.userData, s, w.rotRad || 0),
                          _svgWrapRadialDir(svgMesh),
