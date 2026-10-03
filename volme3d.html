@@ -17472,8 +17472,8 @@ function _meshWorldToStls(obj) {
 // Genus 5541 brauchte 30 min zum Einlesen, 13,5 min zum Sewen und kippte dann
 // in den WASM-OOM — der Nutzer sah nur den Balken bei 93 % stehen.
 // Manifold rechnet direkt auf dem Dreiecksnetz: derselbe Fall in ~1,4 s.
-// Darunter bleibt OCCT zuständig (exaktere Kanten, echte B-Rep-Flächen).
-const _MF_SUBTRACT_MIN_TRIS = 50000;
+// Seit v1.18.114 geht der generische Abzug immer zuerst an Manifold (siehe
+// _doSubtractHoles) — OCCT bekommt dort ohnehin nur STL-Netze, keine B-Rep.
 
 // „Nur ein Netz" — aus STL/OBJ/3MF importiert, ohne B-Rep dahinter. Für solche
 // Körper bringt OCCT keinen Genauigkeitsvorteil (es näht das Netz nur zusammen
@@ -24642,13 +24642,9 @@ async function _doSubtractHoles(solids, holes, ctl) {
 
   if (_genericTools.length) {
     let occtOk = false;
-    // ── Schnellweg: große/löchrige Netze gehen an Manifold statt an OCCT ─────
-    // (OCCT-Sewing skaliert auf solchen Netzen nicht — siehe _mfSubtractWorld.)
+    // ── Schnellweg: Manifold statt OCCT ──────────────────────────────────────
+    // (OCCT-Sewing skaliert auf Netzen nicht — siehe _mfSubtractWorld.)
     const _nTris = _countTris([solidMesh, ...solids.slice(1)]) + _countTris(_genericTools);
-    // Gewickelte Motive sind zwangsläufig fein tesselliert (Bogen in ~3°-Schritten).
-    // Daran verschluckt sich das OCCT-Sewing (Minuten bis nie) — Manifold macht es
-    // in Sekunden. Siehe auch _MF_SUBTRACT_MIN_TRIS.
-    const _hasWrapTool = _genericTools.some(t => t.userData && t.userData._wrapTool);
     // Importiertes Netz ohne echte B-Rep? Dann hat OCCT gar nichts zu bewahren:
     // Es muss das STL erst zu einem Shell zusammennähen und gibt am Ende ohnehin
     // wieder ein Netz zurück. Das kostet aber ein Vielfaches — an Josys
@@ -24661,7 +24657,14 @@ async function _doSubtractHoles(solids, holes, ctl) {
     // importiertes Bauteil, 33.600 Dreiecke): OCCT hing am Sewing des Werkzeugs,
     // der Balken stand wieder bei 93 %.
     const _meshImport = [solidMesh, ...solids.slice(1), ..._genericTools].some(o => _istNetzImport(o));
-    if (_nTris >= _MF_SUBTRACT_MIN_TRIS || _hasWrapTool || _meshImport) {
+    // Zum dritten Mal 93 % (Ralf, 3.10.2026): Scheibe + Mutter minus Gewindeloch,
+    // KEIN Import, nur ~10k Dreiecke — OCCT lief in die 600-s-Notbremse, das Sewing
+    // war nach 0,5 s fertig, es hing der Boolean selbst. Nachgestellt (M12, 22k
+    // Dreiecke): OCCT 133 s. Dieser Weg schickt ohnehin nur STL-Netze an den Server
+    // (_meshWorldToStls), eine B-Rep kommt dort nie an — OCCT hat also auch bei
+    // App-Körpern nichts Exaktes zu bewahren. Deshalb rechnet Manifold jetzt
+    // IMMER zuerst; OCCT bleibt Rückfall (es verzeiht offene Netze per Sewing).
+    {
       try {
         const t0 = performance.now();
         const geo = await _mfRetry(() => _mfSubtractWorld([solidMesh, ...solids.slice(1)], _genericTools));
