@@ -49,6 +49,32 @@ for (const [fein, vereinf, name] of [[false, false, 'Zylinder + Kugel'], [true, 
   ok(`${name}: wasserdicht`, r.offen === 0, r.offen);
   if (fein) ok(`${name}: wirklich feines Netz (> 40.000 Dreiecke, alter OCCT-Weg hätte nur gruppiert)`, r.nachVereinfachen > 40000, r.nachVereinfachen);
 }
+// Kaputte Netze: Ein Stück, das auch die Reparatur nicht rettet („Flosse“: drei
+// Dreiecke an einer Kante), darf das Vereinen nicht mehr kippen (Josy 4.10., 13:19:
+// Server-Vereinen 63 s, gescheitert).
+const kaputtLauf = (modus) => pg.evaluate(async (modus) => {
+  objects.slice().forEach(o => scene.remove(o)); objects.length = 0;
+  window._toasts = window._toasts || []; window._toasts.length = 0;
+  if (!window._n0) { window._n0 = window.notify; window.notify = function (m) { window._toasts.push(String(m)); return window._n0.apply(this, arguments); }; }
+  addShape('box'); const a = objects[objects.length - 1];
+  addShape('cylinder'); const c = objects[objects.length - 1]; c.position.x += 0.6; c.updateMatrixWorld(true);
+  const flosse = [0,0,0, 1,0,0, 0,1,0,  0,0,0, 1,0,0, 0,-1,0.3,  0,0,0, 1,0,0, 0,0.2,1];
+  const g = new THREE.BoxGeometry(0.4, 0.4, 0.4).toNonIndexed(); g.translate(0, 1.1, 0);
+  const pos = modus === 'stueck' ? [...g.attributes.position.array, ...flosse.map(v => v * 0.3 + 1)] : flosse;
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial());
+  m.userData = { id: idCtr++, name: 'Motiv', type: 'custom', shapeType: 'custom' };
+  scene.add(m); objects.push(m); m.updateMatrixWorld(true);
+  selectObjs([a, c, m]);
+  await unionSelected();
+  return { namen: objects.filter(o => o.visible !== false).map(o => o.userData.name), toasts: window._toasts.slice() };
+}, modus);
+let k = await kaputtLauf('stueck');
+ok('Motiv mit unreparierbarem Stück: alles zu EINEM Körper, Stück weggelassen und gemeldet',
+  k.namen.length === 1 && /^Verschmolzen/.test(k.namen[0]) && k.toasts.some(t => /weggelassen/.test(t)), k);
+k = await kaputtLauf('ganz');
+ok('komplett kaputtes Teil: Rest verschmolzen, kaputtes bleibt stehen und wird genannt',
+  k.namen.length === 2 && k.namen.some(n => /^Verschmolzen/.test(n)) && k.namen.includes('Motiv') && k.toasts.some(t => /Nicht mitverschmolzen: „Motiv“/.test(t)), k);
 ok('Server nicht gebraucht', occtAufrufe === 0, occtAufrufe);
 ok('keine JS-Fehler', errs.length === 0, errs);
 await b.close();

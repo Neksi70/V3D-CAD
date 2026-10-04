@@ -167,6 +167,29 @@ WASM_GZ = 'volme3d-occt.wasm.gz'
 # Gehaertete Auslieferungs-Version (von build.js erzeugt). Liegt sie vor,
 # wird sie statt der Arbeitskopie volme3d.html ausgeliefert.
 DIST_HTML = 'volme3d.dist.html'
+
+
+_VER_CACHE = {'key': None, 'ver': ''}
+
+
+def _ausgelieferte_version():
+    """VOLME3D_VERSION der Datei, die gerade ausgeliefert wird (nach mtime gecacht)."""
+    fname = 'volme3d.html' if DEV_MODE or not os.path.isfile(DIST_HTML) else DIST_HTML
+    try:
+        st = os.stat(fname)
+    except OSError:
+        return ''
+    key = (fname, st.st_mtime_ns, st.st_size)
+    if _VER_CACHE['key'] != key:
+        ver = ''
+        try:
+            with open(fname, 'rb') as f:
+                m = re.search(rb'VOLME3D_VERSION\s*=\s*[\'"]([0-9.]+)[\'"]', f.read())
+            ver = m.group(1).decode() if m else ''
+        except OSError:
+            pass
+        _VER_CACHE.update(key=key, ver=ver)
+    return _VER_CACHE['ver']
 APP_PATHS = ('/volme3d.html',)
 # Dev-Modus (--dev): liefert IMMER die rohe Arbeitskopie volme3d.html aus,
 # nie die dist. Fuer lokale Vorschau der WIP-Aenderungen, ohne Testern
@@ -804,6 +827,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == '/occt-health':
             self._proxy_occt('GET')
+            return
+
+        if path == '/api/version':
+            # Welche Version liefert der Server gerade aus? Die App fragt das, wenn
+            # man zum Tab zurückkehrt — ein über Nacht offener Tab lief sonst mit dem
+            # alten Stand weiter (Josy 4.10.: Fix vom Vorabend nie geladen).
+            self._json(200, {'version': _ausgelieferte_version()})
             return
 
         if path in ('/nutzung', '/nutzung.json'):

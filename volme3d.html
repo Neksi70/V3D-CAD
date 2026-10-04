@@ -17898,6 +17898,54 @@ async function _unionTrimMotive(sel) {
 // Echter, wasserdichter Boolean-Union via OCCT-Backend → EIN manifoltes Mesh
 // (druckbar, keine durchdringenden Hüllen). Fällt auf Gruppierung zurück, falls
 // das Backend tot ist oder das Fuse scheitert.
+// STL-Puffer eines Teils → ein Manifold. Erst roh, dann repariert, dann in lose
+// Stücke (über verschweißte Eckpunkte) zerlegt: einzelne kaputte Stücke — eine
+// offene Kontur in einer Linienzeichnung — fallen weg, statt das Teil zu kippen.
+// → { mf, repariert, weg } oder { mf: null, grund }
+function _mfAusStls(w, bufs) {
+  let n = 0;
+  for (const b of bufs) n += new DataView(b).getUint32(80, true);
+  const t = new Float32Array(n * 9); let o = 0;
+  for (const b of bufs) {
+    const dv = new DataView(b), m = dv.getUint32(80, true);
+    for (let i = 0; i < m; i++) for (let k = 0; k < 9; k++) t[o++] = dv.getFloat32(84 + i*50 + 12 + k*4, true);
+  }
+  let grund;
+  try { return { mf: _mfFromSoup(w, t) }; }
+  catch (e) { if (_mfEngineErr(e)) throw e; grund = String(e.message || e); }
+  const g = _healTrisForBool(t);
+  if (g) { try { return { mf: _mfFromSoup(w, g), repariert: true }; } catch (e) { if (_mfEngineErr(e)) throw e; } }
+  // lose Stücke
+  const nT = n, q = 1e3, vid = new Map(), tv = new Int32Array(nT * 3);
+  for (let i = 0; i < nT * 3; i++) {
+    const k = Math.round(t[i*3] * q) + ',' + Math.round(t[i*3+1] * q) + ',' + Math.round(t[i*3+2] * q);
+    let id = vid.get(k); if (id === undefined) { id = vid.size; vid.set(k, id); }
+    tv[i] = id;
+  }
+  const par = new Int32Array(vid.size); for (let i = 0; i < par.length; i++) par[i] = i;
+  const find = x => { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; };
+  for (let i = 0; i < nT; i++) { const a = find(tv[i*3]); for (let e = 1; e < 3; e++) { const c = find(tv[i*3+e]); if (a !== c) par[c] = a; } }
+  const stuecke = new Map();
+  for (let i = 0; i < nT; i++) { const r = find(tv[i*3]); (stuecke.get(r) || stuecke.set(r, []).get(r)).push(i); }
+  if (stuecke.size < 2) return { mf: null, grund };
+  let acc = null, weg = 0;
+  for (const liste of stuecke.values()) {
+    const s = new Float32Array(liste.length * 9);
+    liste.forEach((i, k) => s.set(t.subarray(i*9, i*9 + 9), k*9));
+    let mf = null;
+    try { mf = _mfFromSoup(w, s); }
+    catch (e) {
+      if (_mfEngineErr(e)) throw e;
+      const h = _healTrisForBool(s);
+      if (h) try { mf = _mfFromSoup(w, h); } catch (e2) { if (_mfEngineErr(e2)) throw e2; }
+    }
+    if (!mf || mf.isEmpty()) { weg++; continue; }
+    acc = acc ? w.Manifold.union(acc, mf) : mf;
+  }
+  if (!acc) return { mf: null, grund };
+  return { mf: acc, repariert: true, weg };
+}
+
 async function unionSelected() {
   if (selectedObjs.length < 2) { notify('Mind. 2 Objekte', 'w'); return; }
   const sel = selectedObjs.slice();
@@ -17922,33 +17970,57 @@ async function unionSelected() {
   // bekommt hier ohnehin nur STL-Netze, eine B-Rep kommt nie an; OCCT hat also
   // nichts Exaktes zu bewahren (wie beim Abziehen seit v1.18.114) und bleibt
   // Rückfall für Netze, die Manifold nicht annimmt.
+  //
+  // Teile EINZELN umwandeln (wie beim Abziehen): Vorher riss ein einziges Netz,
+  // das Manifold nicht annahm, das ganze Vereinen mit — es landete beim Server
+  // und lief dort 63 s ins Leere (Josy 4.10., 13:19). Jetzt: roh → repariert →
+  // in lose Stücke zerlegt (kaputte Stücke fallen weg). Was dann noch scheitert,
+  // bleibt als eigenes Teil stehen und wird beim Namen genannt; der Rest wird
+  // verschmolzen.
+  let mfGrund = '';
   {
     try {
-      const acc = await _mfRetry(async () => {
+      const r = await _mfRetry(async () => {
         const w = await _mfInit();
-        let acc = null;
-        for (const buf of stls) {
-          const dv = new DataView(buf), n = dv.getUint32(80, true), t = new Float32Array(n * 9);
-          for (let i = 0; i < n; i++) for (let k = 0; k < 9; k++) t[i*9+k] = dv.getFloat32(84 + i*50 + 12 + k*4, true);
-          let mf;
-          try { mf = _mfFromSoup(w, t); }
-          catch (eRoh) { if (_mfEngineErr(eRoh)) throw eRoh; const g = _healTrisForBool(t); if (!g) throw eRoh; mf = _mfFromSoup(w, g); }
-          acc = acc ? w.Manifold.union(acc, mf) : mf;
+        const teile = [], kaputt = [], geflickt = [];
+        for (const o of sel) {
+          const bufs = gestutzt.has(o) ? [gestutzt.get(o)]
+                     : (o.userData.isHole ? _meshWorldToStls(o) : _objsToUnionStls([o]));
+          if (!bufs.length) continue;
+          const name = (o.userData && o.userData.name) || 'ohne Namen';
+          const mf = _mfAusStls(w, bufs);
+          if (!mf.mf) { kaputt.push({ o, name, grund: mf.grund }); continue; }
+          if (mf.weg) geflickt.push(name + ' (' + mf.weg + ' kaputte' + (mf.weg === 1 ? 's Stück' : ' Stücke') + ' weggelassen)');
+          else if (mf.repariert) geflickt.push(name);
+          teile.push({ o, mf: mf.mf });
         }
-        return acc;
+        if (teile.length < 2) {
+          const e = new Error(kaputt.length ? kaputt.map(k => '„' + k.name + '“: ' + k.grund).join('; ') : 'zu wenige Teile');
+          e.kaputt = kaputt; throw e;
+        }
+        let acc = null;
+        for (const t of teile) acc = acc ? w.Manifold.union(acc, t.mf) : t.mf;
+        return { acc, teile, kaputt, geflickt };
       });
+      const { acc, teile, kaputt, geflickt } = r;
       if (!acc || acc.isEmpty()) throw new Error('Ergebnis ist leer');
       saveUndo();
-      const _opJournal = { op: 'union', parts: sel.map(objectToData) };
+      const benutzt = teile.map(t => t.o);
+      const _opJournal = { op: 'union', parts: benutzt.map(objectToData) };
       const mesh = _meshFromStlB64(_bufToBase64(_mfToStlBuf(acc)), 'Verschmolzen ' + idCtr, true);
       if (!mesh) throw new Error('Ergebnis-STL nicht ladbar');
       mesh.userData.opJournal = _opJournal;
-      sel.forEach(o => { objects = objects.filter(x => x !== o); scene.remove(o); });
+      benutzt.forEach(o => { objects = objects.filter(x => x !== o); scene.remove(o); });
       selectObjs([mesh]); updateTree();
       notify(_unionMotivMeldung(gestutzt), 'ok');
+      if (geflickt.length) notify('Beim Vereinen automatisch repariert: ' + geflickt.join(', '), 'ok');
+      if (kaputt.length) notify('Nicht mitverschmolzen: ' + kaputt.map(k => '„' + k.name + '“').join(', ')
+        + ' — das Netz ist nicht geschlossen und ließ sich nicht automatisch reparieren. Es steht weiter als eigenes Teil da; '
+        + 'zum Drucken reicht das, wenn es den Körper berührt.', 'w');
       return;
     } catch (e) {
-      console.warn('[union] Manifold-Weg gescheitert → OCCT:', e.message || e);
+      mfGrund = String((e && e.message) || e || '');
+      console.warn('[union] Manifold-Weg gescheitert → OCCT:', mfGrund);
     }
   }
   // Laufzeit VORHER abschätzen statt den Nutzer bei 85 % hängen zu lassen.
@@ -17961,7 +18033,8 @@ async function unionSelected() {
   if (estMs > EST_MAX) {
     notify('Zu aufwendig: ' + Math.round(nTri).toLocaleString('de') + ' Dreiecke in ' + stls.length
       + ' Teilen (ca. ' + Math.round(estMs/1000) + ' s). Stattdessen gruppiert — zum Drucken reicht das, '
-      + 'überlappende Teile werden ohnehin ein Stück. Echter Verbundkörper? Vorher 🔻 Vereinfachen.', 'w');
+      + 'überlappende Teile werden ohnehin ein Stück. '
+      + (mfGrund ? 'Grund: ' + mfGrund.slice(0, 160) : 'Echter Verbundkörper? Vorher 🔻 Vereinfachen.'), 'w');
     return _unionGroupFallback(sel);
   }
 
@@ -52426,8 +52499,12 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.119';
+const VOLME3D_VERSION = '1.18.120';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.120', date:'2026-10-04', changes:[
+    ['\u{1F41B}','<b>Vereinen scheitert nicht mehr an einem einzigen fehlerhaften Teil.</b> Hatte ein Motiv eine offene Kontur, landete bisher das ganze Vereinen beim Rechen-Server, lief dort über eine Minute und endete als Gruppe. Jetzt wird jedes Teil einzeln geprüft und automatisch repariert; einzelne kaputte Stückchen fallen weg (die Meldung sagt, wie viele). Lässt sich ein Teil gar nicht retten, wird der Rest trotzdem verschmolzen und das Teil bleibt beim Namen genannt daneben stehen. Gemeldet von Josy.'],
+    ['\u{2728}','<b>Hinweis bei neuer Version.</b> Wer V3D CAD über Nacht offen lässt, arbeitet sonst mit dem alten Stand weiter und bekommt Verbesserungen erst nach dem Neuladen. Kommst du zum Fenster zurück und es gibt eine neuere Version, erscheint oben ein Hinweis mit <i>Neu laden</i> \u2014 dein Stand wird vorher gesichert.'],
+  ]},
   { version:'1.18.119', date:'2026-10-04', changes:[
     ['\u{1F41B}','<b>Faltkranz ohne Strich-Gewirr.</b> In den engen Falten zeichnete die Ansicht dichte schwarze Schraffuren. Jetzt sind nur noch die echten Faltlinien zu sehen \u2014 auch nach Speichern und Öffnen.'],
   ]},
@@ -53696,6 +53773,42 @@ function _verGt(a, b){
   }
   return false;
 }
+// Veralteter Tab: Wer die Seite über Nacht offen lässt, arbeitet mit dem alten Stand
+// weiter — Josy meldete am 4.10. um 10:11 einen Fehler, der seit dem Vorabend behoben
+// war (Seite zuletzt am 3.10. um 18:13 geladen). Beim Zurückkehren zum Tab (höchstens
+// alle 5 min, sonst alle 30 min) beim Server nachfragen und ggf. zum Neuladen raten.
+let _verCheckT = 0, _verHinweisFuer = '';
+function _verPruefen(){
+  if (document.hidden || location.protocol === 'file:') return;
+  const now = Date.now();
+  if (now - _verCheckT < 5 * 60e3) return;
+  _verCheckT = now;
+  fetch('/api/version', { cache: 'no-store', credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : null)
+    .then(d => { if (d && d.version && _verGt(d.version, VOLME3D_VERSION)) _verHinweis(d.version); })
+    .catch(() => {});
+}
+function _verHinweis(neu){
+  if (_verHinweisFuer === neu || document.getElementById('ver-neu-hinweis')) return;
+  _verHinweisFuer = neu;
+  const el = document.createElement('div');
+  el.id = 'ver-neu-hinweis';
+  el.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:99990;background:#1f6feb;color:#fff;'
+    + 'padding:9px 12px 9px 16px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.3);font:600 13px system-ui,sans-serif;display:flex;gap:10px;align-items:center';
+  el.innerHTML = '🔄 Neue Version ' + neu + ' ist da — bitte neu laden, sonst fehlen dir die letzten Verbesserungen.'
+    + '<button id="ver-neu-laden" style="background:#fff;color:#1f6feb;border:0;border-radius:7px;padding:5px 11px;font:700 12px system-ui;cursor:pointer">Neu laden</button>'
+    + '<button id="ver-neu-zu" title="Später" style="background:transparent;color:#fff;border:0;font:700 15px system-ui;cursor:pointer">✕</button>';
+  document.body.appendChild(el);
+  document.getElementById('ver-neu-laden').onclick = () => {
+    try { _doAutoSave(); } catch (e) {}          // Stand sichern, kommt nach dem Laden wieder
+    location.reload();
+  };
+  document.getElementById('ver-neu-zu').onclick = () => el.remove();
+}
+document.addEventListener('visibilitychange', _verPruefen);
+window.addEventListener('focus', _verPruefen);
+setInterval(() => { _verCheckT = 0; _verPruefen(); }, 30 * 60e3);
+
 function _openChangelog(){
   const modal = document.getElementById('changelog-modal');
   const body  = document.getElementById('changelog-body');
