@@ -7,7 +7,7 @@
 import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
 
-const PORT = 8786;
+const PORT = 8849;
 const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { cwd: process.cwd() });
 await new Promise(r => setTimeout(r, 900));
 const browser = await chromium.launch();

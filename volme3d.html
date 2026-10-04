@@ -23277,6 +23277,140 @@ function _roundInfo() {
     + 'trotzdem klein anfangen.';
 }
 
+// Farbige Teile getrennt halten: Ralf (4.10.2026) — „nach dem Abrunden ist die
+// Farbe weg". Vorher wurden ALLE Dreiecke eines Teils zusammen gerundet und als
+// EIN Netz in der Grundfarbe eingesetzt: blaues Logo auf weißer Scheibe kam
+// einfarbig zurück, und der 3MF-Export hatte danach nur noch ein Filament.
+// Jetzt: je Farbe eine eigene Gruppe, die einzeln gerundet wird und ihre Farbe
+// behält; bemalte Netze (🖍️) bekommen ihre Bemalung auf die neue Fläche übertragen.
+function _roundColorGroups(o) {
+  const groups = new Map();
+  o.updateMatrixWorld(true);
+  o.traverse(ch => {
+    if (!ch.isMesh || !ch.geometry?.attributes?.position) return;
+    if (ch.userData.isEdgeLines || ch.visible === false) return;
+    if (ch !== o && ch.userData.isHole) return;
+    if (ch.userData._mmuPaint) { groups.set('mmu' + ch.id, { meshes: [ch], hex: null, paint: ch }); return; }
+    const m = Array.isArray(ch.material) ? ch.material[0] : ch.material;
+    const hex = m?.color ? '#' + m.color.getHexString() : (ch.userData.color || o.userData.color || currentColor);
+    if (!groups.has(hex)) groups.set(hex, { meshes: [], hex, paint: null });
+    groups.get(hex).meshes.push(ch);
+  });
+  return [...groups.values()];
+}
+function _roundTrisOf(meshes) {
+  const parts = meshes.map(m => {
+    // _moldCollectTris läuft rekursiv — Kinder hier ausklammern, sie haben ihre eigene Gruppe
+    const kids = m.children.slice(); kids.forEach(k => m.remove(k));
+    try { return _moldCollectTris(m); } finally { kids.forEach(k => m.add(k)); }
+  });
+  if (parts.length === 1) return parts[0];
+  const out = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
+  let off = 0; for (const p of parts) { out.set(p, off); off += p.length; }
+  return out;
+}
+
+// Rundet eine Dreiecksliste (mm, Z-up) — Hüllen einzeln, danach vereint und
+// vereinfacht. Liefert { geo, nParts, kept, vox } oder null (nichts überstand).
+async function _roundTris(w, tris, r, opts, prog, mfTemp) {
+  // Ineinandergesteckte Teile (Topper-Buchstaben!) IMMER einzeln behandeln.
+  // Am Stück gerechnet wäre das Ergebnis falsch: Das Distanzfeld entsteht aus
+  // der rohen Dreiecksliste, also wirken auch die im Material VERSTECKTEN
+  // Flächen der Überlappungen wie echte Oberflächen — das Schrumpfen schneidet
+  // dort mitten durchs Material und der Schriftzug zerfällt in Scheiben.
+  // (Nachgemessen an drei überlappenden Klötzen: am Stück blieb ein zerteiltes
+  // Gebilde ohne den dünnen Anstrich, einzeln gerundet blieb alles heil.)
+  const parts = _roundSplitShells(tris, 200);
+  const list = parts || [tris];
+  const mfs = [], kept = [];
+  let voxUsed = 0;
+  for (let i = 0; i < list.length; i++) {
+    const mf = await _roundOnePart(w, list[i], r, opts, f => prog((i + f) / list.length, i, list.length));
+    voxUsed = Math.max(voxUsed, _moldLastVox);
+    if (mf) { mfs.push(mf); mfTemp.push(mf); } else kept.push(list[i]);
+  }
+  if (!mfs.length) return { geo: null, nParts: list.length, kept: kept.length, vox: voxUsed };
+  // Unveränderte Teile mit in den Verbund nehmen, damit nichts verschwindet.
+  for (const k of kept) {
+    try { const m = _mfFromSoup(w, k); mfs.push(m); mfTemp.push(m); }
+    catch (e) { console.warn('[round] Teil nicht verbundfähig, bleibt außen vor:', e); }
+  }
+  let grown = mfs[0];
+  if (mfs.length > 1) {
+    try { const u = w.Manifold.union(mfs); mfTemp.push(u); grown = u; }
+    catch (e) { console.warn('[round] Vereinen fehlgeschlagen, Teile bleiben einzeln:', e); }
+  }
+  // Marching Cubes zerlegt auch ebene Flächen in tausende Dreiecke — ein Würfel
+  // kam so auf 56.000. Toleranz = ein Zehntel der Voxelgröße: das ist die
+  // Größenordnung der Gitter-Welligkeit, also genau das, was weg darf. Gemessen
+  // am 20-mm-Würfel mit 1 mm Radius: 56.232 → 926 Dreiecke, Volumen 33 mm³
+  // (0,4 ‰) daneben, schärfste Kante unverändert bei ~29°. Mit vox·0,35 war die
+  // Rundung dagegen stellenweise wieder platt (90°-Kanten zurück).
+  if (typeof grown.simplify === 'function') {
+    try { const sm = grown.simplify(voxUsed*0.1); mfTemp.push(sm); grown = sm; }
+    catch (e) { console.warn('[round] Vereinfachen übersprungen:', e); }
+  }
+  // toNonIndexed(): _creaseNormals steigt bei indizierten Netzen aus (und ließe
+  // das Ergebnis ohne Normalen → im Bild pechschwarz). Gleicher Weg wie Gießform.
+  const geo = _mfToGeo(grown).toNonIndexed();
+  if (!geo.attributes.position.count) return { geo: null, nParts: list.length, kept: kept.length, vox: voxUsed };
+  _moldNormals(geo);
+  return { geo, nParts: list.length, kept: kept.length, vox: voxUsed };
+}
+
+// Bemalung (🖍️) aufs gerundete Netz übertragen: jedes neue Dreieck übernimmt den
+// Farbzustand des nächstgelegenen alten Dreiecks. Die Fläche wandert beim Runden
+// höchstens um r — gesucht wird deshalb in einem Raster mit Zellen ≥ 2r.
+function _roundTransferPaint(geo, srcTris, states, hexes, r) {
+  const nSrc = states.length;
+  // Jedes Dreieck in ALLE Zellen seiner Hüllbox eintragen — nur nach Mittelpunkt
+  // einsortiert fand ein Punkt am Rand einer großen Fläche (Würfelseite = 2
+  // Dreiecke) das eigene Dreieck nicht und nahm die Seitenwand.
+  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < srcTris.length; i += 3) for (let k = 0; k < 3; k++) {
+    if (srcTris[i+k] < lo[k]) lo[k] = srcTris[i+k]; if (srcTris[i+k] > hi[k]) hi[k] = srcTris[i+k]; }
+  const cell = Math.max(2 * r, 1, Math.max(hi[0]-lo[0], hi[1]-lo[1], hi[2]-lo[2]) / 96);
+  const key = (x, y, z) => x + ',' + y + ',' + z;
+  const grid = new Map();
+  for (let t = 0; t < nSrc; t++) {
+    const o = t * 9;
+    const mn = [0,1,2].map(k => Math.floor(Math.min(srcTris[o+k], srcTris[o+3+k], srcTris[o+6+k]) / cell));
+    const mx = [0,1,2].map(k => Math.floor(Math.max(srcTris[o+k], srcTris[o+3+k], srcTris[o+6+k]) / cell));
+    for (let x = mn[0]; x <= mx[0]; x++) for (let y = mn[1]; y <= mx[1]; y++) for (let z = mn[2]; z <= mx[2]; z++) {
+      const k = key(x, y, z);
+      let l = grid.get(k); if (!l) grid.set(k, l = []);
+      l.push(t);
+    }
+  }
+  const cols = hexes.map(h => new THREE.Color(h));
+  const pos = geo.attributes.position, n = pos.count, arr = new Float32Array(n * 3);
+  for (let v = 0; v < n; v += 3) {
+    const px = (pos.getX(v) + pos.getX(v+1) + pos.getX(v+2)) / 3;
+    const py = (pos.getY(v) + pos.getY(v+1) + pos.getY(v+2)) / 3;
+    const pz = (pos.getZ(v) + pos.getZ(v+1) + pos.getZ(v+2)) / 3;
+    const gx = Math.floor(px / cell), gy = Math.floor(py / cell), gz = Math.floor(pz / cell);
+    let best = -1, bd = Infinity, found = -1;
+    // Ring für Ring nach außen; nach dem ersten Treffer noch einen Ring weiter,
+    // denn das nächste Dreieck kann knapp in der Nachbarzelle liegen.
+    for (let ring = 0; ring <= 6 && (found < 0 || ring <= found + 1); ring++) {
+      for (let dx = -ring; dx <= ring; dx++) for (let dy = -ring; dy <= ring; dy++) for (let dz = -ring; dz <= ring; dz++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) !== ring) continue;   // nur die Schale
+        const lst = grid.get(key(gx + dx, gy + dy, gz + dz)); if (!lst) continue;
+        for (const t of lst) {
+          const o = t * 9;
+          const d = _moldTriDistSq(px, py, pz, srcTris[o], srcTris[o+1], srcTris[o+2],
+            srcTris[o+3], srcTris[o+4], srcTris[o+5], srcTris[o+6], srcTris[o+7], srcTris[o+8]);
+          if (d < bd) { bd = d; best = t; }
+        }
+      }
+      if (best >= 0 && found < 0) found = ring;
+    }
+    const c = cols[best >= 0 ? states[best] : 0] || cols[0];
+    for (let k = 0; k < 3; k++) { arr[(v+k)*3] = c.r; arr[(v+k)*3+1] = c.g; arr[(v+k)*3+2] = c.b; }
+  }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(arr, 3));
+}
+
 async function _roundApply() {
   if (_roundBusy) return;
   const o = getFirst();
@@ -23289,87 +23423,97 @@ async function _roundApply() {
   try {
     _progressShow('Kanten werden gebrochen…'); _progressSet(3); await _moldTick();
     const w = await _mfInit();
-    const tris = _moldCollectTris(o);
-    if (!tris.length) throw new Error('keine Geometrie');
+    const groups = _roundColorGroups(o);
+    if (!groups.length) throw new Error('keine Geometrie');
     // Gitter am Radius ausrichten: unter ~2,5 Zellen je Radius sieht die Rundung
     // eckig aus. Bei großen Teilen bremst das Zellbudget das wieder ein — dann
     // sagen wir es hinterher, statt still ein grobes Ergebnis abzuliefern.
     const opts = { voxTarget: r/2.5, maxCells: 16e6 };
-    // Ineinandergesteckte Teile (Topper-Buchstaben!) IMMER einzeln behandeln.
-    // Am Stück gerechnet wäre das Ergebnis falsch: Das Distanzfeld entsteht aus
-    // der rohen Dreiecksliste, also wirken auch die im Material VERSTECKTEN
-    // Flächen der Überlappungen wie echte Oberflächen — das Schrumpfen schneidet
-    // dort mitten durchs Material und der Schriftzug zerfällt in Scheiben.
-    // (Nachgemessen an drei überlappenden Klötzen: am Stück blieb ein zerteiltes
-    // Gebilde ohne den dünnen Anstrich, einzeln gerundet blieb alles heil.)
-    const parts = _roundSplitShells(tris, 200);
-    const list = parts || [tris];
-    if (parts) { _progressSet(4, list.length + ' Teile werden einzeln gerundet…'); await _moldTick(); }
-
-    const mfs = [], kept = [];
-    let voxUsed = 0;
-    for (let i = 0; i < list.length; i++) {
-      const base = 4 + 90*i/list.length, span = 90/list.length;
-      const mf = await _roundOnePart(w, list[i], r, opts,
-        f => _progressSet(base + span*f, list.length > 1 ? 'Teil ' + (i+1) + ' von ' + list.length + '…' : 'Kanten werden verrundet…'));
-      voxUsed = Math.max(voxUsed, _moldLastVox);
-      if (mf) { mfs.push(mf); mfTemp.push(mf); } else kept.push(list[i]);
+    const results = [];
+    let nParts = 0, nKept = 0, voxUsed = 0, nLost = 0;
+    for (let gi = 0; gi < groups.length; gi++) {
+      const g = groups[gi];
+      const tris = _roundTrisOf(g.meshes);
+      if (!tris.length) continue;
+      const base = 4 + 90*gi/groups.length, span = 90/groups.length;
+      const res = await _roundTris(w, tris, r, opts, (f, i, n) => _progressSet(base + span*f,
+        (groups.length > 1 ? 'Farbe ' + (gi+1) + ' von ' + groups.length + ' · ' : '')
+        + (n > 1 ? 'Teil ' + (i+1) + ' von ' + n + '…' : 'Kanten werden verrundet…')), mfTemp);
+      nParts += res.nParts; voxUsed = Math.max(voxUsed, res.vox);
+      if (!res.geo) {
+        // Zu fein für den Radius: Farbteil unverändert behalten statt verlieren
+        if (groups.length > 1) { nLost++; results.push({ g, geo: null }); }
+        continue;
+      }
+      nKept += res.kept;
+      if (g.paint) {
+        const src = g.paint.geometry.index ? g.paint.geometry.toNonIndexed() : g.paint.geometry;
+        const st = _mmuTriStatesGeo(src, g.paint.userData);
+        if (st && st.states.length * 9 === tris.length) _roundTransferPaint(res.geo, tris, st.states, st.hexes, r);
+      }
+      results.push({ g, geo: res.geo });
     }
-    if (!mfs.length) {
+    if (!results.some(x => x.geo)) {
       throw new Error('Bei ' + r.toFixed(1).replace('.',',') + ' mm bliebe zu wenig übrig — '
         + 'das Teil ist überall dünner als ' + (2*r).toFixed(1).replace('.',',') + ' mm. Mit kleinerem Radius versuchen.');
     }
-    // Unveränderte Teile mit in den Verbund nehmen, damit nichts verschwindet.
-    for (const k of kept) {
-      try { const m = _mfFromSoup(w, k); mfs.push(m); mfTemp.push(m); }
-      catch (e) { console.warn('[round] Teil nicht verbundfähig, bleibt außen vor:', e); }
-    }
-    _progressSet(94, 'Teile werden zusammengesetzt…'); await _moldTick();
-    let grown = mfs[0];
-    if (mfs.length > 1) {
-      try { const u = w.Manifold.union(mfs); mfTemp.push(u); grown = u; }
-      catch (e) { console.warn('[round] Vereinen fehlgeschlagen, Teile bleiben einzeln:', e); }
-    }
-    // Marching Cubes zerlegt auch ebene Flächen in tausende Dreiecke — ein Würfel
-    // kam so auf 56.000. Toleranz = ein Zehntel der Voxelgröße: das ist die
-    // Größenordnung der Gitter-Welligkeit, also genau das, was weg darf. Gemessen
-    // am 20-mm-Würfel mit 1 mm Radius: 56.232 → 926 Dreiecke, Volumen 33 mm³
-    // (0,4 ‰) daneben, schärfste Kante unverändert bei ~29°. Mit vox·0,35 war die
-    // Rundung dagegen stellenweise wieder platt (90°-Kanten zurück).
-    if (typeof grown.simplify === 'function') {
-      try { const sm = grown.simplify(voxUsed*0.1); mfTemp.push(sm); grown = sm; }
-      catch (e) { console.warn('[round] Vereinfachen übersprungen:', e); }
-    }
     _progressSet(96, 'Netz wird übernommen…'); await _moldTick();
-    // toNonIndexed(): _creaseNormals steigt bei indizierten Netzen aus (und ließe
-    // das Ergebnis ohne Normalen → im Bild pechschwarz). Gleicher Weg wie Gießform.
-    const geo = _mfToGeo(grown).toNonIndexed();
-    if (!geo.attributes.position.count) throw new Error('leeres Ergebnis');
-    _moldNormals(geo);
     saveUndo();
     // Ergebnis liegt in Welt-Koordinaten (mm, Z-up) → wie bei der Gießform als
     // eigenes Mesh mit fester Transformation einsetzen und das Original ersetzen.
-    const mat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(o.userData.color || currentColor), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.castShadow = true; mesh.receiveShadow = true;
-    mesh.scale.setScalar(0.1); mesh.rotation.x = -Math.PI/2; mesh.updateMatrixWorld(true);
-    mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import',
-      name: o.userData.name || 'Teil', color: o.userData.color || currentColor,
-      isHole: !!o.userData.isHole, _origGeo: geo, _roundedMM: r };
+    const mkMesh = (geo, hex, paintSrc, name) => {
+      const mat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(paintSrc ? '#ffffff' : hex), roughness: 0.38, metalness: 0.05,
+        side: THREE.DoubleSide, vertexColors: !!paintSrc });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      mesh.scale.setScalar(0.1); mesh.rotation.x = -Math.PI/2; mesh.updateMatrixWorld(true);
+      mesh.userData = { id: idCtr++, type: 'import', shapeType: 'import', name,
+        color: paintSrc ? (paintSrc.userData._mmuBase || o.userData.color || currentColor) : hex,
+        isHole: !!o.userData.isHole, _origGeo: geo, _roundedMM: r };
+      if (paintSrc && geo.getAttribute('color')) {
+        mesh.userData._mmuPaint = 1;
+        if (paintSrc.userData._mmuBase)  mesh.userData._mmuBase  = paintSrc.userData._mmuBase;
+        if (paintSrc.userData._mmuSlots) mesh.userData._mmuSlots = paintSrc.userData._mmuSlots.slice();
+      }
+      return mesh;
+    };
+    const baseName = o.userData.name || 'Teil';
+    let neu;
+    if (results.length === 1) {
+      const { g, geo } = results[0];
+      const hex = groups.length === 1 && !g.paint ? (o.userData.color || g.hex || currentColor) : g.hex;
+      neu = mkMesh(geo, hex, g.paint, baseName);
+    } else {
+      // Mehrere Farben → Gruppe aus einfarbigen Teilen (3MF: ein Filament je Farbe)
+      neu = new THREE.Group();
+      neu.userData = { id: idCtr++, name: baseName, isGroup: true, color: o.userData.color || currentColor };
+      results.forEach(({ g, geo }, k) => {
+        if (geo) { neu.add(mkMesh(geo, g.hex, g.paint, baseName + ' · Farbe ' + (k+1))); return; }
+        // unverändert übernehmen (in Welt-Lage)
+        for (const m of g.meshes) {
+          const c = m.clone(false); c.geometry = m.geometry.clone();
+          m.updateMatrixWorld(true); c.matrixAutoUpdate = true;
+          m.matrixWorld.decompose(c.position, c.quaternion, c.scale);
+          c.userData = { ...m.userData, id: idCtr++ };
+          neu.add(c);
+        }
+      });
+    }
     const i = objects.indexOf(o);
-    if (i >= 0) objects[i] = mesh; else objects.push(mesh);
-    scene.remove(o); scene.add(mesh);
-    if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(mesh);
-    selectObjs([mesh]); updateTree();
+    if (i >= 0) objects[i] = neu; else objects.push(neu);
+    scene.remove(o); scene.add(neu);
+    if (typeof _updateObjEdgeLines === 'function') neu.traverse(m => { if (m.isMesh && !m.userData.isEdgeLines) _updateObjEdgeLines(m); });
+    selectObjs([neu]); updateTree();
     _progressDone();
     const coarse = voxUsed > r/1.6;
     notify('Kanten abgerundet (' + r.toFixed(1).replace('.',',') + ' mm)'
-      + (list.length > 1 ? ' · ' + list.length + ' Teile einzeln gerundet und wieder zusammengesetzt' : '')
-      + (kept.length ? ' · ' + kept.length + ' Teil' + (kept.length>1?'e sind':' ist') + ' zu fein dafür und blieb'
-          + (kept.length>1?'en':'') + ' unverändert' : '')
+      + (results.length > 1 ? ' · ' + results.length + ' Farben behalten' : '')
+      + (nParts > results.length ? ' · ' + nParts + ' Teile einzeln gerundet und wieder zusammengesetzt' : '')
+      + (nKept + nLost ? ' · ' + (nKept + nLost) + ' Teil' + ((nKept + nLost)>1?'e sind':' ist') + ' zu fein dafür und blieb'
+          + ((nKept + nLost)>1?'en':'') + ' unverändert' : '')
       + (coarse ? ' — das Teil ist groß im Verhältnis zum Radius, deshalb wirkt die Rundung etwas kantig. Größerer Radius = glatter.' : ''),
-      (coarse || kept.length) ? 'w' : 'ok');
+      (coarse || nKept || nLost) ? 'w' : 'ok');
   } catch (e) {
     _progressHide();
     console.error('[round]', e);
@@ -52517,6 +52661,9 @@ const VOLME3D_CHANGELOG = [
   { version:'1.18.115', date:'2026-10-03', changes:[
     ['\u{1F41B}','<b>Rundum gewickelte Muster verschwinden auf runden Schultern nicht mehr.</b> Wer ein großes Muster (zum Beispiel Leo-Flecken) um einen Körper wickelt, der oben rund zuläuft, sah auf der Schulter zwei leere Ringe \u2014 dort lag das Muster in der Wand statt darauf, und nach dem Vereinen fehlte es an genau diesen Stellen. Die Rundung wird jetzt fein genug abgetastet: Das Muster liegt bis zur Öffnung überall gleichmäßig auf. Gemeldet von Josy.'],
     ['\u{1F41B}','<b>Vereinen klappt jetzt auch bei feinen Netzen \u2014 ohne vorher zu vereinfachen.</b> Ab etwa 40.000 Dreiecken (zum Beispiel ein Körper mit Oberflächen-Textur) wurde bisher nur gruppiert, mit dem Rat \u201eVorher Vereinfachen\u201c \u2014 oft half auch das nicht. Vereinen rechnet jetzt immer zuerst direkt im Browser (wie Abziehen seit 1.18.114): Ein texturierter Zylinder mit Kugel (340.000 Dreiecke) wird in Sekunden zu einem wasserdichten Körper, und es geht auch dann, wenn der Rechen-Server gerade nicht erreichbar ist. Gemeldet von Josy.'],
+  ]},
+  { version:'1.18.115', date:'2026-10-04', changes:[
+    ['\u{1F3A8}','<b>\u201eAlles abrunden\u201c beh\u00e4lt die Farben.</b> Bisher wurde ein mehrfarbiges Teil \u2014 etwa ein blaues Logo auf einer wei\u00dfen Scheibe \u2014 als Ganzes gerundet und kam <b>einfarbig</b> zur\u00fcck; im 3MF stand danach nur noch ein Filament. Jetzt wird jede Farbe f\u00fcr sich gerundet und bleibt ein eigenes Teil in ihrer Farbe, und mit \u{1F58D}\uFE0F Mehrfarb-Druck bemalte Fl\u00e4chen werden auf die gerundete Oberfl\u00e4che \u00fcbertragen. Der 3MF-Export ordnet dann wieder jeder Farbe ein eigenes Filament zu. Gemeldet von Ralf.'],
   ]},
   { version:'1.18.114', date:'2026-10-03', changes:[
     ['\u{1F41B}','<b>Abziehen bleibt bei Gewinden und Muttern nicht mehr bei 93\u202f% stehen.</b> Eine Scheibe mit aufgesetzter Mutter, aus der ein Gewindeloch abgezogen wird, ging an den Server-Rechner \u2014 und der kam mit den vielen schr\u00e4gen Gewindefl\u00e4chen nicht zurecht: Der Balken stand bei 93\u202f%, nach zehn Minuten brach der Server ab. Vereinfachen half nicht. Nachgestellt mit M12: Server <b>133 Sekunden</b>, jetzt im Browser <b>unter einer Sekunde</b>. Abziehen rechnet deshalb jetzt immer zuerst direkt im Browser; der Server springt nur noch ein, wenn ein Teil nicht geschlossen ist. Gemeldet von Ralf.'],
