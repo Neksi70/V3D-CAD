@@ -81,6 +81,14 @@ const made = await pg.evaluate(async () => {
   return { n: objects.length - n0, name: objects[objects.length - 1]?.userData?.name, open: document.getElementById('fkz-modal').classList.contains('show') };
 });
 ok('Erstellen legt ein Teil an', made.n === 1 && /Faltkranz/.test(made.name) && !made.open, made);
+const kanten = await pg.evaluate(async () => {
+  const cnt = m => { const e = m.children.find(c => c.userData.isEdgeLines); return e ? e.geometry.attributes.position.count / 2 : -1; };
+  const o = objects[objects.length - 1], roh = new THREE.EdgesGeometry(o.geometry, 30).attributes.position.count / 2;
+  const o2 = await buildObjectFromData(JSON.parse(JSON.stringify(objectToData(o))));
+  return { roh, neu: cnt(o), geladen: cnt(o2) };
+});
+// 30° schraffiert die leicht verdrehten Täler (~27k Kanten), 60° lässt nur die Faltlinien (~20k)
+ok('Kantenlinien ohne Schraffur, auch nach Laden', kanten.neu < kanten.roh * 0.8 && Math.abs(kanten.geladen - kanten.neu) < kanten.neu * 0.01, kanten);
 ok('keine Seitenfehler', pageErrors.length === 0, pageErrors);
 await b.close();
 console.log(fails.length ? '\n' + fails.length + ' FEHLER' : '\nalles OK');
