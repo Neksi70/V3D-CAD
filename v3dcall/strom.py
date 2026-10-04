@@ -793,6 +793,15 @@ class Anruf:
             if r.status != 200:
                 raise RuntimeError(f"ElevenLabs {r.status}: {(await r.text())[:200]}")
             self.sprecher.satz_beginn(satz)
+            # Jeder Satz kommt einzeln von ElevenLabs und endet praktisch ohne
+            # Nachlauf — direkt aneinandergehaengt klang es, als fehlten alle
+            # Punkte. Darum vor jedem Folgesatz Stille einschieben; nach einem
+            # Komma (der erste Satz darf dort trennen) nur eine kurze.
+            if vorher:
+                ms = core.cfg("dialog", "satzpauseMs", default=450)
+                if not vorher.rstrip().endswith((".", "!", "?")):
+                    ms //= 3
+                self.sprecher.ton(b"\0\0" * (RATE * ms // 1000))
             rest = b""
             async for happen in r.content.iter_chunked(1600):
                 if self.denk_abbruch:

@@ -544,6 +544,25 @@ def fuer_die_stimme(text):
     return text
 
 
+# Satzende mitten im Text: Punkt/Frage-/Ausrufezeichen, danach Leerraum und
+# weiterer Text. Nicht nach Ziffern ("8. Oktober" ist kein Satzende).
+SATZENDE = re.compile(r"(?<=[^\d\s][.!?])\s+(?=\S)")
+
+
+def mit_satzpausen(text):
+    """Echte Pause zwischen den Saetzen erzwingen.
+
+    Turbo mit optimize_streaming_latency zieht Saetze ohne hoerbare Pause
+    zusammen (gemessen: keine Luecke >= 0,12 s an der Satzgrenze) — es klang,
+    als fehlten alle Punkte. Eine Break-Marke gibt ~0,6 s, ohne die
+    Erzeugung zu verlangsamen.
+    """
+    ms = core.cfg("dialog", "satzpauseMs", default=450)
+    if not ms:
+        return text
+    return SATZENDE.sub(f' <break time="{ms / 1000:.2f}s" /> ', text)
+
+
 def sprich(text, ziel_ohne_endung):
     """Text -> 8-kHz-wav fuer Asterisk. Flash-Modell wegen der Latenz."""
     k = core.cfg("elevenlabs", "apiKey")
@@ -554,7 +573,7 @@ def sprich(text, ziel_ohne_endung):
     r = _sitzung.post(
         f"https://api.elevenlabs.io/v1/text-to-speech/{v}/stream"
         f"?optimize_streaming_latency=3",
-        json={"text": fuer_die_stimme(text),
+        json={"text": mit_satzpausen(fuer_die_stimme(text)),
               "model_id": core.cfg("dialog", "ttsModel", default="eleven_flash_v2_5"),
               "voice_settings": {"stability": 0.4, "similarity_boost": 0.75,
                                  "speed": core.cfg("elevenlabs", "speed", default=1.0)}},
