@@ -7753,10 +7753,17 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
   const { wpos, wnor, baseT, mask, idx, count } = C;
   const out = new Float32Array(count * 3);
   const v = new THREE.Vector3();
+  // Richtung: 'aufgesetzt' legt das Muster AUSSEN auf (0…+Höhe) — das Teil wächst
+  // je Seite um die Texturhöhe und der Boden rutscht unter die Platte (Ralf 5.10.:
+  // „wenn ich eine Textur anbringe, verändert sich die Größe"). 'eingepraegt'
+  // (−Höhe…0): Spitzen liegen auf der alten Fläche, die Außenmaße bleiben.
+  // Fehlt die Angabe (alte Szenen, Generatoren), bleibt es beim alten Aufsetzen.
+  const inward = mesh.userData.texDir === 'eingepraegt';
   for (let i = 0; i < count; i++) {
     let t = baseT[i];
     if (invert) t = 1 - t;
     if (symmetric) t = Math.abs(t * 2 - 1);
+    if (inward) t -= 1;
     let x = wpos[i * 3], y = wpos[i * 3 + 1], z = wpos[i * 3 + 2];
     if (mask[i]) { const d = t * ampU; x += wnor[i * 3] * d; y += wnor[i * 3 + 1] * d; z += wnor[i * 3 + 2] * d; }
     v.set(x, y, z).applyMatrix4(Minv);
@@ -7833,6 +7840,16 @@ function applyDisplacement(param, val) {
   _applyDisplacementNow(param, val);
 }
 
+// Erste Textur auf einem Teil: eingeprägt (Maße bleiben) und Boden glatt (liegt
+// weiter plan auf der Platte). Nur wenn noch nichts festgelegt ist — vorhandene
+// Teile und Generatoren mit eigener Vorgabe behalten ihr Verhalten.
+function _texNeuVorgabe(o, param, prevPat) {
+  if (param !== 'pattern' || !o.userData.displacementPattern || o.userData.displacementPattern === 'keine') return;
+  if (prevPat && prevPat !== 'keine') return;   // hatte schon eine Textur → so lassen
+  if (!o.userData.texDir) o.userData.texDir = 'eingepraegt';
+  if (o.userData.texWhere == null) o.userData.texWhere = 'aussen,oben,innen';
+}
+
 function _applyDisplacementNow(param, val) {
   const o = getFirst(); if (!o) return;
 
@@ -7840,6 +7857,7 @@ function _applyDisplacementNow(param, val) {
   if (!o.isMesh) {
     if (!o.children || !o.children.length) return;
     saveUndoDebounced();
+    const _prevPat = o.userData.displacementPattern;
     if (param === 'pattern')   o.userData.displacementPattern   = val;
     if (param === 'amp')       o.userData.displacementAmp       = parseFloat(val) || 0.5;
     if (param === 'freq')      o.userData.displacementFreq      = parseFloat(val) || 4;
@@ -7848,11 +7866,13 @@ function _applyDisplacementNow(param, val) {
     if (param === 'orient')    o.userData.texOrient = val;
     if (param === 'profile')   o.userData.texProfile = val;
     if (param === 'where')     o.userData.texWhere  = _toggleWhere(o.userData.texWhere, val);
+    if (param === 'dir')       o.userData.texDir    = val;
+    _texNeuVorgabe(o, param, _prevPat);
     const gp = o.userData.displacementPattern || 'keine', ga = o.userData.displacementAmp || 0.5,
           gf = o.userData.displacementFreq || 4, gi = !!o.userData.displacementInvert, gs = !!o.userData.displacementSymmetric,
           go = o.userData.texOrient || 'laengs', gw = o.userData.texWhere || 'alle',
           gpr = o.userData.texProfile || 'kantig';
-    o.traverse(m => { if (m.isMesh && !m.userData.isEdgeLines && !m.userData.isHole) { m.userData.texProfile = gpr; _dispMesh(m, gp, ga, gf, gi, gs, go, gw); } });
+    o.traverse(m => { if (m.isMesh && !m.userData.isEdgeLines && !m.userData.isHole) { m.userData.texProfile = gpr; m.userData.texDir = o.userData.texDir; _dispMesh(m, gp, ga, gf, gi, gs, go, gw); } });
     _fpCurType = null; updateFP();
     if (param === 'pattern' && gp !== 'keine') o.traverse(m => { if (m.isMesh && m.material) _startTexPreview(m); });
     return;
@@ -7860,6 +7880,7 @@ function _applyDisplacementNow(param, val) {
 
   if (!o.isMesh) return;
   saveUndoDebounced();
+  const _prevPat = o.userData.displacementPattern;
   if (param === 'pattern')   o.userData.displacementPattern   = val;
   if (param === 'amp')       o.userData.displacementAmp       = parseFloat(val) || 0.5;
   if (param === 'freq')      o.userData.displacementFreq      = parseFloat(val) || 4;
@@ -7868,6 +7889,8 @@ function _applyDisplacementNow(param, val) {
   if (param === 'orient')    o.userData.texOrient = val;
   if (param === 'profile')   o.userData.texProfile = val;
   if (param === 'where')     o.userData.texWhere  = _toggleWhere(o.userData.texWhere, val);
+  if (param === 'dir')       o.userData.texDir    = val;
+  _texNeuVorgabe(o, param, _prevPat);
 
   const pat  = o.userData.displacementPattern  || 'keine';
   const amp  = o.userData.displacementAmp      || 0.5;
@@ -16837,6 +16860,7 @@ function buildObjectFromData(data) {
   if (data.polyMeasure) obj.userData.polyMeasure = data.polyMeasure;
   if (data.texOrient) obj.userData.texOrient = data.texOrient;
   if (data.texWhere)  obj.userData.texWhere  = data.texWhere;
+  if (data.texDir)    obj.userData.texDir    = data.texDir;
   // Alt-Stand ohne Profil-Angabe: die runde Fassung behalten, sonst wuerde sich
   // ein gespeichertes Teil beim Oeffnen sichtbar veraendern.
   obj.userData.texProfile = data.texProfile ||
@@ -17154,6 +17178,7 @@ function objectToData(o, modus) {
     if (o.userData.displacementSymmetric) d.displacementSymmetric = true;
     if (o.userData.texOrient && o.userData.texOrient !== 'laengs') d.texOrient = o.userData.texOrient;
     if (o.userData.texWhere && o.userData.texWhere !== 'alle')     d.texWhere  = o.userData.texWhere;
+    if (o.userData.texDir) d.texDir = o.userData.texDir;
     d.texProfile = o.userData.texProfile || 'kantig';
     if (o.isMesh && o.geometry) d.geometry = _cachedGeoJSON(o.geometry, modus);   // Gruppen haben keine eigene Geometrie
   } else if (o.userData.type === 'svg' && o.userData._svgPathData &&
@@ -52662,6 +52687,9 @@ const VOLME3D_CHANGELOG = [
     ['\u{1F41B}','<b>Rundum gewickelte Muster verschwinden auf runden Schultern nicht mehr.</b> Wer ein großes Muster (zum Beispiel Leo-Flecken) um einen Körper wickelt, der oben rund zuläuft, sah auf der Schulter zwei leere Ringe \u2014 dort lag das Muster in der Wand statt darauf, und nach dem Vereinen fehlte es an genau diesen Stellen. Die Rundung wird jetzt fein genug abgetastet: Das Muster liegt bis zur Öffnung überall gleichmäßig auf. Gemeldet von Josy.'],
     ['\u{1F41B}','<b>Vereinen klappt jetzt auch bei feinen Netzen \u2014 ohne vorher zu vereinfachen.</b> Ab etwa 40.000 Dreiecken (zum Beispiel ein Körper mit Oberflächen-Textur) wurde bisher nur gruppiert, mit dem Rat \u201eVorher Vereinfachen\u201c \u2014 oft half auch das nicht. Vereinen rechnet jetzt immer zuerst direkt im Browser (wie Abziehen seit 1.18.114): Ein texturierter Zylinder mit Kugel (340.000 Dreiecke) wird in Sekunden zu einem wasserdichten Körper, und es geht auch dann, wenn der Rechen-Server gerade nicht erreichbar ist. Gemeldet von Josy.'],
   ]},
+  { version:'1.18.116', date:'2026-10-05', changes:[
+    ['\u{1F4CF}','<b>Textur ver\u00e4ndert die Gr\u00f6\u00dfe nicht mehr.</b> Bisher wurde jedes Muster au\u00dfen <b>aufgesetzt</b>: Ein Teil mit 200\u00d760\u00d723,4\u202fmm war mit 0,5\u202fmm Texturh\u00f6he danach 201\u00d761\u00d724,4\u202fmm gro\u00df, und der Boden rutschte einen halben Millimeter unter die Druckplatte. Neue Texturen werden jetzt <b>eingepr\u00e4gt</b>: Die Au\u00dfenma\u00dfe bleiben genau so, wie du sie eingestellt hast, und der Boden bleibt glatt und liegt plan auf. Wer das Muster lieber erhaben haben will, w\u00e4hlt im Textur-Feld <b>\u201eAufgesetzt\u201c</b>. Bereits texturierte Teile bleiben, wie sie sind. Gemeldet von Ralf.'],
+  ]},
   { version:'1.18.115', date:'2026-10-04', changes:[
     ['\u{1F3A8}','<b>\u201eAlles abrunden\u201c beh\u00e4lt die Farben.</b> Bisher wurde ein mehrfarbiges Teil \u2014 etwa ein blaues Logo auf einer wei\u00dfen Scheibe \u2014 als Ganzes gerundet und kam <b>einfarbig</b> zur\u00fcck; im 3MF stand danach nur noch ein Filament. Jetzt wird jede Farbe f\u00fcr sich gerundet und bleibt ein eigenes Teil in ihrer Farbe, und mit \u{1F58D}\uFE0F Mehrfarb-Druck bemalte Fl\u00e4chen werden auf die gerundete Oberfl\u00e4che \u00fcbertragen. Der 3MF-Export ordnet dann wieder jeder Farbe ein eigenes Filament zu. Gemeldet von Ralf.'],
   ]},
@@ -58238,6 +58266,8 @@ function _buildTexPanelContent(o) {
   const ori  = o.userData.texOrient || 'laengs';
   const whr  = o.userData.texWhere  || 'alle';
   const prf  = o.userData.texProfile || 'kantig';
+  // ohne Angabe: neue Textur wird eingeprägt, eine vorhandene war aufgesetzt
+  const tdir = o.userData.texDir || (pat === 'keine' ? 'eingepraegt' : 'aufgesetzt');
   const hide = '';   // Einstellungs-Block immer sichtbar, auch ohne gewählte Textur
   const row = (lbl, id, val, oc, u, mn, mx, st) =>
     `<div class="fp-row"><div class="fp-row-top"><span class="fp-lbl">${lbl}</span>` +
@@ -58261,6 +58291,10 @@ function _buildTexPanelContent(o) {
       `<div class="fp-tex-sec" style="margin-top:2px">Texturtiefe</div>` +
       row('Texturhöhe', 'tex-disp-amp',  amp,  "applyDisplacement('amp',this.value)",  'mm', 0.05, 5, 0.05) +
       row('Skalierung', 'tex-disp-freq', freq, "applyDisplacement('freq',this.value)", '',   0.5, 40, 0.5) +
+      `<div class="fp-row" style="flex-direction:row;gap:5px">` +
+        `<button class="fp-toggle-btn${tdir==='eingepraegt'?' on':''}" style="flex:1" onclick="applyDisplacement('dir','eingepraegt')" title="Muster wird ins Material geprägt — Außenmaße bleiben genau wie eingestellt">Eingeprägt</button>` +
+        `<button class="fp-toggle-btn${tdir==='aufgesetzt'?' on':''}" style="flex:1" onclick="applyDisplacement('dir','aufgesetzt')" title="Muster wird außen aufgesetzt — das Teil wird je Seite um die Texturhöhe größer">Aufgesetzt</button>` +
+      `</div>` +
       `<label class="fp-check-lbl"><input type="checkbox" id="tex-disp-inv" ${inv} onchange="applyDisplacement('invert',this.checked)"> Invertieren</label>` +
       `<label class="fp-check-lbl"><input type="checkbox" id="tex-disp-sym" ${sym} onchange="applyDisplacement('symmetric',this.checked)"> Symmetrisch</label>` +
       `<div class="fp-tex-sec" style="margin-top:6px">Richtung</div>` +

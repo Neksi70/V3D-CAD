@@ -398,7 +398,9 @@ const tex = await pg.evaluate(() => {
     offen: w.offen, yMin: box.min.y, hutKnopf: !!hut.userData._origGeo };
 });
 ok('Textur-Knopf steht für beide Teile bereit', tex.knopfDa && tex.hutKnopf);
-ok('Textur verändert die Außenhaut', tex.mitteDeltaMm > 0.3, { deltaMm: +tex.mitteDeltaMm.toFixed(2) });
+// Seit v1.18.116 wird eine neue Textur eingeprägt (Außenmaße bleiben) — die Haut
+// wandert also nach INNEN, nicht mehr nach außen. Geprüft wird nur, dass sie sich bewegt.
+ok('Textur verändert die Außenhaut', Math.abs(tex.mitteDeltaMm) > 0.2, { deltaMm: +tex.mitteDeltaMm.toFixed(2) });
 ok('Textur lässt das Gewinde in Ruhe', Math.abs(tex.gewindeDeltaMm) < 0.02, { deltaMm: +tex.gewindeDeltaMm.toFixed(3) });
 ok('Textur lässt die Einsatz-Tasche in Ruhe', Math.abs(tex.taschenDeltaMm) < 0.02, { deltaMm: +tex.taschenDeltaMm.toFixed(3) });
 ok('Teil bleibt nach der Textur wasserdicht', tex.offen === 0, { offen: tex.offen });
