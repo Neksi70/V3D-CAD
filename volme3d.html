@@ -25649,6 +25649,7 @@ let _fdMode = false, _fdObj = null, _fdHL = null, _fdHitKey = '';
 // _lblPick schon beim ersten Durchlauf liest.
 let _lblPick = null, _lblObj = null, _lblArt = 'tief';
 let _svgSnapAtHit = false;     // _applySvgSnap: an den Klickpunkt statt in die Flächenmitte
+let _svgSnapAmPfeil = false;   // _applySvgSnap: per Gizmo-Pfeil hingeschoben → Lage behalten
 let _engravePreset = null;     // subtractHoles: Tiefe ohne Dialog
 
 const _FD_MAX_TRI = 400000;   // darüber nur das getroffene Dreieck zeigen (Zeitbremse)
@@ -31429,6 +31430,17 @@ function _mgDown(e) {
   isDrag = false; dragData = null; isRubber = false;   // freien Objekt-Zug sicher aus
   _mg.drag = { axis, dir, origin, t0, moved: false,
                start: selectedObjs.map(o => ({ x: o.position.x, y: o.position.y, z: o.position.z })) };
+  // Sitzt ein SVG-Motiv schon auf einer Wand, darf beim Pfeil-Ziehen nicht der
+  // ZEIGER bestimmen, wo es beim Loslassen landet: Die Pfeilspitze steht neben dem
+  // Motiv und zeigt oft auf ein anderes Motiv oder über die Kante auf die
+  // Deckfläche — dann wurde dort neu geheftet und das Motiv sprang auf das andere
+  // bzw. zurück in die Flächenmitte (Josy 6.10.: „springt immer dahin, wo der
+  // hinspringen will, bleibt nicht da, wo ich ihn haben möchte").
+  if (selectedObjs.length === 1 && selectedObjs[0].userData.shapeType === 'svg') {
+    const fr = _svgGlideFrame(selectedObjs[0]);
+    if (fr) _mg.drag.svgHaft = { kind: fr.kind,
+                                 ziel: fr.kind === 'flat' ? fr.solid.mesh : fr.target };
+  }
   _mg.hover = null; _mgSetHover(axis);
   // Konsequent Pointer-Events: das preventDefault oben unterdrückt die
   // Maus-Ersatzereignisse, mousemove/mouseup kämen gar nicht mehr an.
@@ -31460,8 +31472,19 @@ function _mgMove(e) {
   _doRepositionDimHandles();
   if (selectedObjs.length === 1) _fpPositionPanel();
   _mgTip(e, k, shown * 10);   // 1 Scene-Unit = 10 mm
-  // Anschmiegen muss auch beim Ziehen am Pfeil greifen
+  // Anschmiegen muss auch beim Ziehen am Pfeil greifen — bei einem schon
+  // aufgesetzten SVG aber nur auf dem EIGENEN Körper (siehe _mgDown)
+  const haft = d.svgHaft;
+  if (haft && haft.kind === 'flat') { _textSnapTarget = null; return; }   // bleibt, wo losgelassen
   _detectTextSnapWhileDragging(e);
+  if (haft && _textSnapTarget) {
+    const wurzel = m => { let p = m; while (p && !objects.includes(p)) p = p.parent; return p || m; };
+    if (!haft.ziel || wurzel(_textSnapTarget.obj) !== wurzel(haft.ziel)) {
+      _textSnapTarget = null;
+      const hint = document.getElementById('text-snap-hint');
+      if (hint) hint.style.display = 'none';
+    }
+  }
 }
 
 function _mgUp(e) {
@@ -31470,11 +31493,22 @@ function _mgUp(e) {
   window.removeEventListener('pointermove', _mgMove, true);
   window.removeEventListener('pointerup', _mgUp, true);
   window.removeEventListener('pointercancel', _mgUp, true);
+  const haft = _mg.drag.svgHaft;
   _mg.drag = null;
   _mgTip(null);
   _mg.hover = 'reset'; _mgSetHover(null);   // Farben/Deckkraft zurücksetzen
   _mgMuteHandles(false);
-  _applyTextSnapOnDrop();                  // Text/SVG ans Ziel schmiegen
+  // Flach aufgesetzt: Lage behalten, nur den Gravur-Ankerpunkt auf der Wand
+  // nachführen (_svgFlatTarget prüft per Strahl, ob es noch auf der Wand sitzt).
+  if (haft && haft.kind === 'flat' && selectedObjs.length === 1) {
+    _svgFlatTarget(selectedObjs[0]);
+    _textSnapTarget = null;
+    const hint = document.getElementById('text-snap-hint');
+    if (hint) hint.style.display = 'none';
+  }
+  _svgSnapAmPfeil = true;                  // neu aufsetzen: da, wo der Pfeil es hingeschoben hat
+  try { _applyTextSnapOnDrop(); }          // Text/SVG ans Ziel schmiegen
+  finally { _svgSnapAmPfeil = false; }
   _svgWrapFollowSel(0);                    // Wand an der neuen Höhe nachmessen
   updateTFInputs();
 }
@@ -52668,8 +52702,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.120';
+const VOLME3D_VERSION = '1.18.121';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.121', date:'2026-10-07', changes:[
+    ['\u{1F41B}','<b>Motive bleiben beim Verschieben mit den Pfeilen da, wo du sie loslässt.</b> Ein Motiv auf einer flachen Seite sprang beim Ziehen am Pfeil manchmal weg: zurück in die Mitte der Fläche, wenn die Pfeilspitze über die Oberkante ragte, oder auf ein anderes Motiv daneben, wenn der Zeiger dort stand. Jetzt zählt nur noch, wohin du das Motiv schiebst. Schiebst du ein loses Motiv mit einem Pfeil an eine Wand, setzt es sich dort an genau dieser Stelle auf (und nicht mehr in die Mitte). Ein zweites Motiv auf derselben Fläche gilt außerdem nicht mehr als Wand, an die man ein Motiv heften kann.'],
+  ]},
   { version:'1.18.120', date:'2026-10-04', changes:[
     ['\u{1F41B}','<b>Vereinen scheitert nicht mehr an einem einzigen fehlerhaften Teil.</b> Hatte ein Motiv eine offene Kontur, landete bisher das ganze Vereinen beim Rechen-Server, lief dort über eine Minute und endete als Gruppe. Jetzt wird jedes Teil einzeln geprüft und automatisch repariert; einzelne kaputte Stückchen fallen weg (die Meldung sagt, wie viele). Lässt sich ein Teil gar nicht retten, wird der Rest trotzdem verschmolzen und das Teil bleibt beim Namen genannt daneben stehen. Gemeldet von Josy.'],
     ['\u{2728}','<b>Hinweis bei neuer Version.</b> Wer V3D CAD über Nacht offen lässt, arbeitet sonst mit dem alten Stand weiter und bekommt Verbesserungen erst nach dem Neuladen. Kommst du zum Fenster zurück und es gibt eine neuere Version, erscheint oben ein Hinweis mit <i>Neu laden</i> \u2014 dein Stand wird vorher gesichert.'],
@@ -54245,7 +54282,7 @@ function _svgSnapDetect(svgMesh, mouseEvent) {
   // Raycast VOM MAUS-CURSOR auf alle Objekte (außer SVG selbst)
   getNorm(mouseEvent);
   raycaster.setFromCamera(mousev, camera);
-  const targets = objects.filter(o => o !== svgMesh && !o.userData.isEdgeLines && o.isMesh);
+  const targets = objects.filter(o => o !== svgMesh && !o.userData.isEdgeLines && o.isMesh && !_svgIstAufsatz(o));
   const hits = raycaster.intersectObjects(targets, true);
   const hit = hits.find(h => h.face && h.object.isMesh);
 
@@ -54366,6 +54403,24 @@ function _svgCenterWorld(o) {
   if (!g) return o.getWorldPosition(new THREE.Vector3());
   if (!g.boundingBox) g.computeBoundingBox();
   return o.localToWorld(g.boundingBox.getCenter(new THREE.Vector3()));
+}
+
+// Per Gizmo-Pfeil an eine Wand geschoben: Der Nutzer hat das Motiv bewusst
+// dorthin gestellt — also seine Mitte senkrecht auf die Wand loten, statt es in
+// die Flächenmitte springen zu lassen. Ragt es über den Rand, wird es gerade so
+// weit hereingeholt, dass es ganz auf der Fläche liegt. null = Lot trifft die
+// Fläche nicht (dann wie bisher in die Mitte).
+function _svgPfeilAnker(o, hit, planeD, n, uW, vW) {
+  const face = _faceInfoWorld(hit.object, hit.face.normal, planeD, uW, vW);
+  if (!face || face.uMin == null) return null;
+  const c = _svgCenterWorld(o).sub(face.center);
+  let du = c.dot(uW), dv = c.dot(vW);
+  const luft = 0.05;
+  if (du < face.uMin - luft || du > face.uMax + luft || dv < face.vMin - luft || dv > face.vMax + luft) return null;
+  const half = _svgGlideHalfExtent(o);   // lokal X = Breite, Z = Höhe — nach dem Ausrichten = uW/vW
+  du = _svgGlideClamp(du, face.uMin, face.uMax, half.u);
+  dv = _svgGlideClamp(dv, face.vMin, face.vMax, half.v);
+  return face.center.clone().addScaledVector(uW, du).addScaledVector(vW, dv);
 }
 
 function _applySvgSnap(svgMesh, {obj, type, wrap}) {
@@ -54496,7 +54551,8 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   const _anchor = _svgSnapAtHit ? null               // „Beschriftung setzen": genau an den Klickpunkt
     : _sameFace && _prevCenterW
     ? _prevCenterW                                   // schon drauf: Lage in der Fläche behalten
-    : _faceCenterWorld(hit.object, hit.face);        // neu drauf: in die Flächenmitte
+    : (_svgSnapAmPfeil && _svgPfeilAnker(svgMesh, hit, _planeD, n, _colX, _colZ))
+      || _faceCenterWorld(hit.object, hit.face);     // neu drauf: in die Flächenmitte
   if (_anchor) {
     const _d = _anchor.clone().sub(hit.point);
     _target.add(_d).addScaledVector(n, -_d.dot(n));  // nur In-Flächen-Anteil von (anker - hit)
@@ -54560,6 +54616,16 @@ function _svgGlideHalfExtent(o) {
            v: (bb.max.z - bb.min.z) / 2 * Math.abs(o.scale.z) };
 }
 
+// Ein anderes SVG-Motiv, das selbst nur auf einer Wand sitzt (oder eine Bohrung
+// ist), ist keine Wand zum Aufsetzen. Sonst heftete sich ein Motiv an seinen
+// Nachbarn, sobald Zeiger oder Lot ihn trafen — es stand dann vor der Wand und
+// sprang beim Verschieben auf den Nachbarn (Josy 6.10., zwei Teddys auf einem Quader).
+function _svgIstAufsatz(x) {
+  const u = x && x.userData;
+  return !!(u && u.shapeType === 'svg'
+            && (u.isHole || u._snapNormal || u._svgWrap || u._svgSchmieg));
+}
+
 // Das geheftete Solid samt Flächenebene wiederfinden. Nach Speichern/Laden ist
 // die Referenz weg — dann von oberhalb des Motivs auf die Wand strahlen.
 // Die gemerkte Fläche (_snapSolid/_snapNormal) überlebt auch dann, wenn das Motiv
@@ -54576,7 +54642,7 @@ function _svgFlatTarget(o) {
   const c = _svgCenterWorld(o);
   const rc = new THREE.Raycaster();
   rc.set(c.clone().addScaledVector(n, START), n.clone().negate());
-  for (const h of rc.intersectObjects(objects.filter(x => x !== o), true)) {
+  for (const h of rc.intersectObjects(objects.filter(x => x !== o && !_svgIstAufsatz(x)), true)) {
     if (!h.face || h.object.userData.isEdgeLines || !h.object.isMesh) continue;
     let root = h.object; while (root && !objects.includes(root)) root = root.parent;
     if (root === o) continue;
@@ -54627,7 +54693,7 @@ function _svgWrapTarget(o) {
   const R = (ud._svgWrap && ud._svgWrap.R) || 1;
   const rc = new THREE.Raycaster();
   rc.set(o.position.clone().addScaledVector(e1, R * 4 + 20), e1.clone().negate());
-  for (const h of rc.intersectObjects(objects.filter(x => x !== o), true)) {
+  for (const h of rc.intersectObjects(objects.filter(x => x !== o && !_svgIstAufsatz(x)), true)) {
     if (!h.face || h.object.userData.isEdgeLines || !h.object.isMesh) continue;
     let root = h.object; while (root && !objects.includes(root)) root = root.parent;
     if (root === o) continue;
@@ -54779,7 +54845,7 @@ function _svgGlideEscaped(e) {
   if (!G || G.kind === 'rot') return false;   // Drehen bricht nicht aus
   getNorm(e); raycaster.setFromCamera(mousev, camera);
   const hits = raycaster.intersectObjects(
-    objects.filter(o => o !== G.obj && !o.userData.isEdgeLines), true);
+    objects.filter(o => o !== G.obj && !o.userData.isEdgeLines && !_svgIstAufsatz(o)), true);
   const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines);
   const rootOf = m => { let p = m; while (p && !objects.includes(p)) p = p.parent; return p || m; };
   const own = G.kind === 'flat' ? (G.fr.solid && G.fr.solid.mesh) : G.fr.target;
