@@ -748,6 +748,40 @@ class Handler(BaseHTTPRequestHandler):
                             "position": WARTESCHLANGE.qsize()})
             return
 
+        if pfad == "/api/nochmal":
+            # fertigen Job mit anderem Modus neu rechnen - ohne neuen Upload
+            # (z. B. Transkript fertig, jetzt noch die Szenenbilder dazu)
+            alt = job_lesen((q.get("id") or [""])[0])
+            modus_wunsch = (q.get("modus") or ["beides"])[0]
+            if not alt or modus_wunsch not in ("auto", "ton", "bild", "beides"):
+                self.json_raus({"fehler": "unbekannt"}, 404)
+                return
+            quelle = os.path.join(MEDIEN, alt.get("datei") or "")
+            if not alt.get("datei") or not os.path.isfile(quelle):
+                self.json_raus({"fehler": "Originaldatei nicht mehr da - bitte neu hochladen"}, 410)
+                return
+            bild, fehler = bild_optionen(q)
+            if fehler:
+                self.json_raus({"fehler": "Bildmodus: " + fehler}, 400)
+                return
+            jid = uuid.uuid4().hex
+            dateiname = jid + os.path.splitext(alt["datei"])[1]
+            ziel = os.path.join(MEDIEN, dateiname)
+            try:
+                os.link(quelle, ziel)
+            except OSError:
+                shutil.copyfile(quelle, ziel)
+            job = {"id": jid, "name": alt["name"], "datei": dateiname,
+                   "modell": alt.get("modell") or "small",
+                   "sprache": alt.get("sprache") or "de", "modus_wunsch": modus_wunsch,
+                   "bild": bild, "zustand": "wartet", "prozent": 0,
+                   "angelegt": time.time(), "groesse": alt.get("groesse"),
+                   "segmente": [], "text": ""}
+            job_schreiben(job)
+            WARTESCHLANGE.put(jid)
+            self.json_raus({"ok": True, "id": jid, "position": WARTESCHLANGE.qsize()})
+            return
+
         if pfad == "/api/loeschen":
             jid = (self.json_rein().get("id") or "")
             job = job_lesen(jid)
