@@ -835,18 +835,30 @@ def markdown_bauen(erg):
     s = erg["statistik"]
     a = erg["ausschnitt"]
     z = []
+    beides = erg.get("modus") == "beides"
     z.append(f"# Bildprotokoll: {erg['quelle']}")
     z.append("")
-    z.append("Stummes Video, zerlegt in Schlüsselbilder. Jedes Bild zeigt einen sichtbar "
-             "neuen Zustand des Bildschirms, in zeitlicher Reihenfolge. Der Text unter "
-             "jedem Bild ist maschinell erkannt (OCR) und kann Fehler enthalten - im Zweifel "
-             "gilt das Bild.")
-    z.append("")
-    z.append("**Auftrag für die Auswertung:** Beschreibe anhand der Bilder Schritt für Schritt, "
-             "was die Person macht: welches Programm bzw. welche Seite, welche Menüs, "
-             "Schaltflächen und Eingaben, und was am Ende herauskommt. Nenne zu jedem Schritt "
-             "die Bildnummer und den Zeitstempel. Lücken zwischen zwei Bildern bitte als "
-             "Vermutung kennzeichnen.")
+    if beides:
+        z.append("Video mit Ton, zerlegt in Szenenbilder. Unter jedem Bild steht, was ab "
+                 "diesem Zeitpunkt bis zum nächsten Bild gesprochen wird (Spracherkennung), "
+                 "und der Text, der im Bild zu sehen ist (OCR). Beides ist maschinell erkannt "
+                 "und kann Fehler enthalten - im Zweifel gilt das Bild.")
+        z.append("")
+        z.append("**Auftrag für die Auswertung:** Fasse das Video Schritt für Schritt zusammen: "
+                 "was gezeigt und was dazu gesagt wird. Nenne zu jedem Schritt die Bildnummer "
+                 "und den Zeitstempel. Lücken zwischen zwei Bildern bitte als Vermutung "
+                 "kennzeichnen.")
+    else:
+        z.append("Stummes Video, zerlegt in Schlüsselbilder. Jedes Bild zeigt einen sichtbar "
+                 "neuen Zustand des Bildschirms, in zeitlicher Reihenfolge. Der Text unter "
+                 "jedem Bild ist maschinell erkannt (OCR) und kann Fehler enthalten - im Zweifel "
+                 "gilt das Bild.")
+        z.append("")
+        z.append("**Auftrag für die Auswertung:** Beschreibe anhand der Bilder Schritt für Schritt, "
+                 "was die Person macht: welches Programm bzw. welche Seite, welche Menüs, "
+                 "Schaltflächen und Eingaben, und was am Ende herauskommt. Nenne zu jedem Schritt "
+                 "die Bildnummer und den Zeitstempel. Lücken zwischen zwei Bildern bitte als "
+                 "Vermutung kennzeichnen.")
     z.append("")
     z.append("| | |")
     z.append("|---|---|")
@@ -857,7 +869,11 @@ def markdown_bauen(erg):
         z.append(f"| Auflösung | {v['breite']}×{v['hoehe']}"
                  + (f", {v['fps']:g} fps" if v.get("fps") else "") + " |")
     z.append(f"| Ausschnitt | {zeit_text(a['start'])} – {zeit_text(a['ende'])} |")
-    z.append(f"| Warum Bildmodus | {erg.get('modus_grund') or '-'} |")
+    z.append(f"| {'Modus' if beides else 'Warum Bildmodus'} | {erg.get('modus_grund') or '-'} |")
+    if beides:
+        sp = erg.get("sprache") or {}
+        z.append(f"| Spracherkennung | Whisper ({sp.get('modell') or '-'}), "
+                 f"{sp.get('abschnitte', 0)} Abschnitte |")
     z.append(f"| Bilder | {len(erg['bilder'])} (aus {s['kandidaten']} Kandidaten, "
              f"{s['duplikate_entfernt']} Duplikate entfernt) |")
     z.append(f"| Szenen-Schwellwert | {e['schwelle']:g}"
@@ -886,6 +902,15 @@ def markdown_bauen(erg):
                  + (f" · Abstand zum vorigen Bild {b['hash_abstand']}/{HASH_GROESSE ** 2} Bit"
                     if b.get("hash_abstand") is not None else "") + "*")
         z.append("")
+        if beides:
+            gesagt = (b.get("gesprochen") or "").strip()
+            if gesagt:
+                z.append("**Gesprochen:**")
+                z.append("")
+                z.append("> " + gesagt.replace("\n", "\n> "))
+            else:
+                z.append("*Dazu wird nichts gesagt.*")
+            z.append("")
         o = b.get("ocr")
         if o is None:
             continue
@@ -898,7 +923,8 @@ def markdown_bauen(erg):
                 z.append(f"⚠️ **Schwache Erkennung** (Ø Konfidenz {o['konfidenz']:.0f} %) - "
                          "Text unsicher, bitte am Bild prüfen.")
             else:
-                z.append(f"**Erkannter Text** (Ø Konfidenz {o['konfidenz']:.0f} %):")
+                z.append(f"**{'Text im Bild' if beides else 'Erkannter Text'}** "
+                         f"(Ø Konfidenz {o['konfidenz']:.0f} %):")
             z.append("")
             zaun = _zaun(o["text"])
             z.append(zaun + "text")
@@ -918,6 +944,41 @@ def markdown_bauen(erg):
             z.append(f"- {m['text']}")
         z.append("")
     return "\n".join(z)
+
+
+def sprache_zuordnen(erg, segmente, modell=None):
+    """Modus "beides": jedem Bild das Gesprochene von seinem Zeitpunkt bis zum
+    nächsten Bild zuordnen (Abschnittsbeginn zählt). Was vor dem ersten Bild
+    gesagt wird, gehört zum ersten Bild."""
+    bilder = erg["bilder"]
+    for b in bilder:
+        b["gesprochen"] = ""
+    if bilder:
+        teile = [[] for _ in bilder]
+
+        def bild_zu(zeit):
+            i = 0
+            while i + 1 < len(bilder) and zeit >= bilder[i + 1]["zeit"]:
+                i += 1
+            return i
+        for seg in segmente:
+            if seg.get("woerter"):          # genauer: jedes Wort (Mitte) zu seinem Bild
+                for mitte, wort in seg["woerter"]:
+                    teile[bild_zu(mitte)].append(wort)
+            else:
+                teile[bild_zu(seg["start"])].append(" " + (seg.get("text") or "").strip())
+        for b, t in zip(bilder, teile):
+            b["gesprochen"] = "".join(t).strip()
+    erg["modus"] = "beides"
+    erg["sprache"] = {"modell": modell, "abschnitte": len(segmente)}
+    return erg
+
+
+def protokoll_schreiben(erg, ausgabe):
+    with open(os.path.join(ausgabe, "bildprotokoll.json"), "w", encoding="utf-8") as f:
+        json.dump(erg, f, ensure_ascii=False, indent=2)
+    with open(os.path.join(ausgabe, "bildprotokoll.md"), "w", encoding="utf-8") as f:
+        f.write(markdown_bauen(erg))
 
 
 def _ausgabe_vorbereiten(ausgabe, ueberschreiben):
@@ -1190,10 +1251,7 @@ def ausfuehren(video, ausgabe, *, start=None, ende=None, schwelle=STANDARD["schw
             erg["ausschnitt"]["ende"] = ergebnisse[-1]["zeit"]
         p.info(f"Fertig: {len(ergebnisse)} Bilder in {erg['statistik']['laufzeit_s']:g} s")
         erg["log"] = p.eintraege
-        with open(os.path.join(ausgabe, "bildprotokoll.json"), "w", encoding="utf-8") as f:
-            json.dump(erg, f, ensure_ascii=False, indent=2)
-        with open(os.path.join(ausgabe, "bildprotokoll.md"), "w", encoding="utf-8") as f:
-            f.write(markdown_bauen(erg))
+        protokoll_schreiben(erg, ausgabe)
         with open(os.path.join(ausgabe, "bildmodus.log"), "w", encoding="utf-8") as f:
             f.write(p.als_text())
         return erg

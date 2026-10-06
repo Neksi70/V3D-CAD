@@ -21,6 +21,12 @@ Markdown/JSON/ZIP für die Auswertung mit Claude.
 Modus **automatisch** (Standard): hat das Video keine oder eine stille Tonspur,
 oder findet Whisper darin keine Sprache, geht es in den Bildmodus.
 
+Modus **Ton + Bilder** (`modus=beides`): erst Whisper (mit Wort-Zeitmarken), dann
+Szenenbilder + OCR wie im Bildmodus. Jedes Bild bekommt das Gesprochene bis zum
+nächsten Bild – zugeordnet nach der *Mitte* jedes Worts (Abschnitte und
+Wortanfänge legt Whisper oft schon in die Pause davor). Markdown/JSON/ZIP
+enthalten pro Bild „Gesprochen" + „Text im Bild"; `.srt` bleibt der Ton.
+
 Ein Job nach dem anderen (Warteschlange), damit die CPU nicht überläuft.
 Grobe Faustregel auf dieser Kiste: `small` ≈ 6–8× schneller als Echtzeit,
 `medium` etwa 3× langsamer als `small`, dafür genauer bei Dialekt/Nebengeräuschen.

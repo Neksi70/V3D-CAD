@@ -213,13 +213,15 @@ class JobGeloescht(Exception):
     pass
 
 
-def bild_verarbeiten(jid, job, quelle, grund):
+def bild_verarbeiten(jid, job, quelle, grund, sprache=None, prozent_ab=0):
     """Bildmodus: Schlüsselbilder + OCR nach data/bilder/<jid>/. Das Ergebnis
-    landet zusätzlich als Segmente/Text im Job - damit gehen auch .txt/.srt."""
+    landet zusätzlich als Segmente/Text im Job - damit gehen auch .txt/.srt.
+    sprache = Whisper-Segmente -> Modus "beides": Gesprochenes je Bild."""
     ordner = os.path.join(BILDER, jid)
     shutil.rmtree(ordner, ignore_errors=True)
     opts = job.get("bild") or {}
-    job.update(modus="bild", modus_grund=grund, zustand="bilder", prozent=2)
+    job.update(modus="bild", modus_grund=grund, zustand="bilder",
+               prozent=max(2, prozent_ab))
     job_schreiben(job)
     letzte = [0.0]
 
@@ -232,6 +234,7 @@ def bild_verarbeiten(jid, job, quelle, grund):
             return
         letzte[0] = time.time()
         pruefen()
+        prozent = prozent_ab + prozent * (100 - prozent_ab) / 100
         job.update(zustand=zustand, prozent=int(min(99, prozent)), schritt=text)
         job_schreiben(job)
 
@@ -249,6 +252,32 @@ def bild_verarbeiten(jid, job, quelle, grund):
         modus_grund=grund, quelle_name=job.get("name"),
         protokoll=bildmodus.Protokoll(echo), fortschritt=fortschritt,
         abbrechen_pruefen=pruefen, arbeitsordner=MEDIEN)
+    if sprache is not None:
+        bildmodus.sprache_zuordnen(erg, sprache, job.get("modell"))
+        bildmodus.protokoll_schreiben(erg, ordner)
+        job = job_lesen(jid)
+        if job is None:
+            raise JobGeloescht()
+
+        def block(b):
+            o = ((b.get("ocr") or {}).get("text") or "").strip()
+            return (f"[{bildmodus.zeit_text(b['zeit'])}] Bild {b['nr']}\n"
+                    f"Gesprochen: {b.get('gesprochen') or '(nichts)'}"
+                    + (f"\nText im Bild: {o}" if o else ""))
+        job.update(
+            modus="beides", modus_grund=grund, segmente=sprache,
+            text="\n\n".join(block(b) for b in erg["bilder"]),
+            bilder=[{k: b.get(k) for k in ("nr", "zeit", "zeit_text", "datei", "breite",
+                                            "hoehe", "grund", "text_geaendert", "entzerrt",
+                                            "ocr", "gesprochen")}
+                    for b in erg["bilder"]],
+            statistik=erg["statistik"], einstellungen=erg["einstellungen"],
+            hinweise=(job.get("hinweise") or [])
+            + [e["text"] for e in erg["log"] if e["stufe"] == "warnung"],
+            dauer=erg["video"].get("dauer") or job.get("dauer"), zustand="fertig",
+            prozent=100, beendet=time.time(), schritt=None)
+        job_schreiben(job)
+        return
     segmente = []
     for i, b in enumerate(erg["bilder"]):
         naechste = erg["bilder"][i + 1]["zeit"] if i + 1 < len(erg["bilder"]) else (
@@ -298,6 +327,7 @@ def verarbeiten(jid):
                 return
             job["hat_bildspur"] = info["video"] is not None
 
+        beides = modus == "beides"
         job["modus"] = "ton"
         job["zustand"] = "ton"
         job["prozent"] = 2
@@ -306,7 +336,16 @@ def verarbeiten(jid):
         # nicht schlicht jid + ".wav": bei einem hochgeladenen .wav waere das
         # dieselbe Datei wie die Quelle und ffmpeg bricht ab
         wav = os.path.join(MEDIEN, jid + "_16k.wav")
-        ton_extrahieren(quelle, wav)
+        try:
+            ton_extrahieren(quelle, wav)
+        except RuntimeError as e:
+            if not beides:
+                raise
+            # Video ohne Tonspur: Bilder gibt es trotzdem
+            job["hinweise"] = [f"Kein Ton verschriftlicht: {e}"]
+            bild_verarbeiten(jid, job, quelle, "Ton + Bilder gewählt", sprache=[],
+                             prozent_ab=5)
+            return
 
         laenge = tondauer(wav)
         job["dauer"] = round(laenge, 1)
@@ -322,7 +361,8 @@ def verarbeiten(jid):
             vad_filter=True,
             vad_parameters={"min_silence_duration_ms": 500},
             beam_size=5,
-            condition_on_previous_text=False)
+            condition_on_previous_text=False,
+            word_timestamps=beides)
 
         job["erkannte_sprache"] = getattr(info, "language", None)
         gesammelt = []
@@ -330,18 +370,34 @@ def verarbeiten(jid):
         for seg in segmente:
             text = (seg.text or "").strip()
             if text:
-                gesammelt.append({"start": round(seg.start, 2),
-                                  "ende": round(seg.end, 2),
-                                  "text": text})
+                eintrag = {"start": round(seg.start, 2), "ende": round(seg.end, 2),
+                           "text": text}
+                if beides and getattr(seg, "words", None):
+                    # Abschnitte beginnen oft schon in der Pause davor, Wortanfänge
+                    # liegen etwas zu früh - fürs Bild zählt die Mitte jedes Worts
+                    eintrag["woerter"] = [[round((w.start + w.end) / 2, 2), w.word]
+                                          for w in seg.words]
+                gesammelt.append(eintrag)
             if time.time() - letzte_meldung > 1.5:
                 letzte_meldung = time.time()
                 if laenge > 0:
-                    job["prozent"] = min(98, 5 + int(seg.end / laenge * 93))
+                    anteil = 45 if beides else 93
+                    job["prozent"] = min(98, 5 + int(seg.end / laenge * anteil))
                 job["segmente"] = gesammelt
                 job_schreiben(job)
             if job_lesen(jid) is None:      # Job wurde gelöscht
                 return
 
+        if beides:
+            try:
+                os.remove(wav)
+            except OSError:
+                pass
+            if not gesammelt:
+                job["hinweise"] = ["In der Tonspur wurde keine Sprache erkannt."]
+            bild_verarbeiten(jid, job, quelle, "Ton + Bilder gewählt", sprache=gesammelt,
+                             prozent_ab=50)
+            return
         if not gesammelt and modus == "auto" and job.get("hat_bildspur"):
             # Ton war da, aber nichts Gesprochenes (Rauschen, Musik ohne Text)
             try:
@@ -430,7 +486,7 @@ def bild_optionen(q):
 
 
 def bild_ordner(job):
-    if not job or job.get("modus") != "bild" or job.get("zustand") != "fertig":
+    if not job or job.get("modus") not in ("bild", "beides") or job.get("zustand") != "fertig":
         return None
     ordner = os.path.join(BILDER, job["id"])
     return ordner if os.path.isdir(ordner) else None
@@ -650,7 +706,7 @@ class Handler(BaseHTTPRequestHandler):
             if sprache not in ("de", "en", "auto", "nl", "fr", "es", "it", "tr", "pl", "ru"):
                 sprache = "de"
             modus_wunsch = (q.get("modus") or ["auto"])[0]
-            if modus_wunsch not in ("auto", "ton", "bild"):
+            if modus_wunsch not in ("auto", "ton", "bild", "beides"):
                 modus_wunsch = "auto"
             bild, fehler = bild_optionen(q)
             if fehler:
