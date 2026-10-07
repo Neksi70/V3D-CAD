@@ -53032,8 +53032,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.127';
+const VOLME3D_VERSION = '1.18.128';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.128', date:'2026-10-08', changes:[
+    ['\u{1F5A8}','<b>Druck-Check: kein falscher Alarm mehr bei erhabener Schrift.</b> Bei Namensschildern mit Schreibschrift meldete der Druck-Check „nicht wasserdicht“, obwohl das Teil in Ordnung war. Grund waren winzige Rundungen der Buchstaben, kleiner als ein Hundertstelmillimeter, die der Check zu grob gemessen hat. Er prüft jetzt zehnmal feiner. Echte Löcher im Netz findet der Druck-Check weiterhin.'],
+  ]},
   { version:'1.18.127', date:'2026-10-07', changes:[
     ['\u{1F41B}','<b>Oben offene Taschen werden nicht mehr zu tief.</b> Schloss eine Bohrung oben genau mit dem Teil ab, zum Beispiel der Hohlraum einer Box, hat V3D CAD sie beim Abziehen nicht nur nach oben, sondern auch 0,8 mm nach unten verlängert. Der Boden wurde dadurch dünner als eingestellt, bei einer Box mit 2 mm Boden nur 1,2 mm. Jetzt wird nur die bündige Seite verlängert, und der Boden hat genau das eingestellte Maß.'],
   ]},
@@ -62665,7 +62668,9 @@ function _printCheckAnalyze(){
       const g=m.geometry, pos=g && g.attributes.position; if(!pos) continue;
       const idx=g.index, triCount=(idx?idx.count:pos.count)/3;
       const edges=new Map();
-      const key=v=>Math.round(v.x*1000)+'_'+Math.round(v.y*1000)+'_'+Math.round(v.z*1000);
+      // Raster 0,001 mm (1 Unit = 10 mm): fein genug für die winzigen Rundungen erhabener
+      // Schrift, grob genug gegen Float-Rauschen (float32 bei 100 mm ≈ 0,00001 mm).
+      const key=v=>Math.round(v.x*10000)+'_'+Math.round(v.y*10000)+'_'+Math.round(v.z*10000);
       const addEdge=(a,c)=>{ const k=a<c?a+'|'+c:c+'|'+a; edges.set(k,(edges.get(k)||0)+1); };
       for(let t=0;t<triCount;t++){
         const i0=idx?idx.getX(t*3):t*3, i1=idx?idx.getX(t*3+1):t*3+1, i2=idx?idx.getX(t*3+2):t*3+2;
@@ -62673,7 +62678,10 @@ function _printCheckAnalyze(){
         vB.fromBufferAttribute(pos,i1).applyMatrix4(m.matrixWorld);
         vC.fromBufferAttribute(pos,i2).applyMatrix4(m.matrixWorld);
         const ka=key(vA),kb=key(vB),kc=key(vC);
-        addEdge(ka,kb); addEdge(kb,kc); addEdge(kc,ka);
+        // Winzige Dreiecke, die im Prüfraster auf einen Punkt/eine Linie
+        // fallen, nicht als Kanten zählen — sonst meldete erhabene Schreibschrift
+        // (Namensschild) „nicht wasserdicht“, obwohl das Netz sauber ist (Gartenstecker 8.10.).
+        if(ka!==kb && kb!==kc && kc!==ka){ addEdge(ka,kb); addEdge(kb,kc); addEdge(kc,ka); }
         ab.subVectors(vB,vA); ac.subVectors(vC,vA); nrm.crossVectors(ab,ac);
         const area=nrm.length()/2; totalArea+=area;
         if(area>1e-9){ nrm.multiplyScalar(1/(area*2));

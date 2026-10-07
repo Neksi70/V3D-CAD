@@ -82,5 +82,10 @@ try {
   await pg.mouse.click(5, 900);
   await pg.waitForTimeout(800);
   await pg.screenshot({ path: OUT + '/stecker_2.png' });
+  // Gegenprobe: echtes Loch im Netz muss der Druck-Check weiterhin finden
+  log('Gegenprobe Loch:', JSON.stringify(await pg.evaluate(() => { _newCreate(false); addShape('box'); const o = objects[0];
+    let g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone(); const p = g.attributes.position;
+    const neu = new THREE.BufferGeometry(); neu.setAttribute('position', new THREE.BufferAttribute(p.array.slice(9), 3)); o.geometry = neu;   // ein Dreieck weg
+    const r = _printCheckAnalyze(); return { offeneKanten: r.boundaryEdges, nichtManifold: r.nonManifold }; })));
   log('Seitenfehler:', errs);
 } finally { await b.close(); }
