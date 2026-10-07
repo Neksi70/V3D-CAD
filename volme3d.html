@@ -15928,12 +15928,24 @@ function _doRepositionDimHandles() {
 }
 
 // ─── Build once on selection ──────────────────────────────────────────
+// Lokale Box je Positions-Attribut zwischenspeichern: getMeshBox läuft pro Frame
+// (Maß-Griffe, Eigenschaften) — bei Scan-Netzen (927k Dreiecke) kostete das
+// Durchlaufen aller Punkte ~260 ms je Frame. Neu gerechnet wird nur, wenn sich
+// das Attribut ändert (anderes Objekt, version durch needsUpdate, andere Anzahl).
+const _mbLocalCache = new WeakMap();
+function _mbLocalBox(pos) {
+  const c = _mbLocalCache.get(pos);
+  if (c && c.v === pos.version && c.n === pos.count) return c.box;
+  const box = new THREE.Box3().setFromBufferAttribute(pos);
+  _mbLocalCache.set(pos, { v: pos.version, n: pos.count, box });
+  return box;
+}
 function getMeshBox(o) {
   o.updateMatrixWorld(true);
   const box = new THREE.Box3();
   o.traverse(child => {
-    if (!child.isMesh || !child.geometry) return;
-    const localBox = new THREE.Box3().setFromBufferAttribute(child.geometry.attributes.position);
+    if (!child.isMesh || !child.geometry || !child.geometry.attributes.position) return;
+    const localBox = _mbLocalBox(child.geometry.attributes.position);
     const corners = [
       [localBox.min.x,localBox.min.y,localBox.min.z],[localBox.max.x,localBox.min.y,localBox.min.z],
       [localBox.min.x,localBox.max.y,localBox.min.z],[localBox.max.x,localBox.max.y,localBox.min.z],
@@ -52702,8 +52714,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.121';
+const VOLME3D_VERSION = '1.18.122';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.122', date:'2026-10-07', changes:[
+    ['\u{26A1}','<b>Große Scan-Modelle ruckeln nicht mehr, solange sie ausgewählt sind.</b> Bei Netzen mit fast einer Million Dreiecken hat V3D CAD in jedem Bild die Maße über alle Punkte neu ausgerechnet. Das passiert jetzt nur noch, wenn sich das Modell wirklich ändert.'],
+  ]},
   { version:'1.18.121', date:'2026-10-07', changes:[
     ['\u{1F41B}','<b>Motive bleiben beim Verschieben mit den Pfeilen da, wo du sie loslässt.</b> Ein Motiv auf einer flachen Seite sprang beim Ziehen am Pfeil manchmal weg: zurück in die Mitte der Fläche, wenn die Pfeilspitze über die Oberkante ragte, oder auf ein anderes Motiv daneben, wenn der Zeiger dort stand. Jetzt zählt nur noch, wohin du das Motiv schiebst. Schiebst du ein loses Motiv mit einem Pfeil an eine Wand, setzt es sich dort an genau dieser Stelle auf (und nicht mehr in die Mitte). Ein zweites Motiv auf derselben Fläche gilt außerdem nicht mehr als Wand, an die man ein Motiv heften kann.'],
   ]},
