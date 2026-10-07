@@ -32381,10 +32381,15 @@ function _dsQuotaWarn(e) {
 // localStorage-Set mit Auto-Aufräumen: bei „voll" alte Design-Caches (Daten/Thumbs)
 // entfernen (sind in Firestore gesichert) und erneut versuchen. Aktuelles Design +
 // Index bleiben geschützt. Gibt true bei Erfolg.
+const _DS_JSON_MAX = 17e6;    // darüber wird es gepackt > 4,5 Mio. Zeichen → passt nirgends
+const _LS_MAX_CHARS = 4.8e6;  // größer als der ganze Browser-Speicher → Aufräumen sinnlos
 function _lsSetWithEvict(key, val, keepId) {
   try { localStorage.setItem(key, val); return true; }
   catch(e) {
     if (e?.name !== 'QuotaExceededError') { console.warn('[ls] setItem:', e?.name); return false; }
+    // Passt selbst in einen leeren Speicher nicht: NICHT die anderen Designs
+    // wegräumen — das löschte sie für nichts (ein Scan mit 9 MB gepackt)
+    if (typeof val === 'string' && val.length > _LS_MAX_CHARS) return false;
     const protect = new Set([key, DS_IDX_KEY]);
     if (keepId) { protect.add(_dsDataKey(keepId)); protect.add(_dsThumbKey(keepId)); }
     const victims = [];
@@ -32446,19 +32451,21 @@ async function _resizeThumb(base64, w, h) {
   });
 }
 
-async function _fsSaveDesign(id, data, thumb, name, silent) {
+async function _fsSaveDesign(id, data, thumb, name, silent, packedIn) {
   const ref = _fsDesignsRef();
   if (!ref) return;
   try {
     const meta = _dsIdx().find(d => d.id === id);
     const now  = Date.now();
-    const smallThumb = await _resizeThumb(thumb, 200, 150);
-    const packed = _dsCompress(JSON.stringify(data));
+    // Schon gepackt (dsSaveDesign)? Dann nicht ein zweites Mal stringify+gzip —
+    // bei Scans kostete das jeweils ~2 s Stillstand pro Auto-Speichern
+    const packed = packedIn != null ? packedIn : _dsCompress(JSON.stringify(data));
     if (packed.length > 900000) {
       if (silent) console.warn('[Firestore] Design zu groß (' + packed.length + ' B) — nur lokal gespeichert');
       else notify('Design zu groß zum Speichern (~900KB Limit)', 'w');
       return;
     }
+    const smallThumb = await _resizeThumb(thumb, 200, 150);
     await ref.doc(id).set({
       name:    name || meta?.name || 'Design',
       created: meta?.created || now,
@@ -32528,11 +32535,24 @@ function dsSaveDesign(id, data, thumb, name, silent) {
     idx.push({ id, name: name || 'Design', created: now, updated: now });
   }
   _dsSetIdx(idx);
-  // Daten komprimiert + mit Auto-Aufräumen speichern (räumt alte Caches bei „voll")
-  const ok = _lsSetWithEvict(_dsDataKey(id), _dsCompress(JSON.stringify(data)), id);
+  // Einmal packen, für Browser-Speicher UND Cloud. Riesige Szenen (Scan-Netze)
+  // passen in keins von beiden: gzip schrumpft Geometrie-JSON ~4×, der
+  // Browser-Speicher fasst ~5 Mio. Zeichen, die Cloud 0,9 MB. Dann gar nicht erst
+  // komprimieren (Holzschwein nach Reparieren: 36 MB JSON, 1,7 s gzip — zweimal
+  // pro Auto-Speichern, und am Ende passte es doch nirgends hinein).
+  const json = JSON.stringify(data);
+  if (json.length > _DS_JSON_MAX) {
+    console.warn('[Speichern] Design zu groß für Browser-Speicher/Cloud (' + (json.length / 1e6).toFixed(0) + ' MB JSON) — nur Sicherung/Datei');
+    if (!silent) notify('Dieses Design ist zu groß für den Browser-Speicher. Bitte mit Strg+S als Datei speichern.', 'w', 9000);
+    return false;
+  }
+  const packed = _dsCompress(json);
+  // Daten mit Auto-Aufräumen speichern (räumt alte Caches bei „voll")
+  const ok = _lsSetWithEvict(_dsDataKey(id), packed, id);
   if (thumb) _lsSetWithEvict(_dsThumbKey(id), thumb, id);
   if (!ok && !silent) _dsQuotaWarn({ name: 'QuotaExceededError' });   // nur wenn selbst nach Aufräumen kein Platz
-  _fsSaveDesign(id, data, thumb, name, silent); // async, fire & forget
+  _fsSaveDesign(id, data, thumb, name, silent, packed); // async, fire & forget
+  return ok;
 }
 
 function dsDeleteDesign(id) {
@@ -52985,8 +53005,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.125';
+const VOLME3D_VERSION = '1.18.126';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.126', date:'2026-10-07', changes:[
+    ['\u{26A1}','<b>Große Scans bremsen das Speichern nicht mehr aus.</b> Bei einem großen Scan stand V3D CAD beim automatischen Speichern jedes Mal mehrere Sekunden still. Die Szene wurde dabei zweimal verpackt, einmal für den Browser und einmal für die Cloud, obwohl sie in keins von beiden hineinpasste. Jetzt wird nur einmal verpackt, und ist die Szene sichtlich zu groß, gar nicht erst. Außerdem löscht V3D CAD für so ein Design keine anderen Designs mehr aus dem Browser-Speicher. <b>Wichtig:</b> Große Scans bitte mit <b>Strg+S</b> als Datei sichern, für den Browser-Speicher sind sie zu groß.'],
+  ]},
   { version:'1.18.125', date:'2026-10-07', changes:[
     ['\u{1FA79}','<b>🩹 Reparieren lässt Scans sauber aussehen.</b> Nach dem Schließen von Löchern war ein gescanntes Modell bisher mit schwarzen Strichen übersät, weil V3D CAD dabei Kantenlinien neu gezeichnet hat. Jetzt bleiben die Kantenlinien so, wie sie vorher waren. Bleibt ein Scan danach für Vereinen/Abziehen schwierig, nennt die Meldung jetzt den wirklichen Grund und nicht mehr eine SVG-Datei.'],
   ]},
