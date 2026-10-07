@@ -52985,8 +52985,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.124';
+const VOLME3D_VERSION = '1.18.125';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.125', date:'2026-10-07', changes:[
+    ['\u{1FA79}','<b>🩹 Reparieren lässt Scans sauber aussehen.</b> Nach dem Schließen von Löchern war ein gescanntes Modell bisher mit schwarzen Strichen übersät, weil V3D CAD dabei Kantenlinien neu gezeichnet hat. Jetzt bleiben die Kantenlinien so, wie sie vorher waren. Bleibt ein Scan danach für Vereinen/Abziehen schwierig, nennt die Meldung jetzt den wirklichen Grund und nicht mehr eine SVG-Datei.'],
+  ]},
   { version:'1.18.124', date:'2026-10-07', changes:[
     ['\u{1F41B}','<b>Gedrehte Teile stehen wieder richtig auf der Platte.</b> Bei schräg gedrehten Teilen hat V3D CAD die Unterkante zu tief angenommen. Nach <b>⊥ Aufstellen</b>, Drehen oder <b>D</b> (auf den Boden) schwebte das Teil deshalb über der Platte, bei einem großen Scan um mehrere Zentimeter. Auch Breite, Tiefe und Höhe waren zu groß angezeigt. Jetzt zählt der echte tiefste Punkt, und die Maße stimmen.'],
     ['\u{26A1}','<b>Kein Haken mehr alle 30 Sekunden bei großen Modellen.</b> Das automatische Speichern lief alle 30 Sekunden, auch wenn sich nichts geändert hatte. Bei einem großen Scan stand V3D CAD dabei jedes Mal etwa eine Sekunde still, das fiel besonders beim Drehen auf. Jetzt wird nur noch gespeichert, wenn sich etwas geändert hat, und nicht mehr, während du mit gedrückter Maustaste drehst oder ziehst.'],
@@ -63726,19 +63729,27 @@ async function repairSelected() {
   saveUndo();
   let loops = 0, entartet = 0;
   meshes.forEach(m => {
+    // Kantenlinien nur erneuern, wo schon welche waren: ein Scan-Import hat
+    // keine, und neu gebaut sprenkelte jede Falte schwarz (Holzschwein 7.10.)
+    const hatteKanten = m.children.some(c => c.userData && c.userData.isEdgeLines);
     entartet += _dropDegenerateTris(m);
     loops += _fillHoles(m);
-    if (typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(m);
+    if (hatteKanten && typeof _updateObjEdgeLines === 'function') _updateObjEdgeLines(m);
   });
   updateTree();
   // Ehrliche Rueckmeldung: taugt das Teil jetzt zum Abziehen oder nicht? Sonst
   // schickt die Fehlermeldung beim Abziehen einen im Kreis ("bitte reparieren").
   const kaputt = [];
+  let kaputtImport = false;
   try {
     const w = await _mfInit();
     for (const m of meshes) {
       try { _mfFromSoup(w, _moldCollectTris(m)); }
-      catch (e) { kaputt.push(m.userData?.name || 'ohne Namen'); }
+      catch (e) {
+        kaputt.push(m.userData?.name || 'ohne Namen');
+        const root = typeof _fdRoot === 'function' ? _fdRoot(m) : m;
+        if ((root && root.userData && root.userData.type === 'import') || (m.userData && m.userData.type === 'import')) kaputtImport = true;
+      }
     }
   } catch (e) { /* Manifold nicht da: dann eben ohne Pruefung */ }
   const teile = [];
@@ -63747,7 +63758,9 @@ async function repairSelected() {
   if (kaputt.length)
     notify((teile.length ? teile.join(', ') + ' — ' : '') +
            'aber noch nicht abzieh-tauglich: ' + kaputt.join(', ') +
-           '. Meist liegt es an sich überschneidenden Linien im SVG.', 'w');
+           (kaputtImport
+             ? '. Das Netz hat Stellen, an denen mehr als zwei Flächen an einer Kante zusammenstoßen. Das ist typisch für Scans und vereinfachte Netze.'
+             : '. Meist liegt es an sich überschneidenden Linien im SVG.'), 'w');
   else
     notify((teile.length ? teile.join(', ') + ' ✓' : 'Nichts zu reparieren') +
            ' — Motiv ist zum Abziehen bereit', 'ok');
