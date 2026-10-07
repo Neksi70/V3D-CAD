@@ -25077,12 +25077,39 @@ async function _doSubtractHoles(solids, holes, ctl) {
       const halfH = (proxyBB.max.y - proxyBB.min.y) * 0.5;
       const cy    = (proxyBB.max.y + proxyBB.min.y) * 0.5;
       if (halfH > 0.001) {
-        let f = 1.0;
-        if (proxyBB.max.y > solidBB.max.y - eps)
-          f = Math.max(f, (solidBB.max.y + eps - cy) / halfH);
-        if (proxyBB.min.y < solidBB.min.y + eps)
-          f = Math.max(f, (cy - solidBB.min.y + eps) / halfH);
-        if (f > 1.0) { csgProxy.scale.y *= f; csgProxy.updateWorldMatrix(true, true); }
+        // Nur die bündige Seite verlängern. Früher wurde symmetrisch um die Mitte
+        // gestreckt → eine oben bündige Tasche wuchs auch 0,8 mm nach UNTEN
+        // (Übung A Grundkurs: Boxboden 1,2 statt 2 mm, Volker 7.10.).
+        const upW = new THREE.Vector3(0, 1, 0).applyQuaternion(csgProxy.getWorldQuaternion(new THREE.Quaternion()));
+        if (Math.abs(upW.y) > 0.999) {
+          let lo = proxyBB.min.y, hi = proxyBB.max.y;
+          if (hi > solidBB.max.y - eps) hi = Math.max(hi, solidBB.max.y + eps);
+          if (lo < solidBB.min.y + eps) lo = Math.min(lo, solidBB.min.y - eps);
+          const f = (hi - lo) / (2 * halfH);
+          if (f > 1.0001) {
+            // Kopie statt der Bohrung selbst: scheitert der Abzug, bleibt sie unverändert stehen
+            if (csgProxy === hole) {
+              csgProxy = new THREE.Mesh(hole.geometry, hole.material);
+              csgProxy.position.copy(hole.getWorldPosition(new THREE.Vector3()));
+              csgProxy.quaternion.copy(hole.getWorldQuaternion(new THREE.Quaternion()));
+              csgProxy.scale.copy(hole.getWorldScale(new THREE.Vector3()));
+              csgProxy.userData = Object.assign({}, hole.userData);
+            }
+            csgProxy.scale.y *= f;
+            csgProxy.updateWorldMatrix(true, true);
+            const nb = new THREE.Box3().setFromObject(csgProxy);
+            csgProxy.position.y += (lo + hi) / 2 - (nb.min.y + nb.max.y) / 2;
+            csgProxy.updateWorldMatrix(true, true);
+          }
+        } else {
+          // gekippte Bohrung: lokales Y ≠ Welt-Y → bisheriges Verhalten beibehalten
+          let f = 1.0;
+          if (proxyBB.max.y > solidBB.max.y - eps)
+            f = Math.max(f, (solidBB.max.y + eps - cy) / halfH);
+          if (proxyBB.min.y < solidBB.min.y + eps)
+            f = Math.max(f, (cy - solidBB.min.y + eps) / halfH);
+          if (f > 1.0) { csgProxy.scale.y *= f; csgProxy.updateWorldMatrix(true, true); }
+        }
       }
     }
 
@@ -53005,8 +53032,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.126';
+const VOLME3D_VERSION = '1.18.127';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.127', date:'2026-10-07', changes:[
+    ['\u{1F41B}','<b>Oben offene Taschen werden nicht mehr zu tief.</b> Schloss eine Bohrung oben genau mit dem Teil ab, zum Beispiel der Hohlraum einer Box, hat V3D CAD sie beim Abziehen nicht nur nach oben, sondern auch 0,8 mm nach unten verlängert. Der Boden wurde dadurch dünner als eingestellt, bei einer Box mit 2 mm Boden nur 1,2 mm. Jetzt wird nur die bündige Seite verlängert, und der Boden hat genau das eingestellte Maß.'],
+  ]},
   { version:'1.18.126', date:'2026-10-07', changes:[
     ['\u{26A1}','<b>Große Scans bremsen das Speichern nicht mehr aus.</b> Bei einem großen Scan stand V3D CAD beim automatischen Speichern jedes Mal mehrere Sekunden still. Die Szene wurde dabei zweimal verpackt, einmal für den Browser und einmal für die Cloud, obwohl sie in keins von beiden hineinpasste. Jetzt wird nur einmal verpackt, und ist die Szene sichtlich zu groß, gar nicht erst. Außerdem löscht V3D CAD für so ein Design keine anderen Designs mehr aus dem Browser-Speicher. <b>Wichtig:</b> Große Scans bitte mit <b>Strg+S</b> als Datei sichern, für den Browser-Speicher sind sie zu groß.'],
   ]},
