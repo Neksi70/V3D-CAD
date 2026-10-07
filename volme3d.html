@@ -1311,6 +1311,7 @@ const firebaseConfig = {
       <button class="btn" onclick="rotate225('y',1)" title="Drehen — 22,5° im Uhrzeigersinn (steht aufrecht, bleibt am Boden)">↻ Drehen</button>
       <button class="btn" onclick="rotate225('x',1)" title="Kippen — 22,5° um die Querachse (bleibt am Boden)">⤵ Kippen</button>
       <button class="btn" onclick="toggleFaceDown()" title="Fläche unten — Objekt wählen, dann die Fläche anklicken, die flach auf der Platte liegen soll. Spart das Drehen von Hand.">⬓ Fläche unten</button>
+      <button class="btn" onclick="standUpright()" title="Aufstellen — stellt das Teil in seine sicherste Standlage (Sockel, Füße), auch wenn die nicht eben ist, z. B. bei Scans. Nochmal klicken = nächste Standlage.">⊥ Aufstellen</button>
       <button class="btn" onclick="linearPatternTool()" title="Lineares Muster — Objekt mehrfach in einer Richtung kopieren">⋮ Linear</button>
       <button class="btn" onclick="circularPatternTool()" title="Kreismuster — Objekt kreisförmig anordnen">⊙ Kreis</button>
       <button class="btn" onclick="hexPatternTool()" title="Wabenmuster — Sechskant-Löcher in den Boden des gewählten Körpers stanzen">⬡ Waben</button>
@@ -25796,6 +25797,161 @@ function toggleFaceDown() {
                 ' — <span style="font-size:10px">orange = was mit auf die Platte kommt · Esc = Abbrechen</span>';
   h.classList.add('show');
   notify('Fläche anklicken, die unten liegen soll', 'ok');
+}
+
+// ═══ AUFSTELLEN — Teil in eine stabile Standlage bringen (_stl*) ════════════
+// Volker 7.10.2026, Holzschwein-Scan: steht schief, und „Fläche unten" hilft
+// nicht, weil vier Füße keine gemeinsame ebene Fläche sind. Wie ein echtes Teil
+// auf dem Tisch: Es steht auf seiner konvexen Hülle. Jede Hüllfacette, über der
+// der Schwerpunkt liegt, ist eine Standlage. Sortiert nach Kippwinkel (Abstand
+// des Lotpunkts zur nächsten Kante gegen Schwerpunkthöhe). Erster Klick =
+// sicherste Lage, jeder weitere = nächste.
+let _stlState = null;   // { obj, q0, p0, poses, i, qSet }
+
+const _STL_MAX_PTS  = 300000;   // Hüllpunkte (mehr bringt nichts, nur Zeit)
+const _STL_MERGE    = Math.cos(3 * Math.PI / 180);   // Facetten bis 3° = eine Standfläche
+const _STL_MIN_TIP  = 2;        // Grad — kippeliger zählt nicht als Standlage
+
+// Weltpunkte (für die Hülle, ausgedünnt) + Volumenschwerpunkt aller Dreiecke
+function _stlWorldData(o) {
+  o.updateMatrixWorld(true);
+  const meshes = [];
+  o.traverse(c => { if (c.isMesh && !c.userData.isEdgeLines && c.geometry && c.geometry.attributes.position) meshes.push(c); });
+  let total = 0;
+  meshes.forEach(m => { total += m.geometry.attributes.position.count; });
+  const step = Math.max(1, Math.ceil(total / _STL_MAX_PTS));
+  const pts = [], v = new THREE.Vector3(), a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), bc = new THREE.Vector3();
+  let vol = 0, cx = 0, cy = 0, cz = 0, sx = 0, sy = 0, sz = 0, sn = 0;
+  meshes.forEach(m => {
+    const pos = m.geometry.attributes.position, idx = m.geometry.index, mw = m.matrixWorld;
+    for (let i = 0; i < pos.count; i += step) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(mw);
+      pts.push([v.x, v.y, v.z]);
+    }
+    const triN = (idx ? idx.count : pos.count) / 3;
+    for (let t = 0; t < triN; t++) {
+      a.fromBufferAttribute(pos, idx ? idx.getX(t * 3) : t * 3).applyMatrix4(mw);
+      b.fromBufferAttribute(pos, idx ? idx.getX(t * 3 + 1) : t * 3 + 1).applyMatrix4(mw);
+      c.fromBufferAttribute(pos, idx ? idx.getX(t * 3 + 2) : t * 3 + 2).applyMatrix4(mw);
+      const d = a.dot(bc.crossVectors(b, c)) / 6;   // Tetraeder zum Ursprung
+      vol += d;
+      cx += d * (a.x + b.x + c.x) / 4; cy += d * (a.y + b.y + c.y) / 4; cz += d * (a.z + b.z + c.z) / 4;
+      sx += a.x + b.x + c.x; sy += a.y + b.y + c.y; sz += a.z + b.z + c.z; sn += 3;
+    }
+  });
+  // Offenes/kaputtes Netz: Volumen unbrauchbar → Mittel der Oberflächenpunkte
+  const com = Math.abs(vol) > 1e-9 ? new THREE.Vector3(cx / vol, cy / vol, cz / vol)
+                                   : new THREE.Vector3(sx / sn, sy / sn, sz / sn);
+  return { pts, com };
+}
+
+// 2D-Hülle (monotone chain), Punkte als [x,y], Ergebnis gegen den Uhrzeigersinn
+function _stlHull2D(p) {
+  p = p.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (p.length < 3) return p;
+  const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo = [], up = [];
+  for (const q of p) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); }
+  for (let i = p.length - 1; i >= 0; i--) { const q = p[i]; while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q); }
+  lo.pop(); up.pop();
+  return lo.concat(up);
+}
+
+// Alle stabilen Standlagen in Weltkoordinaten: [{ n (Hüllnormale, zeigt nach außen),
+// tip (Kippwinkel °), area, h }] — beste zuerst
+function _stlPoses(w, data) {
+  const hull = w.Manifold.hull(data.pts);
+  let mesh;
+  try { mesh = hull.getMesh(); } finally { hull.delete(); }
+  const P = mesh.vertProperties, T = mesh.triVerts, np = mesh.numProp;
+  const vp = i => new THREE.Vector3(P[i * np], P[i * np + 1], P[i * np + 2]);
+  const nV = P.length / np, hv = [];
+  for (let i = 0; i < nV; i++) hv.push(vp(i));
+  // Hülldreiecke nach Richtung zu Standflächen zusammenfassen (flächengewichtet)
+  const facets = [];
+  for (let t = 0; t < T.length; t += 3) {
+    const a = hv[T[t]], b = hv[T[t + 1]], c = hv[T[t + 2]];
+    const n = new THREE.Vector3().crossVectors(new THREE.Vector3().subVectors(b, a), new THREE.Vector3().subVectors(c, a));
+    const ar = n.length() / 2; if (ar < 1e-12) continue;
+    n.normalize();
+    let f = facets.find(f => f.n.dot(n) > _STL_MERGE);
+    if (!f) { f = { sum: new THREE.Vector3(), n: n.clone(), area: 0, vi: new Set() }; facets.push(f); }
+    f.sum.addScaledVector(n, ar); f.area += ar; f.n.copy(f.sum).normalize();
+    f.vi.add(T[t]); f.vi.add(T[t + 1]); f.vi.add(T[t + 2]);
+  }
+  const com = data.com, poses = [];
+  facets.forEach(f => {
+    const n = f.n;
+    // Stützebene: weitester Hüllpunkt in Richtung n; Aufstandspunkte = was dort anliegt
+    let d = -Infinity; hv.forEach(p => { const s = p.dot(n); if (s > d) d = s; });
+    const h = d - n.dot(com); if (!(h > 1e-6)) return;
+    const u = new THREE.Vector3(1, 0, 0); if (Math.abs(n.x) > 0.9) u.set(0, 1, 0);
+    u.sub(n.clone().multiplyScalar(u.dot(n))).normalize();
+    const vv = new THREE.Vector3().crossVectors(n, u);
+    // Aufstandsfläche = Ecken der Hüllfacetten dieser Richtung, die wirklich
+    // anliegen. Scan-Böden sind nie ganz plan — 2 % der Schwerpunkthöhe Spiel.
+    const tol = Math.max(1e-4, h * 0.02);
+    const sup = [];
+    f.vi.forEach(i => { const p = hv[i]; if (d - p.dot(n) <= tol) sup.push([p.dot(u), p.dot(vv)]); });
+    if (sup.length < 3) return;
+    const poly = _stlHull2D(sup); if (poly.length < 3) return;
+    const c2 = [com.dot(u), com.dot(vv)];
+    let margin = Infinity, sArea = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const A = poly[i], B = poly[(i + 1) % poly.length];
+      sArea += (A[0] * B[1] - B[0] * A[1]) / 2;
+      const ex = B[0] - A[0], ey = B[1] - A[1], L = Math.hypot(ex, ey); if (L < 1e-12) continue;
+      margin = Math.min(margin, (ex * (c2[1] - A[1]) - ey * (c2[0] - A[0])) / L);   // >0 = innen
+    }
+    if (!(margin > 0)) return;
+    const tip = Math.atan2(margin, h) * 180 / Math.PI;
+    if (tip < _STL_MIN_TIP) return;
+    poses.push({ n: n.clone(), tip, area: sArea, h });
+  });
+  // Kippsicherste Lage zuerst. Holzschwein: Sockel 18,9°, auf der Seite 11,6°,
+  // Stirnseiten/Kanten 4–5°. Weder Hüllfläche (Seite am größten) noch echte
+  // Auflagefläche (Scan-Sockel gewölbt, kaum mehr als die Stirnseite) trennen das.
+  // Gleich sicher (Würfel: alle 45°)? Dann die Lage mit der kleinsten Drehung —
+  // Normale zeigt schon am ehesten nach unten (n.y am kleinsten).
+  poses.sort((a, b) => Math.abs(b.tip - a.tip) > 1 ? b.tip - a.tip : a.n.y - b.n.y);
+  return poses;
+}
+
+async function standUpright() {
+  const o = selectedObjs.length === 1 ? selectedObjs[0] : null;
+  if (!o) { notify('Bitte genau ein Objekt wählen', 'w'); return; }
+  if (_fdMode) exitFaceDownMode();
+  // Weiterschalten, solange das Teil seit dem letzten Klick nicht bewegt wurde
+  const st = _stlState;
+  if (st && st.obj === o && st.qSet && o.quaternion.angleTo(st.qSet) < 1e-6 && st.poses.length > 1) {
+    st.i = (st.i + 1) % st.poses.length;
+  } else {
+    _progressShow('Standlagen werden gesucht…'); _progressSet(30);
+    await new Promise(r => setTimeout(r, 30));   // Overlay zeichnen lassen
+    let poses;
+    try {
+      const w = await _mfInit();
+      poses = _stlPoses(w, _stlWorldData(o));
+    } catch (e) {
+      console.warn('[aufstellen]', e);
+      _progressDone(); notify('Aufstellen fehlgeschlagen: ' + (e.message || e), 'e'); return;
+    }
+    _progressDone();
+    if (!poses.length) { notify('Keine stabile Standlage gefunden — mit ⬓ Fläche unten von Hand hinlegen', 'w'); return; }
+    _stlState = { obj: o, q0: o.quaternion.clone(), p0: o.position.clone(), poses, i: 0, qSet: null };
+  }
+  const s = _stlState, pose = s.poses[s.i];
+  saveUndo();
+  // Immer von der Ausgangslage aus drehen — die Normalen gelten für sie
+  o.quaternion.copy(s.q0); o.position.copy(s.p0); o.updateMatrixWorld(true);
+  _fdPlaceOnFace(o, pose.n);
+  s.qSet = o.quaternion.clone();
+  updateTFInputs();
+  _doRepositionDimHandles();
+  const kipp = pose.tip.toFixed(0);
+  notify(s.poses.length > 1
+    ? 'Steht stabil (Standlage ' + (s.i + 1) + ' von ' + s.poses.length + ', kippt erst ab ' + kipp + '°) — nochmal klicken = nächste Lage'
+    : 'Steht stabil (kippt erst ab ' + kipp + '°)', 'ok');
 }
 
 // Prüf-Hook für Headless-Tests (let-Variablen hängen nicht am window)
@@ -52717,6 +52873,7 @@ function _cncExport(){ _cncLauf(true); }
 const VOLME3D_VERSION = '1.18.122';
 const VOLME3D_CHANGELOG = [
   { version:'1.18.122', date:'2026-10-07', changes:[
+    ['\u22A5','<b>Neu: ⊥ Aufstellen.</b> Ein schief gescanntes oder schief zusammengesetztes Modell steht mit einem Klick gerade auf der Platte. V3D CAD sucht dafür die Lagen, in denen das Teil wirklich stehen bleibt, so wie es auf dem Tisch stehen würde: auf seinem Sockel oder seinen Füßen, auch wenn diese nicht eben sind. Der erste Klick nimmt die Lage, in der es am sichersten steht, jeder weitere Klick zeigt die nächste mögliche Lage. Der Knopf sitzt neben <b>⬓ Fläche unten</b>.'],
     ['\u{26A1}','<b>Große Scan-Modelle ruckeln nicht mehr, solange sie ausgewählt sind.</b> Bei Netzen mit fast einer Million Dreiecken hat V3D CAD in jedem Bild die Maße über alle Punkte neu ausgerechnet. Das passiert jetzt nur noch, wenn sich das Modell wirklich ändert.'],
   ]},
   { version:'1.18.121', date:'2026-10-07', changes:[
@@ -62746,6 +62903,7 @@ const CMDK = [
   {i:'⊿',g:'Bearbeiten',t:'Spiegeln',k:'mirror',run:()=>mirrorTool()},
   {i:'⊜',g:'Bearbeiten',t:'Ausrichten',k:'align',run:()=>alignTool()},
   {i:'⬓',g:'Bearbeiten',t:'Fläche unten',k:'flaeche flache stelle unten absetzen hinlegen aufstellen platte bett ausrichten kippen drehen liegen plan schraeg abflachung standflaeche place on face',run:()=>toggleFaceDown()},
+  {i:'⊥',g:'Bearbeiten',t:'Aufstellen',k:'aufstellen hinstellen stehen standflaeche stabil gerade schief scan fuesse sockel boden platte ausrichten umfallen kippen lay flat stand upright',run:()=>standUpright()},
   {i:'⋮',g:'Bearbeiten',t:'Lineares Muster',k:'array pattern',run:()=>linearPatternTool()},
   {i:'⊙',g:'Bearbeiten',t:'Kreismuster',k:'circular array',run:()=>circularPatternTool()},
   {i:'✂',g:'Bearbeiten',t:'Schneiden',k:'cut split zerteilen',run:()=>openCutTool()},
