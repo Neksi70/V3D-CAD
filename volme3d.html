@@ -15941,12 +15941,78 @@ function _mbLocalBox(pos) {
   _mbLocalCache.set(pos, { v: pos.version, n: pos.count, box });
   return box;
 }
+// Gedrehte Teile: Die 8 Ecken der lokalen Box schräg gestellt ergeben eine viel
+// zu große Welt-Box — das aufgestellte Holzschwein hing ~15 cm über der Platte
+// („D" setzte die Box-Ecke auf, nicht die Füße), Maße waren aufgebläht. Exakt
+// ist die Welt-Box der Hüllpunkte: einmal je Netz per Manifold, dann pro Aufruf
+// nur ein paar tausend Punkte drehen statt alle.
+const _MB_ALL_PTS = 6000;   // bis hierhin einfach alle Punkte drehen
+const _mbHullCache = new WeakMap();
+function _mbHullPts(pos) {
+  const c = _mbHullCache.get(pos);
+  if (c && c.v === pos.version && c.n === pos.count) return c.pts;
+  let w = null;
+  try { w = _mfWasm; } catch (e) {}   // let weiter unten — beim Seitenaufbau evtl. noch nicht da
+  if (!w) { try { _mfInit().catch(() => {}); } catch (e) {} return null; }
+  // Netz wird gerade laufend verändert (Modellieren): erst rechnen, wenn diese
+  // Fassung 0,8 s Bestand hat — solange gelten die Box-Ecken
+  const now = performance.now();
+  if (c) {
+    if (c.seenV !== pos.version || c.seenN !== pos.count) { c.seenV = pos.version; c.seenN = pos.count; c.seenT = now; return null; }
+    if (now - c.seenT < 800) return null;
+  }
+  let pts = null;
+  try {
+    const CH = 150000, acc = [];
+    for (let s = 0; s < pos.count; s += CH) {
+      const arr = [], e = Math.min(pos.count, s + CH);
+      for (let i = s; i < e; i++) arr.push([pos.getX(i), pos.getY(i), pos.getZ(i)]);
+      const h = w.Manifold.hull(arr);
+      try { const m = h.getMesh(), P = m.vertProperties, np = m.numProp;
+            for (let i = 0; i < P.length; i += np) acc.push([P[i], P[i + 1], P[i + 2]]); }
+      finally { h.delete(); }
+    }
+    let flat = acc;
+    if (pos.count > CH && acc.length) {   // Teilhüllen zusammenführen
+      const h = w.Manifold.hull(acc); flat = [];
+      try { const m = h.getMesh(), P = m.vertProperties, np = m.numProp;
+            for (let i = 0; i < P.length; i += np) flat.push([P[i], P[i + 1], P[i + 2]]); }
+      finally { h.delete(); }
+    }
+    if (flat.length >= 4) { pts = new Float32Array(flat.length * 3); flat.forEach((p, i) => pts.set(p, i * 3)); }
+  } catch (e) { pts = null; }   // flach/entartet → Box-Ecken
+  _mbHullCache.set(pos, { v: pos.version, n: pos.count, pts, seenV: pos.version, seenN: pos.count, seenT: now });
+  return pts;
+}
+// Dreht die Matrix nur um Vielfache von 90°? Dann sind die Box-Ecken exakt.
+function _mbAxisAligned(m) {
+  const e = m.elements;
+  for (let col = 0; col < 3; col++) {
+    let nz = 0;
+    for (let r = 0; r < 3; r++) if (Math.abs(e[col * 4 + r]) > 1e-9) nz++;
+    if (nz > 1) return false;
+  }
+  return true;
+}
 function getMeshBox(o) {
   o.updateMatrixWorld(true);
   const box = new THREE.Box3();
+  const v = new THREE.Vector3();
   o.traverse(child => {
     if (!child.isMesh || !child.geometry || !child.geometry.attributes.position) return;
-    const localBox = _mbLocalBox(child.geometry.attributes.position);
+    const pos = child.geometry.attributes.position, mw = child.matrixWorld;
+    if (!_mbAxisAligned(mw)) {
+      if (pos.count <= _MB_ALL_PTS) {
+        for (let i = 0; i < pos.count; i++) box.expandByPoint(v.fromBufferAttribute(pos, i).applyMatrix4(mw));
+        return;
+      }
+      const hp = _mbHullPts(pos);
+      if (hp) {
+        for (let i = 0; i < hp.length; i += 3) box.expandByPoint(v.set(hp[i], hp[i + 1], hp[i + 2]).applyMatrix4(mw));
+        return;
+      }
+    }
+    const localBox = _mbLocalBox(pos);
     const corners = [
       [localBox.min.x,localBox.min.y,localBox.min.z],[localBox.max.x,localBox.min.y,localBox.min.z],
       [localBox.min.x,localBox.max.y,localBox.min.z],[localBox.max.x,localBox.max.y,localBox.min.z],
@@ -27311,7 +27377,9 @@ function _l3ApplySmooth(on){
 }
 
 // ═══ UNDO / REDO ══════════════════════════════════════════════════════
+let _sceneRev = 0;   // zählt Änderungs-Checkpoints (Auto-Speichern erkennt daran „nichts passiert")
 function saveUndo() {
+  _sceneRev++;
   undoStack.push(objects.map(o => objectToData(o, 'undo')));
   if (undoStack.length > 50) undoStack.shift();
   redoStack = [];
@@ -32794,9 +32862,42 @@ async function _bakRestore(i){
 }
 
 // ── Auto-save ──────────────────────────────────────────────────────────────
+// Billiger Fingerabdruck der Szene: Lage, Netz-Fassung, Farbe, Name je Objekt.
+// Unverändert → Auto-Speichern spart sich das Serialisieren. Das lief vorher
+// stur alle 30 s und fror bei einem Scan (Holzschwein, 140k Dreiecke) jedes Mal
+// ~1,2 s ein — mitten im Drehen spürbar als Haken.
+let _autoSaveSigLast = null, _autoSaveLastT = 0, _autoSavePtr = 0, _autoSaveRetry = null;
+// Maustaste gedrückt (Drehen/Ziehen läuft) → nicht mitten in die Geste sichern
+document.addEventListener('pointerdown', () => { _autoSavePtr++; }, true);
+document.addEventListener('pointerup', () => { _autoSavePtr = Math.max(0, _autoSavePtr - 1); }, true);
+document.addEventListener('pointercancel', () => { _autoSavePtr = 0; }, true);
+window.addEventListener('blur', () => { _autoSavePtr = 0; });
+function _autoSaveSig() {
+  const parts = [_sceneRev, undoStack.length, redoStack.length, objects.length, currentDesignId];
+  const r = x => Math.round(x * 1e5);
+  objects.forEach(o => o.traverse(c => {
+    const g = c.geometry, pa = g && g.attributes && g.attributes.position;
+    parts.push(c.uuid, c.visible ? 1 : 0, r(c.position.x), r(c.position.y), r(c.position.z),
+      r(c.quaternion.x), r(c.quaternion.y), r(c.quaternion.z), r(c.quaternion.w),
+      r(c.scale.x), r(c.scale.y), r(c.scale.z), g ? g.uuid : '', pa ? pa.version + ':' + pa.count : '',
+      c.material && c.material.color ? c.material.color.getHex() : '',
+      c.userData ? [c.userData.name, c.userData.color, c.userData.isHole, c.userData.locked, c.userData.hidden].join('|') : '');
+  }));
+  return parts.join(',');
+}
 function _doAutoSave() {
   if (_autoSaveBusy) return;
   if (!currentDesignId && objects.length === 0) return;
+  // Nichts geändert seit dem letzten Sichern? Dann nicht neu schreiben — spätestens
+  // alle 5 min aber doch (falls eine Änderung am Fingerabdruck vorbeiläuft)
+  let sig = null;
+  try { sig = _autoSaveSig(); } catch (e) { sig = null; }
+  const now = Date.now();
+  if (sig && sig === _autoSaveSigLast && now - _autoSaveLastT < 300000) return;
+  if (_autoSavePtr > 0 && document.visibilityState !== 'hidden') {
+    if (!_autoSaveRetry) _autoSaveRetry = setTimeout(() => { _autoSaveRetry = null; _doAutoSave(); }, 3000);
+    return;
+  }
   _autoSaveBusy = true;
   try {
     if (!currentDesignId) {
@@ -32810,6 +32911,7 @@ function _doAutoSave() {
     _bakSnapshot(currentDesignId, snap);   // async, fire & forget
     _updateDesignLabel(name);
     _flashSaveDot();
+    _autoSaveSigLast = sig; _autoSaveLastT = now;   // erst nach geglücktem Speichern merken
     // Zusätzlich auf die Festplatte des Nutzers, wenn eine Datei verknüpft ist
     _localAutoSave();
     if (!_localFileHandle && window.showSaveFilePicker && objects.length &&
@@ -52883,8 +52985,12 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.123';
+const VOLME3D_VERSION = '1.18.124';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.124', date:'2026-10-07', changes:[
+    ['\u{1F41B}','<b>Gedrehte Teile stehen wieder richtig auf der Platte.</b> Bei schräg gedrehten Teilen hat V3D CAD die Unterkante zu tief angenommen. Nach <b>⊥ Aufstellen</b>, Drehen oder <b>D</b> (auf den Boden) schwebte das Teil deshalb über der Platte, bei einem großen Scan um mehrere Zentimeter. Auch Breite, Tiefe und Höhe waren zu groß angezeigt. Jetzt zählt der echte tiefste Punkt, und die Maße stimmen.'],
+    ['\u{26A1}','<b>Kein Haken mehr alle 30 Sekunden bei großen Modellen.</b> Das automatische Speichern lief alle 30 Sekunden, auch wenn sich nichts geändert hatte. Bei einem großen Scan stand V3D CAD dabei jedes Mal etwa eine Sekunde still, das fiel besonders beim Drehen auf. Jetzt wird nur noch gespeichert, wenn sich etwas geändert hat, und nicht mehr, während du mit gedrückter Maustaste drehst oder ziehst.'],
+  ]},
   { version:'1.18.123', date:'2026-10-07', changes:[
     ['\u2194','<b>Die Verschiebe-Pfeile sind auf jeder Farbe zu sehen.</b> Auf einem roten Teil ging der rote Pfeil für links/rechts fast unter, auf einem blauen der blaue Pfeil für vorne/hinten. Es sah so aus, als fehlte eine Achse. Die Pfeile haben jetzt einen hellen Rand und heben sich so von jedem Teil ab: <b>rot = links/rechts</b>, <b>grün = hoch/runter</b>, <b>blau = vor/zurück</b>. Zum Drehen gibt es die Ringe im Dreh-Modus: Taste <b>E</b> oder <b>↻</b> in der linken Leiste. Gemeldet von Ralf.'],
   ]},
