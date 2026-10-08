@@ -1692,6 +1692,7 @@ const firebaseConfig = {
     <input id="rev-dim-h" type="text" inputmode="decimal" autocomplete="off" style="width:52px;background:#11141c;border:1px solid #543;color:#fff;border-radius:3px;padding:2px 4px;font-size:11px">
     <span style="color:#987">mm</span>
   </div>
+  <div id="rev-live" style="display:none;position:fixed;z-index:8601;pointer-events:none;background:rgba(20,22,30,0.92);border:1px solid #0088ff;border-radius:6px;padding:2px 7px;font-size:11px;color:#dbeaff;white-space:nowrap;box-shadow:0 3px 12px rgba(0,0,0,.4)"></div>
   <div id="sk-dim" style="display:none;position:fixed;z-index:8600;background:rgba(20,22,30,0.96);border:1px solid #3b82f6;border-radius:6px;padding:3px 6px;gap:4px;align-items:center;font-size:11px;color:#cfe2ff;box-shadow:0 3px 12px rgba(0,0,0,.45)">
     <span id="sk-dim-l1" style="color:#86a">L</span>
     <input id="sk-dim-1" type="text" inputmode="decimal" autocomplete="off" style="width:48px;background:#11141c;border:1px solid #345;color:#fff;border-radius:3px;padding:2px 4px;font-size:11px">
@@ -9428,6 +9429,7 @@ function exitRevolveMode() {
   _revolvePlaneN = null; _revolveRight = null; _revolveDrag = -1;
   _revolveSel = -1; _revolveHover = -1; _revolveHist = [];
   document.getElementById('rev-dim').style.display = 'none';
+  document.getElementById('rev-live').style.display = 'none';
   if (_revolveEditObj) { const eo = _revolveEditObj; eo.visible = true; _revolveEditObj = null; selectObjs([eo]); }
   if (_revolveSavedCam) {
     sph.theta = _revolveSavedCam.theta; sph.phi = _revolveSavedCam.phi; sph.r = _revolveSavedCam.r;
@@ -10936,6 +10938,12 @@ function _revolveDimPos() {
   const box = document.getElementById('rev-dim');
   const p = _revolvePoints[_revolveSel];
   if (!p || box.style.display === 'none') return;
+  // Beim Zeichnen fest über der Drehen-Leiste: neben dem Punkt läge das Feld
+  // genau da, wo man meist den nächsten Punkt setzt, und schluckte den Klick.
+  if (!_revolveEditObj) {
+    const bar = document.getElementById('revolve-bar'), br = bar && bar.getBoundingClientRect();
+    if (br && br.width) { box.style.left = br.left + 'px'; box.style.top = (br.top - (box.offsetHeight || 26) - 6) + 'px'; return; }
+  }
   const v = p.world.clone().project(camera), rect = vpEl.getBoundingClientRect();
   box.style.left = (rect.left + (v.x + 1) / 2 * rect.width + 16) + 'px';
   box.style.top  = (rect.top + (-v.y + 1) / 2 * rect.height - 12) + 'px';
@@ -10999,6 +11007,26 @@ window.addEventListener('keydown', e => {
   }
 }, true);
 
+// Live-Maß am Zeiger beim Zeichnen/Ziehen: Ø und Höhe des Punkts, dazu Länge
+// und Winkel des Abschnitts vom Bezugspunkt (vorheriger Profilpunkt).
+function _revolveLive(e, p, ref) {
+  const el = document.getElementById('rev-live'); if (!el) return;
+  if (!p || !_revolveMode) { el.style.display = 'none'; return; }
+  let t = `<b style="color:#8fc3ff">Ø</b> ${_revolveFmt(p.r * 20)}  <b style="color:#8fc3ff">H</b> ${_revolveFmt(p.h * 10)}`;
+  if (ref) {
+    const dr = (p.r - ref.r) * 10, dh = (p.h - ref.h) * 10, L = Math.hypot(dr, dh);
+    if (L > 0.05) {
+      const lage = p.ortho === 'h' ? ' — waagerecht' : p.ortho === 'v' ? ' | senkrecht'
+        : ' ∠ ' + Math.round(Math.abs(Math.atan2(dh, Math.abs(dr)) * 180 / Math.PI)) + '°';
+      t += `  <b style="color:#8fc3ff">↔</b> ${_revolveFmt(L)}${lage}`;
+    }
+  }
+  el.innerHTML = t + ' <span style="color:#89a">mm</span>';
+  el.style.left = (e.clientX + 16) + 'px';
+  el.style.top = (e.clientY + 22) + 'px';
+  el.style.display = 'block';
+}
+
 // Gummiband-Vorschau: gestrichelte Linie vom letzten Punkt zum Cursor
 // + Geister-Punkt an der gesnappten Position des nächsten Klicks
 function _revolveGhostMove(e) {
@@ -11006,7 +11034,10 @@ function _revolveGhostMove(e) {
   if (_revolveDrag >= 0) {
     if (_revolveGhostLine) _revolveGhostLine.visible = false;
     if (_revolveGhostDot)  _revolveGhostDot.visible  = false;
-    _revolveDragMove(e); return;
+    _revolveDragMove(e);
+    const i = _revolveDrag, q = _revolvePoints[i];
+    if (q) _revolveLive(e, q, i > 0 ? _revolvePoints[i - 1] : _revolvePoints[1]);
+    return;
   }
   const hov = e.target === canvas ? _revolveDotAt(e) : -1;
   if (hov !== _revolveHover) { _revolveHover = hov; _revolveDotColors(); }
@@ -11015,6 +11046,7 @@ function _revolveGhostMove(e) {
   canvas.style.cursor = overDot ? 'grab' : overSeg ? 'copy' : _revolveEditObj ? 'default' : 'crosshair';
   // Beim Bearbeiten kein Gummiband: Klick ins Leere hängt dort nichts an
   const p = e.target === canvas && !overDot && !_revolveEditObj ? _revolvePickPoint(e) : null;
+  _revolveLive(e, p, p && _revolvePoints.length ? _revolvePoints[_revolvePoints.length - 1] : null);
   if (!p) {
     if (_revolveGhostLine) _revolveGhostLine.visible = false;
     if (_revolveGhostDot)  _revolveGhostDot.visible  = false;
@@ -11064,6 +11096,8 @@ function _revolveAddPoint(e) {
   _revolvePushPoint(p.r, p.h);
   _revolveUpdatePreview();
   _revolveUpdateBar();
+  // Gerade gesetzten Punkt wählen → Maßfeld (Ø/H) zum genauen Eintippen
+  _revolveSelect(_revolvePoints.length - 1);
 }
 
 function _revolvePushPoint(r, h) {
@@ -53497,8 +53531,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.133';
+const VOLME3D_VERSION = '1.18.134';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.134', date:'2026-10-09', changes:[
+    ['\u{1F4CF}','<b>Drehen: Maße schon beim Zeichnen.</b> Beim Zeichnen eines Drehteil-Profils steht jetzt direkt neben dem Mauszeiger, wo der nächste Punkt landet: <b>Ø</b> (Durchmesser), <b>H</b> (Höhe über der Platte) und die <b>Länge</b> des Abschnitts vom letzten Punkt. Liegt er genau waagerecht oder senkrecht, steht das dabei, sonst der Winkel. Auch beim Ziehen eines Punkts laufen die Maße live mit. Nach jedem Klick erscheint über der Leiste ein Feld mit Ø und Höhe des gerade gesetzten Punkts. Dort kannst du den genauen Wert eintippen und mit Enter bestätigen.']
+  ]},
   { version:'1.18.133', date:'2026-10-09', changes:[
     ['\u2B21','<b>Muster auf Rundung: Größen-Mix, und das Muster sitzt jetzt immer außen.</b> Neuer Regler <b>Größen-Mix</b>: Waben, Dreiecke, Organisch und Voronoi werden damit unregelmäßig, mit großen und kleinen Zellen gemischt über die ganze Vase verteilt. Die Waben bleiben dabei sechseckähnlich, die Dreiecke fast gleichseitig, nur eben in verschiedenen Größen. Mit 🎲 würfelst du eine neue Verteilung. Das klappt erhaben, vertieft und durchbrochen. <b>Behoben:</b> Bei Vasen aus dem Vasen-Generator und bei manchen STL-Dateien landete das Muster innen statt außen oder nur am Hals. Jetzt liegt es immer auf der Außenhaut, auch auf steilen Schultern einer Kugelvase, und die Innenwand bleibt glatt.']
   ]},
