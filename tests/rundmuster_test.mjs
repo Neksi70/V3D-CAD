@@ -114,6 +114,7 @@ await page.waitForTimeout(300);
 const ui = await page.evaluate(() => ({ cell: !!document.getElementById('rmp-cell'), jit: !!document.getElementById('rmp-jitter'),
   on: document.querySelector('[data-rmp="voronoi"]').classList.contains('on'), pat: objects[objects.length - 1].userData.rmp.pat }));
 await page.screenshot({ path: '/tmp/rmp_panel.png' });
+ await page.evaluate(() => _rmpMode('durch')); await page.waitForTimeout(2500); await page.evaluate(() => _buildTexPanelContent(getFirst())); await page.screenshot({ path: '/tmp/rmp_panel_durch.png' }); await page.evaluate(() => _rmpMode('erhaben'));
 // Zellen vertieft: Außenmaß bleibt, Zellen sinken ein
 const tief = await page.evaluate(async () => {
   const o = objects[objects.length - 1]; selectObjs([o]);
@@ -124,7 +125,80 @@ const tief = await page.evaluate(async () => {
 });
 console.log('ui', JSON.stringify(ui), 'tief', JSON.stringify(tief));
 
+// ── Durchbrochen: Öffnungen gehen durch die Wand ────────────────────────
+const durch = {};
+for (const pat of PATS) {
+  const r = await page.evaluate(async ({ pat, H, WALL }) => {
+    _newCreate(false);
+    const ro = y => 24 + 14 * Math.sin(Math.PI * y / H);
+    const pts = [new THREE.Vector2(0, 0)];
+    for (let i = 0; i <= 60; i++) { const y = H * i / 60; pts.push(new THREE.Vector2(ro(y), y)); }
+    for (let i = 60; i >= 0; i--) { const y = WALL + (H - WALL) * i / 60; pts.push(new THREE.Vector2(ro(y) - WALL, y)); }
+    pts.push(new THREE.Vector2(0, WALL));
+    const vol = g => { const p = g.attributes.position; let v = 0; const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+      for (let i = 0; i < p.count; i += 3) { a.fromBufferAttribute(p, i); b.fromBufferAttribute(p, i + 1); c.fromBufferAttribute(p, i + 2); v += a.dot(b.clone().cross(c)) / 6; } return v; };
+    let g = new THREE.LatheGeometry(pts, 96).toNonIndexed();
+    if (vol(g) < 0) g = new THREE.LatheGeometry(pts.reverse(), 96).toNonIndexed();
+    g.rotateX(Math.PI / 2);
+    _addImportedGeo(g, 'vase.stl', true, null, false);
+    const o = objects[objects.length - 1]; selectObjs([o]); o.updateMatrixWorld(true);
+    const bb0 = new THREE.Box3().setFromObject(o);
+    const cx = (bb0.min.x + bb0.max.x) / 2, cz = (bb0.min.z + bb0.max.z) / 2, yB = bb0.min.y;
+    const volObj = () => { o.updateMatrixWorld(true); const gg = o.geometry.clone().applyMatrix4(o.matrixWorld); const nn = gg.index ? gg.toNonIndexed() : gg; return vol(nn) * 1000; };
+    const v0 = volObj();
+    _rmpApply(pat); await new Promise(res => setTimeout(res, 100));
+    for (let k = 0; k < 200 && o.userData.displacementPattern !== 'rmp'; k++) await new Promise(res => setTimeout(res, 50));
+    const t0 = performance.now(); const g0 = o.geometry;
+    _rmpMode('durch');
+    for (let k = 0; k < 1200 && o.geometry === g0; k++) await new Promise(res => setTimeout(res, 50));
+    const ms = Math.round(performance.now() - t0);
+    o.updateMatrixWorld(true);
+    const v1 = volObj();
+    // Radiale Strahlen von außen: trifft der erste Treffer die Außenwand (~5 mm) oder geht er durch?
+    const rc = new THREE.Raycaster();
+    let loch = 0, wand = 0, randZu = 0, randN = 0;
+    for (let yi = 0; yi < 40; yi++) for (let ti = 0; ti < 72; ti++) {
+      const y = 1 + (H - 2) * yi / 39, th = ti / 72 * 2 * Math.PI, R = ro(y) + 5;
+      const org = new THREE.Vector3(cx + R / 10 * Math.cos(th), yB + y / 10, cz + R / 10 * Math.sin(th));
+      rc.set(org, new THREE.Vector3(-Math.cos(th), 0, -Math.sin(th)));
+      const h = rc.intersectObject(o, false)[0];
+      const d = h ? h.distance * 10 : Infinity;
+      const durch = d > 5 + WALL + 1;
+      if (y < 2.5 || y > H - 2.5) { randN++; if (!durch) randZu++; }
+      else if (y > 8 && y < H - 8) { if (durch) loch++; else wand++; }
+    }
+    const bb = new THREE.Box3().setFromObject(o);
+    const d = JSON.parse(JSON.stringify(objectToData(o)));
+    return { ms, lochFrac: +(loch / (loch + wand)).toFixed(3), randZu: randZu / randN, volRel: +(v1 / v0).toFixed(3),
+      tris: (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3,
+      boden: +((bb.min.y - bb0.min.y) * 10).toFixed(3), hoehe: +((bb.max.y - bb.min.y) * 10).toFixed(2),
+      savedDurch: !!(d.rmp && d.rmp.durch), hatGeo: !!d.geometry };
+  }, { pat, H, WALL });
+  durch[pat] = r;
+  console.log('durch', pat, JSON.stringify(r));
+  await page.evaluate(() => { selectObjs([]); fitView(); sph.r *= 0.55; sph2cam(); });
+  await page.mouse.move(640, 600); await page.mouse.move(645, 605); await page.waitForTimeout(400);
+  await page.screenshot({ path: `/tmp/rmp_durch_${pat}.png`, clip: { x: 300, y: 260, width: 560, height: 600 } });
+}
+// zurück auf erhaben + entfernen
+const zurueck = await page.evaluate(async () => {
+  const o = objects[objects.length - 1]; selectObjs([o]);
+  _rmpMode('erhaben');
+  const erh = !o.userData.rmp.durch && o.userData._warpCache && !!o.userData._warpCache.rmpInfo;
+  applyDisplacement('pattern', 'keine');
+  return { erh, keine: o.userData.displacementPattern };
+});
+console.log('zurueck', JSON.stringify(zurueck));
+
 const checks = [];
+for (const pat of PATS) {
+  const r = durch[pat];
+  checks.push([pat + ' durch: Öffnungen gehen durch (> 25 % der Strahlen)', r.lochFrac > 0.25 && r.lochFrac < 0.9]);
+  checks.push([pat + ' durch: Rand oben/unten bleibt zu', r.randZu > 0.97]);
+  checks.push([pat + ' durch: Material weg, Vase steht noch', r.volRel < 0.95 && r.volRel > 0.2 && Math.abs(r.boden) < 0.02 && Math.abs(r.hoehe - 120) < 0.05]);
+  checks.push([pat + ' durch: gespeichert mit Geometrie', r.savedDurch && r.hatGeo]);
+}
+checks.push(['zurück auf Erhaben + Entfernen', zurueck.erh && zurueck.keine === 'keine']);
 for (const pat of PATS) {
   const r = out[pat];
   checks.push([pat + ': wasserdicht', r.bad === 0]);

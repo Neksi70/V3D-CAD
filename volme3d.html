@@ -7645,7 +7645,7 @@ const RMP_PATS = [
   { id: 'organisch', lbl: 'Organisch', tip: 'Dreiecke, jedes etwas anders — wie gewachsen' },
   { id: 'voronoi',   lbl: 'Voronoi',   tip: 'Unregelmäßige Zellen wie Schaum oder Knochen' },
 ];
-const RMP_DEF = { pat: 'wabe', cell: 10, web: 1.6, jitter: 60, rand: 3, seed: 1 };
+const RMP_DEF = { pat: 'wabe', cell: 10, web: 1.6, jitter: 60, rand: 3, seed: 1, durch: false };
 function _rmpParams(o) { return Object.assign({}, RMP_DEF, (o && o.userData.rmp) || {}); }
 function _rmpHash(i, j, s) {
   let n = (Math.imul(i, 374761393) + Math.imul(j, 668265263) + Math.imul(s, 1442695041)) | 0;
@@ -7819,6 +7819,8 @@ function _rmpMapper(pos, ctr, P) {
   at.info = { Rref, N, cell: c };
   at.outer = outer;
   at.yMin = y0 / U; at.yMax = y1 / U;
+  // Rohdaten für den Durchbruch (_rmpDurch): Profil, Abwicklung, Gitter
+  at.prof = { y0, dy, NB, rB, V, S, L: Ltot, Rref, N, c, J, pat, half, rand, cx: ctr.x * U, cz: ctr.z * U };
   return at;
 }
 
@@ -8077,6 +8079,7 @@ function _applyDisplacementNow(param, val) {
     if (param === 'where')     o.userData.texWhere  = _toggleWhere(o.userData.texWhere, val);
     if (param === 'dir')       o.userData.texDir    = val;
     _texNeuVorgabe(o, param, _prevPat);
+    if (o.userData.rmp && o.userData.rmp.durch) o.userData.rmp = Object.assign({}, o.userData.rmp, { durch: false });
     const gp = o.userData.displacementPattern || 'keine', ga = o.userData.displacementAmp || 0.5,
           gf = o.userData.displacementFreq || 4, gi = !!o.userData.displacementInvert, gs = !!o.userData.displacementSymmetric,
           go = o.userData.texOrient || 'laengs', gw = o.userData.texWhere || 'alle',
@@ -8108,6 +8111,9 @@ function _applyDisplacementNow(param, val) {
   const sym  = !!o.userData.displacementSymmetric;
   const ori  = o.userData.texOrient || 'laengs';
   const whr  = o.userData.texWhere  || 'alle';
+
+  // Muster auf Rundung, durchbrochen: echter Abzug statt Verschiebung (asynchron)
+  if (pat === 'rmp' && o.userData.rmp && o.userData.rmp.durch) { _rmpDurchRun(o); return; }
 
   // Rohr/Kantrohr: echte (Poly-/Boden-/Twist-)Form als Basis, nicht das runde Standard-Rohr
   if (o.userData.shapeType === 'tube') {
@@ -53252,8 +53258,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.130';
+const VOLME3D_VERSION = '1.18.131';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.131', date:'2026-10-08', changes:[
+    ['\u2B21','<b>Muster auf Rundung jetzt auch durchbrochen.</b> Unter <i>Muster auf Rundung</i> gibt es neben <b>Erhaben</b> und <b>Vertieft</b> jetzt <b>Durchbrochen</b>. Dann gehen die Waben, Dreiecke oder Voronoi-Zellen ganz durch die Wand, und es entsteht ein offenes Gitter wie bei einem Lampenschirm, Windlicht oder Korb. Die Stege behalten die eingestellte Breite. Oben und unten bleibt ein geschlossener Rand (<b>Rand frei</b>), damit das Teil stabil steht. Die gegenüberliegende Wand und der Boden bleiben dabei heil. Zellgröße, Stegbreite und Unruhe lassen sich weiter ändern, das Gitter wird dann neu gestanzt. Der Körper sollte hohl sein (zum Beispiel eine Vase). Bei einem massiven Körper entstehen nur Vertiefungen, und die App sagt Bescheid.']
+  ]},
   { version:'1.18.130', date:'2026-10-08', changes:[
     ['🏷️','<b>Beschriften: Text lässt sich jetzt aufs Bauteil ziehen, nicht nur klicken.</b> Nach <i>✓ Erstellen</i> mit <i>Auf Bauteil</i> setzt sich der Text schon beim Darüberfahren auf ebene Flächen. Absetzen geht per Klick oder indem man ihn hinzieht und loslässt. Danach erscheint immer das Feld <b>Vertieft / Erhaben</b>. Der neue Text schiebt das Bauteil nicht mehr zur Seite (im Grundkurs flog der Deckel weg, auf den der Name sollte). Und ein aufgesetzter Text wird beim Nachschieben nicht mehr versehentlich flachgedrückt: Der Höhen-Anfasser lag genau auf dem Schriftzug.'],
   ]},
@@ -58964,10 +58973,16 @@ function _buildTexPanelContent(o) {
     : '';
   const isRmp = pat === 'rmp';
   const rp = _rmpParams(o);
-  const _tp = document.getElementById('tex-panel'); if (_tp) _tp._rmpKey = isRmp ? 'rmp:' + rp.pat : '-';
+  const _tp = document.getElementById('tex-panel'); if (_tp) _tp._rmpKey = isRmp ? 'rmp:' + rp.pat + (rp.durch ? ':d' : '') : '-';
   const rmpBtns = RMP_PATS.map(q =>
     `<button class="fp-toggle-btn${isRmp && rp.pat===q.id?' on':''}" data-rmp="${q.id}" style="flex:1 1 45%" title="${q.tip}" onclick="_rmpApply('${q.id}')">${q.lbl}</button>`).join('');
   const rmpExtra = !isRmp ? '' :
+    `<div class="fp-row" style="flex-direction:row;gap:4px">` +
+      `<button class="fp-toggle-btn${!rp.durch&&tdir==='aufgesetzt'?' on':''}" data-rmode="erhaben" style="flex:1;padding:4px 2px" onclick="_rmpMode('erhaben')" title="Die Stege werden auf die Wand gelegt — die Wand bleibt voll, das Teil wird je Seite um die Höhe größer">Erhaben</button>` +
+            `<button class="fp-toggle-btn${!rp.durch&&tdir==='eingepraegt'?' on':''}" data-rmode="vertieft" style="flex:1;padding:4px 2px" onclick="_rmpMode('vertieft')" title="Die Zellen werden in die Wand geprägt — Außenmaße bleiben, die Wand wird in den Zellen dünner">Vertieft</button>` +
+            `<button class="fp-toggle-btn${rp.durch?' on':''}" data-rmode="durch" style="flex:1;padding:4px 2px" onclick="_rmpMode('durch')" title="Die Zellen gehen ganz durch die Wand — offenes Gitter wie bei einem Lampenschirm. Der Körper sollte hohl sein.">Durchbrochen</button>` +
+    `</div>` +
+    (rp.durch ? '' : row('Höhe', 'tex-disp-amp', amp, "applyDisplacement('amp',this.value)", 'mm', 0.2, 5, 0.1)) +
     row('Zellgröße', 'rmp-cell', rp.cell, "_rmpSet('cell',this.value)", 'mm', 3, 40, 0.5) +
     row('Stegbreite', 'rmp-web', rp.web, "_rmpSet('web',this.value)", 'mm', 0.4, 8, 0.1) +
     ((rp.pat === 'organisch' || rp.pat === 'voronoi')
@@ -58985,16 +59000,15 @@ function _buildTexPanelContent(o) {
     noBtn +
     `<div id="tex-disp-extra" ${hide}>` +
       `<div class="fp-tex-sec" style="margin-top:2px">Texturtiefe</div>` +
-      row('Texturhöhe', 'tex-disp-amp',  amp,  "applyDisplacement('amp',this.value)",  'mm', 0.05, 5, 0.05) +
+      (isRmp ? '' : row('Texturhöhe', 'tex-disp-amp',  amp,  "applyDisplacement('amp',this.value)",  'mm', 0.05, 5, 0.05)) +
       (isRmp ? '' : row('Skalierung', 'tex-disp-freq', freq, "applyDisplacement('freq',this.value)", '',   0.5, 40, 0.5)) +
       `<div class="fp-row" style="flex-direction:row;gap:5px">` +
         (isRmp
-          ? `<button class="fp-toggle-btn${tdir==='aufgesetzt'?' on':''}" style="flex:1" onclick="applyDisplacement('dir','aufgesetzt')" title="Die Stege werden auf die Wand gelegt — die Wand bleibt voll, das Teil wird je Seite um die Höhe größer">Stege erhaben</button>` +
-            `<button class="fp-toggle-btn${tdir==='eingepraegt'?' on':''}" style="flex:1" onclick="applyDisplacement('dir','eingepraegt')" title="Die Zellen werden in die Wand geprägt — Außenmaße bleiben, die Wand wird in den Zellen dünner">Zellen vertieft</button>`
+          ? ''
           : `<button class="fp-toggle-btn${tdir==='eingepraegt'?' on':''}" style="flex:1" onclick="applyDisplacement('dir','eingepraegt')" title="Muster wird ins Material geprägt — Außenmaße bleiben genau wie eingestellt">Eingeprägt</button>` +
             `<button class="fp-toggle-btn${tdir==='aufgesetzt'?' on':''}" style="flex:1" onclick="applyDisplacement('dir','aufgesetzt')" title="Muster wird außen aufgesetzt — das Teil wird je Seite um die Texturhöhe größer">Aufgesetzt</button>`) +
       `</div>` +
-      `<label class="fp-check-lbl"><input type="checkbox" id="tex-disp-inv" ${inv} onchange="applyDisplacement('invert',this.checked)"> Invertieren</label>` +
+      (isRmp && rp.durch ? '' : `<label class="fp-check-lbl"><input type="checkbox" id="tex-disp-inv" ${inv} onchange="applyDisplacement('invert',this.checked)"> Invertieren</label>`) +
       (isRmp ? `<div id="tex-rmp-only" style="display:none">` : '') +
       `<label class="fp-check-lbl"><input type="checkbox" id="tex-disp-sym" ${sym} onchange="applyDisplacement('symmetric',this.checked)"> Symmetrisch</label>` +
       `<div class="fp-tex-sec" style="margin-top:6px">Richtung</div>` +
@@ -59029,7 +59043,7 @@ function _syncTexPanel(o) {
   if (!o || (!o.isMesh && !(o.children && o.children.length))) { panel.style.display = 'none'; return; }
   const pat = o.userData.displacementPattern || 'keine';
   // Muster-auf-Rundung-Regler hängen vom Muster ab → bei Wechsel neu aufbauen
-  if (panel._rmpKey !== (pat === 'rmp' ? 'rmp:' + _rmpParams(o).pat : '-')) { _buildTexPanelContent(o); return; }
+  if (panel._rmpKey !== (pat === 'rmp' ? 'rmp:' + _rmpParams(o).pat + (_rmpParams(o).durch ? ':d' : '') : '-')) { _buildTexPanelContent(o); return; }
   panel.querySelectorAll('.fp-tex-thumb').forEach(el => {
     el.classList.toggle('fp-tex-on', el.dataset.pid === pat);
   });
@@ -59120,6 +59134,215 @@ function _rmpOpen() {
   const panel = document.getElementById('tex-panel');
   if (panel && panel.style.display !== 'block') toggleTexPanel();
   notify('Muster auf Rundung: oben im Textur-Fenster ein Muster anklicken', 'info');
+}
+
+// ─── Muster auf Rundung: Durchbrochen ──────────────────────────────────
+// Statt einer Prägung gehen die Zellen ganz durch die Wand (Lampenschirm,
+// Windlicht, Korb). Jede Zelle ist in der Abwicklung ein konvexes Vieleck
+// (Wabe, Dreieck, verwackeltes Dreieck, Voronoi-Zelle); um die halbe Steg-
+// breite eingerückt wird daraus ein radialer Stanzkörper von 2 mm außerhalb
+// der Wand bis 1,5 mm hinter die Innenwand. Alle Stanzkörper gehen in EINEM
+// Manifold-Abzug weg. Die Basis bleibt erhalten (_origGeo / Grundform), jede
+// Regleränderung rechnet den Durchbruch neu.
+function _rmpBaseGeo(o) {
+  const ud = o.userData, st = ud.shapeType;
+  if (st === 'tube') return _tubeDispBase(o);
+  if (st === 'funnel') return buildFunnelGeo(ud.funnelTopDia, ud.funnelSpoutDia, ud.funnelHeight, ud.funnelSpoutLen, ud.funnelWall, ud.segments || 48, ud.funnelBevel);
+  if (st === 'conetube') return buildConeTubeGeo(ud.ctTopDia, ud.ctBotDia, ud.ctTopIn, ud.ctBotIn, ud.ctHeight, ud.segments || 48, ud.ctBevel, !!ud.ctFloor);
+  if (ud._origGeo) return ud._origGeo.clone();
+  return _buildHighResGeo(st || 'box', ud.coneTop || 0, ud.coneFlip);
+}
+// Konvexes Vieleck ([x,y]-Liste) an der Halbebene n·p ≤ d beschneiden
+function _rmpClip(poly, nx, ny, d) {
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const A = poly[i], B = poly[(i + 1) % poly.length];
+    const da = nx * A[0] + ny * A[1] - d, db = nx * B[0] + ny * B[1] - d;
+    if (da <= 0) out.push(A);
+    if ((da <= 0) !== (db <= 0)) { const t = da / (da - db); out.push([A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t]); }
+  }
+  return out;
+}
+// Konvexes Vieleck (gegen den Uhrzeigersinn) um d nach innen einrücken
+function _rmpInset(poly, d) {
+  let out = poly;
+  for (let i = 0; i < poly.length && out.length >= 3; i++) {
+    const A = poly[i], B = poly[(i + 1) % poly.length];
+    const ex = B[0] - A[0], ey = B[1] - A[1], l = Math.hypot(ex, ey);
+    if (l < 1e-9) continue;
+    const nx = ey / l, ny = -ex / l;                      // Außennormale
+    out = _rmpClip(out, nx, ny, nx * A[0] + ny * A[1] - d);
+  }
+  return out;
+}
+// Alle Zellen (flach, CCW) eines Umlaufs zwischen Ylo und Yhi
+function _rmpCells(P, Ylo, Yhi) {
+  const { c, N, J, pat } = P, h = c * 0.8660254037844386;
+  const pt = (i, j) => {
+    let x = (i + 0.5 * (j & 1)) * c, y = j * h;
+    if (J) { let jj = j - J.jmin; jj = jj < 0 ? 0 : (jj >= J.rows ? J.rows - 1 : jj); const t = jj * N + (((i % N) + N) % N); x += J.jx[t]; y += J.jy[t]; }
+    return [x, y];
+  };
+  const cells = [];
+  const j0 = Math.floor(Ylo / h) - 2, j1 = Math.ceil(Yhi / h) + 2;
+  for (let j = j0; j <= j1; j++) for (let i = 0; i < N; i++) {
+    if (pat === 'wabe') {
+      const C = pt(i, j), R = c / Math.sqrt(3), poly = [];
+      for (let k = 0; k < 6; k++) { const a = Math.PI / 6 + k * Math.PI / 3; poly.push([C[0] + R * Math.cos(a), C[1] + R * Math.sin(a)]); }
+      cells.push(poly);
+    } else if (pat === 'voronoi') {
+      const A = pt(i, j);
+      let poly = [[A[0] - 2 * c, A[1] - 2 * c], [A[0] + 2 * c, A[1] - 2 * c], [A[0] + 2 * c, A[1] + 2 * c], [A[0] - 2 * c, A[1] + 2 * c]];
+      for (let dj = -2; dj <= 2 && poly.length >= 3; dj++) for (let di = -3; di <= 3; di++) {
+        if (!di && !dj) continue;
+        const B = pt(i + di, j + dj), vx = B[0] - A[0], vy = B[1] - A[1], l = Math.hypot(vx, vy);
+        if (l < 1e-9) continue;
+        poly = _rmpClip(poly, vx / l, vy / l, (vx * (A[0] + B[0]) + vy * (A[1] + B[1])) / (2 * l));
+        if (poly.length < 3) break;
+      }
+      if (poly.length >= 3) cells.push(poly);
+    } else {                                              // dreieck / organisch
+      const p = j & 1, A = pt(i, j), B = pt(i + 1, j), C1 = pt(i - 1 + p, j + 1), C2 = pt(i + p, j + 1);
+      cells.push([A, B, C2], [A, C2, C1]);
+    }
+  }
+  return cells;
+}
+// Rechnet den Durchbruch und setzt die Geometrie. Liefert Infos fürs Melden.
+async function _rmpDurch(o) {
+  const tok = o.userData._rmpTok = (o.userData._rmpTok || 0) + 1;
+  const base = _rmpBaseGeo(o);
+  o.updateMatrixWorld(true);
+  const M = o.matrixWorld.clone();
+  const U = _MM_PER_UNIT;
+  // Basis in Welt-Units (für Profil) + als Manifold-Körper
+  const bp = base.attributes.position, wpos = new Float32Array(bp.count * 3), v = new THREE.Vector3(), bb = new THREE.Box3();
+  for (let i = 0; i < bp.count; i++) { v.fromBufferAttribute(bp, i).applyMatrix4(M); wpos[i * 3] = v.x; wpos[i * 3 + 1] = v.y; wpos[i * 3 + 2] = v.z; bb.expandByPoint(v); }
+  const at = _rmpMapper(wpos, bb.getCenter(new THREE.Vector3()), _rmpParams(o));
+  if (!at) throw new Error('kein Profil');
+  const P = at.prof, NB = P.NB;
+  // Wandstärke je Höhenband: größter Radius UNTER der Außenwand = Innenwand
+  const th = new Float64Array(NB + 1).fill(-1);
+  for (let i = 0; i < bp.count; i++) {
+    const b = Math.round((wpos[i * 3 + 1] * U - P.y0) / P.dy);
+    const r = Math.hypot(wpos[i * 3] * U - P.cx, wpos[i * 3 + 2] * U - P.cz), rb = P.rB[b];
+    if (r < rb - (0.3 + 0.01 * rb) && r > 0.55 * rb && rb - r > 0 && (th[b] < 0 || rb - r < th[b])) th[b] = rb - r;
+  }
+  let last = -1, hohl = 0;
+  for (let b = 0; b <= NB; b++) {
+    if (th[b] < 0) continue;
+    hohl++;
+    if (last < 0) { for (let q = 0; q < b; q++) th[q] = th[b]; }
+    else for (let q = last + 1; q < b; q++) th[q] = th[last] + (th[b] - th[last]) * (q - last) / (b - last);
+    last = b;
+  }
+  const massiv = last < 0;
+  if (massiv) for (let b = 0; b <= NB; b++) th[b] = Math.min(0.4 * P.rB[b], Math.max(3, P.c));
+  else for (let q = last + 1; q <= NB; q++) th[q] = th[last];
+  // Abwicklungshöhe Y → (y, r, Wand); Bogenlänge s → Y
+  const findB = (arr, val) => { let lo = 0, hi = NB; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (arr[m] < val) lo = m; else hi = m; } return lo; };
+  const atY = Y => {
+    const b = findB(P.V, Y), t = Math.max(0, Math.min(1, (Y - P.V[b]) / Math.max(1e-9, P.V[b + 1] - P.V[b])));
+    return { y: P.y0 + (b + t) * P.dy, r: P.rB[b] + (P.rB[b + 1] - P.rB[b]) * t,
+             w: Math.min(0.45 * P.rB[b], th[b] + (th[b + 1] - th[b]) * t) };
+  };
+  const YofS = sv => { const b = findB(P.S, sv), t = (sv - P.S[b]) / Math.max(1e-9, P.S[b + 1] - P.S[b]); return P.V[b] + (P.V[b + 1] - P.V[b]) * t; };
+  const randEff = Math.max(1, P.rand);
+  const Ylo = YofS(randEff), Yhi = YofS(P.L - randEff);
+  // Stanzkörper
+  const T = [];   // mm, Y-up
+  let nCells = 0;
+  const P3 = (X, Y, aussen) => {
+    const g = atY(Y), th3 = X / P.Rref, R = aussen ? g.r + 2 : g.r - g.w - 1.5;
+    return [P.cx + R * Math.cos(th3), g.y, P.cz + R * Math.sin(th3)];
+  };
+  for (const cell of _rmpCells(P, Ylo, Yhi)) {
+    let cy = 0; for (const q of cell) cy += q[1]; cy /= cell.length;
+    const k = Math.max(0.25, atY(cy).r / P.Rref);
+    let poly = _rmpInset(cell, P.half / k);
+    if (poly.length < 3) continue;
+    poly = _rmpClip(poly, 0, -1, -Ylo); if (poly.length < 3) continue;
+    poly = _rmpClip(poly, 0, 1, Yhi);   if (poly.length < 3) continue;
+    let A = 0; for (let i = 0; i < poly.length; i++) { const a = poly[i], b = poly[(i + 1) % poly.length]; A += a[0] * b[1] - b[0] * a[1]; }
+    if (A / 2 * k * k < 0.4) continue;                    // Krümel < 0,4 mm² weglassen
+    // Kanten fein teilen, damit der Stanzkörper der Rundung folgt
+    const step = Math.min(1.5, P.c * k / 6) / k, ring = [];
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / step));
+      for (let s = 0; s < n; s++) ring.push([a[0] + (b[0] - a[0]) * s / n, a[1] + (b[1] - a[1]) * s / n]);
+    }
+    let mx = 0, my = 0; for (const q of ring) { mx += q[0]; my += q[1]; } mx /= ring.length; my /= ring.length;
+    const O = ring.map(q => P3(q[0], q[1], true)), I = ring.map(q => P3(q[0], q[1], false));
+    const co = P3(mx, my, true), ci = P3(mx, my, false), m = ring.length;
+    for (let i = 0; i < m; i++) {
+      const j = (i + 1) % m;
+      T.push(co, O[i], O[j],  ci, I[j], I[i],  O[i], I[i], I[j],  O[i], I[j], O[j]);
+    }
+    nCells++;
+  }
+  base.dispose && base.dispose();
+  if (!nCells) throw new Error('keine Zelle passt — Zellgröße kleiner oder Stegbreite schmaler wählen');
+  // → Manifold-Konvention (mm, Z-up: x, −z, y), Wicklung nach Volumen richten
+  const tris = new Float32Array(T.length * 3);
+  let vol = 0;
+  for (let i = 0; i < T.length; i += 3) {
+    const a = T[i], b = T[i + 1], c = T[i + 2];
+    vol += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
+  }
+  const flip = vol < 0;
+  for (let i = 0; i < T.length; i += 3) for (let k = 0; k < 3; k++) {
+    const q = T[i + (flip ? [0, 2, 1][k] : k)], o9 = (i + k) * 3;
+    tris[o9] = q[0]; tris[o9 + 1] = -q[2]; tris[o9 + 2] = q[1];
+  }
+  const tmp = new THREE.Mesh(_rmpBaseGeo(o));
+  tmp.matrixAutoUpdate = false; tmp.matrix.copy(M);
+  const geo = await _mfRetry(async () => {
+    const w = await _mfInit();
+    let solidTris = _moldCollectTris(tmp), solid;
+    try { solid = _mfFromSoup(w, solidTris); }
+    catch (e) { const h = _healTrisForBool(solidTris); if (!h) throw e; solid = _mfFromSoup(w, h); }
+    solid = _mfSelfUnion(w, solid);
+    const tool = _mfFromSoup(w, tris);
+    const res = w.Manifold.difference(solid, tool);
+    if (res.isEmpty()) throw new Error('Ergebnis ist leer');
+    const g = _mfToGeo(res).toNonIndexed();
+    g.rotateX(-Math.PI / 2); g.scale(0.1, 0.1, 0.1);   // mm/Z-up → App-Units/Y-up
+    return g;
+  });
+  tmp.geometry.dispose();
+  if (tok !== o.userData._rmpTok) { geo.dispose(); return null; }   // inzwischen neu angestoßen
+  geo.applyMatrix4(M.clone().invert());
+  const out = _moldNormals(geo);
+  o.geometry.dispose(); o.geometry = out;
+  o.userData._warpCache = null;
+  _updateObjEdgeLines(o);
+  return { nCells, massiv, N: P.N };
+}
+let _rmpDurchLauf = 0;
+async function _rmpDurchRun(o) {
+  const lauf = ++_rmpDurchLauf;
+  _progressShow('⬡ Muster wird durchgestanzt …');
+  try {
+    const r = await _rmpDurch(o);
+    if (!r || lauf !== _rmpDurchLauf) return;
+    _fpCurType = null; updateFP();
+    notify(`⬡ ${r.nCells} Öffnungen durchgestanzt (${r.N} je Umlauf)`, 'ok');
+    if (r.massiv) notify('Der Körper ist massiv — statt Löchern entstehen Vertiefungen. Erst aushöhlen (Hohlkörper), dann gehen die Öffnungen durch.', 'warn', 9000);
+  } catch (e) {
+    console.error('[rmp] Durchbruch:', e);
+    notify('Durchbrechen hat nicht geklappt: ' + (e.message || e), 'warn', 8000);
+  } finally {
+    if (lauf === _rmpDurchLauf) _progressDone();
+  }
+}
+// Stege erhaben / Zellen vertieft / Durchbrochen
+function _rmpMode(m) {
+  const o = getFirst(); if (!o || o.userData.displacementPattern !== 'rmp') return;
+  if (m === 'durch' && !o.isMesh) { notify('Durchbrechen geht nur an einem einzelnen Körper — Gruppe erst vereinen', 'warn'); return; }
+  o.userData.rmp = Object.assign(_rmpParams(o), { durch: m === 'durch' });
+  if (m !== 'durch') o.userData.texDir = m === 'vertieft' ? 'eingepraegt' : 'aufgesetzt';
+  _applyDisplacementNow('rmp', null);
+  _buildTexPanelContent(o);
 }
 
 function closeTexPanel() {
