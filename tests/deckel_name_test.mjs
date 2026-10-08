@@ -112,8 +112,8 @@ try {
   await shot('2_danach');
   // Vertieft anbringen (0,6 mm) wie im Feld vorgeschlagen
   await pg.locator('#lbl-pop button', { hasText: 'Anbringen' }).click();
-  for (let i = 0; i < 40 && await pg.evaluate(() => objects.length !== 1); i++) await pg.waitForTimeout(1000);
-  const fertig = await pg.evaluate(() => { const o = objects[0]; o.updateMatrixWorld(true); const g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry; const p = g.attributes.position, a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  for (let i = 0; i < 40 && await pg.evaluate(() => objects.some(o => o.userData.shapeType === 'svg')); i++) await pg.waitForTimeout(1000);
+  const fertig = await pg.evaluate(() => { const hoch = o => { const x = new THREE.Box3().setFromObject(o); return x.max.y - x.min.y; }; const o = objects.slice().sort((a, b) => hoch(a) - hoch(b))[0]; o.updateMatrixWorld(true); const g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry; const p = g.attributes.position, a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
     const k = v => [v.x, v.y, v.z].map(x => Math.round(x * 1e4)).join(','); const kanten = new Map(); let vol = 0;
     for (let i = 0; i < p.count; i += 3) { a.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld); b.fromBufferAttribute(p, i + 1).applyMatrix4(o.matrixWorld); c.fromBufferAttribute(p, i + 2).applyMatrix4(o.matrixWorld);
       vol += a.dot(b.clone().cross(c)) / 6; for (const [u, v] of [[a, b], [b, c], [c, a]]) { const kk = [k(u), k(v)].sort().join('|'); kanten.set(kk, (kanten.get(kk) || 0) + 1); } }
