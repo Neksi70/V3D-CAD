@@ -7456,7 +7456,7 @@ function _subdivStep(pos, idx, marked, tOf) {
   return nIdx;
 }
 
-function _subdivideAdaptive(pos, idx, target) {
+function _subdivideAdaptive(pos, idx, target, wantTri) {
   const t2 = target * target;
   const e2 = (p, q) => { const dx = pos[p * 3] - pos[q * 3], dy = pos[p * 3 + 1] - pos[q * 3 + 1], dz = pos[p * 3 + 2] - pos[q * 3 + 2]; return dx * dx + dy * dy + dz * dz; };
   for (let iter = 0; iter < 9; iter++) {
@@ -7464,7 +7464,7 @@ function _subdivideAdaptive(pos, idx, target) {
     const marked = new Set(); let any = false;
     for (let i = 0; i < idx.length; i += 3) {
       const a = idx[i], b = idx[i + 1], c = idx[i + 2];
-      if (Math.max(e2(a, b), e2(b, c), e2(c, a)) > t2) { marked.add(_ek(a, b)); marked.add(_ek(b, c)); marked.add(_ek(c, a)); any = true; }
+      if (Math.max(e2(a, b), e2(b, c), e2(c, a)) > t2 && (!wantTri || wantTri(a, b, c))) { marked.add(_ek(a, b)); marked.add(_ek(b, c)); marked.add(_ek(c, a)); any = true; }
     }
     if (!any) break;
     idx = _subdivStep(pos, idx, marked, null);
@@ -7628,6 +7628,200 @@ function _creasedNormalsGeo(pos, idx, angleDeg) {
   return g;
 }
 
+// ─── Muster auf Rundung (_rmp*) ─────────────────────────────────────────
+// Wabe / Dreiecke / organische Dreiecke / Voronoi nahtlos um einen Drehkörper
+// (Vase, Becher, Lampenschirm). Triplanar taugt dafür nicht: dort, wo die
+// Projektion wechselt (alle 45° um die Vase), verschwimmt das Gitter. Hier wird
+// um die senkrechte Achse durch die Hüllbox-Mitte abgewickelt:
+//   X = Rref·θ         Umfang; Zellzahl ringsum ganzzahlig → keine Naht
+//   Y = Rref·∫ds/r     winkeltreu: die Zelle behält ihre Form, wird am Hals
+//                      kleiner und am Bauch größer (wie bei einer Wabenvase)
+// Stegbreite und Flanke bleiben in mm konstant (lokaler Maßstab k = r/Rref).
+// Höhe 1 = Steg (Oberfläche), 0 = Zelle — mit 'aufgesetzt' stehen die Stege
+// heraus, mit 'eingepraegt' sinken die Zellen ein.
+const RMP_PATS = [
+  { id: 'wabe',      lbl: 'Wabe',      tip: 'Sechseck-Waben' },
+  { id: 'dreieck',   lbl: 'Dreiecke',  tip: 'Regelmäßiges Dreiecksgitter' },
+  { id: 'organisch', lbl: 'Organisch', tip: 'Dreiecke, jedes etwas anders — wie gewachsen' },
+  { id: 'voronoi',   lbl: 'Voronoi',   tip: 'Unregelmäßige Zellen wie Schaum oder Knochen' },
+];
+const RMP_DEF = { pat: 'wabe', cell: 10, web: 1.6, jitter: 60, rand: 3, seed: 1 };
+function _rmpParams(o) { return Object.assign({}, RMP_DEF, (o && o.userData.rmp) || {}); }
+function _rmpHash(i, j, s) {
+  let n = (Math.imul(i, 374761393) + Math.imul(j, 668265263) + Math.imul(s, 1442695041)) | 0;
+  n = Math.imul(n ^ (n >>> 13), 1274126177); n ^= n >>> 16;
+  return (n >>> 0) / 4294967296;
+}
+// Liefert f(X,Y) = Abstand (flache Einheiten) zur nächsten Stegmitte.
+// Gitterpunkte: Reihen im Abstand h = c·√3/2, ungerade Reihen um c/2 versetzt.
+// J = vorab gewürfelte Versätze je Punkt, Index (i mod N) → die Naht bei
+// θ = ±π geht auf; null = regelmäßig. Als Fabrik gebaut: f läuft je Vase
+// einige Millionen Mal (Knick-Suche), da kostet jede Closure pro Aufruf.
+function _rmpField(pat, c, N, J) {
+  const h = c * 0.8660254037844386;
+  if (pat === 'dreieck') return (X, Y) => {
+    const a = Y / h, b = (0.8660254 * X - 0.5 * Y) / h, d = (0.8660254 * X + 0.5 * Y) / h;
+    return h * Math.min(Math.abs(a - Math.round(a)), Math.abs(b - Math.round(b)), Math.abs(d - Math.round(d)));
+  };
+  if (pat === 'wabe') return (X, Y) => {
+    const j0 = Math.round(Y / h);
+    let best = Infinity;
+    for (let j = j0 - 1; j <= j0 + 1; j++) {
+      const p = j & 1, i0 = Math.round(X / c - 0.5 * p);
+      for (let i = i0 - 1; i <= i0 + 1; i++) {
+        const dx = X - (i + 0.5 * p) * c, dy = Y - j * h;
+        const hd = Math.max(Math.abs(dx), Math.abs(0.5 * dx + 0.8660254 * dy), Math.abs(0.5 * dx - 0.8660254 * dy));
+        if (hd < best) best = hd;
+      }
+    }
+    return c / 2 - best;
+  };
+  // Verwackelte Punkte eines Fensters (COLS × ROWS) um die Abfrage sammeln
+  const COLS = 8, ROWS = 5, GX = new Float64Array(COLS * ROWS), GY = new Float64Array(COLS * ROWS);
+  const gather = (iB, jB) => {
+    for (let r = 0; r < ROWS; r++) {
+      const j = jB + r, off = 0.5 * (j & 1);
+      let jj = J ? j - J.jmin : 0; if (jj < 0) jj = 0; else if (J && jj >= J.rows) jj = J.rows - 1;
+      for (let q = 0; q < COLS; q++) {
+        const i = iB + q, k = r * COLS + q;
+        GX[k] = (i + off) * c; GY[k] = j * h;
+        if (J) { const t = jj * N + (((i % N) + N) % N); GX[k] += J.jx[t]; GY[k] += J.jy[t]; }
+      }
+    }
+  };
+  if (pat === 'organisch') return (X, Y) => {
+    // feste Dreiecks-Topologie auf verwackelten Punkten → jedes Dreieck anders
+    const jB = Math.round(Y / h) - 2, iB = Math.round(X / c) - 3;
+    gather(iB, jB);
+    let best = Infinity;
+    const seg = (ka, kb) => {
+      const ax = GX[ka], ay = GY[ka], vx = GX[kb] - ax, vy = GY[kb] - ay, wx = X - ax, wy = Y - ay;
+      const l2 = vx * vx + vy * vy; let t = l2 > 0 ? (wx * vx + wy * vy) / l2 : 0;
+      t = t < 0 ? 0 : (t > 1 ? 1 : t);
+      const ex = wx - vx * t, ey = wy - vy * t, d = ex * ex + ey * ey;
+      if (d < best) best = d;
+    };
+    for (let r = 0; r < ROWS - 1; r++) {
+      const p = (jB + r) & 1;
+      for (let q = 1; q < COLS - 1; q++) {
+        const k = r * COLS + q, up = (r + 1) * COLS + q;
+        seg(k, k + 1); seg(k, up - 1 + p); seg(k, up + p);
+      }
+    }
+    return Math.sqrt(best);
+  };
+  // Voronoi: nächster Punkt, dann Abstand zur nächsten Mittelsenkrechten (exakt)
+  return (X, Y) => {
+    const jB = Math.round(Y / h) - 2, iB = Math.round(X / c) - 3;
+    gather(iB, jB);
+    let ka = 0, dBest = Infinity;
+    for (let k = 0; k < GX.length; k++) {
+      const dx = GX[k] - X, dy = GY[k] - Y, d = dx * dx + dy * dy;
+      if (d < dBest) { dBest = d; ka = k; }
+    }
+    const ax = GX[ka], ay = GY[ka];
+    let best = Infinity;
+    for (let k = 0; k < GX.length; k++) {
+      if (k === ka) continue;
+      const vx = GX[k] - ax, vy = GY[k] - ay, l2 = vx * vx + vy * vy;
+      if (l2 < 1e-18) continue;
+      // Abstand zur Mittelsenkrechten = ((m − P)·v)/|v|; erst ohne Wurzel vorsieben
+      const num = ((ax + GX[k]) / 2 - X) * vx + ((ay + GY[k]) / 2 - Y) * vy;
+      if (num * num >= best * best * l2 && num > 0) continue;
+      const d = num / Math.sqrt(l2);
+      if (d < best) best = d;
+    }
+    return best;
+  };
+}
+// Baut aus den (Welt-)Punkten das Wandprofil r(y) um die senkrechte Achse durch
+// ctr und liefert die Höhenfunktion (x,y,z) → 0..1. Profil = größter Radius je
+// Höhenband → bei Hohlkörpern immer die Außenwand.
+function _rmpMapper(pos, ctr, P) {
+  const U = _MM_PER_UNIT, n = pos.length / 3;
+  let y0 = Infinity, y1 = -Infinity;
+  for (let i = 1; i < pos.length; i += 3) { if (pos[i] < y0) y0 = pos[i]; if (pos[i] > y1) y1 = pos[i]; }
+  y0 *= U; y1 *= U;
+  const NB = 240, dy = Math.max(1e-6, y1 - y0) / NB;
+  const rB = new Float64Array(NB + 1).fill(-1);
+  for (let i = 0; i < n; i++) {
+    const b = Math.round((pos[i * 3 + 1] * U - y0) / dy);
+    const r = Math.hypot(pos[i * 3] - ctr.x, pos[i * 3 + 2] - ctr.z) * U;
+    if (r > rB[b]) rB[b] = r;
+  }
+  // Lücken (z. B. glatter Zylindermantel ohne Zwischenpunkte) linear füllen
+  let last = -1;
+  for (let b = 0; b <= NB; b++) {
+    if (rB[b] < 0) continue;
+    if (last < 0) { for (let q = 0; q < b; q++) rB[q] = rB[b]; }
+    else for (let q = last + 1; q < b; q++) rB[q] = rB[last] + (rB[b] - rB[last]) * (q - last) / (b - last);
+    last = b;
+  }
+  if (last < 0) return null;
+  for (let q = last + 1; q <= NB; q++) rB[q] = rB[last];
+  const S = new Float64Array(NB + 1), V = new Float64Array(NB + 1);
+  let L = 0, Rs = 0;
+  for (let b = 1; b <= NB; b++) {
+    const ds = Math.hypot(dy, rB[b] - rB[b - 1]);
+    L += ds; Rs += ds * (rB[b] + rB[b - 1]) / 2; S[b] = L;
+  }
+  const Rref = Math.max(0.5, Rs / Math.max(L, 1e-6));
+  for (let b = 1; b <= NB; b++) {
+    const ds = S[b] - S[b - 1];
+    V[b] = V[b - 1] + ds * Rref / Math.max(Rref * 0.25, (rB[b] + rB[b - 1]) / 2);
+  }
+  const cell = Math.max(1, +P.cell || RMP_DEF.cell);
+  const N = Math.max(3, Math.round(2 * Math.PI * Rref / cell));
+  const c = 2 * Math.PI * Rref / N;
+  const pat = P.pat || 'wabe';
+  const jit = pat === 'voronoi' ? _clamp01((+P.jitter || 0) / 100) * 0.9
+            : pat === 'organisch' ? _clamp01((+P.jitter || 0) / 100) * 0.55 : 0;
+  const seed = (P.seed | 0) || 1;
+  let J = null;
+  if (jit > 0) {
+    const h = c * 0.8660254037844386;
+    const jmin = Math.floor(V[0] / h) - 4, rows = Math.ceil(V[NB] / h) + 5 - jmin;
+    const jx = new Float32Array(rows * N), jy = new Float32Array(rows * N);
+    for (let r = 0; r < rows; r++) for (let ii = 0; ii < N; ii++) {
+      jx[r * N + ii] = (_rmpHash(ii, r + jmin, seed) - 0.5) * jit * c;
+      jy[r * N + ii] = (_rmpHash(ii, r + jmin, seed + 7919) - 0.5) * jit * c;
+    }
+    J = { jx, jy, jmin, rows };
+  }
+  const field = _rmpField(pat, c, N, J);
+  const half = Math.max(0.2, +P.web || RMP_DEF.web) / 2;
+  const fl = Math.max(0.35, Math.min(0.9, half * 0.8));     // Flanke in mm (druckbar, ~45°)
+  const rand = Math.max(0, +P.rand || 0);
+  const Ltot = L;
+  // Außenwand = Punkt liegt (fast) auf dem Profil. Innenwand, Boden, Deckel
+  // bekommen kein Muster und auch keine Unterteilung (sonst verdoppeln sich
+  // Dreiecke und Rechenzeit für nichts).
+  const outer = (x, y, z) => {
+    let f = (y * U - y0) / dy; if (f < 0) f = 0; if (f > NB) f = NB;
+    const b = Math.min(NB - 1, Math.floor(f)), t = f - b;
+    const rp = rB[b] + (rB[b + 1] - rB[b]) * t;
+    return Math.hypot(x - ctr.x, z - ctr.z) * U > rp - (0.6 + 0.01 * rp);
+  };
+  const at = (x, y, z) => {
+    if (!outer(x, y, z)) return 1;
+    let f = (y * U - y0) / dy; if (f < 0) f = 0; if (f > NB) f = NB;
+    const b = Math.min(NB - 1, Math.floor(f)), t = f - b;
+    const r = rB[b] + (rB[b + 1] - rB[b]) * t;
+    const Y = V[b] + (V[b + 1] - V[b]) * t;
+    const s = S[b] + (S[b + 1] - S[b]) * t;
+    const k = Math.max(0.25, r / Rref);
+    const X = Math.atan2(z - ctr.z, x - ctr.x) * Rref;
+    const e = field(X, Y) * k;   // mm bis Stegmitte
+    let hgt = 1 - _clamp01((e - half) / fl);
+    if (rand > 0) { const dr = Math.min(s, Ltot - s); hgt = Math.max(hgt, 1 - _clamp01((dr - rand) / fl)); }
+    return hgt;
+  };
+  at.info = { Rref, N, cell: c };
+  at.outer = outer;
+  at.yMin = y0 / U; at.yMax = y1 / U;
+  return at;
+}
+
 // Zentrale Displacement-Pipeline: weld → 3D-Tessellierung → glatte Welt-Normalen
 // → triplanar-Höhe → Verschiebung im WELT-Raum mit ABSOLUTER mm-Höhe → zurück in
 // Local-Space. ampMm = Texturhöhe in mm, unabhängig von Modellgröße/-skalierung.
@@ -7645,10 +7839,14 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
   // Organische Muster (Rauschen, Holz, Organisch, eigenes Bild) haben keine
   // Knicklinien — sie laufen immer über den runden Weg, sonst würde die
   // Knick-Verfeinerung überall auslösen und nur Dreiecke verbrennen.
-  const sharp = (mesh.userData.texProfile || 'kantig') === 'kantig' && _SHARP_PATTERNS.has(pattern);
+  // Muster auf Rundung: eigene Abbildung um die Achse, immer kantig
+  const isRmp = pattern === 'rmp';
+  const rmpP = isRmp ? _rmpParams(mesh) : null;
+  const sharp = isRmp || ((mesh.userData.texProfile || 'kantig') === 'kantig' && _SHARP_PATTERNS.has(pattern));
   // Basis-Anteil der Welt-Matrix (Rotation·Skalierung, ohne Translation) → Cache-Key
   const basis = M.elements.slice(0, 12).map(e => Math.round(e * 1e4)).join(',');
-  const sig = pattern + '|' + freq + '|' + orient + '|' + where + '|' + (sharp ? 'k' : 'r') + '|' + basis;
+  const sig = pattern + '|' + freq + '|' + orient + '|' + where + '|' + (sharp ? 'k' : 'r') + '|' + basis +
+    (isRmp ? '|' + JSON.stringify(rmpP) : '');
 
   let C = mesh.userData._warpCache;
   if (!C || C.sig !== sig) {
@@ -7680,16 +7878,22 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
     //    Grundauflösung, die Schärfe kommt danach aus der Knick-Verfeinerung.
     //    Die setzt ihre Vertices dorthin, wo sie gebraucht werden, statt überall
     //    — unterm Strich weniger Dreiecke bei schärferem Ergebnis.
-    const target = Math.max(worldMax / 200, (ref / Math.max(0.5, freq)) / 3) * (sharp ? 2.5 : 1);
-    const r = _subdivideAdaptive(pos, idx, target);
+    // Muster auf Rundung: Raster an Zellgröße/Stegbreite (mm) statt an „Skalierung"
+    const target = isRmp
+      ? Math.max(worldMax / 250, Math.min(rmpP.cell / 2, 4) / _MM_PER_UNIT)
+      : Math.max(worldMax / 200, (ref / Math.max(0.5, freq)) / 3) * (sharp ? 2.5 : 1);
+    const rmpAt = isRmp ? _rmpMapper(pos, ctr, rmpP) : null;
+    if (isRmp && !rmpAt) return null;
+    const onOut = isRmp ? (a => rmpAt.outer(pos[a * 3], pos[a * 3 + 1], pos[a * 3 + 2])) : null;
+    const r = _subdivideAdaptive(pos, idx, target, isRmp ? ((a, b, c) => onOut(a) || onOut(b) || onOut(c)) : null);
     pos = r.pos; idx = r.idx;
     // 3b. Knick-Verfeinerung: Vertices auf die Knicklinien des Musters ziehen,
     //     damit Grate und Wände wirklich scharf werden statt weggemittelt.
     //     Nur im kantigen Profil — rund soll unverändert bleiben.
     if (sharp) {
-      const hf = (x, y, z, nx, ny, nz) =>
+      const hf = isRmp ? ((x, y, z) => rmpAt(x, y, z)) : (x, y, z, nx, ny, nz) =>
         _triplanarHeight(pattern, (x - ctr.x) / ref, (y - ctr.y) / ref, (z - ctr.z) / ref, nx, ny, nz, freq, orient, true);
-      const rc = _subdivideCrease(pos, idx, hf, 3, 200000);
+      const rc = _subdivideCrease(pos, idx, hf, 3, isRmp ? 180000 : 200000);
       pos = rc.pos; idx = rc.idx;
     }
     // 4. glatte Welt-Normalen
@@ -7744,14 +7948,16 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
       // Amplitude an Grenzen zu AUSGESCHLOSSENEN Flächen weich gegen 0 → kein
       // ausgefranstes Band an der Wand-Boden-/Wand-Dach-Kante (Triplanar-Misch-
       // zone + harte Maskenkante). Innerhalb einer Fläche bleibt fade = 1.
-      baseT[i] = _triplanarHeight(pattern, (x - ctr.x) / ref, (y - ctr.y) / ref, (z - ctr.z) / ref, nx, ny, nz, freq, orient, sharp) * fade;
+      baseT[i] = (isRmp ? rmpAt(x, y, z)
+        : _triplanarHeight(pattern, (x - ctr.x) / ref, (y - ctr.y) / ref, (z - ctr.z) / ref, nx, ny, nz, freq, orient, sharp)) * fade;
     }
     wg.dispose();
-    C = mesh.userData._warpCache = { sig, wpos, wnor, baseT, mask, idx, count };
+    C = mesh.userData._warpCache = { sig, wpos, wnor, baseT, mask, idx, count, rmpInfo: rmpAt ? rmpAt.info : null,
+      yLim: rmpAt ? [rmpAt.yMin, rmpAt.yMax] : null };
   }
 
   // 6. invert/sym anwenden + absolute mm-Verschiebung im Welt-Raum → Local-Space
-  const { wpos, wnor, baseT, mask, idx, count } = C;
+  const { wpos, wnor, baseT, mask, idx, count, yLim } = C;
   const out = new Float32Array(count * 3);
   const v = new THREE.Vector3();
   // Richtung: 'aufgesetzt' legt das Muster AUSSEN auf (0…+Höhe) — das Teil wächst
@@ -7767,6 +7973,8 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
     if (inward) t -= 1;
     let x = wpos[i * 3], y = wpos[i * 3 + 1], z = wpos[i * 3 + 2];
     if (mask[i]) { const d = t * ampU; x += wnor[i * 3] * d; y += wnor[i * 3 + 1] * d; z += wnor[i * 3 + 2] * d; }
+    // Muster auf Rundung: Fuß bleibt auf der Platte, Oberkante auf ihrer Höhe
+    if (yLim) { if (y < yLim[0]) y = yLim[0]; else if (y > yLim[1]) y = yLim[1]; }
     v.set(x, y, z).applyMatrix4(Minv);
     out[i * 3] = v.x; out[i * 3 + 1] = v.y; out[i * 3 + 2] = v.z;
   }
@@ -7873,7 +8081,7 @@ function _applyDisplacementNow(param, val) {
           gf = o.userData.displacementFreq || 4, gi = !!o.userData.displacementInvert, gs = !!o.userData.displacementSymmetric,
           go = o.userData.texOrient || 'laengs', gw = o.userData.texWhere || 'alle',
           gpr = o.userData.texProfile || 'kantig';
-    o.traverse(m => { if (m.isMesh && !m.userData.isEdgeLines && !m.userData.isHole) { m.userData.texProfile = gpr; m.userData.texDir = o.userData.texDir; _dispMesh(m, gp, ga, gf, gi, gs, go, gw); } });
+    o.traverse(m => { if (m.isMesh && !m.userData.isEdgeLines && !m.userData.isHole) { m.userData.texProfile = gpr; m.userData.texDir = o.userData.texDir; if (o.userData.rmp) m.userData.rmp = o.userData.rmp; _dispMesh(m, gp, ga, gf, gi, gs, go, gw); } });
     _fpCurType = null; updateFP();
     if (param === 'pattern' && gp !== 'keine') o.traverse(m => { if (m.isMesh && m.material) _startTexPreview(m); });
     return;
@@ -14492,8 +14700,12 @@ function _confirmText3d() {
     // klemmung, Zweifarb-Inlay, 3MF-Export) genau wie ein importiertes SVG.
     const built = _textEditBuildSvg(font, meta);
     if (!built) { notify('Text ohne Kontur', 'w'); return; }
-    const mesh = _importSvgConfirm({ svgText: built.svg, mode: 'extrude', depthMM: Math.max(1, sizeMm * 0.25),
-                                     targetMM: built.targetMM, name: meta.mode === 'arc' ? txt + ' (Bogen)' : txt });
+    // „Auf Bauteil“: Der Text wird gleich ans Bauteil gesetzt — nichts beiseiteschieben
+    // (sonst sprang im Kurs der Deckel weg, auf den der Name sollte)
+    _spawnKeinPlatz = mode === 'surface';
+    let mesh;
+    try { mesh = _importSvgConfirm({ svgText: built.svg, mode: 'extrude', depthMM: Math.max(1, sizeMm * 0.25),
+                                     targetMM: built.targetMM, name: meta.mode === 'arc' ? txt + ' (Bogen)' : txt }); } finally { _spawnKeinPlatz = false; }
     if (mesh) mesh.userData.textEdit = meta;   // für „Text ändern"
     if (mesh && mode === 'surface' && !_lblPickStart(mesh))
       notify('Kein Bauteil in der Szene — der Text liegt frei auf der Platte', 'w');
@@ -16940,6 +17152,7 @@ function buildObjectFromData(data) {
   if (data.texOrient) obj.userData.texOrient = data.texOrient;
   if (data.texWhere)  obj.userData.texWhere  = data.texWhere;
   if (data.texDir)    obj.userData.texDir    = data.texDir;
+  if (data.rmp)       obj.userData.rmp       = { ...data.rmp };
   // Alt-Stand ohne Profil-Angabe: die runde Fassung behalten, sonst wuerde sich
   // ein gespeichertes Teil beim Oeffnen sichtbar veraendern.
   obj.userData.texProfile = data.texProfile ||
@@ -17258,6 +17471,7 @@ function objectToData(o, modus) {
     if (o.userData.texOrient && o.userData.texOrient !== 'laengs') d.texOrient = o.userData.texOrient;
     if (o.userData.texWhere && o.userData.texWhere !== 'alle')     d.texWhere  = o.userData.texWhere;
     if (o.userData.texDir) d.texDir = o.userData.texDir;
+    if (o.userData.displacementPattern === 'rmp' && o.userData.rmp) d.rmp = { ...o.userData.rmp };
     d.texProfile = o.userData.texProfile || 'kantig';
     if (o.isMesh && o.geometry) d.geometry = _cachedGeoJSON(o.geometry, modus);   // Gruppen haben keine eigene Geometrie
   } else if (o.userData.type === 'svg' && o.userData._svgPathData &&
@@ -25753,7 +25967,7 @@ function rotate225cw(dir) { rotate225('y', dir); }
 let _fdMode = false, _fdObj = null, _fdHL = null, _fdHitKey = '';
 // Beschriftung anbringen (_lbl*, weiter unten): hier deklariert, weil animate()
 // _lblPick schon beim ersten Durchlauf liest.
-let _lblPick = null, _lblObj = null, _lblArt = 'tief';
+let _lblPick = null, _lblObj = null, _lblArt = 'tief', _lblCarry = false, _lblHoverT = 0;
 let _svgSnapAtHit = false;     // _applySvgSnap: an den Klickpunkt statt in die Flächenmitte
 let _svgSnapAmPfeil = false;   // _applySvgSnap: per Gizmo-Pfeil hingeschoben → Lage behalten
 let _engravePreset = null;     // subtractHoles: Tiefe ohne Dialog
@@ -27682,7 +27896,7 @@ canvas.addEventListener('mousedown', e => {
     return;
   }
   if (_bndPick) { _bndZielKlick(e); return; }
-  if (_lblPick) { _lblPickClick(e); return; }
+  if (_lblPick) { _lblPickDown(e); return; }
   if (_fdMode) { _fdClick(e); return; }
   if (_shellMode) {
     const hits = pickObjects(e);
@@ -27950,6 +28164,7 @@ window.addEventListener('mouseup', e => {
   if (e.button === 2 || e.button === 1) { isOrbit = false; isPan = false; }
   if (e.button === 0) {
     isDrag = false; dragData = null;
+    if (_lblCarry) _lblCarryDrop(e);
     // Auf der Flaeche geglitten? Dann NICHT neu heften — das wuerde zentrieren.
     if (_svgGlideEnd()) _textSnapTarget = null;
     // Text/SVG auf Ziel heften wenn Snap-Ziel vorhanden
@@ -28431,7 +28646,9 @@ function _rectsOverlapXZ(a, b, gap) {
 // auf den nächsten freien Platz der Bauplatte schieben (Spiralsuche).
 // Nur auf der Standard-Bodenplatte (Workplane = Boden) und nicht bei Bohrungen
 // (Löcher sollen die Körper ja schneiden, also überlappen).
+let _spawnKeinPlatz = false;
 function _pushAsideForNew(newMesh) {
+  if (_spawnKeinPlatz) return;
   if (shapeMode === 'hole') return;
   if (workplaneNormal.y < 0.99 || Math.abs(workplanePoint.y) > 0.01) return;
   newMesh.updateMatrixWorld(true);
@@ -53032,8 +53249,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.128';
+const VOLME3D_VERSION = '1.18.129';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.129', date:'2026-10-08', changes:[
+    ['\u2B21','<b>Muster auf Rundung: Waben, Dreiecke, organische Dreiecke oder Voronoi mit einem Klick rundum auf die Vase.</b> Vase, Becher oder Lampenschirm auswählen, das Fenster <b>Textur</b> öffnen und ganz oben unter <i>Muster auf Rundung</i> ein Muster anklicken. Das Gitter läuft dann nahtlos einmal um den Körper herum, ohne sichtbaren Stoß. Am Bauch werden die Zellen etwas größer, am Hals kleiner, ihre Form bleibt dabei überall gleich. Die Stege bleiben überall gleich breit. Einstellbar sind <b>Zellgröße</b>, <b>Stegbreite</b>, <b>Höhe</b> und ein <b>freier Rand</b> oben und unten. Bei Organisch und Voronoi gibt es zusätzlich <b>Unruhe</b> und 🎲 für eine neue Verteilung. Standard ist <b>Stege erhaben</b>: Die Wand bleibt voll, auch bei dünnwandigen Vasen. Mit <b>Zellen vertieft</b> werden die Zellen stattdessen eingeprägt, und die Außenmaße bleiben gleich. Innenseite, Boden und Oberkante bleiben glatt, und die Vase steht weiter plan auf der Platte.']
+  ]},
   { version:'1.18.128', date:'2026-10-08', changes:[
     ['\u{1F5A8}','<b>Druck-Check: kein falscher Alarm mehr bei erhabener Schrift.</b> Bei Namensschildern mit Schreibschrift meldete der Druck-Check „nicht wasserdicht“, obwohl das Teil in Ordnung war. Grund waren winzige Rundungen der Buchstaben, kleiner als ein Hundertstelmillimeter, die der Check zu grob gemessen hat. Er prüft jetzt zehnmal feiner. Echte Löcher im Netz findet der Druck-Check weiterhin.'],
   ]},
@@ -54517,8 +54737,43 @@ function _lblPickEnd() {
   const h = document.getElementById('hint'); h.classList.remove('show'); h.innerHTML = '';
   const sh = document.getElementById('text-snap-hint'); if (sh) sh.style.display = 'none';
 }
+// Der Text hängt am Zeiger: Auf ebenen Flächen setzt er sich schon beim Darüberfahren
+// auf (Vorschau), Rundungen zeigen nur den Hinweis — dort wäre Neuformen pro
+// Mausschritt zu teuer. Im Kurs zogen alle den Text, statt zu klicken (8.10.).
+let _svgSnapLeise = false;
 function _lblPickHover(e) {
-  if (_lblPick && _lblPick.parent) _svgSnapDetect(_lblPick, e);
+  const m = _lblPick;
+  if (!m || !m.parent) return;
+  _svgSnapDetect(m, e);
+  const tgt = _textSnapTarget;
+  if (!tgt || tgt.type !== 'surface') return;
+  const jetzt = performance.now();
+  if (jetzt - _lblHoverT < 50) return;
+  _lblHoverT = jetzt;
+  _svgSnapAtHit = true; _svgSnapLeise = true;
+  try { _applySvgSnap(m, tgt); } finally { _svgSnapAtHit = false; _svgSnapLeise = false; }
+  _textSnapTarget = tgt;
+}
+// Maustaste runter: auf dem Bauteil oder dem Text selbst → der Text folgt dem Zeiger,
+// abgesetzt wird beim Loslassen (Klick = Drücken + Loslassen an derselben Stelle)
+function _lblPickDown(e) {
+  const m = _lblPick;
+  if (!m || !m.parent) { _lblPickEnd(); return; }
+  _svgSnapDetect(m, e);
+  if (!_textSnapTarget) {
+    getNorm(e); raycaster.setFromCamera(mousev, camera);
+    if (!raycaster.intersectObject(m, true).length) { notify('Bitte direkt auf das Bauteil klicken', 'w'); return; }
+  }
+  _lblCarry = true;
+  _lblHoverT = 0; _lblPickHover(e);
+}
+// Maustaste los: dort absetzen
+function _lblCarryDrop(e) {
+  _lblCarry = false;
+  if (!_lblPick) return;
+  _svgSnapDetect(_lblPick, e);
+  if (_textSnapTarget) _lblPickClick(e);
+  else notify('Zum Absetzen über dem Bauteil loslassen — oder die Stelle anklicken', 'w');
 }
 function _lblPickClick(e) {
   const m = _lblPick;
@@ -54932,7 +55187,7 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   _svgSnapHit = null;
   _updateObjEdgeLines(svgMesh);
   updateTFInputs(); updateTree(); updateCtxPopup();   // ⊕-Knopf erscheint sofort
-  notify(_sameFace ? '📌 SVG auf der Fläche verschoben' : '📌 SVG auf Fläche geheftet', 'ok');
+  if (!_svgSnapLeise) notify(_sameFace ? '📌 SVG auf der Fläche verschoben' : '📌 SVG auf Fläche geheftet', 'ok');
 }
 // ===== SVG AUF DER FLÄCHE VERSCHIEBEN ("Gleiten") ==========================
 // Ein geheftetes Motiv ließ sich danach kaum noch bewegen: Der freie Objekt-Zug
@@ -58701,7 +58956,23 @@ function _buildTexPanelContent(o) {
   const customThumb = _dispThumbCache['custom']
     ? `<img class="fp-tex-thumb${pat==='custom'?' fp-tex-on':''}" title="Eigene Textur" data-pid="custom" src="${_dispThumbCache['custom']}" onclick="applyDisplacement('pattern','custom')">`
     : '';
+  const isRmp = pat === 'rmp';
+  const rp = _rmpParams(o);
+  const _tp = document.getElementById('tex-panel'); if (_tp) _tp._rmpKey = isRmp ? 'rmp:' + rp.pat : '-';
+  const rmpBtns = RMP_PATS.map(q =>
+    `<button class="fp-toggle-btn${isRmp && rp.pat===q.id?' on':''}" data-rmp="${q.id}" style="flex:1 1 45%" title="${q.tip}" onclick="_rmpApply('${q.id}')">${q.lbl}</button>`).join('');
+  const rmpExtra = !isRmp ? '' :
+    row('Zellgröße', 'rmp-cell', rp.cell, "_rmpSet('cell',this.value)", 'mm', 3, 40, 0.5) +
+    row('Stegbreite', 'rmp-web', rp.web, "_rmpSet('web',this.value)", 'mm', 0.4, 8, 0.1) +
+    ((rp.pat === 'organisch' || rp.pat === 'voronoi')
+      ? row('Unruhe', 'rmp-jitter', rp.jitter, "_rmpSet('jitter',this.value)", '%', 0, 100, 5) +
+        `<button class="fp-btn" style="width:100%;margin-bottom:6px;font-size:10.5px" onclick="_rmpShuffle()">🎲 Neue Verteilung</button>`
+      : '') +
+    row('Rand frei', 'rmp-rand', rp.rand, "_rmpSet('rand',this.value)", 'mm', 0, 30, 0.5);
   body.innerHTML =
+    `<div class="fp-tex-sec">Muster auf Rundung <span style="font-weight:400;color:#999">· Vase, Becher, Schirm</span></div>` +
+    `<div class="fp-row" style="flex-direction:row;gap:4px;flex-wrap:wrap">${rmpBtns}</div>` +
+    rmpExtra +
     `<div class="fp-tex-sec">Textur</div>` +
     `<div class="fp-tex-grid">${thumbs}${customThumb}</div>` +
     `<button class="fp-btn" style="width:100%;margin-bottom:8px;font-size:10.5px" onclick="openTexUpload()">↑ Eigene Textur hochladen</button>` +
@@ -58709,12 +58980,16 @@ function _buildTexPanelContent(o) {
     `<div id="tex-disp-extra" ${hide}>` +
       `<div class="fp-tex-sec" style="margin-top:2px">Texturtiefe</div>` +
       row('Texturhöhe', 'tex-disp-amp',  amp,  "applyDisplacement('amp',this.value)",  'mm', 0.05, 5, 0.05) +
-      row('Skalierung', 'tex-disp-freq', freq, "applyDisplacement('freq',this.value)", '',   0.5, 40, 0.5) +
+      (isRmp ? '' : row('Skalierung', 'tex-disp-freq', freq, "applyDisplacement('freq',this.value)", '',   0.5, 40, 0.5)) +
       `<div class="fp-row" style="flex-direction:row;gap:5px">` +
-        `<button class="fp-toggle-btn${tdir==='eingepraegt'?' on':''}" style="flex:1" onclick="applyDisplacement('dir','eingepraegt')" title="Muster wird ins Material geprägt — Außenmaße bleiben genau wie eingestellt">Eingeprägt</button>` +
-        `<button class="fp-toggle-btn${tdir==='aufgesetzt'?' on':''}" style="flex:1" onclick="applyDisplacement('dir','aufgesetzt')" title="Muster wird außen aufgesetzt — das Teil wird je Seite um die Texturhöhe größer">Aufgesetzt</button>` +
+        (isRmp
+          ? `<button class="fp-toggle-btn${tdir==='aufgesetzt'?' on':''}" style="flex:1" onclick="applyDisplacement('dir','aufgesetzt')" title="Die Stege werden auf die Wand gelegt — die Wand bleibt voll, das Teil wird je Seite um die Höhe größer">Stege erhaben</button>` +
+            `<button class="fp-toggle-btn${tdir==='eingepraegt'?' on':''}" style="flex:1" onclick="applyDisplacement('dir','eingepraegt')" title="Die Zellen werden in die Wand geprägt — Außenmaße bleiben, die Wand wird in den Zellen dünner">Zellen vertieft</button>`
+          : `<button class="fp-toggle-btn${tdir==='eingepraegt'?' on':''}" style="flex:1" onclick="applyDisplacement('dir','eingepraegt')" title="Muster wird ins Material geprägt — Außenmaße bleiben genau wie eingestellt">Eingeprägt</button>` +
+            `<button class="fp-toggle-btn${tdir==='aufgesetzt'?' on':''}" style="flex:1" onclick="applyDisplacement('dir','aufgesetzt')" title="Muster wird außen aufgesetzt — das Teil wird je Seite um die Texturhöhe größer">Aufgesetzt</button>`) +
       `</div>` +
       `<label class="fp-check-lbl"><input type="checkbox" id="tex-disp-inv" ${inv} onchange="applyDisplacement('invert',this.checked)"> Invertieren</label>` +
+      (isRmp ? `<div id="tex-rmp-only" style="display:none">` : '') +
       `<label class="fp-check-lbl"><input type="checkbox" id="tex-disp-sym" ${sym} onchange="applyDisplacement('symmetric',this.checked)"> Symmetrisch</label>` +
       `<div class="fp-tex-sec" style="margin-top:6px">Richtung</div>` +
       `<div class="fp-row" style="flex-direction:row;gap:5px">` +
@@ -58726,6 +59001,7 @@ function _buildTexPanelContent(o) {
         `<button class="fp-toggle-btn${prf==='kantig'?' on':''}" data-tprof="kantig" style="flex:1" onclick="applyDisplacement('profile','kantig')" title="Ebene Facetten mit scharfen Graten — die Vertices liegen auf den Knicklinien des Musters, so wie es gedruckt wird">Kantig</button>` +
         `<button class="fp-toggle-btn${prf==='rund'?' on':''}" data-tprof="rund" style="flex:1" onclick="applyDisplacement('profile','rund')" title="Weiche Sinus-Form (die bisherige Fassung)">Rund</button>` +
       `</div>` +
+      (isRmp ? `</div>` : '') +
       (() => { const _W = _parseWhere(whr); const _all = _W.aussen && _W.oben && _W.innen && _W.unten;
         return `<div class="fp-tex-sec" style="margin-top:6px">Ort <span style="font-weight:400;color:#999">· mehrfach wählbar</span></div>` +
         `<div class="fp-row" style="flex-direction:row;gap:4px;flex-wrap:wrap">` +
@@ -58746,6 +59022,8 @@ function _syncTexPanel(o) {
   if (!o) o = getFirst();
   if (!o || (!o.isMesh && !(o.children && o.children.length))) { panel.style.display = 'none'; return; }
   const pat = o.userData.displacementPattern || 'keine';
+  // Muster-auf-Rundung-Regler hängen vom Muster ab → bei Wechsel neu aufbauen
+  if (panel._rmpKey !== (pat === 'rmp' ? 'rmp:' + _rmpParams(o).pat : '-')) { _buildTexPanelContent(o); return; }
   panel.querySelectorAll('.fp-tex-thumb').forEach(el => {
     el.classList.toggle('fp-tex-on', el.dataset.pid === pat);
   });
@@ -58785,6 +59063,57 @@ function toggleTexPanel() {
   } else {
     panel.style.display = 'none';
   }
+}
+
+// ─── Muster auf Rundung: Knöpfe im Textur-Panel ───────────────────────
+// Ein Klick legt das Muster rundum auf die Außenwand. Erste Wahl: Stege
+// erhaben (Wand bleibt voll — dünne Vasenwände werden nicht geschwächt),
+// 1 mm hoch, nur Außenwand (Rand oben, Boden und Innenseite bleiben glatt).
+function _rmpTarget() {
+  const o = getFirst();
+  if (!o || (!o.isMesh && !(o.children && o.children.length))) { notify('Erst den runden Körper (Vase, Becher …) auswählen', 'warn'); return null; }
+  return o;
+}
+function _rmpApply(pat) {
+  const o = _rmpTarget(); if (!o) return;
+  const first = o.userData.displacementPattern !== 'rmp';
+  o.userData.rmp = Object.assign(_rmpParams(o), { pat });
+  if (first) {
+    o.userData.texWhere = 'aussen';
+    o.userData.texDir = 'aufgesetzt';
+    o.userData.displacementAmp = 1;
+  }
+  const lbl = (RMP_PATS.find(q => q.id === pat) || {}).lbl || pat;
+  notify(`⬡ ${lbl} wird um den Körper gelegt …`, 'info', 1500);
+  setTimeout(() => {   // Hinweis erst malen lassen, die Rechnung dauert ein paar Sekunden
+    _applyDisplacementNow('pattern', 'rmp');
+    const panel = document.getElementById('tex-panel');
+    if (panel && panel.style.display !== 'none') _buildTexPanelContent(o);
+    let info = null;
+    o.traverse(m => { if (!info && m.userData._warpCache && m.userData._warpCache.rmpInfo) info = m.userData._warpCache.rmpInfo; });
+    if (info) notify(`⬡ ${lbl} rundum — ${info.N} Zellen je Umlauf, nahtlos`, 'ok');
+  }, 40);
+}
+let _rmpTimer = null;
+function _rmpSet(k, v) {
+  const o = getFirst(); if (!o || o.userData.displacementPattern !== 'rmp') return;
+  const n = parseFloat(v); if (!isFinite(n)) return;
+  o.userData.rmp = Object.assign(_rmpParams(o), { [k]: n });
+  clearTimeout(_rmpTimer);
+  _rmpTimer = setTimeout(() => _applyDisplacementNow('rmp', null), 250);
+}
+function _rmpShuffle() {
+  const o = getFirst(); if (!o || o.userData.displacementPattern !== 'rmp') return;
+  const P = _rmpParams(o);
+  o.userData.rmp = Object.assign(P, { seed: (P.seed | 0) + 1 });
+  _applyDisplacementNow('rmp', null);
+}
+// Aus Befehlspalette/Generatorliste: Textur-Panel öffnen, Abschnitt steht oben
+function _rmpOpen() {
+  const o = _rmpTarget(); if (!o) return;
+  const panel = document.getElementById('tex-panel');
+  if (panel && panel.style.display !== 'block') toggleTexPanel();
+  notify('Muster auf Rundung: oben im Textur-Fenster ein Muster anklicken', 'info');
 }
 
 function closeTexPanel() {
@@ -63070,6 +63399,7 @@ const CMDK = [
   {i:'🤳',g:'Generator',t:'Foto-Requisite',k:'foto requisite prop polaroid selfie fotobox photobooth party hochzeit schriftzug schön hier herz rahmen hochhalten instagram',run:()=>_fppOpen()},
   {i:'⚔️',g:'Generator',t:'Tabletop-Figur',k:'figur miniatur mini tabletop trench crusade soldat pilger ritter ketzer warband grimdark 32mm base gasmaske',run:()=>_tfgOpen()},
   {i:'🍷',g:'Generator',t:'Glas-Marker',k:'glasmarker glas marker weinglas weinglaeser weingläser stiel clip flasche bierflasche flaschenhals hals ring glasrand rand buegel bügel party fest feier weinprobe kennung namen tiere blumen symbole namensschild becher tasse untersetzer wiedererkennung',run:()=>_gmkOpen()},
+  {i:'⬡',g:'Bearbeiten',t:'Muster auf Rundung',k:'muster rundung vase becher lampenschirm schirm topf übertopf uebertopf zylinder rund rundum wickeln umwickeln waben wabe honeycomb dreieck dreiecke organisch voronoi gitter struktur relief textur oberfläche oberflaeche nahtlos drehkörper drehkoerper',run:()=>_rmpOpen()},
   {i:'⬡',g:'Generator',t:'Muster-Generator',k:'muster pattern waben wabe honeycomb hexagon asanoha hanfblatt japanisch dreieck quadrat raute voronoi wellen linien gitter lattice svg laser lasercut plotter lesezeichen untersetzer gitterblende lüftungsgitter lampenschirm einsatz',run:()=>_pgOpen()},
   {i:'🧩',g:'Generator',t:'Puzzle',k:'puzzle puzzel jigsaw steckpuzzle legespiel teile stecken verzahnung nasen foto fotopuzzle bild motiv kinder kinderpuzzle spiel geschenk tablett wanne rahmen mehrfarbig mmu ams filament',run:()=>_pzlOpen()},
   {i:'⬤',g:'Bearbeiten',t:'Alles abrunden',k:'abrunden rundung kanten brechen weich haptik fillet radius import stl spielzeug',run:()=>_openRoundModal()},
