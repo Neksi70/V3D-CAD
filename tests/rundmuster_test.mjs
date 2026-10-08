@@ -180,6 +180,29 @@ for (const pat of PATS) {
   await page.mouse.move(640, 600); await page.mouse.move(645, 605); await page.waitForTimeout(400);
   await page.screenshot({ path: `/tmp/rmp_durch_${pat}.png`, clip: { x: 300, y: 260, width: 560, height: 600 } });
 }
+// Größen-Mix: Zellen verschieden groß, trotzdem dicht und durchbrochen
+const mix = await page.evaluate(async () => {
+  const o = objects[objects.length - 1]; selectObjs([o]);
+  const out = {};
+  for (const pat of ['wabe', 'dreieck']) {
+    o.userData.rmp = Object.assign(_rmpParams(o), { pat, mix: 80, durch: false });
+    _applyDisplacementNow('rmp', null);
+    const P = (() => { let i = null; o.traverse(m => { if (!i && m.userData._warpCache) i = m.userData._warpCache; }); return i; })();
+    const g0 = o.geometry; _rmpMode('durch');
+    for (let k = 0; k < 1200 && o.geometry === g0; k++) await new Promise(r => setTimeout(r, 50));
+    // Zellflächen aus der Abwicklung: Spreizung groß/klein
+    const base = _rmpBaseGeo(o); o.updateMatrixWorld(true);
+    const bp = base.attributes.position, w = new Float32Array(bp.count * 3), v = new THREE.Vector3(), bb = new THREE.Box3();
+    for (let i = 0; i < bp.count; i++) { v.fromBufferAttribute(bp, i).applyMatrix4(o.matrixWorld); w.set([v.x, v.y, v.z], i * 3); bb.expandByPoint(v); }
+    const at = _rmpMapper(w, bb.getCenter(new THREE.Vector3()), _rmpParams(o), base.index ? base.index.array : null);
+    const A = _rmpCells(at.prof, at.prof.V[0] + 20, at.prof.V[at.prof.NB] - 20).map(p => { let a = 0; for (let i = 0; i < p.length; i++) { const q = p[i], r = p[(i + 1) % p.length]; a += q[0] * r[1] - r[0] * q[1]; } return Math.abs(a / 2); }).filter(a => a > 1).sort((a, b) => a - b);
+    out[pat] = { geaendert: o.geometry !== g0, spreiz: +(A[Math.floor(A.length * 0.9)] / A[Math.floor(A.length * 0.1)]).toFixed(2), n: A.length };
+  }
+  o.userData.rmp = Object.assign(_rmpParams(o), { pat: 'voronoi', mix: 0 });
+  return out;
+});
+console.log('mix', JSON.stringify(mix));
+
 // zurück auf erhaben + entfernen
 const zurueck = await page.evaluate(async () => {
   const o = objects[objects.length - 1]; selectObjs([o]);
@@ -190,13 +213,52 @@ const zurueck = await page.evaluate(async () => {
 });
 console.log('zurueck', JSON.stringify(zurueck));
 
+// ── Vasen-Generator: Netz ist umgestülpt (Volumen < 0) → Muster muss trotzdem AUSSEN sitzen
+await page.evaluate(() => { _newCreate(false); _openVaseModal(); });
+await page.waitForTimeout(800);
+const gen = await page.evaluate(async () => {
+  _createVase(); await new Promise(r => setTimeout(r, 500)); _closeVaseModal();
+  const o = objects[objects.length - 1]; selectObjs([o]); o.updateMatrixWorld(true);
+  const bb = new THREE.Box3().setFromObject(o), cx = (bb.min.x + bb.max.x) / 2, cz = (bb.min.z + bb.max.z) / 2;
+  const hs = [0.3, 0.55, 0.8].map(f => bb.min.y + (bb.max.y - bb.min.y) * f);
+  // Strahlen gegen eine beidseitige Kopie: von außen → Außenhaut, von der Achse → Innenwand
+  const mess = () => {
+    o.updateMatrixWorld(true);
+    const m = new THREE.Mesh(o.geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+    m.matrixAutoUpdate = false; m.matrix.copy(o.matrixWorld); m.matrixWorld.copy(o.matrixWorld);
+    const rc = new THREE.Raycaster();
+    return hs.map(h => { let aussen = Infinity, innen = Infinity;
+      for (let t = 0; t < 72; t++) { const th = t / 72 * 2 * Math.PI, d = new THREE.Vector3(Math.cos(th), 0, Math.sin(th));
+        rc.set(new THREE.Vector3(cx, h, cz).addScaledVector(d, 8), d.clone().negate()); const a = rc.intersectObject(m)[0];
+        if (a) aussen = Math.min(aussen, (8 - a.distance) * -10);   // −Radius der Außenhaut (min → größter Radius)
+        rc.set(new THREE.Vector3(cx, h, cz), d); const b = rc.intersectObject(m)[0];
+        if (b) innen = Math.min(innen, b.distance * 10); }
+      return [innen, -aussen]; });
+  };
+  const vor = mess();
+  _rmpApply('wabe'); await new Promise(r => setTimeout(r, 200));
+  for (let k = 0; k < 200 && o.userData.displacementPattern !== 'rmp'; k++) await new Promise(r => setTimeout(r, 50));
+  const nach = mess();
+  return { vor, nach };
+});
+console.log('generator', JSON.stringify(gen));
+
 const checks = [];
+gen.vor.forEach((v, k) => {
+  const n = gen.nach[k];
+  checks.push([`Generator-Vase Höhe ${k}: Innenwand unberührt`, Math.abs(n[0] - v[0]) < 0.1]);
+  checks.push([`Generator-Vase Höhe ${k}: Stege außen (~+1 mm)`, n[1] - v[1] > 0.8 && n[1] - v[1] < 1.6]);   // waagerecht gemessen: an Schrägen 1/cos(Neigung)
+});
 for (const pat of PATS) {
   const r = durch[pat];
   checks.push([pat + ' durch: Öffnungen gehen durch (> 25 % der Strahlen)', r.lochFrac > 0.25 && r.lochFrac < 0.9]);
   checks.push([pat + ' durch: Rand oben/unten bleibt zu', r.randZu > 0.97]);
   checks.push([pat + ' durch: Material weg, Vase steht noch', r.volRel < 0.95 && r.volRel > 0.2 && Math.abs(r.boden) < 0.02 && Math.abs(r.hoehe - 120) < 0.05]);
   checks.push([pat + ' durch: gespeichert mit Geometrie', r.savedDurch && r.hatGeo]);
+}
+for (const pat of ['wabe', 'dreieck']) {
+  checks.push([`Größen-Mix ${pat}: durchgestanzt`, mix[pat].geaendert]);
+  checks.push([`Größen-Mix ${pat}: Zellen klar verschieden groß (P90/P10 > 2)`, mix[pat].spreiz > 2]);
 }
 checks.push(['zurück auf Erhaben + Entfernen', zurueck.erh && zurueck.keine === 'keine']);
 for (const pat of PATS) {

@@ -7645,7 +7645,7 @@ const RMP_PATS = [
   { id: 'organisch', lbl: 'Organisch', tip: 'Dreiecke, jedes etwas anders — wie gewachsen' },
   { id: 'voronoi',   lbl: 'Voronoi',   tip: 'Unregelmäßige Zellen wie Schaum oder Knochen' },
 ];
-const RMP_DEF = { pat: 'wabe', cell: 10, web: 1.6, jitter: 60, rand: 3, seed: 1, durch: false };
+const RMP_DEF = { pat: 'wabe', cell: 10, web: 1.6, jitter: 60, rand: 3, seed: 1, durch: false, mix: 0 };
 function _rmpParams(o) { return Object.assign({}, RMP_DEF, (o && o.userData.rmp) || {}); }
 function _rmpHash(i, j, s) {
   let n = (Math.imul(i, 374761393) + Math.imul(j, 668265263) + Math.imul(s, 1442695041)) | 0;
@@ -7734,10 +7734,208 @@ function _rmpField(pat, c, N, J) {
     return best;
   };
 }
+// ─── Muster auf Rundung: Größen-Mix ────────────────────────────────────
+// Statt eines starren Gitters: Zellmittelpunkte mit fließend wechselnder
+// Dichte (Poisson-Scheiben mit ortsabhängigem Radius), ringsum periodisch.
+// Wabe/Dreieck werden geglättet (Lloyd) → sechseckähnliche Waben bzw. fast
+// gleichseitige Dreiecke, nur groß und klein gemischt; Organisch/Voronoi
+// bleiben ungeglättet. Waben/Voronoi = Voronoi-Zellen der Punkte, Dreiecke =
+// Delaunay-Dreiecke (aus den Nachbarn der Voronoi-Zellen gewonnen).
+function _rmpRng(seed) {
+  let a = (seed | 0) * 2654435761 >>> 0 || 1;
+  return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+// Weiches Rauschen −1…1, in X periodisch mit Pp (zwei Oktaven)
+function _rmpNoise(Pp, L, seed) {
+  const oct = (Lo, s) => {
+    const nx = Math.max(2, Math.round(Pp / Lo)), Lx = Pp / nx;
+    return (X, Y) => {
+      const u = X / Lx, v = Y / Lo, i = Math.floor(u), j = Math.floor(v), fu = u - i, fv = v - j;
+      const h = (a, b) => _rmpHash(((a % nx) + nx) % nx, b, s) * 2 - 1;
+      const su = fu * fu * (3 - 2 * fu), sv = fv * fv * (3 - 2 * fv);
+      return (h(i, j) * (1 - su) + h(i + 1, j) * su) * (1 - sv) + (h(i, j + 1) * (1 - su) + h(i + 1, j + 1) * su) * sv;
+    };
+  };
+  const a = oct(L, seed), b = oct(L / 2, seed + 101);
+  return (X, Y) => Math.max(-1, Math.min(1, (0.75 * a(X, Y) + 0.35 * b(X, Y)) * 1.3));
+}
+// Konvexes Vieleck mit Kantenmarken ({x,y,l}: l = Marke der Kante ab diesem
+// Punkt) an n·p ≤ d beschneiden; die neue Kante auf der Schnittlinie bekommt lab.
+function _rmpClipL(poly, nx, ny, d, lab) {
+  const out = [], n = poly.length;
+  for (let i = 0; i < n; i++) {
+    const A = poly[i], B = poly[(i + 1) % n];
+    const da = nx * A.x + ny * A.y - d, db = nx * B.x + ny * B.y - d;
+    const ina = da <= 0, inb = db <= 0;
+    if (ina) out.push(A);
+    if (ina !== inb) {
+      const t = da / (da - db), I = { x: A.x + (B.x - A.x) * t, y: A.y + (B.y - A.y) * t, l: ina ? lab : A.l };
+      out.push(I);
+    }
+  }
+  return out;
+}
+function _rmpSites(Pp, Ya, Yb, cell, mix, seed, relax) {
+  const m = _clamp01(mix / 100) * Math.log(2.2);
+  const nz = _rmpNoise(Pp, 3.5 * cell, seed + 31);
+  const sizeAt = (X, Y) => cell * Math.exp(m * nz(X, Y));
+  const rMax = cell * Math.exp(m) * 0.9, rnd = _rmpRng(seed + 7);
+  const wrap = X => X - Pp * Math.floor(X / Pp);
+  // Eimer-Raster (Kante ≥ rMax), X ringsum
+  const nbx = Math.max(1, Math.floor(Pp / rMax)), bs = Pp / nbx, nby = Math.max(1, Math.ceil((Yb - Ya) / bs) + 1);
+  let SX = [], SY = [], SR = [], B;
+  const rebuild = () => {
+    B = Array.from({ length: nbx * nby }, () => []);
+    for (let k = 0; k < SX.length; k++) {
+      const bx = Math.min(nbx - 1, Math.floor(SX[k] / bs)), by = Math.min(nby - 1, Math.max(0, Math.floor((SY[k] - Ya) / bs)));
+      B[by * nbx + bx].push(k);
+    }
+  };
+  // Alle Punkte (samt Kopien über die Naht) im Umkreis R um (X,Y): [k, Versatz]
+  const near = (X, Y, R, cb) => {
+    const r = Math.ceil(R / bs), bx0 = Math.floor(X / bs), by0 = Math.floor((Y - Ya) / bs);
+    for (let by = Math.max(0, by0 - r); by <= Math.min(nby - 1, by0 + r); by++)
+      for (let bx = bx0 - r; bx <= bx0 + r; bx++) {
+        const q = ((bx % nbx) + nbx) % nbx, sh = Math.floor(bx / nbx) * Pp;
+        for (const k of B[by * nbx + q]) cb(k, sh);
+      }
+  };
+  // 1) Poisson-Scheiben mit ortsabhängigem Radius (Bridson)
+  const r0 = X => 0.9 * X;
+  SX.push(rnd() * Pp); SY.push(Ya + rnd() * (Yb - Ya)); SR.push(r0(sizeAt(SX[0], SY[0])));
+  rebuild();
+  const active = [0];
+  while (active.length) {
+    const ai = Math.floor(rnd() * active.length), a = active[ai];
+    let placed = false;
+    for (let t = 0; t < 24; t++) {
+      const ang = rnd() * 2 * Math.PI, rad = SR[a] * (1 + rnd());
+      const x = wrap(SX[a] + Math.cos(ang) * rad), y = SY[a] + Math.sin(ang) * rad;
+      if (y < Ya || y > Yb) continue;
+      const rq = r0(sizeAt(x, y));
+      let ok = true;
+      near(x, y, (rq + rMax) / 2, (k, sh) => {
+        if (!ok) return;
+        const dx = SX[k] + sh - x, dy = SY[k] - y, lim = (rq + SR[k]) / 2;
+        if (dx * dx + dy * dy < lim * lim) ok = false;
+      });
+      if (!ok) continue;
+      const k = SX.length; SX.push(x); SY.push(y); SR.push(rq);
+      B[Math.min(nby - 1, Math.max(0, Math.floor((y - Ya) / bs))) * nbx + Math.min(nbx - 1, Math.floor(x / bs))].push(k);
+      active.push(k); placed = true;
+      if (SX.length > 40000) { active.length = 0; break; }
+    }
+    if (!placed) active.splice(ai, 1);
+  }
+  // Voronoi-Zelle eines Punkts (mit Nachbar-Marken k*3+Versatzstufe)
+  const cellOf = s => {
+    const R0 = 2 * (SR[s] + rMax);
+    let poly = [{ x: SX[s] - R0, y: SY[s] - R0, l: -1 }, { x: SX[s] + R0, y: SY[s] - R0, l: -1 },
+                { x: SX[s] + R0, y: SY[s] + R0, l: -1 }, { x: SX[s] - R0, y: SY[s] + R0, l: -1 }];
+    const cand = [];
+    near(SX[s], SY[s], R0, (k, sh) => {
+      if (k === s && !sh) return;
+      const dx = SX[k] + sh - SX[s], dy = SY[k] - SY[s];
+      cand.push([dx * dx + dy * dy, k, sh]);
+    });
+    cand.sort((p, q) => p[0] - q[0]);
+    for (const [d2, k, sh] of cand) {
+      let ext = 0; for (const p of poly) ext = Math.max(ext, (p.x - SX[s]) ** 2 + (p.y - SY[s]) ** 2);
+      if (d2 / 4 > ext) break;                       // kann die Zelle nicht mehr schneiden
+      const vx = SX[k] + sh - SX[s], vy = SY[k] - SY[s], l = Math.sqrt(d2);
+      if (l < 1e-9) continue;
+      poly = _rmpClipL(poly, vx / l, vy / l, (vx * (SX[s] + SX[k] + sh) + vy * (SY[s] + SY[k])) / (2 * l), k * 3 + (Math.round(sh / Pp) + 1));
+      if (poly.length < 3) break;
+    }
+    return poly;
+  };
+  // 2) Glätten (Lloyd): jeder Punkt in den Schwerpunkt seiner Zelle
+  for (let it = 0; it < (relax || 0); it++) {
+    const NX = new Float64Array(SX.length), NY = new Float64Array(SX.length);
+    for (let s = 0; s < SX.length; s++) {
+      const p = cellOf(s); let A = 0, cx = 0, cy = 0;
+      for (let i = 0; i < p.length; i++) { const a = p[i], b = p[(i + 1) % p.length], cr = a.x * b.y - b.x * a.y; A += cr; cx += (a.x + b.x) * cr; cy += (a.y + b.y) * cr; }
+      if (Math.abs(A) < 1e-9 || SY[s] < Ya + rMax || SY[s] > Yb - rMax) { NX[s] = SX[s]; NY[s] = SY[s]; continue; }
+      NX[s] = wrap(cx / (3 * A)); NY[s] = Math.max(Ya, Math.min(Yb, cy / (3 * A)));
+    }
+    SX = Array.from(NX); SY = Array.from(NY); rebuild();
+  }
+  // 3) Endgültige Zellen + Nachbarn
+  const cells = [], nbrs = [];
+  for (let s = 0; s < SX.length; s++) {
+    const p = cellOf(s); cells.push(p);
+    nbrs.push(p.map(q => q.l < 0 ? null : { k: Math.floor(q.l / 3), sh: (q.l % 3 - 1) * Pp }));
+  }
+  // Delaunay-Dreiecke: aufeinanderfolgende Nachbarn um jeden Punkt; jedes Dreieck
+  // nur vom Punkt mit der kleinsten Nummer ausgeben
+  const tris = [];
+  for (let s = 0; s < SX.length; s++) {
+    const nb = nbrs[s];
+    for (let i = 0; i < nb.length; i++) {
+      const a = nb[i], b = nb[(i + 1) % nb.length];
+      if (!a || !b || a.k <= s || b.k <= s) continue;
+      tris.push([[SX[s], SY[s]], [SX[a.k] + a.sh, SY[a.k]], [SX[b.k] + b.sh, SY[b.k]]]);
+    }
+  }
+  // Schnelle Suche „nächster Punkt": feines Raster mit Kandidatenlisten
+  const g = Math.max(0.5, cell * Math.exp(-m) * 0.45), gnx = Math.max(1, Math.round(Pp / g)), gx = Pp / gnx, gny = Math.max(1, Math.ceil((Yb - Ya) / g) + 1);
+  const G = new Array(gnx * gny);
+  for (let j = 0; j < gny; j++) for (let i = 0; i < gnx; i++) {
+    const X = (i + 0.5) * gx, Y = Ya + (j + 0.5) * g;
+    let best = Infinity;
+    for (let R = rMax; best === Infinity && R < 8 * rMax; R *= 2) near(X, Y, R, (k, sh) => { const dx = SX[k] + sh - X, dy = SY[k] - Y; best = Math.min(best, dx * dx + dy * dy); });
+    const lim = Math.sqrt(best) + 1.5 * Math.max(gx, g), L = [];
+    near(X, Y, lim, (k, sh) => { const dx = SX[k] + sh - X, dy = SY[k] - Y; if (dx * dx + dy * dy <= lim * lim) L.push(k, sh); });
+    G[j * gnx + i] = L;
+  }
+  const nearest = (X, Y) => {
+    X = wrap(X);
+    const i = Math.min(gnx - 1, Math.floor(X / gx)), j = Math.min(gny - 1, Math.max(0, Math.floor((Y - Ya) / g)));
+    const L = G[j * gnx + i]; let bk = -1, bsh = 0, bd = Infinity;
+    for (let q = 0; q < L.length; q += 2) { const dx = SX[L[q]] + L[q + 1] - X, dy = SY[L[q]] - Y, d = dx * dx + dy * dy; if (d < bd) { bd = d; bk = L[q]; bsh = L[q + 1]; } }
+    return [bk, X - bsh];                            // Punkt + Abfrage im Rahmen des Punkts
+  };
+  return { SX, SY, cells, nbrs, tris, nearest, Pp };
+}
+// Abstandsfeld zur nächsten Stegmitte auf Basis der Punkte
+function _rmpSiteField(S, tri) {
+  const { SX, SY, nbrs, nearest } = S;
+  return (X0, Y) => {
+    const [a, X] = nearest(X0, Y);
+    if (a < 0) return 0;
+    const ax = SX[a], ay = SY[a], nb = nbrs[a];
+    if (!tri) {                                       // Voronoi: Mittelsenkrechten
+      let best = Infinity;
+      for (const n of nb) {
+        if (!n) continue;
+        const vx = SX[n.k] + n.sh - ax, vy = SY[n.k] - ay, l = Math.hypot(vx, vy);
+        const d = ((ax + SX[n.k] + n.sh) / 2 - X) * vx / l + ((ay + SY[n.k]) / 2 - Y) * vy / l;
+        if (d < best) best = d;
+      }
+      return best;
+    }
+    // Delaunay: Kanten um a, Kranz um a und die Kanten der Nachbarn
+    let best = Infinity;
+    const seg = (x1, y1, x2, y2) => {
+      const vx = x2 - x1, vy = y2 - y1, wx = X - x1, wy = Y - y1, l2 = vx * vx + vy * vy;
+      let t = l2 > 0 ? (wx * vx + wy * vy) / l2 : 0; t = t < 0 ? 0 : (t > 1 ? 1 : t);
+      const ex = wx - vx * t, ey = wy - vy * t, d = ex * ex + ey * ey;
+      if (d < best) best = d;
+    };
+    for (const n of nb) {
+      if (!n) continue;
+      const nx = SX[n.k] + n.sh, ny = SY[n.k];
+      seg(ax, ay, nx, ny);
+      for (const m of nbrs[n.k]) if (m) seg(nx, ny, SX[m.k] + m.sh + n.sh, SY[m.k]);
+    }
+    return Math.sqrt(best);
+  };
+}
+
 // Baut aus den (Welt-)Punkten das Wandprofil r(y) um die senkrechte Achse durch
 // ctr und liefert die Höhenfunktion (x,y,z) → 0..1. Profil = größter Radius je
 // Höhenband → bei Hohlkörpern immer die Außenwand.
-function _rmpMapper(pos, ctr, P) {
+function _rmpMapper(pos, ctr, P, idx) {
   const U = _MM_PER_UNIT, n = pos.length / 3;
   let y0 = Infinity, y1 = -Infinity;
   for (let i = 1; i < pos.length; i += 3) { if (pos[i] < y0) y0 = pos[i]; if (pos[i] > y1) y1 = pos[i]; }
@@ -7748,6 +7946,25 @@ function _rmpMapper(pos, ctr, P) {
     const b = Math.round((pos[i * 3 + 1] * U - y0) / dy);
     const r = Math.hypot(pos[i * 3] - ctr.x, pos[i * 3 + 2] - ctr.z) * U;
     if (r > rB[b]) rB[b] = r;
+  }
+  // Auch entlang der Dreieckskanten abtasten: Liegen Innen- und Außenwand-Ringe
+  // auf verschiedenen Höhen, gäbe es sonst Bänder mit NUR einem Innenwand-Punkt
+  // — dort hielte das Profil die Innenwand für die Außenhaut.
+  const nT = idx ? idx.length / 3 : n / 3;
+  const edge = (a, b) => {
+    const ya = (pos[a * 3 + 1] * U - y0) / dy, yb = (pos[b * 3 + 1] * U - y0) / dy;
+    const lo = Math.ceil(Math.min(ya, yb)), hi = Math.floor(Math.max(ya, yb));
+    if (hi < lo || Math.abs(yb - ya) < 1e-9) return;
+    for (let q = Math.max(0, lo); q <= Math.min(NB, hi); q++) {
+      const t = (q - ya) / (yb - ya);
+      const x = pos[a * 3] + (pos[b * 3] - pos[a * 3]) * t, z = pos[a * 3 + 2] + (pos[b * 3 + 2] - pos[a * 3 + 2]) * t;
+      const r = Math.hypot(x - ctr.x, z - ctr.z) * U;
+      if (r > rB[q]) rB[q] = r;
+    }
+  };
+  for (let t = 0; t < nT; t++) {
+    const a = idx ? idx[t * 3] : t * 3, b = idx ? idx[t * 3 + 1] : t * 3 + 1, c = idx ? idx[t * 3 + 2] : t * 3 + 2;
+    edge(a, b); edge(b, c); edge(c, a);
   }
   // Lücken (z. B. glatter Zylindermantel ohne Zwischenpunkte) linear füllen
   let last = -1;
@@ -7788,7 +8005,14 @@ function _rmpMapper(pos, ctr, P) {
     }
     J = { jx, jy, jmin, rows };
   }
-  const field = _rmpField(pat, c, N, J);
+  // Größen-Mix > 0: unregelmäßige Punkte statt starres Gitter
+  const mix = Math.max(0, +P.mix || 0);
+  let sites = null;
+  if (mix > 0) {
+    const pad = 3 * cell * 2.2;
+    sites = _rmpSites(2 * Math.PI * Rref, V[0] - pad, V[NB] + pad, cell, mix, seed, (pat === 'wabe' || pat === 'dreieck') ? 4 : 0);
+  }
+  const field = sites ? _rmpSiteField(sites, pat === 'dreieck' || pat === 'organisch') : _rmpField(pat, c, N, J);
   const half = Math.max(0.2, +P.web || RMP_DEF.web) / 2;
   const fl = Math.max(0.35, Math.min(0.9, half * 0.8));     // Flanke in mm (druckbar, ~45°)
   const rand = Math.max(0, +P.rand || 0);
@@ -7820,7 +8044,7 @@ function _rmpMapper(pos, ctr, P) {
   at.outer = outer;
   at.yMin = y0 / U; at.yMax = y1 / U;
   // Rohdaten für den Durchbruch (_rmpDurch): Profil, Abwicklung, Gitter
-  at.prof = { y0, dy, NB, rB, V, S, L: Ltot, Rref, N, c, J, pat, half, rand, cx: ctr.x * U, cz: ctr.z * U };
+  at.prof = { y0, dy, NB, rB, V, S, L: Ltot, Rref, N, c, J, pat, half, rand, cx: ctr.x * U, cz: ctr.z * U, sites };
   return at;
 }
 
@@ -7884,7 +8108,7 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
     const target = isRmp
       ? Math.max(worldMax / 250, Math.min(rmpP.cell / 2, 4) / _MM_PER_UNIT)
       : Math.max(worldMax / 200, (ref / Math.max(0.5, freq)) / 3) * (sharp ? 2.5 : 1);
-    const rmpAt = isRmp ? _rmpMapper(pos, ctr, rmpP) : null;
+    const rmpAt = isRmp ? _rmpMapper(pos, ctr, rmpP, idx) : null;
     if (isRmp && !rmpAt) return null;
     const onOut = isRmp ? (a => rmpAt.outer(pos[a * 3], pos[a * 3 + 1], pos[a * 3 + 2])) : null;
     const r = _subdivideAdaptive(pos, idx, target, isRmp ? ((a, b, c) => onOut(a) || onOut(b) || onOut(c)) : null);
@@ -7910,6 +8134,19 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
     const mask = new Uint8Array(count);
     const wpos = Float32Array.from(pos);
     const wnor = Float32Array.from(nrm.array);
+    // Umgestülpte Netze (Wicklung verkehrt herum, z. B. Vasen-Generator): die
+    // Normalen zeigen nach innen → „außen" wäre die Innenwand und das Muster
+    // ginge nach innen. Gesamtvolumen negativ → Normalen für die Textur drehen.
+    {
+      let vol = 0;
+      for (let t = 0; t < idx.length; t += 3) {
+        const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
+        vol += pos[a] * (pos[b + 1] * pos[c + 2] - pos[b + 2] * pos[c + 1])
+             - pos[a + 1] * (pos[b] * pos[c + 2] - pos[b + 2] * pos[c])
+             + pos[a + 2] * (pos[b] * pos[c + 1] - pos[b + 1] * pos[c]);
+      }
+      if (vol < 0) for (let i = 0; i < wnor.length; i++) wnor[i] = -wnor[i];
+    }
     const W = _parseWhere(where);   // aktive Flächenkategorien (multi-select)
     // Schutzzonen: Bereiche, die eine Textur NICHT anfassen darf — Gewinde,
     // Auflageflächen, Standflächen, Einsatz-Taschen. Als Zylinderzonen im
@@ -7931,11 +8168,19 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
         }
         if (imSchutz) { mask[i] = 0; continue; }
       }
-      const outward = (nx * (x - ctr.x) + ny * (y - ctr.y) + nz * (z - ctr.z)) > 1e-6;   // nach außen zeigend
+      // Muster auf Rundung: außen = liegt auf dem Außenprofil (rein geometrisch)
+      const outward = isRmp ? rmpAt.outer(x, y, z)
+        : (nx * (x - ctr.x) + ny * (y - ctr.y) + nz * (z - ctr.z)) > 1e-6;   // nach außen zeigend
       // Flächenkategorie bestimmen → texturieren nur, wenn diese Kategorie aktiv ist
       const a = Math.abs(ny);
       let on, fade = 1;
-      if (ny > 0.6) {                                     // waagerecht, oben → Dach
+      if (isRmp) {
+        // Muster auf Rundung: die ganze Außenhaut zählt als Wand, auch steile
+        // Schultern einer Kugelvase — nur wirklich flache Deckel/Böden nicht.
+        if (outward && a < 0.97) on = W.aussen;
+        else if (a < 0.6) on = W.innen;
+        else on = ny > 0 ? W.oben : W.unten;
+      } else if (ny > 0.6) {                              // waagerecht, oben → Dach
         on = W.oben;
         if (on && !(outward ? W.aussen : W.innen)) fade = _sstep(0.6, 0.78, a);          // → Wand-Grenze weich ausblenden
       } else if (ny < -0.6) {                             // waagerecht, unten → Boden
@@ -53252,8 +53497,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.132';
+const VOLME3D_VERSION = '1.18.133';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.133', date:'2026-10-09', changes:[
+    ['\u2B21','<b>Muster auf Rundung: Größen-Mix, und das Muster sitzt jetzt immer außen.</b> Neuer Regler <b>Größen-Mix</b>: Waben, Dreiecke, Organisch und Voronoi werden damit unregelmäßig, mit großen und kleinen Zellen gemischt über die ganze Vase verteilt. Die Waben bleiben dabei sechseckähnlich, die Dreiecke fast gleichseitig, nur eben in verschiedenen Größen. Mit 🎲 würfelst du eine neue Verteilung. Das klappt erhaben, vertieft und durchbrochen. <b>Behoben:</b> Bei Vasen aus dem Vasen-Generator und bei manchen STL-Dateien landete das Muster innen statt außen oder nur am Hals. Jetzt liegt es immer auf der Außenhaut, auch auf steilen Schultern einer Kugelvase, und die Innenwand bleibt glatt.']
+  ]},
   { version:'1.18.132', date:'2026-10-08', changes:[
     ['🏷️','<b>Beschriften: Der neue Text liegt frei neben dem Bauteil.</b> Wie früher rückt das Bauteil beim Erstellen zur Seite. Ein kurzer Name steckt so nicht unsichtbar im Bauteil, bevor man ihn draufzieht oder die Stelle anklickt.'],
   ]},
@@ -58970,7 +59218,7 @@ function _buildTexPanelContent(o) {
     : '';
   const isRmp = pat === 'rmp';
   const rp = _rmpParams(o);
-  const _tp = document.getElementById('tex-panel'); if (_tp) _tp._rmpKey = isRmp ? 'rmp:' + rp.pat + (rp.durch ? ':d' : '') : '-';
+  const _tp = document.getElementById('tex-panel'); if (_tp) _tp._rmpKey = isRmp ? 'rmp:' + rp.pat + (rp.durch ? ':d' : '') + (rp.mix > 0 ? ':m' : '') : '-';
   const rmpBtns = RMP_PATS.map(q =>
     `<button class="fp-toggle-btn${isRmp && rp.pat===q.id?' on':''}" data-rmp="${q.id}" style="flex:1 1 45%" title="${q.tip}" onclick="_rmpApply('${q.id}')">${q.lbl}</button>`).join('');
   const rmpExtra = !isRmp ? '' :
@@ -58982,8 +59230,9 @@ function _buildTexPanelContent(o) {
     (rp.durch ? '' : row('Höhe', 'tex-disp-amp', amp, "applyDisplacement('amp',this.value)", 'mm', 0.2, 5, 0.1)) +
     row('Zellgröße', 'rmp-cell', rp.cell, "_rmpSet('cell',this.value)", 'mm', 3, 40, 0.5) +
     row('Stegbreite', 'rmp-web', rp.web, "_rmpSet('web',this.value)", 'mm', 0.4, 8, 0.1) +
-    ((rp.pat === 'organisch' || rp.pat === 'voronoi')
-      ? row('Unruhe', 'rmp-jitter', rp.jitter, "_rmpSet('jitter',this.value)", '%', 0, 100, 5) +
+    row('Größen-Mix', 'rmp-mix', rp.mix || 0, "_rmpSet('mix',this.value)", '%', 0, 100, 5) +
+    ((rp.pat === 'organisch' || rp.pat === 'voronoi' || rp.mix > 0)
+      ? ((rp.pat === 'organisch' || rp.pat === 'voronoi') && !(rp.mix > 0) ? row('Unruhe', 'rmp-jitter', rp.jitter, "_rmpSet('jitter',this.value)", '%', 0, 100, 5) : '') +
         `<button class="fp-btn" style="width:100%;margin-bottom:6px;font-size:10.5px" onclick="_rmpShuffle()">🎲 Neue Verteilung</button>`
       : '') +
     row('Rand frei', 'rmp-rand', rp.rand, "_rmpSet('rand',this.value)", 'mm', 0, 30, 0.5);
@@ -59040,7 +59289,7 @@ function _syncTexPanel(o) {
   if (!o || (!o.isMesh && !(o.children && o.children.length))) { panel.style.display = 'none'; return; }
   const pat = o.userData.displacementPattern || 'keine';
   // Muster-auf-Rundung-Regler hängen vom Muster ab → bei Wechsel neu aufbauen
-  if (panel._rmpKey !== (pat === 'rmp' ? 'rmp:' + _rmpParams(o).pat + (_rmpParams(o).durch ? ':d' : '') : '-')) { _buildTexPanelContent(o); return; }
+  if (panel._rmpKey !== (pat === 'rmp' ? 'rmp:' + _rmpParams(o).pat + (_rmpParams(o).durch ? ':d' : '') + (_rmpParams(o).mix > 0 ? ':m' : '') : '-')) { _buildTexPanelContent(o); return; }
   panel.querySelectorAll('.fp-tex-thumb').forEach(el => {
     el.classList.toggle('fp-tex-on', el.dataset.pid === pat);
   });
@@ -59175,6 +59424,10 @@ function _rmpInset(poly, d) {
 // Alle Zellen (flach, CCW) eines Umlaufs zwischen Ylo und Yhi
 function _rmpCells(P, Ylo, Yhi) {
   const { c, N, J, pat } = P, h = c * 0.8660254037844386;
+  if (P.sites) {                                       // Größen-Mix
+    if (pat === 'dreieck' || pat === 'organisch') return P.sites.tris;
+    return P.sites.cells.map(q => q.map(p => [p.x, p.y]));
+  }
   const pt = (i, j) => {
     let x = (i + 0.5 * (j & 1)) * c, y = j * h;
     if (J) { let jj = j - J.jmin; jj = jj < 0 ? 0 : (jj >= J.rows ? J.rows - 1 : jj); const t = jj * N + (((i % N) + N) % N); x += J.jx[t]; y += J.jy[t]; }
@@ -59215,7 +59468,7 @@ async function _rmpDurch(o) {
   // Basis in Welt-Units (für Profil) + als Manifold-Körper
   const bp = base.attributes.position, wpos = new Float32Array(bp.count * 3), v = new THREE.Vector3(), bb = new THREE.Box3();
   for (let i = 0; i < bp.count; i++) { v.fromBufferAttribute(bp, i).applyMatrix4(M); wpos[i * 3] = v.x; wpos[i * 3 + 1] = v.y; wpos[i * 3 + 2] = v.z; bb.expandByPoint(v); }
-  const at = _rmpMapper(wpos, bb.getCenter(new THREE.Vector3()), _rmpParams(o));
+  const at = _rmpMapper(wpos, bb.getCenter(new THREE.Vector3()), _rmpParams(o), base.index ? base.index.array : null);
   if (!at) throw new Error('kein Profil');
   const P = at.prof, NB = P.NB;
   // Wandstärke je Höhenband: größter Radius UNTER der Außenwand = Innenwand
