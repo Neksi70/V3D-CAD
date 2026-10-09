@@ -1,5 +1,7 @@
 // Übung A (Box mit Schiebedeckel) komplett in V3D CAD bauen und als STL ablegen:
 // Box nach Folie 17 (Punkte 1–3, Griffkante nötig für erhabenen Namen) + Deckel mit erhabenem Namen.
+// Box steht hochkant zur Front (60 breit × 80 tief): Deckel wird von der Stirnseite (vorne) eingeschoben,
+// Nut läuft links, rechts und hinten am Kopfstück je 1 mm in die Wand.
 // NAME=Volker ERHABEN=1 (mm) GROESSE=12 (mm) ZIEL=~/Ablage/Grundkurs
 import { chromium } from '/home/v3da/node_modules/@playwright/test/index.mjs';
 import { spawn } from 'child_process';
@@ -28,21 +30,21 @@ try {
   });
   const eins = () => objects.length === 1 && !objects[0].userData.isHole;
   // 1: Hohlkörper
-  await pg.evaluate(() => { setShapeMode('solid'); const A = _k.box(80, 60, 35); setShapeMode('hole'); const B = _k.box(74, 54, 33);
+  await pg.evaluate(() => { setShapeMode('solid'); const A = _k.box(60, 80, 35); setShapeMode('hole'); const B = _k.box(54, 74, 33);
     selectObjs([A, B]); alignObjects('xcenter'); alignObjects('zcenter'); alignObjects('ymax'); setShapeMode('solid'); selectObjs(objects.slice()); subtractHoles(); });
   log('1 Hohlkörper:', await warte(eins));
   // 2: Nut
-  await pg.evaluate(() => { const A = objects[0]; _k.ebene(-5.4); setShapeMode('hole'); const C = _k.box(78, 56, 3.4);
+  await pg.evaluate(() => { const A = objects[0]; _k.ebene(-5.4); setShapeMode('hole'); const C = _k.box(56, 78, 3.4);
     selectObjs([A, C]); alignObjects('xcenter'); alignObjects('zmin'); resetWorkplane(); setShapeMode('solid'); selectObjs(objects.slice()); subtractHoles(); });
   log('2 Nut:', await warte(eins));
   // 3: Griffkante (sonst stößt der erhabene Name vorne am Steg an)
-  await pg.evaluate(() => { const A = objects[0]; _k.ebene(-2); setShapeMode('hole'); const D = _k.box(78, 5, 4);
+  await pg.evaluate(() => { const A = objects[0]; _k.ebene(-2); setShapeMode('hole'); const D = _k.box(56, 5, 4);
     selectObjs([A, D]); alignObjects('xcenter'); alignObjects('zmin'); resetWorkplane(); setShapeMode('solid'); selectObjs(objects.slice()); subtractHoles(); });
   log('3 Griffkante:', await warte(eins));
   const boxId = await pg.evaluate(() => { objects[0].userData.name = 'Box'; return objects[0].userData.id; });
 
-  // 4: Deckel 78×56×3,4 → Spielraum −0,2
-  const deckelId = await pg.evaluate(() => { setShapeMode('solid'); const L = _k.box(78, 56, 3.4); selectObjs([L]); _offsetApply(-0.2); L.userData.name = 'Deckel'; deselect(); return L.userData.id; });
+  // 4: Deckel 56×78×3,4 → Spielraum −0,2
+  const deckelId = await pg.evaluate(() => { setShapeMode('solid'); const L = _k.box(56, 78, 3.4); selectObjs([L]); _offsetApply(-0.2); L.userData.name = 'Deckel'; deselect(); return L.userData.id; });
   // Name: Text-Dialog „Auf Bauteil“, Größe, Erstellen → auf die Deckelmitte klicken
   await pg.evaluate(() => addTextShape()); await pg.waitForTimeout(400);
   await pg.fill('#text3d-input', NAME);
