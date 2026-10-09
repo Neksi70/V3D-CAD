@@ -110,6 +110,47 @@ const ui = await pg.evaluate(async () => {
 ok('Info zeigt Maße', /Kasten .* mm/.test(ui.info) && /12 Fächer/.test(ui.info), ui.info);
 ok('Warnung bei zu niedriger Höhe', ui.warn);
 ok('Erstellen legt ein Teil an', ui.n === 1 && /Bierkasten/.test(ui.name) && !ui.open, ui);
+
+// 7. Nachträglich bearbeiten (✏️ im Eigenschaften-Feld)
+const ed = await pg.evaluate(async () => {
+  const o = objects[objects.length - 1];
+  o.position.set(3, 0, -2); o.rotation.y = 0.5; selectObjs([o]); updateFP();
+  const btn = !!document.querySelector('button[onclick="_bkxEdit(getFirst())"]');
+  const n0 = objects.length, id0 = o.userData.id, w0 = getMeshBox(o).getSize(new THREE.Vector3()).length();
+  document.querySelector('button[onclick="_bkxEdit(getFirst())"]')?.click();
+  await new Promise(r => setTimeout(r, 300));
+  const loaded = _bkxP.reihen === o.userData.bierkastenParams.reihen && document.getElementById('bkx-go').textContent.includes('Übernehmen');
+  _bkxAnz(4, 5);
+  await _bkxCreate();
+  const o2 = objects.find(x => x.userData.id === id0);
+  const w1 = getMeshBox(o2).getSize(new THREE.Vector3()).length();
+  const res = { btn, loaded, n: objects.length - n0, same: o2 === o, pos: o2.position.toArray(), rotY: o2.rotation.y,
+    params: o2.userData.bierkastenParams.reihen + 'x' + o2.userData.bierkastenParams.spalten, grew: w1 > w0 * 1.1,
+    open: document.getElementById('bkx-modal').classList.contains('show') };
+  // Speichern/Laden behält die Einstellungen
+  const o3 = await buildObjectFromData(JSON.parse(JSON.stringify(objectToData(o2))));
+  res.geladen = o3.userData.bierkastenParams && o3.userData.bierkastenParams.spalten === 5 && o3.userData._bkxVerts === o3.geometry.attributes.position.count;
+  scene.remove(o3); objects.splice(objects.indexOf(o3), 1);
+  // Rückgängig → wieder 3×4
+  undo(); await new Promise(r => setTimeout(r, 300));
+  const o4 = objects.find(x => x.userData.id === id0);
+  res.undo = o4 && o4.userData.bierkastenParams.spalten === 4 && Math.abs(getMeshBox(o4).getSize(new THREE.Vector3()).length() - w0) < 0.01;
+  // verändertes Netz → Rückfrage
+  let asked = false; const c0 = window.confirm; window.confirm = () => { asked = true; return false; };
+  o4.userData._bkxVerts = 1; _bkxEdit(o4); window.confirm = c0;
+  res.asked = asked && !document.getElementById('bkx-modal').classList.contains('show');
+  // Neuer Kasten aus der Liste wieder „Erstellen“
+  _bkxOpen(); res.neuText = document.getElementById('bkx-go').textContent; _bkxClose();
+  return res;
+});
+ok('Eigenschaften-Feld zeigt „Im Generator bearbeiten“', ed.btn, ed);
+ok('Bearbeiten lädt die Einstellungen, Knopf heißt Übernehmen', ed.loaded);
+ok('Übernehmen ersetzt an Ort und Stelle (kein neues Teil, Lage bleibt)', ed.n === 0 && ed.same && ed.pos[0] === 3 && ed.pos[2] === -2 && Math.abs(ed.rotY - 0.5) < 1e-9 && !ed.open, ed);
+ok('neue Einstellungen wirken (4×5, größer)', ed.params === '4x5' && ed.grew, ed.params);
+ok('Speichern/Laden behält die Generator-Einstellungen', ed.geladen);
+ok('Rückgängig holt den alten Kasten zurück', ed.undo);
+ok('verändertes Netz: Rückfrage vor dem Bearbeiten', ed.asked);
+ok('aus der Generatorliste wieder „Erstellen“', /Erstellen/.test(ed.neuText), ed.neuText);
 ok('keine Seitenfehler', pageErrors.length === 0, pageErrors);
 await b.close();
 console.log(fails.length ? '\n' + fails.length + ' FEHLER' : '\nalles OK');
