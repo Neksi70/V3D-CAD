@@ -40,8 +40,9 @@ try {
     const stab = box(8, 100, 4);
     const spitze = box(8, 8, 4); selectObjs([spitze]); updateTFInputs(); document.getElementById('ry').value = 45; applyTF();
     const sb = _g.bb(schild), mx = (sb[0] + sb[3]) / 2;
-    setMin(stab, mx - 4, 0, sb[2] - 95);
-    const tb = _g.bb(spitze); setMin(spitze, mx - (tb[3] - tb[0]) / 2, 0, (sb[2] - 95) - (tb[5] - tb[2]) / 2);
+    // Stab an die UNTERKANTE der Schrift (+Z = zum Betrachter): Spitze nach unten → Text richtig herum lesbar
+    setMin(stab, mx - 4, 0, sb[5] - 5);
+    const tb = _g.bb(spitze); setMin(spitze, mx - (tb[3] - tb[0]) / 2, 0, (sb[5] + 95) - (tb[5] - tb[2]) / 2);
     let plattenFarbe = null; schild.traverse(n => { if (n.isMesh && !n.userData.isEdgeLines && !plattenFarbe) plattenFarbe = n.userData.color || ('#' + n.material.color.getHexString()); });
     for (const o of [stab, spitze]) { selectObjs([o]); setColor(plattenFarbe); }
     selectObjs([stab, spitze]); await unionSelected();
@@ -61,7 +62,7 @@ try {
   fs.writeFileSync(datei, Buffer.from(exp.b64, 'base64'));
   log('3MF:', JSON.stringify({ teile: exp.teile, farben: exp.farben, legende: exp.legende }), '→', datei);
 
-  await pg.evaluate(() => { selectObjs([]); try { setView('iso'); } catch (e) {} if (typeof zoomToFit === 'function') zoomToFit(); });
+  await pg.evaluate(() => { selectObjs([]); try { setView('top'); } catch (e) {} if (typeof zoomToFit === 'function') zoomToFit(); });
   await pg.mouse.move(700, 500);
   await pg.waitForTimeout(1200);
   // Anmelde-Overlay (nur fürs Speichern in der Cloud) fürs Vorschaubild ausblenden

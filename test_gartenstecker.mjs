@@ -62,8 +62,9 @@ try {
     const stab = box(8, 100, 4);
     const spitze = box(8, 8, 4); selectObjs([spitze]); updateTFInputs(); document.getElementById('ry').value = 45; applyTF();
     const sb = _g.bb(schild), mx = (sb[0] + sb[3]) / 2;
-    setMin(stab, mx - 4, 0, sb[2] - 95);
-    const tb = _g.bb(spitze); setMin(spitze, mx - (tb[3] - tb[0]) / 2, 0, (sb[2] - 95) - (tb[5] - tb[2]) / 2);
+    // Stab an die UNTERKANTE der Schrift (+Z = zum Betrachter): Spitze nach unten → Text richtig herum lesbar
+    setMin(stab, mx - 4, 0, sb[5] - 5);
+    const tb = _g.bb(spitze); setMin(spitze, mx - (tb[3] - tb[0]) / 2, 0, (sb[5] + 95) - (tb[5] - tb[2]) / 2);
     // Farbe der Platte übernehmen (wie Farbwahl im UI)
     let plattenFarbe = null; schild.traverse(n => { if (n.isMesh && !n.userData.isEdgeLines && !plattenFarbe) plattenFarbe = n.userData.color || ('#' + n.material.color.getHexString()); });
     const farbe = c => { for (const o of [stab, spitze]) { selectObjs([o]); if (typeof setColor === 'function') setColor(c); else { o.userData.color = c; o.material.color.set(c); } } };
