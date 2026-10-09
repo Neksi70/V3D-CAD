@@ -932,7 +932,7 @@ body.devmode .dev-only{display:flex!important}
 #tex-hdr{display:flex;align-items:center;justify-content:space-between;padding:9px 12px 8px;border-bottom:1px solid #eef0f6;font-weight:700;font-size:13px;color:#1a1a1a;border-radius:10px 10px 0 0;cursor:move;user-select:none}
 #tex-hdr-x{cursor:pointer;font-size:13px;line-height:1;color:#aaa;background:#f0f2f7;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background .15s;user-select:none}
 #tex-hdr-x:hover{background:#e2e6f0;color:#333}
-#tex-body{padding:8px 13px 12px}
+#tex-body{padding:8px 13px 12px;overflow-y:auto;overscroll-behavior:contain}
 /* Solid / Bohrung big icon buttons */
 .fp-mode-row{display:flex;gap:10px;padding:12px 14px 10px;border-bottom:1px solid #eef0f6}
 .fp-mode-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;padding:8px 4px 7px;border-radius:8px;border:2px solid transparent;transition:border-color .15s,background .15s;user-select:none}
@@ -53571,8 +53571,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.137';
+const VOLME3D_VERSION = '1.18.138';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.138', date:'2026-10-09', changes:[
+    ['⬡','<b>Textur-Fenster passt auf kleine Bildschirme.</b> Bisher lief das Fenster mit den Texturen unten aus dem Bild und ließ sich nicht verschieben oder scrollen. Jetzt endet es am Fensterrand und bekommt einen Schiebebalken; mit dem Mausrad kommt man bis zum letzten Knopf. Es öffnet sich auch nicht mehr halb unter der Werkzeugleiste.']
+  ]},
   { version:'1.18.137', date:'2026-10-09', changes:[
     ['🏷️','<b>Namensschild-Generator: Farben direkt im Fenster wählen.</b> Bei <i>Text auf Platte</i> gibt es jetzt zwei Farbfelder, <b>Platte</b> und <b>Text</b>. Die Vorschau zeigt die Farben sofort. Vorbelegt ist die aktive Farbe für die Platte und eine gut lesbare Kontrastfarbe für den Text. Ändert man die Platte, zieht der Text mit, bis man ihn selbst wählt. Bei <i>Freistehend</i> gibt es ein Farbfeld für das ganze Schild. Beim 3MF-Export werden daraus wie gewohnt zwei Filamente.']
   ]},
@@ -58539,6 +58542,7 @@ function _makeDraggable(panel, handle) {
       panel.style.left = (ox + ev.clientX - sx) + 'px';
       panel.style.top  = (oy + ev.clientY - sy) + 'px';
       if (panel.id === 'fp') _fpFitHeight();
+      else if (panel.id === 'tex-panel') _texFitHeight();
     };
     const onUp = () => {
       panel._userMoved = true;
@@ -59371,6 +59375,7 @@ function _buildTexPanelContent(o) {
     `</div>` +
     `<div class="fp-sep"></div>` +
     `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="exportToBumpMesh()">⬡ BumpMesh.com</button></div>`;
+  _texFitHeight();
 }
 
 function _syncTexPanel(o) {
@@ -59409,9 +59414,12 @@ function toggleTexPanel() {
   const o = getFirst(); if (!o || (!o.isMesh && !(o.children && o.children.length))) return;   // Mesh ODER Gruppe/Union
   if (panel.style.display === 'none' || !panel.style.display) {
     if (!panel._userMoved) {
-      const fp = document.getElementById('fp');
-      const left = fp ? (parseInt(fp.style.left || 60) + 250) : 320;
-      const top  = fp ? (parseInt(fp.style.top  || 120))      : 120;
+      // Bildschirm-Lage des Eigenschaften-Felds nehmen: dessen style.top ist relativ zum
+      // Container unter der Werkzeugleiste, das Textur-Fenster aber fixed → landete unter der Leiste
+      const fp = document.getElementById('fp'), fr = fp && fp.offsetParent ? fp.getBoundingClientRect() : null;
+      const tb = document.getElementById('tb'), floor = (tb ? tb.getBoundingClientRect().bottom : 0) + 6;
+      const left = fr ? fr.left + 250 : 320;
+      const top  = Math.max(floor, fr ? fr.top : 120);
       panel.style.left = left + 'px';
       panel.style.top  = top  + 'px';
     }
@@ -59735,19 +59743,24 @@ function updateFP() {
 // Feld hatte keine Höhengrenze — bei der Box (viele Zeilen) oder kleinem Fenster
 // lief es unten aus dem Bild, ohne Scrollbalken. Jetzt endet der Inhalt am
 // Fensterrand und scrollt; Kopf und Solid/Bohrung bleiben stehen.
-function _fpFitHeight() {
-  const b = document.getElementById('fp-body'); if (!b || !b.offsetParent) return;
+function _fpFitHeight() { _panelFitHeight('fp', 'fp-body'); }
+// Textur-Fenster: auf kleinen Monitoren lief die Liste unten aus dem Bild (9.10.)
+function _texFitHeight() { _panelFitHeight('tex-panel', 'tex-body'); }
+function _panelFitHeight(panelId, bodyId) {
+  const b = document.getElementById(bodyId); if (!b || !b.offsetParent) return;
   // kleines Fenster: Feld lieber nach oben rücken, als den Inhalt auf ein Guckloch zu quetschen
-  const fp = document.getElementById('fp'), want = Math.min(b.scrollHeight, 260);
+  const fp = document.getElementById(panelId), want = Math.min(b.scrollHeight, 260);
   const room = innerHeight - b.getBoundingClientRect().top - 10;
   if (room < want && !fp._userMoved) {
-    const top = parseInt(fp.style.top || 120), up = Math.min(want - room, Math.max(0, top - 8));
+    // nicht unter die Werkzeugleiste schieben — die liegt darüber und schluckt Klicks/Mausrad
+    const tb = document.getElementById('tb'), floor = (tb ? tb.getBoundingClientRect().bottom : 0) + 6;
+    const top = parseInt(fp.style.top || 120), up = Math.min(want - room, Math.max(0, fp.getBoundingClientRect().top - floor));
     if (up > 0) fp.style.top = (top - up) + 'px';
   }
   const mh = Math.max(120, Math.floor(innerHeight - b.getBoundingClientRect().top - 10)) + 'px';
   if (b.style.maxHeight !== mh) b.style.maxHeight = mh;
 }
-window.addEventListener('resize', _fpFitHeight);
+window.addEventListener('resize', () => { _fpFitHeight(); _texFitHeight(); });
 
 
 function hideFP() {
