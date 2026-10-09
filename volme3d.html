@@ -3406,6 +3406,10 @@ const firebaseConfig = {
         <label id="name-row-baseweb" style="display:none;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:2px" title="Dünner Steg an der Grundlinie, der alle Buchstaben sicher zu EINEM druckbaren Stück verbindet. Nur ohne Höhenversatz nötig — beim Versatz greifen die Buchstaben von selbst ineinander."><input type="checkbox" id="name-baseweb" onchange="_namePreview()"> Verbindungssteg unten (nur falls Buchstaben sich lösen)</label>
         <label id="name-row-multicol" style="display:none;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:2px" title="Jeder Buchstabe wird ein eigenes, einzeln färbbares Teil in einer Gruppe. Die Buchstaben überlappen weiter satt und drucken als ein Stück — im Slicer einfach jedem Teil seine Farbe zuweisen."><input type="checkbox" id="name-multicol" onchange="_npColorsRebuild();_namePreview()"> Mehrfarbig — Buchstaben einzeln färben</label>
         <div id="name-colors" style="display:none;flex-wrap:wrap;gap:6px;padding:2px 0"></div>
+        <div class="vrow" id="name-row-col"><label title="Farben des Schilds. Beim 2-farbigen Druck werden daraus im 3MF zwei Filamente.">Farben</label>
+          <span style="display:flex;align-items:center;gap:5px;font-size:12px"><span id="name-col-plate-label">Platte</span><input type="color" id="name-col-plate" oninput="_npColPlateChanged()" style="width:34px;height:26px;border:1px solid var(--border);border-radius:6px;padding:1px;background:#fff;cursor:pointer"></span>
+          <span id="name-col-text-wrap" style="display:flex;align-items:center;gap:5px;font-size:12px;margin-left:10px">Text<input type="color" id="name-col-text" oninput="_npColTextManual=true;_namePreview()" style="width:34px;height:26px;border:1px solid var(--border);border-radius:6px;padding:1px;background:#fff;cursor:pointer"></span>
+        </div>
         <div class="vrow" id="name-row-margin"><label title="Rand zwischen Text und Plattenkante">Rand</label> <input type="range" id="name-margin" min="1" max="15" value="4" step="0.5" oninput="document.getElementById('name-marginv').textContent=this.value;_namePreview()"><span class="vv" id="name-marginv">4</span><span class="vu">mm</span></div>
         <div class="vrow" id="name-row-round"><label title="Abrundung der vier Plattenecken (0 = scharfe Ecken)">Eckenradius</label> <input type="range" id="name-round" min="0" max="20" value="3" step="0.5" oninput="document.getElementById('name-roundv').textContent=this.value;_namePreview()"><span class="vv" id="name-roundv">3</span><span class="vu">mm</span></div>
         <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;margin-top:2px"><input type="checkbox" id="name-eyelet" checked onchange="_namePreview()"> Öse für Schlüsselanhänger</label>
@@ -48667,7 +48671,22 @@ function _createQR(){
 // ===== END QR-CODE-GENERATOR =====
 
 // ===== NAMENSSCHILD-GENERATOR (Text auf Platte mit Öse) =====
-function _openNameModal(){ document.getElementById('name-modal').classList.add('show'); _npStyleChange(); }
+function _openNameModal(){ _npColInit(); document.getElementById('name-modal').classList.add('show'); _npStyleChange(); }
+// Farbwahl im Generator: Platte startet mit der aktiven Farbe, Text mit der Kontrastfarbe.
+// Solange der Text nicht von Hand gewählt wurde, zieht er beim Ändern der Platte mit.
+let _npColTextManual = false;
+function _npColInit(){
+  const c = (typeof currentColor!=='undefined' && currentColor) ? currentColor : '#2b7cff';
+  document.getElementById('name-col-plate').value = c;
+  document.getElementById('name-col-text').value = _nameContrast(c);
+  _npColTextManual = false;
+}
+function _npColPlateChanged(){
+  if(!_npColTextManual) document.getElementById('name-col-text').value = _nameContrast(document.getElementById('name-col-plate').value);
+  _namePreview();
+}
+function _npColPlate(){ const e=document.getElementById('name-col-plate'); return (e && e.value) || currentColor; }
+function _npColText(){ const e=document.getElementById('name-col-text'); return (e && e.value) || _nameContrast(_npColPlate()); }
 function _closeNameModal(){ document.getElementById('name-modal').classList.remove('show'); }
 
 // Plattenoptionen aus dem UI lesen. cr = Eckenradius in mm (roh), wird in der Geometrie
@@ -49291,6 +49310,7 @@ function _npStyleChange(){
   document.getElementById('name-row-round2').style.display  = free ? '' : 'none';
   document.getElementById('name-row-baseweb').style.display = free ? 'flex' : 'none';
   document.getElementById('name-row-multicol').style.display= free ? 'flex' : 'none';
+  _npColRowUpdate();
   document.getElementById('name-row-dims').style.display    = free ? '' : 'none';
   document.getElementById('name-plate-label').textContent   = free ? 'Dicke' : 'Platte';
   if(free){
@@ -49318,7 +49338,15 @@ function _npLetterChars(){
   for(const ch of document.getElementById('name-text').value.trim()){ if(ch !== ' ') out.push(ch); }
   return out;
 }
+function _npColRowUpdate(){
+  const free  = document.getElementById('name-style').value === 'free';
+  const multi = document.getElementById('name-multicol').checked;
+  document.getElementById('name-row-col').style.display = (free && multi) ? 'none' : '';
+  document.getElementById('name-col-text-wrap').style.display = free ? 'none' : 'flex';
+  document.getElementById('name-col-plate-label').textContent = free ? 'Schild' : 'Platte';
+}
 function _npColorsRebuild(){
+  _npColRowUpdate();
   const free  = document.getElementById('name-style').value === 'free';
   const multi = document.getElementById('name-multicol').checked;
   const box = document.getElementById('name-colors');
@@ -49548,7 +49576,7 @@ function _nameplateBuildFree(font, txt, sizeMM, thickMM, overlapPct, baseWeb, st
   const geo = _freeMeshGeo(font, txt, sizeMM, thickMM, overlapPct, baseWeb, staggerPct, slantDeg, roundPct, opt);
   if(!geo){ notify('Text ohne Kontur','w'); return; }
   saveUndo();
-  const col = currentColor;
+  const col = _npColPlate();
   const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color:new THREE.Color(col), roughness:0.55, metalness:0, side:THREE.DoubleSide}));
   mesh.castShadow=true; mesh.receiveShadow=true;
   typeCounts['nameplate'] = (typeCounts['nameplate']||0) + 1;
@@ -49581,8 +49609,8 @@ function _nameplateBuild(font, txt, sizeMM, raiseMM, plateMM, marginMM, opt){
   const plateGeo = _nameplateGeo(baseWU, baseHU, plateU, opt); plateGeo.computeVertexNormals();
 
   saveUndo();
-  const colPlate = currentColor;
-  const colText  = _nameContrast(colPlate);
+  const colPlate = _npColPlate();
+  const colText  = _npColText();
   const plateMesh = new THREE.Mesh(plateGeo, new THREE.MeshStandardMaterial({color:new THREE.Color(colPlate), roughness:0.7, metalness:0, side:THREE.DoubleSide}));
   plateMesh.castShadow=true; plateMesh.receiveShadow=true;
   plateMesh.userData={id:idCtr++, type:'custom', shapeType:'custom', name:'Platte', color:colPlate, isHole:false, fillet:0, chamfer:0};
@@ -49632,12 +49660,12 @@ function _namePreview(){
   const pw=plateWmm*scale, ph=plateHmm*scale, ox=(cv.width-pw)/2, oy=(cv.height-ph)/2;
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height);
   const crPx=Math.min(crMM*scale, Math.min(pw,ph)/2);
-  ctx.fillStyle='#d8d8d8'; ctx.strokeStyle='#aaa'; ctx.lineWidth=1.5;
+  ctx.fillStyle=_npColPlate(); ctx.strokeStyle='#aaa'; ctx.lineWidth=1.5;
   ctx.beginPath();
   if(ctx.roundRect) ctx.roundRect(ox,oy,pw,ph,crPx); else ctx.rect(ox,oy,pw,ph);
   ctx.fill(); ctx.stroke();
   // Name mittig
-  ctx.fillStyle='#222'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle=_npColText(); ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.font = 'bold ' + Math.max(8, textHmm*scale) + 'px sans-serif';
   ctx.fillText(txt, cv.width/2, cv.height/2);
   // Öse-Loch andeuten
@@ -49652,7 +49680,7 @@ function _namePreview(){
     ctx.beginPath(); ctx.arc(hx,hz,rEye,0,Math.PI*2); ctx.fill(); ctx.stroke();
   }
   const info=document.getElementById('name-info');
-  if(info) info.textContent='Platte ≈ '+Math.round(plateWmm)+' × '+Math.round(plateHmm)+' mm · Platte = aktive Farbe, Text in Kontrastfarbe (2-farbig drucken).';
+  if(info) info.textContent='Platte ≈ '+Math.round(plateWmm)+' × '+Math.round(plateHmm)+' mm · Platte und Text getrennt gefärbt (2-farbig drucken).';
 }
 
 // ECHTE 3D-Vorschau für die freistehende Variante: baut dieselbe Geometrie wie beim
@@ -49683,7 +49711,7 @@ function _namePreviewFree(ctx, cv, txt, sizeMM, eyeOn, opt){
         }
       } else {
         const geo=_freeMeshGeo(font, txt, sizeMM, thickMM, overlapPct, baseWeb, staggerPct, slantDeg, roundPct, opt);
-        if(geo) items=[{geo, color:(typeof currentColor!=='undefined')?currentColor:'#2b7cff'}];
+        if(geo) items=[{geo, color:_npColPlate()}];
       }
     }catch(e){ items=null; }
     if(items){
@@ -53543,8 +53571,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.136';
+const VOLME3D_VERSION = '1.18.137';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.137', date:'2026-10-09', changes:[
+    ['🏷️','<b>Namensschild-Generator: Farben direkt im Fenster wählen.</b> Bei <i>Text auf Platte</i> gibt es jetzt zwei Farbfelder, <b>Platte</b> und <b>Text</b>. Die Vorschau zeigt die Farben sofort. Vorbelegt ist die aktive Farbe für die Platte und eine gut lesbare Kontrastfarbe für den Text. Ändert man die Platte, zieht der Text mit, bis man ihn selbst wählt. Bei <i>Freistehend</i> gibt es ein Farbfeld für das ganze Schild. Beim 3MF-Export werden daraus wie gewohnt zwei Filamente.']
+  ]},
   { version:'1.18.136', date:'2026-10-09', changes:[
     ['↻','<b>90°-Knöpfe lassen das Teil auf der Platte.</b> Wer im Eigenschaften-Reiter X− oder Y− klickte, hatte z. B. die Box aus der Galerie danach halb unter der Druckplatte, erst die Gegenrichtung holte sie zurück. Jetzt bleibt ein aufliegendes Teil nach jeder 90°-Drehung auf der Platte, wie beim Drehen und Kippen. Ein bewusst angehobenes Teil behält seine Höhe (danke Otmar).'],
     ['📜','<b>Das Eigenschaften-Feld links lässt sich scrollen.</b> Bei Teilen mit vielen Einstellungen oder in einem kleinen Fenster lief es bisher unten aus dem Bild, und die unteren Knöpfe waren nicht zu erreichen. Jetzt endet es am Fensterrand und scrollt mit dem Mausrad. Kopf und Solid/Bohrung bleiben dabei stehen (danke Otmar).'],
