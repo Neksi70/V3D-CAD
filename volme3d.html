@@ -950,7 +950,7 @@ body.devmode .dev-only{display:flex!important}
 #fp-props-hdr-lbl{font-size:10.5px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:#888}
 #fp-props-hdr-arr{font-size:11px;color:#aaa;transition:transform .18s}
 #fp-props-hdr-arr.collapsed{transform:rotate(-90deg)}
-#fp-body{padding:4px 13px 12px}
+#fp-body{padding:4px 13px 12px;overflow-y:auto;overscroll-behavior:contain}
 #fp-body.fp-collapsed{display:none}
 /* Property rows with sliders */
 .fp-row{display:flex;flex-direction:column;margin-bottom:10px}
@@ -26216,10 +26216,19 @@ function _rotStepWorld(o, axis, angle) {
   o.updateMatrixWorld(true);
 }
 
+// Otmar 9.10.: X−90° an der Box aus der Galerie → halb unter der Druckplatte.
+// Gedreht wird um die Körpermitte; ein flaches, tiefes Teil ragt dann nach unten.
+// Was vorher auf der Platte lag (oder jetzt darunter steckt), kommt wieder darauf;
+// ein bewusst angehobenes Teil behält seine Höhe.
 function rotate90(axis, dir) {
   if (!selectedObjs.length) { notify('Objekt wählen', 'w'); return; }
   saveUndo();
-  selectedObjs.forEach(o => _rotStepWorld(o, axis, dir * Math.PI / 2));
+  selectedObjs.forEach(o => {
+    const lag = Math.abs(getMeshBox(o).min.y) < 0.01;
+    _rotStepWorld(o, axis, dir * Math.PI / 2);
+    const y0 = getMeshBox(o).min.y;
+    if (lag || y0 < 0) { o.position.y -= y0; o.updateMatrixWorld(true); }
+  });
   updateTFInputs();
 }
 
@@ -53534,8 +53543,13 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.135';
+const VOLME3D_VERSION = '1.18.136';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.136', date:'2026-10-09', changes:[
+    ['↻','<b>90°-Knöpfe lassen das Teil auf der Platte.</b> Wer im Eigenschaften-Reiter X− oder Y− klickte, hatte z. B. die Box aus der Galerie danach halb unter der Druckplatte, erst die Gegenrichtung holte sie zurück. Jetzt bleibt ein aufliegendes Teil nach jeder 90°-Drehung auf der Platte, wie beim Drehen und Kippen. Ein bewusst angehobenes Teil behält seine Höhe (danke Otmar).'],
+    ['📜','<b>Das Eigenschaften-Feld links lässt sich scrollen.</b> Bei Teilen mit vielen Einstellungen oder in einem kleinen Fenster lief es bisher unten aus dem Bild, und die unteren Knöpfe waren nicht zu erreichen. Jetzt endet es am Fensterrand und scrollt mit dem Mausrad. Kopf und Solid/Bohrung bleiben dabei stehen (danke Otmar).'],
+    ['⬤','<b>Gehäuse/Box: „Alles abrunden“ direkt im Eigenschaften-Feld.</b> Damit bekommen alle Außenkanten der Box einen Radius. Bei 2 mm Wand am besten höchstens 0,8 mm wählen. Danach ist die Box ein festes Teil, Breite und Höhe lassen sich nicht mehr über die Generator-Felder ändern. Also erst die Maße einstellen, dann abrunden.'],
+  ]},
   { version:'1.18.135', date:'2026-10-09', changes:[
     ['↕','<b>Achsen heißen jetzt überall gleich: X = Breite, Y = Tiefe, Z = Höhe.</b> Wer ein Teil am grünen Pfeil nach unten zog, las bisher „Y“ an der Maus, obwohl die Höhe sonst überall Z heißt, wie im Slicer. Die Anzeige sagt jetzt z. B. <i>Z · Höhe: −5,4 mm</i>. Auch Position, Drehung und die 90°-Knöpfe im Eigenschaften-Reiter sind entsprechend beschriftet.'],
   ]},
@@ -58493,6 +58507,7 @@ function _makeDraggable(panel, handle) {
     const onMove = ev => {
       panel.style.left = (ox + ev.clientX - sx) + 'px';
       panel.style.top  = (oy + ev.clientY - sy) + 'px';
+      if (panel.id === 'fp') _fpFitHeight();
     };
     const onUp = () => {
       panel._userMoved = true;
@@ -59035,7 +59050,8 @@ function _fpBuildRows(type, o) {
              '<div class="fp-sep"></div>' +
              `<div class="fp-lbl" style="display:block;margin-bottom:5px">Schraubdome</div>` +
              `<div style="display:flex;gap:4px;margin-bottom:6px">${bb(true,'Mit Domen')}${bb(false,'Ohne')}</div>` +
-             (eb ? `<div style="display:flex;gap:4px">${zb('M3')}${zb('M4')}</div>` : '');
+             (eb ? `<div style="display:flex;gap:4px">${zb('M3')}${zb('M4')}</div>` : '') +
+             '<div class="fp-sep"></div>' + roundBtn;   // Otmar 9.10.: Kanten der Box brechen
     }
     case 'sketch': {
       const skMax = Math.round(Math.min(w, d, h) / 2 * 10) / 10;   // Radius/Fase ≤ halbe kleinste Ausdehnung
@@ -59230,6 +59246,7 @@ function _fpPositionPanel() {
   if (fp._userMoved) return;
   fp.style.left = '60px';
   fp.style.top  = '120px';
+  _fpFitHeight();
 }
 
 // ─── Texture Panel ────────────────────────────────────────────────────
@@ -59683,6 +59700,24 @@ function updateFP() {
   _fpPositionPanel();
 }
 
+// Otmar 9.10.: „Das Eigenschaften-Menü links kann ich nicht runterschieben." Das
+// Feld hatte keine Höhengrenze — bei der Box (viele Zeilen) oder kleinem Fenster
+// lief es unten aus dem Bild, ohne Scrollbalken. Jetzt endet der Inhalt am
+// Fensterrand und scrollt; Kopf und Solid/Bohrung bleiben stehen.
+function _fpFitHeight() {
+  const b = document.getElementById('fp-body'); if (!b || !b.offsetParent) return;
+  // kleines Fenster: Feld lieber nach oben rücken, als den Inhalt auf ein Guckloch zu quetschen
+  const fp = document.getElementById('fp'), want = Math.min(b.scrollHeight, 260);
+  const room = innerHeight - b.getBoundingClientRect().top - 10;
+  if (room < want && !fp._userMoved) {
+    const top = parseInt(fp.style.top || 120), up = Math.min(want - room, Math.max(0, top - 8));
+    if (up > 0) fp.style.top = (top - up) + 'px';
+  }
+  const mh = Math.max(120, Math.floor(innerHeight - b.getBoundingClientRect().top - 10)) + 'px';
+  if (b.style.maxHeight !== mh) b.style.maxHeight = mh;
+}
+window.addEventListener('resize', _fpFitHeight);
+
 
 function hideFP() {
   const fp = document.getElementById('fp'); if (!fp) return;
@@ -59703,6 +59738,7 @@ function fpToggleCollapse() {
   if (modeRow) modeRow.style.display = mini ? 'none' : '';
   if (propsHdr) propsHdr.style.display = mini ? 'none' : '';
   document.getElementById('fp-hdr-x').innerHTML = mini ? '&#9662;' : '&#9652;';
+  _fpFitHeight();
 }
 
 function fpToggleProps() {
