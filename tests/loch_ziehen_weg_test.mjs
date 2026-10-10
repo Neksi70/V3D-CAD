@@ -61,6 +61,27 @@ try {
   const v1 = await vol();
   ok(v0 - v1 > 50, `Loch geschnitten: −${(v0 - v1).toFixed(0)} mm³`);
   ok(!(await p.$('#sk-hole-tip')), 'Hinweis nach dem Loch weg');
+  // 2. Runde getippt: „10" + Enter = Ø 10 mm (Auto-Select fraß die erste Ziffer → „0"),
+  // nach unten ziehen + „8" = 8 mm tiefes Loch (getippte Zahl war immer positiv → „anfügen")
+  await p.evaluate(() => selectObjs([]));
+  await p.click('#tool-dd-btn'); await p.waitForTimeout(200);
+  await p.click('#tool-dd-list .shp:has-text("Loch ziehen")'); await p.waitForTimeout(800);
+  const t2 = await scr(1, 2, 1); await p.mouse.click(t2.x, t2.y); await p.waitForTimeout(400);
+  const m2 = await scr(1, 2, 1); await p.mouse.click(m2.x, m2.y); await p.waitForTimeout(200);
+  await p.keyboard.press('1'); await p.waitForTimeout(60); await p.keyboard.press('0'); await p.waitForTimeout(60); await p.keyboard.press('Enter'); await p.waitForTimeout(300);
+  const st4 = await p.evaluate(() => ({ tool: _sk.tool, r: _sk.ents[0] && _sk.ents[0].r }));
+  ok(st4.tool === 'pull' && Math.abs(st4.r - 0.5) < 1e-6, `„10" getippt → Kreis Ø ${st4.r ? (st4.r * 20).toFixed(1) : '–'} mm`);
+  const g1 = await p.evaluate(() => objects[0].geometry.uuid), v2a = await vol();
+  await p.mouse.move(m2.x, m2.y); await p.mouse.down();
+  for (let i = 1; i <= 12; i++) { await p.mouse.move(m2.x, m2.y + i * 6); await p.waitForTimeout(30); }
+  await p.keyboard.press('8'); await p.waitForTimeout(100);
+  const lb2 = await p.evaluate(() => ({ op: _skPull.op, h: _skPull.h, l: _skPull.label && _skPull.label.textContent }));
+  ok(lb2.op === 'cut' && Math.abs(lb2.h + 0.8) < 1e-6, 'nach unten + „8" = 8 mm tief: ' + lb2.l);
+  await p.mouse.up();
+  await p.waitForFunction((g) => objects[0].geometry.uuid !== g && !_sk.hole, g1, { timeout: 40000 }).catch(() => {});
+  await p.waitForTimeout(800);
+  const dv = v2a - await vol(), soll = Math.PI * 25 * 8;
+  ok(Math.abs(dv - soll) < soll * 0.08, `getipptes Loch: −${dv.toFixed(0)} mm³ (soll ≈ ${soll.toFixed(0)})`);
   ok(errs.length === 0, 'keine Seitenfehler ' + errs.slice(0, 2).join(' | '));
   await p.screenshot({ path: '/tmp/loch_weg.png' });
 } catch (e) { console.error(e); fail++; } finally { await b.close(); srv.kill(); }

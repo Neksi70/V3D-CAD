@@ -10511,7 +10511,11 @@ function _skHoleTip(html){
     el.style.cssText = 'position:fixed;left:50%;top:150px;transform:translateX(-50%);z-index:350;background:#1f2937;color:#fff;padding:9px 14px 9px 16px;border-radius:9px;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.25);display:flex;gap:12px;align-items:center;max-width:min(640px,92vw)';
     document.body.appendChild(el);
   }
-  el.innerHTML = '<span>🕳️ ' + html + '</span><span style="cursor:pointer;opacity:.7;font-size:15px" title="Hinweis schließen" onclick="_skHoleTip(null)">✕</span>';
+  // Howto-Video (Ralf: „brauch mal ein Video"), nur wenn es ausgeliefert ist
+  let vid = false; try { vid = _howtoListe.some(v => v.id === 'loch-ziehen'); } catch (_) {}
+  el.innerHTML = '<span>🕳️ ' + html + '</span>' +
+    (vid ? '<span style="cursor:pointer;white-space:nowrap;font-size:11px;font-weight:700;color:#fdba74;border:1px solid #fdba74;border-radius:8px;padding:2px 8px" title="Kurzes Video: so ziehst du ein Loch" onclick="_howtoOpen(\'loch-ziehen\')">? Video</span>' : '') +
+    '<span style="cursor:pointer;opacity:.7;font-size:15px" title="Hinweis schließen" onclick="_skHoleTip(null)">✕</span>';
 }
 function _skSnap(p){
   const tol = Math.max(0.06, sph.r*0.012);
@@ -11968,7 +11972,7 @@ function _skPullStart(p){
   if (!pick){ notify('In eine geschlossene Fläche klicken und hochziehen','w'); return; }
   const c=_loopCentroid(pick.outer);
   _skPull.editing=true; _skPull.dragging=true; _skPull.shape=pick;
-  _skPull.cu=c.u; _skPull.cv=c.v; _skPull.h=0; _skPull.grabOff=null; _skPull.typed=''; _skPull.through=false; _skPull.op='new'; _skPull._opSign=null;
+  _skPull.cu=c.u; _skPull.cv=c.v; _skPull.h=0; _skPull.grabOff=null; _skPull.typed=''; _skPull.typedSign=1; _skPull.through=false; _skPull.op='new'; _skPull._opSign=null;
   _skPull.savedSk={ theta:sph.theta, phi:sph.phi, r:sph.r };
   // Szenen-Objekte
   _skPull.group=new THREE.Group(); _skPull.group.renderOrder=1001;
@@ -12007,7 +12011,7 @@ function _skPullUp(e){
 // Getippte Zahl übernehmen; Vorzeichen folgt „−" bzw. der Zug-Richtung
 function _skPullTyped(){
   const v=parseFloat(_skPull.typed); if (!(Math.abs(v)>0)) return null;
-  return v/10;
+  return (_skPull.typedSign||1)*v/10;
 }
 function _skPullKey(e){
   if (!_skPull.editing) return;
@@ -12024,6 +12028,9 @@ function _skPullKey(e){
   if (/^[0-9]$/.test(e.key) || e.key==='.' || e.key===',' || e.key==='-'){
     e.preventDefault(); e.stopPropagation();
     _skPull.through=false;
+    // Richtung beim ersten Zeichen aus dem Zug übernehmen: nach unten gezogen +
+    // „8" = 8 mm tief (Loch), nicht 8 mm hoch (war: immer „anfügen")
+    if (_skPull.typed==='' && Math.abs(_skPull.h) > 1e-4) _skPull.typedSign = Math.sign(_skPull.h);
     if (e.key==='-'){ _skPull.typed=_skPull.typed.startsWith('-')?_skPull.typed.slice(1):'-'+_skPull.typed; }
     else { const ch=e.key===','?'.':e.key; if (ch==='.' && _skPull.typed.includes('.')) return; _skPull.typed+=ch; }
     const v=_skPullTyped(); _skPullSetHeight(v!==null?v:0);
@@ -30859,6 +30866,9 @@ window.addEventListener('keydown', e => {
     if (/^[0-9.,]$/.test(k) && _skDimSpec()) {
       const el = document.getElementById('sk-dim-1');
       el.focus(); el.value = (k === ',' ? '.' : k); _sk.dimLock = true;
+      // Auto-Select (focusin → setTimeout select) markiert sonst die erste Ziffer,
+      // die zweite überschreibt sie: „10" wurde zu „0". Cursor danach ans Ende.
+      setTimeout(() => { try { el.setSelectionRange(el.value.length, el.value.length); } catch (_) {} }, 0);
       _skRender(); _skDimUpdate(); e.preventDefault(); return;
     }
     if (k === 'Enter') { _skFinishCurrent(); return; }
