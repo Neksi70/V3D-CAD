@@ -130,7 +130,7 @@ const ed = await pg.evaluate(async () => {
   // Speichern/Laden behält die Einstellungen
   const o3 = await buildObjectFromData(JSON.parse(JSON.stringify(objectToData(o2))));
   res.geladen = o3.userData.bierkastenParams && o3.userData.bierkastenParams.spalten === 5 && o3.userData._bkxVerts === o3.geometry.attributes.position.count;
-  scene.remove(o3); objects.splice(objects.indexOf(o3), 1);
+  scene.remove(o3); if (objects.includes(o3)) objects.splice(objects.indexOf(o3), 1);
   // Rückgängig → wieder 3×4
   undo(); await new Promise(r => setTimeout(r, 300));
   const o4 = objects.find(x => x.userData.id === id0);
