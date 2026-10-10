@@ -1377,6 +1377,7 @@ const firebaseConfig = {
         <button class="btn pri spl" onclick="toggleStlMenu(event)" title="An Slicer senden">▾</button>
         <div id="stl-menu">
           <div class="sli-item" onclick="document.getElementById('stl-menu')?.classList.remove('show');_dvOpen()" title="Drucker, Filament, Schichthöhe, Wände, Füllung, Stützen wählen — prüft, ob es passt, und gibt das Modell mit genau diesen Einstellungen an den Slicer (oder als Projekt-3MF für Bambu Studio, Orca, Anycubic, Snapmaker, Elegoo)">🖨 Druck-Vorschau &amp; Slicer-Einstellungen…</div>
+          <div class="sli-item" onclick="document.getElementById('stl-menu')?.classList.remove('show');_fotoOpen()" title="Foto der aktuellen Ansicht rendern (PNG, bis 4K, auch transparenter Hintergrund)">📷 Foto erstellen…</div>
           <div class="sli-item" onclick="_openInV3DSlicer()" title="Modell im V3D Web-Slicer öffnen — dort slicen und mit Druckcode direkt auf der V3D-Drucker-Flotte drucken">🖨 Im V3D Slicer öffnen</div>
           <div class="sli-sep"></div>
           <div id="send-slicer-sec"></div>
@@ -2133,6 +2134,15 @@ const firebaseConfig = {
           <div class="toggle-knob"></div>
         </div>
       </div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:7px" title="Aussehen nur für die Anzeige und 📷 Fotos — Farbe und Export bleiben gleich">
+        <span style="font-size:10px;font-weight:700;color:var(--dim)">Aussehen</span>
+        <select id="look-sel" style="flex:1;font-size:11px" onchange="setLook(this.value)" disabled>
+          <option value="standard">Standard</option><option value="matt">Kunststoff matt (PLA)</option><option value="glanz">Kunststoff glänzend</option>
+          <option value="seide">Seidenglanz (Silk-PLA)</option><option value="metall">Metall gebürstet</option><option value="chrom">Chrom / poliert</option>
+          <option value="keramik">Keramik</option><option value="gummi">Gummi (TPU)</option><option value="glas">Glas / transparent</option>
+        </select>
+      </div>
+      <button class="btn" style="width:100%;margin-top:7px;justify-content:center" onclick="_fotoOpen()" title="Foto der aktuellen Ansicht rendern — Licht-Stimmung, Hintergrund (auch transparent), weiche Schatten, bis 4K — für Kunden, Shop und Werbung">📷 Foto erstellen</button>
     </div>
   </div>
 
@@ -7192,12 +7202,201 @@ function setTransparent(on) {
   });
 }
 
+// ═══ AUSSEHEN (Materialwirkung, nur Anzeige) + FOTO ERSTELLEN (1.18.157) ════
+// Aussehen ändert NUR die Darstellung (Rauheit, Metall, Spiegelung, Glas) —
+// Farbe, STL/3MF-Export und Filamentzuordnung bleiben, wie sie sind.
+const _LOOKS = {
+  standard: { l: 'Standard',              r: 0.38, m: 0.05, env: 0   },
+  matt:     { l: 'Kunststoff matt (PLA)', r: 0.92, m: 0.00, env: 0.15 },
+  glanz:    { l: 'Kunststoff glänzend',   r: 0.16, m: 0.00, env: 0.55 },
+  seide:    { l: 'Seidenglanz (Silk-PLA)', r: 0.28, m: 0.45, env: 1.0 },
+  metall:   { l: 'Metall gebürstet',      r: 0.42, m: 1.00, env: 1.0 },
+  chrom:    { l: 'Chrom / poliert',       r: 0.06, m: 1.00, env: 1.25 },
+  keramik:  { l: 'Keramik',               r: 0.10, m: 0.00, env: 0.7 },
+  gummi:    { l: 'Gummi (TPU)',           r: 1.00, m: 0.00, env: 0   },
+  glas:     { l: 'Glas / transparent',    r: 0.04, m: 0.00, env: 1.1, glas: true },
+};
+let _lookEnvTex = null;
+// Studio-Umgebung für Spiegelungen: Verlaufskugel + helle Softboxen → PMREM
+function _lookEnvFor(rnd) {
+  const pm = new THREE.PMREMGenerator(rnd);
+  const es = new THREE.Scene();
+  const cv = document.createElement('canvas'); cv.width = 16; cv.height = 256;
+  const g = cv.getContext('2d'), gr = g.createLinearGradient(0, 0, 0, 256);
+  gr.addColorStop(0, '#ffffff'); gr.addColorStop(0.45, '#c9d2dd'); gr.addColorStop(0.55, '#6b7380'); gr.addColorStop(1, '#2a2f36');
+  g.fillStyle = gr; g.fillRect(0, 0, 16, 256);
+  const tex = new THREE.CanvasTexture(cv);
+  es.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide })));
+  for (const [x, y, z, w, h, k] of [[0, 30, 0, 40, 40, 2.4], [-35, 12, 20, 14, 26, 1.6], [35, 10, -15, 12, 22, 1.2]]) {
+    const pl = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color(k, k, k), side: THREE.DoubleSide }));
+    pl.position.set(x, y, z); pl.lookAt(0, 0, 0); es.add(pl);
+  }
+  const rt = pm.fromScene(es, 0.02);
+  pm.dispose(); tex.dispose();
+  return rt.texture;
+}
+function _applyLook(o) {
+  const meshes = [];
+  if (o.isMesh) meshes.push(o); else if (o.traverse) o.traverse(c => { if (c !== o && c.isMesh && !c.userData.isEdgeLines && !c.userData.isHole) meshes.push(c); });
+  const key = (o.userData && o.userData.look) || 'standard', L = _LOOKS[key] || _LOOKS.standard;
+  for (const m of meshes) {
+    if (m.userData.isHole || !m.material || Array.isArray(m.material)) continue;
+    const mat = m.material;
+    if (!('roughness' in mat)) continue;
+    mat.roughness = L.r; mat.metalness = L.m;
+    if (L.env > 0) {
+      if (!_lookEnvTex) _lookEnvTex = _lookEnvFor(renderer);
+      mat.envMap = _lookEnvTex; mat.envMapIntensity = L.env;
+    } else { mat.envMap = null; }
+    const userOp = m.userData.opacity != null && m.userData.opacity < 0.99 ? m.userData.opacity : (o.userData.opacity != null && o.userData.opacity < 0.99 ? o.userData.opacity : null);
+    if (L.glas) { mat.transparent = true; mat.opacity = userOp != null ? Math.min(userOp, 0.45) : 0.45; mat.depthWrite = false; }
+    else if (m.userData._lookGlas) { mat.transparent = userOp != null; mat.opacity = userOp != null ? userOp : 1; mat.depthWrite = userOp == null; }
+    m.userData._lookGlas = !!L.glas;
+    mat.needsUpdate = true;
+  }
+}
+function setLook(key) {
+  if (!_LOOKS[key]) return;
+  if (!selectedObjs.length) { notify('Erst ein Teil auswählen', 'w'); return; }
+  saveUndo();
+  selectedObjs.forEach(o => { if (o.userData.isHole) return; o.userData.look = key === 'standard' ? undefined : key; _applyLook(o); });
+  _syncLookSelect();
+}
+function _syncLookSelect() {
+  const s = document.getElementById('look-sel'); if (!s) return;
+  const o = selectedObjs.length ? selectedObjs[0] : null;
+  s.value = (o && o.userData.look) || 'standard';
+  s.disabled = !o || !!o.userData.isHole;
+}
+
+// ── Foto erstellen ──────────────────────────────────────────────────────
+const _foto = { p: Object.assign({ licht: 'studio', bg: 'verlauf', schatten: true, kanten: false, groesse: '1920x1080' },
+  (() => { try { return JSON.parse(localStorage.getItem('v3d_foto') || '{}'); } catch (e) { return {}; } })()), url: null };
+function _fotoOpen() {
+  let el = document.getElementById('foto-panel');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'foto-panel';
+    el.style.cssText = 'position:fixed;right:232px;top:120px;width:340px;max-height:calc(100vh - 150px);overflow-y:auto;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+    el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape') _fotoClose(); });
+    document.body.appendChild(el);
+  }
+  const p = _foto.p, tb = (k, v, t, tip) => `<button class="vtb${String(p[k]) === String(v) ? ' on' : ''}" onclick="_fotoSet('${k}','${v}')"${tip ? ` title="${tip}"` : ''}>${t}</button>`;
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">📷 Foto erstellen</b>
+      <span onclick="_fotoClose()" style="cursor:pointer;color:var(--dim);font-size:15px" title="Schließen (Esc)">✕</span></div>
+    <div style="font-size:11px;color:var(--dim);margin-bottom:6px">Blickwinkel = aktuelle Ansicht. Aussehen je Teil unter <i>Farbe → Aussehen</i>.</div>
+    <div class="vrow"><label>Licht</label><div class="vbg" style="flex:1;flex-wrap:wrap">${tb('licht', 'studio', 'Studio')}${tb('licht', 'dunkel', 'Studio dunkel')}${tb('licht', 'tag', 'Tageslicht')}${tb('licht', 'abend', 'Abendsonne')}</div></div>
+    <div class="vrow"><label>Hintergrund</label><div class="vbg" style="flex:1;flex-wrap:wrap">${tb('bg', 'weiss', 'Weiß')}${tb('bg', 'verlauf', 'Verlauf')}${tb('bg', 'dunkel', 'Dunkel')}${tb('bg', 'transparent', 'Transparent', 'PNG ohne Hintergrund — z. B. für Shop, Flyer, Website')}</div></div>
+    <div class="vrow"><label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" ${p.schatten ? 'checked' : ''} onchange="_fotoSet('schatten',this.checked)"> weicher Schatten</label>
+      <label style="display:flex;align-items:center;gap:5px;cursor:pointer;margin-left:10px"><input type="checkbox" ${p.kanten ? 'checked' : ''} onchange="_fotoSet('kanten',this.checked)"> Kantenlinien</label></div>
+    <div class="vrow"><label>Größe</label><select style="flex:1" onchange="_fotoSet('groesse',this.value)">${[['1920x1080', 'Full HD 1920 × 1080'], ['2048x2048', 'Quadrat 2048 × 2048'], ['1080x1350', 'Hochformat 1080 × 1350 (Instagram)'], ['3840x2160', '4K 3840 × 2160']].map(([v, l]) => `<option value="${v}"${v === p.groesse ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+    <div style="display:flex;gap:6px;margin:8px 0"><button class="btn pri" style="flex:1" id="foto-go" onclick="_fotoRender()">📷 Foto erstellen</button>
+      <button class="btn" id="foto-dl" onclick="_fotoDownload()" ${_foto.url ? '' : 'disabled'}>⬇ PNG</button></div>
+    <div id="foto-prev" style="border:1px solid var(--border);border-radius:6px;min-height:60px;background:repeating-conic-gradient(#eee 0 25%,#fff 0 50%) 0 0/16px 16px;display:flex;align-items:center;justify-content:center;color:var(--dim)">${_foto.url ? `<img src="${_foto.url}" style="max-width:100%;display:block;border-radius:6px">` : 'Noch kein Foto'}</div>`;
+}
+function _fotoClose() { const el = document.getElementById('foto-panel'); if (el) el.remove(); }
+function _fotoSet(k, v) { _foto.p[k] = v; try { localStorage.setItem('v3d_foto', JSON.stringify(_foto.p)); } catch (e) {} _fotoOpen(); }
+function _fotoDownload() {
+  if (!_foto.url) return;
+  const a = document.createElement('a'); a.href = _foto.url; a.download = _designFilename('png').replace(/\.png$/, '') + '_foto.png'; a.click();
+}
+// Rendert die aktuelle Ansicht offscreen: nur Körper (ohne Raster, Platte,
+// Griffe, Bohrungen), eigene Lichter je Stimmung, Schattenfänger, ACES-Tonung.
+async function _fotoRender() {
+  const p = _foto.p, [W, H] = p.groesse.split('x').map(Number);
+  const solids = objects.filter(o => !o.userData.isHole && o.visible !== false);
+  if (!solids.length) { notify('Keine Teile zum Fotografieren', 'w'); return; }
+  const btn = document.getElementById('foto-go'); if (btn) { btn.disabled = true; btn.textContent = '⏳ rendert …'; }
+  await new Promise(r => setTimeout(r, 30));
+  const prevSel = selectedObjs.slice(); deselect();
+  const rnd = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+  const saved = [], envSwap = [];
+  const temp = new THREE.Group();
+  try {
+    rnd.setPixelRatio(1); rnd.setSize(W, H);
+    if (THREE.sRGBEncoding !== undefined) rnd.outputEncoding = THREE.sRGBEncoding;
+    rnd.toneMapping = THREE.ACESFilmicToneMapping; rnd.toneMappingExposure = p.licht === 'dunkel' ? 1.05 : 1.0;
+    rnd.shadowMap.enabled = !!p.schatten; rnd.shadowMap.type = THREE.PCFSoftShadowMap;
+    // Szene vorbereiten: alles außer Körpern ausblenden
+    for (const c of scene.children) { saved.push([c, c.visible]); c.visible = solids.includes(c); }
+    solids.forEach(o => o.traverse(c => { if (c.userData && c.userData.isEdgeLines) { saved.push([c, c.visible]); c.visible = !!p.kanten; }
+      if (c.isMesh && !c.userData.isEdgeLines) { saved.push([c, c.castShadow, 'cast']); c.castShadow = true; } }));
+    // Spiegelungen: Umgebung im Foto-Renderer neu bauen (Texturen gehören je Kontext)
+    const env = _lookEnvFor(rnd);
+    // Teile mit Aussehen: deren Spiegelung; „Standard"-Teile nur einen Hauch Studio-Licht
+    solids.forEach(o => o.traverse(c => { if (!c.isMesh || c.userData.isEdgeLines || !c.material || Array.isArray(c.material) || !('envMap' in c.material)) return;
+      envSwap.push([c.material, c.material.envMap, c.material.envMapIntensity]);
+      if (!c.material.envMap) c.material.envMapIntensity = 0.3;
+      c.material.envMap = env; c.material.needsUpdate = true; }));
+    const prevBg = scene.background;
+    // Hintergrund
+    if (p.bg === 'transparent') scene.background = null;
+    else if (p.bg === 'weiss') scene.background = new THREE.Color(0xffffff);
+    else if (p.bg === 'dunkel') scene.background = new THREE.Color(0x1d2026);
+    else { const cv = document.createElement('canvas'); cv.width = 4; cv.height = 512; const g = cv.getContext('2d'), gr = g.createLinearGradient(0, 0, 0, 512);
+      gr.addColorStop(0, '#f4f6f9'); gr.addColorStop(1, '#c7ced8'); g.fillStyle = gr; g.fillRect(0, 0, 4, 512);
+      const t = new THREE.CanvasTexture(cv); if (THREE.sRGBEncoding !== undefined) t.encoding = THREE.sRGBEncoding; scene.background = t; }
+    // Lichter je Stimmung
+    const box = new THREE.Box3(); solids.forEach(o => box.expandByObject(o));
+    const c = box.getCenter(new THREE.Vector3()), R = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 0.5);
+    const L = { studio: [[0xffffff, 0.55], [0xffffff, 2.2, [0.6, 1.2, 0.8]], [0xdfe8ff, 0.7, [-1, 0.6, -0.4]]],
+                dunkel: [[0x8090a8, 0.25], [0xffffff, 2.6, [0.7, 1.0, 0.5]], [0x6fa8ff, 1.0, [-1, 0.4, -0.8]]],
+                tag:    [[0xbfd6ff, 0.8], [0xfff4e0, 2.4, [0.4, 1.4, 0.6]], [0xffffff, 0.4, [-0.8, 0.5, -0.6]]],
+                abend:  [[0x6a5a7a, 0.5], [0xffb070, 2.6, [1.2, 0.45, 0.3]], [0x7090ff, 0.6, [-1, 0.6, -0.6]]] }[p.licht] || [];
+    L.forEach((d, i) => {
+      if (i === 0) { temp.add(new THREE.HemisphereLight(d[0], 0x404040, d[1])); return; }
+      const dl = new THREE.DirectionalLight(d[0], d[1]); dl.position.copy(c).addScaledVector(new THREE.Vector3(...d[2]).normalize(), R * 4);
+      dl.target.position.copy(c); temp.add(dl.target);
+      if (i === 1 && p.schatten) { dl.castShadow = true; dl.shadow.mapSize.set(2048, 2048); dl.shadow.radius = 6; dl.shadow.bias = -0.0005;
+        const sc = dl.shadow.camera; sc.left = sc.bottom = -R * 1.6; sc.right = sc.top = R * 1.6; sc.near = R * 0.5; sc.far = R * 8; sc.updateProjectionMatrix(); }
+      temp.add(dl);
+    });
+    if (p.schatten) {
+      const gnd = new THREE.Mesh(new THREE.PlaneGeometry(R * 20, R * 20), new THREE.ShadowMaterial({ opacity: p.bg === 'dunkel' ? 0.5 : 0.22 }));
+      gnd.rotation.x = -Math.PI / 2; gnd.position.set(c.x, box.min.y - 0.002, c.z); gnd.receiveShadow = true; temp.add(gnd);
+    }
+    scene.add(temp);
+    // Kamera wie die Ansicht, Seitenverhältnis des Fotos
+    // Blickrichtung wie die Ansicht, Teile mittig und formatfüllend eingepasst
+    const cam = camera.clone();
+    const dir = camera.position.clone().sub(orbitTarget).normalize();
+    if (cam.isPerspectiveCamera) {
+      cam.aspect = W / H;
+      const vf = THREE.MathUtils.degToRad(cam.fov) / 2, hf = Math.atan(Math.tan(vf) * cam.aspect);
+      const dist = R / Math.sin(Math.min(vf, hf)) * 1.12;
+      cam.position.copy(c).addScaledVector(dir, dist); cam.near = dist / 100; cam.far = dist * 10;
+    } else {
+      const h = R * 1.15 * Math.max(1, H / W); cam.top = h; cam.bottom = -h; cam.left = -h * W / H; cam.right = h * W / H;
+      if (W / H < 1) { cam.left = -R * 1.15; cam.right = R * 1.15; cam.top = R * 1.15 * H / W; cam.bottom = -cam.top; }
+      cam.position.copy(c).addScaledVector(dir, R * 4); cam.near = 0.01; cam.far = R * 20;
+    }
+    cam.lookAt(c);
+    cam.updateProjectionMatrix();
+    rnd.render(scene, cam);
+    _foto.url = rnd.domElement.toDataURL('image/png');
+    scene.background = prevBg;
+    env.dispose();
+  } catch (e) {
+    console.error('[foto]', e); notify('Foto fehlgeschlagen: ' + (e.message || e), 'e');
+  } finally {
+    scene.remove(temp);
+    temp.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material && o.material.dispose) o.material.dispose(); });
+    for (const [o, v, k] of saved.reverse()) { if (k === 'cast') o.castShadow = v; else o.visible = v; }
+    for (const [m, e, k] of envSwap) { m.envMap = e; m.envMapIntensity = k; m.needsUpdate = true; }
+    rnd.dispose(); rnd.forceContextLoss && rnd.forceContextLoss();
+    if (prevSel.length) selectObjs(prevSel);
+  }
+  _fotoOpen();
+  if (_foto.url) notify(`Foto fertig (${W} × ${H}) — mit „⬇ PNG" speichern`, 'ok');
+}
+
 function _syncTranspToggle() {
   const t = document.getElementById('transp-toggle');
   if (!t) return;
   const o = selectedObjs.length === 1 ? selectedObjs[0] : null;
   const on = o && !o.userData.isHole && (o.userData.opacity || 1.0) < 0.99;
   t.classList.toggle('on', !!on);
+  _syncLookSelect();
 }
 
 function setColor(hex) {
@@ -18405,6 +18604,7 @@ function buildObjectFromData(data) {
     obj.userData._sideOrig = THREE.DoubleSide; obj.userData._castOrig = true;
     _applyTranspLook(obj);
   }
+  if (data.look) { obj.userData.look = data.look; _applyLook(obj); }
   return obj;
 }
 
@@ -18607,6 +18807,7 @@ function objectToData(o, modus) {
   if (o.userData.opJournal) d.opJournal = o.userData.opJournal;
   if (o.userData.hidden || !o.visible) d.hidden = true;
   if (o.userData.opacity && o.userData.opacity < 0.99) d.opacity = o.userData.opacity;
+  if (o.userData.look) d.look = o.userData.look;
   if (o.userData.threadDiameter) d.threadDiameter = o.userData.threadDiameter;
   if (o.userData.threadPitch)    d.threadPitch    = o.userData.threadPitch;
   if (o.userData.threadTurns)    d.threadTurns    = o.userData.threadTurns;
@@ -57747,8 +57948,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.156';
+const VOLME3D_VERSION = '1.18.157';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.157', date:'2026-10-10', changes:[
+    ['✨','<b>Aussehen wie in Fusion.</b> Unter <i>Farbe</i> gibt es jetzt <b>Aussehen</b>: Kunststoff matt (PLA), Kunststoff glänzend, Seidenglanz (Silk-PLA), Metall gebürstet, Chrom, Keramik, Gummi (TPU) und Glas – mit echten Spiegelungen. Das ist nur für die Anzeige und Fotos; Farbe, Export und Filamente bleiben unverändert. Das Aussehen wird mit dem Design gespeichert.'],
+    ['📷','<b>Foto erstellen.</b> Neuer Knopf <b>📷 Foto erstellen</b> (unter <i>Farbe</i> und im Export-Menü ▾): rendert die aktuelle Ansicht als PNG – Licht <i>Studio, Studio dunkel, Tageslicht, Abendsonne</i>, Hintergrund weiß, Verlauf, dunkel oder <b>transparent</b>, weicher Schatten, bis <b>4K</b> oder im Instagram-Hochformat. Die Teile werden automatisch mittig eingepasst, Raster und Platte bleiben weg – ideal für Kunden, Shop und Werbung.'],
+  ]},
   { version:'1.18.156', date:'2026-10-10', spots:[{id:'druckvorschau',sel:'#btn-druckvorschau'}], changes:[
     ['🖨','<b>Druck-Vorschau für alle gängigen Drucker.</b> Neuer Knopf <b>🖨 Druck-Vorschau</b> (unter <i>Prüfen</i> und im Export-Menü ▾): Hersteller und Drucker wählen – über 560 Modelle von <b>Bambu Lab, Snapmaker, Anycubic, Elegoo, Prusa, Creality, Flashforge, Qidi, Sovol, Voron</b> u. a. –, dazu Filament (PLA, PETG, ABS, ASA, TPU, CF …), Schichthöhe, Wände, Füllung und Stützen. Sofort sichtbar: <b>passt das Teil auf die Platte?</b> und wie viel Material es ungefähr braucht.'],
     ['⚙️','<b>Slicen mit diesen Einstellungen.</b> <b>Slicen &amp; Schichten ansehen</b> öffnet den V3D Slicer mit genau diesen Werten und rechnet sofort: echte Druckzeit, Gewicht, Schicht-Vorschau, G-Code oder direkt an die Drucker-Flotte. <b>📦 Projekt-3MF</b> speichert Modell <i>und</i> Einstellungen als Projekt für <b>Bambu Studio, OrcaSlicer, Anycubic Slicer Next, Snapmaker Orca und ElegooSlicer</b> – dort öffnet es mit den vorgewählten Werten. Die Übergabe an den Slicer klappt jetzt auch über v3dcad.volme3dakademie.de.'],
@@ -68316,6 +68521,7 @@ const CMDK = [
   {i:'⛶',g:'Ansicht',t:'Vollbild ein/aus',k:'vollbild fullscreen ganzer bildschirm beamer praesentation f11',run:()=>_fsToggle()},
   {i:'🔩',g:'Bearbeiten',t:'Gewinde an Fläche (Bohrung/Zylinder anklicken)',k:'gewinde thread innengewinde aussengewinde bohrung schraube mutter m3 m4 m5 m6 m8 m10 m12 spiel toleranz',run:()=>_thfStart()},
   {i:'🖨',g:'Datei',t:'Druck-Vorschau & Slicer-Einstellungen',k:'druck vorschau slicer drucker bambu snapmaker anycubic elegoo prusa creality filament schichthoehe waende infill fuellung stuetzen gcode 3mf projekt druckzeit gewicht',run:()=>_dvOpen()},
+  {i:'📷',g:'Datei',t:'Foto erstellen (Rendern)',k:'foto bild render rendern png screenshot werbung shop kunde aussehen material',run:()=>_fotoOpen()},
   {i:'◪',g:'Ansicht',t:'Schnittansicht (Modell aufschneiden)',k:'schnitt section querschnitt clipping wandstaerke innen',run:()=>sectionTool()},
   {i:'🛟',g:'Datei',t:'Sicherungen (ältere Stände)',k:'backup sicherung wiederherstellen restore version',run:()=>_bakOpen()},
   {i:'📱',g:'Ansicht',t:'Ansehen-Modus (mobil)',k:'mobile view vorschau',run:()=>_mviewToggle()},
