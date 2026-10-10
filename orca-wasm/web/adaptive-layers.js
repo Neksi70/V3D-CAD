@@ -553,7 +553,7 @@ function weld(pos, index) {
   return { verts, tris };
 }
 
-export async function build3mf(objects, { title = 'V3D Slicer' } = {}) {
+export async function build3mf(objects, { title = 'V3D Slicer', settings = null } = {}) {
   let resources = '', build = '', profTxt = '';
   objects.forEach((o, i) => {
     const id = i + 1;
@@ -567,9 +567,12 @@ export async function build3mf(objects, { title = 'V3D Slicer' } = {}) {
     if (o.profile && o.profile.length >= 6) profTxt += `object_id=${id}|${o.profile.map(v => v.toFixed(6)).join(';')}\n`;
   });
   const model = `<?xml version="1.0" encoding="UTF-8"?>
-<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"${settings ? ' xmlns:BambuStudio="http://schemas.bambulab.com/package/2021"' : ''}>
 <metadata name="Title">${xmlEsc(title)}</metadata>
-<metadata name="Application">V3D Slicer</metadata>
+${settings
+    // Als Bambu-Studio-Projekt ausweisen, sonst übernehmen Studio/Orca nur die Geometrie
+    ? `<metadata name="Application">BambuStudio-${xmlEsc(String(settings.version || '02.08.02.61'))}</metadata>\n<metadata name="BambuStudio:3mfVersion">1</metadata>`
+    : '<metadata name="Application">V3D Slicer</metadata>'}
 <resources>
 ${resources}</resources>
 <build>
@@ -582,6 +585,7 @@ ${build}</build>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>` },
     { name: '3D/3dmodel.model', data: model },
   ];
+  if (settings) files.push({ name: 'Metadata/project_settings.config', data: JSON.stringify(settings, null, 4) });
   if (profTxt) {
     files.push({ name: 'Metadata/layer_heights_profile.txt', data: profTxt });               // Bambu Studio / OrcaSlicer
     files.push({ name: 'Metadata/Slic3r_PE_layer_heights_profile.txt', data: profTxt });    // PrusaSlicer

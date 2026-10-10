@@ -1346,6 +1346,7 @@ const firebaseConfig = {
     </div></div>
     <div class="tbg"><span class="tbg-l">Prüfen</span><div class="tbg-row">
       <button class="btn" id="btn-measure" onclick="measureTool()" title="Messen — Kreiskante anklicken für Durchmesser, zwei Punkte für Abstand in mm (Esc beendet)">📐 Messen</button>
+      <button class="btn" id="btn-druckvorschau" onclick="_dvOpen()" title="Druck-Vorschau — Drucker (Bambu, Snapmaker, Anycubic, Elegoo, Prusa …), Filament, Schicht, Wände, Füllung, Stützen: passt es? Material ca.? Dann echt slicen oder Projekt-3MF für den eigenen Slicer">🖨 Druck-Vorschau</button>
       <button class="btn" id="btn-section" onclick="sectionTool()" title="Schnittansicht — Modell mit einer Ebene aufschneiden, Wandstärken &amp; Innenleben prüfen (nur Ansicht, ändert nichts am Körper, Esc beendet)">◪ Schnitt</button>
     </div></div>
     <div class="tbg"><span class="tbg-l">Ansicht</span><div class="tbg-row">
@@ -1375,6 +1376,7 @@ const firebaseConfig = {
         <button class="btn pri main-stl" onclick="exportSTL()" title="STL herunterladen — bei Auswahl nur die markierten Objekte, sonst alle">⬇ Export</button>
         <button class="btn pri spl" onclick="toggleStlMenu(event)" title="An Slicer senden">▾</button>
         <div id="stl-menu">
+          <div class="sli-item" onclick="document.getElementById('stl-menu')?.classList.remove('show');_dvOpen()" title="Drucker, Filament, Schichthöhe, Wände, Füllung, Stützen wählen — prüft, ob es passt, und gibt das Modell mit genau diesen Einstellungen an den Slicer (oder als Projekt-3MF für Bambu Studio, Orca, Anycubic, Snapmaker, Elegoo)">🖨 Druck-Vorschau &amp; Slicer-Einstellungen…</div>
           <div class="sli-item" onclick="_openInV3DSlicer()" title="Modell im V3D Web-Slicer öffnen — dort slicen und mit Druckcode direkt auf der V3D-Drucker-Flotte drucken">🖨 Im V3D Slicer öffnen</div>
           <div class="sli-sep"></div>
           <div id="send-slicer-sec"></div>
@@ -31002,6 +31004,162 @@ async function _refreshSendSlicerItem() {
 const _V3D_SLICER_URL = location.hostname.endsWith('.ts.net')
   ? 'https://' + location.hostname + '/slicer/app/'
   : 'https://v3da.tailf05fe9.ts.net:10000/app/';
+// ═══ DRUCK-VORSCHAU (_dv*, 1.18.156) ═══════════════════════════════════════
+// Drucker (alle Hersteller aus den V3D-Slicer-Profilen: Bambu, Snapmaker,
+// Anycubic, Elegoo, Prusa, Creality …), Filament, Schicht, Wände, Füllung,
+// Stützen wählen → sofort: passt es auf die Platte? Gewicht/Filament grob.
+// Danach geht das Modell MIT diesen Einstellungen an den V3D Slicer (echte
+// Druckzeit, echtes Gewicht, Schichten, G-Code, Flotte) — oder direkt als
+// Projekt-3MF, das Bambu Studio/Orca/Anycubic/Snapmaker/Elegoo samt
+// Einstellungen öffnen. Die Profile selbst rechnet der Slicer, nicht CAD.
+const _DV_FIL = { 'PLA': 1.24, 'PETG': 1.27, 'ABS': 1.04, 'ASA': 1.07, 'TPU': 1.21, 'PLA-CF': 1.29, 'PETG-CF': 1.30, 'PA': 1.14 };
+let _dvListe = null;
+const _dv = { p: Object.assign({ vendor: 'BBL', machine: '', ftype: 'PLA', lh: '0.2', walls: 2, infill: 15, support: 'aus' },
+  (() => { try { return JSON.parse(localStorage.getItem('v3d_druckvorschau') || '{}'); } catch (e) { return {}; } })()) };
+// Übergabe-Adresse für Modelle an den Slicer (VolmeShop-Handoff, CORS offen):
+// im Tailnet same-origin, lokal am Shop-Port, sonst (netcup u. a.) öffentlich über V3DA
+const _V3D_HANDOFF_BASE = location.hostname.endsWith('.ts.net') ? '/bestellen'
+  : (/^(127\.0\.0\.1|localhost)$/.test(location.hostname) ? 'http://127.0.0.1:8776/bestellen'
+     : 'https://v3da.tailf05fe9.ts.net/bestellen');
+async function _dvLoad() {
+  if (_dvListe) return _dvListe;
+  _dvListe = await (await fetch('druckerliste.json', { cache: 'force-cache' })).json();
+  return _dvListe;
+}
+function _dvVendor() { return (_dvListe || []).find(v => v.v === _dv.p.vendor) || (_dvListe || [])[0]; }
+function _dvMachine() { const v = _dvVendor(); return v && (v.drucker.find(m => m.n === _dv.p.machine) || v.drucker.find(m => m.noz === '0.4') || v.drucker[0]); }
+// Modell der aktiven Platte: Maße, Volumen, Oberfläche (Welt, mm)
+function _dvModel() {
+  const src = _slicerSrc(); const box = new THREE.Box3(); let V = 0, A = 0, n = 0;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const walk = list => list.forEach(o => {
+    if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false && o.geometry) {
+      o.updateMatrixWorld(true); n++;
+      const P = o.geometry.attributes.position, I = o.geometry.index ? o.geometry.index.array : null, cnt = I ? I.length : P.count;
+      let v = 0;
+      for (let i = 0; i < cnt; i += 3) {
+        a.fromBufferAttribute(P, I ? I[i] : i).applyMatrix4(o.matrixWorld);
+        b.fromBufferAttribute(P, I ? I[i+1] : i+1).applyMatrix4(o.matrixWorld);
+        c.fromBufferAttribute(P, I ? I[i+2] : i+2).applyMatrix4(o.matrixWorld);
+        v += a.dot(b.clone().cross(c)) / 6;
+        A += b.clone().sub(a).cross(c.clone().sub(a)).length() / 2;
+        box.expandByPoint(a); box.expandByPoint(b); box.expandByPoint(c);
+      }
+      V += Math.abs(v);
+    }
+    if (o.children && !o.isMesh) walk(o.children);
+  });
+  walk(src);
+  if (!n || box.isEmpty()) return null;
+  const s = box.getSize(new THREE.Vector3());
+  return { w: s.x * 10, d: s.z * 10, h: s.y * 10, V: V * 1000, A: A * 100 };   // mm, mm³, mm²
+}
+function _dvRechne() {
+  const m = _dvModel(), M = _dvMachine(), p = _dv.p;
+  if (!m || !M) return { m, M };
+  const fits = (m.w <= M.w && m.d <= M.d) || (m.w <= M.d && m.d <= M.w);
+  const fitsH = m.h <= M.h;
+  const rotated = fits && !(m.w <= M.w && m.d <= M.d);
+  // Grobe Materialschätzung: Hülle = Oberfläche × Wanddicke (Wände × ~0,45 mm,
+  // mindestens 3 Schichten oben/unten), Rest × Füllgrad
+  const shell = Math.min(m.V, m.A * Math.max(p.walls * 0.45, 3 * parseFloat(p.lh)) * 0.95);
+  const vol = shell + Math.max(0, m.V - shell) * (p.infill / 100);
+  const g = vol / 1000 * (_DV_FIL[p.ftype] || 1.24);
+  const meter = vol / (Math.PI * 0.875 * 0.875) / 1000;
+  return { m, M, fits, fitsH, rotated, g, meter };
+}
+function _dvOpen() {
+  _dvLoad().then(() => { _dvPanel(); }).catch(e => notify('Druckerliste nicht geladen: ' + (e.message || e), 'e'));
+}
+function _dvClose() { const el = document.getElementById('dv-panel'); if (el) el.remove(); }
+function _dvSet(k, v) {
+  const p = _dv.p;
+  if (k === 'vendor') { p.vendor = v; p.machine = ''; }
+  else if (k === 'walls') p.walls = Math.max(1, Math.min(10, parseInt(v, 10) || 2));
+  else if (k === 'infill') p.infill = Math.max(0, Math.min(100, parseInt(v, 10) || 0));
+  else p[k] = v;
+  if (!p.machine) { const M = _dvMachine(); if (M) p.machine = M.n; }
+  try { localStorage.setItem('v3d_druckvorschau', JSON.stringify(p)); } catch (e) {}
+  _dvPanel(k === 'infill');
+}
+function _dvPanel(nurInfo) {
+  let el = document.getElementById('dv-panel');
+  const p = _dv.p; if (!p.machine) { const M = _dvMachine(); if (M) p.machine = M.n; }
+  const r = _dvRechne();
+  const f1 = x => String(Math.round(x * 10) / 10).replace('.', ',');
+  const info = !r.m ? '<span style="color:#dc2626">Keine Teile auf der Platte.</span>' : `
+    <div style="display:grid;grid-template-columns:auto 1fr;gap:2px 10px">
+      <span style="color:var(--dim)">Modell</span><b>${f1(r.m.w)} × ${f1(r.m.d)} × ${f1(r.m.h)} mm</b>
+      <span style="color:var(--dim)">Druckbereich</span><span>${r.M.w} × ${r.M.d} × ${r.M.h} mm</span>
+      <span style="color:var(--dim)">Passt?</span>${r.fits && r.fitsH ? `<b style="color:#16a34a">✓ passt${r.rotated ? ' (um 90° gedreht)' : ''}</b>`
+        : `<b style="color:#dc2626">✗ zu groß${!r.fitsH ? ' (zu hoch)' : ''} — teilen (✂ Schneiden) oder kleiner skalieren</b>`}
+      <span style="color:var(--dim)">Material ca.</span><b>${f1(r.g)} g · ${f1(r.meter)} m ${p.ftype}</b>
+    </div>
+    <div style="font-size:10.5px;color:var(--dim);margin-top:4px">Grobe Schätzung. Genaue Druckzeit, Gewicht und alle Schichten zeigt der Slicer.</div>`;
+  if (nurInfo && el) { el.querySelector('#dv-info').innerHTML = info; return; }
+  if (!el) {
+    el = document.createElement('div'); el.id = 'dv-panel';
+    el.style.cssText = 'position:fixed;right:232px;top:120px;width:330px;max-height:calc(100vh - 150px);overflow-y:auto;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+    el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape') _dvClose(); });
+    document.body.appendChild(el);
+  }
+  const V = _dvVendor(), byModel = new Map();
+  for (const m of V.drucker) { if (!byModel.has(m.m)) byModel.set(m.m, []); byModel.get(m.m).push(m); }
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const tb = (on, k, v, t) => `<button class="vtb${on ? ' on' : ''}" onclick="_dvSet('${k}','${v}')">${t}</button>`;
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">🖨 Druck-Vorschau</b>
+      <span onclick="_dvClose()" style="cursor:pointer;color:var(--dim);font-size:15px" title="Schließen (Esc)">✕</span></div>
+    <div class="vrow"><label>Hersteller</label><select id="dv-vendor" style="flex:1" onchange="_dvSet('vendor',this.value)">${_dvListe.map(v => `<option value="${v.v}"${v.v === V.v ? ' selected' : ''}>${v.l}</option>`).join('')}</select></div>
+    <div class="vrow"><label>Drucker</label><select id="dv-machine" style="flex:1;max-width:220px" onchange="_dvSet('machine',this.value)">${[...byModel].map(([mo, list]) => `<optgroup label="${esc(mo)}">${list.map(m => `<option value="${esc(m.n)}"${m.n === p.machine ? ' selected' : ''}>${esc(m.n)}</option>`).join('')}</optgroup>`).join('')}</select></div>
+    <div class="vrow"><label>Filament</label><select id="dv-ftype" style="flex:1" onchange="_dvSet('ftype',this.value)">${Object.keys(_DV_FIL).map(f => `<option${f === p.ftype ? ' selected' : ''}>${f}</option>`).join('')}</select></div>
+    <div class="vrow"><label>Schichthöhe</label><select id="dv-lh" style="flex:1" onchange="_dvSet('lh',this.value)">${['0.08', '0.12', '0.16', '0.2', '0.24', '0.28'].map(v => `<option value="${v}"${parseFloat(v) === parseFloat(p.lh) ? ' selected' : ''}>${v.replace('.', ',')} mm${v === '0.2' ? ' (Standard)' : v === '0.12' ? ' (fein)' : v === '0.28' ? ' (schnell)' : ''}</option>`).join('')}</select></div>
+    <div class="vrow"><label>Wände</label><input id="dv-walls" type="number" min="1" max="10" value="${p.walls}" style="width:60px" onchange="_dvSet('walls',this.value)"></div>
+    <div class="vrow"><label>Füllung</label><input id="dv-infill" type="range" min="0" max="100" step="5" value="${p.infill}" style="flex:1" oninput="_dv.p.infill=+this.value;document.getElementById('dv-inv').textContent=this.value;_dvPanel(true)" onchange="_dvSet('infill',this.value)"><span class="vv" id="dv-inv">${p.infill}</span><span class="vu">%</span></div>
+    <div class="vrow"><label>Stützen</label><div class="vbg" style="flex:1">${tb(p.support === 'aus', 'support', 'aus', 'Aus')}${tb(p.support === 'normal', 'support', 'normal', 'Normal')}${tb(p.support === 'baum', 'support', 'baum', 'Baum')}</div></div>
+    <div id="dv-info" style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:7px 9px;margin:8px 0;line-height:1.5">${info}</div>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <button class="btn pri" id="dv-slice" onclick="_dvSend('slice')" title="Modell mit diesen Einstellungen im V3D Slicer öffnen und sofort slicen: echte Druckzeit, Gewicht, Schicht-Vorschau, G-Code herunterladen oder an die Drucker-Flotte senden">🖨 Slicen &amp; Schichten ansehen</button>
+      <button class="btn" id="dv-proj" onclick="_dvSend('proj')" title="Projekt-3MF mit allen Einstellungen speichern — öffnet in Bambu Studio, OrcaSlicer, Anycubic Slicer Next, Snapmaker Orca oder ElegooSlicer mit genau diesen Werten">📦 Projekt-3MF für Bambu Studio / Orca / Anycubic / Snapmaker</button>
+    </div>`;
+}
+// Modell + Einstellungen an den V3D Slicer (neuer Tab)
+async function _dvSend(was) {
+  const r = _dvRechne(), p = _dv.p;
+  if (!r.m) { notify('Keine Teile auf der Platte', 'w'); return; }
+  if (!(r.fits && r.fitsH) && !confirm('Das Modell ist größer als der Druckbereich. Trotzdem an den Slicer geben?')) return;
+  const src = _slicerSrc();
+  const colors = new Set();
+  (function tr(list){ list.forEach(o => {
+    if (o.isMesh && !o.userData.isHole && !o.userData.isEdgeLines && o.visible !== false && o.material?.color) colors.add(o.material.color.getHexString());
+    if (o.children) tr(o.children);
+  }); })(src);
+  let blob = null, fname;
+  if (colors.size > 1 && typeof fflate !== 'undefined') {
+    try { const r3 = _withPlateShift(src, () => _build3mfBlob(src)); if (r3) { blob = r3.blob; fname = _designFilename('3mf'); } }
+    catch (e) { console.error('[dv] 3MF fehlgeschlagen, nehme STL:', e); }
+  }
+  if (!blob) { const rs = _withPlateShift(src, () => _buildStlBlob(src)); if (!rs) { notify('Keine Objekte zum Slicen', 'w'); return; } blob = rs.blob; fname = _designFilename('stl'); }
+  // Fenster sofort öffnen (Popup-Blocker), Adresse folgt nach der Übergabe
+  const win = window.open('about:blank', '_blank');
+  notify('Übergebe an den V3D Slicer …', 'ok');
+  try {
+    const b64 = await new Promise((ok, fail) => { const fr = new FileReader(); fr.onload = () => ok(String(fr.result).split(',')[1]); fr.onerror = fail; fr.readAsDataURL(blob); });
+    const h = await (await fetch(_V3D_HANDOFF_BASE + '/api/handoff', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: fname, dataB64: b64 }) })).json();
+    if (!h.ok) throw new Error(h.error || 'Übergabe fehlgeschlagen');
+    const q = new URLSearchParams({ cad: '1', vendor: p.vendor, machine: p.machine, ftype: p.ftype, lh: p.lh, walls: p.walls,
+      infill: p.infill, support: p.support, load: h.url, name: fname });
+    if (was === 'slice') q.set('autoslice', '1'); else q.set('then', 'proj');
+    const url = _V3D_SLICER_URL + '?' + q.toString();
+    if (win && !win.closed) win.location.href = url; else window.open(url, '_blank');
+    window._dvLastUrl = url;
+  } catch (e) {
+    if (win && !win.closed) win.close();
+    notify('V3D Slicer: ' + (e.message || e), 'e');
+  }
+}
+
 async function _openInV3DSlicer() {
   document.getElementById('stl-menu')?.classList.remove('show');
   const src = _slicerSrc();   // mehrere Platten: nur die aktive
@@ -31030,8 +31188,7 @@ async function _openInV3DSlicer() {
       fr.readAsDataURL(blob);
     });
     // Öffentlich (Funnel) same-origin unter /bestellen; lokal direkt an den Shop-Port
-    const base = location.hostname.endsWith('.ts.net') ? '/bestellen' : 'http://127.0.0.1:8776/bestellen';
-    const h = await (await fetch(base + '/api/handoff', {
+    const h = await (await fetch(_V3D_HANDOFF_BASE + '/api/handoff', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: fname, dataB64: b64 }),
     })).json();
@@ -57590,8 +57747,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.155';
+const VOLME3D_VERSION = '1.18.156';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.156', date:'2026-10-10', spots:[{id:'druckvorschau',sel:'#btn-druckvorschau'}], changes:[
+    ['🖨','<b>Druck-Vorschau für alle gängigen Drucker.</b> Neuer Knopf <b>🖨 Druck-Vorschau</b> (unter <i>Prüfen</i> und im Export-Menü ▾): Hersteller und Drucker wählen – über 560 Modelle von <b>Bambu Lab, Snapmaker, Anycubic, Elegoo, Prusa, Creality, Flashforge, Qidi, Sovol, Voron</b> u. a. –, dazu Filament (PLA, PETG, ABS, ASA, TPU, CF …), Schichthöhe, Wände, Füllung und Stützen. Sofort sichtbar: <b>passt das Teil auf die Platte?</b> und wie viel Material es ungefähr braucht.'],
+    ['⚙️','<b>Slicen mit diesen Einstellungen.</b> <b>Slicen &amp; Schichten ansehen</b> öffnet den V3D Slicer mit genau diesen Werten und rechnet sofort: echte Druckzeit, Gewicht, Schicht-Vorschau, G-Code oder direkt an die Drucker-Flotte. <b>📦 Projekt-3MF</b> speichert Modell <i>und</i> Einstellungen als Projekt für <b>Bambu Studio, OrcaSlicer, Anycubic Slicer Next, Snapmaker Orca und ElegooSlicer</b> – dort öffnet es mit den vorgewählten Werten. Die Übergabe an den Slicer klappt jetzt auch über v3dcad.volme3dakademie.de.'],
+  ]},
   { version:'1.18.155', date:'2026-10-10', changes:[
     ['👆','<b>Textur auf gewählte Flächen.</b> Im Textur-Fenster unter <i>Ort</i> gibt es jetzt <b>👆 Flächen wählen</b>: einfach die gewünschten Flächen am Körper anklicken (nochmal klicken = abwählen). Beim Zylinder wird so z. B. nur der <b>Mantel</b> gemustert, Deckel und Boden bleiben glatt; bei einer Box nur die Oberseite oder einzelne Seiten. Die Auswahl bleibt beim Skalieren, Speichern und Rückgängig erhalten; <b>✕</b> hebt sie wieder auf.'],
   ]},
@@ -68154,6 +68315,7 @@ const CMDK = [
   {i:'🎬',g:'Seite',t:'Videos (Howto-Filme)',k:'video videos anleitung howto hilfe film tutorial erklaerung zeigen lernen kurs schulung',run:()=>_howtoMenu()},
   {i:'⛶',g:'Ansicht',t:'Vollbild ein/aus',k:'vollbild fullscreen ganzer bildschirm beamer praesentation f11',run:()=>_fsToggle()},
   {i:'🔩',g:'Bearbeiten',t:'Gewinde an Fläche (Bohrung/Zylinder anklicken)',k:'gewinde thread innengewinde aussengewinde bohrung schraube mutter m3 m4 m5 m6 m8 m10 m12 spiel toleranz',run:()=>_thfStart()},
+  {i:'🖨',g:'Datei',t:'Druck-Vorschau & Slicer-Einstellungen',k:'druck vorschau slicer drucker bambu snapmaker anycubic elegoo prusa creality filament schichthoehe waende infill fuellung stuetzen gcode 3mf projekt druckzeit gewicht',run:()=>_dvOpen()},
   {i:'◪',g:'Ansicht',t:'Schnittansicht (Modell aufschneiden)',k:'schnitt section querschnitt clipping wandstaerke innen',run:()=>sectionTool()},
   {i:'🛟',g:'Datei',t:'Sicherungen (ältere Stände)',k:'backup sicherung wiederherstellen restore version',run:()=>_bakOpen()},
   {i:'📱',g:'Ansicht',t:'Ansehen-Modus (mobil)',k:'mobile view vorschau',run:()=>_mviewToggle()},

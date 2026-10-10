@@ -438,6 +438,7 @@
     <input type="checkbox" id="srvSlice" style="width:auto"> 🖥️ Auf dem Server slicen <small style="opacity:.6">(schneller)</small></label>
   <button id="btnSlice" disabled>Slicen</button>
   <button id="btnDownload" class="secondary" disabled>G-Code herunterladen</button>
+  <button id="btnProj3mf" class="secondary" disabled title="Modell + ALLE Einstellungen (Drucker, Filament, Schichthöhe, Wände, Füllung, Stützen …) als Projekt-3MF speichern — öffnet in Bambu Studio, OrcaSlicer, Anycubic Slicer Next, Snapmaker Orca oder ElegooSlicer mit genau diesen Werten">📦 Projekt-3MF für anderen Slicer</button>
 
   <div id="sendPanel" hidden style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.6rem .8rem">
     <label style="opacity:1;font-size:.85rem">🖨️ An Drucker senden</label>
@@ -1603,7 +1604,18 @@ function renderSettings() {
 
 // Abweichungen vom Profil als [key, value]-Liste
 function settingOverrides() {
-  return [...changedValues.entries()];
+  const out = [...changedValues.entries()];
+  // Adaptive Schichthöhe (Standard: automatisch) verträgt keine ORGANISCHEN Stützen
+  // („Variable layer height is not supported with Organic supports") — Baumstützen
+  // im Stil „default"/„organic" laufen dann als „Baum schlank" (Bambus Vorgabe).
+  try {
+    const val = k => changedValues.has(k) ? String(changedValues.get(k)) : effVal(k);
+    const adaptiv = adaptMode === 'auto' || (adaptMode === 'orca' && adaptiveParams);
+    const sup = val('enable_support'), typ = val('support_type'), stil = val('support_style');
+    if (adaptiv && (sup === '1' || sup === 'true') && /^tree/.test(typ) && (!stil || stil === 'default' || stil === 'organic')
+        && !changedValues.has('support_style')) out.push(['support_style', 'tree_slim']);
+  } catch {}
+  return out;
 }
 
 // Die Checkbox „Stützen" ist der EINZIGE Schalter für enable_support
@@ -1618,9 +1630,22 @@ function setSupportEnabled(on) {
 }
 $('support').onchange = () => setSupportEnabled($('support').checked);
 
+// Aufruf aus der Druck-Vorschau von V3D CAD: ?cad=1&vendor=&machine=&ftype=&lh=
+// &walls=&infill=&support=aus|normal|baum&autoslice=1 — überschreibt die
+// gemerkten Presets für diesen Aufruf.
+const CAD = (() => {
+  const q = new URLSearchParams(location.search);
+  if (q.get('cad') !== '1') return null;
+  const n = k => (q.get(k) === null || q.get(k) === '' ? null : q.get(k));
+  return { vendor: n('vendor'), machine: n('machine'), ftype: n('ftype'), lh: n('lh'), walls: n('walls'),
+           infill: n('infill'), support: n('support'), autoslice: q.get('autoslice') === '1', then: n('then') };
+})();
+
 async function fillVendor() {
   const vendors = await (await fetch(ROOTP + '/profiles/index.json')).json();
-  const saved = JSON.parse(localStorage.getItem('vs-presets') || '{}');
+  let saved = JSON.parse(localStorage.getItem('vs-presets') || '{}');
+  if (CAD && CAD.vendor && vendors.includes(CAD.vendor))
+    saved = { vendor: CAD.vendor, machine: CAD.machine || undefined, bedType: saved.bedType };
   const sel = saved.vendor && vendors.includes(saved.vendor) ? saved.vendor : 'BBL';
   $('vendor').innerHTML = vendors.map(v => `<option${v === sel ? ' selected' : ''}>${v}</option>`).join('');
   await fillPresets(saved);
@@ -4505,7 +4530,7 @@ let worker = null;
 let sliceStart = 0;
 let lastGcode = '';
 let lastSliceId = null;   // id des Server-Slice-Jobs (für natives .gcode.3mf)
-function updateSliceable() { $('btnSlice').disabled = !modelBytes; }
+function updateSliceable() { $('btnSlice').disabled = !modelBytes; if ($('btnProj3mf')) $('btnProj3mf').disabled = !modelBytes; }
 
 function crashRecovery(message) {
   // Nach einem WASM-Trap ist die Instanz tot → Worker neu starten,
@@ -4863,10 +4888,102 @@ $('btnDownload').onclick = () => {
 // GANZ ANS ENDE: top-level awaits blockieren die restliche Modul-Ausführung —
 // standen sie vor den Click-Handlern, war z. B. „Slicen" schon klickbar,
 // hatte aber noch keinen Handler (Klick verpuffte still).
+// ---------- Projekt-3MF (Einstellungen eingebettet) ----------
+// Aufbau wie ein Bambu-Studio-Projekt: Application „BambuStudio-…" + 3mfVersion
+// und Metadata/project_settings.config (alle Werte als Text/Textlisten,
+// from=project). Orca-Abkömmlinge (OrcaSlicer, Anycubic Slicer Next,
+// Snapmaker Orca, ElegooSlicer) lesen dasselbe Format.
+function projectSettingsStrings() {
+  const s = buildProjectSettings(); if (!s) return null;
+  const out = {};
+  for (const [k, v] of Object.entries(s)) {
+    if (v === undefined || v === null) continue;
+    out[k] = Array.isArray(v) ? v.map(x => String(x)) : String(v);
+  }
+  for (const k of ['inherits', 'instantiation', 'setting_id', 'type']) delete out[k];
+  out.from = 'project'; out.name = 'project_settings';
+  return out;
+}
+$('btnProj3mf').onclick = async () => {
+  const [aox, aoy] = plateOffset(activePlate);
+  const objs = [];
+  objectStates.forEach(st => {
+    if (!st || st.deleted || !st.mesh) return;
+    const pos = worldPositions(st);
+    for (let k = 0; k < pos.length; k += 3) { pos[k] -= aox; pos[k + 1] -= aoy; }
+    objs.push({ name: st.name, pos, index: st.mesh.geometry.index ? st.mesh.geometry.index.array : null });
+  });
+  if (!objs.length) { status.textContent = 'Kein Modell geladen'; return; }
+  const settings = projectSettingsStrings();
+  if (!settings) { status.textContent = 'Einstellungen noch nicht geladen'; return; }
+  status.textContent = 'Projekt-3MF wird gebaut …';
+  const blob = await build3mf(objs, { title: modelName, settings });
+  const short = $('machine').value.replace(/\s*\(?[0-9.]+(\+[0-9.]+)?\s*nozzle\)?\s*$/i, '').replace(/[^\w.-]+/g, '_');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (modelName || 'modell').replace(/\.[^.]+$/, '') + '_' + short + '.3mf';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+  status.innerHTML = '<span class="ok">Projekt-3MF gespeichert — in Bambu Studio/Orca/Anycubic/Snapmaker/Elegoo öffnen; die Einstellungen kommen mit.</span>';
+};
+
+// Vorgaben aus V3D CAD auf die geladenen Profile anwenden
+async function applyCadSettings() {
+  if (!CAD) return;
+  const opts = id => [...$(id).options].map(o => o.value).filter(Boolean);
+  let lhMatched = false;
+  const machine = $('machine').value;
+  const usable = async (listKey, n) => !/\bbase\s*$/i.test(n) && await presetCompatible(listKey, n, machine);
+  if (CAD.lh) {
+    // Schichthöhe steht vorn im Namen: „0.20mm Standard …" (Bambu) oder „0.28 Extra Draft …" (Snapmaker)
+    const want = Number(CAD.lh), lhOf = n => { const m = /^(\d+(?:\.\d+)?)\s*(?:mm)?\b/i.exec(n); return m ? parseFloat(m[1]) : NaN; };
+    const rank = n => (/standard/i.test(n) ? 3 : /optimal|quality|balanced/i.test(n) ? 2 : /draft|fine/i.test(n) ? 1 : 0)
+      - (/benchy|support|strength|speed|bambu/i.test(n) ? 5 : 0);
+    const cand = opts('process').filter(n => Math.abs(lhOf(n) - want) < 1e-3).sort((a, b) => rank(b) - rank(a));
+    for (const n of cand) if (await usable('process_list', n)) { $('process').value = n; lhMatched = true; break; }
+    if (!lhMatched) {   // keine passende Stufe: Standard-Profil + Schichthöhe als Override
+      const std = opts('process').filter(n => /standard/i.test(n)).sort((a, b) => Math.abs(lhOf(a) - want) - Math.abs(lhOf(b) - want));
+      for (const n of std) if (await usable('process_list', n)) { $('process').value = n; break; }
+    }
+  }
+  if (CAD.ftype) {
+    const ft = CAD.ftype.toUpperCase(), re = new RegExp('\\b' + ft.replace(/[-+]/g, '[-+ ]?') + '(?![-+ ]?(CF|GF|ESD|HF))\\b', 'i');
+    const def = machines.find(x => x.name === machine)?.defFilament || $('filament').value;
+    const brand = (def.split(' ')[0] || '').toLowerCase();
+    const special = /\b(CF|GF|HF|ESD|Silk|Matte|Support|Translucent|Glow|Marble|Wood|Galaxy|Sparkle|Metal|Metallic|Aero|Lite|Tough|Dynamic|Rapid|Speed|SnapSpeed|High Speed|Celestial|Luminous|Neon|Satin|Starlight|Dual|J1)\b/i;
+    const score = n => (re.test(n) ? 10 : -100) + (n.toLowerCase().startsWith(brand) ? 3 : 0) + (/basic|generic/i.test(n) ? 2 : 0)
+      + (special.test(n) && !/CF|GF/.test(ft) ? -4 : 0) - n.length / 100;
+    const cand = opts('filament').filter(n => score(n) > 0).sort((a, b) => score(b) - score(a));
+    for (const n of cand) if (await usable('filament_list', n)) { setFilament(n); break; }
+  }
+  chainsCache = null;
+  await refreshSettings();          // leert changedValues → Overrides danach setzen
+  if (CAD.lh && !lhMatched) changedValues.set('layer_height', String(CAD.lh));
+  if (CAD.walls) changedValues.set('wall_loops', String(parseInt(CAD.walls, 10)));
+  if (CAD.infill !== null) changedValues.set('sparse_infill_density', String(parseFloat(CAD.infill)) + '%');
+  if (CAD.support) {
+    const on = CAD.support !== 'aus';
+    setSupportEnabled(on);
+    if (on) changedValues.set('support_type', CAD.support === 'baum' ? 'tree(auto)' : 'normal(auto)');
+  }
+  renderSettings(); savePresets();
+  window._cadApplied = true;
+  status.innerHTML = '<span class="ok">Einstellungen aus V3D CAD übernommen: ' +
+    [$('machine').value, $('filament').value, $('process').value].join(' · ') + '</span>';
+  if (CAD.autoslice || CAD.then === 'proj') {
+    for (let i = 0; i < 240 && !modelBytes; i++) await new Promise(r => setTimeout(r, 250));   // Modell lädt parallel
+    await new Promise(r => setTimeout(r, 400));   // Vorschau/Objekte aufbauen lassen
+    if (CAD.then === 'proj' && modelBytes) $('btnProj3mf').click();
+    if (CAD.autoslice && modelBytes && !$('btnSlice').disabled) $('btnSlice').click();
+  }
+}
+window._cadDebug = () => ({ CAD, machine: $('machine').value, filament: $('filament').value, process: $('process').value, changed: [...changedValues] });
+
 await fillVendor();
 setBed(256, 256);
 await applyMachineBed();
 await refreshSettings();
+await applyCadSettings();
 </script>
 </body>
 </html>

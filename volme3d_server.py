@@ -236,6 +236,8 @@ ALLOW = {
     # Bestaetigt Android, dass Links auf /familie von der V3D-Familie-App
     # geoeffnet werden duerfen (App Links, sonst landet alles im Browser).
     '/.well-known/assetlinks.json':       ('assetlinks.json', 'application/json'),
+    # Druckerliste fuer die Druck-Vorschau (aus den V3D-Slicer-Profilen, tools/bau_druckerliste.py)
+    '/druckerliste.json':                 ('druckerliste.json', 'application/json; charset=utf-8'),
     '/favicon.svg':                       ('favicon.svg', 'image/svg+xml'),
     '/logo.svg':                          ('logo.svg', 'image/svg+xml'),
     '/volme3d-occt.js':                   ('volme3d-occt.js', 'text/javascript; charset=utf-8'),
