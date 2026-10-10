@@ -13529,6 +13529,7 @@ async function _ebValApply() {
   const round = c.canRound && _ebVal.round;
   const want = (round ? 1 : -1) * mm / 10;
   _ebValHide();
+  const warKanten = _edgeMode;   // danach wieder im Kanten-Modus weitermachen
   if (_edgeMode) exitEdgeMode();
   // Stand VOR dem Ziehen zurückholen (ohne Redo-Eintrag — es ist eine Korrektur)
   const gezogen = objects.map(x => objectToData(x, 'undo'));
@@ -13564,6 +13565,7 @@ async function _ebValApply() {
   const ctx2 = _ebValCapture(f);
   await _applyEdgeHandleValue(f);
   if (_edgeMode) { const e2 = _edgeObj; exitEdgeMode(); if (e2 && objects.includes(e2)) selectObjs([e2]); }
+  if (warKanten && selectedObjs.length === 1 && objects.includes(selectedObjs[0])) enterEdgeMode(true);
   _fpCurType = null; updateFP();
   _ebValShow(ctx2);   // Feld bleibt für weitere Korrekturen
 }
@@ -17147,6 +17149,9 @@ function clearSelLines() { selLines = []; }
 function rebuildSelLine(o) { /* selection shown via SVG overlay */ }
 
 function selectObjs(objs) {
+  // Kanten-Modus gehört zu genau einem gewählten Körper — wechselt die Auswahl,
+  // endet er (sonst blieb der orange Kanten-Griff stehen, Ralf 11.10.)
+  if (_edgeMode && !(objs.length === 1 && objs[0] === _edgeObj)) exitEdgeMode();
   // Ausricht-Modus braucht eine Auswahl — ist sie leer, Anfasser weg
   if (specialMode === 'align' && objs.length < 1) exitSpecialMode();
   clearSelLines();
@@ -17165,6 +17170,7 @@ function selectObjs(objs) {
 
 function deselect() {
   if (_fdMode) exitFaceDownMode();
+  if (_edgeMode) exitEdgeMode();
   if (_shellMode) exitShellMode();
   if (specialMode === 'align') exitSpecialMode();
   clearSelLines();
@@ -29820,6 +29826,14 @@ canvas.addEventListener('mousedown', e => {
   if (_revolveMode) { _revolveAddPoint(e); return; }
   if (_sk.active) { _skClick(e); return; }
   if (!_edgeMode && _edgeBevelDragging) { _edgeBevelDragging = false; _edgeBevelDragStart = null; }
+  // Kanten-Modus: Klick ins Leere oder auf einen anderen Körper beendet ihn und
+  // läuft dann normal weiter (Auswahl/Rahmen) — vorher schluckte der Modus jeden
+  // Klick, und der orange Griff ging nur mit Esc oder Neuladen weg (Ralf 11.10.)
+  if (_edgeMode && !e.shiftKey && (_edgeGlobal || _edgePickIdx(e).idx < 0)) {
+    const _eo = _edgeObj;
+    const _onObj = pickObjects(e).some(h => h.object === _eo || (h.object.parent === _eo));
+    if (!_onObj) exitEdgeMode();
+  }
   if (_edgeMode) {
     if (!_edgeGlobal) {
       const _pick = _edgePickIdx(e), idx = _pick.idx;
@@ -34331,7 +34345,7 @@ _ebh.addEventListener('pointerup', e => {
   if (!_edgeBevelDragging) return;
   _edgeBevelDragging = false;
   canvas.style.cursor = 'crosshair';
-  _ebPrevRelease(_edgeBevelDragVal);   // Vorschau verwerfen, regulär (mit Undo) anwenden
+  _edgeModeWeiter(_ebPrevRelease(_edgeBevelDragVal));   // Vorschau verwerfen, regulär (mit Undo) anwenden, Modus bleibt
 });
 _ebh.addEventListener('pointercancel', () => {
   if (!_edgeBevelDragging) return;
@@ -34340,11 +34354,12 @@ _ebh.addEventListener('pointercancel', () => {
   _ebPrevEnd();
 });
 
-// ═══ KANTE DIREKT ANFASSEN (ohne „⬡ Kanten bearbeiten") ═══════════════════
-// Wie in Shapr3D/Fusion: Ist ein Körper gewählt, reicht es, auf eine seiner
-// sichtbaren Kanten zu drücken und zu ziehen — der Kanten-Modus geht dabei
-// von selbst auf, die Kante ist gewählt und der Zug läuft wie am orangen
-// Griff (inkl. Live-Vorschau). Ein Klick ohne Ziehen wählt nur die Kante.
+// ═══ KANTE DIREKT ANFASSEN (im Modus „⬡ Kanten bearbeiten") ═══════════════
+// Im Kanten-Modus reicht es, auf eine sichtbare Kante zu drücken und zu
+// ziehen — die Kante ist gewählt und der Zug läuft wie am orangen Griff
+// (inkl. Live-Vorschau). Ein Klick ohne Ziehen wählt nur die Kante.
+// Bis 11.10. ging das auch in der normalen Auswahl (Modus öffnete still) —
+// Anfänger landeten so versehentlich im Kanten-Modus mit orangem Griff (Ralf).
 // Getroffen wird in BILDSCHIRM-Pixeln an den schwarzen Kantenlinien (die
 // zeigen genau, was der Nutzer als Kante sieht); verdeckte Kanten zählen nicht.
 // Der Verschiebe-Gizmo (_mgDown) hat Vorrang: er ist vorher registriert.
@@ -34378,14 +34393,6 @@ function _dedRims(o) {
     _dedRimCache.set(o.geometry, r);
   }
   return r;
-}
-
-function _dedBlocked() {
-  return _edgeMode || _edgeBevelDragging || workplaneMode || _fdMode || _shellMode || _revolveMode ||
-    _sk.active || _plugMode || _lf.active || _pp.active || _bndPick || _lblPick || _measureMode ||
-    isDrag || isOrbit || isRubber || _mg.drag || _mg.hover ||
-    _cut.active || _eraser.active || _sculpt.active || _paint.active || _mmu.active ||
-    selectedObjs.length !== 1;
 }
 
 // Nächste sichtbare Kantenlinie des gewählten Körpers unter dem Zeiger
@@ -34475,18 +34482,11 @@ function _dedHover(pk) {
   canvas.style.cursor = 'pointer'; _ded.cursorSet = true;
 }
 
+// Seit 11.10. (Ralf): KEIN Kanten-Hover mehr in der normalen Auswahl — die
+// Kante leuchtet nur im Kanten-Modus (dort über _edgeHover). Hier nur noch
+// einen evtl. stehengebliebenen Hover-Rest wegräumen.
 function _dedMoveHover(e) {
-  if (e.buttons) return;
-  _ded.lastEv = { clientX: e.clientX, clientY: e.clientY, pointerType: e.pointerType, target: e.target };
-  if (_ded.raf) return;
-  _ded.raf = requestAnimationFrame(() => {
-    _ded.raf = 0;
-    const ev = _ded.lastEv;
-    if (!ev || ev.target !== canvas || _dedBlocked()) { _dedHover(null); return; }
-    let pk = null;
-    try { pk = _dedPick(ev); } catch (err) {}
-    _dedHover(pk);
-  });
+  if ((_ded.hl && _ded.hl.visible) || _ded.cursorSet) _dedHover(null);
 }
 
 // Welche Kante im Kanten-Modus entspricht dem angefassten Punkt (Welt)?
@@ -34574,20 +34574,10 @@ function _dedDown(e) {
     _dedStartDrag(e);
     return;
   }
-  if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
-  let pk = null;
-  try { if (_dedBlocked()) return; pk = _dedPick(e); } catch (err) { return; }
-  if (!pk) return;
-  enterEdgeMode(true);
-  const idx = _dedEdgeIndex(pk.pw);
-  if (idx < 0) { exitEdgeMode(); return; }   // keine bearbeitbare Kante → normales Verhalten
-  e.stopPropagation(); e.preventDefault();
-  _dedHover(null);
-  _edgeSel.clear(); _edgeSel.add(idx); _edgeHover = -1;
-  _updateEdgeColors();
-  _edgeBevelHandlePos = pk.pw.clone();
-  _fpCurType = null; updateFP();
-  _dedStartDrag(e);
+  // Normale Auswahl: Kanten werden NICHT mehr direkt gegriffen (Ralf 11.10.:
+  // der orange Kanten-Griff erschien beim Anklicken/Verschieben eines Körpers,
+  // ohne dass „⬡ Kanten bearbeiten" gewählt war, und hielt die Szene fest).
+  // Fasen/Runden nur im Kanten-Modus — der Klick wählt/verschiebt den Körper.
 }
 
 function _dedDragMove(e) {
@@ -34597,6 +34587,19 @@ function _dedDragMove(e) {
   _edgeBevelDragVal = dx * 0.1;
   canvas.style.cursor = 'ew-resize';
   _ebPrevRequest(Math.abs(_edgeBevelDragVal) > 0.5 ? _edgeBevelDragVal / 10 : 0);
+}
+
+// Nach einer Fase/Rundung im Kanten-Modus weitermachen: der OCCT-Weg baut den
+// Körper neu und beendet dabei den Modus — seit die Kanten nicht mehr in der
+// normalen Auswahl greifbar sind, öffnen wir ihn am Ergebnis wieder, sofern der
+// Nutzer inzwischen nichts anderes angefangen hat.
+function _edgeModeWeiter(r) {
+  if (!r) return;
+  Promise.resolve(r).then(() => {
+    if (_edgeMode || _edgeBevelDragging || selectedObjs.length !== 1 || !objects.includes(selectedObjs[0])) return;
+    if (workplaneMode || _fdMode || _shellMode || _revolveMode || _sk.active || _lf.active || _pp.active) return;
+    enterEdgeMode(true);
+  }).catch(() => {});
 }
 
 function _dedDragUp(e) {
@@ -34611,12 +34614,9 @@ function _dedDragUp(e) {
   const val = _edgeBevelDragVal;
   // Nur geklickt: Kante bleibt gewählt, Griff steht bereit (Kanten-Modus offen)
   if (e && e.type !== 'pointercancel' && Math.abs(val) > 0.5) {
-    // Nach dem Direkt-Zug zurück in die normale Auswahl (Zylinder-Pfad ließ
-    // den Kanten-Modus sonst offen) — die nächste Kante greift man wieder direkt
-    const r = _ebPrevRelease(val);
-    if (r) Promise.resolve(r).then(() => {
-      if (_edgeMode) { const o = _edgeObj; exitEdgeMode(); if (o && objects.includes(o)) selectObjs([o]); _fpCurType = null; updateFP(); }
-    });
+    // Kanten-Modus bleibt offen (er wurde bewusst über „⬡ Kanten bearbeiten"
+    // geöffnet) — die nächste Kante lässt sich gleich weiter ziehen
+    _edgeModeWeiter(_ebPrevRelease(val));
   } else { _ebPrevEnd(); _edgeBevelDragVal = 0; }
 }
 

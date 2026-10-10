@@ -1,7 +1,7 @@
 import { chromium } from '/home/v3da/node_modules/@playwright/test/index.mjs';
 import { spawn } from 'child_process';
 const PORT = 8854;
-const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { stdio: 'ignore', cwd: '/home/v3da' });
+const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { stdio: 'ignore', cwd: process.cwd() });
 await new Promise(r => setTimeout(r, 1500));
 const b = await chromium.launch({ args: ['--use-gl=swiftshader','--enable-webgl'] });
 const pg = await b.newPage({ viewport: { width: 1400, height: 900 } });
@@ -18,7 +18,8 @@ try {
       _edgeSel.clear(); _edgeSel.add(o.userData._dynamicEdges.findIndex(pred)); await _applyEdgeHandleValue(val); if (_edgeMode) exitEdgeMode(); };
     await _loadOCCT(); _newCreate(false); addShape('box');
     await apply(isE(1,2,-1, 1,2,1), -0.7); await apply(isE(-1,2,-1, -1,2,1), 0.8);
-    selectObjs([objects[0]]);
+    // Seit 11.10. (Ralf) greifen Kanten nur im Modus „⬡ Kanten bearbeiten"
+    selectObjs([objects[0]]); enterEdgeMode(true);
   });
   await pg.waitForTimeout(300);
   // Bildschirmpunkt auf der senkrechten Kante x=1,z=1 bei y=0.6
@@ -33,7 +34,7 @@ try {
     const after = await pg.evaluate(() => (objects[objects.length-1].userData._occtParams?.ops || []).map(x => x.type + x.dist.toFixed(2)));
     console.log('dx', dx, JSON.stringify(st), '→', JSON.stringify(after));
     await pg.evaluate(() => { undo(); }); await pg.waitForTimeout(500);
-    await pg.evaluate(() => { if (_edgeMode) exitEdgeMode(); selectObjs([objects[objects.length-1]]); });
+    await pg.evaluate(() => { if (_edgeMode) exitEdgeMode(); selectObjs([objects[objects.length-1]]); enterEdgeMode(true); });
     await pg.waitForTimeout(200);
   }
 } finally { await b.close(); srv.kill(); }

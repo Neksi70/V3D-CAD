@@ -1,11 +1,11 @@
-// Quader mit zwei Löchern (abgezogen) → Lochränder DIREKT anfassen:
+// Quader mit zwei Löchern (abgezogen) → Lochränder im Kanten-Modus DIREKT anfassen:
 // Hover leuchtet ganzen Rand, beim Ziehen Live-Vorschau (Manifold), rechts =
 // Rundung, links = Fase. Zweites Loch muss NACH dem ersten Bevel noch greifbar
 // sein (Ergebnis hat dann Kantenlinien — bis 1.18.70 war dann Schluss).
 import { chromium } from '/home/v3da/node_modules/@playwright/test/index.mjs';
 import { spawn } from 'child_process';
 const PORT = 8862;
-const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { stdio: 'ignore', cwd: '/home/v3da' });
+const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { stdio: 'ignore', cwd: process.cwd() });
 await new Promise(r => setTimeout(r, 1500));
 const b = await chromium.launch({ args: ['--use-gl=swiftshader','--enable-webgl'] });
 const pg = await b.newPage({ viewport: { width: 1400, height: 900 } });
@@ -28,10 +28,13 @@ const rimPt = hx => pg.evaluate(hx => {
 async function zug(hx, dx) {
   const pt = await rimPt(hx);
   if (!pt) return { hx, dx, fehler: 'kein Rand erkannt' };
+  // Seit 11.10. (Ralf) greifen Kanten/Ränder nur im Modus „⬡ Kanten bearbeiten"
+  await pg.evaluate(() => { if (!_edgeMode) { selectObjs([objects[0]]); enterEdgeMode(true); } });
   await pg.mouse.move(pt.x - 30, pt.y - 30); await pg.mouse.move(pt.x, pt.y);
   await pg.waitForTimeout(200);
-  console.log('an', hx, await pg.evaluate(pt => { const e = document.elementFromPoint(pt.x, pt.y); return e.tagName + ' mgHover=' + JSON.stringify(_mg.hover) + ' blocked=' + _dedBlocked(); }, pt), JSON.stringify(await pg.evaluate(() => { try { return !!_dedPick({ clientX: _ded.lastEv.clientX, clientY: _ded.lastEv.clientY, pointerType: 'mouse' }); } catch (e) { return e.message; } })));
-  const hover = await pg.evaluate(() => !!(_ded.hl && _ded.hl.visible) ? _ded.hl.geometry.attributes.position.count : 0);
+  console.log('an', hx, await pg.evaluate(pt => { const e = document.elementFromPoint(pt.x, pt.y); return e.tagName + ' mgHover=' + JSON.stringify(_mg.hover) + ' edgeMode=' + _edgeMode; }, pt));
+  // Hover im Kanten-Modus: die Randkante ist als _edgeHover markiert
+  const hover = await pg.evaluate(() => _edgeHover >= 0 && (_edgeObj.userData._dynamicEdges[_edgeHover] || {}).rim ? 99 : 0);
   const v0 = await pg.evaluate(() => __vol(objects[0].geometry));
   const o0 = await pg.evaluate(() => objects[0].uuid);
   await pg.mouse.down();
@@ -68,7 +71,7 @@ try {
   const a = await zug(-3.5, +40);          // Loch links: Rundung
   await pg.keyboard.press('Escape');       // Maßfeld (_ebVal) schließen — es liegt sonst über dem Nachbarloch
   await pg.waitForTimeout(300);
-  console.log(await pg.evaluate(() => JSON.stringify({ edgeMode: _edgeMode, sel: selectedObjs.length, selIsObj: selectedObjs[0] === objects[0], blocked: _dedBlocked(), rims: _dedRims(objects[0]).map(r => r.cW.map(v => +v.toFixed(2)).concat([+r.axisW[1].toFixed(2)])), analytic: _dedAnalytic(objects[0]) })));
+  console.log(await pg.evaluate(() => JSON.stringify({ edgeMode: _edgeMode, sel: selectedObjs.length, selIsObj: selectedObjs[0] === objects[0], rims: _dedRims(objects[0]).map(r => r.cW.map(v => +v.toFixed(2)).concat([+r.axisW[1].toFixed(2)])), analytic: _dedAnalytic(objects[0]) })));
   const c = await zug(-1.5, -40);          // Loch rechts, NACH dem ersten Bevel: Fase
   console.log(JSON.stringify(a)); console.log(JSON.stringify(c));
   const gut = x => x.hover > 2 && x.kind === 'rim' && x.prevHalb < x.v0 && x.prevVoll < x.prevHalb && x.origHidden &&

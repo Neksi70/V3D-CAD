@@ -1,7 +1,7 @@
 import { chromium } from '/home/v3da/node_modules/@playwright/test/index.mjs';
 import { spawn } from 'child_process';
 const PORT = 8849;
-const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { stdio: 'inherit' });
+const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { stdio: 'inherit', cwd: process.cwd() });
 await new Promise(r => setTimeout(r, 1500));
 const b = await chromium.launch({ args: ['--use-gl=swiftshader','--enable-webgl'] });
 const pg = await b.newPage({ viewport: { width: 1400, height: 900 } });
@@ -39,17 +39,18 @@ try {
   await pg.waitForFunction(() => typeof addShape === 'function');
   await pg.evaluate(() => hideStarter());
   await pg.mouse.click(700, 450);
-  await pg.evaluate(async () => { _newCreate(false); addShape('box'); await _loadOCCT(); selectObjs([objects[0]]); });
+  // Seit 11.10. (Ralf) greifen Kanten nur im Modus „⬡ Kanten bearbeiten" → erst öffnen
+  await pg.evaluate(async () => { _newCreate(false); addShape('box'); await _loadOCCT(); selectObjs([objects[0]]); enterEdgeMode(true); });
   await pg.waitForTimeout(300);
   let E = await visEdges(); console.log('visible edges', E.length);
-  // 1) Direkt: erste Kante runden
+  // 1) Im Kanten-Modus direkt: erste Kante runden
   const e1 = E[0]; await drag(e1, 30); check('direkt #1 Rundung', await opsWorld(), e1.w, 'fillet');
   // 2) Direkt: die am weitesten entfernte sichtbare Kante fasen
-  await pg.evaluate(() => selectObjs([objects[objects.length-1]]));
+  await pg.evaluate(() => { selectObjs([objects[objects.length-1]]); if (!_edgeMode) enterEdgeMode(true); });
   E = await visEdges(); const far = E.reduce((m, p) => d3(p.w, e1.w) > d3(m.w, e1.w) ? p : m, E[0]);
   await drag(far, -30); check('direkt #2 gegenüber Fase', await opsWorld(), far.w, 'chamfer');
   // 3) Klick (ohne Ziehen) auf Kante A → Kanten-Modus; dann Kante B drücken+ziehen
-  await pg.evaluate(() => selectObjs([objects[objects.length-1]]));
+  await pg.evaluate(() => { selectObjs([objects[objects.length-1]]); if (!_edgeMode) enterEdgeMode(true); });
   E = await visEdges();
   const cand = E.filter(p => d3(p.w, e1.w) > 0.5 && d3(p.w, far.w) > 0.5);
   const A = cand[0], B = cand.reduce((m, p) => d3(p.w, A.w) > d3(m.w, A.w) ? p : m, cand[0]);

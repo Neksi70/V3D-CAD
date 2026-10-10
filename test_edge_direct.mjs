@@ -1,7 +1,7 @@
 import { chromium } from '/home/v3da/node_modules/@playwright/test/index.mjs';
 import { spawn } from 'child_process';
 const PORT = 8848;
-const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { stdio: 'inherit' });
+const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { stdio: 'inherit', cwd: process.cwd() });
 await new Promise(r => setTimeout(r, 1500));
 const b = await chromium.launch({ args: ['--use-gl=swiftshader','--enable-webgl'] });
 const pg = await b.newPage({ viewport: { width: 1400, height: 900 } });
@@ -27,30 +27,38 @@ try {
   await pg.evaluate(() => hideStarter());
   await pg.mouse.click(700, 450);
   for (const shape of ['box', 'cylinder']) {
+    // Seit 11.10. (Ralf) greifen Kanten nur im Modus „⬡ Kanten bearbeiten" —
+    // in der normalen Auswahl darf weder Leuchten noch Griff kommen
     await pg.evaluate(async (s) => { _newCreate(false); addShape(s); await _loadOCCT(); selectObjs([objects[objects.length-1]]); }, shape);
+    await pg.waitForTimeout(300);
+    { const p0 = await edgePt(); await pg.mouse.move(p0.x + 40, p0.y + 40); await pg.mouse.move(p0.x, p0.y); await pg.waitForTimeout(150);
+      await pg.mouse.down(); await pg.mouse.up(); await pg.waitForTimeout(200);
+      const n = await pg.evaluate(() => ({ hl: !!(_ded.hl && _ded.hl.visible), edgeMode: _edgeMode, handle: document.getElementById('edge-bevel-handle').style.display }));
+      console.log('  normal (soll: nichts)', n, n.hl || n.edgeMode || n.handle !== 'none' ? 'FEHLER' : 'ok'); }
+    await pg.evaluate(() => { selectObjs([objects[objects.length-1]]); enterEdgeMode(true); });
     await pg.waitForTimeout(300);
     const p = await edgePt();
     console.log(shape, 'edge point', JSON.stringify(p));
     // Hover
     await pg.mouse.move(p.x + 40, p.y + 40); await pg.mouse.move(p.x, p.y); await pg.waitForTimeout(150);
-    console.log('  hover', await pg.evaluate(() => ({ hl: !!(_ded.hl && _ded.hl.visible), cur: canvas.style.cursor })));
+    console.log('  hover', await pg.evaluate(() => ({ edgeHover: _edgeHover, cur: canvas.style.cursor })));
     // Klick ohne Ziehen
     await pg.mouse.down(); await pg.mouse.up(); await pg.waitForTimeout(200);
     console.log('  click', await pg.evaluate(() => ({ edgeMode: _edgeMode, sel: [..._edgeSel], handle: document.getElementById('edge-bevel-handle').style.display })));
-    await pg.evaluate(() => { exitEdgeMode(); selectObjs([objects[objects.length-1]]); });
+    await pg.evaluate(() => { exitEdgeMode(); selectObjs([objects[objects.length-1]]); enterEdgeMode(true); });
     // Drücken + Ziehen nach links
     await pg.mouse.move(p.x, p.y); await pg.mouse.down();
     for (let i = 1; i <= 10; i++) { await pg.mouse.move(p.x - i*2, p.y); await pg.waitForTimeout(30); }
     await pg.waitForTimeout(300);
     console.log('  drag', await pg.evaluate(() => ({ prev: _ebPrev && _ebPrev.kind, lbl: document.getElementById('edge-bevel-label').textContent })));
-    await pg.screenshot({ path: '/tmp/claude-1000/-home-v3da/8ef21cf7-b51e-42e7-9863-7e8789f7c022/scratchpad/direct_' + shape + '.png' });
+    await pg.screenshot({ path: '/tmp/direct_' + shape + '.png' });
     const pos0 = await pg.evaluate(() => objects[objects.length-1].position.toArray());
     await pg.mouse.up(); await pg.waitForTimeout(800);
     console.log('  after', await pg.evaluate((pos0) => { const o = objects[objects.length-1]; const g=o.geometry;
       return { n: objects.length, tris: (g.index?g.index.count:g.attributes.position.count)/3, occt: o.userData._occtParams?.ops?.map(x=>x.type+':'+x.dist.toFixed(2)), cap: o.userData.capBevel, posSame: JSON.stringify(o.position.toArray())===JSON.stringify(pos0) }; }, pos0));
   }
   // Gegenprobe: Ziehen auf der Fläche verschiebt weiter
-  await pg.evaluate(() => { _newCreate(false); addShape('box'); selectObjs([objects[0]]); });
+  await pg.evaluate(() => { _newCreate(false); addShape('box'); selectObjs([objects[0]]); });   // normale Auswahl
   const c = await pg.evaluate(() => { const o=objects[0]; const m=o.position.clone().project(camera); const r=vpEl.getBoundingClientRect(); return {x:r.left+(m.x+1)/2*r.width, y:r.top+(1-m.y)/2*r.height, p:o.position.toArray()}; });
   await pg.mouse.move(c.x, c.y); await pg.mouse.down(); await pg.mouse.move(c.x+60, c.y, {steps:6}); await pg.mouse.up();
   console.log('face-drag moved:', await pg.evaluate((p0) => JSON.stringify(objects[0].position.toArray()) !== JSON.stringify(p0), c.p), 'edgeMode', await pg.evaluate(() => _edgeMode));

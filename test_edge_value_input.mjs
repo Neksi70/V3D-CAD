@@ -4,7 +4,7 @@
 import { chromium } from '/home/v3da/node_modules/@playwright/test/index.mjs';
 import { spawn } from 'child_process';
 const PORT = 8864;
-const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { stdio: 'ignore', cwd: '/home/v3da' });
+const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { stdio: 'ignore', cwd: process.cwd() });
 await new Promise(r => setTimeout(r, 1500));
 const b = await chromium.launch({ args: ['--use-gl=swiftshader','--enable-webgl'] });
 const pg = await b.newPage({ viewport: { width: 1400, height: 900 } });
@@ -17,6 +17,8 @@ await pg.addInitScript(() => {
 const scr = w => pg.evaluate(w => { const v = new THREE.Vector3(...w).project(camera); const r = vpEl.getBoundingClientRect();
   return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height }; }, w);
 const drag = async (pt, dx) => {
+  // Seit 11.10. (Ralf) greifen Kanten nur im Modus „⬡ Kanten bearbeiten"
+  await pg.evaluate(() => { if (!_edgeMode) { selectObjs([objects[0]]); enterEdgeMode(true); } });
   await pg.mouse.move(pt.x - 30, pt.y - 30); await pg.mouse.move(pt.x, pt.y); await pg.waitForTimeout(200);
   await pg.mouse.down(); await pg.mouse.move(pt.x + dx / 2, pt.y); await pg.mouse.move(pt.x + dx, pt.y);
   await pg.waitForTimeout(300); await pg.mouse.up();

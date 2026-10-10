@@ -2,7 +2,7 @@
 import { chromium } from '/home/v3da/node_modules/@playwright/test/index.mjs';
 import { spawn } from 'child_process';
 const PORT = 8855;
-const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { stdio: 'ignore' });
+const srv = spawn('python3', ['volme3d_server.py', String(PORT), '--dev'], { stdio: 'ignore', cwd: process.cwd() });
 await new Promise(r => setTimeout(r, 1500));
 const b = await chromium.launch({ args: ['--use-gl=swiftshader','--enable-webgl'] });
 const pg = await b.newPage({ viewport: { width: 1400, height: 900 } });
@@ -14,6 +14,8 @@ try {
   await pg.evaluate(() => hideStarter());
   await pg.mouse.click(700, 450);
   for (const [label, mv] of [['unverschoben', { p: [0,0,0], s: 1 }], ['verschoben x+1.5 y+0.5', { p: [1.5,0.5,0], s: 1 }], ['skaliert 1.5', { p: [0,0,0], s: 1.5 }]]) {
+    // Maßfeld vom vorigen Zug schließen (liegt sonst über der nächsten Kante)
+    await pg.evaluate(() => { if (typeof _ebValHide === 'function') _ebValHide(); });
     await pg.evaluate(async (mv) => {
       const isE = (ax,ay,az,bx,by,bz) => e => { const A=e.worldA,B=e.worldB, near=(p,x,y,z)=>Math.abs(p[0]-x)+Math.abs(p[1]-y)+Math.abs(p[2]-z)<0.01;
         return (near(A,ax,ay,az)&&near(B,bx,by,bz))||(near(A,bx,by,bz)&&near(B,ax,ay,az)); };
@@ -22,7 +24,7 @@ try {
       _edgeSel.clear(); _edgeSel.add(o.userData._dynamicEdges.findIndex(isE(1,2,-1, 1,2,1))); await _applyEdgeHandleValue(0.6);
       if (_edgeMode) exitEdgeMode();
       const r = objects[0]; r.position.set(...mv.p); r.scale.setScalar(mv.s); r.updateMatrixWorld(true);
-      selectObjs([r]);
+      selectObjs([r]); enterEdgeMode(true);   // seit 11.10. (Ralf) Kanten nur im Kanten-Modus greifbar
     }, mv);
     await pg.waitForTimeout(300);
     // senkrechte Kante vorn links (Welt, vor dem Verschieben x=-1,z=1) → nach Transform
