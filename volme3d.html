@@ -47,6 +47,17 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);width:100vw;
   #tb-r1 .sep,#tb-r2 .sep{display:none}
 }
 #tb-r1{border-bottom:1px solid var(--border);align-items:flex-end}
+/* Beginner | Advanced */
+#mode-sw{display:flex;border:1.5px solid #3a3f52;border-radius:12px;overflow:hidden}
+#mode-sw button{background:transparent;border:0;color:#9aa1b3;font-size:10px;font-weight:800;padding:3px 9px;cursor:pointer;letter-spacing:.04em}
+#mode-sw button.on{background:#F97316;color:#fff}
+.adv-only{display:none!important}
+body.adv .adv-only{display:flex!important}
+#adv-browser{display:none;width:230px;flex-shrink:0;flex-direction:column;background:var(--white);border-right:1px solid var(--border);min-height:0}
+body.adv #adv-browser{display:flex}
+#adv-browser .advb-h{padding:9px 10px 6px;font-size:9px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:var(--dim);border-bottom:1px solid var(--border)}
+#adv-browser .advb-h span{display:block;letter-spacing:0;text-transform:none;font-weight:600;font-size:10px;margin-top:2px}
+#adv-browser .advb-f{padding:6px 10px;font-size:9.5px;color:var(--dim);border-top:1px solid var(--border)}
 /* Werkzeug-Gruppen mit Mini-Überschrift — das Auge springt zur richtigen Schublade */
 .tbg{display:flex;flex-direction:column;gap:2px;flex-shrink:0}
 .tbg-l{font-size:9px;font-weight:800;color:var(--dim);letter-spacing:.07em;line-height:1;padding-left:3px;text-transform:uppercase;white-space:nowrap;user-select:none}
@@ -1281,6 +1292,9 @@ const firebaseConfig = {
     <div id="logo"><img src="logo.svg" style="height:26px;width:auto;margin-right:5px;"> <span>V3D<span style="color:#F97316"> CAD</span></span></div>
     <div id="version-btn" onclick="_openChangelog()" title="Was ist neu? Versionshistorie öffnen">v1.15.53<div id="version-dot"></div></div>
     <div id="dev-badge" onclick="_toggleDevMode()" title="Dev-Mode (Strg+Shift+D)">🧪 DEV</div>
+    <div id="mode-sw" title="Arbeitsweise: Beginner = Formen zusammenschieben (wie Tinkercad) · Advanced = Skizze → Extrudieren → Verlauf (wie Fusion/Onshape). Das Modell bleibt beim Umschalten gleich.">
+      <button data-m="beginner" onclick="_advSet('beginner')">BEGINNER</button><button data-m="advanced" onclick="_advSet('advanced')">ADVANCED</button>
+    </div>
     <div class="r0-spacer"></div>
     <div id="fs-tb" onclick="_fsToggle()" title="Vollbild (F11) — Browser-Leisten ausblenden, mehr Platz für das Modell"><svg viewBox="0 0 16 16"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg></div>
     <div id="howto-tb" onclick="_howtoMenu()" title="Kurze Howto-Videos: zeigen Schritt für Schritt, wie ein Werkzeug bedient wird">🎬 Videos</div>
@@ -11321,6 +11335,80 @@ function _skMakeBodyFromShapes(shapes, hmm, offU){
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
   return mesh;
 }
+// ═══ ARBEITSWEISE: BEGINNER | ADVANCED (1.18.161) ═════════════════════════════
+// Wie bei JumpStart: ein Modell, zwei Anordnungen. Beginner = die gewohnte
+// Oberfläche (Vorgabe, nichts ändert sich). Advanced ordnet nur um — nichts wird
+// ausgeblendet oder ausgegraut (Volker 28.09.):
+//   • Werkzeugband in Arbeitsablauf-Reihenfolge wie Fusion/Onshape: Erstellen →
+//     Konstruieren → Form ändern → Kombinieren → Anordnen → Prüfen → Ansicht → Einfügen
+//     (Erstellen/Konstruieren holen die Skizzen-/Modellier-Werkzeuge nach vorn,
+//     die sonst im Werkzeug-Menü bzw. in der linken Leiste stecken),
+//   • links ein Browser mit allen Körpern und ihren Skizzen/Gewinden (Auge, ✎) —
+//     die Elemente-Liste zieht dafür von rechts nach links um.
+// Umschalten ändert am Modell nichts; die Wahl wird gemerkt.
+const _ADV_ORDER = { erstellen: 1, konstruieren: 2, 'form ändern': 3, kombinieren: 4, anordnen: 5, 'prüfen': 6, ansicht: 7, datei: 8 };
+let _advMode = (() => { try { return localStorage.getItem('v3d_modus') === 'advanced' ? 'advanced' : 'beginner'; } catch (e) { return 'beginner'; } })();
+function _advBuild() {
+  const r1 = document.getElementById('tb-r1'); if (!r1 || document.getElementById('adv-create')) return;
+  const grp = (id, label, btns) => {
+    const g = document.createElement('div'); g.className = 'tbg adv-only'; g.id = id; g.dataset.g = label.toLowerCase();
+    g.innerHTML = `<span class="tbg-l">${label}</span><div class="tbg-row">` +
+      btns.map(([fn, t, tip]) => `<button class="btn" onclick="${fn}" title="${tip}">${t}</button>`).join('') + '</div>';
+    return g;
+  };
+  const burger = document.getElementById('burger-wrap');
+  const g1 = grp('adv-create', 'Erstellen', [
+    ['enterSketchMode()', '✏ Skizze', 'Skizze zeichnen (Bauplatte, Arbeitsebene oder ▱ Auf Fläche) — dann extrudieren, anfügen oder abziehen. Bleibt im Verlauf und lässt sich später ändern'],
+    ['enterRevolveMode()', '⟲ Drehen', 'Profil zeichnen und um eine Achse drehen (Vasen, Hülsen, Rotationskörper)'],
+    ['enterLoftMode()', '⤧ Loft', 'Zwei oder mehr Flächen nacheinander anklicken → weicher Übergangskörper'],
+    ['_thfStart()', '🔩 Gewinde', 'Gewinde an Fläche: Bohrung (innen) oder Zylinder (außen) anklicken'],
+    ['_flxOpen()', '🔗 Flexi', 'Beweglich machen: flaches Teil in Glieder mit Fass-Scharnieren'],
+  ]);
+  const g2 = grp('adv-construct', 'Konstruieren', [
+    ['toggleWorkplane()', '▱ Arbeitsebene', 'Arbeitsebene auf eine Fläche legen (P) — neue Körper und Skizzen landen darauf'],
+    ['enterEdgeMode()', '⬡ Kanten', 'Kanten runden oder abschrägen'],
+    ['enterPushPull()', '⇕ Fläche ziehen', 'Fläche verschieben / drücken-ziehen'],
+    ['enterShellMode()', '▢ Schale', 'Aushöhlen: Fläche öffnen, Wandstärke wählen'],
+    ['toggleTexPanel()', '▦ Textur', 'Textur aufbringen — ganzes Teil, Flächenarten oder 👆 einzelne Flächen'],
+  ]);
+  r1.insertBefore(g2, burger.nextSibling); r1.insertBefore(g1, g2);
+  r1.querySelectorAll(':scope > .tbg').forEach(g => {
+    if (!g.dataset.g) { const l = g.querySelector('.tbg-l'); g.dataset.g = l ? l.textContent.trim().toLowerCase() : ''; }
+  });
+  // Browser-Leiste links
+  const main = document.getElementById('main'), vp = document.getElementById('vp');
+  const br = document.createElement('div'); br.id = 'adv-browser';
+  br.innerHTML = `<div class="advb-h">Browser <span>Körper · Skizzen · Gewinde</span></div><div id="adv-tree-slot" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>
+    <div class="advb-f">✎ / Doppelklick: Skizze oder Gewinde ändern · 👁 ein/aus</div>`;
+  main.insertBefore(br, vp);
+  const ph = document.createElement('div'); ph.id = 'adv-tree-ph';
+  ph.innerHTML = '<div style="padding:14px;font-size:10.5px;color:var(--dim);line-height:1.5">In <b>Advanced</b> stehen die Elemente links im <b>Browser</b>. <span style="color:var(--acc);cursor:pointer" onclick="_advSet(\'beginner\')">Zu Beginner wechseln</span></div>';
+  document.getElementById('tree').after(ph);
+}
+function _advSet(mode) {
+  _advMode = mode === 'advanced' ? 'advanced' : 'beginner';
+  try { localStorage.setItem('v3d_modus', _advMode); } catch (e) {}
+  _advApply();
+  if (_advMode === 'advanced') notify('Advanced: Werkzeuge in Arbeitsablauf-Reihenfolge, links der Browser mit Körpern und Skizzen. Das Modell bleibt, wie es ist.', 'ok');
+}
+function _advApply() {
+  _advBuild();
+  const adv = _advMode === 'advanced';
+  document.body.classList.toggle('adv', adv);
+  document.querySelectorAll('#mode-sw button').forEach(b => b.classList.toggle('on', b.dataset.m === _advMode));
+  const r1 = document.getElementById('tb-r1');
+  r1.querySelectorAll(':scope > .tbg').forEach(g => { g.style.order = adv ? String(_ADV_ORDER[g.dataset.g] || 9) : ''; });
+  const burger = document.getElementById('burger-wrap'); if (burger) burger.style.order = adv ? '0' : '';
+  // Elemente-Liste umziehen
+  const tree = document.getElementById('tree'), slot = document.getElementById('adv-tree-slot'), ph = document.getElementById('adv-tree-ph');
+  if (adv && tree.parentElement !== slot) slot.appendChild(tree);
+  if (!adv && tree.parentElement === slot) ph.before(tree);
+  ph.style.display = adv ? '' : 'none';
+  updateTree();
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 30);   // Ansicht an neue Breite anpassen
+}
+setTimeout(_advApply, 0);
+
 // ═══ VERLAUF: SKIZZEN + GEWINDE NACHTRÄGLICH ÄNDERN (userData.feat, 1.18.159) ═══
 // Parametrik à la Fusion/Onshape: Jedes Teil, das über Skizze/Extrudieren oder
 // „Gewinde an Fläche" entsteht oder verändert wird, merkt sich
@@ -59076,8 +59164,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.160';
+const VOLME3D_VERSION = '1.18.161';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.161', date:'2026-10-11', spots:[{id:'mode-sw',sel:'#mode-sw'}], changes:[
+    ['⇄','<b>Beginner | Advanced.</b> Oben neben der Versionsnummer lässt sich die Arbeitsweise umschalten. <b>Beginner</b> ist die gewohnte Oberfläche – Formen zusammenschieben wie in Tinkercad. <b>Advanced</b> ordnet für die Arbeitsweise von Fusion/Onshape um: vorn <b>Erstellen</b> (Skizze, Drehen, Loft, Gewinde, Flexi) und <b>Konstruieren</b> (Arbeitsebene, Kanten, Fläche ziehen, Schale, Textur), dahinter wie gewohnt Form ändern, Kombinieren, Anordnen, Prüfen. Links steht ein <b>Browser</b> mit allen Körpern und ihren Skizzen und Gewinden – mit ✎ bzw. Doppelklick nachträglich ändern. Es wird nichts ausgeblendet, das Modell bleibt beim Umschalten gleich, und die Wahl wird gemerkt.'],
+  ]},
   { version:'1.18.160', date:'2026-10-10', changes:[
     ['🕘','<b>Skizzen und Gewinde nachträglich ändern – wie in Fusion.</b> Jedes Teil merkt sich jetzt seine Schritte aus Skizze/Extrudieren und „Gewinde an Fläche“. In der <b>Elemente</b>-Liste stehen sie unter dem Teil (z. B. „✏ Skizze 1 · Abziehen 12 mm“, „🔩 Gewinde M10×1,5 innen“). <b>Doppelklick oder ✎</b> öffnet die Skizze wieder auf derselben Fläche bzw. das Gewinde-Fenster mit den alten Werten – ändern, bestätigen, und das Teil <b>rechnet sich mit allen späteren Schritten neu</b>: Wird aus dem Ø8-Loch ein Ø10-Loch, wandert das Gewinde mit. Das Auge blendet die Skizzenlinien im Modell ein. Wurde das Teil zwischendurch anders verändert (z. B. Rundung oder Textur), fragt V3D CAD vorher nach, weil diese Änderung beim Neuberechnen verloren ginge.'],
   ]},
@@ -69780,6 +69871,7 @@ const CMDK = [
   {i:'🖨',g:'Datei',t:'Druck-Vorschau & Slicer-Einstellungen',k:'druck vorschau slicer drucker bambu snapmaker anycubic elegoo prusa creality filament schichthoehe waende infill fuellung stuetzen gcode 3mf projekt druckzeit gewicht',run:()=>_dvOpen()},
   {i:'📷',g:'Datei',t:'Foto erstellen (Rendern)',k:'foto bild render rendern png screenshot werbung shop kunde aussehen material',run:()=>_fotoOpen()},
   {i:'🔗',g:'Bearbeiten',t:'Beweglich machen (FlexiGen, Flexi-Gelenke)',k:'flexi flexigen beweglich gelenk scharnier glieder print in place biegen kette herz schild',run:()=>_flxOpen()},
+  {i:'⇄',g:'Ansicht',t:'Arbeitsweise Beginner / Advanced umschalten',k:'beginner advanced modus profi einsteiger fusion onshape tinkercad browser arbeitsweise oberflaeche',run:()=>_advSet(_advMode === 'advanced' ? 'beginner' : 'advanced')},
   {i:'◪',g:'Ansicht',t:'Schnittansicht (Modell aufschneiden)',k:'schnitt section querschnitt clipping wandstaerke innen',run:()=>sectionTool()},
   {i:'🛟',g:'Datei',t:'Sicherungen (ältere Stände)',k:'backup sicherung wiederherstellen restore version',run:()=>_bakOpen()},
   {i:'📱',g:'Ansicht',t:'Ansehen-Modus (mobil)',k:'mobile view vorschau',run:()=>_mviewToggle()},
