@@ -1653,7 +1653,7 @@ const firebaseConfig = {
     <button class="skt" data-tool="spline"  onclick="_skSetTool('spline')"  title="Spline durch Punkte"><span class="ski">∿</span><span class="skl">Spline</span><span class="skk">I</span></button>
     <button class="skt" data-tool="free"    onclick="_skSetTool('free')"    title="Freihand: Maustaste gedrückt halten und zeichnen wie mit dem Stift — die Linie wird geglättet. Endest du nahe am Anfang, schließt sich die Kontur automatisch"><span class="ski">✎</span><span class="skl">Freihand</span><span class="skk">F</span></button>
     <button class="skt" data-tool="trim"    onclick="_skSetTool('trim')"    title="Beschneiden / Löschen"><span class="ski">✂</span><span class="skl">Trim</span><span class="skk">T</span></button>
-    <button class="skt" data-tool="pull"    onclick="_skSetTool('pull')"    title="Fläche andrücken und nach oben ziehen — Höhe live (Zahl tippen = exakt, Enter bestätigt, Esc bricht ab)"><span class="ski">⬆</span><span class="skl">Ziehen</span><span class="skk">P</span></button>
+    <button class="skt" data-tool="pull"    onclick="_skSetTool('pull')"    title="Fläche andrücken und ziehen — nach oben = neuer Körper bzw. anfügen, in einen Körper hinein = Loch/Tasche. Zahl tippen = exakt (− = andere Richtung), D = durch alles, Enter bestätigt, Esc bricht ab"><span class="ski">⬆</span><span class="skl">Ziehen</span><span class="skk">P</span></button>
     <div class="sksep"></div>
     <button class="skt on" id="sk-ortho-btn" onclick="_skToggleOrtho()" title="Ortho-Fang: rastet auf waagerecht / senkrecht / 45° und an vorhandenen Punkten (O)"><span class="ski">⊾</span><span class="skl">Ortho-Fang</span><span class="skk">O</span></button>
     <button class="skbtn" onclick="_skFacePickStart()" title="Skizze auf eine ebene Fläche eines Körpers legen (z. B. Oberseite einer Box) — dann lässt sich direkt anfügen oder eine Tasche abziehen">▱ Auf Fläche</button>
@@ -9870,7 +9870,7 @@ function enterSketchMode() {
   document.getElementById('sketch-bar').style.display = 'flex';
   _skWireDim();
   _skSetTool('line');
-  notify('Skizze: zeichnen · dann „⬆ Ziehen" (P), Fläche andrücken und hochziehen (Zahl tippen = exakt) — oder „✓ Extrudieren" für alles', 'ok');
+  notify('Skizze: zeichnen · dann „⬆ Ziehen" (P): Fläche andrücken und hoch- oder in einen Körper hineinziehen (Zahl tippen = exakt, D = durch alles) — oder „✓ Extrudieren…"', 'ok');
 }
 
 function exitSketchMode() {
@@ -10909,7 +10909,7 @@ function _skMakeBodyFromShapes(shapes, hmm, offU){
 // hinein → Abziehen; liegt die Skizze AUF einem Körper und wächst nach außen →
 // Anfügen; sonst neuer Körper. Vorschau farbig: blau neu, grün anfügen, rot abziehen.
 const _skx = { open:false, panel:null, prev:null, shapes:null,
-               p:{ dir:'one', d:10, d2:5, op:'auto' }, res:null, busy:false };
+               p:{ dir:'one', d:10, d2:5, op:'auto', thru:false }, res:null, busy:false };
 function _skExtrude(){
   if (!_sk.active) return;
   const shapes=_skBuildShapes();
@@ -10924,6 +10924,7 @@ function _skxRange(){
   const p = _skx.p, d = (parseFloat(p.d) || 0) / 10, d2 = (parseFloat(p.d2) || 0) / 10;
   if (p.dir === 'sym') return [-Math.abs(d) / 2, Math.abs(d) / 2];
   if (p.dir === 'two') return [-Math.abs(d2), Math.abs(d)];
+  if (p.thru) { const sg = d > 0 ? 1 : -1, L = _skxThroughLen(sg); return sg > 0 ? [0, L] : [-L, 0]; }
   return d >= 0 ? [0, d] : [d, 0];
 }
 // Punkt sicher innerhalb einer Fläche (nicht im Loch)
@@ -11000,6 +11001,7 @@ function _skxPanel(){
     <div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:5px 8px;margin-bottom:8px">${_skx.shapes.length} Profil${_skx.shapes.length > 1 ? 'e' : ''} gewählt${_sk.onFace ? ' · auf Fläche/Arbeitsebene' : ''}</div>
     <div class="vrow"><label>Richtung</label><div class="vbg" style="flex:1">${tb(p.dir === 'one', 'dir', 'one', 'Eine Seite')}${tb(p.dir === 'sym', 'dir', 'sym', 'Symmetrisch', 'Je die Hälfte nach beiden Seiten')}${tb(p.dir === 'two', 'dir', 'two', 'Zwei Seiten', 'Nach beiden Seiten unterschiedlich weit')}</div></div>
     <div class="vrow"><label title="${p.dir === 'one' ? 'Negativ = in die andere Richtung (z. B. in den Körper hinein)' : ''}">${p.dir === 'two' ? 'Seite 1' : (p.dir === 'sym' ? 'Gesamt' : 'Abstand')}</label><input id="skx-d" type="number" step="0.5" value="${p.d}" oninput="_skxSet('d',this.value)" style="width:80px"><span class="vu">mm</span></div>
+    ${p.dir === 'one' ? `<div class="vrow"><label style="display:flex;align-items:center;gap:5px;cursor:pointer" title="Bis ganz durch alle Körper — z. B. Durchgangsloch. Richtung folgt dem Vorzeichen des Abstands (0 oder negativ = in den Körper hinein)"><input type="checkbox" ${p.thru ? 'checked' : ''} onchange="_skxSet('thru',this.checked)"> durch alles</label></div>` : ''}
     ${p.dir === 'two' ? `<div class="vrow"><label>Seite 2</label><input id="skx-d2" type="number" step="0.5" min="0" value="${p.d2}" oninput="_skxSet('d2',this.value)" style="width:80px"><span class="vu">mm</span></div>` : ''}
     <div class="vrow"><label>Operation</label><select id="skx-op" onchange="_skxSet('op',this.value)" style="flex:1">
       ${[['auto','Automatisch'],['new','Neuer Körper'],['join','Anfügen'],['cut','Abziehen']].map(([v, l]) => `<option value="${v}"${p.op === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
@@ -11011,6 +11013,7 @@ function _skxPanel(){
 }
 function _skxSet(k, v){
   if (k === 'dir' || k === 'op') { _skx.p[k] = v; _skxPanel(); }
+  else if (k === 'thru') { _skx.p.thru = !!v; }
   else _skx.p[k] = String(v).replace(',', '.');
   _skxUpdate();
 }
@@ -11119,22 +11122,50 @@ function _skPullHeightFromMouse(e){
   return hit.sub(O).dot(A);   // rohe Höhe in Units
 }
 function _skPullSetHeight(hU){
-  _skPull.h=Math.max(0, hU);
+  // Seit 1.18.154 auch nach unten: in einen Körper hinein = Loch/Tasche, aus ihm
+  // heraus = anfügen, frei = neuer Körper (Automatik wie im Extrudieren-Fenster)
+  _skPull.h=hU;
   // mm auf SNAP-Raster runden (default 0,1 mm)
   const step=(typeof snapGrid==='number' && snapGrid>0)?snapGrid:0.1;
   let mm=Math.round(_skPull.h*10/step)*step; mm=Math.round(mm*100)/100;
+  if (_skPull.through) mm=Math.round(hU*1000)/100;
   _skPull.h=mm/10;
   // Vorschau-Geometrie tauschen
-  if (_skPull.preview){ _skPull.preview.geometry.dispose(); _skPull.preview.geometry=_skPullPreviewGeo(_skPull.h); }
+  if (_skPull.preview){ _skPull.preview.geometry.dispose(); _skPull.preview.geometry=_skPullPreviewGeo(Math.abs(_skPull.h));
+    _skPull.preview.position.y=Math.min(0,_skPull.h); _skPullOpColor(); }
   // Griff positionieren + Skalieren (konstante Bildschirmgröße)
   const s=Math.max(0.04, sph.r*0.011);
   if (_skPull.handle){ _skPull.handle.scale.setScalar(s); _skPull.handle.position.set(_skPull.cu, _skPull.h, _skPull.cv); }
   // Label
   if (_skPull.label){
-    _skPull.label.textContent=(_skPull.typed!=='' ? _skPull.typed : mm.toFixed(mm%1?1:0))+' mm';
+    const opTxt={cut:' · Loch',join:' · anfügen',new:''}[_skPull.op||'new']||'';
+    _skPull.label.textContent=(_skPull.through?'durch alles · ':'')+(_skPull.typed!=='' ? _skPull.typed : mm.toFixed(mm%1?1:0))+' mm'+opTxt;
+    _skPull.label.style.background=_skPull.op==='cut'?'#dc2626':(_skPull.op==='join'?'#16a34a':'#2563eb');
     const sc=_skPullScreen(_skPull.cu, _skPull.h+s*5.2, _skPull.cv);
     _skPull.label.style.left=(sc.x+14)+'px'; _skPull.label.style.top=(sc.y-10)+'px';
   }
+}
+// Operation für die aktuelle Zieh-Höhe bestimmen (gedrosselt) und Vorschau einfärben
+function _skPullOpColor(){
+  if (!_skPull.shape) return;
+  const now=performance.now(), sg=Math.sign(_skPull.h);
+  if (sg===_skPull._opSign && now-(_skPull._opT||0)<150) return;
+  _skPull._opSign=sg; _skPull._opT=now;
+  if (Math.abs(_skPull.h)<1e-4){ _skPull.op='new'; }
+  else {
+    _skx.shapes=[_skPull.shape]; _skx.p={ dir:'one', d:_skPull.h*10, d2:5, op:'auto', thru:false };
+    try { _skPull.op=_skxResolve().op; } catch(e){ _skPull.op='new'; }
+  }
+  const col=_skPull.op==='cut'?0xef4444:(_skPull.op==='join'?0x22c55e:new THREE.Color(currentColor).getHex());
+  if (_skPull.preview){ _skPull.preview.material.color.setHex(col); _skPull.preview.material.depthTest=_skPull.op!=='cut'; _skPull.preview.material.needsUpdate=true; }
+}
+// „Durch alles": Länge bis hinter den letzten Körper in Richtung sg (±1, lokal Y)
+function _skxThroughLen(sg){
+  let m=0; const O=_sk.O||new THREE.Vector3(), N=_sk.N||new THREE.Vector3(0,1,0), c=new THREE.Vector3();
+  for (const o of _skxBodies()){ const bb=getMeshBox(o);
+    for (let i=0;i<8;i++){ c.set(i&1?bb.max.x:bb.min.x, i&2?bb.max.y:bb.min.y, i&4?bb.max.z:bb.min.z);
+      m=Math.max(m, sg*c.clone().sub(O).dot(N)); } }
+  return Math.max(0.05, m+0.1);
 }
 function _skPullStart(p){
   const shapes=_skBuildShapes();
@@ -11149,7 +11180,7 @@ function _skPullStart(p){
   if (!pick){ notify('In eine geschlossene Fläche klicken und hochziehen','w'); return; }
   const c=_loopCentroid(pick.outer);
   _skPull.editing=true; _skPull.dragging=true; _skPull.shape=pick;
-  _skPull.cu=c.u; _skPull.cv=c.v; _skPull.h=0; _skPull.grabOff=null; _skPull.typed='';
+  _skPull.cu=c.u; _skPull.cv=c.v; _skPull.h=0; _skPull.grabOff=null; _skPull.typed=''; _skPull.through=false; _skPull.op='new'; _skPull._opSign=null;
   _skPull.savedSk={ theta:sph.theta, phi:sph.phi, r:sph.r };
   // Szenen-Objekte
   _skPull.group=new THREE.Group(); _skPull.group.renderOrder=1001;
@@ -11183,23 +11214,35 @@ function _skPullMove(e){
 function _skPullUp(e){
   if (!_skPull.dragging) return;
   _skPull.dragging=false;
-  if (_skPull.h*10 >= 0.5) _skPullCommit(); else _skPullCancel();
+  if (Math.abs(_skPull.h*10) >= 0.5) _skPullCommit(); else _skPullCancel();
+}
+// Getippte Zahl übernehmen; Vorzeichen folgt „−" bzw. der Zug-Richtung
+function _skPullTyped(){
+  const v=parseFloat(_skPull.typed); if (!(Math.abs(v)>0)) return null;
+  return v/10;
 }
 function _skPullKey(e){
   if (!_skPull.editing) return;
   if (e.key==='Escape'){ e.preventDefault(); e.stopPropagation(); _skPullCancel(); return; }
   if (e.key==='Enter'){ e.preventDefault(); e.stopPropagation();
-    if (_skPull.typed!==''){ const v=parseFloat(_skPull.typed); if(v>0){ _skPull.typed=''; _skPullSetHeight(v/10); } }
-    if (_skPull.h*10>=0.5) _skPullCommit(); return; }
-  if (/^[0-9]$/.test(e.key) || e.key==='.' || e.key===','){
+    const v=_skPullTyped(); if (v!==null){ _skPull.typed=''; _skPullSetHeight(v); }
+    if (Math.abs(_skPull.h*10)>=0.5) _skPullCommit(); return; }
+  // D = durch alles (in die aktuelle Zug-Richtung, ohne Zug nach unten)
+  if (e.key==='d'||e.key==='D'){ e.preventDefault(); e.stopPropagation();
+    _skPull.through=!_skPull.through; _skPull.typed='';
+    if (_skPull.through){ const sg=_skPull.h>1e-4?1:-1; _skPullSetHeight(sg*_skxThroughLen(sg)); }
+    else _skPullSetHeight(0);
+    return; }
+  if (/^[0-9]$/.test(e.key) || e.key==='.' || e.key===',' || e.key==='-'){
     e.preventDefault(); e.stopPropagation();
-    const ch=e.key===','?'.':e.key;
-    if (ch==='.' && _skPull.typed.includes('.')) return;
-    _skPull.typed+=ch; const v=parseFloat(_skPull.typed); if(v>0) _skPullSetHeight(v/10); else { _skPull.h=0; _skPullSetHeight(0); }
+    _skPull.through=false;
+    if (e.key==='-'){ _skPull.typed=_skPull.typed.startsWith('-')?_skPull.typed.slice(1):'-'+_skPull.typed; }
+    else { const ch=e.key===','?'.':e.key; if (ch==='.' && _skPull.typed.includes('.')) return; _skPull.typed+=ch; }
+    const v=_skPullTyped(); _skPullSetHeight(v!==null?v:0);
     return; }
   if (e.key==='Backspace'){ e.preventDefault(); e.stopPropagation();
-    _skPull.typed=_skPull.typed.slice(0,-1); const v=parseFloat(_skPull.typed);
-    _skPullSetHeight(v>0?v/10:0); return; }
+    _skPull.typed=_skPull.typed.slice(0,-1); const v=_skPullTyped();
+    _skPullSetHeight(v!==null?v:0); return; }
 }
 function _skPullCleanup(){
   document.removeEventListener('mousemove', _skPullMove, true);
@@ -11216,15 +11259,14 @@ function _skPullCancel(){
   if (sv){ sph.theta=sv.theta; sph.phi=sv.phi; sph.r=sv.r; sph2cam(); }
   _skRender();
 }
-function _skPullCommit(){
+async function _skPullCommit(){
   const shape=_skPull.shape, hmm=Math.round(_skPull.h*10*100)/100;
   _skPullCleanup();
-  if (!shape || hmm<0.05){ return; }
-  saveUndo();
-  const mesh=_skMakeBodyFromShapes([shape], hmm);
-  selectObjs([mesh]); updateTree();
-  exitSketchMode();
-  notify('Fläche extrudiert — '+hmm+' mm','ok');
+  if (!shape || Math.abs(hmm)<0.05){ return; }
+  // gleiche Logik wie das Extrudieren-Fenster: Automatik → neu / anfügen / Loch
+  _skx.shapes=[shape]; _skx.p={ dir:'one', d:hmm, d2:5, op:'auto', thru:false };
+  _skx.open=true; _skx.res=_skxResolve();
+  await _skxApply();
 }
 
 // ═══ LOFT: mehrere geschlossene Profile → Übergangskörper ══════════════════
@@ -57376,8 +57418,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.153';
+const VOLME3D_VERSION = '1.18.154';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.154', date:'2026-10-10', changes:[
+    ['🕳️','<b>Löcher einfach ziehen.</b> In der Skizze auf einer Fläche (▱ Auf Fläche) lässt sich ein Kreis mit <b>⬆ Ziehen (P)</b> jetzt auch <b>in den Körper hinein</b> ziehen – das ergibt ein Sackloch (Tiefe live oder getippt). <b>D</b> macht daraus ein <b>Durchgangsloch</b> („durch alles“). Nach oben gezogen wird die Form am Körper <b>angefügt</b>. Die Vorschau zeigt farbig, was passiert (rot = Loch, grün = anfügen). Danach kann man direkt mit <b>🔩 Gewinde an Fläche</b> ein Gewinde ins Loch setzen. Auch im Extrudieren-Fenster gibt es jetzt <b>„durch alles“</b>.'],
+  ]},
   { version:'1.18.153', date:'2026-10-10', changes:[
     ['⬆','<b>Extrudieren mit Fenster – wie in Fusion/Onshape.</b> In der Skizze öffnet <b>✓ Extrudieren…</b> jetzt ein Fenster mit Live-Vorschau: <b>Richtung</b> (eine Seite, symmetrisch oder zwei Seiten unterschiedlich weit), <b>Abstand</b> (negativ = in die andere Richtung) und <b>Operation</b>: <i>Automatisch</i>, <i>Neuer Körper</i>, <i>Anfügen</i> oder <i>Abziehen</i>. Automatisch erkennt selbst, ob die Form aus einem Körper herauswächst (wird angefügt, grün) oder hineingeht (wird abgezogen, rot), und schreibt dazu, was passiert. Enter = OK, Esc = zurück zur Skizze.'],
     ['▱','<b>Skizze auf einer Fläche.</b> Mit <b>▱ Auf Fläche</b> in der Skizzenleiste eine ebene Fläche anklicken (z. B. die Oberseite einer Box) – die Skizze liegt dann genau darauf. Ist eine <b>Arbeitsebene</b> gesetzt, startet die Skizze automatisch dort (auch versetzt oder gekippt). So entsteht z. B. eine Tasche: Rechteck auf die Oberseite zeichnen, −6 mm extrudieren, fertig.'],
