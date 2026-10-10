@@ -369,7 +369,10 @@ body.devmode .dev-only{display:flex!important}
 #scene-settings-btn{position:absolute;bottom:12px;right:130px;padding:4px 12px;background:var(--white);border:1.5px solid var(--border);border-radius:20px;font-size:10px;font-weight:700;color:var(--mid);cursor:pointer;box-shadow:var(--sh);transition:all .12s;z-index:20}
 #scene-settings-btn:hover{border-color:var(--acc);color:var(--acc)}
 #ttb.on{border-color:var(--grn);color:var(--grn);background:#f0fff8}
-#vcube-wrap{position:absolute;top:10px;right:10px;z-index:20;width:110px;height:110px;cursor:pointer}
+#vcube-wrap{position:absolute;top:22px;right:26px;z-index:20;width:110px;height:110px;cursor:pointer}
+.vca{position:absolute;width:18px;height:18px;padding:0;border:0;background:transparent;color:#8898b8;font-size:12px;line-height:18px;text-align:center;cursor:pointer;border-radius:4px;transition:all .12s}
+.vca:hover{color:var(--acc);background:rgba(249,115,22,.1)}
+.vca-u{top:-20px;left:46px}.vca-d{bottom:-20px;left:46px}.vca-l{left:-20px;top:46px}.vca-r{right:-20px;top:46px}
 #vcube-wrap canvas{border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,.15)}
 
 /* RIGHT */
@@ -1942,7 +1945,7 @@ const firebaseConfig = {
     <button class="vcb" onclick="setView('right')">RECHTS</button>
     <button class="vcb" onclick="setView('iso')">ISO</button>
   </div>
-  <div id="vcube-wrap" title="Klick: Ansicht wechseln"></div>
+  <div id="vcube-wrap" title="Fläche anklicken: Ansicht von dort · ziehen: frei drehen"><button onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" class="vca vca-u" onclick="_vcStep('up')" title="Ansicht nach oben schwenken (90°)">▲</button><button onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" class="vca vca-d" onclick="_vcStep('down')" title="Ansicht nach unten schwenken (90°)">▼</button><button onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" class="vca vca-l" onclick="_vcStep('left')" title="Ansicht nach links schwenken (90°)">◀</button><button onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" class="vca vca-r" onclick="_vcStep('right')" title="Ansicht nach rechts schwenken (90°)">▶</button></div>
   <button id="ttb" onclick="toggleTurntable()">⟳ Turntable</button>
   <button id="scene-settings-btn" onclick="_openSceneSettings()">Einstellungen</button>
   <div id="bp-hud-printer" style="position:absolute;bottom:14px;left:12px;font-size:10px;font-weight:700;color:#8aa4bc;pointer-events:none;display:none"></div>
@@ -31430,15 +31433,21 @@ function _creaseNormals(geo, angleDeg) {
   window.addEventListener('mouseup', e => {
     if (!vcDragging) return;
     vcDragging = false;
-    // If no real drag → cycle preset views
+    // Kein echtes Ziehen → angeklickte Würfelfläche wird zur Ansicht
+    // (vorher: Klick schaltete nur reihum durch, egal wo man traf)
     if (!vcMoved) {
-      const views = ['iso','top','front','right'];
-      vcViewIdx = (vcViewIdx + 1) % views.length;
-      setView(views[vcViewIdx]);
+      const r = vcRenderer.domElement.getBoundingClientRect();
+      const m = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      const rc = new THREE.Raycaster(); rc.setFromCamera(m, vcCamera);
+      const hit = rc.intersectObject(cubeMesh, false)[0];
+      if (hit && hit.face) {
+        // BoxGeometry-Reihenfolge +X, -X, +Y, -Y, +Z, -Z
+        const V = [[Math.PI/2, Math.PI/2], [-Math.PI/2, Math.PI/2], [null, 0.02],
+                   [null, Math.PI - 0.04], [0, Math.PI/2], [Math.PI, Math.PI/2]][hit.face.materialIndex];
+        _vcAnimTo(V[0] === null ? Math.round(sph.theta / (Math.PI/2)) * (Math.PI/2) : V[0], V[1]);
+      }
     }
   });
-
-  let vcViewIdx = 0;
 
   // ── Sync cube rotation with main camera ──────────────────────────────
   // Build a quaternion from spherical angles, then invert for the cube display
@@ -31456,6 +31465,40 @@ function _creaseNormals(geo, angleDeg) {
 
   window._updateVcube = updateVcube;
 })();
+
+// Weicher Kameraschwenk zu (theta, phi) — kürzester Weg um die Hochachse.
+let _vcAnim = null;
+function _vcAnimTo(theta, phi, ms) {
+  if (_vcAnim) cancelAnimationFrame(_vcAnim.raf);
+  const t0 = sph.theta, p0 = sph.phi;
+  let dt = theta - t0; dt = Math.atan2(Math.sin(dt), Math.cos(dt));
+  const dur = ms || 280, start = performance.now();
+  const a = _vcAnim = { raf: 0, theta: t0 + dt, phi };
+  const step = now => {
+    const k = Math.min(1, (now - start) / dur), e = k < .5 ? 2*k*k : 1 - Math.pow(-2*k + 2, 2) / 2;
+    sph.theta = t0 + dt * e; sph.phi = p0 + (phi - p0) * e; sph2cam();
+    if (k < 1 && _vcAnim === a) a.raf = requestAnimationFrame(step); else if (_vcAnim === a) _vcAnim = null;
+  };
+  a.raf = requestAnimationFrame(step);
+}
+// Pfeile am Würfel: Kamera um 90° weiterschwenken (wie die Dreiecke am Fusion-ViewCube).
+// Links/rechts: aus einer Seitenansicht auf die nächste Seite; aus schrägen Ansichten
+// (ISO) bleibt der Versatz erhalten. Hoch/runter: Seite ↔ Oben/Unten.
+function _vcStep(dir) {
+  const Q = Math.PI / 2, near = (a, b) => Math.abs(a - b) < 0.12;
+  // Läuft noch ein Schwenk (schnelles Doppelklicken), vom Ziel aus weiterrechnen
+  let th = _vcAnim ? _vcAnim.theta : sph.theta, ph = _vcAnim ? _vcAnim.phi : sph.phi;
+  if (dir === 'left' || dir === 'right') {
+    const s = Math.round(th / Q) * Q;
+    if (near(th, s)) th = s;
+    th += dir === 'left' ? -Q : Q;
+  } else {
+    const top = 0.02, side = Q, bot = Math.PI - 0.04;
+    if (dir === 'up')   ph = ph < 0.3 ? top : (ph > side + 0.12 ? side : top);
+    else                ph = ph < side - 0.12 ? side : bot;
+  }
+  _vcAnimTo(th, ph);
+}
 
 // ═══ FERNWARTUNG (MeshCentral-Agent herunterladen) ═════════════════════
 // Loest V3D-Remote (RustDesk) ab: laeuft ueber HTTPS/8443, kein UDP, keine
@@ -56694,8 +56737,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.148';
+const VOLME3D_VERSION = '1.18.149';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.149', date:'2026-10-10', spots:[{id:'vc-arrows',sel:'.vca-r'}], changes:[
+    ['🧊','<b>Ansichtswürfel mit Pfeilen.</b> Rund um den Würfel oben rechts sitzen jetzt vier Pfeile: <b>◀ ▶</b> schwenken die Ansicht um 90° zur nächsten Seite, <b>▲ ▼</b> kippen nach oben bzw. unten (Seite ↔ Draufsicht ↔ Untersicht). Ein <b>Klick auf eine Würfelfläche</b> (z. B. RECHTS) springt direkt in diese Ansicht – bisher wechselte ein Klick nur der Reihe nach. Die Übergänge laufen weich, Ziehen am Würfel dreht wie gewohnt frei.'],
+  ]},
   { version:'1.18.148', date:'2026-10-10', spots:[{id:'fs-tb',sel:'#fs-tb'}], changes:[
     ['⛶','<b>Vollbild.</b> Oben rechts in der schwarzen Leiste schaltet der neue Knopf <b>⛶</b> V3D CAD ins Vollbild: Adressleiste, Tabs und Lesezeichen verschwinden, das Modell bekommt den ganzen Bildschirm – praktisch am Beamer, Fernseher oder kleinen Laptop. Nochmal klicken oder <b>Esc</b> drücken holt alles zurück.'],
   ]},
