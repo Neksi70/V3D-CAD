@@ -2089,6 +2089,9 @@ const firebaseConfig = {
             <path d="M20 19 C18.5 11 16.5 8 15.5 5"/>
           </svg><span class="sdd-name">Loft</span>
         </div>
+        <div class="shp" onclick="_thfStart()" title="Gewinde auf vorhandene Bohrung (innen) oder Zylinder (außen) setzen — Größe wird erkannt, Druck-Spiel einstellbar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="7" y="3" width="10" height="18" rx="1.5"/><path d="M7 7l10 2M7 11l10 2M7 15l10 2"/></svg><span class="sdd-name">Gewinde an Fläche</span>
+        </div>
         <div class="shp" onclick="enterSketchMode()" title="2D-Skizze auf der Bodenebene zeichnen und zu einem Körper extrudieren">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">
             <path d="M3 17.5 L13 7.5 L16.5 11 L6.5 21 L3 21 Z"/>
@@ -43804,6 +43807,322 @@ function _createPip(){
   _closePipModal();
 }
 
+// ═══ GEWINDE AUF FLÄCHE (_thf*) ═══════════════════════════════════════════
+// Wie bei Fusion/JumpStart: vorhandene Bohrung oder Zylinderfläche anklicken →
+// Achse, Ø und Länge werden aus dem Netz erkannt (Flutfüllung über glatte
+// Nachbardreiecke, Achse = kleinster Eigenvektor von Σ a·n·nᵀ, Kreis per
+// Kasa-Fit), passende ISO-Größe wird vorgeschlagen (Ø10-Loch → M12×1,75).
+// Geschnitten wird über den normalen Manifold-Abzug:
+//   Innengewinde = Körper − Gewindekörper(d + Spiel)
+//   Außengewinde = Körper − (Hülse − Gewindekörper(d − Spiel))
+// Offene Enden bekommen eine Steigung Überstand (Kappenzone liegt dann in der
+// Luft), geschlossene Enden (Sackloch-Boden, Zapfen-Fuß) nicht.
+const _THF_ISO = [
+  ['M2',2,0.4,1.6], ['M2.5',2.5,0.45,2.05], ['M3',3,0.5,2.5], ['M4',4,0.7,3.3], ['M5',5,0.8,4.2],
+  ['M6',6,1,5], ['M8',8,1.25,6.8], ['M10',10,1.5,8.5], ['M12',12,1.75,10.2], ['M14',14,2,12],
+  ['M16',16,2,14], ['M18',18,2.5,15.5], ['M20',20,2.5,17.5], ['M22',22,2.5,19.5], ['M24',24,3,21],
+  ['M27',27,3,24], ['M30',30,3.5,26.5], ['M36',36,4,32], ['M42',42,4.5,37.5], ['M48',48,5,43]
+];
+const _thf = { active:false, picking:false, obj:null, cyl:null, ghost:null, panel:null, busy:false,
+               p:{ size:'M12', d:12, pitch:1.75, full:true, len:10, from:'a', hand:'right', clr:0 } };
+
+function _thfStart() {
+  if (_thf.active) _thfClose();
+  _thf.active = true; _thf.picking = true;
+  canvas.addEventListener('pointerdown', _thfPointer, true);
+  document.addEventListener('keydown', _thfKey, true);
+  canvas.style.cursor = 'crosshair';
+  notify('🔩 Gewinde: Bohrung (innen) oder Zylinder (außen) anklicken · Esc = abbrechen', 'ok');
+}
+function _thfKey(e) {
+  if (e.key !== 'Escape' || !_thf.active) return;
+  e.preventDefault(); e.stopPropagation(); _thfClose();
+}
+function _thfPointer(e) {
+  if (!_thf.picking || e.button > 0) return;
+  const hits = pickObjects(e).filter(h => h.object.isMesh && !(h.object.userData && h.object.userData.isEdgeLines));
+  if (!hits.length) return;                 // Leerraum: drehen/schieben wie sonst
+  e.preventDefault(); e.stopPropagation();
+  const h = hits[0];
+  let top = h.object; while (top && !objects.includes(top)) top = top.parent;
+  if (!top || top.userData.isHole) { notify('Bitte einen Volumenkörper anklicken (keine Bohrung)', 'w'); return; }
+  if (h.object !== top) { notify('Das ist eine Gruppe — erst „Vereinen", dann das Gewinde setzen', 'w'); return; }
+  const cyl = _thfDetect(top, h);
+  if (!cyl) { notify('Keine runde Fläche erkannt — bitte direkt auf die Innenwand der Bohrung bzw. den Zylindermantel klicken', 'w'); return; }
+  _thf.obj = top; _thf.cyl = cyl; _thf.picking = false;
+  canvas.style.cursor = '';
+  selectObjs([top]);
+  _thfSuggest(); _thfPanel(); _thfPreview();
+}
+
+// ── Zylinder-Erkennung ────────────────────────────────────────────────────
+function _thfEig3Min(M) {
+  // Jacobi für symmetrische 3×3 → Eigenvektor zum kleinsten Eigenwert
+  const a = [[M[0],M[1],M[2]],[M[1],M[3],M[4]],[M[2],M[4],M[5]]];
+  const V = [[1,0,0],[0,1,0],[0,0,1]];
+  for (let sweep = 0; sweep < 30; sweep++) {
+    let off = 0; for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) off += a[i][j] * a[i][j];
+    if (off < 1e-20) break;
+    for (let p = 0; p < 3; p++) for (let q = p + 1; q < 3; q++) {
+      if (Math.abs(a[p][q]) < 1e-30) continue;
+      const th = (a[q][q] - a[p][p]) / (2 * a[p][q]);
+      const t = Math.sign(th || 1) / (Math.abs(th) + Math.sqrt(th * th + 1));
+      const c = 1 / Math.sqrt(t * t + 1), s = t * c;
+      for (let k = 0; k < 3; k++) { const akp = a[k][p], akq = a[k][q]; a[k][p] = c*akp - s*akq; a[k][q] = s*akp + c*akq; }
+      for (let k = 0; k < 3; k++) { const apk = a[p][k], aqk = a[q][k]; a[p][k] = c*apk - s*aqk; a[q][k] = s*apk + c*aqk; }
+      for (let k = 0; k < 3; k++) { const vkp = V[k][p], vkq = V[k][q]; V[k][p] = c*vkp - s*vkq; V[k][q] = s*vkp + c*vkq; }
+    }
+  }
+  let m = 0; for (let i = 1; i < 3; i++) if (a[i][i] < a[m][m]) m = i;
+  return new THREE.Vector3(V[0][m], V[1][m], V[2][m]).normalize();
+}
+function _thfDetect(o, hit) {
+  o.updateMatrixWorld(true);
+  const g0 = o.geometry.clone(); g0.applyMatrix4(o.matrixWorld);
+  for (const n in g0.attributes) if (n !== 'position') g0.deleteAttribute(n);
+  const box = new THREE.Box3().setFromBufferAttribute(g0.attributes.position);
+  const g = THREE.BufferGeometryUtils.mergeVertices(g0, Math.max(1e-5, box.getSize(new THREE.Vector3()).length() * 1e-6));
+  const P = g.attributes.position, I = g.index.array, nT = I.length / 3;
+  if (nT > 600000) return null;
+  const N = new Float32Array(nT * 3), A = new Float32Array(nT);
+  const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3(), cr = new THREE.Vector3();
+  for (let t = 0; t < nT; t++) {
+    va.fromBufferAttribute(P, I[t*3]); vb.fromBufferAttribute(P, I[t*3+1]); vc.fromBufferAttribute(P, I[t*3+2]);
+    cr.copy(vb.clone().sub(va).cross(vc.clone().sub(va)));   // (b−a)×(c−a)
+    const l = cr.length(); A[t] = l / 2;
+    if (l > 0) { N[t*3] = cr.x / l; N[t*3+1] = cr.y / l; N[t*3+2] = cr.z / l; }
+  }
+  // Kanten → Nachbarn
+  const em = new Map(), nb = Array.from({ length: nT }, () => []);
+  for (let t = 0; t < nT; t++) for (let k = 0; k < 3; k++) {
+    const x = I[t*3+k], y = I[t*3+(k+1)%3], key = x < y ? x * 4294967296 + y : y * 4294967296 + x;
+    const o2 = em.get(key);
+    if (o2 === undefined) em.set(key, t); else { nb[t].push(o2); nb[o2].push(t); }
+  }
+  const start = hit.faceIndex;
+  if (start == null || start >= nT || !(A[start] > 0)) return null;
+  const COS = Math.cos(THREE.MathUtils.degToRad(30));
+  const seen = new Uint8Array(nT), reg = [start]; seen[start] = 1;
+  for (let q = 0; q < reg.length && reg.length < 200000; q++) {
+    const t = reg[q];
+    for (const u of nb[t]) {
+      if (seen[u] || !(A[u] > 0)) continue;
+      const d = N[t*3]*N[u*3] + N[t*3+1]*N[u*3+1] + N[t*3+2]*N[u*3+2];
+      if (d >= COS) { seen[u] = 1; reg.push(u); }
+    }
+  }
+  if (reg.length < 6) return null;
+  const M = [0,0,0,0,0,0];
+  for (const t of reg) { const a = A[t], x = N[t*3], y = N[t*3+1], z = N[t*3+2];
+    M[0]+=a*x*x; M[1]+=a*x*y; M[2]+=a*x*z; M[3]+=a*y*y; M[4]+=a*y*z; M[5]+=a*z*z; }
+  const ax = _thfEig3Min(M);
+  // nur Dreiecke, deren Normale wirklich quer zur Achse steht
+  const side = reg.filter(t => Math.abs(N[t*3]*ax.x + N[t*3+1]*ax.y + N[t*3+2]*ax.z) < 0.2);
+  if (side.length < 6) return null;
+  const u = new THREE.Vector3(1, 0, 0); if (Math.abs(ax.x) > 0.9) u.set(0, 1, 0);
+  u.sub(ax.clone().multiplyScalar(u.dot(ax))).normalize();
+  const v = new THREE.Vector3().crossVectors(ax, u);
+  const vs = new Set(); side.forEach(t => { vs.add(I[t*3]); vs.add(I[t*3+1]); vs.add(I[t*3+2]); });
+  const pts = []; let tmin = Infinity, tmax = -Infinity;
+  const p = new THREE.Vector3();
+  vs.forEach(i => { p.fromBufferAttribute(P, i); const tt = p.dot(ax); if (tt < tmin) tmin = tt; if (tt > tmax) tmax = tt; pts.push([p.dot(u), p.dot(v)]); });
+  // Kasa-Kreisfit: x²+y² + Dx + Ey + F = 0
+  let sxx=0,sxy=0,syy=0,sx=0,sy=0,sz=0,sxz=0,syz=0; const n = pts.length;
+  for (const [x, y] of pts) { const z = x*x + y*y; sxx+=x*x; sxy+=x*y; syy+=y*y; sx+=x; sy+=y; sz+=z; sxz+=x*z; syz+=y*z; }
+  const S = [[sxx,sxy,sx],[sxy,syy,sy],[sx,sy,n]], b = [-sxz,-syz,-sz];
+  const det3 = m => m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1]) - m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0]) + m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+  const D0 = det3(S); if (Math.abs(D0) < 1e-18) return null;
+  const sol = [0,1,2].map(k => det3(S.map((row, r) => row.map((val, c) => c === k ? b[r] : val))) / D0);
+  const cx = -sol[0] / 2, cy = -sol[1] / 2, r = Math.sqrt(Math.max(0, cx*cx + cy*cy - sol[2]));
+  if (!(r > 0.005)) return null;   // < 0,05 mm
+  let err = 0; const angs = [];
+  for (const [x, y] of pts) { err += (Math.hypot(x - cx, y - cy) - r) ** 2; angs.push(Math.atan2(y - cy, x - cx)); }
+  err = Math.sqrt(err / n) / r;
+  angs.sort((a, b2) => a - b2);
+  let gap = angs[0] + 2 * Math.PI - angs[angs.length - 1];
+  for (let i = 1; i < angs.length; i++) gap = Math.max(gap, angs[i] - angs[i-1]);
+  if (err > 0.04 || gap > THREE.MathUtils.degToRad(70) || tmax - tmin < 0.02) return null;
+  const O = u.clone().multiplyScalar(cx).add(v.clone().multiplyScalar(cy));   // Achspunkt bei t = 0
+  // innen/außen: zeigt die Flächennormale am Klickpunkt zur Achse, ist es eine Bohrung
+  const hp = hit.point.clone(), rad = hp.clone().sub(O).sub(ax.clone().multiplyScalar(hp.dot(ax)));
+  const nH = new THREE.Vector3(N[start*3], N[start*3+1], N[start*3+2]);
+  const inner = nH.dot(rad) < 0;
+  const at = t => O.clone().add(ax.clone().multiplyScalar(t));
+  const eps = Math.min(0.05, (tmax - tmin) * 0.2);
+  const closedLo = _thfInside(o, at(tmin - eps)), closedHi = _thfInside(o, at(tmax + eps));
+  g0.dispose(); g.dispose();
+  return { O, ax, r, tmin, tmax, inner, closedLo, closedHi };
+}
+// Punkt im Körper? Strahl-Parität in drei Richtungen, Mehrheit entscheidet.
+function _thfInside(o, pt) {
+  const rc = new THREE.Raycaster(); let votes = 0;
+  for (const d of [[0.577,0.577,0.577],[-0.267,0.534,-0.802],[0.802,-0.267,0.534]]) {
+    rc.set(pt, new THREE.Vector3(...d).normalize());
+    const hs = rc.intersectObject(o, false).filter(h => h.object === o);
+    let cnt = 0, last = -1;
+    for (const h of hs) { if (h.distance - last > 1e-6) cnt++; last = h.distance; }
+    if (cnt % 2 === 1) votes++;
+  }
+  return votes >= 2;
+}
+
+// ── Größe vorschlagen ─────────────────────────────────────────────────────
+function _thfSuggest() {
+  const c = _thf.cyl, D = c.r * 20, p = _thf.p;
+  let best = null, bd = Infinity;
+  for (const s of _THF_ISO) { const d = Math.abs((c.inner ? s[3] : s[1]) - D); if (d < bd) { bd = d; best = s; } }
+  if (best && bd / D <= (c.inner ? 0.12 : 0.08)) { p.size = best[0]; p.d = best[1]; p.pitch = best[2]; }
+  else {
+    // eigene Größe: Steigung vom nächsten Normgewinde, Ø aus der Fläche
+    const pit = best ? best[2] : 2;
+    p.size = 'eigen'; p.pitch = pit;
+    p.d = +(c.inner ? D + 1.0825 * pit : D).toFixed(2);
+  }
+  p.len = Math.round(Math.min((c.tmax - c.tmin) * 10, Math.max(3 * p.pitch, p.d)) * 10) / 10;
+  p.from = (!c.closedHi || c.closedLo) ? 'a' : 'b';   // a = oberes/offenes Ende
+}
+function _thfInfo() {
+  const c = _thf.cyl, p = _thf.p, D = (c.r * 20).toFixed(1).replace('.', ',');
+  const kind = c.inner ? 'Bohrung · Innengewinde' : 'Zylinder · Außengewinde';
+  const iso = _THF_ISO.find(s => s[0] === p.size);
+  const match = iso ? `Passt zu ${iso[0]} × ${String(iso[2]).replace('.', ',')} (ISO Regelgewinde).`
+                    : `Keine Normgröße — eigenes Gewinde Ø ${String(p.d).replace('.', ',')} mm.`;
+  return `<b>Ø ${D} ${kind}</b><br>${match}`;
+}
+
+// ── Werkzeug-Geometrie ────────────────────────────────────────────────────
+function _thfRange() {
+  const c = _thf.cyl, p = _thf.p, pu = p.pitch / 10;
+  let t0 = c.tmin, t1 = c.tmax;
+  // Ende a = oberes Ende (tmax), b = unteres (tmin)
+  if (!p.full) {
+    const L = Math.max(pu, Math.min(p.len / 10, c.tmax - c.tmin));
+    if (p.from === 'a') t0 = c.tmax - L; else t1 = c.tmin + L;
+  }
+  const openLo = !c.closedLo && (p.full || p.from === 'b');
+  const openHi = !c.closedHi && (p.full || p.from === 'a');
+  if (openLo) t0 -= pu;
+  if (openHi) t1 += pu;
+  return { t0, t1 };
+}
+function _thfThreadMesh() {
+  const c = _thf.cyl, p = _thf.p, { t0, t1 } = _thfRange();
+  const d = c.inner ? p.d + p.clr : p.d - p.clr;
+  const turns = (t1 - t0) / (p.pitch / 10);
+  const geo = _buildThreadGeo(d, p.pitch, turns, d > 30 ? 128 : 72, p.hand === 'left');
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xf97316, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide }));
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), c.ax);
+  m.position.copy(c.O).add(c.ax.clone().multiplyScalar((t0 + t1) / 2));
+  m.updateMatrixWorld(true);
+  return m;
+}
+async function _thfToolGeo() {
+  const c = _thf.cyl, p = _thf.p, th = _thfThreadMesh();
+  if (c.inner) { const g = th.geometry.clone(); g.applyMatrix4(th.matrixWorld); return g; }
+  const { t0, t1 } = _thfRange();
+  const rS = Math.max(c.r * 1.08, c.r + 0.1, p.d / 20 + 0.1);
+  const sl = new THREE.Mesh(new THREE.CylinderGeometry(rS, rS, t1 - t0, 96));
+  sl.quaternion.copy(th.quaternion); sl.position.copy(th.position); sl.updateMatrixWorld(true);
+  return await _mfRetry(() => _mfSubtractWorld([sl], [th]));
+}
+
+// ── Vorschau + Fenster ────────────────────────────────────────────────────
+function _thfPreview() {
+  if (_thf.ghost) { scene.remove(_thf.ghost); _thf.ghost.geometry.dispose(); _thf.ghost = null; }
+  if (!_thf.cyl) return;
+  try { _thf.ghost = _thfThreadMesh(); _thf.ghost.renderOrder = 990; scene.add(_thf.ghost); } catch (e) { console.warn('[thf] Vorschau', e); }
+}
+function _thfPanel() {
+  let el = _thf.panel;
+  if (!el) {
+    el = _thf.panel = document.createElement('div');
+    el.id = 'thf-panel';
+    el.style.cssText = 'position:fixed;right:232px;bottom:64px;width:264px;max-height:calc(100vh - 240px);overflow-y:auto;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+    el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); _thfApply(); } if (e.key === 'Escape') _thfClose(); });
+    document.body.appendChild(el);
+  }
+  const p = _thf.p, c = _thf.cyl;
+  const opt = _THF_ISO.map(s => `<option value="${s[0]}"${s[0] === p.size ? ' selected' : ''}>${s[0]} × ${String(s[2]).replace('.', ',')}</option>`).join('')
+            + `<option value="eigen"${p.size === 'eigen' ? ' selected' : ''}>eigene Größe…</option>`;
+  const tb = (on, f, v, t, tip) => `<button class="vtb${on ? ' on' : ''}" onclick="${f}('${v}')"${tip ? ` title="${tip}"` : ''}>${t}</button>`;
+  const endA = c.closedHi ? 'oberes Ende' : 'offenes Ende', endB = c.closedLo ? 'unteres Ende' : (c.closedHi ? 'offenes Ende' : 'anderes Ende');
+  const clrs = [0, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4];
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">🔩 Gewinde</b>
+      <span onclick="_thfClose()" style="cursor:pointer;color:var(--dim);font-size:15px" title="Schließen (Esc)">✕</span></div>
+    <div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.45">${_thfInfo()}
+      <span onclick="_thfRepick()" style="float:right;cursor:pointer;color:var(--acc);font-size:11px" title="Andere Fläche anklicken">andere Fläche</span></div>
+    <div class="vrow"><label>Größe</label><select id="thf-size" onchange="_thfSet('size',this.value)" style="flex:1">${opt}</select></div>
+    <div class="vrow"${p.size === 'eigen' ? '' : ' style="display:none"'}><label>Ø außen</label><input id="thf-d" type="number" min="1" max="300" step="0.1" value="${p.d}" onchange="_thfSet('d',this.value)" style="width:70px"><span class="vu">mm</span></div>
+    <div class="vrow"><label>Steigung</label><input id="thf-pitch" type="number" min="0.2" max="10" step="0.05" value="${p.pitch}" onchange="_thfSet('pitch',this.value)" style="width:70px"><span class="vu">mm</span></div>
+    <div class="vrow"><label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="thf-full" ${p.full ? 'checked' : ''} onchange="_thfSet('full',this.checked)"> ganze Länge</label></div>
+    <div${p.full ? ' style="display:none"' : ''}>
+      <div class="vrow"><label>Länge</label><input id="thf-len" type="number" min="0.5" step="0.5" value="${p.len}" onchange="_thfSet('len',this.value)" style="width:70px"><span class="vu">mm</span></div>
+      <div class="vrow"><label>Beginnt am</label><div class="vbg" style="flex:1">${tb(p.from === 'a', '_thfSetFrom', 'a', endA)}${tb(p.from === 'b', '_thfSetFrom', 'b', endB)}</div></div>
+    </div>
+    <div class="vrow"><label>Drehsinn</label><div class="vbg" style="flex:1">${tb(p.hand === 'right', '_thfSetHand', 'right', 'Rechts', 'Normales Gewinde: im Uhrzeigersinn festdrehen')}${tb(p.hand === 'left', '_thfSetHand', 'left', 'Links')}</div></div>
+    <div class="vrow"><label title="Druck-Spiel: ${c.inner ? 'Innengewinde wird um diesen Wert größer' : 'Außengewinde wird um diesen Wert dünner'}, damit gedruckte Teile ineinander passen. Typisch 0,2–0,3 mm; ohne Spiel für Norm-Schrauben aus Metall">Druck-Spiel</label>
+      <select id="thf-clr" onchange="_thfSet('clr',this.value)" style="flex:1">${clrs.map(v => `<option value="${v}"${Math.abs(v - p.clr) < 1e-6 ? ' selected' : ''}>${v ? (c.inner ? '+' : '−') + String(v).replace('.', ',') + ' mm' : 'kein Spiel'}</option>`).join('')}${clrs.some(v => Math.abs(v - p.clr) < 1e-6) ? '' : `<option selected value="${p.clr}">${String(p.clr).replace('.', ',')} mm</option>`}</select></div>
+    <div style="font-size:10.5px;color:var(--dim);margin:4px 0 9px;line-height:1.4">${c.inner ? 'Innengewinde wird um das Spiel <b>größer</b> geschnitten.' : 'Außengewinde wird um das Spiel <b>dünner</b>.'} Den Wert deines Druckers einmal mit einem Test-Paar ermitteln.</div>
+    <div style="display:flex;gap:6px;justify-content:flex-end">
+      <button class="btn" onclick="_thfClose()">Abbrechen</button>
+      <button class="btn pri" id="thf-ok" onclick="_thfApply()">✓ Gewinde schneiden</button></div>`;
+}
+function _thfSet(k, v) {
+  const p = _thf.p;
+  if (k === 'size') {
+    p.size = v; const s = _THF_ISO.find(x => x[0] === v);
+    if (s) { p.d = s[1]; p.pitch = s[2]; }
+  } else if (k === 'full') p.full = !!v;
+  else { const n = parseFloat(String(v).replace(',', '.')); if (!(n >= 0)) return;
+    if (k === 'd') p.d = Math.max(1, n); else if (k === 'pitch') p.pitch = Math.max(0.2, n);
+    else if (k === 'len') p.len = Math.max(0.5, n); else if (k === 'clr') p.clr = Math.min(2, n); }
+  _thfPanel(); _thfPreview();
+}
+function _thfSetFrom(v) { _thf.p.from = v; _thfPanel(); _thfPreview(); }
+function _thfSetHand(v) { _thf.p.hand = v; _thfPanel(); _thfPreview(); }
+function _thfRepick() {
+  if (_thf.ghost) { scene.remove(_thf.ghost); _thf.ghost = null; }
+  _thf.cyl = null; _thf.obj = null; _thf.picking = true; canvas.style.cursor = 'crosshair';
+  if (_thf.panel) { _thf.panel.remove(); _thf.panel = null; }
+  notify('Andere Bohrung oder Zylinderfläche anklicken', 'ok');
+}
+function _thfClose() {
+  if (_thf.ghost) { scene.remove(_thf.ghost); _thf.ghost.geometry.dispose(); _thf.ghost = null; }
+  if (_thf.panel) { _thf.panel.remove(); _thf.panel = null; }
+  canvas.removeEventListener('pointerdown', _thfPointer, true);
+  document.removeEventListener('keydown', _thfKey, true);
+  if (_thf.picking) canvas.style.cursor = '';
+  _thf.active = _thf.picking = false; _thf.obj = null; _thf.cyl = null;
+}
+async function _thfApply() {
+  if (_thf.busy || !_thf.obj || !_thf.cyl) return;
+  const o = _thf.obj, p = { ..._thf.p }, inner = _thf.cyl.inner;
+  _thf.busy = true;
+  let tool = null;
+  try {
+    _progressShow('Gewinde wird geschnitten…'); _progressSet(6); _progressCreep(93);
+    await new Promise(r => setTimeout(r, 30));
+    const geo = await _thfToolGeo();
+    _thfClose();
+    saveUndo();   // VOR dem Werkzeug: Rückgängig liefert den Körper ohne Hilfsobjekt
+    tool = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xf03030, transparent: true, opacity: 0.52, side: THREE.DoubleSide }));
+    tool.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Gewinde-Werkzeug', color: '#f03030',
+                      isHole: true, fillet: 0, chamfer: 0, displacementPattern: 'keine' };
+    scene.add(tool); objects.push(tool);
+    const ctl = _progressCancelable();
+    await _doSubtractHoles([o], [tool], ctl);
+    _progressDone();
+    const name = p.size === 'eigen' ? `Ø${String(p.d).replace('.', ',')}×${String(p.pitch).replace('.', ',')}` : `${p.size}×${String(p.pitch).replace('.', ',')}`;
+    notify(`${inner ? 'Innengewinde' : 'Außengewinde'} ${name}${p.hand === 'left' ? ' links' : ''} geschnitten${p.clr ? ` (Spiel ${String(p.clr).replace('.', ',')} mm)` : ''} ✓`, 'ok');
+  } catch (err) {
+    _progressHide();
+    if (tool && objects.includes(tool)) { scene.remove(tool); objects.splice(objects.indexOf(tool), 1); updateTree(); }
+    console.error('[thf]', err);
+    notify('Gewinde konnte nicht geschnitten werden: ' + (err.message || err), 'e');
+  } finally { _thf.busy = false; }
+}
+
 // ═══ SCHRAUBDOSEN-GENERATOR (Dose mit Schraubdeckel) ═════════════════════════
 // Beide Teile als Grid-Revolve mit θ-abhängigem Radius (wie _buildThreadGeo):
 // eine Profilkette außen hoch → über den Rand → innen runter, dazu Deckel-Fächer
@@ -56843,8 +57162,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.151';
+const VOLME3D_VERSION = '1.18.152';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.152', date:'2026-10-10', changes:[
+    ['🔩','<b>Gewinde an Fläche.</b> Neues Werkzeug unter <i>Werkzeuge öffnen</i> (oder Suche „Gewinde“): einfach eine vorhandene <b>Bohrung</b> (wird Innengewinde) oder einen <b>Zylinder</b> (wird Außengewinde) anklicken. V3D CAD erkennt Durchmesser und Länge und schlägt das passende Normgewinde vor – z. B. Ø10-Loch → <b>M12 × 1,75</b>. Einstellbar sind Größe (M2 bis M48 oder eigene), Steigung, ganze Länge oder ein Stück ab einem Ende, Rechts-/Linksgewinde und das <b>Druck-Spiel</b> (+0,1 bis +0,4 mm): Innengewinde werden um diesen Wert größer, Außengewinde dünner, damit gedruckte Teile sicher ineinander passen. Eine orange Vorschau zeigt das Gewinde vorher, Sacklöcher behalten ihren Boden, Rückgängig holt die glatte Bohrung zurück.'],
+  ]},
   { version:'1.18.151', date:'2026-10-10', changes:[
     ['❤️','<b>Sieben neue Grundformen</b> im Formen-Menü: <b>Herz</b> und <b>Pfeil</b> (liegen flach und drucken ohne Stützen), <b>Satteldach</b>, <b>Runddach</b> (halber Zylinder), <b>Halbkugel</b>, <b>Edelstein</b> im Brillant-Schliff und <b>Kapsel</b>. Alle lassen sich wie gewohnt skalieren, als Bohrung nutzen, abziehen und vereinen.'],
   ]},
@@ -67388,6 +67710,7 @@ const CMDK = [
   {i:'📝',g:'Seite',t:'Was ist neu?',k:'changelog version',run:()=>_openChangelog()},
   {i:'🎬',g:'Seite',t:'Videos (Howto-Filme)',k:'video videos anleitung howto hilfe film tutorial erklaerung zeigen lernen kurs schulung',run:()=>_howtoMenu()},
   {i:'⛶',g:'Ansicht',t:'Vollbild ein/aus',k:'vollbild fullscreen ganzer bildschirm beamer praesentation f11',run:()=>_fsToggle()},
+  {i:'🔩',g:'Bearbeiten',t:'Gewinde an Fläche (Bohrung/Zylinder anklicken)',k:'gewinde thread innengewinde aussengewinde bohrung schraube mutter m3 m4 m5 m6 m8 m10 m12 spiel toleranz',run:()=>_thfStart()},
   {i:'◪',g:'Ansicht',t:'Schnittansicht (Modell aufschneiden)',k:'schnitt section querschnitt clipping wandstaerke innen',run:()=>sectionTool()},
   {i:'🛟',g:'Datei',t:'Sicherungen (ältere Stände)',k:'backup sicherung wiederherstellen restore version',run:()=>_bakOpen()},
   {i:'📱',g:'Ansicht',t:'Ansehen-Modus (mobil)',k:'mobile view vorschau',run:()=>_mviewToggle()},
