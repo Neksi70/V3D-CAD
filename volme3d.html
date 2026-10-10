@@ -272,6 +272,9 @@ body.devmode .dev-only{display:flex!important}
 /* Viewport-Kontextmenü (Rechtsklick) */
 #vp-ctxmenu{display:none;position:fixed;background:var(--white);border:1px solid var(--border);border-radius:var(--rs);box-shadow:var(--shm);z-index:400;min-width:170px;padding:3px 0}
 #vp-ctxmenu.show{display:block}
+#vp-ctxmenu .ctx-k{margin-left:auto;padding-left:18px;font-size:10.5px;color:var(--dim);font-weight:500}
+#vp-ctxmenu .sli-item{display:flex;align-items:center}
+#vp-ctxmenu .ctx-sep{height:1px;background:var(--border);margin:3px 0}
 .outdir-status{font-size:10px;font-weight:700;color:var(--acc);padding:7px 12px 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:230px}
 .outdir-status:empty{display:none}
 .outdir-clear{font-size:11px;color:var(--mid)}
@@ -1638,6 +1641,12 @@ const firebaseConfig = {
   <div id="plate-bar"></div>
   <div id="text-snap-hint"></div>
   <div id="vp-ctxmenu">
+    <div class="sli-item" id="ctx-cut" data-sel="1">✂️ Ausschneiden<span class="ctx-k">Strg+X</span></div>
+    <div class="sli-item" id="ctx-copy" data-sel="1">📋 Kopieren<span class="ctx-k">Strg+C</span></div>
+    <div class="sli-item" id="ctx-paste">📥 Einfügen<span class="ctx-k">Strg+V</span></div>
+    <div class="sli-item" id="ctx-dup" data-sel="1">⧉ Duplizieren<span class="ctx-k">Strg+D</span></div>
+    <div class="sli-item" id="ctx-del" data-sel="1">🗑️ Löschen<span class="ctx-k">Entf</span></div>
+    <div class="ctx-sep" id="ctx-sep"></div>
     <div class="sli-item" id="ctx-measure">📐 Messen (Abstand / Ø)</div>
     <div class="sli-item" id="ctx-pushpull">↕ Fläche ziehen (Push/Pull)</div>
     <div class="sli-item" id="ctx-loft">⤧ Loft (Flächen verbinden)</div>
@@ -30115,6 +30124,11 @@ function _showVpCtx(x, y){
   // Push/Pull nur bei genau einem ausgewählten Objekt anbieten
   const ppItem = document.getElementById('ctx-pushpull');
   if (ppItem) ppItem.style.display = (selectedObjs && selectedObjs.length === 1) ? '' : 'none';
+  // Bearbeiten-Einträge (Ralf 11.10.26): nur zeigen, was gerade geht – nichts ausgegraut
+  const hasSel = !!(selectedObjs && selectedObjs.length);
+  _vpCtx.querySelectorAll('[data-sel]').forEach(el => el.style.display = hasSel ? '' : 'none');
+  const pa = document.getElementById('ctx-paste'); if (pa) pa.style.display = clipboard ? '' : 'none';
+  const sep = document.getElementById('ctx-sep'); if (sep) sep.style.display = (hasSel || clipboard) ? '' : 'none';
   _vpCtx.classList.add('show');
   // innerhalb des Fensters halten
   const mw = _vpCtx.offsetWidth, mh = _vpCtx.offsetHeight;
@@ -30128,13 +30142,45 @@ window.addEventListener('mouseup', e => {
     const rect = vpEl.getBoundingClientRect();
     const inVp = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom;
     const moved = Math.hypot(e.clientX - mouseDownPos.x, e.clientY - mouseDownPos.y);
-    if (inVp && moved < 5) _showVpCtx(e.clientX, e.clientY);
+    if (inVp && moved < 5) { _ctxSelectUnder(e); _showVpCtx(e.clientX, e.clientY); }
   }
 }, true);
 // Schließen bei Linksklick / Escape / Scroll
 window.addEventListener('mousedown', e => { if(e.button !== 2 && _vpCtx && _vpCtx.classList.contains('show') && !_vpCtx.contains(e.target)) _hideVpCtx(); }, true);
 window.addEventListener('wheel', _hideVpCtx, true);
 window.addEventListener('keydown', e => { if(e.key==='Escape') _hideVpCtx(); });
+// Rechtsklick auf ein Teil wählt es (wie in Tinkercad/Windows); liegt es schon in
+// der Auswahl, bleibt die Mehrfachauswahl stehen. Rechtsklick ins Leere lässt die
+// Auswahl, damit „Einfügen" auch dort geht.
+// Treffer beim Drücken merken (beim Loslassen kann der Orbit schon gelaufen sein).
+let _ctxDownObj = null;
+window.addEventListener('mousedown', e => {
+  if (e.button !== 2) return;
+  _ctxDownObj = null;
+  if (e.target !== canvas) return;
+  try {
+    const hs = pickObjects(e).filter(h => h.object && !(h.object.userData && h.object.userData.isSketchRef));
+    const h = hs.find(h => h.object.isMesh) || hs[0];   // wie Linksklick: Kante nur als Notnagel
+    let o = h && h.object; while (o && !objects.includes(o)) o = o.parent;
+    _ctxDownObj = o || null;
+  } catch (_) {}
+}, true);
+function _ctxSelectUnder(e){
+  const o = _ctxDownObj; _ctxDownObj = null;
+  if (!o || !objects.includes(o) || selectedObjs.includes(o)) return;
+  selectObjs([o]);
+}
+function cutSelected(){
+  if (!selectedObjs.length) return;
+  const n = selectedObjs.length;
+  copySelected(); deleteSelected();
+  notify(n > 1 ? n + ' Teile ausgeschnitten — Strg+V fügt sie ein' : 'Ausgeschnitten — Strg+V fügt es ein', 'ok');
+}
+document.getElementById('ctx-cut').addEventListener('click',   () => { _hideVpCtx(); cutSelected(); });
+document.getElementById('ctx-copy').addEventListener('click',  () => { _hideVpCtx(); copySelected(); });
+document.getElementById('ctx-paste').addEventListener('click', () => { _hideVpCtx(); pasteClipboard(); });
+document.getElementById('ctx-dup').addEventListener('click',   () => { _hideVpCtx(); smartDuplicate(); });
+document.getElementById('ctx-del').addEventListener('click',   () => { _hideVpCtx(); deleteSelected(); });
 document.getElementById('ctx-measure').addEventListener('click', () => { _hideVpCtx(); if(typeof measureTool!=='function') return; if(_measureMode) _measureExit(); /* aktiven Modus zurücksetzen, damit der Klick immer (neu) startet statt zu togglen */ measureTool(); });
 document.getElementById('ctx-pushpull').addEventListener('click', () => { _hideVpCtx(); enterPushPull(); });
 document.getElementById('ctx-loft').addEventListener('click', () => { _hideVpCtx(); if (!_lf.active) enterLoftMode(); });
@@ -30818,6 +30864,7 @@ window.addEventListener('keydown', e => {
     if (k === 'd') { e.preventDefault(); smartDuplicate(); return; }
     if (k === 'a') { e.preventDefault(); selectObjs([...objects]); return; }
     if (k === 'c') { e.preventDefault(); copySelected(); return; }
+    if (k === 'x') { e.preventDefault(); cutSelected(); return; }
     if (k === 'v') { e.preventDefault(); pasteClipboard(); return; }
     if (k === 'g') { e.preventDefault(); e.shiftKey ? ungroupSelected() : groupSelected(); return; }
     if (k === 'h') { e.preventDefault(); e.shiftKey ? showAllObjects() : toggleHideSelected(); return; }
