@@ -1656,9 +1656,10 @@ const firebaseConfig = {
     <button class="skt" data-tool="pull"    onclick="_skSetTool('pull')"    title="Fläche andrücken und nach oben ziehen — Höhe live (Zahl tippen = exakt, Enter bestätigt, Esc bricht ab)"><span class="ski">⬆</span><span class="skl">Ziehen</span><span class="skk">P</span></button>
     <div class="sksep"></div>
     <button class="skt on" id="sk-ortho-btn" onclick="_skToggleOrtho()" title="Ortho-Fang: rastet auf waagerecht / senkrecht / 45° und an vorhandenen Punkten (O)"><span class="ski">⊾</span><span class="skl">Ortho-Fang</span><span class="skk">O</span></button>
+    <button class="skbtn" onclick="_skFacePickStart()" title="Skizze auf eine ebene Fläche eines Körpers legen (z. B. Oberseite einer Box) — dann lässt sich direkt anfügen oder eine Tasche abziehen">▱ Auf Fläche</button>
     <button class="skbtn" onclick="_skUndo()" title="Letztes Element zurück (Strg+Z)">↶ Zurück</button>
     <label class="skh">Höhe <input id="sketch-h" type="number" value="10" min="0.2" step="0.5"> mm</label>
-    <button class="skbtn skbtn-go" onclick="_skExtrude()" title="Geschlossene Profile extrudieren">✓ Extrudieren</button>
+    <button class="skbtn skbtn-go" onclick="_skExtrude()" title="Geschlossene Profile extrudieren — Richtung, Abstand und Operation (Neu / Anfügen / Abziehen) im Fenster">✓ Extrudieren…</button>
     <button class="skbtn" onclick="_skLoft()" title="≥2 geschlossene Profile (Zeichenreihenfolge: 1=unten, letztes=oben auf Höhe) zu Übergangskörper verbinden">⤧ Loft</button>
     <button class="skbtn" onclick="_skSweep()" title="Geschlossenes Profil entlang offenem Pfad (Linie/Spline) ziehen → Rohr/Profil folgt der Kurve">↝ Sweep</button>
     <div class="sksep"></div>
@@ -9862,8 +9863,9 @@ function enterSketchMode() {
   if (_lf.active)   exitLoftMode();
   _sk.active = true; _sk.tool = 'line'; _sk.ents = []; _sk.pending = [];
   _sk.savedCam = { theta: sph.theta, phi: sph.phi, r: sph.r, target: orbitTarget.clone() };
-  setView('top');
-  _sk.group = new THREE.Group(); _sk.group.renderOrder = 996; scene.add(_sk.group);
+  _sk.group = new THREE.Group(); _sk.group.renderOrder = 996; _sk.group.matrixAutoUpdate = false; scene.add(_sk.group);
+  // Skizzenebene: gesetzte Arbeitsebene (Fläche, Versatz, Kippen) — sonst Bauplatte
+  _skSetFrame(workplaneNormal, workplanePoint);
   canvas.style.cursor = 'crosshair';
   document.getElementById('sketch-bar').style.display = 'flex';
   _skWireDim();
@@ -9874,6 +9876,8 @@ function enterSketchMode() {
 function exitSketchMode() {
   if (!_sk.active) return;
   if (_skPull.editing) _skPullCleanup();
+  if (_sk.facePick) { canvas.removeEventListener('pointerdown', _skFacePickDown, true); _sk.facePick = false; }
+  if (typeof _skxClose === 'function') _skxClose(true);
   _sk.active = false; canvas.style.cursor = ''; _sk.hint=''; _skUpdateBadge();
   if (_sk.group) { scene.remove(_sk.group); _skDisposeGroup(); _sk.group = null; }
   _sk.ents = []; _sk.pending = []; _sk.dimLock = false;
@@ -9903,7 +9907,7 @@ function _skSetTool(t) {
 // ── Maß-Eingabe beim Zeichnen (Live-Anzeige + getippte Sollgröße) ────────
 function _skMM(u){ return Math.round(u*10*100)/100; }           // Units → mm
 function _skScreen(u,v){
-  const p=_skWorld(u,v).project(camera); const r=vpEl.getBoundingClientRect();
+  const p=_skToWorld(_skWorld(u,v)).project(camera); const r=vpEl.getBoundingClientRect();
   return { x: r.left+(p.x*0.5+0.5)*r.width, y: r.top+(-p.y*0.5+0.5)*r.height };
 }
 function _skDimSpec(){
@@ -9944,12 +9948,62 @@ function _skCommitTyped(){
 }
 
 // ── Koordinaten / Snap ───────────────────────────────────────────────────
-function _skWorld(u,v){ return new THREE.Vector3(u, _SK_Y, v); }
+function _skWorld(u,v){ return new THREE.Vector3(u, _SK_Y, v); }   // LOKAL (in _sk.group)
+// ── Skizzenebene (1.18.153) ──────────────────────────────────────────────
+// Alles in der Skizze rechnet in lokalen (u, v): u = lokale X, v = lokale Z,
+// Extrusion entlang lokal +Y. _sk.M legt diese Ebene in die Welt — Bauplatte
+// (Einheitsmatrix), Arbeitsebene oder angeklickte Fläche. Lokales Y = Normale,
+// gleiche Drehung wie _wpSpawnMesh (_wpMakeQuat), damit Körper und Skizzen auf
+// derselben Ebene dieselbe Ausrichtung haben.
+function _skSetFrame(n, o){
+  n = n.clone().normalize();
+  _sk.N = n; _sk.O = o.clone(); _sk.Q = _wpMakeQuat(n);
+  _sk.M = new THREE.Matrix4().compose(_sk.O, _sk.Q, new THREE.Vector3(1, 1, 1));
+  _sk.Minv = _sk.M.clone().invert();
+  _sk.onFace = !(n.y > 0.99999 && Math.abs(o.y) < 1e-6);
+  if (_sk.group) { _sk.group.matrix.copy(_sk.M); _sk.group.matrixWorldNeedsUpdate = true; }
+  if (_sk.onFace) { orbitTarget.copy(_sk.O); sph.r = Math.min(sph.r, 22); _skCamLocal(new THREE.Vector3(0, 1, 0)); }
+  else setView('top');
+}
+// Kamera entlang einer LOKALEN Richtung der Skizzenebene ausrichten
+function _skCamLocal(dl){
+  const d = dl.clone().applyQuaternion(_sk.Q || new THREE.Quaternion()).normalize();
+  sph.phi = Math.acos(Math.max(-1, Math.min(1, d.y)));
+  if (Math.abs(d.x) + Math.abs(d.z) > 1e-6) sph.theta = Math.atan2(d.x, d.z);
+  sph2cam();
+}
+function _skToWorld(v3){ return _sk.M ? v3.clone().applyMatrix4(_sk.M) : v3.clone(); }
 function _skPlanePoint(e){
   getNorm(e); raycaster.setFromCamera(mousev, camera);
   const hit = new THREE.Vector3();
-  if (!raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0), 0), hit)) return null;
+  const N = _sk.N || new THREE.Vector3(0,1,0), O = _sk.O || new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(N, O), hit)) return null;
+  if (_sk.Minv) hit.applyMatrix4(_sk.Minv);
   return { u: hit.x, v: hit.z };
+}
+// Skizze auf eine Fläche legen: Knopf „▱ Auf Fläche" → nächster Klick auf eine
+// ebene Körperfläche setzt die Skizzenebene dorthin (Leerraum = Bauplatte).
+function _skFacePickStart(){
+  if (!_sk.active) return;
+  if (_sk.ents.length && !confirm('Die Skizze wird dafür geleert. Weiter?')) return;
+  _sk.facePick = true; canvas.style.cursor = 'pointer';
+  canvas.addEventListener('pointerdown', _skFacePickDown, true);
+  notify('Ebene Fläche eines Körpers anklicken — die Skizze liegt dann darauf (Leerraum = Bauplatte)', 'ok');
+}
+function _skFacePickDown(e){
+  if (!_sk.facePick || e.button > 0) return;
+  e.preventDefault(); e.stopPropagation();
+  canvas.removeEventListener('pointerdown', _skFacePickDown, true);
+  _sk.facePick = false; canvas.style.cursor = 'crosshair';
+  const hits = pickObjects(e).filter(h => h.object.isMesh && h.face && !(h.object.userData && (h.object.userData.isEdgeLines || h.object.userData.isSketchRef)) && objects.some(o => o === h.object || o.getObjectById(h.object.id)));
+  _sk.ents = []; _sk.pending = [];
+  if (!hits.length) { _skSetFrame(new THREE.Vector3(0,1,0), new THREE.Vector3()); _skRender(); notify('Skizze liegt auf der Bauplatte', 'ok'); return; }
+  const h = hits[0];
+  const n = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
+  if (n.dot(raycaster.ray.direction) > 0) n.negate();
+  _skSetFrame(n, h.point.clone());
+  _skRender();
+  notify('Skizze liegt jetzt auf der Fläche — zeichnen, dann „✓ Extrudieren"', 'ok');
 }
 function _skSnap(p){
   const tol = Math.max(0.06, sph.r*0.012);
@@ -10142,6 +10196,7 @@ function _skRefApply() {
   mesh.position.set(_skRef.xMm / 10, _SK_Y - 0.005, _skRef.yMm / 10);
   mesh.renderOrder = 994;                              // unter den Skizzenlinien (996)
   mesh.userData.isSketchRef = true;
+  if (_sk.M) mesh.applyMatrix4(_sk.M);                 // auf die Skizzenebene (Fläche/Arbeitsebene)
   scene.add(mesh);
   _skRef.mesh = mesh;
 }
@@ -10822,7 +10877,12 @@ function _skApplySides(nSides){
   _updateObjEdgeLines(o);
 }
 // Flächen (mit Löchern) um hmm mm nach +Y extrudieren → fertiges Mesh in der Szene.
-function _skMakeBodyFromShapes(shapes, hmm){
+function _skPlace(mesh, offU){
+  if (offU) mesh.position.y += offU;
+  if (_sk.M && _sk.onFace) mesh.applyMatrix4(_sk.M);
+  mesh.updateMatrixWorld(true);
+}
+function _skMakeBodyFromShapes(shapes, hmm, offU){
   const profiles=shapes.map(s=>({ outer:s.outer.map(p=>({u:p.u,v:p.v})),
                                   holes:(s.holes||[]).map(h=>h.map(p=>({u:p.u,v:p.v}))) }));
   const merged=_skBuildGeoFromProfiles(profiles, hmm, 0, 0);
@@ -10838,20 +10898,165 @@ function _skMakeBodyFromShapes(shapes, hmm){
   mesh.userData._skProfilesFull = profiles.map(pr=>({ outer:pr.outer.map(p=>({u:p.u,v:p.v})),
                                                       holes:(pr.holes||[]).map(h=>h.map(p=>({u:p.u,v:p.v}))) }));  // pristine Basis für „Seiten"
   mesh.userData._skHeightMM = hmm;
+  _skPlace(mesh, offU || 0);
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
   return mesh;
 }
+// ═══ EXTRUDIEREN-DIALOG (_skx*, 1.18.153) ═══════════════════════════════════
+// Wie in Fusion/Onshape/JumpStart: Richtung (eine Seite / symmetrisch / zwei
+// Seiten), Abstand (negativ = in die andere Richtung) und Operation. „Automatisch"
+// sticht kurz hinter die Startebene: wächst die Extrusion in einen Körper
+// hinein → Abziehen; liegt die Skizze AUF einem Körper und wächst nach außen →
+// Anfügen; sonst neuer Körper. Vorschau farbig: blau neu, grün anfügen, rot abziehen.
+const _skx = { open:false, panel:null, prev:null, shapes:null,
+               p:{ dir:'one', d:10, d2:5, op:'auto' }, res:null, busy:false };
 function _skExtrude(){
   if (!_sk.active) return;
   const shapes=_skBuildShapes();
   if (shapes.length===0){ notify('Keine geschlossene Kontur — Profil schließen (Endpunkte aneinander) oder Kreis/Ellipse nutzen','w'); return; }
-  const hmm=parseFloat(document.getElementById('sketch-h').value)||10;
-  saveUndo();
-  const mesh=_skMakeBodyFromShapes(shapes, hmm);
-  selectObjs([mesh]); updateTree();
-  exitSketchMode();
-  notify('Körper aus Skizze erzeugt ('+shapes.length+' Profil'+(shapes.length>1?'e':'')+')','ok');
+  _skx.shapes = shapes;
+  const h = parseFloat(document.getElementById('sketch-h').value);
+  if (h > 0 && !_skx.open) _skx.p.d = h;
+  _skx.open = true;
+  _skxPanel(); _skxUpdate();
 }
+function _skxRange(){
+  const p = _skx.p, d = (parseFloat(p.d) || 0) / 10, d2 = (parseFloat(p.d2) || 0) / 10;
+  if (p.dir === 'sym') return [-Math.abs(d) / 2, Math.abs(d) / 2];
+  if (p.dir === 'two') return [-Math.abs(d2), Math.abs(d)];
+  return d >= 0 ? [0, d] : [d, 0];
+}
+// Punkt sicher innerhalb einer Fläche (nicht im Loch)
+function _skxInnerPt(s){
+  const ok = q => _polyContains(s.outer, q) && !(s.holes || []).some(hh => _polyContains(hh, q));
+  const c = _loopCentroid(s.outer); if (ok(c)) return c;
+  let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+  for (const q of s.outer){ x0=Math.min(x0,q.u); x1=Math.max(x1,q.u); y0=Math.min(y0,q.v); y1=Math.max(y1,q.v); }
+  for (let n = 4; n <= 32; n *= 2) for (let i = 1; i < n; i++) for (let j = 1; j < n; j++) {
+    const q = { u: x0 + (x1 - x0) * i / n, v: y0 + (y1 - y0) * j / n }; if (ok(q)) return q;
+  }
+  return c;
+}
+function _skxBodies(){ return objects.filter(o => o.isMesh && o.userData && !o.userData.isHole && o.visible !== false && !o.userData.locked); }
+function _skxBodyAt(local){
+  const w = _skToWorld(local);
+  for (const o of _skxBodies()) { try { if (_thfInside(o, w)) return o; } catch (e) {} }
+  return null;
+}
+// Automatik + gewählte Operation → { op:'new'|'join'|'cut', target }
+function _skxResolve(){
+  const [a, b] = _skxRange(), p = _skx.p, eps = Math.min(0.02, Math.max(1e-4, (b - a) / 3));
+  const pts = _skx.shapes.map(_skxInnerPt);
+  const probe = y => { for (const q of pts) { const o = _skxBodyAt(new THREE.Vector3(q.u, y, q.v)); if (o) return o; } return null; };
+  // in Wachsrichtung direkt hinter der Startebene
+  const fwd = a >= 0 ? probe(a + eps) : (b <= 0 ? probe(b - eps) : (probe(eps) || probe(-eps)));
+  // gegen die Wachsrichtung (Skizze liegt auf einem Körper)
+  const back = (a >= 0) ? probe(-eps) : (b <= 0 ? probe(eps) : null);
+  let auto = fwd ? { op:'cut', target:fwd } : (back ? { op:'join', target:back } : { op:'new', target:null });
+  if (p.op === 'auto') return { ...auto, auto:true };
+  if (p.op === 'new') return { op:'new', target:null };
+  const tgt = fwd || back || (selectedObjs.find(o => _skxBodies().includes(o))) || null;
+  return { op:p.op, target:tgt };
+}
+function _skxInfo(r){
+  const nm = r.target ? '„' + (r.target.userData.name || 'Körper') + '“' : '';
+  if (r.op === 'cut')  return r.target ? `Wird aus ${nm} <b style="color:#dc2626">abgezogen</b>.` : '<span style="color:#dc2626">Kein Körper im Weg — nichts zum Abziehen.</span>';
+  if (r.op === 'join') return r.target ? `Wird an ${nm} <b style="color:#16a34a">angefügt</b>.` : '<span style="color:#dc2626">Kein Körper berührt — nichts zum Anfügen.</span>';
+  return 'Erzeugt einen <b style="color:#2563eb">neuen Körper</b>.';
+}
+function _skxUpdate(){
+  if (!_skx.open) return;
+  const [a, b] = _skxRange();
+  const r = _skx.res = _skxResolve();
+  if (_skx.prev) { _sk.group.remove(_skx.prev); _skx.prev.geometry.dispose(); _skx.prev = null; }
+  if (b - a > 1e-4) {
+    const profiles = _skx.shapes.map(s => ({ outer: s.outer, holes: s.holes || [] }));
+    const geo = _skBuildGeoFromProfiles(profiles, (b - a) * 10, 0, 0);
+    const col = r.op === 'cut' ? 0xef4444 : (r.op === 'join' ? 0x22c55e : 0x3b82f6);
+    // Abziehen liegt IM Körper → ohne Tiefentest zeichnen, sonst sieht man die Tasche nicht
+    _skx.prev = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: col, transparent: true, opacity: r.op === 'cut' ? 0.55 : 0.5,
+      depthWrite: false, depthTest: r.op !== 'cut', side: THREE.DoubleSide }));
+    _skx.prev.position.y = a; _skx.prev.renderOrder = 997;
+    _sk.group.add(_skx.prev);
+  }
+  const info = document.getElementById('skx-info'); if (info) info.innerHTML = _skxInfo(r);
+  // Ansicht kippen, damit man die Höhe sieht (nur einmal, beim Öffnen)
+  if (!_skx.tilted) { _skx.tilted = true;
+    if (_sk.onFace) _skCamLocal(new THREE.Vector3(Math.sin(0.88)*Math.sin(0.6), Math.cos(0.88), Math.sin(0.88)*Math.cos(0.6)));
+    else { sph.theta = 0.6; sph.phi = 0.88; sph2cam(); } }
+}
+function _skxPanel(){
+  let el = _skx.panel;
+  if (!el) {
+    el = _skx.panel = document.createElement('div'); el.id = 'skx-panel';
+    el.style.cssText = 'position:fixed;right:232px;bottom:64px;width:268px;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+    el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); _skxApply(); } if (e.key === 'Escape') _skxClose(); });
+    document.body.appendChild(el);
+  }
+  const p = _skx.p, tb = (on, k, v, t, tip) => `<button class="vtb${on ? ' on' : ''}" onclick="_skxSet('${k}','${v}')"${tip ? ` title="${tip}"` : ''}>${t}</button>`;
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">⬆ Extrudieren</b>
+      <span onclick="_skxClose()" style="cursor:pointer;color:var(--dim);font-size:15px" title="Zurück zur Skizze (Esc)">✕</span></div>
+    <div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:5px 8px;margin-bottom:8px">${_skx.shapes.length} Profil${_skx.shapes.length > 1 ? 'e' : ''} gewählt${_sk.onFace ? ' · auf Fläche/Arbeitsebene' : ''}</div>
+    <div class="vrow"><label>Richtung</label><div class="vbg" style="flex:1">${tb(p.dir === 'one', 'dir', 'one', 'Eine Seite')}${tb(p.dir === 'sym', 'dir', 'sym', 'Symmetrisch', 'Je die Hälfte nach beiden Seiten')}${tb(p.dir === 'two', 'dir', 'two', 'Zwei Seiten', 'Nach beiden Seiten unterschiedlich weit')}</div></div>
+    <div class="vrow"><label title="${p.dir === 'one' ? 'Negativ = in die andere Richtung (z. B. in den Körper hinein)' : ''}">${p.dir === 'two' ? 'Seite 1' : (p.dir === 'sym' ? 'Gesamt' : 'Abstand')}</label><input id="skx-d" type="number" step="0.5" value="${p.d}" oninput="_skxSet('d',this.value)" style="width:80px"><span class="vu">mm</span></div>
+    ${p.dir === 'two' ? `<div class="vrow"><label>Seite 2</label><input id="skx-d2" type="number" step="0.5" min="0" value="${p.d2}" oninput="_skxSet('d2',this.value)" style="width:80px"><span class="vu">mm</span></div>` : ''}
+    <div class="vrow"><label>Operation</label><select id="skx-op" onchange="_skxSet('op',this.value)" style="flex:1">
+      ${[['auto','Automatisch'],['new','Neuer Körper'],['join','Anfügen'],['cut','Abziehen']].map(([v, l]) => `<option value="${v}"${p.op === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+    <div id="skx-info" style="font-size:11.5px;margin:4px 0 10px;line-height:1.4"></div>
+    <div style="display:flex;gap:6px;justify-content:flex-end">
+      <button class="btn" onclick="_skxClose()">Abbrechen</button>
+      <button class="btn pri" id="skx-ok" onclick="_skxApply()">✓ OK</button></div>`;
+  setTimeout(() => { const i = document.getElementById('skx-d'); if (i && document.activeElement !== i) { i.focus(); i.select(); } }, 0);
+}
+function _skxSet(k, v){
+  if (k === 'dir' || k === 'op') { _skx.p[k] = v; _skxPanel(); }
+  else _skx.p[k] = String(v).replace(',', '.');
+  _skxUpdate();
+}
+function _skxClose(silent){
+  if (_skx.prev) { if (_skx.prev.parent) _skx.prev.parent.remove(_skx.prev); _skx.prev.geometry.dispose(); _skx.prev = null; }
+  if (_skx.panel) { _skx.panel.remove(); _skx.panel = null; }
+  _skx.open = false; _skx.tilted = false;
+  if (!silent && _sk.active) { if (_sk.onFace) _skCamLocal(new THREE.Vector3(0, 1, 0)); else setView('top'); }
+}
+async function _skxApply(){
+  if (_skx.busy || !_skx.open) return;
+  const [a, b] = _skxRange();
+  if (b - a < 0.005) { notify('Abstand ist 0 — bitte einen Wert eingeben', 'w'); return; }
+  const r = _skx.res || _skxResolve(), shapes = _skx.shapes, hmm = Math.round((b - a) * 1000) / 100;
+  if ((r.op === 'cut' || r.op === 'join') && !r.target) { notify(r.op === 'cut' ? 'Kein Körper zum Abziehen getroffen' : 'Kein Körper zum Anfügen berührt', 'w'); return; }
+  _skx.busy = true;
+  try {
+    _skxClose(true);
+    saveUndo();
+    const n0 = undoStack.length;
+    const mesh = _skMakeBodyFromShapes(shapes, hmm, a);
+    exitSketchMode();
+    if (r.op === 'new') {
+      selectObjs([mesh]); updateTree();
+      notify('Körper aus Skizze erzeugt — ' + String(hmm).replace('.', ',') + ' mm', 'ok');
+    } else if (r.op === 'join') {
+      selectObjs([r.target, mesh]);
+      await unionSelected();
+      if (undoStack.length === n0 + 1) undoStack.pop();   // Zwischenstand „Körper daneben" nicht im Verlauf
+      updateUndoRedoButtons();
+    } else {
+      mesh.userData.isHole = true; mesh.userData.color = '#f03030';
+      mesh.material.color.set('#f03030'); mesh.material.transparent = true; mesh.material.opacity = 0.52;
+      updateTree();
+      _progressShow('Abziehen läuft…'); _progressSet(8); _progressCreep(93);
+      const ctl = _progressCancelable();
+      try { await _doSubtractHoles([r.target], [mesh], ctl); _progressDone(); notify('Aus „' + (r.target.userData.name || 'Körper') + '“ abgezogen — ' + String(hmm).replace('.', ',') + ' mm', 'ok'); }
+      catch (err) {
+        _progressHide();
+        if (objects.includes(mesh)) { scene.remove(mesh); objects.splice(objects.indexOf(mesh), 1); updateTree(); }
+        notify('Abziehen nicht möglich: ' + (err.message || err), 'e');
+      }
+    }
+  } finally { _skx.busy = false; }
+}
+
 // „Ziehen": die angeklickte Fläche (Außenkontur, in der p liegt, ohne Loch)
 // einzeln extrudieren → Körper. Schließt danach den Skizzen-Modus, damit man
 // das Ergebnis in der Iso-Ansicht sieht.
@@ -10900,12 +11105,12 @@ function _skPullPreviewGeo(hU){
   return geo;
 }
 function _skPullScreen(x,y,z){
-  const p=new THREE.Vector3(x,y,z).project(camera); const r=vpEl.getBoundingClientRect();
+  const p=_skToWorld(new THREE.Vector3(x,y,z)).project(camera); const r=vpEl.getBoundingClientRect();
   return { x:r.left+(p.x*0.5+0.5)*r.width, y:r.top+(-p.y*0.5+0.5)*r.height };
 }
 function _skPullHeightFromMouse(e){
   getNorm(e); raycaster.setFromCamera(mousev, camera);
-  const O=new THREE.Vector3(_skPull.cu,0,_skPull.cv), A=new THREE.Vector3(0,1,0);
+  const O=_skToWorld(new THREE.Vector3(_skPull.cu,0,_skPull.cv)), A=(_sk.N||new THREE.Vector3(0,1,0)).clone();
   const view=camera.position.clone().sub(O);
   const n=view.clone().sub(A.clone().multiplyScalar(view.dot(A)));   // Ebene enthält Achse, zur Kamera gedreht
   if (n.lengthSq()<1e-6) return null; n.normalize();
@@ -10947,7 +11152,9 @@ function _skPullStart(p){
   _skPull.cu=c.u; _skPull.cv=c.v; _skPull.h=0; _skPull.grabOff=null; _skPull.typed='';
   _skPull.savedSk={ theta:sph.theta, phi:sph.phi, r:sph.r };
   // Szenen-Objekte
-  _skPull.group=new THREE.Group(); _skPull.group.renderOrder=1001; scene.add(_skPull.group);
+  _skPull.group=new THREE.Group(); _skPull.group.renderOrder=1001;
+  if (_sk.M){ _skPull.group.matrixAutoUpdate=false; _skPull.group.matrix.copy(_sk.M); }
+  scene.add(_skPull.group);
   _skPull.preview=new THREE.Mesh(_skPullPreviewGeo(0.002),
     new THREE.MeshStandardMaterial({ color:new THREE.Color(currentColor), roughness:0.4, metalness:0.05,
       transparent:true, opacity:0.85, side:THREE.DoubleSide }));
@@ -10966,7 +11173,8 @@ function _skPullMove(e){
   if (!_skPull.dragging) return;
   if (_skPull.grabOff===null){
     // erste Bewegung: jetzt erst die Ansicht kippen (kein Flackern bei reinem Klick)
-    sph.theta=0.6; sph.phi=0.88; sph2cam();
+    if (_sk.onFace) _skCamLocal(new THREE.Vector3(Math.sin(0.88)*Math.sin(0.6), Math.cos(0.88), Math.sin(0.88)*Math.cos(0.6)));
+    else { sph.theta=0.6; sph.phi=0.88; sph2cam(); }
   }
   const raw=_skPullHeightFromMouse(e); if (raw===null) return;
   if (_skPull.grabOff===null) _skPull.grabOff=-raw;   // Höhe startet bei 0
@@ -11103,6 +11311,7 @@ function _skLoft(){
   mesh.userData._loftHmm = hmm;
   mesh.userData._loftSides = 96;
   mesh.userData._origGeo = geo;
+  _skPlace(mesh, 0);
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
   selectObjs([mesh]); updateTree();
   exitSketchMode();
@@ -11186,6 +11395,7 @@ function _skSweep(){
   mesh.userData._sweepPath = path.map(p=>({u:p.u,v:p.v}));
   mesh.userData._sweepSides = 64;
   mesh.userData._origGeo = geo;
+  _skPlace(mesh, 0);
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
   selectObjs([mesh]); updateTree();
   exitSketchMode();
@@ -29613,6 +29823,8 @@ window.addEventListener('keydown', e => {
     // Cursor!), erst der nächste ESC schließt die Skizze — sonst fliegt man
     // mitten im Zeichnen aus dem ganzen Modus (bzw. glaubt festzuhängen).
     if (_sk.active) {
+      if (_skx.open) { _skxClose(); return; }               // Extrudieren-Fenster zuerst
+      if (_sk.facePick) { canvas.removeEventListener('pointerdown', _skFacePickDown, true); _sk.facePick = false; canvas.style.cursor = 'crosshair'; return; }
       if (_sk.pending.length) { _sk.pending = []; _sk.dimLock = false; _skRender(); _skDimUpdate(); }
       else exitSketchMode();
       return;
@@ -29629,6 +29841,8 @@ window.addEventListener('keydown', e => {
 
   // Loft-Modus: Enter bestätigt
   if (_lf.active && k === 'Enter') { _lfApply(); return; }
+  // Extrudieren-Fenster: Enter bestätigt auch ohne Fokus im Feld
+  if (_skx.open && k === 'Enter') { e.preventDefault(); _skxApply(); return; }
 
   // Löcher-verschließen-Modus: Enter übernimmt die markierten Löcher
   if (_plugMode && k === 'Enter') { _plugApply(); return; }
@@ -57162,8 +57376,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.152';
+const VOLME3D_VERSION = '1.18.153';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.153', date:'2026-10-10', changes:[
+    ['⬆','<b>Extrudieren mit Fenster – wie in Fusion/Onshape.</b> In der Skizze öffnet <b>✓ Extrudieren…</b> jetzt ein Fenster mit Live-Vorschau: <b>Richtung</b> (eine Seite, symmetrisch oder zwei Seiten unterschiedlich weit), <b>Abstand</b> (negativ = in die andere Richtung) und <b>Operation</b>: <i>Automatisch</i>, <i>Neuer Körper</i>, <i>Anfügen</i> oder <i>Abziehen</i>. Automatisch erkennt selbst, ob die Form aus einem Körper herauswächst (wird angefügt, grün) oder hineingeht (wird abgezogen, rot), und schreibt dazu, was passiert. Enter = OK, Esc = zurück zur Skizze.'],
+    ['▱','<b>Skizze auf einer Fläche.</b> Mit <b>▱ Auf Fläche</b> in der Skizzenleiste eine ebene Fläche anklicken (z. B. die Oberseite einer Box) – die Skizze liegt dann genau darauf. Ist eine <b>Arbeitsebene</b> gesetzt, startet die Skizze automatisch dort (auch versetzt oder gekippt). So entsteht z. B. eine Tasche: Rechteck auf die Oberseite zeichnen, −6 mm extrudieren, fertig.'],
+  ]},
   { version:'1.18.152', date:'2026-10-10', changes:[
     ['🔩','<b>Gewinde an Fläche.</b> Neues Werkzeug unter <i>Werkzeuge öffnen</i> (oder Suche „Gewinde“): einfach eine vorhandene <b>Bohrung</b> (wird Innengewinde) oder einen <b>Zylinder</b> (wird Außengewinde) anklicken. V3D CAD erkennt Durchmesser und Länge und schlägt das passende Normgewinde vor – z. B. Ø10-Loch → <b>M12 × 1,75</b>. Einstellbar sind Größe (M2 bis M48 oder eigene), Steigung, ganze Länge oder ein Stück ab einem Ende, Rechts-/Linksgewinde und das <b>Druck-Spiel</b> (+0,1 bis +0,4 mm): Innengewinde werden um diesen Wert größer, Außengewinde dünner, damit gedruckte Teile sicher ineinander passen. Eine orange Vorschau zeigt das Gewinde vorher, Sacklöcher behalten ihren Boden, Rückgängig holt die glatte Bohrung zurück.'],
   ]},
