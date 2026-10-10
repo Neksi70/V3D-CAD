@@ -8452,6 +8452,166 @@ function _rmpMapper(pos, ctr, P, idx) {
 // Local-Space. ampMm = Texturhöhe in mm, unabhängig von Modellgröße/-skalierung.
 // Cached auf Mesh (sig = Muster|Skalierung|Richtung|Ort|Basis-Matrix), sodass
 // reine Höhen-Änderungen (Slider) nicht neu tessellieren müssen.
+// ═══ TEXTUR AUF GEWÄHLTE FLÄCHEN (texWhere = 'flaechen', 1.18.155) ═══════════
+// Wie „Faces" bei JumpStart/Fusion: statt Flächen-ARTEN (außen/oben/…) einzelne
+// Flächen anklicken. Gespeichert wird je Fläche nur ein Startpunkt + Normale im
+// Local-Space (übersteht Skalieren, Speichern, Undo); die Fläche selbst entsteht
+// bei jedem Texturieren neu per Flutfüllung über glatte Nachbardreiecke (< 30°)
+// auf der verschweißten Basis — beim Zylinder also der ganze Mantel, bei der Box
+// genau eine Seite. Randpunkte (Grenze zu nicht gewählten Flächen) bleiben
+// unverschoben, damit das Netz geschlossen bleibt.
+function _texRegionTris(pos, idx, seeds) {
+  const nT = idx.length / 3, N = new Float32Array(nT * 3), inR = new Uint8Array(nT);
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
+  for (let t = 0; t < nT; t++) {
+    a.fromArray(pos, idx[t*3]*3); b.fromArray(pos, idx[t*3+1]*3); c.fromArray(pos, idx[t*3+2]*3);
+    n.subVectors(b, a).cross(c.clone().sub(a)); const l = n.length() || 1;
+    N[t*3] = n.x / l; N[t*3+1] = n.y / l; N[t*3+2] = n.z / l;
+  }
+  const em = new Map(), nb = Array.from({ length: nT }, () => []);
+  for (let t = 0; t < nT; t++) for (let k = 0; k < 3; k++) {
+    const x = idx[t*3+k], y = idx[t*3+(k+1)%3], key = x < y ? x * 4194304 + y : y * 4194304 + x;
+    const o = em.get(key); if (o === undefined) em.set(key, t); else { nb[t].push(o); nb[o].push(t); }
+  }
+  const COS = Math.cos(THREE.MathUtils.degToRad(30)), tri = new THREE.Triangle(), cp = new THREE.Vector3();
+  const seedTri = [];
+  for (const s of seeds) {
+    const P = new THREE.Vector3().fromArray(s.p), SN = new THREE.Vector3().fromArray(s.n).normalize();
+    let best = -1, bd = Infinity;
+    for (let t = 0; t < nT; t++) {
+      if (N[t*3]*SN.x + N[t*3+1]*SN.y + N[t*3+2]*SN.z < 0.5) continue;
+      a.fromArray(pos, idx[t*3]*3); b.fromArray(pos, idx[t*3+1]*3); c.fromArray(pos, idx[t*3+2]*3);
+      tri.set(a, b, c); tri.closestPointToPoint(P, cp); const d = cp.distanceToSquared(P);
+      if (d < bd) { bd = d; best = t; }
+    }
+    seedTri.push(best);
+    if (best < 0) continue;
+    const q = [best]; inR[best] = 1;
+    for (let i = 0; i < q.length; i++) { const t = q[i];
+      for (const u of nb[t]) { if (inR[u]) continue;
+        if (N[t*3]*N[u*3] + N[t*3+1]*N[u*3+1] + N[t*3+2]*N[u*3+2] >= COS) { inR[u] = 1; q.push(u); } } }
+  }
+  return { inR, nb, seedTri };
+}
+// Welt-Abfrage: liegt ein Punkt auf einer gewählten Fläche (und nicht auf ihrem Rand)?
+function _texRegionTester(pos, idx, inR, nb, worldMax) {
+  const eps = Math.max(1e-6, worldMax * 2e-5), cell = Math.max(worldMax / 48, 1e-4);
+  const triG = new Map(), edgeG = new Map();
+  const key = (x, y, z) => x + ',' + y + ',' + z;
+  const put = (G, bbMin, bbMax, item) => {
+    const x0 = Math.floor((bbMin.x - eps) / cell), x1 = Math.floor((bbMax.x + eps) / cell);
+    const y0 = Math.floor((bbMin.y - eps) / cell), y1 = Math.floor((bbMax.y + eps) / cell);
+    const z0 = Math.floor((bbMin.z - eps) / cell), z1 = Math.floor((bbMax.z + eps) / cell);
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
+      const k = key(x, y, z); let arr = G.get(k); if (!arr) G.set(k, arr = []); arr.push(item); }
+  };
+  const V = i => new THREE.Vector3(pos[i*3], pos[i*3+1], pos[i*3+2]);
+  const nT = idx.length / 3;
+  for (let t = 0; t < nT; t++) {
+    if (!inR[t]) continue;
+    const A = V(idx[t*3]), B = V(idx[t*3+1]), Cc = V(idx[t*3+2]);
+    const bb = new THREE.Box3().setFromPoints([A, B, Cc]);
+    put(triG, bb.min, bb.max, new THREE.Triangle(A, B, Cc));
+    for (let k = 0; k < 3; k++) {
+      const x = idx[t*3+k], y = idx[t*3+(k+1)%3];
+      // Randkante: Nachbar über diese Kante nicht in der Auswahl
+      const other = nb[t].find(u => { for (let m = 0; m < 3; m++) { const p = idx[u*3+m], q = idx[u*3+(m+1)%3]; if ((p === x && q === y) || (p === y && q === x)) return true; } return false; });
+      if (other !== undefined && inR[other]) continue;
+      const P0 = V(x), P1 = V(y), eb = new THREE.Box3().setFromPoints([P0, P1]);
+      put(edgeG, eb.min, eb.max, new THREE.Line3(P0, P1));
+    }
+  }
+  const p = new THREE.Vector3(), cp = new THREE.Vector3();
+  return (x, y, z) => {
+    p.set(x, y, z);
+    const k = key(Math.floor(x / cell), Math.floor(y / cell), Math.floor(z / cell));
+    const ts = triG.get(k); if (!ts) return 0;
+    let on = false;
+    for (const tr of ts) { tr.closestPointToPoint(p, cp); if (cp.distanceToSquared(p) <= eps * eps) { on = true; break; } }
+    if (!on) return 0;
+    const es = edgeG.get(k);
+    if (es) for (const ln of es) { ln.closestPointToPoint(p, true, cp); if (cp.distanceToSquared(p) <= eps * eps * 4) return 0; }
+    return 1;
+  };
+}
+// Basis-Geometrie (Local) wie in _applyDisplacementNow — für die Flächen-Auswahl
+function _texBaseGeo(o) {
+  const st = o.userData.shapeType;
+  if (st === 'tube') return _tubeDispBase(o);
+  if (st === 'funnel') return buildFunnelGeo(o.userData.funnelTopDia, o.userData.funnelSpoutDia, o.userData.funnelHeight, o.userData.funnelSpoutLen, o.userData.funnelWall, o.userData.segments || 48, o.userData.funnelBevel);
+  if (st === 'conetube') return buildConeTubeGeo(o.userData.ctTopDia, o.userData.ctBotDia, o.userData.ctTopIn, o.userData.ctBotIn, o.userData.ctHeight, o.userData.segments || 48, o.userData.ctBevel, !!o.userData.ctFloor);
+  if (o.userData._origGeo) return o.userData._origGeo.clone();
+  return _buildHighResGeo(st || 'box', o.userData.coneTop || 0, o.userData.coneFlip);
+}
+// Klick-Auswahl
+const _texFP = { active:false, obj:null };
+function _texFacePickStart() {
+  const o = getFirst();
+  if (!o || !o.isMesh) { notify('Flächen wählen geht bei einem einzelnen Körper (Gruppen erst vereinen)', 'w'); return; }
+  if (_texFP.active) { _texFacePickEnd(); return; }
+  _texFP.active = true; _texFP.obj = o;
+  canvas.addEventListener('pointerdown', _texFacePickDown, true);
+  document.addEventListener('keydown', _texFacePickKey, true);
+  canvas.style.cursor = 'pointer';
+  if (!o.userData.displacementPattern || o.userData.displacementPattern === 'keine')
+    notify('Erst ein Muster wählen, dann Flächen anklicken', 'w');
+  notify('👆 Flächen anklicken: an/aus · Esc oder „Fertig" beendet', 'ok');
+  _fpCurType = null; updateFP();
+}
+function _texFacePickKey(e) { if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); _texFacePickEnd(); } }
+function _texFacePickEnd() {
+  canvas.removeEventListener('pointerdown', _texFacePickDown, true);
+  document.removeEventListener('keydown', _texFacePickKey, true);
+  canvas.style.cursor = '';
+  _texFP.active = false; _texFP.obj = null;
+  _fpCurType = null; updateFP();
+}
+function _texFacePickDown(e) {
+  if (!_texFP.active || e.button > 0) return;
+  const o = _texFP.obj;
+  getNorm(e); raycaster.setFromCamera(mousev, camera);
+  const hit = raycaster.intersectObject(o, false)[0];
+  if (!hit) return;                         // daneben: Ansicht drehen wie sonst
+  e.preventDefault(); e.stopPropagation();
+  _texToggleFaceAt(o, hit);
+}
+// Fläche am Treffer an-/abwählen (auch für Tests direkt aufrufbar)
+function _texToggleFaceAt(o, hit) {
+  o.updateMatrixWorld(true);
+  const Minv = o.matrixWorld.clone().invert();
+  const pL = hit.point.clone().applyMatrix4(Minv);
+  const nL = hit.face.normal.clone().normalize();
+  const faces = (o.userData.texFaces || []).slice();
+  // Liegt der Klick in einer schon gewählten Fläche? → diese abwählen
+  const base = _texBaseGeo(o), wb = _prepWarpBase(base); base.dispose && base.dispose();
+  const P = Array.from(wb.attributes.position.array), I = Array.from(wb.index.array); wb.dispose && wb.dispose();
+  const neu = _texRegionTris(P, I, [{ p: pL.toArray(), n: nL.toArray() }]);
+  let removed = false;
+  for (let i = 0; i < faces.length; i++) {
+    const r = _texRegionTris(P, I, [faces[i]]);
+    if (neu.seedTri[0] >= 0 && r.inR[neu.seedTri[0]]) { faces.splice(i, 1); removed = true; break; }
+  }
+  if (!removed) faces.push({ p: pL.toArray().map(v => +v.toFixed(5)), n: nL.toArray().map(v => +v.toFixed(4)) });
+  saveUndo();
+  const nU = undoStack.length;
+  o.userData.texFaces = faces;
+  _applyDisplacementNow('where', faces.length ? 'flaechen' : 'alle');
+  // _applyDisplacementNow speichert selbst (entprellt) — der Stand wäre schon MIT
+  // der neuen Auswahl; ein Rückgängig soll aber vor den Klick springen
+  while (undoStack.length > nU) undoStack.pop();
+  if (_undoDebTimer !== null) { clearTimeout(_undoDebTimer); _undoDebTimer = null; }
+  updateUndoRedoButtons();
+  notify(faces.length ? `${faces.length} Fläche${faces.length > 1 ? 'n' : ''} gewählt` : 'Keine Fläche gewählt — Textur wieder überall', 'ok');
+}
+function _texFacesClear() {
+  const o = getFirst(); if (!o) return;
+  saveUndo(); const nU = undoStack.length; o.userData.texFaces = [];
+  _applyDisplacementNow('where', 'alle');
+  while (undoStack.length > nU) undoStack.pop();
+  if (_undoDebTimer !== null) { clearTimeout(_undoDebTimer); _undoDebTimer = null; }
+  updateUndoRedoButtons();
+}
+
 function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric, orient, where) {
   if (!baseGeo || !pattern || pattern === 'keine') return null;
   mesh.updateWorldMatrix(true, false);
@@ -8471,7 +8631,8 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
   // Basis-Anteil der Welt-Matrix (Rotation·Skalierung, ohne Translation) → Cache-Key
   const basis = M.elements.slice(0, 12).map(e => Math.round(e * 1e4)).join(',');
   const sig = pattern + '|' + freq + '|' + orient + '|' + where + '|' + (sharp ? 'k' : 'r') + '|' + basis +
-    (isRmp ? '|' + JSON.stringify(rmpP) : '');
+    (isRmp ? '|' + JSON.stringify(rmpP) : '') +
+    (where === 'flaechen' ? '|F' + JSON.stringify(mesh.userData.texFaces || []) : '');
 
   let C = mesh.userData._warpCache;
   if (!C || C.sig !== sig) {
@@ -8480,6 +8641,8 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
     let pos = Array.from(wb.attributes.position.array);
     let idx = Array.from(wb.index.array);
     wb.dispose && wb.dispose();
+    const faceSeeds = where === 'flaechen' ? (mesh.userData.texFaces || []) : null;
+    const faceReg = faceSeeds && faceSeeds.length ? _texRegionTris(pos, idx, faceSeeds) : null;
     // 2. Local → Welt + Welt-Ausdehnung messen
     const v = new THREE.Vector3(); const bb = new THREE.Box3();
     for (let i = 0; i < pos.length; i += 3) {
@@ -8507,6 +8670,7 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
     const target = isRmp
       ? Math.max(worldMax / 250, Math.min(rmpP.cell / 2, 4) / _MM_PER_UNIT)
       : Math.max(worldMax / 200, (ref / Math.max(0.5, freq)) / 3) * (sharp ? 2.5 : 1);
+    const baseWorld = faceReg ? { pos: pos.slice(), idx: idx.slice() } : null;
     const rmpAt = isRmp ? _rmpMapper(pos, ctr, rmpP, idx) : null;
     if (isRmp && !rmpAt) return null;
     const onOut = isRmp ? (a => rmpAt.outer(pos[a * 3], pos[a * 3 + 1], pos[a * 3 + 2])) : null;
@@ -8547,6 +8711,10 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
       if (vol < 0) for (let i = 0; i < wnor.length; i++) wnor[i] = -wnor[i];
     }
     const W = _parseWhere(where);   // aktive Flächenkategorien (multi-select)
+    // Gewählte Flächen: Tester auf der (noch unverfeinerten) Welt-Basis — die
+    // Unterteilung legt neue Punkte nur AUF die alten Dreiecke
+    const faceOn = faceReg ? _texRegionTester(baseWorld.pos, baseWorld.idx, faceReg.inR, faceReg.nb, worldMax) : null;
+    if (faceSeeds && !faceReg) { /* „Flächen" ohne Auswahl → nichts texturieren */ }
     // Schutzzonen: Bereiche, die eine Textur NICHT anfassen darf — Gewinde,
     // Auflageflächen, Standflächen, Einsatz-Taschen. Als Zylinderzonen im
     // Local-Space ({yMin,yMax,rMax}), damit sie das Skalieren überleben und
@@ -8573,7 +8741,9 @@ function _displaceForMesh(mesh, baseGeo, pattern, ampMm, freq, invert, symmetric
       // Flächenkategorie bestimmen → texturieren nur, wenn diese Kategorie aktiv ist
       const a = Math.abs(ny);
       let on, fade = 1;
-      if (isRmp) {
+      if (faceSeeds) {
+        on = faceOn ? faceOn(x, y, z) : 0;
+      } else if (isRmp) {
         // Muster auf Rundung: die ganze Außenhaut zählt als Wand, auch steile
         // Schultern einer Kugelvase — nur wirklich flache Deckel/Böden nicht.
         if (outward && a < 0.97) on = W.aussen;
@@ -8720,7 +8890,7 @@ function _applyDisplacementNow(param, val) {
     if (param === 'symmetric') o.userData.displacementSymmetric = !!val;
     if (param === 'orient')    o.userData.texOrient = val;
     if (param === 'profile')   o.userData.texProfile = val;
-    if (param === 'where')     o.userData.texWhere  = _toggleWhere(o.userData.texWhere, val);
+    if (param === 'where')     o.userData.texWhere  = val === 'flaechen' ? 'flaechen' : _toggleWhere(o.userData.texWhere === 'flaechen' ? 'nichts' : o.userData.texWhere, val);
     if (param === 'dir')       o.userData.texDir    = val;
     _texNeuVorgabe(o, param, _prevPat);
     if (o.userData.rmp && o.userData.rmp.durch) o.userData.rmp = Object.assign({}, o.userData.rmp, { durch: false });
@@ -8744,7 +8914,7 @@ function _applyDisplacementNow(param, val) {
   if (param === 'symmetric') o.userData.displacementSymmetric = !!val;
   if (param === 'orient')    o.userData.texOrient = val;
   if (param === 'profile')   o.userData.texProfile = val;
-  if (param === 'where')     o.userData.texWhere  = _toggleWhere(o.userData.texWhere, val);
+  if (param === 'where')     o.userData.texWhere  = val === 'flaechen' ? 'flaechen' : _toggleWhere(o.userData.texWhere === 'flaechen' ? 'nichts' : o.userData.texWhere, val);
   if (param === 'dir')       o.userData.texDir    = val;
   _texNeuVorgabe(o, param, _prevPat);
 
@@ -18173,6 +18343,7 @@ function buildObjectFromData(data) {
   if (data.polyMeasure) obj.userData.polyMeasure = data.polyMeasure;
   if (data.texOrient) obj.userData.texOrient = data.texOrient;
   if (data.texWhere)  obj.userData.texWhere  = data.texWhere;
+  if (data.texFaces)  obj.userData.texFaces  = data.texFaces.map(f => ({ p: f.p.slice(), n: f.n.slice() }));
   if (data.texDir)    obj.userData.texDir    = data.texDir;
   if (data.rmp)       obj.userData.rmp       = { ...data.rmp };
   // Alt-Stand ohne Profil-Angabe: die runde Fassung behalten, sonst wuerde sich
@@ -18497,6 +18668,7 @@ function objectToData(o, modus) {
     if (o.userData.displacementSymmetric) d.displacementSymmetric = true;
     if (o.userData.texOrient && o.userData.texOrient !== 'laengs') d.texOrient = o.userData.texOrient;
     if (o.userData.texWhere && o.userData.texWhere !== 'alle')     d.texWhere  = o.userData.texWhere;
+    if (o.userData.texFaces && o.userData.texFaces.length)          d.texFaces  = o.userData.texFaces.map(f => ({ p: f.p.slice(), n: f.n.slice() }));
     if (o.userData.texDir) d.texDir = o.userData.texDir;
     if (o.userData.displacementPattern === 'rmp' && o.userData.rmp) d.rmp = { ...o.userData.rmp };
     d.texProfile = o.userData.texProfile || 'kantig';
@@ -57418,8 +57590,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.154';
+const VOLME3D_VERSION = '1.18.155';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.155', date:'2026-10-10', changes:[
+    ['👆','<b>Textur auf gewählte Flächen.</b> Im Textur-Fenster unter <i>Ort</i> gibt es jetzt <b>👆 Flächen wählen</b>: einfach die gewünschten Flächen am Körper anklicken (nochmal klicken = abwählen). Beim Zylinder wird so z. B. nur der <b>Mantel</b> gemustert, Deckel und Boden bleiben glatt; bei einer Box nur die Oberseite oder einzelne Seiten. Die Auswahl bleibt beim Skalieren, Speichern und Rückgängig erhalten; <b>✕</b> hebt sie wieder auf.'],
+  ]},
   { version:'1.18.154', date:'2026-10-10', changes:[
     ['🕳️','<b>Löcher einfach ziehen.</b> In der Skizze auf einer Fläche (▱ Auf Fläche) lässt sich ein Kreis mit <b>⬆ Ziehen (P)</b> jetzt auch <b>in den Körper hinein</b> ziehen – das ergibt ein Sackloch (Tiefe live oder getippt). <b>D</b> macht daraus ein <b>Durchgangsloch</b> („durch alles“). Nach oben gezogen wird die Form am Körper <b>angefügt</b>. Die Vorschau zeigt farbig, was passiert (rot = Loch, grün = anfügen). Danach kann man direkt mit <b>🔩 Gewinde an Fläche</b> ein Gewinde ins Loch setzen. Auch im Extrudieren-Fenster gibt es jetzt <b>„durch alles“</b>.'],
   ]},
@@ -63279,7 +63454,12 @@ function _buildTexPanelContent(o) {
           `<button class="fp-toggle-btn${_W.oben?' on':''}" data-wcat="oben" style="flex:1 1 30%" onclick="applyDisplacement('where','oben')" title="Waagerechte Oberseiten (Dach) an/aus">Oben</button>` +
           `<button class="fp-toggle-btn${_W.innen?' on':''}" data-wcat="innen" style="flex:1 1 30%" onclick="applyDisplacement('where','innen')" title="Senkrechte Innenwände/Bohrung an/aus">Innen</button>` +
           `<button class="fp-toggle-btn${_W.unten?' on':''}" data-wcat="unten" style="flex:1 1 30%" onclick="applyDisplacement('where','unten')" title="Waagerechte Unterseiten (Boden) an/aus">Unten</button>` +
-        `</div>`; })() +
+        `</div>` +
+        (() => { const _o = getFirst(), _nf = (_o && _o.userData.texFaces || []).length, _fm = whr === 'flaechen';
+          return `<div class="fp-row" style="flex-direction:row;gap:4px;margin-top:4px">` +
+            `<button class="fp-toggle-btn${_fm || _texFP.active ? ' on' : ''}" id="tex-face-pick" style="flex:1" onclick="_texFacePickStart()" title="Einzelne Flächen am Körper anklicken (an/aus) — z. B. nur den Zylindermantel, Deckel und Boden bleiben glatt">${_texFP.active ? '✓ Fertig' : '👆 Flächen wählen'}</button>` +
+            (_nf ? `<button class="fp-toggle-btn" style="flex:0 0 auto" onclick="_texFacesClear()" title="Auswahl aufheben — Textur wieder nach Ort">${_nf} ✕</button>` : '') +
+          `</div>`; })(); })() +
     `</div>` +
     `<div class="fp-sep"></div>` +
     `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="exportToBumpMesh()">⬡ BumpMesh.com</button></div>`;
