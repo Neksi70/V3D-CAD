@@ -20,8 +20,10 @@ try {
     const btns = document.querySelectorAll('#tb-r1 button').length;
     const visBtns = [...document.querySelectorAll('#tb-r1 button')].filter(x => x.offsetParent).length;
     const br = document.getElementById('adv-browser'), tree = document.getElementById('tree');
-    return { groups, btns, visBtns, browser: br && getComputedStyle(br).display !== 'none', treeLeft: !!tree.closest('#adv-browser'), canvasW: canvas.clientWidth, vpW: vpEl.clientWidth, n: objects.length, mode: _advMode };
+    const rows = new Set([...document.querySelectorAll('#tb-r1 > .tbg')].filter(g => getComputedStyle(g).display !== 'none').map(g => Math.round(g.getBoundingClientRect().top / 10))).size;
+    return { rows, tbH: document.getElementById('tb-r1').getBoundingClientRect().height, compact: document.querySelectorAll('#tb-r1 .btn.advc').length, groups, btns, visBtns, browser: br && getComputedStyle(br).display !== 'none', treeLeft: !!tree.closest('#adv-browser'), canvasW: canvas.clientWidth, vpW: vpEl.clientWidth, n: objects.length, mode: _advMode };
   });
+  const html0 = await p.evaluate(() => [...document.querySelectorAll('#tb-r1 button')].filter(b => !b.closest('.adv-only')).map(b => b.innerHTML));
   const b0 = await vis();
   ok(!b0.browser && !b0.treeLeft && !b0.groups.includes('Erstellen') && b0.groups.length === 6, 'Beginner wie bisher: ' + b0.groups.join(' › '));
   await p.click('#mode-sw button[data-m="advanced"]'); await p.waitForTimeout(300);
@@ -29,6 +31,7 @@ try {
   ok(JSON.stringify(a.groups) === JSON.stringify(['Erstellen', 'Konstruieren', 'Form ändern', 'Kombinieren', 'Anordnen', 'Prüfen', 'Ansicht', 'Datei']), 'Advanced: ' + a.groups.join(' › '));
   ok(a.visBtns >= b0.visBtns + 10, `alle bisherigen Knöpfe weiter da + neue vorn (${b0.visBtns} → ${a.visBtns} sichtbar)`);
   ok(a.browser && a.treeLeft, 'Browser links mit der Elemente-Liste');
+  ok(a.compact >= 40 && a.tbH < 140 && a.rows <= 3, `kompaktes Band: ${a.compact} Knöpfe Symbol/Text, ${a.rows} Zeilen, ${Math.round(a.tbH)} px hoch (Beginner ${Math.round(b0.tbH)} px)`);
   ok(Math.abs(a.canvasW - a.vpW) < 2 && a.vpW < b0.vpW, `Ansicht passt sich an (${b0.vpW} → ${a.vpW} px)`);
   ok(a.n === 2, 'Modell unverändert (2 Teile)');
   // Browser bedienen: Teil anklicken wählt es aus
@@ -43,7 +46,10 @@ try {
   ok(await p.evaluate(() => _advMode === 'advanced' && document.body.classList.contains('adv') && !!document.getElementById('tree').closest('#adv-browser')), 'nach Neuladen weiter Advanced');
   await p.evaluate(() => _advSet('beginner')); await p.waitForTimeout(200);
   const b1 = await vis();
-  ok(!b1.browser && !b1.treeLeft && JSON.stringify(b1.groups) === JSON.stringify(b0.groups) && b1.visBtns === b0.visBtns, 'zurück zu Beginner: alles wie vorher');
+  const html1 = await p.evaluate(() => [...document.querySelectorAll('#tb-r1 button')].filter(b => !b.closest('.adv-only')).map(b => b.innerHTML));
+  const diff = html0.filter((h, i) => h !== html1[i]);
+  ok(diff.length === 0 && html0.length === html1.length, 'alle Knopf-Inhalte identisch zurück (' + diff.length + ' abweichend) ' + diff.slice(0, 2).join(' | '));
+  ok(!b1.browser && !b1.treeLeft && JSON.stringify(b1.groups) === JSON.stringify(b0.groups) && b1.visBtns === b0.visBtns && b1.compact === 0 && Math.abs(b1.tbH - b0.tbH) <= 2, 'zurück zu Beginner: alles wie vorher (auch Knopf-Texte, Höhe ' + Math.round(b1.tbH) + ' px)');
   ok(errs.length === 0, 'keine Seitenfehler ' + errs.slice(0, 3).join(' | '));
   await p.evaluate(() => _advSet('advanced')); await p.evaluate(() => { _newCreate(false); addShape('box'); }); await p.waitForTimeout(400);
   await p.screenshot({ path: '/tmp/adv.png' });
