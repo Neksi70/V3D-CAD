@@ -429,6 +429,12 @@ body.devmode .dev-only{display:flex!important}
 .sdd-list .shp .sdd-name{display:flex;flex-direction:column;gap:1px;line-height:1.25;min-width:0}
 .sdd-list .shp .sdd-name small{font-size:10px;font-weight:500;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #gen-dd-btn .sdd-caret{margin-left:auto;font-size:10px;color:var(--dim)}
+#gen-dd{width:300px}
+.gen-abc{display:flex;flex-wrap:wrap;gap:3px;padding:7px 10px 6px;border-bottom:1px solid var(--border)}
+.gen-abc button{min-width:22px;height:22px;padding:0 4px;border:1px solid var(--border);border-radius:5px;background:var(--white);font-family:inherit;font-weight:700;font-size:11.5px;line-height:20px;color:var(--text);cursor:pointer}
+.gen-abc button:hover,.gen-abc button.on{background:var(--alit);border-color:var(--acc);color:var(--acc)}
+.sdd-list .gen-abc-hd{padding:6px 14px 2px;font-size:11px;font-weight:800;color:var(--dim);letter-spacing:.06em}
+.sdd-list .shp.gen-flash{background:var(--alit);color:var(--acc)}
 
 /* Color */
 .cg{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;margin-bottom:6px}
@@ -671,6 +677,10 @@ body.devmode .dev-only{display:flex!important}
 #start-hdr p{margin:5px 0 0;font-size:13px;color:#777;font-weight:500}
 #start-x{position:absolute;top:14px;right:18px;cursor:pointer;font-size:22px;color:#bbb;line-height:1;z-index:1}
 #start-x:hover{color:#666}
+#start-abc{display:flex;flex-wrap:wrap;gap:4px;padding:10px 26px 0;flex-shrink:0}
+#start-abc button{min-width:28px;height:28px;padding:0 6px;border:1.4px solid #e6dcfb;border-radius:7px;background:#fff;font-family:inherit;font-weight:800;font-size:13px;line-height:24px;color:#2a2440;cursor:pointer}
+#start-abc button:hover{border-color:#8b5cf6;color:#7c3aed;background:#f6f2ff}
+.st-card.st-flash{border-color:#8b5cf6;box-shadow:0 0 0 3px rgba(139,92,246,.35)}
 #start-grid{padding:18px 26px;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px;overflow-y:auto;flex:1;align-content:start}
 .st-card{display:flex;flex-direction:column;align-items:center;text-align:center;gap:7px;padding:18px 12px 15px;background:linear-gradient(180deg,#fff,#f6f2ff);border:1.6px solid #e6dcfb;border-radius:13px;cursor:pointer;transition:all .13s;box-shadow:0 1px 3px rgba(124,58,237,.08)}
 .st-card:hover{border-color:#8b5cf6;transform:translateY(-3px);box-shadow:0 8px 22px rgba(124,58,237,.2)}
@@ -1977,7 +1987,8 @@ const firebaseConfig = {
       <div class="gen-box" id="gen-dd-wrap">
         <button class="gen-btn gen-open" id="gen-dd-btn" onclick="_toggleGenMenu(event)" title="Generator-Katalog öffnen (Vase, Zahnrad, QR-Code, …)"><span class="gi">✨</span><span class="gl">Generatoren</span><span class="sdd-caret">▾</span></button>
         <div id="gen-dd" class="sdd-panel">
-          <div class="sdd-hd">Generatoren</div>
+          <div class="sdd-hd">Generatoren <small style="font-weight:500;color:var(--dim)">– A–Z, Buchstabe tippen springt</small></div>
+          <div id="gen-dd-abc" class="gen-abc"></div>
           <div id="gen-dd-list" class="sdd-list"></div>
         </div>
       </div>
@@ -2534,6 +2545,7 @@ const firebaseConfig = {
       <h2>Womit möchtest du starten?</h2>
       <p>Wähle eine Vorlage und passe sie mit Schiebereglern an — oder starte mit einem leeren Design.</p>
     </div>
+    <div id="start-abc"></div>
     <div id="start-grid"></div>
     <div id="start-foot">
       <label><input type="checkbox" id="start-hide" onchange="localStorage.setItem('volme3d_hide_start',this.checked?'1':'')"> Beim Start nicht mehr zeigen</label>
@@ -7477,9 +7489,11 @@ async function _genGenList() {
   list.innerHTML =
     `<div class="shp" onclick="showStarter()" title="Galerie mit großen Vorschau-Karten öffnen">` +
     `<span class="sdd-emoji">🗂️</span><span class="sdd-name">Als Galerie öffnen<small>Große Vorschau-Karten</small></span></div>` +
-    _STARTERS.map((s, i) => (s.blank || (s.dev && !dev)) ? '' :
-      `<div class="shp" data-gk="${s.gk || ''}" onclick="_runStarter(${i})" title="${esc(s.d)}">` +
+    _startersSorted().filter(({ s }) => !s.blank && !(s.dev && !dev)).map(({ s, i, L }, k, a) =>
+      (k === 0 || a[k - 1].L !== L ? `<div class="gen-abc-hd" data-abc="${L}">${L}</div>` : '') +
+      `<div class="shp" data-gk="${s.gk || ''}" data-abc="${L}" onclick="_runStarter(${i})" title="${esc(s.d)}">` +
       `<span class="sdd-emoji">${s.i}</span><span class="sdd-name">${s.t}<small>${s.d}</small></span></div>`).join('');
+  _abcBar(document.getElementById('gen-dd-abc'), list, '.shp[data-abc]', 'gen-flash');
   // Klick-schließt-Menü übernimmt der Listener aus der Startphase (#gen-dd-list trägt .sdd-list)
   for (const el of list.querySelectorAll('[data-gk]')) {
     const key = el.dataset.gk;
@@ -34995,10 +35009,49 @@ const _STARTERS = [
 function _renderStarter(){
   const g = document.getElementById('start-grid'); if(!g) return;
   const dev = (typeof _devMode==='function') && _devMode();
-  g.innerHTML = _STARTERS.map((s,i) => (s.dev && !dev) ? '' :   // dev-only Karten nur im Dev-Modus
-    '<div class="st-card'+(s.blank?' blank':'')+'"'+(s.gk?' data-key="'+s.gk+'" data-ver="1"':'')+' onclick="_runStarter('+i+')">'+
+  g.innerHTML = _startersSorted().map(({s,i,L}) => (s.dev && !dev) ? '' :   // dev-only Karten nur im Dev-Modus
+    '<div class="st-card'+(s.blank?' blank':'')+'"'+(s.blank?'':' data-abc="'+L+'"')+(s.gk?' data-key="'+s.gk+'" data-ver="1"':'')+' onclick="_runStarter('+i+')">'+
     '<span class="si">'+s.i+'</span><span class="stt">'+s.t+'</span><span class="sd">'+s.d+'</span></div>').join('');
+  _abcBar(document.getElementById('start-abc'), g, '.st-card[data-abc]', 'st-flash');
 }
+// Generatoren alphabetisch (Ralf 10.10.26): „Leeres Design" bleibt vorn, Rest nach
+// Titel (deutsch, Umlaute wie Grundbuchstabe); L = Anfangsbuchstabe, Ziffern → „#".
+function _startersSorted(){
+  const letter = t => { const c = (t||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().charAt(0).toUpperCase(); return /[A-Z]/.test(c) ? c : '#'; };
+  return _STARTERS.map((s,i) => ({ s, i, L: letter(s.t) }))
+    .sort((a,b) => (b.s.blank?1:0) - (a.s.blank?1:0) || (a.L==='#') - (b.L==='#') || a.s.t.localeCompare(b.s.t, 'de', { sensitivity:'base' }));
+}
+// Buchstabenleiste: nur vorhandene Anfangsbuchstaben (nichts ausgegraut), Klick
+// scrollt zum ersten Eintrag. Tippen eines Buchstabens bei offener Liste springt
+// ebenso (Listener unten, einmalig).
+function _abcBar(bar, scroller, sel, flash){
+  if (!bar || !scroller) return;
+  const seen = [];
+  for (const el of scroller.querySelectorAll(sel)) if (!seen.includes(el.dataset.abc)) seen.push(el.dataset.abc);
+  bar.innerHTML = seen.map(L => `<button type="button" data-l="${L}" title="Zu ${L} springen">${L}</button>`).join('');
+  bar.onclick = e => { const b = e.target.closest('button[data-l]'); if (b) { e.stopPropagation(); _abcJump(scroller, sel, b.dataset.l, flash); } };
+}
+function _abcJump(scroller, sel, L, flash){
+  const items = [...scroller.querySelectorAll(sel)];
+  const el = items.find(x => x.dataset.abc === L) || items.find(x => x.dataset.abc > L) || items[items.length-1];
+  if (!el) return false;
+  const hd = el.previousElementSibling && el.previousElementSibling.classList.contains('gen-abc-hd') ? el.previousElementSibling : el;
+  scroller.scrollTop += hd.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 4;
+  scroller.querySelectorAll('.'+flash).forEach(x => x.classList.remove(flash));
+  items.filter(x => x.dataset.abc === el.dataset.abc).forEach(x => x.classList.add(flash));
+  clearTimeout(_abcJump._t); _abcJump._t = setTimeout(() => scroller.querySelectorAll('.'+flash).forEach(x => x.classList.remove(flash)), 1200);
+  return true;
+}
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey || e.metaKey || e.altKey || !/^[a-zäöüA-ZÄÖÜ0-9]$/.test(e.key)) return;
+  if (e.target && e.target.closest && e.target.closest('input,textarea,select,[contenteditable="true"]')) return;
+  const L = /[0-9]/.test(e.key) ? '#' : e.key.normalize('NFD').charAt(0).toUpperCase();
+  const dd = document.getElementById('gen-dd'), sm = document.getElementById('start-modal');
+  let ok = false;
+  if (dd && dd.classList.contains('show')) ok = _abcJump(document.getElementById('gen-dd-list'), '.shp[data-abc]', L, 'gen-flash');
+  else if (sm && sm.classList.contains('show')) ok = _abcJump(document.getElementById('start-grid'), '.st-card[data-abc]', L, 'st-flash');
+  if (ok) { e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
 function showStarter(){
   _renderStarter();
   const cb = document.getElementById('start-hide'); if(cb) cb.checked = localStorage.getItem('volme3d_hide_start')==='1';
