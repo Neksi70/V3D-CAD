@@ -7,6 +7,9 @@
 //   5. Fenster, Vorschau, Erstellen, Im Generator bearbeiten, Speichern/Laden
 //   6. Maul (Unterkiefer): eigenes Teil, wasserdicht, Stift stramm in der Zunge/mit Spiel im Kiefer, öffnet 0–35°
 //      frei, Anschlag danach, schließt nicht durch den Oberkiefer, kopfüber flach auf dem Bett
+//   7. Zähne (Raubsaurier Zahnreihen, Pflanzenfresser Stift-/Blattzähne bzw. Hornschnabel) + Krallen: Maul-Prüfungen aus 6
+//      laufen mit Zähnen (Standard an); ohne Kiefer Zähne in der Maulspalte; Krallen ohne zusätzlichen Überhang;
+//      Optionen im Fenster, alte Dinos öffnen mit Zähnen/Krallen aus
 // Start: python3 volme3d_server.py 8853 --dev   →   V3D_URL=http://127.0.0.1:8853/volme3d.html node tests/dino_test.mjs
 import { chromium } from 'playwright';
 
@@ -98,7 +101,7 @@ for (const art of arten) {
           sRumpf: body.minGap(pK, 1), sKiefer: jaw.minGap(pK, 1), sSchnitt: sch(body, pK) + sch(jaw, pK),
           buendig: [pl / 2, achse.max[0], -achse.min[0]], dp: k.dp };
       }
-      return { ms, laenge, komp, klemm, bv, bvGap, stift, endeH, endeV, cy, fuss, dp: [H.dp, V.dp], kf, klein: r.maulKlein };
+      return { ms, laenge, komp, klemm, bv, bvGap, stift, endeH, endeV, cy, fuss, dp: [H.dp, V.dp], kf, klein: r.maulKlein, zahn: r.zahn };
     } finally { tmp.forEach(x => { try { x.delete(); } catch (e) {} }); _dnoFree(r); }
   }, art);
   console.log(`— ${art}: ${r.ms} ms, Stifte Ø ${r.dp.map(v => v.toFixed(1)).join('/')}`);
@@ -111,6 +114,10 @@ for (const art of arten) {
     && r.stift.hBein > 0.1 && r.stift.hBein < 0.16 && r.stift.vBein > 0.1 && r.stift.vBein < 0.16,
     [r.stift.hRumpf, r.stift.hBein, r.stift.vRumpf, r.stift.vBein, r.stift.schnitt].map(v => +v.toFixed(3)));
   ok(art + ': Stift reicht tief ins Bein', r.endeH > r.stift.hIn * 0.8 - 0.5 && r.endeV > r.stift.vIn * 0.8 - 0.5 && r.endeH <= r.stift.hIn + 0.01, [+r.endeH.toFixed(2), +r.stift.hIn.toFixed(2), +r.endeV.toFixed(2), +r.stift.vIn.toFixed(2)]);
+  // Zähne: Raubsaurier Reihen oben + unten, Pflanzenfresser mit Kiefer Zähne oder Schnabel (Diplo/Stego: Kopf zu klein → keine)
+  const zf = { trex: 'zahn', raptor: 'zahn', spino: 'kegel', brachio: 'stift', ankylo: 'schnabel', trike: 'schnabel', parasaur: 'schnabel', pachy: 'blatt' }[art];
+  if (zf) ok(art + ': Zähne/Schnabel (' + zf + ') am Kiefer', r.zahn && r.zahn.form === zf && r.zahn.mode === 'kiefer' && r.zahn.oben >= 2
+    && (zf === 'schnabel' || r.zahn.unten >= 2) && (!['zahn', 'kegel'].includes(zf) || (r.zahn.oben >= 6 && r.zahn.unten >= 6)), r.zahn);
   ok(art + ': steht (Schwerpunkt über den Füßen)', r.cy > r.fuss[0] + 1 && r.cy < r.fuss[1] - 1, [+r.cy.toFixed(1), r.fuss.map(v => +v.toFixed(1))]);
   // Maul: bei 160 mm haben Diplodocus und Stegosaurus zu kleine Köpfe → Hinweis statt Kiefer
   if (['diplo', 'stego'].includes(art)) { ok(art + ': Kopf zu klein → kein Kiefer, Hinweis mit Mindestlänge', !r.kf && r.klein > 160, r.klein); continue; }
@@ -124,6 +131,45 @@ for (const art of arten) {
   ok(art + ': Kieferstift stramm in der Zunge, mit Spiel im Kiefer', k.sSchnitt < 0.01 && k.sRumpf < 0.08 && k.sKiefer > 0.1 && k.sKiefer < 0.16,
     [k.sRumpf, k.sKiefer, k.sSchnitt].map(v => +v.toFixed(3)));
   ok(art + ': Kieferstift steht seitlich nicht über', k.buendig[0] < k.buendig[1] && k.buendig[0] < k.buendig[2], k.buendig.map(v => +v.toFixed(2)));
+}
+
+// Ohne Kiefer (Maul aus / Kopf zu klein): Raubsaurier-Zähne in der Maulspalte, Rumpf ein Stück + wasserdicht; Zähne aus = alter Kopf
+for (const [art, extra] of [['trex', { maul: false }], ['spino', { maul: false }], ['raptor', { laenge: 110 }], ['raptor', { laenge: 110, zaehne: false }]]) {
+  const r = await pg.evaluate(([art, extra]) => { const r = _dnoBuild(_mfWasm, { ..._DNO_DEF, art, anordnung: 'figur', beinW: 0, armW: 0, ...extra }, 'vorschau');
+    try { const b = r.raw.body, d = b.decompose(), n = d.length; d.forEach(x => x.delete());
+      const g = b.getMesh(), t = g.triVerts, e = new Map();
+      for (let i = 0; i < t.length; i += 3) for (let j = 0; j < 3; j++) { const k = t[i + j] + ',' + t[i + (j + 1) % 3]; e.set(k, (e.get(k) || 0) + 1); }
+      let wd = t.length > 0; for (const [k, c] of e) { const [a, bb] = k.split(','); if (c !== 1 || e.get(bb + ',' + a) !== 1) { wd = false; break; } }
+      return { jaw: !!r.raw.jaw, zahn: r.zahn, n, wd }; } finally { _dnoFree(r); } }, [art, extra]);
+  const name = art + ' ' + JSON.stringify(extra);
+  if (extra.zaehne === false) ok(name + ': ohne Zähne keine Zähne', !r.zahn && !r.jaw && r.n === 1, r);
+  else ok(name + ': Zähne oben + unten in der Maulspalte, Rumpf ein Stück + wasserdicht', !r.jaw && r.zahn && r.zahn.mode === 'spalt' && r.zahn.oben >= 4 && r.zahn.unten >= 4 && r.n === 1 && r.wd, r);
+}
+// Pflanzenfresser ohne Kiefer: keine Relief-Stummel
+{
+  const r = await pg.evaluate(() => { const r = _dnoBuild(_mfWasm, { ..._DNO_DEF, art: 'stego' }, 'vorschau'); try { return { zahn: r.zahn, jaw: !!r.raw.jaw }; } finally { _dnoFree(r); } });
+  ok('Stegosaurus (Kopf zu klein): keine Zähne/kein Schnabel als Relief', !r.zahn && !r.jaw, r);
+}
+// Krallen: Beine/Arme bleiben ein Stück, Form geändert, Überhang der Glieder (Drucklage) nicht schlechter
+for (const art of ['trex', 'raptor', 'brachio', 'parasaur']) {
+  const r = await pg.evaluate((art) => {
+    const ueber = m => { const g = m.getMesh(), v = g.vertProperties, np = g.numProp, tv = g.triVerts; let A = 0;
+      for (let i = 0; i < tv.length; i += 3) { const a = tv[i] * np, b = tv[i + 1] * np, c = tv[i + 2] * np;
+        const ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2], wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
+        const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx, n = Math.hypot(nx, ny, nz) || 1;
+        if ((v[a + 2] + v[b + 2] + v[c + 2]) / 3 > 0.4 && nz / n < -Math.cos(55 * Math.PI / 180)) A += n / 2; } return A; };
+    const res = {};
+    for (const kr of [false, true]) {
+      const r = _dnoBuild(_mfWasm, { ..._DNO_DEF, art, anordnung: 'druck', krallen: kr, zaehne: false }, 'vorschau');
+      try { const L = r.out.find(t => t.teil === 'legR').mf, A = r.out.find(t => t.teil === 'armR').mf;
+        const dl = L.decompose(), da = A.decompose(); res[kr] = { st: [dl.length, da.length], u: +(ueber(L) + ueber(A)).toFixed(1), h: L.boundingBox().max[2], vol: +L.volume().toFixed(1) };
+        dl.forEach(x => x.delete()); da.forEach(x => x.delete()); } finally { _dnoFree(r); }
+    }
+    return res;
+  }, art);
+  ok(art + ': Krallen – Bein/Arm je ein Stück, Form geändert, kein zusätzlicher Überhang', r.true.st[0] === 1 && r.true.st[1] === 1
+    && Math.abs(r.true.vol - r.false.vol) > 1 && r.true.u <= r.false.u + 2, { mit: r.true, ohne: r.false });
+  if (art === 'raptor') ok('raptor: Sichelkralle liegt auf der Innenseite (Bein in Drucklage nicht höher)', r.true.h <= r.false.h + 0.3, [r.true.h, r.false.h].map(v => +v.toFixed(2)));
 }
 
 // Maul abgeschaltet → kein Kiefer, alte Teilezahl
@@ -143,16 +189,17 @@ for (const art of arten) {
       for (const t of L) {
         const bb = t.mf.boundingBox(); if (Math.abs(bb.min[2]) > 0.01) f.zmin.push(t.teil + ':' + bb.min[2].toFixed(2));
         // Überhang: nach unten zeigende Flächen steiler als 55° über z > 0,4 (Fläche in mm²)
-        const g = t.mf.getMesh(), v = g.vertProperties, np = g.numProp, tv = g.triVerts; let A = 0, Ab = 0;
+        const g = t.mf.getMesh(), v = g.vertProperties, np = g.numProp, tv = g.triVerts; let A = 0, A45 = 0, Ab = 0;
         for (let i = 0; i < tv.length; i += 3) {
           const a = tv[i] * np, b = tv[i + 1] * np, c = tv[i + 2] * np;
           const ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2], wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
           const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx, n = Math.hypot(nx, ny, nz) || 1;
           const zc = (v[a + 2] + v[b + 2] + v[c + 2]) / 3;
           if (zc > 0.4 && nz / n < -Math.cos(55 * Math.PI / 180)) A += n / 2;
+          if (zc > 0.4 && nz / n < -Math.cos(43 * Math.PI / 180)) A45 += n / 2;      // steiler als 45° + 2° (echter Überhang)
           Ab += n / 2;
         }
-        f.ueber.push([t.teil, +A.toFixed(0), +(100 * A / Ab).toFixed(1)]);
+        f.ueber.push([t.teil, +A.toFixed(0), +(100 * A / Ab).toFixed(1), +(100 * A45 / Ab).toFixed(1)]);
       }
       for (let i = 0; i < L.length; i++) for (let j = i + 1; j < L.length; j++) {
         const x = L[i].mf.intersect(L[j].mf), v = x.volume(); x.delete();
@@ -168,8 +215,12 @@ for (const art of arten) {
   }, art);
   ok(art + ' Druckplatte: alles auf z = 0', r.zmin.length === 0, r.zmin);
   ok(art + ' Druckplatte: Teile überlappen nicht (außer Platten auf dem Rumpf)', r.ueberlapp.length === 0, r.ueberlapp);
-  const max = Math.max(...r.ueber.map(u => u[2]));
+  // Unterkiefer mit Zähnen/Schnabel: die Zahnkerben haben 45°-Flanken (Kompromiss: Schädelhälften und Kiefer liegen beim Druck
+  // um 90° verschieden) → dort zählt der echte Überhang (> 47°), das grobe Maß darf bis 6 %
+  const max = Math.max(...r.ueber.filter(u => u[0] !== 'jaw').map(u => u[2]));
   ok(art + ' Druckplatte: Überhänge > 55° unter 4 % je Teil', max < 4, r.ueber.filter(u => u[2] >= 1));
+  const jw = r.ueber.find(u => u[0] === 'jaw');
+  if (jw) ok(art + ' Druckplatte: Unterkiefer mit Zähnen – Überhang steiler als 45° unter 2 %, grob unter 6 %', jw[3] < 2 && jw[2] < 6, jw);
   if (!['diplo', 'stego'].includes(art)) ok(art + ' Druckplatte: Unterkiefer liegt flach (Maulseite unten)', r.auflage > 40, r.auflage && +r.auflage.toFixed(0));
   console.log('       Platte', r.platte.join(' × '), 'mm,', r.n, 'Teile');
 }
@@ -185,6 +236,9 @@ for (const art of arten) {
   ok('Infotext: Stegosaurus-Kopf zu klein fürs Maul', /zu klein für einen beweglichen Unterkiefer/.test(v.info), v.info.slice(-200));
   const cb = await pg.evaluate(() => { const c = document.getElementById('dno-maul'); const a = c && c.checked;
     _dnoStr('art', 'trex'); const t = document.getElementById('dno-info').textContent; _dnoStr('art', 'stego'); return { da: !!c, an: a, t }; });
+  const zk = await pg.evaluate(() => { const z = document.getElementById('dno-zaehne'), k = document.getElementById('dno-krallen');
+    return { z: z && z.checked, k: k && k.checked, def: [_DNO_DEF.zaehne, _DNO_DEF.krallen], zt: document.getElementById('dno-zaehne-txt').textContent }; });
+  ok('Optionen „Zähne“ und „Krallen“ da und Standard an (Stego: Hornschnabel)', zk.z === true && zk.k === true && zk.def.every(v => v === true) && /Hornschnabel/.test(zk.zt), zk);
   ok('Option „Maul beweglich“ da und Standard an, Infotext T-Rex nennt Unterkiefer', cb.da && cb.an && /Unterkiefer/.test(cb.t) && /10 Teile/.test(cb.t), cb);
   await pg.evaluate(() => _dnoCreate());
   await pg.waitForFunction(() => objects.length >= 10, { timeout: 120000 });
@@ -205,15 +259,16 @@ for (const art of arten) {
   ok('Übernehmen ersetzt den Dino (Triceratops, 10 Teile mit Unterkiefer + Kieferstift)', e2.n === 10 && e2.art.every(a => a === 'trike')
     && e2.names.some(n => /Unterkiefer/.test(n)) && e2.names.some(n => /Stift Kiefer/.test(n)), e2);
   const s = await pg.evaluate(() => { const d = objectToData(objects[0]); const o = buildObjectFromData(d); return { p: o && o.userData.dinoParams, set: o && o.userData.dnoSet === objects[0].userData.dnoSet }; });
-  ok('Speichern/Laden behält die Generator-Einstellungen (inkl. Maul)', s.p && s.p.art === 'trike' && s.p.maul === true && s.set, s);
+  ok('Speichern/Laden behält die Generator-Einstellungen (inkl. Maul, Zähne, Krallen)', s.p && s.p.art === 'trike' && s.p.maul === true && s.p.zaehne === true && s.p.krallen === true && s.set, s);
   // Im Generator bearbeiten: Maul abschalten → 8 Teile; alter Dino ohne Maul-Angabe öffnet mit Maul aus
   await pg.evaluate(() => { _dnoEdit(objects.find(o => /Unterkiefer/.test(o.userData.name))); _dnoStr('maul', false); return _dnoCreate(); });
   await pg.waitForFunction(() => objects.length === 8, { timeout: 120000 }).catch(() => {});
   const e3 = await pg.evaluate(() => ({ n: objects.length, maul: objects[0].userData.dinoParams.maul }));
   ok('Bearbeiten: Maul abschalten ersetzt durch 8 Teile', e3.n === 8 && e3.maul === false, e3);
-  const e4 = await pg.evaluate(() => { const o = objects[0]; const alt = { ...o.userData.dinoParams }; delete alt.maul; delete alt.maulW; o.userData.dinoParams = alt;
-    _dnoEdit(o); const r = { maul: _dnoP.maul, cb: document.getElementById('dno-maul').checked }; _dnoClose(); return r; });
-  ok('Alter Dino (ohne Maul-Angabe) öffnet mit Maul aus', e4.maul === false && e4.cb === false, e4);
+  const e4 = await pg.evaluate(() => { const o = objects[0]; const alt = { ...o.userData.dinoParams }; delete alt.maul; delete alt.maulW; delete alt.zaehne; delete alt.krallen; o.userData.dinoParams = alt;
+    _dnoEdit(o); const r = { maul: _dnoP.maul, cb: document.getElementById('dno-maul').checked, zaehne: _dnoP.zaehne, krallen: _dnoP.krallen,
+      zcb: document.getElementById('dno-zaehne').checked, kcb: document.getElementById('dno-krallen').checked }; _dnoClose(); return r; });
+  ok('Alter Dino (ohne Maul-/Zähne-/Krallen-Angabe) öffnet mit allem aus', e4.maul === false && e4.cb === false && e4.zaehne === false && e4.krallen === false && !e4.zcb && !e4.kcb, e4);
   await pg.evaluate(() => { undo(); });
   const u = await pg.evaluate(() => { undo(); return objects.length; });
   ok('Rückgängig stellt den Stegosaurus wieder her', u === 10, u);
