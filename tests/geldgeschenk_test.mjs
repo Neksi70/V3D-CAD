@@ -6,7 +6,7 @@
 //   4. Text mit Umlauten ergibt Formen, zu langer Text wird schmaler gesetzt
 //   5. SVG: Ebenen Gravieren/Schneiden, Gravur je Platte verschweißt (ein Pfad),
 //      Maße in mm, mehrere Garnituren bleiben in der Arbeitsfläche
-//   6. Dialog: Vorlage setzt Text + Motiv, keine Seitenfehler; Screenshot
+//   6. Dialog: Vorlage setzt Text + Motiv, DIN-Formate/Hochformat/freie Maße, keine Seitenfehler; Screenshot
 // Start: python3 volme3d_server.py 8766 --dev   →   node tests/geldgeschenk_test.mjs
 import { chromium } from 'playwright';
 
@@ -41,6 +41,12 @@ const varianten = [
   { name: 'Oval, große Ecken',                        p: { motiv: 'oval', rad: 15 } },
   { name: 'kein Motiv, groß',                         p: { motiv: 'keins', textH: 30 } },
   { name: 'Weltkarte ohne kleine Inseln',             p: { inseln: false } },
+  { name: 'DIN A4 quer',                              p: { B: 297, H: 210, textH: 42 } },
+  { name: 'DIN A4 hoch',                              p: { B: 210, H: 297, textH: 42 } },
+  { name: 'DIN A3 quer, Schlitze',                    p: { B: 420, H: 297, textH: 59.5, bind: 'schlitz' } },
+  { name: 'DIN A6 quer',                              p: { B: 148, H: 105, textH: 21 } },
+  { name: 'DIN A7 quer',                              p: { B: 105, H: 74, textH: 15 } },
+  { name: 'DIN lang',                                 p: { B: 210, H: 99, textH: 20 } },
 ];
 
 const res = await pg.evaluate((varianten) => {
@@ -145,6 +151,28 @@ await pg.locator('#ggp-modal .g3box').screenshot({ path: '/tmp/ggp_dialog.png' }
 await pg.evaluate(() => { _ggpSet('bind', 'schlitz'); _ggpSet('text2', 'Für Lena & Max'); });
 await pg.waitForTimeout(300);
 await pg.locator('#ggp-canvas').screenshot({ path: '/tmp/ggp_schlitz.png' });
+await pg.evaluate(() => _ggpReset());
+// Formate
+const fm = await pg.evaluate(() => {
+  const r = {};
+  _ggpSetFmt('a4'); r.a4 = [_ggpP.B, _ggpP.H, _ggpP.fmt, _ggpP.textH, document.getElementById('ggp-Bn').value];
+  _ggpSetOri('hoch'); r.hoch = [_ggpP.B, _ggpP.H, _ggpP.fmt, document.querySelector('#ggp-ori .vtb.on')?.dataset.v];
+  _ggpSetFmt('a6'); r.a6hoch = [_ggpP.B, _ggpP.H];
+  _ggpSet('B', 123.5); r.frei = [_ggpP.B, _ggpP.fmt, document.getElementById('ggp-fmt').value];
+  _ggpSet('B', 210); _ggpSet('H', 99); r.lang = _ggpP.fmt;
+  _ggpSet('H', 999); r.clamp = _ggpP.H;
+  return r;
+});
+console.log('\nFormate');
+ok('DIN A4 setzt 297 × 210 und skaliert die Schrift', fm.a4[0] === 297 && fm.a4[1] === 210 && fm.a4[2] === 'a4' && fm.a4[3] === 42 && fm.a4[4] === '297', fm.a4);
+ok('Hochformat tauscht Breite/Höhe, Format bleibt A4', fm.hoch[0] === 210 && fm.hoch[1] === 297 && fm.hoch[2] === 'a4' && fm.hoch[3] === 'hoch', fm.hoch);
+ok('Formatwechsel behält Hochformat', fm.a6hoch[0] === 105 && fm.a6hoch[1] === 148, fm.a6hoch);
+ok('freie Maße → „Eigene Maße"', fm.frei[0] === 123.5 && fm.frei[1] === 'eigen' && fm.frei[2] === 'eigen', fm.frei);
+ok('getippte 210 × 99 erkennen DIN lang', fm.lang === 'lang', fm.lang);
+ok('Maße auf 450 mm begrenzt', fm.clamp === 450, fm.clamp);
+await pg.evaluate(() => { _ggpReset(); _ggpSetFmt('a5'); _ggpSetOri('hoch'); });
+await pg.waitForTimeout(300);
+await pg.locator('#ggp-modal .g3box').screenshot({ path: '/tmp/ggp_a5hoch.png' });
 await pg.evaluate(() => _ggpReset());
 ok('keine Seitenfehler', pageErrors.length === 0, pageErrors.slice(0, 3));
 
