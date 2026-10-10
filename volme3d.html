@@ -2093,6 +2093,9 @@ const firebaseConfig = {
             <path d="M20 19 C18.5 11 16.5 8 15.5 5"/>
           </svg><span class="sdd-name">Loft</span>
         </div>
+        <div class="shp" onclick="_flxOpen()" title="Beweglich machen (FlexiGen): flaches Teil in Glieder mit Fass-Scharnieren schneiden — druckt am Stück, biegt nach oben und unten">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2" y="9" width="5" height="6" rx="1"/><rect x="9.5" y="9" width="5" height="6" rx="1"/><rect x="17" y="9" width="5" height="6" rx="1"/><circle cx="8.2" cy="12" r="1.1"/><circle cx="15.7" cy="12" r="1.1"/></svg><span class="sdd-name">Beweglich (Flexi)</span>
+        </div>
         <div class="shp" onclick="_thfStart()" title="Gewinde auf vorhandene Bohrung (innen) oder Zylinder (außen) setzen — Größe wird erkannt, Druck-Spiel einstellbar">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="7" y="3" width="10" height="18" rx="1.5"/><path d="M7 7l10 2M7 11l10 2M7 15l10 2"/></svg><span class="sdd-name">Gewinde an Fläche</span>
         </div>
@@ -44593,6 +44596,218 @@ function _createPip(){
   _closePipModal();
 }
 
+// ═══ FLEXIGEN — Teil beweglich machen (_flx*, 1.18.158) ═══════════════════════
+// Wie FlexiGen bei JumpStart: ein flaches Teil (Schild, Herz, Tier-Umriss …) in
+// Glieder schneiden, an jedem Schnitt ein Fass-Scharnier (Knöchel im Wechsel,
+// durchgehender Stift, Bohrung mit Spiel) — druckt am Stück, flach, ohne Stützen,
+// und biegt nach oben/unten. Das Original bleibt bis „Übernehmen" unverändert.
+// Kern _flxBuild rechnet in Manifold (mm, Z oben); Entwicklung/Prüfung in Node:
+// tools/flexigen/flx_core.js + flx_pruef.mjs (Node: Überlappung, Abstand, Drehen) — Kern hier 1:1 eingebettet.
+// FlexiGen-Kern (Fass-Scharnier, print-in-place) — reine Manifold-Funktion.
+// Eingabe: Manifold in mm, Z oben, Unterseite auf z=zmin. Glieder entlang +X.
+// p: { n: Anzahl Glieder, clr: Spiel (mm), pin: Stift-Ø (mm, 0 = auto), band: Knöchelbreite (mm, 0 = auto), cuts: [x…] optional }
+// Rückgabe: { teile: [Manifold…], info: {…} }  oder wirft Error mit verständlicher Meldung.
+function _flxBuild(w, M0, p) {
+  const M = w.Manifold;
+  const bb = M0.boundingBox(), x0 = bb.min[0], x1 = bb.max[0], y0 = bb.min[1], y1 = bb.max[1], zmin = bb.min[2];
+  const T = bb.max[2] - zmin, L = x1 - x0;
+  if (T < 2.5) throw new Error(`Zu dünn (${T.toFixed(1)} mm) — das Fass-Scharnier braucht mindestens 2,5 mm Dicke`);
+  if (T > 30) throw new Error(`Zu dick (${T.toFixed(1)} mm) — das Fass-Scharnier ist für flache Teile bis 30 mm gedacht`);
+  const c = Math.max(0.15, p.clr ?? 0.4);
+  const r = T / 2;                                   // Knöchel = volle Dicke
+  const rp = Math.max(0.6, Math.min(r - 0.8 - c, (p.pin > 0 ? p.pin : Math.max(1.6, Math.min(4, T * 0.4))) / 2));
+  const zc = zmin + r;
+  const Lmin = 2 * (r + c) + 2;                     // kürzestes Glied (Knöchel beider Seiten + Steg)
+  let cuts = Array.isArray(p.cuts) && p.cuts.length ? p.cuts.slice().sort((a, b) => a - b)
+    : Array.from({ length: Math.max(1, (p.n || 6) - 1) }, (_, i) => x0 + L * (i + 1) / (p.n || 6));
+  // zu enge Schnitte zusammenziehen
+  const ok = []; let prev = x0;
+  for (const x of cuts) if (x - prev >= Lmin && x1 - x >= Lmin / 2 + r) { ok.push(x); prev = x; }
+  cuts = ok;
+  if (!cuts.length) throw new Error(`Zu kurz für Gelenke — jedes Glied braucht mindestens ${Lmin.toFixed(1)} mm`);
+  const big = Math.max(L, y1 - y0, T) * 4 + 50;
+  const cube = (ax, bx, ay, by, az, bz) => M.cube([bx - ax, by - ay, bz - az]).translate([ax, ay, az]);
+  // Zylinder entlang Y durch (x, zc)
+  const cylY = (x, rad, ya, yb, seg) => M.cylinder(yb - ya, rad, rad, seg || 64).rotate([-90, 0, 0]).translate([x, ya, zc]);
+  const teile = [], info = { T, r, rp, c, cuts: cuts.slice(), bands: [] };
+  // Grundstücke zwischen den Schnitten (mit Spalt c um jeden Schnitt)
+  const grenzen = [x0 - 1, ...cuts, x1 + 1];
+  for (let i = 0; i + 1 < grenzen.length; i++) {
+    const a = i === 0 ? x0 - 1 : grenzen[i] + c / 2, b = i + 2 === grenzen.length ? x1 + 1 : grenzen[i + 1] - c / 2;
+    teile.push(M.intersection(M0, cube(a, b, y0 - 1, y1 + 1, zmin - 1, zmin + T + 1)));
+  }
+  cuts.forEach((xk, k) => {
+    // Breite des Teils am Schnitt (Querschnitt)
+    const q = M.intersection(M0, cube(xk - 0.05, xk + 0.05, y0 - 1, y1 + 1, zmin - 1, zmin + T + 1));
+    if (q.isEmpty()) return;
+    const qb = q.boundingBox(), ya = qb.min[1], yb = qb.max[1], W = yb - ya;
+    const bw = p.band > 0 ? p.band : Math.max(3.5, Math.min(12, T * 1.6));
+    let nb = Math.max(3, Math.round(W / bw)); if (nb % 2 === 0) nb++;      // ungerade: außen A
+    const step = W / nb;
+    const A = [], B = [];
+    for (let j = 0; j < nb; j++) {
+      const s0 = ya + j * step, s1 = ya + (j + 1) * step;
+      // äußere Bänder bis über das ganze Teil hinaus (Kerben/Lappen neben dem Schnitt)
+      const band = cube(xk - r - c - 1, xk + r + c + 1, j === 0 ? y0 - 2 : s0 + c / 2, j === nb - 1 ? y1 + 2 : s1 - c / 2, zmin - 1, zmin + T + 1);
+      (j % 2 === 0 ? A : B).push(band);
+    }
+    info.bands.push(nb);
+    const Kr = cylY(xk, r, y0 - 3, y1 + 3), Krc = cylY(xk, r + c, y0 - 3, y1 + 3);
+    const Au = M.union(A), Bu = M.union(B);
+    const kA = M.intersection(M.intersection(M0, Kr), Au);          // Knöchel A (volle Scheibe)
+    const kB = M.intersection(M.intersection(M0, Kr), Bu);
+    // Aussparung: im Zylinder r+c bleibt nur das eigene Band übrig
+    const cavA = M.difference(Krc, Au), cavB = M.difference(Krc, Bu);
+    const pin = M.intersection(cylY(xk, rp, y0 - 3, y1 + 3, 40), M.intersection(M0, Kr));
+    const bore = cylY(xk, rp + c, y0 - 3, y1 + 3, 40);
+    teile[k] = M.union([M.difference(teile[k], cavA), kA, pin]);
+    teile[k + 1] = M.difference(M.union([M.difference(teile[k + 1], cavB), kB]), bore);   // Bohrung durch ALLES vom Nachbarn
+  });
+  return { teile, info };
+}
+const _flx = { obj: null, p: { dir: 'auto', n: 0, clr: 0.4, pin: 0 }, teile: null, gelenke: null, info: null, winkel: 0, busy: false };
+function _flxOpen() {
+  const o = getFirst();
+  if (!o || !o.isMesh || o.userData.isHole || selectedObjs.length !== 1) { notify('Ein einzelnes Teil auswählen (Gruppen erst vereinen) — z. B. ein Herz, Schild oder Tier-Umriss', 'w'); return; }
+  if (_flx.obj && _flx.obj !== o) _flxVerwerfen();
+  _flx.obj = o;
+  _flxPanel();
+}
+function _flxMaße(o) {
+  const bb = getMeshBox(o), s = bb.getSize(new THREE.Vector3());
+  return { lx: s.x * 10, lz: s.z * 10, h: s.y * 10 };
+}
+function _flxPanel() {
+  let el = document.getElementById('flx-panel');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'flx-panel';
+    el.style.cssText = 'position:fixed;right:232px;top:120px;width:320px;max-height:calc(100vh - 150px);overflow-y:auto;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+    el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape') _flxVerwerfen(); });
+    document.body.appendChild(el);
+  }
+  const o = _flx.obj, p = _flx.p, m = _flxMaße(o), f1 = x => String(Math.round(x * 10) / 10).replace('.', ',');
+  const L = p.dir === 'z' ? m.lz : p.dir === 'x' ? m.lx : Math.max(m.lx, m.lz);
+  const Lmin = 2 * (m.h / 2 + p.clr) + 2;
+  const nAuto = Math.max(2, Math.min(24, Math.round(L / Math.max(Lmin * 1.4, 12))));
+  const n = p.n > 0 ? p.n : nAuto;
+  const tb = (k, v, t) => `<button class="vtb${String(p[k]) === String(v) ? ' on' : ''}" onclick="_flxSet('${k}','${v}')">${t}</button>`;
+  const warn = m.h < 2.5 ? 'Zu dünn — mindestens 2,5 mm Dicke nötig.' : m.h > 30 ? 'Zu dick — das Fass-Scharnier ist für flache Teile bis 30 mm gedacht.' : '';
+  const fertig = !!_flx.teile;
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">🔗 Beweglich machen (FlexiGen)</b>
+      <span onclick="_flxVerwerfen()" style="cursor:pointer;color:var(--dim);font-size:15px" title="Schließen, nichts ändern (Esc)">✕</span></div>
+    <div style="font-size:11px;color:var(--dim);margin-bottom:7px;line-height:1.4">Schneidet das Teil in Glieder mit <b>Fass-Scharnieren</b> (biegt nach oben/unten). Druckt flach am Stück, ohne Stützen. Am besten für flache Teile: Schilder, Herzen, Tiere, Namen.</div>
+    <div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:5px 8px;margin-bottom:8px">„${(o.userData.name || 'Teil').replace(/</g, '&lt;')}“: ${f1(m.lx)} × ${f1(m.lz)} mm, <b>${f1(m.h)} mm dick</b>${warn ? `<br><b style="color:#dc2626">${warn}</b>` : ''}</div>
+    <div class="vrow"><label>Richtung</label><div class="vbg" style="flex:1">${tb('dir', 'auto', 'Längs (auto)')}${tb('dir', 'x', 'X')}${tb('dir', 'z', 'Y')}</div></div>
+    <div class="vrow"><label>Glieder</label><input id="flx-n" type="number" min="2" max="30" value="${n}" style="width:60px" onchange="_flxSet('n',this.value)"><span class="vu">${p.n > 0 ? '' : '(auto)'}</span></div>
+    <div class="vrow"><label title="Luft zwischen Stift und Bohrung bzw. zwischen den Knöcheln. Klemmt es nach dem Druck: erhöhen">Spiel</label><select id="flx-clr" style="flex:1" onchange="_flxSet('clr',this.value)">${[0.25, 0.3, 0.35, 0.4, 0.5, 0.6].map(v => `<option value="${v}"${v === p.clr ? ' selected' : ''}>${String(v).replace('.', ',')} mm${v === 0.4 ? ' (Standard)' : ''}</option>`).join('')}</select></div>
+    <div class="vrow"><label>Stift-Ø</label><input id="flx-pin" type="number" min="0" max="8" step="0.1" value="${p.pin || ''}" placeholder="auto" style="width:60px" onchange="_flxSet('pin',this.value)"><span class="vu">mm</span></div>
+    <div style="display:flex;gap:6px;margin:8px 0"><button class="btn pri" style="flex:1" id="flx-go" onclick="_flxBauen()" ${warn ? 'disabled' : ''}>${_flx.busy ? '⏳ rechnet …' : fertig ? '↻ Neu bauen' : '🔗 Flexi-Modell bauen'}</button></div>
+    ${fertig ? `
+    <div style="background:#f0fdf4;border:1px solid #22c55e;border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.45">✓ <b>${_flx.teile.length} Glieder</b>, ${_flx.gelenke.length} Gelenke · Stift Ø ${f1(_flx.info.rp * 2)} mm · biegt je Gelenk bis ca. <b>${_flx.info.maxGrad}°</b></div>
+    <div class="vrow"><label>Biegen</label><input id="flx-bend" type="range" min="-45" max="45" step="1" value="${_flx.winkel}" style="flex:1" oninput="_flxBiegen(+this.value)"><span class="vv" id="flx-bv">${_flx.winkel}</span><span class="vu">°</span></div>
+    <div style="font-size:10.5px;color:var(--dim);margin:-2px 0 8px">Nur Vorschau — übernommen wird flach, so wie es gedruckt wird.</div>
+    <div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn" onclick="_flxVerwerfen()">Verwerfen</button><button class="btn pri" id="flx-ok" onclick="_flxUebernehmen()">✓ Übernehmen</button></div>` : ''}`;
+}
+function _flxSet(k, v) {
+  if (k === 'dir') _flx.p.dir = v;
+  else { const n = parseFloat(String(v).replace(',', '.')); _flx.p[k] = isFinite(n) ? n : 0; }
+  if (_flx.teile) _flxVorschauWeg();
+  _flxPanel();
+}
+function _flxVorschauWeg() {
+  (_flx.teile || []).forEach(m => { scene.remove(m); m.geometry.dispose(); m.material.dispose(); });
+  _flx.teile = null; _flx.gelenke = null; _flx.winkel = 0;
+  if (_flx.obj) _flx.obj.visible = true;
+}
+async function _flxBauen() {
+  const o = _flx.obj; if (!o || _flx.busy) return;
+  _flx.busy = true; _flxPanel();
+  await new Promise(r => setTimeout(r, 30));
+  try {
+    _flxVorschauWeg();
+    const w = await _mfInit();
+    let M0 = _mfUnionObjs(w, [o]);
+    if (!M0 || M0.isEmpty()) throw new Error('Teil ist nicht wasserdicht — erst 🩹 Reparieren');
+    // Manifold-Raum: X = Welt-x, Y = −Welt-z (mm), Z = Höhe
+    const bb = M0.boundingBox(), lx = bb.max[0] - bb.min[0], ly = bb.max[1] - bb.min[1];
+    const p = _flx.p, entlangY = p.dir === 'z' || (p.dir === 'auto' && ly > lx);
+    if (entlangY) M0 = M0.rotate([0, 0, 90]);   // Gliederkette immer entlang +X rechnen
+    const L = entlangY ? ly : lx, T = bb.max[2] - bb.min[2];
+    const Lmin = 2 * (T / 2 + p.clr) + 2;
+    const n = p.n > 0 ? p.n : Math.max(2, Math.min(24, Math.round(L / Math.max(Lmin * 1.4, 12))));
+    const { teile, info } = _flxBuild(w, M0, { n, clr: p.clr, pin: p.pin });
+    // größter freier Biegewinkel (Gelenk 1, 2,5°-Schritte)
+    let maxGrad = 0;
+    { const xk = info.cuts[0], zc = M0.boundingBox().min[2] + info.r;
+      for (let g = 5; g <= 90; g += 2.5) {
+        const rot = teile[1].translate([-xk, 0, -zc]).rotate([0, g, 0]).translate([xk, 0, zc]);
+        if (w.Manifold.intersection(teile[0], rot).volume() > 0.05) break; maxGrad = g; } }
+    info.maxGrad = Math.round(maxGrad);
+    const zc = M0.boundingBox().min[2] + info.r;
+    const back = m => entlangY ? m.rotate([0, 0, -90]) : m;
+    const farbe = o.userData.color || '#' + o.material.color.getHexString();
+    const meshes = teile.map((t, i) => {
+      const g = _mfToGeo(back(t)).toNonIndexed(); g.rotateX(-Math.PI / 2); g.scale(0.1, 0.1, 0.1); _moldNormals(g);
+      const col = new THREE.Color(farbe); if (i % 2) col.offsetHSL(0, 0, col.getHSL({}).l > 0.5 ? -0.12 : 0.12);   // Vorschau: Glieder im Wechsel heller/dunkler
+      const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: col, roughness: 0.4, metalness: 0.05, side: THREE.DoubleSide }));
+      m.castShadow = m.receiveShadow = true; m.matrixAutoUpdate = false; m.updateMatrix();
+      scene.add(m); return m;
+    });
+    // Gelenkachsen in Weltkoordinaten (für die Biegen-Vorschau)
+    const zuWelt = (x, y, z) => { const v = new THREE.Vector3(x, y, z); if (entlangY) v.applyAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2); return new THREE.Vector3(v.x / 10, v.z / 10, -v.y / 10); };
+    _flx.gelenke = info.cuts.map(xk => { const a = zuWelt(xk, 0, zc), b = zuWelt(xk, 10, zc); return { p: a, d: b.clone().sub(a).normalize() }; });
+    _flx.teile = meshes; _flx.info = info; _flx.teileMf = null;
+    o.visible = false;
+    notify(`${meshes.length} Glieder mit ${info.cuts.length} Fass-Scharnieren — mit „Biegen" ausprobieren, dann übernehmen`, 'ok');
+  } catch (e) {
+    console.error('[flx]', e); notify('FlexiGen: ' + (e.message || e), 'e');
+  } finally { _flx.busy = false; _flxPanel(); }
+}
+function _flxBiegen(grad) {
+  _flx.winkel = grad; const v = document.getElementById('flx-bv'); if (v) v.textContent = grad;
+  if (!_flx.teile) return;
+  const a = THREE.MathUtils.degToRad(grad);
+  let acc = new THREE.Matrix4();
+  _flx.teile.forEach((m, i) => {
+    if (i > 0) {
+      const g = _flx.gelenke[i - 1];
+      const R = new THREE.Matrix4().makeTranslation(g.p.x, g.p.y, g.p.z)
+        .multiply(new THREE.Matrix4().makeRotationAxis(g.d, a))
+        .multiply(new THREE.Matrix4().makeTranslation(-g.p.x, -g.p.y, -g.p.z));
+      acc = acc.clone().multiply(R);
+    }
+    m.matrix.copy(acc); m.matrixWorldNeedsUpdate = true;
+  });
+}
+function _flxUebernehmen() {
+  const o = _flx.obj; if (!o || !_flx.teile) return;
+  _flxBiegen(0);
+  o.visible = true;     // Rückgängig-Stand = Original SICHTBAR (in der Vorschau war es ausgeblendet)
+  saveUndo();
+  const geo = _mergeGeos(_flx.teile.map(m => m.geometry.clone()));   // alle Glieder in EIN Teil (druckt am Stück)
+  const g2 = geo.index ? geo.toNonIndexed() : geo; _moldNormals(g2);
+  const farbe = o.userData.color || '#' + o.material.color.getHexString();
+  const mesh = new THREE.Mesh(g2, new THREE.MeshStandardMaterial({ color: new THREE.Color(farbe), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide }));
+  mesh.castShadow = mesh.receiveShadow = true;
+  typeCounts['flexi'] = (typeCounts['flexi'] || 0) + 1;
+  mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Flexi ' + (o.userData.name || typeCounts['flexi']),
+    color: farbe, isHole: false, fillet: 0, chamfer: 0, displacementPattern: 'keine',
+    flexInfo: { glieder: _flx.teile.length, spiel: _flx.p.clr, stift: +(_flx.info.rp * 2).toFixed(2) } };
+  _flxVorschauWeg();
+  scene.remove(o); objects.splice(objects.indexOf(o), 1);
+  scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
+  selectObjs([mesh]); updateTree();
+  _flx.obj = null;
+  const el = document.getElementById('flx-panel'); if (el) el.remove();
+  notify('Flexi-Modell übernommen — flach drucken, ohne Stützen. Nach dem Druck die Glieder einmal vorsichtig durchbiegen.', 'ok');
+}
+function _flxVerwerfen() {
+  _flxVorschauWeg();
+  _flx.obj = null;
+  const el = document.getElementById('flx-panel'); if (el) el.remove();
+}
+
 // ═══ GEWINDE AUF FLÄCHE (_thf*) ═══════════════════════════════════════════
 // Wie bei Fusion/JumpStart: vorhandene Bohrung oder Zylinderfläche anklicken →
 // Achse, Ø und Länge werden aus dem Netz erkannt (Flutfüllung über glatte
@@ -57948,8 +58163,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.157';
+const VOLME3D_VERSION = '1.18.158';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.158', date:'2026-10-10', changes:[
+    ['🔗','<b>Beweglich machen (FlexiGen).</b> Neues Werkzeug unter <i>Werkzeuge öffnen</i> (oder Suche „Flexi“): ein flaches Teil auswählen – Herz, Schild, Tier-Umriss, Namensschild – und es wird in <b>Glieder mit Fass-Scharnieren</b> geschnitten: Knöchel im Wechsel, durchgehender Stift, Spiel einstellbar. Das Ergebnis druckt <b>flach am Stück und ohne Stützen</b> und biegt sich danach nach oben und unten. Mit dem Schieber <b>Biegen</b> sieht man vorher, wie es sich bewegt; das Original bleibt bis <b>✓ Übernehmen</b> unverändert. Geeignet für Teile von 2,5 bis 30 mm Dicke.'],
+  ]},
   { version:'1.18.157', date:'2026-10-10', changes:[
     ['✨','<b>Aussehen wie in Fusion.</b> Unter <i>Farbe</i> gibt es jetzt <b>Aussehen</b>: Kunststoff matt (PLA), Kunststoff glänzend, Seidenglanz (Silk-PLA), Metall gebürstet, Chrom, Keramik, Gummi (TPU) und Glas – mit echten Spiegelungen. Das ist nur für die Anzeige und Fotos; Farbe, Export und Filamente bleiben unverändert. Das Aussehen wird mit dem Design gespeichert.'],
     ['📷','<b>Foto erstellen.</b> Neuer Knopf <b>📷 Foto erstellen</b> (unter <i>Farbe</i> und im Export-Menü ▾): rendert die aktuelle Ansicht als PNG – Licht <i>Studio, Studio dunkel, Tageslicht, Abendsonne</i>, Hintergrund weiß, Verlauf, dunkel oder <b>transparent</b>, weicher Schatten, bis <b>4K</b> oder im Instagram-Hochformat. Die Teile werden automatisch mittig eingepasst, Raster und Platte bleiben weg – ideal für Kunden, Shop und Werbung.'],
@@ -68522,6 +68740,7 @@ const CMDK = [
   {i:'🔩',g:'Bearbeiten',t:'Gewinde an Fläche (Bohrung/Zylinder anklicken)',k:'gewinde thread innengewinde aussengewinde bohrung schraube mutter m3 m4 m5 m6 m8 m10 m12 spiel toleranz',run:()=>_thfStart()},
   {i:'🖨',g:'Datei',t:'Druck-Vorschau & Slicer-Einstellungen',k:'druck vorschau slicer drucker bambu snapmaker anycubic elegoo prusa creality filament schichthoehe waende infill fuellung stuetzen gcode 3mf projekt druckzeit gewicht',run:()=>_dvOpen()},
   {i:'📷',g:'Datei',t:'Foto erstellen (Rendern)',k:'foto bild render rendern png screenshot werbung shop kunde aussehen material',run:()=>_fotoOpen()},
+  {i:'🔗',g:'Bearbeiten',t:'Beweglich machen (FlexiGen, Flexi-Gelenke)',k:'flexi flexigen beweglich gelenk scharnier glieder print in place biegen kette herz schild',run:()=>_flxOpen()},
   {i:'◪',g:'Ansicht',t:'Schnittansicht (Modell aufschneiden)',k:'schnitt section querschnitt clipping wandstaerke innen',run:()=>sectionTool()},
   {i:'🛟',g:'Datei',t:'Sicherungen (ältere Stände)',k:'backup sicherung wiederherstellen restore version',run:()=>_bakOpen()},
   {i:'📱',g:'Ansicht',t:'Ansehen-Modus (mobil)',k:'mobile view vorschau',run:()=>_mviewToggle()},
