@@ -10287,6 +10287,7 @@ function exitSketchMode() {
   if (_skPull.editing) _skPullCleanup();
   if (_sk.facePick) { canvas.removeEventListener('pointerdown', _skFacePickDown, true); _sk.facePick = false; }
   if (typeof _skxClose === 'function') _skxClose(true);
+  _sk.editFeat = null;
   _sk.active = false; canvas.style.cursor = ''; _sk.hint=''; _skUpdateBadge();
   if (_sk.group) { scene.remove(_sk.group); _skDisposeGroup(); _sk.group = null; }
   _sk.ents = []; _sk.pending = []; _sk.dimLock = false;
@@ -10373,6 +10374,15 @@ function _skSetFrame(n, o){
   if (_sk.group) { _sk.group.matrix.copy(_sk.M); _sk.group.matrixWorldNeedsUpdate = true; }
   if (_sk.onFace) { orbitTarget.copy(_sk.O); sph.r = Math.min(sph.r, 22); _skCamLocal(new THREE.Vector3(0, 1, 0)); }
   else setView('top');
+}
+// Skizzenebene direkt aus einer Matrix (Bearbeiten einer gespeicherten Skizze)
+function _skSetFrameM(mat) {
+  _sk.M = mat.clone(); _sk.Minv = mat.clone().invert();
+  const pos = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+  mat.decompose(pos, q, sc);
+  _sk.O = pos; _sk.Q = q; _sk.N = new THREE.Vector3(0, 1, 0).transformDirection(mat).normalize(); _sk.onFace = true;
+  if (_sk.group) { _sk.group.matrix.copy(_sk.M); _sk.group.matrixWorldNeedsUpdate = true; }
+  orbitTarget.copy(pos); sph.r = Math.min(sph.r, 22); _skCamLocal(new THREE.Vector3(0, 1, 0));
 }
 // Kamera entlang einer LOKALEN Richtung der Skizzenebene ausrichten
 function _skCamLocal(dl){
@@ -11311,6 +11321,161 @@ function _skMakeBodyFromShapes(shapes, hmm, offU){
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
   return mesh;
 }
+// ═══ VERLAUF: SKIZZEN + GEWINDE NACHTRÄGLICH ÄNDERN (userData.feat, 1.18.159) ═══
+// Parametrik à la Fusion/Onshape: Jedes Teil, das über Skizze/Extrudieren oder
+// „Gewinde an Fläche" entsteht oder verändert wird, merkt sich
+//   feat = { base: objectToData(Teil vor dem 1. Schritt) | null, list: [Schritt…], sig }
+// Schritt Skizze:  { typ:'skizze', ents, frame:[16], ab:[a,b], op:'new'|'join'|'cut', picks, pUI, T }
+// Schritt Gewinde: { typ:'gewinde', cyl, p, T }
+// Koordinaten: Schritt k rechnet in L_k (= Welt beim Anwenden; nach jedem Boolean
+// hat das Ergebnis die Einheitsmatrix). T_k = Matrix des Teils direkt vor Schritt k
+// (bildet L_{k-1} → L_k ab); beim ersten Schritt steckt sie schon in base.
+// Neurechnen = base aufbauen, Schritte der Reihe nach per Manifold anwenden; die
+// aktuelle Matrix des Teils bleibt (L_n → heutige Welt), also überlebt Verschieben.
+// sig = Fingerabdruck der Geometrie nach dem letzten Schritt: weicht er ab, wurde
+// das Teil anders verändert (Rundung, Textur, Abziehen per Leiste …) — dann vor
+// dem Neurechnen nachfragen, weil diese Änderung sonst verloren ginge.
+const _featClone = x => JSON.parse(JSON.stringify(x));
+function _featSig(o) {
+  const g = o.geometry; if (!g || !g.attributes.position) return '';
+  g.computeBoundingBox(); const b = g.boundingBox;
+  return [g.attributes.position.count, ...b.min.toArray(), ...b.max.toArray()].map(v => Math.round(v * 1e4)).join(',');
+}
+function _featIntakt(o) { const H = o && o.userData.feat; return !!(H && H.sig && H.sig === _featSig(o)); }
+// Verlauf, an den ein neuer Schritt am Teil tgt angehängt wird (Kopie). Ist der alte
+// Verlauf nicht mehr intakt, beginnt ein neuer mit dem jetzigen Teil als Basis.
+function _featStart(tgt) {
+  if (tgt.userData.feat && _featIntakt(tgt)) return { H: _featClone(tgt.userData.feat), T: tgt.matrixWorld.elements.slice() };
+  const d = objectToData(tgt); delete d.feat; delete d.opJournal;
+  return { H: { base: _featClone(d), list: [] }, T: null };
+}
+function _featCyl(c) { return { O: c.O.toArray(), ax: c.ax.toArray(), r: c.r, tmin: c.tmin, tmax: c.tmax, inner: c.inner, closedLo: c.closedLo, closedHi: c.closedHi }; }
+function _featCylBack(c) { return { ...c, O: new THREE.Vector3().fromArray(c.O), ax: new THREE.Vector3().fromArray(c.ax) }; }
+function _featSet(o, H) { o.userData.feat = H; H.sig = _featSig(o); }
+// Werkzeug-Körper einer Skizzen-Stufe (Mesh in L_k)
+function _featSketchMesh(f) {
+  const keep = _sk.ents; _sk.ents = _featClone(f.ents);
+  let shapes; try { shapes = _skBuildShapes(); } finally { _sk.ents = keep; }
+  if (f.picks && f.picks.length)
+    shapes = shapes.filter(s => f.picks.some(q => _polyContains(s.outer, q) && !(s.holes || []).some(h => _polyContains(h, q))));
+  if (!shapes.length) return null;
+  const [a, b] = f.ab;
+  const profiles = shapes.map(s => ({ outer: s.outer, holes: s.holes || [] }));
+  const m = new THREE.Mesh(_skBuildGeoFromProfiles(profiles, (b - a) * 10, 0, 0));
+  m.position.y = a; m.updateMatrix();
+  m.applyMatrix4(new THREE.Matrix4().fromArray(f.frame)); m.updateMatrixWorld(true);
+  return m;
+}
+async function _featThreadTool(f) {
+  const kc = _thf.cyl, kp = _thf.p;
+  _thf.cyl = _featCylBack(f.cyl); _thf.p = { ...f.p };
+  try { return await _thfToolGeo(); } finally { _thf.cyl = kc; _thf.p = kp; }
+}
+// Ganzen Verlauf neu rechnen → Geometrie in L_n
+async function _featRebuild(H) {
+  const w = await _mfInit(), M = w.Manifold;
+  const toMf = mesh => _mfUnionObjs(w, [mesh]);
+  const geoOf = mf => { const g = _mfToGeo(mf).toNonIndexed(); g.rotateX(-Math.PI / 2); g.scale(0.1, 0.1, 0.1); return g; };
+  let cur = null;
+  if (H.base) { const b = buildObjectFromData(_featClone(H.base)); b.updateMatrixWorld(true); cur = toMf(b); }
+  H.list.forEach((f, k) => { if (f.typ === 'skizze' && !f.ents) throw new Error('Schritt ' + (k + 1) + ' unvollständig'); });
+  for (let k = 0; k < H.list.length; k++) {
+    const f = H.list[k];
+    if (f.T && cur) { const g = geoOf(cur); g.applyMatrix4(new THREE.Matrix4().fromArray(f.T)); cur = toMf(new THREE.Mesh(g)); }
+    if (f.typ === 'skizze') {
+      const tool = _featSketchMesh(f);
+      if (!tool) throw new Error(`Skizze ${k + 1} hat keine geschlossene Kontur mehr`);
+      const tm = toMf(tool);
+      cur = !cur ? tm : (f.op === 'cut' ? M.difference(cur, tm) : M.union(cur, tm));
+    } else if (f.typ === 'gewinde') {
+      if (!cur) throw new Error('Gewinde ohne Körper');
+      cur = M.difference(cur, toMf(new THREE.Mesh(await _featThreadTool(f))));
+    }
+    if (!cur || cur.isEmpty()) throw new Error(`Nach Schritt ${k + 1} ist nichts mehr übrig`);
+  }
+  return _moldNormals(geoOf(cur));
+}
+// Neu gerechneten Verlauf ins Teil schreiben (Matrix bleibt)
+async function _featApply(o, H) {
+  const geo = await _featRebuild(H);
+  o.geometry.dispose(); o.geometry = geo;
+  // Reiner Skizzen-Körper: die Profil-Daten für die Kantenrundung passen nicht mehr
+  delete o.userData._skProfiles; delete o.userData._skProfilesFull; delete o.userData._origGeo;
+  if (o.userData.shapeType === 'sketch') { o.userData.shapeType = 'custom'; o.userData.type = 'custom'; }
+  o.userData._warpCache = null;
+  _featSet(o, H);
+  _updateObjEdgeLines(o);
+  updateTree(); if (selectedObjs.includes(o)) selectObjs(selectedObjs);
+}
+// Rahmen-Kette: L_k → heutige Welt
+function _featChain(o, k) {
+  const H = o.userData.feat, C = new THREE.Matrix4();
+  for (let j = H.list.length - 1; j > k; j--) if (H.list[j].T) C.premultiply(new THREE.Matrix4().fromArray(H.list[j].T));
+  o.updateMatrixWorld(true);
+  return o.matrixWorld.clone().multiply(C);
+}
+function _featLabel(f, k) {
+  if (f.typ === 'gewinde') { const s = f.p.size === 'eigen' ? 'Ø' + String(f.p.d).replace('.', ',') : f.p.size; return `🔩 Gewinde ${s}×${String(f.p.pitch).replace('.', ',')}${f.cyl.inner ? ' innen' : ' außen'}`; }
+  const mm = String(Math.round(Math.abs(f.ab[1] - f.ab[0]) * 100) / 10).replace('.', ',');
+  return `✏ Skizze ${k + 1} · ${f.op === 'cut' ? 'Abziehen' : f.op === 'join' ? 'Anfügen' : 'Körper'} ${mm} mm`;
+}
+function _featPruefen(o) {
+  if (_featIntakt(o)) return true;
+  return confirm('„' + (o.userData.name || 'Teil') + '“ wurde nach dem letzten Skizzen-/Gewinde-Schritt noch anders verändert (z. B. Rundung, Textur oder Abziehen über die Leiste).\n\nBeim Neuberechnen geht diese Änderung verloren. Trotzdem bearbeiten?');
+}
+// Skizze k wieder öffnen
+function _featEditSketch(id, k) {
+  const o = objects.find(x => x.userData.id === id); if (!o || !o.userData.feat) return;
+  const f = o.userData.feat.list[k]; if (!f || f.typ !== 'skizze') return;
+  if (!_featPruefen(o)) return;
+  if (_sk.active) exitSketchMode();
+  selectObjs([o]);
+  enterSketchMode();
+  _skSetFrameM(_featChain(o, k).multiply(new THREE.Matrix4().fromArray(f.frame)));
+  _sk.ents = _featClone(f.ents); _sk.pending = []; _skRender();
+  _sk.editFeat = { id, k };
+  _skx.p = Object.assign({ dir: 'one', d: 10, d2: 5, op: 'auto', thru: false }, _featClone(f.pUI || {}));
+  notify(`Skizze ${k + 1} von „${o.userData.name}“: ändern, dann „✓ Extrudieren…“ — das Teil rechnet sich mit allen späteren Schritten neu`, 'ok');
+}
+// Gewinde k wieder öffnen
+function _featEditThread(id, k) {
+  const o = objects.find(x => x.userData.id === id); if (!o || !o.userData.feat) return;
+  const f = o.userData.feat.list[k]; if (!f || f.typ !== 'gewinde') return;
+  if (!_featPruefen(o)) return;
+  if (_thf.active) _thfClose();
+  selectObjs([o]);
+  // Zylinder für Vorschau/Fenster in die heutige Welt bringen
+  const C = _featChain(o, k), c = _featCylBack(f.cyl);
+  const O = c.O.clone().applyMatrix4(C), ax = c.ax.clone().transformDirection(C);
+  // t-Bereich: Achspunkt verschiebt sich — tmin/tmax relativ zu O neu bestimmen
+  const shift = O.dot(ax) - c.O.dot(c.ax);
+  _thf.active = true; _thf.picking = false; _thf.obj = o;
+  _thf.cyl = { ...c, O: O.clone().sub(ax.clone().multiplyScalar(O.dot(ax))), ax, tmin: c.tmin + shift, tmax: c.tmax + shift };
+  _thf.p = { ...f.p }; _thf.editFeat = { id, k };
+  document.addEventListener('keydown', _thfKey, true);
+  _thfPanel(); _thfPreview();
+  notify(`Gewinde von „${o.userData.name}“ ändern — „✓ Gewinde schneiden“ rechnet das Teil neu`, 'ok');
+}
+// Skizze im Modell zeigen (Auge)
+const _featShown = new Map();
+function _featToggleShow(id, k) {
+  const key = id + ':' + k, old = _featShown.get(key);
+  if (old) { scene.remove(old); old.traverse(c => { if (c.geometry) c.geometry.dispose(); }); _featShown.delete(key); updateTree(); return; }
+  const o = objects.find(x => x.userData.id === id); if (!o) return;
+  const f = o.userData.feat.list[k];
+  const g = new THREE.Group(), mat = new THREE.LineBasicMaterial({ color: 0xf97316, depthTest: false });
+  const keep = _sk.ents; _sk.ents = _featClone(f.ents);
+  try {
+    for (const lp of _skBuildLoops()) {
+      const pts = lp.map(p => new THREE.Vector3(p.u, 0.02, p.v)); pts.push(pts[0].clone());
+      const ln = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat); ln.renderOrder = 999; g.add(ln);
+    }
+  } finally { _sk.ents = keep; }
+  g.matrixAutoUpdate = false; g.matrix.copy(_featChain(o, k).multiply(new THREE.Matrix4().fromArray(f.frame)));
+  g.userData.isFeatOverlay = true;
+  scene.add(g); _featShown.set(key, g); updateTree();
+}
+
 // ═══ EXTRUDIEREN-DIALOG (_skx*, 1.18.153) ═══════════════════════════════════
 // Wie in Fusion/Onshape/JumpStart: Richtung (eine Seite / symmetrisch / zwei
 // Seiten), Abstand (negativ = in die andere Richtung) und Operation. „Automatisch"
@@ -11325,7 +11490,7 @@ function _skExtrude(){
   if (shapes.length===0){ notify('Keine geschlossene Kontur — Profil schließen (Endpunkte aneinander) oder Kreis/Ellipse nutzen','w'); return; }
   _skx.shapes = shapes;
   const h = parseFloat(document.getElementById('sketch-h').value);
-  if (h > 0 && !_skx.open) _skx.p.d = h;
+  if (h > 0 && !_skx.open && !_sk.editFeat) _skx.p.d = h;   // gespeicherte Skizze: eigene Werte behalten
   _skx.open = true;
   _skxPanel(); _skxUpdate();
 }
@@ -11356,6 +11521,11 @@ function _skxBodyAt(local){
 // Automatik + gewählte Operation → { op:'new'|'join'|'cut', target }
 function _skxResolve(){
   const [a, b] = _skxRange(), p = _skx.p, eps = Math.min(0.02, Math.max(1e-4, (b - a) / 3));
+  if (_sk.editFeat) {   // gespeicherte Skizze: Ziel ist das eigene Teil, Operation wie gespeichert (oder neu gewählt)
+    const o = objects.find(x => x.userData.id === _sk.editFeat.id), f = o && o.userData.feat.list[_sk.editFeat.k];
+    const op = f && f.op === 'new' ? 'new' : (p.op === 'auto' || p.op === 'new' ? (f ? f.op : 'new') : p.op);
+    return { op, target: o, edit: true };
+  }
   const pts = _skx.shapes.map(_skxInnerPt);
   const probe = y => { for (const q of pts) { const o = _skxBodyAt(new THREE.Vector3(q.u, y, q.v)); if (o) return o; } return null; };
   // in Wachsrichtung direkt hinter der Startebene
@@ -11370,6 +11540,7 @@ function _skxResolve(){
 }
 function _skxInfo(r){
   const nm = r.target ? '„' + (r.target.userData.name || 'Körper') + '“' : '';
+  if (r.edit) return `Ändert Skizze ${_sk.editFeat.k + 1} von ${nm} (${r.op === 'cut' ? 'Abziehen' : r.op === 'join' ? 'Anfügen' : 'Körper'}) — das Teil wird mit allen späteren Schritten <b>neu berechnet</b>.`;
   if (r.op === 'cut')  return r.target ? `Wird aus ${nm} <b style="color:#dc2626">abgezogen</b>.` : '<span style="color:#dc2626">Kein Körper im Weg — nichts zum Abziehen.</span>';
   if (r.op === 'join') return r.target ? `Wird an ${nm} <b style="color:#16a34a">angefügt</b>.` : '<span style="color:#dc2626">Kein Körper berührt — nichts zum Anfügen.</span>';
   return 'Erzeugt einen <b style="color:#2563eb">neuen Körper</b>.';
@@ -11438,6 +11609,27 @@ async function _skxApply(){
   if (b - a < 0.005) { notify('Abstand ist 0 — bitte einen Wert eingeben', 'w'); return; }
   const r = _skx.res || _skxResolve(), shapes = _skx.shapes, hmm = Math.round((b - a) * 1000) / 100;
   if ((r.op === 'cut' || r.op === 'join') && !r.target) { notify(r.op === 'cut' ? 'Kein Körper zum Abziehen getroffen' : 'Kein Körper zum Anfügen berührt', 'w'); return; }
+  // Für den Verlauf: Skizze, Ebene, Bereich, gewählte Flächen
+  const ents = _featClone(_sk.ents), frameW = _sk.M ? _sk.M.clone() : new THREE.Matrix4();
+  const alleFl = _skBuildShapes().length === shapes.length;
+  const picks = alleFl ? null : shapes.map(_skxInnerPt);
+  const pUI = _featClone(_skx.p);
+  if (r.edit) {   // gespeicherte Skizze geändert → Teil neu rechnen
+    const o = r.target, k = _sk.editFeat.k, H = _featClone(o.userData.feat), f = H.list[k];
+    const Cinv = _featChain(o, k).invert();
+    f.ents = ents; f.frame = Cinv.multiply(frameW).elements.slice(); f.ab = [a, b]; f.op = r.op; f.picks = picks; f.pUI = pUI;
+    _skx.busy = true;
+    try {
+      _skxClose(true); saveUndo(); exitSketchMode();
+      _progressShow('Teil wird neu berechnet…'); _progressSet(20); _progressCreep(90);
+      await _featApply(o, H); _progressDone();
+      notify(`Skizze ${k + 1} geändert — „${o.userData.name}“ neu berechnet`, 'ok');
+    } catch (err) { _progressHide(); undo(); notify('Neuberechnung fehlgeschlagen: ' + (err.message || err) + ' — alter Stand wiederhergestellt', 'e'); }
+    finally { _skx.busy = false; }
+    return;
+  }
+  const start = r.target ? _featStart(r.target) : null;
+  const fNeu = { typ: 'skizze', ents, frame: frameW.elements.slice(), ab: [a, b], op: r.op, picks, pUI };
   _skx.busy = true;
   try {
     _skxClose(true);
@@ -11446,6 +11638,9 @@ async function _skxApply(){
     const mesh = _skMakeBodyFromShapes(shapes, hmm, a);
     exitSketchMode();
     if (r.op === 'new') {
+      // eigener Körper: Skizzenebene im Teil-Lokalraum (Teil-Matrix = Ebene · Versatz a)
+      fNeu.frame = new THREE.Matrix4().makeTranslation(0, -a, 0).elements.slice();
+      _featSet(mesh, { base: null, list: [fNeu] });
       selectObjs([mesh]); updateTree();
       notify('Körper aus Skizze erzeugt — ' + String(hmm).replace('.', ',') + ' mm', 'ok');
     } else if (r.op === 'join') {
@@ -11453,13 +11648,17 @@ async function _skxApply(){
       await unionSelected();
       if (undoStack.length === n0 + 1) undoStack.pop();   // Zwischenstand „Körper daneben" nicht im Verlauf
       updateUndoRedoButtons();
+      const res = selectedObjs.length === 1 && !objects.includes(r.target) && !objects.includes(mesh) ? selectedObjs[0] : null;
+      if (res) { fNeu.T = start.T; start.H.list.push(fNeu); _featSet(res, start.H); updateTree(); }
     } else {
       mesh.userData.isHole = true; mesh.userData.color = '#f03030';
       mesh.material.color.set('#f03030'); mesh.material.transparent = true; mesh.material.opacity = 0.52;
       updateTree();
       _progressShow('Abziehen läuft…'); _progressSet(8); _progressCreep(93);
       const ctl = _progressCancelable();
-      try { await _doSubtractHoles([r.target], [mesh], ctl); _progressDone(); notify('Aus „' + (r.target.userData.name || 'Körper') + '“ abgezogen — ' + String(hmm).replace('.', ',') + ' mm', 'ok'); }
+      try { await _doSubtractHoles([r.target], [mesh], ctl); _progressDone(); notify('Aus „' + (r.target.userData.name || 'Körper') + '“ abgezogen — ' + String(hmm).replace('.', ',') + ' mm', 'ok');
+        const res = selectedObjs.length === 1 && !objects.includes(r.target) ? selectedObjs[0] : null;
+        if (res) { fNeu.T = start.T; start.H.list.push(fNeu); _featSet(res, start.H); updateTree(); } }
       catch (err) {
         _progressHide();
         if (objects.includes(mesh)) { scene.remove(mesh); objects.splice(objects.indexOf(mesh), 1); updateTree(); }
@@ -18515,6 +18714,23 @@ function updateTree() {
     nameEl.title = 'Doppelklick: umbenennen';
     nameEl.ondblclick = e => { e.stopPropagation(); _treeRenameStart(o, nameEl); };
     wrap.appendChild(el);
+    if (o.userData.feat && o.userData.feat.list && o.userData.feat.list.length) {
+      const intakt = _featIntakt(o);
+      o.userData.feat.list.forEach((f, k) => {
+        const r = document.createElement('div');
+        r.className = 'ti ti-feat';
+        r.style.paddingLeft = (23 + depth * 14) + 'px';
+        r.style.fontSize = '10px';
+        const sk = f.typ === 'skizze', an = _featShown.has(o.userData.id + ':' + k);
+        r.title = 'Doppelklick: ' + (sk ? 'Skizze bearbeiten — das Teil rechnet sich neu' : 'Gewinde ändern') + (intakt ? '' : ' (Achtung: Teil wurde danach noch anders verändert)');
+        r.innerHTML = `<span class="ti-n" style="${intakt ? '' : 'opacity:.6;'}">${_featLabel(f, k)}</span>` +
+          (sk ? `<span class="ti-eye" title="Skizzenlinien im Modell ${an ? 'ausblenden' : 'zeigen'}" onclick="event.stopPropagation();_featToggleShow(${o.userData.id},${k})" style="${an ? 'opacity:1' : ''}">${an ? '👁' : '◌'}</span>` : '') +
+          `<span class="ti-eye" title="Bearbeiten" onclick="event.stopPropagation();${sk ? '_featEditSketch' : '_featEditThread'}(${o.userData.id},${k})">✎</span>`;
+        r.onclick = () => selectObjs([o]);
+        r.ondblclick = e => { e.stopPropagation(); (sk ? _featEditSketch : _featEditThread)(o.userData.id, k); };
+        wrap.appendChild(r);
+      });
+    }
     if (isGrp && o.children) {
       o.children.forEach(child => { if (child.userData) renderObj(child, depth + 1); });
     }
@@ -18757,6 +18973,7 @@ function buildObjectFromData(data) {
     _applyTranspLook(obj);
   }
   if (data.look) { obj.userData.look = data.look; _applyLook(obj); }
+  if (data.feat) obj.userData.feat = _featClone(data.feat);
   return obj;
 }
 
@@ -18960,6 +19177,7 @@ function objectToData(o, modus) {
   if (o.userData.hidden || !o.visible) d.hidden = true;
   if (o.userData.opacity && o.userData.opacity < 0.99) d.opacity = o.userData.opacity;
   if (o.userData.look) d.look = o.userData.look;
+  if (o.userData.feat) d.feat = _featClone(o.userData.feat);
   if (o.userData.threadDiameter) d.threadDiameter = o.userData.threadDiameter;
   if (o.userData.threadPitch)    d.threadPitch    = o.userData.threadPitch;
   if (o.userData.threadTurns)    d.threadTurns    = o.userData.threadTurns;
@@ -45237,10 +45455,10 @@ function _thfPanel() {
   const endA = c.closedHi ? 'oberes Ende' : 'offenes Ende', endB = c.closedLo ? 'unteres Ende' : (c.closedHi ? 'offenes Ende' : 'anderes Ende');
   const clrs = [0, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4];
   el.innerHTML = `
-    <div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">🔩 Gewinde</b>
+    <div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">🔩 Gewinde${_thf.editFeat ? ' ändern' : ''}</b>
       <span onclick="_thfClose()" style="cursor:pointer;color:var(--dim);font-size:15px" title="Schließen (Esc)">✕</span></div>
     <div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.45">${_thfInfo()}
-      <span onclick="_thfRepick()" style="float:right;cursor:pointer;color:var(--acc);font-size:11px" title="Andere Fläche anklicken">andere Fläche</span></div>
+      ${_thf.editFeat ? '' : '<span onclick="_thfRepick()" style="float:right;cursor:pointer;color:var(--acc);font-size:11px" title="Andere Fläche anklicken">andere Fläche</span>'}</div>
     <div class="vrow"><label>Größe</label><select id="thf-size" onchange="_thfSet('size',this.value)" style="flex:1">${opt}</select></div>
     <div class="vrow"${p.size === 'eigen' ? '' : ' style="display:none"'}><label>Ø außen</label><input id="thf-d" type="number" min="1" max="300" step="0.1" value="${p.d}" onchange="_thfSet('d',this.value)" style="width:70px"><span class="vu">mm</span></div>
     <div class="vrow"><label>Steigung</label><input id="thf-pitch" type="number" min="0.2" max="10" step="0.05" value="${p.pitch}" onchange="_thfSet('pitch',this.value)" style="width:70px"><span class="vu">mm</span></div>
@@ -45255,7 +45473,7 @@ function _thfPanel() {
     <div style="font-size:10.5px;color:var(--dim);margin:4px 0 9px;line-height:1.4">${c.inner ? 'Innengewinde wird um das Spiel <b>größer</b> geschnitten.' : 'Außengewinde wird um das Spiel <b>dünner</b>.'} Den Wert deines Druckers einmal mit einem Test-Paar ermitteln.</div>
     <div style="display:flex;gap:6px;justify-content:flex-end">
       <button class="btn" onclick="_thfClose()">Abbrechen</button>
-      <button class="btn pri" id="thf-ok" onclick="_thfApply()">✓ Gewinde schneiden</button></div>`;
+      <button class="btn pri" id="thf-ok" onclick="_thfApply()">${_thf.editFeat ? '✓ Übernehmen &amp; neu berechnen' : '✓ Gewinde schneiden'}</button></div>`;
 }
 function _thfSet(k, v) {
   const p = _thf.p;
@@ -45282,11 +45500,25 @@ function _thfClose() {
   canvas.removeEventListener('pointerdown', _thfPointer, true);
   document.removeEventListener('keydown', _thfKey, true);
   if (_thf.picking) canvas.style.cursor = '';
-  _thf.active = _thf.picking = false; _thf.obj = null; _thf.cyl = null;
+  _thf.active = _thf.picking = false; _thf.obj = null; _thf.cyl = null; _thf.editFeat = null;
 }
 async function _thfApply() {
   if (_thf.busy || !_thf.obj || !_thf.cyl) return;
   const o = _thf.obj, p = { ..._thf.p }, inner = _thf.cyl.inner;
+  if (_thf.editFeat) {   // gespeichertes Gewinde geändert → Teil neu rechnen
+    const { k } = _thf.editFeat, H = _featClone(o.userData.feat);
+    H.list[k].p = p;
+    _thf.busy = true;
+    try {
+      _thfClose(); saveUndo();
+      _progressShow('Teil wird neu berechnet…'); _progressSet(20); _progressCreep(90);
+      await _featApply(o, H); _progressDone();
+      notify(`Gewinde geändert — „${o.userData.name}“ neu berechnet`, 'ok');
+    } catch (err) { _progressHide(); undo(); notify('Neuberechnung fehlgeschlagen: ' + (err.message || err) + ' — alter Stand wiederhergestellt', 'e'); }
+    finally { _thf.busy = false; }
+    return;
+  }
+  const cylS = _featCyl(_thf.cyl), start = _featStart(o);
   _thf.busy = true;
   let tool = null;
   try {
@@ -45302,6 +45534,8 @@ async function _thfApply() {
     const ctl = _progressCancelable();
     await _doSubtractHoles([o], [tool], ctl);
     _progressDone();
+    const res = selectedObjs.length === 1 && !objects.includes(o) ? selectedObjs[0] : null;
+    if (res) { start.H.list.push({ typ: 'gewinde', cyl: cylS, p, T: start.T }); _featSet(res, start.H); updateTree(); }
     const name = p.size === 'eigen' ? `Ø${String(p.d).replace('.', ',')}×${String(p.pitch).replace('.', ',')}` : `${p.size}×${String(p.pitch).replace('.', ',')}`;
     notify(`${inner ? 'Innengewinde' : 'Außengewinde'} ${name}${p.hand === 'left' ? ' links' : ''} geschnitten${p.clr ? ` (Spiel ${String(p.clr).replace('.', ',')} mm)` : ''} ✓`, 'ok');
   } catch (err) {
@@ -58842,8 +59076,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.159';
+const VOLME3D_VERSION = '1.18.160';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.160', date:'2026-10-10', changes:[
+    ['🕘','<b>Skizzen und Gewinde nachträglich ändern – wie in Fusion.</b> Jedes Teil merkt sich jetzt seine Schritte aus Skizze/Extrudieren und „Gewinde an Fläche“. In der <b>Elemente</b>-Liste stehen sie unter dem Teil (z. B. „✏ Skizze 1 · Abziehen 12 mm“, „🔩 Gewinde M10×1,5 innen“). <b>Doppelklick oder ✎</b> öffnet die Skizze wieder auf derselben Fläche bzw. das Gewinde-Fenster mit den alten Werten – ändern, bestätigen, und das Teil <b>rechnet sich mit allen späteren Schritten neu</b>: Wird aus dem Ø8-Loch ein Ø10-Loch, wandert das Gewinde mit. Das Auge blendet die Skizzenlinien im Modell ein. Wurde das Teil zwischendurch anders verändert (z. B. Rundung oder Textur), fragt V3D CAD vorher nach, weil diese Änderung beim Neuberechnen verloren ginge.'],
+  ]},
   { version:'1.18.159', date:'2026-10-10', spots:[{id:'gen-abc-1018159',sel:'#gen-dd-btn'}], changes:[
     ['🔤','<b>Generatoren von A bis Z.</b> Katalog und Galerie sind jetzt alphabetisch sortiert. Oben gibt es eine Buchstabenleiste: einen Buchstaben anklicken oder bei offener Liste einfach tippen, und die Liste springt dorthin.'],
     ['🦖','<b>Dinosaurier: Maul beweglich.</b> Der Unterkiefer ist ein eigenes Teil mit Scharnierstift und öffnet bis etwa 35°. Er wird kopfüber ohne Stützen gedruckt. Die Option „Maul beweglich“ ist standardmäßig an; bei sehr kleinen Köpfen schaltet sie sich automatisch ab und nennt die nötige Mindestlänge.'],
