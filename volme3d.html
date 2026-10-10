@@ -5683,7 +5683,9 @@ Patrick</textarea>
     <div class="g3foot">
       <button class="btn" onclick="_ggpReset()" style="margin-right:auto" title="Alle Einstellungen auf Anfang">↺ Zurücksetzen</button>
       <button class="btn" onclick="_ggpClose()">Schließen</button>
-      <button class="btn pri" onclick="_ggpExportSVG()">⬇ SVG für den Laser</button>
+      <button class="btn" onclick="_ggpExportSVG('vorne')" title="Nur die Vorderplatte(n) mit Spruch und Motiv-Fenster">⬇ Vorderseite</button>
+      <button class="btn" onclick="_ggpExportSVG('hinten')" title="Nur die Rückplatte(n) mit den Löchern">⬇ Rückseite</button>
+      <button class="btn pri" onclick="_ggpExportSVG('beide')" title="Vorder- und Rückplatte zusammen auf einem Blatt">⬇ Beide (SVG)</button>
     </div>
   </div>
 </div>
@@ -55361,9 +55363,13 @@ function _ggpLayout(p){
   return { W, H, front:{ cut:[outline, ...holes, ...cut], eng }, back:{ cut:[outline, ...holes], eng:backEng }, info };
 }
 // Platten aufs Blatt verteilen: Vorder- und Rückplatte je Garnitur nebeneinander
-function _ggpSheet(L, n, blatt){
+// teil: 'beide' (Vorder- + Rückplatte je Garnitur nebeneinander), 'vorne' oder 'hinten'
+function _ggpSheet(L, n, blatt, teil){
   const g = 4, items = [];
-  for (let i = 0; i < n; i++){ items.push(L.front, L.back); }
+  for (let i = 0; i < n; i++){
+    if (teil !== 'hinten') items.push(L.front);
+    if (teil !== 'vorne') items.push(L.back);
+  }
   let x = g, y = g, rowH = 0, SW = 0;
   const placed = [];
   for (const it of items){
@@ -55520,8 +55526,10 @@ function _ggpUnion(w, shapes){
   } catch (e) { console.warn('[ggp] Verschweißen fehlgeschlagen:', e.message || e); return null; }
   finally { for (const k of keep){ try { k.delete(); } catch (e) {} } }
 }
-async function _ggpBuildSVG(p){
-  const L = _ggpLayout(p), S = _ggpSheet(L, p.anzahl, p.blatt);
+const _GGP_TEIL = { beide:'Vorder- + Rückplatte', vorne:'Vorderplatte', hinten:'Rückplatte' };
+async function _ggpBuildSVG(p, teil){
+  teil = _GGP_TEIL[teil] ? teil : 'beide';
+  const L = _ggpLayout(p), S = _ggpSheet(L, p.anzahl, p.blatt, teil);
   let w = null; try { w = await _mfInit(); } catch (e) { console.warn('[ggp] Manifold nicht geladen — Gravur unverschweißt', e); }
   const engD = new Map();
   const engOf = pl => { if (!engD.has(pl)){ const u = _ggpUnion(w, pl.eng); engD.set(pl, u ? [_ggpD(u)] : pl.eng.map(_ggpD)); } return engD.get(pl); };
@@ -55536,7 +55544,7 @@ async function _ggpBuildSVG(p){
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" version="1.1"
      width="${SW}mm" height="${SH}mm" viewBox="0 0 ${SW} ${SH}">
-  <!-- V3D CAD Geldgeschenk-Platten „${esc(p.text1)}" ${p.B}x${p.H} mm, ${p.anzahl}x Vorder- + Rückplatte, Maße 1:1 in mm -->
+  <!-- V3D CAD Geldgeschenk-Platten „${esc(p.text1)}" ${p.B}x${p.H} mm, ${p.anzahl}x ${_GGP_TEIL[teil]}, Maße 1:1 in mm -->
   <!-- Ebene Gravieren (schwarz gefüllt) zuerst lasern, danach Schneiden (rote Haarlinie) -->
   <g id="gravieren" inkscape:label="Gravieren" inkscape:groupmode="layer" fill="#000000" fill-rule="nonzero" stroke="none">
 ${eng.join('\n')}
@@ -55547,12 +55555,14 @@ ${cut.join('\n')}
 </svg>
 `;
 }
-async function _ggpExportSVG(){
+async function _ggpExportSVG(teil){
+  teil = _GGP_TEIL[teil] ? teil : 'beide';
   let svg;
-  try { svg = await _ggpBuildSVG(_ggpP); } catch (e) { console.error('[ggp] SVG', e); notify('SVG-Export fehlgeschlagen', 'w'); return; }
+  try { svg = await _ggpBuildSVG(_ggpP, teil); } catch (e) { console.error('[ggp] SVG', e); notify('SVG-Export fehlgeschlagen', 'w'); return; }
   const nm = (_ggpP.text1 || 'geldgeschenk').toLowerCase().replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'geldgeschenk';
-  _downloadBlob(new Blob([svg], { type:'image/svg+xml' }), `${nm}_${_ggpP.B}x${_ggpP.H}_laser.svg`);
-  notify('SVG gespeichert – Gravur (schwarz) zuerst, dann Schneiden (rot)', 'ok');
+  _downloadBlob(new Blob([svg], { type:'image/svg+xml' }), `${nm}_${_ggpP.B}x${_ggpP.H}${{ beide:'', vorne:'_vorderseite', hinten:'_rueckseite' }[teil]}_laser.svg`);
+  const ohneGravur = teil === 'hinten' && !(_ggpP.rueck && _ggpP.rueck.trim());
+  notify(ohneGravur ? 'Rückseite gespeichert – nur Schneiden (rot)' : 'SVG gespeichert – Gravur (schwarz) zuerst, dann Schneiden (rot)', 'ok');
 }
 // ===== ENDE GELDGESCHENK-PLATTEN ==============================================
 
@@ -56650,8 +56660,11 @@ function _cncVorschau(){ _cncLauf(false); }
 function _cncExport(){ _cncLauf(true); }
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.146';
+const VOLME3D_VERSION = '1.18.147';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.147', date:'2026-10-10', changes:[
+    ['💶','<b>Geldgeschenk-Platten: Vorder- und Rückseite einzeln speichern.</b> Neue Knöpfe <b>⬇ Vorderseite</b> und <b>⬇ Rückseite</b> legen je eine eigene SVG an (z. B. für verschiedene Holzsorten oder Durchgänge), <b>⬇ Beide</b> wie bisher alles auf einem Blatt. Die Anzahl gilt jeweils für die gewählte Seite.'],
+  ]},
   { version:'1.18.146', date:'2026-10-10', changes:[
     ['📐','<b>Geldgeschenk-Platten: DIN-Formate und freie Maße.</b> Plattengröße als DIN A3, A4, A5, A6 (Postkarte), A7 oder DIN lang wählen, jeweils <b>quer oder hoch</b> – die Schrift wächst mit. Breite und Höhe lassen sich außerdem frei bis 450 mm <b>eintippen</b> (auch halbe Millimeter); passende Maße werden als DIN-Format erkannt.'],
   ]},

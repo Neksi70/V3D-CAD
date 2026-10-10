@@ -4,7 +4,7 @@
 //      Motiv-Ring berührt Text, Löcher oder das Band
 //   3. Weltkarte: genug Kontinente/Inseln, „ohne kleine Inseln" lässt weniger übrig
 //   4. Text mit Umlauten ergibt Formen, zu langer Text wird schmaler gesetzt
-//   5. SVG: Ebenen Gravieren/Schneiden, Gravur je Platte verschweißt (ein Pfad),
+//   5. SVG: Vorder-/Rückseite einzeln oder zusammen; Ebenen Gravieren/Schneiden, Gravur je Platte verschweißt (ein Pfad),
 //      Maße in mm, mehrere Garnituren bleiben in der Arbeitsfläche
 //   6. Dialog: Vorlage setzt Text + Motiv, DIN-Formate/Hochformat/freie Maße, keine Seitenfehler; Screenshot
 // Start: python3 volme3d_server.py 8766 --dev   →   node tests/geldgeschenk_test.mjs
@@ -152,6 +152,30 @@ await pg.evaluate(() => { _ggpSet('bind', 'schlitz'); _ggpSet('text2', 'Für Len
 await pg.waitForTimeout(300);
 await pg.locator('#ggp-canvas').screenshot({ path: '/tmp/ggp_schlitz.png' });
 await pg.evaluate(() => _ggpReset());
+// Einzel-Export Vorder-/Rückseite
+const ex = await pg.evaluate(async () => {
+  const cnt = async (p, teil) => {
+    const doc = new DOMParser().parseFromString(await _ggpBuildSVG(p, teil), 'image/svg+xml');
+    return { eng: doc.getElementById('gravieren').querySelectorAll('path').length, cut: doc.getElementById('schneiden').querySelectorAll('path').length,
+      w: parseFloat(doc.documentElement.getAttribute('width')) };
+  };
+  const p = Object.assign({}, _GGP_DEF, { anzahl: 2 }), L = _ggpLayout(p);
+  return { vorne: await cnt(p, 'vorne'), hinten: await cnt(p, 'hinten'), beide: await cnt(p, 'beide'),
+    hintenGrav: await cnt(Object.assign({}, p, { rueck: 'Gute Reise!' }), 'hinten'), nF: L.front.cut.length, nB: L.back.cut.length };
+});
+console.log('\nEinzel-Export');
+ok('Vorderseite: nur Vorderplatten (2× Gravur + Schnitte)', ex.vorne.eng === 2 && ex.vorne.cut === 2 * ex.nF, ex.vorne);
+ok('Rückseite: nur Rückplatten, ohne Gravur', ex.hinten.eng === 0 && ex.hinten.cut === 2 * ex.nB, ex.hinten);
+ok('Rückseite mit Gravurtext graviert', ex.hintenGrav.eng === 2, ex.hintenGrav);
+ok('Beide = Summe', ex.beide.cut === ex.vorne.cut + ex.hinten.cut && ex.beide.eng === ex.vorne.eng + ex.hinten.eng, ex.beide);
+await pg.evaluate(() => { _ggpReset(); _ggpOpen(); });
+const names = [];
+for (const lbl of ['Vorderseite', 'Rückseite', 'Beide']){
+  const [dl] = await Promise.all([pg.waitForEvent('download', { timeout: 15000 }), pg.click(`#ggp-modal .g3foot button:has-text("${lbl}")`)]);
+  names.push(dl.suggestedFilename());
+}
+ok('Knöpfe laden drei Dateien mit passendem Namen', names[0] === 'reisekasse_170x100_vorderseite_laser.svg' && names[1] === 'reisekasse_170x100_rueckseite_laser.svg' && names[2] === 'reisekasse_170x100_laser.svg', names);
+
 // Formate
 const fm = await pg.evaluate(() => {
   const r = {};
