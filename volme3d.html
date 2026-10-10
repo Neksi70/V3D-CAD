@@ -63286,6 +63286,92 @@ function _fpScreenBounds(o) {
   return { minX, maxX, minY, maxY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
 }
 
+// ─── „Seiten"-Regler mit Raststufen ──────────────────────────────────────
+// Linear lag 3…128 auf ~200 px Spur: 1,6 px pro Ecke, Dreieck → rund mit einem
+// Zucken, das Quadrat kaum zu treffen (Ralf). Die Spur läuft intern 0…1000 und ist
+// in Bänder geteilt: kleine Eckenzahlen (3–6) dreifach, 7/8 doppelt breit, darüber
+// nur runde Stufen (10, 12, 16, 20, 24, 32, 48, 64 …). Zwischenwerte (9, 11 …)
+// per Zahlenfeld oder Pfeiltasten (±1). Gespeichert wird weiter die Eckenzahl.
+const _SEG_STOPS = [3, 4, 5, 6, 7, 8, 10, 12, 16, 20, 24, 32, 48, 64, 96, 128, 160, 192, 256];
+function _segBands(mn, mx) {
+  const vs = [mn, ..._SEG_STOPS.filter(v => v > mn && v < mx), mx].filter((v, i, a) => a.indexOf(v) === i);
+  const ws = vs.map(v => v <= 6 ? 3 : v <= 8 ? 2 : 1);
+  const tot = ws.reduce((a, b) => a + b, 0);
+  let acc = 0;
+  return vs.map((v, i) => { const a = acc; acc += ws[i]; return { v, a: a / tot * 1000, b: acc / tot * 1000 }; });
+}
+function _segRange(sl) { return [+sl.dataset.segMin, +sl.dataset.segMax]; }
+function _segValFromPos(sl) {
+  const bands = _segBands(..._segRange(sl)), p = +sl.value;
+  for (const bd of bands) if (p < bd.b) return bd.v;
+  return bands[bands.length - 1].v;
+}
+function _segPosFromVal(sl, v) {
+  const [mn, mx] = _segRange(sl);
+  v = +v; if (!isFinite(v)) return sl.value;
+  if (v <= mn) return 0;
+  if (v >= mx) return 1000;
+  const bands = _segBands(mn, mx), c = bd => (bd.a + bd.b) / 2;
+  for (let i = 0; i < bands.length - 1; i++) {
+    const A = bands[i], B = bands[i + 1];
+    if (v === A.v) return Math.round(c(A));
+    if (v < B.v) return Math.round(c(A) + (c(B) - c(A)) * (v - A.v) / (B.v - A.v));   // Zwischenwert
+  }
+  return Math.round(c(bands[bands.length - 1]));
+}
+let _segFromSl = false;   // Zahlenfeld-oninput soll den Daumen beim Ziehen nicht zurückschnappen lassen
+// Feld → Spur (oninput des Zahlenfelds)
+function _segSyncSl(id) {
+  if (_segFromSl) return;
+  const f = document.getElementById(id), sl = document.getElementById(id + '-sl');
+  if (f && sl) { const v = parseFloat(f.value); if (isFinite(v)) sl.value = _segPosFromVal(sl, v); }
+}
+// Wert ins Feld schreiben und dessen oninput (= Original-Handler) auslösen
+function _segApply(id, v) {
+  const f = document.getElementById(id); if (!f) return;
+  _varUnbind(id);
+  f.value = v;
+  _segFromSl = true;
+  try { f.dispatchEvent(new Event('input')); } finally { _segFromSl = false; }
+}
+// Spur gezogen/geklickt: nur bei echtem Stufenwechsel neu bauen
+function _segSlInput(sl, id) {
+  const v = _segValFromPos(sl), f = document.getElementById(id);
+  if (f && String(f.value) === String(v)) return;   // Plateau: kein Neubau
+  _segApply(id, v);
+  // Breite Bänder = längere Pausen ohne Wertwechsel → der 400-ms-Undo-Takt liefe
+  // ab und ein Ziehen zerfiele in mehrere Undo-Schritte. Solange die Maustaste
+  // gehalten wird, bleibt die Geste offen (Ende: pointerup unten).
+  if (_fpDragging && _undoDebTimer !== null) {
+    clearTimeout(_undoDebTimer);
+    _undoDebTimer = setTimeout(() => { _undoDebTimer = null; }, 600000);
+    _segGesture = true;
+  }
+}
+let _segGesture = false;
+document.addEventListener('pointerup', () => {
+  if (!_segGesture) return;
+  _segGesture = false;
+  if (_undoDebTimer !== null) { clearTimeout(_undoDebTimer); _undoDebTimer = setTimeout(() => { _undoDebTimer = null; }, 400); }
+});
+// Pfeiltasten ±1 (genau), Bild↑/↓ = nächste Raststufe, Pos1/Ende = Min/Max
+function _segSlKey(e, sl, id) {
+  const [mn, mx] = _segRange(sl), f = document.getElementById(id);
+  const cur = Math.round(parseFloat(f && f.value)) || _segValFromPos(sl);
+  let nv = null;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowUp') nv = cur + 1;
+  else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') nv = cur - 1;
+  else if (e.key === 'PageUp') nv = (_segBands(mn, mx).find(b => b.v > cur) || { v: mx }).v;
+  else if (e.key === 'PageDown') nv = ([..._segBands(mn, mx)].reverse().find(b => b.v < cur) || { v: mn }).v;
+  else if (e.key === 'Home') nv = mn;
+  else if (e.key === 'End') nv = mx;
+  if (nv == null) return;
+  e.preventDefault();
+  nv = Math.max(mn, Math.min(mx, nv));
+  sl.value = _segPosFromVal(sl, nv);
+  if (nv !== cur) _segApply(id, nv);
+}
+
 // Build property rows HTML for the given shape
 function _fpBuildRows(type, o) {
   const box = getMeshBox(o);
@@ -63313,6 +63399,17 @@ function _fpBuildRows(type, o) {
     // die Formel (_varCommitInput), reine Zahlen wirken wie bisher live (oninput).
     const bound = o.userData.varExprs && o.userData.varExprs[id];
     const shown = bound != null ? bound : val;
+    // Ganzzahl-„Seiten"-Regler: Raststufen-Spur statt linear (siehe _segBands)
+    if (lbl === 'Seiten' && u === '' && st === 1 && mx > mn) {
+      const pos = _segPosFromVal({ dataset: { segMin: mn, segMax: mx }, value: 0 }, val);
+      return `<div class="fp-row">` +
+        `<div class="fp-row-top">` +
+          `<span class="fp-lbl">${lbl}</span>` +
+          `<div class="fp-val-box"><input class="fp-inp" id="${id}" type="text" inputmode="decimal" value="${shown}" oninput="_segSyncSl('${id}');${onchange}" onchange="_varCommitInput(this,'${id}')"><span class="fp-unit">${u}</span></div>` +
+        `</div>` +
+        `<input class="fp-slider" id="${id}-sl" type="range" min="0" max="1000" step="1" value="${pos}" data-seg-min="${mn}" data-seg-max="${mx}" title="Raststufen 3, 4, 5, 6, 8, 10, 12 … — Pfeiltasten ±1, Zwischenwerte im Zahlenfeld" oninput="_segSlInput(this,'${id}')" onkeydown="_segSlKey(event,this,'${id}')">` +
+      `</div>`;
+    }
     return `<div class="fp-row">` +
       `<div class="fp-row-top">` +
         `<span class="fp-lbl">${lbl}</span>` +
@@ -63888,7 +63985,8 @@ function _fpSyncValues() {
     const bound = o.userData.varExprs && o.userData.varExprs[id] != null;
     if (el && document.activeElement !== el && !bound) el.value = v;
     const sl = document.getElementById(id + '-sl');
-    if (sl && document.activeElement !== sl) sl.value = v;
+    if (sl && sl.dataset.segMin != null) sl.value = _segPosFromVal(sl, v);   // Seiten-Raststufen: Wert → Spurposition
+    else if (sl && document.activeElement !== sl) sl.value = v;
   };
   const w = r2(sz.x*10), h = r2(sz.y*10), d = r2(sz.z*10);
   // Rotationskörper: Ø/Höhe entlang der eigenen Achsen (siehe _fpBuildRows)
