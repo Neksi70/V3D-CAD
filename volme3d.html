@@ -16854,9 +16854,15 @@ function updateTFInputs() {
     psE.style.display = isEnc ? 'block' : 'none';
     if (isEnc) _encEditSyncUI(o);
   }
-  const _box = getMeshBox(o);
-  const _sz  = _box.getSize(new THREE.Vector3());
-  const w = r2(_sz.x * 10), h = r2(_sz.y * 10), d = r2(_sz.z * 10);
+  const _dm = _dimDispMM(o);
+  const w = r2(_dm.w), h = r2(_dm.h), d = r2(_dm.d);
+  { // Relief (Text/SVG): Regler wirken in den eigenen Achsen → Beschriftung ohne Weltachse
+    const rel = _reliefLocal(o);
+    const lab = (id, a, b) => { const el = document.getElementById(id); const l = el && el.parentElement.querySelector('label'); if (l) l.textContent = rel ? b : a; };
+    lab('sl-w', 'Breite (X)', 'Breite');
+    lab('sl-d', 'Tiefe (Y)', 'Tiefe');
+    lab('sl-h', 'Höhe (Z)', o.userData.isHole ? 'Höhe (Dicke)' : 'Höhe (erhaben)');
+  }
   setSliderVal('sl-w','dn-w', w);
   setSliderVal('sl-h','dn-h', h);
   setSliderVal('sl-d','dn-d', d);
@@ -17004,8 +17010,111 @@ function _dimSetWorldExtent(o, wk, val, curMM, measure) {
   return null;
 }
 
+// ── Flache Reliefs (Text / ebenes SVG) ──────────────────────────────────────
+// Ein Schriftzug hat EIGENE Achsen: lokal X = Laufrichtung, lokal Z = Zeilenhöhe
+// (Text-Oben = lokal −Z), lokal Y = Extrusion/Erhabenheit (nach außen). Steht er
+// an einer senkrechten Wand, zeigt lokal Y auf eine Welt-WAAGRECHTE — „Höhe Z"
+// verstellte dann die Zeilenhöhe und „Tiefe Y" die Erhabenheit, und das auch
+// noch aus der Mitte heraus (halb in die Wand). Ralf 10.10.26: „Höhe sollte immer
+// die Erhabenheit des Teils sein." Darum wirken die Regler hier immer lokal.
+// Gewickelte/angeschmiegte Motive sind gebogen — dort gilt weiter die Welt-Box.
+function _reliefLocal(o) {
+  if (!o || !o.isMesh || !o.geometry || !o.geometry.attributes.position) return false;
+  const ud = o.userData || {};
+  if (ud.type !== 'svg' && ud.shapeType !== 'svg') return false;
+  if (ud._svgWrap || ud._svgSchmieg) return false;
+  return true;
+}
+// Wandpunkt (lokal) eines an eine Fläche gehefteten Reliefs, sonst null
+function _reliefWall(o) {
+  const ud = o.userData, sl = ud._snapSurfaceLocal;
+  if (!sl || typeof sl.y !== 'number' || !ud._snapNormal) return null;
+  let t = ud._snapSolid;
+  while (t && !objects.includes(t)) t = t.parent;
+  if (!t) return null;
+  return new THREE.Vector3(sl.x, sl.y, sl.z);
+}
+// Maße entlang der eigenen Achsen (mm). h = Überstand über die Trägerfläche,
+// wenn das Relief (Körper) an einer Fläche sitzt, sonst die ganze Dicke.
+function _reliefInfo(o) {
+  const g = o.geometry;
+  if (!g.boundingBox) g.computeBoundingBox();
+  const bb = g.boundingBox, s = o.scale;
+  const sy = s.y || 1e-9;
+  const base = sy >= 0 ? bb.min.y : bb.max.y;          // Unterseite (liegt auf/in der Fläche)
+  const top  = sy >= 0 ? bb.max.y : bb.min.y;          // Oberseite (zeigt nach außen)
+  const tGeo = bb.max.y - bb.min.y;
+  const w = (bb.max.x - bb.min.x) * Math.abs(s.x) * 10;
+  const d = (bb.max.z - bb.min.z) * Math.abs(s.z) * 10;
+  const t = tGeo * Math.abs(sy) * 10;
+  const wall = _reliefWall(o);
+  let inMM = 0, outMM = t, attached = false;
+  if (wall && !o.userData.isHole) {
+    const dir = Math.sign(top - base) || 1;             // lokale Richtung nach außen
+    const inG = (wall.y - base) * dir, outG = (top - wall.y) * dir;
+    if (outG * Math.abs(sy) * 10 > 0.01 && inG > -1e-9) {
+      attached = true;
+      inMM = Math.max(0, inG) * Math.abs(sy) * 10;
+      outMM = Math.min(t, outG * Math.abs(sy) * 10);
+    }
+  }
+  return { bb, base, top, w, d, t, h: attached ? outMM : t, inMM, attached, wall };
+}
+// Anzeige-Maße für Regler/Panel: Relief lokal, sonst Welt-Box (alles in mm)
+function _dimDispMM(o) {
+  if (_reliefLocal(o)) { const r = _reliefInfo(o); return { w: r.w, h: r.h, d: r.d }; }
+  const sz = getMeshBox(o).getSize(new THREE.Vector3());
+  return { w: sz.x * 10, h: sz.y * 10, d: sz.z * 10 };
+}
+function _reliefApplyDim(o, axis, val) {
+  const v = parseFloat(val); if (!(v > 0)) return;
+  const ud = o.userData;
+  const r = _reliefInfo(o);
+  if (axis === 'sh' && r.t < 0.05) {
+    // Flach eingefügtes SVG: erst echte Tiefe geben (siehe _svgGiveDepth)
+    if (ud._svgPathData && _svgGiveDepth(o, v)) notify('Flaches SVG bekommt Tiefe — jetzt ' + r2(v) + ' mm dick', 'ok');
+    else notify('Dieses Teil hat keine Dicke — Höhe lässt sich hier nicht ziehen', 'w');
+    _dimChangePost(o);
+    return;
+  }
+  o.updateMatrixWorld(true);
+  const bb = r.bb;
+  const P = new THREE.Vector3((bb.min.x + bb.max.x) / 2, r.base, (bb.min.z + bb.max.z) / 2);
+  const wallW = r.wall ? o.localToWorld(r.wall.clone()) : null;
+  if (axis === 'sh') {
+    // Unterseite bleibt liegen, das Relief wächst aus der Fläche heraus. An einer
+    // Wand bleibt der eingebettete Teil gleich, nur der Überstand ändert sich.
+    const neuT = r.attached ? r.inMM + v : v;
+    if (ud.isHole && r.wall) P.y = r.wall.y;            // Gravur-Körper: Wandebene halten
+    o.scale.y *= neuT / (r.t || 0.1);
+  } else {
+    const k = axis === 'sw' ? 'x' : 'z';
+    const cur = k === 'x' ? r.w : r.d;
+    if (!(cur > 0.05)) { notify('Dieses Teil hat in der Richtung keine Ausdehnung', 'w'); _dimChangePost(o); return; }
+    const f = v / cur;
+    // Proportional verbindet Breite und Tiefe (Schriftgröße) — die Erhabenheit bleibt
+    if (scaleLocked) { o.scale.x *= f; o.scale.z *= f; } else o.scale[k] *= f;
+    if (!scaleFromCenter) {
+      // Ohne „Vom Zentrum": Textanfang (links) bzw. Grundlinie (unten) bleibt stehen
+      if (k === 'x' || scaleLocked) P.x = o.scale.x >= 0 ? bb.min.x : bb.max.x;
+      if (k === 'z' || scaleLocked) P.z = o.scale.z >= 0 ? bb.max.z : bb.min.z;
+    }
+  }
+  const W0 = P.clone().applyMatrix4(o.matrixWorld);
+  o.updateMatrixWorld(true);
+  const W1 = P.clone().applyMatrix4(o.matrixWorld);
+  o.position.add(W0.sub(W1));
+  o.updateMatrixWorld(true);
+  // Trägerfläche liegt in der Welt fest → Wandpunkt im neuen lokalen Rahmen nachführen
+  if (wallW) ud._snapSurfaceLocal = o.worldToLocal(wallW);
+  { const b0 = getMeshBox(o); if (b0.min.y < -1e-4) { o.position.y -= b0.min.y; o.updateMatrixWorld(true); } }
+  _updateObjEdgeLines(o);
+  _dimChangePost(o);
+}
+
 function applyDimChange(axis, val) {
   const o = getFirst(); if (!o) return;
+  if (axis !== 'uniform' && _reliefLocal(o)) { _reliefApplyDim(o, axis, val); return; }
   // Flaches SVG + Höhe → extrudieren statt skalieren (siehe _svgGiveDepth)
   if (axis === 'sh' && o.userData.type === 'svg' && o.userData._svgPathData) {
     const hMM = getMeshBox(o).getSize(new THREE.Vector3()).y * 10;
@@ -17100,11 +17209,11 @@ function applyDimChange(axis, val) {
 // Nachlauf jeder Größenänderung: Slider/Transform-Felder aus der echten BBox
 // nachziehen, Handles neu setzen, Kanten-Modus neu aufbauen.
 function _dimChangePost(o) {
-  // Always sync all sliders from actual bbox
-  const bx = getMeshBox(o); const bsz = bx.getSize(new THREE.Vector3());
-  setSliderVal('sl-w','dn-w', r2(bsz.x*10));
-  setSliderVal('sl-h','dn-h', r2(bsz.y*10));
-  setSliderVal('sl-d','dn-d', r2(bsz.z*10));
+  // Always sync all sliders from actual bbox (Text/SVG-Relief: eigene Achsen)
+  const dm = _dimDispMM(o);
+  setSliderVal('sl-w','dn-w', r2(dm.w));
+  setSliderVal('sl-h','dn-h', r2(dm.h));
+  setSliderVal('sl-d','dn-d', r2(dm.d));
   updateTFInputs();
   _svgDirty = true;
   _doRepositionDimHandles();
@@ -17210,6 +17319,9 @@ function _handleAnchor(o, axis) {
   }
   const b2 = d.measure(o);
   if (b2.min.y < -1e-4) o.position.y -= b2.min.y;          // nie unter die Platte
+  // Relief an einer Fläche: die Wand bleibt in der Welt stehen → Wandpunkt im neuen
+  // lokalen Rahmen nachführen, sonst stimmt „Höhe (erhaben)" danach nicht mehr
+  if (d.wallW) { o.updateMatrixWorld(true); o.userData._snapSurfaceLocal = o.worldToLocal(d.wallW.clone()); }
 }
 
 function clearDimHandles() {
@@ -17877,6 +17989,8 @@ function updateDimHandles() {
         // Ausgangslage: jeder Zug rechnet von hier aus neu (kein Aufschaukeln)
         startPos: curO.position.clone(), startScale: curO.scale.clone(), startBox: cb.clone(), measure,
         startPosY: curO.position.y, tip, el,
+        // Text/SVG an einer Fläche: Wandpunkt in Weltkoordinaten merken (siehe _handleAnchor)
+        wallW: (_reliefLocal(curO) && _reliefWall(curO)) ? curO.localToWorld(_reliefWall(curO)) : null,
       };
       // Highlight active handle
       el.style.background = '#F97316';
@@ -64359,6 +64473,21 @@ function _fpBuildRows(type, o) {
       const svgBtns=
         (nShapes>1 ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_svgExplode()" title="Jede geschlossene Form wird ein eigenes Objekt — einzeln verschieben, färben, löschen">⧉ Zerlegen (${nShapes} Teile)</button></div>` : '') +
         (o.userData._svgPathData ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_svgEditAsSketch()" title="Konturen in den Skizzen-Editor übernehmen — beschneiden, teilen, ändern und neu extrudieren">✎ Als Skizze bearbeiten</button></div>` : '');
+      // Text/SVG-Relief: Maße entlang der EIGENEN Achsen, egal wie das Motiv im Raum
+      // liegt (an einer senkrechten Wand vertauschten die Welt-Achsen Zeilenhöhe und
+      // Erhabenheit — Ralf 10.10.26). Höhe = Überstand über die Trägerfläche.
+      if (_reliefLocal(o)) {
+        const rd = _dimDispMM(o), txt = !!o.userData.textEdit;
+        const tip = (t, s) => `<span title="${s}">${t}</span>`;
+        return row(tip('Breite', txt ? 'Länge des Schriftzugs (Laufrichtung)' : 'Breite des Motivs'), 'fpw', r2(rd.w), "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
+               propLock().replace('Proportional (X/Y)', 'Proportional (Breite/Tiefe)') +
+               row(tip('Tiefe', txt ? 'Zeilenhöhe der Schrift' : 'Höhe des Motivs in seiner Fläche'), 'fpd', r2(rd.d), "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
+               row(o.userData.isHole ? tip('Höhe (Dicke)', 'Dicke des Gravur-Körpers')
+                                     : tip('Höhe (erhaben)', 'Wie weit das Motiv aus seiner Fläche herausragt — wächst immer aus der Fläche heraus, egal wie es gekippt ist'),
+                   'fph', r2(rd.h), "fpApplyDim('h',this.value)", 'mm', 0.1, 500) +
+               '<div class="fp-sep"></div>' + svgBtns + edgeBtn + shellBtn + hollowLidBtn + roundBtn + bendBtn + moldBtn + legoBtn + sprBtn + snpBtn +
+               _dispRows();
+      }
       return row('Breite X', 'fpw', w, "fpApplyDim('w',this.value)", 'mm', 0.1, 500) +
              propLock() +
              row('Tiefe Y',  'fpd', d, "fpApplyDim('d',this.value)", 'mm', 0.1, 500) +
@@ -64394,7 +64523,9 @@ function _fpSyncValues() {
     if (sl && sl.dataset.segMin != null) sl.value = _segPosFromVal(sl, v);   // Seiten-Raststufen: Wert → Spurposition
     else if (sl && document.activeElement !== sl) sl.value = v;
   };
-  const w = r2(sz.x*10), h = r2(sz.y*10), d = r2(sz.z*10);
+  // Text/SVG-Relief: eigene Achsen, Höhe = Erhabenheit (siehe _reliefInfo)
+  const _rel = _reliefLocal(o) ? _dimDispMM(o) : null;
+  const w = r2(_rel ? _rel.w : sz.x*10), h = r2(_rel ? _rel.h : sz.y*10), d = r2(_rel ? _rel.d : sz.z*10);
   // Rotationskörper: Ø/Höhe entlang der eigenen Achsen (siehe _fpBuildRows)
   const lsz = _fpIsRot(o) ? _fpLocalSize(o) : sz;
   const lh  = r2(lsz.y*10);
@@ -64947,7 +65078,8 @@ function updateFP() {
   // Rebuild property rows only if shape type changed. Objekt-ID im Key: Journal-
   // Button und Variablen-Formeln sind pro Objekt — Wechsel zwischen zwei Objekten
   // gleichen Typs muss die Zeilen neu bauen, sonst zeigt das Panel stale Werte.
-  const typeKey = type + '#' + (o.userData.id || 0);
+  // Relief-Zustand mit im Schlüssel: Beschriftung „Höhe (erhaben)“/„(Dicke)“ hängt daran
+  const typeKey = type + '#' + (o.userData.id || 0) + (_reliefLocal(o) ? (o.userData.isHole ? '#rh' : '#r') : '');
   if (_fpCurType !== typeKey) {
     _fpCurType = typeKey;
     let rows = _fpBuildRows(type, o);
