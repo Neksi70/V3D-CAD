@@ -238,6 +238,9 @@ ALLOW = {
     '/.well-known/assetlinks.json':       ('assetlinks.json', 'application/json'),
     # Druckerliste fuer die Druck-Vorschau (aus den V3D-Slicer-Profilen, tools/bau_druckerliste.py)
     '/druckerliste.json':                 ('druckerliste.json', 'application/json; charset=utf-8'),
+    # Hilfe-Inhalte (Seite „📖 Hilfe" laedt sie erst beim Oeffnen) + fertiges PDF fuer Kurse
+    '/hilfe-daten.js':                    ('hilfe-daten.js', 'text/javascript; charset=utf-8'),
+    '/V3D-CAD-Hilfe.pdf':                 ('V3D-CAD-Hilfe.pdf', 'application/pdf'),
     '/favicon.svg':                       ('favicon.svg', 'image/svg+xml'),
     '/logo.svg':                          ('logo.svg', 'image/svg+xml'),
     '/volme3d-occt.js':                   ('volme3d-occt.js', 'text/javascript; charset=utf-8'),
