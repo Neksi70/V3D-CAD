@@ -51900,6 +51900,124 @@ _kgReg('haus', {
   },
 });
 
+// ─── Brücken ────────────────────────────────────────────────────────────────
+// Fahrbahn folgt einer Höhenkurve h(x) (Oberkante). Buckel: beide Enden auf
+// Schienenhöhe, Mitte hoch. Auffahrt: von Schienenhöhe auf Hochbahn-Höhe (Brio: +64 mm).
+// Hochbahn: konstant hoch. Fachwerk: flach auf dem Boden, Fachwerk-Wände seitlich.
+// Unterbau = Seitenprofil (gleiche Polylinie wie die Fahrbahn-Unterkante → Farbteile
+// berühren sich exakt), Bögen als Spitzbögen (Kreis bis 45°, dann 45°-Gerade) → druckbar.
+function _kgBrueckenBau(H, p){
+  const m = { ..._KG_WELT, spiel: p.spiel || 0.7 };
+  const bahn = p.fahrweg !== 'strasse', L = Math.max(54, p.laenge), hS = m.schH;
+  const B = bahn ? m.schB : Math.max(30, p.breiteS), dT = bahn ? hS : 6;          // Fahrbahn-Dicke
+  const hMax = Math.max(dT + 20, p.hoehe);
+  const typ = p.vorlage;
+  const hF = x => {
+    const t = Math.max(0, Math.min(1, x / L));
+    if (typ === 'buckel') return dT + (hMax - dT) * (1 - Math.cos(2 * Math.PI * t)) / 2;
+    if (typ === 'auffahrt') return dT + (hMax - dT) * t * t * (3 - 2 * t);
+    if (typ === 'hoch') return hMax;
+    return dT;                                                                      // fachwerk
+  };
+  const n = H.fein ? 48 : 24, xs = Array.from({ length: n + 1 }, (_, i) => L * i / n);
+  const oben = xs.map(x => [x, hF(x)]), unten = xs.map(x => [x, hF(x) - dT]);
+  const band = (o, u) => o.concat(u.slice().reverse());
+  let deck = H.extXZ(band(oben, unten), -B / 2, B / 2);
+  const deko = [];
+  if (bahn) {
+    // Rillen entlang der Höhenkurve, durch die Stirnseiten
+    const ro = oben.map(([x, z]) => [x, z + 1]), ru = oben.map(([x, z]) => [x, z - m.rilleT]);
+    ro[0][0] = ru[0][0] = -2; ro[n][0] = ru[n][0] = L + 2;
+    for (const sg of [1, -1]) deck = H.sub(deck, H.extXZ(band(ro, ru), sg * m.rilleA / 2 - m.rilleB / 2, sg * m.rilleA / 2 + m.rilleB / 2));
+    // Verbinder an den Enden (die Enden sind waagerecht)
+    const ends = [{ p: [0, 0], dir: 180, typ: (p.enden || 'mw')[0], z: hF(0) }, { p: [L, 0], dir: 0, typ: (p.enden || 'mw')[1], z: hF(L) }];
+    for (const e of ends) {
+      const v = _kgVerbinder(H, e.p, e.dir, m, e.typ === 'w');
+      const k = H.U(v.map(lp => H.ext(lp, e.z - dT - (e.typ === 'w' ? 1 : 0), e.z + (e.typ === 'w' ? 1 : 0))));
+      if (e.typ === 'w') deck = H.sub(deck, k); else deck = H.U([deck, k]);
+    }
+  } else {
+    // Straße: Bordstein + Geländer an beiden Seiten
+    for (const sg of [1, -1]) deko.push(H.extXZ(band(oben.map(([x, z]) => [x, z + 7]), oben.map(([x, z]) => [x, z - 0.01])), sg > 0 ? B / 2 - 2.4 : -B / 2, sg > 0 ? B / 2 : -B / 2 + 2.4));
+  }
+  // Unterbau: Seitenprofil von 0 bis Fahrbahn-Unterkante, mit Spitzbögen
+  let unter = null;
+  if (typ !== 'fachwerk') {
+    const prof = [[0, 0], [L, 0], ...unten.slice().reverse()].filter((q, i, a) => { const v = a[(i + a.length - 1) % a.length]; return Math.hypot(q[0] - v[0], q[1] - v[1]) > 0.05; });
+    unter = H.extXZ(prof, -B / 2, B / 2);
+    const nB = Math.max(1, Math.round(L / 60)), pw = Math.max(8, L * 0.05), w = (L - (nB + 1) * pw) / nB;
+    const boegen = [];
+    for (let i = 0; i < nB; i++) {
+      const xc = pw + w / 2 + i * (w + pw);
+      let hb = Infinity; for (let j = 0; j <= 16; j++) hb = Math.min(hb, hF(xc - w / 2 + w * j / 16) - dT);
+      const zTop = hb - 5;
+      const r = Math.min(w / 2, zTop / Math.SQRT2);                              // Scheitel = Kämpfer + r·√2
+      if (r < 6 || zTop < 12) continue;
+      const zSp = Math.max(0, zTop - r * Math.SQRT2);
+      const pts = [[xc - r, -1], [xc - r, zSp]];
+      for (let k = 0; k <= 8; k++) { const a = Math.PI - k / 8 * Math.PI / 4; pts.push([xc + r * Math.cos(a), zSp + r * Math.sin(a)]); }
+      pts.push([xc, zSp + r * Math.SQRT2]);
+      for (let k = 8; k >= 0; k--) { const a = k / 8 * Math.PI / 4; pts.push([xc + r * Math.cos(a), zSp + r * Math.sin(a)]); }
+      pts.push([xc + r, zSp], [xc + r, -1]);
+      boegen.push(H.extXZ(pts, -B, B));
+    }
+    if (boegen.length) unter = H.sub(unter, H.U(boegen));
+  } else {
+    // Fachwerk: zwei Wände neben der Fahrbahn, Knoten alle ~hT, Diagonalen 45°, Portal an den Enden
+    const hT = Math.max(30, p.hoehe * 0.6), x0 = bahn ? 20 : 4, x1 = L - (bahn ? 20 : 4), dW = 3;
+    const nP = Math.max(2, Math.round((x1 - x0) / (hT - dT - 4))), pL = (x1 - x0) / nP;   // Feld ≈ Höhe → Diagonalen ≈ 45°
+    const stab = (xa, za, xb, zb, y) => H.hull([H.box(xa - 1.2, xa + 1.2, y - dW / 2, y + dW / 2, za - 1.2, za + 1.2), H.box(xb - 1.2, xb + 1.2, y - dW / 2, y + dW / 2, zb - 1.2, zb + 1.2)]);
+    for (const sg of [1, -1]) {
+      const y = sg * (B / 2 + dW / 2);
+      deko.push(H.box(x0 - 1.2, x1 + 1.2, y - dW / 2, y + dW / 2, 0, dT + 2));      // Untergurt
+      deko.push(H.box(x0 - 1.2, x1 + 1.2, y - dW / 2, y + dW / 2, hT - 2.4, hT));   // Obergurt
+      for (let k = 0; k <= nP; k++) deko.push(H.box(x0 + k * pL - 1.2, x0 + k * pL + 1.2, y - dW / 2, y + dW / 2, 0, hT));
+      for (let k = 0; k < nP; k++) {
+        const xa = x0 + k * pL, xb = xa + pL;
+        deko.push(k < nP / 2 ? stab(xa, hT - 1.2, xb, dT + 1, y) : stab(xa, dT + 1, xb, hT - 1.2, y));
+      }
+    }
+    for (const xx of [x0, x1]) deko.push(H.box(xx - 1.2, xx + 1.2, -B / 2 - dW, B / 2 + dW, hT - 2.4, hT));   // Portal (Brücke quer)
+  }
+  const teile = [];
+  if (deko.length) teile.push({ mf: H.U(deko), hex: p.farbe3, name: bahn ? 'Fachwerk' : 'Geländer' });
+  teile.push({ mf: deck, hex: bahn ? p.farbe : '#4a4f55', name: bahn ? 'Gleis' : 'Fahrbahn' });
+  if (unter) teile.push({ mf: unter, hex: p.farbe2, name: 'Pfeiler' });
+  const hinweise = [];
+  if (typ === 'auffahrt' && bahn && Math.atan((hMax - dT) * 1.5 / L) > 0.45) hinweise.push('Sehr steil – Züge rutschen zurück. Länger wählen.');
+  return { teile, hinweise };
+}
+
+_kgReg('bruecke', {
+  icon: '🌉', name: 'Brücke', thema: 'Spielwelt & Kinder',
+  desc: 'Buckelbrücke, Hochbahn mit Auffahrt, Fachwerkbrücke – für Holzeisenbahn oder Straße',
+  vorlagen: {
+    buckel:   { name: 'Buckelbrücke', icon: '🌉', tip: 'Beide Enden auf Bodenhöhe, in der Mitte hoch – mit Bögen darunter', p: { laenge: 216, hoehe: 60 } },
+    auffahrt: { name: 'Auffahrt', icon: '📈', tip: 'Von Bodenhöhe auf Hochbahn-Höhe (wie die Brio-Auffahrt: +64 mm)', p: { laenge: 216, hoehe: 76 } },
+    hoch:     { name: 'Hochbahn', icon: '🏛️', tip: 'Gerades Stück in Hochbahn-Höhe auf Bögen (zwischen zwei Auffahrten)', p: { laenge: 144, hoehe: 76 } },
+    fachwerk: { name: 'Fachwerk', icon: '🏗️', tip: 'Flache Brücke mit Fachwerk-Wänden – z. B. über einen gemalten Fluss', p: { laenge: 144, hoehe: 60 } },
+  },
+  params: [
+    { sec: 'Brücke' },
+    { k: 'fahrweg', t: 'wahl', l: 'Für', o: [['bahn', 'Holzeisenbahn', 'Oben ein Gleis mit Rillen und Zapfen'], ['strasse', 'Straße', 'Fahrbahn mit Geländer für die Autos']], v: 'bahn' },
+    { k: 'laenge', t: 'range', l: 'Länge', min: 54, max: 216, step: 18, u: 'mm', v: 216, tip: 'Bis 216 mm (Brio-Schiene D) – mit den Zapfen passt das noch aufs 256er-Bett' },
+    { k: 'hoehe', t: 'range', l: 'Höhe', min: 30, max: 120, step: 2, u: 'mm', v: 60, tip: 'Oberkante der Fahrbahn (Hochbahn wie Brio: 76 mm)' },
+    { k: 'breiteS', t: 'range', l: 'Straßen-Breite', min: 30, max: 90, step: 2, u: 'mm', v: 52, tip: 'nur bei Straße' },
+    { k: 'enden', t: 'wahl', l: 'Enden', o: [['mw', 'Zapfen + Loch'], ['ww', 'Loch + Loch'], ['mm', 'Zapfen + Zapfen']], v: 'mw' },
+    { sec: 'Farben' },
+    { k: 'farbig', t: 'wahl', l: 'Druck', o: [[1, 'Mehrfarbig'], [0, 'Einfarbig']], v: 1 },
+    { k: 'farbe', t: 'farbe', l: 'Gleis', v: '#d9b380' },
+    { k: 'farbe2', t: 'farbe', l: 'Pfeiler', v: '#a1887f' },
+    { k: 'farbe3', t: 'farbe', l: 'Fachwerk/Geländer', v: '#c62828' },
+  ],
+  build: (H, p) => _kgBrueckenBau(H, p),
+  info(r, p){
+    let s = 'Steht auf dem Bett, die Bögen haben oben eine 45°-Spitze: druckt <b>ohne Stützen</b>. Mit wenig Füllung (10 %) drucken.';
+    if (p.vorlage === 'hoch') s += ' Zwischen zwei <b>Auffahrten</b> setzen – Höhe gleich einstellen.';
+    return s;
+  },
+});
+
 // ═══ FLEXI-DRACHE (Print-in-Place, gelenkige Glieder) ════════════════════════
 // Bauraum mm, Z oben, Länge entlang X (Schwanzspitze x = 0, Schnauze x = L), am Ende
 // per rotate([-90,0,0]) auf Y oben gekippt. Alles liegt flach auf dem Bett und wird
@@ -61820,8 +61938,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.178';
+const VOLME3D_VERSION = '1.18.179';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.179', date:'2026-10-11', changes:[
+    ['🌉','<b>Neu: Brücken.</b> Buckelbrücke (beide Enden am Boden, in der Mitte hoch), Auffahrt auf Hochbahn-Höhe wie die Brio-Auffahrt, Hochbahn-Stück auf Bögen und eine flache Fachwerkbrücke – für die Holzeisenbahn mit Rillen und Zapfen oder als Straße mit Geländer. Die Bögen haben oben eine 45°-Spitze, darum druckt alles ohne Stützen.'],
+  ]},
   { version:'1.18.178', date:'2026-10-11', changes:[
     ['🏠','<b>Neu: Häuser für die Spielstadt.</b> Haus mit Satteldach, Stadthaus, Hochhaus, Laden mit rot-weißer Markise, Feuerwache mit großen Toren und Schlauchturm und Bahnhof mit Bahnsteig in Holzeisenbahn-Höhe und Vordach. Breite, Tiefe, Stockwerke und Dach frei einstellbar, Fenster und Türen farbig eingelassen, dazu ein <b>Schild mit eigenem Text</b>. Druckt ohne Stützen.'],
   ]},
