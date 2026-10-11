@@ -33,7 +33,7 @@ await pg.evaluate(() => {
 });
 await pg.evaluate(async () => { await _mfInit(); });
 
-const arten = (ONLY || ['trex', 'raptor', 'spino', 'brachio', 'diplo', 'stego', 'ankylo', 'trike', 'parasaur', 'pachy']);
+const arten = (ONLY || ['trex', 'raptor', 'spino', 'brachio', 'diplo', 'stego', 'ankylo', 'trike', 'parasaur', 'pachy', 'echse']);
 for (const art of arten) {
   const r = await pg.evaluate((art) => {
     const M = _mfWasm.Manifold, f = [];
