@@ -819,6 +819,15 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        # V3D Kids: eigener Einstieg in dieselbe App (Kachelseite fuer Kinder)
+        if path in ('/kids', '/kids/'):
+            query = self.path[len(path):].lstrip('?')
+            self.send_response(302)
+            self.send_header('Location', '/volme3d.html?kids=1' + ('&' + query if query else ''))
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
         if path in ('/login', '/login.html'):
             self._send_file('login.html', 'text/html; charset=utf-8')
             return

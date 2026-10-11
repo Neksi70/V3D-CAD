@@ -60,6 +60,25 @@ body.adv #adv-browser{display:flex}
 #adv-browser .advb-f{padding:6px 10px;font-size:9.5px;color:var(--dim);border-top:1px solid var(--border)}
 /* Generatoren-Seite */
 #main{position:relative}
+#kids-page{display:none;position:fixed;inset:0;z-index:3000;background:linear-gradient(180deg,#fff7e6,#eef7ff);flex-direction:column;min-height:0;font-family:inherit}
+#kids-page.show{display:flex}
+#kids-page .kd-top{display:flex;align-items:center;gap:14px;padding:16px 26px 8px;flex-wrap:wrap}
+#kids-page .kd-top b{font-size:26px;font-weight:900;color:#ff7a00}
+#kids-page .kd-top span{font-size:20px;font-weight:700;color:#334}
+#kids-page .kd-gross{margin-left:auto;border:2px solid #cfd6e4;background:#fff;border-radius:12px;padding:8px 14px;font:inherit;font-weight:700;cursor:pointer}
+#kids-page .kd-zu{border:none;background:none;font-size:22px;color:#889;cursor:pointer;padding:4px 8px}
+#kids-page .kd-body{flex:1;overflow:auto;padding:4px 26px 30px}
+#kids-page .kd-sec{font-size:18px;font-weight:800;color:#445;margin:14px 0 8px}
+#kids-page .kd-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
+#kids-page .kd-card{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:130px;border:3px solid #ffd59e;border-radius:20px;background:#fff;cursor:pointer;font:inherit;box-shadow:0 3px 0 #ffd59e;transition:transform .08s}
+#kids-page .kd-card:hover{transform:translateY(-3px);border-color:#ff9f43}
+#kids-page .kd-card:active{transform:translateY(1px)}
+#kids-page .kd-i{font-size:54px;line-height:1}
+#kids-page .kd-t{font-size:17px;font-weight:800;color:#334}
+#kids-bar{display:none;position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:2900;gap:10px;padding:10px;background:#fff;border:3px solid #ffd59e;border-radius:18px;box-shadow:0 6px 24px rgba(0,0,0,.18)}
+#kids-bar.show{display:flex}
+#kids-bar button{border:2px solid #cfd6e4;background:#fff;border-radius:12px;padding:10px 14px;font:inherit;font-size:15px;font-weight:800;cursor:pointer;white-space:nowrap}
+#kids-bar button.kd-pri{background:#ff7a00;border-color:#ff7a00;color:#fff}
 #gen-page{display:none;position:absolute;inset:0;z-index:7000;background:#fbf9ff;flex-direction:column;min-height:0}
 #gen-page.show{display:flex}
 #gen-page .gp-top{display:flex;align-items:center;gap:12px;padding:14px 26px 6px;flex-wrap:wrap}
@@ -35786,6 +35805,11 @@ async function _starterFillThumbs(){
 function hideStarter(){ document.getElementById('start-modal').classList.remove('show'); }
 function _runStarter(i){ const s=_STARTERS[i]; hideStarter(); if(s&&s.run){ try{ s.run(); }catch(e){ console.warn('starter',e); } } }
 function _maybeShowStarter(){
+  if (typeof _kidsOn === 'function' && _kidsOn()) {                      // V3D Kids: Kachelseite statt Startdialog
+    const ov = document.getElementById('auth-overlay');
+    if (ov && !ov.classList.contains('hidden')) return false;
+    return _kidsStart();
+  }
   if(localStorage.getItem('volme3d_hide_start')==='1') return false;   // Nutzer hat abgewählt
   if(localStorage.getItem('volme3d_cur')) return false;                // schon ein Design offen
   if(objects.length) return false;                                     // Szene nicht leer
@@ -35904,6 +35928,7 @@ document.addEventListener('keydown', e => {
 const _GEN_TESTHINWEIS = true;
 function _genTesthinweis() {
   if (!_GEN_TESTHINWEIS) return;
+  if (typeof _kidsOn === 'function' && _kidsOn()) return;                   // nicht im Kinder-Modus (verdeckt die Leiste)
   try { if (localStorage.getItem('v3d_hinweis_genseite') === '1') return; } catch (e) { return; }
   let n = 0;
   const warte = () => {
@@ -52272,6 +52297,69 @@ _kgReg('landschaft', {
   },
 });
 
+// ═══ V3D KIDS – Kinder-Eingang (?kids=1 bzw. /kids) ══════════════════════════
+// Gleiche App, anderer Einstieg: statt des Startdialogs eine Kachelseite mit den
+// kindgerechten Generatoren, nach dem Bauen eine Leiste unten (noch etwas bauen,
+// rückgängig, für den Drucker speichern, große Werkstatt). Es wird NICHTS
+// ausgeblendet – die volle App bleibt darunter erreichbar (Vorgabe: keine Stufen).
+const _KIDS_GRUPPEN = [
+  ['🏙️ Spielstadt', ['Straße', 'Häuser', 'Landschaft', 'Pflanzen', 'Brücke']],
+  ['🚂 Eisenbahn', ['Schienen', 'Zug']],
+  ['🚗 Fahrzeuge', ['Fahrzeug', 'Flugzeug', 'U-Boot', 'Schiff', 'Ständer']],
+  ['🦖 Figuren & Tiere', ['Dinosaurier', 'Minecraft-Figur', 'Flexi-Drache']],
+  ['🎁 Geschenke & Basteln', ['Becher', 'Namensschild', 'Keksausstecher', 'Puzzle', 'Kürbis', 'Pilz']],
+];
+function _kidsOn(){ try { return new URLSearchParams(location.search).has('kids'); } catch (e) { return false; } }
+function _kidsPageOpen(){
+  let el = document.getElementById('kids-page');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'kids-page';
+    const card = t => {
+      const i = _STARTERS.findIndex(s => s.t === t); if (i < 0) return '';
+      const s = _STARTERS[i];
+      return `<button type="button" class="kd-card" onclick="_kidsRun(${i})" title="${s.d.replace(/"/g, '&quot;')}"><span class="kd-i">${s.i}</span><span class="kd-t">${s.t}</span></button>`;
+    };
+    el.innerHTML = `<div class="kd-top"><b>🧒 V3D Kids</b><span>Was möchtest du bauen?</span>
+        <button type="button" class="kd-gross" onclick="_kidsExit()" title="Zur ganzen Werkstatt mit allen Werkzeugen">🔧 Große Werkstatt</button>
+        <button type="button" class="kd-zu" onclick="_kidsPageClose()" title="Zurück zu meinem Modell">✕</button></div>
+      <div class="kd-body">${_KIDS_GRUPPEN.map(([n, l]) => `<div class="kd-sec">${n}</div><div class="kd-grid">${l.map(card).join('')}</div>`).join('')}</div>`;
+    document.body.appendChild(el);
+  }
+  el.classList.add('show');
+  const bar = document.getElementById('kids-bar'); if (bar) bar.classList.remove('show');
+  try { hideStarter(); } catch (e) {}
+}
+function _kidsPageClose(){ const el = document.getElementById('kids-page'); if (el) el.classList.remove('show'); _kidsBar(); }
+function _kidsRun(i){ const s = _STARTERS[i]; if (!s) return; _kidsPageClose(); try { s.run(); } catch (e) { console.warn('kids', e); } }
+function _kidsBar(){
+  let bar = document.getElementById('kids-bar');
+  if (!bar) {
+    bar = document.createElement('div'); bar.id = 'kids-bar';
+    bar.innerHTML = `<button type="button" onclick="_kidsPageOpen()">➕ Noch etwas bauen</button>
+      <button type="button" onclick="undo()">↩️ Rückgängig</button>
+      <button type="button" class="kd-pri" onclick="_kidsDrucken()" title="Speichert alles als 3MF-Datei für den Drucker (Bambu Studio, Orca …)">🖨️ Für den Drucker speichern</button>
+      <button type="button" onclick="_kidsExit()">🔧 Große Werkstatt</button>`;
+    document.body.appendChild(bar);
+  }
+  bar.classList.add('show');
+}
+function _kidsDrucken(){
+  if (!objects.length) { notify('Bau zuerst etwas – dann kannst du es speichern 🙂', 'w'); return; }
+  try { export3MF(); } catch (e) { notify('Speichern ging nicht: ' + (e && e.message || e), 'w'); }
+}
+function _kidsExit(){
+  const el = document.getElementById('kids-page'); if (el) el.classList.remove('show');
+  const bar = document.getElementById('kids-bar'); if (bar) bar.classList.remove('show');
+  document.body.classList.remove('kids');
+  try { const u = new URL(location.href); u.searchParams.delete('kids'); history.replaceState(null, '', u.pathname + u.search + u.hash); } catch (e) {}
+}
+function _kidsStart(){
+  if (!_kidsOn()) return false;
+  document.body.classList.add('kids');
+  _kidsPageOpen();
+  return true;
+}
+
 // ═══ FLEXI-DRACHE (Print-in-Place, gelenkige Glieder) ════════════════════════
 // Bauraum mm, Z oben, Länge entlang X (Schwanzspitze x = 0, Schnauze x = L), am Ende
 // per rotate([-90,0,0]) auf Y oben gekippt. Alles liegt flach auf dem Bett und wird
@@ -62192,8 +62280,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.180';
+const VOLME3D_VERSION = '1.18.181';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.181', date:'2026-10-11', changes:[
+    ['🧒','<b>Neu: V3D Kids.</b> Unter <b>…/kids</b> startet V3D CAD mit einer Kinderseite: große Kacheln für Spielstadt, Eisenbahn, Fahrzeuge, Figuren und Geschenke. Nach dem Bauen hilft eine Leiste unten weiter – <b>Noch etwas bauen</b>, <b>Rückgängig</b>, <b>Für den Drucker speichern</b> (3MF). Die ganze Werkstatt bleibt erreichbar, es wird nichts ausgeblendet.'],
+  ]},
   { version:'1.18.180', date:'2026-10-11', changes:[
     ['⛰️','<b>Neu: Landschaftsplatten.</b> Hügel, Tunnelberg (Tunnel für die Holzeisenbahn, mit Schneekuppe), Teich, Fluss, Wald mit Bäumen und Acker mit Furchen – gleiche Größe und gleiche Puzzle-Kanten wie die Straßenplatten, die Ränder laufen flach aus. Mit <b>Variante</b> gibt es jedes Mal eine andere Form.'],
     ['🌳','<b>Neu: Pflanzen.</b> Laubbaum, Apfelbaum, Tanne, Busch, Kaktus und Palme – mit oder ohne runden Fuß. Die Kronen sind unten 45° schräg, darum druckt alles ohne Stützen.'],
