@@ -362,6 +362,7 @@ body.devmode .dev-only{display:flex!important}
 
 /* CTX POPUP */
 #ctx{position:absolute;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:4px;display:none;gap:3px;z-index:30}
+#ksn-pop{position:absolute;right:14px;top:142px;width:272px;max-height:calc(100% - 200px);overflow:auto;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:10px 12px;display:none;z-index:51}
 #lbl-pop{position:absolute;left:min(304px,calc(100vw - 262px));bottom:52px;width:226px;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:10px 12px;display:none;z-index:51}
 #nudge-pop{position:absolute;left:14px;bottom:96px;background:var(--white);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:var(--shm);padding:10px 12px;display:none;z-index:31}
 #nudge-pop .btn{width:30px;height:30px;padding:0;display:flex;align-items:center;justify-content:center;font-size:14px}
@@ -1973,6 +1974,7 @@ const firebaseConfig = {
     <div class="cb" onclick="plugHoles()" title="Löcher verschließen/öffnen — grün: Loch bekommt Stopfen · rot: Stopfen oder geplante Bohrung wird entfernt">🩹</div>
     <div class="cb" id="ctx-textedit" onclick="editTextObj()" title="Text ändern (oder Doppelklick auf den Text) — Lage, Tiefe und Farbe bleiben" style="display:none">✏️</div>
     <div class="cb" id="ctx-label" onclick="toggleLbl()" title="Beschriftung anbringen — vertieft (eingeprägt) oder erhaben, mit Tiefe in mm. Zieht ab bzw. vereint selbst." style="display:none">🏷️</div>
+    <div class="cb" id="ctx-ksn" onclick="_ksnOpen()" title="Kürbis schnitzen — Gesicht in einen importierten Kürbis-Scan schnitzen (vertieft oder durchbrochen + hohl für ein LED-Teelicht)" style="display:none">🎃</div>
     <div class="cb" id="ctx-svgcenter" onclick="svgCenterOnFace()" title="Motiv mittig auf seine Flaeche setzen (auf einer Rundung: mittig auf die Hoehe)" style="display:none">⊕</div>
     <div class="cb" id="nudge-btn" onclick="toggleNudge()" title="Exakt versetzen — Auswahl um X mm in eine Richtung schieben">✥</div>
     <div class="cb" onclick="deleteSelected()" title="Del" style="color:var(--red)">🗑</div>
@@ -1999,6 +2001,38 @@ const firebaseConfig = {
     <div style="display:flex;gap:6px">
       <button class="btn" onclick="svgCenterOnFace()" title="Mittig auf die Fläche setzen">⊕ Mitte</button>
       <button class="btn pri" style="flex:1" onclick="_lblApply()">✓ Anbringen</button>
+    </div>
+  </div>
+
+  <!-- Eigenen Kürbis (Scan) schnitzen (_ksn*): wirkt auf das gewählte Objekt,
+       dunkle Prismen zeigen live, wo geschnitzt wird -->
+  <div id="ksn-pop">
+    <div style="display:flex;align-items:center;margin-bottom:6px"><span style="font-size:10px;font-weight:800;letter-spacing:.05em;color:var(--dim);flex:1">🎃 KÜRBIS SCHNITZEN</span><span style="cursor:pointer;color:var(--mid);font-size:14px" onclick="_ksnClose()" title="Schließen">✕</span></div>
+    <span class="vsec">Gesicht</span>
+    <div class="vbg" id="ksn-face">
+      <button class="vtb on" data-v="klassisch" onclick="_ksnSet('face','klassisch')" title="Dreiecksaugen + Zickzack-Grinsen">Klassisch</button>
+      <button class="vtb" data-v="gruselig" onclick="_ksnSet('face','gruselig')" title="Böse Augen + Zackenmaul">Gruselig</button>
+      <button class="vtb" data-v="froehlich" onclick="_ksnSet('face','froehlich')" title="Runde Augen + Lächeln">Fröhlich</button>
+    </div>
+    <div class="vrow"><label title="Wie groß das Gesicht im Verhältnis zum Kürbis ist">Größe</label> <input type="range" id="ksn-size" min="40" max="160" step="5" value="100" oninput="_ksnSet('size',this.value)"><span class="vv" id="ksnv-size">100</span><span class="vu">%</span></div>
+    <div class="vrow"><label title="Wo die Gesichtsmitte sitzt — in % der ganzen Höhe (mit Stiel)">Höhe</label> <input type="range" id="ksn-hoehe" min="10" max="90" step="1" value="45" oninput="_ksnSet('hoehe',this.value)"><span class="vv" id="ksnv-hoehe">45</span><span class="vu">%</span></div>
+    <div class="vrow"><label title="Welche Seite vorne ist: das Gesicht um den Kürbis herumdrehen">Drehung</label> <input type="range" id="ksn-dreh" min="-180" max="180" step="5" value="0" oninput="_ksnSet('dreh',this.value)"><span class="vv" id="ksnv-dreh">0</span><span class="vu">°</span></div>
+    <div style="display:flex;gap:4px;margin:-2px 0 6px">
+      <button class="btn" style="flex:1;padding:3px 6px;font-size:12px" onclick="_ksnTurn(-45)" title="Gesicht 45° weiter nach links">↺ 45°</button>
+      <button class="btn" style="flex:1;padding:3px 6px;font-size:12px" onclick="_ksnTurn(45)" title="Gesicht 45° weiter nach rechts">↻ 45°</button>
+    </div>
+    <span class="vsec">Art</span>
+    <div class="vbg" id="ksn-modus">
+      <button class="vtb on" data-v="tief" onclick="_ksnSet('modus','tief')" title="Gesicht als Vertiefung — der Kürbis bleibt voll. Klappt mit jedem Scan.">⬇ Vertieft</button>
+      <button class="vtb" data-v="hohl" onclick="_ksnSet('modus','hohl')" title="Kürbis wird ausgehöhlt, unten kommt eine Öffnung für ein LED-Teelicht hinein, das Gesicht geht durch die Wand">💡 Durchbrochen + hohl</button>
+    </div>
+    <div class="vrow" id="ksn-row-tiefe"><label title="Wie tief das Gesicht eingeschnitzt wird">Tiefe</label> <input type="range" id="ksn-tiefe" min="1" max="8" step="0.5" value="3" oninput="_ksnSet('tiefe',this.value)"><span class="vv" id="ksnv-tiefe">3</span><span class="vu">mm</span></div>
+    <div class="vrow" id="ksn-row-wall" style="display:none"><label title="Dicke der Kürbiswand nach dem Aushöhlen — überall gleich, auch in den Furchen">Wand</label> <input type="range" id="ksn-wall" min="1.6" max="6" step="0.2" value="2.8" oninput="_ksnSet('wall',this.value)"><span class="vv" id="ksnv-wall">2.8</span><span class="vu">mm</span></div>
+    <div class="vrow" id="ksn-row-loch" style="display:none"><label title="Runde Öffnung im Boden, durch die das LED-Teelicht hineinkommt (übliche Teelichter: 38 mm). 0 = ohne Öffnung">Boden-Loch</label> <input type="range" id="ksn-loch" min="0" max="70" step="1" value="42" oninput="_ksnSet('loch',this.value)"><span class="vv" id="ksnv-loch">42</span><span class="vu">mm</span></div>
+    <div id="ksn-info" style="font-size:11px;color:var(--dim);line-height:1.4;margin:4px 0 8px"></div>
+    <div style="display:flex;gap:6px">
+      <button class="btn" onclick="_ksnClose()">Abbrechen</button>
+      <button class="btn pri" style="flex:1" id="ksn-go" onclick="_ksnApply()">✓ Schnitzen</button>
     </div>
   </div>
 
@@ -4209,6 +4243,11 @@ Patrick</textarea>
     <div class="g3body">
       <canvas id="kbs-canvas" width="200" height="320"></canvas>
       <div class="g3ctrl">
+        <span class="vsec">🎃 Eigenen Kürbis (Scan) schnitzen</span>
+        <div style="background:#fff4e8;border:1.5px solid #f3c48f;border-radius:9px;padding:7px 9px;margin-bottom:8px;font-size:11px;line-height:1.4;color:#6b4a26">
+          Echten Kürbis gescannt? Scan importieren, anklicken und hier das Gesicht hineinschnitzen — vertieft oder ausgehöhlt fürs LED-Teelicht.
+          <button class="btn pri" style="width:100%;margin-top:6px" onclick="_ksnOpen()" title="Wirkt auf das gerade ausgewählte Objekt">🎃 Gewählten Kürbis schnitzen…</button>
+        </div>
         <span class="vsec">Vorlage</span>
         <div class="vtbrow" style="display:flex;gap:4px;margin-bottom:7px">
           <button class="vtb" title="Geschnitzter Halloween-Kürbis mit Gesicht" onclick="_kbsPreset('halloween')">🎃 Halloween</button>
@@ -18849,6 +18888,9 @@ function updateCtxPopup() {
   const lbC = document.getElementById('ctx-label');
   if (lbC) lbC.style.display = (selectedObjs.length === 1 && _lblAttached(selectedObjs[0])) ? '' : 'none';
   if (_lblObj && (selectedObjs.length !== 1 || selectedObjs[0] !== _lblObj)) _lblClose();
+  const ksC = document.getElementById('ctx-ksn');
+  if (ksC) ksC.style.display = (selectedObjs.length === 1 && _istNetzImport(selectedObjs[0])) ? '' : 'none';
+  if (_ksnObj && !_ksnBusy && (selectedObjs.length !== 1 || selectedObjs[0] !== _ksnObj)) _ksnClose();
   const txC = document.getElementById('ctx-textedit');
   if (txC) txC.style.display = (selectedObjs.length === 1 && _textEditable(selectedObjs[0])) ? '' : 'none';
   if (!o) { ctxEl.style.display = 'none'; _nudgeHide(); return; }
@@ -26020,6 +26062,10 @@ async function _moldDilate3D(w, tris, off, prog, opts) {
   // gesteckte Bauteile): der überlappende Bereich zählte als AUSSEN und wurde zum
   // Hohlraum. Die Windungszahl zählt ihn korrekt als Material — und ein komplett
   // falsch herum gewickeltes Netz (Windung −1) bleibt ebenfalls massiv.
+  // opts.parity: „jede zweite Kreuzung" statt Windungszahl — für kaputte Netze
+  // mit uneinheitlich gedrehten Dreiecken (Scans), bei denen sich die Windung
+  // sonst gegenseitig aufhebt (Kürbis-Scan schnitzen, _ksn*).
+  const parity = !!(opts && opts.parity);
   const ord = [];
   for (let iz=0; iz<nz; iz++) for (let iy=0; iy<ny; iy++) {
     const xs = rows[iz*ny+iy]; if (!xs || xs.length < 4) continue;
@@ -26029,8 +26075,8 @@ async function _moldDilate3D(w, tris, off, prog, opts) {
     const base = (iz*ny+iy)*nx;
     let wind = 0;
     for (let k = 0; k+1 < nc; k++) {
-      wind += xs[ord[k]*2+1];
-      if (wind === 0) continue;                     // hier liegt Luft
+      wind += parity ? 1 : xs[ord[k]*2+1];
+      if (parity ? (wind & 1) === 0 : wind === 0) continue;   // hier liegt Luft
       let i0 = Math.max(0, Math.ceil((xs[ord[k]*2]-ox)/vox-0.5));
       let i1 = Math.min(nx-1, Math.floor((xs[ord[k+1]*2]-ox)/vox-0.5));
       for (let ix=i0; ix<=i1; ix++) inside[base+ix] = 1;
@@ -41753,6 +41799,387 @@ async function _kbsCreate(){
     console.error('Kürbis:',e);
     _progressHide();
     notify('Kürbis fehlgeschlagen: '+(e&&e.message||e),'w');
+  }
+}
+
+// ═══ EIGENEN KÜRBIS (SCAN) SCHNITZEN ═══════════════════════════════════════
+// Gesicht aus den Generator-Vorlagen (_KBS_FACES) in ein beliebiges Netz
+// schnitzen — gedacht für den Kinderkurs: echten Zierkürbis scannen, Scan
+// importieren, anklicken, Gesicht aussuchen. Wirkt auf das gewählte Objekt.
+// Gerechnet wird in Welt-mm, Z-up (so liefert _moldCollectTris die Dreiecke —
+// die Welt-Transformation ist damit VOR jeder Boolean-Operation angewendet).
+//   • Aufbereiten: _mfFromSoup → bei Ablehnung _healTrisForBool (Löcher zu)
+//     → zur Not Neuaufbau über das Distanzfeld (_moldDilate3D, Versatz ~0).
+//     Ineinandersteckende Hüllen per _mfSelfUnion, Splitter (< 2 %) raus.
+//   • Innenkörper per Distanzfeld-EROSION (_moldDilate3D mit negativem
+//     Versatz): überall genau „Wand“ mm unter der Haut, auch in tiefen
+//     Furchen. Eine skalierte Kopie bräche dort durch. Vom Ergebnis bleibt nur
+//     das größte Stück — der Stiel bleibt also voll.
+//   • Vertieft: Gesichtsprisma − (Körper um „Tiefe“ erodiert) = nur die Haut-
+//     schicht im Gesicht → gleich tief, auch auf der Wölbung.
+//   • Durchbrochen + hohl: Körper − Innenkörper − Boden-Loch − Gesichtsprisma.
+// Die Prismen laufen von der Hochachse (c = 0) nach vorn — die Rückwand bleibt
+// heil. „Vorne“ ist Welt +Z der App (= −Y in mm), dorthin schaut die Kamera.
+let _ksnP = { face:'klassisch', size:100, hoehe:45, dreh:0, modus:'tief', tiefe:3, wall:2.8, loch:42 };
+// var statt let: updateCtxPopup liest _ksnObj/_ksnBusy evtl. schon, bevor dieser Block lief
+var _ksnObj = null, _ksnPrev = null, _ksnCache = null, _ksnBusy = false, _ksnRaf = 0;
+
+// Eckpunkte des Objekts in Welt-mm (Z-up) + Kennzahlen; bei Riesen-Scans ausgedünnt.
+// Neu gerechnet, sobald das Objekt verschoben/gedreht wurde.
+function _ksnGeom(o){
+  o.updateMatrixWorld(true);
+  const meshes=[]; let total=0;
+  o.traverse(ch=>{ if(ch.isMesh && ch.geometry?.attributes?.position && !ch.userData.isEdgeLines && ch.visible!==false){
+    meshes.push(ch); total+=ch.geometry.attributes.position.count; } });
+  const sig=meshes.map(m=>m.geometry.uuid+':'+m.matrixWorld.elements.map(v=>v.toFixed(5)).join(',')).join('|');
+  if(_ksnCache && _ksnCache.obj===o && _ksnCache.sig===sig) return _ksnCache;
+  const step=Math.max(1,Math.ceil(total/400000));
+  const pts=new Float32Array(Math.ceil(total/step)*3+3); let n=0;
+  const v=new THREE.Vector3();
+  let minX=Infinity,minY=Infinity,minZ=Infinity,maxX=-Infinity,maxY=-Infinity,maxZ=-Infinity;
+  for(const m of meshes){
+    const pa=m.geometry.attributes.position;
+    for(let i=0;i<pa.count;i+=step){
+      v.fromBufferAttribute(pa,i).applyMatrix4(m.matrixWorld);
+      const x=v.x*10, y=-v.z*10, z=v.y*10;           // App-Units Y-up → mm Z-up
+      pts[n++]=x; pts[n++]=y; pts[n++]=z;
+      if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y; if(z<minZ)minZ=z; if(z>maxZ)maxZ=z;
+    }
+  }
+  const cx=(minX+maxX)/2, cy=(minY+maxY)/2, H=Math.max(1e-3,maxZ-minZ);
+  // Bauch suchen: Höhenband mit dem größten Radius um die Hochachse
+  const NB=40, band=new Float32Array(NB);
+  let rMax=0;
+  for(let i=0;i<n;i+=3){
+    const r=Math.hypot(pts[i]-cx,pts[i+1]-cy);
+    const b=Math.min(NB-1,Math.floor((pts[i+2]-minZ)/H*NB));
+    if(r>band[b]) band[b]=r; if(r>rMax) rMax=r;
+  }
+  let bmax=0; for(let b=0;b<NB;b++) if(band[b]>bmax) bmax=band[b];
+  let s0=-1,s1=-1; for(let b=0;b<NB;b++) if(band[b]>=bmax*0.97){ if(s0<0) s0=b; s1=b; }
+  const belly=s0<0?45:Math.round(100*((s0+s1+1)/2)/NB);
+  const R=Math.max(1,((maxX-minX)+(maxY-minY))/4);
+  _ksnCache={obj:o,sig,pts:pts.subarray(0,n),minX,minY,minZ,maxX,maxY,maxZ,cx,cy,H,R,rMax,belly};
+  return _ksnCache;
+}
+
+// Gesichts-Rahmen: a = quer (rechts aus Sicht des Betrachters), b = hoch, c = nach vorn
+function _ksnFrame(c,p){
+  const th=(p.dreh||0)*Math.PI/180;
+  const f=[Math.sin(th),-Math.cos(th)], r=[Math.cos(th),Math.sin(th)];
+  const zc=c.minZ+c.H*Math.min(95,Math.max(5,p.hoehe))/100;
+  const fs=Math.max(0.3,(p.size||100)/100);
+  // Maße wie im Generator (fw=0,72·R, fh=0,52·H mit H≈1,44·R) — aber nur am
+  // Radius bemessen, damit ein langer Stiel das Gesicht nicht aufbläht
+  const fw=c.R*0.72*fs, fh=c.R*0.75*fs;
+  const polys=(_KBS_FACES[p.face]||_KBS_FACES.klassisch).map(pl=>pl.map(([u,w])=>[u*fw,(w-0.46)*fh]));
+  const toW=(a,b,cc)=>[c.cx+a*r[0]+cc*f[0], c.cy+a*r[1]+cc*f[1], zc+b];
+  return {f,r,zc,polys,toW,fw,fh};
+}
+
+// Polygon → Prisma von c0 bis c1 entlang „vorn“, in Welt-mm (Dreht det=+1, Wicklung bleibt)
+function _ksnPrism(poly,c0,c1,fr){
+  const g=_kbsPrismGrid(poly,c0,c1);
+  for(let i=0;i<g.pos.length;i+=3){
+    const q=fr.toW(g.pos[i],g.pos[i+1],g.pos[i+2]);
+    g.pos[i]=q[0]; g.pos[i+1]=q[1]; g.pos[i+2]=q[2];
+  }
+  _kbsFixWinding(g.pos,g.idx);
+  return g;
+}
+// Senkrechter Zylinder (Boden-Loch) — 61 Teilungen, damit keine Kante exakt
+// auf einer Kante des Körpers liegt (Primzahl, siehe Kürbis-Generator)
+function _ksnCyl(cx,cy,rad,z0,z1){
+  const S=61, pos=[], idx=[];
+  for(let s=0;s<S;s++){ const a=s*2*Math.PI/S; pos.push(cx+rad*Math.cos(a),cy+rad*Math.sin(a),z0); }
+  for(let s=0;s<S;s++){ const a=s*2*Math.PI/S; pos.push(cx+rad*Math.cos(a),cy+rad*Math.sin(a),z1); }
+  pos.push(cx,cy,z0, cx,cy,z1); const cb=2*S, ct=2*S+1;
+  for(let s=0;s<S;s++){ const s2=(s+1)%S;
+    idx.push(s,s2,S+s2, s,S+s2,S+s); idx.push(cb,s2,s); idx.push(ct,S+s,S+s2); }
+  _kbsFixWinding(pos,idx);
+  return {pos,idx,col:[]};
+}
+
+// Höchster Hautpunkt (c) je Polygon — daraus die Kappenhöhe der Vorschau
+function _ksnMaxC(c,fr){
+  const P=c.pts, polys=fr.polys, maxC=polys.map(()=>0);
+  const bb=polys.map(pl=>{ let a0=Infinity,a1=-Infinity,b0=Infinity,b1=-Infinity;
+    for(const [a,b] of pl){ if(a<a0)a0=a; if(a>a1)a1=a; if(b<b0)b0=b; if(b>b1)b1=b; } return [a0,a1,b0,b1]; });
+  for(let i=0;i<P.length;i+=3){
+    const dx=P[i]-c.cx, dy=P[i+1]-c.cy;
+    const cc=dx*fr.f[0]+dy*fr.f[1]; if(cc<=0) continue;
+    const a=dx*fr.r[0]+dy*fr.r[1], b=P[i+2]-fr.zc;
+    for(let k=0;k<polys.length;k++){
+      const q=bb[k]; if(a<q[0]||a>q[1]||b<q[2]||b>q[3]||cc<=maxC[k]) continue;
+      if(_kbsPointIn(polys[k],a,b)) maxC[k]=cc;
+    }
+  }
+  return maxC;
+}
+
+function _ksnOpen(){
+  const o=selectedObjs.length===1?selectedObjs[0]:null;
+  if(!o || !objects.includes(o)){
+    notify('Bitte zuerst deinen Kürbis (den importierten Scan) anklicken — dann nochmal „Kürbis schnitzen“','w'); return; }
+  if(o.userData.locked){ notify('Objekt ist gesperrt','w'); return; }
+  let hatGeo=false; o.traverse(ch=>{ if(ch.isMesh && ch.geometry?.attributes?.position) hatGeo=true; });
+  if(!hatGeo){ notify('Das gewählte Objekt hat keine Form zum Schnitzen','w'); return; }
+  const kbs=document.getElementById('kbs-modal');
+  if(kbs && kbs.classList.contains('show')) _closeKbsModal();
+  if(_ksnObj && _ksnObj!==o) _ksnClose();
+  const neu=_ksnObj!==o;
+  _ksnObj=o;
+  const c=_ksnGeom(o);
+  if(neu){ _ksnP.hoehe=Math.min(80,Math.max(20,c.belly)); _ksnP.dreh=0; }
+  if(typeof _nudgeHide==='function') _nudgeHide();
+  if(typeof _lblClose==='function' && _lblObj) _lblClose();
+  document.getElementById('ksn-pop').style.display='block';
+  const b=document.getElementById('ctx-ksn'); if(b) b.style.background='var(--alit)';
+  _ksnSync(); _ksnPreview();
+}
+function _ksnClose(){
+  _ksnObj=null;
+  if(_ksnRaf){ cancelAnimationFrame(_ksnRaf); _ksnRaf=0; }
+  _ksnPreviewClear();
+  const p=document.getElementById('ksn-pop'); if(p) p.style.display='none';
+  const b=document.getElementById('ctx-ksn'); if(b) b.style.background='';
+}
+function _ksnSet(k,v){
+  _ksnP[k]=(k==='face'||k==='modus')?v:parseFloat(v);
+  _ksnSync();
+  if(!_ksnRaf) _ksnRaf=requestAnimationFrame(()=>{ _ksnRaf=0; _ksnPreview(); });
+}
+function _ksnTurn(d){
+  let a=(_ksnP.dreh||0)+d; while(a>180) a-=360; while(a<-180) a+=360;
+  _ksnSet('dreh',a);
+}
+function _ksnSync(){
+  const p=_ksnP;
+  for(const k of ['size','hoehe','dreh','tiefe','wall','loch']){
+    const el=document.getElementById('ksn-'+k); if(el && +el.value!==p[k]) el.value=p[k];
+    const vv=document.getElementById('ksnv-'+k); if(vv) vv.textContent=String(p[k]).replace('.',',');
+  }
+  for(const g of ['face','modus']) document.querySelectorAll('#ksn-'+g+' .vtb').forEach(b=>b.classList.toggle('on',b.dataset.v===p[g]));
+  const hohl=p.modus==='hohl';
+  document.getElementById('ksn-row-tiefe').style.display=hohl?'none':'';
+  document.getElementById('ksn-row-wall').style.display=hohl?'':'none';
+  document.getElementById('ksn-row-loch').style.display=hohl?'':'none';
+}
+
+function _ksnPreviewClear(){
+  if(!_ksnPrev) return;
+  scene.remove(_ksnPrev);
+  _ksnPrev.geometry.dispose(); _ksnPrev.material.dispose();
+  _ksnPrev=null;
+}
+// Dunkle Prismen, die knapp (1,5 mm) aus der Haut ragen — wie im Generator
+function _ksnPreview(){
+  const o=_ksnObj;
+  if(!o || !o.parent){ _ksnClose(); return; }
+  const p=_ksnP, c=_ksnGeom(o), fr=_ksnFrame(c,p);
+  const maxC=_ksnMaxC(c,fr);
+  const parts=[]; let daneben=0;
+  fr.polys.forEach((pl,k)=>{
+    let top=maxC[k];
+    if(!(top>0)){ daneben++; top=c.rMax; }
+    parts.push(_ksnPrism(pl, top*0.55, top+1.5, fr));
+  });
+  if(p.modus==='hohl' && p.loch>0) parts.push(_ksnCyl(c.cx,c.cy,p.loch/2,c.minZ-0.8,c.minZ+1.2));
+  const pos=[], idx=[]; let off=0;
+  for(const g of parts){ for(const x of g.pos) pos.push(x); for(const i of g.idx) idx.push(i+off); off+=g.pos.length/3; }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  geo.setIndex(idx); geo.computeVertexNormals();
+  _ksnPreviewClear();
+  const m=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color:0x1a0c05,roughness:0.9,metalness:0,side:THREE.DoubleSide}));
+  m.scale.setScalar(0.1); m.rotation.x=-Math.PI/2;        // mm Z-up → App-Units Y-up (wie ein Import)
+  m.raycast=()=>{};                                       // Klicks gehen durch
+  m.userData={isKsnPreview:true};
+  scene.add(m); _ksnPrev=m;
+  const info=document.getElementById('ksn-info');
+  if(info){
+    const f1=x=>Math.round(x).toString();
+    let t='Kürbis: <b>'+f1(c.R*2)+' mm</b> breit, <b>'+f1(c.H)+' mm</b> hoch. Die dunkle Form zeigt, wo geschnitzt wird.';
+    if(daneben) t+='<br><span style="color:#c0392b;font-weight:700">⚠️ Ein Teil des Gesichts liegt neben dem Kürbis — Höhe oder Größe ändern.</span>';
+    if(p.modus==='hohl'){
+      t+='<br>Wird innen ausgehöhlt (Wand <b>'+String(p.wall).replace('.',',')+' mm</b>)'+(p.loch>0?', unten Loch Ø <b>'+p.loch+' mm</b> fürs LED-Teelicht.':' — ohne Boden-Loch.')+' Nur LED-Teelicht, keine echte Kerze!';
+      if(p.loch>0 && p.loch>c.R*1.5) t+='<br><span style="color:#c0392b;font-weight:700">⚠️ Boden-Loch ist sehr groß für diesen Kürbis.</span>';
+    } else t+='<br>Das Gesicht wird <b>'+String(p.tiefe).replace('.',',')+' mm</b> tief eingeschnitzt, der Kürbis bleibt voll.';
+    info.innerHTML=t;
+  }
+}
+
+// Entartete Dreiecke und Doppel (gleiche drei Ecken, egal welche Drehrichtung)
+// entfernen — typische Scan-/Export-Reste. Ecken auf 1/1000 mm verglichen.
+function _ksnCleanSoup(tris){
+  const n=tris.length/9, keepT=new Uint8Array(n), seen=new Set(); let m=0;
+  const q=v=>Math.round(v*1000);
+  for(let t=0;t<n;t++){
+    const o=t*9;
+    const a=q(tris[o])+','+q(tris[o+1])+','+q(tris[o+2]);
+    const b=q(tris[o+3])+','+q(tris[o+4])+','+q(tris[o+5]);
+    const c=q(tris[o+6])+','+q(tris[o+7])+','+q(tris[o+8]);
+    if(a===b||b===c||a===c) continue;
+    const k=[a,b,c].sort().join('|');
+    if(seen.has(k)) continue;
+    seen.add(k); keepT[t]=1; m++;
+  }
+  if(m===n) return tris;
+  const out=new Float32Array(m*9);
+  for(let t=0,j=0;t<n;t++) if(keepT[t]){ out.set(tris.subarray(t*9,t*9+9),j); j+=9; }
+  return out;
+}
+
+// Nur das größte Stück behalten (frac=1) bzw. alles ab frac·größtes Volumen
+function _ksnBiggest(w,mf,frac,keep){
+  let parts; try{ parts=mf.decompose(); }catch(_){ return mf; }
+  if(!parts || parts.length<2){ (parts||[]).forEach(q=>{ if(q!==mf) keep(q); }); return mf; }
+  parts.forEach(keep);
+  const vols=parts.map(q=>q.volume()), vmax=Math.max(...vols);
+  const behalten=parts.filter((q,i)=>vols[i]>0 && vols[i]>=vmax*frac-1e-9);
+  if(behalten.length===1) return behalten[0];
+  return keep(w.Manifold.union(behalten));
+}
+
+// Rechenkern — liefert { mf, info } in Welt-mm Z-up. keep() sammelt alles zum Aufräumen.
+async function _ksnCompute(w,o,p,keep,prog){
+  const c=_ksnGeom(o), fr=_ksnFrame(c,p);
+  let tris=_moldCollectTris(o);
+  if(!tris.length) throw new Error('keine Geometrie im gewählten Objekt');
+  const T0=performance.now(), zeit={}; const mark=k=>{ zeit[k]=Math.round(performance.now()-T0); };
+  prog(4,'Scan wird geprüft…');
+  // 1) Aufbereiten — erst Entartete und doppelte Dreiecke raus (auch umgedrehte
+  //    Doppel: die heben sich sonst in der Windungszahl gegenseitig auf)
+  const roh=tris;
+  tris=_ksnCleanSoup(tris); mark('gereinigt');
+  let solid=null, weg=tris.length<roh.length?'doppelte Flächen entfernt':'';
+  const versuch=(t)=>{ try{ const m=keep(_mfFromSoup(w,t)); const u=keep(_mfSelfUnion(w,m)); return u.volume()>0?u:null; }
+                       catch(e){ if(_mfEngineErr(e)) throw e; return null; } };
+  solid=versuch(tris);
+  if(!solid){
+    const heal=_healTrisForBool(tris);
+    if(heal){ solid=versuch(heal); if(solid) weg='Löcher im Scan geschlossen'; }
+  }
+  if(!solid){
+    prog(6,'Scan ist undicht — wird neu aufgebaut…');
+    solid=keep(await _moldDilate3D(w,tris,0.01,f=>prog(6+f*24),{maxCells:16e6,parity:true}));
+    if(typeof solid.simplify==='function'){ try{ solid=keep(solid.simplify(_moldLastVox*0.1)); }catch(_){} }
+    weg='Scan neu aufgebaut (war undicht)';
+  }
+  solid=_ksnBiggest(w,solid,0.02,keep);
+  if(solid.isEmpty()) throw new Error('vom Scan ist nichts Brauchbares übrig');
+  const vol0=solid.volume();
+  // Fürs Distanzfeld reicht ein vereinfachtes Netz: Toleranz 0,15 mm liegt weit
+  // unter der Voxelgröße (~0,8 mm). Ein 570k-Scan brauchte sonst ~25 s fürs Feld.
+  let sdfSrc=solid;
+  if(solid.numTri && solid.numTri()>120000 && typeof solid.simplify==='function'){
+    try{ sdfSrc=keep(solid.simplify(0.15)); }catch(_){ sdfSrc=solid; }
+  }
+  const soup=_mfToSoup(sdfSrc);
+  mark('vereinfacht');
+  const reach=c.rMax*1.5+20;
+  const facePrisms=()=>{
+    const ms=fr.polys.map(pl=>keep(_mfFromSoup(w,_kbsSoup(_ksnPrism(pl,0,reach,fr)))));
+    return ms.length===1?ms[0]:keep(w.Manifold.union(ms));
+  };
+  let res, info={weg};
+  if(p.modus==='hohl'){
+    const wall=Math.min(10,Math.max(1.2,p.wall));
+    mark('aufbereitet'); prog(30,'Kürbis wird ausgehöhlt…');
+    let inner=keep(await _moldDilate3D(w,soup,-wall,f=>prog(30+f*45),{voxTarget:wall/3,maxCells:16e6}));
+    info.vox=_moldLastVox;
+    inner=_ksnBiggest(w,inner,1,keep);
+    if(inner.isEmpty() || inner.volume()<vol0*0.02)
+      throw new Error('Der Kürbis ist zu klein für '+String(wall).replace('.',',')+' mm Wand — Wand dünner stellen oder „Vertieft“ wählen');
+    if(typeof inner.simplify==='function'){ try{ inner=keep(inner.simplify(_moldLastVox*0.1)); }catch(_){} }
+    mark('innenkoerper'); prog(78,'Innenraum wird ausgeräumt…');
+    res=keep(w.Manifold.difference(solid,inner));
+    if(p.loch>0){
+      // Boden-Loch: von unten bis in den Hohlraum. Höhe = höchster Punkt des
+      // Hohlraum-Bodens innerhalb des Lochkreises (untere Hälfte des Innenraums)
+      const im=inner.getMesh(), P=im.vertProperties, np=im.numProp;
+      let iz0=Infinity,iz1=-Infinity,ix0=Infinity,ix1=-Infinity,iy0=Infinity,iy1=-Infinity;
+      for(let i=0;i<P.length;i+=np){ const x=P[i],y=P[i+1],z=P[i+2];
+        if(z<iz0)iz0=z; if(z>iz1)iz1=z; if(x<ix0)ix0=x; if(x>ix1)ix1=x; if(y<iy0)iy0=y; if(y>iy1)iy1=y; }
+      const ox=(ix0+ix1)/2, oy=(iy0+iy1)/2, rr=(p.loch/2+1)**2, zLim=iz0+0.5*(iz1-iz0);
+      let zTop=-Infinity;
+      for(let i=0;i<P.length;i+=np){ const z=P[i+2]; if(z>=zLim) continue;
+        if((P[i]-ox)**2+(P[i+1]-oy)**2<=rr && z>zTop) zTop=z; }
+      if(!isFinite(zTop)) zTop=iz0+wall;
+      info.lochEng=zTop>iz0+0.35*(iz1-iz0);
+      res=keep(w.Manifold.difference(res,keep(_mfFromSoup(w,_kbsSoup(_ksnCyl(ox,oy,p.loch/2,c.minZ-3,zTop+0.8))))));
+    }
+    mark('ausgehoehlt'); prog(86,'Gesicht wird durchgestochen…');
+    res=keep(w.Manifold.difference(res,facePrisms()));
+  } else {
+    const t=Math.min(15,Math.max(0.5,p.tiefe));
+    mark('aufbereitet'); prog(30,'Haut wird vermessen…');
+    let er=keep(await _moldDilate3D(w,soup,-t,f=>prog(30+f*50),{voxTarget:Math.max(0.35,t/2.5),maxCells:16e6}));
+    info.vox=_moldLastVox;
+    if(typeof er.simplify==='function'){ try{ er=keep(er.simplify(_moldLastVox*0.1)); }catch(_){} }
+    mark('erodiert'); prog(84,'Gesicht wird geschnitzt…');
+    const carve=keep(w.Manifold.difference(facePrisms(),er));
+    res=keep(w.Manifold.difference(solid,carve));
+  }
+  if(res.isEmpty()) throw new Error('Ergebnis ist leer');
+  if(Math.abs(res.volume()-vol0)<=vol0*1e-5) throw new Error('Das Gesicht trifft den Kürbis nicht — Höhe, Größe oder Drehung ändern');
+  mark('fertig'); console.log('[ksn] '+(tris.length/9)+' Dreiecke, Zeiten (ms):', JSON.stringify(zeit), weg||'');
+  info.vol0=vol0; info.vol=res.volume();
+  try{ info.teile=res.decompose().length; }catch(_){ info.teile=1; }
+  return {mf:res,info};
+}
+
+async function _ksnApply(){
+  if(_ksnBusy) return;
+  const o=_ksnObj;
+  if(!o || !o.parent || !objects.includes(o)){ _ksnClose(); notify('Bitte zuerst den Kürbis auswählen','w'); return; }
+  if(o.userData.locked){ notify('Objekt ist gesperrt','w'); return; }
+  const p={..._ksnP};
+  _ksnBusy=true;
+  const btn=document.getElementById('ksn-go'); if(btn){ btn.disabled=true; btn.textContent='… rechnet'; }
+  _ksnClose();
+  const tmp=new Set(); const keep=m=>{ if(m) tmp.add(m); return m; };
+  try{
+    _progressShow('Kürbis wird geschnitzt…'); _progressSet(2); await _moldTick();
+    const {mf,info}=await _mfRetry(async()=>{
+      const w=await _mfInit();
+      return _ksnCompute(w,o,p,keep,(v,msg)=>_progressSet(v,msg));
+    });
+    _progressSet(94,'Ergebnis wird übernommen…'); await _moldTick();
+    const geo=_mfToGeo(mf).toNonIndexed();
+    _moldNormals(geo); geo.computeBoundingBox();
+    saveUndo();
+    const color='#e8862a';
+    const mat=new THREE.MeshStandardMaterial({color:new THREE.Color(color),roughness:0.8,metalness:0.02,side:THREE.DoubleSide});
+    const neu=new THREE.Mesh(geo,mat);
+    neu.castShadow=neu.receiveShadow=true;
+    neu.scale.setScalar(0.1); neu.rotation.x=-Math.PI/2;   // Welt-mm Z-up → App (wie ein Import)
+    neu.updateMatrixWorld(true);
+    const baseName=String(o.userData.name||'Kürbis').replace(/ – geschnitzt$/,'');
+    neu.userData={id:idCtr++,type:'import',shapeType:'import',name:baseName+' – geschnitzt',color,
+      isHole:false,_origGeo:geo,ksn:{...p},
+      edgeAngle:50};   // Scan-Rauschen sonst als schwarze Kanten-Schraffur; die Schnitzkanten (~90°) bleiben sichtbar
+    const i=objects.indexOf(o);
+    if(i>=0) objects[i]=neu; else objects.push(neu);
+    scene.remove(o); scene.add(neu);
+    _updateObjEdgeLines(neu);
+    selectObjs([neu]); updateTree();
+    _progressDone();
+    let msg=p.modus==='hohl'
+      ? 'Kürbis ausgehöhlt und Gesicht durchgeschnitzt 🎃 — mit dem Loch nach unten drucken, nur LED-Teelicht hinein'
+      : 'Gesicht eingeschnitzt 🎃 ('+String(p.tiefe).replace('.',',')+' mm tief)';
+    if(info.weg) msg+=' · '+info.weg;
+    if(info.lochEng) msg+=' · Achtung: Das Boden-Loch ist für diesen Kürbis sehr groß — prüf die Wand unten';
+    if(info.teile>1) msg+=' · Das Ergebnis besteht aus '+info.teile+' Stücken — Gesicht etwas kleiner machen';
+    notify(msg,(info.lochEng||info.teile>1)?'w':'ok');
+  }catch(e){
+    console.error('[ksn]',e);
+    _progressHide();
+    notify('Schnitzen fehlgeschlagen: '+(e&&e.message||e),'e');
+  }finally{
+    for(const m of tmp){ try{ m.delete(); }catch(_){} }
+    _ksnBusy=false;
+    if(btn){ btn.disabled=false; btn.textContent='✓ Schnitzen'; }
   }
 }
 
@@ -59772,8 +60199,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.172';
+const VOLME3D_VERSION = '1.18.173';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.173', date:'2026-10-11', changes:[
+    ['🎃','<b>Eigenen Kürbis schnitzen.</b> Einen echten Kürbis scannen, den Scan importieren, anklicken und unten links auf <b>🎃</b> tippen (oder im Kürbis-Generator ganz oben „Gewählten Kürbis schnitzen…“). Gesicht aussuchen, mit <b>Größe</b>, <b>Höhe</b> und <b>Drehung</b> zurechtschieben – die dunkle Vorschau zeigt sofort, wo geschnitzt wird. <b>Vertieft</b> schnitzt das Gesicht ein paar Millimeter tief ein. <b>Durchbrochen + hohl</b> höhlt den Kürbis mit gleichmäßiger Wand aus (auch in tiefen Furchen), macht unten ein Loch für ein LED-Teelicht und schneidet das Gesicht durch die Wand. Undichte Scans mit Löchern werden dabei automatisch repariert, Rückgängig geht wie immer.'],
+  ]},
   { version:'1.18.172', date:'2026-10-11', changes:[
     ['🔗','<b>Beweglich machen: bessere Vorschau.</b> Beim <b>Biegen</b> bleibt jetzt das mittlere Glied liegen und beide Enden biegen sich – nach unten gebogen verschwindet die Kette nicht mehr unter der Bauplatte, sie liegt immer darauf. Neu ist <b>▶ Bewegung zeigen</b>: die Kette wippt von selbst hin und her, so sieht man sofort, wie das gedruckte Teil sich bewegt.'],
   ]},
@@ -70471,6 +70901,7 @@ const CMDK = [
   {i:'⊜',g:'Bearbeiten',t:'Ausrichten',k:'align',run:()=>alignTool()},
   {i:'⬓',g:'Bearbeiten',t:'Fläche unten',k:'flaeche flache stelle unten absetzen hinlegen aufstellen platte bett ausrichten kippen drehen liegen plan schraeg abflachung standflaeche place on face',run:()=>toggleFaceDown()},
   {i:'⊥',g:'Bearbeiten',t:'Aufstellen',k:'aufstellen hinstellen stehen standflaeche stabil gerade schief scan fuesse sockel boden platte ausrichten umfallen kippen lay flat stand upright',run:()=>standUpright()},
+  {i:'🎃',g:'Bearbeiten',t:'Kürbis schnitzen (Scan)',k:'kürbis kuerbis schnitzen scan gescannt gesicht halloween aushöhlen aushoehlen hohl teelicht laterne import eigener echter pumpkin carve',run:()=>_ksnOpen()},
   {i:'⋮',g:'Bearbeiten',t:'Lineares Muster',k:'array pattern',run:()=>linearPatternTool()},
   {i:'⊙',g:'Bearbeiten',t:'Kreismuster',k:'circular array',run:()=>circularPatternTool()},
   {i:'✂',g:'Bearbeiten',t:'Schneiden',k:'cut split zerteilen',run:()=>openCutTool()},
