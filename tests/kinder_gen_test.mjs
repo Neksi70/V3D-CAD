@@ -19,6 +19,8 @@ const ok = (name, cond, extra) => {
 // Sonderfälle je Generator (zusätzlich zu allen Vorlagen + einfarbig)
 const EXTRA = {
   staender: [{ aufnahme: 'teller', neigung: 25 }, { aufnahme: 'gabel', fussForm: 'eckig' }, { neigung: 0, hoehe: 200 }, { neigung: 30, hoehe: 20 }],
+  zug: [{ vorlage: 'dampf', kupplung: 'haken' }, { vorlage: 'personen', laenge: 160 }, { vorlage: 'gueter', laenge: 50, kupplung: 'keine' }, { vorlage: 'elok', farbig: 0 }, { vorlage: 'kessel', kupplung: 'haken', laenge: 50 }],
+  schienen: [{ vorlage: 'gerade', laenge: 18 }, { vorlage: 'gerade', laenge: 216, enden: 'ww' }, { vorlage: 'kurve', enden: 'mm' }, { vorlage: 'kurve', winkel: 90, radius: 110 }, { vorlage: 'weiche', richtung: 'rechts' }, { vorlage: 'weiche', laenge: 216, winkel: 30 }, { vorlage: 'kreuzung', laenge: 108 }, { vorlage: 'prellbock', laenge: 54 }],
   becher: [{ vorlage: 'tasse', name: 'Florian' }, { vorlage: 'katze', name: 'Mia', nameSeite: 'hinten' }, { vorlage: 'stifte', name: 'Stifte', schrift: 'pacifico_local' }, { vorlage: 'frosch', farbig: 0, name: 'Ben' }, { form: 'wellen', henkel: 1, konisch: 30 }, { vorlage: 'hase', hoehe: 40, durchm: 40 }, { vorlage: 'baer', hoehe: 160, durchm: 120, henkel: 1, name: 'Maximilian' }],
   uboot: [{ vorlage: 'modern', darst: 'voll' }, { vorlage: 'klassik', darst: 'voll', staender: 0 }, { vorlage: 'comic', darst: 'voll' }, { vorlage: 'comic', farbig: 0 }, { vorlage: 'klassik', platte: 0 }, { vorlage: 'modern', laenge: 60, dicke: 6 }, { vorlage: 'comic', laenge: 220, dicke: 32, turmH: 200 }],
   flugzeug: [{ vorlage: 'jet', staender: 0 }, { vorlage: 'prop', triebw: 2, fenster: 1 }, { vorlage: 'jaeger', laenge: 60 }, { vorlage: 'jumbo', laenge: 250, spann: 90 }, { vorlage: 'segler', farbig: 0 }],

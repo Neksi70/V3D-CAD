@@ -51162,6 +51162,303 @@ _kgReg('becher', {
   },
 });
 
+// ─── Spielwelt: gemeinsame Maße ─────────────────────────────────────────────
+// Holzeisenbahn-Maß (Brio & kompatible), recherchiert (woodenrailway.info), noch NICHT
+// an einer echten Schiene nachgemessen – darum alles einstellbar. Straßen-/Landschafts-
+// platten nutzen das Raster 144 mm (= Länge der Brio-Schiene A).
+const _KG_WELT = { raster: 144, schB: 40, schH: 12, rilleB: 6, rilleT: 3, rilleA: 26, zapfenD: 11.5, halsB: 6, halsL: 7 };
+
+// Mittellinie eines Gleisstücks: Folge von Punkten [x, y] + Richtung am Anfang/Ende
+function _kgPfadGerade(L){ return { pts: [[0, 0], [L, 0]], a: { p: [0, 0], dir: 180 }, e: { p: [L, 0], dir: 0 } }; }
+function _kgPfadBogen(R, wGrad, sg = 1, n = 48){
+  const w = wGrad * Math.PI / 180, pts = [];
+  for (let i = 0; i <= n; i++) { const t = w * i / n; pts.push([R * Math.sin(t), sg * (R - R * Math.cos(t))]); }
+  return { pts, a: { p: [0, 0], dir: 180 }, e: { p: pts[n], dir: sg * wGrad } };
+}
+// Band um eine Mittellinie (Breite b, seitlich um off verschoben) als Polygon
+function _kgBand(pts, b, off = 0){
+  const L = [], R = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[Math.max(0, i - 1)], c = pts[Math.min(pts.length - 1, i + 1)];
+    let dx = c[0] - a[0], dy = c[1] - a[1]; const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l;
+    const nx = -dy, ny = dx;
+    L.push([pts[i][0] + nx * (off + b / 2), pts[i][1] + ny * (off + b / 2)]);
+    R.push([pts[i][0] + nx * (off - b / 2), pts[i][1] + ny * (off - b / 2)]);
+  }
+  return L.concat(R.reverse());
+}
+// Verbinder an einem Ende (Punkt p, Richtung dir nach außen): Hals + runder Kopf
+function _kgVerbinder(H, p, dir, m, loch){
+  const sp = loch ? m.spiel : 0, hb = m.halsB + 2 * sp, d = m.zapfenD + (loch ? 2 * sp : 0);
+  const hl = m.halsL + (loch ? 0.4 : 0.3);                                         // Hals greift etwas ins Stück
+  const lok = [[-(loch ? 0.01 : 0.3), -hb / 2], [hl + d / 2, -hb / 2], [hl + d / 2, hb / 2], [-(loch ? 0.01 : 0.3), hb / 2]];
+  const kreis = H.kreis(d / 2, m.halsL + m.zapfenD / 2, 0, 40);
+  const a = dir * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  const dreh = q => [p[0] + q[0] * c - q[1] * s, p[1] + q[0] * s + q[1] * c];
+  // Loch: Kopf und Hals zeigen ins Stück hinein (Richtung umdrehen)
+  const um = loch ? q => dreh([-q[0], q[1]]) : dreh;
+  return [lok.map(um), kreis.map(um)];
+}
+
+function _kgSchienenBau(H, p){
+  const m = { ..._KG_WELT, spiel: p.spiel, schB: p.breite, zapfenD: p.zapfenD, halsB: p.halsB };
+  const hS = m.schH, bS = m.schB;
+  const pfade = [];
+  const R = p.radius, W = p.winkel;
+  const endTyp = i => (p.enden || 'mw')[i === 0 ? 0 : 1];                           // erstes Ende = Anfang
+  let enden = [];                                                                    // { p, dir, typ }
+  // Mindestlänge: ein Loch ist so tief wie Hals + Kopf, zwei Löcher dürfen sich nicht treffen
+  const tief = m.halsL + m.zapfenD + 2 * m.spiel + 0.4, nW = (p.enden || 'mw').split('').filter(c => c === 'w').length;
+  const Lmin = Math.max(18, nW * tief + 4);
+  if (p.teil === 'gerade' || p.teil === 'prellbock') {
+    const L = p.teil === 'prellbock' ? Math.max(54, p.laenge) : Math.max(Lmin, p.laenge);
+    const g = _kgPfadGerade(L); pfade.push(g);
+    enden.push({ ...g.a, typ: endTyp(0) });
+    if (p.teil === 'gerade') enden.push({ ...g.e, typ: endTyp(1) });
+  } else if (p.teil === 'kurve') {
+    const b = _kgPfadBogen(R, W, 1); pfade.push(b);
+    enden.push({ ...b.a, typ: endTyp(0) }, { ...b.e, typ: endTyp(1) });
+  } else if (p.teil === 'weiche') {
+    const sg = p.richtung === 'rechts' ? -1 : 1;
+    const L = Math.max(p.laenge, Lmin, R * Math.sin(W * Math.PI / 180));
+    const g = _kgPfadGerade(L), b = _kgPfadBogen(R, W, sg);
+    pfade.push(g, b);
+    enden.push({ ...g.a, typ: endTyp(0) }, { ...g.e, typ: endTyp(1) }, { ...b.e, typ: endTyp(1) });
+  } else if (p.teil === 'kreuzung') {
+    const L = Math.max(p.laenge, Lmin, m.schB + 2 * tief + 4);
+    pfade.push(_kgPfadGerade(L));
+    const q = { pts: [[L / 2, -L / 2], [L / 2, L / 2]], a: { p: [L / 2, -L / 2], dir: -90 }, e: { p: [L / 2, L / 2], dir: 90 } };
+    pfade.push(q);
+    enden.push({ ...pfade[0].a, typ: endTyp(0) }, { ...pfade[0].e, typ: endTyp(1) }, { ...q.a, typ: endTyp(0) }, { ...q.e, typ: endTyp(1) });
+  }
+  // Grundfläche (2D) → Zapfen dazu, Löcher weg → hochziehen
+  let flaeche = H.U(pfade.map(f => H.ext(_kgBand(f.pts, bS), 0, hS)));
+  const zapfen = [], loecher = [];
+  for (const e of enden) {
+    const v = _kgVerbinder(H, e.p, e.dir, m, e.typ === 'w');
+    (e.typ === 'w' ? loecher : zapfen).push(H.U(v.map(lp => H.ext(lp, e.typ === 'w' ? -1 : 0, hS + (e.typ === 'w' ? 1 : 0)))));
+  }
+  let stueck = H.U([flaeche, ...zapfen]);
+  if (loecher.length) stueck = H.sub(stueck, H.U(loecher));
+  // Rillen (oben, an beiden Rändern bis durch die Stirnseiten)
+  const rillen = [];
+  for (const f of pfade) {
+    const ext = f.pts;
+    // Mittellinie über die Enden hinaus verlängern, damit die Rille sauber durch die Stirnseite läuft
+    const a0 = ext[0], a1 = ext[1], b0 = ext[ext.length - 1], b1 = ext[ext.length - 2];
+    const ve = (s, t, l) => { const dx = s[0] - t[0], dy = s[1] - t[1], n = Math.hypot(dx, dy) || 1; return [s[0] + dx / n * l, s[1] + dy / n * l]; };
+    const lang = [ve(a0, a1, 2), ...ext, ve(b0, b1, 2)];
+    for (const sg of [1, -1]) rillen.push(H.ext(_kgBand(lang, m.rilleB, sg * m.rilleA / 2), hS - m.rilleT, hS + 1));
+  }
+  stueck = H.sub(stueck, H.U(rillen));
+  const teile = [];
+  if (p.teil === 'prellbock') {
+    // Prellbock am Ende: zwei Pfosten + roter Balken, Schrägen 45°
+    const L = Math.max(54, p.laenge), bb = bS, x1 = L, x0 = L - 14;
+    const pf = [];
+    for (const sg of [1, -1]) pf.push(H.hull([H.box(x0 - 6, x1, sg * 10 - 3, sg * 10 + 3, hS - 0.5, hS + 1), H.box(x1 - 6, x1, sg * 10 - 3, sg * 10 + 3, hS + 18, hS + 19)]));
+    const balken = H.box(x1 - 8, x1 - 2, -13, 13, hS + 14, hS + 22);              // nur zwischen den Pfosten (Brücke, kein Überhang)
+    const puffer = [];
+    for (const sg of [1, -1]) puffer.push(H.cylX(3.2, x1 - 12, x1 - 7.5, sg * 12, hS + 18, 20));
+    teile.push({ mf: H.U([balken, ...puffer]), hex: '#d0342c', name: 'Prellbock' });
+    stueck = H.U([stueck, ...pf]);
+  }
+  teile.push({ mf: stueck, hex: p.farbe, name: '' });
+  return { teile, hinweise: [] };
+}
+
+_kgReg('schienen', {
+  icon: '🛤️', name: 'Schienen', thema: 'Spielwelt & Kinder',
+  desc: 'Holzeisenbahn-Schienen (Brio-Maß): Gerade, Kurve, Weiche, Kreuzung, Prellbock',
+  vorlagen: {
+    gerade:    { name: 'Gerade', icon: '➖', tip: 'Gerades Stück, Länge in 18-mm-Schritten wie bei Brio (54/72/108/144/216)', p: { teil: 'gerade', laenge: 144 } },
+    kurve:     { name: 'Kurve', icon: '↪️', tip: 'Bogen, 8 Stück à 45° ergeben einen Kreis', p: { teil: 'kurve', radius: 202, winkel: 45 } },
+    kleinkurve:{ name: 'Kleine Kurve', icon: '🔄', tip: 'Enger Bogen', p: { teil: 'kurve', radius: 110, winkel: 45 } },
+    weiche:    { name: 'Weiche', icon: '🔀', tip: 'Gerade + Abzweig nach links oder rechts', p: { teil: 'weiche', laenge: 144, radius: 202, winkel: 45 } },
+    kreuzung:  { name: 'Kreuzung', icon: '✖️', tip: 'Zwei Gleise kreuzen sich im rechten Winkel', p: { teil: 'kreuzung', laenge: 144 } },
+    prellbock: { name: 'Prellbock', icon: '🛑', tip: 'Gleisende mit Puffer', p: { teil: 'prellbock', laenge: 72 } },
+  },
+  params: [
+    { sec: 'Stück' },
+    { k: 'teil', t: 'wahl', l: 'Art', o: [['gerade', 'Gerade'], ['kurve', 'Kurve'], ['weiche', 'Weiche'], ['kreuzung', 'Kreuzung'], ['prellbock', 'Prellbock']], v: 'gerade' },
+    { k: 'laenge', t: 'range', l: 'Länge', min: 18, max: 216, step: 18, u: 'mm', v: 144, tip: 'Gerade/Weiche/Kreuzung – Brio: 54, 72, 108, 144, 216' },
+    { k: 'radius', t: 'range', l: 'Radius', min: 80, max: 400, step: 2, u: 'mm', v: 202, tip: 'Radius der Gleismitte – Brio groß ≈ 202, klein ≈ 110' },
+    { k: 'winkel', t: 'range', l: 'Winkel', min: 15, max: 90, step: 15, u: '°', v: 45 },
+    { k: 'richtung', t: 'wahl', l: 'Weiche nach', o: [['links', 'Links'], ['rechts', 'Rechts']], v: 'links' },
+    { k: 'enden', t: 'wahl', l: 'Enden', o: [['mw', 'Zapfen + Loch'], ['ww', 'Loch + Loch'], ['mm', 'Zapfen + Zapfen']], v: 'mw', tip: 'Anfang + Ende des Stücks (Weiche: beide Abzweige wie das Ende)' },
+    { sec: 'Maße (Holzeisenbahn)' },
+    { k: 'breite', t: 'range', l: 'Breite', min: 30, max: 50, step: 0.5, u: 'mm', v: 40 },
+    { k: 'zapfenD', t: 'range', l: 'Zapfen-Ø', min: 8, max: 14, step: 0.1, u: 'mm', v: 11.5 },
+    { k: 'halsB', t: 'range', l: 'Hals-Breite', min: 4, max: 9, step: 0.1, u: 'mm', v: 6 },
+    { k: 'spiel', t: 'range', l: 'Spiel im Loch', min: 0.2, max: 2, step: 0.1, u: 'mm', v: 0.7, tip: 'So viel größer ist das Loch rundum als der Zapfen' },
+    { k: 'farbe', t: 'farbe', l: 'Farbe', v: '#d9b380' },
+  ],
+  build: (H, p) => _kgSchienenBau(H, p),
+  info(r, p){
+    return 'Liegt flach, druckt <b>ohne Stützen</b>. Maße wie Holzeisenbahn (Brio): 40 mm breit, 12 mm hoch, Rillen 6 × 3 mm. <i>Noch nicht an einer echten Schiene geprüft – bei Bedarf Zapfen, Hals und Spiel anpassen.</i>';
+  },
+});
+
+// ─── Radsatz (Zug + Fahrzeuge) ──────────────────────────────────────────────
+// Räder werden einzeln flach gedruckt und mit einer Steckachse (eigener Druck, Kopf
+// außen) durch die Außenwand und das Rad in den Mittelsteg gedrückt: Achse sitzt
+// stramm im Steg (Ø −0,1), Rad und Außenwand haben Spiel (Ø +0,4) → das Rad dreht.
+// Radkasten = Hohlraum unten offen, Decke als kurze Brücke (≤ 2 rw + 2).
+// Körpersystem: x längs, y quer (Mitte 0), z = 0 Unterkante.
+// o: { achsen:[x…], yR (Radmitte |y|), rw, bw (Radbreite), zA (Achshöhe), aussen (halbe
+//      Körperbreite), dA (Achs-Ø) }
+function _kgRadsatz(H, o){
+  const dA = o.dA || 3, sp = 0.35;
+  const yIn = o.yR - o.bw / 2 - 0.8, yOut = o.yR + o.bw / 2 + sp;               // 0,8 Anlaufscheibe innen
+  const kasten = [], loecher = [], raeder = [], stifte = [];
+  for (const x of o.achsen) for (const sg of [1, -1]) {
+    const y0 = sg > 0 ? yIn - sp : -yOut, y1 = sg > 0 ? yOut : -(yIn - sp);
+    kasten.push(H.box(x - o.rw - 0.9, x + o.rw + 0.9, y0, y1, -1, o.zA + o.rw + 0.9));
+    // Achsloch: außen + Rad frei, im Steg stramm (bis 4 mm vor die Mitte)
+    const yS = Math.max(1.5, yIn - 6);
+    loecher.push(sg > 0 ? H.cylY(dA / 2 + 0.2, yIn - 0.2, o.aussen + 1, x, o.zA, 20) : H.cylY(dA / 2 + 0.2, -o.aussen - 1, -yIn + 0.2, x, o.zA, 20));
+    loecher.push(sg > 0 ? H.cylY(dA / 2 - 0.05, yS, yIn, x, o.zA, 20) : H.cylY(dA / 2 - 0.05, -yIn, -yS, x, o.zA, 20));
+  }
+  // Druckteile: Rad flach (Nabe nach oben), Achse stehend (Kopf unten)
+  const nR = o.achsen.length * 2;
+  for (let i = 0; i < nR; i++) {
+    const r = H.U([H.cyl(o.rw, 0, o.bw, 0, 0, 48), H.cyl(Math.min(o.rw * 0.5, dA * 1.3), o.bw - 0.01, o.bw + 0.8, 0, 0, 24)]);
+    raeder.push(H.sub(r, H.cyl(dA / 2 + 0.2, -1, o.bw + 2, 0, 0, 20)));
+    const lS = o.aussen - Math.max(1.5, yIn - 6) - 0.3;
+    stifte.push(H.U([H.cyl(dA / 2 + 1.3, 0, 1.2, 0, 0, 24), H.cyl(dA / 2, 1.19, 1.2 + lS, 0, 0, 20, dA / 2 - 0.2)]));
+  }
+  return { kasten: H.U(kasten), loecher: H.U(loecher), raeder, stifte, lS: o.aussen - Math.max(1.5, yIn - 6) - 0.3 };
+}
+// Räder + Achsen als freie Teile neben dem Fahrzeug (y < −yAb) auslegen
+function _kgRadTeile(H, rs, o, yAb, hexR, hexS){
+  const t = [], d = o.rw * 2 + 3;
+  rs.raeder.forEach((r, i) => t.push({ mf: H.k(r.translate([i * d, -yAb - o.rw - 4, 0])), hex: hexR, name: 'Rad ' + (i + 1), frei: true }));
+  rs.stifte.forEach((s, i) => t.push({ mf: H.k(s.translate([i * 7, -yAb - 2 * o.rw - 12, 0])), hex: hexS, name: 'Achse ' + (i + 1), frei: true }));
+  return t;
+}
+
+// ─── Zug (Holzeisenbahn) ────────────────────────────────────────────────────
+// Rad Ø15, 4,5 breit, läuft in der Rille (taucht 2,5 mm ein). Radmitte quer = Rillen-
+// abstand/2. Unterkante Fahrzeug 1 mm über der Schiene → Achshöhe 4 mm im Körper.
+function _kgZugBau(H, p){
+  const L = Math.max(50, p.laenge), B = 37, hR = 14, typ = p.vorlage;
+  const rw = 7.5, bw = 4.5, zA = 4;
+  const ro = { achsen: [L * 0.2, L * 0.8], yR: _KG_WELT.rilleA / 2, rw, bw, zA, aussen: B / 2, dA: 3 };
+  const rs = _kgRadsatz(H, ro);
+  const rahmen = [H.box(0, L, -B / 2, B / 2, 0, hR)];
+  const aufbau = [], dach = [], akzent = [], fenster = [];
+  const fensterReihe = (x0, x1, z0, z1, n, tiefe = 0.8) => {           // Fenster als Einsatz (dunkel) in beiden Seiten
+    const w = (x1 - x0) / n;
+    for (let i = 0; i < n; i++) for (const sg of [1, -1]) {
+      const a = x0 + i * w + w * 0.15, b = x0 + (i + 1) * w - w * 0.15;
+      fenster.push(H.box(a, b, sg > 0 ? B / 2 - 0.5 - tiefe : -B / 2 + 0.5, sg > 0 ? B / 2 - 0.5 : -B / 2 + 0.5 + tiefe, z0, z1));
+    }
+  };
+  const bA = B - 1;                                                          // Aufbau 0,5 mm schmaler als der Rahmen
+  if (typ === 'dampf') {
+    const Rk = 11, zK = hR + Rk * 0.7;
+    aufbau.push(H.cylX(Rk, L * 0.3, L - 5, 0, zK, 40));
+    akzent.push(H.cylX(Rk * 0.86, L - 5.01, L - 3.2, 0, zK, 40));              // Rauchkammertür
+    const zKt = zK + Rk;
+    akzent.push(H.cyl(3.8, zKt - 2, zKt + 11, L - 13, 0, 24));               // Schornstein mit 45°-Kragen
+    akzent.push(H.cyl(3.8, zKt + 11, zKt + 12.6, L - 13, 0, 24, 5.4));
+    akzent.push(H.cyl(5.4, zKt + 12.6, zKt + 14, L - 13, 0, 24));
+    akzent.push(H.sph(5, L * 0.58, 0, zKt - 1.2, 20));                         // Dampfdom
+    const xc0 = L * 0.03, xc1 = L * 0.31, zc1 = hR + 31;
+    aufbau.push(H.box(xc0, xc1, -bA / 2, bA / 2, hR - 0.5, zc1));
+    fensterReihe(xc0 + 2, xc1 - 2, hR + 16, hR + 26, 1);
+    dach.push(H.hull([H.box(xc0 - 1, xc1 + 1, -B / 2 - 0.5, B / 2 + 0.5, zc1 + 1, zc1 + 3.5), H.box(xc0, xc1, -bA / 2, bA / 2, zc1 - 0.01, zc1 + 0.01)]));
+  } else if (typ === 'elok') {
+    const z1 = hR + 30, xf = L - 9;
+    // Kasten, vorn eine 45°-Schräge für die Frontscheibe
+    aufbau.push(H.hull([H.box(2, xf, -bA / 2, bA / 2, hR - 0.5, z1), H.box(2, L - 2, -bA / 2, bA / 2, hR - 0.5, z1 - 9)]));
+    fensterReihe(L * 0.18, xf - 4, hR + 15, hR + 24, 4);
+    // Frontscheibe in der Schräge (dunkel): Schnitt Kasten ∩ Streifen
+    const fs = H.box(xf - 7.5, L, -bA / 2 + 3, bA / 2 - 3, z1 - 8, z1 - 1.5);
+    fenster.push(H.int(aufbau[0], fs));
+    aufbau[0] = H.sub(aufbau[0], fs);                                           // gleicher Schneidkörper → keine Restfuge
+    dach.push(H.box(4, xf - 2, -bA / 2 + 4, bA / 2 - 4, z1 - 0.01, z1 + 2));
+    // Stromabnehmer: Raute aus 45°-Streben (stehende Platten)
+    for (const sg of [1, -1]) {
+      const yy = sg * 6, xm = L * 0.45, w = 9, h = 9;
+      for (const [a, b] of [[[xm - w, yy, z1 + 2], [xm, yy, z1 + 2 + h]], [[xm + w, yy, z1 + 2], [xm, yy, z1 + 2 + h]]]) akzent.push(H.stab(a, b, 0.9));
+    }
+    akzent.push(H.box(L * 0.45 - 8, L * 0.45 + 8, -8, 8, z1 + 10.2, z1 + 11.6));
+  } else if (typ === 'personen') {
+    const z1 = hR + 27;
+    aufbau.push(H.box(1.5, L - 1.5, -bA / 2, bA / 2, hR - 0.5, z1));
+    fensterReihe(L * 0.16, L * 0.84, hR + 12, hR + 21, Math.max(2, Math.round(L / 20)));
+    for (const sg of [1, -1]) fenster.push(H.box(4, L * 0.13, sg > 0 ? bA / 2 - 0.8 : -bA / 2, sg > 0 ? bA / 2 : -bA / 2 + 0.8, hR + 2, hR + 22));   // Türen
+    // Gewölbtes Dach: Kasten ∩ großer liegender Zylinder
+    const Rd = 30;
+    dach.push(H.int(H.box(0.5, L - 0.5, -B / 2 - 0.3, B / 2 + 0.3, z1 - 0.01, z1 + 6), H.cylX(Rd, 0, L, 0, z1 + 6 - Rd, 64)));
+  } else if (typ === 'gueter') {
+    const z1 = hR + 18, w = 2.4;
+    const kiste = H.box(1, L - 1, -bA / 2, bA / 2, hR - 0.5, z1);
+    aufbau.push(H.sub(kiste, H.box(1 + w, L - 1 - w, -bA / 2 + w, bA / 2 - w, hR + 1.5, z1 + 1)));
+    for (let i = 1; i < 4; i++) for (const sg of [1, -1]) akzent.push(H.box(L * i / 4 - 1, L * i / 4 + 1, sg > 0 ? bA / 2 - 0.01 : -bA / 2 - 1, sg > 0 ? bA / 2 + 1 : -bA / 2 + 0.01, hR, z1));   // Rungen
+  } else if (typ === 'kessel') {
+    const Rk = 13, zK = hR + Rk * 0.72;
+    aufbau.push(H.cylX(Rk, 4, L - 4, 0, zK, 40));
+    for (const xx of [4, L - 4]) akzent.push(H.cylX(Rk, xx - 1.2, xx + 1.2, 0, zK, 40, Rk));   // Ringe an den Enden
+    akzent.push(H.cyl(4.5, zK + Rk - 2, zK + Rk + 3.5, L / 2, 0, 24));                       // Dom
+    akzent.push(H.cyl(4.5, zK + Rk + 3.5, zK + Rk + 5, L / 2, 0, 24, 3.2));
+  }
+  // Kupplungen: Magnet-Taschen (6 × 3 mm) in beiden Stirnseiten oder gedruckte Haken
+  const ausschnitt = [rs.kasten, rs.loecher];
+  const zM = 7.5;
+  if (p.kupplung === 'magnet') {
+    ausschnitt.push(H.cylX(3.15, -0.1, 3.3, 0, zM, 20), H.cylX(3.15, L - 3.3, L + 0.1, 0, zM, 20));
+  } else if (p.kupplung === 'haken') {
+    // vorn (+X): Zunge am Boden mit stehendem Stift; hinten: Öse höher, darunter 45°-Keil
+    rahmen.push(H.box(L - 0.5, L + 9, -4, 4, 0, 3), H.cyl(1.7, 2.9, 9, L + 5.5, 0, 16));
+    const oese = H.sub(H.hull([H.box(-0.01, 0.5, -4, 4, 3.6, 6.4), H.cyl(4, 3.6, 6.4, -6, 0, 24)]), H.cyl(2.6, 3, 7, -6, 0, 20));
+    rahmen.push(oese, H.hull([H.box(0, 0.5, -4, 4, 0, 6.4), H.box(-3.4, 0.5, -4, 4, 3.59, 3.61)]));
+  }
+  const cut = H.U(ausschnitt);
+  const teile = [];
+  const sub = m => H.sub(m, cut);
+  if (fenster.length) teile.push({ mf: sub(H.U(fenster)), hex: '#26303c', name: 'Fenster' });
+  if (akzent.length) teile.push({ mf: sub(H.U(akzent)), hex: p.farbe3, name: 'Details' });
+  if (dach.length) teile.push({ mf: sub(H.U(dach)), hex: p.farbe2, name: 'Dach' });
+  if (aufbau.length) teile.push({ mf: sub(H.U(aufbau)), hex: p.farbe, name: 'Aufbau' });
+  teile.push({ mf: sub(H.U(rahmen)), hex: p.farbeR, name: 'Rahmen' });
+  teile.push(..._kgRadTeile(H, rs, ro, B / 2, '#202428', '#9aa3ad'));
+  return { teile, hinweise: [], extra: { nR: rs.raeder.length } };
+}
+
+_kgReg('zug', {
+  icon: '🚂', name: 'Zug', thema: 'Spielwelt & Kinder',
+  desc: 'Lok und Wagen für die Holzeisenbahn – Räder drehen sich, Magnet- oder Hakenkupplung',
+  vorlagen: {
+    dampf:    { name: 'Dampflok', icon: '🚂', tip: 'Lok mit Kessel, Schornstein und Führerhaus', p: { laenge: 95, farbe: '#2e7d32', farbe2: '#c62828', farbe3: '#ffc107', farbeR: '#212121' } },
+    elok:     { name: 'E-Lok', icon: '🚆', tip: 'Elektrolok mit Frontscheibe und Stromabnehmer', p: { laenge: 95, farbe: '#d32f2f', farbe2: '#9e9e9e', farbe3: '#424242', farbeR: '#212121' } },
+    personen: { name: 'Personenwagen', icon: '🚃', tip: 'Wagen mit Fensterreihe, Türen und gewölbtem Dach', p: { laenge: 85, farbe: '#1565c0', farbe2: '#9e9e9e', farbe3: '#ffc107', farbeR: '#212121' } },
+    gueter:   { name: 'Güterwagen', icon: '📦', tip: 'Offener Wagen zum Beladen', p: { laenge: 75, farbe: '#8d6e63', farbe2: '#9e9e9e', farbe3: '#5d4037', farbeR: '#212121' } },
+    kessel:   { name: 'Kesselwagen', icon: '🛢️', tip: 'Wagen mit liegendem Tank', p: { laenge: 75, farbe: '#eeeeee', farbe2: '#9e9e9e', farbe3: '#ff9800', farbeR: '#212121' } },
+  },
+  params: [
+    { sec: 'Größe' },
+    { k: 'laenge', t: 'range', l: 'Länge', min: 50, max: 160, step: 5, u: 'mm', v: 95 },
+    { sec: 'Kupplung' },
+    { k: 'kupplung', t: 'wahl', l: 'Kupplung', o: [['magnet', 'Magnet', 'Taschen für Magnete 6 × 3 mm vorn und hinten (einkleben, auf die Pole achten)'], ['haken', 'Haken', 'Gedruckt: vorn ein Stift, hinten eine Öse'], ['keine', 'Keine']], v: 'magnet' },
+    { sec: 'Farben' },
+    { k: 'farbig', t: 'wahl', l: 'Druck', o: [[1, 'Mehrfarbig'], [0, 'Einfarbig']], v: 1 },
+    { k: 'farbe', t: 'farbe', l: 'Aufbau', v: '#2e7d32' },
+    { k: 'farbe2', t: 'farbe', l: 'Dach', v: '#c62828' },
+    { k: 'farbe3', t: 'farbe', l: 'Details', v: '#ffc107' },
+    { k: 'farbeR', t: 'farbe', l: 'Rahmen', v: '#212121' },
+  ],
+  build: (H, p) => _kgZugBau(H, p),
+  info(r, p){
+    const n = r.extra && r.extra.nR || 4;
+    let s = 'Druckt <b>ohne Stützen</b>. Dazu ' + n + ' Räder und ' + n + ' Steckachsen (eigene Teile): Rad von unten in den Radkasten halten, Achse von außen durchstecken, bis sie stramm sitzt.';
+    if (p.kupplung === 'magnet') s += ' Magnete 6 × 3 mm einkleben – vorn und hinten verschiedene Pole nach außen.';
+    if (p.kupplung === 'haken') s += ' Die Öse der Hakenkupplung hat 3,6 mm Abstand zum Bett – evtl. kleine Stütze.';
+    return s;
+  },
+});
+
 // ═══ FLEXI-DRACHE (Print-in-Place, gelenkige Glieder) ════════════════════════
 // Bauraum mm, Z oben, Länge entlang X (Schwanzspitze x = 0, Schnauze x = L), am Ende
 // per rotate([-90,0,0]) auf Y oben gekippt. Alles liegt flach auf dem Bett und wird
@@ -61082,8 +61379,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.175';
+const VOLME3D_VERSION = '1.18.176';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.176', date:'2026-10-11', changes:[
+    ['🛤️','<b>Neu: Schienen für die Holzeisenbahn.</b> Gerade, Kurve, kleine Kurve, Weiche (links/rechts), Kreuzung und Prellbock im Brio-Maß (40 mm breit, Rillen 6 × 3 mm, Puzzle-Zapfen). Länge in 18-mm-Schritten wie die gekauften Schienen, Zapfen oder Loch an jedem Ende wählbar. Die Maße sind einstellbar, falls es mit deinen Holzschienen nicht ganz passt.'],
+    ['🚂','<b>Neu: Zug-Generator.</b> Dampflok, E-Lok, Personenwagen, Güterwagen und Kesselwagen für die Holzeisenbahn. Die Räder drehen sich wirklich: Sie werden einzeln gedruckt und mit Steckachsen in die Radkästen gesteckt. Kupplung mit Magneten (Taschen für 6 × 3 mm) oder mit gedruckten Haken.'],
+  ]},
   { version:'1.18.175', date:'2026-10-11', changes:[
     ['🛥️','<b>Neu: U-Boot-Generator.</b> Atom-U-Boot, klassisches U-Boot mit Deck und Kanone oder dickes gelbes Comic-U-Boot mit Bullaugen. <b>Aufgetaucht</b> liegt es flach auf einer blauen Wasserplatte mit Wellen, <b>Ganz</b> gibt es den vollen Rumpf mit Schraube und einen Gabel-Ständer – beides druckt ohne Stützen.'],
     ['🥤','<b>Neu: Becher-Generator.</b> Stiftebecher, Tasse mit Henkel oder Tier-Becher als Katze, Bär, Hase oder Frosch – mit Ohren am Rand, Gesicht und deinem <b>Namen</b> (vorne oder hinten, drei Schriften). Mehrfarbig für den AMS. Gedruckt nicht lebensmittelecht, gedacht für Stifte, Pinsel und Zahnbürsten.'],
