@@ -16,7 +16,7 @@ try {
   ok(await p.isVisible('#hilfe-tb'), '❓ Hilfe oben sichtbar');
   await p.click('#hilfe-tb'); await p.waitForSelector('#hilfe-page.show');
   const r1 = await p.evaluate(() => ({ n: document.querySelectorAll('.hl-e').length, nav: document.querySelectorAll('.hl-nv').length, focus: document.activeElement.id }));
-  ok(r1.n >= 60 && r1.nav === 12 && r1.focus === 'hl-q', `${r1.n} Einträge in ${r1.nav} Bereichen, Suchfeld hat den Fokus`);
+  ok(r1.n >= 120 && r1.nav === 13 && r1.focus === 'hl-q', `${r1.n} Einträge in ${r1.nav} Bereichen, Suchfeld hat den Fokus`);
   await p.keyboard.type('loch');
   const r2 = await p.evaluate(() => [...document.querySelectorAll('.hl-e .hl-t')].map(x => x.textContent.trim()));
   ok(r2.some(t => /Loch ziehen/.test(t)) && r2.some(t => /Abziehen|Bohrung/.test(t)), 'Suche „loch“: ' + r2.slice(0, 6).join(' · '));
@@ -33,7 +33,7 @@ try {
   // Druckfassung
   const [pop] = await Promise.all([ctx.waitForEvent('page'), p.evaluate(() => { window.print = () => {}; _hlfOpen(); setTimeout(() => _hlfDruck(), 50); })]);
   await pop.waitForLoadState(); const h = await pop.evaluate(() => ({ t: document.title, h2: document.querySelectorAll('h2').length, e: document.querySelectorAll('.e').length }));
-  ok(h.t === 'V3D CAD – Hilfe' && h.h2 === 12 && h.e >= 60, `Druckfassung: ${h.h2} Bereiche, ${h.e} Einträge`);
+  ok(h.t === 'V3D CAD – Hilfe' && h.h2 === 13 && h.e >= 120, `Druckfassung: ${h.h2} Bereiche, ${h.e} Einträge`);
   const pdf = await p.evaluate(async () => { const r = await fetch('V3D-CAD-Hilfe.pdf'); return { s: r.status, t: r.headers.get('content-type') }; });
   ok(pdf.s === 200 && /pdf/.test(pdf.t), 'PDF wird ausgeliefert (' + pdf.t + ')');
   await p.evaluate(() => _hlfOpen('')); await p.waitForTimeout(400); await p.screenshot({ path: '/tmp/hilfe.png' });
