@@ -34,6 +34,17 @@ try {
   // Biegen-Vorschau
   const r2 = await p.evaluate(() => { _flxBiegen(30); const last = _flx.teile[_flx.teile.length - 1]; const e = last.matrix.elements; const moved = Math.abs(e[13]) + Math.abs(e[12]) + Math.abs(e[14]) > 0.01; _flxBiegen(0); return { moved, back: _flx.teile.every(m => m.matrix.equals(new THREE.Matrix4())) }; });
   ok(r2.moved && r2.back, 'Biegen bewegt die Kette, 0° = wieder flach');
+  const r2b = await p.evaluate(async () => {
+    const minY = () => { let m = Infinity; const bb = new THREE.Box3(); _flx.teile.forEach(t => { t.updateMatrixWorld(true); bb.setFromObject(t); m = Math.min(m, bb.min.y); }); return m; };
+    _flxBiegen(-30); const unten = minY(); _flxBiegen(30); const oben = minY();
+    _flxBiegen(0); const flach = minY();
+    _flxAnimToggle(); const w0 = _flx.winkel; await new Promise(r => setTimeout(r, 600)); const w1 = _flx.winkel; await new Promise(r => setTimeout(r, 400)); const w2 = _flx.winkel;
+    const btn = document.getElementById('flx-anim').textContent;
+    _flxAnimToggle(); const stopped = !_flx.anim; _flxBiegen(0);
+    return { unten, oben, flach, w0, w1, w2, btn, stopped };
+  });
+  ok(Math.abs(r2b.unten - r2b.flach) < 1e-3 && Math.abs(r2b.oben - r2b.flach) < 1e-3, `gebogen nach unten/oben bleibt der tiefste Punkt auf der Platte (${(r2b.unten*10).toFixed(2)} / ${(r2b.oben*10).toFixed(2)} mm)`);
+  ok(r2b.w1 !== r2b.w2 && /Anhalten/.test(r2b.btn) && r2b.stopped, `„▶ Bewegung zeigen“ wippt (${r2b.w1.toFixed(1)}° → ${r2b.w2.toFixed(1)}°) und hält wieder an`);
   // Übernehmen
   const r3 = await p.evaluate(async () => {
     _flxUebernehmen();

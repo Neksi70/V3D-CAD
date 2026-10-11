@@ -45617,7 +45617,8 @@ function _flxPanel() {
     <div style="display:flex;gap:6px;margin:8px 0"><button class="btn pri" style="flex:1" id="flx-go" onclick="_flxBauen()" ${warn ? 'disabled' : ''}>${_flx.busy ? '⏳ rechnet …' : fertig ? '↻ Neu bauen' : '🔗 Flexi-Modell bauen'}</button></div>
     ${fertig ? `
     <div style="background:#f0fdf4;border:1px solid #22c55e;border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.45">✓ <b>${_flx.teile.length} Glieder</b>, ${_flx.gelenke.length} Gelenke · Stift Ø ${f1(_flx.info.rp * 2)} mm · biegt je Gelenk bis ca. <b>${_flx.info.maxGrad}°</b></div>
-    <div class="vrow"><label>Biegen</label><input id="flx-bend" type="range" min="-45" max="45" step="1" value="${_flx.winkel}" style="flex:1" oninput="_flxBiegen(+this.value)"><span class="vv" id="flx-bv">${_flx.winkel}</span><span class="vu">°</span></div>
+    <div class="vrow"><label>Biegen</label><input id="flx-bend" type="range" min="-45" max="45" step="1" value="${_flx.winkel}" style="flex:1" oninput="_flxAnimStop();_flxBiegen(+this.value)"><span class="vv" id="flx-bv">${Math.round(_flx.winkel)}</span><span class="vu">°</span></div>
+    <div style="margin:-2px 0 6px"><button class="btn" id="flx-anim" style="width:100%;justify-content:center" onclick="_flxAnimToggle()">${_flx.anim ? '⏸ Anhalten' : '▶ Bewegung zeigen'}</button></div>
     <div style="font-size:10.5px;color:var(--dim);margin:-2px 0 8px">Nur Vorschau — übernommen wird flach, so wie es gedruckt wird.</div>
     <div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn" onclick="_flxVerwerfen()">Verwerfen</button><button class="btn pri" id="flx-ok" onclick="_flxUebernehmen()">✓ Übernehmen</button></div>` : ''}`;
 }
@@ -45628,6 +45629,7 @@ function _flxSet(k, v) {
   _flxPanel();
 }
 function _flxVorschauWeg() {
+  _flxAnimStop();
   (_flx.teile || []).forEach(m => { scene.remove(m); m.geometry.dispose(); m.material.dispose(); });
   _flx.teile = null; _flx.gelenke = null; _flx.winkel = 0;
   if (_flx.obj) _flx.obj.visible = true;
@@ -45670,6 +45672,7 @@ async function _flxBauen() {
     const zuWelt = (x, y, z) => { const v = new THREE.Vector3(x, y, z); if (entlangY) v.applyAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2); return new THREE.Vector3(v.x / 10, v.z / 10, -v.y / 10); };
     _flx.gelenke = info.cuts.map(xk => { const a = zuWelt(xk, 0, zc), b = zuWelt(xk, 10, zc); return { p: a, d: b.clone().sub(a).normalize() }; });
     _flx.teile = meshes; _flx.info = info; _flx.teileMf = null;
+    _flx.minY0 = Math.min(...meshes.map(m => { m.geometry.computeBoundingBox(); return m.geometry.boundingBox.min.y; }));
     o.visible = false;
     notify(`${meshes.length} Glieder mit ${info.cuts.length} Fass-Scharnieren — mit „Biegen" ausprobieren, dann übernehmen`, 'ok');
   } catch (e) {
@@ -45677,24 +45680,44 @@ async function _flxBauen() {
   } finally { _flx.busy = false; _flxPanel(); }
 }
 function _flxBiegen(grad) {
-  _flx.winkel = grad; const v = document.getElementById('flx-bv'); if (v) v.textContent = grad;
+  _flx.winkel = grad; const v = document.getElementById('flx-bv'); if (v) v.textContent = Math.round(grad);
+  const sl = document.getElementById('flx-bend'); if (sl && document.activeElement !== sl) sl.value = Math.round(grad);
   if (!_flx.teile) return;
-  const a = THREE.MathUtils.degToRad(grad);
-  let acc = new THREE.Matrix4();
-  _flx.teile.forEach((m, i) => {
-    if (i > 0) {
-      const g = _flx.gelenke[i - 1];
-      const R = new THREE.Matrix4().makeTranslation(g.p.x, g.p.y, g.p.z)
-        .multiply(new THREE.Matrix4().makeRotationAxis(g.d, a))
-        .multiply(new THREE.Matrix4().makeTranslation(-g.p.x, -g.p.y, -g.p.z));
-      acc = acc.clone().multiply(R);
-    }
-    m.matrix.copy(acc); m.matrixWorldNeedsUpdate = true;
-  });
+  // Mittleres Glied bleibt liegen, beide Enden biegen sich (wie das echte Teil in der Hand);
+  // danach die ganze Kette so anheben, dass der tiefste Punkt auf der Platte liegt —
+  // nach unten gebogen verschwand sie sonst unter der Bauplatte.
+  const a = THREE.MathUtils.degToRad(grad), n = _flx.teile.length, mid = Math.floor(n / 2);
+  const rot = (g, w) => new THREE.Matrix4().makeTranslation(g.p.x, g.p.y, g.p.z)
+    .multiply(new THREE.Matrix4().makeRotationAxis(g.d, w))
+    .multiply(new THREE.Matrix4().makeTranslation(-g.p.x, -g.p.y, -g.p.z));
+  const M = new Array(n);
+  M[mid] = new THREE.Matrix4();
+  for (let i = mid + 1; i < n; i++) M[i] = M[i - 1].clone().multiply(rot(_flx.gelenke[i - 1], a));
+  for (let i = mid - 1; i >= 0; i--) M[i] = M[i + 1].clone().multiply(rot(_flx.gelenke[i], -a));
+  let minY = Infinity; const bb = new THREE.Box3();
+  _flx.teile.forEach((m, i) => { m.geometry.boundingBox || m.geometry.computeBoundingBox(); bb.copy(m.geometry.boundingBox).applyMatrix4(M[i]); minY = Math.min(minY, bb.min.y); });
+  const ref = _flx.minY0 != null ? _flx.minY0 : 0;
+  const lift = new THREE.Matrix4().makeTranslation(0, Math.abs(grad) > 1e-6 ? ref - minY : 0, 0);
+  _flx.teile.forEach((m, i) => { m.matrix.copy(lift.clone().multiply(M[i])); m.matrixWorldNeedsUpdate = true; });
 }
+// „▶ Bewegung zeigen": Kette wippt von selbst zwischen −max und +max
+function _flxAnimToggle() {
+  const b = document.getElementById('flx-anim');
+  if (_flx.anim) { cancelAnimationFrame(_flx.anim); _flx.anim = null; if (b) b.textContent = '▶ Bewegung zeigen'; return; }
+  if (!_flx.teile) return;
+  const amp = Math.min(40, Math.max(10, (_flx.info && _flx.info.maxGrad) || 30) * 0.8), t0 = performance.now();
+  const step = now => {
+    if (!_flx.teile) { _flx.anim = null; return; }
+    _flxBiegen(amp * Math.sin((now - t0) / 1000 * 1.6));
+    _flx.anim = requestAnimationFrame(step);
+  };
+  _flx.anim = requestAnimationFrame(step);
+  if (b) b.textContent = '⏸ Anhalten';
+}
+function _flxAnimStop() { if (_flx.anim) { cancelAnimationFrame(_flx.anim); _flx.anim = null; } const b = document.getElementById('flx-anim'); if (b) b.textContent = '▶ Bewegung zeigen'; }
 function _flxUebernehmen() {
   const o = _flx.obj; if (!o || !_flx.teile) return;
-  _flxBiegen(0);
+  _flxAnimStop(); _flxBiegen(0);
   o.visible = true;     // Rückgängig-Stand = Original SICHTBAR (in der Vorschau war es ausgeblendet)
   saveUndo();
   const geo = _mergeGeos(_flx.teile.map(m => m.geometry.clone()));   // alle Glieder in EIN Teil (druckt am Stück)
@@ -59749,8 +59772,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.171';
+const VOLME3D_VERSION = '1.18.172';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.172', date:'2026-10-11', changes:[
+    ['🔗','<b>Beweglich machen: bessere Vorschau.</b> Beim <b>Biegen</b> bleibt jetzt das mittlere Glied liegen und beide Enden biegen sich – nach unten gebogen verschwindet die Kette nicht mehr unter der Bauplatte, sie liegt immer darauf. Neu ist <b>▶ Bewegung zeigen</b>: die Kette wippt von selbst hin und her, so sieht man sofort, wie das gedruckte Teil sich bewegt.'],
+  ]},
   { version:'1.18.171', date:'2026-10-11', changes:[
     ['📖','<b>Hilfe jetzt komplett.</b> Die Hilfe (❓ oben rechts oder F1) erklärt jetzt <b>alle Generatoren einzeln</b> – im neuen Bereich „Generatoren A–Z“ stehen zu jedem Generator die wichtigsten Einstellungen und ein Drucktipp (z. B. Spiel, ohne Stützen, Druckrichtung). Dazu sind weitere Funktionen dazugekommen: Arbeitsbereich und Drucker einstellen, Exakt versetzen, Sperren/Ausblenden, Lasso, Turntable, Druck-Check, Auto-Ausrichten, Stege, STL pro Körper, Fernwartung, SpaceMouse. Insgesamt 131 Einträge; das PDF zum Ausdrucken ist aktualisiert.'],
   ]},
