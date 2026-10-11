@@ -51741,6 +51741,165 @@ _kgReg('fahrzeug', {
   },
 });
 
+// ─── Häuser ─────────────────────────────────────────────────────────────────
+// Massiver Baukörper (Füllung macht der Slicer), Fenster/Türen 1,2 mm eingelassen,
+// die Scheibe sitzt hinten im Fenster (eigene Farbe, berührt nur). Dächer: Satteldach
+// (Giebel ±X), Flachdach mit Rand, Pyramide am Turm. Vorn = −Y. Alles ohne Stützen:
+// Überstände ≤ 2 mm, Markise und Vordach unter 45° bzw. auf Pfosten.
+function _kgHausBau(H, p){
+  const typ = p.vorlage, B = Math.max(30, p.breite), T = Math.max(25, p.tiefe), nG = Math.max(1, Math.round(p.geschosse)), hG = Math.max(14, p.geschossH);
+  const Hw = nG * hG, x0 = -B / 2, x1 = B / 2, y0 = -T / 2, y1 = T / 2;
+  let wand = H.box(x0, x1, y0, y1, 0, Hw);
+  // Feuerwache: Schlauchturm hinten rechts – VOR den Fenstern, sonst füllt er Fensternischen und lässt Hohlräume
+  const tw = Math.min(16, B * 0.3), tx = x1 - tw / 2, ty = y1 - tw / 2, hT = Hw + hG * 1.6;
+  if (typ === 'feuer') wand = H.U([wand, H.box(tx - tw / 2, tx + tw / 2, ty - tw / 2, ty + tw / 2, 0, hT)]);
+  const scheiben = [], tueren = [], dach = [], akzent = [], schild = [], streifen = [];
+  // Öffnung in einer Fassade (seite: 'v' vorn −Y, 'h' hinten +Y, 'l' links −X, 'r' rechts +X), u = Mitte längs, z0..z1
+  const oeffnung = (seite, u, w, z0, z1, liste) => {
+    const t = 1.2, d = 0.6, zc = z0 <= 0.01 ? -1 : z0, zf = Math.max(0, z0);   // Türen: Ausschnitt bis unters Bett, keine Hauchschicht
+    let cutB, fill;
+    if (seite === 'v') { cutB = H.box(u - w / 2, u + w / 2, y0 - 1, y0 + t, zc, z1); fill = H.box(u - w / 2, u + w / 2, y0 + t - d, y0 + t, zf, z1); }
+    else if (seite === 'h') { cutB = H.box(u - w / 2, u + w / 2, y1 - t, y1 + 1, zc, z1); fill = H.box(u - w / 2, u + w / 2, y1 - t, y1 - t + d, zf, z1); }
+    else if (seite === 'l') { cutB = H.box(x0 - 1, x0 + t, u - w / 2, u + w / 2, zc, z1); fill = H.box(x0 + t - d, x0 + t, u - w / 2, u + w / 2, zf, z1); }
+    else { cutB = H.box(x1 - t, x1 + 1, u - w / 2, u + w / 2, zc, z1); fill = H.box(x1 - t, x1 - t + d, u - w / 2, u + w / 2, zf, z1); }
+    wand = H.sub(wand, cutB);
+    liste.push(fill);
+  };
+  const reihe = (seite, len, nMax, w, z0, z1, auslassen) => {
+    const n = Math.max(1, Math.min(nMax, Math.floor((len - 6) / Math.max(w + 6, 15))));
+    for (let i = 0; i < n; i++) { const u = -len / 2 + len * (i + 0.5) / n; if (auslassen && auslassen(u)) continue; oeffnung(seite, u, w, z0, z1, scheiben); }
+  };
+  const fw = Math.min(10, hG * 0.42), fh = hG * 0.5;
+  const tuerB = Math.min(12, B * 0.25), tuerH = Math.min(hG * 0.8, 19);
+  // Erdgeschoss je Typ
+  let egFrei = u => Math.abs(u) < tuerB / 2 + 4;                                 // vorn Platz für die Tür
+  if (typ === 'laden') {
+    oeffnung('v', -B * 0.12, B * 0.58, 3, hG * 0.78, scheiben);                  // Schaufenster
+    oeffnung('v', B * 0.33, Math.min(10, B * 0.18), 0.01, tuerH, tueren);
+  } else if (typ === 'feuer') {
+    const nT = Math.max(1, Math.min(3, Math.floor(B / 30)));
+    for (let i = 0; i < nT; i++) oeffnung('v', -B / 2 + B * (i + 0.5) / nT, Math.min(24, B / nT - 6), 0.01, Math.min(hG * 1.3, Hw - 4), tueren);
+  } else if (typ !== 'bahnhof') {
+    oeffnung('v', 0, tuerB, 0.01, tuerH, tueren);
+  } else {
+    oeffnung('v', 0, tuerB * 1.4, _KG_WELT.schH, _KG_WELT.schH + tuerH, tueren);   // Bahnhof: Tür über dem Bahnsteig
+  }
+  const txt = (p.schild || '').trim();
+  for (let g = 0; g < nG; g++) {
+    const z0 = g * hG + hG * 0.3, z1 = z0 + fh;
+    const voll = typ === 'feuer' && g * hG < Math.min(hG * 1.3, Hw - 4) + 1;    // Torreihe
+    const schildBand = txt && ((typ === 'laden' && g === 1) || (typ === 'bahnhof' && g >= 1));   // Platz fürs Schild
+    const zv0 = typ === 'bahnhof' && g === 0 ? Math.max(z0, _KG_WELT.schH + 2) : z0;
+    if (!(g === 0 && (typ === 'laden' || typ === 'feuer')) && !voll && !schildBand) reihe('v', B, 12, fw, zv0, Math.max(zv0 + 4, z1), g === 0 ? egFrei : null);
+    reihe('h', B, 12, fw, z0, z1, typ === 'feuer' ? u => u > x1 - tw - fw / 2 - 1 : null);
+    reihe('l', T, 8, fw, z0, z1); reihe('r', T, 8, fw, z0, z1);
+  }
+  // Dach
+  const e = 1.8;
+  let topZ = Hw;
+  if (p.dach === 'sattel') {
+    const hD = (T / 2 + e) * Math.tan(Math.max(30, Math.min(60, p.neigung)) * Math.PI / 180);
+    dach.push(H.extYZ([[y0 - e, Hw - 0.01], [y1 + e, Hw - 0.01], [0, Hw + hD]], x0 - e, x1 + e));
+    topZ = Hw + hD;
+    // Schornstein auf der hinteren Dachfläche
+    const cx = x0 + B * 0.28, cy = T * 0.18;
+    akzent.push(H.box(cx - 3.5, cx + 3.5, cy - 3.5, cy + 3.5, Hw + 1, Hw + hD * 0.95 + 4));
+  } else {
+    // Flachdach: 2 mm Rand rundum
+    dach.push(H.sub(H.box(x0, x1, y0, y1, Hw - 0.01, Hw + 3), H.box(x0 + 2, x1 - 2, y0 + 2, y1 - 2, Hw + 1, Hw + 4)));
+    topZ = Hw + 3;
+    if (typ === 'hochhaus') akzent.push(H.cyl(0.9, Hw + 1, Hw + 1 + hG * 1.2, B * 0.25, 0, 12), H.box(-B * 0.2, B * 0.1, -T * 0.15, T * 0.15, Hw + 0.9, Hw + 7));
+  }
+  // Extras
+  if (typ === 'laden') {
+    // Markise über dem Schaufenster: Platte 45° nach unten-außen, rot-weiß gestreift
+    const zM = hG * 0.86, aus = Math.min(10, hG * 0.42), xa = -B * 0.12 - B * 0.31, xb = -B * 0.12 + B * 0.31, n = 7;
+    const platte = (xs0, xs1) => H.hull([H.box(xs0, xs1, y0 - 0.01, y0 + 0.6, zM - 0.01, zM + 1.6), H.box(xs0, xs1, y0 - aus, y0 - aus + 1.2, zM - aus, zM - aus + 1.6)]);
+    for (let i = 0; i < n; i++) (i % 2 ? streifen : akzent).push(platte(xa + (xb - xa) * i / n, xa + (xb - xa) * (i + 1) / n));
+  }
+  if (typ === 'feuer') {
+    // Schlauchturm hinten rechts mit Pyramidendach
+    dach.push(H.hull([H.box(tx - tw / 2 - 1, tx + tw / 2 + 1, ty - tw / 2 - 1, ty + tw / 2 + 1, hT - 0.01, hT + 1), H.box(tx - 0.3, tx + 0.3, ty - 0.3, ty + 0.3, hT + tw * 0.75, hT + tw * 0.75 + 0.5)]));
+    for (let g = 1; g * hG + hG * 0.4 < hT - 6; g++) oeffnung('r', ty, Math.min(6, tw * 0.4), g * hG + hG * 0.3, g * hG + hG * 0.75, scheiben);
+    topZ = Math.max(topZ, hT + tw * 0.75);
+  }
+  if (typ === 'bahnhof') {
+    // Bahnsteig vorn in Schienenhöhe (12 mm) + Vordach auf Pfosten mit 45°-Kopfbändern
+    const bt = Math.max(18, p.bahnsteig), xs0 = x0 - B * 0.2, xs1 = x1 + B * 0.2, zS = _KG_WELT.schH;
+    akzent.push(H.box(xs0, xs1, y0 - bt, y0 + 0.01, 0, zS));
+    const zV = Math.min(Hw - 2, zS + hG * 1.1), nP = Math.max(2, Math.round((xs1 - xs0) / 40) + 1), yP = y0 - bt + 4;
+    for (let i = 0; i < nP; i++) {
+      const xp = xs0 + 3 + (xs1 - xs0 - 6) * i / (nP - 1);
+      dach.push(H.box(xp - 1.3, xp + 1.3, yP - 1.3, yP + 1.3, zS - 0.01, zV));
+      dach.push(H.hull([H.box(xp - 1.3, xp + 1.3, yP - 1.3, yP + 1.3, zV - 6, zV - 5.9), H.box(xp - 1.3, xp + 1.3, yP - 7, yP + 7, zV - 0.01, zV)]));
+    }
+    dach.push(H.box(xs0, xs1, yP - 1.3, yP + 1.3, zV - 2.5, zV));               // Pfette über den Pfosten
+    dach.push(H.box(xs0, xs1, y0 - bt + 1, y0 + 0.01, zV - 0.01, zV + 1.8));
+    // Bahnsteigkante (weiße Linie)
+    streifen.push(H.box(xs0, xs1, y0 - bt - 0.01, y0 - bt + 2, zS - 0.6, zS + 0.01));
+  }
+  // Schild (Text, 0,8 mm erhaben): über der Tür, beim Laden über der Markise, beim Bahnhof über dem Vordach
+  if (txt) {
+    _npLoadFont('baloo_local', () => {});
+    let hS = Math.min(9, hG * 0.36), zS = hG * 1.05;
+    if (typ === 'laden') zS = hG * 0.86 + hS * 0.5 + 3;
+    if (typ === 'feuer') zS = Math.min(hG * 1.3, Hw - 4) + hS / 2 + 2.5;          // über den Toren
+    if (typ === 'bahnhof') { const zV = Math.min(Hw - 2, _KG_WELT.schH + hG * 1.1); hS = Math.min(9, Hw - zV - 4); zS = zV + 2.5 + hS / 2; }
+    const t = hS < 4 ? null : _litTextLoops({ textMode: 'zeile', text1: txt, font1: 'baloo_local' }, hS, zS, () => B * 0.8);
+    if (t) schild.push(H.extXZ(t.loops, y0 - 0.8, y0 + 0.01));
+  }
+  const teile = [];
+  if (scheiben.length) teile.push({ mf: H.U(scheiben), hex: p.farbeF, name: 'Fenster' });
+  if (tueren.length) teile.push({ mf: H.U(tueren), hex: p.farbeT, name: 'Türen' });
+  if (schild.length) teile.push({ mf: H.U(schild), hex: p.farbeS, name: 'Schild' });
+  if (streifen.length) teile.push({ mf: H.U(streifen), hex: '#ffffff', name: 'Streifen' });
+  if (akzent.length) teile.push({ mf: H.U(akzent), hex: p.farbeA, name: 'Details' });
+  teile.push({ mf: H.U(dach), hex: p.farbeD, name: 'Dach' });
+  teile.push({ mf: wand, hex: p.farbe, name: 'Wände' });
+  const hinweise = [];
+  if (txt && !schild.length) hinweise.push('Für das Schild ist kein Platz – ein Stockwerk mehr oder höhere Stockwerke wählen.');
+  return { teile, hinweise };
+}
+
+_kgReg('haus', {
+  icon: '🏠', name: 'Häuser', thema: 'Spielwelt & Kinder',
+  desc: 'Haus, Stadthaus, Hochhaus, Laden, Feuerwache, Bahnhof – mit Fenstern, Türen und Schild',
+  vorlagen: {
+    haus:      { name: 'Haus', icon: '🏠', p: { breite: 56, tiefe: 44, geschosse: 2, geschossH: 22, dach: 'sattel', neigung: 45, schild: '', farbe: '#f4e3c1', farbeD: '#c0392b', farbeA: '#8d3a2a', farbeF: '#8fd0ff', farbeT: '#7a4a2a', farbeS: '#2c3e50' } },
+    stadthaus: { name: 'Stadthaus', icon: '🏘️', p: { breite: 48, tiefe: 44, geschosse: 4, geschossH: 20, dach: 'flach', schild: '', farbe: '#b7d7c9', farbeD: '#6b7b85', farbeA: '#6b7b85', farbeF: '#8fd0ff', farbeT: '#4b5b65', farbeS: '#2c3e50' } },
+    hochhaus:  { name: 'Hochhaus', icon: '🏢', p: { breite: 48, tiefe: 48, geschosse: 9, geschossH: 18, dach: 'flach', schild: '', farbe: '#cfd8dc', farbeD: '#78909c', farbeA: '#d32f2f', farbeF: '#5dade2', farbeT: '#455a64', farbeS: '#263238' } },
+    laden:     { name: 'Laden', icon: '🏪', p: { breite: 64, tiefe: 44, geschosse: 2, geschossH: 24, dach: 'flach', schild: 'LADEN', farbe: '#fff3e0', farbeD: '#8d6e63', farbeA: '#e53935', farbeF: '#8fd0ff', farbeT: '#6d4c41', farbeS: '#e53935' } },
+    feuer:     { name: 'Feuerwache', icon: '🚒', p: { breite: 90, tiefe: 50, geschosse: 2, geschossH: 26, dach: 'flach', schild: 'FEUERWEHR', farbe: '#eceff1', farbeD: '#b71c1c', farbeA: '#b71c1c', farbeF: '#8fd0ff', farbeT: '#d32f2f', farbeS: '#d32f2f' } },
+    bahnhof:   { name: 'Bahnhof', icon: '🚉', p: { breite: 84, tiefe: 40, geschosse: 2, geschossH: 24, dach: 'sattel', neigung: 35, schild: 'BAHNHOF', bahnsteig: 26, farbe: '#ffe0b2', farbeD: '#5d4037', farbeA: '#9e9e9e', farbeF: '#8fd0ff', farbeT: '#5d4037', farbeS: '#1565c0' } },
+  },
+  params: [
+    { sec: 'Größe' },
+    { k: 'breite', t: 'range', l: 'Breite', min: 30, max: 140, step: 2, u: 'mm', v: 56 },
+    { k: 'tiefe', t: 'range', l: 'Tiefe', min: 25, max: 100, step: 2, u: 'mm', v: 44 },
+    { k: 'geschosse', t: 'range', l: 'Stockwerke', min: 1, max: 12, step: 1, v: 2 },
+    { k: 'geschossH', t: 'range', l: 'Stockwerk-Höhe', min: 14, max: 34, step: 1, u: 'mm', v: 22 },
+    { sec: 'Dach & Schild' },
+    { k: 'dach', t: 'wahl', l: 'Dach', o: [['sattel', 'Satteldach'], ['flach', 'Flachdach']], v: 'sattel' },
+    { k: 'neigung', t: 'range', l: 'Dachneigung', min: 30, max: 60, step: 5, u: '°', v: 45 },
+    { k: 'schild', t: 'text', l: 'Schild', v: '', max: 14, ph: 'z. B. BÄCKEREI' },
+    { k: 'bahnsteig', t: 'range', l: 'Bahnsteig', min: 18, max: 50, step: 2, u: 'mm', v: 26, tip: 'Nur beim Bahnhof: Tiefe des Bahnsteigs (Höhe = Holzeisenbahn-Schiene)' },
+    { sec: 'Farben' },
+    { k: 'farbig', t: 'wahl', l: 'Druck', o: [[1, 'Mehrfarbig'], [0, 'Einfarbig']], v: 1 },
+    { k: 'farbe', t: 'farbe', l: 'Wände', v: '#f4e3c1' },
+    { k: 'farbeD', t: 'farbe', l: 'Dach', v: '#c0392b' },
+    { k: 'farbeF', t: 'farbe', l: 'Fenster', v: '#8fd0ff' },
+    { k: 'farbeT', t: 'farbe', l: 'Türen', v: '#7a4a2a' },
+    { k: 'farbeA', t: 'farbe', l: 'Details', v: '#8d3a2a' },
+    { k: 'farbeS', t: 'farbe', l: 'Schild', v: '#2c3e50' },
+  ],
+  build: (H, p) => _kgHausBau(H, p),
+  info(r, p){
+    let s = 'Druckt <b>ohne Stützen</b> (mit wenig Füllung, z. B. 10 %, geht es schnell).';
+    if (p.vorlage === 'bahnhof') s += ' Der Bahnsteig ist so hoch wie eine Holzeisenbahn-Schiene – Gleis davor legen.';
+    return s;
+  },
+});
+
 // ═══ FLEXI-DRACHE (Print-in-Place, gelenkige Glieder) ════════════════════════
 // Bauraum mm, Z oben, Länge entlang X (Schwanzspitze x = 0, Schnauze x = L), am Ende
 // per rotate([-90,0,0]) auf Y oben gekippt. Alles liegt flach auf dem Bett und wird
@@ -61661,8 +61820,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.177';
+const VOLME3D_VERSION = '1.18.178';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.178', date:'2026-10-11', changes:[
+    ['🏠','<b>Neu: Häuser für die Spielstadt.</b> Haus mit Satteldach, Stadthaus, Hochhaus, Laden mit rot-weißer Markise, Feuerwache mit großen Toren und Schlauchturm und Bahnhof mit Bahnsteig in Holzeisenbahn-Höhe und Vordach. Breite, Tiefe, Stockwerke und Dach frei einstellbar, Fenster und Türen farbig eingelassen, dazu ein <b>Schild mit eigenem Text</b>. Druckt ohne Stützen.'],
+  ]},
   { version:'1.18.177', date:'2026-10-11', changes:[
     ['🛣️','<b>Neu: Straßenplatten für die Spielstadt.</b> Gerade, Kurve, Kreuzung, T-Kreuzung, Zebrastreifen, Kreisverkehr und Sackgasse – mit Gehweg, Wiese und Mittellinie, mehrfarbig oder einfarbig (Markierung eingraviert). An jeder Kante sitzen ein Puzzle-Zapfen und ein Loch: Die Platten passen in jeder Drehung aneinander. Standardgröße 144 mm, wie eine Holzeisenbahn-Schiene.'],
     ['🚗','<b>Neu: Fahrzeug-Generator.</b> Auto, Polizei, Feuerwehr (mit Leiter), Bus, Laster, Traktor und Rennauto. Die Räder drehen sich: Sie werden einzeln gedruckt und mit Steckachsen außen angesteckt. Mit Rädern unter 42 mm breit – passt in eine Spur der Straßenplatten.'],

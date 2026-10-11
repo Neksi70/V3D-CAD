@@ -19,6 +19,7 @@ const ok = (name, cond, extra) => {
 // Sonderfälle je Generator (zusätzlich zu allen Vorlagen + einfarbig)
 const EXTRA = {
   staender: [{ aufnahme: 'teller', neigung: 25 }, { aufnahme: 'gabel', fussForm: 'eckig' }, { neigung: 0, hoehe: 200 }, { neigung: 30, hoehe: 20 }],
+  haus: [{ vorlage: 'haus', schild: 'Nr. 7' }, { vorlage: 'hochhaus', geschosse: 12, geschossH: 20 }, { vorlage: 'haus', geschosse: 1, breite: 30, tiefe: 25, neigung: 60 }, { vorlage: 'stadthaus', dach: 'sattel', schild: 'CAFÉ' }, { vorlage: 'laden', schild: '' }, { vorlage: 'feuer', breite: 140, farbig: 0 }, { vorlage: 'bahnhof', breite: 40, geschosse: 1 }],
   fahrzeug: [{ vorlage: 'auto', laenge: 50 }, { vorlage: 'bus', laenge: 160 }, { vorlage: 'feuer', laenge: 60 }, { vorlage: 'traktor', laenge: 50 }, { vorlage: 'renn', farbig: 0 }, { vorlage: 'lkw', laenge: 160 }, { vorlage: 'polizei', laenge: 120 }],
   strasse: [{ vorlage: 'kreuzung', raster: 96, fahrbahn: 50, gehweg: 6 }, { vorlage: 'kreisel', raster: 224, fahrbahn: 120, gehweg: 24 }, { vorlage: 'kurve', gehweg: 0 }, { vorlage: 'tkreuzung', farbig: 0 }, { vorlage: 'ende', raster: 96 }, { vorlage: 'zebra', fahrbahn: 40 }],
   zug: [{ vorlage: 'dampf', kupplung: 'haken' }, { vorlage: 'personen', laenge: 160 }, { vorlage: 'gueter', laenge: 50, kupplung: 'keine' }, { vorlage: 'elok', farbig: 0 }, { vorlage: 'kessel', kupplung: 'haken', laenge: 50 }],
