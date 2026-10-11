@@ -19142,6 +19142,7 @@ function buildObjectFromData(data) {
   if (data.schiffParams) { obj.userData.schiffParams = { ...data.schiffParams }; obj.userData.shfSet = data.shfSet; obj.userData._shfVerts = data._shfVerts; }
   if (data.minecraftParams) { obj.userData.minecraftParams = { ...data.minecraftParams }; obj.userData.mcfSet = data.mcfSet; obj.userData._mcfVerts = data._mcfVerts; }
   if (data.dinoParams) { obj.userData.dinoParams = { ...data.dinoParams }; obj.userData.dnoSet = data.dnoSet; obj.userData._dnoVerts = data._dnoVerts; }
+  if (data.kgParams) { obj.userData.kgParams = { ...data.kgParams }; obj.userData.kgSet = data.kgSet; obj.userData._kgVerts = data._kgVerts; }
   if (data.shapeType === 'funnel' || data.type === 'funnel') {   // Trichter-Maße zurück (Geometrie wird unten neu gebaut)
     obj.userData.funnelTopDia   = data.funnelTopDia   != null ? data.funnelTopDia   : 40;
     obj.userData.funnelSpoutDia = data.funnelSpoutDia != null ? data.funnelSpoutDia : 12;
@@ -19435,6 +19436,7 @@ function objectToData(o, modus) {
   if (o.userData.schiffParams) { d.schiffParams = { ...o.userData.schiffParams }; d.shfSet = o.userData.shfSet; d._shfVerts = o.userData._shfVerts; }
   if (o.userData.minecraftParams) { d.minecraftParams = { ...o.userData.minecraftParams }; d.mcfSet = o.userData.mcfSet; d._mcfVerts = o.userData._mcfVerts; }
   if (o.userData.dinoParams) { d.dinoParams = { ...o.userData.dinoParams }; d.dnoSet = o.userData.dnoSet; d._dnoVerts = o.userData._dnoVerts; }
+  if (o.userData.kgParams) { d.kgParams = { ...o.userData.kgParams }; d.kgSet = o.userData.kgSet; d._kgVerts = o.userData._kgVerts; }
   if (o.userData.isSubtract) d.isSubtract = true;
   if (o.userData.varExprs && Object.keys(o.userData.varExprs).length) d.varExprs = o.userData.varExprs;
   if (o.userData.opJournal) d.opJournal = o.userData.opJournal;
@@ -50288,6 +50290,570 @@ async function _shfCreate(){
   }
 }
 
+// ═══ KINDER- & SPIELWELT-GENERATOREN (_kg*) ═════════════════════════════════
+// Gemeinsames Gerüst für die Generatoren aus dem Kinderkurs (Wunschliste Florian,
+// VHS 11.10.26). Ein Generator beschreibt nur Regler + Bauplan:
+//   _kgReg(id, { icon, name, desc, thema, params:[…], vorlagen:{…}, build(H, p, q), info(r, p) })
+// params: { sec:'Überschrift' } | { k, t:'range', l, min, max, step, u, v, tip }
+//         | { k, t:'wahl', l, o:[[wert, text, tip]…], v } | { k, t:'farbe', l, v }
+// build liefert { teile:[{ mf, hex, name, frei }], hinweise:[] } in mm, Z oben.
+// Das Gerüst kümmert sich um Fenster, Vorschau, Farb-Vorrang (frühere Teile
+// gewinnen, spätere werden ausgespart), Einfarbig-Zusammenfassen, Erstellen,
+// Speichern/Laden und „✏️ Im Generator bearbeiten“.
+// Teile mit frei:true (z. B. ein Ständer daneben) bleiben eigenständig.
+const _KG = {};
+const _kgS = { id: null, p: {}, edit: null, rt: null, letzte: null };
+
+function _kgReg(id, def){
+  def.id = id;
+  def.DEF = {};
+  for (const x of def.params) if (x.k) def.DEF[x.k] = x.v;
+  if (def.vorlagen) {
+    const v0 = Object.keys(def.vorlagen)[0];
+    def.DEF.vorlage = v0;
+    Object.assign(def.DEF, def.vorlagen[v0].p || {});
+  }
+  _KG[id] = def;
+  _STARTERS.push({ i: def.icon, t: def.name, d: def.desc, run: () => _kgOpen(id), kids: true, kg: id });
+  if (def.thema) {
+    const th = _GEN_THEMEN.find(t => t[0] === def.thema);
+    if (th) th[1].push(def.name);
+    else { const i = _GEN_THEMEN.findIndex(t => t[0] === 'Spielen & Figuren'); _GEN_THEMEN.splice(i < 0 ? _GEN_THEMEN.length : i + 1, 0, [def.thema, [def.name]]); }
+  }
+}
+
+// Bau-Helfer: alles in mm, Z oben; jedes Zwischenergebnis wird am Ende freigegeben
+function _kgHelfer(w, q){
+  const M = w.Manifold, CS = w.CrossSection, tmp = [];
+  const fein = q === 'fein';
+  const k = x => { if (x) tmp.push(x); return x; };
+  const H = {
+    M, CS, tmp, fein, k,
+    seg: n => Math.max(8, Math.round((fein ? 1 : 0.5) * n)),
+    box: (x0, x1, y0, y1, z0, z1) => k(k(M.cube([Math.max(0.01, x1 - x0), Math.max(0.01, y1 - y0), Math.max(0.01, z1 - z0)])).translate([x0, y0, z0])),
+    // senkrechter Zylinder/Kegel (r unten → r2 oben)
+    cyl: (r, z0, z1, x = 0, y = 0, n = 32, r2) => k(k(M.cylinder(Math.max(0.01, z1 - z0), r, r2 == null ? r : r2, H.seg(n))).translate([x, y, z0])),
+    // liegender Zylinder entlang X bzw. Y
+    cylX: (r, x0, x1, y = 0, z = 0, n = 32, r2) => k(k(k(M.cylinder(Math.max(0.01, x1 - x0), r, r2 == null ? r : r2, H.seg(n))).rotate([0, 90, 0])).translate([x0, y, z])),
+    cylY: (r, y0, y1, x = 0, z = 0, n = 32, r2) => k(k(k(M.cylinder(Math.max(0.01, y1 - y0), r, r2 == null ? r : r2, H.seg(n))).rotate([-90, 0, 0])).translate([x, y0, z])),
+    sph: (r, x = 0, y = 0, z = 0, n = 24) => k(k(M.sphere(Math.max(0.05, r), H.seg(n))).translate([x, y, z])),
+    ell: (rx, ry, rz, x = 0, y = 0, z = 0, n = 24) => k(k(k(M.sphere(1, H.seg(n))).scale([Math.max(0.05, rx), Math.max(0.05, ry), Math.max(0.05, rz)])).translate([x, y, z])),
+    hull: arr => k(M.hull(arr.filter(Boolean))),
+    U: arr => { arr = arr.filter(Boolean); return !arr.length ? null : arr.length === 1 ? arr[0] : k(M.union(arr)); },
+    sub: (a, b) => !a ? null : !b ? a : k(a.subtract(b)),
+    int: (a, b) => (!a || !b) ? null : k(a.intersect(b)),
+    // Stab von a nach b mit Radius r (Kugelenden)
+    stab: (a, b, r, r2) => H.hull([H.sph(r, a[0], a[1], a[2], 16), H.sph(r2 == null ? r : r2, b[0], b[1], b[2], 16)]),
+    // Umriss [[x,y]…] in der XY-Ebene, von z0 nach z1 hochgezogen
+    ext: (pts, z0, z1) => k(k(k(new CS([pts], 'EvenOdd')).extrude(Math.max(0.01, z1 - z0))).translate([0, 0, z0])),
+    // Umriss [[x,z]…] (Seitenansicht), quer von y0 bis y1
+    extXZ: (pts, y0, y1) => k(k(k(k(new CS([pts], 'EvenOdd')).extrude(Math.max(0.01, y1 - y0))).rotate([90, 0, 0])).translate([0, y1, 0])),
+    // Umriss [[y,z]…] (Vorderansicht), längs von x0 bis x1
+    extYZ: (pts, x0, x1) => k(k(k(k(new CS([pts], 'EvenOdd')).extrude(Math.max(0.01, x1 - x0))).rotate([90, 0, 90])).translate([x0, 0, 0])),
+    // Drehkörper aus einem Profil [[r,z]…] um die Z-Achse
+    rev: (pts, x = 0, y = 0, n = 48) => k(k(M.revolve(k(new CS([pts], 'EvenOdd')), H.seg(n))).translate([x, y, 0])),
+    // alles unterhalb des Betts abschneiden
+    bett: m => !m ? null : H.int(m, H.box(-1e4, 1e4, -1e4, 1e4, 0, 1e4)),
+  };
+  return H;
+}
+
+// Bauplan ausführen → Teile als Geometrie (mm, Y oben, Mitte über dem Ursprung)
+function _kgBau(w, id, p, q){
+  const def = _KG[id], H = _kgHelfer(w, q);
+  try {
+    const r = def.build(H, p, q) || {};
+    let roh = (r.teile || []).filter(t => t && t.mf && !t.mf.isEmpty());
+    // Einfarbig: alles außer den freien Teilen zu einem Stück
+    if (p.farbig === 0) {
+      const fest = roh.filter(t => !t.frei), frei = roh.filter(t => t.frei);
+      roh = fest.length ? [{ mf: H.U(fest.map(t => t.mf)), hex: p.farbe || (fest[fest.length - 1].hex), name: '' }, ...frei] : frei;
+    }
+    // Farb-Vorrang: frühere Teile gewinnen, spätere werden dort ausgespart
+    let belegt = null;
+    const res = [];
+    for (const t of roh) {
+      let m = t.mf;
+      if (!t.frei && belegt) m = H.sub(m, belegt);
+      if (!m || m.isEmpty() || m.volume() < 0.05) continue;
+      if (!t.frei) belegt = belegt ? H.k(belegt.add(m)) : m;
+      res.push({ mf: m, hex: t.hex, name: t.name || '', frei: !!t.frei });
+    }
+    if (!res.length) throw new Error('nichts zu bauen');
+    // Maße + Mitte nach dem eigentlichen Modell (freie Beistell-Teile wie ein Ständer zählen nicht mit)
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    const nurFest = res.some(t => !t.frei);
+    const teile = res.map(t => {
+      const geo = _mfToGeo(t.mf), a = geo.attributes.position.array;
+      if (!nurFest || !t.frei) for (let i = 0; i < a.length; i += 3) {
+        if (a[i] < x0) x0 = a[i]; if (a[i] > x1) x1 = a[i];
+        if (a[i + 1] < y0) y0 = a[i + 1]; if (a[i + 1] > y1) y1 = a[i + 1];
+        if (a[i + 2] < z0) z0 = a[i + 2]; if (a[i + 2] > z1) z1 = a[i + 2];
+      }
+      return { geo, hex: t.hex, name: t.name, frei: t.frei, vol: t.mf.volume() };
+    });
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    for (const t of teile) { t.geo.translate(-cx, -cy, -z0); t.geo.rotateX(-Math.PI / 2); }
+    return { teile, hinweise: r.hinweise || [], extra: r.extra || {}, mass: { lx: x1 - x0, by: y1 - y0, hz: z1 - z0 } };
+  } finally {
+    for (const x of H.tmp) { try { x.delete(); } catch (e) {} }
+  }
+}
+
+function _kgFenster(){
+  let el = document.getElementById('kg-modal');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'kg-modal'; el.className = 'g3dm';
+  el.onclick = e => { if (e.target === el) _kgClose(); };
+  el.innerHTML = `<div class="g3box">
+    <div class="g3hdr"><span id="kg-titel"></span><span class="vx" onclick="_kgClose()">✕</span></div>
+    <div class="g3body"><canvas id="kg-canvas" width="200" height="320"></canvas>
+      <div class="g3ctrl"><div id="kg-regler"></div><div class="g3info" id="kg-info"></div></div></div>
+    <div class="g3foot">
+      <button class="btn" onclick="_kgReset()">Zurücksetzen</button>
+      <button class="btn" onclick="_kgClose()">Abbrechen</button>
+      <button class="btn pri" id="kg-go" onclick="_kgCreate()">✓ Erstellen</button>
+    </div></div>`;
+  document.body.appendChild(el);
+  return el;
+}
+
+function _kgRegler(def){
+  const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  let h = '';
+  if (def.vorlagen) {
+    h += '<span class="vsec">Vorlage</span><div class="vtbrow" id="kg-vorlage-bg" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:7px">';
+    for (const [key, v] of Object.entries(def.vorlagen))
+      h += `<button class="vtb" data-v="${key}" title="${esc(v.tip || v.name)}" onclick="_kgVorlage('${key}')">${v.icon || ''} ${esc(v.name)}</button>`;
+    h += '</div>';
+  }
+  for (const x of def.params) {
+    if (x.sec) { h += `<span class="vsec">${esc(x.sec)}</span>`; continue; }
+    const tip = x.tip ? ` title="${esc(x.tip)}"` : '';
+    if (x.t === 'range') {
+      h += `<div class="vrow"><label${tip}>${esc(x.l)}</label> <input type="range" id="kg-${x.k}" min="${x.min}" max="${x.max}" step="${x.step || 1}" value="${x.v}" oninput="_kgSet('${x.k}',parseFloat(this.value))"><span class="vv" id="kgv-${x.k}"></span>${x.u ? `<span class="vu">${esc(x.u)}</span>` : ''}</div>`;
+    } else if (x.t === 'wahl') {
+      h += `<div class="vrow"><label${tip}>${esc(x.l)}</label></div><div class="vtbrow" id="kg-${x.k}-bg" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px">`;
+      for (const [val, txt, t2] of x.o) {
+        const js = typeof val === 'number' ? val : `'${val}'`;
+        h += `<button class="vtb" data-v="${esc(val)}"${t2 ? ` title="${esc(t2)}"` : ''} onclick="_kgSet('${x.k}',${js})">${esc(txt)}</button>`;
+      }
+      h += '</div>';
+    } else if (x.t === 'farbe') {
+      h += `<div class="vrow"><label${tip}>${esc(x.l)}</label> <input type="color" id="kg-${x.k}" value="${x.v}" oninput="_kgSet('${x.k}',this.value)" style="width:46px;height:24px;padding:0;border:1px solid var(--border);border-radius:5px;background:none"></div>`;
+    }
+  }
+  return h;
+}
+
+function _kgSync(){
+  const def = _KG[_kgS.id]; if (!def) return;
+  const p = _kgS.p;
+  for (const x of def.params) {
+    if (!x.k) continue;
+    if (x.t === 'range') {
+      const s = document.getElementById('kg-' + x.k), t = document.getElementById('kgv-' + x.k);
+      if (s) s.value = p[x.k];
+      if (t) t.textContent = String(p[x.k]).replace('.', ',');
+    } else if (x.t === 'wahl') {
+      document.querySelectorAll('#kg-' + x.k + '-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === String(p[x.k])));
+    } else if (x.t === 'farbe') {
+      const s = document.getElementById('kg-' + x.k); if (s) s.value = p[x.k];
+    }
+  }
+  document.querySelectorAll('#kg-vorlage-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === String(p.vorlage)));
+}
+
+function _kgOpen(id, editObj){
+  const def = _KG[id]; if (!def) return;
+  if (!editObj && _kgS.id !== id) _kgS.p = { ...def.DEF };            // gleicher Generator: letzte Einstellung bleibt
+  _kgS.id = id;
+  _kgS.edit = editObj && editObj.isMesh ? editObj : null;
+  const el = _kgFenster();
+  document.getElementById('kg-titel').textContent = def.icon + ' ' + def.name;
+  document.getElementById('kg-regler').innerHTML = _kgRegler(def);
+  document.getElementById('kg-go').textContent = _kgS.edit ? '✓ Übernehmen' : '✓ Erstellen';
+  document.getElementById('kg-info').innerHTML = '';
+  el.classList.add('show');
+  _kgSync();
+  _mfInit().then(_kgBoot).catch(() => notify('Rechenkern für den Generator konnte nicht geladen werden', 'w'));
+}
+function _kgBoot(){
+  const m = document.getElementById('kg-modal');
+  if (!m || !m.classList.contains('show')) return;
+  if (!_gpv['kg']) _gpvInit('kg', () => _kgPreviewGeo());
+  else { _gpvUpdate('kg'); if (!_gpv['kg'].anim) _gpvLoop('kg'); }
+}
+function _kgClose(){ const el = document.getElementById('kg-modal'); if (el) el.classList.remove('show'); _gpvStop('kg'); _kgS.edit = null; }
+function _kgRepaint(){
+  _kgSync();
+  if (_kgS.rt) clearTimeout(_kgS.rt);
+  _kgS.rt = setTimeout(() => { _kgS.rt = null; if (!_mfWasm) return; if (_gpv['kg']) _gpvUpdate('kg'); else _kgBoot(); }, 200);
+}
+function _kgSet(k, v){ _kgS.p[k] = v; _kgRepaint(); }
+function _kgVorlage(key){
+  const def = _KG[_kgS.id], v = def && def.vorlagen && def.vorlagen[key]; if (!v) return;
+  Object.assign(_kgS.p, v.p || {}, { vorlage: key });
+  _kgRepaint();
+}
+function _kgReset(){ const def = _KG[_kgS.id]; if (!def) return; _kgS.p = { ...def.DEF }; _kgRepaint(); }
+
+function _kgPreviewGeo(){
+  if (!_mfWasm) throw new Error('Manifold lädt noch');
+  const r = _kgBau(_mfWasm, _kgS.id, _kgS.p, 'vorschau');
+  let n = 0; for (const t of r.teile) { t.geo = t.geo.toNonIndexed(); n += t.geo.attributes.position.array.length; }
+  const pos = new Float32Array(n), col = new Float32Array(n);
+  let o = 0;
+  for (const t of r.teile) {
+    const a = t.geo.attributes.position.array, c = new THREE.Color(t.hex);
+    pos.set(a, o);
+    for (let i = o; i < o + a.length; i += 3) { col[i] = c.r; col[i + 1] = c.g; col[i + 2] = c.b; }
+    o += a.length; t.geo.dispose();
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.scale(0.1, 0.1, 0.1);
+  geo.computeVertexNormals();
+  _kgS.letzte = r;
+  _kgInfo(r);
+  return geo;
+}
+
+function _kgInfo(r){
+  const el = document.getElementById('kg-info'), def = _KG[_kgS.id];
+  if (!el || !r || !def) return;
+  const fm = v => (Math.round(v * 10) / 10).toString().replace('.', ',');
+  const fest = r.teile.filter(t => !t.frei).length, frei = r.teile.length - fest;
+  let s = '<b>' + fm(r.mass.lx) + ' × ' + fm(r.mass.by) + ' × ' + fm(r.mass.hz) + ' mm</b>';
+  if (_kgS.p.farbig === 0) s += ' · einfarbig, ein Teil';
+  else if (fest > 1) s += ' · <b>' + fest + ' Farbteile</b> (im 3MF Filament 1–' + fest + ')';
+  if (frei) s += ' · dazu ' + (frei === 1 ? 'ein eigenes Teil' : frei + ' eigene Teile');
+  if (def.info) { const t = def.info(r, _kgS.p); if (t) s += '<br>' + t; }
+  if (Math.max(r.mass.lx, r.mass.by) > 256) s += '<br><b style="color:#ffb455">⚠ Größer als ein 256-mm-Bett: kleiner wählen oder mit ✂ Schneiden teilen.</b>';
+  for (const h of r.hinweise) s += '<br><b style="color:#ffb455">⚠ ' + h + '</b>';
+  el.innerHTML = s;
+}
+
+function _kgSetOf(o){ const id = o && o.userData.kgSet; return id ? objects.filter(x => x.userData.kgSet === id) : (o ? [o] : []); }
+function _kgEdit(o){
+  const kp = o && o.userData.kgParams;
+  if (!kp || !_KG[kp.gen]) return;
+  const geaendert = _kgSetOf(o).some(x => x.userData._kgVerts && x.geometry && x.geometry.attributes.position.count !== x.userData._kgVerts);
+  if (geaendert && !confirm('Das Modell wurde nach dem Erstellen verändert (z. B. abgezogen, abgerundet oder mit Textur). Beim Bearbeiten im Generator wird es neu gebaut, diese Änderungen gehen verloren.\n\nTrotzdem bearbeiten?')) return;
+  const def = _KG[kp.gen];
+  _kgS.p = { ...def.DEF, ...kp };
+  delete _kgS.p.gen;
+  _kgS.id = kp.gen;
+  _kgOpen(kp.gen, o);
+}
+
+async function _kgCreate(){
+  const id = _kgS.id, def = _KG[id]; if (!def) return;
+  const p = { ..._kgS.p };
+  _progressShow(def.name + ' wird gebaut…'); _progressSet(10); _progressCreep(90, 0.8);
+  try {
+    const w = await _mfInit();
+    await new Promise(res => setTimeout(res, 30));
+    const r = _kgBau(w, id, p, 'fein');
+    const setId = 'kg' + Date.now().toString(36) + Math.floor(Math.random() * 1e4);
+    const eo = _kgS.edit;
+    typeCounts['kg_' + id] = (typeCounts['kg_' + id] || 0) + (eo ? 0 : 1);
+    const nr = typeCounts['kg_' + id] || 1;
+    const vn = def.vorlagen && def.vorlagen[p.vorlage] ? def.vorlagen[p.vorlage].name : def.name;
+    const meshes = r.teile.map(t => {
+      const geo = t.geo.toNonIndexed(); t.geo.dispose();
+      geo.scale(0.1, 0.1, 0.1);
+      _moldNormals(geo);
+      const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(t.hex), roughness: 0.6, metalness: 0.02, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: vn + ' #' + nr + (t.name ? ' · ' + t.name : ''), color: t.hex, isHole: false,
+        fillet: 0, chamfer: 0, displacementPattern: 'keine', displacementAmp: 0.5, displacementFreq: 4,
+        displacementInvert: false, displacementSymmetric: false, kgParams: { gen: id, ...p }, kgSet: setId, edgeAngle: 40,
+        _origGeo: geo, _kgVerts: geo.attributes.position.count };
+      return mesh;
+    });
+    if (eo && objects.includes(eo)) {                                       // an Ort und Stelle ersetzen
+      saveUndo();
+      const alt = _kgSetOf(eo);
+      for (const m of meshes) { m.position.copy(eo.position); m.quaternion.copy(eo.quaternion); scene.add(m); objects.push(m); _updateObjEdgeLines(m); }
+      for (const o of alt) { scene.remove(o); objects = objects.filter(x => x !== o); }
+      selectObjs(meshes); updateTree(); updateFP();
+      _progressDone();
+      notify(vn + ' geändert ✓', 'ok');
+      _kgClose();
+      return;
+    }
+    saveUndo();
+    _genAddParts(meshes);
+    _progressDone();
+    notify(vn + ' erstellt ✓ ' + meshes.length + (meshes.length === 1 ? ' Teil' : ' Teile'), 'ok');
+    _kgClose();
+  } catch (e) {
+    console.error(def.name + ':', e);
+    _progressHide();
+    notify(def.name + ' fehlgeschlagen: ' + (e && e.message || e), 'w');
+  }
+}
+
+// ─── Ständer (eigener Generator + Baustein fürs Flugzeug) ───────────────────
+// Fuß auf dem Bett, Stab um „neigung“ nach vorn (+X) gekippt, oben eine Aufnahme:
+//   zapfen – steckt in ein Loch im Modell (Flugzeug: Loch im Bauch)
+//   teller – runde Auflage zum Ankleben / für einen Magneten
+//   gabel  – U-Gabel, in die man ein Modell (Rakete, Boot) einlegt
+// Lokal: Stabfuß im Ursprung. Liefert { mf, top:[x,z], achse:[sx,cz] }.
+function _kgStaender(H, s){
+  const hS = Math.max(20, s.hoehe), a = Math.max(0, Math.min(35, s.neigung)) * Math.PI / 180;
+  const rS = Math.max(2.5, s.stab / 2), fG = Math.max(30, s.fuss), dF = Math.max(3, Math.min(6, fG * 0.07));
+  const sx = Math.sin(a), cz = Math.cos(a);
+  const xFuss = -hS * sx / 2;                                              // Schwerpunkt der Spitze über der Fußmitte
+  const fuss = s.fussForm === 'eckig'
+    ? H.hull([H.box(-fG / 2, fG / 2, -fG / 2, fG / 2, 0, 0.6), H.box(-fG / 2 + 1.2, fG / 2 - 1.2, -fG / 2 + 1.2, fG / 2 - 1.2, 0, dF)])
+    : H.cyl(fG / 2, 0, dF, 0, 0, 64, fG / 2 - 1.2);
+  // Stab + Aufnahme im eigenen System (Achse Z), dann kippen
+  const loc = [];
+  loc.push(H.cyl(rS * 1.6, -dF, 0.01, 0, 0, 32, rS));                       // Kehle zum Fuß
+  loc.push(H.cyl(rS, -dF, hS, 0, 0, 32));
+  const zp = Math.max(2, s.zapfen / 2);
+  if (s.aufnahme === 'teller') {
+    const rT = Math.max(rS + 3, s.teller / 2);
+    loc.push(H.cyl(rS, hS - (rT - rS) * 1.2, hS, 0, 0, 32, rT));             // sanfter Kegel unter dem Teller
+    loc.push(H.cyl(rT, hS, hS + 2.4, 0, 0, 48));
+  } else if (s.aufnahme === 'gabel') {
+    const gw = Math.max(4, s.gabel), wd = Math.max(2, rS * 0.8), gh = Math.max(8, gw * 0.9);
+    loc.push(H.box(-rS, rS, -gw / 2 - wd, gw / 2 + wd, hS, hS + 2));
+    loc.push(H.box(-rS, rS, -gw / 2 - wd, -gw / 2, hS, hS + gh));
+    loc.push(H.box(-rS, rS, gw / 2, gw / 2 + wd, hS, hS + gh));
+  } else {
+    loc.push(H.cyl(zp, hS, hS + 6, 0, 0, 32));                             // Zapfen
+    loc.push(H.cyl(zp, hS + 6, hS + 7, 0, 0, 32, zp - 0.8));               // Fase zum Einfädeln
+  }
+  const stab = H.k(H.k(H.U(loc).rotate([0, a * 180 / Math.PI, 0])).translate([xFuss, 0, dF]));
+  const mf = H.bett(H.U([fuss, stab]));
+  return { mf, top: [xFuss + hS * sx, dF + hS * cz], fussG: fG, dF };
+}
+
+_kgReg('staender', {
+  icon: '🗼', name: 'Ständer', thema: 'Spielwelt & Kinder',
+  desc: 'Hält Flugzeuge, Raketen und Figuren in der Luft – mit Zapfen, Teller oder Gabel',
+  params: [
+    { sec: 'Ständer' },
+    { k: 'hoehe', t: 'range', l: 'Höhe', min: 20, max: 200, step: 5, u: 'mm', v: 80, tip: 'Höhe des Stabs über dem Fuß' },
+    { k: 'neigung', t: 'range', l: 'Neigung', min: 0, max: 30, step: 1, u: '°', v: 15, tip: 'Stab nach vorn kippen – das Flugzeug steigt dann. Bis 30° druckt man ohne Stützen.' },
+    { k: 'stab', t: 'range', l: 'Stab-Ø', min: 5, max: 16, step: 0.5, u: 'mm', v: 8 },
+    { k: 'fussForm', t: 'wahl', l: 'Fuß', o: [['rund', 'Rund'], ['eckig', 'Eckig']], v: 'rund' },
+    { k: 'fuss', t: 'range', l: 'Fuß-Größe', min: 30, max: 140, step: 5, u: 'mm', v: 60, tip: 'Größerer Fuß = kippt nicht so leicht' },
+    { sec: 'Oben' },
+    { k: 'aufnahme', t: 'wahl', l: 'Aufnahme', o: [['zapfen', 'Zapfen', 'Steckt in ein Loch im Modell (z. B. im Flugzeugbauch)'], ['teller', 'Teller', 'Runde Auflage zum Ankleben oder für einen Magneten'], ['gabel', 'Gabel', 'U-Gabel zum Einlegen (Rakete, Boot, Stift)']], v: 'zapfen' },
+    { k: 'zapfen', t: 'range', l: 'Zapfen-Ø', min: 3, max: 10, step: 0.5, u: 'mm', v: 5, tip: 'Das Loch im Modell sollte 0,3 mm größer sein' },
+    { k: 'teller', t: 'range', l: 'Teller-Ø', min: 10, max: 50, step: 1, u: 'mm', v: 24 },
+    { k: 'gabel', t: 'range', l: 'Gabel-Weite', min: 4, max: 40, step: 1, u: 'mm', v: 12 },
+    { k: 'farbe', t: 'farbe', l: 'Farbe', v: '#3a3f45' },
+  ],
+  build(H, p){
+    const s = _kgStaender(H, p);
+    return { teile: [{ mf: s.mf, hex: p.farbe, name: '' }] };
+  },
+  info(r, p){
+    let s = 'Fuß liegt flach auf dem Bett, der Stab druckt ohne Stützen.';
+    if (p.aufnahme === 'teller' && p.neigung > 10) s += ' Der Teller kippt mit – unter seinem Rand evtl. Stützen.';
+    if (p.aufnahme === 'zapfen') s += ' Loch im Modell: Ø ' + String(p.zapfen + 0.3).replace('.', ',') + ' mm, 7 mm tief.';
+    return s;
+  },
+});
+
+// ─── Flugzeug ───────────────────────────────────────────────────────────────
+// Alles hat einen flachen Boden auf dem Bett (Rumpf unten abgeflacht, Flügel mit
+// ebener Unterseite wie ein Clark-Y-Profil, Höhenleitwerk auf dem Bett) – so
+// druckt das Flugzeug ohne Stützen. Bauraum mm, Nase bei +X, Heck bei x = 0.
+// Optional ein Loch im Bauch + passender Ständer daneben.
+const _KG_FLUG = {
+  jet:    { R: 0.055, nase: 'rund',  nl: 0.12, tl: 0.32, rt: 0.22, xw: 0.40, cr: 0.25, tap: 0.33, ht: 0.13, fin: 0.17, kanzel: 'scheibe', duese: 0 },
+  jumbo:  { R: 0.068, nase: 'rund',  nl: 0.14, tl: 0.32, rt: 0.22, xw: 0.40, cr: 0.27, tap: 0.30, ht: 0.13, fin: 0.17, kanzel: 'scheibe', duese: 0, buckel: 1 },
+  prop:   { R: 0.075, nase: 'stumpf', nl: 0.10, tl: 0.42, rt: 0.28, xw: 0.52, cr: 0.20, tap: 0.70, ht: 0.15, fin: 0.17, kanzel: 'kuppel', duese: 0 },
+  jaeger: { R: 0.052, nase: 'spitz', nl: 0.30, tl: 0.18, rt: 0.60, xw: 0.10, cr: 0.52, tap: 0.10, ht: 0.10, fin: 0.16, kanzel: 'kuppel', duese: 1 },
+  segler: { R: 0.042, nase: 'rund',  nl: 0.16, tl: 0.55, rt: 0.16, xw: 0.52, cr: 0.15, tap: 0.50, ht: 0.11, fin: 0.17, kanzel: 'kuppel', duese: 0 },
+};
+
+function _kgFlugzeugBau(H, p){
+  const F = _KG_FLUG[p.vorlage] || _KG_FLUG.jet;
+  const L = Math.max(60, p.laenge), R = L * F.R, S2 = L * Math.max(40, p.spann) / 200;
+  const sw = Math.max(0, Math.min(60, p.pfeil)) * Math.PI / 180;
+  const n = H.fein ? 26 : 14;
+  // Rumpf-Radius über die Länge (u = 0 Heck … 1 Nase)
+  const rad = u => {
+    let f = 1;
+    const v0 = 1 - F.nl;
+    if (u > v0) {
+      const t = Math.min(1, (u - v0) / F.nl);
+      f = F.nase === 'spitz' ? Math.pow(1 - t, 0.85) : F.nase === 'stumpf' ? 0.55 + 0.45 * Math.sqrt(Math.max(0, 1 - t * t)) : Math.sqrt(Math.max(0, 1 - t * t));
+    }
+    if (u < F.tl) f *= F.rt + (1 - F.rt) * Math.pow(u / F.tl, 0.75);
+    return Math.max(0.35, R * f);
+  };
+  const zc = u => rad(u) * 0.62;                                            // flacher Boden: Mitte knapp über dem Bett
+  const tlg = [];
+  const kugeln = [];
+  for (let i = 0; i <= n; i++) {
+    const u = i / n, r = rad(u);
+    let rz = r;
+    if (F.buckel && u > 0.62 && u < 0.92) rz = r * (1 + 0.32 * Math.sin((u - 0.62) / 0.3 * Math.PI));   // Jumbo-Buckel
+    kugeln.push(H.ell(r, r, rz, u * L, 0, zc(u), 20));
+  }
+  const rumpfT = [];
+  for (let i = 0; i < n; i++) rumpfT.push(H.hull([kugeln[i], kugeln[i + 1]]));
+  let rumpf = H.bett(H.U(rumpfT));
+  // Flügelprofil mit ebener Unterseite (liegt auf dem Bett)
+  // xLE = Vorderkante (Richtung Nase, +X), die Profiltiefe c läuft nach hinten
+  const profil = (xLE, c, t) => {
+    const pts = [];
+    const m = 10;
+    for (let i = 0; i <= m; i++) {
+      const s = 1 - i / m;                                                  // Hinterkante → Vorderkante (oben)
+      const zt = Math.max(0.5, t * (s < 0.3 ? Math.sqrt(s / 0.3) : 1 - Math.pow((s - 0.3) / 0.7, 1.6) * 0.82));
+      pts.push([xLE - c * s, zt]);
+    }
+    pts.push([xLE, 0]); pts.push([xLE - c, 0]);
+    return pts;
+  };
+  const fluegelPaar = (xLE, c, tR, sp, tap, swp, yRoot = 0) => {
+    const cT = c * tap, tT = Math.max(1.4, tR * Math.max(0.45, tap));
+    const root = H.extXZ(profil(xLE, c, tR), yRoot - 0.1, yRoot + 0.1);
+    const out = [];
+    for (const sg of [1, -1]) {
+      const xT = xLE - sp * Math.tan(swp) - (c - cT) * 0.25;
+      const y0 = sg > 0 ? yRoot + sp - 0.2 : -yRoot - sp, y1 = y0 + 0.2;
+      const rootS = sg > 0 ? root : H.extXZ(profil(xLE, c, tR), -yRoot - 0.1, -yRoot + 0.1);
+      out.push(H.hull([rootS, H.extXZ(profil(xT, cT, tT), y0, y1)]));
+    }
+    return H.U(out);
+  };
+  const cR = L * F.cr, xLE = L * F.xw + cR;                              // xw = Hinterkante an der Wurzel
+  const tR = Math.max(2.4, Math.min(R * 0.9, cR * 0.13));
+  const fluegel = fluegelPaar(xLE, cR, tR, S2, F.tap, sw);
+  // Leitwerk: Höhenleitwerk auf dem Bett, Seitenleitwerk(e) senkrecht
+  const cH = L * F.ht, sH = Math.max(S2 * 0.36, R * 2.2);
+  const hoehe = F.ht > 0.1 || p.vorlage !== 'jaeger' ? fluegelPaar(L * 0.015 + cH, cH, Math.max(1.6, cH * 0.11), sH, 0.55, sw * 0.8) : null;
+  const hF = L * F.fin, dF = Math.max(1.6, L * 0.012);
+  const finPts = (x0) => [[x0, 0], [x0 + L * 0.2, 0], [x0 + L * 0.2, zc(0.2) + rad(0.2) * 0.6], [x0 + L * 0.075 + hF * 0.55, zc(0.03) + hF], [x0 + L * 0.02 + hF * 0.42, zc(0.03) + hF], [x0, zc(0.02) + rad(0.02)]];
+  const flossen = [];
+  if (p.leitwerk === 'doppel') {
+    for (const sg of [1, -1]) { const y = sg * Math.max(R * 0.55, dF); flossen.push(H.extXZ(finPts(L * 0.01), y - dF / 2, y + dF / 2)); }
+  } else flossen.push(H.extXZ(finPts(0), -dF / 2, dF / 2));
+  const leitwerk = H.U(flossen);
+  // Triebwerke unter/an den Flügeln (flach auf dem Bett)
+  const akzent = [];
+  const nT = Math.round(p.triebw || 0);
+  if (nT > 0) {
+    const rE = Math.max(1.6, R * (p.vorlage === 'jumbo' ? 0.42 : 0.5)), lE = L * 0.17;
+    const lagen = nT >= 4 ? [0.36, 0.66] : [0.38];
+    for (const f of lagen) for (const sg of [1, -1]) {
+      const y = sg * Math.max(R + rE + 1, S2 * f), xl = xLE - Math.abs(y) * Math.tan(sw);
+      const x0 = xl - lE * 0.55;
+      akzent.push(H.bett(H.cylX(rE, x0, x0 + lE, y, rE * 0.8, 24, rE * 0.82)));
+    }
+  }
+  // Propeller vorn: Spinner + zwei senkrechte Blätter (das untere endet am Bett)
+  if (p.prop) {
+    const zN = zc(1), rN = rad(1), xN = L;
+    akzent.push(H.ell(Math.max(2, rN * 0.9), rN * 0.7, rN * 0.7, xN, 0, zN, 20));
+    const bl = Math.max(R * 1.6, 7), bw = Math.max(3, R * 0.62), bd = Math.max(1.8, L * 0.014);
+    akzent.push(H.bett(H.box(xN + rN * 0.25, xN + rN * 0.25 + bd, -bw / 2, bw / 2, zN - bl, zN + bl)));
+  }
+  if (F.duese) akzent.push(H.bett(H.cylX(rad(0.03) * 0.8, -L * 0.03, L * 0.04, 0, zc(0.03), 24, rad(0.05) * 0.9)));
+  // Cockpit: Scheibe vorn (Jets) oder Kuppel (kleine Flugzeuge, Jäger, Segler)
+  let kanzel = null;
+  if (F.kanzel === 'kuppel') {
+    const u = p.vorlage === 'jaeger' ? 0.76 : p.vorlage === 'segler' ? 0.8 : 0.66;
+    const r = rad(u);
+    kanzel = H.ell(L * (p.vorlage === 'segler' ? 0.12 : 0.1), r * 0.55, r * 0.55, u * L, 0, zc(u) + r * 0.62, 24);
+  } else {
+    const u0 = 1 - F.nl * 0.85, u1 = 1 - F.nl * 0.45;
+    const kb = H.box(u0 * L, u1 * L, -R * 2, R * 2, zc(0.9) + R * 0.28, zc(0.9) + R * 3);
+    kanzel = H.int(rumpf, kb);
+    rumpf = H.sub(rumpf, kb);                                               // gleicher Schneidkörper → keine Restfuge
+  }
+  // Fensterreihe (nur Passagierflugzeuge)
+  let fenster = null;
+  if (p.fenster) {
+    const rw = Math.max(0.8, R * 0.13), zf = zc(0.5) + R * 0.28, dx = Math.max(rw * 3, R * 0.42);
+    const st = [];
+    for (let x = L * 0.26; x < L * (1 - F.nl * 1.05); x += dx) {
+      if (Math.abs(x - (xLE - cR * 0.5)) < cR * 0.4) continue;            // über dem Flügel frei lassen
+      st.push(H.cylY(rw, -R * 1.5, R * 1.5, x, zf, 12));
+    }
+    const stangen = H.U(st);
+    if (p.farbig !== 0 && stangen) { fenster = H.int(rumpf, stangen); rumpf = H.sub(rumpf, stangen); }
+    if (p.farbig === 0 && stangen) {                                       // einfarbig: Fenster 0,7 mm tief eingraviert
+      const innen = [];
+      for (let i = 0; i <= n; i++) { const u = i / n; innen.push(H.ell(Math.max(0.2, rad(u) - 0.7), Math.max(0.2, rad(u) - 0.7), Math.max(0.2, rad(u) - 0.7), u * L, 0, zc(u), 20)); }
+      const kern = [];
+      for (let i = 0; i < n; i++) kern.push(H.hull([innen[i], innen[i + 1]]));
+      rumpf = H.sub(rumpf, H.sub(stangen, H.U(kern)));
+    }
+  }
+  // Ständer-Loch im Bauch (Schwerpunkt ≈ 30 % der Flügeltiefe)
+  const lochD = (p.zapfen || 5) + 0.3, xCG = xLE - cR * (p.vorlage === 'jaeger' ? 0.45 : 0.32);
+  const loch = p.staender ? H.cyl(lochD / 2, -1, Math.min(7, zc(xCG / L) + rad(xCG / L) - 1.6), xCG, 0, 24) : null;
+  const dunkel = '#26303c';
+  const teile = [];
+  if (kanzel) teile.push({ mf: kanzel, hex: dunkel, name: 'Cockpit' });
+  if (fenster) teile.push({ mf: fenster, hex: dunkel, name: 'Fenster' });
+  if (akzent.length) teile.push({ mf: H.U(akzent), hex: p.farbe2, name: 'Triebwerke' });
+  teile.push({ mf: leitwerk, hex: p.farbe2, name: 'Leitwerk' });
+  teile.push({ mf: H.U([fluegel, hoehe]), hex: p.farbe3 || p.farbe, name: 'Flügel' });
+  teile.push({ mf: rumpf, hex: p.farbe, name: 'Rumpf' });
+  if (loch) for (const t of teile) t.mf = H.sub(t.mf, loch);
+  if (p.staender) {
+    const s = _kgStaender(H, { hoehe: p.stH, neigung: p.stN, stab: 8, fussForm: 'rund', fuss: Math.max(50, Math.min(100, L * 0.45)), aufnahme: 'zapfen', zapfen: p.zapfen || 5 });
+    // hinter dem Heck abstellen (das Heck ist schmal, so bleibt die Fläche klein)
+    teile.push({ mf: H.k(s.mf.translate([-s.fussG / 2 - 6 - L * 0.06, 0, 0])), hex: '#3a3f45', name: 'Ständer', frei: true });
+  }
+  const hinweise = [];
+  if (dF < 1.6 || tR < 2) hinweise.push('Sehr klein – Leitwerk und Flügel werden zerbrechlich. Länger wählen.');
+  return { teile, hinweise };
+}
+
+_kgReg('flugzeug', {
+  icon: '✈️', name: 'Flugzeug', thema: 'Spielwelt & Kinder',
+  desc: 'Passagierjet, Jumbo, Propellerflugzeug, Düsenjäger, Segelflieger – flach auf dem Bett, mit Ständer',
+  vorlagen: {
+    jet:    { name: 'Passagierjet', icon: '✈️', tip: 'Verkehrsflugzeug mit zwei Triebwerken und Fensterreihe', p: { laenge: 150, spann: 100, pfeil: 25, triebw: 2, prop: 0, leitwerk: 'normal', fenster: 1, farbe: '#f2f4f7', farbe2: '#1c64c8', farbe3: '#c9d1da' } },
+    jumbo:  { name: 'Jumbo', icon: '🛫', tip: 'Großraumflugzeug mit Buckel und vier Triebwerken', p: { laenge: 170, spann: 95, pfeil: 30, triebw: 4, prop: 0, leitwerk: 'normal', fenster: 1, farbe: '#f2f4f7', farbe2: '#c8281c', farbe3: '#c9d1da' } },
+    prop:   { name: 'Propeller', icon: '🛩️', tip: 'Kleines Sportflugzeug mit Propeller und Kuppel', p: { laenge: 120, spann: 120, pfeil: 0, triebw: 0, prop: 1, leitwerk: 'normal', fenster: 0, farbe: '#ffcc00', farbe2: '#d0342c', farbe3: '#ffcc00' } },
+    jaeger: { name: 'Düsenjäger', icon: '🚀', tip: 'Schneller Jet mit Deltaflügel und zwei Seitenleitwerken', p: { laenge: 150, spann: 70, pfeil: 48, triebw: 0, prop: 0, leitwerk: 'doppel', fenster: 0, farbe: '#8f9aa6', farbe2: '#3a4a5a', farbe3: '#8f9aa6' } },
+    segler: { name: 'Segelflieger', icon: '🪂', tip: 'Segelflugzeug mit ganz langen, schmalen Flügeln', p: { laenge: 110, spann: 200, pfeil: 0, triebw: 0, prop: 0, leitwerk: 'normal', fenster: 0, farbe: '#ffffff', farbe2: '#e03030', farbe3: '#ffffff' } },
+  },
+  params: [
+    { sec: 'Größe & Form' },
+    { k: 'laenge', t: 'range', l: 'Länge', min: 60, max: 250, step: 5, u: 'mm', v: 150 },
+    { k: 'spann', t: 'range', l: 'Spannweite', min: 50, max: 220, step: 5, u: '%', v: 100, tip: 'Spannweite in Prozent der Länge' },
+    { k: 'pfeil', t: 'range', l: 'Pfeilung', min: 0, max: 55, step: 1, u: '°', v: 25, tip: 'Wie weit die Flügel nach hinten zeigen' },
+    { k: 'triebw', t: 'wahl', l: 'Triebwerke', o: [[0, 'Keine'], [2, 'Zwei'], [4, 'Vier']], v: 2 },
+    { k: 'prop', t: 'wahl', l: 'Propeller', o: [[1, 'Ja'], [0, 'Nein']], v: 0 },
+    { k: 'leitwerk', t: 'wahl', l: 'Seitenleitwerk', o: [['normal', 'Eins'], ['doppel', 'Zwei']], v: 'normal' },
+    { k: 'fenster', t: 'wahl', l: 'Fenster', o: [[1, 'Fensterreihe'], [0, 'Ohne']], v: 1 },
+    { sec: 'Ständer' },
+    { k: 'staender', t: 'wahl', l: 'Ständer', o: [[1, 'Mit Ständer', 'Loch im Bauch + passender Ständer als eigenes Teil'], [0, 'Ohne']], v: 1 },
+    { k: 'stH', t: 'range', l: 'Ständer-Höhe', min: 30, max: 160, step: 5, u: 'mm', v: 70 },
+    { k: 'stN', t: 'range', l: 'Steigflug', min: 0, max: 30, step: 1, u: '°', v: 15, tip: 'Ständer nach vorn gekippt – das Flugzeug steigt' },
+    { sec: 'Farben' },
+    { k: 'farbig', t: 'wahl', l: 'Druck', o: [[1, 'Mehrfarbig', 'Rumpf, Flügel, Leitwerk, Cockpit als eigene Farbteile (AMS)'], [0, 'Einfarbig']], v: 1 },
+    { k: 'farbe', t: 'farbe', l: 'Rumpf', v: '#f2f4f7' },
+    { k: 'farbe3', t: 'farbe', l: 'Flügel', v: '#c9d1da' },
+    { k: 'farbe2', t: 'farbe', l: 'Leitwerk + Triebwerke', v: '#1c64c8' },
+  ],
+  build: (H, p) => _kgFlugzeugBau(H, p),
+  info(r, p){
+    let s = 'Flacher Boden: druckt <b>ohne Stützen</b>.';
+    if (p.prop) s += ' Propeller-Blätter stehen senkrecht.';
+    if (p.staender) s += ' Der Ständer steckt in das Loch im Bauch.';
+    return s;
+  },
+});
+
 // ═══ FLEXI-DRACHE (Print-in-Place, gelenkige Glieder) ════════════════════════
 // Bauraum mm, Z oben, Länge entlang X (Schwanzspitze x = 0, Schnauze x = L), am Ende
 // per rotate([-90,0,0]) auf Y oben gekippt. Alles liegt flach auf dem Bett und wird
@@ -60199,8 +60765,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.173';
+const VOLME3D_VERSION = '1.18.174';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.174', date:'2026-10-11', changes:[
+    ['✈️','<b>Neu: Flugzeug-Generator.</b> Passagierjet, Jumbo, Propellerflugzeug, Düsenjäger oder Segelflieger – Länge, Spannweite, Pfeilung, Triebwerke, Propeller, Leitwerk und Fenster frei einstellbar, mehrfarbig oder einfarbig. Unten ist alles flach, darum druckt das Flugzeug <b>ohne Stützen</b>. Mit Ständer bekommt es ein Loch im Bauch und einen passenden Ständer, der es im Steigflug in die Luft hält. Zu finden unter Generatoren → „Spielwelt & Kinder“.'],
+    ['🗼','<b>Neu: Ständer-Generator.</b> Hält Flugzeuge, Raketen und Figuren in der Luft: Höhe, Neigung (bis 30° ohne Stützen), runder oder eckiger Fuß, oben ein Zapfen, ein Teller oder eine Gabel.'],
+  ]},
   { version:'1.18.173', date:'2026-10-11', changes:[
     ['🎃','<b>Eigenen Kürbis schnitzen.</b> Einen echten Kürbis scannen, den Scan importieren, anklicken und unten links auf <b>🎃</b> tippen (oder im Kürbis-Generator ganz oben „Gewählten Kürbis schnitzen…“). Gesicht aussuchen, mit <b>Größe</b>, <b>Höhe</b> und <b>Drehung</b> zurechtschieben – die dunkle Vorschau zeigt sofort, wo geschnitzt wird. <b>Vertieft</b> schnitzt das Gesicht ein paar Millimeter tief ein. <b>Durchbrochen + hohl</b> höhlt den Kürbis mit gleichmäßiger Wand aus (auch in tiefen Furchen), macht unten ein Loch für ein LED-Teelicht und schneidet das Gesicht durch die Wand. Undichte Scans mit Löchern werden dabei automatisch repariert, Rückgängig geht wie immer.'],
   ]},
@@ -65558,7 +66128,9 @@ function _fpBuildRows(type, o) {
         '<div class="fp-sep"></div>'
       : '';
     // Generator-Körper: zurück ins Generator-Fenster (wie „Profil bearbeiten" beim Drehen)
-    const genRow = o.userData.bierkastenParams
+    const genRow = o.userData.kgParams && _KG[o.userData.kgParams.gen]
+      ? `<button class="fp-btn" style="width:100%;margin:0 0 8px" title="Zurück in den Generator: Einstellungen ändern, das Modell wird an Ort und Stelle ersetzt" onclick="_kgEdit(getFirst())">✏️ Im Generator bearbeiten</button>`
+      : o.userData.bierkastenParams
       ? `<button class="fp-btn" style="width:100%;margin:0 0 8px" title="Zurück in den Bierkasten-Generator: Fächer, Flasche, Höhe … ändern, der Kasten wird an Ort und Stelle ersetzt" onclick="_bkxEdit(getFirst())">✏️ Im Generator bearbeiten</button>`
       : o.userData.flexidracheParams
       ? `<button class="fp-btn" style="width:100%;margin:0 0 8px" title="Zurück in den Flexi-Drachen-Generator: Größe, Aussehen, Farben, Öse … ändern, der Drache wird an Ort und Stelle ersetzt" onclick="_fdrEdit(getFirst())">✏️ Im Generator bearbeiten</button>`
