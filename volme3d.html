@@ -50329,7 +50329,7 @@ function _kgHelfer(w, q){
   const fein = q === 'fein';
   const k = x => { if (x) tmp.push(x); return x; };
   const H = {
-    M, CS, tmp, fein, k,
+    M, CS, tmp, fein, k, w,
     seg: n => Math.max(8, Math.round((fein ? 1 : 0.5) * n)),
     box: (x0, x1, y0, y1, z0, z1) => k(k(M.cube([Math.max(0.01, x1 - x0), Math.max(0.01, y1 - y0), Math.max(0.01, z1 - z0)])).translate([x0, y0, z0])),
     // senkrechter Zylinder/Kegel (r unten → r2 oben)
@@ -51464,6 +51464,32 @@ _kgReg('zug', {
   },
 });
 
+// Puzzle-Kanten für Rasterplatten (Straße, Landschaft): an jeder Kante bei +s (im
+// Gegenuhrzeigersinn) ein Zapfen nach außen, bei −s ein Loch nach innen → jede Platte
+// passt in jeder Drehung an jede andere. Liefert 2D-Querschnitte (CrossSection).
+function _kgPuzzle2D(H, S){
+  const CS = H.CS, k = H.k, s2 = S / 2;
+  const C = pts => k(new CS([pts], 'EvenOdd'));
+  const CU = arr => { arr = arr.filter(Boolean); return !arr.length ? null : arr.length === 1 ? arr[0] : k(CS.union(arr)); };
+  const sP = S * 0.42, hl = 5.5, dK = 9, hb = 5, spiel = 0.25;
+  const zapfen = [], loch = [];
+  const kanten = [[0, -s2, 0], [s2, 0, 90], [0, s2, 180], [-s2, 0, 270]];        // Mitte + Außenrichtung − 90°
+  for (const [cx, cy, a] of kanten) {
+    const r = a * Math.PI / 180, tx = Math.cos(r), ty = Math.sin(r), nx = ty, ny = -tx;   // t = Kante (CCW), n = nach außen
+    const form = (vz, gross) => {
+      const e = gross ? spiel : 0, b = hb + 2 * e, d = dK + 2 * e, ofs = (vz > 0 ? 1 : -1) * sP;
+      const bx = cx + tx * ofs, by = cy + ty * ofs, dir = vz > 0 ? 1 : -1;
+      const P = (u, v) => [bx + tx * u + nx * v * dir, by + ty * u + ny * v * dir];
+      const hals = [P(-b / 2, -0.6), P(b / 2, -0.6), P(b / 2, hl + dK / 2), P(-b / 2, hl + dK / 2)];   // bis zur Kopfmitte, sonst berührt der Kopf nur in einem Punkt
+      const kopf = Array.from({ length: 32 }, (_, i) => { const w = i / 32 * Math.PI * 2; return P(d / 2 * Math.cos(w), hl + dK / 2 + d / 2 * Math.sin(w)); });
+      return CU([C(hals), C(kopf)]);
+    };
+    zapfen.push(form(1, false));                                                // nach außen
+    loch.push(form(-1, true));                                                  // nach innen
+  }
+  return { zapfen, loch };
+}
+
 // ─── Straßenplatten ─────────────────────────────────────────────────────────
 // Quadratische Platten im Raster (Standard 144 mm). Alles wird in 2D gebaut
 // (Fahrbahn, Gehweg, Wiese, Markierung) und dann hochgezogen – so berühren sich die
@@ -51540,23 +51566,7 @@ function _kgStrassenBau(H, p){
   }
   const markU = mark.length ? Cint(CU(mark), fahr) : null;
   const wiese = Csub(Csub(Csub(tile, fahr), weg), insel);
-  // Puzzle-Verbinder an jeder Kante: Zapfen bei +s, Loch bei −s (Gegenuhrzeigersinn)
-  const sP = S * 0.42, hl = 5.5, dK = 9, hb = 5, spiel = 0.25;
-  const zapfen = [], loch = [];
-  const kanten = [[0, -s2, 0], [s2, 0, 90], [0, s2, 180], [-s2, 0, 270]];        // Mitte + Außenrichtung − 90°
-  for (const [cx, cy, a] of kanten) {
-    const r = a * Math.PI / 180, tx = Math.cos(r), ty = Math.sin(r), nx = ty, ny = -tx;   // t = Kante (CCW), n = nach außen
-    const form = (vz, gross) => {
-      const e = gross ? spiel : 0, b = hb + 2 * e, d = dK + 2 * e, ofs = (vz > 0 ? 1 : -1) * sP;
-      const bx = cx + tx * ofs, by = cy + ty * ofs, dir = vz > 0 ? 1 : -1;
-      const P = (u, v) => [bx + tx * u + nx * v * dir, by + ty * u + ny * v * dir];
-      const hals = [P(-b / 2, -0.6), P(b / 2, -0.6), P(b / 2, hl + dK / 2), P(-b / 2, hl + dK / 2)];   // bis zur Kopfmitte, sonst berührt der Kopf nur in einem Punkt
-      const kopf = Array.from({ length: 32 }, (_, i) => { const w = i / 32 * Math.PI * 2; return P(d / 2 * Math.cos(w), hl + dK / 2 + d / 2 * Math.sin(w)); });
-      return CU([C(hals), C(kopf)]);
-    };
-    zapfen.push(form(1, false));                                                // nach außen
-    loch.push(form(-1, true));                                                  // nach innen
-  }
+  const { zapfen, loch } = _kgPuzzle2D(H, S);
   const lochU = CU(loch);
   const ext = (cs, z0, z1) => !cs ? null : k(k(cs.extrude(z1 - z0)).translate([0, 0, z0]));
   const cut = c => Csub(c, lochU);
@@ -52015,6 +52025,250 @@ _kgReg('bruecke', {
     let s = 'Steht auf dem Bett, die Bögen haben oben eine 45°-Spitze: druckt <b>ohne Stützen</b>. Mit wenig Füllung (10 %) drucken.';
     if (p.vorlage === 'hoch') s += ' Zwischen zwei <b>Auffahrten</b> setzen – Höhe gleich einstellen.';
     return s;
+  },
+});
+
+// ─── Pflanzen (eigener Generator + Bausteine für die Waldplatte) ───────────
+// Druckbar ohne Stützen: Laubkronen als „Tropfen“ (Hülle aus Kugel + Punkt √2·R darunter
+// → Unterseite 45°), Tannen-Etagen als Doppelkegel (unten 45°), Kaktus-Arme erst 45°
+// schräg, dann senkrecht, Palmwedel 45° nach oben. z0 = Standfläche, Maß h = Gesamthöhe.
+function _kgPflanze(H, art, h, x, y, z0, seed = 1){
+  let s = seed * 9301 + 49297; const rnd = () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
+  const holz = [], gruen = [], bunt = [];
+  const tropfen = (r, cx, cy, cz) => H.hull([H.sph(r, cx, cy, cz, 24), H.sph(0.3, cx, cy, cz - r * Math.SQRT2, 8)]);
+  if (art === 'laub' || art === 'apfel') {
+    const rS = Math.max(1.6, h * 0.07), hS = h * 0.45, R = h * 0.27;
+    holz.push(H.cyl(rS * 1.3, z0, z0 + 2, x, y, 20, rS), H.cyl(rS, z0, z0 + hS + R * 0.4, x, y, 20, rS * 0.8));
+    const zc = z0 + h - R;
+    gruen.push(tropfen(R, x, y, zc));
+    // Nebenkronen etwas höher, damit ihre Spitze IN der Hauptkrone liegt (sonst hängt sie frei in der Luft)
+    for (let i = 0; i < 3; i++) { const a = i / 3 * Math.PI * 2 + rnd(); gruen.push(tropfen(R * 0.7, x + Math.cos(a) * R * 0.55, y + Math.sin(a) * R * 0.55, zc + R * 0.2)); }
+    if (art === 'apfel') for (let i = 0; i < 7; i++) {
+      const a = i / 7 * Math.PI * 2 + rnd() * 0.5, e = 0.35 + rnd() * 0.5, rr = R * 0.98;
+      bunt.push(H.sph(Math.max(1.4, R * 0.13), x + Math.cos(a) * rr * Math.cos(e), y + Math.sin(a) * rr * Math.cos(e), zc + rr * Math.sin(e) * 0.8, 12));
+    }
+  } else if (art === 'tanne') {
+    const rS = Math.max(1.6, h * 0.06), R0 = h * 0.3, n = 4;
+    holz.push(H.cyl(rS, z0, z0 + h * 0.3, x, y, 16));
+    for (let i = 0; i < n; i++) {
+      const t = i / n, R = R0 * (1 - t * 0.55), zr = z0 + h * (0.18 + t * 0.62);
+      gruen.push(H.hull([H.cyl(R, zr, zr + 0.6, x, y, 32), H.sph(0.3, x, y, zr - R * 1.05, 8), H.sph(0.3, x, y, i === n - 1 ? z0 + h : zr + R * 1.5, 8)]));   // unten ≤ 45°
+    }
+  } else if (art === 'busch') {
+    // Busch aus Tropfen (unten 45°), am Boden flach abgeschnitten
+    const R = h * 0.5;
+    gruen.push(tropfen(R, x, y, z0 + h - R));
+    for (let i = 0; i < 4; i++) { const a = i / 4 * Math.PI * 2 + rnd(); gruen.push(tropfen(R * 0.65, x + Math.cos(a) * R * 0.75, y + Math.sin(a) * R * 0.75, z0 + R * 0.65)); }
+  } else if (art === 'kaktus') {
+    const r = Math.max(2.5, h * 0.11);
+    gruen.push(H.cyl(r, z0, z0 + h - r, x, y, 24), H.sph(r, x, y, z0 + h - r, 20));
+    for (const [sg, zA, len] of [[1, 0.35, 0.3], [-1, 0.5, 0.22]]) {
+      const ra = r * 0.75, za = z0 + h * zA, dx = sg * r * 1.6;
+      gruen.push(H.stab([x, y, za], [x + dx, y, za + Math.abs(dx)], ra));        // 45° schräg
+      gruen.push(H.cyl(ra, za + Math.abs(dx), za + Math.abs(dx) + h * len, x + dx, y, 20), H.sph(ra, x + dx, y, za + Math.abs(dx) + h * len, 16));
+    }
+    bunt.push(H.sph(r * 0.55, x, y, z0 + h - r * 0.2, 14));                       // Blüte oben
+  } else if (art === 'palme') {
+    const rS = Math.max(1.6, h * 0.05), n = 6, lean = h * 0.12;
+    let pr = [x, y, z0];
+    for (let i = 1; i <= n; i++) { const t = i / n, q = [x + lean * t * t, y, z0 + h * 0.78 * t]; holz.push(H.stab(pr, q, rS * (1.15 - t * 0.3))); pr = q; }
+    const top = pr, lw = h * 0.42;
+    for (let i = 0; i < 6; i++) {
+      const a = i / 6 * Math.PI * 2 + 0.3, dx = Math.cos(a), dy = Math.sin(a);
+      gruen.push(H.hull([H.sph(1.2, top[0], top[1], top[2], 8), H.k(H.k(H.k(H.sph(1, 0, 0, 0, 12)).scale([lw * 0.5, lw * 0.13, 0.9])).rotate([0, -45, a * 180 / Math.PI])).translate([top[0] + dx * lw * 0.36, top[1] + dy * lw * 0.36, top[2] + lw * 0.36])]));
+    }
+    for (let i = 0; i < 3; i++) { const a = i / 3 * Math.PI * 2; bunt.push(H.sph(rS * 0.9, top[0] + Math.cos(a) * rS * 0.9, top[1] + Math.sin(a) * rS * 0.9, top[2] - rS * 0.4, 12)); }
+  }
+  return { holz, gruen, bunt };
+}
+
+_kgReg('pflanze', {
+  icon: '🌳', name: 'Pflanzen', thema: 'Spielwelt & Kinder',
+  desc: 'Laubbaum, Apfelbaum, Tanne, Busch, Kaktus, Palme – für die Spielstadt, druckt ohne Stützen',
+  vorlagen: {
+    laub:   { name: 'Laubbaum', icon: '🌳', p: { art: 'laub', hoehe: 70, farbe: '#43a047', farbeH: '#795548', farbeB: '#e53935' } },
+    apfel:  { name: 'Apfelbaum', icon: '🍎', p: { art: 'apfel', hoehe: 70, farbe: '#43a047', farbeH: '#795548', farbeB: '#e53935' } },
+    tanne:  { name: 'Tanne', icon: '🌲', p: { art: 'tanne', hoehe: 80, farbe: '#2e7d32', farbeH: '#5d4037', farbeB: '#e53935' } },
+    busch:  { name: 'Busch', icon: '🌿', p: { art: 'busch', hoehe: 25, farbe: '#66bb6a', farbeH: '#795548', farbeB: '#e53935' } },
+    kaktus: { name: 'Kaktus', icon: '🌵', p: { art: 'kaktus', hoehe: 60, farbe: '#7cb342', farbeH: '#795548', farbeB: '#ec407a' } },
+    palme:  { name: 'Palme', icon: '🌴', p: { art: 'palme', hoehe: 80, farbe: '#43a047', farbeH: '#8d6e63', farbeB: '#6d4c41' } },
+  },
+  params: [
+    { sec: 'Pflanze' },
+    { k: 'art', t: 'wahl', l: 'Art', o: [['laub', 'Laubbaum'], ['apfel', 'Apfelbaum'], ['tanne', 'Tanne'], ['busch', 'Busch'], ['kaktus', 'Kaktus'], ['palme', 'Palme']], v: 'laub' },
+    { k: 'hoehe', t: 'range', l: 'Höhe', min: 15, max: 160, step: 5, u: 'mm', v: 70 },
+    { k: 'sockel', t: 'wahl', l: 'Sockel', o: [['rund', 'Runder Fuß', 'Steht stabil'], ['keiner', 'Ohne']], v: 'rund' },
+    { k: 'seed', t: 'range', l: 'Variante', min: 1, max: 20, step: 1, v: 1, tip: 'Andere Zufallsform' },
+    { sec: 'Farben' },
+    { k: 'farbig', t: 'wahl', l: 'Druck', o: [[1, 'Mehrfarbig'], [0, 'Einfarbig']], v: 1 },
+    { k: 'farbe', t: 'farbe', l: 'Grün', v: '#43a047' },
+    { k: 'farbeH', t: 'farbe', l: 'Stamm + Fuß', v: '#795548' },
+    { k: 'farbeB', t: 'farbe', l: 'Früchte/Blüte', v: '#e53935' },
+  ],
+  build(H, p){
+    const h = Math.max(15, p.hoehe), z0 = p.sockel === 'rund' ? 2 : 0, f = _kgPflanze(H, p.art, h, 0, 0, z0, p.seed);
+    const ab = m => H.int(m, H.box(-1e4, 1e4, -1e4, 1e4, z0 > 0 ? 1 : 0, 1e4));        // nichts unter die Standfläche
+    if (p.sockel === 'rund') f.holz.push(H.cyl(Math.max(8, h * 0.22), 0, 2.01, 0, 0, 40, Math.max(8, h * 0.22) - 0.8));
+    const teile = [];
+    if (f.bunt.length) teile.push({ mf: ab(H.U(f.bunt)), hex: p.farbeB, name: 'Früchte' });
+    if (f.holz.length) teile.push({ mf: H.U(f.holz.map((m, i) => i === f.holz.length - 1 && p.sockel === 'rund' ? m : ab(m))), hex: p.farbeH, name: 'Stamm' });
+    teile.push({ mf: ab(H.U(f.gruen)), hex: p.farbe, name: 'Grün' });
+    return { teile, hinweise: [] };
+  },
+  info(r, p){ return 'Kronen und Äste sind unten 45° schräg: druckt <b>ohne Stützen</b>.' + (p.sockel !== 'rund' ? ' Ohne Fuß zum Einkleben in eine Landschaftsplatte.' : ''); },
+});
+
+// ─── Landschaftsplatten ─────────────────────────────────────────────────────
+// Höhenfeld auf der Rasterplatte (Grund 4 mm wie die Straßen), Ränder laufen auf
+// Grundhöhe aus → passt an Straßen- und andere Landschaftsplatten. Puzzle-Kanten wie
+// bei den Straßen. Netz direkt als geschlossenes Gitter (Ober-/Unterseite + Ränder).
+function _kgHoehenfeld(H, S, N, hFn, T){
+  const s2 = S / 2, n1 = N + 1, nV = n1 * n1, P = new Float32Array(nV * 2 * 3), tri = [];
+  for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) {
+    const x = -s2 + S * i / N, y = -s2 + S * j / N, v = j * n1 + i;
+    P[v * 3] = x; P[v * 3 + 1] = y; P[v * 3 + 2] = T + Math.max(0, hFn(x, y) + 0);
+    P[(nV + v) * 3] = x; P[(nV + v) * 3 + 1] = y; P[(nV + v) * 3 + 2] = 0;
+  }
+  const o = (i, j) => j * n1 + i, u = (i, j) => nV + j * n1 + i;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    tri.push(o(i, j), o(i + 1, j), o(i + 1, j + 1), o(i, j), o(i + 1, j + 1), o(i, j + 1));
+    tri.push(u(i, j), u(i + 1, j + 1), u(i + 1, j), u(i, j), u(i, j + 1), u(i + 1, j + 1));
+  }
+  for (let i = 0; i < N; i++) {
+    tri.push(o(i, 0), u(i, 0), u(i + 1, 0), o(i, 0), u(i + 1, 0), o(i + 1, 0));           // vorn (y = −s2)
+    tri.push(o(i, N), o(i + 1, N), u(i + 1, N), o(i, N), u(i + 1, N), u(i, N));           // hinten
+    tri.push(o(0, i), o(0, i + 1), u(0, i + 1), o(0, i), u(0, i + 1), u(0, i));           // links
+    tri.push(o(N, i), u(N, i), u(N, i + 1), o(N, i), u(N, i + 1), o(N, i + 1));           // rechts
+  }
+  return H.k(new H.w.Manifold(new H.w.Mesh({ numProp: 3, vertProperties: P, triVerts: new Uint32Array(tri) })));
+}
+
+function _kgLandBau(H, p){
+  const S = Math.max(96, p.raster), s2 = S / 2, T = 4, typ = p.vorlage;
+  const N = H.fein ? 96 : 48;
+  let sd = (p.seed || 1) * 7919;
+  const rnd = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
+  // glatte Zufallsbuckel
+  const bumps = Array.from({ length: 9 }, () => ({ x: (rnd() - 0.5) * S * 0.8, y: (rnd() - 0.5) * S * 0.8, r: S * (0.12 + rnd() * 0.18), a: rnd() }));
+  const buckel = (x, y) => bumps.reduce((s, b) => s + b.a * Math.exp(-((x - b.x) ** 2 + (y - b.y) ** 2) / (b.r * b.r)), 0);
+  const rand = (x, y) => { const d = s2 - Math.max(Math.abs(x), Math.abs(y)), t = Math.max(0, Math.min(1, (d - 2) / 16)); return t * t * (3 - 2 * t); };   // 0 am Rand → 1 innen
+  const hoch = Math.max(5, p.hoehe);
+  let hFn = () => 0, wasser = null, tunnel = null, baeume = [];
+  const zonen = [];                                                               // [zAb, Farbe, Name] Höhenbänder
+  if (typ === 'huegel') hFn = (x, y) => hoch * Math.min(1, buckel(x, y) * 0.9) * rand(x, y);
+  else if (typ === 'berg') {
+    // Berg mit Tunnel längs X (für die Holzeisenbahn): Spitzbogen 52 × 72 mm, darüber mindestens 8 mm
+    const tw = 52, th = 72, rr = tw / 2, zSp = th - rr * Math.SQRT2, decke = th + 8;
+    const sig = S * 0.3;
+    const randY = y => { const d = s2 - Math.abs(y), t = Math.max(0, Math.min(1, (d - 2) / 16)); return t * t * (3 - 2 * t); };
+    const y0 = tw / 2 + 4;
+    hFn = (x, y) => {
+      const ay = Math.abs(y), kuppe = hoch * Math.exp(-(x * x + y * y) / (2 * sig * sig));
+      // Tunnelrücken: über dem Tunnel mind. „decke“, zur Seite runde Schulter bis auf den Rand
+      const t = Math.max(0, Math.min(1, (ay - y0) / (s2 - y0))), schulter = 0.5 + 0.5 * Math.cos(Math.PI * t);
+      const grat = (decke + (hoch - decke) * 0.35 * Math.exp(-x * x / (2 * sig * sig))) * schulter;
+      const rauh = ay > y0 ? hoch * 0.12 * (buckel(x, y) - 0.4) * t : 0;              // Unebenheit nur an den Flanken
+      return Math.max(kuppe * rand(x, y), grat * randY(y)) + rauh * rand(x, y);
+    };
+    const pts = [[-rr, -1], [-rr, zSp]];
+    for (let k = 0; k <= 8; k++) { const a = Math.PI - k / 8 * Math.PI / 4; pts.push([rr * Math.cos(a), zSp + rr * Math.sin(a)]); }
+    pts.push([0, zSp + rr * Math.SQRT2]);
+    for (let k = 8; k >= 0; k--) { const a = k / 8 * Math.PI / 4; pts.push([rr * Math.cos(a), zSp + rr * Math.sin(a)]); }
+    pts.push([rr, zSp], [rr, -1]);
+    tunnel = H.extYZ(pts, -s2 - 1, s2 + 1);
+    zonen.push([Math.max(decke + 2, hoch * 0.62) + T, p.farbe2, 'Fels'], [hoch * 0.85 + T, '#ffffff', 'Schnee']);
+  } else if (typ === 'see' || typ === 'fluss') {
+    // Wasser 1,2 mm unter Grundhöhe, Ufer leicht ansteigend
+    let inWasser;
+    if (typ === 'see') {
+      const rs = Array.from({ length: 7 }, () => 0.85 + rnd() * 0.3), R = S * 0.3;
+      const rad = a => { let r = 0; for (let i = 0; i < 7; i++) r += rs[i] * (1 + 0.12 * Math.cos((i + 2) * a + i)); return R * r / 7; };
+      inWasser = (x, y) => Math.hypot(x, y) < rad(Math.atan2(y, x));
+      const poly = Array.from({ length: 64 }, (_, i) => { const a = i / 64 * Math.PI * 2, r = rad(a); return [r * Math.cos(a), r * Math.sin(a)]; });
+      wasser = poly;
+      hFn = (x, y) => { const d = Math.hypot(x, y) - rad(Math.atan2(y, x)); return d < 0 ? -1.2 : Math.min(4, d * 0.15) * rand(x, y) + hoch * 0.25 * buckel(x, y) * rand(x, y) * Math.min(1, d / 20); };
+    } else {
+      const amp = S * 0.12, bw = Math.max(16, p.flussB);
+      const yc = x => amp * Math.sin(Math.PI * (x + s2) / S * 2) * Math.sin(Math.PI * (x + s2) / S);
+      inWasser = (x, y) => Math.abs(y - yc(x)) < bw / 2;
+      const o = [], u = [];
+      for (let i = 0; i <= 48; i++) { const x = -s2 - 0.5 + (S + 1) * i / 48; o.push([x, yc(x) + bw / 2]); u.push([x, yc(x) - bw / 2]); }
+      wasser = o.concat(u.reverse());
+      hFn = (x, y) => { const d = Math.abs(y - yc(x)) - bw / 2; return d < 0 ? -1.2 : Math.min(3, d * 0.2) * rand(x, y) + hoch * 0.2 * buckel(x, y) * rand(x, y) * Math.min(1, d / 20); };
+    }
+  } else if (typ === 'wald') {
+    hFn = (x, y) => hoch * 0.25 * buckel(x, y) * rand(x, y);
+    const n = Math.max(1, Math.round(p.baeume)), pos = [];
+    for (let t = 0; t < 400 && pos.length < n; t++) {
+      const x = (rnd() - 0.5) * (S - 30), y = (rnd() - 0.5) * (S - 30);
+      if (pos.every(q => Math.hypot(q[0] - x, q[1] - y) > S * 0.16)) pos.push([x, y]);
+    }
+    baeume = pos.map(([x, y], i) => ({ x, y, art: (i + (p.seed || 1)) % 3 === 0 ? 'laub' : 'tanne', h: S * (0.32 + rnd() * 0.18), seed: i + 1 }));
+  } else if (typ === 'acker') {
+    hFn = (x, y) => (Math.abs(x) < s2 - 14 && Math.abs(y) < s2 - 14 ? 1.2 + 1.2 * Math.cos(y / 6 * Math.PI) : 0) * Math.min(1, rand(x, y) * 3);
+    zonen.push([T + 1.25, p.farbe2, 'Acker']);
+  }
+  const hRoh = hFn;
+  const hClamp = (x, y) => Math.max(-1.2, hRoh(x, y));
+  // Höhenfeld mit Wasser: das Gitter darf unter Grundhöhe (Wasser) – Unterkante bleibt 0
+  let land = _kgHoehenfeld(H, S, N, (x, y) => hClamp(x, y), T);
+  // Wasser: Tasche bis 2,4 mm unter die Oberkante, das Wasser-Teil füllt sie bis 1,2 mm darunter
+  if (wasser) land = H.sub(land, H.ext(wasser, T - 2.4, T + 40));
+  const { zapfen, loch } = _kgPuzzle2D(H, S);
+  const lochM = H.k(H.k(H.k(H.CS.union(loch)).extrude(T + 300)).translate([0, 0, -1]));
+  land = H.U([land, ...zapfen.map(c => H.k(H.k(c.extrude(T)).translate([0, 0, 0])))]);
+  land = H.sub(land, lochM);
+  if (tunnel) land = H.sub(land, tunnel);
+  const teile = [];
+  // Bäume auf der Waldplatte (stehen im Gelände: Fuß 2 mm eingesenkt)
+  if (baeume.length) {
+    const holz = [], gruen = [];
+    for (const b of baeume) { const f = _kgPflanze(H, b.art, b.h, b.x, b.y, T + Math.max(0, hClamp(b.x, b.y)) - 2, b.seed); holz.push(...f.holz); gruen.push(...f.gruen); }
+    teile.push({ mf: H.U(gruen), hex: p.farbeB || '#2e7d32', name: 'Bäume' });
+    teile.push({ mf: H.U(holz), hex: '#6d4c41', name: 'Stämme' });
+  }
+  if (wasser) teile.push({ mf: H.sub(H.int(H.ext(wasser, T - 2.4, T - 1.2), H.box(-s2, s2, -s2, s2, -1, 1e4)), lochM), hex: p.farbeW, name: 'Wasser' });
+  // Höhenbänder (Fels, Schnee) mit demselben Schneidkörper → keine Restfuge
+  zonen.sort((a, b) => b[0] - a[0]);
+  for (const [zAb, hex, name] of zonen) {
+    const box = H.box(-s2 - 30, s2 + 30, -s2 - 30, s2 + 30, zAb, 1e4);
+    teile.push({ mf: H.int(land, box), hex, name });
+    land = H.sub(land, box);
+  }
+  teile.push({ mf: land, hex: p.farbe, name: 'Wiese' });
+  return { teile, hinweise: [] };
+}
+
+_kgReg('landschaft', {
+  icon: '⛰️', name: 'Landschaft', thema: 'Spielwelt & Kinder',
+  desc: 'Landschaftsplatten: Hügel, Berg mit Eisenbahntunnel, Teich, Fluss, Wald, Acker – passen an die Straßen',
+  vorlagen: {
+    huegel: { name: 'Hügel', icon: '🟢', p: { hoehe: 22, farbe: '#5cb85c', farbe2: '#8d6e63' } },
+    berg:   { name: 'Tunnelberg', icon: '⛰️', tip: 'Tunnel für die Holzeisenbahn (52 × 72 mm)', p: { hoehe: 110, farbe: '#5cb85c', farbe2: '#8d8d8d' } },
+    see:    { name: 'Teich', icon: '💧', p: { hoehe: 10, farbe: '#5cb85c', farbe2: '#8d6e63' } },
+    fluss:  { name: 'Fluss', icon: '🏞️', tip: 'Fluss quer über die Platte – mehrere Platten ergeben einen langen Fluss', p: { hoehe: 10, farbe: '#5cb85c', farbe2: '#8d6e63' } },
+    wald:   { name: 'Wald', icon: '🌲', p: { hoehe: 10, baeume: 5, farbe: '#5cb85c', farbe2: '#8d6e63' } },
+    acker:  { name: 'Acker', icon: '🌾', p: { hoehe: 5, farbe: '#5cb85c', farbe2: '#8d6e63' } },
+  },
+  params: [
+    { sec: 'Platte' },
+    { k: 'raster', t: 'range', l: 'Plattengröße', min: 96, max: 224, step: 8, u: 'mm', v: 144, tip: 'Gleich groß wie die Straßenplatten wählen' },
+    { k: 'hoehe', t: 'range', l: 'Höhe', min: 5, max: 140, step: 1, u: 'mm', v: 22, tip: 'Höhe der Hügel bzw. des Bergs' },
+    { k: 'seed', t: 'range', l: 'Variante', min: 1, max: 30, step: 1, v: 1, tip: 'Andere Zufallsform' },
+    { k: 'baeume', t: 'range', l: 'Bäume', min: 1, max: 12, step: 1, v: 5, tip: 'nur beim Wald' },
+    { k: 'flussB', t: 'range', l: 'Fluss-Breite', min: 16, max: 60, step: 2, u: 'mm', v: 30, tip: 'nur beim Fluss' },
+    { sec: 'Farben' },
+    { k: 'farbig', t: 'wahl', l: 'Druck', o: [[1, 'Mehrfarbig'], [0, 'Einfarbig']], v: 1 },
+    { k: 'farbe', t: 'farbe', l: 'Wiese', v: '#5cb85c' },
+    { k: 'farbe2', t: 'farbe', l: 'Fels/Acker', v: '#8d6e63' },
+    { k: 'farbeW', t: 'farbe', l: 'Wasser', v: '#2f7fd0' },
+    { k: 'farbeB', t: 'farbe', l: 'Bäume', v: '#2e7d32' },
+  ],
+  build: (H, p) => _kgLandBau(H, p),
+  info(r, p){
+    let s = 'Ränder flach auf 4 mm wie die Straßenplatten, Puzzle an jeder Kante. Druckt <b>ohne Stützen</b>';
+    if (p.vorlage === 'berg') s += ' – der Tunnel hat oben eine 45°-Spitze. Mit wenig Füllung (10 %) drucken';
+    return s + '.';
   },
 });
 
@@ -61938,8 +62192,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.179';
+const VOLME3D_VERSION = '1.18.180';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.180', date:'2026-10-11', changes:[
+    ['⛰️','<b>Neu: Landschaftsplatten.</b> Hügel, Tunnelberg (Tunnel für die Holzeisenbahn, mit Schneekuppe), Teich, Fluss, Wald mit Bäumen und Acker mit Furchen – gleiche Größe und gleiche Puzzle-Kanten wie die Straßenplatten, die Ränder laufen flach aus. Mit <b>Variante</b> gibt es jedes Mal eine andere Form.'],
+    ['🌳','<b>Neu: Pflanzen.</b> Laubbaum, Apfelbaum, Tanne, Busch, Kaktus und Palme – mit oder ohne runden Fuß. Die Kronen sind unten 45° schräg, darum druckt alles ohne Stützen.'],
+  ]},
   { version:'1.18.179', date:'2026-10-11', changes:[
     ['🌉','<b>Neu: Brücken.</b> Buckelbrücke (beide Enden am Boden, in der Mitte hoch), Auffahrt auf Hochbahn-Höhe wie die Brio-Auffahrt, Hochbahn-Stück auf Bögen und eine flache Fachwerkbrücke – für die Holzeisenbahn mit Rillen und Zapfen oder als Straße mit Geländer. Die Bögen haben oben eine 45°-Spitze, darum druckt alles ohne Stützen.'],
   ]},

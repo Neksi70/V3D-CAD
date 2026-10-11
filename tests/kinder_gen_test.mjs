@@ -19,6 +19,8 @@ const ok = (name, cond, extra) => {
 // Sonderfälle je Generator (zusätzlich zu allen Vorlagen + einfarbig)
 const EXTRA = {
   staender: [{ aufnahme: 'teller', neigung: 25 }, { aufnahme: 'gabel', fussForm: 'eckig' }, { neigung: 0, hoehe: 200 }, { neigung: 30, hoehe: 20 }],
+  pflanze: [{ vorlage: 'laub', sockel: 'keiner' }, { vorlage: 'tanne', hoehe: 160 }, { vorlage: 'busch', hoehe: 15 }, { vorlage: 'palme', seed: 7 }, { vorlage: 'kaktus', hoehe: 20 }, { vorlage: 'apfel', farbig: 0 }],
+  landschaft: [{ vorlage: 'berg', raster: 224, hoehe: 140 }, { vorlage: 'huegel', raster: 96, seed: 9 }, { vorlage: 'wald', baeume: 12 }, { vorlage: 'fluss', flussB: 60 }, { vorlage: 'see', farbig: 0 }],
   bruecke: [{ vorlage: 'buckel', fahrweg: 'strasse' }, { vorlage: 'auffahrt', laenge: 216, enden: 'mm' }, { vorlage: 'hoch', laenge: 54, enden: 'mm' }, { vorlage: 'fachwerk', fahrweg: 'strasse', laenge: 216 }, { vorlage: 'buckel', hoehe: 120, laenge: 108, enden: 'ww' }, { vorlage: 'hoch', hoehe: 30 }],
   haus: [{ vorlage: 'haus', schild: 'Nr. 7' }, { vorlage: 'hochhaus', geschosse: 12, geschossH: 20 }, { vorlage: 'haus', geschosse: 1, breite: 30, tiefe: 25, neigung: 60 }, { vorlage: 'stadthaus', dach: 'sattel', schild: 'CAFÉ' }, { vorlage: 'laden', schild: '' }, { vorlage: 'feuer', breite: 140, farbig: 0 }, { vorlage: 'bahnhof', breite: 40, geschosse: 1 }],
   fahrzeug: [{ vorlage: 'auto', laenge: 50 }, { vorlage: 'bus', laenge: 160 }, { vorlage: 'feuer', laenge: 60 }, { vorlage: 'traktor', laenge: 50 }, { vorlage: 'renn', farbig: 0 }, { vorlage: 'lkw', laenge: 160 }, { vorlage: 'polizei', laenge: 120 }],
