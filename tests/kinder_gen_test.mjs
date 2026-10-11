@@ -19,6 +19,8 @@ const ok = (name, cond, extra) => {
 // Sonderfälle je Generator (zusätzlich zu allen Vorlagen + einfarbig)
 const EXTRA = {
   staender: [{ aufnahme: 'teller', neigung: 25 }, { aufnahme: 'gabel', fussForm: 'eckig' }, { neigung: 0, hoehe: 200 }, { neigung: 30, hoehe: 20 }],
+  fahrzeug: [{ vorlage: 'auto', laenge: 50 }, { vorlage: 'bus', laenge: 160 }, { vorlage: 'feuer', laenge: 60 }, { vorlage: 'traktor', laenge: 50 }, { vorlage: 'renn', farbig: 0 }, { vorlage: 'lkw', laenge: 160 }, { vorlage: 'polizei', laenge: 120 }],
+  strasse: [{ vorlage: 'kreuzung', raster: 96, fahrbahn: 50, gehweg: 6 }, { vorlage: 'kreisel', raster: 224, fahrbahn: 120, gehweg: 24 }, { vorlage: 'kurve', gehweg: 0 }, { vorlage: 'tkreuzung', farbig: 0 }, { vorlage: 'ende', raster: 96 }, { vorlage: 'zebra', fahrbahn: 40 }],
   zug: [{ vorlage: 'dampf', kupplung: 'haken' }, { vorlage: 'personen', laenge: 160 }, { vorlage: 'gueter', laenge: 50, kupplung: 'keine' }, { vorlage: 'elok', farbig: 0 }, { vorlage: 'kessel', kupplung: 'haken', laenge: 50 }],
   schienen: [{ vorlage: 'gerade', laenge: 18 }, { vorlage: 'gerade', laenge: 216, enden: 'ww' }, { vorlage: 'kurve', enden: 'mm' }, { vorlage: 'kurve', winkel: 90, radius: 110 }, { vorlage: 'weiche', richtung: 'rechts' }, { vorlage: 'weiche', laenge: 216, winkel: 30 }, { vorlage: 'kreuzung', laenge: 108 }, { vorlage: 'prellbock', laenge: 54 }],
   becher: [{ vorlage: 'tasse', name: 'Florian' }, { vorlage: 'katze', name: 'Mia', nameSeite: 'hinten' }, { vorlage: 'stifte', name: 'Stifte', schrift: 'pacifico_local' }, { vorlage: 'frosch', farbig: 0, name: 'Ben' }, { form: 'wellen', henkel: 1, konisch: 30 }, { vorlage: 'hase', hoehe: 40, durchm: 40 }, { vorlage: 'baer', hoehe: 160, durchm: 120, henkel: 1, name: 'Maximilian' }],
@@ -60,7 +62,9 @@ for (const g of gens) {
       const mfs = [];
       for (const t of res.teile) {
         const pos = t.geo.toNonIndexed().attributes.position.array;
-        for (let i = 1; i < pos.length; i += 3) out.minY = Math.min(out.minY, pos[i]);
+        let mY = Infinity; for (let i = 1; i < pos.length; i += 3) mY = Math.min(mY, pos[i]);
+        out.minY = Math.min(out.minY, mY);
+        if (t.frei) out.freiY = Math.max(out.freiY || 0, Math.abs(mY)); else out.festY = Math.min(out.festY ?? Infinity, mY);
         let mf;
         try { mf = _mfFromSoup(W, pos); } catch (e) { out.wasserdicht = false; out.err = String(e); continue; }
         if (mf.isEmpty()) { out.wasserdicht = false; continue; }
@@ -82,7 +86,7 @@ for (const g of gens) {
     ok(v.name + ': baut, wasserdicht', r.wasserdicht && r.vol.every(x => x > 0), { ms: r.ms, teile: r.teile, vol: r.vol, err: r.err });
     ok(v.name + ': keine Überlappung der Farbteile', r.ueber < Math.max(0.5, 0.005 * r.minVol), r.ueber);
     ok(v.name + ': ein zusammenhängendes Modell', r.koerper === 1 && r.frei.every(n => n === 1), { koerper: r.koerper, frei: r.frei });
-    ok(v.name + ': liegt auf dem Bett', Math.abs(r.minY) < 0.01, r.minY);
+    ok(v.name + ': liegt auf dem Bett (Modell + jedes freie Teil)', Math.abs(r.minY) < 0.01 && Math.abs(r.festY) < 0.01 && (r.freiY || 0) < 0.01, { minY: r.minY, festY: r.festY, freiY: r.freiY });
     ok(v.name + ': passt aufs Bett (≤ 256 mm)', Math.max(r.mass.lx, r.mass.by) <= 256.5, r.mass);
   }
 

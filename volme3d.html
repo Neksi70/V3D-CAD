@@ -50389,15 +50389,20 @@ function _kgBau(w, id, p, q){
     const nurFest = res.some(t => !t.frei);
     const teile = res.map(t => {
       const geo = _mfToGeo(t.mf), a = geo.attributes.position.array;
-      if (!nurFest || !t.frei) for (let i = 0; i < a.length; i += 3) {
+      let zMin = Infinity;
+      const mit = !nurFest || !t.frei;
+      for (let i = 0; i < a.length; i += 3) {
+        if (a[i + 2] < zMin) zMin = a[i + 2];
+        if (!mit) continue;
         if (a[i] < x0) x0 = a[i]; if (a[i] > x1) x1 = a[i];
         if (a[i + 1] < y0) y0 = a[i + 1]; if (a[i + 1] > y1) y1 = a[i + 1];
         if (a[i + 2] < z0) z0 = a[i + 2]; if (a[i + 2] > z1) z1 = a[i + 2];
       }
-      return { geo, hex: t.hex, name: t.name, frei: t.frei, vol: t.mf.volume() };
+      return { geo, hex: t.hex, name: t.name, frei: t.frei, vol: t.mf.volume(), zMin };
     });
     const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-    for (const t of teile) { t.geo.translate(-cx, -cy, -z0); t.geo.rotateX(-Math.PI / 2); }
+    // Modell aufs Bett; freie Beistell-Teile (Räder, Ständer …) liegen jedes für sich auf dem Bett
+    for (const t of teile) { t.geo.translate(-cx, -cy, -(t.frei && nurFest ? t.zMin : z0)); t.geo.rotateX(-Math.PI / 2); }
     return { teile, hinweise: r.hinweise || [], extra: r.extra || {}, mass: { lx: x1 - x0, by: y1 - y0, hz: z1 - z0 } };
   } finally {
     for (const x of H.tmp) { try { x.delete(); } catch (e) {} }
@@ -51456,6 +51461,283 @@ _kgReg('zug', {
     if (p.kupplung === 'magnet') s += ' Magnete 6 × 3 mm einkleben – vorn und hinten verschiedene Pole nach außen.';
     if (p.kupplung === 'haken') s += ' Die Öse der Hakenkupplung hat 3,6 mm Abstand zum Bett – evtl. kleine Stütze.';
     return s;
+  },
+});
+
+// ─── Straßenplatten ─────────────────────────────────────────────────────────
+// Quadratische Platten im Raster (Standard 144 mm). Alles wird in 2D gebaut
+// (Fahrbahn, Gehweg, Wiese, Markierung) und dann hochgezogen – so berühren sich die
+// Farbteile nur, nichts überlappt. Markierungen liegen 0,6 mm tief eingelegt in der
+// Fahrbahn. An JEDER Kante sitzt bei +s (im Gegenuhrzeigersinn) ein Puzzle-Zapfen und
+// bei −s ein Loch → jede Platte passt in jeder Drehung an jede andere.
+function _kgStrassenBau(H, p){
+  const CS = H.CS, k = H.k, S = Math.max(96, p.raster), T = 4, s2 = S / 2;
+  const wF = Math.max(40, Math.min(S * 0.7, p.fahrbahn)), gw = Math.max(0, p.gehweg), hG = 1.6;
+  const n = H.fein ? 64 : 32;
+  const C = pts => k(new CS([pts], 'EvenOdd'));
+  const CU = arr => { arr = arr.filter(Boolean); return !arr.length ? null : arr.length === 1 ? arr[0] : k(CS.union(arr)); };
+  const Csub = (a, b) => !a ? null : !b ? a : k(a.subtract(b));
+  const Cint = (a, b) => (!a || !b) ? null : k(a.intersect(b));
+  const rect = (x0, x1, y0, y1) => C([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+  const ring = (cx, cy, r0, r1, a0 = 0, a1 = Math.PI * 2) => {
+    const o = [], u = [];
+    for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; o.push([cx + r1 * Math.cos(a), cy + r1 * Math.sin(a)]); if (r0 > 0) u.push([cx + r0 * Math.cos(a), cy + r0 * Math.sin(a)]); }
+    if (r0 <= 0) { if (a1 - a0 < Math.PI * 2 - 1e-6) o.push([cx, cy]); return C(o); }
+    if (a1 - a0 >= Math.PI * 2 - 1e-6) return k(C(o).subtract(C(u)));
+    return C(o.concat(u.reverse()));
+  };
+  const tile = rect(-s2, s2, -s2, s2);
+  // Straßenzüge als Mittellinien-Bänder: Art → Liste { typ:'g', ax:'x'|'y', von, bis } | { typ:'b', … }
+  const W = wF / 2, G = W + gw;
+  let fahr = null, weg = null, insel = null;
+  const mark = [];                                                            // Markierungs-Flächen (2D)
+  const strich = (x0, x1, y, b, ax) => ax === 'x' ? rect(x0, x1, y - b / 2, y + b / 2) : rect(y - b / 2, y + b / 2, x0, x1);
+  const mittelStriche = (a0, a1, ax, frei = []) => {                       // gestrichelte Mittellinie
+    for (let a = a0 + 6; a + 14 <= a1 - 2; a += 24) { if (frei.some(([f0, f1]) => a + 14 > f0 && a < f1)) continue; mark.push(strich(a, a + 14, 0, 2.4, ax)); }
+  };
+  const teil = p.teil;
+  if (teil === 'gerade' || teil === 'zebra') {
+    fahr = rect(-s2, s2, -W, W); weg = Csub(rect(-s2, s2, -G, G), fahr);
+    if (teil === 'zebra') {
+      for (let y = -W + 4; y + 6 <= W - 4 + 0.01; y += 10) mark.push(rect(-13, 13, y, y + 6));
+      mittelStriche(-s2, s2, 'x', [[-16, 16]]);
+    } else mittelStriche(-s2, s2, 'x');
+  } else if (teil === 'kurve') {
+    // Bogen um die Ecke (−s2, −s2): verbindet die Mitte der linken mit der Mitte der unteren Kante
+    fahr = Cint(ring(-s2, -s2, s2 - W, s2 + W, 0, Math.PI / 2), tile);
+    weg = Csub(Cint(ring(-s2, -s2, Math.max(0.1, s2 - G), s2 + G, 0, Math.PI / 2), tile), fahr);
+    const m = 20;
+    for (let i = 0; i < m; i++) {
+      if (i % 2) continue;
+      const a0 = Math.PI / 2 * (i + 0.15) / m, a1 = Math.PI / 2 * (i + 0.85) / m;
+      mark.push(Cint(ring(-s2, -s2, s2 - 1.2, s2 + 1.2, a0, a1), tile));
+    }
+  } else if (teil === 'kreuzung' || teil === 'tkreuzung') {
+    const arme = teil === 'kreuzung' ? [rect(-s2, s2, -W, W), rect(-W, W, -s2, s2)] : [rect(-s2, s2, -W, W), rect(-W, W, 0, s2)];
+    fahr = CU(arme);
+    const breit = teil === 'kreuzung' ? [rect(-s2, s2, -G, G), rect(-G, G, -s2, s2)] : [rect(-s2, s2, -G, G), rect(-G, G, 0, s2)];
+    weg = Csub(CU(breit), fahr);
+    if (teil === 'tkreuzung') weg = CU([weg, rect(-W, W, -G, -W)]);             // unten durchgehender Gehweg
+    mittelStriche(-s2, -G, 'x'); mittelStriche(G, s2, 'x'); mittelStriche(G, s2, 'y');
+    if (teil === 'kreuzung') mittelStriche(-s2, -G, 'y');
+    // Haltelinien vor der Kreuzung
+    for (const [x0, x1, y0, y1] of [[-G - 2.5, -G, -W, 0], [G, G + 2.5, 0, W], [0, W, G, G + 2.5]].concat(teil === 'kreuzung' ? [[-W, 0, -G - 2.5, -G]] : []))
+      mark.push(rect(x0, x1, y0, y1));
+  } else if (teil === 'kreisel') {
+    const rA = Math.min(s2 - gw - 2, W * 2.1), rI = Math.max(10, rA - Math.max(24, W * 0.75));   // Ring eine Spur breit → große Insel
+    const ringF = ring(0, 0, rI, rA);
+    fahr = CU([ringF, Csub(rect(-s2, s2, -W, W), ring(0, 0, 0, rI)), Csub(rect(-W, W, -s2, s2), ring(0, 0, 0, rI))]);
+    weg = Csub(CU([ring(0, 0, 0, rA + gw), rect(-s2, s2, -G, G), rect(-G, G, -s2, s2)]), CU([fahr, ring(0, 0, 0, rI)]));
+    insel = ring(0, 0, 0, rI - 1.5);
+    weg = CU([weg, Csub(ring(0, 0, 0, rI), insel)]);                           // Bordstein um die Insel
+    for (const ax of ['x', 'y']) { mittelStriche(-s2, -rA - 2, ax); mittelStriche(rA + 2, s2, ax); }
+  } else if (teil === 'ende') {
+    // Sackgasse mit Wendehammer (Kreis in der Mitte)
+    const rW = Math.min(s2 - gw - 2, W * 1.35);
+    fahr = CU([rect(-s2, 0, -W, W), ring(0, 0, 0, rW)]);
+    weg = Csub(CU([rect(-s2, 0, -G, G), ring(0, 0, 0, rW + gw)]), fahr);
+    mittelStriche(-s2, -rW, 'x');
+  }
+  const markU = mark.length ? Cint(CU(mark), fahr) : null;
+  const wiese = Csub(Csub(Csub(tile, fahr), weg), insel);
+  // Puzzle-Verbinder an jeder Kante: Zapfen bei +s, Loch bei −s (Gegenuhrzeigersinn)
+  const sP = S * 0.42, hl = 5.5, dK = 9, hb = 5, spiel = 0.25;
+  const zapfen = [], loch = [];
+  const kanten = [[0, -s2, 0], [s2, 0, 90], [0, s2, 180], [-s2, 0, 270]];        // Mitte + Außenrichtung − 90°
+  for (const [cx, cy, a] of kanten) {
+    const r = a * Math.PI / 180, tx = Math.cos(r), ty = Math.sin(r), nx = ty, ny = -tx;   // t = Kante (CCW), n = nach außen
+    const form = (vz, gross) => {
+      const e = gross ? spiel : 0, b = hb + 2 * e, d = dK + 2 * e, ofs = (vz > 0 ? 1 : -1) * sP;
+      const bx = cx + tx * ofs, by = cy + ty * ofs, dir = vz > 0 ? 1 : -1;
+      const P = (u, v) => [bx + tx * u + nx * v * dir, by + ty * u + ny * v * dir];
+      const hals = [P(-b / 2, -0.6), P(b / 2, -0.6), P(b / 2, hl + dK / 2), P(-b / 2, hl + dK / 2)];   // bis zur Kopfmitte, sonst berührt der Kopf nur in einem Punkt
+      const kopf = Array.from({ length: 32 }, (_, i) => { const w = i / 32 * Math.PI * 2; return P(d / 2 * Math.cos(w), hl + dK / 2 + d / 2 * Math.sin(w)); });
+      return CU([C(hals), C(kopf)]);
+    };
+    zapfen.push(form(1, false));                                                // nach außen
+    loch.push(form(-1, true));                                                  // nach innen
+  }
+  const lochU = CU(loch);
+  const ext = (cs, z0, z1) => !cs ? null : k(k(cs.extrude(z1 - z0)).translate([0, 0, z0]));
+  const cut = c => Csub(c, lochU);
+  const teile = [];
+  if (markU && p.farbig !== 0) teile.push({ mf: ext(cut(markU), T - 0.6, T), hex: p.farbeM, name: 'Markierung' });   // einfarbig: nur eingraviert
+  teile.push({ mf: H.sub(ext(cut(fahr), 0, T), markU ? ext(markU, T - 0.6, T + 1) : null), hex: p.farbeF, name: 'Fahrbahn' });
+  if (weg) teile.push({ mf: ext(cut(weg), 0, T + hG), hex: p.farbeG, name: 'Gehweg' });
+  if (insel) teile.push({ mf: ext(cut(insel), 0, T + 2.5), hex: p.farbeW, name: 'Insel' });
+  teile.push({ mf: ext(cut(CU([wiese, ...zapfen])), 0, T), hex: p.farbeW, name: 'Wiese' });
+  return { teile, hinweise: [] };
+}
+
+_kgReg('strasse', {
+  icon: '🛣️', name: 'Straße', thema: 'Spielwelt & Kinder',
+  desc: 'Straßenplatten zum Zusammenstecken: Gerade, Kurve, Kreuzung, Zebrastreifen, Kreisverkehr',
+  vorlagen: {
+    gerade:    { name: 'Gerade', icon: '➖', p: { teil: 'gerade' } },
+    kurve:     { name: 'Kurve', icon: '↪️', p: { teil: 'kurve' } },
+    kreuzung:  { name: 'Kreuzung', icon: '➕', p: { teil: 'kreuzung' } },
+    tkreuzung: { name: 'T-Kreuzung', icon: '⊤', p: { teil: 'tkreuzung' } },
+    zebra:     { name: 'Zebrastreifen', icon: '🦓', p: { teil: 'zebra' } },
+    kreisel:   { name: 'Kreisverkehr', icon: '⭕', p: { teil: 'kreisel' } },
+    ende:      { name: 'Sackgasse', icon: '🔚', tip: 'Straßenende mit Wendehammer', p: { teil: 'ende' } },
+  },
+  params: [
+    { sec: 'Platte' },
+    { k: 'teil', t: 'wahl', l: 'Art', o: [['gerade', 'Gerade'], ['kurve', 'Kurve'], ['kreuzung', 'Kreuzung'], ['tkreuzung', 'T-Kreuzung'], ['zebra', 'Zebrastreifen'], ['kreisel', 'Kreisel'], ['ende', 'Sackgasse']], v: 'gerade' },
+    { k: 'raster', t: 'range', l: 'Plattengröße', min: 96, max: 224, step: 8, u: 'mm', v: 144, tip: 'Alle Platten einer Stadt gleich groß wählen (Standard 144 mm = eine Holzeisenbahn-Schiene)' },
+    { k: 'fahrbahn', t: 'range', l: 'Fahrbahn', min: 40, max: 120, step: 2, u: 'mm', v: 84, tip: 'Breite beider Spuren zusammen – die Autos aus dem Fahrzeug-Generator brauchen 42 mm je Spur' },
+    { k: 'gehweg', t: 'range', l: 'Gehweg', min: 0, max: 24, step: 1, u: 'mm', v: 12 },
+    { sec: 'Farben' },
+    { k: 'farbig', t: 'wahl', l: 'Druck', o: [[1, 'Mehrfarbig'], [0, 'Einfarbig']], v: 1 },
+    { k: 'farbeF', t: 'farbe', l: 'Fahrbahn', v: '#4a4f55' },
+    { k: 'farbeM', t: 'farbe', l: 'Markierung', v: '#ffffff' },
+    { k: 'farbeG', t: 'farbe', l: 'Gehweg', v: '#c9c9c9' },
+    { k: 'farbeW', t: 'farbe', l: 'Wiese', v: '#5cb85c' },
+    { k: 'farbe', t: 'farbe', l: 'Einfarbig', v: '#8a8f96' },
+  ],
+  build: (H, p) => _kgStrassenBau(H, p),
+  info(r, p){
+    return 'Flach, druckt <b>ohne Stützen</b>. An jeder Kante ein Puzzle-Zapfen und ein Loch – die Platten passen in jeder Drehung aneinander. Alle Platten einer Stadt mit derselben <b>Plattengröße</b> bauen.';
+  },
+});
+
+// ─── Fahrzeuge (Straße) ─────────────────────────────────────────────────────
+// Räder außen sichtbar (wie Holzspielzeug), Steckachse durch Rad (Spiel) in die
+// Seitenwand (stramm). Körpersystem: x längs (Front +X), z = 0 Unterkante,
+// Bodenfreiheit 2,5 mm. Breite mit Rädern < 42 mm → passt in eine Spur der Straßen.
+function _kgRadAussen(H, achsen, B, clr, bw, dA = 3){
+  const loecher = [], raeder = [], stifte = [];
+  for (const a of achsen) {
+    const zA = a.rw - clr;
+    for (const sg of [1, -1]) loecher.push(sg > 0 ? H.cylY(dA / 2 - 0.05, B / 2 - 8, B / 2 + 0.1, a.x, zA, 20) : H.cylY(dA / 2 - 0.05, -B / 2 - 0.1, -B / 2 + 8, a.x, zA, 20));
+    for (let i = 0; i < 2; i++) {
+      const r = H.U([H.cyl(a.rw, 0, bw, 0, 0, 48), H.cyl(Math.min(a.rw * 0.45, dA * 1.3), bw - 0.01, bw + 0.6, 0, 0, 24)]);
+      raeder.push({ mf: H.sub(r, H.cyl(dA / 2 + 0.2, -1, bw + 2, 0, 0, 20)), rw: a.rw });
+      const lS = 0.6 + bw + 8 - 0.4;
+      stifte.push(H.U([H.cyl(dA / 2 + 1.3, 0, 1.2, 0, 0, 24), H.cyl(dA / 2, 1.19, 1.2 + lS, 0, 0, 20, dA / 2 - 0.2)]));
+    }
+  }
+  return { loecher: H.U(loecher), raeder, stifte };
+}
+
+function _kgFahrzeugBau(H, p){
+  const typ = p.vorlage, L = Math.max(50, p.laenge), clr = 2.5, bw = 5;
+  const B = typ === 'bus' || typ === 'lkw' || typ === 'feuer' ? 28 : 26;
+  const fz = [], fenster = [], akzent = [], akzent2 = [];
+  let achsen;
+  const kiste = (x0, x1, z0, z1, ein = 0, fase = 0) => fase
+    ? H.hull([H.box(x0, x1, -B / 2 + ein, B / 2 - ein, z0, z1 - fase), H.box(x0 + fase, x1 - fase, -B / 2 + ein + fase, B / 2 - ein - fase, z1 - 0.01, z1)])
+    : H.box(x0, x1, -B / 2 + ein, B / 2 - ein, z0, z1);
+  // Fensterband: Kabine ∩ Band, mit demselben Band aus der Kabine geschnitten (keine Restfuge)
+  const fensterAus = (koerper, band, holme) => {
+    const b = holme ? H.sub(band, holme) : band;
+    fenster.push(H.int(koerper, b));
+    return H.sub(koerper, b);
+  };
+  if (typ === 'auto' || typ === 'polizei') {
+    achsen = [{ x: L * 0.2, rw: 8 }, { x: L * 0.8, rw: 8 }];
+    const unten = H.hull([kiste(0, L, 0, 12, 0, 0), kiste(1.5, L - 1.5, 0, 14, 0, 2)]);
+    let kab = H.hull([kiste(L * 0.25, L * 0.74, 13.9, 15, 1.2), kiste(L * 0.36, L * 0.62, 24, 25, 2.2, 1)]);
+    kab = fensterAus(kab, H.box(-1, L + 1, -B, B, 16, 22.5), H.box(L * 0.48, L * 0.52, -B, B, 0, 40));
+    fz.push(unten, kab);
+    for (const sg of [1, -1]) {
+      akzent.push(H.box(L - 1.2, L + 0.01, sg * B / 2 - (sg > 0 ? 6 : -1), sg * B / 2 - (sg > 0 ? 1 : -6), 7, 10));        // Scheinwerfer
+      akzent2.push(H.box(-0.01, 1.2, sg * B / 2 - (sg > 0 ? 6 : -1), sg * B / 2 - (sg > 0 ? 1 : -6), 7, 10));           // Rücklichter
+    }
+    if (typ === 'polizei') {
+      const st = H.box(-1, L + 1, -B, B, 8.5, 11.5);                              // blauer Streifen rundum
+      fz[0] = H.sub(unten, st);
+      akzent2.push(H.int(unten, st));
+      akzent2.push(H.box(L * 0.42, L * 0.58, -B / 2 + 6, B / 2 - 6, 24.9, 28));     // Blaulichtbalken
+    }
+  } else if (typ === 'renn') {
+    achsen = [{ x: L * 0.18, rw: 8.5 }, { x: L * 0.8, rw: 7.5 }];
+    const keil = H.hull([kiste(0, L * 0.3, 0, 13, 0, 0), kiste(L * 0.85, L, 0, 6, 3), kiste(0, L * 0.85, 0, 9, 0)]);
+    fz.push(keil);
+    fenster.push(H.ell(L * 0.16, B * 0.22, 5, L * 0.48, 0, 9.5, 24));             // Cockpit
+    // Heckflügel auf zwei Stützen (Brücke dazwischen)
+    for (const sg of [1, -1]) akzent.push(H.box(L * 0.02, L * 0.09, sg * (B / 2 - 2.5) - 1.2, sg * (B / 2 - 2.5) + 1.2, 12, 19));
+    akzent.push(H.box(-1, L * 0.11, -B / 2 + 0.5, B / 2 - 0.5, 19, 21.5));
+    const st = H.box(L * 0.55, L * 0.75, -B, B, 3, 6.5);                          // Startnummer-Feld (Seiten)
+    fz[0] = H.sub(keil, st); akzent2.push(H.int(keil, st));
+  } else if (typ === 'bus') {
+    achsen = [{ x: L * 0.2, rw: 8.5 }, { x: L * 0.78, rw: 8.5 }];
+    let k = H.hull([kiste(0, L, 0, 34, 0, 0), kiste(0.5, L - 0.5, 0, 36, 0, 2)]);
+    const holme = H.U(Array.from({ length: Math.floor(L / 16) + 1 }, (_, i) => H.box(i * 16 - 1, i * 16 + 1, -B, B, 0, 40)));
+    k = fensterAus(k, H.box(4, L + 1, -B, B, 19, 30), holme);
+    k = fensterAus(k, H.box(L - 1.5, L + 1, -B / 2 + 2.5, B / 2 - 2.5, 12, 19), null);   // große Frontscheibe unten
+    fz.push(k);
+    akzent.push(H.box(L * 0.3, L * 0.38, B / 2 - 0.8, B / 2 + 0.01, 3.5, 30));        // Tür (rechts)
+    for (const sg of [1, -1]) akzent2.push(H.box(L - 0.8, L + 0.01, sg * (B / 2 - 3.5) - 2, sg * (B / 2 - 3.5) + 2, 5, 8));
+  } else if (typ === 'feuer' || typ === 'lkw') {
+    achsen = [{ x: L * 0.17, rw: 8.5 }, { x: L * 0.8, rw: 8.5 }];
+    const xc = L * 0.72;
+    let kab = kiste(xc, L, 0, 30, 0, 2);
+    kab = fensterAus(kab, H.box(xc + 3, L + 1, -B, B, 19, 27), H.box(L - 4.5, L - 2.5, -B, B, 0, 40));
+    fz.push(kab, kiste(0, xc + 0.01, 0, 9, 0));
+    if (typ === 'feuer') {
+      fz.push(kiste(0.5, xc - 1, 8.99, 28, 0.5, 1));
+      // Rolltore: senkrechte Rillen (Farbteil)
+      for (let i = 0; i < 3; i++) for (const sg of [1, -1]) akzent.push(H.box(4 + i * (xc - 8) / 3, 2 + (i + 1) * (xc - 8) / 3, sg > 0 ? B / 2 - 1.3 : -B / 2 + 0.5, sg > 0 ? B / 2 - 0.5 : -B / 2 + 1.3, 11, 26));
+      // Leiter flach auf dem Dach (keine Brücke nötig)
+      for (const sg of [1, -1]) akzent2.push(H.box(2, L * 0.82, sg * 6 - 1, sg * 6 + 1, 27.9, 29.6));
+      for (let x = 5; x < L * 0.8; x += 7) akzent2.push(H.box(x, x + 1.2, -5.01, 5.01, 27.9, 29.2));
+      akzent.push(H.box(L - 12, L - 5, -B / 2 + 5, B / 2 - 5, 29.9, 33));          // Blaulicht
+    } else {
+      const wd = 2.2;                                                              // offene Pritsche
+      fz.push(H.sub(kiste(0.5, xc - 1.5, 8.99, 22, 0.5), kiste(0.5 + wd, xc - 1.5 - wd, 10.5, 23, 0.5 + wd)));
+    }
+  } else if (typ === 'traktor') {
+    achsen = [{ x: L * 0.25, rw: 13.5 }, { x: L * 0.82, rw: 8 }];
+    fz.push(H.hull([kiste(L * 0.35, L, 1.5, 17, 5, 0), kiste(L * 0.4, L - 1, 1.5, 19, 6, 1.5)]));   // Motorhaube (tief genug für die Vorderachse)
+    fz.push(kiste(0, L * 0.4, 1.5, 22, 3));                                        // Sitzblock unter der Kabine (gleiche Unterkante wie die Haube)
+    // Kabine: vier Pfosten + Dach (Brücke ≤ 30 mm)
+    const x0 = L * 0.04, x1 = L * 0.4, zD = 46;
+    for (const xx of [x0, x1 - 3]) for (const sg of [1, -1]) akzent.push(H.box(xx, xx + 3, sg > 0 ? B / 2 - 6 : -B / 2 + 3, sg > 0 ? B / 2 - 3 : -B / 2 + 6, 21.9, zD));
+    akzent.push(H.box(x0 - 1.5, x1 + 1.5, -B / 2 + 1.5, B / 2 - 1.5, zD - 0.01, zD + 2.5));
+    akzent2.push(H.cyl(1.8, 18.9, 32, L * 0.78, B / 2 - 7, 16));                      // Auspuff
+    fenster.push(H.box(L - 0.8, L + 0.01, -5, 5, 9, 14));                           // Kühlergrill
+  }
+  const ra = _kgRadAussen(H, achsen, B, clr, bw);
+  const cut = ra.loecher;
+  const teile = [];
+  const sub = m => H.sub(m, cut);
+  if (fenster.length) teile.push({ mf: sub(H.U(fenster)), hex: '#26303c', name: 'Fenster' });
+  if (akzent.length) teile.push({ mf: sub(H.U(akzent)), hex: p.farbe2, name: 'Details' });
+  if (akzent2.length) teile.push({ mf: sub(H.U(akzent2)), hex: p.farbe3, name: 'Lichter' });
+  teile.push({ mf: sub(H.U(fz)), hex: p.farbe, name: 'Karosserie' });
+  // Räder + Achsen daneben
+  let x = 0;
+  ra.raeder.forEach((r, i) => { teile.push({ mf: H.k(r.mf.translate([x + r.rw, -B / 2 - 6 - r.rw - 12, 0])), hex: '#202428', name: 'Rad ' + (i + 1), frei: true }); x += 2 * r.rw + 3; });
+  ra.stifte.forEach((s, i) => teile.push({ mf: H.k(s.translate([i * 7, -B / 2 - 6, 0])), hex: '#9aa3ad', name: 'Achse ' + (i + 1), frei: true }));
+  return { teile, hinweise: [], extra: { nR: ra.raeder.length } };
+}
+
+_kgReg('fahrzeug', {
+  icon: '🚗', name: 'Fahrzeug', thema: 'Spielwelt & Kinder',
+  desc: 'Auto, Polizei, Feuerwehr, Bus, Laster, Traktor, Rennauto – Räder drehen sich, passt auf die Straßenplatten',
+  vorlagen: {
+    auto:    { name: 'Auto', icon: '🚗', p: { laenge: 70, farbe: '#e53935', farbe2: '#fff59d', farbe3: '#b71c1c' } },
+    polizei: { name: 'Polizei', icon: '🚓', p: { laenge: 72, farbe: '#f5f5f5', farbe2: '#fff59d', farbe3: '#1565c0' } },
+    feuer:   { name: 'Feuerwehr', icon: '🚒', p: { laenge: 105, farbe: '#d32f2f', farbe2: '#1e88e5', farbe3: '#e0e0e0' } },
+    bus:     { name: 'Bus', icon: '🚌', p: { laenge: 110, farbe: '#fbc02d', farbe2: '#424242', farbe3: '#ffffff' } },
+    lkw:     { name: 'Laster', icon: '🚚', p: { laenge: 100, farbe: '#1e88e5', farbe2: '#424242', farbe3: '#ffffff' } },
+    traktor: { name: 'Traktor', icon: '🚜', p: { laenge: 72, farbe: '#43a047', farbe2: '#fdd835', farbe3: '#424242' } },
+    renn:    { name: 'Rennauto', icon: '🏎️', p: { laenge: 80, farbe: '#ff6d00', farbe2: '#212121', farbe3: '#ffffff' } },
+  },
+  params: [
+    { sec: 'Größe' },
+    { k: 'laenge', t: 'range', l: 'Länge', min: 50, max: 160, step: 5, u: 'mm', v: 70 },
+    { sec: 'Farben' },
+    { k: 'farbig', t: 'wahl', l: 'Druck', o: [[1, 'Mehrfarbig'], [0, 'Einfarbig']], v: 1 },
+    { k: 'farbe', t: 'farbe', l: 'Karosserie', v: '#e53935' },
+    { k: 'farbe2', t: 'farbe', l: 'Details', v: '#fff59d' },
+    { k: 'farbe3', t: 'farbe', l: 'Lichter/Streifen', v: '#b71c1c' },
+  ],
+  build: (H, p) => _kgFahrzeugBau(H, p),
+  info(r, p){
+    const n = r.extra && r.extra.nR || 4;
+    return 'Druckt <b>ohne Stützen</b>. Dazu ' + n + ' Räder und ' + n + ' Steckachsen: Achse durchs Rad in das Loch in der Seite drücken, bis sie stramm sitzt – das Rad dreht sich. Breite mit Rädern unter 42 mm: passt in eine Spur der Straßenplatten.';
   },
 });
 
@@ -61379,8 +61661,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.176';
+const VOLME3D_VERSION = '1.18.177';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.177', date:'2026-10-11', changes:[
+    ['🛣️','<b>Neu: Straßenplatten für die Spielstadt.</b> Gerade, Kurve, Kreuzung, T-Kreuzung, Zebrastreifen, Kreisverkehr und Sackgasse – mit Gehweg, Wiese und Mittellinie, mehrfarbig oder einfarbig (Markierung eingraviert). An jeder Kante sitzen ein Puzzle-Zapfen und ein Loch: Die Platten passen in jeder Drehung aneinander. Standardgröße 144 mm, wie eine Holzeisenbahn-Schiene.'],
+    ['🚗','<b>Neu: Fahrzeug-Generator.</b> Auto, Polizei, Feuerwehr (mit Leiter), Bus, Laster, Traktor und Rennauto. Die Räder drehen sich: Sie werden einzeln gedruckt und mit Steckachsen außen angesteckt. Mit Rädern unter 42 mm breit – passt in eine Spur der Straßenplatten.'],
+  ]},
   { version:'1.18.176', date:'2026-10-11', changes:[
     ['🛤️','<b>Neu: Schienen für die Holzeisenbahn.</b> Gerade, Kurve, kleine Kurve, Weiche (links/rechts), Kreuzung und Prellbock im Brio-Maß (40 mm breit, Rillen 6 × 3 mm, Puzzle-Zapfen). Länge in 18-mm-Schritten wie die gekauften Schienen, Zapfen oder Loch an jedem Ende wählbar. Die Maße sind einstellbar, falls es mit deinen Holzschienen nicht ganz passt.'],
     ['🚂','<b>Neu: Zug-Generator.</b> Dampflok, E-Lok, Personenwagen, Güterwagen und Kesselwagen für die Holzeisenbahn. Die Räder drehen sich wirklich: Sie werden einzeln gedruckt und mit Steckachsen in die Radkästen gesteckt. Kupplung mit Magneten (Taschen für 6 × 3 mm) oder mit gedruckten Haken.'],
