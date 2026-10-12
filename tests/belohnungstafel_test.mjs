@@ -27,13 +27,15 @@ await pg.evaluate(() => {
 });
 
 const varianten = [
-  { name: 'Standard 380×280',                  p: {} },
-  { name: 'Theo, Mo–Fr, lange Tage',           p: { titel: 'Theos Belohnungstafel', tage: 5, tagForm: 'lang', belohnung: 'Eis essen gehen' } },
+  { name: 'Standard 380×300',                  p: {} },
+  { name: 'Theo, Mo–Fr, lange Tage',           p: { titel: 'Theos Belohnungstafel', tage: 5, tagForm: 'lang', kinder: [{ n: 'Theo', z: 15, b: 'Eis essen gehen' }] } },
+  { name: '3 Kinder, kurze Tage',              p: { tagForm: 'kurz', kinder: [{ n: 'Theo', z: 15, b: 'Kino' }, { n: 'Amelie', z: 20, b: 'Spieleabend' }, { n: 'Ben', z: 10, b: 'Eis' }] } },
+  { name: '3 Kinder, Rückplatte',              p: { halt: 'scheiben', kinder: [{ n: 'A', z: 1, b: '' }, { n: 'B', z: 2, b: '' }, { n: 'C', z: 3, b: '' }] } },
   { name: 'Rückplatte mit Löchern',            p: { halt: 'scheiben' } },
   { name: 'Hochformat 297×420, 10 Aufgaben',   p: { B: 297, H: 420, tasks: Array.from({ length: 10 }, (_, i) => ({ t: 'Aufgabe Nummer ' + (i + 1) + ' mit langem Text', i: 'auto' })) } },
   { name: 'klein 200×150, ohne Fuß/Deko',      p: { B: 200, H: 150, fuss: false, deko: 'keine', aufh: false } },
   { name: 'Marker als Form + Ring',            p: { mForm: 'kontur', mMag: 'ring', mMotiv: 'stern', mGr: 90 } },
-  { name: 'Herz-Form, kleiner Magnet',         p: { mForm: 'kontur', mMotiv: 'herz', magD: 8 } },
+  { name: 'Herz-Form, kleiner Magnet',         p: { mForm: 'kontur', mMotiv: 'herz', magD: 6, B: 420, H: 400 } },
 ];
 const res = await pg.evaluate((varianten) => {
   const out = [];
@@ -49,7 +51,8 @@ const res = await pg.evaluate((varianten) => {
       for (const g of L.front.eng) for (const q of g[0]) holeClr = Math.min(holeClr, Math.hypot(q[0] - cx, q[1] - cy) - r); }
     const nTasks = p.tasks.filter(t => t.t.trim()).length;
     out.push({ name: v.name, inside, eb, holeClr, nShapes: L.front.eng.length,
-      back: L.back ? L.back.cut.length - 1 - (p.aufh ? 2 : 0) : null, cells: nTasks * (p.tage === 5 ? 5 : 7),
+      back: L.back ? L.back.cut.length - 1 - (p.aufh ? 2 : 0) : null, cells: nTasks * (p.tage === 5 ? 5 : 7) + (I.parkHoles || 0), parkHoles: I.parkHoles || 0,
+      kidMot: [...new Set(L.markers.map(k => k.motiv))].join(','), nK: p.fuss ? p.kinder.length : 1,
       markerD: 2 * I.R, cell: I.cell, magFit: I.magFit, nMarker: L.markers.length, mAnz: p.mAnz, titleH: I.titleShrunk });
   }
   return out;
@@ -58,18 +61,20 @@ for (const r of res){
   ok(`${r.name}: Gravur innerhalb der Platte`, r.inside, r.eb.map(x => +x.toFixed(1)));
   ok(`${r.name}: Abstand Gravur–Aufhängeloch ≥ 1 mm`, r.holeClr >= 1, +r.holeClr.toFixed(2));
   ok(`${r.name}: Marker kleiner als Feld`, r.markerD < r.cell - 1, [+r.markerD.toFixed(1), +r.cell.toFixed(1)]);
-  ok(`${r.name}: Markeranzahl`, r.nMarker === r.mAnz);
+  ok(`${r.name}: Markeranzahl`, r.nMarker === r.mAnz * r.nK, [r.nMarker, r.mAnz, r.nK]);
   if (r.back !== null) ok(`${r.name}: ein Loch je Feld in der Rückplatte`, r.back === r.cells, [r.back, r.cells]);
 }
-ok('Herz-Form mit Ø8-Magnet passt', res[6].magFit);
+ok('Herz-Form mit Ø6-Magnet passt (große Tafel)', res.find(r => /Herz-Form/.test(r.name)).magFit);
+ok('3 Kinder: Stern, Herz, Sonne', res.find(r => r.name === '3 Kinder, kurze Tage').kidMot === 'stern,herz,sonne', res.find(r => r.name === '3 Kinder, kurze Tage').kidMot);
+ok('Rückplatte: Löcher auch im Sternen-Feld', res.find(r => r.name === '3 Kinder, Rückplatte').parkHoles > 0);
 
 // Symbole
 const sym = await pg.evaluate(() => {
-  const guess = ['Zähne putzen','Zimmer aufräumen','Anziehen','Hände waschen','Tisch decken','Ins Bett gehen','Hausaufgaben machen','Blumen gießen','Gassi gehen','Klavier üben','Freundlich sein','Schultasche packen','Wasser trinken','Irgendwas'].map(t => [t, _belGuessIcon(t)]);
+  const guess = ['Zähne putzen','Zimmer aufräumen','Anziehen','Hände waschen','Tisch decken','Ins Bett gehen','Hausaufgaben machen','Blumen gießen','Gassi gehen','Klavier üben','Freundlich sein','Schultasche packen','Wasser trinken','Pünktlich sein','Irgendwas'].map(t => [t, _belGuessIcon(t)]);
   const sizes = Object.keys(_BEL_ICONS).map(k => { const o = _belIcon(k, 0, 0, 20, 1, []); const xs = o.flat(2); let a = 1e9, b = -1e9; for (const q of xs){ a = Math.min(a, q[0], q[1]); b = Math.max(b, q[0], q[1]); } return [k, o.length, +a.toFixed(1), +b.toFixed(1)]; });
   return { guess, sizes };
 });
-const want = { 'Zähne putzen':'zahn','Zimmer aufräumen':'kiste','Anziehen':'shirt','Hände waschen':'tropfen','Tisch decken':'teller','Ins Bett gehen':'mond','Hausaufgaben machen':'buch','Blumen gießen':'blume','Gassi gehen':'pfote','Klavier üben':'note','Freundlich sein':'herz','Schultasche packen':'ranzen','Wasser trinken':'tasse','Irgendwas':'stern' };
+const want = { 'Zähne putzen':'zahn','Zimmer aufräumen':'kiste','Anziehen':'shirt','Hände waschen':'tropfen','Tisch decken':'teller','Ins Bett gehen':'mond','Hausaufgaben machen':'buch','Blumen gießen':'blume','Gassi gehen':'pfote','Klavier üben':'note','Freundlich sein':'herz','Schultasche packen':'ranzen','Wasser trinken':'tasse','Pünktlich sein':'uhr','Irgendwas':'stern' };
 for (const [t, k] of sym.guess) ok(`Symbol für „${t}"`, want[t] === k, k);
 for (const [k, n, a, z] of sym.sizes) ok(`Symbol ${k} liegt im Kasten`, n > 0 && a >= -1.5 && z <= 21.5, [n, a, z]);
 
@@ -82,7 +87,7 @@ const svg = await pg.evaluate(async () => {
     const doc = new DOMParser().parseFromString(s, 'image/svg+xml');
     const g = doc.getElementById('gravieren'), c = doc.getElementById('schneiden');
     r[nm] = { ok: !doc.querySelector('parsererror'), w: doc.documentElement.getAttribute('width'), h: doc.documentElement.getAttribute('height'),
-      eng: g.querySelectorAll('path').length, cut: c.querySelectorAll('path').length, len: s.length };
+      park: _belLayout(p).info.parkHoles || 0, eng: g.querySelectorAll('path').length, cut: c.querySelectorAll('path').length, len: s.length };
   }
   return r;
 });
@@ -90,7 +95,7 @@ ok('SVG alles: gültig, mm', svg.alles.ok && /mm$/.test(svg.alles.w), svg.alles)
 ok('SVG alles: Breite ≤ Arbeitsfläche 400', parseFloat(svg.alles.w) <= 400.01, svg.alles.w);
 ok('SVG alles: Gravur verschweißt (1 Pfad je Teil = 1 + 21)', svg.alles.eng === 22, svg.alles.eng);
 ok('SVG alles: Schnitte = Kontur + 2 Löcher + 21 Marker', svg.alles.cut === 24, svg.alles.cut);
-ok('SVG Ring+Rückplatte: Schnitte', svg.ring.cut === 3 + (3 + 42) + 21 + 21 * 2, svg.ring.cut);
+ok('SVG Ring+Rückplatte: Schnitte', svg.ring.cut === 3 + (3 + 49 + svg.ring.park) + 21 + 21 * 2, [svg.ring.cut, svg.ring.park]);
 ok('SVG nur Marker: 21 Gravur, 21 Schnitte', svg.marker.eng === 21 && svg.marker.cut === 21, svg.marker);
 
 // Dialog
