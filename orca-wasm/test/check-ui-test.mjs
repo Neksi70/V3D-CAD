@@ -25,7 +25,11 @@ console.log('Befunde:', d1.score, d1.ids.join(', '));
 ok(d1.ids.includes('stuetzen_an'), 'Γ-Winkel: „Stützen nötig" erkannt');
 ok(await page.evaluate(() => document.getElementById('tbCheck').classList.contains('warnOn') || document.getElementById('tbCheck').classList.contains('errOn')),
   'Werkzeug-Knopf zeigt Warnstreifen');
-await page.locator('#toolPanel').screenshot({ path: `${OUT}/check-panel.png` });
+await page.evaluate(() => { for (const el of document.querySelectorAll('div')) { const cs = getComputedStyle(el); if (cs.position === 'fixed' && +cs.zIndex > 50) el.style.display = 'none'; } });
+const sel = await page.evaluate(i => window._checkSelect(i), d1.findings.findIndex(f => f.loc));
+ok(sel.marks > 0, 'Karte → Stelle im Modell markiert');
+await page.waitForTimeout(300);
+await page.screenshot({ path: `${OUT}/check-panel.png` });
 
 const idx = d1.findings.findIndex(f => f.id === 'stuetzen_an');
 await page.click(`#toolPanel button[data-pc="${idx}"]`);

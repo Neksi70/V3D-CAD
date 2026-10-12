@@ -81,6 +81,24 @@ console.log('Einstellungs-Regeln');
   ok(ids(P.checkSettings(c6, {})).includes('abrasiv0'), 'PLA-CF + Messing → Warnung');
 }
 
+console.log('Urteil, Steckbrief, Stellen');
+{
+  const m = an(boxes([0, 0, 0, 20, 20, 5], [0, 0, 10, 20, 20, 15]));
+  const F = P.checkSettings(base(), { models: [m] });
+  const s = F.find(f => f.id === 'stuetzen_an');
+  ok(s.loc && s.loc.pts.length && Math.abs(s.loc.pts[0][2] - 10) < 0.01, 'Stützen-Befund zeigt auf die Insel (z = 10)');
+  ok(P.verdict(P.summarize(F)).text.startsWith('So lieber nicht'), 'Urteil bei Fehler');
+  ok(P.verdict(P.summarize([])).emoji === '🎉', 'Urteil ohne Befund');
+  const thin = an(boxes([0, 0, 0, 30, 0.3, 10]));
+  const t = P.checkSettings(base(), { models: [thin] }).find(f => f.id === 'zudünn');
+  ok(t.loc && t.loc.pts.length > 0, 'Dünnwand-Befund hat Stellen');
+  const fa = P.printFacts({ ...base(), filament_cost: '25', filament_density: '1.24' }, null, [an(boxes([0, 0, 0, 20, 20, 20]))]);
+  ok(fa.weightEst && fa.weightG > 2 && fa.weightG < 10 && fa.costEur > 0, `Gewicht geschätzt (${fa.weightG.toFixed(1)} g, ${fa.costEur.toFixed(2)} €)`);
+  const big = an(boxes([0, 0, 0, 200, 100, 10]));
+  ok(!ids(P.checkSettings(base({ printable: [256, 256, 256] }), { models: [big] })).includes('bauraum'), '200×100 passt auf 256er Bett');
+  ok(ids(P.checkSettings(base({ printable: [180, 300, 180] }), { models: [an(boxes([0, 0, 0, 250, 100, 10]))] })).includes('bauraum') === false, '250×100 passt gedreht auf 180×300');
+}
+
 console.log('Fixes anwenden');
 {
   const c = { nozzle_temperature: ['200', '210'], fan: '100,100', t: 'PLA;PETG', x: '1' };

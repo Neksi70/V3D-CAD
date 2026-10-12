@@ -60,15 +60,37 @@
   #toolPanel table { border-collapse: collapse; }
   #tbCheck.warnOn { box-shadow: inset 0 -3px 0 #e8a33a; }
   #tbCheck.errOn { box-shadow: inset 0 -3px 0 #d23f31; }
-  #toolPanel .pcList { max-height: 60vh; overflow: auto; width: 25rem; margin-top: .35rem; }
-  #toolPanel .pcItem { border-top: 1px solid var(--border); padding: .45rem 0; }
-  #toolPanel .pcItem b { font-weight: 600; }
-  #toolPanel .pcItem .pcDet { opacity: .75; margin: .15rem 0 .2rem; line-height: 1.3; }
+  #toolPanel .pcList { max-height: 56vh; overflow: auto; width: 26rem; margin-top: .4rem; padding-right: .2rem; }
+  #toolPanel .pcTop { display: flex; align-items: center; gap: .7rem; margin: .2rem 0 .4rem; }
+  #toolPanel .pcRing { position: relative; display: inline-grid; place-items: center; flex: 0 0 auto; vertical-align: middle; }
+  #toolPanel .pcRing svg { position: absolute; inset: 0; }
+  #toolPanel .pcRing b { position: relative; font-size: .95rem; font-weight: 800; }
+  #toolPanel .pcDone .pcRing b { font-size: .7rem; }
+  #toolPanel .pcVerdict { font-weight: 700; font-size: .95rem; line-height: 1.25; max-width: 19rem; }
+  #toolPanel .pcMagic { width: 100%; margin: .25rem 0 .1rem; padding: .5rem; border: 0; border-radius: 9px; cursor: pointer; color: #fff; font-weight: 800; font-size: .92rem;
+                        background: linear-gradient(100deg, #8a4fd8, #f07c1e); box-shadow: 0 3px 12px rgba(240,124,30,.25); }
+  #toolPanel .pcMagic:hover { filter: brightness(1.08); }
+  #toolPanel .pcMagic small { font-weight: 500; opacity: .9; margin-left: .3rem; }
+  #toolPanel .pcDone { display: flex; align-items: center; gap: .4rem; margin: .4rem 0 .1rem; padding: .4rem .5rem; border-radius: 8px;
+                       background: linear-gradient(100deg, #f3ecfd, #fff2e6); font-size: .78rem; }
+  #toolPanel .pcDone span:last-child { flex: 1; }
+  #toolPanel .pcCard { display: flex; gap: .55rem; border: 1px solid var(--border); border-left-width: 4px; border-radius: 10px; padding: .45rem .55rem; margin: .4rem 0; background: #fff; }
+  #toolPanel .pcCard.l3 { border-left-color: #d23f31; } #toolPanel .pcCard.l2 { border-left-color: #e8a33a; } #toolPanel .pcCard.l1 { border-left-color: #2ea2d8; }
+  #toolPanel .pcCard.loc { cursor: pointer; } #toolPanel .pcCard.loc:hover { background: #fafbfc; }
+  #toolPanel .pcCard.sel { box-shadow: 0 0 0 2px #f07c1e66; border-color: #f07c1e; }
+  #toolPanel .pcIco { font-size: 1.15rem; width: 1.9rem; height: 1.9rem; display: grid; place-items: center; border-radius: 8px; background: #f2f4f7; flex: 0 0 auto; }
+  #toolPanel .pcBody { flex: 1; min-width: 0; }
+  #toolPanel .pcTi { font-weight: 700; line-height: 1.25; }
+  #toolPanel .pcMeta { font-size: .7rem; margin: .1rem 0 .2rem; }
+  #toolPanel .pcLv { font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin-right: .4rem; }
+  #toolPanel .pcCard.l3 .pcLv { color: #d23f31; } #toolPanel .pcCard.l2 .pcLv { color: #c2810f; } #toolPanel .pcCard.l1 .pcLv { color: #2a8cbc; }
+  #toolPanel .pcShow { color: #e06a10; }
   #toolPanel .pcFix { display: flex; align-items: center; gap: .5rem; font-size: .78rem; }
-  #toolPanel .pcFix span { flex: 1; }
-  #toolPanel .pcFix button, #toolPanel .pcTop button { padding: .2rem .6rem; font-size: .78rem; }
-  #toolPanel .pcTop { display: flex; align-items: center; gap: .6rem; }
-  #toolPanel .pcScore { font-size: 1.25rem; font-weight: 700; }
+  #toolPanel .pcFix span { flex: 1; } #toolPanel .pcFix s { opacity: .55; }
+  #toolPanel .pcFix button { padding: .2rem .6rem; font-size: .76rem; }
+  #toolPanel .pcCard details { font-size: .76rem; opacity: .8; margin-top: .2rem; }
+  #toolPanel .pcCard summary { cursor: pointer; opacity: .8; }
+  #toolPanel .pcAllGood { padding: .8rem .2rem; }
   #toolPanel td { padding: .18rem .3rem; }
   #toolPanel input[type=number] { width: 5.4rem; padding: .25rem .4rem; }
   #toolPanel .axX { color: #d23f31; font-weight: 600; }
@@ -3955,38 +3977,85 @@ function applyCheckFixes(fixes) {
   renderSettings();
   renderToolPanel();
 }
+// Markierungen „Klick → Stelle im Modell" (pulsieren, eigener kleiner Takt)
+const checkMarks = new THREE.Group(); scene.add(checkMarks);
+let checkSel = -1, checkImprove = null;
+(function pulse(t) { requestAnimationFrame(pulse); if (!checkMarks.children.length) return;
+  const ph = (Math.sin(t / 180) + 1) / 2;
+  checkMarks.children.forEach(m => { if (m.userData.pulse) { m.scale.setScalar(0.8 + 0.6 * ph); m.material.opacity = 0.65 - 0.4 * ph; } }); })(0);
+function checkFocus(f) {
+  checkMarks.clear();
+  if (!f || !f.loc || !f.loc.pts.length) return;
+  const box = new THREE.Box3();
+  for (const st of objectStates) if (!st.deleted) box.expandByObject(st.group);
+  const size = box.isEmpty() ? 50 : box.getSize(new THREE.Vector3()).length();
+  const pts = f.loc.pts.map(p => new THREE.Vector3(...p));
+  const c = pts.reduce((a, p) => a.add(p), new THREE.Vector3()).divideScalar(pts.length);
+  const rad = Math.max(1, size / 45);
+  for (const p of pts) {
+    const halo = new THREE.Mesh(new THREE.SphereGeometry(rad, 20, 14), new THREE.MeshBasicMaterial({ color: 0xff7a1a, transparent: true, opacity: .5, depthTest: false }));
+    halo.position.copy(p); halo.userData.pulse = true; halo.renderOrder = 20; checkMarks.add(halo);
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(rad * 0.35, 12, 10), new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false }));
+    dot.position.copy(p); dot.renderOrder = 21; checkMarks.add(dot);
+  }
+  CENTER = c; camDist = Math.max(60, size * 1.1);
+  camPhi = (f.cat === 'Stützen' || f.id === 'ohspeed') ? 1.4 : 0.95;   // Unterseiten flach von der Seite (Platte ist undurchsichtig)
+  updateCam();
+}
+function checkRing(score, size = 58, stroke = 7) {
+  const r = (size - stroke) / 2, c = 2 * Math.PI * r, col = score >= 90 ? '#16a34a' : score >= 60 ? '#d08a12' : '#d23f31';
+  return `<span class="pcRing" style="width:${size}px;height:${size}px"><svg width="${size}" height="${size}" style="transform:rotate(-90deg)">
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="#e5e8ec" stroke-width="${stroke}"/>
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${col}" stroke-width="${stroke}" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - score / 100)}"/></svg>
+    <b style="color:${col}">${score}</b></span>`;
+}
 function renderCheckPanel(p) {
   p.hidden = false;
   if (!Object.keys(effectiveConfig).length) { p.innerHTML = '<div class="tpHead">Druck-Check [P]</div><div class="tpDim">Profile werden geladen …</div>'; return; }
   const { cfg, findings, sum } = runCheck();
   const esc = t => String(t).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
   const all = findings.flatMap(f => f.fixes || []);
-  const color = sum.score >= 90 ? '#16a34a' : sum.score >= 60 ? '#d08a12' : '#d23f31';
-  const items = findings.length ? findings.map((f, i) => `<div class="pcItem">
-      <div>${PC.LEVEL_ICONS[f.level]} <b>${esc(f.title)}</b></div>
-      <div class="pcDet">${esc(f.detail)}</div>
-      ${(f.fixes || []).length ? `<div class="pcFix"><span>${f.fixes.map(x =>
-        `${esc(PC.keyLabel(x.key))}: ${esc(PC.valueText(x.key, x.key === 'curr_bed_type' ? cfg.curr_bed_type : PC.cfgStr(cfg, x.key, x.idx || 0)) || '–')} → <b>${esc(PC.valueText(x.key, x.value))}</b>`).join('<br>')}</span>
-        <button class="secondary" data-pc="${i}">Übernehmen</button></div>` : ''}
+  const v = PC.verdict(sum);
+  const LV = ['', 'Tipp', 'Warnung', 'Fehler'];
+  const cur = x => PC.valueText(x.key, x.key === 'curr_bed_type' ? cfg.curr_bed_type : PC.cfgStr(cfg, x.key, x.idx || 0)) || '–';
+  const items = findings.length ? findings.map((f, i) => `<div class="pcCard l${f.level}${f.loc ? ' loc' : ''}${checkSel === i ? ' sel' : ''}" data-ci="${i}">
+      <span class="pcIco">${PC.CAT_ICONS[f.cat] || '•'}</span>
+      <div class="pcBody"><div class="pcTi">${esc(f.title)}</div>
+        <div class="pcMeta"><span class="pcLv">${LV[f.level]}</span>${f.loc ? '<span class="pcShow">📍 zeigen</span>' : ''}</div>
+        ${(f.fixes || []).length ? `<div class="pcFix"><span>${f.fixes.map(x =>
+          `${esc(PC.keyLabel(x.key))}: <s>${esc(cur(x))}</s> → <b>${esc(PC.valueText(x.key, x.value))}</b>`).join('<br>')}</span>
+          <button class="secondary" data-pc="${i}">Übernehmen</button></div>` : ''}
+        <details><summary>Warum?</summary>${esc(f.detail)}</details></div>
     </div>`).join('')
-    : '<div class="pcItem">✅ Keine Auffälligkeiten — Einstellungen passen zu Material, Düse und Modell.</div>';
+    : '<div class="pcAllGood">🎉 Keine Auffälligkeiten – Einstellungen passen zu Material, Düse und Modell.</div>';
   const g = _checkG.parsed;
-  p.innerHTML = `<div class="tpHead">Druck-Check [P]</div>
-    <div class="pcTop"><span class="pcScore" style="color:${color}">${sum.score}</span>
-      <span class="tpDim">${sum.counts[3]} Fehler · ${sum.counts[2]} Warnungen · ${sum.counts[1]} Hinweise</span>
-      <span style="flex:1"></span>
-      ${all.length ? `<button data-pc="all">Alle übernehmen (${all.length})</button>` : ''}
-      <button class="secondary" data-pc="re" title="Neu prüfen">↻</button></div>
-    ${checkApplied ? `<div class="tpDim" style="margin-top:.3rem">✏️ Werte übernommen — im Settings-Panel markiert. <b>Neu slicen</b>, damit sie wirken.</div>` : ''}
-    ${g && g.stats.layers ? `<div class="tpDim" style="margin-top:.2rem">Letzter Slice: ${g.stats.layers} Schichten${g.stats.timeText ? ' · ' + esc(g.stats.timeText) : ''}${g.stats.weightG ? ' · ' + g.stats.weightG.toFixed(1).replace('.', ',') + ' g' : ''}</div>` : ''}
+  p.innerHTML = `<div class="tpHead" style="display:flex;align-items:center">Druck-Check [P]<span style="flex:1"></span>
+      <button class="secondary" data-pc="re" title="Neu prüfen" style="padding:.1rem .45rem">↻</button></div>
+    <div class="pcTop">${checkRing(sum.score)}<div><div class="pcVerdict">${v.emoji} ${esc(v.text)}</div>
+      <div class="tpDim">${[sum.counts[3] && sum.counts[3] + ' Fehler', sum.counts[2] && sum.counts[2] + (sum.counts[2] > 1 ? ' Warnungen' : ' Warnung'), sum.counts[1] && sum.counts[1] + (sum.counts[1] > 1 ? ' Tipps' : ' Tipp')].filter(Boolean).join(' · ') || 'nichts gefunden'}${
+        g && g.stats.layers ? ` · letzter Slice ${g.stats.timeText ? esc(g.stats.timeText) : g.stats.layers + ' Schichten'}${g.stats.weightG ? ', ' + g.stats.weightG.toFixed(1).replace('.', ',') + ' g' : ''}` : ''}</div></div></div>
+    ${all.length ? `<button class="pcMagic" data-pc="all">✨ Alles verbessern <small>${all.length} Wert${all.length > 1 ? 'e' : ''}</small></button>` : ''}
+    ${checkImprove ? `<div class="pcDone">${checkRing(checkImprove.before, 34, 4)} ➜ ${checkRing(checkImprove.after, 34, 4)}
+      <span>${checkImprove.n} Wert${checkImprove.n > 1 ? 'e' : ''} übernommen – im Settings-Panel markiert. Jetzt <b>neu slicen</b>.</span></div>`
+      : checkApplied ? `<div class="pcDone"><span>✏️ Werte übernommen – im Settings-Panel markiert. <b>Neu slicen</b>, damit sie wirken.</span></div>` : ''}
     <div class="pcList">${items}</div>`;
-  p.querySelectorAll('button[data-pc]').forEach(b => b.onclick = () => {
+  p.querySelectorAll('button[data-pc]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
     const k = b.dataset.pc;
-    if (k === 're') { _checkCache.clear(); renderToolPanel(); }
-    else if (k === 'all') applyCheckFixes(all);
+    if (k === 're') { _checkCache.clear(); checkImprove = null; renderToolPanel(); }
+    else if (k === 'all') { const before = sum.score; checkSel = -1; checkMarks.clear(); applyCheckFixes(all);
+      checkImprove = { before, after: runCheck().sum.score, n: all.length }; renderToolPanel(); }
     else applyCheckFixes(findings[+k].fixes || []);
   });
+  p.querySelectorAll('.pcCard.loc').forEach(c => c.onclick = e => {
+    if (e.target.closest('button, details')) return;
+    const i = +c.dataset.ci;
+    checkSel = checkSel === i ? -1 : i;
+    if (checkSel < 0) { checkMarks.clear(); $('tbFit').click(); } else checkFocus(findings[i]);
+    renderToolPanel();
+  });
 }
+window._checkSelect = i => { const r = runCheck(); checkSel = i; checkFocus(r.findings[i]); renderToolPanel(); return { center: CENTER.toArray(), marks: checkMarks.children.length }; };
 window._checkDebug = () => { const r = runCheck(); return { score: r.sum.score, ids: r.findings.map(f => f.id), findings: r.findings, applied: checkApplied }; };
 window._checkApply = (id) => { const r = runCheck(); const f = id === 'all' ? r.findings.flatMap(x => x.fixes || []) : (r.findings.find(x => x.id === id) || {}).fixes || []; applyCheckFixes(f); return f; };
 
@@ -4096,6 +4165,7 @@ function renderToolPanel() {
   }
 
   if (activeTool === 'check') { renderCheckPanel(p); return; }
+  checkMarks.clear(); checkSel = -1; checkImprove = null;
 
   // Schneiden: braucht ein Zielobjekt (der Entwurf hält die Ebene)
   if (activeTool === 'cut') {
@@ -4684,7 +4754,7 @@ function handleMessage(e) {
     $('btnDownload').disabled = false;
     updateSend();
     updateToolbar();
-    checkApplied = 0; try { if (activeTool === 'check') renderToolPanel(); else runCheck(); } catch {}
+    checkApplied = 0; checkImprove = null; try { if (activeTool === 'check') renderToolPanel(); else runCheck(); } catch {}
     const grab = re => (lastGcode.match(re) || [,''])[1];
     $('stats').innerHTML = [
       `<b>${layers.length}</b> Layer in <b>${dt}s</b>`,

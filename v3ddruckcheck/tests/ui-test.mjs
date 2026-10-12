@@ -18,7 +18,7 @@ const load = async f => {
   await page.setInputFiles('#file', f);
   await page.waitForFunction(() => window._dc && window._dc.findings, null, { timeout: 60000 });
   return page.evaluate(() => ({ ids: window._dc.findings.map(f => f.id), src: window._dc.r.source, models: window._dc.models.length,
-    info: document.getElementById('info').innerText, base: !document.getElementById('baseBox').hidden }));
+    info: [...['fSub', 'facts']].map(i => document.getElementById(i).innerText).join(' | ') + (document.getElementById('viewMsg').hidden ? '' : ' Kein Modell'), base: !document.getElementById('baseBox').hidden }));
 };
 
 console.log('Orca-G-Code');
@@ -42,6 +42,20 @@ const ids2 = await page.evaluate(() => window._dc.findings.map(f => f.id));
 ok(ids2.includes('platte0'), 'Formular ändern prüft neu (ASA auf Cool Plate)');
 await page.screenshot({ path: '/tmp/druckcheck-stl.png' });
 
+console.log('Beispiel + Klick → 3D');
+await page.goto(URL_);
+ok(await page.locator('.tile').count() === 3, 'Startseite mit 3 Kacheln');
+await page.screenshot({ path: '/tmp/druckcheck-start.png' });
+await page.click('#demo');
+await page.waitForFunction(() => window._dc && window._dc.findings, null, { timeout: 30000 });
+const demo = await page.evaluate(() => window._dc.findings.map(f => f.id));
+ok(demo.includes('stuetzen_an') && demo.includes('nozzle_temperature0') && demo.includes('top'), `Beispiel zeigt typische Fehler (${demo})`);
+const si = await page.evaluate(() => window._dc.findings.findIndex(f => f.loc));
+await page.click(`.card[data-i="${si}"] .ti`);
+await page.waitForTimeout(900);
+ok(await page.evaluate(() => !document.getElementById('focusInfo').hidden && document.querySelector('.card.sel') !== null), 'Karte angeklickt → Stelle markiert');
+await page.screenshot({ path: '/tmp/druckcheck-demo.png' });
+
 console.log('Korrigiertes 3MF');
 {
   // Prüfdatei: Γ-Winkel als Projekt-3MF, PLA mit 300 °C und Stützen aus
@@ -56,8 +70,11 @@ console.log('Korrigiertes 3MF');
 r = await load('/tmp/druckcheck-probe.3mf');
 ok(r.src === '3mf' && r.models === 1 && !r.base, 'Projekt-3MF: Modell + Einstellungen');
 ok(r.ids.includes('stuetzen_an') && r.ids.includes('nozzle_temperature0'), `Stützen + Temperatur erkannt (${r.ids})`);
-ok(await page.locator('#o3mf').count() === 1, '3MF-Knopf da');
-// Netz-Hinweis hat keinen Fix; Temperatur-Fix für Filament 2 abwählen → nur gewählte Werte landen im 3MF
+ok(await page.locator('#magic').isVisible(), '„✨ Alles verbessern" sichtbar');
+await page.click('#magic');
+const imp = await page.evaluate(() => window._dc.lastImprove);
+ok(imp && imp.after > imp.before && imp.can3mf, `Vorher/Nachher ${imp && imp.before} → ${imp && imp.after}`);
+await page.waitForTimeout(1000);
 await page.screenshot({ path: '/tmp/druckcheck-3mf.png' });
 const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#o3mf')]);
 const out = '/tmp/druckcheck-probe_korrigiert.3mf';

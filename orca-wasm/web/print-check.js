@@ -533,7 +533,7 @@ export function analyzeMesh(pos, index, { name = '', maxThickSamples = 3000 } = 
   }
   const bridges = [], overhangs = [];
   for (const R of regions.values()) {
-    const span = Math.min(R.x1 - R.x0, R.y1 - R.y0), o = { area: R.area, span, z: R.z - minZ };
+    const span = Math.min(R.x1 - R.x0, R.y1 - R.y0), o = { area: R.area, span, z: R.z - minZ, c: [(R.x0 + R.x1) / 2, (R.y0 + R.y1) / 2, R.z] };
     if (R.kind === 2) { if (R.area > 1) bridges.push(o); } else if (R.area > 1) overhangs.push(o);
   }
   bridges.sort((p, q) => q.span - p.span); overhangs.sort((p, q) => q.area - p.area);
@@ -687,7 +687,7 @@ function wallThickness(G, vx, vy, vz, corner, nT, nx, ny, nz, area, maxS) {
   if (!G) return { samples: [], wallArea: wallA, skipped: true };
   const { GX, GY, GZ, ci, start, list, bb } = G;
   const stamp = G.stamp;
-  const samples = [];
+  const samples = [], thinPts = [];
   const step = wallA / maxS;
   let acc = step / 2;
   for (let t = 0; t < nT; t++) {
@@ -717,9 +717,10 @@ function wallThickness(G, vx, vy, vz, corner, nT, nx, ny, nz, area, maxS) {
         }
       }
       samples.push(best <= MAXD ? best : Infinity);
+      if (best < 2 && thinPts.length < 400) thinPts.push([ox, oy, oz, best]);
     }
   }
-  return { samples, wallArea: wallA };
+  return { samples, thinPts, wallArea: wallA };
 }
 function rayTri(ox, oy, oz, dx, dy, dz, corner, t, vx, vy, vz) {
   const a = corner[t * 3], b = corner[t * 3 + 1], c = corner[t * 3 + 2];
@@ -750,18 +751,24 @@ export function thinFraction(thick, d) {
 // ---------------------------------------------------------------------------
 // ctx: { models:[analyzeMesh…], gcode:{features,stats}|null, usedFilaments:[i]|null,
 //        adaptive:bool (Slicer: adaptive Schichthöhe aktiv) }
+// Symbole je Thema (Karten im Slicer + Standalone)
+export const CAT_ICONS = { Material: '🌡️', Stützen: '🏗️', Haftung: '🧲', Festigkeit: '🧱', Modell: '📐', Qualität: '✨', Abgleich: '🔁' };
+
 export function checkSettings(cfg, ctx = {}) {
   const F = [];
   // Fixes, die schon dem aktuellen Wert entsprechen, fallen weg (kein „A → A")
-  const add = (level, cat, id, title, detail, fixes = []) => F.push({ id, level, cat, title, detail,
+  // loc = Stelle im Modell { m: Modellindex, pts: [[x,y,z],…] } für „Klick → 3D"
+  const add = (level, cat, id, title, detail, fixes = [], loc = null) => F.push({ id, level, cat, title, detail, loc,
     fixes: fixes.filter(x => cfgStr(cfg, x.key, x.idx || 0) !== String(x.value)) });
   const models = ctx.models || [];
+  const mid = m => { const b = m.bbox; return [(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2]; };
   const used = ctx.usedFilaments && ctx.usedFilaments.length ? ctx.usedFilaments : [0];
   const d = cfgNum(cfg, 'nozzle_diameter', 0, 0.4);
   const lh = cfgNum(cfg, 'layer_height', 0, NaN);
   const bed = bedInfo(cfgStr(cfg, 'curr_bed_type'));
   const spiral = cfgBool(cfg, 'spiral_mode');
   const supportOn = cfgBool(cfg, 'enable_support');
+  const dz = `${de(d)}er Düse`;
 
   // --- Bauraum ---
   const pa = cfgStr(cfg, 'printable_area');
@@ -771,13 +778,14 @@ export function checkSettings(cfg, ctx = {}) {
   if (models.length && pts.length >= 3) {
     const bw = Math.max(...pts.map(p => p[0])) - Math.min(...pts.map(p => p[0]));
     const bd = Math.max(...pts.map(p => p[1])) - Math.min(...pts.map(p => p[1]));
-    for (const m of models) {
+    models.forEach((m, mi) => {
       const [w, dd, h] = m.size;
       const fits = (w <= bw + 0.01 && dd <= bd + 0.01) || (dd <= bw + 0.01 && w <= bd + 0.01);
       if (!fits || (Number.isFinite(ph) && h > ph + 0.01))
-        add(LEVEL.ERROR, 'Modell', 'bauraum', `${m.name || 'Modell'} passt nicht in den Bauraum`,
-          `Modell ${de(w, 1)} × ${de(dd, 1)} × ${de(h, 1)} mm, Drucker ${de(bw, 0)} × ${de(bd, 0)} × ${de(ph, 0)} mm. Verkleinern, drehen oder teilen.`);
-    }
+        add(LEVEL.ERROR, 'Modell', 'bauraum', `${models.length > 1 ? m.name + ': ' : ''}Passt nicht in den Drucker`,
+          `Modell ${de(w, 1)} × ${de(dd, 1)} × ${de(h, 1)} mm, Drucker ${de(bw, 0)} × ${de(bd, 0)} × ${de(ph, 0)} mm. Verkleinern, drehen oder teilen.`,
+          [], { m: mi, pts: [mid(m)] });
+    });
   }
 
   // --- Material: Temperaturen, Platte, Kühlung ---
@@ -785,7 +793,8 @@ export function checkSettings(cfg, ctx = {}) {
     const type = cfgStr(cfg, 'filament_type', fi);
     const fam = materialFamily(type);
     const M = fam ? MAT[fam] : null;
-    const tag = used.length > 1 ? ` (Filament ${fi + 1}: ${type})` : type ? ` (${type})` : '';
+    const mat = type || fam || 'das Filament';
+    const tag = used.length > 1 ? ` (Filament ${fi + 1})` : '';
     const lo = cfgNum(cfg, 'nozzle_temperature_range_low', fi, NaN), hi = cfgNum(cfg, 'nozzle_temperature_range_high', fi, NaN);
     const range = Number.isFinite(lo) && Number.isFinite(hi) && hi > lo ? [lo, hi] : M ? M.noz : null;
     const src = Number.isFinite(lo) && Number.isFinite(hi) && hi > lo ? 'laut Filamentprofil' : 'typisch';
@@ -795,9 +804,10 @@ export function checkSettings(cfg, ctx = {}) {
         if (!Number.isFinite(T)) continue;
         if (T < range[0] || T > range[1]) {
           const to = T < range[0] ? Math.min(range[0] + 5, (range[0] + range[1]) / 2) : Math.max(range[1] - 5, (range[0] + range[1]) / 2);
-          add(LEVEL.WARN, 'Material', key + fi, `${keyLabel(key)} ${T} °C außerhalb ${range[0]}–${range[1]} °C${tag}`,
-            T < range[0] ? `Zu kalt: schlechte Schichthaftung, Unterextrusion, verstopfte Düse möglich (${src}).`
-                         : `Zu heiß: Fädenziehen, Blasen, verbrannte Oberfläche (${src}).`,
+          const erste = key.endsWith('initial_layer') ? ' in der ersten Schicht' : '';
+          add(LEVEL.WARN, 'Material', key + fi, `Düse${erste} zu ${T < range[0] ? 'kalt' : 'heiß'} für ${mat} (${T} °C)${tag}`,
+            (T < range[0] ? 'Zu kalt: Schichten halten schlecht aneinander, die Düse kann verstopfen.'
+                          : 'Zu heiß: Fäden ziehen, Blasen, verbrannte Oberfläche.') + ` Richtig sind ${range[0]}–${range[1]} °C (${src}).`,
             [{ key, value: String(Math.round(to)), idx: fi }]);
         }
       }
@@ -806,7 +816,7 @@ export function checkSettings(cfg, ctx = {}) {
     const plateT = cfgNum(cfg, bed.key, fi, NaN);
     const plateBad = M && M.bed[bed.kind] === null;
     if ((has(cfg, bed.key) && plateT === 0) || plateBad) {
-      add(LEVEL.ERROR, 'Material', 'platte' + fi, `${type || 'Filament'} passt nicht zur ${bed.name}`,
+      add(LEVEL.ERROR, 'Material', 'platte' + fi, `${mat} hält nicht auf der ${bed.name}${tag}`,
         plateBad ? `${fam} haftet auf dieser Platte schlecht bzw. beschädigt sie. Texturierte PEI ist die sichere Wahl.`
                  : `Das Filamentprofil hat für diese Platte 0 °C hinterlegt = nicht freigegeben. Bambu verweigert den Druck oder er löst sich.`,
         [{ key: 'curr_bed_type', value: 'Textured PEI Plate' }]);
@@ -815,8 +825,8 @@ export function checkSettings(cfg, ctx = {}) {
       for (const key of [bed.key, bed.key + '_initial_layer']) {
         const T = cfgNum(cfg, key, fi, NaN);
         if (!Number.isFinite(T) || (T >= b0 - 5 && T <= b1 + 5)) continue;
-        add(LEVEL.WARN, 'Material', key + fi, `${keyLabel(key)} ${T} °C ungewöhnlich für ${fam}${tag}`,
-          T < b0 ? 'Zu kalt: erste Schicht hält schlecht, Ecken heben sich (Warping).' : 'Zu heiß: Elefantenfuß, Teil klebt zu fest oder verformt sich unten.',
+        add(LEVEL.WARN, 'Material', key + fi, `Druckbett zu ${T < b0 ? 'kalt' : 'heiß'} für ${fam} (${T} °C)${tag}`,
+          (T < b0 ? 'Die erste Schicht hält schlecht, Ecken heben sich (Warping).' : 'Elefantenfuß unten, das Teil klebt zu fest oder verformt sich.') + ` Üblich auf der ${bed.name}: ${b0}–${b1} °C.`,
           [{ key, value: String(T < b0 ? b0 : b1), idx: fi }]);
       }
     }
@@ -824,14 +834,14 @@ export function checkSettings(cfg, ctx = {}) {
     if (M && M.fanLow && has(cfg, 'fan_max_speed')) {
       const f = cfgNum(cfg, 'fan_max_speed', fi, NaN);
       if (Number.isFinite(f) && f < M.fanLow)
-        add(LEVEL.WARN, 'Material', 'fanlow' + fi, `Lüfter höchstens ${f} % bei ${fam}${tag}`,
+        add(LEVEL.WARN, 'Material', 'fanlow' + fi, `${fam} wird zu wenig gekühlt (Lüfter max. ${f} %)${tag}`,
           `${fam} braucht viel Kühlung, sonst werden Überhänge, Brücken und kleine Details weich und hängen durch.`,
           [{ key: 'fan_max_speed', value: '100', idx: fi }]);
     }
     if (M && M.fanMax && has(cfg, 'fan_max_speed')) {
       const f = cfgNum(cfg, 'fan_max_speed', fi, NaN);
       if (Number.isFinite(f) && f > M.fanMax + 10)
-        add(LEVEL.WARN, 'Material', 'fanmax' + fi, `Lüfter bis ${f} % bei ${fam}${tag}`,
+        add(LEVEL.WARN, 'Material', 'fanmax' + fi, `${fam} wird zu stark gekühlt (Lüfter bis ${f} %)${tag}`,
           `${fam} reißt bei starker Kühlung zwischen den Schichten (Delamination) und verzieht sich.`,
           [{ key: 'fan_max_speed', value: String(M.fanMax - 10), idx: fi }]);
     }
@@ -839,8 +849,8 @@ export function checkSettings(cfg, ctx = {}) {
     if (/CF|GF/.test(String(type).toUpperCase())) {
       const nt = cfgStr(cfg, 'nozzle_type', 0).toLowerCase();
       if (nt === 'brass' || nt === 'stainless_steel')
-        add(LEVEL.WARN, 'Material', 'abrasiv' + fi, `${type} mit ${nt === 'brass' ? 'Messing' : 'Edelstahl'}-Düse`,
-          'Faserverstärktes Filament schleift weiche Düsen in wenigen Stunden aus. Gehärtete Düse einsetzen (und im Druckerprofil eintragen).');
+        add(LEVEL.WARN, 'Material', 'abrasiv' + fi, `${type} schleift die ${nt === 'brass' ? 'Messing' : 'Edelstahl'}-Düse aus`,
+          'Faserverstärktes Filament macht weiche Düsen in wenigen Stunden kaputt. Gehärtete Düse einsetzen (und im Druckerprofil eintragen).');
     }
   }
 
@@ -849,30 +859,30 @@ export function checkSettings(cfg, ctx = {}) {
     const hMin = cfgNum(cfg, 'min_layer_height', 0, NaN), hMax = cfgNum(cfg, 'max_layer_height', 0, NaN);
     const good = r2(Math.max(0.08, Math.round(d * 0.5 / 0.02) * 0.02));
     if (lh > d * 0.8 || (Number.isFinite(hMax) && hMax > 0 && lh > hMax + 1e-6))
-      add(LEVEL.ERROR, 'Qualität', 'lh_hoch', `Schichthöhe ${de(lh)} mm zu hoch für ${de(d)}-mm-Düse`,
-        `Mehr als ~75 % des Düsendurchmessers: Schichten haften schlecht aufeinander.`, [{ key: 'layer_height', value: String(good) }]);
+      add(LEVEL.ERROR, 'Qualität', 'lh_hoch', `Schichten zu dick für die ${dz} (${de(lh)} mm)`,
+        `Mehr als ~75 % des Düsendurchmessers: die Schichten haften schlecht aufeinander.`, [{ key: 'layer_height', value: String(good) }]);
     else if (lh > d * 0.7)
-      add(LEVEL.WARN, 'Qualität', 'lh_hoch', `Schichthöhe ${de(lh)} mm an der Grenze der ${de(d)}-mm-Düse`,
+      add(LEVEL.WARN, 'Qualität', 'lh_hoch', `Schichten sehr dick für die ${dz} (${de(lh)} mm)`,
         'Grob und schwach zwischen den Schichten. Nur für schnelle Entwürfe sinnvoll.', [{ key: 'layer_height', value: String(good) }]);
     else if (lh < d * 0.2 || (Number.isFinite(hMin) && hMin > 0 && lh < hMin - 1e-6))
-      add(LEVEL.WARN, 'Qualität', 'lh_tief', `Schichthöhe ${de(lh)} mm sehr fein für ${de(d)}-mm-Düse`,
+      add(LEVEL.WARN, 'Qualität', 'lh_tief', `Schichten feiner als nötig (${de(lh)} mm)`,
         'Unter ~20 % der Düse: lange Druckzeit, Hitzestau und kaum sichtbarer Gewinn.', [{ key: 'layer_height', value: String(r2(Math.round(d * 0.3 / 0.02) * 0.02)) }]);
     const fl = cfgNum(cfg, 'initial_layer_print_height', 0, NaN);
     if (Number.isFinite(fl)) {
       if (fl > d * 0.75)
-        add(LEVEL.WARN, 'Haftung', 'fl_hoch', `Erste Schicht ${de(fl)} mm zu dick`,
-          'Wird nicht mehr richtig angedrückt und haftet schlecht.', [{ key: 'initial_layer_print_height', value: String(r2(d * 0.5)) }]);
+        add(LEVEL.WARN, 'Haftung', 'fl_hoch', `Erste Schicht zu dick (${de(fl)} mm)`,
+          'Sie wird nicht mehr richtig auf die Platte gedrückt und haftet schlecht.', [{ key: 'initial_layer_print_height', value: String(r2(d * 0.5)) }]);
       else if (fl < d * 0.3 && d >= 0.4)
-        add(LEVEL.INFO, 'Haftung', 'fl_tief', `Erste Schicht nur ${de(fl)} mm`,
-          'Sehr empfindlich gegen Unebenheiten der Platte; 0,2 mm (bei 0,4-Düse) verzeiht mehr.', [{ key: 'initial_layer_print_height', value: String(r2(d * 0.5)) }]);
+        add(LEVEL.INFO, 'Haftung', 'fl_tief', `Erste Schicht sehr dünn (${de(fl)} mm)`,
+          'Sehr empfindlich gegen Unebenheiten der Platte; 0,2 mm (bei 0,4er Düse) verzeiht mehr.', [{ key: 'initial_layer_print_height', value: String(r2(d * 0.5)) }]);
     }
     for (const key of ['line_width', 'outer_wall_line_width', 'inner_wall_line_width', 'initial_layer_line_width', 'sparse_infill_line_width', 'top_surface_line_width']) {
       if (!has(cfg, key)) continue;
       const w = widthMm(cfgStr(cfg, key), d);
       if (!Number.isFinite(w)) continue;
       if (w < d * 0.8 || w > d * 1.8)
-        add(LEVEL.WARN, 'Qualität', 'lw_' + key, `${keyLabel(key)} ${de(w)} mm passt nicht zur ${de(d)}-mm-Düse`,
-          w < d * 0.8 ? 'Schmaler als ~80 % der Düse: Material wird nicht sauber abgelegt.' : 'Breiter als ~180 % der Düse: Linien quetschen unsauber.',
+        add(LEVEL.WARN, 'Qualität', 'lw_' + key, `${keyLabel(key)} passt nicht zur ${dz} (${de(w)} mm)`,
+          w < d * 0.8 ? 'Schmaler als ~80 % der Düse: das Material wird nicht sauber abgelegt.' : 'Breiter als ~180 % der Düse: die Linien quetschen unsauber.',
           [{ key, value: String(r2(key === 'initial_layer_line_width' ? d * 1.25 : d * 1.05)) }]);
     }
   }
@@ -881,34 +891,40 @@ export function checkSettings(cfg, ctx = {}) {
   if (!spiral && Number.isFinite(lh)) {
     const walls = cfgNum(cfg, 'wall_loops', 0, NaN);
     if (Number.isFinite(walls) && walls < 2)
-      add(LEVEL.WARN, 'Festigkeit', 'walls', `Nur ${walls} Wandlinie`, 'Eine Wand ist undicht und bricht leicht. 2 ist das Minimum, 3–4 für belastete Teile.', [{ key: 'wall_loops', value: '2' }]);
+      add(LEVEL.WARN, 'Festigkeit', 'walls', `Nur ${walls} Wand – zu dünnwandig`, 'Eine einzelne Wand ist undicht und bricht leicht. 2 ist das Minimum, 3–4 für belastete Teile.', [{ key: 'wall_loops', value: '2' }]);
     const infill = parseFloat(cfgStr(cfg, 'sparse_infill_density'));
     const top = Math.max(cfgNum(cfg, 'top_shell_layers', 0, 0) * lh, cfgNum(cfg, 'top_shell_thickness', 0, 0));
     const bot = Math.max(cfgNum(cfg, 'bottom_shell_layers', 0, 0) * lh, cfgNum(cfg, 'bottom_shell_thickness', 0, 0));
     if (has(cfg, 'top_shell_layers') && top < 0.6 && !(infill >= 100))
-      add(LEVEL.WARN, 'Festigkeit', 'top', `Deckschicht nur ${de(top)} mm dick`,
-        'Unter ~0,6 mm schließt die Oberseite nicht sauber über der Füllung (Kissenbildung, Löcher).',
+      add(LEVEL.WARN, 'Festigkeit', 'top', `Oberseite zu dünn – Löcher möglich`,
+        `Nur ${de(top)} mm Deckschicht. Unter ~0,6 mm schließt die Oberseite nicht sauber über der Füllung.`,
         [{ key: 'top_shell_layers', value: String(Math.ceil(0.8 / lh - 1e-6)) }]);
     if (has(cfg, 'bottom_shell_layers') && bot < 0.45 && !(infill >= 100))
-      add(LEVEL.WARN, 'Festigkeit', 'bottom', `Boden nur ${de(bot)} mm dick`, 'Der Boden wird löchrig und undicht.',
+      add(LEVEL.WARN, 'Festigkeit', 'bottom', `Boden zu dünn`, `Nur ${de(bot)} mm. Der Boden wird löchrig und undicht.`,
         [{ key: 'bottom_shell_layers', value: String(Math.ceil(0.6 / lh - 1e-6)) }]);
     const volBig = models.some(m => m.volume > 1000);
     if (infill === 0 && (volBig || !models.length))
-      add(LEVEL.WARN, 'Festigkeit', 'infill0', 'Füllung 0 %', 'Hohl: Deckflächen fallen ohne Unterbau ein, das Teil ist sehr weich.', [{ key: 'sparse_infill_density', value: '15%' }]);
+      add(LEVEL.WARN, 'Festigkeit', 'infill0', 'Innen komplett hohl (0 % Füllung)', 'Deckflächen fallen ohne Unterbau ein, das Teil ist sehr weich.', [{ key: 'sparse_infill_density', value: '15%' }]);
   }
 
   // --- Modellbezogen ---
   const thr = cfgNum(cfg, 'support_threshold_angle', 0, 0) > 0 ? cfgNum(cfg, 'support_threshold_angle', 0, 30) : 30;
-  let needIsl = 0, needArea = 0, longBridge = 0, ohArea = 0, anyModel = models.length > 0;
-  for (const m of models) {
+  let needIsl = 0, needArea = 0, longBridge = 0, ohArea = 0;
+  const anyModel = models.length > 0;
+  const supLoc = { m: 0, pts: [] };
+  models.forEach((m, mi) => {
     needIsl += m.islands.length;
     for (let b = 1; b < 18; b++) {
       const tilt = b * 5 + 2.5;
       if (tilt < thr) needArea += m.downHist[b];
       if (tilt < 50) ohArea += m.downHist[b];
     }
-    for (const br of m.bridges) { if (br.span > 25) { needArea += br.area; longBridge = Math.max(longBridge, br.span); } }
-  }
+    for (const br of m.bridges) if (br.span > 25) { needArea += br.area; longBridge = Math.max(longBridge, br.span); }
+    if (!supLoc.pts.length) {
+      const p = [...(m.islandPts || []), ...m.bridges.filter(b => b.span > 25).map(b => b.c), ...m.overhangs.slice(0, 3).map(o => o.c)].filter(Boolean);
+      if (p.length) { supLoc.m = mi; supLoc.pts = p.slice(0, 8); }
+    }
+  });
   if (anyModel) {
     const surf = models.reduce((s, m) => s + m.area, 0);
     const need = needIsl > 0 || needArea > Math.max(25, surf * 0.005);
@@ -916,92 +932,125 @@ export function checkSettings(cfg, ctx = {}) {
       const why = [needIsl ? `${needIsl} Stelle(n) beginnen frei in der Luft (ab ${de(models.flatMap(m => m.islands)[0] || 0, 1)} mm Höhe)` : '',
         needArea > 0 ? `${de(needArea / 100, 1)} cm² Überhang flacher als ${thr}°` : '',
         longBridge ? `waagerechte Unterseite über ${de(longBridge, 0)} mm frei` : ''].filter(Boolean).join(', ');
-      add(needIsl ? LEVEL.ERROR : LEVEL.WARN, 'Stützen', 'stuetzen_an', 'Stützen nötig, aber ausgeschaltet',
-        `${why}. Ohne Stützen druckt der Drucker dort in die Luft (Spaghetti).`,
-        [{ key: 'enable_support', value: '1' }, { key: 'support_type', value: 'tree(auto)' }]);
+      add(needIsl ? LEVEL.ERROR : LEVEL.WARN, 'Stützen', 'stuetzen_an', needIsl ? 'Teile würden in der Luft beginnen' : 'Überhänge brauchen Stützen',
+        `${why}. Ohne Stützen druckt der Drucker dort ins Leere (Spaghetti).`,
+        [{ key: 'enable_support', value: '1' }, { key: 'support_type', value: 'tree(auto)' }], supLoc.pts.length ? supLoc : null);
     } else if (!need && supportOn && needArea < 5 && !models.some(m => m.bridges.some(b => b.span > 15))) {
-      add(LEVEL.INFO, 'Stützen', 'stuetzen_aus', 'Stützen vermutlich unnötig',
+      add(LEVEL.INFO, 'Stützen', 'stuetzen_aus', 'Stützen kannst du dir sparen',
         'Das Modell hat keine schwebenden Stellen und keine nennenswerten Überhänge. Ohne Stützen: schneller, weniger Material, sauberere Unterseite.',
         [{ key: 'enable_support', value: '0' }]);
     }
     if (ohArea > 100 && has(cfg, 'enable_overhang_speed') && !cfgBool(cfg, 'enable_overhang_speed'))
-      add(LEVEL.INFO, 'Qualität', 'ohspeed', 'Überhänge werden nicht verlangsamt',
-        `${de(ohArea / 100, 1)} cm² Überhang flacher als 50°. Langsamer drucken = sauberere Überhänge.`, [{ key: 'enable_overhang_speed', value: '1' }]);
+      add(LEVEL.INFO, 'Qualität', 'ohspeed', 'Überhänge werden zu schnell gedruckt',
+        `${de(ohArea / 100, 1)} cm² Überhang flacher als 50°. Langsamer drucken = sauberere Überhänge.`, [{ key: 'enable_overhang_speed', value: '1' }],
+        supLoc.pts.length ? supLoc : null);
 
     // Haftung / Standfestigkeit
     const brim = cfgStr(cfg, 'brim_type') || 'auto_brim';
-    for (const fi of used.slice(0, 1)) {
-      const fam = materialFamily(cfgStr(cfg, 'filament_type', fi));
-      for (const m of models) {
-        const [cw, cd] = m.contactSize, h = m.size[2];
-        const foot = Math.max(1, Math.min(cw, cd));
-        const nm = models.length > 1 ? `${m.name}: ` : '';
-        if (m.contact < 1 && h > 2) {
-          add(LEVEL.WARN, 'Haftung', 'keinfuss', `${nm}kaum Auflagefläche`,
-            `Das Modell berührt die Platte nur punktuell (${de(m.contact, 1)} mm²). Flache Seite nach unten drehen (Auto-Ausrichten) oder mit Rand + Stützen drucken.`,
-            brim === 'no_brim' ? [{ key: 'brim_type', value: 'outer_only' }, { key: 'brim_width', value: '5' }] : []);
-          continue;
-        }
-        const slender = h / foot;
-        if (slender > 4 && h > 25 && brim === 'no_brim')
-          add(LEVEL.WARN, 'Haftung', 'kippen', `${nm}hoch und schmal (${de(h, 0)} mm auf ${de(foot, 1)} mm Fuß)`,
-            'Kippt oder löst sich beim Drucken leicht. Ein Rand vergrößert die Haftfläche.',
-            [{ key: 'brim_type', value: 'outer_only' }, { key: 'brim_width', value: '5' }]);
-        else if (fam && MAT[fam].warp && Math.max(cw, cd) > 80 && brim === 'no_brim')
-          add(LEVEL.WARN, 'Haftung', 'warping', `${nm}großer ${fam}-Druck ohne Rand`,
-            `${de(Math.max(cw, cd), 0)} mm Standfläche: ${fam} zieht sich beim Abkühlen zusammen, die Ecken heben sich. Rand + geschlossene Kammer helfen.`,
-            [{ key: 'brim_type', value: 'outer_only' }, { key: 'brim_width', value: '5' }]);
+    const fam0 = materialFamily(cfgStr(cfg, 'filament_type', used[0]));
+    models.forEach((m, mi) => {
+      const [cw, cd] = m.contactSize, h = m.size[2];
+      const foot = Math.max(1, Math.min(cw, cd));
+      const nm = models.length > 1 ? `${m.name}: ` : '';
+      const fussLoc = { m: mi, pts: [[(m.bbox[0] + m.bbox[3]) / 2, (m.bbox[1] + m.bbox[4]) / 2, m.bbox[2]]] };
+      if (m.contact < 1 && h > 2) {
+        add(LEVEL.WARN, 'Haftung', 'keinfuss', `${nm}Modell steht kaum auf der Platte`,
+          `Es berührt die Platte nur punktuell (${de(m.contact, 1)} mm²). Flache Seite nach unten drehen (Auto-Ausrichten) oder mit Rand + Stützen drucken.`,
+          brim === 'no_brim' ? [{ key: 'brim_type', value: 'outer_only' }, { key: 'brim_width', value: '5' }] : [], fussLoc);
+        return;
       }
-    }
+      if (h / foot > 4 && h > 25 && brim === 'no_brim')
+        add(LEVEL.WARN, 'Haftung', 'kippen', `${nm}Hoher, schmaler Turm kann umkippen`,
+          `${de(h, 0)} mm hoch auf nur ${de(foot, 1)} mm Fuß: löst sich beim Drucken leicht. Ein Rand vergrößert die Haftfläche.`,
+          [{ key: 'brim_type', value: 'outer_only' }, { key: 'brim_width', value: '5' }], { m: mi, pts: [mid(m)] });
+      else if (fam0 && MAT[fam0].warp && Math.max(cw, cd) > 80 && brim === 'no_brim')
+        add(LEVEL.WARN, 'Haftung', 'warping', `${nm}Ecken können sich hochziehen (${fam0}, Warping)`,
+          `${de(Math.max(cw, cd), 0)} mm Standfläche: ${fam0} zieht sich beim Abkühlen zusammen, die Ecken heben sich. Rand + geschlossene Kammer helfen.`,
+          [{ key: 'brim_type', value: 'outer_only' }, { key: 'brim_width', value: '5' }], fussLoc);
+    });
 
     // Dünne Wände
     const ow = widthMm(cfgStr(cfg, 'outer_wall_line_width') || cfgStr(cfg, 'line_width'), d) || d * 1.05;
     const gen = cfgStr(cfg, 'wall_generator') || 'classic';
-    for (const m of models) {
-      if (!m.thick || !m.thick.samples.length) continue;
+    models.forEach((m, mi) => {
+      if (!m.thick || !m.thick.samples.length) return;
       const nm = models.length > 1 ? `${m.name}: ` : '';
       const tooThin = thinFraction(m.thick, d * 0.95), thin = thinFraction(m.thick, ow * 2 * 0.95);
+      const locOf = lim => { const p = (m.thick.thinPts || []).filter(q => q[3] < lim).slice(0, 8).map(q => q.slice(0, 3)); return p.length ? { m: mi, pts: p } : null; };
       if (tooThin > 0.01)
-        add(LEVEL.WARN, 'Modell', 'zudünn', `${nm}${Math.round(tooThin * 100)} % der Wände dünner als die Düse (${de(d)} mm)`,
-          'Diese Stellen fallen weg oder werden lückenhaft. Abhilfe: Wand im Modell verstärken, Modell größer skalieren oder kleinere Düse.' +
+        add(LEVEL.WARN, 'Modell', 'zudünn', `${nm}Wände dünner als die Düse`,
+          `${Math.round(tooThin * 100)} % der Wände sind dünner als ${de(d)} mm. Diese Stellen fallen weg oder werden lückenhaft. Abhilfe: Wand im Modell verstärken, größer skalieren oder kleinere Düse.` +
           (gen !== 'arachne' ? ' Arachne holt noch das Meiste heraus.' : ''),
-          gen !== 'arachne' ? [{ key: 'wall_generator', value: 'arachne' }] : []);
+          gen !== 'arachne' ? [{ key: 'wall_generator', value: 'arachne' }] : [], locOf(d * 0.95));
       else if (thin > 0.03 && gen !== 'arachne')
-        add(LEVEL.WARN, 'Qualität', 'dünn', `${nm}dünne Wände (${Math.round(thin * 100)} % unter ${de(ow * 2)} mm)`,
-          'Mit dem klassischen Wandgenerator entstehen dort Lücken oder Zickzack-Füllung. Arachne passt die Linienbreite an die Wandstärke an.',
-          [{ key: 'wall_generator', value: 'arachne' }]);
-    }
+        add(LEVEL.WARN, 'Qualität', 'dünn', `${nm}Dünne Wände drucken lückenhaft`,
+          `${Math.round(thin * 100)} % der Wände sind dünner als ${de(ow * 2)} mm. Mit dem klassischen Wandgenerator entstehen dort Lücken oder Zickzack. Arachne passt die Linienbreite an die Wandstärke an.`,
+          [{ key: 'wall_generator', value: 'arachne' }], locOf(ow * 2 * 0.95));
+    });
 
     // Treppenstufen auf flachen Schrägen
     if (Number.isFinite(lh) && lh >= 0.16 && !ctx.adaptive) {
       const up = models.reduce((s, m) => s + m.upArea, 0), gentle = models.reduce((s, m) => s + m.gentleUp, 0);
       if (up > 0 && gentle / up > 0.15 && gentle > 200)
-        add(LEVEL.INFO, 'Qualität', 'treppe', `Sichtbare Treppenstufen auf flachen Schrägen`,
+        add(LEVEL.INFO, 'Qualität', 'treppe', `Treppenstufen auf flachen Schrägen sichtbar`,
           `${Math.round(gentle / up * 100)} % der Oberseiten sind flach geneigt (3–25°). Feinere Schichten${ctx.inSlicer ? ' oder adaptive Schichthöhe [A]' : ''} glätten das, kosten aber Zeit.`,
           [{ key: 'layer_height', value: String(r2(Math.max(0.08, Math.round(d * 0.3 / 0.02) * 0.02))) }]);
     }
 
     // Netzfehler
-    for (const m of models) {
-      if (m.openEdges > 0 || m.nonManifold > 0)
-        add(LEVEL.INFO, 'Modell', 'netz', `${models.length > 1 ? m.name + ': ' : ''}Netz nicht geschlossen`,
-          `${m.openEdges} offene, ${m.nonManifold} mehrfach genutzte Kanten. Der Slicer repariert das meist selbst; bei Löchern im Druck das Modell reparieren.`);
-    }
+    models.forEach((m, mi) => {
+      // nur echte Löcher; mehrfach genutzte Kanten entstehen schon, wenn zwei Körper aneinanderstoßen
+      if (m.openEdges > 0)
+        add(LEVEL.INFO, 'Modell', 'netz', `${models.length > 1 ? m.name + ': ' : ''}Modell hat Löcher im Netz`,
+          `${m.openEdges} offene Kanten. Der Slicer repariert das meist selbst; wenn im Druck Lücken auftauchen, das Modell reparieren.`,
+          [], { m: mi, pts: [mid(m)] });
+    });
   }
 
   // --- G-Code-Merkmale ---
   const feat = ctx.gcode && ctx.gcode.features;
   if (feat) {
     const sup = Object.keys(feat).some(f => /support/i.test(f));
-    if (sup && !supportOn) add(LEVEL.INFO, 'Stützen', 'g_sup', 'Im G-Code sind Stützen enthalten', 'Kommen von bemalten/erzwungenen Stützen.');
+    if (sup && !supportOn) add(LEVEL.INFO, 'Stützen', 'g_sup', 'Im G-Code sind trotzdem Stützen', 'Kommen von bemalten/erzwungenen Stützen.');
     if (!anyModel && supportOn && !sup) add(LEVEL.INFO, 'Stützen', 'g_nosup', 'Stützen an, aber keine erzeugt', 'Das Modell braucht offenbar keine — ausschalten spart nichts, schadet aber auch nicht.');
   }
   const diff = cfgList(cfg, 'different_settings_to_system').join(';').split(/[;,]/).map(s => s.trim()).filter(Boolean);
   if (diff.length)
-    add(LEVEL.INFO, 'Abgleich', 'diff', `${diff.length} Wert(e) gegenüber dem Systemprofil geändert`, diff.slice(0, 30).join(', ') + (diff.length > 30 ? ' …' : ''));
+    add(LEVEL.INFO, 'Abgleich', 'diff', `${diff.length} Wert(e) vom Systemprofil abweichend`, diff.slice(0, 30).join(', ') + (diff.length > 30 ? ' …' : ''));
 
   F.sort((a, b) => b.level - a.level);
   return F;
+}
+
+// Ein Satz als Urteil (Ring/Kopf)
+export function verdict(sum) {
+  const n = sum.counts;
+  if (n[3]) return { emoji: '🛑', text: `So lieber nicht drucken – ${n[3] === 1 ? 'ein Fehler muss' : n[3] + ' Fehler müssen'} weg` };
+  if (n[2] === 1) return { emoji: '🟠', text: 'Fast gut – eine Sache solltest du ändern' };
+  if (n[2]) return { emoji: '🟠', text: `Fast gut – ${n[2]} Dinge solltest du ändern` };
+  if (n[1]) return { emoji: '👍', text: 'So kannst du drucken – mit kleinen Tipps' };
+  return { emoji: '🎉', text: 'Alles passt – ab auf den Drucker!' };
+}
+
+// Steckbrief: Zeit, Gewicht, Kosten, Material
+export function printFacts(cfg, gcode, models = []) {
+  const st = gcode && gcode.stats || {};
+  const used = gcode && gcode.usedFilaments && gcode.usedFilaments.length ? gcode.usedFilaments : [0];
+  let weight = st.weightG || 0, est = false;
+  if (!weight && models.length) {   // grobe Schätzung ohne Slice: Hülle voll + Füllung anteilig
+    const dens = cfgNum(cfg, 'filament_density', used[0], 1.24) || 1.24;
+    const fill = (parseFloat(cfgStr(cfg, 'sparse_infill_density')) || 15) / 100;
+    const vol = models.reduce((s, m) => s + Math.min(m.volume, m.area * 1.2 + (m.volume - Math.min(m.volume, m.area * 1.2)) * fill), 0);
+    weight = vol / 1000 * dens; est = true;
+  }
+  const price = cfgNum(cfg, 'filament_cost', used[0], NaN);
+  const types = [...new Set(used.map(i => cfgStr(cfg, 'filament_type', i)).filter(Boolean))];
+  return {
+    time: st.timeText || '', weightG: weight, weightEst: est,
+    costEur: Number.isFinite(price) && price > 0 && weight ? weight / 1000 * price : NaN,
+    material: types.join(' + '), nozzle: cfgNum(cfg, 'nozzle_diameter', 0, NaN),
+    layer: cfgNum(cfg, 'layer_height', 0, NaN), plate: bedInfo(cfgStr(cfg, 'curr_bed_type')).name,
+  };
 }
 
 export function summarize(findings) {
