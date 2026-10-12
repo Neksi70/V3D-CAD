@@ -58,6 +58,17 @@
                box-shadow: 0 8px 24px rgba(15,23,42,.12); padding: .65rem .9rem;
                font-size: .84rem; min-width: 22rem; }
   #toolPanel table { border-collapse: collapse; }
+  #tbCheck.warnOn { box-shadow: inset 0 -3px 0 #e8a33a; }
+  #tbCheck.errOn { box-shadow: inset 0 -3px 0 #d23f31; }
+  #toolPanel .pcList { max-height: 60vh; overflow: auto; width: 25rem; margin-top: .35rem; }
+  #toolPanel .pcItem { border-top: 1px solid var(--border); padding: .45rem 0; }
+  #toolPanel .pcItem b { font-weight: 600; }
+  #toolPanel .pcItem .pcDet { opacity: .75; margin: .15rem 0 .2rem; line-height: 1.3; }
+  #toolPanel .pcFix { display: flex; align-items: center; gap: .5rem; font-size: .78rem; }
+  #toolPanel .pcFix span { flex: 1; }
+  #toolPanel .pcFix button, #toolPanel .pcTop button { padding: .2rem .6rem; font-size: .78rem; }
+  #toolPanel .pcTop { display: flex; align-items: center; gap: .6rem; }
+  #toolPanel .pcScore { font-size: 1.25rem; font-weight: 700; }
   #toolPanel td { padding: .18rem .3rem; }
   #toolPanel input[type=number] { width: 5.4rem; padding: .25rem .4rem; }
   #toolPanel .axX { color: #d23f31; font-weight: 600; }
@@ -481,6 +492,7 @@
     <button id="tbCut" title="Schneiden [C]" disabled><svg viewBox="0 0 40 40" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 20h28"/><path d="M11 20l7-11 4 6 3-4 4 9"/><path d="M9 26l3 6M31 26l-3 6"/></g></svg></button>
     <button id="tbAdapt" title="Adaptive Schichthöhe [A]" disabled><svg viewBox="0 0 40 40" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12h24"/><path d="M8 17h24"/><path d="M8 23h24"/><path d="M8 31h24"/></g></svg></button>
     <button id="tbPaint" title="Bemalen [B]" disabled><svg viewBox="0 0 40 40" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 5C11.7 5 5 11 5 18.5S11.7 32 20 32c1.9 0 3.1-1.1 3.1-2.6 0-.8-.4-1.4-.9-2-.5-.6-.9-1.2-.9-2 0-1.5 1.3-2.7 3-2.7h3.4c4.1 0 7.3-3 7.3-6.9C35 9.4 28.3 5 20 5z"/><circle cx="12.5" cy="14.5" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="11" r="1.6" fill="currentColor" stroke="none"/><circle cx="27.5" cy="14.5" r="1.6" fill="currentColor" stroke="none"/><circle cx="11" cy="21.5" r="1.6" fill="currentColor" stroke="none"/></g></svg></button>
+    <button id="tbCheck" title="Druck-Check [P] — Einstellungen gegen Material, Düse und Modell prüfen" disabled><svg viewBox="0 0 40 40" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 7h-3a2 2 0 0 0-2 2v24a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3"/><rect x="14" y="4.5" width="12" height="5" rx="1.2"/><path d="M14 22l4 4 8-9"/></g></svg></button>
   </div>
   <div id="toolPanel" hidden></div>
   <canvas id="view"></canvas>
@@ -667,6 +679,7 @@
 <script src="./transform-controls.js"></script>
 <script type="module">
 import { computeLayerPlan, build3mf, REASON_NAMES } from './adaptive-layers.js';
+import * as PC from './print-check.js';
 const $ = id => document.getElementById(id);
 const status = $('status');
 
@@ -1528,7 +1541,7 @@ async function refreshSettings() {
   } catch { return; }   // unvollstaendige Auswahl -> Panel unveraendert
   renderSettings();
   // Adaptiv-Panel hängt an Schichthöhe/Min/Max des Profils → neu zeichnen
-  try { if (activeTool === 'adapt') renderToolPanel(); } catch {}
+  try { if (activeTool === 'adapt' || activeTool === 'check') renderToolPanel(); } catch {}
 }
 
 function fieldHtml(key) {
@@ -3889,10 +3902,98 @@ function updateCutPlane() {
   cutPlaneMesh.visible = true;
 }
 
+// ---------- Druck-Check [P]: Einstellungen gegen Material/Düse/Modell (web/print-check.js) ----------
+let _checkCache = new Map(), _checkG = { src: null, parsed: null }, checkApplied = 0;
+function checkConfig() {
+  return { ...effectiveConfig, ...Object.fromEntries(changedValues), curr_bed_type: $('bedType').value || effectiveConfig.curr_bed_type };
+}
+function checkModels() {
+  const next = new Map();
+  const out = [];
+  objectStates.forEach((st, i) => {
+    if (!st || st.deleted || !st.mesh) return;
+    st.mesh.updateMatrixWorld(true);
+    const geo = st.mesh.geometry;
+    const key = [geo.uuid, geo.attributes.position.count, geo.attributes.position.version,
+                 st.mesh.matrixWorld.elements.map(v => v.toFixed(4)).join(',')].join('|');
+    let m = _checkCache.get(i);
+    if (!m || m.key !== key) {
+      try { m = { key, ...PC.analyzeMesh(worldPositions(st), geo.index ? geo.index.array : null, { name: st.name || `Objekt ${i + 1}` }) }; }
+      catch (e) { console.warn('Druck-Check Analyse:', e); m = null; }
+    }
+    if (m) { next.set(i, m); out.push(m); }
+  });
+  _checkCache = next;
+  return out;
+}
+function runCheck() {
+  if (_checkG.src !== lastGcode) _checkG = { src: lastGcode, parsed: lastGcode ? PC.parseGcode(lastGcode) : null };
+  const cfg = checkConfig();
+  const findings = PC.checkSettings(cfg, {
+    models: checkModels(), gcode: _checkG.parsed, inSlicer: true,
+    adaptive: adaptMode === 'auto' || (adaptMode === 'orca' && !!adaptiveParams),
+  });
+  const sum = PC.summarize(findings);
+  $('tbCheck').classList.toggle('errOn', sum.worst >= PC.LEVEL.ERROR);
+  $('tbCheck').classList.toggle('warnOn', sum.worst === PC.LEVEL.WARN);
+  return { cfg, findings, sum };
+}
+// Fix-Wert → Slicer-Zustand (Settings-Overrides, Stützen-Schalter, Plattenwahl)
+function applyCheckFixes(fixes) {
+  for (const x of fixes) {
+    if (x.key === 'curr_bed_type') {
+      const want = { 'High Temp Plate': 'Smooth PEI Plate', 'Supertack Plate': 'Cool Plate (SuperTack)' }[x.value] || x.value;
+      if ([...$('bedType').options].some(o => o.value === want)) { $('bedType').value = want; savePresets(); }
+      continue;
+    }
+    if (x.key === 'enable_support') { setSupportEnabled(x.value === '1'); continue; }
+    if ((x.idx || 0) > 0) continue;   // Einfarb-Kette: nur Filament 1
+    if (String(x.value) === effVal(x.key)) changedValues.delete(x.key);
+    else changedValues.set(x.key, String(x.value));
+  }
+  checkApplied += fixes.length;
+  renderSettings();
+  renderToolPanel();
+}
+function renderCheckPanel(p) {
+  p.hidden = false;
+  if (!Object.keys(effectiveConfig).length) { p.innerHTML = '<div class="tpHead">Druck-Check [P]</div><div class="tpDim">Profile werden geladen …</div>'; return; }
+  const { cfg, findings, sum } = runCheck();
+  const esc = t => String(t).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+  const all = findings.flatMap(f => f.fixes || []);
+  const color = sum.score >= 90 ? '#16a34a' : sum.score >= 60 ? '#d08a12' : '#d23f31';
+  const items = findings.length ? findings.map((f, i) => `<div class="pcItem">
+      <div>${PC.LEVEL_ICONS[f.level]} <b>${esc(f.title)}</b></div>
+      <div class="pcDet">${esc(f.detail)}</div>
+      ${(f.fixes || []).length ? `<div class="pcFix"><span>${f.fixes.map(x =>
+        `${esc(PC.keyLabel(x.key))}: ${esc(PC.valueText(x.key, x.key === 'curr_bed_type' ? cfg.curr_bed_type : PC.cfgStr(cfg, x.key, x.idx || 0)) || '–')} → <b>${esc(PC.valueText(x.key, x.value))}</b>`).join('<br>')}</span>
+        <button class="secondary" data-pc="${i}">Übernehmen</button></div>` : ''}
+    </div>`).join('')
+    : '<div class="pcItem">✅ Keine Auffälligkeiten — Einstellungen passen zu Material, Düse und Modell.</div>';
+  const g = _checkG.parsed;
+  p.innerHTML = `<div class="tpHead">Druck-Check [P]</div>
+    <div class="pcTop"><span class="pcScore" style="color:${color}">${sum.score}</span>
+      <span class="tpDim">${sum.counts[3]} Fehler · ${sum.counts[2]} Warnungen · ${sum.counts[1]} Hinweise</span>
+      <span style="flex:1"></span>
+      ${all.length ? `<button data-pc="all">Alle übernehmen (${all.length})</button>` : ''}
+      <button class="secondary" data-pc="re" title="Neu prüfen">↻</button></div>
+    ${checkApplied ? `<div class="tpDim" style="margin-top:.3rem">✏️ Werte übernommen — im Settings-Panel markiert. <b>Neu slicen</b>, damit sie wirken.</div>` : ''}
+    ${g && g.stats.layers ? `<div class="tpDim" style="margin-top:.2rem">Letzter Slice: ${g.stats.layers} Schichten${g.stats.timeText ? ' · ' + esc(g.stats.timeText) : ''}${g.stats.weightG ? ' · ' + g.stats.weightG.toFixed(1).replace('.', ',') + ' g' : ''}</div>` : ''}
+    <div class="pcList">${items}</div>`;
+  p.querySelectorAll('button[data-pc]').forEach(b => b.onclick = () => {
+    const k = b.dataset.pc;
+    if (k === 're') { _checkCache.clear(); renderToolPanel(); }
+    else if (k === 'all') applyCheckFixes(all);
+    else applyCheckFixes(findings[+k].fixes || []);
+  });
+}
+window._checkDebug = () => { const r = runCheck(); return { score: r.sum.score, ids: r.findings.map(f => f.id), findings: r.findings, applied: checkApplied }; };
+window._checkApply = (id) => { const r = runCheck(); const f = id === 'all' ? r.findings.flatMap(x => x.fixes || []) : (r.findings.find(x => x.id === id) || {}).fixes || []; applyCheckFixes(f); return f; };
+
 function setTool(tool) {
   activeTool = activeTool === tool ? null : tool;
   for (const [id, t] of [['tbMove', 'move'], ['tbRotate', 'rotate'], ['tbScale', 'scale'],
-                         ['tbCut', 'cut'], ['tbAdapt', 'adapt'], ['tbPaint', 'paint']])
+                         ['tbCut', 'cut'], ['tbAdapt', 'adapt'], ['tbPaint', 'paint'], ['tbCheck', 'check']])
     $(id).classList.toggle('active', activeTool === t);
   // Schnitt-Entwurf: bei Auswahl eines Objekts auf halber Höhe starten
   if (activeTool === 'cut') {
@@ -3993,6 +4094,8 @@ function renderToolPanel() {
     });
     return;
   }
+
+  if (activeTool === 'check') { renderCheckPanel(p); return; }
 
   // Schneiden: braucht ein Zielobjekt (der Entwurf hält die Ebene)
   if (activeTool === 'cut') {
@@ -4266,6 +4369,7 @@ document.addEventListener('keydown', (e) => {
   if (key === 'b') return setTool('paint');
   if (key === 'c') return setTool('cut');
   if (key === 'a' && !(e.ctrlKey || e.metaKey)) return setTool('adapt');
+  if (key === 'p' && !(e.ctrlKey || e.metaKey) && !$('tbCheck').disabled) return setTool('check');
   if (key === 'escape') {
     if (activeTool) setTool(activeTool);   // Toggle aus
     else selectObject(-1);
@@ -4295,6 +4399,7 @@ function updateToolbar() {
   $('tbCut').disabled = !has;
   $('tbAdapt').disabled = !anyObj;
   $('tbPaint').disabled = !anyObj;   // Panel erklärt selbst, dass ein Objekt/Filamente fehlen
+  $('tbCheck').disabled = !anyObj;
   $('tbDownload').disabled = $('btnDownload').disabled;
 }
 $('tbMove').onclick = () => setTool('move');
@@ -4303,6 +4408,7 @@ $('tbScale').onclick = () => setTool('scale');
 $('tbPaint').onclick = () => setTool('paint');
 $('tbCut').onclick = () => setTool('cut');
 $('tbAdapt').onclick = () => setTool('adapt');
+$('tbCheck').onclick = () => setTool('check');
 function markAdaptiveButton() {
   const on = adaptMode === 'auto' || (adaptMode === 'orca' && adaptiveParams);
   $('tbAdapt').classList.toggle('adaptOn', Boolean(on));
@@ -4578,6 +4684,7 @@ function handleMessage(e) {
     $('btnDownload').disabled = false;
     updateSend();
     updateToolbar();
+    checkApplied = 0; try { if (activeTool === 'check') renderToolPanel(); else runCheck(); } catch {}
     const grab = re => (lastGcode.match(re) || [,''])[1];
     $('stats').innerHTML = [
       `<b>${layers.length}</b> Layer in <b>${dt}s</b>`,
