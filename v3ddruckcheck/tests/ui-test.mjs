@@ -54,7 +54,18 @@ const si = await page.evaluate(() => window._dc.findings.findIndex(f => f.loc));
 await page.click(`.card[data-i="${si}"] .ti`);
 await page.waitForTimeout(900);
 ok(await page.evaluate(() => !document.getElementById('focusInfo').hidden && document.querySelector('.card.sel') !== null), 'Karte angeklickt → Stelle markiert');
+ok(await page.locator('#back').isVisible(), 'Knopf „← Neue Prüfung" sichtbar');
 await page.screenshot({ path: '/tmp/druckcheck-demo.png' });
+await page.goBack();
+ok(await page.locator('#start').isVisible(), 'Browser-Zurück → Startseite');
+await page.goForward();
+ok(await page.locator('#result').isVisible(), 'Browser-Vor → Ergebnis wieder da');
+await page.click('#back');
+ok(await page.locator('#start').isVisible() && !(await page.locator('#back').isVisible()), '„← Neue Prüfung" → Startseite');
+await page.click('#demo');
+await page.waitForFunction(() => window._dc && window._dc.findings, null, { timeout: 30000 });
+await page.click('#home');
+ok(await page.locator('#start').isVisible(), 'Logo → Startseite');
 
 console.log('Korrigiertes 3MF');
 {
