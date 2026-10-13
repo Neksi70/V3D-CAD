@@ -17,7 +17,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from . import settings  # zuerst: lädt .env
-from . import audit, gedaechtnis, mail
+from . import audit, familie, gedaechtnis, mail
 from .core import MailError, vm
 from .netz import RateLimit
 from .oauth import Provider, login
@@ -42,7 +42,10 @@ ANLEITUNG = (
     '(z. B. V3D Familie, V3D CAD, Generatoren, Dienste auf seinem Server). Bei Fragen dazu — oder '
     'wenn ein Name/Tool unbekannt ist — ZUERST gedaechtnis_suchen, dann gedaechtnis_lesen; nicht '
     'nachfragen, ob es das gibt. Geheimnisse (PINs, Codes, Tokens) sind dort ausgeblendet. '
-    'Neues Wissen, das Claude Code kennen soll, mit gedaechtnis_merken ablegen.'
+    'Neues Wissen, das Claude Code kennen soll, mit gedaechtnis_merken ablegen. '
+    'FAMILIENKALENDER (V3D Familie, Volker/Sylvia/Emma) ist etwas anderes als der Mail-Kalender: '
+    'dafür die Werkzeuge familie_* benutzen. Dort angelegte Termine sind sofort fest (kein "vorläufig"). '
+    'Bei mehreren Treffern oder Serienterminen vor Ändern/Löschen nachfragen.'
 )
 
 mcp = MCPServer(
@@ -262,6 +265,56 @@ def delete_event(href: Annotated[str, Field(description='href aus list_events/cr
     """Vorläufigen Termin endgültig löschen. Nur nach ausdrücklicher Zustimmung;
     echte (nicht vorläufige) Termine bleiben unangetastet."""
     return mail.delete_event(href, account)
+
+
+# --- V3D Familie (Familienkalender) ------------------------------------------
+
+EventId = Annotated[int, Field(description='event_id aus familie_list_events/familie_create_event')]
+Person = Annotated[str | None, Field(description='Für wen: Volker, Sylvia oder Emma (Standard: Volker)')]
+
+
+@werkzeug(LESEN)
+def familie_list_events(
+        start: Annotated[str | None, Field(description='Beginn ISO-8601, z. B. 2026-11-01 oder 2026-11-01T00:00+01:00 (Standard: heute)')] = None,
+        end: Annotated[str | None, Field(description='Ende ISO-8601, einschließlich (Standard: start + 14 Tage)')] = None) -> CallToolResult:
+    """Termine im V3D-Familienkalender auflisten (Serien aufgeklappt, dazu Feiertage/Schulferien NRW
+    als read_only). Zeiten in Europe/Berlin mit UTC-Offset."""
+    return familie.list_events(start, end)
+
+
+@werkzeug(LESEN)
+def familie_get_event(event_id: EventId) -> CallToolResult:
+    """Einen Termin des Familienkalenders abrufen."""
+    return familie.get_event(event_id)
+
+
+@werkzeug(AENDERN)
+def familie_create_event(
+        title: str,
+        start: Annotated[str, Field(description='ISO-8601; ohne Offset = Berliner Zeit, z. B. 2026-11-18T15:00. Ganztägig: 2026-11-18')],
+        end: Annotated[str | None, Field(description='Ende im selben Format (Standard: +1 h; ganztägig: letzter Tag)')] = None,
+        location: str | None = None, description: str | None = None,
+        all_day: bool = False, person: Person = None) -> CallToolResult:
+    """Termin im V3D-Familienkalender anlegen (sofort fest, erscheint in App und Abo-Feed)."""
+    return familie.create_event(title, start, end, location, description, all_day, person)
+
+
+@werkzeug(AENDERN)
+def familie_update_event(
+        event_id: EventId, title: str | None = None,
+        start: Annotated[str | None, Field(description='neuer Beginn ISO-8601 (nur start → Dauer bleibt)')] = None,
+        end: str | None = None, location: str | None = None, description: str | None = None,
+        all_day: bool | None = None, person: Person = None) -> CallToolResult:
+    """Termin im Familienkalender ändern; nur übergebene Felder ändern sich. Bei Serien gilt es für die ganze Serie."""
+    return familie.update_event(event_id, title, start, end, location, description, all_day, person)
+
+
+@werkzeug(LOESCHEN)
+def familie_delete_event(
+        event_id: EventId,
+        confirm_series: Annotated[bool, Field(description='nur bei Serienterminen: ganze Serie wirklich löschen')] = False) -> CallToolResult:
+    """Termin aus dem Familienkalender löschen. Vorher mit dem Nutzer bestätigen."""
+    return familie.delete_event(event_id, confirm_series)
 
 
 # --- Gemeinsames Gedächtnis (Claude Code) ------------------------------------

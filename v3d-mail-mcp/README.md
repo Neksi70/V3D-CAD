@@ -50,3 +50,14 @@ Der Connector stellt Claude Chat/Cowork auch das Auto-Gedächtnis von Claude Cod
   eine Zeile unter „## Eingang aus Claude Chat/Cowork" an `MEMORY.md`. Bestehende Einträge
   werden nie geändert. Einsortieren/Aufräumen macht Claude Code.
 - Die Server-Anleitung weist Chat/Cowork an, bei Fragen zu Volkers Tools zuerst zu suchen.
+
+## V3D-Familie-Kalender (seit 13.10.2026)
+
+Modul `v3dmcp/familie.py`, Werkzeuge `familie_list_events`, `familie_get_event`,
+`familie_create_event`, `familie_update_event`, `familie_delete_event`. Schreibt direkt in
+`~/v3dfamilie/daten.db` (wie die Web-App, WAL), Serien klappt `kalenderlogik.py` der App auf.
+Zeiten: Eingabe ISO-8601 mit/ohne Offset (ohne = Europe/Berlin), Ausgabe mit Berliner Offset.
+Termine sind sofort fest. Serientermine löschen nur mit `confirm_series=true`; jeder gelöschte
+Termin steht zusätzlich in `DATA_DIR/familie-geloescht.jsonl`. Feiertage/Schulferien NRW
+kommen in `familie_list_events` als `read_only` mit. Pfad per `FAMILIE_DIR` änderbar.
+Präfix `familie_`, weil `list_events` usw. schon für den Mail-Kalender (CalDAV) vergeben sind.
