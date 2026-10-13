@@ -17,7 +17,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from . import settings  # zuerst: lädt .env
-from . import audit, mail
+from . import audit, gedaechtnis, mail
 from .core import MailError, vm
 from .netz import RateLimit
 from .oauth import Provider, login
@@ -37,7 +37,12 @@ ANLEITUNG = (
     'Termine legt Claude nur vorläufig an (Titel "vorläufig: …", Status TENTATIVE); '
     'absagen per update_event(cancel=true), endgültig weg per delete_event (nur vorläufige Termine). '
     'Zeiten ohne Zone gelten als Europe/Berlin. '
-    'Vor send_message den Text mit dem Nutzer abstimmen; im Zweifel create_draft.'
+    'Vor send_message den Text mit dem Nutzer abstimmen; im Zweifel create_draft. '
+    'GEMEINSAMES GEDÄCHTNIS: Volker hat mit Claude Code viele eigene Tools, Apps und Projekte gebaut '
+    '(z. B. V3D Familie, V3D CAD, Generatoren, Dienste auf seinem Server). Bei Fragen dazu — oder '
+    'wenn ein Name/Tool unbekannt ist — ZUERST gedaechtnis_suchen, dann gedaechtnis_lesen; nicht '
+    'nachfragen, ob es das gibt. Geheimnisse (PINs, Codes, Tokens) sind dort ausgeblendet. '
+    'Neues Wissen, das Claude Code kennen soll, mit gedaechtnis_merken ablegen.'
 )
 
 mcp = MCPServer(
@@ -257,6 +262,40 @@ def delete_event(href: Annotated[str, Field(description='href aus list_events/cr
     """Vorläufigen Termin endgültig löschen. Nur nach ausdrücklicher Zustimmung;
     echte (nicht vorläufige) Termine bleiben unangetastet."""
     return mail.delete_event(href, account)
+
+
+# --- Gemeinsames Gedächtnis (Claude Code) ------------------------------------
+
+@werkzeug(LESEN)
+def gedaechtnis_index() -> CallToolResult:
+    """Übersicht aller Gedächtnis-Einträge aus Claude Code (eine Zeile je Tool/Projekt/Vorgabe)."""
+    return gedaechtnis.index()
+
+
+@werkzeug(LESEN)
+def gedaechtnis_suchen(
+        stichwort: Annotated[str, Field(description='Ein oder mehrere Stichwörter, z. B. "Familie Kalender"')],
+        limit: Annotated[int, Field(ge=1, le=25, description='max. Treffer (Standard 8)')] = 8) -> CallToolResult:
+    """Im Gedächtnis von Claude Code suchen (Volkers Tools, Apps, Projekte, Vorlieben). Liefert Namen
+    + Fundstellen; ganzen Eintrag mit gedaechtnis_lesen."""
+    return gedaechtnis.suchen(stichwort, limit)
+
+
+@werkzeug(LESEN)
+def gedaechtnis_lesen(name: Annotated[str, Field(description='Name aus gedaechtnis_suchen/gedaechtnis_index, z. B. "v3d-familie-tool"')]) -> CallToolResult:
+    """Einen Gedächtnis-Eintrag vollständig lesen (Geheimnisse ausgeblendet)."""
+    return gedaechtnis.lesen(name)
+
+
+@werkzeug(AENDERN)
+def gedaechtnis_merken(
+        titel: Annotated[str, Field(description='Kurzer Titel, z. B. "Anycubic-Kontakt Sharron"')],
+        inhalt: Annotated[str, Field(description='Die Notiz (Markdown, max. 8000 Zeichen); bei Vorgaben mit Begründung')],
+        beschreibung: Annotated[str | None, Field(description='Eine Zeile für die Übersicht')] = None,
+        art: Annotated[str, Field(description='user | feedback | project | reference')] = 'project') -> CallToolResult:
+    """Etwas für Claude Code merken. Legt einen NEUEN Eintrag „eingang-…" an (bestehende werden nie
+    geändert); Claude Code sieht ihn ab der nächsten Sitzung. Keine Passwörter/PINs ablegen."""
+    return gedaechtnis.merken(titel, inhalt, beschreibung, art)
 
 
 # --- HTTP ----------------------------------------------------------------------

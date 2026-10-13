@@ -37,3 +37,16 @@ deshalb Titel „… (abgesagt)“ + `TRANSP:TRANSPARENT` und lässt den Termin 
 `tests/oauth_flow.py` (offizieller SDK-Client, OAuth + Werkzeugaufrufe) und `tests/security.py`
 (PKCE, Sperre, Rotation, revoke-all) — **nur gegen eine Test-Instanz** mit eigenem `DATA_DIR`,
 `ISSUER_URL=http://127.0.0.1:<port>` und `V3DMCP_TEST_HASH`. Schreibende Aufrufe wirken auf die echten Postfächer.
+
+## Gemeinsames Gedächtnis (seit 13.10.2026)
+
+Der Connector stellt Claude Chat/Cowork auch das Auto-Gedächtnis von Claude Code bereit
+(`~/.claude/projects/-home-v3da/memory`, per `GEDAECHTNIS_DIR` änderbar), Modul `v3dmcp/gedaechtnis.py`:
+
+- `gedaechtnis_index`, `gedaechtnis_suchen`, `gedaechtnis_lesen` — nur lesend; PINs, Codes,
+  Tokens und zufällig aussehende Schlüssel werden beim Ausliefern durch `[ausgeblendet]` ersetzt
+  (die Dateien selbst bleiben unverändert).
+- `gedaechtnis_merken` — legt nur NEUE Dateien `eingang-<titel>.md` an (max. 100) und hängt je
+  eine Zeile unter „## Eingang aus Claude Chat/Cowork" an `MEMORY.md`. Bestehende Einträge
+  werden nie geändert. Einsortieren/Aufräumen macht Claude Code.
+- Die Server-Anleitung weist Chat/Cowork an, bei Fragen zu Volkers Tools zuerst zu suchen.
