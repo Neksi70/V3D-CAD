@@ -377,7 +377,7 @@ function memoSprechen(){
 }
 
 // --- Spracherkennung: Browser (live) oder Server (Whisper)
-let REC = null, MR = null, aufnahme = false, recBasis = '';
+let REC = null, MR = null, aufnahme = false, recBasis = '', recWache = null;
 function aufnahmeUmschalten(){ aufnahme ? aufnahmeStopp() : aufnahmeStart(); }
 function micAnzeige(an, text){
   const m = $('#mic'); if (!m) return;
@@ -390,12 +390,15 @@ function aufnahmeStart(){
     toast('Mikrofon-Knopf geht nur über https – bitte ' + (/Android|iPhone|iPad/i.test(navigator.userAgent) ? 'die Mikrofon-Taste der Tastatur' : 'Windows-Taste + H') + ' nutzen');
     return;
   }
-  const browser = SR && D.einstellungen.sprache !== 'server';
+  // Live-Erkennung des Browsers, außer sie ist abgeschaltet oder hat auf diesem Gerät schon einmal versagt
+  const browser = SR && D.einstellungen.sprache !== 'server' && !lsGet('me_nur_server');
   if (browser){
+    let gehoert = false;
     REC = new SR(); REC.lang='de-DE'; REC.continuous=true; REC.interimResults=true;
     recBasis = $('#memoText').value.trim(); if (recBasis) recBasis += ' ';
     let fertig = '';
     REC.onresult = e => {
+      gehoert = true;
       let vorl = '';
       for (let i=e.resultIndex; i<e.results.length; i++){
         if (e.results[i].isFinal) fertig += e.results[i][0].transcript + ' ';
@@ -405,14 +408,17 @@ function aufnahmeStart(){
     };
     REC.onerror = e => {
       if (e.error==='not-allowed' || e.error==='service-not-allowed'){ aufnahme=false; micAnzeige(false, MIC_GESPERRT); }
-      else if (e.error==='network'){ aufnahme=false; REC=null; serverAufnahme(); }
+      else if (e.error==='network' || e.error==='audio-capture'){ aufnahmeWechsel(); }
     };
+    // Manche Browser nehmen die Erkennung an, liefern aber nie etwas (ohne Fehler) → nach 7 s auf Server umschalten
+    clearTimeout(recWache);
+    recWache = setTimeout(() => { if (aufnahme && REC && !gehoert) aufnahmeWechsel(); }, 7000);
     REC.onend = () => { if (aufnahme && REC){ recBasis = $('#memoText').value.trim()+' '; fertig=''; try{ REC.start(); }catch(e){} } };
     try { REC.start(); aufnahme = true; micAnzeige(true, 'Ich höre zu … zum Beenden nochmal tippen'); }
     catch(e){ serverAufnahme(); }
   } else serverAufnahme();
 }
-async function serverAufnahme(){
+async function serverAufnahme(hinweis){
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder){
     micAnzeige(false, 'Sprechen geht hier nicht – bitte die Mikrofon-Taste der Handy-Tastatur nutzen oder tippen.'); return;
   }
@@ -434,10 +440,18 @@ async function serverAufnahme(){
       } catch(e){ micAnzeige(false, 'Erkennung fehlgeschlagen – bitte tippen.'); }
       $('#memoWeiter').disabled = false;
     };
-    MR.start(); aufnahme = true; micAnzeige(true, 'Aufnahme läuft … zum Beenden nochmal tippen');
+    MR.start(); aufnahme = true; micAnzeige(true, hinweis || 'Aufnahme läuft … zum Beenden nochmal tippen');
   } catch(e){ micAnzeige(false, MIC_GESPERRT); }
 }
+function aufnahmeWechsel(){
+  clearTimeout(recWache);
+  const r = REC; REC = null; aufnahme = false;
+  if (r){ r.onend = null; r.onerror = null; try { r.abort(); } catch(e){} }
+  lsSet('me_nur_server', '1');          // dieses Gerät künftig gleich über den Server
+  serverAufnahme('Live-Erkennung reagiert hier nicht – ich nehme jetzt auf. Bitte noch einmal sagen, dann zum Beenden tippen.');
+}
 function aufnahmeStopp(abbruch){
+  clearTimeout(recWache);
   aufnahme = false;
   if (REC){ const r = REC; REC = null; try { r.stop(); } catch(e){} micAnzeige(false, 'Fertig – prüfen und auf „Weiter" tippen'); }
   if (MR){ MR._abbruch = !!abbruch; try { MR.stop(); } catch(e){} }
@@ -1174,6 +1188,7 @@ async function einstellungenSpeichern(){
   const d = {};
   for (const k of ['einkaeufer','start','basis','bonus_prozent','bonus_deckel','bonus_basis','sprache','firma_adresse']) d[k] = $('#e_'+k).value;
   d.bonus_prozent = zahlLesen(d.bonus_prozent); d.bonus_deckel = zahlLesen(d.bonus_deckel);
+  lsSet('me_nur_server', null);
   await api('einstellungen', {method:'PUT', body:d}); await laden(); toast('Gespeichert');
 }
 
