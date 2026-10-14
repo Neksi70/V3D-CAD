@@ -342,6 +342,7 @@ function sStart(){
 let M = null;   // aktueller Memo-Vorgang
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const MOBIL = /Android|iPhone|iPad/i.test(navigator.userAgent);
+const ANDROID = /Android/i.test(navigator.userAgent);
 const DIKTAT_TIPP = MOBIL
   ? 'ins Textfeld tippen und auf der Handy-Tastatur die <b>Mikrofon-Taste 🎤</b> drücken.'
   : 'ins Textfeld klicken und <b>Windows-Taste + H</b> drücken (Mac: zweimal <b>Fn</b>).';
@@ -391,20 +392,19 @@ function aufnahmeStart(){
     return;
   }
   // Live-Erkennung des Browsers, außer sie ist abgeschaltet oder hat auf diesem Gerät schon einmal versagt
-  const browser = SR && D.einstellungen.sprache !== 'server' && !lsGet('me_nur_server');
+  // Android-Chrome wiederholt im Dauermodus jeden Zwischenstand („ich ich habe ich habe heute …") und
+  // verschluckt Zahlen → dort standardmäßig Aufnahme + Whisper; PC/iPhone live im Browser.
+  const browser = SR && D.einstellungen.sprache === 'auto' && !ANDROID && !lsGet('me_nur_server')
+               || SR && D.einstellungen.sprache === 'browser';
   if (browser){
     let gehoert = false;
     REC = new SR(); REC.lang='de-DE'; REC.continuous=true; REC.interimResults=true;
     recBasis = $('#memoText').value.trim(); if (recBasis) recBasis += ' ';
-    let fertig = '';
     REC.onresult = e => {
       gehoert = true;
-      let vorl = '';
-      for (let i=e.resultIndex; i<e.results.length; i++){
-        if (e.results[i].isFinal) fertig += e.results[i][0].transcript + ' ';
-        else vorl += e.results[i][0].transcript;
-      }
-      M.text = $('#memoText').value = (recBasis + fertig + vorl).replace(/\s+/g,' ');
+      let t = '';
+      for (const r of e.results) t += r[0].transcript + ' ';
+      M.text = $('#memoText').value = (recBasis + t).replace(/\s+/g,' ').trim();
     };
     REC.onerror = e => {
       if (e.error==='not-allowed' || e.error==='service-not-allowed'){ aufnahme=false; micAnzeige(false, MIC_GESPERRT); }
@@ -413,7 +413,7 @@ function aufnahmeStart(){
     // Manche Browser nehmen die Erkennung an, liefern aber nie etwas (ohne Fehler) → nach 7 s auf Server umschalten
     clearTimeout(recWache);
     recWache = setTimeout(() => { if (aufnahme && REC && !gehoert) aufnahmeWechsel(); }, 7000);
-    REC.onend = () => { if (aufnahme && REC){ recBasis = $('#memoText').value.trim()+' '; fertig=''; try{ REC.start(); }catch(e){} } };
+    REC.onend = () => { if (aufnahme && REC){ recBasis = $('#memoText').value.trim()+' '; try{ REC.start(); }catch(e){} } };
     try { REC.start(); aufnahme = true; micAnzeige(true, 'Ich höre zu … zum Beenden nochmal tippen'); }
     catch(e){ serverAufnahme(); }
   } else serverAufnahme();
@@ -429,10 +429,11 @@ async function serverAufnahme(hinweis){
     MR = new MediaRecorder(strom);
     MR.ondataavailable = e => e.data.size && teile.push(e.data);
     MR.onstop = async () => {
+      clearInterval(MR?._uhr);
       strom.getTracks().forEach(t=>t.stop());
       if (MR?._abbruch){ MR=null; return; }
       MR = null;
-      micAnzeige(false, 'Erkenne Sprache …'); $('#memoWeiter').disabled = true;
+      micAnzeige(false, '⏳ Erkenne Sprache … (dauert ein paar Sekunden)'); $('#memoWeiter').disabled = true;
       try {
         const r = await api('ton', {method:'POST', body:new Blob(teile), roh:true});
         const t = $('#memoText'); t.value = (t.value.trim()+' '+r.text).trim(); M.text = t.value;
@@ -440,7 +441,11 @@ async function serverAufnahme(hinweis){
       } catch(e){ micAnzeige(false, 'Erkennung fehlgeschlagen – bitte tippen.'); }
       $('#memoWeiter').disabled = false;
     };
-    MR.start(); aufnahme = true; micAnzeige(true, hinweis || 'Aufnahme läuft … zum Beenden nochmal tippen');
+    MR.start(); aufnahme = true;
+    const t0 = Date.now(), text = hinweis || 'Aufnahme läuft – zum Beenden nochmal tippen';
+    micAnzeige(true, '🔴 0:00 · ' + text);
+    MR._uhr = setInterval(() => { const s = Math.floor((Date.now()-t0)/1000);
+      if (aufnahme && $('#micStatus')) $('#micStatus').textContent = `🔴 ${Math.floor(s/60)}:${String(s%60).padStart(2,'0')} · ${text}`; }, 500);
   } catch(e){ micAnzeige(false, MIC_GESPERRT); }
 }
 function aufnahmeWechsel(){
@@ -1177,7 +1182,8 @@ function vEinstellungen(){
       <option value="hart" ${E.bonus_basis==='hart'?'selected':''}>Nur Ersparnis gegenüber dem bisher bezahlten Preis</option>
       <option value="beides" ${E.bonus_basis==='beides'?'selected':''}>Zusätzlich Ersparnis durch Angebotsvergleich (wenn kein bisheriger Preis bekannt ist)</option></select></label>
     <label>Spracherkennung<select id="e_sprache">
-      <option value="auto" ${E.sprache==='auto'?'selected':''}>Automatisch (live im Browser, sonst Server)</option>
+      <option value="auto" ${E.sprache==='auto'?'selected':''}>Automatisch (PC/iPhone live, Android über den Server)</option>
+      <option value="browser" ${E.sprache==='browser'?'selected':''}>Immer live im Browser</option>
       <option value="server" ${E.sprache==='server'?'selected':''}>Immer auf dem Server (Whisper)</option></select></label>
     <label>Firmenadresse (Bestellschein)<input id="e_firma_adresse" value="${esc(E.firma_adresse)}"></label>
   </div>

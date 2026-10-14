@@ -110,7 +110,7 @@ STANDARD_EINSTELLUNGEN = {
     "bonus_prozent": 10.0,
     "bonus_deckel": 0.0,       # 0 = ohne Obergrenze
     "bonus_basis": "hart",     # "hart" = nur ggü. Vergleichspreis | "beides" = sonst ggü. Angebots-Ø
-    "sprache": "auto",         # "auto" = Browser, sonst Server | "server" = immer Whisper
+    "sprache": "auto",         # "auto" = PC/iPhone live, Android Whisper | "browser" | "server"
     "firma_adresse": "Auf dem Brümmer 6a · 44149 Dortmund",
 }
 
@@ -769,6 +769,7 @@ def ki_aufrufen(system, text, max_tokens=1500):
 MEMO_SYSTEM = """Du bist die Eingabehilfe im Einkaufsprogramm der Marchi Group (Fahrzeug- und Sonderbau, Dortmund).
 Der Einkäufer hat gerade mit einem Lieferanten telefoniert und spricht das Ergebnis kurz ins Handy.
 Der Text kommt aus einer Spracherkennung: Zahlwörter, Versprecher und Erkennungsfehler sind normal.
+Manche Handys wiederholen dabei den Satzanfang immer wieder ("ich ich habe ich habe heute ..."): werte so einen Text nur EINMAL aus, maßgeblich ist die längste/letzte Fassung.
 Mach daraus ein Angebot. Antworte AUSSCHLIESSLICH mit JSON (kein Fließtext, kein Code-Zaun):
 {"lieferant":{"id":null,"name":""},"ansprechpartner":"","telefon":"",
  "positionen":[{"artikel_id":null,"artikel_name":"","werkstoff":"","abmessung":"","rubrik_id":null,
