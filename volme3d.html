@@ -1779,6 +1779,8 @@ const firebaseConfig = {
     <button class="skt" data-tool="spline"  onclick="_skSetTool('spline')"  title="Spline durch Punkte"><span class="ski">∿</span><span class="skl">Spline</span><span class="skk">I</span></button>
     <button class="skt" data-tool="free"    onclick="_skSetTool('free')"    title="Freihand: Maustaste gedrückt halten und zeichnen wie mit dem Stift — die Linie wird geglättet. Endest du nahe am Anfang, schließt sich die Kontur automatisch"><span class="ski">✎</span><span class="skl">Freihand</span><span class="skk">F</span></button>
     <button class="skt" data-tool="trim"    onclick="_skSetTool('trim')"    title="Beschneiden / Löschen"><span class="ski">✂</span><span class="skl">Trim</span><span class="skk">T</span></button>
+    <button class="skt" data-tool="filletc" onclick="_skSetTool('filletc')" title="Ecke runden: Ecke anklicken, an der zwei Linien zusammenstoßen — Radius im Feld am Zeiger tippen"><span class="ski">╭</span><span class="skl">Ecke runden</span><span class="skk"></span></button>
+    <button class="skt" data-tool="chamferc" onclick="_skSetTool('chamferc')" title="Ecke fasen: Ecke anklicken, an der zwei Linien zusammenstoßen — Fasenmaß im Feld am Zeiger tippen"><span class="ski">◸</span><span class="skl">Ecke fasen</span><span class="skk"></span></button>
     <button class="skt" data-tool="pull"    onclick="_skSetTool('pull')"    title="Fläche andrücken und ziehen — nach oben = neuer Körper bzw. anfügen, in einen Körper hinein = Loch/Tasche. Zahl tippen = exakt (− = andere Richtung), D = durch alles, Enter bestätigt, Esc bricht ab"><span class="ski">⬆</span><span class="skl">Ziehen</span><span class="skk">P</span></button>
     <div class="sksep"></div>
     <button class="skt on" id="sk-ortho-btn" onclick="_skToggleOrtho()" title="Ortho-Fang: rastet auf waagerecht / senkrecht / 45° und an vorhandenen Punkten (O)"><span class="ski">⊾</span><span class="skl">Ortho-Fang</span><span class="skk">O</span></button>
@@ -10340,6 +10342,7 @@ function enterEdgeMode(quiet = false) {
 
 function exitEdgeMode() {
   _ebPrevEnd();
+  _edgeFeatEditKey = null;
   if (_edgeLines) { _edgeObj.remove(_edgeLines); _edgeLines.geometry.dispose(); _edgeLines = null; }
   if (_edgeCircles) { _edgeObj.remove(_edgeCircles); _edgeCircles.geometry.dispose(); _edgeCircles = null; }
   if (_edgeMeshes.length > 0) {
@@ -10526,7 +10529,8 @@ function _skSetTool(t) {
   if (_skPull.editing) _skPullCancel();
   _sk.pending = []; _sk.tool = t; _sk.dimLock = false;
   document.querySelectorAll('#sketch-bar .skt[data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
-  canvas.style.cursor = (t === 'trim' || t === 'pull') ? 'pointer' : 'crosshair';
+  canvas.style.cursor = (t === 'trim' || t === 'pull' || t === 'filletc' || t === 'chamferc') ? 'pointer' : 'crosshair';
+  if (t === 'filletc' || t === 'chamferc') notify((t === 'filletc' ? 'Ecke runden' : 'Ecke fasen') + ': Ecke anklicken, an der zwei Linien zusammenstoßen — Maß im Feld am Zeiger tippen + Enter', 'ok');
   _skRender(); _skDimUpdate();
 }
 
@@ -10542,6 +10546,7 @@ function _skDimSpec(){
   if (T==='rect'    && P.length===1){ return {n:2,l1:'B',v1:_skMM(Math.abs(c.u-P[0].u)),l2:'H',v2:_skMM(Math.abs(c.v-P[0].v))}; }
   if (T==='circle'  && P.length===1){ return {n:1,l1:'⌀',v1:_skMM(2*Math.hypot(c.u-P[0].u,c.v-P[0].v))}; }
   if (T==='ellipse' && P.length===1){ return {n:2,l1:'Rx',v1:_skMM(Math.abs(c.u-P[0].u)),l2:'Ry',v2:_skMM(Math.abs(c.v-P[0].v))}; }
+  if (T==='filletc' || T==='chamferc') return {n:1,l1:T==='filletc'?'R':'Fase',v1:_sk.cornerMM[T]};
   return null;
 }
 function _skDimUpdate(){
@@ -10569,6 +10574,7 @@ function _skCommitTyped(){
     const r=_skRectPts(P[0],b); for(let i=0;i<4;i++) _sk.ents.push({type:'line',a:{u:r[i].u,v:r[i].v},b:{u:r[i+1].u,v:r[i+1].v}}); _sk.pending=[]; }
   else if (T==='circle' && P.length===1 && d1>0){ _sk.ents.push({type:'circle', c:{u:P[0].u,v:P[0].v}, r:d1/2}); _sk.pending=[]; setTimeout(_skHoleNext, 0); }
   else if (T==='ellipse' && P.length===1 && d1>0 && d2>0){ _sk.ents.push({type:'ellipse', c:{u:P[0].u,v:P[0].v}, rx:d1, ry:d2}); _sk.pending=[]; }
+  else if ((T==='filletc' || T==='chamferc') && d1>0){ _sk.cornerMM[T]=Math.round(d1*1000)/100; notify((T==='filletc'?'Rundung R ':'Fase ')+String(_sk.cornerMM[T]).replace('.',',')+' mm — jetzt Ecken anklicken','ok'); }
   else return;
   _sk.dimLock=false; _skRender(); _skDimUpdate();
 }
@@ -11034,6 +11040,10 @@ function _skClick(e){
   const raw=_skPlanePoint(e); if(!raw) return;
   if (_sk.tool==='pull'){ if(!_skPull.editing) _skPullStart(raw); return; }   // Fläche andrücken → interaktiv hochziehen
   if (_sk.tool==='free'){ _skFreeStart(raw); return; }                        // Freihand: ziehen statt klicken
+  if (_sk.tool==='filletc' || _sk.tool==='chamferc'){                          // Ecke runden/fasen
+    if (_sk.dimLock){ const v=parseFloat(String(document.getElementById('sk-dim-1').value).replace(',','.')); if (v>0) _sk.cornerMM[_sk.tool]=v; _sk.dimLock=false; }
+    _skCornerApply(raw); _skRender(); _skDimUpdate(); return;
+  }
   const sp=_skSnapFull(raw), cur={u:sp.u, v:sp.v};
   _sk.dimLock=false;
   const T=_sk.tool, P=_sk.pending;
@@ -11072,7 +11082,118 @@ function _skFinishCurrent(){
     _sk.ents.push({type:'spline', pts:_sk.pending.map(p=>({u:p.u,v:p.v}))});
   _sk.pending=[]; _skRender();
 }
-function _skUndo(){ if (_sk.pending.length) _sk.pending.pop(); else _sk.ents.pop(); _skRender(); }
+function _skUndo(){
+  if (_sk.pending.length) _sk.pending.pop();
+  else if (_sk.cornerUndo && _sk.cornerUndo.length && _sk.cornerUndo[_sk.cornerUndo.length-1].ents === _sk.ents && _sk.cornerUndo[_sk.cornerUndo.length-1].len === _sk.ents.length)
+    _sk.ents = _sk.cornerUndo.pop().before;      // Ecke runden/fasen zurück
+  else _sk.ents.pop();
+  _skRender();
+}
+
+// ── Ecke runden / Ecke fasen (Skizze) ────────────────────────────────────
+// Idee aus dem layerling-Abgleich (14.10.2026), eigener Code: eine Ecke
+// anklicken, an der zwei Linien zusammenstoßen (oder ein Knick einer
+// Polylinie) → Rundung = Bogen tangential an beide Linien, Fase = gerade
+// Verbindung; die Linien werden passend gekürzt. Maß wie beim Zeichnen
+// tippbar (Feld am Zeiger), gilt danach für jede weitere Ecke.
+_sk.cornerMM = { filletc: 2, chamferc: 1 };
+function _skCornerAt(p){
+  const tol = Math.max(0.12, sph.r * 0.02);
+  const d = (a, b) => Math.hypot(a.u - b.u, a.v - b.v);
+  // 1) Linien-Enden
+  let best = null;
+  _sk.ents.forEach((en, i) => {
+    if (en.type !== 'line') return;
+    for (const k of ['a', 'b']) {
+      const q = en[k], dd = d(q, p);
+      if (dd < tol && (!best || dd < best.dd)) best = { dd, P: { u: q.u, v: q.v } };
+    }
+  });
+  if (best) {
+    const eps = 1e-4 * Math.max(1, sph.r);
+    const hits = [];
+    _sk.ents.forEach((en, i) => {
+      if (en.type !== 'line') return;
+      if (d(en.a, best.P) < eps) hits.push({ i, end: 'a' });
+      else if (d(en.b, best.P) < eps) hits.push({ i, end: 'b' });
+    });
+    if (hits.length === 2) return { kind: 'lines', P: best.P, hits };
+    if (hits.length > 2) return { err: 'An dieser Ecke treffen mehr als zwei Linien zusammen.' };
+  }
+  // 2) Knick einer Polylinie
+  let pb = null;
+  _sk.ents.forEach((en, i) => {
+    if (en.type !== 'poly') return;
+    const n = en.pts.length;
+    en.pts.forEach((q, j) => {
+      if (!en.closed && (j === 0 || j === n - 1)) return;
+      const dd = d(q, p);
+      if (dd < tol && (!pb || dd < pb.dd)) pb = { dd, i, j };
+    });
+  });
+  if (pb) return { kind: 'poly', ...pb };
+  return best ? { err: 'Hier stößt keine zweite Linie an — Rundung braucht zwei Linien.' } : null;
+}
+
+// Geometrie einer Ecke: P = Eckpunkt, A/B = ferne Enden der beiden Schenkel
+function _skCornerGeom(P, A, B, mode, val){
+  const l1 = Math.hypot(A.u - P.u, A.v - P.v), l2 = Math.hypot(B.u - P.u, B.v - P.v);
+  if (l1 < 1e-6 || l2 < 1e-6) return { err: 'Schenkel zu kurz.' };
+  const d1 = { u: (A.u - P.u) / l1, v: (A.v - P.v) / l1 }, d2 = { u: (B.u - P.u) / l2, v: (B.v - P.v) / l2 };
+  const cos = Math.max(-1, Math.min(1, d1.u * d2.u + d1.v * d2.v)), th = Math.acos(cos);
+  if (th < 1e-3 || th > Math.PI - 1e-3) return { err: 'Die Linien laufen hier gerade weiter — keine Ecke.' };
+  const t = mode === 'filletc' ? val / Math.tan(th / 2) : val;
+  if (t > Math.min(l1, l2) + 1e-6) {
+    const maxV = mode === 'filletc' ? Math.min(l1, l2) * Math.tan(th / 2) : Math.min(l1, l2);
+    return { err: 'Zu groß für diese Ecke — höchstens ' + (Math.floor(maxV * 100) / 10).toFixed(1).replace('.', ',') + ' mm.' };
+  }
+  const T1 = { u: P.u + d1.u * t, v: P.v + d1.v * t }, T2 = { u: P.u + d2.u * t, v: P.v + d2.v * t };
+  if (mode !== 'filletc') return { T1, T2 };
+  const bis = { u: d1.u + d2.u, v: d1.v + d2.v }, bl = Math.hypot(bis.u, bis.v);
+  const h = val / Math.sin(th / 2);
+  const c = { u: P.u + bis.u / bl * h, v: P.v + bis.v / bl * h };
+  const a0 = Math.atan2(T1.v - c.v, T1.u - c.u);
+  return { T1, T2, arc: { type: 'arc', c, r: val, a0, a1: _skArcEnd(a0, Math.atan2(T2.v - c.v, T2.u - c.u)) } };
+}
+
+function _skCornerApply(p){
+  const mode = _sk.tool;
+  const val = (_sk.cornerMM[mode] || 1) / 10;
+  const hit = _skCornerAt(p);
+  if (!hit) { notify('Bitte genau auf eine Ecke klicken.', 'w'); return false; }
+  if (hit.err) { notify(hit.err, 'w'); return false; }
+  const before = _sk.ents;   // das aktuelle Array selbst → mehrfaches Strg+Z bleibt eine Kette
+  const ents = before.map(en => JSON.parse(JSON.stringify(en)));
+  if (hit.kind === 'lines') {
+    const [h1, h2] = hit.hits;
+    const e1 = ents[h1.i], e2 = ents[h2.i];
+    const far1 = h1.end === 'a' ? e1.b : e1.a, far2 = h2.end === 'a' ? e2.b : e2.a;
+    const g = _skCornerGeom(hit.P, far1, far2, mode, val);
+    if (g.err) { notify(g.err, 'w'); return false; }
+    e1[h1.end] = g.T1; e2[h2.end] = g.T2;
+    ents.push(g.arc || { type: 'line', a: g.T1, b: g.T2 });
+    // auf 0 gekürzte Linien entfernen (Rundung so groß wie der Schenkel)
+    for (const i of [h1.i, h2.i].sort((a, b) => b - a))
+      if (Math.hypot(ents[i].a.u - ents[i].b.u, ents[i].a.v - ents[i].b.v) < 1e-6) ents.splice(i, 1);
+  } else {
+    const en = ents[hit.i], n = en.pts.length, j = hit.j;
+    const A = en.pts[(j - 1 + n) % n], B = en.pts[(j + 1) % n];
+    const g = _skCornerGeom(en.pts[j], A, B, mode, val);
+    if (g.err) { notify(g.err, 'w'); return false; }
+    let mid = [g.T1, g.T2];
+    if (g.arc) {
+      const N = Math.max(4, Math.ceil(Math.abs(g.arc.a1 - g.arc.a0) / (Math.PI / 24)));
+      mid = [];
+      for (let k = 0; k <= N; k++) mid.push(_skArcPt(g.arc, g.arc.a0 + (g.arc.a1 - g.arc.a0) * k / N));
+    }
+    en.pts.splice(j, 1, ...mid);
+  }
+  _sk.cornerUndo = _sk.cornerUndo || [];
+  _sk.cornerUndo.push({ before, ents, len: ents.length });
+  _sk.ents = ents;
+  notify((mode === 'filletc' ? 'Ecke gerundet (R ' : 'Ecke gefast (') + String(Math.round(val * 100) / 10).replace('.', ',') + ' mm) — Strg+Z nimmt sie zurück', 'ok');
+  return true;
+}
 
 // ── DXF Im-/Export (2D, R12-ASCII; für Lasercutter/Plotter) ───────────────
 // Skizze (u,v) ↔ DXF (mm). v wird gespiegelt (Y=-v*10), damit die DXF wie die
@@ -11289,12 +11410,20 @@ function _skBuildLoops(){
   for (let i=0;i<chains.length;i++){ if(used[i]) continue;
     let chain=chains[i].slice(); used[i]=true; let ext=true;
     while (ext){ ext=false; const head=chain[0], tail=chain[chain.length-1];
+      // Den NÄCHSTEN passenden Anschluss nehmen, nicht den ersten innerhalb der
+      // Toleranz — sonst springt die Kontur bei kleinen Fasen/Rundungen
+      // (Enden < 0,9 mm auseinander) auf das falsche Ende (14.10.2026).
+      let bj=-1, bk=-1, bd=tol;
+      const dd=(p,q)=>Math.hypot(p.u-q.u,p.v-q.v);
       for (let j=0;j<chains.length;j++){ if(used[j]) continue; const s=chains[j], a=s[0], b=s[s.length-1];
-        if (_skNear(tail,a,tol)){ chain=chain.concat(s.slice(1)); used[j]=ext=true; }
-        else if (_skNear(tail,b,tol)){ chain=chain.concat(s.slice().reverse().slice(1)); used[j]=ext=true; }
-        else if (_skNear(head,a,tol)){ chain=s.slice().reverse().slice(0,-1).concat(chain); used[j]=ext=true; }
-        else if (_skNear(head,b,tol)){ chain=s.slice(0,-1).concat(chain); used[j]=ext=true; }
-        if (ext) break; } }
+        const c=[dd(tail,a),dd(tail,b),dd(head,a),dd(head,b)];
+        for (let k=0;k<4;k++) if (c[k]<=bd){ bd=c[k]; bj=j; bk=k; } }
+      if (bj>=0){ const s=chains[bj];
+        if (bk===0) chain=chain.concat(s.slice(1));
+        else if (bk===1) chain=chain.concat(s.slice().reverse().slice(1));
+        else if (bk===2) chain=s.slice().reverse().slice(0,-1).concat(chain);
+        else chain=s.slice(0,-1).concat(chain);
+        used[bj]=ext=true; } }
     if (chain.length>=4 && _skNear(chain[0],chain[chain.length-1],Math.max(tol,0.1))) loops.push(_skDedupe(chain));
   }
   return loops.filter(lp=>lp.length>=3);
@@ -13494,7 +13623,7 @@ function _ebPrevCompute(p, val) {
   const toOcct = w => [w[0]-q.geoOff.x, w[1]-q.geoOff.y, w[2]-q.geoOff.z];
   const isPos = val < 0, dist = Math.abs(val);   // links = Fase (s. _applyEdgeHandleValue)
   const newOps = [..._edgeSel].map(i => ({ idx: i, dist, type: isPos ? 'chamfer' : 'fillet',
-    wa: toOcct(dyn[i].worldA), wb: toOcct(dyn[i].worldB) }));
+    wa: toOcct(dyn[i].worldA), wb: toOcct(dyn[i].worldB), ..._edgeNewOpExtra(isPos, 'vorschau') }));
   // Replay kanonisiert die Ops in-place → mit einer Kopie arbeiten
   const prevOps = JSON.parse(JSON.stringify(q.prevOps));
   const allOps = _mergeOCCTOps(prevOps, newOps, { sx: q.sx, sy: q.sy, sz: q.sz });
@@ -14175,7 +14304,14 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz, noSeq) {
       // Build kann eine C++-Ausnahme werfen (kommt im WASM als ReferenceError
       // ___cxa_can_catch an) → wie „nicht geklappt" behandeln
       try {
-        for (const x of r) for (const e of x.edges) ch.Add_2(x.op.dist, e);
+        for (const x of r) for (const e of x.edges) {
+          // Fase mit Winkel: Abstand auf einer Nachbarfläche + Winkel (s. _occtEdgeFace)
+          if (x.op.ang && Math.abs(x.op.ang - 45) > 0.05) {
+            const f = _occtEdgeFace(oc, curShape, e, !!x.op.flip);
+            if (f) { ch.AddDA(x.op.dist, x.op.ang * Math.PI / 180, e, f); continue; }
+          }
+          ch.Add_2(x.op.dist, e);
+        }
         ch.Build(); opOk = ch.IsDone();
         if (opOk) { const res = ch.Shape(); opOk = _occtShapeValid(oc, res); if (opOk) curShape = res; }
       } catch (e) { opOk = false; }
@@ -14183,7 +14319,9 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz, noSeq) {
     }
   }
   if (filletOps.length > 0 && opOk) {
-    const tol = chamferOps.length > 0 ? Math.max(...chamferOps.map(o => o.dist)) + 0.1 : 0.01;
+    // Fase mit Winkel: der längere Schenkel ist dist·tan(Winkel)
+    const _leg = o => o.dist * Math.max(1, o.ang ? Math.tan(o.ang * Math.PI / 180) : 1, o.ang ? 1 / Math.tan(o.ang * Math.PI / 180) : 1);
+    const tol = chamferOps.length > 0 ? Math.max(...chamferOps.map(_leg)) + 0.1 : 0.01;
     const r = _resolve(curShape, filletOps, tol);
     if (!r) opOk = false;
     else {
@@ -14842,9 +14980,10 @@ async function _applyEdgeHandleValue(chamferDist) {
           prevOps = [];
         }
 
+        const _grp = 'g' + Date.now().toString(36);
         const newOps = edgeData.map(({ idx, dynEdge }) => ({
           idx, dist, type: isPos ? 'chamfer' : 'fillet',
-          wa: toOcct(dynEdge.worldA), wb: toOcct(dynEdge.worldB)
+          wa: toOcct(dynEdge.worldA), wb: toOcct(dynEdge.worldB), ..._edgeNewOpExtra(isPos, _grp)
         }));
         const allOps = _mergeOCCTOps(prevOps, newOps, { sx, sy, sz });
 
@@ -15044,6 +15183,297 @@ function _edgeSetAngle(v) {
   if (!_edgeObj || !_edgeMode) return;
   exitEdgeMode(); enterEdgeMode(true);
   notify('Kanten ab ' + v + '° Knickwinkel', 'ok');
+}
+
+// ═══ FASE MIT WINKEL · OBERE KANTEN · GLATTE KETTEN · KANTEN-LISTE ═════════
+// Lücken aus dem Abgleich mit layerling (14.10.2026), eigenständig gebaut:
+//   • Fase nicht nur 45°: Abstand auf einer Nachbarfläche + Winkel (OCCT AddDA).
+//     Gemessen auf der „oberen" Nachbarfläche (höherer Flächen-Schwerpunkt),
+//     „andere Seite" misst auf der zweiten Fläche.
+//   • „Obere Kanten": ein Klick wählt alle Kanten ganz oben (Ausstechform-Rand).
+//   • Glatte Ketten: ein Klick wählt Segmente mit, die ohne Knick weiterlaufen
+//     (gerundete Ecken an Skizzen/Importen bestehen sonst aus vielen Stücken).
+//   • Kanten-Liste: jede Fase/Rundung einzeln ändern oder zurücknehmen — der
+//     Körper wird aus der Grundform neu gerechnet, die übrigen bleiben.
+let _edgeChamferAngle = 45;     // Grad; 45 = gleichschenklig
+let _edgeChamferFlip  = false;  // Abstand auf der anderen Nachbarfläche
+let _edgeTangentChain = (() => { try { return localStorage.getItem('v3d_edge_chain') !== '0'; } catch (e) { return true; } })();
+let _edgeFeatEditKey  = null;   // Eintrag der Kanten-Liste, der gerade geändert wird
+
+// Zusatzfelder einer neuen Fase (nur wenn nicht 45°) + Gruppen-Kennung, damit
+// die Kanten einer Bearbeitung in der Liste als EIN Eintrag erscheinen.
+function _edgeNewOpExtra(isChamfer, grp) {
+  const x = { grp };
+  const a = Math.round(_edgeChamferAngle * 10) / 10;
+  if (isChamfer && Math.abs(a - 45) > 0.05) { x.ang = a; if (_edgeChamferFlip) x.flip = true; }
+  return x;
+}
+
+function _edgeSetChamferAngle(v) {
+  const a = parseFloat(String(v).replace(',', '.'));
+  if (!(a >= 10 && a <= 80)) return;
+  _edgeChamferAngle = a;
+}
+function _edgeSetChamferFlip(on) { _edgeChamferFlip = !!on; }
+function _edgeSetTangentChain(on) {
+  _edgeTangentChain = !!on;
+  try { localStorage.setItem('v3d_edge_chain', on ? '1' : '0'); } catch (e) {}
+}
+
+// Nachbarfläche einer Kante für die Winkel-Fase: die mit dem höheren
+// Schwerpunkt (bei Gleichstand die erste), mit flip die andere.
+function _occtEdgeFace(oc, shape, edge, flip) {
+  const found = [];
+  const exp = new oc.TopExp_Explorer_2(shape, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+  while (exp.More()) {
+    const f = oc.TopoDS.Face_1(exp.Current());
+    const ee = new oc.TopExp_Explorer_2(f, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+    let hit = false;
+    while (ee.More() && !hit) { if (ee.Current().IsSame(edge)) hit = true; ee.Next(); }
+    ee.delete();
+    if (hit) {
+      const pr = new oc.GProp_GProps_1();
+      oc.BRepGProp.SurfaceProperties_1(f, pr, false, false);
+      const c = pr.CentreOfMass(); const y = c.Y();
+      try { c.delete(); } catch (e) {}
+      pr.delete();
+      found.push({ f, y });
+    } else f.delete();
+    exp.Next();
+  }
+  exp.delete();
+  if (!found.length) return null;
+  const order = found.slice().sort((a, b) => (b.y - a.y) > 1e-6 ? 1 : (a.y - b.y) > 1e-6 ? -1 : 0);
+  const pick = order[flip && order.length > 1 ? 1 : 0].f;
+  found.forEach(x => { if (x.f !== pick) x.f.delete(); });
+  return pick;
+}
+
+// Kante in Weltkoordinaten (die Kantenlisten liegen je nach Pfad lokal oder in Welt)
+function _edgeWorldPts(o, ed) {
+  const a = new THREE.Vector3(...ed.worldA), b = new THREE.Vector3(...ed.worldB);
+  if (!o.userData._dynEdgesWorld && !ed.brep) { o.updateMatrixWorld(true); a.applyMatrix4(o.matrixWorld); b.applyMatrix4(o.matrixWorld); }
+  return [a, b];
+}
+
+// Alle Segmente, die von Kante idx aus ohne Knick (< 20°) weiterlaufen. Nur
+// durch Punkte mit genau zwei Kanten — an echten Ecken (3+ Kanten) endet die Kette.
+function _edgeChainOf(o, idx) {
+  const dyn = o.userData._dynamicEdges || [];
+  const e0 = dyn[idx];
+  if (!_edgeTangentChain || !e0 || e0.rim || e0.brep) return [idx];
+  const P = dyn.map(ed => (ed && !ed.rim && !ed.brep) ? _edgeWorldPts(o, ed) : null);
+  const size = getMeshBox(o).getSize(new THREE.Vector3()).length() || 1;
+  const q = 1e-4 * size;
+  const key = v => Math.round(v.x / q) + ',' + Math.round(v.y / q) + ',' + Math.round(v.z / q);
+  const at = new Map();
+  P.forEach((p, i) => {
+    if (!p || p[0].distanceToSquared(p[1]) < 1e-12) return;
+    for (const k of [key(p[0]), key(p[1])]) { if (!at.has(k)) at.set(k, []); at.get(k).push(i); }
+  });
+  if (!P[idx] || P[idx][0].distanceToSquared(P[idx][1]) < 1e-12) return [idx];
+  const cosMax = Math.cos(20 * Math.PI / 180);
+  const seen = new Set([idx]);
+  const walk = (i, fromEnd) => {          // fromEnd: Index des Endpunkts, an dem es weitergeht
+    for (let guard = 0; guard < 20000; guard++) {
+      const p = P[i], v = p[fromEnd], other = p[1 - fromEnd];
+      const list = at.get(key(v)) || [];
+      if (list.length !== 2) return;
+      const j = list[0] === i ? list[1] : list[0];
+      if (seen.has(j)) return;
+      const pj = P[j];
+      const jStart = key(pj[0]) === key(v) ? 0 : 1;
+      const d1 = v.clone().sub(other).normalize(), d2 = pj[1 - jStart].clone().sub(v).normalize();
+      if (d1.dot(d2) < cosMax) return;
+      seen.add(j); i = j; fromEnd = 1 - jStart;
+    }
+  };
+  walk(idx, 0); walk(idx, 1);
+  return [...seen];
+}
+
+function _edgeSelHandleAt(o, i) {
+  const dyn = o.userData._dynamicEdges || [];
+  const e0 = dyn[i]; if (!e0) return;
+  const [wa, wb] = e0.rim ? [new THREE.Vector3(...e0.rim.cW), new THREE.Vector3(...e0.rim.cW)] : _edgeWorldPts(o, e0);
+  const mid = wa.clone().lerp(wb, 0.5);
+  if (wa.distanceTo(wb) < 0.001 && !e0.rim) {
+    const radius = o.userData._occtParams?.sx ?? o.scale.x;
+    const toCamera = camera.position.clone().sub(mid).normalize();
+    const circleDir = new THREE.Vector3(toCamera.x, 0, toCamera.z);
+    if (circleDir.lengthSq() > 0.01) mid.addScaledVector(circleDir.normalize(), radius);
+  }
+  _edgeBevelHandlePos = mid;
+  _edgeBevelDragVal = 0;
+}
+
+// Alle Kanten ganz oben am Körper (z. B. der Schneidrand einer Ausstechform)
+function _edgeSelectTop() {
+  const o = _edgeObj; if (!o || !_edgeMode) return;
+  const dyn = o.userData._dynamicEdges || [];
+  const bb = getMeshBox(o), top = bb.max.y;
+  const tol = Math.max(0.02, (bb.max.y - bb.min.y) * 0.01);
+  const plain = [], rims = [];
+  dyn.forEach((e, i) => {
+    if (!e) return;
+    if (e.rim) { if (e.rim.cW[1] >= top - tol) rims.push(i); return; }
+    const [a, b] = _edgeWorldPts(o, e);
+    if (a.y >= top - tol && b.y >= top - tol) plain.push(i);
+  });
+  // Lochränder laufen über einen eigenen Weg und schlucken eine gemischte
+  // Auswahl → bevorzugt die normalen Kanten, sonst die Ränder
+  const pick = plain.length ? plain : rims;
+  if (!pick.length) { notify('Oben gibt es keine Kante, die sich bearbeiten lässt.', 'w'); return; }
+  _edgeSel.clear(); pick.forEach(i => _edgeSel.add(i));
+  _updateEdgeColors();
+  _edgeSelHandleAt(o, pick[0]);
+  _fpCurType = null; updateFP();
+  notify(pick.length + ' obere Kante(n) gewählt — Griff ziehen: ← Fase | Rundung →'
+    + (plain.length && rims.length ? ' (Lochränder oben bitte einzeln)' : ''), 'ok');
+}
+
+// ─── Kanten-Liste ──────────────────────────────────────────────────────────
+function _edgeFeatGroups(o) {
+  const ops = (o && o.userData._occtParams && o.userData._occtParams.ops) || [];
+  const groups = [], byKey = new Map();
+  ops.forEach((op, i) => {
+    if (op.type !== 'chamfer' && op.type !== 'fillet' && op.type !== 'shell') return;
+    const k = op.type === 'shell' ? 'shell'
+      : (op.grp || (op.type + '|' + (+op.dist).toFixed(4) + '|' + (op.ang || 45) + '|' + (op.flip ? 1 : 0)));
+    let g = byKey.get(k);
+    if (!g) { g = { key: k, type: op.type, dist: op.dist, ang: op.ang || 45, flip: !!op.flip, thickness: op.thickness, idx: [] }; byKey.set(k, g); groups.push(g); }
+    g.idx.push(i);
+  });
+  return groups;
+}
+
+function _edgeFeatLabel(g) {
+  const mm = v => (Math.round(v * 100) / 10).toFixed(1).replace('.', ',');
+  if (g.type === 'shell') return 'Aushöhlung (' + mm(g.thickness) + ' mm Wand)';
+  const n = g.idx.length, kn = n + ' Kante' + (n !== 1 ? 'n' : '');
+  if (g.type === 'fillet') return 'Rundung ' + mm(g.dist) + ' mm · ' + kn;
+  return 'Fase ' + mm(g.dist) + ' mm' + (Math.abs(g.ang - 45) > 0.05 ? ' / ' + String(g.ang).replace('.', ',') + '°' : '') + ' · ' + kn;
+}
+
+function _edgeFeatListHTML(o) {
+  const gs = _edgeFeatGroups(o);
+  if (!gs.length) return '';
+  const esc = s => String(s).replace(/[&"'<>]/g, c => '&#' + c.charCodeAt(0) + ';');
+  let h = '<div class="fp-sep"></div><div class="fp-row"><span class="fp-lbl">Kantenbearbeitungen</span></div>';
+  for (const g of gs) {
+    const k = esc(g.key);
+    if (_edgeFeatEditKey === g.key && g.type !== 'shell') {
+      const mmV = (Math.round(g.dist * 100) / 10).toFixed(1).replace('.', ',');
+      h += `<div class="fp-row fp-efeat" data-key="${k}" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">` +
+        `<span class="fp-lbl" style="min-width:auto">${g.type === 'fillet' ? 'Radius' : 'Abstand'}</span>` +
+        `<input class="fp-inp" id="fp-efeat-mm" type="text" inputmode="decimal" value="${mmV}" style="width:52px" onkeydown="if(event.key==='Enter'){event.preventDefault();_edgeFeatEditApply()}"><span class="fp-unit">mm</span>` +
+        (g.type === 'chamfer'
+          ? `<span class="fp-lbl" style="min-width:auto">Winkel</span><input class="fp-inp" id="fp-efeat-ang" type="text" inputmode="decimal" value="${String(g.ang).replace('.', ',')}" style="width:40px" onkeydown="if(event.key==='Enter'){event.preventDefault();_edgeFeatEditApply()}"><span class="fp-unit">°</span>`
+          : '') +
+        `<button class="fp-btn" onclick="_edgeFeatEditApply()">OK</button><button class="fp-btn" onclick="_edgeFeatEditKey=null;_fpCurType=null;updateFP()">✕</button></div>`;
+    } else {
+      h += `<div class="fp-row fp-efeat" data-key="${k}" style="display:flex;gap:4px;align-items:center">` +
+        `<span class="fp-lbl" style="flex:1;min-width:0;font-size:12px">${esc(_edgeFeatLabel(g))}</span>` +
+        (g.type !== 'shell' ? `<button class="fp-btn" title="Maß dieser Bearbeitung ändern — die übrigen bleiben" onclick="_edgeFeatEditStart(this.closest('.fp-efeat').dataset.key)">Ändern</button>` : '') +
+        `<button class="fp-btn" title="Nur diese Bearbeitung zurücknehmen — die übrigen bleiben" onclick="_edgeFeatRemove(this.closest('.fp-efeat').dataset.key)">Zurücknehmen</button></div>`;
+    }
+  }
+  return h;
+}
+
+function _edgeFeatEditStart(key) {
+  _edgeFeatEditKey = key; _fpCurType = null; updateFP();
+  setTimeout(() => { const i = document.getElementById('fp-efeat-mm'); if (i) { i.focus(); i.select(); } }, 0);
+}
+
+async function _edgeFeatEditApply() {
+  const o = _edgeObj || getFirst(); if (!o) return;
+  const g = _edgeFeatGroups(o).find(x => x.key === _edgeFeatEditKey);
+  if (!g) { _edgeFeatEditKey = null; _fpCurType = null; updateFP(); return; }
+  const mm = parseFloat(String(document.getElementById('fp-efeat-mm')?.value || '').replace(',', '.'));
+  if (!(mm > 0) || mm > 1000) { notify('Bitte ein Maß in mm eingeben, z. B. 2 oder 1,5', 'w'); return; }
+  let ang = g.ang;
+  if (g.type === 'chamfer') {
+    const a = parseFloat(String(document.getElementById('fp-efeat-ang')?.value || '45').replace(',', '.'));
+    if (!(a >= 10 && a <= 80)) { notify('Fasen-Winkel bitte zwischen 10° und 80°', 'w'); return; }
+    ang = a;
+  }
+  const ops = JSON.parse(JSON.stringify(o.userData._occtParams.ops));
+  g.idx.forEach(i => {
+    ops[i].dist = mm / 10;
+    if (g.type === 'chamfer') { if (Math.abs(ang - 45) > 0.05) ops[i].ang = ang; else delete ops[i].ang; }
+  });
+  _edgeFeatEditKey = null;
+  const res = await _edgeOpsRebuild(o, ops);
+  notify(res ? (g.type === 'fillet' ? 'Rundung' : 'Fase') + ' geändert: ' + String(mm).replace('.', ',') + ' mm'
+             : 'Mit diesem Maß geht es an diesen Kanten nicht — nichts geändert.', res ? 'ok' : 'w');
+}
+
+async function _edgeFeatRemove(key) {
+  const o = _edgeObj || getFirst(); if (!o) return;
+  const g = _edgeFeatGroups(o).find(x => x.key === key); if (!g) return;
+  const drop = new Set(g.idx);
+  const ops = JSON.parse(JSON.stringify(o.userData._occtParams.ops)).filter((op, i) => !drop.has(i));
+  const label = _edgeFeatLabel(g);
+  const res = await _edgeOpsRebuild(o, ops);
+  notify(res ? 'Zurückgenommen: ' + label : 'Ohne diese Bearbeitung lässt sich der Körper nicht neu rechnen — nichts geändert.', res ? 'ok' : 'w');
+}
+
+// Körper mit einer geänderten Op-Liste aus der Grundform neu rechnen.
+// Erfolg → neues Objekt (an Stelle des alten, mit Undo), sonst null + unverändert.
+async function _edgeOpsRebuild(o, ops) {
+  const P = o && o.userData._occtParams;
+  const occtShape = o && o.userData.occtShape;
+  if (!P || !occtShape) return null;
+  const warKanten = _edgeMode && _edgeObj === o;
+  let oc, base = null, r = null;
+  try {
+    if (!_oc && !_ocLoadPromise) notify('OCCT wird geladen…', 'ok');
+    oc = await _loadOCCT();
+    const { sx, sy, sz, geoOff } = P;
+    base = _buildOCCTBaseShape(oc, occtShape, sx, sy, sz,
+      occtShape === 'polygon' ? (o.userData.segments || 6) : null,
+      o.userData.coneTop || 0, o.userData.coneFlip, o.userData._brep);
+    r = _replayOCCTOps(oc, base, ops, sx, sy, sz);
+    if (!r.opOk) return null;
+    const geo = _occtShapeToThreeGeo(oc, r.shape, geoOff);
+    saveUndo();
+    if (warKanten) exitEdgeMode();
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(o.userData.color || '#0078ff'),
+      roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide
+    });
+    const result = new THREE.Mesh(geo, mat);
+    result.castShadow = true; result.receiveShadow = true;
+    result.userData = { ...o.userData, type: 'custom', shapeType: 'custom', occtShape,
+      _occtParams: { sx, sy, sz, geoOff, ops: r.ops || ops } };
+    delete result.userData.wasBox;
+    delete result.userData.edgeBevels;
+    delete result.userData._dynamicEdges;
+    if (occtShape === 'brep') {
+      try {
+        const rl = _brepEdgeList(oc, r.shape, geoOff);
+        result.userData._brepEdges = rl.edges;
+        result.userData._brepEdgesTotal = rl.gesamt;
+        result.userData._brepGeo = result.geometry;
+      } catch (e) { console.warn('[brep] Kantenliste nach dem Neurechnen:', e); }
+    }
+    const ii = objects.indexOf(o);
+    if (ii >= 0) objects[ii] = result;
+    scene.remove(o); scene.add(result);
+    _updateObjEdgeLines(result);
+    selectObjs([result]);
+    if (warKanten) enterEdgeMode(true);
+    _fpCurType = null; updateFP();
+    updateTree();
+    return result;
+  } catch (e) {
+    console.warn('[kanten-liste] Neurechnen fehlgeschlagen:', e);
+    return null;
+  } finally {
+    try { if (r && r.shape && r.shape !== base) r.shape.delete(); } catch (e) {}
+    try { if (base && occtShape !== 'brep') base.delete(); } catch (e) {}
+  }
 }
 
 function applyGlobalChamfer(mesh, chamferDist) {
@@ -30005,8 +30435,9 @@ canvas.addEventListener('mousedown', e => {
     if (!_edgeGlobal) {
       const _pick = _edgePickIdx(e), idx = _pick.idx;
       if (idx >= 0) {
-        if (e.shiftKey) { if (_edgeSel.has(idx)) _edgeSel.delete(idx); else _edgeSel.add(idx); }
-        else { _edgeSel.clear(); _edgeSel.add(idx); }
+        const _chain = _edgeChainOf(_edgeObj, idx);   // glatt weiterlaufende Stücke mit
+        if (e.shiftKey) { const _off = _edgeSel.has(idx); _chain.forEach(i => _off ? _edgeSel.delete(i) : _edgeSel.add(i)); }
+        else { _edgeSel.clear(); _chain.forEach(i => _edgeSel.add(i)); }
         _updateEdgeColors();
         if (_edgeObj.userData._dynamicEdges) {
           const edge = _edgeObj.userData._dynamicEdges[idx];
@@ -34734,7 +35165,7 @@ function _dedDown(e) {
     const r = _edgePickIdx(e);
     if (r.idx < 0 || !r.pw) return;
     e.stopPropagation(); e.preventDefault();
-    if (!(_edgeSel.has(r.idx) && _edgeSel.size > 1)) { _edgeSel.clear(); _edgeSel.add(r.idx); }
+    if (!(_edgeSel.has(r.idx) && _edgeSel.size > 1)) { _edgeSel.clear(); _edgeChainOf(_edgeObj, r.idx).forEach(i => _edgeSel.add(i)); }
     _edgeHover = -1; _updateEdgeColors();
     _edgeBevelHandlePos = r.pw.clone();
     _fpCurType = null; updateFP();
@@ -62775,8 +63206,14 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.183';
+const VOLME3D_VERSION = '1.18.184';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.184', date:'2026-10-14', changes:[
+    ['📐','<b>Fase mit Winkel:</b> im Kanten-Modus gibt es jetzt den <b>Fasen-Winkel</b> – 45° ist die gleichmäßige Fase, andere Winkel machen sie flacher oder steiler (z. B. 30° für eine flache Anlaufschräge). Das Maß gilt auf der oberen Fläche, mit einem Häkchen auf der anderen.'],
+    ['⬆','<b>Obere Kanten</b> mit einem Klick wählen – praktisch für Ausstechformen, Deckel und Schilder. Und an Skizzen-Körpern und Importen wählt ein Klick einen <b>ganzen Bogen</b> statt nur eines kleinen Stücks.'],
+    ['📋','<b>Kantenbearbeitungen einzeln ändern:</b> Im Kanten-Modus stehen alle Fasen und Rundungen eines Teils in einer Liste. <b>Ändern</b> setzt ein neues Maß, <b>Zurücknehmen</b> entfernt genau diese eine – die übrigen bleiben.'],
+    ['╭','<b>Skizze: Ecke runden / Ecke fasen.</b> Ecke anklicken, an der zwei Linien zusammenstoßen – das Maß tippst du im Feld am Zeiger. Geht auch an Knicken von SVG-Umrissen; Strg+Z nimmt die Ecke zurück. Dabei behoben: Sehr kleine Fasen/Rundungen ließen die Kontur manchmal falsch zusammenlaufen.'],
+  ]},
   { version:'1.18.183', date:'2026-10-12', changes:[
     ['⭐','<b>Belohnungstafel wie die Vorlage:</b> unten ein Namenskärtchen mit <b>Name, Sterne-Ziel und Belohnung</b> – für bis zu <b>3 Kinder</b>, jedes mit eigenen Markern (Stern, Herz oder Sonne). Daneben das Feld <b>„Meine Sterne“</b>, in dem die Marker warten. Neues Symbol <b>Uhr</b> für „Pünktlich sein“; Wochentage jetzt ausgeschrieben.'],
   ]},
@@ -68110,7 +68547,17 @@ function _fpBuildRows(type, o) {
         `<div class="fp-row"><span class="fp-lbl" style="color:#aaa;font-size:11px">Knick-Winkel wählt nur aus, welche Kanten anklickbar sind — er rundet nicht.</span></div>` : '') +
       (isMeshEdges ? `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="exitEdgeMode();_openRoundModal()" title="Alle scharfen Außenkanten auf einmal runden — auch bei importierten Netzen">⬤ Alles abrunden</button></div>` : '') +
       `<div class="fp-row fp-edge-row"><button class="fp-btn" onclick="_edgeSelectAll()" title="Alle scharfen Kanten auf einmal auswählen — Handle ziehen wirkt dann auf alle">☑ Alle Kanten</button>` +
-      `<button class="fp-btn" onclick="exitEdgeMode()">Fertig</button></div>`;
+      `<button class="fp-btn" onclick="_edgeSelectTop()" title="Nur die Kanten ganz oben am Körper wählen — z. B. den Rand einer Ausstechform oder eines Deckels">⬆ Obere Kanten</button>` +
+      `<button class="fp-btn" onclick="exitEdgeMode()">Fertig</button></div>` +
+      (isMeshEdges ? `<label class="fp-check-lbl" title="Gerundete Ecken an Skizzen und Importen bestehen aus vielen kurzen Stücken — so reicht ein Klick für den ganzen Bogen"><input type="checkbox" ${_edgeTangentChain ? 'checked' : ''} onchange="_edgeSetTangentChain(this.checked)"> Klick wählt glatt anschließende Kanten mit</label>` : '') +
+      // Fase mit Winkel geht nur über den Geometrie-Kern (Quader, Keil, Vieleck, STEP …)
+      ((o.userData._occtParams || _ebPrevOcctParams(o)) && o.userData.shapeType !== 'cylinder' && o.userData.shapeType !== 'cone' && o.userData.shapeType !== 'tube'
+        ? '<div class="fp-sep"></div>' +
+          row('Fasen-Winkel', 'fp-edge-chang', _edgeChamferAngle, '_edgeSetChamferAngle(this.value)', '°', 10, 80, 5) +
+          `<label class="fp-check-lbl" title="Der Abstand wird auf einer der beiden Flächen an der Kante gemessen — normalerweise auf der oberen. Hiermit auf der anderen."><input type="checkbox" ${_edgeChamferFlip ? 'checked' : ''} onchange="_edgeSetChamferFlip(this.checked)"> Abstand auf der anderen Fläche messen</label>` +
+          `<div class="fp-row"><span class="fp-lbl" style="color:#aaa;font-size:11px">45° = gleichmäßige Fase. Andere Winkel: Abstand auf der Fläche, Winkel dazu — gilt für die nächste Fase.</span></div>`
+        : '') +
+      _edgeFeatListHTML(o);
   }
 
   if (isBoxGeom && _edgeMode && _edgeObj === o && o.userData.edgeBevels) {
