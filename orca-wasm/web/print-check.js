@@ -59,42 +59,45 @@ const r2 = v => Math.round(v * 100) / 100;
 const de = (v, n = 2) => (Math.round(v * 10 ** n) / 10 ** n).toString().replace('.', ',');
 
 // Lesbare Namen + Fundort in Bambu Studio / OrcaSlicer
+// Name = genau wie im deutschen Bambu Studio (aus dessen Übersetzung abgelesen), damit man
+// ihn dort findet; wo Studio deutsch ist, steht der englische Fachbegriff (OrcaSlicer,
+// englische Anleitungen) in Klammern dahinter. Plattennamen lässt Studio englisch.
 export const LABELS = {
-  nozzle_temperature: ['Düsentemperatur', 'Filament › Drucktemperatur › Düse › Andere Schichten'],
-  nozzle_temperature_initial_layer: ['Düsentemperatur erste Schicht', 'Filament › Drucktemperatur › Düse › Erste Schicht'],
-  cool_plate_temp: ['Betttemperatur (Cool Plate)', 'Filament › Druckbetttemperatur › Andere Schichten'],
-  eng_plate_temp: ['Betttemperatur (Engineering Plate)', 'Filament › Druckbetttemperatur › Andere Schichten'],
-  hot_plate_temp: ['Betttemperatur (glatte PEI)', 'Filament › Druckbetttemperatur › Andere Schichten'],
-  textured_plate_temp: ['Betttemperatur (texturierte PEI)', 'Filament › Druckbetttemperatur › Andere Schichten'],
-  supertack_plate_temp: ['Betttemperatur (SuperTack)', 'Filament › Druckbetttemperatur › Andere Schichten'],
-  textured_cool_plate_temp: ['Betttemperatur (strukturierte Cool Plate)', 'Filament › Druckbetttemperatur › Andere Schichten'],
-  cool_plate_temp_initial_layer: ['Betttemperatur erste Schicht (Cool Plate)', 'Filament › Druckbetttemperatur › Erste Schicht'],
-  eng_plate_temp_initial_layer: ['Betttemperatur erste Schicht (Engineering Plate)', 'Filament › Druckbetttemperatur › Erste Schicht'],
-  hot_plate_temp_initial_layer: ['Betttemperatur erste Schicht (glatte PEI)', 'Filament › Druckbetttemperatur › Erste Schicht'],
-  textured_plate_temp_initial_layer: ['Betttemperatur erste Schicht (texturierte PEI)', 'Filament › Druckbetttemperatur › Erste Schicht'],
-  supertack_plate_temp_initial_layer: ['Betttemperatur erste Schicht (SuperTack)', 'Filament › Druckbetttemperatur › Erste Schicht'],
-  textured_cool_plate_temp_initial_layer: ['Betttemperatur erste Schicht (strukt. Cool Plate)', 'Filament › Druckbetttemperatur › Erste Schicht'],
-  curr_bed_type: ['Druckplatte', 'Plattenauswahl oben im Slicer (in Bambu Studio englisch, z. B. „Textured PEI Plate“)'],
-  layer_height: ['Schichthöhe', 'Prozess › Qualität › Schichthöhe'],
-  initial_layer_print_height: ['Höhe der ersten Schicht', 'Prozess › Qualität › Schichthöhe'],
-  line_width: ['Linienbreite (Standard)', 'Prozess › Qualität › Breite der Linie'],
-  outer_wall_line_width: ['Linienbreite Außenwand', 'Prozess › Qualität › Breite der Linie'],
-  inner_wall_line_width: ['Linienbreite Innenwand', 'Prozess › Qualität › Breite der Linie'],
-  initial_layer_line_width: ['Linienbreite erste Schicht', 'Prozess › Qualität › Breite der Linie'],
-  sparse_infill_line_width: ['Linienbreite Füllung', 'Prozess › Qualität › Breite der Linie'],
-  top_surface_line_width: ['Linienbreite Oberfläche', 'Prozess › Qualität › Breite der Linie'],
-  enable_support: ['Stützen', 'Prozess › Stützen › Stützstrukturen aktivieren'],
-  support_type: ['Stützentyp', 'Prozess › Stützen › Typ'],
-  brim_type: ['Umrandung (Brim)', 'Prozess › Sonstige › Umrandung › Randtyp'],
-  brim_width: ['Randbreite', 'Prozess › Sonstige › Umrandung › Randbreite'],
-  wall_generator: ['Wandgenerator', 'Prozess › Qualität › Wandgenerator'],
-  wall_loops: ['Wandlinien', 'Prozess › Stärke › Wände › Wandlinien'],
-  top_shell_layers: ['Obere Schalenschichten', 'Prozess › Stärke › Obere/Untere Schichten'],
-  bottom_shell_layers: ['Untere Schalenschichten', 'Prozess › Stärke › Obere/Untere Schichten'],
-  sparse_infill_density: ['Fülldichte', 'Prozess › Stärke › Füllung › Fülldichte'],
-  fan_min_speed: ['Lüfter min.', 'Filament › Kühlung › Bauteillüfter'],
-  fan_max_speed: ['Lüfter max.', 'Filament › Kühlung › Bauteillüfter'],
-  enable_overhang_speed: ['Bei Überhängen verlangsamen', 'Prozess › Geschwindigkeit › Verlangsamen bei Überhängen'],
+  nozzle_temperature: ['Düsentemperatur (Nozzle temperature)', 'Filament › Drucktemperatur › Düse › Andere Schichten'],
+  nozzle_temperature_initial_layer: ['Düsentemperatur erste Schicht (Initial layer)', 'Filament › Drucktemperatur › Düse › Erste Schicht'],
+  cool_plate_temp: ['Druckbetttemperatur Cool Plate', 'Filament › Druckbetttemperatur › Andere Schichten'],
+  eng_plate_temp: ['Druckbetttemperatur Engineering Plate', 'Filament › Druckbetttemperatur › Andere Schichten'],
+  hot_plate_temp: ['Druckbetttemperatur Smooth PEI Plate / High Temp Plate', 'Filament › Druckbetttemperatur › Andere Schichten'],
+  textured_plate_temp: ['Druckbetttemperatur Textured PEI Plate', 'Filament › Druckbetttemperatur › Andere Schichten'],
+  supertack_plate_temp: ['Druckbetttemperatur Cool Plate (SuperTack)', 'Filament › Druckbetttemperatur › Andere Schichten'],
+  textured_cool_plate_temp: ['Druckbetttemperatur Textured Cool Plate', 'Filament › Druckbetttemperatur › Andere Schichten'],
+  cool_plate_temp_initial_layer: ['Druckbetttemperatur erste Schicht Cool Plate', 'Filament › Druckbetttemperatur › Erste Schicht'],
+  eng_plate_temp_initial_layer: ['Druckbetttemperatur erste Schicht Engineering Plate', 'Filament › Druckbetttemperatur › Erste Schicht'],
+  hot_plate_temp_initial_layer: ['Druckbetttemperatur erste Schicht Smooth PEI Plate / High Temp Plate', 'Filament › Druckbetttemperatur › Erste Schicht'],
+  textured_plate_temp_initial_layer: ['Druckbetttemperatur erste Schicht Textured PEI Plate', 'Filament › Druckbetttemperatur › Erste Schicht'],
+  supertack_plate_temp_initial_layer: ['Druckbetttemperatur erste Schicht Cool Plate (SuperTack)', 'Filament › Druckbetttemperatur › Erste Schicht'],
+  textured_cool_plate_temp_initial_layer: ['Druckbetttemperatur erste Schicht Textured Cool Plate', 'Filament › Druckbetttemperatur › Erste Schicht'],
+  curr_bed_type: ['Druckplatte (Plate type)', 'Plattenauswahl oben im Slicer'],
+  layer_height: ['Schichthöhe (Layer height)', 'Prozess › Qualität › Schichthöhe'],
+  initial_layer_print_height: ['Höhe der ersten Schicht (Initial layer height)', 'Prozess › Qualität › Schichthöhe'],
+  line_width: ['Breite der Linie › Standard (Line width › Default)', 'Prozess › Qualität › Breite der Linie'],
+  outer_wall_line_width: ['Breite der Linie › Außenwand (Outer wall)', 'Prozess › Qualität › Breite der Linie'],
+  inner_wall_line_width: ['Breite der Linie › Innere Wand (Inner wall)', 'Prozess › Qualität › Breite der Linie'],
+  initial_layer_line_width: ['Breite der Linie › Erste Schicht (Initial layer)', 'Prozess › Qualität › Breite der Linie'],
+  sparse_infill_line_width: ['Breite der Linie › Füllung (Sparse infill)', 'Prozess › Qualität › Breite der Linie'],
+  top_surface_line_width: ['Breite der Linie › Oberfläche (Top surface)', 'Prozess › Qualität › Breite der Linie'],
+  enable_support: ['Stützstrukturen aktivieren (Enable support)', 'Prozess › Stützen'],
+  support_type: ['Stützen › Typ (Support type)', 'Prozess › Stützen › Typ'],
+  brim_type: ['Randtyp (Brim type)', 'Prozess › Sonstige › Umrandung'],
+  brim_width: ['Randbreite (Brim width)', 'Prozess › Sonstige › Umrandung'],
+  wall_generator: ['Wandgenerator (Wall generator)', 'Prozess › Qualität › Wandgenerator'],
+  wall_loops: ['Wandlinien (Wall loops)', 'Prozess › Stärke › Wände'],
+  top_shell_layers: ['Obere Schalenschichten (Top shell layers)', 'Prozess › Stärke › Obere/Untere Schichten'],
+  bottom_shell_layers: ['Untere Schalenschichten (Bottom shell layers)', 'Prozess › Stärke › Obere/Untere Schichten'],
+  sparse_infill_density: ['Fülldichte (Sparse infill density)', 'Prozess › Stärke › Füllung'],
+  fan_min_speed: ['Min fan speed', 'Filament › Kühlung › Bauteillüfter'],
+  fan_max_speed: ['Max fan speed', 'Filament › Kühlung › Bauteillüfter'],
+  enable_overhang_speed: ['Verlangsamen bei Überhängen (Slow down for overhang)', 'Prozess › Geschwindigkeit'],
 };
 // Weitere deutsche Namen (Slicer: aus params.json; Standalone: von bauen.py eingebettet)
 let EXTRA_LABELS = {};
@@ -116,14 +119,13 @@ export function keyWhere(key) { return (LABELS[key] || [, ''])[1]; }
 
 // Anzeige-Werte (Enums)
 const ENUM_DE = {
-  'tree(auto)': 'Baum (automatisch)', 'normal(auto)': 'Normal (automatisch)',
-  'tree(manual)': 'Baum (manuell)', 'normal(manual)': 'Normal (manuell)',
-  auto_brim: 'Automatisch', outer_only: 'Nur äußerer Rand', no_brim: 'Keine Umrandung', brim_ears: 'Mausohren',
-  inner_only: 'Nur innerer Rand', outer_and_inner: 'Äußerer und innerer Rand', painted: 'Bemalt',
-  'Smooth PEI Plate': 'Glatte PEI (High Temp)', 'Cool Plate (SuperTack)': 'SuperTack',
-  arachne: 'Arachne', classic: 'Klassisch',
-  'Textured PEI Plate': 'Texturierte PEI', 'Cool Plate': 'Cool Plate', 'High Temp Plate': 'Glatte PEI (High Temp)',
-  'Engineering Plate': 'Engineering Plate', 'Supertack Plate': 'SuperTack', 'Textured Cool Plate': 'Strukt. Cool Plate',
+  'tree(auto)': 'Tree(auto)', 'normal(auto)': 'Normal(auto)', 'tree(manual)': 'Tree(manual)', 'normal(manual)': 'Normal(manual)',
+  auto_brim: 'Automatisch (Auto)', outer_only: 'Nur äußerer Rand (Outer brim only)', no_brim: 'Keine Umrandung (No-brim)', brim_ears: 'Mouse ear',
+  inner_only: 'Nur innerer Rand (Inner brim only)', outer_and_inner: 'Äußerer und innerer Rand (Outer and inner brim)', painted: 'Bemalt (Painted)',
+  arachne: 'Arachne', classic: 'Klassisch (Classic)',
+  'Textured PEI Plate': 'Textured PEI Plate', 'Cool Plate': 'Cool Plate', 'High Temp Plate': 'Smooth PEI Plate / High Temp Plate',
+  'Smooth PEI Plate': 'Smooth PEI Plate / High Temp Plate', 'Engineering Plate': 'Engineering Plate', 'Supertack Plate': 'Cool Plate (SuperTack)',
+  'Cool Plate (SuperTack)': 'Cool Plate (SuperTack)', 'Textured Cool Plate': 'Textured Cool Plate',
 };
 export function valueText(key, v) {
   const s = String(v ?? '');
@@ -167,12 +169,12 @@ export function materialFamily(type) {
 // curr_bed_type (Orca-, Bambu- und V3D-Slicer-Schreibweisen) → Kurzname + Temperatur-Schlüssel
 export function bedInfo(bedType) {
   const b = String(bedType || '').toLowerCase();
-  if (/supertack/.test(b)) return { kind: 'tack', key: 'supertack_plate_temp', name: 'SuperTack' };
-  if (/textured cool/.test(b)) return { kind: 'texcool', key: 'textured_cool_plate_temp', name: 'strukturierte Cool Plate' };
+  if (/supertack/.test(b)) return { kind: 'tack', key: 'supertack_plate_temp', name: 'Cool Plate (SuperTack)' };
+  if (/textured cool/.test(b)) return { kind: 'texcool', key: 'textured_cool_plate_temp', name: 'Textured Cool Plate' };
   if (/cool/.test(b)) return { kind: 'cool', key: 'cool_plate_temp', name: 'Cool Plate' };
   if (/eng/.test(b)) return { kind: 'eng', key: 'eng_plate_temp', name: 'Engineering Plate' };
-  if (/high temp|smooth/.test(b)) return { kind: 'hot', key: 'hot_plate_temp', name: 'glatte PEI (High Temp)' };
-  return { kind: 'tex', key: 'textured_plate_temp', name: 'texturierte PEI' };
+  if (/high temp|smooth/.test(b)) return { kind: 'hot', key: 'hot_plate_temp', name: 'Smooth PEI Plate / High Temp Plate' };
+  return { kind: 'tex', key: 'textured_plate_temp', name: 'Textured PEI Plate' };
 }
 
 // ---------------------------------------------------------------------------
@@ -844,7 +846,7 @@ export function checkSettings(cfg, ctx = {}) {
     const plateBad = M && M.bed[bed.kind] === null;
     if ((has(cfg, bed.key) && plateT === 0) || plateBad) {
       add(LEVEL.ERROR, 'Material', 'platte' + fi, `${mat} hält nicht auf der ${bed.name}${tag}`,
-        plateBad ? `${fam} haftet auf dieser Platte schlecht bzw. beschädigt sie. Texturierte PEI ist die sichere Wahl.`
+        plateBad ? `${fam} haftet auf dieser Platte schlecht bzw. beschädigt sie. Die Textured PEI Plate ist die sichere Wahl.`
                  : `Das Filamentprofil hat für diese Platte 0 °C hinterlegt = nicht freigegeben. Bambu verweigert den Druck oder er löst sich.`,
         [{ key: 'curr_bed_type', value: 'Textured PEI Plate' }]);
     } else if (M && M.bed[bed.kind] && Number.isFinite(plateT)) {
@@ -982,17 +984,17 @@ export function checkSettings(cfg, ctx = {}) {
       const fussLoc = { m: mi, pts: [[(m.bbox[0] + m.bbox[3]) / 2, (m.bbox[1] + m.bbox[4]) / 2, m.bbox[2]]] };
       if (m.contact < 1 && h > 2) {
         add(LEVEL.WARN, 'Haftung', 'keinfuss', `${nm}Modell steht kaum auf der Platte`,
-          `Es berührt die Platte nur punktuell (${de(m.contact, 1)} mm²). Flache Seite nach unten drehen (Auto-Ausrichten) oder mit Rand + Stützen drucken.`,
+          `Es berührt die Platte nur punktuell (${de(m.contact, 1)} mm²). Flache Seite nach unten drehen („Automatische Orientierung“) oder mit Brim + Stützen drucken.`,
           brim === 'no_brim' ? [{ key: 'brim_type', value: 'outer_only' }, { key: 'brim_width', value: '5' }] : [], fussLoc);
         return;
       }
       if (h / foot > 4 && h > 25 && brim === 'no_brim')
         add(LEVEL.WARN, 'Haftung', 'kippen', `${nm}Hoher, schmaler Turm kann umkippen`,
-          `${de(h, 0)} mm hoch auf nur ${de(foot, 1)} mm Fuß: löst sich beim Drucken leicht. Ein Rand vergrößert die Haftfläche.`,
+          `${de(h, 0)} mm hoch auf nur ${de(foot, 1)} mm Fuß: löst sich beim Drucken leicht. Ein Brim (Umrandung) vergrößert die Haftfläche.`,
           [{ key: 'brim_type', value: 'outer_only' }, { key: 'brim_width', value: '5' }], { m: mi, pts: [mid(m)] });
       else if (fam0 && MAT[fam0].warp && Math.max(cw, cd) > 80 && brim === 'no_brim')
         add(LEVEL.WARN, 'Haftung', 'warping', `${nm}Ecken können sich hochziehen (${fam0}, Warping)`,
-          `${de(Math.max(cw, cd), 0)} mm Standfläche: ${fam0} zieht sich beim Abkühlen zusammen, die Ecken heben sich. Rand + geschlossene Kammer helfen.`,
+          `${de(Math.max(cw, cd), 0)} mm Standfläche: ${fam0} zieht sich beim Abkühlen zusammen, die Ecken heben sich. Brim (Umrandung) + geschlossene Kammer helfen.`,
           [{ key: 'brim_type', value: 'outer_only' }, { key: 'brim_width', value: '5' }], fussLoc);
     });
 
@@ -1020,7 +1022,7 @@ export function checkSettings(cfg, ctx = {}) {
       const up = models.reduce((s, m) => s + m.upArea, 0), gentle = models.reduce((s, m) => s + m.gentleUp, 0);
       if (up > 0 && gentle / up > 0.15 && gentle > 200)
         add(LEVEL.INFO, 'Qualität', 'treppe', `Treppenstufen auf flachen Schrägen sichtbar`,
-          `${Math.round(gentle / up * 100)} % der Oberseiten sind flach geneigt (3–25°). Feinere Schichten${ctx.inSlicer ? ' oder adaptive Schichthöhe [A]' : ''} glätten das, kosten aber Zeit.`,
+          `${Math.round(gentle / up * 100)} % der Oberseiten sind flach geneigt (3–25°). Kleinere Schichthöhe${ctx.inSlicer ? ' oder adaptive Schichthöhe [A]' : ' oder „Variable Schichthöhe“'} glätten das, kosten aber Zeit.`,
           [{ key: 'layer_height', value: String(r2(Math.max(0.08, Math.round(d * 0.3 / 0.02) * 0.02))) }]);
     }
 
