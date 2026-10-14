@@ -28,7 +28,7 @@ try {
       _advSet(m); _symToggle(true);
       const btns = [..._symButtons()];
       const ohne = btns.filter(b => !b.querySelector('svg')).map(b => b.getAttribute('onclick') + ' ' + b.textContent.trim());
-      const ohneTitel = btns.filter(b => b.querySelector('svg') && !(b.title || '').trim()).length;
+      const ohneTitel = btns.filter(b => b.querySelector('svg') && !(b.dataset.symName || '').trim()).length;
       const groups = [...document.querySelectorAll('#tb-r1 > .tbg')].filter(g => g.offsetParent).map(g => ({ g: g.dataset.g, c: getComputedStyle(g.querySelector('.tbg-row')).borderTopColor }));
       return { n: btns.length, ohne, ohneTitel, groups, h: document.getElementById('tb-r1').offsetHeight, sw: document.getElementById('sym-sw').classList.contains('on') };
     }, mode);
@@ -40,6 +40,18 @@ try {
     await pg.mouse.move(5, 300);
     await pg.screenshot({ path: `/tmp/sym_${mode}.png`, clip: { x: 0, y: 0, width: 1440, height: 260 } });
   }
+
+  console.log('\n=== Tooltip mit der Maus ===');
+  await pg.evaluate(() => { _advSet('beginner'); _symToggle(true); });
+  const bb = await pg.locator('#tb-r1 button[onclick="unionSelected()"]').boundingBox();
+  await pg.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
+  await pg.waitForTimeout(500);
+  const tip = await pg.evaluate(() => { const t = document.getElementById('sym-tip'); return t && t.style.display === 'block' ? t.innerText : null; });
+  ok('Tooltip nach kurzem Verweilen: Name + Erklärung', !!tip && /^Vereinen/.test(tip) && tip.length > 15, tip);
+  await pg.screenshot({ path: '/tmp/sym_tip.png', clip: { x: 0, y: 0, width: 1000, height: 200 } });
+  await pg.mouse.move(700, 600); await pg.waitForTimeout(300);
+  ok('Tooltip verschwindet beim Weggehen', await pg.evaluate(() => document.getElementById('sym-tip').style.display === 'none'));
+  ok('kein Browser-title doppelt', await pg.evaluate(() => !document.querySelector('#tb-r1 .btn.symb[title]')));
 
   console.log('\n=== Funktion bleibt: Würfel + Rückgängig per Symbol ===');
   const n0 = await pg.evaluate(() => { _advSet('beginner'); _newCreate(false); addShape('box'); return objects.length; });
@@ -63,6 +75,13 @@ try {
   await pg.setViewportSize({ width: 1280, height: 800 });
   await pg.waitForTimeout(300);
   await pg.screenshot({ path: '/tmp/sym_1280.png', clip: { x: 0, y: 0, width: 1280, height: 260 } });
+
+  console.log('\n=== schmal (780 px): Überschriften bleiben ===');
+  await pg.setViewportSize({ width: 780, height: 900 });
+  await pg.waitForTimeout(300);
+  const hd = await pg.evaluate(() => [...document.querySelectorAll('#tb-r1 > .tbg')].filter(g => g.offsetParent).map(g => getComputedStyle(g.querySelector('.tbg-l')).display));
+  ok('alle Gruppen-Überschriften sichtbar', hd.length > 0 && hd.every(d => d !== 'none'), hd);
+  await pg.screenshot({ path: '/tmp/sym_780.png', clip: { x: 0, y: 0, width: 780, height: 330 } });
   await pg.evaluate(() => _symToggle(false));
 
   ok('keine Seitenfehler', errs.length === 0, errs);

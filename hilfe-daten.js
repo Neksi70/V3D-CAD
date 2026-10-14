@@ -52,7 +52,7 @@ window.V3D_HILFE = [
   { b: 'Erste Schritte', i: '▦', t: 'Symbole statt Text', k: 'symbole piktogramme icons symbolleiste aufgeräumt kompakt text leiste gruppen',
     was: 'Zeigt die Werkzeuge oben als schlichte Symbole in farbig umrandeten Gruppen statt mit Text — viel aufgeräumter, meist passt alles in eine Zeile. Geht in Beginner und Advanced.',
     wo: 'Oben in der schwarzen Leiste rechts neben Beginner | Advanced: <b>SYMBOLE</b>.',
-    s: ['Auf <b>SYMBOLE</b> klicken.', 'Maus kurz über ein Symbol halten — Name und Erklärung erscheinen.', 'Nochmal <b>SYMBOLE</b> = wieder mit Text. Die Wahl wird gemerkt.'],
+    s: ['Auf <b>SYMBOLE</b> klicken.', 'Maus über ein Symbol halten — Name und Erklärung erscheinen. Am Handy/Tablet: <b>lange drücken</b> erklärt, ohne auszuführen.', 'Nochmal <b>SYMBOLE</b> = wieder mit Text. Die Wahl wird gemerkt.'],
     run: '_symToggle()' },
   { b: 'Erste Schritte', i: '🔍', t: 'Befehl suchen', k: 'suche befehl finden strg k palette',
     was: 'Jede Funktion in Sekunden finden und starten, ohne zu wissen, wo sie steckt.',
