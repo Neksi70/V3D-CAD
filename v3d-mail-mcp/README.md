@@ -61,3 +61,27 @@ Termine sind sofort fest. Serientermine löschen nur mit `confirm_series=true`; 
 Termin steht zusätzlich in `DATA_DIR/familie-geloescht.jsonl`. Feiertage/Schulferien NRW
 kommen in `familie_list_events` als `read_only` mit. Pfad per `FAMILIE_DIR` änderbar.
 Präfix `familie_`, weil `list_events` usw. schon für den Mail-Kalender (CalDAV) vergeben sind.
+
+## Server-Browser (seit 14.10.2026)
+
+Claude Chat/Cowork bekommt über diesen Connector einen eigenen, unsichtbaren Chrome auf V3DA
+(nicht Volkers PC-Browser, eigene Anmeldungen im Profil `~/.local/share/v3d-browser/profil`).
+Werkzeuge `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`,
+`browser_fill_form`, `browser_select_option`, `browser_press_key`, `browser_hover`,
+`browser_find`, `browser_wait_for`, `browser_tabs`, `browser_handle_dialog`,
+`browser_take_screenshot`, `browser_navigate_back`, `browser_close` (Modul `v3dmcp/browser.py`).
+
+Aufbau: Connector → `v3d-browser.service` (Playwright MCP 0.0.83 aus `browser/node_modules`,
+127.0.0.1:8812, Konfiguration `browser/config.json`) → Chrome → `v3d-browser-proxy.service`
+(`browser/sperrproxy.py`, 127.0.0.1:8813). Der Sperr-Proxy löst Namen selbst auf und verbindet nur
+zu öffentlichen IPs (gesperrt: localhost, Heimnetz, Tailnet 100.64/10, Link-Local …);
+`<-loopback>` zwingt auch localhost durch den Proxy. Gesperrte Aufrufe stehen im Journal
+(`journalctl --user -u v3d-browser-proxy | grep GESPERRT`).
+
+Nicht weitergereicht: Datei-Upload/-Drop, `browser_run_code_unsafe`, `browser_evaluate`,
+Netzwerk-/Konsolen-Mitschnitte, `filename`-Parameter. Die MCP-Sitzung zu Playwright bleibt
+dauerhaft offen (eigener Thread) — eine Sitzung je Aufruf landete jedes Mal auf about:blank.
+Nach Aktionen liefert Playwright im HTTP-Modus den Snapshot nur als Datei; `browser.py` holt ihn
+dann per `browser_snapshot` und setzt ihn in die Antwort ein.
+
+Unit-Dateien liegen in `browser/` und sind nach `~/.config/systemd/user/` verlinkt.
