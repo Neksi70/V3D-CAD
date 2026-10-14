@@ -5,10 +5,11 @@ Der Prüfkern (print-check.js) kommt aus dem V3D Slicer — eine Quelle für bei
 Nach Änderungen an ~/orca-wasm/web/print-check.js hier neu bauen: python3 bauen.py
 Die fertige index.html läuft auch offline (Doppelklick) — der Server bietet sie als Download an.
 """
-import os, re, sys
+import json, os, re, sys
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 KERN = os.path.expanduser('~/orca-wasm/web/print-check.js')
+PARAMS = os.path.expanduser('~/orca-wasm/web/params.json')   # deutsche Einstellungsnamen (aus Orca de.po)
 
 
 def lies(p):
@@ -30,8 +31,11 @@ imp = "import * as PC from './print-check.js';\n"
 if app.count(tag) != 1 or app.count(imp) != 1:
     sys.exit('Platzhalter in app.html nicht gefunden')
 inline = lambda code: '<script>' + code.replace('</script', '<\\/script') + '</script>'
+P = json.load(open(PARAMS, encoding='utf-8'))
+labels = {'pages': [{'groups': [{'name': g['name'], 'options': g['options']} for g in pg['groups']]} for pg in P['pages']],
+          'options': {k: {'label': v['label']} for k, v in P['options'].items() if v.get('label')}}
 block = ('// ---- Prüfkern (aus ~/orca-wasm/web/print-check.js) ----\nconst PC = (() => {\n' + kern
-         + '\nreturn { ' + ', '.join(namen) + ' };\n})();\n// ---- Ende Prüfkern ----\n')
+         + '\nreturn { ' + ', '.join(namen) + ' };\n})();\nPC.setKeyLabels(PC.labelsFromParams(' + json.dumps(labels, ensure_ascii=False, separators=(',', ':')) + '));\n// ---- Ende Prüfkern ----\n')
 out = app.replace(tag, inline(three)).replace(imp, block)
 with open(os.path.join(BASE, 'index.html'), 'w', encoding='utf-8') as f:
     f.write(out)

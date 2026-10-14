@@ -60,49 +60,67 @@ const de = (v, n = 2) => (Math.round(v * 10 ** n) / 10 ** n).toString().replace(
 
 // Lesbare Namen + Fundort in Bambu Studio / OrcaSlicer
 export const LABELS = {
-  nozzle_temperature: ['Düsentemperatur', 'Filament › Temperatur › Andere Schichten'],
-  nozzle_temperature_initial_layer: ['Düsentemperatur erste Schicht', 'Filament › Temperatur › Erste Schicht'],
-  cool_plate_temp: ['Betttemperatur (Cool Plate)', 'Filament › Druckbetttemperatur'],
-  eng_plate_temp: ['Betttemperatur (Engineering Plate)', 'Filament › Druckbetttemperatur'],
-  hot_plate_temp: ['Betttemperatur (glatte PEI/High Temp)', 'Filament › Druckbetttemperatur'],
-  textured_plate_temp: ['Betttemperatur (texturierte PEI)', 'Filament › Druckbetttemperatur'],
-  supertack_plate_temp: ['Betttemperatur (SuperTack)', 'Filament › Druckbetttemperatur'],
-  textured_cool_plate_temp: ['Betttemperatur (strukturierte Cool Plate)', 'Filament › Druckbetttemperatur'],
-  cool_plate_temp_initial_layer: ['Betttemperatur erste Schicht (Cool Plate)', 'Filament › Druckbetttemperatur'],
-  eng_plate_temp_initial_layer: ['Betttemperatur erste Schicht (Engineering Plate)', 'Filament › Druckbetttemperatur'],
-  hot_plate_temp_initial_layer: ['Betttemperatur erste Schicht (glatte PEI)', 'Filament › Druckbetttemperatur'],
-  textured_plate_temp_initial_layer: ['Betttemperatur erste Schicht (texturierte PEI)', 'Filament › Druckbetttemperatur'],
-  supertack_plate_temp_initial_layer: ['Betttemperatur erste Schicht (SuperTack)', 'Filament › Druckbetttemperatur'],
-  textured_cool_plate_temp_initial_layer: ['Betttemperatur erste Schicht (strukt. Cool Plate)', 'Filament › Druckbetttemperatur'],
-  curr_bed_type: ['Druckplatte', 'Plattentyp oben im Slicer'],
+  nozzle_temperature: ['Düsentemperatur', 'Filament › Drucktemperatur › Düse › Andere Schichten'],
+  nozzle_temperature_initial_layer: ['Düsentemperatur erste Schicht', 'Filament › Drucktemperatur › Düse › Erste Schicht'],
+  cool_plate_temp: ['Betttemperatur (Cool Plate)', 'Filament › Druckbetttemperatur › Andere Schichten'],
+  eng_plate_temp: ['Betttemperatur (Engineering Plate)', 'Filament › Druckbetttemperatur › Andere Schichten'],
+  hot_plate_temp: ['Betttemperatur (glatte PEI)', 'Filament › Druckbetttemperatur › Andere Schichten'],
+  textured_plate_temp: ['Betttemperatur (texturierte PEI)', 'Filament › Druckbetttemperatur › Andere Schichten'],
+  supertack_plate_temp: ['Betttemperatur (SuperTack)', 'Filament › Druckbetttemperatur › Andere Schichten'],
+  textured_cool_plate_temp: ['Betttemperatur (strukturierte Cool Plate)', 'Filament › Druckbetttemperatur › Andere Schichten'],
+  cool_plate_temp_initial_layer: ['Betttemperatur erste Schicht (Cool Plate)', 'Filament › Druckbetttemperatur › Erste Schicht'],
+  eng_plate_temp_initial_layer: ['Betttemperatur erste Schicht (Engineering Plate)', 'Filament › Druckbetttemperatur › Erste Schicht'],
+  hot_plate_temp_initial_layer: ['Betttemperatur erste Schicht (glatte PEI)', 'Filament › Druckbetttemperatur › Erste Schicht'],
+  textured_plate_temp_initial_layer: ['Betttemperatur erste Schicht (texturierte PEI)', 'Filament › Druckbetttemperatur › Erste Schicht'],
+  supertack_plate_temp_initial_layer: ['Betttemperatur erste Schicht (SuperTack)', 'Filament › Druckbetttemperatur › Erste Schicht'],
+  textured_cool_plate_temp_initial_layer: ['Betttemperatur erste Schicht (strukt. Cool Plate)', 'Filament › Druckbetttemperatur › Erste Schicht'],
+  curr_bed_type: ['Druckplatte', 'Plattenauswahl oben im Slicer (in Bambu Studio englisch, z. B. „Textured PEI Plate“)'],
   layer_height: ['Schichthöhe', 'Prozess › Qualität › Schichthöhe'],
   initial_layer_print_height: ['Höhe der ersten Schicht', 'Prozess › Qualität › Schichthöhe'],
-  line_width: ['Linienbreite (Standard)', 'Prozess › Qualität › Linienbreite'],
-  outer_wall_line_width: ['Linienbreite Außenwand', 'Prozess › Qualität › Linienbreite'],
-  inner_wall_line_width: ['Linienbreite Innenwand', 'Prozess › Qualität › Linienbreite'],
-  initial_layer_line_width: ['Linienbreite erste Schicht', 'Prozess › Qualität › Linienbreite'],
-  sparse_infill_line_width: ['Linienbreite Füllung', 'Prozess › Qualität › Linienbreite'],
-  top_surface_line_width: ['Linienbreite Oberfläche', 'Prozess › Qualität › Linienbreite'],
-  enable_support: ['Stützen aktivieren', 'Prozess › Stützen'],
+  line_width: ['Linienbreite (Standard)', 'Prozess › Qualität › Breite der Linie'],
+  outer_wall_line_width: ['Linienbreite Außenwand', 'Prozess › Qualität › Breite der Linie'],
+  inner_wall_line_width: ['Linienbreite Innenwand', 'Prozess › Qualität › Breite der Linie'],
+  initial_layer_line_width: ['Linienbreite erste Schicht', 'Prozess › Qualität › Breite der Linie'],
+  sparse_infill_line_width: ['Linienbreite Füllung', 'Prozess › Qualität › Breite der Linie'],
+  top_surface_line_width: ['Linienbreite Oberfläche', 'Prozess › Qualität › Breite der Linie'],
+  enable_support: ['Stützen', 'Prozess › Stützen › Stützstrukturen aktivieren'],
   support_type: ['Stützentyp', 'Prozess › Stützen › Typ'],
-  brim_type: ['Rand (Brim)', 'Prozess › Sonstiges › Rand'],
-  brim_width: ['Randbreite', 'Prozess › Sonstiges › Rand'],
+  brim_type: ['Umrandung (Brim)', 'Prozess › Sonstige › Umrandung › Randtyp'],
+  brim_width: ['Randbreite', 'Prozess › Sonstige › Umrandung › Randbreite'],
   wall_generator: ['Wandgenerator', 'Prozess › Qualität › Wandgenerator'],
-  wall_loops: ['Wandlinien', 'Prozess › Festigkeit › Wände'],
-  top_shell_layers: ['Obere Schalenschichten', 'Prozess › Festigkeit › Deckschichten'],
-  bottom_shell_layers: ['Untere Schalenschichten', 'Prozess › Festigkeit › Bodenschichten'],
-  sparse_infill_density: ['Fülldichte', 'Prozess › Festigkeit › Füllung'],
-  fan_min_speed: ['Lüfter min.', 'Filament › Kühlung'],
-  fan_max_speed: ['Lüfter max.', 'Filament › Kühlung'],
-  enable_overhang_speed: ['Bei Überhängen verlangsamen', 'Prozess › Geschwindigkeit'],
+  wall_loops: ['Wandlinien', 'Prozess › Stärke › Wände › Wandlinien'],
+  top_shell_layers: ['Obere Schalenschichten', 'Prozess › Stärke › Obere/Untere Schichten'],
+  bottom_shell_layers: ['Untere Schalenschichten', 'Prozess › Stärke › Obere/Untere Schichten'],
+  sparse_infill_density: ['Fülldichte', 'Prozess › Stärke › Füllung › Fülldichte'],
+  fan_min_speed: ['Lüfter min.', 'Filament › Kühlung › Bauteillüfter'],
+  fan_max_speed: ['Lüfter max.', 'Filament › Kühlung › Bauteillüfter'],
+  enable_overhang_speed: ['Bei Überhängen verlangsamen', 'Prozess › Geschwindigkeit › Verlangsamen bei Überhängen'],
 };
-export function keyLabel(key) { return (LABELS[key] || [key])[0]; }
+// Weitere deutsche Namen (Slicer: aus params.json; Standalone: von bauen.py eingebettet)
+let EXTRA_LABELS = {};
+export function setKeyLabels(map) { EXTRA_LABELS = map || {}; }
+// params.json (Seiten › Gruppen › Optionen) → Schlüssel → deutscher Name; doppelte Namen
+// („Andere Schichten") bekommen die Gruppe davor
+export function labelsFromParams(P) {
+  const out = {}, seen = {};
+  for (const pg of (P && P.pages) || []) for (const g of pg.groups || []) for (const k of g.options || []) {
+    const l = P.options[k] && P.options[k].label;
+    if (!l) continue;
+    out[k] = [l, g.name]; seen[l] = (seen[l] || 0) + 1;
+  }
+  for (const k in out) out[k] = seen[out[k][0]] > 1 ? `${out[k][1]}: ${out[k][0]}` : out[k][0];
+  return out;
+}
+export function keyLabel(key) { return LABELS[key] ? LABELS[key][0] : EXTRA_LABELS[key] || key; }
 export function keyWhere(key) { return (LABELS[key] || [, ''])[1]; }
 
 // Anzeige-Werte (Enums)
 const ENUM_DE = {
   'tree(auto)': 'Baum (automatisch)', 'normal(auto)': 'Normal (automatisch)',
-  auto_brim: 'Automatisch', outer_only: 'Nur außen', no_brim: 'Kein Rand', brim_ears: 'Mausohren',
+  'tree(manual)': 'Baum (manuell)', 'normal(manual)': 'Normal (manuell)',
+  auto_brim: 'Automatisch', outer_only: 'Nur äußerer Rand', no_brim: 'Keine Umrandung', brim_ears: 'Mausohren',
+  inner_only: 'Nur innerer Rand', outer_and_inner: 'Äußerer und innerer Rand', painted: 'Bemalt',
+  'Smooth PEI Plate': 'Glatte PEI (High Temp)', 'Cool Plate (SuperTack)': 'SuperTack',
   arachne: 'Arachne', classic: 'Klassisch',
   'Textured PEI Plate': 'Texturierte PEI', 'Cool Plate': 'Cool Plate', 'High Temp Plate': 'Glatte PEI (High Temp)',
   'Engineering Plate': 'Engineering Plate', 'Supertack Plate': 'SuperTack', 'Textured Cool Plate': 'Strukt. Cool Plate',
@@ -114,6 +132,7 @@ export function valueText(key, v) {
   if (/temp/.test(key) && s !== '') return s + ' °C';
   if (/(height|width)$/.test(key) && /^[\d.]+$/.test(s)) return de(parseFloat(s), 3) + ' mm';
   if (/fan_.*speed/.test(key) && /^[\d.]+$/.test(s)) return s + ' %';
+  if (/^[\d.]+%$/.test(s)) return s.replace('%', ' %').replace('.', ',');
   return s.replace('.', ',');
 }
 
@@ -189,6 +208,14 @@ export function parseGcode(text) {
     },
     usedFilaments: used.length ? used : null,
   };
+}
+// Sekunden → „1 h 05 min" / „16 min 29 s"
+export function fmtDuration(t) {
+  if (!(t > 0)) return '';
+  const d = Math.floor(t / 86400), h = Math.floor(t % 86400 / 3600), m = Math.floor(t % 3600 / 60), sec = Math.round(t % 60);
+  if (d) return `${d} d ${h} h`;
+  if (h) return `${h} h ${String(m).padStart(2, '0')} min`;
+  return m ? `${m} min ${sec} s` : `${sec} s`;
 }
 export function parseDuration(s) {
   if (!s) return 0;
@@ -1016,7 +1043,8 @@ export function checkSettings(cfg, ctx = {}) {
   }
   const diff = cfgList(cfg, 'different_settings_to_system').join(';').split(/[;,]/).map(s => s.trim()).filter(Boolean);
   if (diff.length)
-    add(LEVEL.INFO, 'Abgleich', 'diff', `${diff.length} Wert(e) vom Systemprofil abweichend`, diff.slice(0, 30).join(', ') + (diff.length > 30 ? ' …' : ''));
+    add(LEVEL.INFO, 'Abgleich', 'diff', `${diff.length} Wert${diff.length > 1 ? 'e' : ''} gegenüber dem Bambu-/Orca-Standardprofil geändert`,
+      'Selbst geändert: ' + diff.slice(0, 30).map(keyLabel).join(', ') + (diff.length > 30 ? ' …' : '') + '. Das ist kein Fehler – nur zur Übersicht.');
 
   F.sort((a, b) => b.level - a.level);
   return F;
@@ -1046,7 +1074,7 @@ export function printFacts(cfg, gcode, models = []) {
   const price = cfgNum(cfg, 'filament_cost', used[0], NaN);
   const types = [...new Set(used.map(i => cfgStr(cfg, 'filament_type', i)).filter(Boolean))];
   return {
-    time: st.timeText || '', weightG: weight, weightEst: est,
+    time: fmtDuration(st.timeS) || st.timeText || '', weightG: weight, weightEst: est,
     costEur: Number.isFinite(price) && price > 0 && weight ? weight / 1000 * price : NaN,
     material: types.join(' + '), nozzle: cfgNum(cfg, 'nozzle_diameter', 0, NaN),
     layer: cfgNum(cfg, 'layer_height', 0, NaN), plate: bedInfo(cfgStr(cfg, 'curr_bed_type')).name,
