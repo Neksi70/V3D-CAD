@@ -1,77 +1,80 @@
-// Headless-Durchlauf: Login, Lieferant, Rubrik, Artikel, Bestellung, Kunden-Import (CSV + XLSX)
-import { chromium } from '/home/v3da/node_modules/playwright/index.mjs';
-const [,, URL = 'http://127.0.0.1:8811/', PIN, CSV1, XLSX, OUT = '.'] = process.argv;
+// Headless-Durchlauf (Handy-Größe): Telefonat per Text → KI → Speichern → Preisspiegel → Bestellen → Ersparnis,
+// Anruf-Brücke, Altpreis-Import. NUR gegen eine Wegwerf-DB laufen lassen (legt Daten an, ruft die KI auf).
+// node test_ui.mjs URL PIN altpreise.csv [ausgabeordner]
+import { chromium, devices } from '/home/v3da/node_modules/playwright/index.mjs';
+const [,, URL = 'http://127.0.0.1:8812/', PIN, ALT, OUT = '.'] = process.argv;
 const b = await chromium.launch();
-const p = await b.newPage({ viewport: { width: 1400, height: 900 } });
+const ctx = await b.newContext({ ...devices['Pixel 7'] });
+const p = await ctx.newPage();
 const fehler = []; p.on('pageerror', e => fehler.push(e.message));
-p.on('dialog', d => d.accept());
+p.on('dialog', d => d.accept(d.type() === 'prompt' ? '600' : undefined));
+const schritt = async (name) => { await p.waitForTimeout(250); await p.screenshot({ path: `${OUT}/m-${name}.png` }); console.log('✓', name); };
+
 await p.goto(URL);
 await p.fill('#pin', PIN); await p.press('#pin', 'Enter');
 await p.waitForSelector('#app:not([hidden])');
+await p.click('nav button[data-s=start]');
+await schritt('1-start');
 
-// Lieferant
-await p.click('nav button[data-s=lieferanten]');
-await p.click('text=+ Lieferant');
-await p.fill('[data-k=name]', 'Stahlhandel Ruhr GmbH');
-await p.fill('[data-k=ansprechpartner]', 'Herr Becker');
-await p.check('#lrub input[value="1"]');
-await p.click('#fdSpeichern');
-await p.waitForSelector('text=Stahlhandel Ruhr GmbH');
+// Telefonat eintragen (Text statt Sprache)
+await p.click('.mikro-karte');
+await p.fill('#memoText', 'Schweißtechnik Krämer, Ansprechpartner Herr Krämer, Telefon 0231 445566. Aluprofil 40 mal 40 mal 2 für 3,70 das Kilo ab 200 Kilo, Lieferzeit zwei Wochen, Fracht 45 Euro pauschal.');
+await schritt('2-memo');
+await p.click('#memoWeiter');
+await p.waitForSelector('#mPos .posk', { timeout: 60000 });
+await schritt('3-pruefen');
+console.log('  Lieferant:', await p.inputValue('#m_lieferant'), '| Artikel:', await p.inputValue('#mPos [data-f=artikel]'), '| Preis:', await p.inputValue('#mPos [data-f=preis]'));
+await p.click('#memoSpeichern');
+await p.waitForSelector('text=Gespeichert', { timeout: 20000 });
+await schritt('4-ergebnis');
+console.log('  Urteil:', (await p.textContent('.urteil')).trim());
+await p.click('.dfuss >> text=Fertig');
 
-// eigene Rubrik
-await p.click('nav button[data-s=rubriken]');
-await p.click('text=+ Rubrik');
-await p.fill('[data-k=name]', 'Kupfer & Messing');
-await p.click('#fdSpeichern');
-await p.waitForSelector('.baum >> text=Kupfer & Messing');
+// Anruf-Brücke: so tun, als käme er nach 10 s Telefonat zurück
+await p.evaluate(() => { const l = D.lieferanten.find(x => x.name.includes('Müller')); localStorage.setItem('me_anruf', JSON.stringify({lid: l.id, aid: D.artikel[0].id, t: Date.now() - 10000})); window.dispatchEvent(new Event('focus')); });
+await p.waitForSelector('#dlg[open] .memo-mic');
+console.log('  Nach Anruf:', (await p.textContent('#dlg h3')).trim());
+await schritt('5-nach-anruf');
+await p.click('#dlg .dkopf .x');
 
-// Artikel in Stahl › Bleche
-await p.click('.baum >> text=Stahl');
-await p.click('text=+ Artikel');
-await p.fill('[data-k=name]', 'Stahlblech DC01');
-await p.fill('[data-k=abmessung]', '2000×1000×2 mm');
-await p.selectOption('[data-k=einheit]', 'Tafel');
-await p.fill('[data-k=preis]', '48,50');
-await p.selectOption('[data-k=lieferant_id]', { label: 'Stahlhandel Ruhr GmbH' });
-await p.click('#fdSpeichern');
-await p.waitForSelector('td >> text=Stahlblech DC01');
-
-// Kunden-Import CSV (cp1252, Semikolon)
-await p.click('nav button[data-s=kunden]');
-await p.setInputFiles('#importDatei', CSV1);
-await p.waitForSelector('text=Datensätze gefunden');
-const zuord = await p.$$eval('select[data-i]', s => s.map(x => x.value));
-console.log('CSV-Zuordnung:', zuord.join(','));
-await p.click('.dfuss .btn.p');
-console.log(await p.textContent('.ok'));
-await p.click('text=Fertig');
-// XLSX: aktualisiert 10002, legt 20001 an
-await p.setInputFiles('#importDatei', XLSX);
-await p.waitForSelector('text=Datensätze gefunden');
-console.log('XLSX-Zuordnung:', (await p.$$eval('select[data-i]', s => s.map(x => x.value))).join(','));
-await p.click('.dfuss .btn.p');
-console.log(await p.textContent('.ok'));
-await p.click('text=Fertig');
-await p.screenshot({ path: OUT + '/kunden.png' });
-
-// Bestellung mit Kunde + Artikel
-await p.click('nav button[data-s=bestellungen]');
-await p.click('text=+ Neuer Vorgang');
-await p.fill('#b_kunde', '10001 · Müller Fahrzeugbau GmbH (Dortmund)');
-await p.fill('#b_projekt', 'Foodtruck Ausbau');
-await p.fill('#b_besteller', 'V. Isken');
-await p.fill('#posBody tr:nth-child(1) input[list]', 'Stahlblech DC01 – 2000×1000×2 mm');
-await p.press('#posBody tr:nth-child(1) input[list]', 'Tab');
-await p.fill('#posBody tr:nth-child(1) td:nth-child(3) input', '4');
-await p.press('#posBody tr:nth-child(1) td:nth-child(3) input', 'Tab');
-await p.selectOption('#b_status', 'Bestellt');
-console.log('Summe:', await p.textContent('#bSumme'), '| Lieferant:', await p.$eval('#b_lieferant_id', s => s.selectedOptions[0].text));
-await p.screenshot({ path: OUT + '/bestellung.png' });
+// Preisspiegel
+await p.click('nav button[data-s=preise]');
+await p.fill('#psuche', 'alu');
+await p.click('#ptab tbody tr >> nth=0');
+await p.waitForSelector('.rang');
+await schritt('6-preisspiegel');
+console.log('  Rangfolge:', (await p.$$eval('.rang', r => r.map(x => x.querySelector('b').textContent + ' ' + x.querySelector('.preis').childNodes[0].textContent))).join(' | '));
+await p.click('.rang.best >> text=Bestellen');
+await p.waitForSelector('#posBody tr');
+console.log('  Bestellung:', (await p.textContent('#bSumme')).trim());
+await schritt('7-bestellung');
 await p.click('.dfuss >> text=Speichern');
-await p.waitForSelector('td >> text=E-2026-0001');
-await p.click('nav button[data-s=uebersicht]');
-await p.screenshot({ path: OUT + '/uebersicht.png' });
-await p.click('nav button[data-s=rubriken]');
-await p.screenshot({ path: OUT + '/rubriken.png' });
+
+// Ersparnis
+await p.click('nav button[data-s=ersparnis]');
+await p.waitForSelector('.groesse');
+console.log('  Ersparnis:', (await p.$$eval('.groesse', g => g.map(x => x.textContent))).join(' / Bonus '));
+await schritt('8-ersparnis');
+await p.evaluate(() => window.scrollTo(0, 700));
+await schritt('9-ersparnis-unten');
+
+// Altpreise einlesen
+await p.click('nav button[data-s=verwaltung]');
+await p.click('.reiter >> text=Altpreise einlesen');
+const [fc] = await Promise.all([p.waitForEvent('filechooser'), p.click('text=Datei mit Altpreisen einlesen')]);
+await fc.setFiles(ALT);
+await p.waitForSelector('select[data-i]');
+console.log('  Zuordnung:', (await p.$$eval('select[data-i]', s => s.map(x => x.value))).join(','));
+await p.click('.dfuss >> text=Zeilen einlesen');
+console.log(' ', (await (await p.waitForSelector('.ok')).textContent()).trim());
+await p.click('.dfuss >> text=Fertig');
+await schritt('10-altpreise');
+
+// Desktop-Ansicht
+const d = await (await b.newContext({ viewport: { width: 1400, height: 950 } })).newPage();
+await d.goto(URL); await d.fill('#pin', PIN); await d.press('#pin', 'Enter'); await d.waitForSelector('#app:not([hidden])');
+await d.click('nav button[data-s=ersparnis]'); await d.waitForSelector('.groesse'); await d.waitForTimeout(300);
+await d.screenshot({ path: `${OUT}/d-ersparnis.png` });
+await d.click('nav button[data-s=start]'); await d.waitForTimeout(400); await d.screenshot({ path: `${OUT}/d-start.png` });
 console.log('JS-Fehler:', fehler.length ? fehler : 'keine');
 await b.close();
