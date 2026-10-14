@@ -341,6 +341,11 @@ function sStart(){
 // Telefonat eintragen (Sprach-Memo → KI → Angebot)
 let M = null;   // aktueller Memo-Vorgang
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const MOBIL = /Android|iPhone|iPad/i.test(navigator.userAgent);
+const DIKTAT_TIPP = MOBIL
+  ? 'ins Textfeld tippen und auf der Handy-Tastatur die <b>Mikrofon-Taste 🎤</b> drücken.'
+  : 'ins Textfeld klicken und <b>Windows-Taste + H</b> drücken (Mac: zweimal <b>Fn</b>).';
+const MIC_GESPERRT = 'Mikrofon gesperrt – links in der Adresszeile auf das Schloss tippen und „Mikrofon: Zulassen" wählen.';
 
 function memoOeffnen(vor={}){
   if ($('#dlg').open) return;
@@ -361,7 +366,8 @@ function memoSprechen(){
   dlg.innerHTML = memoKopf(M.nachAnruf && l ? 'Was hat '+esc(l.name)+' angeboten?' : 'Telefonat eintragen') + `
   <div class="dinhalt">
     <button class="memo-mic" id="mic" onclick="aufnahmeUmschalten()" aria-label="Aufnahme starten">🎤</button>
-    <div class="memo-status" id="micStatus">Tippen und einfach losreden</div>
+    <div class="memo-status" id="micStatus">${window.isSecureContext ? 'Tippen und einfach losreden' : ''}</div>
+    ${window.isSecureContext ? '' : `<div class="rueck" style="font-size:15px">🎙️ <b>So diktierst du hier:</b> ${DIKTAT_TIPP}<br><span class="hinweis">Der große Mikrofon-Knopf funktioniert nur über die sichere Adresse (https).</span></div>`}
     <textarea id="memoText" rows="5" placeholder="Hier erscheint, was du sagst. Du kannst auch tippen.">${esc(M.text)}</textarea>
     <div class="beispiel">Zum Beispiel: <i>„${l?esc(l.name.split(' ')[0]):'Müller Stahl'}, Aluprofil 40×40×2, 3,80 € pro Kilo, ab 500 Kilo 3,60. Lieferzeit eine Woche, frei Haus, 2 % Skonto. Bisher haben wir 4,10 bezahlt."</i></div>
   </div>
@@ -379,6 +385,11 @@ function micAnzeige(an, text){
   $('#micStatus').textContent = text;
 }
 function aufnahmeStart(){
+  if (!window.isSecureContext){            // Browser geben das Mikrofon nur auf https-Seiten frei
+    micAnzeige(false, ''); $('#memoText').focus();
+    toast('Mikrofon-Knopf geht nur über https – bitte ' + (/Android|iPhone|iPad/i.test(navigator.userAgent) ? 'die Mikrofon-Taste der Tastatur' : 'Windows-Taste + H') + ' nutzen');
+    return;
+  }
   const browser = SR && D.einstellungen.sprache !== 'server';
   if (browser){
     REC = new SR(); REC.lang='de-DE'; REC.continuous=true; REC.interimResults=true;
@@ -393,7 +404,7 @@ function aufnahmeStart(){
       M.text = $('#memoText').value = (recBasis + fertig + vorl).replace(/\s+/g,' ');
     };
     REC.onerror = e => {
-      if (e.error==='not-allowed' || e.error==='service-not-allowed'){ aufnahme=false; micAnzeige(false,'Mikrofon nicht erlaubt – bitte im Browser freigeben oder tippen.'); }
+      if (e.error==='not-allowed' || e.error==='service-not-allowed'){ aufnahme=false; micAnzeige(false, MIC_GESPERRT); }
       else if (e.error==='network'){ aufnahme=false; REC=null; serverAufnahme(); }
     };
     REC.onend = () => { if (aufnahme && REC){ recBasis = $('#memoText').value.trim()+' '; fertig=''; try{ REC.start(); }catch(e){} } };
@@ -424,7 +435,7 @@ async function serverAufnahme(){
       $('#memoWeiter').disabled = false;
     };
     MR.start(); aufnahme = true; micAnzeige(true, 'Aufnahme läuft … zum Beenden nochmal tippen');
-  } catch(e){ micAnzeige(false, 'Mikrofon nicht erlaubt – bitte im Browser freigeben oder tippen.'); }
+  } catch(e){ micAnzeige(false, MIC_GESPERRT); }
 }
 function aufnahmeStopp(abbruch){
   aufnahme = false;
