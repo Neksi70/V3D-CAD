@@ -91,6 +91,9 @@ export const LABELS = {
   brim_type: ['Randtyp (Brim type)', 'Prozess › Sonstige › Umrandung'],
   brim_width: ['Randbreite (Brim width)', 'Prozess › Sonstige › Umrandung'],
   wall_generator: ['Wandgenerator (Wall generator)', 'Prozess › Qualität › Wandgenerator'],
+  min_feature_size: ['Minimale Feature-Größe (Minimum feature size)', 'Prozess › Qualität › Wandgenerator (bei Arachne)'],
+  min_bead_width: ['Minimale Wandbreite (Minimum wall width)', 'Prozess › Qualität › Wandgenerator (bei Arachne)'],
+  min_length_factor: ['Minimale Wandlänge (Minimum wall length, nur OrcaSlicer)', 'Prozess › Qualität › Wandgenerator (bei Arachne)'],
   wall_loops: ['Wandlinien (Wall loops)', 'Prozess › Stärke › Wände'],
   top_shell_layers: ['Obere Schalenschichten (Top shell layers)', 'Prozess › Stärke › Obere/Untere Schichten'],
   bottom_shell_layers: ['Untere Schalenschichten (Bottom shell layers)', 'Prozess › Stärke › Obere/Untere Schichten'],
@@ -443,7 +446,7 @@ class DSU {
 }
 
 // Netz (Druckkoordinaten, z ab 0) → Kennzahlen für die Regeln
-export function analyzeMesh(pos, index, { name = '', maxThickSamples = 3000 } = {}) {
+export function analyzeMesh(pos, index, { name = '', maxThickSamples = 6000 } = {}) {
   const nT = index ? index.length / 3 : pos.length / 9;
   // Vertices verschweißen (nicht-indizierte STL), Raster 1e-4 mm
   const corner = new Uint32Array(nT * 3);
@@ -711,7 +714,9 @@ function pointTriDist(px, py, pz, ax, ay, az, bx, by, bz, cx, cy, cz) {
 function wallThickness(G, vx, vy, vz, corner, nT, nx, ny, nz, area, maxS) {
   const MAXD = 4;
   let wallA = 0;
-  for (let t = 0; t < nT; t++) if (Math.abs(nz[t]) < 0.5) wallA += area[t];
+  // Wände = Flächen bis ~58° Neigung; gemessen wird WAAGERECHT (Schichtschnitt), so wie Arachne die Breite sieht
+  const isWall = t => Math.abs(nz[t]) < 0.85 && area[t] > 0;
+  for (let t = 0; t < nT; t++) if (isWall(t)) wallA += area[t];
   if (wallA <= 0) return { samples: [], wallArea: 0 };
   if (!G) return { samples: [], wallArea: wallA, skipped: true };
   const { GX, GY, GZ, ci, start, list, bb } = G;
@@ -720,14 +725,15 @@ function wallThickness(G, vx, vy, vz, corner, nT, nx, ny, nz, area, maxS) {
   const step = wallA / maxS;
   let acc = step / 2;
   for (let t = 0; t < nT; t++) {
-    if (!(Math.abs(nz[t]) < 0.5) || area[t] === 0) continue;
+    if (!isWall(t)) continue;
     acc += area[t];
     while (acc >= step) {
       acc -= step;
       // Punkt: Schwerpunkt, leicht ins Innere versetzt
       const a = corner[t * 3], b = corner[t * 3 + 1], c = corner[t * 3 + 2];
-      const ox = (vx[a] + vx[b] + vx[c]) / 3 - nx[t] * 1e-3, oy = (vy[a] + vy[b] + vy[c]) / 3 - ny[t] * 1e-3, oz = (vz[a] + vz[b] + vz[c]) / 3 - nz[t] * 1e-3;
-      const dx = -nx[t], dy = -ny[t], dz = -nz[t];
+      const hl = Math.hypot(nx[t], ny[t]) || 1;
+      const dx = -nx[t] / hl, dy = -ny[t] / hl, dz = 0;
+      const ox = (vx[a] + vx[b] + vx[c]) / 3 + dx * 1e-3, oy = (vy[a] + vy[b] + vy[c]) / 3 + dy * 1e-3, oz = (vz[a] + vz[b] + vz[c]) / 3;
       const ex = ox + dx * MAXD, ey = oy + dy * MAXD, ez = oz + dz * MAXD;
       const X0 = ci(Math.min(ox, ex), bb[0], GX), X1 = ci(Math.max(ox, ex), bb[0], GX);
       const Y0 = ci(Math.min(oy, ey), bb[1], GY), Y1 = ci(Math.max(oy, ey), bb[1], GY);
@@ -768,6 +774,8 @@ function rayTri(ox, oy, oz, dx, dy, dz, corner, t, vx, vy, vz) {
 }
 
 // Anteil der Wandfläche dünner als d (aus den Stichproben)
+// Fläche (mm²) der Wände dünner als d
+export function thinArea(thick, d) { return thinFraction(thick, d) * ((thick && thick.wallArea) || 0); }
 export function thinFraction(thick, d) {
   const s = thick && thick.samples;
   if (!s || !s.length) return 0;
@@ -998,23 +1006,40 @@ export function checkSettings(cfg, ctx = {}) {
           [{ key: 'brim_type', value: 'outer_only' }, { key: 'brim_width', value: '5' }], fussLoc);
     });
 
-    // Dünne Wände
+    // Dünne Wände – Arachne allein reicht nicht (Ralf, 14.10.): erst mit kleiner Feature-Größe
+    // und voller Mindest-Wandbreite werden schmale Stellen dicht statt löchrig gedruckt
     const ow = widthMm(cfgStr(cfg, 'outer_wall_line_width') || cfgStr(cfg, 'line_width'), d) || d * 1.05;
     const gen = cfgStr(cfg, 'wall_generator') || 'classic';
+    const pct = k => parseFloat(cfgStr(cfg, k));
+    const arachneFixes = () => [
+      { key: 'wall_generator', value: 'arachne' },
+      ...(!(pct('min_feature_size') <= 5) ? [{ key: 'min_feature_size', value: '5%' }] : []),
+      ...(!(pct('min_bead_width') >= 100) ? [{ key: 'min_bead_width', value: '100%' }] : []),
+      ...(has(cfg, 'min_length_factor') && cfgNum(cfg, 'min_length_factor', 0, 0) > 0 ? [{ key: 'min_length_factor', value: '0' }] : []),
+    ];
+    const warum = ' Was die Werte bewirken: „Minimale Feature-Größe“ 5 % druckt auch sehr schmale Stellen, statt sie wegzulassen; ' +
+      '„Minimale Wandbreite“ 100 % legt schmale Stellen in voller Düsenbreite – dicht statt löchrig (minimal überfüllt).' +
+      (has(cfg, 'min_length_factor') ? ' „Minimale Wandlänge“ 0 behält auch ganz kurze Wandstücke.' : '');
     models.forEach((m, mi) => {
       if (!m.thick || !m.thick.samples.length) return;
       const nm = models.length > 1 ? `${m.name}: ` : '';
-      const tooThin = thinFraction(m.thick, d * 0.95), thin = thinFraction(m.thick, ow * 2 * 0.95);
+      const fx = arachneFixes().filter(x => cfgStr(cfg, x.key) !== String(x.value));
+      const aTooThin = thinArea(m.thick, d * 0.95), aThin = thinArea(m.thick, ow * 2 * 0.95);
+      const fTooThin = thinFraction(m.thick, d * 0.95), fThin = thinFraction(m.thick, ow * 2 * 0.95);
       const locOf = lim => { const p = (m.thick.thinPts || []).filter(q => q[3] < lim).slice(0, 8).map(q => q.slice(0, 3)); return p.length ? { m: mi, pts: p } : null; };
-      if (tooThin > 0.01)
-        add(LEVEL.WARN, 'Modell', 'zudünn', `${nm}Wände dünner als die Düse`,
-          `${Math.round(tooThin * 100)} % der Wände sind dünner als ${de(d)} mm. Diese Stellen fallen weg oder werden lückenhaft. Abhilfe: Wand im Modell verstärken, größer skalieren oder kleinere Düse.` +
-          (gen !== 'arachne' ? ' Arachne holt noch das Meiste heraus.' : ''),
-          gen !== 'arachne' ? [{ key: 'wall_generator', value: 'arachne' }] : [], locOf(d * 0.95));
-      else if (thin > 0.03 && gen !== 'arachne')
+      const wieviel = (a, f) => f >= 0.01 ? `${Math.round(f * 100)} % der Wände` : `Stellen mit zusammen ca. ${de(a, 0)} mm² Wandfläche`;
+      // Auch kleine Stellen zählen (dünner Deckel an großem Teil) – Fläche ODER Anteil
+      if (aTooThin > 5 || fTooThin > 0.01)
+        add(LEVEL.WARN, 'Modell', 'zudünn', `${nm}Stellen dünner als die Düse – werden löchrig`,
+          `${wieviel(aTooThin, fTooThin)} sind schmaler als ${de(d)} mm. Dort fehlen sonst Linien oder es bleiben Löcher.` +
+          (fx.length ? ' Arachne mit angepassten Werten holt das Meiste heraus.' + warum : '') +
+          ' Sicherer: Wand im Modell verstärken, größer skalieren oder eine kleinere Düse.', fx, locOf(d * 0.95));
+      else if ((aThin > 10 || fThin > 0.03) && fx.length)
         add(LEVEL.WARN, 'Qualität', 'dünn', `${nm}Dünne Wände drucken lückenhaft`,
-          `${Math.round(thin * 100)} % der Wände sind dünner als ${de(ow * 2)} mm. Mit dem klassischen Wandgenerator entstehen dort Lücken oder Zickzack. Arachne passt die Linienbreite an die Wandstärke an.`,
-          [{ key: 'wall_generator', value: 'arachne' }], locOf(ow * 2 * 0.95));
+          `${wieviel(aThin, fThin)} sind schmaler als ${de(ow * 2)} mm (zwei Linien). ` +
+          (gen !== 'arachne' ? 'Mit dem klassischen Wandgenerator entstehen dort Lücken oder Zickzack. Arachne passt die Linienbreite an – aber erst mit passenden Werten wird es dicht.'
+                             : 'Arachne ist an, aber noch mit Standardwerten – die lassen schmale Stellen dünn oder weg.') + warum,
+          fx, locOf(ow * 2 * 0.95));
     });
 
     // Treppenstufen auf flachen Schrägen

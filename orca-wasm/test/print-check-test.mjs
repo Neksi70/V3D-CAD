@@ -64,6 +64,35 @@ console.log('Modell-Regeln');
   ok(ids(F2).includes('bauraum'), '120 mm auf 100-mm-Bett → Bauraum-Fehler');
 }
 
+console.log('Dünne Stellen + Arachne-Werte (Ralf 14.10.)');
+{
+  // kleine dünne Finne (0,3 mm) auf großem Block: < 1 % der Wandfläche, früher übersehen
+  const m = an(boxes([0, 0, 0, 100, 100, 30], [40, 50, 30, 50, 50.3, 34]));
+  const f = P.checkSettings(base(), { models: [m] }).find(x => x.id === 'zudünn');
+  ok(f, `kleine 0,3-mm-Finne auf großem Block erkannt (${P.thinArea(m.thick, 0.38).toFixed(0)} mm²)`);
+  ok(f && f.loc && f.loc.pts.every(p => p[2] > 29.9), 'Stelle zeigt auf die Finne');
+  // schräge dünne Wand (45°), waagerecht 0,3 mm breit
+  const V = [], T = [];
+  const q = [[0, 0, 0], [30, 0, 0], [30, 0.3, 0], [0, 0.3, 0], [0, 10, 10], [30, 10, 10], [30, 10.3, 10], [0, 10.3, 10]];
+  const sk = { pos: new Float32Array(q.flat()), index: new Uint32Array([[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]].flat()) };
+  void V; void T;
+  const ms = an(sk);
+  ok(P.thinFraction(ms.thick, 0.38) > 0.5, `schräge Wand: waagerechte Breite 0,3 mm gemessen (${P.thinFraction(ms.thick, 0.38).toFixed(2)})`);
+  // Vorschlag = Arachne + Ralfs Werte; Orca-Wandlänge nur wenn der Slicer sie kennt
+  const m2 = an(boxes([0, 0, 0, 30, 0.6, 10]));
+  const bambu = { ...base(), min_feature_size: '25%', min_bead_width: '85%' };
+  const d1 = P.checkSettings(bambu, { models: [m2] }).find(x => x.id === 'dünn');
+  const keys = d1 ? Object.fromEntries(d1.fixes.map(x => [x.key, x.value])) : {};
+  ok(keys.wall_generator === 'arachne' && keys.min_feature_size === '5%' && keys.min_bead_width === '100%' && !('min_length_factor' in keys),
+    `Bambu: Arachne + Feature-Größe 5 % + Wandbreite 100 % (${JSON.stringify(keys)})`);
+  const orca = { ...bambu, min_length_factor: '0.5' };
+  ok(P.checkSettings(orca, { models: [m2] }).find(x => x.id === 'dünn').fixes.some(x => x.key === 'min_length_factor' && x.value === '0'), 'Orca: zusätzlich Wandlänge 0');
+  const nurAn = { ...bambu, wall_generator: 'arachne' };
+  ok(ids(P.checkSettings(nurAn, { models: [m2] })).includes('dünn'), 'nur Arachne an, Standardwerte → trotzdem Hinweis');
+  const fertig = { ...nurAn, min_feature_size: '5%', min_bead_width: '100%' };
+  ok(!ids(P.checkSettings(fertig, { models: [m2] })).includes('dünn'), 'Arachne mit Ralfs Werten → kein Hinweis mehr');
+}
+
 console.log('Einstellungs-Regeln');
 {
   const c = base({ material: 'ASA', bedType: 'Cool Plate' });
