@@ -31,7 +31,7 @@ if (fs.existsSync(bambu)) {
   console.log('Bambu .gcode.3mf');
   r = await load(bambu);
   ok(r.src === 'gcode3mf' && r.models === 1, 'Modell + Einstellungen gelesen');
-  ok(r.info.includes('Bambu Lab H2C') && r.info.includes('16m 29s'), 'Drucker + Druckzeit angezeigt');
+  ok(r.info.includes('Bambu Lab H2C') && r.info.includes('16 min 29 s'), 'Drucker + Druckzeit angezeigt');
 }
 
 console.log('STL mit Grundwerten');
