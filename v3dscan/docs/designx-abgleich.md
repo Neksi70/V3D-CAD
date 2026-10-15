@@ -67,11 +67,37 @@ Mehrfach-Ausrichtung.
 6. **PDF-Bericht**, DXF, Netz-Offset, Sweep/Loft, 3D-Skizze.
 7. **Freiform / Auto Surface (Etappe 7)**.
 
-## Oberfläche (Look & Feel)
+## Oberfläche (Look & Feel) – belegt aus offiziellem Video (Design X 2024.3)
 
-Noch nicht angeglichen – öffentlich gibt es keine brauchbaren Screenshots (Shop-Seite zeigt
-nur Packshots). Wartet auf Screenshots aus der Testversion. Vermutetes Grundmuster von
-Design X (nicht geprüft): Ribbon mit Reitern nach Arbeitsschritt oben, Feature-/Modellbaum
-links, Eigenschaften-/Accuracy-Analyzer-Spalte rechts, heller Verlaufs-Hintergrund im
-Ansichtsfenster, farbige Regionen. Heute in V3D Scan: dunkles Theme, Reiter rechts,
-Scanliste links, schwebende Werkzeugleiste unten.
+Quelle: Geomagic-Video „User Interface | Getting Started“ (youtu.be/7YLutlx5OHs), Standbilder
+lokal in `designx-referenz/videos/stand/` (nicht im Git). Handbuch: `designx-referenz/designx-2014-userguide.pdf`
+(968 S., Version 2014, Uni Pittsburgh – Aufbau seither weitgehend gleich).
+
+- **Hell**, Windows/Office-Stil: Titelleiste mit Schnellzugriff, roter „MENU“-Knopf links.
+- **Ribbon** oben, Reiter = Arbeitsschritte: HOME · LIVECAPTURE · POINTS · POLYGONS · REGION ·
+  ALIGNMENT · SKETCH · 3D SKETCH · MODEL · EXACT SURFACING. Gruppen mit Beschriftung darunter
+  (z. B. POLYGONS: Scan Process | Wizard | Merge/Combine | Repair Holes/Boss | Optimize | Edit | Navigation).
+  Große Symbole mit Text, kleine Symbole in 3er-Spalten.
+- **Links** zwei Bäume übereinander: oben *Feature*-Baum (Verlauf: Region Group, Sketch (Mesh),
+  Extrude, Mesh Fit, Cut, Plane, Revolve …), unten *Model*-Baum nach Typ (Meshes, Point Clouds,
+  Surface Bodies, Solid Bodies, Sketches, Reference Vectors/Planes/Coordinates) mit Augen-Kästchen.
+- **Mitte** Ansichtsfenster mit grauem Hintergrund, Netz hellblau, Auswahl orange; schwebende
+  Ansichtsleiste oben mittig; Reiter „Model View“ unten; Achsenkreuz + Maßstab unten links.
+- **Rechts** Spalte *Properties | Display | Accuracy Analyzer(TM)* als Reiter, Eigenschaften als
+  zweispaltige Tabelle mit Gruppen (Common, Appearance, Nominal Geometry …).
+- Eingeblendete **Maus-/Tastenhilfe** (dunkles Feld rechts im Viewport: „Select an entity“, „Rotate“…).
+- **Console** unten (Protokoll mit Zeitstempel), darunter **Auswahlfilter-Leiste** und Statuszeile.
+- Regionen farbig (Region Group), Accuracy Analyzer als Farbskala rechts.
+
+Heute in V3D Scan: dunkles Theme, Reiter rechts, Scanliste links, schwebende Werkzeugleiste
+unten. Umbau erst nach Abstimmung mit Volker.
+
+### Offizielle Schulungsreihe „Geomagic Design X Go Training“ (YouTube, Kanal Geomagic)
+01 Introduction (25 min, ar1i2HtTgBk) · 02 View Manipulation & Selection (34, 9DVrgpViIH0) ·
+03 Reference Geometry & Mesh Sketching (44, QU0Hp8pHwnk) · 04 Extrude, Revolve & Solid Primitives
+(40, xtqKIKBbxTM) · 05 Model Finishing & LiveTransfer (9, Q-V5zUZ7NhA) · 06 Alignment &
+Coordinate Systems (34, vq6wEDTDkVA) · 07 Regions (61, xb8XmhKChzU) · 08 Point Cloud Data
+(35, lErmchuWerY) · 09 Advanced Lofted Surfaces (42, lQQaSgtID88) · 10 Mesh Fit Tools
+(32, vZIOOhoBCfY) · 11 Autosurfacing (8, ODUuM-dykuE).
+Dazu: Complete Reverse Engineering Workflow | Design X Go (26 min, 6cjzwXqiQlo), What's New 2025.1
+(34 min, N54eYz57rCw), Händler-Demo Design X Go (EMS3D, 40 min, FuSRFoQz4Z0).
