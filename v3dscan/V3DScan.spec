@@ -18,20 +18,42 @@ WEG = ("open3d.ml.tf", "open3d.ml.torch", "open3d.ml.contrib", "open3d.examples"
 
 open3d_module = [m for m in collect_submodules("open3d") if not m.startswith(WEG)]
 
+# OpenCASCADE (OCP) fuer Koerper/STEP: eine grosse .pyd; ihre DLLs sucht OCP/__init__ in
+# ../cadquery_ocp.libs und ../vtk.libs (os.add_dll_directory) -> genau so ablegen.
+# Nur die tatsaechlich referenzierten DLLs (rekursiv ueber eingebettete Namen):
+# 108 von 264, 110 statt 201 MB.
+import re
+SITE = os.path.dirname(os.path.dirname(numpy.__file__))
+OCP_PYD = os.path.join(SITE, "OCP", "OCP.cp311-win_amd64.pyd")
+_dll_ordner = {}
+for _o in ("cadquery_ocp.libs", "vtk.libs"):
+    for _f in os.listdir(os.path.join(SITE, _o)):
+        _dll_ordner[_f.lower()] = (os.path.join(SITE, _o, _f), _o)
+_rx = re.compile(rb"[A-Za-z0-9_.\-]{3,120}\.dll", re.I)
+_gesehen, _stapel = set(), [OCP_PYD]
+while _stapel:
+    with open(_stapel.pop(), "rb") as _d:
+        _namen = {m.decode().lower() for m in _rx.findall(_d.read())}
+    for _n in _namen:
+        if _n in _dll_ordner and _n not in _gesehen:
+            _gesehen.add(_n)
+            _stapel.append(_dll_ordner[_n][0])
+ocp_binaries = [(OCP_PYD, "OCP")] + [_dll_ordner[_n] for _n in sorted(_gesehen)]
+
 a = Analysis(
     ["exe_start.py"],
     pathex=["."],
-    binaries=collect_dynamic_libs("open3d"),
+    binaries=collect_dynamic_libs("open3d") + ocp_binaries,
     datas=[("web", "web")],
     hiddenimports=["server", "kern", "kern.o3d", "kern.wolke", "kern.werkzeuge",
-                   "kern.registrierung", "kern.projekt", "kern.netz", "kern.formen", "kern.koordinaten", "kern.erkennung", "open3d.visualization.draw_plotly",
+                   "kern.registrierung", "kern.projekt", "kern.netz", "kern.formen", "kern.koordinaten", "kern.erkennung", "kern.koerper", "OCP", "open3d.visualization.draw_plotly",
                    "open3d.visualization.to_mitsuba"] + open3d_module
                   + [m for m in collect_submodules("numpy") if ".tests" not in m],
     hookspath=[NUMPY_HOOKS],
     runtime_hooks=[],
     excludes=["tkinter", "unittest", "pydoc", "doctest", "IPython", "ipywidgets",
               "matplotlib", "pandas", "sklearn", "scipy", "dash", "plotly", "PIL",
-              "torch", "tensorflow"],
+              "torch", "tensorflow", "vtkmodules", "vtk"],
     noarchive=False,
 )
 pyz = PYZ(a.pure, a.zipped_data)
