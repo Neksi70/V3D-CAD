@@ -8,6 +8,9 @@ Die MCP-Sitzung zu Playwright bleibt dauerhaft offen (eigener Thread mit eigener
 Ereignisschleife): Playwright hängt Tabs an die Sitzung, eine Sitzung je Aufruf
 stünde jedes Mal wieder auf about:blank. Bricht sie ab, wird einmal neu verbunden.
 
+Ziel "notebook": derselbe Weg zu Playwright MCP auf Volkers Notebook (über Tailscale,
+--extension → sein echter Chrome mit Anmeldungen). Dort gibt es keinen Sperr-Proxy.
+
 Bewusst NICHT weitergereicht: Datei-Upload/-Drop (läse Serverdateien),
 browser_run_code_unsafe (Node-Code auf dem Server), evaluate, Netzwerk-/Konsolen-
 Mitschnitte und alle filename-Parameter (schrieben auf die Platte).
@@ -18,13 +21,22 @@ import logging
 import os
 import re
 import threading
+from urllib.parse import urlsplit
 
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult, TextContent
 
-URL = os.environ.get('BROWSER_MCP_URL') or 'http://127.0.0.1:8812/mcp'
+ZIELE = {
+    'server': os.environ.get('BROWSER_MCP_URL') or 'http://127.0.0.1:8812/mcp',
+    'notebook': os.environ.get('NOTEBOOK_MCP_URL') or 'http://100.66.252.89:8931/mcp',
+}
+HILFE = {
+    'server': 'systemctl --user status v3d-browser',
+    'notebook': 'ist das Notebook an, im Tailnet und läuft „V3D Browser-Brücke"?',
+}
 FRIST = 90
+VERBINDEN_FRIST = 15  # Notebook aus → nicht 90 s warten
 
 # Hinweise auf Dateien in Playwrights Ausgabeordner sind für Claude Chat wertlos
 _DATEI_ZEILE = re.compile(r'^.*\]\(\.\./ausgabe/[^)]*\).*$\n?', re.M)
@@ -38,9 +50,10 @@ class BrowserFehler(Exception):
 
 
 class _Verbindung:
-    def __init__(self):
+    def __init__(self, ziel):
+        self.url, self.hilfe = ZIELE[ziel], HILFE[ziel]
         self.loop = asyncio.new_event_loop()
-        threading.Thread(target=self.loop.run_forever, name='v3d-browser', daemon=True).start()
+        threading.Thread(target=self.loop.run_forever, name='v3d-browser-' + ziel, daemon=True).start()
         self.stapel = None
         self.sitzung = None
         self.lock = None
@@ -51,10 +64,17 @@ class _Verbindung:
             with contextlib.suppress(BaseException):
                 await stapel.aclose()
 
+    async def _erreichbar(self):
+        # kurzer TCP-Test vorab; wait_for um _verbinden ginge nicht (anyio-Kontexte
+        # müssen in derselben Aufgabe betreten und verlassen werden)
+        u = urlsplit(self.url)
+        _, w = await asyncio.wait_for(asyncio.open_connection(u.hostname, u.port or 80), VERBINDEN_FRIST)
+        w.close()
+
     async def _verbinden(self):
         stapel = contextlib.AsyncExitStack()
         try:
-            streams = await stapel.enter_async_context(streamable_http_client(URL))
+            streams = await stapel.enter_async_context(streamable_http_client(self.url))
             sitzung = await stapel.enter_async_context(ClientSession(streams[0], streams[1]))
             await sitzung.initialize()
         except BaseException:
@@ -70,29 +90,34 @@ class _Verbindung:
             for versuch in (1, 2):
                 try:
                     if self.sitzung is None:
+                        await self._erreichbar()
                         await self._verbinden()
                     return await asyncio.wait_for(self.sitzung.call_tool(name, argumente), FRIST)
                 except asyncio.TimeoutError:
                     await self._trennen()
-                    raise BrowserFehler('Zeitüberschreitung nach %d s' % FRIST)
-                except Exception as e:
+                    raise BrowserFehler('Zeitüberschreitung — %s' % self.hilfe)
+                # CancelledError: anyio bricht bei Verbindungsfehlern die eigene Aufgabe ab;
+                # in dieser Schleife bricht sonst niemand ab → wie ein Fehler behandeln
+                except (Exception, asyncio.CancelledError) as e:
                     await self._trennen()
                     if versuch == 2:
-                        raise BrowserFehler('Browser-Dienst nicht erreichbar (%s) — '
-                                            'systemctl --user status v3d-browser' % type(e).__name__)
+                        raise BrowserFehler('Browser-Dienst nicht erreichbar (%s) — %s'
+                                        % (type(e).__name__, self.hilfe))
 
     async def rufe(self, name, argumente):
         fut = asyncio.run_coroutine_threadsafe(self._rufe(name, argumente), self.loop)
         return await asyncio.wrap_future(fut)
 
 
-_verbindung = None
+_verbindungen = {}
 
 
-async def rufe(name, argumente):
-    global _verbindung
-    if _verbindung is None:
-        _verbindung = _Verbindung()
+async def rufe(name, argumente, ziel='server'):
+    if ziel not in ZIELE:
+        raise BrowserFehler('unbekanntes Ziel %r (server oder notebook)' % ziel)
+    if ziel not in _verbindungen:
+        _verbindungen[ziel] = _Verbindung(ziel)
+    _verbindung = _verbindungen[ziel]
     argumente = {k: v for k, v in argumente.items() if v is not None}
     r = await _verbindung.rufe(name, argumente)
     inhalt = []
