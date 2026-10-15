@@ -69,6 +69,13 @@ def main():
             konsole = []
             seite.on("console", lambda m: konsole.append(m.text) if m.type == "error" else None)
             seite.on("pageerror", lambda e: konsole.append(str(e)))
+
+            def oeffne(band, teil):
+                """Werkzeug wie ein Nutzer über das Menüband öffnen (falls nicht schon offen)."""
+                if seite.evaluate("!!document.querySelector('#wfInhalt #%s')" % teil):
+                    return
+                seite.click("#bandReiter [data-band=%s]" % band)
+                seite.click("[data-bandseite=%s] [data-wf~='%s']" % (band, teil))
             seite.goto("http://127.0.0.1:%d/" % PORT)
             seite.wait_for_function("window.v3dscan && window.v3dscan.S.scans.size === 2", timeout=20000)
             seite.mouse.click(700, 450)
@@ -125,7 +132,7 @@ def main():
             seite.keyboard.press("v")
 
             # --- Bereinigen: Tisch-Vorschau + Anwenden -----------------------
-            seite.click("#reiter button[data-reiter=bereinigen]")
+            oeffne("punkte", "w-tisch")
             seite.click("section[data-werkzeug-block=tisch] [data-vorschau]")
             seite.wait_for_function("[...v3dscan.S.scans.values()].some(e=>e.vor.some(v=>v))", timeout=20000)
             seite.mouse.move(cx, cy)
@@ -142,13 +149,14 @@ def main():
             n0 = punkte(1)
             seite.click("section[data-werkzeug-block=tisch] [data-anwenden]")
             seite.wait_for_function("v3dscan.S.scans.get(1).n < %d" % n0, timeout=20000)
+            oeffne("punkte", "w-inseln")
             seite.check("input[name=ziel][value=sichtbar]")
             seite.click("section[data-werkzeug-block=inseln] [data-anwenden]")
             seite.wait_for_function("!v3dscan.S.beschaeftigt")
             time.sleep(0.5)
 
             # --- Ausrichten ----------------------------------------------------
-            seite.click("#reiter button[data-reiter=ausrichten]")
+            oeffne("ausrichten", "w-reg-auto")
             seite.select_option("#wahlFest", "1")
             time.sleep(0.5)
             seite.select_option("#wahlBewegt", "2")
@@ -162,14 +170,17 @@ def main():
             soll = json.load(open(os.path.join(DATEN, "soll.json")))["ansicht_2.ply"]["matrix"]
             abw = max(abs(matrix[i][3] - soll[i][3]) for i in range(3))
             pruefe(abw < 1.0, "Automatisch: Verschiebung weicht %.3f mm ab" % abw)
-            seite.click("[data-aktion=abweichung]")
+            oeffne("ausrichten", "w-reg-abw")
+            seite.click("#wfInhalt [data-aktion=abweichung]")
             seite.wait_for_selector("#legende:not([hidden])", timeout=30000)
             seite.mouse.move(cx, cy + 5)
             seite.screenshot(path=os.path.join(BILDER, "04_ausgerichtet_abweichung.png"))
-            seite.click("[data-aktion=regAnwenden] >> nth=0")
+            oeffne("ausrichten", "w-reg-auto")
+            seite.click("#wfInhalt [data-aktion=regAnwenden]")
             seite.wait_for_function("!v3dscan.S.regMatrizen && !v3dscan.S.beschaeftigt", timeout=30000)
             time.sleep(0.5)
-            seite.click("[data-aktion=zusammenfuehren]")
+            oeffne("ausrichten", "w-reg-merge")
+            seite.click("#wfInhalt [data-aktion=zusammenfuehren]")
             seite.wait_for_function("v3dscan.S.scans.size === 3", timeout=30000)
             pruefe(True, "Zusammengeführt")
             seite.mouse.move(cx, cy - 5)

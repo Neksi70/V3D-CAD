@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
-FASSUNG = "0.4.0"
+FASSUNG = "0.5.0"
 HIER = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, "frozen", False):
     HIER = getattr(sys, "_MEIPASS", HIER)
@@ -32,6 +32,7 @@ WEB = os.path.join(HIER, "web")
 
 from kern import erkennung as er  # noqa: E402
 from kern import formen as fo  # noqa: E402
+from kern import koerper as kp  # noqa: E402
 from kern import koordinaten as ko  # noqa: E402
 from kern import netz as nz  # noqa: E402
 from kern import registrierung as rg  # noqa: E402
@@ -312,6 +313,8 @@ def befehl(name, d):
         return koordinaten(name.split("/", 1)[1], d)
     if name.startswith("formen/"):
         return formen_befehl(name.split("/", 1)[1], d)
+    if name.startswith("koerper/"):
+        return koerper_befehl(name.split("/", 1)[1], d)
 
     if name == "zusammenfuehren":
         neu = p.zusammenfuehren([int(i) for i in d.get("ids") or []],
@@ -382,6 +385,72 @@ def formen_befehl(was, d):
         _zusammenfassung_neu(erk)
         return _erkennung_senden(s.id)
     raise Fehler("Unbekannter Formen-Befehl %s" % was)
+
+
+# --- Koerper (OCP) ------------------------------------------------------------------
+def _b64(arr, typ):
+    return base64.b64encode(np.ascontiguousarray(arr, typ).tobytes()).decode()
+
+
+def netz_json(netz):
+    return {"xyz": _b64(netz["xyz"], np.float32), "tri": _b64(netz["tri"], np.uint32),
+            "kanten": _b64(netz["kanten"], np.float32)}
+
+
+def _element(d):
+    s = projekt.scan(d.get("id"))
+    erk = projekt.erkennung.get(s.id)
+    if not erk or erk["rev"] != s.rev:
+        raise Fehler("Keine aktuelle Erkennung – bitte neu analysieren.")
+    try:
+        eid = int(d.get("element"))
+    except (TypeError, ValueError):
+        raise Fehler("Kein Element gewählt.")
+    el = next((e for e in erk["elemente"] if e["id"] == eid), None)
+    if el is None:
+        raise Fehler("Element %s gibt es nicht (mehr)." % d.get("element"))
+    return s, el
+
+
+def koerper_befehl(was, d):
+    p = projekt
+    if was == "aus_form":
+        s, el = _element(d)
+        nenn = bool(d.get("nennmass", True))
+        par = kp.grundkoerper_parameter(el, nenn, zahl(d, "verlaengern", 0))
+        op = d.get("operation") or kp.standard_operation(el, bool(p.koerper))
+        if op not in kp.OPERATIONEN:
+            raise Fehler("Unbekannte Operation „%s“." % op)
+        ziel = None
+        if op != "neu":
+            ziel = p.koerper_holen(d["ziel"]) if d.get("ziel") is not None else p.standard_ziel()
+            if ziel is None:
+                raise Fehler("Zum %s braucht es einen Körper – erst einen Grundkörper erzeugen."
+                             % ("Abziehen" if op == "abziehen" else "Vereinen"))
+        werkzeug = kp.baue(par)
+        text = kp.beschreibung(par, nenn)
+        if op == "abziehen":
+            text += " – wird von „%s“ abgezogen" % ziel.name
+        elif op == "vereinen":
+            text += " – wird mit „%s“ vereint" % ziel.name
+        else:
+            text += " – neuer Körper"
+        info = {"text": text, "operation": op, "ziel": ziel.id if ziel else None}
+        if d.get("vorschau"):
+            return {"vorschau": netz_json(kp.vernetzen(werkzeug)), "info": info}
+        k = p.grundkoerper(werkzeug, kp.ART_NAMEN[par["art"]], op, ziel,
+                           quelle={"scan": s.id, "element": el["id"]},
+                           parameter=dict(par, nennmass=nenn, verlaengern=zahl(d, "verlaengern", 0),
+                                          typ=el.get("typ")))
+        return {"koerper": k.id, "info": info}
+    if was == "setzen":
+        sichtbar = d.get("sichtbar")
+        p.koerper_setzen(d.get("kid"), None if sichtbar is None else bool(sichtbar), d.get("name"))
+        return {}
+    if was == "entfernen":
+        p.koerper_entfernen(d.get("kid"))
+        return {}
+    raise Fehler("Unbekannter Körper-Befehl %s" % was)
 
 
 def _zusammenfassung_neu(erk):
@@ -621,6 +690,26 @@ class Handler(BaseHTTPRequestHandler):
                     daten = elementliste_csv(sid)
                     name = os.path.splitext(projekt.scan(sid).name)[0] + "_formen.csv"
                 return self._senden(200, daten, "text/csv; charset=utf-8", {
+                    "Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
+            if pfad.startswith("/api/koerper/netz/"):
+                with sperre:
+                    k = projekt.koerper_holen(pfad.rsplit("/", 1)[1])
+                    daten = netz_json(k.daten()["netz"])
+                return self._senden(200, daten, kopf={"X-Rev": str(k.rev)})
+            if pfad.startswith("/api/koerper/export/"):
+                fmt = q.get("format", "step").lower()
+                wer = pfad.rsplit("/", 1)[1]
+                with sperre:
+                    if wer == "alle":
+                        liste = list(projekt.koerper.values())
+                        name = "koerper"
+                    else:
+                        liste = [projekt.koerper_holen(wer)]
+                        name = liste[0].name
+                    daten = kp.exportieren([k.shape for k in liste], fmt)
+                name = "".join(c if c.isalnum() or c in "-_ ()" else "_" for c in name).strip() or "koerper"
+                name += kp.FORMATE.get(fmt, ".step")
+                return self._senden(200, daten, "application/octet-stream", {
                     "Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
             if pfad == "/api/projekt/speichern":
                 with sperre:

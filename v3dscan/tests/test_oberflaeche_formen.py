@@ -62,8 +62,15 @@ def main():
             seite.wait_for_function("window.v3dscan && v3dscan.S.scans.size === 1", timeout=30000)
             leer = lambda: seite.wait_for_function("!v3dscan.S.beschaeftigt", timeout=180000)  # noqa: E731
 
-            seite.click("#reiter button[data-reiter=formen]")
-            seite.click("[data-aktion=formenErkennen]")
+            def oeffne(band, teil):
+                """Werkzeug wie ein Nutzer über das Menüband öffnen (falls nicht schon offen)."""
+                if seite.evaluate("!!document.querySelector('#wfInhalt #%s')" % teil):
+                    return
+                seite.click("#bandReiter [data-band=%s]" % band)
+                seite.click("[data-bandseite=%s] [data-wf~='%s']" % (band, teil))
+
+            oeffne("bereiche", "w-formen-auto")
+            seite.click("#wfInhalt [data-aktion=formenErkennen]")
             seite.wait_for_selector("#formZusammenfassung:not([hidden])", timeout=180000)
             leer()
             text = seite.inner_text("#formZusammenfassung")
@@ -102,7 +109,8 @@ def main():
             # Auswahl wurde durch das Listen-Neuzeichnen nicht geloescht? neu setzen per Labels geht nicht mehr
             # (-1) -> Auswahl aus dem Schritt davor wiederherstellen
             seite.evaluate("""(eid) => { const e = v3dscan.S.scans.get(1); let n=0; for (let i = 0; i < e.n; i++) n += e.sel[i]; return n; }""", eid)
-            seite.click("[data-form-auswahl=auto]")
+            oeffne("bereiche", "w-formen-auswahl")
+            seite.click("#wfInhalt [data-form-auswahl=auto]")
             leer()
             time.sleep(0.4)
             letzte = seite.evaluate("v3dscan.S.erkennung.elemente[v3dscan.S.erkennung.elemente.length-1]")
@@ -110,7 +118,7 @@ def main():
                    "von Hand eingepasst: %s" % letzte["text"])
 
             with seite.expect_download() as dl:
-                seite.click("[data-aktion=formenCsv]")
+                seite.click("[data-bandseite=bereiche] [data-aktion=formenCsv]")
             csv = open(dl.value.path(), encoding="utf-8-sig").read().splitlines()
             pruefe(csv[0].startswith("Nr;Typ;Nennmaß") and len(csv) == vorher + 1, "CSV mit %d Zeilen" % (len(csv) - 1))
 

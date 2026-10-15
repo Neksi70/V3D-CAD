@@ -3,6 +3,10 @@
 # Rueckgaengig speichert vor jeder Aenderung Kopien der betroffenen Scans
 # (nicht Differenzen): einfach und robust. Damit der Speicher nicht vollaeuft,
 # gilt eine Obergrenze in Bytes - aelteste Schritte fallen zuerst weg.
+#
+# Volumenkoerper (kern/koerper.py) stehen im Rueckgaengig-Eintrag unter dem
+# Schluessel "koerper" als Stand der ganzen Koerperliste; TopoDS_Shapes sind
+# unveraenderlich, darum reichen dort Referenzen statt Kopien.
 
 import io
 import json
@@ -27,6 +31,9 @@ class Projekt:
         # Geometrieerkennung je Scan: {"rev", "elemente" (JSON), "labels" (int32),
         # "zusammenfassung", "freiform"} - gilt nur fuer genau diesen Datenstand
         self.erkennung = {}
+        self.koerper = {}         # id -> koerper.Koerper
+        self.naechster_koerper = 1
+        self.grundkoerper_zaehler = 0   # "Grundkörper<N>" wie in Design X
 
     # --- Verwaltung ---------------------------------------------------------
     def hinzufuegen(self, scan, merken=True):
@@ -59,6 +66,7 @@ class Projekt:
                 "hat_farbe": s.rgb is not None, "hat_normalen": s.nrm is not None,
                 "dreiecke": 0 if s.tri is None else len(s.tri),
             } for s in self.scans.values()],
+            "koerper": [k.zustand() for k in self.koerper.values()],
             "undo": self.undo[-1][0] if self.undo else None,
             "redo": self.redo[-1][0] if self.redo else None,
         }
@@ -73,9 +81,18 @@ class Projekt:
         self.redo.clear()
         self._kuerzen()
 
+    def _koerper_stand(self):
+        return {"liste": [k.kopie() for k in self.koerper.values()],
+                "naechste": self.naechster_koerper, "zaehler": self.grundkoerper_zaehler}
+
+    def _merke_koerper(self, text):
+        self.undo.append((text, {"koerper": self._koerper_stand()}))
+        self.redo.clear()
+        self._kuerzen()
+
     def _kuerzen(self):
         def groesse(e):
-            return sum(s.bytes() for s in e[1].values() if s is not None)
+            return sum(s.bytes() for s in e[1].values() if isinstance(s, Scan))
         while len(self.undo) > UNDO_SCHRITTE or \
                 (len(self.undo) > 1 and sum(map(groesse, self.undo)) > UNDO_BYTES):
             self.undo.pop(0)
@@ -86,6 +103,17 @@ class Projekt:
         text, eintrag = von.pop()
         gegen = {}
         for sid, alt in eintrag.items():
+            if sid == "koerper":
+                gegen["koerper"] = self._koerper_stand()
+                neu = {}
+                for k in alt["liste"]:
+                    jetzt = self.koerper.get(k.id)
+                    k.rev = max(k.rev, jetzt.rev if jetzt else 0) + 1
+                    neu[k.id] = k
+                self.koerper = neu
+                self.naechster_koerper = alt["naechste"]
+                self.grundkoerper_zaehler = alt["zaehler"]
+                continue
             aktuell = self.scans.get(sid)
             gegen[sid] = aktuell
             if alt is None:
@@ -182,6 +210,73 @@ class Projekt:
                 s.sichtbar = False
         return neu
 
+    # --- Volumenkoerper (mit Rueckgaengig) ------------------------------------------
+    def koerper_holen(self, kid):
+        try:
+            return self.koerper[int(kid)]
+        except (KeyError, ValueError, TypeError):
+            raise KeyError("Körper %s gibt es nicht (mehr)." % kid)
+
+    def standard_ziel(self):
+        """Ziel fuer vereinen/abziehen ohne Angabe: letzter sichtbarer Koerper."""
+        sichtbar = [k for k in self.koerper.values() if k.sichtbar]
+        liste = sichtbar or list(self.koerper.values())
+        return liste[-1] if liste else None
+
+    def grundkoerper(self, shape, art_name, operation, ziel=None, quelle=None, parameter=None):
+        """Werkzeugkoerper als neuen Koerper anlegen oder mit ziel (Koerper)
+        vereinen/von ihm abziehen. Liefert den geaenderten/neuen Koerper."""
+        from .koerper import Koerper, boolean, OP_ZUSATZ
+        nr = self.grundkoerper_zaehler + 1
+        eintrag = {"typ": "grundkoerper", "quelle": quelle, "parameter": parameter,
+                   "operation": operation}
+        if operation == "neu":
+            name = "Grundkörper%d (%s)" % (nr, art_name)
+            self._merke_koerper("%s erzeugt" % name)
+            k = Koerper(self.naechster_koerper, name, shape, [dict(eintrag, name=name)])
+            self.naechster_koerper += 1
+            self.koerper[k.id] = k
+        else:
+            if ziel is None:
+                raise ValueError("Kein Zielkörper für „%s“." % operation)
+            neu_shape = boolean(ziel.shape, shape, operation)
+            name = "Grundkörper%d (%s, %s)" % (nr, art_name, OP_ZUSATZ[operation])
+            self._merke_koerper("%s → %s" % (name, ziel.name))
+            k = self.koerper[ziel.id]
+            k.shape = neu_shape
+            k.verlauf = k.verlauf + [dict(eintrag, name=name)]
+            k.rev += 1
+        self.grundkoerper_zaehler = nr
+        return k
+
+    def koerper_hinzufuegen(self, shape, name, verlauf=None):
+        """Fertigen Koerper uebernehmen (z. B. Import, Tests)."""
+        from .koerper import Koerper
+        self._merke_koerper("Körper „%s“ hinzugefügt" % name)
+        k = Koerper(self.naechster_koerper, name, shape, verlauf or [{"name": name, "typ": "import"}])
+        self.naechster_koerper += 1
+        self.koerper[k.id] = k
+        return k
+
+    def koerper_setzen(self, kid, sichtbar=None, name=None):
+        k = self.koerper_holen(kid)
+        if sichtbar is None and not name:
+            return k
+        text = "Körper „%s“ %s" % (k.name, "umbenannt" if name else
+                                    ("eingeblendet" if sichtbar else "ausgeblendet"))
+        self._merke_koerper(text)
+        k = self.koerper[k.id]
+        if sichtbar is not None:
+            k.sichtbar = bool(sichtbar)
+        if name:
+            k.name = str(name)[:120]
+        return k
+
+    def koerper_entfernen(self, kid):
+        k = self.koerper_holen(kid)
+        self._merke_koerper("Körper „%s“ entfernt" % k.name)
+        del self.koerper[k.id]
+
     # --- Speichern / Laden -----------------------------------------------------
     def speichern(self):
         puffer = io.BytesIO()
@@ -203,6 +298,15 @@ class Projekt:
                     np.save(b, erk["labels"])
                     z.writestr("scan_%d_labels.npy" % s.id, b.getvalue())
                     eintrag["erkennung"] = {k: v for k, v in erk.items() if k not in ("labels", "rev")}
+            if self.koerper:
+                from .koerper import brep_text
+                info["koerper"] = []
+                for k in self.koerper.values():
+                    info["koerper"].append({"id": k.id, "name": k.name, "sichtbar": k.sichtbar,
+                                            "verlauf": k.verlauf})
+                    z.writestr("koerper_%d.brep" % k.id, brep_text(k.shape))
+                info["naechster_koerper"] = self.naechster_koerper
+                info["grundkoerper_zaehler"] = self.grundkoerper_zaehler
             z.writestr("projekt.json", json.dumps(info, ensure_ascii=False, indent=1))
         return puffer.getvalue()
 
@@ -226,6 +330,14 @@ class Projekt:
                     p.erkennung[s.id] = dict(e["erkennung"], rev=s.rev,
                                              labels=np.load(io.BytesIO(z.read("scan_%d_labels.npy" % e["id"]))))
                 p.naechste_id = max(p.naechste_id, s.id + 1)
+            if info.get("koerper"):
+                from .koerper import Koerper, aus_brep
+                for e in info["koerper"]:
+                    k = Koerper(int(e["id"]), e["name"], aus_brep(z.read("koerper_%d.brep" % e["id"])),
+                                e.get("verlauf") or [], e.get("sichtbar", True))
+                    p.koerper[k.id] = k
+                p.naechster_koerper = max([info.get("naechster_koerper", 1)] + [k + 1 for k in p.koerper])
+                p.grundkoerper_zaehler = int(info.get("grundkoerper_zaehler", 0))
         return p
 
 

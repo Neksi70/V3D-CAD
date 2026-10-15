@@ -53,7 +53,14 @@ def main():
             seite.goto("http://127.0.0.1:%d/" % PORT)
             seite.wait_for_function("window.v3dscan && v3dscan.S.scans.size === 1", timeout=30000)
             leer = lambda: seite.wait_for_function("!v3dscan.S.beschaeftigt", timeout=60000)  # noqa: E731
-            seite.click("#reiter button[data-reiter=achsen]")
+
+            def oeffne(band, teil):
+                """Werkzeug wie ein Nutzer über das Menüband öffnen (falls nicht schon offen)."""
+                if seite.evaluate("!!document.querySelector('#wfInhalt #%s')" % teil):
+                    return
+                seite.click("#bandReiter [data-band=%s]" % band)
+                seite.click("[data-bandseite=%s] [data-wf~='%s']" % (band, teil))
+            oeffne("ausrichten", "w-koord-321")
 
             # Auswahl als Zustand setzen (welche Punkte auf welcher Flaeche liegen,
             # weiss nur der Test ueber die Soll-Matrix); geklickt wird echt.
@@ -70,10 +77,10 @@ def main():
 
             def slot_form(slot, bedingung, knopf):
                 seite.evaluate("waehle((p) => %s)" % bedingung)
-                seite.click("#s-achsen [data-slot=%s] [data-form=%s]" % (slot, knopf))
+                seite.click("#w-koord-321 [data-slot=%s] [data-form=%s]" % (slot, knopf))
                 leer()
                 time.sleep(0.3)
-                return seite.inner_text("#s-achsen [data-slot=%s] [data-info]" % slot)
+                return seite.inner_text("#w-koord-321 [data-slot=%s] [data-info]" % slot)
 
             info = slot_form("primaer", "Math.abs(p[2]-15) < 0.2 && p[0] < 25", "ebene")
             print("  Primär:", info)
@@ -83,7 +90,7 @@ def main():
             info = slot_form("ursprung", "Math.abs(Math.hypot(p[0]-35, p[1]-20) - 5.015) < 0.2 && p[2] > 0.5 && p[2] < 14.5", "zylinder")
             print("  Ursprung:", info)
             pruefe("Ø 10,03" in info, "Bohrung als Zylinder Ø 10,03 erkannt")
-            seite.select_option("#s-achsen [data-slot=sekundaer] [data-ziel]", "x")
+            seite.select_option("#w-koord-321 [data-slot=sekundaer] [data-ziel]", "x")
             seite.click("[data-aktion=koordElemente]")
             leer()
             time.sleep(0.5)
@@ -97,7 +104,7 @@ def main():
             abw_weg = np.linalg.norm(T[:3, 3] - erwartet[:3, 3])
             pruefe(abw_dreh < 0.05 and abw_weg < 0.1, "3-2-1: %.4f° / %.4f mm vom Soll" % (abw_dreh, abw_weg))
 
-            seite.click("[data-aktion=koordAnwenden] >> nth=0")
+            seite.click("#wfInhalt [data-aktion=koordAnwenden]")
             leer()
             seite.wait_for_function("v3dscan.S.scans.get(1).rev > 1", timeout=30000)
             time.sleep(0.5)
@@ -109,6 +116,7 @@ def main():
             seite.screenshot(path=os.path.join(BILDER, "a2_angewendet_oben.png"))
 
             # Automatik: auf groesste Ebene stellen -> Boden auf Z=0
+            oeffne("ausrichten", "w-koord-auto")
             seite.select_option("#autoUrsprung", "unten")
             seite.click("[data-aktion=koordEbene]")
             leer()
@@ -116,7 +124,7 @@ def main():
             T2 = np.array(seite.evaluate("v3dscan.S.regMatrizen[1]"))
             e = np.abs(T2[:3, :3] @ [0, 0, 1])
             pruefe(e.max() > 0.999, "Auf größte Ebene: eine Plattenfläche wird Boden")
-            seite.click("[data-aktion=koordZurueck] >> nth=0")
+            seite.click("#wfInhalt [data-aktion=koordZurueck]")
 
             pruefe(not konsole, "keine JS-Fehler %s" % konsole[:3])
             browser.close()

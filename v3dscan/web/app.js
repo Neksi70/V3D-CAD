@@ -53,6 +53,7 @@ async function api(name, daten = {}, text = null) {
     const j = await r.json().catch(() => ({ fehler: 'Ungültige Antwort vom Dienst.' }));
     if (!r.ok || j.fehler) throw new Error(j.fehler || ('HTTP ' + r.status));
     if (j.zustand) await zustandUebernehmen(j.zustand);
+    if (text) konsole(`${text.replace(/…$/, '')} – fertig`);
     return j;
   });
 }
@@ -82,9 +83,22 @@ function meldung(text, art = '') {
   el.textContent = text;
   $('#meldungen').appendChild(el);
   setTimeout(() => el.remove(), art === 'fehler' ? 7000 : 3500);
+  konsole(text, art);
 }
 
 function status(text) { $('#statusText').textContent = text; }
+
+// Konsole unten: Protokoll aller Meldungen und Ergebnisse mit Zeitstempel
+function konsole(text, art = '') {
+  const box = $('#konsoleText');
+  const z = document.createElement('div');
+  if (art) z.className = art;
+  const t = new Date();
+  z.textContent = `[${t.toLocaleTimeString('de-DE')}] ${text}`;
+  box.appendChild(z);
+  while (box.childElementCount > 300) box.firstElementChild.remove();
+  box.scrollTop = box.scrollHeight;
+}
 
 async function sicher(fn) {
   try {
@@ -121,9 +135,10 @@ const b64 = {
 // Szene
 // ---------------------------------------------------------------------------
 const leinwand = $('#leinwand');
-const renderer = new THREE.WebGLRenderer({ canvas: leinwand, antialias: true, preserveDrawingBuffer: false });
+const renderer = new THREE.WebGLRenderer({ canvas: leinwand, antialias: true, alpha: true, preserveDrawingBuffer: false });
 renderer.setPixelRatio(window.devicePixelRatio);
-renderer.setClearColor(0x16191e);
+// Hintergrund (heller Verlauf) kommt aus CSS hinter der Leinwand
+renderer.setClearColor(0x000000, 0);
 const szene = new THREE.Scene();
 const kamera = new THREE.PerspectiveCamera(45, 1, 0.1, 10000);
 kamera.position.set(0, 150, 400);
@@ -132,6 +147,12 @@ steuerung.enableDamping = false;
 steuerung.zoomToCursor = true;
 const hilfsGruppe = new THREE.Group();
 szene.add(hilfsGruppe);
+// Licht nur für Körper (Scans haben eigene Shader ohne Licht)
+szene.add(new THREE.HemisphereLight(0xffffff, 0x8a9099, 1.6));
+const kameraLicht = new THREE.DirectionalLight(0xffffff, 1.4);
+kamera.add(kameraLicht);
+kameraLicht.position.set(0.4, 0.8, 1);
+szene.add(kamera);
 let gitter = null;
 
 const PUNKT_VS = `
@@ -153,7 +174,7 @@ const PUNKT_VS = `
       c *= 0.3 + 0.8 * l;
     }
     if (mark > 1.5) c = vec3(1.0, 0.18, 0.12);
-    else if (mark > 0.5) c = mix(c, vec3(1.0, 0.62, 0.0), 0.8);
+    else if (mark > 0.5) c = mix(c, vec3(0.05, 0.78, 0.84), 0.85);
     vFarbe = c;
   }`;
 const PUNKT_FS = `
@@ -195,7 +216,7 @@ const NETZ_FS = `
     c += vec3(0.12) * pow(max(dot(n * (vorne * 2.0 - 1.0), h), 0.0), 24.0);
     if (vorne < 0.5) c = mix(c, vec3(0.25, 0.3, 0.55), 0.6);
     if (vMark > 1.5) c = vec3(1.0, 0.18, 0.12);
-    else if (vMark > 0.5) c = mix(c, vec3(1.0, 0.62, 0.0), 0.8);
+    else if (vMark > 0.5) c = mix(c, vec3(0.05, 0.78, 0.84), 0.85);
     gl_FragColor = vec4(c, 1.0);
   }`;
 const TIEFE_VS = `
@@ -368,6 +389,8 @@ async function zustandUebernehmen(z) {
   $('#knopfUndo').title = z.undo ? 'Rückgängig: ' + z.undo + ' (Strg+Z)' : 'Nichts rückgängig zu machen';
   $('#knopfRedo').title = z.redo ? 'Wiederholen: ' + z.redo + ' (Strg+Y)' : 'Nichts zu wiederholen';
   $('#leerHinweis').hidden = z.scans.length > 0;
+  await koerperUebernehmen(z.koerper || []);
+  elementEigenschaften();
   if (erstesMal && z.scans.length) einpassen();
   hilfenZeichnen();
   kameraGrenzen();
@@ -435,6 +458,7 @@ function eigenschaftenZeichnen() {
     $('#lochListe').innerHTML = '';
   }
   $('#eigenschaften').hidden = !e;
+  elementEigenschaften();
   if (!e) return;
   const bb = e.geo.boundingBox, groesse = bb.getSize(new THREE.Vector3()), mitte = bb.getCenter(new THREE.Vector3());
   const f = (v) => v.toLocaleString('de-DE', { maximumFractionDigits: 1, minimumFractionDigits: 1 });
@@ -598,6 +622,7 @@ function auswahlMasken() {
 function szenenKugel() {
   const box = new THREE.Box3();
   for (const e of sichtbareScans()) if (e.n) box.union(e.geo.boundingBox.clone().applyMatrix4(e.obj.matrix));
+  if (S.koerper) for (const k of S.koerper.values()) if (k.meta.sichtbar) box.union(k.flaeche.geometry.boundingBox);
   if (box.isEmpty()) return new THREE.Sphere(new THREE.Vector3(), 100);
   return box.getBoundingSphere(new THREE.Sphere());
 }
@@ -650,7 +675,9 @@ function einpassen() {
 function gitterSetzen(k) {
   if (gitter) { szene.remove(gitter); gitter.geometry.dispose(); gitter.material.dispose(); }
   const groesse = Math.pow(10, Math.ceil(Math.log10(k.radius * 3)));
-  gitter = new THREE.GridHelper(groesse, 20, 0x3a4350, 0x262c35);
+  gitter = new THREE.GridHelper(groesse, 20, 0x8f97a1, 0xb4bac2);
+  gitter.material.transparent = true;
+  gitter.material.opacity = 0.6;
   if (S.oben === 'z') gitter.rotation.x = Math.PI / 2;
   const unten = new THREE.Box3();
   for (const e of sichtbareScans()) unten.union(e.geo.boundingBox);
@@ -677,6 +704,23 @@ function zeichnen() {
   markerGroesse();
   renderer.render(szene, kamera);
   achsenZeichnen();
+  massstabZeichnen();
+}
+
+let massstabAlt = '';
+function massstabZeichnen() {
+  const h = leinwand.clientHeight || 1;
+  const dist = kamera.position.distanceTo(steuerung.target);
+  const mmProPx = 2 * dist * Math.tan(THREE.MathUtils.degToRad(kamera.fov / 2)) / h;
+  const roh = mmProPx * 70;
+  const stufe = Math.pow(10, Math.floor(Math.log10(roh)));
+  const wert = [1, 2, 5, 10].map((f) => f * stufe).find((v) => v >= roh * 0.6) || stufe * 10;
+  const px = wert / mmProPx;
+  const text = `${wert.toLocaleString('de-DE')} mm|${px.toFixed(0)}`;
+  if (text === massstabAlt) return;
+  massstabAlt = text;
+  $('#massstab .balken').style.width = px.toFixed(0) + 'px';
+  $('#massstab span').textContent = wert.toLocaleString('de-DE') + ' mm';
 }
 
 const achsenSvg = $('#achsen');
@@ -705,8 +749,8 @@ function tiefenbild() {
   tiefeMaterial.uniforms.fern.value = kamera.far;
   tiefeNetzMaterial.uniforms.nah.value = kamera.near;
   tiefeNetzMaterial.uniforms.fern.value = kamera.far;
-  const altHilfe = hilfsGruppe.visible, altGitter = gitter ? gitter.visible : false;
-  hilfsGruppe.visible = false; if (gitter) gitter.visible = false;
+  const altHilfe = hilfsGruppe.visible, altGitter = gitter ? gitter.visible : false, altKoerper = koerperGruppe.visible;
+  hilfsGruppe.visible = false; if (gitter) gitter.visible = false; koerperGruppe.visible = false;
   if (S.weltAchsen) S.weltAchsen.visible = false;
   const getauscht = [];
   for (const e of S.scans.values()) { getauscht.push([e.obj, e.obj.material]); e.obj.material = e.obj.userData.tiefe; }
@@ -720,7 +764,7 @@ function tiefenbild() {
   renderer.setRenderTarget(null);
   renderer.setClearColor(altFarbe, altAlpha);
   for (const [o, m] of getauscht) o.material = m;
-  hilfsGruppe.visible = altHilfe; if (gitter) gitter.visible = altGitter;
+  hilfsGruppe.visible = altHilfe; if (gitter) gitter.visible = altGitter; koerperGruppe.visible = altKoerper;
   if (S.weltAchsen) S.weltAchsen.visible = true;
   ziel.dispose();
   const tiefe = new Float32Array(w * h);
@@ -845,6 +889,24 @@ leinwand.addEventListener('pointermove', (ev) => {
 });
 leinwand.addEventListener('dblclick', () => polygonSchliessen());
 
+// Klick (ohne Ziehen) im Drehen-Werkzeug wählt den Bereich unter der Maus
+let klickStart = null;
+leinwand.addEventListener('pointerdown', (ev) => { klickStart = ev.button === 0 ? lokalePos(ev) : null; });
+leinwand.addEventListener('pointerup', (ev) => {
+  if (!klickStart || S.werkzeug !== 'orbit' || S.pickModus || S.beschaeftigt) return;
+  const [x, y] = lokalePos(ev);
+  if (Math.hypot(x - klickStart[0], y - klickStart[1]) > 4) return;
+  klickStart = null;
+  const erk = S.erkennung;
+  if (!erk) return;
+  const p = punktAn(x, y, erk.id);
+  if (!p) return;
+  const l = erk.labels[p.index];
+  const el = l >= 0 ? erk.elemente.find((q) => q.id === l) : null;
+  if (el) formWaehlen(el, false);
+  else status('Kein Bereich an dieser Stelle (Freiform/ungeordnet).');
+});
+
 function polygonSchliessen() {
   if (!zug || zug.art !== 'polygon') return false;
   const z = zug;
@@ -867,7 +929,7 @@ leinwand.addEventListener('pointerup', () => {
 
 function zugZeichnen() {
   const p = zug.punkte;
-  const farbe = zug.weg ? '#e0584f' : '#3d9be9';
+  const farbe = zug.weg ? '#d03b31' : '#d4237a';
   if (zug.art === 'rechteck') {
     if (p.length < 2) { zeichnung.innerHTML = ''; return; }
     const x = Math.min(p[0][0], p[1][0]), y = Math.min(p[0][1], p[1][1]);
@@ -1403,7 +1465,7 @@ function formText(f) {
 }
 
 function koordSlotsZeichnen() {
-  for (const el of $$('#s-achsen .element')) {
+  for (const el of $$('#w-koord-321 .element')) {
     const f = S.koord[el.dataset.slot];
     el.classList.toggle('gesetzt', !!f);
     el.querySelector('[data-info]').textContent = formText(f);
@@ -1411,7 +1473,7 @@ function koordSlotsZeichnen() {
   hilfenZeichnen();
 }
 
-$$('#s-achsen .element').forEach((el) => {
+$$('#w-koord-321 .element').forEach((el) => {
   const slot = el.dataset.slot;
   el.querySelectorAll('[data-form]').forEach((b) => b.addEventListener('click', () => {
     const art = b.dataset.form;
@@ -1502,8 +1564,8 @@ async function koordAnwenden() {
 }
 
 function koordZiele() {
-  const z1 = $('#s-achsen [data-slot=primaer] [data-ziel]').value;
-  const z2 = $('#s-achsen [data-slot=sekundaer] [data-ziel]').value;
+  const z1 = $('#w-koord-321 [data-slot=primaer] [data-ziel]').value;
+  const z2 = $('#w-koord-321 [data-slot=sekundaer] [data-ziel]').value;
   if (z1 === z2) throw new Error('Primär- und Sekundärachse müssen verschieden sein.');
   return { ziel1: z1, ziel2: z2 };
 }
@@ -1537,6 +1599,7 @@ function erkennungUebernehmen(erk) {
   for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
   S.erkennung = { ...erk, labels: new Int16Array(u.buffer) };
   S.formAktiv = null;
+  elementEigenschaften();
   if (S.farbModus !== 'segmente') { S.farbModus = 'segmente'; $('#farbModus').value = 'segmente'; }
   alleFarbenSetzen();
   formListeZeichnen();
@@ -1545,7 +1608,7 @@ function erkennungUebernehmen(erk) {
 async function formenErkennen() {
   const e = S.scans.get(S.aktiv);
   if (!e) throw new Error('Kein Scan aktiv.');
-  const arten = $$('#s-formen [data-art]').filter((c) => c.checked).map((c) => c.dataset.art);
+  const arten = $$('#w-formen-auto [data-art]').filter((c) => c.checked).map((c) => c.dataset.art);
   const tol = $('#formToleranz').value;
   const j = await api('formen/erkennen', { id: e.id, arten, toleranz: tol ? Number(tol) : null,
     winkel: Number($('#formWinkel').value), min_anteil: Number($('#formMin').value) }, 'Analysiere Geometrie…');
@@ -1622,11 +1685,16 @@ function formListeZeichnen() {
   }
 }
 
-function formWaehlen(el) {
+function formWaehlen(el, hinsehen = true) {
   const erk = S.erkennung;
   const e = S.scans.get(erk.id);
   if (!e) return;
   S.formAktiv = el.id;
+  S.koerperAktiv = null;
+  for (const k of S.koerper.values()) koerperDarstellung(k);
+  koerperListeZeichnen();
+  elementEigenschaften();
+  if (WF.haupt && WF.haupt.id === 'w-grundkoerper') { gkFeldZeichnen(); gkVorschauWeg(); $('#gkInfo').textContent = ''; }
   const box = new THREE.Box3();
   const v = new THREE.Vector3();
   for (const x of S.scans.values()) x.sel.fill(0);
@@ -1636,7 +1704,7 @@ function formWaehlen(el) {
   }
   alleMarkierungen();
   formListeZeichnen();
-  if (!n) return;
+  if (!n || !hinsehen) { status(el.text); return; }
   const k = box.getBoundingSphere(new THREE.Sphere());
   const richtung = kamera.position.clone().sub(steuerung.target).normalize();
   const dist = Math.max(k.radius, 2) / Math.sin(THREE.MathUtils.degToRad(kamera.fov / 2)) * 1.6;
@@ -1658,6 +1726,243 @@ $$('[data-form-auswahl]').forEach((b) => b.addEventListener('click', () => siche
   const neu = j.erkennung.elemente[j.erkennung.elemente.length - 1];
   meldung(neu.text, 'ok');
 })));
+
+// ---------------------------------------------------------------------------
+// Körper (OCP im Dienst): Anzeige, Modellbaum, Verlauf, Grundkörper aus Bereich
+// ---------------------------------------------------------------------------
+const koerperGruppe = new THREE.Group();
+szene.add(koerperGruppe);
+S.koerper = new Map();     // kid -> {meta, gruppe, flaeche, kanten}
+S.koerperAktiv = null;
+S.gkVorschau = null;       // THREE.Group der Vorschau
+
+function b64Uint32(text) {
+  const bin = atob(text);
+  const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return new Uint32Array(u.buffer);
+}
+
+function koerperObjekt(d, farbe, deckkraft = 1) {
+  const g = new THREE.Group();
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(b64.float32(d.xyz), 3));
+  geo.setIndex(new THREE.BufferAttribute(b64Uint32(d.tri), 1));
+  geo.computeVertexNormals();
+  geo.computeBoundingBox();
+  const mat = new THREE.MeshStandardMaterial({ color: farbe, metalness: 0.05, roughness: 0.55, side: THREE.DoubleSide,
+    transparent: deckkraft < 1, opacity: deckkraft, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+  const flaeche = new THREE.Mesh(geo, mat);
+  g.add(flaeche);
+  let kanten = null;
+  if (d.kanten) {
+    const kg = new THREE.BufferGeometry();
+    kg.setAttribute('position', new THREE.BufferAttribute(b64.float32(d.kanten), 3));
+    kanten = new THREE.LineSegments(kg, new THREE.LineBasicMaterial({ color: 0x20262d }));
+    g.add(kanten);
+  }
+  return { gruppe: g, flaeche, kanten };
+}
+
+function koerperWeg(k) {
+  koerperGruppe.remove(k.gruppe);
+  k.gruppe.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+}
+
+function koerperDarstellung(k) {
+  const t = Number($('#koerperTransparenz').value);
+  k.flaeche.material.transparent = t > 0;
+  k.flaeche.material.opacity = 1 - t;
+  k.flaeche.material.depthWrite = t === 0;
+  k.flaeche.material.color.set(k.meta.kid === S.koerperAktiv ? 0x9cc3ea : 0xaeb4bc);
+  if (k.kanten) k.kanten.visible = $('#koerperKanten').checked;
+  k.gruppe.visible = k.meta.sichtbar;
+}
+
+async function koerperUebernehmen(liste) {
+  const ids = new Set(liste.map((m) => m.id));
+  for (const [kid, k] of S.koerper) if (!ids.has(kid)) { koerperWeg(k); S.koerper.delete(kid); }
+  for (const meta of liste) {
+    let k = S.koerper.get(meta.id);
+    if (!k || k.meta.rev !== meta.rev) {
+      const r = await fetch('/api/koerper/netz/' + meta.id);
+      if (!r.ok) throw new Error('Körper ' + meta.name + ' nicht ladbar');
+      const d = await r.json();
+      if (k) koerperWeg(k);
+      k = { ...koerperObjekt(d, 0xaeb4bc), meta: { ...meta, kid: meta.id } };
+      koerperGruppe.add(k.gruppe);
+      S.koerper.set(meta.id, k);
+    }
+    k.meta = { ...meta, kid: meta.id };
+    koerperDarstellung(k);
+  }
+  if (S.koerperAktiv !== null && !S.koerper.has(S.koerperAktiv)) S.koerperAktiv = null;
+  koerperListeZeichnen();
+  verlaufZeichnen();
+  gkZielFuellen();
+}
+
+function koerperWaehlen(kid) {
+  S.koerperAktiv = S.koerperAktiv === kid ? null : kid;
+  for (const k of S.koerper.values()) koerperDarstellung(k);
+  koerperListeZeichnen();
+  verlaufZeichnen();
+  elementEigenschaften();
+}
+
+function koerperListeZeichnen() {
+  const box = $('#koerperListe');
+  if (!S.koerper.size) { box.innerHTML = '<span class="info">Noch keine Körper.</span>'; return; }
+  box.innerHTML = '';
+  for (const k of S.koerper.values()) {
+    const m = k.meta;
+    const el = document.createElement('div');
+    el.className = 'koerper' + (m.id === S.koerperAktiv ? ' aktiv' : '') + (m.sichtbar ? '' : ' versteckt');
+    el.innerHTML = `<button class="auge" title="Ein-/Ausblenden">${m.sichtbar ? '👁' : '◌'}</button>
+      <span class="punkt" style="background:#aeb4bc;border:1px solid #6b737c"></span>
+      <span class="name" title="Doppelklick zum Umbenennen"></span>
+      <span class="rechts"><button class="weg" title="Körper entfernen">✕</button></span>
+      <span class="zahl"></span>`;
+    el.querySelector('.name').textContent = m.name;
+    el.querySelector('.zahl').textContent = `Volumen ${zahlText(m.volumen || 0, 1)} mm³`;
+    el.addEventListener('click', () => koerperWaehlen(m.id));
+    el.querySelector('.auge').addEventListener('click', (ev) => { ev.stopPropagation(); sicher(() => api('koerper/setzen', { kid: m.id, sichtbar: !m.sichtbar })); });
+    el.querySelector('.weg').addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (confirm(`Körper „${m.name}“ entfernen? (Rückgängig möglich)`)) sicher(() => api('koerper/entfernen', { kid: m.id }));
+    });
+    el.querySelector('.name').addEventListener('dblclick', (ev) => {
+      ev.stopPropagation();
+      const name = prompt('Neuer Name:', m.name);
+      if (name) sicher(() => api('koerper/setzen', { kid: m.id, name }));
+    });
+    box.appendChild(el);
+  }
+}
+
+function verlaufZeichnen() {
+  const box = $('#verlaufListe');
+  if (!S.koerper.size) { box.innerHTML = '<span class="info">Noch keine Modell-Schritte.</span>'; return; }
+  box.innerHTML = '';
+  for (const k of S.koerper.values()) {
+    const kopf = document.createElement('div');
+    kopf.className = 'schritt koerperKopf' + (k.meta.id === S.koerperAktiv ? ' aktiv' : '');
+    kopf.innerHTML = '<span class="sym">⬢</span><span></span>';
+    kopf.lastChild.textContent = k.meta.name;
+    kopf.addEventListener('click', () => koerperWaehlen(k.meta.id));
+    box.appendChild(kopf);
+    for (const v of k.meta.verlauf || []) {
+      const z = document.createElement('div');
+      z.className = 'schritt unter';
+      z.innerHTML = `<span class="sym">${/abgezogen/.test(v.name) ? '⊖' : /vereint/.test(v.name) ? '⊕' : '◆'}</span><span></span>`;
+      z.lastChild.textContent = v.name;
+      z.addEventListener('click', () => koerperWaehlen(k.meta.id));
+      box.appendChild(z);
+    }
+  }
+}
+
+// Eigenschaften rechts: gewählter Bereich bzw. Körper
+const TYP_NAME = { ebene: 'Ebene', bohrung: 'Bohrung', zapfen: 'Zapfen/Welle', zylinder: 'Zylinder', zylinderflaeche: 'Zylinderfläche',
+  rundung: 'Rundung', hohlkehle: 'Hohlkehle', kugel: 'Kugel', kugelmulde: 'Kugelmulde', kegel: 'Kegel', senkung: 'Senkung' };
+function vekText(v, st = 3) { return v ? v.map((x) => zahlText(x, st)).join(' ; ') : '–'; }
+function elementEigenschaften() {
+  const tab = $('#elementTabelle');
+  const zeilen = [];
+  let kopf = '';
+  const k = S.koerperAktiv !== null ? S.koerper.get(S.koerperAktiv) : null;
+  const erk = S.erkennung;
+  const el = erk && S.formAktiv !== null ? erk.elemente.find((x) => x.id === S.formAktiv) : null;
+  if (k) {
+    kopf = 'Körper';
+    const m = k.meta;
+    zeilen.push(['Name', m.name], ['Volumen', `${zahlText(m.volumen || 0, 2)} mm³`]);
+    if (m.groesse) zeilen.push(['Größe X × Y × Z', m.groesse.map((x) => zahlText(x, 2)).join(' × ') + ' mm']);
+    zeilen.push(['Dreiecke (Anzeige)', (m.dreiecke || 0).toLocaleString('de-DE')], ['Schritte', String((m.verlauf || []).length)]);
+  } else if (el) {
+    kopf = 'Bereich';
+    zeilen.push(['Typ', TYP_NAME[el.typ] || el.typ], ['Beschreibung', el.text]);
+    if ('durchmesser' in el) zeilen.push(['Durchmesser', `${zahlText(el.durchmesser)} mm`]);
+    if ('durchmesser_nenn' in el) zeilen.push(['Nennmaß Ø', `${zahlText(el.durchmesser_nenn)} mm`]);
+    if ('radius_nenn' in el) zeilen.push(['Nennmaß R', `${zahlText(el.radius_nenn)} mm`]);
+    if ('hoehe' in el) zeilen.push(['Höhe', `${zahlText(el.hoehe)} mm`]);
+    if ('winkel_grad' in el) zeilen.push(['Öffnungswinkel', `${zahlText(el.winkel_grad, 2)}°`]);
+    if (el.achse) zeilen.push(['Achse', vekText(el.achse)]);
+    if (el.normale) zeilen.push(['Normale', vekText(el.normale)]);
+    if (el.mitte) zeilen.push(['Mitte', vekText(el.mitte)]);
+    else if (el.punkt) zeilen.push(['Punkt', vekText(el.punkt)]);
+    if (el.ausdehnung) zeilen.push(['Ausdehnung', el.ausdehnung.map((x) => zahlText(x, 1)).join(' × ') + ' mm']);
+    zeilen.push(['RMS', `${zahlText(el.rms, 4)} mm`], ['Punkte', el.punkte.toLocaleString('de-DE')]);
+  }
+  $('#elementEigenschaften').hidden = !zeilen.length;
+  $('#elementKopf').textContent = kopf;
+  tab.innerHTML = '';
+  for (const [a, b] of zeilen) { const tr = tab.insertRow(); tr.insertCell().textContent = a; tr.insertCell().textContent = b; }
+  $('#eigenschaftenLeer').hidden = !$('#eigenschaften').hidden || !$('#elementEigenschaften').hidden;
+}
+
+// Grundkörper aus Bereich ----------------------------------------------------
+function gkElement() {
+  const erk = S.erkennung;
+  return erk && S.formAktiv !== null ? erk.elemente.find((x) => x.id === S.formAktiv) : null;
+}
+function gkFeldZeichnen() {
+  const el = gkElement();
+  const f = $('#gkBereich');
+  f.textContent = el ? el.text : '– keiner gewählt –';
+  f.classList.toggle('leer', !el);
+  gkZielFuellen();
+}
+function gkZielFuellen() {
+  const sel = $('#gkZiel');
+  const alt = Number(sel.value);
+  sel.innerHTML = [...S.koerper.values()].map((k) => `<option value="${k.meta.id}"></option>`).join('');
+  [...sel.options].forEach((o) => { o.textContent = S.koerper.get(Number(o.value)).meta.name; });
+  if (S.koerper.has(alt)) sel.value = alt;
+  else if (S.koerperAktiv !== null) sel.value = S.koerperAktiv;
+  const op = $('#gkOperation').value;
+  sel.disabled = !(op === 'vereinen' || op === 'abziehen') || !S.koerper.size;
+}
+$('#gkOperation').addEventListener('change', gkZielFuellen);
+function gkParameter() {
+  const el = gkElement();
+  if (!el) throw new Error('Erst einen Bereich wählen (links unter „Bereiche“ oder im Modell anklicken).');
+  const op = $('#gkOperation').value || null;
+  const ziel = op === 'vereinen' || op === 'abziehen' ? Number($('#gkZiel').value) : null;
+  if ((op === 'vereinen' || op === 'abziehen') && !S.koerper.has(ziel)) throw new Error('Zielkörper wählen – es gibt noch keinen.');
+  return { id: S.erkennung.id, element: el.id, nennmass: $('#gkNennmass').checked,
+    verlaengern: Number($('#gkVerlaengern').value) || 0, operation: op, ziel };
+}
+function gkVorschauWeg() {
+  if (!S.gkVorschau) return;
+  koerperGruppe.remove(S.gkVorschau);
+  S.gkVorschau.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+  S.gkVorschau = null;
+}
+async function gkVorschau() {
+  const j = await api('koerper/aus_form', { ...gkParameter(), vorschau: true }, 'Baue Vorschau…');
+  gkVorschauWeg();
+  const o = koerperObjekt(j.vorschau, 0xf08a1c, 0.55);
+  o.kanten && o.kanten.material.color.set(0xb35a00);
+  S.gkVorschau = o.gruppe;
+  koerperGruppe.add(o.gruppe);
+  $('#gkInfo').textContent = j.info.text;
+}
+async function gkAnwenden() {
+  const j = await api('koerper/aus_form', { ...gkParameter(), vorschau: false }, 'Erzeuge Körper…');
+  gkVorschauWeg();
+  $('#gkInfo').textContent = '';
+  if (j.koerper !== undefined && j.koerper !== null) { S.koerperAktiv = j.koerper; for (const k of S.koerper.values()) koerperDarstellung(k); koerperListeZeichnen(); verlaufZeichnen(); }
+  meldung('Körper erzeugt.', 'ok');
+}
+function koerperExport(format) {
+  if (!S.koerper.size) throw new Error('Noch keine Körper – erst einen Grundkörper erzeugen.');
+  const ziel = S.koerperAktiv !== null ? S.koerperAktiv : 'alle';
+  herunterladen(`/api/koerper/export/${ziel}?format=${format}`);
+  konsole(`Export ${format.toUpperCase()}: ${ziel === 'alle' ? 'alle Körper' : S.koerper.get(ziel).meta.name}`, 'ok');
+}
+$('#koerperKanten').addEventListener('change', () => { for (const k of S.koerper.values()) koerperDarstellung(k); });
+$('#koerperTransparenz').addEventListener('input', () => { for (const k of S.koerper.values()) koerperDarstellung(k); });
 
 // ---------------------------------------------------------------------------
 // Ausrichten
@@ -1878,6 +2183,8 @@ const AKTIONEN = {
   nichts: { text: 'Auswahl aufheben / Abbrechen', taste: 'Escape', fn: () => {
     if (zug) { zug = null; zeichnung.innerHTML = ''; status('Abgebrochen.'); return; }
     if (S.pickModus) { pickModusSetzen(null); status('Punkte setzen beendet.'); return; }
+    const gewaehlt = [...S.scans.values()].some((e) => e.sel.some((x) => x));
+    if (!gewaehlt && !$('#werkzeugfenster').hidden) { werkzeugSchliessen(true); return; }
     auswahlAlle(0);
   } },
   invertieren: { text: 'Auswahl umkehren', taste: 'Ctrl+I', fn: auswahlUmkehren },
@@ -1943,6 +2250,13 @@ const AKTIONEN = {
   koordZurueck: { text: 'Koordinaten-Vorschau zurücksetzen', fn: () => regZuruecksetzen() },
   koordLeeren: { text: 'Elemente leeren', fn: () => { S.koord = { primaer: null, sekundaer: null, ursprung: null }; koordSlotsZeichnen(); } },
   netzProbleme: { text: 'Problemstellen markieren', fn: netzProblemeMarkieren },
+  gkVorschau: { text: 'Grundkörper: Vorschau', fn: gkVorschau },
+  gkAnwenden: { text: 'Grundkörper erzeugen', fn: gkAnwenden },
+  gkZurueck: { text: '', fn: () => { gkVorschauWeg(); $('#gkInfo').textContent = ''; } },
+  grundkoerper: { text: 'Werkzeug: Grundkörper aus Bereich', taste: 'G', fn: () => werkzeugOeffnen('w-grundkoerper', $('[data-bandseite=modell] [data-wf=w-grundkoerper]')) },
+  koerperStep: { text: 'Körper als STEP exportieren', fn: () => koerperExport('step') },
+  koerperIges: { text: 'Körper als IGES exportieren', fn: () => koerperExport('iges') },
+  anzeigeReiter: { text: 'Anzeigeoptionen', fn: () => rechtsSetzen('anzeige') },
   tasten: { text: 'Tastenkürzel', fn: tastenDialog },
   tastenZu: { text: '', fn: () => $('#tastenDialog').close() },
   tastenStandard: { text: '', fn: () => { localStorage.removeItem('v3dscan.tasten'); tastenLaden(); tastenTabelle(); } },
@@ -2024,11 +2338,107 @@ document.addEventListener('click', (ev) => {
   if (w && w.tagName === 'BUTTON') werkzeugSetzen(w.dataset.werkzeug);
 });
 
-// Reiter
-$$('#reiter button').forEach((b) => b.addEventListener('click', () => {
-  $$('#reiter button').forEach((x) => x.classList.toggle('an', x === b));
-  $$('.seite').forEach((s) => s.classList.toggle('an', s.id === 's-' + b.dataset.reiter));
-}));
+// ---------------------------------------------------------------------------
+// Menüband, Datei-Menü, rechte Reiter, Konsole
+// ---------------------------------------------------------------------------
+function bandSetzen(name) {
+  $$('#bandReiter [data-band]').forEach((x) => x.classList.toggle('an', x.dataset.band === name));
+  $$('.bandseite').forEach((x) => x.classList.toggle('an', x.dataset.bandseite === name));
+  localStorage.setItem('v3dscan.band', name);
+}
+$$('#bandReiter [data-band]').forEach((b) => b.addEventListener('click', () => bandSetzen(b.dataset.band)));
+$('#menueKnopf').addEventListener('click', (ev) => { ev.stopPropagation(); $('#menue').hidden = !$('#menue').hidden; });
+document.addEventListener('click', (ev) => {
+  if (!$('#menue').hidden && !ev.target.closest('#menue') && !ev.target.closest('[data-menue-export]')) $('#menue').hidden = true;
+});
+$('#menue').addEventListener('click', (ev) => { if (ev.target.closest('button[data-aktion]')) $('#menue').hidden = true; });
+$$('[data-menue-export]').forEach((b) => b.addEventListener('click', (ev) => { ev.stopPropagation(); $('#menue').hidden = false; }));
+
+function rechtsSetzen(name) {
+  $$('#rechtsReiter [data-rechts]').forEach((x) => x.classList.toggle('an', x.dataset.rechts === name));
+  $$('.rechtsSeite').forEach((x) => x.classList.toggle('an', x.dataset.rechtsseite === name));
+}
+$$('#rechtsReiter [data-rechts]').forEach((b) => b.addEventListener('click', () => rechtsSetzen(b.dataset.rechts)));
+$('#konsoleZu').addEventListener('click', () => {
+  $('#konsole').classList.toggle('zu');
+  $('#konsoleZu').textContent = $('#konsole').classList.contains('zu') ? '▴' : '▾';
+});
+
+// ---------------------------------------------------------------------------
+// Werkzeugfenster: holt Abschnitte aus #werkzeugablage ins Ansichtsfenster.
+// Kopf: 👁 = Vorschau, ✓ = Übernehmen, ✕ = Zurücksetzen + Schließen.
+// ---------------------------------------------------------------------------
+const WF = { teile: [], knopf: null };
+
+function wfKnopf(haupt, art) {
+  if (!haupt) return null;
+  const nachText = (re) => [...haupt.querySelectorAll('button')].find((b) => re.test(b.textContent.trim()));
+  if (art === 'vorschau') return haupt.querySelector('[data-vorschau]') || nachText(/^Vorschau/);
+  if (art === 'ok') return haupt.querySelector('[data-anwenden]') || haupt.querySelector('button.haupt');
+  return haupt.querySelector('[data-zuruecksetzen]') || nachText(/^Zurücksetzen/);
+}
+
+function werkzeugOeffnen(liste, knopf = null) {
+  werkzeugSchliessen(false);
+  const ids = liste.split(/\s+/).filter(Boolean);
+  const inhalt = $('#wfInhalt');
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el) { inhalt.appendChild(el); WF.teile.push(el); }
+  }
+  const haupt = [...WF.teile].reverse().find((el) => el.tagName === 'SECTION');
+  $('#wfTitel').textContent = haupt ? (haupt.dataset.titel || 'Werkzeug') : 'Werkzeug';
+  WF.haupt = haupt;
+  $('#wfVorschau').hidden = !wfKnopf(haupt, 'vorschau');
+  $('#wfOk').hidden = !wfKnopf(haupt, 'ok');
+  $('#werkzeugfenster').hidden = false;
+  WF.knopf = knopf;
+  $$('#band button').forEach((b) => b.classList.toggle('an', b === knopf));
+  inhalt.scrollTop = 0;
+  if (haupt && haupt.id === 'w-grundkoerper') gkFeldZeichnen();
+}
+
+function werkzeugSchliessen(zuruecksetzen = true) {
+  if (zuruecksetzen && WF.haupt) {
+    const z = wfKnopf(WF.haupt, 'zurueck');
+    if (z) z.click();
+    if (WF.haupt.id === 'w-grundkoerper') gkVorschauWeg();
+  }
+  const ablage = $('#werkzeugablage');
+  for (const el of WF.teile) ablage.appendChild(el);
+  WF.teile = []; WF.haupt = null;
+  $('#werkzeugfenster').hidden = true;
+  if (WF.knopf) WF.knopf.classList.remove('an');
+  WF.knopf = null;
+}
+
+$('#wfVorschau').addEventListener('click', () => { const b = wfKnopf(WF.haupt, 'vorschau'); if (b) b.click(); });
+$('#wfOk').addEventListener('click', () => { const b = wfKnopf(WF.haupt, 'ok'); if (b) b.click(); });
+$('#wfZu').addEventListener('click', () => werkzeugSchliessen(true));
+document.addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-wf]');
+  if (!b) return;
+  if (WF.knopf === b) { werkzeugSchliessen(true); return; }
+  werkzeugOeffnen(b.dataset.wf, b);
+});
+
+// Werkzeugfenster am Kopf verschieben
+(() => {
+  const fenster = $('#werkzeugfenster');
+  let start = null;
+  fenster.querySelector('.wfKopf').addEventListener('pointerdown', (ev) => {
+    if (ev.target.closest('button')) return;
+    const r = fenster.getBoundingClientRect(), eltern = fenster.parentElement.getBoundingClientRect();
+    start = { x: ev.clientX, y: ev.clientY, l: r.left - eltern.left, t: r.top - eltern.top, w: eltern.width - r.width, h: eltern.height - 40 };
+    ev.currentTarget.setPointerCapture(ev.pointerId);
+  });
+  fenster.querySelector('.wfKopf').addEventListener('pointermove', (ev) => {
+    if (!start) return;
+    fenster.style.left = Math.max(0, Math.min(start.w, start.l + ev.clientX - start.x)) + 'px';
+    fenster.style.top = Math.max(0, Math.min(start.h, start.t + ev.clientY - start.y)) + 'px';
+  });
+  fenster.querySelector('.wfKopf').addEventListener('pointerup', () => { start = null; });
+})();
 
 // Ansicht-Einstellungen
 function punktGroesseSetzen(v) {
@@ -2084,6 +2494,7 @@ function einstellungenLaden() {
 async function start() {
   einstellungenLaden();
   tastenLaden();
+  bandSetzen(localStorage.getItem('v3dscan.band') || 'start');
   werkzeugSetzen('orbit');
   groesseAnpassen();
   zeichnen();
@@ -2099,6 +2510,8 @@ async function start() {
   setInterval(() => fetch('/api/puls').catch(() => status('Verbindung zum Dienst verloren – Programm neu starten.')), 10000);
   fetch('/api/puls');
   steuerung.addEventListener('change', kameraGrenzen);
-  window.v3dscan = { S, api, einpassen, werkzeugSetzen, punktAn, auswahlAnwenden, kamera, steuerung, renderer };
+  window.v3dscan = { S, api, einpassen, werkzeugSetzen, punktAn, auswahlAnwenden, kamera, steuerung, renderer,
+    werkzeugOeffnen, werkzeugSchliessen, bandSetzen, formWaehlen };
+  konsole('V3D Scan ' + z.fassung + ' bereit.');
 }
 start().catch((e) => meldung('Start fehlgeschlagen: ' + e.message, 'fehler'));

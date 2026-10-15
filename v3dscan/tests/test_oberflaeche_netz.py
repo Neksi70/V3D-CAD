@@ -52,14 +52,23 @@ def main():
             seite.wait_for_function("window.v3dscan && v3dscan.S.scans.size === 2", timeout=30000)
             leer = lambda: seite.wait_for_function("!v3dscan.S.beschaeftigt", timeout=120000)  # noqa: E731
 
+            def oeffne(band, teil):
+                """Werkzeug wie ein Nutzer über das Menüband öffnen (falls nicht schon offen)."""
+                if seite.evaluate("!!document.querySelector('#wfInhalt #%s')" % teil):
+                    return
+                seite.click("#bandReiter [data-band=%s]" % band)
+                seite.click("[data-bandseite=%s] [data-wf~='%s']" % (band, teil))
+
             def analyse():
-                seite.click("[data-aktion=netzAnalyse]")
+                oeffne("polygone", "w-netz-analyse")
+                seite.click("#wfInhalt [data-aktion=netzAnalyse]")
                 leer()
                 time.sleep(0.3)
                 return {r.split("\t")[0]: r.split("\t")[-1]
                         for r in seite.inner_text("#analyseTabelle").split("\n") if "\t" in r}
 
             def netz_block(name, knopf):
+                oeffne("punkte" if name == "erzeugen" else "polygone", "w-netz-" + name)
                 seite.click("section[data-netz=%s] [data-%s]" % (name, knopf))
                 leer()
                 time.sleep(0.4)
@@ -69,15 +78,15 @@ def main():
             seite.click("#scanListe .scan >> nth=0 >> .auge")
             leer()
             seite.keyboard.press("f")
-            seite.click("#reiter button[data-reiter=netz]")
             a = analyse()
             print("  Analyse:", a)
             pruefe(a.get("Löcher / offene Ränder") == "5", "5 offene Ränder erkannt")
             pruefe(a.get("wasserdicht (druckbar)") == "nein", "nicht wasserdicht")
-            seite.click("[data-aktion=netzProbleme]")
+            seite.click("#wfInhalt [data-aktion=netzProbleme]")
             seite.mouse.move(700, 400)
             seite.screenshot(path=os.path.join(BILDER, "n1_analyse_probleme.png"))
 
+            oeffne("polygone", "w-netz-reparieren")
             seite.fill("section[data-netz=reparieren] [data-p=kleine_teile]", "1")
             netz_block("reparieren", "vorschau")
             pruefe(seite.is_visible("#netzErgebnis"), "Reparieren: Vorschau zeigt Bericht")
@@ -87,6 +96,7 @@ def main():
                    "Reparieren: keine Doppelten, Splitter weg (Teile %s)" % a.get("Teile"))
 
             # Loecher: Schieber steht auf "alle ausser dem groessten"
+            oeffne("polygone", "w-netz-loecher")
             listentext = seite.inner_text("#lochListe")
             print("  Löcher:", listentext.replace("\n", " | "))
             netz_block("loecher", "vorschau")
@@ -100,6 +110,7 @@ def main():
                    "Löcher geschlossen (%d → %s)" % (loecher_vor, a.get("Löcher / offene Ränder")))
 
             dreiecke_vor = seite.evaluate("v3dscan.S.scans.get(2).tri.length / 3")
+            oeffne("polygone", "w-netz-vereinfachen")
             seite.fill("section[data-netz=vereinfachen] [data-p=prozent]", "30")
             netz_block("vereinfachen", "vorschau")
             netz_block("vereinfachen", "anwenden")
@@ -117,6 +128,7 @@ def main():
             seite.click("#scanListe .scan >> nth=1 >> .auge")
             leer()
             seite.click("#scanListe .scan >> nth=0")
+            oeffne("punkte", "w-netz-erzeugen")
             seite.fill("section[data-netz=erzeugen] [data-p=tiefe]", "7")
             netz_block("erzeugen", "anwenden")
             seite.wait_for_function("v3dscan.S.scans.size === 3", timeout=180000)
@@ -127,8 +139,9 @@ def main():
             seite.screenshot(path=os.path.join(BILDER, "n3_poisson.png"))
 
             with seite.expect_download() as dl:
+                seite.click("#menueKnopf")
                 seite.select_option("#exportFormat", "stl")
-                seite.click("[data-aktion=exportieren]")
+                seite.click("#menue [data-aktion=exportieren]")
             pfad = dl.value.path()
             groesse = os.path.getsize(pfad)
             pruefe(groesse == 84 + 50 * neu, "STL-Export binär, %d Bytes" % groesse)
