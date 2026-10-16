@@ -2290,6 +2290,9 @@ const firebaseConfig = {
         <div class="shp" onclick="_holeQuickStart()" title="Loch in einen Körper: Fläche anklicken → Kreis aufziehen → nach unten ziehen (D = durch alles). Danach geht Gewinde an Fläche.">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 9l9-5 9 5v8l-9 5-9-5V9z"/><ellipse cx="12" cy="9" rx="3.4" ry="1.7"/><path d="M8.6 9v5M15.4 9v5" stroke-dasharray="1.6 1.4"/></svg><span class="sdd-name">Loch ziehen</span>
         </div>
+        <div class="shp" onclick="_lvtStart()" title="Vorhandenes Loch tiefer machen: ins Loch klicken → Ø, Tiefe und Restmaterial werden gemessen → neue Tiefe eingeben">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"><path d="M3 9l9-5 9 5v8l-9 5-9-5V9z"/><ellipse cx="12" cy="9" rx="3.4" ry="1.7"/><path d="M8.6 9v4M15.4 9v4"/><path d="M12 12.5v6M10 16.5l2 2 2-2"/></svg><span class="sdd-name">Loch vertiefen</span>
+        </div>
         <div class="shp" onclick="_thfStart()" title="Gewinde auf vorhandene Bohrung (innen) oder Zylinder (außen) setzen — Größe wird erkannt, Druck-Spiel einstellbar">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="7" y="3" width="10" height="18" rx="1.5"/><path d="M7 7l10 2M7 11l10 2M7 15l10 2"/></svg><span class="sdd-name">Gewinde an Fläche</span>
         </div>
@@ -11759,6 +11762,7 @@ function _advBuild() {
     ['enterRevolveMode()', '⟲ Drehen', 'Profil zeichnen und um eine Achse drehen (Vasen, Hülsen, Rotationskörper)'],
     ['enterLoftMode()', '⤧ Loft', 'Zwei oder mehr Flächen nacheinander anklicken → weicher Übergangskörper'],
     ['_thfStart()', '🔩 Gewinde', 'Gewinde an Fläche: Bohrung (innen) oder Zylinder (außen) anklicken'],
+    ['_lvtStart()', '🕳️ Vertiefen', 'Loch vertiefen: ins vorhandene Loch klicken — Ø, Tiefe und Restmaterial werden gemessen'],
     ['_flxOpen()', '🔗 Flexi', 'Beweglich machen: flaches Teil in Glieder mit Fass-Scharnieren'],
   ]);
   const g2 = grp('adv-construct', 'Konstruieren', [
@@ -11837,6 +11841,7 @@ const _SYM_ICONS = {
   'enterSketchMode()': '<path d="M4 20h6"/><path d="M14.5 4.5l5 5L9 20H4v-5z"/><path d="M12.5 6.5l5 5"/>',
   'enterRevolveMode()': '<path d="M12 4v16"/><path d="M12 5h3c0 3-2 4-2 7s3 4 3 7h-4"/><path d="M7 8a6 6 0 0 0 0 8"/><path d="M5.3 14.3L7 16l2-.8"/>',
   'enterLoftMode()': '<ellipse cx="12" cy="5" rx="4" ry="1.6"/><path d="M4 18l4-2h8l4 2-4 2H8z"/><path d="M8 5.3L4 18M16 5.3L20 18"/>',
+  '_lvtStart()': '<path d="M3 9l9-5 9 5v8l-9 5-9-5V9z"/><ellipse cx="12" cy="9" rx="3.4" ry="1.7"/><path d="M12 12.5v6M10 16.5l2 2 2-2"/>',
   '_thfStart()': '<path d="M8 3h8v4H8z"/><path d="M10 7v14h4V7"/><path d="M10 10.5l4-1.5M10 13.5l4-1.5M10 16.5l4-1.5M10 19.5l4-1.5"/>',
   '_flxOpen()': '<rect x="2.5" y="9" width="8" height="6" rx="3"/><rect x="13.5" y="9" width="8" height="6" rx="3"/><path d="M8 12h8"/>',
   'toggleWorkplane()': '<path d="M3 17l5-9h13l-5 9z"/><path d="M5.5 12.5h13M11 8l-5 9M16 8l-5 9"/>',
@@ -47225,6 +47230,256 @@ async function _thfApply() {
   } finally { _thf.busy = false; }
 }
 
+// ═══ LOCH VERTIEFEN (_lvt*) ═══════════════════════════════════════════════
+// Vorhandene Bohrung anklicken (Wand oder Boden) → Ø, Achse, Tiefe und offenes
+// Ende kommen aus _thfDetect; das Restmaterial hinter dem Boden misst ein Strahl
+// je Achsparallele (Mitte + 6 Punkte am Rand, der kleinste Wert zählt).
+// Vertieft wird per Manifold-Abzug eines Zylinders gleichen Ø, der etwas in das
+// vorhandene Loch zurückreicht (keine koplanaren Böden).
+const _lvt = { active:false, picking:false, obj:null, m:null, ghost:null, panel:null, busy:false, depth:0 };
+const _LVT_WALL = 0.8;   // mm Mindest-Restwand, bevor gewarnt wird
+
+function _lvtStart() {
+  if (_lvt.active) _lvtClose();
+  if (_thf.active) _thfClose();
+  _lvt.active = true; _lvt.picking = true;
+  // Maß-Anfasser des gewählten Körpers liegen oft genau über der Lochmitte
+  // und schlucken den Klick → Auswahl aufheben, solange gewählt wird
+  if (selectedObjs.length) selectObjs([]);
+  canvas.addEventListener('pointerdown', _lvtPointer, true);
+  document.addEventListener('keydown', _lvtKey, true);
+  canvas.style.cursor = 'crosshair';
+  notify('🕳️ Loch vertiefen: in das Loch klicken (Wand oder Boden) — es wird automatisch ausgemessen · Esc = abbrechen', 'ok');
+}
+function _lvtKey(e) {
+  if (e.key !== 'Escape' || !_lvt.active) return;
+  e.preventDefault(); e.stopPropagation(); _lvtClose();
+}
+function _lvtPointer(e) {
+  if (!_lvt.picking || e.button > 0) return;
+  const hits = pickObjects(e).filter(h => h.object.isMesh && !(h.object.userData && h.object.userData.isEdgeLines));
+  if (!hits.length) return;                 // Leerraum: drehen/schieben wie sonst
+  e.preventDefault(); e.stopPropagation();
+  const h = hits[0];
+  let top = h.object; while (top && !objects.includes(top)) top = top.parent;
+  if (!top || top.userData.isHole) { notify('Bitte einen Volumenkörper anklicken (keine Bohrung)', 'w'); return; }
+  if (h.object !== top) { notify('Das ist eine Gruppe — erst „Vereinen", dann das Loch vertiefen', 'w'); return; }
+  canvas.style.cursor = 'wait';
+  setTimeout(() => {
+    let m = null;
+    try { m = _lvtMeasure(top, h); } catch (err) { console.warn('[lvt] Messung', err); }
+    canvas.style.cursor = _lvt.picking ? 'crosshair' : '';
+    if (!m) return;
+    _lvt.obj = top; _lvt.m = m; _lvt.picking = false; canvas.style.cursor = '';
+    selectObjs([top]);
+    const plus = isFinite(m.restMm) ? Math.min(5, Math.max(0, m.restMm - _LVT_WALL)) : 5;
+    _lvt.depth = Math.round((m.depthMm + (plus > 0.5 ? plus : 5)) * 2) / 2;
+    _lvtPanel(); _lvtPreview();
+  }, 20);
+}
+
+// Strahl-Treffer am Körper (beide Seiten, Doppeltreffer an Kanten zusammengefasst)
+function _lvtRay(o, from, dir) {
+  const rc = new THREE.Raycaster(from, dir);
+  const mats = Array.isArray(o.material) ? o.material : [o.material], sides = mats.map(mm => mm.side);
+  mats.forEach(mm => { mm.side = THREE.DoubleSide; });
+  try {
+    const out = []; let last = -1;
+    for (const x of rc.intersectObject(o, false)) {
+      if (x.object !== o) continue;
+      if (x.distance - last > 1e-5) out.push(x);
+      last = x.distance;
+    }
+    return out;
+  } finally { mats.forEach((mm, i) => { mm.side = sides[i]; }); }
+}
+// Material ab dem ersten Treffer bis zum Austritt (innere Hüllen überlappender
+// Scan-Teile zählen nicht als Austritt → per Innen-Test zwischen den Treffern)
+function _lvtSpan(o, from, dir) {
+  const hs = _lvtRay(o, from, dir);
+  if (!hs.length) return null;
+  const d0 = hs[0].distance;
+  for (let i = 1; i < hs.length; i++) {
+    const nxt = i + 1 < hs.length ? hs[i+1].distance : hs[i].distance + 0.2;
+    const mid = from.clone().addScaledVector(dir, (hs[i].distance + nxt) / 2);
+    if (!_thfInside(o, mid)) return { d0, rest: hs[i].distance - d0 };
+  }
+  return { d0, rest: Infinity };
+}
+
+function _lvtMeasure(o, hit) {
+  o.updateMatrixWorld(true);
+  let cyl = _thfDetect(o, hit);
+  if (!cyl) {
+    // Boden (ebene Fläche) erwischt? Von dort quer zur Normalen die Wand suchen
+    const n = hit.face ? hit.face.normal.clone().transformDirection(o.matrixWorld) : null;
+    if (n) {
+      const u = new THREE.Vector3(1, 0, 0); if (Math.abs(n.x) > 0.9) u.set(0, 1, 0);
+      u.sub(n.clone().multiplyScalar(u.dot(n))).normalize();
+      const v = new THREE.Vector3().crossVectors(n, u);
+      const from = hit.point.clone().addScaledVector(n, 0.02);
+      const maxD = getMeshBox(o).getSize(new THREE.Vector3()).length() * 0.5;
+      for (let k = 0; k < 8 && !cyl; k++) {
+        const a = k / 8 * Math.PI * 2, dir = u.clone().multiplyScalar(Math.cos(a)).addScaledVector(v, Math.sin(a));
+        const hs = _lvtRay(o, from, dir);
+        if (!hs.length || hs[0].distance > maxD) continue;
+        const c = _thfDetect(o, hs[0]);
+        if (c && c.inner && Math.abs(c.ax.dot(n)) > 0.9) cyl = c;
+      }
+    }
+  }
+  if (!cyl) { notify('Kein rundes Loch erkannt — bitte direkt auf die Innenwand des Lochs klicken', 'w'); return null; }
+  if (!cyl.inner) { notify('Das ist ein Zapfen/Zylinder, kein Loch — bitte in die Bohrung klicken', 'w'); return null; }
+  const { O, ax, r, tmin, tmax } = cyl;
+  const at = t => O.clone().addScaledVector(ax, t);
+  const tMid = (tmin + tmax) / 2, half = (tmax - tmin) / 2;
+  // Welches Ende ist zu? Strahl von der Lochmitte je Achsrichtung: trifft er
+  // nahe hinter dem Wandende (auch Bohrspitzen-Kegel), ist dort der Boden.
+  const reach = half + 1.2 * r + 0.05;
+  const probe = s => { const hs = _lvtRay(o, at(tMid), ax.clone().multiplyScalar(s)); return hs.length && hs[0].distance <= reach ? hs[0].distance : null; };
+  const hiD = probe(1), loD = probe(-1);
+  const hiZu = cyl.closedHi || hiD != null, loZu = cyl.closedLo || loD != null;
+  if (hiZu === loZu) {
+    notify(hiZu ? 'Das Loch ist auf beiden Seiten geschlossen (Hohlraum) — Vertiefen geht nur bei Sacklöchern'
+                : 'Das Loch geht schon ganz durch — da gibt es nichts zu vertiefen', 'w');
+    return null;
+  }
+  const s = hiZu ? 1 : -1;                         // Richtung „tiefer"
+  const dir = ax.clone().multiplyScalar(s);
+  const tOpen = hiZu ? tmin : tmax, tWall = hiZu ? tmax : tmin;
+  const bodenD = hiZu ? hiD : loD;                 // Mitte → tiefster Bodenpunkt (Achse)
+  const tFloor = bodenD != null ? tMid + s * bodenD : tWall;
+  // Restmaterial: Mitte + 6 Punkte bei 0,9·r, kleinster Wert
+  const u = new THREE.Vector3(1, 0, 0); if (Math.abs(ax.x) > 0.9) u.set(0, 1, 0);
+  u.sub(ax.clone().multiplyScalar(u.dot(ax))).normalize();
+  const v = new THREE.Vector3().crossVectors(ax, u);
+  let rest = Infinity, sp;
+  const offs = [new THREE.Vector3()];
+  for (let k = 0; k < 6; k++) { const a = k / 6 * Math.PI * 2; offs.push(u.clone().multiplyScalar(Math.cos(a) * 0.9 * r).addScaledVector(v, Math.sin(a) * 0.9 * r)); }
+  for (const off of offs) {
+    sp = _lvtSpan(o, at(tMid).add(off), dir);
+    if (sp) rest = Math.min(rest, sp.rest + Math.max(0, s * (tMid + s * sp.d0 - tFloor)));   // vom tiefsten Bodenpunkt aus
+  }
+  return {
+    O, ax, r, dir, tOpen, tWall, tFloor, s,
+    dMm: r * 20,
+    depthMm: Math.abs(tFloor - tOpen) * 10,        // Rand → tiefster Punkt
+    wallMm: Math.abs(tWall - tOpen) * 10,          // zylindrischer Teil
+    spitze: Math.abs(tFloor - tWall) * 10 > 0.15,  // Kegel-/Rundboden
+    restMm: rest * 10
+  };
+}
+
+// Werkzeug-Zylinder: reicht 0,2 mm (max. halbe Wand) ins vorhandene Loch zurück
+function _lvtToolMesh(mat) {
+  const m = _lvt.m;
+  const back = Math.min(0.02, Math.abs(m.tWall - m.tOpen) * 0.5);
+  const t0 = m.tWall - m.s * back, t1 = m.tOpen + m.s * _lvt.depth / 10;
+  const len = Math.abs(t1 - t0);
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(m.r, m.r, len, Math.max(48, Math.min(128, Math.round(m.r * 200)))),
+    mat || new THREE.MeshStandardMaterial({ color: 0xf97316, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide }));
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), m.ax);
+  mesh.position.copy(m.O).addScaledVector(m.ax, (t0 + t1) / 2);
+  mesh.updateMatrixWorld(true);
+  return mesh;
+}
+function _lvtPreview() {
+  if (_lvt.ghost) { scene.remove(_lvt.ghost); _lvt.ghost.geometry.dispose(); _lvt.ghost.material.dispose(); _lvt.ghost = null; }
+  if (!_lvt.m || _lvt.depth <= _lvt.m.depthMm + 0.01) return;
+  _lvt.ghost = _lvtToolMesh(); _lvt.ghost.renderOrder = 990; scene.add(_lvt.ghost);
+}
+function _lvtFmt(x) { return (Math.round(x * 10) / 10).toFixed(1).replace('.', ','); }
+function _lvtPanel() {
+  let el = _lvt.panel;
+  if (!el) {
+    el = _lvt.panel = document.createElement('div');
+    el.id = 'lvt-panel';
+    el.style.cssText = 'position:fixed;right:232px;bottom:64px;width:272px;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+    el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); _lvtApply(); } if (e.key === 'Escape') _lvtClose(); });
+    document.body.appendChild(el);
+  }
+  _lvtPanelFill();
+}
+function _lvtPanelFill() {
+  const m = _lvt.m, el = _lvt.panel; if (!m || !el) return;
+  const hatRest = isFinite(m.restMm);
+  const maxT = hatRest ? m.depthMm + m.restMm : m.depthMm + 50;
+  const sliderMax = Math.ceil(hatRest ? maxT : m.depthMm + 30);
+  const restNeu = hatRest ? m.restMm - (_lvt.depth - m.depthMm) : Infinity;
+  let warn = '';
+  if (_lvt.depth <= m.depthMm + 0.01) warn = '<span style="color:var(--dim)">Neue Tiefe muss größer als die jetzige sein.</span>';
+  else if (restNeu <= 0.05) warn = '<b style="color:#dc2626">⚠ Das Loch bricht durch</b> — es wird zum Durchgangsloch.';
+  else if (restNeu < _LVT_WALL) warn = `<b style="color:#d97706">⚠ Nur noch ${_lvtFmt(restNeu)} mm Wand</b> — kann beim Druck aufreißen.`;
+  else if (hatRest) warn = `Danach bleiben <b>${_lvtFmt(restNeu)} mm</b> Material unter dem Boden.`;
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">🕳️ Loch vertiefen</b>
+      <span onclick="_lvtClose()" style="cursor:pointer;color:var(--dim);font-size:15px" title="Schließen (Esc)">✕</span></div>
+    <div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.55">
+      <b>Gemessen:</b> <span onclick="_lvtRepick()" style="float:right;cursor:pointer;color:var(--acc);font-size:11px" title="Anderes Loch anklicken">anderes Loch</span><br>
+      Ø <b>${_lvtFmt(m.dMm)} mm</b><br>
+      Tiefe <b>${_lvtFmt(m.depthMm)} mm</b>${m.spitze ? ` <span style="color:var(--dim)">(davon ${_lvtFmt(m.wallMm)} mm gerade Wand, Rest Kegel-/Rundboden)</span>` : ''}<br>
+      Material unter dem Boden: <b>${hatRest ? _lvtFmt(m.restMm) + ' mm' : 'nicht messbar'}</b></div>
+    <div class="vrow"><label>Neue Tiefe</label><input id="lvt-depth" type="number" min="${_lvtFmt(m.depthMm).replace(',', '.')}" step="0.5" value="${_lvt.depth}" onchange="_lvtSet(this.value)" style="width:70px"><span class="vu">mm</span></div>
+    <div class="vrow"><input type="range" style="flex:1" min="${Math.floor(m.depthMm)}" max="${sliderMax}" step="0.5" value="${_lvt.depth}" oninput="_lvtSet(this.value,1)"></div>
+    <div style="display:flex;gap:4px;margin:2px 0 6px">${[1, 2, 5, 10].map(d => `<button class="vtb" onclick="_lvtSet(${Math.round((m.depthMm + d) * 2) / 2})" title="${d} mm tiefer als jetzt">+${d}</button>`).join('')}
+      ${hatRest ? `<button class="vtb" onclick="_lvtSet(${Math.floor((maxT - _LVT_WALL) * 2) / 2})" title="So tief wie möglich, ${String(_LVT_WALL).replace('.', ',')} mm Wand bleiben">max.</button>` : ''}</div>
+    <div id="lvt-warn" style="font-size:11px;margin:4px 0 9px;line-height:1.4">${warn}</div>
+    <div style="font-size:10.5px;color:var(--dim);margin:0 0 9px;line-height:1.4">Gleicher Ø wie das Loch, der neue Boden wird flach.</div>
+    <div style="display:flex;gap:6px;justify-content:flex-end">
+      <button class="btn" onclick="_lvtClose()">Abbrechen</button>
+      <button class="btn pri" onclick="_lvtApply()"${_lvt.depth <= m.depthMm + 0.01 ? ' disabled' : ''}>✓ Vertiefen</button></div>`;
+}
+function _lvtSet(v, fromSlider) {
+  const n = parseFloat(String(v).replace(',', '.'));
+  if (!(n > 0) || !_lvt.m) return;
+  _lvt.depth = Math.min(n, _lvt.m.depthMm + 500);
+  if (fromSlider) {   // Schieber nicht neu aufbauen (verlöre den Griff) — nur Feld + Hinweis
+    const f = document.getElementById('lvt-depth'); if (f) f.value = _lvt.depth;
+    const keep = _lvt.panel.querySelector('input[type=range]');
+    _lvtPanelFill();
+    const nr = _lvt.panel.querySelector('input[type=range]'); if (nr && keep) nr.replaceWith(keep);
+  } else _lvtPanelFill();
+  _lvtPreview();
+}
+function _lvtRepick() {
+  if (_lvt.ghost) { scene.remove(_lvt.ghost); _lvt.ghost = null; }
+  _lvt.m = null; _lvt.obj = null; _lvt.picking = true; canvas.style.cursor = 'crosshair';
+  if (_lvt.panel) { _lvt.panel.remove(); _lvt.panel = null; }
+  notify('Anderes Loch anklicken', 'ok');
+}
+function _lvtClose() {
+  if (_lvt.ghost) { scene.remove(_lvt.ghost); _lvt.ghost.geometry.dispose(); _lvt.ghost.material.dispose(); _lvt.ghost = null; }
+  if (_lvt.panel) { _lvt.panel.remove(); _lvt.panel = null; }
+  canvas.removeEventListener('pointerdown', _lvtPointer, true);
+  document.removeEventListener('keydown', _lvtKey, true);
+  if (_lvt.picking) canvas.style.cursor = '';
+  _lvt.active = _lvt.picking = false; _lvt.obj = null; _lvt.m = null;
+}
+async function _lvtApply() {
+  if (_lvt.busy || !_lvt.obj || !_lvt.m || _lvt.depth <= _lvt.m.depthMm + 0.01) return;
+  const o = _lvt.obj, alt = _lvt.m.depthMm, neu = _lvt.depth;
+  _lvt.busy = true;
+  let tool = null;
+  try {
+    tool = _lvtToolMesh(new THREE.MeshStandardMaterial({ color: 0xf03030, transparent: true, opacity: 0.52, side: THREE.DoubleSide }));
+    _lvtClose();
+    _progressShow('Loch wird vertieft…'); _progressSet(6); _progressCreep(93);
+    saveUndo();   // VOR dem Werkzeug: Rückgängig liefert den Körper ohne Hilfsobjekt
+    tool.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Vertiefung', color: '#f03030',
+                      isHole: true, fillet: 0, chamfer: 0, displacementPattern: 'keine' };
+    scene.add(tool); objects.push(tool);
+    const ctl = _progressCancelable();
+    await _doSubtractHoles([o], [tool], ctl);
+    _progressDone();
+    notify(`Loch vertieft: ${_lvtFmt(alt)} → ${_lvtFmt(neu)} mm ✓`, 'ok');
+  } catch (err) {
+    _progressHide();
+    if (tool && objects.includes(tool)) { scene.remove(tool); objects.splice(objects.indexOf(tool), 1); updateTree(); }
+    console.error('[lvt]', err);
+    notify('Loch konnte nicht vertieft werden: ' + (err.message || err), 'e');
+  } finally { _lvt.busy = false; }
+}
+
 // ═══ SCHRAUBDOSEN-GENERATOR (Dose mit Schraubdeckel) ═════════════════════════
 // Beide Teile als Grid-Revolve mit θ-abhängigem Radius (wie _buildThreadGeo):
 // eine Profilkette außen hoch → über den Rand → innen runter, dazu Deckel-Fächer
@@ -63398,8 +63653,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.187';
+const VOLME3D_VERSION = '1.18.188';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.188', date:'2026-10-17', changes:[
+    ['🕳️','<b>Loch vertiefen:</b> In ein vorhandenes Loch klicken (Wand oder Boden) – V3D CAD misst automatisch <b>Ø, jetzige Tiefe und das Material unter dem Boden</b>. Dann die neue Tiefe eintippen oder mit +1/+2/+5/+10 bzw. „max.“ wählen; die Vorschau zeigt den neuen Teil orange, und es wird gewarnt, bevor die Wand zu dünn wird oder durchbricht. Funktioniert auch an importierten STL-Teilen. Zu finden unter Werkzeuge → Loch vertiefen (Advanced: Erstellen → Vertiefen) oder Strg+K „vertiefen“.'],
+  ]},
   { version:'1.18.187', date:'2026-10-15', changes:[
     ['▦','<b>Symbol-Leiste verbessert:</b> Die Gruppen-Überschriften (Datei, Kombinieren, Anordnen …) stehen jetzt auf <b>jeder Bildschirmbreite</b> – auch auf Tablet und Handy. Fährt man mit der Maus über ein Symbol, erscheint sofort ein <b>Tooltip mit Name und Erklärung</b>. Am Touchgerät: kurz tippen führt aus und zeigt kurz, was es war; <b>lange drücken</b> erklärt nur, ohne etwas auszuführen.'],
   ]},
@@ -74206,6 +74464,7 @@ const CMDK = [
   {i:'📝',g:'Seite',t:'Was ist neu?',k:'changelog version',run:()=>_openChangelog()},
   {i:'🎬',g:'Seite',t:'Videos (Howto-Filme)',k:'video videos anleitung howto hilfe film tutorial erklaerung zeigen lernen kurs schulung',run:()=>_howtoMenu()},
   {i:'⛶',g:'Ansicht',t:'Vollbild ein/aus',k:'vollbild fullscreen ganzer bildschirm beamer praesentation f11',run:()=>_fsToggle()},
+  {i:'🕳️',g:'Bearbeiten',t:'Loch vertiefen (ausmessen + tiefer setzen)',k:'loch vertiefen tiefer bohrung sackloch tiefe messen ausmessen bohren',run:()=>_lvtStart()},
   {i:'🔩',g:'Bearbeiten',t:'Gewinde an Fläche (Bohrung/Zylinder anklicken)',k:'gewinde thread innengewinde aussengewinde bohrung schraube mutter m3 m4 m5 m6 m8 m10 m12 spiel toleranz',run:()=>_thfStart()},
   {i:'🖨',g:'Datei',t:'Druck-Vorschau & Slicer-Einstellungen',k:'druck vorschau slicer drucker bambu snapmaker anycubic elegoo prusa creality filament schichthoehe waende infill fuellung stuetzen gcode 3mf projekt druckzeit gewicht',run:()=>_dvOpen()},
   {i:'📷',g:'Datei',t:'Foto erstellen (Rendern)',k:'foto bild render rendern png screenshot werbung shop kunde aussehen material',run:()=>_fotoOpen()},
