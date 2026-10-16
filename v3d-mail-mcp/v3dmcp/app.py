@@ -12,7 +12,7 @@ import time
 import warnings
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -38,6 +38,8 @@ ANLEITUNG = (
     'absagen per update_event(cancel=true), endgültig weg per delete_event (nur vorläufige Termine). '
     'Zeiten ohne Zone gelten als Europe/Berlin. '
     'Vor send_message den Text mit dem Nutzer abstimmen; im Zweifel create_draft. '
+    'Anhänge: send_message/create_draft nehmen attachments (aus vorhandener Mail per folder+uid+part, '
+    'Datei aus /srv/v3dmail/files/ — siehe list_files — oder Base64), zusammen max. 20 MB. '
     'GEMEINSAMES GEDÄCHTNIS: Volker hat mit Claude Code viele eigene Tools, Apps und Projekte gebaut '
     '(z. B. V3D Familie, V3D CAD, Generatoren, Dienste auf seinem Server). Bei Fragen dazu — oder '
     'wenn ein Name/Tool unbekannt ist — ZUERST gedaechtnis_suchen, dann gedaechtnis_lesen; nicht '
@@ -83,6 +85,37 @@ Konto = Annotated[str | None, Field(description='Postfach-Adresse oder ID (Stand
 Ordner = Annotated[str, Field(description='Ordnerpfad aus search_messages/list_folders oder Art '
                                           '(inbox, sent, drafts, trash, junk, archive)')]
 Uid = Annotated[int, Field(description='UID der Nachricht im Ordner')]
+
+
+class _Streng(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+
+class MailTeil(_Streng):
+    folder: Annotated[str, Field(description='Ordner der Mail mit dem Anhang')]
+    uid: Annotated[int, Field(description='UID dieser Mail')]
+    part: Annotated[str, Field(description='"part" aus der Anhangsliste von get_message')]
+
+
+class AnhangAusMail(_Streng):
+    from_mail: Annotated[MailTeil, Field(description='Anhang serverseitig aus einer vorhandenen Mail übernehmen')]
+
+
+class AnhangDatei(_Streng):
+    path: Annotated[str, Field(description='Datei aus /srv/v3dmail/files/ (relativer Pfad wie list_files ihn liefert)')]
+
+
+class AnhangInhalt(_Streng):
+    filename: str
+    content_base64: Annotated[str, Field(description='Dateiinhalt als Base64')]
+    mime_type: Annotated[str, Field(description='z. B. application/pdf')]
+
+
+Anhaenge = Annotated[list[AnhangAusMail | AnhangDatei | AnhangInhalt] | None, Field(
+    description='Anhänge (optional, zusammen max. 20 MB, max. 20 Stück). Je Eintrag GENAU EINE Form: '
+                '{"from_mail": {"folder", "uid", "part"}} = Anhang aus vorhandener Mail (bevorzugt, '
+                'nichts muss durch den Chat); {"path": "..."} = Datei aus /srv/v3dmail/files/ (list_files); '
+                '{"filename", "content_base64", "mime_type"} = eigener Inhalt (nur für kleine Dateien).')]
 
 
 def _fehlertext(e):
@@ -198,6 +231,12 @@ def get_attachment(folder: Ordner, uid: Uid,
 
 
 @werkzeug(LESEN)
+def list_files() -> CallToolResult:
+    """Dateien in /srv/v3dmail/files/ (Pfad, Größe, Typ, Änderungsdatum) — als Anhang per attachments=[{"path": …}]."""
+    return mail.list_files()
+
+
+@werkzeug(LESEN)
 def list_events(start: Annotated[str | None, Field(description='Beginn ISO (Standard: jetzt)')] = None,
                 end: Annotated[str | None, Field(description='Ende ISO (Standard: +14 Tage)')] = None,
                 account: Konto = None) -> CallToolResult:
@@ -213,9 +252,11 @@ def create_draft(to_: Annotated[str, Field(alias='to', description='Empfänger, 
                  cc: str | None = None, bcc: str | None = None,
                  reply_to_folder: Annotated[str | None, Field(description='Ordner der Mail, auf die geantwortet wird')] = None,
                  reply_to_uid: Annotated[int | None, Field(description='UID der Mail, auf die geantwortet wird')] = None,
+                 attachments: Anhaenge = None,
                  account: Konto = None) -> CallToolResult:
-    """Entwurf im Ordner Entwürfe ablegen (wird NICHT gesendet; in V3D Mail prüfen und senden)."""
-    return mail.create_draft(to_, subject, body, cc, bcc, reply_to_folder, reply_to_uid, account)
+    """Entwurf im Ordner Entwürfe ablegen (wird NICHT gesendet; in V3D Mail prüfen und senden).
+    Optional mit Anhängen (attachments: aus einer Mail, aus /srv/v3dmail/files/ oder Base64; max. 20 MB)."""
+    return mail.create_draft(to_, subject, body, cc, bcc, reply_to_folder, reply_to_uid, account, attachments)
 
 
 @werkzeug(SENDEN, to='to_')
@@ -223,9 +264,12 @@ def send_message(to_: Annotated[str, Field(alias='to', description='Empfänger, 
                  subject: str, body: Annotated[str, Field(description='Text (Klartext; Signatur wird angehängt)')],
                  cc: str | None = None, bcc: str | None = None,
                  reply_to_folder: str | None = None, reply_to_uid: int | None = None,
+                 attachments: Anhaenge = None,
                  account: Konto = None) -> CallToolResult:
-    """Mail SOFORT senden (mit Signatur, Kopie in Gesendet). Nur nach ausdrücklicher Zustimmung."""
-    return mail.send_message(to_, subject, body, cc, bcc, reply_to_folder, reply_to_uid, account)
+    """Mail SOFORT senden (mit Signatur, Kopie in Gesendet). Nur nach ausdrücklicher Zustimmung.
+    Optional mit Anhängen (attachments: aus einer Mail, aus /srv/v3dmail/files/ oder Base64; max. 20 MB).
+    Vorher die Anhänge mit dem Nutzer abstimmen."""
+    return mail.send_message(to_, subject, body, cc, bcc, reply_to_folder, reply_to_uid, account, attachments)
 
 
 @werkzeug(AENDERN)

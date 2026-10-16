@@ -11,6 +11,7 @@ import email.utils
 import html
 import imaplib
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -26,7 +27,10 @@ from .core import MailError, vm
 
 BERLIN = zoneinfo.ZoneInfo('Europe/Berlin')
 MAX_TEXT = 50_000                 # Zeichen je Nachrichtentext
-MAX_ANHANG = 10 * 1024 * 1024     # Bytes je Anhang
+MAX_ANHANG = 10 * 1024 * 1024     # Bytes je Anhang (get_attachment)
+MAX_ANHAENGE_SENDEN = 20 * 1024 * 1024   # Bytes aller Anhänge einer ausgehenden Mail
+MAX_ANHAENGE_ANZAHL = 20
+DATEI_ORDNER = os.path.realpath(os.environ.get('V3DMCP_FILES_DIR') or '/srv/v3dmail/files')
 LIMIT_STANDARD, LIMIT_MAX = 20, 50
 PRAEFIX_VORLAEUFIG = 'vorläufig: '
 ALLE = ('', 'alle', 'all', '*')
@@ -528,6 +532,135 @@ def get_attachment(folder, uid, part, account=None):
     return meta, daten, text
 
 
+# --- Anhänge für ausgehende Mails ------------------------------------------------
+
+MIME_RE = re.compile(r'[A-Za-z0-9][\w.+-]*/[A-Za-z0-9][\w.+-]*')
+
+
+def _mb(n):
+    return '%.2f MB' % (n / 1048576)
+
+
+def _dateiname(name, ersatz='anhang'):
+    """Nur der letzte Pfadteil, ohne Steuerzeichen — landet im MIME-Kopf."""
+    name = re.split(r'[\\/]', str(name or ''))[-1]
+    name = re.sub(r'[\x00-\x1f\x7f]', '', name).strip().strip('.')
+    return name[:200] or ersatz
+
+
+def _mime(typ, name):
+    typ = (typ or '').strip().lower()
+    if typ and MIME_RE.fullmatch(typ):
+        return typ
+    return mimetypes.guess_type(name)[0] or 'application/octet-stream'
+
+
+def datei_aufloesen(pfad):
+    """Pfad relativ zu (oder absolut in) DATEI_ORDNER → echter Pfad. Alles, was
+    nach Auflösen von .. und Symlinks außerhalb liegt, wird abgelehnt."""
+    roh = str(pfad or '').strip()
+    if not roh or '\x00' in roh:
+        raise MailError('path fehlt')
+    if not os.path.isdir(DATEI_ORDNER):
+        raise MailError('Dateiordner %s fehlt auf dem Server' % DATEI_ORDNER)
+    # Absolute Pfade gewinnen bei join — die commonpath-Prüfung fängt sie ab.
+    echt = os.path.realpath(os.path.join(DATEI_ORDNER, roh))
+    if os.path.commonpath([echt, DATEI_ORDNER]) != DATEI_ORDNER or echt == DATEI_ORDNER:
+        raise MailError('Nur Dateien aus %s sind erlaubt (Pfad: %s)' % (DATEI_ORDNER, roh))
+    if not os.path.isfile(echt):
+        raise MailError('Datei nicht gefunden: %s — list_files zeigt, was da ist' % roh)
+    return echt
+
+
+def list_files():
+    if not os.path.isdir(DATEI_ORDNER):
+        raise MailError('Dateiordner %s fehlt auf dem Server' % DATEI_ORDNER)
+    out = []
+    for wurzel, ordner, dateien in os.walk(DATEI_ORDNER):
+        ordner[:] = sorted(o for o in ordner if not o.startswith('.'))
+        for d in sorted(dateien):
+            if d.startswith('.'):
+                continue
+            voll = os.path.join(wurzel, d)
+            try:
+                echt = datei_aufloesen(os.path.relpath(voll, DATEI_ORDNER))
+                st = os.stat(echt)
+            except (MailError, OSError):
+                continue        # z. B. Symlink nach draußen
+            out.append({'path': os.path.relpath(voll, DATEI_ORDNER), 'size': st.st_size,
+                        'type': mimetypes.guess_type(d)[0] or 'application/octet-stream',
+                        'modified': datetime.datetime.fromtimestamp(st.st_mtime, BERLIN)
+                        .isoformat(timespec='seconds')})
+            if len(out) >= 500:
+                break
+    return {'folder': DATEI_ORDNER, 'count': len(out), 'files': out,
+            'hint': 'Als Anhang: attachments=[{"path": "<path>"}] bei send_message/create_draft.'}
+
+
+def anhaenge_bauen(box, eintraege):
+    """attachments-Parameter → Liste für baue_nachricht ({name, type, data(b64)}).
+    Prüft die Gesamtgröße schon beim Einsammeln, damit nichts Unnötiges lädt."""
+    eintraege = list(eintraege or [])
+    if len(eintraege) > MAX_ANHAENGE_ANZAHL:
+        raise MailError('Höchstens %d Anhänge je Mail' % MAX_ANHAENGE_ANZAHL)
+    out, summe = [], 0
+
+    def dazu(name, typ, daten, herkunft):
+        nonlocal summe
+        summe += len(daten)
+        if summe > MAX_ANHAENGE_SENDEN:
+            raise MailError('Anhänge zu groß: mit %s (%s) zusammen %s, Grenze %s. '
+                            'Weniger/kleinere Dateien anhängen oder einen Link schicken.'
+                            % (name, herkunft, _mb(summe), _mb(MAX_ANHAENGE_SENDEN)))
+        out.append({'name': name, 'type': typ, 'data': base64.b64encode(daten).decode('ascii')})
+
+    for i, e in enumerate(eintraege, 1):
+        if hasattr(e, 'model_dump'):
+            e = e.model_dump(exclude_none=True)
+        if not isinstance(e, dict):
+            raise MailError('Anhang %d: Objekt erwartet' % i)
+        arten = [k for k in ('from_mail', 'path', 'content_base64') if e.get(k) is not None]
+        if len(arten) != 1 or (arten[0] != 'content_base64'
+                               and (e.get('filename') is not None or e.get('mime_type') is not None)):
+            raise MailError('Anhang %d: genau eins von from_mail, path oder '
+                            'filename+content_base64+mime_type angeben' % i)
+        if arten[0] == 'from_mail':
+            q = e['from_mail'] or {}
+            if not isinstance(q, dict) or not q.get('folder') or q.get('uid') is None or q.get('part') in (None, ''):
+                raise MailError('Anhang %d: from_mail braucht folder, uid und part' % i)
+            pfad = ordner_aufloesen(box, q['folder'])
+            daten, ctype, name = vm.load_attachment(box, pfad, int(q['uid']), str(q['part']))
+            if ctype.startswith('multipart/'):
+                raise MailError('Anhang %d: Teil %s ist kein Anhang — "part" aus get_message nehmen'
+                                % (i, q['part']))
+            name = _dateiname(name)
+            dazu(name, _mime(ctype, name), daten, 'aus Mail %s/%s' % (pfad, q['uid']))
+        elif arten[0] == 'path':
+            echt = datei_aufloesen(e['path'])
+            groesse = os.path.getsize(echt)
+            if summe + groesse > MAX_ANHAENGE_SENDEN:
+                raise MailError('Anhänge zu groß: %s ist %s, zusammen %s, Grenze %s. '
+                                'Weniger/kleinere Dateien anhängen oder einen Link schicken.'
+                                % (e['path'], _mb(groesse), _mb(summe + groesse), _mb(MAX_ANHAENGE_SENDEN)))
+            with open(echt, 'rb') as fh:
+                daten = fh.read()
+            name = _dateiname(os.path.basename(echt))
+            dazu(name, _mime(None, name), daten, 'Datei')
+        else:
+            b64 = re.sub(r'\s+', '', str(e['content_base64']))
+            if len(b64) * 3 // 4 > MAX_ANHAENGE_SENDEN + 3:
+                raise MailError('Anhang %d ist größer als %s' % (i, _mb(MAX_ANHAENGE_SENDEN)))
+            try:
+                daten = base64.b64decode(b64, validate=True)
+            except Exception:
+                raise MailError('Anhang %d: content_base64 ist kein gültiges Base64' % i)
+            name = _dateiname(e.get('filename'))
+            if name == 'anhang' and not e.get('filename'):
+                raise MailError('Anhang %d: filename fehlt' % i)
+            dazu(name, _mime(e.get('mime_type'), name), daten, 'Base64')
+    return out, summe
+
+
 # --- Schreiben: Entwurf und Versand ------------------------------------------
 
 def _antwortbezug(box, reply_to_folder, reply_to_uid):
@@ -551,12 +684,13 @@ def _daten(to_, subject, body, cc, bcc):
 
 
 def create_draft(to_, subject, body, cc=None, bcc=None, reply_to_folder=None,
-                 reply_to_uid=None, account=None):
+                 reply_to_uid=None, account=None, attachments=None):
     acc = konto(account)
     box = vm.get_box(acc)
     daten = _daten(to_, subject, body, cc, bcc)
     bezug, _ = _antwortbezug(box, reply_to_folder, reply_to_uid)
     daten.update(bezug)
+    daten['attachments'], summe = anhaenge_bauen(box, attachments)
     # Ohne Signatur: V3D Mail hängt sie beim Senden aus dem Entwurf selbst an.
     msg = vm.baue_nachricht(acc, daten)
     if daten['bcc']:
@@ -574,6 +708,7 @@ def create_draft(to_, subject, body, cc=None, bcc=None, reply_to_folder=None,
         raise MailError('Entwurf konnte nicht abgelegt werden')
     return {'ok': True, 'account': acc['email'], 'folder': drafts,
             'message_id': msg['Message-ID'], 'to': daten['to'], 'subject': daten['subject'],
+            'attachments': [a['name'] for a in daten['attachments']], 'attachments_size': summe,
             'hint': 'Liegt in V3D Mail im Ordner "%s" — dort öffnen, "Bearbeiten", prüfen, senden.' % drafts}
 
 
@@ -584,12 +719,14 @@ def _html_aus_text(text):
 
 
 def send_message(to_, subject, body, cc=None, bcc=None, reply_to_folder=None,
-                 reply_to_uid=None, account=None):
+                 reply_to_uid=None, account=None, attachments=None):
     acc = konto(account)
     box = vm.get_box(acc)
     daten = _daten(to_, subject, body, cc, bcc)
     bezug, orig = _antwortbezug(box, reply_to_folder, reply_to_uid)
     daten.update(bezug)
+    # Vor dem Versand: ein ungültiger Anhang darf nicht zu einer Mail ohne ihn führen.
+    daten['attachments'], summe = anhaenge_bauen(box, attachments)
     # Signatur wie beim Senden aus der Oberfläche (doSend in mail.html);
     # das Logo ergänzt baue_nachricht über ergaenze_signaturbild selbst.
     roh = daten['text']
@@ -607,7 +744,8 @@ def send_message(to_, subject, body, cc=None, bcc=None, reply_to_folder=None,
             pass
     n = sum(1 for f in ('to', 'cc', 'bcc') for _, a in email.utils.getaddresses([daten[f]]) if a)
     return {'ok': True, 'account': acc['email'], 'message_id': ergebnis.get('messageId'),
-            'recipients': n, 'saved_to_sent': ergebnis.get('savedToSent')}
+            'recipients': n, 'saved_to_sent': ergebnis.get('savedToSent'),
+            'attachments': [a['name'] for a in daten['attachments']], 'attachments_size': summe}
 
 
 # --- Verschieben und Markieren -----------------------------------------------
