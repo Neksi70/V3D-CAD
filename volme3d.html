@@ -16328,6 +16328,92 @@ function buildGeo(type) {
   }
 }
 
+// Kanten-Gesprenkel entfernen: Auf Scans/organischen Netzen (Kühlerfigur,
+// Volker 17.10.) überschreiten tausende Mini-Knicke die 30°-Schwelle — als
+// Linien nur schwarze Punkte (Stern + Ring um jede Netz-Spitze). Echte Kanten
+// bilden lange Züge (Sockelrand, Lochrand, Quaderkanten). Weg kommt ein
+// zusammenhängender Linienzug, wenn er
+//  · räumlich kaum größer ist als die typische (kürzeste) Dreieckskante des
+//    Netzes (< 3,5 × Median) — ein echtes Loch mit 16+ Segmenten ist ≥ 5× so groß,
+//  · oder offen endet und kurz ist (< 4 % der Diagonale bzw. ≤ 12 Stücke).
+// Stufe 2 für stark verrauschte Netze siehe unten.
+function _edgeDespeckle(eg, geo) {
+  const P = eg.attributes.position, nS = P.count / 2;
+  if (nS < 40) return eg;
+  eg.computeBoundingBox();
+  const diag = eg.boundingBox.getSize(new THREE.Vector3()).length();
+  if (!(diag > 0)) return eg;
+  // typische Dreieckskante (Stichprobe)
+  let med = 0;
+  if (geo && geo.attributes.position) {
+    const G = geo.attributes.position, I = geo.index, nT = Math.floor((I ? I.count : G.count) / 3);
+    const step = Math.max(1, Math.floor(nT / 20000)), L = [];
+    const at = k => I ? I.getX(k) : k;
+    // je Dreieck die KÜRZESTE Kante: lange Mantel-Dreiecke (Zylinder) blähen
+    // den Wert sonst auf die Körperhöhe auf
+    for (let t = 0; t < nT; t += step) {
+      let m = Infinity;
+      for (let e = 0; e < 3; e++) {
+        const a = at(t*3 + e), b = at(t*3 + (e+1) % 3);
+        m = Math.min(m, Math.hypot(G.getX(a) - G.getX(b), G.getY(a) - G.getY(b), G.getZ(a) - G.getZ(b)));
+      }
+      if (m > 0) L.push(m);
+    }
+    L.sort((x, y) => x - y); med = L[L.length >> 1] || 0;
+  }
+  const q = diag * 1e-6, ids = new Map(), vid = new Int32Array(P.count);
+  for (let i = 0; i < P.count; i++) {
+    const k = Math.round(P.getX(i) / q) + '_' + Math.round(P.getY(i) / q) + '_' + Math.round(P.getZ(i) / q);
+    let id = ids.get(k); if (id === undefined) { id = ids.size; ids.set(k, id); }
+    vid[i] = id;
+  }
+  const nV = ids.size, par = new Int32Array(nV), deg = new Uint16Array(nV);
+  for (let i = 0; i < nV; i++) par[i] = i;
+  const find = x => { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; };
+  for (let s = 0; s < nS; s++) {
+    const a = vid[2*s], b = vid[2*s+1];
+    deg[a]++; deg[b]++;
+    const ra = find(a), rb = find(b); if (ra !== rb) par[ra] = rb;
+  }
+  const len = new Float64Array(nV), segs = new Int32Array(nV), open = new Uint8Array(nV);
+  const bb = new Float64Array(nV * 6).fill(Infinity);
+  for (let v = 0; v < nV; v++) for (let k = 3; k < 6; k++) bb[v*6 + k] = -Infinity;
+  for (let i = 0; i < P.count; i++) {
+    const r = find(vid[i]) * 6, x = P.getX(i), y = P.getY(i), z = P.getZ(i);
+    if (x < bb[r]) bb[r] = x; if (y < bb[r+1]) bb[r+1] = y; if (z < bb[r+2]) bb[r+2] = z;
+    if (x > bb[r+3]) bb[r+3] = x; if (y > bb[r+4]) bb[r+4] = y; if (z > bb[r+5]) bb[r+5] = z;
+  }
+  for (let s = 0; s < nS; s++) {
+    const r = find(vid[2*s]);
+    len[r] += Math.hypot(P.getX(2*s) - P.getX(2*s+1), P.getY(2*s) - P.getY(2*s+1), P.getZ(2*s) - P.getZ(2*s+1));
+    segs[r]++;
+  }
+  const nVc = new Int32Array(nV), branch = new Int32Array(nV);
+  for (let v = 0; v < nV; v++) { const r = find(v); nVc[r]++; if (deg[v] === 1) open[r] = 1; if (deg[v] >= 3) branch[r]++; }
+  const ext = r => { const o = r * 6; return Math.hypot(bb[o+3] - bb[o], bb[o+4] - bb[o+1], bb[o+5] - bb[o+2]); };
+  const rausch = r => (med > 0 && ext(r) < med * 3.5) || (open[r] && (len[r] < diag * 0.04 || segs[r] <= 12));
+  let weg = 0;
+  for (let s = 0; s < nS; s++) if (rausch(find(vid[2*s]))) weg++;
+  // Stufe 2 — war über die Hälfte Gesprenkel, ist das Netz verrauscht (Scan):
+  // dann auch verzweigte Knäuel (≥ 20 % Abzweig-Punkte, echte Kantenzüge sind
+  // fast nur Ketten) und Restzüge unter 10 % der Diagonale weg. Saubere
+  // Ränder wie ein angesetzter Sockel sind lange, unverzweigte Ringe.
+  const verrauscht = weg > 200 && weg > nS * 0.5;
+  const keep = [];
+  for (let s = 0; s < nS; s++) {
+    const r = find(vid[2*s]);
+    if (rausch(r)) continue;
+    if (verrauscht && (branch[r] > nVc[r] * 0.2 || len[r] < diag * 0.1)) continue;
+    keep.push(s);
+  }
+  if (keep.length === nS) return eg;
+  const out = new Float32Array(keep.length * 6);
+  keep.forEach((s, j) => { for (let k = 0; k < 6; k++) out[j*6 + k] = P.array[s*6 + k]; });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(out, 3));
+  eg.dispose();
+  return g;
+}
 function _updateObjEdgeLines(mesh) {
   mesh.children.filter(c => c.userData.isEdgeLines)
     .forEach(c => { c.geometry.dispose(); mesh.remove(c); });
@@ -16348,7 +16434,7 @@ function _updateObjEdgeLines(mesh) {
   { const g = mesh.geometry, nTri = g?.attributes?.position ? (g.index ? g.index.count : g.attributes.position.count) / 3 : 0;
     if (nTri > 200000) return; }
   const wf = new THREE.LineSegments(
-    new THREE.EdgesGeometry(mesh.geometry, (mesh.userData && mesh.userData.edgeAngle) || 30),
+    _edgeDespeckle(new THREE.EdgesGeometry(mesh.geometry, (mesh.userData && mesh.userData.edgeAngle) || 30), mesh.geometry),
     new THREE.LineBasicMaterial({ color: 0x000000, depthTest: true })
   );
   wf.userData.isEdgeLines = true;
@@ -63653,8 +63739,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.189';
+const VOLME3D_VERSION = '1.18.190';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.190', date:'2026-10-17', changes:[
+    ['✨','<b>Keine schwarzen Pünktchen mehr auf Scans:</b> Nach dem Neuladen bekamen Scan- und Figuren-Teile (z. B. eine Kühlerfigur) überall kleine schwarze Striche – das waren Kantenlinien an winzigen Knicken im Netz. Solches Gesprenkel wird jetzt herausgefiltert; echte Kanten wie Sockel- und Lochränder bleiben sichtbar.'],
+  ]},
   { version:'1.18.189', date:'2026-10-17', changes:[
     ['⬆','<b>Leisten-Gruppe heißt jetzt „Import“</b> statt „Datei“ – darin stecken Bibliothek, SVG und Bild, also alles zum Hereinholen.'],
   ]},
