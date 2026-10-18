@@ -1842,6 +1842,7 @@ const firebaseConfig = {
     <button class="skbtn skbtn-go" onclick="_skExtrude()" title="Geschlossene Profile extrudieren — Richtung, Abstand und Operation (Neu / Anfügen / Abziehen) im Fenster">✓ Extrudieren…</button>
     <button class="skbtn" onclick="_skLoft()" title="≥2 geschlossene Profile (Zeichenreihenfolge: 1=unten, letztes=oben auf Höhe) zu Übergangskörper verbinden">⤧ Loft</button>
     <button class="skbtn" onclick="_skSweep()" title="Geschlossenes Profil entlang offenem Pfad (Linie/Spline) ziehen → Rohr/Profil folgt der Kurve">↝ Sweep</button>
+    <button class="skbtn" onclick="_flgFromSketch()" title="Folgen: geschlossenes Profil dieser Skizze entlang von Modellkanten ziehen (z. B. Rand oder Nut rund um eine Kante) — danach Kanten im Modell anklicken">⤳ Folgen (Kanten)</button>
     <div class="sksep"></div>
     <button class="skbtn" onclick="document.getElementById('sk-dxf-file').click()" title="DXF-Datei (Linien/Kreise/Bögen) als Skizze laden">⬆ DXF laden</button>
     <button class="skbtn" onclick="document.getElementById('sk-svg-file').click()" title="SVG-Datei als Skizze laden — Konturen beschneiden, teilen, ändern und neu extrudieren">⬆ SVG laden</button>
@@ -30878,6 +30879,275 @@ function _ppApply(){
   notify('Fläche verschoben ✓ (jetzt Freiform-Körper)','ok');
 }
 
+// ═══ FOLGEN: Profil entlang Modellkanten (3D-Sweep, 1.18.194) ═══════════════
+// Idee aus dem ShapeAnywhere-Abgleich, eigener Code. Profil = geschlossene
+// Kontur der aktuellen Skizze (Knopf „↝ Folgen") oder eine angeklickte ebene
+// Fläche; Pfad = Modellkanten (Klick nimmt die tangential anschließende
+// Kantenkette mit, Shift = weitere Kette anhängen). Das Profil wird per
+// Parallel-Transport ohne Verdrehen mitgeführt; an Ecken Gehrung (Schnitt in
+// der Winkelhalbierenden, Profil um 1/cos(φ/2) gestreckt). Liegt das Profil
+// mitten am Pfad, gilt seine Lage dort — der Pfad läuft trotzdem ganz durch.
+const _flg = { active:false, prof:null, path:null, closed:false, grp:null, prev:null, op:'auto', bar:null };
+function _flgFromSketch(){
+  if (!_sk.active) return;
+  const shapes = _skBuildShapes();
+  if (!shapes.length){ notify('Folgen braucht ein geschlossenes Profil in der Skizze (z. B. Kreis oder Rechteck)', 'w'); return; }
+  const s = shapes.slice().sort((a, b) => Math.abs(_polyArea(a.outer)) - Math.abs(_polyArea(b.outer)))[0];
+  const toW = q => _skToWorld(new THREE.Vector3(q.u, 0, q.v));
+  const prof = { outer: s.outer.map(toW), holes: (s.holes || []).map(h => h.map(toW)), n: (_sk.N || new THREE.Vector3(0, 1, 0)).clone(), fromSketch: true };
+  exitSketchMode();
+  enterFolgen(prof);
+}
+function enterFolgen(prof){
+  if (_flg.active) _flgExit();
+  if (_sk.active) exitSketchMode();
+  if (_pp.active) exitPushPull();
+  if (_lf.active) exitLoftMode();
+  if (_edgeMode) exitEdgeMode();
+  _flg.active = true; _flg.prof = prof || null; _flg.path = null; _flg.closed = false; _flg.chains = [];
+  _flg.grp = new THREE.Group(); scene.add(_flg.grp);
+  canvas.style.cursor = 'crosshair';
+  let bar = document.getElementById('flg-bar');
+  if (!bar){
+    bar = document.createElement('div'); bar.id = 'flg-bar';
+    bar.style.cssText = 'position:fixed;bottom:56px;left:50%;transform:translateX(-50%);background:rgba(24,24,32,0.93);border:1px solid #444;border-radius:8px;padding:7px 12px;display:flex;align-items:center;gap:10px;z-index:8500;font-size:12px;color:#ccc;white-space:nowrap';
+    bar.innerHTML = '<span id="flg-status" style="font-weight:700;color:#aaa"></span>'
+      + '<select id="flg-op" onchange="_flg.op=this.value;_flgPreview()" style="background:#11141c;color:#fff;border:1px solid #455;border-radius:4px;padding:2px 4px;font-size:11px" title="Was mit dem Ergebnis passiert">'
+      + '<option value="auto">Automatisch</option><option value="new">Neuer Körper</option><option value="join">Anfügen</option><option value="cut">Abziehen</option></select>'
+      + '<button onclick="_flgUndo()" style="background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px" title="Letzte Kantenkette entfernen">← Zurück</button>'
+      + '<button id="flg-apply" onclick="_flgApply()" style="background:#F97316;border:none;color:#fff;border-radius:5px;padding:3px 10px;cursor:pointer;font-size:11px;font-weight:700">✓ Erstellen</button>'
+      + '<button onclick="_flgExit()" style="background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:3px 8px;cursor:pointer;font-size:11px">✕ ESC</button>';
+    document.body.appendChild(bar);
+  }
+  bar.style.display = 'flex'; document.getElementById('flg-op').value = _flg.op;
+  _flgDraw(); _flgStatus();
+  notify(_flg.prof ? 'Folgen: jetzt die Kante(n) anklicken, an denen das Profil entlanglaufen soll (Shift = weitere Kette, Enter = erstellen)'
+                   : 'Folgen: erst die ebene Profilfläche anklicken, dann die Kanten für den Pfad', 'ok');
+}
+function _flgExit(){
+  if (!_flg.active) return;
+  _flg.active = false;
+  if (_flg.grp){ scene.remove(_flg.grp); _flg.grp.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); }); _flg.grp = null; }
+  _flg.prev = null; _flg.prof = null; _flg.path = null; _flg.chains = [];
+  const bar = document.getElementById('flg-bar'); if (bar) bar.style.display = 'none';
+  canvas.style.cursor = '';
+}
+function _flgStatus(){
+  const el = document.getElementById('flg-status'); if (!el) return;
+  if (!_flg.prof) { el.textContent = '1/2 Ebene Profilfläche anklicken'; return; }
+  if (!_flg.path) { el.textContent = '2/2 Kante für den Pfad anklicken'; return; }
+  let L = 0; for (let i = 1; i < _flg.path.length; i++) L += _flg.path[i].distanceTo(_flg.path[i - 1]);
+  el.textContent = `Pfad: ${_flg.chains.length} Kette${_flg.chains.length > 1 ? 'n' : ''} · ${String(Math.round(L * 100) / 10).replace('.', ',')} mm${_flg.closed ? ' · geschlossen' : ''} — Shift+Klick = mehr, Enter = erstellen`;
+}
+function _flgClick(e){
+  if (!_flg.prof){
+    const hit = pickObjects(e).find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines && objects.some(o => o === h.object || o.getObjectById(h.object.id)));
+    if (!hit) { notify('Daneben — eine ebene Fläche anklicken', 'w'); return; }
+    const r = _faceRegion(hit.object, hit);
+    if (!r) { notify('Das ist keine ebene Fläche', 'w'); return; }
+    _flg.prof = { outer: r.loops[0], holes: r.loops.slice(1), n: r.normal.clone(), body: hit.object };
+    _flgDraw(); _flgStatus(); return;
+  }
+  const ch = _flgPickChain(e);
+  if (!ch) { notify('Keine Kante getroffen — genauer auf eine Kantenlinie klicken', 'w'); return; }
+  if (!e.shiftKey || !_flg.path) { _flg.chains = [ch]; }
+  else _flg.chains.push(ch);
+  if (!_flgJoin()) { _flg.chains.pop(); _flgJoin(); notify('Diese Kante schließt nicht an den bisherigen Pfad an', 'w'); }
+  _flgDraw(); _flgStatus(); _flgPreview();
+}
+function _flgUndo(){ if (_flg.chains.length) { _flg.chains.pop(); _flgJoin(); _flgDraw(); _flgStatus(); _flgPreview(); } else if (_flg.prof && !_flg.prof.fromSketch) { _flg.prof = null; _flgDraw(); _flgStatus(); } }
+// Kantenlinie unter dem Zeiger → tangential zusammenhängende Kette (Welt-Punkte)
+function _flgPickChain(e){
+  getNorm(e); raycaster.setFromCamera(mousev, camera);
+  const lines = [];
+  objects.forEach(o => o.traverse(c => { if (c.userData && c.userData.isEdgeLines && c.visible !== false) lines.push(c); }));
+  if (!lines.length) return null;
+  const r = vpEl.getBoundingClientRect();
+  const dist = camera.position.distanceTo(orbitTarget), wpp = 2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / r.height;
+  const old = raycaster.params.Line ? raycaster.params.Line.threshold : 1;
+  raycaster.params.Line = { threshold: 7 * wpp };
+  let hits; try { hits = raycaster.intersectObjects(lines, false); } finally { raycaster.params.Line = { threshold: old }; }
+  if (!hits.length) return null;
+  const h = hits[0], ln = h.object, pos = ln.geometry.attributes.position;
+  ln.updateMatrixWorld(true);
+  const segs = [];
+  for (let i = 0; i + 1 < pos.count; i += 2) segs.push([new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(ln.matrixWorld), new THREE.Vector3().fromBufferAttribute(pos, i + 1).applyMatrix4(ln.matrixWorld)]);
+  const s0 = Math.floor(h.index / 2); if (!segs[s0]) return null;
+  const q = 1e-3, key = v => Math.round(v.x / q) + ',' + Math.round(v.y / q) + ',' + Math.round(v.z / q);
+  const at = new Map();
+  segs.forEach((s, i) => { for (const k of [key(s[0]), key(s[1])]) { if (!at.has(k)) at.set(k, []); at.get(k).push(i); } });
+  const used = new Set([s0]);
+  // in eine Richtung weiterlaufen, solange es genau einen Nachfolger gibt und der Knick < 35° ist
+  const grow = (pts) => {
+    for (let guard = 0; guard < segs.length; guard++) {
+      const end = pts[pts.length - 1], prevP = pts[pts.length - 2];
+      const nb = (at.get(key(end)) || []).filter(i => !used.has(i));
+      if ((at.get(key(end)) || []).length !== 2 || nb.length !== 1) break;
+      const s = segs[nb[0]], nxt = key(s[0]) === key(end) ? s[1] : s[0];
+      const d0 = end.clone().sub(prevP).normalize(), d1 = nxt.clone().sub(end).normalize();
+      if (d0.dot(d1) < Math.cos(35 * Math.PI / 180)) break;
+      used.add(nb[0]);
+      if (key(nxt) === key(pts[0])) { pts.push(pts[0].clone()); break; }   // Ring geschlossen
+      pts.push(nxt);
+    }
+    return pts;
+  };
+  let pts = grow([segs[s0][0].clone(), segs[s0][1].clone()]);
+  if (!(pts.length > 2 && key(pts[0]) === key(pts[pts.length - 1]))) { pts.reverse(); pts = grow(pts); }
+  return pts;
+}
+// Ketten zu einem Pfad verbinden (Enden passend drehen). false = nicht verbunden
+function _flgJoin(){
+  _flg.path = null; _flg.closed = false;
+  if (!_flg.chains.length) return true;
+  const near = (a, b) => a.distanceTo(b) < 2e-3;
+  let P = _flg.chains[0].map(v => v.clone());
+  for (let k = 1; k < _flg.chains.length; k++) {
+    const c = _flg.chains[k].map(v => v.clone()), a = P[0], b = P[P.length - 1];
+    if (near(b, c[0])) P = P.concat(c.slice(1));
+    else if (near(b, c[c.length - 1])) P = P.concat(c.reverse().slice(1));
+    else if (near(a, c[c.length - 1])) P = c.concat(P.slice(1));
+    else if (near(a, c[0])) P = c.reverse().concat(P.slice(1));
+    else return false;
+  }
+  _flg.closed = P.length > 3 && near(P[0], P[P.length - 1]);
+  if (_flg.closed) P.pop();
+  _flg.path = P;
+  return true;
+}
+function _flgDraw(){
+  if (!_flg.grp) return;
+  _flg.grp.children.filter(c => c !== _flg.prev).forEach(c => { _flg.grp.remove(c); c.geometry.dispose(); c.material.dispose(); });
+  const line = (pts, col, loop) => { const g = new THREE.BufferGeometry().setFromPoints(pts);
+    const l = new (loop ? THREE.LineLoop : THREE.Line)(g, new THREE.LineBasicMaterial({ color: col, depthTest: false })); l.renderOrder = 998; _flg.grp.add(l); };
+  if (_flg.prof) [_flg.prof.outer, ..._flg.prof.holes].forEach(lp => line(lp, 0x2563eb, true));
+  if (_flg.path) line(_flg.path, 0xF97316, _flg.closed);
+}
+// Geometrie des Sweeps (Welt-Koordinaten)
+function _flgGeo(prof, path, closed){
+  let P = []; for (const v of path) if (!P.length || P[P.length - 1].distanceTo(v) > 1e-5) P.push(v.clone());
+  if (closed && P.length > 2 && P[0].distanceTo(P[P.length - 1]) < 1e-5) P.pop();
+  if (P.length < 2) throw new Error('Pfad zu kurz');
+  // Bezugspunkt = Pfadpunkt am nächsten zur Profilmitte (dort eingefügt)
+  const C = new THREE.Vector3(); prof.outer.forEach(v => C.add(v)); C.multiplyScalar(1 / prof.outer.length);
+  let bi = 0, bt = 0, bd = Infinity;
+  const nSeg = closed ? P.length : P.length - 1;
+  for (let i = 0; i < nSeg; i++) { const a = P[i], b = P[(i + 1) % P.length], ab = b.clone().sub(a), L2 = ab.lengthSq() || 1e-12;
+    const t = Math.max(0, Math.min(1, C.clone().sub(a).dot(ab) / L2)), q = a.clone().addScaledVector(ab, t), d = q.distanceTo(C);
+    if (d < bd) { bd = d; bi = i; bt = t; } }
+  let ref;
+  if (bt < 1e-4) ref = bi; else if (bt > 1 - 1e-4) ref = (bi + 1) % P.length;
+  else { P.splice(bi + 1, 0, P[bi].clone().lerp(P[(bi + 1) % P.length], bt)); ref = bi + 1; }
+  if (closed) { P = P.slice(ref).concat(P.slice(0, ref)); ref = 0; }   // geschlossen: beim Profil beginnen
+  const M = P.length;
+  const tin = [], tout = [], T = [];
+  for (let j = 0; j < M; j++) {
+    const pj = closed ? P[(j - 1 + M) % M] : P[j - 1], nj = closed ? P[(j + 1) % M] : P[j + 1];
+    tin[j] = pj ? P[j].clone().sub(pj).normalize() : null;
+    tout[j] = nj ? nj.clone().sub(P[j]).normalize() : null;
+    const a = tin[j] || tout[j], b = tout[j] || tin[j];
+    const t = a.clone().add(b); T[j] = t.lengthSq() > 1e-10 ? t.normalize() : b.clone();
+  }
+  // Parallel-Transport der Drehung
+  const R = [new THREE.Quaternion()];
+  for (let j = 1; j < M; j++) R[j] = new THREE.Quaternion().setFromUnitVectors(T[j - 1], T[j]).multiply(R[j - 1]);
+  const Rinv = R[ref].clone().invert();
+  // Profil-Ebene: Basis so, dass e1×e2 = Tangente am Bezugspunkt
+  const n = prof.n.clone().normalize(); if (n.dot(T[ref]) < 0) n.negate();
+  const e1 = new THREE.Vector3().crossVectors(Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0), n).normalize();
+  const e2 = new THREE.Vector3().crossVectors(n, e1);
+  const loops = [prof.outer, ...prof.holes].map((lp, k) => {
+    let L = lp.map(v => v.clone()); if (L.length > 2 && L[0].distanceTo(L[L.length - 1]) < 1e-6) L.pop();
+    const a2 = L.reduce((s, v, i) => { const w = L[(i + 1) % L.length], p = v.clone().sub(C), q = w.clone().sub(C); return s + (p.dot(e1) * q.dot(e2) - q.dot(e1) * p.dot(e2)); }, 0);
+    if ((k === 0) !== (a2 > 0)) L.reverse();   // außen CCW, Löcher CW
+    return L;
+  });
+  const Pref = P[ref], pos = [], idx = [];
+  const ringStart = [];   // ringStart[j][k] = Vertexindex
+  for (let j = 0; j < M; j++) {
+    const Q = R[j].clone().multiply(Rinv);
+    const corner = tin[j] && tout[j] && tin[j].dot(tout[j]) < 0.99999;
+    let b = null, s = 1;
+    if (corner) { const phi = tin[j].angleTo(tout[j]); s = 1 / Math.cos(phi / 2); b = tout[j].clone().sub(tin[j]).normalize(); }
+    ringStart[j] = [];
+    loops.forEach((L, k) => {
+      ringStart[j][k] = pos.length / 3;
+      for (const v of L) {
+        const d = v.clone().sub(Pref).applyQuaternion(Q);
+        if (b) d.addScaledVector(b, (s - 1) * d.dot(b));
+        const w = P[j].clone().add(d); pos.push(w.x, w.y, w.z);
+      }
+    });
+  }
+  const segN = closed ? M : M - 1;
+  for (let j = 0; j < segN; j++) { const j2 = (j + 1) % M;
+    loops.forEach((L, k) => { const N = L.length, a0 = ringStart[j][k], b0 = ringStart[j2][k];
+      for (let i = 0; i < N; i++) { const i2 = (i + 1) % N; idx.push(a0 + i, a0 + i2, b0 + i2, a0 + i, b0 + i2, b0 + i); } }); }
+  if (!closed) {   // Deckel (Profil mit Löchern triangulieren)
+    const to2 = v => new THREE.Vector2(v.clone().sub(C).dot(e1), v.clone().sub(C).dot(e2));
+    const tris = THREE.ShapeUtils.triangulateShape(loops[0].map(to2), loops.slice(1).map(L => L.map(to2)));
+    const flat = j => { const out = []; loops.forEach((L, k) => { for (let i = 0; i < L.length; i++) out.push(ringStart[j][k] + i); }); return out; };
+    const s0 = flat(0), s1 = flat(M - 1);
+    for (const t of tris) { idx.push(s0[t[0]], s0[t[2]], s0[t[1]]); idx.push(s1[t[0]], s1[t[1]], s1[t[2]]); }
+  }
+  let geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setIndex(idx);
+  // Sicherheitsnetz: Normalen nach außen (Volumen positiv)
+  let vol = 0; const A = new THREE.Vector3(), B = new THREE.Vector3(), Cc = new THREE.Vector3();
+  for (let t = 0; t < idx.length; t += 3) { A.fromArray(pos, idx[t] * 3); B.fromArray(pos, idx[t + 1] * 3); Cc.fromArray(pos, idx[t + 2] * 3); vol += A.dot(B.clone().cross(Cc)); }
+  if (vol < 0) { for (let t = 0; t < idx.length; t += 3) { const x = idx[t + 1]; idx[t + 1] = idx[t + 2]; idx[t + 2] = x; } geo.setIndex(idx); }
+  geo = geo.toNonIndexed(); geo.computeVertexNormals(); geo.computeBoundingBox();
+  return geo;
+}
+function _flgPreview(){
+  if (!_flg.grp) return;
+  if (_flg.prev) { _flg.grp.remove(_flg.prev); _flg.prev.geometry.dispose(); _flg.prev.material.dispose(); _flg.prev = null; }
+  if (!_flg.prof || !_flg.path) return;
+  let geo; try { geo = _flgGeo(_flg.prof, _flg.path, _flg.closed); } catch (e) { return; }
+  const r = _flgResolve(geo);
+  const col = r.op === 'cut' ? 0xef4444 : r.op === 'join' ? 0x22c55e : 0x3b82f6;
+  _flg.prev = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: col, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide }));
+  _flg.prev.renderOrder = 996; _flg.grp.add(_flg.prev);
+}
+// Automatik: berührt/schneidet der Sweep einen Körper → anfügen, sonst neu
+function _flgResolve(geo){
+  const bb = geo.boundingBox.clone().expandByScalar(0.005);
+  const cands = _skxBodies().filter(o => bb.intersectsBox(getMeshBox(o)));
+  const pref = _flg.prof && _flg.prof.body && cands.find(o => o === _flg.prof.body || o.getObjectById(_flg.prof.body.id));
+  const target = pref || cands[0] || null;
+  if (_flg.op === 'auto') return target ? { op: 'join', target } : { op: 'new', target: null };
+  if (_flg.op === 'new') return { op: 'new', target: null };
+  return { op: _flg.op, target };
+}
+async function _flgApply(){
+  if (!_flg.active) return;
+  if (!_flg.prof || !_flg.path) { notify('Erst Profil und Pfad wählen', 'w'); return; }
+  let geo; try { geo = _flgGeo(_flg.prof, _flg.path, _flg.closed); } catch (e) { notify('Folgen nicht möglich: ' + e.message, 'w'); return; }
+  const r = _flgResolve(geo);
+  if (r.op !== 'new' && !r.target) { notify('Kein Körper berührt — als neuen Körper erstellen oder Operation ändern', 'w'); return; }
+  _flgExit();
+  saveUndo();
+  const n0 = undoStack.length;
+  typeCounts['custom'] = (typeCounts['custom'] || 0) + 1;
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(currentColor), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide }));
+  mesh.castShadow = mesh.receiveShadow = true;
+  mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Folgen ' + typeCounts['custom'], color: currentColor, isHole: false, fillet: 0, chamfer: 0 };
+  objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
+  if (r.op === 'new') { selectObjs([mesh]); updateTree(); notify('Folgen: Körper entlang des Pfads erzeugt', 'ok'); return; }
+  if (r.op === 'join') {
+    selectObjs([r.target, mesh]); await unionSelected();
+    if (undoStack.length === n0 + 1) undoStack.pop(); updateUndoRedoButtons();
+    notify('Folgen: an „' + (r.target.userData.name || 'Körper') + '“ angefügt', 'ok'); return;
+  }
+  mesh.userData.isHole = true; mesh.userData.color = '#f03030';
+  mesh.material.color.set('#f03030'); mesh.material.transparent = true; mesh.material.opacity = 0.52;
+  updateTree();
+  _progressShow('Abziehen läuft…'); _progressSet(8); _progressCreep(93);
+  const ctl = _progressCancelable();
+  try { await _doSubtractHoles([r.target], [mesh], ctl); _progressDone(); notify('Folgen: aus „' + (r.target.userData.name || 'Körper') + '“ abgezogen (Nut)', 'ok'); }
+  catch (err) { _progressHide(); if (objects.includes(mesh)) { scene.remove(mesh); objects.splice(objects.indexOf(mesh), 1); updateTree(); } notify('Abziehen nicht möglich: ' + (err.message || err), 'e'); }
+}
+
 // ═══ LOFT 3D: 2+ ebene Flächen → Übergangskörper (Shapr3D-Stil) ═══════════
 // Anders als der Skizzen-Loft (Profile in EINER Ebene, gestapelt) verbindet
 // dieses Werkzeug frei im Raum liegende ebene Flächen beliebiger Körper:
@@ -31529,6 +31799,7 @@ canvas.addEventListener('mousedown', e => {
     }
     return;
   }
+  if (_flg.active) { _flgClick(e); return; }
   if (_lf.active) {
     const hits = pickObjects(e);
     const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines);
@@ -32478,6 +32749,7 @@ window.addEventListener('keydown', e => {
     if (document.getElementById('ds-modal').classList.contains('show')) { hideDesigns(); return; }
     if (_plugMode) { _plugCancel(); return; }
     if (_pp.active) { exitPushPull(); return; }
+    if (_flg.active) { _flgExit(); return; }
     if (_lf.active) { exitLoftMode(); return; }
     // ESC in der Skizze: erst den angefangenen Zug abbrechen (Linie klebt am
     // Cursor!), erst der nächste ESC schließt die Skizze — sonst fliegt man
@@ -32504,6 +32776,7 @@ window.addEventListener('keydown', e => {
   // Loft-Modus: Enter bestätigt
   if (_lf.active && k === 'Enter') { _lfApply(); return; }
   if (_pp.active && k === 'Enter') { e.preventDefault(); _ppGo(); return; }
+  if (_flg.active && k === 'Enter') { e.preventDefault(); _flgApply(); return; }
   // Extrudieren-Fenster: Enter bestätigt auch ohne Fokus im Feld
   if (_skx.open && k === 'Enter') { e.preventDefault(); _skxApply(); return; }
 
@@ -64500,8 +64773,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.193';
+const VOLME3D_VERSION = '1.18.194';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.194', date:'2026-10-19', changes:[
+    ['⤳','<b>Neu: Folgen – ein Profil entlang von Modellkanten ziehen.</b> In der Skizze ein geschlossenes Profil zeichnen (z. B. Kreis oder Rechteck auf einer Seitenfläche), dann <b>⤳ Folgen (Kanten)</b>, oder über die Suche „Folgen“ eine ebene Fläche als Profil anklicken. Danach die Kante(n) im Modell anklicken. Ein Klick nimmt die ganze tangential anschließende Kette mit, etwa einen Kreisrand komplett; Shift hängt weitere Kanten an. Ecken werden sauber auf Gehrung geschnitten, Hohlprofile bleiben hohl. Ergebnis: Rand, Wulst, Leiste oder mit „Abziehen“ eine Nut rund um das Teil.'],
+  ]},
   { version:'1.18.193', date:'2026-10-19', changes:[
     ['⇕','<b>Fläche ziehen versetzt jetzt exakt.</b> Ebene Fläche anklicken (Shift = weitere Flächen derselben Ebene, Enter = weiter): Ihre Kontur wird zur Skizze auf der Fläche, und das Extrudieren-Fenster öffnet sich. Positiv fügt nach außen an, negativ drückt hinein. Das wird als echter Boolean gerechnet, nicht mehr durch Verschieben von Eckpunkten. Damit klappt es auch bei Zylindern, Kegeln und Teilen mit schrägen Wänden, die Kontur lässt sich vorher noch ändern, und der Schritt steht im Verlauf.'],
     ['⬆','<b>Extrudieren: neues Feld „Ende“.</b> <b>Abstand</b> wie bisher, <b>Bis nächste Fläche</b> (bis zur ersten Körperfläche in Zugrichtung, z. B. eine Lücke genau füllen), <b>Bis Fläche…</b> (Zielfläche anklicken) und <b>Durch alles</b>. Neue Operation <b>Schnittmenge</b>: Vom Körper bleibt nur, was innerhalb der Extrusion liegt. Alles auch im Verlauf nachträglich änderbar.'],
@@ -75417,6 +75693,7 @@ const CMDK = [
   {i:'📐',g:'Bearbeiten',t:'Messen (Abstand / Durchmesser)',k:'measure distance diameter durchmesser bemaszung',run:()=>measureTool()},
   {i:'↕',g:'Bearbeiten',t:'Fläche ziehen / versetzen (Push/Pull)',k:'push pull fläche offset versetzen extrudieren bis nächste bis fläche durch alles',run:()=>enterPushPull()},
   {i:'⤧',g:'Bearbeiten',t:'Loft (Flächen verbinden)',k:'loft übergang flächen verbinden shapr',run:()=>{ if(!_lf.active) enterLoftMode(); }},
+  {i:'⤳',g:'Bearbeiten',t:'Folgen (Profil entlang Kanten)',k:'folgen sweep follow me profil kante pfad rand nut leiste rohr',run:()=>enterFolgen()},
   {i:'🔻',g:'Bearbeiten',t:'Vereinfachen (Dreiecke)',k:'simplify decimate reduzieren',run:()=>openSimplifyModal()},
   {i:'⬇',g:'Export',t:'Skizze als DXF',k:'dxf laser export skizze',run:()=>{ if(_sk.active) _skExportDXF(); else notify('Erst Skizzen-Modus öffnen','w'); }},
   {i:'🔧',g:'Export',t:'CNC-Fräsen (G-Code)',k:'cnc fraese fräse fraesen fräsen gcode g-code grbl nc cam werkzeugweg ausschneiden tasche gravieren bohren haltesteg estlcam portalfraese portalfräse oberfraese',run:()=>_cncOpen()},
