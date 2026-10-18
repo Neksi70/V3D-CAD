@@ -12388,7 +12388,7 @@ function _advBuild() {
   const g2 = grp('adv-construct', 'Konstruieren', [
     ['toggleWorkplane()', '▱ Arbeitsebene', 'Arbeitsebene auf eine Fläche legen (P) — neue Körper und Skizzen landen darauf'],
     ['enterEdgeMode()', '⬡ Kanten', 'Kanten runden oder abschrägen'],
-    ['enterPushPull()', '⇕ Fläche ziehen', 'Fläche verschieben / drücken-ziehen'],
+    ['enterPushPull()', '⇕ Fläche ziehen', 'Fläche versetzen: ebene Fläche anklicken, nach außen anfügen oder hineindrücken — exakt, mit Bis nächste / Bis Fläche / Durch alles'],
     ['enterShellMode()', '▢ Schale', 'Aushöhlen: Fläche öffnen, Wandstärke wählen'],
     ['toggleTexPanel()', '▦ Textur', 'Textur aufbringen — ganzes Teil, Flächenarten oder 👆 einzelne Flächen'],
   ]);
@@ -12608,7 +12608,7 @@ setTimeout(_advApply, 0);
 // Parametrik à la Fusion/Onshape: Jedes Teil, das über Skizze/Extrudieren oder
 // „Gewinde an Fläche" entsteht oder verändert wird, merkt sich
 //   feat = { base: objectToData(Teil vor dem 1. Schritt) | null, list: [Schritt…], sig }
-// Schritt Skizze:  { typ:'skizze', ents, frame:[16], ab:[a,b], op:'new'|'join'|'cut', picks, pUI, T }
+// Schritt Skizze:  { typ:'skizze', ents, cons, frame:[16], ab:[a,b], op:'new'|'join'|'cut'|'isect', picks, pUI, T }
 // Schritt Gewinde: { typ:'gewinde', cyl, p, T }
 // Koordinaten: Schritt k rechnet in L_k (= Welt beim Anwenden; nach jedem Boolean
 // hat das Ergebnis die Einheitsmatrix). T_k = Matrix des Teils direkt vor Schritt k
@@ -12669,7 +12669,7 @@ async function _featRebuild(H) {
       const tool = _featSketchMesh(f);
       if (!tool) throw new Error(`Skizze ${k + 1} hat keine geschlossene Kontur mehr`);
       const tm = toMf(tool);
-      cur = !cur ? tm : (f.op === 'cut' ? M.difference(cur, tm) : M.union(cur, tm));
+      cur = !cur ? tm : (f.op === 'cut' ? M.difference(cur, tm) : f.op === 'isect' ? M.intersection(cur, tm) : M.union(cur, tm));
     } else if (f.typ === 'gewinde') {
       if (!cur) throw new Error('Gewinde ohne Körper');
       cur = M.difference(cur, toMf(new THREE.Mesh(await _featThreadTool(f))));
@@ -12700,7 +12700,7 @@ function _featChain(o, k) {
 function _featLabel(f, k) {
   if (f.typ === 'gewinde') { const s = f.p.size === 'eigen' ? 'Ø' + String(f.p.d).replace('.', ',') : f.p.size; return `🔩 Gewinde ${s}×${String(f.p.pitch).replace('.', ',')}${f.cyl.inner ? ' innen' : ' außen'}`; }
   const mm = String(Math.round(Math.abs(f.ab[1] - f.ab[0]) * 100) / 10).replace('.', ',');
-  return `✏ Skizze ${k + 1} · ${f.op === 'cut' ? 'Abziehen' : f.op === 'join' ? 'Anfügen' : 'Körper'} ${mm} mm`;
+  return `✏ Skizze ${k + 1} · ${f.op === 'cut' ? 'Abziehen' : f.op === 'join' ? 'Anfügen' : f.op === 'isect' ? 'Schnittmenge' : 'Körper'} ${mm} mm`;
 }
 function _featPruefen(o) {
   if (_featIntakt(o)) return true;
@@ -12781,8 +12781,51 @@ function _skxRange(){
   const p = _skx.p, d = (parseFloat(p.d) || 0) / 10, d2 = (parseFloat(p.d2) || 0) / 10;
   if (p.dir === 'sym') return [-Math.abs(d) / 2, Math.abs(d) / 2];
   if (p.dir === 'two') return [-Math.abs(d2), Math.abs(d)];
-  if (p.thru) { const sg = d > 0 ? 1 : -1, L = _skxThroughLen(sg); return sg > 0 ? [0, L] : [-L, 0]; }
+  const end = p.end || (p.thru ? 'thru' : 'dist');
+  if (end === 'thru') { const sg = d > 0 ? 1 : -1, L = _skxThroughLen(sg); return sg > 0 ? [0, L] : [-L, 0]; }
+  if (end === 'next') { const sg = d > 0 ? 1 : -1, L = _skxNextLen(sg); return L > 0 ? (sg > 0 ? [0, L] : [-L, 0]) : [0, 0]; }
+  if (end === 'face') { const f = p.faceD; if (f == null || !isFinite(f)) return [0, 0]; return f >= 0 ? [0, f] : [f, 0]; }
   return d >= 0 ? [0, d] : [d, 0];
+}
+// „Bis nächste": vom Profil aus in Richtung sg bis zur ersten Körperfläche. Liegt
+// die Skizze auf einem Körper und geht hinein, ist das dessen Rückseite (= Tasche
+// bis zur nächsten Wand). Rückseiten zählen mit (Raycast doppelseitig).
+function _skxNextLen(sg){
+  const bodies = _skxBodies(); if (!bodies.length || !_skx.shapes) return 0;
+  const N = (_sk.N || new THREE.Vector3(0, 1, 0)).clone().multiplyScalar(sg), eps = 0.002;
+  const sides = bodies.map(o => o.material && o.material.side);
+  bodies.forEach(o => { if (o.material && !Array.isArray(o.material)) o.material.side = THREE.DoubleSide; });
+  const rc = new THREE.Raycaster(); let best = Infinity;
+  try {
+    for (const s of _skx.shapes) {
+      const q = _skxInnerPt(s), O = _skToWorld(new THREE.Vector3(q.u, 0, q.v)).addScaledVector(N, eps);
+      rc.set(O, N);
+      const h = rc.intersectObjects(bodies, false).find(x => x.distance > 1e-4);
+      if (h) best = Math.min(best, h.distance + eps);
+    }
+  } finally { bodies.forEach((o, i) => { if (o.material && !Array.isArray(o.material)) o.material.side = sides[i]; }); }
+  return best < Infinity ? best : 0;
+}
+// „Bis Fläche": Zielfläche anklicken → Abstand von der Skizzenebene bis dorthin
+function _skxPickFace(){
+  if (!_skx.open) return;
+  _skx.facePick = true; canvas.style.cursor = 'pointer';
+  canvas.addEventListener('pointerdown', _skxFaceDown, true);
+  notify('Bis Fläche: die Fläche anklicken, an der die Extrusion enden soll', 'ok');
+}
+function _skxFaceDown(e){
+  if (!_skx.facePick || e.button > 0) return;
+  e.preventDefault(); e.stopPropagation();
+  canvas.removeEventListener('pointerdown', _skxFaceDown, true);
+  _skx.facePick = false; canvas.style.cursor = _sk.active ? 'crosshair' : '';
+  const h = pickObjects(e).find(x => x.object.isMesh && x.face && !(x.object.userData && (x.object.userData.isEdgeLines || x.object.userData.isSketchRef))
+    && objects.some(o => o === x.object || o.getObjectById(x.object.id)));
+  if (!h) { notify('Keine Körperfläche getroffen — nochmal „Fläche anklicken"', 'w'); return; }
+  const N = _sk.N || new THREE.Vector3(0, 1, 0), O = _sk.O || new THREE.Vector3();
+  const nW = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
+  _skx.p.faceD = h.point.clone().sub(O).dot(N);
+  if (Math.abs(nW.dot(N)) < 0.99) notify('Die Fläche ist schräg zur Skizze — die Extrusion endet am angeklickten Punkt', 'w');
+  _skxPanel(); _skxUpdate();
 }
 // Punkt sicher innerhalb einer Fläche (nicht im Loch)
 function _skxInnerPt(s){
@@ -12823,9 +12866,10 @@ function _skxResolve(){
 }
 function _skxInfo(r){
   const nm = r.target ? '„' + (r.target.userData.name || 'Körper') + '“' : '';
-  if (r.edit) return `Ändert Skizze ${_sk.editFeat.k + 1} von ${nm} (${r.op === 'cut' ? 'Abziehen' : r.op === 'join' ? 'Anfügen' : 'Körper'}) — das Teil wird mit allen späteren Schritten <b>neu berechnet</b>.`;
+  if (r.edit) return `Ändert Skizze ${_sk.editFeat.k + 1} von ${nm} (${r.op === 'cut' ? 'Abziehen' : r.op === 'join' ? 'Anfügen' : r.op === 'isect' ? 'Schnittmenge' : 'Körper'}) — das Teil wird mit allen späteren Schritten <b>neu berechnet</b>.`;
   if (r.op === 'cut')  return r.target ? `Wird aus ${nm} <b style="color:#dc2626">abgezogen</b>.` : '<span style="color:#dc2626">Kein Körper im Weg — nichts zum Abziehen.</span>';
   if (r.op === 'join') return r.target ? `Wird an ${nm} <b style="color:#16a34a">angefügt</b>.` : '<span style="color:#dc2626">Kein Körper berührt — nichts zum Anfügen.</span>';
+  if (r.op === 'isect') return r.target ? `Von ${nm} bleibt nur die <b style="color:#9333ea">Schnittmenge</b> mit der Extrusion.` : '<span style="color:#dc2626">Kein Körper berührt — keine Schnittmenge.</span>';
   return 'Erzeugt einen <b style="color:#2563eb">neuen Körper</b>.';
 }
 function _skxUpdate(){
@@ -12836,7 +12880,7 @@ function _skxUpdate(){
   if (b - a > 1e-4) {
     const profiles = _skx.shapes.map(s => ({ outer: s.outer, holes: s.holes || [] }));
     const geo = _skBuildGeoFromProfiles(profiles, (b - a) * 10, 0, 0);
-    const col = r.op === 'cut' ? 0xef4444 : (r.op === 'join' ? 0x22c55e : 0x3b82f6);
+    const col = r.op === 'cut' ? 0xef4444 : r.op === 'join' ? 0x22c55e : r.op === 'isect' ? 0xa855f7 : 0x3b82f6;
     // Abziehen liegt IM Körper → ohne Tiefentest zeichnen, sonst sieht man die Tasche nicht
     _skx.prev = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: col, transparent: true, opacity: r.op === 'cut' ? 0.55 : 0.5,
       depthWrite: false, depthTest: r.op !== 'cut', side: THREE.DoubleSide }));
@@ -12864,10 +12908,14 @@ function _skxPanel(){
     <div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:5px 8px;margin-bottom:8px">${_skx.shapes.length} Profil${_skx.shapes.length > 1 ? 'e' : ''} gewählt${_sk.onFace ? ' · auf Fläche/Arbeitsebene' : ''}</div>
     <div class="vrow"><label>Richtung</label><div class="vbg" style="flex:1">${tb(p.dir === 'one', 'dir', 'one', 'Eine Seite')}${tb(p.dir === 'sym', 'dir', 'sym', 'Symmetrisch', 'Je die Hälfte nach beiden Seiten')}${tb(p.dir === 'two', 'dir', 'two', 'Zwei Seiten', 'Nach beiden Seiten unterschiedlich weit')}</div></div>
     <div class="vrow"><label title="${p.dir === 'one' ? 'Negativ = in die andere Richtung (z. B. in den Körper hinein)' : ''}">${p.dir === 'two' ? 'Seite 1' : (p.dir === 'sym' ? 'Gesamt' : 'Abstand')}</label><input id="skx-d" type="number" step="0.5" value="${p.d}" oninput="_skxSet('d',this.value)" style="width:80px"><span class="vu">mm</span></div>
-    ${p.dir === 'one' ? `<div class="vrow"><label style="display:flex;align-items:center;gap:5px;cursor:pointer" title="Bis ganz durch alle Körper — z. B. Durchgangsloch. Richtung folgt dem Vorzeichen des Abstands (0 oder negativ = in den Körper hinein)"><input type="checkbox" ${p.thru ? 'checked' : ''} onchange="_skxSet('thru',this.checked)"> durch alles</label></div>` : ''}
+    ${p.dir === 'one' ? (() => { const end = p.end || (p.thru ? 'thru' : 'dist');
+      return `<div class="vrow"><label title="Wo die Extrusion endet. Bei „Bis nächste“ und „Durch alles“ bestimmt nur das Vorzeichen des Abstands die Richtung (0 oder negativ = in den Körper hinein)">Ende</label><select onchange="_skxSet('end',this.value)" style="flex:1">
+        ${[['dist','Abstand'],['next','Bis nächste Fläche'],['face','Bis Fläche…'],['thru','Durch alles']].map(([v, l]) => `<option value="${v}"${end === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>`
+        + (end === 'face' ? `<div class="vrow"><label></label><button class="btn" onclick="_skxPickFace()" title="Die Fläche anklicken, an der die Extrusion enden soll">🎯 Fläche anklicken</button><span class="vu" style="margin-left:6px">${p.faceD != null ? String(Math.round(p.faceD * 100) / 10).replace('.', ',') + ' mm' : 'noch keine'}</span></div>` : '')
+        + (end === 'next' ? `<div style="font-size:11px;color:var(--dim);margin:-2px 0 6px">${(() => { const [a, b] = _skxRange(); return b - a > 1e-4 ? 'bis zur nächsten Fläche: ' + String(Math.round((b - a) * 100) / 10).replace('.', ',') + ' mm' : '<span style="color:#dc2626">in dieser Richtung liegt keine Fläche</span>'; })()}</div>` : ''); })() : ''}
     ${p.dir === 'two' ? `<div class="vrow"><label>Seite 2</label><input id="skx-d2" type="number" step="0.5" min="0" value="${p.d2}" oninput="_skxSet('d2',this.value)" style="width:80px"><span class="vu">mm</span></div>` : ''}
     <div class="vrow"><label>Operation</label><select id="skx-op" onchange="_skxSet('op',this.value)" style="flex:1">
-      ${[['auto','Automatisch'],['new','Neuer Körper'],['join','Anfügen'],['cut','Abziehen']].map(([v, l]) => `<option value="${v}"${p.op === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+      ${[['auto','Automatisch'],['new','Neuer Körper'],['join','Anfügen'],['cut','Abziehen'],['isect','Schnittmenge']].map(([v, l]) => `<option value="${v}"${p.op === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
     <div id="skx-info" style="font-size:11.5px;margin:4px 0 10px;line-height:1.4"></div>
     <div style="display:flex;gap:6px;justify-content:flex-end">
       <button class="btn" onclick="_skxClose()">Abbrechen</button>
@@ -12876,11 +12924,13 @@ function _skxPanel(){
 }
 function _skxSet(k, v){
   if (k === 'dir' || k === 'op') { _skx.p[k] = v; _skxPanel(); }
-  else if (k === 'thru') { _skx.p.thru = !!v; }
+  else if (k === 'thru') { _skx.p.thru = !!v; _skx.p.end = v ? 'thru' : 'dist'; }
+  else if (k === 'end') { _skx.p.end = v; _skx.p.thru = v === 'thru'; _skxPanel(); if (v === 'face' && _skx.p.faceD == null) _skxPickFace(); }
   else _skx.p[k] = String(v).replace(',', '.');
   _skxUpdate();
 }
 function _skxClose(silent){
+  if (_skx.facePick) { canvas.removeEventListener('pointerdown', _skxFaceDown, true); _skx.facePick = false; }
   if (_skx.prev) { if (_skx.prev.parent) _skx.prev.parent.remove(_skx.prev); _skx.prev.geometry.dispose(); _skx.prev = null; }
   if (_skx.panel) { _skx.panel.remove(); _skx.panel = null; }
   _skx.open = false; _skx.tilted = false;
@@ -12891,7 +12941,7 @@ async function _skxApply(){
   const [a, b] = _skxRange();
   if (b - a < 0.005) { notify('Abstand ist 0 — bitte einen Wert eingeben', 'w'); return; }
   const r = _skx.res || _skxResolve(), shapes = _skx.shapes, hmm = Math.round((b - a) * 1000) / 100;
-  if ((r.op === 'cut' || r.op === 'join') && !r.target) { notify(r.op === 'cut' ? 'Kein Körper zum Abziehen getroffen' : 'Kein Körper zum Anfügen berührt', 'w'); return; }
+  if ((r.op === 'cut' || r.op === 'join' || r.op === 'isect') && !r.target) { notify(r.op === 'cut' ? 'Kein Körper zum Abziehen getroffen' : r.op === 'isect' ? 'Kein Körper für die Schnittmenge berührt' : 'Kein Körper zum Anfügen berührt', 'w'); return; }
   // Für den Verlauf: Skizze, Ebene, Bereich, gewählte Flächen
   _skcIds();
   const ents = _featClone(_sk.ents), cons = _featClone(_sk.cons || []), frameW = _sk.M ? _sk.M.clone() : new THREE.Matrix4();
@@ -12934,6 +12984,14 @@ async function _skxApply(){
       updateUndoRedoButtons();
       const res = selectedObjs.length === 1 && !objects.includes(r.target) && !objects.includes(mesh) ? selectedObjs[0] : null;
       if (res) { fNeu.T = start.T; start.H.list.push(fNeu); _featSet(res, start.H); updateTree(); }
+    } else if (r.op === 'isect') {
+      selectObjs([r.target, mesh]);
+      await intersectSelected();
+      if (undoStack.length === n0 + 1) undoStack.pop();
+      updateUndoRedoButtons();
+      const res = selectedObjs.length === 1 && !objects.includes(r.target) && !objects.includes(mesh) ? selectedObjs[0] : null;
+      if (res) { res.userData.name = r.target.userData.name || res.userData.name; fNeu.T = start.T; start.H.list.push(fNeu); _featSet(res, start.H); updateTree(); }
+      else if (objects.includes(mesh)) { scene.remove(mesh); objects.splice(objects.indexOf(mesh), 1); updateTree(); }
     } else {
       mesh.userData.isHole = true; mesh.userData.color = '#f03030';
       mesh.material.color.set('#f03030'); mesh.material.transparent = true; mesh.material.opacity = 0.52;
@@ -30630,11 +30688,14 @@ async function _applyHexPattern(cellMm, wallMm, marginMm, depthMm) {
   }
 }
 
-// ═══ PUSH / PULL (Fläche ziehen) ═══════════════════════════════════════
-// Eine ebene Fläche anklicken und entlang ihrer Normalen versetzen. Alle
-// Vertices, die auf der Flächen-Ebene liegen, wandern mit — bei prismatischen
-// Körpern (Box, Vieleck, extrudierte Skizze) verlängern/verkürzen sich so die
-// Seitenwände. Ergebnis ist ein Freiform-Mesh (parametrische Daten entfallen).
+// ═══ PUSH / PULL = FLÄCHE VERSETZEN (seit 1.18.193 exakt) ════════════════
+// Ebene Fläche(n) anklicken (Shift = weitere in derselben Ebene, Enter = los).
+// Die Flächenkontur (mit Löchern) wird zur Skizze auf der Fläche, der
+// Extrudieren-Dialog öffnet sich: Automatik = nach außen anfügen, nach innen
+// abziehen — per Boolean, also auch bei Körpern, deren Wände nicht senkrecht
+// stehen, und mit allen Endbedingungen (Bis nächste, Bis Fläche, Durch alles)
+// und Operationen (Neu, Schnittmenge). Der Schritt landet im Verlauf.
+// Vorher (bis 1.18.192) wurden nur Eckpunkte verschoben (_ppPreview, noch da).
 const _pp = { active:false, obj:null, locked:false, idxs:null, base:null,
               localDir:null, didUndo:false };
 
@@ -30647,23 +30708,23 @@ function enterPushPull(){
   if (_revolveMode) exitRevolveMode();
   if (_lf.active) exitLoftMode();
   const o = selectedObjs.length === 1 ? selectedObjs[0] : null;
-  if (!o){ notify('Bitte genau ein Objekt wählen','w'); return; }
-  const mesh = o.isMesh ? o : o.getObjectByProperty('isMesh', true);
-  if (!mesh || !mesh.geometry || !mesh.geometry.attributes.position){ notify('Objekt hat keine bearbeitbare Geometrie','w'); return; }
-  _pp.active = true; _pp.obj = mesh; _pp.locked = false; _pp.didUndo = false;
+  const mesh = o ? (o.isMesh ? o : o.getObjectByProperty('isMesh', true)) : null;
+  _pp.active = true; _pp.obj = mesh || null; _pp.locked = false; _pp.didUndo = false; _pp.picks = [];
+  if (!_pp.grp){ _pp.grp = new THREE.Group(); scene.add(_pp.grp); }
   clearDimHandles();
   canvas.style.cursor = 'crosshair';
   document.getElementById('pp-bar').style.display = 'flex';
-  document.getElementById('pp-status').textContent = 'Ebene Fläche anklicken';
+  document.getElementById('pp-status').textContent = 'Ebene Fläche anklicken — Shift = weitere Fläche derselben Ebene';
   document.getElementById('pp-input-wrap').style.display = 'none';
   document.getElementById('pp-apply').style.display = 'none';
-  notify('Push/Pull: ebene Fläche anklicken, dann Versatz eingeben (Esc bricht ab)','ok');
+  notify('Fläche versetzen: ebene Fläche anklicken (Shift = mehrere, Enter = weiter) — danach Abstand eingeben, negativ = hinein','ok');
 }
 
 function exitPushPull(){
   if (!_pp.active) return;
   if (_pp.locked && _pp.didUndo){ _ppRestore(); undoStack.pop(); updateUndoRedoButtons(); }  // abgebrochen → zurücksetzen
-  _pp.active = false; _pp.obj = null; _pp.locked = false; _pp.idxs = null; _pp.base = null; _pp.didUndo = false;
+  _pp.active = false; _pp.obj = null; _pp.locked = false; _pp.idxs = null; _pp.base = null; _pp.didUndo = false; _pp.picks = [];
+  if (_pp.grp){ _pp.grp.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); }); _pp.grp.clear(); }
   canvas.style.cursor = '';
   document.getElementById('pp-bar').style.display = 'none';
   // Griffe NEU bauen — beim Betreten wurden sie geleert, und
@@ -30684,7 +30745,72 @@ function _ppRestore(){
   _pp.obj.geometry.computeBoundingSphere();
 }
 
-function _ppPickFace(hit){
+// Fläche aufnehmen; ohne Shift geht es gleich weiter in den Extrudieren-Dialog
+function _ppPickFace(hit, add){
+  const mesh = hit.object, r = _faceRegion(mesh, hit);
+  if (!r){ notify('Keine ebene Fläche getroffen — auf eine flache Seite klicken (runde Flächen gehen noch nicht)','w'); return; }
+  const P = _pp.picks;
+  if (P.length){
+    const n0 = P[0].r.normal, d = Math.abs(r.point.clone().sub(P[0].r.point).dot(n0));
+    if (r.normal.dot(n0) < 0.9995 || d > 0.002){ notify('Weitere Flächen müssen in derselben Ebene liegen und in dieselbe Richtung zeigen','w'); return; }
+    const k = P.findIndex(q => q.mesh === mesh && q.r.loops[0].length === r.loops[0].length && q.r.loops[0][0].distanceTo(r.loops[0][0]) < 1e-4);
+    if (k >= 0){ _pp.grp.remove(P[k].hl); P[k].hl.geometry.dispose(); P.splice(k, 1); _ppStatus(); return; }   // nochmal = abwählen
+  }
+  const hl = new THREE.Group();
+  for (const lp of r.loops){
+    const ln = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(lp.map(q => q.clone().addScaledVector(r.normal, 0.01))),
+      new THREE.LineBasicMaterial({ color: 0xF97316, depthTest: false }));
+    ln.renderOrder = 997; hl.add(ln);
+  }
+  hl.geometry = { dispose(){ hl.children.forEach(c => c.geometry.dispose()); } };
+  _pp.grp.add(hl);
+  P.push({ mesh, r, hl });
+  _ppStatus();
+  if (!add) _ppGo();
+}
+function _ppStatus(){
+  const n = _pp.picks.length;
+  document.getElementById('pp-status').textContent = n ? `${n} Fläche${n > 1 ? 'n' : ''} gewählt — Enter = weiter, Shift+Klick = mehr` : 'Ebene Fläche anklicken — Shift = weitere Fläche derselben Ebene';
+}
+// Gewählte Flächen → Skizze auf der Fläche → Extrudieren-Dialog
+function _ppGo(){
+  const P = _pp.picks.slice(); if (!P.length){ notify('Erst eine ebene Fläche anklicken','w'); return; }
+  const body = objects.find(o => o === P[0].mesh || o.getObjectById(P[0].mesh.id)) || P[0].mesh;
+  exitPushPull();
+  if (_sk.active) exitSketchMode();
+  selectObjs([body]);
+  enterSketchMode();
+  _skSetFrame(P[0].r.normal, P[0].r.point);
+  const ents = [];
+  for (const pk of P) for (const lp of pk.r.loops){
+    let pts = lp.map(w => { const l = w.clone().applyMatrix4(_sk.Minv); return { u: l.x, v: l.z }; });
+    pts = _ppDropCollinear(pts);
+    if (pts.length < 3) continue;
+    if (pts.length <= 64) for (let i = 0; i < pts.length; i++){ const a = pts[i], b = pts[(i + 1) % pts.length]; ents.push({ type: 'line', a: { u: a.u, v: a.v }, b: { u: b.u, v: b.v } }); }
+    else ents.push({ type: 'poly', pts: [...pts, { u: pts[0].u, v: pts[0].v }], closed: true });
+  }
+  _sk.ents = ents; _skcIds(); _skRender();
+  _skExtrude();
+  if (!_skx.open){ notify('Aus der Fläche ließ sich keine geschlossene Kontur bilden','w'); return; }
+  _skx.p = { dir: 'one', d: 5, d2: 5, op: 'auto', thru: false, end: 'dist' };
+  _skxPanel(); _skxUpdate();
+  notify('Fläche versetzen: Abstand eingeben — positiv = nach außen anfügen, negativ = hinein (Tasche). Ende/Operation im Fenster, die Kontur lässt sich vorher in der Skizze ändern', 'ok');
+}
+// Punkte auf gerader Strecke entfernen (Dreiecksnetz hat oft Zwischenpunkte)
+function _ppDropCollinear(pts){
+  let out = pts.slice(), changed = true;
+  while (changed && out.length > 3){
+    changed = false;
+    for (let i = 0; i < out.length && out.length > 3; i++){
+      const a = out[(i - 1 + out.length) % out.length], b = out[i], c = out[(i + 1) % out.length];
+      const ab = Math.hypot(b.u - a.u, b.v - a.v), bc = Math.hypot(c.u - b.u, c.v - b.v);
+      const cr = Math.abs((b.u - a.u) * (c.v - a.v) - (b.v - a.v) * (c.u - a.u));
+      if (ab < 1e-5 || bc < 1e-5 || cr / Math.max(1e-9, Math.hypot(c.u - a.u, c.v - a.v)) < 1e-4){ out.splice(i, 1); changed = true; i--; }
+    }
+  }
+  return out;
+}
+function _ppPickFaceAlt(hit){
   const mesh = _pp.obj;
   mesh.updateMatrixWorld(true);
   // Flächen-Normale in Welt (zur Kamera hin orientiert = nach außen)
@@ -30801,6 +30927,14 @@ function _lfStatus(){
 // EINEM Dreieck der Region benutzt werden, bilden den Rand; bei Flächen mit
 // Loch zählt die äußere (größte) Schleife. Alles in Welt-Koordinaten.
 function _lfFaceRing(mesh, hit){
+  const r = _faceRegion(mesh, hit); if (!r) return null;
+  const ring = r.loops[0];
+  const cen = new THREE.Vector3(); ring.forEach(p => cen.add(p)); cen.multiplyScalar(1/ring.length);
+  return { ring, normal: r.normal, center: cen };
+}
+// Zusammenhängende ebene Fläche um den Treffer: alle Randschleifen in Welt-
+// Koordinaten (größte = Außenkontur zuerst), Normale zur Kamera hin.
+function _faceRegion(mesh, hit){
   mesh.updateMatrixWorld(true);
   let n = hit.face.normal.clone().transformDirection(mesh.matrixWorld).normalize();
   if (n.dot(raycaster.ray.direction) > 0) n.negate();
@@ -30890,9 +31024,7 @@ function _lfFaceRing(mesh, hit){
     for (let i = 1; i < lp.length-1; i++){ t1.subVectors(lp[i], lp[0]); t2.subVectors(lp[i+1], lp[0]); s.add(t1.clone().cross(t2)); }
     return s.length() / 2; };
   loops.sort((a,b) => area3(b) - area3(a));
-  const ring = loops[0];
-  const cen = new THREE.Vector3(); ring.forEach(p => cen.add(p)); cen.multiplyScalar(1/ring.length);
-  return { ring, normal: n, center: cen };
+  return { loops, normal: n, point: wp.clone() };
 }
 
 function _lfPickFace(hit){
@@ -31390,8 +31522,10 @@ canvas.addEventListener('mousedown', e => {
   if (_pp.active) {
     if (!_pp.locked) {
       const hits = pickObjects(e);
-      const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines && h.object === _pp.obj);
-      if (hit) _ppPickFace(hit);
+      const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines && !h.object.userData.isSketchRef
+        && objects.some(o => (o === h.object || o.getObjectById(h.object.id)) && !o.userData.isHole));
+      if (hit) _ppPickFace(hit, e.shiftKey);
+      else notify('Daneben — eine ebene Fläche eines Körpers anklicken', 'w');
     }
     return;
   }
@@ -32369,6 +32503,7 @@ window.addEventListener('keydown', e => {
 
   // Loft-Modus: Enter bestätigt
   if (_lf.active && k === 'Enter') { _lfApply(); return; }
+  if (_pp.active && k === 'Enter') { e.preventDefault(); _ppGo(); return; }
   // Extrudieren-Fenster: Enter bestätigt auch ohne Fokus im Feld
   if (_skx.open && k === 'Enter') { e.preventDefault(); _skxApply(); return; }
 
@@ -64365,8 +64500,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.192';
+const VOLME3D_VERSION = '1.18.193';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.193', date:'2026-10-19', changes:[
+    ['⇕','<b>Fläche ziehen versetzt jetzt exakt.</b> Ebene Fläche anklicken (Shift = weitere Flächen derselben Ebene, Enter = weiter): Ihre Kontur wird zur Skizze auf der Fläche, und das Extrudieren-Fenster öffnet sich. Positiv fügt nach außen an, negativ drückt hinein. Das wird als echter Boolean gerechnet, nicht mehr durch Verschieben von Eckpunkten. Damit klappt es auch bei Zylindern, Kegeln und Teilen mit schrägen Wänden, die Kontur lässt sich vorher noch ändern, und der Schritt steht im Verlauf.'],
+    ['⬆','<b>Extrudieren: neues Feld „Ende“.</b> <b>Abstand</b> wie bisher, <b>Bis nächste Fläche</b> (bis zur ersten Körperfläche in Zugrichtung, z. B. eine Lücke genau füllen), <b>Bis Fläche…</b> (Zielfläche anklicken) und <b>Durch alles</b>. Neue Operation <b>Schnittmenge</b>: Vom Körper bleibt nur, was innerhalb der Extrusion liegt. Alles auch im Verlauf nachträglich änderbar.'],
+  ]},
   { version:'1.18.192', date:'2026-10-19', changes:[
     ['⛓','<b>Skizze: Abhängigkeiten und Bemaßung wie in Fusion/Onshape.</b> Neues Werkzeug <b>↖ Auswahl (S)</b> in der Skizze: Linien, Kreise, Bögen und Punkte anklicken (Shift = mehrere) und rechts im Panel <b>Abhängigkeiten</b> festlegen: Horizontal, Vertikal, Parallel, Senkrecht, Gleich, Koinzident, Tangential, Konzentrisch, Mittelpunkt, Kollinear, Symmetrisch und Fixieren. <b>Bemaßen (M)</b> setzt Länge, ⌀, Radius, Abstand oder Winkel. Die Zahl steht danach in der Skizze; anklicken, neuen Wert tippen, und die Skizze passt sich an. Ein Rechteck bleibt beim Ziehen an einer Ecke ein Rechteck mit seinen Maßen, waagerecht/senkrecht gezeichnete Linien bekommen H/V automatisch. Das Panel zeigt, wie viele Freiheitsgrade noch offen sind, bis „vollständig bestimmt“. Widersprüchliche Maße werden abgelehnt. Alles wird mit der Skizze gespeichert und gilt auch beim späteren Bearbeiten im Verlauf; Strg+Z nimmt jeden Schritt zurück.'],
   ]},
@@ -75276,7 +75415,7 @@ const CMDK = [
   {i:'🖨',g:'Druck',t:'Druck-Check',k:'print check druckbar',run:()=>_printCheckOpen()},
   {i:'↻',g:'Druck',t:'Für Druck ausrichten',k:'orient',run:()=>autoOrientForPrint()},
   {i:'📐',g:'Bearbeiten',t:'Messen (Abstand / Durchmesser)',k:'measure distance diameter durchmesser bemaszung',run:()=>measureTool()},
-  {i:'↕',g:'Bearbeiten',t:'Fläche ziehen (Push/Pull)',k:'push pull fläche offset extrudieren',run:()=>enterPushPull()},
+  {i:'↕',g:'Bearbeiten',t:'Fläche ziehen / versetzen (Push/Pull)',k:'push pull fläche offset versetzen extrudieren bis nächste bis fläche durch alles',run:()=>enterPushPull()},
   {i:'⤧',g:'Bearbeiten',t:'Loft (Flächen verbinden)',k:'loft übergang flächen verbinden shapr',run:()=>{ if(!_lf.active) enterLoftMode(); }},
   {i:'🔻',g:'Bearbeiten',t:'Vereinfachen (Dreiecke)',k:'simplify decimate reduzieren',run:()=>openSimplifyModal()},
   {i:'⬇',g:'Export',t:'Skizze als DXF',k:'dxf laser export skizze',run:()=>{ if(_sk.active) _skExportDXF(); else notify('Erst Skizzen-Modus öffnen','w'); }},
