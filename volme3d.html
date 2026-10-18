@@ -63739,8 +63739,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.190';
+const VOLME3D_VERSION = '1.18.191';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.191', date:'2026-10-18', changes:[
+    ['🌲','<b>Reliefs in Schichten: Jede neue Schicht zählt ihre Höhe ab der Wand.</b> Wer z. B. eine Reihe Tannen auf einen Kasten setzt, vereint und dann eine zweite Reihe dazulegt, landete mit dem Zeiger oft auf einer Tanne der ersten Reihe. Die neue Schicht klebte dann an deren Oberseite: Sie saß vor der Wand, und <b>Höhe (erhaben)</b> zählte ab dem Relief, aus 3 mm wurden so 5 mm. Jetzt erkennt V3D CAD, dass das Motiv gar nicht auf die getroffene Tanne passt, und setzt es auf die Wand dahinter. So lässt sich jede Schicht unabhängig dicker oder dünner einstellen. Ein Schriftzug, der ganz auf ein erhabenes Namensschild passt, bleibt wie gewohnt auf dem Schild (danke Josy).'],
+  ]},
   { version:'1.18.190', date:'2026-10-17', changes:[
     ['✨','<b>Keine schwarzen Pünktchen mehr auf Scans:</b> Nach dem Neuladen bekamen Scan- und Figuren-Teile (z. B. eine Kühlerfigur) überall kleine schwarze Striche – das waren Kantenlinien an winzigen Knicken im Netz. Solches Gesprenkel wird jetzt herausgefiltert; echte Kanten wie Sockel- und Lochränder bleiben sichtbar.'],
   ]},
@@ -65880,10 +65883,117 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
   // const bb = new THREE.Box3().setFromObject(svgMesh);
   // if (bb.min.y < 0) svgMesh.position.y -= bb.min.y;
 
+  // Auf einer erhabenen Schicht gelandet, auf die das Motiv gar nicht passt?
+  // Dann auf die Wand dahinter — sonst zählt „Höhe (erhaben)" ab dem Relief.
+  if (!svgMesh.userData.isHole && !_svgSnapAtHit && !_svgGrundLauf) {
+    const g = _svgGrundflaeche(svgMesh, hit, n);
+    if (g) {
+      _svgGrundLauf = true;
+      try { _svgSnapHit = g; _applySvgSnap(svgMesh, { obj, type: 'face' }); }
+      finally { _svgGrundLauf = false; }
+      return;
+    }
+  }
+
   _svgSnapHit = null;
   _updateObjEdgeLines(svgMesh);
   updateTFInputs(); updateTree(); updateCtxPopup();   // ⊕-Knopf erscheint sofort
   if (!_svgSnapLeise) notify(_sameFace ? '📌 SVG auf der Fläche verschoben' : '📌 SVG auf Fläche geheftet', 'ok');
+}
+
+// Schichtweise Reliefs (Josy 18.10.26: „eine Schicht Tannen drauf, verschmelzen,
+// die nächste Schicht soll dicker oder dünner rausstechen"). Nach dem Vereinen
+// ist die erste Schicht Teil des Körpers. Landete der Zeiger beim Ablegen der
+// zweiten auf einer Tanne der ersten, heftete sich das Motiv an deren Oberseite:
+// Es saß 2 mm vor der Wand, „Höhe (erhaben)" zählte ab dort (gemessen 5 statt
+// 3 mm), und eingemittet wurde auf die Schicht statt auf die Wand.
+// Entscheidung über die Deckung: Liegt das bereits platzierte Motiv zu weniger
+// als 75 % über der getroffenen Ebene, und gibt es dahinter (bis 30 mm) eine
+// größere parallele Fläche desselben Körpers, gilt diese. Ein Schriftzug auf
+// einem erhabenen Namensschild liegt ganz auf dem Schild und bleibt dort.
+// Liefert einen Ersatz-Treffer auf der Grundfläche oder null.
+let _svgGrundLauf = false;
+function _svgGrundflaeche(svgMesh, hit, n) {
+  const mesh = hit.object, geo = mesh && mesh.geometry, pos = geo && geo.attributes.position;
+  if (!pos || !hit.face) return null;
+  const idx = geo.index ? geo.index.array : null;
+  const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
+  if (nTri > 1500000) return null;
+  mesh.updateMatrixWorld(true);
+  const M = mesh.matrixWorld, flip = M.determinant() < 0;
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), cr = new THREE.Vector3();
+  const dHit = n.dot(hit.point), TOL = 0.02;            // 0,2 mm
+  const ebenen = new Map();                              // gerundetes d → {d, flaeche, tri}
+  const triAt = t => [idx ? idx[t*3] : t*3, idx ? idx[t*3+1] : t*3+1, idx ? idx[t*3+2] : t*3+2];
+  const laden = t => { const [a, b, c] = triAt(t);
+    A.fromBufferAttribute(pos, a).applyMatrix4(M); B.fromBufferAttribute(pos, b).applyMatrix4(M);
+    C.fromBufferAttribute(pos, c).applyMatrix4(M); };
+  for (let t = 0; t < nTri; t++) {
+    laden(t);
+    e1.subVectors(B, A); e2.subVectors(C, A); cr.crossVectors(e1, e2);
+    if (flip) cr.negate();
+    const a2 = cr.length(); if (a2 < 1e-10) continue;
+    if (cr.dot(n) / a2 < 0.99) continue;                 // nicht parallel zur getroffenen Fläche
+    const d = n.dot(A);
+    if (d > dHit + TOL || d < dHit - 3) continue;        // nur die Trefferebene und bis 30 mm dahinter
+    const k = Math.round(d / TOL);
+    const e = ebenen.get(k) || { d, flaeche: 0, tri: t };
+    e.flaeche += a2 / 2; ebenen.set(k, e);
+  }
+  let treffer = null, grund = null;
+  for (const e of ebenen.values()) {
+    if (Math.abs(e.d - dHit) <= TOL) { if (!treffer || e.flaeche > treffer.flaeche) treffer = e; }
+    else if (e.d < dHit - TOL && (!grund || e.flaeche > grund.flaeche)) grund = e;
+  }
+  if (!treffer || !grund || grund.flaeche <= treffer.flaeche) return null;
+
+  // Deckung: Kappen-Dreiecke des Motivs (lokal +Y) über den Dreiecken der Trefferebene?
+  const u = new THREE.Vector3(1, 0, 0); if (Math.abs(u.dot(n)) > 0.9) u.set(0, 1, 0);
+  u.addScaledVector(n, -u.dot(n)).normalize();
+  const v = new THREE.Vector3().crossVectors(n, u);
+  const ebeneTris = [];
+  for (let t = 0; t < nTri; t++) {
+    laden(t);
+    e1.subVectors(B, A); e2.subVectors(C, A); cr.crossVectors(e1, e2);
+    if (flip) cr.negate();
+    const a2 = cr.length(); if (a2 < 1e-10 || cr.dot(n) / a2 < 0.99) continue;
+    if (Math.abs(n.dot(A) - dHit) > TOL) continue;
+    ebeneTris.push([A.dot(u), A.dot(v), B.dot(u), B.dot(v), C.dot(u), C.dot(v)]);
+  }
+  const sg = svgMesh.geometry, sp = sg && sg.attributes.position;
+  if (!sp || !ebeneTris.length) return null;
+  svgMesh.updateMatrixWorld(true);
+  const sIdx = sg.index ? sg.index.array : null;
+  const sTri = Math.floor((sIdx ? sIdx.length : sp.count) / 3);
+  const schritt = Math.max(1, Math.floor(sTri / 1500));
+  const nS = new THREE.Vector3(0, 1, 0).transformDirection(svgMesh.matrixWorld).normalize();
+  const innen = (x, y, q) => {
+    const d1 = (x - q[2]) * (q[1] - q[3]) - (q[0] - q[2]) * (y - q[3]);
+    const d2 = (x - q[4]) * (q[3] - q[5]) - (q[2] - q[4]) * (y - q[5]);
+    const d3 = (x - q[0]) * (q[5] - q[1]) - (q[4] - q[0]) * (y - q[1]);
+    return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+  };
+  let gesamt = 0, gedeckt = 0;
+  for (let t = 0; t < sTri; t += schritt) {
+    const a = sIdx ? sIdx[t*3] : t*3, b = sIdx ? sIdx[t*3+1] : t*3+1, c = sIdx ? sIdx[t*3+2] : t*3+2;
+    A.fromBufferAttribute(sp, a).applyMatrix4(svgMesh.matrixWorld);
+    B.fromBufferAttribute(sp, b).applyMatrix4(svgMesh.matrixWorld);
+    C.fromBufferAttribute(sp, c).applyMatrix4(svgMesh.matrixWorld);
+    e1.subVectors(B, A); e2.subVectors(C, A); cr.crossVectors(e1, e2);
+    const a2 = cr.length(); if (a2 < 1e-10 || Math.abs(cr.dot(nS)) / a2 < 0.99) continue;   // nur Kappenflächen
+    if (cr.dot(nS) < 0) continue;                         // eine Kappe genügt
+    const x = (A.dot(u) + B.dot(u) + C.dot(u)) / 3, y = (A.dot(v) + B.dot(v) + C.dot(v)) / 3;
+    gesamt += a2;
+    if (ebeneTris.some(q => innen(x, y, q))) gedeckt += a2;
+  }
+  if (!gesamt || gedeckt / gesamt >= 0.75) return null;
+
+  const [ga, gb, gc] = triAt(grund.tri);
+  const nL = new THREE.Vector3().subVectors(new THREE.Vector3().fromBufferAttribute(pos, gb), new THREE.Vector3().fromBufferAttribute(pos, ga))
+    .cross(new THREE.Vector3().subVectors(new THREE.Vector3().fromBufferAttribute(pos, gc), new THREE.Vector3().fromBufferAttribute(pos, ga))).normalize();
+  return { object: mesh, face: { a: ga, b: gb, c: gc, normal: nL },
+           point: hit.point.clone().addScaledVector(n, grund.d - dHit), distance: hit.distance };
 }
 // ===== SVG AUF DER FLÄCHE VERSCHIEBEN ("Gleiten") ==========================
 // Ein geheftetes Motiv ließ sich danach kaum noch bewegen: Der freie Objekt-Zug
@@ -65955,6 +66065,17 @@ function _svgFlatTarget(o) {
     if (Math.abs(nW.dot(n)) < 0.9) continue;            // andere Wand, nicht die darunter
     const d = _facePlaneD(h.object, h.face);
     if (d == null) continue;
+    // Bewusst auf die Wand HINTER einer Reliefschicht gesetzt (_svgGrundflaeche)?
+    // Dann trifft der Strahl zuerst das Relief — die gemerkte Ebene gilt weiter,
+    // solange der Aufsetzpunkt noch genau in ihr liegt.
+    if (ud._snapSolid === h.object && ud._snapNormal && ud._snapFaceD != null && ud._snapSurfaceLocal
+        && Math.abs(d - ud._snapFaceD) > 1e-6) {
+      const nG = ud._snapNormal.clone().normalize();
+      const pL = h.object.worldToLocal(o.localToWorld(ud._snapSurfaceLocal.clone()));
+      const pW = h.object.localToWorld(pL.clone().addScaledVector(nG, ud._snapFaceD - nG.dot(pL)));
+      if (pW.distanceTo(o.localToWorld(ud._snapSurfaceLocal.clone())) < 0.01)
+        return { mesh: h.object, nLocal: ud._snapNormal.clone(), planeD: ud._snapFaceD };
+    }
     ud._snapSolid = h.object; ud._snapNormal = h.face.normal.clone(); ud._snapFaceD = d;
     ud._snapSurfaceLocal = o.worldToLocal(h.point.clone());
     return { mesh: h.object, nLocal: h.face.normal.clone(), planeD: d };
