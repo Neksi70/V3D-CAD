@@ -76110,5 +76110,427 @@ function _fillHoles(mesh) {
 }
 
 </script>
+<script>
+// ═══ V3D-API: Fernsteuerung für KI-Agenten (MCP) ══════════════════════════
+// Ein Befehlssatz für Agenten: v3dApi.execute(befehl, params) und v3dApi.batch([...]).
+// Vorbild ist das Befehlsregister von SolidCraft (MIT/Apache): jeder Befehl ist
+// ein Undo-Schritt, bei einem Fehler bleibt die Szene unverändert, Antworten sind JSON.
+// Außen gilt: Millimeter, Z zeigt nach oben (wie im Slicer/STL-Export).
+// Innen rechnet der Editor in Einheiten à 10 mm mit Y oben → Umrechnung hier.
+// Der MCP-Server (~/v3d-cad-mcp) ruft das per Playwright auf.
+(function () {
+  const S = 10;                                           // 1 Szenen-Einheit = 10 mm
+  // Welt (mm, Z oben) ↔ Editor (Einheiten, Y oben): world = (x, -z, y)·10
+  const toApp   = p => new THREE.Vector3(p[0] / S, p[2] / S, -p[1] / S);
+  const toWorld = v => [r3(v.x * S), r3(-v.z * S), r3(v.y * S)];
+  const r3 = x => Math.round(x * 1000) / 1000;
+  const C    = new THREE.Matrix4().makeRotationX(Math.PI / 2);   // Editor → Welt
+  const Cinv = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+  const DEG = Math.PI / 180;
+
+  class ApiError extends Error {}
+  const fail = m => { throw new ApiError(m); };
+  const isVec3 = v => Array.isArray(v) && v.length === 3 && v.every(x => typeof x === 'number' && isFinite(x));
+  const needVec3 = (v, name) => { if (!isVec3(v)) fail(name + ' muss [x, y, z] in mm sein'); return v; };
+
+  function byId(id) {
+    const o = objects.find(x => x.userData && x.userData.id === id);
+    if (!o) fail('Kein Körper mit id ' + id + ' — mit scene.inspect nachsehen, welche ids es gibt');
+    return o;
+  }
+  const byIds = (ids, name) => {
+    if (!Array.isArray(ids) || !ids.length) fail(name + ' muss eine Liste von ids sein');
+    return ids.map(byId);
+  };
+
+  // Drehung: Grad um die Welt-Achsen, nacheinander X, dann Y, dann Z (extrinsisch)
+  function setRotation(o, deg) {
+    const mw = new THREE.Matrix4().makeRotationFromEuler(
+      new THREE.Euler(deg[0] * DEG, deg[1] * DEG, deg[2] * DEG, 'ZYX'));
+    const ma = new THREE.Matrix4().multiplyMatrices(Cinv, mw).multiply(C);
+    o.quaternion.setFromRotationMatrix(ma);
+    o.updateMatrixWorld(true);
+  }
+  function getRotation(o) {
+    const ma = new THREE.Matrix4().makeRotationFromQuaternion(o.quaternion);
+    const mw = new THREE.Matrix4().multiplyMatrices(C, ma).multiply(Cinv);
+    const e = new THREE.Euler().setFromRotationMatrix(mw, 'ZYX');
+    return [r3(e.x / DEG), r3(e.y / DEG), r3(e.z / DEG)].map(x => Object.is(x, -0) ? 0 : x);
+  }
+
+  function boxWorld(o) {
+    const b = getMeshBox(o);
+    const a = toWorld(b.min), c = toWorld(b.max);
+    const min = [Math.min(a[0], c[0]), Math.min(a[1], c[1]), Math.min(a[2], c[2])];
+    const max = [Math.max(a[0], c[0]), Math.max(a[1], c[1]), Math.max(a[2], c[2])];
+    return { min, max,
+      size: [r3(max[0] - min[0]), r3(max[1] - min[1]), r3(max[2] - min[2])],
+      center: [r3((min[0] + max[0]) / 2), r3((min[1] + max[1]) / 2), r3((min[2] + max[2]) / 2)] };
+  }
+  // Bounding-Box-Mitte auf einen Weltpunkt schieben
+  function setCenter(o, c) {
+    const cur = boxWorld(o).center;
+    o.position.add(toApp([c[0] - cur[0], c[1] - cur[1], c[2] - cur[2]]));
+    o.updateMatrixWorld(true);
+  }
+  // Größe der Bounding-Box je Welt-Achse (mm). Geht über applyDimChange, damit die
+  // Sonderfälle (Schraube, SVG, Relief, gedrehte Importe) genauso wie im Editor laufen.
+  function setSize(o, size) {
+    const c = boxWorld(o).center;
+    const keepSel = selectedObjs.slice(), keepLock = scaleLocked;
+    try {
+      selectObjs([o]); scaleLocked = false;
+      const axes = [['sw', size[0]], ['sd', size[1]], ['sh', size[2]]];   // Welt X, Y, Z
+      for (const [ax, v] of axes) {
+        if (v == null) continue;
+        if (!(v > 0)) fail('Größe muss > 0 mm sein');
+        applyDimChange(ax, v);
+      }
+    } finally { scaleLocked = keepLock; selectObjs(keepSel.filter(x => objects.includes(x))); }
+    setCenter(o, c);
+  }
+
+  function setHole(o, isHole) {
+    if (isHole && !o.userData.isHole) o.userData._apiSolidColor = o.userData.color;
+    const col = isHole ? '#f03030' : (o.userData._apiSolidColor || (o.userData.isHole ? currentColor : o.userData.color) || currentColor);
+    o.userData.isHole = !!isHole;
+    o.userData.color = col;
+    o.traverse(m => {
+      if (!m.isMesh || !m.material || m.userData.isEdgeLines) return;
+      m.material.color.set(col);
+      m.material.transparent = !!isHole; m.material.opacity = isHole ? 0.52 : 1.0;
+      m.material.needsUpdate = true;
+    });
+  }
+  function setColorOf(o, hex) {
+    if (!/^#[0-9a-f]{6}$/i.test(hex)) fail('Farbe als #rrggbb angeben');
+    o.userData.color = hex;
+    if (o.userData.isHole) return;
+    o.traverse(m => { if (m.isMesh && m.material && !m.userData.isEdgeLines) m.material.color.set(hex); });
+  }
+
+  // Volumen + Oberfläche in Weltmaßen (mm³ / mm²), Bohrungen zählen nicht
+  function measureObj(o) {
+    let vol = 0, area = 0, tris = 0;
+    o.updateMatrixWorld(true);
+    o.traverse(m => {
+      if (!m.isMesh || !m.geometry || !m.geometry.attributes.position || m.userData.isEdgeLines) return;
+      const g = m.geometry.clone().applyMatrix4(m.matrixWorld);
+      vol += _geoSignedVolume(g);
+      const p = g.attributes.position, idx = g.index ? g.index.array : null;
+      const n = idx ? idx.length : p.count;
+      const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+      for (let i = 0; i + 2 < n; i += 3) {
+        a.fromBufferAttribute(p, idx ? idx[i] : i);
+        b.fromBufferAttribute(p, idx ? idx[i + 1] : i + 1);
+        c.fromBufferAttribute(p, idx ? idx[i + 2] : i + 2);
+        area += b.sub(a).cross(c.sub(a)).length() / 2;
+      }
+      tris += n / 3;
+      g.dispose();
+    });
+    return { volume_mm3: r3(Math.abs(vol) * S * S * S), area_mm2: r3(area * S * S), triangles: tris };
+  }
+
+  function info(o, withMeasure) {
+    const b = boxWorld(o), u = o.userData;
+    const r = { id: u.id, name: u.name, type: u.shapeType || u.type, hole: !!u.isHole,
+      color: u.color, center: b.center, size: b.size, bbox: { min: b.min, max: b.max },
+      rotation: getRotation(o) };
+    if (o.visible === false) r.hidden = true;
+    if (withMeasure && !u.isHole) Object.assign(r, measureObj(o));
+    return r;
+  }
+
+  // Neue Objekte eines Editor-Befehls finden (Booleans legen neue Körper an)
+  async function created(fn) {
+    const before = new Set(objects);
+    await fn();
+    return objects.filter(o => !before.has(o));
+  }
+
+  async function blobToB64(blob) {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+
+  // ── Befehle ────────────────────────────────────────────────────────────
+  // doc: einzeilige Parameterbeschreibung (erscheint in list_commands);
+  // undo:false = nur lesend, kein Undo-Schritt.
+  const CMDS = {
+    'scene.new': { doc: '{} — leere Szene (ohne Rückfrage)', fn() {
+      _newCreate(false); return { bodies: 0 };
+    } },
+    'scene.inspect': { undo: false, doc: '{measure?: bool=false} — alle Körper mit id, Name, Typ, Bohrung?, Mitte/Größe/BBox (mm), Drehung (°); mit measure auch Volumen/Fläche', fn(p) {
+      return { units: 'mm, Z oben', bodies: objects.map(o => info(o, !!p.measure)) };
+    } },
+    'scene.save': { undo: false, doc: '{} — ganze Szene als JSON-Text (zum späteren scene.load)', fn() {
+      return { json: JSON.stringify(_sceneSnapshot()) };
+    } },
+    'scene.load': { doc: '{json: string} — Szene aus scene.save-JSON laden', fn(p) {
+      if (typeof p.json !== 'string') fail('json fehlt');
+      const d = JSON.parse(p.json);
+      objects.forEach(o => scene.remove(o)); objects = []; deselect();
+      (d.objects || []).forEach(x => { const o = buildObjectFromData(x); scene.add(o); objects.push(o); });
+      if (d.idCtr) idCtr = Math.max(idCtr, d.idCtr);
+      updateTree();
+      return { bodies: objects.length };
+    } },
+    'shape.types': { undo: false, doc: '{} — verfügbare Grundformen für shape.add', fn() {
+      return { types: Object.entries(typeNames).map(([type, name]) => ({ type, name })) };
+    } },
+    'shape.add': { doc: '{type: string (box, cylinder, sphere, cone, tube, …), size?: [x,y,z] mm, center?: [x,y,z] mm (Mitte der BBox; ohne: liegt mittig auf der Platte), rotation?: [rx,ry,rz] °, hole?: bool, color?: "#rrggbb", name?: string}', fn(p) {
+      if (!p.type || !(p.type in typeNames)) fail('Unbekannter type "' + p.type + '" — siehe shape.types');
+      const keepMode = shapeMode;
+      // addShape rückt überlappende Körper zur Seite — für Agenten nicht erwünscht
+      const keepPos = objects.map(o => [o, o.position.clone()]);
+      shapeMode = p.hole ? 'hole' : 'solid';
+      try { addShape(p.type); } finally { shapeMode = keepMode; }
+      keepPos.forEach(([o, v]) => o.position.copy(v));
+      const o = objects[objects.length - 1];
+      o.quaternion.identity(); o.updateMatrixWorld(true);
+      if (p.size) setSize(o, needVec3(p.size, 'size'));
+      if (p.rotation) setRotation(o, needVec3(p.rotation, 'rotation'));
+      if (p.center) setCenter(o, needVec3(p.center, 'center'));
+      else { const b = boxWorld(o); setCenter(o, [0, 0, b.size[2] / 2]); }
+      if (p.color) setColorOf(o, p.color);
+      if (p.name) o.userData.name = String(p.name);
+      return info(o);
+    } },
+    'body.transform': { doc: '{id, center?: [x,y,z] mm, move?: [dx,dy,dz] mm, size?: [x,y,z] mm (null = Achse lassen), rotation?: [rx,ry,rz] ° absolut, drop?: bool (auf die Platte legen)}', fn(p) {
+      const o = byId(p.id);
+      if (p.size) { if (!Array.isArray(p.size) || p.size.length !== 3) fail('size muss [x,y,z] sein'); setSize(o, p.size); }
+      if (p.rotation) { const c = boxWorld(o).center; setRotation(o, needVec3(p.rotation, 'rotation')); setCenter(o, c); }
+      if (p.center) setCenter(o, needVec3(p.center, 'center'));
+      if (p.move) { const m = needVec3(p.move, 'move'); o.position.add(toApp(m)); o.updateMatrixWorld(true); }
+      if (p.drop) { const b = boxWorld(o); o.position.add(toApp([0, 0, -b.min[2]])); o.updateMatrixWorld(true); }
+      return info(o);
+    } },
+    'body.set': { doc: '{id, hole?: bool, color?: "#rrggbb", name?: string, hidden?: bool}', fn(p) {
+      const o = byId(p.id);
+      if (p.hole !== undefined) setHole(o, p.hole);
+      if (p.color) setColorOf(o, p.color);
+      if (p.name !== undefined) o.userData.name = String(p.name);
+      if (p.hidden !== undefined) o.visible = !p.hidden;
+      return info(o);
+    } },
+    'body.duplicate': { doc: '{id, move?: [dx,dy,dz] mm} — Kopie, liefert den neuen Körper', fn(p) {
+      const src = byId(p.id);
+      const d = objectToData(src); delete d.id;
+      const o = buildObjectFromData(d);
+      o.userData.id = idCtr++;
+      o.userData.name = (src.userData.name || 'Objekt') + ' Kopie';
+      scene.add(o); objects.push(o);
+      if (p.move) { o.position.add(toApp(needVec3(p.move, 'move'))); o.updateMatrixWorld(true); }
+      return info(o);
+    } },
+    'body.delete': { doc: '{ids: [id, …]}', fn(p) {
+      const os = byIds(p.ids, 'ids');
+      os.forEach(o => scene.remove(o));
+      objects = objects.filter(o => !os.includes(o));
+      deselect();
+      return { deleted: p.ids };
+    } },
+    'bool.union': { doc: '{ids: [id, …] (≥ 2)} — vereinen; liefert den neuen Körper (neue id!)', async fn(p) {
+      const os = byIds(p.ids, 'ids'); if (os.length < 2) fail('Mindestens 2 ids');
+      selectObjs(os);
+      const neu = await created(() => unionSelected());
+      if (!neu.length) fail('Vereinen hat kein Ergebnis geliefert');
+      return { created: neu.map(o => info(o, true)), removed: p.ids.filter(id => !objects.some(o => o.userData.id === id)) };
+    } },
+    'bool.subtract': { doc: '{target: id | [id, …], tools: [id, …]} — Werkzeuge aus dem Ziel abziehen (werden automatisch zur Bohrung); liefert den neuen Körper (neue id!)', async fn(p) {
+      const solids = byIds(Array.isArray(p.target) ? p.target : [p.target], 'target');
+      const tools = byIds(p.tools, 'tools');
+      if (tools.some(t => solids.includes(t))) fail('Ein Körper kann nicht Ziel und Werkzeug zugleich sein');
+      tools.forEach(t => setHole(t, true));
+      solids.forEach(s => { if (s.userData.isHole) setHole(s, false); });
+      if (tools.some(t => t.userData.type === 'svg')) fail('SVG-Gravuren gehen über die API noch nicht (Dialog)');
+      const neu = await created(() => _doSubtractHoles(solids, tools, new AbortController()));
+      _progressHide();
+      if (!neu.length) fail('Abziehen hat kein Ergebnis geliefert');
+      return { created: neu.map(o => info(o, true)) };
+    } },
+    'bool.intersect': { doc: '{ids: [id, …] (≥ 2)} — Schnittmenge; liefert den neuen Körper', async fn(p) {
+      const os = byIds(p.ids, 'ids'); if (os.length < 2) fail('Mindestens 2 ids');
+      selectObjs(os);
+      const neu = await created(() => intersectSelected());
+      if (!neu.length) fail('Schnittmenge hat kein Ergebnis geliefert (berühren sich die Körper?)');
+      return { created: neu.map(o => info(o, true)) };
+    } },
+    'measure': { undo: false, doc: '{id?} — Volumen (mm³), Oberfläche (mm²), BBox je Körper + Summe; ohne id alle Körper', fn(p) {
+      const os = p.id !== undefined ? [byId(p.id)] : objects.filter(o => !o.userData.isHole && o.visible !== false);
+      const bodies = os.map(o => info(o, true));
+      const total = { volume_mm3: r3(bodies.reduce((s, b) => s + (b.volume_mm3 || 0), 0)),
+                      area_mm2: r3(bodies.reduce((s, b) => s + (b.area_mm2 || 0), 0)) };
+      if (os.length) {
+        const bs = os.map(boxWorld);
+        const min = [0, 1, 2].map(i => Math.min(...bs.map(b => b.min[i])));
+        const max = [0, 1, 2].map(i => Math.max(...bs.map(b => b.max[i])));
+        total.bbox = { min, max, size: max.map((v, i) => r3(v - min[i])) };
+      }
+      return { bodies, total };
+    } },
+    'measure.distance': { undo: false, doc: '{a: id, b: id} — Abstand der BBox-Mitten + Lücke zwischen den BBoxen je Achse (mm, negativ = Überlappung)', fn(p) {
+      const A = boxWorld(byId(p.a)), B = boxWorld(byId(p.b));
+      const delta = [0, 1, 2].map(i => r3(B.center[i] - A.center[i]));
+      const gap = [0, 1, 2].map(i => r3(Math.max(B.min[i] - A.max[i], A.min[i] - B.max[i])));
+      return { center_distance_mm: r3(Math.hypot(...delta)), delta, bbox_gap_mm: gap,
+               touching_or_overlapping: gap.every(g => g <= 1e-3) };
+    } },
+    'edit.undo': { undo: false, doc: '{} — einen Schritt zurück', fn() {
+      if (!undoStack.length) fail('Nichts zum Zurücknehmen'); undo(); return { bodies: objects.length };
+    } },
+    'edit.redo': { undo: false, doc: '{} — einen Schritt vor', fn() {
+      if (!redoStack.length) fail('Nichts zum Wiederholen'); redo(); return { bodies: objects.length };
+    } },
+    'view.screenshot': { undo: false, doc: '{view?: iso|front|back|top|bottom|left|right (iso), width?: 960, height?: 600, ids?: [id,…] (nur diese zeigen), grid?: bool=true} — PNG als data-URL', fn(p) {
+      return screenshot(p);
+    } },
+    'file.export': { undo: false, doc: '{format: stl|3mf|step, ids?: [id, …]} — Datei als Base64 (mm, Z oben); Bohrungen werden nicht exportiert', async fn(p) {
+      const os = p.ids ? byIds(p.ids, 'ids') : objects.filter(o => o.visible !== false);
+      const fmt = String(p.format || 'stl').toLowerCase();
+      if (fmt === 'stl' || fmt === 'step') {
+        const r = _buildStlBlob(os); if (!r) fail('Nichts zu exportieren');
+        if (fmt === 'stl') return { format: 'stl', triangles: r.count, base64: await blobToB64(r.blob) };
+        const step = await _stepExportLocal(await r.blob.arrayBuffer());
+        return { format: 'step', base64: await blobToB64(new Blob([step])) };
+      }
+      if (fmt === '3mf') {
+        const r = await _build3mfBlob(os); if (!r) fail('Nichts zu exportieren');
+        return { format: '3mf', parts: r.parts, base64: await blobToB64(r.blob) };
+      }
+      fail('format muss stl, 3mf oder step sein');
+    } },
+  };
+
+  // Kamera je Ansicht als Richtung in Weltkoordinaten (Z oben)
+  const VIEWS = { iso: [1, -1, 0.8], front: [0, -1, 0], back: [0, 1, 0], top: [0, 0, 1],
+                  bottom: [0, 0, -1], right: [1, 0, 0], left: [-1, 0, 0] };
+  function screenshot(p) {
+    const dir = VIEWS[p.view || 'iso']; if (!dir) fail('view: ' + Object.keys(VIEWS).join(', '));
+    const w = Math.max(64, Math.min(2048, p.width | 0 || 960)), h = Math.max(64, Math.min(2048, p.height | 0 || 600));
+    const show = p.ids ? byIds(p.ids, 'ids') : null;
+    const hidden = [];
+    const hide = o => { if (o && o.visible) { o.visible = false; hidden.push(o); } };
+    if (show) objects.forEach(o => { if (!show.includes(o)) hide(o); });
+    if (typeof _mg !== 'undefined') hide(_mg.group);
+    if (typeof _skRef !== 'undefined') hide(_skRef.mesh);
+    if (p.grid === false) { hide(gridMesh); hide(_wpGrid); }
+    const keepSel = selectedObjs.slice(); deselect();
+    const size0 = renderer.getSize(new THREE.Vector2()), pr0 = renderer.getPixelRatio();
+    try {
+      const vis = objects.filter(o => o.visible);
+      const box = new THREE.Box3();
+      vis.forEach(o => box.union(getMeshBox(o)));
+      if (box.isEmpty()) box.set(new THREE.Vector3(-2, 0, -2), new THREE.Vector3(2, 2, 2));
+      const center = box.getCenter(new THREE.Vector3());
+      const rad = Math.max(0.5, box.getSize(new THREE.Vector3()).length() / 2);
+      const cam = new THREE.PerspectiveCamera(35, w / h, rad * 0.02, rad * 100 + 200);
+      const d = toApp(dir.map(x => x * S)).normalize();
+      const fit = rad / Math.sin(17.5 * DEG) * (w < h ? h / w : 1) * 1.05;
+      cam.position.copy(center).addScaledVector(d, fit);
+      cam.up.set(0, Math.abs(d.y) > 0.99 ? 0 : 1, Math.abs(d.y) > 0.99 ? -1 : 0);
+      cam.lookAt(center);
+      renderer.setPixelRatio(1); renderer.setSize(w, h, false);
+      renderer.render(scene, cam);
+      return { png: canvas.toDataURL('image/png'), width: w, height: h, view: p.view || 'iso' };
+    } finally {
+      renderer.setPixelRatio(pr0); renderer.setSize(size0.x, size0.y, false);
+      hidden.forEach(o => { o.visible = true; });
+      selectObjs(keepSel.filter(o => objects.includes(o)));
+      renderer.render(scene, camera);
+    }
+  }
+
+  // ── Ausführung: ein Befehl nach dem anderen, Fehler setzt zurück ────────
+  let queue = Promise.resolve();
+  const serial = fn => { const r = queue.then(fn, fn); queue = r.catch(() => {}); return r; };
+
+  function takeSnap() { return { objs: objects.map(o => objectToData(o, 'undo')), undoLen: undoStack.length, idCtr }; }
+  function rollback(s) {
+    restoreState(s.objs);
+    undoStack.length = Math.min(undoStack.length, s.undoLen); redoStack = [];
+    updateUndoRedoButtons();
+  }
+  // Alles seit dem Schnappschuss zu GENAU einem Undo-Schritt zusammenfassen
+  function commit(s) {
+    undoStack.length = Math.min(undoStack.length, s.undoLen);
+    undoStack.push(s.objs); if (undoStack.length > 50) undoStack.shift();
+    redoStack = []; _sceneRev++;
+    updateUndoRedoButtons(); updateTree();
+  }
+
+  async function runOne(command, params, log) {
+    const c = CMDS[command];
+    if (!c) {
+      const near = Object.keys(CMDS).filter(k => k.split('.')[0] === String(command).split('.')[0] || k.includes(command));
+      fail('Unbekannter Befehl "' + command + '"' + (near.length ? ' — meintest du: ' + near.join(', ') : ' — siehe commands()'));
+    }
+    return await c.fn(params || {}, log);
+  }
+
+  // Meldungen des Editors (notify) mitschneiden: Warnungen/Fehler gehen an den Agenten
+  async function withLog(fn) {
+    const log = [], orig = notify;
+    notify = function (m, t) { if (t === 'w' || t === 'e') log.push((t === 'e' ? 'Fehler: ' : 'Hinweis: ') + m); return orig.apply(this, arguments); };
+    const dlgConfirm = window.confirm, dlgAlert = window.alert;
+    window.confirm = () => true; window.alert = m => log.push('Hinweis: ' + m);
+    try { return { log, value: await fn(log) }; }
+    catch (e) { e._log = log; throw e; }
+    finally { notify = orig; window.confirm = dlgConfirm; window.alert = dlgAlert; }
+  }
+  const errText = e => (e instanceof ApiError ? '' : 'Interner Fehler: ') + (e && e.message || String(e));
+
+  function execute(command, params) {
+    return serial(async () => {
+      const c = CMDS[command], mut = !(c && c.undo === false);
+      const snap = mut ? takeSnap() : null;
+      try {
+        const { log, value } = await withLog(log => runOne(command, params, log));
+        if (mut) commit(snap);
+        return Object.assign({ ok: true, result: value }, log.length ? { messages: log } : {});
+      } catch (e) {
+        if (mut) { try { rollback(snap); } catch (_) {} }
+        return Object.assign({ ok: false, error: errText(e), unchanged: mut }, e._log && e._log.length ? { messages: e._log } : {});
+      }
+    });
+  }
+
+  // steps: [{command, params}] — der Reihe nach, Stopp beim ersten Fehler.
+  // rollback (Standard true): bei Fehler alles zurück. Erfolg = EIN Undo-Schritt.
+  function batch(steps, opts) {
+    opts = opts || {};
+    return serial(async () => {
+      if (!Array.isArray(steps) || !steps.length) return { ok: false, error: 'steps muss eine nicht-leere Liste sein' };
+      const snap = takeSnap(), results = [];
+      for (let i = 0; i < steps.length; i++) {
+        const st = steps[i] || {};
+        try {
+          const { log, value } = await withLog(log => runOne(st.command, st.params, log));
+          results.push(Object.assign({ ok: true, result: value }, log.length ? { messages: log } : {}));
+        } catch (e) {
+          const rb = opts.rollback !== false;
+          if (rb) { try { rollback(snap); } catch (_) {} } else commit(snap);
+          return { ok: false, completed: i, failed: { index: i, command: st.command, error: errText(e), messages: e._log || [] },
+                   rolled_back: rb, results };
+        }
+      }
+      commit(snap);
+      return { ok: true, completed: steps.length, results };
+    });
+  }
+
+  function commands(filter) {
+    const f = (filter || '').toLowerCase();
+    return Object.entries(CMDS).filter(([k, c]) => !f || k.includes(f) || c.doc.toLowerCase().includes(f))
+      .map(([id, c]) => ({ id, params: c.doc, changes_scene: c.undo !== false }));
+  }
+
+  window.v3dApi = { version: 1, execute, batch, commands,
+    ready: () => typeof objects !== 'undefined' && !!renderer };
+})();
+</script>
 </body>
 </html>

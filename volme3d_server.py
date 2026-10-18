@@ -961,4 +961,7 @@ if __name__ == '__main__':
     # ThreadingHTTPServer: jede Verbindung in eigenem Thread, damit eine
     # haengende/Keep-Alive-Verbindung nicht den ganzen Server blockiert
     # (daemon_threads=True ist Default in 3.7+).
-    ThreadingHTTPServer(('', port), Handler).serve_forever()
+    # Dev-Modus hat KEIN Login → nur auf localhost lauschen (sonst aus LAN/Tailnet
+    # offen). Produktion bleibt wie gehabt (Funnel/nginx davor).
+    host = '127.0.0.1' if DEV_MODE else ''
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
