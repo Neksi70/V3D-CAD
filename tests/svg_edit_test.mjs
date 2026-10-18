@@ -101,8 +101,10 @@ const ext = await pg.evaluate(() => {
 ok('Skizzen-Konturen ≈ 60 mm breit', Math.abs(ext.w - 60) < 1, { w: ext.w.toFixed(1), h: ext.h.toFixed(1) });
 
 // ── 4. Extrudieren aus der Skizze ────────────────────────────────────────
-const extr = await pg.evaluate(() => {
-  _skExtrude();
+const extr = await pg.evaluate(async () => {
+  // Seit 1.18.153 öffnet „Extrudieren…“ ein Fenster — Höhe 5 mm, neuer Körper, OK
+  _skExtrude(); _skxSet('end', 'dist'); _skxSet('dir', 'one'); _skxSet('op', 'new'); _skxSet('d', '5');
+  await _skxApply();
   const o = objects[objects.length - 1];
   if (!o) return null;
   const bb = new THREE.Box3().setFromObject(o);

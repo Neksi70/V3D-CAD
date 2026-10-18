@@ -1763,6 +1763,8 @@ const firebaseConfig = {
     <div class="sli-item" id="ctx-measure">📐 Messen (Abstand / Ø)</div>
     <div class="sli-item" id="ctx-pushpull">↕ Fläche ziehen (Push/Pull)</div>
     <div class="sli-item" id="ctx-loft">⤧ Loft (Flächen verbinden)</div>
+    <div class="sli-item" id="ctx-folgen">⤳ Folgen (Profil entlang Kanten)</div>
+    <div class="sli-item" id="ctx-m2c">▣ Mesh → CAD (STL bearbeitbar machen)</div>
   </div>
   <div id="pp-bar" style="display:none;position:fixed;bottom:56px;left:50%;transform:translateX(-50%);background:rgba(24,24,32,0.93);border:1px solid #444;border-radius:8px;padding:7px 12px;align-items:center;gap:10px;z-index:8500;font-size:12px;color:#ccc;white-space:nowrap">
     <span id="pp-status" style="font-weight:700;color:#aaa">Fläche anklicken</span>
@@ -12127,9 +12129,14 @@ function _skBuildGeoFromProfiles(profiles, hmm, filMM, chaMM){
   }
   return _skRoundExtrude(profiles, hU, bev, useFil);
 }
+// Drehsinn festlegen: außen gegen, Löcher im Uhrzeigersinn. ExtrudeGeometry
+// prüft die Löcher nur, wenn es die Außenkontur selbst umdreht — lief die schon
+// richtig herum, blieben gleichsinnige Löcher stehen und ihre Wände zeigten nach
+// innen (Netz nicht geschlossen → Verlauf/Manifold „Not manifold“, 1.18.195).
 function _skProfileToShape(pr){
-  const sh=new THREE.Shape(pr.outer.map(p=>new THREE.Vector2(p.u,-p.v)));
-  (pr.holes||[]).forEach(h=>sh.holes.push(new THREE.Path(h.map(p=>new THREE.Vector2(p.u,-p.v)))));
+  const o=pr.outer.map(p=>new THREE.Vector2(p.u,-p.v)); if (THREE.ShapeUtils.isClockWise(o)) o.reverse();
+  const sh=new THREE.Shape(o);
+  (pr.holes||[]).forEach(h=>{ const hp=h.map(p=>new THREE.Vector2(p.u,-p.v)); if (!THREE.ShapeUtils.isClockWise(hp)) hp.reverse(); sh.holes.push(new THREE.Path(hp)); });
   return sh;
 }
 function _skFinishGeo(geo){
@@ -30879,6 +30886,249 @@ function _ppApply(){
   notify('Fläche verschoben ✓ (jetzt Freiform-Körper)','ok');
 }
 
+// ═══ MESH → CAD: technische STL-Teile in Skizzen-Schritte zurückverwandeln (1.18.195) ═══
+// Idee aus dem ShapeAnywhere-Abgleich (dort Bezahl-Beta), eigener Code.
+// Für 2,5D-Teile (Halter, Platten, Gehäuse, Adapter — alle Wände parallel zu
+// einer Achse, alle Deckflächen quer dazu):
+//  1. Achse: Richtung, zu der ≥ 85 % der Fläche quer oder parallel liegen.
+//  2. Höhenstufen aus den Deckflächen; je Schicht dazwischen ein Querschnitt.
+//  3. Querschnitt → Linien, Bögen, Kreise (Tessellierung fällt weg, Kreise
+//     werden wieder echte Kreise, Langlöcher Linie + Halbkreis).
+//  4. Gleiche Schichten zusammengefasst → Körper mit Verlauf: Skizze 1 = neuer
+//     Körper, weitere = Anfügen. Jede Skizze lässt sich öffnen, bemaßen, ändern.
+// Schrägen/Rundungen an Deckkanten werden als Stufe angenähert (Bericht zeigt
+// die Volumen-Abweichung). Nicht-prismatische Teile (Figuren, Scans) → Hinweis.
+function _m2cTris(o){
+  o.updateMatrixWorld(true);
+  const T = [];
+  o.traverse(ch => {
+    if (!ch.isMesh || !ch.geometry || !ch.geometry.attributes.position || ch.userData.isEdgeLines) return;
+    const g = ch.geometry, P = g.attributes.position, I = g.index ? g.index.array : null, n = I ? I.length : P.count;
+    const flip = ch.matrixWorld.determinant() < 0, v = new THREE.Vector3();
+    const W = new Float64Array(P.count * 3);
+    for (let i = 0; i < P.count; i++) { v.fromBufferAttribute(P, i).applyMatrix4(ch.matrixWorld); W[i*3] = v.x; W[i*3+1] = v.y; W[i*3+2] = v.z; }
+    for (let t = 0; t + 2 < n; t += 3) {
+      let a = I ? I[t] : t, b = I ? I[t+1] : t+1, c = I ? I[t+2] : t+2; if (flip) { const x = b; b = c; c = x; }
+      T.push([W[a*3], W[a*3+1], W[a*3+2], W[b*3], W[b*3+1], W[b*3+2], W[c*3], W[c*3+1], W[c*3+2]]);
+    }
+  });
+  return T;
+}
+function _m2cNormalArea(t){
+  const ux = t[3]-t[0], uy = t[4]-t[1], uz = t[5]-t[2], vx = t[6]-t[0], vy = t[7]-t[1], vz = t[8]-t[2];
+  const nx = uy*vz-uz*vy, ny = uz*vx-ux*vz, nz = ux*vy-uy*vx, L = Math.hypot(nx, ny, nz);
+  return L < 1e-14 ? null : { n: new THREE.Vector3(nx/L, ny/L, nz/L), a: L/2 };
+}
+function _m2cVolume(T){ let v = 0; for (const t of T) v += t[0]*(t[4]*t[8]-t[5]*t[7]) - t[1]*(t[3]*t[8]-t[5]*t[6]) + t[2]*(t[3]*t[7]-t[4]*t[6]); return v / 6; }
+// Hauptachse: Kandidaten = große Normalen-Gruppen + Weltachsen
+function _m2cAxis(T){
+  const NA = T.map(_m2cNormalArea).filter(Boolean);
+  const total = NA.reduce((s, x) => s + x.a, 0) || 1;
+  const cl = [];
+  for (const x of NA.slice().sort((p, q) => q.a - p.a)) {
+    const c = cl.find(c => Math.abs(c.n.dot(x.n)) > 0.9995);
+    if (c) c.a += x.a; else if (cl.length < 40) cl.push({ n: x.n.clone(), a: x.a });
+  }
+  const cands = cl.sort((p, q) => q.a - p.a).slice(0, 8).map(c => c.n);
+  cands.push(new THREE.Vector3(0, 1, 0), new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1));
+  let best = null;
+  for (const A of cands) {
+    let s = 0; for (const x of NA) { const d = Math.abs(x.n.dot(A)); if (d > 0.9998 || d < 0.02) s += x.a; }
+    if (!best || s > best.s + 1e-9) best = { A: A.clone().normalize(), s };
+  }
+  if (best.A.dot(new THREE.Vector3(0, 1, 0)) < -1e-9 || (Math.abs(best.A.y) < 1e-9 && best.A.x + best.A.z < 0)) best.A.negate();
+  return { A: best.A, score: best.s / total };
+}
+// Querschnitt (lokal, y = h) → geschlossene Schleifen in (u, v)
+function _m2cSection(L, h){
+  const segs = [];
+  for (const t of L) {
+    const ys = [t[1] - h, t[4] - h, t[7] - h].map(y => y === 0 ? 1e-9 : y);
+    const pts = [];
+    for (let e = 0; e < 3; e++) { const i = e, j = (e + 1) % 3;
+      if ((ys[i] > 0) !== (ys[j] > 0)) { const f = ys[i] / (ys[i] - ys[j]);
+        pts.push({ u: t[i*3] + (t[j*3] - t[i*3]) * f, v: t[i*3+2] + (t[j*3+2] - t[i*3+2]) * f }); } }
+    if (pts.length === 2 && Math.hypot(pts[0].u - pts[1].u, pts[0].v - pts[1].v) > 1e-9) segs.push(pts);
+  }
+  const q = 1e-5, key = p => Math.round(p.u / q) + ',' + Math.round(p.v / q);
+  const at = new Map();
+  segs.forEach((s, i) => { for (const k of [key(s[0]), key(s[1])]) { if (!at.has(k)) at.set(k, []); at.get(k).push(i); } });
+  const used = new Uint8Array(segs.length), loops = [];
+  for (let s0 = 0; s0 < segs.length; s0++) {
+    if (used[s0]) continue; used[s0] = 1;
+    const lp = [segs[s0][0], segs[s0][1]], k0 = key(lp[0]);
+    for (let guard = 0; guard < segs.length; guard++) {
+      const end = lp[lp.length - 1], ke = key(end);
+      if (ke === k0) break;
+      const nb = (at.get(ke) || []).find(i => !used[i]); if (nb === undefined) break;
+      used[nb] = 1; const s = segs[nb]; lp.push(key(s[0]) === ke ? s[1] : s[0]);
+    }
+    if (lp.length > 3 && key(lp[lp.length - 1]) === k0) { lp.pop(); loops.push(lp); }
+  }
+  return loops;
+}
+function _m2cCircleFit(P){
+  let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sz = 0, sxz = 0, syz = 0; const n = P.length;
+  for (const p of P) { const z = p.u*p.u + p.v*p.v; sx += p.u; sy += p.v; sxx += p.u*p.u; syy += p.v*p.v; sxy += p.u*p.v; sz += z; sxz += p.u*z; syz += p.v*z; }
+  // [sxx sxy sx; sxy syy sy; sx sy n] [D E F]ᵀ = -[sxz syz sz]
+  const A = [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, n]], b = [-sxz, -syz, -sz];
+  const det = m => m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1]) - m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0]) + m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+  const d = det(A); if (Math.abs(d) < 1e-20) return null;
+  const col = (k) => A.map((r, i) => r.map((x, j) => j === k ? b[i] : x));
+  const D = det(col(0)) / d, E = det(col(1)) / d, F = det(col(2)) / d;
+  const c = { u: -D / 2, v: -E / 2 }, r2 = c.u*c.u + c.v*c.v - F; if (!(r2 > 0)) return null;
+  const r = Math.sqrt(r2); let dev = 0; for (const p of P) dev = Math.max(dev, Math.abs(Math.hypot(p.u - c.u, p.v - c.v) - r));
+  return { c, r, dev };
+}
+// Eine Schleife → Linien/Bögen/Kreis
+function _m2cFitLoop(lp, tol){
+  // gerade Zwischenpunkte entfernen
+  let V = lp.slice(), changed = true;
+  while (changed && V.length > 3) { changed = false;
+    for (let i = 0; i < V.length && V.length > 3; i++) { const a = V[(i - 1 + V.length) % V.length], b = V[i], c = V[(i + 1) % V.length];
+      const L = Math.hypot(c.u - a.u, c.v - a.v) || 1e-12, dev = Math.abs((b.u - a.u)*(c.v - a.v) - (b.v - a.v)*(c.u - a.u)) / L;
+      if (dev < tol * 0.5) { V.splice(i, 1); i--; changed = true; } } }
+  // ganzer Kreis?
+  if (V.length >= 8) { const f = _m2cCircleFit(V); if (f && f.dev < tol) return [{ type: 'circle', c: f.c, r: f.r }]; }
+  const n = V.length, ang = (a, b, c) => { const x1 = b.u - a.u, y1 = b.v - a.v, x2 = c.u - b.u, y2 = c.v - b.v; return Math.atan2(x1*y2 - y1*x2, x1*x2 + y1*y2); };
+  // Start am Anfang des längsten Segments (nie mitten in einem Bogen)
+  let st = 0, bl = -1; for (let i = 0; i < n; i++) { const L = Math.hypot(V[(i+1)%n].u - V[i].u, V[(i+1)%n].v - V[i].v); if (L > bl) { bl = L; st = i; } }
+  V = V.slice(st).concat(V.slice(0, st));
+  const out = []; let i = 0;
+  const fitsArc = (i, j) => {   // Punkte V[i..j] (j ≤ n, V[n] = V[0])
+    const P = []; for (let k = i; k <= j; k++) P.push(V[k % n]);
+    if (P.length < 4) return null;
+    let sg = 0;
+    for (let k = 1; k < P.length - 1; k++) { const t = ang(P[k-1], P[k], P[k+1]); if (Math.abs(t) > 0.7) return null; const s = Math.sign(t); if (!s) return null; if (sg && s !== sg) return null; sg = s; }
+    const f = _m2cCircleFit(P); if (!f || f.dev > tol) return null;
+    for (let k = 0; k < P.length - 1; k++) if (Math.hypot(P[k+1].u - P[k].u, P[k+1].v - P[k].v) > f.r * 0.75) return null;   // Sehne > ~44° → keine Bogen-Tessellierung
+    return f;
+  };
+  while (i < n) {
+    let best = null, bj = -1;
+    for (let j = i + 3; j <= n; j++) { const f = fitsArc(i, j); if (f) { best = f; bj = j; } else if (bj > 0) break; }
+    if (best) {
+      const a = V[i], b = V[bj % n], c = best.c;
+      const a0 = Math.atan2(a.v - c.v, a.u - c.u); let sw = 0;
+      for (let k = i; k < bj; k++) { const p = V[k % n], q = V[(k + 1) % n]; let d = Math.atan2(q.v - c.v, q.u - c.u) - Math.atan2(p.v - c.v, p.u - c.u);
+        while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; sw += d; }
+      out.push({ type: 'arc', c: { u: c.u, v: c.v }, r: best.r, a0, a1: a0 + sw });
+      i = bj;
+    } else { const a = V[i], b = V[(i + 1) % n]; out.push({ type: 'line', a: { u: a.u, v: a.v }, b: { u: b.u, v: b.v } }); i++; }
+  }
+  // Übergänge exakt schließen: Linien-Enden auf die Bogen-Enden setzen
+  const ends = en => en.type === 'line' ? [en.a, en.b] : [_skArcPt(en, en.a0), _skArcPt(en, en.a1)];
+  for (let k = 0; k < out.length; k++) {
+    const A = out[k], B = out[(k + 1) % out.length];
+    if (A.type === 'line' && B.type === 'arc') { const p = ends(B)[0]; A.b = { u: p.u, v: p.v }; }
+    else if (A.type === 'arc' && B.type === 'line') { const p = ends(A)[1]; B.a = { u: p.u, v: p.v }; }
+    else if (A.type === 'line' && B.type === 'line') B.a = { u: A.b.u, v: A.b.v };
+  }
+  return out;
+}
+function _m2cSig(ents){ return JSON.stringify(ents.map(e => e.type === 'line' ? ['l', e.a.u, e.a.v, e.b.u, e.b.v] : e.type === 'circle' ? ['c', e.c.u, e.c.v, e.r] : ['a', e.c.u, e.c.v, e.r, e.a0, e.a1]).map(x => x.map(y => typeof y === 'number' ? Math.round(y * 2000) : y))); }
+// Analyse → Plan (ohne die Szene zu ändern)
+function _m2cAnalyse(o){
+  const T = _m2cTris(o);
+  if (T.length < 4) throw new Error('Kein Netz gefunden');
+  const vol0 = Math.abs(_m2cVolume(T));
+  const ax = _m2cAxis(T);
+  const rep = { tris: T.length, score: ax.score, axis: ax.A.toArray(), vol0 };
+  if (ax.score < 0.85) { rep.ok = false; rep.reason = `Nur ${Math.round(ax.score * 100)} % der Oberfläche liegen quer oder parallel zu einer Achse — das ist kein technisches 2,5D-Teil (eher Figur, Scan oder Freiform).`; return rep; }
+  const Q = _wpMakeQuat(ax.A), Qi = Q.clone().invert(), v = new THREE.Vector3();
+  const L = T.map(t => { const r = []; for (let k = 0; k < 3; k++) { v.set(t[k*3], t[k*3+1], t[k*3+2]).applyQuaternion(Qi); r.push(v.x, v.y, v.z); } return r; });
+  let hmin = Infinity, hmax = -Infinity, umin = Infinity, umax = -Infinity, wmin = Infinity, wmax = -Infinity;
+  for (const t of L) for (let k = 0; k < 3; k++) { hmin = Math.min(hmin, t[k*3+1]); hmax = Math.max(hmax, t[k*3+1]);
+    umin = Math.min(umin, t[k*3]); umax = Math.max(umax, t[k*3]); wmin = Math.min(wmin, t[k*3+2]); wmax = Math.max(wmax, t[k*3+2]); }
+  const diag = Math.hypot(hmax - hmin, umax - umin, wmax - wmin);
+  const tol = Math.max(0.002, diag * 2e-4);
+  // Höhenstufen aus Deckflächen
+  const lv = [hmin, hmax];
+  for (const t of L) { const na = _m2cNormalArea(t); if (na && Math.abs(na.n.y) > 0.9998) lv.push((t[1] + t[4] + t[7]) / 3); }
+  lv.sort((a, b) => a - b);
+  const levels = []; for (const h of lv) if (!levels.length || h - levels[levels.length - 1] > tol) levels.push(h);
+  if (levels.length > 160) { rep.ok = false; rep.reason = `${levels.length} Höhenstufen — das Teil ist zu stark abgestuft/gewölbt für eine saubere Rückführung.`; return rep; }
+  const slabs = [];
+  for (let i = 0; i + 1 < levels.length; i++) {
+    const a = levels[i], b = levels[i + 1]; if (b - a < tol) continue;
+    const loops = _m2cSection(L, (a + b) / 2);
+    if (!loops.length) continue;
+    const ents = []; for (const lp of loops) ents.push(..._m2cFitLoop(lp, tol));
+    slabs.push({ a, b, ents, sig: _m2cSig(ents), nLoops: loops.length });
+  }
+  // gleiche, direkt aufeinanderliegende Schichten zusammenfassen
+  const groups = [];
+  for (const s of slabs) { const g = groups[groups.length - 1];
+    if (g && g.sig === s.sig && Math.abs(g.b - s.a) < tol) g.b = s.b; else groups.push({ ...s }); }
+  if (!groups.length) { rep.ok = false; rep.reason = 'Kein geschlossener Querschnitt gefunden — ist das Netz wasserdicht?'; return rep; }
+  rep.ok = true; rep.Q = Q; rep.groups = groups; rep.tol = tol;
+  rep.counts = { line: 0, arc: 0, circle: 0 };
+  for (const g of groups) for (const e of g.ents) rep.counts[e.type]++;
+  return rep;
+}
+// Verlauf bauen: jede Gruppe = Skizze in Welt-Ebene auf Höhe a, extrudiert bis b
+function _m2cHistory(rep){
+  const list = [], ov = rep.tol * 0.25;
+  rep.groups.forEach((g, k) => {
+    const M = new THREE.Matrix4().compose(rep.axisV.clone().multiplyScalar(g.a), rep.Q, new THREE.Vector3(1, 1, 1));
+    const ents = _featClone(g.ents); ents.forEach((e, i) => { e.id = i + 1; });
+    list.push({ typ: 'skizze', ents, cons: [], frame: M.elements.slice(), ab: [k ? -ov : 0, g.b - g.a], op: k ? 'join' : 'new', picks: null,
+      pUI: { dir: 'one', d: Math.round((g.b - g.a) * 1000) / 100, d2: 5, op: k ? 'join' : 'new', thru: false, end: 'dist' } });
+  });
+  return { base: null, list };
+}
+async function meshToCad(){
+  const o = selectedObjs.length === 1 ? selectedObjs[0] : null;
+  if (!o) { notify('Mesh → CAD: genau ein importiertes Teil (STL/3MF) auswählen', 'w'); return; }
+  _progressShow('Mesh → CAD: Netz wird analysiert…'); _progressSet(10);
+  await new Promise(r => setTimeout(r, 30));
+  let rep;
+  try { rep = _m2cAnalyse(o); rep.axisV = new THREE.Vector3().fromArray(rep.axis); }
+  catch (e) { _progressHide(); notify('Mesh → CAD nicht möglich: ' + (e.message || e), 'e'); return; }
+  if (!rep.ok) { _progressHide(); _m2cReport(o, rep, null); return; }
+  _progressSet(45, 'CAD-Schritte werden aufgebaut…');
+  const H = _m2cHistory(rep);
+  let geo;
+  try { geo = await _featRebuild(H); }
+  catch (e) { _progressHide(); notify('Mesh → CAD: Aufbau gescheitert — ' + (e.message || e), 'e'); return; }
+  _progressSet(90);
+  saveUndo();
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(o.userData.color || currentColor), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide }));
+  mesh.castShadow = mesh.receiveShadow = true;
+  mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'CAD · ' + (o.userData.name || 'Teil'), color: o.userData.color || currentColor, isHole: false, fillet: 0, chamfer: 0 };
+  objects.push(mesh); scene.add(mesh);
+  _featSet(mesh, H); _updateObjEdgeLines(mesh);
+  o.visible = false;
+  selectObjs([mesh]); updateTree();
+  const g2 = geo.clone(); const T2 = []; const P = g2.attributes.position;
+  for (let i = 0; i + 2 < P.count; i += 3) T2.push([P.getX(i), P.getY(i), P.getZ(i), P.getX(i+1), P.getY(i+1), P.getZ(i+1), P.getX(i+2), P.getY(i+2), P.getZ(i+2)]);
+  rep.vol1 = Math.abs(_m2cVolume(T2)); g2.dispose();
+  _progressDone();
+  _m2cReport(o, rep, mesh);
+}
+function _m2cReport(o, rep, mesh){
+  let el = document.getElementById('m2c-panel');
+  if (!el) { el = document.createElement('div'); el.id = 'm2c-panel';
+    el.style.cssText = 'position:fixed;right:232px;bottom:64px;width:330px;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text);line-height:1.45';
+    document.body.appendChild(el); }
+  const nm = o.userData.name || 'Teil';
+  if (!rep.ok) {
+    el.innerHTML = `<div style="display:flex;margin-bottom:6px"><b style="flex:1">⬡→▣ Mesh → CAD</b><span onclick="this.closest('#m2c-panel').remove()" style="cursor:pointer;color:var(--dim)">✕</span></div>
+      <div style="color:#b45309">„${nm}“ ließ sich nicht zurückführen.</div><div style="margin-top:6px">${rep.reason || ''}</div>
+      <div style="margin-top:8px;color:var(--dim)">Geht gut: gedruckte/gefräste Halter, Platten, Gehäuse, Adapter mit senkrechten Wänden. Figuren, Scans und KI-Modelle bleiben Netze.</div>`;
+    return;
+  }
+  const dv = rep.vol1 != null ? (rep.vol1 - rep.vol0) / rep.vol0 * 100 : null;
+  const mm3 = x => String(Math.round(x * 1000)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  el.innerHTML = `<div style="display:flex;margin-bottom:6px"><b style="flex:1">⬡→▣ Mesh → CAD · fertig</b><span onclick="this.closest('#m2c-panel').remove()" style="cursor:pointer;color:var(--dim)">✕</span></div>
+    <div>Aus <b>${rep.tris.toLocaleString('de-DE')}</b> Dreiecken wurden <b>${rep.groups.length}</b> Skizzen-Schritt${rep.groups.length > 1 ? 'e' : ''}:
+      ${rep.counts.line} Linien, ${rep.counts.arc} Bögen, ${rep.counts.circle} Kreise.</div>
+    <div style="margin-top:4px">Achse ${rep.axis.map(x => (Math.round(x * 100) / 100)).join(' / ')} · ${Math.round(rep.score * 100)} % der Fläche prismatisch</div>
+    ${dv != null ? `<div style="margin-top:4px">Volumen: Original ${mm3(rep.vol0)} mm³ → CAD ${mm3(rep.vol1)} mm³ (<b style="color:${Math.abs(dv) < 0.5 ? '#16a34a' : Math.abs(dv) < 3 ? '#b45309' : '#dc2626'}">${dv >= 0 ? '+' : ''}${dv.toFixed(2).replace('.', ',')} %</b>)</div>` : ''}
+    ${rep.score < 0.98 ? '<div style="margin-top:4px;color:#b45309">Schrägen oder Rundungen an Deckkanten sind als Stufen angenähert.</div>' : ''}
+    <div style="margin-top:8px;color:var(--dim)">Das Original ist ausgeblendet (im Baum wieder einblendbar). Im Verlauf des neuen Teils jede Skizze öffnen, bemaßen und ändern — das Teil rechnet sich neu.</div>`;
+}
+
 // ═══ FOLGEN: Profil entlang Modellkanten (3D-Sweep, 1.18.194) ═══════════════
 // Idee aus dem ShapeAnywhere-Abgleich, eigener Code. Profil = geschlossene
 // Kontur der aktuellen Skizze (Knopf „↝ Folgen") oder eine angeklickte ebene
@@ -32134,6 +32384,8 @@ document.getElementById('ctx-del').addEventListener('click',   () => { _hideVpCt
 document.getElementById('ctx-measure').addEventListener('click', () => { _hideVpCtx(); if(typeof measureTool!=='function') return; if(_measureMode) _measureExit(); /* aktiven Modus zurücksetzen, damit der Klick immer (neu) startet statt zu togglen */ measureTool(); });
 document.getElementById('ctx-pushpull').addEventListener('click', () => { _hideVpCtx(); enterPushPull(); });
 document.getElementById('ctx-loft').addEventListener('click', () => { _hideVpCtx(); if (!_lf.active) enterLoftMode(); });
+document.getElementById('ctx-folgen').addEventListener('click', () => { _hideVpCtx(); enterFolgen(); });
+document.getElementById('ctx-m2c').addEventListener('click', () => { _hideVpCtx(); meshToCad(); });
 
 canvas.addEventListener('mouseup', e => {
   const moved = Math.hypot(e.clientX - mouseDownPos.x, e.clientY - mouseDownPos.y);
@@ -64773,8 +65025,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.194';
+const VOLME3D_VERSION = '1.18.195';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.195', date:'2026-10-19', changes:[
+    ['▣','<b>Neu: Mesh → CAD – technische STL-Teile wieder bearbeitbar machen.</b> Importiertes Teil wählen, Rechtsklick → <b>▣ Mesh → CAD</b>. V3D CAD erkennt die Hauptachse und die Höhenstufen und verwandelt jeden Querschnitt in echte Linien, Bögen und Kreise. Aus den hunderten Dreiecken einer Bohrung wird wieder ein Kreis, aus einem Langloch Linie und Halbkreis. Ergebnis ist ein Teil mit Verlauf: Jede Skizze lässt sich öffnen, bemaßen und ändern (z. B. Bohrung von Ø6 auf Ø8), und das Teil rechnet sich neu. Ein Bericht zeigt die Abweichung zum Original, das ausgeblendet bleibt. Geht gut bei Haltern, Platten, Gehäusen und Adaptern mit senkrechten Wänden; Figuren und Scans bleiben Netze, das sagt der Bericht dann auch.'],
+    ['🔧','<b>Behoben: Skizzen mit Löchern ließen sich im Verlauf manchmal nicht nachrechnen</b> („Not manifold“), z. B. eine Scheibe mit Bohrung. Die Lochwände zeigten je nach Zeichenrichtung nach innen. Jetzt stimmt die Richtung immer.'],
+  ]},
   { version:'1.18.194', date:'2026-10-19', changes:[
     ['⤳','<b>Neu: Folgen – ein Profil entlang von Modellkanten ziehen.</b> In der Skizze ein geschlossenes Profil zeichnen (z. B. Kreis oder Rechteck auf einer Seitenfläche), dann <b>⤳ Folgen (Kanten)</b>, oder über die Suche „Folgen“ eine ebene Fläche als Profil anklicken. Danach die Kante(n) im Modell anklicken. Ein Klick nimmt die ganze tangential anschließende Kette mit, etwa einen Kreisrand komplett; Shift hängt weitere Kanten an. Ecken werden sauber auf Gehrung geschnitten, Hohlprofile bleiben hohl. Ergebnis: Rand, Wulst, Leiste oder mit „Abziehen“ eine Nut rund um das Teil.'],
   ]},
@@ -75693,6 +75949,7 @@ const CMDK = [
   {i:'📐',g:'Bearbeiten',t:'Messen (Abstand / Durchmesser)',k:'measure distance diameter durchmesser bemaszung',run:()=>measureTool()},
   {i:'↕',g:'Bearbeiten',t:'Fläche ziehen / versetzen (Push/Pull)',k:'push pull fläche offset versetzen extrudieren bis nächste bis fläche durch alles',run:()=>enterPushPull()},
   {i:'⤧',g:'Bearbeiten',t:'Loft (Flächen verbinden)',k:'loft übergang flächen verbinden shapr',run:()=>{ if(!_lf.active) enterLoftMode(); }},
+  {i:'▣',g:'Bearbeiten',t:'Mesh → CAD (STL in Skizzen-Schritte)',k:'mesh to cad stl 3mf zurückführen rekonstruieren reverse engineering skizze verlauf bearbeitbar parametrisch',run:()=>meshToCad()},
   {i:'⤳',g:'Bearbeiten',t:'Folgen (Profil entlang Kanten)',k:'folgen sweep follow me profil kante pfad rand nut leiste rohr',run:()=>enterFolgen()},
   {i:'🔻',g:'Bearbeiten',t:'Vereinfachen (Dreiecke)',k:'simplify decimate reduzieren',run:()=>openSimplifyModal()},
   {i:'⬇',g:'Export',t:'Skizze als DXF',k:'dxf laser export skizze',run:()=>{ if(_sk.active) _skExportDXF(); else notify('Erst Skizzen-Modus öffnen','w'); }},
