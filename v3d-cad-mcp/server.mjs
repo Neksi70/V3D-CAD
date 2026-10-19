@@ -94,9 +94,16 @@ const INSTRUCTIONS = `V3D CAD (Browser-CAD von Volme 3D) per Befehl steuern.
 - Vorgehen: erst planen (Maße, Positionen, erwartetes Volumen), dann mit batch in wenigen Schritten bauen, danach mit measure gegen die erwarteten Werte prüfen. "ok" allein heißt nicht, dass ein Schnitt getroffen hat.
 - Ein execute oder ein ganzer batch ist EIN Undo-Schritt; bei Fehler bleibt die Szene unverändert.
 - list_commands zeigt alle Befehle mit Parametern; shape.types die Grundformen.
+- Werkzeuge: Grundformen (shape.add), Skizzen extrudieren/anfügen/abziehen (sketch.extrude), Kanten runden/fasen (body.fillet/body.chamfer — VOR Bool-Operationen und VOR dem Drehen), Bool (bool.*), Generatoren für Kinder-/Spielmodelle (gen.list/gen.run/gen.edit).
+- VOR dem ersten Bauen einmal das Werkzeug "anleitung" lesen (Vorgehen, Ebenen, Rezepte, Grenzen).
 - Zum Schluss ein kleiner screenshot (z. B. 480×320) zur Sichtkontrolle.`;
 
+const ANLEITUNG = () => fs.readFileSync(new URL('./ANLEITUNG.md', import.meta.url), 'utf8');
+
 const TOOLS = [
+  { name: 'anleitung', description: 'Anleitung zum Modellieren in V3D CAD: Koordinaten, Vorgehen, Skizzen-Ebenen, Runden-Grenzen, Rezepte (Box mit Deckel, Gehäuse, Lochplatte). Vor dem ersten Bauen lesen.',
+    inputSchema: obj({}), annotations: { readOnlyHint: true },
+    run: async () => ({ content: [{ type: 'text', text: ANLEITUNG() }] }) },
   { name: 'list_commands', description: 'Alle V3D-CAD-Befehle mit Parametern (für execute/batch).',
     inputSchema: obj({ filter: { type: 'string', description: 'Teilstring in Befehl oder Beschreibung' } }),
     annotations: { readOnlyHint: true },
@@ -121,7 +128,8 @@ const TOOLS = [
     inputSchema: obj({ view: { type: 'string', enum: ['iso', 'front', 'back', 'top', 'bottom', 'left', 'right'] },
                        width: { type: 'integer' }, height: { type: 'integer' },
                        ids: { type: 'array', items: { type: 'integer' }, description: 'nur diese Körper zeigen' },
-                       grid: { type: 'boolean' }, path: { type: 'string', description: 'zusätzlich als Datei speichern' } }),
+                       grid: { type: 'boolean' }, axes: { type: 'boolean', description: 'Achsenkreuz zeigen (Standard aus)' },
+                       path: { type: 'string', description: 'zusätzlich als Datei speichern' } }),
     annotations: { readOnlyHint: true },
     run: async a => {
       const { path: p, ...rest } = a;
@@ -398,13 +406,19 @@ async function handle(msg) {
       case 'initialize': {
         const v = params && PROTOCOLS.includes(params.protocolVersion) ? params.protocolVersion : PROTOCOLS[0];
         return { jsonrpc: '2.0', id, result: { protocolVersion: v,
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: 'v3d-cad', version: '0.2.0' },
+          capabilities: { tools: { listChanged: false }, resources: { listChanged: false } },
+          serverInfo: { name: 'v3d-cad', version: '0.3.0' },
           instructions: INSTRUCTIONS + (await monReady, monPort
             ? `\n- Der Nutzer kann live mitverfolgen, was du baust: Agent-Monitor ${PUBLIC_LINK} (von überall, mit PIN) bzw. http://127.0.0.1:${monPort}/ auf dem Server — nenne ihm den Link, wenn du mit dem Bauen beginnst.` : '') } };
       }
       case 'notifications/initialized': case 'notifications/cancelled': return null;
       case 'ping': return { jsonrpc: '2.0', id, result: {} };
+      case 'resources/list':
+        return { jsonrpc: '2.0', id, result: { resources: [{ uri: 'v3d-cad://anleitung', name: 'Anleitung V3D CAD', mimeType: 'text/markdown',
+          description: 'Vorgehen, Koordinaten, Skizzen-Ebenen, Runden-Grenzen, Rezepte' }] } };
+      case 'resources/read':
+        if (params?.uri !== 'v3d-cad://anleitung') return rpcErr(id, -32002, 'Ressource unbekannt: ' + params?.uri);
+        return { jsonrpc: '2.0', id, result: { contents: [{ uri: params.uri, mimeType: 'text/markdown', text: ANLEITUNG() }] } };
       case 'tools/list':
         return { jsonrpc: '2.0', id, result: { tools: TOOLS.map(({ run, ...t }) => t) } };
       case 'tools/call': {
