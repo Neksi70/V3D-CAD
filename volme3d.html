@@ -1818,6 +1818,7 @@ const firebaseConfig = {
       <button class="skc" data-c="sym"  onclick="_skcApply('sym')"  title="Symmetrisch: zwei Punkte spiegelbildlich zu einer Linie (Achse)"><b>⇋</b>Symmetrisch</button>
       <button class="skc" data-c="fix"  onclick="_skcApply('fix')"  title="Fixieren: Punkt oder Element bleibt, wo es ist"><b>⚓</b>Fixieren</button>
     </div>
+    <button class="skt" onclick="_skpOpen()" title="Skizzenmuster: gewählte Elemente linear oder auf einem Kreis vervielfachen — die Kopien folgen der Vorlage"><span class="ski">▦</span><span class="skl">Muster…</span><span class="skk"></span></button>
     <button class="skt" data-c="dim" onclick="_skcApply('dim')" title="Bemaßen: Linie = Länge, Kreis = ⌀, Bogen = R, zwei Punkte / Punkt + Linie = Abstand, zwei Linien = Winkel. Die Maßzahl in der Skizze anklicken = ändern, die Skizze folgt"><span class="ski">↔</span><span class="skl">Bemaßen</span><span class="skk">M</span></button>
     <div id="sk-cons-st" class="skc-st"></div>
     <div class="skc-tip">Erst wählen, dann Knopf — oder erst Knopf, dann anklicken. Symbol in der Skizze anklicken = entfernen. Entf löscht gewählte Elemente.</div>
@@ -10583,7 +10584,7 @@ function exitSketchMode() {
   if (_sk.group) { scene.remove(_sk.group); _skDisposeGroup(); _sk.group = null; }
   _sk.ents = []; _sk.pending = []; _sk.dimLock = false;
   _sk.cons = []; _sk.sel = []; _sk.arm = null; _sk.cUndo = []; _skcDrag.on = false;
-  _skcDimClose(); _skcOverlay(); _skcPanel();
+  _skcDimClose(); _skcOverlay(); _skcPanel(); _sk.patEd = null; _skpPanel();
   _skRefClear();
   if (typeof _cncPrevClear === 'function') _cncPrevClear();
   document.getElementById('sketch-bar').style.display = 'none';
@@ -11305,6 +11306,7 @@ const _SKC_INFO = {
   col: { i:'⋯', n:'Kollinear',     need:'zwei Linien' },
   sym: { i:'⇋', n:'Symmetrisch',   need:'zwei Punkte + eine Linie als Achse' },
   fix: { i:'⚓', n:'Fixieren',      need:'Punkte oder Elemente' },
+  pat: { i:'▦', n:'Muster',        need:'Elemente' },
   dim: { i:'↔', n:'Bemaßen',       need:'eine Linie, einen Kreis/Bogen, zwei Punkte, Punkt + Linie oder zwei Linien' },
 };
 function _skcIds(){
@@ -11323,6 +11325,9 @@ function _skcPrune(){
   const has = new Set(_sk.ents.map(en => en.id));
   _sk.cons = _sk.cons.filter(c => c.refs.every(r => has.has(r.id)));
   _sk.sel = _sk.sel.filter(r => has.has(r.id));
+  // Kopien eines aufgelösten Musters werden wieder normale Elemente
+  const live = new Set(_sk.cons.filter(c => c.t === 'pat').flatMap(c => (c.copies || []).flat()));
+  for (const en of _sk.ents) if (en.pat && !live.has(en.id)) delete en.pat;
 }
 function _skcLn(en){ const dx = en.b.u - en.a.u, dy = en.b.v - en.a.v; return { dx, dy, L: Math.hypot(dx, dy) || 1e-9 }; }
 function _skcLineDist(en, p){ const l = _skcLn(en); return ((p.u - en.a.u) * l.dy - (p.v - en.a.v) * l.dx) / l.L; }   // vorzeichenbehaftet
@@ -11481,6 +11486,7 @@ function _skcSolve(opt){
     dof = N - rank;
   }
   _sk.dof = dof;
+  _skpRegen();
   return { ok: nr < 1e-6, err: nr, dof };
 }
 
@@ -11492,13 +11498,18 @@ function _skcPick(raw){
   const upx = _skcPxU(raw), tol = 11 * upx;
   let best = null, bd = tol;
   for (const en of _sk.ents) {
-    if (!_SKC_PAR[en.type]) continue;
+    if (!_SKC_PAR[en.type] || en.pat) continue;
     const ps = en.type === 'line' ? ['a', 'b'] : en.type === 'arc' ? ['s', 'e', 'c'] : ['c'];
     for (const p of ps) { const q = _skcPt(en, p), d = Math.hypot(q.u - raw.u, q.v - raw.v) * 0.8; if (d < bd) { bd = d; best = { id: en.id, p }; } }
   }
-  if (best) return best;
-  bd = 8 * upx;
-  for (const en of _sk.ents) { if (!_SKC_PAR[en.type]) continue; const d = _skDistToEnt(en, raw); if (d < bd) { bd = d; best = { id: en.id, p: null }; } }
+  // Punkt gegen Linie/Kreis abwägen: gewinnt, was näher am Klick liegt (bei
+  // kleinen Kreisen lag die Mitte sonst immer im Fangradius und der Rand war
+  // nicht wählbar)
+  const bestPt = best, dPt = bd;
+  bd = 8 * upx; best = null;
+  for (const en of _sk.ents) { if (!_SKC_PAR[en.type] || en.pat) continue; const d = _skDistToEnt(en, raw); if (d < bd) { bd = d; best = { id: en.id, p: null }; } }
+  if (bestPt && (!best || dPt <= bd)) return bestPt;
+  if (!best && _sk.ents.some(en => en.pat && _skDistToEnt(en, raw) < 8 * upx)) return { nope: true, pat: true };
   if (!best && _sk.ents.some(en => !_SKC_PAR[en.type] && _skDistToEnt(en, raw) < 8 * upx))
     return { nope: true };
   return best;
@@ -11508,7 +11519,7 @@ const _skcDrag = { on: false };
 function _skcDown(e, raw){
   _skcIds();
   const hit = _skcPick(raw);
-  if (hit && hit.nope) { notify('Freihand-, Spline- und SVG-Konturen bekommen (noch) keine Abhängigkeiten — Linien, Kreise, Bögen und Ellipsen schon', 'w'); return; }
+  if (hit && hit.nope) { notify(hit.pat ? 'Das ist eine Muster-Kopie — die Vorlage ändern, dann folgen alle Kopien (▦-Symbol anklicken = Muster lösen)' : 'Freihand-, Spline- und SVG-Konturen bekommen (noch) keine Abhängigkeiten — Linien, Kreise, Bögen und Ellipsen schon', 'w'); return; }
   if (!hit) { if (!e.shiftKey && !_sk.arm) _sk.sel = []; _skRender(); _skcPanel(); return; }
   const i = _sk.sel.findIndex(r => _skcSameRef(r, hit));
   if (_sk.arm) { if (i < 0) _sk.sel.push(hit); }
@@ -11795,10 +11806,11 @@ function _skcOverlay(){
       ? 'position:fixed;pointer-events:auto;cursor:pointer;background:#fff;color:#111827;border:1px solid #9ca3af;border-radius:4px;padding:0 4px;font:600 11px system-ui;white-space:nowrap;transform:translate(-50%,-50%)'
       : 'position:fixed;pointer-events:auto;cursor:pointer;background:#374151;color:#fde68a;border-radius:3px;padding:0 3px;font:700 10px system-ui;min-width:10px;text-align:center;transform:translate(-50%,-50%)';
     const nm = c.t === 'on' ? 'Punkt auf Element' : (_SKC_INFO[c.t] || {}).n || ({ len: 'Länge', dia: 'Durchmesser', rad: 'Radius', dist: 'Abstand', pld: 'Abstand', ang: 'Winkel' })[c.t];
-    el.title = isDim ? nm + ' — anklicken zum Ändern, Rechtsklick entfernt' : nm + ' — anklicken entfernt die Abhängigkeit';
+    el.title = isDim ? nm + ' — anklicken zum Ändern, Rechtsklick entfernt' : c.t === 'pat' ? `Muster ${c.n}× — anklicken = ändern, Rechtsklick = lösen (Kopien werden eigenständig)` : nm + ' — anklicken entfernt die Abhängigkeit';
     el.addEventListener('mousedown', ev => { ev.stopPropagation(); ev.preventDefault();
       if (isDim && ev.button === 0) { const sp = _skcDimSpec(c.refs.map(r => ({ id: r.id, p: r.p })));
         if (sp && sp.t === c.t) _skcDimEdit(sp, c); return; }
+      if (c.t === 'pat' && ev.button === 0) { _skpOpen(c); return; }
       _skcRemove(c); });
     el.addEventListener('contextmenu', ev => { ev.preventDefault(); ev.stopPropagation(); });
     lay.appendChild(el);
@@ -11814,6 +11826,7 @@ function _skcOverlayPos(){
 function _skcRemove(c){
   const before = _featClone(_sk.ents), cons0 = _featClone(_sk.cons);
   _sk.cons = _sk.cons.filter(o => o !== c); _sk.ents = _featClone(_sk.ents);
+  if (c.t === 'pat') { const ids = new Set((c.copies || []).flat()); _sk.ents.forEach(en => { if (ids.has(en.id)) delete en.pat; }); }
   _sk.cUndo.push({ before, cons: cons0, after: _sk.ents, len: _sk.ents.length });
   _skcSolve();
   notify(((_SKC_DIMS[c.t] ? 'Maß ' + _skcLabel(c) : (_SKC_INFO[c.t === 'on' ? 'coin' : c.t] || {}).n) || 'Abhängigkeit') + ' entfernt — Strg+Z holt es zurück', 'ok');
@@ -11848,6 +11861,118 @@ function _skcAutoHV(en, hint){
   _skcIds();
   if (hint[0] === 'H') _sk.cons.push({ t: 'h', refs: [{ id: en.id, p: null }], auto: 1 });
   else if (hint[0] === 'V') _sk.cons.push({ t: 'v', refs: [{ id: en.id, p: null }], auto: 1 });
+}
+
+// ── Skizzenmuster (1.18.196) ─────────────────────────────────────────────
+// Gewählte Elemente linear oder auf einem Kreis vervielfachen. Das Muster ist
+// eine Abhängigkeit {t:'pat'} in _sk.cons (Rückgängig/Verlauf/Prune laufen so
+// mit): refs = Vorlagen, copies[k][i] = id der Kopie. Nach jedem Lösen werden
+// die Kopien aus den Vorlagen neu gerechnet — Maß an der Vorlage ändern, alle
+// Kopien folgen. Kopien sind nicht einzeln greifbar; Muster-Symbol anklicken
+// = lösen (Kopien bleiben als normale Elemente).
+const _SKP_OK = { line: 1, circle: 1, arc: 1, ellipse: 1, poly: 1, spline: 1 };
+function _skpXform(en, f, rot){   // f: Punkt→Punkt, rot: Drehwinkel (für Bögen)
+  const P = q => { const r = f(q); return { u: r.u, v: r.v }; };
+  const o = { type: en.type, pat: 1 };
+  if (en.type === 'line') { o.a = P(en.a); o.b = P(en.b); }
+  else if (en.type === 'circle') { o.c = P(en.c); o.r = en.r; }
+  else if (en.type === 'arc') { o.c = P(en.c); o.r = en.r; o.a0 = en.a0 + rot; o.a1 = en.a1 + rot; }
+  else if (en.type === 'ellipse') { o.c = P(en.c); o.rx = en.rx; o.ry = en.ry; }
+  else if (en.type === 'poly' || en.type === 'spline') { o.pts = en.pts.map(P); if (en.closed) o.closed = true; }
+  return o;
+}
+function _skpInstances(c){
+  const out = [];
+  for (let k = 1; k < c.n; k++) {
+    if (c.kind === 'lin') { const du = Math.cos(c.ang * Math.PI / 180) * c.d * k, dv = Math.sin(c.ang * Math.PI / 180) * c.d * k;
+      out.push({ f: q => ({ u: q.u + du, v: q.v + dv }), rot: 0 }); }
+    else { const step = (Math.abs(c.tot) >= 359.999 ? c.tot / c.n : c.tot / Math.max(1, c.n - 1)) * Math.PI / 180, a = step * k, cs = Math.cos(a), sn = Math.sin(a);
+      out.push({ f: q => ({ u: c.c.u + (q.u - c.c.u) * cs - (q.v - c.c.v) * sn, v: c.c.v + (q.u - c.c.u) * sn + (q.v - c.c.v) * cs }), rot: a }); }
+  }
+  return out;
+}
+// Kopien aller Muster neu aufbauen (ids bleiben stabil)
+function _skpRegen(){
+  const pats = (_sk.cons || []).filter(c => c.t === 'pat'); if (!pats.length) return;
+  const byId = new Map(_sk.ents.map(en => [en.id, en]));
+  const keep = new Set();
+  for (const c of pats) {
+    const src = c.refs.map(r => byId.get(r.id)); if (src.some(e => !e)) continue;
+    const inst = _skpInstances(c);
+    c.copies = c.copies || [];
+    inst.forEach((tr, k) => {
+      c.copies[k] = c.copies[k] || [];
+      src.forEach((en, i) => {
+        if (en.type === 'ellipse' && tr.rot) return;   // Ellipsen nur verschieben
+        const nu = _skpXform(en, tr.f, tr.rot), id = c.copies[k][i];
+        const ex = id && byId.get(id);
+        if (ex) { for (const kk of Object.keys(ex)) if (kk !== 'id') delete ex[kk]; Object.assign(ex, nu); keep.add(ex.id); }
+        else { nu.id = _sk.nextId++; _sk.ents.push(nu); byId.set(nu.id, nu); c.copies[k][i] = nu.id; keep.add(nu.id); }
+      });
+    });
+    // überzählige Kopien (Anzahl verringert) entfernen
+    const extra = c.copies.slice(inst.length).flat(); c.copies.length = inst.length;
+    if (extra.length) { const ex = new Set(extra); _sk.ents = _sk.ents.filter(en => !ex.has(en.id)); }
+  }
+}
+function _skpOpen(edit){
+  if (!_sk.active) return;
+  if (_sk.tool !== 'sel') _skSetTool('sel');
+  // Vorlagen = gewählte Elemente; nur Punkte gewählt → deren Elemente. Ein Punkt
+  // eines anderen Elements ist die Kreismuster-Mitte.
+  let src = edit ? edit.refs : _sk.sel.filter(r => !r.p);
+  if (!edit && !src.length) src = [...new Set(_sk.sel.map(r => r.id))].map(id => ({ id, p: null }));
+  if (!src.length) { notify('Muster: erst mit „↖ Auswahl" die Elemente wählen (Shift = mehrere), dann ▦ Muster', 'w'); return; }
+  const srcIds = new Set(src.map(r => r.id));
+  const ptSel = _sk.sel.find(r => r.p && !srcIds.has(r.id));
+  let c0 = { u: 0, v: 0 };
+  if (ptSel) { const en = _skcEnt(ptSel.id); c0 = { ..._skcPt(en, ptSel.p) }; }
+  const p = edit ? { kind: edit.kind, n: edit.n, d: _skMM(edit.d), ang: edit.ang, tot: edit.tot, cu: _skMM(edit.c.u), cv: _skMM(edit.c.v) }
+                 : Object.assign({ kind: 'lin', n: 4, d: 10, ang: 0, tot: 360 }, _sk.patLast || {}, { cu: _skMM(c0.u), cv: _skMM(c0.v) });
+  _sk.patEd = { src: src.map(r => ({ id: r.id, p: null })), edit, p };
+  _skpPanel();
+}
+function _skpPanel(){
+  let el = document.getElementById('skp-panel');
+  if (!_sk.patEd) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement('div'); el.id = 'skp-panel';
+    el.style.cssText = 'position:fixed;right:232px;bottom:64px;width:270px;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+    el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); _skpApply(); } if (e.key === 'Escape') { _sk.patEd = null; _skpPanel(); } });
+    document.body.appendChild(el); }
+  const p = _sk.patEd.p, tb = (on, v, t) => `<button class="vtb${on ? ' on' : ''}" onclick="_skpSet('kind','${v}')">${t}</button>`;
+  const inp = (k, v, u, step) => `<input type="number" step="${step || 1}" value="${v}" oninput="_skpSet('${k}',this.value)" style="width:76px"><span class="vu">${u}</span>`;
+  el.innerHTML = `<div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">▦ Skizzenmuster${_sk.patEd.edit ? ' ändern' : ''}</b>
+      <span onclick="_sk.patEd=null;_skpPanel()" style="cursor:pointer;color:var(--dim);font-size:15px">✕</span></div>
+    <div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:5px 8px;margin-bottom:8px">${_sk.patEd.src.length} Vorlage${_sk.patEd.src.length > 1 ? 'n' : ''} — Kopien bleiben verknüpft</div>
+    <div class="vrow"><label>Anordnung</label><div class="vbg" style="flex:1">${tb(p.kind === 'lin', 'lin', 'Linear')}${tb(p.kind === 'circ', 'circ', 'Kreis')}</div></div>
+    <div class="vrow"><label>Anzahl</label>${inp('n', p.n, 'Stück')}</div>
+    ${p.kind === 'lin' ? `<div class="vrow"><label>Abstand</label>${inp('d', p.d, 'mm', 0.5)}</div><div class="vrow"><label>Richtung</label>${inp('ang', p.ang, '°', 15)}</div>`
+      : `<div class="vrow"><label>Winkel</label>${inp('tot', p.tot, '°', 15)}</div><div class="vrow"><label>Mitte X</label>${inp('cu', p.cu, 'mm', 0.5)}</div><div class="vrow"><label>Mitte Y</label>${inp('cv', p.cv, 'mm', 0.5)}</div>
+         <div style="font-size:11px;color:var(--dim);margin:-2px 0 6px">360° = gleichmäßig rundum. Tipp: einen Punkt mitwählen, dann ist er die Mitte.</div>`}
+    <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px"><button class="btn" onclick="_sk.patEd=null;_skpPanel()">Abbrechen</button><button class="btn pri" onclick="_skpApply()">✓ ${_sk.patEd.edit ? 'Übernehmen' : 'Muster erstellen'}</button></div>`;
+}
+function _skpSet(k, v){
+  const p = _sk.patEd.p;
+  if (k === 'kind') { p.kind = v; _skpPanel(); return; }
+  p[k] = parseFloat(String(v).replace(',', '.'));
+}
+function _skpApply(){
+  const ed = _sk.patEd; if (!ed) return;
+  const p = ed.p, n = Math.round(p.n);
+  if (!(n >= 2 && n <= 500)) { notify('Anzahl zwischen 2 und 500', 'w'); return; }
+  if (p.kind === 'lin' && !(Math.abs(p.d) > 0)) { notify('Abstand größer 0 eingeben', 'w'); return; }
+  if (p.kind === 'circ' && !(Math.abs(p.tot) > 0)) { notify('Winkel größer 0 eingeben', 'w'); return; }
+  _sk.patLast = { kind: p.kind, n, d: p.d, ang: p.ang, tot: p.tot };
+  const before = _featClone(_sk.ents), cons0 = _featClone(_sk.cons);
+  _sk.ents = _featClone(_sk.ents);
+  const c = ed.edit ? _sk.cons.find(x => x.t === 'pat' && x.refs[0].id === ed.edit.refs[0].id) : { t: 'pat', refs: ed.src, copies: [] };
+  Object.assign(c, { kind: p.kind, n, d: (p.d || 0) / 10, ang: p.ang || 0, tot: p.tot || 360, c: { u: (p.cu || 0) / 10, v: (p.cv || 0) / 10 } });
+  if (!ed.edit) _sk.cons.push(c);
+  _skcIds(); _skpRegen();
+  _sk.cUndo.push({ before, cons: cons0, after: _sk.ents, len: _sk.ents.length });
+  _sk.patEd = null; _skpPanel(); _sk.sel = [];
+  _skcSolve(); _skRender(); _skcPanel();
+  notify(`Muster: ${n}× ${p.kind === 'lin' ? 'linear' : 'auf dem Kreis'} — Vorlage ändern (Maß, Ziehen) und alle Kopien folgen; ▦-Symbol anklicken = Muster lösen`, 'ok');
 }
 
 // ── DXF Im-/Export (2D, R12-ASCII; für Lasercutter/Plotter) ───────────────
@@ -33009,6 +33134,7 @@ window.addEventListener('keydown', e => {
     if (_sk.active) {
       if (_skx.open) { _skxClose(); return; }               // Extrudieren-Fenster zuerst
       if (_sk.dimEd) { _skcDimClose(); return; }
+      if (_sk.patEd) { _sk.patEd = null; _skpPanel(); return; }
       if (_sk.arm || _sk.sel.length) { _sk.arm = null; _sk.sel = []; _skRender(); _skcPanel(); return; }
       if (_sk.facePick) { canvas.removeEventListener('pointerdown', _skFacePickDown, true); _sk.facePick = false; canvas.style.cursor = 'crosshair'; return; }
       if (_sk.pending.length) { _sk.pending = []; _sk.dimLock = false; _skRender(); _skDimUpdate(); }
@@ -65025,8 +65151,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.195';
+const VOLME3D_VERSION = '1.18.196';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.196', date:'2026-10-19', changes:[
+    ['▦','<b>Skizze: Muster.</b> Elemente mit <b>↖ Auswahl</b> wählen, im Panel <b>▦ Muster…</b>: <b>linear</b> (Anzahl, Abstand, Richtung) oder <b>auf einem Kreis</b> (Anzahl, Winkel, Mitte; ein mitgewählter Punkt wird die Mitte). Die Kopien bleiben mit der Vorlage verknüpft: Maß an der Vorlage ändern oder sie ziehen, und alle Kopien folgen. Das ▦-Symbol anklicken ändert das Muster, Rechtsklick löst es (Kopien werden eigenständig). Ideal für Lochreihen und Lochkreise; wird mit der Skizze im Verlauf gespeichert.'],
+    ['🎯','Skizze/Auswahl: Bei kleinen Kreisen ließ sich der Rand nicht anklicken, die Mitte war immer näher im Fangradius. Jetzt gewinnt, was dem Klick wirklich am nächsten liegt.'],
+  ]},
   { version:'1.18.195', date:'2026-10-19', changes:[
     ['▣','<b>Neu: Mesh → CAD – technische STL-Teile wieder bearbeitbar machen.</b> Importiertes Teil wählen, Rechtsklick → <b>▣ Mesh → CAD</b>. V3D CAD erkennt die Hauptachse und die Höhenstufen und verwandelt jeden Querschnitt in echte Linien, Bögen und Kreise. Aus den hunderten Dreiecken einer Bohrung wird wieder ein Kreis, aus einem Langloch Linie und Halbkreis. Ergebnis ist ein Teil mit Verlauf: Jede Skizze lässt sich öffnen, bemaßen und ändern (z. B. Bohrung von Ø6 auf Ø8), und das Teil rechnet sich neu. Ein Bericht zeigt die Abweichung zum Original, das ausgeblendet bleibt. Geht gut bei Haltern, Platten, Gehäusen und Adaptern mit senkrechten Wänden; Figuren und Scans bleiben Netze, das sagt der Bericht dann auch.'],
     ['🔧','<b>Behoben: Skizzen mit Löchern ließen sich im Verlauf manchmal nicht nachrechnen</b> („Not manifold“), z. B. eine Scheibe mit Bohrung. Die Lochwände zeigten je nach Zeichenrichtung nach innen. Jetzt stimmt die Richtung immer.'],
