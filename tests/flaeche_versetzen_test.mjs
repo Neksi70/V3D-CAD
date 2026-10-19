@@ -88,6 +88,17 @@ try {
   ok(Math.abs(st.len - 30) < 0.05, `Bis Fläche (Oberseite der 30 mm hohen Box angeklickt): ${st.len.toFixed(2)} mm`);
   await p.evaluate(async () => { await _skxApply(); });
 
+  // 7) Extrudieren mit Fase oben 2 mm: 20×20×10 → 4000 − ∫₀² (20−2x)² dx = 3850,67 mm³; Verlauf rechnet gleich nach
+  const r7 = await p.evaluate(async () => { if (_sk.active) exitSketchMode(); _newCreate(false); enterSketchMode();
+    [[-1,-1,1,-1],[1,-1,1,1],[1,1,-1,1],[-1,1,-1,-1]].forEach(([a,b,c,d]) => _sk.ents.push({ type: 'line', a: { u: a, v: b }, b: { u: c, v: d } })); _skRender();
+    _skExtrude(); _skxSet('end', 'dist'); _skxSet('dir', 'one'); _skxSet('op', 'new'); _skxSet('d', '10'); _skxSet('bevT', 'cha'); _skxSet('bevTmm', '2'); await _skxApply();
+    const o = objects[0], vol = g => { const gg = g.index ? g.toNonIndexed() : g, P = gg.attributes.position; let v = 0; const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
+      for (let i = 0; i < P.count; i += 3) { A.fromBufferAttribute(P, i); B.fromBufferAttribute(P, i+1); C.fromBufferAttribute(P, i+2); v += A.dot(B.clone().cross(C)); } return Math.abs(v / 6) * 1000; };
+    o.updateMatrixWorld(true); const g = o.geometry.clone(); g.applyMatrix4(o.matrixWorld);
+    const H = o.userData.feat; const g2 = await _featRebuild(H);
+    return { v: vol(g), v2: vol(g2), bev: H.list[0].bev }; });
+  ok(Math.abs(r7.v - 3850.67) < 2 && Math.abs(r7.v2 - 3850.67) < 2 && r7.bev && r7.bev.top && !r7.bev.top.fil, `Fase oben 2 mm: ${r7.v.toFixed(2)} / Verlauf ${r7.v2.toFixed(2)} mm³ (soll 3850,67)`);
+
   ok(errs.length === 0, 'keine Seitenfehler ' + errs.join(' | '));
 } catch (e) { console.log('ABBRUCH ' + String(e.message || e).split('\n')[0]); fail++; }
 await b.close(); srv.kill();

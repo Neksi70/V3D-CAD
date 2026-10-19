@@ -29,7 +29,19 @@ try {
         // Ø3 quer durch den Zapfen (entlang X, z = 10), Ø2 längs durch die Platte (entlang Y, z = 2,5)
         m = m.subtract(M.cylinder(40, 1.5, 1.5, 48, false).rotate([0, 90, 0]).translate([0, 15, 10]));
         m = m.subtract(M.cylinder(40, 1, 1, 48, false).rotate([-90, 0, 0]).translate([12, -5, 2.5]));
+      } else if (kind === 'zapfen') {
+        m = M.cube([30, 20, 10], false);
+        m = m.add(M.cylinder(12, 4, 4, 64, false).rotate([0, 90, 0]).translate([28, 10, 5]));    // Ø8, ragt 10 mm seitlich heraus
+        m = m.subtract(M.cylinder(50, 1.5, 1.5, 48, false).rotate([0, 90, 0]).translate([20, 10, 5]));   // Ø3 durch den Zapfen
+        m = m.add(M.cylinder(8, 3, 3, 64, false).rotate([-90, 0, 0]).translate([10, 18, 5]));             // zweiter Zapfen Ø6 nach +Y
       } else if (kind === 'kugel') m = M.sphere(10, 48);
+      if (kind === 'fase') {   // Platte 40×30×10, Bohrung Ø8, oben R2, unten Fase 1 — als Netz wie ein STL
+        const R = [[0,0],[4,0],[4,3],[0,3]].map(([u, v]) => ({ u, v })), hole = []; for (let i = 0; i < 64; i++) { const a = -i / 64 * Math.PI * 2; hole.push({ u: 2 + 0.4 * Math.cos(a), v: 1.5 + 0.4 * Math.sin(a) }); }
+        const g = _skGeoBev([{ outer: R, holes: [hole] }], 10, { top: { fil: true, mm: 2 }, bot: { fil: false, mm: 1 } }).toNonIndexed();
+        const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x888888, side: THREE.DoubleSide }));
+        mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Import fase', color: '#888888' };
+        objects.push(mesh); scene.add(mesh); selectObjs([mesh]); updateTree(); return mesh.userData.id;
+      }
       let geo = _mfToGeo(m).toNonIndexed(); geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);
       const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x888888, side: THREE.DoubleSide }));
       if (rot) { mesh.rotation.set(rot[0], rot[1], rot[2]); mesh.updateMatrixWorld(true); }
@@ -77,6 +89,21 @@ try {
     ok(dv < 0.5, `Volumen mit Querbohrungen ${r.v0.toFixed(1)} → ${r.v1.toFixed(1)} mm³ (${dv.toFixed(3)} %)`);
     ok(/2 Querbohrungen/.test(r.txt), 'Bericht nennt 2 Querbohrungen');
   } else ok(false, 'Querbohrungen: ' + r.txt);
+  // Fasen/Rundungen als Kantenoperation
+  r = await run('fase');
+  if (r.ok) {
+    const dv = Math.abs(r.v1 - r.v0) / r.v0 * 100;
+    const bev = await p.evaluate(() => { const o = objects.find(x => x.visible !== false); return o.userData.feat.list[0].bev; });
+    ok(r.steps === 1 && bev && bev.top && bev.top.fil && Math.abs(bev.top.mm - 2) < 0.15 && bev.bot && !bev.bot.fil && Math.abs(bev.bot.mm - 1) < 0.1, `Rundung oben + Fase unten erkannt: ${JSON.stringify(bev)}`);
+    ok(dv < 0.5, `Volumen mit Kanten ${r.v0.toFixed(1)} → ${r.v1.toFixed(1)} mm³ (${dv.toFixed(3)} %)`);
+  } else ok(false, 'Fase: ' + r.txt);
+  // Seitlicher Zapfen mit Bohrung
+  r = await run('zapfen');
+  if (r.ok) {
+    const dv = Math.abs(r.v1 - r.v0) / r.v0 * 100;
+    ok(/join/.test(r.ops) && /Seitliche Zapfen/.test(r.txt), `Zapfen in zwei Richtungen: seitlicher Zapfen als Anfügen erkannt (${r.ops})`);
+    ok(dv < 0.5 && r.bb0.every((x, i) => Math.abs(x - r.bb1[i]) < 0.05), `Volumen ${r.v0.toFixed(1)} → ${r.v1.toFixed(1)} mm³ (${dv.toFixed(3)} %), Maße ${r.bb1}`);
+  } else ok(false, 'Zapfen: ' + r.txt);
   // Kugel → Hinweis
   r = await run('kugel');
   ok(!r.ok && /kein technisches 2,5D-Teil/.test(r.txt), 'Kugel abgelehnt mit Hinweis');

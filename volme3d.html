@@ -12433,6 +12433,17 @@ function _skBuildGeoFromProfiles(profiles, hmm, filMM, chaMM){
 // prüft die Löcher nur, wenn es die Außenkontur selbst umdreht — lief die schon
 // richtig herum, blieben gleichsinnige Löcher stehen und ihre Wände zeigten nach
 // innen (Netz nicht geschlossen → Verlauf/Manifold „Not manifold“, 1.18.195).
+// Extrusion mit Kanten oben/unten: bev = { top:{fil,mm}, bot:{fil,mm} } | null
+function _skGeoBev(profiles, hmm, bev){
+  if (!bev || (!bev.top && !bev.bot)) return _skBuildGeoFromProfiles(profiles, hmm, 0, 0);
+  const hU = Math.max(0.02, hmm / 10);
+  let minU=Infinity,maxU=-Infinity,minV=Infinity,maxV=-Infinity;
+  for (const pr of profiles) for (const p of pr.outer){ minU=Math.min(minU,p.u); maxU=Math.max(maxU,p.u); minV=Math.min(minV,p.v); maxV=Math.max(maxV,p.v); }
+  const lim = Math.min(hU * (bev.top && bev.bot ? 0.48 : 0.96), Math.min(maxU-minU, maxV-minV) / 2 * 0.6);
+  const u = e => e ? Math.max(0.001, Math.min(lim, e.mm / 10)) : 0;
+  return _skRoundExtrude(profiles, hU, 0, false, { top: !!bev.top, bottom: !!bev.bot, topU: u(bev.top), botU: u(bev.bot),
+    topFil: !!(bev.top && bev.top.fil), botFil: !!(bev.bot && bev.bot.fil), segs: 8 });
+}
 function _skProfileToShape(pr){
   const o=pr.outer.map(p=>new THREE.Vector2(p.u,-p.v)); if (THREE.ShapeUtils.isClockWise(o)) o.reverse();
   const sh=new THREE.Shape(o);
@@ -12472,16 +12483,16 @@ function _loopOffsetNormals(pts, isHole){
 function _skRoundExtrude(profiles, hU, bevU, useFil, opts){
   const doBot = !opts || opts.bottom !== false;
   const doTop = !opts || opts.top    !== false;
-  const K=useFil?((opts&&opts.segs)||6):1, rings=[];
-  if (useFil){
-    if(doBot) for(let k=K;k>=0;k--){ const a=(k/K)*(Math.PI/2); rings.push({ins:bevU*(1-Math.cos(a)), y:bevU*(1-Math.sin(a))}); }
-    else rings.push({ins:0, y:0});
-    if(doTop) for(let k=0;k<=K;k++){ const a=(k/K)*(Math.PI/2); rings.push({ins:bevU*(1-Math.cos(a)), y:hU-bevU*(1-Math.sin(a))}); }
-    else rings.push({ins:0, y:hU});
-  } else {
-    if(doBot) rings.push({ins:bevU,y:0},{ins:0,y:bevU}); else rings.push({ins:0,y:0});
-    if(doTop) rings.push({ins:0,y:hU-bevU},{ins:bevU,y:hU}); else rings.push({ins:0,y:hU});
-  }
+  // Seit 1.18.202 oben und unten getrennt einstellbar (Art + Größe)
+  const bB = opts && opts.botU != null ? opts.botU : bevU, bT = opts && opts.topU != null ? opts.topU : bevU;
+  const fB = opts && opts.botFil != null ? opts.botFil : useFil, fT = opts && opts.topFil != null ? opts.topFil : useFil;
+  const K=(opts&&opts.segs)||6, rings=[];
+  if(doBot){ if(fB) for(let k=K;k>=0;k--){ const a=(k/K)*(Math.PI/2); rings.push({ins:bB*(1-Math.cos(a)), y:bB*(1-Math.sin(a))}); }
+             else rings.push({ins:bB,y:0},{ins:0,y:bB}); }
+  else rings.push({ins:0, y:0});
+  if(doTop){ if(fT) for(let k=0;k<=K;k++){ const a=(k/K)*(Math.PI/2); rings.push({ins:bT*(1-Math.cos(a)), y:hU-bT*(1-Math.sin(a))}); }
+             else rings.push({ins:0,y:hU-bT},{ins:bT,y:hU}); }
+  else rings.push({ins:0, y:hU});
   const P=[], I=[];
   const addV=(x,y,z)=>{ P.push(x,y,z); return P.length/3-1; };
   const loops=[];
@@ -12537,14 +12548,14 @@ function _skRoundExtrude(profiles, hU, bevU, useFil, opts){
       if(rev) I.push(a,c,b); else I.push(a,b,c);
     }
   };
-  mkCap(hU, true, doTop?bevU:0); mkCap(0, false, doBot?bevU:0);
+  mkCap(hU, true, doTop?bT:0); mkCap(0, false, doBot?bB:0);
   // Vertices verschweißen (Naht Wand↔Deckel schließen)
   const map=new Map(), remap=new Array(P.length/3), NP=[];
   for(let i=0;i<P.length/3;i++){ const k=Math.round(P[i*3]*1e4)+'_'+Math.round(P[i*3+1]*1e4)+'_'+Math.round(P[i*3+2]*1e4);
     if(map.has(k)) remap[i]=map.get(k); else { const ni=NP.length/3; NP.push(P[i*3],P[i*3+1],P[i*3+2]); map.set(k,ni); remap[i]=ni; } }
   const g=new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(NP,3)); g.setIndex(I.map(i=>remap[i]));
-  if (useFil){ g.computeVertexNormals(); g.computeBoundingBox(); return g; }
+  if (useFil || fT || fB){ g.computeVertexNormals(); g.computeBoundingBox(); return g; }
   // Fase: flache 45°-Facette. Glatte (gemittelte) Normalen würden sie zur
   // weichen Wulst verschmieren → winkelbasierte Normalen: glatt nur rund um den
   // Umfang (Kreis 7,5°/Segment), scharfe Kante an den Fasen-Übergängen (45°).
@@ -12643,10 +12654,10 @@ function _skPlace(mesh, offU){
   if (_sk.M && _sk.onFace) mesh.applyMatrix4(_sk.M);
   mesh.updateMatrixWorld(true);
 }
-function _skMakeBodyFromShapes(shapes, hmm, offU){
+function _skMakeBodyFromShapes(shapes, hmm, offU, bev){
   const profiles=shapes.map(s=>({ outer:s.outer.map(p=>({u:p.u,v:p.v})),
                                   holes:(s.holes||[]).map(h=>h.map(p=>({u:p.u,v:p.v}))) }));
-  const merged=_skBuildGeoFromProfiles(profiles, hmm, 0, 0);
+  const merged=_skGeoBev(profiles, hmm, bev);
   const color=currentColor;
   const mesh=new THREE.Mesh(merged, new THREE.MeshStandardMaterial({
     color:new THREE.Color(color), roughness:0.38, metalness:0.05, side:THREE.DoubleSide }));
@@ -12952,7 +12963,7 @@ function _featSketchMesh(f) {
   if (!shapes.length) return null;
   const [a, b] = f.ab;
   const profiles = shapes.map(s => ({ outer: s.outer, holes: s.holes || [] }));
-  const m = new THREE.Mesh(_skBuildGeoFromProfiles(profiles, (b - a) * 10, 0, 0));
+  const m = new THREE.Mesh(_skGeoBev(profiles, (b - a) * 10, f.bev));
   m.position.y = a; m.updateMatrix();
   m.applyMatrix4(new THREE.Matrix4().fromArray(f.frame)); m.updateMatrixWorld(true);
   return m;
@@ -13180,6 +13191,11 @@ function _skxInfo(r){
   if (r.op === 'isect') return r.target ? `Von ${nm} bleibt nur die <b style="color:#9333ea">Schnittmenge</b> mit der Extrusion.` : '<span style="color:#dc2626">Kein Körper berührt — keine Schnittmenge.</span>';
   return 'Erzeugt einen <b style="color:#2563eb">neuen Körper</b>.';
 }
+function _skxBev(){
+  const p = _skx.p, e = (k, mm) => (k === 'cha' || k === 'fil') && parseFloat(mm) > 0 ? { fil: k === 'fil', mm: parseFloat(mm) } : null;
+  const top = e(p.bevT, p.bevTmm), bot = e(p.bevB, p.bevBmm);
+  return top || bot ? { top, bot } : null;
+}
 function _skxUpdate(){
   if (!_skx.open) return;
   const [a, b] = _skxRange();
@@ -13187,7 +13203,7 @@ function _skxUpdate(){
   if (_skx.prev) { _sk.group.remove(_skx.prev); _skx.prev.geometry.dispose(); _skx.prev = null; }
   if (b - a > 1e-4) {
     const profiles = _skx.shapes.map(s => ({ outer: s.outer, holes: s.holes || [] }));
-    const geo = _skBuildGeoFromProfiles(profiles, (b - a) * 10, 0, 0);
+    const geo = _skGeoBev(profiles, (b - a) * 10, _skxBev());
     const col = r.op === 'cut' ? 0xef4444 : r.op === 'join' ? 0x22c55e : r.op === 'isect' ? 0xa855f7 : 0x3b82f6;
     // Abziehen liegt IM Körper → ohne Tiefentest zeichnen, sonst sieht man die Tasche nicht
     _skx.prev = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: col, transparent: true, opacity: r.op === 'cut' ? 0.55 : 0.5,
@@ -13222,6 +13238,9 @@ function _skxPanel(){
         + (end === 'face' ? `<div class="vrow"><label></label><button class="btn" onclick="_skxPickFace()" title="Die Fläche anklicken, an der die Extrusion enden soll">🎯 Fläche anklicken</button><span class="vu" style="margin-left:6px">${p.faceD != null ? String(Math.round(p.faceD * 100) / 10).replace('.', ',') + ' mm' : 'noch keine'}</span></div>` : '')
         + (end === 'next' ? `<div style="font-size:11px;color:var(--dim);margin:-2px 0 6px">${(() => { const [a, b] = _skxRange(); return b - a > 1e-4 ? 'bis zur nächsten Fläche: ' + String(Math.round((b - a) * 100) / 10).replace('.', ',') + ' mm' : '<span style="color:#dc2626">in dieser Richtung liegt keine Fläche</span>'; })()}</div>` : ''); })() : ''}
     ${p.dir === 'two' ? `<div class="vrow"><label>Seite 2</label><input id="skx-d2" type="number" step="0.5" min="0" value="${p.d2}" oninput="_skxSet('d2',this.value)" style="width:80px"><span class="vu">mm</span></div>` : ''}
+    ${['T', 'B'].map(w => `<div class="vrow"><label title="${w === 'T' ? 'Kante am oberen Ende (in Zugrichtung)' : 'Kante an der Skizzenebene bzw. am unteren Ende'}">Kante ${w === 'T' ? 'oben' : 'unten'}</label><select onchange="_skxSet('bev${w}',this.value)" style="width:96px">
+      ${[['none','keine'],['cha','Fase'],['fil','Rundung']].map(([v, l]) => `<option value="${v}"${(p['bev' + w] || 'none') === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+      ${(p['bev' + w] || 'none') !== 'none' ? `<input type="number" step="0.5" min="0.1" value="${p['bev' + w + 'mm'] || 1}" oninput="_skxSet('bev${w}mm',this.value)" style="width:58px;margin-left:4px"><span class="vu">mm</span>` : ''}</div>`).join('')}
     <div class="vrow"><label>Operation</label><select id="skx-op" onchange="_skxSet('op',this.value)" style="flex:1">
       ${[['auto','Automatisch'],['new','Neuer Körper'],['join','Anfügen'],['cut','Abziehen'],['isect','Schnittmenge']].map(([v, l]) => `<option value="${v}"${p.op === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
     <div id="skx-info" style="font-size:11.5px;margin:4px 0 10px;line-height:1.4"></div>
@@ -13232,6 +13251,7 @@ function _skxPanel(){
 }
 function _skxSet(k, v){
   if (k === 'dir' || k === 'op') { _skx.p[k] = v; _skxPanel(); }
+  else if (k === 'bevT' || k === 'bevB') { _skx.p[k] = v; if (v !== 'none' && !(parseFloat(_skx.p[k + 'mm']) > 0)) _skx.p[k + 'mm'] = 1; _skxPanel(); }
   else if (k === 'thru') { _skx.p.thru = !!v; _skx.p.end = v ? 'thru' : 'dist'; }
   else if (k === 'end') { _skx.p.end = v; _skx.p.thru = v === 'thru'; _skxPanel(); if (v === 'face' && _skx.p.faceD == null) _skxPickFace(); }
   else _skx.p[k] = String(v).replace(',', '.');
@@ -13259,7 +13279,7 @@ async function _skxApply(){
   if (r.edit) {   // gespeicherte Skizze geändert → Teil neu rechnen
     const o = r.target, k = _sk.editFeat.k, H = _featClone(o.userData.feat), f = H.list[k];
     const Cinv = _featChain(o, k).invert();
-    f.ents = ents; f.cons = cons; f.frame = Cinv.multiply(frameW).elements.slice(); f.ab = [a, b]; f.op = r.op; f.picks = picks; f.pUI = pUI;
+    f.ents = ents; f.cons = cons; f.frame = Cinv.multiply(frameW).elements.slice(); f.ab = [a, b]; f.op = r.op; f.picks = picks; f.pUI = pUI; f.bev = _skxBev();
     _skx.busy = true;
     try {
       _skxClose(true); saveUndo(); exitSketchMode();
@@ -13271,13 +13291,14 @@ async function _skxApply(){
     return;
   }
   const start = r.target ? _featStart(r.target) : null;
-  const fNeu = { typ: 'skizze', ents, cons, frame: frameW.elements.slice(), ab: [a, b], op: r.op, picks, pUI };
+  const bev = _skxBev();
+  const fNeu = { typ: 'skizze', ents, cons, frame: frameW.elements.slice(), ab: [a, b], op: r.op, picks, pUI, bev };
   _skx.busy = true;
   try {
     _skxClose(true);
     saveUndo();
     const n0 = undoStack.length;
-    const mesh = _skMakeBodyFromShapes(shapes, hmm, a);
+    const mesh = _skMakeBodyFromShapes(shapes, hmm, a, bev);
     exitSketchMode();
     if (r.op === 'new') {
       // eigener Körper: Skizzenebene im Teil-Lokalraum (Teil-Matrix = Ebene · Versatz a)
@@ -31328,7 +31349,7 @@ function _m2cNormalArea(t){
 }
 function _m2cVolume(T){ let v = 0; for (const t of T) v += t[0]*(t[4]*t[8]-t[5]*t[7]) - t[1]*(t[3]*t[8]-t[5]*t[6]) + t[2]*(t[3]*t[7]-t[4]*t[6]); return v / 6; }
 // Hauptachse: Kandidaten = große Normalen-Gruppen + Weltachsen
-function _m2cAxis(T){
+function _m2cAxis(T, alle){
   const NA = T.map(_m2cNormalArea).filter(Boolean);
   const total = NA.reduce((s, x) => s + x.a, 0) || 1;
   const cl = [];
@@ -31338,13 +31359,16 @@ function _m2cAxis(T){
   }
   const cands = cl.sort((p, q) => q.a - p.a).slice(0, 8).map(c => c.n);
   cands.push(new THREE.Vector3(0, 1, 0), new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1));
-  let best = null;
-  for (const A of cands) {
+  const norm = A => { if (A.dot(new THREE.Vector3(0, 1, 0)) < -1e-9 || (Math.abs(A.y) < 1e-9 && A.x + A.z < 0)) A.negate(); return A; };
+  const list = [];
+  for (const A0 of cands) {
+    const A = norm(A0.clone().normalize());
+    if (list.some(x => Math.abs(x.A.dot(A)) > 0.9995)) continue;
     let s = 0; for (const x of NA) { const d = Math.abs(x.n.dot(A)); if (d > 0.9998 || d < 0.02) s += x.a; }
-    if (!best || s > best.s + 1e-9) best = { A: A.clone().normalize(), s };
+    list.push({ A, score: s / total });
   }
-  if (best.A.dot(new THREE.Vector3(0, 1, 0)) < -1e-9 || (Math.abs(best.A.y) < 1e-9 && best.A.x + best.A.z < 0)) best.A.negate();
-  return { A: best.A, score: best.s / total };
+  list.sort((p, q) => q.score - p.score);
+  return alle ? list : list[0];
 }
 // Querschnitt (lokal, y = h) → geschlossene Schleifen in (u, v)
 function _m2cSection(L, h){
@@ -31445,7 +31469,7 @@ function _m2cSideHoles(T, A, tol){
   const nb = Array.from({ length: n }, () => []);
   for (const arr of edgeMap.values()) if (arr.length === 2) { nb[arr[0]].push(arr[1]); nb[arr[1]].push(arr[0]); }
   const seed = i => NA[i] && Math.abs(NA[i].n.dot(A)) > 0.02 && Math.abs(NA[i].n.dot(A)) < 0.9998;
-  const used = new Uint8Array(n), holes = [], skipped = { boss: 0, partial: 0 };
+  const used = new Uint8Array(n), holes = [], bosses = [], skipped = { boss: 0, partial: 0 };
   const smooth = (i, j) => NA[i] && NA[j] && NA[i].n.dot(NA[j].n) > Math.cos(25 * Math.PI / 180);
   for (let s = 0; s < n; s++) {
     if (used[s] || !seed(s)) continue;
@@ -31474,26 +31498,56 @@ function _m2cSideHoles(T, A, tol){
     for (const i of reg) { const c = { u: (T[i][0] + T[i][3] + T[i][6]) / 3, v: (T[i][1] + T[i][4] + T[i][7]) / 3, w: (T[i][2] + T[i][5] + T[i][8]) / 3 };
       const p = new THREE.Vector3(c.u, c.v, c.w), r2 = { u: p.dot(e1) - f.c.u, v: p.dot(e2) - f.c.v };
       inward += (NA[i].n.dot(e1) * r2.u + NA[i].n.dot(e2) * r2.v) < 0 ? 1 : -1; }
-    if (inward <= 0) { skipped.boss++; continue; }
     const axisPt = e1.clone().multiplyScalar(f.c.u).addScaledVector(e2, f.c.v);   // Punkt auf der Achse bei t = 0
+    if (inward <= 0) {
+      // Seitlicher Zapfen (1.18.202): Fuß = das Ende OHNE Deckelscheibe
+      const capAt = tt => T.some((t, i) => { if (!NA[i] || Math.abs(NA[i].n.dot(B)) < 0.9998) return false;
+        const c = new THREE.Vector3((t[0] + t[3] + t[6]) / 3, (t[1] + t[4] + t[7]) / 3, (t[2] + t[5] + t[8]) / 3);
+        return Math.abs(c.dot(B) - tt) < tol * 3 && Math.hypot(c.dot(e1) - f.c.u, c.dot(e2) - f.c.v) < f.r; });
+      const cMax = capAt(tmax), cMin = capAt(tmin);
+      if (cMax === cMin) { skipped.boss++; continue; }   // beidseitig frei/zu → unklar, bleibt Stufe
+      bosses.push({ B, axisPt, r: f.r, tmin, tmax, base: cMax ? 'min' : 'max', tris: reg });
+      continue;
+    }
     holes.push({ B, axisPt, r: f.r, tmin, tmax, tris: reg });
   }
-  return { holes, skipped };
+  return { holes, bosses, skipped };
 }
 // Analyse → Plan (ohne die Szene zu ändern)
-function _m2cAnalyse(o){
+// Mehrere Achsen probieren (1.18.202): Mit Fasen/Rundungen ist ein Teil oft auch
+// quer „fast prismatisch“ (die Rundung landet dann im Querschnitt) — entscheidend
+// ist, welche Rückführung das Original am genauesten trifft (Volumen per Manifold).
+async function _m2cAnalyse(o){
   const T = _m2cTris(o);
   if (T.length < 4) throw new Error('Kein Netz gefunden');
   const vol0 = Math.abs(_m2cVolume(T));
-  const ax = _m2cAxis(T);
+  const cands = _m2cAxis(T, true).filter((x, i) => i === 0 || x.score >= 0.7).slice(0, 3);
+  let best = null, first = null;
+  for (const ax of cands) {
+    const rep = _m2cAnalyseAxis(T, vol0, { A: ax.A.clone(), score: ax.score });
+    if (!first) first = rep;
+    if (!rep.ok) continue;
+    rep.axisV = new THREE.Vector3().fromArray(rep.axis);
+    try { rep.H = _m2cHistory(rep); rep.geo = await _featRebuild(rep.H); } catch (e) { rep.ok = false; rep.reason = 'Aufbau gescheitert: ' + (e.message || e); continue; }
+    rep.vol1 = _m2cGeoVol(rep.geo); rep.err = Math.abs(rep.vol1 - vol0) / vol0;
+    if (!best || rep.err < best.err - 0.002 || (Math.abs(rep.err - best.err) <= 0.002 && rep.score > best.score)) best = rep;
+  }
+  if (!best) return first;
+  if (best.err > 0.05) { best.ok = false; best.reason = `Die beste Rückführung weicht ${Math.round(best.err * 100)} % vom Original ab — das Teil ist zu frei geformt für Skizzen-Schritte.`; }
+  return best;
+}
+function _m2cGeoVol(geo){ const g = geo.index ? geo.toNonIndexed() : geo, P = g.attributes.position, T = [];
+  for (let i = 0; i + 2 < P.count; i += 3) T.push([P.getX(i), P.getY(i), P.getZ(i), P.getX(i+1), P.getY(i+1), P.getZ(i+1), P.getX(i+2), P.getY(i+2), P.getZ(i+2)]);
+  return Math.abs(_m2cVolume(T)); }
+function _m2cAnalyseAxis(T, vol0, ax){
   // Querbohrungen erkennen und aus Achsen-Bewertung + Höhenstufen herausnehmen
   let bb0 = new THREE.Box3(); for (const t of T) for (let k = 0; k < 3; k++) bb0.expandByPoint(new THREE.Vector3(t[k*3], t[k*3+1], t[k*3+2]));
   const tol0 = Math.max(0.002, bb0.getSize(new THREE.Vector3()).length() * 2e-4);
   const sh = _m2cSideHoles(T, ax.A, tol0);
-  const holeTri = new Uint8Array(T.length); sh.holes.forEach(h => h.tris.forEach(i => { holeTri[i] = 1; }));
-  if (sh.holes.length) { const ax2 = _m2cAxis(T.filter((t, i) => !holeTri[i])); if (ax2.A.dot(ax.A) > 0.999) ax.score = ax2.score; }
-  const rep = { tris: T.length, score: ax.score, axis: ax.A.toArray(), vol0, sideHoles: sh.holes, skipped: sh.skipped };
-  if (ax.score < 0.85) { rep.ok = false; rep.reason = `Nur ${Math.round(ax.score * 100)} % der Oberfläche liegen quer oder parallel zu einer Achse — das ist kein technisches 2,5D-Teil (eher Figur, Scan oder Freiform).`; return rep; }
+  const holeTri = new Uint8Array(T.length); [...sh.holes, ...sh.bosses].forEach(h => h.tris.forEach(i => { holeTri[i] = 1; }));
+  if (sh.holes.length || sh.bosses.length) { const ax2 = _m2cAxis(T.filter((t, i) => !holeTri[i])); if (ax2.A.dot(ax.A) > 0.999) ax.score = ax2.score; }
+  const rep = { tris: T.length, score: ax.score, axis: ax.A.toArray(), vol0, sideHoles: sh.holes, sideBosses: sh.bosses, skipped: sh.skipped };
+  if (ax.score < 0.7) { rep.ok = false; rep.reason = `Nur ${Math.round(ax.score * 100)} % der Oberfläche liegen quer oder parallel zu einer Achse — das ist kein technisches 2,5D-Teil (eher Figur, Scan oder Freiform).`; return rep; }
   const Q = _wpMakeQuat(ax.A), Qi = Q.clone().invert(), v = new THREE.Vector3();
   const L = T.map(t => { const r = []; for (let k = 0; k < 3; k++) { v.set(t[k*3], t[k*3+1], t[k*3+2]).applyQuaternion(Qi); r.push(v.x, v.y, v.z); } return r; });
   let hmin = Infinity, hmax = -Infinity, umin = Infinity, umax = -Infinity, wmin = Infinity, wmax = -Infinity;
@@ -31505,7 +31559,7 @@ function _m2cAnalyse(o){
   const lv = [hmin, hmax];
   L.forEach((t, i) => { if (holeTri[i]) return; const na = _m2cNormalArea(t); if (na && Math.abs(na.n.y) > 0.9998) lv.push((t[1] + t[4] + t[7]) / 3); });
   // Höhenbereiche der Querbohrungen (entlang A): dort nicht schneiden
-  const avoid = sh.holes.map(h => { const c = h.axisPt.clone().addScaledVector(h.B, (h.tmin + h.tmax) / 2).dot(ax.A); return [c - h.r - tol * 4, c + h.r + tol * 4]; });
+  const avoid = [...sh.holes, ...sh.bosses].map(h => { const c = h.axisPt.clone().addScaledVector(h.B, (h.tmin + h.tmax) / 2).dot(ax.A); return [c - h.r - tol * 4, c + h.r + tol * 4]; });
   lv.sort((a, b) => a - b);
   const levels = []; for (const h of lv) if (!levels.length || h - levels[levels.length - 1] > tol) levels.push(h);
   if (levels.length > 160) { rep.ok = false; rep.reason = `${levels.length} Höhenstufen — das Teil ist zu stark abgestuft/gewölbt für eine saubere Rückführung.`; return rep; }
@@ -31524,6 +31578,38 @@ function _m2cAnalyse(o){
   for (const s of slabs) { const g = groups[groups.length - 1];
     if (g && g.sig === s.sig && Math.abs(g.b - s.a) < tol) g.b = s.b; else groups.push({ ...s }); }
   if (!groups.length) { rep.ok = false; rep.reason = 'Kein geschlossener Querschnitt gefunden — ist das Netz wasserdicht?'; return rep; }
+  // Fasen/Rundungen an freien Enden (1.18.202): Einzug d(δ) = ΔFläche / mittlerer Umfang
+  const secAP = h => { const loops = _m2cSection(L, h); let A = 0, P = 0;
+    loops.forEach((lp, i) => { let a = 0, per = 0; for (let k = 0; k < lp.length; k++) { const p = lp[k], q = lp[(k + 1) % lp.length]; a += p.u * q.v - q.u * p.v; per += Math.hypot(q.u - p.u, q.v - p.v); }
+      let inside = 0; for (let j = 0; j < loops.length; j++) if (j !== i && _polyContains(loops[j], lp[0])) inside++;
+      A += (inside % 2 ? -1 : 1) * Math.abs(a / 2); P += per; });
+    return { A, P }; };
+  const pickH = (a, b) => { for (const f of [0.5, 0.4, 0.6, 0.3, 0.7]) { const h = a + (b - a) * f; if (!avoid.some(([x, y]) => h > x && h < y)) return h; } return (a + b) / 2; };
+  rep.bevels = 0;
+  for (const g of groups) {
+    const H = g.b - g.a, base = secAP(pickH(g.a, g.b));
+    if (!(base.A > 0)) continue;
+    for (const end of ['top', 'bot']) {
+      const at = end === 'top' ? g.b : g.a;
+      if (groups.some(o => o !== g && Math.abs((end === 'top' ? o.a : o.b) - at) < tol)) continue;   // Ende liegt an einer anderen Schicht
+      const S = [];
+      for (let i = 1; i <= 24; i++) { const dl = H * 0.45 * i / 24, h = end === 'top' ? g.b - dl : g.a + dl;
+        if (avoid.some(([x, y]) => h > x && h < y)) continue;
+        const s2 = secAP(h); if (!(s2.P > 0)) continue;
+        S.push({ dl, d: Math.max(0, (base.A - s2.A) / ((base.P + s2.P) / 2)) }); }
+      if (S.length < 6 || S[0].d < tol * 3) continue;
+      const k0 = S.findIndex(x => x.d < tol * 1.5); if (k0 < 2) continue;   // Einzug endet nicht innerhalb von 45 % der Höhe
+      const zone = S.slice(0, k0);
+      const fil = (r, dl) => dl >= r ? 0 : r - Math.sqrt(Math.max(0, r * r - (r - dl) * (r - dl)));
+      const err = fn => Math.sqrt(zone.reduce((q, x) => q + (x.d - fn(x.dl)) ** 2, 0) / zone.length);
+      const sC = zone.reduce((q, x) => q + x.d + x.dl, 0) / zone.length, eC = err(dl => Math.max(0, sC - dl));
+      let sF = S[k0].dl, eF = Infinity;
+      for (let t = 0.5; t <= 1.6; t += 0.01) { const r = S[k0 - 1].dl * t + 1e-9, e = err(dl => fil(r, dl)); if (e < eF) { eF = e; sF = r; } }
+      const isF = eF < eC, sz = isF ? sF : sC, e = Math.min(eF, eC);
+      if (!(sz > tol * 2) || e > Math.max(tol * 3, sz * 0.08)) continue;
+      g.bev = g.bev || {}; g.bev[end] = { fil: isF, mm: Math.round(sz * 1000) / 100 }; rep.bevels++;
+    }
+  }
   rep.ok = true; rep.Q = Q; rep.groups = groups; rep.tol = tol;
   rep.counts = { line: 0, arc: 0, circle: 0 };
   for (const g of groups) for (const e of g.ents) rep.counts[e.type]++;
@@ -31535,9 +31621,19 @@ function _m2cHistory(rep){
   rep.groups.forEach((g, k) => {
     const M = new THREE.Matrix4().compose(rep.axisV.clone().multiplyScalar(g.a), rep.Q, new THREE.Vector3(1, 1, 1));
     const ents = _featClone(g.ents); ents.forEach((e, i) => { e.id = i + 1; });
-    list.push({ typ: 'skizze', ents, cons: [], frame: M.elements.slice(), ab: [k ? -ov : 0, g.b - g.a], op: k ? 'join' : 'new', picks: null,
-      pUI: { dir: 'one', d: Math.round((g.b - g.a) * 1000) / 100, d2: 5, op: k ? 'join' : 'new', thru: false, end: 'dist' } });
+    const bv = g.bev || {}, pb = e => e ? (e.fil ? 'fil' : 'cha') : 'none';
+    list.push({ typ: 'skizze', ents, cons: [], frame: M.elements.slice(), ab: [k && !bv.bot ? -ov : 0, g.b - g.a], op: k ? 'join' : 'new', picks: null,
+      bev: g.bev ? { top: bv.top || null, bot: bv.bot || null } : null,
+      pUI: { dir: 'one', d: Math.round((g.b - g.a) * 1000) / 100, d2: 5, op: k ? 'join' : 'new', thru: false, end: 'dist',
+             bevT: pb(bv.top), bevTmm: bv.top ? bv.top.mm : 1, bevB: pb(bv.bot), bevBmm: bv.bot ? bv.bot.mm : 1 } });
   });
+  for (const h of rep.sideBosses || []) {   // seitliche Zapfen: vom Fuß aus, Fuß leicht in die Wand
+    const Qb = _wpMakeQuat(h.B), l = h.axisPt.clone().applyQuaternion(Qb.clone().invert()), ext = rep.tol * 2, len = h.tmax - h.tmin;
+    const M = new THREE.Matrix4().compose(h.B.clone().multiplyScalar(h.tmin), Qb, new THREE.Vector3(1, 1, 1));
+    list.push({ typ: 'skizze', ents: [{ type: 'circle', c: { u: l.x, v: l.z }, r: h.r, id: 1 }], cons: [], frame: M.elements.slice(),
+      ab: h.base === 'min' ? [-ext, len] : [0, len + ext], op: 'join', picks: null,
+      pUI: { dir: 'one', d: Math.round(len * 1000) / 100, d2: 5, op: 'join', thru: false, end: 'dist' } });
+  }
   for (const h of rep.sideHoles || []) {
     const Qb = _wpMakeQuat(h.B), l = h.axisPt.clone().applyQuaternion(Qb.clone().invert()), ext = rep.tol * 5;
     const M = new THREE.Matrix4().compose(h.B.clone().multiplyScalar(h.tmin), Qb, new THREE.Vector3(1, 1, 1));
@@ -31552,14 +31648,10 @@ async function meshToCad(){
   _progressShow('Mesh → CAD: Netz wird analysiert…'); _progressSet(10);
   await new Promise(r => setTimeout(r, 30));
   let rep;
-  try { rep = _m2cAnalyse(o); rep.axisV = new THREE.Vector3().fromArray(rep.axis); }
+  try { rep = await _m2cAnalyse(o); }
   catch (e) { _progressHide(); notify('Mesh → CAD nicht möglich: ' + (e.message || e), 'e'); return; }
   if (!rep.ok) { _progressHide(); _m2cReport(o, rep, null); return; }
-  _progressSet(45, 'CAD-Schritte werden aufgebaut…');
-  const H = _m2cHistory(rep);
-  let geo;
-  try { geo = await _featRebuild(H); }
-  catch (e) { _progressHide(); notify('Mesh → CAD: Aufbau gescheitert — ' + (e.message || e), 'e'); return; }
+  const H = rep.H, geo = rep.geo;
   _progressSet(90);
   saveUndo();
   const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(o.userData.color || currentColor), roughness: 0.38, metalness: 0.05, side: THREE.DoubleSide }));
@@ -31569,9 +31661,6 @@ async function meshToCad(){
   _featSet(mesh, H); _updateObjEdgeLines(mesh);
   o.visible = false;
   selectObjs([mesh]); updateTree();
-  const g2 = geo.clone(); const T2 = []; const P = g2.attributes.position;
-  for (let i = 0; i + 2 < P.count; i += 3) T2.push([P.getX(i), P.getY(i), P.getZ(i), P.getX(i+1), P.getY(i+1), P.getZ(i+1), P.getX(i+2), P.getY(i+2), P.getZ(i+2)]);
-  rep.vol1 = Math.abs(_m2cVolume(T2)); g2.dispose();
   _progressDone();
   _m2cReport(o, rep, mesh);
 }
@@ -31592,10 +31681,12 @@ function _m2cReport(o, rep, mesh){
   el.innerHTML = `<div style="display:flex;margin-bottom:6px"><b style="flex:1">⬡→▣ Mesh → CAD · fertig</b><span onclick="this.closest('#m2c-panel').remove()" style="cursor:pointer;color:var(--dim)">✕</span></div>
     <div>Aus <b>${rep.tris.toLocaleString('de-DE')}</b> Dreiecken wurden <b>${rep.groups.length}</b> Skizzen-Schritt${rep.groups.length > 1 ? 'e' : ''}:
       ${rep.counts.line} Linien, ${rep.counts.arc} Bögen, ${rep.counts.circle} Kreise${rep.sideHoles && rep.sideHoles.length ? `, dazu <b>${rep.sideHoles.length} Querbohrung${rep.sideHoles.length > 1 ? 'en' : ''}</b> (⌀ ${rep.sideHoles.map(h => String(Math.round(h.r * 200) / 10).replace('.', ',')).join(', ')} mm)` : ''}.</div>
-    ${rep.skipped && rep.skipped.boss ? `<div style="margin-top:4px;color:#b45309">${rep.skipped.boss} seitliche${rep.skipped.boss > 1 ? '' : 'r'} Zapfen noch nicht übernommen (als Stufe angenähert).</div>` : ''}
+    ${rep.sideBosses && rep.sideBosses.length ? `<div style="margin-top:4px">Seitliche Zapfen: <b>${rep.sideBosses.length}</b> (⌀ ${rep.sideBosses.map(h => String(Math.round(h.r * 200) / 10).replace('.', ',')).join(', ')} mm) als „Anfügen“.</div>` : ''}
+    ${rep.bevels ? `<div style="margin-top:4px">Kanten: <b>${rep.bevels}</b> Fase${rep.bevels > 1 ? 'n' : ''}/Rundung${rep.bevels > 1 ? 'en' : ''} als echte Kantenoperation (${rep.groups.flatMap(g => ['top', 'bot'].filter(e => g.bev && g.bev[e]).map(e => (g.bev[e].fil ? 'R' : 'Fase ') + String(g.bev[e].mm).replace('.', ',') + ' ' + (e === 'top' ? 'oben' : 'unten'))).join(', ')}) — im Verlauf unter „Kante oben/unten“ änderbar.</div>` : ''}
+    ${rep.skipped && rep.skipped.boss ? `<div style="margin-top:4px;color:#b45309">${rep.skipped.boss} seitliche Form${rep.skipped.boss > 1 ? 'en' : ''} nicht eindeutig (als Stufe angenähert).</div>` : ''}
     <div style="margin-top:4px">Achse ${rep.axis.map(x => (Math.round(x * 100) / 100)).join(' / ')} · ${Math.round(rep.score * 100)} % der Fläche prismatisch</div>
     ${dv != null ? `<div style="margin-top:4px">Volumen: Original ${mm3(rep.vol0)} mm³ → CAD ${mm3(rep.vol1)} mm³ (<b style="color:${Math.abs(dv) < 0.5 ? '#16a34a' : Math.abs(dv) < 3 ? '#b45309' : '#dc2626'}">${dv >= 0 ? '+' : ''}${dv.toFixed(2).replace('.', ',')} %</b>)</div>` : ''}
-    ${rep.score < 0.98 ? '<div style="margin-top:4px;color:#b45309">Schrägen oder Rundungen an Deckkanten sind als Stufen angenähert.</div>' : ''}
+    ${rep.score < 0.98 && !rep.bevels ? '<div style="margin-top:4px;color:#b45309">Schrägen oder Rundungen an Deckkanten sind als Stufen angenähert.</div>' : ''}
     <div style="margin-top:8px;color:var(--dim)">Das Original ist ausgeblendet (im Baum wieder einblendbar). Im Verlauf des neuen Teils jede Skizze öffnen, bemaßen und ändern — das Teil rechnet sich neu.</div>`;
 }
 
@@ -65571,8 +65662,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.201';
+const VOLME3D_VERSION = '1.18.202';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.202', date:'2026-10-19', changes:[
+    ['▣','<b>Mesh → CAD erkennt Fasen, Rundungen und seitliche Zapfen.</b> Gerundete oder gefaste Deckkanten werden nicht mehr als Treppe angenähert. Sie landen als echte Kantenoperation mit gemessener Größe im Verlauf (z. B. „R 2 oben, Fase 1 unten“). Zapfen, die seitlich aus einer Wand ragen, kommen als eigener Schritt „Anfügen“ dazu. Sind mehrere Richtungen denkbar, rechnet V3D CAD alle durch und nimmt die, die das Original am genauesten trifft.'],
+    ['⬆','<b>Extrudieren: Kante oben/unten.</b> Im Extrudieren-Fenster lässt sich jetzt für das obere und das untere Ende getrennt eine <b>Fase</b> oder <b>Rundung</b> mit Größe in mm einstellen. Das wird mit im Verlauf gespeichert und ist nachträglich änderbar.'],
+  ]},
   { version:'1.18.201', date:'2026-10-19', changes:[
     ['⤧','<b>Loft entlang Pfad.</b> Im Loft nach den Profilflächen <b>⤳ Pfad</b> drücken und eine Kante oder einen Kantenzug anklicken (Shift = weitere anhängen). Der Übergang folgt dann dieser Kurve statt der geraden Verbindung, z. B. ein Rohrbogen, der von rund auf eckig wechselt, oder ein geschwungener Griff. Die Profile werden ohne Verdrehen mitgeführt; der Pfad wird mit dem Teil gespeichert.'],
   ]},
