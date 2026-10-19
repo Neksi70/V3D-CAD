@@ -1436,7 +1436,7 @@ const firebaseConfig = {
         <div class="sli-item" onclick="_svgImportOpen()" title="SVG-Datei laden — als Körper extrudieren, flach einfügen oder als Skizze bearbeiten">⬆ SVG importieren</div>
         <div class="sli-item" onclick="_localSave()" title="Design lokal speichern (Strg+S)" id="btn-local-save">💾 Speichern</div>
         <div class="sli-item" onclick="_localSaveAs()" title="Unter neuem Namen speichern">💾 Speichern unter …</div>
-        <div class="sli-item" onclick="_bakOpen()" title="Automatische Sicherungen des aktuellen Designs — ältere Stände der letzten Arbeitsstunde wiederherstellen">🛟 Sicherungen</div>
+        <div class="sli-item" onclick="_bakOpen()" title="Versionsverlauf des aktuellen Designs: ältere Stände (bis 30 Tage) wiederherstellen oder als Kopie öffnen, wichtige Stände mit Namen festhalten">🕘 Versionen</div>
         <div class="sli-sep"></div>
         <div class="bm-sec">Lernen &amp; Hilfe</div>
         <div class="sli-item" onclick="_hlfOpen()" title="Alle Funktionen zum Nachschlagen (F1)">📖 Hilfe (F1)</div>
@@ -38327,7 +38327,21 @@ function _tabClose(id) {
 // Schutz gegen „guten Stand mit kaputtem überschrieben": Autosave legt
 // zusätzlich zeitlich gestaffelte Snapshots ab (frühestens alle 5 min,
 // max. 5 pro Design). Wiederherstellen: Burger-Menü → 🛟 Sicherungen.
-const _BAK_MAX = 5, _BAK_MIN_GAP = 5 * 60 * 1000;
+// Versionsverlauf (seit 1.18.207): statt der letzten 5 Stände wird ausgedünnt —
+// letzte Stunde alle (≥ 5 min Abstand), dann einer pro Stunde (24 h), dann einer
+// pro Tag (30 Tage). Festgehaltene Versionen (📌, mit Namen) bleiben immer.
+const _BAK_MAX = 90, _BAK_MIN_GAP = 5 * 60 * 1000;
+function _bakThin(list){
+  const now = Date.now(), seen = new Set(), out = []; let n = 0;
+  for (const b of list) {
+    if (b.pinned) { out.push(b); continue; }
+    const age = now - b.ts;
+    const key = age < 3600e3 ? 'm' + b.ts : age < 86400e3 ? 'h' + Math.floor(b.ts / 3600e3) : age < 30 * 86400e3 ? 'd' + Math.floor(b.ts / 86400e3) : null;
+    if (!key || seen.has(key)) continue;
+    seen.add(key); if (++n <= _BAK_MAX) out.push(b);
+  }
+  return out;
+}
 
 function _bakDb(){ return new Promise((res, rej) => {
   const r = indexedDB.open('volme3d-backups', 1);
@@ -38353,47 +38367,81 @@ async function _bakWrite(id, list){
   });
 }
 
-async function _bakSnapshot(id, data, force){
+async function _bakSnapshot(id, data, force, extra){
   try {
-    const list = await _bakList(id);
-    const now = Date.now();
-    if (!force && list.length && now - list[0].ts < _BAK_MIN_GAP) return;
+    let list = await _bakList(id);
+    const now = Date.now(), newest = list.find(b => !b.pinned) || null;
+    if (!force && newest && now - newest.ts < _BAK_MIN_GAP) return;
     const json = JSON.stringify(data);
-    if (list.length && list[0].json === json) return;   // unverändert → kein neues Backup
-    list.unshift({ ts: now, json, n: (data.objects || []).length });
-    while (list.length > _BAK_MAX) list.pop();
-    await _bakWrite(id, list);
+    if (list.length && list[0].json === json) {   // unverändert → kein neuer Stand (höchstens festhalten)
+      if (extra && extra.pinned) { list[0].pinned = true; list[0].name = extra.name || list[0].name || ''; await _bakWrite(id, list); }
+      return;
+    }
+    list.unshift({ ts: now, json, n: (data.objects || []).length, thumb: (extra && extra.thumb) || null, name: (extra && extra.name) || '', pinned: !!(extra && extra.pinned) });
+    list.sort((a, b) => b.ts - a.ts);
+    await _bakWrite(id, _bakThin(list));
   } catch(e){ console.warn('[backup]', e); }
 }
 
 let _bakPanel = null;
 function _bakClose(){ if (_bakPanel){ _bakPanel.remove(); _bakPanel = null; } }
 
-async function _bakOpen(){
+async function _bakOpen(keep){
   document.getElementById('burger-menu')?.classList.remove('show');
-  if (_bakPanel){ _bakClose(); return; }
-  if (!currentDesignId){ notify('Kein Design offen — Sicherungen entstehen automatisch beim Arbeiten', 'w'); return; }
+  if (_bakPanel && !keep){ _bakClose(); return; }
+  if (!currentDesignId){ notify('Kein Design offen — Versionen entstehen automatisch beim Arbeiten', 'w'); return; }
   const list = await _bakList(currentDesignId);
+  if (_bakPanel) _bakPanel.remove();
   const p = document.createElement('div');
   p.id = 'bak-panel';
-  p.style.cssText = 'position:fixed;top:70px;left:50%;transform:translateX(-50%);width:340px;z-index:6000;' +
+  p.style.cssText = 'position:fixed;top:70px;left:50%;transform:translateX(-50%);width:440px;max-height:78vh;overflow-y:auto;z-index:6000;' +
     'background:#1f2329;border:1px solid #3a3f47;border-radius:9px;padding:14px 16px;' +
     'color:#e6e8eb;font:12px/1.4 system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.45)';
-  let h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
-    '<b style="font-size:13px">🛟 Sicherungen — ' + (dsGetMeta(currentDesignId)?.name || 'Design') + '</b>' +
-    '<span onclick="_bakClose()" style="cursor:pointer;color:#9aa0a8;font-size:16px;line-height:1">✕</span></div>';
-  if (!list.length){
-    h += '<div style="color:#9aa0a8">Noch keine Sicherungen — sie entstehen automatisch beim Arbeiten (alle ~5 Minuten ein Stand, die letzten ' + _BAK_MAX + ' bleiben erhalten).</div>';
-  } else {
-    h += '<div style="color:#9aa0a8;margin-bottom:8px">Ältere Stände dieses Designs. Vor dem Wiederherstellen wird der aktuelle Stand selbst gesichert.</div>' +
-      list.map((b, i) =>
-        '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid #2a2f37">' +
-        '<span style="flex:1">' + _fmtDate(b.ts) + ' <span style="color:#9aa0a8">· ' + b.n + ' Objekt(e)</span></span>' +
-        '<button onclick="_bakRestore(' + i + ')" style="background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:4px 10px;cursor:pointer">↩ Wiederherstellen</button></div>').join('');
-  }
+  const btn = (on, t, tip) => `<button onclick="${on}" title="${tip}" style="background:#2a2f37;border:1px solid #3a3f47;border-radius:6px;color:#e6e8eb;padding:3px 8px;cursor:pointer">${t}</button>`;
+  let h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+    '<b style="font-size:13px">🕘 Versionen — ' + (dsGetMeta(currentDesignId)?.name || 'Design') + '</b>' +
+    '<span onclick="_bakClose()" style="cursor:pointer;color:#9aa0a8;font-size:16px;line-height:1">✕</span></div>' +
+    '<div style="color:#9aa0a8;margin-bottom:8px">Automatisch beim Arbeiten: die letzte Stunde alle 5 Minuten, dann ein Stand pro Stunde (1 Tag) und pro Tag (30 Tage). 📌 Festgehaltene Versionen bleiben immer.</div>' +
+    '<div style="margin-bottom:10px">' + btn('_bakPinNow()', '📌 Aktuellen Stand festhalten…', 'Den jetzigen Stand mit Namen als Version sichern — wird nie automatisch gelöscht') + '</div>';
+  if (!list.length) h += '<div style="color:#9aa0a8">Noch keine Versionen — sie entstehen automatisch beim Arbeiten.</div>';
+  else h += list.map((b, i) =>
+    '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid #2a2f37">' +
+    (b.thumb ? `<img src="${b.thumb}" style="width:64px;height:48px;object-fit:cover;border-radius:4px;background:#fff">` : '<div style="width:64px;height:48px;border-radius:4px;background:#2a2f37"></div>') +
+    '<span style="flex:1">' + (b.pinned ? '📌 <b>' + (b.name ? String(b.name).replace(/</g, '&lt;') : 'Version') + '</b><br>' : '') + _fmtDate(b.ts) + ' <span style="color:#9aa0a8">· ' + b.n + ' Objekt(e)</span></span>' +
+    btn(`_bakRestore(${i})`, '↩', 'Diesen Stand wiederherstellen (der aktuelle wird vorher gesichert)') +
+    btn(`_bakCopy(${i})`, '⧉', 'Als Kopie öffnen — eigenes Design, dieses bleibt unverändert') +
+    btn(`_bakPin(${i})`, b.pinned ? '📍' : '📌', b.pinned ? 'Nicht mehr festhalten (wird dann wieder ausgedünnt)' : 'Festhalten mit Namen') +
+    btn(`_bakDel(${i})`, '🗑', 'Version löschen') + '</div>').join('');
   p.innerHTML = h;
   document.body.appendChild(p);
   _bakPanel = p;
+}
+async function _bakPinNow(){
+  if (!currentDesignId) { _doAutoSave(); if (!currentDesignId) return; }
+  const name = prompt('Name für diese Version (z. B. „vor dem Umbau“):', ''); if (name === null) return;
+  await _bakSnapshot(currentDesignId, _sceneSnapshot(), true, { pinned: true, name: name.trim(), thumb: captureThumbnail() });
+  notify('📌 Version „' + (name.trim() || 'ohne Namen') + '“ festgehalten', 'ok');
+  _bakOpen(true);
+}
+async function _bakPin(i){
+  const list = await _bakList(currentDesignId), b = list[i]; if (!b) return;
+  if (b.pinned) { b.pinned = false; }
+  else { const name = prompt('Name für diese Version:', b.name || ''); if (name === null) return; b.pinned = true; b.name = name.trim(); }
+  await _bakWrite(currentDesignId, list); _bakOpen(true);
+}
+async function _bakDel(i){
+  const list = await _bakList(currentDesignId), b = list[i]; if (!b) return;
+  if (!confirm('Version vom ' + _fmtDate(b.ts) + (b.name ? ' („' + b.name + '“)' : '') + ' löschen?')) return;
+  list.splice(i, 1); await _bakWrite(currentDesignId, list); _bakOpen(true);
+}
+async function _bakCopy(i){
+  const list = await _bakList(currentDesignId), b = list[i]; if (!b) return;
+  let data; try { data = JSON.parse(b.json); } catch { notify('Version ist beschädigt', 'e'); return; }
+  const id = dsNewId(), name = (dsGetMeta(currentDesignId)?.name || 'Design') + ' · Stand ' + _fmtDate(b.ts);
+  dsSaveDesign(id, data, b.thumb || '', name, true);
+  _bakClose();
+  loadDesign(id);
+  notify('Als Kopie geöffnet: „' + name + '“ — das Original bleibt unverändert', 'ok');
 }
 
 async function _bakRestore(i){
@@ -38455,8 +38503,9 @@ function _doAutoSave() {
     const meta = dsGetMeta(currentDesignId);
     const name = meta?.name || _randomDesignName();
     const snap = _sceneSnapshot();
-    dsSaveDesign(currentDesignId, snap, captureThumbnail(), name, true);  // still: kein Nag-Popup
-    _bakSnapshot(currentDesignId, snap);   // async, fire & forget
+    const thumb = captureThumbnail();
+    dsSaveDesign(currentDesignId, snap, thumb, name, true);  // still: kein Nag-Popup
+    _bakSnapshot(currentDesignId, snap, false, { thumb });   // async, fire & forget
     _updateDesignLabel(name);
     _flashSaveDot();
     _autoSaveSigLast = sig; _autoSaveLastT = now;   // erst nach geglücktem Speichern merken
@@ -65932,8 +65981,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.206';
+const VOLME3D_VERSION = '1.18.207';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.207', date:'2026-10-19', changes:[
+    ['🕘','<b>Versionsverlauf statt nur 5 Sicherungen.</b> Menü → <b>🕘 Versionen</b>. V3D CAD hebt jetzt ältere Stände viel länger auf: die letzte Stunde alle 5 Minuten, dann einen pro Stunde (einen Tag lang) und einen pro Tag (30 Tage), jeweils mit Vorschaubild. <b>📌 Aktuellen Stand festhalten…</b> sichert einen Stand mit Namen (z. B. „vor dem Umbau“), der nie automatisch gelöscht wird. Jeder Stand lässt sich <b>wiederherstellen</b> (der aktuelle wird vorher gesichert) oder <b>als Kopie öffnen</b>; dann bleibt das Original unverändert.'],
+  ]},
   { version:'1.18.206', date:'2026-10-19', changes:[
     ['∥','<b>Skizze: Fang parallel und senkrecht zu vorhandenen Linien.</b> Zeichnest du eine Linie fast parallel (oder im rechten Winkel) zu einer schon vorhandenen, rastet sie genau ein. Am Zeiger steht „∥ parallel“ bzw. „⟂ senkrecht zur Linie“, und die Bezugslinie leuchtet orange. Die passende Abhängigkeit wird gleich mit angelegt, so bleibt die Richtung auch beim späteren Ziehen erhalten. Gilt bei eingeschaltetem Ortho-Fang (O).'],
   ]},
@@ -76937,7 +76989,7 @@ const CMDK = [
   {i:'✨',g:'Seite',t:'Generatoren-Seite (alle Generatoren groß)',k:'generatoren generator vorlagen katalog seite alle uebersicht',run:()=>_genPageOpen()},
   {i:'⇄',g:'Ansicht',t:'Arbeitsweise Beginner / Advanced umschalten',k:'beginner advanced modus profi einsteiger fusion onshape tinkercad browser arbeitsweise oberflaeche',run:()=>_advSet(_advMode === 'advanced' ? 'beginner' : 'advanced')},
   {i:'◪',g:'Ansicht',t:'Schnittansicht (Modell aufschneiden)',k:'schnitt section querschnitt clipping wandstaerke innen',run:()=>sectionTool()},
-  {i:'🛟',g:'Datei',t:'Sicherungen (ältere Stände)',k:'backup sicherung wiederherstellen restore version',run:()=>_bakOpen()},
+  {i:'🕘',g:'Datei',t:'Versionen (Verlauf, festhalten, wiederherstellen)',k:'backup sicherung wiederherstellen restore version versionen verlauf historie festhalten kopie',run:()=>_bakOpen()},
   {i:'📱',g:'Ansicht',t:'Ansehen-Modus (mobil)',k:'mobile view vorschau',run:()=>_mviewToggle()},
 ];
 let _cmdkSel=0, _cmdkRes=[];

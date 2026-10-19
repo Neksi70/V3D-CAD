@@ -10,6 +10,10 @@ window.V3D_HILFE_BEREICHE = [
 ];
 window.V3D_HILFE = [
   // ── Erste Schritte ─────────────────────────────────────────────────────
+  { b: 'Erste Schritte', i: '🕘', t: 'Versionen (ältere Stände)', k: 'versionen verlauf backup sicherung wiederherstellen festhalten kopie historie alter stand',
+    was: 'V3D CAD hebt ältere Stände deines Designs automatisch auf (bis 30 Tage) und du kannst wichtige Stände mit Namen festhalten.',
+    wo: 'Menü (☰) → „🕘 Versionen“, oder Suche „Versionen“.',
+    s: ['<b>📌 Aktuellen Stand festhalten…</b>: Namen eingeben. Diese Version bleibt immer.', '<b>↩</b> stellt einen Stand wieder her (der aktuelle wird vorher gesichert).', '<b>⧉</b> öffnet einen Stand als eigenes Design, das Original bleibt unverändert.', 'Automatisch: die letzte Stunde alle 5 Minuten, dann stündlich (1 Tag) und täglich (30 Tage).'], run: '_bakOpen()' },
   { b: 'Erste Schritte', i: '🎓', t: 'Interaktive Anleitungen', k: 'anleitung tutorial lernen schritt für schritt übung becher halter einstieg kurs',
     was: 'Baue ein Modell Schritt für Schritt direkt im Programm nach. Jeder Schritt wird geprüft, dann geht es von allein weiter.',
     wo: 'Hier: „▶ Jetzt öffnen“, oder Suche „Anleitung“.',
