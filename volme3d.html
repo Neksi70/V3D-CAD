@@ -1773,6 +1773,7 @@ const firebaseConfig = {
     <div class="sli-item" id="ctx-folgen">⤳ Folgen (Profil entlang Kanten)</div>
     <div class="sli-item" id="ctx-m2c">▣ Mesh → CAD (STL bearbeitbar machen)</div>
     <div class="sli-item" id="ctx-heal">🩹 Fläche löschen und heilen</div>
+    <div class="sli-item" id="ctx-ssf">∿ Spline auf der Fläche</div>
   </div>
   <div id="pp-bar" style="display:none;position:fixed;bottom:56px;left:50%;transform:translateX(-50%);background:rgba(24,24,32,0.93);border:1px solid #444;border-radius:8px;padding:7px 12px;align-items:center;gap:10px;z-index:8500;font-size:12px;color:#ccc;white-space:nowrap">
     <span id="pp-status" style="font-weight:700;color:#aaa">Fläche anklicken</span>
@@ -32329,6 +32330,125 @@ function _m2cReport(o, rep, mesh){
     <div style="margin-top:8px;color:var(--dim)">Das Original ist ausgeblendet (im Baum wieder einblendbar). Im Verlauf des neuen Teils jede Skizze öffnen, bemaßen und ändern — das Teil rechnet sich neu.</div>`;
 }
 
+// ═══ SPLINE AUF DER FLÄCHE (1.18.213) ════════════════════════════════════════
+// Idee aus dem ShapeAnywhere-Abgleich, eigener Code. Punkte direkt auf ein Modell
+// klicken (auch gewölbt); die Kurve (Catmull-Rom) wird Stück für Stück auf die
+// Oberfläche projiziert. Daraus eine Nut oder ein Steg, deren Querschnitt überall
+// auf der Oberflächen-Normalen steht (nicht nur auf einer Ebene wie „Prägen“).
+const _ssf = { active: false, pts: [], nrm: [], body: null, closed: false, grp: null, p: { mode: 'cut', prof: 'v', w: 1.5, d: 0.8 } };
+function enterSplineOnSurface(){
+  if (_ssf.active) { _ssfExit(); return; }
+  if (_sk.active) exitSketchMode(); if (_pp.active) exitPushPull(); if (_flg.active) _flgExit(); if (_pm.active) _pmExit(); if (_heal.active) _healExit();
+  Object.assign(_ssf, { active: true, pts: [], nrm: [], body: null, closed: false });
+  _ssf.grp = new THREE.Group(); scene.add(_ssf.grp); deselect(); canvas.style.cursor = 'crosshair';
+  _ssfPanel();
+  notify('Spline auf der Fläche: Punkte auf das Modell klicken (Startpunkt erneut = geschlossen, Rücktaste = letzten weg, Enter = fertig)', 'ok');
+}
+function _ssfExit(){
+  if (!_ssf.active) return; _ssf.active = false;
+  if (_ssf.grp) { scene.remove(_ssf.grp); _ssf.grp.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); }); _ssf.grp = null; }
+  const el = document.getElementById('ssf-panel'); if (el) el.remove(); canvas.style.cursor = '';
+}
+function _ssfAdd(hit){
+  const o = objects.find(x => x === hit.object || x.getObjectById(hit.object.id)); if (!o) return;
+  if (_ssf.body && o !== _ssf.body) { notify('Alle Punkte müssen auf demselben Körper liegen', 'w'); return; }
+  _ssf.body = o;
+  const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+  if (_ssf.pts.length >= 3 && hit.point.distanceTo(_ssf.pts[0]) < Math.max(0.05, sph.r * 0.01)) { _ssf.closed = true; notify('Kurve geschlossen — Enter oder „✓ Anwenden“', 'ok'); }
+  else { _ssf.pts.push(hit.point.clone()); _ssf.nrm.push(n); }
+  _ssfDraw(); _ssfPanel();
+}
+function _ssfClick(e){
+  const hit = pickObjects(e).find(h => h.object.isMesh && h.face && !h.object.userData.isEdgeLines && objects.some(o => o === h.object || o.getObjectById(h.object.id)));
+  if (!hit) { notify('Auf einen Körper klicken', 'w'); return; }
+  _ssfAdd(hit);
+}
+// Kurve auf die Oberfläche: Abtastpunkte + Normalen
+function _ssfSample(){
+  const P = _ssf.pts, n = P.length; if (n < 2 || !_ssf.body) return null;
+  const curve = new THREE.CatmullRomCurve3(P.map(p => p.clone()), _ssf.closed, 'centripetal');
+  const L = curve.getLength(), N = Math.max(24, Math.min(1500, Math.round(L / 0.02)));
+  const body = _ssf.body, mats = [];
+  body.traverse(m => { if (m.isMesh && m.material && !Array.isArray(m.material)) { mats.push([m, m.material.side]); m.material.side = THREE.DoubleSide; } });
+  const rc = new THREE.Raycaster(), out = [], nrm = [];
+  try {
+    for (let i = 0; i <= N; i++) {
+      if (_ssf.closed && i === N) break;
+      const t = i / N, q = curve.getPointAt(t), seg = t * (_ssf.closed ? n : n - 1), a = Math.floor(seg) % n, b2 = Math.min(_ssf.closed ? (a + 1) % n : n - 1, a + 1), f = seg - Math.floor(seg);
+      const nE = _ssf.nrm[a].clone().lerp(_ssf.nrm[b2 % n], f).normalize(), off = Math.max(0.05, L * 0.05);
+      rc.set(q.clone().addScaledVector(nE, off), nE.clone().negate()); rc.far = off * 2.5;
+      let h = rc.intersectObject(body, true).find(x => x.face && !x.object.userData.isEdgeLines);
+      if (!h) { rc.set(q.clone().addScaledVector(nE, -off), nE.clone()); h = rc.intersectObject(body, true).find(x => x.face && !x.object.userData.isEdgeLines); }
+      if (h) { out.push(h.point.clone()); let fn = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize(); if (fn.dot(nE) < 0) fn.negate(); nrm.push(fn); }
+      else { out.push(q); nrm.push(nE); }
+    }
+  } finally { mats.forEach(([m, s]) => { m.material.side = s; }); }
+  // Normalen glätten (Facetten-Sprünge)
+  const sm = nrm.map((v, i) => { const a = nrm[Math.max(0, i - 1)], c = nrm[Math.min(nrm.length - 1, i + 1)]; return v.clone().add(a).add(c).normalize(); });
+  return { P: out, N: sm };
+}
+function _ssfDraw(){
+  _ssf.grp.children.slice().forEach(c => { _ssf.grp.remove(c); c.geometry.dispose(); c.material.dispose(); });
+  for (const p of _ssf.pts) { const d = new THREE.Mesh(new THREE.SphereGeometry(Math.max(0.03, sph.r * 0.004), 10, 8), new THREE.MeshBasicMaterial({ color: 0x7c3aed, depthTest: false }));
+    d.position.copy(p); d.renderOrder = 999; _ssf.grp.add(d); }
+  const S = _ssfSample();
+  if (S) { const pts = S.P.map((p, i) => p.clone().addScaledVector(S.N[i], 0.004)); if (_ssf.closed) pts.push(pts[0].clone());
+    const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0xf97316, depthTest: false })); l.renderOrder = 998; _ssf.grp.add(l); }
+}
+function _ssfUndo(){ if (_ssf.closed) _ssf.closed = false; else { _ssf.pts.pop(); _ssf.nrm.pop(); } if (!_ssf.pts.length) _ssf.body = null; _ssfDraw(); _ssfPanel(); }
+function _ssfPanel(){
+  let el = document.getElementById('ssf-panel');
+  if (!el) { el = document.createElement('div'); el.id = 'ssf-panel';
+    el.style.cssText = 'position:fixed;right:232px;bottom:64px;width:276px;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+    el.addEventListener('keydown', e => e.stopPropagation()); document.body.appendChild(el); }
+  const p = _ssf.p, tb = (k, on, v, t) => `<button class="vtb${on ? ' on' : ''}" onclick="_ssfSet('${k}','${v}')">${t}</button>`;
+  el.innerHTML = `<div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">∿ Spline auf der Fläche</b><span onclick="_ssfExit()" style="cursor:pointer;color:var(--dim);font-size:15px">✕</span></div>
+    <div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:5px 8px;margin-bottom:8px">${_ssf.pts.length} Punkt${_ssf.pts.length === 1 ? '' : 'e'}${_ssf.closed ? ' · geschlossen' : ''}${_ssf.body ? ' auf „' + (_ssf.body.userData.name || 'Körper') + '“' : ' — auf das Modell klicken'}</div>
+    <div class="vrow"><label>Art</label><div class="vbg" style="flex:1">${tb('mode', p.mode === 'cut', 'cut', 'Nut')}${tb('mode', p.mode === 'join', 'join', 'Steg')}</div></div>
+    <div class="vrow"><label>Profil</label><div class="vbg" style="flex:1">${tb('prof', p.prof === 'v', 'v', 'V')}${tb('prof', p.prof === 'r', 'r', 'Rund')}${tb('prof', p.prof === 'q', 'q', 'Rechteck')}</div></div>
+    <div class="vrow"><label>Breite</label><input type="number" step="0.5" min="0.1" value="${p.w}" oninput="_ssfSet('w',this.value)" style="width:70px"><span class="vu">mm</span></div>
+    <div class="vrow"><label>${p.mode === 'cut' ? 'Tiefe' : 'Höhe'}</label><input type="number" step="0.5" min="0.1" value="${p.d}" oninput="_ssfSet('d',this.value)" style="width:70px"><span class="vu">mm</span></div>
+    <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px"><button class="btn" onclick="_ssfUndo()" title="Letzten Punkt entfernen (Rücktaste)">← Punkt</button><button class="btn pri" onclick="_ssfApply()">✓ Anwenden</button></div>`;
+}
+function _ssfSet(k, v){ if (k === 'mode' || k === 'prof') { _ssf.p[k] = v; _ssfPanel(); } else _ssf.p[k] = parseFloat(String(v).replace(',', '.')) || 0; }
+// Schlauch entlang P mit Oberflächen-Normalen N: Querschnitt (Seite, Normale)
+function _ssfSweepGeo(prof2D, P, N, closed){
+  const M = P.length, K = prof2D.length, pos = [], idx = [];
+  for (let i = 0; i < M; i++) {
+    const a = P[closed ? (i - 1 + M) % M : Math.max(0, i - 1)], c = P[closed ? (i + 1) % M : Math.min(M - 1, i + 1)];
+    const t = c.clone().sub(a).normalize(), n = N[i].clone().addScaledVector(t, -N[i].dot(t)).normalize(), s = new THREE.Vector3().crossVectors(t, n);
+    for (const [u, h] of prof2D) { const q = P[i].clone().addScaledVector(s, u).addScaledVector(n, h); pos.push(q.x, q.y, q.z); }
+  }
+  const segs = closed ? M : M - 1;
+  for (let i = 0; i < segs; i++) { const i2 = (i + 1) % M; for (let k = 0; k < K; k++) { const k2 = (k + 1) % K, a = i * K + k, b = i * K + k2, c = i2 * K + k2, d = i2 * K + k; idx.push(a, b, c, a, c, d); } }
+  if (!closed) for (const [ring, flip] of [[0, true], [M - 1, false]]) for (let k = 1; k < K - 1; k++) { const a = ring * K, b = ring * K + k, c = ring * K + k + 1; if (flip) idx.push(a, c, b); else idx.push(a, b, c); }
+  let vol = 0; for (let t = 0; t < idx.length; t += 3) { const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
+    vol += pos[a] * (pos[b + 1] * pos[c + 2] - pos[b + 2] * pos[c + 1]) - pos[a + 1] * (pos[b] * pos[c + 2] - pos[b + 2] * pos[c]) + pos[a + 2] * (pos[b] * pos[c + 1] - pos[b + 1] * pos[c]); }
+  if (vol < 0) for (let t = 0; t < idx.length; t += 3) { const x = idx[t + 1]; idx[t + 1] = idx[t + 2]; idx[t + 2] = x; }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); return g.toNonIndexed();
+}
+async function _ssfApply(){
+  const S = _ssfSample(); if (!S || S.P.length < 2) { notify('Mindestens zwei Punkte auf das Modell klicken', 'w'); return; }
+  const p = { ..._ssf.p }, body = _ssf.body, closed = _ssf.closed;
+  if (!(p.w > 0 && p.d > 0)) { notify('Breite und Tiefe größer 0', 'w'); return; }
+  const prof = _embProfile2D(p.prof, p.w / 10, p.d / 10, p.mode);
+  const tool = _ssfSweepGeo(prof, S.P, S.N, closed);
+  _ssfExit();
+  try {
+    const w = await _mfInit(), Mf = w.Manifold;
+    const a = _mfUnionObjs(w, [body]), tm = new THREE.Mesh(tool); tm.updateMatrixWorld(true); const b = _mfUnionObjs(w, [tm]);
+    const res = p.mode === 'cut' ? Mf.difference(a, b) : Mf.union(a, b);
+    if (res.isEmpty()) throw new Error('Ergebnis leer');
+    const geo = _mfToGeo(res).toNonIndexed(); geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1); _moldNormals(geo);
+    saveUndo();
+    body.geometry.dispose(); body.geometry = geo; body.position.set(0, 0, 0); body.quaternion.identity(); body.scale.set(1, 1, 1); body.updateMatrixWorld(true);
+    const ud = body.userData; ud.type = 'custom'; ud.shapeType = 'custom';
+    ['occtShape', '_occtParams', 'edgeBevels', '_dynamicEdges', '_origGeo', '_origStlBuf', 'wasBox', 'feat', '_skProfiles', '_skProfilesFull'].forEach(k => delete ud[k]);
+    _updateObjEdgeLines(body); selectObjs([body]); updateTree();
+    notify(`∿ ${p.mode === 'cut' ? 'Nut' : 'Steg'} entlang der Kurve auf der Fläche ✓`, 'ok');
+  } catch (err) { notify('Nicht möglich: ' + (err.message || err), 'e'); }
+}
+
 // ═══ FLÄCHE LÖSCHEN UND HEILEN (1.18.212) ═══════════════════════════════════
 // Idee aus dem ShapeAnywhere-Abgleich (Radierer mit CAD-Healing), eigener Code.
 // Angeklickte Fläche erkennen und so entfernen, dass das Teil wieder geschlossen
@@ -33729,6 +33849,7 @@ canvas.addEventListener('mousedown', e => {
   if (_flg.active) { _flgClick(e); return; }
   if (_pm.active) { _pmClick(e); return; }
   if (_heal.active) { _healClick(e); return; }
+  if (_ssf.active) { _ssfClick(e); return; }
   if (_lf.active) {
     if (_lf.pathPick) { _lfPathClick(e); return; }
     const hits = pickObjects(e);
@@ -34067,6 +34188,7 @@ document.getElementById('ctx-loft').addEventListener('click', () => { _hideVpCtx
 document.getElementById('ctx-folgen').addEventListener('click', () => { _hideVpCtx(); enterFolgen(); });
 document.getElementById('ctx-m2c').addEventListener('click', () => { _hideVpCtx(); meshToCad(); });
 document.getElementById('ctx-heal').addEventListener('click', () => { _hideVpCtx(); enterHealFace(); });
+document.getElementById('ctx-ssf').addEventListener('click', () => { _hideVpCtx(); enterSplineOnSurface(); });
 
 canvas.addEventListener('mouseup', e => {
   const moved = Math.hypot(e.clientX - mouseDownPos.x, e.clientY - mouseDownPos.y);
@@ -34685,6 +34807,7 @@ window.addEventListener('keydown', e => {
     if (_flg.active) { _flgExit(); return; }
     if (_pm.active) { _pmExit(); return; }
     if (_heal.active) { _healExit(); return; }
+    if (_ssf.active) { _ssfExit(); return; }
     if (_lf.active) { exitLoftMode(); return; }
     // ESC in der Skizze: erst den angefangenen Zug abbrechen (Linie klebt am
     // Cursor!), erst der nächste ESC schließt die Skizze — sonst fliegt man
@@ -34715,6 +34838,8 @@ window.addEventListener('keydown', e => {
   if (_flg.active && k === 'Enter') { e.preventDefault(); _flgApply(); return; }
   if (_pm.active && k === 'Enter') { e.preventDefault(); _pmApply(); return; }
   if (_heal.active && k === 'Enter' && _heal.info) { e.preventDefault(); _healApply(); return; }
+  if (_ssf.active && k === 'Enter') { e.preventDefault(); _ssfApply(); return; }
+  if (_ssf.active && k === 'Backspace') { e.preventDefault(); _ssfUndo(); return; }
   // Extrudieren-Fenster: Enter bestätigt auch ohne Fokus im Feld
   if (_skx.open && k === 'Enter') { e.preventDefault(); _skxApply(); return; }
 
@@ -67124,8 +67249,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.212';
+const VOLME3D_VERSION = '1.18.213';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.213', date:'2026-10-19', changes:[
+    ['∿','<b>Neu: Spline auf der Fläche.</b> Rechtsklick → <b>∿ Spline auf der Fläche</b>, dann Punkte direkt auf das Modell klicken, auch auf Kugeln, Zylinder oder gewölbte Scan-Teile. Die Kurve schmiegt sich an die Oberfläche; den Startpunkt erneut anklicken schließt sie. Daraus wird eine <b>Nut</b> oder ein <b>Steg</b> (V, rund, rechteckig), deren Querschnitt überall senkrecht auf der Oberfläche steht, z. B. Zierlinien auf einer Kugel, Griffrillen oder Dichtungsnuten auf gewölbten Deckeln.'],
+  ]},
   { version:'1.18.212', date:'2026-10-19', changes:[
     ['🩹','<b>Neu: Fläche löschen und heilen.</b> Rechtsklick → <b>🩹 Fläche löschen und heilen</b> (oder Suche), dann eine Fläche anklicken. V3D CAD erkennt, was es ist, und markiert es orange: <b>Bohrung</b> (wird geschlossen), <b>Zapfen</b> (wird entfernt), <b>Rundung</b> oder <b>Fase</b> an einer Kante, außen oder innen (wird wieder zur scharfen Kante). <b>✓ Löschen und heilen</b> rechnet das exakt: Die Ecke wird aus den beiden Nachbarflächen rekonstruiert, das Teil bleibt geschlossen. Ideal für importierte STL/STEP-Teile, an denen ein Loch stört oder eine Rundung weg soll.'],
   ]},
@@ -78118,6 +78246,7 @@ const CMDK = [
   {i:'⤧',g:'Bearbeiten',t:'Loft (Flächen verbinden)',k:'loft übergang flächen verbinden shapr',run:()=>{ if(!_lf.active) enterLoftMode(); }},
   {i:'🎓',g:'Hilfe',t:'Interaktive Anleitungen (Schritt für Schritt)',k:'anleitung tutorial lernen schritt für schritt übung becher halter einstieg kurs',run:()=>_tutMenu()},
   {i:'▣',g:'Bearbeiten',t:'Mesh → CAD (STL in Skizzen-Schritte)',k:'mesh to cad stl 3mf zurückführen rekonstruieren reverse engineering skizze verlauf bearbeitbar parametrisch',run:()=>meshToCad()},
+  {i:'∿',g:'Bearbeiten',t:'Spline auf der Fläche (Nut/Steg auf gewölbten Flächen)',k:'spline auf fläche oberfläche kurve gewölbt kugel nut steg rille zierlinie 3d kurve projizieren',run:()=>enterSplineOnSurface()},
   {i:'🩹',g:'Bearbeiten',t:'Fläche löschen und heilen (Bohrung, Zapfen, Rundung, Fase entfernen)',k:'fläche löschen heilen healing bohrung schließen loch zu zapfen entfernen rundung fase scharfe kante entfernen feature löschen radierer',run:()=>enterHealFace()},
   {i:'⟿',g:'Anordnen',t:'Konturmuster (Körper entlang einer Kontur verteilen)',k:'konturmuster muster kontur kante rändel kerben verteilen entlang pfad teilung anzahl',run:()=>enterKonturmuster()},
   {i:'◍',g:'Anordnen',t:'Kugelmuster (Körper über eine Kugel verteilen)',k:'kugelmuster kugel muster verteilen golfball noppen dimples fibonacci',run:()=>enterKugelmuster()},
