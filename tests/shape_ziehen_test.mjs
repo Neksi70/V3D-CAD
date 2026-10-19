@@ -37,6 +37,7 @@ try {
   await p.mouse.move(a.x, (a.y + oben.y) / 2, { steps: 4 }); await p.mouse.move(oben.x, oben.y, { steps: 6 });
   const lbl = await p.evaluate(() => _skPull.label && _skPull.label.textContent);
   ok(/mm/.test(lbl || ''), 'Maß am Pfeil beim Ziehen: ' + lbl);
+  ok(await p.evaluate(() => getComputedStyle(document.getElementById('sketch-bar')).display === 'none' && getComputedStyle(document.getElementById('sk-cons')).display === 'none'), 'beim Ziehen keine Skizzen-Werkzeuge im Bild');
   await p.mouse.up(); await fertig();
   const z1 = await zustand();
   ok(z1.n === 1 && z1.maxY > 2.2 && z1.exakt, `gezogen: Oberkante ${z1.maxY} cm (> 2,2), ein Körper, exakt`);
