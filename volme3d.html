@@ -12819,7 +12819,7 @@ function _exaktSkizze(mesh, profiles, hU) {
     try {
       if (!objects.includes(mesh) || mesh.userData._brepStep) return;
       let s = _skExaktForm(oc, profiles, hU);
-      try { const u = new oc.ShapeUpgrade_UnifySameDomain_2(s, true, true, false); u.Build(); s = u.Shape(); } catch (e) {}
+      s = _occtVereinheitlichen(oc, s);
       if (!_occtShapeValid(oc, s)) { console.warn('[exakt] Skizze: Form ungültig — bleibt Netz'); return; }
       mesh.updateWorldMatrix(true, false);
       // Volumen-Gegenprobe im LOKALEN System (Netz und Form müssen zusammenpassen)
@@ -13021,6 +13021,70 @@ function _shpKontext() {
   kx.style.transform = ueber ? 'translate(-50%, -100%)' : 'translate(-50%, 0)';
 }
 (function _shpSchleife() { try { if (_advMode === 'shape') _shpKontext(); } catch (e) {} requestAnimationFrame(_shpSchleife); })();
+// ═══ V3D-SHAPE: Fläche direkt am Pfeil ziehen (19.10.26) ═══════════════════
+// Wie Shapr3D: Körper ist gewählt → auf eine ebene Fläche drücken und ziehen.
+// Baut auf vorhandenen Teilen auf: _faceRegion (Flächenkontur), Skizze auf der
+// Fläche und „Ziehen“ (_skPull: Pfeil, Maß, Zahl tippen, D = durch alles,
+// nach außen = anfügen, nach innen = Tasche/Loch). Kamera bleibt stehen.
+// ohneZug: Start per Klick (Maus schon oben) → Pfeil wartet auf Zug/Zahl.
+function _shpFlaecheZiehen(hit, ohneZug) {
+  const mesh = hit.object, r = _faceRegion(mesh, hit);
+  if (!r) { notify('Keine ebene Fläche getroffen — runde Flächen lassen sich noch nicht ziehen', 'w'); return false; }
+  const body = objects.find(o => o === mesh || o.getObjectById(mesh.id)) || mesh;
+  const cam = { theta: sph.theta, phi: sph.phi, r: sph.r, target: orbitTarget.clone() };
+  const zurueck = () => { sph.theta = cam.theta; sph.phi = cam.phi; sph.r = cam.r; orbitTarget.copy(cam.target); sph2cam(); };
+  if (_sk.active) exitSketchMode();
+  selectObjs([body]);
+  enterSketchMode();
+  _skSetFrame(r.normal, r.point);
+  const ents = [];
+  for (const lp of r.loops) {
+    let pts = lp.map(w => { const l = w.clone().applyMatrix4(_sk.Minv); return { u: l.x, v: l.z }; });
+    pts = _ppDropCollinear(pts);
+    if (pts.length < 3) continue;
+    if (pts.length <= 64) for (let i = 0; i < pts.length; i++) { const a = pts[i], b = pts[(i + 1) % pts.length]; ents.push({ type: 'line', a: { u: a.u, v: a.v }, b: { u: b.u, v: b.v } }); }
+    else ents.push({ type: 'poly', pts: [...pts, { u: pts[0].u, v: pts[0].v }], closed: true });
+  }
+  _sk.ents = ents; _skcIds(); _skRender();
+  zurueck();
+  const l = hit.point.clone().applyMatrix4(_sk.Minv);
+  _skPullStart({ u: l.x, v: l.z }, { keepCam: true, ausShape: true, ohneZug: !!ohneZug });
+  if (!_skPull.editing) { exitSketchMode(); zurueck(); return false; }
+  return true;
+}
+// Ist die Fläche am Trefferpunkt WIRKLICH eben? Das Netz eines Zylinders besteht aus
+// ebenen Streifen — _faceRegion hielte so einen Streifen für eine Fläche. Bei
+// exakten Körpern entscheidet die echte Form; ohne exakte Form wie bisher das Netz.
+function _shpEbeneFlaeche(owner, hit) {
+  if (!_faceRegion(hit.object, hit)) return false;
+  try {
+    if (!_oc) return true;
+    const oc = _oc, w = _exaktWelt(oc, owner);
+    if (!w) return true;
+    const v = new oc.BRepBuilderAPI_MakeVertex(new oc.gp_Pnt_3(hit.point.x, hit.point.y, hit.point.z)).Vertex();
+    let best = null, bd = Infinity;
+    for (const f of _occtEindeutig(oc, w, oc.TopAbs_ShapeEnum.TopAbs_FACE, x => oc.TopoDS.Face_1(x))) {
+      const ds = new oc.BRepExtrema_DistShapeShape_2(v, f, oc.Extrema_ExtFlag.Extrema_ExtFlag_MINMAX, oc.Extrema_ExtAlgo.Extrema_ExtAlgo_Grad);
+      if (ds.IsDone() && ds.Value() < bd) { bd = ds.Value(); best = f; }
+    }
+    if (!best || bd > 0.05) return true;              // Netz und Form weichen ab → Netz entscheidet
+    const ad = new oc.BRepAdaptor_Surface_2(best, true);
+    return ad.GetType() === oc.GeomAbs_SurfaceType.GeomAbs_Plane;
+  } catch (e) { return true; }
+}
+// Drücken auf eine Fläche des schon gewählten Körpers → sofort ziehen
+canvas.addEventListener('mousedown', e => {
+  if (_advMode !== 'shape' || e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (_sk.active || _edgeMode || _pp.active || _skPull.editing || specialMode || _measureMode) return;
+  if (!selectedObjs.length) return;
+  const hit = pickObjects(e).find(h => h.object && h.object.isMesh && h.face);
+  if (!hit) return;
+  const owner = selectedObjs.find(o => o === hit.object || o.getObjectById(hit.object.id));
+  if (!owner || owner.userData.locked) return;
+  if (!_shpEbeneFlaeche(owner, hit)) return;      // runde Fläche: normale Auswahl
+  e.stopImmediatePropagation(); e.preventDefault();
+  _shpFlaecheZiehen(hit, false);
+}, true);
 // Tooltips der Knöpfe um die Taste der aktiven Umgebung ergänzen
 function _umgTooltips() {
   V3D_BEFEHLE.forEach(b => {
@@ -13759,7 +13823,7 @@ function _skxThroughLen(sg){
       m=Math.max(m, sg*c.clone().sub(O).dot(N)); } }
   return Math.max(0.05, m+0.1);
 }
-function _skPullStart(p){
+function _skPullStart(p, opts){
   const shapes=_skBuildShapes();
   if (shapes.length===0){ notify('Keine geschlossene Fläche — Profil erst schließen (Linien aneinander, oder Kreis/Rechteck)','w'); return; }
   let pick=null, pa=Infinity;
@@ -13773,6 +13837,9 @@ function _skPullStart(p){
   const c=_loopCentroid(pick.outer);
   _skPull.editing=true; _skPull.dragging=true; _skPull.shape=pick;
   _skPull.cu=c.u; _skPull.cv=c.v; _skPull.h=0; _skPull.grabOff=null; _skPull.typed=''; _skPull.typedSign=1; _skPull.through=false; _skPull.op='new'; _skPull._opSign=null;
+  // V3D-Shape: Kamera bleibt, Klick ohne Zug wartet auf Zahl/Enter oder neuen Zug
+  _skPull.keepCam=!!(opts&&opts.keepCam); _skPull.ausShape=!!(opts&&opts.ausShape);
+  if (opts && opts.ohneZug) _skPull.dragging=false;
   _skPull.savedSk={ theta:sph.theta, phi:sph.phi, r:sph.r };
   // Szenen-Objekte
   _skPull.group=new THREE.Group(); _skPull.group.renderOrder=1001;
@@ -13791,22 +13858,31 @@ function _skPullStart(p){
   document.addEventListener('mousemove', _skPullMove, true);
   document.addEventListener('mouseup',   _skPullUp,   true);
   document.addEventListener('keydown',   _skPullKey,  true);
+  if (_skPull.ausShape) canvas.addEventListener('mousedown', _skPullNeuZug, true);
+}
+// V3D-Shape: Pfeil steht, erneut drücken = weiterziehen (Höhe läuft ab dem Stand weiter)
+function _skPullNeuZug(e){
+  if (!_skPull.editing || _skPull.dragging || e.button!==0) return;
+  e.stopImmediatePropagation(); e.preventDefault();
+  _skPull.dragging=true; _skPull.grabOff=null; _skPull.basisH=_skPull.h; _skPull.typed='';
 }
 function _skPullMove(e){
   if (!_skPull.dragging) return;
-  if (_skPull.grabOff===null){
+  if (_skPull.grabOff===null && !_skPull.keepCam){
     // erste Bewegung: jetzt erst die Ansicht kippen (kein Flackern bei reinem Klick)
     if (_sk.onFace) _skCamLocal(new THREE.Vector3(Math.sin(0.88)*Math.sin(0.6), Math.cos(0.88), Math.sin(0.88)*Math.cos(0.6)));
     else { sph.theta=0.6; sph.phi=0.88; sph2cam(); }
   }
   const raw=_skPullHeightFromMouse(e); if (raw===null) return;
-  if (_skPull.grabOff===null) _skPull.grabOff=-raw;   // Höhe startet bei 0
+  if (_skPull.grabOff===null) _skPull.grabOff=-raw+(_skPull.basisH||0);   // Höhe startet bei 0 (bzw. beim gezogenen Stand)
   if (_skPull.typed==='') _skPullSetHeight(raw+_skPull.grabOff);
 }
 function _skPullUp(e){
   if (!_skPull.dragging) return;
   _skPull.dragging=false;
-  if (Math.abs(_skPull.h*10) >= 0.5) _skPullCommit(); else _skPullCancel();
+  if (Math.abs(_skPull.h*10) >= 0.5) _skPullCommit();
+  else if (_skPull.ausShape) { _skPull.basisH=0; }   // Klick ohne Zug: Pfeil bleibt, Zahl tippen + Enter oder ziehen
+  else _skPullCancel();
 }
 // Getippte Zahl übernehmen; Vorzeichen folgt „−" bzw. der Zug-Richtung
 function _skPullTyped(){
@@ -13843,6 +13919,8 @@ function _skPullCleanup(){
   document.removeEventListener('mousemove', _skPullMove, true);
   document.removeEventListener('mouseup',   _skPullUp,   true);
   document.removeEventListener('keydown',   _skPullKey,  true);
+  canvas.removeEventListener('mousedown', _skPullNeuZug, true);
+  _skPull.keepCam=false; _skPull.basisH=0;
   if (_skPull.group){ _skPull.group.traverse(o=>{ if(o.geometry)o.geometry.dispose(); if(o.material&&o.material.dispose)o.material.dispose(); });
     scene.remove(_skPull.group); }
   if (_skPull.label) _skPull.label.remove();
@@ -13850,14 +13928,15 @@ function _skPullCleanup(){
   _skPull.editing=_skPull.dragging=false; _skPull.shape=null; _skPull.grabOff=null; _skPull.typed='';
 }
 function _skPullCancel(){
-  const sv=_skPull.savedSk; _skPullCleanup();
+  const sv=_skPull.savedSk, ausShape=_skPull.ausShape; _skPullCleanup(); _skPull.ausShape=false;
   if (sv){ sph.theta=sv.theta; sph.phi=sv.phi; sph.r=sv.r; sph2cam(); }
+  if (ausShape) { if (_sk.active) exitSketchMode(); return; }   // V3D-Shape: Hilfsskizze wieder weg
   _skRender();
 }
 async function _skPullCommit(){
   if (_sk.hole) { _sk.hole = false; _skHoleTip(null); }
   const shape=_skPull.shape, hmm=Math.round(_skPull.h*10*100)/100;
-  _skPullCleanup();
+  _skPullCleanup(); _skPull.ausShape=false;
   if (!shape || Math.abs(hmm)<0.05){ return; }
   // gleiche Logik wie das Extrudieren-Fenster: Automatik → neu / anfügen / Loch
   _skx.shapes=[shape]; _skx.p={ dir:'one', d:hmm, d2:5, op:'auto', thru:false };
@@ -15797,10 +15876,23 @@ function _occtMitLochKorrektur(oc, shape, kanten, bauen) {
     if (!s) throw new Error('glatt ging nicht');
     if (v.weg)  { const op = new oc.BRepAlgoAPI_Cut_3(s, v.weg);  if (!op.IsDone()) throw new Error('Loch'); s = op.Shape(); }
     if (v.dazu) { const op = new oc.BRepAlgoAPI_Fuse_3(s, v.dazu); if (!op.IsDone()) throw new Error('Zapfen'); s = op.Shape(); }
-    try { const u = new oc.ShapeUpgrade_UnifySameDomain_2(s, true, true, false); u.Build(); s = u.Shape(); } catch (e) {}
+    s = _occtVereinheitlichen(oc, s);
     if (!_occtShapeValid(oc, s)) throw new Error('ungültig');
     return s;
   } catch (e) { return direkt(); }
+}
+// Gleichartige Nachbarflächen zusammenfassen — aber nur, wenn das Ergebnis gültig
+// bleibt: Zwei koaxiale Zylinder mit Nähten an verschiedenen Winkeln (Grundkörper +
+// hochgezogener Deckel) verschmelzen sonst zu einem Mantel mit zwei Nähten → ungültig.
+// Auf einer KOPIE: wirft UnifySameDomain mittendrin eine C++-Ausnahme (so bei Zylinder +
+// hochgezogenem Deckel), bleibt die gemeinsam genutzte Eingabe sonst beschädigt zurück.
+function _occtVereinheitlichen(oc, s) {
+  try {
+    const kopie = new oc.BRepBuilderAPI_Copy_2(s, true, false).Shape();
+    const u = new oc.ShapeUpgrade_UnifySameDomain_2(kopie, true, true, false); u.Build();
+    const r = u.Shape();
+    return _occtShapeValid(oc, r) ? r : s;
+  } catch (e) { return s; }
 }
 function _occtEindeutig(oc, shape, art, cast) {
   const out = [], ex = new oc.TopExp_Explorer_2(shape, art, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
@@ -16262,7 +16354,7 @@ function _exaktNachher(mesh, art, vorher, teileA, teileB) {
       s = A[0];
       for (const x of A.slice(1)) { const op = new oc.BRepAlgoAPI_Common_3(s, x); if (!op.IsDone()) throw new Error('Common'); s = op.Shape(); }
     } else s = A.reduce(fuse);
-    try { const u = new oc.ShapeUpgrade_UnifySameDomain_2(s, true, true, false); u.Build(); s = u.Shape(); } catch (e) {}
+    s = _occtVereinheitlichen(oc, s);
     if (!_occtShapeValid(oc, s)) { console.warn('[exakt] Ergebnis ungültig — bleibt Netz'); return false; }
     mesh.updateWorldMatrix(true, false);
     const vE = _occtVolumen(oc, s), vN = _meshVolumenWelt(mesh);
@@ -31718,6 +31810,7 @@ function _ppPickFace(hit, add){
   _pp.grp.add(hl);
   P.push({ mesh, r, hl });
   _ppStatus();
+  if (!add && _advMode === 'shape') { exitPushPull(); _shpFlaecheZiehen(hit, true); return; }   // V3D-Shape: direkt am Pfeil
   if (!add) _ppGo();
 }
 function _ppStatus(){
@@ -37525,8 +37618,10 @@ function _mgScreenScale(p) {
 
 function _mgUpdate() {
   const g = _mgBuild();
+  // V3D-Shape (wie Shapr3D): Verschiebe-Pfeile nur im Werkzeug „Verschieben“ —
+  // in der Auswahl gehört ein Druck auf die Fläche dem Flächen-Ziehen
   const show = _mgOn && selectedObjs.length > 0
-            && (editMode === 'select' || editMode === 'move')
+            && ((editMode === 'select' && _advMode !== 'shape') || editMode === 'move')
             && !isRubber && !_mgBusy();
   if (!show) {
     if (g.visible) { g.visible = false; _mgSetHover(null); _mgMuteHandles(false); }
