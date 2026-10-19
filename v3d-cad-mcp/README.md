@@ -48,6 +48,7 @@ Befehle für `execute`/`batch`:
 - `body.edges`, `body.fillet`, `body.chamfer`
 - `gen.list`, `gen.run`, `gen.edit` (Kinder-/Spielwelt-Generatoren)
 - `revolve`, `body.shell`, `body.mirror`, `body.pattern`, `file.import`
+- `param.set`, `param.list`, `param.delete`, `timeline.list`, `timeline.edit`, `timeline.delete`, `timeline.rebuild`, `timeline.reset` (Parametrik: Formeln in allen Zahlen, Neuaufbau bei Parameteränderung)
 - `body.transform`, `body.set`, `body.duplicate`, `body.delete`
 - `bool.union`, `bool.subtract`, `bool.intersect`
 - `measure`, `measure.distance`
@@ -61,7 +62,7 @@ Regeln:
 
 ## Test
 
-Stufe 2 (Skizzen, Runden/Fasen, Generatoren): `node test_stufe2.mjs`. Formwerkzeuge: `node test_formen.mjs`. Die Bausteine liegen in `stufe2/` und werden mit `stufe2/einsetzen.py volme3d.html` eingearbeitet (idempotent).
+Stufe 2 (Skizzen, Runden/Fasen, Generatoren): `node test_stufe2.mjs`. Formwerkzeuge: `node test_formen.mjs`. Parametrik: `node test_bauplan.mjs`. Die Bausteine liegen in `stufe2/` und werden mit `stufe2/einsetzen.py volme3d.html` eingearbeitet (idempotent).
 
 Anleitung für Agenten: `ANLEITUNG.md` (MCP-Werkzeug `anleitung` bzw. Ressource `v3d-cad://anleitung`).
 
