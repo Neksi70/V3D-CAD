@@ -110,23 +110,28 @@ const TOOLS = [
     annotations: { readOnlyHint: true },
     run: async a => text(await call(f => window.v3dApi.commands(f), a.filter || '')) },
   { name: 'execute', description: 'Einen Befehl ausführen (z. B. shape.add, body.transform, bool.subtract). Ein Undo-Schritt; bei Fehler unverändert.',
-    inputSchema: obj({ command: { type: 'string' }, params: { type: 'object' } }, ['command']),
-    run: async a => engine(await execute(a.command, a.params)) },
+    inputSchema: obj({ command: { type: 'string' }, params: { type: 'object' },
+                       verbose: { type: 'boolean', description: 'false = kompakte Antwort (nur id, Name, Größe, Mitte, Volumen je Körper); spart Platz' } }, ['command']),
+    run: async a => engine(compact(await execute(a.command, a.params), a.verbose)) },
   { name: 'batch', description: 'Mehrere Befehle der Reihe nach, Stopp beim ersten Fehler; standardmäßig alles oder nichts. Zusammen EIN Undo-Schritt.',
     inputSchema: obj({ commands: { type: 'array', items: obj({ command: { type: 'string' }, params: { type: 'object' } }, ['command']) },
-                       rollback: { type: 'boolean', description: 'bei Fehler alles zurück (Standard true)' } }, ['commands']),
-    run: async a => engine(await call(([s, o]) => window.v3dApi.batch(s, o),
-      [a.commands.map(c => ({ command: c.command, params: c.params || {} })), { rollback: a.rollback !== false }])) },
+                       rollback: { type: 'boolean', description: 'bei Fehler alles zurück (Standard true)' },
+                       verbose: { type: 'boolean', description: 'false = kompakte Antworten' } }, ['commands']),
+    run: async a => engine(compact(await call(([s, o]) => window.v3dApi.batch(s, o),
+      [a.commands.map(c => ({ command: c.command, params: c.params || {} })), { rollback: a.rollback !== false }]), a.verbose)) },
   { name: 'inspect_scene', description: 'Alle Körper: id, Name, Typ, Bohrung?, Mitte/Größe/BBox (mm), Drehung (°); optional mit Volumen/Fläche.',
     inputSchema: obj({ measure: { type: 'boolean' } }), annotations: { readOnlyHint: true },
     run: async a => engine(await execute('scene.inspect', { measure: !!a.measure })) },
-  { name: 'measure', description: 'Volumen (mm³), Oberfläche (mm²), BBox je Körper und gesamt. Mit a+b: Abstand zweier Körper.',
+  { name: 'measure', description: 'Volumen (mm³), Oberfläche (mm²), BBox je Körper und gesamt. Mit a+b: echter kleinster Abstand zweier Körper (0 = berühren/überlappen, dann Überschneidungs-Volumen) und BBox-Lücke je Achse.',
     inputSchema: obj({ id: { type: 'integer' }, a: { type: 'integer' }, b: { type: 'integer' } }), annotations: { readOnlyHint: true },
     run: async a => engine(await (a.a !== undefined && a.b !== undefined
-      ? execute('measure.distance', { a: a.a, b: a.b })
+      ? Promise.all([execute('measure.distance', { a: a.a, b: a.b }), execute('measure.min_distance', { a: a.a, b: a.b })])
+          .then(([d, m]) => d.ok && m.ok ? { ok: true, result: { ...d.result, ...m.result } } : (d.ok ? m : d))
       : execute('measure', a.id !== undefined ? { id: a.id } : {}))) },
-  { name: 'screenshot', description: 'PNG der Szene aus einer Standardansicht.',
+  { name: 'screenshot', description: 'PNG der Szene aus einer Standardansicht oder freier Kamera, optional als Schnittansicht.',
     inputSchema: obj({ view: { type: 'string', enum: ['iso', 'front', 'back', 'top', 'bottom', 'left', 'right'] },
+                       camera: { type: 'object', description: '{target:[x,y,z] mm, yaw: ° (0 vorn, 90 rechts), pitch: ° (90 oben), distance: mm, fov?: ° (0 = orthografisch)} statt view' },
+                       section: { type: 'object', description: '{axis: X|Y|Z, at: mm, keep?: "-"|"+"} Schnittansicht' },
                        width: { type: 'integer' }, height: { type: 'integer' },
                        ids: { type: 'array', items: { type: 'integer' }, description: 'nur diese Körper zeigen' },
                        grid: { type: 'boolean' }, axes: { type: 'boolean', description: 'Achsenkreuz zeigen (Standard aus)' },
@@ -183,6 +188,15 @@ const TOOLS = [
   { name: 'redo', description: 'Einen Schritt vor.', inputSchema: obj({}), run: async () => engine(await execute('edit.redo')) },
 ];
 
+// Kompakte Antwort (verbose:false): je Körper nur das Nötigste
+function compact(r, verbose) {
+  if (verbose !== false || !r) return r;
+  const slim = o => (o && typeof o === 'object' && 'id' in o && 'bbox' in o)
+    ? { id: o.id, name: o.name, size: o.size, center: o.center, ...(o.volume_mm3 !== undefined ? { volume_mm3: o.volume_mm3 } : {}), ...(o.hole ? { hole: true } : {}) }
+    : o;
+  const walk = v => Array.isArray(v) ? v.map(walk) : v && typeof v === 'object' ? slim(Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]))) : v;
+  return walk(r);
+}
 function text(v) { return { content: [{ type: 'text', text: JSON.stringify(v, null, 1) }] }; }
 // Engine-Fehler sind normale Tool-Ergebnisse mit isError (das Modell kann korrigieren)
 function engine(r) { const t = text(r); if (r && r.ok === false) t.isError = true; return t; }

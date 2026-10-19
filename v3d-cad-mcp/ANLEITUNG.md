@@ -54,6 +54,8 @@
 | spiegeln | `body.mirror {id, plane:"YZ"/"XZ"/"XY", at?, copy?}` |
 | Reihen, Lochkreise | `body.pattern {id, linear:{count, step}}` oder `{circular:{count, axis?, center?, angle?}}`, mit `union:true` gleich vereint |
 | vorhandene Datei weiterbearbeiten | MCP-Werkzeug `import {path}` (STL, 3MF, OBJ, STEP) |
+| auf eine Fläche skizzieren (Tasche, Zapfen, Gravur) | `body.faces {id}`, dann `sketch.extrude {face:{id, face:"top"/"+x"/index/[x,y,z]}, outer, height, op}`; `cut` geht nach innen, das Ziel ist automatisch der Körper |
+| Skizze mit Bedingungen (bemaßt) | `sketch.solve` zum Prüfen (dof 0 = voll bestimmt), dann `sketch.extrude {sketch:{entities, constraints}}` |
 | verschieben, drehen, Größe ändern | `body.transform {id, center?, move?, rotate?, size?, drop?}`; `rotate` dreht *um* den Winkel, das absolute `rotation` geht nur bei Grundformen |
 | kopieren, Reihen | `body.duplicate {id, move}` |
 
@@ -97,7 +99,22 @@
 1. Platte: `sketch.extrude` mit `rect` und `corner_radius`
 2. **Alle** Löcher als `holes` in **derselben** Skizze. Das ist schneller und robuster als viele einzelne Abzüge.
 
+### Skizzen mit Bedingungen
+- **Elemente** (ungefähre Startlage genügt, der Löser zieht sie zurecht):
+  - `{id:"l1", type:"line", a:[x,y], b:[x,y]}`
+  - `{id:"c1", type:"circle", c:[x,y], r}`
+  - `{id:"a1", type:"arc", c, r, a0, a1}` (Winkel in Grad)
+- **Bezüge:** `"l1"` (ganzes Element), `"l1.a"`/`"l1.b"` (Linienenden), `"c1.c"` (Mitte), `"a1.s"`/`"a1.e"` (Bogenenden). Enden, die schon aufeinanderliegen, gelten als verbunden.
+- **Bedingungen:** `horizontal`, `vertical`, `parallel`, `perpendicular`, `equal`, `coincident`, `on`, `tangent`, `concentric`, `midpoint`, `collinear`, `symmetric`, `fix`.
+- **Maße mit `value`:** `length`, `radius`, `diameter`, `distance` (Punkt–Punkt oder Punkt–Linie senkrecht), `angle` (Grad). Werte dürfen Parameter sein (`value:"breite/2"`), dann rechnet `param.set` die Skizze neu.
+- **Mindestens einen Punkt mit `fix` festlegen**, sonst „schwimmt“ die Skizze, und `dof` ist größer als 0.
+
 ## Prüfen
 - `measure {}` liefert Gesamtvolumen und Bounding-Box, `measure {id}` die Werte eines Körpers, `measure {a, b}` den Abstand/die Lücke zwischen zwei Körpern (negativ = Überlappung).
+- `measure {a, b}` liefert zusätzlich den **echten kleinsten Abstand** (`min_distance_mm`). Ist er 0, berühren oder überlappen sich die Körper, und `overlap_mm3` ist das Volumen der Überschneidung.
+- `measure.interference {}` prüft alle Körper auf Kollision.
+- `measure.section {id, axis, at}` liefert Querschnittsfläche und Konturen, z. B. zur Prüfung der Wandstärke oder ob ein Loch durchgeht. Das Bild dazu: `screenshot {section:{axis, at}}`.
+- `screenshot {camera:{target, yaw, pitch, distance, fov?}}` ist eine freie Kamera: yaw 0 = von vorn, 90 = von rechts; pitch 90 = von oben; fov 0 = orthografisch.
+- Antworten kurz halten: `execute`/`batch` mit `verbose:false` liefern je Körper nur id, Name, Größe, Mitte und Volumen.
 - `scene.inspect` listet alle Körper. Übrig gebliebene Werkzeuge (`hole:true`) werden nicht exportiert, stören aber; lösche sie mit `body.delete`.
 - Toleranzen: Rundungen und Kreise sind vernetzt, also Abweichung bis ca. 1 % gegenüber der Formel. Eckige Teile stimmen auf 0,01 %.

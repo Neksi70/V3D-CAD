@@ -79348,21 +79348,41 @@ function _fillHoles(mesh) {
     const h = +p.height; if (!(h > 0)) fail('height muss > 0 mm sein');
     const plane = String(p.plane || 'XY').toUpperCase(); if (!PLANES[plane]) fail('plane: XY, XZ oder YZ');
     const op = p.op || 'new'; if (!['new', 'join', 'cut'].includes(op)) fail('op: new, join oder cut');
+    // Auf einer Fläche skizzieren: Rahmen aus der Fläche, Ziel ist automatisch ihr Körper
+    const F = p.face ? faceFrame(pickFace(byId(p.face.id), p.face.face === undefined ? 'top' : p.face.face)) : null;
+    if (F && op !== 'new' && p.target === undefined) p = { ...p, target: p.face.id };
     if (op !== 'new') byId(p.target);
     // Skizzen-mm (x,y) → Editor-Skizze (u = Welt-X, v = Editor-Z = −Welt-Y), Einheiten à 10 mm
     const uv = pts => pts.map(([x, y]) => ({ u: x / S, v: -y / S }));
-    const shape = { outer: uv(contour(p.outer, 'outer')), holes: (p.holes || []).map((c, i) => uv(contour(c, 'holes[' + i + ']'))) };
+    let shapes;
+    if (p.sketch) {
+      const sol = solveSketch(p.sketch);
+      if (!sol.loops.length) fail('Die Skizze hat keine geschlossene Kontur — Enden aufeinanderlegen oder mit coin verbinden');
+      if (!sol.ok) log.push('Hinweis: Bedingungen nicht alle erfüllbar (Rest ' + r3(sol.residual) + ') — widersprüchlich?');
+      if (sol.dof) log.push('Hinweis: Skizze hat noch ' + sol.dof + ' Freiheitsgrad(e), ist also nicht voll bemaßt');
+      shapes = loopsToShapes(sol.loops.map(lp => lp.map(q => ({ u: q.u, v: -q.v }))));   // Löser rechnet mit v = y
+    } else shapes = [{ outer: uv(contour(p.outer, 'outer')), holes: (p.holes || []).map((c, i) => uv(contour(c, 'holes[' + i + ']'))) }];
+    // Auf Flächen: Abziehen ragt 0,5 mm heraus, Anfügen taucht 0,2 mm ein (keine deckungsgleichen Flächen)
+    const sink = F ? (op === 'cut' ? h : op === 'join' ? 0.2 : 0) : 0, extra = F ? (op === 'cut' ? 0.5 : op === 'join' ? 0.2 : 0) : 0;
     const be = (fil, cha) => fil > 0 ? { fil: true, mm: +fil } : cha > 0 ? { fil: false, mm: +cha } : null;
     const top = be(p.fillet_top, p.chamfer_top), bot = be(p.fillet_bottom, p.chamfer_bottom);
     const keepFace = _sk.onFace; _sk.onFace = false;            // nie auf eine zufällig offene Fläche setzen
     let mesh;
-    try { mesh = _skMakeBodyFromShapes([shape], h, 0, top || bot ? { top, bot } : null); }
+    try { mesh = _skMakeBodyFromShapes(shapes, h + extra, 0, top || bot ? { top, bot } : null); }
     finally { _sk.onFace = keepFace; }
     // Körper liegt jetzt in XY mit Unterkante Z=0 → auf den Abstand heben, dann in die Ebene drehen (um den Ursprung)
     mesh.position.set(0, 0, 0); mesh.quaternion.identity(); mesh.scale.set(1, 1, 1);
-    mesh.position.add(toApp([0, 0, +p.offset || 0]));
-    mesh.updateMatrix();
-    mesh.applyMatrix4(new THREE.Matrix4().multiplyMatrices(Cinv, PLANES[plane]).multiply(C));
+    if (F) {
+      const t = F.o.clone().addScaledVector(F.n, (+p.offset || 0) - sink);
+      const ta = toApp(t.toArray());
+      mesh.updateMatrix();
+      mesh.applyMatrix4(new THREE.Matrix4().makeTranslation(ta.x, ta.y, ta.z)
+        .multiply(new THREE.Matrix4().multiplyMatrices(Cinv, new THREE.Matrix4().makeBasis(F.x, F.y, F.n)).multiply(C)));
+    } else {
+      mesh.position.add(toApp([0, 0, +p.offset || 0]));
+      mesh.updateMatrix();
+      mesh.applyMatrix4(new THREE.Matrix4().multiplyMatrices(Cinv, PLANES[plane]).multiply(C));
+    }
     mesh.updateMatrixWorld(true);
     if (p.name) mesh.userData.name = String(p.name);
     if (p.color) setColorOf(mesh, p.color);
@@ -79706,7 +79726,7 @@ function _fillHoles(mesh) {
   }
 
   // Formeln in Parametern auflösen. Texte (Namen, Farben, Ebenen, Kanten-Wahl …) bleiben Texte.
-  const BP_TEXT = new Set(['name', 'color', 'type', 'plane', 'op', 'vorlage', 'axis', 'open', 'filter', 'format', 'view', 'json', 'base64', 'command', 'schrift', 'motiv', 'form']);
+  const BP_TEXT = new Set(['name', 'color', 'type', 'plane', 'op', 'vorlage', 'axis', 'open', 'filter', 'format', 'view', 'json', 'base64', 'command', 'schrift', 'motiv', 'form', 'face', 'keep', 'refs', 'id', 't']);
   const BP_NUM = /^(size|center|move|radius|distance|thickness|height|offset|step|count|r|wall|at|angle|rotation|rotate|sides|corner_radius|fillet_top|fillet_bottom|chamfer_top|chamfer_bottom|profile|polygon|edges)$/;
   function bpEval(params) {
     const walk = (v, key) => {
@@ -79777,6 +79797,201 @@ function _fillHoles(mesh) {
       }
       return r;
     };
+  }
+
+  // ── Flächen, Skizzen mit Bedingungen, genaues Messen, Kamera ────────────
+  // Formeln in allen Befehlen auswerten — außer dort, wo Text gespeichert wird
+  const bpWantsEval = c => !/^(param|timeline)\./.test(c) && !['scene.load', 'file.import'].includes(c);
+  const dirWorld = v => [v.x, -v.z, v.y];                     // Editor-Richtung → Welt (Z oben)
+  // Ebene Flächen eines Körpers: Dreiecke nach Normale + Ebenenabstand gruppiert
+  function facesOf(o) {
+    o.updateMatrixWorld(true);
+    const groups = new Map();
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    o.traverse(m => {
+      if (!m.isMesh || !m.geometry || !m.geometry.attributes.position || m.userData.isEdgeLines) return;
+      const g = m.geometry, p = g.attributes.position, idx = g.index ? g.index.array : null, n = idx ? idx.length : p.count;
+      for (let i = 0; i + 2 < n; i += 3) {
+        a.fromBufferAttribute(p, idx ? idx[i] : i).applyMatrix4(m.matrixWorld);
+        b.fromBufferAttribute(p, idx ? idx[i + 1] : i + 1).applyMatrix4(m.matrixWorld);
+        c.fromBufferAttribute(p, idx ? idx[i + 2] : i + 2).applyMatrix4(m.matrixWorld);
+        const A = toWorld(a), B = toWorld(b), Cc = toWorld(c);
+        const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], v = [Cc[0] - A[0], Cc[1] - A[1], Cc[2] - A[2]];
+        const nx = u[1] * v[2] - u[2] * v[1], ny = u[2] * v[0] - u[0] * v[2], nz = u[0] * v[1] - u[1] * v[0];
+        const len = Math.hypot(nx, ny, nz); if (len < 1e-9) continue;
+        const N = [nx / len, ny / len, nz / len], d = N[0] * A[0] + N[1] * A[1] + N[2] * A[2];
+        const key = N.map(x => Math.round(x * 200)).join(',') + '|' + Math.round(d * 20);
+        let G = groups.get(key);
+        if (!G) { G = { n: N, d, area: 0, cx: 0, cy: 0, cz: 0, min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] }; groups.set(key, G); }
+        const ar = len / 2; G.area += ar;
+        G.cx += ar * (A[0] + B[0] + Cc[0]) / 3; G.cy += ar * (A[1] + B[1] + Cc[1]) / 3; G.cz += ar * (A[2] + B[2] + Cc[2]) / 3;
+        for (const P of [A, B, Cc]) for (let k = 0; k < 3; k++) { G.min[k] = Math.min(G.min[k], P[k]); G.max[k] = Math.max(G.max[k], P[k]); }
+      }
+    });
+    const bw = boxWorld(o);
+    const list = [...groups.values()].filter(G => G.area > 0.5).sort((x, y) => y.area - x.area).map(G => ({
+      normal: G.n.map(r3), center: [r3(G.cx / G.area), r3(G.cy / G.area), r3(G.cz / G.area)], area_mm2: r3(G.area),
+      bbox: { min: G.min.map(r3), max: G.max.map(r3) } }));
+    // Namen für die äußeren, achsenparallelen Flächen (die größte je Richtung)
+    const tags = [['top', 2, 1], ['bottom', 2, -1], ['+x', 0, 1], ['-x', 0, -1], ['+y', 1, 1], ['-y', 1, -1]];
+    list.forEach((f, i) => { f.index = i; });
+    for (const [name, ax, sg] of tags) {
+      const f = list.find(f => Math.abs(f.normal[ax] - sg) < 1e-3 && Math.abs(f.center[ax] - (sg > 0 ? bw.max[ax] : bw.min[ax])) < 0.05);
+      if (f && !f.name) f.name = name;
+    }
+    return list.slice(0, 60);
+  }
+  function pickFace(o, sel) {
+    const fs = facesOf(o); if (!fs.length) fail('Körper ' + o.userData.id + ' hat keine ebenen Flächen');
+    if (typeof sel === 'number') { const f = fs[sel]; if (!f) fail('Fläche ' + sel + ' gibt es nicht (0–' + (fs.length - 1) + ')'); return f; }
+    if (typeof sel === 'string') { const f = fs.find(f => f.name === sel.toLowerCase()); if (!f) fail('Fläche „' + sel + '“ gibt es nicht — siehe body.faces'); return f; }
+    if (isVec3(sel)) {
+      let best = null;
+      for (const f of fs) {
+        const d = Math.abs(f.normal[0] * sel[0] + f.normal[1] * sel[1] + f.normal[2] * sel[2] - (f.normal[0] * f.center[0] + f.normal[1] * f.center[1] + f.normal[2] * f.center[2]));
+        const inside = [0, 1, 2].every(k => sel[k] >= f.bbox.min[k] - 0.1 && sel[k] <= f.bbox.max[k] + 0.1);
+        if (inside && (!best || d < best.d)) best = { f, d };
+      }
+      if (!best || best.d > 0.5) fail('Keine ebene Fläche bei [' + sel.join(', ') + '] — siehe body.faces');
+      return best.f;
+    }
+    fail('face: index, Name (top, bottom, +x, -x, +y, -y) oder Punkt [x,y,z]');
+  }
+  // Skizzen-Rahmen auf einer Fläche: x-Achse = Welt-X auf die Fläche projiziert (bzw. Y), Normale nach außen
+  function faceFrame(f) {
+    const n = new THREE.Vector3(...f.normal);
+    let x = new THREE.Vector3(1, 0, 0).addScaledVector(n, -n.x);
+    if (x.length() < 0.3) x = new THREE.Vector3(0, 1, 0).addScaledVector(n, -n.y);
+    x.normalize();
+    const y = new THREE.Vector3().crossVectors(n, x);
+    return { x, y, n, o: new THREE.Vector3(...f.center) };
+  }
+
+  // Skizze mit Elementen + Bedingungen über den Skizzen-Löser des Editors (_skcSolve)
+  const SKC_TYPES = { h: 'h', horizontal: 'h', v: 'v', vertical: 'v', par: 'par', parallel: 'par', perp: 'perp', perpendicular: 'perp',
+    eq: 'eq', equal: 'eq', coin: 'coin', coincident: 'coin', on: 'on', tan: 'tan', tangent: 'tan', conc: 'conc', concentric: 'conc',
+    mid: 'mid', midpoint: 'mid', col: 'col', collinear: 'col', sym: 'sym', symmetric: 'sym', fix: 'fix',
+    len: 'len', length: 'len', dia: 'dia', diameter: 'dia', rad: 'rad', radius: 'rad', dist: 'dist', distance: 'dist', ang: 'ang', angle: 'ang' };
+  function solveSketch(sk) {
+    if (!sk || !Array.isArray(sk.entities) || !sk.entities.length) fail('sketch.entities: Liste von Linien/Kreisen/Bögen');
+    const idMap = new Map(); let nr = 1;
+    const ents = sk.entities.map((e, i) => {
+      const id = String(e.id || 'e' + (i + 1)); if (idMap.has(id)) fail('id „' + id + '“ doppelt');
+      const P = (q, k) => { if (!Array.isArray(q) || q.length !== 2 || !q.every(isFinite)) fail(id + '.' + k + ': [x, y] in mm'); return { u: q[0] / S, v: q[1] / S }; };
+      let en;
+      if (e.type === 'line') en = { type: 'line', a: P(e.a, 'a'), b: P(e.b, 'b') };
+      else if (e.type === 'circle') { if (!(e.r > 0)) fail(id + '.r > 0'); en = { type: 'circle', c: P(e.c, 'c'), r: e.r / S }; }
+      else if (e.type === 'arc') { if (!(e.r > 0)) fail(id + '.r > 0'); en = { type: 'arc', c: P(e.c, 'c'), r: e.r / S, a0: (+e.a0 || 0) * DEG, a1: (+e.a1 || 0) * DEG }; }
+      else fail(id + ': type line, circle oder arc');
+      en.id = nr++; idMap.set(id, en); return en;
+    });
+    const ref = s => {
+      const [nm, pt] = String(s).split('.'); const en = idMap.get(nm); if (!en) fail('Bezug „' + s + '“: Element „' + nm + '“ gibt es nicht');
+      if (pt && !['a', 'b', 'c', 's', 'e'].includes(pt)) fail('Bezug „' + s + '“: Punkt a/b (Linie), c (Mitte), s/e (Bogenenden)');
+      return { id: en.id, p: pt || null };
+    };
+    const cons = (sk.constraints || []).map((c, i) => {
+      const t = SKC_TYPES[String(c.type || '').toLowerCase()]; if (!t) fail('constraints[' + i + '].type „' + c.type + '“ unbekannt — ' + Object.keys(SKC_TYPES).filter(k => k.length > 3).join(', '));
+      const refs = (c.refs || []).map(ref); if (!refs.length) fail('constraints[' + i + '].refs fehlt');
+      const isLine = r => ents.find(e => e.id === r.id).type === 'line';
+      const out = { t: t === 'dist' && refs.length === 2 && refs[1].p === null && isLine(refs[1]) ? 'pld' : t, refs };   // Punkt–Linie
+      if (['len', 'dia', 'rad', 'dist', 'pld'].includes(out.t)) { if (!(+c.value >= 0)) fail('constraints[' + i + '].value (mm) fehlt'); out.val = +c.value / S; }
+      if (out.t === 'ang') { if (!isFinite(+c.value)) fail('constraints[' + i + '].value (Grad) fehlt'); out.val = +c.value * DEG; }
+      return out;
+    });
+    // Vorzeichen-Bedingungen wie im Editor aus der Ausgangslage bestimmen
+    const keep = { ents: _sk.ents, cons: _sk.cons, nextId: _sk.nextId, dof: _sk.dof };
+    try {
+      _sk.ents = ents; _sk.cons = []; _sk.nextId = nr;
+      for (const c of cons) {
+        const E = c.refs.map(r => ents.find(e => e.id === r.id));
+        if (c.t === 'tan') c.s = E[0].type === 'line' ? (Math.sign(_skcLineDist(E[0], E[1].c)) || 1) : (Math.hypot(E[0].c.u - E[1].c.u, E[0].c.v - E[1].c.v) > Math.max(E[0].r, E[1].r) ? 1 : -1);
+        if (c.t === 'pld') c.s = Math.sign(_skcLineDist(E[1], _skcPt(E[0], c.refs[0].p))) || 1;
+        if (c.t === 'ang') { const a = _skcLn(E[0]), b = _skcLn(E[1]); c.s = Math.sign(a.dx * b.dy - a.dy * b.dx) || 1; }
+        if (c.t === 'fix') {
+          if (c.refs[0].p) { const q = _skcPt(E[0], c.refs[0].p); c.fx = { u: q.u, v: q.v }; }
+          else { c.fx = {}; for (const k of _skcParams(E[0])) c.fx[k.join('.')] = _skcGet(E[0], k); }
+        }
+      }
+      _sk.cons = cons;
+      const res = _skcSolve({});
+      const loops = _skBuildLoops().map(lp => lp.map(q => ({ u: q.u, v: q.v })));
+      const back = {};
+      for (const [k, en] of idMap) back[k] = en.type === 'line' ? { a: [r3(en.a.u * S), r3(en.a.v * S)], b: [r3(en.b.u * S), r3(en.b.v * S)] }
+        : { c: [r3(en.c.u * S), r3(en.c.v * S)], r: r3(en.r * S), ...(en.type === 'arc' ? { a0: r3(en.a0 / DEG), a1: r3(en.a1 / DEG) } : {}) };
+      return { ok: res.ok, dof: res.dof, residual: res.err, entities: back, loops };
+    } finally { _sk.ents = keep.ents; _sk.cons = keep.cons; _sk.nextId = keep.nextId; _sk.dof = keep.dof; }
+  }
+  // Geschlossene Schleifen → Profile (äußere Kontur + Löcher nach Verschachtelung)
+  function loopsToShapes(loops) {
+    const area = lp => { let s = 0; for (let i = 0; i < lp.length; i++) { const a = lp[i], b = lp[(i + 1) % lp.length]; s += a.u * b.v - b.u * a.v; } return Math.abs(s / 2); };
+    const inside = (pt, lp) => { let c = false; for (let i = 0, j = lp.length - 1; i < lp.length; j = i++) {
+      const a = lp[i], b = lp[j]; if ((a.v > pt.v) !== (b.v > pt.v) && pt.u < (b.u - a.u) * (pt.v - a.v) / (b.v - a.v) + a.u) c = !c; } return c; };
+    const L = loops.map(lp => ({ lp, A: area(lp) })).sort((x, y) => y.A - x.A);
+    L.forEach((x, i) => { x.parent = null; for (let j = i - 1; j >= 0; j--) if (inside(x.lp[0], L[j].lp)) { x.parent = L[j]; break; } });
+    const depth = x => x.parent ? 1 + depth(x.parent) : 0;
+    const outers = L.filter(x => depth(x) % 2 === 0);
+    return outers.map(o => ({ outer: o.lp, holes: L.filter(x => x.parent === o).map(x => x.lp) }));
+  }
+
+  // Genaues Messen über Manifold (mm, Z oben)
+  async function mfOf(o) {
+    const w = await _mfInit();
+    const mf = _mfUnionObjs(w, [o]); if (!mf) fail('Körper ' + o.userData.id + ' hat keine Flächen');
+    return { w, mf };
+  }
+  async function minDistance(A, B) {
+    const { mf: a } = await mfOf(A), { mf: b } = await mfOf(B);
+    try {
+      const ba = boxWorld(A), bb = boxWorld(B);
+      const search = Math.max(1, ...[0, 1, 2].map(k => Math.max(ba.max[k], bb.max[k]) - Math.min(ba.min[k], bb.min[k]))) * 2;
+      const gap = a.minGap(b, search);
+      let overlap = 0;
+      if (gap <= 1e-6) { const x = a.intersect(b); overlap = x.volume(); x.delete(); }
+      return { min_distance_mm: r3(gap), overlap_mm3: r3(overlap) };
+    } finally { a.delete(); b.delete(); }
+  }
+  async function section(o, axis, at) {
+    const { mf } = await mfOf(o);
+    let m = mf;
+    try {
+      // slice schneidet bei Z = at → für X/Y den Körper vorher so drehen, dass die Achse nach oben zeigt
+      if (axis === 'X') m = mf.rotate([0, -90, 0]);
+      else if (axis === 'Y') m = mf.rotate([90, 0, 0]);
+      const cs = m.slice(at);                                   // Rx(90°): neues Z = altes Y, Ry(−90°): neues Z = altes X
+      const polys = cs.toPolygons(), area = cs.area(), bd = cs.bounds();
+      cs.delete();
+      return { area_mm2: r3(area), contours: polys.length, bounds2d: { min: [r3(bd.min[0]), r3(bd.min[1])], max: [r3(bd.max[0]), r3(bd.max[1])] } };
+    } finally { if (m !== mf) m.delete(); mf.delete(); }
+  }
+
+  // Schnittansicht im Screenshot: Clipping-Ebene an allen Körpern, behält die Seite keep (−: kleiner als at)
+  function clipScene(sec) {
+    const ax = { X: 0, Y: 1, Z: 2 }[String(sec.axis || 'Z').toUpperCase()]; if (ax === undefined) fail('section.axis: X, Y oder Z');
+    const at = +sec.at; if (!isFinite(at)) fail('section.at (mm) fehlt');
+    const sg = sec.keep === '+' ? 1 : -1;
+    const nw = [0, 0, 0]; nw[ax] = sg;
+    const plane = new THREE.Plane(dirApp(nw).normalize(), -sg * at / S);
+    const mats = [];
+    objects.forEach(o => o.traverse(m => { if ((m.isMesh || m.isLine) && m.material) (Array.isArray(m.material) ? m.material : [m.material]).forEach(mt => { mats.push([mt, mt.clippingPlanes]); mt.clippingPlanes = [plane]; mt.needsUpdate = true; }); }));
+    const before = renderer.localClippingEnabled; renderer.localClippingEnabled = true;
+    return () => { mats.forEach(([mt, cp]) => { mt.clippingPlanes = cp; mt.needsUpdate = true; }); renderer.localClippingEnabled = before; };
+  }
+  // Freie Kamera wie in SolidCraft: Ziel + Drehung (yaw um Z, pitch nach oben, Grad) + Abstand (mm); fov 0 = orthografisch
+  function customCam(c, w, h) {
+    const t = needVec3(c.target || [0, 0, 0], 'camera.target'), dist = +c.distance;
+    if (!(dist > 0)) fail('camera.distance (mm) > 0 nötig');
+    const yaw = (+c.yaw || 0) * DEG, pitch = (+c.pitch || 0) * DEG;
+    // yaw 0 = von vorn (−Y), 90 = von rechts (+X), 180 = von hinten; pitch 90 = von oben
+    const eyeW = [t[0] + dist * Math.sin(yaw) * Math.cos(pitch), t[1] - dist * Math.cos(yaw) * Math.cos(pitch), t[2] + dist * Math.sin(pitch)];
+    const fov = c.fov === undefined ? 35 : +c.fov;
+    let cam;
+    if (fov > 0) cam = new THREE.PerspectiveCamera(fov, w / h, dist / S * 0.01, dist / S * 100 + 200);
+    else { const hh = 0.4 * dist / S; cam = new THREE.OrthographicCamera(-hh * w / h, hh * w / h, hh, -hh, 0.01, dist / S * 100 + 200); }
+    cam.position.copy(toApp(eyeW));
+    cam.up.copy(Math.abs(Math.cos(pitch)) < 1e-3 ? dirApp([-Math.sin(yaw), Math.cos(yaw), 0]) : new THREE.Vector3(0, 1, 0));
+    cam.lookAt(toApp(t));
+    return cam;
   }
 
   // ── Befehle ────────────────────────────────────────────────────────────
@@ -79886,7 +80101,7 @@ function _fillHoles(mesh) {
       if (!neu.length) fail('Schnittmenge hat kein Ergebnis geliefert (berühren sich die Körper?)');
       return { created: neu.map(o => info(o, true)) };
     } },
-    'sketch.extrude': { doc: '{outer: Kontur, holes?: [Kontur, …], height: mm, plane?: XY|XZ|YZ (XY), offset?: mm (Abstand der Skizze von der Ebene), op?: new|join|cut, target?: id (für join/cut), fillet_top?/fillet_bottom?/chamfer_top?/chamfer_bottom?: mm, name?, color?} — Kontur = {rect:{center:[x,y], size:[w,h], corner_radius?}} | {circle:{center:[x,y], r}} | {ngon:{center:[x,y], r, sides}} | {polygon:[[x,y], …]} (mm in Skizzen-Koordinaten). XY: Draufsicht, x→X, y→Y, nach oben (+Z) extrudiert; XZ: Vorderansicht, x→X, y→Z, nach −Y; YZ: Seitenansicht, x→Y, y→Z, nach +X', async fn(p, log) {
+    'sketch.extrude': { doc: '{outer: Kontur ODER sketch: {entities, constraints} (Skizze mit Bedingungen, s. u.), holes?: [Kontur, …], height: mm, face?: {id, face: index|top|bottom|+x|-x|+y|-y|[x,y,z]} (auf einer Fläche skizzieren: Skizzen-Ursprung = Flächenmitte, x = Welt-X bzw. -Y auf der Fläche, nach außen extrudiert, cut geht nach innen; Ziel = Körper der Fläche; siehe body.faces), plane?: XY|XZ|YZ (XY), offset?: mm (Abstand der Skizze von der Ebene), op?: new|join|cut, target?: id (für join/cut), fillet_top?/fillet_bottom?/chamfer_top?/chamfer_bottom?: mm, name?, color?} — Kontur = {rect:{center:[x,y], size:[w,h], corner_radius?}} | {circle:{center:[x,y], r}} | {ngon:{center:[x,y], r, sides}} | {polygon:[[x,y], …]} (mm in Skizzen-Koordinaten). XY: Draufsicht, x→X, y→Y, nach oben (+Z) extrudiert; XZ: Vorderansicht, x→X, y→Z, nach −Y; YZ: Seitenansicht, x→Y, y→Z, nach +X. Skizze mit Bedingungen: entities [{id:"l1", type:"line", a:[x,y], b:[x,y]} | {id, type:"circle", c:[x,y], r} | {id, type:"arc", c, r, a0, a1 (°)}] als ungefähre Startlage, constraints [{type: h|v|par|perp|eq|coin|on|tan|conc|mid|col|sym|fix|len|dia|rad|dist|ang, refs: ["l1", "l1.a", "l2.b", "c1.c", "a1.s"], value?: mm bzw. °}]; aufeinanderliegende Enden gelten als verbunden; dist von Punkt zu Linie = Abstand senkrecht. Vorher prüfen mit sketch.solve (dof 0 = voll bestimmt)', async fn(p, log) {
       return sketchExtrude(p, log);
     } },
     'body.edges': { undo: false, doc: '{id, filter?: all|top|bottom|vertical} — Kanten eines Grundkörpers (Quader, Zylinder, Kegel, Rohr bzw. schon gerundete) mit index, Art, Endpunkten/Mitte, Länge (mm)', async fn(p) {
@@ -79997,6 +80212,32 @@ function _fillHoles(mesh) {
     'timeline.reset': { doc: '{} — neuen Bauplan ab dem jetzigen Stand beginnen (bisherige Schritte werden fester Ausgangsteil)', fn() {
       const n = recipe ? recipe.steps.length : 0; recipe = bpFresh(); return { frozen_steps: n };
     } },
+    'body.faces': { undo: false, doc: '{id} — ebene Flächen eines Körpers (größte zuerst): index, name (top, bottom, +x, -x, +y, -y für die äußeren), normal, center, area_mm2, bbox. Für sketch.extrude {face}', fn(p) {
+      return { faces: facesOf(byId(p.id)) };
+    } },
+    'sketch.solve': { undo: false, doc: '{sketch: {entities, constraints}} — Skizze mit Bedingungen lösen, ohne zu bauen: liefert gelöste Elemente (mm), dof (Freiheitsgrade; 0 = voll bestimmt), ok und die Zahl geschlossener Konturen. Aufbau siehe sketch.extrude', fn(p) {
+      const r = solveSketch(p.sketch);
+      return { ok: r.ok, dof: r.dof, entities: r.entities, closed_loops: r.loops.length };
+    } },
+    'measure.min_distance': { undo: false, doc: '{a: id, b: id} — echter kleinster Abstand zwischen zwei Körpern (Manifold, mm); 0 = berühren/überlappen, dann overlap_mm3 = Volumen der Überschneidung', async fn(p) {
+      return minDistance(byId(p.a), byId(p.b));
+    } },
+    'measure.interference': { undo: false, doc: '{ids?: [id, …]} — Kollisionsprüfung: alle Körperpaare, die sich überschneiden, mit Überschneidungs-Volumen (Bohrungen zählen nicht)', async fn(p) {
+      const os = p.ids ? byIds(p.ids, 'ids') : objects.filter(o => !o.userData.isHole && o.visible !== false);
+      if (os.length > 40) fail('Höchstens 40 Körper auf einmal prüfen (ids angeben)');
+      const bw = os.map(boxWorld), hits = [];
+      for (let i = 0; i < os.length; i++) for (let j = i + 1; j < os.length; j++) {
+        if (![0, 1, 2].every(k => bw[i].min[k] < bw[j].max[k] && bw[j].min[k] < bw[i].max[k])) continue;   // BBox getrennt → sicher frei
+        const r = await minDistance(os[i], os[j]);
+        if (r.overlap_mm3 > 1e-3) hits.push({ a: os[i].userData.id, b: os[j].userData.id, overlap_mm3: r.overlap_mm3 });
+      }
+      return { checked: os.length, collisions: hits };
+    } },
+    'measure.section': { undo: false, doc: '{id, axis: X|Y|Z, at: mm} — Schnitt durch einen Körper bei axis = at: Querschnittsfläche (mm²), Zahl der Konturen (Löcher zählen mit), 2D-Grenzen. Für Wandstärken-/Querschnitts-Checks; Bild dazu: view.screenshot mit section', async fn(p) {
+      const ax = String(p.axis || 'Z').toUpperCase(); if (!['X', 'Y', 'Z'].includes(ax)) fail('axis: X, Y oder Z');
+      if (!isFinite(+p.at)) fail('at (mm) fehlt');
+      return section(byId(p.id), ax, +p.at);
+    } },
     'measure': { undo: false, doc: '{id?} — Volumen (mm³), Oberfläche (mm²), BBox je Körper + Summe; ohne id alle Körper', fn(p) {
       const os = p.id !== undefined ? [byId(p.id)] : objects.filter(o => !o.userData.isHole && o.visible !== false);
       const bodies = os.map(o => info(o, true));
@@ -80027,7 +80268,7 @@ function _fillHoles(mesh) {
       bpUndo.push(clone(recipe)); recipe = bpRedo.length ? bpRedo.pop() : null; if (recipe) recipe.fp = fingerprint();
       return { bodies: objects.length };
     } },
-    'view.screenshot': { undo: false, doc: '{view?: iso|front|back|top|bottom|left|right (iso), width?: 960, height?: 600, ids?: [id,…] (nur diese zeigen), grid?: bool=true, axes?: bool=false (Achsenkreuz)} — PNG als data-URL', fn(p) {
+    'view.screenshot': { undo: false, doc: '{view?: iso|front|back|top|bottom|left|right (iso), width?: 960, height?: 600, ids?: [id,…] (nur diese zeigen), grid?: bool=true, axes?: bool=false (Achsenkreuz), camera?: {target: [x,y,z] mm, yaw: ° (0 = von vorn, 90 = von rechts, 180 = von hinten), pitch: ° (90 = von oben), distance: mm, fov?: ° (0 = orthografisch)} statt view, section?: {axis: X|Y|Z, at: mm, keep?: "-"|"+" (welche Seite bleibt, Standard die kleinere)} = Schnittansicht} — PNG als data-URL', fn(p) {
       return screenshot(p);
     } },
     'file.export': { undo: false, doc: '{format: stl|3mf|step, ids?: [id, …]} — Datei als Base64 (mm, Z oben); Bohrungen werden nicht exportiert', async fn(p) {
@@ -80051,7 +80292,8 @@ function _fillHoles(mesh) {
   const VIEWS = { iso: [1, -1, 0.8], front: [0, -1, 0], back: [0, 1, 0], top: [0, 0, 1],
                   bottom: [0, 0, -1], right: [1, 0, 0], left: [-1, 0, 0] };
   function screenshot(p) {
-    const dir = VIEWS[p.view || 'iso']; if (!dir) fail('view: ' + Object.keys(VIEWS).join(', '));
+    if (p.view && p.camera) fail('view ODER camera angeben, nicht beides');
+    const dir = VIEWS[p.camera ? 'iso' : (p.view || 'iso')]; if (!dir) fail('view: ' + Object.keys(VIEWS).join(', '));
     const w = Math.max(64, Math.min(2048, p.width | 0 || 960)), h = Math.max(64, Math.min(2048, p.height | 0 || 600));
     const show = p.ids ? byIds(p.ids, 'ids') : null;
     const hidden = [];
@@ -80070,15 +80312,17 @@ function _fillHoles(mesh) {
       if (box.isEmpty()) box.set(new THREE.Vector3(-2, 0, -2), new THREE.Vector3(2, 2, 2));
       const center = box.getCenter(new THREE.Vector3());
       const rad = Math.max(0.5, box.getSize(new THREE.Vector3()).length() / 2);
-      const cam = new THREE.PerspectiveCamera(35, w / h, rad * 0.02, rad * 100 + 200);
+      let cam = new THREE.PerspectiveCamera(35, w / h, rad * 0.02, rad * 100 + 200);
       const d = toApp(dir.map(x => x * S)).normalize();
       const fit = rad / Math.sin(17.5 * DEG) * (w < h ? h / w : 1) * 1.05;
       cam.position.copy(center).addScaledVector(d, fit);
       cam.up.set(0, Math.abs(d.y) > 0.99 ? 0 : 1, Math.abs(d.y) > 0.99 ? -1 : 0);
       cam.lookAt(center);
+      if (p.camera) cam = customCam(p.camera, w, h);
       renderer.setPixelRatio(1); renderer.setSize(w, h, false);
-      renderer.render(scene, cam);
-      return { png: canvas.toDataURL('image/png'), width: w, height: h, view: p.view || 'iso' };
+      const undoClip = p.section ? clipScene(p.section) : null;
+      try { renderer.render(scene, cam); } finally { if (undoClip) undoClip(); }
+      return { png: canvas.toDataURL('image/png'), width: w, height: h, view: p.camera ? 'camera' : (p.view || 'iso') };
     } finally {
       renderer.setPixelRatio(pr0); renderer.setSize(size0.x, size0.y, false);
       hidden.forEach(o => { o.visible = true; });
@@ -80137,7 +80381,7 @@ function _fillHoles(mesh) {
       try {
         const { log, value } = await withLog(async log => {
           if (isRecorded(command)) bpBefore(log);
-          const v = await runOne(command, isRecorded(command) ? bpEval(params) : params, log);
+          const v = await runOne(command, bpWantsEval(command) ? bpEval(params) : params, log);
           if (mut) bpRecord(command, params, v);
           return v;
         });
@@ -80162,7 +80406,7 @@ function _fillHoles(mesh) {
         try {
           const { log, value } = await withLog(async log => {
             if (isRecorded(st.command)) bpBefore(log);
-            const v = await runOne(st.command, isRecorded(st.command) ? bpEval(st.params) : st.params, log);
+            const v = await runOne(st.command, bpWantsEval(st.command) ? bpEval(st.params) : st.params, log);
             bpRecord(st.command, st.params, v);
             return v;
           });

@@ -41,7 +41,7 @@
   }
 
   // Formeln in Parametern auflösen. Texte (Namen, Farben, Ebenen, Kanten-Wahl …) bleiben Texte.
-  const BP_TEXT = new Set(['name', 'color', 'type', 'plane', 'op', 'vorlage', 'axis', 'open', 'filter', 'format', 'view', 'json', 'base64', 'command', 'schrift', 'motiv', 'form']);
+  const BP_TEXT = new Set(['name', 'color', 'type', 'plane', 'op', 'vorlage', 'axis', 'open', 'filter', 'format', 'view', 'json', 'base64', 'command', 'schrift', 'motiv', 'form', 'face', 'keep', 'refs', 'id', 't']);
   const BP_NUM = /^(size|center|move|radius|distance|thickness|height|offset|step|count|r|wall|at|angle|rotation|rotate|sides|corner_radius|fillet_top|fillet_bottom|chamfer_top|chamfer_bottom|profile|polygon|edges)$/;
   function bpEval(params) {
     const walk = (v, key) => {

@@ -49,6 +49,7 @@ Befehle für `execute`/`batch`:
 - `gen.list`, `gen.run`, `gen.edit` (Kinder-/Spielwelt-Generatoren)
 - `revolve`, `body.shell`, `body.mirror`, `body.pattern`, `file.import`
 - `param.set`, `param.list`, `param.delete`, `timeline.list`, `timeline.edit`, `timeline.delete`, `timeline.rebuild`, `timeline.reset` (Parametrik: Formeln in allen Zahlen, Neuaufbau bei Parameteränderung)
+- `body.faces`, `sketch.solve` (Skizze mit Bedingungen), `measure.min_distance`, `measure.interference`, `measure.section`; `sketch.extrude` auch mit `face` und `sketch`; Screenshot mit freier `camera` und `section`; `verbose:false` für kompakte Antworten
 - `body.transform`, `body.set`, `body.duplicate`, `body.delete`
 - `bool.union`, `bool.subtract`, `bool.intersect`
 - `measure`, `measure.distance`
@@ -62,7 +63,7 @@ Regeln:
 
 ## Test
 
-Stufe 2 (Skizzen, Runden/Fasen, Generatoren): `node test_stufe2.mjs`. Formwerkzeuge: `node test_formen.mjs`. Parametrik: `node test_bauplan.mjs`. Die Bausteine liegen in `stufe2/` und werden mit `stufe2/einsetzen.py volme3d.html` eingearbeitet (idempotent).
+Stufe 2 (Skizzen, Runden/Fasen, Generatoren): `node test_stufe2.mjs`. Formwerkzeuge: `node test_formen.mjs`. Parametrik: `node test_bauplan.mjs`. Flächen, Bedingungen, Messen, Kamera: `node test_rest.mjs`. Die Bausteine liegen in `stufe2/` und werden mit `stufe2/einsetzen.py volme3d.html` eingearbeitet (idempotent).
 
 Anleitung für Agenten: `ANLEITUNG.md` (MCP-Werkzeug `anleitung` bzw. Ressource `v3d-cad://anleitung`).
 
