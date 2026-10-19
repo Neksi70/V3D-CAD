@@ -21,6 +21,24 @@
    - Liegt ein Werkzeug nur bündig an einer Fläche, gibt es Mini-Splitter. Lass Abzieh-Körper deshalb 0,5–1 mm über die Fläche hinausragen (durchgehende Löcher etwas höher als die Wand).
 4. **Zum Schluss** einen `screenshot` (klein, z. B. 480×320, `view: iso`) zur Sichtkontrolle, dann `export` (3MF für den Druck, STEP für andere CAD-Programme).
 
+## Parametrisch bauen (Bauplan)
+- **Parameter zuerst anlegen:** `param.set {name:"breite", value:80}`; auch Formeln wie `{name:"rand", value:"d + 4"}`. Sie erscheinen im 𝑥-Panel des Editors.
+- **In jedem Befehl** darf statt einer Zahl eine Formel stehen: `size:["breite","tiefe","hoehe"]`, `center:["breite/2 - wand - 5", 0, "wand + 5"]`, `radius:"R"`, `step:[0, "-(B - 2*rand)", 0]`.
+- Jeder bauende Befehl landet mit seinen Formeln im **Bauplan** (`timeline.list`). **`param.set` mit neuem Wert baut alles neu.**
+  - Die Antwort enthält `recomputed`, `volume_before` und `volume_after`.
+  - Die ids bleiben gleich.
+  - Scheitert ein Schritt (z. B. Radius zu groß), kommt eine Meldung mit der Schrittnummer, und alles bleibt beim alten Wert.
+- **Bauplan bearbeiten:**
+  - `timeline.edit {step, params}` ändert einen Schritt.
+  - `timeline.delete {step}` entfernt einen; hängen spätere Schritte davon ab, wird das verweigert.
+  - `timeline.rebuild` rechnet zur Kontrolle neu.
+- **Gute Praxis:**
+  - Alles, was der Nutzer später ändern könnte (Außenmaße, Wand, Lochdurchmesser, Abstände), als Parameter anlegen.
+  - Positionen relativ dazu formulieren, damit Löcher und Dome beim Ändern mitwandern.
+  - Spiegeln und Muster mit Formel-Schritten halten die Symmetrie.
+  - Nach `param.set` das neue Volumen kurz gegen die Erwartung prüfen.
+- **Handänderung:** Ändert der Nutzer die Szene im Editor (ziehen, löschen, Undo), friert der Bauplan ein. Die Antwort enthält dann einen Hinweis. Der jetzige Stand wird neuer Ausgangspunkt, die Parameter bleiben, und neue Schritte werden wieder aufgezeichnet. Importe beginnen ebenfalls einen neuen Bauplan.
+
 ## Bausteine
 | Ziel | Befehl |
 |---|---|

@@ -79663,6 +79663,122 @@ function _fillHoles(mesh) {
     return { created: neu.map(o => info(o, true)) };
   }
 
+  // ── Bauplan (Parametrik wie die Zeitleiste in SolidCraft) ───────────────
+  // Jeder bauende API-Befehl wird mit seinen ORIGINAL-Parametern aufgezeichnet
+  // (Formeln bleiben Formeln). Ändert sich ein Parameter (𝑥-Variablen = designVars),
+  // wird ab dem Ausgangsstand neu gebaut — gleiche Reihenfolge, gleicher idCtr-Start
+  // → die Körper behalten ihre ids. Wird die Szene zwischendurch von Hand geändert,
+  // friert der Bauplan ein: der jetzige Stand wird neuer Ausgangspunkt, nichts geht verloren.
+  let recipe = null;                     // { base: [objectToData], baseIdCtr, steps: [{command, params, ids}], fp }
+  let bpUndo = [], bpRedo = [];          // Bauplan-Stände passend zu edit.undo/redo der API
+  const BP_SKIP = new Set(['scene.new', 'scene.load', 'edit.undo', 'edit.redo', 'file.import']);
+  const isRecorded = c => CMDS[c] && CMDS[c].undo !== false && !BP_SKIP.has(c) && !/^(param|timeline)\./.test(c);
+  const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
+
+  // Fingerabdruck der Szene: erkennt Handänderungen im Editor (Ziehen, Undo, Löschen …)
+  function fingerprint() {
+    return objects.map(o => [o.userData.id, o.geometry ? o.geometry.uuid : 'g',
+      o.position.toArray().map(v => v.toFixed(5)).join(','), o.quaternion.toArray().map(v => v.toFixed(6)).join(','),
+      o.scale.toArray().map(v => v.toFixed(5)).join(','), o.userData.isHole ? 1 : 0, o.visible ? 1 : 0, o.userData.color].join('|'))
+      .join(';') + '#' + idCtr;
+  }
+  function bpFresh() {
+    return { base: objects.map(o => objectToData(o)), baseIdCtr: idCtr, steps: [], fp: fingerprint() };
+  }
+  // Vor jedem bauenden Befehl: Bauplan anlegen bzw. bei Handänderung einfrieren
+  function bpBefore(log) {
+    if (!recipe) { recipe = bpFresh(); return; }
+    if (recipe.fp !== fingerprint()) {
+      const n = recipe.steps.length;
+      recipe = bpFresh();
+      if (n) log.push('Hinweis: Die Szene wurde von Hand geändert — der Bauplan (' + n + ' Schritte) ist eingefroren und beginnt ab dem jetzigen Stand neu. Bisherige Parameter wirken nur noch auf neue Schritte.');
+    }
+  }
+  const createdIds = v => v && Array.isArray(v.created) ? v.created.map(o => o.id) : v && v.id !== undefined ? [v.id] : [];
+  function bpRecord(command, params, value) {
+    if (command === 'scene.new') recipe = bpFresh();
+    else if (command === 'scene.load') {
+      let d = null; try { d = JSON.parse(params.json); } catch (_) {}
+      recipe = d && d.apiRecipe ? { ...d.apiRecipe, fp: null } : bpFresh();
+    } else if (command === 'file.import') recipe = bpFresh();      // Importe = fester Ausgangsteil
+    else if (isRecorded(command)) recipe.steps.push({ command, params: clone(params || {}), ids: createdIds(value) });
+    if (recipe) recipe.fp = fingerprint();
+  }
+
+  // Formeln in Parametern auflösen. Texte (Namen, Farben, Ebenen, Kanten-Wahl …) bleiben Texte.
+  const BP_TEXT = new Set(['name', 'color', 'type', 'plane', 'op', 'vorlage', 'axis', 'open', 'filter', 'format', 'view', 'json', 'base64', 'command', 'schrift', 'motiv', 'form']);
+  const BP_NUM = /^(size|center|move|radius|distance|thickness|height|offset|step|count|r|wall|at|angle|rotation|rotate|sides|corner_radius|fillet_top|fillet_bottom|chamfer_top|chamfer_bottom|profile|polygon|edges)$/;
+  function bpEval(params) {
+    const walk = (v, key) => {
+      if (Array.isArray(v)) return v.map(x => walk(x, key));
+      if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x, k)]));
+      if (typeof v !== 'string' || BP_TEXT.has(key) || v.startsWith('#')) return v;
+      const s = v.trim();
+      if (!/^[\w\säöüÄÖÜß+\-*/().,]+$/.test(s)) return v;
+      const num = _varEvalExpr(s);
+      if (num != null) return num;
+      // sieht nach Formel aus (Operator/Ziffer + Name), lässt sich aber nicht auflösen → klare Meldung
+      if (/[+\-*/()]/.test(s) && /[A-Za-zäöüÄÖÜß_]/.test(s))
+        fail('Formel „' + s + '“ nicht auflösbar — Parameter mit param.set anlegen (bekannt: ' + (designVars.map(d => d.name).join(', ') || 'keine') + ')');
+      // einzelner Name an einer Stelle, wo eine Zahl hingehört → Tippfehler/fehlender Parameter
+      if (key && BP_NUM.test(key) && /^[A-Za-zäöüÄÖÜß_][\wäöüÄÖÜß]*$/.test(s) && !['all', 'top', 'bottom', 'vertical'].includes(s))
+        fail('„' + s + '“ ist kein bekannter Parameter — erst param.set {name:"' + s + '", value:…} (bekannt: ' + (designVars.map(d => d.name).join(', ') || 'keine') + ')');
+      return v;
+    };
+    return walk(params || {}, null);
+  }
+
+  const totalVol = () => r3(objects.filter(o => !o.userData.isHole && o.visible !== false).reduce((s, o) => s + measureObj(o).volume_mm3, 0));
+  async function bpRebuild(log) {
+    if (!recipe || !recipe.steps.length) return { recomputed: 0, hinweis: 'Kein Bauplan — es gibt nichts neu zu rechnen' };
+    const vorher = totalVol();
+    restoreState(recipe.base);
+    idCtr = recipe.baseIdCtr;
+    for (let i = 0; i < recipe.steps.length; i++) {
+      const st = recipe.steps[i];
+      let v;
+      try { v = await runOne(st.command, bpEval(st.params), log); }
+      catch (e) { fail('Schritt ' + (i + 1) + ' (' + st.command + ') scheitert mit den neuen Werten: ' + e.message + ' — alles bleibt wie vorher'); }
+      const ids = createdIds(v);
+      if (st.ids && st.ids.length && ids.join() !== st.ids.join())
+        log.push('Hinweis: Schritt ' + (i + 1) + ' lieferte andere ids (' + ids.join(', ') + ' statt ' + st.ids.join(', ') + ')');
+    }
+    recipe.fp = fingerprint();
+    return { recomputed: recipe.steps.length, volume_before: vorher, volume_after: totalVol(), bodies: objects.map(o => info(o)) };
+  }
+  // Prüft vor param.set/timeline.*: Handänderung? Dann einfrieren statt fremden Stand zu überschreiben
+  function bpGuard(log) {
+    if (recipe && recipe.fp !== fingerprint()) { bpBefore(log); return false; }
+    return true;
+  }
+
+  // Speichern/Laden: Bauplan reist mit der Szene (Design-Speicher, Datei, Mitsehen)
+  {
+    const snap0 = _sceneSnapshot, apply0 = _applySnapshot, load0 = _loadSceneFromJSON;
+    _sceneSnapshot = function () {
+      const d = snap0.apply(this, arguments);
+      if (recipe && recipe.steps.length) d.apiRecipe = { base: recipe.base, baseIdCtr: recipe.baseIdCtr, steps: recipe.steps };
+      return d;
+    };
+    const after = data => { recipe = data && data.apiRecipe ? { ...data.apiRecipe, fp: fingerprint() } : null; bpUndo = []; bpRedo = []; };
+    _applySnapshot = function (data) { const r = apply0.apply(this, arguments); after(data); return r; };
+    _loadSceneFromJSON = function (text) { const r = load0.apply(this, arguments); let d = null; try { d = JSON.parse(text); } catch (_) {} after(d); return r; };
+    // 𝑥-Panel: ändert der Nutzer eine Variable, rechnet auch der Bauplan neu
+    const varsEdit0 = _varsEdit;
+    _varsEdit = function (i, key) {
+      const alt = clone(designVars);
+      const r = varsEdit0.apply(this, arguments);
+      if (key === 'expr' && recipe && recipe.steps.length && JSON.stringify(alt) !== JSON.stringify(designVars)) {
+        execute('timeline.rebuild', {}).then(res => {
+          if (res.ok && res.result.recomputed) notify('Bauplan neu gerechnet (' + res.result.recomputed + ' Schritte) ✓', 'ok');
+          else if (!res.ok) { designVars = alt; _varsRender(); notify(res.error, 'e'); }
+          else if (res.messages) notify(res.messages.join(' '), 'w');
+        });
+      }
+      return r;
+    };
+  }
+
   // ── Befehle ────────────────────────────────────────────────────────────
   // doc: einzeilige Parameterbeschreibung (erscheint in list_commands);
   // undo:false = nur lesend, kein Undo-Schritt.
@@ -79824,6 +79940,63 @@ function _fillHoles(mesh) {
     'file.import': { doc: '{name: "teil.stl|3mf|obj|step", base64, center?: [x,y] mm} — Datei importieren (mm, Z oben); liegt danach auf der Platte. Über MCP einfacher: Werkzeug import mit Pfad', async fn(p) {
       return importFile(p);
     } },
+    'param.set': { doc: '{name, value: Zahl (mm) oder Formel ("breite/2 - wand"), comment?} — Parameter anlegen/ändern (erscheint im 𝑥-Panel). Gibt es einen Bauplan, wird das Modell damit neu gebaut (recomputed, Volumen vorher/nachher); scheitert ein Schritt, bleibt alles wie vorher. In allen Befehlen dürfen Zahlen Formeln mit Parametern sein', async fn(p, log) {
+      const name = String(p.name || '').trim();
+      if (!/^[A-Za-zÄÖÜäöüß_][A-Za-z0-9ÄÖÜäöüß_]*$/.test(name)) fail('name: Buchstaben, Ziffern, _ (nicht mit Ziffer beginnen)');
+      if (p.value === undefined || p.value === null || p.value === '') fail('value fehlt');
+      const expr = String(p.value);
+      const test = designVars.filter(v => v.name !== name).concat([{ name, expr }]);
+      const keep = designVars; designVars = test;
+      const val = _varsValues()[name];
+      if (val == null) { designVars = keep; fail('„' + expr + '“ lässt sich nicht ausrechnen (unbekannter Name oder Zeichen?)'); }
+      designVars = keep;
+      const vorhanden = designVars.find(v => v.name === name);
+      const guard = bpGuard(log);
+      if (vorhanden) { vorhanden.expr = expr; if (p.comment !== undefined) vorhanden.comment = String(p.comment); }
+      else designVars.push({ name, expr, ...(p.comment ? { comment: String(p.comment) } : {}) });
+      if (document.getElementById('vars-panel').classList.contains('show')) _varsRender();
+      const res = guard ? await bpRebuild(log) : { recomputed: 0 };
+      return { name, expr, value: r3(val), ...res };
+    } },
+    'param.list': { undo: false, doc: '{} — alle Parameter mit Formel und Wert', fn() {
+      const vals = _varsValues();
+      return { params: designVars.map(v => ({ name: v.name, expr: v.expr, value: vals[v.name] != null ? r3(vals[v.name]) : null, ...(v.comment ? { comment: v.comment } : {}) })) };
+    } },
+    'param.delete': { doc: '{name} — Parameter löschen (nur wenn kein Bauplan-Schritt und kein anderer Parameter ihn benutzt)', fn(p) {
+      const i = designVars.findIndex(v => v.name === p.name); if (i < 0) fail('Parameter „' + p.name + '“ gibt es nicht');
+      const re = new RegExp('(^|[^\\wäöüÄÖÜß])' + p.name + '($|[^\\wäöüÄÖÜß])');
+      const inSteps = (recipe ? recipe.steps : []).map((s, k) => re.test(JSON.stringify(s.params)) ? k + 1 : 0).filter(Boolean);
+      const inVars = designVars.filter(v => v.name !== p.name && re.test(String(v.expr))).map(v => v.name);
+      if (inSteps.length || inVars.length) fail('„' + p.name + '“ wird noch benutzt' + (inSteps.length ? ' in Schritt ' + inSteps.join(', ') : '') + (inVars.length ? ' in ' + inVars.join(', ') : ''));
+      designVars.splice(i, 1);
+      if (document.getElementById('vars-panel').classList.contains('show')) _varsRender();
+      return { deleted: p.name };
+    } },
+    'timeline.list': { undo: false, doc: '{} — Bauplan: alle aufgezeichneten Schritte (step ab 1, Befehl, Original-Parameter mit Formeln, erzeugte ids). eingefroren:true heißt: die Szene wurde von Hand geändert, der nächste Schritt beginnt einen neuen Bauplan', fn() {
+      if (!recipe) return { steps: [], hinweis: 'Noch kein Bauplan — er entsteht mit dem ersten bauenden Befehl' };
+      return { steps: recipe.steps.map((s, i) => ({ step: i + 1, command: s.command, params: s.params, ids: s.ids })),
+               base_bodies: recipe.base.length, eingefroren: recipe.fp !== fingerprint() };
+    } },
+    'timeline.edit': { doc: '{step, params: {…} (werden mit den alten zusammengeführt), replace?: bool (statt zusammenführen ersetzen)} — Schritt ändern und neu bauen', async fn(p, log) {
+      if (!bpGuard(log)) fail('Die Szene wurde von Hand geändert — der alte Bauplan ist eingefroren, es gibt nichts mehr zu bearbeiten');
+      const st = recipe && recipe.steps[p.step - 1]; if (!st) fail('Schritt ' + p.step + ' gibt es nicht (1–' + (recipe ? recipe.steps.length : 0) + ')');
+      if (!p.params || typeof p.params !== 'object') fail('params fehlt');
+      st.params = p.replace ? clone(p.params) : { ...st.params, ...clone(p.params) };
+      return { step: p.step, params: st.params, ...await bpRebuild(log) };
+    } },
+    'timeline.delete': { doc: '{step} — Schritt aus dem Bauplan löschen und neu bauen. Hängt ein späterer Schritt davon ab (benutzt seine ids), scheitert es mit Angabe des Schritts — dann den zuerst löschen', async fn(p, log) {
+      if (!bpGuard(log)) fail('Die Szene wurde von Hand geändert — der alte Bauplan ist eingefroren');
+      if (!recipe || !recipe.steps[p.step - 1]) fail('Schritt ' + p.step + ' gibt es nicht');
+      const [weg] = recipe.steps.splice(p.step - 1, 1);
+      return { deleted: { step: p.step, command: weg.command }, ...await bpRebuild(log) };
+    } },
+    'timeline.rebuild': { doc: '{} — Bauplan mit den aktuellen Parametern neu bauen (zur Kontrolle)', async fn(p, log) {
+      if (!bpGuard(log)) return { recomputed: 0, hinweis: 'Szene von Hand geändert — Bauplan eingefroren, nichts neu gerechnet' };
+      return bpRebuild(log);
+    } },
+    'timeline.reset': { doc: '{} — neuen Bauplan ab dem jetzigen Stand beginnen (bisherige Schritte werden fester Ausgangsteil)', fn() {
+      const n = recipe ? recipe.steps.length : 0; recipe = bpFresh(); return { frozen_steps: n };
+    } },
     'measure': { undo: false, doc: '{id?} — Volumen (mm³), Oberfläche (mm²), BBox je Körper + Summe; ohne id alle Körper', fn(p) {
       const os = p.id !== undefined ? [byId(p.id)] : objects.filter(o => !o.userData.isHole && o.visible !== false);
       const bodies = os.map(o => info(o, true));
@@ -79845,10 +80018,14 @@ function _fillHoles(mesh) {
                touching_or_overlapping: gap.every(g => g <= 1e-3) };
     } },
     'edit.undo': { undo: false, doc: '{} — einen Schritt zurück', fn() {
-      if (!undoStack.length) fail('Nichts zum Zurücknehmen'); undo(); return { bodies: objects.length };
+      if (!undoStack.length) fail('Nichts zum Zurücknehmen'); undo();
+      bpRedo.push(clone(recipe)); recipe = bpUndo.length ? bpUndo.pop() : null; if (recipe) recipe.fp = fingerprint();
+      return { bodies: objects.length };
     } },
     'edit.redo': { undo: false, doc: '{} — einen Schritt vor', fn() {
-      if (!redoStack.length) fail('Nichts zum Wiederholen'); redo(); return { bodies: objects.length };
+      if (!redoStack.length) fail('Nichts zum Wiederholen'); redo();
+      bpUndo.push(clone(recipe)); recipe = bpRedo.length ? bpRedo.pop() : null; if (recipe) recipe.fp = fingerprint();
+      return { bodies: objects.length };
     } },
     'view.screenshot': { undo: false, doc: '{view?: iso|front|back|top|bottom|left|right (iso), width?: 960, height?: 600, ids?: [id,…] (nur diese zeigen), grid?: bool=true, axes?: bool=false (Achsenkreuz)} — PNG als data-URL', fn(p) {
       return screenshot(p);
@@ -79914,9 +80091,12 @@ function _fillHoles(mesh) {
   let queue = Promise.resolve();
   const serial = fn => { const r = queue.then(fn, fn); queue = r.catch(() => {}); return r; };
 
-  function takeSnap() { return { objs: objects.map(o => objectToData(o, 'undo')), undoLen: undoStack.length, idCtr }; }
+  function takeSnap() { return { objs: objects.map(o => objectToData(o, 'undo')), undoLen: undoStack.length, idCtr,
+                                  recipe: clone(recipe), vars: clone(designVars) }; }
   function rollback(s) {
     restoreState(s.objs);
+    idCtr = s.idCtr; designVars = s.vars; recipe = s.recipe;
+    if (recipe) recipe.fp = fingerprint();                  // Szene passt wieder zum Bauplan-Stand
     undoStack.length = Math.min(undoStack.length, s.undoLen); redoStack = [];
     updateUndoRedoButtons();
   }
@@ -79924,6 +80104,7 @@ function _fillHoles(mesh) {
   function commit(s) {
     undoStack.length = Math.min(undoStack.length, s.undoLen);
     undoStack.push(s.objs); if (undoStack.length > 50) undoStack.shift();
+    bpUndo.push(s.recipe); if (bpUndo.length > 50) bpUndo.shift(); bpRedo = [];
     redoStack = []; _sceneRev++;
     updateUndoRedoButtons(); updateTree();
   }
@@ -79954,7 +80135,12 @@ function _fillHoles(mesh) {
       const c = CMDS[command], mut = !(c && c.undo === false);
       const snap = mut ? takeSnap() : null;
       try {
-        const { log, value } = await withLog(log => runOne(command, params, log));
+        const { log, value } = await withLog(async log => {
+          if (isRecorded(command)) bpBefore(log);
+          const v = await runOne(command, isRecorded(command) ? bpEval(params) : params, log);
+          if (mut) bpRecord(command, params, v);
+          return v;
+        });
         if (mut) commit(snap);
         return Object.assign({ ok: true, result: value }, log.length ? { messages: log } : {});
       } catch (e) {
@@ -79974,7 +80160,12 @@ function _fillHoles(mesh) {
       for (let i = 0; i < steps.length; i++) {
         const st = steps[i] || {};
         try {
-          const { log, value } = await withLog(log => runOne(st.command, st.params, log));
+          const { log, value } = await withLog(async log => {
+            if (isRecorded(st.command)) bpBefore(log);
+            const v = await runOne(st.command, isRecorded(st.command) ? bpEval(st.params) : st.params, log);
+            bpRecord(st.command, st.params, v);
+            return v;
+          });
           results.push(Object.assign({ ok: true, result: value }, log.length ? { messages: log } : {}));
         } catch (e) {
           const rb = opts.rollback !== false;

@@ -95,6 +95,7 @@ const INSTRUCTIONS = `V3D CAD (Browser-CAD von Volme 3D) per Befehl steuern.
 - Ein execute oder ein ganzer batch ist EIN Undo-Schritt; bei Fehler bleibt die Szene unverändert.
 - list_commands zeigt alle Befehle mit Parametern; shape.types die Grundformen.
 - Werkzeuge: Grundformen (shape.add), Skizzen extrudieren/anfügen/abziehen (sketch.extrude), Kanten runden/fasen (body.fillet/body.chamfer — VOR Bool-Operationen und VOR dem Drehen), Bool (bool.*), Generatoren für Kinder-/Spielmodelle (gen.list/gen.run/gen.edit).
+- Parametrisch: erst param.set für änderbare Maße, dann Formeln in den Befehlen ("breite/2 - wand"); param.set mit neuem Wert baut den Bauplan neu (ids bleiben).
 - VOR dem ersten Bauen einmal das Werkzeug "anleitung" lesen (Vorgehen, Ebenen, Rezepte, Grenzen).
 - Zum Schluss ein kleiner screenshot (z. B. 480×320) zur Sichtkontrolle.`;
 

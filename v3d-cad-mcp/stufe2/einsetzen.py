@@ -23,6 +23,13 @@ if "'body.mirror'" not in s:
             sys.exit('Anker nicht eindeutig: ' + a[:50])
     s = s.replace(anker_helfer, (hier / 'formen_helfer.js').read_text(encoding='utf-8') + anker_helfer)
     s = s.replace(anker_befehle, (hier / 'formen_befehle.js').read_text(encoding='utf-8') + anker_befehle)
+# Bauplan (Parametrik) — eigener Satz Bausteine
+if "'param.set'" not in s:
+    for a in (anker_helfer, anker_befehle):
+        if s.count(a) != 1:
+            sys.exit('Anker nicht eindeutig: ' + a[:50])
+    s = s.replace(anker_helfer, (hier / 'bauplan_helfer.js').read_text(encoding='utf-8') + anker_helfer)
+    s = s.replace(anker_befehle, (hier / 'bauplan_befehle.js').read_text(encoding='utf-8') + anker_befehle)
 # Drehen: relativ („rotate“) für alle Körper; absolut („rotation“) nur bei Grundformen.
 # Bool-/Skizzen-/Generator-Ergebnisse tragen oft eine innere Grunddrehung — absolut
 # gesetzt landete der Deckel aus dem Rezept hochkant statt umgedreht.
@@ -54,6 +61,41 @@ ERSETZE = [
     if (!p.axes) hide(window._bpCross);                     // Achsenkreuz stört im Produktbild"""),
 ("""grid?: bool=true} — PNG als data-URL'""",
 """grid?: bool=true, axes?: bool=false (Achsenkreuz)} — PNG als data-URL'"""),
+# Bauplan in den Ablauf einhängen: aufzeichnen, Formeln auswerten, Rückrollen, Undo
+("""        const { log, value } = await withLog(log => runOne(command, params, log));""",
+"""        const { log, value } = await withLog(async log => {
+          if (isRecorded(command)) bpBefore(log);
+          const v = await runOne(command, isRecorded(command) ? bpEval(params) : params, log);
+          if (mut) bpRecord(command, params, v);
+          return v;
+        });"""),
+("""          const { log, value } = await withLog(log => runOne(st.command, st.params, log));""",
+"""          const { log, value } = await withLog(async log => {
+            if (isRecorded(st.command)) bpBefore(log);
+            const v = await runOne(st.command, isRecorded(st.command) ? bpEval(st.params) : st.params, log);
+            bpRecord(st.command, st.params, v);
+            return v;
+          });"""),
+("""  function takeSnap() { return { objs: objects.map(o => objectToData(o, 'undo')), undoLen: undoStack.length, idCtr }; }""",
+"""  function takeSnap() { return { objs: objects.map(o => objectToData(o, 'undo')), undoLen: undoStack.length, idCtr,
+                                  recipe: clone(recipe), vars: clone(designVars) }; }"""),
+("""    restoreState(s.objs);
+    undoStack.length = Math.min(undoStack.length, s.undoLen); redoStack = [];""",
+"""    restoreState(s.objs);
+    idCtr = s.idCtr; designVars = s.vars; recipe = s.recipe;
+    if (recipe) recipe.fp = fingerprint();                  // Szene passt wieder zum Bauplan-Stand
+    undoStack.length = Math.min(undoStack.length, s.undoLen); redoStack = [];"""),
+("""    undoStack.push(s.objs); if (undoStack.length > 50) undoStack.shift();""",
+"""    undoStack.push(s.objs); if (undoStack.length > 50) undoStack.shift();
+    bpUndo.push(s.recipe); if (bpUndo.length > 50) bpUndo.shift(); bpRedo = [];"""),
+("""      if (!undoStack.length) fail('Nichts zum Zurücknehmen'); undo(); return { bodies: objects.length };""",
+"""      if (!undoStack.length) fail('Nichts zum Zurücknehmen'); undo();
+      bpRedo.push(clone(recipe)); recipe = bpUndo.length ? bpUndo.pop() : null; if (recipe) recipe.fp = fingerprint();
+      return { bodies: objects.length };"""),
+("""      if (!redoStack.length) fail('Nichts zum Wiederholen'); redo(); return { bodies: objects.length };""",
+"""      if (!redoStack.length) fail('Nichts zum Wiederholen'); redo();
+      bpUndo.push(clone(recipe)); recipe = bpRedo.length ? bpRedo.pop() : null; if (recipe) recipe.fp = fingerprint();
+      return { bodies: objects.length };"""),
 ]
 for alt, neu in ERSETZE:
     if neu in s:
