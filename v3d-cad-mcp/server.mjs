@@ -187,7 +187,13 @@ function checkArgs(tool, a) {
 // ── Agent-Monitor: Weboberfläche zum Mitverfolgen (nur localhost) ─────────
 // Jeder Werkzeug-Aufruf landet im Verlauf (Speicher + Protokolldatei) und geht
 // per Server-Sent Events an offene Monitor-Seiten. Nach jedem Bauschritt ein Bild.
-const MON_PORT0 = parseInt(argVal('--monitor-port') || '8830', 10);
+// Hub (--hub): Dauerdienst auf 8830 hinter dem Funnel-Pfad /cad-agent. Baut selbst
+// nichts, sondern leitet zu den Sitzungen weiter. Jede Claude-Sitzung bekommt einen
+// eigenen Monitor auf 8831–8839, der Hub reicht sie unter p/<port>/ durch.
+const HUB = args.includes('--hub');
+const HUB_PORT = 8830;
+const MON_PORT0 = parseInt(argVal('--monitor-port') || String(HUB_PORT + 1), 10);
+const SESS_MIN = HUB_PORT + 1, SESS_MAX = HUB_PORT + 9;
 const BAUEND = new Set(['execute', 'batch', 'open', 'new_scene', 'undo', 'redo']);
 const history = [];                 // {n, zeit, quelle, tool, args, ok, ms, ergebnis, bild}
 const sseClients = new Set();
@@ -276,7 +282,7 @@ ${msg ? `<div class="m">${msg}</div>` : ''}<button>Öffnen</button></form></body
 // Alle laufenden Monitore (einer je Claude-Sitzung) auf 8830–8839
 async function sitzungen() {
   const out = [];
-  await Promise.all(Array.from({ length: 10 }, (_, i) => MON_PORT0 + i).map(async port => {
+  await Promise.all(Array.from({ length: SESS_MAX - SESS_MIN + 1 }, (_, i) => SESS_MIN + i).map(async port => {
     if (port === monPort) { out.push({ port, selbst: true, pid: process.pid, start: startedAt, schritte: histN }); return; }
     try {
       const r = await fetch(`http://127.0.0.1:${port}/api/info`, { signal: AbortSignal.timeout(800) });
@@ -313,12 +319,14 @@ async function startMonitor() {
     const pm = /^\/p\/(\d+)(\/.*)?$/.exec(u.pathname);
     if (pm) {
       const port = +pm[1];
-      if (port < MON_PORT0 || port >= MON_PORT0 + 10 || port === monPort) { res.writeHead(404); return res.end(); }
+      if (port < SESS_MIN || port > SESS_MAX || port === monPort) { res.writeHead(404); return res.end(); }
       if (!pm[2]) { res.writeHead(302, { location: port + '/' }); return res.end(); }
       const h = { ...req.headers }; delete h.host; delete h.cookie; delete h.origin;
       for (const k of Object.keys(h)) if (/^x-forwarded|^tailscale/i.test(k)) delete h[k];
       const pr = http.request({ host: '127.0.0.1', port, path: pm[2] + u.search, method: req.method, headers: h }, r2 => {
         res.writeHead(r2.statusCode, r2.headers); r2.pipe(res);
+        // Bricht die Sitzung ab (Prozess beendet), endet pipe() nicht von selbst → Live-Verbindung hinge
+        r2.on('close', () => { if (!res.writableEnded) res.end(); });
       });
       pr.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end('Sitzung nicht mehr da'); });
       req.pipe(pr); res.on('close', () => pr.destroy());
@@ -327,7 +335,9 @@ async function startMonitor() {
     try {
       if (u.pathname === '/api/sitzungen') return json(res, 200, await sitzungen());
       if (u.pathname === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); return res.end(html()); }
-      if (u.pathname === '/api/info') return json(res, 200, { pid: process.pid, start: startedAt, protokoll: LOG_FILE, appBereit: !!(page && !page.isClosed()), schritte: histN });
+      if (u.pathname === '/api/info') return json(res, 200, { pid: process.pid, start: startedAt, protokoll: HUB ? null : LOG_FILE, hub: HUB, appBereit: !!(page && !page.isClosed()), schritte: histN });
+      // Der Hub hat keine eigene App: nur Seite, Info, Sitzungsliste und Werkzeugliste
+      if (HUB && !['/', '/api/werkzeuge'].includes(u.pathname)) { res.writeHead(404); return res.end(); }
       if (u.pathname === '/api/verlauf') return json(res, 200, history);
       if (u.pathname === '/api/werkzeuge') return json(res, 200, TOOLS.map(({ run, ...t }) => t));
       if (u.pathname === '/api/events') {
@@ -365,13 +375,16 @@ async function startMonitor() {
       res.writeHead(404); res.end();
     } catch (e) { json(res, 500, { error: e.message }); }
   });
-  for (let p = MON_PORT0; p < MON_PORT0 + 10; p++) {
+  const [von, bis] = HUB ? [HUB_PORT, HUB_PORT] : [MON_PORT0, SESS_MAX];
+  for (let p = von; p <= bis; p++) {
     const okk = await new Promise(r => { srv.once('error', () => r(false)); srv.listen(p, '127.0.0.1', () => r(true)); });
-    if (okk) { monPort = p; log(`Monitor: http://127.0.0.1:${p}/`); return; }
+    if (okk) { monPort = p; log(`${HUB ? 'Hub' : 'Monitor'}: http://127.0.0.1:${p}/`); return; }
   }
-  log('Monitor: kein freier Port ab ' + MON_PORT0);
+  log('Monitor: kein freier Port ' + von + '–' + bis);
+  if (HUB) process.exit(1);
 }
 const monReady = args.includes('--no-monitor') ? Promise.resolve() : startMonitor().catch(e => log('Monitor-Fehler:', e.message));
+const PUBLIC_LINK = PUBLIC_ORIGIN + '/cad-agent/';
 
 // ── JSON-RPC ──────────────────────────────────────────────────────────────
 const send = m => process.stdout.write(JSON.stringify(m) + '\n');
@@ -388,7 +401,7 @@ async function handle(msg) {
           capabilities: { tools: { listChanged: false } },
           serverInfo: { name: 'v3d-cad', version: '0.2.0' },
           instructions: INSTRUCTIONS + (await monReady, monPort
-            ? `\n- Der Nutzer kann live mitverfolgen, was du baust: Agent-Monitor http://127.0.0.1:${monPort}/ — nenne ihm den Link, wenn du mit dem Bauen beginnst.` : '') } };
+            ? `\n- Der Nutzer kann live mitverfolgen, was du baust: Agent-Monitor ${PUBLIC_LINK} (von überall, mit PIN) bzw. http://127.0.0.1:${monPort}/ auf dem Server — nenne ihm den Link, wenn du mit dem Bauen beginnst.` : '') } };
       }
       case 'notifications/initialized': case 'notifications/cancelled': return null;
       case 'ping': return { jsonrpc: '2.0', id, result: {} };
@@ -413,9 +426,10 @@ async function handle(msg) {
   } catch (e) { return isNote ? null : rpcErr(id, -32603, e.message); }
 }
 
-const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+// Im Hub-Modus kein MCP über stdio — nur der Webdienst
+const rl = HUB ? null : createInterface({ input: process.stdin, crlfDelay: Infinity });
 let chain = Promise.resolve();
-rl.on('line', line => {
+rl?.on('line', line => {
   if (!line.trim()) return;
   let msg;
   try { msg = JSON.parse(line); } catch { send(rpcErr(null, -32700, 'Parse error')); return; }
@@ -433,5 +447,5 @@ async function shutdown() {
   try { devSrv?.kill(); } catch (_) {}
   process.exit(0);
 }
-rl.on('close', () => chain.then(shutdown));
+rl?.on('close', () => chain.then(shutdown));
 process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);

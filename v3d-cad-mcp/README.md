@@ -19,7 +19,7 @@ Optionen:
 
 ## Agent-Monitor (live mitverfolgen)
 
-Sobald der Server läuft, öffnet sich unter **http://127.0.0.1:8830/** der Agent-Monitor (nur von diesem Rechner erreichbar). Ist der Port belegt, nimmt er den nächsten freien bis 8839; mit `--monitor-port N` lässt sich ein anderer Startport wählen, mit `--no-monitor` schaltet man ihn ab. Claude bekommt den Link mitgeteilt und nennt ihn dir.
+Sobald der Server läuft, öffnet sich unter **http://127.0.0.1:8831/** (bzw. dem nächsten freien Port bis 8839) der Agent-Monitor der Sitzung (nur von diesem Rechner erreichbar). Mit `--monitor-port N` lässt sich ein anderer Startport wählen, mit `--no-monitor` schaltet man ihn ab. Claude bekommt den Link mitgeteilt und nennt ihn dir.
 
 - **Verlauf:** jeder Werkzeug-Aufruf live mit Parametern, Ergebnis, Fehlern und Dauer, dazu ein Bild nach jedem Bauschritt.
 - **Ansicht:** Live folgen oder einen alten Schritt anklicken; Iso/Vorne/Oben/… rendert den aktuellen Stand.
@@ -27,6 +27,16 @@ Sobald der Server läuft, öffnet sich unter **http://127.0.0.1:8830/** der Agen
 - **Befehle / MCP-Werkzeuge:** alle Befehle mit Parametern. Über das Formular lassen sie sich selbst ausführen; sie erscheinen dann als „Hand“ im Verlauf.
 - **Download:** STL, 3MF, STEP und die Szene (V3D-JSON, in V3D CAD zu öffnen).
 - **Protokoll:** jede Sitzung schreibt `ausgabe/protokoll-<Datum-Uhrzeit>.jsonl`.
+
+## Von außen: https://v3da.tailf05fe9.ts.net/cad-agent/ (PIN)
+
+- Der Funnel-Pfad `/cad-agent` zeigt auf den **Hub** (127.0.0.1:8830, `server.mjs --hub`). Der Hub baut selbst nichts. Läuft keine Sitzung, zeigt er „Gerade baut keine Claude-Sitzung“. Startet eine, springt er zur neuesten Sitzung und reicht deren Monitor (8831–8839) unter `p/<port>/` durch.
+- Von außen geht es nur mit PIN (`~/.config/v3d-cad-mcp/pin`, eigene PIN einfach dort eintragen). Das Cookie gilt 30 Tage. Nach 5 Fehlversuchen ist 15 Minuten gesperrt.
+- Dauerdienst einrichten:
+  ```
+  cp ~/v3d-cad-mcp/v3d-cad-agent-hub.service ~/.config/systemd/user/
+  systemctl --user daemon-reload && systemctl --user enable --now v3d-cad-agent-hub
+  ```
 
 ## Werkzeuge
 

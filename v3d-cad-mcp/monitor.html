@@ -268,6 +268,7 @@ $('#nurBau').onchange = renderVerlauf;
 
 async function info() {
   try { const i = await (await fetch('api/info')).json();
+        if (i.hub) return 'hub';
         $('#proto').textContent = 'Protokoll: ' + i.protokoll;
         $('#zaehler').textContent = 'Sitzung seit ' + new Date(i.start).toLocaleTimeString('de-DE') + ' · PID ' + i.pid; } catch (_) {}
 }
@@ -278,21 +279,41 @@ const HIER = (/p\/(\d+)\/$/.exec(location.pathname) || [])[1];
 async function ladeSitzungen() {
   try {
     const list = await (await fetch(ROOT + 'api/sitzungen')).json();
-    const hub = list.find(s => s.selbst);
     const sel = $('#sitzung');
     sel.hidden = list.length < 2;
     sel.innerHTML = list.map(s => {
       const aktiv = HIER ? String(s.port) === HIER : s.selbst;
-      return `<option value="${s === hub ? '' : 'p/' + s.port + '/'}"${aktiv ? ' selected' : ''}>Sitzung ${new Date(s.start).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} · ${s.schritte} Schritte</option>`;
+      return `<option value="${s.selbst ? '' : 'p/' + s.port + '/'}"${aktiv ? ' selected' : ''}>Sitzung ${new Date(s.start).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} · ${s.schritte} Schritte</option>`;
     }).join('');
-  } catch (_) {}
+    return list;
+  } catch (_) { return null; }
+}
+
+// Hub-Seite (Dauerdienst ohne eigene Sitzung): zur neuesten Sitzung springen oder warten
+async function hubWarten() {
+  document.querySelector('main').innerHTML = `<div style="grid-column:1/-1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:40px;text-align:center">
+    <div style="font-size:42px">🛠️</div><div style="font-size:18px;font-weight:600">Gerade baut keine Claude-Sitzung mit V3D CAD</div>
+    <div class="mute">Sobald Claude in einer Sitzung ein V3D-Werkzeug benutzt, springt diese Seite automatisch dorthin.</div></div>`;
+  $('#status').textContent = 'wartet auf eine Sitzung'; $('#dot').classList.remove('live');
+  for (;;) {
+    const list = await ladeSitzungen();
+    if (list && list.length) {
+      const neu = list.slice().sort((a, b) => new Date(b.start) - new Date(a.start))[0];
+      location.replace(ROOT + 'p/' + neu.port + '/'); return;
+    }
+    await new Promise(r => setTimeout(r, 4000));
+  }
 }
 $('#sitzung').onchange = e => { location.href = ROOT + e.target.value; };
 
 function verbinde() {
   const es = new EventSource('api/events');
   es.onopen = () => { $('#dot').classList.add('live'); $('#status').textContent = 'live verbunden'; };
-  es.onerror = () => { $('#dot').classList.remove('live'); $('#status').textContent = 'getrennt — Claude-Sitzung beendet? Neuer Versuch …'; };
+  es.onerror = async () => {
+    $('#dot').classList.remove('live'); $('#status').textContent = 'getrennt — Claude-Sitzung beendet? Neuer Versuch …';
+    // Über den Hub angesehen und die Sitzung ist weg → zurück zum Hub (wartet bzw. springt zur nächsten)
+    if (HIER) { const list = await ladeSitzungen(); if (list && !list.some(s => String(s.port) === HIER)) { es.close(); location.replace(ROOT); } }
+  };
   es.addEventListener('schritt', m => {
     const e = JSON.parse(m.data);
     steps.push(e);
@@ -303,8 +324,13 @@ function verbinde() {
 }
 
 (async () => {
-  await info();
-  ladeSitzungen(); setInterval(ladeSitzungen, 20000);
+  if (await info() === 'hub') return hubWarten();
+  ladeSitzungen();
+  // Über den Hub angesehen: Sitzung beendet → zurück zum Hub (wartet bzw. springt zur nächsten)
+  setInterval(async () => {
+    const list = await ladeSitzungen();
+    if (HIER && list && !list.some(s => String(s.port) === HIER)) location.replace(ROOT);
+  }, HIER ? 5000 : 20000);
   steps =await (await fetch('api/verlauf')).json();
   renderVerlauf(); if (steps.length) waehle(steps[steps.length - 1].n);
   await ladeWerkzeuge();
