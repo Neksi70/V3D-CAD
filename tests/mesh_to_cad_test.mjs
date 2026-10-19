@@ -35,6 +35,15 @@ try {
         m = m.subtract(M.cylinder(50, 1.5, 1.5, 48, false).rotate([0, 90, 0]).translate([20, 10, 5]));   // Ø3 durch den Zapfen
         m = m.add(M.cylinder(8, 3, 3, 64, false).rotate([-90, 0, 0]).translate([10, 18, 5]));             // zweiter Zapfen Ø6 nach +Y
       } else if (kind === 'kugel') m = M.sphere(10, 48);
+      if (kind === 'rund') {   // 40×30, senkrechte Kanten R4, Bohrung Ø8, oben Fase 1 × 2 (nicht 45°), 10 hoch
+        const out = [], c = [[3.6, 2.6, 0], [0.4, 2.6, 90], [0.4, 0.4, 180], [3.6, 0.4, 270]];
+        for (const [cx, cv, a0] of c.map(([x, y, a]) => [x, y, a])) for (let i = 0; i <= 16; i++) { const a = (a0 + i / 16 * 90) * Math.PI / 180; out.push({ u: cx + 0.4 * Math.cos(a), v: cv + 0.4 * Math.sin(a) }); }
+        const hole = []; for (let i = 0; i < 64; i++) { const a = -i / 64 * Math.PI * 2; hole.push({ u: 2 + 0.4 * Math.cos(a), v: 1.5 + 0.4 * Math.sin(a) }); }
+        const g = _skGeoBev([{ outer: out, holes: [hole] }], 10, { top: { fil: false, mm: 1, mm2: 2 }, bot: null }).toNonIndexed();
+        const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x888888, side: THREE.DoubleSide }));
+        mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Import rund', color: '#888888' };
+        objects.push(mesh); scene.add(mesh); selectObjs([mesh]); updateTree(); return mesh.userData.id;
+      }
       if (kind === 'fase') {   // Platte 40×30×10, Bohrung Ø8, oben R2, unten Fase 1 — als Netz wie ein STL
         const R = [[0,0],[4,0],[4,3],[0,3]].map(([u, v]) => ({ u, v })), hole = []; for (let i = 0; i < 64; i++) { const a = -i / 64 * Math.PI * 2; hole.push({ u: 2 + 0.4 * Math.cos(a), v: 1.5 + 0.4 * Math.sin(a) }); }
         const g = _skGeoBev([{ outer: R, holes: [hole] }], 10, { top: { fil: true, mm: 2 }, bot: { fil: false, mm: 1 } }).toNonIndexed();
@@ -97,6 +106,26 @@ try {
     ok(r.steps === 1 && bev && bev.top && bev.top.fil && Math.abs(bev.top.mm - 2) < 0.15 && bev.bot && !bev.bot.fil && Math.abs(bev.bot.mm - 1) < 0.1, `Rundung oben + Fase unten erkannt: ${JSON.stringify(bev)}`);
     ok(dv < 0.5, `Volumen mit Kanten ${r.v0.toFixed(1)} → ${r.v1.toFixed(1)} mm³ (${dv.toFixed(3)} %)`);
   } else ok(false, 'Fase: ' + r.txt);
+  // Fase 1 × 2 (nicht 45°) + Rundungen an senkrechten Kanten als Eckenrundung
+  r = await run('rund');
+  if (r.ok) {
+    const dv = Math.abs(r.v1 - r.v0) / r.v0 * 100;
+    const f = await p.evaluate(() => { const o = objects.find(x => x.visible !== false); const s = o.userData.feat.list[0];
+      return { bev: s.bev, cons: s.cons.map(c => c.t).sort().join(','), arcs: s.ents.filter(e => e.type === 'arc').map(e => +(e.r * 10).toFixed(2)) }; });
+    ok(f.bev && f.bev.top && !f.bev.top.fil && Math.abs(f.bev.top.mm - 1) < 0.1 && Math.abs((f.bev.top.mm2 || 0) - 2) < 0.15, `Fase 1 × 2 erkannt: ${JSON.stringify(f.bev.top)}`);
+    ok(f.arcs.length === 4 && f.arcs.every(x => Math.abs(x - 4) < 0.05) && (f.cons.match(/tan/g) || []).length === 8 && (f.cons.match(/eq/g) || []).length === 3 && /rad/.test(f.cons) && /dia/.test(f.cons),
+       `4 Eckenrundungen R4: tangential, 1× R-Maß + 3× gleich, Bohrung bemaßt (${f.cons})`);
+    ok(dv < 0.5, `Volumen ${r.v0.toFixed(1)} → ${r.v1.toFixed(1)} mm³ (${dv.toFixed(3)} %)`);
+    const e2 = await p.evaluate(async () => { const o = objects.find(x => x.visible !== false); _featEditSketch(o.userData.id, 0);
+      const c = _sk.cons.find(x => x.t === 'rad'); _skcDimEdit(_skcDimSpec(c.refs.map(r => ({ id: r.id, p: null }))), c); document.getElementById('sk-cdim-v').value = '6'; _skcDimCommit();
+      const arcs = _sk.ents.filter(e => e.type === 'arc').map(e => +(e.r * 10).toFixed(2));
+      let mu = Infinity, Mu = -Infinity, mv = Infinity, Mv = -Infinity; for (const e of _sk.ents) for (const q of _skTess(e).pts) { mu = Math.min(mu, q.u); Mu = Math.max(Mu, q.u); mv = Math.min(mv, q.v); Mv = Math.max(Mv, q.v); }
+      _skExtrude(); await _skxApply(); await new Promise(r => setTimeout(r, 300));
+      const o2 = objects.find(x => x.visible !== false), bb = getMeshBox(o2).getSize(new THREE.Vector3());
+      return { arcs, w: +((Mu - mu) * 10).toFixed(2), h: +((Mv - mv) * 10).toFixed(2), bb: [bb.x, bb.y, bb.z].map(x => +(x * 10).toFixed(2)), bev: o2.userData.feat.list[0].bev }; });
+    ok(e2.arcs.every(x => Math.abs(x - 6) < 0.01) && Math.abs(e2.w - 40) < 0.05 && Math.abs(e2.h - 30) < 0.05, `R-Maß 4 → 6: alle Ecken folgen, Kontur bleibt 40×30 (${JSON.stringify(e2.arcs)}, ${e2.w}×${e2.h})`);
+    ok(e2.bev && e2.bev.top && e2.bev.top.mm2, `Neu gerechnet, Fase bleibt erhalten, Teil ${e2.bb}`);
+  } else ok(false, 'Rund: ' + r.txt);
   // Seitlicher Zapfen mit Bohrung
   r = await run('zapfen');
   if (r.ok) {

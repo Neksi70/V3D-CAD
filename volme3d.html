@@ -11460,6 +11460,7 @@ function _skcSolve(opt){
   opt = opt || {};
   _skcIds(); _skcPrune();
   const { R, act } = _skcSystem(opt.seed, opt.links);
+  if (opt.extra) for (const x of opt.extra) { R.push(x); for (const e of x.ens) act.add(e); }
   // geteilte Punkt-Objekte entkoppeln (Importe), sonst wirkt ein Schritt doppelt
   for (const en of act) { if (en.a) en.a = { u: en.a.u, v: en.a.v }; if (en.b) en.b = { u: en.b.u, v: en.b.v }; if (en.c) en.c = { u: en.c.u, v: en.c.v }; }
   const vars = [], base = new Map();
@@ -11674,12 +11675,19 @@ function _skcPush(list, msg, heavy){
     if (k >= 0) _sk.cons.splice(k, 1);
     _sk.cons.push(c);
   }
-  const res = _skcSolve(heavy ? { heavy: heavy() } : undefined);
+  const hv = heavy ? heavy() : null, opt = hv ? (hv instanceof Map ? { heavy: hv } : hv) : undefined;
+  let res = _skcSolve(opt);
+  if (!res.ok && opt && opt.extra) {   // Zusatzwunsch (Linien bleiben auf ihrer Geraden) nicht erfüllbar → ohne ihn
+    _sk.ents = _featClone(before);
+    for (const c of list) { const k = _sk.cons.findIndex(o => o.t === c.t && o.refs.length === c.refs.length && o.refs.every((r, i) => _skcSameRef(r, c.refs[i]))); if (k >= 0) _sk.cons.splice(k, 1); _sk.cons.push(c); }
+    res = _skcSolve();
+  }
   if (!res.ok) {
     _sk.ents = before; _sk.cons = cons0; _skcSolve();
     notify('Passt nicht: widerspricht einer vorhandenen Abhängigkeit oder einem Maß (überbestimmt). Vorhandene Abhängigkeit anklicken = entfernen', 'w');
     _skRender(); _skcPanel(); return false;
   }
+  if (opt && opt.extra) res = _skcSolve();   // Freiheitsgrade ohne den Zusatzwunsch anzeigen
   _sk.cUndo.push({ before, cons: cons0, after: _sk.ents, len: _sk.ents.length });
   if (msg) notify(msg + (res.dof === 0 ? ' — Skizze ist vollständig bestimmt ✓' : res.dof != null ? ` — noch ${res.dof} Freiheitsgrad${res.dof === 1 ? '' : 'e'}` : ''), 'ok');
   _skRender(); _skcPanel(); return true;
@@ -11772,6 +11780,20 @@ function _skcDimCommit(){
   _skcDimClose();
   // Maß ändern: der erste Punkt bleibt stehen (Linie wächst am Ende, Kreis um die Mitte)
   const heavy = () => { const en = _skcEnt(c.refs[0].id); if (!en) return new Map();
+    // Radius/Durchmesser: Linien bleiben liegen, Bogenmitten wandern — so behält
+    // eine Eckenrundung die Außenmaße (wie in CAD üblich), Kreise ihre Mitte
+    if (c.t === 'rad' || c.t === 'dia') {
+      if (en.type === 'circle') return new Map([[en, new Set(['c.u', 'c.v'])]]);
+      // Eckenrundung: alle per „Gleich“ gekoppelten Bögen, deren Tangenten-Linien
+      // bleiben auf ihrer Geraden (dürfen länger/kürzer werden)
+      const grp = new Set([en.id]); let more = true;
+      while (more) { more = false; for (const q of _sk.cons) if (q.t === 'eq' && q.refs.some(r => grp.has(r.id))) for (const r of q.refs) if (!grp.has(r.id)) { grp.add(r.id); more = true; } }
+      const extra = [];
+      for (const q of _sk.cons) if (q.t === 'tan' && grp.has(q.refs[1].id)) { const l = _skcEnt(q.refs[0].id); if (!l || l.type !== 'line') continue;
+        const a0 = { u: l.a.u, v: l.a.v }, L = Math.hypot(l.b.u - l.a.u, l.b.v - l.a.v) || 1, nu = -(l.b.v - l.a.v) / L, nv = (l.b.u - l.a.u) / L;
+        extra.push({ ens: [l], f: () => (l.a.u - a0.u) * nu + (l.a.v - a0.v) * nv }, { ens: [l], f: () => (l.b.u - a0.u) * nu + (l.b.v - a0.v) * nv }); }
+      return extra.length ? { extra } : new Map();
+    }
     const p = c.refs[0].p, k = p === 'a' || p === 'b' || p === 'c' ? [p + '.u', p + '.v'] : en.type === 'line' ? ['a.u', 'a.v'] : ['c.u', 'c.v'];
     return new Map([[en, new Set(k)]]); };
   _skcPush([c], (sp.lab === '⌀' ? '⌀ ' : sp.lab === 'R' ? 'R ' : sp.lab + ' ') + String(raw).replace('.', ',') + (sp.deg ? '°' : ' mm'), heavy);
@@ -12449,7 +12471,10 @@ function _skGeoBev(profiles, hmm, bev){
   for (const pr of profiles) for (const p of pr.outer){ minU=Math.min(minU,p.u); maxU=Math.max(maxU,p.u); minV=Math.min(minV,p.v); maxV=Math.max(maxV,p.v); }
   const lim = Math.min(hU * (bev.top && bev.bot ? 0.48 : 0.96), Math.min(maxU-minU, maxV-minV) / 2 * 0.6);
   const u = e => e ? Math.max(0.001, Math.min(lim, e.mm / 10)) : 0;
+  const limI = Math.min(maxU-minU, maxV-minV) / 2 * 0.6;
+  const ins = e => e && !e.fil && e.mm2 > 0 ? Math.max(0.001, Math.min(limI, e.mm2 / 10)) : null;
   return _skRoundExtrude(profiles, hU, 0, false, { top: !!bev.top, bottom: !!bev.bot, topU: u(bev.top), botU: u(bev.bot),
+    topIns: ins(bev.top), botIns: ins(bev.bot),
     topFil: !!(bev.top && bev.top.fil), botFil: !!(bev.bot && bev.bot.fil), segs: 8 });
 }
 function _skProfileToShape(pr){
@@ -12494,12 +12519,14 @@ function _skRoundExtrude(profiles, hU, bevU, useFil, opts){
   // Seit 1.18.202 oben und unten getrennt einstellbar (Art + Größe)
   const bB = opts && opts.botU != null ? opts.botU : bevU, bT = opts && opts.topU != null ? opts.topU : bevU;
   const fB = opts && opts.botFil != null ? opts.botFil : useFil, fT = opts && opts.topFil != null ? opts.topFil : useFil;
+  // Fase mit beliebigem Winkel (1.18.204): Breite (Einzug) getrennt von der Höhe
+  const iB = !fB && opts && opts.botIns != null ? opts.botIns : bB, iT = !fT && opts && opts.topIns != null ? opts.topIns : bT;
   const K=(opts&&opts.segs)||6, rings=[];
   if(doBot){ if(fB) for(let k=K;k>=0;k--){ const a=(k/K)*(Math.PI/2); rings.push({ins:bB*(1-Math.cos(a)), y:bB*(1-Math.sin(a))}); }
-             else rings.push({ins:bB,y:0},{ins:0,y:bB}); }
+             else rings.push({ins:iB,y:0},{ins:0,y:bB}); }
   else rings.push({ins:0, y:0});
   if(doTop){ if(fT) for(let k=0;k<=K;k++){ const a=(k/K)*(Math.PI/2); rings.push({ins:bT*(1-Math.cos(a)), y:hU-bT*(1-Math.sin(a))}); }
-             else rings.push({ins:0,y:hU-bT},{ins:bT,y:hU}); }
+             else rings.push({ins:0,y:hU-bT},{ins:iT,y:hU}); }
   else rings.push({ins:0, y:hU});
   const P=[], I=[];
   const addV=(x,y,z)=>{ P.push(x,y,z); return P.length/3-1; };
@@ -12556,7 +12583,7 @@ function _skRoundExtrude(profiles, hU, bevU, useFil, opts){
       if(rev) I.push(a,c,b); else I.push(a,b,c);
     }
   };
-  mkCap(hU, true, doTop?bT:0); mkCap(0, false, doBot?bB:0);
+  mkCap(hU, true, doTop?iT:0); mkCap(0, false, doBot?iB:0);
   // Vertices verschweißen (Naht Wand↔Deckel schließen)
   const map=new Map(), remap=new Array(P.length/3), NP=[];
   for(let i=0;i<P.length/3;i++){ const k=Math.round(P[i*3]*1e4)+'_'+Math.round(P[i*3+1]*1e4)+'_'+Math.round(P[i*3+2]*1e4);
@@ -13200,8 +13227,9 @@ function _skxInfo(r){
   return 'Erzeugt einen <b style="color:#2563eb">neuen Körper</b>.';
 }
 function _skxBev(){
-  const p = _skx.p, e = (k, mm) => (k === 'cha' || k === 'fil') && parseFloat(mm) > 0 ? { fil: k === 'fil', mm: parseFloat(mm) } : null;
-  const top = e(p.bevT, p.bevTmm), bot = e(p.bevB, p.bevBmm);
+  const p = _skx.p, e = (k, mm, mm2) => { if (!((k === 'cha' || k === 'fil') && parseFloat(mm) > 0)) return null;
+    const o = { fil: k === 'fil', mm: parseFloat(mm) }; if (k === 'cha' && parseFloat(mm2) > 0 && Math.abs(parseFloat(mm2) - o.mm) > 1e-6) o.mm2 = parseFloat(mm2); return o; };
+  const top = e(p.bevT, p.bevTmm, p.bevTmm2), bot = e(p.bevB, p.bevBmm, p.bevBmm2);
   return top || bot ? { top, bot } : null;
 }
 function _skxUpdate(){
@@ -13248,7 +13276,8 @@ function _skxPanel(){
     ${p.dir === 'two' ? `<div class="vrow"><label>Seite 2</label><input id="skx-d2" type="number" step="0.5" min="0" value="${p.d2}" oninput="_skxSet('d2',this.value)" style="width:80px"><span class="vu">mm</span></div>` : ''}
     ${['T', 'B'].map(w => `<div class="vrow"><label title="${w === 'T' ? 'Kante am oberen Ende (in Zugrichtung)' : 'Kante an der Skizzenebene bzw. am unteren Ende'}">Kante ${w === 'T' ? 'oben' : 'unten'}</label><select onchange="_skxSet('bev${w}',this.value)" style="width:96px">
       ${[['none','keine'],['cha','Fase'],['fil','Rundung']].map(([v, l]) => `<option value="${v}"${(p['bev' + w] || 'none') === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
-      ${(p['bev' + w] || 'none') !== 'none' ? `<input type="number" step="0.5" min="0.1" value="${p['bev' + w + 'mm'] || 1}" oninput="_skxSet('bev${w}mm',this.value)" style="width:58px;margin-left:4px"><span class="vu">mm</span>` : ''}</div>`).join('')}
+      ${(p['bev' + w] || 'none') !== 'none' ? `<input type="number" step="0.5" min="0.1" value="${p['bev' + w + 'mm'] || 1}" oninput="_skxSet('bev${w}mm',this.value)" title="${p['bev' + w] === 'cha' ? 'Höhe der Fase (in Zugrichtung)' : 'Radius'}" style="width:${p['bev' + w] === 'cha' ? 44 : 58}px;margin-left:4px">`
+        + (p['bev' + w] === 'cha' ? `<span class="vu">×</span><input type="number" step="0.5" min="0.1" value="${p['bev' + w + 'mm2'] || p['bev' + w + 'mm'] || 1}" oninput="_skxSet('bev${w}mm2',this.value)" title="Breite der Fase (wie weit sie nach innen geht) — gleich der Höhe = 45°" style="width:44px">` : '') + '<span class="vu">mm</span>' : ''}</div>`).join('')}
     <div class="vrow"><label>Operation</label><select id="skx-op" onchange="_skxSet('op',this.value)" style="flex:1">
       ${[['auto','Automatisch'],['new','Neuer Körper'],['join','Anfügen'],['cut','Abziehen'],['isect','Schnittmenge']].map(([v, l]) => `<option value="${v}"${p.op === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
     <div id="skx-info" style="font-size:11.5px;margin:4px 0 10px;line-height:1.4"></div>
@@ -31478,7 +31507,11 @@ function _m2cFitLoop(lp, tol){
     let sg = 0;
     for (let k = 1; k < P.length - 1; k++) { const t = ang(P[k-1], P[k], P[k+1]); if (Math.abs(t) > 0.7) return null; const s = Math.sign(t); if (!s) return null; if (sg && s !== sg) return null; sg = s; }
     const f = _m2cCircleFit(P); if (!f || f.dev > tol) return null;
-    for (let k = 0; k < P.length - 1; k++) if (Math.hypot(P[k+1].u - P[k].u, P[k+1].v - P[k].v) > f.r * 0.75) return null;   // Sehne > ~44° → keine Bogen-Tessellierung
+    let cmin = Infinity, cmax = 0;
+    for (let k = 0; k < P.length - 1; k++) { const ch = Math.hypot(P[k+1].u - P[k].u, P[k+1].v - P[k].v); if (ch > f.r * 0.75) return null; cmin = Math.min(cmin, ch); cmax = Math.max(cmax, ch); }   // Sehne > ~44° → keine Bogen-Tessellierung
+    // Tessellierte Bögen haben gleichmäßige Sehnen; eine lange Gerade + Bogenanfang
+    // passt sonst auf einen großen Kreis (Tangenten-Falle, 1.18.204)
+    if (cmax > cmin * 3) return null;
     return f;
   };
   while (i < n) {
@@ -31648,12 +31681,18 @@ function _m2cAnalyseAxis(T, vol0, ax){
       const zone = S.slice(0, k0);
       const fil = (r, dl) => dl >= r ? 0 : r - Math.sqrt(Math.max(0, r * r - (r - dl) * (r - dl)));
       const err = fn => Math.sqrt(zone.reduce((q, x) => q + (x.d - fn(x.dl)) ** 2, 0) / zone.length);
-      const sC = zone.reduce((q, x) => q + x.d + x.dl, 0) / zone.length, eC = err(dl => Math.max(0, sC - dl));
+      // Fase mit beliebigem Winkel: Gerade d = a − k·δ (a = Breite, a/k = Höhe)
+      const n = zone.length, mx = zone.reduce((q, x) => q + x.dl, 0) / n, my = zone.reduce((q, x) => q + x.d, 0) / n;
+      const sxy = zone.reduce((q, x) => q + (x.dl - mx) * (x.d - my), 0), sxx = zone.reduce((q, x) => q + (x.dl - mx) ** 2, 0);
+      const kk = sxx > 0 ? -sxy / sxx : 1, aa = my + kk * mx;
+      const hC = kk > 0 ? aa / kk : 0, eC = kk > 0.15 && kk < 7 ? err(dl => Math.max(0, aa - kk * dl)) : Infinity;
       let sF = S[k0].dl, eF = Infinity;
       for (let t = 0.5; t <= 1.6; t += 0.01) { const r = S[k0 - 1].dl * t + 1e-9, e = err(dl => fil(r, dl)); if (e < eF) { eF = e; sF = r; } }
-      const isF = eF < eC, sz = isF ? sF : sC, e = Math.min(eF, eC);
+      const isF = eF < eC, sz = isF ? sF : hC, e = Math.min(eF, eC);
       if (!(sz > tol * 2) || e > Math.max(tol * 3, sz * 0.08)) continue;
-      g.bev = g.bev || {}; g.bev[end] = { fil: isF, mm: Math.round(sz * 1000) / 100 }; rep.bevels++;
+      const bv = { fil: isF, mm: Math.round(sz * 1000) / 100 };
+      if (!isF && Math.abs(aa - hC) > Math.max(tol * 2, hC * 0.04)) bv.mm2 = Math.round(aa * 1000) / 100;   // nicht 45° → Breite getrennt
+      g.bev = g.bev || {}; g.bev[end] = bv; rep.bevels++;
     }
   }
   rep.ok = true; rep.Q = Q; rep.groups = groups; rep.tol = tol;
@@ -31661,17 +31700,44 @@ function _m2cAnalyseAxis(T, vol0, ax){
   for (const g of groups) for (const e of g.ents) rep.counts[e.type]++;
   return rep;
 }
+// Rundungen an senkrechten Kanten als echte Eckenrundung (1.18.204): Bogen
+// tangential zwischen zwei Linien → Tangential zu beiden + R-Maß, gleiche
+// Radien per „Gleich“ gekoppelt (ein Maß ändern = alle). Dazu H/V an
+// achsparallelen Linien und ⌀ an Bohrungen — die Skizze ist sofort bemaßt.
+function _m2cProfileCons(ents){
+  const cons = [], fil = [], ref = e => ({ id: e.id, p: null }), near = (a, b) => Math.hypot(a.u - b.u, a.v - b.v) < 1e-5;
+  for (const e of ents) if (e.type === 'line') { const du = e.b.u - e.a.u, dv = e.b.v - e.a.v, L = Math.hypot(du, dv) || 1;
+    if (Math.abs(dv) / L < 2e-4) cons.push({ t: 'h', refs: [ref(e)] }); else if (Math.abs(du) / L < 2e-4) cons.push({ t: 'v', refs: [ref(e)] }); }
+  for (const e of ents) if (e.type === 'circle') cons.push({ t: 'dia', refs: [ref(e)], val: 2 * e.r });
+  for (const a of ents) {
+    if (a.type !== 'arc' || Math.abs(a.a1 - a.a0) > Math.PI * 1.01) continue;
+    const s0 = _skArcPt(a, a.a0), s1 = _skArcPt(a, a.a1);
+    const tang = (ln, pt) => { const du = ln.b.u - ln.a.u, dv = ln.b.v - ln.a.v, L = Math.hypot(du, dv) || 1, ru = pt.u - a.c.u, rv = pt.v - a.c.v, R = Math.hypot(ru, rv) || 1;
+      return Math.abs((du * ru + dv * rv) / (L * R)) < 0.02; };
+    const l0 = ents.find(l => l.type === 'line' && (near(l.a, s0) || near(l.b, s0)) && tang(l, s0));
+    const l1 = ents.find(l => l.type === 'line' && l !== l0 && (near(l.a, s1) || near(l.b, s1)) && tang(l, s1));
+    if (!l0 || !l1) continue;
+    for (const l of [l0, l1]) cons.push({ t: 'tan', refs: [ref(l), ref(a)], s: Math.sign(_skcLineDist(l, a.c)) || 1 });
+    fil.push(a);
+  }
+  const groups = [];
+  for (const a of fil) { const g = groups.find(g => Math.abs(g[0].r - a.r) < Math.max(1e-4, a.r * 0.01)); if (g) g.push(a); else groups.push([a]); }
+  for (const g of groups) { cons.push({ t: 'rad', refs: [ref(g[0])], val: g[0].r }); for (let i = 1; i < g.length; i++) cons.push({ t: 'eq', refs: [ref(g[0]), ref(g[i])] }); }
+  return { cons, fillets: groups.map(g => ({ r: g[0].r, n: g.length })) };
+}
 // Verlauf bauen: jede Gruppe = Skizze in Welt-Ebene auf Höhe a, extrudiert bis b
 function _m2cHistory(rep){
   const list = [], ov = rep.tol * 0.25;
   rep.groups.forEach((g, k) => {
     const M = new THREE.Matrix4().compose(rep.axisV.clone().multiplyScalar(g.a), rep.Q, new THREE.Vector3(1, 1, 1));
     const ents = _featClone(g.ents); ents.forEach((e, i) => { e.id = i + 1; });
+    const pc = _m2cProfileCons(ents); g.fillets = pc.fillets;
     const bv = g.bev || {}, pb = e => e ? (e.fil ? 'fil' : 'cha') : 'none';
-    list.push({ typ: 'skizze', ents, cons: [], frame: M.elements.slice(), ab: [k && !bv.bot ? -ov : 0, g.b - g.a], op: k ? 'join' : 'new', picks: null,
+    list.push({ typ: 'skizze', ents, cons: pc.cons, frame: M.elements.slice(), ab: [k && !bv.bot ? -ov : 0, g.b - g.a], op: k ? 'join' : 'new', picks: null,
       bev: g.bev ? { top: bv.top || null, bot: bv.bot || null } : null,
       pUI: { dir: 'one', d: Math.round((g.b - g.a) * 1000) / 100, d2: 5, op: k ? 'join' : 'new', thru: false, end: 'dist',
-             bevT: pb(bv.top), bevTmm: bv.top ? bv.top.mm : 1, bevB: pb(bv.bot), bevBmm: bv.bot ? bv.bot.mm : 1 } });
+             bevT: pb(bv.top), bevTmm: bv.top ? bv.top.mm : 1, bevTmm2: bv.top && bv.top.mm2 ? bv.top.mm2 : undefined,
+             bevB: pb(bv.bot), bevBmm: bv.bot ? bv.bot.mm : 1, bevBmm2: bv.bot && bv.bot.mm2 ? bv.bot.mm2 : undefined } });
   });
   for (const h of rep.sideBosses || []) {   // seitliche Zapfen: vom Fuß aus, Fuß leicht in die Wand
     const Qb = _wpMakeQuat(h.B), l = h.axisPt.clone().applyQuaternion(Qb.clone().invert()), ext = rep.tol * 2, len = h.tmax - h.tmin;
@@ -31727,8 +31793,10 @@ function _m2cReport(o, rep, mesh){
   el.innerHTML = `<div style="display:flex;margin-bottom:6px"><b style="flex:1">⬡→▣ Mesh → CAD · fertig</b><span onclick="this.closest('#m2c-panel').remove()" style="cursor:pointer;color:var(--dim)">✕</span></div>
     <div>Aus <b>${rep.tris.toLocaleString('de-DE')}</b> Dreiecken wurden <b>${rep.groups.length}</b> Skizzen-Schritt${rep.groups.length > 1 ? 'e' : ''}:
       ${rep.counts.line} Linien, ${rep.counts.arc} Bögen, ${rep.counts.circle} Kreise${rep.sideHoles && rep.sideHoles.length ? `, dazu <b>${rep.sideHoles.length} Querbohrung${rep.sideHoles.length > 1 ? 'en' : ''}</b> (⌀ ${rep.sideHoles.map(h => String(Math.round(h.r * 200) / 10).replace('.', ',')).join(', ')} mm)` : ''}.</div>
+    ${(() => { const F = rep.groups.flatMap(g => g.fillets || []); if (!F.length) return '';
+      return `<div style="margin-top:4px">Eckenrundungen (senkrechte Kanten): ${F.map(f => f.n + '× R ' + String(Math.round(f.r * 1000) / 100).replace('.', ',')).join(', ')} — tangential + R-Maß, gleiche Radien gekoppelt: in der Skizze das R anklicken ändert alle.</div>`; })()}
     ${rep.sideBosses && rep.sideBosses.length ? `<div style="margin-top:4px">Seitliche Zapfen: <b>${rep.sideBosses.length}</b> (⌀ ${rep.sideBosses.map(h => String(Math.round(h.r * 200) / 10).replace('.', ',')).join(', ')} mm) als „Anfügen“.</div>` : ''}
-    ${rep.bevels ? `<div style="margin-top:4px">Kanten: <b>${rep.bevels}</b> Fase${rep.bevels > 1 ? 'n' : ''}/Rundung${rep.bevels > 1 ? 'en' : ''} als echte Kantenoperation (${rep.groups.flatMap(g => ['top', 'bot'].filter(e => g.bev && g.bev[e]).map(e => (g.bev[e].fil ? 'R' : 'Fase ') + String(g.bev[e].mm).replace('.', ',') + ' ' + (e === 'top' ? 'oben' : 'unten'))).join(', ')}) — im Verlauf unter „Kante oben/unten“ änderbar.</div>` : ''}
+    ${rep.bevels ? `<div style="margin-top:4px">Kanten: <b>${rep.bevels}</b> Fase${rep.bevels > 1 ? 'n' : ''}/Rundung${rep.bevels > 1 ? 'en' : ''} als echte Kantenoperation (${rep.groups.flatMap(g => ['top', 'bot'].filter(e => g.bev && g.bev[e]).map(e => (g.bev[e].fil ? 'R' : 'Fase ') + String(g.bev[e].mm).replace('.', ',') + (g.bev[e].mm2 ? ' × ' + String(g.bev[e].mm2).replace('.', ',') : '') + ' ' + (e === 'top' ? 'oben' : 'unten'))).join(', ')}) — im Verlauf unter „Kante oben/unten“ änderbar.</div>` : ''}
     ${rep.skipped && rep.skipped.boss ? `<div style="margin-top:4px;color:#b45309">${rep.skipped.boss} seitliche Form${rep.skipped.boss > 1 ? 'en' : ''} nicht eindeutig (als Stufe angenähert).</div>` : ''}
     <div style="margin-top:4px">Achse ${rep.axis.map(x => (Math.round(x * 100) / 100)).join(' / ')} · ${Math.round(rep.score * 100)} % der Fläche prismatisch</div>
     ${dv != null ? `<div style="margin-top:4px">Volumen: Original ${mm3(rep.vol0)} mm³ → CAD ${mm3(rep.vol1)} mm³ (<b style="color:${Math.abs(dv) < 0.5 ? '#16a34a' : Math.abs(dv) < 3 ? '#b45309' : '#dc2626'}">${dv >= 0 ? '+' : ''}${dv.toFixed(2).replace('.', ',')} %</b>)</div>` : ''}
@@ -65708,8 +65776,13 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.203';
+const VOLME3D_VERSION = '1.18.204';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.204', date:'2026-10-19', changes:[
+    ['▣','<b>Mesh → CAD: Fasen mit jedem Winkel und Eckenrundungen als echte Kantenoperation.</b> Fasen werden jetzt mit Höhe × Breite erkannt (z. B. 1 × 2 mm), nicht nur mit 45°. Rundungen an senkrechten Kanten stehen in der Skizze als echte Eckenrundung: tangential an beide Kanten, mit R-Maß, gleiche Radien gekoppelt. Ein Klick aufs R und ein neuer Wert ändern alle Ecken, die Außenmaße bleiben. Bohrungen sind gleich mit ⌀ bemaßt. Außerdem genauer: Eine lange Gerade neben einer Rundung wird nicht mehr fälschlich als großer Bogen erkannt.'],
+    ['⬆','Extrudieren: Die <b>Fase</b> bei „Kante oben/unten“ hat jetzt zwei Felder, <b>Höhe × Breite</b>. Sind beide gleich, ergibt das 45°.'],
+    ['📏','Skizze: Wird der Radius einer Eckenrundung geändert, bleiben die angrenzenden Kanten auf ihrer Linie und die Rundung wandert nach innen, statt das Teil größer zu machen.'],
+  ]},
   { version:'1.18.203', date:'2026-10-19', changes:[
     ['🎓','<b>Drei neue interaktive Anleitungen:</b> <b>Schlüsselanhänger mit Prägung</b> (Ecken runden, Bohrung, gerundete Oberkante, Zierlinie per Prägen), <b>Flansch mit Lochkreis</b> (Kreismuster, Fase) und <b>Altes STL bearbeitbar machen</b> (Mesh → CAD, Bohrung im Verlauf vergrößern; das Übungs-STL wird automatisch angelegt). Damit gibt es fünf Anleitungen unter ❓ Hilfe bzw. Suche „Anleitung“.'],
     ['🔧','Skizze: Wird eine Ecke gerundet oder gefast, an der eine bemaßte Linie hängt, fällt dieses Längenmaß jetzt weg (mit Hinweis), weil es nicht mehr passt. Vorher konnte das nächste Maß die Rundung wieder verbiegen. Strg+Z bringt beides zurück.'],

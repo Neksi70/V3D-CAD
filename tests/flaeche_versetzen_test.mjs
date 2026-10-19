@@ -99,6 +99,16 @@ try {
     return { v: vol(g), v2: vol(g2), bev: H.list[0].bev }; });
   ok(Math.abs(r7.v - 3850.67) < 2 && Math.abs(r7.v2 - 3850.67) < 2 && r7.bev && r7.bev.top && !r7.bev.top.fil, `Fase oben 2 mm: ${r7.v.toFixed(2)} / Verlauf ${r7.v2.toFixed(2)} mm³ (soll 3850,67)`);
 
+  // 8) Fase 1 × 2 (Höhe × Breite, nicht 45°): 4000 − ½·(800 − 650,67) = 3925,33 mm³
+  const r8 = await p.evaluate(async () => { if (_sk.active) exitSketchMode(); _newCreate(false); enterSketchMode();
+    [[-1,-1,1,-1],[1,-1,1,1],[1,1,-1,1],[-1,1,-1,-1]].forEach(([a,b,c,d]) => _sk.ents.push({ type: 'line', a: { u: a, v: b }, b: { u: c, v: d } })); _skRender();
+    _skExtrude(); _skxSet('end', 'dist'); _skxSet('dir', 'one'); _skxSet('op', 'new'); _skxSet('d', '10'); _skxSet('bevT', 'cha'); _skxSet('bevTmm', '1'); _skxSet('bevTmm2', '2'); await _skxApply();
+    const o = objects[0], g = o.geometry.clone(); o.updateMatrixWorld(true); g.applyMatrix4(o.matrixWorld);
+    const gg = g.index ? g.toNonIndexed() : g, P = gg.attributes.position; let v = 0; const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
+    for (let i = 0; i < P.count; i += 3) { A.fromBufferAttribute(P, i); B.fromBufferAttribute(P, i+1); C.fromBufferAttribute(P, i+2); v += A.dot(B.clone().cross(C)); }
+    return { v: Math.abs(v / 6) * 1000, bev: o.userData.feat.list[0].bev }; });
+  ok(Math.abs(r8.v - 3925.33) < 2 && r8.bev.top.mm2 === 2, `Fase 1 × 2 mm: ${r8.v.toFixed(2)} mm³ (soll 3925,33), gespeichert ${JSON.stringify(r8.bev.top)}`);
+
   ok(errs.length === 0, 'keine Seitenfehler ' + errs.join(' | '));
 } catch (e) { console.log('ABBRUCH ' + String(e.message || e).split('\n')[0]); fail++; }
 await b.close(); srv.kill();
