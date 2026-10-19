@@ -40,13 +40,14 @@ Sobald der Server läuft, öffnet sich unter **http://127.0.0.1:8831/** (bzw. de
 
 ## Werkzeuge
 
-`anleitung`, `list_commands`, `execute`, `batch`, `inspect_scene`, `measure`, `screenshot`, `export` (stl/3mf/step), `save`, `open`, `new_scene`, `undo`, `redo`
+`anleitung`, `list_commands`, `execute`, `batch`, `inspect_scene`, `measure`, `screenshot`, `export` (stl/3mf/step), `save`, `open`, `import`, `new_scene`, `undo`, `redo`
 
 Befehle für `execute`/`batch`:
 - `scene.new`, `scene.inspect`, `scene.save`, `scene.load`
 - `shape.types`, `shape.add`, `sketch.extrude`
 - `body.edges`, `body.fillet`, `body.chamfer`
 - `gen.list`, `gen.run`, `gen.edit` (Kinder-/Spielwelt-Generatoren)
+- `revolve`, `body.shell`, `body.mirror`, `body.pattern`, `file.import`
 - `body.transform`, `body.set`, `body.duplicate`, `body.delete`
 - `bool.union`, `bool.subtract`, `bool.intersect`
 - `measure`, `measure.distance`
@@ -60,7 +61,7 @@ Regeln:
 
 ## Test
 
-Stufe 2 (Skizzen, Runden/Fasen, Generatoren): `node test_stufe2.mjs`. Die Bausteine liegen in `stufe2/` und werden mit `stufe2/einsetzen.py volme3d.html` eingearbeitet (idempotent).
+Stufe 2 (Skizzen, Runden/Fasen, Generatoren): `node test_stufe2.mjs`. Formwerkzeuge: `node test_formen.mjs`. Die Bausteine liegen in `stufe2/` und werden mit `stufe2/einsetzen.py volme3d.html` eingearbeitet (idempotent).
 
 Anleitung für Agenten: `ANLEITUNG.md` (MCP-Werkzeug `anleitung` bzw. Ressource `v3d-cad://anleitung`).
 
