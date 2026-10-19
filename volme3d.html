@@ -1822,6 +1822,7 @@ const firebaseConfig = {
       <button class="skc" data-c="mid"  onclick="_skcApply('mid')"  title="Mittelpunkt: Punkt sitzt in der Mitte einer Linie"><b>M</b>Mittelpunkt</button>
       <button class="skc" data-c="col"  onclick="_skcApply('col')"  title="Kollinear: zwei Linien auf einer Geraden"><b>⋯</b>Kollinear</button>
       <button class="skc" data-c="sym"  onclick="_skcApply('sym')"  title="Symmetrisch: zwei Punkte spiegelbildlich zu einer Linie (Achse)"><b>⇋</b>Symmetrisch</button>
+      <button class="skc" data-c="g2"   onclick="_skcApply('g2')"   title="Krümmungsstetig (G2): Spline geht ohne Knick UND ohne Krümmungssprung in Linie, Bogen oder anderen Spline über — noch weicher als tangential. Spline + Nachbar anklicken"><b>G2</b>Krümmung</button>
       <button class="skc" data-c="fix"  onclick="_skcApply('fix')"  title="Fixieren: Punkt oder Element bleibt, wo es ist"><b>⚓</b>Fixieren</button>
     </div>
     <div class="skc-grid" style="margin-top:3px">
@@ -11708,6 +11709,7 @@ const _SKC_INFO = {
   sym: { i:'⇋', n:'Symmetrisch',   need:'zwei Punkte + eine Linie als Achse' },
   fix: { i:'⚓', n:'Fixieren',      need:'Punkte oder Elemente' },
   pat: { i:'▦', n:'Muster',        need:'Elemente' },
+  g2:  { i:'G2', n:'Krümmungsstetig', need:'einen Spline und eine Linie, einen Bogen oder einen zweiten Spline, die aneinanderstoßen' },
   dim: { i:'↔', n:'Bemaßen',       need:'eine Linie, einen Kreis/Bogen, zwei Punkte, Punkt + Linie oder zwei Linien' },
 };
 function _skcIds(){
@@ -11733,8 +11735,23 @@ function _skcPrune(){
 }
 function _skcLn(en){ const dx = en.b.u - en.a.u, dy = en.b.v - en.a.v; return { dx, dy, L: Math.hypot(dx, dy) || 1e-9 }; }
 function _skcLineDist(en, p){ const l = _skcLn(en); return ((p.u - en.a.u) * l.dy - (p.v - en.a.v) * l.dx) / l.L; }   // vorzeichenbehaftet
-function _skcGet(en, k){ return k.length === 1 ? en[k[0]] : en[k[0]][k[1]]; }
-function _skcSet(en, k, x){ if (k.length === 1) en[k[0]] = x; else en[k[0]][k[1]] = x; }
+function _skcGet(en, k){ return k.length === 1 ? en[k[0]] : k.length === 2 ? en[k[0]][k[1]] : en[k[0]][k[1]][k[2]]; }
+function _skcSet(en, k, x){ if (k.length === 1) en[k[0]] = x; else if (k.length === 2) en[k[0]][k[1]] = x; else en[k[0]][k[1]][k[2]] = x; }
+// Löser-Parameter je Element; Splines: alle Stützpunkte (seit 1.18.210, für G1/G2)
+function _skcParams(en){ return en.type === 'spline' ? en.pts.flatMap((_, i) => [['pts', i, 'u'], ['pts', i, 'v']]) : _SKC_PAR[en.type]; }
+// Kurven-Ende „vom Anschlusspunkt weg": Richtung T (Einheit) und vorzeichenbehaftete Krümmung k
+function _skcCurveEnd(en, p){
+  if (en.type === 'line') { const P = p === 'a' ? en.a : en.b, Q = p === 'a' ? en.b : en.a, L = Math.hypot(Q.u - P.u, Q.v - P.v) || 1e-9;
+    return { T: { u: (Q.u - P.u) / L, v: (Q.v - P.v) / L }, k: 0 }; }
+  if (en.type === 'arc') { const fwd = p === 's', a = fwd ? en.a0 : en.a1, sg = (fwd ? 1 : -1) * Math.sign(en.a1 - en.a0 || 1);
+    return { T: { u: -sg * Math.sin(a), v: sg * Math.cos(a) }, k: sg / en.r }; }
+  if (en.type === 'spline') { const c = _skSplineCurve(en), h = 1e-3, rev = p !== 'k0';
+    const g = t => c.getPoint(rev ? 1 - t : t), P0 = g(0), P1 = g(h), P2 = g(2 * h);
+    const d1u = (-3 * P0.x + 4 * P1.x - P2.x) / (2 * h), d1v = (-3 * P0.y + 4 * P1.y - P2.y) / (2 * h);
+    const d2u = (P0.x - 2 * P1.x + P2.x) / (h * h), d2v = (P0.y - 2 * P1.y + P2.y) / (h * h), sp = Math.hypot(d1u, d1v) || 1e-9;
+    return { T: { u: d1u / sp, v: d1v / sp }, k: (d1u * d2v - d1v * d2u) / (sp * sp * sp) }; }
+  return null;
+}
 
 // Residuen einer Abhängigkeit (0 = erfüllt). out: [{ens, f}]
 function _skcRes(c, out){
@@ -11771,7 +11788,13 @@ function _skcRes(c, out){
       break;
     case 'fix':
       if (c.refs[0].p) { add(() => P(0).u - c.fx.u); add(() => P(0).v - c.fx.v); }
-      else for (const k of _SKC_PAR[E[0].type]) add(() => _skcGet(E[0], k) - c.fx[k.join('.')]);
+      else for (const k of _skcParams(E[0])) add(() => _skcGet(E[0], k) - c.fx[k.join('.')]);
+      break;
+    // G1/G2 am Anschluss zweier Kurven (mind. ein Spline): Richtungen gegenläufig
+    // parallel (Kreuzprodukt 0), bei G2 zusätzlich Krümmung stetig (k_A + k_B = 0)
+    case 'g2':
+      add(() => { const A = _skcCurveEnd(E[0], c.refs[0].p), B = _skcCurveEnd(E[1], c.refs[1].p); return A.T.u * B.T.v - A.T.v * B.T.u; });
+      if (c.lvl !== 1) add(() => { const A = _skcCurveEnd(E[0], c.refs[0].p), B = _skcCurveEnd(E[1], c.refs[1].p); return (A.k + B.k) * 0.5; });
       break;
     case 'len':  add(() => _skcLn(E[0]).L - c.val); break;
     case 'dia':  add(() => 2 * E[0].r - c.val); break;
@@ -11836,10 +11859,10 @@ function _skcSolve(opt){
   // geteilte Punkt-Objekte entkoppeln (Importe), sonst wirkt ein Schritt doppelt
   for (const en of act) { if (en.a) en.a = { u: en.a.u, v: en.a.v }; if (en.b) en.b = { u: en.b.u, v: en.b.v }; if (en.c) en.c = { u: en.c.u, v: en.c.v }; }
   const vars = [], base = new Map();
-  for (const en of act) { const ks = _SKC_PAR[en.type]; if (!ks) continue; base.set(en, vars.length);
+  for (const en of act) { const ks = _skcParams(en); if (!ks) continue; base.set(en, vars.length);
     for (const k of ks) { const hk = opt.heavy && opt.heavy.get(en);
       vars.push({ en, k, w: hk && hk.has(k.join('.')) ? 1e-8 : 1 }); } }
-  const rv = R.map(r => { const ix = []; for (const en of new Set(r.ens)) { const b = base.get(en); if (b === undefined) continue; for (let i = 0; i < _SKC_PAR[en.type].length; i++) ix.push(b + i); } return ix; });
+  const rv = R.map(r => { const ix = []; for (const en of new Set(r.ens)) { const b = base.get(en); if (b === undefined) continue; for (let i = 0; i < _skcParams(en).length; i++) ix.push(b + i); } return ix; });
   const M = R.length, h = 1e-7;
   const evalR = () => R.map(x => x.f());
   const norm = r => { let s = 0; for (const x of r) s += x * x; return Math.sqrt(s); };
@@ -11957,7 +11980,7 @@ function _skcDragMove(e){
   const links = _skcAutoLinks();   // Verbindungen VOR dem Verschieben merken, sonst reißt die Ecke ab
   const en = _skcEnt(_skcDrag.hit.id); if (!en) return;
   const p = _skcDrag.hit.p, du = raw.u - _skcDrag.raw0.u, dv = raw.v - _skcDrag.raw0.v;
-  if (p && p[0] === 'k') { const q = _skcSnapFree(raw, en, p); en.pts[+p.slice(1)] = { u: q.u, v: q.v }; _skcSolve({ seed: [en], links }); _sk.cursor = { u: raw.u, v: raw.v }; _skRender(); _skcPanel(); return; }
+  if (p && p[0] === 'k') { const q = _skcSnapFree(raw, en, p), ki = +p.slice(1); en.pts[ki] = { u: q.u, v: q.v }; _skcSolve({ seed: [en], links, heavy: new Map([[en, new Set(['pts.' + ki + '.u', 'pts.' + ki + '.v'])]]) }); _sk.cursor = { u: raw.u, v: raw.v }; _skRender(); _skcPanel(); return; }
   if (p === 'a' || p === 'b' || p === 'c') { const q = _skcSnapFree(raw, en, p); en[p] = { u: q.u, v: q.v }; }
   else if (p === 's' || p === 'e') { const k = p === 's' ? 'a0' : 'a1';
     en.r = Math.hypot(raw.u - en.c.u, raw.v - en.c.v) || en.r;
@@ -11997,7 +12020,7 @@ function _skcDragEnd(e){
 function _skcClassify(sel){
   const P = [], L = [], C = [], A = [];
   for (const r of sel) { const en = _skcEnt(r.id); if (!en) continue;
-    if (r.p) P.push(r); else if (en.type === 'line') L.push(r); else if (en.type === 'circle' || en.type === 'arc') C.push(r); A.push(r); }
+    if (r.p) P.push(r); else if (en.type === 'line') L.push(r); else if (en.type === 'circle' || en.type === 'arc') C.push(r); A.push(r); }   // Splines: nur in A (für G1/G2)
   return { P, L, C, A };
 }
 // Baut aus der Auswahl die Abhängigkeit(en) für Typ t; null = Auswahl passt (noch) nicht
@@ -12005,6 +12028,17 @@ function _skcBuild(t, sel){
   const { P, L, C, A } = _skcClassify(sel), n = sel.length;
   const E = r => _skcEnt(r.id);
   const out = [];
+  // Splines: Tangential (G1) bzw. Krümmungsstetig (G2) am gemeinsamen Ende
+  if ((t === 'g2' || t === 'tan') && sel.length === 2 && sel.some(r => { const en = E(r); return en && en.type === 'spline'; })) {
+    const ends = en => en.type === 'line' ? ['a', 'b'] : en.type === 'arc' ? ['s', 'e'] : en.type === 'spline' ? ['k0', 'k' + (en.pts.length - 1)] : [];
+    const A = E(sel[0]), B = E(sel[1]); if (!A || !B || !ends(A).length || !ends(B).length) return null;
+    let best = null;
+    for (const pa of ends(A)) for (const pb of ends(B)) { const qa = _skcPt(A, pa), qb = _skcPt(B, pb), d = Math.hypot(qa.u - qb.u, qa.v - qb.v); if (!best || d < best.d) best = { pa, pb, d }; }
+    if (best.d > 1e-3) out.push({ t: 'coin', refs: [{ id: A.id, p: best.pa }, { id: B.id, p: best.pb }] });
+    out.push({ t: 'g2', lvl: t === 'tan' ? 1 : 2, refs: [{ id: A.id, p: best.pa }, { id: B.id, p: best.pb }] });
+    return out;
+  }
+  if (t === 'g2') return null;
   if (t === 'h' || t === 'v') {
     if (L.length && L.length === n) L.forEach(l => out.push({ t, refs: [l] }));
     else if (P.length === 2 && n === 2) out.push({ t, refs: P });
@@ -12034,7 +12068,7 @@ function _skcBuild(t, sel){
   } else if (t === 'fix') {
     for (const r of sel) { const en = E(r);
       if (r.p) { const q = _skcPt(en, r.p); out.push({ t, refs: [r], fx: { u: q.u, v: q.v } }); }
-      else { const fx = {}; for (const k of _SKC_PAR[en.type]) fx[k.join('.')] = _skcGet(en, k); out.push({ t, refs: [r], fx }); } }
+      else { const fx = {}; for (const k of _skcParams(en)) fx[k.join('.')] = _skcGet(en, k); out.push({ t, refs: [r], fx }); } }
   }
   return out.length ? out : null;
 }
@@ -12178,7 +12212,7 @@ function _skcAnchor(c){
   const P = i => _skcPt(E[i], c.refs[i].p);
   const mid = en => en.type === 'line' ? { u: (en.a.u + en.b.u) / 2, v: (en.a.v + en.b.v) / 2 }
     : en.type === 'arc' ? _skArcPt(en, (en.a0 + en.a1) / 2) : en.type === 'circle' ? { u: en.c.u + en.r * 0.7071, v: en.c.v + en.r * 0.7071 } : en.c;
-  if (c.refs[0].p && (c.t === 'coin' || c.t === 'on' || c.t === 'mid' || c.t === 'fix')) return P(0);
+  if (c.refs[0].p && (c.t === 'coin' || c.t === 'on' || c.t === 'mid' || c.t === 'fix' || c.t === 'g2')) return P(0);
   if (c.t === 'dist' || (c.refs.length === 2 && c.refs[0].p && c.refs[1].p)) { const a = P(0), b = P(1); return { u: (a.u + b.u) / 2, v: (a.v + b.v) / 2 }; }
   if (c.t === 'pld') { const a = P(0), en = E[1], l = _skcLn(en), d = _skcLineDist(en, a);
     return { u: a.u - l.dy / l.L * d / 2, v: a.v + l.dx / l.L * d / 2 }; }
@@ -12191,6 +12225,7 @@ function _skcLabel(c){
   if (c.t === 'dia') return '⌀' + String(_skMM(c.val)).replace('.', ',');
   if (c.t === 'rad') return 'R' + String(_skMM(c.val)).replace('.', ',');
   if (c.t === 'ang') return String(Math.round(c.val * 180 / Math.PI * 10) / 10).replace('.', ',') + '°';
+  if (c.t === 'g2') return c.lvl === 1 ? 'G1' : 'G2';
   return (_SKC_INFO[c.t === 'on' ? 'coin' : c.t] || { i: '?' }).i;
 }
 const _SKC_DIMS = { len: 1, dia: 1, rad: 1, dist: 1, pld: 1, ang: 1 };
@@ -66702,8 +66737,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.209';
+const VOLME3D_VERSION = '1.18.210';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.210', date:'2026-10-19', changes:[
+    ['G2','<b>Skizze: krümmungsstetig (G2).</b> Neue Abhängigkeit im Panel: Spline und Nachbar (Linie, Bogen oder zweiter Spline) anklicken, <b>G2</b>. Der Übergang hat dann weder einen Knick noch einen Krümmungssprung, sichtbar am Krümmungskamm und an Glanzlichtern auf gedruckten Teilen. <b>Tangential</b> zwischen Spline und Linie/Bogen gibt es jetzt auch (G1). Spline-Punkte lassen sich weiter frei ziehen, die Abhängigkeit bleibt erhalten.'],
+  ]},
   { version:'1.18.209', date:'2026-10-19', changes:[
     ['🎨','<b>Neu: Chroma – Bild als Filament-Gemälde.</b> Generatoren → <b>🎨 Chroma</b>. Aus einem Foto wird eine flache Platte, deren Höhe je Bildpunkt bestimmt, wie viele dünne Schichten übereinander liegen. Die Filamente wechseln nur an festen Höhen (dunkel unten, hell oben), dünne Schichten scheinen durch – so mischen sich aus 3–5 Filamenten Verläufe, <b>mit einer Düse, ohne Reinigungsturm</b>. V3D CAD schlägt die Farben aus dem Bild vor und rechnet die besten Wechselhöhen selbst aus; die <b>Druck-Vorschau</b> zeigt vorher, wie es ungefähr aussieht. Mit AMS stehen die Wechsel beim <b>3MF-Export</b> schon als Höhenbereiche drin (in Bambu Studio geprüft), ohne AMS zeigt der Plan, an welcher Schicht du pausierst.'],
     ['🎬','<b>Render-Studio: Fotos, alle Ansichten und Videos.</b> Aus „Foto erstellen“ wird das Render-Studio: Fotos jetzt auch als 9:16, 4:3, 1:1 und 1440p, als PNG oder JPG, mit <b>Wasserzeichen</b>. <b>🖼️ Ansichten</b> rendert alle Seiten auf einmal als ZIP für den Shop. <b>🔄 360°</b> macht ein Drehteller-Video, <b>🛤️ Fahrt</b> eine Kamerafahrt durch gemerkte Ansichten – als MP4, das Wasserzeichen kreist dabei ums Bild. Außerdem stimmen die Farben im Foto jetzt mit der Ansicht überein (vorher wirkten sie ausgewaschen).'],
