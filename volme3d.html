@@ -1482,6 +1482,8 @@ const firebaseConfig = {
       <button class="btn" onclick="standUpright()" title="Aufstellen — stellt das Teil in seine sicherste Standlage (Sockel, Füße), auch wenn die nicht eben ist, z. B. bei Scans. Nochmal klicken = nächste Standlage.">⊥ Aufstellen</button>
       <button class="btn" onclick="linearPatternTool()" title="Lineares Muster — Objekt mehrfach in einer Richtung kopieren">⋮ Linear</button>
       <button class="btn" onclick="circularPatternTool()" title="Kreismuster — Objekt mehrfach im Kreis anordnen (für Löcher: Werkzeuge → 🕳️ Loch ziehen)">⊙ Kreismuster</button>
+      <button class="btn" onclick="enterKonturmuster()" title="Konturmuster — gewählten Körper entlang einer Kante/Kontur verteilen (z. B. Rändelkerben rund um einen Kopf), als Kopien oder gleich abziehen/anfügen">⟿ Konturmuster</button>
+      <button class="btn" onclick="enterKugelmuster()" title="Kugelmuster — gewählten Körper gleichmäßig über eine Kugel verteilen (ganze Kugel oder Kappe), z. B. Noppen oder Golfball-Dellen">◍ Kugelmuster</button>
       <button class="btn" onclick="hexPatternTool()" title="Wabenmuster — Sechskant-Löcher in den Boden des gewählten Körpers stanzen">⬡ Waben</button>
       <button class="btn" onclick="fillPlateTool()" title="Platte füllen — nur das Teil wählen = Druckplatte füllen, oder eigene Grundplatte + Teil wählen: so viele Kopien des Teils wie möglich — oder eine feste Anzahl, z. B. 4 — auf die Platte verteilen (gleiche Höhe) — wahlweise dicht verschachtelt oder sauber in Reihen untereinander">▦ Füllen</button>
       <button class="btn" onclick="plateAdd()" title="Weitere Druckplatte daneben anlegen — umschalten, entfernen und je Platte exportieren über die Platten-Leiste unten in der Mitte">▭ ＋ Platte</button>
@@ -32326,6 +32328,186 @@ function _m2cReport(o, rep, mesh){
     <div style="margin-top:8px;color:var(--dim)">Das Original ist ausgeblendet (im Baum wieder einblendbar). Im Verlauf des neuen Teils jede Skizze öffnen, bemaßen und ändern — das Teil rechnet sich neu.</div>`;
 }
 
+// ═══ KONTURMUSTER + KUGELMUSTER (1.18.211) ══════════════════════════════════
+// Idee aus dem ShapeAnywhere-Abgleich, eigener Code. Ein (oder mehrere) Körper
+// wird entlang einer angeklickten Kantenkette verteilt (Anzahl, Teilung oder
+// automatisch mit Lücke; optional mitgedreht wie der Pfad) bzw. gleichmäßig
+// über eine Kugel (Fibonacci-Verteilung, ganze Kugel oder Kappe). Ergebnis:
+// Kopien, oder gleich vom Zielkörper abgezogen / angefügt (z. B. Rändelkerben).
+const _pm = { active: false, kind: null, src: [], chains: [], path: null, closed: false, target: null, grp: null,
+  p: { dist: 'count', n: 12, pitch: 5, gap: 1, follow: true, op: 'copy', ang: 180 } };
+// Bogenlänge, Tangente, Parallel-Transport-Drehung entlang eines (ggf. geschlossenen) Pfads
+function _pmPathFns(Pin, closed){
+  let P = []; for (const v of Pin) if (!P.length || P[P.length - 1].distanceTo(v) > 1e-6) P.push(v.clone());
+  // Geschlossene Kontur, die ein Kreis ist (Kantenlinien = Vieleck): exakten Kreis nehmen,
+  // sonst sitzen die Kopien im Sehnen-Takt mal innen, mal außen und drehen in Stufen
+  if (closed && P.length >= 12) {
+    const cen = new THREE.Vector3(); P.forEach(v => cen.add(v)); cen.multiplyScalar(1 / P.length);
+    const n = _ringNormal3(P), e1 = new THREE.Vector3().crossVectors(Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0), n).normalize(), e2 = new THREE.Vector3().crossVectors(n, e1);
+    const flat = P.every(v => Math.abs(v.clone().sub(cen).dot(n)) < 1e-4);
+    const f = flat ? _m2cCircleFit(P.map(v => { const d = v.clone().sub(cen); return { u: d.dot(e1), v: d.dot(e2) }; })) : null;
+    if (f && f.dev < Math.max(1e-4, f.r * 0.004)) {
+      const C = cen.clone().addScaledVector(e1, f.c.u).addScaledVector(e2, f.c.v), d0 = P[0].clone().sub(C), a0 = Math.atan2(d0.dot(e2), d0.dot(e1));
+      const d1 = P[1].clone().sub(C), sg = Math.sign(Math.atan2(d1.dot(e2), d1.dot(e1)) - a0 || 1) * (Math.abs(Math.atan2(d1.dot(e2), d1.dot(e1)) - a0) > Math.PI ? -1 : 1);
+      P = []; for (let i = 0; i < 720; i++) { const a = a0 + sg * i / 720 * Math.PI * 2; P.push(C.clone().addScaledVector(e1, f.r * Math.cos(a)).addScaledVector(e2, f.r * Math.sin(a))); }
+    }
+  }
+  if (closed && P[0].distanceTo(P[P.length - 1]) > 1e-6) P.push(P[0].clone());
+  const cum = [0]; for (let i = 1; i < P.length; i++) cum.push(cum[i - 1] + P[i].distanceTo(P[i - 1]));
+  const L = cum[cum.length - 1];
+  const wrap = s => closed ? ((s % L) + L) % L : Math.max(0, Math.min(L, s));
+  const at = s => { s = wrap(s); let i = 1; while (i < P.length - 1 && cum[i] < s) i++; const f = (s - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1e-12); return P[i - 1].clone().lerp(P[i], f); };
+  const tanAt = s => { const h = Math.max(L * 1e-4, 1e-6); const a = closed ? at(s - h) : at(Math.max(0, s - h)), b = closed ? at(s + h) : at(Math.min(L, s + h)); const t = b.sub(a); return t.lengthSq() < 1e-18 ? new THREE.Vector3(1, 0, 0) : t.normalize(); };
+  const M = Math.max(64, Math.min(1200, P.length * 8)), Q = [new THREE.Quaternion()], T = [tanAt(0)];
+  for (let j = 1; j <= M; j++) { T.push(tanAt(L * j / M)); Q.push(new THREE.Quaternion().setFromUnitVectors(T[j - 1], T[j]).multiply(Q[j - 1])); }
+  const rotAt = s => { s = wrap(s); const x = s / (L || 1) * M, j = Math.min(M - 1, Math.floor(x)); return Q[j].clone().slerp(Q[j + 1], x - j); };
+  const sOf = c => { let bs = 0, bd = Infinity;
+    for (let i = 0; i < P.length - 1; i++) { const ab = P[i + 1].clone().sub(P[i]), L2 = ab.lengthSq() || 1e-12, t = Math.max(0, Math.min(1, c.clone().sub(P[i]).dot(ab) / L2)), d = P[i].clone().addScaledVector(ab, t).distanceTo(c);
+      if (d < bd) { bd = d; bs = cum[i] + t * Math.sqrt(L2); } }
+    return bs; };
+  return { L, at, tanAt, rotAt, sOf };
+}
+function _pmCenter(objs){ const b = new THREE.Box3(); objs.forEach(o => b.union(getMeshBox(o))); return b.getCenter(new THREE.Vector3()); }
+// Transformationen der Kopien (ohne die Vorlage selbst)
+function _pmMats(){
+  const P = _pm.p, C = _pmCenter(_pm.src), out = [];
+  if (_pm.kind === 'kontur') {
+    if (!_pm.path) return { mats: [] };
+    const F = _pmPathFns(_pm.path, _pm.closed), s0 = F.sOf(C), P0 = F.at(s0), R0i = F.rotAt(s0).invert();
+    let pitch, n;
+    if (P.dist === 'count') { n = Math.max(2, Math.round(P.n)); pitch = _pm.closed ? F.L / n : (F.L - s0) / Math.max(1, n - 1); }
+    else {
+      if (P.dist === 'pitch') pitch = Math.max(0.01, P.pitch / 10);
+      else { const T = F.tanAt(s0), b = new THREE.Box3(); _pm.src.forEach(o => b.union(getMeshBox(o)));
+        let lo = Infinity, hi = -Infinity; for (let i = 0; i < 8; i++) { const c = new THREE.Vector3(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z); const d = c.dot(T); lo = Math.min(lo, d); hi = Math.max(hi, d); }
+        pitch = Math.max(0.01, (hi - lo) + P.gap / 10); }
+      n = _pm.closed ? Math.max(1, Math.floor(F.L / pitch + 1e-6)) : Math.floor((F.L - s0) / pitch + 1e-6) + 1;
+      if (_pm.closed && n > 0) pitch = F.L / n;   // geschlossen: gleichmäßig auffüllen
+    }
+    n = Math.min(n, 500);
+    for (let k = 1; k < n; k++) {
+      const s = s0 + k * pitch, Pk = F.at(s), R = P.follow ? F.rotAt(s).multiply(R0i.clone()) : new THREE.Quaternion();
+      out.push(new THREE.Matrix4().makeTranslation(Pk.x, Pk.y, Pk.z).multiply(new THREE.Matrix4().makeRotationFromQuaternion(R)).multiply(new THREE.Matrix4().makeTranslation(-P0.x, -P0.y, -P0.z)));
+    }
+    return { mats: out, n, pitch, L: F.L };
+  }
+  // Kugel: Fibonacci-Verteilung in einer Kappe um die Richtung Mitte → Vorlage
+  if (!_pm.target) return { mats: [] };
+  const K = getMeshBox(_pm.target).getCenter(new THREE.Vector3()), pole = C.clone().sub(K);
+  if (pole.lengthSq() < 1e-12) return { mats: [] };
+  pole.normalize();
+  const e1 = new THREE.Vector3().crossVectors(Math.abs(pole.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0), pole).normalize(), e2 = new THREE.Vector3().crossVectors(pole, e1);
+  const n = Math.max(2, Math.min(500, Math.round(P.n))), cmin = Math.cos(Math.min(180, Math.max(1, P.ang)) * Math.PI / 180), ga = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 1; i < n; i++) {
+    const z = 1 - (1 - cmin) * i / (n - 1), r = Math.sqrt(Math.max(0, 1 - z * z)), ph = i * ga;
+    const d = e1.clone().multiplyScalar(r * Math.cos(ph)).addScaledVector(e2, r * Math.sin(ph)).addScaledVector(pole, z).normalize();
+    const R = new THREE.Quaternion().setFromUnitVectors(pole, d);
+    out.push(new THREE.Matrix4().makeTranslation(K.x, K.y, K.z).multiply(new THREE.Matrix4().makeRotationFromQuaternion(R)).multiply(new THREE.Matrix4().makeTranslation(-K.x, -K.y, -K.z)));
+  }
+  return { mats: out, n };
+}
+function enterKonturmuster(){ _pmEnter('kontur'); }
+function enterKugelmuster(){ _pmEnter('kugel'); }
+function _pmEnter(kind){
+  const src = selectedObjs.filter(o => objects.includes(o));
+  if (!src.length) { notify(kind === 'kontur' ? 'Konturmuster: erst den Körper wählen, der verteilt werden soll (z. B. ein Kerb-Werkzeug)' : 'Kugelmuster: erst den Körper wählen, der verteilt werden soll', 'w'); return; }
+  if (_pm.active) _pmExit();
+  if (_sk.active) exitSketchMode(); if (_flg.active) _flgExit(); if (_lf.active) exitLoftMode(); if (_pp.active) exitPushPull();
+  Object.assign(_pm, { active: true, kind, src, chains: [], path: null, closed: false, target: null });
+  deselect();   // Griffe der Auswahl würden Klicks auf Kanten abfangen
+  _pm.grp = new THREE.Group(); scene.add(_pm.grp);
+  canvas.style.cursor = 'crosshair';
+  _pmPanel(); _pmPreview();
+  notify(kind === 'kontur' ? 'Konturmuster: Kante(n) der Kontur anklicken (ein Klick nimmt die ganze Kantenkette, Shift = weitere)' : 'Kugelmuster: die Kugel (Zielkörper) anklicken', 'ok');
+}
+function _pmExit(){
+  if (!_pm.active) return;
+  _pm.active = false;
+  if (_pm.grp) { scene.remove(_pm.grp); _pm.grp.traverse(c => { if (c.material && c.userData.ghost) c.material.dispose(); if (c.geometry && c.userData.own) c.geometry.dispose(); }); _pm.grp = null; }
+  const el = document.getElementById('pm-panel'); if (el) el.remove();
+  canvas.style.cursor = '';
+}
+function _pmClick(e){
+  if (_pm.kind === 'kontur') {
+    const ch = _flgPickChain(e); if (!ch) { notify('Keine Kante getroffen — genauer auf eine Kantenlinie klicken', 'w'); return; }
+    const prev = _flg.chains, prevP = _flg.path, prevC = _flg.closed;
+    _flg.chains = e.shiftKey && _pm.chains.length ? _pm.chains.concat([ch]) : [ch];
+    const okJ = _flgJoin();
+    if (okJ) { _pm.chains = _flg.chains; _pm.path = _flg.path; _pm.closed = _flg.closed; } else notify('Diese Kante schließt nicht an die Kontur an', 'w');
+    _flg.chains = prev; _flg.path = prevP; _flg.closed = prevC;
+    // Ziel: Körper, zu dem die Kante gehört
+    getNorm(e); raycaster.setFromCamera(mousev, camera);
+    const hit = pickObjects(e).find(h => h.object.isMesh && !h.object.userData.isEdgeLines && objects.some(o => (o === h.object || o.getObjectById(h.object.id)) && !_pm.src.includes(o)));
+    const owner = o => objects.find(x => x === o || x.getObjectById(o.id));
+    if (hit) _pm.target = owner(hit.object);
+    else { const ln = _pm.path && _pm.path[0]; _pm.target = ln ? (_skxBodies().filter(o => !_pm.src.includes(o)).find(o => getMeshBox(o).expandByScalar(0.01).containsPoint(ln)) || null) : null; }
+  } else {
+    const hit = pickObjects(e).find(h => h.object.isMesh && !h.object.userData.isEdgeLines && objects.some(o => (o === h.object || o.getObjectById(h.object.id)) && !_pm.src.includes(o)));
+    if (!hit) { notify('Daneben — den Zielkörper (Kugel) anklicken', 'w'); return; }
+    _pm.target = objects.find(x => x === hit.object || x.getObjectById(hit.object.id));
+  }
+  _pmPanel(); _pmPreview();
+}
+function _pmPreview(){
+  if (!_pm.grp) return;
+  _pm.grp.children.slice().forEach(c => { _pm.grp.remove(c); if (c.material && c.userData.ghost) c.material.dispose(); if (c.geometry && c.userData.own) c.geometry.dispose(); });
+  if (_pm.path) { const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(_pm.closed ? [..._pm.path, _pm.path[0]] : _pm.path), new THREE.LineBasicMaterial({ color: 0xF97316, depthTest: false }));
+    l.renderOrder = 998; l.userData.own = true; l.userData.ghost = true; _pm.grp.add(l); }
+  const { mats } = _pmMats();
+  const col = _pm.p.op === 'cut' ? 0xef4444 : _pm.p.op === 'join' ? 0x22c55e : 0x3b82f6;
+  for (const G of mats.slice(0, 300)) for (const s of _pm.src) s.traverse(m => {
+    if (!m.isMesh || m.userData.isEdgeLines) return;
+    const gm = new THREE.Mesh(m.geometry, new THREE.MeshStandardMaterial({ color: col, transparent: true, opacity: 0.45, depthWrite: false }));
+    gm.userData.ghost = true; gm.matrixAutoUpdate = false; m.updateMatrixWorld(true); gm.matrix.copy(G.clone().multiply(m.matrixWorld)); _pm.grp.add(gm); });
+}
+function _pmPanel(){
+  let el = document.getElementById('pm-panel');
+  if (!el) { el = document.createElement('div'); el.id = 'pm-panel';
+    el.style.cssText = 'position:fixed;right:232px;bottom:64px;width:286px;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+    el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); _pmApply(); } if (e.key === 'Escape') _pmExit(); });
+    document.body.appendChild(el); }
+  const P = _pm.p, K = _pm.kind === 'kontur', info = _pmMats(), tb = (k, on, v, t) => `<button class="vtb${on ? ' on' : ''}" onclick="_pmSet('${k}','${v}')">${t}</button>`;
+  const inp = (k, v, u, st) => `<input type="number" step="${st || 1}" value="${v}" oninput="_pmSet('${k}',this.value)" style="width:70px"><span class="vu">${u}</span>`;
+  const tn = _pm.target ? '„' + (_pm.target.userData.name || 'Körper') + '“' : 'keiner';
+  el.innerHTML = `<div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">${K ? '⟿ Konturmuster' : '◍ Kugelmuster'}</b><span onclick="_pmExit()" style="cursor:pointer;color:var(--dim);font-size:15px">✕</span></div>
+    <div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:5px 8px;margin-bottom:8px">${_pm.src.length} Vorlage${_pm.src.length > 1 ? 'n' : ''} · ${K ? (_pm.path ? `Kontur ${String(Math.round(info.L * 100) / 10).replace('.', ',')} mm${_pm.closed ? ' (geschlossen)' : ''}` : '<b>Kante anklicken</b>') : (_pm.target ? 'Kugel ' + tn : '<b>Kugel anklicken</b>')}</div>
+    ${K ? `<div class="vrow"><label>Verteilung</label><div class="vbg" style="flex:1">${tb('dist', P.dist === 'count', 'count', 'Anzahl')}${tb('dist', P.dist === 'pitch', 'pitch', 'Teilung')}${tb('dist', P.dist === 'auto', 'auto', 'Auto')}</div></div>
+      ${P.dist === 'count' ? `<div class="vrow"><label>Anzahl</label>${inp('n', P.n, 'Stück')}</div>` : P.dist === 'pitch' ? `<div class="vrow"><label>Teilung</label>${inp('pitch', P.pitch, 'mm', 0.5)}</div>` : `<div class="vrow"><label title="Lücke zwischen zwei Kopien — die Anzahl ergibt sich aus Größe + Lücke">Lücke</label>${inp('gap', P.gap, 'mm', 0.5)}</div>`}
+      <div class="vrow"><label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" ${P.follow ? 'checked' : ''} onchange="_pmSet('follow',this.checked)"> mit der Kontur drehen</label></div>
+      ${_pm.path ? `<div style="font-size:11px;color:var(--dim);margin:-2px 0 6px">${info.n} Stück, effektive Teilung ${String(Math.round(info.pitch * 100) / 10).replace('.', ',')} mm</div>` : ''}`
+    : `<div class="vrow"><label>Anzahl</label>${inp('n', P.n, 'Stück')}</div><div class="vrow"><label title="180° = ganze Kugel, 90° = Halbkugel um die Vorlage">Bereich</label>${inp('ang', P.ang, '°', 15)}</div>`}
+    <div class="vrow"><label>Ergebnis</label><select onchange="_pmSet('op',this.value)" style="flex:1">${[['copy', 'Kopien'], ['cut', 'Vom Ziel abziehen'], ['join', 'An Ziel anfügen']].map(([v, l]) => `<option value="${v}"${P.op === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+    <div style="font-size:11px;color:var(--dim)">Ziel: ${tn}</div>
+    <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px"><button class="btn" onclick="_pmExit()">Abbrechen</button><button class="btn pri" onclick="_pmApply()">✓ Erstellen</button></div>`;
+}
+function _pmSet(k, v){ const P = _pm.p; if (k === 'dist' || k === 'op') P[k] = v; else if (k === 'follow') P.follow = !!v; else P[k] = parseFloat(String(v).replace(',', '.')) || 0;
+  if (k === 'dist' || k === 'op' || k === 'follow') _pmPanel(); else { const el = document.getElementById('pm-panel'); const d = el && el.querySelector('div[style*="effektive"]'); if (d) { const i = _pmMats(); d.textContent = `${i.n} Stück, effektive Teilung ${String(Math.round(i.pitch * 100) / 10).replace('.', ',')} mm`; } }
+  _pmPreview(); }
+async function _pmApply(){
+  const { mats, n } = _pmMats();
+  if (!mats.length) { notify(_pm.kind === 'kontur' ? 'Erst die Kontur-Kante anklicken' : 'Erst die Kugel anklicken', 'w'); return; }
+  const P = { ..._pm.p }, src = _pm.src.slice(), target = _pm.target, kind = _pm.kind;
+  if (P.op !== 'copy' && !target) { notify('Kein Zielkörper — „Kopien“ wählen oder die Kante eines Körpers anklicken', 'w'); return; }
+  _pmExit();
+  saveUndo(); const n0 = undoStack.length;
+  const copies = [];
+  for (const G of mats) for (const s of src) {
+    const d = objectToData(s); d.id = idCtr++;
+    const cl = buildObjectFromData(d); s.updateMatrixWorld(true);
+    G.clone().multiply(s.matrixWorld).decompose(cl.position, cl.quaternion, cl.scale); cl.updateMatrixWorld(true);
+    scene.add(cl); objects.push(cl); copies.push(cl);
+  }
+  const all = [...src, ...copies], lab = kind === 'kontur' ? 'Konturmuster' : 'Kugelmuster';
+  if (P.op === 'copy') { selectObjs(all); updateTree(); notify(`${lab}: ${n} Stück ✓`, 'ok'); return; }
+  if (P.op === 'join') { selectObjs([target, ...all]); await unionSelected(); if (undoStack.length === n0 + 1) undoStack.pop(); updateUndoRedoButtons(); notify(`${lab}: ${n} Stück angefügt ✓`, 'ok'); return; }
+  all.forEach(o => { o.userData.isHole = true; o.userData._exactTool = true; o.userData.color = '#f03030'; o.traverse(m => { if (m.isMesh && m.material && m.material.color) { m.material.color.set('#f03030'); m.material.transparent = true; m.material.opacity = 0.52; } }); });
+  updateTree();
+  _progressShow(lab + ': abziehen…'); _progressSet(8); _progressCreep(93);
+  const ctl = _progressCancelable();
+  try { await _doSubtractHoles([target], all, ctl); _progressDone(); notify(`${lab}: ${n} Stück aus „${target.userData.name || 'Körper'}“ abgezogen ✓`, 'ok'); }
+  catch (err) { _progressHide(); notify(lab + ' — Abziehen nicht möglich: ' + (err.message || err), 'e'); }
+}
+
 // ═══ FOLGEN: Profil entlang Modellkanten (3D-Sweep, 1.18.194) ═══════════════
 // Idee aus dem ShapeAnywhere-Abgleich, eigener Code. Profil = geschlossene
 // Kontur der aktuellen Skizze (Knopf „↝ Folgen") oder eine angeklickte ebene
@@ -33347,6 +33529,7 @@ canvas.addEventListener('mousedown', e => {
     return;
   }
   if (_flg.active) { _flgClick(e); return; }
+  if (_pm.active) { _pmClick(e); return; }
   if (_lf.active) {
     if (_lf.pathPick) { _lfPathClick(e); return; }
     const hits = pickObjects(e);
@@ -34300,6 +34483,7 @@ window.addEventListener('keydown', e => {
     if (_plugMode) { _plugCancel(); return; }
     if (_pp.active) { exitPushPull(); return; }
     if (_flg.active) { _flgExit(); return; }
+    if (_pm.active) { _pmExit(); return; }
     if (_lf.active) { exitLoftMode(); return; }
     // ESC in der Skizze: erst den angefangenen Zug abbrechen (Linie klebt am
     // Cursor!), erst der nächste ESC schließt die Skizze — sonst fliegt man
@@ -34328,6 +34512,7 @@ window.addEventListener('keydown', e => {
   if (_lf.active && k === 'Enter') { _lfApply(); return; }
   if (_pp.active && k === 'Enter') { e.preventDefault(); _ppGo(); return; }
   if (_flg.active && k === 'Enter') { e.preventDefault(); _flgApply(); return; }
+  if (_pm.active && k === 'Enter') { e.preventDefault(); _pmApply(); return; }
   // Extrudieren-Fenster: Enter bestätigt auch ohne Fokus im Feld
   if (_skx.open && k === 'Enter') { e.preventDefault(); _skxApply(); return; }
 
@@ -66737,8 +66922,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.210';
+const VOLME3D_VERSION = '1.18.211';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.211', date:'2026-10-19', changes:[
+    ['⟿','<b>Neu: Konturmuster.</b> Körper wählen (z. B. ein kleines Kerb-Werkzeug), <b>⟿ Konturmuster</b>, dann eine Kante anklicken; ein Klick nimmt die ganze Kantenkette, z. B. einen Kreisrand. Verteilung nach <b>Anzahl</b>, <b>Teilung</b> (mm) oder <b>Auto</b> (aus Größe + Lücke, bei geschlossenen Konturen gleichmäßig aufgefüllt). Die Kopien drehen sich mit der Kontur. Ergebnis: Kopien, oder gleich vom Körper <b>abgezogen</b> (Rändel, Kerben, Lüftungsschlitze) bzw. <b>angefügt</b>.'],
+    ['◍','<b>Neu: Kugelmuster.</b> Körper wählen, <b>◍ Kugelmuster</b>, Kugel anklicken: Die Kopien werden gleichmäßig über die ganze Kugel oder einen Winkelbereich verteilt (z. B. Noppen, Golfball-Dellen, Igel-Stacheln). Auch als Abziehen oder Anfügen.'],
+  ]},
   { version:'1.18.210', date:'2026-10-19', changes:[
     ['G2','<b>Skizze: krümmungsstetig (G2).</b> Neue Abhängigkeit im Panel: Spline und Nachbar (Linie, Bogen oder zweiter Spline) anklicken, <b>G2</b>. Der Übergang hat dann weder einen Knick noch einen Krümmungssprung, sichtbar am Krümmungskamm und an Glanzlichtern auf gedruckten Teilen. <b>Tangential</b> zwischen Spline und Linie/Bogen gibt es jetzt auch (G1). Spline-Punkte lassen sich weiter frei ziehen, die Abhängigkeit bleibt erhalten.'],
   ]},
@@ -77724,6 +77913,8 @@ const CMDK = [
   {i:'⤧',g:'Bearbeiten',t:'Loft (Flächen verbinden)',k:'loft übergang flächen verbinden shapr',run:()=>{ if(!_lf.active) enterLoftMode(); }},
   {i:'🎓',g:'Hilfe',t:'Interaktive Anleitungen (Schritt für Schritt)',k:'anleitung tutorial lernen schritt für schritt übung becher halter einstieg kurs',run:()=>_tutMenu()},
   {i:'▣',g:'Bearbeiten',t:'Mesh → CAD (STL in Skizzen-Schritte)',k:'mesh to cad stl 3mf zurückführen rekonstruieren reverse engineering skizze verlauf bearbeitbar parametrisch',run:()=>meshToCad()},
+  {i:'⟿',g:'Anordnen',t:'Konturmuster (Körper entlang einer Kontur verteilen)',k:'konturmuster muster kontur kante rändel kerben verteilen entlang pfad teilung anzahl',run:()=>enterKonturmuster()},
+  {i:'◍',g:'Anordnen',t:'Kugelmuster (Körper über eine Kugel verteilen)',k:'kugelmuster kugel muster verteilen golfball noppen dimples fibonacci',run:()=>enterKugelmuster()},
   {i:'⤳',g:'Bearbeiten',t:'Folgen (Profil entlang Kanten)',k:'folgen sweep follow me profil kante pfad rand nut leiste rohr',run:()=>enterFolgen()},
   {i:'🔻',g:'Bearbeiten',t:'Vereinfachen (Dreiecke)',k:'simplify decimate reduzieren',run:()=>openSimplifyModal()},
   {i:'⬇',g:'Export',t:'Skizze als DXF',k:'dxf laser export skizze',run:()=>{ if(_sk.active) _skExportDXF(); else notify('Erst Skizzen-Modus öffnen','w'); }},
