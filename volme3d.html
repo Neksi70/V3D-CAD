@@ -1772,6 +1772,7 @@ const firebaseConfig = {
     <div class="sli-item" id="ctx-loft">⤧ Loft (Flächen verbinden)</div>
     <div class="sli-item" id="ctx-folgen">⤳ Folgen (Profil entlang Kanten)</div>
     <div class="sli-item" id="ctx-m2c">▣ Mesh → CAD (STL bearbeitbar machen)</div>
+    <div class="sli-item" id="ctx-heal">🩹 Fläche löschen und heilen</div>
   </div>
   <div id="pp-bar" style="display:none;position:fixed;bottom:56px;left:50%;transform:translateX(-50%);background:rgba(24,24,32,0.93);border:1px solid #444;border-radius:8px;padding:7px 12px;align-items:center;gap:10px;z-index:8500;font-size:12px;color:#ccc;white-space:nowrap">
     <span id="pp-status" style="font-weight:700;color:#aaa">Fläche anklicken</span>
@@ -32328,6 +32329,203 @@ function _m2cReport(o, rep, mesh){
     <div style="margin-top:8px;color:var(--dim)">Das Original ist ausgeblendet (im Baum wieder einblendbar). Im Verlauf des neuen Teils jede Skizze öffnen, bemaßen und ändern — das Teil rechnet sich neu.</div>`;
 }
 
+// ═══ FLÄCHE LÖSCHEN UND HEILEN (1.18.212) ═══════════════════════════════════
+// Idee aus dem ShapeAnywhere-Abgleich (Radierer mit CAD-Healing), eigener Code.
+// Angeklickte Fläche erkennen und so entfernen, dass das Teil wieder geschlossen
+// ist — exakt per Manifold:
+//   Bohrung (voller Zylinder, Normalen zur Achse) → mit Zylinder füllen
+//   Zapfen  (voller Zylinder, Normalen nach außen) → vom Fuß an wegschneiden
+//   Rundung (Teilzylinder) → Ecke aus den beiden Tangentialebenen: außen Material
+//            ergänzen (Viereck Mitte–P1–K–P2), innen wegnehmen (Dreieck P1–K–P2)
+//   Fase    (ebener Streifen zwischen zwei Ebenen) → Ecke K aus beiden Ebenen
+const _heal = { active: false, info: null, grp: null };
+function enterHealFace(){
+  if (_heal.active) { _healExit(); return; }
+  if (_sk.active) exitSketchMode(); if (_pp.active) exitPushPull(); if (_flg.active) _flgExit(); if (_pm.active) _pmExit(); if (_lf.active) exitLoftMode();
+  _heal.active = true; _heal.info = null; _heal.grp = new THREE.Group(); scene.add(_heal.grp);
+  deselect(); canvas.style.cursor = 'crosshair'; _healPanel();
+  notify('Fläche löschen und heilen: Bohrung, Zapfen, Rundung oder Fase anklicken', 'ok');
+}
+function _healExit(){
+  if (!_heal.active) return; _heal.active = false;
+  if (_heal.grp) { scene.remove(_heal.grp); _heal.grp.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); }); _heal.grp = null; }
+  const el = document.getElementById('heal-panel'); if (el) el.remove(); canvas.style.cursor = '';
+}
+function _healClick(e){
+  const hit = pickObjects(e).find(h => h.object.isMesh && h.face && !h.object.userData.isEdgeLines && objects.includes(h.object));
+  if (!hit) { notify('Eine Fläche eines Körpers anklicken', 'w'); return; }
+  _healPick(hit);
+}
+// Analyse der angeklickten Fläche → _heal.info
+function _healPick(hit){
+  const body = hit.object, T = _m2cTris(body), NA = T.map(_m2cNormalArea), n = T.length, seed = hit.faceIndex;
+  if (seed == null || !NA[seed]) { notify('Diese Stelle lässt sich nicht auswerten', 'w'); return null; }
+  const q = 1e-4, key = (t, k) => Math.round(t[k*3] / q) + ',' + Math.round(t[k*3+1] / q) + ',' + Math.round(t[k*3+2] / q);
+  const em = new Map(); for (let i = 0; i < n; i++) for (let e = 0; e < 3; e++) { const a = key(T[i], e), b = key(T[i], (e + 1) % 3), k = a < b ? a + '|' + b : b + '|' + a; if (!em.has(k)) em.set(k, []); em.get(k).push(i); }
+  const nb = Array.from({ length: n }, () => []); for (const arr of em.values()) if (arr.length === 2) { nb[arr[0]].push(arr[1]); nb[arr[1]].push(arr[0]); }
+  const V = (t, k) => new THREE.Vector3(t[k*3], t[k*3+1], t[k*3+2]), cen = t => V(t, 0).add(V(t, 1)).add(V(t, 2)).multiplyScalar(1 / 3);
+  const bb = getMeshBox(body), tol = Math.max(0.001, bb.getSize(new THREE.Vector3()).length() * 2e-4);
+  const n0 = NA[seed].n;
+  // ── eben? (Nachbarn mit gleicher Normale)
+  const coplanar = (i) => NA[i] && NA[i].n.dot(n0) > 0.99995 && Math.abs(cen(T[i]).sub(cen(T[seed])).dot(n0)) < tol;
+  const flatReg = [], seen = new Set([seed]), st = [seed];
+  while (st.length) { const i = st.pop(); flatReg.push(i); for (const j of nb[i]) if (!seen.has(j) && coplanar(j)) { seen.add(j); st.push(j); } }
+  const curvedNb = nb[seed].find(j => NA[j] && NA[j].n.dot(n0) < 0.99995 && NA[j].n.dot(n0) > Math.cos(30 * Math.PI / 180));
+  let info = null;
+  if (!curvedNb) info = _healChamfer(T, NA, nb, flatReg, n0, tol, cen, V);
+  else info = _healCylinder(T, NA, nb, seed, curvedNb, tol, cen, V);
+  if (!info || info.err) { notify(info && info.err ? info.err : 'Diese Fläche wird (noch) nicht erkannt — Bohrung, Zapfen, Rundung oder Fase anklicken', 'w'); return info; }
+  info.body = body;
+  _heal.info = info; _healShow(T); _healPanel();
+  return info;
+}
+function _healCylinder(T, NA, nb, seed, j2, tol, cen, V){
+  const n1 = NA[seed].n, n2 = NA[j2].n, B = new THREE.Vector3().crossVectors(n1, n2).normalize();
+  const e1 = new THREE.Vector3().crossVectors(Math.abs(B.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0), B).normalize(), e2 = new THREE.Vector3().crossVectors(B, e1);
+  const smooth = (i, j) => NA[i] && NA[j] && NA[i].n.dot(NA[j].n) > Math.cos(25 * Math.PI / 180);
+  // Nachbarschaft der Facetten (Tiefe ≤ 8) → Ausgleich: Schwerpunkt = Mitte + ρ·Normale (in der Ebene ⟂ B)
+  const nbh = [], dep = new Map([[seed, 0]]), q0 = [seed];
+  while (q0.length) { const i = q0.shift(); nbh.push(i); if (dep.get(i) >= 8) continue;
+    for (const j of nb[i]) if (!dep.has(j) && NA[j] && Math.abs(NA[j].n.dot(B)) < 0.03 && smooth(i, j)) { dep.set(j, dep.get(i) + 1); q0.push(j); } }
+  const fitLS = ids => { let a11 = 0, a12 = 0, a13 = 0, a22 = 0, a23 = 0, a33 = 0, b1 = 0, b2 = 0, b3 = 0;
+    for (const i of ids) { const c = cen(T[i]), px = c.dot(e1), py = c.dot(e2), nx = NA[i].n.dot(e1), ny = NA[i].n.dot(e2);
+      // Gleichungen: Cx + ρ nx = px ; Cy + ρ ny = py
+      a11 += 1; a13 += nx; a22 += 1; a23 += ny; a33 += nx * nx + ny * ny; b1 += px; b2 += py; b3 += nx * px + ny * py; }
+    const Mx = new THREE.Matrix3().set(a11, a12, a13, a12, a22, a23, a13, a23, a33);
+    if (Math.abs(Mx.determinant()) < 1e-14) return null;
+    const x = new THREE.Vector3(b1, b2, b3).applyMatrix3(Mx.invert()); return { cx: x.x, cy: x.y, rho: x.z }; };
+  let F = fitLS(nbh); if (!F) return { err: 'Gekrümmte Fläche nicht als Zylinder erkannt' };
+  const resid = (i, F) => { const c = cen(T[i]); return Math.hypot(c.dot(e1) - F.cx - F.rho * NA[i].n.dot(e1), c.dot(e2) - F.cy - F.rho * NA[i].n.dot(e2)); };
+  for (let it = 0; it < 3; it++) { const keep = nbh.filter(i => resid(i, F) < Math.max(tol * 3, Math.abs(F.rho) * 0.03)); if (keep.length < 3) break; const F2 = fitLS(keep); if (!F2) break; F = F2; }
+  let r = Math.abs(F.rho), C = e1.clone().multiplyScalar(F.cx).addScaledVector(e2, F.cy);
+  const onCyl = (i) => { if (!NA[i] || Math.abs(NA[i].n.dot(B)) > 0.03) return false;
+    for (let k = 0; k < 3; k++) { const d = V(T[i], k).sub(C); d.addScaledVector(B, -d.dot(B)); if (Math.abs(d.length() - r) > Math.max(tol * 3, r * 0.02)) return false; } return true; };
+  let reg = [];
+  for (let pass = 0; pass < 2; pass++) {
+    reg = []; const seen = new Set([seed]), st = [seed];
+    while (st.length) { const i = st.pop(); reg.push(i); for (const j of nb[i]) if (!seen.has(j) && onCyl(j)) { seen.add(j); st.push(j); } }
+    const Fr = _m2cCircleFit(reg.flatMap(i => [0, 1, 2].map(k => { const v = V(T[i], k); return { u: v.dot(e1), v: v.dot(e2) }; })));
+    if (Fr && Fr.dev < Math.max(tol * 3, Fr.r * 0.02)) { r = Fr.r; C = e1.clone().multiplyScalar(Fr.c.u).addScaledVector(e2, Fr.c.v); }
+  }
+  if (reg.length < 2) return { err: 'Gekrümmte Fläche nicht als Zylinder erkannt' };
+  // genauer Kreis-Fit in der Ebene ⟂ B
+  const pts = [], ts = []; for (const i of reg) for (let k = 0; k < 3; k++) { const v = V(T[i], k); pts.push({ u: v.dot(e1), v: v.dot(e2) }); ts.push(v.dot(B)); }
+  const f = _m2cCircleFit(pts); if (f) { r = f.r; C = e1.clone().multiplyScalar(f.c.u).addScaledVector(e2, f.c.v); }
+  else { C = C.clone().addScaledVector(B, -C.dot(B)); }
+  const tmin = Math.min(...ts), tmax = Math.max(...ts);
+  const angs = pts.map(p => Math.atan2(p.v - (f ? f.c.v : C.dot(e2)), p.u - (f ? f.c.u : C.dot(e1)))).sort((a, b) => a - b);
+  let gap = angs[0] + 2 * Math.PI - angs[angs.length - 1], gi = angs.length - 1;
+  for (let i = 1; i < angs.length; i++) if (angs[i] - angs[i - 1] > gap) { gap = angs[i] - angs[i - 1]; gi = i - 1; }
+  const span = 2 * Math.PI - gap;
+  let inward = 0;
+  for (const i of reg) { const c = cen(T[i]), d = c.clone().sub(C); d.addScaledVector(B, -d.dot(B)); inward += NA[i].n.dot(d) < 0 ? 1 : -1; }
+  const info = { B, C, r, tmin, tmax, e1, e2, tris: reg, inward: inward > 0 };
+  if (span > 300 * Math.PI / 180) {
+    if (info.inward) { info.kind = 'bohrung'; info.text = `Bohrung ⌀ ${String(Math.round(r * 200) / 10).replace('.', ',')} mm, ${String(Math.round((tmax - tmin) * 100) / 10).replace('.', ',')} mm tief → wird geschlossen`; }
+    else {
+      // Fuß = Ende ohne Deckelscheibe
+      const capAt = tt => T.some((t, i) => { if (!NA[i] || Math.abs(NA[i].n.dot(B)) < 0.9998) return false; const c = cen(t); const d = c.clone().sub(C); d.addScaledVector(B, -d.dot(B));
+        return Math.abs(c.dot(B) - tt) < tol * 3 && d.length() < r; });
+      const cMax = capAt(tmax), cMin = capAt(tmin);
+      if (cMax === cMin) return { err: 'Zylinder ohne eindeutigen Fuß — als Zapfen nicht entfernbar' };
+      info.kind = 'zapfen'; info.base = cMax ? 'min' : 'max';
+      info.text = `Zapfen ⌀ ${String(Math.round(r * 200) / 10).replace('.', ',')} mm, ${String(Math.round((tmax - tmin) * 100) / 10).replace('.', ',')} mm lang → wird entfernt`;
+    }
+  } else if (span < Math.PI * 0.999) {
+    const a1 = angs[(gi + 1) % angs.length], a2 = a1 + span;
+    const d1 = e1.clone().multiplyScalar(Math.cos(a1)).addScaledVector(e2, Math.sin(a1)), d2 = e1.clone().multiplyScalar(Math.cos(a2)).addScaledVector(e2, Math.sin(a2));
+    Object.assign(info, { kind: info.inward ? 'rundungInnen' : 'rundungAussen', d1, d2,
+      text: `Rundung R ${String(Math.round(r * 1000) / 100).replace('.', ',')} mm (${info.inward ? 'innen' : 'außen'}), ${String(Math.round((tmax - tmin) * 100) / 10).replace('.', ',')} mm lang → wird zur scharfen Kante` });
+  } else return { err: 'Halbzylinder oder mehr ohne geschlossenen Umfang — nicht eindeutig' };
+  return info;
+}
+function _healChamfer(T, NA, nb, reg, nR, tol, cen, V){
+  // Nachbarflächen am Rand der ebenen Region, gewichtet nach gemeinsamer Kantenlänge
+  const inReg = new Set(reg), groups = [];
+  for (const i of reg) for (const j of nb[i]) { if (inReg.has(j) || !NA[j]) continue;
+    const nj = NA[j].n; if (Math.abs(nj.dot(nR)) > 0.9999) continue;
+    let g = groups.find(g => g.n.dot(nj) > 0.9999); if (!g) groups.push(g = { n: nj.clone(), pts: [], w: 0 });
+    const sh = []; for (let a = 0; a < 3; a++) { const va = V(T[j], a); for (let b2 = 0; b2 < 3; b2++) if (V(T[i], b2).distanceTo(va) < 1e-4) { sh.push(va); break; } }
+    if (sh.length === 2) { g.pts.push(...sh); g.w += sh[0].distanceTo(sh[1]); } }
+  // Paar, dessen Schnittkante entlang der Fläche läuft (A ⟂ nR), mit größter Kantenlänge
+  let best = null;
+  for (let a = 0; a < groups.length; a++) for (let b2 = a + 1; b2 < groups.length; b2++) {
+    const A0 = new THREE.Vector3().crossVectors(groups[a].n, groups[b2].n); if (A0.length() < 0.05) continue; A0.normalize();
+    if (Math.abs(nR.dot(A0)) > 0.02) continue;
+    const w = groups[a].w + groups[b2].w; if (!best || w > best.w) best = { G1: groups[a], G2: groups[b2], A: A0, w }; }
+  if (!best) return { err: 'Ebene Fläche ohne zwei passende Nachbarflächen — nur Fasen lassen sich so heilen' };
+  const { G1, G2, A } = best;
+  const avg = ps => ps.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(1 / ps.length);
+  const E1 = avg(G1.pts), E2 = avg(G2.pts);
+  // K: auf Ebene 1 (durch E1) und Ebene 2 (durch E2), in der Querschnittsebene durch E1 ⟂ A
+  const M3 = new THREE.Matrix3().set(G1.n.x, G1.n.y, G1.n.z, G2.n.x, G2.n.y, G2.n.z, A.x, A.y, A.z);
+  const rhs = new THREE.Vector3(G1.n.dot(E1), G2.n.dot(E2), A.dot(E1)), Kp = rhs.applyMatrix3(M3.clone().invert());
+  const ts = []; for (const i of reg) for (let k = 0; k < 3; k++) ts.push(V(T[i], k).dot(A));
+  const tE1 = E1.dot(A), proj = P => P.clone().addScaledVector(A, tE1 - P.dot(A));
+  const P1 = proj(E1), P2 = proj(E2), K = Kp;
+  const convex = K.clone().sub(P1).dot(nR) > 0;
+  return { kind: convex ? 'faseAussen' : 'faseInnen', A, P1, P2, K, tmin: Math.min(...ts), tmax: Math.max(...ts), tris: reg,
+    text: `Fase ${String(Math.round(P1.distanceTo(K) * 100) / 10).replace('.', ',')} × ${String(Math.round(P2.distanceTo(K) * 100) / 10).replace('.', ',')} mm (${convex ? 'außen' : 'innen'}) → wird zur scharfen Kante` };
+}
+function _healShow(T){
+  _heal.grp.children.slice().forEach(c => { _heal.grp.remove(c); c.geometry.dispose(); c.material.dispose(); });
+  const pos = []; for (const i of _heal.info.tris) pos.push(...T[i]);
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xf97316, transparent: true, opacity: 0.6, depthTest: false, side: THREE.DoubleSide })); m.renderOrder = 997; _heal.grp.add(m);
+}
+function _healPanel(){
+  let el = document.getElementById('heal-panel');
+  if (!el) { el = document.createElement('div'); el.id = 'heal-panel';
+    el.style.cssText = 'position:fixed;right:232px;bottom:64px;width:290px;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+    document.body.appendChild(el); }
+  const I = _heal.info;
+  el.innerHTML = `<div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">🩹 Fläche löschen und heilen</b><span onclick="_healExit()" style="cursor:pointer;color:var(--dim);font-size:15px">✕</span></div>
+    <div style="margin-bottom:8px">${I ? '<b>Erkannt:</b> ' + I.text : 'Bohrung, Zapfen, Rundung oder Fase anklicken — die Fläche wird orange markiert.'}</div>
+    <div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn" onclick="_healExit()">Schließen</button>${I ? '<button class="btn pri" onclick="_healApply()">✓ Löschen und heilen</button>' : ''}</div>`;
+}
+// geschlossenes Prisma aus einem Vieleck (Ebene ⟂ A bei t0) über die Länge len
+function _healPrism(poly, A, t0, len){
+  const base = poly.map(p => p.clone().addScaledVector(A, t0 - p.dot(A))), top = base.map(p => p.clone().addScaledVector(A, len)), n = base.length, pos = [], idx = [];
+  base.concat(top).forEach(p => pos.push(p.x, p.y, p.z));
+  for (let i = 1; i < n - 1; i++) { idx.push(0, i + 1, i); idx.push(n, n + i, n + i + 1); }
+  for (let i = 0; i < n; i++) { const j = (i + 1) % n; idx.push(i, j, n + j, i, n + j, n + i); }
+  let vol = 0; for (let t = 0; t < idx.length; t += 3) { const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
+    vol += pos[a] * (pos[b + 1] * pos[c + 2] - pos[b + 2] * pos[c + 1]) - pos[a + 1] * (pos[b] * pos[c + 2] - pos[b + 2] * pos[c]) + pos[a + 2] * (pos[b] * pos[c + 1] - pos[b + 1] * pos[c]); }
+  if (vol < 0) for (let t = 0; t < idx.length; t += 3) { const x = idx[t + 1]; idx[t + 1] = idx[t + 2]; idx[t + 2] = x; }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); return g.toNonIndexed();
+}
+function _healCylGeo(C, B, r, t0, t1){
+  const g = new THREE.CylinderGeometry(r, r, t1 - t0, 128, 1); g.applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), B)));
+  const mid = C.clone().addScaledVector(B, (t0 + t1) / 2 - C.dot(B)); g.translate(mid.x, mid.y, mid.z); return g;
+}
+async function _healApply(){
+  const I = _heal.info; if (!I) return;
+  const body = I.body;
+  let tool, op;
+  if (I.kind === 'bohrung') { tool = _healCylGeo(I.C, I.B, I.r * 1.0008, I.tmin, I.tmax); op = 'union'; }
+  else if (I.kind === 'zapfen') { const e = (I.tmax - I.tmin) * 0.02 + 0.001; tool = I.base === 'min' ? _healCylGeo(I.C, I.B, I.r * 1.02, I.tmin, I.tmax + e) : _healCylGeo(I.C, I.B, I.r * 1.02, I.tmin - e, I.tmax); op = 'diff'; }
+  else if (I.kind === 'rundungAussen' || I.kind === 'rundungInnen') {
+    const Cp = I.C.clone().addScaledVector(I.B, I.tmin - I.C.dot(I.B)), P1 = Cp.clone().addScaledVector(I.d1, I.r), P2 = Cp.clone().addScaledVector(I.d2, I.r);
+    const K = Cp.clone().addScaledVector(I.d1.clone().add(I.d2), I.r / (1 + I.d1.dot(I.d2)));
+    tool = _healPrism(I.kind === 'rundungAussen' ? [Cp, P1, K, P2] : [P1, K, P2], I.B, I.tmin, I.tmax - I.tmin); op = I.kind === 'rundungAussen' ? 'union' : 'diff';
+  } else { tool = _healPrism([I.P1, I.K, I.P2], I.A, I.tmin, I.tmax - I.tmin); op = I.kind === 'faseAussen' ? 'union' : 'diff'; }
+  _healExit();
+  try {
+    const w = await _mfInit(), M = w.Manifold;
+    const a = _mfUnionObjs(w, [body]), tm = new THREE.Mesh(tool); tm.updateMatrixWorld(true); const b = _mfUnionObjs(w, [tm]);
+    const res = op === 'union' ? M.union(a, b) : M.difference(a, b);
+    if (res.isEmpty()) throw new Error('Ergebnis leer');
+    const geo = _mfToGeo(res).toNonIndexed(); geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1); _moldNormals(geo);
+    saveUndo();
+    body.geometry.dispose(); body.geometry = geo;
+    body.position.set(0, 0, 0); body.quaternion.identity(); body.scale.set(1, 1, 1); body.updateMatrixWorld(true);
+    const ud = body.userData; ud.type = 'custom'; ud.shapeType = 'custom';
+    ['occtShape', '_occtParams', 'edgeBevels', '_dynamicEdges', '_origGeo', '_origStlBuf', 'wasBox', '_brepStep', '_brepEdges', '_brep', '_brepGeo', 'feat', '_skProfiles', '_skProfilesFull'].forEach(k => delete ud[k]);
+    _updateObjEdgeLines(body); selectObjs([body]); updateTree();
+    notify('🩹 ' + I.text.replace(/ → .*/, '') + ' — entfernt, Fläche geheilt ✓', 'ok');
+  } catch (err) { notify('Heilen nicht möglich: ' + (err.message || err), 'e'); }
+}
+
 // ═══ KONTURMUSTER + KUGELMUSTER (1.18.211) ══════════════════════════════════
 // Idee aus dem ShapeAnywhere-Abgleich, eigener Code. Ein (oder mehrere) Körper
 // wird entlang einer angeklickten Kantenkette verteilt (Anzahl, Teilung oder
@@ -33530,6 +33728,7 @@ canvas.addEventListener('mousedown', e => {
   }
   if (_flg.active) { _flgClick(e); return; }
   if (_pm.active) { _pmClick(e); return; }
+  if (_heal.active) { _healClick(e); return; }
   if (_lf.active) {
     if (_lf.pathPick) { _lfPathClick(e); return; }
     const hits = pickObjects(e);
@@ -33867,6 +34066,7 @@ document.getElementById('ctx-pushpull').addEventListener('click', () => { _hideV
 document.getElementById('ctx-loft').addEventListener('click', () => { _hideVpCtx(); if (!_lf.active) enterLoftMode(); });
 document.getElementById('ctx-folgen').addEventListener('click', () => { _hideVpCtx(); enterFolgen(); });
 document.getElementById('ctx-m2c').addEventListener('click', () => { _hideVpCtx(); meshToCad(); });
+document.getElementById('ctx-heal').addEventListener('click', () => { _hideVpCtx(); enterHealFace(); });
 
 canvas.addEventListener('mouseup', e => {
   const moved = Math.hypot(e.clientX - mouseDownPos.x, e.clientY - mouseDownPos.y);
@@ -34484,6 +34684,7 @@ window.addEventListener('keydown', e => {
     if (_pp.active) { exitPushPull(); return; }
     if (_flg.active) { _flgExit(); return; }
     if (_pm.active) { _pmExit(); return; }
+    if (_heal.active) { _healExit(); return; }
     if (_lf.active) { exitLoftMode(); return; }
     // ESC in der Skizze: erst den angefangenen Zug abbrechen (Linie klebt am
     // Cursor!), erst der nächste ESC schließt die Skizze — sonst fliegt man
@@ -34513,6 +34714,7 @@ window.addEventListener('keydown', e => {
   if (_pp.active && k === 'Enter') { e.preventDefault(); _ppGo(); return; }
   if (_flg.active && k === 'Enter') { e.preventDefault(); _flgApply(); return; }
   if (_pm.active && k === 'Enter') { e.preventDefault(); _pmApply(); return; }
+  if (_heal.active && k === 'Enter' && _heal.info) { e.preventDefault(); _healApply(); return; }
   // Extrudieren-Fenster: Enter bestätigt auch ohne Fokus im Feld
   if (_skx.open && k === 'Enter') { e.preventDefault(); _skxApply(); return; }
 
@@ -66922,8 +67124,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.211';
+const VOLME3D_VERSION = '1.18.212';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.212', date:'2026-10-19', changes:[
+    ['🩹','<b>Neu: Fläche löschen und heilen.</b> Rechtsklick → <b>🩹 Fläche löschen und heilen</b> (oder Suche), dann eine Fläche anklicken. V3D CAD erkennt, was es ist, und markiert es orange: <b>Bohrung</b> (wird geschlossen), <b>Zapfen</b> (wird entfernt), <b>Rundung</b> oder <b>Fase</b> an einer Kante, außen oder innen (wird wieder zur scharfen Kante). <b>✓ Löschen und heilen</b> rechnet das exakt: Die Ecke wird aus den beiden Nachbarflächen rekonstruiert, das Teil bleibt geschlossen. Ideal für importierte STL/STEP-Teile, an denen ein Loch stört oder eine Rundung weg soll.'],
+  ]},
   { version:'1.18.211', date:'2026-10-19', changes:[
     ['⟿','<b>Neu: Konturmuster.</b> Körper wählen (z. B. ein kleines Kerb-Werkzeug), <b>⟿ Konturmuster</b>, dann eine Kante anklicken; ein Klick nimmt die ganze Kantenkette, z. B. einen Kreisrand. Verteilung nach <b>Anzahl</b>, <b>Teilung</b> (mm) oder <b>Auto</b> (aus Größe + Lücke, bei geschlossenen Konturen gleichmäßig aufgefüllt). Die Kopien drehen sich mit der Kontur. Ergebnis: Kopien, oder gleich vom Körper <b>abgezogen</b> (Rändel, Kerben, Lüftungsschlitze) bzw. <b>angefügt</b>.'],
     ['◍','<b>Neu: Kugelmuster.</b> Körper wählen, <b>◍ Kugelmuster</b>, Kugel anklicken: Die Kopien werden gleichmäßig über die ganze Kugel oder einen Winkelbereich verteilt (z. B. Noppen, Golfball-Dellen, Igel-Stacheln). Auch als Abziehen oder Anfügen.'],
@@ -77913,6 +78118,7 @@ const CMDK = [
   {i:'⤧',g:'Bearbeiten',t:'Loft (Flächen verbinden)',k:'loft übergang flächen verbinden shapr',run:()=>{ if(!_lf.active) enterLoftMode(); }},
   {i:'🎓',g:'Hilfe',t:'Interaktive Anleitungen (Schritt für Schritt)',k:'anleitung tutorial lernen schritt für schritt übung becher halter einstieg kurs',run:()=>_tutMenu()},
   {i:'▣',g:'Bearbeiten',t:'Mesh → CAD (STL in Skizzen-Schritte)',k:'mesh to cad stl 3mf zurückführen rekonstruieren reverse engineering skizze verlauf bearbeitbar parametrisch',run:()=>meshToCad()},
+  {i:'🩹',g:'Bearbeiten',t:'Fläche löschen und heilen (Bohrung, Zapfen, Rundung, Fase entfernen)',k:'fläche löschen heilen healing bohrung schließen loch zu zapfen entfernen rundung fase scharfe kante entfernen feature löschen radierer',run:()=>enterHealFace()},
   {i:'⟿',g:'Anordnen',t:'Konturmuster (Körper entlang einer Kontur verteilen)',k:'konturmuster muster kontur kante rändel kerben verteilen entlang pfad teilung anzahl',run:()=>enterKonturmuster()},
   {i:'◍',g:'Anordnen',t:'Kugelmuster (Körper über eine Kugel verteilen)',k:'kugelmuster kugel muster verteilen golfball noppen dimples fibonacci',run:()=>enterKugelmuster()},
   {i:'⤳',g:'Bearbeiten',t:'Folgen (Profil entlang Kanten)',k:'folgen sweep follow me profil kante pfad rand nut leiste rohr',run:()=>enterFolgen()},
