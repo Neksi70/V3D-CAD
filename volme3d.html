@@ -11189,7 +11189,7 @@ function _skUndo(){
     _sk.cUndo.pop(); _sk.ents = cu.before; _sk.cons = cu.cons; _sk.sel = []; _skcSolve(); _skRender(); _skcPanel(); return; }
   if (_sk.pending.length) _sk.pending.pop();
   else if (_sk.cornerUndo && _sk.cornerUndo.length && _sk.cornerUndo[_sk.cornerUndo.length-1].ents === _sk.ents && _sk.cornerUndo[_sk.cornerUndo.length-1].len === _sk.ents.length)
-    _sk.ents = _sk.cornerUndo.pop().before;      // Ecke runden/fasen zurück
+    { const cu2 = _sk.cornerUndo.pop(); _sk.ents = cu2.before; if (cu2.cons) _sk.cons = cu2.cons; }      // Ecke runden/fasen zurück
   else _sk.ents.pop();
   _skcPrune(); _skRender(); _skcPanel();
 }
@@ -11293,9 +11293,17 @@ function _skCornerApply(p){
     en.pts.splice(j, 1, ...mid);
   }
   _sk.cornerUndo = _sk.cornerUndo || [];
-  _sk.cornerUndo.push({ before, ents, len: ents.length });
+  // Gekürzte Linien: Längen-/Abstandsmaße passen nicht mehr (der Löser würde
+  // die Rundung beim nächsten Maß wieder „zurückziehen“) → entfernen
+  const consBefore = _featClone(_sk.cons || []);
+  let weg = 0;
+  if (hit.kind === 'lines') { const ids = new Set(hit.hits.map(h => before[h.i] && before[h.i].id).filter(Boolean));
+    const n0 = (_sk.cons || []).length;
+    _sk.cons = (_sk.cons || []).filter(c => !(['len', 'eq', 'mid', 'dist', 'pld', 'sym', 'col'].includes(c.t) && c.refs.some(r => ids.has(r.id))));
+    weg = n0 - _sk.cons.length; }
+  _sk.cornerUndo.push({ before, ents, len: ents.length, cons: consBefore });
   _sk.ents = ents;
-  notify((mode === 'filletc' ? 'Ecke gerundet (R ' : 'Ecke gefast (') + String(Math.round(val * 100) / 10).replace('.', ',') + ' mm) — Strg+Z nimmt sie zurück', 'ok');
+  notify((mode === 'filletc' ? 'Ecke gerundet (R ' : 'Ecke gefast (') + String(Math.round(val * 100) / 10).replace('.', ',') + ' mm) — Strg+Z nimmt sie zurück' + (weg ? ` · ${weg} Maß${weg > 1 ? 'e' : ''} an den gekürzten Kanten entfernt` : ''), 'ok');
   return true;
 }
 
@@ -31243,6 +31251,43 @@ const _TUTS = [
     { h: 'Lochreihe', s: 'Mit <b>↖ Auswahl</b> den Kreis anklicken, im Panel <b>▦ Muster…</b>: Linear, Anzahl <b>3</b>, Abstand <b>20</b>, Richtung <b>0</b>° → Muster erstellen.', ok: () => _sk.active && (_sk.cons || []).some(c => c.t === 'pat' && c.n === 3 && _tutNear(c.d * 10, 20, 0.05)) },
     { h: 'Platte 5 mm', s: '<b>✓ Extrudieren…</b>, Abstand <b>5</b>, OK.', ok: () => !_sk.active && objects.length === 1 && (s => _tutNear(s.x, 60) && _tutNear(s.y, 5) && _tutNear(s.z, 30))(_tutBox(objects[0])) && _tutNear(_tutVol(objects[0]), 60 * 30 * 5 - 3 * Math.PI * 6.25 * 5, 60) },
     { h: 'Fertig!', s: 'Der Halter ist fertig. Tipp: Skizze im Verlauf öffnen, das ▦-Symbol anklicken und die Anzahl auf 4 ändern, dann rechnet sich das Teil neu.', ok: null } ] },
+  { id: 'anhaenger', t: 'Schlüsselanhänger mit Prägung', img: '🔑', dauer: 'ca. 10 Min.', was: 'Ecken runden, Bohrung, gerundete Kante beim Extrudieren und eine Zierlinie per „Prägen entlang Pfad“.', steps: [
+    { h: 'Skizze öffnen', s: 'In der Leiste <b>Skizze</b> öffnen.', ok: () => _sk.active },
+    { h: 'Rechteck zeichnen', s: 'Werkzeug <b>Rechteck</b> (R): zwei Ecken anklicken.', ok: () => _sk.active && _sk.ents.filter(e => e.type === 'line').length >= 4 },
+    { h: '50 × 25 mm', s: '<b>↖ Auswahl</b> (S) → <b>Bemaßen</b> (M): lange Kante <b>50</b>, kurze Kante <b>25</b>.', ok: () => _tutDim('len', 50) && _tutDim('len', 25) },
+    { h: 'Ecken runden', s: 'Werkzeug <b>Ecke runden</b>: <b>5</b> tippen + Enter, dann alle <b>vier Ecken</b> anklicken. (Die Längenmaße an den gekürzten Kanten fallen dabei weg, das ist richtig so.)', ok: () => _sk.active && _sk.ents.filter(e => e.type === 'arc').length >= 4 },
+    { h: 'Loch für den Ring', s: '<b>Kreis</b> (C) links ins Rechteck zeichnen und mit <b>Bemaßen</b> auf <b>⌀ 5</b> setzen.', ok: () => _tutDim('dia', 5) },
+    { h: '4 mm, Kante oben rund', s: '<b>✓ Extrudieren…</b>: Abstand <b>4</b>, bei <b>Kante oben</b> „Rundung“ und <b>1</b> mm, OK.', ok: () => { const o = objects[0]; const f = o && o.userData.feat && o.userData.feat.list[o.userData.feat.list.length - 1];
+        const r = !_sk.active && objects.length === 1 && _tutNear(_tutBox(o).y, 4, 0.3) && !!(f && f.bev && f.bev.top && f.bev.top.fil); if (r) _tut.mem.v = _tutVol(o); return r; } },
+    { h: 'Skizze auf die Oberseite', s: 'Wieder <b>Skizze</b>, dann <b>▱ Auf Fläche</b> und die <b>flache Oberseite</b> anklicken.', ok: () => _sk.active && _sk.N && _sk.N.y > 0.99 && _tutNear(_sk.O.y * 10, 4, 0.3) },
+    { h: 'Zierlinie zeichnen', s: 'Mit <b>Spline</b> (I) eine Welle über die Fläche zeichnen: Punkte setzen, <b>Enter</b> beendet. Nicht über den Rand hinaus.', ok: () => _sk.active && _skBuildOpenPaths().length >= 1 },
+    { h: 'Prägen', s: '<b>〰 Prägen entlang Pfad</b>: <b>Vertieft</b>, Profil <b>V</b>, Breite <b>1,5</b>, Tiefe <b>0,8</b> → ✓ Prägen.', ok: () => !_sk.active && objects.length === 1 && _tut.mem.v && _tutVol(objects[0]) < _tut.mem.v - 1 },
+    { h: 'Fertig!', s: 'Dein Anhänger hat runde Ecken, eine weiche Oberkante und eine eingeprägte Welle. Tipp: Im Verlauf lässt sich die Rundung oben jederzeit ändern.', ok: null } ] },
+  { id: 'flansch', t: 'Flansch mit Lochkreis', img: '⚙️', dauer: 'ca. 7 Min.', was: 'Konzentrische Kreise, Kreismuster um einen Mittelpunkt und eine Fase beim Extrudieren.', steps: [
+    { h: 'Skizze öffnen', s: 'In der Leiste <b>Skizze</b> öffnen.', ok: () => _sk.active },
+    { h: 'Außenkreis ⌀ 80', s: '<b>Kreis</b> (C) mit der Mitte im Ursprung (Achsenkreuz) zeichnen und mit <b>↖ Auswahl</b> + <b>Bemaßen</b> auf <b>80</b> setzen.', ok: () => _tutDim('dia', 80) },
+    { h: 'Mittelloch ⌀ 20', s: 'Zweiten Kreis mit <b>derselben Mitte</b> zeichnen (der Fang zeigt „Zentrum“) und auf <b>20</b> bemaßen.', ok: () => _tutDim('dia', 20) },
+    { h: 'Schraubenloch ⌀ 8', s: 'Einen kleinen Kreis zwischen die beiden zeichnen (etwa 30 mm rechts der Mitte) und auf <b>8</b> bemaßen.', ok: () => _tutDim('dia', 8) },
+    { h: 'Lochkreis 6×', s: 'Mit <b>↖ Auswahl</b> den kleinen Kreis anklicken, mit <b>Shift</b> die <b>Mitte</b> des großen Kreises dazu. <b>▦ Muster…</b> → Kreis, Anzahl <b>6</b>, Winkel <b>360</b> → Muster erstellen.', ok: () => _sk.active && (_sk.cons || []).some(c => c.t === 'pat' && c.kind === 'circ' && c.n === 6) },
+    { h: '8 mm mit Fase', s: '<b>✓ Extrudieren…</b>: Abstand <b>8</b>, <b>Kante oben</b> „Fase“ <b>1</b> mm, OK.', ok: () => { const o = objects[0], f = o && o.userData.feat && o.userData.feat.list[0];
+        return !_sk.active && objects.length === 1 && _tutNear(_tutBox(o).x, 80, 0.8) && _tutNear(_tutBox(o).y, 8, 0.3) && !!(f && f.bev && f.bev.top && !f.bev.top.fil)
+          && _tutNear(_tutVol(o), Math.PI * 8 * (1600 - 100 - 6 * 16), 900); } },
+    { h: 'Fertig!', s: 'Der Flansch hat sechs gleichmäßig verteilte Löcher. Ändere im Verlauf den kleinen Kreis, und alle sechs Löcher folgen.', ok: null } ] },
+  { id: 'stl', t: 'Altes STL bearbeitbar machen', img: '▣', dauer: 'ca. 5 Min.', was: 'Mesh → CAD: aus einem STL wird ein Teil mit Skizzen, dann eine Bohrung vergrößern.',
+    setup: async () => { const w = await _mfInit(), M = w.Manifold;
+      let m = M.cube([50, 30, 5], false); for (const x of [10, 40]) m = m.subtract(M.cylinder(12, 3, 3, 64, false).translate([x, 15, -1]));
+      const g = _mfToGeo(m).toNonIndexed(); g.rotateX(-Math.PI / 2); g.scale(0.1, 0.1, 0.1);
+      const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.5, side: THREE.DoubleSide }));
+      mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Halter.stl', color: '#9ca3af', isHole: false, fillet: 0, chamfer: 0 };
+      objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh); updateTree(); deselect(); },
+    steps: [
+    { h: 'Teil anklicken', s: 'Hier liegt „Halter.stl“, ein reines Dreiecksnetz wie aus dem Internet. Klick es an.', ok: () => selectedObjs.length === 1 && selectedObjs[0].userData.name === 'Halter.stl' },
+    { h: 'Mesh → CAD', s: '<b>Rechtsklick</b> aufs Teil → <b>▣ Mesh → CAD</b>. Der Bericht zeigt, was erkannt wurde.', ok: () => objects.some(o => o.userData.feat && o.visible !== false) },
+    { h: 'Skizze im Verlauf öffnen', s: 'Rechts im Reiter <b>Elemente</b> beim neuen Teil „CAD · Halter.stl“ auf <b>✏ Skizze 1</b> doppelklicken (oder ✎).', ok: () => _sk.active && !!_sk.editFeat },
+    { h: 'Bohrung auf ⌀ 8', s: '<b>↖ Auswahl</b> (S) → <b>Bemaßen</b> (M): eine der beiden Bohrungen anklicken, <b>8</b> Enter.', ok: () => _tutDim('dia', 8) },
+    { h: 'Neu rechnen', s: '<b>✓ Extrudieren…</b> → <b>OK</b>. Das Teil rechnet sich mit der größeren Bohrung neu.', ok: () => { const o = objects.find(x => x.visible !== false && x.userData.feat);
+        return !_sk.active && !!o && _tutNear(_tutVol(o), 50 * 30 * 5 - Math.PI * 9 * 5 - Math.PI * 16 * 5, 40); } },
+    { h: 'Fertig!', s: 'Aus dem starren STL ist ein bearbeitbares Teil geworden. Das funktioniert bei Haltern, Platten und Gehäusen, auch mit Fasen, Rundungen und Querbohrungen.', ok: null } ] },
 ];
 function _tutMenu(){
   let el = document.getElementById('tut-menu');
@@ -31250,7 +31295,7 @@ function _tutMenu(){
     el.style.cssText = 'position:fixed;inset:0;z-index:9600;background:rgba(15,18,25,.55);display:flex;align-items:center;justify-content:center';
     el.addEventListener('mousedown', e => { if (e.target === el) el.remove(); });
     document.body.appendChild(el); }
-  el.innerHTML = `<div style="width:min(620px,94vw);background:var(--white);border-radius:14px;padding:22px 24px;box-shadow:0 20px 60px rgba(0,0,0,.4);color:var(--text)">
+  el.innerHTML = `<div style="width:min(620px,94vw);max-height:92vh;overflow-y:auto;background:var(--white);border-radius:14px;padding:22px 24px;box-shadow:0 20px 60px rgba(0,0,0,.4);color:var(--text)">
     <div style="font:700 11px system-ui;letter-spacing:.12em;color:var(--acc)">SCHRITT FÜR SCHRITT</div>
     <div style="font-size:24px;font-weight:800;margin:4px 0 6px">Interaktive Anleitungen</div>
     <div style="color:var(--dim);margin-bottom:14px">Du baust das Modell direkt im Programm. Die Anleitung bleibt sichtbar und prüft nach jedem Schritt, ob alles stimmt. Dein Projekt wird solange gesichert und danach wiederhergestellt.</div>
@@ -31269,7 +31314,8 @@ function _tutStart(k){
   _tut.saved = { objs: objects.slice(), undo: undoStack, redo: redoStack, vars: designVars, target: orbitTarget.clone() };
   objects.forEach(o => scene.remove(o)); objects = []; undoStack = []; redoStack = []; designVars = [];
   updateUndoRedoButtons(); updateTree(); setView('iso');
-  _tut.on = true; _tut.def = _TUTS[k]; _tut.i = 0; _tut.done = false;
+  _tut.on = true; _tut.def = _TUTS[k]; _tut.i = 0; _tut.done = false; _tut.mem = {};
+  if (_tut.def.setup) { try { const r = _tut.def.setup(); if (r && r.then) r.then(() => _tutRender()); } catch (e) { console.warn('[anleitung]', e); } }
   _tutRender();
   _tut.timer = setInterval(_tutTick, 400);
 }
@@ -65662,8 +65708,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.202';
+const VOLME3D_VERSION = '1.18.203';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.203', date:'2026-10-19', changes:[
+    ['🎓','<b>Drei neue interaktive Anleitungen:</b> <b>Schlüsselanhänger mit Prägung</b> (Ecken runden, Bohrung, gerundete Oberkante, Zierlinie per Prägen), <b>Flansch mit Lochkreis</b> (Kreismuster, Fase) und <b>Altes STL bearbeitbar machen</b> (Mesh → CAD, Bohrung im Verlauf vergrößern; das Übungs-STL wird automatisch angelegt). Damit gibt es fünf Anleitungen unter ❓ Hilfe bzw. Suche „Anleitung“.'],
+    ['🔧','Skizze: Wird eine Ecke gerundet oder gefast, an der eine bemaßte Linie hängt, fällt dieses Längenmaß jetzt weg (mit Hinweis), weil es nicht mehr passt. Vorher konnte das nächste Maß die Rundung wieder verbiegen. Strg+Z bringt beides zurück.'],
+  ]},
   { version:'1.18.202', date:'2026-10-19', changes:[
     ['▣','<b>Mesh → CAD erkennt Fasen, Rundungen und seitliche Zapfen.</b> Gerundete oder gefaste Deckkanten werden nicht mehr als Treppe angenähert. Sie landen als echte Kantenoperation mit gemessener Größe im Verlauf (z. B. „R 2 oben, Fase 1 unten“). Zapfen, die seitlich aus einer Wand ragen, kommen als eigener Schritt „Anfügen“ dazu. Sind mehrere Richtungen denkbar, rechnet V3D CAD alle durch und nimmt die, die das Original am genauesten trifft.'],
     ['⬆','<b>Extrudieren: Kante oben/unten.</b> Im Extrudieren-Fenster lässt sich jetzt für das obere und das untere Ende getrennt eine <b>Fase</b> oder <b>Rundung</b> mit Größe in mm einstellen. Das wird mit im Verlauf gespeichert und ist nachträglich änderbar.'],

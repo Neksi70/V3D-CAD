@@ -13,7 +13,7 @@ window.V3D_HILFE = [
   { b: 'Erste Schritte', i: '🎓', t: 'Interaktive Anleitungen', k: 'anleitung tutorial lernen schritt für schritt übung becher halter einstieg kurs',
     was: 'Baue ein Modell Schritt für Schritt direkt im Programm nach. Jeder Schritt wird geprüft, dann geht es von allein weiter.',
     wo: 'Hier: „▶ Jetzt öffnen“, oder Suche „Anleitung“.',
-    s: ['Anleitung wählen (Stiftebecher oder Halter mit Lochreihe) und <b>Starten</b>.', 'Oben rechts steht, was zu tun ist. Ist der Schritt geschafft, wird der Rahmen kurz grün und der nächste erscheint.', 'Dein eigenes Projekt ist solange beiseitegelegt und kommt mit <b>Beenden</b> unverändert zurück.'], run: '_tutMenu()' },
+    s: ['Anleitung wählen (Stiftebecher, Halter mit Lochreihe, Schlüsselanhänger, Flansch mit Lochkreis oder Altes STL bearbeitbar machen) und <b>Starten</b>.', 'Oben rechts steht, was zu tun ist. Ist der Schritt geschafft, wird der Rahmen kurz grün und der nächste erscheint.', 'Dein eigenes Projekt ist solange beiseitegelegt und kommt mit <b>Beenden</b> unverändert zurück.'], run: '_tutMenu()' },
   { b: 'Erste Schritte', i: '🖱️', t: 'Ansicht drehen, verschieben, zoomen', k: 'maus navigation orbit pan zoom touchpad drehen verschieben einpassen',
     was: 'So bewegst du dich um dein Modell herum. Das Modell selbst bleibt dabei, wo es ist.',
     wo: 'Überall in der 3D-Ansicht.',
