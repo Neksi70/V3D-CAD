@@ -111,6 +111,19 @@ await page.waitForTimeout(300);
 const re = await page.evaluate(() => ({ n: _sk.cons.length, res: _skcSolve().ok }));
 ok(re.n === n0 && re.res, `Skizze wieder geöffnet: ${re.n} Abhängigkeiten, lösbar`);
 
+  // Fang parallel / senkrecht zu vorhandener Linie (1.18.206)
+  const pp = await page.evaluate(() => { if (_sk.active) exitSketchMode(); enterSketchMode(); _sk.ents.push({ type: 'line', a: { u: 1, v: 1 }, b: { u: 3, v: 2 } }); _skcIds(); _skSetTool('line'); _sk.ortho = true; return true; });
+  await click(0, 3); await click(2, 4.03);
+  let rr = await page.evaluate(() => { const l = _sk.ents[_sk.ents.length - 1], r = _sk.ents[0]; const cr = (l.b.u - l.a.u) * (r.b.v - r.a.v) - (l.b.v - l.a.v) * (r.b.u - r.a.u);
+    return { cr: Math.abs(cr), par: _sk.cons.some(c => c.t === 'par'), n: _sk.ents.length }; });
+  ok(rr.n === 2 && rr.cr < 1e-9 && rr.par, `Linie rastet parallel ein + Abhängigkeit ∥ (Kreuzprodukt ${rr.cr.toExponential(1)})`);
+  await key('Escape');
+  await click(5, 0); await click(4, 2.04);
+  rr = await page.evaluate(() => { const l = _sk.ents[_sk.ents.length - 1], r = _sk.ents[0]; const dot = (l.b.u - l.a.u) * (r.b.u - r.a.u) + (l.b.v - l.a.v) * (r.b.v - r.a.v);
+    return { dot: Math.abs(dot), perp: _sk.cons.some(c => c.t === 'perp') }; });
+  ok(rr.dot < 1e-9 && rr.perp, `Linie rastet senkrecht ein + Abhängigkeit ⟂ (Skalarprodukt ${rr.dot.toExponential(1)})`);
+  await key('Escape');
+
 ok(errs.length === 0, 'keine Seitenfehler ' + errs.join(' | '));
 } catch (e) { console.log('ABBRUCH ' + (e.message || e).split('\n')[0]); fail++; }
 await browser.close(); srv.kill();
