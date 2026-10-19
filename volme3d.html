@@ -15549,6 +15549,102 @@ function _occtShapeValid(oc, shape) {
   finally { if (an) { try { an.delete(); } catch (e) {} } }
 }
 
+// ═══ RUNDUNG/FASE ÜBER EIN LOCH HINWEG (aus V3D Direkt 0.9.2, 19.10.26) ═════
+// Reicht die Rundungszone einer Kante in ein Loch, flickt OCCT die Rundung mit
+// einer Freiformfläche — die Rundungskante hängt dann durch (Delle). Darum:
+// Löcher/Zapfen in den Nachbarflächen der Kanten vorübergehend entfernen
+// (BRepAlgoAPI_Defeaturing), am glatten Körper runden/fasen, danach das Loch
+// wieder ausschneiden bzw. den Zapfen wieder ansetzen. Klappt das nicht: direkt.
+// bauen(shape, zu) führt die Operation aus; zu(kante) liefert die passende Kante
+// im übergebenen Körper (null = schon vergeben). Ergebnis: Form oder null.
+const _LOCH_MAX_FLAECHEN = 300;   // größere Körper direkt (Wachstum ist O(F·E))
+function _occtMitLochKorrektur(oc, shape, kanten, bauen) {
+  const direkt = () => bauen(shape, e => e);
+  let v = null;
+  try { v = _occtFeaturesWeg(oc, shape, kanten); } catch (e) { v = null; }
+  if (!v) return direkt();
+  try {
+    const vergeben = [];
+    const zu = e => {
+      const i = kanten.findIndex(k => k.IsSame(e));
+      const g = i >= 0 ? v.glattKanten[i] : null;
+      if (!g || vergeben.some(x => x.IsSame(g))) return null;
+      vergeben.push(g); return g;
+    };
+    let s = bauen(v.glatt, zu);
+    if (!s) throw new Error('glatt ging nicht');
+    if (v.weg)  { const op = new oc.BRepAlgoAPI_Cut_3(s, v.weg);  if (!op.IsDone()) throw new Error('Loch'); s = op.Shape(); }
+    if (v.dazu) { const op = new oc.BRepAlgoAPI_Fuse_3(s, v.dazu); if (!op.IsDone()) throw new Error('Zapfen'); s = op.Shape(); }
+    try { const u = new oc.ShapeUpgrade_UnifySameDomain_2(s, true, true, false); u.Build(); s = u.Shape(); } catch (e) {}
+    if (!_occtShapeValid(oc, s)) throw new Error('ungültig');
+    return s;
+  } catch (e) { return direkt(); }
+}
+function _occtEindeutig(oc, shape, art, cast) {
+  const out = [], ex = new oc.TopExp_Explorer_2(shape, art, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+  for (; ex.More(); ex.Next()) { const x = cast(ex.Current()); if (!out.some(o => o.IsSame(x))) out.push(x); }
+  ex.delete(); return out;
+}
+function _occtVolumen(oc, s) {
+  const p = new oc.GProp_GProps_1(); oc.BRepGProp.VolumeProperties_1(s, p, false, false, false);
+  const v = p.Mass(); p.delete(); return v;
+}
+// Feature-Flächen = alles, was an einem inneren Draht (Lochrand) einer Nachbar-
+// fläche der Kanten hängt, ohne über weitere innere Drähte hinauszuwachsen
+// (ein Durchgangsloch endet am Lochrand der Bodenfläche).
+function _occtFeaturesWeg(oc, shape, kanten) {
+  if (!kanten.length || !oc.BRepAlgoAPI_Defeaturing) return null;
+  const A = oc.TopAbs_ShapeEnum;
+  const flaechen = _occtEindeutig(oc, shape, A.TopAbs_FACE, x => oc.TopoDS.Face_1(x));
+  if (flaechen.length > _LOCH_MAX_FLAECHEN) return null;
+  const alle = _occtEindeutig(oc, shape, A.TopAbs_EDGE, x => oc.TopoDS.Edge_1(x));
+  const nachbarn = alle.map(() => []), innen = flaechen.map(() => new Set());
+  flaechen.forEach((f, fi) => {
+    const aussen = oc.BRepTools.OuterWire(f);
+    for (const w of _occtEindeutig(oc, f, A.TopAbs_WIRE, x => oc.TopoDS.Wire_1(x))) {
+      const istInnen = !w.IsSame(aussen);
+      for (const e of _occtEindeutig(oc, w, A.TopAbs_EDGE, x => oc.TopoDS.Edge_1(x))) {
+        const k = alle.findIndex(x => x.IsSame(e)); if (k < 0) continue;
+        if (!nachbarn[k].includes(fi)) nachbarn[k].push(fi);
+        if (istInnen) innen[fi].add(k);
+      }
+    }
+  });
+  const ki = kanten.map(e => alle.findIndex(x => x.IsSame(e)));
+  if (ki.some(i => i < 0)) return null;
+  const nb = new Set(ki.flatMap(i => nachbarn[i]));
+  const feat = new Set(), stapel = [];
+  const dazu = g => { if (!nb.has(g) && !feat.has(g)) { feat.add(g); stapel.push(g); } };
+  for (const f of nb) for (const e of innen[f]) for (const g of nachbarn[e]) dazu(g);
+  while (stapel.length) {
+    const f = stapel.pop();
+    nachbarn.forEach((n, e) => { if (n.includes(f)) for (const g of n) if (g !== f && !innen[g].has(e)) dazu(g); });
+  }
+  if (!feat.size) return null;
+  const d = new oc.BRepAlgoAPI_Defeaturing();
+  d.SetShape(shape);
+  for (const f of feat) d.AddFaceToRemove(flaechen[f]);
+  d.Build();
+  if (!d.IsDone()) return null;
+  const glatt = d.Shape();
+  // Kanten im glatten Körper wiederfinden: Mittelpunkt der alten Kante liegt auf der neuen
+  const neu = _occtEindeutig(oc, glatt, A.TopAbs_EDGE, x => oc.TopoDS.Edge_1(x)), glattKanten = [];
+  for (const e of kanten) {
+    const c = new oc.BRepAdaptor_Curve_2(e), typ = c.GetType();
+    const pm = c.Value((c.FirstParameter() + c.LastParameter()) / 2);
+    const v = new oc.BRepBuilderAPI_MakeVertex(pm).Vertex();
+    const t = neu.find(x => {
+      if (new oc.BRepAdaptor_Curve_2(x).GetType() !== typ) return false;
+      const ds = new oc.BRepExtrema_DistShapeShape_2(v, x, oc.Extrema_ExtFlag.Extrema_ExtFlag_MINMAX, oc.Extrema_ExtAlgo.Extrema_ExtAlgo_Grad);
+      return ds.IsDone() && ds.Value() < 1e-5;
+    });
+    if (!t) return null;
+    glattKanten.push(t);
+  }
+  const rest = (a, b) => { const op = new oc.BRepAlgoAPI_Cut_3(a, b); if (!op.IsDone()) throw new Error('Feature'); const r = op.Shape(); return _occtVolumen(oc, r) > 1e-9 ? r : null; };
+  return { glatt, glattKanten, weg: rest(glatt, shape), dazu: rest(shape, glatt) };
+}
+
 function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz, noSeq) {
   const chamferOps = ops.filter(op => op.type === 'chamfer');
   const filletOps  = ops.filter(op => op.type === 'fillet');
@@ -15599,22 +15695,27 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz, noSeq) {
     if (!r) opOk = false;
     else {
       lebende = lebende.concat(r.map(x => x.op));
-      const ch = new oc.BRepFilletAPI_MakeChamfer(curShape);
-      // Build kann eine C++-Ausnahme werfen (kommt im WASM als ReferenceError
-      // ___cxa_can_catch an) → wie „nicht geklappt" behandeln
-      try {
-        for (const x of r) for (const e of x.edges) {
-          // Fase mit Winkel: Abstand auf einer Nachbarfläche + Winkel (s. _occtEdgeFace)
-          if (x.op.ang && Math.abs(x.op.ang - 45) > 0.05) {
-            const f = _occtEdgeFace(oc, curShape, e, !!x.op.flip);
-            if (f) { ch.AddDA(x.op.dist, x.op.ang * Math.PI / 180, e, f); continue; }
+      // Liegt ein Loch in der Fasen-Zone, erst ohne Loch fasen (_occtMitLochKorrektur)
+      const res = _occtMitLochKorrektur(oc, curShape, r.flatMap(x => x.edges), (sh, zu) => {
+        const ch = new oc.BRepFilletAPI_MakeChamfer(sh);
+        // Build kann eine C++-Ausnahme werfen (kommt im WASM als ReferenceError
+        // ___cxa_can_catch an) → wie „nicht geklappt" behandeln
+        try {
+          for (const x of r) for (const e0 of x.edges) {
+            const e = zu(e0); if (!e) continue;
+            // Fase mit Winkel: Abstand auf einer Nachbarfläche + Winkel (s. _occtEdgeFace)
+            if (x.op.ang && Math.abs(x.op.ang - 45) > 0.05) {
+              const f = _occtEdgeFace(oc, sh, e, !!x.op.flip);
+              if (f) { ch.AddDA(x.op.dist, x.op.ang * Math.PI / 180, e, f); continue; }
+            }
+            ch.Add_2(x.op.dist, e);
           }
-          ch.Add_2(x.op.dist, e);
-        }
-        ch.Build(); opOk = ch.IsDone();
-        if (opOk) { const res = ch.Shape(); opOk = _occtShapeValid(oc, res); if (opOk) curShape = res; }
-      } catch (e) { opOk = false; }
-      finally { try { ch.delete(); } catch (e) {} }
+          ch.Build(); if (!ch.IsDone()) return null;
+          const out = ch.Shape(); return _occtShapeValid(oc, out) ? out : null;
+        } catch (e) { return null; }
+        finally { try { ch.delete(); } catch (e) {} }
+      });
+      opOk = !!res; if (res) curShape = res;
     }
   }
   if (filletOps.length > 0 && opOk) {
@@ -15625,13 +15726,16 @@ function _replayOCCTOps(oc, baseShape, ops, sx, sy, sz, noSeq) {
     if (!r) opOk = false;
     else {
       lebende = lebende.concat(r.map(x => x.op));
-      const fi = new oc.BRepFilletAPI_MakeFillet(curShape, oc.ChFi3d_FilletShape.ChFi3d_Rational);
-      try {
-        for (const x of r) for (const e of x.edges) fi.Add_2(x.op.dist, e);
-        fi.Build(); opOk = fi.IsDone();
-        if (opOk) { const res = fi.Shape(); opOk = _occtShapeValid(oc, res); if (opOk) curShape = res; }
-      } catch (e) { opOk = false; }
-      finally { try { fi.delete(); } catch (e) {} }
+      const res = _occtMitLochKorrektur(oc, curShape, r.flatMap(x => x.edges), (sh, zu) => {
+        const fi = new oc.BRepFilletAPI_MakeFillet(sh, oc.ChFi3d_FilletShape.ChFi3d_Rational);
+        try {
+          for (const x of r) for (const e0 of x.edges) { const e = zu(e0); if (e) fi.Add_2(x.op.dist, e); }
+          fi.Build(); if (!fi.IsDone()) return null;
+          const out = fi.Shape(); return _occtShapeValid(oc, out) ? out : null;
+        } catch (e) { return null; }
+        finally { try { fi.delete(); } catch (e) {} }
+      });
+      opOk = !!res; if (res) curShape = res;
     }
   }
   // Rückfall: Schritt für Schritt in Anlege-Reihenfolge. Alle Fasen, dann alle
@@ -15779,6 +15883,18 @@ function _brepEdgesOf(oc, bytes) {
 // Grundform lebt im Ursprung) oder null.
 function _brepEdgeList(oc, shape, off) {
   const seen = new Set(), out = [];
+  // Nähte (Zylinder-/Lochwand an sich selbst) sind keine echten Kanten → nicht anbieten
+  const naht = [];
+  try {
+    const fx = new oc.TopExp_Explorer_2(shape, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+    for (let n = 0; fx.More() && n < 5000; fx.Next(), n++) {
+      const f = oc.TopoDS.Face_1(fx.Current());
+      const ex = new oc.TopExp_Explorer_2(f, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+      for (; ex.More(); ex.Next()) { const e = oc.TopoDS.Edge_1(ex.Current()); if (oc.BRep_Tool.IsClosed_2(e, f) && !naht.some(x => x.IsSame(e))) naht.push(e); }
+      ex.delete();
+    }
+    fx.delete();
+  } catch (e) { naht.length = 0; }
   const sh = off ? (p => [p[0]+off.x, p[1]+off.y, p[2]+off.z]) : (p => p);
   const exp = new oc.TopExp_Explorer_2(shape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
   // Notbremse: OCCT rechnet synchron — eine Baugruppe mit zehntausenden Kanten
@@ -15786,6 +15902,7 @@ function _brepEdgeList(oc, shape, off) {
   let besucht = 0;
   while (exp.More() && besucht++ < 40000) {
     const edge = oc.TopoDS.Edge_1(exp.Current());
+    if (naht.length && naht.some(x => x.IsSame(edge))) { exp.Next(); continue; }
     const fp = _efpOfEdge(oc, edge);
     exp.Next();
     if (!fp) { try { edge.delete(); } catch (e) {} continue; }
@@ -15818,6 +15935,168 @@ function _brepOk(o) {
     return false;
   }
   return true;
+}
+
+// ═══ EXAKTE FORM ÜBER VEREINEN / ABZIEHEN / SCHNITTMENGE (19.10.26) ═══════
+// Bis 1.18.204 blieb nach jedem Boolean nur ein Dreiecksnetz ('custom') übrig →
+// Kanten am Ergebnis (z. B. der Rand neben einem Loch) ließen sich nicht mehr
+// exakt runden. Jetzt: Haben ALLE beteiligten Körper eine exakte Form
+// (Grundkörper, STEP-Import, schon exaktes Ergebnis), rechnet OCCT dieselbe
+// Operation exakt mit, und das Ergebnis trägt sie als _brepStep weiter — wie ein
+// STEP-Import (Kanten-Modus, Rundung, Fase greifen dann über die B-Rep).
+// Sicherheitsnetz: Weicht das exakte Volumen vom Netz-Ergebnis ab (falsche Lage,
+// unbekannter Grundkörper), bleibt es beim Netz wie bisher.
+const _EXAKT_TYPEN = new Set(['box', 'cylinder', 'cone', 'polygon']);
+const _EXAKT_MAX_ABW = 0.03;               // 3 % (32-Eck-Zylinder ≈ 0,6 % kleiner)
+function _exaktTransform(oc, shape, m) {
+  const t = _trsfFromMatrix4(oc, m); if (!t) return null;
+  const tr = new oc.BRepBuilderAPI_Transform_2(shape, t, true);
+  const out = tr.Shape(); tr.delete(); t.delete(); return out;
+}
+// Exakte Form eines Körpers in Weltkoordinaten (App-Einheiten) oder null
+function _exaktWelt(oc, o) {
+  if (!o || !o.isMesh || !o.userData || o.visible === false) return null;
+  if (o.children.some(c => c.isMesh)) return null;       // Inlays, Gewinde-Overlays
+  const ud = o.userData;
+  o.updateWorldMatrix(true, false);
+  const M = o.matrixWorld;
+  if (ud._occtParams && ud.occtShape) {                  // schon über OCCT bearbeitet
+    if (ud.occtShape === 'brep' && !ud._brep) return null;
+    const { sx, sy, sz, geoOff, ops } = ud._occtParams;
+    const base = _buildOCCTBaseShape(oc, ud.occtShape, sx, sy, sz, null, ud.coneTop || 0, ud.coneFlip, ud._brep);
+    const r = _replayOCCTOps(oc, base, ops || [], sx, sy, sz);
+    if (!r.opOk) return null;
+    return _exaktTransform(oc, r.shape, M.clone().multiply(new THREE.Matrix4().makeTranslation(geoOff.x, geoOff.y, geoOff.z)));
+  }
+  if (_brepOk(o)) {                                      // STEP-Import / exaktes Boolean-Ergebnis
+    const raw = _brepReadStep(oc, ud._brepStep);
+    return raw ? _exaktTransform(oc, raw, M) : null;
+  }
+  const typ = ud.shapeType;
+  if (!_EXAKT_TYPEN.has(typ) || ud.type !== typ) return null;
+  if (ud.fillet || ud.chamfer || (ud.edgeBevels && ud.edgeBevels.some(b => b && (b.fillet || b.chamfer)))) return null;
+  const g = o.geometry, gp = g && g.parameters;
+  if (typ === 'box' && !(g instanceof THREE.BoxGeometry)) return null;
+  if ((typ === 'cylinder' || typ === 'polygon') && !(g instanceof THREE.CylinderGeometry && gp.radiusTop === gp.radiusBottom)) return null;
+  if (typ === 'cone' && !(g instanceof THREE.ConeGeometry || g instanceof THREE.CylinderGeometry)) return null;
+  const p = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+  M.decompose(p, q, sc);
+  if (typ !== 'box' && typ !== 'polygon' && Math.abs(sc.x - sc.z) > 1e-6 * Math.max(sc.x, sc.z)) return null;   // elliptisch
+  const sides = typ === 'polygon' ? gp.radialSegments : null;
+  const base = _buildOCCTBaseShape(oc, typ, sc.x, sc.y, sc.z, sides, ud.coneTop || 0, ud.coneFlip);
+  const off = typ === 'box' ? new THREE.Vector3(-sc.x, -sc.y, -sc.z) : new THREE.Vector3(0, -sc.y, 0);
+  const m = new THREE.Matrix4().compose(p, q, new THREE.Vector3(1, 1, 1)).multiply(new THREE.Matrix4().makeTranslation(off.x, off.y, off.z));
+  return _exaktTransform(oc, base, m);
+}
+// Vor der Operation: exakte Formen aller Beteiligten (oder null)
+async function _exaktVorher(objs) {
+  try {
+    if (!objs.length) return null;
+    const oc = await _loadOCCT();
+    const formen = new Map();
+    for (const o of objs) { const f = _exaktWelt(oc, o); if (!f) return null; formen.set(o, f); }
+    return { oc, formen };
+  } catch (e) { console.warn('[exakt] Vorbereitung:', e); return null; }
+}
+function _meshVolumenWelt(mesh) {
+  const g = mesh.geometry, pos = g.attributes.position, idx = g.index, M = mesh.matrixWorld;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const n = idx ? idx.count : pos.count;
+  let v = 0;
+  for (let i = 0; i < n; i += 3) {
+    const i0 = idx ? idx.getX(i) : i, i1 = idx ? idx.getX(i + 1) : i + 1, i2 = idx ? idx.getX(i + 2) : i + 2;
+    a.fromBufferAttribute(pos, i0).applyMatrix4(M); b.fromBufferAttribute(pos, i1).applyMatrix4(M); c.fromBufferAttribute(pos, i2).applyMatrix4(M);
+    v += a.dot(b.clone().cross(c)) / 6;
+  }
+  return Math.abs(v);
+}
+function _occtStepBytes(oc, shape) {
+  const w = new oc.STEPControl_Writer_1();
+  const st = w.Transfer(shape, oc.STEPControl_StepModelType.STEPControl_AsIs, true);
+  if ((st.value !== undefined ? st.value : st) !== 1) { w.delete(); return null; }
+  // Pfad KURZ halten: ab 11 Zeichen kommt der Name im WASM-Build verstümmelt an
+  // (Datei heißt dann z. B. „ʁ“, readFile → FS error 44). '/out.step' und '/brep.step' gehen.
+  const ws = w.Write('/ex.step'); w.delete();
+  if ((ws.value !== undefined ? ws.value : ws) !== 1) return null;
+  const buf = oc.FS.readFile('/ex.step'); try { oc.FS.unlink('/ex.step'); } catch (_) {}
+  return buf;
+}
+// Nach der Operation: exaktes Ergebnis rechnen und an das Netz-Ergebnis hängen.
+// art: 'cut' (erster Körper minus Rest) | 'fuse' | 'common'. teileA/teileB:
+// beteiligte Objekte (bei 'cut' A = Körper, B = Bohrungen). true = angehängt.
+function _exaktNachher(mesh, art, vorher, teileA, teileB) {
+  if (!vorher || !mesh || !mesh.isMesh) return false;
+  const { oc, formen } = vorher;
+  try {
+    const f = o => formen.get(o);
+    const A = teileA.map(f), B = (teileB || []).map(f);
+    if (A.some(x => !x) || B.some(x => !x) || !A.length) return false;
+    const fuse = (a, b) => { const op = new oc.BRepAlgoAPI_Fuse_3(a, b); if (!op.IsDone()) throw new Error('Fuse'); return op.Shape(); };
+    let s;
+    if (art === 'cut') {
+      s = A.reduce(fuse);
+      for (const h of B) { const op = new oc.BRepAlgoAPI_Cut_3(s, h); if (!op.IsDone()) throw new Error('Cut'); s = op.Shape(); }
+    } else if (art === 'common') {
+      s = A[0];
+      for (const x of A.slice(1)) { const op = new oc.BRepAlgoAPI_Common_3(s, x); if (!op.IsDone()) throw new Error('Common'); s = op.Shape(); }
+    } else s = A.reduce(fuse);
+    try { const u = new oc.ShapeUpgrade_UnifySameDomain_2(s, true, true, false); u.Build(); s = u.Shape(); } catch (e) {}
+    if (!_occtShapeValid(oc, s)) { console.warn('[exakt] Ergebnis ungültig — bleibt Netz'); return false; }
+    mesh.updateWorldMatrix(true, false);
+    const vE = _occtVolumen(oc, s), vN = _meshVolumenWelt(mesh);
+    if (!(vN > 1e-9) || Math.abs(vE - vN) / vN > _EXAKT_MAX_ABW) {
+      console.warn('[exakt] Volumen weicht ab (exakt ' + vE.toFixed(4) + ', Netz ' + vN.toFixed(4) + ') — bleibt Netz');
+      return false;
+    }
+    // Ins lokale System des Ergebnis-Netzes: dort leben STEP-Rohdaten (wie beim Import)
+    const lokal = _exaktTransform(oc, s, mesh.matrixWorld.clone().invert());
+    if (!lokal) return false;
+    const bytes = _occtStepBytes(oc, lokal);
+    if (!bytes || bytes.length > _MAX_BREP_BYTES) return false;
+    const geo = _occtShapeToThreeGeo(oc, lokal, { x: 0, y: 0, z: 0 });
+    if (!(geo.attributes.position.count > 0)) return false;
+    const rl = _brepEdgeList(oc, lokal, null);
+    const alt = mesh.geometry; mesh.geometry = geo; try { alt.dispose(); } catch (e) {}
+    const ud = mesh.userData;
+    ud._brepStep = bytes; ud._brepEdges = rl.edges; ud._brepEdgesTotal = rl.gesamt; ud._brepGeo = mesh.geometry;
+    delete ud._brep; delete ud._occtParams; delete ud.occtShape; delete ud.edgeBevels; delete ud._dynamicEdges;
+    ud._origStlBuf = null;                    // passt nicht mehr zur neuen Geometrie
+    ud.exakt = true;
+    try { _updateObjEdgeLines(mesh); } catch (e) {}
+    return true;
+  } catch (e) { console.warn('[exakt] ' + art + ' nicht exakt möglich — bleibt Netz:', e); return false; }
+}
+
+const _BREP_SPEICHER_MAX = 3 * 1024 * 1024;
+// Laden/Rückgängig: STEP-Bytes ans Objekt, Kanten im Hintergrund neu ziehen
+function _brepAusDaten(obj, data) {
+  if (!obj || !obj.isMesh || !data) return;
+  let st = data._brepStepRef || null;
+  if (!st && data._brepStepB64) { try { st = Uint8Array.from(atob(data._brepStepB64), c => c.charCodeAt(0)); } catch (e) { st = null; } }
+  if (!st) return;
+  const ud = obj.userData;
+  ud._brepStep = st;
+  if (data._brepMeta) ud._brep = { ...data._brepMeta, step: st, uid: ++_brepUid };
+  if (data.exakt) ud.exakt = true;
+  _brepNachLaden(obj);
+}
+async function _brepNachLaden(o) {
+  const ud = o.userData;
+  if (ud._occtParams && ud.occtShape === 'brep') {
+    // Schon über OCCT bearbeitet: Kanten aus dem nachgerechneten Stand, nicht aus der Roh-STEP
+    if (!ud._brep) return;
+    try {
+      const oc = await _loadOCCT();
+      const { sx, sy, sz, geoOff, ops } = ud._occtParams;
+      const r = _replayOCCTOps(oc, _buildOCCTBaseShape(oc, 'brep', sx, sy, sz, null, 0, false, ud._brep), ops || [], sx, sy, sz);
+      if (!r.opOk) return;
+      const rl = _brepEdgeList(oc, r.shape, geoOff);
+      ud._brepEdges = rl.edges; ud._brepEdgesTotal = rl.gesamt; ud._brepGeo = o.geometry;
+    } catch (e) { console.warn('[brep] nach dem Laden:', e); }
+    return;
+  }
+  delete ud._brepEdges;
+  return _brepPrepare(o);
 }
 
 // Nach dem Import einmal im Hintergrund die echten Kanten ziehen.
@@ -21148,6 +21427,7 @@ function buildObjectFromData(data) {
   }
   if (data.look) { obj.userData.look = data.look; _applyLook(obj); }
   if (data.feat) obj.userData.feat = _featClone(data.feat);
+  _brepAusDaten(obj, data);   // exakte Form zurück
   return obj;
 }
 
@@ -21404,6 +21684,17 @@ function objectToData(o, modus) {
   if (o.userData._l3Rings)     { d._l3Rings = o.userData._l3Rings; d._l3Sides = o.userData._l3Sides; if (o.userData._l3Smooth) d._l3Smooth = true; if (o.userData._l3Path) d._l3Path = o.userData._l3Path; }
   if (o.userData.occtShape)    d.occtShape   = o.userData.occtShape;
   if (o.userData._occtParams)  d._occtParams = o.userData._occtParams;
+  // Exakte Form (STEP-Bytes): im Verlauf nur als Verweis (die Bytes ändern sich nie
+  // → kostet keinen Speicher), beim Speichern als Base64 bis _BREP_SPEICHER_MAX —
+  // größere Formen bleiben wie bisher nur im Speicher. Bis 1.18.204 ging sie beim
+  // Speichern/Rückgängig immer verloren (auch bei STEP-Importen).
+  if (o.userData._brepStep && (o.userData._brep || _brepOk(o))) {
+    const st = o.userData._brepStep;
+    if (modus === 'undo') d._brepStepRef = st;
+    else if (st.length <= _BREP_SPEICHER_MAX) d._brepStepB64 = _bufToBase64(st);
+    if (o.userData._brep) { const { m, off0, dim0 } = o.userData._brep; d._brepMeta = { m, off0, dim0 }; }
+    if (o.userData.exakt) d.exakt = true;
+  }
   // Mehrfarb-Bemalung: Farben stecken im Geometrie-Attribut, hier nur Flag+Palette
   if (o.userData._mmuPaint) { d._mmuPaint = 1; d._mmuBase = o.userData._mmuBase; d._mmuSlots = o.userData._mmuSlots; }
   if (o.userData._hollowFlip)  d._hollowFlip = true;
@@ -22222,6 +22513,7 @@ async function unionSelected() {
   // (zum Ausstanzen gibt es „Abziehen").
   const holeSel = sel.filter(o => o.userData.isHole && o.visible !== false);
   const gestutzt = await _unionTrimMotive(sel);
+  const _exaktIn = gestutzt.size ? null : await _exaktVorher(sel);   // exakte Formen VOR dem Umbau
   const stls = [..._objsToUnionStls(sel.filter(o => !gestutzt.has(o))), ...gestutzt.values(),
                 ...holeSel.flatMap(o => _meshWorldToStls(o))];
   if (holeSel.length) notify('Bohrungs-Körper in der Auswahl werden als normales Material mitverschmolzen — zum Ausstanzen stattdessen „Abziehen" nutzen', 'w');
@@ -22275,6 +22567,7 @@ async function unionSelected() {
       const mesh = _meshFromStlB64(_bufToBase64(_mfToStlBuf(acc)), 'Verschmolzen ' + idCtr, true);
       if (!mesh) throw new Error('Ergebnis-STL nicht ladbar');
       mesh.userData.opJournal = _opJournal;
+      _exaktNachher(mesh, 'fuse', _exaktIn, benutzt);
       benutzt.forEach(o => { objects = objects.filter(x => x !== o); scene.remove(o); });
       selectObjs([mesh]); updateTree();
       notify(_unionMotivMeldung(gestutzt), 'ok');
@@ -22330,6 +22623,7 @@ async function unionSelected() {
     const mesh = _meshFromStlB64(data.stlBase64, 'Verschmolzen ' + idCtr, true);   // keepWorld: bleibt an Ort und Stelle
     if (!mesh) throw new Error('Ergebnis-STL nicht ladbar');
     mesh.userData.opJournal = _opJournal;
+    _exaktNachher(mesh, 'fuse', _exaktIn, sel);
     sel.forEach(o => { objects = objects.filter(x => x !== o); scene.remove(o); });
     selectObjs([mesh]); updateTree();
     _progressDone();
@@ -22366,6 +22660,7 @@ async function intersectSelected() {
     return;
   }
   const sel = selectedObjs.slice();
+  const _exaktIn = await _exaktVorher(sel);   // exakte Formen VOR dem Umbau
   // Als Bohrung markierte Körper zählen hier wie normales Material: Eine
   // Schnittmenge kennt kein „Werkzeug", jeder Körper ist gleichberechtigt.
   const nTris = _countTris(sel);
@@ -22431,6 +22726,7 @@ async function intersectSelected() {
     deselect();
     sel.forEach(o => { objects = objects.filter(x => x !== o); scene.remove(o); });
     scene.add(mesh); objects.push(mesh);
+    _exaktNachher(mesh, 'common', _exaktIn, sel);
     _updateObjEdgeLines(mesh);
     selectObjs([mesh]); updateTree();
     _progressDone();
@@ -29076,6 +29372,7 @@ async function _doSubtractHoles(solids, holes, ctl) {
   // Wird bei Erfolg ans Ergebnis gehängt → „✎ Operation bearbeiten" stellt die
   // Teile wieder her (Parametrik-Stufe 1: Bohrung nachträglich ändern).
   const _opJournal = { op: 'subtract', parts: [...solids, ...holes].map(objectToData) };
+  const _exaktIn = await _exaktVorher([...solids, ...holes]);   // exakte Formen VOR dem Umbau
 
   let solidMesh = solids[0];
   solidMesh.updateWorldMatrix(true, true);
@@ -29474,6 +29771,8 @@ async function _doSubtractHoles(solids, holes, ctl) {
     solidMesh.attach(visMesh);
   }
 
+  if (_exaktIn && !_pendingInlays.length && !threadOverlays.length)
+    _exaktNachher(solidMesh, 'cut', _exaktIn, solids.filter(x => consumedSolids.has(x)), holes);
   solidMesh.userData.opJournal = _opJournal;
   selectObjs([solidMesh]);
   updateTree();
