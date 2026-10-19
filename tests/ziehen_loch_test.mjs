@@ -17,6 +17,10 @@ try {
       wait: async (pred, ms = 40000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { await new Promise(r => setTimeout(r, 150)); if (pred()) return true; } return false; },
       vol: o => { o.updateMatrixWorld(true); const g = o.geometry.clone(); g.applyMatrix4(o.matrixWorld); const P = g.attributes.position, I = g.index ? g.index.array : null, n = I ? I.length : P.count; let v = 0; const a = new THREE.Vector3(), b2 = new THREE.Vector3(), c = new THREE.Vector3();
         for (let i = 0; i < n; i += 3) { a.fromBufferAttribute(P, I ? I[i] : i); b2.fromBufferAttribute(P, I ? I[i+1] : i+1); c.fromBufferAttribute(P, I ? I[i+2] : i+2); v += a.dot(b2.clone().cross(c)) / 6; } return v * 1000; },
+      // Volumen in mm³: exakt, wenn der Körper eine exakte Form hat (seit den
+      // Arbeitsumgebungen: Boolean-Ergebnisse) — sonst übers Netz. Netz gegen Netz
+      // verglich sonst das 32-Eck des Ausgangszylinders mit dem runderen Ergebnis.
+      vEx: o => { const w = (typeof _exaktWelt === 'function' && _oc) ? _exaktWelt(_oc, o) : null; return w ? _occtVolumen(_oc, w) * 1000 : window._T.vol(o); },
       // Zylinder Ø20×20 auf dem Boden, Skizze auf der Oberseite, Kreis Ø6 → Ziehen starten
       setup: () => {
         _newCreate(false); resetWorkplane(); addShape('cylinder');
@@ -32,14 +36,15 @@ try {
   });
   // 1) Sackloch 8 mm
   const r1 = await p.evaluate(async () => {
-    const o = _T.setup(), v0 = _T.vol(o);
+    if (typeof _loadOCCT === 'function') await _loadOCCT();
+    const o = _T.setup(), v0 = _T.vEx(o);
     _skPullSetHeight(-0.8); await new Promise(r => setTimeout(r, 200)); _skPullSetHeight(-0.8);
     const op = _skPull.op, lbl = _skPull.label.textContent;
     await _skPullCommit();
     await _T.wait(() => objects.length === 1 && objects[0] !== o && !objects[0].userData.isHole);
     await new Promise(r => setTimeout(r, 700));
     const n = objects[0];
-    return { op, lbl, n: objects.length, dv: v0 - _T.vol(n), bottomClosed: _thfInside(n, new THREE.Vector3(0, 0.5, 0)), topOpen: !_thfInside(n, new THREE.Vector3(0, 1.9, 0)) };
+    return { op, lbl, n: objects.length, dv: v0 - _T.vEx(n), bottomClosed: _thfInside(n, new THREE.Vector3(0, 0.5, 0)), topOpen: !_thfInside(n, new THREE.Vector3(0, 1.9, 0)) };
   });
   ok(r1.op === 'cut' && /Loch/.test(r1.lbl), 'nach unten ziehen = Loch (Anzeige „' + r1.lbl + '")');
   ok(r1.n === 1 && Math.abs(r1.dv - Math.PI * 9 * 8) < 15, `Sackloch Ø6×8: −${r1.dv.toFixed(0)} mm³ (Soll ${(Math.PI*72).toFixed(0)})`);
@@ -59,7 +64,8 @@ try {
   ok(r2.inner && r2.lo && r2.n === 1, `Gewinde ins gezogene Sackloch: erkannt als ${r2.size} innen, Boden zu`);
   // 3) Durchgangsloch per D
   const r3 = await p.evaluate(async () => {
-    const o = _T.setup(), v0 = _T.vol(o);
+    if (typeof _loadOCCT === 'function') await _loadOCCT();
+    const o = _T.setup(), v0 = _T.vEx(o);
     _skPullSetHeight(-0.1);
     _skPullKey(new KeyboardEvent('keydown', { key:'d' }));
     const h = _skPull.h, lbl = _skPull.label.textContent;
@@ -67,7 +73,7 @@ try {
     await _T.wait(() => objects.length === 1 && objects[0] !== o && !objects[0].userData.isHole);
     await new Promise(r => setTimeout(r, 700));
     const n = objects[0];
-    return { h, lbl, dv: v0 - _T.vol(n), through: !_thfInside(n, new THREE.Vector3(0, 0.05, 0)) && !_thfInside(n, new THREE.Vector3(0, 1.95, 0)) };
+    return { h, lbl, dv: v0 - _T.vEx(n), through: !_thfInside(n, new THREE.Vector3(0, 0.05, 0)) && !_thfInside(n, new THREE.Vector3(0, 1.95, 0)) };
   });
   ok(/durch alles/.test(r3.lbl) && r3.h < -2, 'D = durch alles (' + r3.lbl + ')');
   ok(r3.through && Math.abs(r3.dv - Math.PI * 9 * 20) < 25, `Durchgangsloch Ø6×20: −${r3.dv.toFixed(0)} mm³ (Soll ${(Math.PI*180).toFixed(0)})`);
