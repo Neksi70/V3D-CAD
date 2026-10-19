@@ -117,7 +117,7 @@ window.V3D_HILFE = [
   { b: 'Skizze & Extrudieren', i: '〰', t: 'Prägen entlang Pfad (Nut/Steg)', k: 'prägen pfad nut steg rille v-nut rundnut dichtung kabelkanal zierlinie linie gravieren',
     was: 'Macht aus Linien, Bögen oder Splines der Skizze eine Nut oder einen Steg mit V-, Rund- oder Rechteckprofil.',
     wo: 'In der Skizzenleiste: „〰 Prägen entlang Pfad“.',
-    s: ['Skizze auf die Fläche legen („▱ Auf Fläche“) und den Pfad zeichnen. Offene Linien und geschlossene Formen gehen beide.', '<b>〰 Prägen entlang Pfad</b>: vertieft (Nut) oder erhaben (Steg) wählen.', 'Profil (V, Rund, Rechteck), Breite und Tiefe eingeben, <b>✓ Prägen</b>.'], run: 'enterSketchMode()' },
+    s: ['Skizze auf die Fläche legen („▱ Auf Fläche“) und den Pfad zeichnen. Offene Linien und geschlossene Formen gehen beide.', '<b>〰 Prägen entlang Pfad</b>: vertieft (Nut) oder erhaben (Steg) wählen.', 'Profil (V, Rund, Rechteck), Breite und Tiefe eingeben, <b>✓ Prägen</b>.', 'Später ändern: im Baum die Prägung doppelklicken. Pfad und Maße lassen sich anpassen, das Teil rechnet sich neu.'], run: 'enterSketchMode()' },
   { b: 'Skizze & Extrudieren', i: '▦', t: 'Skizzenmuster (Lochreihe, Lochkreis)', k: 'muster pattern lochreihe lochkreis kreismuster linear vervielfachen kopien skizze',
     was: 'Vervielfacht Elemente der Skizze in einer Reihe oder auf einem Kreis. Die Kopien folgen der Vorlage, wenn du sie änderst.',
     wo: 'In der Skizze: „↖ Auswahl“, dann im Panel „▦ Muster…“.',

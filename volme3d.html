@@ -10586,7 +10586,7 @@ function exitSketchMode() {
   if (_skPull.editing) _skPullCleanup();
   if (_sk.facePick) { canvas.removeEventListener('pointerdown', _skFacePickDown, true); _sk.facePick = false; }
   if (typeof _skxClose === 'function') _skxClose(true);
-  _sk.editFeat = null;
+  _sk.editFeat = null; _sk.editEmb = null; _sk.editFlg = null;
   _sk.active = false; canvas.style.cursor = ''; _sk.hint=''; _skUpdateBadge();
   if (_sk.group) { scene.remove(_sk.group); _skDisposeGroup(); _sk.group = null; }
   _sk.ents = []; _sk.pending = []; _sk.dimLock = false;
@@ -12030,12 +12030,12 @@ function _embProfile2D(prof, w, d, mode){
   const pts = [[-h, top], [h, top]]; for (let i = 0; i <= 16; i++) { const a = i / 16 * Math.PI; pts.push([h * Math.cos(a), sg * (e2 + (d - e2) * Math.sin(a))]); }
   return pts;
 }
-async function _embApply(){
-  const p = _emb.p;
-  if (!(p.w > 0 && p.d > 0)) { notify('Breite und Tiefe größer 0 eingeben', 'w'); return; }
-  const N = (_sk.N || new THREE.Vector3(0, 1, 0)).clone().normalize();
-  const toW = q => _skToWorld(new THREE.Vector3(q.u, 0, q.v));
-  const paths = [..._skBuildOpenPaths().map(c => ({ pts: _cleanPath(c), closed: false })), ..._skBuildLoops().map(l => ({ pts: l, closed: true }))];
+// Werkzeug-Körper einer Prägung aus Skizzen-Elementen + Ebene (auch fürs Nachrechnen im Verlauf)
+function _embToolGeos(ents, M, p){
+  const keep = _sk.ents; _sk.ents = ents;
+  let paths; try { paths = [..._skBuildOpenPaths().map(c => ({ pts: _cleanPath(c), closed: false })), ..._skBuildLoops().map(l => ({ pts: l, closed: true }))]; } finally { _sk.ents = keep; }
+  const N = new THREE.Vector3(0, 1, 0).transformDirection(M).normalize();
+  const toW = q => new THREE.Vector3(q.u, 0, q.v).applyMatrix4(M);
   const geos = [];
   for (const pa of paths) {
     const P = pa.pts.map(toW); if (P.length < 2) continue;
@@ -12043,13 +12043,38 @@ async function _embApply(){
     const outer = _embProfile2D(p.prof, p.w / 10, p.d / 10, p.mode).map(([s, h]) => P[0].clone().addScaledVector(side, s).addScaledVector(N, h));
     try { geos.push(_flgGeo({ outer, holes: [], n: t }, P, pa.closed)); } catch (e) { console.warn('[prägen]', e); }
   }
+  return { geos, paths };
+}
+async function _embApply(){
+  const p = _emb.p;
+  if (!(p.w > 0 && p.d > 0)) { notify('Breite und Tiefe größer 0 eingeben', 'w'); return; }
+  const frameW = _sk.M ? _sk.M.clone() : new THREE.Matrix4();
+  _skcIds();
+  const entsF = _featClone(_sk.ents);
+  const { geos, paths } = _embToolGeos(_sk.ents, frameW, p);
   if (!geos.length) { notify('Kein verwendbarer Pfad', 'w'); return; }
+  // Gespeicherte Prägung geändert → Teil mit allen Schritten neu rechnen
+  if (_sk.editEmb) {
+    const o = objects.find(x => x.userData.id === _sk.editEmb.id), k = _sk.editEmb.k;
+    if (!o) { notify('Teil nicht mehr da', 'w'); return; }
+    const H = _featClone(o.userData.feat), f = H.list[k];
+    f.ents = entsF; f.frame = _featChain(o, k).invert().multiply(frameW).elements.slice(); f.p = { ...p };
+    _embClose(); saveUndo(); exitSketchMode();
+    _progressShow('Teil wird neu berechnet…'); _progressSet(20); _progressCreep(90);
+    try { await _featApply(o, H); _progressDone(); notify(`Prägung geändert — „${o.userData.name}“ neu berechnet`, 'ok'); }
+    catch (err) { _progressHide(); undo(); notify('Neuberechnung fehlgeschlagen: ' + (err.message || err) + ' — alter Stand wiederhergestellt', 'e'); }
+    return;
+  }
   // Zielkörper: der, auf dem die Skizze liegt (knapp unter der Ebene im Körper)
   const probe = paths[0].pts[Math.floor(paths[0].pts.length / 2)];
   const target = _skxBodyAt(new THREE.Vector3(probe.u, -0.01, probe.v)) || _skxBodyAt(new THREE.Vector3(probe.u, 0.01, probe.v));
   if (p.mode === 'cut' && !target) { notify('Unter der Skizze liegt kein Körper — Skizze auf eine Fläche legen („▱ Auf Fläche")', 'w'); return; }
   _embClose(); exitSketchMode();
   saveUndo(); const n0 = undoStack.length;
+  const start = target ? _featStart(target) : null;
+  const fNeu = { typ: 'praegen', ents: entsF, frame: frameW.elements.slice(), p: { ...p } };
+  const merkeVerlauf = () => { const res = selectedObjs.length === 1 && !objects.includes(target) ? selectedObjs[0] : null;
+    if (res && start) { fNeu.T = start.T; start.H.list.push(fNeu); _featBake(res); _featSet(res, start.H); updateTree(); } };
   const meshes = geos.map(g => { const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: new THREE.Color(currentColor), side: THREE.DoubleSide }));
     typeCounts['custom'] = (typeCounts['custom'] || 0) + 1;
     m.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Prägung ' + typeCounts['custom'], color: currentColor, isHole: false, fillet: 0, chamfer: 0 };
@@ -12058,13 +12083,14 @@ async function _embApply(){
     if (!target) { selectObjs(meshes); updateTree(); notify('Steg als eigener Körper erzeugt (unter der Skizze lag kein Körper)', 'ok'); return; }
     selectObjs([target, ...meshes]); await unionSelected();
     if (undoStack.length === n0 + 1) undoStack.pop(); updateUndoRedoButtons();
+    merkeVerlauf();
     notify(`Erhaben geprägt: ${meshes.length} Pfad${meshes.length > 1 ? 'e' : ''}, ${String(p.d).replace('.', ',')} mm hoch`, 'ok'); return;
   }
   meshes.forEach(m => { m.userData.isHole = true; m.userData._exactTool = true; m.userData.color = '#f03030'; m.material.color.set('#f03030'); m.material.transparent = true; m.material.opacity = 0.52; });
   updateTree();
   _progressShow('Prägen läuft…'); _progressSet(8); _progressCreep(93);
   const ctl = _progressCancelable();
-  try { await _doSubtractHoles([target], meshes, ctl); _progressDone(); notify(`Vertieft geprägt: ${meshes.length} Nut${meshes.length > 1 ? 'en' : ''}, ${String(p.d).replace('.', ',')} mm tief`, 'ok'); }
+  try { await _doSubtractHoles([target], meshes, ctl); _progressDone(); merkeVerlauf(); notify(`Vertieft geprägt: ${meshes.length} Nut${meshes.length > 1 ? 'en' : ''}, ${String(p.d).replace('.', ',')} mm tief`, 'ok'); }
   catch (err) { _progressHide(); meshes.forEach(m => { if (objects.includes(m)) { scene.remove(m); objects.splice(objects.indexOf(m), 1); } }); updateTree(); notify('Prägen nicht möglich: ' + (err.message || err), 'e'); }
 }
 
@@ -12989,6 +13015,20 @@ function _featStart(tgt) {
 function _featCyl(c) { return { O: c.O.toArray(), ax: c.ax.toArray(), r: c.r, tmin: c.tmin, tmax: c.tmax, inner: c.inner, closedLo: c.closedLo, closedHi: c.closedHi }; }
 function _featCylBack(c) { return { ...c, O: new THREE.Vector3().fromArray(c.O), ax: new THREE.Vector3().fromArray(c.ax) }; }
 function _featSet(o, H) { o.userData.feat = H; H.sig = _featSig(o); }
+// Verlauf rechnet „nach jedem Boolean Einheitsmatrix“. Manche Ergebnisse (z. B.
+// Vereinen mit einem Zylinder-Grundkörper über OCCT) kommen in mm mit Maßstab 0,1
+// zurück — dann die Matrix in die Geometrie einbacken, sonst schrumpft das Teil
+// beim Neuberechnen auf ein Zehntel (1.18.205).
+function _featBake(o) {
+  o.updateMatrixWorld(true);
+  if (o.matrixWorld.equals(new THREE.Matrix4())) return;
+  if (o.parent && o.parent !== scene) return;   // in Gruppen nicht anfassen
+  o.geometry = o.geometry.clone(); o.geometry.applyMatrix4(o.matrixWorld);
+  o.position.set(0, 0, 0); o.quaternion.identity(); o.scale.set(1, 1, 1); o.updateMatrixWorld(true);
+  o.geometry.computeBoundingBox(); o.geometry.computeBoundingSphere();
+  delete o.userData._origGeo;
+  try { _updateObjEdgeLines(o); } catch (e) {}
+}
 // Werkzeug-Körper einer Skizzen-Stufe (Mesh in L_k)
 function _featSketchMesh(f) {
   const keep = _sk.ents; _sk.ents = _featClone(f.ents);
@@ -13024,6 +13064,18 @@ async function _featRebuild(H) {
       if (!tool) throw new Error(`Skizze ${k + 1} hat keine geschlossene Kontur mehr`);
       const tm = toMf(tool);
       cur = !cur ? tm : (f.op === 'cut' ? M.difference(cur, tm) : f.op === 'isect' ? M.intersection(cur, tm) : M.union(cur, tm));
+    } else if (f.typ === 'praegen') {
+      const { geos } = _embToolGeos(f.ents, new THREE.Matrix4().fromArray(f.frame), f.p);
+      if (!geos.length) throw new Error(`Prägung ${k + 1} hat keinen Pfad mehr`);
+      let tm = null; for (const g of geos) { const m = toMf(new THREE.Mesh(g)); tm = tm ? M.union(tm, m) : m; }
+      cur = !cur ? tm : (f.p.mode === 'cut' ? M.difference(cur, tm) : M.union(cur, tm));
+    } else if (f.typ === 'folgen') {
+      const prof = { outer: f.prof.outer.map(a => new THREE.Vector3().fromArray(a)), holes: f.prof.holes.map(h => h.map(a => new THREE.Vector3().fromArray(a))), n: new THREE.Vector3().fromArray(f.prof.n) };
+      const tm = toMf(new THREE.Mesh(_flgGeo(prof, f.path.map(a => new THREE.Vector3().fromArray(a)), f.closed)));
+      cur = !cur ? tm : (f.op === 'cut' ? M.difference(cur, tm) : f.op === 'isect' ? M.intersection(cur, tm) : M.union(cur, tm));
+    } else if (f.typ === 'loft') {
+      const g = _buildLoft3DGeo(f.rings.map(r => r.map(a => new THREE.Vector3().fromArray(a))), f.sides || 96, !!f.smooth, f.path ? f.path.map(a => new THREE.Vector3().fromArray(a)) : null);
+      const tm = toMf(new THREE.Mesh(g)); cur = !cur ? tm : M.union(cur, tm);
     } else if (f.typ === 'gewinde') {
       if (!cur) throw new Error('Gewinde ohne Körper');
       cur = M.difference(cur, toMf(new THREE.Mesh(await _featThreadTool(f))));
@@ -13052,6 +13104,10 @@ function _featChain(o, k) {
   return o.matrixWorld.clone().multiply(C);
 }
 function _featLabel(f, k) {
+  const mmS = x => String(Math.round(x * 100) / 100).replace('.', ',');
+  if (f.typ === 'praegen') return `〰 Prägung ${k + 1} · ${f.p.mode === 'cut' ? 'vertieft' : 'erhaben'} ${({ v: 'V', r: 'rund', q: 'Rechteck' })[f.p.prof] || ''} ${mmS(f.p.w)}×${mmS(f.p.d)} mm`;
+  if (f.typ === 'folgen') return `⤳ Folgen ${k + 1} · ${f.op === 'cut' ? 'Abziehen' : f.op === 'join' ? 'Anfügen' : f.op === 'isect' ? 'Schnittmenge' : 'Körper'}`;
+  if (f.typ === 'loft') return `⤧ Loft · ${f.rings.length} Profile${f.path ? ' · entlang Pfad' : ''}${f.smooth ? ' · glatt' : ''}`;
   if (f.typ === 'gewinde') { const s = f.p.size === 'eigen' ? 'Ø' + String(f.p.d).replace('.', ',') : f.p.size; return `🔩 Gewinde ${s}×${String(f.p.pitch).replace('.', ',')}${f.cyl.inner ? ' innen' : ' außen'}`; }
   const mm = String(Math.round(Math.abs(f.ab[1] - f.ab[0]) * 100) / 10).replace('.', ',');
   return `✏ Skizze ${k + 1} · ${f.op === 'cut' ? 'Abziehen' : f.op === 'join' ? 'Anfügen' : f.op === 'isect' ? 'Schnittmenge' : 'Körper'} ${mm} mm`;
@@ -13073,6 +13129,61 @@ function _featEditSketch(id, k) {
   _sk.editFeat = { id, k };
   _skx.p = Object.assign({ dir: 'one', d: 10, d2: 5, op: 'auto', thru: false }, _featClone(f.pUI || {}));
   notify(`Skizze ${k + 1} von „${o.userData.name}“: ändern, dann „✓ Extrudieren…“ — das Teil rechnet sich mit allen späteren Schritten neu`, 'ok');
+}
+// Einheitlicher Einstieg aus dem Baum (Doppelklick / ✎)
+function _featEdit(id, k) {
+  const o = objects.find(x => x.userData.id === id), f = o && o.userData.feat && o.userData.feat.list[k]; if (!f) return;
+  ({ skizze: _featEditSketch, gewinde: _featEditThread, praegen: _featEditEmb, folgen: _featEditFlg, loft: _featEditLoft })[f.typ](id, k);
+}
+// Prägung k: Pfad-Skizze + Prägen-Fenster wieder öffnen
+function _featEditEmb(id, k) {
+  const o = objects.find(x => x.userData.id === id); if (!o) return; const f = o.userData.feat.list[k];
+  if (!_featPruefen(o)) return;
+  if (_sk.active) exitSketchMode();
+  selectObjs([o]); enterSketchMode();
+  _skSetFrameM(_featChain(o, k).multiply(new THREE.Matrix4().fromArray(f.frame)));
+  _sk.ents = _featClone(f.ents); _sk.cons = []; _sk.pending = []; _skcIds(); _skRender(); _skcPanel();
+  _sk.editEmb = { id, k }; _emb.p = { ...f.p }; _embOpen();
+  notify(`Prägung ${k + 1}: Pfad in der Skizze ändern oder Maße im Fenster, dann „✓ Prägen“ — das Teil rechnet sich neu`, 'ok');
+}
+// Folgen k: Profil-Skizze öffnen (Pfad bleibt) — oder nur die Operation ändern
+function _featEditFlg(id, k) {
+  const o = objects.find(x => x.userData.id === id); if (!o) return; const f = o.userData.feat.list[k];
+  if (!_featPruefen(o)) return;
+  if (f.sk) {
+    if (_sk.active) exitSketchMode();
+    selectObjs([o]); enterSketchMode();
+    _skSetFrameM(_featChain(o, k).multiply(new THREE.Matrix4().fromArray(f.sk.frame)));
+    _sk.ents = _featClone(f.sk.ents); _sk.cons = _featClone(f.sk.cons || []); _sk.pending = []; _skcIds(); _skRender(); _skcPanel();
+    _sk.editFlg = { id, k };
+    notify(`Folgen ${k + 1}: Profil ändern (z. B. bemaßen), dann „⤳ Folgen (Kanten)“ — der Pfad bleibt, das Teil rechnet sich neu`, 'ok');
+    return;
+  }
+  const ops = [['join', 'Anfügen'], ['cut', 'Abziehen']].filter(x => x[0] !== f.op);
+  if (confirm(`Folgen ${k + 1} (Profil von einer Fläche): Operation auf „${ops[0][1]}“ umstellen?`)) _flgEditApply({ id, k }, null, null, ops[0][0]);
+}
+// Loft: glatt/gerade + Seitenzahl
+function _featEditLoft(id, k) {
+  const o = objects.find(x => x.userData.id === id); if (!o) return; const f = o.userData.feat.list[k];
+  if (!_featPruefen(o)) return;
+  let el = document.getElementById('lfe-panel'); if (el) el.remove();
+  el = document.createElement('div'); el.id = 'lfe-panel';
+  el.style.cssText = 'position:fixed;right:232px;bottom:64px;width:250px;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+  el.innerHTML = `<div style="display:flex;margin-bottom:8px"><b style="flex:1">⤧ Loft ändern</b><span onclick="this.closest('#lfe-panel').remove()" style="cursor:pointer;color:var(--dim)">✕</span></div>
+    <div class="vrow"><label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="lfe-s" ${f.smooth ? 'checked' : ''}> glatt (ab 3 Profilen)</label></div>
+    <div class="vrow"><label>Seiten</label><input type="number" id="lfe-n" min="12" max="256" step="4" value="${f.sides || 96}" style="width:70px"></div>
+    ${f.path ? '<div class="vrow"><label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="lfe-p"> Pfad entfernen (gerade verbinden)</label></div>' : ''}
+    <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:8px"><button class="btn" onclick="this.closest('#lfe-panel').remove()">Abbrechen</button><button class="btn pri" id="lfe-ok">✓ Übernehmen</button></div>`;
+  document.body.appendChild(el);
+  el.querySelector('#lfe-ok').onclick = async () => {
+    const H = _featClone(o.userData.feat), g = H.list[k];
+    g.smooth = el.querySelector('#lfe-s').checked; g.sides = Math.max(12, Math.min(256, parseInt(el.querySelector('#lfe-n').value) || 96));
+    const pp = el.querySelector('#lfe-p'); if (pp && pp.checked) g.path = null;
+    el.remove(); saveUndo();
+    try { await _featApply(o, H); if (k === 0 && o.userData._l3Rings) { o.userData._l3Smooth = g.smooth; o.userData._l3Sides = g.sides; if (!g.path) delete o.userData._l3Path; }
+      notify(`Loft geändert — „${o.userData.name}“ neu berechnet`, 'ok'); }
+    catch (err) { undo(); notify('Neuberechnung fehlgeschlagen: ' + (err.message || err), 'e'); }
+  };
 }
 // Gewinde k wieder öffnen
 function _featEditThread(id, k) {
@@ -13349,14 +13460,14 @@ async function _skxApply(){
       if (undoStack.length === n0 + 1) undoStack.pop();   // Zwischenstand „Körper daneben" nicht im Verlauf
       updateUndoRedoButtons();
       const res = selectedObjs.length === 1 && !objects.includes(r.target) && !objects.includes(mesh) ? selectedObjs[0] : null;
-      if (res) { fNeu.T = start.T; start.H.list.push(fNeu); _featSet(res, start.H); updateTree(); }
+      if (res) { fNeu.T = start.T; start.H.list.push(fNeu); _featBake(res); _featSet(res, start.H); updateTree(); }
     } else if (r.op === 'isect') {
       selectObjs([r.target, mesh]);
       await intersectSelected();
       if (undoStack.length === n0 + 1) undoStack.pop();
       updateUndoRedoButtons();
       const res = selectedObjs.length === 1 && !objects.includes(r.target) && !objects.includes(mesh) ? selectedObjs[0] : null;
-      if (res) { res.userData.name = r.target.userData.name || res.userData.name; fNeu.T = start.T; start.H.list.push(fNeu); _featSet(res, start.H); updateTree(); }
+      if (res) { res.userData.name = r.target.userData.name || res.userData.name; fNeu.T = start.T; start.H.list.push(fNeu); _featBake(res); _featSet(res, start.H); updateTree(); }
       else if (objects.includes(mesh)) { scene.remove(mesh); objects.splice(objects.indexOf(mesh), 1); updateTree(); }
     } else {
       mesh.userData.isHole = true; mesh.userData.color = '#f03030';
@@ -13366,7 +13477,7 @@ async function _skxApply(){
       const ctl = _progressCancelable();
       try { await _doSubtractHoles([r.target], [mesh], ctl); _progressDone(); notify('Aus „' + (r.target.userData.name || 'Körper') + '“ abgezogen — ' + String(hmm).replace('.', ',') + ' mm', 'ok');
         const res = selectedObjs.length === 1 && !objects.includes(r.target) ? selectedObjs[0] : null;
-        if (res) { fNeu.T = start.T; start.H.list.push(fNeu); _featSet(res, start.H); updateTree(); } }
+        if (res) { fNeu.T = start.T; start.H.list.push(fNeu); _featBake(res); _featSet(res, start.H); updateTree(); } }
       catch (err) {
         _progressHide();
         if (objects.includes(mesh)) { scene.remove(mesh); objects.splice(objects.indexOf(mesh), 1); updateTree(); }
@@ -20833,12 +20944,12 @@ function updateTree() {
         r.style.paddingLeft = (23 + depth * 14) + 'px';
         r.style.fontSize = '10px';
         const sk = f.typ === 'skizze', an = _featShown.has(o.userData.id + ':' + k);
-        r.title = 'Doppelklick: ' + (sk ? 'Skizze bearbeiten — das Teil rechnet sich neu' : 'Gewinde ändern') + (intakt ? '' : ' (Achtung: Teil wurde danach noch anders verändert)');
+        r.title = 'Doppelklick: ' + ({ skizze: 'Skizze bearbeiten', gewinde: 'Gewinde ändern', praegen: 'Prägung ändern', folgen: 'Folgen-Profil ändern', loft: 'Loft ändern' })[f.typ] + ' — das Teil rechnet sich neu' + (intakt ? '' : ' (Achtung: Teil wurde danach noch anders verändert)');
         r.innerHTML = `<span class="ti-n" style="${intakt ? '' : 'opacity:.6;'}">${_featLabel(f, k)}</span>` +
           (sk ? `<span class="ti-eye" title="Skizzenlinien im Modell ${an ? 'ausblenden' : 'zeigen'}" onclick="event.stopPropagation();_featToggleShow(${o.userData.id},${k})" style="${an ? 'opacity:1' : ''}">${an ? '👁' : '◌'}</span>` : '') +
-          `<span class="ti-eye" title="Bearbeiten" onclick="event.stopPropagation();${sk ? '_featEditSketch' : '_featEditThread'}(${o.userData.id},${k})">✎</span>`;
+          `<span class="ti-eye" title="Bearbeiten" onclick="event.stopPropagation();_featEdit(${o.userData.id},${k})">✎</span>`;
         r.onclick = () => selectObjs([o]);
-        r.ondblclick = e => { e.stopPropagation(); (sk ? _featEditSketch : _featEditThread)(o.userData.id, k); };
+        r.ondblclick = e => { e.stopPropagation(); _featEdit(o.userData.id, k); };
         wrap.appendChild(r);
       });
     }
@@ -31820,8 +31931,28 @@ function _flgFromSketch(){
   const s = shapes.slice().sort((a, b) => Math.abs(_polyArea(a.outer)) - Math.abs(_polyArea(b.outer)))[0];
   const toW = q => _skToWorld(new THREE.Vector3(q.u, 0, q.v));
   const prof = { outer: s.outer.map(toW), holes: (s.holes || []).map(h => h.map(toW)), n: (_sk.N || new THREE.Vector3(0, 1, 0)).clone(), fromSketch: true };
+  _skcIds();
+  const src = { ents: _featClone(_sk.ents), cons: _featClone(_sk.cons || []), frame: (_sk.M ? _sk.M.clone() : new THREE.Matrix4()).elements.slice() };
+  // Gespeicherter Folgen-Schritt: neues Profil, Pfad bleibt → gleich neu rechnen
+  if (_sk.editFlg) { const ed = _sk.editFlg; exitSketchMode(); _flgEditApply(ed, prof, src); return; }
   exitSketchMode();
   enterFolgen(prof);
+  _flg.src = src;
+}
+const _v3a = v => [v.x, v.y, v.z];
+async function _flgEditApply(ed, prof, src, op){
+  const o = objects.find(x => x.userData.id === ed.id); if (!o) return;
+  const H = _featClone(o.userData.feat), f = H.list[ed.k], Ci = _featChain(o, ed.k).invert();
+  if (prof) {
+    const L = v => _v3a(v.clone().applyMatrix4(Ci));
+    f.prof = { outer: prof.outer.map(L), holes: prof.holes.map(h => h.map(L)), n: _v3a(prof.n.clone().transformDirection(Ci)) };
+    f.sk = { ents: src.ents, cons: src.cons, frame: Ci.clone().multiply(new THREE.Matrix4().fromArray(src.frame)).elements.slice() };
+  }
+  if (op) f.op = op;
+  saveUndo();
+  _progressShow('Teil wird neu berechnet…'); _progressSet(20); _progressCreep(90);
+  try { await _featApply(o, H); _progressDone(); notify(`Folgen geändert — „${o.userData.name}“ neu berechnet`, 'ok'); }
+  catch (err) { _progressHide(); undo(); notify('Neuberechnung fehlgeschlagen: ' + (err.message || err) + ' — alter Stand wiederhergestellt', 'e'); }
 }
 function enterFolgen(prof){
   if (_flg.active) _flgExit();
@@ -31829,7 +31960,7 @@ function enterFolgen(prof){
   if (_pp.active) exitPushPull();
   if (_lf.active) exitLoftMode();
   if (_edgeMode) exitEdgeMode();
-  _flg.active = true; _flg.prof = prof || null; _flg.path = null; _flg.closed = false; _flg.chains = [];
+  _flg.active = true; _flg.prof = prof || null; _flg.path = null; _flg.closed = false; _flg.chains = []; _flg.src = null;
   _flg.grp = new THREE.Group(); scene.add(_flg.grp);
   canvas.style.cursor = 'crosshair';
   let bar = document.getElementById('flg-bar');
@@ -32050,6 +32181,11 @@ async function _flgApply(){
   let geo; try { geo = _flgGeo(_flg.prof, _flg.path, _flg.closed); } catch (e) { notify('Folgen nicht möglich: ' + e.message, 'w'); return; }
   const r = _flgResolve(geo);
   if (r.op !== 'new' && !r.target) { notify('Kein Körper berührt — als neuen Körper erstellen oder Operation ändern', 'w'); return; }
+  const fNeu = { typ: 'folgen', prof: { outer: _flg.prof.outer.map(_v3a), holes: _flg.prof.holes.map(h => h.map(_v3a)), n: _v3a(_flg.prof.n) },
+    path: _flg.path.map(_v3a), closed: !!_flg.closed, op: r.op, sk: _flg.src || null };
+  const start = r.target ? _featStart(r.target) : null;
+  const merkeVerlauf = () => { const res = selectedObjs.length === 1 && !objects.includes(r.target) ? selectedObjs[0] : null;
+    if (res && start) { fNeu.T = start.T; start.H.list.push(fNeu); _featBake(res); _featSet(res, start.H); updateTree(); } };
   _flgExit();
   saveUndo();
   const n0 = undoStack.length;
@@ -32058,10 +32194,11 @@ async function _flgApply(){
   mesh.castShadow = mesh.receiveShadow = true;
   mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Folgen ' + typeCounts['custom'], color: currentColor, isHole: false, fillet: 0, chamfer: 0 };
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
-  if (r.op === 'new') { selectObjs([mesh]); updateTree(); notify('Folgen: Körper entlang des Pfads erzeugt', 'ok'); return; }
+  if (r.op === 'new') { _featSet(mesh, { base: null, list: [fNeu] }); selectObjs([mesh]); updateTree(); notify('Folgen: Körper entlang des Pfads erzeugt', 'ok'); return; }
   if (r.op === 'join') {
     selectObjs([r.target, mesh]); await unionSelected();
     if (undoStack.length === n0 + 1) undoStack.pop(); updateUndoRedoButtons();
+    merkeVerlauf();
     notify('Folgen: an „' + (r.target.userData.name || 'Körper') + '“ angefügt', 'ok'); return;
   }
   mesh.userData.isHole = true; mesh.userData._exactTool = true; mesh.userData.color = '#f03030';
@@ -32069,7 +32206,7 @@ async function _flgApply(){
   updateTree();
   _progressShow('Abziehen läuft…'); _progressSet(8); _progressCreep(93);
   const ctl = _progressCancelable();
-  try { await _doSubtractHoles([r.target], [mesh], ctl); _progressDone(); notify('Folgen: aus „' + (r.target.userData.name || 'Körper') + '“ abgezogen (Nut)', 'ok'); }
+  try { await _doSubtractHoles([r.target], [mesh], ctl); _progressDone(); merkeVerlauf(); notify('Folgen: aus „' + (r.target.userData.name || 'Körper') + '“ abgezogen (Nut)', 'ok'); }
   catch (err) { _progressHide(); if (objects.includes(mesh)) { scene.remove(mesh); objects.splice(objects.indexOf(mesh), 1); updateTree(); } notify('Abziehen nicht möglich: ' + (err.message || err), 'e'); }
 }
 
@@ -32464,6 +32601,7 @@ function _lfApply(){
   mesh.userData._l3Sides = 96;
   mesh.userData._l3Smooth = smooth;
   if (path) mesh.userData._l3Path = path.map(p => [Math.round((p.x-c.x)*1e4)/1e4, Math.round((p.y-c.y)*1e4)/1e4, Math.round((p.z-c.z)*1e4)/1e4]);
+  _featSet(mesh, { base: null, list: [{ typ: 'loft', rings: mesh.userData._l3Rings, path: mesh.userData._l3Path || null, smooth: !!smooth, sides: 96 }] });
   mesh.userData._origGeo = geo;
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
   selectObjs([mesh]); updateTree();
@@ -49342,7 +49480,7 @@ async function _thfApply() {
     await _doSubtractHoles([o], [tool], ctl);
     _progressDone();
     const res = selectedObjs.length === 1 && !objects.includes(o) ? selectedObjs[0] : null;
-    if (res) { start.H.list.push({ typ: 'gewinde', cyl: cylS, p, T: start.T }); _featSet(res, start.H); updateTree(); }
+    if (res) { start.H.list.push({ typ: 'gewinde', cyl: cylS, p, T: start.T }); _featBake(res); _featSet(res, start.H); updateTree(); }
     const name = p.size === 'eigen' ? `Ø${String(p.d).replace('.', ',')}×${String(p.pitch).replace('.', ',')}` : `${p.size}×${String(p.pitch).replace('.', ',')}`;
     notify(`${inner ? 'Innengewinde' : 'Außengewinde'} ${name}${p.hand === 'left' ? ' links' : ''} geschnitten${p.clr ? ` (Spiel ${String(p.clr).replace('.', ',')} mm)` : ''} ✓`, 'ok');
   } catch (err) {
@@ -65776,8 +65914,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.204';
+const VOLME3D_VERSION = '1.18.205';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.205', date:'2026-10-19', changes:[
+    ['🕘','<b>Prägen, Folgen und Loft stehen jetzt im Verlauf und lassen sich nachträglich ändern.</b> Doppelklick (oder ✎) auf den Schritt im Baum: Bei einer <b>Prägung</b> öffnen sich die Pfad-Skizze und das Prägen-Fenster (Pfad, Profil, Breite, Tiefe). Bei <b>Folgen</b> öffnet sich die Profil-Skizze; der Kantenpfad bleibt gespeichert. Beim <b>Loft</b> lassen sich glatt/gerade, die Seitenzahl und der Pfad ändern. Das Teil rechnet sich danach mit allen späteren Schritten neu.'],
+    ['🔧','Verlauf: Nach dem Vereinen mit einem Zylinder-Grundkörper rechnete das Neuberechnen das Teil auf ein Zehntel zusammen (falscher Maßstab im Zwischenergebnis). Behoben, auch für Skizzen- und Gewinde-Schritte.'],
+  ]},
   { version:'1.18.204', date:'2026-10-19', changes:[
     ['▣','<b>Mesh → CAD: Fasen mit jedem Winkel und Eckenrundungen als echte Kantenoperation.</b> Fasen werden jetzt mit Höhe × Breite erkannt (z. B. 1 × 2 mm), nicht nur mit 45°. Rundungen an senkrechten Kanten stehen in der Skizze als echte Eckenrundung: tangential an beide Kanten, mit R-Maß, gleiche Radien gekoppelt. Ein Klick aufs R und ein neuer Wert ändern alle Ecken, die Außenmaße bleiben. Bohrungen sind gleich mit ⌀ bemaßt. Außerdem genauer: Eine lange Gerade neben einer Rundung wird nicht mehr fälschlich als großer Bogen erkannt.'],
     ['⬆','Extrudieren: Die <b>Fase</b> bei „Kante oben/unten“ hat jetzt zwei Felder, <b>Höhe × Breite</b>. Sind beide gleich, ergibt das 45°.'],
@@ -77927,6 +78069,158 @@ function _fillHoles(mesh) {
     return { generator: d.id, created: neu.map(o => info(o, true)) };
   }
 
+  // ── Formwerkzeuge: Drehen, Aushöhlen, Spiegeln, Muster, Import ──────────
+  // Welt-Richtung (Z oben) → Editor-Richtung
+  const dirApp = d => new THREE.Vector3(d[0], d[2], -d[1]);
+  const DIRS = { '+x': [1, 0, 0], '-x': [-1, 0, 0], '+y': [0, 1, 0], '-y': [0, -1, 0], top: [0, 0, 1], '+z': [0, 0, 1], bottom: [0, 0, -1], '-z': [0, 0, -1] };
+
+  // Rotationskörper aus einem Profil [[r, z], …] (mm), um die senkrechte Achse durch center.
+  // Gleicher Aufbau wie „Drehen“ im Editor (normierte Punkte + Maßstab), damit der Körper
+  // dort mit ✏ weiter bearbeitet werden kann.
+  function revolve(p) {
+    const prof = p.profile;
+    if (!Array.isArray(prof) || prof.length < 2 || !prof.every(q => Array.isArray(q) && q.length === 2 && q.every(isFinite)))
+      fail('profile: mindestens 2 Punkte [r, z] in mm');
+    if (prof.some(q => q[0] < 0)) fail('profile: r (Abstand zur Achse) darf nicht negativ sein');
+    const pts = prof.map(q => new THREE.Vector2(q[0] / S, q[1] / S));
+    const maxR = Math.max(...pts.map(q => q.x)); if (!(maxR > 0)) fail('profile: mindestens ein Punkt mit r > 0');
+    const ys = pts.map(q => q.y), minH = Math.min(...ys), maxH = Math.max(...ys);
+    const totalH = maxH - minH; if (!(totalH > 0)) fail('profile: braucht eine Höhe (verschiedene z-Werte)');
+    const centerH = (minH + maxH) / 2;
+    const normPts = pts.map(q => new THREE.Vector2(q.x / maxR, (q.y - centerH) / (totalH / 2)));
+    const isHole = !!p.hole, color = isHole ? '#f03030' : (p.color || currentColor);
+    const mesh = new THREE.Mesh(_buildRevolveGeo(normPts, {}), new THREE.MeshStandardMaterial({
+      color: new THREE.Color(color), roughness: 0.38, metalness: 0.05, transparent: isHole, opacity: isHole ? 0.52 : 1, side: THREE.DoubleSide }));
+    mesh.scale.set(maxR, totalH / 2, maxR);
+    mesh.position.y = centerH;
+    mesh.castShadow = mesh.receiveShadow = true;
+    typeCounts['revolve'] = (typeCounts['revolve'] || 0) + 1;
+    mesh.userData = { id: idCtr++, type: 'revolve', shapeType: 'revolve', name: p.name ? String(p.name) : 'Drehen ' + typeCounts['revolve'],
+      color, isHole, fillet: 0, chamfer: 0, revolveNormPts: normPts.map(q => ({ x: q.x, y: q.y })),
+      revolveTwist: 0, revolveWall: 0, revolveCross: 'circle', revolvePolyN: 6, revolveWaveN: 8, revolveWaveAmp: 20,
+      revolveSurface: 'none', revolveStripsN: 16, revolveStripsD: 20,
+      _origGeo: _buildRevolveGeo(_revolveInterpolate(normPts, 48), { hires: true }) };
+    objects.push(mesh); scene.add(mesh);
+    if (p.wall > 0) { mesh.userData.revolveWall = +p.wall; _rebuildRevolveGeo(mesh); }
+    _updateObjEdgeLines(mesh);
+    const c = p.center ? needVec3([p.center[0], p.center[1], 0], 'center') : [0, 0, 0];
+    mesh.position.x = c[0] / S; mesh.position.z = -c[1] / S;
+    mesh.updateMatrixWorld(true);
+    return info(mesh, true);
+  }
+
+  // Aushöhlen (OCCT-Shell): Wand nach innen, die genannten Seiten bleiben offen
+  async function shell(p) {
+    const t = +p.thickness; if (!(t > 0)) fail('thickness muss > 0 mm sein');
+    const o = byId(p.id); edgeFrame(o);                         // gleiche Grenzen wie Runden (ungedreht, Grundkörper)
+    const open = p.open === undefined ? ['top'] : Array.isArray(p.open) ? p.open : [p.open];
+    if (!open.length) fail('open: mindestens eine Seite (top, bottom, +x, -x, +y, -y), die offen bleibt');
+    const b = getMeshBox(o), c = b.getCenter(new THREE.Vector3()), half = b.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+    const faces = open.map(s => {
+      const d = DIRS[String(s).toLowerCase()]; if (!d) fail('open: ' + s + ' — erlaubt top, bottom, +x, -x, +y, -y');
+      const n = dirApp(d);
+      const pt = c.clone().add(new THREE.Vector3(n.x * half.x, n.y * half.y, n.z * half.z));
+      return { worldP: [pt.x, pt.y, pt.z], worldN: [n.x, n.y, n.z] };
+    });
+    const res = await _applyCSGShell(o, faces, t);
+    if (!res) fail('Aushöhlen mit ' + t + ' mm hat OCCT nicht geschafft — Wand dünner wählen?');
+    res.userData._shellThickness = t;
+    if (o.userData.isHole) setHole(res, true);
+    return info(res, true);
+  }
+
+  // Spiegeln: Geometrie wirklich spiegeln (Welt einbacken + Dreiecke umdrehen).
+  // Negative Skalierung wie beim Editor-Spiegeln dreht beim Export die Normalen nach innen.
+  function mirror(p) {
+    const src = byId(p.id);
+    if (!src.isMesh) fail('Spiegeln geht nur an einzelnen Körpern, nicht an Gruppen');
+    const plane = String(p.plane || 'YZ').toUpperCase();
+    const axis = { YZ: 0, XZ: 1, XY: 2 }[plane]; if (axis === undefined) fail('plane: YZ (spiegelt X), XZ (spiegelt Y) oder XY (spiegelt Z)');
+    const bw = boxWorld(src);
+    const at = p.at !== undefined ? +p.at : bw.center[axis];
+    if (!isFinite(at)) fail('at muss eine Zahl (mm) sein');
+    // Spiegelebene in Editor-Koordinaten: Welt X→x, Y→−z, Z→y
+    const appAxis = [0, 2, 1][axis], appAt = axis === 1 ? -at / S : at / S;
+    const s = new THREE.Vector3(1, 1, 1); s.setComponent(appAxis, -1);
+    const off = new THREE.Vector3(); off.setComponent(appAxis, appAt);
+    const M = new THREE.Matrix4().makeTranslation(off.x, off.y, off.z)
+      .multiply(new THREE.Matrix4().makeScale(s.x, s.y, s.z))
+      .multiply(new THREE.Matrix4().makeTranslation(-off.x, -off.y, -off.z));
+    src.updateMatrixWorld(true);
+    let geo = src.geometry.clone().applyMatrix4(src.matrixWorld).applyMatrix4(M);
+    geo = _ensureOutwardGeo(geo);                               // Dreiecke wieder nach außen
+    const mat = src.material.clone();
+    const m = new THREE.Mesh(geo, mat); m.castShadow = m.receiveShadow = true;
+    m.userData = { id: p.copy ? idCtr++ : src.userData.id, type: 'custom', shapeType: 'custom',
+      name: (src.userData.name || 'Körper') + (p.copy ? ' gespiegelt' : ''), color: src.userData.color, isHole: !!src.userData.isHole,
+      fillet: 0, chamfer: 0, _origGeo: geo };
+    if (p.copy) { objects.push(m); scene.add(m); }
+    else { const i = objects.indexOf(src); objects[i] = m; scene.remove(src); scene.add(m); }
+    _updateObjEdgeLines(m);
+    return info(m, true);
+  }
+
+  // Muster: Kopien linear versetzt oder im Kreis um eine Achse (Kopien drehen sich mit)
+  async function pattern(p, log) {
+    const src = byId(p.id);
+    if (!!p.linear === !!p.circular) fail('genau eins angeben: linear {count, step} oder circular {count, axis?, center?, angle?}');
+    const copy = () => {
+      const d = objectToData(src); delete d.id;
+      const o = buildObjectFromData(d); o.userData.id = idCtr++;
+      scene.add(o); objects.push(o); return o;
+    };
+    const made = [];
+    if (p.linear) {
+      const n = Math.round(p.linear.count), st = needVec3(p.linear.step, 'linear.step');
+      if (!(n >= 2) || n > 200) fail('linear.count: 2 bis 200 (inklusive Original)');
+      for (let i = 1; i < n; i++) {
+        const o = copy(); o.position.add(toApp([st[0] * i, st[1] * i, st[2] * i])); o.updateMatrixWorld(true); made.push(o);
+      }
+    } else {
+      const c0 = p.circular, n = Math.round(c0.count);
+      if (!(n >= 2) || n > 200) fail('circular.count: 2 bis 200 (inklusive Original)');
+      const ang = c0.angle === undefined ? 360 : +c0.angle;
+      const step = Math.abs(ang % 360) < 1e-9 ? ang / n : ang / (n - 1);    // voller Kreis: keine Doppelung am Ende
+      const ax = String(c0.axis || 'Z').toUpperCase(); const ai = { X: 0, Y: 1, Z: 2 }[ax];
+      if (ai === undefined) fail('circular.axis: X, Y oder Z');
+      const cen = c0.center ? needVec3(c0.center, 'circular.center') : [0, 0, 0];
+      const ca = toApp(cen);
+      for (let i = 1; i < n; i++) {
+        const o = copy();
+        const rot = [0, 0, 0]; rot[ai] = step * i;
+        const mw = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0] * DEG, rot[1] * DEG, rot[2] * DEG, 'ZYX'));
+        const R = new THREE.Matrix4().multiplyMatrices(Cinv, mw).multiply(C);
+        o.applyMatrix4(new THREE.Matrix4().makeTranslation(ca.x, ca.y, ca.z).multiply(R).multiply(new THREE.Matrix4().makeTranslation(-ca.x, -ca.y, -ca.z)));
+        o.updateMatrixWorld(true); made.push(o);
+      }
+    }
+    if (p.union) return Object.assign(await CMDS['bool.union'].fn({ ids: [src.userData.id, ...made.map(o => o.userData.id)] }, log), { copies: made.length });
+    return { created: made.map(o => info(o)), copies: made.length };
+  }
+
+  // Import: STL, 3MF, OBJ, STEP (Bytes als Base64) über die Import-Wege des Editors
+  async function importFile(p) {
+    if (typeof p.base64 !== 'string' || !p.name) fail('name und base64 nötig');
+    const bin = atob(p.base64), u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const buf = u8.buffer, name = String(p.name), ext = (name.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
+    const before = new Set(objects);
+    if (ext === 'stl') _addImportedStl(buf, name, false);
+    else if (ext === '3mf') await _importThreeMF(buf, name);
+    else if (ext === 'obj') _addImportedGeo(_parseOBJ(new TextDecoder().decode(buf)), name, false, null, false);
+    else if (ext === 'step' || ext === 'stp') await _importStepFile({ name, size: buf.byteLength, arrayBuffer: async () => buf });
+    else fail('Format .' + ext + ' wird nicht unterstützt — stl, 3mf, obj, step');
+    const neu = objects.filter(o => !before.has(o));
+    if (!neu.length) fail('Import hat nichts geliefert');
+    if (p.center) {
+      const box = new THREE.Box3(); neu.forEach(o => box.union(getMeshBox(o)));
+      const c = toWorld(box.getCenter(new THREE.Vector3()));
+      const mv = toApp([p.center[0] - c[0], p.center[1] - c[1], 0]);
+      neu.forEach(o => { o.position.add(mv); o.updateMatrixWorld(true); });
+    }
+    return { created: neu.map(o => info(o, true)) };
+  }
+
   // ── Befehle ────────────────────────────────────────────────────────────
   // doc: einzeilige Parameterbeschreibung (erscheint in list_commands);
   // undo:false = nur lesend, kein Undo-Schritt.
@@ -78072,6 +78366,21 @@ function _fillHoles(mesh) {
       if (!kp || !_KG[kp.gen]) fail('Körper ' + p.id + ' stammt nicht aus einem Generator');
       const d = _KG[kp.gen]; const { gen, ...alt } = kp;
       return genBuild(d, { ...alt, ...genParams(d, p.params || {}) }, o, null);
+    } },
+    'revolve': { doc: '{profile: [[r, z], …] mm (r = Abstand zur Achse ≥ 0, z = Höhe), center?: [x,y] mm, wall?: mm (aushöhlen), hole?, name?, color?} — Rotationskörper um die senkrechte Achse (Vase, Knauf, Becher). Profil auf der Achse beginnen und enden lassen (erster und letzter Punkt r = 0); wall macht daraus einen Becher (Boden zu, oben offen)', fn(p) {
+      return revolve(p);
+    } },
+    'body.shell': { doc: '{id, thickness: mm, open?: top|bottom|+x|-x|+y|-y oder Liste (Standard top)} — aushöhlen: Wand nach innen, die genannten Seiten bleiben offen (OCCT). Grenzen wie body.fillet: Grundkörper, ungedreht, vor Bool. Runden geht davor oder danach', async fn(p) {
+      return shell(p);
+    } },
+    'body.mirror': { doc: '{id, plane: YZ|XZ|XY (YZ spiegelt in X, XZ in Y, XY in Z), at?: mm (Lage der Ebene, Standard: Körpermitte), copy?: bool} — spiegeln; mit copy eine gespiegelte Kopie (neue id), sonst an Ort und Stelle (id bleibt)', fn(p) {
+      return mirror(p);
+    } },
+    'body.pattern': { doc: '{id, linear?: {count, step:[dx,dy,dz] mm}, circular?: {count, axis?: X|Y|Z (Z), center?: [x,y,z] mm (Ursprung), angle?: ° (360 = voller Kreis)}, union?: bool} — Muster; count zählt das Original mit. Ohne union die Kopien als eigene Körper, mit union alles zu einem', async fn(p, log) {
+      return pattern(p, log);
+    } },
+    'file.import': { doc: '{name: "teil.stl|3mf|obj|step", base64, center?: [x,y] mm} — Datei importieren (mm, Z oben); liegt danach auf der Platte. Über MCP einfacher: Werkzeug import mit Pfad', async fn(p) {
+      return importFile(p);
     } },
     'measure': { undo: false, doc: '{id?} — Volumen (mm³), Oberfläche (mm²), BBox je Körper + Summe; ohne id alle Körper', fn(p) {
       const os = p.id !== undefined ? [byId(p.id)] : objects.filter(o => !o.userData.isHole && o.visible !== false);
