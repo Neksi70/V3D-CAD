@@ -873,6 +873,11 @@ body.devmode .dev-only{display:flex!important}
 .g3dm .g3info{font-size:10.5px;color:#888;line-height:1.5;margin-top:8px;padding-top:8px;border-top:1px solid #eee}
 /* Vektorisierer: größere Vorschau — der Rahmen wird direkt darauf aufgezogen */
 #vec-modal .g3box{width:820px}
+#chr-modal .g3box{width:920px}
+#chr-modal .chr-links{width:440px;flex-shrink:0;padding:10px;background:#10141c;display:flex;flex-direction:column;align-items:center}
+#chr-modal canvas{width:420px;max-width:100%;height:auto;border-radius:8px}
+#chr-modal .chr-links .vtb{color:#cfd8e3}
+#chr-modal .chr-links .vtb.on{color:#fff}
 #fdr-modal .g3box{width:680px}
 /* Muster-Generator: flaches Teil, darum breite 2D-Vorschau statt 3D-Karussell */
 #pg-modal .g3box{width:880px}
@@ -1525,7 +1530,7 @@ const firebaseConfig = {
         <button class="btn pri spl" onclick="toggleStlMenu(event)" title="An Slicer senden">▾</button>
         <div id="stl-menu">
           <div class="sli-item" onclick="document.getElementById('stl-menu')?.classList.remove('show');_dvOpen()" title="Drucker, Filament, Schichthöhe, Wände, Füllung, Stützen wählen — prüft, ob es passt, und gibt das Modell mit genau diesen Einstellungen an den Slicer (oder als Projekt-3MF für Bambu Studio, Orca, Anycubic, Snapmaker, Elegoo)">🖨 Druck-Vorschau &amp; Slicer-Einstellungen…</div>
-          <div class="sli-item" onclick="document.getElementById('stl-menu')?.classList.remove('show');_fotoOpen()" title="Foto der aktuellen Ansicht rendern (PNG, bis 4K, auch transparenter Hintergrund)">📷 Foto erstellen…</div>
+          <div class="sli-item" onclick="document.getElementById('stl-menu')?.classList.remove('show');_fotoOpen()" title="Render-Studio: Fotos bis 4K (auch transparent), alle Ansichten als ZIP, 360°-Video und Kamerafahrt als MP4">🎬 Render-Studio (Foto &amp; Video)…</div>
           <div class="sli-item" onclick="_openInV3DSlicer()" title="Modell im V3D Web-Slicer öffnen — dort slicen und mit Druckcode direkt auf der V3D-Drucker-Flotte drucken">🖨 Im V3D Slicer öffnen</div>
           <div class="sli-sep"></div>
           <div id="send-slicer-sec"></div>
@@ -2386,7 +2391,7 @@ const firebaseConfig = {
           <option value="keramik">Keramik</option><option value="gummi">Gummi (TPU)</option><option value="glas">Glas / transparent</option>
         </select>
       </div>
-      <button class="btn" style="width:100%;margin-top:7px;justify-content:center" onclick="_fotoOpen()" title="Foto der aktuellen Ansicht rendern — Licht-Stimmung, Hintergrund (auch transparent), weiche Schatten, bis 4K — für Kunden, Shop und Werbung">📷 Foto erstellen</button>
+      <button class="btn" style="width:100%;margin-top:7px;justify-content:center" onclick="_fotoOpen()" title="Render-Studio: Fotos (Licht-Stimmung, Hintergrund auch transparent, weiche Schatten, bis 4K), alle Ansichten als ZIP, 360°-Drehteller-Video und Kamerafahrt — für Kunden, Shop und Werbung">🎬 Foto &amp; Video</button>
     </div>
   </div>
 
@@ -5735,6 +5740,55 @@ Patrick</textarea>
   </div>
 </div>
 
+<div id="chr-modal" class="g3dm" onclick="if(event.target===this)_chrClose()">
+  <div class="g3box">
+    <div class="g3hdr">🎨 Chroma (Bild → Filament-Gemälde, eine Düse)<span class="vx" onclick="_chrClose()">✕</span></div>
+    <div class="g3body">
+      <div class="chr-links">
+        <canvas id="chr-canvas" width="440" height="440"></canvas>
+        <div class="vbg" id="chr-gans" style="margin-top:6px">
+          <button class="vtb on" data-v="sim" onclick="_chrAnsicht('sim')" title="So sieht der Druck ungefähr aus (aus Filamentfarben und TD berechnet)">Druck-Vorschau</button>
+          <button class="vtb" data-v="orig" onclick="_chrAnsicht('orig')">Original</button>
+          <button class="vtb" data-v="hoehe" onclick="_chrAnsicht('hoehe')" title="Hell = viele Schichten">Höhe</button>
+        </div>
+      </div>
+      <div class="g3ctrl">
+        <span class="vsec">Bild</span>
+        <div id="chr-drop" onclick="document.getElementById('chr-file').click()" style="border:1.5px dashed #4a5266;border-radius:8px;padding:12px;text-align:center;cursor:pointer;color:#9fb0c4;font-size:12px">🖼️ Bild wählen (Foto / PNG / JPG)</div>
+        <input type="file" id="chr-file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="_chrFile(event)">
+        <span class="vsec">Filamente <span style="font-weight:400;color:#888">(unten → oben, dunkel zuerst)</span></span>
+        <div id="chr-fil"></div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">
+          <button class="vtb" onclick="_chrFilAdd()">＋ Filament</button>
+          <button class="vtb" onclick="_chrAuto(_chr.fil.length||4)" title="Farben neu aus dem Bild vorschlagen (gleiche Anzahl)">Aus Bild vorschlagen</button>
+          <button class="vtb" onclick="_chrSort()" title="Dunkel unten, hell oben — so deckt jede Schicht die vorige am besten ab">Nach Helligkeit</button>
+        </div>
+        <div class="vrow"><label title="0 % = nur hell/dunkel wie ein Lithophane, 100 % = Farbton zählt doppelt">Farbtreue</label> <input type="range" id="chr-treue" min="0" max="100" value="50" step="5" oninput="_chrSet('treue',this.value)"><span class="vv" id="chrv-treue">50</span><span class="vu">%</span></div>
+        <span class="vsec">Maße</span>
+        <div class="vrow"><label>Breite</label> <input type="range" id="chr-width" min="30" max="250" value="100" step="1" oninput="_chrSet('width',this.value)"><span class="vv" id="chrv-width">100</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Pixel über die Breite. Feiner als die Düse (~0,4 mm) bringt nichts mehr.">Auflösung</label> <input type="range" id="chr-res" min="60" max="600" value="250" step="10" oninput="_chrSet('res',this.value)"><span class="vv" id="chrv-res">250</span><span class="vu">px</span></div>
+        <div class="vrow"><label title="Glättet Bildrauschen, das sonst als Krümel in der Höhe landet">Glättung</label> <input type="range" id="chr-glatt" min="0" max="3" value="1" step="1" oninput="_chrSet('glatt',this.value)"><span class="vv" id="chrv-glatt">1</span><span class="vu"></span></div>
+        <div class="vrow"><label title="Rand in voller Höhe (oberstes Filament)">Rahmen</label> <input type="range" id="chr-frame" min="0" max="10" value="0" step="0.5" oninput="_chrSet('frame',this.value)"><span class="vv" id="chrv-frame">0</span><span class="vu">mm</span></div>
+        <span class="vsec">Schichten (wie im Slicer)</span>
+        <div class="vrow"><label>Erste Schicht</label> <input type="range" id="chr-flh" min="0.08" max="0.32" value="0.2" step="0.02" oninput="_chrSet('flh',this.value)"><span class="vv" id="chrv-flh">0.2</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Dünner = feinere Farbübergänge, aber längerer Druck. 0,08 mm ist üblich.">Schichthöhe</label> <input type="range" id="chr-lh" min="0.04" max="0.2" value="0.08" step="0.02" oninput="_chrSet('lh',this.value)"><span class="vv" id="chrv-lh">0.08</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Schichten der Grundplatte im ersten Filament — trägt das Bild">Basis</label> <input type="range" id="chr-nb" min="1" max="12" value="5" step="1" oninput="_chrSet('nb',this.value)"><span class="vv" id="chrv-nb">5</span><span class="vu">Schichten</span></div>
+        <div class="vrow"><label title="Höchste Stelle der Platte. Mehr Höhe = mehr Schichten zum Mischen.">Max. Höhe</label> <input type="range" id="chr-maxH" min="0.8" max="4" value="2" step="0.04" oninput="_chrSet('maxH',this.value)"><span class="vv" id="chrv-maxH">2</span><span class="vu">mm</span></div>
+        <span class="vsec">Farbwechsel</span>
+        <div class="vbg" id="chr-gmodus">
+          <button class="vtb on" data-v="ams" onclick="_chrSet('modus','ams')" title="Bambu/Orca mit AMS: Filamentwechsel automatisch an den Wechselschichten">AMS (automatisch)</button>
+          <button class="vtb" data-v="hand" onclick="_chrSet('modus','hand')" title="Ohne AMS: Pause (M600) an jeder Wechselschicht, Filament von Hand tauschen">Von Hand (Pause)</button>
+        </div>
+        <div class="g3info" id="chr-info">Noch kein Bild geladen.</div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_chrClose()">Abbrechen</button>
+      <button class="btn pri" id="chr-create-btn" onclick="_chrCreate()" disabled>✓ Erstellen</button>
+    </div>
+  </div>
+</div>
+
 <div id="vk-modal" class="g3dm" onclick="if(event.target===this)_vkClose()">
   <div class="g3box">
     <div class="g3hdr">💳 3D-Visitenkarte (Foto-Relief + Text)<span class="vx" onclick="_vkClose()">✕</span></div>
@@ -7600,99 +7654,209 @@ function _syncLookSelect() {
   s.disabled = !o || !!o.userData.isHole;
 }
 
-// ── Foto erstellen ──────────────────────────────────────────────────────
-const _foto = { p: Object.assign({ licht: 'studio', bg: 'verlauf', schatten: true, kanten: false, groesse: '1920x1080' },
-  (() => { try { return JSON.parse(localStorage.getItem('v3d_foto') || '{}'); } catch (e) { return {}; } })()), url: null };
+// ── Render-Studio: Foto · alle Ansichten · 360°-Video · Kamerafahrt ─────
+// Alles offscreen in einem eigenen Renderer: nur Körper (ohne Raster, Platte,
+// Griffe, Bohrungen), eigene Lichter je Stimmung, Schattenfänger, ACES-Tonung.
+// Videos: WebCodecs-H.264 + eigener MP4-Schreiber (_mp4Mux) — jedes Bild hat
+// seinen festen Zeitstempel, ein schweres Modell rendert also nur länger, das
+// Video läuft trotzdem gleichmäßig mit 30 Bildern/s. MediaRecorder in Echtzeit
+// nur als Notlösung (Browser ohne WebCodecs). Ein Versuch, den Rekorder
+// zwischen den Bildern zu pausieren, verlor in Chrome die meisten Bilder.
+const _foto = { p: Object.assign({ licht: 'studio', bg: 'verlauf', schatten: true, kanten: false, groesse: '1920x1080',
+    art: 'foto', fmt: 'png', wz: '', vgr: '1920x1080', dauer: 8, richtung: 1 },
+  (() => { try { return JSON.parse(localStorage.getItem('v3d_foto') || '{}'); } catch (e) { return {}; } })()),
+  url: null, vid: null, zip: null, pfad: [], busy: false, abbruch: false };
+const _FOTO_GROESSEN = [
+  ['1920x1080', '1080p · 16:9 Querformat (1920 × 1080)'], ['1080x1920', '1080p · 9:16 Hochformat (Reels, TikTok)'],
+  ['1440x1080', '1080p · 4:3 (1440 × 1080)'], ['1080x1080', '1080p · 1:1 Quadrat'], ['1080x1350', '1080p · 4:5 (Instagram-Beitrag)'],
+  ['2560x1440', '1440p · 16:9 (2560 × 1440)'], ['1440x2560', '1440p · 9:16 Hochformat'], ['1920x1440', '1440p · 4:3'],
+  ['1440x1440', '1440p · 1:1 Quadrat'], ['2048x2048', 'Quadrat 2048 × 2048'], ['3840x2160', '4K 3840 × 2160']];
+const _FOTO_VGROESSEN = [
+  ['1920x1080', '1080p · 16:9'], ['1080x1920', '1080p · 9:16 (Reels, TikTok, Shorts)'], ['1080x1080', '1080p · 1:1'],
+  ['1080x1350', '1080p · 4:5 (Instagram)'], ['2560x1440', '1440p · 16:9'], ['1280x720', '720p · 16:9 (klein, schnell)']];
+// Blickrichtungen fürs Ansichten-Set (Y oben, vorne = +Z wie setView)
+const _FOTO_ANSICHTEN = [['vorne', [0, 0.22, 1]], ['vorne-rechts', [0.75, 0.6, 1]], ['rechts', [1, 0.22, 0]], ['hinten-rechts', [0.75, 0.6, -1]],
+  ['hinten', [0, 0.22, -1]], ['hinten-links', [-0.75, 0.6, -1]], ['links', [-1, 0.22, 0]], ['vorne-links', [-0.75, 0.6, 1]], ['oben', [0, 1, 0.0001]]];
+
 function _fotoOpen() {
   let el = document.getElementById('foto-panel');
   if (!el) {
     el = document.createElement('div'); el.id = 'foto-panel';
-    el.style.cssText = 'position:fixed;right:232px;top:120px;width:340px;max-height:calc(100vh - 150px);overflow-y:auto;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+    el.style.cssText = 'position:fixed;right:232px;top:120px;width:360px;max-height:calc(100vh - 150px);overflow-y:auto;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
     el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape') _fotoClose(); });
     document.body.appendChild(el);
   }
-  const p = _foto.p, tb = (k, v, t, tip) => `<button class="vtb${String(p[k]) === String(v) ? ' on' : ''}" onclick="_fotoSet('${k}','${v}')"${tip ? ` title="${tip}"` : ''}>${t}</button>`;
-  el.innerHTML = `
-    <div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">📷 Foto erstellen</b>
-      <span onclick="_fotoClose()" style="cursor:pointer;color:var(--dim);font-size:15px" title="Schließen (Esc)">✕</span></div>
+  const p = _foto.p, A = p.art, busy = _foto.busy;
+  const tb = (k, v, t, tip) => `<button class="vtb${String(p[k]) === String(v) ? ' on' : ''}" onclick="_fotoSet('${k}','${v}')"${tip ? ` title="${tip}"` : ''}${busy ? ' disabled' : ''}>${t}</button>`;
+  const sel = (k, list) => `<select style="flex:1" onchange="_fotoSet('${k}',this.value)"${busy ? ' disabled' : ''}>${list.map(([v, l]) => `<option value="${v}"${String(v) === String(p[k]) ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+  const video = A === 'video' || A === 'pfad';
+  let mitte = '';
+  if (A === 'foto') mitte = `
     <div style="font-size:11px;color:var(--dim);margin-bottom:6px">Blickwinkel = aktuelle Ansicht. Aussehen je Teil unter <i>Farbe → Aussehen</i>.</div>
-    <div class="vrow"><label>Licht</label><div class="vbg" style="flex:1;flex-wrap:wrap">${tb('licht', 'studio', 'Studio')}${tb('licht', 'dunkel', 'Studio dunkel')}${tb('licht', 'tag', 'Tageslicht')}${tb('licht', 'abend', 'Abendsonne')}</div></div>
-    <div class="vrow"><label>Hintergrund</label><div class="vbg" style="flex:1;flex-wrap:wrap">${tb('bg', 'weiss', 'Weiß')}${tb('bg', 'verlauf', 'Verlauf')}${tb('bg', 'dunkel', 'Dunkel')}${tb('bg', 'transparent', 'Transparent', 'PNG ohne Hintergrund — z. B. für Shop, Flyer, Website')}</div></div>
-    <div class="vrow"><label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" ${p.schatten ? 'checked' : ''} onchange="_fotoSet('schatten',this.checked)"> weicher Schatten</label>
-      <label style="display:flex;align-items:center;gap:5px;cursor:pointer;margin-left:10px"><input type="checkbox" ${p.kanten ? 'checked' : ''} onchange="_fotoSet('kanten',this.checked)"> Kantenlinien</label></div>
-    <div class="vrow"><label>Größe</label><select style="flex:1" onchange="_fotoSet('groesse',this.value)">${[['1920x1080', 'Full HD 1920 × 1080'], ['2048x2048', 'Quadrat 2048 × 2048'], ['1080x1350', 'Hochformat 1080 × 1350 (Instagram)'], ['3840x2160', '4K 3840 × 2160']].map(([v, l]) => `<option value="${v}"${v === p.groesse ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
-    <div style="display:flex;gap:6px;margin:8px 0"><button class="btn pri" style="flex:1" id="foto-go" onclick="_fotoRender()">📷 Foto erstellen</button>
-      <button class="btn" id="foto-dl" onclick="_fotoDownload()" ${_foto.url ? '' : 'disabled'}>⬇ PNG</button></div>
+    <div class="vrow"><label>Größe</label>${sel('groesse', _FOTO_GROESSEN)}</div>
+    <div class="vrow"><label>Datei</label><div class="vbg" style="flex:1">${tb('fmt', 'png', 'PNG')}${tb('fmt', 'jpg', 'JPG', 'Kleinere Datei, ohne Transparenz')}</div></div>
+    <div style="display:flex;gap:6px;margin:8px 0"><button class="btn pri" style="flex:1" id="foto-go" onclick="_fotoRender()"${busy ? ' disabled' : ''}>📷 Foto erstellen</button>
+      <button class="btn" id="foto-dl" onclick="_fotoDownload()" ${_foto.url && !busy ? '' : 'disabled'}>⬇ ${p.fmt === 'jpg' ? 'JPG' : 'PNG'}</button></div>
     <div id="foto-prev" style="border:1px solid var(--border);border-radius:6px;min-height:60px;background:repeating-conic-gradient(#eee 0 25%,#fff 0 50%) 0 0/16px 16px;display:flex;align-items:center;justify-content:center;color:var(--dim)">${_foto.url ? `<img src="${_foto.url}" style="max-width:100%;display:block;border-radius:6px">` : 'Noch kein Foto'}</div>`;
+  else if (A === 'set') mitte = `
+    <div style="font-size:11px;color:var(--dim);margin-bottom:6px">${_FOTO_ANSICHTEN.length} Bilder rundherum (vorne, schräg, Seiten, hinten, oben) in einem Rutsch — als ZIP für Shop-Seiten.</div>
+    <div class="vrow"><label>Größe</label>${sel('groesse', _FOTO_GROESSEN)}</div>
+    <div class="vrow"><label>Datei</label><div class="vbg" style="flex:1">${tb('fmt', 'png', 'PNG')}${tb('fmt', 'jpg', 'JPG', 'Kleinere Dateien, ohne Transparenz')}</div></div>
+    <div style="display:flex;gap:6px;margin:8px 0"><button class="btn pri" style="flex:1" onclick="_fotoSetRender()"${busy ? ' disabled' : ''}>🖼️ Alle Ansichten rendern</button>
+      <button class="btn" onclick="_fotoZipDownload()" ${_foto.zip && !busy ? '' : 'disabled'}>⬇ ZIP</button></div>
+    <div id="foto-prev">${_foto.zip ? `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px">${_foto.zip.thumbs.map(t => `<img src="${t}" style="width:100%;border:1px solid var(--border);border-radius:4px">`).join('')}</div>` : '<div style="color:var(--dim);text-align:center;padding:14px;border:1px solid var(--border);border-radius:6px">Noch keine Bilder</div>'}</div>`;
+  else {
+    const pfad = A === 'pfad', np = _foto.pfad.length;
+    mitte = (pfad ? `
+    <div style="font-size:11px;color:var(--dim);margin-bottom:6px">Ansicht einstellen → <b>＋ merken</b>, nächste Ansicht → merken … Die Kamera fliegt weich durch alle Punkte (mind. 2).</div>
+    <div style="display:flex;gap:6px;margin-bottom:6px"><button class="btn" style="flex:1" onclick="_fotoPfadAdd()"${busy ? ' disabled' : ''}>＋ Aktuelle Ansicht merken</button>
+      <button class="btn" onclick="_fotoPfadClear()" ${np && !busy ? '' : 'disabled'} title="Alle Punkte löschen">✕</button></div>
+    <div style="font-size:11px;margin-bottom:6px">${np ? np + ' Punkt' + (np > 1 ? 'e' : '') + ' gemerkt' + (np < 2 ? ' — noch einer fehlt' : '') : 'Noch keine Punkte gemerkt'}</div>`
+    : `<div style="font-size:11px;color:var(--dim);margin-bottom:6px">Drehteller: das Modell dreht sich einmal ganz herum, Neigung wie die aktuelle Ansicht.</div>
+    <div class="vrow"><label>Richtung</label><div class="vbg" style="flex:1">${tb('richtung', 1, '↻ rechts herum')}${tb('richtung', -1, '↺ links herum')}</div></div>`) + `
+    <div class="vrow"><label>Größe</label>${sel('vgr', _FOTO_VGROESSEN)}</div>
+    <div class="vrow"><label>Dauer</label><div class="vbg" style="flex:1;flex-wrap:wrap">${[4, 6, 8, 12, 20].map(s => tb('dauer', s, s + ' s')).join('')}</div></div>
+    <div style="display:flex;gap:6px;margin:8px 0">${busy
+      ? `<button class="btn" style="flex:1" onclick="_foto.abbruch=true">■ Abbrechen</button>`
+      : `<button class="btn pri" style="flex:1" onclick="_fotoVideo('${A}')" ${pfad && np < 2 ? 'disabled' : ''}>🎬 Video rendern</button>`}
+      <button class="btn" onclick="_fotoVidDownload()" ${_foto.vid && !busy ? '' : 'disabled'}>⬇ ${_foto.vid ? _foto.vid.ext.toUpperCase() : 'Video'}</button></div>
+    <div id="foto-prog" style="height:6px;border-radius:3px;background:var(--border);overflow:hidden;margin-bottom:6px;${busy ? '' : 'display:none'}"><div style="height:100%;width:0;background:var(--accent,#0078ff)"></div></div>
+    <div id="foto-prev">${_foto.vid ? `<video src="${_foto.vid.url}" controls loop muted playsinline style="max-width:100%;display:block;border-radius:6px;background:#000"></video>` : '<div style="color:var(--dim);text-align:center;padding:14px;border:1px solid var(--border);border-radius:6px">Noch kein Video</div>'}</div>`;
+  }
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">🎬 Render-Studio</b>
+      <span onclick="_fotoClose()" style="cursor:pointer;color:var(--dim);font-size:15px" title="Schließen (Esc)">✕</span></div>
+    <div class="vbg" style="margin-bottom:8px">${tb('art', 'foto', '📷 Foto')}${tb('art', 'set', '🖼️ Ansichten', 'Alle Seiten auf einmal, als ZIP')}${tb('art', 'video', '🔄 360°', '360°-Drehteller-Video')}${tb('art', 'pfad', '🛤️ Fahrt', 'Eigene Kamerafahrt durch gemerkte Ansichten')}</div>
+    <div class="vrow"><label>Licht</label><div class="vbg" style="flex:1;flex-wrap:wrap">${tb('licht', 'studio', 'Studio')}${tb('licht', 'dunkel', 'Studio dunkel')}${tb('licht', 'tag', 'Tageslicht')}${tb('licht', 'abend', 'Abendsonne')}</div></div>
+    <div class="vrow"><label>Hintergrund</label><div class="vbg" style="flex:1;flex-wrap:wrap">${tb('bg', 'weiss', 'Weiß')}${tb('bg', 'verlauf', 'Verlauf')}${tb('bg', 'dunkel', 'Dunkel')}${video ? '' : tb('bg', 'transparent', 'Transparent', 'PNG ohne Hintergrund — z. B. für Shop, Flyer, Website')}</div></div>
+    <div class="vrow"><label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" ${p.schatten ? 'checked' : ''} onchange="_fotoSet('schatten',this.checked)"${busy ? ' disabled' : ''}> weicher Schatten</label>
+      <label style="display:flex;align-items:center;gap:5px;cursor:pointer;margin-left:10px"><input type="checkbox" ${p.kanten ? 'checked' : ''} onchange="_fotoSet('kanten',this.checked)"${busy ? ' disabled' : ''}> Kantenlinien</label></div>
+    <div class="vrow" title="${video ? 'Der Schriftzug kreist im Video langsam ums Bild — schwer wegzuschneiden, schützt das Design' : 'Kleiner Schriftzug unten rechts'}"><label>Wasserzeichen</label><input type="text" maxlength="40" placeholder="z. B. © Volme 3D (leer = keins)" value="${(p.wz || '').replace(/"/g, '&quot;')}" onchange="_fotoSet('wz',this.value)" style="flex:1;min-width:0;font-size:12px;border:1.5px solid var(--border);border-radius:7px;padding:4px 7px"${busy ? ' disabled' : ''}></div>
+    ${mitte}`;
 }
-function _fotoClose() { const el = document.getElementById('foto-panel'); if (el) el.remove(); }
-function _fotoSet(k, v) { _foto.p[k] = v; try { localStorage.setItem('v3d_foto', JSON.stringify(_foto.p)); } catch (e) {} _fotoOpen(); }
+function _fotoClose() { if (_foto.busy) { _foto.abbruch = true; return; } const el = document.getElementById('foto-panel'); if (el) el.remove(); }
+function _fotoSet(k, v) {
+  if (_foto.busy) return;
+  _foto.p[k] = (k === 'dauer' || k === 'richtung') ? Number(v) : v;
+  try { localStorage.setItem('v3d_foto', JSON.stringify(_foto.p)); } catch (e) {}
+  _fotoOpen();
+}
+function _fotoName(zusatz, ext) { return _designFilename('png').replace(/\.png$/, '') + '_' + zusatz + '.' + ext; }
 function _fotoDownload() {
   if (!_foto.url) return;
-  const a = document.createElement('a'); a.href = _foto.url; a.download = _designFilename('png').replace(/\.png$/, '') + '_foto.png'; a.click();
+  const a = document.createElement('a'); a.href = _foto.url; a.download = _fotoName('foto', _foto.urlExt || 'png'); a.click();
 }
-// Rendert die aktuelle Ansicht offscreen: nur Körper (ohne Raster, Platte,
-// Griffe, Bohrungen), eigene Lichter je Stimmung, Schattenfänger, ACES-Tonung.
-async function _fotoRender() {
-  const p = _foto.p, [W, H] = p.groesse.split('x').map(Number);
+function _fotoZipDownload() { if (_foto.zip) _saveExport(_foto.zip.blob, _fotoName('ansichten', 'zip')); }
+function _fotoVidDownload() { if (_foto.vid) _saveExport(_foto.vid.blob, _fotoName(_foto.vid.art === 'pfad' ? 'kamerafahrt' : '360', _foto.vid.ext)); }
+function _fotoPfadAdd() {
+  _foto.pfad.push({ pos: camera.position.clone(), tgt: orbitTarget.clone() });
+  notify(`Ansicht ${_foto.pfad.length} gemerkt${_foto.pfad.length < 2 ? ' — jetzt die nächste einstellen' : ''}`, 'ok');
+  _fotoOpen();
+}
+function _fotoPfadClear() { _foto.pfad = []; _fotoOpen(); }
+function _fotoProg(f) { const b = document.querySelector('#foto-prog > div'); if (b) b.style.width = Math.round(f * 100) + '%'; }
+
+// Wasserzeichen auf die 2D-Leinwand: t = null → unten rechts, sonst kreist der
+// Schriftzug einmal pro Video ums Bild (t = 0…1).
+function _fotoWz(g, W, H, text, t) {
+  if (!text) return;
+  const fs = Math.round(Math.min(W, H) * (t == null ? 0.032 : 0.045));
+  g.save(); g.font = `600 ${fs}px Inter, Arial, sans-serif`; g.textBaseline = 'middle';
+  let x, y;
+  if (t == null) { g.textAlign = 'right'; x = W - fs * 0.8; y = H - fs * 0.9; }
+  else { g.textAlign = 'center'; const a = t * Math.PI * 2 - Math.PI / 2; x = W / 2 + Math.cos(a) * W * 0.3; y = H / 2 + Math.sin(a) * H * 0.3; }
+  g.globalAlpha = 0.55; g.lineWidth = Math.max(2, fs / 9); g.strokeStyle = 'rgba(0,0,0,.55)'; g.strokeText(text, x, y);
+  g.fillStyle = '#fff'; g.fillText(text, x, y); g.restore();
+}
+
+// Bühne aufbauen: Szene auf Körper reduzieren, Lichter/Hintergrund/Schatten,
+// Kamera mit dem Seitenverhältnis W:H. Liefert Hilfen zum Ausrichten und end()
+// zum Wiederherstellen — end() MUSS laufen (try/finally beim Aufrufer).
+function _fotoStageBegin(W, H, mitVideo) {
+  const p = _foto.p;
   const solids = objects.filter(o => !o.userData.isHole && o.visible !== false);
-  if (!solids.length) { notify('Keine Teile zum Fotografieren', 'w'); return; }
-  const btn = document.getElementById('foto-go'); if (btn) { btn.disabled = true; btn.textContent = '⏳ rendert …'; }
-  await new Promise(r => setTimeout(r, 30));
-  const prevSel = selectedObjs.slice(); deselect();
-  const rnd = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
-  const saved = [], envSwap = [];
-  const temp = new THREE.Group();
-  try {
-    rnd.setPixelRatio(1); rnd.setSize(W, H);
-    if (THREE.sRGBEncoding !== undefined) rnd.outputEncoding = THREE.sRGBEncoding;
-    rnd.toneMapping = THREE.ACESFilmicToneMapping; rnd.toneMappingExposure = p.licht === 'dunkel' ? 1.05 : 1.0;
-    rnd.shadowMap.enabled = !!p.schatten; rnd.shadowMap.type = THREE.PCFSoftShadowMap;
-    // Szene vorbereiten: alles außer Körpern ausblenden
-    for (const c of scene.children) { saved.push([c, c.visible]); c.visible = solids.includes(c); }
-    solids.forEach(o => o.traverse(c => { if (c.userData && c.userData.isEdgeLines) { saved.push([c, c.visible]); c.visible = !!p.kanten; }
-      if (c.isMesh && !c.userData.isEdgeLines) { saved.push([c, c.castShadow, 'cast']); c.castShadow = true; } }));
-    // Spiegelungen: Umgebung im Foto-Renderer neu bauen (Texturen gehören je Kontext)
-    const env = _lookEnvFor(rnd);
-    // Teile mit Aussehen: deren Spiegelung; „Standard"-Teile nur einen Hauch Studio-Licht
-    solids.forEach(o => o.traverse(c => { if (!c.isMesh || c.userData.isEdgeLines || !c.material || Array.isArray(c.material) || !('envMap' in c.material)) return;
-      envSwap.push([c.material, c.material.envMap, c.material.envMapIntensity]);
-      if (!c.material.envMap) c.material.envMapIntensity = 0.3;
-      c.material.envMap = env; c.material.needsUpdate = true; }));
-    const prevBg = scene.background;
-    // Hintergrund
-    if (p.bg === 'transparent') scene.background = null;
-    else if (p.bg === 'weiss') scene.background = new THREE.Color(0xffffff);
-    else if (p.bg === 'dunkel') scene.background = new THREE.Color(0x1d2026);
-    else { const cv = document.createElement('canvas'); cv.width = 4; cv.height = 512; const g = cv.getContext('2d'), gr = g.createLinearGradient(0, 0, 0, 512);
-      gr.addColorStop(0, '#f4f6f9'); gr.addColorStop(1, '#c7ced8'); g.fillStyle = gr; g.fillRect(0, 0, 4, 512);
-      const t = new THREE.CanvasTexture(cv); if (THREE.sRGBEncoding !== undefined) t.encoding = THREE.sRGBEncoding; scene.background = t; }
-    // Lichter je Stimmung
-    const box = new THREE.Box3(); solids.forEach(o => box.expandByObject(o));
-    const c = box.getCenter(new THREE.Vector3()), R = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 0.5);
-    const L = { studio: [[0xffffff, 0.55], [0xffffff, 2.2, [0.6, 1.2, 0.8]], [0xdfe8ff, 0.7, [-1, 0.6, -0.4]]],
-                dunkel: [[0x8090a8, 0.25], [0xffffff, 2.6, [0.7, 1.0, 0.5]], [0x6fa8ff, 1.0, [-1, 0.4, -0.8]]],
-                tag:    [[0xbfd6ff, 0.8], [0xfff4e0, 2.4, [0.4, 1.4, 0.6]], [0xffffff, 0.4, [-0.8, 0.5, -0.6]]],
-                abend:  [[0x6a5a7a, 0.5], [0xffb070, 2.6, [1.2, 0.45, 0.3]], [0x7090ff, 0.6, [-1, 0.6, -0.6]]] }[p.licht] || [];
-    L.forEach((d, i) => {
-      if (i === 0) { temp.add(new THREE.HemisphereLight(d[0], 0x404040, d[1])); return; }
-      const dl = new THREE.DirectionalLight(d[0], d[1]); dl.position.copy(c).addScaledVector(new THREE.Vector3(...d[2]).normalize(), R * 4);
-      dl.target.position.copy(c); temp.add(dl.target);
-      if (i === 1 && p.schatten) { dl.castShadow = true; dl.shadow.mapSize.set(2048, 2048); dl.shadow.radius = 6; dl.shadow.bias = -0.0005;
-        const sc = dl.shadow.camera; sc.left = sc.bottom = -R * 1.6; sc.right = sc.top = R * 1.6; sc.near = R * 0.5; sc.far = R * 8; sc.updateProjectionMatrix(); }
-      temp.add(dl);
-    });
-    if (p.schatten) {
-      const gnd = new THREE.Mesh(new THREE.PlaneGeometry(R * 20, R * 20), new THREE.ShadowMaterial({ opacity: p.bg === 'dunkel' ? 0.5 : 0.22 }));
-      gnd.rotation.x = -Math.PI / 2; gnd.position.set(c.x, box.min.y - 0.002, c.z); gnd.receiveShadow = true; temp.add(gnd);
+  const st = { prevSel: selectedObjs.slice(), saved: [], envSwap: [], colSwap: [], attrSwap: [], temp: new THREE.Group(), lights: [], prevBg: scene.background, env: null };
+  deselect();
+  const rnd = st.rnd = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+  rnd.setPixelRatio(1); rnd.setSize(W, H);
+  if (THREE.sRGBEncoding !== undefined) rnd.outputEncoding = THREE.sRGBEncoding;
+  rnd.toneMapping = THREE.ACESFilmicToneMapping; rnd.toneMappingExposure = p.licht === 'dunkel' ? 1.05 : 1.0;
+  rnd.shadowMap.enabled = !!p.schatten; rnd.shadowMap.type = THREE.PCFSoftShadowMap;
+  st.end = () => {
+    scene.remove(st.temp);
+    st.temp.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material && o.material.dispose) o.material.dispose(); });
+    for (const [o, v, k] of st.saved.reverse()) { if (k === 'cast') o.castShadow = v; else o.visible = v; }
+    for (const [m, e, k] of st.envSwap) { m.envMap = e; m.envMapIntensity = k; m.needsUpdate = true; }
+    for (const [m, col] of st.colSwap) m.color.copy(col);
+    for (const [g, a] of st.attrSwap) g.setAttribute('color', a);
+    scene.background = st.prevBg;
+    if (st.env) st.env.dispose();
+    rnd.dispose(); rnd.forceContextLoss && rnd.forceContextLoss();
+    if (st.prevSel.length) selectObjs(st.prevSel);
+  };
+  // Szene vorbereiten: alles außer Körpern ausblenden
+  for (const c of scene.children) { st.saved.push([c, c.visible]); c.visible = solids.includes(c); }
+  solids.forEach(o => o.traverse(c => { if (c.userData && c.userData.isEdgeLines) { st.saved.push([c, c.visible]); c.visible = !!p.kanten; }
+    if (c.isMesh && !c.userData.isEdgeLines) { st.saved.push([c, c.castShadow, 'cast']); c.castShadow = true; } }));
+  // Spiegelungen: Umgebung im Foto-Renderer neu bauen (Texturen gehören je Kontext)
+  const env = st.env = _lookEnvFor(rnd);
+  // Teile mit Aussehen: deren Spiegelung; „Standard"-Teile nur einen Hauch Studio-Licht
+  solids.forEach(o => o.traverse(c => { if (!c.isMesh || c.userData.isEdgeLines || !c.material || Array.isArray(c.material) || !('envMap' in c.material)) return;
+    st.envSwap.push([c.material, c.material.envMap, c.material.envMapIntensity]);
+    if (!c.material.envMap) c.material.envMapIntensity = 0.3;
+    c.material.envMap = env; c.material.needsUpdate = true; }));
+  // Farbraum: Die Ansicht zeigt Hex- und Vertex-Farben unverändert, dieser Renderer
+  // gibt sRGB aus — ohne Linearisieren wurde alles doppelt aufgehellt (dunkelgrün →
+  // blassgrün, bei Bemalung und 🎨 Chroma besonders auffällig). end() stellt zurück.
+  const linM = new Set(), linG = new Set();
+  solids.forEach(o => o.traverse(c => {
+    if (!c.isMesh || c.userData.isEdgeLines) return;
+    (Array.isArray(c.material) ? c.material : [c.material]).forEach(m => {
+      if (m && m.color && !linM.has(m)) { linM.add(m); st.colSwap.push([m, m.color.clone()]); m.color.convertSRGBToLinear(); } });
+    const ca = c.geometry && c.geometry.getAttribute && c.geometry.getAttribute('color');
+    if (ca && !linG.has(c.geometry)) {
+      linG.add(c.geometry); const lin = ca.clone(), A = lin.array, n = lin.itemSize;
+      const S = lin.normalized ? (A instanceof Uint8Array ? 255 : A instanceof Uint16Array ? 65535 : 1) : 1;   // Undo-Schnappschuss: 16 Bit
+      for (let i = 0; i < A.length; i++) if (i % n < 3) { const v = A[i] / S, l = v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); A[i] = S > 1 ? Math.round(l * S) : l; }
+      st.attrSwap.push([c.geometry, ca]); c.geometry.setAttribute('color', lin);
     }
-    scene.add(temp);
-    // Kamera wie die Ansicht, Seitenverhältnis des Fotos
-    // Blickrichtung wie die Ansicht, Teile mittig und formatfüllend eingepasst
-    const cam = camera.clone();
-    const dir = camera.position.clone().sub(orbitTarget).normalize();
+  }));
+  // Hintergrund (Video kennt keine Transparenz → Verlauf)
+  const bg = (mitVideo && p.bg === 'transparent') ? 'verlauf' : p.bg;
+  if (bg === 'transparent') scene.background = null;
+  else if (bg === 'weiss') scene.background = new THREE.Color(0xffffff);
+  else if (bg === 'dunkel') scene.background = new THREE.Color(0x1d2026);
+  else { const cv = document.createElement('canvas'); cv.width = 4; cv.height = 512; const g = cv.getContext('2d'), gr = g.createLinearGradient(0, 0, 0, 512);
+    gr.addColorStop(0, '#f4f6f9'); gr.addColorStop(1, '#c7ced8'); g.fillStyle = gr; g.fillRect(0, 0, 4, 512);
+    const t = new THREE.CanvasTexture(cv); if (THREE.sRGBEncoding !== undefined) t.encoding = THREE.sRGBEncoding; scene.background = t; }
+  st.transparent = bg === 'transparent';
+  // Lichter je Stimmung
+  const box = new THREE.Box3(); solids.forEach(o => box.expandByObject(o));
+  const c = st.c = box.getCenter(new THREE.Vector3()), R = st.R = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 0.5);
+  const L = { studio: [[0xffffff, 0.55], [0xffffff, 2.2, [0.6, 1.2, 0.8]], [0xdfe8ff, 0.7, [-1, 0.6, -0.4]]],
+              dunkel: [[0x8090a8, 0.25], [0xffffff, 2.6, [0.7, 1.0, 0.5]], [0x6fa8ff, 1.0, [-1, 0.4, -0.8]]],
+              tag:    [[0xbfd6ff, 0.8], [0xfff4e0, 2.4, [0.4, 1.4, 0.6]], [0xffffff, 0.4, [-0.8, 0.5, -0.6]]],
+              abend:  [[0x6a5a7a, 0.5], [0xffb070, 2.6, [1.2, 0.45, 0.3]], [0x7090ff, 0.6, [-1, 0.6, -0.6]]] }[p.licht] || [];
+  L.forEach((d, i) => {
+    if (i === 0) { st.temp.add(new THREE.HemisphereLight(d[0], 0x404040, d[1])); return; }
+    const dl = new THREE.DirectionalLight(d[0], d[1]), off = new THREE.Vector3(...d[2]).normalize().multiplyScalar(R * 4);
+    dl.position.copy(c).add(off);
+    dl.target.position.copy(c); st.temp.add(dl.target);
+    if (i === 1 && p.schatten) { dl.castShadow = true; dl.shadow.mapSize.set(2048, 2048); dl.shadow.radius = 6; dl.shadow.bias = -0.0005;
+      const sc = dl.shadow.camera; sc.left = sc.bottom = -R * 1.6; sc.right = sc.top = R * 1.6; sc.near = R * 0.5; sc.far = R * 8; sc.updateProjectionMatrix(); }
+    st.temp.add(dl); st.lights.push([dl, off]);
+  });
+  if (p.schatten) {
+    const gnd = new THREE.Mesh(new THREE.PlaneGeometry(R * 20, R * 20), new THREE.ShadowMaterial({ opacity: bg === 'dunkel' ? 0.5 : 0.22 }));
+    gnd.rotation.x = -Math.PI / 2; gnd.position.set(c.x, box.min.y - 0.002, c.z); gnd.receiveShadow = true; st.temp.add(gnd);
+  }
+  scene.add(st.temp);
+  const cam = st.cam = camera.clone();
+  if (cam.isPerspectiveCamera) cam.aspect = W / H;
+  // Kamera aus Richtung dir auf die Teilemitte, formatfüllend eingepasst
+  st.fit = dir => {
+    dir = dir.clone().normalize();
     if (cam.isPerspectiveCamera) {
-      cam.aspect = W / H;
       const vf = THREE.MathUtils.degToRad(cam.fov) / 2, hf = Math.atan(Math.tan(vf) * cam.aspect);
       const dist = R / Math.sin(Math.min(vf, hf)) * 1.12;
       cam.position.copy(c).addScaledVector(dir, dist); cam.near = dist / 100; cam.far = dist * 10;
@@ -7701,24 +7865,216 @@ async function _fotoRender() {
       if (W / H < 1) { cam.left = -R * 1.15; cam.right = R * 1.15; cam.top = R * 1.15 * H / W; cam.bottom = -cam.top; }
       cam.position.copy(c).addScaledVector(dir, R * 4); cam.near = 0.01; cam.far = R * 20;
     }
-    cam.lookAt(c);
-    cam.updateProjectionMatrix();
-    rnd.render(scene, cam);
-    _foto.url = rnd.domElement.toDataURL('image/png');
-    scene.background = prevBg;
-    env.dispose();
+    cam.up.set(0, 1, 0); cam.lookAt(c); cam.updateProjectionMatrix();
+  };
+  // Drehteller: Lichter drehen mit der Kamera (das Modell dreht sich, nicht der Raum)
+  st.turnLights = ang => { const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ang);
+    st.lights.forEach(([dl, off]) => dl.position.copy(c).add(off.clone().applyQuaternion(q))); };
+  st.viewDir = () => camera.position.clone().sub(orbitTarget).normalize();
+  st.render = () => rnd.render(scene, cam);
+  return st;
+}
+
+// Bild aus dem WebGL-Puffer + Wasserzeichen → Data-URL
+function _fotoGrab(st, W, H, fmt) {
+  const wz = (_foto.p.wz || '').trim();
+  if (!wz && fmt === 'png') return st.rnd.domElement.toDataURL('image/png');
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const g = cv.getContext('2d');
+  if (fmt === 'jpg') { g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); }
+  g.drawImage(st.rnd.domElement, 0, 0); _fotoWz(g, W, H, wz, null);
+  return fmt === 'jpg' ? cv.toDataURL('image/jpeg', 0.92) : cv.toDataURL('image/png');
+}
+function _fotoHatTeile() {
+  if (objects.some(o => !o.userData.isHole && o.visible !== false)) return true;
+  notify('Keine Teile zum Fotografieren', 'w'); return false;
+}
+
+async function _fotoRender() {
+  const p = _foto.p, [W, H] = p.groesse.split('x').map(Number);
+  if (_foto.busy || !_fotoHatTeile()) return;
+  const btn = document.getElementById('foto-go'); if (btn) { btn.disabled = true; btn.textContent = '⏳ rendert …'; }
+  await new Promise(r => setTimeout(r, 30));
+  let st = null;
+  try {
+    st = _fotoStageBegin(W, H, false);
+    st.fit(st.viewDir()); st.render();
+    _foto.url = _fotoGrab(st, W, H, p.fmt); _foto.urlExt = p.fmt === 'jpg' ? 'jpg' : 'png';
   } catch (e) {
     console.error('[foto]', e); notify('Foto fehlgeschlagen: ' + (e.message || e), 'e');
-  } finally {
-    scene.remove(temp);
-    temp.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material && o.material.dispose) o.material.dispose(); });
-    for (const [o, v, k] of saved.reverse()) { if (k === 'cast') o.castShadow = v; else o.visible = v; }
-    for (const [m, e, k] of envSwap) { m.envMap = e; m.envMapIntensity = k; m.needsUpdate = true; }
-    rnd.dispose(); rnd.forceContextLoss && rnd.forceContextLoss();
-    if (prevSel.length) selectObjs(prevSel);
-  }
+  } finally { if (st) st.end(); }
   _fotoOpen();
-  if (_foto.url) notify(`Foto fertig (${W} × ${H}) — mit „⬇ PNG" speichern`, 'ok');
+  if (_foto.url) notify(`Foto fertig (${W} × ${H}) — mit „⬇ ${p.fmt === 'jpg' ? 'JPG' : 'PNG'}" speichern`, 'ok');
+}
+
+async function _fotoSetRender() {
+  const p = _foto.p, [W, H] = p.groesse.split('x').map(Number), ext = p.fmt === 'jpg' ? 'jpg' : 'png';
+  if (_foto.busy || !_fotoHatTeile()) return;
+  if (typeof fflate === 'undefined') { notify('Zip-Bibliothek lädt noch — kurz warten, erneut versuchen', 'w'); return; }
+  _foto.busy = true; _fotoOpen();
+  await new Promise(r => setTimeout(r, 30));
+  let st = null; const files = {}, thumbs = [];
+  try {
+    st = _fotoStageBegin(W, H, false);
+    for (let i = 0; i < _FOTO_ANSICHTEN.length; i++) {
+      const [nm, d] = _FOTO_ANSICHTEN[i];
+      st.fit(new THREE.Vector3(...d)); st.render();
+      const url = _fotoGrab(st, W, H, p.fmt);
+      files[String(i + 1).padStart(2, '0') + '_' + nm + '.' + ext] = Uint8Array.from(atob(url.split(',')[1]), ch => ch.charCodeAt(0));
+      const tc = document.createElement('canvas'), s = 160 / Math.max(W, H); tc.width = Math.round(W * s); tc.height = Math.round(H * s);
+      tc.getContext('2d').drawImage(st.rnd.domElement, 0, 0, tc.width, tc.height); thumbs.push(tc.toDataURL('image/jpeg', 0.8));
+      await new Promise(r => setTimeout(r, 0));
+    }
+    _foto.zip = { blob: new Blob([fflate.zipSync(files, { level: 0 })], { type: 'application/zip' }), thumbs };
+  } catch (e) {
+    console.error('[foto-set]', e); notify('Ansichten fehlgeschlagen: ' + (e.message || e), 'e');
+  } finally { if (st) st.end(); _foto.busy = false; }
+  _fotoOpen();
+  if (_foto.zip) notify(`${_FOTO_ANSICHTEN.length} Ansichten fertig (${W} × ${H}) — mit „⬇ ZIP" speichern`, 'ok');
+}
+
+function _fotoVideoMime() {
+  if (typeof MediaRecorder === 'undefined' || !HTMLCanvasElement.prototype.captureStream) return null;
+  return ['video/mp4;codecs=avc1.640028', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+    .find(m => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || null;
+}
+
+// Kleiner MP4-Schreiber für H.264 aus WebCodecs (ein Videospur, eine Probe je
+// Chunk, moov vor mdat = „faststart", spielt sofort im Browser/Handy).
+// samples: [{data:Uint8Array, key:bool, cts:Zeit in timescale}], avcC = decoderConfig.description
+function _mp4Mux(samples, avcC, W, H, fps) {
+  const TS = 90000, D = Math.round(TS / fps), N = samples.length, dur = N * D;
+  const u32 = v => [v >>> 24 & 255, v >>> 16 & 255, v >>> 8 & 255, v & 255], u16 = v => [v >> 8 & 255, v & 255];
+  const str = s => [...s].map(c => c.charCodeAt(0));
+  const box = (typ, ...teile) => { const body = teile.flat(Infinity); return [...u32(body.length + 8), ...str(typ), ...body]; };
+  const full = (typ, ver, flags, ...teile) => box(typ, ver, flags >> 16 & 255, flags >> 8 & 255, flags & 255, ...teile);
+  const MATRIX = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000].map(u32);
+  const off = samples.map((s, i) => s.cts - i * D), minOff = Math.min(0, ...off), ctts = off.some(o => o !== off[0]);
+  const moovBau = stco => box('moov',
+    full('mvhd', 0, 0, u32(0), u32(0), u32(1000), u32(Math.round(dur / TS * 1000)), u32(0x00010000), u16(0x0100), u16(0), u32(0), u32(0), MATRIX, Array(24).fill(0), u32(2)),
+    box('trak',
+      full('tkhd', 0, 3, u32(0), u32(0), u32(1), u32(0), u32(Math.round(dur / TS * 1000)), u32(0), u32(0), u16(0), u16(0), u16(0), u16(0), MATRIX, u32(W << 16), u32(H << 16)),
+      box('mdia',
+        full('mdhd', 0, 0, u32(0), u32(0), u32(TS), u32(dur), u16(0x55C4), u16(0)),
+        full('hdlr', 0, 0, u32(0), str('vide'), u32(0), u32(0), u32(0), str('VideoHandler'), 0),
+        box('minf',
+          full('vmhd', 0, 1, u16(0), u16(0), u16(0), u16(0)),
+          box('dinf', full('dref', 0, 0, u32(1), full('url ', 0, 1))),
+          box('stbl',
+            full('stsd', 0, 0, u32(1), box('avc1', Array(6).fill(0), u16(1), u16(0), u16(0), Array(12).fill(0), u16(W), u16(H),
+              u32(0x00480000), u32(0x00480000), u32(0), u16(1), Array(32).fill(0), u16(0x0018), u16(0xFFFF), box('avcC', [...avcC]))),
+            full('stts', 0, 0, u32(1), u32(N), u32(D)),
+            ctts ? full('ctts', 0, 0, u32(N), samples.map((s, i) => [u32(1), u32(off[i] - minOff)])) : [],
+            full('stss', 0, 0, u32(samples.filter(s => s.key).length), samples.map((s, i) => s.key ? u32(i + 1) : [])),
+            full('stsc', 0, 0, u32(1), u32(1), u32(1), u32(1)),
+            full('stsz', 0, 0, u32(0), u32(N), samples.map(s => u32(s.data.length))),
+            full('stco', 0, 0, u32(N), stco.map(u32)))))));
+  const ftyp = box('ftyp', str('isom'), u32(512), str('isom'), str('iso2'), str('avc1'), str('mp41'));
+  const leer = moovBau(samples.map(() => 0));
+  let p = ftyp.length + leer.length + 8; const stco = samples.map(s => { const o = p; p += s.data.length; return o; });
+  const moov = moovBau(stco), mdatLen = samples.reduce((a, s) => a + s.data.length, 0) + 8;
+  return new Blob([new Uint8Array(ftyp), new Uint8Array(moov), new Uint8Array([...u32(mdatLen), ...str('mdat')]), ...samples.map(s => s.data)], { type: 'video/mp4' });
+}
+// H.264-Encoder suchen, der W×H kann (Level nach Bildgröße), sonst null
+async function _fotoAvcConfig(W, H, fps) {
+  if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') return null;
+  const mbs = Math.ceil(W / 16) * Math.ceil(H / 16), lv = mbs <= 3600 ? '1F' : mbs <= 8192 ? '28' : '33';
+  const br = Math.round(Math.min(20e6, Math.max(4e6, W * H * fps * 0.12)));
+  for (const prof of ['6400', '4D00', '42E0']) {
+    const cfg = { codec: 'avc1.' + prof + lv, width: W, height: H, bitrate: br, framerate: fps, avc: { format: 'avc' } };
+    try { const s = await VideoEncoder.isConfigSupported(cfg); if (s && s.supported) return cfg; } catch (e) {}
+  }
+  return null;
+}
+
+// art 'video' = 360°-Drehteller, 'pfad' = Kamerafahrt durch die gemerkten Ansichten
+async function _fotoVideo(art) {
+  const p = _foto.p, [W, H] = p.vgr.split('x').map(Number), FPS = 30, N = Math.max(2, Math.round(p.dauer * FPS));
+  if (_foto.busy || !_fotoHatTeile()) return;
+  if (art === 'pfad' && _foto.pfad.length < 2) { notify('Erst mindestens 2 Ansichten merken', 'w'); return; }
+  _foto.busy = true; _foto.abbruch = false; _fotoOpen();
+  const avc = await _fotoAvcConfig(W, H, FPS), mime = avc ? 'video/mp4' : _fotoVideoMime();
+  if (!mime) { _foto.busy = false; _fotoOpen(); notify('Dieser Browser kann keine Videos aufnehmen — bitte Chrome, Edge oder Safari nehmen', 'w'); return; }
+  await new Promise(r => setTimeout(r, 30));
+  const wz = (p.wz || '').trim(), sleep = ms => new Promise(r => setTimeout(r, ms));
+  let st = null, rec = null, ok = false, zaeh = false;
+  try {
+    st = _fotoStageBegin(W, H, true);
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const g = cv.getContext('2d');
+    // Kamerafahrt: weiche Kurve durch Positionen und Blickziele
+    let kP = null, kT = null, pcam = null;
+    if (art === 'pfad') {
+      kP = new THREE.CatmullRomCurve3(_foto.pfad.map(k => k.pos.clone()), false, 'centripetal');
+      kT = new THREE.CatmullRomCurve3(_foto.pfad.map(k => k.tgt.clone()), false, 'centripetal');
+      pcam = new THREE.PerspectiveCamera(camera.isPerspectiveCamera ? camera.fov : 40, W / H, st.R / 200, st.R * 200);
+    }
+    const dir0 = st.viewDir(), yAx = new THREE.Vector3(0, 1, 0);
+    const bild = i => {
+      const t = i / N;
+      if (art === 'pfad') {
+        const u = N > 1 ? i / (N - 1) : 0, e = u * u * (3 - 2 * u);   // sanft an- und auslaufen
+        pcam.position.copy(kP.getPoint(e)); pcam.lookAt(kT.getPoint(e)); pcam.updateMatrixWorld();
+        st.rnd.render(scene, pcam);
+      } else {
+        const ang = p.richtung * Math.PI * 2 * t;   // t < 1: letztes Bild ≠ erstes → nahtlose Schleife
+        st.fit(dir0.clone().applyAxisAngle(yAx, ang)); st.turnLights(ang); st.render();
+      }
+      g.drawImage(st.rnd.domElement, 0, 0);
+      _fotoWz(g, W, H, wz, t);
+    };
+    let blob = null;
+    if (avc) {
+      // WebCodecs: jedes Bild bekommt seinen Zeitstempel → exakt 30 Bilder/s, egal wie lange das Rendern dauert
+      const D = 90000 / FPS, samples = []; let desc = null, encErr = null;
+      const enc = new VideoEncoder({
+        output: (ch, meta) => {
+          if (meta && meta.decoderConfig && meta.decoderConfig.description) desc = new Uint8Array(meta.decoderConfig.description);
+          const d = new Uint8Array(ch.byteLength); ch.copyTo(d);
+          samples.push({ data: d, key: ch.type === 'key', cts: Math.round(ch.timestamp * FPS / 1e6) * D });
+        },
+        error: e => { encErr = e; } });
+      enc.configure(avc);
+      for (let i = 0; i < N && !_foto.abbruch; i++) {
+        bild(i);
+        const vf = new VideoFrame(cv, { timestamp: Math.round(i * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
+        enc.encode(vf, { keyFrame: i % (FPS * 2) === 0 }); vf.close();
+        while (enc.encodeQueueSize > 3) await sleep(4);
+        if (encErr) throw encErr;
+        if (i % 3 === 0) { _fotoProg((i + 1) / N); await sleep(0); }
+      }
+      await enc.flush(); enc.close();
+      if (encErr) throw encErr;
+      if (!_foto.abbruch) { if (!desc) throw new Error('Encoder ohne avcC'); blob = _mp4Mux(samples, desc, W, H, FPS); }
+    } else {
+      // Notlösung ohne WebCodecs: Echtzeit-Aufnahme. Ist das Rendern langsamer
+      // als 30 Bilder/s, wird das Video ungleichmäßig (Hinweis unten).
+      const stream = cv.captureStream(0), track = stream.getVideoTracks()[0];
+      rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: Math.round(Math.min(16e6, Math.max(4e6, W * H * FPS * 0.13))) });
+      const chunks = [], fertig = new Promise(r => { rec.onstop = r; });
+      rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+      rec.start(); const t0 = performance.now();
+      for (let i = 0; i < N && !_foto.abbruch; i++) {
+        bild(i); track.requestFrame();
+        const warte = t0 + (i + 1) * 1000 / FPS - performance.now();
+        if (warte < -200) zaeh = true;
+        await sleep(Math.max(0, warte));
+        if (i % 3 === 0) _fotoProg((i + 1) / N);
+      }
+      rec.stop(); await fertig;
+      if (!_foto.abbruch) blob = new Blob(chunks, { type: mime.split(';')[0] });
+    }
+    if (blob) {
+      if (_foto.vid) URL.revokeObjectURL(_foto.vid.url);
+      _foto.vid = { blob, url: URL.createObjectURL(blob), ext: blob.type === 'video/mp4' ? 'mp4' : 'webm', art };
+      ok = true;
+    }
+  } catch (e) {
+    console.error('[foto-video]', e); notify('Video fehlgeschlagen: ' + (e.message || e), 'e');
+    try { if (rec && rec.state !== 'inactive') rec.stop(); } catch (e2) {}
+  } finally { if (st) st.end(); _foto.busy = false; }
+  _fotoOpen();
+  if (ok) notify(`Video fertig (${W} × ${H}, ${p.dauer} s, ${_foto.vid.ext.toUpperCase()}) — mit „⬇" speichern` +
+    (zaeh ? '. Achtung: der Rechner war zu langsam für Echtzeit, das Video kann ruckeln — kleinere Größe wählen oder Chrome/Edge nehmen' : ''), zaeh ? 'w' : 'ok');
+  else if (_foto.abbruch) notify('Video abgebrochen', 'w');
 }
 
 function _syncTranspToggle() {
@@ -21112,6 +21468,7 @@ function buildObjectFromData(data) {
   obj.rotation.set(data.rx || 0, data.ry || 0, data.rz || 0);
   obj.scale.set(data.sx || 1, data.sy || 1, data.sz || 1);
   obj.userData = { id: data.id || idCtr++, name: data.name || 'Objekt', color: data.color || '#0078ff', isHole: !!data.isHole, fillFit: data.fillFit || undefined, opacity: data.opacity || 1.0, type: data.type, shapeType: data.shapeType || (data.isSubtract ? 'custom' : data.type), isGroup: !!data.isGroup, textStr: data.textStr || '', fillet: data.fillet || 0, chamfer: data.chamfer || 0, segments: data.segments, tubeRatio: data.tubeRatio, coneTop: data.coneTop, coneFlip: !!data.coneFlip, tubeWall: (data.tubeWall != null ? data.tubeWall : (data.shapeType==='tube'||data.type==='tube' ? 2 : undefined)), edgeBevels: data.edgeBevels, occtShape: data.occtShape || (data.wasBox ? 'box' : null), _occtParams: data._occtParams || null, displacementPattern: data.displacementPattern || 'keine', displacementAmp: data.displacementAmp || 0.5, displacementFreq: data.displacementFreq || 4, displacementInvert: !!data.displacementInvert, displacementSymmetric: !!data.displacementSymmetric, locked: !!data.locked, hidden: !!data.hidden, threadDiameter: data.threadDiameter, threadPitch: data.threadPitch, threadTurns: data.threadTurns, threadLeft: !!data.threadLeft, screwType: data.screwType, screwSize: data.screwSize, screwLength: data.screwLength, screwClearance: data.screwClearance, screwOuter: data.screwOuter, screwThread: data.screwThread, screwHead: data.screwHead, screwLeft: !!data.screwLeft, holeKind: data.holeKind, holeHead: data.holeHead, holeDepth: data.holeDepth, gearModule: data.gearModule, gearTeeth: data.gearTeeth, gearWidth: data.gearWidth, gearBore: data.gearBore, rackModule: data.rackModule, rackLength: data.rackLength, rackWidth: data.rackWidth, encType: data.encType, encW: data.encW, encD: data.encD, encH: data.encH, encWall: data.encWall, encBosses: data.encBosses, encBossSize: data.encBossSize };
+  if (data.chroma) obj.userData.chroma = data.chroma;
   if (data.edgeAngle) { obj.userData.edgeAngle = data.edgeAngle; if (obj.isMesh) _updateObjEdgeLines(obj); }   // Linien oben entstanden noch mit 30°
   if (data.bierkastenParams) { obj.userData.bierkastenParams = { ...data.bierkastenParams }; obj.userData._bkxVerts = data._bkxVerts; }
   if (data.flexidracheParams) { obj.userData.flexidracheParams = { ...data.flexidracheParams }; obj.userData.fdrSet = data.fdrSet; obj.userData._fdrVerts = data._fdrVerts; }
@@ -21407,6 +21764,7 @@ function objectToData(o, modus) {
   };
   if (o.userData.locked) d.locked = true;
   if (o.userData.edgeAngle) d.edgeAngle = o.userData.edgeAngle;
+  if (o.userData.chroma) d.chroma = o.userData.chroma;   // 🎨 Farbwechsel-Plan für den 3MF-Export
   if (o.userData.bierkastenParams) { d.bierkastenParams = { ...o.userData.bierkastenParams }; d._bkxVerts = o.userData._bkxVerts; }   // ✏️ Im Generator bearbeiten
   if (o.userData.flexidracheParams) { d.flexidracheParams = { ...o.userData.flexidracheParams }; d.fdrSet = o.userData.fdrSet; d._fdrVerts = o.userData._fdrVerts; }
   if (o.userData.schiffParams) { d.schiffParams = { ...o.userData.schiffParams }; d.shfSet = o.userData.shfSet; d._shfVerts = o.userData._shfVerts; }
@@ -34569,6 +34927,7 @@ function _export3MF() {
     _saveExport(r.blob, fname).then(res => {
       notify(`3MF „${fname}" ${res.wrote ? '→ ' + res.dir : ''} — ${r.parts} Teile, ${r.colors} Farbe/n ✓${_exportIsSel() ? ' [nur Auswahl]' : ''}`, 'ok');
       if (r.colors > 1) notify('Filament-Zuordnung im Slicer: ' + r.legend.join('  '), 'ok');
+      if (r.chroma) notify(r.chroma, /NICHT/.test(r.chroma) ? 'w' : 'ok');
     });
   } catch(e) {
     console.error('3MF Export Fehler:', e);
@@ -34592,6 +34951,11 @@ function _build3mfBlob(expSrc) {
     const IDENT = '1 0 0 0 1 0 0 0 1 0 0 0';
     const colorIndex = new Map();
     const objXml = [], compXml = [], partXml = [];
+    // 🎨 Chroma: Filamente in Druck-Reihenfolge zuerst vergeben (Filament 1 = Basis),
+    // damit die Wechsel unten auf die richtigen Slots zeigen. Von Hand = alles auf 1.
+    const chrM = meshes.filter(m => m.userData.chroma), chrC = chrM.length ? chrM[0].userData.chroma : null;
+    if (chrC) (chrC.modus === 'ams' ? chrC.fil : chrC.fil.slice(0, 1)).forEach(f => {
+      const h = f.hex.slice(1).toUpperCase(); if (!colorIndex.has(h)) colorIndex.set(h, colorIndex.size); });
     meshes.forEach((m, i) => {
       const id = i + 1;
       let geo = m.geometry.clone().toNonIndexed();
@@ -34602,6 +34966,7 @@ function _build3mfBlob(expSrc) {
         mmu = _mmuTriStatesGeo(geo, m.userData);
       }
       const hex = mmu ? mmu.hexes[0].slice(1).toUpperCase()
+                : m.userData.chroma ? m.userData.chroma.fil[0].hex.slice(1).toUpperCase()
                       : (m.material?.color || new THREE.Color(0xcccccc)).getHexString().toUpperCase();
       if (!colorIndex.has(hex)) colorIndex.set(hex, colorIndex.size);
       const extruder = colorIndex.get(hex) + 1;
@@ -34650,6 +35015,35 @@ function _build3mfBlob(expSrc) {
     });
     const asmId = meshes.length + 1;
     const modelName = _designFilename('3mf').replace(/\.3mf$/i, '');
+    // 🎨 Chroma-Farbwechsel. Geprüft mit Bambu Studio 02.08 (CLI) und Orca-Quellcode:
+    //  · Metadata/custom_gcode_per_layer.xml (Farbwechsel/Pause je Schicht) liest der
+    //    Slicer NUR, wenn die 3MF Projekt-Einstellungen hat (project_settings.config) —
+    //    eine CAD-3MF ohne sie wird als „nur Geometrie" importiert, die Wechsel fallen weg.
+    //  · Metadata/layer_config_ranges.xml (Höhenbereich-Modifikatoren) gehört zum Objekt
+    //    und kommt immer an → AMS: je Filament ein Höhenbereich mit eigenem Extruder.
+    //  Grenzen liegen auf Schicht-Oberkanten, die Schichtmitte fällt eindeutig hinein.
+    // Nur gültig, solange die Platte nicht skaliert/gedreht wurde: Höhe gegen den Plan prüfen.
+    let chrXml = null, chrRanges = null, chrHinweis = null;
+    if (chrC) {
+      const bb = new THREE.Box3().setFromObject(chrM[0]), hMM = (bb.max.y - bb.min.y) * 10;
+      const F = chrC.fil, top = n => chrC.flh + (n - 1) * chrC.lh;   // Oberkante von Schicht n (1-basiert)
+      const von = F.map((f, k) => k === 0 ? 1 : chrC.nb + chrC.swaps[k - 1]);
+      const bis = F.map((f, k) => k < F.length - 1 ? von[k + 1] - 1 : chrC.nb + chrC.M);
+      if (Math.abs(hMM - chrC.hoehe) > Math.max(0.03, chrC.hoehe * 0.02))
+        chrHinweis = `Chroma-Platte ist ${hMM.toFixed(2)} mm statt ${chrC.hoehe.toFixed(2)} mm hoch (skaliert oder gedreht?) — Farbwechsel NICHT eingetragen, bitte im Slicer selbst setzen`;
+      else if (chrC.modus === 'ams') {
+        chrRanges = `<?xml version="1.0" encoding="utf-8"?>\n<objects>\n <object id="1">\n` + F.map((f, k) =>
+          `  <range min_z="${k === 0 ? 0 : top(von[k] - 1).toFixed(3)}" max_z="${top(bis[k]).toFixed(3)}">\n` +
+          `   <option opt_key="extruder">${colorIndex.get(f.hex.slice(1).toUpperCase()) + 1}</option>\n   <option opt_key="layer_height">${chrC.lh}</option>\n  </range>\n`).join('') +
+          ` </object>\n</objects>\n`;
+        chrHinweis = `Chroma: ${F.length} Filamente als Höhenbereiche eingetragen (AMS wechselt selbst) — im Slicer erste Schicht ${chrC.flh} mm`;
+        if (chrM.length > 1 || meshes.length > 1) chrHinweis += ' · Achtung: die Höhenbereiche gelten für alle Teile in dieser 3MF — Chroma-Platte besser allein exportieren (nur Auswahl)';
+      } else {
+        const zeilen = F.slice(1).map((f, i) => `<layer top_z="${top(von[i + 1]).toFixed(3)}" type="0" extruder="1" color="${f.hex.toUpperCase()}" extra="" gcode="M600"/>`);
+        chrXml = `<?xml version="1.0" encoding="utf-8"?>\n<custom_gcodes_per_layer>\n<plate>\n<plate_info id="1"/>\n${zeilen.join('\n')}\n<mode value="SingleExtruder"/>\n</plate>\n</custom_gcodes_per_layer>\n`;
+        chrHinweis = `Chroma von Hand: im Slicer Pause/Farbwechsel setzen bei Schicht ${von.slice(1).join(', ')} (Z ${von.slice(1).map(n => top(n).toFixed(2)).join(' / ')} mm) — Rechtsklick auf den Schichtregler. Erste Schicht ${chrC.flh} mm`;
+      }
+    }
     const model = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
  <resources>
@@ -34661,24 +35055,27 @@ ${objXml.join('\n')}
     const cfg = `<?xml version="1.0" encoding="UTF-8"?>
 <config>
  <object id="${asmId}">
-  <metadata key="name" value="${modelName}"/>
+  <metadata key="name" value="${modelName}"/>${(chrXml || chrRanges) ? `\n  <metadata key="layer_height" value="${chrC.lh}"/>` : ''}
 ${partXml.join('\n')}
  </object>
 </config>`;
     const ct = `<?xml version="1.0" encoding="UTF-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/xml"/></Types>`;
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/xml"/><Default Extension="xml" ContentType="application/xml"/></Types>`;
     const rels = `<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`;
     const u8 = s => fflate.strToU8(s);
-    const zipped = fflate.zipSync({
+    const dateien = {
       '[Content_Types].xml': u8(ct),
       '_rels/.rels': u8(rels),
       '3D/3dmodel.model': u8(model),
       'Metadata/model_settings.config': u8(cfg),
-    }, { level: 6 });
+    };
+    if (chrXml) dateien['Metadata/custom_gcode_per_layer.xml'] = u8(chrXml);
+    if (chrRanges) dateien['Metadata/layer_config_ranges.xml'] = u8(chrRanges);
+    const zipped = fflate.zipSync(dateien, { level: 6 });
     const blob3mf = new Blob([zipped], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
     const legend = [...colorIndex.entries()].sort((a, b) => a[1] - b[1]).map(([h, ix]) => (ix + 1) + '=#' + h);
-    return { blob: blob3mf, parts: meshes.length, colors: colorIndex.size, legend };
+    return { blob: blob3mf, parts: meshes.length, colors: colorIndex.size, legend, chroma: chrHinweis };
 }
 
 // ═══ STEP LOKAL IM BROWSER ═══════════════════════════════════════════════════
@@ -38671,6 +39068,7 @@ const _STARTERS = [
   {i:'🎂',t:'Tortentopper',d:'Schriftzug mit Steckpins für die Torte',run:()=>_ttOpen()},
   {i:'🗺️',t:'Karte → 3D',d:'Reliefs aus Landkarten',run:()=>_openMapModal()},
   {i:'🖼️',t:'Lithophane',d:'Foto als Leuchtrelief',run:()=>_openLithoModal()},
+  {i:'🎨',t:'Chroma (Filament-Bild)',d:'Bild als Farbschichten, eine Düse, kein AMS nötig',run:()=>_chrOpen()},
   {i:'💳',t:'3D-Visitenkarte',d:'Foto-Relief + fühlbarer Text',run:()=>_vkOpen()},
   {i:'✏️',t:'Bild → SVG',d:'Foto/JPG in Konturen umwandeln',run:()=>_vecOpen()},
   {i:'🫙',t:'Schraubdose',d:'Dose mit Schraubdeckel',run:()=>_openJarModal()},
@@ -38859,7 +39257,7 @@ const _GEN_THEMEN = [
   ['Wohnen & Licht', ['Vase', 'Organic Planter', 'Lampe', 'Laterne', 'Pilzlampe', 'Leo-Windlicht', 'Eichel', 'Leucht-Buchstaben', 'Bilderrahmen', 'Blume', 'Pilz', 'Kürbis']],
   ['Feste & Geschenke', ['Geflochtener Kranz', 'Faltkranz', 'Tortentopper', 'Geldgeschenk (Laser)', 'Glas-Marker', 'Foto-Requisite', 'Bierkasten', 'Bild-Box', 'Keksausstecher']],
   ['Spielen & Figuren', ['Flexi-Drache', 'Minecraft-Figur', 'Dinosaurier', 'Schiff', 'Puzzle', 'Figur-Baukasten', 'Tabletop-Figur', 'Bausatz-Rahmen', 'Steckbausatz', 'Klemmbaustein-Look']],
-  ['Bild, Text & KI', ['QR-Code', 'Namensschild', 'Karte → 3D', 'Lithophane', '3D-Visitenkarte', 'Bild → SVG', 'KI-Modell']],
+  ['Bild, Text & KI', ['QR-Code', 'Namensschild', 'Karte → 3D', 'Lithophane', 'Chroma (Filament-Bild)', '3D-Visitenkarte', 'Bild → SVG', 'KI-Modell']],
   ['Laser & Werkstatt', ['Laser-Box (Zinken)', 'Muster-Generator', 'Silikon-Gießform']],
 ];
 const _genPg = { open: false, ansicht: 'thema', q: '' };
@@ -59031,6 +59429,329 @@ function _createLitho(){
   _closeLithoModal();
 }
 
+// ═══ CHROMA (Bild → Filament-Gemälde auf EINER Düse, à la HueForge) ═══════
+// Eine flache Platte, deren Höhe je Pixel festlegt, wie viele Schichten dort
+// übereinander liegen. Die Filamente wechseln nur an festen Schichthöhen
+// (dunkel unten, hell oben) — also ohne AMS druckbar, mit einer Pause je
+// Farbe. Dünne Schichten scheinen durch: TD (Transmission Distance) ist die
+// Dicke, ab der ein Filament ~90 % deckt. Darum mischt sich der sichtbare Ton
+// aus dem Stapel darunter, und aus 3–5 Filamenten wird ein Bild mit Verläufen.
+// Rechenweg:
+//  1. Farbe jedes möglichen Stapels (0…M Schichten über der Basis) vorab,
+//     Schicht für Schicht in linearem RGB überblendet (Deckung 1−10^(−h/TD)),
+//  2. je Pixel die Schichtzahl, deren Stapelfarbe dem Bild am nächsten ist
+//     (Lab; „Farbtreue" gewichtet Buntheit gegen Helligkeit),
+//  3. die Wechselhöhen selbst per Koordinatenabstieg so, dass der Fehler über
+//     das farbreduzierte Bild (Histogramm, 4 Bit je Kanal) minimal wird.
+// Beim 3MF-Export landen die Wechsel in Metadata/custom_gcode_per_layer.xml
+// (Bambu/Orca): AMS = automatischer Filamentwechsel, „von Hand" = Pause.
+const _chr = { img: null, cols: 0, rows: 0, aspect: 1, lin: null, lab: null, bins: null,
+  fil: [], swaps: [], jmap: null, tab: null, ansicht: 'sim',
+  p: { width: 100, res: 250, flh: 0.2, lh: 0.08, nb: 5, maxH: 2.0, frame: 0, treue: 50, glatt: 1, modus: 'ams' } };
+const _chrLin = v => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+const _chrGam = v => v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+function _chrLab(r, g, b, out, o) {   // lineares RGB → CIE-Lab (D65)
+  const f = t => t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116;
+  const fx = f((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047), fy = f(0.2126 * r + 0.7152 * g + 0.0722 * b),
+        fz = f((0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883);
+  out[o] = 116 * fy - 16; out[o + 1] = 500 * (fx - fy); out[o + 2] = 200 * (fy - fz);
+}
+function _chrHexLin(h) { const n = parseInt(h.slice(1), 16); return [_chrLin((n >> 16 & 255) / 255), _chrLin((n >> 8 & 255) / 255), _chrLin((n & 255) / 255)]; }
+function _chrLinHex(c) { return '#' + c.map(v => Math.max(0, Math.min(255, Math.round(_chrGam(Math.max(0, v)) * 255))).toString(16).padStart(2, '0')).join(''); }
+// Schätzwert, wenn keine Herstellerangabe da ist: dunkle Filamente decken früh
+function _chrTdGuess(hex) { const c = _chrHexLin(hex), L = [0, 0, 0]; _chrLab(c[0], c[1], c[2], L, 0); return Math.round((0.6 + 3 * Math.pow(L[0] / 100, 2)) * 10) / 10; }
+// Schichtzahl über der Basis (M) und Gesamthöhen in mm
+function _chrM() { const P = _chr.p; return Math.max(1, Math.floor((P.maxH - (P.flh + (P.nb - 1) * P.lh)) / P.lh + 1e-6)); }
+function _chrTopZ(j) { const P = _chr.p; return P.flh + (P.nb + j - 1) * P.lh; }   // Oberkante bei j Schichten über der Basis
+
+function _chrSample() {
+  const P = _chr.p, img = _chr.img; if (!img) return;
+  const cols = Math.max(20, Math.min(Math.round(P.res), img.width || P.res, 600));
+  const rows = Math.max(20, Math.round(cols / _chr.aspect));
+  const c = document.createElement('canvas'); c.width = cols; c.height = rows;
+  const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cols, rows);   // Transparenz = weißer Grund
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high'; ctx.drawImage(img, 0, 0, cols, rows);
+  const d = ctx.getImageData(0, 0, cols, rows).data, N = cols * rows;
+  let lin = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) { lin[i * 3] = _chrLin(d[i * 4] / 255); lin[i * 3 + 1] = _chrLin(d[i * 4 + 1] / 255); lin[i * 3 + 2] = _chrLin(d[i * 4 + 2] / 255); }
+  // Glättung: Kastenfilter (2 Durchgänge ≈ Gauß) — sonst landet Bildrauschen als Krümel in der Höhe
+  const r = Math.round(P.glatt);
+  if (r > 0) for (let pass = 0; pass < 2; pass++) for (const horiz of [true, false]) {
+    const out = new Float32Array(N * 3), len = horiz ? cols : rows, cnt = horiz ? rows : cols;
+    for (let q = 0; q < cnt; q++) for (let k = 0; k < 3; k++) {
+      const at = s => (horiz ? q * cols + s : s * cols + q) * 3 + k;
+      let sum = 0; for (let s = -r; s <= r; s++) sum += lin[at(Math.max(0, Math.min(len - 1, s)))];
+      for (let s = 0; s < len; s++) {
+        out[at(s)] = sum / (2 * r + 1);
+        sum += lin[at(Math.min(len - 1, s + r + 1))] - lin[at(Math.max(0, s - r))];
+      }
+    }
+    lin = out;
+  }
+  const lab = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) _chrLab(lin[i * 3], lin[i * 3 + 1], lin[i * 3 + 2], lab, i * 3);
+  // Histogramm für die Optimierung: 4 Bit je Kanal, Lab-Mittel je Fach
+  const acc = new Float64Array(4096 * 4);
+  for (let i = 0; i < N; i++) {
+    const q = (Math.min(15, _chrGam(lin[i * 3]) * 16 | 0) << 8) | (Math.min(15, _chrGam(lin[i * 3 + 1]) * 16 | 0) << 4) | Math.min(15, _chrGam(lin[i * 3 + 2]) * 16 | 0);
+    acc[q * 4] += lab[i * 3]; acc[q * 4 + 1] += lab[i * 3 + 1]; acc[q * 4 + 2] += lab[i * 3 + 2]; acc[q * 4 + 3]++;
+  }
+  const b = []; for (let q = 0; q < 4096; q++) { const w = acc[q * 4 + 3]; if (w) b.push(acc[q * 4] / w, acc[q * 4 + 1] / w, acc[q * 4 + 2] / w, w); }
+  Object.assign(_chr, { cols, rows, lin, lab, bins: new Float32Array(b) });
+}
+
+// Filamente aus dem Bild vorschlagen: k-Means in Lab, Start mit dem dunkelsten
+// Pixel und dann jeweils dem entferntesten (deterministisch, Extreme sicher dabei)
+function _chrAutoFarben(n) {
+  const lab = _chr.lab, lin = _chr.lin; if (!lab) return;
+  const N = lab.length / 3, step = Math.max(1, Math.floor(N / 6000)), S = [];
+  for (let i = 0; i < N; i += step) S.push(i);
+  const d2 = (i, c) => { const a = lab[i * 3] - c[0], b = lab[i * 3 + 1] - c[1], e = lab[i * 3 + 2] - c[2]; return a * a + b * b + e * e; };
+  let dark = S[0]; for (const i of S) if (lab[i * 3] < lab[dark * 3]) dark = i;
+  const C = [[lab[dark * 3], lab[dark * 3 + 1], lab[dark * 3 + 2]]];
+  const md = S.map(i => d2(i, C[0]));
+  while (C.length < n) {
+    let bi = 0; for (let k = 1; k < S.length; k++) if (md[k] > md[bi]) bi = k;
+    const i = S[bi], c = [lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]]; C.push(c);
+    S.forEach((s, k) => { md[k] = Math.min(md[k], d2(s, c)); });
+  }
+  let as = new Int32Array(S.length), rgb = C.map(() => [0, 0, 0]);
+  for (let it = 0; it < 12; it++) {
+    S.forEach((i, k) => { let b = 0, bd = Infinity; C.forEach((c, j) => { const d = d2(i, c); if (d < bd) { bd = d; b = j; } }); as[k] = b; });
+    const sum = C.map(() => [0, 0, 0, 0, 0, 0, 0]);
+    S.forEach((i, k) => { const s = sum[as[k]]; for (let q = 0; q < 3; q++) { s[q] += lab[i * 3 + q]; s[3 + q] += lin[i * 3 + q]; } s[6]++; });
+    sum.forEach((s, j) => { if (s[6]) { C[j] = [s[0] / s[6], s[1] / s[6], s[2] / s[6]]; rgb[j] = [s[3] / s[6], s[4] / s[6], s[5] / s[6]]; } });
+  }
+  const fil = C.map((c, j) => ({ L: c[0], hex: _chrLinHex(rgb[j]) })).sort((a, b) => a.L - b.L);
+  _chr.fil = fil.map(f => ({ hex: f.hex, td: _chrTdGuess(f.hex) }));
+}
+
+// Stapelfarben für j = 0…M Schichten über der Basis
+function _chrTable(swaps) {
+  const fil = _chr.fil, M = _chrM(), lh = _chr.p.lh;
+  const lins = fil.map(f => _chrHexLin(f.hex)), lin = new Float32Array((M + 1) * 3), lab = new Float32Array((M + 1) * 3), fi = new Uint8Array(M + 1);
+  let C = lins[0].slice(), k = 0;
+  for (let j = 0; j <= M; j++) {
+    if (j > 0) {
+      while (k < swaps.length && j >= swaps[k]) k++;
+      const a = 1 - Math.pow(10, -lh / Math.max(0.05, fil[k].td)), f = lins[k];
+      for (let q = 0; q < 3; q++) C[q] = C[q] * (1 - a) + f[q] * a;
+    }
+    lin.set(C, j * 3); _chrLab(C[0], C[1], C[2], lab, j * 3); fi[j] = k;
+  }
+  return { lin, lab, fi, M };
+}
+function _chrWC() { return Math.max(0, _chr.p.treue) / 50; }   // 0 = nur Helligkeit, 1 = Lab, 2 = Farbe zählt doppelt
+function _chrErr(tab) {
+  const b = _chr.bins, L = tab.lab, M = tab.M, wc = _chrWC(); let E = 0;
+  for (let i = 0; i < b.length; i += 4) {
+    let best = Infinity;
+    for (let j = 0; j <= M; j++) {
+      const dl = b[i] - L[j * 3], da = b[i + 1] - L[j * 3 + 1], db = b[i + 2] - L[j * 3 + 2];
+      const d = dl * dl + wc * (da * da + db * db); if (d < best) best = d;
+    }
+    E += best * b[i + 3];
+  }
+  return E;
+}
+// Wechselhöhen suchen: gleichmäßig starten, dann jede Grenze einzeln über
+// alle erlaubten Schichten schieben, solange es besser wird
+function _chrOptimize() {
+  const K = _chr.fil.length, M = _chrM();
+  if (K < 2) { _chr.swaps = []; return; }
+  if (M < K - 1) { _chr.swaps = null; return; }
+  let s = []; for (let k = 1; k < K; k++) s.push(Math.max(k, Math.min(M - (K - 1 - k), Math.round(k * M / K))));
+  let E = _chrErr(_chrTable(s));
+  for (let pass = 0; pass < 4; pass++) {
+    let moved = false;
+    for (let k = 0; k < K - 1; k++) {
+      const lo = k ? s[k - 1] + 1 : 1, hi = k < K - 2 ? s[k + 1] - 1 : M;
+      let bv = s[k];
+      for (let v = lo; v <= hi; v++) { if (v === s[k]) continue; const t = s.slice(); t[k] = v; const e = _chrErr(_chrTable(t)); if (e < E) { E = e; bv = v; } }
+      if (bv !== s[k]) { s[k] = bv; moved = true; }
+    }
+    if (!moved) break;
+  }
+  _chr.swaps = s;
+}
+// Je Pixel die passende Schichtzahl; Rahmen = volle Höhe
+function _chrMap() {
+  const tab = _chr.tab = _chrTable(_chr.swaps), L = tab.lab, M = tab.M, wc = _chrWC();
+  const { cols, rows, lab } = _chr, N = cols * rows, jm = new Uint8Array(N);
+  const P = _chr.p, frPx = P.frame > 0 ? P.frame / (P.width / cols) : 0;
+  for (let i = 0; i < N; i++) {
+    if (frPx > 0) { const x = i % cols, y = (i / cols) | 0; if (x < frPx || y < frPx || x >= cols - frPx || y >= rows - frPx) { jm[i] = M; continue; } }
+    let best = Infinity, bj = 0;
+    for (let j = 0; j <= M; j++) {
+      const dl = lab[i * 3] - L[j * 3], da = lab[i * 3 + 1] - L[j * 3 + 1], db = lab[i * 3 + 2] - L[j * 3 + 2];
+      const d = dl * dl + wc * (da * da + db * db); if (d < best) { best = d; bj = j; }
+    }
+    jm[i] = bj;
+  }
+  _chr.jmap = jm;
+}
+function _chrRechne() {
+  if (!_chr.lab || _chr.fil.length < 1) return;
+  _chrOptimize();
+  if (!_chr.swaps) { _chr.jmap = null; return; }
+  _chrMap();
+}
+
+// Wasserdichtes Solid: Pixel-Gitter oben (Höhe = Schichtzahl), Ring-Wände und
+// ein flacher Boden als Fächer um einen Mittelpunkt (statt eines zweiten Gitters
+// — halbiert die Dreiecke). Vertex-Farben = vorausberechnete Stapelfarbe.
+function _chrGeo() {
+  const { cols: nx, rows: nz, jmap, tab } = _chr, P = _chr.p;
+  const wU = P.width / 10, hU = wU / _chr.aspect;
+  const nTop = nx * nz, ring = [];
+  for (let ix = 0; ix < nx; ix++) ring.push(ix);
+  for (let iz = 1; iz < nz; iz++) ring.push(iz * nx + nx - 1);
+  for (let ix = nx - 2; ix >= 0; ix--) ring.push((nz - 1) * nx + ix);
+  for (let iz = nz - 2; iz >= 1; iz--) ring.push(iz * nx);
+  const nv = nTop + ring.length + 1, pos = new Float32Array(nv * 3), col = new Float32Array(nv * 3);
+  const srgb = tab.lin.map(v => _chrGam(Math.max(0, v)));
+  for (let iz = 0; iz < nz; iz++) for (let ix = 0; ix < nx; ix++) {
+    const i = iz * nx + ix, j = jmap[i];
+    pos[i * 3] = ix / (nx - 1) * wU - wU / 2; pos[i * 3 + 1] = _chrTopZ(j) / 10; pos[i * 3 + 2] = iz / (nz - 1) * hU - hU / 2;
+    col[i * 3] = srgb[j * 3]; col[i * 3 + 1] = srgb[j * 3 + 1]; col[i * 3 + 2] = srgb[j * 3 + 2];
+  }
+  ring.forEach((t, k) => { const v = nTop + k; pos[v * 3] = pos[t * 3]; pos[v * 3 + 1] = 0; pos[v * 3 + 2] = pos[t * 3 + 2]; col.set(srgb.subarray(0, 3), v * 3); });
+  const ctr = nv - 1; col.set(srgb.subarray(0, 3), ctr * 3);
+  const idx = new Uint32Array(6 * (nx - 1) * (nz - 1) + 9 * ring.length); let o = 0;
+  for (let iz = 0; iz < nz - 1; iz++) for (let ix = 0; ix < nx - 1; ix++) {   // Oberseite
+    const a = iz * nx + ix, b = a + 1, c = a + nx + 1, d = a + nx;
+    idx[o++] = a; idx[o++] = d; idx[o++] = c; idx[o++] = a; idx[o++] = c; idx[o++] = b;
+  }
+  for (let k = 0; k < ring.length; k++) {   // Wände + Boden
+    const k2 = (k + 1) % ring.length, T0 = ring[k], T1 = ring[k2], B0 = nTop + k, B1 = nTop + k2;
+    idx[o++] = B0; idx[o++] = T1; idx[o++] = B1; idx[o++] = B0; idx[o++] = T0; idx[o++] = T1;
+    idx[o++] = ctr; idx[o++] = B0; idx[o++] = B1;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  if (_geoSignedVolume(g) < 0) { for (let i = 0; i < idx.length; i += 3) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t; } }
+  g.computeVertexNormals(); g.computeBoundingBox();
+  return g;
+}
+
+// ── Oberfläche ──
+function _chrOpen() { document.getElementById('chr-modal').classList.add('show'); _chrUI(); _chrZeichne(); }
+function _chrClose() { document.getElementById('chr-modal').classList.remove('show'); }
+function _chrFile(ev) {
+  const f = ev.target.files[0]; ev.target.value = ''; if (!f) return;
+  const img = new Image();
+  img.onload = () => {
+    _chr.img = img; _chr.aspect = img.width / img.height || 1;
+    _chrSample();
+    if (_chr.fil.length < 2) _chrAutoFarben(4);
+    document.getElementById('chr-drop').textContent = '🖼️ Bild ersetzen';
+    _chrNeu(true);
+  };
+  img.onerror = () => notify('Bild konnte nicht geladen werden', 'e');
+  img.src = URL.createObjectURL(f);
+}
+let _chrRT = null, _chrReS = false;
+function _chrNeu(sofort, neuAbtasten) {
+  if (_chrRT) clearTimeout(_chrRT);
+  _chrReS = _chrReS || !!neuAbtasten;   // eine anstehende Neu-Abtastung nicht verschlucken
+  const run = () => { _chrRT = null; if (!_chr.img) { _chrUI(); return; } if (_chrReS) { _chrReS = false; _chrSample(); } _chrRechne(); _chrUI(); _chrZeichne(); };
+  if (sofort) run(); else _chrRT = setTimeout(run, 160);
+}
+function _chrSet(k, v) {
+  _chr.p[k] = k === 'modus' ? v : parseFloat(v);
+  const lbl = document.getElementById('chrv-' + k); if (lbl) lbl.textContent = v;
+  if (k === 'modus') { _chrUI(); return; }
+  _chrNeu(false, k === 'res' || k === 'glatt');
+}
+function _chrFilSet(i, k, v) {
+  const f = _chr.fil[i]; if (!f) return;
+  if (k === 'hex') { f.hex = v; f.td = _chrTdGuess(v); } else f.td = Math.max(0.1, Math.min(10, parseFloat(v) || f.td));
+  _chrNeu(false);
+}
+function _chrFilMove(i, d) { const F = _chr.fil, j = i + d; if (j < 0 || j >= F.length) return; [F[i], F[j]] = [F[j], F[i]]; _chrNeu(true); }
+function _chrFilDel(i) { if (_chr.fil.length <= 2) { notify('Mindestens 2 Filamente', 'w'); return; } _chr.fil.splice(i, 1); _chrNeu(true); }
+function _chrFilAdd() {
+  if (_chr.fil.length >= 8) { notify('Höchstens 8 Filamente', 'w'); return; }
+  _chr.fil.push({ hex: '#ffffff', td: _chrTdGuess('#ffffff') }); _chrNeu(true);
+}
+function _chrAuto(n) { if (!_chr.lab) { notify('Erst ein Bild wählen', 'w'); return; } _chrAutoFarben(n); _chrNeu(true); }
+function _chrSort() { _chr.fil.sort((a, b) => { const A = [0, 0, 0], B = [0, 0, 0], x = _chrHexLin(a.hex), y = _chrHexLin(b.hex); _chrLab(...x, A, 0); _chrLab(...y, B, 0); return A[0] - B[0]; }); _chrNeu(true); }
+function _chrAnsicht(a) { _chr.ansicht = a; _chrUI(); _chrZeichne(); }
+
+// Wechsel-Plan als Zeilen: [{k, hex, td, von, bis, z}] — von/bis = Schichtnummern (1-basiert, wie im Slicer)
+function _chrPlan() {
+  const P = _chr.p, M = _chrM(), F = _chr.fil, s = _chr.swaps; if (!s) return [];
+  return F.map((f, k) => {
+    const von = k === 0 ? 1 : P.nb + s[k - 1], bis = k < F.length - 1 ? P.nb + s[k] - 1 : P.nb + M;
+    return { k, hex: f.hex, td: f.td, von, bis, z: k === 0 ? 0 : P.flh + (von - 1) * P.lh, leer: bis < von };
+  });
+}
+function _chrUI() {
+  const P = _chr.p, F = _chr.fil, M = _chrM();
+  const box = document.getElementById('chr-fil'); if (!box) return;
+  box.innerHTML = F.map((f, i) => `<div style="display:flex;align-items:center;gap:5px;margin:3px 0">
+      <span style="width:18px;text-align:right;color:#888;font-size:11px">${i + 1}</span>
+      <input type="color" value="${f.hex}" onchange="_chrFilSet(${i},'hex',this.value)" style="width:34px;height:24px;border:1px solid var(--border);border-radius:5px;padding:0;cursor:pointer" title="Filamentfarbe">
+      <label style="font-size:11px;color:#666" title="Transmission Distance: Dicke in mm, ab der dieses Filament ~90 % deckt. Werte aus der HueForge-Filamentliste oder vom Hersteller; geschätzt aus der Helligkeit, wenn du nichts einträgst.">TD</label>
+      <input type="number" min="0.1" max="10" step="0.1" value="${f.td}" onchange="_chrFilSet(${i},'td',this.value)" style="width:52px;font-size:12px;border:1.5px solid var(--border);border-radius:6px;padding:2px 4px">
+      <span style="font-size:10.5px;color:#888;flex:1">${i === 0 ? 'Basis (unten)' : i === F.length - 1 ? 'oben' : ''}</span>
+      <button class="vtb" style="flex:0 0 auto;padding:2px 7px;min-width:0" onclick="_chrFilMove(${i},-1)" title="Nach unten (früher drucken)" ${i ? '' : 'disabled'}>▼</button>
+      <button class="vtb" style="flex:0 0 auto;padding:2px 7px;min-width:0" onclick="_chrFilMove(${i},1)" title="Nach oben (später drucken)" ${i < F.length - 1 ? '' : 'disabled'}>▲</button>
+      <button class="vtb" style="flex:0 0 auto;padding:2px 7px;min-width:0" onclick="_chrFilDel(${i})" title="Entfernen">✕</button></div>`).join('') || '<div style="color:#888;font-size:11px">Bild wählen → Farben werden vorgeschlagen</div>';
+  const set = (id, v) => { const e = document.getElementById(id); if (e && e.value != v) e.value = v; };
+  ['width', 'res', 'flh', 'lh', 'nb', 'maxH', 'frame', 'treue', 'glatt'].forEach(k => { set('chr-' + k, P[k]); const l = document.getElementById('chrv-' + k); if (l) l.textContent = P[k]; });
+  document.querySelectorAll('#chr-gmodus .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === P.modus));
+  document.querySelectorAll('#chr-gans .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === _chr.ansicht));
+  const info = document.getElementById('chr-info'), btn = document.getElementById('chr-create-btn');
+  if (btn) btn.disabled = !_chr.jmap;
+  if (!info) return;
+  if (!_chr.img) { info.innerHTML = 'Noch kein Bild geladen.'; return; }
+  if (!_chr.swaps) { info.innerHTML = `<b style="color:#d33">Zu wenig Schichten:</b> ${M} Schichten über der Basis reichen nicht für ${F.length} Filamente — Max. Höhe erhöhen oder Basis-Schichten verringern.`; return; }
+  const plan = _chrPlan(), hoch = _chrTopZ(M), tri = 2 * (_chr.cols - 1) * (_chr.rows - 1) + 3 * 2 * (_chr.cols + _chr.rows - 2);
+  info.innerHTML = `<b>Farbwechsel-Plan</b> (Schichthöhe ${P.lh} mm, erste Schicht ${P.flh} mm):<br>` +
+    plan.map(r => `<span style="display:inline-block;width:11px;height:11px;border-radius:3px;border:1px solid #aaa;vertical-align:-1px;background:${r.hex}"></span> ` +
+      (r.k === 0 ? `Schicht 1–${r.bis}: Filament 1 (Start)` : `ab Schicht ${r.von} (Z ${r.z.toFixed(2)} mm): Filament ${r.k + 1}`)).join('<br>') +
+    `<br>Platte ${P.width} × ${Math.round(P.width / _chr.aspect)} mm, ${hoch.toFixed(2)} mm hoch · Raster ${_chr.cols}×${_chr.rows} (${(P.width / _chr.cols).toFixed(2)} mm/Pixel) · rund ${Math.round(tri / 1000)}k Dreiecke` +
+    `<br>${P.modus === 'ams' ? 'AMS: Beim <b>3MF-Export</b> landen die Filamente als Höhenbereiche in der Datei — Bambu Studio/Orca wechseln an diesen Schichten selbst.' : 'Von Hand: im Slicer an jeder Wechselschicht eine Pause (Farbwechsel) setzen — Rechtsklick auf den Schichtregler —, dann tauschst du dort das Filament.'} Im Slicer erste Schicht ${P.flh} mm einstellen.`;
+}
+function _chrZeichne() {
+  const cv = document.getElementById('chr-canvas'); if (!cv) return;
+  const g = cv.getContext('2d'), W = cv.width, H = cv.height;
+  g.fillStyle = '#10141c'; g.fillRect(0, 0, W, H);
+  if (!_chr.img) { g.fillStyle = '#9fb0c4'; g.font = '14px sans-serif'; g.textAlign = 'center'; g.fillText('Bild wählen →', W / 2, H / 2); return; }
+  const { cols, rows } = _chr, s = Math.min(W / cols, H / rows), dw = cols * s, dh = rows * s, ox = (W - dw) / 2, oy = (H - dh) / 2;
+  if (_chr.ansicht === 'orig' || !_chr.jmap) { g.drawImage(_chr.img, ox, oy, dw, dh); return; }
+  const id = new ImageData(cols, rows), D = id.data, jm = _chr.jmap, tl = _chr.tab.lin, M = _chr.tab.M;
+  for (let i = 0; i < cols * rows; i++) {
+    const j = jm[i];
+    if (_chr.ansicht === 'hoehe') { const v = Math.round(255 * j / M); D[i * 4] = D[i * 4 + 1] = D[i * 4 + 2] = v; }
+    else for (let q = 0; q < 3; q++) D[i * 4 + q] = Math.round(255 * _chrGam(Math.max(0, tl[j * 3 + q])));
+    D[i * 4 + 3] = 255;
+  }
+  const tc = document.createElement('canvas'); tc.width = cols; tc.height = rows; tc.getContext('2d').putImageData(id, 0, 0);
+  g.imageSmoothingEnabled = false; g.drawImage(tc, ox, oy, dw, dh);
+}
+function _chrCreate() {
+  if (!_chr.jmap) { notify('Erst ein Bild wählen', 'w'); return; }
+  saveUndo();
+  let geo; try { geo = _chrGeo(); } catch (e) { console.error('Chroma:', e); notify('Fehler beim Erstellen', 'w'); return; }
+  const P = _chr.p, M = _chrM();
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.6, metalness: 0.0, side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(geo, mat); mesh.castShadow = true; mesh.receiveShadow = true;
+  mesh.quaternion.copy(_wpMakeQuat(workplaneNormal)); mesh.position.copy(workplanePoint);
+  typeCounts['chroma'] = (typeCounts['chroma'] || 0) + 1;
+  mesh.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Chroma ' + P.width + 'mm #' + typeCounts['chroma'],
+    color: _chr.fil[0].hex, isHole: false, fillet: 0, chamfer: 0, edgeAngle: 89,
+    chroma: { fil: _chr.fil.map(f => ({ hex: f.hex, td: f.td })), swaps: _chr.swaps.slice(), flh: P.flh, lh: P.lh, nb: P.nb, M, hoehe: _chrTopZ(M), modus: P.modus } };
+  scene.add(mesh); objects.push(mesh); _updateObjEdgeLines(mesh);
+  selectObjs([mesh]); updateTree(); fitToObjects([mesh]);
+  notify(P.modus === 'ams' ? `Chroma erstellt — ${_chr.fil.length} Filamente. Beim 3MF-Export landen die Wechsel als Höhenbereiche in der Datei (Platte nicht skalieren!)`
+                           : `Chroma erstellt — Farbwechsel-Plan steht im Dialog und kommt beim 3MF-Export als Hinweis`, 'ok');
+  _chrClose();
+}
+
 // ═══ 3D-VISITENKARTEN-GENERATOR (Foto-Basrelief + Text) ════════════════════
 // Karte im ISO-Format, Portraitfoto als flaches Basrelief, Text erhaben oder
 // eingelassen. Alles landet in EINER Höhenkarte (Millimeter über der Rück-
@@ -65981,8 +66702,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.208';
+const VOLME3D_VERSION = '1.18.209';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.209', date:'2026-10-19', changes:[
+    ['🎨','<b>Neu: Chroma – Bild als Filament-Gemälde.</b> Generatoren → <b>🎨 Chroma</b>. Aus einem Foto wird eine flache Platte, deren Höhe je Bildpunkt bestimmt, wie viele dünne Schichten übereinander liegen. Die Filamente wechseln nur an festen Höhen (dunkel unten, hell oben), dünne Schichten scheinen durch – so mischen sich aus 3–5 Filamenten Verläufe, <b>mit einer Düse, ohne Reinigungsturm</b>. V3D CAD schlägt die Farben aus dem Bild vor und rechnet die besten Wechselhöhen selbst aus; die <b>Druck-Vorschau</b> zeigt vorher, wie es ungefähr aussieht. Mit AMS stehen die Wechsel beim <b>3MF-Export</b> schon als Höhenbereiche drin (in Bambu Studio geprüft), ohne AMS zeigt der Plan, an welcher Schicht du pausierst.'],
+    ['🎬','<b>Render-Studio: Fotos, alle Ansichten und Videos.</b> Aus „Foto erstellen“ wird das Render-Studio: Fotos jetzt auch als 9:16, 4:3, 1:1 und 1440p, als PNG oder JPG, mit <b>Wasserzeichen</b>. <b>🖼️ Ansichten</b> rendert alle Seiten auf einmal als ZIP für den Shop. <b>🔄 360°</b> macht ein Drehteller-Video, <b>🛤️ Fahrt</b> eine Kamerafahrt durch gemerkte Ansichten – als MP4, das Wasserzeichen kreist dabei ums Bild. Außerdem stimmen die Farben im Foto jetzt mit der Ansicht überein (vorher wirkten sie ausgewaschen).'],
+  ]},
   { version:'1.18.208', date:'2026-10-19', changes:[
     ['🔧','<b>Textur: Längs/Quer zeigt wieder an, was gilt.</b> Ein Klick auf <b>Längs</b> oder <b>Quer</b> drehte das Muster zwar, die Markierung blieb aber auf dem alten Knopf stehen – es sah aus, als ginge der Klick ins Leere. Gleiches für <b>Eingeprägt/Aufgesetzt</b>.'],
   ]},
@@ -76907,6 +77632,7 @@ const CMDK = [
   {i:'🧪',g:'Generator',t:'Rasterbox',k:'gridfinity raster',run:()=>_openGFModal()},
   {i:'🔋',g:'Generator',t:'Batteriehalter',k:'battery akku aa aaa 18650 zelle halter',run:()=>_openBattModal()},
   {i:'🖼️',g:'Generator',t:'Lithophane',k:'lithophane foto bild relief licht',run:()=>_openLithoModal()},
+  {i:'🎨',g:'Generator',t:'Chroma: Bild als Filament-Gemälde',k:'chroma hueforge bild foto farbschichten filament gemälde farbwechsel m600 eine düse ohne ams relief',run:()=>_chrOpen()},
   {i:'✏️',g:'Generator',t:'Bild → SVG',k:'svg vektor vektorisieren trace nachzeichnen jpg png bild foto kontur umriss silhouette potrace umwandeln konvertieren',run:()=>_vecOpen()},
   {i:'🛡️',g:'Generator',t:'Rohr-Klipp',k:'rohr klipp clip schale schutz scheuerschutz kantenschutz gebogen bogen biegung krümmung anhänger rahmen überschnappen c-profil hülse',run:()=>_rkOpen()},
   {i:'🪛',g:'Generator',t:'Halterplatte',k:'halter halterplatte ständer bohrer bohrerhalter inbus innensechskant sechskant schlüssel stifthalter aufnahme aufnahmen platte sortier organizer topper tortentopper display präsentation loch löcher raster satz',run:()=>_hpOpen()},
@@ -76992,7 +77718,8 @@ const CMDK = [
   {i:'🕳️',g:'Bearbeiten',t:'Loch vertiefen (ausmessen + tiefer setzen)',k:'loch vertiefen tiefer bohrung sackloch tiefe messen ausmessen bohren',run:()=>_lvtStart()},
   {i:'🔩',g:'Bearbeiten',t:'Gewinde an Fläche (Bohrung/Zylinder anklicken)',k:'gewinde thread innengewinde aussengewinde bohrung schraube mutter m3 m4 m5 m6 m8 m10 m12 spiel toleranz',run:()=>_thfStart()},
   {i:'🖨',g:'Datei',t:'Druck-Vorschau & Slicer-Einstellungen',k:'druck vorschau slicer drucker bambu snapmaker anycubic elegoo prusa creality filament schichthoehe waende infill fuellung stuetzen gcode 3mf projekt druckzeit gewicht',run:()=>_dvOpen()},
-  {i:'📷',g:'Datei',t:'Foto erstellen (Rendern)',k:'foto bild render rendern png screenshot werbung shop kunde aussehen material',run:()=>_fotoOpen()},
+  {i:'📷',g:'Datei',t:'Foto erstellen (Rendern)',k:'foto bild render rendern png jpg screenshot werbung shop kunde aussehen material render-studio ansichten zip',run:()=>_fotoOpen()},
+  {i:'🎬',g:'Datei',t:'360°-Video / Kamerafahrt (Render-Studio)',k:'video 360 drehteller turntable mp4 webm kamerafahrt kamerapfad film reel tiktok instagram wasserzeichen',run:()=>{_foto.p.art='video';_fotoOpen();}},
   {i:'🔗',g:'Bearbeiten',t:'Beweglich machen (FlexiGen, Flexi-Gelenke)',k:'flexi flexigen beweglich gelenk scharnier glieder print in place biegen kette herz schild',run:()=>_flxOpen()},
   {i:'📖',g:'Seite',t:'Hilfe — alle Funktionen nachschlagen (F1)',k:'hilfe help handbuch anleitung erklärung wie geht funktionen f1 nachschlagen',run:()=>_hlfOpen()},
   {i:'✨',g:'Seite',t:'Generatoren-Seite (alle Generatoren groß)',k:'generatoren generator vorlagen katalog seite alle uebersicht',run:()=>_genPageOpen()},
