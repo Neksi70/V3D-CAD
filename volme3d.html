@@ -1849,6 +1849,7 @@ const firebaseConfig = {
     <button class="skbtn skbtn-go" onclick="_skExtrude()" title="Geschlossene Profile extrudieren — Richtung, Abstand und Operation (Neu / Anfügen / Abziehen) im Fenster">✓ Extrudieren…</button>
     <button class="skbtn" onclick="_skLoft()" title="≥2 geschlossene Profile (Zeichenreihenfolge: 1=unten, letztes=oben auf Höhe) zu Übergangskörper verbinden">⤧ Loft</button>
     <button class="skbtn" onclick="_skSweep()" title="Geschlossenes Profil entlang offenem Pfad (Linie/Spline) ziehen → Rohr/Profil folgt der Kurve">↝ Sweep</button>
+    <button class="skbtn" onclick="_embOpen()" title="Prägen entlang Pfad: die Linien/Bögen/Splines dieser Skizze werden zur Nut (vertieft) oder zum Steg (erhaben) mit V-, Rund- oder Rechteckprofil — Skizze dafür auf die Fläche legen">〰 Prägen entlang Pfad</button>
     <button class="skbtn" onclick="_flgFromSketch()" title="Folgen: geschlossenes Profil dieser Skizze entlang von Modellkanten ziehen (z. B. Rand oder Nut rund um eine Kante) — danach Kanten im Modell anklicken">⤳ Folgen (Kanten)</button>
     <div class="sksep"></div>
     <button class="skbtn" onclick="document.getElementById('sk-dxf-file').click()" title="DXF-Datei (Linien/Kreise/Bögen) als Skizze laden">⬆ DXF laden</button>
@@ -10588,7 +10589,7 @@ function exitSketchMode() {
   if (_sk.group) { scene.remove(_sk.group); _skDisposeGroup(); _sk.group = null; }
   _sk.ents = []; _sk.pending = []; _sk.dimLock = false;
   _sk.cons = []; _sk.sel = []; _sk.arm = null; _sk.cUndo = []; _skcDrag.on = false;
-  _skcDimClose(); _skcOverlay(); _skcPanel(); _sk.patEd = null; _skpPanel();
+  _skcDimClose(); _skcOverlay(); _skcPanel(); _sk.patEd = null; _skpPanel(); _embClose();
   _skRefClear();
   if (typeof _cncPrevClear === 'function') _cncPrevClear();
   document.getElementById('sketch-bar').style.display = 'none';
@@ -11957,6 +11958,82 @@ function _skCombRender(){
     const ls = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg), mat); ls.renderOrder = 996; _sk.group.add(ls);
     const el = new THREE.Line(new THREE.BufferGeometry().setFromPoints(envP), mat); el.renderOrder = 996; _sk.group.add(el);
   }
+}
+
+// ── Prägen entlang Pfad (1.18.198) ───────────────────────────────────────
+// Linien/Bögen/Splines der Skizze (offen oder geschlossen) werden zur Nut
+// (vertieft) oder zum Steg (erhaben) mit V-, Rund- oder Rechteckprofil. Der
+// Querschnitt steht senkrecht auf dem Pfad, die Tiefe zählt ab der Skizzenebene
+// (also ab der Fläche, auf der die Skizze liegt). Gebaut mit dem Folgen-Sweep.
+const _emb = { p: { prof: 'v', w: 2, d: 1, mode: 'cut' } };
+function _embOpen(){
+  if (!_sk.active) return;
+  const n = _skBuildOpenPaths().length + _skBuildLoops().length;
+  if (!n) { notify('Prägen entlang Pfad: erst Linien, Bögen oder einen Spline als Pfad zeichnen', 'w'); return; }
+  let el = document.getElementById('emb-panel');
+  if (!el) { el = document.createElement('div'); el.id = 'emb-panel';
+    el.style.cssText = 'position:fixed;right:232px;bottom:64px;width:270px;z-index:8600;background:var(--white);border:1.5px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px;font-size:12px;color:var(--text)';
+    el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); _embApply(); } if (e.key === 'Escape') _embClose(); });
+    document.body.appendChild(el); }
+  const p = _emb.p, tb = (k, on, v, t, tip) => `<button class="vtb${on ? ' on' : ''}" onclick="_embSet('${k}','${v}')"${tip ? ` title="${tip}"` : ''}>${t}</button>`;
+  el.innerHTML = `<div style="display:flex;align-items:center;margin-bottom:8px"><b style="font-size:13px;flex:1">〰 Prägen entlang Pfad</b><span onclick="_embClose()" style="cursor:pointer;color:var(--dim);font-size:15px">✕</span></div>
+    <div style="background:var(--alit);border:1px solid var(--acc);border-radius:6px;padding:5px 8px;margin-bottom:8px">${n} Pfad${n > 1 ? 'e' : ''} in der Skizze</div>
+    <div class="vrow"><label>Art</label><div class="vbg" style="flex:1">${tb('mode', p.mode === 'cut', 'cut', 'Vertieft', 'Nut in den Körper')}${tb('mode', p.mode === 'join', 'join', 'Erhaben', 'Steg auf den Körper')}</div></div>
+    <div class="vrow"><label>Profil</label><div class="vbg" style="flex:1">${tb('prof', p.prof === 'v', 'v', 'V')}${tb('prof', p.prof === 'r', 'r', 'Rund')}${tb('prof', p.prof === 'q', 'q', 'Rechteck')}</div></div>
+    <div class="vrow"><label>Breite</label><input type="number" step="0.5" min="0.1" value="${p.w}" oninput="_embSet('w',this.value)" style="width:76px"><span class="vu">mm</span></div>
+    <div class="vrow"><label>${p.mode === 'cut' ? 'Tiefe' : 'Höhe'}</label><input type="number" step="0.5" min="0.1" value="${p.d}" oninput="_embSet('d',this.value)" style="width:76px"><span class="vu">mm</span></div>
+    <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px"><button class="btn" onclick="_embClose()">Abbrechen</button><button class="btn pri" onclick="_embApply()">✓ Prägen</button></div>`;
+}
+function _embSet(k, v){ if (k === 'mode' || k === 'prof') { _emb.p[k] = v; _embOpen(); } else _emb.p[k] = parseFloat(String(v).replace(',', '.')); }
+function _embClose(){ const el = document.getElementById('emb-panel'); if (el) el.remove(); }
+// Querschnitt in (Seite, Normale), Units
+function _embProfile2D(prof, w, d, mode){
+  const e = Math.min(0.05, Math.max(0.01, d * 0.3)), h = w / 2, sg = mode === 'cut' ? -1 : 1, top = -sg * e;   // „top" liegt auf der anderen Seite der Fläche
+  // Über der Fläche senkrecht hochgeführt → an der Oberfläche genau „Breite“ breit
+  if (prof === 'q') return [[-h, top], [h, top], [h, sg * d], [-h, sg * d]];
+  // Schulterpunkte knapp (0,02 mm) unter der Fläche: Eckpunkte genau auf der
+  // Körperfläche ließen den Boolean Volumen verlieren (V-Nut 8,7 statt 12 mm³)
+  const e2 = Math.min(0.002, d * 0.1);
+  if (prof === 'v') return [[-h, top], [h, top], [h, sg * e2], [0, sg * d], [-h, sg * e2]];
+  const pts = [[-h, top], [h, top]]; for (let i = 0; i <= 16; i++) { const a = i / 16 * Math.PI; pts.push([h * Math.cos(a), sg * (e2 + (d - e2) * Math.sin(a))]); }
+  return pts;
+}
+async function _embApply(){
+  const p = _emb.p;
+  if (!(p.w > 0 && p.d > 0)) { notify('Breite und Tiefe größer 0 eingeben', 'w'); return; }
+  const N = (_sk.N || new THREE.Vector3(0, 1, 0)).clone().normalize();
+  const toW = q => _skToWorld(new THREE.Vector3(q.u, 0, q.v));
+  const paths = [..._skBuildOpenPaths().map(c => ({ pts: _cleanPath(c), closed: false })), ..._skBuildLoops().map(l => ({ pts: l, closed: true }))];
+  const geos = [];
+  for (const pa of paths) {
+    const P = pa.pts.map(toW); if (P.length < 2) continue;
+    const t = P[1].clone().sub(P[0]).normalize(), side = new THREE.Vector3().crossVectors(t, N).normalize();
+    const outer = _embProfile2D(p.prof, p.w / 10, p.d / 10, p.mode).map(([s, h]) => P[0].clone().addScaledVector(side, s).addScaledVector(N, h));
+    try { geos.push(_flgGeo({ outer, holes: [], n: t }, P, pa.closed)); } catch (e) { console.warn('[prägen]', e); }
+  }
+  if (!geos.length) { notify('Kein verwendbarer Pfad', 'w'); return; }
+  // Zielkörper: der, auf dem die Skizze liegt (knapp unter der Ebene im Körper)
+  const probe = paths[0].pts[Math.floor(paths[0].pts.length / 2)];
+  const target = _skxBodyAt(new THREE.Vector3(probe.u, -0.01, probe.v)) || _skxBodyAt(new THREE.Vector3(probe.u, 0.01, probe.v));
+  if (p.mode === 'cut' && !target) { notify('Unter der Skizze liegt kein Körper — Skizze auf eine Fläche legen („▱ Auf Fläche")', 'w'); return; }
+  _embClose(); exitSketchMode();
+  saveUndo(); const n0 = undoStack.length;
+  const meshes = geos.map(g => { const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: new THREE.Color(currentColor), side: THREE.DoubleSide }));
+    typeCounts['custom'] = (typeCounts['custom'] || 0) + 1;
+    m.userData = { id: idCtr++, type: 'custom', shapeType: 'custom', name: 'Prägung ' + typeCounts['custom'], color: currentColor, isHole: false, fillet: 0, chamfer: 0 };
+    objects.push(m); scene.add(m); return m; });
+  if (p.mode === 'join') {
+    if (!target) { selectObjs(meshes); updateTree(); notify('Steg als eigener Körper erzeugt (unter der Skizze lag kein Körper)', 'ok'); return; }
+    selectObjs([target, ...meshes]); await unionSelected();
+    if (undoStack.length === n0 + 1) undoStack.pop(); updateUndoRedoButtons();
+    notify(`Erhaben geprägt: ${meshes.length} Pfad${meshes.length > 1 ? 'e' : ''}, ${String(p.d).replace('.', ',')} mm hoch`, 'ok'); return;
+  }
+  meshes.forEach(m => { m.userData.isHole = true; m.userData._exactTool = true; m.userData.color = '#f03030'; m.material.color.set('#f03030'); m.material.transparent = true; m.material.opacity = 0.52; });
+  updateTree();
+  _progressShow('Prägen läuft…'); _progressSet(8); _progressCreep(93);
+  const ctl = _progressCancelable();
+  try { await _doSubtractHoles([target], meshes, ctl); _progressDone(); notify(`Vertieft geprägt: ${meshes.length} Nut${meshes.length > 1 ? 'en' : ''}, ${String(p.d).replace('.', ',')} mm tief`, 'ok'); }
+  catch (err) { _progressHide(); meshes.forEach(m => { if (objects.includes(m)) { scene.remove(m); objects.splice(objects.indexOf(m), 1); } }); updateTree(); notify('Prägen nicht möglich: ' + (err.message || err), 'e'); }
 }
 
 // ── Skizzenmuster (1.18.196) ─────────────────────────────────────────────
@@ -29036,7 +29113,9 @@ async function _doSubtractHoles(solids, holes, ctl) {
     }
 
     // ── Koplanar-Fix: Proxy über Solid-Grenzen verlängern ────────────────────
-    if (!cutThrough) {
+    // Exakt gebaute Werkzeuge (Prägen entlang Pfad, Folgen-Nut) ragen schon
+    // selbst über die Fläche; Strecken würde ihr V-/Rundprofil verzerren.
+    if (!cutThrough && !(hole.userData && hole.userData._exactTool)) {
       const solidBB = new THREE.Box3().setFromObject(solidMesh);
       const proxyBB = new THREE.Box3().setFromObject(csgProxy);
       const eps   = 0.08;
@@ -31610,7 +31689,7 @@ async function _flgApply(){
     if (undoStack.length === n0 + 1) undoStack.pop(); updateUndoRedoButtons();
     notify('Folgen: an „' + (r.target.userData.name || 'Körper') + '“ angefügt', 'ok'); return;
   }
-  mesh.userData.isHole = true; mesh.userData.color = '#f03030';
+  mesh.userData.isHole = true; mesh.userData._exactTool = true; mesh.userData.color = '#f03030';
   mesh.material.color.set('#f03030'); mesh.material.transparent = true; mesh.material.opacity = 0.52;
   updateTree();
   _progressShow('Abziehen läuft…'); _progressSet(8); _progressCreep(93);
@@ -65247,8 +65326,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.197';
+const VOLME3D_VERSION = '1.18.198';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.198', date:'2026-10-19', changes:[
+    ['〰','<b>Neu: Prägen entlang Pfad.</b> Skizze auf eine Fläche legen, Linien, Bögen oder einen Spline als Pfad zeichnen und <b>〰 Prägen entlang Pfad</b> wählen. <b>Vertieft</b> ergibt eine Nut, <b>erhaben</b> einen Steg, jeweils mit <b>V-</b>, <b>Rund-</b> oder <b>Rechteckprofil</b>, Breite und Tiefe in mm. Geschlossene Konturen ergeben Ringnuten. Für Zierlinien, Sollbruchkanten, Kabelkanäle oder Dichtungsnuten.'],
+    ['🔧','Abziehen: Exakt gebaute Werkzeuge (Prägen, Folgen-Nut) werden nicht mehr automatisch in der Höhe gestreckt; das verzerrte V- und Rundprofile.'],
+  ]},
   { version:'1.18.197', date:'2026-10-19', changes:[
     ['∿','<b>Spline bearbeiten.</b> Mit <b>↖ Auswahl</b> die Punkte eines Splines ziehen; <b>Alt+Klick</b> auf die Kurve fügt einen Punkt ein, <b>Entf</b> löscht den gewählten. Beim Zeichnen den Startpunkt wieder anklicken = <b>geschlossener Spline</b>, der sich direkt extrudieren lässt (oder im Panel <b>∿ Spline zu/auf</b>). <b>⌇ Kamm</b> zeigt den Krümmungskamm: Ein gleichmäßiger Kamm heißt glatte Kurve, Zacken zeigen Knicke oder Dellen, die man im Druck sieht.'],
   ]},
