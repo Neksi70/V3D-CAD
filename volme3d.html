@@ -1802,7 +1802,7 @@ const firebaseConfig = {
   </div>
 
   <!-- Skizzen-Werkzeugleiste (vertikales Flyout, Shapr3D-Stil) -->
-  <div id="sk-cons" style="display:none;position:fixed;top:50%;transform:translateY(-50%);flex-direction:column;gap:2px;z-index:8500">
+  <div id="sk-cons" style="display:none;position:fixed;top:212px;max-height:calc(100vh - 272px);overflow-y:auto;flex-direction:column;gap:2px;z-index:8500">
     <div class="skhdr">⛓ ABHÄNGIGKEITEN</div>
     <div class="skc-grid">
       <button class="skc" data-c="h"    onclick="_skcApply('h')"    title="Horizontal: Linie(n) waagerecht — oder zwei Punkte auf gleiche Höhe"><b>H</b>Horizontal</button>
@@ -1827,7 +1827,7 @@ const firebaseConfig = {
     <div id="sk-cons-st" class="skc-st"></div>
     <div class="skc-tip">Erst wählen, dann Knopf — oder erst Knopf, dann anklicken. Symbol in der Skizze anklicken = entfernen. Entf löscht gewählte Elemente.</div>
   </div>
-  <div id="sketch-bar" style="display:none;position:fixed;left:54px;top:50%;transform:translateY(-50%);flex-direction:column;gap:2px;z-index:8500">
+  <div id="sketch-bar" style="display:none;position:fixed;left:54px;top:212px;max-height:calc(100vh - 272px);overflow-y:auto;flex-direction:column;gap:2px;z-index:8500">
     <div class="skhdr">✏ SKIZZE</div>
     <button class="skt" data-tool="sel"     onclick="_skSetTool('sel')"     title="Auswahl: Elemente und Punkte anklicken (Shift = mehrere), ziehen = verschieben — die Abhängigkeiten bleiben dabei erhalten"><span class="ski">↖</span><span class="skl">Auswahl</span><span class="skk">S</span></button>
     <button class="skt" data-tool="line"    onclick="_skSetTool('line')"    title="Linie / Polylinie"><span class="ski">╱</span><span class="skl">Linie</span><span class="skk">L</span></button>
@@ -1871,6 +1871,7 @@ const firebaseConfig = {
     <button class="skbtn" onclick="exitSketchMode()" title="Skizze schließen (ESC)">✕ Schließen</button>
   </div>
   <style>
+    #sketch-bar > *, #sk-cons > *{flex-shrink:0}
     #sk-cons{width:226px;box-sizing:border-box;background:rgba(24,26,34,0.96);border:1px solid #3a4250;border-radius:10px;padding:8px;color:#cfd6e0;font-size:12px;box-shadow:0 8px 28px rgba(0,0,0,.45)}
     #sk-cons .skhdr{font-weight:700;color:#8fb0dc;font-size:11px;letter-spacing:.05em;padding:1px 6px 6px}
     #sk-cons .skc-grid{display:grid;grid-template-columns:1fr 1fr;gap:3px;margin-bottom:4px}
@@ -31186,6 +31187,111 @@ function _ppApply(){
   notify('Fläche verschoben ✓ (jetzt Freiform-Körper)','ok');
 }
 
+// ═══ INTERAKTIVE ANLEITUNGEN (1.18.200) ═══════════════════════════════════
+// Idee aus dem ShapeAnywhere-Abgleich, eigener Code. Eine Anleitung führt
+// Schritt für Schritt durch ein Modell im ECHTEN Programm. Jeder Schritt hat
+// eine Prüfung (ok()), die alle 400 ms läuft — ist sie erfüllt, geht es von
+// selbst weiter. Die Anleitung arbeitet in einem leeren Projekt; das eigene
+// Projekt wird vorher gesichert und beim Beenden wiederhergestellt.
+const _tut = { on: false, def: null, i: 0, saved: null, timer: null, done: false };
+const _tutVol = o => { o.updateMatrixWorld(true); const g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone(); g.applyMatrix4(o.matrixWorld);
+  const P = g.attributes.position, A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(); let v = 0;
+  for (let i = 0; i < P.count; i += 3) { A.fromBufferAttribute(P, i); B.fromBufferAttribute(P, i + 1); C.fromBufferAttribute(P, i + 2); v += A.dot(B.clone().cross(C)); }
+  return Math.abs(v / 6) * 1000; };
+const _tutBox = o => { const s = getMeshBox(o).getSize(new THREE.Vector3()).multiplyScalar(10); return s; };
+const _tutNear = (a, b, t) => Math.abs(a - b) <= (t || 0.6);
+const _tutDim = (t, mm) => _sk.active && (_sk.cons || []).some(c => c.t === t && _tutNear(c.val * (t === 'dia' ? 10 : 10), mm, 0.05));
+const _TUTS = [
+  { id: 'becher', t: 'Stiftebecher', img: '🥤', dauer: 'ca. 8 Min.', was: 'Skizze, Maß, Extrudieren, Skizze auf einer Fläche und hineinziehen.', steps: [
+    { h: 'Skizze öffnen', s: 'Öffne eine Skizze: in der Leiste <b>Skizze</b> (Advanced: Erstellen → Skizze). Die Ansicht schaut dann von oben auf die Bauplatte.', ok: () => _sk.active },
+    { h: 'Kreis zeichnen', s: 'Werkzeug <b>Kreis</b> (Taste <b>C</b>): erst die Mitte anklicken, dann den Rand. Die Größe ist noch egal.', ok: () => _sk.active && _sk.ents.some(e => e.type === 'circle') },
+    { h: 'Durchmesser 70 mm', s: '<b>↖ Auswahl</b> (S), dann <b>Bemaßen</b> (M) und den Kreis anklicken. <b>70</b> eintippen, Enter.', ok: () => _tutDim('dia', 70) },
+    { h: 'Extrudieren öffnen', s: 'In der Skizzenleiste <b>✓ Extrudieren…</b> anklicken.', ok: () => _skx.open },
+    { h: '90 mm hoch', s: 'Im Fenster <b>Abstand 90</b> mm eintragen und <b>✓ OK</b>.', ok: () => !_sk.active && objects.length === 1 && (s => _tutNear(s.y, 90) && _tutNear(s.x, 70))(_tutBox(objects[0])) },
+    { h: 'Skizze auf die Deckfläche', s: 'Wieder <b>Skizze</b> öffnen, dann <b>▱ Auf Fläche</b> und die <b>obere runde Fläche</b> anklicken.', ok: () => _sk.active && _sk.N && _sk.N.y > 0.99 && _tutNear(_sk.O.y * 10, 90, 0.5) },
+    { h: 'Innenkreis Ø64', s: 'Kreis in die Mitte zeichnen (Mitte fängt am Mittelpunkt) und mit <b>Bemaßen</b> auf <b>64</b> mm setzen. So bleiben 3 mm Wand.', ok: () => _tutDim('dia', 64) },
+    { h: 'Hineinziehen: −86 mm', s: '<b>✓ Extrudieren…</b>, Abstand <b>−86</b> (negativ = in den Becher hinein), OK. Der Boden bleibt 4 mm dick.', ok: () => !_sk.active && objects.length === 1 && _tutNear(_tutVol(objects[0]), Math.PI * (35 * 35 * 90 - 32 * 32 * 86), 6000) },
+    { h: 'Fertig!', s: 'Dein Stiftebecher steht. Im Verlauf links lassen sich beide Skizzen jederzeit wieder öffnen und die Maße ändern, das Teil rechnet sich neu.', ok: null } ] },
+  { id: 'halter', t: 'Halter mit Lochreihe', img: '🔩', dauer: 'ca. 8 Min.', was: 'Rechteck mit genauen Maßen, Bohrung, Skizzenmuster und Platte extrudieren.', steps: [
+    { h: 'Skizze öffnen', s: 'In der Leiste <b>Skizze</b> öffnen.', ok: () => _sk.active },
+    { h: 'Rechteck zeichnen', s: 'Werkzeug <b>Rechteck</b> (R): zwei Ecken anklicken. Waagerechte und senkrechte Kanten bekommen automatisch H und V.', ok: () => _sk.active && _sk.ents.filter(e => e.type === 'line').length >= 4 },
+    { h: '60 × 30 mm', s: '<b>↖ Auswahl</b> (S) → <b>Bemaßen</b> (M): untere Kante anklicken, <b>60</b> Enter; dann eine senkrechte Kante, <b>30</b> Enter.', ok: () => _tutDim('len', 60) && _tutDim('len', 30) },
+    { h: 'Bohrung zeichnen', s: 'Werkzeug <b>Kreis</b> (C): einen kleinen Kreis links in die Platte zeichnen.', ok: () => _sk.active && _sk.ents.some(e => e.type === 'circle') },
+    { h: 'Bohrung Ø5', s: '<b>Bemaßen</b> (M): Kreis anklicken, <b>5</b> Enter.', ok: () => _tutDim('dia', 5) },
+    { h: 'Lochreihe', s: 'Mit <b>↖ Auswahl</b> den Kreis anklicken, im Panel <b>▦ Muster…</b>: Linear, Anzahl <b>3</b>, Abstand <b>20</b>, Richtung <b>0</b>° → Muster erstellen.', ok: () => _sk.active && (_sk.cons || []).some(c => c.t === 'pat' && c.n === 3 && _tutNear(c.d * 10, 20, 0.05)) },
+    { h: 'Platte 5 mm', s: '<b>✓ Extrudieren…</b>, Abstand <b>5</b>, OK.', ok: () => !_sk.active && objects.length === 1 && (s => _tutNear(s.x, 60) && _tutNear(s.y, 5) && _tutNear(s.z, 30))(_tutBox(objects[0])) && _tutNear(_tutVol(objects[0]), 60 * 30 * 5 - 3 * Math.PI * 6.25 * 5, 60) },
+    { h: 'Fertig!', s: 'Der Halter ist fertig. Tipp: Skizze im Verlauf öffnen, das ▦-Symbol anklicken und die Anzahl auf 4 ändern, dann rechnet sich das Teil neu.', ok: null } ] },
+];
+function _tutMenu(){
+  let el = document.getElementById('tut-menu');
+  if (!el) { el = document.createElement('div'); el.id = 'tut-menu';
+    el.style.cssText = 'position:fixed;inset:0;z-index:9600;background:rgba(15,18,25,.55);display:flex;align-items:center;justify-content:center';
+    el.addEventListener('mousedown', e => { if (e.target === el) el.remove(); });
+    document.body.appendChild(el); }
+  el.innerHTML = `<div style="width:min(620px,94vw);background:var(--white);border-radius:14px;padding:22px 24px;box-shadow:0 20px 60px rgba(0,0,0,.4);color:var(--text)">
+    <div style="font:700 11px system-ui;letter-spacing:.12em;color:var(--acc)">SCHRITT FÜR SCHRITT</div>
+    <div style="font-size:24px;font-weight:800;margin:4px 0 6px">Interaktive Anleitungen</div>
+    <div style="color:var(--dim);margin-bottom:14px">Du baust das Modell direkt im Programm. Die Anleitung bleibt sichtbar und prüft nach jedem Schritt, ob alles stimmt. Dein Projekt wird solange gesichert und danach wiederhergestellt.</div>
+    ${_TUTS.map((t, k) => `<div style="display:flex;gap:14px;align-items:center;border:1.5px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px">
+      <div style="font-size:30px">${t.img}</div><div style="flex:1"><b>${t.t}</b><div style="font-size:12px;color:var(--dim)">${t.was}</div><div style="font-size:11px;color:var(--dim)">${t.steps.length - 1} Schritte · ${t.dauer}</div></div>
+      <button class="btn pri" onclick="_tutStart(${k})">Starten →</button></div>`).join('')}
+    <div style="text-align:right;margin-top:6px"><button class="btn" onclick="document.getElementById('tut-menu').remove()">Schließen</button></div></div>`;
+}
+function _tutStart(k){
+  const m = document.getElementById('tut-menu'); if (m) m.remove();
+  if (_tut.on) _tutEnd(true);
+  if (_sk.active) exitSketchMode();
+  // Eigenes Projekt im Speicher beiseitelegen (Objekte, Verlauf, Variablen) —
+  // kein neues Design anlegen, kein Autospeichern während der Übung
+  deselect();
+  _tut.saved = { objs: objects.slice(), undo: undoStack, redo: redoStack, vars: designVars, target: orbitTarget.clone() };
+  objects.forEach(o => scene.remove(o)); objects = []; undoStack = []; redoStack = []; designVars = [];
+  updateUndoRedoButtons(); updateTree(); setView('iso');
+  _tut.on = true; _tut.def = _TUTS[k]; _tut.i = 0; _tut.done = false;
+  _tutRender();
+  _tut.timer = setInterval(_tutTick, 400);
+}
+function _tutTick(){
+  if (!_tut.on) return;
+  const st = _tut.def.steps[_tut.i]; if (!st || !st.ok) return;
+  let ok = false; try { ok = !!st.ok(); } catch (e) { ok = false; }
+  if (ok) { _tut.i++; _tutRender(true); }
+}
+function _tutRender(flash){
+  let el = document.getElementById('tut-panel');
+  if (!_tut.on) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement('div'); el.id = 'tut-panel';
+    el.style.cssText = 'position:fixed;top:118px;right:236px;width:300px;z-index:9100;background:#1f2937;color:#e5e7eb;border:1.5px solid #2563eb;border-radius:12px;padding:12px 14px;font-size:12.5px;line-height:1.45;box-shadow:0 10px 30px rgba(0,0,0,.35)';
+    document.body.appendChild(el); }
+  const d = _tut.def, n = d.steps.length, st = d.steps[Math.min(_tut.i, n - 1)], last = !st.ok;
+  const dots = d.steps.map((s, k) => `<span style="display:inline-block;width:${k === _tut.i ? 14 : 7}px;height:7px;border-radius:4px;margin-right:3px;background:${k < _tut.i ? '#22c55e' : k === _tut.i ? '#60a5fa' : '#4b5563'}"></span>`).join('');
+  el.innerHTML = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span style="font:700 10px system-ui;letter-spacing:.1em;color:#93c5fd;flex:1">${d.img} ${d.t.toUpperCase()} · ${last ? 'GESCHAFFT' : `SCHRITT ${_tut.i + 1}/${n - 1}`}</span>
+      <span onclick="_tutEnd()" title="Anleitung beenden — dein Projekt kommt zurück" style="cursor:pointer;opacity:.7">✕</span></div>
+    <div style="margin-bottom:6px">${dots}</div>
+    <div style="font-size:15px;font-weight:700;margin-bottom:4px">${last ? '🎉 ' : ''}${st.h}</div>
+    <div>${st.s}</div>
+    <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:10px">
+      ${!last && _tut.i > 0 ? '<button class="btn" onclick="_tut.i--;_tutRender()" style="font-size:11px">← Zurück</button>' : ''}
+      ${!last ? '<button class="btn" onclick="_tut.i++;_tutRender()" title="Diesen Schritt überspringen (wird nicht geprüft)" style="font-size:11px">Überspringen</button>' : ''}
+      <button class="btn pri" onclick="_tutEnd()" style="font-size:11px">${last ? 'Zurück zu meinem Projekt' : 'Beenden'}</button></div>`;
+  if (flash) { el.style.borderColor = '#22c55e'; setTimeout(() => { if (el) el.style.borderColor = '#2563eb'; }, 700); }
+}
+function _tutEnd(silent){
+  if (!_tut.on) return;
+  clearInterval(_tut.timer); _tut.timer = null; _tut.on = false;
+  _tutRender();
+  if (_sk.active) exitSketchMode();
+  if (_skx.open) _skxClose(true);
+  deselect();
+  objects.forEach(o => scene.remove(o));
+  const sv = _tut.saved;
+  if (sv) { objects = sv.objs; objects.forEach(o => scene.add(o)); undoStack = sv.undo; redoStack = sv.redo; designVars = sv.vars; orbitTarget.copy(sv.target); sph2cam(); }
+  else objects = [];
+  updateUndoRedoButtons(); updateTree();
+  _tut.saved = null;
+  if (!silent) notify('Anleitung beendet — dein Projekt ist wieder da', 'ok');
+}
+
 // ═══ MESH → CAD: technische STL-Teile in Skizzen-Schritte zurückverwandeln (1.18.195) ═══
 // Idee aus dem ShapeAnywhere-Abgleich (dort Bezahl-Beta), eigener Code.
 // Für 2,5D-Teile (Halter, Platten, Gehäuse, Adapter — alle Wände parallel zu
@@ -37892,6 +37998,7 @@ function _autoSaveSig() {
 }
 function _doAutoSave() {
   if (_autoSaveBusy) return;
+  if (typeof _tut !== 'undefined' && _tut.on) return;   // Anleitung läuft im Übungsprojekt — eigenes Projekt nicht überschreiben
   if (!currentDesignId && objects.length === 0) return;
   // Nichts geändert seit dem letzten Sichern? Dann nicht neu schreiben — spätestens
   // alle 5 min aber doch (falls eine Änderung am Fingerabdruck vorbeiläuft)
@@ -65389,8 +65496,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.199';
+const VOLME3D_VERSION = '1.18.200';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.200', date:'2026-10-19', changes:[
+    ['🎓','<b>Neu: Interaktive Anleitungen.</b> Unter <b>❓ Hilfe</b> oder über die Suche „Anleitung“: <b>Stiftebecher</b> und <b>Halter mit Lochreihe</b>. Du baust das Modell direkt im Programm, das Fenster oben rechts erklärt jeden Schritt und prüft selbst, ob er geklappt hat (Maß, Höhe, sogar das Volumen), dann geht es von allein weiter. Dein eigenes Projekt wird solange beiseitegelegt und kommt beim Beenden unverändert zurück, samt Rückgängig-Verlauf.'],
+    ['📐','Die Skizzenleiste ragt nicht mehr über die Werkzeugleisten; bei kleinen Bildschirmen lässt sie sich scrollen.'],
+  ]},
   { version:'1.18.199', date:'2026-10-19', changes:[
     ['▣','<b>Mesh → CAD erkennt Querbohrungen.</b> Bohrungen von der Seite (quer zur Hauptrichtung des Teils, z. B. für eine Achse oder Schraube) werden als eigene Schritte „Abziehen“ in den Verlauf übernommen, mit echtem Durchmesser. Vorher hätten sie die Querschnitte gestört. Der Bericht nennt die erkannten Bohrungen mit ⌀.'],
   ]},
@@ -76327,6 +76438,7 @@ const CMDK = [
   {i:'📐',g:'Bearbeiten',t:'Messen (Abstand / Durchmesser)',k:'measure distance diameter durchmesser bemaszung',run:()=>measureTool()},
   {i:'↕',g:'Bearbeiten',t:'Fläche ziehen / versetzen (Push/Pull)',k:'push pull fläche offset versetzen extrudieren bis nächste bis fläche durch alles',run:()=>enterPushPull()},
   {i:'⤧',g:'Bearbeiten',t:'Loft (Flächen verbinden)',k:'loft übergang flächen verbinden shapr',run:()=>{ if(!_lf.active) enterLoftMode(); }},
+  {i:'🎓',g:'Hilfe',t:'Interaktive Anleitungen (Schritt für Schritt)',k:'anleitung tutorial lernen schritt für schritt übung becher halter einstieg kurs',run:()=>_tutMenu()},
   {i:'▣',g:'Bearbeiten',t:'Mesh → CAD (STL in Skizzen-Schritte)',k:'mesh to cad stl 3mf zurückführen rekonstruieren reverse engineering skizze verlauf bearbeitbar parametrisch',run:()=>meshToCad()},
   {i:'⤳',g:'Bearbeiten',t:'Folgen (Profil entlang Kanten)',k:'folgen sweep follow me profil kante pfad rand nut leiste rohr',run:()=>enterFolgen()},
   {i:'🔻',g:'Bearbeiten',t:'Vereinfachen (Dreiecke)',k:'simplify decimate reduzieren',run:()=>openSimplifyModal()},
