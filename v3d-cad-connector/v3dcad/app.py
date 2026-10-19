@@ -316,6 +316,14 @@ async def _login(request: Request):
     return await login(request)
 
 
+@mcp.custom_route('/anleitung', methods=['GET'])
+async def _anleitung_seite(request: Request):
+    # Öffentliche Anleitung für Nutzer: Umzug nach netcup + Claude verbinden
+    from starlette.responses import HTMLResponse
+    with open(os.path.join(os.path.dirname(__file__), 'anleitung.html'), encoding='utf-8') as fh:
+        return HTMLResponse(fh.read(), headers={'Cache-Control': 'no-cache'})
+
+
 @mcp.custom_route('/health', methods=['GET'])
 async def _health(request: Request):
     return JSONResponse({'ok': True})
@@ -345,7 +353,7 @@ code{background:#f0f2f7;padding:2px 6px;border-radius:6px;word-break:break-all}o
 <ol><li>Am Computer <b>claude.ai</b> öffnen → Einstellungen → <b>Connectors</b> → <b>Eigenen Connector hinzufügen</b>.</li>
 <li>Name <code>V3D CAD</code>, URL <code>%s</code> → Hinzufügen → <b>Verbinden</b> → auf der V3D-CAD-Seite <b>Erlauben</b>.</li>
 <li>In V3D CAD <b>☰ Menü → 🤖 Claude live</b> öffnen und Claude den angezeigten Code nennen.</li></ol>
-<p class="m">Claude baut dann sichtbar in deinem V3D-CAD-Tab, mit deinem eigenen Claude-Abo.</p></main></body></html>"""
+<p class="m">Claude baut dann sichtbar in deinem V3D-CAD-Tab, mit deinem eigenen Claude-Abo. <a href="anleitung">Ausführliche Anleitung</a></p></main></body></html>"""
 
 
 class BrowserHinweis:
