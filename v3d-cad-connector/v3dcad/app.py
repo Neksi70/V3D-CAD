@@ -331,7 +331,35 @@ def build_app():
     app = mcp.streamable_http_app(streamable_http_path='/mcp', stateless_http=True,
                                   json_response=True, transport_security=sicherheit,
                                   host=settings.BIND_HOST)
-    return app, RateLimit(app)
+    return app, RateLimit(BrowserHinweis(app))
+
+
+HILFE = """<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>V3D CAD für Claude</title>
+<style>body{margin:0;font:16px/1.55 system-ui,sans-serif;background:#f4f5f8;color:#1c2030;display:flex;justify-content:center;padding:20px}
+main{background:#fff;border:1px solid #e3e6ef;border-radius:14px;padding:26px;max-width:560px}h1{font-size:21px;margin:0 0 8px}
+code{background:#f0f2f7;padding:2px 6px;border-radius:6px;word-break:break-all}ol{padding-left:20px}li{margin:6px 0}.m{color:#5b6172;font-size:14px}
+@media (prefers-color-scheme:dark){body{background:#14161c;color:#e8eaf0}main{background:#1e2129;border-color:#2e323d}code{background:#2a2e38}.m{color:#9aa0b0}}</style></head>
+<body><main><h1>🤖 V3D CAD für Claude</h1>
+<p>Diese Adresse ist für <b>Claude</b> gedacht, nicht zum Öffnen im Browser.</p>
+<ol><li>Am Computer <b>claude.ai</b> öffnen → Einstellungen → <b>Connectors</b> → <b>Eigenen Connector hinzufügen</b>.</li>
+<li>Name <code>V3D CAD</code>, URL <code>%s</code> → Hinzufügen → <b>Verbinden</b> → auf der V3D-CAD-Seite <b>Erlauben</b>.</li>
+<li>In V3D CAD <b>☰ Menü → 🤖 Claude live</b> öffnen und Claude den angezeigten Code nennen.</li></ol>
+<p class="m">Claude baut dann sichtbar in deinem V3D-CAD-Tab, mit deinem eigenen Claude-Abo.</p></main></body></html>"""
+
+
+class BrowserHinweis:
+    """Wer die Connector-Adresse im Browser öffnet, bekommt eine Anleitung statt einer JSON-Fehlermeldung."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] == 'http' and scope.get('method') == 'GET' and scope.get('path') == '/mcp':
+            kopf = dict(scope.get('headers') or [])
+            if b'text/html' in kopf.get(b'accept', b'') and b'authorization' not in kopf:
+                from starlette.responses import HTMLResponse
+                return await HTMLResponse(HILFE % settings.RESOURCE_URL, headers={'Cache-Control': 'no-store'})(scope, receive, send)
+        return await self.app(scope, receive, send)
 
 
 def serve():

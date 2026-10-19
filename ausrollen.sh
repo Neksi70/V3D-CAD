@@ -47,6 +47,13 @@ if ! git diff --quiet $REMOTE_HEAD HEAD -- '*.py'; then
   echo 'volme3d.service neu gestartet (Python geaendert)'
   sleep 2
 fi
+# Claude-Anbindung: Connector (claude.ai) und Agent-Hub (Live-Tabs) lesen ihren Code nur beim Start
+if ! git diff --quiet $REMOTE_HEAD HEAD -- v3d-cad-connector; then
+  sudo systemctl restart v3d-cad-connector && echo 'v3d-cad-connector neu gestartet'
+fi
+if ! git diff --quiet $REMOTE_HEAD HEAD -- v3d-cad-mcp/server.mjs; then
+  sudo systemctl restart v3d-cad-agent-hub && echo 'v3d-cad-agent-hub neu gestartet (offene Live-Tabs müssen Claude live neu starten)'
+fi
 echo '— Gesundheitscheck —'
 curl -sL -o /dev/null -w 'App:  HTTP %{http_code}\n' https://v3dcad.volme3dakademie.de/
 curl -s https://v3dcad.volme3dakademie.de/occt-health | head -c 40; echo
