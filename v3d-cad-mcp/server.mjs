@@ -223,17 +223,109 @@ async function record(quelle, tool, args, result, ms) {
   sse('schritt', e);
 }
 
+// ── Zugang von außen: PIN + signiertes Cookie ─────────────────────────────
+const CONF_DIR = path.join(os.homedir(), '.config', 'v3d-cad-mcp');
+const PUBLIC_ORIGIN = process.env.V3D_MONITOR_ORIGIN || 'https://v3da.tailf05fe9.ts.net';
+let PIN = null, SECRET = null, cryptoMod = null;
+function confFile(name, make) {
+  const f = path.join(CONF_DIR, name);
+  try { return fs.readFileSync(f, 'utf8').trim(); } catch (_) {}
+  fs.mkdirSync(CONF_DIR, { recursive: true, mode: 0o700 });
+  const v = make();
+  try { fs.writeFileSync(f, v + '\n', { mode: 0o600, flag: 'wx' }); return v; }
+  catch (_) { return fs.readFileSync(f, 'utf8').trim(); }     // gleichzeitig angelegt
+}
+const isForwarded = req => Object.keys(req.headers).some(k => /^x-forwarded-|^tailscale-/i.test(k));
+const sign = v => cryptoMod.createHmac('sha256', SECRET).update(v).digest();
+function hasSession(req) {
+  const m = /(?:^|;\s*)v3dagent=(\d+)\.([0-9a-f]{64})/.exec(req.headers.cookie || '');
+  if (!m || +m[1] < Date.now()) return false;
+  const want = sign(m[1]), got = Buffer.from(m[2], 'hex');
+  return got.length === want.length && cryptoMod.timingSafeEqual(got, want);
+}
+const fehlversuche = new Map();         // IP → Zeitpunkte der Fehlversuche
+function login(req, res, raw) {
+  const ip = String(req.headers['x-forwarded-for'] || 'x').split(',')[0].trim();
+  const now = Date.now(), list = (fehlversuche.get(ip) || []).filter(t => now - t < 15 * 60e3);
+  const send = (code, html, cookie) => {
+    res.writeHead(code, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...(cookie ? { 'set-cookie': cookie } : {}) });
+    res.end(html);
+  };
+  if (list.length >= 5) return send(429, LOGIN_HTML('Zu viele Fehlversuche — bitte 15 Minuten warten.'));
+  const a = sign('pin:' + (new URLSearchParams(raw).get('pin') || '').trim()), b = sign('pin:' + PIN);
+  if (!cryptoMod.timingSafeEqual(a, b)) {
+    list.push(now); fehlversuche.set(ip, list);
+    return send(403, LOGIN_HTML('Falsche PIN.'));
+  }
+  fehlversuche.delete(ip);
+  const exp = String(now + 30 * 24 * 3600e3);
+  // Ohne Path-Attribut: gilt für den Funnel-Pfad, unter dem der Browser die Seite sieht
+  send(200, '<!DOCTYPE html><meta http-equiv="refresh" content="0;url=./">',
+       `v3dagent=${exp}.${sign(exp).toString('hex')}; HttpOnly; Secure; SameSite=Strict; Max-Age=${30 * 24 * 3600}`);
+}
+const LOGIN_HTML = msg => `<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>V3D Agent-Monitor</title><script>if(!location.pathname.endsWith('/'))location.replace(location.pathname+'/'+location.search)</script>
+<style>body{margin:0;font:16px system-ui,sans-serif;background:#0f1720;color:#e6edf3;display:flex;align-items:center;justify-content:center;height:100vh}
+form{background:#16212d;border:1px solid #243444;border-radius:12px;padding:26px;display:flex;flex-direction:column;gap:12px;width:280px}
+h1{font-size:18px;margin:0}h1 span{color:#3b9cff}input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #243444;background:#1d2b3a;color:#e6edf3}
+input{letter-spacing:6px;text-align:center;font-size:22px}button{background:#3b9cff;border-color:#3b9cff;color:#fff;font-weight:600}.m{color:#ff8080;font-size:14px}</style></head>
+<body><form method="post" action="login"><h1><span>V3D</span> Agent-Monitor</h1>
+<input name="pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="PIN" autofocus>
+${msg ? `<div class="m">${msg}</div>` : ''}<button>Öffnen</button></form></body></html>`;
+
+// Alle laufenden Monitore (einer je Claude-Sitzung) auf 8830–8839
+async function sitzungen() {
+  const out = [];
+  await Promise.all(Array.from({ length: 10 }, (_, i) => MON_PORT0 + i).map(async port => {
+    if (port === monPort) { out.push({ port, selbst: true, pid: process.pid, start: startedAt, schritte: histN }); return; }
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/api/info`, { signal: AbortSignal.timeout(800) });
+      const i = await r.json(); if (i && i.pid) out.push({ port, pid: i.pid, start: i.start, schritte: i.schritte });
+    } catch (_) {}
+  }));
+  return out.sort((a, b) => a.port - b.port);
+}
+
 async function startMonitor() {
+  cryptoMod = await import('crypto');
+  PIN = confFile('pin', () => String(cryptoMod.randomInt(0, 1e6)).padStart(6, '0'));
+  SECRET = confFile('secret', () => cryptoMod.randomBytes(32).toString('hex'));
   const http = await import('http');
   const html = () => fs.readFileSync(new URL('./monitor.html', import.meta.url), 'utf8');
   const body = req => new Promise(r => { let b = ''; req.on('data', c => { b += c; if (b.length > 5e6) req.destroy(); }); req.on('end', () => r(b)); });
   const json = (res, code, v) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(v)); };
   const srv = http.createServer(async (req, res) => {
-    // Nur Aufrufe von dieser Maschine; fremde Origins (andere Webseiten im Browser) abweisen
+    // Fremde Origins (andere Webseiten im Browser) abweisen
     const origin = req.headers.origin;
-    if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) { res.writeHead(403); return res.end(); }
+    if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin) && origin !== PUBLIC_ORIGIN) { res.writeHead(403); return res.end(); }
     const u = new URL(req.url, 'http://x');
+    // Von außen (Funnel) nur mit PIN-Cookie. Hinter dem Funnel ist remote_addr
+    // IMMER 127.0.0.1 — „von außen" erkennt man an den Funnel-Kopfzeilen.
+    if (isForwarded(req)) {
+      if (u.pathname === '/login' && req.method === 'POST') return login(req, res, await body(req));
+      if (!hasSession(req)) {
+        if (u.pathname.startsWith('/api/') || u.pathname.startsWith('/p/')) return json(res, 401, { error: 'PIN nötig' });
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        return res.end(LOGIN_HTML(''));
+      }
+    }
+    // Andere gleichzeitige Claude-Sitzungen (Ports 8830–8839) über diesen Monitor erreichbar
+    const pm = /^\/p\/(\d+)(\/.*)?$/.exec(u.pathname);
+    if (pm) {
+      const port = +pm[1];
+      if (port < MON_PORT0 || port >= MON_PORT0 + 10 || port === monPort) { res.writeHead(404); return res.end(); }
+      if (!pm[2]) { res.writeHead(302, { location: port + '/' }); return res.end(); }
+      const h = { ...req.headers }; delete h.host; delete h.cookie; delete h.origin;
+      for (const k of Object.keys(h)) if (/^x-forwarded|^tailscale/i.test(k)) delete h[k];
+      const pr = http.request({ host: '127.0.0.1', port, path: pm[2] + u.search, method: req.method, headers: h }, r2 => {
+        res.writeHead(r2.statusCode, r2.headers); r2.pipe(res);
+      });
+      pr.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end('Sitzung nicht mehr da'); });
+      req.pipe(pr); res.on('close', () => pr.destroy());
+      return;
+    }
     try {
+      if (u.pathname === '/api/sitzungen') return json(res, 200, await sitzungen());
       if (u.pathname === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); return res.end(html()); }
       if (u.pathname === '/api/info') return json(res, 200, { pid: process.pid, start: startedAt, protokoll: LOG_FILE, appBereit: !!(page && !page.isClosed()), schritte: histN });
       if (u.pathname === '/api/verlauf') return json(res, 200, history);

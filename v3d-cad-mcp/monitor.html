@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>V3D Agent-Monitor</title>
+<script>
+  // Hinter dem Funnel-Pfad (…/cad-agent) braucht es den Schluss-Schrägstrich, sonst zeigen die relativen api/-Aufrufe ins Leere
+  if (!location.pathname.endsWith('/')) location.replace(location.pathname + '/' + location.search);
+</script>
 <style>
   :root { --bg:#0f1720; --panel:#16212d; --line:#243444; --text:#e6edf3; --mute:#8aa0b4;
           --blue:#3b9cff; --ok:#2fbf71; --err:#ff5d5d; --warn:#f5b942; --hand:#b884ff; }
@@ -77,6 +81,7 @@
   <h1><span>V3D</span> Agent-Monitor</h1>
   <span><span id="dot" class="dot"></span><span id="status">verbinde …</span></span>
   <span class="mute" id="zaehler"></span>
+  <select id="sitzung" hidden title="Mehrere Claude-Sitzungen bauen gerade — hier umschalten"></select>
   <span class="mute" id="proto" style="margin-left:auto"></span>
 </header>
 <main>
@@ -267,6 +272,23 @@ async function info() {
         $('#zaehler').textContent = 'Sitzung seit ' + new Date(i.start).toLocaleTimeString('de-DE') + ' · PID ' + i.pid; } catch (_) {}
 }
 
+// Sitzungswähler: der erste Monitor (Hub) liegt an der Wurzel, die übrigen unter p/<port>/
+const ROOT = location.pathname.replace(/p\/\d+\/$/, '');
+const HIER = (/p\/(\d+)\/$/.exec(location.pathname) || [])[1];
+async function ladeSitzungen() {
+  try {
+    const list = await (await fetch(ROOT + 'api/sitzungen')).json();
+    const hub = list.find(s => s.selbst);
+    const sel = $('#sitzung');
+    sel.hidden = list.length < 2;
+    sel.innerHTML = list.map(s => {
+      const aktiv = HIER ? String(s.port) === HIER : s.selbst;
+      return `<option value="${s === hub ? '' : 'p/' + s.port + '/'}"${aktiv ? ' selected' : ''}>Sitzung ${new Date(s.start).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} · ${s.schritte} Schritte</option>`;
+    }).join('');
+  } catch (_) {}
+}
+$('#sitzung').onchange = e => { location.href = ROOT + e.target.value; };
+
 function verbinde() {
   const es = new EventSource('api/events');
   es.onopen = () => { $('#dot').classList.add('live'); $('#status').textContent = 'live verbunden'; };
@@ -282,7 +304,8 @@ function verbinde() {
 
 (async () => {
   await info();
-  steps = await (await fetch('api/verlauf')).json();
+  ladeSitzungen(); setInterval(ladeSitzungen, 20000);
+  steps =await (await fetch('api/verlauf')).json();
   renderVerlauf(); if (steps.length) waehle(steps[steps.length - 1].n);
   await ladeWerkzeuge();
   verbinde();
