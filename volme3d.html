@@ -31327,13 +31327,65 @@ function _m2cFitLoop(lp, tol){
   return out;
 }
 function _m2cSig(ents){ return JSON.stringify(ents.map(e => e.type === 'line' ? ['l', e.a.u, e.a.v, e.b.u, e.b.v] : e.type === 'circle' ? ['c', e.c.u, e.c.v, e.r] : ['a', e.c.u, e.c.v, e.r, e.a0, e.a1]).map(x => x.map(y => typeof y === 'number' ? Math.round(y * 2000) : y))); }
+// Querbohrungen (1.18.199): gebogene Flächen, die nicht zur Hauptachse passen,
+// zu Regionen wachsen lassen; ein voller Zylinder quer zur Achse = Bohrung.
+function _m2cSideHoles(T, A, tol){
+  const n = T.length, NA = T.map(_m2cNormalArea);
+  const q = 1e-4, key = (t, k) => Math.round(t[k*3] / q) + ',' + Math.round(t[k*3+1] / q) + ',' + Math.round(t[k*3+2] / q);
+  const edgeMap = new Map();
+  for (let i = 0; i < n; i++) for (let e = 0; e < 3; e++) { const a = key(T[i], e), b = key(T[i], (e + 1) % 3), k = a < b ? a + '|' + b : b + '|' + a;
+    if (!edgeMap.has(k)) edgeMap.set(k, []); edgeMap.get(k).push(i); }
+  const nb = Array.from({ length: n }, () => []);
+  for (const arr of edgeMap.values()) if (arr.length === 2) { nb[arr[0]].push(arr[1]); nb[arr[1]].push(arr[0]); }
+  const seed = i => NA[i] && Math.abs(NA[i].n.dot(A)) > 0.02 && Math.abs(NA[i].n.dot(A)) < 0.9998;
+  const used = new Uint8Array(n), holes = [], skipped = { boss: 0, partial: 0 };
+  const smooth = (i, j) => NA[i] && NA[j] && NA[i].n.dot(NA[j].n) > Math.cos(25 * Math.PI / 180);
+  for (let s = 0; s < n; s++) {
+    if (used[s] || !seed(s)) continue;
+    // Achse aus zwei verschiedenen Nachbar-Normalen
+    let B = null;
+    const st0 = [s], seen0 = new Set([s]);
+    while (st0.length && !B) { const i = st0.shift();
+      for (const j of nb[i]) { if (seen0.has(j) || !smooth(i, j)) continue; seen0.add(j);
+        const c = new THREE.Vector3().crossVectors(NA[s].n, NA[j].n); if (c.length() > 0.02) { B = c.normalize(); break; } st0.push(j); }
+      if (seen0.size > 200) break; }
+    if (!B || Math.abs(B.dot(A)) > 0.05) { used[s] = 1; continue; }
+    // Region: glatte Nachbarn mit Normale ⟂ B
+    const reg = [], st = [s]; used[s] = 1;
+    while (st.length) { const i = st.pop(); reg.push(i);
+      for (const j of nb[i]) if (!used[j] && NA[j] && Math.abs(NA[j].n.dot(B)) < 0.03 && smooth(i, j)) { used[j] = 1; st.push(j); } }
+    // Kreis in der Ebene ⟂ B
+    const e1 = new THREE.Vector3().crossVectors(Math.abs(B.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0), B).normalize(), e2 = new THREE.Vector3().crossVectors(B, e1);
+    const P2 = [], v = new THREE.Vector3(); let tmin = Infinity, tmax = -Infinity;
+    for (const i of reg) for (let k = 0; k < 3; k++) { v.set(T[i][k*3], T[i][k*3+1], T[i][k*3+2]); P2.push({ u: v.dot(e1), v: v.dot(e2) }); const t = v.dot(B); tmin = Math.min(tmin, t); tmax = Math.max(tmax, t); }
+    const f = _m2cCircleFit(P2); if (!f || f.dev > tol * 2) { skipped.partial++; continue; }
+    const angs = P2.map(p => Math.atan2(p.v - f.c.v, p.u - f.c.u)).sort((a, b) => a - b);
+    let gap = angs[0] + 2 * Math.PI - angs[angs.length - 1]; for (let i = 1; i < angs.length; i++) gap = Math.max(gap, angs[i] - angs[i - 1]);
+    if (gap > Math.PI / 3) { skipped.partial++; continue; }   // nur Teil-Zylinder (Rundung) → bleibt Stufe
+    // Normalen zur Achse hin = Bohrung
+    let inward = 0;
+    for (const i of reg) { const c = { u: (T[i][0] + T[i][3] + T[i][6]) / 3, v: (T[i][1] + T[i][4] + T[i][7]) / 3, w: (T[i][2] + T[i][5] + T[i][8]) / 3 };
+      const p = new THREE.Vector3(c.u, c.v, c.w), r2 = { u: p.dot(e1) - f.c.u, v: p.dot(e2) - f.c.v };
+      inward += (NA[i].n.dot(e1) * r2.u + NA[i].n.dot(e2) * r2.v) < 0 ? 1 : -1; }
+    if (inward <= 0) { skipped.boss++; continue; }
+    const axisPt = e1.clone().multiplyScalar(f.c.u).addScaledVector(e2, f.c.v);   // Punkt auf der Achse bei t = 0
+    holes.push({ B, axisPt, r: f.r, tmin, tmax, tris: reg });
+  }
+  return { holes, skipped };
+}
 // Analyse → Plan (ohne die Szene zu ändern)
 function _m2cAnalyse(o){
   const T = _m2cTris(o);
   if (T.length < 4) throw new Error('Kein Netz gefunden');
   const vol0 = Math.abs(_m2cVolume(T));
   const ax = _m2cAxis(T);
-  const rep = { tris: T.length, score: ax.score, axis: ax.A.toArray(), vol0 };
+  // Querbohrungen erkennen und aus Achsen-Bewertung + Höhenstufen herausnehmen
+  let bb0 = new THREE.Box3(); for (const t of T) for (let k = 0; k < 3; k++) bb0.expandByPoint(new THREE.Vector3(t[k*3], t[k*3+1], t[k*3+2]));
+  const tol0 = Math.max(0.002, bb0.getSize(new THREE.Vector3()).length() * 2e-4);
+  const sh = _m2cSideHoles(T, ax.A, tol0);
+  const holeTri = new Uint8Array(T.length); sh.holes.forEach(h => h.tris.forEach(i => { holeTri[i] = 1; }));
+  if (sh.holes.length) { const ax2 = _m2cAxis(T.filter((t, i) => !holeTri[i])); if (ax2.A.dot(ax.A) > 0.999) ax.score = ax2.score; }
+  const rep = { tris: T.length, score: ax.score, axis: ax.A.toArray(), vol0, sideHoles: sh.holes, skipped: sh.skipped };
   if (ax.score < 0.85) { rep.ok = false; rep.reason = `Nur ${Math.round(ax.score * 100)} % der Oberfläche liegen quer oder parallel zu einer Achse — das ist kein technisches 2,5D-Teil (eher Figur, Scan oder Freiform).`; return rep; }
   const Q = _wpMakeQuat(ax.A), Qi = Q.clone().invert(), v = new THREE.Vector3();
   const L = T.map(t => { const r = []; for (let k = 0; k < 3; k++) { v.set(t[k*3], t[k*3+1], t[k*3+2]).applyQuaternion(Qi); r.push(v.x, v.y, v.z); } return r; });
@@ -31344,14 +31396,18 @@ function _m2cAnalyse(o){
   const tol = Math.max(0.002, diag * 2e-4);
   // Höhenstufen aus Deckflächen
   const lv = [hmin, hmax];
-  for (const t of L) { const na = _m2cNormalArea(t); if (na && Math.abs(na.n.y) > 0.9998) lv.push((t[1] + t[4] + t[7]) / 3); }
+  L.forEach((t, i) => { if (holeTri[i]) return; const na = _m2cNormalArea(t); if (na && Math.abs(na.n.y) > 0.9998) lv.push((t[1] + t[4] + t[7]) / 3); });
+  // Höhenbereiche der Querbohrungen (entlang A): dort nicht schneiden
+  const avoid = sh.holes.map(h => { const c = h.axisPt.clone().addScaledVector(h.B, (h.tmin + h.tmax) / 2).dot(ax.A); return [c - h.r - tol * 4, c + h.r + tol * 4]; });
   lv.sort((a, b) => a - b);
   const levels = []; for (const h of lv) if (!levels.length || h - levels[levels.length - 1] > tol) levels.push(h);
   if (levels.length > 160) { rep.ok = false; rep.reason = `${levels.length} Höhenstufen — das Teil ist zu stark abgestuft/gewölbt für eine saubere Rückführung.`; return rep; }
   const slabs = [];
   for (let i = 0; i + 1 < levels.length; i++) {
     const a = levels[i], b = levels[i + 1]; if (b - a < tol) continue;
-    const loops = _m2cSection(L, (a + b) / 2);
+    let hs = (a + b) / 2;
+    for (const f of [0.5, 0.25, 0.75, 0.12, 0.88, 0.05, 0.95]) { const h = a + (b - a) * f; if (!avoid.some(([x, y]) => h > x && h < y)) { hs = h; break; } }
+    const loops = _m2cSection(L, hs);
     if (!loops.length) continue;
     const ents = []; for (const lp of loops) ents.push(..._m2cFitLoop(lp, tol));
     slabs.push({ a, b, ents, sig: _m2cSig(ents), nLoops: loops.length });
@@ -31375,6 +31431,12 @@ function _m2cHistory(rep){
     list.push({ typ: 'skizze', ents, cons: [], frame: M.elements.slice(), ab: [k ? -ov : 0, g.b - g.a], op: k ? 'join' : 'new', picks: null,
       pUI: { dir: 'one', d: Math.round((g.b - g.a) * 1000) / 100, d2: 5, op: k ? 'join' : 'new', thru: false, end: 'dist' } });
   });
+  for (const h of rep.sideHoles || []) {
+    const Qb = _wpMakeQuat(h.B), l = h.axisPt.clone().applyQuaternion(Qb.clone().invert()), ext = rep.tol * 5;
+    const M = new THREE.Matrix4().compose(h.B.clone().multiplyScalar(h.tmin), Qb, new THREE.Vector3(1, 1, 1));
+    list.push({ typ: 'skizze', ents: [{ type: 'circle', c: { u: l.x, v: l.z }, r: h.r, id: 1 }], cons: [], frame: M.elements.slice(), ab: [-ext, h.tmax - h.tmin + ext], op: 'cut', picks: null,
+      pUI: { dir: 'one', d: Math.round((h.tmax - h.tmin) * 1000) / 100, d2: 5, op: 'cut', thru: false, end: 'dist' } });
+  }
   return { base: null, list };
 }
 async function meshToCad(){
@@ -31422,7 +31484,8 @@ function _m2cReport(o, rep, mesh){
   const mm3 = x => String(Math.round(x * 1000)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
   el.innerHTML = `<div style="display:flex;margin-bottom:6px"><b style="flex:1">⬡→▣ Mesh → CAD · fertig</b><span onclick="this.closest('#m2c-panel').remove()" style="cursor:pointer;color:var(--dim)">✕</span></div>
     <div>Aus <b>${rep.tris.toLocaleString('de-DE')}</b> Dreiecken wurden <b>${rep.groups.length}</b> Skizzen-Schritt${rep.groups.length > 1 ? 'e' : ''}:
-      ${rep.counts.line} Linien, ${rep.counts.arc} Bögen, ${rep.counts.circle} Kreise.</div>
+      ${rep.counts.line} Linien, ${rep.counts.arc} Bögen, ${rep.counts.circle} Kreise${rep.sideHoles && rep.sideHoles.length ? `, dazu <b>${rep.sideHoles.length} Querbohrung${rep.sideHoles.length > 1 ? 'en' : ''}</b> (⌀ ${rep.sideHoles.map(h => String(Math.round(h.r * 200) / 10).replace('.', ',')).join(', ')} mm)` : ''}.</div>
+    ${rep.skipped && rep.skipped.boss ? `<div style="margin-top:4px;color:#b45309">${rep.skipped.boss} seitliche${rep.skipped.boss > 1 ? '' : 'r'} Zapfen noch nicht übernommen (als Stufe angenähert).</div>` : ''}
     <div style="margin-top:4px">Achse ${rep.axis.map(x => (Math.round(x * 100) / 100)).join(' / ')} · ${Math.round(rep.score * 100)} % der Fläche prismatisch</div>
     ${dv != null ? `<div style="margin-top:4px">Volumen: Original ${mm3(rep.vol0)} mm³ → CAD ${mm3(rep.vol1)} mm³ (<b style="color:${Math.abs(dv) < 0.5 ? '#16a34a' : Math.abs(dv) < 3 ? '#b45309' : '#dc2626'}">${dv >= 0 ? '+' : ''}${dv.toFixed(2).replace('.', ',')} %</b>)</div>` : ''}
     ${rep.score < 0.98 ? '<div style="margin-top:4px;color:#b45309">Schrägen oder Rundungen an Deckkanten sind als Stufen angenähert.</div>' : ''}
@@ -65326,8 +65389,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.198';
+const VOLME3D_VERSION = '1.18.199';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.199', date:'2026-10-19', changes:[
+    ['▣','<b>Mesh → CAD erkennt Querbohrungen.</b> Bohrungen von der Seite (quer zur Hauptrichtung des Teils, z. B. für eine Achse oder Schraube) werden als eigene Schritte „Abziehen“ in den Verlauf übernommen, mit echtem Durchmesser. Vorher hätten sie die Querschnitte gestört. Der Bericht nennt die erkannten Bohrungen mit ⌀.'],
+  ]},
   { version:'1.18.198', date:'2026-10-19', changes:[
     ['〰','<b>Neu: Prägen entlang Pfad.</b> Skizze auf eine Fläche legen, Linien, Bögen oder einen Spline als Pfad zeichnen und <b>〰 Prägen entlang Pfad</b> wählen. <b>Vertieft</b> ergibt eine Nut, <b>erhaben</b> einen Steg, jeweils mit <b>V-</b>, <b>Rund-</b> oder <b>Rechteckprofil</b>, Breite und Tiefe in mm. Geschlossene Konturen ergeben Ringnuten. Für Zierlinien, Sollbruchkanten, Kabelkanäle oder Dichtungsnuten.'],
     ['🔧','Abziehen: Exakt gebaute Werkzeuge (Prägen, Folgen-Nut) werden nicht mehr automatisch in der Höhe gestreckt; das verzerrte V- und Rundprofile.'],

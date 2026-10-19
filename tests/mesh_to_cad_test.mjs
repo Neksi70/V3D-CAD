@@ -23,6 +23,12 @@ try {
         const sl = M.cube([7, 5, 12], false).translate([16.5, 12.5, -1]).add(M.cylinder(12, 2.5, 2.5, 64, false).translate([16.5, 15, -1])).add(M.cylinder(12, 2.5, 2.5, 64, false).translate([23.5, 15, -1]));
         m = m.subtract(sl);
         m = m.add(M.cylinder(10, 5, 5, 64, false).translate([20, 15, 5]).subtract(M.cylinder(12, 2, 2, 48, false).translate([20, 15, 4])));
+      } else if (kind === 'quer') {
+        m = M.cube([40, 30, 5], false);
+        m = m.add(M.cylinder(10, 5, 5, 64, false).translate([20, 15, 5]));
+        // Ø3 quer durch den Zapfen (entlang X, z = 10), Ø2 längs durch die Platte (entlang Y, z = 2,5)
+        m = m.subtract(M.cylinder(40, 1.5, 1.5, 48, false).rotate([0, 90, 0]).translate([0, 15, 10]));
+        m = m.subtract(M.cylinder(40, 1, 1, 48, false).rotate([-90, 0, 0]).translate([12, -5, 2.5]));
       } else if (kind === 'kugel') m = M.sphere(10, 48);
       let geo = _mfToGeo(m).toNonIndexed(); geo.rotateX(-Math.PI / 2); geo.scale(0.1, 0.1, 0.1);
       const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x888888, side: THREE.DoubleSide }));
@@ -63,6 +69,14 @@ try {
   // gedreht (Achse schräg)
   r = await run('halter', [0.5, 0.3, 0.2]);
   ok(r.ok && r.steps === 2 && Math.abs(r.v1 - r.v0) / r.v0 < 0.005, `schräg gedreht: ${r.ok ? r.steps + ' Schritte, ' + (Math.abs(r.v1 - r.v0) / r.v0 * 100).toFixed(3) + ' %' : r.txt}`);
+  // Querbohrungen
+  r = await run('quer');
+  if (r.ok) {
+    const dv = Math.abs(r.v1 - r.v0) / r.v0 * 100;
+    ok(r.ops === 'new,join,cut,cut', `Querbohrungen: Platte + Zapfen + 2× Abziehen (${r.ops})`);
+    ok(dv < 0.5, `Volumen mit Querbohrungen ${r.v0.toFixed(1)} → ${r.v1.toFixed(1)} mm³ (${dv.toFixed(3)} %)`);
+    ok(/2 Querbohrungen/.test(r.txt), 'Bericht nennt 2 Querbohrungen');
+  } else ok(false, 'Querbohrungen: ' + r.txt);
   // Kugel → Hinweis
   r = await run('kugel');
   ok(!r.ok && /kein technisches 2,5D-Teil/.test(r.txt), 'Kugel abgelehnt mit Hinweis');

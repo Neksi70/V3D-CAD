@@ -109,7 +109,7 @@ window.V3D_HILFE = [
   { b: 'Skizze & Extrudieren', i: '▣', t: 'Mesh → CAD (STL bearbeitbar machen)', k: 'mesh to cad stl 3mf zurückführen rekonstruieren reverse engineering bohrung ändern skizze verlauf bearbeitbar',
     was: 'Macht aus einem importierten technischen Teil (STL/3MF) wieder ein bearbeitbares CAD-Teil mit Skizzen: Bohrungen werden Kreise, Kanten werden Linien und Bögen.',
     wo: 'Teil auswählen → Rechtsklick → „▣ Mesh → CAD“, oder Suche „Mesh → CAD“.',
-    s: ['Importiertes Teil anklicken.', 'Rechtsklick → <b>▣ Mesh → CAD</b>. Der Bericht zeigt die Zahl der Schritte, Linien, Bögen und Kreise sowie die Abweichung.', 'Im Verlauf des neuen Teils eine Skizze öffnen, Maß ändern, <b>✓ Extrudieren…</b> → OK. Das Teil rechnet sich neu.', 'Geht bei Teilen mit senkrechten Wänden (Halter, Platten, Gehäuse). Schrägen werden als Stufen angenähert; Figuren und Scans bleiben Netze.'], run: 'meshToCad()' },
+    s: ['Importiertes Teil anklicken.', 'Rechtsklick → <b>▣ Mesh → CAD</b>. Der Bericht zeigt die Zahl der Schritte, Linien, Bögen und Kreise sowie die Abweichung.', 'Im Verlauf des neuen Teils eine Skizze öffnen, Maß ändern, <b>✓ Extrudieren…</b> → OK. Das Teil rechnet sich neu.', 'Geht bei Teilen mit senkrechten Wänden (Halter, Platten, Gehäuse), auch mit Querbohrungen. Schrägen werden als Stufen angenähert; Figuren und Scans bleiben Netze.'], run: 'meshToCad()' },
   { b: 'Skizze & Extrudieren', i: '〰', t: 'Prägen entlang Pfad (Nut/Steg)', k: 'prägen pfad nut steg rille v-nut rundnut dichtung kabelkanal zierlinie linie gravieren',
     was: 'Macht aus Linien, Bögen oder Splines der Skizze eine Nut oder einen Steg mit V-, Rund- oder Rechteckprofil.',
     wo: 'In der Skizzenleiste: „〰 Prägen entlang Pfad“.',
