@@ -71,9 +71,27 @@ async function app() {
   return page;
 }
 
-const call = async (fn, ...a) => (await app()).evaluate(fn, ...a);
-const execute = (command, params) =>
-  call(([c, p]) => window.v3dApi.execute(c, p), [command, params || {}]);
+// Live-Modus: statt des unsichtbaren Browsers den offenen V3D-CAD-Tab des Nutzers
+// steuern. Vermittelt über den Hub (127.0.0.1:8830, Routen /live/*); der Tab zeigt
+// einen Code, den der Nutzer Claude nennt (live_connect).
+const HUB_URL = 'http://127.0.0.1:8830';
+let liveTab = null;
+async function hubPost(pfad, body) {
+  const r = await fetch(HUB_URL + pfad, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) })
+    .catch(() => { throw new Error('Agent-Hub (127.0.0.1:8830) nicht erreichbar — läuft v3d-cad-agent-hub?'); });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Hub antwortet mit ' + r.status);
+  return j;
+}
+// Ein Aufruf an window.v3dApi — im unsichtbaren Browser oder im Live-Tab
+async function apiCall(op, args) {
+  if (liveTab) {
+    try { return (await hubPost('/live/call', { tab: liveTab, op, args })).result; }
+    catch (e) { throw new Error('Live-Tab: ' + e.message + ' — mit live_disconnect zurück zum unsichtbaren Browser'); }
+  }
+  return (await app()).evaluate(([o, a]) => window.v3dApi[o](...a), [op, args]);
+}
+const execute = (command, params) => apiCall('execute', [command, params || {}]);
 
 // ── Dateien: nur in erlaubten Ordnern ─────────────────────────────────────
 function safePath(p, ext) {
@@ -96,6 +114,8 @@ const INSTRUCTIONS = `V3D CAD (Browser-CAD von Volme 3D) per Befehl steuern.
 - list_commands zeigt alle Befehle mit Parametern; shape.types die Grundformen.
 - Werkzeuge: Grundformen (shape.add), Skizzen extrudieren/anfügen/abziehen (sketch.extrude), Kanten runden/fasen (body.fillet/body.chamfer — VOR Bool-Operationen und VOR dem Drehen), Bool (bool.*), Generatoren für Kinder-/Spielmodelle (gen.list/gen.run/gen.edit).
 - Parametrisch: erst param.set für änderbare Maße, dann Formeln in den Befehlen ("breite/2 - wand"); param.set mit neuem Wert baut den Bauplan neu (ids bleiben).
+- Fertige Normteile/Generatoren (Schraube, Mutter, Zahnrad, Gehäuse, Vase …): starter.list → starter.inspect → starter.run.
+- Will der Nutzer zusehen/mitbauen: er öffnet im V3D-CAD-Tab ☰ Menü → 🤖 Claude live und nennt dir den Code → live_connect.
 - VOR dem ersten Bauen einmal das Werkzeug "anleitung" lesen (Vorgehen, Ebenen, Rezepte, Grenzen).
 - Zum Schluss ein kleiner screenshot (z. B. 480×320) zur Sichtkontrolle.`;
 
@@ -105,10 +125,23 @@ const TOOLS = [
   { name: 'anleitung', description: 'Anleitung zum Modellieren in V3D CAD: Koordinaten, Vorgehen, Skizzen-Ebenen, Runden-Grenzen, Rezepte (Box mit Deckel, Gehäuse, Lochplatte). Vor dem ersten Bauen lesen.',
     inputSchema: obj({}), annotations: { readOnlyHint: true },
     run: async () => ({ content: [{ type: 'text', text: ANLEITUNG() }] }) },
+  { name: 'live_connect', description: 'Live bauen: mit dem offenen V3D-CAD-Tab des Nutzers verbinden (im Tab: ☰ Menü → 🤖 Claude live, dort steht ein 6-stelliger Code). Danach laufen alle Befehle sichtbar in seinem Tab statt im unsichtbaren Browser.',
+    inputSchema: obj({ code: { type: 'string', description: '6-stelliger Code aus dem Tab' } }, ['code']),
+    run: async a => {
+      const r = await hubPost('/live/connect', { code: String(a.code).replace(/\D/g, '') });
+      liveTab = r.tab;
+      const probe = await apiCall('execute', ['scene.inspect', {}]);
+      return text({ verbunden: true, tab: r.tab, koerper_im_tab: probe.ok ? probe.result.bodies.length : null,
+        hinweis: 'Alle Befehle laufen jetzt im Tab des Nutzers. Seine Szene nicht ungefragt leeren (scene.new). live_disconnect beendet.' });
+    } },
+  { name: 'live_disconnect', description: 'Live-Verbindung zum Tab beenden; danach wieder unsichtbarer Browser.', inputSchema: obj({}),
+    run: async () => { const t = liveTab; liveTab = null; if (t) await hubPost('/live/disconnect', { tab: t }).catch(() => {}); return text({ getrennt: !!t }); } },
+  { name: 'live_status', description: 'Ist ein Live-Tab verbunden?', inputSchema: obj({}), annotations: { readOnlyHint: true },
+    run: async () => text(liveTab ? { live: true, tab: liveTab, ...(await hubPost('/live/status', { tab: liveTab }).catch(e => ({ fehler: e.message }))) } : { live: false }) },
   { name: 'list_commands', description: 'Alle V3D-CAD-Befehle mit Parametern (für execute/batch).',
     inputSchema: obj({ filter: { type: 'string', description: 'Teilstring in Befehl oder Beschreibung' } }),
     annotations: { readOnlyHint: true },
-    run: async a => text(await call(f => window.v3dApi.commands(f), a.filter || '')) },
+    run: async a => text(await apiCall('commands', [a.filter || ''])) },
   { name: 'execute', description: 'Einen Befehl ausführen (z. B. shape.add, body.transform, bool.subtract). Ein Undo-Schritt; bei Fehler unverändert.',
     inputSchema: obj({ command: { type: 'string' }, params: { type: 'object' },
                        verbose: { type: 'boolean', description: 'false = kompakte Antwort (nur id, Name, Größe, Mitte, Volumen je Körper); spart Platz' } }, ['command']),
@@ -117,7 +150,7 @@ const TOOLS = [
     inputSchema: obj({ commands: { type: 'array', items: obj({ command: { type: 'string' }, params: { type: 'object' } }, ['command']) },
                        rollback: { type: 'boolean', description: 'bei Fehler alles zurück (Standard true)' },
                        verbose: { type: 'boolean', description: 'false = kompakte Antworten' } }, ['commands']),
-    run: async a => engine(compact(await call(([s, o]) => window.v3dApi.batch(s, o),
+    run: async a => engine(compact(await apiCall('batch',
       [a.commands.map(c => ({ command: c.command, params: c.params || {} })), { rollback: a.rollback !== false }]), a.verbose)) },
   { name: 'inspect_scene', description: 'Alle Körper: id, Name, Typ, Bohrung?, Mitte/Größe/BBox (mm), Drehung (°); optional mit Volumen/Fläche.',
     inputSchema: obj({ measure: { type: 'boolean' } }), annotations: { readOnlyHint: true },
@@ -252,7 +285,7 @@ function summarize(result) {
 }
 async function record(quelle, tool, args, result, ms) {
   const e = { n: ++histN, zeit: new Date().toISOString(), quelle, tool, args, ok: !result.isError, ms, ergebnis: summarize(result) };
-  if (BAUEND.has(tool) && page && !page.isClosed()) {
+  if (BAUEND.has(tool) && !liveTab && page && !page.isClosed()) {        // live: der Nutzer sieht es direkt, kein Flackern
     try {
       const r = await execute('view.screenshot', { width: 640, height: 400 });
       if (r.ok) e.bild = r.result.png;
@@ -313,6 +346,81 @@ input{letter-spacing:6px;text-align:center;font-size:22px}button{background:#3b9
 <input name="pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="PIN" autofocus>
 ${msg ? `<div class="m">${msg}</div>` : ''}<button>Öffnen</button></form></body></html>`;
 
+// ── Live-Vermittlung (nur im Hub): Tab ↔ MCP-Server ───────────────────────
+// Tab: POST /live/open → {tab, secret, code}; GET /live/events (SSE, Befehle);
+//      POST /live/result {id, result}; POST /live/close. Ausweis: tab + secret.
+// MCP (nur lokal, ohne Funnel-Kopfzeilen): /live/connect {code}, /live/call {tab, op, args},
+//      /live/status, /live/disconnect. Der Code steht nur im Tab des Nutzers.
+const liveTabs = new Map();             // id → {secret, code, sse, pending: Map, seq, seen}
+const liveOpens = [];                   // Zeitpunkte von /live/open (Bremse gegen Fluten)
+async function liveRoute(req, res, u, body) {
+  const { randomBytes, randomInt } = cryptoMod;
+  const origin = req.headers.origin;
+  const cors = origin && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin) ? { 'access-control-allow-origin': origin, 'access-control-allow-headers': 'content-type' } : {};
+  const send = (code, v) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...cors }); res.end(JSON.stringify(v)); };
+  if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors, 'access-control-allow-methods': 'GET, POST' }); return res.end(); }
+  const lokal = !isForwarded(req) && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+  const P = u.pathname.slice(6);
+  const tabAus = () => { const t = liveTabs.get(u.searchParams.get('tab')); return t && t.secret === u.searchParams.get('secret') ? t : null; };
+  // aufräumen: Tabs ohne Verbindung nach 10 min
+  for (const [id, t] of liveTabs) if (!t.sse && Date.now() - t.seen > 600e3) liveTabs.delete(id);
+  if (P === 'open' && req.method === 'POST') {
+    const jetzt = Date.now(); while (liveOpens.length && jetzt - liveOpens[0] > 60e3) liveOpens.shift();
+    if (liveOpens.length > 20 || liveTabs.size > 50) return send(429, { error: 'Zu viele Live-Tabs — kurz warten' });
+    liveOpens.push(jetzt);
+    let code; do code = String(randomInt(0, 1e6)).padStart(6, '0'); while ([...liveTabs.values()].some(t => t.code === code));
+    const id = randomBytes(8).toString('hex'), secret = randomBytes(24).toString('hex');
+    liveTabs.set(id, { secret, code, sse: null, pending: new Map(), seq: 0, seen: jetzt, verbunden: false });
+    return send(200, { tab: id, secret, code });
+  }
+  if (P === 'events' && req.method === 'GET') {
+    const t = tabAus(); if (!t) return send(403, { error: 'unbekannter Tab' });
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', ...cors });
+    res.write(': hallo\n\n'); t.sse = res; t.seen = Date.now();
+    if (t.verbunden) res.write('event: verbunden\ndata: {}\n\n');
+    const ka = setInterval(() => res.write(': ka\n\n'), 20000);
+    req.on('close', () => { clearInterval(ka); if (t.sse === res) t.sse = null; t.seen = Date.now(); });
+    return;
+  }
+  if (P === 'result' && req.method === 'POST') {
+    const t = tabAus(); if (!t) return send(403, { error: 'unbekannter Tab' });
+    const j = JSON.parse(await body(req) || '{}'), w = t.pending.get(j.id);
+    if (w) { t.pending.delete(j.id); w.ok(j.result); }
+    return send(200, { ok: true });
+  }
+  if (P === 'close' && req.method === 'POST') {
+    const t = tabAus(); if (t) { for (const w of t.pending.values()) w.fail(new Error('Tab hat Claude-Live beendet')); liveTabs.delete(u.searchParams.get('tab')); }
+    return send(200, { ok: true });
+  }
+  // ab hier nur der MCP-Server auf dieser Maschine
+  if (!lokal) return send(403, { error: 'nur lokal' });
+  const j = req.method === 'POST' ? JSON.parse(await body(req) || '{}') : {};
+  if (P === 'connect') {
+    const hit = [...liveTabs.entries()].find(([, t]) => t.code === String(j.code));
+    if (!hit) return send(404, { error: 'Kein Tab mit Code ' + j.code + ' — im Tab ☰ Menü → 🤖 Claude live öffnen und den Code ablesen' });
+    if (!hit[1].sse) return send(409, { error: 'Der Tab mit diesem Code ist gerade nicht verbunden (geschlossen oder offline)' });
+    hit[1].verbunden = true; hit[1].sse.write('event: verbunden\ndata: {}\n\n');
+    return send(200, { tab: hit[0] });
+  }
+  const t = liveTabs.get(j.tab);
+  if (P === 'status') return send(200, t ? { verbunden: !!t.sse, code: t.code, offen: t.pending.size } : { verbunden: false, error: 'Tab unbekannt' });
+  if (P === 'disconnect') { if (t) { t.verbunden = false; if (t.sse) t.sse.write('event: getrennt\ndata: {}\n\n'); } return send(200, { ok: true }); }
+  if (P === 'call') {
+    if (!t) return send(404, { error: 'Tab unbekannt (geschlossen?)' });
+    if (!t.sse) return send(409, { error: 'Tab ist nicht verbunden (Seite neu geladen oder geschlossen?)' });
+    const id = ++t.seq;
+    try {
+      const result = await new Promise((ok, fail) => {
+        const to = setTimeout(() => { t.pending.delete(id); fail(new Error('Tab hat nicht geantwortet (10 min)')); }, 600e3);
+        t.pending.set(id, { ok: v => { clearTimeout(to); ok(v); }, fail: e => { clearTimeout(to); fail(e); } });
+        t.sse.write('event: cmd\ndata: ' + JSON.stringify({ id, op: j.op, args: j.args || [] }) + '\n\n');
+      });
+      return send(200, { result });
+    } catch (e) { return send(504, { error: e.message }); }
+  }
+  return send(404, { error: 'unbekannt' });
+}
+
 // Alle laufenden Monitore (einer je Claude-Sitzung) auf 8830–8839
 async function sitzungen() {
   const out = [];
@@ -332,13 +440,15 @@ async function startMonitor() {
   SECRET = confFile('secret', () => cryptoMod.randomBytes(32).toString('hex'));
   const http = await import('http');
   const html = () => fs.readFileSync(new URL('./monitor.html', import.meta.url), 'utf8');
-  const body = req => new Promise(r => { let b = ''; req.on('data', c => { b += c; if (b.length > 5e6) req.destroy(); }); req.on('end', () => r(b)); });
+  const body = req => new Promise(r => { let b = ''; req.on('data', c => { b += c; if (b.length > 100e6) req.destroy(); }); req.on('end', () => r(b)); });
   const json = (res, code, v) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(v)); };
   const srv = http.createServer(async (req, res) => {
     // Fremde Origins (andere Webseiten im Browser) abweisen
     const origin = req.headers.origin;
     if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin) && origin !== PUBLIC_ORIGIN) { res.writeHead(403); return res.end(); }
     const u = new URL(req.url, 'http://x');
+    // Live-Tabs (eigene Absicherung über Tab-Geheimnis bzw. nur lokal), vor der PIN-Schranke
+    if (HUB && u.pathname.startsWith('/live/')) return liveRoute(req, res, u, body);
     // Von außen (Funnel) nur mit PIN-Cookie. Hinter dem Funnel ist remote_addr
     // IMMER 127.0.0.1 — „von außen" erkennt man an den Funnel-Kopfzeilen.
     if (isForwarded(req)) {
@@ -381,7 +491,7 @@ async function startMonitor() {
         req.on('close', () => { clearInterval(ka); sseClients.delete(res); });
         return;
       }
-      if (u.pathname === '/api/befehle') return json(res, 200, await call(f => window.v3dApi.commands(f), ''));
+      if (u.pathname === '/api/befehle') return json(res, 200, await apiCall('commands', ['']));
       if (u.pathname === '/api/szene') return json(res, 200, await execute('scene.inspect', { measure: true }));
       if (u.pathname === '/api/bild') {
         const r = await execute('view.screenshot', { view: u.searchParams.get('view') || 'iso', width: 960, height: 600 });

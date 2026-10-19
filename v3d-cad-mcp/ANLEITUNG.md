@@ -21,6 +21,13 @@
    - Liegt ein Werkzeug nur bündig an einer Fläche, gibt es Mini-Splitter. Lass Abzieh-Körper deshalb 0,5–1 mm über die Fläche hinausragen (durchgehende Löcher etwas höher als die Wand).
 4. **Zum Schluss** einen `screenshot` (klein, z. B. 480×320, `view: iso`) zur Sichtkontrolle, dann `export` (3MF für den Druck, STEP für andere CAD-Programme).
 
+## Live im Tab des Nutzers
+- Der Nutzer öffnet in V3D CAD **☰ Menü → 🤖 Claude live**. Der Tab zeigt dann einen 6-stelligen Code.
+- `live_connect {code}`: Danach laufen **alle** Befehle sichtbar in seinem Tab statt im unsichtbaren Browser. `live_disconnect` schaltet zurück.
+- In seinem Tab liegt **sein** Modell. Nicht ungefragt `scene.new` ausführen oder Körper löschen.
+- Ändert er nebenbei etwas von Hand, friert der Bauplan ein (siehe unten). Das ist so gewollt.
+- Beendet er „Claude live“, scheitern die Befehle mit einer klaren Meldung. Dann `live_disconnect`.
+
 ## Parametrisch bauen (Bauplan)
 - **Parameter zuerst anlegen:** `param.set {name:"breite", value:80}`; auch Formeln wie `{name:"rand", value:"d + 4"}`. Sie erscheinen im 𝑥-Panel des Editors.
 - **In jedem Befehl** darf statt einer Zahl eine Formel stehen: `size:["breite","tiefe","hoehe"]`, `center:["breite/2 - wand - 5", 0, "wand + 5"]`, `radius:"R"`, `step:[0, "-(B - 2*rand)", 0]`.
@@ -56,6 +63,7 @@
 | vorhandene Datei weiterbearbeiten | MCP-Werkzeug `import {path}` (STL, 3MF, OBJ, STEP) |
 | auf eine Fläche skizzieren (Tasche, Zapfen, Gravur) | `body.faces {id}`, dann `sketch.extrude {face:{id, face:"top"/"+x"/index/[x,y,z]}, outer, height, op}`; `cut` geht nach innen, das Ziel ist automatisch der Körper |
 | Skizze mit Bedingungen (bemaßt) | `sketch.solve` zum Prüfen (dof 0 = voll bestimmt), dann `sketch.extrude {sketch:{entities, constraints}}` |
+| fertige Teile mit eigenem Generator-Fenster (Schraube/Mutter, Zahnrad, Gehäuse, Vase, Laterne …, 57 Stück) | `starter.list`, dann `starter.inspect {name}` (Regler mit key, Bereich, Auswahl), dann `starter.run {name, params:{key: wert}, center?}`; bei Knopfgruppen ist der Wert der Knopf-Text, z. B. `{"sbg-type":"Mutter", "sbg-size":"M8"}` |
 | verschieben, drehen, Größe ändern | `body.transform {id, center?, move?, rotate?, size?, drop?}`; `rotate` dreht *um* den Winkel, das absolute `rotation` geht nur bei Grundformen |
 | kopieren, Reihen | `body.duplicate {id, move}` |
 

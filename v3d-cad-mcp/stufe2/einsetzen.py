@@ -37,6 +37,13 @@ if "'body.faces'" not in s:
             sys.exit('Anker nicht eindeutig: ' + a[:50])
     s = s.replace(anker_helfer, (hier / 'rest_helfer.js').read_text(encoding='utf-8') + anker_helfer)
     s = s.replace(anker_befehle, (hier / 'rest_befehle.js').read_text(encoding='utf-8') + anker_befehle)
+# Stufe 3: Claude live im Tab + Generatoren mit eigenem Fenster — eigener Satz Bausteine
+if "'starter.run'" not in s:
+    for a in (anker_helfer, anker_befehle):
+        if s.count(a) != 1:
+            sys.exit('Anker nicht eindeutig: ' + a[:50])
+    s = s.replace(anker_helfer, (hier / 'live_tab.js').read_text(encoding='utf-8') + (hier / 'starter_helfer.js').read_text(encoding='utf-8') + anker_helfer)
+    s = s.replace(anker_befehle, (hier / 'starter_befehle.js').read_text(encoding='utf-8') + anker_befehle)
 # Drehen: relativ („rotate“) für alle Körper; absolut („rotation“) nur bei Grundformen.
 # Bool-/Skizzen-/Generator-Ergebnisse tragen oft eine innere Grunddrehung — absolut
 # gesetzt landete der Deckel aus dem Rezept hochkant statt umgedreht.
