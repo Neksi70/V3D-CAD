@@ -53,10 +53,11 @@
   }
   window.v3dLive = { start: liveStart, stop: liveStop, state: () => ({ on: LIVE.on, code: LIVE.code, status: LIVE.status, n: LIVE.n }) };
   window.addEventListener('beforeunload', () => { if (LIVE.on) navigator.sendBeacon && navigator.sendBeacon(liveBase() + '/live/close' + liveQ()); });
-  // Menüeintrag unter „Extras“ (per Code eingehängt, das Menü-HTML bleibt unberührt)
-  {
+  // Menüeintrag unter „Extras“ (per Code eingehängt, das Menü-HTML bleibt unberührt) — nur für
+  // Admins: verbinden kann sich bisher nur Volkers Claude, für alle anderen wäre er nutzlos
+  fetch('/auth/me', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : {}).catch(() => ({})).then(me => {
     const m = document.getElementById('burger-menu');
-    if (m && !document.getElementById('bm-claude-live')) {
+    if (me && me.admin && m && !document.getElementById('bm-claude-live')) {
       const it = document.createElement('div');
       it.className = 'sli-item'; it.id = 'bm-claude-live';
       it.title = 'Claude (KI) baut sichtbar in diesem Tab mit: zeigt einen Code, den du Claude nennst';
@@ -64,5 +65,5 @@
       it.onclick = () => liveStart();
       m.appendChild(it);
     }
-  }
+  });
 

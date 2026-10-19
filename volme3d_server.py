@@ -837,7 +837,10 @@ class Handler(BaseHTTPRequestHandler):
             sess = self._session()
             self._json(200, {'angemeldet': bool(sess),
                              'gast': bool(sess and sess.get('g')),
-                             'email': (sess or {}).get('e', '')})
+                             'email': (sess or {}).get('e', ''),
+                             # Admin (Liste ~/.config/volme3d/admins) — z. B. für
+                             # „Claude live“, das nur mit Volkers Claude funktioniert
+                             'admin': bool(DEV_MODE or v3d_nutzung.ist_admin(sess))})
             return
 
         if path == '/occt-health':
