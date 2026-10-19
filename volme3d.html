@@ -80317,7 +80317,9 @@ function _fillHoles(mesh) {
   // Befehle hier sichtbar. Der Hub erreicht den Tab nur über die vom Tab geöffnete
   // Verbindung; „Beenden“ trennt sofort.
   const LIVE = { on: false, es: null, tab: null, secret: null, code: null, el: null, n: 0, status: 'wartet' };
-  const liveBase = () => /\.ts\.net$/.test(location.hostname) ? '/cad-agent' : 'http://127.0.0.1:8830';
+  // Über HTTPS (V3DA-Funnel, netcup) liegt der Hub unter /cad-agent am selben Host, lokal direkt auf 8830
+  const liveBase = () => window.V3D_LIVE_HUB || (location.protocol === 'https:' ? '/cad-agent' : 'http://127.0.0.1:8830');   // V3D_LIVE_HUB nur für Tests
+  let liveInfo = { connector: false, connector_url: null };
   const liveQ = () => '?tab=' + LIVE.tab + '&secret=' + LIVE.secret;
   function liveBadge(letzter) {
     if (!LIVE.on) { if (LIVE.el) { LIVE.el.remove(); LIVE.el = null; } return; }
@@ -80331,13 +80333,15 @@ function _fillHoles(mesh) {
         <button style="margin-left:auto;font:inherit;font-size:12px;padding:2px 8px;border-radius:6px;border:1px solid #3b9cff;background:transparent;color:#e6edf3;cursor:pointer" onclick="v3dLive.stop()">Beenden</button></div>
       <div style="margin-top:6px">${LIVE.status === 'verbunden' ? 'Claude ist verbunden und baut hier mit.' : 'Sag Claude: <b>„verbinde dich live mit Code ' + LIVE.code + '“</b>'}</div>
       <div style="margin-top:4px;font-size:22px;letter-spacing:4px;font-weight:700;color:#9fd0ff">${LIVE.code}</div>
-      <div style="margin-top:4px;font-size:11.5px;color:#8aa0b4">${LIVE.n ? LIVE.n + ' Befehle' + (letzter ? ' · zuletzt ' + letzter : '') : 'noch keine Befehle'}</div>`;
+      <div style="margin-top:4px;font-size:11.5px;color:#8aa0b4">${LIVE.n ? LIVE.n + ' Befehle' + (letzter ? ' · zuletzt ' + letzter : '') : 'noch keine Befehle'}</div>
+      ${LIVE.status !== 'verbunden' && liveInfo.connector_url ? `<div style="margin-top:6px;font-size:11.5px;color:#8aa0b4;border-top:1px solid #243444;padding-top:6px">Einmalig nötig: in Claude unter Einstellungen → Connectors den Connector <b>V3D CAD</b> mit der Adresse <span style="user-select:all;color:#9fd0ff">${liveInfo.connector_url}</span> hinzufügen.</div>` : ''}`;
   }
   async function liveStart() {
     if (LIVE.on) { liveBadge(); return; }
     let r;
     try { r = await (await fetch(liveBase() + '/live/open', { method: 'POST' })).json(); } catch (e) { r = { error: 'Agent-Dienst nicht erreichbar' }; }
     if (!r || !r.tab) { notify('Claude live geht gerade nicht: ' + ((r && r.error) || 'keine Antwort'), 'e'); return; }
+    try { const i = await (await fetch(liveBase() + '/live/info')).json(); if (i && i.connector) liveInfo = i; } catch (_) {}
     Object.assign(LIVE, { on: true, tab: r.tab, secret: r.secret, code: r.code, n: 0, status: 'wartet' });
     LIVE.es = new EventSource(liveBase() + '/live/events' + liveQ());
     LIVE.es.addEventListener('verbunden', () => { LIVE.status = 'verbunden'; liveBadge(); notify('🤖 Claude ist live verbunden', 'ok'); });
@@ -80349,6 +80353,7 @@ function _fillHoles(mesh) {
         if (job.op === 'execute') result = await execute(job.args[0], job.args[1]);
         else if (job.op === 'batch') result = await batch(job.args[0], job.args[1]);
         else if (job.op === 'commands') result = commands(job.args[0]);
+        else if (job.op === 'download') result = await liveDownload(job.args[0] || {});
         else result = { ok: false, error: 'unbekannte Operation ' + job.op };
       } catch (e) { result = { ok: false, error: String(e && e.message || e) }; }
       LIVE.n++; LIVE.status = 'verbunden';
@@ -80356,6 +80361,18 @@ function _fillHoles(mesh) {
       fetch(liveBase() + '/live/result' + liveQ(), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: job.id, result }) });
     });
     liveBadge();
+  }
+  // Export als Download in diesem Tab (der Connector hat keinen Dateizugriff beim Nutzer)
+  async function liveDownload(p) {
+    const r = await execute('file.export', { format: p.format || '3mf', ...(p.ids ? { ids: p.ids } : {}) });
+    if (!r.ok) return r;
+    const bin = atob(r.result.base64), u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const name = String(p.name || 'v3d-claude').replace(/[^\w\-äöüÄÖÜß ]+/g, '_').slice(0, 60) + '.' + r.result.format;
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([u8])); a.download = name;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+    notify('⬇ ' + name + ' (von Claude) heruntergeladen', 'ok');
+    return { ok: true, result: { file: name, bytes: u8.length, hinweis: 'Liegt im Download-Ordner des Nutzers' } };
   }
   function liveStop() {
     if (!LIVE.on) return;
@@ -80366,11 +80383,16 @@ function _fillHoles(mesh) {
   }
   window.v3dLive = { start: liveStart, stop: liveStop, state: () => ({ on: LIVE.on, code: LIVE.code, status: LIVE.status, n: LIVE.n }) };
   window.addEventListener('beforeunload', () => { if (LIVE.on) navigator.sendBeacon && navigator.sendBeacon(liveBase() + '/live/close' + liveQ()); });
-  // Menüeintrag unter „Extras“ (per Code eingehängt, das Menü-HTML bleibt unberührt) — nur für
-  // Admins: verbinden kann sich bisher nur Volkers Claude, für alle anderen wäre er nutzlos
-  fetch('/auth/me', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : {}).catch(() => ({})).then(me => {
+  // Menüeintrag unter „Extras“ (per Code eingehängt, das Menü-HTML bleibt unberührt): für Admins
+  // immer (Volkers Claude auf dem Server), für alle Angemeldeten nur, wo der claude.ai-Connector läuft
+  Promise.all([
+    fetch('/auth/me', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+    fetch(liveBase() + '/live/info').then(r => r.ok ? r.json() : {}).catch(() => ({})),
+  ]).then(([me, info]) => {
+    if (info && info.connector) liveInfo = info;
     const m = document.getElementById('burger-menu');
-    if (me && me.admin && m && !document.getElementById('bm-claude-live')) {
+    const darf = me && (me.admin || (me.angemeldet && !me.gast && liveInfo.connector));
+    if (darf && m && !document.getElementById('bm-claude-live')) {
       const it = document.createElement('div');
       it.className = 'sli-item'; it.id = 'bm-claude-live';
       it.title = 'Claude (KI) baut sichtbar in diesem Tab mit: zeigt einen Code, den du Claude nennst';

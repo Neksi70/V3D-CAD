@@ -258,7 +258,7 @@ function checkArgs(tool, a) {
 // nichts, sondern leitet zu den Sitzungen weiter. Jede Claude-Sitzung bekommt einen
 // eigenen Monitor auf 8831–8839, der Hub reicht sie unter p/<port>/ durch.
 const HUB = args.includes('--hub');
-const HUB_PORT = 8830;
+const HUB_PORT = parseInt(argVal('--hub-port') || '8830', 10);   // anderer Port nur für Tests
 const MON_PORT0 = parseInt(argVal('--monitor-port') || String(HUB_PORT + 1), 10);
 const SESS_MIN = HUB_PORT + 1, SESS_MAX = HUB_PORT + 9;
 const BAUEND = new Set(['execute', 'batch', 'open', 'new_scene', 'undo', 'redo']);
@@ -298,7 +298,12 @@ async function record(quelle, tool, args, result, ms) {
 
 // ── Zugang von außen: PIN + signiertes Cookie ─────────────────────────────
 const CONF_DIR = path.join(os.homedir(), '.config', 'v3d-cad-mcp');
-const PUBLIC_ORIGIN = process.env.V3D_MONITOR_ORIGIN || 'https://v3da.tailf05fe9.ts.net';
+// Öffentliche Ursprünge (V3DA-Funnel und netcup); weitere per V3D_MONITOR_ORIGIN (Komma-Liste)
+const PUBLIC_ORIGINS = (process.env.V3D_MONITOR_ORIGIN || 'https://v3da.tailf05fe9.ts.net,https://v3dcad.volme3dakademie.de').split(',').map(x => x.trim()).filter(Boolean);
+const PUBLIC_ORIGIN = PUBLIC_ORIGINS[0];
+// V3D CAD auf diesem Rechner (für /auth/me: welches Konto hat der Tab?) und ob der claude.ai-Connector hier läuft
+const CAD_URL = (process.env.V3D_CAD_URL || 'http://127.0.0.1:8765').replace(/\/$/, '');
+const CONNECTOR_URL = process.env.V3D_CONNECTOR_URL || '';
 let PIN = null, SECRET = null, cryptoMod = null;
 function confFile(name, make) {
   const f = path.join(CONF_DIR, name);
@@ -364,13 +369,22 @@ async function liveRoute(req, res, u, body) {
   const tabAus = () => { const t = liveTabs.get(u.searchParams.get('tab')); return t && t.secret === u.searchParams.get('secret') ? t : null; };
   // aufräumen: Tabs ohne Verbindung nach 10 min
   for (const [id, t] of liveTabs) if (!t.sse && Date.now() - t.seen > 600e3) liveTabs.delete(id);
+  if (P === 'info') return send(200, { connector: !!CONNECTOR_URL, connector_url: CONNECTOR_URL || null });
   if (P === 'open' && req.method === 'POST') {
     const jetzt = Date.now(); while (liveOpens.length && jetzt - liveOpens[0] > 60e3) liveOpens.shift();
-    if (liveOpens.length > 20 || liveTabs.size > 50) return send(429, { error: 'Zu viele Live-Tabs — kurz warten' });
+    if (liveOpens.length > 30 || liveTabs.size > 200) return send(429, { error: 'Zu viele Live-Tabs — kurz warten' });
     liveOpens.push(jetzt);
+    // Welches Konto? V3D CAD mit dem Cookie des Tabs fragen (Dev-Tab auf localhost: dessen eigener Server)
+    const cadBase = origin && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin) ? origin : CAD_URL;
+    let owner = null;
+    try {
+      const me = await (await fetch(cadBase + '/auth/me', { headers: { cookie: req.headers.cookie || '' }, signal: AbortSignal.timeout(5000) })).json();
+      if (me.angemeldet && !me.gast && me.email) owner = String(me.email).trim().toLowerCase();
+    } catch (_) {}
+    if (!owner) return send(401, { error: 'Bitte in V3D CAD mit deinem Konto anmelden (Gäste können Claude live nicht nutzen)' });
     let code; do code = String(randomInt(0, 1e6)).padStart(6, '0'); while ([...liveTabs.values()].some(t => t.code === code));
     const id = randomBytes(8).toString('hex'), secret = randomBytes(24).toString('hex');
-    liveTabs.set(id, { secret, code, sse: null, pending: new Map(), seq: 0, seen: jetzt, verbunden: false });
+    liveTabs.set(id, { secret, code, owner, sse: null, pending: new Map(), seq: 0, seen: jetzt, verbunden: false });
     return send(200, { tab: id, secret, code });
   }
   if (P === 'events' && req.method === 'GET') {
@@ -399,10 +413,13 @@ async function liveRoute(req, res, u, body) {
     const hit = [...liveTabs.entries()].find(([, t]) => t.code === String(j.code));
     if (!hit) return send(404, { error: 'Kein Tab mit Code ' + j.code + ' — im Tab ☰ Menü → 🤖 Claude live öffnen und den Code ablesen' });
     if (!hit[1].sse) return send(409, { error: 'Der Tab mit diesem Code ist gerade nicht verbunden (geschlossen oder offline)' });
+    // Nur mit dem eigenen Konto: der Connector schickt das Konto aus dem OAuth-Token mit
+    if (j.owner && hit[1].owner !== String(j.owner).toLowerCase()) return send(403, { error: 'Dieser Tab gehört zu einem anderen V3D-CAD-Konto' });
     hit[1].verbunden = true; hit[1].sse.write('event: verbunden\ndata: {}\n\n');
     return send(200, { tab: hit[0] });
   }
   const t = liveTabs.get(j.tab);
+  if (t && j.owner && t.owner !== String(j.owner).toLowerCase()) return send(403, { error: 'Dieser Tab gehört zu einem anderen V3D-CAD-Konto' });
   if (P === 'status') return send(200, t ? { verbunden: !!t.sse, code: t.code, offen: t.pending.size } : { verbunden: false, error: 'Tab unbekannt' });
   if (P === 'disconnect') { if (t) { t.verbunden = false; if (t.sse) t.sse.write('event: getrennt\ndata: {}\n\n'); } return send(200, { ok: true }); }
   if (P === 'call') {
@@ -445,7 +462,7 @@ async function startMonitor() {
   const srv = http.createServer(async (req, res) => {
     // Fremde Origins (andere Webseiten im Browser) abweisen
     const origin = req.headers.origin;
-    if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin) && origin !== PUBLIC_ORIGIN) { res.writeHead(403); return res.end(); }
+    if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin) && !PUBLIC_ORIGINS.includes(origin)) { res.writeHead(403); return res.end(); }
     const u = new URL(req.url, 'http://x');
     // Live-Tabs (eigene Absicherung über Tab-Geheimnis bzw. nur lokal), vor der PIN-Schranke
     if (HUB && u.pathname.startsWith('/live/')) return liveRoute(req, res, u, body);
