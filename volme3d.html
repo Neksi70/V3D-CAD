@@ -1775,6 +1775,7 @@ const firebaseConfig = {
   <div id="lf-bar" style="display:none;position:fixed;bottom:56px;left:50%;transform:translateX(-50%);background:rgba(24,24,32,0.93);border:1px solid #444;border-radius:8px;padding:7px 12px;align-items:center;gap:10px;z-index:8500;font-size:12px;color:#ccc;white-space:nowrap">
     <span id="lf-status" style="font-weight:700;color:#aaa">Ebene Flächen anklicken (mind. 2)</span>
     <label style="display:flex;align-items:center;gap:5px;cursor:pointer" title="≥3 Profile: weicher Spline-Verlauf statt gerader Segmente"><input id="lf-smooth" type="checkbox" checked onchange="_lfPreviewUpdate()" style="accent-color:#F97316">glatt</label>
+    <button id="lf-path" onclick="if(_lf.pathPick){_lf.pathPick=false;_lf.path=null;_lf.chains=[];_lfStatus();_lfPreviewUpdate();}else _lfPathPick()" title="Loft entlang Pfad: eine Kante (oder einen Kantenzug) anklicken, die vom ersten zum letzten Profil führt — der Übergang folgt dann dieser Kurve" style="display:none;background:#333;border:1px solid #555;color:#fff;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px">⤳ Pfad</button>
     <button id="lf-undo" onclick="_lfUndo()" style="display:none;background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px">← Zurück</button>
     <button id="lf-apply" onclick="_lfApply()" style="display:none;background:#F97316;border:none;color:#fff;border-radius:5px;padding:3px 10px;cursor:pointer;font-size:11px;font-weight:700">✓ Erstellen</button>
     <button onclick="exitLoftMode()" style="background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:3px 8px;cursor:pointer;font-size:11px">✕ ESC</button>
@@ -20990,7 +20991,7 @@ function buildObjectFromData(data) {
   if (data._skSides)        obj.userData._skSides        = data._skSides;
   if (data._loftLoops)   { obj.userData._loftLoops = data._loftLoops; obj.userData._loftHmm = data._loftHmm; obj.userData._loftSides = data._loftSides; }
   if (data._sweepProfile){ obj.userData._sweepProfile = data._sweepProfile; obj.userData._sweepPath = data._sweepPath; obj.userData._sweepSides = data._sweepSides; }
-  if (data._l3Rings)     { obj.userData._l3Rings = data._l3Rings; obj.userData._l3Sides = data._l3Sides; obj.userData._l3Smooth = !!data._l3Smooth; }
+  if (data._l3Rings)     { obj.userData._l3Rings = data._l3Rings; obj.userData._l3Sides = data._l3Sides; obj.userData._l3Smooth = !!data._l3Smooth; if (data._l3Path) obj.userData._l3Path = data._l3Path; }
   if (data._mmuPaint) {
     obj.userData._mmuPaint = 1;
     if (data._mmuBase)  obj.userData._mmuBase  = data._mmuBase;
@@ -21280,7 +21281,7 @@ function objectToData(o, modus) {
   if (o.userData._skSides)        d._skSides        = o.userData._skSides;
   if (o.userData._loftLoops)   { d._loftLoops = o.userData._loftLoops; d._loftHmm = o.userData._loftHmm; d._loftSides = o.userData._loftSides; }
   if (o.userData._sweepProfile){ d._sweepProfile = o.userData._sweepProfile; d._sweepPath = o.userData._sweepPath; d._sweepSides = o.userData._sweepSides; }
-  if (o.userData._l3Rings)     { d._l3Rings = o.userData._l3Rings; d._l3Sides = o.userData._l3Sides; if (o.userData._l3Smooth) d._l3Smooth = true; }
+  if (o.userData._l3Rings)     { d._l3Rings = o.userData._l3Rings; d._l3Sides = o.userData._l3Sides; if (o.userData._l3Smooth) d._l3Smooth = true; if (o.userData._l3Path) d._l3Path = o.userData._l3Path; }
   if (o.userData.occtShape)    d.occtShape   = o.userData.occtShape;
   if (o.userData._occtParams)  d._occtParams = o.userData._occtParams;
   // Mehrfarb-Bemalung: Farben stecken im Geometrie-Attribut, hier nur Flag+Palette
@@ -31883,7 +31884,7 @@ function enterLoftMode(){
   if (_edgeMode)    exitEdgeMode();
   if (_revolveMode) exitRevolveMode();
   if (workplaneMode) toggleWorkplane();
-  _lf.active = true; _lf.picks = []; _lf.preview = null;
+  _lf.active = true; _lf.picks = []; _lf.preview = null; _lf.path = null; _lf.pathPick = false; _lf.chains = [];
   _lf.group = new THREE.Group(); _lf.group.renderOrder = 995; scene.add(_lf.group);
   canvas.style.cursor = 'crosshair';
   document.getElementById('lf-bar').style.display = 'flex';
@@ -31892,7 +31893,7 @@ function enterLoftMode(){
 }
 function exitLoftMode(){
   if (!_lf.active) return;
-  _lf.active = false; _lf.picks = []; _lf.preview = null;
+  _lf.active = false; _lf.picks = []; _lf.preview = null; _lf.path = null; _lf.pathPick = false; _lf.chains = [];
   if (_lf.group){
     scene.remove(_lf.group);
     _lf.group.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material && o.material.dispose) o.material.dispose(); });
@@ -31906,7 +31907,8 @@ function _lfStatus(){
   document.getElementById('lf-status').textContent =
     n === 0 ? 'Ebene Flächen anklicken (mind. 2)' :
     n === 1 ? '1 Profil — noch mindestens eine Fläche anklicken' :
-              n + ' Profile gewählt';
+              n + ' Profile gewählt' + (_lf.pathPick ? (_lf.path ? ' · Pfad: ' + String(Math.round(_lf.path.reduce((s, p, i, a) => i ? s + p.distanceTo(a[i - 1]) : 0, 0) * 100) / 10).replace('.', ',') + ' mm' : ' · Pfad-Kante anklicken') : '');
+  const pb = document.getElementById('lf-path'); if (pb) { pb.style.display = n >= 2 ? '' : 'none'; pb.style.background = _lf.pathPick ? '#F97316' : '#333'; }
   document.getElementById('lf-apply').style.display = n >= 2 ? '' : 'none';
   document.getElementById('lf-undo').style.display  = n >= 1 ? '' : 'none';
 }
@@ -32054,7 +32056,7 @@ function _lfPreviewUpdate(){
   }
   if (_lf.picks.length < 2) return;
   const smooth = document.getElementById('lf-smooth').checked;
-  const geo = _buildLoft3DGeo(_lf.picks.map(p => p.ring), 64, smooth);
+  const geo = _buildLoft3DGeo(_lf.picks.map(p => p.ring), 64, smooth, _lf.path || null);
   _lf.preview = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
     color: 0xF97316, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide }));
   _lf.group.add(_lf.preview);
@@ -32087,12 +32089,14 @@ function _catmull3(p0,p1,p2,p3,t){
   const f = (a,b,c,d) => 0.5*((2*b) + (-a+c)*t + (2*a-5*b+4*c-d)*t2 + (-a+3*b-3*c+d)*t3);
   return new THREE.Vector3(f(p0.x,p1.x,p2.x,p3.x), f(p0.y,p1.y,p2.y,p3.y), f(p0.z,p1.z,p2.z,p3.z));
 }
-function _buildLoft3DGeo(ringsIn, N, smooth){
+function _buildLoft3DGeo(ringsIn, N, smooth, pathIn){
   N = N || 96;
   const K = ringsIn.length;
   const cents = ringsIn.map(r => { const c = new THREE.Vector3(); r.forEach(p => c.add(p)); return c.multiplyScalar(1/r.length); });
-  // Verlaufsrichtung je Profil (zentraler Differenzenquotient über die Zentren)
+  const PF = pathIn && pathIn.length >= 2 ? _lfPathFrames(pathIn, cents) : null;
+  // Verlaufsrichtung je Profil (zentraler Differenzenquotient über die Zentren, mit Pfad: Pfad-Tangente)
   const tang = cents.map((c,k) => {
+    if (PF) return PF.tanAt(PF.sOf[k]);
     const t = new THREE.Vector3().subVectors(cents[Math.min(K-1,k+1)], cents[Math.max(0,k-1)]);
     return t.lengthSq() < 1e-12 ? new THREE.Vector3(0,1,0) : t.normalize();
   });
@@ -32115,7 +32119,8 @@ function _buildLoft3DGeo(ringsIn, N, smooth){
   }
   // Zwischenreihen: 2 Profile = linear; ≥3 + glatt = Catmull-Rom durch alle
   let rows = rings;
-  if (smooth && K >= 3){
+  if (PF) rows = _lfPathRows(rings, PF, smooth);
+  else if (smooth && K >= 3){
     const S = 8; rows = [];
     for (let k = 0; k < K-1; k++){
       const r0 = rings[Math.max(0,k-1)], r1 = rings[k], r2 = rings[k+1], r3 = rings[Math.min(K-1,k+2)];
@@ -32161,12 +32166,80 @@ function _buildLoft3DGeo(ringsIn, N, smooth){
   return geo;
 }
 
+// ── Loft entlang Pfad (1.18.201) ──────────────────────────────────────────
+// Ein Kantenzug gibt den Verlauf vor. Jedes Profil wird in den mitlaufenden
+// Rahmen des Pfads (Parallel-Transport wie bei „Folgen") übertragen; zwischen
+// den Profilen wird im Rahmen überblendet und die Reihe auf den Pfad gesetzt.
+function _lfPathFrames(pathIn, cents){
+  let P = []; for (const v of pathIn) if (!P.length || P[P.length - 1].distanceTo(v) > 1e-6) P.push(v.clone());
+  if (P[0].distanceTo(cents[0]) > P[P.length - 1].distanceTo(cents[0])) P.reverse();   // Pfad beginnt am ersten Profil
+  const cum = [0]; for (let i = 1; i < P.length; i++) cum.push(cum[i - 1] + P[i].distanceTo(P[i - 1]));
+  const L = cum[cum.length - 1];
+  const at = s => { s = Math.max(0, Math.min(L, s)); let i = 1; while (i < P.length - 1 && cum[i] < s) i++;
+    const f = (s - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1e-12); return P[i - 1].clone().lerp(P[i], f); };
+  const tanAt = s => { const h = Math.max(L * 1e-3, 1e-5); const a = at(s - h), b = at(s + h); const t = b.sub(a); return t.lengthSq() < 1e-16 ? new THREE.Vector3(0, 1, 0) : t.normalize(); };
+  // Profile auf dem Pfad einordnen (nächster Pfadpunkt zur Profilmitte)
+  const sOf = cents.map(c => { let bs = 0, bd = Infinity;
+    for (let i = 0; i < P.length - 1; i++) { const ab = P[i + 1].clone().sub(P[i]), L2 = ab.lengthSq() || 1e-12;
+      const t = Math.max(0, Math.min(1, c.clone().sub(P[i]).dot(ab) / L2)), d = P[i].clone().addScaledVector(ab, t).distanceTo(c);
+      if (d < bd) { bd = d; bs = cum[i] + t * Math.sqrt(L2); } }
+    return bs; });
+  // Drehung je Bogenlänge (fein abgetastet, Parallel-Transport)
+  const M = Math.max(48, Math.min(400, Math.round(P.length * 6)));
+  const S = [], Q = [], T = [];
+  for (let j = 0; j <= M; j++) { S.push(L * j / M); T.push(tanAt(L * j / M)); }
+  Q.push(new THREE.Quaternion()); for (let j = 1; j <= M; j++) Q.push(new THREE.Quaternion().setFromUnitVectors(T[j - 1], T[j]).multiply(Q[j - 1]));
+  const rotAt = s => { const x = Math.max(0, Math.min(M, s / (L || 1) * M)), j = Math.floor(x); return j >= M ? Q[M].clone() : Q[j].clone().slerp(Q[j + 1], x - j); };
+  return { P, L, at, tanAt, rotAt, sOf, M };
+}
+function _lfPathRows(rings, PF, smooth){
+  const K = rings.length;
+  // Profile nach Lage auf dem Pfad sortieren und in den Pfad-Rahmen bringen
+  const ord = rings.map((r, k) => k).sort((a, b) => PF.sOf[a] - PF.sOf[b]);
+  const sK = ord.map(k => PF.sOf[k]);
+  const loc = ord.map((k, n) => { const s = sK[n], O = PF.at(s), Ri = PF.rotAt(s).invert(); return rings[k].map(p => p.clone().sub(O).applyQuaternion(Ri)); });
+  const s0 = sK[0], s1 = sK[K - 1], R = Math.max(12, Math.round(PF.M * (s1 - s0) / (PF.L || 1)));
+  const rows = [];
+  for (let j = 0; j <= R; j++) {
+    const s = s0 + (s1 - s0) * j / R;
+    let k = 0; while (k < K - 2 && sK[k + 1] < s) k++;
+    const t = Math.max(0, Math.min(1, (s - sK[k]) / ((sK[k + 1] - sK[k]) || 1e-12)));
+    const O = PF.at(s), Rq = PF.rotAt(s), row = new Array(loc[0].length);
+    for (let i = 0; i < row.length; i++) {
+      let v;
+      if (smooth && K >= 3) v = _catmull3(loc[Math.max(0, k - 1)][i], loc[k][i], loc[k + 1][i], loc[Math.min(K - 1, k + 2)][i], t);
+      else v = loc[k][i].clone().lerp(loc[k + 1][i], t);
+      row[i] = v.applyQuaternion(Rq).add(O);
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+function _lfPathPick(){
+  if (!_lf.active) return;
+  if (_lf.picks.length < 2) { notify('Erst mindestens 2 Profilflächen anklicken, dann den Pfad', 'w'); return; }
+  _lf.pathPick = true; _lf.chains = [];
+  notify('Pfad: Kante(n) anklicken, die vom ersten zum letzten Profil führen (Shift = weitere Kante anhängen). Erneut „⤳ Pfad“ = Pfad entfernen', 'ok');
+  _lfStatus();
+}
+function _lfPathClick(e){
+  const ch = _flgPickChain(e);
+  if (!ch) { notify('Keine Kante getroffen — genauer auf eine Kantenlinie klicken', 'w'); return; }
+  const prev = _flg.chains, prevP = _flg.path, prevC = _flg.closed;   // _flgJoin rechnet auf _flg → kurz leihen
+  _flg.chains = e.shiftKey && _lf.chains.length ? _lf.chains.concat([ch]) : [ch];
+  const okJ = _flgJoin();
+  if (okJ) { _lf.chains = _flg.chains; _lf.path = _flg.path; }
+  else notify('Diese Kante schließt nicht an den Pfad an', 'w');
+  _flg.chains = prev; _flg.path = prevP; _flg.closed = prevC;
+  _lfStatus(); _lfPreviewUpdate();
+}
 function _lfApply(){
   if (!_lf.active || _lf.picks.length < 2){ notify('Mindestens 2 Flächen anklicken','w'); return; }
   const smooth = document.getElementById('lf-smooth').checked;
   saveUndo();
   const rings = _lf.picks.map(p => p.ring);
-  const geo = _buildLoft3DGeo(rings, 96, smooth);
+  const path = _lf.path || null;
+  const geo = _buildLoft3DGeo(rings, 96, smooth, path);
   // Geometrie um die Bounding-Box-Mitte zentrieren, Mesh dorthin setzen
   geo.computeBoundingBox();
   const c = geo.boundingBox.getCenter(new THREE.Vector3());
@@ -32185,6 +32258,7 @@ function _lfApply(){
     Math.round((p.x-c.x)*1e4)/1e4, Math.round((p.y-c.y)*1e4)/1e4, Math.round((p.z-c.z)*1e4)/1e4 ]));
   mesh.userData._l3Sides = 96;
   mesh.userData._l3Smooth = smooth;
+  if (path) mesh.userData._l3Path = path.map(p => [Math.round((p.x-c.x)*1e4)/1e4, Math.round((p.y-c.y)*1e4)/1e4, Math.round((p.z-c.z)*1e4)/1e4]);
   mesh.userData._origGeo = geo;
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
   selectObjs([mesh]); updateTree();
@@ -32194,7 +32268,7 @@ function _lfApply(){
 // „Seiten"-/„Glatt"-Regler im Eigenschaften-Panel
 function _l3Rebuild(o){
   const rings = o.userData._l3Rings.map(r => r.map(a => new THREE.Vector3(a[0], a[1], a[2])));
-  const geo = _buildLoft3DGeo(rings, o.userData._l3Sides || 96, !!o.userData._l3Smooth);
+  const geo = _buildLoft3DGeo(rings, o.userData._l3Sides || 96, !!o.userData._l3Smooth, o.userData._l3Path ? o.userData._l3Path.map(a => new THREE.Vector3(a[0], a[1], a[2])) : null);
   o.geometry.dispose(); o.geometry = geo; o.userData._origGeo = geo;
   if (o.userData.displacementPattern && o.userData.displacementPattern !== 'keine'){ o.userData._dispBase = null; o.userData.displacementPattern = 'keine'; }
   _updateObjEdgeLines(o);
@@ -32520,6 +32594,7 @@ canvas.addEventListener('mousedown', e => {
   }
   if (_flg.active) { _flgClick(e); return; }
   if (_lf.active) {
+    if (_lf.pathPick) { _lfPathClick(e); return; }
     const hits = pickObjects(e);
     const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines);
     if (hit) _lfPickFace(hit);
@@ -65496,8 +65571,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.200';
+const VOLME3D_VERSION = '1.18.201';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.201', date:'2026-10-19', changes:[
+    ['⤧','<b>Loft entlang Pfad.</b> Im Loft nach den Profilflächen <b>⤳ Pfad</b> drücken und eine Kante oder einen Kantenzug anklicken (Shift = weitere anhängen). Der Übergang folgt dann dieser Kurve statt der geraden Verbindung, z. B. ein Rohrbogen, der von rund auf eckig wechselt, oder ein geschwungener Griff. Die Profile werden ohne Verdrehen mitgeführt; der Pfad wird mit dem Teil gespeichert.'],
+  ]},
   { version:'1.18.200', date:'2026-10-19', changes:[
     ['🎓','<b>Neu: Interaktive Anleitungen.</b> Unter <b>❓ Hilfe</b> oder über die Suche „Anleitung“: <b>Stiftebecher</b> und <b>Halter mit Lochreihe</b>. Du baust das Modell direkt im Programm, das Fenster oben rechts erklärt jeden Schritt und prüft selbst, ob er geklappt hat (Maß, Höhe, sogar das Volumen), dann geht es von allein weiter. Dein eigenes Projekt wird solange beiseitegelegt und kommt beim Beenden unverändert zurück, samt Rückgängig-Verlauf.'],
     ['📐','Die Skizzenleiste ragt nicht mehr über die Werkzeugleisten; bei kleinen Bildschirmen lässt sie sich scrollen.'],
