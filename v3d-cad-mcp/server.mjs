@@ -165,6 +165,17 @@ const TOOLS = [
   { name: 'open', description: 'V3D-JSON-Szene laden (ersetzt die aktuelle Szene).',
     inputSchema: obj({ path: { type: 'string' } }, ['path']),
     run: async a => engine(await execute('scene.load', { json: fs.readFileSync(safePath(a.path), 'utf8') })) },
+  { name: 'import', description: 'STL, 3MF, OBJ oder STEP importieren (zur Szene hinzufügen). Liegt danach auf der Platte; mit center verschieben.',
+    inputSchema: obj({ path: { type: 'string', description: `Datei (relativ zu ${OUT_DIR}) oder absoluter Pfad in einem erlaubten Ordner` },
+                       center: { type: 'array', items: { type: 'number' }, description: '[x, y] mm' } }, ['path']),
+    run: async a => {
+      const f = safePath(a.path);
+      if (!fs.existsSync(f)) throw new Error('Datei nicht gefunden: ' + f);
+      const st = fs.statSync(f);
+      if (st.size > 60 * 1024 * 1024) throw new Error('Datei zu groß (' + Math.round(st.size / 1048576) + ' MB, höchstens 60 MB)');
+      return engine(await execute('file.import', { name: path.basename(f), base64: fs.readFileSync(f).toString('base64'),
+                                                   ...(a.center ? { center: a.center } : {}) }));
+    } },
   { name: 'new_scene', description: 'Leere Szene (destruktiv).', inputSchema: obj({}),
     annotations: { destructiveHint: true }, run: async () => engine(await execute('scene.new')) },
   { name: 'undo', description: 'Einen Schritt zurück.', inputSchema: obj({}), run: async () => engine(await execute('edit.undo')) },

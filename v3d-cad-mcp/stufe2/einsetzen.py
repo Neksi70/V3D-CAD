@@ -16,6 +16,13 @@ if not schon:
             sys.exit('Anker nicht eindeutig: ' + a[:50])
     s = s.replace(anker_helfer, (hier / 'helfer.js').read_text(encoding='utf-8') + anker_helfer)
     s = s.replace(anker_befehle, (hier / 'befehle.js').read_text(encoding='utf-8') + anker_befehle)
+# Formwerkzeuge (Drehen, Aushöhlen, Spiegeln, Muster, Import) — eigener Satz Bausteine
+if "'body.mirror'" not in s:
+    for a in (anker_helfer, anker_befehle):
+        if s.count(a) != 1:
+            sys.exit('Anker nicht eindeutig: ' + a[:50])
+    s = s.replace(anker_helfer, (hier / 'formen_helfer.js').read_text(encoding='utf-8') + anker_helfer)
+    s = s.replace(anker_befehle, (hier / 'formen_befehle.js').read_text(encoding='utf-8') + anker_befehle)
 # Drehen: relativ („rotate“) für alle Körper; absolut („rotation“) nur bei Grundformen.
 # Bool-/Skizzen-/Generator-Ergebnisse tragen oft eine innere Grunddrehung — absolut
 # gesetzt landete der Deckel aus dem Rezept hochkant statt umgedreht.

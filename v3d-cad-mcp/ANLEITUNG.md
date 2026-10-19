@@ -31,6 +31,11 @@
 | Kanten runden oder fasen | `body.fillet {id, radius, edges}` bzw. `body.chamfer {id, distance, edges}` |
 | Kanten ansehen | `body.edges {id, filter?}` |
 | fertige Spielzeug-/Kindermodelle | `gen.list`, dann `gen.list {id}`, dann `gen.run {id, vorlage?, params}`; nachträglich ändern mit `gen.edit` |
+| Rotationskörper (Vase, Knauf, Becher) | `revolve {profile:[[r,z], …], center?, wall?}`; Profil auf der Achse (r = 0) beginnen und enden lassen |
+| aushöhlen (Wand nach innen, Seite offen) | `body.shell {id, thickness, open:"top"}`; gleiche Grenzen wie Runden |
+| spiegeln | `body.mirror {id, plane:"YZ"/"XZ"/"XY", at?, copy?}` |
+| Reihen, Lochkreise | `body.pattern {id, linear:{count, step}}` oder `{circular:{count, axis?, center?, angle?}}`, mit `union:true` gleich vereint |
+| vorhandene Datei weiterbearbeiten | MCP-Werkzeug `import {path}` (STL, 3MF, OBJ, STEP) |
 | verschieben, drehen, Größe ändern | `body.transform {id, center?, move?, rotate?, size?, drop?}`; `rotate` dreht *um* den Winkel, das absolute `rotation` geht nur bei Grundformen |
 | kopieren, Reihen | `body.duplicate {id, move}` |
 
@@ -65,8 +70,8 @@
 5. Steg darunter: `sketch.extrude {outer:{rect:{size:[B-2w-0.6, T-2w-0.6]}}, height:3, offset:w, op:"join", target:<deckel>}` (0,3 mm Spiel je Seite). Danach den Deckel umdrehen: `body.transform {rotate:[180,0,0], drop:true}`.
 
 **Gehäuse mit Schraubdomen:**
-1. Schale wie oben
-2. Dome: `shape.add cylinder size [6,6,h]` an den Ecken innen, auf dem Boden (Z = w), dann `bool.union` mit der Schale
+1. Schale: Quader, dann `body.shell {thickness:w, open:"top"}`. Das ist einfacher als Innenraum-Abziehen.
+2. Dome: einen `shape.add cylinder size [6,6,h]` innen an eine Ecke stellen, auf den Boden (Z = w). `body.pattern` bzw. `body.mirror` mit `copy` für die anderen Ecken, dann alles mit der Schale `bool.union`
 3. Schraublöcher: Zylinder Ø2,5 als `hole:true`, 0,5 mm über die Domoberkante hinaus, dann `bool.subtract`
 4. Öffnung für die Buchse: Quader `hole:true`, der die Wand ganz durchstößt (Tiefe = 2·w), dann `bool.subtract`
 
