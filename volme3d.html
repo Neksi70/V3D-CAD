@@ -1785,6 +1785,7 @@ const firebaseConfig = {
     <span id="lf-status" style="font-weight:700;color:#aaa">Ebene Flächen anklicken (mind. 2)</span>
     <label style="display:flex;align-items:center;gap:5px;cursor:pointer" title="≥3 Profile: weicher Spline-Verlauf statt gerader Segmente"><input id="lf-smooth" type="checkbox" checked onchange="_lfPreviewUpdate()" style="accent-color:#F97316">glatt</label>
     <button id="lf-path" onclick="if(_lf.pathPick){_lf.pathPick=false;_lf.path=null;_lf.chains=[];_lfStatus();_lfPreviewUpdate();}else _lfPathPick()" title="Loft entlang Pfad: eine Kante (oder einen Kantenzug) anklicken, die vom ersten zum letzten Profil führt — der Übergang folgt dann dieser Kurve" style="display:none;background:#333;border:1px solid #555;color:#fff;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px">⤳ Pfad</button>
+    <button id="lf-guide" onclick="_lfGuidePick()" title="Führungslinien: Kanten anklicken, die vom ersten zum letzten Profil laufen — die Seitenform des Lofts folgt ihnen (jeder Klick eine Führung, erneut drücken = alle entfernen)" style="display:none;background:#333;border:1px solid #555;color:#fff;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px">〰 Führung</button>
     <button id="lf-undo" onclick="_lfUndo()" style="display:none;background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px">← Zurück</button>
     <button id="lf-apply" onclick="_lfApply()" style="display:none;background:#F97316;border:none;color:#fff;border-radius:5px;padding:3px 10px;cursor:pointer;font-size:11px;font-weight:700">✓ Erstellen</button>
     <button onclick="exitLoftMode()" style="background:#333;border:1px solid #555;color:#ccc;border-radius:5px;padding:3px 8px;cursor:pointer;font-size:11px">✕ ESC</button>
@@ -13487,7 +13488,8 @@ async function _featRebuild(H) {
       const tm = toMf(new THREE.Mesh(_flgGeo(prof, f.path.map(a => new THREE.Vector3().fromArray(a)), f.closed)));
       cur = !cur ? tm : (f.op === 'cut' ? M.difference(cur, tm) : f.op === 'isect' ? M.intersection(cur, tm) : M.union(cur, tm));
     } else if (f.typ === 'loft') {
-      const g = _buildLoft3DGeo(f.rings.map(r => r.map(a => new THREE.Vector3().fromArray(a))), f.sides || 96, !!f.smooth, f.path ? f.path.map(a => new THREE.Vector3().fromArray(a)) : null);
+      const g = _buildLoft3DGeo(f.rings.map(r => r.map(a => new THREE.Vector3().fromArray(a))), f.sides || 96, !!f.smooth, f.path ? f.path.map(a => new THREE.Vector3().fromArray(a)) : null,
+        f.guides ? f.guides.map(gd => gd.map(a => new THREE.Vector3().fromArray(a))) : null);
       const tm = toMf(new THREE.Mesh(g)); cur = !cur ? tm : M.union(cur, tm);
     } else if (f.typ === 'gewinde') {
       if (!cur) throw new Error('Gewinde ohne Körper');
@@ -13520,7 +13522,7 @@ function _featLabel(f, k) {
   const mmS = x => String(Math.round(x * 100) / 100).replace('.', ',');
   if (f.typ === 'praegen') return `〰 Prägung ${k + 1} · ${f.p.mode === 'cut' ? 'vertieft' : 'erhaben'} ${({ v: 'V', r: 'rund', q: 'Rechteck' })[f.p.prof] || ''} ${mmS(f.p.w)}×${mmS(f.p.d)} mm`;
   if (f.typ === 'folgen') return `⤳ Folgen ${k + 1} · ${f.op === 'cut' ? 'Abziehen' : f.op === 'join' ? 'Anfügen' : f.op === 'isect' ? 'Schnittmenge' : 'Körper'}`;
-  if (f.typ === 'loft') return `⤧ Loft · ${f.rings.length} Profile${f.path ? ' · entlang Pfad' : ''}${f.smooth ? ' · glatt' : ''}`;
+  if (f.typ === 'loft') return `⤧ Loft · ${f.rings.length} Profile${f.path ? ' · entlang Pfad' : ''}${f.guides ? ' · ' + f.guides.length + ' Führung' + (f.guides.length > 1 ? 'en' : '') : ''}${f.smooth ? ' · glatt' : ''}`;
   if (f.typ === 'gewinde') { const s = f.p.size === 'eigen' ? 'Ø' + String(f.p.d).replace('.', ',') : f.p.size; return `🔩 Gewinde ${s}×${String(f.p.pitch).replace('.', ',')}${f.cyl.inner ? ' innen' : ' außen'}`; }
   const mm = String(Math.round(Math.abs(f.ab[1] - f.ab[0]) * 100) / 10).replace('.', ',');
   return `✏ Skizze ${k + 1} · ${f.op === 'cut' ? 'Abziehen' : f.op === 'join' ? 'Anfügen' : f.op === 'isect' ? 'Schnittmenge' : 'Körper'} ${mm} mm`;
@@ -13586,14 +13588,16 @@ function _featEditLoft(id, k) {
     <div class="vrow"><label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="lfe-s" ${f.smooth ? 'checked' : ''}> glatt (ab 3 Profilen)</label></div>
     <div class="vrow"><label>Seiten</label><input type="number" id="lfe-n" min="12" max="256" step="4" value="${f.sides || 96}" style="width:70px"></div>
     ${f.path ? '<div class="vrow"><label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="lfe-p"> Pfad entfernen (gerade verbinden)</label></div>' : ''}
+    ${f.guides ? '<div class="vrow"><label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="lfe-g"> Führungslinien entfernen</label></div>' : ''}
     <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:8px"><button class="btn" onclick="this.closest('#lfe-panel').remove()">Abbrechen</button><button class="btn pri" id="lfe-ok">✓ Übernehmen</button></div>`;
   document.body.appendChild(el);
   el.querySelector('#lfe-ok').onclick = async () => {
     const H = _featClone(o.userData.feat), g = H.list[k];
     g.smooth = el.querySelector('#lfe-s').checked; g.sides = Math.max(12, Math.min(256, parseInt(el.querySelector('#lfe-n').value) || 96));
     const pp = el.querySelector('#lfe-p'); if (pp && pp.checked) g.path = null;
+    const pg = el.querySelector('#lfe-g'); if (pg && pg.checked) g.guides = null;
     el.remove(); saveUndo();
-    try { await _featApply(o, H); if (k === 0 && o.userData._l3Rings) { o.userData._l3Smooth = g.smooth; o.userData._l3Sides = g.sides; if (!g.path) delete o.userData._l3Path; }
+    try { await _featApply(o, H); if (k === 0 && o.userData._l3Rings) { o.userData._l3Smooth = g.smooth; o.userData._l3Sides = g.sides; if (!g.path) delete o.userData._l3Path; if (!g.guides) delete o.userData._l3Guides; }
       notify(`Loft geändert — „${o.userData.name}“ neu berechnet`, 'ok'); }
     catch (err) { undo(); notify('Neuberechnung fehlgeschlagen: ' + (err.message || err), 'e'); }
   };
@@ -21574,7 +21578,7 @@ function buildObjectFromData(data) {
   if (data._skSides)        obj.userData._skSides        = data._skSides;
   if (data._loftLoops)   { obj.userData._loftLoops = data._loftLoops; obj.userData._loftHmm = data._loftHmm; obj.userData._loftSides = data._loftSides; }
   if (data._sweepProfile){ obj.userData._sweepProfile = data._sweepProfile; obj.userData._sweepPath = data._sweepPath; obj.userData._sweepSides = data._sweepSides; }
-  if (data._l3Rings)     { obj.userData._l3Rings = data._l3Rings; obj.userData._l3Sides = data._l3Sides; obj.userData._l3Smooth = !!data._l3Smooth; if (data._l3Path) obj.userData._l3Path = data._l3Path; }
+  if (data._l3Rings)     { obj.userData._l3Rings = data._l3Rings; obj.userData._l3Sides = data._l3Sides; obj.userData._l3Smooth = !!data._l3Smooth; if (data._l3Path) obj.userData._l3Path = data._l3Path; if (data._l3Guides) obj.userData._l3Guides = data._l3Guides; }
   if (data._mmuPaint) {
     obj.userData._mmuPaint = 1;
     if (data._mmuBase)  obj.userData._mmuBase  = data._mmuBase;
@@ -21865,7 +21869,7 @@ function objectToData(o, modus) {
   if (o.userData._skSides)        d._skSides        = o.userData._skSides;
   if (o.userData._loftLoops)   { d._loftLoops = o.userData._loftLoops; d._loftHmm = o.userData._loftHmm; d._loftSides = o.userData._loftSides; }
   if (o.userData._sweepProfile){ d._sweepProfile = o.userData._sweepProfile; d._sweepPath = o.userData._sweepPath; d._sweepSides = o.userData._sweepSides; }
-  if (o.userData._l3Rings)     { d._l3Rings = o.userData._l3Rings; d._l3Sides = o.userData._l3Sides; if (o.userData._l3Smooth) d._l3Smooth = true; if (o.userData._l3Path) d._l3Path = o.userData._l3Path; }
+  if (o.userData._l3Rings)     { d._l3Rings = o.userData._l3Rings; d._l3Sides = o.userData._l3Sides; if (o.userData._l3Smooth) d._l3Smooth = true; if (o.userData._l3Path) d._l3Path = o.userData._l3Path; if (o.userData._l3Guides) d._l3Guides = o.userData._l3Guides; }
   if (o.userData.occtShape)    d.occtShape   = o.userData.occtShape;
   if (o.userData._occtParams)  d._occtParams = o.userData._occtParams;
   // Mehrfarb-Bemalung: Farben stecken im Geometrie-Attribut, hier nur Flag+Palette
@@ -33137,7 +33141,7 @@ function enterLoftMode(){
   if (_edgeMode)    exitEdgeMode();
   if (_revolveMode) exitRevolveMode();
   if (workplaneMode) toggleWorkplane();
-  _lf.active = true; _lf.picks = []; _lf.preview = null; _lf.path = null; _lf.pathPick = false; _lf.chains = [];
+  _lf.active = true; _lf.picks = []; _lf.preview = null; _lf.path = null; _lf.pathPick = false; _lf.chains = []; _lf.guides = []; _lf.guidePick = false;
   _lf.group = new THREE.Group(); _lf.group.renderOrder = 995; scene.add(_lf.group);
   canvas.style.cursor = 'crosshair';
   document.getElementById('lf-bar').style.display = 'flex';
@@ -33146,7 +33150,7 @@ function enterLoftMode(){
 }
 function exitLoftMode(){
   if (!_lf.active) return;
-  _lf.active = false; _lf.picks = []; _lf.preview = null; _lf.path = null; _lf.pathPick = false; _lf.chains = [];
+  _lf.active = false; _lf.picks = []; _lf.preview = null; _lf.path = null; _lf.pathPick = false; _lf.chains = []; _lf.guides = []; _lf.guidePick = false;
   if (_lf.group){
     scene.remove(_lf.group);
     _lf.group.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material && o.material.dispose) o.material.dispose(); });
@@ -33162,6 +33166,7 @@ function _lfStatus(){
     n === 1 ? '1 Profil — noch mindestens eine Fläche anklicken' :
               n + ' Profile gewählt' + (_lf.pathPick ? (_lf.path ? ' · Pfad: ' + String(Math.round(_lf.path.reduce((s, p, i, a) => i ? s + p.distanceTo(a[i - 1]) : 0, 0) * 100) / 10).replace('.', ',') + ' mm' : ' · Pfad-Kante anklicken') : '');
   const pb = document.getElementById('lf-path'); if (pb) { pb.style.display = n >= 2 ? '' : 'none'; pb.style.background = _lf.pathPick ? '#F97316' : '#333'; }
+  const gb = document.getElementById('lf-guide'); if (gb) { gb.style.display = n >= 2 ? '' : 'none'; gb.style.background = _lf.guidePick ? '#F97316' : '#333'; gb.textContent = '〰 Führung' + (_lf.guides && _lf.guides.length ? ' (' + _lf.guides.length + ')' : ''); }
   document.getElementById('lf-apply').style.display = n >= 2 ? '' : 'none';
   document.getElementById('lf-undo').style.display  = n >= 1 ? '' : 'none';
 }
@@ -33309,7 +33314,7 @@ function _lfPreviewUpdate(){
   }
   if (_lf.picks.length < 2) return;
   const smooth = document.getElementById('lf-smooth').checked;
-  const geo = _buildLoft3DGeo(_lf.picks.map(p => p.ring), 64, smooth, _lf.path || null);
+  const geo = _buildLoft3DGeo(_lf.picks.map(p => p.ring), 64, smooth, _lf.path || null, _lf.guides && _lf.guides.length ? _lf.guides : null);
   _lf.preview = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
     color: 0xF97316, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide }));
   _lf.group.add(_lf.preview);
@@ -33342,7 +33347,7 @@ function _catmull3(p0,p1,p2,p3,t){
   const f = (a,b,c,d) => 0.5*((2*b) + (-a+c)*t + (2*a-5*b+4*c-d)*t2 + (-a+3*b-3*c+d)*t3);
   return new THREE.Vector3(f(p0.x,p1.x,p2.x,p3.x), f(p0.y,p1.y,p2.y,p3.y), f(p0.z,p1.z,p2.z,p3.z));
 }
-function _buildLoft3DGeo(ringsIn, N, smooth, pathIn){
+function _buildLoft3DGeo(ringsIn, N, smooth, pathIn, guidesIn){
   N = N || 96;
   const K = ringsIn.length;
   const cents = ringsIn.map(r => { const c = new THREE.Vector3(); r.forEach(p => c.add(p)); return c.multiplyScalar(1/r.length); });
@@ -33373,7 +33378,7 @@ function _buildLoft3DGeo(ringsIn, N, smooth, pathIn){
   // Zwischenreihen: 2 Profile = linear; ≥3 + glatt = Catmull-Rom durch alle
   let rows = rings;
   if (PF) rows = _lfPathRows(rings, PF, smooth);
-  else if (smooth && K >= 3){
+  else if (smooth && K >= 3 && !(guidesIn && guidesIn.length)){
     const S = 8; rows = [];
     for (let k = 0; k < K-1; k++){
       const r0 = rings[Math.max(0,k-1)], r1 = rings[k], r2 = rings[k+1], r3 = rings[Math.min(K-1,k+2)];
@@ -33385,6 +33390,7 @@ function _buildLoft3DGeo(ringsIn, N, smooth, pathIn){
     }
     rows.push(rings[K-1]);
   }
+  if (guidesIn && guidesIn.length) rows = _lfGuideRows(rows, guidesIn);
   // Mantel
   const pos = [], idx = [], R = rows.length;
   for (let r = 0; r < R; r++) for (let i = 0; i < N; i++){ const p = rows[r][i]; pos.push(p.x, p.y, p.z); }
@@ -33468,6 +33474,63 @@ function _lfPathRows(rings, PF, smooth){
   }
   return rows;
 }
+// ── Loft mit Führungslinien (1.18.214) ─────────────────────────────────────
+// Jede Führung (Kantenzug vom ersten zum letzten Profil) zieht die Ringpunkte an
+// ihrer Stelle auf sich; zwischen mehreren Führungen wird um den Umfang linear
+// überblendet, bei einer einzigen mit Kosinus-Abfall zur Gegenseite. Anfang und
+// Ende bleiben exakt (Versatz dort wird herausgerechnet).
+function _lfGuideRows(rows0, guides){
+  // genug Zwischenreihen, damit die Führung Wirkung hat
+  let rows = rows0;
+  const want = 48;
+  if (rows.length < want) { const out = [], segs = rows.length - 1, per = Math.ceil((want - 1) / segs);
+    for (let k = 0; k < segs; k++) for (let s = 0; s < per; s++) { const t = s / per; out.push(rows[k].map((p, i) => p.clone().lerp(rows[k + 1][i], t))); }
+    out.push(rows[rows.length - 1].map(p => p.clone())); rows = out; } else rows = rows.map(r => r.map(p => p.clone()));
+  const R = rows.length, N = rows[0].length;
+  // Reihen-Parameter über die Mittelpunkte
+  const cents = rows.map(r => r.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(1 / N));
+  const cum = [0]; for (let j = 1; j < R; j++) cum.push(cum[j - 1] + cents[j].distanceTo(cents[j - 1]));
+  const tRow = cum.map(c => c / (cum[R - 1] || 1));
+  const G = [];
+  for (const gIn of guides) {
+    let g = gIn.map(p => p.clone()); if (g.length < 2) continue;
+    const near = q => Math.min(...rows[0].map(p => p.distanceTo(q)));
+    if (near(g[g.length - 1]) < near(g[0])) g.reverse();
+    let gi = 0, bd = Infinity; rows[0].forEach((p, i) => { const d = p.distanceTo(g[0]); if (d < bd) { bd = d; gi = i; } });
+    const gc = [0]; for (let i = 1; i < g.length; i++) gc.push(gc[i - 1] + g[i].distanceTo(g[i - 1]));
+    const L = gc[gc.length - 1] || 1, at = u => { const s = u * L; let i = 1; while (i < g.length - 1 && gc[i] < s) i++; const f = (s - gc[i - 1]) / ((gc[i] - gc[i - 1]) || 1e-12); return g[i - 1].clone().lerp(g[i], Math.max(0, Math.min(1, f))); };
+    const D = rows.map((r, j) => at(tRow[j]).sub(r[gi]));
+    const D0 = D[0].clone(), D1 = D[R - 1].clone();
+    D.forEach((d, j) => d.sub(D0.clone().lerp(D1, tRow[j])));   // Enden exakt lassen
+    G.push({ gi, D });
+  }
+  if (!G.length) return rows0;
+  G.sort((a, b) => a.gi - b.gi);
+  const cd = (a, b) => { const d = Math.abs(a - b) % N; return Math.min(d, N - d); };
+  for (let j = 1; j < R - 1; j++) for (let i = 0; i < N; i++) {
+    let disp;
+    if (G.length === 1) { const d = cd(i, G[0].gi), w = 0.5 * (1 + Math.cos(Math.PI * d / (N / 2))); disp = G[0].D[j].clone().multiplyScalar(w); }
+    else { let a = G[G.length - 1], b = G[0];   // Nachbar-Führungen im Umlauf
+      for (let k = 0; k < G.length; k++) { const nx = G[(k + 1) % G.length]; const ga = G[k].gi, gb = nx.gi;
+        const inSeg = gb > ga ? (i >= ga && i <= gb) : (i >= ga || i <= gb); if (inSeg) { a = G[k]; b = nx; break; } }
+      const span = ((b.gi - a.gi) + N) % N || N, f = (((i - a.gi) + N) % N) / span;
+      disp = a.D[j].clone().lerp(b.D[j], f); }
+    rows[j][i].add(disp);
+  }
+  return rows;
+}
+function _lfGuidePick(){
+  if (!_lf.active) return;
+  if (_lf.picks.length < 2) { notify('Erst mindestens 2 Profilflächen anklicken, dann die Führung', 'w'); return; }
+  if (_lf.guidePick) { _lf.guidePick = false; _lf.guides = []; _lfStatus(); _lfPreviewUpdate(); notify('Führungslinien entfernt', 'ok'); return; }
+  _lf.guidePick = true; _lf.pathPick = false; _lf.guides = _lf.guides || [];
+  notify('Führung: Kante(n) anklicken, die vom ersten zum letzten Profil laufen — jeder Klick eine Führung. Erneut „〰 Führung“ = alle entfernen', 'ok');
+  _lfStatus();
+}
+function _lfGuideClick(e){
+  const ch = _flgPickChain(e); if (!ch) { notify('Keine Kante getroffen', 'w'); return; }
+  _lf.guides.push(ch); _lfStatus(); _lfPreviewUpdate();
+}
 function _lfPathPick(){
   if (!_lf.active) return;
   if (_lf.picks.length < 2) { notify('Erst mindestens 2 Profilflächen anklicken, dann den Pfad', 'w'); return; }
@@ -33491,8 +33554,8 @@ function _lfApply(){
   const smooth = document.getElementById('lf-smooth').checked;
   saveUndo();
   const rings = _lf.picks.map(p => p.ring);
-  const path = _lf.path || null;
-  const geo = _buildLoft3DGeo(rings, 96, smooth, path);
+  const path = _lf.path || null, guides = _lf.guides && _lf.guides.length ? _lf.guides : null;
+  const geo = _buildLoft3DGeo(rings, 96, smooth, path, guides);
   // Geometrie um die Bounding-Box-Mitte zentrieren, Mesh dorthin setzen
   geo.computeBoundingBox();
   const c = geo.boundingBox.getCenter(new THREE.Vector3());
@@ -33512,7 +33575,8 @@ function _lfApply(){
   mesh.userData._l3Sides = 96;
   mesh.userData._l3Smooth = smooth;
   if (path) mesh.userData._l3Path = path.map(p => [Math.round((p.x-c.x)*1e4)/1e4, Math.round((p.y-c.y)*1e4)/1e4, Math.round((p.z-c.z)*1e4)/1e4]);
-  _featSet(mesh, { base: null, list: [{ typ: 'loft', rings: mesh.userData._l3Rings, path: mesh.userData._l3Path || null, smooth: !!smooth, sides: 96 }] });
+  if (guides) mesh.userData._l3Guides = guides.map(g => g.map(p => [Math.round((p.x-c.x)*1e4)/1e4, Math.round((p.y-c.y)*1e4)/1e4, Math.round((p.z-c.z)*1e4)/1e4]));
+  _featSet(mesh, { base: null, list: [{ typ: 'loft', rings: mesh.userData._l3Rings, path: mesh.userData._l3Path || null, guides: mesh.userData._l3Guides || null, smooth: !!smooth, sides: 96 }] });
   mesh.userData._origGeo = geo;
   objects.push(mesh); scene.add(mesh); _updateObjEdgeLines(mesh);
   selectObjs([mesh]); updateTree();
@@ -33522,7 +33586,8 @@ function _lfApply(){
 // „Seiten"-/„Glatt"-Regler im Eigenschaften-Panel
 function _l3Rebuild(o){
   const rings = o.userData._l3Rings.map(r => r.map(a => new THREE.Vector3(a[0], a[1], a[2])));
-  const geo = _buildLoft3DGeo(rings, o.userData._l3Sides || 96, !!o.userData._l3Smooth, o.userData._l3Path ? o.userData._l3Path.map(a => new THREE.Vector3(a[0], a[1], a[2])) : null);
+  const geo = _buildLoft3DGeo(rings, o.userData._l3Sides || 96, !!o.userData._l3Smooth, o.userData._l3Path ? o.userData._l3Path.map(a => new THREE.Vector3(a[0], a[1], a[2])) : null,
+    o.userData._l3Guides ? o.userData._l3Guides.map(g => g.map(a => new THREE.Vector3(a[0], a[1], a[2]))) : null);
   o.geometry.dispose(); o.geometry = geo; o.userData._origGeo = geo;
   if (o.userData.displacementPattern && o.userData.displacementPattern !== 'keine'){ o.userData._dispBase = null; o.userData.displacementPattern = 'keine'; }
   _updateObjEdgeLines(o);
@@ -33851,6 +33916,7 @@ canvas.addEventListener('mousedown', e => {
   if (_heal.active) { _healClick(e); return; }
   if (_ssf.active) { _ssfClick(e); return; }
   if (_lf.active) {
+    if (_lf.guidePick) { _lfGuideClick(e); return; }
     if (_lf.pathPick) { _lfPathClick(e); return; }
     const hits = pickObjects(e);
     const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines);
@@ -67249,8 +67315,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.213';
+const VOLME3D_VERSION = '1.18.214';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.214', date:'2026-10-19', changes:[
+    ['⤧','<b>Loft mit Führungslinien.</b> Im Loft nach den Profilflächen <b>〰 Führung</b> drücken und Kanten anklicken, die vom ersten zum letzten Profil laufen; jeder Klick ist eine Führung. Die Seitenform des Übergangs folgt diesen Kurven, z. B. eine bauchige Flasche oder ein Griff, der in der Mitte breiter wird. Mehrere Führungen werden um den Umfang ineinander überblendet, Anfangs- und Endprofil bleiben exakt. Die Führungen werden im Verlauf gespeichert und lassen sich dort wieder entfernen.'],
+  ]},
   { version:'1.18.213', date:'2026-10-19', changes:[
     ['∿','<b>Neu: Spline auf der Fläche.</b> Rechtsklick → <b>∿ Spline auf der Fläche</b>, dann Punkte direkt auf das Modell klicken, auch auf Kugeln, Zylinder oder gewölbte Scan-Teile. Die Kurve schmiegt sich an die Oberfläche; den Startpunkt erneut anklicken schließt sie. Daraus wird eine <b>Nut</b> oder ein <b>Steg</b> (V, rund, rechteckig), deren Querschnitt überall senkrecht auf der Oberfläche steht, z. B. Zierlinien auf einer Kugel, Griffrillen oder Dichtungsnuten auf gewölbten Deckeln.'],
   ]},
