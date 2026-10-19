@@ -13879,10 +13879,25 @@ function _featBake(o) {
   o.updateMatrixWorld(true);
   if (o.matrixWorld.equals(new THREE.Matrix4())) return;
   if (o.parent && o.parent !== scene) return;   // in Gruppen nicht anfassen
-  o.geometry = o.geometry.clone(); o.geometry.applyMatrix4(o.matrixWorld);
+  // Exakte Form mitnehmen: ihre STEP-Rohdaten leben im lokalen System des Netzes.
+  // Ohne Umrechnung passt _brepGeo nach dem Einbacken nicht mehr, und _brepOk
+  // verwirft die exakte Form (Anfügen per Zahl in V3D-Shape verlor sie, 20.10.26).
+  const ud = o.userData, M = o.matrixWorld.clone();
+  let roh = null;
+  try { if (ud.exakt && _oc && _brepOk(o)) roh = _brepReadStep(_oc, ud._brepStep); } catch (e) { roh = null; }
+  o.geometry = o.geometry.clone(); o.geometry.applyMatrix4(M);
   o.position.set(0, 0, 0); o.quaternion.identity(); o.scale.set(1, 1, 1); o.updateMatrixWorld(true);
   o.geometry.computeBoundingBox(); o.geometry.computeBoundingSphere();
   delete o.userData._origGeo;
+  if (roh) {
+    try {
+      const welt = _exaktTransform(_oc, roh, M), bytes = welt && _occtStepBytes(_oc, welt);
+      if (bytes && bytes.length <= _MAX_BREP_BYTES) {
+        const rl = _brepEdgeList(_oc, welt, null);
+        ud._brepStep = bytes; ud._brepEdges = rl.edges; ud._brepEdgesTotal = rl.gesamt; ud._brepGeo = o.geometry;
+      }
+    } catch (e) { console.warn('[exakt] Einbacken: exakte Form nicht übernommen — bleibt Netz:', e); }
+  }
   try { _updateObjEdgeLines(o); } catch (e) {}
 }
 // Werkzeug-Körper einer Skizzen-Stufe (Mesh in L_k)
@@ -68555,8 +68570,13 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.217';
+const VOLME3D_VERSION = '1.18.218';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.218', date:'2026-10-20', changes:[
+    ['🧭','<b>Drei Arbeitsweisen, ein Modell:</b> Oben neben <b>BEGINNER</b> gibt es jetzt <b>V3D-VUSION</b> (für Umsteiger von Fusion: Menüband, Browser, Tastenkürzel wie dort, Shift + mittlere Maustaste dreht) und <b>V3D-SHAPE</b> (für Umsteiger von Shapr3D: Werkzeugspalte links, Werkzeuge direkt an der Auswahl, Flächen am Pfeil ziehen – gut für Tablet und Stift). Standard bleibt die V3D-Oberfläche; du kannst jederzeit hin- und zurückspringen – dein Modell bleibt dasselbe und lässt sich überall weiterbearbeiten.'],
+    ['📐','<b>Exakte Körper:</b> Würfel, Zylinder und Skizzen-Extrusionen behalten beim Vereinen, Abziehen und bei der Schnittmenge ihre exakte Form. Dadurch gehen Rundungen und Fasen jetzt auch über ein Loch hinweg, ohne Delle, und Flächen lassen sich auf den Zehntelmillimeter genau ziehen.'],
+    ['🤖','<b>Claude live:</b> Wer Claude nutzt, kann es sichtbar im eigenen Tab mitbauen lassen – mit dem eigenen Claude-Zugang. Einmal den Connector „V3D CAD“ in claude.ai hinzufügen, dann <b>☰ Menü → 🤖 Claude live</b> öffnen und Claude den Code nennen. Anleitung: <b>v3dcad.volme3dakademie.de/cad-mcp/anleitung</b>'],
+  ]},
   { version:'1.18.217', date:'2026-10-19', changes:[
     ['↝','<b>Skizze entlang Pfad:</b> Ein Querschnitt wird an einem Pfad entlanggezogen – ein Kabelkanal mit Ecke, eine Leitung, ein Ring um ein Sechseck. Den Pfad zeichnest du mit der neuen <b>┄ Hilfslinie</b> (Taste H) als Linien, Bögen oder Splines, offen oder geschlossen; Hilfslinien werden nie selbst zum Körper. Ein Umriss im Querschnitt macht ihn <b>hohl</b>. Ecken werden saubere Gehrungen mit gleich dicker Wand, Bögen bleiben glatt. Mit Vorschau, als Körper oder Loch, und später über den Baum („↝ Pfad-Skizze“) änderbar.'],
   ]},
