@@ -308,8 +308,8 @@ window.V3D_HILFE = [
 
   // ── Datei & Hilfe ─────────────────────────────────────────────────────
   { b: 'Datei & Hilfe', i: '💾', t: 'Speichern, Öffnen, Meine Designs', k: 'speichern öffnen designs galerie neu strg s sicherungen',
-    was: 'Designs speichern und wieder öffnen. Sicherungen holen ältere Stände der letzten Arbeitsstunde zurück.',
-    wo: '☰ Menü → Speichern / Öffnen / Sicherungen; „📁 Meine Designs“.', s: ['<b>Strg+S</b> speichert.', '„📁 Meine Designs“ zeigt alle gespeicherten Designs.'], run: 'showDesigns()' },
+    was: 'Designs speichern und wieder öffnen. Unter „🕘 Versionen“ holst du ältere Stände (bis 30 Tage) zurück oder hältst wichtige Stände fest.',
+    wo: '☰ Menü → Speichern / Öffnen / Versionen; „📁 Meine Designs“.', s: ['<b>Strg+S</b> speichert.', '„📁 Meine Designs“ zeigt alle gespeicherten Designs.'], run: 'showDesigns()' },
   { b: 'Datei & Hilfe', i: '📚', t: 'Bibliothek', k: 'bibliothek heruntergeladen modelle durchsuchen öffnen drucken',
     was: 'Heruntergeladene Modelle (STL/3MF/OBJ/STEP) durchsuchen, ansehen, öffnen und drucken.',
     wo: 'Import → 📚 Bibliothek.', s: ['Bibliothek öffnen und Modell wählen.'], run: '_stlLibOpen()' },
