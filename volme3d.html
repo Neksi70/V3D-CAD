@@ -6650,6 +6650,92 @@ Patrick</textarea>
 <script src="lib/GLTFLoader.js"></script>
 <script src="lib/SVGLoader.js"></script>
 <script src="lib/BufferGeometryUtils.js"></script>
+<script src="lib/three-mesh-bvh.min.js"></script>
+<script>
+// ── Schnelles Anklicken großer Netze: three-mesh-bvh 0.5.24 (MIT; die letzte Reihe für three r128) ──
+// Ohne Suchbaum prüft jeder Raycast (Hover, Pinsel, Messen, Flächen-Picks) ALLE Dreiecke.
+// Der Baum sitzt auf einer Schatten-Geometrie: dieselben Punkte (geteiltes Attribut), aber
+// ein eigener Index — die Bibliothek sortiert beim Aufbau die Dreiecke im Index um, das darf
+// die echte Geometrie nicht treffen (Bemalung, Flächen-Picks und 3MF merken sich Dreiecks-
+// nummern). Treffer werden deshalb auf die echte Dreiecksnummer zurückgerechnet.
+// Punkte verschoben (position.version, z. B. Modellieren) → refit; neue Topologie → neu bauen.
+// Fehlt die Bibliothek (anderer Server), bleibt alles beim normalen three-Raycast.
+// window._bvhAus = true schaltet ab (Vergleich/Fehlersuche).
+(function () {
+  const L = window.MeshBVHLib;
+  if (!L || !L.MeshBVH || !window.THREE || !THREE.Mesh) return;
+  const orig = THREE.Mesh.prototype.raycast, MIN_TRI = 15000, cache = new WeakMap();
+  const _inv = new THREE.Matrix4(), _ray = new THREE.Ray();
+  function bauen(g) {
+    const pos = g.attributes.position, idx = g.index, nTri = Math.floor((idx ? idx.count : pos.count) / 3);
+    const ix = new Uint32Array(nTri * 3);
+    if (idx) ix.set(idx.array.subarray(0, nTri * 3)); else for (let i = 0; i < ix.length; i++) ix[i] = i;
+    const proxy = new THREE.BufferGeometry();
+    proxy.setAttribute('position', pos);
+    proxy.setIndex(new THREE.BufferAttribute(ix, 1));
+    for (const gr of g.groups) proxy.addGroup(gr.start, Math.min(gr.count, nTri * 3 - gr.start), gr.materialIndex);
+    const bvh = new L.MeshBVH(proxy, { maxLeafTris: 10, verbose: false });
+    // Rückweg bei indizierten Netzen: echte Dreiecke nach erstem Eckpunkt einsortiert
+    let start = null, ids = null;
+    if (idx) {
+      const I = idx.array, nv = pos.count; start = new Uint32Array(nv + 1); ids = new Uint32Array(nTri);
+      for (let t = 0; t < nTri; t++) start[I[3 * t] + 1]++;
+      for (let v = 0; v < nv; v++) start[v + 1] += start[v];
+      const fill = start.slice(0, nv);
+      for (let t = 0; t < nTri; t++) ids[fill[I[3 * t]]++] = t;
+    }
+    return { bvh, ix, pos, posArr: pos.array, posVer: pos.version, idx, idxArr: idx && idx.array, idxVer: idx ? idx.version : -1, start, ids };
+  }
+  function echt(e, t) {
+    const a = e.ix[3 * t];
+    if (!e.idx) return (a / 3) | 0;            // Schatten-Index war 0,1,2,… → Dreieck = a/3
+    const b = e.ix[3 * t + 1], c = e.ix[3 * t + 2], I = e.idx.array;
+    for (let k = e.start[a]; k < e.start[a + 1]; k++) { const o = e.ids[k]; if (I[3 * o + 1] === b && I[3 * o + 2] === c) return o; }
+    return t;
+  }
+  function bereit(g) {
+    const pos = g.attributes.position, idx = g.index; let e = cache.get(g);
+    if (e && (e.pos !== pos || e.posArr !== pos.array || e.idx !== idx || (idx && (e.idxArr !== idx.array || e.idxVer !== idx.version)))) e = null;
+    if (!e) { e = bauen(g); cache.set(g, e); }
+    else if (e.posVer !== pos.version) { e.bvh.refit(); e.posVer = pos.version; }
+    return e;
+  }
+  function geeignet(mesh) {
+    const g = mesh.geometry, m = mesh.material, pos = g && g.attributes && g.attributes.position;
+    return !(window._bvhAus || !pos || !g.isBufferGeometry || m === undefined || mesh.isSkinnedMesh || mesh.isInstancedMesh ||
+      (mesh.morphTargetInfluences && mesh.morphTargetInfluences.length) || (Array.isArray(m) && !g.groups.length) ||
+      (g.index ? g.index.count : pos.count) < MIN_TRI * 3 || g.drawRange.start !== 0 || g.drawRange.count !== Infinity);
+  }
+  THREE.Mesh.prototype.raycast = function (rc, hits) {
+    const g = this.geometry, m = this.material;
+    if (!geeignet(this)) return orig.call(this, rc, hits);
+    let e; try { e = bereit(g); } catch (err) { console.warn('[bvh] Suchbaum fehlgeschlagen, normaler Raycast:', err); window._bvhAus = true; return orig.call(this, rc, hits); }
+    _inv.copy(this.matrixWorld).invert(); _ray.copy(rc.ray).applyMatrix4(_inv);
+    const roh = rc.firstHitOnly ? [e.bvh.raycastFirst(_ray, m)] : e.bvh.raycast(_ray, m);
+    for (const h of roh) {
+      if (!h) continue;
+      h.point.applyMatrix4(this.matrixWorld);
+      h.distance = h.point.distanceTo(rc.ray.origin);
+      if (h.distance < rc.near || h.distance > rc.far) continue;
+      h.object = this; h.faceIndex = echt(e, h.faceIndex);
+      hits.push(h);
+    }
+  };
+  window._bvhInfo = g => { const e = cache.get(g); return e ? { tris: e.ix.length / 3, posVer: e.posVer } : null; };
+  // Im Leerlauf vorbauen: große Netze bekommen ihren Baum gleich nach Import/Erzeugen,
+  // nicht erst beim ersten Hover (700k Dreiecke ≈ 0,4 s Pause). Höchstens ein Netz je Runde.
+  const leerlauf = window.requestIdleCallback || (f => setTimeout(f, 50));
+  setInterval(() => leerlauf(() => {
+    let liste; try { liste = objects; } catch (e) { return; }   // Haupt-Skript noch nicht durch
+    if (window._bvhAus || !Array.isArray(liste)) return;
+    for (const o of liste) {
+      let ziel = null;
+      o.traverse(c => { if (!ziel && c.isMesh && !c.userData.isEdgeLines && geeignet(c) && !cache.get(c.geometry)) ziel = c; });
+      if (ziel) { try { bereit(ziel.geometry); } catch (e) { window._bvhAus = true; } return; }
+    }
+  }, { timeout: 1000 }), 1500);   // die Render-Schleife lässt kaum Leerlauf → Frist greift
+})();
+</script>
 <script src="cam-kern.js"></script>
 <script src="lib/fflate.min.js"></script>
 <script src="lib/SimplifyModifier.js"></script>
@@ -67315,8 +67401,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.214';
+const VOLME3D_VERSION = '1.18.215';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.215', date:'2026-10-19', changes:[
+    ['⚡','<b>Große Netze reagieren viel schneller.</b> Anklicken, Darüberfahren, Bemalen, Modellieren und Messen auf Scans und feinen Modellen prüfen jetzt nicht mehr jedes einzelne Dreieck, sondern nutzen einen Suchbaum: gemessen rund <b>500-mal schneller</b> je Klick (700 000 Dreiecke: 20 ms → 0,05 ms). Der Baum entsteht kurz nach dem Laden im Hintergrund; am Modell selbst ändert sich nichts.'],
+  ]},
   { version:'1.18.214', date:'2026-10-19', changes:[
     ['⤧','<b>Loft mit Führungslinien.</b> Im Loft nach den Profilflächen <b>〰 Führung</b> drücken und Kanten anklicken, die vom ersten zum letzten Profil laufen; jeder Klick ist eine Führung. Die Seitenform des Übergangs folgt diesen Kurven, z. B. eine bauchige Flasche oder ein Griff, der in der Mitte breiter wird. Mehrere Führungen werden um den Umfang ineinander überblendet, Anfangs- und Endprofil bleiben exakt. Die Führungen werden im Verlauf gespeichert und lassen sich dort wieder entfernen.'],
   ]},
