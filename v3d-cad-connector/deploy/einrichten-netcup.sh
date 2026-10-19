@@ -16,12 +16,16 @@ sleep 3
 systemctl is-active v3d-cad-agent-hub v3d-cad-connector
 echo '== nginx'
 SITE=$(grep -l 'server_name[^;]*v3dcad.volme3dakademie.de' /etc/nginx/sites-enabled/* | head -1)
-echo "Site: $SITE"
-if ! grep -q 'v3d-cad-connector/deploy/nginx-cad.conf' "$SITE"; then
-  sudo cp "$SITE" "$SITE.bak-$(date +%Y%m%d-%H%M%S)"
+# sites-enabled enthält Verweise auf sites-available: die ECHTE Datei bearbeiten (sed -i würde
+# den Verweis durch eine Kopie ersetzen) und die Sicherung AUSSERHALB von sites-enabled ablegen
+# (nginx liest dort jede Datei — eine Kopie dort lässt „nginx -t“ scheitern). Passiert am 19.10.26.
+REAL=$(readlink -f "$SITE")
+echo "Site: $SITE -> $REAL"
+if ! grep -q 'v3d-cad-connector/deploy/nginx-cad.conf' "$REAL"; then
+  sudo cp "$REAL" "/etc/nginx/$(basename "$REAL").bak-$(date +%Y%m%d-%H%M%S)"
   # in den 443-Block: direkt nach der ersten „listen 443“-Zeile einfügen
   sudo sed -i '0,/listen[^;]*443/{/listen[^;]*443[^;]*;/a\    include /home/v3da/v3d-cad-connector/deploy/nginx-cad.conf;
-}' "$SITE"
+}' "$REAL"
 fi
 sudo nginx -t && sudo systemctl reload nginx
 echo '== Prüfen'
