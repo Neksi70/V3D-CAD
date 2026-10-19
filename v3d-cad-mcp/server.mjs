@@ -184,6 +184,103 @@ function checkArgs(tool, a) {
   return null;
 }
 
+// ── Agent-Monitor: Weboberfläche zum Mitverfolgen (nur localhost) ─────────
+// Jeder Werkzeug-Aufruf landet im Verlauf (Speicher + Protokolldatei) und geht
+// per Server-Sent Events an offene Monitor-Seiten. Nach jedem Bauschritt ein Bild.
+const MON_PORT0 = parseInt(argVal('--monitor-port') || '8830', 10);
+const BAUEND = new Set(['execute', 'batch', 'open', 'new_scene', 'undo', 'redo']);
+const history = [];                 // {n, zeit, quelle, tool, args, ok, ms, ergebnis, bild}
+const sseClients = new Set();
+let monPort = null, histN = 0;
+const startedAt = new Date();
+const LOG_FILE = path.join(OUT_DIR, 'protokoll-' + startedAt.toLocaleString('sv-SE').replace(/[: ]/g, '-') + '.jsonl');
+
+function sse(ev, data) {
+  const msg = `event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const res of sseClients) res.write(msg);
+}
+// Ergebnis kürzen: Bilder/Base64 nicht in den Verlauf
+function summarize(result) {
+  const out = { isError: !!result.isError, texte: [] };
+  for (const c of result.content || []) {
+    if (c.type === 'image') { out.hatBild = true; continue; }
+    let t = c.text || '';
+    try { const j = JSON.parse(t); if (j?.result?.json) j.result.json = '[Szene, ' + j.result.json.length + ' Zeichen]'; t = JSON.stringify(j, null, 1); } catch (_) {}
+    out.texte.push(t.length > 20000 ? t.slice(0, 20000) + ' …' : t);
+  }
+  return out;
+}
+async function record(quelle, tool, args, result, ms) {
+  const e = { n: ++histN, zeit: new Date().toISOString(), quelle, tool, args, ok: !result.isError, ms, ergebnis: summarize(result) };
+  if (BAUEND.has(tool) && page && !page.isClosed()) {
+    try {
+      const r = await execute('view.screenshot', { width: 640, height: 400 });
+      if (r.ok) e.bild = r.result.png;
+    } catch (_) {}
+  }
+  history.push(e); if (history.length > 500) history.shift();
+  try { fs.mkdirSync(OUT_DIR, { recursive: true }); const { bild, ...ohneBild } = e; fs.appendFileSync(LOG_FILE, JSON.stringify(ohneBild) + '\n'); } catch (_) {}
+  sse('schritt', e);
+}
+
+async function startMonitor() {
+  const http = await import('http');
+  const html = () => fs.readFileSync(new URL('./monitor.html', import.meta.url), 'utf8');
+  const body = req => new Promise(r => { let b = ''; req.on('data', c => { b += c; if (b.length > 5e6) req.destroy(); }); req.on('end', () => r(b)); });
+  const json = (res, code, v) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(v)); };
+  const srv = http.createServer(async (req, res) => {
+    // Nur Aufrufe von dieser Maschine; fremde Origins (andere Webseiten im Browser) abweisen
+    const origin = req.headers.origin;
+    if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) { res.writeHead(403); return res.end(); }
+    const u = new URL(req.url, 'http://x');
+    try {
+      if (u.pathname === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); return res.end(html()); }
+      if (u.pathname === '/api/info') return json(res, 200, { pid: process.pid, start: startedAt, protokoll: LOG_FILE, appBereit: !!(page && !page.isClosed()), schritte: histN });
+      if (u.pathname === '/api/verlauf') return json(res, 200, history);
+      if (u.pathname === '/api/werkzeuge') return json(res, 200, TOOLS.map(({ run, ...t }) => t));
+      if (u.pathname === '/api/events') {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
+        res.write(': hallo\n\n'); sseClients.add(res);
+        const ka = setInterval(() => res.write(': ka\n\n'), 25000);
+        req.on('close', () => { clearInterval(ka); sseClients.delete(res); });
+        return;
+      }
+      if (u.pathname === '/api/befehle') return json(res, 200, await call(f => window.v3dApi.commands(f), ''));
+      if (u.pathname === '/api/szene') return json(res, 200, await execute('scene.inspect', { measure: true }));
+      if (u.pathname === '/api/bild') {
+        const r = await execute('view.screenshot', { view: u.searchParams.get('view') || 'iso', width: 960, height: 600 });
+        return json(res, r.ok ? 200 : 500, r);
+      }
+      if (u.pathname === '/api/download') {
+        const fmt = u.searchParams.get('format') || 'stl';
+        const r = fmt === 'json' ? await execute('scene.save') : await execute('file.export', { format: fmt });
+        if (!r.ok) return json(res, 500, r);
+        const buf = fmt === 'json' ? Buffer.from(r.result.json) : Buffer.from(r.result.base64, 'base64');
+        res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename="v3d-agent.${fmt === 'json' ? 'v3d.json' : fmt}"` });
+        return res.end(buf);
+      }
+      if (u.pathname === '/api/ausfuehren' && req.method === 'POST') {
+        // Werkzeug von Hand ausführen (gleicher Weg wie Claude, landet im Verlauf als „Hand")
+        const { tool: name, args = {} } = JSON.parse(await body(req) || '{}');
+        const tool = TOOLS.find(t => t.name === name);
+        if (!tool) return json(res, 400, { error: 'Unbekanntes Werkzeug ' + name });
+        const bad = checkArgs(tool, args); if (bad) return json(res, 400, { error: bad });
+        const t0 = Date.now(); let result;
+        try { result = await tool.run(args); } catch (e) { result = { content: [{ type: 'text', text: 'Fehler: ' + e.message }], isError: true }; }
+        await record('Hand', name, args, result, Date.now() - t0);
+        return json(res, 200, summarize(result));
+      }
+      res.writeHead(404); res.end();
+    } catch (e) { json(res, 500, { error: e.message }); }
+  });
+  for (let p = MON_PORT0; p < MON_PORT0 + 10; p++) {
+    const okk = await new Promise(r => { srv.once('error', () => r(false)); srv.listen(p, '127.0.0.1', () => r(true)); });
+    if (okk) { monPort = p; log(`Monitor: http://127.0.0.1:${p}/`); return; }
+  }
+  log('Monitor: kein freier Port ab ' + MON_PORT0);
+}
+const monReady = args.includes('--no-monitor') ? Promise.resolve() : startMonitor().catch(e => log('Monitor-Fehler:', e.message));
+
 // ── JSON-RPC ──────────────────────────────────────────────────────────────
 const send = m => process.stdout.write(JSON.stringify(m) + '\n');
 const rpcErr = (id, code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
@@ -197,7 +294,9 @@ async function handle(msg) {
         const v = params && PROTOCOLS.includes(params.protocolVersion) ? params.protocolVersion : PROTOCOLS[0];
         return { jsonrpc: '2.0', id, result: { protocolVersion: v,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: 'v3d-cad', version: '0.1.0' }, instructions: INSTRUCTIONS } };
+          serverInfo: { name: 'v3d-cad', version: '0.2.0' },
+          instructions: INSTRUCTIONS + (await monReady, monPort
+            ? `\n- Der Nutzer kann live mitverfolgen, was du baust: Agent-Monitor http://127.0.0.1:${monPort}/ — nenne ihm den Link, wenn du mit dem Bauen beginnst.` : '') } };
       }
       case 'notifications/initialized': case 'notifications/cancelled': return null;
       case 'ping': return { jsonrpc: '2.0', id, result: {} };
@@ -209,8 +308,12 @@ async function handle(msg) {
         const a = params.arguments || {};
         const bad = checkArgs(tool, a);
         if (bad) return rpcErr(id, -32602, bad);
-        try { return { jsonrpc: '2.0', id, result: await tool.run(a) }; }
-        catch (e) { return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'Fehler: ' + e.message }], isError: true } }; }
+        const t0 = Date.now();
+        let result;
+        try { result = await tool.run(a); }
+        catch (e) { result = { content: [{ type: 'text', text: 'Fehler: ' + e.message }], isError: true }; }
+        record('Claude', tool.name, a, result, Date.now() - t0);
+        return { jsonrpc: '2.0', id, result };
       }
       default:
         return isNote ? null : rpcErr(id, -32601, `Methode unbekannt: ${method}`);

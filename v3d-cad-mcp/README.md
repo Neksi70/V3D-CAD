@@ -17,6 +17,17 @@ Optionen:
 - `--allow-path DIR`: weitere Ordner zum Speichern und Laden freigeben (Standard: `~/v3d-cad-mcp/ausgabe`)
 - `--show`: den Browser sichtbar öffnen
 
+## Agent-Monitor (live mitverfolgen)
+
+Sobald der Server läuft, öffnet sich unter **http://127.0.0.1:8830/** der Agent-Monitor (nur von diesem Rechner erreichbar). Ist der Port belegt, nimmt er den nächsten freien bis 8839; mit `--monitor-port N` lässt sich ein anderer Startport wählen, mit `--no-monitor` schaltet man ihn ab. Claude bekommt den Link mitgeteilt und nennt ihn dir.
+
+- **Verlauf:** jeder Werkzeug-Aufruf live mit Parametern, Ergebnis, Fehlern und Dauer, dazu ein Bild nach jedem Bauschritt.
+- **Ansicht:** Live folgen oder einen alten Schritt anklicken; Iso/Vorne/Oben/… rendert den aktuellen Stand.
+- **Körper:** id, Name, Größe, Volumen.
+- **Befehle / MCP-Werkzeuge:** alle Befehle mit Parametern. Über das Formular lassen sie sich selbst ausführen; sie erscheinen dann als „Hand“ im Verlauf.
+- **Download:** STL, 3MF, STEP und die Szene (V3D-JSON, in V3D CAD zu öffnen).
+- **Protokoll:** jede Sitzung schreibt `ausgabe/protokoll-<Datum-Uhrzeit>.jsonl`.
+
 ## Werkzeuge
 
 `list_commands`, `execute`, `batch`, `inspect_scene`, `measure`, `screenshot`, `export` (stl/3mf/step), `save`, `open`, `new_scene`, `undo`, `redo`

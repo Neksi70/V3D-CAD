@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V3D Agent-Monitor</title>
+<style>
+  :root { --bg:#0f1720; --panel:#16212d; --line:#243444; --text:#e6edf3; --mute:#8aa0b4;
+          --blue:#3b9cff; --ok:#2fbf71; --err:#ff5d5d; --warn:#f5b942; --hand:#b884ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:14px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; font-weight:650; }
+  header h1 span { color:var(--blue); }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--err); display:inline-block; margin-right:6px; vertical-align:middle; }
+  .dot.live { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+  .mute { color:var(--mute); font-size:12px; }
+  main { flex:1; display:grid; grid-template-columns: 330px 1fr 380px; min-height:0; }
+  section { display:flex; flex-direction:column; min-height:0; border-right:1px solid var(--line); }
+  section:last-child { border-right:0; }
+  .head { padding:8px 12px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; font-weight:600; }
+  .scroll { overflow:auto; flex:1; min-height:0; }
+  /* Verlauf */
+  .step { padding:8px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .step:hover { background:#1b2938; }
+  .step.sel { background:#1f3247; border-left:3px solid var(--blue); padding-left:9px; }
+  .step .top { display:flex; gap:6px; align-items:center; }
+  .step .n { color:var(--mute); font-variant-numeric:tabular-nums; min-width:28px; }
+  .step .tool { font-weight:600; }
+  .step .ms { margin-left:auto; color:var(--mute); font-size:12px; }
+  .step .sub { color:var(--mute); font-size:12px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .badge { font-size:11px; padding:1px 6px; border-radius:9px; background:#24405e; color:#9fd0ff; }
+  .badge.hand { background:#3a2a55; color:var(--hand); }
+  .ok { color:var(--ok); } .err { color:var(--err); }
+  /* Mitte */
+  .bildwrap { position:relative; background:#dfe8f1; display:flex; align-items:center; justify-content:center; min-height:260px; flex:1; }
+  .bildwrap img { max-width:100%; max-height:100%; object-fit:contain; display:block; }
+  .bildwrap .leer { color:#57708a; }
+  .bildinfo { position:absolute; left:10px; top:8px; background:rgba(15,23,32,.75); color:#fff; padding:3px 8px; border-radius:6px; font-size:12px; }
+  .bar { display:flex; gap:6px; padding:8px 12px; border-bottom:1px solid var(--line); flex-wrap:wrap; align-items:center; }
+  button, select, textarea, input { font:inherit; color:var(--text); background:#1d2b3a; border:1px solid var(--line); border-radius:7px; }
+  button { padding:5px 10px; cursor:pointer; }
+  button:hover { border-color:var(--blue); }
+  button.primary { background:var(--blue); border-color:var(--blue); color:#fff; font-weight:600; }
+  button.on { background:#1f3a57; border-color:var(--blue); }
+  .detail { max-height:42%; overflow:auto; border-top:1px solid var(--line); padding:10px 12px; }
+  .detail h3 { font-size:13px; margin:8px 0 4px; color:var(--mute); font-weight:600; }
+  pre { margin:0; white-space:pre-wrap; word-break:break-word; font:12px/1.45 ui-monospace, Menlo, Consolas, monospace; background:#0b121a; padding:8px; border-radius:7px; border:1px solid var(--line); }
+  pre.err { border-color:var(--err); color:#ffc9c9; }
+  /* Rechts */
+  .tabs { display:flex; border-bottom:1px solid var(--line); }
+  .tabs button { flex:1; border:0; border-radius:0; background:transparent; padding:9px; color:var(--mute); }
+  .tabs button.on { color:var(--text); border-bottom:2px solid var(--blue); background:transparent; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mute); font-weight:600; position:sticky; top:0; background:var(--panel); }
+  td.num { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .cmd { padding:8px 12px; border-bottom:1px solid var(--line); }
+  .cmd b { color:#9fd0ff; font-family:ui-monospace, Menlo, Consolas, monospace; }
+  .cmd .doc { color:var(--mute); font-size:12px; margin:3px 0 5px; }
+  .cmd button { font-size:12px; padding:2px 8px; }
+  .form { padding:10px 12px; border-top:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; gap:6px; }
+  .form .row { display:flex; gap:6px; }
+  .form select { flex:1; padding:5px; }
+  .form textarea { width:100%; min-height:90px; padding:6px; font:12px ui-monospace, Menlo, Consolas, monospace; resize:vertical; }
+  .hint { font-size:12px; color:var(--mute); }
+  #antwort { max-height:160px; overflow:auto; }
+  @media (max-width: 1000px) {
+    main { grid-template-columns: 1fr; grid-auto-rows: minmax(300px, auto); overflow:auto; }
+    section { border-right:0; border-bottom:1px solid var(--line); min-height:320px; }
+    body { height:auto; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>V3D</span> Agent-Monitor</h1>
+  <span><span id="dot" class="dot"></span><span id="status">verbinde …</span></span>
+  <span class="mute" id="zaehler"></span>
+  <span class="mute" id="proto" style="margin-left:auto"></span>
+</header>
+<main>
+  <!-- Verlauf -->
+  <section>
+    <div class="head">Verlauf <span class="mute" id="anz"></span>
+      <label class="mute" style="margin-left:auto;font-weight:400"><input type="checkbox" id="nurBau" checked> nur Bauschritte</label></div>
+    <div class="scroll" id="verlauf"><div class="mute" style="padding:12px">Noch nichts passiert. Sobald Claude ein V3D-Werkzeug benutzt, erscheint hier jeder Schritt.</div></div>
+  </section>
+
+  <!-- Ansicht -->
+  <section>
+    <div class="bar">
+      <button id="live" class="on" title="Immer den neuesten Schritt zeigen">● Live folgen</button>
+      <span class="mute">Ansicht:</span>
+      <button data-view="iso">Iso</button><button data-view="front">Vorne</button><button data-view="top">Oben</button>
+      <button data-view="right">Rechts</button><button data-view="left">Links</button><button data-view="back">Hinten</button>
+      <span style="margin-left:auto" class="mute">Download:</span>
+      <button data-dl="stl">STL</button><button data-dl="3mf">3MF</button><button data-dl="step">STEP</button><button data-dl="json" title="Szene als V3D-JSON – in V3D CAD über Öffnen laden">Szene</button>
+    </div>
+    <div class="bildwrap"><span class="leer" id="leer">Noch kein Bild</span><img id="bild" alt="" hidden><span class="bildinfo" id="bildinfo" hidden></span></div>
+    <div class="detail" id="detail"><span class="mute">Schritt im Verlauf anklicken, um Parameter und Ergebnis zu sehen.</span></div>
+  </section>
+
+  <!-- Körper + Befehle -->
+  <section>
+    <div class="tabs"><button class="on" data-tab="koerper">Körper</button><button data-tab="befehle">Befehle</button><button data-tab="werkzeuge">MCP-Werkzeuge</button></div>
+    <div class="scroll" id="tab-koerper"></div>
+    <div class="scroll" id="tab-befehle" hidden></div>
+    <div class="scroll" id="tab-werkzeuge" hidden></div>
+    <div class="form">
+      <div class="row">
+        <select id="fTool" title="MCP-Werkzeug"></select>
+        <select id="fBefehl" title="Befehl (nur bei execute)"></select>
+      </div>
+      <textarea id="fArgs" spellcheck="false"></textarea>
+      <div class="row"><button class="primary" id="fRun">Ausführen</button><span class="hint" id="fHint">Läuft auf derselben Szene wie Claude und erscheint im Verlauf als „Hand“.</span></div>
+      <div id="antwort"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+const BAUEND = new Set(['execute', 'batch', 'open', 'new_scene', 'undo', 'redo']);
+let steps = [], sel = null, live = true, befehle = [], werkzeuge = [];
+
+// Kurzbeschreibung eines Schritts für die Liste
+function kurz(e) {
+  const a = e.args || {};
+  if (e.tool === 'execute') return a.command + (a.params && Object.keys(a.params).length ? ' ' + JSON.stringify(a.params) : '');
+  if (e.tool === 'batch') return (a.commands || []).length + ' Befehle: ' + (a.commands || []).map(c => c.command).join(', ');
+  const s = JSON.stringify(a); return s === '{}' ? '' : s;
+}
+function fehlertext(e) {
+  for (const t of e.ergebnis.texte || []) {
+    try { const j = JSON.parse(t); if (j.error) return j.error; if (j.failed) return '#' + j.failed.index + ' ' + j.failed.command + ': ' + j.failed.error; } catch (_) { return t; }
+  }
+  return '';
+}
+
+function renderVerlauf() {
+  const nurBau = $('#nurBau').checked;
+  const list = steps.filter(e => !nurBau || BAUEND.has(e.tool) || !e.ok).slice().reverse();
+  $('#anz').textContent = '(' + steps.length + ')';
+  if (!list.length) return;
+  $('#verlauf').innerHTML = list.map(e => `
+    <div class="step${sel === e.n ? ' sel' : ''}" data-n="${e.n}">
+      <div class="top"><span class="n">#${e.n}</span><span class="${e.ok ? 'ok' : 'err'}">${e.ok ? '✓' : '✗'}</span>
+        <span class="tool">${esc(e.tool)}</span><span class="badge${e.quelle === 'Hand' ? ' hand' : ''}">${esc(e.quelle)}</span>
+        <span class="ms">${new Date(e.zeit).toLocaleTimeString('de-DE')} · ${e.ms < 1000 ? e.ms + ' ms' : (e.ms / 1000).toFixed(1) + ' s'}</span></div>
+      <div class="sub" title="${esc(kurz(e))}">${esc(kurz(e)) || '&nbsp;'}</div>
+      ${e.ok ? '' : `<div class="sub err">${esc(fehlertext(e))}</div>`}
+    </div>`).join('');
+}
+
+function zeigeBild(src, info) {
+  if (!src) return;
+  $('#bild').src = src; $('#bild').hidden = false; $('#leer').hidden = true;
+  $('#bildinfo').textContent = info; $('#bildinfo').hidden = !info;
+}
+
+function waehle(n) {
+  sel = n; const e = steps.find(x => x.n === n); if (!e) return;
+  if (n !== steps[steps.length - 1]?.n) setLive(false);
+  // Bild: das dieses Schritts, sonst das letzte davor
+  const mitBild = steps.filter(x => x.n <= n && x.bild).pop();
+  if (mitBild) zeigeBild(mitBild.bild, 'nach Schritt #' + mitBild.n);
+  $('#detail').innerHTML = `
+    <div><b>#${e.n} ${esc(e.tool)}</b> <span class="badge${e.quelle === 'Hand' ? ' hand' : ''}">${esc(e.quelle)}</span>
+      <span class="mute">${new Date(e.zeit).toLocaleString('de-DE')} · ${e.ms} ms</span></div>
+    <h3>Parameter</h3><pre>${esc(JSON.stringify(e.args, null, 2))}</pre>
+    <h3>Ergebnis${e.ergebnis.hatBild ? ' (mit Bild)' : ''}</h3>
+    ${(e.ergebnis.texte || []).map(t => `<pre class="${e.ok ? '' : 'err'}">${esc(t)}</pre>`).join('') || '<span class="mute">—</span>'}`;
+  renderVerlauf();
+}
+
+function setLive(v) {
+  live = v; $('#live').classList.toggle('on', v);
+  if (v && steps.length) waehle(steps[steps.length - 1].n);
+}
+
+async function ladeKoerper() {
+  try {
+    const r = await (await fetch('api/szene')).json();
+    const b = r.ok ? r.result.bodies : [];
+    $('#tab-koerper').innerHTML = !b.length ? '<div class="mute" style="padding:12px">Szene ist leer.</div>' : `
+      <table><tr><th>id</th><th>Name</th><th>Größe (mm)</th><th>Volumen</th></tr>
+      ${b.map(k => `<tr title="Mitte ${k.center.join(' / ')} · Drehung ${k.rotation.join(' / ')}°">
+        <td class="num">${k.id}</td>
+        <td>${esc(k.name)}<br><span class="mute">${esc(k.type)}${k.hole ? ' · <span class="err">Bohrung</span>' : ''}${k.hidden ? ' · ausgeblendet' : ''}</span></td>
+        <td class="num">${k.size.map(x => +x.toFixed(2)).join(' × ')}</td>
+        <td class="num">${k.volume_mm3 != null ? (k.volume_mm3 / 1000).toFixed(2) + ' cm³' : '—'}</td></tr>`).join('')}</table>`;
+  } catch (e) { $('#tab-koerper').innerHTML = '<div class="mute" style="padding:12px">App startet noch …</div>'; }
+}
+
+async function ladeBefehle() {
+  try {
+    befehle = await (await fetch('api/befehle')).json();
+    $('#tab-befehle').innerHTML = befehle.map(c => `
+      <div class="cmd"><b>${esc(c.id)}</b> ${c.changes_scene ? '' : '<span class="badge">nur lesen</span>'}
+        <div class="doc">${esc(c.params)}</div><button data-cmd="${esc(c.id)}">ins Formular</button></div>`).join('');
+    $('#fBefehl').innerHTML = befehle.map(c => `<option>${esc(c.id)}</option>`).join('');
+  } catch (_) {}
+}
+async function ladeWerkzeuge() {
+  werkzeuge = await (await fetch('api/werkzeuge')).json();
+  $('#tab-werkzeuge').innerHTML = werkzeuge.map(t => `
+    <div class="cmd"><b>${esc(t.name)}</b><div class="doc">${esc(t.description)}</div>
+      <pre>${esc(JSON.stringify(Object.fromEntries(Object.entries(t.inputSchema.properties).map(([k, v]) => [k + ((t.inputSchema.required || []).includes(k) ? ' *' : ''), v.enum ? v.enum.join('|') : v.type]))))}</pre></div>`).join('');
+  $('#fTool').innerHTML = werkzeuge.map(t => `<option${t.name === 'execute' ? ' selected' : ''}>${esc(t.name)}</option>`).join('');
+  formVorlage();
+}
+
+// Beispiel-Parameter für das Formular
+const BEISPIEL = {
+  'shape.add': { type: 'box', size: [40, 30, 20], center: [0, 0, 10] },
+  'body.transform': { id: 1, move: [10, 0, 0] }, 'body.set': { id: 1, color: '#ff8800' },
+  'body.duplicate': { id: 1, move: [30, 0, 0] }, 'body.delete': { ids: [1] },
+  'bool.union': { ids: [1, 2] }, 'bool.subtract': { target: 1, tools: [2] }, 'bool.intersect': { ids: [1, 2] },
+  'measure': {}, 'measure.distance': { a: 1, b: 2 }, 'scene.inspect': { measure: true },
+  'view.screenshot': { view: 'iso' }, 'file.export': { format: 'stl' },
+};
+function formVorlage() {
+  const t = $('#fTool').value;
+  $('#fBefehl').disabled = t !== 'execute';
+  if (t === 'execute') $('#fArgs').value = JSON.stringify(BEISPIEL[$('#fBefehl').value] || {}, null, 1);
+  else if (t === 'batch') $('#fArgs').value = JSON.stringify({ commands: [{ command: 'shape.add', params: BEISPIEL['shape.add'] }] }, null, 1);
+  else if (t === 'export') $('#fArgs').value = JSON.stringify({ path: 'teil.stl' });
+  else if (t === 'save' || t === 'open') $('#fArgs').value = JSON.stringify({ path: 'szene.json' });
+  else $('#fArgs').value = '{}';
+}
+$('#fTool').onchange = formVorlage; $('#fBefehl').onchange = formVorlage;
+
+$('#fRun').onclick = async () => {
+  let a;
+  try { a = JSON.parse($('#fArgs').value || '{}'); } catch (e) { $('#antwort').innerHTML = `<pre class="err">JSON-Fehler: ${esc(e.message)}</pre>`; return; }
+  const tool = $('#fTool').value;
+  const args = tool === 'execute' ? { command: $('#fBefehl').value, params: a } : a;
+  $('#fRun').disabled = true; $('#antwort').innerHTML = '<span class="mute">läuft …</span>';
+  try {
+    const r = await (await fetch('api/ausfuehren', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tool, args }) })).json();
+    $('#antwort').innerHTML = r.error ? `<pre class="err">${esc(r.error)}</pre>` : (r.texte || []).map(t => `<pre class="${r.isError ? 'err' : ''}">${esc(t)}</pre>`).join('');
+  } catch (e) { $('#antwort').innerHTML = `<pre class="err">${esc(e.message)}</pre>`; }
+  $('#fRun').disabled = false;
+};
+
+document.addEventListener('click', async ev => {
+  const st = ev.target.closest('.step'); if (st) return waehle(+st.dataset.n);
+  const t = ev.target.closest('[data-tab]');
+  if (t) { document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('on', b === t));
+           ['koerper', 'befehle', 'werkzeuge'].forEach(k => $('#tab-' + k).hidden = k !== t.dataset.tab); return; }
+  const c = ev.target.closest('[data-cmd]');
+  if (c) { $('#fTool').value = 'execute'; $('#fBefehl').value = c.dataset.cmd; formVorlage(); $('#fArgs').focus(); return; }
+  const v = ev.target.closest('[data-view]');
+  if (v) { setLive(false); v.disabled = true;
+    try { const r = await (await fetch('api/bild?view=' + v.dataset.view)).json(); if (r.ok) zeigeBild(r.result.png, 'aktuell · ' + v.textContent); }
+    finally { v.disabled = false; } return; }
+  const d = ev.target.closest('[data-dl]'); if (d) location.href = 'api/download?format=' + d.dataset.dl;
+});
+$('#live').onclick = () => setLive(!live);
+$('#nurBau').onchange = renderVerlauf;
+
+async function info() {
+  try { const i = await (await fetch('api/info')).json();
+        $('#proto').textContent = 'Protokoll: ' + i.protokoll;
+        $('#zaehler').textContent = 'Sitzung seit ' + new Date(i.start).toLocaleTimeString('de-DE') + ' · PID ' + i.pid; } catch (_) {}
+}
+
+function verbinde() {
+  const es = new EventSource('api/events');
+  es.onopen = () => { $('#dot').classList.add('live'); $('#status').textContent = 'live verbunden'; };
+  es.onerror = () => { $('#dot').classList.remove('live'); $('#status').textContent = 'getrennt — Claude-Sitzung beendet? Neuer Versuch …'; };
+  es.addEventListener('schritt', m => {
+    const e = JSON.parse(m.data);
+    steps.push(e);
+    if (live) waehle(e.n); else renderVerlauf();
+    if (BAUEND.has(e.tool)) ladeKoerper();
+    if (befehle.length === 0) ladeBefehle();
+  });
+}
+
+(async () => {
+  await info();
+  steps = await (await fetch('api/verlauf')).json();
+  renderVerlauf(); if (steps.length) waehle(steps[steps.length - 1].n);
+  await ladeWerkzeuge();
+  verbinde();
+  // Befehle/Körper erst, wenn die App läuft (startet beim ersten Werkzeug-Aufruf)
+  ladeBefehle(); ladeKoerper();
+})();
+</script>
+</body>
+</html>
