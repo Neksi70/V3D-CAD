@@ -42,7 +42,7 @@ rm /tmp/ausrollen.bundle
 npm run build 2>&1 | tail -2
 # volme3d_server.py & Co. laufen als System-Dienst weiter — ohne Neustart
 # bliebe der alte Python-Code aktiv (dist/HTML liest er dagegen frisch).
-if ! git diff --quiet $REMOTE_HEAD HEAD -- '*.py'; then
+if ! git diff --quiet $REMOTE_HEAD HEAD -- '*.py' ':!v3d-cad-connector'; then   # Connector-Python startet unten nur den Connector neu
   sudo systemctl restart volme3d.service
   echo 'volme3d.service neu gestartet (Python geaendert)'
   sleep 2
