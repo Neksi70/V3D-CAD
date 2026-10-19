@@ -21575,6 +21575,9 @@ function buildObjectFromData(data) {
     let geo;
     if (data.geometry && data.geometry.__snap) {
       geo = _geoFromSnap(data.geometry.__snap);          // Rückgängig: volle Auflösung
+    } else if (data.geometry && data.geometry.__fullB64) {
+      try { geo = _geoUnpack(_geoB64Dec(data.geometry.__fullB64)); }            // .v3d mit vollem Netz
+      catch (e) { console.warn('[geo-voll] eingebettetes Netz unlesbar, nehme vereinfachte Fassung:', e); geo = new THREE.BufferGeometryLoader().parse(data.geometry); }
     } else if (data.geometry) {
       geo = new THREE.BufferGeometryLoader().parse(data.geometry);
     } else if (data.type === 'svg' && data._svgPathData) {
@@ -21592,6 +21595,7 @@ function buildObjectFromData(data) {
     obj = new THREE.Mesh(geo, mat);
     obj.castShadow = true; obj.receiveShadow = true;
     _updateObjEdgeLines(obj);
+    if (data.geometry && data.geometry.__full && !data.geometry.__fullB64 && !data.geometry.__snap) _geoFullUpgradeLater(obj, data.geometry);
   }
   obj.position.set(data.px || 0, data.py || 0, data.pz || 0);
   obj.rotation.set(data.rx || 0, data.ry || 0, data.rz || 0);
@@ -21800,7 +21804,189 @@ function _roundGeoJSON(j){
   if (j.data.boundingSphere) delete j.data.boundingSphere; // wird beim Laden neu berechnet
   return j;
 }
+// ═══ Riesen-Netze in voller Auflösung speichern (binär, IndexedDB) ═════════
+// Das Design-JSON trägt für > 400k Dreiecke weiter die reduzierte Fassung (passt in
+// Browser-Speicher und Cloud, andere Geräte/ältere Versionen laden sie wie bisher) —
+// plus einen Verweis geometry.__full auf das volle Netz in IndexedDB 'volme3d-geo'.
+// buildObjectFromData baut zuerst die reduzierte Fassung und tauscht das volle Netz
+// ein, sobald IndexedDB es geliefert hat (alle Ladewege, ohne sie async zu machen).
+// .v3d-Dateien tragen das volle Netz eingebettet (geometry.__fullB64), synchron lesbar.
+// Paket: nicht indizierte Netze werden verlustfrei verschweißt (gleiche Position und
+// Farbe bitgenau → ein Punkt) — ~halb so groß; flache Normalen werden neu berechnet.
+const _geoFullPut = new Set();          // in dieser Sitzung geschriebene/geladene Schlüssel
+function _geoIdb() {
+  if (!window._geoIdbP) window._geoIdbP = new Promise((res, rej) => {
+    const r = indexedDB.open('volme3d-geo', 1);
+    r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains('g')) r.result.createObjectStore('g'); };
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+  return window._geoIdbP;
+}
+function _geoArr3(attr) {   // Attribut → Float32Array (count*3), auch normalisierte Ganzzahlen
+  if (attr.array instanceof Float32Array && attr.itemSize === 3 && !attr.isInterleavedBufferAttribute) return attr.array.subarray(0, attr.count * 3);
+  const o = new Float32Array(attr.count * 3);
+  for (let i = 0; i < attr.count; i++) { o[i * 3] = attr.getX(i); o[i * 3 + 1] = attr.getY(i); o[i * 3 + 2] = attr.getZ(i); }
+  return o;
+}
+// Nur position/normal/color (Scans, Importe, Bemalung) — sonst null (dann bleibt es beim Alten)
+function _geoPack(geo) {
+  const A = geo.attributes;
+  if (!A.position || Object.keys(A).some(k => k !== 'position' && k !== 'normal' && k !== 'color')) return null;
+  const P = _geoArr3(A.position), C = A.color ? _geoArr3(A.color) : null, N = A.normal ? _geoArr3(A.normal) : null;
+  const q16 = a => { const o = new Int16Array(a.length); for (let i = 0; i < a.length; i++) o[i] = Math.max(-32767, Math.min(32767, Math.round(a[i] * 32767))); return o; };
+  if (geo.index) {
+    return { v: 1, nonIdx: false, nTri: geo.index.count / 3, pos: P.slice(), idx: Uint32Array.from(geo.index.array.subarray(0, geo.index.count)),
+      nor: N ? q16(N) : null, col: C ? C.slice() : null };
+  }
+  const n = A.position.count, nTri = Math.floor(n / 3);
+  // Flache Normalen? (wie nach parseSTL) Stichprobe — dann Normalen nicht speichern
+  let flat = !N;
+  if (N) {
+    flat = true; const st = Math.max(1, Math.floor(nTri / 3000));
+    for (let t = 0; t < nTri && flat; t += st) {
+      const a = t * 9, ux = P[a + 3] - P[a], uy = P[a + 4] - P[a + 1], uz = P[a + 5] - P[a + 2], vx = P[a + 6] - P[a], vy = P[a + 7] - P[a + 1], vz = P[a + 8] - P[a + 2];
+      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz); if (l < 1e-12) continue;
+      nx /= l; ny /= l; nz /= l;
+      for (let k = 0; k < 3; k++) if (N[a + k * 3] * nx + N[a + k * 3 + 1] * ny + N[a + k * 3 + 2] * nz < 0.9999) { flat = false; break; }
+    }
+  }
+  if (!flat) return { v: 1, nonIdx: true, nTri, pos: P.slice(), idx: null, nor: q16(N), col: C ? C.slice() : null };
+  // Verlustfrei verschweißen: Hash über die Bitmuster von Position (+ Farbe)
+  const PU = new Uint32Array(P.buffer, P.byteOffset, n * 3), CU = C ? new Uint32Array(C.buffer, C.byteOffset, n * 3) : null;
+  let cap = 1; while (cap < n * 2) cap <<= 1; const mask = cap - 1, tab = new Int32Array(cap).fill(-1);
+  const idx = new Uint32Array(n), uP = new Float32Array(n * 3), uC = C ? new Float32Array(n * 3) : null, uPU = new Uint32Array(uP.buffer), uCU = uC ? new Uint32Array(uC.buffer) : null;
+  let m = 0;
+  for (let i = 0; i < n; i++) {
+    const x = PU[i * 3], y = PU[i * 3 + 1], z = PU[i * 3 + 2];
+    let h = Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791);
+    if (CU) h ^= Math.imul(CU[i * 3] ^ (CU[i * 3 + 1] << 7) ^ (CU[i * 3 + 2] << 13), 2654435761);
+    let s = (h >>> 0) & mask;
+    for (;;) {
+      const j = tab[s];
+      if (j < 0) {
+        tab[s] = m; uPU[m * 3] = x; uPU[m * 3 + 1] = y; uPU[m * 3 + 2] = z;
+        if (CU) { uCU[m * 3] = CU[i * 3]; uCU[m * 3 + 1] = CU[i * 3 + 1]; uCU[m * 3 + 2] = CU[i * 3 + 2]; }
+        idx[i] = m++; break;
+      }
+      if (uPU[j * 3] === x && uPU[j * 3 + 1] === y && uPU[j * 3 + 2] === z &&
+          (!CU || (uCU[j * 3] === CU[i * 3] && uCU[j * 3 + 1] === CU[i * 3 + 1] && uCU[j * 3 + 2] === CU[i * 3 + 2]))) { idx[i] = j; break; }
+      s = (s + 1) & mask;
+    }
+  }
+  if (m > n * 0.6) return { v: 1, nonIdx: true, nTri, pos: P.slice(), idx: null, nor: null, col: C ? C.slice() : null };   // Verschweißen lohnt nicht
+  return { v: 1, nonIdx: true, nTri, pos: uP.slice(0, m * 3), idx, nor: null, col: uC ? uC.slice(0, m * 3) : null };
+}
+function _geoUnpack(p) {
+  const g = new THREE.BufferGeometry(), dq = a => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = a[i] / 32767; return o; };
+  if (p.nonIdx && p.idx) {        // verschweißt gespeichert → wieder aufklappen
+    const n = p.idx.length, P = new Float32Array(n * 3), C = p.col ? new Float32Array(n * 3) : null;
+    for (let i = 0; i < n; i++) { const j = p.idx[i] * 3; P[i * 3] = p.pos[j]; P[i * 3 + 1] = p.pos[j + 1]; P[i * 3 + 2] = p.pos[j + 2];
+      if (C) { C[i * 3] = p.col[j]; C[i * 3 + 1] = p.col[j + 1]; C[i * 3 + 2] = p.col[j + 2]; } }
+    g.setAttribute('position', new THREE.BufferAttribute(P, 3));
+    if (C) g.setAttribute('color', new THREE.BufferAttribute(C, 3));
+    g.computeVertexNormals();     // nicht indiziert → flache Normalen wie nach dem Import
+  } else {
+    g.setAttribute('position', new THREE.BufferAttribute(p.pos, 3));
+    if (p.idx) g.setIndex(new THREE.BufferAttribute(p.idx, 1));
+    if (p.col) g.setAttribute('color', new THREE.BufferAttribute(p.col, 3));
+    if (p.nor) g.setAttribute('normal', new THREE.BufferAttribute(dq(p.nor), 3)); else g.computeVertexNormals();
+  }
+  g.computeBoundingBox(); g.computeBoundingSphere();
+  return g;
+}
+function _geoPackKey(p) {   // Inhalts-Schlüssel: 2× FNV-1a über alle Bytes
+  let h1 = 0x811c9dc5, h2 = 0x01000193 ^ p.nTri;
+  for (const a of [p.pos, p.idx, p.col, p.nor]) {
+    if (!a) { h1 = Math.imul(h1 ^ 0xff, 16777619); continue; }
+    const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength), L = u.length;
+    for (let i = 0; i < L; i++) { h1 = Math.imul(h1 ^ u[i], 16777619); h2 = Math.imul(h2 ^ u[i], 2246822519); }
+  }
+  return 'g' + (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0') + '_' + p.nTri;
+}
+// Für _cachedGeoJSON: volles Netz ablegen (asynchron), Schlüssel sofort zurück
+function _geoFullStore(geo) {
+  const p = _geoPack(geo); if (!p) return null;
+  const key = _geoPackKey(p);
+  if (!_geoFullPut.has(key)) {
+    _geoFullPut.add(key); p.ts = Date.now();
+    if (navigator.storage && navigator.storage.persist && !window._geoPersistAsked) { window._geoPersistAsked = 1; navigator.storage.persist().catch(() => {}); }
+    _geoIdb().then(db => new Promise((res, rej) => { const tx = db.transaction('g', 'readwrite'); tx.objectStore('g').put(p, key); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }))
+      .catch(e => { _geoFullPut.delete(key); console.warn('[geo-voll] Ablegen fehlgeschlagen:', e); });
+  }
+  return key;
+}
+// Nach dem Laden: volles Netz eintauschen, sobald IndexedDB es liefert
+function _geoFullUpgradeLater(obj, gjson) {
+  const key = gjson.__full, alt = obj.geometry;
+  _geoIdb().then(db => new Promise((res, rej) => { const r = db.transaction('g', 'readonly').objectStore('g').get(key); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }))
+    .then(p => {
+      if (!p || obj.geometry !== alt) return;   // nicht auf diesem Gerät, oder inzwischen geändert
+      const g = _geoUnpack(p);
+      obj.geometry = g;
+      if (obj.userData._origGeo === alt) obj.userData._origGeo = g;
+      if (g.getAttribute('color') && obj.material && !obj.material.vertexColors) { obj.material.vertexColors = true; obj.material.color.set('#ffffff'); obj.material.needsUpdate = true; }
+      _geoJsonCache.set(g, gjson); _geoFullPut.add(key);   // gespeicherte Fassung bleibt gültig, kein Neu-Reduzieren
+      alt.dispose(); _updateObjEdgeLines(obj);
+      if (typeof selectedObjs !== 'undefined' && selectedObjs.includes(obj) && typeof updateFP === 'function') try { updateFP(); } catch (e) {}
+      console.log('[geo-voll] volle Auflösung geladen:', obj.userData.name, p.nTri, 'Dreiecke');
+    })
+    .catch(e => console.warn('[geo-voll] volles Netz nicht geladen:', e));
+}
+// Paket ⇄ Base64 (für .v3d-Dateien): [u32 Kopflänge][Kopf-JSON][Puffer, je auf 4 Byte]
+const _geoB64Cache = new WeakMap();
+function _geoB64Enc(geo) {
+  const ver = geo.attributes.position.version + ':' + (geo.attributes.color ? geo.attributes.color.version : '-');
+  const c = _geoB64Cache.get(geo); if (c && c.ver === ver) return c.s;
+  const p = _geoPack(geo); if (!p) return null;
+  const teile = [], kopf = { v: 1, nonIdx: p.nonIdx, nTri: p.nTri, a: {} };
+  let off = 0;
+  for (const [k, T] of [['pos', 'f32'], ['idx', 'u32'], ['col', 'f32'], ['nor', 'i16']]) if (p[k]) {
+    const b = new Uint8Array(p[k].buffer, p[k].byteOffset, p[k].byteLength); kopf.a[k] = [T, off, p[k].length];
+    teile.push(b); off += b.length; const pad = (4 - off % 4) % 4; if (pad) { teile.push(new Uint8Array(pad)); off += pad; }
+  }
+  const kb = new TextEncoder().encode(JSON.stringify(kopf)), kpad = (4 - (kb.length + 4) % 4) % 4;
+  const all = new Uint8Array(4 + kb.length + kpad + off); new DataView(all.buffer).setUint32(0, kb.length, true); all.set(kb, 4);
+  let o = 4 + kb.length + kpad; for (const t of teile) { all.set(t, o); o += t.length; }
+  let s = ''; for (let i = 0; i < all.length; i += 0x8000) s += String.fromCharCode.apply(null, all.subarray(i, i + 0x8000));
+  s = btoa(s); _geoB64Cache.set(geo, { ver, s });
+  return s;
+}
+function _geoB64Dec(s) {
+  const bin = atob(s), all = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) all[i] = bin.charCodeAt(i);
+  const kl = new DataView(all.buffer).getUint32(0, true), kopf = JSON.parse(new TextDecoder().decode(all.subarray(4, 4 + kl)));
+  const base = 4 + kl + (4 - (kl + 4) % 4) % 4, p = { v: kopf.v, nonIdx: kopf.nonIdx, nTri: kopf.nTri };
+  const TA = { f32: Float32Array, u32: Uint32Array, i16: Int16Array };
+  for (const k in kopf.a) { const [T, off, len] = kopf.a[k]; p[k] = new TA[T](all.buffer.slice(base + off, base + off + len * TA[T].BYTES_PER_ELEMENT)); }
+  return p;
+}
+// Aufräumen: Einträge, auf die kein Design und keine Sicherung mehr verweist, nach 2 Tagen löschen.
+// Im Zweifel (Fehler beim Lesen) wird NICHTS gelöscht.
+async function _geoGc() {
+  const db = await _geoIdb();
+  const eintraege = await new Promise((res, rej) => { const out = []; const r = db.transaction('g', 'readonly').objectStore('g').openCursor();
+    r.onsuccess = () => { const c = r.result; if (!c) return res(out); out.push([c.key, c.value && c.value.ts || 0]); c.continue(); }; r.onerror = () => rej(r.error); });
+  if (!eintraege.length) return 0;
+  const ref = new Set(), re = /"__full":"(g[0-9a-f]+_\d+)"/g;
+  const scan = s => { if (typeof s !== 'string') return; let m; re.lastIndex = 0; while ((m = re.exec(s))) ref.add(m[1]); };
+  for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith('volme3d_d_')) scan(_dsDecompress(localStorage.getItem(k))); }
+  const bdb = await _bakDb();
+  const baks = await new Promise((res, rej) => { const r = bdb.transaction('bak', 'readonly').objectStore('bak').getAll(); r.onsuccess = () => res(r.result || []); r.onerror = () => rej(r.error); });
+  for (const list of baks) if (Array.isArray(list)) for (const b of list) scan(typeof b.json === 'string' && b.json.startsWith('GZ1:') ? _dsDecompress(b.json) : b.json);
+  const alt = Date.now() - 2 * 864e5, weg = eintraege.filter(([k, ts]) => !ref.has(k) && !_geoFullPut.has(k) && ts < alt).map(e => e[0]);
+  if (weg.length) await new Promise((res, rej) => { const tx = db.transaction('g', 'readwrite'); weg.forEach(k => tx.objectStore('g').delete(k)); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+  if (weg.length) console.log('[geo-voll] aufgeräumt:', weg.length, 'nicht mehr benutzte Netze');
+  return weg.length;
+}
+setTimeout(() => { (window.requestIdleCallback || (f => setTimeout(f, 0)))(() => _geoGc().catch(e => console.warn('[geo-voll] Aufräumen übersprungen:', e))); }, 30000);
+
 function _cachedGeoJSON(geo, modus){
+  // .v3d-Datei: gespeicherte Fassung + volles Netz eingebettet (Base64-Paket)
+  if (modus === 'datei') {
+    const j0 = _cachedGeoJSON(geo);
+    if (!j0 || !j0.__full) return j0;
+    let b = null; try { b = _geoB64Enc(geo); } catch (e) { console.warn('[geo-voll] Einbetten fehlgeschlagen:', e); }
+    return b ? Object.assign({}, j0, { __fullB64: b }) : j0;
+  }
   // Rückgängig/Wiederholen: volle Treue per Schnappschuss (nur Riesen-Netze
   // brauchen ihn — kleine Netze bleiben beim gecachten JSON).
   if (modus === 'undo') {
@@ -21838,6 +22024,8 @@ function _cachedGeoJSON(geo, modus){
         flat[w2++]=pos.getX(b); flat[w2++]=pos.getY(b); flat[w2++]=pos.getZ(b);
         flat[w2++]=pos.getX(c); flat[w2++]=pos.getY(c); flat[w2++]=pos.getZ(c);
       }
+      let fullKey = null;   // volles Netz binär in IndexedDB, das JSON verweist darauf
+      try { fullKey = _geoFullStore(src); } catch (e) { console.warn('[geo-voll]', e); }
       const out = _clusterDecimateFlat(flat, 150000, 300);
       const dec = new THREE.BufferGeometry();
       dec.setAttribute('position', new THREE.BufferAttribute(out instanceof Float32Array ? out : Float32Array.from(out), 3));
@@ -21846,8 +22034,9 @@ function _cachedGeoJSON(geo, modus){
       // Original-Vertex über ein Raster-Hash (0,5 mm) übertragen
       const srcCol = src.attributes.color;
       if (srcCol) {
-        const K = 20, cmap = new Map();
-        const key = (x,y,z) => Math.round(x*K)+'_'+Math.round(y*K)+'_'+Math.round(z*K);
+        // Zahlen-Schlüssel (±32 m Wertebereich) statt Text — gleiche Zellen, viel schneller
+        const K = 20, cmap = new Map(), O = 65536, S = 131072, kz = (ix,iy,iz) => (ix+O) + S*((iy+O) + S*(iz+O));
+        const key = (x,y,z) => kz(Math.round(x*K), Math.round(y*K), Math.round(z*K));
         for (let i = 0; i < pos.count; i++) {
           const k = key(pos.getX(i), pos.getY(i), pos.getZ(i));
           if (!cmap.has(k)) cmap.set(k, i);
@@ -21858,7 +22047,7 @@ function _cachedGeoJSON(geo, modus){
           let si = cmap.get(key(x,y,z));
           if (si === undefined) {            // Nachbarzellen absuchen
             outer: for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) for (let oz = -1; oz <= 1; oz++) {
-              si = cmap.get((Math.round(x*K)+ox)+'_'+(Math.round(y*K)+oy)+'_'+(Math.round(z*K)+oz));
+              si = cmap.get(kz(Math.round(x*K)+ox, Math.round(y*K)+oy, Math.round(z*K)+oz));
               if (si !== undefined) break outer;
             }
           }
@@ -21867,17 +22056,19 @@ function _cachedGeoJSON(geo, modus){
         }
         dec.setAttribute('color', new THREE.BufferAttribute(ca, 3));
       }
-      console.warn('[geoJSON] Riesen-Netz (' + nTri + ' Dreiecke) → gespeicherte Fassung reduziert (' + dec.attributes.position.count/3 + ')');
+      console.warn('[geoJSON] Riesen-Netz (' + nTri + ' Dreiecke) → gespeicherte Fassung reduziert (' + dec.attributes.position.count/3 + ')' + (fullKey ? ', volles Netz in IndexedDB: ' + fullKey : ''));
+      dec.__fullKey = fullKey;
       // Einmal pro Sitzung sagen, was da passiert: im Editor bleibt das Netz
       // fein, die GESPEICHERTE Fassung wird gröber. Wer das feine Netz behalten
       // will, exportiert es (STL/3MF) — stilles Vereinfachen hat schon Arbeit gekostet.
       if (!window._geoDecWarned && typeof notify === 'function') {
         window._geoDecWarned = 1;
-        notify('Sehr feines Netz (' + Math.round(nTri/1000) + 'k Dreiecke): die gespeicherte Fassung wird vereinfacht. Im Editor und beim Export bleibt es fein.', 'w');
+        notify(fullKey ? 'Sehr feines Netz (' + Math.round(nTri/1000) + 'k Dreiecke): auf diesem Gerät wird es in voller Auflösung gespeichert, in der Cloud als vereinfachte Fassung.'
+                       : 'Sehr feines Netz (' + Math.round(nTri/1000) + 'k Dreiecke): die gespeicherte Fassung wird vereinfacht. Im Editor und beim Export bleibt es fein.', fullKey ? 'ok' : 'w');
       }
       src = dec;
     }
-    j = _roundGeoJSON(src.toJSON()); _geoJsonCache.set(geo, j);
+    j = _roundGeoJSON(src.toJSON()); if (src.__fullKey) j.__full = src.__fullKey; _geoJsonCache.set(geo, j);
   }
   return j;
 }
@@ -22015,7 +22206,7 @@ function smartDuplicate() {
   saveUndo();
   const newOs = [];
   selectedObjs.forEach(o => {
-    const data = objectToData(o);
+    const data = objectToData(o, 'undo');   // volle Auflösung (Riesen-Netze sonst als reduzierte Speicher-Fassung)
     data.id    = idCtr++;
     data.name  = o.userData.name + ' Kopie';
     data.px    = (data.px || 0) + 2.5;
@@ -24255,26 +24446,31 @@ function _clusterDecimateFlat(v, target, gridN0) {
   const ext = Math.max(maxx-minx, maxy-miny, maxz-minz) || 1;
   // gridN0: feineres Startgitter für sanfte Reduktionen (z. B. Vereinfachen 30%);
   // ohne Angabe wie bisher 64 (grobes Ziel für Server-Uploads).
+  // Zahlen- statt Text-Schlüssel ('x|y|z') und typisierte Puffer: gleiche Zellen,
+  // gleiche Mittelwerte (Float64), gleiches Ergebnis — bei 2 Mio. Dreiecken ~10× schneller.
+  const nV = v.length / 3, cell = new Int32Array(nV);
   let gridN = gridN0 || 64, out = v;
   for (let iter = 0; iter < 7; iter++) {
-    const inv = gridN / ext;
-    const key = (x,y,z) => Math.floor((x-minx)*inv)+'|'+Math.floor((y-miny)*inv)+'|'+Math.floor((z-minz)*inv);
-    const rep = new Map();
-    for (let i = 0; i < v.length; i += 3) {
-      const k = key(v[i],v[i+1],v[i+2]);
-      let r = rep.get(k); if (!r) { r = [0,0,0,0]; rep.set(k,r); }
-      r[0]+=v[i]; r[1]+=v[i+1]; r[2]+=v[i+2]; r[3]++;
+    const inv = gridN / ext, B = gridN + 2, rep = new Map();
+    let sx = new Float64Array(1024), sy = new Float64Array(1024), sz = new Float64Array(1024), sn = new Float64Array(1024), nc = 0;
+    for (let i = 0, q = 0; i < v.length; i += 3, q++) {
+      const k = Math.floor((v[i]-minx)*inv) + B * (Math.floor((v[i+1]-miny)*inv) + B * Math.floor((v[i+2]-minz)*inv));
+      let r = rep.get(k);
+      if (r === undefined) {
+        r = nc++; rep.set(k, r);
+        if (nc > sx.length) { const g = a => { const b = new Float64Array(a.length * 2); b.set(a); return b; }; sx = g(sx); sy = g(sy); sz = g(sz); sn = g(sn); }
+      }
+      cell[q] = r; sx[r] += v[i]; sy[r] += v[i+1]; sz[r] += v[i+2]; sn[r]++;
     }
-    rep.forEach(r => { r[0]/=r[3]; r[1]/=r[3]; r[2]/=r[3]; });
-    const o2 = [];
-    for (let i = 0; i < v.length; i += 9) {
-      const ka=key(v[i],v[i+1],v[i+2]), kb=key(v[i+3],v[i+4],v[i+5]), kc=key(v[i+6],v[i+7],v[i+8]);
-      if (ka===kb||kb===kc||ka===kc) continue;        // kollabiert → weg
-      const a=rep.get(ka), b=rep.get(kb), c=rep.get(kc);
-      o2.push(a[0],a[1],a[2], b[0],b[1],b[2], c[0],c[1],c[2]);
+    for (let r = 0; r < nc; r++) { sx[r] /= sn[r]; sy[r] /= sn[r]; sz[r] /= sn[r]; }
+    const o2 = new Float32Array(v.length); let w = 0;
+    for (let q = 0; q < nV; q += 3) {
+      const a = cell[q], b = cell[q+1], c = cell[q+2];
+      if (a === b || b === c || a === c) continue;        // kollabiert → weg
+      o2[w++]=sx[a]; o2[w++]=sy[a]; o2[w++]=sz[a]; o2[w++]=sx[b]; o2[w++]=sy[b]; o2[w++]=sz[b]; o2[w++]=sx[c]; o2[w++]=sy[c]; o2[w++]=sz[c];
     }
-    out = o2;
-    if (o2.length/9 <= target || gridN <= 12) break;
+    out = o2.slice(0, w);
+    if (w/9 <= target || gridN <= 12) break;
     gridN = Math.max(12, Math.round(gridN * 0.7));     // gröber → weniger Dreiecke
   }
   return out;
@@ -31412,7 +31608,7 @@ function _applyFillPlate(gapMm, marginMm, allowRot, count, even, depthMm, rows) 
     o.updateMatrixWorld(true);
   };
   part.userData.fillFit = true;                            // → Aufmaß-Frage beim Abziehen
-  const data = objectToData(part);
+  const data = objectToData(part, 'undo');   // volle Auflösung (Riesen-Netze)
   const all = [part];
   place(part, places[0]);                                  // Original wird Kopie Nr. 1
   for (let k = 1; k < places.length; k++) {
@@ -31482,7 +31678,7 @@ function _applyLinearPattern(count, dx, dy, dz) {
   const allNew = [...originals];
   for (let i = 1; i < count; i++) {
     originals.forEach(orig => {
-      const d = objectToData(orig);
+      const d = objectToData(orig, 'undo');   // volle Auflösung (Riesen-Netze)
       d.id  = idCtr++;
       d.px  = (d.px || 0) + dx * i;
       d.py  = (d.py || 0) + dy * i;
@@ -31503,7 +31699,7 @@ function _applyCircularPattern(count, radius, axis) {
   for (let i = 0; i < count; i++) {
     const angle = (i / count) * Math.PI * 2;
     originals.forEach(orig => {
-      const d = objectToData(orig);
+      const d = objectToData(orig, 'undo');   // volle Auflösung (Riesen-Netze)
       d.id = idCtr++;
       if (axis === 'y') {
         d.px = Math.cos(angle) * radius; d.pz = Math.sin(angle) * radius; d.py = orig.position.y;
@@ -32900,7 +33096,7 @@ async function _pmApply(){
   saveUndo(); const n0 = undoStack.length;
   const copies = [];
   for (const G of mats) for (const s of src) {
-    const d = objectToData(s); d.id = idCtr++;
+    const d = objectToData(s, 'undo'); d.id = idCtr++;   // volle Auflösung (Riesen-Netze)
     const cl = buildObjectFromData(d); s.updateMatrixWorld(true);
     G.clone().multiply(s.matrixWorld).decompose(cl.position, cl.quaternion, cl.scale); cl.updateMatrixWorld(true);
     scene.add(cl); objects.push(cl); copies.push(cl);
@@ -36530,7 +36726,8 @@ function _varsDelete(i) {
 let _localFileHandle = null;  // Datei-Handle für direktes Ctrl+S
 
 function _sceneJson() {
-  return JSON.stringify({ version:1, objects:objects.map(objectToData), idCtr, currentColor, shapeMode, vars: designVars }, null, 2);
+  // Ohne Einrückung (eingerückt stand jede Zahl auf einer Zeile: 3–4× größer); Riesen-Netze voll eingebettet
+  return JSON.stringify({ version:1, objects:objects.map(o => objectToData(o, 'datei')), idCtr, currentColor, shapeMode, vars: designVars });
 }
 
 async function _localSave() {
@@ -39082,7 +39279,7 @@ async function _fsSaveDesign(id, data, thumb, name, silent, packedIn) {
     const now  = Date.now();
     // Schon gepackt (dsSaveDesign)? Dann nicht ein zweites Mal stringify+gzip —
     // bei Scans kostete das jeweils ~2 s Stillstand pro Auto-Speichern
-    const packed = packedIn != null ? packedIn : _dsCompress(JSON.stringify(data));
+    const packed = packedIn != null ? packedIn : _dsCompress(_jsonOf(data));
     if (packed.length > 900000) {
       if (silent) console.warn('[Firestore] Design zu groß (' + packed.length + ' B) — nur lokal gespeichert');
       else notify('Design zu groß zum Speichern (~900KB Limit)', 'w');
@@ -39147,7 +39344,11 @@ function dsGetMeta(id)  { return _dsIdx().find(d => d.id === id) || null; }
 function dsLoadData(id) { try { return JSON.parse(_dsDecompress(localStorage.getItem(_dsDataKey(id)))); } catch { return null; } }
 function dsThumb(id)    { return localStorage.getItem(_dsThumbKey(id)) || ''; }
 
-function dsSaveDesign(id, data, thumb, name, silent) {
+// Derselbe Schnappschuss wird beim Auto-Speichern mehrfach gebraucht (Browser-Speicher,
+// Cloud, Versionsverlauf) — einmal in JSON wandeln statt dreimal (Riesen-Szenen: Sekunden)
+const _jsonMemo = new WeakMap();
+function _jsonOf(data) { let j = _jsonMemo.get(data); if (j === undefined) { j = JSON.stringify(data); _jsonMemo.set(data, j); } return j; }
+function dsSaveDesign(id, data, thumb, name, silent, packedIn) {
   const idx = _dsIdx();
   const existing = idx.find(d => d.id === id);
   const now = Date.now();
@@ -39163,13 +39364,13 @@ function dsSaveDesign(id, data, thumb, name, silent) {
   // Browser-Speicher fasst ~5 Mio. Zeichen, die Cloud 0,9 MB. Dann gar nicht erst
   // komprimieren (Holzschwein nach Reparieren: 36 MB JSON, 1,7 s gzip — zweimal
   // pro Auto-Speichern, und am Ende passte es doch nirgends hinein).
-  const json = JSON.stringify(data);
+  const json = _jsonOf(data);
   if (json.length > _DS_JSON_MAX) {
     console.warn('[Speichern] Design zu groß für Browser-Speicher/Cloud (' + (json.length / 1e6).toFixed(0) + ' MB JSON) — nur Sicherung/Datei');
     if (!silent) notify('Dieses Design ist zu groß für den Browser-Speicher. Bitte mit Strg+S als Datei speichern.', 'w', 9000);
     return false;
   }
-  const packed = _dsCompress(json);
+  const packed = packedIn != null ? packedIn : _dsCompress(json);
   // Daten mit Auto-Aufräumen speichern (räumt alte Caches bei „voll")
   const ok = _lsSetWithEvict(_dsDataKey(id), packed, id);
   if (thumb) _lsSetWithEvict(_dsThumbKey(id), thumb, id);
@@ -39178,7 +39379,28 @@ function dsSaveDesign(id, data, thumb, name, silent) {
   return ok;
 }
 
+// Auto-Speichern: gzip im Web Worker (fflate.gzip) statt im Haupt-Thread — bei großen
+// Szenen ~0,7 s Einfrieren je Speichern weniger. Aufträge laufen nacheinander; ein
+// inzwischen gelöschtes Design wird nicht wieder angelegt. Ohne Worker → synchron.
+let _dsAsyncKette = Promise.resolve();
+const _dsGeloescht = new Set();
+function dsSaveDesignAsync(id, data, thumb, name) {
+  const json = _jsonOf(data);
+  if (typeof fflate === 'undefined' || typeof fflate.gzip !== 'function' || typeof Worker === 'undefined' || json.length > _DS_JSON_MAX)
+    return Promise.resolve(dsSaveDesign(id, data, thumb, name, true));
+  const job = () => new Promise(res => {
+    fflate.gzip(fflate.strToU8(json), { level: 6 }, (err, gz) => {
+      if (_dsGeloescht.has(id)) return res(false);
+      if (err) return res(dsSaveDesign(id, data, thumb, name, true));
+      let bin = ''; for (let i = 0; i < gz.length; i += 0x8000) bin += String.fromCharCode.apply(null, gz.subarray(i, i + 0x8000));
+      res(dsSaveDesign(id, data, thumb, name, true, 'GZ1:' + btoa(bin)));
+    });
+  });
+  return (_dsAsyncKette = _dsAsyncKette.then(job, job));
+}
+
 function dsDeleteDesign(id) {
+  _dsGeloescht.add(id);
   _dsSetIdx(_dsIdx().filter(d => d.id !== id));
   localStorage.removeItem(_dsDataKey(id));
   localStorage.removeItem(_dsThumbKey(id));
@@ -39468,7 +39690,7 @@ async function _bakSnapshot(id, data, force, extra){
     let list = await _bakList(id);
     const now = Date.now(), newest = list.find(b => !b.pinned) || null;
     if (!force && newest && now - newest.ts < _BAK_MIN_GAP) return;
-    const json = JSON.stringify(data);
+    const json = _jsonOf(data);
     if (list.length && list[0].json === json) {   // unverändert → kein neuer Stand (höchstens festhalten)
       if (extra && extra.pinned) { list[0].pinned = true; list[0].name = extra.name || list[0].name || ''; await _bakWrite(id, list); }
       return;
@@ -39600,7 +39822,9 @@ function _doAutoSave() {
     const name = meta?.name || _randomDesignName();
     const snap = _sceneSnapshot();
     const thumb = captureThumbnail();
-    dsSaveDesign(currentDesignId, snap, thumb, name, true);  // still: kein Nag-Popup
+    // still (kein Nag-Popup); gzip im Worker — nur beim Verlassen des Tabs synchron, sonst ginge es verloren
+    if (document.visibilityState === 'hidden') dsSaveDesign(currentDesignId, snap, thumb, name, true);
+    else dsSaveDesignAsync(currentDesignId, snap, thumb, name);
     _bakSnapshot(currentDesignId, snap, false, { thumb });   // async, fire & forget
     _updateDesignLabel(name);
     _flashSaveDot();
@@ -67401,8 +67625,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.215';
+const VOLME3D_VERSION = '1.18.216';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.216', date:'2026-10-19', changes:[
+    ['💾','<b>Scans und feine Netze werden in voller Auflösung gespeichert.</b> Bisher wurde ein Netz mit mehr als 400 000 Dreiecken beim Speichern vereinfacht (z. B. 2 Mio. → 130 000). Jetzt legt V3D CAD das volle Netz auf diesem Gerät ab und lädt es beim Öffnen wieder – in der Cloud bleibt die vereinfachte Fassung (dort ist der Platz begrenzt). Auch die <b>.v3d-Datei</b> (Strg+S) enthält jetzt das volle Netz und ist trotzdem kleiner als vorher.'],
+    ['⚡','<b>Duplizieren, Muster und Füllen behalten das feine Netz</b> – Kopien eines Scans waren bisher vereinfacht, und das Duplizieren dauerte bei 2 Mio. Dreiecken rund 9 Sekunden; jetzt eine halbe Sekunde. Das automatische Speichern packt im Hintergrund (Web Worker), große Szenen ruckeln dabei nicht mehr.'],
+  ]},
   { version:'1.18.215', date:'2026-10-19', changes:[
     ['⚡','<b>Große Netze reagieren viel schneller.</b> Anklicken, Darüberfahren, Bemalen, Modellieren und Messen auf Scans und feinen Modellen prüfen jetzt nicht mehr jedes einzelne Dreieck, sondern nutzen einen Suchbaum: gemessen rund <b>500-mal schneller</b> je Klick (700 000 Dreiecke: 20 ms → 0,05 ms). Der Baum entsteht kurz nach dem Laden im Hintergrund; am Modell selbst ändert sich nichts.'],
   ]},
@@ -79716,7 +79944,7 @@ function _fillHoles(mesh) {
     const src = byId(p.id);
     if (!!p.linear === !!p.circular) fail('genau eins angeben: linear {count, step} oder circular {count, axis?, center?, angle?}');
     const copy = () => {
-      const d = objectToData(src); delete d.id;
+      const d = objectToData(src, 'undo'); delete d.id;   // volle Auflösung (Riesen-Netze)
       const o = buildObjectFromData(d); o.userData.id = idCtr++;
       scene.add(o); objects.push(o); return o;
     };
@@ -80356,7 +80584,7 @@ function _fillHoles(mesh) {
     } },
     'body.duplicate': { doc: '{id, move?: [dx,dy,dz] mm} — Kopie, liefert den neuen Körper', fn(p) {
       const src = byId(p.id);
-      const d = objectToData(src); delete d.id;
+      const d = objectToData(src, 'undo'); delete d.id;   // volle Auflösung (Riesen-Netze)
       const o = buildObjectFromData(d);
       o.userData.id = idCtr++;
       o.userData.name = (src.userData.name || 'Objekt') + ' Kopie';
