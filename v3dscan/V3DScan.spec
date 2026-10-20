@@ -47,7 +47,7 @@ a = Analysis(
     datas=[("web", "web")],
     hiddenimports=["server", "kern", "kern.o3d", "kern.wolke", "kern.werkzeuge",
                    "kern.registrierung", "kern.projekt", "kern.netz", "kern.formen", "kern.koordinaten", "kern.erkennung", "kern.koerper", "kern.skizze", "kern.features",
-                   "kern.freiform", "pynanoinstantmeshes", "pynanoinstantmeshes._pynim", "OCP", "open3d.visualization.draw_plotly",
+                   "kern.freiform", "kern.referenz", "kern.verlauf", "pynanoinstantmeshes", "pynanoinstantmeshes._pynim", "OCP", "open3d.visualization.draw_plotly",
                    "open3d.visualization.to_mitsuba"] + open3d_module
                   + [m for m in collect_submodules("numpy") if ".tests" not in m],
     hookspath=[NUMPY_HOOKS],
