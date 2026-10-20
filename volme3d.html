@@ -868,6 +868,8 @@ body.devmode .dev-only{display:flex!important}
 /* Generischer 3D-Generator-Dialog (Zahnrad, Gehäuse …) */
 .g3dm{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3100;display:none;align-items:center;justify-content:center}
 .g3dm.show{display:flex}
+.g3dm.g3side{background:transparent;pointer-events:none;justify-content:flex-end;align-items:flex-start;padding:64px 12px 0}
+.g3dm.g3side .g3box{pointer-events:auto;width:370px;max-height:calc(100vh - 90px)}
 .g3dm .g3box{background:#fff;border-radius:14px;width:600px;max-width:97vw;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 50px rgba(0,0,0,.28)}
 .g3dm .g3hdr{display:flex;align-items:center;gap:8px;padding:13px 18px 11px;border-bottom:1px solid var(--border);font-size:14px;font-weight:800;flex-shrink:0}
 .g3dm .g3hdr .vx{margin-left:auto;cursor:pointer;font-size:14px;color:#aaa;line-height:1;padding:0 2px}
@@ -1500,6 +1502,7 @@ const firebaseConfig = {
       <button class="btn" onclick="rotate225('x',1)" title="Kippen — 22,5° um die Querachse (bleibt am Boden)">⤵ Kippen</button>
       <button class="btn" onclick="toggleFaceDown()" title="Fläche unten — Objekt wählen, dann die Fläche anklicken, die flach auf der Platte liegen soll. Spart das Drehen von Hand.">⬓ Fläche unten</button>
       <button class="btn" onclick="standUpright()" title="Aufstellen — stellt das Teil in seine sicherste Standlage (Sockel, Füße), auch wenn die nicht eben ist, z. B. bei Scans. Nochmal klicken = nächste Standlage.">⊥ Aufstellen</button>
+      <button class="btn" onclick="_sfnOpen()" title="Stützfinnen — abbrechbare Stützen fest ins Modell einbauen: Überhänge werden rot gezeigt, Finnen mit Zinken und Bett-Pad erzeugt. Gedruckt wird dann ohne Slicer-Stützen.">🦈 Stützfinnen</button>
       <button class="btn" onclick="linearPatternTool()" title="Lineares Muster — Objekt mehrfach in einer Richtung kopieren">⋮ Linear</button>
       <button class="btn" onclick="circularPatternTool()" title="Kreismuster — Objekt mehrfach im Kreis anordnen (für Löcher: Werkzeuge → 🕳️ Loch ziehen)">⊙ Kreismuster</button>
       <button class="btn" onclick="enterKonturmuster()" title="Konturmuster — gewählten Körper entlang einer Kante/Kontur verteilen (z. B. Rändelkerben rund um einen Kopf), als Kopien oder gleich abziehen/anfügen">⟿ Konturmuster</button>
@@ -3684,6 +3687,54 @@ const firebaseConfig = {
     <div class="g3foot">
       <button class="btn" onclick="_bndClose(true)">Abbrechen</button>
       <button class="btn pri" onclick="_bndApply()">✓ Übernehmen</button>
+    </div>
+  </div>
+</div>
+
+<div id="sfn-modal" class="g3dm g3side">
+  <div class="g3box">
+    <div class="g3hdr">🦈 Stützfinnen<span class="vx" onclick="_sfnClose()">✕</span></div>
+    <div class="g3body">
+      <div class="g3ctrl">
+        <div class="g3info" id="sfn-dim" style="margin:0 0 4px;padding:0;border:0"></div>
+        <div class="g3info" id="sfn-ueber" style="margin-top:0">Überhänge werden gesucht…</div>
+        <span class="vsec" title="Liegend oder schräg gedruckt ist ein Teil oft deutlich stabiler als stehend. Die Finnen machen solche Lagen druckbar.">1 · Lage</span>
+        <div class="vrow"><label></label><button class="btn" style="flex:1;font-size:12px;padding:5px 8px" onclick="_sfnSuggest()" title="Bewertet mögliche Lagen nach Überhangfläche, Stützmaterial, Höhe und Auflage. Nochmal klicken = nächster Vorschlag. Drehen von Hand geht weiterhin, danach „↻ Neu berechnen“.">🧭 Lage vorschlagen</button><button class="btn" style="font-size:12px;padding:5px 8px;margin-left:6px" onclick="_sfnReset()" title="Zurück zur Lage vor dem ersten Vorschlag">↺</button></div>
+        <div class="g3info" id="sfn-sug" style="margin-top:2px;padding-top:0;border:0"></div>
+        <span class="vsec">2 · Platzierung</span>
+        <div class="vbg" id="sfn-mode-bg">
+          <button class="vtb on" data-v="auto" onclick="_sfnSet('mode','auto')" title="Finnen mit Zinken unter den Überhängen, dazu Keile unter Flächen, die keine Wand erreicht">Automatisch</button>
+          <button class="vtb" data-v="full" onclick="_sfnSet('mode','full')" title="Wie Automatisch, danach weitere Wände unter allem Roten, das noch frei ist — auch unter Inseln, die in der Luft beginnen">Volle Abdeckung</button>
+          <button class="vtb" data-v="prop" onclick="_sfnSet('mode','prop')" title="Nur schlichte abbrechbare Wände unter den Überhängen, ohne Keile">Nur Wände</button>
+        </div>
+        <div class="vrow" id="sfn-row-cov"><label title="Wie dicht die Finnen unter breiten Flächen stehen (nur Automatisch/Nur Wände)">Dichte</label> <input type="range" id="sfn-cov" min="0" max="100" step="5" value="50" oninput="_sfnSet('coverage',this.value)"><span class="vv" id="sfnv-cov">50</span><span class="vu">%</span></div>
+        <span class="vsec">3 · Drucker</span>
+        <div class="vrow"><label title="Düsendurchmesser — die Wandstärken der Finnen richten sich danach">Düse</label> <select id="sfn-nozzle" onchange="_sfnSet('nozzle',this.value)" style="flex:1;padding:4px 6px"><option>0.2</option><option>0.25</option><option selected>0.4</option><option>0.6</option><option>0.8</option><option>1.0</option></select><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Schichthöhe im Slicer — die Zinken sind eine Schicht dick">Schichthöhe</label> <input type="range" id="sfn-layer" min="0.08" max="0.4" step="0.04" value="0.2" oninput="_sfnSet('layer',this.value)"><span class="vv" id="sfnv-layer">0,20</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Abstand zwischen Finne und Teil. Größer = bricht leichter ab, kleiner = sauberere Unterseite. PETG eher 0,25–0,3.">Abstand</label> <input type="range" id="sfn-gap" min="0.1" max="0.4" step="0.05" value="0.2" oninput="_sfnSet('gap',this.value)"><span class="vv" id="sfnv-gap">0,20</span><span class="vu">mm</span></div>
+        <div class="vrow"><label title="Wandlinien der Finnen. Mehr = steifer, für hohe Teile">Wandlinien</label> <select id="sfn-walls" onchange="_sfnSet('wallLines',parseInt(this.value))" style="flex:1;padding:4px 6px"><option>2</option><option>4</option><option>6</option><option>8</option></select></div>
+        <span class="vsec">4 · Finnen</span>
+        <div class="vrow"><label title="Einlagige Zinken verbinden Finne und Teil, damit die Finne hält statt nur zu stützen. Aus = schlichte abbrechbare Wand.">Zinken</label> <input type="checkbox" id="sfn-tines" checked onchange="_sfnSet('tines',this.checked)" style="flex:0"></div>
+        <div class="vrow"><label title="Wie dicht die Zinken sitzen: links leicht (wenig Spuren), rechts fest (für kippelige oder hohe Teile)">Halt</label> <input type="range" id="sfn-grip" min="0" max="100" step="5" value="0" oninput="_sfnSet('grip',this.value)"><span class="vu" style="min-width:48px">leicht→fest</span></div>
+        <div class="vrow"><label title="Aussparungen in den Finnen sparen Material und brechen leichter heraus">Aussparung</label> <select id="sfn-cutout" onchange="_sfnSet('cutout',this.value)" style="flex:1;padding:4px 6px"><option value="none">keine</option><option value="diamond">Raute</option><option value="triangle">Dreieck</option><option value="arch">Bogen</option><option value="lattice">Gitter</option><option value="honeycomb">Wabe</option></select></div>
+        <span class="vsec" title="Ein dünnes Pad auf der Platte, auf dem die Finnen stehen — hält sie beim Drucken fest">Bett-Pad</span>
+        <div class="vbg" id="sfn-pad-bg">
+          <button class="vtb" data-v="off" onclick="_sfnSet('pad','off')">Aus</button>
+          <button class="vtb on" data-v="auto" onclick="_sfnSet('pad','auto')" title="Nur wenn die Auflage des Teils zu klein ist">Auto</button>
+          <button class="vtb" data-v="light" onclick="_sfnSet('pad','light')">Leicht</button>
+          <button class="vtb" data-v="sure" onclick="_sfnSet('pad','sure')" title="Volles Pad, schmiegt sich an die Unterseite">Sicherer Halt</button>
+        </div>
+        <span class="vsec">Hohe Teile</span>
+        <div class="vrow"><label title="Senkrechte Rippen, die schlanke hohe Teile seitlich festhalten, damit sie beim Drucken nicht wackeln">Stabilisierungsrippen</label> <input type="checkbox" id="sfn-sway" onchange="_sfnSet('sway',this.checked)" style="flex:0"></div>
+        <div class="vrow"><label title="Hohe Finnen bekommen Querrippen, damit sie nicht umknicken">Hohe Finnen versteifen</label> <input type="checkbox" id="sfn-tall" checked onchange="_sfnSet('tallRibs',this.checked)" style="flex:0"></div>
+        <div class="g3info" id="sfn-info"></div>
+        <div class="g3info">Die Finnen werden ein eigener Körper (orange). <b>Teil + Finnen zusammen exportieren</b> und im Slicer <b>Stützstrukturen aus</b>. Nach dem Druck abbrechen. Rechenkern: <i>Support Fins</i> (printfins.com, MIT-Lizenz).</div>
+      </div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" onclick="_sfnClose()">Abbrechen</button>
+      <button class="btn" onclick="_sfnPlanPreview(0)" title="Nach Drehen oder Verschieben von Hand neu rechnen">↻ Neu berechnen</button>
+      <button class="btn pri" id="sfn-go" onclick="_sfnApply()">✓ Finnen erzeugen</button>
     </div>
   </div>
 </div>
@@ -13753,6 +13804,7 @@ const _SYM_ICONS = {
   "rotate225('x',1)": '<rect x="4" y="11" width="9" height="9" rx="1" transform="rotate(-20 8.5 15.5)"/><path d="M13.5 4.2a7.5 7.5 0 0 1 6.5 6.8"/><path d="M20.5 7.5L20 11l-3.3-1"/>',
   'toggleFaceDown()': '<path d="M12 2v6M9 5l3 3 3-3"/><path d="M3 15l9-4 9 4-9 4z" fill="currentColor" fill-opacity=".3"/><path d="M3 15v3l9 4 9-4v-3"/>',
   'standUpright()': '<path d="M12 3v11"/><path d="M8.5 6.5L12 3l3.5 3.5"/><path d="M8.5 14h7l1 4h-9z"/><path d="M3 21h18"/>',
+  '_sfnOpen()': '<path d="M3 20h18"/><path d="M6 20V9l5-5v16"/><path d="M11 9h7l-2 4h-5"/><path d="M14 13v7M17.5 13v7"/>',
   'linearPatternTool()': '<rect x="2.5" y="9" width="5" height="6" rx="1"/><rect x="9.5" y="9" width="5" height="6" rx="1"/><rect x="16.5" y="9" width="5" height="6" rx="1"/>',
   'circularPatternTool()': '<circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="12" cy="4.6" r="2"/><circle cx="18.4" cy="8.3" r="2"/><circle cx="18.4" cy="15.7" r="2"/><circle cx="12" cy="19.4" r="2"/><circle cx="5.6" cy="15.7" r="2"/><circle cx="5.6" cy="8.3" r="2"/>',
   'hexPatternTool()': '<path d="M7 3l4 2.3v4.6L7 12.2 3 9.9V5.3zM17 3l4 2.3v4.6l-4 2.3-4-2.3V5.3zM12 11.8l4 2.3v4.6L12 21l-4-2.3v-4.6z"/>',
@@ -31961,6 +32013,289 @@ function exitFaceDownMode() {
   if (selectedObjs.length) updateDimHandles();
   _doRepositionDimHandles();
   updateRotHandles();
+}
+
+// ═══ STÜTZFINNEN — abbrechbare Stützen fest ins Modell (_sfn*) ═══════════════
+// Idee + Rechenkern: Support Fins (printfins.com, github.com/gittrahan/support-fins,
+// MIT). Statt Slicer-Stützen bekommt das Teil dünne Wände („Finnen“), die mit
+// einlagigen Zinken am Teil haften und mit einem Pad auf der Platte stehen. Sie
+// stecken im STL selbst — gedruckt wird dann mit Stützstrukturen AUS, in jedem
+// Slicer, auf jedem Drucker. Der Kern rechnet im Worker (lib/stuetzfinnen-worker.js,
+// gebaut aus tools/stuetzfinnen-worker.src.js) in mm mit Z oben; die Umrechnung
+// aus der Szene machen _moldCollectTris / _moldSceneMesh wie bei der Gießform.
+const _sfnP = { mode: 'auto', nozzle: 0.4, layer: 0.2, gap: 0.2, wallLines: 2, tines: true,
+                grip: 0, cutout: 'none', coverage: 50, pad: 'auto', sway: false, tallRibs: true };
+let _sfnObj = null;      // Körper im Dialog
+let _sfnW = null;        // Worker
+let _sfnSeq = 0;         // Nachrichten-Nummer
+const _sfnWait = new Map();
+let _sfnRed = null;      // rote Überhang-Anzeige (nur Hilfsobjekt)
+let _sfnPrev = null;     // Finnen-Vorschau (nur Hilfsobjekt)
+let _sfnLast = null;     // letztes Bau-Ergebnis { key, tris, info }
+let _sfnGen = 0;         // verwirft veraltete Vorschauen
+let _sfnTimer = null;
+let _sfnSug = null;      // { q0, p0, list, i, qSet }
+let _sfnSoupKey = '';    // Lage, für die der Worker die Suppe hat
+
+function _sfnWorker() {
+  if (_sfnW) return _sfnW;
+  const v = typeof VOLME3D_VERSION !== 'undefined' ? VOLME3D_VERSION : '1';
+  _sfnW = new Worker('lib/stuetzfinnen-worker.js?v=' + v);
+  _sfnW.onmessage = (e) => {
+    const d = e.data || {}, p = _sfnWait.get(d.id);
+    if (!p) return;
+    _sfnWait.delete(d.id);
+    if (d.error) p.rej(new Error(d.error)); else p.res(d);
+  };
+  _sfnW.onerror = (e) => {
+    const err = new Error('Stützfinnen-Rechenkern nicht ladbar' + (e && e.message ? ': ' + e.message : ''));
+    for (const p of _sfnWait.values()) p.rej(err);
+    _sfnWait.clear(); _sfnW = null;
+  };
+  return _sfnW;
+}
+function _sfnCall(cmd, data, transfer) {
+  const w = _sfnWorker(), id = ++_sfnSeq;
+  return new Promise((res, rej) => { _sfnWait.set(id, { res, rej }); w.postMessage({ id, cmd, ...data }, transfer || []); });
+}
+
+// Lage-Schlüssel: Suppe neu senden, sobald das Teil gedreht/verschoben/skaliert wurde
+function _sfnPoseKey(o) {
+  o.updateMatrixWorld(true);
+  return o.matrixWorld.elements.map(x => x.toFixed(5)).join(',');
+}
+let _sfnSoup = null;     // mm, Z oben — dieselbe Suppe wie im Worker
+async function _sfnLoad() {
+  const o = _sfnObj, key = _sfnPoseKey(o);
+  if (key === _sfnSoupKey && _sfnSoup) return;
+  _sfnSoup = _moldCollectTris(o);
+  await _sfnCall('load', { pos: _sfnSoup.slice() });
+  _sfnSoupKey = key; _sfnLast = null;
+}
+
+function _sfnOpts() {
+  const p = _sfnP;
+  return {
+    mode: p.mode, bedPad: p.pad !== 'off', tines: p.tines, layerHeight: p.layer,
+    tineDensity: p.grip / 100, coverage: p.mode === 'full' ? undefined : p.coverage / 100,
+    tallRibs: p.tallRibs, plateOnly: false,
+    sway: p.sway ? { on: true, uncappedDepth: false, gripFrom: 0, tineSpacing: 6, reach: 0.15, crossRise: 0.5,
+                    gap: p.gap, tines: p.tines, layerHeight: p.layer, crossAbove: Infinity } : undefined,
+    tunables: { propGap: p.gap, padStyle: p.pad === 'off' ? undefined : p.pad, cutout: p.cutout,
+                nozzle: p.nozzle, wallLines: p.wallLines },
+  };
+}
+
+// Mesh in Szene-Einheiten aus einer mm-/Z-oben-Suppe (wie _moldSceneMesh, aber ohne Registrieren)
+function _sfnHelperMesh(tris, color, opacity) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(tris, 3));
+  g.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.6, metalness: 0,
+    side: THREE.DoubleSide, transparent: opacity < 1, opacity, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const m = new THREE.Mesh(g, mat);
+  m.scale.setScalar(0.1); m.rotation.x = -Math.PI / 2;
+  m.userData = { isSfnHelper: true };
+  m.raycast = () => {};            // nicht anklickbar
+  m.renderOrder = 2;
+  return m;
+}
+function _sfnDrop(which) {
+  const m = which === 'red' ? _sfnRed : _sfnPrev;
+  if (!m) return;
+  scene.remove(m); m.geometry.dispose(); m.material.dispose();
+  if (which === 'red') _sfnRed = null; else _sfnPrev = null;
+}
+
+async function _sfnAnalyze() {
+  await _sfnLoad();
+  const r = await _sfnCall('analyze', { threshold: 45 });
+  _sfnDrop('red');
+  const s = _sfnSoup, k = r.kept;
+  let n = 0; for (let f = 0; f < k.length; f++) if (k[f]) n++;
+  if (n) {
+    const out = new Float32Array(n * 9); let w = 0;
+    for (let f = 0; f < k.length; f++) if (k[f]) { out.set(s.subarray(f * 9, f * 9 + 9), w); w += 9; }
+    _sfnRed = _sfnHelperMesh(out, '#e53935', 0.85);
+    scene.add(_sfnRed);
+  }
+  const el = document.getElementById('sfn-ueber');
+  if (el) el.innerHTML = r.regions
+    ? '<b style="color:#e53935">' + r.regions + ' Überhang-Bereich' + (r.regions > 1 ? 'e' : '') + '</b> (' +
+      Math.round(r.overArea / 100) + ' cm²) brauchen Stütze — rot markiert. Auflage auf der Platte: ' + Math.round(r.bedArea / 100) + ' cm².'
+    : '<b style="color:#2e7d32">Keine Überhänge über 45°</b> — so lässt sich das Teil ohne Stützen drucken.';
+  return r;
+}
+
+function _sfnPlanPreview(ms) {
+  clearTimeout(_sfnTimer);
+  _sfnTimer = setTimeout(() => _sfnPreview(), ms == null ? 350 : ms);
+}
+async function _sfnPreview() {
+  if (!_sfnObj) return null;
+  const gen = ++_sfnGen;
+  const info = document.getElementById('sfn-info');
+  if (info) info.textContent = 'Finnen werden berechnet…';
+  try {
+    await _sfnAnalyze();
+    const opts = _sfnOpts(), key = _sfnSoupKey + '|' + JSON.stringify(opts);
+    const r = await _sfnCall('build', { threshold: 45, opts });
+    if (gen !== _sfnGen || !_sfnObj) return null;
+    _sfnDrop('prev');
+    if (r.tris.length) { _sfnPrev = _sfnHelperMesh(r.tris, '#ff9800', 1); scene.add(_sfnPrev); }
+    _sfnLast = { key, tris: r.tris, info: r };
+    _sfnShowInfo(r);
+    return _sfnLast;
+  } catch (e) {
+    console.warn('[stuetzfinnen]', e);
+    if (gen === _sfnGen && info) info.innerHTML = '<span style="color:#c62828">Berechnung fehlgeschlagen: ' + _stlEsc(e.message || String(e)) + '</span>';
+    return null;
+  }
+}
+function _sfnShowInfo(r) {
+  const el = document.getElementById('sfn-info'); if (!el) return;
+  const t = [];
+  if (!r.regions) t.push('Nichts zu stützen.');
+  else {
+    t.push('<b>' + r.fins + ' Finne' + (r.fins === 1 ? '' : 'n') + '</b>' + (r.tines ? ', ' + r.tines + ' Zinken' : '') +
+           (r.braces ? ', ' + r.braces + ' Stabilisierungsrippe' + (r.braces === 1 ? '' : 'n') : '') + (r.pad ? ', Bett-Pad' : ''));
+    if (r.volume) t.push('Stützmaterial ca. <b>' + (r.volume / 1000).toFixed(1).replace('.', ',') + ' cm³</b>');
+    if (r.unserved) t.push('<span style="color:#c62828">' + r.unserved + ' Bereich' + (r.unserved > 1 ? 'e' : '') + ' ohne Finne</span> — „Volle Abdeckung“ oder andere Lage versuchen');
+    if (r.bare && r.bare.total > 0) t.push('Abgedeckt: ' + Math.round(100 * (1 - r.bare.area / r.bare.total)) + ' % der roten Fläche');
+  }
+  if (r.seating === 'point') t.push('<span style="color:#c62828">Teil steht nur auf einem Punkt — so hält es nichts. Lage ändern!</span>');
+  if (r.floating) t.push('<span style="color:#c62828">' + r.floating + ' Stück beginnt in der Luft</span>');
+  el.innerHTML = t.join('<br>');
+}
+
+function _sfnOpen() {
+  const o = getFirst();
+  if (!o || selectedObjs.length !== 1) { notify('Bitte genau ein Teil auswählen, das Stützfinnen bekommen soll', 'w'); return; }
+  if (o.userData.isHole) { notify('Eine Bohrung braucht keine Stützen — bitte einen Körper wählen', 'w'); return; }
+  if (typeof Worker === 'undefined') { notify('Dieser Browser kann keine Hintergrund-Berechnung (Worker)', 'e'); return; }
+  if (_sfnObj) _sfnClose();
+  _sfnObj = o; _sfnSoupKey = ''; _sfnSoup = null; _sfnLast = null; _sfnSug = null;
+  // Liegt das Teil nicht auf der Platte, rechnet der Kern es trotzdem aufgesetzt —
+  // die Finnen kämen dann in der Luft an. Also gleich hinsetzen (mit Rückgängig).
+  o.updateMatrixWorld(true);
+  const bb = getMeshBox(o);
+  if (Math.abs(bb.min.y) > 0.005) { saveUndo(); o.position.y -= bb.min.y; o.updateMatrixWorld(true); updateTFInputs(); _doRepositionDimHandles(); }
+  const e = document.getElementById('sfn-dim');
+  if (e) e.innerHTML = 'Teil: <b>' + _stlEsc(o.userData.name || 'Körper') + '</b>';
+  const sg = document.getElementById('sfn-sug'); if (sg) sg.textContent = '';
+  _sfnSyncUI();
+  document.getElementById('sfn-modal').classList.add('show');
+  _sfnPlanPreview(0);
+}
+function _sfnClose() {
+  const m = document.getElementById('sfn-modal'); if (m) m.classList.remove('show');
+  clearTimeout(_sfnTimer); _sfnGen++;
+  _sfnDrop('red'); _sfnDrop('prev');
+  _sfnObj = null; _sfnSoup = null; _sfnSoupKey = ''; _sfnLast = null; _sfnSug = null;
+}
+
+function _sfnSyncUI() {
+  const p = _sfnP, $ = id => document.getElementById(id);
+  document.querySelectorAll('#sfn-mode-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === p.mode));
+  document.querySelectorAll('#sfn-pad-bg .vtb').forEach(b => b.classList.toggle('on', b.dataset.v === p.pad));
+  if ($('sfn-nozzle')) $('sfn-nozzle').value = String(p.nozzle);
+  if ($('sfn-layer')) { $('sfn-layer').value = p.layer; $('sfnv-layer').textContent = p.layer.toFixed(2).replace('.', ','); }
+  if ($('sfn-gap')) { $('sfn-gap').value = p.gap; $('sfnv-gap').textContent = p.gap.toFixed(2).replace('.', ','); }
+  if ($('sfn-walls')) $('sfn-walls').value = String(p.wallLines);
+  if ($('sfn-tines')) $('sfn-tines').checked = p.tines;
+  if ($('sfn-grip')) { $('sfn-grip').value = p.grip; $('sfn-grip').disabled = !p.tines; }
+  if ($('sfn-cutout')) $('sfn-cutout').value = p.cutout;
+  if ($('sfn-cov')) { $('sfn-cov').value = p.coverage; $('sfnv-cov').textContent = p.coverage; }
+  if ($('sfn-row-cov')) $('sfn-row-cov').style.opacity = p.mode === 'full' ? 0.45 : 1;
+  if ($('sfn-sway')) $('sfn-sway').checked = p.sway;
+  if ($('sfn-tall')) $('sfn-tall').checked = p.tallRibs;
+}
+function _sfnSet(k, v) {
+  const p = _sfnP;
+  if (typeof p[k] === 'number') { v = parseFloat(v); if (!isFinite(v)) return; }
+  if (k === 'layer') v = Math.min(0.6, Math.max(0.05, v));
+  if (k === 'gap') v = Math.min(0.5, Math.max(0.05, v));
+  p[k] = v;
+  _sfnSyncUI(); _sfnPlanPreview();
+}
+
+// Ausrichtung vorschlagen: der Kern bewertet Lagen (Überhangfläche, Stützmaterial,
+// Höhe, Auflage). Jeder weitere Klick = nächster Vorschlag, wie bei ⊥ Aufstellen.
+async function _sfnSuggest() {
+  const o = _sfnObj; if (!o) return;
+  const sg = document.getElementById('sfn-sug');
+  const s = _sfnSug;
+  if (!(s && s.qSet && o.quaternion.angleTo(s.qSet) < 1e-6 && s.list.length > 1)) {
+    if (sg) sg.textContent = 'Lagen werden bewertet…';
+    try {
+      await _sfnLoad();
+      const r = await _sfnCall('suggest', { threshold: 45 });
+      if (!r.candidates.length) { if (sg) sg.textContent = 'Keine bessere Lage gefunden.'; return; }
+      _sfnSug = { q0: o.quaternion.clone(), p0: o.position.clone(), list: r.candidates, conf: r.confidence, i: 0, qSet: null };
+    } catch (e) { if (sg) sg.textContent = 'Vorschlag fehlgeschlagen: ' + (e.message || e); return; }
+  } else s.i = (s.i + 1) % s.list.length;
+  const S = _sfnSug, c = S.list[S.i];
+  saveUndo();
+  o.quaternion.copy(S.q0); o.position.copy(S.p0); o.updateMatrixWorld(true);
+  // Drehung des Kerns (Spalten-Matrix, mm/Z oben) in die Szene (Y oben): C·R·C⁻¹
+  const C = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+  const R = new THREE.Matrix4().setFromMatrix3(new THREE.Matrix3().fromArray(c.rot));
+  const M = C.clone().multiply(R).multiply(C.clone().invert());
+  const b0 = getMeshBox(o), cx = (b0.min.x + b0.max.x) / 2, cz = (b0.min.z + b0.max.z) / 2;
+  o.quaternion.premultiply(new THREE.Quaternion().setFromRotationMatrix(M));
+  o.updateMatrixWorld(true);
+  const b1 = getMeshBox(o);
+  o.position.x += cx - (b1.min.x + b1.max.x) / 2; o.position.z += cz - (b1.min.z + b1.max.z) / 2;
+  o.updateMatrixWorld(true);
+  o.position.y -= getMeshBox(o).min.y; o.updateMatrixWorld(true);
+  S.qSet = o.quaternion.clone();
+  updateTFInputs(); _doRepositionDimHandles();
+  const sicher = { high: 'klarer Favorit', medium: 'knapp vorn', low: 'mehrere Lagen etwa gleich gut', none: 'keine Lage steht sicher' }[S.conf] || '';
+  if (sg) sg.innerHTML = 'Vorschlag <b>' + (S.i + 1) + ' von ' + S.list.length + '</b>' + (S.i === 0 && sicher ? ' (' + sicher + ')' : '') +
+    ': ' + c.regions + ' Überhang-Bereich' + (c.regions === 1 ? '' : 'e') + ', Höhe ' + Math.round(c.height) + ' mm' +
+    (S.list.length > 1 ? ' — nochmal klicken = nächster' : '');
+  _sfnPlanPreview(0);
+}
+function _sfnReset() {
+  const o = _sfnObj, S = _sfnSug; if (!o || !S) return;
+  saveUndo();
+  o.quaternion.copy(S.q0); o.position.copy(S.p0); o.updateMatrixWorld(true);
+  _sfnSug = null; updateTFInputs(); _doRepositionDimHandles();
+  const sg = document.getElementById('sfn-sug'); if (sg) sg.textContent = 'Ursprüngliche Lage.';
+  _sfnPlanPreview(0);
+}
+
+async function _sfnApply() {
+  const o = _sfnObj; if (!o) return;
+  const btn = document.getElementById('sfn-go'); if (btn) btn.disabled = true;
+  try {
+    let L = _sfnLast;
+    const key = _sfnPoseKey(o) + '|' + JSON.stringify(_sfnOpts());
+    if (!L || L.key !== key) L = await _sfnPreview();
+    if (!L) return;
+    if (!L.tris.length) { notify('Keine Finnen nötig — das Teil druckt in dieser Lage ohne Stützen', 'ok'); _sfnClose(); return; }
+    saveUndo();
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(L.tris.slice(), 3));
+    g.computeVertexNormals(); g.computeBoundingBox();
+    typeCounts['stuetzfinnen'] = (typeCounts['stuetzfinnen'] || 0) + 1;
+    const m = _moldSceneMesh(g, 'Stützfinnen ' + (o.userData.name || '') + (typeCounts['stuetzfinnen'] > 1 ? ' #' + typeCounts['stuetzfinnen'] : ''));
+    m.material.color.set('#ff9800'); m.userData.color = '#ff9800';
+    m.userData.sfnFuer = o.userData.id;
+    m.userData.sfn = { ..._sfnP };
+    _updateObjEdgeLines(m);
+    const r = L.info;
+    _sfnClose();
+    selectObjs([o, m]); updateTree(); updateFP();
+    notify('🦈 ' + r.fins + ' Stützfinne' + (r.fins === 1 ? '' : 'n') + ' erzeugt — Teil + Finnen zusammen exportieren und im Slicer Stützstrukturen AUS', 'ok', 7000);
+  } finally { if (btn) btn.disabled = false; }
+}
+
+// Prüf-Hook für Headless-Tests
+function _sfnDbg() {
+  return { open: !!_sfnObj, red: _sfnRed ? _sfnRed.geometry.attributes.position.count / 3 : 0,
+           prev: _sfnPrev ? _sfnPrev.geometry.attributes.position.count / 3 : 0,
+           info: _sfnLast ? { ..._sfnLast.info, tris: undefined } : null, p: { ..._sfnP } };
 }
 
 function mirrorObj(axis) {
@@ -68601,8 +68936,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.222';
+const VOLME3D_VERSION = '1.18.223';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.223', date:'2026-10-21', changes:[
+    ['🦈','<b>Neu: 🦈 Stützfinnen – Stützstrukturen neu gedacht.</b> Statt Slicer-Stützen baut V3D CAD dünne, abbrechbare Wände direkt ins Modell. Sie haften mit einlagigen Zinken am Teil und stehen auf einem Bett-Pad. Überhänge werden rot gezeigt, <b>🧭 Lage vorschlagen</b> sucht eine gut druckbare Lage, und Düse, Schichthöhe, Abstand, Halt, Aussparungen sowie Rippen für hohe Teile sind einstellbar. Die Finnen werden ein eigener Körper: Teil und Finnen zusammen exportieren und im Slicer <b>ohne Stützstrukturen</b> drucken, auf jedem Drucker. Der Knopf sitzt neben <b>⊥ Aufstellen</b>. Rechenkern: Support Fins (printfins.com, MIT-Lizenz).'],
+  ]},
   { version:'1.18.222', date:'2026-10-20', changes:[
     ['↪','<b>Motive um runde Kanten legen.</b> Auf eckigen Dosen und Gefäßen mit abgerundeten Kanten ließ sich ein breites Motiv nur flach anheften – es stand an der Rundung vorne über und wurde beim Vereinen nicht sauber angebunden. Reicht das Motiv über die ebene Fläche hinaus, zeigt der Zeiger jetzt <b>„↪ Um die Kanten legen“</b>: Das Motiv läuft wie ein umgelegtes Etikett um die Rundung bis auf die Seitenwand, ohne Verzerrung und überall anliegend. Abziehen und Vereinen funktionieren wie gewohnt. Quader mit scharfen Kanten und Motive, die auf die Fläche passen, werden weiter flach geheftet (danke Josy).'],
   ]},
@@ -79823,6 +80161,7 @@ const CMDK = [
   {i:'⊿',g:'Bearbeiten',t:'Spiegeln',k:'mirror',run:()=>mirrorTool()},
   {i:'⊜',g:'Bearbeiten',t:'Ausrichten',k:'align',run:()=>alignTool()},
   {i:'⬓',g:'Bearbeiten',t:'Fläche unten',k:'flaeche flache stelle unten absetzen hinlegen aufstellen platte bett ausrichten kippen drehen liegen plan schraeg abflachung standflaeche place on face',run:()=>toggleFaceDown()},
+  {i:'🦈',g:'Bearbeiten',t:'Stützfinnen',k:'stuetzfinnen stützfinnen finnen fins support supports stuetzen stützen stützstrukturen ueberhang überhang abbrechen breakaway printfins zinken pad drucken ohne stuetzen lage ausrichtung',run:()=>_sfnOpen()},
   {i:'⊥',g:'Bearbeiten',t:'Aufstellen',k:'aufstellen hinstellen stehen standflaeche stabil gerade schief scan fuesse sockel boden platte ausrichten umfallen kippen lay flat stand upright',run:()=>standUpright()},
   {i:'🎃',g:'Bearbeiten',t:'Kürbis schnitzen (Scan)',k:'kürbis kuerbis schnitzen scan gescannt gesicht halloween aushöhlen aushoehlen hohl teelicht laterne import eigener echter pumpkin carve',run:()=>_ksnOpen()},
   {i:'⋮',g:'Bearbeiten',t:'Lineares Muster',k:'array pattern',run:()=>linearPatternTool()},
