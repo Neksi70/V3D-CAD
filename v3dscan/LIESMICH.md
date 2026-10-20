@@ -2,7 +2,7 @@
 
 Windows-Programm zum Nachbearbeiten von 3D-Scans (Punktwolken), gedacht für
 Exporte aus Revo Scan (Revopoint MIRACO/POP) und CrealityScan (PiKa).
-Stand 0.6.0 = Abweichung Scan ↔ Körper (MODELL → Prüfen, Etappe F) + Oberfläche nach Arbeitsschritten (Design-X-Vorbild, siehe docs/designx-bauplan.md) +
+Stand 0.7.0 = Querschnitt-Skizze → Extrudieren/Drehen → Runden/Fasen (MODELL, Etappen D/E) + Abweichung Scan ↔ Körper (Etappe F) + Oberfläche nach Arbeitsschritten (Design-X-Vorbild, siehe docs/designx-bauplan.md) +
 Körper (Grundkörper aus Bereich, Vereinen/Abziehen, STEP/IGES) + Punktwolke (Grundgerüst, Bereinigen, Zusammenführen) + Scan→CAD Etappe 1
 (Netzbearbeitung), Etappe 2 (Ausrichten am Koordinatensystem), Etappe 3 (Geometrieerkennung). Ziel: Scan → Geometrieerkennung → parametrisches CAD → STEP/IGES,
 Geometriekern dafür wird OpenCASCADE (OCP) – Entscheidung des Users 14.09.2026 (Variante A).
@@ -23,6 +23,15 @@ Geometriekern dafür wird OpenCASCADE (OCP) – Entscheidung des Users 14.09.202
   - `koordinaten.py` Hauptachsen, auf größte Ebene stellen, 3-2-1 aus Elementen (rechtshändig für jede
     Achsenzuordnung), Verschieben/Drehen um Werte – Matrix gilt für alle sichtbaren Scans
   - `projekt.py` Scans, Rückgängig/Wiederholen (Kopien, max. 30 Schritte / 3 GB), Projektdatei `.v3dscan` (ZIP mit .npy)
+- `kern/skizze.py` Querschnitt → Skizze: Ebene (Welt XY/XZ/YZ + Versatz, erkannte Ebene, durch Zylinder-/Kegelachse),
+  Netz exakt geschnitten, Punktwolke als Scheibe (±1,5 × Punktabstand) gierig geordnet; Zerlegen in Linie/Bogen/Kreis
+  (Teilen an größter Sehnenabweichung, Zusammenfassen, 3→2-Reduktion, Naht in der Mitte der längsten Linie, robust:
+  95 % in Toleranz); Rundungen zwischen zwei Linien tangential mit nur dem Radius als Unbekannter eingepasst
+  (freie Kreispassung streut an kurzen Bögen ±0,1); Nennmaß + achsparallel; Anschlüsse als Schnitt-/Berührpunkte,
+  damit die OCP-Kontur exakt zu ist; Radius ändern (bleibt tangential), Element → Gerade
+- `kern/features.py` Profil (Außen-/Innenkonturen) → Extrusion (Länge/symmetrisch/bis Scan = Tiefe der Scanpunkte im
+  Profil), Drehung (Profil an der Achse auf eine Seite beschnitten), Rundung/Fase an Kanten (Nummern = TopExp-Map,
+  im Anzeige-Netz je Kantensegment mitgeliefert), Radius-Vorschlag aus erkannten Rundungen
 - `server.py` lokaler Dienst (nur 127.0.0.1, Port 8797), JSON-Befehle + binäre Punktdaten
 - `kern/koerper.py` OCP-Körper: Grundkörper aus erkanntem Bereich (Zylinder/Kugel/Kegel, Nennmaß, Verlängern),
   Vereinen/Abziehen, Vernetzen für die Anzeige (Flächen + B-Rep-Kanten), BRep im Projekt, STEP/IGES,
@@ -57,6 +66,9 @@ wegfallenden Punkte rot, erst „Anwenden“ ändert Daten (rückgängig machbar
 - `python3 tests/test_oberflaeche_formen.py` Formen-Reiter (auch gegen EXE)
 - `python3 tests/test_koerper.py` Körper: Maße, Kegelrichtung, Abziehen/Vereinen exakt, Rückgängig, Speichern, STEP/IGES
 - `python3 tests/test_oberflaeche_koerper.py` Grundkörper über Menüband, Klick im Modell, Vereinen, STEP-Download
+- `python3 tests/test_skizze.py` Skizze/Extrusion/Drehung/Runden gegen Sollteile (Platte R5+Ø12 als Netz und Wolke,
+  Welle Ø20/Ø12), Bearbeiten, Speichern, Server-Ablauf mit Rückgängig
+- `python3 tests/test_oberflaeche_skizze.py` MODELL-Werkzeuge per Klick (Kante mit echter Maus gewählt)
 - `python3 tests/test_abweichung.py` Abweichung Scan ↔ Körper gegen Sollwerte (±0,1/0,2/0,3 mm, 1e-4 genau; 1 Mio Punkte < 10 s)
 - `python3 tests/test_oberflaeche_abweichung.py` MODELL → Abweichung: Farben (grün im Toleranzband, grau ohne Gegenstück), Kennwerte, Legende
 - UI-Tests öffnen Werkzeuge wie ein Nutzer über das Menüband (Helfer `oeffne(band, id)`)

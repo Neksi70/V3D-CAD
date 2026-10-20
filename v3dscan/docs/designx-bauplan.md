@@ -39,6 +39,11 @@ Alles, was diese Schleife nicht trägt, kommt später.
 | **H** | Punktwolken-Komfort: Punktpaar-Ausrichten mit geteilter Ansicht, Combine mit Überlappungsentfernung, Sampling nach Krümmung, Box-Filter | 08 | klein–mittel |
 | **I** | Flächen: Loft aus Profilen, Mesh Fit (B-Spline auf Region), Auto Surface; **dazu Extend/Trim**, was Go fehlt | 09, 10, 11 | groß |
 
+**Stand 20.10.2026 (v0.7.0):** A weitgehend (Menüband/Werkzeugfenster/Bäume), D (Querschnitt-Skizze mit Auto-Fit,
+Nennmaß, Radius ändern, Element→Gerade), E (Extrudieren inkl. „bis Scan“, Drehen, Runden/Fasen mit Kantenpick,
+Grundkörper, STEP/IGES), F (Abweichung Körper↔Scan, Skizze↔Schnitt) erledigt. Zusätzliche Vorlage: QuickSurface
+(siehe Gedächtnis „quicksurface-analyse“). Offen: B (Regionen je Dreieck), C (dauerhafte Referenzgeometrie), G, H, I.
+
 Reihenfolge A → B → C → D → E → F, danach G/H/I nach Bedarf. Nach E ist der Ablauf aus Folge 12
 komplett in V3D Scan machbar (Meilenstein „erstes echtes Teil vom Scan zum STEP“).
 

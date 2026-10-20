@@ -390,6 +390,7 @@ async function zustandUebernehmen(z) {
   $('#knopfRedo').title = z.redo ? 'Wiederholen: ' + z.redo + ' (Strg+Y)' : 'Nichts zu wiederholen';
   $('#leerHinweis').hidden = z.scans.length > 0;
   await koerperUebernehmen(z.koerper || []);
+  await skizzenUebernehmen(z.skizzen || []);
   elementEigenschaften();
   if (erstesMal && z.scans.length) einpassen();
   hilfenZeichnen();
@@ -915,6 +916,7 @@ leinwand.addEventListener('pointerup', (ev) => {
   const [x, y] = lokalePos(ev);
   if (Math.hypot(x - klickStart[0], y - klickStart[1]) > 4) return;
   klickStart = null;
+  if (WF.haupt && WF.haupt.id === 'w-kanten') { kanteKlick(x, y); return; }
   const erk = S.erkennung;
   if (!erk) return;
   const p = punktAn(x, y, erk.id);
@@ -1713,6 +1715,7 @@ function formWaehlen(el, hinsehen = true) {
   koerperListeZeichnen();
   elementEigenschaften();
   if (WF.haupt && WF.haupt.id === 'w-grundkoerper') { gkFeldZeichnen(); gkVorschauWeg(); $('#gkInfo').textContent = ''; }
+  if (WF.haupt && WF.haupt.id === 'w-skizze') skBereichZeichnen();
   const box = new THREE.Box3();
   const v = new THREE.Vector3();
   for (const x of S.scans.values()) x.sel.fill(0);
@@ -1808,6 +1811,7 @@ async function koerperUebernehmen(liste) {
       const d = await r.json();
       if (k) koerperWeg(k);
       k = { ...koerperObjekt(d, 0xaeb4bc), meta: { ...meta, kid: meta.id } };
+      k.kantenId = d.kanten_id ? b64Uint32(d.kanten_id) : null;
       koerperGruppe.add(k.gruppe);
       S.koerper.set(meta.id, k);
     }
@@ -1819,6 +1823,7 @@ async function koerperUebernehmen(liste) {
   verlaufZeichnen();
   gkZielFuellen();
   kaFuellen();
+  if (typeof featureAuswahlFuellen === 'function' && S.skizzen) { featureAuswahlFuellen(); knZeichnen(); }
 }
 
 function koerperWaehlen(kid) {
@@ -1974,6 +1979,465 @@ async function gkAnwenden() {
   if (j.koerper !== undefined && j.koerper !== null) { S.koerperAktiv = j.koerper; for (const k of S.koerper.values()) koerperDarstellung(k); koerperListeZeichnen(); verlaufZeichnen(); }
   meldung('Körper erzeugt.', 'ok');
 }
+// ===========================================================================
+// Skizzen (Querschnitt) + Körper aus Skizze + Kanten (Etappen D/E)
+// ===========================================================================
+const skizzenGruppe = new THREE.Group();
+koerperGruppe.add(skizzenGruppe);            // so auch beim Tiefenbild ausgeblendet
+S.skizzen = new Map();      // sid -> {meta, daten, obj}
+S.skizzeAktiv = null;
+S.skVorschau = null;        // {daten, texte, abw, obj}
+S.skHervor = null;          // [kette, element] in der Vorschau-Liste
+S.featVorschau = null;      // THREE.Group (Extrusion/Drehung/Kanten)
+S.knKanten = new Set();     // gewählte Kanten-Nummern (Kanten-Werkzeug)
+let knGruppe = null;
+
+async function apiRoh(name, daten = {}) {
+  const r = await fetch('/api/' + name, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(daten) });
+  const j = await r.json().catch(() => ({ fehler: 'Ungültige Antwort vom Dienst.' }));
+  if (!r.ok || j.fehler) throw new Error(j.fehler || ('HTTP ' + r.status));
+  return j;
+}
+
+function sk3d(E, s, t) {
+  return new THREE.Vector3(E.ursprung[0] + s * E.u[0] + t * E.v[0], E.ursprung[1] + s * E.u[1] + t * E.v[1],
+    E.ursprung[2] + s * E.u[2] + t * E.v[2]);
+}
+function skDiskret(el) {
+  if (el.typ === 'linie') return [el.a, el.b];
+  const m = el.mitte, r = el.r;
+  if (el.typ === 'kreis') {
+    const pts = [];
+    for (let i = 0; i <= 72; i++) { const w = i / 72 * 2 * Math.PI; pts.push([m[0] + r * Math.cos(w), m[1] + r * Math.sin(w)]); }
+    return pts;
+  }
+  const wi = (p) => Math.atan2(p[1] - m[1], p[0] - m[0]);
+  const ccw = (a, b) => ((b - a) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+  const w0 = wi(el.a), wm = wi(el.m), w1 = wi(el.b);
+  const spanne = ccw(w0, wm) <= ccw(w0, w1) ? ccw(w0, w1) : -ccw(w1, w0);
+  const k = Math.max(2, Math.ceil(Math.abs(spanne) / (Math.PI / 36)) + 1);
+  const pts = [];
+  for (let i = 0; i < k; i++) { const w = w0 + spanne * i / (k - 1); pts.push([m[0] + r * Math.cos(w), m[1] + r * Math.sin(w)]); }
+  pts[0] = el.a; pts[k - 1] = el.b;
+  return pts;
+}
+function linienObjekt(pts3, farbe, oben = true) {
+  const pos = new Float32Array((pts3.length - 1) * 6);
+  for (let i = 0; i < pts3.length - 1; i++) {
+    pos.set([pts3[i].x, pts3[i].y, pts3[i].z, pts3[i + 1].x, pts3[i + 1].y, pts3[i + 1].z], i * 6);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const l = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: farbe, depthTest: !oben, transparent: oben }));
+  l.renderOrder = oben ? 5 : 0;
+  return l;
+}
+function skizzeObjekt(skz, { vorschau = false, hervor = null, abw = null } = {}) {
+  const g = new THREE.Group();
+  const E = skz.ebene;
+  let lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+  (skz.schnitt || []).forEach((P, ki) => {
+    if (!P.length) return;
+    for (const q of P) { lo = [Math.min(lo[0], q[0]), Math.min(lo[1], q[1])]; hi = [Math.max(hi[0], q[0]), Math.max(hi[1], q[1])]; }
+    if (vorschau) {
+      const pts = P.map((q) => sk3d(E, q[0], q[1]));
+      if (skz.ketten[ki] && skz.ketten[ki].geschlossen) pts.push(pts[0]);
+      g.add(linienObjekt(pts, 0xe04f9a));
+    }
+  });
+  skz.ketten.forEach((k, ki) => k.elemente.forEach((el, ei) => {
+    const an = hervor && hervor[0] === ki && hervor[1] === ei;
+    const farbe = an ? 0xf08a1c : (k.geschlossen ? 0x1f5fd0 : 0xc0661a);
+    const o = linienObjekt(skDiskret(el).map((q) => sk3d(E, q[0], q[1])), farbe, true);
+    g.add(o);
+  }));
+  if (vorschau && isFinite(lo[0])) {
+    // Ebene als zarte Fläche um die Schnittspur
+    const rand = Math.max(hi[0] - lo[0], hi[1] - lo[1]) * 0.15 + 2;
+    const ecken = [[lo[0] - rand, lo[1] - rand], [hi[0] + rand, lo[1] - rand], [hi[0] + rand, hi[1] + rand], [lo[0] - rand, hi[1] + rand]]
+      .map((q) => sk3d(E, q[0], q[1]));
+    const geo = new THREE.BufferGeometry().setFromPoints([ecken[0], ecken[1], ecken[2], ecken[0], ecken[2], ecken[3]]);
+    const f = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x6aa3ff, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false }));
+    g.add(f);
+  }
+  return g;
+}
+function objektEntsorgen(o) {
+  if (!o) return;
+  if (o.parent) o.parent.remove(o);
+  o.traverse((x) => { if (x.geometry) x.geometry.dispose(); if (x.material) x.material.dispose(); });
+}
+
+// --- Skizzen im Modell ----------------------------------------------------------------
+async function skizzenUebernehmen(liste) {
+  const ids = new Set(liste.map((m) => m.id));
+  for (const [sid, z] of S.skizzen) if (!ids.has(sid)) { objektEntsorgen(z.obj); S.skizzen.delete(sid); }
+  for (const meta of liste) {
+    let z = S.skizzen.get(meta.id);
+    if (!z || z.meta.rev !== meta.rev) {
+      const j = await apiRoh('skizze/holen', { sid: meta.id });
+      if (z) objektEntsorgen(z.obj);
+      z = { meta, daten: j.skizze, texte: j.texte, obj: skizzeObjekt(j.skizze) };
+      skizzenGruppe.add(z.obj);
+      S.skizzen.set(meta.id, z);
+    }
+    z.meta = meta;
+    z.obj.visible = meta.sichtbar;
+  }
+  if (S.skizzeAktiv !== null && !S.skizzen.has(S.skizzeAktiv)) S.skizzeAktiv = null;
+  skizzenListeZeichnen();
+  featureAuswahlFuellen();
+}
+function skizzenListeZeichnen() {
+  const box = $('#skizzenListe');
+  if (!S.skizzen.size) { box.innerHTML = '<span class="info">Noch keine Skizzen.</span>'; return; }
+  box.innerHTML = '';
+  for (const z of S.skizzen.values()) {
+    const m = z.meta;
+    const el = document.createElement('div');
+    el.className = 'skizze' + (m.id === S.skizzeAktiv ? ' aktiv' : '') + (m.sichtbar ? '' : ' versteckt');
+    el.innerHTML = `<button class="auge" title="Ein-/Ausblenden">${m.sichtbar ? '👁' : '◌'}</button><span>✎</span>
+      <span class="name" title="Doppelklick zum Umbenennen"></span><button class="weg" title="Skizze entfernen">✕</button><span class="zahl"></span>`;
+    el.querySelector('.name').textContent = m.name;
+    el.querySelector('.zahl').textContent = `${m.geschlossen} von ${m.ketten} Konturen geschlossen · ${m.elemente} Elemente`;
+    el.addEventListener('click', () => { S.skizzeAktiv = S.skizzeAktiv === m.id ? null : m.id; skizzenListeZeichnen(); featureAuswahlFuellen(); });
+    el.querySelector('.auge').addEventListener('click', (ev) => { ev.stopPropagation(); sicher(() => api('skizze/setzen', { sid: m.id, sichtbar: !m.sichtbar })); });
+    el.querySelector('.weg').addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (confirm(`Skizze „${m.name}“ entfernen? (Rückgängig möglich)`)) sicher(() => api('skizze/entfernen', { sid: m.id }));
+    });
+    el.querySelector('.name').addEventListener('dblclick', (ev) => {
+      ev.stopPropagation();
+      const name = prompt('Neuer Name:', m.name);
+      if (name) sicher(() => api('skizze/setzen', { sid: m.id, name }));
+    });
+    box.appendChild(el);
+  }
+}
+function selectFuellen(sel, eintraege, bevorzugt = null) {
+  const alt = sel.value;
+  sel.innerHTML = eintraege.map(([v]) => `<option value="${v}"></option>`).join('');
+  [...sel.options].forEach((o, i) => { o.textContent = eintraege[i][1]; });
+  if (bevorzugt !== null && eintraege.some(([v]) => String(v) === String(bevorzugt))) sel.value = bevorzugt;
+  else if (eintraege.some(([v]) => String(v) === alt)) sel.value = alt;
+}
+function featureAuswahlFuellen() {
+  const sk = [...S.skizzen.values()].map((z) => [z.meta.id, z.meta.name]);
+  const neueste = sk.length ? sk[sk.length - 1][0] : null;
+  for (const id of ['#exSkizze', '#drSkizze']) selectFuellen($(id), sk, S.skizzeAktiv !== null ? S.skizzeAktiv : (document.querySelector(id).value ? null : neueste));
+  const ko = [...S.koerper.values()].map((k) => [k.meta.id, k.meta.name]);
+  for (const id of ['#exZiel', '#drZiel', '#knKoerper']) selectFuellen($(id), ko, S.koerperAktiv);
+  drAchsenFuellen();
+  for (const [op, ziel] of [['#exOperation', '#exZiel'], ['#drOperation', '#drZiel']]) {
+    const o = $(op).value;
+    $(ziel).disabled = !(o === 'vereinen' || o === 'abziehen') || !S.koerper.size;
+  }
+  const scans = S.zustand ? S.zustand.scans : [];
+  selectFuellen($('#skScan'), scans.map((x) => [x.id, x.name]), $('#skScan').value ? null : S.aktiv);
+}
+function drAchsenFuellen() {
+  const z = S.skizzen.get(Number($('#drSkizze').value));
+  const eintraege = [['', 'Achse der Skizzenebene (u)']];
+  if (z) {
+    let n = 0;
+    z.daten.ketten.forEach((k, ki) => k.elemente.forEach((el, ei) => {
+      if (el.typ === 'linie') eintraege.push([String(n), `Linie ${ki + 1}.${ei + 1} – ${z.texte[ki][ei]}`]);
+      n++;
+    }));
+  }
+  selectFuellen($('#drAchse'), eintraege);
+}
+$('#drSkizze').addEventListener('change', drAchsenFuellen);
+for (const [op, ziel] of [['#exOperation', '#exZiel'], ['#drOperation', '#drZiel']]) {
+  $(op).addEventListener('change', () => { $(ziel).disabled = !($(op).value === 'vereinen' || $(op).value === 'abziehen') || !S.koerper.size; });
+}
+
+// --- Werkzeug „Querschnitt-Skizze“ -------------------------------------------------------
+function skEbeneArt() { return $('#skEbene').value; }
+function skFelderZeigen() {
+  const art = skEbeneArt();
+  $('#skBereichBox').hidden = !(art === 'bereich' || art === 'achse');
+  $('#skWinkelReihe').hidden = art !== 'achse';
+  $('#skVersatzReihe').hidden = art === 'achse';
+  $('#skVersatzRegler').hidden = art === 'achse';
+  skBereichZeichnen();
+  skReglerSpanne();
+}
+function skBereichZeichnen() {
+  const el = gkElement();
+  const f = $('#skBereich');
+  f.textContent = el ? el.text : '– keiner gewählt –';
+  f.classList.toggle('leer', !el);
+}
+function skReglerSpanne() {
+  // Reglerbereich = Ausdehnung des Scans entlang der Ebenennormale
+  const e = S.scans.get(Number($('#skScan').value));
+  if (!e) return;
+  const art = skEbeneArt();
+  const bb = e.geo.boundingBox;
+  let lo = -50, hi = 50;
+  if (art.startsWith('welt:')) {
+    const k = { 'welt:xy': 'z', 'welt:xz': 'y', 'welt:yz': 'x' }[art];
+    lo = bb.min[k]; hi = bb.max[k];
+  } else {
+    const d = bb.getSize(new THREE.Vector3()).length() / 2;
+    lo = -d; hi = d;
+  }
+  const r = $('#skVersatzRegler');
+  r.min = lo.toFixed(2); r.max = hi.toFixed(2);
+  r.step = Math.max(0.01, (hi - lo) / 400).toPrecision(2);
+}
+$('#skEbene').addEventListener('change', skFelderZeigen);
+$('#skScan').addEventListener('change', skReglerSpanne);
+let skTimer = null;
+$('#skVersatzRegler').addEventListener('input', () => {
+  $('#skVersatz').value = Number($('#skVersatzRegler').value).toFixed(2);
+  clearTimeout(skTimer);
+  skTimer = setTimeout(() => sicher(skVorschau), 350);     // live mitziehen
+});
+$('#skVersatz').addEventListener('change', () => { $('#skVersatzRegler').value = $('#skVersatz').value; });
+
+function skParameter() {
+  const id = Number($('#skScan').value);
+  if (!S.scans.has(id)) throw new Error('Erst einen Scan laden.');
+  const art = skEbeneArt();
+  let ebene;
+  if (art.startsWith('welt:')) ebene = { art: 'welt', name: art.slice(5), versatz: Number($('#skVersatz').value) || 0 };
+  else {
+    const el = gkElement();
+    if (!el) throw new Error('Erst einen Bereich wählen (links unter „Bereiche“ oder im Modell anklicken).');
+    if (S.erkennung.id !== id) throw new Error('Der gewählte Bereich gehört zu einem anderen Scan.');
+    ebene = art === 'bereich' ? { art, element: el.id, versatz: Number($('#skVersatz').value) || 0 }
+      : { art, element: el.id, winkel: Number($('#skWinkel').value) || 0 };
+  }
+  return { id, ebene, toleranz: Number($('#skTol').value) || 0.1, luecke: Number($('#skLuecke').value) || 0,
+    achsen: $('#skAchsen').checked, radien: $('#skRadien').checked };
+}
+function skVorschauSetzen(j) {
+  objektEntsorgen(S.skVorschau && S.skVorschau.obj);
+  S.skVorschau = { daten: j.skizze, texte: j.texte, abw: j.abweichung };
+  S.skVorschau.obj = skizzeObjekt(j.skizze, { vorschau: true, hervor: S.skHervor });
+  hilfsGruppe.add(S.skVorschau.obj);
+  skElementeZeichnen();
+}
+function skVorschauWeg() {
+  if (S.skVorschau) objektEntsorgen(S.skVorschau.obj);
+  S.skVorschau = null;
+  S.skHervor = null;
+  $('#skElemente').innerHTML = '';
+  $('#skInfo').textContent = '';
+}
+async function skVorschau() {
+  const j = await api('skizze/schnitt', skParameter(), 'Schneide und passe ein…');
+  S.skHervor = null;
+  skVorschauSetzen(j);
+}
+function skElementeZeichnen() {
+  const v = S.skVorschau;
+  const box = $('#skElemente');
+  box.innerHTML = '';
+  if (!v) return;
+  const info = v.daten.info || {};
+  const zu = v.daten.ketten.filter((k) => k.geschlossen).length;
+  $('#skInfo').innerHTML = `${v.daten.ketten.length} Kontur(en), davon ${zu} geschlossen` +
+    (info.art === 'wolke' ? ` · Scheibe ±${zahlText(info.band, 2)} mm (${info.scheibe.toLocaleString('de-DE')} Punkte)` : '') +
+    (info.dauer !== undefined ? ` · ${zahlText(info.dauer, 2)} s` : '');
+  v.daten.ketten.forEach((k, ki) => {
+    const kopf = document.createElement('div');
+    kopf.className = 'kette' + (k.geschlossen ? '' : ' offen');
+    const a = v.abw[ki];
+    kopf.textContent = `Kontur ${ki + 1}${k.geschlossen ? '' : ' (offen – nicht extrudierbar)'}` + (a ? ` · Abweichung zum Schnitt max ${zahlText(a.max, 3)} mm` : '');
+    box.appendChild(kopf);
+    k.elemente.forEach((el, ei) => {
+      const z = document.createElement('div');
+      z.className = 'el' + (S.skHervor && S.skHervor[0] === ki && S.skHervor[1] === ei ? ' an' : '');
+      const txt = document.createElement('span');
+      txt.textContent = v.texte[ki][ei] + (el.achse ? ` (${el.achse})` : '') + (el.typ !== 'linie' && el.nenn ? ' · Nennmaß' : '');
+      z.appendChild(txt);
+      if (el.typ !== 'linie') {
+        const r = document.createElement('input');
+        r.type = 'number'; r.step = '0.1'; r.min = '0.01'; r.value = String(+(el.typ === 'kreis' ? 2 * el.r : el.r).toFixed(3));
+        r.title = el.typ === 'kreis' ? 'Durchmesser' : 'Radius';
+        r.addEventListener('click', (ev) => ev.stopPropagation());
+        r.addEventListener('change', () => sicher(async () => {
+          const wert = Number(r.value);
+          const j = await api('skizze/radius', { kette: ki, element: ei, r: el.typ === 'kreis' ? wert / 2 : wert }, 'Ändere Radius…');
+          skVorschauSetzen(j);
+        }));
+        z.appendChild(r);
+      } else z.appendChild(document.createElement('span'));
+      const weg = document.createElement('button');
+      weg.textContent = '✕';
+      weg.title = el.typ === 'kreis' ? 'Kreis entfernen' : 'Durch gerade Verbindung ersetzen';
+      weg.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        sicher(async () => { S.skHervor = null; skVorschauSetzen(await api('skizze/element_entfernen', { kette: ki, element: ei }, 'Entferne…')); });
+      });
+      z.appendChild(weg);
+      z.addEventListener('click', () => {
+        S.skHervor = S.skHervor && S.skHervor[0] === ki && S.skHervor[1] === ei ? null : [ki, ei];
+        objektEntsorgen(S.skVorschau.obj);
+        S.skVorschau.obj = skizzeObjekt(S.skVorschau.daten, { vorschau: true, hervor: S.skHervor });
+        hilfsGruppe.add(S.skVorschau.obj);
+        skElementeZeichnen();
+      });
+      box.appendChild(z);
+    });
+  });
+}
+async function skUebernehmen() {
+  if (!S.skVorschau) await skVorschau();
+  const j = await api('skizze/uebernehmen', {}, 'Übernehme Skizze…');
+  skVorschauWeg();
+  S.skizzeAktiv = j.sid;
+  skizzenListeZeichnen();
+  featureAuswahlFuellen();
+  meldung('Skizze übernommen – jetzt Extrudieren oder Drehen.', 'ok');
+}
+async function skZurueck() {
+  skVorschauWeg();
+  await apiRoh('skizze/verwerfen', {});
+}
+
+// --- Extrudieren / Drehen -----------------------------------------------------------------------
+function featVorschauWeg() { objektEntsorgen(S.featVorschau); S.featVorschau = null; }
+function featVorschauZeigen(netz) {
+  featVorschauWeg();
+  const o = koerperObjekt(netz, 0xf08a1c, 0.55);
+  o.kanten && o.kanten.material.color.set(0xb35a00);
+  S.featVorschau = o.gruppe;
+  koerperGruppe.add(o.gruppe);
+}
+function opZiel(op, ziel) {
+  const o = $(op).value || null;
+  const z = o === 'vereinen' || o === 'abziehen' ? Number($(ziel).value) : null;
+  if ((o === 'vereinen' || o === 'abziehen') && !S.koerper.has(z)) throw new Error('Zielkörper wählen – es gibt noch keinen.');
+  return { operation: o, ziel: z };
+}
+function exParameter() {
+  const sid = Number($('#exSkizze').value);
+  if (!S.skizzen.has(sid)) throw new Error('Erst eine Skizze anlegen (Querschnitt-Skizze → Übernehmen).');
+  return { sid, modus: $('#exModus').value, laenge: Number($('#exLaenge').value) || 10, umkehren: $('#exUmkehren').checked,
+    ...opZiel('#exOperation', '#exZiel') };
+}
+$('#exModus').addEventListener('change', () => { $('#exLaengeReihe').hidden = $('#exModus').value === 'auto'; });
+function opText(info) {
+  const ziel = info.ziel !== null && S.koerper.has(info.ziel) ? S.koerper.get(info.ziel).meta.name : '';
+  return info.operation === 'neu' ? 'neuer Körper' : info.operation === 'abziehen' ? `wird von „${ziel}“ abgezogen` : `wird mit „${ziel}“ vereint`;
+}
+async function exVorschau() {
+  const j = await api('feature/extrudieren', { ...exParameter(), vorschau: true }, 'Baue Vorschau…');
+  featVorschauZeigen(j.vorschau);
+  $('#exInfo').textContent = `Länge ${zahlText(j.info.laenge, 3)} mm (${zahlText(j.info.von, 3)} … ${zahlText(j.info.bis, 3)}) · ${zahlText(j.info.volumen, 1)} mm³ · ${opText(j.info)}`;
+}
+async function exAnwenden() {
+  const j = await api('feature/extrudieren', exParameter(), 'Extrudiere…');
+  featVorschauWeg();
+  $('#exInfo').textContent = '';
+  S.koerperAktiv = j.koerper;
+  for (const k of S.koerper.values()) koerperDarstellung(k);
+  koerperListeZeichnen(); verlaufZeichnen();
+  meldung('Extrusion erzeugt.', 'ok');
+}
+function drParameter() {
+  const sid = Number($('#drSkizze').value);
+  if (!S.skizzen.has(sid)) throw new Error('Erst eine Skizze anlegen (Querschnitt-Skizze → Übernehmen).');
+  const a = $('#drAchse').value;
+  return { sid, winkel: Number($('#drWinkel').value) || 360, element: a === '' ? null : Number(a), ...opZiel('#drOperation', '#drZiel') };
+}
+async function drVorschau() {
+  const j = await api('feature/drehen', { ...drParameter(), vorschau: true }, 'Baue Vorschau…');
+  featVorschauZeigen(j.vorschau);
+  $('#drInfo').textContent = `${zahlText(j.info.volumen, 1)} mm³ · ${opText(j.info)}`;
+}
+async function drAnwenden() {
+  const j = await api('feature/drehen', drParameter(), 'Drehe…');
+  featVorschauWeg();
+  $('#drInfo').textContent = '';
+  S.koerperAktiv = j.koerper;
+  for (const k of S.koerper.values()) koerperDarstellung(k);
+  koerperListeZeichnen(); verlaufZeichnen();
+  meldung('Drehkörper erzeugt.', 'ok');
+}
+
+// --- Kanten runden / fasen ----------------------------------------------------------------------
+function knKoerper() {
+  const kid = Number($('#knKoerper').value);
+  const k = S.koerper.get(kid);
+  if (!k) throw new Error('Erst einen Körper erzeugen.');
+  return k;
+}
+function knZeichnen() {
+  objektEntsorgen(knGruppe);
+  knGruppe = null;
+  const k = S.koerper.get(Number($('#knKoerper').value));
+  const n = S.knKanten.size;
+  $('#knInfo').textContent = n ? `${n} Kante${n > 1 ? 'n' : ''} gewählt.` : 'Noch keine Kante gewählt – im Modell anklicken.';
+  if (!k || !n || !k.kantenId) return;
+  const pos = k.kanten.geometry.getAttribute('position').array;
+  const wahl = [];
+  for (let i = 0; i < k.kantenId.length; i++) if (S.knKanten.has(k.kantenId[i])) wahl.push(...pos.slice(i * 6, i * 6 + 6));
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(wahl), 3));
+  knGruppe = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0xf08a1c, depthTest: false, transparent: true }));
+  knGruppe.renderOrder = 6;
+  hilfsGruppe.add(knGruppe);
+}
+function kanteAn(x, y, k) {
+  // naechstes Kantensegment in Bildschirm-Pixeln
+  if (!k || !k.kanten || !k.kantenId) return null;
+  const pos = k.kanten.geometry.getAttribute('position').array;
+  const w = leinwand.clientWidth, h = leinwand.clientHeight;
+  const a = new THREE.Vector3(), b = new THREE.Vector3();
+  let bester = null;
+  for (let i = 0; i < k.kantenId.length; i++) {
+    a.set(pos[i * 6], pos[i * 6 + 1], pos[i * 6 + 2]).project(kamera);
+    b.set(pos[i * 6 + 3], pos[i * 6 + 4], pos[i * 6 + 5]).project(kamera);
+    if (a.z > 1 || b.z > 1) continue;
+    const ax = (a.x + 1) / 2 * w, ay = (1 - a.y) / 2 * h, bx = (b.x + 1) / 2 * w, by = (1 - b.y) / 2 * h;
+    const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+    const t = l2 > 0 ? Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / l2)) : 0;
+    const d = Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+    if (d < 9 && (!bester || d < bester.d)) bester = { d, id: k.kantenId[i] };
+  }
+  return bester;
+}
+function kanteKlick(x, y) {
+  const k = S.koerper.get(Number($('#knKoerper').value));
+  const t = kanteAn(x, y, k);
+  if (!t) { status('Keine Kante an dieser Stelle – genauer auf eine Kante klicken.'); return; }
+  if (S.knKanten.has(t.id)) S.knKanten.delete(t.id); else S.knKanten.add(t.id);
+  featVorschauWeg();
+  knZeichnen();
+}
+$('#knKoerper').addEventListener('change', () => { S.knKanten.clear(); featVorschauWeg(); knZeichnen(); });
+function knParameter() {
+  const k = knKoerper();
+  if (!S.knKanten.size) throw new Error('Erst Kanten im Modell anklicken.');
+  return { kid: k.meta.id, kanten: [...S.knKanten], radius: Number($('#knRadius').value) || 1 };
+}
+async function knVorschau() {
+  const j = await api('feature/' + $('#knArt').value, { ...knParameter(), vorschau: true }, 'Baue Vorschau…');
+  featVorschauZeigen(j.vorschau);
+  $('#knInfo').textContent = `${S.knKanten.size} Kante(n) · Volumen danach ${zahlText(j.info.volumen, 1)} mm³`;
+}
+async function knAnwenden() {
+  await api('feature/' + $('#knArt').value, knParameter(), $('#knArt').value === 'fasen' ? 'Fase…' : 'Runde…');
+  featVorschauWeg();
+  S.knKanten.clear();
+  knZeichnen();
+  meldung($('#knArt').value === 'fasen' ? 'Fase erzeugt.' : 'Rundung erzeugt.', 'ok');
+}
+async function knVorschlag() {
+  const p = knParameter();
+  const j = await apiRoh('feature/radius_vorschlag', p);
+  if (j.radius === null) throw new Error('Im Scan wurde an diesen Kanten keine Rundung erkannt (BEREICHE → Automatisch erkennen).');
+  $('#knRadius').value = j.radius;
+  $('#knArt').value = 'runden';
+  meldung(`Radius aus Scan: R ${zahlText(j.radius, 3)}`, 'ok');
+}
+function knZurueck() { featVorschauWeg(); S.knKanten.clear(); knZeichnen(); }
+
 // --- Abweichung Scan <-> Koerper --------------------------------------------------
 function kaFuellen() {
   const scans = S.zustand ? S.zustand.scans : [];
@@ -2316,6 +2780,19 @@ const AKTIONEN = {
   gkZurueck: { text: '', fn: () => { gkVorschauWeg(); $('#gkInfo').textContent = ''; } },
   grundkoerper: { text: 'Werkzeug: Grundkörper aus Bereich', taste: 'G', fn: () => werkzeugOeffnen('w-grundkoerper', $('[data-bandseite=modell] [data-wf=w-grundkoerper]')) },
   kaZeigen: { text: 'Abweichung Scan ↔ Körper', fn: kaZeigen },
+  skVorschau: { text: 'Querschnitt-Skizze: Vorschau', fn: skVorschau },
+  skUebernehmen: { text: 'Skizze übernehmen', fn: skUebernehmen },
+  skZurueck: { text: '', fn: skZurueck },
+  exVorschau: { text: 'Extrudieren: Vorschau', fn: exVorschau },
+  exAnwenden: { text: 'Extrudieren', fn: exAnwenden },
+  exZurueck: { text: '', fn: () => { featVorschauWeg(); $('#exInfo').textContent = ''; } },
+  drVorschau: { text: 'Drehen: Vorschau', fn: drVorschau },
+  drAnwenden: { text: 'Drehen', fn: drAnwenden },
+  drZurueck: { text: '', fn: () => { featVorschauWeg(); $('#drInfo').textContent = ''; } },
+  knVorschau: { text: 'Kanten: Vorschau', fn: knVorschau },
+  knAnwenden: { text: 'Kanten runden/fasen', fn: knAnwenden },
+  knVorschlag: { text: 'Radius aus Scan', fn: knVorschlag },
+  knZurueck: { text: '', fn: knZurueck },
   kaAus: { text: 'Abweichungskarte aus', fn: kaAus },
   koerperStep: { text: 'Körper als STEP exportieren', fn: () => koerperExport('step') },
   koerperIges: { text: 'Körper als IGES exportieren', fn: () => koerperExport('iges') },
@@ -2460,6 +2937,10 @@ function werkzeugOeffnen(liste, knopf = null) {
   inhalt.scrollTop = 0;
   if (haupt && haupt.id === 'w-grundkoerper') gkFeldZeichnen();
   if (haupt && haupt.id === 'w-koerper-abw') kaFuellen();
+  if (haupt && ['w-skizze', 'w-extrudieren', 'w-drehen', 'w-kanten'].includes(haupt.id)) featureAuswahlFuellen();
+  if (haupt && haupt.id === 'w-skizze') skFelderZeigen();
+  if (haupt && haupt.id === 'w-extrudieren') $('#exLaengeReihe').hidden = $('#exModus').value === 'auto';
+  if (haupt && haupt.id === 'w-kanten') knZeichnen();
 }
 
 function werkzeugSchliessen(zuruecksetzen = true) {
