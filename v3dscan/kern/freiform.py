@@ -182,8 +182,9 @@ def auto_flaechen(X, T, flaechen=300, raster=9, kantenwinkel=0.0, fortschritt=No
     E[:, 1:-1] = proj.entlang(E[:, 1:-1], EN[:, 1:-1], weit)
     E[:, 0], E[:, -1] = V[K[:, 0]], V[K[:, 1]]
     kp_rand = kp_quer = None
+    scharf, ecke_scharf = scharfe_kanten(V, F, K, schluessel, proj)
     if glatt:
-        kp_rand, kp_quer = _g1_kanten(E, EN, K, schluessel, _glatte_normalen(X, T))
+        kp_rand, kp_quer = _g1_kanten(E, EN, K, schluessel, _glatte_normalen(X, T), scharf, ecke_scharf)
         _g1_flaeche.schluessel = schluessel
 
     def rand(a, b, feld=None):
@@ -222,7 +223,10 @@ def auto_flaechen(X, T, flaechen=300, raster=9, kantenwinkel=0.0, fortschritt=No
     sewing.Perform()
     genaeht = sewing.SewedShape()
     info = {"vierecke": int(len(F)), "fehlgeschlagen": fehlgeschlagen, "freie_kanten": int(sewing.NbFreeEdges())}
-    info.update(_knicke(flaechen_liste))
+    scharf_menge = {(int(a), int(b)) for (a, b) in K[scharf]}
+    info.update(_knicke(flaechen_liste, ausnahmen=scharf_menge))
+    info["scharfe_kanten"] = int(scharf.sum())
+    info["kantig"] = bool(scharf.sum() > 0.05 * len(K))
     shape = genaeht
     info["geschlossen"] = False
     if sewing.NbFreeEdges() == 0:
@@ -263,7 +267,37 @@ def _basis(t, m=M_KP, p=3, knoten=_KNOTEN):
     return N[:, :m]
 
 
-def _g1_kanten(E, EN, K, schluessel, normale):
+def scharfe_kanten(V, F, K, schluessel, proj=None, grenze=35.0):
+    """Kante scharf, wenn die Scan-Normalen dicht links und rechts der Kantenmitte (je 15 % des
+    Wegs zur Viereckmitte) mehr als grenze Grad auseinanderliegen (Bauteilkante) - dort wird
+    nicht geglaettet. Ohne Projektor: Normalen der beiden Vierecke (grob)."""
+    mitte_f = V[F].mean(1)
+    nachbarn = [[] for _ in range(len(K))]
+    for fi, (c0, c1, c2, c3) in enumerate(F.tolist()):
+        for a, b in ((c0, c1), (c1, c2), (c2, c3), (c3, c0)):
+            nachbarn[schluessel[(min(a, b), max(a, b))]].append(fi)
+    paare = [(k, fs[0], fs[1]) for k, fs in enumerate(nachbarn) if len(fs) == 2]
+    scharf = np.zeros(len(K), bool)
+    if paare:
+        kk = np.array([p[0] for p in paare])
+        fa = np.array([p[1] for p in paare])
+        fb = np.array([p[2] for p in paare])
+        km = 0.5 * (V[K[kk, 0]] + V[K[kk, 1]])
+        if proj is not None:
+            _, na = proj.mit_normale(km + 0.15 * (mitte_f[fa] - km))
+            _, nb = proj.mit_normale(km + 0.15 * (mitte_f[fb] - km))
+        else:
+            qn = np.cross(V[F[:, 2]] - V[F[:, 0]], V[F[:, 3]] - V[F[:, 1]])
+            na, nb = qn[fa], qn[fb]
+        na = na / np.maximum(np.linalg.norm(na, axis=1, keepdims=True), 1e-12)
+        nb = nb / np.maximum(np.linalg.norm(nb, axis=1, keepdims=True), 1e-12)
+        scharf[kk] = np.einsum("ij,ij->i", na, nb) < np.cos(np.radians(grenze))
+    ecke_scharf = np.zeros(len(V), bool)
+    ecke_scharf[K[scharf].ravel()] = True
+    return scharf, ecke_scharf
+
+
+def _g1_kanten(E, EN, K, schluessel, normale, scharf=None, ecke_scharf=None):
     """Je Kante: Kontrollpunkte der Randkurve (an die Abtastpunkte angepasst, Enden fest) und
     Querrichtung je Kontrollpunkt (in der Tangentialebene, senkrecht zur Kante). Beide Nachbarn
     setzen ihre zweite Kontrollreihe entlang +-Querrichtung -> G1 entlang der ganzen Kante."""
@@ -282,13 +316,17 @@ def _g1_kanten(E, EN, K, schluessel, normale):
     N = normale(rand, bezug)
     # ecknahe Kontrollpunkte in die Tangentialebene der Ecke: alle Flaechen an einer Ecke
     # bekommen dort dieselbe Normale (die Ecknormale ist fuer jede Kante dieselbe)
-    for i_rand, i_nah in ((0, 1), (M_KP - 1, M_KP - 2)):
+    for i_rand, i_nah, ende in ((0, 1, 0), (M_KP - 1, M_KP - 2, 1)):
         d = rand[:, i_nah] - rand[:, i_rand]
         nn = N[:, i_rand]
-        rand[:, i_nah] = rand[:, i_nah] - np.einsum("ij,ij->i", d, nn)[:, None] * nn
+        neu = rand[:, i_nah] - np.einsum("ij,ij->i", d, nn)[:, None] * nn
+        ok = np.ones(len(K), bool) if ecke_scharf is None else ~ecke_scharf[K[:, ende]]
+        rand[ok, i_nah] = neu[ok]
     tang = np.gradient(rand, axis=1)
     quer = np.cross(N, tang)
     quer /= np.maximum(np.linalg.norm(quer, axis=2, keepdims=True), 1e-12)
+    if scharf is not None:
+        quer[scharf] = np.nan                      # scharfe Kante: zweite Reihe frei einpassen
     return rand, quer
 
 
@@ -315,6 +353,8 @@ def _g1_flaeche(G, ecken, kp_rand, kp_quer, schluessel=None):
     mitte = G.reshape(-1, 3).mean(0)
     zweite = {}
     for (r, q), art, idx in seiten:
+        if np.isnan(q).any():
+            continue
         innen_idx = 1 if idx == 0 else m - 2
         # Laenge quer ueber die Flaeche -> Betrag der Querableitung
         gegen = Q[:, m - 1 - idx] if art == "u" else Q[m - 1 - idx, :]
@@ -328,6 +368,8 @@ def _g1_flaeche(G, ecken, kp_rand, kp_quer, schluessel=None):
         Q[pos] = np.mean(werte, axis=0)              # Ecken (1,1) …: Mittel beider Kanten
     # Drillpunkte (1,1) … in die Ebene durch Ecke und ihre beiden Nachbar-Kontrollpunkte
     for (ci, cj), (di, dj) in (((0, 0), (1, 1)), ((m - 1, 0), (-1, 1)), ((0, m - 1), (1, -1)), ((m - 1, m - 1), (-1, -1))):
+        if np.isnan(Q[ci + di, cj + dj, 0]):
+            continue                                 # an scharfen Kanten frei eingepasst
         ecke = Q[ci, cj]
         a_ = Q[ci + di, cj] - ecke
         b_ = Q[ci, cj + dj] - ecke
@@ -361,7 +403,7 @@ def _g1_flaeche(G, ecken, kp_rand, kp_quer, schluessel=None):
     return Geom_BSplineSurface(pole, knoten, knoten, vielf, vielf, 3, 3)
 
 
-def _knicke(flaechen_liste, anteile=(0.1, 0.25, 0.5)):
+def _knicke(flaechen_liste, anteile=(0.1, 0.25, 0.5), ausnahmen=()):
     """Knickwinkel (Grad) zwischen Nachbarflaechen an Stellen entlang jeder gemeinsamen Kante
     (Anteil ab der kleineren Ecken-Nummer). knick_mitte nur in der Kantenmitte."""
     from OCP.gp import gp_Pnt, gp_Vec
@@ -379,8 +421,8 @@ def _knicke(flaechen_liste, anteile=(0.1, 0.25, 0.5)):
                 werte.append(None if nv.Magnitude() < 1e-12 else np.array([nv.X(), nv.Y(), nv.Z()]) / nv.Magnitude())
             seiten.setdefault((min(a, b), max(a, b)), []).append(werte)
     alle, mitte = [], []
-    for ns in seiten.values():
-        if len(ns) != 2:
+    for schl, ns in seiten.items():
+        if len(ns) != 2 or schl in ausnahmen:
             continue
         for k, f in enumerate(anteile):
             if ns[0][k] is None or ns[1][k] is None:

@@ -2,7 +2,7 @@
 
 Windows-Programm zum Nachbearbeiten von 3D-Scans (Punktwolken), gedacht für
 Exporte aus Revo Scan (Revopoint MIRACO/POP) und CrealityScan (PiKa).
-Stand 0.8.0 = Freiform (automatische Flächen, Fläche aus Auswahl, Beschneiden, Aufdicken) + Körper-Werkzeuge (Verknüpfen, Verschieben/Kopie, Spiegeln, Muster, Schale) + Querschnitt-Skizze → Extrudieren/Drehen → Runden/Fasen (MODELL, Etappen D/E) + Abweichung Scan ↔ Körper (Etappe F) + Oberfläche nach Arbeitsschritten (Design-X-Vorbild, siehe docs/designx-bauplan.md) +
+Stand 0.9.0 = Messen, Symmetrie-/Referenzebenen, Mehrfachschnitt, Loft/Sweep/Rohr, Abwickeln (SVG), glatte (G1) Freiform + Käfig von Hand, Zebra/Formschräge + Freiform (automatische Flächen, Fläche aus Auswahl, Beschneiden, Aufdicken) + Körper-Werkzeuge (Verknüpfen, Verschieben/Kopie, Spiegeln, Muster, Schale) + Querschnitt-Skizze → Extrudieren/Drehen → Runden/Fasen (MODELL, Etappen D/E) + Abweichung Scan ↔ Körper (Etappe F) + Oberfläche nach Arbeitsschritten (Design-X-Vorbild, siehe docs/designx-bauplan.md) +
 Körper (Grundkörper aus Bereich, Vereinen/Abziehen, STEP/IGES) + Punktwolke (Grundgerüst, Bereinigen, Zusammenführen) + Scan→CAD Etappe 1
 (Netzbearbeitung), Etappe 2 (Ausrichten am Koordinatensystem), Etappe 3 (Geometrieerkennung). Ziel: Scan → Geometrieerkennung → parametrisches CAD → STEP/IGES,
 Geometriekern dafür wird OpenCASCADE (OCP) – Entscheidung des Users 14.09.2026 (Variante A).
@@ -42,6 +42,17 @@ Geometriekern dafür wird OpenCASCADE (OCP) – Entscheidung des Users 14.09.202
   Spiegeln, lineares/Kreis-Muster, Schale (offene Flächen per Klick, sonst geschlossen hohl), Aufdicken
 - Vernetzen: unbeschnittene B-Spline-Flächen über ein eigenes Parameterraster (BRepMesh brauchte für eine
   Freiform-Fläche bei Messtoleranz 216 s, jetzt 0,5 s); Kennwerte adaptiv (eps 1e-5) statt fester Integration
+- `kern/referenz.py` Symmetrieebene (Spiegelung je Hauptachse + ICP, Ebene aus M = T·S), Ebene/Achse aus Bereich,
+  Mittelebene; Referenzen im Projekt (Skizzenebene „Referenz“, Spiegelebene `ref:<id>`)
+- Freiform G1: je Kante gemeinsame kubische B-Spline-Randkurve (7 Kontrollpunkte), zweite Kontrollreihe beider
+  Nachbarn ±Querrichtung in der Tangentialebene → G1 entlang der Kante; ecknahe Punkte + Drillpunkte in die
+  Ecktangentialebene; scharfe Bauteilkanten (Scan-Normalen beidseits > 35°) bleiben scharf. Käfig von Hand:
+  Vorschau liefert V/F, Ecken im Browser über den Scan ziehen, `kaefig` an `freiform/auto`
+- `features.py`: Loft (ThruSections), Sweep/Rohr (PipeShell), Abwickeln (LSCM, eigener CG ohne scipy; Naht innerhalb
+  einer Fläche nicht verschweißen, sonst wird der Zylinder zum Rohr), SVG in mm
+- Skizze: Kontur vor dem Einpassen nach Bogenlänge gleichmäßig abgetastet (Netzschnitte: gerade Wände fast punktlos)
+- Oberfläche: Messen (Abstand/Winkel/Kreis, Klick auf Scan oder Körper), Zebra-Streifen (Shader), Formschräge
+  (Normalen-Farben zur Entformungsrichtung)
 - `server.py` lokaler Dienst (nur 127.0.0.1, Port 8797), JSON-Befehle + binäre Punktdaten
 - `kern/koerper.py` OCP-Körper: Grundkörper aus erkanntem Bereich (Zylinder/Kugel/Kegel, Nennmaß, Verlängern),
   Vereinen/Abziehen, Vernetzen für die Anzeige (Flächen + B-Rep-Kanten), BRep im Projekt, STEP/IGES,
@@ -82,6 +93,8 @@ wegfallenden Punkte rot, erst „Anwenden“ ändert Daten (rückgängig machbar
 - `python3 tests/test_freiform.py` Torus → geschlossener Körper (Volumen ±0,2 %, 95 % unter 0,02 mm), verrauscht,
   offene Kuppel, Wellenfläche + Beschneiden gegen ∫, Verknüpfen/Spiegeln/Muster/Schale/Aufdicken mit Sollvolumen
 - `python3 tests/test_oberflaeche_freiform.py` Freiform + Körper-Werkzeuge per Klick
+- `python3 tests/test_flaechen2.py` Loft/Sweep/Rohr/Abwickeln gegen Formeln, G1-Knickwerte, Käfig, Symmetrie, Mehrfachschnitt
+- `python3 tests/test_oberflaeche_v09.py` Referenz, Messen (echte Maus), Loft, Zebra, Abwickeln per Klick, Rohr, Käfig ziehen
 - `python3 tests/test_abweichung.py` Abweichung Scan ↔ Körper gegen Sollwerte (±0,1/0,2/0,3 mm, 1e-4 genau; 1 Mio Punkte < 10 s)
 - `python3 tests/test_oberflaeche_abweichung.py` MODELL → Abweichung: Farben (grün im Toleranzband, grau ohne Gegenstück), Kennwerte, Legende
 - UI-Tests öffnen Werkzeuge wie ein Nutzer über das Menüband (Helfer `oeffne(band, id)`)

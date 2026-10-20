@@ -30,16 +30,16 @@ Legende: ✔ vorhanden · ◐ teilweise · ✗ fehlt · – bewusst weggelassen
 | QuickSurface | V3D Scan |
 |---|---|
 | Extract primitives (Plane/Cylinder/Cone/Sphere) | ✔ Bereiche automatisch + manuell |
-| Middle plane, Plane along path, Plane through sketch line, Plane from 2D sketch | ◐ Skizzenebene Welt/Bereich/durch Achse; dauerhafte Referenzebenen fehlen (Etappe C) |
-| Symmetry Plane | ✗ |
-| Reference Line / Point | ✗ |
+| Middle plane, Plane along path, Plane through sketch line, Plane from 2D sketch | ✔ v0.9 Referenzebene aus Bereich (+Versatz), Mittelebene / ◐ übrige |
+| Symmetry Plane | ✔ v0.9 automatisch (Spiegel-ICP) |
+| Reference Line / Point | ✔ v0.9 Referenzachse aus Bereich / ✗ Punkt |
 | Plane/Cylinder/Cone from CAD | ✗ |
 
 ## Freeform
 | QuickSurface | V3D Scan |
 |---|---|
 | Auto Freeform | ✔ v0.8 Automatische Flächenrückführung (Vierecksnetz → B-Spline-Flächen → Körper) |
-| New Freeform (Käfig von Hand ziehen), Wrap Surface, From 3D Sketch, From quad OBJ | ✗ / ✗ / ✗ / ◐ (Quad-Netz intern) |
+| New Freeform (Käfig von Hand ziehen), Wrap Surface, From 3D Sketch, From quad OBJ | ◐ v0.9 Käfig aus Auto-Netz von Hand verschieben / ✗ / ✗ / ◐ |
 | Thicken / Offset | ✔ v0.8 Aufdicken einer Fläche |
 | Convert to CAD body | ✔ automatisch (geschlossene Schale → Volumenkörper) |
 
@@ -47,15 +47,15 @@ Legende: ✔ vorhanden · ◐ teilweise · ✗ fehlt · – bewusst weggelassen
 | QuickSurface | V3D Scan |
 |---|---|
 | Fit Surface | ✔ v0.8 Fläche aus Punktauswahl (B-Spline, verlängerbar) |
-| Loft / Sweep / Pipe / Fill Surface / From 2D sketch | ✗ |
+| Loft / Sweep / Pipe / Fill Surface / From 2D sketch | ✔ v0.9 Loft, Sweep, Rohr (auch hohl) / ✗ Fill |
 | 3D Sketch / Helix / Roll Sketch | ✗ |
 | Duplicate Face / Offset / Thicken / Extend Surface / Sew surfaces | ◐ Verlängern beim Einpassen, Aufdicken |
-| Project sketch / Flatten | ✗ |
+| Project sketch / Flatten | ✗ / ✔ v0.9 Abwickeln (längentreu bzw. konform) als SVG |
 
 ## CAD
 | QuickSurface | V3D Scan |
 |---|---|
-| 2D Sketch (Querschnitt) / Multiple sections | ✔ v0.7 / ✗ |
+| 2D Sketch (Querschnitt) / Multiple sections | ✔ v0.7 / ✔ v0.9 Mehrfachschnitt |
 | Extrude / Revolve | ✔ v0.7 (bis Scan, Länge, symmetrisch; Achse) |
 | Trim | ◐ Element → Gerade, Radius ändern |
 | Combine / Cut / Intersect | ✔ v0.8 Körper mit Körper |
@@ -72,8 +72,8 @@ Legende: ✔ vorhanden · ◐ teilweise · ✗ fehlt · – bewusst weggelassen
 |---|---|
 | Compare (Scan ↔ CAD) | ✔ v0.6 Abweichungskarte mit Toleranz/Kennwerten |
 | Compare to other meshes | ✔ Abweichungskarte Scan ↔ Scan (Ausrichten) |
-| Measure / Surface Area / Volume | ◐ Volumen + Fläche in den Eigenschaften (v0.8); Messen fehlt |
-| Zebra Stripes / Environment Map / Draft | ✗ |
+| Measure / Surface Area / Volume | ✔ v0.9 Messen (Abstand/Winkel/Kreis) + Volumen/Fläche |
+| Zebra Stripes / Environment Map / Draft | ✔ v0.9 / – / ✔ v0.9 Formschräge |
 | Snapshot | – (Bildschirmfoto des Systems) |
 
 ## Settings / Help
@@ -83,9 +83,8 @@ Legende: ✔ vorhanden · ◐ teilweise · ✗ fehlt · – bewusst weggelassen
 | Video-Tutorials, Hilfe-PDF, Shortcuts, Beispiele | ◐ Tastenkürzel-Dialog |
 | KI-Assistent (Gemini, verweist auf Tutorials) | ✗ – mit Claude möglich |
 
-## Stand v0.8.0 – was noch fehlt (Reihenfolge nach Nutzen)
-1. Messen (Abstand/Winkel/Radius am Scan und Körper), Symmetrieebene, Referenzebene/-linie/-punkt dauerhaft
-2. Loft / Sweep / Pipe / Fläche füllen, Fläche verlängern/nähen als eigene Werkzeuge
-3. Freiform von Hand (Käfig ziehen, Wrap Surface), G1-Übergänge zwischen den Auto-Flächen (jetzt C0)
-4. Mehrere Querschnitte, 3D-Skizze, Helix/Gewinde, Abwickeln (Unroll/Flatten)
-5. Analyse: Zebra, Formschräge (Draft), Flächen löschen / Fläche verschieben
+## Stand v0.9.0 – was noch fehlt
+- Fläche füllen (Fill Surface), Fläche verlängern/nähen als eigene Werkzeuge, Projektion von Skizzen
+- Freiform ganz neu von Hand zeichnen (ohne Auto-Netz), Wrap Surface, 3D-Skizze, Helix/Gewinde, Unroll eines Scans
+- G1 auch an unregelmäßigen Ecken (Valenz ≠ 4; dort Restknicke bis ~30°), G2
+- Flächen löschen / Fläche verschieben / Formschräge anbringen (Draft als Feature)
