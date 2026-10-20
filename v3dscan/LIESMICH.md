@@ -2,7 +2,7 @@
 
 Windows-Programm zum Nachbearbeiten von 3D-Scans (Punktwolken), gedacht für
 Exporte aus Revo Scan (Revopoint MIRACO/POP) und CrealityScan (PiKa).
-Stand 0.5.0 = Oberfläche nach Arbeitsschritten (Design-X-Vorbild, siehe docs/designx-bauplan.md) +
+Stand 0.6.0 = Abweichung Scan ↔ Körper (MODELL → Prüfen, Etappe F) + Oberfläche nach Arbeitsschritten (Design-X-Vorbild, siehe docs/designx-bauplan.md) +
 Körper (Grundkörper aus Bereich, Vereinen/Abziehen, STEP/IGES) + Punktwolke (Grundgerüst, Bereinigen, Zusammenführen) + Scan→CAD Etappe 1
 (Netzbearbeitung), Etappe 2 (Ausrichten am Koordinatensystem), Etappe 3 (Geometrieerkennung). Ziel: Scan → Geometrieerkennung → parametrisches CAD → STEP/IGES,
 Geometriekern dafür wird OpenCASCADE (OCP) – Entscheidung des Users 14.09.2026 (Variante A).
@@ -25,7 +25,10 @@ Geometriekern dafür wird OpenCASCADE (OCP) – Entscheidung des Users 14.09.202
   - `projekt.py` Scans, Rückgängig/Wiederholen (Kopien, max. 30 Schritte / 3 GB), Projektdatei `.v3dscan` (ZIP mit .npy)
 - `server.py` lokaler Dienst (nur 127.0.0.1, Port 8797), JSON-Befehle + binäre Punktdaten
 - `kern/koerper.py` OCP-Körper: Grundkörper aus erkanntem Bereich (Zylinder/Kugel/Kegel, Nennmaß, Verlängern),
-  Vereinen/Abziehen, Vernetzen für die Anzeige (Flächen + B-Rep-Kanten), BRep im Projekt, STEP/IGES
+  Vereinen/Abziehen, Vernetzen für die Anzeige (Flächen + B-Rep-Kanten), BRep im Projekt, STEP/IGES,
+  Abweichung Scan ↔ Körper mit Vorzeichen (+ = Scan hat mehr Material): fein vernetzt (Sehne ~0,003 mm an R10),
+  Open3D-Closest-Point + exakte float64-Nachrechnung im Dreiecks-Umfeld (Open3D greift an Fächer-Planflächen
+  sonst das Nachbardreieck, Fehler bis 0,01 mm); Kennwerte Mittel/σ/RMS/p95/% in Toleranz, „grau ab“ = ohne Gegenstück
 - `web/` Oberfläche (Three.js r170 lokal in `web/lib`, keine CDN-Abhängigkeit), hell im Design-X-Aufbau:
   Menüband (START/PUNKTE/POLYGONE/BEREICHE/AUSRICHTEN/MODELL/ANSICHT) → schwebendes Werkzeugfenster
   (👁 Vorschau · ✓ Übernehmen · ✕ Zurücksetzen+Schließen); die Werkzeug-Abschnitte liegen in `#werkzeugablage`
@@ -54,6 +57,8 @@ wegfallenden Punkte rot, erst „Anwenden“ ändert Daten (rückgängig machbar
 - `python3 tests/test_oberflaeche_formen.py` Formen-Reiter (auch gegen EXE)
 - `python3 tests/test_koerper.py` Körper: Maße, Kegelrichtung, Abziehen/Vereinen exakt, Rückgängig, Speichern, STEP/IGES
 - `python3 tests/test_oberflaeche_koerper.py` Grundkörper über Menüband, Klick im Modell, Vereinen, STEP-Download
+- `python3 tests/test_abweichung.py` Abweichung Scan ↔ Körper gegen Sollwerte (±0,1/0,2/0,3 mm, 1e-4 genau; 1 Mio Punkte < 10 s)
+- `python3 tests/test_oberflaeche_abweichung.py` MODELL → Abweichung: Farben (grün im Toleranzband, grau ohne Gegenstück), Kennwerte, Legende
 - UI-Tests öffnen Werkzeuge wie ein Nutzer über das Menüband (Helfer `oeffne(band, id)`)
 - `python3 tests/test_oberflaeche.py` Playwright-Durchlauf über echte Maus-/Tastatureingaben
   (gegen die EXE: `V3DSCAN_TEST_PORT=8797`, EXE vorher mit `V3DSCAN_KEIN_FENSTER=1` starten)

@@ -218,9 +218,10 @@ def kennwerte(shape):
     return {"volumen": abs(float(g.Mass())), "groesse": [float(x) for x in groesse]}
 
 
-def vernetzen(shape):
+def vernetzen(shape, fein=False):
     """-> {xyz float32 (n,3), tri uint32 (m,3), kanten float32 (k,2,3)}.
-    Toleranz relativ zur Groesse; vernetzt wird eine Kopie."""
+    Toleranz relativ zur Groesse; vernetzt wird eine Kopie. fein=True fuer Messungen
+    (Abweichung): Sehnenfehler an R10 ~0,003 mm statt ~0,08 mm."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Curve
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
@@ -236,6 +237,8 @@ def vernetzen(shape):
     diag = max(float(np.linalg.norm(groesse)), 1e-3)
     lin = max(diag * 4e-4, 0.002)
     ang = 0.25
+    if fein:
+        lin, ang = max(diag * 2e-5, 0.001), 0.05
     kopie = BRepBuilderAPI_Copy(shape, True, False).Shape()
     BRepMesh_IncrementalMesh(kopie, lin, False, ang, True)
     punkte, dreiecke, versatz = [], [], 0
@@ -288,6 +291,125 @@ def vernetzen(shape):
     return {"xyz": (np.concatenate(punkte) if punkte else np.zeros((0, 3))).astype(np.float32),
             "tri": (np.concatenate(dreiecke) if dreiecke else np.zeros((0, 3), np.int64)).astype(np.uint32),
             "kanten": (np.concatenate(segmente) if segmente else np.zeros((0, 2, 3))).astype(np.float32)}
+
+
+# --- Abweichung Scan <-> Koerper (Design X "Accuracy Analyzer", QuickSurface "Compare") -----------
+def abweichung(shapes, xyz):
+    """Abstand jedes Punkts zur naechsten Koerperoberflaeche mit Vorzeichen (mm, float32):
+    positiv = Punkt liegt ausserhalb (Scan hat mehr Material), negativ = innerhalb.
+    Vorzeichen ueber die Normale am naechsten Punkt statt Strahl-Paritaet: die Flaechen
+    aus vernetzen() sind je Flaeche einzeln trianguliert (Naehte nicht verschweisst)."""
+    from .o3d import o3d
+    netze = [vernetzen(s, fein=True) for s in shapes]
+    xyz_k = np.concatenate([n["xyz"] for n in netze]) if netze else np.zeros((0, 3), np.float32)
+    if not len(xyz_k):
+        raise ValueError("Der Körper hat keine Oberfläche.")
+    versatz, tris = 0, []
+    for n in netze:
+        tris.append(n["tri"].astype(np.int64) + versatz)
+        versatz += len(n["xyz"])
+    tri = np.concatenate(tris).astype(np.uint32)
+    szene = o3d.t.geometry.RaycastingScene()
+    szene.add_triangles(o3d.core.Tensor(xyz_k.astype(np.float32)), o3d.core.Tensor(tri))
+    q = o3d.core.Tensor(np.ascontiguousarray(xyz, np.float32))
+    erg = szene.compute_closest_points(q)
+    # Open3D greift bei faecherfoermig vernetzten Planflaechen (lange, schmale Dreiecke)
+    # manchmal das Nachbardreieck (Fehler bis ~0,01 mm) -> alle Dreiecke um die drei
+    # Ecken des gefundenen exakt (float64) nachrechnen und das naechste nehmen
+    ids = erg["primitive_ids"].numpy().astype(np.int64)
+    X = xyz_k.astype(np.float64)
+    T = tri.astype(np.int64)
+    p = np.asarray(xyz, np.float64)
+    bester = ids.copy()
+    e = X[T[ids]]
+    diff = p - _naechster_punkt_dreieck(p, e[:, 0], e[:, 1], e[:, 2])
+    abst = np.linalg.norm(diff, axis=1)
+    # liegt der naechste Punkt im Dreiecksinneren, steht diff senkrecht -> schon exakt;
+    # nur Punkte mit Fusspunkt auf Kante/Ecke nachrechnen
+    n_hat = np.cross(e[:, 1] - e[:, 0], e[:, 2] - e[:, 0])
+    n_hat /= np.maximum(np.linalg.norm(n_hat, axis=1, keepdims=True), 1e-30)
+    seitlich = np.linalg.norm(diff - np.einsum("ij,ij->i", diff, n_hat)[:, None] * n_hat, axis=1)
+    pruefen = np.nonzero(seitlich > 1e-6 + 1e-6 * abst)[0]
+    # Ecke -> Dreiecke (CSR)
+    ecke = T.ravel()
+    ordnung = np.argsort(ecke, kind="stable")
+    tri_von = ordnung // 3
+    start = np.searchsorted(ecke[ordnung], np.arange(len(X)))
+    grad = np.bincount(ecke, minlength=len(X))
+    for k in range(3):
+        v = T[ids[pruefen], k]
+        g, s0 = grad[v], start[v]
+        for j in range(int(g.max()) if len(g) else 0):
+            sub = np.nonzero(g > j)[0]
+            m = pruefen[sub]
+            kand = tri_von[s0[sub] + j]
+            e = X[T[kand]]
+            d = np.linalg.norm(p[m] - _naechster_punkt_dreieck(p[m], e[:, 0], e[:, 1], e[:, 2]), axis=1)
+            besser = d < abst[m]
+            abst[m[besser]] = d[besser]
+            bester[m[besser]] = kand[besser]
+    e = X[T[bester]]
+    naechst = _naechster_punkt_dreieck(p, e[:, 0], e[:, 1], e[:, 2])
+    nrm = np.cross(e[:, 1] - e[:, 0], e[:, 2] - e[:, 0])
+    diff = p - naechst
+    vz = np.where(np.einsum("ij,ij->i", diff, nrm) < 0, -1.0, 1.0)
+    return (np.linalg.norm(diff, axis=1) * vz).astype(np.float32)
+
+
+def _naechster_punkt_dreieck(p, a, b, c):
+    """Naechster Punkt auf Dreieck (a,b,c) je Zeile, vektorisiert
+    (Ericson, Real-Time Collision Detection 5.1.5)."""
+    ab, ac, ap = b - a, c - a, p - a
+    d1 = np.einsum("ij,ij->i", ab, ap)
+    d2 = np.einsum("ij,ij->i", ac, ap)
+    bp = p - b
+    d3 = np.einsum("ij,ij->i", ab, bp)
+    d4 = np.einsum("ij,ij->i", ac, bp)
+    cp = p - c
+    d5 = np.einsum("ij,ij->i", ab, cp)
+    d6 = np.einsum("ij,ij->i", ac, cp)
+    va = d3 * d6 - d5 * d4
+    vb = d5 * d2 - d1 * d6
+    vc = d1 * d4 - d3 * d2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        # Inneres
+        nenner = va + vb + vc
+        v = vb / nenner
+        w = vc / nenner
+        erg = a + ab * v[:, None] + ac * w[:, None]
+        # Kante BC
+        m = (va <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0)
+        t = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+        erg = np.where(m[:, None], b + (c - b) * t[:, None], erg)
+        # Kante AC
+        m = (vb <= 0) & (d2 >= 0) & (d6 <= 0)
+        t = d2 / (d2 - d6)
+        erg = np.where(m[:, None], a + ac * t[:, None], erg)
+        # Kante AB
+        m = (vc <= 0) & (d1 >= 0) & (d3 <= 0)
+        t = d1 / (d1 - d3)
+        erg = np.where(m[:, None], a + ab * t[:, None], erg)
+    # Ecken (Vorrang vor den Kanten)
+    erg = np.where(((d6 >= 0) & (d5 <= d6))[:, None], c, erg)
+    erg = np.where(((d3 >= 0) & (d4 <= d3))[:, None], b, erg)
+    erg = np.where(((d1 <= 0) & (d2 <= 0))[:, None], a, erg)
+    # entartete Dreiecke: Open3D-Punkt waere hier auch nicht besser -> Ecke a
+    return np.where(np.isfinite(erg), erg, a)
+
+
+def abweichung_kennwerte(werte, toleranz, ausblenden):
+    """Statistik nur ueber Punkte mit Gegenstueck (|d| <= ausblenden)."""
+    a = np.abs(werte)
+    m = a <= ausblenden if ausblenden and ausblenden > 0 else np.ones(len(werte), bool)
+    w = werte[m]
+    if not len(w):
+        return {"anzahl": 0, "ohne_gegenstueck": int(len(werte))}
+    return {"anzahl": int(len(w)), "ohne_gegenstueck": int(len(werte) - len(w)),
+            "mittel": round(float(w.mean()), 4), "std": round(float(w.std()), 4),
+            "rms": round(float(np.sqrt(np.mean(w ** 2))), 4),
+            "min": round(float(w.min()), 4), "max": round(float(w.max()), 4),
+            "p95": round(float(np.percentile(np.abs(w), 95)), 4),
+            "in_toleranz": round(float(np.mean(np.abs(w) <= toleranz) * 100), 2)}
 
 
 # --- Speichern / Export ----------------------------------------------------------------------------

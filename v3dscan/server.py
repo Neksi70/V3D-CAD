@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
-FASSUNG = "0.5.0"
+FASSUNG = "0.6.0"
 HIER = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, "frozen", False):
     HIER = getattr(sys, "_MEIPASS", HIER)
@@ -450,6 +450,18 @@ def koerper_befehl(was, d):
     if was == "entfernen":
         p.koerper_entfernen(d.get("kid"))
         return {}
+    if was == "abweichung":
+        s = p.scan(d.get("id"))
+        if d.get("kid") is not None:
+            koerper = [p.koerper_holen(d["kid"])]
+        else:
+            koerper = [k for k in p.koerper.values() if k.sichtbar]
+        if not koerper or koerper[0] is None:
+            raise Fehler("Es gibt noch keinen (sichtbaren) Körper zum Vergleichen.")
+        werte = kp.abweichung([k.shape for k in koerper], s.xyz)
+        kw = kp.abweichung_kennwerte(werte, zahl(d, "toleranz", 0.1), zahl(d, "ausblenden", 0))
+        return {"werte": _b64(werte, np.float32), "kennwerte": kw,
+                "koerper": [k.id for k in koerper]}
     raise Fehler("Unbekannter Körper-Befehl %s" % was)
 
 

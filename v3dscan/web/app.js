@@ -539,7 +539,16 @@ function farbenSetzen(e, min, max, achse) {
   const f = e.farbe, n = e.n;
   const eigen = hexZuRgb(e.meta.farbe);
   const abw = S.abweichung && S.abweichung.id === e.id ? S.abweichung : null;
-  if (abw) {
+  if (abw && abw.koerper) {
+    // Scan <-> Koerper: mit Vorzeichen, Turbo-Mitte = 0, Toleranzband gruen
+    const grau = 150;
+    for (let i = 0; i < n; i++) {
+      const w = abw.werte[i], a = Math.abs(w);
+      if (abw.aus > 0 && a > abw.aus) { f[i * 3] = f[i * 3 + 1] = f[i * 3 + 2] = grau; }
+      else if (a <= abw.tol) { f[i * 3] = 46; f[i * 3 + 1] = 190; f[i * 3 + 2] = 90; }
+      else farbskala(0.5 + 0.5 * w / abw.max, f, i * 3);
+    }
+  } else if (abw) {
     const grau = 110;
     for (let i = 0; i < n; i++) {
       const w = abw.werte[i];
@@ -577,6 +586,15 @@ function legendeZeichnen() {
   const stops = TURBO.map((c, i) => `rgb(${c}) ${(i / (TURBO.length - 1) * 100).toFixed(0)}%`).join(',');
   const a = S.abweichung;
   el.hidden = false;
+  if (a.koerper) {
+    const k = a.kennwerte, z = (x) => (x > 0 ? '+' : '') + x.toFixed(3);
+    el.innerHTML = `<div>Abweichung Scan ↔ Körper</div>
+    <div class="balken" style="background:linear-gradient(90deg,${stops})"></div>
+    <div class="skala"><span>−${a.max.toFixed(2)}</span><span>0</span><span>+${a.max.toFixed(2)} mm</span></div>
+    <div>${k.anzahl ? `Mittel ${z(k.mittel)} · σ ${k.std.toFixed(3)} · ${k.in_toleranz.toFixed(1)} % in ±${a.tol}` : 'keine Punkte am Körper'}<br>
+    <small>grün = ±${a.tol} mm · rot = mehr Material · grau = weiter als ${a.aus} mm</small></div>`;
+    return;
+  }
   el.innerHTML = `<div>Abweichung zum festen Scan</div>
     <div class="balken" style="background:linear-gradient(90deg,${stops})"></div>
     <div class="skala"><span>0</span><span>${(a.max / 2).toFixed(2)}</span><span>${a.max.toFixed(2)} mm</span></div>
@@ -1800,6 +1818,7 @@ async function koerperUebernehmen(liste) {
   koerperListeZeichnen();
   verlaufZeichnen();
   gkZielFuellen();
+  kaFuellen();
 }
 
 function koerperWaehlen(kid) {
@@ -1955,6 +1974,48 @@ async function gkAnwenden() {
   if (j.koerper !== undefined && j.koerper !== null) { S.koerperAktiv = j.koerper; for (const k of S.koerper.values()) koerperDarstellung(k); koerperListeZeichnen(); verlaufZeichnen(); }
   meldung('Körper erzeugt.', 'ok');
 }
+// --- Abweichung Scan <-> Koerper --------------------------------------------------
+function kaFuellen() {
+  const scans = S.zustand ? S.zustand.scans : [];
+  const sel = $('#kaScan'), alt = Number(sel.value);
+  sel.innerHTML = scans.map((s) => `<option value="${s.id}"></option>`).join('');
+  [...sel.options].forEach((o, i) => { o.textContent = scans[i].name; });
+  if (scans.some((s) => s.id === alt)) sel.value = alt; else if (S.aktiv) sel.value = S.aktiv;
+  const kSel = $('#kaKoerper'), kAlt = kSel.value;
+  kSel.innerHTML = '<option value="">alle sichtbaren</option>' +
+    [...S.koerper.values()].map((k) => `<option value="${k.meta.id}"></option>`).join('');
+  [...kSel.options].slice(1).forEach((o) => { o.textContent = S.koerper.get(Number(o.value)).meta.name; });
+  if ([...kSel.options].some((o) => o.value === kAlt)) kSel.value = kAlt;
+}
+async function kaZeigen() {
+  if (!S.koerper.size) throw new Error('Noch keine Körper – erst einen Grundkörper erzeugen (MODELL → Grundkörper).');
+  const id = Number($('#kaScan').value);
+  if (!S.scans.has(id)) throw new Error('Erst einen Scan laden.');
+  const kid = $('#kaKoerper').value === '' ? null : Number($('#kaKoerper').value);
+  const max = Math.max(0.001, Number($('#kaMax').value) || 0.5);
+  const tol = Math.max(0, Number($('#kaTol').value) || 0);
+  const aus = Math.max(0, Number($('#kaAus').value) || 0);
+  const j = await api('koerper/abweichung', { id, kid, toleranz: tol, ausblenden: aus }, 'Berechne Abweichung…');
+  S.abweichung = { id, koerper: true, werte: b64.float32(j.werte), max, tol, aus, kennwerte: j.kennwerte };
+  alleFarbenSetzen();
+  const k = j.kennwerte;
+  $('#kaInfo').innerHTML = k.anzahl
+    ? `<table>
+      <tr><td>Mittel</td><td>${k.mittel.toFixed(3)} mm</td></tr>
+      <tr><td>Std-Abw. σ</td><td>${k.std.toFixed(3)} mm</td></tr>
+      <tr><td>RMS</td><td>${k.rms.toFixed(3)} mm</td></tr>
+      <tr><td>Min / Max</td><td>${k.min.toFixed(3)} / ${k.max.toFixed(3)} mm</td></tr>
+      <tr><td>95 % unter</td><td>${k.p95.toFixed(3)} mm</td></tr>
+      <tr><td>in ±${tol} mm</td><td>${k.in_toleranz.toFixed(1)} %</td></tr>
+      <tr><td>ohne Gegenstück</td><td>${k.ohne_gegenstueck.toLocaleString('de-DE')} Punkte</td></tr></table>`
+    : `Kein Punkt näher als ${aus} mm am Körper – liegen Scan und Körper übereinander?`;
+  meldung('Abweichungskarte berechnet.', 'ok');
+}
+function kaAus() {
+  if (S.abweichung && S.abweichung.koerper) { S.abweichung = null; alleFarbenSetzen(); }
+  $('#kaInfo').textContent = '';
+}
+
 function koerperExport(format) {
   if (!S.koerper.size) throw new Error('Noch keine Körper – erst einen Grundkörper erzeugen.');
   const ziel = S.koerperAktiv !== null ? S.koerperAktiv : 'alle';
@@ -2254,6 +2315,8 @@ const AKTIONEN = {
   gkAnwenden: { text: 'Grundkörper erzeugen', fn: gkAnwenden },
   gkZurueck: { text: '', fn: () => { gkVorschauWeg(); $('#gkInfo').textContent = ''; } },
   grundkoerper: { text: 'Werkzeug: Grundkörper aus Bereich', taste: 'G', fn: () => werkzeugOeffnen('w-grundkoerper', $('[data-bandseite=modell] [data-wf=w-grundkoerper]')) },
+  kaZeigen: { text: 'Abweichung Scan ↔ Körper', fn: kaZeigen },
+  kaAus: { text: 'Abweichungskarte aus', fn: kaAus },
   koerperStep: { text: 'Körper als STEP exportieren', fn: () => koerperExport('step') },
   koerperIges: { text: 'Körper als IGES exportieren', fn: () => koerperExport('iges') },
   anzeigeReiter: { text: 'Anzeigeoptionen', fn: () => rechtsSetzen('anzeige') },
@@ -2396,6 +2459,7 @@ function werkzeugOeffnen(liste, knopf = null) {
   $$('#band button').forEach((b) => b.classList.toggle('an', b === knopf));
   inhalt.scrollTop = 0;
   if (haupt && haupt.id === 'w-grundkoerper') gkFeldZeichnen();
+  if (haupt && haupt.id === 'w-koerper-abw') kaFuellen();
 }
 
 function werkzeugSchliessen(zuruecksetzen = true) {
