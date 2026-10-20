@@ -321,6 +321,12 @@ def befehl(name, d):
         return koerper_befehl(name.split("/", 1)[1], d)
     if name.startswith("skizze/"):
         return skizze_befehl(name.split("/", 1)[1], d)
+    if name == "verlauf/neu":
+        k, n = p.koerper_neu_rechnen(d["kid"])
+        return {"schritte": n}
+    if name == "verlauf/schalten":
+        p.verlauf_schalten(d["kid"], int(d["index"]), bool(d.get("aus")))
+        return {}
     if name.startswith("referenz/"):
         return referenz_befehl(name.split("/", 1)[1], d)
     if name.startswith("freiform/"):
@@ -328,6 +334,75 @@ def befehl(name, d):
     if name.startswith("feature/"):
         return feature_befehl(name.split("/", 1)[1], d)
 
+    if name == "scan/transformieren":
+        s = p.scan(d["id"])
+        T = np.eye(4)
+        art = d.get("art")
+        mitte = s.xyz.astype(float).mean(0)
+        if art == "skalieren":
+            f = d.get("faktor", 1)
+            f = np.array(f if isinstance(f, list) else [f, f, f], float)
+            if (f <= 0).any():
+                raise Fehler("Faktoren müssen größer 0 sein.")
+            T[:3, :3] = np.diag(f)
+        elif art == "spiegeln":
+            k = {"x": 0, "y": 1, "z": 2}[d.get("achse", "x")]
+            T[k, k] = -1
+        else:
+            raise Fehler("Unbekannte Umwandlung „%s“." % art)
+        T[:3, 3] = mitte - T[:3, :3] @ mitte          # um die Scanmitte
+        p.transformieren({s.id: T.tolist()}, "Scan %s" % ("skaliert" if art == "skalieren" else "gespiegelt"))
+        return {}
+    if name == "scan/normalen_umdrehen":
+        s = p.scan(d["id"])
+        p.ersetzen(s.id, neuer_scan=nz.normalen_umdrehen(s), text="Normalen umgedreht")
+        return {}
+    if name == "scan/abrollen":
+        s = p.scan(d["id"])
+        el = _erk_element(d["id"], d.get("element"))
+        if "achse" not in el:
+            raise Fehler("Zum Abrollen einen Zylinder als Bereich wählen.")
+        neu = nz.abrollen(s, el["punkt"], el["achse"], zahl(d, "radius", 0) or None)
+        p.hinzufuegen(neu)
+        return {"neu": neu.id}
+    if name == "scan/mittelwert":
+        ids = [int(x) for x in d.get("ids") or []] or [x.id for x in p.scans.values() if x.sichtbar]
+        if len(ids) < 2:
+            raise Fehler("Für ein Mittelwert-Netz mindestens zwei ausgerichtete Scans.")
+        neu, bericht = nz.mittelwert_netz([p.scan(i) for i in ids], int(zahl(d, "tiefe", 9)))
+        p.hinzufuegen(neu)
+        return {"neu": neu.id}
+    if name == "scan/mit_koerper":
+        s = p.scan(d["id"])
+        kids = [int(x) for x in d.get("kids") or []] or [k.id for k in p.koerper.values() if k.sichtbar]
+        if not kids:
+            raise Fehler("Es gibt keinen (sichtbaren) Körper.")
+        m = nz.innen_maske(s, [p.koerper_holen(k).shape for k in kids])
+        if not m.any():
+            raise Fehler("Kein Scanpunkt liegt im Körper.")
+        if d.get("art") == "abziehen":
+            p.loeschen({s.id: m}, "Netz: Körper abgezogen")
+            return {"anzahl": int(m.sum())}
+        neu = p.abtrennen({s.id: m})
+        return {"neu": neu.id if neu else None, "anzahl": int(m.sum())}
+    if name == "auswahl/speichern":
+        masken = masken_lesen(d)
+        if not masken:
+            raise Fehler("Erst Punkte auswählen.")
+        sid, m = next(iter(masken.items()))
+        aid = p.naechste_auswahl
+        p.naechste_auswahl += 1
+        p.auswahlen[aid] = {"id": aid, "name": str(d.get("name") or "Auswahl %d" % aid)[:80], "scan": sid,
+                            "anzahl": int(m.sum()), "maske": maske_b64(m)}
+        return {"aid": aid}
+    if name == "auswahl/holen":
+        a = p.auswahlen.get(int(d["aid"]))
+        if not a:
+            raise Fehler("Diese Auswahl gibt es nicht (mehr).")
+        return {"scan": a["scan"], "maske": a["maske"]}
+    if name == "auswahl/entfernen":
+        p.auswahlen.pop(int(d["aid"]), None)
+        return {}
     if name == "zusammenfuehren":
         neu = p.zusammenfuehren([int(i) for i in d.get("ids") or []],
                                 zahl(d, "voxel", 0))
@@ -510,7 +585,30 @@ def _ebene_aus(d):
     raise Fehler("Unbekannte Ebene „%s“." % art)
 
 
+def _teil_scan(s, maske):
+    """Scan auf die gewaehlten Punkte beschraenken (Netz: Dreiecke mit allen Ecken gewaehlt)."""
+    from kern.wolke import Scan
+    if s.tri is not None and len(s.tri):
+        tri = s.tri[maske[s.tri].all(1)]
+        return Scan(s.name, s.xyz, tri=tri)
+    return Scan(s.name, s.xyz[maske], nrm=None if s.nrm is None else s.nrm[maske])
+
+
+def _kurve_punkte(draht, n=240):
+    from OCP.BRepAdaptor import BRepAdaptor_CompCurve
+    c = BRepAdaptor_CompCurve(draht)
+    u0, u1 = c.FirstParameter(), c.LastParameter()
+    aus = []
+    for u in np.linspace(u0, u1, n):
+        q = c.Value(u)
+        aus.append([round(q.X(), 4), round(q.Y(), 4), round(q.Z(), 4)])
+    return aus
+
+
 def _skizze_antwort(skz):
+    if skz.get("art") == "3d":
+        return {"skizze": dict(skz, kurve=_kurve_punkte(sk_feat.skizze_draht(skz))), "texte": [], "abweichung": [],
+                "abweichung_werte": []}
     abw = sk.schnitt_abweichung(skz)
     texte = [[sk.kette_text(e) for e in k["elemente"]] for k in skz["ketten"]]
     kenn = []
@@ -537,7 +635,13 @@ def skizze_befehl(was, d):
         E = _ebene_aus(d)
         tol = max(zahl(d, "toleranz", 0.1), 1e-4)
         t = time.time()
-        linien, zu, info = sk.schnitt(s, E, zahl(d, "band", 0) or None)
+        quelle = s
+        if d.get("masken"):
+            m = masken_lesen(d).get(s.id)
+            if m is None or not m.any():
+                raise Fehler("Für „nur durch Auswahl“ erst Punkte dieses Scans wählen.")
+            quelle = _teil_scan(s, m)
+        linien, zu, info = sk.schnitt(quelle, E, zahl(d, "band", 0) or None)
         if not linien:
             raise Fehler("Die Ebene schneidet den Scan nicht (Versatz prüfen).")
         ketten = sk.skizze_rechnen(linien, zu, tol=tol, luecke=zahl(d, "luecke", 0),
@@ -554,6 +658,7 @@ def skizze_befehl(was, d):
     if was == "verwerfen":
         skizze_vorschau.clear()
         return {}
+
     if was == "stapel":
         s = p.scan(d["id"])
         von, bis, anzahl = zahl(d, "von", 0), zahl(d, "bis", 10), int(zahl(d, "anzahl", 5))
@@ -581,7 +686,23 @@ def skizze_befehl(was, d):
     if was == "uebernehmen":
         if "skizze" not in skizze_vorschau:
             raise Fehler("Erst einen Schnitt rechnen (Vorschau).")
-        z = p.skizze_hinzufuegen(skizze_vorschau.pop("skizze"))
+        daten = skizze_vorschau.pop("skizze")
+        ersetzt = skizze_vorschau.pop("ersetzt", None)
+        if ersetzt is not None and ersetzt in p.skizzen:
+            daten = {k_: v for k_, v in daten.items() if k_ not in ("id", "name", "rev", "sichtbar")}
+            z = p.skizze_ersetzen(ersetzt, daten, "bearbeitet")
+            # parametrisch: Koerper, die diese Skizze nutzen, nachrechnen
+            from kern.verlauf import nutzt_skizze
+            neu_gerechnet, fehler_ = [], []
+            for k in list(p.koerper.values()):
+                if nutzt_skizze(k, z["id"]):
+                    try:
+                        p.koerper_neu_rechnen(k.id, "nach Skizzenänderung neu aufgebaut")
+                        neu_gerechnet.append(k.name)
+                    except Exception as ex:
+                        fehler_.append("%s: %s" % (k.name, ex))
+            return {"sid": z["id"], "neu_gerechnet": neu_gerechnet, "nicht_moeglich": fehler_}
+        z = p.skizze_hinzufuegen(daten)
         return {"sid": z["id"]}
     if was == "holen":
         return _skizze_antwort(p.skizze_holen(d["sid"]))
@@ -612,6 +733,122 @@ def skizze_befehl(was, d):
             skz = dict(skz, **daten)
             skizze_vorschau["skizze"] = skz
         return _skizze_antwort(skz)
+    if was == "3d":
+        P = np.asarray(d.get("punkte") or [], float).reshape(-1, 3)
+        if len(P) < 2:
+            raise Fehler("Für eine 3D-Skizze mindestens 2 Punkte anklicken.")
+        if d.get("auf_scan", True) and d.get("id") is not None:
+            sc = p.scan(d["id"])
+            if sc.tri is not None and len(sc.tri):
+                P = ff._Projektor(sc.xyz, sc.tri)(P)
+        z = p.skizze_hinzufuegen({"art": "3d", "punkte3d": np.round(P, 5).tolist(), "glatt": bool(d.get("glatt", True)),
+                                  "geschlossen": bool(d.get("geschlossen", False)), "ketten": [], "schnitt": []})
+        sk_feat.skizze_draht(z)                       # prueft, ob sich eine Kurve bilden laesst
+        return {"sid": z["id"]}
+    if was == "neu":
+        E = _ebene_aus(d)
+        skz = {"ebene": sk.ebene_json(E), "ketten": [], "schnitt": [], "info": {"art": "leer"},
+               "quelle": {"scan": d.get("id"), "ebene": d.get("ebene"), "toleranz": zahl(d, "toleranz", 0.1)}}
+        skizze_vorschau["skizze"] = skz
+        return _skizze_antwort(skz)
+    if was == "umriss":
+        s = p.scan(d["id"])
+        E = _ebene_aus(d)
+        tol = max(zahl(d, "toleranz", 0.1), 1e-4)
+        linien, zu = sk.umriss(s.xyz, E, tri=s.tri)
+        ketten = sk.skizze_rechnen(linien, zu, tol=tol, achsen_grad=1.0 if d.get("achsen", True) else 0.0,
+                                   radien=bool(d.get("radien", True)))
+        if not ketten:
+            raise Fehler("Kein Umriss gefunden.")
+        skz = sk.skizze_json(ketten, E, {"art": "umriss"})
+        skz["quelle"] = {"scan": s.id, "ebene": d.get("ebene"), "toleranz": tol}
+        skizze_vorschau["skizze"] = skz
+        return _skizze_antwort(skz)
+    if was == "dxf":
+        skz, _ = _skizze_ziel(d)
+        return {"dxf": sk.dxf(skz), "name": skz.get("name", "skizze")}
+    if was in ("zeichnen", "spline", "versatz", "spiegeln", "kopieren", "ecke", "bedingung", "abstand",
+               "kette_entfernen"):
+        skz, gespeichert = _skizze_ziel(d)
+        ketten = [dict(k) for k in skz["ketten"]]
+        schnitt = list(skz.get("schnitt", []))
+        while len(schnitt) < len(ketten):
+            schnitt.append([])
+        tol = (skz.get("quelle") or {}).get("toleranz", 0.1)
+
+        def kette(i=None):
+            i = int(d.get("kette", 0)) if i is None else int(i)
+            if not 0 <= i < len(ketten):
+                raise Fehler("Kontur %s gibt es nicht." % (i + 1))
+            return i, ketten[i]
+        if was == "zeichnen":
+            ketten.append(sk.kette_json(sk.zeichnen(d.get("art", "linie"), d.get("punkte") or [], d.get("wert"))))
+            schnitt.append([])
+            text = "Element gezeichnet"
+        elif was == "spline":
+            i, k = kette()
+            ketten[i] = sk.spline_aus_schnitt(k, schnitt[i], int(d.get("von", 0)), int(d.get("bis", 0)),
+                                              zahl(d, "toleranz", tol))
+            text = "Spline eingepasst"
+        elif was == "versatz":
+            i, k = kette()
+            ketten.append(sk.versatz(k, zahl(d, "abstand", 1), d.get("ecke", "bogen")))
+            schnitt.append([])
+            text = "Kontur versetzt"
+        elif was == "spiegeln":
+            i, k = kette()
+            achse = d.get("achse", "v")
+            if achse == "u":
+                pkt, rich = (0, 0), (1, 0)
+            elif achse == "v":
+                pkt, rich = (0, 0), (0, 1)
+            else:
+                li = sk.element_lesen(ketten[int(achse["kette"])]["elemente"][int(achse["element"])])
+                if li["typ"] != "linie":
+                    raise Fehler("Spiegelachse muss eine Linie sein.")
+                pkt, rich = li["a"], li["b"] - li["a"]
+            ketten.append(sk.spiegeln_2d(k, pkt, rich))
+            schnitt.append([])
+            text = "Kontur gespiegelt"
+        elif was == "kopieren":
+            i, k = kette()
+            neu = sk.kopieren(k, d.get("art", "linear"), int(zahl(d, "anzahl", 2)), d.get("schritt") or (10, 0),
+                              int(zahl(d, "anzahl2", 1)), d.get("schritt2") or (0, 10), d.get("mitte") or (0, 0),
+                              zahl(d, "winkel", 360))
+            ketten += neu
+            schnitt += [[] for _ in neu]
+            text = "%d Kopien" % len(neu)
+        elif was == "ecke":
+            i, k = kette()
+            ketten[i] = sk.ecke_runden(k, int(d.get("element", 0)), zahl(d, "r", 1))
+            text = "Ecke gerundet"
+        elif was == "bedingung":
+            i, k = kette()
+            b = d.get("bezug")
+            ketten[i] = sk.bedingung(k, int(d.get("element", 0)), d.get("art", "waagrecht"), None if b in (None, "") else int(b))
+            text = "Bedingung „%s“" % d.get("art")
+        elif was == "abstand":
+            i, k = kette()
+            ketten[i] = sk.abstand_setzen(k, int(d.get("element", 0)), int(d.get("bezug", 0)), zahl(d, "wert", 10))
+            text = "Abstand gesetzt"
+        else:
+            i, _ = kette()
+            del ketten[i]
+            del schnitt[i]
+            text = "Kontur entfernt"
+        daten = {"ketten": ketten, "schnitt": schnitt}
+        if gespeichert:
+            skz = p.skizze_ersetzen(skz["id"], daten, text)
+        else:
+            skz = dict(skz, **daten)
+            skizze_vorschau["skizze"] = skz
+        return _skizze_antwort(skz)
+    if was == "bearbeiten":
+        # gespeicherte Skizze in die Vorschau holen (Übernehmen ersetzt sie dann)
+        z = p.skizze_holen(d["sid"])
+        skizze_vorschau["skizze"] = dict(z)
+        skizze_vorschau["ersetzt"] = z["id"]
+        return _skizze_antwort(z)
     if was == "setzen":
         sichtbar = d.get("sichtbar")
         p.skizze_setzen(d["sid"], None if sichtbar is None else bool(sichtbar), d.get("name"))
@@ -664,14 +901,18 @@ def feature_befehl(was, d):
                     "laenge": round(bis - von, 3)}
             if d.get("vorschau"):
                 return {"vorschau": netz_json(kp.vernetzen(werkzeug)), "info": info}
-            k = p.feature(werkzeug, "Extrudierte Fläche", "neu", None, {"typ": "extrusion_flaeche", "skizze": skz["id"]})
+            k = p.feature(werkzeug, "Extrudierte Fläche", "neu", None, {"typ": "extrusion_flaeche", "skizze": skz["id"],
+                          "modus": modus, "von": von, "bis": bis, "laenge": zahl(d, "laenge", 10),
+                          "laenge2": zahl(d, "laenge2", 0), "umkehren": bool(d.get("umkehren"))})
             return {"koerper": k.id, "info": info}
         if abs(zahl(d, "schraege", 0)) > 1e-9:
             werkzeug = sk_feat.extrudieren_schraeg(skz, von, bis, zahl(d, "schraege", 0))
         else:
             werkzeug = sk_feat.extrudieren(skz, von, bis)
         erg = _feature_ergebnis(werkzeug, "Extrusion", d, {
-            "typ": "extrusion", "skizze": skz["id"], "modus": modus, "von": round(von, 4), "bis": round(bis, 4)})
+            "typ": "extrusion", "skizze": skz["id"], "modus": modus, "von": round(von, 4), "bis": round(bis, 4),
+            "laenge": zahl(d, "laenge", 10), "laenge2": zahl(d, "laenge2", 0), "umkehren": bool(d.get("umkehren")),
+            "schraege": zahl(d, "schraege", 0)})
         erg["info"].update({"von": round(von, 3), "bis": round(bis, 3), "laenge": round(bis - von, 3)})
         return erg
     if was == "drehen":
@@ -679,7 +920,8 @@ def feature_befehl(was, d):
         el = d.get("element")
         werkzeug = sk_feat.drehen(skz, zahl(d, "winkel", 360), None if el in (None, "") else int(el), zahl(d, "winkel2", 0))
         return _feature_ergebnis(werkzeug, "Drehung", d, {
-            "typ": "drehung", "skizze": skz["id"], "winkel": zahl(d, "winkel", 360), "element": el})
+            "typ": "drehung", "skizze": skz["id"], "winkel": zahl(d, "winkel", 360), "element": el,
+            "winkel2": zahl(d, "winkel2", 0)})
     if was in ("runden", "fasen"):
         k = p.koerper_holen(d["kid"])
         kanten = [int(x) for x in d.get("kanten") or []]
@@ -688,7 +930,9 @@ def feature_befehl(was, d):
             return {"vorschau": netz_json(kp.vernetzen(neu)),
                     "info": {"volumen": round(kp.kennwerte(neu)["volumen"], 3)}}
         typ = "Fase" if was == "fasen" else "Rundung"
-        p.koerper_aendern(k.id, neu, typ, {"typ": was, "kanten": kanten, "radius": zahl(d, "radius", 1)})
+        from kern.verlauf import kanten_bezug
+        p.koerper_aendern(k.id, neu, typ, {"typ": was, "kanten": kanten, "radius": zahl(d, "radius", 1),
+                                           "kanten_ref": kanten_bezug(k.shape, kanten)})
         return {"koerper": k.id}
     if was == "aus_flaechen":
         kids = [int(x) for x in d.get("kids") or []]
@@ -721,21 +965,24 @@ def feature_befehl(was, d):
                 "art": "Außengewinde" if aussen else "Innengewinde"}
         if d.get("vorschau"):
             return {"vorschau": netz_json(kp.vernetzen(shape)), "info": info}
-        p.koerper_aendern(k.id, shape, "Gewinde", dict(info, typ="gewinde"))
+        p.koerper_aendern(k.id, shape, "Gewinde", dict(info, typ="gewinde", start=start.tolist(), achse_v=a.tolist(),
+                                                     r=r, aussen=aussen))
         return {"koerper": k.id, "info": info}
     if was in ("bool", "verschieben", "spiegeln", "muster", "schale", "aufdicken", "schneiden_flaeche",
-               "skalieren", "flaeche_verschieben", "flaechen_loeschen", "formschraege"):
+               "skalieren", "flaeche_verschieben", "flaechen_loeschen", "formschraege", "versetzen",
+               "duplizieren", "verlaengern", "projizieren", "ebene_schneiden"):
         return _koerper_werkzeug(was, d)
     if was == "loft":
         sids = [int(x) for x in d.get("sids") or []]
         werkzeug = sk_feat.loft([p.skizze_holen(x) for x in sids], bool(d.get("glatt", True)))
-        return _feature_ergebnis(werkzeug, "Loft", d, {"typ": "loft", "skizzen": sids})
+        return _feature_ergebnis(werkzeug, "Loft", d, {"typ": "loft", "skizzen": sids, "glatt": bool(d.get("glatt", True))})
     if was == "sweep":
         werkzeug = sk_feat.sweep(p.skizze_holen(d["profil"]), p.skizze_holen(d["pfad"]))
         return _feature_ergebnis(werkzeug, "Sweep", d, {"typ": "sweep", "profil": d["profil"], "pfad": d["pfad"]})
     if was == "pipe":
         werkzeug = sk_feat.pipe(p.skizze_holen(d["pfad"]), zahl(d, "radius", 2), zahl(d, "innen", 0))
-        return _feature_ergebnis(werkzeug, "Rohr", d, {"typ": "rohr", "pfad": d["pfad"], "radius": zahl(d, "radius", 2)})
+        return _feature_ergebnis(werkzeug, "Rohr", d, {"typ": "rohr", "pfad": d["pfad"], "radius": zahl(d, "radius", 2),
+                                                       "innen": zahl(d, "innen", 0)})
     if was == "abwickeln":
         k = p.koerper_holen(d["kid"])
         a = sk_feat.abwickeln(k.shape, [int(x) for x in d.get("flaechen") or []] or None)
@@ -743,6 +990,84 @@ def feature_befehl(was, d):
                 "svg": sk_feat.umriss_svg(a["umriss"]),
                 "info": {k_: (round(v, 5) if isinstance(v, float) else [round(x, 3) for x in v])
                          for k_, v in a["info"].items()}}
+    if was == "extrudieren_3d":
+        z = p.skizze_holen(d["sid"])
+        if z.get("art") != "3d":
+            raise Fehler("Bitte eine 3D-Skizze wählen.")
+        shape = sk_feat.extrudieren_3d(z, d.get("richtung", "mittel"), zahl(d, "laenge", 20), bool(d.get("beidseitig", True)))
+        if d.get("vorschau"):
+            return {"vorschau": netz_json(kp.vernetzen(shape)), "info": {"flaeche": round(kp.kennwerte(shape)["flaeche"], 2)}}
+        k = p.feature(shape, "Extrudierte Kurve", "neu", None, {"typ": "extrusion_3d", "skizze": z["id"],
+                      "richtung": d.get("richtung", "mittel"), "laenge": zahl(d, "laenge", 20),
+                      "beidseitig": bool(d.get("beidseitig", True))})
+        return {"koerper": k.id}
+    if was == "fuellen":
+        scan_p = None
+        nachbar = None
+        if d.get("kid") is not None:
+            nachbar = p.koerper_holen(d["kid"]).shape
+            raender = sk_feat.freie_raender(nachbar)
+            if not raender:
+                raise Fehler("Der Körper hat keine offenen Ränder.")
+            nr = int(zahl(d, "rand", 0))
+            if not 0 <= nr < len(raender):
+                raise Fehler("Rand %d gibt es nicht (%d offene Ränder)." % (nr + 1, len(raender)))
+            rand = raender[nr]
+        else:
+            z = p.skizze_holen(d["sid"])
+            if z.get("art") != "3d" or not z.get("geschlossen"):
+                raise Fehler("Bitte eine geschlossene 3D-Skizze oder einen Körper mit offenem Rand wählen.")
+            rand = sk_feat.skizze_draht(z)
+        if d.get("auf_scan") and d.get("id") is not None:
+            sc = p.scan(d["id"])
+            # Scanpunkte innerhalb des Randes (Projektion auf die Ausgleichsebene des Randes)
+            rp = np.asarray(_kurve_punkte(rand, 120), float)
+            c = rp.mean(0)
+            _, _, vt = np.linalg.svd(rp - c)
+            q2 = (rp - c) @ vt[:2].T
+            Q = sc.xyz.astype(float)
+            if sc.tri is not None and len(sc.tri):
+                # Netz dicht abtasten - grosse ebene Dreiecke haben im Rand oft gar keine Eckpunkte
+                from kern.o3d import o3d
+                m = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(Q), o3d.utility.Vector3iVector(sc.tri.astype(np.int32)))
+                Q = np.r_[Q, np.asarray(m.sample_points_uniformly(200000).points)]
+            S2 = (Q - c) @ vt[:2].T
+            tief = np.abs((Q - c) @ vt[2])
+            # nur Scanpunkte nahe der Randflaeche (sonst zaehlt z. B. die Unterseite einer Platte mit)
+            rand_rms = float(np.sqrt(np.mean(((rp - c) @ vt[2]) ** 2)))
+            grenze = max(4 * rand_rms, 0.1 * float(np.ptp(q2, axis=0).max()))
+            vor = tief < grenze
+            drin = np.zeros(len(Q), bool)
+            drin[vor] = sk.innen(q2, S2[vor])
+            kand = Q[drin]
+            if len(kand) > 300:
+                kand = kand[np.random.default_rng(0).choice(len(kand), 300, replace=False)]
+            scan_p = kand
+        shape = sk_feat.flaeche_fuellen(rand, nachbar, scan_p, bool(d.get("stetig", True)))
+        info = {"flaeche": round(kp.kennwerte(shape)["flaeche"], 2), "scanpunkte": 0 if scan_p is None else int(len(scan_p))}
+        if d.get("vorschau"):
+            return {"vorschau": netz_json(kp.vernetzen(shape)), "info": info}
+        k = p.feature(shape, "Füllfläche", "neu", None, {"typ": "fuellen"})
+        return {"koerper": k.id, "info": info}
+    if was == "naehen":
+        kids = [int(x) for x in d.get("kids") or []]
+        if len(kids) < 2:
+            raise Fehler("Mindestens zwei Flächen/Körper zum Nähen wählen.")
+        shape, info = sk_feat.naehen([p.koerper_holen(k).shape for k in kids], zahl(d, "toleranz", 0.01))
+        if d.get("vorschau"):
+            return {"vorschau": netz_json(kp.vernetzen(shape)), "info": info}
+        k = p.koerper_ersetzen_mehrere(kids, shape, "Genäht", {"typ": "naehen", "aus": kids})
+        return {"koerper": k.id, "info": info}
+    if was == "wickeln":
+        z = p.skizze_holen(d["sid"])
+        el = _erk_element(d["id"], d.get("element"))
+        if "achse" not in el:
+            raise Fehler("Zum Wickeln einen Zylinder als Bereich wählen.")
+        r = float(el.get("durchmesser") or 2 * el.get("radius", 0)) / 2
+        werkzeug = sk_feat.skizze_wickeln(z, el["punkt"], el["achse"], r, zahl(d, "dicke", 1), bool(d.get("aussen", True)))
+        return _feature_ergebnis(werkzeug, "Wicklung", d, {"typ": "wickeln", "skizze": z["id"], "punkt": list(el["punkt"]),
+                                                           "achse": list(el["achse"]), "radius": r, "dicke": zahl(d, "dicke", 1),
+                                                           "aussen": bool(d.get("aussen", True))})
     if was == "radius_vorschlag":
         k = p.koerper_holen(d["kid"])
         elemente = []
@@ -793,15 +1118,20 @@ def _koerper_werkzeug(was, d):
                 raise Fehler("„%s“ ist keine Ebene." % r["name"])
             ebene = (r["punkt"], r["normale"])
         shape = sk_feat.spiegeln(k.shape, ebene, d.get("durch", "mitte"), bool(d.get("vereinen", True)))
-        return antwort(shape, {"typ": "spiegeln", "ebene": d.get("ebene")}, "Spiegeln")
+        return antwort(shape, {"typ": "spiegeln", "ebene": d.get("ebene"), "durch": d.get("durch", "mitte"),
+                               "vereinen": bool(d.get("vereinen", True))}, "Spiegeln")
     if was == "muster":
         shape = sk_feat.muster(k.shape, d.get("art", "linear"), int(zahl(d, "anzahl", 3)),
                                d.get("versatz") or (10, 0, 0), d.get("achse", "z"), zahl(d, "winkel", 360),
                                d.get("punkt") or (0, 0, 0))
-        return antwort(shape, {"typ": "muster", "art": d.get("art"), "anzahl": zahl(d, "anzahl", 3)}, "Muster")
+        return antwort(shape, {"typ": "muster", "art": d.get("art"), "anzahl": int(zahl(d, "anzahl", 3)),
+                               "versatz": d.get("versatz") or (10, 0, 0), "achse": d.get("achse", "z"),
+                               "winkel": zahl(d, "winkel", 360), "punkt": d.get("punkt") or (0, 0, 0)}, "Muster")
     if was == "schale":
         shape = sk_feat.schale(k.shape, zahl(d, "dicke", 2), [int(x) for x in d.get("flaechen") or []])
-        return antwort(shape, {"typ": "schale", "dicke": zahl(d, "dicke", 2)}, "Schale")
+        from kern.verlauf import flaechen_bezug
+        return antwort(shape, {"typ": "schale", "dicke": zahl(d, "dicke", 2),
+                               "flaechen_ref": flaechen_bezug(k.shape, [int(x) for x in d.get("flaechen") or []])}, "Schale")
     if was == "aufdicken":
         shape = sk_feat.aufdicken(k.shape, zahl(d, "dicke", 2))
         return antwort(shape, {"typ": "aufdicken", "von": k.id, "dicke": zahl(d, "dicke", 2)}, "Aufdickung", neu=True)
@@ -814,20 +1144,59 @@ def _koerper_werkzeug(was, d):
             raise Fehler("„%s“ enthält keine Fläche." % f.name)
         shape = ff.koerper_schneiden(k.shape, ex.Current(), d.get("behalten", "unten"))
         return antwort(shape, {"typ": "beschneiden", "flaeche": f.id, "behalten": d.get("behalten")}, "Beschnitt")
+    if was == "ebene_schneiden":
+        r = p.referenz_holen(d["rid"])
+        if r["art"] != "ebene":
+            raise Fehler("Bitte eine Referenzebene wählen.")
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+        from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+        gross = 10 * max(kp.kennwerte(k.shape)["groesse"]) + 100
+        ebene = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(*map(float, r["punkt"])), gp_Dir(*map(float, r["normale"]))),
+                                        -gross, gross, -gross, gross).Face()
+        if d.get("behalten") == "beide":
+            if vorschau:
+                return antwort(ff.koerper_schneiden(k.shape, ebene, "unten"), None, None)
+            oben = ff.koerper_schneiden(k.shape, ebene, "oben")
+            unten = ff.koerper_schneiden(k.shape, ebene, "unten")
+            neu = p.koerper_aufteilen(k.id, [unten, oben])
+            return {"koerper": [x.id for x in neu]}
+        shape = ff.koerper_schneiden(k.shape, ebene, d.get("behalten", "unten"))
+        return antwort(shape, {"typ": "ebene_schneiden", "referenz": r["id"], "behalten": d.get("behalten", "unten")}, "Schnitt")
+    if was == "versetzen":
+        shape = sk_feat.flaeche_versetzen(k.shape, zahl(d, "abstand", 1))
+        return antwort(shape, {"typ": "versetzen", "von": k.id, "abstand": zahl(d, "abstand", 1)}, "Versatz", neu=True)
+    if was == "duplizieren":
+        shape = sk_feat.flaechen_kopieren(k.shape, [int(x) for x in d.get("flaechen") or []])
+        return antwort(shape, {"typ": "duplizieren", "von": k.id}, "Flächenkopie", neu=True)
+    if was == "verlaengern":
+        shape = sk_feat.flaeche_verlaengern(k.shape, zahl(d, "laenge", 5))
+        return antwort(shape, {"typ": "verlaengern", "laenge": zahl(d, "laenge", 5)}, "Verlängert")
+    if was == "projizieren":
+        shape = sk_feat.skizze_auf_flaeche(k.shape, p.skizze_holen(d["sid"]), d.get("behalten", "innen"))
+        return antwort(shape, {"typ": "projizieren", "skizze": d["sid"], "behalten": d.get("behalten", "innen")}, "Projektion")
     if was == "skalieren":
         f = d.get("faktor", 1)
         shape = sk_feat.skalieren(k.shape, f if isinstance(f, list) else float(f))
         return antwort(shape, {"typ": "skalieren", "faktor": f}, "Skalieren")
     if was == "flaeche_verschieben":
         shape = sk_feat.flaeche_verschieben(k.shape, [int(x) for x in d.get("flaechen") or []], zahl(d, "abstand", 1))
-        return antwort(shape, {"typ": "flaeche_verschieben", "abstand": zahl(d, "abstand", 1)}, "Fläche verschoben")
+        from kern.verlauf import flaechen_bezug
+        return antwort(shape, {"typ": "flaeche_verschieben", "abstand": zahl(d, "abstand", 1),
+                               "flaechen_ref": flaechen_bezug(k.shape, [int(x) for x in d.get("flaechen") or []])},
+                       "Fläche verschoben")
     if was == "flaechen_loeschen":
         shape = sk_feat.flaechen_loeschen(k.shape, [int(x) for x in d.get("flaechen") or []])
-        return antwort(shape, {"typ": "flaechen_loeschen"}, "Flächen entfernt")
+        from kern.verlauf import flaechen_bezug
+        return antwort(shape, {"typ": "flaechen_loeschen",
+                               "flaechen_ref": flaechen_bezug(k.shape, [int(x) for x in d.get("flaechen") or []])},
+                       "Flächen entfernt")
     if was == "formschraege":
         r = {"z": (0, 0, 1), "-z": (0, 0, -1), "y": (0, 1, 0), "-y": (0, -1, 0), "x": (1, 0, 0), "-x": (-1, 0, 0)}[d.get("richtung", "z")]
         shape = sk_feat.formschraege(k.shape, [int(x) for x in d.get("flaechen") or []], zahl(d, "winkel", 1), r)
-        return antwort(shape, {"typ": "formschraege", "winkel": zahl(d, "winkel", 1)}, "Formschräge")
+        from kern.verlauf import flaechen_bezug
+        return antwort(shape, {"typ": "formschraege", "winkel": zahl(d, "winkel", 1), "richtung_v": list(r),
+                               "flaechen_ref": flaechen_bezug(k.shape, [int(x) for x in d.get("flaechen") or []])},
+                       "Formschräge")
     raise Fehler("Unbekanntes Werkzeug %s" % was)
 
 
@@ -857,6 +1226,19 @@ def referenz_befehl(was, d):
             r = p.referenz_hinzufuegen(rf.json_form(rf.ebene_aus_element(el, zahl(d, "versatz", 0))), "Ebene")
         else:
             r = p.referenz_hinzufuegen(rf.json_form(rf.achse_aus_element(el)), "Achse")
+        return {"rid": r["id"]}
+    if was in ("durch_linie", "entlang_pfad", "aus_skizze"):
+        z = p.skizze_holen(d["sid"])
+        if was == "durch_linie":
+            e = sk_feat.ebene_durch_linie(z, int(zahl(d, "element", 0)))
+        elif was == "entlang_pfad":
+            e = sk_feat.ebene_entlang_pfad(z, zahl(d, "anteil", 0))
+        else:
+            if z.get("art") == "3d":
+                raise Fehler("Eine 3D-Skizze hat keine Ebene.")
+            E = sk.ebene_lesen(z["ebene"])
+            e = {"art": "ebene", "punkt": E["ursprung"], "normale": E["n"]}
+        r = p.referenz_hinzufuegen(rf.json_form(e), "Ebene")
         return {"rid": r["id"]}
     if was == "mitte":
         a = _erk_element(d["id"], d.get("element"))
@@ -893,7 +1275,8 @@ def freiform_befehl(was, d):
             kaefig = {"V": np.frombuffer(base64.b64decode(d["kaefig"]["V"]), np.float32).reshape(-1, 3),
                       "F": np.frombuffer(base64.b64decode(d["kaefig"]["F"]), np.uint32).reshape(-1, 4).astype(np.int64)}
         shape, info = ff.auto_flaechen(s.xyz, s.tri, flaechen, int(zahl(d, "raster", 9)), zahl(d, "kantenwinkel", 0),
-                                       glatt=bool(d.get("glatt", True)), kaefig=kaefig)
+                                       glatt=bool(d.get("glatt", True)), kaefig=kaefig,
+                                       scharf_von_hand=d.get("scharf") or None)
         info.pop("quad", None)
         # Guete: Stichprobe der Scanpunkte gegen die Flaechen
         rng = np.random.default_rng(0)
@@ -913,6 +1296,47 @@ def freiform_befehl(was, d):
             return {"vorschau": netz_json(kp.vernetzen(face)), "info": info}
         k = p.feature(face, "Fläche", "neu", None, {"typ": "flaeche", "punkte": int(len(P))})
         return {"koerper": k.id, "info": info}
+    if was in ("kaefig_neu", "kaefig_wrap", "kaefig_op", "kaefig_obj"):
+        s = p.scan(d["id"])
+        if s.tri is None or not len(s.tri):
+            raise Fehler("Die Freiform braucht ein Dreiecksnetz – Punktwolke erst vernetzen.")
+        raster = None
+        if was in ("kaefig_neu", "kaefig_wrap"):
+            P, _ = _gewaehlte_punkte(d)
+            if was == "kaefig_neu":
+                V, F, raster = ff.kaefig_auf_auswahl(P, s.xyz, s.tri, int(zahl(d, "nu", 6)), int(zahl(d, "nv", 6)))
+            else:
+                V, F, raster = ff.kaefig_wrap(P, s.xyz, s.tri, int(zahl(d, "nu", 12)), int(zahl(d, "nv", 6)))
+        elif was == "kaefig_obj":
+            V, F = ff.obj_kaefig(d.get("text", ""))
+            V = ff._Projektor(s.xyz, s.tri)(V)
+        else:
+            V = np.frombuffer(base64.b64decode(d["V"]), np.float32).reshape(-1, 3).astype(float)
+            F = np.frombuffer(base64.b64decode(d["F"]), np.uint32).reshape(-1, 4).astype(np.int64)
+            op = d.get("op")
+            if op == "feiner":
+                V, F = ff.kaefig_feiner(V, F, s.xyz, s.tri)
+            elif op == "glaetten":
+                V = ff.kaefig_glaetten(V, F, s.xyz, s.tri, d.get("ids"))
+            elif op == "symmetrie":
+                r = p.referenz_holen(d["rid"])
+                if r["art"] != "ebene":
+                    raise Fehler("Für Symmetrie eine Referenzebene wählen.")
+                V, F = ff.kaefig_symmetrisch(V, F, r["punkt"], r["normale"])
+                V = ff._Projektor(s.xyz, s.tri)(V)
+            elif op == "einrasten":
+                V = ff._Projektor(s.xyz, s.tri)(V)
+            else:
+                raise Fehler("Unbekannte Käfig-Operation „%s“." % op)
+        seg = np.stack([V[F], V[np.roll(F, -1, axis=1)]], 2).reshape(-1, 2, 3)
+        return {"V": _b64(V, np.float32), "F": _b64(F, np.uint32), "linien": _b64(seg, np.float32),
+                "vierecke": int(len(F)), "raster": raster}
+    if was == "eine_flaeche":
+        s = p.scan(d["id"])
+        V = np.frombuffer(base64.b64decode(d["V"]), np.float32).reshape(-1, 3).astype(float)
+        face = ff.raster_eine_flaeche(V, d["raster"], s.xyz, s.tri)
+        k = p.feature(face, "Freiform", "neu", None, {"typ": "freiform_raster"})
+        return {"koerper": k.id}
     raise Fehler("Unbekannter Freiform-Befehl %s" % was)
 
 
@@ -1171,7 +1595,7 @@ class Handler(BaseHTTPRequestHandler):
                         name = liste[0].name
                     daten = kp.exportieren([k.shape for k in liste], fmt)
                 name = "".join(c if c.isalnum() or c in "-_ ()" else "_" for c in name).strip() or "koerper"
-                name += kp.FORMATE.get(fmt, ".step")
+                name += ".stl" if fmt == "stl" else kp.FORMATE.get(fmt, ".step")
                 return self._senden(200, daten, "application/octet-stream", {
                     "Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
             if pfad == "/api/projekt/speichern":
@@ -1206,8 +1630,18 @@ class Handler(BaseHTTPRequestHandler):
             if pfad == "/api/import":
                 name = os.path.basename(q.get("name") or "scan.ply")
                 daten = self._koerper()
+                endung = os.path.splitext(name)[1].lower()
+                if endung in (".step", ".stp", ".iges", ".igs"):
+                    # CAD-Datei -> Koerper (z. B. zum Vergleichen oder als Ausgangsteil)
+                    shape = kp.einlesen(daten, "step" if endung in (".step", ".stp") else "iges")
+                    if shape is None or shape.IsNull():
+                        raise Fehler("Die CAD-Datei enthält keine Geometrie.")
+                    with sperre:
+                        k = projekt.koerper_hinzufuegen(shape, os.path.splitext(name)[0],
+                                                        [{"name": "Import " + name, "typ": "import"}])
+                        return self._senden(200, dict(projekt.zustand(), koerper_neu=k.id))
                 with tempfile.TemporaryDirectory() as tmp:
-                    datei = os.path.join(tmp, "import" + os.path.splitext(name)[1].lower())
+                    datei = os.path.join(tmp, "import" + endung)
                     with open(datei, "wb") as f:
                         f.write(daten)
                     scan = einlesen(datei, name)

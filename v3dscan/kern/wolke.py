@@ -11,7 +11,7 @@ import numpy as np
 
 from .o3d import o3d
 
-EINLESBAR = (".ply", ".pcd", ".xyz", ".xyzn", ".xyzrgb", ".pts", ".asc", ".txt",
+EINLESBAR = (".ptx", ".ply", ".pcd", ".xyz", ".xyzn", ".xyzrgb", ".pts", ".asc", ".txt",
              ".csv", ".obj", ".stl", ".off", ".gltf", ".glb")
 AUSGEBBAR = ("ply", "pcd", "xyz", "asc")            # Punktwolke
 AUSGEBBAR_NETZ = ("stl", "obj", "ply", "off", "glb")  # Netz
@@ -82,7 +82,13 @@ class Scan:
         R, t = T[:3, :3], T[:3, 3]
         self.xyz = (self.xyz.astype(np.float64) @ R.T + t).astype(np.float32)
         if self.nrm is not None:
-            self.nrm = (self.nrm.astype(np.float64) @ R.T).astype(np.float32)
+            # Normalen mit der inversen Transponierten (richtig auch bei Skalierung/Spiegelung)
+            Ni = np.linalg.inv(R).T
+            n = self.nrm.astype(np.float64) @ Ni.T
+            n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+            self.nrm = n.astype(np.float32)
+        if self.tri is not None and np.linalg.det(R) < 0:
+            self.tri = np.ascontiguousarray(self.tri[:, [0, 2, 1]])   # Spiegelung: Umlauf umkehren
         self.geaendert()
 
     # --- Open3D -----------------------------------------------------------
@@ -125,6 +131,58 @@ class Scan:
 
 
 # --- Einlesen -------------------------------------------------------------
+def _ptx_einlesen(pfad, name, max_kante=None):
+    """Leica PTX (Raster-Punktwolke langreichweitiger Scanner): je Scan Kopf (Spalten, Zeilen,
+    Scannerposition, Achsen, 4x4-Matrix) und Zeilen x y z i [r g b]; (0,0,0) = kein Messpunkt.
+    Aus dem Raster wird direkt ein Netz (Nachbarn im Raster, Kanten bis max_kante)."""
+    with open(pfad, "r", encoding="utf-8", errors="replace") as f:
+        zeilen = f.read().split("\n")
+    pos = 0
+    alle_xyz, alle_rgb, alle_tri, versatz = [], [], [], 0
+    hat_rgb = True
+    while pos < len(zeilen) - 10:
+        if not zeilen[pos].strip():
+            pos += 1
+            continue
+        spalten, reihen = int(zeilen[pos].split()[0]), int(zeilen[pos + 1].split()[0])
+        M = np.array([[float(x) for x in zeilen[pos + 6 + k].split()[:4]] for k in range(4)])
+        pos += 10
+        n = spalten * reihen
+        werte = np.array([z.split() for z in zeilen[pos:pos + n]], dtype=object)
+        pos += n
+        breite = min(len(w) for w in werte)
+        W = np.array([[float(x) for x in w[:breite]] for w in werte])
+        xyz = W[:, :3] @ M[:3, :3] + M[3, :3]             # PTX: Zeilenvektor * Matrix, Translation unten
+        gueltig = np.any(W[:, :3] != 0, axis=1)
+        if breite >= 7:
+            alle_rgb.append(W[:, 4:7])
+        else:
+            hat_rgb = False
+        # Raster: Index = spalte * reihen + reihe
+        idx = np.arange(n).reshape(spalten, reihen)
+        a, b, c, d = idx[:-1, :-1].ravel(), idx[1:, :-1].ravel(), idx[1:, 1:].ravel(), idx[:-1, 1:].ravel()
+        T = np.r_[np.c_[a, b, c], np.c_[a, c, d]]
+        T = T[gueltig[T].all(1)]
+        if len(T):
+            L = np.max([np.linalg.norm(xyz[T[:, i]] - xyz[T[:, (i + 1) % 3]], axis=1) for i in range(3)], axis=0)
+            grenze = max_kante or 6 * float(np.median(L))
+            T = T[L <= grenze]
+        alle_xyz.append(xyz)
+        alle_tri.append(T + versatz)
+        versatz += n
+    if not alle_xyz:
+        raise ValueError("Die PTX-Datei enthält keine Scans.")
+    xyz = np.concatenate(alle_xyz)
+    tri = np.concatenate(alle_tri) if alle_tri else np.zeros((0, 3), int)
+    rgb = np.concatenate(alle_rgb).clip(0, 255).astype(np.uint8) if hat_rgb and alle_rgb else None
+    benutzt = np.zeros(len(xyz), bool)
+    benutzt[tri.ravel()] = True
+    neu = -np.ones(len(xyz), np.int64)
+    neu[benutzt] = np.arange(benutzt.sum())
+    s = Scan(name, xyz[benutzt], None if rgb is None else rgb[benutzt], None, neu[tri] if len(tri) else None)
+    return s
+
+
 def _text_einlesen(pfad):
     """ASC/XYZ/TXT/CSV: Spalten x y z [r g b] [nx ny nz], Trenner beliebig."""
     with open(pfad, "r", encoding="utf-8", errors="replace") as f:
@@ -200,6 +258,8 @@ def einlesen(pfad, name=None):
     if endung not in EINLESBAR:
         raise ValueError("Dateiformat %s wird nicht unterstützt." % endung)
 
+    if endung == ".ptx":
+        return _ptx_einlesen(pfad, name)
     if endung in (".asc", ".txt", ".csv"):
         xyz, rgb, nrm = _text_einlesen(pfad)
         return Scan(name, xyz, rgb, nrm)

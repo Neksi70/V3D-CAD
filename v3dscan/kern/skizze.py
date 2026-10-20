@@ -934,8 +934,9 @@ def skizze_json(ketten, E, info=None):
 def schnitt_abweichung(skz):
     """Je Kette die Abstaende der gespeicherten Schnittpunkte zur Kontur (F2: Skizze <-> Schnitt)."""
     ketten = []
-    for k, P in zip(skz["ketten"], skz.get("schnitt", [])):
-        if not k["elemente"]:
+    schnitte = list(skz.get("schnitt", [])) + [[]] * max(0, len(skz["ketten"]) - len(skz.get("schnitt", [])))
+    for k, P in zip(skz["ketten"], schnitte):
+        if not k["elemente"] or len(P) < 2:          # gezeichnete Kontur: kein Schnitt zum Vergleichen
             ketten.append(None)
             continue
         ketten.append({"elemente": [element_lesen(e) for e in k["elemente"]], "punkte": np.asarray(P, float)})
@@ -1107,9 +1108,13 @@ def versatz(kette, abstand, ecke="bogen"):
         else:
             # Bogen: Richtung von a nach b bestimmt, ob er links- oder rechtsherum laeuft
             m = e["mitte"]
-            links = ((e["m"] - e["a"])[0] * (e["b"] - e["a"])[1] - (e["m"] - e["a"])[1] * (e["b"] - e["a"])[0]) < 0
-            dr = abstand * vz * (-1 if links else 1)
-            r = e["r"] + dr
+            # Versatz nach links um s = vz·abstand: liegt der Mittelpunkt links der Laufrichtung
+            # (am Bogenpunkt m), wird der Radius kleiner, sonst groesser
+            tang = e["b"] - e["a"] if np.linalg.norm(e["b"] - e["a"]) > 1e-9 else np.array([1.0, 0])
+            links_n = np.array([-tang[1], tang[0]])
+            mitte_links = (m - e["m"]) @ links_n > 0
+            s_ = vz * abstand
+            r = e["r"] - s_ if mitte_links else e["r"] + s_
             if r <= 0:
                 raise ValueError("Versatz macht einen Bogen zu klein (R %.2f)." % e["r"])
             f = r / e["r"]
@@ -1319,15 +1324,21 @@ def abstand_setzen(kette, i, bezug, wert):
 
 
 # --- Netz-Umriss (Mesh Outline) ---------------------------------------------------------------------------
-def umriss(xyz, E, zelle=None):
-    """Silhouette des ganzen Scans in der Ebene: Punkte projizieren, Belegungsraster, Randkonturen.
+def umriss(xyz, E, zelle=None, tri=None):
+    """Silhouette des ganzen Scans in der Ebene: Punkte projizieren (Netze vorher dicht abtasten -
+    ebene Flaechen haben kaum Eckpunkte), Belegungsraster, Randkonturen, Treppe glaetten.
     -> (polylinien, geschlossen)."""
+    xyz = np.asarray(xyz, float)
+    if tri is not None and len(tri):
+        from .o3d import o3d
+        m = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(xyz), o3d.utility.Vector3iVector(np.asarray(tri, np.int32)))
+        xyz = np.r_[xyz, np.asarray(m.sample_points_uniformly(min(800000, max(100000, 20 * len(tri)))).points)]
     q = zu2d(xyz, E)
     lo, hi = q.min(0), q.max(0)
     if zelle is None:
-        zelle = max(float(np.max(hi - lo)) / 600, punktabstand(xyz) * 1.5)
-    nx, ny = int((hi[0] - lo[0]) / zelle) + 3, int((hi[1] - lo[1]) / zelle) + 3
-    ij = np.floor((q - lo) / zelle).astype(int) + 1
+        zelle = max(float(np.max(hi - lo)) / 700, punktabstand(xyz) * 1.2)
+    nx, ny = int((hi[0] - lo[0]) / zelle) + 7, int((hi[1] - lo[1]) / zelle) + 7
+    ij = np.floor((q - lo) / zelle).astype(int) + 3
     G = np.zeros((nx, ny), bool)
     G[ij[:, 0], ij[:, 1]] = True
     # Luecken schliessen (Dilatation + Erosion) und innere Loecher fuellen bleibt erhalten
@@ -1336,14 +1347,11 @@ def umriss(xyz, E, zelle=None):
         B[1:] |= A[:-1]; B[:-1] |= A[1:]; B[:, 1:] |= A[:, :-1]; B[:, :-1] |= A[:, 1:]
         return B
     G = ~dil(~dil(G))
+    G[:2], G[-2:], G[:, :2], G[:, -2:] = False, False, False, False
     # Randkanten zwischen belegt/frei als Segmente, dann verketten
     seg = {}
     def add(a, b):
         seg.setdefault(a, []).append(b)
-    for i in range(nx - 1):
-        for j in range(ny - 1):
-            if G[i, j] and not G[i, j - 1] if j > 0 else G[i, j]:
-                pass
     xs, ys = np.nonzero(G)
     for i, j in zip(xs.tolist(), ys.tolist()):
         if not G[i, j - 1]:
@@ -1368,7 +1376,10 @@ def umriss(xyz, E, zelle=None):
             if cur == start:
                 break
         if len(weg) > 8:
-            P = (np.array(weg[:-1], float) - 1) * zelle + lo
+            P = (np.array(weg[:-1], float) - 3) * zelle + lo
+            # Treppe glaetten (zyklisches gleitendes Mittel), Ecken bleiben bis auf ~1 Zelle erhalten
+            for _ in range(3):
+                P = (np.roll(P, 1, axis=0) + 2 * P + np.roll(P, -1, axis=0)) / 4
             linien.append(P)
             zu.append(True)
     return linien, zu

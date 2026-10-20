@@ -142,7 +142,8 @@ def _glatte_normalen(X, T):
     return normale
 
 
-def auto_flaechen(X, T, flaechen=300, raster=9, kantenwinkel=0.0, fortschritt=None, glatt=True, kaefig=None):
+def auto_flaechen(X, T, flaechen=300, raster=9, kantenwinkel=0.0, fortschritt=None, glatt=True, kaefig=None,
+                  scharf_von_hand=None):
     """Geschlossenes oder offenes Scan-Netz -> (shape, info). raster = Punkte je Kante (>= 4).
     glatt: an jedem Kantenpunkt liegen die ersten Rasterreihen beider Nachbarflaechen in derselben
     Tangentialebene (Scan-Normale) -> annaehernd tangentiale Uebergaenge statt Knicke.
@@ -183,6 +184,11 @@ def auto_flaechen(X, T, flaechen=300, raster=9, kantenwinkel=0.0, fortschritt=No
     E[:, 0], E[:, -1] = V[K[:, 0]], V[K[:, 1]]
     kp_rand = kp_quer = None
     scharf, ecke_scharf = scharfe_kanten(V, F, K, schluessel, proj)
+    for a_, b_ in (scharf_von_hand or []):           # Crease von Hand
+        k_ = schluessel.get((min(int(a_), int(b_)), max(int(a_), int(b_))))
+        if k_ is not None:
+            scharf[k_] = True
+            ecke_scharf[[int(a_), int(b_)]] = True
     if glatt:
         kp_rand, kp_quer = _g1_kanten(E, EN, K, schluessel, _glatte_normalen(X, T), scharf, ecke_scharf)
         _g1_flaeche.schluessel = schluessel
@@ -585,3 +591,189 @@ def koerper_schneiden(shape, face, behalten="unten"):
     if kp.kennwerte(erg)["volumen"] < 1e-6:
         raise ValueError("Nach dem Beschneiden bleibt nichts übrig – andere Seite behalten?")
     return erg
+
+
+# === Freiform von Hand (v1.0): Raster-Kaefig, Wrap, feiner, glaetten, Symmetrie, eine Flaeche ===========
+def _raster_flaechen(nu, nv, offset=0, umlaufend=False):
+    F = []
+    breite = nv + 1
+    for i in range(nu):
+        for j in range(nv):
+            a = i * breite + j
+            i2 = (i + 1) % (nu if umlaufend else nu + 1)
+            b = i2 * breite + j
+            F.append([a + offset, b + offset, b + 1 + offset, a + 1 + offset])
+    return np.array(F, np.int64)
+
+
+def kaefig_auf_auswahl(P, X, T, nu=6, nv=6):
+    """New Freeform: rechteckiges Vierecksraster ueber der Ausgleichsebene der Auswahl, auf den Scan gelegt.
+    -> (V, F, raster=(nu, nv))."""
+    P = np.asarray(P, float)
+    if len(P) < 20:
+        raise ValueError("Für eine Freiformfläche bitte einen Bereich auswählen.")
+    c = P.mean(0)
+    _, _, vt = np.linalg.svd(P - c, full_matrices=False)
+    q = (P - c) @ vt[:2].T
+    lo, hi = np.percentile(q, 1, axis=0), np.percentile(q, 99, axis=0)
+    V = np.array([c + (lo[0] + (hi[0] - lo[0]) * i / nu) * vt[0] + (lo[1] + (hi[1] - lo[1]) * j / nv) * vt[1]
+                  for i in range(nu + 1) for j in range(nv + 1)])
+    proj = _Projektor(X, T)
+    weit = float(np.max(hi - lo))
+    V = proj.entlang(V, np.repeat(vt[2][None], len(V), 0), weit)
+    return V, _raster_flaechen(nu, nv), (nu, nv)
+
+
+def kaefig_wrap(P, X, T, n_um=12, n_lang=6):
+    """Wrap Surface: Zylinder in die Auswahl einpassen, Kaefig ringsum (geschlossen in Umfangsrichtung)."""
+    from .formen import zylinder
+    P = np.asarray(P, float)
+    z = zylinder(P)
+    a = np.asarray(z["achse"], float) / np.linalg.norm(z["achse"])
+    p0 = np.asarray(z["punkt"], float)
+    t = (P - p0) @ a
+    t0, t1 = np.percentile(t, 1), np.percentile(t, 99)
+    h = np.array([1.0, 0, 0]) if abs(a[0]) < 0.9 else np.array([0, 1.0, 0])
+    e1 = np.cross(a, h); e1 /= np.linalg.norm(e1)
+    e2 = np.cross(a, e1)
+    V, N = [], []
+    for i in range(n_um):
+        w = 2 * np.pi * i / n_um
+        rad = np.cos(w) * e1 + np.sin(w) * e2
+        for j in range(n_lang + 1):
+            V.append(p0 + a * (t0 + (t1 - t0) * j / n_lang) + rad * z["radius"])
+            N.append(rad)
+    V, N = np.array(V), np.array(N)
+    V = _Projektor(X, T).entlang(V, N, 0.8 * z["radius"])
+    return V, _raster_flaechen(n_um, n_lang, umlaufend=True), (n_um, n_lang)
+
+
+def kaefig_feiner(V, F, X=None, T=None):
+    """Increase Resolution: jedes Viereck -> 4 (Kanten- und Flaechenmitten), auf den Scan gelegt."""
+    V = np.asarray(V, float)
+    F = np.asarray(F, np.int64)
+    neuV = list(V)
+    kanten = {}
+
+    def mitte(a, b):
+        k = (min(a, b), max(a, b))
+        if k not in kanten:
+            kanten[k] = len(neuV)
+            neuV.append(0.5 * (V[a] + V[b]))
+        return kanten[k]
+    neuF = []
+    for c0, c1, c2, c3 in F.tolist():
+        m01, m12, m23, m30 = mitte(c0, c1), mitte(c1, c2), mitte(c2, c3), mitte(c3, c0)
+        z = len(neuV)
+        neuV.append(V[[c0, c1, c2, c3]].mean(0))
+        neuF += [[c0, m01, z, m30], [m01, c1, m12, z], [z, m12, c2, m23], [m30, z, m23, c3]]
+    neuV = np.array(neuV)
+    if X is not None:
+        neuV[len(V):] = _Projektor(X, T)(neuV[len(V):])
+    return neuV, np.array(neuF, np.int64)
+
+
+def kaefig_glaetten(V, F, X=None, T=None, ids=None, staerke=0.5, schritte=2):
+    """Smooth: Ecken zum Mittel ihrer Nachbarn ziehen (Randecken bleiben), danach auf den Scan."""
+    V = np.asarray(V, float).copy()
+    F = np.asarray(F, np.int64)
+    nb = [set() for _ in range(len(V))]
+    kz = {}
+    for f in F.tolist():
+        for a, b in zip(f, f[1:] + f[:1]):
+            nb[a].add(b); nb[b].add(a)
+            k = (min(a, b), max(a, b)); kz[k] = kz.get(k, 0) + 1
+    rand = set(x for k, n in kz.items() if n == 1 for x in k)
+    wahl = set(range(len(V))) if ids is None else set(int(i) for i in ids)
+    for _ in range(schritte):
+        neu = V.copy()
+        for i in wahl:
+            if i in rand or not nb[i]:
+                continue
+            neu[i] = (1 - staerke) * V[i] + staerke * V[list(nb[i])].mean(0)
+        V = neu
+    if X is not None:
+        V = _Projektor(X, T)(V)
+    return V
+
+
+def kaefig_symmetrisch(V, F, punkt, normale, toleranz=None):
+    """Symmetrie: Viereck-Haelfte auf der Seite der Normale behalten, an der Ebene spiegeln, Ecken nahe der
+    Ebene auf die Ebene setzen und verschweissen (Set on Symmetry Plane)."""
+    V = np.asarray(V, float)
+    F = np.asarray(F, np.int64)
+    n = np.asarray(normale, float) / np.linalg.norm(normale)
+    p = np.asarray(punkt, float)
+    d = (V - p) @ n
+    kante = float(np.mean(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)))
+    tol = toleranz or 0.35 * kante
+    behalten = F[(d[F].mean(1) > 0)]
+    if not len(behalten):
+        raise ValueError("Auf der Seite der Ebene liegt kein Käfig.")
+    ids = np.unique(behalten)
+    V2 = V.copy()
+    auf = np.abs(d) <= tol
+    V2[auf] = V[auf] - d[auf, None] * n
+    alt_neu = {int(i): k for k, i in enumerate(ids)}
+    VA = V2[ids]
+    gesp = VA - 2 * ((VA - p) @ n)[:, None] * n
+    VB_index = {}
+    neuV = list(VA)
+    for k, i in enumerate(ids):
+        if auf[i]:
+            VB_index[int(i)] = k                       # Ecke auf der Ebene: geteilt
+        else:
+            VB_index[int(i)] = len(neuV)
+            neuV.append(gesp[k])
+    FA = [[alt_neu[int(x)] for x in f] for f in behalten]
+    FB = [[VB_index[int(x)] for x in f[::-1]] for f in behalten]     # gespiegelt: Umlauf umkehren
+    return np.array(neuV), np.array(FA + FB, np.int64)
+
+
+def raster_eine_flaeche(V, raster, X, T, umlaufend=False):
+    """Merge: Raster-Kaefig (nu x nv) als EINE B-Spline-Flaeche (Kaefig 3x verfeinert, auf den Scan gelegt)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
+    from OCP.GeomAbs import GeomAbs_C2
+    from OCP.TColgp import TColgp_Array2OfPnt
+    from OCP.gp import gp_Pnt
+    if umlaufend:
+        raise ValueError("Ein umlaufender Käfig wird als mehrere Flächen gebaut.")
+    nu, nv = raster
+    G = np.asarray(V, float).reshape(nu + 1, nv + 1, 3)
+    k = 4
+    uu = np.linspace(0, nu, nu * k + 1)
+    vv = np.linspace(0, nv, nv * k + 1)
+    def bilinear(u, v):
+        i, j = min(int(u), nu - 1), min(int(v), nv - 1)
+        s, t = u - i, v - j
+        return (1 - s) * (1 - t) * G[i, j] + s * (1 - t) * G[i + 1, j] + s * t * G[i + 1, j + 1] + (1 - s) * t * G[i, j + 1]
+    D = np.array([[bilinear(u, v) for v in vv] for u in uu])
+    D = _Projektor(X, T)(D)
+    arr = TColgp_Array2OfPnt(1, D.shape[0], 1, D.shape[1])
+    for i in range(D.shape[0]):
+        for j in range(D.shape[1]):
+            arr.SetValue(i + 1, j + 1, gp_Pnt(*map(float, D[i, j])))
+    s = GeomAPI_PointsToBSplineSurface(arr, 3, 3, GeomAbs_C2, 0.005).Surface()
+    a, b, c, d = s.Bounds()
+    return BRepBuilderAPI_MakeFace(s, a, b, c, d, 1e-6).Face()
+
+
+def obj_kaefig(text):
+    """Quad-OBJ (v/f) -> Kaefig (V, F); Dreiecke werden abgelehnt."""
+    V, F = [], []
+    for zeile in text.splitlines():
+        t = zeile.split()
+        if not t:
+            continue
+        if t[0] == "v":
+            V.append([float(x) for x in t[1:4]])
+        elif t[0] == "f":
+            idx = [int(x.split("/")[0]) for x in t[1:]]
+            idx = [i - 1 if i > 0 else len(V) + i for i in idx]
+            if len(idx) != 4:
+                raise ValueError("Die OBJ-Datei enthält Nicht-Vierecke – bitte als reines Quad-Netz exportieren.")
+            F.append(idx)
+    if not F:
+        raise ValueError("Keine Vierecke in der OBJ-Datei.")
+    return np.array(V, float), np.array(F, np.int64)

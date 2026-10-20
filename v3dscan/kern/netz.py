@@ -433,3 +433,58 @@ def netz_erzeugen(scan, verfahren="poisson", tiefe=9, dichte_schnitt=5.0, radius
     if len(m.triangles) == 0:
         raise ValueError("Es ist kein Netz entstanden – andere Einstellungen versuchen.")
     return _neu(scan, m, name="Netz aus " + scan.name), {"dreiecke": len(m.triangles)}
+
+
+
+# === v1.0: Normalen umdrehen, Abrollen, Mittelwert-Netz, Netz mit Koerper teilen ===================
+def normalen_umdrehen(scan):
+    neu = scan.kopie()
+    if neu.tri is not None:
+        neu.tri = np.ascontiguousarray(neu.tri[:, [0, 2, 1]])
+    if neu.nrm is not None:
+        neu.nrm = -neu.nrm
+    neu.geaendert()
+    return neu
+
+
+def abrollen(scan, punkt, achse, radius=None):
+    """Unroll: Netz um eine Zylinderachse in die Ebene abrollen (x = Bogenlaenge auf dem Bezugsradius,
+    y = entlang der Achse, z = Abstand vom Bezugsradius). Dreiecke ueber der Naht fallen weg."""
+    a = np.asarray(achse, float) / np.linalg.norm(achse)
+    p0 = np.asarray(punkt, float)
+    h = np.array([1.0, 0, 0]) if abs(a[0]) < 0.9 else np.array([0, 1.0, 0])
+    e1 = np.cross(a, h); e1 /= np.linalg.norm(e1)
+    e2 = np.cross(a, e1)
+    q = scan.xyz.astype(float) - p0
+    z = q @ a
+    x, y = q @ e1, q @ e2
+    r = np.hypot(x, y)
+    r0 = float(radius) if radius else float(np.median(r))
+    w = np.arctan2(y, x)
+    xyz = np.c_[w * r0, z, r - r0]
+    tri = scan.tri
+    if tri is not None:
+        sprung = np.ptp(w[tri], axis=1) > np.pi
+        tri = tri[~sprung]
+    from .wolke import Scan
+    return Scan(scan.name + " (abgerollt)", xyz, scan.rgb, None, tri)
+
+
+def mittelwert_netz(scans, tiefe=9):
+    """Average Mesh: Punkte mehrerer ausgerichteter Scans zusammen, Normalen, Poisson-Netz."""
+    from .projekt import verbinden
+    teile = []
+    for s in scans:
+        t = s.kopie()
+        if t.tri is not None:
+            t.tri = None
+        teile.append(t)
+    gesamt = verbinden(teile, "Mittelwert-Netz")
+    return netz_erzeugen(gesamt, "poisson", tiefe=tiefe)
+
+
+def innen_maske(scan, shapes):
+    """Punkte des Scans, die innerhalb der Koerper liegen (Vorzeichen der Abstandsfunktion)."""
+    from . import koerper as kp
+    d = kp.abweichung(shapes, scan.xyz)
+    return d < 0

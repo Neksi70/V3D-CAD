@@ -480,7 +480,9 @@ def _aussenkette(skz):
 
 
 def _pfad_draht(skz):
-    """Pfad aus einer Skizze: laengste Kette (offen oder geschlossen) als Draht."""
+    """Pfad aus einer Skizze: laengste Kette (offen oder geschlossen) als Draht; 3D-Skizze direkt."""
+    if skz.get("art") == "3d":
+        return draht_3d(skz["punkte3d"], skz.get("glatt", True), skz.get("geschlossen", False)), None, None
     E = sk.ebene_lesen(skz["ebene"])
     if not skz["ketten"]:
         raise ValueError("Die Pfad-Skizze ist leer.")
@@ -996,3 +998,303 @@ def gewinde(punkt, achse, radius, laenge, steigung, aussen=True, profilwinkel=60
         raise ValueError("Gewinde ließ sich nicht erzeugen.")
     op.MakeSolid()
     return op.Shape()
+
+
+# === Surfacing (v1.0): 3D-Skizze, Fill, Blend, Extend, Offset, Duplicate, Sew, Project, Roll ===========
+def draht_3d(punkte, glatt=True, geschlossen=False):
+    """3D-Skizze -> Draht: Spline durch die Punkte (glatt) oder Linienzug."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakePolygon, BRepBuilderAPI_MakeWire
+    from OCP.GeomAPI import GeomAPI_Interpolate
+    from OCP.TColgp import TColgp_HArray1OfPnt
+    from OCP.gp import gp_Pnt
+    P = np.asarray(punkte, float)
+    if len(P) < 2:
+        raise ValueError("Eine 3D-Skizze braucht mindestens 2 Punkte.")
+    if not glatt or len(P) == 2:
+        poly = BRepBuilderAPI_MakePolygon()
+        for q in P:
+            poly.Add(gp_Pnt(*map(float, q)))
+        if geschlossen and len(P) > 2:
+            poly.Close()
+        return poly.Wire()
+    arr = TColgp_HArray1OfPnt(1, len(P))
+    for i, q in enumerate(P):
+        arr.SetValue(i + 1, gp_Pnt(*map(float, q)))
+    ip = GeomAPI_Interpolate(arr, bool(geschlossen), 1e-6)
+    ip.Perform()
+    if not ip.IsDone():
+        raise ValueError("Durch diese Punkte lässt sich keine Kurve legen (doppelte Punkte?).")
+    return BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(ip.Curve()).Edge()).Wire()
+
+
+def skizze_draht(z):
+    """Pfad/Kontur aus 2D- oder 3D-Skizze."""
+    if z.get("art") == "3d":
+        return draht_3d(z["punkte3d"], z.get("glatt", True), z.get("geschlossen", False))
+    return _pfad_draht(z)[0]
+
+
+def extrudieren_3d(z, richtung, laenge, beidseitig=True):
+    """3D-Skizze in eine Richtung zur Flaeche ziehen ('mittel' = Normale der Ausgleichsebene)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Trsf, gp_Vec
+    P = np.asarray(z["punkte3d"], float)
+    if isinstance(richtung, str):
+        if richtung == "mittel":
+            _, _, vt = np.linalg.svd(P - P.mean(0))
+            r = vt[2]
+        else:
+            r = np.array({"x": (1, 0, 0), "y": (0, 1, 0), "z": (0, 0, 1)}[richtung], float)
+    else:
+        r = np.asarray(richtung, float) / np.linalg.norm(richtung)
+    w = draht_3d(P, z.get("glatt", True), z.get("geschlossen", False))
+    if beidseitig:
+        t = gp_Trsf()
+        t.SetTranslation(gp_Vec(*map(float, -r * laenge / 2)))
+        w = BRepBuilderAPI_Transform(w, t, True).Shape()
+    return BRepPrimAPI_MakePrism(w, gp_Vec(*map(float, r * laenge))).Shape()
+
+
+def freie_raender(shape):
+    """Offene Randkanten einer Flaeche/Schale als geschlossene Draehte."""
+    from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
+    from OCP.TopAbs import TopAbs_WIRE
+    from OCP.TopExp import TopExp_Explorer
+    fb = ShapeAnalysis_FreeBounds(shape, 1e-4, False, False)
+    aus = []
+    for verbund in (fb.GetClosedWires(), fb.GetOpenWires()):
+        ex = TopExp_Explorer(verbund, TopAbs_WIRE)
+        while ex.More():
+            aus.append(ex.Current())
+            ex.Next()
+    return aus
+
+
+def flaeche_fuellen(rand_draht, nachbar=None, scan_punkte=None, stetig=True):
+    """Fill Surface: Plattenflaeche in einen geschlossenen Rand. nachbar = Schale, an die tangential
+    angeschlossen wird (G1), scan_punkte = innere Punkte, durch die die Flaeche gehen soll (On Scan Data)."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeFilling
+    from OCP.GeomAbs import GeomAbs_C0, GeomAbs_G1
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    from OCP.TopoDS import TopoDS
+    from OCP.gp import gp_Pnt
+    mf = BRepOffsetAPI_MakeFilling(3, 15, 2, False, 1e-5, 1e-4, 0.01, 0.1, 8, 9)
+    karte = None
+    if nachbar is not None and stetig:
+        karte = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(nachbar, TopAbs_EDGE, TopAbs_FACE, karte)
+    ex = TopExp_Explorer(rand_draht, TopAbs_EDGE)
+    n = 0
+    while ex.More():
+        e = TopoDS.Edge_s(ex.Current())
+        f = None
+        if karte is not None and karte.Contains(e):
+            fs = karte.FindFromKey(e)
+            if fs.Size() == 1:
+                f = TopoDS.Face_s(fs.First())
+        if f is not None:
+            mf.Add(e, f, GeomAbs_G1, True)
+        else:
+            mf.Add(e, GeomAbs_C0, True)
+        n += 1
+        ex.Next()
+    if n == 0:
+        raise ValueError("Der Rand hat keine Kanten.")
+    if scan_punkte is not None:
+        for q in np.asarray(scan_punkte, float)[:400]:
+            mf.Add(gp_Pnt(*map(float, q)))
+    try:
+        mf.Build()
+    except Exception:
+        pass
+    if not mf.IsDone():
+        raise ValueError("Die Lücke lässt sich nicht füllen.")
+    return mf.Shape()
+
+
+def naehen(shapes, toleranz=0.01):
+    """Flaechen/Schalen zusammennaehen (Sew); geschlossen -> Volumenkoerper."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid, BRepBuilderAPI_Sewing
+    from OCP.ShapeFix import ShapeFix_Solid
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    sw = BRepBuilderAPI_Sewing(float(toleranz))
+    for s in shapes:
+        sw.Add(s)
+    sw.Perform()
+    erg = sw.SewedShape()
+    info = {"freie_kanten": int(sw.NbFreeEdges()), "geschlossen": False}
+    if sw.NbFreeEdges() == 0:
+        ex = TopExp_Explorer(erg, TopAbs_SHELL)
+        if ex.More():
+            mk = BRepBuilderAPI_MakeSolid(TopoDS.Shell_s(ex.Current()))
+            if mk.IsDone():
+                fix = ShapeFix_Solid(mk.Solid())
+                fix.Perform()
+                erg = fix.Solid()
+                info["geschlossen"] = True
+    return erg, info
+
+
+def flaeche_versetzen(shape, abstand):
+    """Flaeche/Schale/Koerper um abstand versetzen (Offset)."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffsetShape
+    from OCP.BRepOffset import BRepOffset_Skin
+    from OCP.GeomAbs import GeomAbs_Intersection
+    off = BRepOffsetAPI_MakeOffsetShape()
+    off.PerformByJoin(shape, float(abstand), 1e-4, BRepOffset_Skin, False, False, GeomAbs_Intersection)
+    if not off.IsDone():
+        raise ValueError("Versetzen um %s mm ist nicht möglich." % abstand)
+    return off.Shape()
+
+
+def flaechen_kopieren(shape, nummern):
+    """Gewaehlte Flaechen eines Koerpers als eigene Flaeche(n) (Duplicate Face)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+    teile = [BRepBuilderAPI_Copy(f, True, False).Shape() for f in _flaechen(shape, nummern)]
+    return _verbund(teile)
+
+
+def flaeche_verlaengern(shape, laenge):
+    """Flaeche ueber alle Raender um laenge verlaengern (Extend Surface): Raster der Flaeche
+    abtasten, linear ueber den Rand fortsetzen, neu als B-Spline einpassen."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.BRepTools import BRepTools
+    from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
+    from OCP.GeomAbs import GeomAbs_C2
+    from OCP.TColgp import TColgp_Array2OfPnt
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.gp import gp_Pnt
+    ex = TopExp_Explorer(shape, TopAbs_FACE)
+    if not ex.More():
+        raise ValueError("Kein Flächenkörper.")
+    f = TopoDS.Face_s(ex.Current())
+    s = BRep_Tool.Surface_s(f)
+    u0, u1, v0, v1 = BRepTools.UVBounds_s(f)
+    n = 24
+    G = np.zeros((n, n, 3))
+    for i, u in enumerate(np.linspace(u0, u1, n)):
+        for j, v in enumerate(np.linspace(v0, v1, n)):
+            q = s.Value(u, v)
+            G[i, j] = (q.X(), q.Y(), q.Z())
+    lu = float(np.mean(np.linalg.norm(G[-1] - G[0], axis=1)))
+    lv = float(np.mean(np.linalg.norm(G[:, -1] - G[:, 0], axis=1)))
+    ku = max(1, int(np.ceil(laenge / (lu / (n - 1)))))
+    kv = max(1, int(np.ceil(laenge / (lv / (n - 1)))))
+    su, sv = laenge / ku, laenge / kv
+    # in u fortsetzen (Tangente aus den letzten Zeilen, auf Schrittlaenge normiert)
+    def fort(R, rueck, k, schritt):
+        t = R[-1] - R[-2] if not rueck else R[0] - R[1]
+        t = t / np.maximum(np.linalg.norm(t, axis=-1, keepdims=True), 1e-12) * schritt
+        basis = R[-1] if not rueck else R[0]
+        neu = np.array([basis + t * (i + 1) for i in range(k)])
+        return np.concatenate([R, neu]) if not rueck else np.concatenate([neu[::-1], R])
+    G = fort(fort(G, False, ku, su), True, ku, su)
+    G = np.swapaxes(fort(fort(np.swapaxes(G, 0, 1), False, kv, sv), True, kv, sv), 0, 1)
+    arr = TColgp_Array2OfPnt(1, G.shape[0], 1, G.shape[1])
+    for i in range(G.shape[0]):
+        for j in range(G.shape[1]):
+            arr.SetValue(i + 1, j + 1, gp_Pnt(*map(float, G[i, j])))
+    neu = GeomAPI_PointsToBSplineSurface(arr, 3, 3, GeomAbs_C2, 1e-3).Surface()
+    a, b, c, d = neu.Bounds()
+    return BRepBuilderAPI_MakeFace(neu, a, b, c, d, 1e-6).Face()
+
+
+def skizze_auf_flaeche(flaeche, skz, behalten="innen"):
+    """Project sketch: geschlossene Konturen der Skizze entlang ihrer Normale durch die Flaeche
+    druecken und die Flaeche innerhalb (oder ausserhalb) der Konturen behalten."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
+    from . import koerper as kp
+    groesse = max(kp.kennwerte(flaeche)["groesse"]) + 10
+    E = sk.ebene_lesen(skz["ebene"])
+    d = float((np.asarray(_mitte(flaeche)) - E["ursprung"]) @ E["n"])
+    prisma = extrudieren(skz, d - 2 * groesse, d + 2 * groesse)
+    op = BRepAlgoAPI_Common(flaeche, prisma) if behalten == "innen" else BRepAlgoAPI_Cut(flaeche, prisma)
+    erg = op.Shape()
+    if kp.kennwerte(erg)["flaeche"] < 1e-6:
+        raise ValueError("Die Skizze trifft die Fläche nicht.")
+    return erg
+
+
+def skizze_wickeln(skz, zyl_punkt, zyl_achse, radius, dicke=1.0, aussen=True):
+    """Roll Sketch: geschlossene Konturen (Skizzen-u = Umfangsrichtung, v = entlang der Achse) auf einen
+    Zylinder wickeln und als Relief (aussen = erhaben) oder Gravur aufdicken. -> Koerper."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepLib import BRepLib
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.Geom2d import Geom2d_BSplineCurve
+    from OCP.GeomAPI import GeomAPI_PointsToBSpline
+    from OCP.ShapeFix import ShapeFix_Face
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt, gp_Pnt2d
+    a = np.asarray(zyl_achse, float) / np.linalg.norm(zyl_achse)
+    zyl = Geom_CylindricalSurface(gp_Ax3(gp_Pnt(*map(float, zyl_punkt)), gp_Dir(*map(float, a))), float(radius))
+    teile = []
+    gruppen, zu, polys = profil(skz)
+    idx = {id(k): i for i, k in enumerate(zu)}
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism  # noqa: F401
+    for aussen_k, innere in gruppen:
+        draehte = []
+        for k in [aussen_k] + innere:
+            P = polys[idx[id(k)]]
+            P = np.r_[P, P[:1]]
+            # Bogenlaenge entlang u -> Winkel auf dem Zylinder, v -> Hoehe entlang der Achse
+            pkte = [gp_Pnt2d(float(s_) / float(radius), float(t_)) for s_, t_ in P]
+            w = BRepBuilderAPI_MakeWire()
+            from OCP.GCE2d import GCE2d_MakeSegment
+            for i in range(len(pkte) - 1):
+                if pkte[i].Distance(pkte[i + 1]) < 1e-9:
+                    continue
+                seg = GCE2d_MakeSegment(pkte[i], pkte[i + 1]).Value()
+                w.Add(BRepBuilderAPI_MakeEdge(seg, zyl).Edge())
+            dr = w.Wire()
+            BRepLib.BuildCurves3d_s(dr)
+            draehte.append(dr)
+        mf = BRepBuilderAPI_MakeFace(zyl, draehte[0], True)
+        for dr in draehte[1:]:
+            mf.Add(dr)
+        fix = ShapeFix_Face(mf.Face())
+        fix.FixOrientation()
+        fix.Perform()
+        teile.append(fix.Face())
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeThickSolid
+    koerper = []
+    for f in teile:
+        mk = BRepOffsetAPI_MakeThickSolid()
+        mk.MakeThickSolidBySimple(f, float(dicke) if aussen else -float(dicke))
+        mk.Build()
+        if not mk.IsDone():
+            raise ValueError("Aufdicken der gewickelten Kontur ist fehlgeschlagen.")
+        koerper.append(mk.Shape())
+    return _verbund(koerper)
+
+
+def ebene_durch_linie(skz, element_index):
+    """Referenzebene, die eine Skizzenlinie enthaelt und senkrecht auf der Skizzenebene steht."""
+    E = sk.ebene_lesen(skz["ebene"])
+    els = [e for k in skz["ketten"] for e in k["elemente"]]
+    el = sk.element_lesen(els[element_index])
+    if el["typ"] != "linie":
+        raise ValueError("Bitte eine Linie wählen.")
+    a, b = sk.zu3d(el["a"], E)[0], sk.zu3d(el["b"], E)[0]
+    d = (b - a) / np.linalg.norm(b - a)
+    n = np.cross(d, E["n"])
+    return {"art": "ebene", "punkt": a, "normale": n / np.linalg.norm(n)}
+
+
+def ebene_entlang_pfad(z, anteil=0.0):
+    """Referenzebene senkrecht zum Pfad an der Stelle anteil (0 … 1)."""
+    from OCP.BRepAdaptor import BRepAdaptor_CompCurve
+    from OCP.gp import gp_Pnt, gp_Vec
+    c = BRepAdaptor_CompCurve(skizze_draht(z))
+    u = c.FirstParameter() + float(anteil) * (c.LastParameter() - c.FirstParameter())
+    p, v = gp_Pnt(), gp_Vec()
+    c.D1(u, p, v)
+    n = np.array([v.X(), v.Y(), v.Z()])
+    return {"art": "ebene", "punkt": np.array([p.X(), p.Y(), p.Z()]), "normale": n / np.linalg.norm(n)}

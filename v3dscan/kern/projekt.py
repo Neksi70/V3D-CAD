@@ -39,6 +39,8 @@ class Projekt:
         self.skizzen = {}               # id -> {"id","name","sichtbar","ebene","ketten","schnitt",...} (JSON)
         self.naechste_skizze = 1
         self.referenzen = {}            # id -> {"id","name","sichtbar","art","punkt","normale"|"richtung"}
+        self.auswahlen = {}             # id -> {"id","name","scan","anzahl","maske"(b64)} gespeicherte Auswahl
+        self.naechste_auswahl = 1
         self.naechste_referenz = 1
 
     # --- Verwaltung ---------------------------------------------------------
@@ -75,6 +77,7 @@ class Projekt:
             "koerper": [k.zustand() for k in self.koerper.values()],
             "skizzen": [skizze_zustand(z) for z in self.skizzen.values()],
             "referenzen": list(self.referenzen.values()),
+            "auswahlen": [{k: v for k, v in a.items() if k != "maske"} for a in self.auswahlen.values()],
             "undo": self.undo[-1][0] if self.undo else None,
             "redo": self.redo[-1][0] if self.redo else None,
         }
@@ -262,6 +265,7 @@ class Projekt:
             k.shape = neu_shape
             k.verlauf = k.verlauf + [dict(eintrag, name=name)]
             k.rev += 1
+            k.basis_pruefen()
         self.grundkoerper_zaehler = nr
         return k
 
@@ -286,6 +290,7 @@ class Projekt:
             k.shape = neu_shape
             k.verlauf = k.verlauf + [dict(eintrag, name=name)]
             k.rev += 1
+            k.basis_pruefen()
         self.zaehler[typ_name] = nr
         return k
 
@@ -299,6 +304,7 @@ class Projekt:
         k.shape = shape
         k.verlauf = k.verlauf + [dict(eintrag or {}, name=name)]
         k.rev += 1
+        k.basis_pruefen()
         self.zaehler[typ_name] = nr
         return k
 
@@ -314,6 +320,7 @@ class Projekt:
         k.shape = shape
         k.verlauf = k.verlauf + [{"name": name, "typ": "kombination", "mit": b.id}]
         k.rev += 1
+        k.basis_pruefen()
         del self.koerper[b.id]
         self.zaehler["Kombination"] = nr
         return k
@@ -358,13 +365,14 @@ class Projekt:
             raise KeyError("Skizze %s gibt es nicht (mehr)." % sid)
 
     def skizze_hinzufuegen(self, daten):
-        nr = self.zaehler.get("Skizze", 0) + 1
-        name = "Skizze%d" % nr
+        typ = "3D-Skizze" if daten.get("art") == "3d" else "Skizze"
+        nr = self.zaehler.get(typ, 0) + 1
+        name = "%s%d" % (typ, nr)
         self._merke_koerper("%s erzeugt" % name)
         z = dict(daten, id=self.naechste_skizze, name=name, sichtbar=True, rev=1)
         self.skizzen[z["id"]] = z
         self.naechste_skizze += 1
-        self.zaehler["Skizze"] = nr
+        self.zaehler[typ] = nr
         return z
 
     def skizzen_hinzufuegen(self, liste, text):
@@ -441,6 +449,47 @@ class Projekt:
         self._merke_koerper("Referenz „%s“ entfernt" % r["name"])
         del self.referenzen[r["id"]]
 
+    def koerper_neu_rechnen(self, kid, text="neu aufgebaut"):
+        """Verlauf eines Koerpers neu rechnen (Rebuild) - ein Rueckgaengig-Schritt."""
+        from .verlauf import nachrechnen
+        k = self.koerper_holen(kid)
+        shape, n = nachrechnen(self, k)
+        self._merke_koerper("„%s“ %s" % (k.name, text))
+        k = self.koerper[k.id]
+        k.shape = shape
+        k.rev += 1
+        return k, n
+
+    def verlauf_schalten(self, kid, index, aus):
+        """Schritt index und alle folgenden aus- (aus=True, "Disable All Next") bzw. alle bis index
+        einschalten (aus=False, "Enable to Here"), dann neu rechnen."""
+        from .verlauf import nachrechnen
+        k = self.koerper_holen(kid)
+        if not 0 <= int(index) < len(k.verlauf):
+            raise ValueError("Schritt %s gibt es nicht." % index)
+        if k.basis and int(index) <= k.basis[0]:
+            raise ValueError("Dieser Schritt liegt vor einem festen Zwischenstand und lässt sich nicht ausschalten.")
+        neu = []
+        for i, e in enumerate(k.verlauf):
+            e = dict(e)
+            if aus and i >= int(index):
+                e["aus"] = True
+            elif not aus:
+                e["aus"] = i > int(index)
+            neu.append(e)
+        alt = k.verlauf
+        k.verlauf = neu
+        try:
+            shape, _ = nachrechnen(self, k)
+        finally:
+            k.verlauf = alt
+        self._merke_koerper("„%s“: Verlauf %s Schritt %d" % (k.name, "aus ab" if aus else "an bis", int(index) + 1))
+        k = self.koerper[k.id]
+        k.verlauf = neu
+        k.shape = shape
+        k.rev += 1
+        return k
+
     def koerper_hinzufuegen(self, shape, name, verlauf=None):
         """Fertigen Koerper uebernehmen (z. B. Import, Tests)."""
         from .koerper import Koerper
@@ -495,13 +544,18 @@ class Projekt:
                 info["koerper"] = []
                 for k in self.koerper.values():
                     info["koerper"].append({"id": k.id, "name": k.name, "sichtbar": k.sichtbar,
-                                            "verlauf": k.verlauf})
+                                            "verlauf": k.verlauf,
+                                            "basis": k.basis[0] if k.basis else None})
                     z.writestr("koerper_%d.brep" % k.id, brep_text(k.shape))
+                    if k.basis and k.basis[1] is not k.shape:
+                        z.writestr("koerper_%d_basis.brep" % k.id, brep_text(k.basis[1]))
                 info["naechster_koerper"] = self.naechster_koerper
                 info["grundkoerper_zaehler"] = self.grundkoerper_zaehler
             if self.skizzen:
                 info["skizzen"] = list(self.skizzen.values())
                 info["naechste_skizze"] = self.naechste_skizze
+            if self.auswahlen:
+                info["auswahlen"] = list(self.auswahlen.values())
             if self.referenzen:
                 info["referenzen"] = list(self.referenzen.values())
                 info["naechste_referenz"] = self.naechste_referenz
@@ -534,6 +588,11 @@ class Projekt:
                 for e in info["koerper"]:
                     k = Koerper(int(e["id"]), e["name"], aus_brep(z.read("koerper_%d.brep" % e["id"])),
                                 e.get("verlauf") or [], e.get("sichtbar", True))
+                    if e.get("basis") is not None:
+                        bn = "koerper_%d_basis.brep" % e["id"]
+                        k.basis = (int(e["basis"]), aus_brep(z.read(bn)) if bn in namen else k.shape)
+                    else:
+                        k.basis = None
                     p.koerper[k.id] = k
                 p.naechster_koerper = max([info.get("naechster_koerper", 1)] + [k + 1 for k in p.koerper])
                 p.grundkoerper_zaehler = int(info.get("grundkoerper_zaehler", 0))
@@ -541,6 +600,9 @@ class Projekt:
                 p.skizzen[int(z["id"])] = z
             p.naechste_skizze = max([info.get("naechste_skizze", 1)] + [k + 1 for k in p.skizzen])
             p.zaehler = dict(info.get("zaehler") or {})
+            for a in info.get("auswahlen") or []:
+                p.auswahlen[int(a["id"])] = a
+            p.naechste_auswahl = max([1] + [k + 1 for k in p.auswahlen])
             for r in info.get("referenzen") or []:
                 p.referenzen[int(r["id"])] = r
             p.naechste_referenz = max([info.get("naechste_referenz", 1)] + [k + 1 for k in p.referenzen])
@@ -549,6 +611,10 @@ class Projekt:
 
 def skizze_zustand(z):
     """Kurzfassung fuer die Oberflaeche (ohne Schnittpunkte)."""
+    if z.get("art") == "3d":
+        return {"id": z["id"], "name": z["name"], "sichtbar": z.get("sichtbar", True), "rev": z.get("rev", 1),
+                "art": "3d", "ketten": 1, "geschlossen": int(bool(z.get("geschlossen"))),
+                "elemente": len(z.get("punkte3d", []))}
     return {"id": z["id"], "name": z["name"], "sichtbar": z.get("sichtbar", True), "rev": z.get("rev", 1),
             "ketten": len(z.get("ketten", [])),
             "geschlossen": sum(1 for k in z.get("ketten", []) if k.get("geschlossen")),

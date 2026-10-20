@@ -41,11 +41,20 @@ class Koerper:
         self.sichtbar = sichtbar
         self.rev = rev
         self._cache = None          # (shape, {netz, volumen, groesse})
+        self.basis = None           # (index, shape): fester Zwischenstand des Verlaufs (siehe kern/verlauf.py)
+        self.basis_pruefen()
+
+    def basis_pruefen(self):
+        """Ist der letzte Schritt nicht nachrechenbar, wird das aktuelle Ergebnis zum festen Zwischenstand."""
+        from .verlauf import NACHRECHENBAR
+        if self.verlauf and self.verlauf[-1].get("typ") not in NACHRECHENBAR:
+            self.basis = (len(self.verlauf) - 1, self.shape)
 
     def kopie(self):
         k = Koerper(self.id, self.name, self.shape, [dict(v) for v in self.verlauf],
                     self.sichtbar, self.rev)
         k._cache = self._cache
+        k.basis = self.basis
         return k
 
     def daten(self):
@@ -58,7 +67,9 @@ class Koerper:
         d = self.daten()
         return {"id": self.id, "name": self.name, "sichtbar": self.sichtbar,
                 "dreiecke": int(len(d["netz"]["tri"])), "rev": self.rev,
-                "verlauf": [{"name": v["name"]} for v in self.verlauf],
+                "verlauf": [{"name": v["name"], "aus": bool(v.get("aus")),
+                             "fest": i <= (self.basis[0] if self.basis else -1)}
+                            for i, v in enumerate(self.verlauf)],
                 "volumen": round(d["volumen"], 3), "groesse": [round(x, 3) for x in d["groesse"]],
                 "flaeche": round(d.get("flaeche", 0.0), 3)}
 
@@ -520,9 +531,29 @@ def aus_brep(daten):
 FORMATE = {"step": ".step", "stp": ".step", "iges": ".igs", "igs": ".igs"}
 
 
+def stl_daten(shapes, fein=True):
+    """Koerper -> binaere STL (druckfertig, mm). Feine Vernetzung (Sehnenfehler ~0,003 mm an R10)."""
+    import struct
+    teile = [vernetzen(s, fein=fein) for s in shapes]
+    tris = []
+    for n in teile:
+        X = n["xyz"].astype(np.float32)
+        tris.append(X[n["tri"].astype(np.int64)])
+    T = np.concatenate(tris) if tris else np.zeros((0, 3, 3), np.float32)
+    nrm = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+    nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-20)
+    daten = np.zeros(len(T), dtype=[("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")])
+    daten["n"], daten["v"] = nrm, T
+    return struct.pack("<80sI", b"V3D Scan STL (mm)", len(T)) + daten.tobytes()
+
+
 def exportieren(shapes, fmt):
     """Liste von Shapes -> Dateiinhalt (bytes), Einheit mm."""
     fmt = (fmt or "step").lower()
+    if fmt == "stl":
+        if not shapes:
+            raise ValueError("Kein Körper zum Exportieren.")
+        return stl_daten(shapes)
     if fmt not in FORMATE:
         raise ValueError("Unbekanntes Format „%s“ (step oder iges)." % fmt)
     if not shapes:
