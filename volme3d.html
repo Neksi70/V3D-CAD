@@ -68601,8 +68601,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.220';
+const VOLME3D_VERSION = '1.18.221';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.221', date:'2026-10-20', changes:[
+    ['📌','<b>Motiv wieder anheften: sitzt wieder vor der Wand.</b> Wurde ein Motiv breiter gezogen, abgelöst und erneut an eine Fläche geheftet, rutschte es in die Wand und war unsichtbar – ein frisch hochgeladenes ging, ein schon benutztes wirkte „verseucht“. Jetzt zählt die echte Dicke: Das Motiv steckt wie gewohnt die halbe Grunddicke in der Wand, der Rest steht heraus, egal wie breit es gezogen wurde (danke Josy).'],
+  ]},
   { version:'1.18.220', date:'2026-10-20', changes:[
     ['🏷️','<b>BEGINNER heißt jetzt V3D-CAD.</b> Der Umschalter oben zeigt damit <b>V3D-CAD | V3D-SIONCAD | V3D-SHAPECAD</b>. V3D-CAD ist die gewohnte Oberfläche und bleibt der Standard; es ändert sich nur der Name.'],
   ]},
@@ -70810,11 +70813,19 @@ function _applySvgSnap(svgMesh, {obj, type, wrap}) {
     svgMesh.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(n, _keepAng));
   svgMesh.userData._svgFlaechenAng = _keepAng;   // für den nächsten Ortswechsel merken
 
-  // Tiefe aus userData (svgDepth in mm)
-  const depthMm = svgMesh.userData.svgDepth || 5;
-  const sc = svgMesh.scale.x || 1;
-  const normF = 2 / (svgMesh.userData.svgSize || 50);
-  const halfDepth = depthMm * normF * sc / 2;  // halbe Tiefe in Szene-Einheiten
+  // Lage zur Wand aus der echten Dicke entlang lokal Y (= Wandnormale): Die Rückseite
+  // steckt die halbe Grunddicke (svgDepth) in der Wand, der Rest steht heraus.
+  // Früher halbe Tiefe × scale.x — ein breiter gezogenes Motiv sackte damit beim
+  // (erneuten) Anheften in die Wand und war unsichtbar, frisch hochgeladen ging es
+  // („die SVG ist verseucht", Josy 20.10.).
+  const depthMm = Math.abs(svgMesh.userData.svgDepth || 5);
+  const _sg = svgMesh.geometry;
+  if (!_sg.boundingBox) _sg.computeBoundingBox();
+  const _sy = svgMesh.scale.y || 1;
+  const _rueckL = _sy > 0 ? _sg.boundingBox.min.y : _sg.boundingBox.max.y;
+  const _dicke = Math.abs((_sg.boundingBox.max.y - _sg.boundingBox.min.y) * _sy);
+  const _emb = Math.min(_dicke / 2, depthMm / 2 / _MM_PER_UNIT);
+  const halfDepth = _emb + _sy * _rueckL;   // Ursprung → Wand, entgegen der Normale
 
   // Ziel: in-plane zur MITTE der geklickten Fläche verschieben, der Normalen-
   // Abstand bleibt aber exakt wie am Klickpunkt (der sauber auf der Oberfläche
