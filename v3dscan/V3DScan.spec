@@ -43,10 +43,11 @@ ocp_binaries = [(OCP_PYD, "OCP")] + [_dll_ordner[_n] for _n in sorted(_gesehen)]
 a = Analysis(
     ["exe_start.py"],
     pathex=["."],
-    binaries=collect_dynamic_libs("open3d") + ocp_binaries,
+    binaries=collect_dynamic_libs("open3d") + collect_dynamic_libs("pynanoinstantmeshes") + ocp_binaries,
     datas=[("web", "web")],
     hiddenimports=["server", "kern", "kern.o3d", "kern.wolke", "kern.werkzeuge",
-                   "kern.registrierung", "kern.projekt", "kern.netz", "kern.formen", "kern.koordinaten", "kern.erkennung", "kern.koerper", "OCP", "open3d.visualization.draw_plotly",
+                   "kern.registrierung", "kern.projekt", "kern.netz", "kern.formen", "kern.koordinaten", "kern.erkennung", "kern.koerper", "kern.skizze", "kern.features",
+                   "kern.freiform", "pynanoinstantmeshes", "pynanoinstantmeshes._pynim", "OCP", "open3d.visualization.draw_plotly",
                    "open3d.visualization.to_mitsuba"] + open3d_module
                   + [m for m in collect_submodules("numpy") if ".tests" not in m],
     hookspath=[NUMPY_HOOKS],

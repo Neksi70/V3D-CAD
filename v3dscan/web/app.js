@@ -917,6 +917,7 @@ leinwand.addEventListener('pointerup', (ev) => {
   if (Math.hypot(x - klickStart[0], y - klickStart[1]) > 4) return;
   klickStart = null;
   if (WF.haupt && WF.haupt.id === 'w-kanten') { kanteKlick(x, y); return; }
+  if (WF.haupt && WF.haupt.id === 'w-schale') { flaecheKlick(x, y); return; }
   const erk = S.erkennung;
   if (!erk) return;
   const p = punktAn(x, y, erk.id);
@@ -1812,6 +1813,7 @@ async function koerperUebernehmen(liste) {
       if (k) koerperWeg(k);
       k = { ...koerperObjekt(d, 0xaeb4bc), meta: { ...meta, kid: meta.id } };
       k.kantenId = d.kanten_id ? b64Uint32(d.kanten_id) : null;
+      k.flaechenId = d.flaechen_id ? b64Uint32(d.flaechen_id) : null;
       koerperGruppe.add(k.gruppe);
       S.koerper.set(meta.id, k);
     }
@@ -1823,7 +1825,7 @@ async function koerperUebernehmen(liste) {
   verlaufZeichnen();
   gkZielFuellen();
   kaFuellen();
-  if (typeof featureAuswahlFuellen === 'function' && S.skizzen) { featureAuswahlFuellen(); knZeichnen(); }
+  if (typeof featureAuswahlFuellen === 'function' && S.skizzen) { featureAuswahlFuellen(); knZeichnen(); kwFuellen(); }
 }
 
 function koerperWaehlen(kid) {
@@ -2438,6 +2440,154 @@ async function knVorschlag() {
 }
 function knZurueck() { featVorschauWeg(); S.knKanten.clear(); knZeichnen(); }
 
+// --- Freiform + Körper-Werkzeuge (v0.8) ------------------------------------------------------
+S.scWahl = new Set();       // Schale: offene Flächen (Nummern)
+let scGruppe = null, afLinien = null;
+
+function kwAktiv() { return WF.haupt && WF.haupt.dataset.kw ? WF.haupt : null; }
+function kwFuellen() {
+  const ko = [...S.koerper.values()].map((k) => [k.meta.id, k.meta.name]);
+  $$('.kwKoerper').forEach((sel) => selectFuellen(sel, ko, sel.id === 'boB' || sel.id === 'beF' ? null : S.koerperAktiv));
+  // zweite Auswahl moeglichst auf einen anderen Koerper stellen
+  for (const [a, b] of [['#boA', '#boB'], ['#beK', '#beF']]) {
+    if ($(a).value === $(b).value && ko.length > 1) {
+      const anders = ko.find(([v]) => String(v) !== $(a).value);
+      if (anders) $(b).value = anders[0];
+    }
+  }
+  const scans = S.zustand ? S.zustand.scans.filter((x) => x.dreiecke > 0) : [];
+  selectFuellen($('#afScan'), scans.map((x) => [x.id, `${x.name} (${x.dreiecke.toLocaleString('de-DE')} Dreiecke)`]), S.aktiv);
+}
+$('#muArt').addEventListener('change', () => {
+  $('.muLinear').hidden = $('#muArt').value !== 'linear';
+  $('.muKreis').hidden = $('#muArt').value === 'linear';
+});
+const zahl3 = (a, b, c) => [Number($(a).value) || 0, Number($(b).value) || 0, Number($(c).value) || 0];
+function kwParameter(was) {
+  const kid = (id) => {
+    const v = Number($(id).value);
+    if (!S.koerper.has(v)) throw new Error('Erst einen Körper erzeugen.');
+    return v;
+  };
+  switch (was) {
+    case 'bool': return { kid: kid('#boA'), kid2: kid('#boB'), art: $('#boArt').value };
+    case 'verschieben': return { kid: kid('#vsK'), versatz: zahl3('#vsX', '#vsY', '#vsZ'), drehung: zahl3('#vsRX', '#vsRY', '#vsRZ'), kopie: $('#vsKopie').checked };
+    case 'spiegeln': return { kid: kid('#spK'), ebene: $('#spEbene').value, durch: $('#spDurch').value, vereinen: $('#spVereinen').checked };
+    case 'muster': return { kid: kid('#muK'), art: $('#muArt').value, anzahl: Number($('#muAnzahl').value) || 3,
+      versatz: zahl3('#muX', '#muY', '#muZ'), achse: $('#muAchse').value, winkel: Number($('#muWinkel').value) || 360 };
+    case 'schale': return { kid: kid('#scK'), dicke: Number($('#scDicke').value) || 2, flaechen: [...S.scWahl] };
+    case 'aufdicken': return { kid: kid('#adK'), dicke: Number($('#adDicke').value) || 2 };
+    case 'schneiden_flaeche': return { kid: kid('#beK'), fid: kid('#beF'), behalten: $('#beSeite').value };
+  }
+  throw new Error('Unbekanntes Werkzeug');
+}
+function kwInfoText(info) {
+  const t = [];
+  if (info.volumen !== undefined) t.push(`Volumen ${zahlText(info.volumen, 1)} mm³`);
+  if (info.flaeche !== undefined) t.push(`Oberfläche ${zahlText(info.flaeche, 1)} mm²`);
+  return t.join(' · ');
+}
+async function kwVorschau() {
+  const h = kwAktiv(); if (!h) return;
+  const j = await api('feature/' + h.dataset.kw, { ...kwParameter(h.dataset.kw), vorschau: true }, 'Baue Vorschau…');
+  featVorschauZeigen(j.vorschau);
+  h.querySelector('.kwInfo').textContent = 'Vorschau: ' + kwInfoText(j.info);
+}
+async function kwAnwenden() {
+  const h = kwAktiv(); if (!h) return;
+  const j = await api('feature/' + h.dataset.kw, kwParameter(h.dataset.kw), 'Wende an…');
+  featVorschauWeg();
+  h.querySelector('.kwInfo').textContent = '';
+  if (j.koerper !== undefined) S.koerperAktiv = j.koerper;
+  for (const k of S.koerper.values()) koerperDarstellung(k);
+  koerperListeZeichnen(); verlaufZeichnen();
+  if (h.id === 'w-schale') { S.scWahl.clear(); scZeichnen(); }
+  meldung((h.dataset.titel || 'Werkzeug') + ' angewendet.', 'ok');
+}
+function kwZurueck() {
+  featVorschauWeg();
+  if (afLinien) { objektEntsorgen(afLinien); afLinien = null; }
+  document.querySelectorAll('.kwInfo').forEach((e) => { e.textContent = ''; });
+  $('#flInfo').textContent = '';
+  S.scWahl.clear(); scZeichnen();
+}
+
+// Schale: Flächen per Klick wählen (Dreieck -> Flächen-Nummer)
+function scZeichnen() {
+  objektEntsorgen(scGruppe); scGruppe = null;
+  const k = S.koerper.get(Number($('#scK').value));
+  const info = WF.haupt && WF.haupt.id === 'w-schale' ? WF.haupt.querySelector('.kwInfo') : null;
+  if (info) info.textContent = S.scWahl.size ? `${S.scWahl.size} Fläche(n) bleiben offen.` : 'Keine Fläche gewählt → geschlossen hohl.';
+  if (!k || !S.scWahl.size || !k.flaechenId) return;
+  const pos = k.flaeche.geometry.getAttribute('position').array, idx = k.flaeche.geometry.index.array;
+  const wahl = [];
+  for (let t = 0; t < k.flaechenId.length; t++) if (S.scWahl.has(k.flaechenId[t])) for (let e = 0; e < 3; e++) wahl.push(...pos.slice(idx[t * 3 + e] * 3, idx[t * 3 + e] * 3 + 3));
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(wahl), 3));
+  scGruppe = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xf08a1c, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthTest: false }));
+  scGruppe.renderOrder = 6;
+  hilfsGruppe.add(scGruppe);
+}
+function flaecheKlick(x, y) {
+  const k = S.koerper.get(Number($('#scK').value));
+  if (!k || !k.flaechenId) return;
+  const r = new THREE.Raycaster();
+  r.setFromCamera(new THREE.Vector2(x / leinwand.clientWidth * 2 - 1, -(y / leinwand.clientHeight) * 2 + 1), kamera);
+  const t = r.intersectObject(k.flaeche, false)[0];
+  if (!t) { status('Keine Fläche des Körpers an dieser Stelle.'); return; }
+  const id = k.flaechenId[t.faceIndex];
+  if (S.scWahl.has(id)) S.scWahl.delete(id); else S.scWahl.add(id);
+  featVorschauWeg();
+  scZeichnen();
+}
+$('#scK').addEventListener('change', () => { S.scWahl.clear(); scZeichnen(); });
+
+// Automatische Flächen
+async function afVorschau() {
+  const id = Number($('#afScan').value);
+  if (!S.scans.has(id)) throw new Error('Erst ein Dreiecksnetz laden (oder Punktwolke vernetzen).');
+  const j = await api('freiform/auto', { id, flaechen: Number($('#afAnzahl').value) || 400, kantenwinkel: Number($('#afKante').value) || 0, vorschau: true }, 'Lege Vierecksnetz…');
+  if (afLinien) objektEntsorgen(afLinien);
+  const pos = b64.float32(j.linien);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  afLinien = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x1f5fd0 }));
+  hilfsGruppe.add(afLinien);
+  $('#afInfo').textContent = `${j.vierecke} Vierecke – so viele Flächen entstehen.`;
+}
+async function afAnwenden() {
+  const id = Number($('#afScan').value);
+  if (!S.scans.has(id)) throw new Error('Erst ein Dreiecksnetz laden (oder Punktwolke vernetzen).');
+  const j = await api('freiform/auto', { id, flaechen: Number($('#afAnzahl').value) || 400, raster: Number($('#afRaster').value) || 7,
+    kantenwinkel: Number($('#afKante').value) || 0 }, 'Erzeuge Flächen…');
+  if (afLinien) { objektEntsorgen(afLinien); afLinien = null; }
+  const i = j.info;
+  $('#afInfo').innerHTML = `${i.vierecke} Flächen in ${zahlText(i.dauer, 1)} s · ${i.geschlossen ? '<b>geschlossener Volumenkörper</b>' : `offene Fläche (${i.freie_kanten} freie Kanten)`}<br>
+    Abweichung zum Scan: Median ${zahlText(i.median, 3)} · 95 % unter ${zahlText(i.p95, 3)} · max ${zahlText(i.max, 3)} mm` +
+    (i.p95 > 0.2 ? '<br><span class="offen">Grob – mehr Flächen wählen.</span>' : '');
+  S.koerperAktiv = j.koerper;
+  for (const k of S.koerper.values()) koerperDarstellung(k);
+  koerperListeZeichnen(); verlaufZeichnen();
+  meldung('Freiform-Körper erzeugt.', 'ok');
+}
+async function flVorschau() {
+  const masken = auswahlMasken();
+  if (!Object.keys(masken).length) throw new Error('Erst Punkte auswählen (Rechteck oder Lasso).');
+  const j = await api('freiform/flaeche', { masken, verlaengern: Number($('#flVerl').value) || 0, raster: Number($('#flRaster').value) || 0, vorschau: true }, 'Passe Fläche ein…');
+  featVorschauZeigen(j.vorschau);
+  $('#flInfo').textContent = `${j.info.punkte.toLocaleString('de-DE')} Punkte · Raster ${j.info.raster.join(' × ')} · Abweichung Median ${zahlText(j.info.median, 3)}, 95 % unter ${zahlText(j.info.p95, 3)} mm`;
+}
+async function flAnwenden() {
+  const masken = auswahlMasken();
+  if (!Object.keys(masken).length) throw new Error('Erst Punkte auswählen (Rechteck oder Lasso).');
+  const j = await api('freiform/flaeche', { masken, verlaengern: Number($('#flVerl').value) || 0, raster: Number($('#flRaster').value) || 0 }, 'Erzeuge Fläche…');
+  featVorschauWeg();
+  S.koerperAktiv = j.koerper;
+  for (const k of S.koerper.values()) koerperDarstellung(k);
+  koerperListeZeichnen(); verlaufZeichnen();
+  meldung('Fläche erzeugt – z. B. „Mit Fläche schneiden“ oder „Aufdicken“.', 'ok');
+}
+
 // --- Abweichung Scan <-> Koerper --------------------------------------------------
 function kaFuellen() {
   const scans = S.zustand ? S.zustand.scans : [];
@@ -2793,6 +2943,14 @@ const AKTIONEN = {
   knAnwenden: { text: 'Kanten runden/fasen', fn: knAnwenden },
   knVorschlag: { text: 'Radius aus Scan', fn: knVorschlag },
   knZurueck: { text: '', fn: knZurueck },
+  kwVorschau: { text: 'Vorschau', fn: kwVorschau },
+  kwAnwenden: { text: 'Anwenden', fn: kwAnwenden },
+  kwZurueck: { text: '', fn: kwZurueck },
+  afVorschau: { text: 'Automatische Flächen: Vorschau', fn: afVorschau },
+  afAnwenden: { text: 'Automatische Flächen', fn: afAnwenden },
+  afZurueck: { text: '', fn: kwZurueck },
+  flVorschau: { text: 'Fläche aus Auswahl: Vorschau', fn: flVorschau },
+  flAnwenden: { text: 'Fläche aus Auswahl', fn: flAnwenden },
   kaAus: { text: 'Abweichungskarte aus', fn: kaAus },
   koerperStep: { text: 'Körper als STEP exportieren', fn: () => koerperExport('step') },
   koerperIges: { text: 'Körper als IGES exportieren', fn: () => koerperExport('iges') },
@@ -2941,6 +3099,8 @@ function werkzeugOeffnen(liste, knopf = null) {
   if (haupt && haupt.id === 'w-skizze') skFelderZeigen();
   if (haupt && haupt.id === 'w-extrudieren') $('#exLaengeReihe').hidden = $('#exModus').value === 'auto';
   if (haupt && haupt.id === 'w-kanten') knZeichnen();
+  if (haupt && (haupt.dataset.kw || haupt.id === 'w-auto-flaechen' || haupt.id === 'w-flaeche')) kwFuellen();
+  if (haupt && haupt.id === 'w-schale') scZeichnen();
 }
 
 function werkzeugSchliessen(zuruecksetzen = true) {

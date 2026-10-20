@@ -2,7 +2,7 @@
 
 Windows-Programm zum Nachbearbeiten von 3D-Scans (Punktwolken), gedacht für
 Exporte aus Revo Scan (Revopoint MIRACO/POP) und CrealityScan (PiKa).
-Stand 0.7.0 = Querschnitt-Skizze → Extrudieren/Drehen → Runden/Fasen (MODELL, Etappen D/E) + Abweichung Scan ↔ Körper (Etappe F) + Oberfläche nach Arbeitsschritten (Design-X-Vorbild, siehe docs/designx-bauplan.md) +
+Stand 0.8.0 = Freiform (automatische Flächen, Fläche aus Auswahl, Beschneiden, Aufdicken) + Körper-Werkzeuge (Verknüpfen, Verschieben/Kopie, Spiegeln, Muster, Schale) + Querschnitt-Skizze → Extrudieren/Drehen → Runden/Fasen (MODELL, Etappen D/E) + Abweichung Scan ↔ Körper (Etappe F) + Oberfläche nach Arbeitsschritten (Design-X-Vorbild, siehe docs/designx-bauplan.md) +
 Körper (Grundkörper aus Bereich, Vereinen/Abziehen, STEP/IGES) + Punktwolke (Grundgerüst, Bereinigen, Zusammenführen) + Scan→CAD Etappe 1
 (Netzbearbeitung), Etappe 2 (Ausrichten am Koordinatensystem), Etappe 3 (Geometrieerkennung). Ziel: Scan → Geometrieerkennung → parametrisches CAD → STEP/IGES,
 Geometriekern dafür wird OpenCASCADE (OCP) – Entscheidung des Users 14.09.2026 (Variante A).
@@ -32,6 +32,16 @@ Geometriekern dafür wird OpenCASCADE (OCP) – Entscheidung des Users 14.09.202
 - `kern/features.py` Profil (Außen-/Innenkonturen) → Extrusion (Länge/symmetrisch/bis Scan = Tiefe der Scanpunkte im
   Profil), Drehung (Profil an der Achse auf eine Seite beschnitten), Rundung/Fase an Kanten (Nummern = TopExp-Map,
   im Anzeige-Netz je Kantensegment mitgeliefert), Radius-Vorschlag aus erkannten Rundungen
+- `kern/freiform.py` Automatische Flächen: Instant Meshes (pynanoinstantmeshes, BSD) → reines Vierecksnetz;
+  Kanten auf den Scan gelegt (Strahl entlang der Normale, sonst springt der nächste Punkt an engen Krümmungen auf die
+  Gegenseite), von beiden Nachbarn geteilt; je Viereck Coons-Raster auf den Scan → bikubische Interpolation mit
+  gleichmäßiger Parametrisierung (gleiche Randpunkte ⇒ identische Randkurven, C0 dicht) → Nähen → Volumenkörper.
+  Fläche aus Auswahl: Höhenraster über der Ausgleichsebene (lokale quadratische Passung je Knoten), über den Rand
+  linear fortgesetzt (GeomLib.ExtendSurfByLength gibt in OCP das Ergebnis nicht zurück!), Beschneiden per Halbraum.
+- `kern/features.py` zusätzlich Körper verknüpfen (vereinen/abziehen/Schnittmenge), Verschieben/Drehen/Kopie,
+  Spiegeln, lineares/Kreis-Muster, Schale (offene Flächen per Klick, sonst geschlossen hohl), Aufdicken
+- Vernetzen: unbeschnittene B-Spline-Flächen über ein eigenes Parameterraster (BRepMesh brauchte für eine
+  Freiform-Fläche bei Messtoleranz 216 s, jetzt 0,5 s); Kennwerte adaptiv (eps 1e-5) statt fester Integration
 - `server.py` lokaler Dienst (nur 127.0.0.1, Port 8797), JSON-Befehle + binäre Punktdaten
 - `kern/koerper.py` OCP-Körper: Grundkörper aus erkanntem Bereich (Zylinder/Kugel/Kegel, Nennmaß, Verlängern),
   Vereinen/Abziehen, Vernetzen für die Anzeige (Flächen + B-Rep-Kanten), BRep im Projekt, STEP/IGES,
@@ -69,6 +79,9 @@ wegfallenden Punkte rot, erst „Anwenden“ ändert Daten (rückgängig machbar
 - `python3 tests/test_skizze.py` Skizze/Extrusion/Drehung/Runden gegen Sollteile (Platte R5+Ø12 als Netz und Wolke,
   Welle Ø20/Ø12), Bearbeiten, Speichern, Server-Ablauf mit Rückgängig
 - `python3 tests/test_oberflaeche_skizze.py` MODELL-Werkzeuge per Klick (Kante mit echter Maus gewählt)
+- `python3 tests/test_freiform.py` Torus → geschlossener Körper (Volumen ±0,2 %, 95 % unter 0,02 mm), verrauscht,
+  offene Kuppel, Wellenfläche + Beschneiden gegen ∫, Verknüpfen/Spiegeln/Muster/Schale/Aufdicken mit Sollvolumen
+- `python3 tests/test_oberflaeche_freiform.py` Freiform + Körper-Werkzeuge per Klick
 - `python3 tests/test_abweichung.py` Abweichung Scan ↔ Körper gegen Sollwerte (±0,1/0,2/0,3 mm, 1e-4 genau; 1 Mio Punkte < 10 s)
 - `python3 tests/test_oberflaeche_abweichung.py` MODELL → Abweichung: Farben (grün im Toleranzband, grau ohne Gegenstück), Kennwerte, Legende
 - UI-Tests öffnen Werkzeuge wie ein Nutzer über das Menüband (Helfer `oeffne(band, id)`)
@@ -83,7 +96,8 @@ Einmalige Einrichtung:
    **Ubuntu-Wine 6 geht nicht**: Open3D ruft `fetestexcept` aus der UCRT, Wine 6 bricht ab.
 2. Prefix `~/.wine-v3dscan` (`wineboot -u`), darin `C:\Py311e` = Python 3.11 embeddable mit
    PyInstaller 5.13 (Kopie aus `~/.wine-volmestick`).
-3. Wheels für win_amd64/cp311 laden und nach `Lib\site-packages` **entpacken** (kein pip):
+3. Wheels für win_amd64/cp311 laden und nach `Lib\site-packages` **entpacken** (kein pip) – seit 0.8.0 auch
+   `pynanoinstantmeshes-0.0.3-cp311-cp311-win_amd64.whl` (Instant Meshes, BSD; `include/` und `lib/` weglassen):
    `pip3 download --platform win_amd64 --python-version 3.11 --only-binary=:all: --no-deps open3d==0.19.0 numpy`
 
 Fallen beim Build:

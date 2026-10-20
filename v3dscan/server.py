@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
-FASSUNG = "0.7.0"
+FASSUNG = "0.8.0"
 HIER = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, "frozen", False):
     HIER = getattr(sys, "_MEIPASS", HIER)
@@ -32,6 +32,7 @@ WEB = os.path.join(HIER, "web")
 
 from kern import erkennung as er  # noqa: E402
 from kern import formen as fo  # noqa: E402
+from kern import freiform as ff  # noqa: E402
 from kern import koerper as kp  # noqa: E402
 from kern import koordinaten as ko  # noqa: E402
 from kern import netz as nz  # noqa: E402
@@ -319,6 +320,8 @@ def befehl(name, d):
         return koerper_befehl(name.split("/", 1)[1], d)
     if name.startswith("skizze/"):
         return skizze_befehl(name.split("/", 1)[1], d)
+    if name.startswith("freiform/"):
+        return freiform_befehl(name.split("/", 1)[1], d)
     if name.startswith("feature/"):
         return feature_befehl(name.split("/", 1)[1], d)
 
@@ -401,7 +404,8 @@ def _b64(arr, typ):
 def netz_json(netz):
     return {"xyz": _b64(netz["xyz"], np.float32), "tri": _b64(netz["tri"], np.uint32),
             "kanten": _b64(netz["kanten"], np.float32),
-            "kanten_id": _b64(netz.get("kanten_id", np.zeros(0)), np.uint32)}
+            "kanten_id": _b64(netz.get("kanten_id", np.zeros(0)), np.uint32),
+            "flaechen_id": _b64(netz.get("flaechen_id", np.zeros(0)), np.uint32)}
 
 
 def _element(d):
@@ -641,6 +645,8 @@ def feature_befehl(was, d):
         typ = "Fase" if was == "fasen" else "Rundung"
         p.koerper_aendern(k.id, neu, typ, {"typ": was, "kanten": kanten, "radius": zahl(d, "radius", 1)})
         return {"koerper": k.id}
+    if was in ("bool", "verschieben", "spiegeln", "muster", "schale", "aufdicken", "schneiden_flaeche"):
+        return _koerper_werkzeug(was, d)
     if was == "radius_vorschlag":
         k = p.koerper_holen(d["kid"])
         elemente = []
@@ -649,6 +655,99 @@ def feature_befehl(was, d):
         r = sk_feat.radius_vorschlag(k.shape, [int(x) for x in d.get("kanten") or []], elemente)
         return {"radius": None if r is None else round(r, 3)}
     raise Fehler("Unbekannter Feature-Befehl %s" % was)
+
+
+def _koerper_werkzeug(was, d):
+    p = projekt
+    k = p.koerper_holen(d["kid"])
+    vorschau = bool(d.get("vorschau"))
+
+    def antwort(shape, eintrag, typ, neu=False):
+        info = {k_: round(v, 3) for k_, v in kp.kennwerte(shape).items() if k_ != "groesse"}
+        if vorschau:
+            return {"vorschau": netz_json(kp.vernetzen(shape)), "info": info}
+        if neu:
+            erg = p.feature(shape, typ, "neu", None, eintrag)
+        else:
+            erg = p.koerper_aendern(k.id, shape, typ, eintrag)
+        return {"koerper": erg.id, "info": info}
+
+    if was == "bool":
+        b = p.koerper_holen(d["kid2"])
+        art = d.get("art", "vereinen")
+        if art not in ("vereinen", "abziehen", "schneiden"):
+            raise Fehler("Unbekannte Verknüpfung „%s“." % art)
+        shape = sk_feat.koerper_bool(k.shape, b.shape, art)
+        if vorschau:
+            return antwort(shape, None, None)
+        text = {"vereinen": "vereint mit", "abziehen": "minus", "schneiden": "geschnitten mit"}[art]
+        erg = p.koerper_kombinieren(k.id, b.id, shape, text)
+        return {"koerper": erg.id}
+    if was == "verschieben":
+        shape = sk_feat.verschieben(k.shape, d.get("versatz") or (0, 0, 0), d.get("drehung") or (0, 0, 0))
+        if d.get("kopie"):
+            return antwort(shape, {"typ": "kopie", "von": k.id}, "Kopie", neu=True)
+        return antwort(shape, {"typ": "verschieben", "versatz": d.get("versatz"), "drehung": d.get("drehung")},
+                       "Verschieben")
+    if was == "spiegeln":
+        shape = sk_feat.spiegeln(k.shape, d.get("ebene", "yz"), d.get("durch", "mitte"), bool(d.get("vereinen", True)))
+        return antwort(shape, {"typ": "spiegeln", "ebene": d.get("ebene")}, "Spiegeln")
+    if was == "muster":
+        shape = sk_feat.muster(k.shape, d.get("art", "linear"), int(zahl(d, "anzahl", 3)),
+                               d.get("versatz") or (10, 0, 0), d.get("achse", "z"), zahl(d, "winkel", 360),
+                               d.get("punkt") or (0, 0, 0))
+        return antwort(shape, {"typ": "muster", "art": d.get("art"), "anzahl": zahl(d, "anzahl", 3)}, "Muster")
+    if was == "schale":
+        shape = sk_feat.schale(k.shape, zahl(d, "dicke", 2), [int(x) for x in d.get("flaechen") or []])
+        return antwort(shape, {"typ": "schale", "dicke": zahl(d, "dicke", 2)}, "Schale")
+    if was == "aufdicken":
+        shape = sk_feat.aufdicken(k.shape, zahl(d, "dicke", 2))
+        return antwort(shape, {"typ": "aufdicken", "von": k.id, "dicke": zahl(d, "dicke", 2)}, "Aufdickung", neu=True)
+    if was == "schneiden_flaeche":
+        f = p.koerper_holen(d["fid"])
+        from OCP.TopAbs import TopAbs_FACE
+        from OCP.TopExp import TopExp_Explorer
+        ex = TopExp_Explorer(f.shape, TopAbs_FACE)
+        if not ex.More():
+            raise Fehler("„%s“ enthält keine Fläche." % f.name)
+        shape = ff.koerper_schneiden(k.shape, ex.Current(), d.get("behalten", "unten"))
+        return antwort(shape, {"typ": "beschneiden", "flaeche": f.id, "behalten": d.get("behalten")}, "Beschnitt")
+    raise Fehler("Unbekanntes Werkzeug %s" % was)
+
+
+def freiform_befehl(was, d):
+    p = projekt
+    if was == "auto":
+        s = p.scan(d["id"])
+        if s.tri is None or not len(s.tri):
+            raise Fehler("Die automatische Flächenrückführung braucht ein Dreiecksnetz – "
+                         "Punktwolke erst vernetzen (POLYGONE → Netz aus Punktwolke).")
+        flaechen = int(zahl(d, "flaechen", 400))
+        if d.get("vorschau"):
+            V, F = ff.quad_netz(s.xyz, s.tri, flaechen, zahl(d, "kantenwinkel", 0))
+            seg = np.stack([V[F], V[np.roll(F, -1, axis=1)]], 2).reshape(-1, 2, 3)
+            return {"vierecke": int(len(F)), "linien": _b64(seg, np.float32)}
+        shape, info = ff.auto_flaechen(s.xyz, s.tri, flaechen, int(zahl(d, "raster", 7)), zahl(d, "kantenwinkel", 0))
+        info.pop("quad", None)
+        # Guete: Stichprobe der Scanpunkte gegen die Flaechen
+        rng = np.random.default_rng(0)
+        idx = rng.choice(len(s.xyz), min(len(s.xyz), 20000), replace=False)
+        w = np.abs(kp.abweichung([shape], s.xyz[idx]))
+        info.update({"median": round(float(np.median(w)), 4), "p95": round(float(np.percentile(w, 95)), 4),
+                     "max": round(float(w.max()), 4)})
+        k = p.feature(shape, "Freiform", "neu", None, {"typ": "freiform", "scan": s.id, "flaechen": flaechen})
+        return {"koerper": k.id, "info": info}
+    if was == "flaeche":
+        P, _ = _gewaehlte_punkte(d)
+        face, info = ff.flaeche_einpassen(P, int(zahl(d, "raster", 0)) or None, zahl(d, "verlaengern", 10) / 100.0,
+                                          int(zahl(d, "glaettung", 0)))
+        w = np.abs(kp.abweichung([face], P))
+        info.update({"median": round(float(np.median(w)), 4), "p95": round(float(np.percentile(w, 95)), 4)})
+        if d.get("vorschau"):
+            return {"vorschau": netz_json(kp.vernetzen(face)), "info": info}
+        k = p.feature(face, "Fläche", "neu", None, {"typ": "flaeche", "punkte": int(len(P))})
+        return {"koerper": k.id, "info": info}
+    raise Fehler("Unbekannter Freiform-Befehl %s" % was)
 
 
 def _zusammenfassung_neu(erk):

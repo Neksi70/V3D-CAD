@@ -296,6 +296,22 @@ class Projekt:
         self.zaehler[typ_name] = nr
         return k
 
+    def koerper_kombinieren(self, kid, kid2, shape, art_text):
+        """Koerper kid bekommt das Ergebnis, kid2 faellt weg - ein Verlaufsschritt."""
+        a, b = self.koerper_holen(kid), self.koerper_holen(kid2)
+        if a.id == b.id:
+            raise ValueError("Bitte zwei verschiedene Körper wählen.")
+        nr = self.zaehler.get("Kombination", 0) + 1
+        name = "Kombination%d (%s %s)" % (nr, art_text, b.name)
+        self._merke_koerper("%s → %s" % (name, a.name))
+        k = self.koerper[a.id]
+        k.shape = shape
+        k.verlauf = k.verlauf + [{"name": name, "typ": "kombination", "mit": b.id}]
+        k.rev += 1
+        del self.koerper[b.id]
+        self.zaehler["Kombination"] = nr
+        return k
+
     # --- Skizzen ---------------------------------------------------------------
     def skizze_holen(self, sid):
         try:

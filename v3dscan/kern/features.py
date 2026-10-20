@@ -283,3 +283,162 @@ def radius_vorschlag(shape, kanten, elemente):
     if not vorschlaege:
         return None
     return float(np.median(vorschlaege))
+
+
+# --- Koerper-Werkzeuge (QuickSurface CAD-Reiter) -----------------------------------------------------
+def koerper_bool(a, b, art):
+    """art: vereinen | abziehen | schneiden (Schnittmenge)."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+    from . import koerper as kp
+    if art == "schneiden":
+        op = BRepAlgoAPI_Common(a, b)
+        if not op.IsDone():
+            raise ValueError("Schnittmenge ist fehlgeschlagen.")
+        erg = op.Shape()
+    else:
+        erg = kp.boolean(a, b, art)
+    if kp.kennwerte(erg)["volumen"] < 1e-6:
+        raise ValueError("Ergebnis ist leer – berühren sich die Körper überhaupt?")
+    return erg
+
+
+def _trsf_anwenden(shape, t, kopie=True):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    return BRepBuilderAPI_Transform(shape, t, kopie).Shape()
+
+
+def verschieben(shape, versatz=(0, 0, 0), drehung=(0, 0, 0), mitte=None):
+    """Verschieben (mm) und um die Koerpermitte drehen (Grad, X dann Y dann Z)."""
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+    m = np.asarray(mitte if mitte is not None else _mitte(shape), float)
+    erg = shape
+    for achse, w in zip(((1, 0, 0), (0, 1, 0), (0, 0, 1)), drehung):
+        if abs(w) > 1e-9:
+            t = gp_Trsf()
+            t.SetRotation(gp_Ax1(gp_Pnt(*m), gp_Dir(*achse)), math.radians(float(w)))
+            erg = _trsf_anwenden(erg, t)
+    if any(abs(x) > 1e-12 for x in versatz):
+        t = gp_Trsf()
+        t.SetTranslation(gp_Vec(*map(float, versatz)))
+        erg = _trsf_anwenden(erg, t)
+    return erg
+
+
+def _mitte(shape):
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    b = Bnd_Box()
+    BRepBndLib.Add_s(shape, b)
+    x0, y0, z0, x1, y1, z1 = b.Get()
+    return [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2]
+
+
+def spiegeln(shape, ebene="yz", durch="mitte", vereinen=True):
+    """Spiegeln an einer Weltebene durch den Ursprung oder die Koerpermitte;
+    vereinen=True haengt die gespiegelte Kopie an (symmetrische Teile)."""
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf
+    n = {"yz": (1, 0, 0), "xz": (0, 1, 0), "xy": (0, 0, 1)}[ebene]
+    p = _mitte(shape) if durch == "mitte" else [0.0, 0.0, 0.0]
+    t = gp_Trsf()
+    t.SetMirror(gp_Ax2(gp_Pnt(*map(float, p)), gp_Dir(*n)))
+    gespiegelt = _trsf_anwenden(shape, t)
+    if not vereinen:
+        return gespiegelt
+    from . import koerper as kp
+    return kp.boolean(shape, gespiegelt, "vereinen")
+
+
+def muster(shape, art="linear", anzahl=3, versatz=(10, 0, 0), achse="z", winkel=360.0, punkt=(0, 0, 0)):
+    """Lineares Muster (Schritt = versatz) oder Kreismuster um eine Weltachse durch punkt.
+    Kopien werden mit dem Original vereint."""
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+    from . import koerper as kp
+    anzahl = int(anzahl)
+    if anzahl < 2:
+        raise ValueError("Ein Muster braucht mindestens 2 Exemplare.")
+    erg = shape
+    for i in range(1, anzahl):
+        t = gp_Trsf()
+        if art == "linear":
+            t.SetTranslation(gp_Vec(*[float(x) * i for x in versatz]))
+        else:
+            d = {"x": (1, 0, 0), "y": (0, 1, 0), "z": (0, 0, 1)}[achse]
+            schritt = float(winkel) / (anzahl if abs(float(winkel) - 360) < 1e-6 else anzahl - 1)
+            t.SetRotation(gp_Ax1(gp_Pnt(*map(float, punkt)), gp_Dir(*d)), math.radians(schritt * i))
+        erg = kp.boolean(erg, _trsf_anwenden(shape, t), "vereinen")
+    return erg
+
+
+def flaechen_karte(shape):
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+    m = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_FACE, m)
+    return m
+
+
+def schale(shape, dicke, offene_flaechen=()):
+    """Volumenkoerper aushoehlen (Wandstaerke dicke nach innen); offene_flaechen = Nummern
+    (flaechen_karte, 1-basiert) der Flaechen, die wegfallen (Oeffnung). Ohne: geschlossen hohl."""
+    from OCP.BRepOffset import BRepOffset_Skin
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeThickSolid
+    from OCP.GeomAbs import GeomAbs_Intersection
+    from OCP.TopTools import TopTools_ListOfShape
+    from OCP.TopoDS import TopoDS
+    if dicke <= 0:
+        raise ValueError("Wandstärke muss größer 0 sein.")
+    m = flaechen_karte(shape)
+    liste = TopTools_ListOfShape()
+    for i in offene_flaechen:
+        if not 1 <= int(i) <= m.Extent():
+            raise ValueError("Fläche %s gibt es nicht (mehr)." % i)
+        liste.Append(TopoDS.Face_s(m.FindKey(int(i))))
+    if liste.Size() == 0:
+        # geschlossen hohl: innen versetzte Haut abziehen
+        from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffsetShape
+        off = BRepOffsetAPI_MakeOffsetShape()
+        off.PerformByJoin(shape, -float(dicke), 1e-4, BRepOffset_Skin, False, False, GeomAbs_Intersection)
+        if not off.IsDone():
+            raise ValueError("Aushöhlen mit %s mm ist nicht möglich." % dicke)
+        innen = off.Shape()
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+        from OCP.TopAbs import TopAbs_SHELL
+        from OCP.TopExp import TopExp_Explorer
+        ex = TopExp_Explorer(innen, TopAbs_SHELL)
+        if not ex.More():
+            raise ValueError("Aushöhlen mit %s mm ist nicht möglich." % dicke)
+        kern_ = BRepBuilderAPI_MakeSolid(TopoDS.Shell_s(ex.Current())).Solid()
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+        erg = BRepAlgoAPI_Cut(shape, kern_).Shape()
+    else:
+        mk = BRepOffsetAPI_MakeThickSolid()
+        mk.MakeThickSolidByJoin(shape, liste, -float(dicke), 1e-4, BRepOffset_Skin, False, False,
+                                GeomAbs_Intersection)
+        try:
+            mk.Build()
+        except Exception:
+            pass
+        if not mk.IsDone():
+            raise ValueError("Schale mit %s mm ist hier nicht möglich (zu dick oder Freiform?)." % dicke)
+        erg = mk.Shape()
+    from . import koerper as kp
+    if kp.kennwerte(erg)["volumen"] <= 1e-6 or kp.kennwerte(erg)["volumen"] >= kp.kennwerte(shape)["volumen"]:
+        raise ValueError("Schale mit %s mm ergab keinen gültigen Körper." % dicke)
+    return erg
+
+
+def aufdicken(flaeche, dicke):
+    """Flaeche/Schale um dicke zum Volumenkoerper aufdicken (Vorzeichen = Seite)."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeThickSolid
+    if abs(dicke) < 1e-6:
+        raise ValueError("Dicke darf nicht 0 sein.")
+    mk = BRepOffsetAPI_MakeThickSolid()
+    mk.MakeThickSolidBySimple(flaeche, float(dicke))
+    try:
+        mk.Build()
+    except Exception:
+        pass
+    if not mk.IsDone():
+        raise ValueError("Aufdicken mit %s mm ist nicht möglich." % dicke)
+    return mk.Shape()

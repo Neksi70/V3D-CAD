@@ -59,7 +59,8 @@ class Koerper:
         return {"id": self.id, "name": self.name, "sichtbar": self.sichtbar,
                 "dreiecke": int(len(d["netz"]["tri"])), "rev": self.rev,
                 "verlauf": [{"name": v["name"]} for v in self.verlauf],
-                "volumen": round(d["volumen"], 3), "groesse": [round(x, 3) for x in d["groesse"]]}
+                "volumen": round(d["volumen"], 3), "groesse": [round(x, 3) for x in d["groesse"]],
+                "flaeche": round(d.get("flaeche", 0.0), 3)}
 
 
 # --- Grundkoerper aus Element ----------------------------------------------------------------
@@ -206,8 +207,12 @@ def kennwerte(shape):
     from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
+    # adaptiv mit relativer Genauigkeit 1e-5: bei Freiform-Koerpern 10x schneller als die
+    # feste Gauss-Integration, bei Grundkoerpern exakt wie vorher
     g = GProp_GProps()
-    BRepGProp.VolumeProperties_s(shape, g)
+    BRepGProp.VolumeProperties_s(shape, g, 1e-5, False)
+    gf = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(shape, gf, 1e-5, False)
     box = Bnd_Box()
     BRepBndLib.AddOptimal_s(shape, box, False, False)
     if box.IsVoid():
@@ -215,7 +220,50 @@ def kennwerte(shape):
     else:
         x0, y0, z0, x1, y1, z1 = box.Get()
         groesse = [x1 - x0, y1 - y0, z1 - z0]
-    return {"volumen": abs(float(g.Mass())), "groesse": [float(x) for x in groesse]}
+    return {"volumen": abs(float(g.Mass())), "groesse": [float(x) for x in groesse],
+            "flaeche": abs(float(gf.Mass()))}
+
+
+def _raster_flaeche(face, schritt):
+    """Unbeschnittene B-Spline-Flaeche -> (punkte, dreiecke) ueber ein gleichmaessiges
+    Parameterraster, sonst None. Sehnenfehler ~ schritt²/(8·Kruemmungsradius)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepTools import BRepTools
+    from OCP.Geom import Geom_BSplineSurface
+    s = BRep_Tool.Surface_s(face)
+    if not isinstance(s, Geom_BSplineSurface):
+        return None
+    u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+    su0, su1, sv0, sv1 = s.Bounds()
+    tol = 1e-7 * max(1.0, abs(su1 - su0), abs(sv1 - sv0))
+    if abs(u0 - su0) > tol or abs(u1 - su1) > tol or abs(v0 - sv0) > tol or abs(v1 - sv1) > tol:
+        return None
+
+    def laenge(entlang_u):
+        m = 0.0
+        for k in (0.0, 0.5, 1.0):
+            pts = []
+            for t in np.linspace(0, 1, 9):
+                u, v = (u0 + t * (u1 - u0), v0 + k * (v1 - v0)) if entlang_u else (u0 + k * (u1 - u0), v0 + t * (v1 - v0))
+                q = s.Value(u, v)
+                pts.append((q.X(), q.Y(), q.Z()))
+            m = max(m, float(np.linalg.norm(np.diff(np.array(pts), axis=0), axis=1).sum()))
+        return m
+    nu = int(np.clip(np.ceil(laenge(True) / schritt) + 1, 4, 300))
+    nv = int(np.clip(np.ceil(laenge(False) / schritt) + 1, 4, 300))
+    us, vs = np.linspace(u0, u1, nu), np.linspace(v0, v1, nv)
+    p = np.empty((nu * nv, 3))
+    k = 0
+    for u in us:
+        for v in vs:
+            q = s.Value(u, v)
+            p[k] = (q.X(), q.Y(), q.Z())
+            k += 1
+    i, j = np.meshgrid(np.arange(nu - 1), np.arange(nv - 1), indexing="ij")
+    a = (i * nv + j).ravel()
+    b, c, d = a + nv, a + nv + 1, a + 1
+    t = np.concatenate([np.c_[a, b, c], np.c_[a, c, d]]).astype(np.int64)
+    return p, t
 
 
 def vernetzen(shape, fein=False):
@@ -233,18 +281,47 @@ def vernetzen(shape, fein=False):
     from OCP.TopoDS import TopoDS
     from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
 
-    groesse = kennwerte(shape)["groesse"]
-    diag = max(float(np.linalg.norm(groesse)), 1e-3)
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    diag = 1e-3 if box.IsVoid() else max(float(np.sqrt(box.SquareExtent())), 1e-3)
     lin = max(diag * 4e-4, 0.002)
     ang = 0.25
     if fein:
         lin, ang = max(diag * 2e-5, 0.001), 0.05
     kopie = BRepBuilderAPI_Copy(shape, True, False).Shape()
-    BRepMesh_IncrementalMesh(kopie, lin, False, ang, True)
-    punkte, dreiecke, versatz = [], [], 0
+    # Unbeschnittene B-Spline-Flaechen (Freiform) selbst ueber ein Parameterraster zerlegen -
+    # BRepMesh braucht dafuer bei feiner Toleranz Minuten; alle anderen Flaechen einzeln mit BRepMesh
+    schritt = max(0.25, diag / 600) if fein else max(1.0, diag / 120)
+    from OCP.TopTools import TopTools_IndexedMapOfShape as _Map
+    fmap = _Map()
+    TopExp.MapShapes_s(kopie, TopAbs_FACE, fmap)
+    raster_flaechen = {}
+    ex = TopExp_Explorer(kopie, TopAbs_FACE)
+    while ex.More():
+        f = TopoDS.Face_s(ex.Current())
+        g = _raster_flaeche(f, schritt)
+        if g is not None:
+            raster_flaechen[fmap.FindIndex(f)] = g
+        else:
+            BRepMesh_IncrementalMesh(f, lin, False, ang, True)
+        ex.Next()
+    punkte, dreiecke, versatz, tri_flaeche = [], [], 0, []
     ex = TopExp_Explorer(kopie, TopAbs_FACE)
     while ex.More():
         flaeche = TopoDS.Face_s(ex.Current())
+        g = raster_flaechen.get(fmap.FindIndex(flaeche))
+        if g is not None:
+            p, t = g
+            if flaeche.Orientation() == TopAbs_REVERSED:
+                t = t[:, [0, 2, 1]]
+            punkte.append(p)
+            dreiecke.append(t + versatz)
+            tri_flaeche.append(np.full(len(t), fmap.FindIndex(flaeche), np.uint32))
+            versatz += len(p)
+            ex.Next()
+            continue
         loc = TopLoc_Location()
         tri = BRep_Tool.Triangulation_s(flaeche, loc)
         if tri is not None and tri.NbTriangles():
@@ -260,6 +337,7 @@ def vernetzen(shape, fein=False):
                 t = t[:, [0, 2, 1]]
             punkte.append(p)
             dreiecke.append(t + versatz)
+            tri_flaeche.append(np.full(len(t), fmap.FindIndex(flaeche), np.uint32))
             versatz += n
         ex.Next()
 
@@ -296,7 +374,8 @@ def vernetzen(shape, fein=False):
     return {"xyz": (np.concatenate(punkte) if punkte else np.zeros((0, 3))).astype(np.float32),
             "tri": (np.concatenate(dreiecke) if dreiecke else np.zeros((0, 3), np.int64)).astype(np.uint32),
             "kanten": (np.concatenate(segmente) if segmente else np.zeros((0, 2, 3))).astype(np.float32),
-            "kanten_id": (np.concatenate(seg_id) if seg_id else np.zeros(0)).astype(np.uint32)}
+            "kanten_id": (np.concatenate(seg_id) if seg_id else np.zeros(0)).astype(np.uint32),
+            "flaechen_id": (np.concatenate(tri_flaeche) if tri_flaeche else np.zeros(0)).astype(np.uint32)}
 
 
 # --- Abweichung Scan <-> Koerper (Design X "Accuracy Analyzer", QuickSurface "Compare") -----------
