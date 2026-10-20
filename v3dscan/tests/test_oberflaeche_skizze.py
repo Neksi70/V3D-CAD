@@ -66,6 +66,8 @@ def main():
             def oeffne(band, teil):
                 if seite.evaluate("!!document.querySelector('#wfInhalt #%s')" % teil):
                     return
+                # Reiter des Werkzeugs selbst finden (Menüband ist nach Arbeitsschritten aufgeteilt)
+                band = seite.evaluate("(t) => document.querySelector(`#band [data-wf~='${t}']`).closest('[data-bandseite]').dataset.bandseite", teil)
                 seite.click("#bandReiter [data-band=%s]" % band)
                 seite.click("[data-bandseite=%s] [data-wf~='%s']" % (band, teil))
 
@@ -78,7 +80,7 @@ def main():
             seite.click("#wfInhalt [data-aktion=skVorschau]")
             seite.wait_for_selector("#skElemente .el", timeout=60000)
             leer()
-            texte = seite.eval_on_selector_all("#skElemente .el span:first-child", "e => e.map(x => x.textContent)")
+            texte = seite.eval_on_selector_all("#skElemente .el > span:first-child", "e => e.map(x => x.childNodes[1] ? x.childNodes[1].textContent : x.textContent)")
             pruefe(len(texte) == 9 and sum(t.startswith("Bogen R 5") for t in texte) == 4
                    and any(t.startswith("Kreis Ø 12") for t in texte),
                    "Vorschau: 9 Elemente, 4× R5, Ø 12 (%s)" % texte)
@@ -87,7 +89,7 @@ def main():
             feld = seite.locator("#skElemente .el:has-text('Bogen') input").first
             feld.fill("6")
             feld.dispatch_event("change")
-            seite.wait_for_function("[...document.querySelectorAll('#skElemente .el span:first-child')].some(e => e.textContent.startsWith('Bogen R 6'))", timeout=30000)
+            seite.wait_for_function("[...document.querySelectorAll('#skElemente .el > span:first-child')].some(e => e.textContent.includes('Bogen R 6'))", timeout=30000)
             pruefe(True, "Radius im Feld geändert → Bogen R 6")
             # Versatz-Regler zieht den Schnitt live nach
             seite.evaluate("""() => { const r = document.querySelector('#skVersatzRegler'); r.value = 2;

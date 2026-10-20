@@ -58,6 +58,8 @@ def main():
             def oeffne(band, teil):
                 if seite.evaluate("!!document.querySelector('#wfInhalt #%s')" % teil):
                     return
+                # Reiter des Werkzeugs selbst finden (Menüband ist nach Arbeitsschritten aufgeteilt)
+                band = seite.evaluate("(t) => document.querySelector(`#band [data-wf~='${t}']`).closest('[data-bandseite]').dataset.bandseite", teil)
                 seite.click("#bandReiter [data-band=%s]" % band)
                 seite.click("[data-bandseite=%s] [data-wf~='%s']" % (band, teil))
 

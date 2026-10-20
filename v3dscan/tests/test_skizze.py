@@ -293,7 +293,7 @@ def http_test():
                 if np.allclose(seg[ids == i][..., 2], 10, atol=1e-3)
                 and np.ptp(seg[ids == i][..., 0]) > 40]
         a = holen("/api/feature/runden", {"kid": kid, "kanten": oben[:1], "radius": 1, "vorschau": True})
-        pruefe("vorschau" in a and a["zustand"]["koerper"][0]["verlauf"] == [{"name": "Extrusion1"}],
+        pruefe("vorschau" in a and [v["name"] for v in a["zustand"]["koerper"][0]["verlauf"]] == ["Extrusion1"],
                "Rundungs-Vorschau ohne Änderung")
         a = holen("/api/feature/runden", {"kid": kid, "kanten": oben[:1], "radius": 1})
         pruefe(a["zustand"]["koerper"][0]["verlauf"][-1]["name"] == "Rundung1", "Rundung1 im Verlauf")

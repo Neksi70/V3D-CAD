@@ -58,6 +58,8 @@ def main():
             def oeffne(band, teil):
                 if seite.evaluate("!!document.querySelector('#wfInhalt #%s')" % teil):
                     return
+                # Reiter des Werkzeugs selbst finden (Menüband ist nach Arbeitsschritten aufgeteilt)
+                band = seite.evaluate("(t) => document.querySelector(`#band [data-wf~='${t}']`).closest('[data-bandseite]').dataset.bandseite", teil)
                 seite.click("#bandReiter [data-band=%s]" % band)
                 seite.click("[data-bandseite=%s] [data-wf~='%s']" % (band, teil))
 
@@ -135,9 +137,9 @@ def main():
             pruefe(True, "Rückgängig stellt den Körper vor dem Vereinen her")
 
             # STEP über das Menüband
-            seite.click("#bandReiter [data-band=modell]")
             with seite.expect_download() as dl:
-                seite.click("[data-bandseite=modell] [data-aktion=koerperStep]")
+                seite.click("#bandReiter [data-band=cad]")
+                seite.click("[data-bandseite=cad] [data-aktion=koerperStep]")
             pfad = os.path.join(BILDER, "export.step")
             dl.value.save_as(pfad)
             sys.path.insert(0, WURZEL)

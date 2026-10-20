@@ -54,6 +54,8 @@ def main():
             def oeffne(band, teil):
                 if seite.evaluate("!!document.querySelector('#wfInhalt #%s')" % teil):
                     return
+                # Reiter des Werkzeugs selbst finden (Menüband ist nach Arbeitsschritten aufgeteilt)
+                band = seite.evaluate("(t) => document.querySelector(`#band [data-wf~='${t}']`).closest('[data-bandseite]').dataset.bandseite", teil)
                 seite.click("#bandReiter [data-band=%s]" % band)
                 seite.click("[data-bandseite=%s] [data-wf~='%s']" % (band, teil))
 
@@ -77,14 +79,17 @@ def main():
                    "Referenz als Skizzenebene wählbar")
 
             # --- Messen mit echter Maus: zwei Eckpunkte der Oberseite ---
-            seite.keyboard.press("2")      # Draufsicht
-            time.sleep(0.5)
+            # senkrecht von oben (z nach oben) – Messen trifft die Oberfläche unter dem Zeiger
+            seite.evaluate("""() => { const {kamera, steuerung} = v3dscan;
+              kamera.up.set(0, 1, 0); kamera.position.set(30, 20, 180); steuerung.target.set(30, 20, 5);
+              kamera.lookAt(30, 20, 5); steuerung.update(); }""")
+            time.sleep(0.4)
             oeffne("modell", "w-messen")
             seite.select_option("#meArt", "abstand")
             punkte = seite.evaluate("""() => { const e = [...v3dscan.S.scans.values()][0]; let a = null, b = null;
               for (let i = 0; i < e.n; i++) { const x = e.xyz[i*3], y = e.xyz[i*3+1], z = e.xyz[i*3+2];
-                if (z < 9.9) continue;
-                if (!a || x + y < a[0] + a[1]) a = [x, y, z]; if (!b || x + y > b[0] + b[1]) b = [x, y, z]; }
+                if (z < 9.9 || x < 38) continue;          // rechte Hälfte: nicht unter dem Werkzeugfenster
+                if (!a || y < a[1]) a = [x, y, z]; if (!b || y > b[1]) b = [x, y, z]; }
               return [a, b]; }""")
             for p in punkte:
                 x, y = bildschirm(p)
@@ -124,18 +129,18 @@ def main():
             pruefe(abs(v - soll) < 20, "Loft1: %.1f mm³ (Soll %.1f)" % (v, soll))
 
             # --- Zebra / Formschräge ---
-            seite.click("#bandReiter [data-band=modell]")
-            seite.click("[data-bandseite=modell] [data-aktion=zebraAn]")
+            seite.click("#bandReiter [data-band=analyse]")
+            seite.click("[data-bandseite=analyse] [data-aktion=zebraAn]")
             pruefe(seite.evaluate("[...v3dscan.S.koerper.values()][0].flaeche.material.type") == "ShaderMaterial"
                    and "Zebra" in seite.inner_text("#legende"), "Zebra-Streifen an")
             seite.screenshot(path=os.path.join(BILDER, "v09_zebra.png"))
-            seite.click("[data-bandseite=modell] [data-aktion=schraegeAn]")
+            seite.click("[data-bandseite=analyse] [data-aktion=schraegeAn]")
             farbe = seite.evaluate("""() => { const k = [...v3dscan.S.koerper.values()][0];
               return {vc: k.flaeche.material.vertexColors, s: k.schraege}; }""")
             pruefe(farbe["vc"] and farbe["s"]["kritisch"] > 0 and farbe["s"]["plus"] > 0,
                    "Formschräge: senkrechte Wände rot, Oberseite grün (%s)" % farbe["s"])
             seite.screenshot(path=os.path.join(BILDER, "v09_schraege.png"))
-            seite.click("[data-bandseite=modell] [data-aktion=schraegeAn]")
+            seite.click("[data-bandseite=analyse] [data-aktion=schraegeAn]")
 
             # --- Abwickeln: Oberseite per Mausklick ---
             oeffne("modell", "w-abwickeln")

@@ -2719,15 +2719,27 @@ async function rfAnwenden() {
 }
 
 // Messen
-function messPunktAn(x, y) {
+function oberflaechePunkt(x, y, { nurScan = null, koerper = true } = {}) {
+  // Netz-Scans und Körper: Strahl auf die Dreiecke (Eckpunkte liegen auf ebenen Flächen oft weit
+  // auseinander); Punktwolken: nächster Punkt unter dem Zeiger
   const r = new THREE.Raycaster();
   r.setFromCamera(new THREE.Vector2(x / leinwand.clientWidth * 2 - 1, -(y / leinwand.clientHeight) * 2 + 1), kamera);
-  const flaechen = [...S.koerper.values()].filter((k) => k.gruppe.visible).map((k) => k.flaeche);
-  const t = r.intersectObjects(flaechen, false)[0];
-  const p = punktAn(x, y);
-  if (t && (!p || t.point.distanceTo(kamera.position) <= p.welt.distanceTo(kamera.position) + 1e-6)) return { pos: t.point.clone(), wo: 'Körper' };
+  const ziele = [];
+  for (const e of S.scans.values()) {
+    if (!e.obj.visible || !e.obj.isMesh || (nurScan !== null && e.id !== nurScan)) continue;
+    ziele.push(e.obj);
+  }
+  if (koerper && nurScan === null) for (const k of S.koerper.values()) if (k.gruppe.visible) ziele.push(k.flaeche);
+  const t = ziele.length ? r.intersectObjects(ziele, false)[0] : null;
+  const wolke = [...S.scans.values()].some((e) => e.obj.visible && !e.obj.isMesh && (nurScan === null || e.id === nurScan));
+  const p = wolke ? punktAn(x, y, nurScan) : null;
+  if (t && (!p || t.point.distanceTo(kamera.position) <= p.welt.distanceTo(kamera.position) + 1e-6)) {
+    const scan = [...S.scans.values()].find((e) => e.obj === t.object);
+    return { pos: t.point.clone(), wo: scan ? 'Scan' : 'Körper' };
+  }
   return p ? { pos: p.welt.clone(), wo: 'Scan' } : null;
 }
+function messPunktAn(x, y) { return oberflaechePunkt(x, y); }
 function messKreis(a, b, c) {
   const ab = b.clone().sub(a), ac = c.clone().sub(a);
   const n = ab.clone().cross(ac);
@@ -3123,9 +3135,9 @@ leinwand.addEventListener('pointerdown', (ev) => {
 leinwand.addEventListener('pointermove', (ev) => {
   if (kaefigZug === null) return;
   const [x, y] = lokalePos(ev);
-  const p = punktAn(x, y, S.kaefig.scan);
-  if (!p) return;
-  S.kaefig.V.set([p.welt.x, p.welt.y, p.welt.z], kaefigZug * 3);
+  const t = oberflaechePunkt(x, y, { nurScan: S.kaefig.scan, koerper: false });
+  if (!t) return;
+  S.kaefig.V.set([t.pos.x, t.pos.y, t.pos.z], kaefigZug * 3);
   S.kaefig.geaendert = true;
   kaefigLinien();
 });
@@ -3947,7 +3959,7 @@ const AKTIONEN = {
   gkVorschau: { text: 'Grundkörper: Vorschau', fn: gkVorschau },
   gkAnwenden: { text: 'Grundkörper erzeugen', fn: gkAnwenden },
   gkZurueck: { text: '', fn: () => { gkVorschauWeg(); $('#gkInfo').textContent = ''; } },
-  grundkoerper: { text: 'Werkzeug: Grundkörper aus Bereich', taste: 'G', fn: () => werkzeugOeffnen('w-grundkoerper', $('[data-bandseite=modell] [data-wf=w-grundkoerper]')) },
+  grundkoerper: { text: 'Werkzeug: Grundkörper aus Bereich', taste: 'G', fn: () => werkzeugOeffnen('w-grundkoerper', $('[data-bandseite=konstruktion] [data-wf=w-grundkoerper]')) },
   kaZeigen: { text: 'Abweichung Scan ↔ Körper', fn: kaZeigen },
   skVorschau: { text: 'Querschnitt-Skizze: Vorschau', fn: skVorschau },
   skUebernehmen: { text: 'Skizze übernehmen', fn: skUebernehmen },
@@ -4065,6 +4077,7 @@ const AKTIONEN = {
   kaAus: { text: 'Abweichungskarte aus', fn: kaAus },
   zebraAn: { text: 'Zebra-Streifen', fn: () => analyseSetzen($('#koerperAnalyse').value === 'zebra' ? '' : 'zebra') },
   schraegeAn: { text: 'Formschräge', fn: () => analyseSetzen($('#koerperAnalyse').value === 'schraege' ? '' : 'schraege') },
+  umgebungAn: { text: 'Umgebung', fn: () => analyseSetzen($('#koerperAnalyse').value === 'umgebung' ? '' : 'umgebung') },
   anCad: { text: 'An V3D CAD übergeben', fn: () => {
     koerperExport('step');
     window.open('https://v3dcad.volme3dakademie.de', '_blank');
