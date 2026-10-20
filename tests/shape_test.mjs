@@ -1,4 +1,4 @@
-// Arbeitsumgebung V3D-Shape (Bedienung wie Shapr3D): Werkzeugspalte links, Leiste an
+// Arbeitsumgebung V3D-ShapeCAD (Bedienung wie Shapr3D): Werkzeugspalte links, Leiste an
 // der Auswahl, Kürzel wie V3D Direkt, Band über „Alle Werkzeuge“ erreichbar, Wahl gemerkt.
 // Aufruf (im Worktree): node tests/shape_test.mjs
 import { chromium } from '/home/v3da/node_modules/playwright/index.mjs';
@@ -22,7 +22,7 @@ try {
   const esc = async () => { await p.keyboard.press('Escape'); await p.keyboard.press('Escape'); await p.waitForTimeout(150); };
 
   await p.click('#mode-sw button[data-m="shape"]'); await p.waitForTimeout(400);
-  ok(await p.evaluate(() => _advMode === 'shape' && document.body.classList.contains('umgshape')), 'Schalter V3D-SHAPE aktiviert die Umgebung');
+  ok(await p.evaluate(() => _advMode === 'shape' && document.body.classList.contains('umgshape')), 'Schalter V3D-SHAPECAD aktiviert die Umgebung');
   ok(await sichtbar('#shp-spalte') && !(await sichtbar('#tb-r1')) && !(await sichtbar('#lp')), 'Werkzeugspalte da, Band und linke Leiste umgeordnet');
   const n = await p.evaluate(() => document.querySelectorAll('#shp-spalte .shp-b').length);
   ok(n === 17, `Spalte: ${n} Werkzeuge in 4 Gruppen`);
@@ -84,7 +84,7 @@ try {
 
   // Wahl gemerkt, zurück zu Beginner stellt alles her
   await p.reload(); await p.waitForFunction(() => typeof _advSet === 'function' && document.body.classList.contains('umgshape'), null, { timeout: 60000 }).catch(() => {});
-  ok(await p.evaluate(() => _advMode === 'shape' && document.body.classList.contains('umgshape')), 'nach Neuladen weiter V3D-Shape');
+  ok(await p.evaluate(() => _advMode === 'shape' && document.body.classList.contains('umgshape')), 'nach Neuladen weiter V3D-ShapeCAD');
   await p.click('#mode-sw button[data-m="beginner"]'); await p.waitForTimeout(300);
   ok(!(await sichtbar('#shp-spalte')) && await sichtbar('#tb-r1') && await sichtbar('#lp'), 'Beginner: Spalte weg, Band und linke Leiste wieder da');
   await p.evaluate(() => { _newCreate(false); addShape('box'); selectObjs([objects[0]]); });

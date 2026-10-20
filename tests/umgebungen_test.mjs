@@ -1,6 +1,6 @@
-// Arbeitsumgebungen: Advanced heißt jetzt V3D-Vusion und hat Fusion-Tastenkürzel,
+// Arbeitsumgebungen: Advanced heißt jetzt V3D-SionCAD und hat Fusion-Tastenkürzel,
 // Beginner behält die bisherige Belegung. Tooltips + Kürzel-Übersicht je Umgebung,
-// Shift+mittlere Taste = Drehen in V3D-Vusion.
+// Shift+mittlere Taste = Drehen in V3D-SionCAD.
 // Aufruf (im Worktree): node tests/umgebungen_test.mjs
 import { chromium } from '/home/v3da/node_modules/playwright/index.mjs';
 import { spawn } from 'child_process';
@@ -22,7 +22,7 @@ try {
   const zustand = () => p.evaluate(() => ({ edit: editMode, pp: !!(_pp && _pp.active), edge: !!_edgeMode, cmdk: document.getElementById('cmdk').classList.contains('show'), n: objects.length, sk: !!_sk.active }));
   const esc = async () => { await p.evaluate(() => { try { _cmdkClose(); } catch (e) {} }); await p.keyboard.press('Escape'); await p.keyboard.press('Escape'); await p.waitForTimeout(150); };
 
-  ok(await p.evaluate(() => document.querySelector('#mode-sw button[data-m="advanced"]').textContent.trim() === 'V3D-VUSION'), 'Schalter heißt V3D-VUSION');
+  ok(await p.evaluate(() => document.querySelector('#mode-sw button[data-m="advanced"]').textContent.trim() === 'V3D-SIONCAD'), 'Schalter heißt V3D-SIONCAD');
 
   // Beginner: bisherige Belegung unverändert
   await p.evaluate(() => selectObjs([objects[0]]));
@@ -33,9 +33,9 @@ try {
   ok(await p.evaluate(() => !/Taste Q/.test(document.querySelector('[onclick="enterPushPull()"]').title)), 'Beginner: Tooltip ohne Vusion-Taste');
   ok(await p.evaluate(() => getComputedStyle(document.querySelector('#pane-keys .umg-vus')).display === 'none'), 'Beginner: Vusion-Kürzel in der Übersicht ausgeblendet');
 
-  // V3D-Vusion
+  // V3D-SionCAD
   await p.click('#mode-sw button[data-m="advanced"]'); await p.waitForTimeout(300);
-  ok(await p.evaluate(() => _advMode === 'advanced' && document.body.classList.contains('adv')), 'V3D-Vusion aktiv (intern advanced)');
+  ok(await p.evaluate(() => _advMode === 'advanced' && document.body.classList.contains('adv')), 'V3D-SionCAD aktiv (intern advanced)');
   ok(await p.evaluate(() => /Taste Q/.test(document.querySelector('[onclick="enterPushPull()"]').title)), 'Vusion: Tooltip „Drücken/Ziehen“ zeigt Taste Q');
   ok(await p.evaluate(() => getComputedStyle(document.querySelector('#pane-keys .umg-vus')).display !== 'none' && getComputedStyle(document.querySelector('#pane-keys .umg-beg')).display === 'none'), 'Vusion: Kürzel-Übersicht zeigt die Fusion-Belegung');
 

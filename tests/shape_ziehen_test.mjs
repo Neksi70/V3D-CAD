@@ -1,4 +1,4 @@
-// V3D-Shape: Fläche direkt am Pfeil ziehen (wie Shapr3D). Gewählter Körper → auf
+// V3D-ShapeCAD: Fläche direkt am Pfeil ziehen (wie Shapr3D). Gewählter Körper → auf
 // ebene Fläche drücken und ziehen; Klick ohne Zug → Zahl tippen + Enter; nach innen =
 // Tasche; Esc bricht ab; Kamera bleibt; runde Fläche zieht nicht; Knopf „Fläche ziehen“.
 // Aufruf (im Worktree): node tests/shape_ziehen_test.mjs

@@ -1,5 +1,5 @@
-// Volker 20.10.26: Standard ist die eigene V3D-Oberfläche; V3D-Vusion (Fusion-artig) und
-// V3D-Shape (Shapr3D-artig) sind nur Umschalter. Was dort gebaut wird, muss nach dem
+// Volker 20.10.26: Standard ist die eigene V3D-Oberfläche; V3D-SionCAD (Fusion-artig) und
+// V3D-ShapeCAD (Shapr3D-artig) sind nur Umschalter. Was dort gebaut wird, muss nach dem
 // Zurückspringen erhalten und weiter bearbeitbar sein.
 import { chromium } from '/home/v3da/node_modules/playwright/index.mjs';
 import { spawn } from 'child_process';
@@ -23,7 +23,7 @@ try {
   const stand = () => p.evaluate(() => objects.map(o => ({ id: o.userData.id, exakt: !!o.userData.exakt,
     v: Math.round(Math.abs(_geoSignedVolume(o.geometry.clone().applyMatrix4(o.matrixWorld))) * 1e4) / 1e4 })));
 
-  for (const [modus, name] of [['shape', 'V3D-Shape'], ['advanced', 'V3D-Vusion']]) {
+  for (const [modus, name] of [['shape', 'V3D-ShapeCAD'], ['advanced', 'V3D-SionCAD']]) {
     await p.evaluate(m => { _newCreate(false); _advSet(m); }, modus);
     ok(await p.evaluate(m => _advMode === m && localStorage.getItem('v3d_modus') === m, modus), `${name} eingeschaltet`);
     const box = (await A('shape.add', { type: 'box', size: [40, 30, 20] })).result;
@@ -50,6 +50,26 @@ try {
     const geladen = await stand();
     ok(geladen.length === zurueck.length && geladen[0].exakt === zurueck[0].exakt, `${name}-Teil: Speichern/Laden in BEGINNER (exakt ${geladen[0].exakt})`);
   }
+  // Umsteiger-Hinweis: frischer Nutzer → einmal Sprechblase, Knopf schaltet um, danach nie wieder
+  const ctx2 = await b.newContext({ viewport: { width: 1400, height: 900 } });
+  const q = await ctx2.newPage();
+  q.on('pageerror', e => errs.push(e.message));
+  await q.goto(`http://127.0.0.1:${PORT}/volme3d-umgebungen.html`);
+  await q.waitForFunction(() => typeof _advSet === 'function');
+  await q.evaluate(() => { try { hideStarter(); } catch (e) {} });
+  await q.waitForSelector('#umsteiger-hinweis', { timeout: 15000 });
+  const txt = await q.textContent('#umsteiger-hinweis');
+  ok(/Fusion/.test(txt) && /V3D-SionCAD/.test(txt) && /Shapr3D/.test(txt) && /V3D-ShapeCAD/.test(txt), 'Umsteiger-Hinweis erscheint für neue Nutzer in BEGINNER');
+  await q.screenshot({ path: '/tmp/umsteiger-hinweis.png', clip: { x: 0, y: 0, width: 1400, height: 330 } });
+  await q.click('#umsteiger-hinweis [data-u="shape"]');
+  ok(await q.evaluate(() => _advMode === 'shape' && !document.getElementById('umsteiger-hinweis')), 'Knopf im Hinweis schaltet auf V3D-ShapeCAD, Hinweis verschwindet');
+  await q.evaluate(() => _advSet('beginner'));
+  await q.reload();
+  await q.waitForFunction(() => typeof _advSet === 'function');
+  await q.evaluate(() => { try { hideStarter(); } catch (e) {} });
+  await q.waitForTimeout(6000);
+  ok(await q.evaluate(() => !document.getElementById('umsteiger-hinweis')), 'nach dem Neuladen kein Hinweis mehr (nur einmal)');
+  await ctx2.close();
   ok(errs.length === 0, 'keine Seitenfehler ' + errs.join(' | ').slice(0, 200));
 } catch (e) { console.error(e); fail++; }
 await b.close(); srv.kill();
