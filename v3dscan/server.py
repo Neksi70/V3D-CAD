@@ -37,6 +37,7 @@ from kern import koerper as kp  # noqa: E402
 from kern import koordinaten as ko  # noqa: E402
 from kern import netz as nz  # noqa: E402
 from kern import features as sk_feat  # noqa: E402
+from kern import referenz as rf  # noqa: E402
 from kern import registrierung as rg  # noqa: E402
 from kern import skizze as sk  # noqa: E402
 from kern import werkzeuge as wz  # noqa: E402
@@ -320,6 +321,8 @@ def befehl(name, d):
         return koerper_befehl(name.split("/", 1)[1], d)
     if name.startswith("skizze/"):
         return skizze_befehl(name.split("/", 1)[1], d)
+    if name.startswith("referenz/"):
+        return referenz_befehl(name.split("/", 1)[1], d)
     if name.startswith("freiform/"):
         return freiform_befehl(name.split("/", 1)[1], d)
     if name.startswith("feature/"):
@@ -485,6 +488,11 @@ def _ebene_aus(d):
     art = e.get("art", "welt")
     if art == "welt":
         return sk.ebene_welt(e.get("name", "xy"), float(e.get("versatz") or 0))
+    if art == "referenz":
+        r = projekt.referenz_holen(e.get("rid"))
+        if r["art"] == "ebene":
+            return sk.ebene_aus_ebene(r, float(e.get("versatz") or 0))
+        return sk.ebene_durch_achse({"punkt": r["punkt"], "achse": r["richtung"]}, float(e.get("winkel") or 0))
     erk = projekt.erkennung.get(int(d["id"]))
     if not erk:
         raise Fehler("Für diese Ebene zuerst Bereiche erkennen (BEREICHE → Automatisch).")
@@ -546,6 +554,30 @@ def skizze_befehl(was, d):
     if was == "verwerfen":
         skizze_vorschau.clear()
         return {}
+    if was == "stapel":
+        s = p.scan(d["id"])
+        von, bis, anzahl = zahl(d, "von", 0), zahl(d, "bis", 10), int(zahl(d, "anzahl", 5))
+        if anzahl < 2 or anzahl > 100:
+            raise Fehler("Anzahl der Schnitte: 2 bis 100.")
+        tol = max(zahl(d, "toleranz", 0.1), 1e-4)
+        liste, leer = [], []
+        for v in np.linspace(von, bis, anzahl):
+            dd = dict(d, ebene=dict(d.get("ebene") or {}, versatz=float(v)))
+            E = _ebene_aus(dd)
+            linien, zu, info = sk.schnitt(s, E, zahl(d, "band", 0) or None)
+            ketten = sk.skizze_rechnen(linien, zu, tol=tol, luecke=zahl(d, "luecke", 0),
+                                       achsen_grad=1.0 if d.get("achsen", True) else 0.0,
+                                       radien=bool(d.get("radien", True))) if linien else []
+            if not ketten:
+                leer.append(round(float(v), 3))
+                continue
+            skz = sk.skizze_json(ketten, E, info)
+            skz["quelle"] = {"scan": s.id, "ebene": dd["ebene"], "toleranz": tol}
+            liste.append(skz)
+        if not liste:
+            raise Fehler("Keiner der Schnitte trifft den Scan.")
+        neu = p.skizzen_hinzufuegen(liste, "%d Querschnitte erzeugt" % len(liste))
+        return {"sids": [z["id"] for z in neu], "leer": leer}
     if was == "uebernehmen":
         if "skizze" not in skizze_vorschau:
             raise Fehler("Erst einen Schnitt rechnen (Vorschau).")
@@ -647,6 +679,23 @@ def feature_befehl(was, d):
         return {"koerper": k.id}
     if was in ("bool", "verschieben", "spiegeln", "muster", "schale", "aufdicken", "schneiden_flaeche"):
         return _koerper_werkzeug(was, d)
+    if was == "loft":
+        sids = [int(x) for x in d.get("sids") or []]
+        werkzeug = sk_feat.loft([p.skizze_holen(x) for x in sids], bool(d.get("glatt", True)))
+        return _feature_ergebnis(werkzeug, "Loft", d, {"typ": "loft", "skizzen": sids})
+    if was == "sweep":
+        werkzeug = sk_feat.sweep(p.skizze_holen(d["profil"]), p.skizze_holen(d["pfad"]))
+        return _feature_ergebnis(werkzeug, "Sweep", d, {"typ": "sweep", "profil": d["profil"], "pfad": d["pfad"]})
+    if was == "pipe":
+        werkzeug = sk_feat.pipe(p.skizze_holen(d["pfad"]), zahl(d, "radius", 2), zahl(d, "innen", 0))
+        return _feature_ergebnis(werkzeug, "Rohr", d, {"typ": "rohr", "pfad": d["pfad"], "radius": zahl(d, "radius", 2)})
+    if was == "abwickeln":
+        k = p.koerper_holen(d["kid"])
+        a = sk_feat.abwickeln(k.shape, [int(x) for x in d.get("flaechen") or []] or None)
+        return {"umriss": [[[round(x, 4), round(y, 4)] for x, y in u] for u in a["umriss"]],
+                "svg": sk_feat.umriss_svg(a["umriss"]),
+                "info": {k_: (round(v, 5) if isinstance(v, float) else [round(x, 3) for x in v])
+                         for k_, v in a["info"].items()}}
     if was == "radius_vorschlag":
         k = p.koerper_holen(d["kid"])
         elemente = []
@@ -690,7 +739,13 @@ def _koerper_werkzeug(was, d):
         return antwort(shape, {"typ": "verschieben", "versatz": d.get("versatz"), "drehung": d.get("drehung")},
                        "Verschieben")
     if was == "spiegeln":
-        shape = sk_feat.spiegeln(k.shape, d.get("ebene", "yz"), d.get("durch", "mitte"), bool(d.get("vereinen", True)))
+        ebene = d.get("ebene", "yz")
+        if str(ebene).startswith("ref:"):
+            r = p.referenz_holen(int(str(ebene)[4:]))
+            if r["art"] != "ebene":
+                raise Fehler("„%s“ ist keine Ebene." % r["name"])
+            ebene = (r["punkt"], r["normale"])
+        shape = sk_feat.spiegeln(k.shape, ebene, d.get("durch", "mitte"), bool(d.get("vereinen", True)))
         return antwort(shape, {"typ": "spiegeln", "ebene": d.get("ebene")}, "Spiegeln")
     if was == "muster":
         shape = sk_feat.muster(k.shape, d.get("art", "linear"), int(zahl(d, "anzahl", 3)),
@@ -715,6 +770,50 @@ def _koerper_werkzeug(was, d):
     raise Fehler("Unbekanntes Werkzeug %s" % was)
 
 
+def _erk_element(sid, eid):
+    erk = projekt.erkennung.get(int(sid))
+    if not erk:
+        raise Fehler("Zuerst Bereiche erkennen (BEREICHE → Automatisch).")
+    el = next((x for x in erk["elemente"] if x["id"] == eid), None)
+    if el is None:
+        raise Fehler("Bereich %s gibt es nicht (mehr)." % eid)
+    return el
+
+
+def referenz_befehl(was, d):
+    p = projekt
+    if was == "symmetrie":
+        s = p.scan(d["id"])
+        e, rms, kand = rf.symmetrieebene(s.xyz)
+        info = {"rms": round(rms, 4), "kandidaten": [round(k["rms"], 4) for k in kand]}
+        if d.get("vorschau"):
+            return {"vorschau": rf.json_form(e), "info": info}
+        r = p.referenz_hinzufuegen(dict(rf.json_form(e), quelle="symmetrie", rms=round(rms, 4)), "Symmetrieebene")
+        return {"rid": r["id"], "info": info}
+    if was == "bereich":
+        el = _erk_element(d["id"], d.get("element"))
+        if el.get("art") == "ebene":
+            r = p.referenz_hinzufuegen(rf.json_form(rf.ebene_aus_element(el, zahl(d, "versatz", 0))), "Ebene")
+        else:
+            r = p.referenz_hinzufuegen(rf.json_form(rf.achse_aus_element(el)), "Achse")
+        return {"rid": r["id"]}
+    if was == "mitte":
+        a = _erk_element(d["id"], d.get("element"))
+        b = _erk_element(d["id"], d.get("element2"))
+        if a.get("art") != "ebene" or b.get("art") != "ebene":
+            raise Fehler("Für die Mittelebene zwei Ebenen-Bereiche wählen.")
+        r = p.referenz_hinzufuegen(rf.json_form(rf.mittelebene(a, b)), "Mittelebene")
+        return {"rid": r["id"]}
+    if was == "setzen":
+        sichtbar = d.get("sichtbar")
+        p.referenz_setzen(d["rid"], None if sichtbar is None else bool(sichtbar), d.get("name"))
+        return {}
+    if was == "entfernen":
+        p.referenz_entfernen(d["rid"])
+        return {}
+    raise Fehler("Unbekannter Referenz-Befehl %s" % was)
+
+
 def freiform_befehl(was, d):
     p = projekt
     if was == "auto":
@@ -726,8 +825,14 @@ def freiform_befehl(was, d):
         if d.get("vorschau"):
             V, F = ff.quad_netz(s.xyz, s.tri, flaechen, zahl(d, "kantenwinkel", 0))
             seg = np.stack([V[F], V[np.roll(F, -1, axis=1)]], 2).reshape(-1, 2, 3)
-            return {"vierecke": int(len(F)), "linien": _b64(seg, np.float32)}
-        shape, info = ff.auto_flaechen(s.xyz, s.tri, flaechen, int(zahl(d, "raster", 7)), zahl(d, "kantenwinkel", 0))
+            return {"vierecke": int(len(F)), "linien": _b64(seg, np.float32),
+                    "V": _b64(V, np.float32), "F": _b64(F, np.uint32)}
+        kaefig = None
+        if d.get("kaefig"):
+            kaefig = {"V": np.frombuffer(base64.b64decode(d["kaefig"]["V"]), np.float32).reshape(-1, 3),
+                      "F": np.frombuffer(base64.b64decode(d["kaefig"]["F"]), np.uint32).reshape(-1, 4).astype(np.int64)}
+        shape, info = ff.auto_flaechen(s.xyz, s.tri, flaechen, int(zahl(d, "raster", 9)), zahl(d, "kantenwinkel", 0),
+                                       glatt=bool(d.get("glatt", True)), kaefig=kaefig)
         info.pop("quad", None)
         # Guete: Stichprobe der Scanpunkte gegen die Flaechen
         rng = np.random.default_rng(0)

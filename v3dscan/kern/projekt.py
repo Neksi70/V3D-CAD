@@ -38,6 +38,8 @@ class Projekt:
         self.zaehler = {}               # Feature-Typ -> laufende Nummer ("Extrusion3")
         self.skizzen = {}               # id -> {"id","name","sichtbar","ebene","ketten","schnitt",...} (JSON)
         self.naechste_skizze = 1
+        self.referenzen = {}            # id -> {"id","name","sichtbar","art","punkt","normale"|"richtung"}
+        self.naechste_referenz = 1
 
     # --- Verwaltung ---------------------------------------------------------
     def hinzufuegen(self, scan, merken=True):
@@ -72,6 +74,7 @@ class Projekt:
             } for s in self.scans.values()],
             "koerper": [k.zustand() for k in self.koerper.values()],
             "skizzen": [skizze_zustand(z) for z in self.skizzen.values()],
+            "referenzen": list(self.referenzen.values()),
             "undo": self.undo[-1][0] if self.undo else None,
             "redo": self.redo[-1][0] if self.redo else None,
         }
@@ -90,7 +93,8 @@ class Projekt:
         return {"liste": [k.kopie() for k in self.koerper.values()],
                 "naechste": self.naechster_koerper, "zaehler": self.grundkoerper_zaehler,
                 "feature_zaehler": dict(self.zaehler),
-                "skizzen": copy.deepcopy(self.skizzen), "naechste_skizze": self.naechste_skizze}
+                "skizzen": copy.deepcopy(self.skizzen), "naechste_skizze": self.naechste_skizze,
+                "referenzen": copy.deepcopy(self.referenzen), "naechste_referenz": self.naechste_referenz}
 
     def _merke_koerper(self, text):
         self.undo.append((text, {"koerper": self._koerper_stand()}))
@@ -123,6 +127,8 @@ class Projekt:
                 self.zaehler = dict(alt.get("feature_zaehler", {}))
                 self.skizzen = alt.get("skizzen", {})
                 self.naechste_skizze = alt.get("naechste_skizze", 1)
+                self.referenzen = alt.get("referenzen", {})
+                self.naechste_referenz = alt.get("naechste_referenz", 1)
                 continue
             aktuell = self.scans.get(sid)
             gegen[sid] = aktuell
@@ -329,6 +335,19 @@ class Projekt:
         self.zaehler["Skizze"] = nr
         return z
 
+    def skizzen_hinzufuegen(self, liste, text):
+        """Mehrere Skizzen in EINEM Verlaufsschritt (Mehrfachschnitt)."""
+        self._merke_koerper(text)
+        neu = []
+        for daten in liste:
+            nr = self.zaehler.get("Skizze", 0) + 1
+            z = dict(daten, id=self.naechste_skizze, name="Skizze%d" % nr, sichtbar=True, rev=1)
+            self.skizzen[z["id"]] = z
+            self.naechste_skizze += 1
+            self.zaehler["Skizze"] = nr
+            neu.append(z)
+        return neu
+
     def skizze_ersetzen(self, sid, daten, text="geändert"):
         z = self.skizze_holen(sid)
         self._merke_koerper("%s %s" % (z["name"], text))
@@ -356,6 +375,39 @@ class Projekt:
         z = self.skizze_holen(sid)
         self._merke_koerper("Skizze „%s“ entfernt" % z["name"])
         del self.skizzen[z["id"]]
+
+    # --- Referenzen ------------------------------------------------------------
+    def referenz_holen(self, rid):
+        try:
+            return self.referenzen[int(rid)]
+        except (KeyError, ValueError, TypeError):
+            raise KeyError("Referenz %s gibt es nicht (mehr)." % rid)
+
+    def referenz_hinzufuegen(self, daten, typ_name):
+        nr = self.zaehler.get(typ_name, 0) + 1
+        name = "%s%d" % (typ_name, nr)
+        self._merke_koerper("%s erzeugt" % name)
+        r = dict(daten, id=self.naechste_referenz, name=name, sichtbar=True)
+        self.referenzen[r["id"]] = r
+        self.naechste_referenz += 1
+        self.zaehler[typ_name] = nr
+        return r
+
+    def referenz_setzen(self, rid, sichtbar=None, name=None):
+        r = self.referenz_holen(rid)
+        self._merke_koerper("Referenz „%s“ geändert" % r["name"])
+        r = dict(r)
+        if sichtbar is not None:
+            r["sichtbar"] = bool(sichtbar)
+        if name:
+            r["name"] = str(name)[:120]
+        self.referenzen[r["id"]] = r
+        return r
+
+    def referenz_entfernen(self, rid):
+        r = self.referenz_holen(rid)
+        self._merke_koerper("Referenz „%s“ entfernt" % r["name"])
+        del self.referenzen[r["id"]]
 
     def koerper_hinzufuegen(self, shape, name, verlauf=None):
         """Fertigen Koerper uebernehmen (z. B. Import, Tests)."""
@@ -418,6 +470,9 @@ class Projekt:
             if self.skizzen:
                 info["skizzen"] = list(self.skizzen.values())
                 info["naechste_skizze"] = self.naechste_skizze
+            if self.referenzen:
+                info["referenzen"] = list(self.referenzen.values())
+                info["naechste_referenz"] = self.naechste_referenz
             info["zaehler"] = self.zaehler
             z.writestr("projekt.json", json.dumps(info, ensure_ascii=False, indent=1))
         return puffer.getvalue()
@@ -454,6 +509,9 @@ class Projekt:
                 p.skizzen[int(z["id"])] = z
             p.naechste_skizze = max([info.get("naechste_skizze", 1)] + [k + 1 for k in p.skizzen])
             p.zaehler = dict(info.get("zaehler") or {})
+            for r in info.get("referenzen") or []:
+                p.referenzen[int(r["id"])] = r
+            p.naechste_referenz = max([info.get("naechste_referenz", 1)] + [k + 1 for k in p.referenzen])
         return p
 
 

@@ -337,8 +337,11 @@ def spiegeln(shape, ebene="yz", durch="mitte", vereinen=True):
     """Spiegeln an einer Weltebene durch den Ursprung oder die Koerpermitte;
     vereinen=True haengt die gespiegelte Kopie an (symmetrische Teile)."""
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf
-    n = {"yz": (1, 0, 0), "xz": (0, 1, 0), "xy": (0, 0, 1)}[ebene]
-    p = _mitte(shape) if durch == "mitte" else [0.0, 0.0, 0.0]
+    if isinstance(ebene, tuple):                 # (punkt, normale) einer Referenzebene
+        p, n = ebene
+    else:
+        n = {"yz": (1, 0, 0), "xz": (0, 1, 0), "xy": (0, 0, 1)}[ebene]
+        p = _mitte(shape) if durch == "mitte" else [0.0, 0.0, 0.0]
     t = gp_Trsf()
     t.SetMirror(gp_Ax2(gp_Pnt(*map(float, p)), gp_Dir(*n)))
     gespiegelt = _trsf_anwenden(shape, t)
@@ -442,3 +445,257 @@ def aufdicken(flaeche, dicke):
     if not mk.IsDone():
         raise ValueError("Aufdicken mit %s mm ist nicht möglich." % dicke)
     return mk.Shape()
+
+
+# --- Loft / Sweep / Pipe (QuickSurface "Surfacing") -----------------------------------------------------
+def _aussenkette(skz):
+    """Groesste geschlossene Kontur einer Skizze."""
+    gruppen, zu, polys = profil(skz)
+    return gruppen[0][0]
+
+
+def _pfad_draht(skz):
+    """Pfad aus einer Skizze: laengste Kette (offen oder geschlossen) als Draht."""
+    E = sk.ebene_lesen(skz["ebene"])
+    if not skz["ketten"]:
+        raise ValueError("Die Pfad-Skizze ist leer.")
+    def laenge(k):
+        return sum(float(np.linalg.norm(np.diff(sk.diskret(sk.element_lesen(e)), axis=0), axis=1).sum())
+                   for e in k["elemente"])
+    k = max(skz["ketten"], key=laenge)
+    return kette_draht(k, E), k, E
+
+
+def loft(skizzen, glatt=True):
+    """Volumenkoerper durch die Aussenkonturen mehrerer Skizzen (Reihenfolge = Liste)."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+    if len(skizzen) < 2:
+        raise ValueError("Für einen Loft mindestens zwei Skizzen wählen.")
+    op = BRepOffsetAPI_ThruSections(True, not glatt, 1e-6)
+    op.CheckCompatibility(True)
+    for skz in skizzen:
+        E = sk.ebene_lesen(skz["ebene"])
+        op.AddWire(kette_draht(_aussenkette(skz), E))
+    try:
+        op.Build()
+    except Exception:
+        pass
+    if not op.IsDone():
+        raise ValueError("Loft ist fehlgeschlagen – Konturen zu unterschiedlich oder in falscher Reihenfolge?")
+    return op.Shape()
+
+
+def sweep(profil_skz, pfad_skz):
+    """Aussenkontur von profil_skz entlang des Pfads (laengste Kette von pfad_skz) ziehen."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
+    E = sk.ebene_lesen(profil_skz["ebene"])
+    profil_draht = kette_draht(_aussenkette(profil_skz), E)
+    pfad, _, _ = _pfad_draht(pfad_skz)
+    op = BRepOffsetAPI_MakePipeShell(pfad)
+    op.Add(profil_draht, False, True)
+    try:
+        op.Build()
+    except Exception:
+        pass
+    if not op.IsDone():
+        raise ValueError("Sweep ist fehlgeschlagen – liegt das Profil am Anfang des Pfads?")
+    op.MakeSolid()
+    return op.Shape()
+
+
+def pipe(pfad_skz, radius, innen=0.0):
+    """Rohr mit Radius entlang des Pfads; innen > 0 macht es hohl."""
+    from OCP.BRepAdaptor import BRepAdaptor_CompCurve
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Vec
+    if radius <= 0 or innen < 0 or innen >= radius:
+        raise ValueError("Radius > Innenradius ≥ 0 nötig.")
+    pfad, _, _ = _pfad_draht(pfad_skz)
+    c = BRepAdaptor_CompCurve(pfad)
+    p, v = gp_Pnt(), gp_Vec()
+    c.D1(c.FirstParameter(), p, v)
+
+    def rohr(r):
+        kreis = BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(p, gp_Dir(v)), float(r))).Edge()
+        op = BRepOffsetAPI_MakePipeShell(pfad)
+        op.Add(BRepBuilderAPI_MakeWire(kreis).Wire(), False, True)
+        try:
+            op.Build()
+        except Exception:
+            pass
+        if not op.IsDone():
+            raise ValueError("Rohr ist fehlgeschlagen – Pfad zu eng gekrümmt für den Radius?")
+        op.MakeSolid()
+        return op.Shape()
+    aussen = rohr(radius)
+    return BRepAlgoAPI_Cut(aussen, rohr(innen)).Shape() if innen > 0 else aussen
+
+
+# --- Abwickeln (QuickSurface "Flatten", "Unroll") -------------------------------------------------------
+def _lscm(X, T, iterationen=4000):
+    """Konforme Abwicklung (Least Squares Conformal Maps), CG auf den Normalgleichungen
+    (ohne scipy). -> UV (n,2), auf gleiche Gesamtflaeche skaliert."""
+    X = np.asarray(X, float)
+    T = np.asarray(T, np.int64)
+    n = len(X)
+    a, b, c = X[T[:, 0]], X[T[:, 1]], X[T[:, 2]]
+    e1 = b - a
+    l1 = np.linalg.norm(e1, axis=1)
+    ok = l1 > 1e-12
+    x_ax = e1 / np.maximum(l1, 1e-12)[:, None]
+    nrm = np.cross(e1, c - a)
+    flaeche2 = np.linalg.norm(nrm, axis=1)
+    ok &= flaeche2 > 1e-12
+    T, a, b, c, x_ax, nrm, flaeche2 = T[ok], a[ok], b[ok], c[ok], x_ax[ok], nrm[ok], flaeche2[ok]
+    y_ax = np.cross(nrm / flaeche2[:, None], x_ax)
+    P = np.stack([np.zeros((len(T), 2)), np.c_[np.einsum("ij,ij->i", b - a, x_ax), np.zeros(len(T))],
+                  np.c_[np.einsum("ij,ij->i", c - a, x_ax), np.einsum("ij,ij->i", c - a, y_ax)]], 1)
+    A2 = flaeche2                                            # 2 x Dreiecksflaeche
+    # Gradient-Koeffizienten g_k = rot90(Gegenkante)/(2A)
+    G = np.zeros((len(T), 3, 2))
+    for k in range(3):
+        e = P[:, (k + 2) % 3] - P[:, (k + 1) % 3]
+        G[:, k] = np.c_[-e[:, 1], e[:, 0]] / A2[:, None]
+    w = np.sqrt(A2 / 2)
+    # Residuen je Dreieck: r1 = dv/dx + du/dy, r2 = dv/dy - du/dx  (Unbekannte: u = z[:n], v = z[n:])
+    zeilen_u = [G[:, :, 1] * w[:, None], -G[:, :, 0] * w[:, None]]
+    zeilen_v = [G[:, :, 0] * w[:, None], G[:, :, 1] * w[:, None]]
+
+    def A_mal(z):
+        u, v = z[:n], z[n:]
+        return [np.einsum("tk,tk->t", cu, u[T]) + np.einsum("tk,tk->t", cv, v[T]) for cu, cv in zip(zeilen_u, zeilen_v)]
+
+    def At_mal(r):
+        g = np.zeros(2 * n)
+        for ri, cu, cv in zip(r, zeilen_u, zeilen_v):
+            np.add.at(g, T, cu * ri[:, None])
+            np.add.at(g, T + n, cv * ri[:, None])
+        return g
+    # zwei weit entfernte Punkte festhalten
+    i0 = 0
+    i1 = int(np.argmax(np.linalg.norm(X - X[i0], axis=1)))
+    i0 = int(np.argmax(np.linalg.norm(X - X[i1], axis=1)))
+    d = float(np.linalg.norm(X[i1] - X[i0]))
+    fest = np.array([i0, i1, i0 + n, i1 + n])
+    werte = np.array([0.0, d, 0.0, 0.0])
+    frei = np.ones(2 * n, bool)
+    frei[fest] = False
+    z0 = np.zeros(2 * n)
+    z0[fest] = werte
+    rhs = -At_mal(A_mal(z0))
+    rhs[~frei] = 0
+
+    def N(x):
+        y = At_mal(A_mal(np.where(frei, x, 0.0)))
+        y[~frei] = 0
+        return y
+    x = np.zeros(2 * n)
+    r = rhs - N(x)
+    p_ = r.copy()
+    rr = r @ r
+    ziel = 1e-20 * max(rhs @ rhs, 1e-30)
+    for _ in range(iterationen):
+        Np = N(p_)
+        alpha = rr / max(p_ @ Np, 1e-300)
+        x += alpha * p_
+        r -= alpha * Np
+        rr_neu = r @ r
+        if rr_neu < ziel:
+            break
+        p_ = r + (rr_neu / rr) * p_
+        rr = rr_neu
+    z = np.where(frei, x, z0)
+    UV = np.c_[z[:n], z[n:]]
+    # gleiche Gesamtflaeche
+    ua, ub, uc = UV[T[:, 0]], UV[T[:, 1]], UV[T[:, 2]]
+    f2d = 0.5 * np.abs((ub[:, 0] - ua[:, 0]) * (uc[:, 1] - ua[:, 1]) - (ub[:, 1] - ua[:, 1]) * (uc[:, 0] - ua[:, 0]))
+    s = np.sqrt((A2 / 2).sum() / max(f2d.sum(), 1e-30))
+    UV *= s
+    verzerrung = np.abs(f2d * s * s / (A2 / 2) - 1)
+    return UV, T, {"flaeche": float((A2 / 2).sum()), "verzerrung_mittel": float(np.average(verzerrung, weights=A2)),
+                   "verzerrung_max": float(np.percentile(verzerrung, 99))}
+
+
+def abwickeln(shape, flaechen=None):
+    """Flaechen (Nummern, sonst alle) eines Koerpers/einer Schale in die Ebene abwickeln.
+    -> {"umriss": [[(x,y)...]...], "info"}. Abwickelbare Flaechen (Zylinder, Kegel) bleiben
+    laengentreu, gekruemmte werden konform (winkeltreu) mit Flaechenausgleich abgebildet."""
+    from . import koerper as kp
+    nz = kp.vernetzen(shape, fein=False)
+    X = nz["xyz"].astype(float)
+    T = nz["tri"].astype(np.int64)
+    fid = nz["flaechen_id"]
+    if flaechen:
+        wahl = np.isin(fid, np.asarray(list(flaechen), np.uint32))
+        T, fid = T[wahl], fid[wahl]
+    if not len(T):
+        raise ValueError("Keine Fläche zum Abwickeln gewählt.")
+    # Punkte zwischen verschiedenen Flaechen verschweissen, innerhalb einer Flaeche NICHT -
+    # sonst schliesst sich die Naht eines Zylinders zum Rohr, das sich nicht abwickeln laesst
+    v_fid = np.zeros(len(X), np.int64)
+    v_fid[T.ravel()] = np.repeat(fid, 3)
+    _, kid = np.unique(np.round(X / 1e-4).astype(np.int64), axis=0, return_inverse=True)
+    kid = kid.ravel()
+    paar = kid * (int(v_fid.max()) + 1) + v_fid
+    _, paar_anz = np.unique(paar, return_counts=True)
+    _, paar_inv = np.unique(paar, return_inverse=True)
+    naht = paar_anz[paar_inv] > 1                     # Doppelpunkt innerhalb derselben Flaeche
+    key = np.where(naht, -1 - np.arange(len(X)), kid)
+    _, idx, inv = np.unique(key, return_index=True, return_inverse=True)
+    T = inv.ravel()[T]
+    benutzt = np.unique(T)
+    neu = -np.ones(len(idx), np.int64)
+    neu[benutzt] = np.arange(len(benutzt))
+    X, T = X[idx][benutzt], neu[T]
+    T = T[(T[:, 0] != T[:, 1]) & (T[:, 1] != T[:, 2]) & (T[:, 0] != T[:, 2])]
+    UV, T, info = _lscm(X, T)
+    # gerade legen: Drehung mit der kleinsten umschliessenden Box (Huelle in 0,5°-Schritten)
+    def box(w):
+        R = np.array([[np.cos(w), -np.sin(w)], [np.sin(w), np.cos(w)]])
+        q = UV @ R.T
+        return float(np.prod(q.max(0) - q.min(0))), R
+    w0 = min(np.radians(np.arange(0, 180, 0.5)), key=lambda w: box(w)[0])
+    w0 = min(w0 + np.radians(np.arange(-0.5, 0.5, 0.01)), key=lambda w: box(w)[0])
+    UV = UV @ box(w0)[1].T
+    if np.ptp(UV[:, 1]) > np.ptp(UV[:, 0]):
+        UV = UV[:, ::-1] * [1, -1]
+    # Randkanten = Kanten mit nur einem Dreieck -> geschlossene Umrisse
+    kanten = np.sort(np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), axis=1)
+    u, anz = np.unique(kanten, axis=0, return_counts=True)
+    rand = u[anz == 1]
+    nach = {}
+    for a_, b_ in rand.tolist():
+        nach.setdefault(a_, []).append(b_)
+        nach.setdefault(b_, []).append(a_)
+    umrisse, gesehen = [], set()
+    for start in list(nach):
+        if start in gesehen:
+            continue
+        weg, cur, vor = [start], start, None
+        gesehen.add(start)
+        while True:
+            kand = [x for x in nach[cur] if x != vor and x not in gesehen]
+            if not kand:
+                break
+            vor, cur = cur, kand[0]
+            gesehen.add(cur)
+            weg.append(cur)
+        umrisse.append(UV[weg].tolist())
+    lo = UV.min(0)
+    umrisse = [[(x - lo[0], y - lo[1]) for x, y in um] for um in umrisse]
+    info["groesse"] = (UV.max(0) - lo).tolist()
+    return {"umriss": umrisse, "uv": UV - lo, "tri": T, "info": info}
+
+
+def umriss_svg(umrisse, rand=5.0):
+    """Abwicklung als SVG in mm (fuer Laser/Plotter)."""
+    alle = np.concatenate([np.asarray(u) for u in umrisse]) if umrisse else np.zeros((1, 2))
+    b, h = alle.max(0) + 2 * rand
+    pfade = []
+    for um in umrisse:
+        pts = " ".join("%.3f,%.3f" % (x + rand, h - (y + rand)) for x, y in um)
+        pfade.append('<polygon points="%s" fill="none" stroke="#000" stroke-width="0.1"/>' % pts)
+    return ('<svg xmlns="http://www.w3.org/2000/svg" width="%.2fmm" height="%.2fmm" viewBox="0 0 %.3f %.3f">\n%s\n</svg>\n'
+            % (b, h, b, h, "\n".join(pfade)))

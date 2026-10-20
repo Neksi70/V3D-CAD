@@ -118,8 +118,35 @@ def _flaeche(gitter):
     return f.Surface()
 
 
-def auto_flaechen(X, T, flaechen=300, raster=7, kantenwinkel=0.0, fortschritt=None):
-    """Geschlossenes oder offenes Scan-Netz -> (shape, info). raster = Punkte je Kante (>= 4)."""
+def _glatte_normalen(X, T):
+    """Funktion P -> Scan-Normale, gemittelt ueber die naechsten Eckpunkte (glatter als eine Facette)."""
+    from .o3d import o3d
+    m = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(X), o3d.utility.Vector3iVector(np.asarray(T, np.int32)))
+    m.compute_vertex_normals()
+    VN = np.asarray(m.vertex_normals)
+    baum = o3d.geometry.KDTreeFlann(o3d.geometry.PointCloud(o3d.utility.Vector3dVector(X)))
+
+    def normale(P, bezug):
+        P = np.asarray(P, float)
+        form = P.shape
+        P2 = P.reshape(-1, 3)
+        B = np.asarray(bezug, float).reshape(-1, 3)
+        aus = np.zeros_like(P2)
+        for i, q in enumerate(P2):
+            _, idx, _ = baum.search_knn_vector_3d(q, 12)
+            n = VN[np.asarray(idx)]
+            n = n[(n @ B[i]) > 0] if np.any((n @ B[i]) > 0) else n     # Gegenseite duenner Wand ignorieren
+            n = n.sum(0)
+            aus[i] = n / max(np.linalg.norm(n), 1e-12)
+        return aus.reshape(form)
+    return normale
+
+
+def auto_flaechen(X, T, flaechen=300, raster=9, kantenwinkel=0.0, fortschritt=None, glatt=True, kaefig=None):
+    """Geschlossenes oder offenes Scan-Netz -> (shape, info). raster = Punkte je Kante (>= 4).
+    glatt: an jedem Kantenpunkt liegen die ersten Rasterreihen beider Nachbarflaechen in derselben
+    Tangentialebene (Scan-Normale) -> annaehernd tangentiale Uebergaenge statt Knicke.
+    kaefig: {"V", "F"} eigenes (von Hand verschobenes) Vierecksnetz statt Instant Meshes."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeSolid, BRepBuilderAPI_Sewing
     from OCP.ShapeFix import ShapeFix_Solid
     from OCP.TopAbs import TopAbs_SHELL
@@ -128,7 +155,13 @@ def auto_flaechen(X, T, flaechen=300, raster=7, kantenwinkel=0.0, fortschritt=No
     t0 = time.time()
     X = np.asarray(X, np.float64)
     T = np.asarray(T, np.int64)
-    V, F = quad_netz(X, T, flaechen, kantenwinkel)
+    if kaefig is not None:
+        V = np.asarray(kaefig["V"], np.float64).reshape(-1, 3)
+        F = np.asarray(kaefig["F"], np.int64).reshape(-1, 4)
+        if len(F) and (F.min() < 0 or F.max() >= len(V)):
+            raise ValueError("Der Käfig passt nicht zusammen (Eckennummern).")
+    else:
+        V, F = quad_netz(X, T, flaechen, kantenwinkel)
     if len(F) < 4:
         raise ValueError("Das Vierecksnetz ist leer – ist der Scan ein Dreiecksnetz?")
     proj = _Projektor(X, T)
@@ -138,6 +171,8 @@ def auto_flaechen(X, T, flaechen=300, raster=7, kantenwinkel=0.0, fortschritt=No
     kante_mittel = float(np.mean(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)))
     weit = 0.6 * kante_mittel
     n = max(4, int(raster))
+    if n % 2 == 0:
+        n += 1                      # ungerade: Kantenmitte ist ein gemeinsamer Abtastpunkt
     t = np.linspace(0, 1, n)
     K = _kanten(F)
     schluessel = {(int(a), int(b)): i for i, (a, b) in enumerate(K)}
@@ -146,10 +181,16 @@ def auto_flaechen(X, T, flaechen=300, raster=7, kantenwinkel=0.0, fortschritt=No
     EN = VN[K[:, 0], None, :] * (1 - t)[None, :, None] + VN[K[:, 1], None, :] * t[None, :, None]
     E[:, 1:-1] = proj.entlang(E[:, 1:-1], EN[:, 1:-1], weit)
     E[:, 0], E[:, -1] = V[K[:, 0]], V[K[:, 1]]
+    kp_rand = kp_quer = None
+    if glatt:
+        kp_rand, kp_quer = _g1_kanten(E, EN, K, schluessel, _glatte_normalen(X, T))
+        _g1_flaeche.schluessel = schluessel
 
-    def rand(a, b):
-        r = E[schluessel[(min(a, b), max(a, b))]]
+    def rand(a, b, feld=None):
+        r = (E if feld is None else feld)[schluessel[(min(a, b), max(a, b))]]
         return r if a < b else r[::-1]
+
+    flaechen_liste = []
 
     def wenn(i):
         return fortschritt(i) if fortschritt else None
@@ -168,8 +209,12 @@ def auto_flaechen(X, T, flaechen=300, raster=7, kantenwinkel=0.0, fortschritt=No
         G[1:-1, 1:-1] = proj.entlang(G[1:-1, 1:-1], GN[1:-1, 1:-1], weit)
         G[:, 0], G[:, -1], G[0, :], G[-1, :] = unten, oben, links, rechts
         try:
-            s = _flaeche(G)
+            if glatt:
+                s = _g1_flaeche(G, (c0, c1, c2, c3), kp_rand, kp_quer)
+            else:
+                s = _flaeche(G)
             sewing.Add(BRepBuilderAPI_MakeFace(s, 1e-6).Face())
+            flaechen_liste.append((s, (c0, c1, c2, c3)))
         except Exception:
             fehlgeschlagen += 1
         if fi % 50 == 0:
@@ -177,6 +222,7 @@ def auto_flaechen(X, T, flaechen=300, raster=7, kantenwinkel=0.0, fortschritt=No
     sewing.Perform()
     genaeht = sewing.SewedShape()
     info = {"vierecke": int(len(F)), "fehlgeschlagen": fehlgeschlagen, "freie_kanten": int(sewing.NbFreeEdges())}
+    info.update(_knicke(flaechen_liste))
     shape = genaeht
     info["geschlossen"] = False
     if sewing.NbFreeEdges() == 0:
@@ -191,6 +237,163 @@ def auto_flaechen(X, T, flaechen=300, raster=7, kantenwinkel=0.0, fortschritt=No
     info["dauer"] = round(time.time() - t0, 2)
     info["quad"] = (V, F)
     return shape, info
+
+
+# --- G1: gemeinsames Kontrollnetz an den Kanten -------------------------------------------------------
+M_KP = 7                                            # Kontrollpunkte je Richtung (kubisch)
+_KNOTEN = np.r_[[0.0] * 3, np.linspace(0, 1, M_KP - 2), [1.0] * 3]
+
+
+def _basis(t, m=M_KP, p=3, knoten=_KNOTEN):
+    """B-Spline-Basis (len(t), m) nach Cox-de Boor."""
+    t = np.clip(np.asarray(t, float), 0, 1 - 1e-12)
+    N = np.zeros((len(t), len(knoten) - 1))
+    for i in range(len(knoten) - 1):
+        N[:, i] = (knoten[i] <= t) & (t < knoten[i + 1])
+    for k in range(1, p + 1):
+        neu = np.zeros((len(t), len(knoten) - 1 - k))
+        for i in range(len(knoten) - 1 - k):
+            a = knoten[i + k] - knoten[i]
+            b = knoten[i + k + 1] - knoten[i + 1]
+            if a > 0:
+                neu[:, i] += (t - knoten[i]) / a * N[:, i]
+            if b > 0:
+                neu[:, i] += (knoten[i + k + 1] - t) / b * N[:, i + 1]
+        N = neu
+    return N[:, :m]
+
+
+def _g1_kanten(E, EN, K, schluessel, normale):
+    """Je Kante: Kontrollpunkte der Randkurve (an die Abtastpunkte angepasst, Enden fest) und
+    Querrichtung je Kontrollpunkt (in der Tangentialebene, senkrecht zur Kante). Beide Nachbarn
+    setzen ihre zweite Kontrollreihe entlang +-Querrichtung -> G1 entlang der ganzen Kante."""
+    n = E.shape[1]
+    t = np.linspace(0, 1, n)
+    B = _basis(t)
+    innen = slice(1, M_KP - 1)
+    rand = np.zeros((len(K), M_KP, 3))
+    for k in range(len(K)):
+        P = E[k]
+        rest = P - np.outer(B[:, 0], P[0]) - np.outer(B[:, -1], P[-1])
+        cp = np.linalg.lstsq(B[:, innen], rest, rcond=None)[0]
+        rand[k] = np.r_[P[:1], cp, P[-1:]]
+    # Normalen an den Kontrollpunkten (Bezug: interpolierte Scan-Normale)
+    bezug = EN[:, np.linspace(0, n - 1, M_KP).round().astype(int)]
+    N = normale(rand, bezug)
+    # ecknahe Kontrollpunkte in die Tangentialebene der Ecke: alle Flaechen an einer Ecke
+    # bekommen dort dieselbe Normale (die Ecknormale ist fuer jede Kante dieselbe)
+    for i_rand, i_nah in ((0, 1), (M_KP - 1, M_KP - 2)):
+        d = rand[:, i_nah] - rand[:, i_rand]
+        nn = N[:, i_rand]
+        rand[:, i_nah] = rand[:, i_nah] - np.einsum("ij,ij->i", d, nn)[:, None] * nn
+    tang = np.gradient(rand, axis=1)
+    quer = np.cross(N, tang)
+    quer /= np.maximum(np.linalg.norm(quer, axis=2, keepdims=True), 1e-12)
+    return rand, quer
+
+
+def _g1_flaeche(G, ecken, kp_rand, kp_quer, schluessel=None):
+    from OCP.Geom import Geom_BSplineSurface
+    from OCP.TColgp import TColgp_Array2OfPnt
+    from OCP.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
+    from OCP.gp import gp_Pnt
+    c0, c1, c2, c3 = ecken
+    sch = _g1_flaeche.schluessel
+
+    def kante(a, b):
+        i = sch[(min(a, b), max(a, b))]
+        r, q = kp_rand[i], kp_quer[i]
+        return (r, q) if a < b else (r[::-1], q[::-1])
+    m = M_KP
+    Q = np.full((m, m, 3), np.nan)
+    seiten = [(kante(c0, c1), "u", 0), (kante(c3, c2), "u", m - 1), (kante(c0, c3), "v", 0), (kante(c1, c2), "v", m - 1)]
+    for (r, _), art, idx in seiten:
+        if art == "u":
+            Q[:, idx] = r
+        else:
+            Q[idx, :] = r
+    mitte = G.reshape(-1, 3).mean(0)
+    zweite = {}
+    for (r, q), art, idx in seiten:
+        innen_idx = 1 if idx == 0 else m - 2
+        # Laenge quer ueber die Flaeche -> Betrag der Querableitung
+        gegen = Q[:, m - 1 - idx] if art == "u" else Q[m - 1 - idx, :]
+        L = float(np.mean(np.linalg.norm(gegen - r, axis=1)))
+        vz = np.sign((mitte - r.mean(0)) @ q[m // 2]) or 1.0
+        reihe = r + vz * q * (L / (3 * (m - 3)))
+        for i in range(1, m - 1):
+            pos = (i, innen_idx) if art == "u" else (innen_idx, i)
+            zweite.setdefault(pos, []).append(reihe[i])
+    for pos, werte in zweite.items():
+        Q[pos] = np.mean(werte, axis=0)              # Ecken (1,1) …: Mittel beider Kanten
+    # Drillpunkte (1,1) … in die Ebene durch Ecke und ihre beiden Nachbar-Kontrollpunkte
+    for (ci, cj), (di, dj) in (((0, 0), (1, 1)), ((m - 1, 0), (-1, 1)), ((0, m - 1), (1, -1)), ((m - 1, m - 1), (-1, -1))):
+        ecke = Q[ci, cj]
+        a_ = Q[ci + di, cj] - ecke
+        b_ = Q[ci, cj + dj] - ecke
+        nn = np.cross(a_, b_)
+        if np.linalg.norm(nn) > 1e-12:
+            nn /= np.linalg.norm(nn)
+            q = Q[ci + di, cj + dj]
+            Q[ci + di, cj + dj] = q - ((q - ecke) @ nn) * nn
+    # restliches Inneres an die Rasterpunkte anpassen
+    n = G.shape[0]
+    Bt = _basis(np.linspace(0, 1, n))
+    frei = [(i, j) for i in range(m) for j in range(m) if np.isnan(Q[i, j, 0])]
+    if frei:
+        bekannt = np.nan_to_num(Q)
+        A = np.einsum("ai,bj->abij", Bt, Bt).reshape(n * n, m * m)
+        fix = A @ bekannt.reshape(m * m, 3)
+        spalten = [i * m + j for i, j in frei]
+        loes = np.linalg.lstsq(A[:, spalten], G.reshape(-1, 3) - fix, rcond=None)[0]
+        for (i, j), p in zip(frei, loes):
+            Q[i, j] = p
+    pole = TColgp_Array2OfPnt(1, m, 1, m)
+    for i in range(m):
+        for j in range(m):
+            pole.SetValue(i + 1, j + 1, gp_Pnt(*map(float, Q[i, j])))
+    kn = np.unique(_KNOTEN)
+    knoten = TColStd_Array1OfReal(1, len(kn))
+    vielf = TColStd_Array1OfInteger(1, len(kn))
+    for i, k in enumerate(kn):
+        knoten.SetValue(i + 1, float(k))
+        vielf.SetValue(i + 1, 4 if i in (0, len(kn) - 1) else 1)
+    return Geom_BSplineSurface(pole, knoten, knoten, vielf, vielf, 3, 3)
+
+
+def _knicke(flaechen_liste, anteile=(0.1, 0.25, 0.5)):
+    """Knickwinkel (Grad) zwischen Nachbarflaechen an Stellen entlang jeder gemeinsamen Kante
+    (Anteil ab der kleineren Ecken-Nummer). knick_mitte nur in der Kantenmitte."""
+    from OCP.gp import gp_Pnt, gp_Vec
+    seiten = {}
+    for s, (c0, c1, c2, c3) in flaechen_liste:
+        u0, u1, v0, v1 = s.Bounds()
+        for (a, b), art, fest in (((c0, c1), "u", v0), ((c3, c2), "u", v1), ((c0, c3), "v", u0), ((c1, c2), "v", u1)):
+            werte = []
+            for f in anteile:
+                g = f if a < b else 1 - f
+                u, v = (u0 + g * (u1 - u0), fest) if art == "u" else (fest, v0 + g * (v1 - v0))
+                p, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+                s.D1(u, v, p, du, dv)
+                nv = du.Crossed(dv)
+                werte.append(None if nv.Magnitude() < 1e-12 else np.array([nv.X(), nv.Y(), nv.Z()]) / nv.Magnitude())
+            seiten.setdefault((min(a, b), max(a, b)), []).append(werte)
+    alle, mitte = [], []
+    for ns in seiten.values():
+        if len(ns) != 2:
+            continue
+        for k, f in enumerate(anteile):
+            if ns[0][k] is None or ns[1][k] is None:
+                continue
+            w = float(np.degrees(np.arccos(np.clip(abs(ns[0][k] @ ns[1][k]), -1, 1))))
+            alle.append(w)
+            if f == 0.5:
+                mitte.append(w)
+    if not alle:
+        return {"knick_max": 0.0, "knick_mittel": 0.0, "knick_mitte_max": 0.0}
+    return {"knick_max": round(max(alle), 2), "knick_mittel": round(float(np.mean(alle)), 3),
+            "knick_mitte_max": round(max(mitte), 3) if mitte else 0.0,
+            "knick_p95": round(float(np.percentile(alle, 95)), 3)}
 
 
 # --- Flaeche auf Punktauswahl -------------------------------------------------------------------------

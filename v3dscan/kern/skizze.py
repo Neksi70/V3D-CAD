@@ -435,9 +435,27 @@ def _aufloesen(P, els, tol):
     return els
 
 
+def gleichmaessig(L, geschlossen, schritt):
+    """Polylinie nach Bogenlaenge gleichmaessig neu abtasten. Netzschnitte haben an geraden
+    Waenden nur wenige, an Rundungen sehr viele Punkte - sonst taeuscht das die Punkt-Statistik."""
+    L = np.asarray(L, float)
+    P = np.r_[L, L[:1]] if geschlossen else L
+    seg = np.linalg.norm(np.diff(P, axis=0), axis=1)
+    s = np.r_[0, np.cumsum(seg)]
+    if s[-1] <= 0:
+        return L
+    n = int(np.clip(s[-1] / schritt, 8, 6000))
+    t = np.linspace(0, s[-1], n + 1)
+    if geschlossen:
+        t = t[:-1]
+    return np.c_[np.interp(t, s, P[:, 0]), np.interp(t, s, P[:, 1])]
+
+
 def einpassen(L, geschlossen, tol):
     """Polylinie -> Elemente (Parameterform, mit Indexbereich i..j in L)."""
     L = np.asarray(L, float)
+    umfang = float(np.linalg.norm(np.diff(np.r_[L, L[:1]] if geschlossen else L, axis=0), axis=1).sum())
+    L = gleichmaessig(L, geschlossen, max(min(2 * tol, umfang / 200), umfang / 6000))
     if geschlossen and len(L) >= 8:
         k = _kreis_fit(L)
         if k is not None:
