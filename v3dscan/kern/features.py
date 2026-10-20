@@ -66,7 +66,7 @@ def kette_draht(kette, E):
 
 def profil(skz):
     """-> Liste [(aeussere Kette, [innere Ketten])] aller geschlossenen Ketten, 2D-Polygone dazu."""
-    zu = [k for k in skz["ketten"] if k["geschlossen"]]
+    zu = [k for k in skz["ketten"] if k["geschlossen"] and not k.get("hilfe")]
     if not zu:
         raise ValueError("Die Skizze hat keine geschlossene Kontur – Lücken schließen oder Toleranz erhöhen.")
     polys = [sk.kette_polygon({"elemente": [sk.element_lesen(e) for e in k["elemente"]]}) for k in zu]
@@ -376,7 +376,8 @@ def spiegeln(shape, ebene="yz", durch="mitte", vereinen=True):
     return kp.boolean(shape, gespiegelt, "vereinen")
 
 
-def muster(shape, art="linear", anzahl=3, versatz=(10, 0, 0), achse="z", winkel=360.0, punkt=(0, 0, 0)):
+def muster(shape, art="linear", anzahl=3, versatz=(10, 0, 0), achse="z", winkel=360.0, punkt=(0, 0, 0),
+           anzahl2=1, versatz2=(0, 10, 0)):
     """Lineares Muster (Schritt = versatz) oder Kreismuster um eine Weltachse durch punkt.
     Kopien werden mit dem Original vereint."""
     from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
@@ -385,6 +386,15 @@ def muster(shape, art="linear", anzahl=3, versatz=(10, 0, 0), achse="z", winkel=
     if anzahl < 2:
         raise ValueError("Ein Muster braucht mindestens 2 Exemplare.")
     erg = shape
+    if art == "raster":
+        for i in range(anzahl):
+            for j in range(max(1, int(anzahl2))):
+                if i == 0 and j == 0:
+                    continue
+                t = gp_Trsf()
+                t.SetTranslation(gp_Vec(*[float(a) * i + float(b) * j for a, b in zip(versatz, versatz2)]))
+                erg = kp.boolean(erg, _trsf_anwenden(shape, t), "vereinen")
+        return erg
     for i in range(1, anzahl):
         t = gp_Trsf()
         if art == "linear":
@@ -1298,3 +1308,54 @@ def ebene_entlang_pfad(z, anteil=0.0):
     c.D1(u, p, v)
     n = np.array([v.X(), v.Y(), v.Z()])
     return {"art": "ebene", "punkt": np.array([p.X(), p.Y(), p.Z()]), "normale": n / np.linalg.norm(n)}
+
+
+# --- Uebergangsflaeche (Blend Surface) -----------------------------------------------------------------
+def uebergang(shape_a, kante_a, shape_b, kante_b):
+    """Flaeche zwischen zwei Randkanten, tangential (G1) an die Flaechen, zu denen die Kanten gehoeren.
+    Die Enden werden mit Geraden verbunden (ueber Kreuz vermieden)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeFilling
+    from OCP.GeomAbs import GeomAbs_C0, GeomAbs_G1
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    from OCP.TopoDS import TopoDS
+
+    def kante_mit_flaeche(shape, nr):
+        m = kanten_karte(shape)
+        e = TopoDS.Edge_s(m.FindKey(int(nr)))
+        karte = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, karte)
+        fs = karte.FindFromKey(e)
+        return e, (TopoDS.Face_s(fs.First()) if fs.Size() >= 1 else None)
+
+    ea, fa = kante_mit_flaeche(shape_a, kante_a)
+    eb, fb = kante_mit_flaeche(shape_b, kante_b)
+
+    def enden(e):
+        from OCP.BRepAdaptor import BRepAdaptor_Curve
+        c = BRepAdaptor_Curve(e)
+        p, q = c.Value(c.FirstParameter()), c.Value(c.LastParameter())
+        return np.array([p.X(), p.Y(), p.Z()]), np.array([q.X(), q.Y(), q.Z()])
+    a0, a1 = enden(ea)
+    b0, b1 = enden(eb)
+    if np.linalg.norm(a0 - b0) + np.linalg.norm(a1 - b1) > np.linalg.norm(a0 - b1) + np.linalg.norm(a1 - b0):
+        b0, b1 = b1, b0
+    from OCP.gp import gp_Pnt
+    v1 = BRepBuilderAPI_MakeEdge(gp_Pnt(*map(float, a1)), gp_Pnt(*map(float, b1))).Edge()
+    v2 = BRepBuilderAPI_MakeEdge(gp_Pnt(*map(float, b0)), gp_Pnt(*map(float, a0))).Edge()
+    mf = BRepOffsetAPI_MakeFilling(3, 15, 2, False, 1e-5, 1e-4, 0.01, 0.1, 8, 9)
+    for e, f in ((ea, fa), (v1, None), (eb, fb), (v2, None)):
+        if f is not None:
+            mf.Add(e, f, GeomAbs_G1, True)
+        else:
+            mf.Add(e, GeomAbs_C0, True)
+    try:
+        mf.Build()
+    except Exception:
+        pass
+    if not mf.IsDone():
+        raise ValueError("Zwischen diesen Kanten lässt sich keine Übergangsfläche bilden.")
+    return mf.Shape()

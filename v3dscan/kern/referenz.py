@@ -75,3 +75,37 @@ def achse_aus_element(el):
 def json_form(r):
     return {k: ([round(float(x), 6) for x in v] if isinstance(v, (np.ndarray, list, tuple)) else v)
             for k, v in r.items()}
+
+
+def ebene_eingabe(punkt, normale):
+    return {"art": "ebene", "punkt": np.asarray(punkt, float), "normale": _einheit(normale)}
+
+
+def ebene_drei_punkte(a, b, c):
+    a, b, c = (np.asarray(x, float) for x in (a, b, c))
+    n = np.cross(b - a, c - a)
+    if np.linalg.norm(n) < 1e-9:
+        raise ValueError("Die drei Punkte liegen auf einer Linie.")
+    return {"art": "ebene", "punkt": (a + b + c) / 3, "normale": _einheit(n)}
+
+
+def achse_aus_ebenen(e1, e2):
+    """Referenzlinie = Schnittgerade zweier Ebenen."""
+    n1, n2 = _einheit(e1["normale"]), _einheit(e2["normale"])
+    d = np.cross(n1, n2)
+    if np.linalg.norm(d) < 1e-6:
+        raise ValueError("Die Ebenen sind parallel – keine Schnittgerade.")
+    d = _einheit(d)
+    A = np.array([n1, n2, d])
+    rhs = np.array([n1 @ np.asarray(e1["punkt"], float), n2 @ np.asarray(e2["punkt"], float),
+                    d @ (0.5 * (np.asarray(e1["punkt"], float) + np.asarray(e2["punkt"], float)))])
+    return {"art": "achse", "punkt": np.linalg.solve(A, rhs), "richtung": d}
+
+
+def punkt_aus_ebenen(e1, e2, e3):
+    """Referenzpunkt = Schnitt dreier Ebenen."""
+    N = np.array([_einheit(e["normale"]) for e in (e1, e2, e3)])
+    if abs(np.linalg.det(N)) < 1e-6:
+        raise ValueError("Die drei Ebenen schneiden sich nicht in einem Punkt.")
+    rhs = np.array([n @ np.asarray(e["punkt"], float) for n, e in zip(N, (e1, e2, e3))])
+    return {"art": "punkt", "punkt": np.linalg.solve(N, rhs)}

@@ -1416,3 +1416,55 @@ def dxf(skz):
                 z.extend(["0", "SEQEND"])
     z.extend(["0", "ENDSEC", "0", "EOF"])
     return "\n".join(z) + "\n"
+
+
+# --- treibende Masse: Linienlaenge, Winkel (v1.0) ------------------------------------------------------
+def _nachfolger_durch(els, k, punkt, geschlossen):
+    """Nachfolger von Element k (falls Linie) parallel so verschieben, dass er durch punkt geht."""
+    n = len(els)
+    if not geschlossen and k >= n - 1:
+        return
+    B = els[(k + 1) % n]
+    if B["typ"] == "linie":
+        v = punkt - B["a"]
+        B["a"], B["b"], B["p"] = B["a"] + v, B["b"] + v, B["p"] + v
+
+
+def laenge_setzen(kette, i, wert):
+    """Linie i auf Laenge wert: Anfang bleibt, Ende wandert entlang der Linie, der folgende
+    (Linien-)Nachbar wird parallel mitgezogen."""
+    els = [element_lesen(e) for e in kette["elemente"]]
+    e = els[i]
+    if e["typ"] != "linie":
+        raise ValueError("Länge gibt es nur für Linien.")
+    if wert <= 0:
+        raise ValueError("Länge muss größer 0 sein.")
+    d = (e["b"] - e["a"]) / max(np.linalg.norm(e["b"] - e["a"]), 1e-12)
+    neu_b = e["a"] + d * float(wert)
+    _nachfolger_durch(els, i, neu_b, kette["geschlossen"])
+    e["b"], e["d"], e["p"] = neu_b, d, e["a"]
+    _neu_anschliessen(els, kette["geschlossen"], (i + 1) % len(els))
+    e["b"] = neu_b
+    nx = els[(i + 1) % len(els)]
+    if kette["geschlossen"] or i < len(els) - 1:
+        nx["a"] = neu_b
+    return {"geschlossen": kette["geschlossen"], "elemente": [element_json(x) for x in els]}
+
+
+def winkel_setzen(kette, i, bezug, grad):
+    """Linie i um ihren Anfangspunkt drehen, bis sie mit Linie bezug den Winkel grad einschliesst."""
+    els = [element_lesen(e) for e in kette["elemente"]]
+    e, b = els[i], els[bezug]
+    if e["typ"] != "linie" or b["typ"] != "linie":
+        raise ValueError("Winkel zwischen zwei Linien.")
+    wb = math.atan2(b["d"][1], b["d"][0])
+    we = math.atan2(e["d"][1], e["d"][0])
+    # die Loesung waehlen, die der jetzigen Lage am naechsten liegt
+    kand = [wb + s * math.radians(float(grad)) + k * math.pi for s in (1, -1) for k in (0, 1)]
+    w = min(kand, key=lambda x: abs((x - we + math.pi) % (2 * math.pi) - math.pi))
+    L = float(np.linalg.norm(e["b"] - e["a"]))
+    e["d"] = np.array([math.cos(w), math.sin(w)])
+    e["p"] = e["a"]
+    e["b"] = e["a"] + e["d"] * L
+    _neu_anschliessen(els, kette["geschlossen"], i)
+    return {"geschlossen": kette["geschlossen"], "elemente": [element_json(x) for x in els]}

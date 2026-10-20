@@ -922,6 +922,7 @@ leinwand.addEventListener('pointerup', (ev) => {
   if (WF.haupt && WF.haupt.id === 'w-schale') { flaecheKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-messen') { messKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-3dskizze') { s3Klick(x, y); return; }
+  if (WF.haupt && WF.haupt.id === 'w-uebergang') { ueKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-koerper-abw' && S.abweichung && S.abweichung.koerper) { wertLabel(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-auto-flaechen' && S.kaefig && $('#kgScharfModus').checked) {
     const k = kaefigKanteAn(x, y);
@@ -1811,15 +1812,15 @@ function koerperWeg(k) {
 
 // --- Körper-Analyse: Zebra-Streifen (Reflexionslinien) und Formschräge ---------------
 const zebraMaterial = new THREE.ShaderMaterial({
-  uniforms: { dichte: { value: 18 } },
+  uniforms: { dichte: { value: 18 }, senkrecht: { value: 0 } },
   side: THREE.DoubleSide,
   vertexShader: `varying vec3 vN; varying vec3 vV;
     void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0); vV = normalize(-mv.xyz);
       vN = normalize(normalMatrix * normal); gl_Position = projectionMatrix * mv; }`,
-  fragmentShader: `uniform float dichte; varying vec3 vN; varying vec3 vV;
+  fragmentShader: `uniform float dichte; uniform float senkrecht; varying vec3 vN; varying vec3 vV;
     void main() { vec3 n = normalize(vN); if (!gl_FrontFacing) n = -n;
       vec3 r = reflect(-normalize(vV), n);
-      float s = step(0.5, fract(r.y * dichte * 0.5));
+      float s = step(0.5, fract(mix(r.y, r.x, senkrecht) * dichte * 0.5));
       float licht = 0.55 + 0.45 * max(dot(n, normalize(vec3(0.3, 0.5, 1.0))), 0.0);
       gl_FragColor = vec4(vec3(mix(0.08, 0.97, s)) * licht, 1.0); }`,
 });
@@ -1887,6 +1888,7 @@ function koerperDarstellung(k) {
   if (!k.normalMaterial) k.normalMaterial = k.flaeche.material;
   if (art === 'zebra') {
     zebraMaterial.uniforms.dichte.value = Number($('#zebraDichte').value) || 18;
+    zebraMaterial.uniforms.senkrecht.value = Number($('#zebraRichtung').value) || 0;
     k.flaeche.material = zebraMaterial;
   } else if (art === 'umgebung') {
     k.flaeche.material = umgebungMaterial;
@@ -2165,7 +2167,7 @@ function skizzeObjekt(skz, { vorschau = false, hervor = null, abw = null } = {})
   });
   skz.ketten.forEach((k, ki) => k.elemente.forEach((el, ei) => {
     const an = hervor && hervor[0] === ki && hervor[1] === ei;
-    const farbe = an ? 0xf08a1c : (k.geschlossen ? 0x1f5fd0 : 0xc0661a);
+    const farbe = an ? 0xf08a1c : k.hilfe ? 0x9aa0a8 : (k.geschlossen ? 0x1f5fd0 : 0xc0661a);
     const o = linienObjekt(skDiskret(el).map((q) => sk3d(E, q[0], q[1])), farbe, true);
     g.add(o);
   }));
@@ -2609,6 +2611,10 @@ function refObjekt(r, farbe = 0x8a5cd6, vorschau = false) {
     const rand = new THREE.LineSegments(new THREE.EdgesGeometry(f.geometry), new THREE.LineBasicMaterial({ color: farbe }));
     rand.position.copy(p); rand.quaternion.copy(f.quaternion);
     g.add(rand);
+  } else if (r.art === 'punkt') {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: markerTextur('•', '#8a5cd6'), depthTest: false, sizeAttenuation: false }));
+    sp.position.copy(p); sp.renderOrder = 10; sp.scale.setScalar(0.03);
+    g.add(sp);
   } else {
     const d = new THREE.Vector3(...r.richtung).normalize();
     const a = p.clone().addScaledVector(d, -k.radius), b = p.clone().addScaledVector(d, k.radius);
@@ -2635,11 +2641,11 @@ function referenzListeZeichnen() {
   for (const r of S.referenzen.values()) {
     const el = document.createElement('div');
     el.className = 'skizze' + (r.sichtbar ? '' : ' versteckt');
-    el.innerHTML = `<button class="auge" title="Ein-/Ausblenden">${r.sichtbar ? '👁' : '◌'}</button><span>${r.art === 'ebene' ? '◇' : '│'}</span>
+    el.innerHTML = `<button class="auge" title="Ein-/Ausblenden">${r.sichtbar ? '👁' : '◌'}</button><span>${r.art === 'ebene' ? '◇' : r.art === 'punkt' ? '•' : '│'}</span>
       <span class="name"></span><button class="weg" title="Referenz entfernen">✕</button><span class="zahl"></span>`;
     el.querySelector('.name').textContent = r.name;
-    const v = r.art === 'ebene' ? r.normale : r.richtung;
-    el.querySelector('.zahl').textContent = `${r.art === 'ebene' ? 'Normale' : 'Richtung'} ${v.map((x) => zahlText(x, 3)).join(' ; ')}` + (r.rms !== undefined ? ` · rms ${zahlText(r.rms, 3)}` : '');
+    const v = r.art === 'ebene' ? r.normale : r.art === 'punkt' ? r.punkt : r.richtung;
+    el.querySelector('.zahl').textContent = `${r.art === 'ebene' ? 'Normale' : r.art === 'punkt' ? 'Lage' : 'Richtung'} ${v.map((x) => zahlText(x, 3)).join(' ; ')}` + (r.rms !== undefined ? ` · rms ${zahlText(r.rms, 3)}` : '');
     el.querySelector('.auge').addEventListener('click', () => sicher(() => api('referenz/setzen', { rid: r.id, sichtbar: !r.sichtbar })));
     el.querySelector('.weg').addEventListener('click', () => {
       if (confirm(`Referenz „${r.name}“ entfernen?`)) sicher(() => api('referenz/entfernen', { rid: r.id }));
@@ -2671,11 +2677,18 @@ function refAuswahlFuellen() {
 function rfFelder() {
   const art = $('#rfArt').value;
   const sk = ['durch_linie', 'entlang_pfad', 'aus_skizze'].includes(art);
+  $('#rfEingabeReihe').hidden = art !== 'eingabe';
+  $('#rfRefsReihe').hidden = !['achse_ebenen', 'punkt_ebenen'].includes(art);
+  $('#rfRef3').hidden = art !== 'punkt_ebenen';
+  const eb = [...S.referenzen.values()].filter((r) => r.art === 'ebene').map((r) => [r.id, r.name]);
+  for (const id of ['#rfRef1', '#rfRef2', '#rfRef3']) selectFuellen($(id), eb);
+  const ohneBereich = sk || ['eingabe', 'drei_punkte', 'achse_ebenen', 'punkt_ebenen'].includes(art);
   $('#rfSkizzeReihe').hidden = !sk;
   $('#rfElementTeil').hidden = art !== 'durch_linie';
   $('#rfAnteilTeil').hidden = art !== 'entlang_pfad';
   $('#rfScan').closest('label').hidden = sk;
-  $('#rfBereichBox').hidden = art === 'symmetrie' || sk;
+  $('#rfBereichBox').hidden = art === 'symmetrie' || ohneBereich;
+  $('#rfScan').closest('label').hidden = ohneBereich && art !== 'symmetrie';
   $('#rfErsteBox').hidden = art !== 'mitte';
   $('#rfVersatzReihe').hidden = art !== 'bereich';
   const el = gkElement();
@@ -2686,6 +2699,15 @@ function rfFelder() {
 $('#rfArt').addEventListener('change', rfFelder);
 function rfParameter() {
   const art = $('#rfArt').value;
+  const vek = (t) => t.split(/[;\s]+/).filter(Boolean).map(Number);
+  if (art === 'eingabe') return ['referenz/eingabe', { punkt: vek($('#rfPunkt').value), normale: vek($('#rfNormale').value) }];
+  if (art === 'drei_punkte') {
+    const m = S.messung.liste.slice().reverse().find((x) => x.punkte.length === 3);
+    if (!m) throw new Error('Erst mit „Messen“ (Winkel oder Kreis) drei Punkte anklicken.');
+    return ['referenz/drei_punkte', { punkte: m.punkte.map((p) => [p.x, p.y, p.z]) }];
+  }
+  if (art === 'achse_ebenen') return ['referenz/achse_ebenen', { rids: [Number($('#rfRef1').value), Number($('#rfRef2').value)] }];
+  if (art === 'punkt_ebenen') return ['referenz/punkt_ebenen', { rids: [Number($('#rfRef1').value), Number($('#rfRef2').value), Number($('#rfRef3').value)] }];
   if (['durch_linie', 'entlang_pfad', 'aus_skizze'].includes(art)) {
     const sid = Number($('#rfSkizze').value);
     if (!S.skizzen.has(sid)) throw new Error('Erst eine Skizze anlegen.');
@@ -2787,7 +2809,8 @@ function messKlick(x, y) {
       const k = messKreis(a, b, c);
       text = k ? `R ${laengeText(k.r, 3)} · Ø ${laengeText(2 * k.r, 3)} · Mitte ${[k.mitte.x, k.mitte.y, k.mitte.z].map((v) => zahlText(v, 2)).join(' ; ')}` : 'Punkte liegen auf einer Linie';
     }
-    S.messung.liste.push({ art: $('#meArt').selectedOptions[0].textContent.split(' (')[0], punkte: S.messung.punkte, text });
+    S.messung.liste.push({ art: $('#meArt').selectedOptions[0].textContent.split(' (')[0], punkte: S.messung.punkte, text,
+      wert: art === 'abstand' ? b.clone().sub(a).length() : null });
     S.messung.punkte = [];
     meldung(text, 'ok');
   }
@@ -2816,8 +2839,10 @@ function kwFuellen() {
   selectFuellen($('#afScan'), scans.map((x) => [x.id, `${x.name} (${x.dreiecke.toLocaleString('de-DE')} Dreiecke)`]), $('#afScan').value ? null : S.aktiv);
 }
 $('#muArt').addEventListener('change', () => {
-  $('.muLinear').hidden = $('#muArt').value !== 'linear';
-  $('.muKreis').hidden = $('#muArt').value === 'linear';
+  const a = $('#muArt').value;
+  $('.muLinear').hidden = a === 'kreis';
+  $('.muRaster').hidden = a !== 'raster';
+  $('.muKreis').hidden = a !== 'kreis';
 });
 const zahl3 = (a, b, c) => [Number($(a).value) || 0, Number($(b).value) || 0, Number($(c).value) || 0];
 function kwParameter(was) {
@@ -2831,7 +2856,8 @@ function kwParameter(was) {
     case 'verschieben': return { kid: kid('#vsK'), versatz: zahl3('#vsX', '#vsY', '#vsZ'), drehung: zahl3('#vsRX', '#vsRY', '#vsRZ'), kopie: $('#vsKopie').checked };
     case 'spiegeln': return { kid: kid('#spK'), ebene: $('#spEbene').value, durch: $('#spDurch').value, vereinen: $('#spVereinen').checked };
     case 'muster': return { kid: kid('#muK'), art: $('#muArt').value, anzahl: Number($('#muAnzahl').value) || 3,
-      versatz: zahl3('#muX', '#muY', '#muZ'), achse: $('#muAchse').value, winkel: Number($('#muWinkel').value) || 360 };
+      versatz: zahl3('#muX', '#muY', '#muZ'), achse: $('#muAchse').value, winkel: Number($('#muWinkel').value) || 360,
+      anzahl2: Number($('#muAnzahl2').value) || 1, versatz2: zahl3('#muX2', '#muY2', '#muZ2') };
     case 'schale': return { kid: kid('#scK'), dicke: Number($('#scDicke').value) || 2, flaechen: [...S.scWahl] };
     case 'aufdicken': return { kid: kid('#adK'), dicke: Number($('#adDicke').value) || 2 };
     case 'schneiden_flaeche': return { kid: kid('#beK'), fid: kid('#beF'), behalten: $('#beSeite').value };
@@ -3294,6 +3320,7 @@ async function skkAusfuehren() {
     }
     j = await api('skizze/spiegeln', { ...skZiel(), kette, achse }, 'Spiegle…');
   } else if (art === 'weg') j = await api('skizze/kette_entfernen', { ...skZiel(), kette }, 'Entferne…');
+  else if (art === 'hilfe') j = await api('skizze/hilfe', { ...skZiel(), kette }, 'Hilfslinie…');
   else j = await api('skizze/kopieren', { ...skZiel(), kette, art, anzahl: Number($('#skkAnzahl').value) || 2,
     schritt: [Number($('#skkDx').value) || 0, Number($('#skkDy').value) || 0], anzahl2: Number($('#skkAnzahl2').value) || 1,
     schritt2: [Number($('#skkDx2').value) || 0, Number($('#skkDy2').value) || 0], mitte: [Number($('#skkMx').value) || 0, Number($('#skkMy').value) || 0],
@@ -3309,6 +3336,11 @@ async function skeAusfuehren() {
   const wert = Number($('#skeWert').value);
   let j;
   if (art === 'ecke') j = await api('skizze/ecke', { ...skZiel(), kette, element, r: wert || 1 }, 'Runde Ecke…');
+  else if (art === 'laenge') j = await api('skizze/laenge', { ...skZiel(), kette, element, wert }, 'Setze Länge…');
+  else if (art === 'winkel') {
+    if (bezug === null) throw new Error('Bezugslinie (Nr.) angeben.');
+    j = await api('skizze/winkel', { ...skZiel(), kette, element, bezug, wert }, 'Setze Winkel…');
+  }
   else if (art === 'abstand') {
     if (bezug === null) throw new Error('Bezugslinie (Nr.) angeben.');
     j = await api('skizze/abstand', { ...skZiel(), kette, element, bezug, wert }, 'Setze Abstand…');
@@ -3615,6 +3647,32 @@ function wertLabel(x, y) {
   return true;
 }
 
+// --- Übergangsfläche + Steigung messen (v1.0) -----------------------------------------------------------
+S.ueKanten = [];
+function kanteAllerKoerper(x, y) {
+  let best = null;
+  for (const k of S.koerper.values()) {
+    if (!k.gruppe.visible) continue;
+    const t = kanteAn(x, y, k);
+    if (t && (!best || t.d < best.d)) best = { ...t, kid: k.meta.id };
+  }
+  return best;
+}
+function ueKlick(x, y) {
+  const t = kanteAllerKoerper(x, y);
+  if (!t) { status('Keine Kante an dieser Stelle.'); return; }
+  if (S.ueKanten.length >= 2) S.ueKanten = [];
+  S.ueKanten.push(t);
+  $('#ueInfo').textContent = S.ueKanten.length === 1 ? 'Kante 1 gewählt – jetzt Kante 2 anklicken.' : 'Beide Kanten gewählt.';
+}
+async function ue(vorschau) {
+  if (S.ueKanten.length < 2) throw new Error('Erst zwei Randkanten anklicken.');
+  const [a, b] = S.ueKanten;
+  const j = await api('feature/uebergang', { kid_a: a.kid, kante_a: a.id, kid_b: b.kid, kante_b: b.id, vorschau }, 'Baue Übergang…');
+  if (vorschau) { featVorschauZeigen(j.vorschau); $('#ueInfo').textContent = `Übergangsfläche ${zahlText(j.info.flaeche, 1)} mm²`; return; }
+  featVorschauWeg(); S.ueKanten = []; neuerKoerperAus(j, 'Übergangsfläche erzeugt.');
+}
+
 // --- Abweichung Scan <-> Koerper --------------------------------------------------
 function kaFuellen() {
   const scans = S.zustand ? S.zustand.scans : [];
@@ -3665,7 +3723,7 @@ function koerperExport(format) {
 }
 $('#koerperKanten').addEventListener('change', () => { for (const k of S.koerper.values()) koerperDarstellung(k); });
 $('#koerperAnalyse').addEventListener('change', () => analyseSetzen($('#koerperAnalyse').value));
-for (const id of ['#zebraDichte', '#schraegeRichtung', '#schraegeMin']) {
+for (const id of ['#zebraDichte', '#zebraRichtung', '#schraegeRichtung', '#schraegeMin']) {
   $(id).addEventListener('input', () => { for (const k of S.koerper.values()) koerperDarstellung(k); analyseLegende(); });
 }
 $('#koerperTransparenz').addEventListener('input', () => { for (const k of S.koerper.values()) koerperDarstellung(k); });
@@ -4010,6 +4068,14 @@ const AKTIONEN = {
   gwAnwenden: { text: 'Gewinde', fn: () => gwAusfuehren(false) },
   trennen: { text: 'Körper trennen', fn: trennen },
   s3Letzter: { text: '', fn: () => { S.s3.pop(); s3Zeichnen(); } },
+  ueVorschau: { text: 'Übergangsfläche: Vorschau', fn: () => ue(true) },
+  ueAnwenden: { text: 'Übergangsfläche', fn: () => ue(false) },
+  ueZurueck: { text: '', fn: () => { S.ueKanten = []; featVorschauWeg(); $('#ueInfo').textContent = 'Kante 1 anklicken.'; } },
+  gwMessen: { text: 'Steigung aus Messung', fn: () => {
+    const m = S.messung.liste.slice().reverse().find((x) => x.wert);
+    if (!m) throw new Error('Erst mit „Messen → Abstand“ über mehrere Gewindespitzen messen.');
+    $('#gwSteigung').value = (m.wert / (Number($('#gwGaenge').value) || 1)).toFixed(3);
+  } },
   snapshot: { text: 'Snapshot', fn: snapshot },
   wertLabelsWeg: { text: '', fn: () => { wertGruppe.children.slice().forEach(objektEntsorgen); } },
   stSkalieren: { text: 'Scan skalieren', fn: () => api('scan/transformieren', { id: Number($('#stScan').value), art: 'skalieren',

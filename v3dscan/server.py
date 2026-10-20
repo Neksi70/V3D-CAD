@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
-FASSUNG = "0.9.0"
+FASSUNG = "1.0.0"
 HIER = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, "frozen", False):
     HIER = getattr(sys, "_MEIPASS", HIER)
@@ -768,7 +768,7 @@ def skizze_befehl(was, d):
         skz, _ = _skizze_ziel(d)
         return {"dxf": sk.dxf(skz), "name": skz.get("name", "skizze")}
     if was in ("zeichnen", "spline", "versatz", "spiegeln", "kopieren", "ecke", "bedingung", "abstand",
-               "kette_entfernen"):
+               "kette_entfernen", "laenge", "winkel", "hilfe"):
         skz, gespeichert = _skizze_ziel(d)
         ketten = [dict(k) for k in skz["ketten"]]
         schnitt = list(skz.get("schnitt", []))
@@ -831,6 +831,18 @@ def skizze_befehl(was, d):
             i, k = kette()
             ketten[i] = sk.abstand_setzen(k, int(d.get("element", 0)), int(d.get("bezug", 0)), zahl(d, "wert", 10))
             text = "Abstand gesetzt"
+        elif was == "laenge":
+            i, k = kette()
+            ketten[i] = sk.laenge_setzen(k, int(d.get("element", 0)), zahl(d, "wert", 10))
+            text = "Länge gesetzt"
+        elif was == "winkel":
+            i, k = kette()
+            ketten[i] = sk.winkel_setzen(k, int(d.get("element", 0)), int(d.get("bezug", 0)), zahl(d, "wert", 90))
+            text = "Winkel gesetzt"
+        elif was == "hilfe":
+            i, k = kette()
+            ketten[i] = dict(k, hilfe=bool(d.get("an", not k.get("hilfe"))))
+            text = "Hilfslinie" if ketten[i]["hilfe"] else "Kontur"
         else:
             i, _ = kette()
             del ketten[i]
@@ -1068,6 +1080,14 @@ def feature_befehl(was, d):
         return _feature_ergebnis(werkzeug, "Wicklung", d, {"typ": "wickeln", "skizze": z["id"], "punkt": list(el["punkt"]),
                                                            "achse": list(el["achse"]), "radius": r, "dicke": zahl(d, "dicke", 1),
                                                            "aussen": bool(d.get("aussen", True))})
+    if was == "uebergang":
+        ka, kb = p.koerper_holen(d["kid_a"]), p.koerper_holen(d["kid_b"])
+        shape = sk_feat.uebergang(ka.shape, int(d["kante_a"]), kb.shape, int(d["kante_b"]))
+        info = {"flaeche": round(kp.kennwerte(shape)["flaeche"], 2)}
+        if d.get("vorschau"):
+            return {"vorschau": netz_json(kp.vernetzen(shape)), "info": info}
+        k = p.feature(shape, "Übergangsfläche", "neu", None, {"typ": "uebergang"})
+        return {"koerper": k.id, "info": info}
     if was == "radius_vorschlag":
         k = p.koerper_holen(d["kid"])
         elemente = []
@@ -1123,10 +1143,11 @@ def _koerper_werkzeug(was, d):
     if was == "muster":
         shape = sk_feat.muster(k.shape, d.get("art", "linear"), int(zahl(d, "anzahl", 3)),
                                d.get("versatz") or (10, 0, 0), d.get("achse", "z"), zahl(d, "winkel", 360),
-                               d.get("punkt") or (0, 0, 0))
+                               d.get("punkt") or (0, 0, 0), int(zahl(d, "anzahl2", 1)), d.get("versatz2") or (0, 10, 0))
         return antwort(shape, {"typ": "muster", "art": d.get("art"), "anzahl": int(zahl(d, "anzahl", 3)),
                                "versatz": d.get("versatz") or (10, 0, 0), "achse": d.get("achse", "z"),
-                               "winkel": zahl(d, "winkel", 360), "punkt": d.get("punkt") or (0, 0, 0)}, "Muster")
+                               "winkel": zahl(d, "winkel", 360), "punkt": d.get("punkt") or (0, 0, 0),
+                               "anzahl2": int(zahl(d, "anzahl2", 1)), "versatz2": d.get("versatz2") or (0, 10, 0)}, "Muster")
     if was == "schale":
         shape = sk_feat.schale(k.shape, zahl(d, "dicke", 2), [int(x) for x in d.get("flaechen") or []])
         from kern.verlauf import flaechen_bezug
@@ -1226,6 +1247,28 @@ def referenz_befehl(was, d):
             r = p.referenz_hinzufuegen(rf.json_form(rf.ebene_aus_element(el, zahl(d, "versatz", 0))), "Ebene")
         else:
             r = p.referenz_hinzufuegen(rf.json_form(rf.achse_aus_element(el)), "Achse")
+        return {"rid": r["id"]}
+    if was == "eingabe":
+        r = p.referenz_hinzufuegen(rf.json_form(rf.ebene_eingabe(d["punkt"], d["normale"])), "Ebene")
+        return {"rid": r["id"]}
+    if was == "drei_punkte":
+        P = d.get("punkte") or []
+        if len(P) < 3:
+            raise Fehler("Drei Punkte nötig (Messen → Winkel oder Kreis anklicken).")
+        r = p.referenz_hinzufuegen(rf.json_form(rf.ebene_drei_punkte(*P[:3])), "Ebene")
+        return {"rid": r["id"]}
+    if was in ("achse_ebenen", "punkt_ebenen"):
+        es = [p.referenz_holen(x) for x in d.get("rids") or []]
+        if any(e["art"] != "ebene" for e in es):
+            raise Fehler("Bitte Referenz-EBENEN wählen.")
+        if was == "achse_ebenen":
+            if len(es) != 2:
+                raise Fehler("Zwei Ebenen wählen.")
+            r = p.referenz_hinzufuegen(rf.json_form(rf.achse_aus_ebenen(*es)), "Achse")
+        else:
+            if len(es) != 3:
+                raise Fehler("Drei Ebenen wählen.")
+            r = p.referenz_hinzufuegen(rf.json_form(rf.punkt_aus_ebenen(*es)), "Punkt")
         return {"rid": r["id"]}
     if was in ("durch_linie", "entlang_pfad", "aus_skizze"):
         z = p.skizze_holen(d["sid"])

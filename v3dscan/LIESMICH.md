@@ -2,7 +2,7 @@
 
 Windows-Programm zum Nachbearbeiten von 3D-Scans (Punktwolken), gedacht für
 Exporte aus Revo Scan (Revopoint MIRACO/POP) und CrealityScan (PiKa).
-Stand 0.9.0 = Messen, Symmetrie-/Referenzebenen, Mehrfachschnitt, Loft/Sweep/Rohr, Abwickeln (SVG), glatte (G1) Freiform + Käfig von Hand, Zebra/Formschräge + Freiform (automatische Flächen, Fläche aus Auswahl, Beschneiden, Aufdicken) + Körper-Werkzeuge (Verknüpfen, Verschieben/Kopie, Spiegeln, Muster, Schale) + Querschnitt-Skizze → Extrudieren/Drehen → Runden/Fasen (MODELL, Etappen D/E) + Abweichung Scan ↔ Körper (Etappe F) + Oberfläche nach Arbeitsschritten (Design-X-Vorbild, siehe docs/designx-bauplan.md) +
+Stand 1.0.0 = Funktionsumfang nach QuickSurface 8 (Vergleich: docs/quicksurface-vergleich.md): Menüband KONSTRUKTION/SKIZZE/CAD/FLÄCHEN/FREIFORM/ANALYSE, Skizzen-Editor, Flächenwerkzeuge, Freiform von Hand, parametrischer Verlauf, STL/STEP/PTX; davor 0.9: Messen, Symmetrie-/Referenzebenen, Mehrfachschnitt, Loft/Sweep/Rohr, Abwickeln (SVG), glatte (G1) Freiform + Käfig von Hand, Zebra/Formschräge + Freiform (automatische Flächen, Fläche aus Auswahl, Beschneiden, Aufdicken) + Körper-Werkzeuge (Verknüpfen, Verschieben/Kopie, Spiegeln, Muster, Schale) + Querschnitt-Skizze → Extrudieren/Drehen → Runden/Fasen (MODELL, Etappen D/E) + Abweichung Scan ↔ Körper (Etappe F) + Oberfläche nach Arbeitsschritten (Design-X-Vorbild, siehe docs/designx-bauplan.md) +
 Körper (Grundkörper aus Bereich, Vereinen/Abziehen, STEP/IGES) + Punktwolke (Grundgerüst, Bereinigen, Zusammenführen) + Scan→CAD Etappe 1
 (Netzbearbeitung), Etappe 2 (Ausrichten am Koordinatensystem), Etappe 3 (Geometrieerkennung). Ziel: Scan → Geometrieerkennung → parametrisches CAD → STEP/IGES,
 Geometriekern dafür wird OpenCASCADE (OCP) – Entscheidung des Users 14.09.2026 (Variante A).
@@ -53,6 +53,13 @@ Geometriekern dafür wird OpenCASCADE (OCP) – Entscheidung des Users 14.09.202
 - Skizze: Kontur vor dem Einpassen nach Bogenlänge gleichmäßig abgetastet (Netzschnitte: gerade Wände fast punktlos)
 - Oberfläche: Messen (Abstand/Winkel/Kreis, Klick auf Scan oder Körper), Zebra-Streifen (Shader), Formschräge
   (Normalen-Farben zur Entformungsrichtung)
+- v1.0: `kern/verlauf.py` parametrischer Verlauf (Neu aufbauen, Schritte aus/an, Kanten/Flächen über
+  Bezugspunkte, fester Zwischenstand bei nicht nachrechenbaren Schritten, Skizzenänderung rechnet Körper nach);
+  `features.py` Körper aus Flächen (BOPAlgo_MakerVolume, Zelle mit bester Scan-Deckung), Formschräge, Fläche
+  verschieben/löschen (Defeaturing), Gewinde (Helix-Sweep), Trennen, Skalieren, Füllen, Nähen, Übergangsfläche,
+  Wickeln, Projizieren; `skizze.py` Zeichnen, Spline, Versatz, Spiegeln, Kopieren, Ecke, Bedingungen,
+  Länge/Winkel/Abstand, Umriss, DXF; `freiform.py` Raster-Käfig, Wrap, feiner, glätten, Symmetrie, Crease;
+  `netz.py` Abrollen, Mittelwert-Netz, Normalen; `wolke.py` PTX
 - `server.py` lokaler Dienst (nur 127.0.0.1, Port 8797), JSON-Befehle + binäre Punktdaten
 - `kern/koerper.py` OCP-Körper: Grundkörper aus erkanntem Bereich (Zylinder/Kugel/Kegel, Nennmaß, Verlängern),
   Vereinen/Abziehen, Vernetzen für die Anzeige (Flächen + B-Rep-Kanten), BRep im Projekt, STEP/IGES,
@@ -95,6 +102,8 @@ wegfallenden Punkte rot, erst „Anwenden“ ändert Daten (rückgängig machbar
 - `python3 tests/test_oberflaeche_freiform.py` Freiform + Körper-Werkzeuge per Klick
 - `python3 tests/test_flaechen2.py` Loft/Sweep/Rohr/Abwickeln gegen Formeln, G1-Knickwerte, Käfig, Symmetrie, Mehrfachschnitt
 - `python3 tests/test_oberflaeche_v09.py` Referenz, Messen (echte Maus), Loft, Zebra, Abwickeln per Klick, Rohr, Käfig ziehen
+- `python3 tests/test_cad2.py`, `test_v10.py`, `test_v10b.py`, `test_verlauf.py` – v1.0-Rechenkern + Dienst
+- `python3 tests/test_oberflaeche_v10.py` – v1.0-Bedienwege per Klick (Skizzen-Editor, Verlauf, 3D-Skizze …)
 - `python3 tests/test_abweichung.py` Abweichung Scan ↔ Körper gegen Sollwerte (±0,1/0,2/0,3 mm, 1e-4 genau; 1 Mio Punkte < 10 s)
 - `python3 tests/test_oberflaeche_abweichung.py` MODELL → Abweichung: Farben (grün im Toleranzband, grau ohne Gegenstück), Kennwerte, Legende
 - UI-Tests öffnen Werkzeuge wie ein Nutzer über das Menüband (Helfer `oeffne(band, id)`)
