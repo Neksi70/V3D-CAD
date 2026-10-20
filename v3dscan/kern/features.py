@@ -27,6 +27,22 @@ def _kante(el, E):
         if np.linalg.norm(b - a) < 1e-7:
             return None
         return BRepBuilderAPI_MakeEdge(GC_MakeSegment(_pnt(E, a), _pnt(E, b)).Value()).Edge()
+    if el["typ"] == "spline":
+        from OCP.Geom import Geom_BSplineCurve
+        from OCP.TColgp import TColgp_Array1OfPnt
+        from OCP.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
+        pole = np.asarray(el["pole"], float)
+        m = len(pole)
+        arr = TColgp_Array1OfPnt(1, m)
+        for i, q in enumerate(pole):
+            arr.SetValue(i + 1, _pnt(E, q))
+        kn = np.linspace(0, 1, m - 2)
+        knoten = TColStd_Array1OfReal(1, len(kn))
+        vielf = TColStd_Array1OfInteger(1, len(kn))
+        for i, k in enumerate(kn):
+            knoten.SetValue(i + 1, float(k))
+            vielf.SetValue(i + 1, 4 if i in (0, len(kn) - 1) else 1)
+        return BRepBuilderAPI_MakeEdge(Geom_BSplineCurve(arr, knoten, vielf, 3)).Edge()
     if el["typ"] == "kreis":
         m = sk.zu3d(el["mitte"], E)[0]
         from OCP.gp import gp_Pnt
@@ -195,17 +211,26 @@ def _halbseite(f, E, p, r):
     return gross_seite[1], True
 
 
-def drehen(skz, winkel_grad=360.0, element=None):
+def drehen(skz, winkel_grad=360.0, element=None, winkel2_grad=0.0):
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeRevol
     from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt
     E = sk.ebene_lesen(skz["ebene"])
     p, r = drehachse(skz, element)
     ax = gp_Ax1(gp_Pnt(*map(float, p)), gp_Dir(*map(float, r)))
-    w = math.radians(max(0.1, min(360.0, float(winkel_grad))))
+    w2 = math.radians(max(0.0, float(winkel2_grad or 0)))
+    w = math.radians(max(0.1, min(360.0, float(winkel_grad)))) 
+    if w + w2 > 2 * math.pi:
+        raise ValueError("Winkel 1 + Winkel 2 dürfen zusammen höchstens 360° sein.")
     teile = []
     for f in flaechen(skz):
         f, _ = _halbseite(f, E, np.asarray(p, float), np.asarray(r, float))
-        teile.append(BRepPrimAPI_MakeRevol(f, ax, w, True).Shape())
+        if w2 > 0:                                   # zweiter Winkel: Profil erst zurückdrehen
+            from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+            from OCP.gp import gp_Trsf
+            t = gp_Trsf()
+            t.SetRotation(ax, -w2)
+            f = BRepBuilderAPI_Transform(f, t, True).Shape()
+        teile.append(BRepPrimAPI_MakeRevol(f, ax, w + w2, True).Shape())
     erg = _verbund(teile)
     if len(teile) > 1:
         # mehrere Profilteile (z. B. beide Seiten getrennt geschnitten) zu einem Koerper
@@ -699,3 +724,275 @@ def umriss_svg(umrisse, rand=5.0):
         pfade.append('<polygon points="%s" fill="none" stroke="#000" stroke-width="0.1"/>' % pts)
     return ('<svg xmlns="http://www.w3.org/2000/svg" width="%.2fmm" height="%.2fmm" viewBox="0 0 %.3f %.3f">\n%s\n</svg>\n'
             % (b, h, b, h, "\n".join(pfade)))
+
+
+# --- CAD-Reiter, Teil 2 (QuickSurface: Draft, Delete faces, Move face, Separate/Scale body,
+#     Automatic Trimming, Helix/Gewinde, extrudierte Flaechen) -------------------------------------------
+def extrudieren_schraeg(skz, von, bis, winkel_grad):
+    """Extrusion mit Formschraege: Seitenflaechen um winkel geneigt (positiv = verjuengt sich),
+    neutrale Ebene = Startebene."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_DraftAngle
+    from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Plane
+    koerper = extrudieren(skz, von, bis)
+    if abs(winkel_grad) < 1e-6:
+        return koerper
+    E = sk.ebene_lesen(skz["ebene"])
+    n = E["n"]
+    neutral = gp_Pln(gp_Pnt(*map(float, E["ursprung"] + n * von)), gp_Dir(*map(float, n)))
+    d = BRepOffsetAPI_DraftAngle(koerper)
+    ex = TopExp_Explorer(koerper, TopAbs_FACE)
+    while ex.More():
+        f = TopoDS.Face_s(ex.Current())
+        a = BRepAdaptor_Surface(f)
+        deckel = False
+        if a.GetType() == GeomAbs_Plane:
+            pn = a.Plane().Axis().Direction()
+            deckel = abs(pn.X() * n[0] + pn.Y() * n[1] + pn.Z() * n[2]) > 0.999
+        if not deckel:
+            d.Add(f, gp_Dir(*map(float, n)), math.radians(float(winkel_grad)), neutral)
+            if not d.AddDone():
+                raise ValueError("Formschräge %s° ist an dieser Kontur nicht möglich." % winkel_grad)
+        ex.Next()
+    d.Build()
+    if not d.IsDone():
+        raise ValueError("Formschräge ist fehlgeschlagen.")
+    return d.Shape()
+
+
+def extrudieren_flaeche(skz, von, bis):
+    """Offene oder geschlossene Ketten als FLAECHE extrudieren (fuer Koerper aus Flaechen)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Trsf, gp_Vec
+    E = sk.ebene_lesen(skz["ebene"])
+    n = E["n"]
+    teile = []
+    for k in skz["ketten"]:
+        if not k["elemente"]:
+            continue
+        w = kette_draht(k, E)
+        t = gp_Trsf()
+        t.SetTranslation(gp_Vec(*map(float, n * von)))
+        w2 = BRepBuilderAPI_Transform(w, t, True).Shape()
+        teile.append(BRepPrimAPI_MakePrism(w2, gp_Vec(*map(float, n * (bis - von)))).Shape())
+    if not teile:
+        raise ValueError("Die Skizze ist leer.")
+    return _verbund(teile)
+
+
+def koerper_aus_flaechen(shapes, scan_xyz=None, scan_tri=None):
+    """QuickSurface "Automatic Trimming": Flaechen/Koerper schneiden sich gegenseitig, aus den
+    entstehenden Zellen wird die gewaehlt, deren Oberflaeche am besten auf dem Scan liegt
+    (ohne Scan: die groesste)."""
+    from OCP.BOPAlgo import BOPAlgo_MakerVolume
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopTools import TopTools_ListOfShape
+    from . import koerper as kp
+    if len(shapes) < 2:
+        raise ValueError("Mindestens zwei Flächen/Körper wählen.")
+    mv = BOPAlgo_MakerVolume()
+    liste = TopTools_ListOfShape()
+    for s in shapes:
+        liste.Append(s)
+    mv.SetArguments(liste)
+    mv.SetIntersect(True)
+    mv.Perform()
+    if mv.HasErrors():
+        raise ValueError("Die Flächen ließen sich nicht verschneiden.")
+    zellen = []
+    ex = TopExp_Explorer(mv.Shape(), TopAbs_SOLID)
+    while ex.More():
+        zellen.append(ex.Current())
+        ex.Next()
+    if not zellen:
+        raise ValueError("Die Flächen schließen keinen Raum ein.")
+    if scan_xyz is None or len(zellen) == 1:
+        return max(zellen, key=lambda z: kp.kennwerte(z)["volumen"]), len(zellen)
+    # Guete je Zelle: Anteil ihrer Oberflaechenpunkte nahe am Scan - bei Netzen Abstand zur
+    # Netzoberflaeche (ebene Scanflaechen haben kaum Eckpunkte), sonst zu den Punkten
+    from .o3d import o3d
+    P = np.asarray(scan_xyz, float)
+    diag = float(np.linalg.norm(P.max(0) - P.min(0)))
+    if scan_tri is not None and len(scan_tri):
+        szene = o3d.t.geometry.RaycastingScene()
+        szene.add_triangles(o3d.core.Tensor(P.astype(np.float32)), o3d.core.Tensor(np.asarray(scan_tri, np.uint32)))
+
+        def abstand(Q):
+            return np.abs(szene.compute_distance(o3d.core.Tensor(Q.astype(np.float32))).numpy())
+    else:
+        if len(P) > 100000:
+            P = P[np.random.default_rng(0).choice(len(P), 100000, replace=False)]
+        wolke = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(P))
+
+        def abstand(Q):
+            return np.asarray(o3d.geometry.PointCloud(o3d.utility.Vector3dVector(Q)).compute_point_cloud_distance(wolke))
+    beste = None
+    for z in zellen:
+        nz = kp.vernetzen(z)
+        X, T = nz["xyz"].astype(float), nz["tri"]
+        m = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(X), o3d.utility.Vector3iVector(T.astype(np.int32)))
+        probe = np.asarray(m.sample_points_uniformly(4000).points)
+        guete = float(np.mean(abstand(probe) < 0.01 * diag))
+        if beste is None or guete > beste[0]:
+            beste = (guete, z)
+    return beste[1], len(zellen)
+
+
+def koerper_trennen(shape):
+    """Zusammengesetzten Koerper in einzelne Volumenkoerper zerlegen (Separate bodies)."""
+    from OCP.TopAbs import TopAbs_SOLID, TopAbs_SHELL, TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    teile = []
+    for art in (TopAbs_SOLID, TopAbs_SHELL, TopAbs_FACE):
+        ex = TopExp_Explorer(shape, art)
+        while ex.More():
+            teile.append(ex.Current())
+            ex.Next()
+        if teile:
+            break
+    return teile
+
+
+def skalieren(shape, faktor, mitte=None):
+    """Gleichmaessig (Zahl) oder je Achse ([fx, fy, fz]) um die Koerpermitte skalieren."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_GTransform
+    from OCP.gp import gp_GTrsf, gp_Mat, gp_Pnt, gp_Trsf, gp_XYZ
+    m = np.asarray(mitte if mitte is not None else _mitte(shape), float)
+    if np.isscalar(faktor) or len(np.atleast_1d(faktor)) == 1:
+        f = float(np.atleast_1d(faktor)[0])
+        if f <= 0:
+            raise ValueError("Faktor muss größer 0 sein.")
+        t = gp_Trsf()
+        t.SetScale(gp_Pnt(*m), f)
+        return _trsf_anwenden(shape, t)
+    fx, fy, fz = map(float, faktor)
+    if min(fx, fy, fz) <= 0:
+        raise ValueError("Faktoren müssen größer 0 sein.")
+    g = gp_GTrsf()
+    g.SetVectorialPart(gp_Mat(fx, 0, 0, 0, fy, 0, 0, 0, fz))
+    g.SetTranslationPart(gp_XYZ(*(m - np.array([fx, fy, fz]) * m)))
+    return BRepBuilderAPI_GTransform(shape, g, True).Shape()
+
+
+def _flaechen(shape, nummern):
+    from OCP.TopoDS import TopoDS
+    m = flaechen_karte(shape)
+    aus = []
+    for i in nummern:
+        if not 1 <= int(i) <= m.Extent():
+            raise ValueError("Fläche %s gibt es nicht (mehr)." % i)
+        aus.append(TopoDS.Face_s(m.FindKey(int(i))))
+    if not aus:
+        raise ValueError("Erst Flächen im Modell anklicken.")
+    return aus
+
+
+def flaeche_verschieben(shape, nummern, abstand):
+    """Flaechen um abstand entlang ihrer Normale versetzen (Move face) - Nachbarn passen sich an."""
+    from OCP.BRepOffset import BRepOffset_MakeOffset, BRepOffset_Skin
+    from OCP.GeomAbs import GeomAbs_Intersection
+    from . import koerper as kp
+    mo = BRepOffset_MakeOffset()
+    mo.Initialize(shape, 0.0, 1e-5, BRepOffset_Skin, False, False, GeomAbs_Intersection, False, False)
+    for f in _flaechen(shape, nummern):
+        mo.SetOffsetOnFace(f, float(abstand))
+    mo.MakeOffsetShape()
+    if not mo.IsDone():
+        raise ValueError("Fläche verschieben um %s mm ist hier nicht möglich." % abstand)
+    erg = mo.Shape()
+    if kp.kennwerte(erg)["volumen"] <= 1e-6:
+        raise ValueError("Fläche verschieben ergab keinen gültigen Körper.")
+    return erg
+
+
+def flaechen_loeschen(shape, nummern):
+    """Flaechen entfernen und das Loch aus den Nachbarn schliessen (Delete faces / Defeaturing):
+    z. B. Rundungen, Fasen, Bohrungen wegnehmen."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Defeaturing
+    df = BRepAlgoAPI_Defeaturing()
+    df.SetShape(shape)
+    for f in _flaechen(shape, nummern):
+        df.AddFaceToRemove(f)
+    df.SetRunParallel(False)
+    df.Build()
+    if not df.IsDone():
+        raise ValueError("Diese Flächen lassen sich nicht entfernen (Nachbarn können die Lücke nicht schließen).")
+    return df.Shape()
+
+
+def formschraege(shape, nummern, winkel_grad, richtung=(0, 0, 1), neutral_punkt=None):
+    """Formschraege an gewaehlten Flaechen anbringen (Draft). Neutrale Ebene senkrecht zur
+    Entformungsrichtung durch neutral_punkt (Standard: Koerperunterseite)."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_DraftAngle
+    from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+    r = np.asarray(richtung, float) / np.linalg.norm(richtung)
+    if neutral_punkt is None:
+        from OCP.Bnd import Bnd_Box
+        from OCP.BRepBndLib import BRepBndLib
+        b = Bnd_Box()
+        BRepBndLib.Add_s(shape, b)
+        x0, y0, z0, x1, y1, z1 = b.Get()
+        ecken = np.array([[x, y, z] for x in (x0, x1) for y in (y0, y1) for z in (z0, z1)])
+        neutral_punkt = ecken[np.argmin(ecken @ r)]
+    d = BRepOffsetAPI_DraftAngle(shape)
+    pln = gp_Pln(gp_Pnt(*map(float, neutral_punkt)), gp_Dir(*map(float, r)))
+    for f in _flaechen(shape, nummern):
+        d.Add(f, gp_Dir(*map(float, r)), math.radians(float(winkel_grad)), pln)
+        if not d.AddDone():
+            raise ValueError("Formschräge an dieser Fläche nicht möglich (nur ebene/zylindrische Seitenflächen).")
+    d.Build()
+    if not d.IsDone():
+        raise ValueError("Formschräge ist fehlgeschlagen.")
+    return d.Shape()
+
+
+def gewinde(punkt, achse, radius, laenge, steigung, aussen=True, profilwinkel=60.0):
+    """Gewindekoerper (Helix-Sweep eines Dreiecksprofils) an einem Zylinder.
+    aussen=True: Gewinde auf einem Bolzen (wird abgezogen: Nut), sonst Muttergewinde (wird
+    abgezogen aus der Bohrungswand). Rueckgabe = Werkzeug zum Abziehen.
+    Tiefe nach ISO: 0,6134·P (aussen) bzw. 0,5413·P (innen)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakePolygon, BRepBuilderAPI_MakeWire
+    from OCP.BRepLib import BRepLib
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.Geom2d import Geom2d_Line
+    from OCP.gp import gp_Ax2d, gp_Ax3, gp_Dir, gp_Dir2d, gp_Pnt, gp_Pnt2d
+    if steigung <= 0 or laenge <= 0 or radius <= 0:
+        raise ValueError("Radius, Länge und Steigung müssen größer 0 sein.")
+    a = np.asarray(achse, float) / np.linalg.norm(achse)
+    p0 = np.asarray(punkt, float)
+    tiefe = (0.6134 if aussen else 0.5413) * steigung
+    # Helix auf dem Zylinder am Gewindegrund (aussen: Kern, innen: Bohrung + Tiefe)
+    r_helix = radius
+    ax3 = gp_Ax3(gp_Pnt(*p0), gp_Dir(*a))
+    zyl = Geom_CylindricalSurface(ax3, r_helix)
+    windungen = laenge / steigung
+    linie = Geom2d_Line(gp_Ax2d(gp_Pnt2d(0, 0), gp_Dir2d(2 * math.pi, steigung)))
+    lang = math.hypot(2 * math.pi, steigung) * windungen
+    kante = BRepBuilderAPI_MakeEdge(linie, zyl, 0.0, lang).Edge()
+    BRepLib.BuildCurves3d_s(kante)
+    pfad = BRepBuilderAPI_MakeWire(kante).Wire()
+    # Profil (Dreieck) in der Ebene durch Achse und Helix-Anfang
+    x = np.asarray([ax3.XDirection().X(), ax3.XDirection().Y(), ax3.XDirection().Z()])
+    start = p0 + x * r_helix
+    halb = math.tan(math.radians(profilwinkel / 2)) * tiefe * 1.05
+    rein = -x if aussen else x                    # aussen: Nut nach innen, innen: nach aussen
+    eck = [start - a * halb - rein * 0.05 * tiefe, start + a * halb - rein * 0.05 * tiefe, start + rein * tiefe]
+    poly = BRepBuilderAPI_MakePolygon()
+    for e in eck:
+        poly.Add(gp_Pnt(*map(float, e)))
+    poly.Close()
+    op = BRepOffsetAPI_MakePipeShell(pfad)
+    op.SetMode(gp_Dir(*a))                         # Profil bleibt zur Achse ausgerichtet
+    op.Add(poly.Wire(), False, False)
+    op.Build()
+    if not op.IsDone():
+        raise ValueError("Gewinde ließ sich nicht erzeugen.")
+    op.MakeSolid()
+    return op.Shape()

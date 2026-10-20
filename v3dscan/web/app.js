@@ -921,6 +921,7 @@ leinwand.addEventListener('pointerup', (ev) => {
   if (WF.haupt && WF.haupt.id === 'w-schale') { flaecheKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-messen') { messKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-abwickeln') { awKlick(x, y); return; }
+  if (WF.haupt && WF.haupt.dataset.flaechenwahl) { fwahlKlick(x, y); return; }
   const erk = S.erkennung;
   if (!erk) return;
   const p = punktAn(x, y, erk.id);
@@ -1722,6 +1723,7 @@ function formWaehlen(el, hinsehen = true) {
   if (WF.haupt && WF.haupt.id === 'w-grundkoerper') { gkFeldZeichnen(); gkVorschauWeg(); $('#gkInfo').textContent = ''; }
   if (WF.haupt && WF.haupt.id === 'w-skizze') skBereichZeichnen();
   if (WF.haupt && WF.haupt.id === 'w-referenz') rfFelder();
+  if (WF.haupt && WF.haupt.id === 'w-gewinde') gwFeld();
   const box = new THREE.Box3();
   const v = new THREE.Vector3();
   for (const x of S.scans.values()) x.sel.fill(0);
@@ -2401,10 +2403,14 @@ function opZiel(op, ziel) {
 function exParameter() {
   const sid = Number($('#exSkizze').value);
   if (!S.skizzen.has(sid)) throw new Error('Erst eine Skizze anlegen (Querschnitt-Skizze → Übernehmen).');
-  return { sid, modus: $('#exModus').value, laenge: Number($('#exLaenge').value) || 10, umkehren: $('#exUmkehren').checked,
+  return { sid, modus: $('#exModus').value, laenge: Number($('#exLaenge').value) || 10, laenge2: Number($('#exLaenge2').value) || 0,
+    umkehren: $('#exUmkehren').checked, schraege: Number($('#exSchraege').value) || 0, als_flaeche: $('#exFlaeche').checked,
     ...opZiel('#exOperation', '#exZiel') };
 }
-$('#exModus').addEventListener('change', () => { $('#exLaengeReihe').hidden = $('#exModus').value === 'auto'; });
+$('#exModus').addEventListener('change', () => {
+  $('#exLaengeReihe').hidden = $('#exModus').value === 'auto';
+  $('#exLaenge2Teil').hidden = $('#exModus').value !== 'beidseitig';
+});
 function opText(info) {
   const ziel = info.ziel !== null && S.koerper.has(info.ziel) ? S.koerper.get(info.ziel).meta.name : '';
   return info.operation === 'neu' ? 'neuer Körper' : info.operation === 'abziehen' ? `wird von „${ziel}“ abgezogen` : `wird mit „${ziel}“ vereint`;
@@ -2427,7 +2433,8 @@ function drParameter() {
   const sid = Number($('#drSkizze').value);
   if (!S.skizzen.has(sid)) throw new Error('Erst eine Skizze anlegen (Querschnitt-Skizze → Übernehmen).');
   const a = $('#drAchse').value;
-  return { sid, winkel: Number($('#drWinkel').value) || 360, element: a === '' ? null : Number(a), ...opZiel('#drOperation', '#drZiel') };
+  return { sid, winkel: Number($('#drWinkel').value) || 360, winkel2: Number($('#drWinkel2').value) || 0,
+    element: a === '' ? null : Number(a), ...opZiel('#drOperation', '#drZiel') };
 }
 async function drVorschau() {
   const j = await api('feature/drehen', { ...drParameter(), vorschau: true }, 'Baue Vorschau…');
@@ -2747,6 +2754,13 @@ function kwParameter(was) {
     case 'schale': return { kid: kid('#scK'), dicke: Number($('#scDicke').value) || 2, flaechen: [...S.scWahl] };
     case 'aufdicken': return { kid: kid('#adK'), dicke: Number($('#adDicke').value) || 2 };
     case 'schneiden_flaeche': return { kid: kid('#beK'), fid: kid('#beF'), behalten: $('#beSeite').value };
+    case 'flaeche_verschieben': return { kid: kid('#fvK'), flaechen: [...S.fwahl], abstand: Number($('#fvAbstand').value) || 0 };
+    case 'flaechen_loeschen': return { kid: kid('#flK'), flaechen: [...S.fwahl] };
+    case 'formschraege': return { kid: kid('#dfK'), flaechen: [...S.fwahl], winkel: Number($('#dfWinkel').value) || 0, richtung: $('#dfRichtung').value };
+    case 'skalieren': {
+      const f = zahl3('#skaX', '#skaY', '#skaZ');
+      return { kid: kid('#skaK'), faktor: f[0] === f[1] && f[1] === f[2] ? f[0] : f };
+    }
   }
   throw new Error('Unbekanntes Werkzeug');
 }
@@ -3023,6 +3037,94 @@ leinwand.addEventListener('pointerup', () => {
   steuerung.enabled = true;
   $('#afInfo').textContent = 'Käfig von Hand geändert – „Erzeugen“ übernimmt ihn.';
 });
+
+// --- CAD Teil 2 (v1.0): generische Flächenwahl, Körper aus Flächen, Gewinde, Trennen -------------------
+S.fwahl = new Set();
+let fwahlGruppe = null;
+function fwahlKoerper() {
+  const sel = WF.haupt && WF.haupt.dataset.flaechenwahl;
+  return sel ? S.koerper.get(Number($(sel).value)) : null;
+}
+function fwahlZeichnen() {
+  objektEntsorgen(fwahlGruppe); fwahlGruppe = null;
+  const k = fwahlKoerper();
+  const info = WF.haupt && WF.haupt.querySelector('.kwInfo');
+  if (info && WF.haupt.dataset.flaechenwahl) info.textContent = S.fwahl.size ? `${S.fwahl.size} Fläche(n) gewählt.` : 'Flächen im Modell anklicken.';
+  if (!k || !S.fwahl.size || !k.flaechenId) return;
+  const pos = k.flaeche.geometry.getAttribute('position').array, idx = k.flaeche.geometry.index.array;
+  const wahl = [];
+  for (let t = 0; t < k.flaechenId.length; t++) if (S.fwahl.has(k.flaechenId[t])) for (let e = 0; e < 3; e++) wahl.push(...pos.slice(idx[t * 3 + e] * 3, idx[t * 3 + e] * 3 + 3));
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(wahl), 3));
+  fwahlGruppe = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xf08a1c, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthTest: false }));
+  fwahlGruppe.renderOrder = 6;
+  hilfsGruppe.add(fwahlGruppe);
+}
+function fwahlKlick(x, y) {
+  const k = fwahlKoerper();
+  if (!k || !k.flaechenId) return;
+  const r = new THREE.Raycaster();
+  r.setFromCamera(new THREE.Vector2(x / leinwand.clientWidth * 2 - 1, -(y / leinwand.clientHeight) * 2 + 1), kamera);
+  const t = r.intersectObject(k.flaeche, false)[0];
+  if (!t) { status('Keine Fläche des Körpers an dieser Stelle.'); return; }
+  const id = k.flaechenId[t.faceIndex];
+  if (S.fwahl.has(id)) S.fwahl.delete(id); else S.fwahl.add(id);
+  featVorschauWeg();
+  fwahlZeichnen();
+}
+document.querySelectorAll('[data-flaechenwahl]').forEach((sec) => {
+  $(sec.dataset.flaechenwahl).addEventListener('change', () => { S.fwahl.clear(); fwahlZeichnen(); });
+});
+
+function afkFuellen() {
+  const box = $('#afkListe');
+  const alt = new Set([...box.querySelectorAll('input:checked')].map((e) => Number(e.value)));
+  box.innerHTML = S.koerper.size ? '' : '<span class="info">Noch keine Körper/Flächen.</span>';
+  for (const k of S.koerper.values()) {
+    const z = document.createElement('label');
+    z.className = 'el';
+    z.innerHTML = `<span><input type="checkbox" value="${k.meta.id}"> </span><span></span><span></span>`;
+    z.querySelector('span').append(k.meta.name);
+    if (alt.has(k.meta.id)) z.querySelector('input').checked = true;
+    box.appendChild(z);
+  }
+  const scans = S.zustand ? S.zustand.scans : [];
+  selectFuellen($('#afkScan'), [['', '– ohne (größte Zelle) –'], ...scans.map((x) => [x.id, x.name])], $('#afkScan').value ? null : (S.aktiv || ''));
+}
+async function afkAusfuehren(vorschau) {
+  const kids = [...$('#afkListe').querySelectorAll('input:checked')].map((e) => Number(e.value));
+  if (kids.length < 2) throw new Error('Mindestens zwei Flächen/Körper anhaken.');
+  const id = $('#afkScan').value === '' ? null : Number($('#afkScan').value);
+  const j = await api('feature/aus_flaechen', { kid: kids[0], kids, id, vorschau }, vorschau ? 'Verschneide…' : 'Erzeuge Körper…');
+  if (vorschau) { featVorschauZeigen(j.vorschau); $('#afkInfo').textContent = `${j.info.zellen} Zelle(n) · gewählt: ${zahlText(j.info.volumen, 1)} mm³`; return; }
+  featVorschauWeg(); $('#afkInfo').textContent = '';
+  S.koerperAktiv = j.koerper; for (const k of S.koerper.values()) koerperDarstellung(k);
+  koerperListeZeichnen(); verlaufZeichnen(); meldung('Körper aus Flächen erzeugt.', 'ok');
+}
+function gwFeld() {
+  const el = gkElement();
+  $('#gwBereich').textContent = el ? el.text : '– keiner gewählt –';
+  $('#gwBereich').classList.toggle('leer', !el);
+}
+async function gwAusfuehren(vorschau) {
+  const el = gkElement();
+  if (!el) throw new Error('Erst einen Zylinder, Zapfen oder eine Bohrung als Bereich wählen.');
+  const kid = Number($('#gwK').value);
+  if (!S.koerper.has(kid)) throw new Error('Erst einen Körper erzeugen (z. B. Grundkörper aus dem Zylinder).');
+  const j = await api('feature/gewinde', { kid, id: S.erkennung.id, element: el.id, steigung: Number($('#gwSteigung').value) || 1.5,
+    laenge: Number($('#gwLaenge').value) || 0, vorschau }, vorschau ? 'Baue Gewinde…' : 'Schneide Gewinde…');
+  const t = `${j.info.art} Ø ${zahlText(j.info.durchmesser, 2)} × ${zahlText(j.info.steigung, 2)} · Länge ${zahlText(j.info.laenge, 1)} mm`;
+  if (vorschau) { featVorschauZeigen(j.vorschau); $('#gwInfo').textContent = t; return; }
+  featVorschauWeg(); $('#gwInfo').textContent = '';
+  for (const k of S.koerper.values()) koerperDarstellung(k);
+  koerperListeZeichnen(); verlaufZeichnen(); meldung(t + ' erzeugt.', 'ok');
+}
+async function trennen() {
+  const kid = S.koerperAktiv;
+  if (kid === null || !S.koerper.has(kid)) throw new Error('Erst einen Körper im Modellbaum anklicken.');
+  const j = await api('feature/trennen', { kid }, 'Trenne…');
+  meldung(`${j.koerper.length} Einzelkörper.`, 'ok');
+}
 
 // --- Abweichung Scan <-> Koerper --------------------------------------------------
 function kaFuellen() {
@@ -3400,7 +3502,13 @@ const AKTIONEN = {
   meNeu: { text: '', fn: () => { S.messung.punkte = []; messZeichnen(); messErgebnisZeichnen(); } },
   meZurueck: { text: '', fn: () => { S.messung = { punkte: [], liste: [] }; messZeichnen(); messErgebnisZeichnen(); } },
   kwAnwenden: { text: 'Anwenden', fn: kwAnwenden },
-  kwZurueck: { text: '', fn: kwZurueck },
+  kwZurueck: { text: '', fn: () => { kwZurueck(); S.fwahl.clear(); fwahlZeichnen(); } },
+  afkVorschau: { text: 'Körper aus Flächen: Vorschau', fn: () => afkAusfuehren(true) },
+  afkAnwenden: { text: 'Körper aus Flächen', fn: () => afkAusfuehren(false) },
+  afkZurueck: { text: '', fn: () => { featVorschauWeg(); $('#afkInfo').textContent = ''; } },
+  gwVorschau: { text: 'Gewinde: Vorschau', fn: () => gwAusfuehren(true) },
+  gwAnwenden: { text: 'Gewinde', fn: () => gwAusfuehren(false) },
+  trennen: { text: 'Körper trennen', fn: trennen },
   afVorschau: { text: 'Automatische Flächen: Vorschau', fn: afVorschau },
   afAnwenden: { text: 'Automatische Flächen', fn: afAnwenden },
   afZurueck: { text: '', fn: kwZurueck },
@@ -3566,6 +3674,9 @@ function werkzeugOeffnen(liste, knopf = null) {
   if (haupt && haupt.id === 'w-referenz') { refAuswahlFuellen(); rfFelder(); }
   if (haupt && haupt.id === 'w-messen') messErgebnisZeichnen();
   if (haupt && ['w-loft', 'w-sweep', 'w-abwickeln'].includes(haupt.id)) { v09Fuellen(); kwFuellen(); }
+  if (haupt && haupt.dataset.flaechenwahl) { S.fwahl.clear(); fwahlZeichnen(); }
+  if (haupt && haupt.id === 'w-ausflaechen') afkFuellen();
+  if (haupt && haupt.id === 'w-gewinde') { kwFuellen(); gwFeld(); }
 }
 
 function werkzeugSchliessen(zuruecksetzen = true) {

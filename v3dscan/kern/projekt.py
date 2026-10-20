@@ -318,6 +318,38 @@ class Projekt:
         self.zaehler["Kombination"] = nr
         return k
 
+    def koerper_aufteilen(self, kid, shapes):
+        """Koerper durch mehrere Teile ersetzen (Separate bodies) - ein Verlaufsschritt."""
+        from .koerper import Koerper
+        k = self.koerper_holen(kid)
+        if len(shapes) < 2:
+            raise ValueError("„%s“ besteht nur aus einem Teil." % k.name)
+        self._merke_koerper("„%s“ in %d Teile getrennt" % (k.name, len(shapes)))
+        del self.koerper[k.id]
+        neu = []
+        for i, s in enumerate(shapes):
+            t = Koerper(self.naechster_koerper, "%s.%d" % (k.name, i + 1), s,
+                        k.verlauf + [{"name": "Getrennt %d/%d" % (i + 1, len(shapes)), "typ": "trennen"}])
+            self.naechster_koerper += 1
+            self.koerper[t.id] = t
+            neu.append(t)
+        return neu
+
+    def koerper_ersetzen_mehrere(self, kids, shape, typ_name, eintrag=None):
+        """Mehrere Koerper (Flaechen) durch einen neuen ersetzen (Koerper aus Flaechen, Naehen)."""
+        from .koerper import Koerper
+        alte = [self.koerper_holen(k) for k in kids]
+        nr = self.zaehler.get(typ_name, 0) + 1
+        name = "%s%d" % (typ_name, nr)
+        self._merke_koerper("%s aus %s" % (name, ", ".join(k.name for k in alte)))
+        for k in alte:
+            del self.koerper[k.id]
+        k = Koerper(self.naechster_koerper, name, shape, [dict(eintrag or {}, name=name)])
+        self.naechster_koerper += 1
+        self.koerper[k.id] = k
+        self.zaehler[typ_name] = nr
+        return k
+
     # --- Skizzen ---------------------------------------------------------------
     def skizze_holen(self, sid):
         try:

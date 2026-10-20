@@ -654,9 +654,22 @@ def feature_befehl(was, d):
             L = zahl(d, "laenge", 10)
             if modus == "mitte":
                 von, bis = -L / 2, L / 2
+            elif modus == "beidseitig":
+                von, bis = -zahl(d, "laenge2", 0), L
             else:
                 von, bis = (0.0, L) if not d.get("umkehren") else (-L, 0.0)
-        werkzeug = sk_feat.extrudieren(skz, von, bis)
+        if d.get("als_flaeche"):
+            werkzeug = sk_feat.extrudieren_flaeche(skz, von, bis)
+            info = {"operation": "neu", "ziel": None, "volumen": 0, "von": round(von, 3), "bis": round(bis, 3),
+                    "laenge": round(bis - von, 3)}
+            if d.get("vorschau"):
+                return {"vorschau": netz_json(kp.vernetzen(werkzeug)), "info": info}
+            k = p.feature(werkzeug, "Extrudierte Fläche", "neu", None, {"typ": "extrusion_flaeche", "skizze": skz["id"]})
+            return {"koerper": k.id, "info": info}
+        if abs(zahl(d, "schraege", 0)) > 1e-9:
+            werkzeug = sk_feat.extrudieren_schraeg(skz, von, bis, zahl(d, "schraege", 0))
+        else:
+            werkzeug = sk_feat.extrudieren(skz, von, bis)
         erg = _feature_ergebnis(werkzeug, "Extrusion", d, {
             "typ": "extrusion", "skizze": skz["id"], "modus": modus, "von": round(von, 4), "bis": round(bis, 4)})
         erg["info"].update({"von": round(von, 3), "bis": round(bis, 3), "laenge": round(bis - von, 3)})
@@ -664,7 +677,7 @@ def feature_befehl(was, d):
     if was == "drehen":
         skz = p.skizze_holen(d["sid"])
         el = d.get("element")
-        werkzeug = sk_feat.drehen(skz, zahl(d, "winkel", 360), None if el in (None, "") else int(el))
+        werkzeug = sk_feat.drehen(skz, zahl(d, "winkel", 360), None if el in (None, "") else int(el), zahl(d, "winkel2", 0))
         return _feature_ergebnis(werkzeug, "Drehung", d, {
             "typ": "drehung", "skizze": skz["id"], "winkel": zahl(d, "winkel", 360), "element": el})
     if was in ("runden", "fasen"):
@@ -677,7 +690,41 @@ def feature_befehl(was, d):
         typ = "Fase" if was == "fasen" else "Rundung"
         p.koerper_aendern(k.id, neu, typ, {"typ": was, "kanten": kanten, "radius": zahl(d, "radius", 1)})
         return {"koerper": k.id}
-    if was in ("bool", "verschieben", "spiegeln", "muster", "schale", "aufdicken", "schneiden_flaeche"):
+    if was == "aus_flaechen":
+        kids = [int(x) for x in d.get("kids") or []]
+        sc = p.scan(d["id"]) if d.get("id") is not None else None
+        shape, zellen = sk_feat.koerper_aus_flaechen([p.koerper_holen(k).shape for k in kids],
+                                                     sc.xyz if sc else None, sc.tri if sc else None)
+        info = {"zellen": zellen, "volumen": round(kp.kennwerte(shape)["volumen"], 3)}
+        if d.get("vorschau"):
+            return {"vorschau": netz_json(kp.vernetzen(shape)), "info": info}
+        k = p.koerper_ersetzen_mehrere(kids, shape, "Körper aus Flächen", {"typ": "aus_flaechen", "aus": kids})
+        return {"koerper": k.id, "info": info}
+    if was == "trennen":
+        teile = sk_feat.koerper_trennen(p.koerper_holen(d["kid"]).shape)
+        neu = p.koerper_aufteilen(d["kid"], teile)
+        return {"koerper": [k.id for k in neu]}
+    if was == "gewinde":
+        el = _erk_element(d["id"], d.get("element"))
+        if "achse" not in el:
+            raise Fehler("Für ein Gewinde einen Zylinder, Zapfen oder eine Bohrung wählen.")
+        aussen = el.get("typ") not in ("bohrung",)
+        r = float(el.get("durchmesser_nenn") or el.get("durchmesser") or 2 * el.get("radius", 0)) / 2
+        laenge = zahl(d, "laenge", 0) or float(el.get("hoehe", 10))
+        a = np.asarray(el["achse"], float)
+        start = np.asarray(el["punkt"], float) - a * float(el.get("hoehe", laenge)) / 2
+        werkzeug = sk_feat.gewinde(start, a, r, laenge, zahl(d, "steigung", 1.5), aussen)
+        k = p.koerper_holen(d["kid"])
+        from kern.koerper import boolean
+        shape = boolean(k.shape, werkzeug, "abziehen")
+        info = {"durchmesser": round(2 * r, 3), "steigung": zahl(d, "steigung", 1.5), "laenge": round(laenge, 3),
+                "art": "Außengewinde" if aussen else "Innengewinde"}
+        if d.get("vorschau"):
+            return {"vorschau": netz_json(kp.vernetzen(shape)), "info": info}
+        p.koerper_aendern(k.id, shape, "Gewinde", dict(info, typ="gewinde"))
+        return {"koerper": k.id, "info": info}
+    if was in ("bool", "verschieben", "spiegeln", "muster", "schale", "aufdicken", "schneiden_flaeche",
+               "skalieren", "flaeche_verschieben", "flaechen_loeschen", "formschraege"):
         return _koerper_werkzeug(was, d)
     if was == "loft":
         sids = [int(x) for x in d.get("sids") or []]
@@ -767,6 +814,20 @@ def _koerper_werkzeug(was, d):
             raise Fehler("„%s“ enthält keine Fläche." % f.name)
         shape = ff.koerper_schneiden(k.shape, ex.Current(), d.get("behalten", "unten"))
         return antwort(shape, {"typ": "beschneiden", "flaeche": f.id, "behalten": d.get("behalten")}, "Beschnitt")
+    if was == "skalieren":
+        f = d.get("faktor", 1)
+        shape = sk_feat.skalieren(k.shape, f if isinstance(f, list) else float(f))
+        return antwort(shape, {"typ": "skalieren", "faktor": f}, "Skalieren")
+    if was == "flaeche_verschieben":
+        shape = sk_feat.flaeche_verschieben(k.shape, [int(x) for x in d.get("flaechen") or []], zahl(d, "abstand", 1))
+        return antwort(shape, {"typ": "flaeche_verschieben", "abstand": zahl(d, "abstand", 1)}, "Fläche verschoben")
+    if was == "flaechen_loeschen":
+        shape = sk_feat.flaechen_loeschen(k.shape, [int(x) for x in d.get("flaechen") or []])
+        return antwort(shape, {"typ": "flaechen_loeschen"}, "Flächen entfernt")
+    if was == "formschraege":
+        r = {"z": (0, 0, 1), "-z": (0, 0, -1), "y": (0, 1, 0), "-y": (0, -1, 0), "x": (1, 0, 0), "-x": (-1, 0, 0)}[d.get("richtung", "z")]
+        shape = sk_feat.formschraege(k.shape, [int(x) for x in d.get("flaechen") or []], zahl(d, "winkel", 1), r)
+        return antwort(shape, {"typ": "formschraege", "winkel": zahl(d, "winkel", 1)}, "Formschräge")
     raise Fehler("Unbekanntes Werkzeug %s" % was)
 
 

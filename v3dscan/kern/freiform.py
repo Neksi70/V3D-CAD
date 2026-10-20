@@ -457,6 +457,17 @@ def flaeche_einpassen(P, raster=None, verlaengern=0.1, glaettung=0):
     q = (P - c) @ np.c_[u_a, v_a, n_a]
     lo, hi = q[:, :2].min(0), q[:, :2].max(0)
     spanne = hi - lo
+    # praktisch eben -> echte Ebene (exakt, und Verschneidungen damit sind schnell)
+    if float(np.percentile(np.abs(q[:, 2]), 98)) <= max(0.03, 2e-4 * float(spanne.max())):
+        from OCP.gp import gp_Dir as _D, gp_Pln, gp_Pnt as _P, gp_Ax3
+        rand = verlaengern * spanne
+        m2 = 0.5 * (lo + hi)
+        mitte = c + m2[0] * u_a + m2[1] * v_a
+        pln = gp_Pln(gp_Ax3(_P(*map(float, mitte)), _D(*map(float, n_a)), _D(*map(float, u_a))))
+        h = 0.5 * spanne + rand
+        face = BRepBuilderAPI_MakeFace(pln, -float(h[0]), float(h[0]), -float(h[1]), float(h[1])).Face()
+        return face, {"raster": [0, 0], "punkte": int(len(P)), "normale": n_a.tolist(), "mitte": mitte.tolist(),
+                      "zelle": 0.0, "eben": True}
     if raster is None:
         raster = int(np.clip(np.sqrt(len(P)) / 3, 8, 40))
     zelle = float(max(spanne) / (int(raster) - 1))
@@ -524,7 +535,8 @@ def flaeche_einpassen(P, raster=None, verlaengern=0.1, glaettung=0):
         for j in range(nv):
             p = c + gu[i] * u_a + gv[j] * v_a + H[i, j] * n_a
             arr.SetValue(i + 1, j + 1, gp_Pnt(*map(float, p)))
-    f = GeomAPI_PointsToBSplineSurface(arr, 3, 8, GeomAbs_C2, max(0.002, 0.004 * zelle))
+    # bikubisch (Grad 3): hoehere Grade machen spaetere Verschneidungen (Koerper aus Flaechen) sehr langsam
+    f = GeomAPI_PointsToBSplineSurface(arr, 3, 3, GeomAbs_C2, max(0.002, 0.004 * zelle))
     if not f.IsDone():
         raise ValueError("Flächeneinpassung fehlgeschlagen.")
     s = f.Surface()

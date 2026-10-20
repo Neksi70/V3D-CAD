@@ -735,6 +735,8 @@ def element_json(el):
             aus[k] = [round(float(x), 6) for x in el[k]]
     if "r" in el:
         aus["r"] = round(float(el["r"]), 6)
+    if "pole" in el:
+        aus["pole"] = [[round(float(x), 6) for x in q] for q in el["pole"]]
     if "rms" in el:
         aus["rms"] = round(float(el["rms"]), 5)
     for k in ("achse", "nenn"):
@@ -745,13 +747,15 @@ def element_json(el):
 
 def element_lesen(d):
     el = dict(d)
-    for k in ("a", "b", "m", "mitte", "p", "d"):
+    for k in ("a", "b", "m", "mitte", "p", "d", "pole"):
         if k in el:
             el[k] = np.asarray(el[k], float)
     return el
 
 
 def kette_text(el):
+    if el["typ"] == "spline":
+        return "Spline (%d Pole)" % len(el["pole"])
     if el["typ"] == "linie":
         return "Linie %.2f mm" % np.linalg.norm(np.asarray(el["b"]) - np.asarray(el["a"]))
     if el["typ"] == "kreis":
@@ -763,6 +767,8 @@ def diskret(el, schritt_grad=5.0):
     """Element -> 2D-Punktfolge (Anzeige, Flaeche, Innen-Test)."""
     if el["typ"] == "linie":
         return np.array([el["a"], el["b"]], float)
+    if el["typ"] == "spline":
+        return spline_auswerten(el["pole"])
     m, r = np.asarray(el["mitte"], float), float(el["r"])
     if el["typ"] == "kreis":
         w = np.linspace(0, 2 * math.pi, int(360 / schritt_grad) + 1)
@@ -939,3 +945,463 @@ def schnitt_abweichung(skz):
     for k in ketten:
         aus.append(None if k is None else next(it))
     return aus
+
+
+# === Skizzen-Editor (v1.0): Zeichnen, Spline, Versatz, Spiegeln, Kopieren, Ecken, Bedingungen, Umriss, DXF ===
+def _lin(a, b):
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    d = b - a
+    n = np.linalg.norm(d)
+    return {"typ": "linie", "a": a, "b": b, "p": a.copy(), "d": d / n if n > 1e-12 else np.array([1.0, 0])}
+
+
+def _kreis_3p(a, m, b):
+    a, m, b = (np.asarray(x, float) for x in (a, m, b))
+    k = _kreis_fit(np.array([a, m, b]))
+    if k is None:
+        raise ValueError("Die drei Punkte liegen auf einer Linie.")
+    return k[0], k[1]
+
+
+def zeichnen(art, punkte, wert=None):
+    """Neue Kette aus Klickpunkten (2D). art: linie (2 P.), polylinie (n P.), kreis (Mitte + Randpunkt
+    oder wert=r), kreis3 (3 P.), bogen (Start, Zwischen-, Endpunkt), rechteck (2 Ecken), langloch (2 Mitten +
+    wert=Breite), sechseck (Mitte + Eckpunkt). -> Kette (Parameterform)."""
+    P = [np.asarray(p, float) for p in punkte]
+    if art == "linie":
+        return {"geschlossen": False, "elemente": [_lin(P[0], P[1])]}
+    if art == "polylinie":
+        zu = len(P) > 2 and np.linalg.norm(P[0] - P[-1]) < 1e-9
+        if zu:
+            P = P[:-1]
+        els = [_lin(P[i], P[(i + 1) % len(P)]) for i in range(len(P) if zu else len(P) - 1)]
+        return {"geschlossen": bool(zu), "elemente": els}
+    if art == "kreis":
+        r = float(wert) if wert else float(np.linalg.norm(P[1] - P[0]))
+        return {"geschlossen": True, "elemente": [{"typ": "kreis", "mitte": P[0], "r": r}]}
+    if art == "kreis3":
+        m, r = _kreis_3p(*P[:3])
+        return {"geschlossen": True, "elemente": [{"typ": "kreis", "mitte": m, "r": r}]}
+    if art == "bogen":
+        m, r = _kreis_3p(*P[:3])
+        return {"geschlossen": False, "elemente": [{"typ": "bogen", "a": P[0], "m": P[1], "b": P[2], "mitte": m, "r": r}]}
+    if art == "rechteck":
+        (x0, y0), (x1, y1) = P[0], P[1]
+        e = [np.array(p) for p in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+        return {"geschlossen": True, "elemente": [_lin(e[i], e[(i + 1) % 4]) for i in range(4)]}
+    if art == "langloch":
+        a, b = P[0], P[1]
+        r = float(wert) / 2 if wert else 0.25 * float(np.linalg.norm(b - a))
+        d = (b - a) / max(np.linalg.norm(b - a), 1e-12)
+        n = np.array([-d[1], d[0]])
+        return {"geschlossen": True, "elemente": [
+            _lin(a + n * r, b + n * r),
+            {"typ": "bogen", "a": b + n * r, "m": b + d * r, "b": b - n * r, "mitte": b, "r": r},
+            _lin(b - n * r, a - n * r),
+            {"typ": "bogen", "a": a - n * r, "m": a - d * r, "b": a + n * r, "mitte": a, "r": r}]}
+    if art == "sechseck":
+        m, e = P[0], P[1]
+        r = float(np.linalg.norm(e - m))
+        w0 = math.atan2(e[1] - m[1], e[0] - m[0])
+        ecken = [m + r * np.array([math.cos(w0 + k * math.pi / 3), math.sin(w0 + k * math.pi / 3)]) for k in range(6)]
+        return {"geschlossen": True, "elemente": [_lin(ecken[k], ecken[(k + 1) % 6]) for k in range(6)]}
+    raise ValueError("Unbekannte Zeichenart „%s“." % art)
+
+
+def kette_json(k):
+    return {"geschlossen": bool(k["geschlossen"]), "elemente": [element_json(e) for e in k["elemente"]]}
+
+
+# --- Spline (Freiformkurve) ---------------------------------------------------------------------------
+def _bspline_basis(t, m, p=3):
+    k = np.r_[[0.0] * p, np.linspace(0, 1, m - p + 1), [1.0] * p]
+    t = np.clip(np.asarray(t, float), 0, 1 - 1e-12)
+    N = np.zeros((len(t), len(k) - 1))
+    for i in range(len(k) - 1):
+        N[:, i] = (k[i] <= t) & (t < k[i + 1])
+    for q in range(1, p + 1):
+        neu = np.zeros((len(t), len(k) - 1 - q))
+        for i in range(len(k) - 1 - q):
+            a, b = k[i + q] - k[i], k[i + q + 1] - k[i + 1]
+            if a > 0:
+                neu[:, i] += (t - k[i]) / a * N[:, i]
+            if b > 0:
+                neu[:, i] += (k[i + q + 1] - t) / b * N[:, i + 1]
+        N = neu
+    return N[:, :m]
+
+
+def spline_auswerten(pole, n=80):
+    pole = np.asarray(pole, float)
+    t = np.linspace(0, 1, n)
+    P = _bspline_basis(t, len(pole)) @ pole
+    P[0], P[-1] = pole[0], pole[-1]
+    return P
+
+
+def spline_fit(P, tol=0.05, max_pole=40):
+    """Punktfolge -> kubischer B-Spline (Enden fest), so wenige Pole wie fuer tol noetig
+    (QuickSurface "Approximate within")."""
+    P = np.asarray(P, float)
+    s = np.r_[0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]
+    t = s / max(s[-1], 1e-12)
+    for m in range(4, max_pole + 1):
+        B = _bspline_basis(t, m)
+        rest = P - np.outer(B[:, 0], P[0]) - np.outer(B[:, -1], P[-1])
+        innen = np.linalg.lstsq(B[:, 1:-1], rest, rcond=None)[0]
+        pole = np.r_[P[:1], innen, P[-1:]]
+        fehler = np.linalg.norm(B @ pole - P, axis=1)
+        if np.percentile(fehler, 98) <= tol:
+            break
+    return {"typ": "spline", "pole": pole, "a": P[0], "b": P[-1], "rms": float(np.sqrt(np.mean(fehler ** 2)))}
+
+
+def spline_aus_schnitt(kette, punkte, i, j, tol=0.05):
+    """Elemente i..j einer Kette durch EINEN Spline ersetzen, eingepasst auf die Schnittpunkte
+    zwischen Anfang von i und Ende von j."""
+    els = [element_lesen(e) for e in kette["elemente"]]
+    P = np.asarray(punkte, float)
+    a, b = np.asarray(els[i]["a"]), np.asarray(els[j]["b"])
+    ia = int(np.argmin(np.linalg.norm(P - a, axis=1)))
+    ib = int(np.argmin(np.linalg.norm(P - b, axis=1)))
+    if kette["geschlossen"] and ib < ia:
+        Q = np.r_[P[ia:], P[:ib + 1]]
+    else:
+        Q = P[min(ia, ib):max(ia, ib) + 1]
+        if ia > ib:
+            Q = Q[::-1]
+    if len(Q) < 4:
+        raise ValueError("Zu wenige Schnittpunkte für einen Spline in diesem Bereich.")
+    Q = np.r_[[a], Q[1:-1], [b]]
+    sp = spline_fit(Q, tol)
+    neu = els[:i] + [sp] + els[j + 1:]
+    return {"geschlossen": kette["geschlossen"], "elemente": [element_json(e) for e in neu]}
+
+
+# --- Versatz, Spiegeln, Kopieren -----------------------------------------------------------------------
+def _flaeche_kette(els):
+    poly = kette_polygon({"elemente": els})
+    return flaeche(poly)
+
+
+def versatz(kette, abstand, ecke="bogen"):
+    """Kette (Linien/Boegen/Kreise) um abstand versetzen (+ = nach aussen bei geschlossener Kette,
+    sonst nach links). ecke: 'bogen' (runde Ecken aussen) oder 'schnitt' (verlaengert)."""
+    els = [element_lesen(e) for e in kette["elemente"]]
+    if any(e["typ"] == "spline" for e in els):
+        raise ValueError("Versatz von Splines ist (noch) nicht möglich.")
+    if len(els) == 1 and els[0]["typ"] == "kreis":
+        r = els[0]["r"] + abstand
+        if r <= 0:
+            raise ValueError("Versatz macht den Kreis zu klein.")
+        return {"geschlossen": True, "elemente": [element_json({"typ": "kreis", "mitte": els[0]["mitte"], "r": r})]}
+    vz = 1.0
+    if kette["geschlossen"]:
+        vz = -1.0 if _flaeche_kette(els) > 0 else 1.0      # gegen den Uhrzeigersinn: aussen = rechts
+    neu = []
+    for e in els:
+        if e["typ"] == "linie":
+            d = (e["b"] - e["a"]) / max(np.linalg.norm(e["b"] - e["a"]), 1e-12)
+            nrm = np.array([-d[1], d[0]]) * vz * abstand
+            neu.append(dict(_lin(e["a"] + nrm, e["b"] + nrm)))
+        else:
+            # Bogen: Richtung von a nach b bestimmt, ob er links- oder rechtsherum laeuft
+            m = e["mitte"]
+            links = ((e["m"] - e["a"])[0] * (e["b"] - e["a"])[1] - (e["m"] - e["a"])[1] * (e["b"] - e["a"])[0]) < 0
+            dr = abstand * vz * (-1 if links else 1)
+            r = e["r"] + dr
+            if r <= 0:
+                raise ValueError("Versatz macht einen Bogen zu klein (R %.2f)." % e["r"])
+            f = r / e["r"]
+            neu.append({"typ": "bogen", "mitte": m, "r": r, "a": m + (e["a"] - m) * f, "m": m + (e["m"] - m) * f,
+                        "b": m + (e["b"] - m) * f})
+    # Anschluesse neu
+    aus = []
+    n = len(neu)
+    for k in range(n):
+        aus.append(neu[k])
+        if k == n - 1 and not kette["geschlossen"]:
+            break
+        A, B = neu[k], neu[(k + 1) % n]
+        if np.linalg.norm(A["b"] - B["a"]) < 1e-7:
+            continue
+        if ecke == "bogen" and abstand * 1 != 0:
+            # Ecke rund: Bogen um den alten Eckpunkt mit Radius |abstand|
+            mitte = els[k]["b"] if np.linalg.norm(els[k]["b"] - els[(k + 1) % n]["a"]) < 1e-6 else els[k]["b"]
+            q = A["b"] - mitte
+            w = B["a"] - mitte
+            mid = q + w
+            mid = mitte + mid / max(np.linalg.norm(mid), 1e-12) * abs(abstand)
+            # nur wenn die Elemente auseinanderlaufen (konvexe Ecke)
+            S_ = _schnitt_gerade_gerade(A.get("p", A["a"]), A.get("d", np.array([1.0, 0])), B.get("p", B["a"]), B.get("d", np.array([1.0, 0]))) if A["typ"] == B["typ"] == "linie" else []
+            if S_ and ((S_[0] - A["b"]) @ (A["b"] - A["a"]) < 0):
+                p_ = S_[0]
+                A["b"] = p_
+                B["a"] = p_
+                B["p"] = p_
+                continue
+            aus.append({"typ": "bogen", "a": A["b"].copy(), "m": mid, "b": B["a"].copy(), "mitte": mitte, "r": abs(abstand)})
+        else:
+            p_, _ = _anschluss(A, B, 0.5 * (A["b"] + B["a"]), 1e9, 0)
+            A["b"] = p_
+            B["a"] = p_
+            if B["typ"] == "linie":
+                B["p"] = p_
+    if kette["geschlossen"] and ecke != "bogen":
+        A, B = aus[-1], aus[0]
+    for e in aus:
+        if e["typ"] == "linie":
+            d = e["b"] - e["a"]
+            e["d"] = d / max(np.linalg.norm(d), 1e-12)
+            e["p"] = e["a"]
+        elif e["typ"] == "bogen":
+            e["m"] = _auf_element(e, e["m"])
+    return {"geschlossen": kette["geschlossen"], "elemente": [element_json(e) for e in aus]}
+
+
+def _abbilden(kette, f, spiegelt=False):
+    els = [element_lesen(e) for e in kette["elemente"]]
+    neu = []
+    for e in els:
+        e2 = dict(e)
+        for k in ("a", "b", "m", "mitte"):
+            if k in e2:
+                e2[k] = f(e2[k])
+        if "pole" in e2:
+            e2["pole"] = np.array([f(p) for p in e2["pole"]])
+        if e2["typ"] == "linie":
+            e2 = _lin(e2["a"], e2["b"])
+        neu.append(e2)
+    if spiegelt:                       # Umlaufsinn bleibt erhalten
+        neu = [dict(e, a=e["b"], b=e["a"], **({"pole": e["pole"][::-1]} if "pole" in e else {})) for e in neu[::-1]]
+        neu = [_lin(e["a"], e["b"]) if e["typ"] == "linie" else e for e in neu]
+    return {"geschlossen": kette["geschlossen"], "elemente": [element_json(e) for e in neu]}
+
+
+def spiegeln_2d(kette, p, d):
+    """An der Geraden (Punkt p, Richtung d) spiegeln."""
+    p, d = np.asarray(p, float), np.asarray(d, float) / np.linalg.norm(d)
+
+    def f(x):
+        x = np.asarray(x, float)
+        q = x - p
+        return p + 2 * (q @ d) * d - q
+    return _abbilden(kette, f, spiegelt=True)
+
+
+def kopieren(kette, art="linear", anzahl=2, schritt=(10, 0), anzahl2=1, schritt2=(0, 10), mitte=(0, 0), winkel=360.0):
+    """Kopien (ohne Original): linear, raster (anzahl × anzahl2) oder kreis (um mitte, Winkel verteilt)."""
+    aus = []
+    if art in ("linear", "raster"):
+        for i in range(int(anzahl)):
+            for j in range(int(anzahl2) if art == "raster" else 1):
+                if i == 0 and j == 0:
+                    continue
+                v = np.asarray(schritt, float) * i + np.asarray(schritt2, float) * j
+                aus.append(_abbilden(kette, lambda x, v=v: np.asarray(x, float) + v))
+    elif art == "kreis":
+        voll = abs(float(winkel) - 360) < 1e-6
+        n = int(anzahl)
+        for i in range(1, n):
+            w = math.radians(float(winkel) * i / (n if voll else max(n - 1, 1)))
+            R = np.array([[math.cos(w), -math.sin(w)], [math.sin(w), math.cos(w)]])
+            c = np.asarray(mitte, float)
+            aus.append(_abbilden(kette, lambda x, R=R, c=c: c + R @ (np.asarray(x, float) - c)))
+    else:
+        raise ValueError("Unbekannte Kopierart „%s“." % art)
+    return aus
+
+
+# --- Ecke runden, Bedingungen, Masse ----------------------------------------------------------------------
+def ecke_runden(kette, i, r):
+    """Zwischen Element i (Linie) und dem naechsten (Linie) einen Tangentenbogen mit Radius r einfuegen."""
+    els = [element_lesen(e) for e in kette["elemente"]]
+    n = len(els)
+    j = (i + 1) % n
+    if not kette["geschlossen"] and i == n - 1:
+        raise ValueError("Am Kettenende gibt es keine Ecke.")
+    A, B = els[i], els[j]
+    if A["typ"] != "linie" or B["typ"] != "linie":
+        raise ValueError("Ecken runden geht zwischen zwei Linien.")
+    m = _rundung_mitte(A, B, A["b"] - 1e-3 * (A["d"] - B["d"]), float(r))
+    # Seite: Mittelpunkt muss innerhalb des Winkels liegen
+    ecke = A["b"]
+    w = (A["a"] - ecke) / max(np.linalg.norm(A["a"] - ecke), 1e-12) + (B["b"] - ecke) / max(np.linalg.norm(B["b"] - ecke), 1e-12)
+    kand = []
+    for sa in (1, -1):
+        for sb in (1, -1):
+            nA = np.array([-A["d"][1], A["d"][0]]) * sa
+            nB = np.array([-B["d"][1], B["d"][0]]) * sb
+            s_ = _schnitt_gerade_gerade(A["p"] + nA * r, A["d"], B["p"] + nB * r, B["d"])
+            if s_:
+                kand.append(s_[0])
+    m = max(kand, key=lambda c: (c - ecke) @ w)
+    ta = A["p"] + ((m - A["p"]) @ A["d"]) * A["d"]
+    tb = B["p"] + ((m - B["p"]) @ B["d"]) * B["d"]
+    if np.linalg.norm(ta - A["a"]) > np.linalg.norm(A["b"] - A["a"]) or np.linalg.norm(tb - B["b"]) > np.linalg.norm(B["b"] - B["a"]):
+        raise ValueError("Radius %s ist für diese Ecke zu groß." % r)
+    mid = m + (ecke - m) / max(np.linalg.norm(ecke - m), 1e-12) * r
+    A["b"] = ta
+    B["a"] = tb
+    B["p"] = tb
+    bogen = {"typ": "bogen", "a": ta, "m": mid, "b": tb, "mitte": m, "r": float(r)}
+    neu = els[:i + 1] + [bogen] + els[i + 1:] if j != 0 else els + [bogen]
+    if j == 0:
+        neu[0] = B
+    return {"geschlossen": kette["geschlossen"], "elemente": [element_json(e) for e in neu]}
+
+
+def _neu_anschliessen(els, geschlossen, idx):
+    """Nach Aenderung von Element idx die Anschlusspunkte zu beiden Nachbarn neu schneiden."""
+    n = len(els)
+    for k in ((idx - 1) % n, idx):
+        if not geschlossen and (k < 0 or k >= n - 1) and not (k == idx - 1 and idx > 0):
+            continue
+        if not geschlossen and k == n - 1:
+            continue
+        A, B = els[k], els[(k + 1) % n]
+        p_, _ = _anschluss(A, B, 0.5 * (A["b"] + B["a"]), 1e9, 0)
+        A["b"] = p_
+        B["a"] = p_
+        for e in (A, B):
+            if e["typ"] == "linie":
+                d = e["b"] - e["a"]
+                if np.linalg.norm(d) > 1e-12 and d @ e["d"] < 0:
+                    pass
+                e["p"] = e["a"]
+            elif e["typ"] == "bogen":
+                e["m"] = _auf_element(e, e["m"])
+    return els
+
+
+def bedingung(kette, i, art, bezug=None):
+    """Linie i: waagrecht | senkrecht | parallel / rechtwinklig zu Linie bezug (Index in derselben Kette).
+    Gedreht wird um die Linienmitte, die Nachbarn schliessen neu an."""
+    els = [element_lesen(e) for e in kette["elemente"]]
+    e = els[i]
+    if e["typ"] != "linie":
+        raise ValueError("Bedingungen gelten für Linien.")
+    if art == "waagrecht":
+        ziel = np.array([1.0, 0])
+    elif art == "senkrecht":
+        ziel = np.array([0, 1.0])
+    elif art in ("parallel", "rechtwinklig"):
+        if bezug is None or els[bezug]["typ"] != "linie":
+            raise ValueError("Als Bezug eine andere Linie wählen.")
+        ziel = els[bezug]["d"]
+        if art == "rechtwinklig":
+            ziel = np.array([-ziel[1], ziel[0]])
+    else:
+        raise ValueError("Unbekannte Bedingung „%s“." % art)
+    if ziel @ e["d"] < 0:
+        ziel = -ziel
+    mitte = 0.5 * (e["a"] + e["b"])
+    e["d"], e["p"] = ziel, mitte
+    e["achse"] = art
+    _neu_anschliessen(els, kette["geschlossen"], i)
+    return {"geschlossen": kette["geschlossen"], "elemente": [element_json(x) for x in els]}
+
+
+def abstand_setzen(kette, i, bezug, wert):
+    """Linie i parallel so verschieben, dass sie wert mm von der (parallelen) Linie bezug entfernt ist."""
+    els = [element_lesen(e) for e in kette["elemente"]]
+    A, B = els[i], els[bezug]
+    if A["typ"] != "linie" or B["typ"] != "linie":
+        raise ValueError("Abstand zwischen zwei Linien.")
+    if abs(A["d"] @ B["d"]) < math.cos(math.radians(2)):
+        raise ValueError("Die Linien sind nicht parallel – erst die Bedingung „parallel“ setzen.")
+    nrm = np.array([-B["d"][1], B["d"][0]])
+    jetzt = (0.5 * (A["a"] + A["b"]) - B["p"]) @ nrm
+    verschiebung = (math.copysign(float(wert), jetzt or 1.0) - jetzt) * nrm
+    A["a"], A["b"], A["p"] = A["a"] + verschiebung, A["b"] + verschiebung, A["p"] + verschiebung
+    _neu_anschliessen(els, kette["geschlossen"], i)
+    return {"geschlossen": kette["geschlossen"], "elemente": [element_json(x) for x in els]}
+
+
+# --- Netz-Umriss (Mesh Outline) ---------------------------------------------------------------------------
+def umriss(xyz, E, zelle=None):
+    """Silhouette des ganzen Scans in der Ebene: Punkte projizieren, Belegungsraster, Randkonturen.
+    -> (polylinien, geschlossen)."""
+    q = zu2d(xyz, E)
+    lo, hi = q.min(0), q.max(0)
+    if zelle is None:
+        zelle = max(float(np.max(hi - lo)) / 600, punktabstand(xyz) * 1.5)
+    nx, ny = int((hi[0] - lo[0]) / zelle) + 3, int((hi[1] - lo[1]) / zelle) + 3
+    ij = np.floor((q - lo) / zelle).astype(int) + 1
+    G = np.zeros((nx, ny), bool)
+    G[ij[:, 0], ij[:, 1]] = True
+    # Luecken schliessen (Dilatation + Erosion) und innere Loecher fuellen bleibt erhalten
+    def dil(A):
+        B = A.copy()
+        B[1:] |= A[:-1]; B[:-1] |= A[1:]; B[:, 1:] |= A[:, :-1]; B[:, :-1] |= A[:, 1:]
+        return B
+    G = ~dil(~dil(G))
+    # Randkanten zwischen belegt/frei als Segmente, dann verketten
+    seg = {}
+    def add(a, b):
+        seg.setdefault(a, []).append(b)
+    for i in range(nx - 1):
+        for j in range(ny - 1):
+            if G[i, j] and not G[i, j - 1] if j > 0 else G[i, j]:
+                pass
+    xs, ys = np.nonzero(G)
+    for i, j in zip(xs.tolist(), ys.tolist()):
+        if not G[i, j - 1]:
+            add((i, j), (i + 1, j))
+        if not G[i + 1, j]:
+            add((i + 1, j), (i + 1, j + 1))
+        if not G[i, j + 1]:
+            add((i + 1, j + 1), (i, j + 1))
+        if not G[i - 1, j]:
+            add((i, j + 1), (i, j))
+    linien, zu = [], []
+    while seg:
+        start = next(iter(seg))
+        weg = [start]
+        cur = start
+        while cur in seg:
+            nxt = seg[cur].pop()
+            if not seg[cur]:
+                del seg[cur]
+            weg.append(nxt)
+            cur = nxt
+            if cur == start:
+                break
+        if len(weg) > 8:
+            P = (np.array(weg[:-1], float) - 1) * zelle + lo
+            linien.append(P)
+            zu.append(True)
+    return linien, zu
+
+
+# --- DXF-Export ---------------------------------------------------------------------------------------------
+def dxf(skz):
+    """Skizze als DXF R12 (2D, mm): LINE, ARC, CIRCLE; Splines als POLYLINE."""
+    z = ["0", "SECTION", "2", "ENTITIES"]
+
+    def p(code, wert):
+        z.extend([str(code), ("%.6f" % wert) if isinstance(wert, float) else str(wert)])
+    for k in skz["ketten"]:
+        for e in (element_lesen(x) for x in k["elemente"]):
+            if e["typ"] == "linie":
+                z.extend(["0", "LINE", "8", "0"])
+                p(10, float(e["a"][0])); p(20, float(e["a"][1])); p(11, float(e["b"][0])); p(21, float(e["b"][1]))
+            elif e["typ"] == "kreis":
+                z.extend(["0", "CIRCLE", "8", "0"])
+                p(10, float(e["mitte"][0])); p(20, float(e["mitte"][1])); p(40, float(e["r"]))
+            elif e["typ"] == "bogen":
+                m = e["mitte"]
+                w = [math.degrees(math.atan2(q[1] - m[1], q[0] - m[0])) % 360 for q in (e["a"], e["m"], e["b"])]
+                ccw = (w[1] - w[0]) % 360 <= (w[2] - w[0]) % 360
+                s0, s1 = (w[0], w[2]) if ccw else (w[2], w[0])
+                z.extend(["0", "ARC", "8", "0"])
+                p(10, float(m[0])); p(20, float(m[1])); p(40, float(e["r"])); p(50, float(s0)); p(51, float(s1))
+            else:
+                P = diskret(e)
+                z.extend(["0", "POLYLINE", "8", "0", "66", "1"])
+                for q in P:
+                    z.extend(["0", "VERTEX", "8", "0"])
+                    p(10, float(q[0])); p(20, float(q[1]))
+                z.extend(["0", "SEQEND"])
+    z.extend(["0", "ENDSEC", "0", "EOF"])
+    return "\n".join(z) + "\n"
