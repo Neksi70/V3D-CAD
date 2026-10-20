@@ -2952,6 +2952,11 @@ const AKTIONEN = {
   flVorschau: { text: 'Fläche aus Auswahl: Vorschau', fn: flVorschau },
   flAnwenden: { text: 'Fläche aus Auswahl', fn: flAnwenden },
   kaAus: { text: 'Abweichungskarte aus', fn: kaAus },
+  anCad: { text: 'An V3D CAD übergeben', fn: () => {
+    koerperExport('step');
+    window.open('https://v3dcad.volme3dakademie.de', '_blank');
+    meldung('STEP gespeichert – in V3D CAD über „Import (STL/STEP/…)“ öffnen; Flächen bleiben echte B-Rep.', 'ok');
+  } },
   koerperStep: { text: 'Körper als STEP exportieren', fn: () => koerperExport('step') },
   koerperIges: { text: 'Körper als IGES exportieren', fn: () => koerperExport('iges') },
   anzeigeReiter: { text: 'Anzeigeoptionen', fn: () => rechtsSetzen('anzeige') },

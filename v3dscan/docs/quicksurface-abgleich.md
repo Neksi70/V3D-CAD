@@ -65,7 +65,7 @@ Legende: ✔ vorhanden · ◐ teilweise · ✗ fehlt · – bewusst weggelassen
 | Split solid (mit Fläche) | ✔ v0.8 Körper mit Fläche beschneiden |
 | Fillet / Chamfer | ✔ v0.7 Kantenwahl per Klick, Radius aus Scan |
 | Circular / Linear pattern, Mirror | ✔ v0.8 |
-| Export (STEP/IGES) | ✔ |
+| Export (STEP/IGES) | ✔ + „An V3D CAD“ (STEP speichern, V3D CAD öffnen; dort echtes B-Rep) |
 
 ## Analysis
 | QuickSurface | V3D Scan |
@@ -82,3 +82,10 @@ Legende: ✔ vorhanden · ◐ teilweise · ✗ fehlt · – bewusst weggelassen
 | Lizenz, Einheiten mm/inch/m, Sprache, Optionen | – nur mm, Deutsch |
 | Video-Tutorials, Hilfe-PDF, Shortcuts, Beispiele | ◐ Tastenkürzel-Dialog |
 | KI-Assistent (Gemini, verweist auf Tutorials) | ✗ – mit Claude möglich |
+
+## Stand v0.8.0 – was noch fehlt (Reihenfolge nach Nutzen)
+1. Messen (Abstand/Winkel/Radius am Scan und Körper), Symmetrieebene, Referenzebene/-linie/-punkt dauerhaft
+2. Loft / Sweep / Pipe / Fläche füllen, Fläche verlängern/nähen als eigene Werkzeuge
+3. Freiform von Hand (Käfig ziehen, Wrap Surface), G1-Übergänge zwischen den Auto-Flächen (jetzt C0)
+4. Mehrere Querschnitte, 3D-Skizze, Helix/Gewinde, Abwickeln (Unroll/Flatten)
+5. Analyse: Zebra, Formschräge (Draft), Flächen löschen / Fläche verschieben

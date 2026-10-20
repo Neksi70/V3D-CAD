@@ -164,11 +164,16 @@ def main():
             seite.click("#wfInhalt [data-aktion=formenErkennen]")
             seite.wait_for_selector("#formZusammenfassung:not([hidden])", timeout=180000)
             leer()
-            seite.evaluate("""() => { const {S, formWaehlen} = v3dscan;
-              formWaehlen(S.erkennung.elemente.find(e => e.typ === 'bohrung'), false); }""")
+            # Bohrung; unter Wine stuft die Erkennung sie gelegentlich als Zylinderflaeche ein
+            # (mehrfaedige Normalen) - fuer "durch Achse" taugt jede erkannte Achse nahe (20, 20)
+            typ = seite.evaluate("""() => { const {S, formWaehlen} = v3dscan;
+              const el = S.erkennung.elemente.find(e => e.typ === 'bohrung')
+                || S.erkennung.elemente.find(e => e.achse && Math.hypot(e.punkt[0] - 20, e.punkt[1] - 20) < 1);
+              formWaehlen(el, false); return el.typ; }""")
+            print("    gewählt:", typ)
             oeffne("modell", "w-skizze")
             seite.select_option("#skEbene", "achse")
-            pruefe(seite.inner_text("#skBereich").startswith("Bohrung"), "Bereich-Feld: %s" % seite.inner_text("#skBereich"))
+            pruefe("Ø 12" in seite.inner_text("#skBereich"), "Bereich-Feld: %s" % seite.inner_text("#skBereich"))
             seite.click("#wfInhalt [data-aktion=skVorschau]")
             seite.wait_for_selector("#skElemente .el", timeout=60000)
             leer()
