@@ -266,7 +266,11 @@ def vernetzen(shape, fein=False):
     # sichtbare Kanten: ohne entartete (Kugelpole) und ohne Nahtkanten
     karte = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndAncestors_s(kopie, TopAbs_EDGE, TopAbs_FACE, karte)
-    segmente = []
+    # Kanten-Nummer wie features.kanten_karte(Original) - die Kopie hat dieselbe Reihenfolge
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+    kmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(kopie, TopAbs_EDGE, kmap)
+    segmente, seg_id = [], []
     for i in range(1, karte.Extent() + 1):
         kante = TopoDS.Edge_s(karte.FindKey(i))
         if BRep_Tool.Degenerated_s(kante):
@@ -288,9 +292,11 @@ def vernetzen(shape, fein=False):
         pp = np.array([[v.X(), v.Y(), v.Z()] for v in
                        (disk.Value(j) for j in range(1, disk.NbPoints() + 1))])
         segmente.append(np.stack([pp[:-1], pp[1:]], 1))
+        seg_id.append(np.full(len(pp) - 1, kmap.FindIndex(kante), np.uint32))
     return {"xyz": (np.concatenate(punkte) if punkte else np.zeros((0, 3))).astype(np.float32),
             "tri": (np.concatenate(dreiecke) if dreiecke else np.zeros((0, 3), np.int64)).astype(np.uint32),
-            "kanten": (np.concatenate(segmente) if segmente else np.zeros((0, 2, 3))).astype(np.float32)}
+            "kanten": (np.concatenate(segmente) if segmente else np.zeros((0, 2, 3))).astype(np.float32),
+            "kanten_id": (np.concatenate(seg_id) if seg_id else np.zeros(0)).astype(np.uint32)}
 
 
 # --- Abweichung Scan <-> Koerper (Design X "Accuracy Analyzer", QuickSurface "Compare") -----------

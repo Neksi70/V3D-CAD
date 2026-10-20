@@ -8,6 +8,7 @@
 # Schluessel "koerper" als Stand der ganzen Koerperliste; TopoDS_Shapes sind
 # unveraenderlich, darum reichen dort Referenzen statt Kopien.
 
+import copy
 import io
 import json
 import zipfile
@@ -34,6 +35,9 @@ class Projekt:
         self.koerper = {}         # id -> koerper.Koerper
         self.naechster_koerper = 1
         self.grundkoerper_zaehler = 0   # "Grundkörper<N>" wie in Design X
+        self.zaehler = {}               # Feature-Typ -> laufende Nummer ("Extrusion3")
+        self.skizzen = {}               # id -> {"id","name","sichtbar","ebene","ketten","schnitt",...} (JSON)
+        self.naechste_skizze = 1
 
     # --- Verwaltung ---------------------------------------------------------
     def hinzufuegen(self, scan, merken=True):
@@ -67,6 +71,7 @@ class Projekt:
                 "dreiecke": 0 if s.tri is None else len(s.tri),
             } for s in self.scans.values()],
             "koerper": [k.zustand() for k in self.koerper.values()],
+            "skizzen": [skizze_zustand(z) for z in self.skizzen.values()],
             "undo": self.undo[-1][0] if self.undo else None,
             "redo": self.redo[-1][0] if self.redo else None,
         }
@@ -83,7 +88,9 @@ class Projekt:
 
     def _koerper_stand(self):
         return {"liste": [k.kopie() for k in self.koerper.values()],
-                "naechste": self.naechster_koerper, "zaehler": self.grundkoerper_zaehler}
+                "naechste": self.naechster_koerper, "zaehler": self.grundkoerper_zaehler,
+                "feature_zaehler": dict(self.zaehler),
+                "skizzen": copy.deepcopy(self.skizzen), "naechste_skizze": self.naechste_skizze}
 
     def _merke_koerper(self, text):
         self.undo.append((text, {"koerper": self._koerper_stand()}))
@@ -113,6 +120,9 @@ class Projekt:
                 self.koerper = neu
                 self.naechster_koerper = alt["naechste"]
                 self.grundkoerper_zaehler = alt["zaehler"]
+                self.zaehler = dict(alt.get("feature_zaehler", {}))
+                self.skizzen = alt.get("skizzen", {})
+                self.naechste_skizze = alt.get("naechste_skizze", 1)
                 continue
             aktuell = self.scans.get(sid)
             gegen[sid] = aktuell
@@ -249,6 +259,88 @@ class Projekt:
         self.grundkoerper_zaehler = nr
         return k
 
+    def feature(self, shape, typ_name, operation, ziel=None, eintrag=None):
+        """Feature-Koerper (Extrusion, Drehung …) neu anlegen oder mit ziel vereinen/abziehen."""
+        from .koerper import Koerper, boolean, OP_ZUSATZ
+        nr = self.zaehler.get(typ_name, 0) + 1
+        eintrag = dict(eintrag or {}, operation=operation)
+        if operation == "neu":
+            name = "%s%d" % (typ_name, nr)
+            self._merke_koerper("%s erzeugt" % name)
+            k = Koerper(self.naechster_koerper, name, shape, [dict(eintrag, name=name)])
+            self.naechster_koerper += 1
+            self.koerper[k.id] = k
+        else:
+            if ziel is None:
+                raise ValueError("Kein Zielkörper für „%s“." % operation)
+            neu_shape = boolean(ziel.shape, shape, operation)
+            name = "%s%d (%s)" % (typ_name, nr, OP_ZUSATZ[operation])
+            self._merke_koerper("%s → %s" % (name, ziel.name))
+            k = self.koerper[ziel.id]
+            k.shape = neu_shape
+            k.verlauf = k.verlauf + [dict(eintrag, name=name)]
+            k.rev += 1
+        self.zaehler[typ_name] = nr
+        return k
+
+    def koerper_aendern(self, kid, shape, typ_name, eintrag=None):
+        """Koerper durch geaenderte Form ersetzen (Rundung/Fase) – ein Verlaufsschritt."""
+        k = self.koerper_holen(kid)
+        nr = self.zaehler.get(typ_name, 0) + 1
+        name = "%s%d" % (typ_name, nr)
+        self._merke_koerper("%s an „%s“" % (name, k.name))
+        k = self.koerper[k.id]
+        k.shape = shape
+        k.verlauf = k.verlauf + [dict(eintrag or {}, name=name)]
+        k.rev += 1
+        self.zaehler[typ_name] = nr
+        return k
+
+    # --- Skizzen ---------------------------------------------------------------
+    def skizze_holen(self, sid):
+        try:
+            return self.skizzen[int(sid)]
+        except (KeyError, ValueError, TypeError):
+            raise KeyError("Skizze %s gibt es nicht (mehr)." % sid)
+
+    def skizze_hinzufuegen(self, daten):
+        nr = self.zaehler.get("Skizze", 0) + 1
+        name = "Skizze%d" % nr
+        self._merke_koerper("%s erzeugt" % name)
+        z = dict(daten, id=self.naechste_skizze, name=name, sichtbar=True, rev=1)
+        self.skizzen[z["id"]] = z
+        self.naechste_skizze += 1
+        self.zaehler["Skizze"] = nr
+        return z
+
+    def skizze_ersetzen(self, sid, daten, text="geändert"):
+        z = self.skizze_holen(sid)
+        self._merke_koerper("%s %s" % (z["name"], text))
+        neu = dict(z, **daten)
+        neu["rev"] = z.get("rev", 1) + 1
+        self.skizzen[z["id"]] = neu
+        return neu
+
+    def skizze_setzen(self, sid, sichtbar=None, name=None):
+        z = self.skizze_holen(sid)
+        if sichtbar is None and not name:
+            return z
+        text = "umbenannt" if name else ("eingeblendet" if sichtbar else "ausgeblendet")
+        self._merke_koerper("Skizze „%s“ %s" % (z["name"], text))
+        z = dict(self.skizzen[z["id"]])
+        if sichtbar is not None:
+            z["sichtbar"] = bool(sichtbar)
+        if name:
+            z["name"] = str(name)[:120]
+        z["rev"] = z.get("rev", 1) + 1
+        self.skizzen[z["id"]] = z
+        return z
+
+    def skizze_entfernen(self, sid):
+        z = self.skizze_holen(sid)
+        self._merke_koerper("Skizze „%s“ entfernt" % z["name"])
+        del self.skizzen[z["id"]]
+
     def koerper_hinzufuegen(self, shape, name, verlauf=None):
         """Fertigen Koerper uebernehmen (z. B. Import, Tests)."""
         from .koerper import Koerper
@@ -307,6 +399,10 @@ class Projekt:
                     z.writestr("koerper_%d.brep" % k.id, brep_text(k.shape))
                 info["naechster_koerper"] = self.naechster_koerper
                 info["grundkoerper_zaehler"] = self.grundkoerper_zaehler
+            if self.skizzen:
+                info["skizzen"] = list(self.skizzen.values())
+                info["naechste_skizze"] = self.naechste_skizze
+            info["zaehler"] = self.zaehler
             z.writestr("projekt.json", json.dumps(info, ensure_ascii=False, indent=1))
         return puffer.getvalue()
 
@@ -338,7 +434,19 @@ class Projekt:
                     p.koerper[k.id] = k
                 p.naechster_koerper = max([info.get("naechster_koerper", 1)] + [k + 1 for k in p.koerper])
                 p.grundkoerper_zaehler = int(info.get("grundkoerper_zaehler", 0))
+            for z in info.get("skizzen") or []:
+                p.skizzen[int(z["id"])] = z
+            p.naechste_skizze = max([info.get("naechste_skizze", 1)] + [k + 1 for k in p.skizzen])
+            p.zaehler = dict(info.get("zaehler") or {})
         return p
+
+
+def skizze_zustand(z):
+    """Kurzfassung fuer die Oberflaeche (ohne Schnittpunkte)."""
+    return {"id": z["id"], "name": z["name"], "sichtbar": z.get("sichtbar", True), "rev": z.get("rev", 1),
+            "ketten": len(z.get("ketten", [])),
+            "geschlossen": sum(1 for k in z.get("ketten", []) if k.get("geschlossen")),
+            "elemente": sum(len(k.get("elemente", [])) for k in z.get("ketten", []))}
 
 
 def verbinden(teile, name):

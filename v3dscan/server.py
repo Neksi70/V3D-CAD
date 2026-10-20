@@ -35,7 +35,9 @@ from kern import formen as fo  # noqa: E402
 from kern import koerper as kp  # noqa: E402
 from kern import koordinaten as ko  # noqa: E402
 from kern import netz as nz  # noqa: E402
+from kern import features as sk_feat  # noqa: E402
 from kern import registrierung as rg  # noqa: E402
+from kern import skizze as sk  # noqa: E402
 from kern import werkzeuge as wz  # noqa: E402
 from kern.projekt import Projekt  # noqa: E402
 from kern.wolke import AUSGEBBAR, AUSGEBBAR_NETZ, einlesen, ausgeben  # noqa: E402
@@ -315,6 +317,10 @@ def befehl(name, d):
         return formen_befehl(name.split("/", 1)[1], d)
     if name.startswith("koerper/"):
         return koerper_befehl(name.split("/", 1)[1], d)
+    if name.startswith("skizze/"):
+        return skizze_befehl(name.split("/", 1)[1], d)
+    if name.startswith("feature/"):
+        return feature_befehl(name.split("/", 1)[1], d)
 
     if name == "zusammenfuehren":
         neu = p.zusammenfuehren([int(i) for i in d.get("ids") or []],
@@ -394,7 +400,8 @@ def _b64(arr, typ):
 
 def netz_json(netz):
     return {"xyz": _b64(netz["xyz"], np.float32), "tri": _b64(netz["tri"], np.uint32),
-            "kanten": _b64(netz["kanten"], np.float32)}
+            "kanten": _b64(netz["kanten"], np.float32),
+            "kanten_id": _b64(netz.get("kanten_id", np.zeros(0)), np.uint32)}
 
 
 def _element(d):
@@ -463,6 +470,185 @@ def koerper_befehl(was, d):
         return {"werte": _b64(werte, np.float32), "kennwerte": kw,
                 "koerper": [k.id for k in koerper]}
     raise Fehler("Unbekannter Körper-Befehl %s" % was)
+
+
+# --- Skizzen (Querschnitt) + Features -------------------------------------------------------
+skizze_vorschau = {}        # "skizze" -> zuletzt gerechnete, noch nicht uebernommene Skizze (JSON)
+
+
+def _ebene_aus(d):
+    e = d.get("ebene") or {}
+    art = e.get("art", "welt")
+    if art == "welt":
+        return sk.ebene_welt(e.get("name", "xy"), float(e.get("versatz") or 0))
+    erk = projekt.erkennung.get(int(d["id"]))
+    if not erk:
+        raise Fehler("Für diese Ebene zuerst Bereiche erkennen (BEREICHE → Automatisch).")
+    el = next((x for x in erk["elemente"] if x["id"] == e.get("element")), None)
+    if el is None:
+        raise Fehler("Bereich %s gibt es nicht (mehr)." % e.get("element"))
+    if art == "bereich":
+        if el.get("art") != "ebene":
+            raise Fehler("Der gewählte Bereich ist keine Ebene – für Zylinder/Kegel „durch Achse“ wählen.")
+        return sk.ebene_aus_ebene(el, float(e.get("versatz") or 0))
+    if art == "achse":
+        if "achse" not in el:
+            raise Fehler("Der gewählte Bereich hat keine Achse (Zylinder, Bohrung, Kegel …).")
+        return sk.ebene_durch_achse(el, float(e.get("winkel") or 0))
+    raise Fehler("Unbekannte Ebene „%s“." % art)
+
+
+def _skizze_antwort(skz):
+    abw = sk.schnitt_abweichung(skz)
+    texte = [[sk.kette_text(e) for e in k["elemente"]] for k in skz["ketten"]]
+    kenn = []
+    for w in abw:
+        kenn.append(None if w is None or not len(w) else
+                    {"max": round(float(w.max()), 4), "rms": round(float(np.sqrt(np.mean(w ** 2))), 4)})
+    return {"skizze": skz, "texte": texte, "abweichung": kenn,
+            "abweichung_werte": [None if w is None else _b64(w, np.float32) for w in abw]}
+
+
+def _skizze_ziel(d):
+    """Bearbeitung trifft die Vorschau (ohne sid) oder eine gespeicherte Skizze."""
+    if d.get("sid") is not None:
+        return projekt.skizze_holen(d["sid"]), True
+    if "skizze" not in skizze_vorschau:
+        raise Fehler("Erst einen Schnitt rechnen (Vorschau).")
+    return skizze_vorschau["skizze"], False
+
+
+def skizze_befehl(was, d):
+    p = projekt
+    if was == "schnitt":
+        s = p.scan(d["id"])
+        E = _ebene_aus(d)
+        tol = max(zahl(d, "toleranz", 0.1), 1e-4)
+        t = time.time()
+        linien, zu, info = sk.schnitt(s, E, zahl(d, "band", 0) or None)
+        if not linien:
+            raise Fehler("Die Ebene schneidet den Scan nicht (Versatz prüfen).")
+        ketten = sk.skizze_rechnen(linien, zu, tol=tol, luecke=zahl(d, "luecke", 0),
+                                   achsen_grad=1.0 if d.get("achsen", True) else 0.0,
+                                   radien=bool(d.get("radien", True)))
+        if not ketten:
+            raise Fehler("Im Schnitt ist keine auswertbare Kontur.")
+        info["dauer"] = round(time.time() - t, 2)
+        skz = sk.skizze_json(ketten, E, info)
+        skz["quelle"] = {"scan": s.id, "ebene": d.get("ebene"), "toleranz": tol,
+                         "luecke": zahl(d, "luecke", 0)}
+        skizze_vorschau["skizze"] = skz
+        return _skizze_antwort(skz)
+    if was == "verwerfen":
+        skizze_vorschau.clear()
+        return {}
+    if was == "uebernehmen":
+        if "skizze" not in skizze_vorschau:
+            raise Fehler("Erst einen Schnitt rechnen (Vorschau).")
+        z = p.skizze_hinzufuegen(skizze_vorschau.pop("skizze"))
+        return {"sid": z["id"]}
+    if was == "holen":
+        return _skizze_antwort(p.skizze_holen(d["sid"]))
+    if was in ("element_entfernen", "radius"):
+        skz, gespeichert = _skizze_ziel(d)
+        ki, ei = int(d["kette"]), int(d["element"])
+        ketten = [dict(k) for k in skz["ketten"]]
+        schnitt = list(skz.get("schnitt", []))
+        if not 0 <= ki < len(ketten) or not 0 <= ei < len(ketten[ki]["elemente"]):
+            raise Fehler("Element gibt es nicht (mehr).")
+        if was == "radius":
+            ketten[ki] = sk.radius_setzen(ketten[ki], ei, zahl(d, "r"),
+                                          (skz.get("quelle") or {}).get("toleranz", 0.05))
+            text = "Radius geändert"
+        else:
+            neu = sk.element_entfernen(ketten[ki], ei)
+            if neu is None:
+                del ketten[ki]
+                if ki < len(schnitt):
+                    del schnitt[ki]
+            else:
+                ketten[ki] = neu
+            text = "Element entfernt"
+        daten = {"ketten": ketten, "schnitt": schnitt}
+        if gespeichert:
+            skz = p.skizze_ersetzen(skz["id"], daten, text)
+        else:
+            skz = dict(skz, **daten)
+            skizze_vorschau["skizze"] = skz
+        return _skizze_antwort(skz)
+    if was == "setzen":
+        sichtbar = d.get("sichtbar")
+        p.skizze_setzen(d["sid"], None if sichtbar is None else bool(sichtbar), d.get("name"))
+        return {}
+    if was == "entfernen":
+        p.skizze_entfernen(d["sid"])
+        return {}
+    raise Fehler("Unbekannter Skizzen-Befehl %s" % was)
+
+
+def _feature_ergebnis(werkzeug, typ_name, d, eintrag):
+    p = projekt
+    op = d.get("operation") or ("vereinen" if p.koerper else "neu")
+    if op not in kp.OPERATIONEN:
+        raise Fehler("Unbekannte Operation „%s“." % op)
+    ziel = None
+    if op != "neu":
+        ziel = p.koerper_holen(d["ziel"]) if d.get("ziel") is not None else p.standard_ziel()
+        if ziel is None:
+            raise Fehler("Zum %s braucht es einen Körper." % ("Abziehen" if op == "abziehen" else "Vereinen"))
+    info = {"operation": op, "ziel": ziel.id if ziel else None, "volumen": round(kp.kennwerte(werkzeug)["volumen"], 3)}
+    if d.get("vorschau"):
+        return {"vorschau": netz_json(kp.vernetzen(werkzeug)), "info": info}
+    k = p.feature(werkzeug, typ_name, op, ziel, eintrag)
+    return {"koerper": k.id, "info": info}
+
+
+def feature_befehl(was, d):
+    p = projekt
+    if was == "extrudieren":
+        skz = p.skizze_holen(d["sid"])
+        modus = d.get("modus", "auto")
+        if modus == "auto":
+            sid = d.get("id") if d.get("id") is not None else (skz.get("quelle") or {}).get("scan")
+            tiefe = sk_feat.scan_tiefe(skz, p.scan(sid).xyz) if sid is not None else None
+            if tiefe is None:
+                raise Fehler("Im Profil liegen keine Scanpunkte – Länge von Hand angeben.")
+            von, bis = tiefe
+        else:
+            L = zahl(d, "laenge", 10)
+            if modus == "mitte":
+                von, bis = -L / 2, L / 2
+            else:
+                von, bis = (0.0, L) if not d.get("umkehren") else (-L, 0.0)
+        werkzeug = sk_feat.extrudieren(skz, von, bis)
+        erg = _feature_ergebnis(werkzeug, "Extrusion", d, {
+            "typ": "extrusion", "skizze": skz["id"], "modus": modus, "von": round(von, 4), "bis": round(bis, 4)})
+        erg["info"].update({"von": round(von, 3), "bis": round(bis, 3), "laenge": round(bis - von, 3)})
+        return erg
+    if was == "drehen":
+        skz = p.skizze_holen(d["sid"])
+        el = d.get("element")
+        werkzeug = sk_feat.drehen(skz, zahl(d, "winkel", 360), None if el in (None, "") else int(el))
+        return _feature_ergebnis(werkzeug, "Drehung", d, {
+            "typ": "drehung", "skizze": skz["id"], "winkel": zahl(d, "winkel", 360), "element": el})
+    if was in ("runden", "fasen"):
+        k = p.koerper_holen(d["kid"])
+        kanten = [int(x) for x in d.get("kanten") or []]
+        neu = sk_feat.kanten_runden(k.shape, kanten, zahl(d, "radius", 1), fase=(was == "fasen"))
+        if d.get("vorschau"):
+            return {"vorschau": netz_json(kp.vernetzen(neu)),
+                    "info": {"volumen": round(kp.kennwerte(neu)["volumen"], 3)}}
+        typ = "Fase" if was == "fasen" else "Rundung"
+        p.koerper_aendern(k.id, neu, typ, {"typ": was, "kanten": kanten, "radius": zahl(d, "radius", 1)})
+        return {"koerper": k.id}
+    if was == "radius_vorschlag":
+        k = p.koerper_holen(d["kid"])
+        elemente = []
+        for erk in p.erkennung.values():
+            elemente += erk["elemente"]
+        r = sk_feat.radius_vorschlag(k.shape, [int(x) for x in d.get("kanten") or []], elemente)
+        return {"radius": None if r is None else round(r, 3)}
+    raise Fehler("Unbekannter Feature-Befehl %s" % was)
 
 
 def _zusammenfassung_neu(erk):
