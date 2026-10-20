@@ -111,7 +111,9 @@ const r2 = await pg.evaluate(async (svg) => {
   const h = rc.intersectObject(k, true).find(x => x.face);
   return h ? _hinweisAn(m, h.point.clone()) : null;
 }, SVG);
-ok('zu ovaler Körper: bietet Anschmiegen an (statt „zu oval" zu heften)', r2 && /anschmiegen/.test(r2.text) && r2.art === 'schmieg', r2);
+// Seit 1.18.222: fast senkrechte ovale Wand → „↪ Um die Kanten legen“ (Abwicklung entlang des Umrisses),
+// das ist dort genauer als das Höhenfeld des Anschmiegens. Beides legt das Motiv an statt flach zu heften.
+ok('zu ovaler Körper: legt das Motiv an (statt „zu oval" zu heften)', r2 && /anschmiegen|Kanten legen/.test(r2.text) && r2.art === 'schmieg', r2);
 
 // ── 3) Flache Wand bleibt schlicht „Auf Fläche heften" ─────────────────────
 const r3 = await pg.evaluate(async (svg) => {

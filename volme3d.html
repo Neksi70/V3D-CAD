@@ -68601,8 +68601,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.221';
+const VOLME3D_VERSION = '1.18.222';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.222', date:'2026-10-20', changes:[
+    ['↪','<b>Motive um runde Kanten legen.</b> Auf eckigen Dosen und Gefäßen mit abgerundeten Kanten ließ sich ein breites Motiv nur flach anheften – es stand an der Rundung vorne über und wurde beim Vereinen nicht sauber angebunden. Reicht das Motiv über die ebene Fläche hinaus, zeigt der Zeiger jetzt <b>„↪ Um die Kanten legen“</b>: Das Motiv läuft wie ein umgelegtes Etikett um die Rundung bis auf die Seitenwand, ohne Verzerrung und überall anliegend. Abziehen und Vereinen funktionieren wie gewohnt. Quader mit scharfen Kanten und Motive, die auf die Fläche passen, werden weiter flach geheftet (danke Josy).'],
+  ]},
   { version:'1.18.221', date:'2026-10-20', changes:[
     ['📌','<b>Motiv wieder anheften: sitzt wieder vor der Wand.</b> Wurde ein Motiv breiter gezogen, abgelöst und erneut an eine Fläche geheftet, rutschte es in die Wand und war unsichtbar – ein frisch hochgeladenes ging, ein schon benutztes wirkte „verseucht“. Jetzt zählt die echte Dicke: Das Motiv steckt wie gewohnt die halbe Grunddicke in der Wand, der Rest steht heraus, egal wie breit es gezogen wurde (danke Josy).'],
   ]},
@@ -70585,8 +70588,17 @@ function _svgSnapDetect(svgMesh, mouseEvent) {
     // flach heften — ein flaches Motiv liegt auf einer Wölbung nur in der Mitte auf.
     // Nur auf wirklich GEWÖLBTEN Flächen: Der Deckel eines Rohrs oder die Wand eines
     // ungleich skalierten Quaders lösen „Kuppel"/„oval" aus, sind aber eben.
-    const schmieg = !wrap && (kuppel || (!probe && _svgWrapReason === 'oval')) && !_svgSnapIstEben(hit, svgMesh);
-    _textSnapTarget = { obj: obj || hit.object, type: wrap ? 'wrap' : (schmieg ? 'schmieg' : 'surface'), wrap };
+    const umlaufWand = !wrap && Math.abs(nW.y) < 0.3 && _svgUmlaufNoetig(hit, svgMesh, nW);
+    const schmieg = !wrap && !umlaufWand && (kuppel || (!probe && _svgWrapReason === 'oval')) && !_svgSnapIstEben(hit, svgMesh);
+    // Eckig mit runden Kanten (Dose, Vierkant-Gefäß): Die Wand steht senkrecht, ist
+    // um keine Achse rund — reicht das Motiv aber über die ebene Fläche hinaus auf
+    // die Rundung, wird es um die Kante gelegt statt flach geheftet. Flach stand es
+    // dort vorne über und ließ sich nicht sauber vereinen („bei runden Formen gar
+    // kein Problem, aber wenn sie ein bisschen eckig sind, meckert er", Josy 20.10.).
+    // Ein Quader mit scharfen Kanten bleibt beim flachen Heften: Dort laufen die
+    // Prüfstrahlen neben der Fläche ins Leere und die Fläche gilt als eben.
+    const umlauf = umlaufWand;
+    _textSnapTarget = { obj: obj || hit.object, type: wrap ? 'wrap' : ((schmieg || umlauf) ? 'schmieg' : 'surface'), wrap, umlauf };
     // Wird nicht gewickelt, muss der Grund dranstehen. Kommentarlos „Auf Fläche
     // heften" sah nach einem Fehler aus: Auf einer Wölbung liegt ein flaches
     // Motiv nun einmal nur in der Mitte auf („es ist nicht ganz drauf, lässt
@@ -70594,7 +70606,7 @@ function _svgSnapDetect(svgMesh, mouseEvent) {
     //  • kuppel: Der Körper IST rund, aber hier wölbt er sich weg (Deckel, Boden,
     //    Kuppelspitze). Um eine Achse wickeln geht dort grundsätzlich nicht.
     //  • oval: Der Querschnitt ist zu unrund für eine Wickelachse.
-    hint.textContent = wrap ? '↩ Um Rundung wickeln'
+    hint.textContent = umlauf ? '↪ Um die Kanten legen' : wrap ? '↩ Um Rundung wickeln'
       : (schmieg ? '🫧 An die Wölbung anschmiegen' : '📌 Auf Fläche heften');
     hint.style.display = 'block';
     hint.style.left = (mouseEvent.clientX + 14) + 'px';
@@ -70698,16 +70710,18 @@ function _svgPfeilAnker(o, hit, planeD, n, uW, vW) {
   return face.center.clone().addScaledVector(uW, du).addScaledVector(vW, dv);
 }
 
-function _applySvgSnap(svgMesh, {obj, type, wrap}) {
+function _applySvgSnap(svgMesh, {obj, type, wrap, umlauf}) {
   const hit = _svgSnapHit;
   if (!hit || !hit.face) return;
-  // Wölbung ohne Drehachse (Kuppel, Schulter, Ei): anschmiegen
+  // Wölbung ohne Drehachse (Kuppel, Schulter, Ei): anschmiegen.
+  // umlauf: senkrechte Wand mit runden Kanten → entlang des Umrisses herumlegen
   if (type === 'schmieg') {
     _svgWrapFlatten(svgMesh);
-    if (_svgSchmiegApply(svgMesh, hit)) {
+    if (_svgSchmiegApply(svgMesh, hit, { umlauf })) {
       _svgSnapHit = null;
       updateTFInputs(); updateTree(); updateCtxPopup();
-      notify('🫧 SVG an die Wölbung angeschmiegt', 'ok');
+      notify(svgMesh.userData._svgSchmieg && svgMesh.userData._svgSchmieg.umlauf
+        ? '↪ SVG um die Kanten gelegt' : '🫧 SVG an die Wölbung angeschmiegt', 'ok');
       return;
     }
   }
@@ -72887,6 +72901,17 @@ function _svgSchmiegBuildGeo(ud, spec) {
   const sliced = _svgWrapSlice(work, ext / 40, 1);
   work.dispose(); work = sliced;
 
+  if (spec.umlauf) {
+    const out = _svgUmlaufAbbilden(work.attributes.position, spec.umlauf);
+    const bent = new THREE.BufferGeometry();
+    bent.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+    if (work.index) bent.setIndex(new THREE.BufferAttribute(work.index.array.slice(), 1));
+    work.dispose();
+    const result = _computeCreasedNormals(bent, Math.PI / 3);
+    bent.dispose();
+    result.computeBoundingBox(); result.computeBoundingSphere();
+    return result;
+  }
   const feld = spec.feld, n = feld.n, A = feld.A, B = feld.B, z = feld.z;
   const da = 2 * A / (n - 1), db = 2 * B / (n - 1), ic = (n - 1) / 2;
   const { sA, sB } = _svgSchmiegBogen(feld);
@@ -72925,7 +72950,7 @@ function _svgSchmiegBuildGeo(ud, spec) {
 }
 
 // Motiv am Raycast-Treffer (hit: object, point, face) an die Wölbung legen.
-function _svgSchmiegApply(svgMesh, hit) {
+function _svgSchmiegApply(svgMesh, hit, opts) {
   const target = hit && hit.object;
   if (!target || !target.isMesh || !hit.face) return false;
   target.updateMatrixWorld(true);
@@ -72947,10 +72972,15 @@ function _svgSchmiegApply(svgMesh, hit) {
                : (wr ? ((wr.rotRad || 0) - (wr.rot0 || 0)) : (svgMesh.userData._svgFlaechenAng || 0));
   const halbA = _svgWrapHalfWidth(svgMesh.userData, s, rotRad);
   const halbB = _svgWrapHalfHeight(svgMesh.userData, s, rotRad);
-  const feld = _svgSchmiegFeld(target, P0, ea, eb, ec, halbA, halbB);
-  if (!feld || feld.belegt < 20) return false;
+  // Herumlegen (senkrechte Wand mit runden Kanten): einmal gewählt, bleibt es beim
+  // Nachschieben auf der Wand dabei
+  const willUmlauf = !!((opts && opts.umlauf) || (w0 && w0.umlauf));
+  const umlauf = willUmlauf ? _svgUmlaufZeilen(target, P0, ea, eb, ec, halbA, halbB) : null;
+  const feld = umlauf ? null : _svgSchmiegFeld(target, P0, ea, eb, ec, halbA, halbB);
+  if (!umlauf && (!feld || feld.belegt < 20)) return false;
   const spec = { P0: P0.toArray(), ea: ea.toArray(), eb: eb.toArray(), ec: ec.toArray(), s, rotRad,
                  depthMm: svgMesh.userData.svgDepth || 3, epsMm: 0.2, feld };
+  if (umlauf) spec.umlauf = umlauf;
   const geo = _svgSchmiegBuildGeo(svgMesh.userData, spec);
   svgMesh.geometry.dispose();
   svgMesh.geometry = geo;
@@ -73032,6 +73062,181 @@ function _svgSchmiegAbsorbTwist(o) {
 // Ist die getroffene Fläche rund um den Klickpunkt eben? Sechs Strahlen im Umkreis
 // der halben Motivgröße; weicht ein Treffer mehr als 0,2 mm aus der Ebene, ist die
 // Fläche gewölbt. Strahlen ins Leere (Flächenrand) zählen nicht dagegen.
+// ── Um die Kanten legen (senkrechte Wand mit runden Kanten) ───────────────
+// Der Körper wird in mehreren Höhen quer zur Wand geschnitten; das Motiv läuft
+// entlang dieser Umrisslinie (Bogenlänge = Motivbreite) — wie Papier, das man um
+// eine Dose mit runden Ecken legt: nichts verzerrt, und es liegt auch auf der
+// Rundung und der Seitenwand an. Alles im Rahmen ea (quer), eb (hoch), ec (Normale)
+// mit Ursprung am Klickpunkt. Rückgabe: { ds, s0, z: [{ b, a:[], c:[], na:[], nc:[] }] }.
+function _svgUmlaufZeilen(target, P0, ea, eb, ec, halbA, halbB) {
+  const geo = target.geometry, pos = geo && geo.attributes.position;
+  if (!pos) return null;
+  const idx = geo.index ? geo.index.array : null;
+  const nTri = Math.floor((idx ? idx.length : pos.count) / 3);
+  if (nTri > 1500000) return null;
+  target.updateMatrixWorld(true);
+  const M = new THREE.Matrix4().makeBasis(ea, eb, ec).setPosition(P0).invert().multiply(target.matrixWorld);
+  const L = new Float32Array(pos.count * 3), v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(M);
+    L[i * 3] = v.x; L[i * 3 + 1] = v.y; L[i * 3 + 2] = v.z;
+  }
+  const rand = 0.15;                                   // 1,5 mm über das Motiv hinaus
+  const nZ = Math.max(3, Math.min(15, Math.ceil(2 * (halbB + rand) / 0.3) + 1));
+  const ds = 0.1;                                      // 1 mm Stützstellen entlang des Umrisses
+  const s0 = -(halbA + rand), nS = Math.ceil(2 * (halbA + rand) / ds) + 1;
+  const zeilen = [];
+  for (let j = 0; j < nZ; j++) {
+    const b = -(halbB + rand) + j * 2 * (halbB + rand) / (nZ - 1);
+    const z = _svgUmlaufZeile(L, idx, nTri, b + 1e-6, s0, ds, nS);
+    if (z) zeilen.push(z);
+    else if (Math.abs(b) < 0.3) return null;          // auf Klickhöhe kein Umriss → nicht herumlegen
+  }
+  if (zeilen.length < 2) return null;
+  return { ds, s0, z: zeilen };
+}
+
+// Eine Schnittlinie auf Höhe b: Dreiecke schneiden, Strecken zur Linie verketten,
+// die Linie am Klickpunkt (a = c = 0) nehmen, nach Bogenlänge abtasten.
+function _svgUmlaufZeile(L, idx, nTri, b, s0, ds, nS) {
+  const key = (x, z) => Math.round(x * 1e4) + ',' + Math.round(z * 1e4);
+  const punkte = [], nachbarn = new Map();
+  const vi = (t, k) => idx ? idx[t * 3 + k] : t * 3 + k;
+  const schnitt = (i, j) => {
+    // gleiche Kante → gleicher Punkt, egal aus welchem Dreieck (Endpunkte sortieren)
+    let p = i, q = j;
+    if (L[p*3] > L[q*3] || (L[p*3] === L[q*3] && (L[p*3+2] > L[q*3+2] || (L[p*3+2] === L[q*3+2] && L[p*3+1] > L[q*3+1])))) { p = j; q = i; }
+    const t = (b - L[p*3+1]) / (L[q*3+1] - L[p*3+1]);
+    return [L[p*3] + t * (L[q*3] - L[p*3]), L[p*3+2] + t * (L[q*3+2] - L[p*3+2])];
+  };
+  const verbinde = (k1, k2) => {
+    if (k1 === k2) return;
+    (nachbarn.get(k1) || nachbarn.set(k1, []).get(k1)).push(k2);
+    (nachbarn.get(k2) || nachbarn.set(k2, []).get(k2)).push(k1);
+  };
+  const ort = new Map();
+  for (let t = 0; t < nTri; t++) {
+    const a = vi(t, 0), c = vi(t, 1), d = vi(t, 2);
+    const ya = L[a*3+1] - b, yc = L[c*3+1] - b, yd = L[d*3+1] - b;
+    if ((ya > 0 && yc > 0 && yd > 0) || (ya < 0 && yc < 0 && yd < 0)) continue;
+    const pts = [];
+    for (const [i, j, yi, yj] of [[a, c, ya, yc], [c, d, yc, yd], [d, a, yd, ya]])
+      if ((yi < 0) !== (yj < 0)) pts.push(schnitt(i, j));
+    if (pts.length !== 2) continue;
+    const k1 = key(pts[0][0], pts[0][1]), k2 = key(pts[1][0], pts[1][1]);
+    if (!ort.has(k1)) ort.set(k1, pts[0]);
+    if (!ort.has(k2)) ort.set(k2, pts[1]);
+    punkte.push([k1, k2]);
+    verbinde(k1, k2);
+  }
+  if (!punkte.length) return null;
+  // Strecke am nächsten zum Klickpunkt
+  let best = null, bestD = Infinity;
+  for (const [k1, k2] of punkte) {
+    const p = ort.get(k1), q = ort.get(k2);
+    const dx = q[0] - p[0], dz = q[1] - p[1], l2 = dx * dx + dz * dz;
+    const t = l2 > 0 ? Math.max(0, Math.min(1, -(p[0] * dx + p[1] * dz) / l2)) : 0;
+    const d = Math.hypot(p[0] + t * dx, p[1] + t * dz);
+    if (d < bestD) { bestD = d; best = [k1, k2]; }
+  }
+  if (bestD > 1) return null;                          // Wand hier >10 mm weg: kein brauchbarer Umriss
+  // von der Strecke aus in beide Richtungen verketten
+  const lauf = (von, nach) => {
+    const kette = [nach], gesehen = new Set([von, nach]);
+    let alt = von, akt = nach;
+    for (;;) {
+      const nb = (nachbarn.get(akt) || []).filter(k => k !== alt);
+      if (!nb.length) return { kette, zu: false };
+      if (nb.includes(von) && kette.length > 1) return { kette, zu: true };
+      const nx = nb.find(k => !gesehen.has(k));
+      if (nx === undefined) return { kette, zu: false };
+      gesehen.add(nx); kette.push(nx); alt = akt; akt = nx;
+    }
+  };
+  const vor = lauf(best[0], best[1]);
+  const geschlossen = vor.zu;
+  let linie = geschlossen ? [best[0], ...vor.kette] : [...lauf(best[1], best[0]).kette.reverse(), ...vor.kette];
+  linie = linie.map(k => ort.get(k));
+  if (geschlossen) linie.push(linie[0]);
+  // Bogenlänge, Klickpunkt-Lage und Richtung (+s läuft Richtung +a)
+  const sl = [0];
+  for (let i = 1; i < linie.length; i++) sl.push(sl[i - 1] + Math.hypot(linie[i][0] - linie[i-1][0], linie[i][1] - linie[i-1][1]));
+  const Lg = sl[sl.length - 1];
+  if (Lg < 1e-4) return null;
+  let sKlick = 0, dK = Infinity, iK = 0;
+  for (let i = 1; i < linie.length; i++) {
+    const p = linie[i - 1], q = linie[i], dx = q[0] - p[0], dz = q[1] - p[1], l2 = dx * dx + dz * dz;
+    const t = l2 > 0 ? Math.max(0, Math.min(1, -(p[0] * dx + p[1] * dz) / l2)) : 0;
+    const d = Math.hypot(p[0] + t * dx, p[1] + t * dz);
+    if (d < dK) { dK = d; sKlick = sl[i - 1] + t * (sl[i] - sl[i - 1]); iK = i; }
+  }
+  const richtung = linie[iK][0] - linie[iK - 1][0] >= 0 ? 1 : -1;
+  const bei = s => {
+    let x = sKlick + richtung * s;
+    if (geschlossen) x = ((x % Lg) + Lg) % Lg; else x = Math.max(0, Math.min(Lg, x));
+    let lo = 0, hi = sl.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (sl[m] <= x) lo = m; else hi = m; }
+    const t = (x - sl[lo]) / Math.max(1e-9, sl[hi] - sl[lo]);
+    return [linie[lo][0] + t * (linie[hi][0] - linie[lo][0]), linie[lo][1] + t * (linie[hi][1] - linie[lo][1])];
+  };
+  const a = [], c = [], na = [], nc = [];
+  const r4 = x => Math.round(x * 1e4) / 1e4;
+  for (let k = 0; k < nS; k++) {
+    const s = s0 + k * ds, p = bei(s), p1 = bei(s - ds / 2), p2 = bei(s + ds / 2);
+    let ta = p2[0] - p1[0], tc = p2[1] - p1[1]; const tl = Math.hypot(ta, tc) || 1; ta /= tl; tc /= tl;
+    a.push(r4(p[0])); c.push(r4(p[1])); na.push(r4(-tc)); nc.push(r4(ta));   // Normale = Tangente um +90° (nach außen)
+  }
+  // nach außen zeigt die Normale am Klickpunkt zu +c; sonst umdrehen
+  const kMitte = Math.round(-s0 / ds);
+  if (nc[kMitte] < 0) for (let k = 0; k < nS; k++) { na[k] = -na[k]; nc[k] = -nc[k]; }
+  return { b: Math.round(b * 1e4) / 1e4, a, c, na, nc };
+}
+
+// Motiv-Ecken (u = Breite, h = Höhe, d = Abstand zur Wand) auf den Umriss legen
+function _svgUmlaufAbbilden(src, U) {
+  const out = new Float32Array(src.count * 3), Z = U.z, nS = Z[0].a.length;
+  const lerp = (arr, f) => { const i = Math.max(0, Math.min(nS - 2, Math.floor(f))), t = Math.max(0, Math.min(1, f - i)); return arr[i] + (arr[i + 1] - arr[i]) * t; };
+  for (let i = 0; i < src.count; i++) {
+    const u = src.getX(i), h = src.getY(i), d = src.getZ(i);
+    let j = 0; while (j < Z.length - 2 && Z[j + 1].b < h) j++;
+    const z0 = Z[j], z1 = Z[j + 1], tz = Math.max(0, Math.min(1, (h - z0.b) / Math.max(1e-9, z1.b - z0.b)));
+    const f = (u - U.s0) / U.ds;
+    const auf = (z) => { const na = lerp(z.na, f), nc = lerp(z.nc, f), l = Math.hypot(na, nc) || 1;
+      return [lerp(z.a, f) + d * na / l, lerp(z.c, f) + d * nc / l]; };
+    const p0 = auf(z0), p1 = auf(z1);
+    out[i * 3]     = p0[0] + (p1[0] - p0[0]) * tz;
+    out[i * 3 + 1] = h;
+    out[i * 3 + 2] = p0[1] + (p1[1] - p0[1]) * tz;
+  }
+  return out;
+}
+
+// Läuft die senkrechte Wand innerhalb der Motivbreite seitlich in eine Rundung
+// weiter? Getastet wird waagerecht entlang der Wand bis zur halben Motivbreite:
+// Liegt ein Treffer desselben Körpers mehr als 0,2 mm hinter der Ebene, biegt die
+// Wand dort weg. Strahlen, die neben dem Körper ins Leere gehen (scharfe Kante,
+// Motiv ragt über einen Quader), zählen nicht — dort bleibt es flach.
+function _svgUmlaufNoetig(hit, svgMesh, nW) {
+  const g = svgMesh.geometry;
+  if (!g) return false;
+  if (!g.boundingBox) g.computeBoundingBox();
+  const sz = g.boundingBox.getSize(new THREE.Vector3());
+  const halbW = Math.max(sz.x * Math.abs(svgMesh.scale.x), sz.z * Math.abs(svgMesh.scale.z)) / 2;
+  const quer = new THREE.Vector3(0, 1, 0).cross(nW);
+  if (quer.lengthSq() < 1e-8) return false;
+  quer.normalize();
+  const rc = new THREE.Raycaster();
+  for (const seite of [1, -1]) for (let k = 1; k <= 6; k++) {
+    const p = hit.point.clone().addScaledVector(quer, seite * halbW * k / 6);
+    rc.set(p.clone().addScaledVector(nW, 5), nW.clone().negate());
+    const h = rc.intersectObject(hit.object, true).find(x => x.face && !x.object.userData.isEdgeLines);
+    if (!h) break;                                    // neben dem Körper: weiter außen auch nichts
+    const tiefe = hit.point.clone().sub(h.point).dot(nW);
+    if (tiefe > 0.02 && tiefe < 5) return true;
+  }
+  return false;
+}
+
 function _svgSnapIstEben(hit, svgMesh) {
   const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
   const g = svgMesh.geometry;

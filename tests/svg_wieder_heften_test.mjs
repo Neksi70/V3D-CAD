@@ -44,9 +44,15 @@ const zieh = async (von, nach) => { await pg.evaluate(() => deselect()); await p
   await pg.mouse.up(); await pg.waitForTimeout(700); };
 const lage = () => pg.evaluate(() => { const t = objects.find(o => o.userData.shapeType === 'svg'), K = _K; t.updateMatrixWorld(true);
   const kb = new THREE.Box3().setFromObject(K), tb = new THREE.Box3().setFromObject(t);
-  return { vorne: +((tb.max.z - kb.max.z) * 10).toFixed(2), hinten: +((tb.min.z - kb.max.z) * 10).toFixed(2), breite: +((tb.max.x - tb.min.x) * 10).toFixed(1),
+  let sdfMax = null, sdfMin = null;
+  if (t.userData._svgSchmieg) { const cx = (kb.min.x + kb.max.x) / 2, cz = (kb.min.z + kb.max.z) / 2, W = 80, D = 60, R = 12;
+    const sdf = (x, z) => { const qx = Math.abs(x) - (W / 2 - R), qz = Math.abs(z) - (D / 2 - R); return Math.hypot(Math.max(qx, 0), Math.max(qz, 0)) + Math.min(Math.max(qx, qz), 0) - R; };
+    const p = t.geometry.attributes.position, v = new THREE.Vector3(); sdfMax = -1e9; sdfMin = 1e9;
+    for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).applyMatrix4(t.matrixWorld); const d = sdf((v.x - cx) * 10, (v.z - cz) * 10); sdfMax = Math.max(sdfMax, d); sdfMin = Math.min(sdfMin, d); }
+    sdfMax = +sdfMax.toFixed(2); sdfMin = +sdfMin.toFixed(2); }
+  return { sdfMax, sdfMin, kb: [kb.min.x, kb.max.x, kb.min.z, kb.max.z].map(x => +(x * 10).toFixed(1)), vorne: +((tb.max.z - kb.max.z) * 10).toFixed(2), hinten: +((tb.min.z - kb.max.z) * 10).toFixed(2), breite: +((tb.max.x - tb.min.x) * 10).toFixed(1),
     hoehe: +((tb.max.y - tb.min.y) * 10).toFixed(1), scale: t.scale.toArray().map(v => +v.toFixed(4)), depth: t.userData.svgDepth, geheftet: !!t.userData._snapNormal,
-    wrap: !!t.userData._svgWrap, schmieg: !!t.userData._svgSchmieg, raised: !!t.userData._svgRaised, loch: !!t.userData.isHole }; });
+    wrap: !!t.userData._svgWrap, schmieg: !!t.userData._svgSchmieg, umlauf: !!(t.userData._svgSchmieg && t.userData._svgSchmieg.umlauf), hinweis: document.getElementById('text-snap-hint').textContent, raised: !!t.userData._svgRaised, loch: !!t.userData.isHole }; });
 // Vorderseite des Körpers (front view schaut von +Z)
 const wandPunkt = () => pg.evaluate(() => { const K = _K, r = canvas.getBoundingClientRect(); let best = null;
   for (let y = r.top + 5; y < r.bottom; y += 5) for (let x = r.left + 5; x < r.right; x += 5) {
@@ -69,7 +75,8 @@ await heften();
 const l3 = await lage(); log('2. Anheften:', JSON.stringify(l3));
 await pg.screenshot({ path: '/tmp/heft2.png' });
 let fehler = 0;
-for (const k of ['vorne', 'hinten', 'breite', 'hoehe']) if (Math.abs(l1[k] - l3[k]) > 0.3) { fehler++; log('FEHLER:', k, l1[k], '→', l3[k]); }
+if (SZENE === 'gefaess') { for (const [n, l] of [['1.', l1], ['2.', l3]]) if (l.sdfMax == null ? !(Math.abs(l.hinten + Math.abs(l.depth) / 2) <= 0.3) : !(l.sdfMax <= 0.5 && l.sdfMin < -0.3)) { fehler++; log('FEHLER:', n, 'Anheften liegt nicht an der Wand', JSON.stringify(l)); } }
+else for (const k of ['vorne', 'hinten', 'breite', 'hoehe']) if (Math.abs(l1[k] - l3[k]) > 0.3) { fehler++; log('FEHLER:', k, l1[k], '→', l3[k]); }
 if (SZENE === 'quader') for (const [n, l] of [['1.', l1], ['2.', l3]]) if (Math.abs(l.hinten + Math.abs(l.depth) / 2) > 0.3) { fehler++; log('FEHLER:', n, 'Anheften – Rückseite', l.hinten, 'mm statt', -Math.abs(l.depth) / 2, '(steckt in der Wand)'); }
 if (!l3.geheftet && !l3.schmieg && !l3.wrap) { fehler++; log('FEHLER: beim 2. Mal nicht geheftet'); }
 log(fehler ? fehler + ' Fehler' : 'OK', errs); await b.close(); process.exit(fehler || errs.length ? 1 : 0);
