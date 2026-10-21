@@ -11,16 +11,30 @@ const b = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-webgl
 const pg = await (await b.newContext({ viewport: { width: 1500, height: 950 } })).newPage();
 const errs = []; pg.on('pageerror', e => errs.push(e.message)); if (process.env.LOG) pg.on('console', m => { const t = m.text(); if (/manifold|Manifold|BSP|OCCT|Abzug|engine|Engine|CSG/i.test(t)) console.log('   [log]', t.slice(0, 200)); });
 await pg.goto(URL); await pg.waitForFunction(() => typeof addShape === 'function', null, { timeout: 30000 });
+if (process.env.OHNE_SPERRE) await pg.evaluate(() => { window._svgWickelUnrund = () => false; });
 const lauf = (szene, breite, loch, hoehe, folge) => pg.evaluate(async ([szene, breite, loch, hoehe, folge]) => {
   objects.slice().forEach(o => scene.remove(o)); objects.length = 0; hideStarter(); setShapeMode('solid');
-  const W = 80, D = 60, R = 12;
+  const W = szene.startsWith('dose') ? 123.2 : 80, D = szene.startsWith('dose') ? 123.2 : 60, R = szene.startsWith('dose') ? 11.4 : 12;
   let K;
-  if (szene === 'gefaess') {
+  if (szene === 'dose36') {
+    // wie Josys „Vase“: 36 Ecken je Umlauf auf dem Umriss eines abgerundeten Quadrats
+    // (halbe Breite 61,6, Ecken R11,4), unten 10 % schmaler, massiv. Grob genug, dass die
+    // Rundungserkennung eine Achse findet.
+    const rq = th => { const c = Math.cos(th), s2 = Math.sin(th); let lo = 0, hi = 200; for (let i = 0; i < 60; i++) { const m = (lo + hi) / 2;
+      const qx = Math.abs(m * c) - (W / 2 - R), qz = Math.abs(m * s2) - (D / 2 - R); const d = Math.hypot(Math.max(qx, 0), Math.max(qz, 0)) + Math.min(Math.max(qx, qz), 0) - R; if (d > 0) hi = m; else lo = m; } return lo; };
+    const N = 36, H = 170, pts = [], ring = (z, f) => { const r = []; for (let k = 0; k < N; k++) { const th = k / N * 2 * Math.PI, rr = rq(th) * f; r.push([rr * Math.cos(th), rr * Math.sin(th), z]); } return r; };
+    const unten = ring(0, 0.9), oben = ring(H, 1), tri = [];
+    const P = (a) => tri.push(...a);
+    for (let k = 0; k < N; k++) { const k2 = (k + 1) % N; P(unten[k]); P(unten[k2]); P(oben[k2]); P(unten[k]); P(oben[k2]); P(oben[k]); P([0, 0, 0]); P(unten[k2]); P(unten[k]); P([0, 0, H]); P(oben[k]); P(oben[k2]); }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(tri, 3)); g.computeVertexNormals();
+    _addImportedGeo(g, 'dose36.stl', true, null, false); K = objects[objects.length - 1];
+  } else if (szene === 'gefaess' || szene === 'dose') {
     const rr = (w, d, r) => { const s = new THREE.Shape(), x = w / 2, y = d / 2; s.moveTo(-x + r, -y); s.lineTo(x - r, -y); s.absarc(x - r, -y + r, r, -Math.PI / 2, 0); s.lineTo(x, y - r); s.absarc(x - r, y - r, r, 0, Math.PI / 2); s.lineTo(-x + r, y); s.absarc(-x + r, y - r, r, Math.PI / 2, Math.PI); s.lineTo(-x, -y + r); s.absarc(-x + r, -y + r, r, Math.PI, Math.PI * 1.5); return s; };
     const aussen = rr(W, D, R), lochP = rr(W - 4, D - 4, R - 2); aussen.holes.push(new THREE.Path(lochP.getPoints(24).reverse()));
     const wand = new THREE.ExtrudeGeometry(aussen, { depth: 100, bevelEnabled: false, curveSegments: 16 });
     const boden = new THREE.ExtrudeGeometry(rr(W, D, R), { depth: 2, bevelEnabled: false, curveSegments: 16 });
     const g = THREE.BufferGeometryUtils.mergeBufferGeometries((folge ? [wand.toNonIndexed()] : [wand.toNonIndexed(), boden.toNonIndexed()]).map(x => { x.deleteAttribute('uv'); x.deleteAttribute('normal'); return x; }));
+    if (szene === 'dose') { const pp = g.attributes.position; for (let i = 0; i < pp.count; i++) { const f = 1 + 0.1 * pp.getZ(i) / 100; pp.setX(i, pp.getX(i) * f); pp.setY(i, pp.getY(i) * f); } }
     g.computeVertexNormals(); _addImportedGeo(g, 'gefaess.stl', true, null, false); K = objects[objects.length - 1];
   } else { addShape('box'); K = objects[objects.length - 1]; selectObjs([K]); numChanged('sw', W); numChanged('sd', D); numChanged('sh', 100); }
   K.updateMatrixWorld(true);
@@ -44,7 +58,11 @@ const lauf = (szene, breite, loch, hoehe, folge) => pg.evaluate(async ([szene, b
   // denselben Entscheid wie _svgSnapDetect treffen, ohne Bildschirmkoordinaten
   const probe = _svgWrapProbe(K, h.point, { normalW: nW });
   const eben = _svgSnapIstEben(h, t);
-  const umlauf = !probe && Math.abs(nW.y) < 0.3 && _svgUmlaufNoetig(h, t, nW);
+  let wrapP = probe;
+  if (wrapP) { const c0 = wrapP.axisPt.clone().addScaledVector(wrapP.axisDir, h.point.clone().sub(wrapP.axisPt).dot(wrapP.axisDir)); if (Math.abs(nW.dot(h.point.clone().sub(c0).normalize())) <= 0.94) wrapP = null; }
+  if (wrapP && Math.abs(nW.y) < 0.3 && _svgWickelUnrund(h, t, wrapP)) wrapP = null;
+  const umlauf = !wrapP && Math.abs(nW.y) < 0.3 && _svgUmlaufNoetig(h, t, nW);
+  window._probeGefunden = !!probe;
   if (folge === "abziehen-feld") { _svgSchmiegApply(t, h, { umlauf: false }); } else
   _applySvgSnap(t, { obj: K, type: umlauf ? 'schmieg' : 'surface', wrap: null, umlauf });
   t.updateMatrixWorld(true);
@@ -53,7 +71,8 @@ const lauf = (szene, breite, loch, hoehe, folge) => pg.evaluate(async ([szene, b
   const p = t.geometry.attributes.position, v = new THREE.Vector3();
   let aussenMax = -1e9, innenMin = 1e9, auf = 0, ueberRund = 0, xMin = 1e9, xMax = -1e9;
   for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).applyMatrix4(t.matrixWorld);
-    const x = (v.x - cx) * 10, z = (v.z - cz) * 10, d = sdf(x, z);
+    const fy = szene === 'dose' ? 1 + 0.1 * (v.y * 10) / 100 : szene === 'dose36' ? 0.9 + 0.1 * (v.y * 10) / 170 : 1;
+    const x = (v.x - cx) * 10 / fy, z = (v.z - cz) * 10 / fy, d = sdf(x, z) * fy;
     aussenMax = Math.max(aussenMax, d); innenMin = Math.min(innenMin, d); xMin = Math.min(xMin, x); xMax = Math.max(xMax, x);
     if (Math.abs(x) > W / 2 - R) ueberRund++; }
   const ud = t.userData;
@@ -78,7 +97,7 @@ const lauf = (szene, breite, loch, hoehe, folge) => pg.evaluate(async ([szene, b
     const e = objects.length === 1 ? vol(objects[0]) : null;
     folgeErg = { werkzeugOffen2: window._wzOffen2, nachherOffen2: e && e.offen2, werkzeugOffen: window._wzOffen, offenVorher: v0.offen, vorher: v0.V, nachher: e && e.V, offen: e && e.offen, objekte: objects.length };
   }
-  return { folgeErg, umlauf: !!(ud._svgSchmieg && ud._svgSchmieg.umlauf), schmieg: !!ud._svgSchmieg, geheftet: !!ud._snapNormal, eben,
+  return { probeGefunden: window._probeGefunden, folgeErg, umlauf: !!(ud._svgSchmieg && ud._svgSchmieg.umlauf), schmieg: !!ud._svgSchmieg, geheftet: !!ud._snapNormal, eben,
     aussenMax: +aussenMax.toFixed(2), innenMin: +innenMin.toFixed(2), xSpanne: [+xMin.toFixed(1), +xMax.toFixed(1)], aufRundung: ueberRund, ecken: p.count };
 }, [szene, breite, loch, hoehe, folge || '']);
 let fehler = 0;
@@ -99,6 +118,11 @@ for (const [folge, br] of (process.env.NUR ? [[process.env.NUR, +process.env.BR]
   ok(`${folge}: ein Teil, keine Löcher`, r.folgeErg && r.folgeErg.objekte === 1 && r.folgeErg.nachherOffen2 <= 30, r.folgeErg);
   ok(`${folge}: Volumen ${folge === 'abziehen' ? 'kleiner' : 'größer'}`, r.folgeErg && r.folgeErg.nachher && (folge === 'abziehen' ? r.folgeErg.nachher < r.folgeErg.vorher : r.folgeErg.nachher > r.folgeErg.vorher), r.folgeErg);
 }
+{ const r = await lauf('dose36', 106, true, 85);
+  console.log('Dose mit 36 Ecken (wie Josys Vase), Motiv 106 mm:', JSON.stringify(r));
+  ok('Dose: nicht um einen Zylinder gewickelt, sondern um die Kanten gelegt', r.umlauf, r);
+  ok('Dose: liegt außen an (≤ 0,5 mm)', r.aussenMax <= 0.5 && r.aussenMax > 0, r.aussenMax);
+  ok('Dose: reicht überall in die Wand', r.innenMin < -0.3, r.innenMin); }
 const q = await lauf('quader', 60, true, 50);
 console.log('Quader scharfkantig, Motiv 60 mm:', JSON.stringify(q));
 ok('Quader bleibt flach geheftet', q.geheftet && !q.schmieg);
