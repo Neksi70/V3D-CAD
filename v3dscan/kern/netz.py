@@ -502,3 +502,52 @@ def innen_maske(scan, shapes):
     from . import koerper as kp
     d = kp.abweichung(shapes, scan.xyz)
     return d < 0
+
+
+# --- Netz an einer geschlossenen 3D-Kurve teilen (v1.2, QuickSurface "Split Mesh with 3D Sketch") ---------
+def _teilnetz(scan, wahl, name):
+    T = np.asarray(scan.tri)[wahl]
+    benutzt = np.unique(T)
+    neu_index = -np.ones(len(scan.xyz), np.int64)
+    neu_index[benutzt] = np.arange(len(benutzt))
+    rgb = None if scan.rgb is None else scan.rgb[benutzt]
+    nrm = None if scan.nrm is None else scan.nrm[benutzt]
+    return Scan(name, scan.xyz[benutzt], rgb, nrm, tri=neu_index[T])
+
+
+def teilen_mit_kurve(scan, kurve):
+    """Dreiecke, deren Mitte - entlang der mittleren Kurvennormale gesehen - innerhalb der geschlossenen Kurve
+    liegt und zur Kurve hin zeigt, werden ein eigenes Netz. -> (innen, aussen) als neue Scans."""
+    _kopf(scan)
+    K = np.asarray(kurve, float)
+    if len(K) < 4:
+        raise ValueError("Die Kurve ist zu kurz.")
+    if np.linalg.norm(K[0] - K[-1]) > 1e-6 * max(1.0, float(np.ptp(K, axis=0).max())):
+        K = np.r_[K, K[:1]]
+    X = np.asarray(scan.xyz, float)
+    T = np.asarray(scan.tri, np.int64)
+    P = X[T]
+    mitte = P.mean(1)
+    fn = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
+    fn /= np.maximum(np.linalg.norm(fn, axis=1), 1e-12)[:, None]
+    c = K.mean(0)
+    _, _, vt = np.linalg.svd(K - c, full_matrices=False)
+    u, v, n = vt[0], vt[1], vt[2]
+    # Normale zur Netzseite der Kurve ausrichten (Mittel der Flaechennormalen nahe der Kurve)
+    nah = np.linalg.norm(mitte - c, axis=1) < 1.2 * float(np.max(np.linalg.norm(K - c, axis=1)))
+    if nah.any() and (fn[nah].mean(0) @ n) < 0:
+        n = -n
+    q = np.c_[(mitte - c) @ u, (mitte - c) @ v]
+    k2 = np.c_[(K - c) @ u, (K - c) @ v]
+    innen = np.zeros(len(q), bool)
+    for (x1, y1), (x2, y2) in zip(k2[:-1], k2[1:]):           # Strahl nach +x, gerade/ungerade Kreuzungen
+        kreuzt = (y1 > q[:, 1]) != (y2 > q[:, 1])
+        if not kreuzt.any():
+            continue
+        xs = x1 + (q[kreuzt, 1] - y1) * (x2 - x1) / (y2 - y1)
+        idx = np.nonzero(kreuzt)[0]
+        innen[idx[q[idx, 0] < xs]] ^= True
+    innen &= (fn @ n) > 0.2                                     # Rueckseite und Wände quer dazu gehören nicht dazu
+    if not innen.any() or innen.all():
+        raise ValueError("Die Kurve umschließt keinen Teil des Netzes – liegt sie auf dem Scan?")
+    return _teilnetz(scan, innen, scan.name + " (innen)"), _teilnetz(scan, ~innen, scan.name)

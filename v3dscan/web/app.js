@@ -950,7 +950,7 @@ function werkzeugSetzen(w) {
   if (w !== 'orbit') pickModusSetzen(null);
   $$('[data-werkzeug]').forEach((b) => b.classList.toggle('an', b.dataset.werkzeug === w));
   if (zug) { zug = null; zeichnung.innerHTML = ''; }
-  const auswahl = w === 'rechteck' || w === 'lasso' || w === 'polygon' || w === 'pinsel' || w === 'kreis';
+  const auswahl = w === 'rechteck' || w === 'lasso' || w === 'polygon' || w === 'pinsel' || w === 'kreis' || w === 'linie';
   const klick = w === 'verbunden' || w === 'zauberstab';
   steuerung.mouseButtons = mausTasten(!(auswahl || klick));
   leinwand.style.cursor = auswahl ? 'crosshair' : klick ? 'pointer' : 'grab';
@@ -962,6 +962,7 @@ function werkzeugSetzen(w) {
     verbunden: 'Punkt anklicken: alles damit Zusammenhängende wird gewählt · Strg = abwählen',
     pinsel: 'Über den Scan malen = hinzufügen · Strg = abwählen · Größe im Auswahl-Fenster',
     kreis: 'Von der Mitte aus aufziehen = hinzufügen · Strg = abwählen',
+    linie: 'Linie ziehen = Streifen in Pinselbreite wählen · Strg = abwählen',
     zauberstab: 'Punkt anklicken: wächst, solange die Fläche nicht stärker knickt als der Winkel · Strg = abwählen',
   };
   status(tipps[w]);
@@ -992,7 +993,7 @@ leinwand.addEventListener('pointerdown', (ev) => {
     zugZeichnen();
     return;
   }
-  if (S.werkzeug !== 'rechteck' && S.werkzeug !== 'lasso' && S.werkzeug !== 'pinsel' && S.werkzeug !== 'kreis') return;
+  if (!['rechteck', 'lasso', 'pinsel', 'kreis', 'linie'].includes(S.werkzeug)) return;
   leinwand.setPointerCapture(ev.pointerId);
   zug = { art: S.werkzeug, punkte: [[x, y]], weg: ev.ctrlKey || ev.metaKey, r: Number($('#pinselGroesse').value) || 20 };
   zugZeichnen();
@@ -1001,7 +1002,7 @@ leinwand.addEventListener('pointermove', (ev) => {
   if (!zug) return;
   const [x, y] = lokalePos(ev);
   if (zug.art === 'polygon') { zug.maus = [x, y]; zugZeichnen(); return; }
-  if (zug.art === 'rechteck' || zug.art === 'kreis') zug.punkte[1] = [x, y];
+  if (zug.art === 'rechteck' || zug.art === 'kreis' || zug.art === 'linie') zug.punkte[1] = [x, y];
   else {
     const l = zug.punkte[zug.punkte.length - 1];
     if (Math.hypot(x - l[0], y - l[1]) > 3) zug.punkte.push([x, y]);
@@ -1056,7 +1057,7 @@ leinwand.addEventListener('pointerup', () => {
   const z = zug;
   zug = null;
   zeichnung.innerHTML = '';
-  if ((z.art === 'rechteck' || z.art === 'kreis') && z.punkte.length < 2) return;
+  if ((z.art === 'rechteck' || z.art === 'kreis' || z.art === 'linie') && z.punkte.length < 2) return;
   if (z.art === 'lasso' && z.punkte.length < 3) return;
   auswahlAnwenden(z);
 });
@@ -1072,7 +1073,7 @@ function zugZeichnen() {
     if (p.length < 2) { zeichnung.innerHTML = ''; return; }
     const r = Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]);
     zeichnung.innerHTML = `<circle cx="${p[0][0]}" cy="${p[0][1]}" r="${r}" fill="${farbe}22" stroke="${farbe}" stroke-dasharray="5 3"/>`;
-  } else if (zug.art === 'pinsel') {
+  } else if (zug.art === 'pinsel' || zug.art === 'linie') {
     zeichnung.innerHTML = `<polyline points="${p.map((q) => q.join(',')).join(' ')}" fill="none" stroke="${farbe}55" stroke-width="${2 * zug.r}" stroke-linecap="round" stroke-linejoin="round"/>`;
   } else if (zug.art === 'polygon') {
     const alle = zug.maus ? [...p, zug.maus] : p;
@@ -1092,7 +1093,7 @@ function auswahlAnwenden(z) {
   const g = c.getContext('2d');
   g.scale(pr, pr);
   g.beginPath();
-  if (z.art === 'pinsel') {
+  if (z.art === 'pinsel' || z.art === 'linie') {
     g.lineWidth = 2 * z.r; g.lineCap = 'round'; g.lineJoin = 'round';
     z.punkte.forEach((q, i) => (i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1])));
     if (z.punkte.length === 1) g.lineTo(z.punkte[0][0] + 0.01, z.punkte[0][1]);
@@ -1107,7 +1108,7 @@ function auswahlAnwenden(z) {
     z.punkte.forEach((q, i) => (i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1])));
     g.closePath();
   }
-  if (z.art !== 'pinsel') g.fill();
+  if (z.art !== 'pinsel' && z.art !== 'linie') g.fill();
   const form = g.getImageData(0, 0, W, H).data;
   const tb = S.durch ? null : tiefenbild();
   const wert = z.weg ? 0 : 1;
@@ -3777,6 +3778,8 @@ function v10Fuellen() {
   for (const id of ['#pjSkizze', '#wiSkizze']) selectFuellen($(id), d2);
   selectFuellen($('#rfSkizze'), alle.map((z) => [z.meta.id, z.meta.name]));
   for (const id of ['#blA', '#blB']) selectFuellen($(id), alle.map((z) => [z.meta.id, z.meta.name]));
+  selectFuellen($('#tkSkizze'), alle.filter((z) => z.meta.art === '3d').map((z) => [z.meta.id, z.meta.name]));
+  selectFuellen($('#tkScan'), (S.zustand ? S.zustand.scans : []).filter((x) => x.dreiecke > 0).map((x) => [x.id, x.name]), $('#tkScan').value ? null : S.aktiv);
   const ko = [...S.koerper.values()].map((k) => [`k${k.meta.id}`, `Körper „${k.meta.name}“`]);
   selectFuellen($('#fuQuelle'), [...ko, ...d3.map(([i, n]) => [`s${i}`, `3D-Skizze „${n}“`])]);
   const scans = S.zustand ? S.zustand.scans : [];
@@ -4351,6 +4354,12 @@ const AKTIONEN = {
   sicherungJetzt: { text: '', fn: async () => { const j = await apiRoh('sicherung/jetzt', {}); meldung(j.name ? 'Gesichert.' : 'Nichts zu sichern.', 'ok'); await sicherungListe(); } },
   pinsel: { text: 'Werkzeug: Pinsel', taste: 'N', fn: () => werkzeugSetzen('pinsel') },
   kreisWahl: { text: 'Werkzeug: Kreis', taste: 'K', fn: () => werkzeugSetzen('kreis') },
+  linieWahl: { text: 'Werkzeug: Linie', fn: () => werkzeugSetzen('linie') },
+  netzTeilenKurve: { text: 'Netz an 3D-Skizze teilen', fn: async () => {
+    const id = Number($('#tkScan').value), sid = Number($('#tkSkizze').value);
+    const j = await api('netz/teilen_kurve', { id, sid }, 'Teile Netz…');
+    meldung(`Geteilt: ${j.dreiecke[0].toLocaleString('de-DE')} Dreiecke abgetrennt, ${j.dreiecke[1].toLocaleString('de-DE')} bleiben.`, 'ok');
+  } },
   zauberstab: { text: 'Werkzeug: Zauberstab', taste: 'W', fn: () => werkzeugSetzen('zauberstab') },
   vergroessern: { text: 'Auswahl vergrößern', fn: () => auswahlWachsen(1) },
   verkleinern: { text: 'Auswahl verkleinern', fn: () => auswahlWachsen(-1) },

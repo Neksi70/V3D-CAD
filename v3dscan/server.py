@@ -318,6 +318,16 @@ def befehl(name, d):
             i["indizes"] = sch.tolist() if len(sch) <= 20000 else sch[::len(sch) // 20000 + 1].tolist()
         return {"analyse": ergebnis, "loecher": info,
                 "problem": maske_b64(marken["problem"]) if "problem" in marken else None}
+    if name == "netz/teilen_kurve":
+        s = p.scan(d["id"])
+        z = p.skizze_holen(d["sid"])
+        if z.get("art") != "3d" or not z.get("geschlossen"):
+            raise Fehler("Bitte eine GESCHLOSSENE 3D-Skizze auf dem Netz wählen.")
+        kurve = _kurve_punkte(sk_feat.skizze_draht(z), 400)
+        innen, aussen = nz.teilen_mit_kurve(s, kurve)
+        p.ersetzen(s.id, neuer_scan=aussen, text="Netz an 3D-Skizze geteilt")
+        p.hinzufuegen(innen)
+        return {"neu": innen.id, "dreiecke": [int(len(innen.tri)), int(len(aussen.tri))]}
     if name == "netz/vorschau":
         _, neu, bericht = netz_rechnen(d)
         return {"bericht": bericht}

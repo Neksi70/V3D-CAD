@@ -90,6 +90,15 @@ def main():
         pruefe(np.allclose(K[0], [20, 0, 0], atol=1e-3) and np.allclose(K[-1], [40, 10, 0], atol=1e-3)
                and t0 @ [1, 0, 0] > 0.99 and t1 @ [0, 1, 0] > 0.99,
                "Übergangskurve: (20,0,0) → (40,10,0), tangential an beiden Enden (%.3f / %.3f)" % (t0 @ [1, 0, 0], t1 @ [0, 1, 0]))
+        # Netz an geschlossener 3D-Skizze teilen (Torus, Kreis auf der Oberseite)
+        from test_oberflaeche_freiform import testdatei as torus_datei
+        tid = holen("/api/import?name=torus.ply", roh=open(torus_datei(), "rb").read())["neu"]
+        t = np.linspace(0, 2 * np.pi, 13)[:-1]
+        punkte = np.c_[48 + 5 * np.cos(t), 5 * np.sin(t), np.full(len(t), 12.0)].tolist()
+        sk3 = holen("/api/skizze/3d", {"id": tid, "punkte": punkte, "geschlossen": True, "auf_scan": True})
+        a = holen("/api/netz/teilen_kurve", {"id": tid, "sid": sk3["sid"]})
+        pruefe("neu" in a and a["dreiecke"][0] > 50 and a["dreiecke"][1] > 10 * a["dreiecke"][0],
+               "Torus an Kreis geteilt: innen %s, Rest %s Dreiecke" % tuple(a.get("dreiecke", ["?", "?"])))
         # Flaechen-Fit nach Toleranz auf einer welligen Flaeche
         from kern.wolke import Scan, ausgeben
         u, w = np.meshgrid(np.linspace(0, 60, 120), np.linspace(0, 40, 80))
