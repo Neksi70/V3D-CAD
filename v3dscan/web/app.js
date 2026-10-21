@@ -2344,7 +2344,7 @@ function skParameter() {
 }
 function skVorschauSetzen(j) {
   objektEntsorgen(S.skVorschau && S.skVorschau.obj);
-  S.skVorschau = { daten: j.skizze, texte: j.texte, abw: j.abweichung };
+  S.skVorschau = { daten: j.skizze, texte: j.texte, abw: j.abweichung, bed: j.bedingungen || [] };
   S.skVorschau.obj = skizzeObjekt(j.skizze, { vorschau: true, hervor: S.skHervor });
   hilfsGruppe.add(S.skVorschau.obj);
   skElementeZeichnen();
@@ -2354,6 +2354,7 @@ function skVorschauWeg() {
   S.skVorschau = null;
   S.skHervor = null;
   $('#skElemente').innerHTML = '';
+  $('#skBedingungen').innerHTML = '';
   $('#skInfo').textContent = '';
 }
 async function skVorschau() {
@@ -2414,6 +2415,29 @@ function skElementeZeichnen() {
       });
       box.appendChild(z);
     });
+  });
+  // gespeicherte Bedingungen und Maße: werden bei jeder Änderung gemeinsam gelöst
+  const bl = $('#skBedingungen');
+  bl.innerHTML = '';
+  if (v.bed.length) {
+    const kopf = document.createElement('div');
+    kopf.className = 'kette';
+    kopf.textContent = `Bedingungen und Maße (${v.bed.length})`;
+    bl.appendChild(kopf);
+  }
+  v.bed.forEach((t, i) => {
+    const z = document.createElement('div');
+    z.className = 'el';
+    const txt = document.createElement('span');
+    txt.textContent = t;
+    const weg = document.createElement('button');
+    weg.textContent = '✕';
+    weg.title = 'Bedingung entfernen';
+    weg.addEventListener('click', () => sicher(async () => {
+      skVorschauSetzen(await api('skizze/bedingung_entfernen', { ...skZiel(), index: i }, 'Entferne…'));
+    }));
+    z.append(txt, document.createElement('span'), weg);
+    bl.appendChild(z);
   });
 }
 async function skUebernehmen() {
@@ -3328,28 +3352,41 @@ async function skkAusfuehren() {
   S.skHervor = null;
   skVorschauSetzen(j);
 }
+function skNr(text, kette) {
+  // "3" = Element 3 derselben Kontur, "2.3" = Kontur 2, Element 3 -> [kette, element] (0-basiert) oder null
+  const t = String(text || '').trim().replace(',', '.');
+  if (!t) return null;
+  const m = t.match(/^(\d+)(?:\.(\d+))?$/);
+  if (!m) throw new Error(`„${t}“ ist keine Element-Nummer (z. B. 3 oder 2.3).`);
+  return m[2] ? [Number(m[1]) - 1, Number(m[2]) - 1] : [kette, Number(m[1]) - 1];
+}
 async function skeAusfuehren() {
   if (!S.skHervor) throw new Error('Erst ein Element in der Liste anklicken.');
   const [kette, element] = S.skHervor;
   const art = $('#skeArt').value;
-  const bezug = $('#skeBezug').value === '' ? null : Number($('#skeBezug').value) - 1;
-  const wert = Number($('#skeWert').value);
+  const bz = skNr($('#skeBezug').value, kette);
+  const bezug = bz ? bz[1] : null;
+  const bezug_kette = bz ? bz[0] : kette;
+  const wert = Number(String($('#skeWert').value).replace(',', '.'));
+  const zwei = ['parallel', 'rechtwinklig', 'gleich', 'tangential', 'konzentrisch', 'abstand', 'winkel', 'symmetrisch'];
+  if (zwei.includes(art) && bezug === null) throw new Error('Bezug angeben (Nr. oder Kontur.Element).');
   let j;
   if (art === 'ecke') j = await api('skizze/ecke', { ...skZiel(), kette, element, r: wert || 1 }, 'Runde Ecke…');
-  else if (art === 'laenge') j = await api('skizze/laenge', { ...skZiel(), kette, element, wert }, 'Setze Länge…');
-  else if (art === 'winkel') {
-    if (bezug === null) throw new Error('Bezugslinie (Nr.) angeben.');
-    j = await api('skizze/winkel', { ...skZiel(), kette, element, bezug, wert }, 'Setze Winkel…');
-  }
-  else if (art === 'abstand') {
-    if (bezug === null) throw new Error('Bezugslinie (Nr.) angeben.');
-    j = await api('skizze/abstand', { ...skZiel(), kette, element, bezug, wert }, 'Setze Abstand…');
-  } else if (art === 'spline') {
+  else if (art === 'spline') {
     if (bezug === null) throw new Error('Bis zu welchem Element (Nr.)?');
     j = await api('skizze/spline', { ...skZiel(), kette, von: Math.min(element, bezug), bis: Math.max(element, bezug) }, 'Passe Spline ein…');
+  } else if (['laenge', 'winkel', 'abstand'].includes(art)) {
+    j = await api('skizze/' + art, { ...skZiel(), kette, element, bezug, bezug_kette, wert }, 'Löse Bedingungen…');
   } else {
-    if ((art === 'parallel' || art === 'rechtwinklig') && bezug === null) throw new Error('Bezugslinie (Nr.) angeben.');
-    j = await api('skizze/bedingung', { ...skZiel(), kette, element, art, bezug }, 'Setze Bedingung…');
+    const d = { ...skZiel(), kette, element, art, bezug, bezug_kette };
+    if (art === 'radius') d.wert = wert;
+    if (art === 'symmetrisch') {
+      // Ende des gewählten Elements ↔ Anfang des Bezugs, gespiegelt an der Achse
+      const ach = skNr($('#skeAchse').value, kette);
+      if (!ach) throw new Error('Für „symmetrisch“ die Achse (Linie) angeben.');
+      Object.assign(d, { ende: 'b', ende2: 'a', achse: { kette: ach[0], element: ach[1] } });
+    }
+    j = await api('skizze/bedingung', d, 'Löse Bedingungen…');
   }
   S.skHervor = null;
   skVorschauSetzen(j);

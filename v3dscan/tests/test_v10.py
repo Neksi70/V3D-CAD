@@ -137,7 +137,9 @@ def http_test():
         a = holen("/api/skizze/zeichnen", {"art": "langloch", "punkte": [[5, 20], [15, 20]], "wert": 4})
         a = holen("/api/skizze/bedingung", {"kette": 0, "element": 2, "art": "senkrecht"})
         if "fehler" in a: print("    FEHLERTEXT", a["fehler"])
-        pruefe("senkrecht" in json.dumps(a["skizze"]["ketten"][0]["elemente"][2]), "Bedingung „senkrecht“")
+        e2 = a["skizze"]["ketten"][0]["elemente"][2]
+        pruefe(any(t.startswith("senkrecht K1/E3") for t in a.get("bedingungen", [])) and abs(e2["a"][0] - e2["b"][0]) < 1e-6,
+               "Bedingung „senkrecht“ gespeichert: %s" % a.get("bedingungen"))
         a = holen("/api/skizze/uebernehmen", {})
         skid = a["sid"]
         d = holen("/api/skizze/dxf", {"sid": skid})

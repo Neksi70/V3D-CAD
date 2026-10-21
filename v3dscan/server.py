@@ -34,6 +34,7 @@ from kern import erkennung as er  # noqa: E402
 from kern import formen as fo  # noqa: E402
 from kern import freiform as ff  # noqa: E402
 from kern import koerper as kp  # noqa: E402
+from kern import loeser  # noqa: E402
 from kern import koordinaten as ko  # noqa: E402
 from kern import netz as nz  # noqa: E402
 from kern import features as sk_feat  # noqa: E402
@@ -616,6 +617,7 @@ def _skizze_antwort(skz):
         kenn.append(None if w is None or not len(w) else
                     {"max": round(float(w.max()), 4), "rms": round(float(np.sqrt(np.mean(w ** 2))), 4)})
     return {"skizze": skz, "texte": texte, "abweichung": kenn,
+            "bedingungen": [loeser.text(c) for c in skz.get("bedingungen", [])],
             "abweichung_werte": [None if w is None else _b64(w, np.float32) for w in abw]}
 
 
@@ -713,7 +715,18 @@ def skizze_befehl(was, d):
         schnitt = list(skz.get("schnitt", []))
         if not 0 <= ki < len(ketten) or not 0 <= ei < len(ketten[ki]["elemente"]):
             raise Fehler("Element gibt es nicht (mehr).")
-        if was == "radius":
+        bedingungen = list(skz.get("bedingungen", []))
+        if was == "radius" and any(ki in loeser._ketten_von(c) for c in bedingungen):
+            # Kontur haengt an Bedingungen: Radius als Mass dazu und alles gemeinsam loesen
+            c = {"art": "radius", "e": [ki, ei], "wert": zahl(d, "r")}
+            neu_b = [x for x in bedingungen if not (x["art"] == "radius" and x.get("e") == c["e"])] + [c]
+            try:
+                ketten = loeser.skizze_loesen(ketten, neu_b)
+            except (ValueError, KeyError, IndexError) as x:
+                raise Fehler(str(x) if isinstance(x, ValueError) else "Bedingung passt nicht zu dieser Kontur.")
+            bedingungen = neu_b
+            text = "Radius geändert"
+        elif was == "radius":
             ketten[ki] = sk.radius_setzen(ketten[ki], ei, zahl(d, "r"),
                                           (skz.get("quelle") or {}).get("toleranz", 0.05))
             text = "Radius geändert"
@@ -723,10 +736,12 @@ def skizze_befehl(was, d):
                 del ketten[ki]
                 if ki < len(schnitt):
                     del schnitt[ki]
+                bedingungen = loeser.ketten_entfernt(bedingungen, ki)
             else:
                 ketten[ki] = neu
+                bedingungen = loeser.kette_geaendert(bedingungen, ki)
             text = "Element entfernt"
-        daten = {"ketten": ketten, "schnitt": schnitt}
+        daten = {"ketten": ketten, "schnitt": schnitt, "bedingungen": bedingungen}
         if gespeichert:
             skz = p.skizze_ersetzen(skz["id"], daten, text)
         else:
@@ -768,13 +783,14 @@ def skizze_befehl(was, d):
         skz, _ = _skizze_ziel(d)
         return {"dxf": sk.dxf(skz), "name": skz.get("name", "skizze")}
     if was in ("zeichnen", "spline", "versatz", "spiegeln", "kopieren", "ecke", "bedingung", "abstand",
-               "kette_entfernen", "laenge", "winkel", "hilfe"):
+               "kette_entfernen", "laenge", "winkel", "hilfe", "bedingung_entfernen"):
         skz, gespeichert = _skizze_ziel(d)
         ketten = [dict(k) for k in skz["ketten"]]
         schnitt = list(skz.get("schnitt", []))
         while len(schnitt) < len(ketten):
             schnitt.append([])
         tol = (skz.get("quelle") or {}).get("toleranz", 0.1)
+        bedingungen = list(skz.get("bedingungen", []))
 
         def kette(i=None):
             i = int(d.get("kette", 0)) if i is None else int(i)
@@ -822,33 +838,73 @@ def skizze_befehl(was, d):
             i, k = kette()
             ketten[i] = sk.ecke_runden(k, int(d.get("element", 0)), zahl(d, "r", 1))
             text = "Ecke gerundet"
-        elif was == "bedingung":
+        elif was in ("bedingung", "abstand", "laenge", "winkel"):
+            # alle Bedingungen und Masse bleiben in der Skizze gespeichert und werden gemeinsam geloest
             i, k = kette()
+            el = int(d.get("element", 0))
+            art = {"abstand": "abstand", "laenge": "laenge", "winkel": "winkel"}.get(was) or d.get("art", "waagrecht")
+            c = {"art": art, "e": [i, el]}
             b = d.get("bezug")
-            ketten[i] = sk.bedingung(k, int(d.get("element", 0)), d.get("art", "waagrecht"), None if b in (None, "") else int(b))
-            text = "Bedingung „%s“" % d.get("art")
-        elif was == "abstand":
-            i, k = kette()
-            ketten[i] = sk.abstand_setzen(k, int(d.get("element", 0)), int(d.get("bezug", 0)), zahl(d, "wert", 10))
-            text = "Abstand gesetzt"
-        elif was == "laenge":
-            i, k = kette()
-            ketten[i] = sk.laenge_setzen(k, int(d.get("element", 0)), zahl(d, "wert", 10))
-            text = "Länge gesetzt"
-        elif was == "winkel":
-            i, k = kette()
-            ketten[i] = sk.winkel_setzen(k, int(d.get("element", 0)), int(d.get("bezug", 0)), zahl(d, "wert", 90))
-            text = "Winkel gesetzt"
+            bk = int(d.get("bezug_kette", i))
+            if b not in (None, ""):
+                c["f"] = [bk, int(b)]
+            if art in ("laenge", "radius", "abstand", "winkel", "punkt_abstand"):
+                c["wert"] = zahl(d, "wert", 90 if art == "winkel" else 10)
+            if not 0 <= el < len(ketten[i]["elemente"]):
+                raise Fehler("Element gibt es nicht (mehr).")
+            if art in ("fix", "symmetrisch", "punkt_abstand", "auf_kreis"):
+                ende = "mitte" if ketten[i]["elemente"][el]["typ"] == "kreis" else d.get("ende", "a")
+                c["p"] = [i, el, ende]
+                if art == "fix":
+                    c["wo"] = ketten[i]["elemente"][el][ende]
+                if art in ("symmetrisch", "punkt_abstand"):
+                    c["q"] = [bk, int(b if b not in (None, "") else el), d.get("ende2", "b")]
+                    c.pop("f", None)
+                if art == "symmetrisch":
+                    ach = d.get("achse") or {}
+                    if "element" not in ach:
+                        raise Fehler("Für „symmetrisch“ eine Linie als Achse wählen.")
+                    c["achse"] = [int(ach.get("kette", i)), int(ach["element"])]
+                if art == "auf_kreis":
+                    c["e"] = [bk, int(b)]
+            if art in ("parallel", "rechtwinklig", "abstand", "winkel", "gleich", "tangential", "konzentrisch") \
+                    and "f" not in c:
+                raise Fehler("Als Bezug ein zweites Element wählen.")
+            alt = list(skz.get("bedingungen", []))
+            # dieselbe Art am selben Element ersetzt die alte Vorgabe (z. B. neue Länge)
+            neu_b = [x for x in alt if not (x["art"] == c["art"] and x.get("e") == c["e"] and x.get("f") == c.get("f")
+                                             and x.get("p") == c.get("p"))]
+            if art == "abstand" and not any(x["art"] == "parallel" and x.get("e") == c["e"] for x in neu_b):
+                neu_b.append({"art": "parallel", "e": c["e"], "f": c["f"]})
+            neu_b.append(c)
+            anker = [[i, el, "a"]] if art == "laenge" else []
+            try:
+                ketten = loeser.skizze_loesen(ketten, neu_b, anker)
+            except (ValueError, KeyError, IndexError) as x:
+                raise Fehler(str(x) if isinstance(x, ValueError) else "Bedingung passt nicht zu dieser Kontur.")
+            bedingungen = neu_b
+            text = {"laenge": "Länge gesetzt", "winkel": "Winkel gesetzt", "abstand": "Abstand gesetzt"}.get(art) \
+                or "Bedingung „%s“" % art
         elif was == "hilfe":
             i, k = kette()
             ketten[i] = dict(k, hilfe=bool(d.get("an", not k.get("hilfe"))))
             text = "Hilfslinie" if ketten[i]["hilfe"] else "Kontur"
+        elif was == "bedingung_entfernen":
+            n = int(d.get("index", -1))
+            if not 0 <= n < len(bedingungen):
+                raise Fehler("Diese Bedingung gibt es nicht.")
+            del bedingungen[n]
+            text = "Bedingung entfernt"
         else:
             i, _ = kette()
             del ketten[i]
             del schnitt[i]
+            bedingungen = loeser.ketten_entfernt(bedingungen, i)
             text = "Kontur entfernt"
-        daten = {"ketten": ketten, "schnitt": schnitt}
+        if was in ("spline", "ecke"):
+            # Elementnummern dieser Kontur haben sich verschoben
+            bedingungen = loeser.kette_geaendert(bedingungen, i)
+        daten = {"ketten": ketten, "schnitt": schnitt, "bedingungen": bedingungen}
         if gespeichert:
             skz = p.skizze_ersetzen(skz["id"], daten, text)
         else:
