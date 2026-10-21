@@ -39206,21 +39206,48 @@ async function _importStepFile(file) {
 // nachgemessen 99,99 % der Punkte unter 0,04 mm.
 const BIGMESH_TRIS = 300000;
 const BIGMESH_TOL_MM = 0.01;
-let _vfW = null, _vfSeq = 0; const _vfWait = new Map();
-// pos = Dreiecksliste (9 Floats/Dreieck); opts {tol} (Einheit von pos) oder {target}
+// …aber nie mehr als 0,02 % der Modellgröße: Dateien, die nicht in mm gezeichnet sind
+// (z. B. Meter → Drache 0,1 Einheiten groß), wären mit festen 0,01 „mm" bis auf wenige
+// hundert Dreiecke zusammengefallen (Bibliothek 21.10.: 93,6 MB → 64 KB).
+const BIGMESH_REL_TOL = 0.0002;
+// Zwei getrennte Worker („Spuren"): Vorschaubilder ('thumb') und alles andere ('main').
+// Sonst wartet jedes Vorschaubild hinter der großen Bibliotheks-Prüfung (Volker 21.10.:
+// nach dem Scrollen nur noch Eieruhren). Jeder Auftrag hat ein Zeitlimit; antwortet der
+// Worker nicht (z. B. vom Browser wegen Speicher beendet — dann kommt oft gar kein
+// Fehler), wird er neu gestartet und seine offenen Aufträge scheitern sauber.
+const _vfLanes = {};
+let _vfSeq = 0;
+function _vfLane(name) {
+  let L = _vfLanes[name];
+  if (L && L.w) return L;
+  const v = typeof VOLME3D_VERSION !== 'undefined' ? VOLME3D_VERSION : '1';
+  L = _vfLanes[name] = { w: new Worker('lib/vereinfachen-worker.js?v=' + v), wait: new Map() };
+  const fail = msg => {
+    const ws = [...L.wait.values()]; L.wait.clear();
+    try { L.w.terminate(); } catch (_) {} L.w = null;
+    for (const x of ws) { clearTimeout(x.t); x.rej(new Error(msg)); }
+  };
+  L.fail = fail;
+  L.w.onmessage = e => { const d = e.data || {}, x = L.wait.get(d.id); if (!x) return; L.wait.delete(d.id); clearTimeout(x.t); d.error ? x.rej(new Error(d.error)) : x.res(d); };
+  L.w.onerror = e => fail('Vereinfachen fehlgeschlagen' + (e && e.message ? ': ' + e.message : ''));
+  return L;
+}
+// pos = Dreiecksliste (9 Floats/Dreieck); opts {tol} (Einheit von pos) oder {target};
+// opts.lane ('main'|'thumb'), opts.timeout (ms).
 // opts.give=true: pos/stl werden an den Worker übergeben (nicht kopiert) — danach unbrauchbar
 function _vfSimplifyAsync(pos, opts) {
-  if (!_vfW) {
-    const v = typeof VOLME3D_VERSION !== 'undefined' ? VOLME3D_VERSION : '1';
-    _vfW = new Worker('lib/vereinfachen-worker.js?v=' + v);
-    _vfW.onmessage = e => { const d = e.data || {}, w = _vfWait.get(d.id); if (!w) return; _vfWait.delete(d.id); d.error ? w.rej(new Error(d.error)) : w.res(d); };
-    _vfW.onerror = e => { const ws = [..._vfWait.values()]; _vfWait.clear(); try { _vfW.terminate(); } catch (_) {} _vfW = null;
-      for (const w of ws) w.rej(new Error('Vereinfachen fehlgeschlagen' + (e && e.message ? ': ' + e.message : ''))); };
-  }
+  const lane = opts.lane || 'main', L = _vfLane(lane);
   const id = ++_vfSeq;
-  const msg = { id, pos, stl: opts.stl || null, tol: opts.tol || 0, target: opts.target || 0, sloppy: !!opts.sloppy, minTris: opts.minTris || 0, indexed: !!opts.indexed };
+  const msg = { id, pos, stl: opts.stl || null, tol: opts.tol || 0, relTol: opts.tol ? BIGMESH_REL_TOL : 0, target: opts.target || 0, sloppy: !!opts.sloppy, minTris: opts.minTris || 0, indexed: !!opts.indexed };
   const give = opts.give ? [opts.stl || (pos && pos.buffer)].filter(Boolean) : [];
-  return new Promise((res, rej) => { _vfWait.set(id, { res, rej }); _vfW.postMessage(msg, give); });
+  // Zeitlimit nach Größe: 60 s + 60 s je Million Dreiecke (4-Mio-Scan braucht ~8 s)
+  const nTri = opts.stl ? (opts.stl.byteLength - 84) / 50 : (pos ? pos.length / 9 : 0);
+  const ms = opts.timeout || (60000 + nTri / 1e6 * 60000);
+  return new Promise((res, rej) => {
+    const t = setTimeout(() => { console.warn('[vereinfachen] Zeitlimit, Worker „' + lane + '“ neu'); L.fail('Zeitüberschreitung beim Vereinfachen'); }, ms);
+    L.wait.set(id, { res, rej, t });
+    L.w.postMessage(msg, give);
+  });
 }
 function _geoSoup(g) {   // Dreiecksliste (kopiert), auch für indizierte Geometrie (OBJ)
   const p = g.attributes.position;
@@ -68929,7 +68956,11 @@ async function _stlPoll(){
   }catch(e){}
 }
 
-function _stlIdb(){return new Promise((res,rej)=>{const r=indexedDB.open('volme3d-stllib',1);r.onupgradeneeded=()=>{const db=r.result;if(!db.objectStoreNames.contains('kv'))db.createObjectStore('kv');if(!db.objectStoreNames.contains('thumbs'))db.createObjectStore('thumbs');};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+// Verbindung einmal öffnen und behalten (vorher bei JEDEM Zugriff neu — 30 gespeicherte
+// Vorschaubilder brauchten so 2,3 s)
+let _stlIdbP=null;
+function _stlIdb(){ if(!_stlIdbP){ _stlIdbP=_stlIdbOpen().catch(e=>{ _stlIdbP=null; throw e; }); } return _stlIdbP; }
+function _stlIdbOpen(){return new Promise((res,rej)=>{const r=indexedDB.open('volme3d-stllib',1);r.onupgradeneeded=()=>{const db=r.result;if(!db.objectStoreNames.contains('kv'))db.createObjectStore('kv');if(!db.objectStoreNames.contains('thumbs'))db.createObjectStore('thumbs');};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
 function _stlIdbGet(store,key){return _stlIdb().then(db=>new Promise((res,rej)=>{const t=db.transaction(store,'readonly').objectStore(store).get(key);t.onsuccess=()=>res(t.result);t.onerror=()=>rej(t.error);}));}
 function _stlIdbSet(store,key,val){return _stlIdb().then(db=>new Promise((res,rej)=>{const tx=db.transaction(store,'readwrite');tx.objectStore(store).put(val,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);}));}
 
@@ -69098,12 +69129,16 @@ function _stlRenderGrid(){
   if(_stlFmtFilter && !dirView) list=list.filter(f=>_stlExt(f.name)===_stlFmtFilter);
   grid.innerHTML='';
   if(_stlThumbObs) _stlThumbObs.disconnect();
-  _stlThumbObs=new IntersectionObserver(es=>{ for(const e of es){ if(e.isIntersecting){ const f=e.target._stlF; _stlThumbObs.unobserve(e.target); if(f) _stlThumbEnqueue(f); } } },{root:grid,rootMargin:'300px'});
-  if(dirView){ _stlRenderDirs(list, grid, q); return; }
+  // Sichtbare Karten kommen in der Warteschlange nach vorn; alle anderen werden ohnehin
+  // im Hintergrund abgearbeitet (_stlThumbQueueAll) — früher nur „wenn sichtbar", und nach
+  // jedem Neuaufbau der Liste blieben weiter unten Eieruhren stehen (Volker 21.10.).
+  _stlThumbObs=new IntersectionObserver(es=>{ for(const e of es){ if(e.isIntersecting){ const f=e.target._stlF; _stlThumbObs.unobserve(e.target); if(f) _stlThumbEnqueue(f, true); } } },{root:grid,rootMargin:'300px'});
+  if(dirView){ _stlRenderDirs(list, grid, q); _stlThumbQueueAll(list); return; }
   if(!list.length){ grid.innerHTML='<div class="stl-empty">'+(_stlFavOnly?'Noch keine Favoriten — tippe auf den ☆ Stern einer Karte.':(_stlFmtFilter?'Keine '+_stlFmtFilter.toUpperCase()+'-Dateien'+(q?' für „'+_stlEsc(q)+'"':'')+' in der Bibliothek.':'Nichts gefunden für „'+_stlEsc(q)+'".'))+'</div>'; return; }
   // Durchgehende Liste in der gewählten Sortierung; Dateien aus Unterordnern tragen ein
   // Ordner-Etikett. Die Ordner selbst blättert man im Reiter „Ordner" durch.
   list.forEach(f=>_stlMakeCard(f, grid));
+  _stlThumbQueueAll(list);
 }
 function _stlOpenDir(d){ _stlDir=d||''; _stlRenderGrid(); const g=document.getElementById('stllib-grid'); if(g) g.scrollTop=0; }
 // Reiter „Ordner": Ordner als Kacheln, Klick öffnet den Ordner (Unterordner wieder als Kacheln,
@@ -69161,16 +69196,44 @@ function _stlRenderDirs(list, grid, q){
   direct.forEach(f=>_stlMakeCard(f, grid));
 }
 // Thumbnails nur für sichtbare Karten, sequenziell (ein Renderer, kein Ansturm bei hunderten Dateien)
-function _stlThumbEnqueue(f){ if(f._thumbDone||f._thumbQueued) return; f._thumbQueued=true; _stlThumbPending.push(f); _stlThumbPump(); }
+// front=true: sichtbare Karte → an den Anfang (auch wenn sie schon weiter hinten wartet)
+function _stlThumbKey(f){ return 'v2|'+f.path+'|'+f.size+'|'+f.mtime; }   // v2: alte (in Firefox schwarze) STL-Thumbs verwerfen → neu rendern
+function _stlThumbEnqueue(f, front){
+  if(f._thumbDone) return;
+  if(f._thumbQueued){ if(front){ const i=_stlThumbPending.indexOf(f); if(i>0){ _stlThumbPending.splice(i,1); _stlThumbPending.unshift(f); } } return; }
+  f._thumbQueued=true; front?_stlThumbPending.unshift(f):_stlThumbPending.push(f); _stlThumbPump();
+}
+// Gespeicherte Vorschaubilder alle auf einmal holen (EINE Transaktion) und sofort zeigen;
+// nur was fehlt (neue/geänderte Dateien) kommt in die Warteschlange.
+async function _stlThumbQueueAll(list){
+  const todo=list.filter(f=>!f._thumbUrl && !f._thumbDone);
+  if(!todo.length) return;
+  try{
+    const db=await _stlIdb();
+    const urls=await new Promise((res,rej)=>{ const st=db.transaction('thumbs','readonly').objectStore('thumbs'), out=new Array(todo.length); let n=0;
+      todo.forEach((f,i)=>{ const q=st.get(_stlThumbKey(f)); q.onsuccess=()=>{ out[i]=q.result; if(++n===todo.length) res(out); }; q.onerror=()=>{ if(++n===todo.length) res(out); }; }); });
+    todo.forEach((f,i)=>{ const url=urls[i]; if(!url||f._thumbDone) return; f._thumbDone=true; f._thumbUrl=url==='-big'?null:url;
+      if(f._thumbEl) f._thumbEl.innerHTML=f._thumbUrl?`<img class="ds-thumb" src="${f._thumbUrl}">`:'<div class="ds-nothumb" title="Datei zu groß für eine Vorschau – Öffnen geht trotzdem">📦</div>'; });
+  }catch(e){}
+  for(const f of todo) if(!f._thumbDone) _stlThumbEnqueue(f);
+}
 async function _stlThumbPump(){
   if(_stlThumbBusy) return; _stlThumbBusy=true;
   // zwischen zwei Vorschauen dem Browser Luft lassen (Klicks/Scrollen bleiben flüssig)
-  while(_stlThumbPending.length){ const f=_stlThumbPending.shift(); try{ await _stlThumbOne(f); }catch(e){} await new Promise(r=>setTimeout(r,0)); }
+  // Zeitlimit je Bild: hängt eins (Helfer antwortet nicht, Worker weg), läuft die
+  // Schlange trotzdem weiter — sonst bleiben alle folgenden Karten Eieruhren.
+  while(_stlThumbPending.length){ const f=_stlThumbPending.shift();
+    if(!_stlFiles.includes(f)) continue;   // Liste inzwischen neu geladen → veralteter Eintrag
+    let to; const guard=new Promise(r=>{ to=setTimeout(()=>{ console.warn('[thumb] Zeitlimit:',f.path); f._thumbTimedOut=true; r(); }, 120000); });
+    try{ await Promise.race([_stlThumbOne(f), guard]); }catch(e){}
+    clearTimeout(to);
+    if(f._thumbTimedOut && !f._thumbUrl && f._thumbEl) f._thumbEl.innerHTML='<div class="ds-nothumb" title="Vorschau dauerte zu lange">📦</div>';
+    await new Promise(r=>setTimeout(r,0)); }
   _stlThumbBusy=false;
 }
 async function _stlThumbOne(f){
   if(f._thumbDone) return; f._thumbDone=true;
-  const key='v2|'+f.path+'|'+f.size+'|'+f.mtime;   // v2: alte (in Firefox schwarze) STL-Thumbs verwerfen → neu rendern
+  const key=_stlThumbKey(f);
   let url=null; try{ url=await _stlIdbGet('thumbs',key); }catch(e){}
   if(!url){ try{ url=await _stlMakeThumb(f); }catch(e){ url=null; } if(url){ try{ await _stlIdbSet('thumbs',key,url); }catch(e){} } }
   // '-big' = absichtlich übersprungen (zu groß fürs Rendern im Haupt-Thread), wird mitgecacht
@@ -69212,8 +69275,13 @@ function _p3mfParseAsync(buf){
     }
     const id=++_p3mfSeq;
     return new Promise((res,rej)=>{
-      const fallback=()=>{ try{ res(P3MF.parseZip(new Uint8Array(buf))); }catch(err){ rej(err); } };
-      _p3mfWait.set(id,{res,rej,fallback});
+      const fallback=()=>{ clearTimeout(t); try{ res(P3MF.parseZip(new Uint8Array(buf))); }catch(err){ rej(err); } };
+      // Zeitlimit (2 min + 1 min je 10 MB): ein vom Browser beendeter Worker meldet sich
+      // oft gar nicht mehr → alle wartenden Aufträge scheitern, Worker wird neu gestartet
+      const t=setTimeout(()=>{ console.warn('[3mf] Zeitlimit, Worker neu');
+        const ws=[..._p3mfWait.values()]; _p3mfWait.clear(); try{_p3mfW.terminate();}catch(_){} _p3mfW=null;
+        for(const w of ws) w.rej(new Error('3MF lesen: Zeitüberschreitung')); }, 120000+buf.byteLength/1e7*60000);
+      _p3mfWait.set(id,{res:v=>{clearTimeout(t);res(v);},rej:e=>{clearTimeout(t);rej(e);},fallback});
       _p3mfW.postMessage({id,buf});   // kopiert (nicht übertragen) — buf bleibt nutzbar
     });
   }catch(e){ console.warn('3MF-Worker nicht verfügbar, lese im Haupt-Thread:',e); return Promise.resolve().then(()=>P3MF.parseZip(new Uint8Array(buf))); }
@@ -69233,7 +69301,7 @@ async function _parse3MFGeoAsync(buf){
 const STLLIB_THUMB_TRIS = 150000;
 async function _thumbReduce(pos){
   if(pos.length/9<=STLLIB_THUMB_TRIS) return pos;
-  try{ return (await _vfSimplifyAsync(pos,{target:STLLIB_THUMB_TRIS,sloppy:true,give:true})).pos; }
+  try{ return (await _vfSimplifyAsync(pos,{target:STLLIB_THUMB_TRIS,sloppy:true,give:true,lane:'thumb'})).pos; }
   catch(e){ console.warn('[thumb] Reduzieren fehlgeschlagen:',e); return null; }
 }
 function _renderGeoThumb(geo, zUp){
@@ -69270,7 +69338,7 @@ async function _stlMakeThumb(f){
     if(!isBin && buf.byteLength>STLLIB_THUMB_MAX_ASCII) return '-big';
     // große binäre STL: lesen + grob reduzieren komplett im Worker
     if(isBin && (buf.byteLength-84)/50>STLLIB_THUMB_TRIS){
-      const r=await _vfSimplifyAsync(null,{stl:buf,target:STLLIB_THUMB_TRIS,sloppy:true,give:true});
+      const r=await _vfSimplifyAsync(null,{stl:buf,target:STLLIB_THUMB_TRIS,sloppy:true,give:true,lane:'thumb'});
       return _renderGeoThumb(_soupGeo(r.pos), true);
     }
     return _renderGeoThumb(parseSTL(buf), true);
@@ -69471,6 +69539,10 @@ async function _stlAutoCheck() {
   try {
     for (const f of _stlFiles.slice()) {
       if (!_stlChkCandidate(f)) continue;
+      // erst die Vorschaubilder fertig werden lassen: beide lesen über den Helfer, der
+      // nur eine Anfrage nach der anderen bedient — sonst warten die Bilder minutenlang
+      while (_stlThumbBusy || _stlThumbPending.length) await new Promise(r => setTimeout(r, 1000));
+      if (!_stlFiles.includes(f)) continue;
       const key = 'chk|' + f.path + '|' + f.size;
       let done = null; try { done = await _stlIdbGet('kv', key); } catch (e) {}
       if (done) continue;
@@ -69994,8 +70066,13 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.241';
+const VOLME3D_VERSION = '1.18.242';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.242', date:'2026-10-21', changes:[
+    ['📚','<b>Bibliothek: keine hängenden Eieruhren mehr, und sie merkt sich die Vorschaubilder.</b> Nach dem Scrollen blieben Vorschaubilder als Eieruhr stehen, weil sie nur für gerade sichtbare Karten angestoßen wurden. Jetzt arbeitet die Bibliothek alle der Reihe nach ab, die sichtbaren zuerst, und ein hängender Auftrag hält die anderen nicht mehr auf. Gespeicherte Vorschaubilder sind beim nächsten Öffnen sofort da (30 Bilder in gut einer Sekunde); neu berechnet werden nur neue oder geänderte Dateien.'],
+    ['🛡️','<b>Vereinfachen schützt jetzt Modelle, die nicht in Millimetern gezeichnet sind.</b> Eine Datei in Metern wurde mit festen 0,01 „mm“ fast vollständig zusammengefaltet. Die Toleranz ist jetzt zusätzlich auf 0,02 % der Modellgröße begrenzt. Wer eine so geschrumpfte Datei in der Bibliothek hat: das Original liegt im Ordner „Original“.'],
+    ['📐','<b>„Fläche unten“ legt Scans gerade hin und richtet sie aus.</b> Bisher zählte nur das eine angeklickte Dreieck – bei einem Scan ist das verrauscht, das Teil lag schief. Jetzt wird die Fläche um den Klick gemittelt, und danach dreht V3D CAD das Teil, bis die Seitenwände parallel zu den Achsen stehen. Runde Teile bleiben, wie sie sind.'],
+  ]},
   { version:'1.18.241', date:'2026-10-21', changes:[
     ['🪄','<b>Scan → CAD versteht echte Scans viel besser.</b> Am ersten echten Scan (Quader mit Stufen, Nut, Senkungen und Bohrungen aus drei Richtungen) kam vorher eine falsche Platte heraus. Jetzt: Löcher im Scan stören die Querschnitte nicht mehr, neue Bauart „Ansichten“ (Umriss von oben, vorne und der Seite, geschnitten) und verdeckte Bohrungen werden nachgeschnitten – Ergebnis 95 % der Punkte ≤ 0,45 mm, mit Verlauf (Volker 21.10.).'],
   ]},
