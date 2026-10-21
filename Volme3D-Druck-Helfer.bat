@@ -266,7 +266,7 @@ function Handle-Client($client) {
     for ($i = 1; $i -lt $lines.Count; $i++) { $ln = $lines[$i]; $idx = $ln.IndexOf(':'); if ($idx -gt 0) { $headers[$ln.Substring(0, $idx).Trim().ToLower()] = $ln.Substring($idx + 1).Trim() } }
     $origin = $headers['origin']; $cors = New-Cors $origin
     if ($method -eq 'OPTIONS') { Send-Bytes $stream '204 No Content' $cors 'text/plain' (New-Object byte[] 0); return }
-    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 11; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir); dir = (Get-RootDir); custom = [bool](Get-CustomDir) }) $origin; return }
+    if ($method -eq 'GET' -and $path -eq '/ping') { Send-Json $stream '200 OK' ([ordered]@{ ok = $true; app = 'volme3d-print-helper'; version = 12; os = 'Windows'; slicers = @((Get-Slicers).Keys); libDir = (Get-LibDir); dir = (Get-RootDir); custom = [bool](Get-CustomDir) }) $origin; return }
     if ($method -eq 'GET' -and $path -eq '/list') {
         if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = 'origin not allowed' }) $origin; return }
         Send-Json $stream '200 OK' ([ordered]@{ ok = $true; dir = (Get-RootDir); custom = [bool](Get-CustomDir); files = @(Get-LibList) }) $origin; return
@@ -313,6 +313,38 @@ function Handle-Client($client) {
             Send-Json $stream '200 OK' (@{ ok = $true; name = $rel }) $origin
         }
         catch { Send-Json $stream '500 Error' (@{ ok = $false; error = "$_" }) $origin }
+        return
+    }
+    if ($method -eq 'POST' -and $path -eq '/replace') {
+        # v12: vereinfachte Fassung ersetzt die Datei (gleicher Name), das Original
+        # wandert nach <Ordner>\Original\ - V3D CAD prueft grosse Dateien in der Bibliothek.
+        if (-not (Test-Origin $origin)) { Send-Json $stream '403 Forbidden' (@{ ok = $false; error = 'origin not allowed' }) $origin; return }
+        $len = 0; if ($headers.ContainsKey('content-length')) { [void][int]::TryParse($headers['content-length'], [ref]$len) }
+        $body = if ($len -gt 0) { Read-Body $stream $len } else { New-Object byte[] 0 }
+        $fp = Get-LibFilePath (Hdr $headers 'x-libfile')
+        if (-not $fp) { Send-Json $stream '404 Not Found' (@{ ok = $false; error = 'Datei nicht gefunden' }) $origin; return }
+        if ($len -lt 100 -or $body.Length -ne $len) { Send-Json $stream '400 Bad Request' (@{ ok = $false; error = 'Datei unvollstaendig' }) $origin; return }
+        $parent = Split-Path -Parent $fp; $leaf = Split-Path -Leaf $fp
+        if ((Split-Path -Leaf $parent) -eq 'Original') { Send-Json $stream '400 Bad Request' (@{ ok = $false; error = 'Originale werden nicht ersetzt' }) $origin; return }
+        $tmp = $fp + '.v3dtmp'
+        try {
+            $odir = Join-Path $parent 'Original'
+            if (-not (Test-Path -LiteralPath $odir)) { New-Item -ItemType Directory -Path $odir -Force | Out-Null }
+            $op = Get-UniquePath $odir $leaf
+            $when = (Get-Item -LiteralPath $fp).LastWriteTime
+            [System.IO.File]::WriteAllBytes($tmp, $body)
+            Move-Item -LiteralPath $fp -Destination $op -Force
+            Move-Item -LiteralPath $tmp -Destination $fp -Force
+            (Get-Item -LiteralPath $fp).LastWriteTime = $when   # Reihenfolge in der Bibliothek bleibt
+            $baseLen = (Get-RootDir).TrimEnd('\').Length
+            $rel = ($fp.Substring($baseLen).TrimStart('\')) -replace '\\', '/'
+            $orel = ($op.Substring($baseLen).TrimStart('\')) -replace '\\', '/'
+            Send-Json $stream '200 OK' ([ordered]@{ ok = $true; name = $rel; original = $orel; size = $body.Length; mtime = [int64]([DateTimeOffset]$when).ToUnixTimeMilliseconds() }) $origin
+        }
+        catch {
+            if (Test-Path -LiteralPath $tmp) { try { Remove-Item -LiteralPath $tmp -Force } catch {} }
+            Send-Json $stream '500 Error' (@{ ok = $false; error = "$_" }) $origin
+        }
         return
     }
     if ($method -eq 'POST' -and $path -eq '/printmulti') {

@@ -6730,6 +6730,7 @@ Patrick</textarea>
       <span id="stllib-helper-dot" title="Druck-Helfer-Status"></span>
       <a id="stllib-update" href="/Volme3D-Druck-Helfer.bat" download title="Neue Helfer-Version verfügbar — herunterladen und doppelklicken" style="display:none;font-size:11px;font-weight:800;color:#fff;background:var(--acc);padding:4px 9px;border-radius:7px;text-decoration:none;white-space:nowrap">⬇ Helfer aktualisieren</a>
       <select id="stllib-slicer" title="Slicer für „Drucken"" style="display:none;padding:4px 6px;border:1.5px solid var(--border);border-radius:6px;font-size:11px;font-family:var(--font)"></select>
+      <span id="stllib-chk" style="display:none;font-size:11px;color:var(--dim);white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis" title="Große Dateien werden einmalig vereinfacht; das Original kommt in den Ordner „Original“"></span>
       <input id="stllib-search" placeholder="Suchen…" oninput="_stlRenderGrid()" style="margin-left:6px;padding:5px 9px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;font-family:var(--font);width:160px">
       <div style="flex:1"></div>
       <button class="btn pri" onclick="_stlCollect()" title="Im Downloads-Ordner einen Unterordner STL anlegen und alle STL/3MF/OBJ/STEP dorthin kopieren">🧹 Aus Downloads einsammeln</button>
@@ -38865,7 +38866,7 @@ function _vfSimplifyAsync(pos, opts) {
       for (const w of ws) w.rej(new Error('Vereinfachen fehlgeschlagen' + (e && e.message ? ': ' + e.message : ''))); };
   }
   const id = ++_vfSeq;
-  const msg = { id, pos, stl: opts.stl || null, tol: opts.tol || 0, target: opts.target || 0, sloppy: !!opts.sloppy };
+  const msg = { id, pos, stl: opts.stl || null, tol: opts.tol || 0, target: opts.target || 0, sloppy: !!opts.sloppy, minTris: opts.minTris || 0, indexed: !!opts.indexed };
   const give = opts.give ? [opts.stl || (pos && pos.buffer)].filter(Boolean) : [];
   return new Promise((res, rej) => { _vfWait.set(id, { res, rej }); _vfW.postMessage(msg, give); });
 }
@@ -68550,7 +68551,7 @@ function _createLaserBox(){
 
 // ===== STL-BIBLIOTHEK =====
 const STLLIB_HELPER = 'http://127.0.0.1:7777';
-const STLLIB_HELPER_LATEST = 11;   // aktuelle Helfer-Version; ältere -> Update-Knopf (v11: erlaubt v3dcad.volme3dakademie.de)
+const STLLIB_HELPER_LATEST = 12;   // aktuelle Helfer-Version; ältere -> Update-Knopf (v11: erlaubt v3dcad.volme3dakademie.de; v12: /replace für die Groß-Prüfung)
 let _stlDirHandle=null, _stlFiles=[], _stlThumbRenderer=null, _stlHelperOk=false, _stlHelperSlicers=[], _stlSource='', _stlHelperVer=0, _stlHelperCustom=false, _stlHelperDir='', _stlThumbObs=null, _stlThumbPending=[], _stlThumbBusy=false, _stlPollTimer=null, _stlListSig='', _stlFmtFilter='';
 let _stlSort='date_desc', _stlFavOnly=false, _stlFav=new Set(), _stlSel=new Set(), _stlDir='';   // _stlDir: geöffneter Ordner im Reiter „Ordner" ('' = Übersicht)
 const _stlCanPickDir = !!window.showDirectoryPicker;   // File System Access API: nur Chrome/Edge (nicht Firefox/Safari)
@@ -68571,6 +68572,7 @@ async function _stlPoll(){
       _stlListSig=sig;
       _stlFiles=files.map(f=>({name:_stlBase(f.name),path:f.name,size:f.size,mtime:f.mtime,lib:true})).sort((a,b)=>b.mtime-a.mtime);
       _stlRenderGrid();
+      _stlAutoCheck();
     }
   }catch(e){}
 }
@@ -69090,8 +69092,127 @@ async function _stlLoadFromHelper(){
     try{ await _stlIdbSet('kv','source','helper'); }catch(e){}
     _stlRenderGrid();
     _stlStartPoll();   // neue Downloads, die der Helfer automatisch verschiebt, erscheinen von selbst
+    setTimeout(_stlAutoCheck, 1500);   // große Neuzugänge prüfen (nach den ersten Vorschaubildern)
   }catch(e){ _stlLibEmpty('Bibliothek konnte nicht geladen werden: '+_stlEsc(e.message),'',''); }
 }
+// ── Bibliothek: große Dateien bei der Aufnahme prüfen (Volker 21.10.) ──
+// Jede Datei ab BIGMESH_TRIS Dreiecken wird EINMAL im Hintergrund mit derselben
+// Höchstabweichung wie beim Import (BIGMESH_TOL_MM) vereinfacht; die vereinfachte
+// Fassung ersetzt die Datei (gleicher Name, gleiches Format), das Original legt der
+// Helfer (ab v12, /replace) in den Unterordner „Original". Der wird nie geprüft.
+// Schutz gegen Schleifen: geprüft wird je Pfad+Größe (kv 'chk|…'); eine schon
+// vereinfachte Datei schrumpft beim zweiten Mal kaum (< 20 %) und bleibt dann liegen.
+const STLLIB_CHECK_MIN = { stl: 84 + BIGMESH_TRIS * 50, '3mf': 2e6, obj: 8e6 };   // darunter sicher klein
+let _stlChkBusy = false, _stlChkHint = false;
+function _stlChkCandidate(f) {
+  const ext = _stlExt(f.name);
+  if (!(ext in STLLIB_CHECK_MIN) || f.size < STLLIB_CHECK_MIN[ext]) return false;
+  return !String(f.path || '').split('/').includes('Original');
+}
+function _stlChkStatus(txt) {
+  const el = document.getElementById('stllib-chk');
+  if (el) { el.textContent = txt || ''; el.style.display = txt ? '' : 'none'; }
+}
+async function _stlAutoCheck() {
+  if (_stlChkBusy || _stlSource !== 'helper' || !_stlHelperOk) return;
+  _stlChkBusy = true;
+  try {
+    for (const f of _stlFiles.slice()) {
+      if (!_stlChkCandidate(f)) continue;
+      const key = 'chk|' + f.path + '|' + f.size;
+      let done = null; try { done = await _stlIdbGet('kv', key); } catch (e) {}
+      if (done) continue;
+      if (_stlHelperVer < 12) {   // alter Helfer kann nicht ersetzen → einmal Bescheid sagen
+        if (!_stlChkHint) { _stlChkHint = true; notify('Große Datei in der Bibliothek — damit V3D CAD sie automatisch vereinfachen kann, oben auf „Helfer aktualisieren“ klicken', 'i'); }
+        break;
+      }
+      try { await _stlChkOne(f, key); }
+      catch (e) { console.warn('[stllib-check]', f.path, e); try { await _stlIdbSet('kv', key, 'fehler'); } catch (_) {} }
+    }
+  } finally { _stlChkBusy = false; _stlChkStatus(''); }
+}
+async function _stlChkOne(f, key) {
+  const ext = _stlExt(f.name), fmt = n => Math.round(n).toLocaleString('de');
+  _stlChkStatus('🔍 Prüfe „' + f.name + '“ …');
+  const buf = await _stlReadBytes(f);
+  // Teile als Dreieckslisten (mm) — Lesen im Worker, wo es geht
+  let parts;
+  if (ext === 'stl') {
+    const r = await _vfSimplifyAsync(null, { stl: buf, tol: BIGMESH_TOL_MM, minTris: BIGMESH_TRIS, indexed: true, give: true })
+      .catch(e => /binäre/.test(e.message) ? null : Promise.reject(e));
+    if (!r) { await _stlIdbSet('kv', key, 'ascii'); return; }          // ASCII-STL: selten groß, nicht anfassen
+    if (r.skipped) { await _stlIdbSet('kv', key, 'klein'); return; }
+    parts = [{ name: f.name.replace(/\.[^.]+$/, ''), r }];
+  } else {
+    let raw;
+    if (ext === '3mf') raw = await _p3mfParseAsync(buf);
+    else { const g = _parseOBJ(new TextDecoder().decode(buf)); raw = [{ name: f.name.replace(/\.[^.]+$/, ''), pos: _geoSoup(g) }]; g.dispose(); }
+    const total = raw.reduce((s, p) => s + p.pos.length / 9, 0);
+    if (total < BIGMESH_TRIS) { await _stlIdbSet('kv', key, 'klein'); return; }
+    parts = [];
+    for (const p of raw) parts.push({ name: p.name, r: await _vfSimplifyAsync(p.pos, { tol: BIGMESH_TOL_MM, indexed: true, give: true }) });
+  }
+  const before = parts.reduce((s, p) => s + p.r.inTris, 0), after = parts.reduce((s, p) => s + p.r.outTris, 0);
+  if (after > before * 0.8) { await _stlIdbSet('kv', key, 'kaum'); return; }   // lohnt nicht (oder schon vereinfacht)
+  _stlChkStatus('🔻 Vereinfache „' + f.name + '“ …');
+  const bytes = ext === 'stl' ? _libWriteSTL(parts) : ext === '3mf' ? _libWrite3MF(parts) : _libWriteOBJ(parts);
+  const res = await fetch(STLLIB_HELPER + '/replace', { method: 'POST', headers: { 'X-LibFile': encodeURIComponent(f.path) }, body: bytes });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || !j.ok) throw new Error(j.error || ('HTTP ' + res.status));
+  await _stlIdbSet('kv', key, 'ersetzt');
+  await _stlIdbSet('kv', 'chk|' + f.path + '|' + bytes.byteLength, 'vereinfacht');   // neue Fassung nicht noch einmal
+  f.size = bytes.byteLength; f._thumbUrl = null; f._thumbDone = false; f._thumbQueued = false; _stlListSig = '';
+  if (document.getElementById('stllib-modal').classList.contains('show')) _stlRenderGrid();
+  notify('🔻 „' + f.name + '“ vereinfacht: ' + fmt(before) + ' → ' + fmt(after) + ' Dreiecke (≤ ' + String(BIGMESH_TOL_MM).replace('.', ',') + ' mm). Original liegt im Ordner „Original“.', 'ok');
+}
+// Schreiber für die Bibliothek: parts = [{name, r:{vpos, idx}}] in mm
+function _libWriteSTL(parts) {
+  const n = parts.reduce((s, p) => s + p.r.idx.length / 3, 0);
+  const buf = new ArrayBuffer(84 + n * 50), dv = new DataView(buf);
+  const head = 'V3D CAD vereinfacht'; for (let i = 0; i < head.length; i++) dv.setUint8(i, head.charCodeAt(i));
+  dv.setUint32(80, n, true); let o = 84;
+  for (const { r } of parts) {
+    const v = r.vpos, ix = r.idx;
+    for (let t = 0; t < ix.length; t += 3) {
+      const a = ix[t] * 3, b = ix[t + 1] * 3, c = ix[t + 2] * 3;
+      const ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2], wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
+      let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx; const l = Math.hypot(nx, ny, nz) || 1;
+      dv.setFloat32(o, nx / l, true); dv.setFloat32(o + 4, ny / l, true); dv.setFloat32(o + 8, nz / l, true); o += 12;
+      for (const q of [a, b, c]) { dv.setFloat32(o, v[q], true); dv.setFloat32(o + 4, v[q + 1], true); dv.setFloat32(o + 8, v[q + 2], true); o += 12; }
+      o += 2;
+    }
+  }
+  return buf;
+}
+function _libNum(x) { return String(Math.round(x * 1e5) / 1e5); }
+function _libWrite3MF(parts) {
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const o = ['<?xml version="1.0" encoding="UTF-8"?>\n<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n<resources>\n'];
+  parts.forEach((p, i) => {
+    const v = p.r.vpos, ix = p.r.idx;
+    o.push('<object id="' + (i + 1) + '" type="model" name="' + esc(p.name) + '"><mesh><vertices>\n');
+    for (let k = 0; k < v.length; k += 3) o.push('<vertex x="' + _libNum(v[k]) + '" y="' + _libNum(v[k + 1]) + '" z="' + _libNum(v[k + 2]) + '"/>\n');
+    o.push('</vertices><triangles>\n');
+    for (let t = 0; t < ix.length; t += 3) o.push('<triangle v1="' + ix[t] + '" v2="' + ix[t + 1] + '" v3="' + ix[t + 2] + '"/>\n');
+    o.push('</triangles></mesh></object>\n');
+  });
+  o.push('</resources>\n<build>' + parts.map((p, i) => '<item objectid="' + (i + 1) + '"/>').join('') + '</build>\n</model>\n');
+  const ct = '<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>';
+  const rels = '<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>';
+  return fflate.zipSync({ '[Content_Types].xml': fflate.strToU8(ct), '_rels/.rels': fflate.strToU8(rels), '3D/3dmodel.model': fflate.strToU8(o.join('')) }, { level: 6 });
+}
+function _libWriteOBJ(parts) {
+  const o = ['# V3D CAD vereinfacht\n']; let base = 1;
+  for (const p of parts) {
+    const v = p.r.vpos, ix = p.r.idx;
+    o.push('o ' + String(p.name).replace(/\s+/g, '_') + '\n');
+    for (let k = 0; k < v.length; k += 3) o.push('v ' + _libNum(v[k]) + ' ' + _libNum(v[k + 1]) + ' ' + _libNum(v[k + 2]) + '\n');
+    for (let t = 0; t < ix.length; t += 3) o.push('f ' + (ix[t] + base) + ' ' + (ix[t + 1] + base) + ' ' + (ix[t + 2] + base) + '\n');
+    base += v.length / 3;
+  }
+  return new TextEncoder().encode(o.join(''));
+}
+
 // „Aus Downloads einsammeln" — der lokale Helfer macht die Dateiarbeit
 // (Chrome verbietet Web-Apps den Zugriff auf den Downloads-Ordner selbst).
 async function _stlCollect(){
@@ -69521,8 +69642,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.234';
+const VOLME3D_VERSION = '1.18.235';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.235', date:'2026-10-21', changes:[
+    ['📚','<b>Bibliothek vereinfacht große Dateien gleich bei der Aufnahme.</b> Landet eine sehr große Datei in der Bibliothek (ab 300.000 Dreiecken, z. B. ein Scan), prüft V3D CAD sie einmal im Hintergrund und ersetzt sie durch eine vereinfachte Fassung – gleiches Format, gleicher Name, höchstens etwa 0,01 mm Abweichung. Das Original wird nicht gelöscht, sondern liegt im Unterordner <b>Original</b>. Beispiel: ein Kopf-Scan schrumpft von 53 MB (4 Mio Dreiecke) auf 11,5 MB (860.000 Dreiecke), eine Relief-Platte von 33 MB auf 1,7 MB. Dateien, die sich kaum verkleinern lassen, bleiben unverändert. <b>Dafür einmal oben in der Bibliothek auf „Helfer aktualisieren“ klicken</b> (Druck-Helfer Version 12).'],
+  ]},
   { version:'1.18.234', date:'2026-10-21', changes:[
     ['📚','<b>Bibliothek wieder flott bei großen Scans.</b> Für das Vorschaubild wurde bisher das ganze Modell gezeichnet – bei einem 4-Millionen-Dreiecke-Scan stand die Seite dabei mehrere Sekunden still. Vorschaubilder werden jetzt im Hintergrund aus einer verkleinerten Fassung gerechnet; am Modell selbst ändert sich nichts. Jedes Vorschaubild entsteht nur einmal und wird dann gespeichert.'],
   ]},
