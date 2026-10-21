@@ -1,4 +1,4 @@
-# Vergleich QuickSurface Pro 8 ↔ V3D Scan 1.2
+# Vergleich QuickSurface Pro 8 ↔ V3D Scan 1.3
 
 Stand 21.10.2026. Grundlage: komplette Funktions-Checkliste aus dem QuickSurface-Handbuch (262 S.), der
 Video-Wissensbasis und den Menüreitern von v8.0.127 (`docs/quicksurface-funktionen.md`). Nachgebaut wurde nur
@@ -16,15 +16,15 @@ Gezählt nach Vergleichszeilen (eine Zeile kann eng verwandte Befehle bündeln);
 | Programm / Dateien / Ansicht | 13 | 11 | 2 | 0 |
 | Scan-Auswahl + Grundformen | 16 | 12 | 4 | 0 |
 | Ausrichten | 6 | 5 | 1 | 0 |
-| 2D-Skizze (Schnitt + Editor) | 25 | 21 | 3 | 1 |
+| 2D-Skizze (Schnitt + Editor) | 25 | 22 | 3 | 0 |
 | CAD-Features | 22 | 19 | 3 | 0 |
 | Flächen / 3D-Skizze | 16 | 11 | 4 | 1 |
 | Freiform | 22 | 16 | 6 | 0 |
-| Netzbearbeitung + Mehrteile | 16 | 14 | 0 | 2 |
+| Netzbearbeitung + Mehrteile | 16 | 16 | 0 | 0 |
 | Verlauf / Objektbaum | 5 | 5 | 0 | 0 |
 | Analyse | 10 | 8 | 1 | 1 |
 | Export / Übergabe | 6 | 4 | 1 | 1 |
-| **Summe** | **157** | **126 (80 %)** | **25 (16 %)** | **6 (4 %)** |
+| **Summe** | **157** | **129 (82 %)** | **25 (16 %)** | **3 (2 %)** |
 
 Stand 1.0 zum Vergleich: 156 Zeilen, ✔ 110 (71 %), ◐ 25 (16 %), ✗ 21 (13 %). Hinzu kam die Zeile
 „gekoppelter Skizzen-Löser“.
@@ -42,9 +42,7 @@ Abwickeln mit Verzerrungsangabe + SVG, Skizze auf Zylinder wickeln, Übergabe an
 - **Fehlt ganz (✗):**
   - Live-Übertragung an SolidWorks/Inventor
   - KI-Assistent
-  - Löcher am Rand füllen (semi-hole/Bridge)
-  - Boundary Edit
-  - Punkt als Skizzenelement
+  - 3D-Kurve nachträglich bearbeiten (Punkt einfügen/verschieben, Join/Break) – heute: neu zeichnen
 - **Nur teilweise (◐):**
   - G1 an unregelmäßigen Ecken: halbiert, aber nicht exakt
   - Zieh-Manipulator im Käfig: numerisch statt Griff
@@ -111,7 +109,7 @@ Abwickeln mit Verzerrungsangabe + SVG, Skizze auf Zylinder wickeln, Übergabe an
 | Nur durch Auswahl | ✔ v1.0 — geprüft |
 | Stacked / Multiple sections | ✔ Mehrfachschnitt (je Schnitt eine Skizze) — geprüft |
 | Linie, Kreis (Mitte/3 P.), Bogen 3 P., Rechteck, Langloch, Sechseck | ✔ v1.0 Zeichnen per Klick — geprüft |
-| Punkt | ✗ |
+| Punkt | ✔ v1.3 Konstruktionspunkt mit Bedingungen (deckungsgleich, auf Linie/Kreis, Abstand, fest), DXF POINT — geprüft |
 | Tangentenbogen zwischen Linien | ✔ Ecke runden — geprüft |
 | Spline (Freiformkurve) | ✔ v1.2 aus Schnittbereich + durch Klickpunkte — geprüft |
 | Auto Sketch (Linien/Bögen erkennen) | ✔ inkl. Rundungen tangential, robust gegen Rauschen — geprüft |
@@ -210,7 +208,7 @@ Abwickeln mit Verzerrungsangabe + SVG, Skizze auf Zylinder wickeln, Übergabe an
 | Edit / Löschen / Smooth selected | ✔ |
 | Individual meshes / kleine Inseln | ✔ |
 | Löcher füllen (Automatic/Tangent/Curvature) | ✔ flach/gewölbt — geprüft |
-| Fill semi-hole / Bridge | ✗ |
+| Fill semi-hole / Bridge | ✔ v1.3 Bucht zwischen 2 Randpunkten füllen (flach/gewölbt), Brücke teilt ein Loch — geprüft |
 | Split mesh mit Körper / Cut / Combine | ✔ v1.0 teilen/abziehen — geprüft |
 | Split Mesh with 3D Sketch | ✔ v1.2 geschlossene 3D-Skizze teilt das Netz (dreiecksgenau) — geprüft |
 | Scale / Mirror / Flip normals | ✔ v1.0 (Umlauf + Normalen korrekt) — geprüft |
@@ -221,7 +219,7 @@ Abwickeln mit Verzerrungsangabe + SVG, Skizze auf Zylinder wickeln, Übergabe an
 | Auto colorize / Default color | ✔ Farbmodi |
 | Export visible | ✔ |
 | Mehrere Scans, Merge, Global Align | ✔ — geprüft |
-| Boundary Edit | ✗ |
+| Boundary Edit | ✔ v1.3 Rand glätten, Zacken entfernen, Rand verlängern (an einspringenden Ecken kurz halten) — geprüft |
 
 ### 8. Verlauf / Objektbaum
 | QuickSurface | V3D Scan |
@@ -270,10 +268,9 @@ Erledigt in v1.1/v1.2 (21.10.26):
 
 Noch offen:
 1. Import-Knopf „Bauplan öffnen“ in V3D CAD (Änderung an der Produktion, wartet auf Freigabe)
-2. Löcher am Rand füllen / Brücke im Netz, Boundary Edit
-3. Zieh-Manipulator (Griffe) für Käfig-Ecken, Grundkörper-Griffe
-4. Exaktes G1 an unregelmäßigen Ecken (Gregory-Flächen oder Unterteilung)
-5. E57-Gegenprobe mit einer echten Scanner-Datei
+2. Zieh-Manipulator (Griffe) für Käfig-Ecken, Grundkörper-Griffe
+3. Exaktes G1 an unregelmäßigen Ecken (Gregory-Flächen oder Unterteilung)
+4. E57-Gegenprobe mit einer echten Scanner-Datei
 
 **Wichtigster nächster Schritt unabhängig von der Liste: Test mit echten Scans (MIRACO).** Alle Prüfungen
 laufen bisher mit synthetischen Teilen (Platte, Welle, Torus, Zylinder) mit nachgerechneten Sollwerten.
