@@ -6853,6 +6853,7 @@ Patrick</textarea>
 </script>
 <script src="cam-kern.js"></script>
 <script src="lib/fflate.min.js"></script>
+<script src="lib/p3mf.js"></script>
 <script src="lib/SimplifyModifier.js"></script>
 <script src="lib/qrcode.min.js"></script>
 <script src="lib/leaflet.js"></script>
@@ -38902,10 +38903,14 @@ function _addImported3MFParts(parts, filename) {
 }
 
 // 3MF-Bytes importieren (Datei-Dialog + Bibliothek): mehrere Teile → einzelne Objekte.
-function _importThreeMF(buf, filename) {
-  if (typeof fflate === 'undefined') { notify('3MF-Unterstützung lädt noch — kurz warten, erneut versuchen', 'w'); return false; }
-  let models = {}; try { models = fflate.unzipSync(new Uint8Array(buf), { filter: fl => /\.model$/i.test(fl.name) }); } catch(e) { models = {}; }
-  const parts = _parse3MFParts(models);
+// Asynchron: das XML wird im Worker gelesen (lib/p3mf.js), die Seite bleibt bedienbar.
+// Rückgabe Promise<bool> — Aufrufer, die das Ergebnis brauchen, müssen awaiten.
+async function _importThreeMF(buf, filename) {
+  if (typeof fflate === 'undefined' || typeof P3MF === 'undefined') { notify('3MF-Unterstützung lädt noch — kurz warten, erneut versuchen', 'w'); return false; }
+  if (buf.byteLength > 8e6) notify('3MF wird gelesen … (' + (buf.byteLength / 1048576).toFixed(0) + ' MB)', 'i');
+  let raw;
+  try { raw = await _p3mfParseAsync(buf); } catch (e) { notify('3MF unlesbar: ' + e.message, 'w'); return false; }
+  const parts = raw.map(r => ({ name: r.name, geo: _p3mfGeo(r.pos) }));
   if (!parts.length) { notify('3MF enthält kein 3D-Modell (nur Vorschau) — bitte „Drucken"', 'w'); return false; }
   if (parts.length > 1) _addImported3MFParts(parts, filename);
   else _addImportedGeo(parts[0].geo, filename, true, null, false);
@@ -68706,129 +68711,45 @@ function _parseOBJ(text){
   }
   const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(verts,3)); if(idx.length) g.setIndex(idx); g.computeVertexNormals(); g.computeBoundingBox(); return g;
 }
-// ── 3MF-Parser ──
-// Echte Slicer-/Makerworld-3MFs sind mehr als "alle <vertex>/<triangle> einsammeln":
-// Bambu/Orca legen die Geometrie in 3D/Objects/*.model ab (3D/3dmodel.model enthält nur
-// Komponenten-Verweise via p:path), Dreiecks-Indizes zählen pro Objekt ab 0, und die
-// Platzierung kommt aus den transform-Attributen von <item>/<component>.
-// 3MF-Transform: 12 Zahlen, Zeilenvektor-Konvention v' = v·M + t (Zeile 4 = Translation).
-function _p3mfMat(str){
-  if(!str) return null;
-  const m=str.trim().split(/\s+/).map(Number);
-  return (m.length===12 && m.every(Number.isFinite)) ? m : null;
-}
-function _p3mfMul(a,b){ // erst a anwenden, dann b → kombinierte 12er-Matrix
-  if(!a) return b; if(!b) return a;
-  const r=new Array(12);
-  for(let i=0;i<4;i++){
-    const x=a[i*3], y=a[i*3+1], z=a[i*3+2];
-    r[i*3]  =x*b[0]+y*b[3]+z*b[6]+(i===3?b[9] :0);
-    r[i*3+1]=x*b[1]+y*b[4]+z*b[7]+(i===3?b[10]:0);
-    r[i*3+2]=x*b[2]+y*b[5]+z*b[8]+(i===3?b[11]:0);
-  }
-  return r;
-}
-function _p3mfModel(xmlText){
-  const doc=new DOMParser().parseFromString(xmlText,'application/xml');
-  const unit=(doc.documentElement.getAttribute('unit')||'millimeter').toLowerCase();
-  const scale={micron:0.001,millimeter:1,centimeter:10,inch:25.4,foot:304.8,meter:1000}[unit]||1;
-  const objs={}, objEls=doc.getElementsByTagName('object');
-  for(let i=0;i<objEls.length;i++){
-    const o=objEls[i], id=o.getAttribute('id'); if(!id) continue;
-    const entry={mesh:null,comps:[],name:o.getAttribute('name')||''};
-    const meshEl=o.getElementsByTagName('mesh')[0];
-    if(meshEl){
-      const vEls=meshEl.getElementsByTagName('vertex'), tEls=meshEl.getElementsByTagName('triangle');
-      const verts=new Float32Array(vEls.length*3);
-      for(let k=0;k<vEls.length;k++){ const v=vEls[k]; verts[k*3]=+v.getAttribute('x'); verts[k*3+1]=+v.getAttribute('y'); verts[k*3+2]=+v.getAttribute('z'); }
-      const tris=new Uint32Array(tEls.length*3);
-      for(let k=0;k<tEls.length;k++){ const t=tEls[k]; tris[k*3]=+t.getAttribute('v1'); tris[k*3+1]=+t.getAttribute('v2'); tris[k*3+2]=+t.getAttribute('v3'); }
-      entry.mesh={verts,tris};
-    }
-    const compEls=o.getElementsByTagName('component');
-    for(let k=0;k<compEls.length;k++){ const c=compEls[k];
-      entry.comps.push({id:c.getAttribute('objectid'), path:c.getAttribute('p:path')||c.getAttribute('path')||'', m:_p3mfMat(c.getAttribute('transform'))});
-    }
-    objs[id]=entry;
-  }
-  const items=[], itemEls=doc.getElementsByTagName('item');
-  for(let i=0;i<itemEls.length;i++){ const it=itemEls[i];
-    items.push({id:it.getAttribute('objectid'), path:it.getAttribute('p:path')||it.getAttribute('path')||'', m:_p3mfMat(it.getAttribute('transform'))});
-  }
-  return {objs,items,scale};
-}
-// models = {zipPfad→Uint8Array} aller .model-Dateien (fflate). Liefert die Einzelteile
-// [{name, geo}] in mm — ein Teil pro Build-Item; hat das 3MF nur EIN Item, dessen Objekt
-// aber mehrere Mesh-Komponenten (Bambu „Objekt mit Teilen"), wird pro Komponente geteilt.
-function _parse3MFParts(models){
-  const norm=p=>String(p||'').replace(/^\//,'');
-  const parsed={};
-  for(const name of Object.keys(models)){
-    try{ parsed[norm(name)]=_p3mfModel(fflate.strFromU8(models[name])); }catch(e){ console.warn('3MF: Modell-Datei unlesbar:',name,e); }
-  }
-  const keys=Object.keys(parsed); if(!keys.length) return [];
-  const rootKey=keys.find(k=>/(^|\/)3dmodel\.model$/i.test(k)) || keys.find(k=>parsed[k].items.length) || keys[0];
-  const root=parsed[rootKey];
-  function emit(out,pathKey,id,m,depth){
-    if(depth>8) return;
-    const mod=parsed[pathKey]; if(!mod) return;
-    const o=mod.objs[id]; if(!o) return;
-    if(o.mesh && o.mesh.tris.length){
-      const {verts,tris}=o.mesh;
-      for(let i=0;i<tris.length;i+=3){
-        const tri=[]; let ok=true;
-        for(let j=0;j<3;j++){
-          const vi=tris[i+j]*3;
-          let x=verts[vi], y=verts[vi+1], z=verts[vi+2];
-          if(m){ const nx=x*m[0]+y*m[3]+z*m[6]+m[9], ny=x*m[1]+y*m[4]+z*m[7]+m[10], nz=x*m[2]+y*m[5]+z*m[8]+m[11]; x=nx; y=ny; z=nz; }
-          if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(z)){ ok=false; break; }
-          tri.push(x,y,z);
-        }
-        if(ok) out.push(...tri);
-      }
-    }
-    for(const c of o.comps) emit(out, c.path?norm(c.path):pathKey, c.id, _p3mfMul(c.m,m), depth+1);
-  }
-  const objName=(pathKey,id)=>{ const mod=parsed[pathKey]; const o=mod&&mod.objs[id]; return (o&&o.name)||''; };
-  const finish=out=>{
-    if(!out.length) return null;
-    const pos=new Float32Array(out);
-    if(root.scale!==1){ for(let i=0;i<pos.length;i++) pos[i]*=root.scale; }
-    const g=new THREE.BufferGeometry();
-    g.setAttribute('position',new THREE.BufferAttribute(pos,3));
-    g.computeVertexNormals(); g.computeBoundingBox(); return g;
-  };
-  const parts=[];
-  const roots = root.items.length
-    ? root.items.map(it=>({path:it.path?norm(it.path):rootKey, id:it.id, m:it.m}))
-    : Object.keys(root.objs).map(id=>({path:rootKey, id, m:null}));
-  let units=roots;
-  // Ein einziges Item, dessen Objekt selbst kein Mesh hat, aber mehrere Komponenten →
-  // an den Komponenten teilen (so verpacken Bambu/Orca „ein Objekt aus mehreren Teilen").
-  if(roots.length===1){
-    const o=(parsed[roots[0].path]||{objs:{}}).objs[roots[0].id];
-    if(o && !(o.mesh&&o.mesh.tris.length) && o.comps.length>1){
-      units=o.comps.map(c=>({path:c.path?norm(c.path):roots[0].path, id:c.id, m:_p3mfMul(c.m,roots[0].m)}));
-    }
-  }
-  units.forEach((u,i)=>{
-    const out=[]; emit(out,u.path,u.id,u.m,0);
-    const g=finish(out);
-    if(g) parts.push({name:objName(u.path,u.id)||('Teil '+(i+1)), geo:g});
-  });
-  return parts;
-}
-// Alles zu EINER Geometrie gemergt (für Thumbnails) oder null.
-function _parse3MFGeo(models){
-  const parts=_parse3MFParts(models);
-  if(!parts.length) return null;
-  if(parts.length===1) return parts[0].geo;
-  let n=0; for(const p of parts) n+=p.geo.attributes.position.count;
-  const pos=new Float32Array(n*3); let off=0;
-  for(const p of parts){ pos.set(p.geo.attributes.position.array,off); off+=p.geo.attributes.position.array.length; p.geo.dispose(); }
+// ── 3MF-Parser ── steckt in lib/p3mf.js (Byte-Scanner ohne DOM, auch als Worker).
+// Vorher DOMParser im Haupt-Thread: ein 50-MB-Scan-3MF fror die Seite ein (21.10.).
+function _p3mfGeo(pos){
   const g=new THREE.BufferGeometry();
   g.setAttribute('position',new THREE.BufferAttribute(pos,3));
   g.computeVertexNormals(); g.computeBoundingBox(); return g;
+}
+// Synchron (kleine Dateien / Tests): models = {zipPfad→Uint8Array} → [{name, geo}]
+function _parse3MFParts(models){
+  return P3MF.assemble(models).map(r=>({name:r.name, geo:_p3mfGeo(r.pos)}));
+}
+// Asynchron im Worker: Zip-Bytes → [{name, pos}]; ohne Worker Fallback im Haupt-Thread.
+let _p3mfW=null, _p3mfSeq=0; const _p3mfWait=new Map();
+function _p3mfParseAsync(buf){
+  try{
+    if(!_p3mfW){
+      const v=typeof VOLME3D_VERSION!=='undefined'?VOLME3D_VERSION:'1';
+      _p3mfW=new Worker('lib/p3mf.js?v='+v);
+      _p3mfW.onmessage=e=>{ const d=e.data||{}, w=_p3mfWait.get(d.id); if(!w) return; _p3mfWait.delete(d.id); d.error?w.rej(new Error(d.error)):w.res(d.parts); };
+      _p3mfW.onerror=e=>{ console.warn('3MF-Worker:',e.message||e); const ws=[..._p3mfWait.values()]; _p3mfWait.clear(); try{_p3mfW.terminate();}catch(_){}
+        _p3mfW=null; for(const w of ws) w.fallback(); };
+    }
+    const id=++_p3mfSeq;
+    return new Promise((res,rej)=>{
+      const fallback=()=>{ try{ res(P3MF.parseZip(new Uint8Array(buf))); }catch(err){ rej(err); } };
+      _p3mfWait.set(id,{res,rej,fallback});
+      _p3mfW.postMessage({id,buf});   // kopiert (nicht übertragen) — buf bleibt nutzbar
+    });
+  }catch(e){ console.warn('3MF-Worker nicht verfügbar, lese im Haupt-Thread:',e); return Promise.resolve().then(()=>P3MF.parseZip(new Uint8Array(buf))); }
+}
+// Alles zu EINER Geometrie gemergt (für Thumbnails) oder null.
+async function _parse3MFGeoAsync(buf){
+  const parts=await _p3mfParseAsync(buf);
+  if(!parts.length) return null;
+  if(parts.length===1) return _p3mfGeo(parts[0].pos);
+  let n=0; for(const p of parts) n+=p.pos.length;
+  const pos=new Float32Array(n); let off=0;
+  for(const p of parts){ pos.set(p.pos,off); off+=p.pos.length; }
+  return _p3mfGeo(pos);
 }
 function _renderGeoThumb(geo, zUp){
   if(!geo || !geo.attributes.position || !geo.attributes.position.count) return null;
@@ -68852,7 +68773,7 @@ function _renderGeoThumb(geo, zUp){
 // Grenzen für Geometrie-Vorschauen: Parsen läuft im Haupt-Thread. Ein 50-MB-Scan-3MF
 // (entpackt mehrere 100 MB XML → DOMParser) fror die ganze Seite ein („Seite antwortet
 // nicht", 21.10.) — und weil nichts gecacht wurde, bei jedem Öffnen der Bibliothek erneut.
-const STLLIB_THUMB_MAX_XML = 40e6;    // entpackte .model-Bytes eines 3MF
+const STLLIB_THUMB_MAX_XML = 400e6;   // entpackte .model-Bytes eines 3MF (Parsen im Worker, lib/p3mf.js)
 const STLLIB_THUMB_MAX_ASCII = 25e6;  // ASCII-STL (Regex-Parser + JS-Arrays)
 const STLLIB_THUMB_MAX_BIN = 200e6;   // binäre STL (schneller Single-Pass)
 async function _stlMakeThumb(f){
@@ -68876,8 +68797,7 @@ async function _stlMakeThumb(f){
     // 2) sonst Modell-XML rendern — vorher nur die Größen lesen (filter→false entpackt nichts)
     let xmlBytes=0; try{ fflate.unzipSync(u8,{filter:fl=>{ if(/\.model$/i.test(fl.name)) xmlBytes+=fl.originalSize||0; return false; }}); }catch(e){}
     if(xmlBytes>STLLIB_THUMB_MAX_XML) return '-big';
-    let models={}; try{ models=fflate.unzipSync(u8,{filter:fl=>/\.model$/i.test(fl.name)}); }catch(e){ models={}; }
-    const g3=_parse3MFGeo(models);
+    const g3=await _parse3MFGeoAsync(buf);
     if(g3) return _renderGeoThumb(g3, true);
     return null;
   }
@@ -68893,7 +68813,7 @@ async function _stlOpenInScene(idx){
     } else if(ext==='obj'){
       _addImportedGeo(_parseOBJ(new TextDecoder().decode(buf)), f.name, false, null, false);
     } else if(ext==='3mf'){
-      if(!_importThreeMF(buf, f.name)) return;
+      if(!(await _importThreeMF(buf, f.name))) return;
     } else if(ext==='step'||ext==='stp'){
       _importStepFile(new File([buf], f.name));   // läuft übers OCCT-Backend, asynchron
     } else { notify('Format nicht unterstützt','w'); return; }
@@ -69469,8 +69389,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.231';
+const VOLME3D_VERSION = '1.18.232';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.232', date:'2026-10-21', changes:[
+    ['⚡','<b>Große 3MF-Dateien öffnen, ohne dass die Seite hängt.</b> 3MF-Dateien werden jetzt mit einem neuen, rund 10-mal schnelleren Leser im Hintergrund eingelesen – auch ein 50-MB-Scan lässt sich öffnen, während die Seite bedienbar bleibt. In der Bibliothek bekommen solche Dateien wieder ein echtes Vorschaubild statt „Vorschau zu groß“.'],
+  ]},
   { version:'1.18.231', date:'2026-10-21', changes:[
     ['📚','<b>Bibliothek friert nicht mehr ein.</b> Sehr große Dateien ohne eingebautes Vorschaubild (z. B. ein 50-MB-Scan als 3MF) brachten beim Öffnen der Bibliothek die Meldung „Diese Seite antwortet nicht“ – bei jedem Öffnen wieder. Solche Dateien zeigen jetzt „Vorschau zu groß“ statt die Seite zu blockieren; <b>Öffnen</b> und <b>Drucken</b> funktionieren wie gewohnt.'],
   ]},

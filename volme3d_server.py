@@ -253,6 +253,8 @@ ALLOW = {
     '/lib/SVGLoader.js':                  ('lib/SVGLoader.js', 'text/javascript; charset=utf-8'),
     '/lib/BufferGeometryUtils.js':        ('lib/BufferGeometryUtils.js', 'text/javascript; charset=utf-8'),
     '/lib/fflate.min.js':                 ('lib/fflate.min.js', 'text/javascript; charset=utf-8'),
+    # 3MF-Parser ohne DOM — im Haupt-Thread per <script> UND als Worker (große Scans)
+    '/lib/p3mf.js':                       ('lib/p3mf.js', 'text/javascript; charset=utf-8'),
     # Stützfinnen-Rechenkern (Support Fins, MIT) als Worker, gebaut von tools/bau_stuetzfinnen.mjs
     '/lib/stuetzfinnen-worker.js':        ('lib/stuetzfinnen-worker.js', 'text/javascript; charset=utf-8'),
     '/lib/three-mesh-bvh.min.js':         ('lib/three-mesh-bvh.min.js', 'text/javascript; charset=utf-8'),
