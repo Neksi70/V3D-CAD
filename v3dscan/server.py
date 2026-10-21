@@ -783,7 +783,7 @@ def skizze_befehl(was, d):
         skz, _ = _skizze_ziel(d)
         return {"dxf": sk.dxf(skz), "name": skz.get("name", "skizze")}
     if was in ("zeichnen", "spline", "versatz", "spiegeln", "kopieren", "ecke", "bedingung", "abstand",
-               "kette_entfernen", "laenge", "winkel", "hilfe", "bedingung_entfernen"):
+               "kette_entfernen", "laenge", "winkel", "hilfe", "bedingung_entfernen", "trennen", "verlaengern"):
         skz, gespeichert = _skizze_ziel(d)
         ketten = [dict(k) for k in skz["ketten"]]
         schnitt = list(skz.get("schnitt", []))
@@ -889,6 +889,14 @@ def skizze_befehl(was, d):
             i, k = kette()
             ketten[i] = dict(k, hilfe=bool(d.get("an", not k.get("hilfe"))))
             text = "Hilfslinie" if ketten[i]["hilfe"] else "Kontur"
+        elif was == "trennen":
+            i, k = kette()
+            ketten[i] = sk.trennen(k, int(d.get("element", 0)), zahl(d, "t", 0.5))
+            text = "Element getrennt"
+        elif was == "verlaengern":
+            i, k = kette()
+            ketten[i] = sk.verlaengern(ketten, i, int(d.get("element", 0)), zahl(d, "laenge", 0) or None)
+            text = "Linie verlängert"
         elif was == "bedingung_entfernen":
             n = int(d.get("index", -1))
             if not 0 <= n < len(bedingungen):
@@ -901,7 +909,7 @@ def skizze_befehl(was, d):
             del schnitt[i]
             bedingungen = loeser.ketten_entfernt(bedingungen, i)
             text = "Kontur entfernt"
-        if was in ("spline", "ecke"):
+        if was in ("spline", "ecke", "trennen"):
             # Elementnummern dieser Kontur haben sich verschoben
             bedingungen = loeser.kette_geaendert(bedingungen, i)
         daten = {"ketten": ketten, "schnitt": schnitt, "bedingungen": bedingungen}

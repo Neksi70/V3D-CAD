@@ -971,6 +971,8 @@ def zeichnen(art, punkte, wert=None):
     P = [np.asarray(p, float) for p in punkte]
     if art == "linie":
         return {"geschlossen": False, "elemente": [_lin(P[0], P[1])]}
+    if art == "spline":
+        return spline_durch(P)
     if art == "polylinie":
         zu = len(P) > 2 and np.linalg.norm(P[0] - P[-1]) < 1e-9
         if zu:
@@ -1468,3 +1470,117 @@ def winkel_setzen(kette, i, bezug, grad):
     e["b"] = e["a"] + e["d"] * L
     _neu_anschliessen(els, kette["geschlossen"], i)
     return {"geschlossen": kette["geschlossen"], "elemente": [element_json(x) for x in els]}
+
+
+# --- Spline durch Klickpunkte, Trennen, Verlaengern (v1.2) ---------------------------------------------
+def spline_durch(P):
+    """Kubischer B-Spline, der genau durch die Klickpunkte laeuft (Sehnenlaengen-Parameter)."""
+    P = np.asarray(P, float)
+    if len(P) < 2:
+        raise ValueError("Für einen Spline mindestens 2 Punkte klicken.")
+    if len(P) < 4:
+        # zu wenig Punkte fuer kubisch: Zwischenpunkte auf dem Linienzug ergaenzen
+        Q = [P[0]]
+        for a, b in zip(P[:-1], P[1:]):
+            Q += [a + (b - a) * t for t in (0.5, 1.0)]
+        P = np.array(Q)
+    s = np.r_[0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]
+    if s[-1] < 1e-9:
+        raise ValueError("Die Punkte liegen aufeinander.")
+    t = s / s[-1]
+    B = _bspline_basis(t, len(P))
+    pole = np.linalg.solve(B, P)
+    zu = len(P) > 3 and np.linalg.norm(P[0] - P[-1]) < 1e-9
+    return {"geschlossen": bool(zu), "elemente": [{"typ": "spline", "pole": pole, "a": P[0], "b": P[-1]}]}
+
+
+def _punkt_bei(el, t):
+    """Punkt bei Anteil t (0..1) entlang des Elements und die beiden Teil-Punktfolgen."""
+    D = diskret(el, 1.0) if el["typ"] != "linie" else np.array([el["a"], el["b"]], float)
+    if el["typ"] == "linie":
+        q = np.asarray(el["a"], float) + t * (np.asarray(el["b"], float) - np.asarray(el["a"], float))
+        return q, None, None
+    L = np.r_[0, np.cumsum(np.linalg.norm(np.diff(D, axis=0), axis=1))]
+    z = t * L[-1]
+    k = int(np.clip(np.searchsorted(L, z) - 1, 0, len(D) - 2))
+    u = (z - L[k]) / max(L[k + 1] - L[k], 1e-12)
+    q = D[k] + u * (D[k + 1] - D[k])
+    return q, np.r_[D[:k + 1], [q]], np.r_[[q], D[k + 1:]]
+
+
+def trennen(kette, i, t=0.5):
+    """Break: Element i bei Anteil t in zwei Elemente gleicher Art teilen (Vollkreis -> zwei Boegen)."""
+    els = [element_lesen(e) for e in kette["elemente"]]
+    e = els[i]
+    t = float(t)
+    if not 0 < t < 1:
+        raise ValueError("Teilungspunkt zwischen 0 und 1 angeben (0,5 = Mitte).")
+    if e["typ"] == "kreis":
+        m, r = e["mitte"], e["r"]
+        w = 2 * math.pi * t
+        p0 = m + r * np.array([math.cos(w), math.sin(w)])
+        p1 = 2 * m - p0
+        h0 = m + r * np.array([math.cos(w + math.pi / 2), math.sin(w + math.pi / 2)])
+        h1 = 2 * m - h0
+        neu = [{"typ": "bogen", "a": p0, "m": h0, "b": p1, "mitte": m, "r": r},
+               {"typ": "bogen", "a": p1, "m": h1, "b": p0, "mitte": m, "r": r}]
+        return {"geschlossen": True, "elemente": [element_json(x) for x in neu]}
+    q, A, B = _punkt_bei(e, t)
+    if e["typ"] == "linie":
+        teile = [_lin(e["a"], q), _lin(q, e["b"])]
+    elif e["typ"] == "bogen":
+        def bogen(P):
+            return {"typ": "bogen", "a": P[0], "m": P[len(P) // 2], "b": P[-1], "mitte": e["mitte"], "r": e["r"]}
+        if len(A) < 3 or len(B) < 3:
+            raise ValueError("Teilungspunkt zu nah am Bogenende.")
+        teile = [bogen(A), bogen(B)]
+    else:
+        teile = [spline_fit(A, 0.001), spline_fit(B, 0.001)] if len(A) >= 4 and len(B) >= 4 else None
+        if teile is None:
+            raise ValueError("Teilungspunkt zu nah am Spline-Ende.")
+        teile[0]["a"], teile[1]["b"] = e["a"], e["b"]
+    neu = els[:i] + teile + els[i + 1:]
+    return {"geschlossen": kette["geschlossen"], "elemente": [element_json(x) for x in neu]}
+
+
+def verlaengern(ketten, k, i, laenge=None):
+    """Extend: Endlinie i einer offenen Kontur in ihrer Richtung bis zum naechsten Element (irgendeiner
+    Kontur) verlaengern; ohne Treffer um laenge, falls angegeben."""
+    kette = ketten[k]
+    els = [element_lesen(e) for e in kette["elemente"]]
+    e = els[i]
+    if kette["geschlossen"] or i not in (0, len(els) - 1):
+        raise ValueError("Verlängern geht an den Enden einer offenen Kontur.")
+    if e["typ"] != "linie":
+        raise ValueError("Verlängern geht für Linien.")
+    am_ende = (i == len(els) - 1)
+    if len(els) == 1:
+        am_ende = True
+    p = np.asarray(e["b"] if am_ende else e["a"], float)
+    d = np.asarray(e["b"], float) - np.asarray(e["a"], float)
+    d = (d if am_ende else -d) / max(np.linalg.norm(d), 1e-12)
+    best = None
+    for kk, kt in enumerate(ketten):
+        for ii, x in enumerate(kt["elemente"]):
+            if kk == k and ii == i:
+                continue
+            D = diskret(element_lesen(x), 1.0)
+            for a, b in zip(D[:-1], D[1:]):
+                # Strahl p + s d gegen Strecke a..b
+                M = np.array([d, a - b]).T
+                if abs(np.linalg.det(M)) < 1e-12:
+                    continue
+                s_, u = np.linalg.solve(M, a - p)
+                if s_ > 1e-6 and -1e-9 <= u <= 1 + 1e-9 and (best is None or s_ < best):
+                    best = s_
+    if best is None:
+        if not laenge:
+            raise ValueError("In Verlängerungsrichtung liegt kein Element – Länge angeben.")
+        best = float(laenge)
+    neu_p = p + d * best
+    if am_ende:
+        e["b"] = neu_p
+    else:
+        e["a"], e["p"] = neu_p, neu_p
+    els[i] = e
+    return {"geschlossen": False, "elemente": [element_json(x) for x in els]}

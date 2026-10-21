@@ -3396,7 +3396,7 @@ async function trennen() {
 
 // --- Skizzen-Editor (v1.0) ------------------------------------------------------------------------
 S.skzKlick = null;      // {art, punkte: [[s,t]…], n}
-const SKZ_PUNKTE = { linie: 2, rechteck: 2, kreis: 2, kreis3: 3, bogen: 3, langloch: 2, sechseck: 2, polylinie: 99 };
+const SKZ_PUNKTE = { linie: 2, rechteck: 2, kreis: 2, kreis3: 3, bogen: 3, langloch: 2, sechseck: 2, polylinie: 99, spline: 99 };
 function skEbeneAktuell() { return S.skVorschau ? S.skVorschau.daten.ebene : null; }
 function ebenePunkt(x, y, E) {
   const r = new THREE.Raycaster();
@@ -3424,7 +3424,7 @@ function skzKlick(x, y) {
   k.punkte.push(p);
   const kreisMitWert = k.art === 'kreis' && Number($('#skzWert').value) > 0;
   if (kreisMitWert || k.punkte.length >= k.n) { sicher(skzSenden); return; }
-  status(`${k.punkte.length} Punkt(e) – weiter klicken${k.art === 'polylinie' ? ', dann „fertig“' : ''}.`);
+  status(`${k.punkte.length} Punkt(e) – weiter klicken${k.n === 99 ? ', dann „fertig“' : ''}.`);
 }
 function skZiel() { return S.skEditSid ? { sid: S.skEditSid } : {}; }
 function skEditorFuellen() {
@@ -3480,6 +3480,8 @@ async function skeAusfuehren() {
   if (zwei.includes(art) && bezug === null) throw new Error('Bezug angeben (Nr. oder Kontur.Element).');
   let j;
   if (art === 'ecke') j = await api('skizze/ecke', { ...skZiel(), kette, element, r: wert || 1 }, 'Runde Ecke…');
+  else if (art === 'trennen') j = await api('skizze/trennen', { ...skZiel(), kette, element, t: wert || 0.5 }, 'Trenne…');
+  else if (art === 'verlaengern') j = await api('skizze/verlaengern', { ...skZiel(), kette, element, laenge: wert || 0 }, 'Verlängere…');
   else if (art === 'spline') {
     if (bezug === null) throw new Error('Bis zu welchem Element (Nr.)?');
     j = await api('skizze/spline', { ...skZiel(), kette, von: Math.min(element, bezug), bis: Math.max(element, bezug) }, 'Passe Spline ein…');

@@ -123,6 +123,19 @@ def dienst():
         pruefe(a["bedingungen"] == ["Radius K1/E1 = 6 mm"], "Kontur entfernt → Bedingungen nachnummeriert: %s" % a["bedingungen"])
         a = holen("/api/skizze/holen", {"sid": sid})
         pruefe(a["bedingungen"] == ["Radius K1/E1 = 6 mm"], "gespeichert in der Skizze")
+        # v1.2: Spline durch Klickpunkte, Trennen, Verlaengern
+        holen("/api/skizze/neu", {"ebene": {"art": "welt", "name": "xy", "versatz": 0}})
+        a = holen("/api/skizze/zeichnen", {"art": "spline", "punkte": [[0, 0], [10, 5], [20, 0], [30, 8]]})
+        e = a["skizze"]["ketten"][0]["elemente"][0]
+        pruefe(e["typ"] == "spline" and e["a"] == [0, 0] and e["b"] == [30, 8], "Spline durch 4 Klickpunkte")
+        a = holen("/api/skizze/trennen", {"kette": 0, "element": 0, "t": 0.5})
+        pruefe(len(a["skizze"]["ketten"][0]["elemente"]) == 2, "Spline getrennt")
+        holen("/api/skizze/zeichnen", {"art": "rechteck", "punkte": [[50, 0], [90, 30]]})
+        holen("/api/skizze/zeichnen", {"art": "linie", "punkte": [[60, 10], [70, 10]]})
+        a = holen("/api/skizze/verlaengern", {"kette": 2, "element": 0})
+        pruefe(a["skizze"]["ketten"][2]["elemente"][0]["b"] == [90, 10], "Linie bis zur Rechteckseite verlängert")
+        a = holen("/api/skizze/trennen", {"kette": 1, "element": 0, "t": 0.25})
+        pruefe(a["texte"][1][:2] == ["Linie 10.00 mm", "Linie 30.00 mm"], "Rechteckseite bei ¼ getrennt: %s" % a["texte"][1])
     finally:
         prozess.terminate()
         prozess.wait(10)
