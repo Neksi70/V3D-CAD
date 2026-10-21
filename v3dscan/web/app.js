@@ -2930,6 +2930,7 @@ async function kwAnwenden() {
   koerperListeZeichnen(); verlaufZeichnen();
   if (h.id === 'w-schale') { S.scWahl.clear(); scZeichnen(); }
   meldung((h.dataset.titel || 'Werkzeug') + ' angewendet.', 'ok');
+  if (j.hinweis) meldung(j.hinweis, 'warnung');
 }
 function kwZurueck() {
   featVorschauWeg();

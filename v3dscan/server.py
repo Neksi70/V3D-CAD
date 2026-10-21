@@ -1174,12 +1174,21 @@ def _koerper_werkzeug(was, d):
         art = d.get("art", "vereinen")
         if art not in ("vereinen", "abziehen", "schneiden"):
             raise Fehler("Unbekannte Verknüpfung „%s“." % art)
-        shape = sk_feat.koerper_bool(k.shape, b.shape, art)
+        rf_info = {}
+        shape = sk_feat.koerper_bool(k.shape, b.shape, art, rf_info)
+        hinweis = None
+        if rf_info.get("stufe", "normal") != "normal":
+            hinweis = {"repariert": "erst nach Reparatur der Eingangskörper (ShapeFix) gelungen",
+                       "unscharf": "nur mit Toleranz %.2g mm gelungen (fast berührende Flächen)" % rf_info.get("fuzzy", 0),
+                       "nachrepariert": "Ergebnis musste repariert werden"}[rf_info["stufe"]]
         if vorschau:
-            return antwort(shape, None, None)
+            a = antwort(shape, None, None)
+            if hinweis:
+                a["hinweis"] = "Verknüpfung " + hinweis + "."
+            return a
         text = {"vereinen": "vereint mit", "abziehen": "minus", "schneiden": "geschnitten mit"}[art]
         erg = p.koerper_kombinieren(k.id, b.id, shape, text)
-        return {"koerper": erg.id}
+        return {"koerper": erg.id, **({"hinweis": "Verknüpfung " + hinweis + "."} if hinweis else {})}
     if was == "verschieben":
         shape = sk_feat.verschieben(k.shape, d.get("versatz") or (0, 0, 0), d.get("drehung") or (0, 0, 0))
         if d.get("kopie"):

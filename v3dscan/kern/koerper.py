@@ -194,21 +194,136 @@ def beschreibung(par, nennmass):
         _mm(2 * par["r_min"], 3), _mm(par["hoehe"], 2), zusatz)
 
 
-def boolean(ziel, werkzeug, operation):
-    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
-    op = BRepAlgoAPI_Cut(ziel, werkzeug) if operation == "abziehen" else BRepAlgoAPI_Fuse(ziel, werkzeug)
+def _volumen(shape, vorzeichen=False):
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    g = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, g, 1e-4, False)
+    return g.Mass() if vorzeichen else abs(g.Mass())
+
+
+def _eingabe_ok(shape):
+    """Gueltig und richtig orientiert (umgedrehte Huelle = negatives Volumen: der Bool rechnet dann
+    still das Gegenteil, z. B. Schnittmenge statt Abziehen)."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    if not BRepCheck_Analyzer(shape).IsValid():
+        return False
+    # Flaechenkoerper (Schalen ohne Volumen) haben kein Vorzeichen
+    return not TopExp_Explorer(shape, TopAbs_SOLID).More() or _volumen(shape, True) > 0
+
+
+def _diagonale(*shapes):
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    box = Bnd_Box()
+    for s in shapes:
+        BRepBndLib.Add_s(s, box)
+    if box.IsVoid():
+        return 1.0
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    return max(float(np.linalg.norm([x1 - x0, y1 - y0, z1 - z0])), 1e-6)
+
+
+def _repariert(shape):
+    from OCP.ShapeFix import ShapeFix_Shape
+    f = ShapeFix_Shape(shape)
+    f.Perform()
+    return f.Shape()
+
+
+def _bool_lauf(ziel, werkzeug, operation, fuzzy=0.0):
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+    from OCP.TopTools import TopTools_ListOfShape
+    op = {"abziehen": BRepAlgoAPI_Cut, "schneiden": BRepAlgoAPI_Common}.get(operation, BRepAlgoAPI_Fuse)()
+    a, b = TopTools_ListOfShape(), TopTools_ListOfShape()
+    a.Append(ziel)
+    b.Append(werkzeug)
+    op.SetArguments(a)
+    op.SetTools(b)
+    op.SetRunParallel(True)
+    if fuzzy > 0:
+        op.SetFuzzyValue(fuzzy)
+    op.Build()
     if not op.IsDone():
-        raise ValueError("Boolean-Operation (%s) ist fehlgeschlagen." % operation)
+        return None
     erg = op.Shape()
+    return None if erg.IsNull() else erg
+
+
+def _bool_pruefen(erg, va, vb, operation, tol):
+    """Ergebnis gueltig (BRepCheck) und das Volumen plausibel? -> Fehlertext oder None."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    if erg is None:
+        return "nicht berechenbar"
+    if not BRepCheck_Analyzer(erg).IsValid():
+        return "ungültige Topologie"
+    v = _volumen(erg)
+    t = tol * max(va, vb, 1e-9) + 1e-9
+    if operation == "abziehen" and not (-t <= v <= va + t):
+        return "Volumen unplausibel"
+    if operation == "schneiden" and v > min(va, vb) + t:
+        return "Volumen unplausibel"
+    if operation == "vereinen" and not (max(va, vb) - t <= v <= va + vb + t):
+        return "Volumen unplausibel"
+    return None
+
+
+def boolean(ziel, werkzeug, operation, info=None):
+    """Vereinen | abziehen | schneiden mit Rueckfallebene: 1. normal, 2. Eingaben mit ShapeFix repariert,
+    3. mit wachsender Unschaerfe (Fuzzy, 1e-6 .. 1e-4 der Diagonale - fast beruehrende/koplanare Flaechen),
+    4. Ergebnis nachtraeglich repariert. Jede Stufe wird auf gueltige Topologie und plausibles Volumen
+    geprueft. info (dict) bekommt "stufe" und ggf. "fuzzy" - fuer die Meldung."""
+    va, vb = _volumen(ziel), _volumen(werkzeug)
+    diag = _diagonale(ziel, werkzeug)
+    gruende = []
+    rep = {}
+
+    def repariert():
+        if not rep:
+            rep["z"], rep["w"] = _repariert(ziel), _repariert(werkzeug)
+        return rep["z"], rep["w"]
+    stufen = [("repariert", repariert, 0.0)] + [("unscharf", repariert, f * diag) for f in (1e-6, 1e-5, 1e-4)]
+    if _eingabe_ok(ziel) and _eingabe_ok(werkzeug):
+        stufen.insert(0, ("normal", lambda: (ziel, werkzeug), 0.0))
+    else:
+        gruende.append("normal: Eingangskörper ungültig oder umgedreht")
+    letzter = None
+    for name, eingaben, fz in stufen:
+        try:
+            erg = _bool_lauf(*eingaben(), operation, fz)
+        except Exception as x:          # OCCT wirft bei kaputten Eingaben auch Standard_Failure
+            erg, grund = None, "Ausnahme: %s" % x
+        else:
+            grund = _bool_pruefen(erg, va, vb, operation, 1e-3 if fz == 0 else 1e-2)
+        if grund is None:
+            if info is not None:
+                info.update({"stufe": name, "fuzzy": fz, "gruende": gruende})
+            return _vereinheitlichen(erg)
+        gruende.append("%s: %s" % (name, grund))
+        if erg is not None:
+            letzter = erg
+    if letzter is not None:
+        erg = _repariert(letzter)
+        if _bool_pruefen(erg, va, vb, operation, 1e-2) is None:
+            if info is not None:
+                info.update({"stufe": "nachrepariert", "fuzzy": 0.0, "gruende": gruende})
+            return _vereinheitlichen(erg)
+    raise ValueError("Boolean-Operation (%s) ist fehlgeschlagen – auch mit Reparatur und Toleranz (%s)."
+                     % (operation, "; ".join(gruende[-2:])))
+
+
+def _vereinheitlichen(erg):
     try:
         from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
         u = ShapeUpgrade_UnifySameDomain(erg, True, True, False)
         u.Build()
-        erg = u.Shape()
+        neu = u.Shape()
+        if not neu.IsNull():
+            erg = neu
     except Exception:
         pass
-    if erg.IsNull():
-        raise ValueError("Boolean-Operation lieferte keinen Körper.")
     return erg
 
 

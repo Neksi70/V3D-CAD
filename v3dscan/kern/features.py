@@ -311,17 +311,10 @@ def radius_vorschlag(shape, kanten, elemente):
 
 
 # --- Koerper-Werkzeuge (QuickSurface CAD-Reiter) -----------------------------------------------------
-def koerper_bool(a, b, art):
-    """art: vereinen | abziehen | schneiden (Schnittmenge)."""
-    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+def koerper_bool(a, b, art, info=None):
+    """art: vereinen | abziehen | schneiden (Schnittmenge) - mit Rueckfallebene (koerper.boolean)."""
     from . import koerper as kp
-    if art == "schneiden":
-        op = BRepAlgoAPI_Common(a, b)
-        if not op.IsDone():
-            raise ValueError("Schnittmenge ist fehlgeschlagen.")
-        erg = op.Shape()
-    else:
-        erg = kp.boolean(a, b, art)
+    erg = kp.boolean(a, b, art, info)
     if kp.kennwerte(erg)["volumen"] < 1e-6:
         raise ValueError("Ergebnis ist leer – berühren sich die Körper überhaupt?")
     return erg
