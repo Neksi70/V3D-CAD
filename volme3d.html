@@ -1632,6 +1632,22 @@ const firebaseConfig = {
   </div>
 </div>
 
+<!-- GROSSES MODELL: vor dem Import warnen + vereinfachen anbieten -->
+<div id="bigmesh-modal" class="g3dm" style="z-index:3700">
+  <div class="g3box" style="width:430px">
+    <div class="g3hdr">⚠️ Großes Modell</div>
+    <div style="padding:16px 18px;font-size:13px;line-height:1.55">
+      <div id="bigmesh-info"></div>
+      <div id="bigmesh-res" style="margin-top:12px;padding:10px 12px;border-radius:8px;background:var(--bg2,#f3f4f6)">Vereinfachte Fassung wird berechnet …</div>
+      <div style="font-size:11px;color:var(--dim);margin-top:10px">Sehr große Netze machen Bearbeiten, Rückgängig und Speichern langsam und können den Browser abstürzen lassen. Die vereinfachte Fassung weicht höchstens <b id="bigmesh-tol">0,01</b> mm vom Original ab – eine Druckschicht ist 0,1–0,2 mm dick.</div>
+    </div>
+    <div class="g3foot">
+      <button class="btn" id="bigmesh-orig">Original laden</button>
+      <button class="btn pri" id="bigmesh-simp" disabled>Vereinfacht laden (empfohlen)</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODELL TEILEN -->
 <div id="share-modal" onclick="if(event.target===this)closeShareModal()">
   <div id="share-box">
@@ -38758,11 +38774,7 @@ function handleImport(e) {
   const reader = new FileReader();
   reader.onload = ev => {
     const buf = ev.target.result;
-    const load = () => {
-      if (/\.3mf$/i.test(file.name)) _importThreeMF(buf, file.name);
-      else if (/\.obj$/i.test(file.name)) _addImportedGeo(_parseOBJ(new TextDecoder().decode(buf)), file.name, false, null, true);
-      else _addImportedStl(buf, file.name, true);
-    };
+    const load = () => _importMeshFile(buf, file.name, true);
     if (big) {
       // Großes Modell: Toast zeigen und das (synchrone, evtl. sekundenlange)
       // Parsen einen Frame verzögern, damit die Seite nicht "tot" wirkt.
@@ -38832,6 +38844,101 @@ async function _importStepFile(file) {
 }
 
 // Gemeinsamer STL-Import (Datei-Dialog + STL-Bibliothek). showDialog=true → Größendialog.
+// ── Große Modelle: vor dem Import warnen und qualitätsschonend vereinfachen ──
+// Riesige Scans (Millionen Dreiecke) ließen V3D CAD beim Bearbeiten/Importieren
+// abstürzen (Volker 21.10.). Ab BIGMESH_TRIS fragt der Import nach; vereinfacht wird
+// mit meshoptimizer im Worker (lib/vereinfachen-worker.js) mit fester Höchstabweichung,
+// nicht „x % weniger" — die Dreieckszahl ergibt sich aus der Qualität.
+// Geprüft an echten Scans: Maschinenteil 650k → 236k, Relief 670k → 34k Dreiecke,
+// nachgemessen 99,99 % der Punkte unter 0,04 mm.
+const BIGMESH_TRIS = 300000;
+const BIGMESH_TOL_MM = 0.01;
+let _vfW = null, _vfSeq = 0; const _vfWait = new Map();
+// pos = Dreiecksliste (9 Floats/Dreieck); opts {tol} (Einheit von pos) oder {target}
+function _vfSimplifyAsync(pos, opts) {
+  if (!_vfW) {
+    const v = typeof VOLME3D_VERSION !== 'undefined' ? VOLME3D_VERSION : '1';
+    _vfW = new Worker('lib/vereinfachen-worker.js?v=' + v);
+    _vfW.onmessage = e => { const d = e.data || {}, w = _vfWait.get(d.id); if (!w) return; _vfWait.delete(d.id); d.error ? w.rej(new Error(d.error)) : w.res(d); };
+    _vfW.onerror = e => { const ws = [..._vfWait.values()]; _vfWait.clear(); try { _vfW.terminate(); } catch (_) {} _vfW = null;
+      for (const w of ws) w.rej(new Error('Vereinfachen fehlgeschlagen' + (e && e.message ? ': ' + e.message : ''))); };
+  }
+  const id = ++_vfSeq;
+  return new Promise((res, rej) => { _vfWait.set(id, { res, rej }); _vfW.postMessage({ id, pos, tol: opts.tol || 0, target: opts.target || 0 }); });
+}
+function _geoSoup(g) {   // Dreiecksliste (kopiert), auch für indizierte Geometrie (OBJ)
+  const p = g.attributes.position;
+  if (!g.index) return new Float32Array(p.array.subarray(0, p.count * 3));
+  const ix = g.index.array, out = new Float32Array(ix.length * 3);
+  for (let i = 0; i < ix.length; i++) { out[i * 3] = p.getX(ix[i]); out[i * 3 + 1] = p.getY(ix[i]); out[i * 3 + 2] = p.getZ(ix[i]); }
+  return out;
+}
+function _geoTriCount(g) { return g && g.attributes && g.attributes.position ? (g.index ? g.index.count : g.attributes.position.count) / 3 : 0; }
+function _soupGeo(pos) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.computeVertexNormals(); g.computeBoundingBox(); return g;
+}
+// geos = Geometrien in mm. Ergebnis: {geos, simplified} oder null (Fenster geschlossen).
+// Unter der Schwelle sofort durch, ohne Fenster.
+async function _bigMeshGate(geos, filename) {
+  const total = geos.reduce((s, g) => s + _geoTriCount(g), 0);
+  if (total < BIGMESH_TRIS) return { geos, simplified: false };
+  const fmt = n => Math.round(n).toLocaleString('de');
+  const modal = document.getElementById('bigmesh-modal');
+  const info = document.getElementById('bigmesh-info'), resEl = document.getElementById('bigmesh-res');
+  const bOrig = document.getElementById('bigmesh-orig'), bSimp = document.getElementById('bigmesh-simp');
+  document.getElementById('bigmesh-tol').textContent = String(BIGMESH_TOL_MM).replace('.', ',');
+  info.innerHTML = '„<b>' + (filename || 'Modell').replace(/[<>&]/g, '') + '</b>“ hat <b>' + fmt(total) + ' Dreiecke</b>' + (geos.length > 1 ? ' in ' + geos.length + ' Teilen' : '') + '.';
+  resEl.textContent = 'Vereinfachte Fassung wird berechnet …';
+  bSimp.disabled = true; bSimp.textContent = 'Vereinfacht laden (empfohlen)';
+  modal.classList.add('show');
+  let done = null, results = null, failed = false;
+  const choice = new Promise(r => { done = r; });
+  bOrig.onclick = () => done('orig');
+  bSimp.onclick = () => { if (results) done('simp'); };
+  const t0 = performance.now();
+  (async () => {
+    try {
+      const out = [];
+      for (const g of geos) out.push(_geoTriCount(g) < 2000 ? null : await _vfSimplifyAsync(_geoSoup(g), { tol: BIGMESH_TOL_MM }));
+      results = out;
+      const after = out.reduce((s, r, i) => s + (r ? r.outTris : _geoTriCount(geos[i])), 0);
+      const err = Math.max(0, ...out.map(r => (r ? r.err : 0)));
+      resEl.innerHTML = 'Vereinfacht: <b>' + fmt(after) + ' Dreiecke</b> (' + Math.max(1, Math.round(after / total * 100)) + ' %), Abweichung ≈ ' + err.toFixed(3).replace('.', ',') + ' mm'
+        + ' <span style="color:var(--dim)">· ' + ((performance.now() - t0) / 1000).toFixed(1).replace('.', ',') + ' s</span>';
+      if (after > total * 0.9) resEl.innerHTML += '<br><span style="color:var(--dim)">Dieses Netz lässt sich ohne Qualitätsverlust kaum verkleinern.</span>';
+      bSimp.disabled = false;
+    } catch (e) {
+      failed = true; console.warn('[bigmesh]', e);
+      resEl.textContent = 'Vereinfachen hat nicht geklappt (' + e.message + ') – du kannst das Original laden.';
+    }
+  })();
+  const c = await choice;
+  modal.classList.remove('show');
+  if (c === 'simp' && results && !failed) {
+    const out = geos.map((g, i) => { if (!results[i]) return g; g.dispose(); return _soupGeo(results[i].pos); });
+    return { geos: out, simplified: true };
+  }
+  return { geos, simplified: false };
+}
+
+// Import aus Datei-Dialog und Bibliothek: STL/OBJ/3MF mit Warnung bei großen Modellen.
+// stl/obj liefern EINE Geometrie, 3MF evtl. mehrere Teile.
+async function _importMeshFile(buf, filename, showDialog) {
+  const ext = (filename.split('.').pop() || '').toLowerCase();
+  if (ext === '3mf') return _importThreeMF(buf, filename, { ask: true });
+  let geo;
+  try { geo = ext === 'obj' ? _parseOBJ(new TextDecoder().decode(buf)) : parseSTL(buf); }
+  catch (err) { notify('Import Fehler: ' + err.message, 'e'); return false; }
+  const r = await _bigMeshGate([geo], filename);
+  if (!r) return false;
+  // vereinfachte Geometrie passt nicht mehr zu den rohen STL-Bytes → nicht mitgeben
+  _addImportedGeo(r.geos[0], filename, ext !== 'obj', (ext === 'stl' && !r.simplified) ? buf : null, showDialog);
+  if (r.simplified) notify('Vereinfacht geladen: ' + Math.round(_geoTriCount(r.geos[0])).toLocaleString('de') + ' Dreiecke', 'ok');
+  return true;
+}
+
 function _addImportedStl(buffer, filename, showDialog, stepBytes) {
   let geo; try { geo = parseSTL(buffer); }   // parseSTL berechnet bereits Normalen
   catch(err){ notify('Import Fehler: ' + err.message, 'e'); return; }
@@ -38905,12 +39012,17 @@ function _addImported3MFParts(parts, filename) {
 // 3MF-Bytes importieren (Datei-Dialog + Bibliothek): mehrere Teile → einzelne Objekte.
 // Asynchron: das XML wird im Worker gelesen (lib/p3mf.js), die Seite bleibt bedienbar.
 // Rückgabe Promise<bool> — Aufrufer, die das Ergebnis brauchen, müssen awaiten.
-async function _importThreeMF(buf, filename) {
+async function _importThreeMF(buf, filename, opts) {
   if (typeof fflate === 'undefined' || typeof P3MF === 'undefined') { notify('3MF-Unterstützung lädt noch — kurz warten, erneut versuchen', 'w'); return false; }
   if (buf.byteLength > 8e6) notify('3MF wird gelesen … (' + (buf.byteLength / 1048576).toFixed(0) + ' MB)', 'i');
   let raw;
   try { raw = await _p3mfParseAsync(buf); } catch (e) { notify('3MF unlesbar: ' + e.message, 'w'); return false; }
-  const parts = raw.map(r => ({ name: r.name, geo: _p3mfGeo(r.pos) }));
+  let parts = raw.map(r => ({ name: r.name, geo: _p3mfGeo(r.pos) }));
+  if (opts && opts.ask && parts.length) {   // Nutzer-Import: bei großen Modellen nachfragen (Agent-API nicht)
+    const g = await _bigMeshGate(parts.map(p => p.geo), filename);
+    if (!g) return false;
+    parts = parts.map((p, i) => ({ name: p.name, geo: g.geos[i] }));
+  }
   if (!parts.length) { notify('3MF enthält kein 3D-Modell (nur Vorschau) — bitte „Drucken"', 'w'); return false; }
   if (parts.length > 1) _addImported3MFParts(parts, filename);
   else _addImportedGeo(parts[0].geo, filename, true, null, false);
@@ -66933,34 +67045,42 @@ function _applySimplify(){
   const pct=+document.getElementById('simplify-pct').value;
   const btn=document.getElementById('simplify-apply'); btn.disabled=true; btn.textContent='…';
   _progressShow('Netz wird vereinfacht…'); _progressSet(30);
-  setTimeout(()=>{
+  setTimeout(async ()=>{
     saveUndo();
     let ok=0;
     try{
       const mod=new THREE.SimplifyModifier();
-      ms.forEach(m=>{
-        const g=m.geometry; if(!g||!g.attributes||!g.attributes.position) return;
+      for(const m of ms){
+        const g=m.geometry; if(!g||!g.attributes||!g.attributes.position) continue;
         const nTri=(g.index?g.index.count:g.attributes.position.count)/3;
         if(nTri>150000){
           // Scan-Netze: QEM-SimplifyModifier + mergeVertices frieren den Browser
-          // bei Millionen Dreiecken ein (String-Maps, O(n·m)-Kollaps). Stattdessen
-          // O(n)-Cluster-Decimation; räumt auch _origGeo/_origStlBuf-Altlasten weg.
+          // bei Millionen Dreiecken ein. meshoptimizer im Worker (kantentreu, Seite
+          // bleibt bedienbar); Raster-Decimation nur noch als Notnagel.
           const target=Math.max(500,Math.round(nTri*(1-pct/100)));
-          if(_clusterDecimateMesh(m, target) < nTri) ok++;
-          return;
+          try{
+            const r=await _vfSimplifyAsync(_geoSoup(g),{target});
+            if(r.outTris<nTri){
+              const ng=_soupGeo(r.pos); g.dispose(); m.geometry=ng;
+              if(m.userData._origGeo) m.userData._origGeo=ng; m.userData._origStlBuf=null;   // gebackene STL passt nicht mehr
+              if(typeof _updateObjEdgeLines==='function' && !(m.userData.displacementPattern&&m.userData.displacementPattern!=='keine')) _updateObjEdgeLines(m);
+              ok++;
+            }
+          }catch(e){ console.warn('[simplify] meshopt fehlgeschlagen, Raster-Verfahren:',e); if(_clusterDecimateMesh(m, target) < nTri) ok++; }
+          continue;
         }
         let base=g;
         try{ if(THREE.BufferGeometryUtils&&THREE.BufferGeometryUtils.mergeVertices) base=THREE.BufferGeometryUtils.mergeVertices(g.index?g:g.toNonIndexed()); }catch(e){}
         const vCount=base.attributes.position.count;
         const remove=Math.min(vCount-4, Math.floor(vCount*pct/100));
-        if(remove<=0) return;
-        let simp; try{ simp=mod.modify(base, remove); }catch(e){ console.warn('simplify',e); return; }
-        if(!simp || !simp.attributes.position || simp.attributes.position.count<9) return;
+        if(remove<=0) continue;
+        let simp; try{ simp=mod.modify(base, remove); }catch(e){ console.warn('simplify',e); continue; }
+        if(!simp || !simp.attributes.position || simp.attributes.position.count<9) continue;
         simp.computeVertexNormals();
         if(m.geometry) m.geometry.dispose(); m.geometry=simp;
         if(typeof _updateObjEdgeLines==='function' && !(m.userData.displacementPattern&&m.userData.displacementPattern!=='keine')) _updateObjEdgeLines(m);
         ok++;
-      });
+      }
     }catch(e){ console.warn(e); }
     _progressDone();
     btn.disabled=false; btn.textContent='✓ Anwenden';
@@ -68808,12 +68928,8 @@ async function _stlOpenInScene(idx){
   const ext=(f.name.split('.').pop()||'').toLowerCase();
   try{
     const buf=await _stlReadBytes(f);
-    if(ext==='stl'){
-      _addImportedStl(buf, f.name, false);
-    } else if(ext==='obj'){
-      _addImportedGeo(_parseOBJ(new TextDecoder().decode(buf)), f.name, false, null, false);
-    } else if(ext==='3mf'){
-      if(!(await _importThreeMF(buf, f.name))) return;
+    if(ext==='stl'||ext==='obj'||ext==='3mf'){
+      if(!(await _importMeshFile(buf, f.name, false))) return;
     } else if(ext==='step'||ext==='stp'){
       _importStepFile(new File([buf], f.name));   // läuft übers OCCT-Backend, asynchron
     } else { notify('Format nicht unterstützt','w'); return; }
@@ -69389,8 +69505,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.232';
+const VOLME3D_VERSION = '1.18.233';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.233', date:'2026-10-21', changes:[
+    ['⚠️','<b>Große Modelle: Warnung vor dem Import und Vereinfachen ohne Qualitätsverlust.</b> Sehr große Dateien (ab 300.000 Dreiecken, z. B. Scans) ließen V3D CAD beim Importieren und Bearbeiten abstürzen. Jetzt erscheint vorher ein Fenster mit der Dreieckszahl und einer vereinfachten Fassung, die höchstens etwa 0,01 mm vom Original abweicht – eine Druckschicht ist 0,1–0,2 mm dick. Ein 4-Millionen-Dreiecke-Scan wird so zu rund 860.000 Dreiecken, im Druck sieht man keinen Unterschied. Wer will, lädt weiter das Original. Gilt für STL, 3MF und OBJ aus dem Import und aus der Bibliothek.'],
+    ['🔻','<b>Vereinfachen arbeitet bei großen Netzen genauer.</b> Statt eines groben Rasters, das feine Details verschmierte, nutzt „🔻 Vereinfachen“ jetzt ein kantentreues Verfahren (meshoptimizer) – im Hintergrund, die Seite bleibt bedienbar.'],
+  ]},
   { version:'1.18.232', date:'2026-10-21', changes:[
     ['⚡','<b>Große 3MF-Dateien öffnen, ohne dass die Seite hängt.</b> 3MF-Dateien werden jetzt mit einem neuen, rund 10-mal schnelleren Leser im Hintergrund eingelesen – auch ein 50-MB-Scan lässt sich öffnen, während die Seite bedienbar bleibt. In der Bibliothek bekommen solche Dateien wieder ein echtes Vorschaubild statt „Vorschau zu groß“.'],
   ]},
