@@ -20684,7 +20684,8 @@ function _importSvgConfirm(override) {
 
   const _shapeRanges = []; // {start, count} im allPositions-Buffer
 
-  for (const shape of allShapes) {
+  for (const shape0 of allShapes) {
+    const shape = _svgShapeSauber(shape0, 12) || shape0;
     let geo;
     if (mode === 'extrude') {
       geo = new THREE.ExtrudeGeometry(shape, {
@@ -22754,6 +22755,37 @@ function removeById(id) {
 // Extrusions-Mesh zu speichern. MUSS die Transform-Kette aus _importSvgConfirm
 // 1:1 spiegeln (scale/Y-Flip/Zentrierung → -90°X → Boden → normF → Bohrung-Shift);
 // bei Änderungen dort hier mitziehen.
+// Umriss aufräumen, bevor er gefüllt wird: doppelte Punkte (auch der Schlusspunkt =
+// Anfangspunkt) und Punkte mitten auf einer Geraden raus. earcut legt über drei
+// Punkte auf einer Linie sonst ein Dreieck ohne Fläche — das Netz ist dann für
+// Manifold „nicht dicht", der Durchbruch fällt auf den OCCT-Weg zurück, und der
+// zerlegt große Flächen in Splitter, die als schwarze Fächerstriche von den
+// Buchstaben zu den Ecken sichtbar sind und mitgedruckt werden (Ralf 9./21.10.).
+// Die Form bleibt exakt gleich.
+function _svgKonturSauber(pts) {
+  const p = [];
+  for (const q of pts) { const l = p[p.length - 1]; if (!l || Math.hypot(q.x - l.x, q.y - l.y) > 1e-9) p.push(q); }
+  while (p.length > 2 && Math.hypot(p[0].x - p[p.length - 1].x, p[0].y - p[p.length - 1].y) <= 1e-9) p.pop();
+  let geaendert = true;
+  while (geaendert && p.length > 3) {
+    geaendert = false;
+    for (let i = 0; i < p.length && p.length > 3; i++) {
+      const a = p[(i + p.length - 1) % p.length], b = p[i], c = p[(i + 1) % p.length];
+      const ux = b.x - a.x, uy = b.y - a.y, vx = c.x - b.x, vy = c.y - b.y;
+      const lu = Math.hypot(ux, uy), lv = Math.hypot(vx, vy);
+      if (lu < 1e-12 || lv < 1e-12 || (Math.abs(ux * vy - uy * vx) <= 1e-7 * lu * lv && ux * vx + uy * vy > 0)) { p.splice(i, 1); i--; geaendert = true; }
+    }
+  }
+  return p;
+}
+function _svgShapeSauber(shape, segs) {
+  const aussen = _svgKonturSauber(shape.getPoints(segs));
+  if (aussen.length < 3) return null;
+  const s = new THREE.Shape(aussen);
+  for (const h of (shape.holes || [])) { const hp = _svgKonturSauber(h.getPoints(segs)); if (hp.length >= 3) s.holes.push(new THREE.Path(hp)); }
+  return s;
+}
+
 function _svgRebuildGeo(data) {
   const pd = data._svgPathData || [];
   const tm = data._svgTransformM || {};
@@ -22772,7 +22804,8 @@ function _svgRebuildGeo(data) {
 
   const allPositions = [], allNormals = [], allUVs = [], allIndices = [];
   let vOff = 0;
-  for (const shape of allShapes) {
+  for (const shape0 of allShapes) {
+    const shape = _svgShapeSauber(shape0, 12); if (!shape) continue;
     const g = (mode === 'extrude')
       ? new THREE.ExtrudeGeometry(shape, { depth: depthMM / scale, bevelEnabled: false, curveSegments: 12, steps: 1 })
       : new THREE.ShapeGeometry(shape, 12);
@@ -24008,6 +24041,14 @@ async function _mfSubtractWorld(solidObjs, toolObjs) {
     const e = new Error('Die Bohrung berührt den Körper nicht — nichts abzuziehen');
     e.keinTreffer = true; throw e;
   }
+  // Splitter weg: Ein STL besteht aus lauter Einzeldreiecken; leicht schräg liegende
+  // sind nach dem Drehen nicht mehr exakt eben, Manifold behält dann die alten
+  // Dreiecksgrenzen (z. B. die Diagonale der Rückwand), und wo die Buchstaben sie
+  // schneiden, entstehen flache Nadeln quer über die Fläche — sichtbar als schwarze
+  // Striche von den Buchstaben zu den Ecken (Ralf 9./21.10., gemessen bis 57 mm lang).
+  // simplify entfernt Dreiecke, die innerhalb 0,01 mm auf einer Linie liegen; keine
+  // Fläche bewegt sich dabei mehr als 0,01 mm (eine Druckdüse ist 0,4 mm breit).
+  try { res = res.simplify(0.01); } catch (e) { console.warn('[subtract] simplify:', e.message || e); }
   // Manifold gibt indiziert zurück; _creaseNormals steigt darauf aus (siehe
   // Definition weiter unten) → vorher auflösen, sonst bleibt alles flat-shaded.
   const geo = _mfToGeo(res).toNonIndexed();
@@ -70082,8 +70123,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.243';
+const VOLME3D_VERSION = '1.18.244';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.244', date:'2026-10-21', changes:[
+    ['🧹','<b>Keine Striche mehr nach dem Durchbruch.</b> Wurde ein Schriftzug als <b>Durchbruch</b> aus einem Bauteil abgezogen (z. B. der Name im Handyständer), zogen sich danach oft schwarze Striche von den Buchstaben bis zu den Ecken der Fläche – und der Slicer druckte sie mit. Ursache: Das Schrift-Netz enthielt Dreiecke ohne Fläche, deshalb lief die Rechnung über einen Ausweichweg, der große Flächen in lange Splitter zerlegt. Jetzt ist die Schrift sauber vernetzt, der Abzug läuft über die schnelle Hauptrechnung (Sekundenbruchteile statt Minuten), und übrig gebliebene Splitter werden entfernt (danke Ralf für das Video).'],
+  ]},
   { version:'1.18.243', date:'2026-10-21', changes:[
     ['🐛','<b>Absturz mit mehreren großen Modellen behoben.</b> Wer zwei oder mehr große Modelle (z. B. Scans) in der Szene hatte und dann weiterarbeitete, brachte die Seite zum Absturz. Ursache: Ein interner Rückgängig-Schnappschuss des großen Netzes wurde beim automatischen Speichern versehentlich mitgeschrieben – bis zu 340 MB alle 30 Sekunden. Jetzt bleibt er im Speicher, wo er hingehört: Im nachgestellten Fall braucht die Seite rund 190 MB statt 1,85 GB.'],
   ]},
