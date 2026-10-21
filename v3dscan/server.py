@@ -136,6 +136,23 @@ def netz_rechnen(d):
     elif w == "glaetten":
         neu, bericht = nz.glaetten(s, int(zahl(d, "iterationen", 5)), d.get("art", "taubin"),
                                    zahl(d, "staerke", 0.5))
+    elif w == "rand":
+        art = d.get("art", "bucht")
+        punkte = d.get("punkte") or []
+        if art in ("bucht", "bruecke") and len(punkte) != 2:
+            raise Fehler("Zwei Punkte am Rand anklicken (Anfang und Ende).")
+        if art == "bucht":
+            neu, bericht = nz.bucht_fuellen(s, punkte, d.get("fuellung", "gewoelbt"))
+        elif art == "bruecke":
+            neu, bericht = nz.bruecke(s, punkte)
+        elif art == "glaetten":
+            neu, bericht = nz.rand_glaetten(s, punkte or None, int(zahl(d, "iterationen", 10)))
+        elif art == "ausfransen":
+            neu, bericht = nz.ausfransungen_entfernen(s, winkel=zahl(d, "winkel", 45))
+        elif art == "verlaengern":
+            neu, bericht = nz.rand_verlaengern(s, punkte or None, zahl(d, "laenge", 2))
+        else:
+            raise Fehler("Unbekanntes Rand-Werkzeug „%s“." % art)
     elif w == "vereinfachen":
         ziel = int(len(s.tri) * zahl(d, "prozent") / 100.0) if s.ist_netz else 0
         neu, bericht = nz.vereinfachen(s, ziel)
@@ -335,7 +352,7 @@ def befehl(name, d):
         s, neu, bericht = netz_rechnen(d)
         netz_vorschau.clear()
         texte = {"reparieren": "Netz repariert", "loecher": "Löcher geschlossen",
-                 "glaetten": "Netz geglättet", "vereinfachen": "Netz vereinfacht",
+                 "glaetten": "Netz geglättet", "vereinfachen": "Netz vereinfacht", "rand": "Netzrand bearbeitet",
                  "beschneiden": "Netz beschnitten"}
         if d.get("werkzeug") == "erzeugen":
             p.hinzufuegen(neu)

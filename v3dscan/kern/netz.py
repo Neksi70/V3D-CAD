@@ -6,6 +6,8 @@
 
 import os
 
+import math
+
 import numpy as np
 
 from .o3d import o3d
@@ -551,3 +553,191 @@ def teilen_mit_kurve(scan, kurve):
     if not innen.any() or innen.all():
         raise ValueError("Die Kurve umschließt keinen Teil des Netzes – liegt sie auf dem Scan?")
     return _teilnetz(scan, innen, scan.name + " (innen)"), _teilnetz(scan, ~innen, scan.name)
+
+
+# --- Netzrand (v1.3): Bucht fuellen (Semi-Hole), Bruecke, Rand glaetten/verlaengern, Ausfransungen -------
+def _netz_aus(scan, xyz, tri, extra_farbe=True):
+    rgb = None
+    if scan.rgb is not None:
+        extra = len(xyz) - len(scan.xyz)
+        rgb = np.vstack([scan.rgb, np.tile(scan.rgb.mean(0).astype(np.uint8), (max(extra, 0), 1))])[:len(xyz)]
+    m = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(np.asarray(xyz, float)),
+                                  o3d.utility.Vector3iVector(np.asarray(tri, np.int32)))
+    if rgb is not None:
+        m.vertex_colors = o3d.utility.Vector3dVector(rgb / 255.0)
+    m.remove_unreferenced_vertices()
+    return _neu(scan, m)
+
+
+def _kantenlaenge(xyz, tri):
+    return float(np.mean(np.linalg.norm(xyz[tri[:, 0]] - xyz[tri[:, 1]], axis=1))) if len(tri) else 1.0
+
+
+def randpunkte_finden(scan, punkte):
+    """Geklickte 3D-Punkte -> (Schleifen-Nr., Position in der Schleife) des naechsten Randpunkts."""
+    schleifen = randschleifen(scan)
+    if not schleifen:
+        raise ValueError("Das Netz hat keinen offenen Rand.")
+    alle = np.concatenate(schleifen)
+    wo = np.concatenate([np.c_[np.full(len(s_), i), np.arange(len(s_))] for i, s_ in enumerate(schleifen)])
+    aus = []
+    for q in np.asarray(punkte, float).reshape(-1, 3):
+        k = int(np.argmin(np.linalg.norm(scan.xyz[alle] - q, axis=1)))
+        aus.append((int(wo[k, 0]), int(wo[k, 1])))
+    return schleifen, aus
+
+
+def bucht_fuellen(scan, punkte, art="gewoelbt"):
+    """Fill semi-hole: Randbogen zwischen zwei Randpunkten (der kuerzere) mit einer geraden Verbindung
+    schliessen und die Bucht dazwischen fuellen - fuer Einbuchtungen am Aussenrand eines offenen Scans."""
+    _kopf(scan)
+    schleifen, ((s1, i1), (s2, i2)) = randpunkte_finden(scan, punkte)
+    if s1 != s2:
+        raise ValueError("Die beiden Punkte liegen auf verschiedenen Rändern.")
+    L = schleifen[s1]
+    if i1 == i2:
+        raise ValueError("Zwei verschiedene Randpunkte wählen.")
+    xyz = scan.xyz.astype(np.float64)
+    n = len(L)
+
+    def bogen(a, b):                                  # Randpunkte von a bis b in Schleifenrichtung
+        return L[np.arange(a, a + (b - a) % n + 1) % n]
+    b1, b2 = bogen(i1, i2), bogen(i2, i1)
+    laenge = [float(np.linalg.norm(np.diff(xyz[b_], axis=0), axis=1).sum()) for b_ in (b1, b2)]
+    arc = b1 if laenge[0] <= laenge[1] else b2       # kuerzerer Bogen = die Bucht
+    if len(arc) < 3:
+        raise ValueError("Zwischen den Punkten liegt keine Bucht (Nachbarpunkte).")
+    pa, pb = xyz[arc[0]], xyz[arc[-1]]
+    kl = _kantenlaenge(xyz, scan.tri)
+    k = max(int(np.ceil(np.linalg.norm(pb - pa) / kl)), 1)
+    steg = np.array([pb + (pa - pb) * t for t in np.linspace(0, 1, k + 1)[1:-1]]).reshape(-1, 3)
+    # Stegpunkte zuerst anhaengen: sie gelten beim Fairen als fest (Rand der Fuellung)
+    s_idx = np.arange(len(xyz), len(xyz) + len(steg))
+    xyz2 = np.vstack([xyz, steg])
+    erster = len(xyz2)
+    # Fuellung gegen die Halbkanten-Richtung: Bogen rueckwaerts, dann Steg von a nach b
+    rand = np.r_[arc[::-1], s_idx[::-1]]
+    pts, tris = _ringe(xyz2, rand, kl, erster)
+    alle = np.vstack([xyz2, pts])
+    tri_alt = scan.tri.astype(np.int64)
+    alle[erster:] = _fairen(alle, tri_alt, tris, erster, art)
+    return _netz_aus(scan, alle, np.vstack([tri_alt, tris])), {"gefuellt": 1, "dreiecke": int(len(tri_alt) + len(tris))}
+
+
+def bruecke(scan, punkte):
+    """Bridge: Streifen zwischen zwei Randpunkten desselben Lochs - teilt das Loch in zwei."""
+    _kopf(scan)
+    schleifen, ((s1, i1), (s2, i2)) = randpunkte_finden(scan, punkte)
+    if s1 != s2:
+        raise ValueError("Die beiden Punkte liegen auf verschiedenen Rändern.")
+    L = schleifen[s1]
+    n = len(L)
+    if (i2 - i1) % n in (0, 1, n - 1):
+        raise ValueError("Die Punkte liegen zu dicht beieinander.")
+    xyz = scan.xyz.astype(np.float64)
+    a, a1, b, b1 = L[i1], L[(i1 + 1) % n], L[i2], L[(i2 + 1) % n]
+    kl = _kantenlaenge(xyz, scan.tri)
+    k = max(int(np.ceil(np.linalg.norm(xyz[b] - xyz[a]) / kl)), 1)
+    # Schienen a -> b1 und a1 -> b; Vierecke [R_j, L_j, L_j+1, R_j+1] nutzen a1->a und b1->b
+    t = np.linspace(0, 1, k + 1)[1:-1]
+    links = [a] + [len(xyz) + j for j in range(len(t))] + [b1]
+    rechts = [a1] + [len(xyz) + len(t) + j for j in range(len(t))] + [b]
+    neu = np.vstack([xyz[a] + (xyz[b1] - xyz[a]) * t[:, None], xyz[a1] + (xyz[b] - xyz[a1]) * t[:, None]]).reshape(-1, 3)
+    tris = []
+    for j in range(k):
+        r0, l0, l1, r1 = rechts[j], links[j], links[j + 1], rechts[j + 1]
+        tris += [[r0, l0, l1], [r0, l1, r1]]
+    tri = np.vstack([scan.tri.astype(np.int64), np.array(tris, np.int64)])
+    return _netz_aus(scan, np.vstack([xyz, neu]), tri), {"dreiecke": int(len(tri))}
+
+
+def _auswahl_schleifen(scan, punkte):
+    schleifen = randschleifen(scan)
+    if not schleifen:
+        raise ValueError("Das Netz hat keinen offenen Rand.")
+    if punkte is None or not len(punkte):
+        return schleifen, list(range(len(schleifen)))
+    _, wahl = randpunkte_finden(scan, punkte)
+    return schleifen, sorted({s_ for s_, _ in wahl})
+
+
+def rand_glaetten(scan, punkte=None, iterationen=10, staerke=0.5):
+    """Boundary smooth: Randpunkte entlang ihrer Schleife glaetten (Taubin, schrumpft kaum);
+    ohne geklickte Punkte alle Raender."""
+    _kopf(scan)
+    schleifen, nummern = _auswahl_schleifen(scan, punkte)
+    xyz = scan.xyz.astype(np.float64).copy()
+    for nr in nummern:
+        L = schleifen[nr]
+        for _ in range(int(iterationen)):
+            for f in (staerke, -staerke - 0.02):
+                P = xyz[L]
+                xyz[L] = P + f * (0.5 * (np.roll(P, 1, 0) + np.roll(P, -1, 0)) - P)
+    return _netz_aus(scan, xyz, scan.tri), {"raender": len(nummern)}
+
+
+def ausfransungen_entfernen(scan, durchgaenge=5, winkel=45.0):
+    """Zacken am Rand weg: Dreiecke, deren zwei Randkanten sich unter weniger als winkel Grad treffen, und
+    lose Einzeldreiecke - wiederholt, weil darunter die naechste Zacke frei wird."""
+    _kopf(scan)
+    tri = scan.tri.astype(np.int64)
+    weg_gesamt = 0
+    for _ in range(int(durchgaenge)):
+        e = np.sort(np.concatenate([tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]]]), axis=1)
+        _, inv, zahl = np.unique(e, axis=0, return_inverse=True, return_counts=True)
+        randkante = (zahl[inv.ravel()] == 1).reshape(3, -1)       # Kante 0: 0-1, 1: 1-2, 2: 2-0
+        rand = randkante.sum(0)
+        # Zacke = zwei Randkanten treffen sich unter spitzem Winkel (echte Ecken bleiben)
+        P = scan.xyz[tri].astype(float)
+        spitz = np.zeros(len(tri), bool)
+        for ecke, (k1, k2) in ((1, (0, 1)), (2, (1, 2)), (0, (2, 0))):
+            beide = randkante[k1] & randkante[k2]
+            if beide.any():
+                a_ = P[beide, (ecke + 1) % 3] - P[beide, ecke]
+                b_ = P[beide, (ecke + 2) % 3] - P[beide, ecke]
+                c = np.einsum("ij,ij->i", a_, b_) / np.maximum(np.linalg.norm(a_, axis=1) * np.linalg.norm(b_, axis=1), 1e-12)
+                spitz[np.nonzero(beide)[0][c > math.cos(math.radians(winkel))]] = True
+        weg = (rand == 3) | spitz
+        if not weg.any():
+            break
+        weg_gesamt += int(weg.sum())
+        tri = tri[~weg]
+    if not len(tri):
+        raise ValueError("Es bliebe nichts übrig.")
+    return _netz_aus(scan, scan.xyz, tri), {"entfernt": weg_gesamt, "dreiecke": int(len(tri))}
+
+
+def rand_verlaengern(scan, punkte=None, laenge=2.0):
+    """Extend boundary: Rand in der Tangentialebene nach aussen um laenge verlaengern (ein Dreiecksstreifen)."""
+    _kopf(scan)
+    schleifen, nummern = _auswahl_schleifen(scan, punkte)
+    xyz = scan.xyz.astype(np.float64)
+    tri = scan.tri.astype(np.int64)
+    m = scan.zu_o3d_netz()
+    m.compute_vertex_normals()
+    N = np.asarray(m.vertex_normals)
+    neu, tris = [], []
+    n0 = len(xyz)
+    kl = _kantenlaenge(xyz, tri)
+    stufen = max(1, int(np.ceil(float(laenge) / kl)))           # in Ringen von hoechstens einer Kantenlaenge
+    for nr in nummern:
+        L = schleifen[nr]
+        P = xyz[L]
+        tang = np.roll(P, -1, 0) - np.roll(P, 1, 0)                 # Schleife folgt den Halbkanten u->v
+        aus = np.cross(tang, N[L])                                    # rechts der Laufrichtung = aussen
+        aus /= np.maximum(np.linalg.norm(aus, axis=1), 1e-12)[:, None]
+        for _ in range(3):                                            # Richtungen glaetten (Ecken)
+            aus = aus + 0.5 * (np.roll(aus, 1, 0) + np.roll(aus, -1, 0))
+            aus /= np.maximum(np.linalg.norm(aus, axis=1), 1e-12)[:, None]
+        vorher = L
+        for st in range(1, stufen + 1):
+            ring = n0 + len(neu) + np.arange(len(L))
+            neu.extend(P + aus * float(laenge) * st / stufen)
+            for j in range(len(L)):
+                u, v = vorher[j], vorher[(j + 1) % len(L)]
+                ru, rv = ring[j], ring[(j + 1) % len(L)]
+                tris += [[v, u, ru], [v, ru, rv]]
+            vorher = ring
+    alle = np.vstack([xyz, np.array(neu)])
+    t_neu = np.array(tris, np.int64)
+    return _netz_aus(scan, alle, np.vstack([tri, t_neu])), {"raender": len(nummern), "dreiecke": int(len(tri) + len(t_neu))}

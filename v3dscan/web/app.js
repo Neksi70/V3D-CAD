@@ -1019,6 +1019,7 @@ leinwand.addEventListener('pointerup', (ev) => {
   const [x, y] = lokalePos(ev);
   if (Math.hypot(x - klickStart[0], y - klickStart[1]) > 4) return;
   klickStart = null;
+  if (WF.haupt && WF.haupt.id === 'w-netz-rand') { randKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-kanten') { kanteKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-schale') { flaecheKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-messen') { messKlick(x, y); return; }
@@ -1459,6 +1460,7 @@ function netzParameter(block) {
     d.nummern = S.loecher.liste.filter((l) => l.gewaehlt).map((l) => l.nr);
     if (!d.nummern.length) throw new Error('Kein Loch gewählt.');
   }
+  if (w === 'rand') d.punkte = S.randPunkte.map((q) => [q.x, q.y, q.z]);
   if (w === 'beschneiden') {
     if (S.ebenePunkte.length !== 3) throw new Error('Erst 3 Punkte für die Schnittebene setzen.');
     d.punkte = S.ebenePunkte;
@@ -1472,6 +1474,8 @@ function berichtText(b) {
   if (b.dreiecke !== undefined) teile.push(`${b.dreiecke.toLocaleString('de-DE')} Dreiecke`);
   if (b.dreiecke_vorher !== undefined) teile.push(`vorher ${b.dreiecke_vorher.toLocaleString('de-DE')}`);
   if (b.gefuellt !== undefined) teile.push(`${b.gefuellt} Löcher gefüllt`);
+  if (b.entfernt !== undefined) teile.push(`${b.entfernt} Zacken entfernt`);
+  if (b.raender !== undefined) teile.push(`${b.raender} Rand/Ränder`);
   if (b.dreiecke_nachher !== undefined) teile.push(`nachher ${b.dreiecke_nachher.toLocaleString('de-DE')}`);
   if (b.abweichung_median !== undefined) teile.push(`Abweichung Median ${zahlText(b.abweichung_median, 4)} · 95 % unter ${zahlText(b.abweichung_p95, 4)} · max ${zahlText(b.abweichung_max, 3)} mm`);
   return teile.join(' · ');
@@ -1497,6 +1501,7 @@ async function netzAnwenden(block) {
   $('#netzErgebnis').hidden = true;
   if (j.neu) { S.aktiv = j.neu; listeZeichnen(); }
   meldung(`Übernommen: ${berichtText(j.bericht)}`, 'ok');
+  if (d.werkzeug === 'rand') { S.randPunkte = []; randZeichnen(); }
   if (d.werkzeug === 'loecher' || d.werkzeug === 'reparieren') await netzAnalyse();
 }
 
@@ -1504,6 +1509,7 @@ async function netzZuruecksetzen() {
   for (const e of S.scans.values()) netzVorschauWeg(e.id);
   $$('section.laeuft').forEach((x) => x.classList.remove('laeuft'));
   $('#netzErgebnis').hidden = true;
+  if (S.randPunkte && S.randPunkte.length) { S.randPunkte = []; randZeichnen(); }
   await api('netz/verwerfen', {});
 }
 
@@ -4954,3 +4960,40 @@ $('#geArt').addEventListener('change', () => {
   $$('[data-ge]').forEach((e) => { e.hidden = !e.dataset.ge.split(' ').includes(a); });
 });
 $('#geArt').dispatchEvent(new Event('change'));
+
+// Netzrand bearbeiten (v1.3): Randpunkte anklicken
+S.randPunkte = [];
+let randGruppe = null;
+function randZeichnen() {
+  objektEntsorgen(randGruppe);
+  randGruppe = new THREE.Group();
+  S.randPunkte.forEach((p, i) => {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: markerTextur(String(i + 1), '#d4237a'), depthTest: false, sizeAttenuation: false }));
+    sp.position.copy(p); sp.renderOrder = 10; randGruppe.add(sp);
+  });
+  messGruppe.add(randGruppe);
+  markerGroesse();
+  $('#randPunkteInfo').textContent = `${S.randPunkte.length} Randpunkt(e) gewählt` +
+    (['glaetten', 'verlaengern'].includes($('#randArt').value) ? ' – ohne Punkt: alle Ränder' : '');
+}
+function randKlick(x, y) {
+  const t = oberflaechePunkt(x, y, { koerper: false });
+  if (!t) { status('Kein Netz an dieser Stelle.'); return; }
+  const zwei = ['bucht', 'bruecke'].includes($('#randArt').value);
+  if (zwei && S.randPunkte.length >= 2) S.randPunkte = [];
+  S.randPunkte.push(t.pos.clone());
+  randZeichnen();
+}
+$('#randArt').addEventListener('change', () => {
+  const a = $('#randArt').value;
+  $$('[data-rand]').forEach((e) => { e.hidden = e.dataset.rand !== a; });
+  $('#randHilfe').textContent = {
+    bucht: 'Zwei Punkte am Rand anklicken – der kürzere Randbogen dazwischen wird gerade geschlossen und gefüllt.',
+    bruecke: 'Zwei Punkte am Rand desselben Lochs anklicken – ein Steg teilt das Loch in zwei kleinere.',
+    glaetten: 'Rand anklicken (oder nichts wählen = alle Ränder) – glättet den Randverlauf.',
+    ausfransen: 'Entfernt spitze Zacken am Rand (Dreiecke mit zwei Randkanten).',
+    verlaengern: 'Rand anklicken (oder nichts = alle) – setzt einen Streifen in der Tangentialebene an. An einspringenden Ecken kurz halten.',
+  }[a];
+  S.randPunkte = []; randZeichnen();
+});
+$('#randArt').dispatchEvent(new Event('change'));
