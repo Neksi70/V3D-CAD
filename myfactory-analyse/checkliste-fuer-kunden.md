@@ -36,6 +36,8 @@ Nur **Strukturen**, keine Inhalte:
 
 Ich notiere **keine** Namen, Adressen, Preise einzelner Kunden oder Belegsummen.
 
+**Zum KI-Assistenten:** Bei der Entwicklung hilft mir ein KI-Assistent. Er sieht nur Masken **ohne** personenbezogene Daten (Konfiguration, Belegarten, leere Eingabemasken). Kunden- und Lieferantenlisten schaue ich mir allein an und gebe nur den Aufbau weiter. Die Import-Programme für die Datenübernahme entstehen mit erfundenen Testdaten. Deine echten Daten laufen ohne den Assistenten durch (siehe AVV, Anlage 3).
+
 ## 5. Später: Datenübernahme
 Wenn das neue System steht, exportierst **du** deine Daten. Wir übernehmen sie dann in einem Rutsch:
 - [ ] Kunden, Lieferanten, Ansprechpartner (Stammdatenlisten → Excel-Export)

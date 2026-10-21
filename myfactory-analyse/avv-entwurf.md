@@ -64,10 +64,9 @@ Auftraggeber                                      Auftragnehmer
 | Anbieter | Leistung | Ort |
 |---|---|---|
 | [Hoster, z. B. netcup GmbH] | Server für Ersatzlösung und Testdaten | Deutschland |
-| Anthropic (KI-Assistent „Claude“) | Unterstützung bei Analyse und Entwicklung: Bildschirminhalte und Dateien, die der Assistent ansieht, werden an den Anbieter übertragen | USA (EU-Standardvertragsklauseln / Data Privacy Framework – **vorher prüfen**) |
 
-> **Wichtig zu Anlage 2:** Wenn ich (Claude) mich in seinem myfactory umsehe, werden die angezeigten Bildschirminhalte an Anthropic übertragen. Zwei saubere Möglichkeiten:
-> 1. **Offen regeln:** Anthropic wie oben als Unterauftragsverarbeiter aufnehmen. Der Bekannte stimmt bewusst zu; die passenden Vertragsunterlagen (DPA) von Anthropic dazulegen.
-> 2. **Vermeiden:** Ich schaue nur Masken an, auf denen keine personenbezogenen Daten stehen, etwa Konfiguration, Belegarten, Grundlagen und leere Neuanlage-Masken. Kundenlisten öffnest du selbst und beschreibst mir nur den Aufbau. Bei Migrationsdaten verarbeite ich keine Echtdaten, sondern schreibe nur die Import-Skripte. Die laufen dann bei dir auf dem Server.
->
-> Variante 2 ist datenschutzrechtlich am einfachsten und reicht für unser Ziel fast vollständig.
+## Anlage 3 – Einsatz von KI-Werkzeugen
+Der Auftragnehmer nutzt bei der Entwicklung einen KI-Assistenten (Anbieter außerhalb der EU). **Personenbezogene Daten des Auftraggebers werden diesem Assistenten nicht zugänglich gemacht.** Im Einzelnen:
+- Mit dem Assistenten werden nur Programmbereiche ohne personenbezogene Inhalte angesehen: Konfiguration, Belegarten, Nummernkreise, Grundlagen, leere Neuanlage-Masken und Hilfe.
+- Masken und Listen mit Kunden-, Lieferanten- oder Mitarbeiterdaten öffnet nur der Auftragnehmer selbst, ohne Assistenten. Weitergegeben werden nur der Aufbau (Spalten, Felder) und anonyme Mengenangaben.
+- Für die Datenübernahme erstellt der Assistent nur Programme (Import-Skripte). Er arbeitet dabei mit erfundenen Testdaten. Ausgeführt werden die Skripte mit den Echtdaten ohne den Assistenten, auf dem Server nach Anlage 1.
