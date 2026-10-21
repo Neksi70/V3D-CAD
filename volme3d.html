@@ -36208,6 +36208,7 @@ canvas.addEventListener('mousedown', e => {
       // Start drag if object is selected
       if (selectedObjs.includes(hitObj) || selectedObjs.length > 0) {
         isDrag = true;
+        if (_frSceneTris() > 100000) _fr('ziehen');
         _snapSticky = null; _magnetBypass = false;   // frischer Fang pro Zug
         dragStart = { x: e.clientX, y: e.clientY };
         dragData = selectedObjs.map(o => ({
@@ -36429,6 +36430,7 @@ window.addEventListener('mousemove', e => {
 window.addEventListener('mouseup', e => {
   if (e.button === 2 || e.button === 1) { isOrbit = false; isPan = false; }
   if (e.button === 0) {
+    if (isDrag && _frSceneTris() > 100000) _fr('ziehen-ende');
     isDrag = false; dragData = null;
     if (_lblCarry) _lblCarryDrop(e);
     // Auf der Flaeche geglitten? Dann NICHT neu heften — das wuerde zentrieren.
@@ -39269,7 +39271,7 @@ function _frGpu() {
 function _frSceneTris() { let n = 0; try { objects.forEach(o => o.traverse(c => { if (c.isMesh && !c.userData.isEdgeLines) n += _geoTriCount(c.geometry); })); } catch (e) {} return Math.round(n); }
 function _frStart() {
   let alt = null; try { alt = JSON.parse(localStorage.getItem(_FR_KEY) || 'null'); } catch (e) {}
-  if (alt && !alt.sauber && Array.isArray(alt.ev) && alt.ev.some(e => /^(import|gross|haenger|grafik|fehler|bib|auswahl|speichern|bild)/.test(e.k))) {
+  if (alt && !alt.sauber && Array.isArray(alt.ev) && alt.ev.some(e => /^(import|gross|haenger|grafik|fehler|bib|auswahl|speichern|bild|ziehen)/.test(e.k))) {
     try { fetch('/api/absturz', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(alt), keepalive: true }).catch(() => {}); } catch (e) {}
   }
   _frLog = { sid: Math.random().toString(36).slice(2, 10), start: new Date().toISOString(), ver: typeof VOLME3D_VERSION !== 'undefined' ? VOLME3D_VERSION : '?',
@@ -39286,7 +39288,7 @@ function _frStart() {
   // Lebenszeichen alle 2 s; bei großen Szenen alle 10 s Speicher + gezeichnete Dreiecke
   let n = 0;
   setInterval(() => {
-    if (++n % 5 === 0) { const t = _frSceneTris(); if (t > BIGMESH_TRIS) _fr('bild', { szene: t, gezeichnet: renderer.info.render.triangles, aufrufe: renderer.info.render.calls }); }
+    if (++n % 5 === 0) { const t = _frSceneTris(); if (t > 100000) _fr('bild', { szene: t, gezeichnet: renderer.info.render.triangles, aufrufe: renderer.info.render.calls }); }
     _frSave();
   }, 2000);
 }
@@ -42275,7 +42277,8 @@ function _doAutoSave() {
     return;
   }
   _autoSaveBusy = true;
-  const _frT = _frSceneTris() > BIGMESH_TRIS ? performance.now() : 0;
+  // ab 100k Dreiecken Schritt für Schritt mitschreiben (Volkers Absturz kam genau 30 s nach dem Start)
+  const _frT = _frSceneTris() > 100000 ? performance.now() : 0;
   if (_frT) _fr('speichern');
   try {
     if (!currentDesignId) {
@@ -42285,10 +42288,13 @@ function _doAutoSave() {
     const meta = dsGetMeta(currentDesignId);
     const name = meta?.name || _newDesignName();
     const snap = _sceneSnapshot();
+    if (_frT) _fr('speichern-bild');
     const thumb = captureThumbnail();
+    if (_frT) _fr('speichern-bild-fertig');
     // still (kein Nag-Popup); gzip im Worker — nur beim Verlassen des Tabs synchron, sonst ginge es verloren
     if (document.visibilityState === 'hidden') dsSaveDesign(currentDesignId, snap, thumb, name, true);
     else dsSaveDesignAsync(currentDesignId, snap, thumb, name);
+    if (_frT) _fr('speichern-json', { mb: +((_jsonMemo.get(snap) || '').length / 1e6).toFixed(1) });
     _bakSnapshot(currentDesignId, snap, false, { thumb });   // async, fire & forget
     _updateDesignLabel(name);
     _flashSaveDot();
@@ -70241,7 +70247,7 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.247';
+const VOLME3D_VERSION = '1.18.248';
 const VOLME3D_CHANGELOG = [
   { version:'1.18.247', date:'2026-10-21', changes:[
     ['🩺','<b>Absturz-Protokoll für große Modelle.</b> Damit wir Abstürze nach dem Laden großer Teile finden, die sich auf unserem Server nicht nachstellen lassen, schreibt V3D CAD ab jetzt still mit, was dabei passiert (Schritte, Speicherbedarf, Grafikchip, Hänger). Stürzt die Seite ab, geht dieses Protokoll beim nächsten Start einmal an uns – keine Modelldaten, keine Dateien, nur der Ablauf. Bei normalem Arbeiten wird nichts verschickt.'],
