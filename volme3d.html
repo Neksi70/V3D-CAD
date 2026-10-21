@@ -3706,7 +3706,10 @@ const firebaseConfig = {
           <button class="vtb on" data-v="auto" onclick="_sfnSet('mode','auto')" title="Finnen mit Zinken unter den Überhängen, dazu Keile unter Flächen, die keine Wand erreicht">Automatisch</button>
           <button class="vtb" data-v="full" onclick="_sfnSet('mode','full')" title="Wie Automatisch, danach weitere Wände unter allem Roten, das noch frei ist — auch unter Inseln, die in der Luft beginnen">Volle Abdeckung</button>
           <button class="vtb" data-v="prop" onclick="_sfnSet('mode','prop')" title="Nur schlichte abbrechbare Wände unter den Überhängen, ohne Keile">Nur Wände</button>
+          <button class="vtb" data-v="draw" onclick="_sfnSet('mode','draw')" title="Keine automatischen Finnen — nur die Wände, die du selbst zeichnest (dazu Bett-Pad)">✏️ Von Hand</button>
         </div>
+        <div class="vrow"><label title="Zwei Klicks auf die Unterseite eines Überhangs = eine Wand bis zur Platte. Geht in jedem Modus, als Ergänzung zu den automatischen Finnen.">Von Hand</label><button class="btn" id="sfn-draw-btn" style="flex:1;font-size:12px;padding:5px 8px" onclick="_sfnDrawStart()">✏️ Wand zeichnen</button><button class="btn" style="font-size:12px;padding:5px 8px;margin-left:6px" onclick="_sfnWallUndo()" title="Letzte gezeichnete Wand entfernen">↶</button><button class="btn" style="font-size:12px;padding:5px 8px;margin-left:6px" onclick="_sfnWallsClear()" title="Alle gezeichneten Wände entfernen">🗑</button></div>
+        <div class="g3info" id="sfn-walls-n" style="margin-top:0;padding-top:0;border:0">noch keine Wand von Hand</div>
         <div class="vrow" id="sfn-row-cov"><label title="Wie dicht die Finnen unter breiten Flächen stehen (nur Automatisch/Nur Wände)">Dichte</label> <input type="range" id="sfn-cov" min="0" max="100" step="5" value="50" oninput="_sfnSet('coverage',this.value)"><span class="vv" id="sfnv-cov">50</span><span class="vu">%</span></div>
         <span class="vsec">3 · Drucker</span>
         <div class="vrow"><label title="Düsendurchmesser — die Wandstärken der Finnen richten sich danach">Düse</label> <select id="sfn-nozzle" onchange="_sfnSet('nozzle',this.value)" style="flex:1;padding:4px 6px"><option>0.2</option><option>0.25</option><option selected>0.4</option><option>0.6</option><option>0.8</option><option>1.0</option></select><span class="vu">mm</span></div>
@@ -28126,6 +28129,7 @@ let _bndObj  = null;     // Körper im Dialog
 let _bndSrc  = null;     // Ausgangsnetz (Float32Array, Skalierung eingebacken)
 let _bndBack = null;     // Zustand vor dem Biegen (für Abbrechen)
 let _bndPick = false;    // wartet auf Klick auf den Zielkörper
+let _sfnPick = false;    // Stützfinnen: Wand von Hand zeichnen (_sfnPickClick)
 let _bndZiel = null;     // gemessener Zielkörper { modus, R, N, A, C }
 const _bndAchsName = ['X', 'Y', 'Z'];
 
@@ -32138,8 +32142,8 @@ async function _sfnPreview() {
   if (info) info.textContent = 'Finnen werden berechnet…';
   try {
     await _sfnAnalyze();
-    const opts = _sfnOpts(), key = _sfnSoupKey + '|' + JSON.stringify(opts);
-    const r = await _sfnCall('build', { threshold: 45, opts });
+    const opts = _sfnOpts(), walls = _sfnWallsMm(), key = _sfnSoupKey + '|' + JSON.stringify(opts) + '|' + JSON.stringify(walls);
+    const r = await _sfnCall('build', { threshold: 45, opts, walls });
     if (gen !== _sfnGen || !_sfnObj) return null;
     _sfnDrop('prev');
     if (r.tris.length) { _sfnPrev = _sfnHelperMesh(r.tris, '#ff9800', 1); scene.add(_sfnPrev); }
@@ -32155,8 +32159,11 @@ async function _sfnPreview() {
 function _sfnShowInfo(r) {
   const el = document.getElementById('sfn-info'); if (!el) return;
   const t = [];
-  if (!r.regions) t.push('Nichts zu stützen.');
-  else {
+  const wv = r.walls || [], wOk = wv.filter(w => w.ok).length, wBad = wv.filter(w => !w.ok);
+  if (wv.length) t.push('<b>' + wOk + ' von ' + wv.length + ' Wänden von Hand</b> gebaut' +
+    (wBad.length ? ' — <span style="color:#c62828">' + wBad.map(w => _stlEsc(w.grund)).join('; ') + '</span>' : ''));
+  if (!r.regions && !wv.length) t.push('Nichts zu stützen.');
+  else if (r.regions && r.fins + (r.braces || 0) > 0 || _sfnP.mode !== 'draw') {
     t.push('<b>' + r.fins + ' Finne' + (r.fins === 1 ? '' : 'n') + '</b>' + (r.tines ? ', ' + r.tines + ' Zinken' : '') +
            (r.braces ? ', ' + r.braces + ' Stabilisierungsrippe' + (r.braces === 1 ? '' : 'n') : '') + (r.pad ? ', Bett-Pad' : ''));
     if (r.volume) t.push('Stützmaterial ca. <b>' + (r.volume / 1000).toFixed(1).replace('.', ',') + ' cm³</b>');
@@ -32174,7 +32181,7 @@ function _sfnOpen() {
   if (o.userData.isHole) { notify('Eine Bohrung braucht keine Stützen — bitte einen Körper wählen', 'w'); return; }
   if (typeof Worker === 'undefined') { notify('Dieser Browser kann keine Hintergrund-Berechnung (Worker)', 'e'); return; }
   if (_sfnObj) _sfnClose();
-  _sfnObj = o; _sfnSoupKey = ''; _sfnSoup = null; _sfnLast = null; _sfnSug = null;
+  _sfnObj = o; _sfnSoupKey = ''; _sfnSoup = null; _sfnLast = null; _sfnSug = null; _sfnWalls = []; _sfnDrawUI();
   // Liegt das Teil nicht auf der Platte, rechnet der Kern es trotzdem aufgesetzt —
   // die Finnen kämen dann in der Luft an. Also gleich hinsetzen (mit Rückgängig).
   o.updateMatrixWorld(true);
@@ -32190,6 +32197,7 @@ function _sfnOpen() {
 function _sfnClose() {
   const m = document.getElementById('sfn-modal'); if (m) m.classList.remove('show');
   clearTimeout(_sfnTimer); _sfnGen++;
+  if (_sfnPick) _sfnDrawEnd();
   _sfnDrop('red'); _sfnDrop('prev');
   _sfnObj = null; _sfnSoup = null; _sfnSoupKey = ''; _sfnLast = null; _sfnSug = null;
 }
@@ -32270,7 +32278,7 @@ async function _sfnApply() {
   const btn = document.getElementById('sfn-go'); if (btn) btn.disabled = true;
   try {
     let L = _sfnLast;
-    const key = _sfnPoseKey(o) + '|' + JSON.stringify(_sfnOpts());
+    const key = _sfnPoseKey(o) + '|' + JSON.stringify(_sfnOpts()) + '|' + JSON.stringify(_sfnWallsMm());
     if (!L || L.key !== key) L = await _sfnPreview();
     if (!L) return;
     if (!L.tris.length) { notify('Keine Finnen nötig — das Teil druckt in dieser Lage ohne Stützen', 'ok'); _sfnClose(); return; }
@@ -32287,15 +32295,130 @@ async function _sfnApply() {
     const r = L.info;
     _sfnClose();
     selectObjs([o, m]); updateTree(); updateFP();
-    notify('🦈 ' + r.fins + ' Stützfinne' + (r.fins === 1 ? '' : 'n') + ' erzeugt — Teil + Finnen zusammen exportieren und im Slicer Stützstrukturen AUS', 'ok', 7000);
+    const nh = (r.walls || []).filter(w => w.ok).length;
+    notify('🦈 ' + (_sfnP.mode === 'draw' ? nh + ' Wand' + (nh === 1 ? '' : 'e') + ' von Hand' : r.fins + ' Stützfinne' + (r.fins === 1 ? '' : 'n') + (nh ? ' + ' + nh + ' von Hand' : '')) + ' erzeugt — Teil + Finnen zusammen exportieren und im Slicer Stützstrukturen AUS', 'ok', 7000);
   } finally { if (btn) btn.disabled = false; }
 }
+
+
+// ── Von Hand zeichnen ─────────────────────────────────────────────────────
+// Wie „Draw“ bei Support Fins: zwei Klicks auf die Unterseite eines Überhangs,
+// der Kern zieht dazwischen eine Wand bis auf die Platte (draw.js drawnWall),
+// mit denselben Zinken wie die automatischen Finnen. Die Endpunkte liegen im
+// Rahmen des KÖRPERS — gedreht oder verschoben, wandern die Wände mit und werden
+// für die neue Lage neu gerechnet (wie im Original).
+let _sfnWalls = [];       // [{ a: Vector3 (lokal), b: Vector3 (lokal) }]
+let _sfnStart = null;     // erster Klick der Wand im Bau (lokal)
+let _sfnGhost = null, _sfnDot = null, _sfnCur = null;
+let _sfnGhostBusy = false, _sfnGhostNext = null;
+
+// Weltpunkt (Szene) → Eingaberahmen des Workers (mm, Z oben), wie _moldCollectTris
+function _sfnToMm(v) { return [v.x * 10, -v.z * 10, v.y * 10]; }
+function _sfnWallsMm() {
+  const o = _sfnObj; o.updateMatrixWorld(true);
+  return _sfnWalls.map(w => [..._sfnToMm(o.localToWorld(w.a.clone())), ..._sfnToMm(o.localToWorld(w.b.clone()))]);
+}
+function _sfnMarker(color, r) {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12),
+    new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 }));
+  m.renderOrder = 5; m.raycast = () => {}; m.userData = { isSfnHelper: true };
+  scene.add(m); return m;
+}
+function _sfnDrawClear() {
+  for (const k of ['_sfnGhost', '_sfnDot', '_sfnCur']) {
+    const m = k === '_sfnGhost' ? _sfnGhost : k === '_sfnDot' ? _sfnDot : _sfnCur;
+    if (m) { scene.remove(m); m.geometry.dispose(); m.material.dispose(); }
+  }
+  _sfnGhost = _sfnDot = _sfnCur = null; _sfnStart = null; _sfnGhostNext = null;
+}
+function _sfnHit(e) {
+  const o = _sfnObj; if (!o) return null;
+  const isPart = (x) => { for (; x; x = x.parent) if (x === o) return true; return false; };
+  return pickObjects(e).find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines && isPart(h.object)) || null;
+}
+function _sfnDrawStart() {
+  if (!_sfnObj) return;
+  if (_sfnPick) { _sfnDrawEnd(); return; }
+  _sfnPick = true;
+  canvas.style.cursor = 'crosshair';
+  _sfnDrawUI();
+  const h = document.getElementById('hint');
+  h.innerHTML = '<b>Wand zeichnen:</b> Anfang und Ende auf der <b>Unterseite</b> des Überhangs anklicken (Ansicht dafür von unten drehen)' +
+                ' — <span style="font-size:10px">Esc = Abbrechen</span>';
+  h.classList.add('show');
+}
+function _sfnDrawEnd() {
+  _sfnPick = false; _sfnDrawClear();
+  canvas.style.cursor = '';
+  const h = document.getElementById('hint'); h.classList.remove('show'); h.innerHTML = '';
+  _sfnDrawUI();
+}
+function _sfnDrawUI() {
+  const b = document.getElementById('sfn-draw-btn');
+  if (b) { b.classList.toggle('pri', _sfnPick); b.textContent = _sfnPick ? '■ Zeichnen beenden' : '✏️ Wand zeichnen'; }
+  const n = document.getElementById('sfn-walls-n');
+  if (n) n.textContent = _sfnWalls.length ? _sfnWalls.length + ' Wand' + (_sfnWalls.length === 1 ? '' : 'e') + ' von Hand' : 'noch keine Wand von Hand';
+}
+function _sfnPickHover(e) {
+  const hit = _sfnHit(e);
+  if (!hit) { if (_sfnCur) _sfnCur.visible = false; return; }
+  const r = 0.06 * Math.max(0.5, Math.min(4, camera.position.distanceTo(hit.point) / 20));
+  if (!_sfnCur) _sfnCur = _sfnMarker(0x1e88e5, 1);
+  _sfnCur.scale.setScalar(r); _sfnCur.position.copy(hit.point); _sfnCur.visible = true;
+  if (_sfnStart) _sfnGhostAt(hit.point);
+}
+// Vorschau der Wand im Bau: höchstens eine Rechnung gleichzeitig, die jüngste gewinnt
+function _sfnGhostAt(p) {
+  _sfnGhostNext = p.clone();
+  if (_sfnGhostBusy) return;
+  _sfnGhostBusy = true;
+  (async () => {
+    try {
+      while (_sfnGhostNext && _sfnStart && _sfnObj) {
+        const q = _sfnGhostNext; _sfnGhostNext = null;
+        await _sfnLoad();
+        const a = _sfnToMm(_sfnObj.localToWorld(_sfnStart.clone())), b = _sfnToMm(q);
+        const r = await _sfnCall('ghost', { a, b, threshold: 45 });
+        if (!_sfnStart) break;
+        if (_sfnGhost) { scene.remove(_sfnGhost); _sfnGhost.geometry.dispose(); _sfnGhost.material.dispose(); _sfnGhost = null; }
+        if (r.ok2 && r.tris.length) { _sfnGhost = _sfnHelperMesh(r.tris, '#1e88e5', 0.55); scene.add(_sfnGhost); }
+      }
+    } catch (err) { console.warn('[stuetzfinnen] Vorschau', err); }
+    finally { _sfnGhostBusy = false; }
+  })();
+}
+async function _sfnPickClick(e) {
+  const hit = _sfnHit(e);
+  if (!hit) { notify('Bitte auf das Teil klicken', 'w'); return; }
+  const o = _sfnObj; o.updateMatrixWorld(true);
+  const local = o.worldToLocal(hit.point.clone());
+  if (!_sfnStart) {
+    _sfnStart = local;
+    if (!_sfnDot) _sfnDot = _sfnMarker(0xff6d00, 1);
+    _sfnDot.scale.setScalar(_sfnCur ? _sfnCur.scale.x * 1.3 : 0.08); _sfnDot.position.copy(hit.point);
+    return;
+  }
+  // Zweiter Punkt: erst prüfen, ob die Wand baubar ist — sonst sagen, warum
+  try {
+    await _sfnLoad();
+    const r = await _sfnCall('ghost', { a: _sfnToMm(o.localToWorld(_sfnStart.clone())), b: _sfnToMm(hit.point), threshold: 45 });
+    if (!r.ok2) { notify('Wand nicht möglich: ' + r.grund, 'w', 5000); _sfnDrawClear(); return; }
+    _sfnWalls.push({ a: _sfnStart.clone(), b: local });
+    notify('Wand gesetzt (' + Math.round(r.length) + ' mm lang, ' + Math.round(r.height) + ' mm hoch)', 'ok');
+  } catch (err) { notify('Wand nicht möglich: ' + (err.message || err), 'w'); }
+  const keep = _sfnCur; _sfnCur = null;
+  _sfnDrawClear(); _sfnCur = keep;
+  _sfnDrawUI(); _sfnPlanPreview(0);
+}
+function _sfnWallUndo() { if (!_sfnWalls.length) return; _sfnWalls.pop(); _sfnDrawUI(); _sfnPlanPreview(0); }
+function _sfnWallsClear() { if (!_sfnWalls.length) return; _sfnWalls = []; _sfnDrawUI(); _sfnPlanPreview(0); }
 
 // Prüf-Hook für Headless-Tests
 function _sfnDbg() {
   return { open: !!_sfnObj, red: _sfnRed ? _sfnRed.geometry.attributes.position.count / 3 : 0,
            prev: _sfnPrev ? _sfnPrev.geometry.attributes.position.count / 3 : 0,
-           info: _sfnLast ? { ..._sfnLast.info, tris: undefined } : null, p: { ..._sfnP } };
+           info: _sfnLast ? { ..._sfnLast.info, tris: undefined } : null, p: { ..._sfnP },
+           pick: _sfnPick, walls: _sfnWalls.length, start: !!_sfnStart, ghost: _sfnGhost ? _sfnGhost.geometry.attributes.position.count / 3 : 0 };
 }
 
 function mirrorObj(axis) {
@@ -35479,6 +35602,7 @@ canvas.addEventListener('mousedown', e => {
     return;
   }
   if (_bndPick) { _bndZielKlick(e); return; }
+  if (_sfnPick) { _sfnPickClick(e); return; }
   if (_lblPick) { _lblPickDown(e); return; }
   if (_fdMode) { _fdClick(e); return; }
   if (_shellMode) {
@@ -35590,6 +35714,7 @@ window.addEventListener('mousemove', e => {
   }
   if (_fdMode) _fdHover(e);
   if (_lblPick) _lblPickHover(e);
+  if (_sfnPick) _sfnPickHover(e);
   if (_shellMode) {
     const hits = pickObjects(e);
     const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines && h.object === _shellObj);
@@ -36476,6 +36601,7 @@ window.addEventListener('keydown', e => {
     }
     if (_revolveMode) { exitRevolveMode(); return; }
     if (_bndPick) { _bndZielEnde(); notify('Anlegen abgebrochen', 'ok'); return; }
+    if (_sfnPick) { if (_sfnStart) { const k = _sfnCur; _sfnCur = null; _sfnDrawClear(); _sfnCur = k; } else _sfnDrawEnd(); return; }
     if (_lblPick) { const m = _lblPick; _lblPickEnd(); if (m.parent) selectObjs([m]); notify('Text liegt frei — auf ein Bauteil ziehen heftet ihn an', 'ok'); return; }
     if (_fdMode) { exitFaceDownMode(); return; }
     if (_shellMode) { exitShellMode(); return; }
@@ -39674,7 +39800,7 @@ function _mgBuild() {
 function _mgBusy() {
   if (_sk.active || _pp.active || _lf.active) return true;
   if (workplaneMode || _edgeMode || _shellMode || _revolveMode || _plugMode || _fdMode) return true;
-  if (_bndPick || _lblPick) return true;
+  if (_bndPick || _lblPick || _sfnPick) return true;
   if (_measureMode || specialMode === 'align') return true;
   try {
     if (_cut.active || _eraser.active || _sculpt.active || _paint.active || _mmu.active) return true;
@@ -39962,7 +40088,7 @@ function animate() {
   _detectResizeForTexture();
   _updateEdgeBevelHandleDOM();
   _mgUpdate();
-  _pickMuteHandles(workplaneMode || _shellMode || _fdMode || _bndPick || _lblPick);
+  _pickMuteHandles(workplaneMode || _shellMode || _fdMode || _bndPick || _lblPick || _sfnPick);
   renderer.render(scene, camera);
 }
 
@@ -68936,8 +69062,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.223';
+const VOLME3D_VERSION = '1.18.224';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.224', date:'2026-10-21', changes:[
+    ['✏️','<b>Stützfinnen von Hand zeichnen.</b> Im Stützfinnen-Panel setzt <b>✏️ Wand zeichnen</b> eine Wand genau dort, wo du sie willst: Anfang und Ende auf der Unterseite eines Überhangs anklicken (Ansicht von unten drehen), eine blaue Vorschau zeigt die Wand schon beim Ziehen. Sie reicht bis auf die Platte und greift mit denselben Zinken wie die automatischen Finnen. Das geht als Ergänzung in jedem Modus oder mit <b>✏️ Von Hand</b> ganz ohne automatische Finnen. Geht eine Wand nicht, steht dabei, warum. ↶ nimmt die letzte weg, 🗑 alle, Esc bricht ab. Gedrehte Teile nehmen ihre Wände mit.'],
+  ]},
   { version:'1.18.223', date:'2026-10-21', changes:[
     ['🦈','<b>Neu: 🦈 Stützfinnen – Stützstrukturen neu gedacht.</b> Statt Slicer-Stützen baut V3D CAD dünne, abbrechbare Wände direkt ins Modell. Sie haften mit einlagigen Zinken am Teil und stehen auf einem Bett-Pad. Überhänge werden rot gezeigt, <b>🧭 Lage vorschlagen</b> sucht eine gut druckbare Lage, und Düse, Schichthöhe, Abstand, Halt, Aussparungen sowie Rippen für hohe Teile sind einstellbar. Die Finnen werden ein eigener Körper: Teil und Finnen zusammen exportieren und im Slicer <b>ohne Stützstrukturen</b> drucken, auf jedem Drucker. Der Knopf sitzt neben <b>⊥ Aufstellen</b>. Rechenkern: Support Fins (printfins.com, MIT-Lizenz).'],
   ]},

@@ -84,6 +84,68 @@ try {
   await pg.evaluate(() => undo());
   ok('Rückgängig nimmt die Finnen weg', await pg.evaluate(() => objects.length) === n0);
 
+  // Von Hand zeichnen: Ansicht von unten, zwei echte Klicks unter den LINKEN Arm
+  await pg.evaluate(() => { selectObjs([objects.find(o => o.userData.name === 'T-Test')]); _sfnOpen(); });
+  await pg.waitForFunction(() => _sfnDbg().info, { timeout: 60000 });
+  await pg.evaluate(() => { _sfnSet('mode', 'draw'); orbitTarget.set(-0.5, 1.5, 0); sph.theta = 0; sph.phi = Math.PI - 0.25; sph.r = 9; sph2cam(); });
+  await pg.waitForFunction(() => _sfnDbg().info, { timeout: 60000 });
+  const scr = (x, y, z) => pg.evaluate(([x, y, z]) => {
+    const v = new THREE.Vector3(x, y, z).project(camera), r = canvas.getBoundingClientRect();
+    return [r.left + (v.x + 1) / 2 * r.width, r.top + (1 - v.y) / 2 * r.height];
+  }, [x, y, z]);
+  await pg.evaluate(() => _sfnDrawStart());
+  const p1 = await scr(-1.3, 2.0, 0), p2 = await scr(-0.3, 2.0, 0), pm = await scr(-0.6, 2.0, 0);
+  await pg.mouse.move(p1[0], p1[1]); await pg.mouse.down(); await pg.mouse.up();
+  ok('erster Punkt gesetzt', await pg.evaluate(() => _sfnDbg().start));
+  await pg.mouse.move(pm[0], pm[1], { steps: 4 });
+  await pg.waitForFunction(() => _sfnDbg().ghost > 0, { timeout: 20000 }).catch(() => {});
+  ok('Live-Vorschau der Wand', await pg.evaluate(() => _sfnDbg().ghost > 0));
+  await pg.mouse.move(p2[0], p2[1]); await pg.mouse.down(); await pg.mouse.up();
+  await pg.waitForFunction(() => _sfnDbg().walls === 1 && _sfnDbg().info && (_sfnDbg().info.walls || []).length === 1, { timeout: 30000 }).catch(() => {});
+  const dw = await pg.evaluate(() => _sfnDbg());
+  ok('Wand von Hand gebaut', dw.walls === 1 && dw.info && dw.info.walls && dw.info.walls[0].ok, dw.info && dw.info.walls);
+  // zu kurze Wand wird abgelehnt und nicht gezählt
+  const q1 = await scr(-0.8, 2.0, 0), q2 = await scr(-0.79, 2.0, 0);
+  await pg.mouse.move(q1[0], q1[1]); await pg.mouse.down(); await pg.mouse.up();
+  await pg.mouse.move(q2[0], q2[1]); await pg.mouse.down(); await pg.mouse.up();
+  await pg.waitForTimeout(800);
+  ok('zu kurze Wand abgelehnt', await pg.evaluate(() => _sfnDbg().walls) === 1);
+  await pg.keyboard.press('Escape');
+  ok('Esc beendet das Zeichnen', !(await pg.evaluate(() => _sfnDbg().pick)));
+  await pg.evaluate(() => _sfnApply());
+  const h = await pg.evaluate(() => {
+    const m = objects[objects.length - 1]; m.updateMatrixWorld(true);
+    const pos = m.geometry.attributes.position, v = new THREE.Vector3();
+    let links = 0, rechts = 0, maxH = 0;
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+      const x = v.x * 10, hh = v.y * 10;
+      if (hh > 1) { if (x < -1) links++; if (x > 11) rechts++; maxH = Math.max(maxH, hh); }
+    }
+    return { name: m.userData.name, links, rechts, maxH };
+  });
+  ok('Hand-Wand steht nur unter dem linken Arm', /Stützfinnen/.test(h.name) && h.links > 0 && h.rechts === 0, h);
+  ok('Hand-Wand endet unter dem Arm', h.maxH > 18 && h.maxH < 20.01, h.maxH);
+  await pg.evaluate(() => { undo(); _sfnP.mode = 'auto'; });
+
+  // Runde Unterseite: Kuppeldecke aus den Testteilen von Support Fins (tests/fixtures,
+  // MIT). Dort müssen Zinken greifen — an der flachen T-Decke gibt es keine (by design:
+  // eine waagrechte Noppe findet unter einer ebenen Decke keinen Halt).
+  const { readFileSync } = await import('node:fs');
+  const dome = Array.from(readFileSync(new global.URL('./fixtures/dome_ceiling.stl', import.meta.url)));
+  await pg.evaluate((bytes) => {
+    _sfnClose();
+    const u8 = new Uint8Array(bytes), dv = new DataView(u8.buffer), n = dv.getUint32(80, true), pos = new Float32Array(n * 9);
+    for (let i = 0; i < n; i++) for (let k = 0; k < 9; k++) pos[i * 9 + k] = dv.getFloat32(84 + i * 50 + 12 + k * 4, true);
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const m = _moldSceneMesh(g, 'Kuppel-Test'); m.position.x += 8; m.updateMatrixWorld(true);
+    m.position.y -= getMeshBox(m).min.y; _updateObjEdgeLines(m); selectObjs([m]); _sfnOpen();
+  }, dome);
+  await pg.waitForFunction(() => _sfnDbg().info, { timeout: 60000 });
+  const kg = await pg.evaluate(() => _sfnDbg().info);
+  ok('Kuppeldecke: Finnen mit Zinken', kg.fins >= 1 && kg.tines > 0, { fins: kg.fins, tines: kg.tines, unserved: kg.unserved });
+  await pg.evaluate(() => { _sfnClose(); const k = objects.find(o => o.userData.name === 'Kuppel-Test'); scene.remove(k); objects.splice(objects.indexOf(k), 1); });
+
   // Lage vorschlagen
   await pg.evaluate(() => { selectObjs([objects.find(o => o.userData.name === 'T-Test')]); _sfnOpen(); });
   await pg.waitForFunction(() => _sfnDbg().info, { timeout: 60000 });
