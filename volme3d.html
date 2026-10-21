@@ -1175,6 +1175,11 @@ body.devmode .dev-only{display:flex!important}
 #s2c-list{margin:6px 18px 6px 36px;padding:0;font-size:12.5px;line-height:1.6;max-height:240px;overflow:auto;color:#333}
 #s2c-list li.sub{list-style:none;margin-left:-8px;color:#888}
 #s2c-stat{padding:4px 18px 10px;font-size:12px;color:#888}
+#s2c-bar{margin:8px 18px 2px;height:10px;border-radius:6px;background:#eef0f4;overflow:hidden;position:relative}
+#s2c-bar-in{height:100%;width:0;border-radius:6px;background:linear-gradient(90deg,var(--acc),#ff9a5a);transition:width .35s ease}
+#s2c-bar.fehler #s2c-bar-in{background:#dc2626}
+#s2c-bar.fertig #s2c-bar-in{background:#16a34a}
+#s2c-proz{float:right;font-weight:700;color:#555}
 #s2c-erg{margin:4px 18px 10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;font-size:12.5px;line-height:1.6;display:none}
 #s2c-erg b.gut{color:#16a34a}#s2c-erg b.mittel{color:#d97706}#s2c-erg b.grob{color:#dc2626}
 #s2c-foot{display:flex;gap:8px;padding:0 18px 16px;justify-content:flex-end}
@@ -2860,6 +2865,7 @@ const firebaseConfig = {
     <div id="s2c-hdr">🪄 Scan → CAD</div>
     <div id="s2c-msg">Der Scan wird bereinigt und ausgerichtet; dann wird ausprobiert, ob er ein Drehteil, ein Prisma (Stufen, Bohrungen) oder eine Freiform ist. Der genaueste Körper wird hier mit Skizzen im Verlauf nachgebaut. Dauert meist 1–2 Minuten.</div>
     <ol id="s2c-list"></ol>
+    <div id="s2c-bar"><div id="s2c-bar-in"></div></div>
     <div id="s2c-stat"></div>
     <div id="s2c-erg"></div>
     <div id="s2c-foot">
@@ -38967,6 +38973,43 @@ function _s2cZeigen(zeilen) {
   }
   ol.scrollTop = ol.scrollHeight;
 }
+// Ladebalken: Hochladen 0–5 % (echte Bytes), Rechnen nach gemeldeten Schritten des Dienstes,
+// zwischen zwei Schritten kriecht er langsam auf den nächsten zu (bleibt nie stehen), Bauen 97–100 %.
+const _S2C_STUFEN = [[/^Netz vereinfacht/, 7], [/^Bereinigt|^Tisch/, 8], [/^Formen erkennen/, 10], [/^Ausgerichtet/, 22],
+  [/^Erkannt/, 34], [/^Drehteil|Drehteil:/, 44], [/^Prisma entlang Z|Prisma Z nicht/, 56], [/^Prisma entlang X|Prisma X nicht/, 66],
+  [/^Prisma entlang Y|Prisma Y nicht/, 75], [/^Bester Kandidat/, 78], [/^Erkannte Formen/, 82], [/^Freiform/, 90], [/^Ergebnis/, 97]];
+function _s2cBalken(lauf) {
+  const bar = document.getElementById('s2c-bar'), inn = document.getElementById('s2c-bar-in');
+  const b = { ziel: 0, zeigt: 0, uhr: null,
+    setze(p) { this.ziel = Math.max(this.ziel, Math.min(100, p)); },
+    aus(zeilen) { let p = 5; for (const z of zeilen) for (const [re, w] of _S2C_STUFEN) if (re.test(z.trim())) p = Math.max(p, w); this.setze(p); },
+    malen() {
+      const naechst = (_S2C_STUFEN.find(([, w]) => w > this.ziel) || [0, 100])[1];
+      if (this.zeigt < this.ziel) this.zeigt = this.ziel;
+      else if (this.ziel >= 5 && this.ziel < 97) this.zeigt += (naechst - 1 - this.zeigt) * 0.012;
+      inn.style.width = this.zeigt.toFixed(1) + '%';
+      const pz = document.getElementById('s2c-proz'); if (pz) pz.textContent = Math.floor(this.zeigt) + ' %';
+    },
+    stopp(art) { clearInterval(this.uhr); if (art) bar.classList.add(art); if (art === 'fertig') { this.zeigt = this.ziel = 100; } this.malen(); }
+  };
+  bar.classList.remove('fehler', 'fertig'); inn.style.width = '0';
+  b.uhr = setInterval(() => b.malen(), 250);
+  return b;
+}
+// Hochladen mit Fortschritt (fetch kann keinen Upload-Fortschritt)
+function _s2cHochladen(body, name, fortschritt) {
+  return new Promise((ok, err) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', '/api/scan2cad/auftrag');
+    x.setRequestHeader('X-Name', encodeURIComponent(name).replace(/%20/g, ' '));
+    x.upload.onprogress = e => { if (e.lengthComputable) fortschritt(e.loaded / e.total); };
+    x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch (_) {}
+      if (x.status === 401) location.replace('/login?grund=abgelaufen&weiter=' + encodeURIComponent(location.pathname + location.search));
+      ok({ status: x.status, j }); };
+    x.onerror = () => err(new Error('Hochladen fehlgeschlagen (Verbindung)'));
+    x.send(body);
+  });
+}
 async function _s2cStart(obj, datei) {
   const m = document.getElementById('s2c-modal');
   _s2cZeigen([]);
@@ -38977,7 +39020,9 @@ async function _s2cStart(obj, datei) {
   stat.textContent = 'Scan wird hochgeladen …';
   m.classList.add('show');
   const lauf = _s2c = { obj, abgebrochen: false, id: null };
+  const balken = lauf.balken = _s2cBalken(lauf);
   const ende = (text, fehler) => {
+    balken.stopp(fehler ? 'fehler' : 'fertig');
     stat.textContent = text; if (fehler) stat.style.color = '#dc2626'; else stat.style.color = '';
     document.getElementById('s2c-ab').style.display = 'none';
     document.getElementById('s2c-zu').style.display = '';
@@ -38989,19 +39034,23 @@ async function _s2cStart(obj, datei) {
       body = _s2cStl(obj); if (!body) { ende('Nichts zu übertragen.', true); return; }
       name = (obj.userData.name || 'scan').replace(/[^\w.\- ]+/g, '_') + '.stl';
     } else { body = datei; name = datei.name; }
-    const resp = await fetch('/api/scan2cad/auftrag', { method: 'POST', body, headers: { 'X-Name': encodeURIComponent(name).replace(/%20/g, ' ') } });
-    const j = await resp.json().catch(() => ({}));
-    if (!resp.ok || !j.id) { ende(j.fehler || j.error || ('Dienst antwortet nicht (HTTP ' + resp.status + ').'), true); return; }
+    const mb = (body.size / 1048576).toFixed(0);
+    const { status, j } = await _s2cHochladen(body, name, f => {
+      balken.setze(5 * f); stat.innerHTML = 'Scan wird hochgeladen … ' + Math.round(100 * f) + ' % von ' + mb + ' MB<span id="s2c-proz"></span>'; });
+    if (lauf.abgebrochen) return;
+    if (status !== 200 || !j.id) { ende(j.fehler || j.error || ('Dienst antwortet nicht (HTTP ' + status + ').'), true); return; }
+    balken.setze(5);
     lauf.id = j.id;
     while (!lauf.abgebrochen) {
       await new Promise(r => setTimeout(r, 1000));
       if (lauf.abgebrochen) return;
       const s = await (await fetch('/api/scan2cad/auftrag/' + lauf.id)).json().catch(() => ({ status: 'fehler', fehler: 'Verbindung verloren' }));
-      if (s.zeilen) _s2cZeigen(s.zeilen);
-      if (s.status === 'wartet') stat.textContent = 'Wartet – Platz ' + s.platz + ' in der Warteschlange …';
-      else if (s.status === 'laeuft') stat.textContent = 'Rechnet … ' + Math.round(s.sekunden) + ' s';
+      if (s.zeilen) { _s2cZeigen(s.zeilen); balken.aus(s.zeilen); }
+      if (s.status === 'wartet') stat.innerHTML = 'Wartet – Platz ' + s.platz + ' in der Warteschlange …<span id="s2c-proz"></span>';
+      else if (s.status === 'laeuft') stat.innerHTML = 'Rechnet … ' + Math.round(s.sekunden) + ' s<span id="s2c-proz"></span>';
       else if (s.status === 'fehler') { ende('✕ ' + (s.fehler || 'Umwandlung fehlgeschlagen'), true); return; }
-      else if (s.status === 'fertig') { await _s2cBauen(lauf, s.ergebnis, ende); return; }
+      else if (s.status === 'fertig') { balken.setze(97); stat.innerHTML = 'Körper wird gebaut …<span id="s2c-proz"></span>'; balken.malen();
+        await new Promise(r => setTimeout(r, 60)); await _s2cBauen(lauf, s.ergebnis, ende); return; }
       else { ende('✕ ' + (s.fehler || 'Auftrag verloren'), true); return; }
     }
   } catch (e) { ende('✕ ' + (e.message || e), true); }
@@ -39033,9 +39082,14 @@ async function _s2cBauen(lauf, erg, ende) {
   e.style.display = 'block';
   ende('Fertig in ' + Math.round(erg.dauer) + ' s · Rückgängig nimmt alles in einem Schritt zurück.');
 }
+// Seite zu / neu geladen: Auftrag sofort streichen, sonst blockiert er die Warteschlange
+// (der Dienst bricht ohne Abfrage nach 45 s ohnehin ab)
+window.addEventListener('pagehide', () => {
+  if (_s2c && _s2c.id) try { navigator.sendBeacon('/api/scan2cad/abbrechen/' + _s2c.id, new Blob([''])); } catch (_) {}
+});
 function _s2cAbbrechen() {
   const l = _s2c;
-  if (l) { l.abgebrochen = true; if (l.id) fetch('/api/scan2cad/abbrechen/' + l.id, { method: 'POST' }).catch(() => {}); }
+  if (l) { l.abgebrochen = true; if (l.balken) l.balken.stopp(); if (l.id) fetch('/api/scan2cad/abbrechen/' + l.id, { method: 'POST' }).catch(() => {}); }
   _s2c = null;
   document.getElementById('s2c-modal').classList.remove('show');
   notify('Scan → CAD abgebrochen', 'w');
@@ -69925,8 +69979,12 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.238';
+const VOLME3D_VERSION = '1.18.239';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.239', date:'2026-10-21', changes:[
+    ['📊','<b>Scan → CAD mit Ladebalken.</b> Das Fenster zeigt jetzt einen Balken mit Prozent: beim Hochladen nach übertragenen Bytes, beim Rechnen Schritt für Schritt (Erkennen, Ausrichten, Drehteil, Prisma, Freiform …) und beim Bauen des Körpers bis 100 % (Volker 21.10.).'],
+    ['🧹','<b>Scan → CAD: keine verwaisten Aufträge mehr.</b> Wer die Seite neu lädt oder schließt, während der Server rechnet, bricht den Auftrag jetzt ab – vorher rechnete er weiter und der nächste Versuch stand auf „Platz 2“.'],
+  ]},
   { version:'1.18.238', date:'2026-10-21', changes:[
     ['🛠','<b>Scan → CAD: Seite reagiert nicht mehr.</b> Wurde aus dem Scan eine Freiform, kam der Körper als STEP-Datei zurück, und V3D CAD hat sie über eine halbe Minute am Stück eingelesen – der Browser meldete „Seite reagiert nicht“ (Volker 21.10.). Jetzt kommt der Körper fertig vernetzt und ist in einem Augenblick da; auch Baupläne aus V3D Scan ohne Verlauf öffnen sich so. Der Scan wird außerdem schneller hochgeladen.'],
   ]},

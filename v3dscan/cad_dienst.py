@@ -16,6 +16,8 @@
 #   python3 cad_dienst.py [--port 3014]
 
 import argparse
+import multiprocessing as mp
+import queue
 import json
 import os
 import sys
@@ -41,6 +43,7 @@ MAX_BYTES = 300 * 1024 * 1024
 MAX_DREIECKE = 600000          # groessere Netze vorher vereinfachen (Automatik braucht keine Feinheit darunter)
 MAX_WARTEND = 8
 HALTEN_S = 30 * 60
+VERWAIST_S = 45               # so lange ohne Statusabfrage = Seite zu/abgestuerzt -> Auftrag abbrechen
 
 auftraege = {}                 # id -> dict
 schlange = deque()
@@ -49,34 +52,46 @@ neu = threading.Condition(sperre)
 
 
 def _platz(aid):
+    """Platz in der Schlange; verwaiste Auftraege davor (Seite zu) zaehlen nicht."""
+    jetzt = time.time()
+    vor = 0
+    for x in schlange:
+        if x == aid:
+            return vor + 1
+        a = auftraege.get(x)
+        if a is not None and not _verwaist(a, jetzt):
+            vor += 1
+    return 0
+
+
+def _kind(pfad, name, q):
+    """Eigener Prozess je Auftrag: laesst sich mitten im Rechnen beenden (Seite zu, Abbrechen)
+    und gibt den Speicher von Open3D/OCP danach sicher frei."""
     try:
-        return list(schlange).index(aid) + 1
-    except ValueError:
-        return 0
+        s = einlesen(pfad, name)
+        if s.tri is not None and len(s.tri) > MAX_DREIECKE:
+            q.put(("zeile", "Netz vereinfacht: %d → %d Dreiecke" % (len(s.tri), MAX_DREIECKE)))
+            s, _ = nz.vereinfachen(s, MAX_DREIECKE)
+        p = Projekt()
+        p.hinzufuegen(s)
+        erg = automatik.scan_zu_cad(p, s.id, fortschritt=lambda z: q.put(("zeile", z)))
+        k = p.koerper_holen(erg["koerper"])
+        erg.pop("protokoll", None)
+        erg["bauplan"] = cad_bauplan.bauplan(p, k)
+        q.put(("fertig", erg))
+    except automatik.Abbruch as ex:
+        q.put(("fehler", str(ex)))
+    except Exception as ex:
+        traceback.print_exc()
+        q.put(("fehler", "Umwandlung fehlgeschlagen: %s" % ex))
 
 
-def _rechnen(a):
-    zeilen = a["zeilen"]
-    endung = os.path.splitext(a["name"])[1].lower() or ".stl"
-    with tempfile.TemporaryDirectory() as tmp:
-        pfad = os.path.join(tmp, "scan" + endung)
-        with open(pfad, "wb") as f:
-            f.write(a.pop("daten"))
-        s = einlesen(pfad, a["name"])
-    if s.tri is not None and len(s.tri) > MAX_DREIECKE:
-        zeilen.append("Netz vereinfacht: %d → %d Dreiecke" % (len(s.tri), MAX_DREIECKE))
-        s, _ = nz.vereinfachen(s, MAX_DREIECKE)
-    p = Projekt()
-    p.hinzufuegen(s)
-    erg = automatik.scan_zu_cad(p, s.id, fortschritt=zeilen.append)
-    k = p.koerper_holen(erg["koerper"])
-    plan = cad_bauplan.bauplan(p, k)
-    erg.pop("protokoll", None)
-    erg["bauplan"] = plan
-    return erg
+def _verwaist(a, jetzt):
+    return a.get("abgebrochen") or jetzt - a.get("abfrage", a["angelegt"]) > VERWAIST_S
 
 
 def arbeiter():
+    ctx = mp.get_context("spawn")
     while True:
         with neu:
             while not schlange:
@@ -85,18 +100,50 @@ def arbeiter():
             a = auftraege.get(aid)
             if a is None:
                 continue
+            if _verwaist(a, time.time()):          # niemand wartet mehr (Seite zu) -> gar nicht erst rechnen
+                a.update(status="abgebrochen", ende=time.time())
+                a.pop("daten", None)
+                continue
             a["status"], a["start"] = "laeuft", time.time()
-        try:
-            erg = _rechnen(a)
-            with sperre:
-                a.update(status="fertig", ergebnis=erg, ende=time.time())
-        except automatik.Abbruch as ex:
-            with sperre:
-                a.update(status="fehler", fehler=str(ex), ende=time.time())
-        except Exception as ex:
-            traceback.print_exc()
-            with sperre:
-                a.update(status="fehler", fehler="Umwandlung fehlgeschlagen: %s" % ex, ende=time.time())
+            daten = a.pop("daten")
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = os.path.join(tmp, "scan" + (os.path.splitext(a["name"])[1].lower() or ".stl"))
+            with open(pfad, "wb") as f:
+                f.write(daten)
+            del daten
+            q = ctx.Queue()
+            kind = ctx.Process(target=_kind, args=(pfad, a["name"], q), daemon=True)
+            kind.start()
+            ergebnis = None
+            while ergebnis is None:
+                try:
+                    art, wert = q.get(timeout=0.5)
+                except queue.Empty:
+                    with sperre:
+                        weg = _verwaist(a, time.time())
+                    if weg:
+                        kind.terminate()
+                        ergebnis = ("abgebrochen", None)
+                        print("Auftrag %s abgebrochen (Seite zu oder Abbrechen)" % aid[:8], flush=True)
+                    elif not kind.is_alive():
+                        ergebnis = ("fehler", "Rechenprozess unerwartet beendet (Speicher?)")
+                    continue
+                if art == "zeile":
+                    with sperre:
+                        a["zeilen"].append(wert)
+                else:
+                    ergebnis = (art, wert)
+            kind.join(5)
+            if kind.is_alive():
+                kind.kill()
+        art, wert = ergebnis
+        with sperre:
+            if art == "fertig":
+                a.update(status="fertig", ergebnis=wert, ende=time.time())
+            elif art == "abgebrochen":
+                a.update(status="abgebrochen", ende=time.time())
+            else:
+                a.update(status="fehler", fehler=wert, ende=time.time())
 
 
 def aufraeumen():
@@ -131,18 +178,22 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/health"):
             with sperre:
                 laeuft = sum(1 for a in auftraege.values() if a["status"] == "laeuft")
+            # wartende Auftraege ohne Abfrage gleich streichen (Platz in der Schlange frei)
                 return self._json(200, {"ok": True, "wartend": len(schlange), "laeuft": laeuft})
         aid = self._id()
         with sperre:
             a = auftraege.get(aid)
             if a is None:
                 return self._json(404, {"fehler": "Auftrag unbekannt oder abgelaufen."})
+            a["abfrage"] = time.time()
             aus = {"status": a["status"], "platz": _platz(aid), "zeilen": list(a["zeilen"]),
                    "sekunden": round(time.time() - (a.get("start") or a["angelegt"]), 1)}
             if a["status"] == "fertig":
                 aus["ergebnis"] = a["ergebnis"]
             if a["status"] == "fehler":
                 aus["fehler"] = a["fehler"]
+            if a["status"] == "abgebrochen":
+                aus["fehler"] = "Abgebrochen."
         return self._json(200, aus)
 
     def do_POST(self):
@@ -161,7 +212,8 @@ class Handler(BaseHTTPRequestHandler):
             if len(schlange) >= MAX_WARTEND:
                 return self._json(503, {"fehler": "Gerade sind viele Scans in Arbeit – bitte in ein paar Minuten noch einmal."})
             aid = uuid.uuid4().hex
-            auftraege[aid] = {"name": name, "daten": daten, "status": "wartet", "zeilen": [], "angelegt": time.time()}
+            auftraege[aid] = {"name": name, "daten": daten, "status": "wartet", "zeilen": [], "angelegt": time.time(),
+                              "abfrage": time.time()}
             schlange.append(aid)
             neu.notify()
             platz = _platz(aid)
@@ -170,9 +222,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         aid = self._id()
         with sperre:
-            a = auftraege.pop(aid, None)
-            if a is not None and aid in schlange:
-                schlange.remove(aid)
+            a = auftraege.get(aid)
+            if a is not None:
+                a["abgebrochen"] = True            # laufend: der Arbeiter beendet den Rechenprozess
+                if aid in schlange:
+                    schlange.remove(aid)
+                    a.update(status="abgebrochen", ende=time.time())
+                    a.pop("daten", None)
         return self._json(200, {"ok": a is not None})
 
 
