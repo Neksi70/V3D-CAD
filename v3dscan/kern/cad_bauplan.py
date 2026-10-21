@@ -145,6 +145,15 @@ def _grundkoerper(par):
         return {"type": "sphere", "size": [2 * r] * 3, "center": list(map(float, par["mitte"]))}
     a = np.asarray(par["achse"], float)
     a = a / np.linalg.norm(a)
+    if par["art"] == "zylinder" and (abs(abs(a[0]) - 1) < 1e-6 or abs(abs(a[1]) - 1) < 1e-6):
+        # liegender Zylinder (Achse X/Y): als stehender anlegen, danach um die Mitte drehen
+        b = np.asarray(par["basis"], float)
+        h, r = float(par["hoehe"]), float(par["radius"])
+        mitte = b + a * h / 2
+        drehung = [0.0, 90.0, 0.0] if abs(a[0]) > 0.5 else [90.0, 0.0, 0.0]
+        return {"befehl": "shape.add", "params": {"type": "cylinder", "size": [2 * r, 2 * r, h],
+                                                  "center": [float(x) for x in mitte]},
+                "danach": {"befehl": "body.transform", "params": {"rotate": drehung}}}
     if abs(abs(a[2]) - 1) > 1e-6 or par["art"] not in ("zylinder", "kegel"):
         raise NichtUebersetzbar("Grundkörper %s mit schräger Achse" % par["art"])
     b = np.asarray(par["basis"], float)
@@ -175,9 +184,11 @@ def bauplan(projekt, k):
     def kombiniere(werkzeug_befehle, op):
         """Werkzeug bauen (als neuer Koerper), dann mit @k verknuepfen."""
         befehle.extend(werkzeug_befehle)
-        w = werkzeug_befehle[-1]["als"]
+        w = [b for b in werkzeug_befehle if "als" in b][-1]["als"]
         if op == "vereinen":
             befehle.append({"befehl": "bool.union", "params": {"ids": ["@k", "@" + w]}, "als": "k"})
+        elif op == "schneiden":
+            befehle.append({"befehl": "bool.intersect", "params": {"ids": ["@k", "@" + w]}, "als": "k"})
         else:
             befehle.append({"befehl": "bool.subtract", "params": {"target": "@k", "tools": ["@" + w]}, "als": "k"})
     try:
@@ -194,6 +205,8 @@ def bauplan(projekt, k):
                 par = _extrusion(e, projekt.skizze_holen(e["skizze"]), von, bis)
                 if not da or op == "neu":
                     befehle.append({"befehl": "sketch.extrude", "params": dict(par, name=k.name), "als": "k"})
+                elif op == "schneiden":
+                    kombiniere([{"befehl": "sketch.extrude", "params": par, "als": neu_name()}], op)
                 else:
                     befehle.append({"befehl": "sketch.extrude", "params": dict(
                         par, op="join" if op == "vereinen" else "cut", target="@k"), "als": "k"})
@@ -203,12 +216,19 @@ def bauplan(projekt, k):
                 else:
                     gk = _grundkoerper(e["parameter"])
                     b = gk if "befehl" in gk else {"befehl": "shape.add", "params": gk}
+                danach = b.pop("danach", None)
                 if not da or op == "neu":
                     b["als"] = "k"
-                    befehle.append(b)
+                    folge = [b]
                 else:
                     b["als"] = neu_name()
-                    kombiniere([b], op)
+                    folge = [b]
+                if danach:
+                    folge.append({"befehl": danach["befehl"], "params": dict(danach["params"], id="@" + b["als"])})
+                if not da or op == "neu":
+                    befehle.extend(folge)
+                else:
+                    kombiniere(folge, op)
             elif not da:
                 raise NichtUebersetzbar("Schritt „%s“ braucht einen Körper davor" % e.get("name", t))
             elif t == "verschieben":

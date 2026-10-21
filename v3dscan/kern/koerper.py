@@ -27,7 +27,7 @@ KEGEL_TYPEN = ("kegel", "senkung")
 ABZIEH_TYPEN = ("bohrung", "kugelmulde", "senkung", "hohlkehle")
 OPERATIONEN = ("neu", "vereinen", "abziehen")
 ART_NAMEN = {"zylinder": "Zylinder", "kugel": "Kugel", "kegel": "Kegel", "quader": "Quader"}
-OP_ZUSATZ = {"vereinen": "vereint", "abziehen": "abgezogen"}
+OP_ZUSATZ = {"vereinen": "vereint", "abziehen": "abgezogen", "schneiden": "Schnittmenge"}
 
 
 class Koerper:
@@ -272,7 +272,8 @@ def _bool_pruefen(erg, va, vb, operation, tol):
     if operation == "abziehen":
         plausibel = -t <= v <= va + t
     elif operation == "schneiden":
-        plausibel = v <= min(va, vb) + t
+        # leer trotz zweier Koerper = meist OCCT an deckungsgleichen Flaechen -> Rueckfallebene versuchen
+        plausibel = 1e-6 * min(va, vb) < v <= min(va, vb) + t
     else:
         plausibel = max(va, vb) - t <= v <= va + vb + t
     if not plausibel:

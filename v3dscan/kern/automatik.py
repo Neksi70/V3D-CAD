@@ -26,12 +26,16 @@ from . import features as ft
 from . import freiform as ff
 from . import koerper as kp
 from . import koordinaten as ko
+from . import schnitt_robust as sr
 from . import skizze as sk
 from . import werkzeuge as wz
 from .o3d import o3d
 
 ACHSEN = {"x": np.array([1.0, 0, 0]), "y": np.array([0, 1.0, 0]), "z": np.array([0, 0, 1.0])}
 WELT_EBENE = {"x": "yz", "y": "xz", "z": "xy"}
+
+
+_LOCHRAND = {}          # id(Bewertungswolke) -> (Lochrand-Punkte, Punktabstand) fuer Scans mit Loechern
 
 
 class Abbruch(Exception):
@@ -178,6 +182,14 @@ def bewerten(shape, P_scan, scan_wolke):
     if len(m.triangles):
         K = m.sample_points_uniformly(8000)
         extra = np.asarray(K.compute_point_cloud_distance(scan_wolke))
+        rand, abstand = _LOCHRAND.get(id(scan_wolke), (None, 0.5))
+        if rand is not None and len(rand.points):
+            # Scan mit Loechern: Koerperstellen, deren naechster Scanpunkt ein Lochrand ist, liegen in
+            # ungescannten Bereichen – dort Flaeche ohne Scanpunkte dahinter ist kein „erfundenes“ Material
+            zum_rand = np.asarray(K.compute_point_cloud_distance(rand))
+            extra = extra[zum_rand > extra + 2 * abstand]
+            if not len(extra):
+                extra = np.zeros(1)
         extra_p90 = float(np.percentile(extra, 90))
     else:
         extra_p90 = float("inf")
@@ -220,9 +232,17 @@ def _kontur_kennwerte(linien, zu):
             "box": np.r_[alle.min(0), alle.max(0)]}
 
 
+def _schnitt(s, E):
+    """Netz mit Loechern -> robuster Rasterschnitt (immer geschlossen), sonst der exakte Schnitt."""
+    feld = getattr(s, "_feld", None)
+    if feld is not None:
+        return feld.schnitt(E)
+    return sk.schnitt(s, E)
+
+
 def _querschnitt(s, k, h):
     try:
-        linien, zu, _ = sk.schnitt(s, _ebene_achse(k, h))
+        linien, zu, _ = _schnitt(s, _ebene_achse(k, h))
     except Exception:
         return None
     if not linien:
@@ -247,7 +267,7 @@ def _gleich(a, b, diag):
 
 
 def _skizze(s, E, tol):
-    linien, zu, info = sk.schnitt(s, E)
+    linien, zu, info = _schnitt(s, E)
     if not linien:
         return None
     ketten = sk.skizze_rechnen(linien, zu, tol=tol, luecke=4 * tol)
@@ -281,7 +301,7 @@ def _skizze_passend(s, k, unten, oben, mitte, tol):
         if bezug is None or bezug.get("chaos"):
             continue
         for luecke in (4, 12):
-            linien, zu, info = sk.schnitt(s, _ebene_achse(k, h))
+            linien, zu, info = _schnitt(s, _ebene_achse(k, h))
             if not linien:
                 break
             ketten = sk.skizze_rechnen(linien, zu, tol=tol, luecke=luecke * tol)
@@ -430,10 +450,101 @@ def kandidat_prisma(s, P, k, elemente, tol, meldung, budget):
     return {"art": "Prisma %s" % k.upper(), "shape": shape, "schritte": schritte}
 
 
+def _vieleck_ketten(linien, tol):
+    """Rasterkonturen -> vereinfachte Vielecke (Douglas-Peucker). Marching-Squares-Konturen ueberschneiden
+    sich nie, das Vieleck bleibt also gueltig – Rueckfall, wenn das Einpassen in Linien/Boegen eine
+    selbstueberschneidende Kontur liefert."""
+    def dp(P, eps):
+        if len(P) < 3:
+            return P
+        a, b = P[0], P[-1]
+        d = b - a
+        n = np.hypot(*d)
+        if n < 1e-12:
+            ab = np.linalg.norm(P - a, axis=1)
+        else:
+            ab = np.abs(np.cross(d, P - a)) / n
+        i = int(np.argmax(ab))
+        if ab[i] <= eps:
+            return np.array([a, b])
+        return np.vstack([dp(P[:i + 1], eps)[:-1], dp(P[i:], eps)])
+    ketten = []
+    for L in linien:
+        L = np.asarray(L, float)
+        i = int(np.argmax(np.linalg.norm(L - L.mean(0), axis=1)))     # Start an einer Ecke, nicht mitten in einer Kante
+        L = np.vstack([np.roll(L, -i, axis=0), np.roll(L, -i, axis=0)[:1]])
+        Q = dp(L, tol)[:-1]
+        if len(Q) < 3:
+            continue
+        els = [sk._lin(Q[j], Q[(j + 1) % len(Q)]) for j in range(len(Q))]
+        ketten.append({"geschlossen": True, "elemente": els, "punkte": L[:-1]})
+    return ketten
+
+
+def _gueltig(shape):
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    return shape is not None and BRepCheck_Analyzer(shape).IsValid() and kp.kennwerte(shape)["volumen"] > 0
+
+
+# --- 3b'. Quader aus drei Ansichten -------------------------------------------------------------------
+def kandidat_ansichten(s, P, tol, meldung):
+    """Umriss je Weltachse (Blick von vorne/seitlich/oben), ueber die ganze Tiefe extrudiert, Schnittmenge
+    der drei = „Sichthuelle“. Trifft Bloecke mit Stufen, Nuten, Absaetzen und durchgehenden Bohrungen in
+    allen drei Richtungen – genau das, woran ein einzelnes Prisma scheitert (Volkers Scan 21.10.).
+    Braucht ein Netz (Innen/Aussen-Feld)."""
+    feld = getattr(s, "_feld", None)
+    if feld is None:
+        if s.tri is None or not len(s.tri):
+            return None
+        feld = s._feld = sr.Feld(s.xyz, s.tri)
+    schritte, shape = [], None
+    for k in ("z", "x", "y"):
+        a = ACHSEN[k]
+        tt = P @ a
+        lo, hi = float(tt.min()), float(tt.max())
+        mitte = (lo + hi) / 2
+        E = _ebene_achse(k, mitte)
+        vz = float(a @ E["n"])
+        von, bis = sorted(((lo - mitte) * vz, (hi - mitte) * vz))
+        linien, zu, info = feld.schatten(E)
+        # Ueberstand: sonst enden alle drei Extrusionen auf denselben Ebenen, und OCCTs Schnittmenge
+        # liefert bei deckungsgleichen Flaechen mitunter einen leeren Koerper (Volkers Scan 21.10.)
+        rand = 0.5 + 0.01 * (bis - von)
+        von, bis = von - rand, bis + rand
+        if not linien:
+            return None
+        tol_k = max(tol, 1.5 * info["aufloesung"])
+        w = None
+        for art in ("elemente", "vieleck"):
+            ketten = (sk.skizze_rechnen(linien, zu, tol=tol_k, luecke=0.0) if art == "elemente"
+                      else _vieleck_ketten(linien, tol_k))
+            if not any(kt["geschlossen"] for kt in ketten):
+                continue
+            skz = sk.skizze_json(ketten, E, info)
+            skz["quelle"] = {"scan": s.id, "toleranz": tol, "assistent": True, "ansicht": k}
+            try:
+                w = ft.extrudieren(skz, von, bis)
+            except Exception:
+                w = None
+            if _gueltig(w):
+                break
+            w = None
+        if w is None:
+            meldung("  Ansicht %s: kein gültiger Umriss" % k.upper())
+            return None
+        shape = w if shape is None else kp.boolean(shape, w, "schneiden")
+        schritte.append(("extrusion", skz, {"von": von, "bis": bis,
+                                           "operation": "neu" if len(schritte) == 0 else "schneiden"}))
+    meldung("Ansichten: Umrisse von oben, vorne und der Seite geschnitten")
+    return {"art": "Ansichten", "shape": shape, "schritte": schritte}
+
+
 def grundkoerper_ergaenzen(kand, elemente, P, wolke, meldung, budget):
     """Erkannte Kugeln/Kegel/Zapfen/Bohrungen dazunehmen bzw. abziehen, wenn der Fehler sinkt."""
+    # auch teilweise gescannte Zylinder (Bohrung ohne Rueckwand = „Hohlkehle“): uebernommen wird ohnehin nur,
+    # was den Fehler senkt (Volkers Scan 21.10.: Ø 18-Bohrungen nur zu ~200° erfasst)
     wahl = [e for e in elemente if e["art"] in ("kugel", "kegel", "zylinder")
-            and (e["art"] == "kugel" or e.get("umfang_grad", 0) >= 300)]
+            and (e["art"] == "kugel" or e.get("umfang_grad", 0) >= 150)]
     wahl.sort(key=lambda e: -e["punkte"])
     guete = kand["guete"]
     for el in wahl[:14]:
@@ -458,6 +569,145 @@ def grundkoerper_ergaenzen(kand, elemente, P, wolke, meldung, budget):
             kand["schritte"].append(("grundkoerper", par, {"operation": op, "text": er.beschreibung(er.als_json(el))}))
             meldung("+ %s (%s)" % (kp.beschreibung(par, True), "abgezogen" if op == "abziehen" else "dazu"))
     kand["guete"] = guete
+
+
+def hohlraeume_nachschneiden(kand, P, wolke, meldung, budget, s=None):
+    """Bohrungen, die keine Ansicht zeigt und die Formerkennung nicht (ganz) fand: Scanpunkte, die IM Koerper
+    liegen, zu Bereichen gruppieren, je Weltachse einen Kreis einpassen, den besten Zylinder bis zur
+    Aussenflaeche verlaengern (Seite aus dem Versuch) und abziehen, wenn der Fehler sinkt."""
+    groesse = float(np.ptp(P, axis=0).max())
+    lo_k, hi_k = P.min(0), P.max(0)
+    versucht = []
+    for _runde in range(10):                      # nach jedem Schnitt neu messen: Nachbarbohrungen trennen sich
+        if time.time() > budget or not _ein_hohlraum(kand, P, wolke, meldung, groesse, lo_k, hi_k, versucht, s):
+            break
+
+
+def _koerper_feld(shape):
+    """Innen-Test fuer den (geschlossenen) CAD-Koerper."""
+    n = kp.vernetzen(shape)
+    sz = o3d.t.geometry.RaycastingScene()
+    sz.add_triangles(o3d.core.Tensor(n["xyz"].astype(np.float32)), o3d.core.Tensor(n["tri"].astype(np.uint32)))
+    return sz
+
+
+def _tasche(kand, s, Q, P, wolke, lo_k, hi_k):
+    """Hohlraum um die Punkte Q als Tasche: je Achse im Querschnitt Flaeche „im Koerper, im Scan hohl“
+    (ueber drei Tiefen gemeinsam) -> Vieleck-Skizze -> Extrusion abziehen. -> (guete, shape, schritt) oder None."""
+    from . import schnitt_robust as _sr
+    feld = getattr(s, "_feld", None)
+    if feld is None:
+        return None
+    koerper = _koerper_feld(kand["shape"])
+    bestes = None
+    for k, a in ACHSEN.items():
+        t = Q @ a
+        t0, t1 = float(t.min()), float(t.max())
+        if t1 - t0 < 0.6:
+            continue
+        E = _ebene_achse(k, (t0 + t1) / 2)
+        q2 = sk.zu2d(Q, E)
+        lo2, hi2 = q2.min(0) - 2.0, q2.max(0) + 2.0
+        h = max(float((hi2 - lo2).max()) / 120.0, 0.12)
+        us, vs = np.arange(lo2[0], hi2[0] + h, h), np.arange(lo2[1], hi2[1] + h, h)
+        U, V = np.meshgrid(us, vs, indexing="ij")
+        hohl = np.ones(U.shape, bool)
+        vz = float(a @ E["n"])
+        for anteil in (0.25, 0.5, 0.75):
+            tiefe = (t0 + anteil * (t1 - t0) - (t0 + t1) / 2) * vz
+            G = E["ursprung"] + U.reshape(-1, 1) * E["u"] + V.reshape(-1, 1) * E["v"] + tiefe * E["n"]
+            im_koerper = koerper.compute_occupancy(o3d.core.Tensor(G.astype(np.float32)), nsamples=3).numpy() > 0.5
+            hohl &= (im_koerper & (feld.werte(G) > 0.05)).reshape(U.shape)
+        if hohl.sum() * h * h < 3.0:
+            continue
+        linien = _sr._marching_squares(np.where(hohl, -1.0, 1.0), us, vs)
+        linien = [L for L in linien if abs(sk.flaeche(L)) >= 3.0]
+        if not linien:
+            continue
+        ketten = _vieleck_ketten(linien, max(0.15, 1.2 * h))
+        if not ketten:
+            continue
+        skz = sk.skizze_json(ketten, E, {"art": "tasche"})
+        a_lo, a_hi = float(lo_k @ a) - 1.0, float(hi_k @ a) + 1.0
+        mitte = (t0 + t1) / 2
+        for von_w, bis_w in ((t0, a_hi), (a_lo, t1), (t0, t1)):
+            von, bis = sorted(((von_w - mitte) * vz, (bis_w - mitte) * vz))
+            try:
+                w = ft.extrudieren(skz, von, bis)
+                neu = kp.boolean(kand["shape"], w, "abziehen")
+                g = bewerten(neu, P, wolke)
+            except Exception:
+                continue
+            if bestes is None or g["mittel"] < bestes[0]["mittel"]:
+                bestes = (g, neu, ("extrusion", skz, {"von": von, "bis": bis, "operation": "abziehen"}), k)
+    return bestes
+
+
+def _ein_hohlraum(kand, P, wolke, meldung, groesse, lo_k, hi_k, versucht, s=None):
+    from . import formen as fo
+    w = kp.abweichung([kand["shape"]], P)
+    innen = P[w < -1.0]
+    if len(innen) < 40:
+        return False
+    lab = np.asarray(o3d.geometry.PointCloud(o3d.utility.Vector3dVector(innen)).cluster_dbscan(2.0, 15))
+    guete = kand["guete"]
+    for c in sorted(set(lab.tolist()) - {-1}, key=lambda c: -(lab == c).sum())[:6]:
+        Q = innen[lab == c]
+        schluessel = tuple(np.round(Q.mean(0) / 2.0).astype(int))
+        if schluessel in versucht:
+            continue
+        versucht.append(schluessel)
+        if len(Q) < 30:
+            continue
+        beste_achse = None
+        for k, a in ACHSEN.items():
+            e1, e2 = sk._senkrecht(a)
+            try:
+                mitte2, r, rms = fo.kreis2d(np.c_[Q @ e1, Q @ e2])
+            except Exception:
+                continue
+            if not (0.8 <= r <= 0.45 * groesse) or rms > 0.12 * r:
+                continue
+            if beste_achse is None or rms / r < beste_achse[0]:
+                beste_achse = (rms / r, k, a, mitte2, r, e1, e2)
+        if beste_achse is None:
+            continue
+        _, k, a, mitte2, r, e1, e2 = beste_achse
+        r = er.nennmass(2 * r, 0.05) / 2
+        t = Q @ a
+        t0, t1 = float(t.min()), float(t.max())
+        a_lo, a_hi = float(lo_k @ a) - 1.0, float(hi_k @ a) + 1.0
+        achse_pkt = mitte2[0] * e1 + mitte2[1] * e2
+        bestes = None
+        for von, bis in ((t0, a_hi), (a_lo, t1), (a_lo, a_hi), (t0, t1)):
+            par = {"art": "zylinder", "basis": (achse_pkt + a * von).tolist(), "achse": a.tolist(), "radius": float(r),
+                   "hoehe": float(bis - von), "punkt": (achse_pkt + a * (von + bis) / 2).tolist()}
+            try:
+                neu = kp.boolean(kand["shape"], kp.baue(par), "abziehen")
+                g = bewerten(neu, P, wolke)
+            except Exception:
+                continue
+            if bestes is None or g["mittel"] < bestes[0]["mittel"]:
+                bestes = (g, neu, par)
+        if bestes and bestes[0]["mittel"] < guete["mittel"] * 0.98 and bestes[0]["extra"] <= guete["extra"] * 1.1 + 0.02:
+            kand["guete"], kand["shape"], par = bestes
+            kand["schritte"].append(("grundkoerper", par, {"operation": "abziehen"}))
+            meldung("+ Bohrung Ø %s entlang %s nachgeschnitten" % (("%.1f" % (2 * r)).replace(".", ","), k.upper()))
+            return True
+    # keine Bohrung passt: als Tasche/Nut/Absatz ausschneiden
+    for c in sorted(set(lab.tolist()) - {-1}, key=lambda c: -(lab == c).sum())[:4]:
+        Q = innen[lab == c]
+        schluessel = ("t",) + tuple(np.round(Q.mean(0) / 2.0).astype(int))
+        if len(Q) < 30 or schluessel in versucht or s is None:
+            continue
+        versucht.append(schluessel)
+        erg = _tasche(kand, s, Q, P, wolke, lo_k, hi_k)
+        if erg and erg[0]["mittel"] < guete["mittel"] * 0.98 and erg[0]["extra"] <= guete["extra"] * 1.1 + 0.02:
+            kand["guete"], kand["shape"], schritt, k = erg
+            kand["schritte"].append(schritt)
+            meldung("+ Tasche/Absatz entlang %s ausgeschnitten" % k.upper())
+            return True
+    return False
 
 
 # --- 3c. Freiform --------------------------------------------------------------------------------------
@@ -501,6 +751,9 @@ def scan_zu_cad(projekt, sid, freiform=True, max_sekunden=240, fortschritt=None)
     projekt.transformieren({s.id: T}, "Assistent: ausgerichtet")
     s = projekt.scan(sid)
     meldung("Ausgerichtet: " + text)
+    if sr.offen(s):
+        s._feld = sr.Feld(s.xyz, s.tri)
+        meldung("Netz hat Löcher → Querschnitte über Innen/Außen-Raster (schließen immer)")
     # kleine Formen (<0,3 %) helfen dem Koerper nicht und kosten an Freiform-Scans Minuten
     erk = er.erkennen(s, min_anteil=0.3)
     elemente = erk["elemente"]
@@ -512,6 +765,15 @@ def scan_zu_cad(projekt, sid, freiform=True, max_sekunden=240, fortschritt=None)
 
     P = _oberflaeche(s, 20000)
     wolke = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(_oberflaeche(s, 120000)))
+    if getattr(s, "_feld", None) is not None:
+        # Lochraender fuer die Bewertung merken (siehe bewerten: Zusatzmaterial in ungescannten Bereichen)
+        t_ = np.sort(np.asarray(s.tri, np.int64), axis=1)
+        kanten = np.concatenate([t_[:, [0, 1]], t_[:, [1, 2]], t_[:, [0, 2]]])
+        schl, anz = np.unique(kanten[:, 0] * (len(s.xyz) + 1) + kanten[:, 1], return_counts=True)
+        rk = schl[anz == 1]
+        rand_idx = np.unique(np.r_[rk // (len(s.xyz) + 1), rk % (len(s.xyz) + 1)])
+        _LOCHRAND[id(wolke)] = (o3d.geometry.PointCloud(o3d.utility.Vector3dVector(s.xyz[rand_idx].astype(np.float64))),
+                                sk.punktabstand(s.xyz))
     rausch = float(np.median([e["rms"] for e in elemente])) if elemente else 0.05
     tol = float(np.clip(3 * rausch, 0.05, 0.5))
     diag = float(np.linalg.norm(P.max(0) - P.min(0)))
@@ -542,11 +804,21 @@ def scan_zu_cad(projekt, sid, freiform=True, max_sekunden=240, fortschritt=None)
             pruefen(kandidat_prisma(s, P, k, elemente, tol, meldung, budget))
         except Exception as ex:
             meldung("Prisma %s nicht möglich: %s" % (k.upper(), ex))
+    if time.time() < budget:
+        try:
+            pruefen(kandidat_ansichten(s, P, tol, meldung))
+        except Exception as ex:
+            meldung("Ansichten nicht möglich: %s" % ex)
     beste = min(kandidaten, key=lambda c: c["guete"]["punkte"]) if kandidaten else None
     meldung("Bester Kandidat bisher: %s" % (beste["art"] if beste else "keiner"))
-    if beste is not None and beste["art"].startswith("Prisma") and beste["guete"]["punkte"] > ziel:
+    if beste is not None and beste["art"].startswith(("Prisma", "Ansichten")) and beste["guete"]["punkte"] > ziel:
         meldung("Erkannte Formen ergänzen …")
         grundkoerper_ergaenzen(beste, elemente, P, wolke, meldung, budget)
+        if beste["guete"]["punkte"] > ziel and time.time() < budget:
+            meldung("Verdeckte Bohrungen suchen …")
+            hohlraeume_nachschneiden(beste, P, wolke, meldung, budget, s)
+        meldung("  %s nach dem Ergänzen: 95 %% ≤ %.3f mm, Zusatzmaterial %.3f mm"
+                % (beste["art"], beste["guete"]["p95"], beste["guete"]["extra"]))
     if freiform and (beste is None or beste["guete"]["punkte"] > 2.5 * ziel) and time.time() < budget:
         try:
             pruefen(kandidat_freiform(s, meldung))

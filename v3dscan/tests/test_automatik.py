@@ -112,6 +112,11 @@ def netz_scan(m, rauschen=0.02, seed=9):
     return Scan("knolle", X @ T[:3, :3].T + T[:3, 3], None, None, np.asarray(m.triangles))
 
 
+def _echt_scan(_form):
+    from kern.wolke import einlesen
+    return einlesen(os.path.join(HIER, "daten", "echt_klotz_volker.stl"))
+
+
 def torus():
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeTorus
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
@@ -128,16 +133,19 @@ def faelle():
         # Torus ist rotationssymmetrisch -> Drehteil (genauer als Freiform)
         "torus": (torus, als_netz, "Drehteil", 0.12, 0.01, True),
         "knolle": (knolle, netz_scan, "Freiform", 0.6, 0.03, False),
+        # echter Scan (Volker 21.10., MIRACO-Netz mit 30 Löchern, vereinfacht auf 200k): Quader mit Stufen, Nut,
+        # Senkungen Ø 18, Durchgangsbohrungen – nur lokal (tests/daten ist nicht im Git)
+        "echt": (None, _echt_scan, "Ansichten", 0.8, None, True),
     }
 
 
 def main():
-    wahl = sys.argv[1:] or list(faelle())
+    wahl = sys.argv[1:] or [n for n in faelle() if n != "echt" or os.path.exists(os.path.join(HIER, "daten", "echt_klotz_volker.stl"))]
     for name in wahl:
         form_fn, scan_fn, art, grenze, vol_tol, bauplan_voll = faelle()[name]
         print("== %s" % name, flush=True)
-        form = form_fn()
-        soll_vol = form.get_volume() if isinstance(form, o3d.geometry.TriangleMesh) else kp.kennwerte(form)["volumen"]
+        form = form_fn() if form_fn else None
+        soll_vol = None if form is None else (form.get_volume() if isinstance(form, o3d.geometry.TriangleMesh) else kp.kennwerte(form)["volumen"])
         p = Projekt()
         s = scan_fn(form)
         p.hinzufuegen(s)
@@ -153,8 +161,9 @@ def main():
         pruefe(erg["art"].startswith(art), "%s: Art %s (erwartet %s)" % (name, erg["art"], art))
         pruefe(erg["guete"]["p95"] <= grenze, "%s: 95 %% der Scanpunkte ≤ %.3f mm (Grenze %.2f)" %
                (name, erg["guete"]["p95"], grenze))
-        pruefe(abs(vol - soll_vol) <= vol_tol * soll_vol, "%s: Volumen %.0f mm³, Soll %.0f (%.2f %%)" %
-               (name, vol, soll_vol, 100 * (vol - soll_vol) / soll_vol))
+        if soll_vol is not None:
+            pruefe(abs(vol - soll_vol) <= vol_tol * soll_vol, "%s: Volumen %.0f mm³, Soll %.0f (%.2f %%)" %
+                   (name, vol, soll_vol, 100 * (vol - soll_vol) / soll_vol))
         b = cad_bauplan.bauplan(p, k)
         pruefe(b["vollstaendig"] == bauplan_voll, "%s: Bauplan vollständig = %s %s" % (name, b["vollstaendig"], b["hinweise"]))
         pruefe(dauer < 300, "%s: Dauer %.0f s" % (name, dauer))
