@@ -36,6 +36,7 @@ from kern import freiform as ff  # noqa: E402
 from kern import koerper as kp  # noqa: E402
 from kern import loeser  # noqa: E402
 from kern import sicherung as sich  # noqa: E402
+from kern import cad_bauplan  # noqa: E402
 from kern import koordinaten as ko  # noqa: E402
 from kern import netz as nz  # noqa: E402
 from kern import features as sk_feat  # noqa: E402
@@ -246,6 +247,8 @@ def befehl(name, d):
         if not 0 <= idx < len(s):
             raise Fehler("Punkt nicht gefunden.")
         return {"maske": maske_b64(wz.verbunden(s, idx, zahl(d, "abstand")))}
+    if name == "koerper/bauplan":
+        return cad_bauplan.bauplan(p, p.koerper_holen(d["kid"]))
     if name == "sicherung/liste":
         return {"liste": sich.liste(), "ordner": sich.ordner(), "minuten": sicherung_stand["minuten"],
                 "letzte": sicherung_stand["letzte_name"]}

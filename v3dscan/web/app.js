@@ -4419,6 +4419,17 @@ const AKTIONEN = {
     window.open('https://v3dcad.volme3dakademie.de', '_blank');
     meldung('STEP gespeichert – in V3D CAD über „Import (STL/STEP/…)“ öffnen; Flächen bleiben echte B-Rep.', 'ok');
   } },
+  koerperBauplan: { text: 'Bauplan für V3D CAD speichern', fn: async () => {
+    const kid = S.koerperAktiv;
+    if (kid === null || kid === undefined || !S.koerper.has(kid)) throw new Error('Erst einen Körper wählen.');
+    const j = await api('koerper/bauplan', { kid }, 'Übersetze Verlauf…');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(j, null, 1)], { type: 'application/json' }));
+    a.download = (j.koerper || 'koerper') + '.v3dcad.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    meldung(j.vollstaendig ? `Bauplan mit ${j.befehle.length} Schritten gespeichert (parametrisch in V3D CAD).`
+      : j.hinweise.join(' '), j.vollstaendig ? 'ok' : 'warnung');
+  } },
   koerperStep: { text: 'Körper als STEP exportieren', fn: () => koerperExport('step') },
   koerperIges: { text: 'Körper als IGES exportieren', fn: () => koerperExport('iges') },
   koerperStl: { text: 'Körper als STL exportieren', fn: () => koerperExport('stl') },
