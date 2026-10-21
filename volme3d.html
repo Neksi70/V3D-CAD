@@ -32019,19 +32019,107 @@ function _fdPlaceOnFace(o, worldN) {
   o.updateMatrixWorld(true);
 }
 
+// Alle Dreiecke eines Objekts in Weltkoordinaten aufrufen: cb(ax,ay,az, bx,by,bz, cx,cy,cz)
+function _fdEachWorldTri(o, cb) {
+  o.updateMatrixWorld(true);
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  o.traverse(m => {
+    if (!m.isMesh || m.userData.isEdgeLines || !m.geometry || !m.geometry.attributes.position) return;
+    const pos = m.geometry.attributes.position, idx = m.geometry.index, mw = m.matrixWorld;
+    const n = (idx ? idx.count : pos.count) / 3;
+    for (let t = 0; t < n; t++) {
+      const i0 = idx ? idx.getX(t * 3) : t * 3, i1 = idx ? idx.getX(t * 3 + 1) : t * 3 + 1, i2 = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+      a.fromBufferAttribute(pos, i0).applyMatrix4(mw); b.fromBufferAttribute(pos, i1).applyMatrix4(mw); c.fromBufferAttribute(pos, i2).applyMatrix4(mw);
+      cb(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+    }
+  });
+}
+
+// Normale der angeklickten Fläche, robust gegen Scan-Rauschen (Volker 21.10.: Scan lag
+// nach „Fläche unten" schief, weil nur das EINE getroffene Dreieck zählte). Um den
+// Klickpunkt werden flächengewichtet die Normalen ähnlich gerichteter Dreiecke gemittelt.
+// Fester, breiter Kegel (35°): Seitenwände (90°) fallen raus, das Rauschen der Fläche
+// zählt aber vollständig mit und mittelt sich weg — ein enger werdender Kegel schneidet
+// bei starkem Rauschen einseitig ab und verschiebt das Ergebnis. Mehrere Runden, weil
+// schon das getroffene Dreieck allein um 20° und mehr danebenliegen kann.
+// Bei glatten CAD-Flächen kommt exakt die Flächennormale heraus.
+function _fdRobustNormal(o, hit, seedN) {
+  const box = getMeshBox(o), sz = box.getSize(new THREE.Vector3());
+  const R = Math.max(sz.x, sz.y, sz.z) * 0.12, R2 = R * R;
+  const p = hit.point, tris = [];
+  _fdEachWorldTri(o, (ax, ay, az, bx, by, bz, cx, cy, cz) => {
+    const mx = (ax + bx + cx) / 3 - p.x, my = (ay + by + cy) / 3 - p.y, mz = (az + bz + cz) / 3 - p.z;
+    if (mx * mx + my * my + mz * mz > R2) return;
+    const ux = bx - ax, uy = by - ay, uz = bz - az, vx = cx - ax, vy = cy - ay, vz = cz - az;
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;   // Länge = 2·Fläche
+    if (nx || ny || nz) tris.push(nx, ny, nz, mx, my, mz);
+  });
+  let n = seedN.clone();
+  for (const deg of [35, 35, 35, 35]) {
+    const cmin = Math.cos(deg * Math.PI / 180), s = new THREE.Vector3();
+    for (let i = 0; i < tris.length; i += 6) {
+      let nx = tris[i], ny = tris[i + 1], nz = tris[i + 2]; const l = Math.hypot(nx, ny, nz);
+      let d = (nx * n.x + ny * n.y + nz * n.z) / l;
+      if (d < 0) { d = -d; nx = -nx; ny = -ny; nz = -nz; }          // Dreiecks-Umlaufsinn egal
+      if (d < cmin) continue;
+      // nur dieselbe Ebene (keine parallelen Stufen weiter hinten)
+      if (Math.abs(tris[i + 3] * n.x + tris[i + 4] * n.y + tris[i + 5] * n.z) > R * 0.15) continue;
+      s.x += nx; s.y += ny; s.z += nz;
+    }
+    if (s.lengthSq() < 1e-20) break;
+    n = s.normalize();
+  }
+  if (n.dot(seedN) < 0) n.negate();
+  return n;
+}
+
+// Nach dem Hinlegen um die Hochachse drehen, bis die Seitenwände parallel zu X/Z der
+// Platte stehen. Hauptrichtung der senkrechten Flächen über den 4θ-Trick (Wände im
+// 90°-Raster zählen alle für dieselbe Richtung). Runde/organische Teile haben keine
+// klare Richtung (Stärke klein) → bleiben, wie sie sind. Liefert gedrehte Grad oder 0.
+function _fdAlignYaw(o) {
+  let C = 0, S = 0, W = 0;
+  _fdEachWorldTri(o, (ax, ay, az, bx, by, bz, cx, cy, cz) => {
+    const ux = bx - ax, uy = by - ay, uz = bz - az, vx = cx - ax, vy = cy - ay, vz = cz - az;
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const l = Math.hypot(nx, ny, nz); if (!l) return;
+    const h = Math.hypot(nx, nz) / l;                 // 1 = senkrechte Wand, 0 = waagrecht
+    if (h < 0.9) return;
+    const w = l * h, t = Math.atan2(nz, nx) * 4;
+    C += w * Math.cos(t); S += w * Math.sin(t); W += w;
+  });
+  if (!W) return 0;
+  const strength = Math.hypot(C, S) / W;
+  if (strength < 0.25) return 0;                      // keine klare Wandrichtung
+  const phi = Math.atan2(S, C) / 4;                   // Wandrichtung, im Bereich ±45°
+  if (Math.abs(phi) < 0.05 * Math.PI / 180) return 0; // schon ausgerichtet
+  const b0 = getMeshBox(o), cx0 = (b0.min.x + b0.max.x) / 2, cz0 = (b0.min.z + b0.max.z) / 2;
+  // Drehung um Y um +phi bringt eine Normale mit Winkel phi (atan2(z,x)) auf 0
+  o.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), phi));
+  o.updateMatrixWorld(true);
+  const b1 = getMeshBox(o);
+  o.position.x += cx0 - (b1.min.x + b1.max.x) / 2;
+  o.position.z += cz0 - (b1.min.z + b1.max.z) / 2;
+  o.updateMatrixWorld(true);
+  const b2 = getMeshBox(o); o.position.y -= b2.min.y; o.updateMatrixWorld(true);
+  return phi * 180 / Math.PI;
+}
+
 function _fdClick(e) {
   const hits = pickObjects(e);
   const hit = hits.find(h => h.face && h.object.isMesh && !h.object.userData.isEdgeLines &&
                              _fdRoot(h.object) === _fdObj);
   if (!hit) return;
-  const wn = _fdWorldNormal(hit);
+  const wn = _fdRobustNormal(_fdObj, hit, _fdWorldNormal(hit));
   const tilt = Math.acos(Math.max(-1, Math.min(1, wn.dot(new THREE.Vector3(0, -1, 0))))) * 180 / Math.PI;
   saveUndo();
   _fdPlaceOnFace(_fdObj, wn);
+  const yaw = _fdAlignYaw(_fdObj);
   updateTFInputs();
   _doRepositionDimHandles();
-  notify(tilt < 0.05 ? 'Diese Fläche liegt schon unten' :
-         'Fläche liegt jetzt unten (' + tilt.toFixed(1).replace('.', ',') + '° gedreht)', 'ok');
+  const f = v => Math.abs(v).toFixed(1).replace('.', ',');
+  notify((tilt < 0.05 ? 'Diese Fläche liegt schon unten' : 'Fläche liegt jetzt unten (' + f(tilt) + '° gedreht)')
+    + (yaw ? ' · an den Achsen ausgerichtet (' + f(yaw) + '°)' : ''), 'ok');
   exitFaceDownMode();
 }
 
