@@ -380,7 +380,21 @@ def vereinfachen(scan, ziel_dreiecke):
     ziel = int(max(4, ziel_dreiecke))
     m = scan.zu_o3d_netz().simplify_quadric_decimation(ziel)
     m.remove_unreferenced_vertices()
-    return _neu(scan, m), {"dreiecke_vorher": len(scan.tri), "dreiecke_nachher": len(m.triangles)}
+    bericht = {"dreiecke_vorher": len(scan.tri), "dreiecke_nachher": len(m.triangles)}
+    # Abweichungsstatistik: Abstand der alten Eckpunkte zum vereinfachten Netz
+    try:
+        szene = o3d.t.geometry.RaycastingScene()
+        szene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(m))
+        P = np.asarray(scan.xyz, np.float32)
+        if len(P) > 200000:
+            P = P[np.random.default_rng(0).choice(len(P), 200000, replace=False)]
+        d = szene.compute_distance(o3d.core.Tensor(P)).numpy()
+        bericht.update({"abweichung_median": round(float(np.median(d)), 4),
+                        "abweichung_p95": round(float(np.percentile(d, 95)), 4),
+                        "abweichung_max": round(float(d.max()), 4)})
+    except Exception:
+        pass
+    return _neu(scan, m), bericht
 
 
 # --- Beschneiden -----------------------------------------------------------------

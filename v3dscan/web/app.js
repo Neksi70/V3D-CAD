@@ -684,7 +684,8 @@ function obenVektor() { return S.oben === 'z' ? new THREE.Vector3(0, 0, 1) : new
 function blick(richtung) {
   const k = szenenKugel();
   const oben = obenVektor();
-  kamera.up.copy(richtung.clone().normalize().dot(oben) > 0.99 ? (S.oben === 'z' ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, -1)) : oben);
+  const senkrecht = Math.abs(richtung.clone().normalize().dot(oben)) > 0.99;      // von oben ODER unten
+  kamera.up.copy(senkrecht ? (S.oben === 'z' ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, -1)) : oben);
   const dist = k.radius / Math.sin(THREE.MathUtils.degToRad(kamera.fov / 2)) * 1.1;
   kamera.position.copy(k.center).addScaledVector(richtung.clone().normalize(), dist);
   steuerung.target.copy(k.center);
@@ -747,9 +748,79 @@ function zeichnen() {
   for (const e of S.scans.values()) if (e.obj.material.uniforms.groesse) e.obj.material.uniforms.groesse.value = g;
   markerGroesse();
   renderer.render(szene, kamera);
+  wuerfelZeichnen();
   achsenZeichnen();
   massstabZeichnen();
 }
+
+// Ansichtswürfel (View Cube) oben rechts: Seite anklicken = Standardansicht
+const WUERFEL_PX = 96;
+const wuerfelSzene = new THREE.Scene();
+const wuerfelKamera = new THREE.OrthographicCamera(-1.6, 1.6, 1.6, -1.6, 0.1, 10);
+let wuerfel = null, wuerfelOben = null;
+function wuerfelBauen() {
+  if (wuerfel) { wuerfelSzene.remove(wuerfel); wuerfel.geometry.dispose(); wuerfel.material.forEach((m) => { m.map.dispose(); m.dispose(); }); }
+  wuerfelOben = S.oben;
+  const namen = { vorne: 'Vorne', hinten: 'Hinten', oben: 'Oben', unten: 'Unten', rechts: 'Rechts', links: 'Links' };
+  const richtung = (n) => ({ hinten: achsenRichtung('vorne').negate(), unten: achsenRichtung('oben').negate(),
+    links: achsenRichtung('rechts').negate() })[n] || achsenRichtung(n);
+  // BoxGeometry-Seiten: +x, -x, +y, -y, +z, -z
+  const seiten = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].map((v) => new THREE.Vector3(...v));
+  const mats = seiten.map((v) => {
+    const name = Object.keys(namen).find((n) => richtung(n).dot(v) > 0.99);
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const g = c.getContext('2d');
+    g.fillStyle = '#e8ecf1'; g.fillRect(0, 0, 128, 128);
+    g.strokeStyle = '#8a95a3'; g.lineWidth = 6; g.strokeRect(3, 3, 122, 122);
+    g.fillStyle = '#233042'; g.font = 'bold 26px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(namen[name], 64, 64);
+    const m = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c) });
+    m.userData.name = name;
+    m.userData.richtung = richtung(name);
+    return m;
+  });
+  wuerfel = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), mats);
+  wuerfelSzene.add(wuerfel);
+}
+function wuerfelLage() {
+  const w = leinwand.clientWidth, h = leinwand.clientHeight;
+  return { x: w - WUERFEL_PX - 8, y: 8, w: WUERFEL_PX, h: WUERFEL_PX, gesamtH: h };
+}
+function wuerfelZeichnen() {
+  if (!wuerfel || wuerfelOben !== S.oben) wuerfelBauen();
+  const r = wuerfelLage();
+  const blickRichtung = kamera.position.clone().sub(steuerung.target).normalize();
+  wuerfelKamera.position.copy(blickRichtung.multiplyScalar(4));
+  wuerfelKamera.up.copy(kamera.up);
+  wuerfelKamera.lookAt(0, 0, 0);
+  const autoClear = renderer.autoClear;
+  renderer.autoClear = false;
+  renderer.setScissorTest(true);
+  renderer.setScissor(r.x, r.gesamtH - r.y - r.h, r.w, r.h);
+  renderer.setViewport(r.x, r.gesamtH - r.y - r.h, r.w, r.h);
+  renderer.clearDepth();
+  renderer.render(wuerfelSzene, wuerfelKamera);
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, leinwand.clientWidth, leinwand.clientHeight);
+  renderer.autoClear = autoClear;
+}
+function wuerfelTreffer(x, y) {
+  const r = wuerfelLage();
+  if (x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h) return null;
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(new THREE.Vector2((x - r.x) / r.w * 2 - 1, -((y - r.y) / r.h) * 2 + 1), wuerfelKamera);
+  const t = wuerfel && ray.intersectObject(wuerfel, false)[0];
+  return t ? wuerfel.material[t.face.materialIndex] : null;
+}
+window.addEventListener('pointerdown', (ev) => {
+  if (ev.target !== leinwand || ev.button !== 0) return;
+  const [x, y] = lokalePos(ev);
+  const m = wuerfelTreffer(x, y);
+  if (!m) return;
+  ev.stopImmediatePropagation(); ev.preventDefault();
+  blick(m.userData.richtung.clone());
+  status(`Ansicht: ${m.userData.name}`);
+}, { capture: true });
 
 let massstabAlt = '';
 function massstabZeichnen() {
@@ -879,7 +950,7 @@ function werkzeugSetzen(w) {
   if (w !== 'orbit') pickModusSetzen(null);
   $$('[data-werkzeug]').forEach((b) => b.classList.toggle('an', b.dataset.werkzeug === w));
   if (zug) { zug = null; zeichnung.innerHTML = ''; }
-  const auswahl = w === 'rechteck' || w === 'lasso' || w === 'polygon' || w === 'pinsel';
+  const auswahl = w === 'rechteck' || w === 'lasso' || w === 'polygon' || w === 'pinsel' || w === 'kreis';
   const klick = w === 'verbunden' || w === 'zauberstab';
   steuerung.mouseButtons = mausTasten(!(auswahl || klick));
   leinwand.style.cursor = auswahl ? 'crosshair' : klick ? 'pointer' : 'grab';
@@ -890,6 +961,7 @@ function werkzeugSetzen(w) {
     polygon: 'Ecken anklicken · Doppelklick oder Enter schließt · Rücktaste nimmt letzte Ecke zurück · Strg = abwählen',
     verbunden: 'Punkt anklicken: alles damit Zusammenhängende wird gewählt · Strg = abwählen',
     pinsel: 'Über den Scan malen = hinzufügen · Strg = abwählen · Größe im Auswahl-Fenster',
+    kreis: 'Von der Mitte aus aufziehen = hinzufügen · Strg = abwählen',
     zauberstab: 'Punkt anklicken: wächst, solange die Fläche nicht stärker knickt als der Winkel · Strg = abwählen',
   };
   status(tipps[w]);
@@ -920,7 +992,7 @@ leinwand.addEventListener('pointerdown', (ev) => {
     zugZeichnen();
     return;
   }
-  if (S.werkzeug !== 'rechteck' && S.werkzeug !== 'lasso' && S.werkzeug !== 'pinsel') return;
+  if (S.werkzeug !== 'rechteck' && S.werkzeug !== 'lasso' && S.werkzeug !== 'pinsel' && S.werkzeug !== 'kreis') return;
   leinwand.setPointerCapture(ev.pointerId);
   zug = { art: S.werkzeug, punkte: [[x, y]], weg: ev.ctrlKey || ev.metaKey, r: Number($('#pinselGroesse').value) || 20 };
   zugZeichnen();
@@ -929,7 +1001,7 @@ leinwand.addEventListener('pointermove', (ev) => {
   if (!zug) return;
   const [x, y] = lokalePos(ev);
   if (zug.art === 'polygon') { zug.maus = [x, y]; zugZeichnen(); return; }
-  if (zug.art === 'rechteck') zug.punkte[1] = [x, y];
+  if (zug.art === 'rechteck' || zug.art === 'kreis') zug.punkte[1] = [x, y];
   else {
     const l = zug.punkte[zug.punkte.length - 1];
     if (Math.hypot(x - l[0], y - l[1]) > 3) zug.punkte.push([x, y]);
@@ -952,7 +1024,7 @@ leinwand.addEventListener('pointerup', (ev) => {
   if (WF.haupt && WF.haupt.id === 'w-3dskizze') { s3Klick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-uebergang') { ueKlick(x, y); return; }
   if (WF.haupt && WF.haupt.id === 'w-koerper-abw' && S.abweichung && S.abweichung.koerper) { wertLabel(x, y); return; }
-  if (WF.haupt && WF.haupt.id === 'w-auto-flaechen' && S.kaefig && $('#kgModus').value !== 'ziehen' && $('#kgModus').value !== 'pinsel') {
+  if (WF.haupt && WF.haupt.id === 'w-auto-flaechen' && (S.kaefig || $('#kgModus').value === 'viereck') && $('#kgModus').value !== 'ziehen' && $('#kgModus').value !== 'pinsel') {
     kaefigKlick(x, y);
     return;
   }
@@ -984,7 +1056,7 @@ leinwand.addEventListener('pointerup', () => {
   const z = zug;
   zug = null;
   zeichnung.innerHTML = '';
-  if (z.art === 'rechteck' && z.punkte.length < 2) return;
+  if ((z.art === 'rechteck' || z.art === 'kreis') && z.punkte.length < 2) return;
   if (z.art === 'lasso' && z.punkte.length < 3) return;
   auswahlAnwenden(z);
 });
@@ -996,6 +1068,10 @@ function zugZeichnen() {
     if (p.length < 2) { zeichnung.innerHTML = ''; return; }
     const x = Math.min(p[0][0], p[1][0]), y = Math.min(p[0][1], p[1][1]);
     zeichnung.innerHTML = `<rect x="${x}" y="${y}" width="${Math.abs(p[1][0] - p[0][0])}" height="${Math.abs(p[1][1] - p[0][1])}" fill="${farbe}22" stroke="${farbe}" stroke-dasharray="5 3"/>`;
+  } else if (zug.art === 'kreis') {
+    if (p.length < 2) { zeichnung.innerHTML = ''; return; }
+    const r = Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]);
+    zeichnung.innerHTML = `<circle cx="${p[0][0]}" cy="${p[0][1]}" r="${r}" fill="${farbe}22" stroke="${farbe}" stroke-dasharray="5 3"/>`;
   } else if (zug.art === 'pinsel') {
     zeichnung.innerHTML = `<polyline points="${p.map((q) => q.join(',')).join(' ')}" fill="none" stroke="${farbe}55" stroke-width="${2 * zug.r}" stroke-linecap="round" stroke-linejoin="round"/>`;
   } else if (zug.art === 'polygon') {
@@ -1021,6 +1097,9 @@ function auswahlAnwenden(z) {
     z.punkte.forEach((q, i) => (i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1])));
     if (z.punkte.length === 1) g.lineTo(z.punkte[0][0] + 0.01, z.punkte[0][1]);
     g.stroke();
+  } else if (z.art === 'kreis') {
+    const [a, b] = z.punkte;
+    g.arc(a[0], a[1], Math.hypot(b[0] - a[0], b[1] - a[1]), 0, 2 * Math.PI);
   } else if (z.art === 'rechteck') {
     const [a, b] = z.punkte;
     g.rect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
@@ -1392,6 +1471,8 @@ function berichtText(b) {
   if (b.dreiecke !== undefined) teile.push(`${b.dreiecke.toLocaleString('de-DE')} Dreiecke`);
   if (b.dreiecke_vorher !== undefined) teile.push(`vorher ${b.dreiecke_vorher.toLocaleString('de-DE')}`);
   if (b.gefuellt !== undefined) teile.push(`${b.gefuellt} Löcher gefüllt`);
+  if (b.dreiecke_nachher !== undefined) teile.push(`nachher ${b.dreiecke_nachher.toLocaleString('de-DE')}`);
+  if (b.abweichung_median !== undefined) teile.push(`Abweichung Median ${zahlText(b.abweichung_median, 4)} · 95 % unter ${zahlText(b.abweichung_p95, 4)} · max ${zahlText(b.abweichung_max, 3)} mm`);
   return teile.join(' · ');
 }
 
@@ -3322,8 +3403,34 @@ function kaefigFlaecheAn(x, y) {
   }
   return best ? best.f : null;
 }
+function kaefigViereckKlick(x, y) {
+  // New Freeform: Viereck aus 4 Klicks; nahe vorhandene Käfig-Ecken werden mitbenutzt (Anschluss)
+  const vorhanden = S.kaefig ? kaefigEckeAn(x, y) : null;
+  let p = null;
+  if (vorhanden === null) {
+    const t = oberflaechePunkt(x, y, { nurScan: Number($('#afScan').value), koerper: false });
+    if (!t) { status('Kein Scan an dieser Stelle.'); return; }
+    p = [t.pos.x, t.pos.y, t.pos.z];
+  }
+  S.kgViereck = S.kgViereck || [];
+  S.kgViereck.push(vorhanden !== null ? { i: vorhanden } : { p });
+  status(`Viereck: ${S.kgViereck.length} von 4 Ecken (gegen den Uhrzeigersinn klicken).`);
+  if (S.kgViereck.length < 4) return;
+  const ecken = S.kgViereck; S.kgViereck = null;
+  const scan = S.kaefig ? S.kaefig.scan : Number($('#afScan').value);
+  const V = S.kaefig ? Array.from(S.kaefig.V) : [], F = S.kaefig ? Array.from(S.kaefig.F) : [];
+  const idx = ecken.map((e) => { if (e.i !== undefined) return e.i; V.push(...e.p); return V.length / 3 - 1; });
+  if (new Set(idx).size < 4) throw new Error('Vier verschiedene Ecken anklicken.');
+  F.push(...idx);
+  const alt = S.kaefig;
+  S.kaefig = { V: new Float32Array(V), F: new Uint32Array(F), scan, geaendert: true, raster: null,
+    scharf: alt ? alt.scharf : new Set(), wahl: null, versteckt: alt ? alt.versteckt : null };
+  kaefigLinien();
+  $('#afInfo').textContent = `Käfig: ${F.length / 4} Vierecke – „Erzeugen“ baut die Flächen.`;
+}
 function kaefigKlick(x, y) {
   const K = S.kaefig, modus = $('#kgModus').value;
+  if (modus === 'viereck') { sicher(() => kaefigViereckKlick(x, y)); return; }
   const umschalten = (menge, k) => { if (menge.has(k)) menge.delete(k); else menge.add(k); };
   if (modus === 'scharf') { const k = kaefigKanteAn(x, y); if (k) umschalten(K.scharf, k); }
   else if (modus === 'kanten') { const k = kaefigKanteAn(x, y); if (k) umschalten(K.wahl.kanten, k); }
@@ -4216,6 +4323,21 @@ const AKTIONEN = {
       ende_b: $('#blEndeB').value, staerke: Number($('#blStaerke').value) || 1 }, 'Erzeuge Übergangskurve…');
     meldung('Übergangskurve als 3D-Skizze erzeugt.', 'ok');
   } },
+  beispielLaden: { text: 'Beispiel laden', fn: async () => {
+    const name = $('#beispielWahl').value;
+    await mitSanduhr(`Lade Beispiel ${name}…`, async () => {
+      const daten = await (await fetch('beispiele/' + name)).blob();
+      const r = await fetch('/api/import?name=' + encodeURIComponent(name), { method: 'POST', body: daten });
+      const j = await r.json();
+      if (!r.ok || j.fehler) throw new Error(j.fehler || r.status);
+      await zustandUebernehmen(j);
+      if (j.neu) S.aktiv = j.neu;
+      listeZeichnen();
+      auswahlListenFuellen();
+      einpassen();
+    });
+    meldung(`Beispiel „${name}“ geladen.`, 'ok');
+  } },
   geVorschau: { text: 'Grundkörper: Vorschau', fn: () => geAusfuehren(true) },
   geAnwenden: { text: 'Grundkörper per Eingabe', fn: () => geAusfuehren(false) },
   rkAnwenden: { text: 'Referenz aus Körperfläche', fn: async () => {
@@ -4228,6 +4350,7 @@ const AKTIONEN = {
   optionenZu: { text: '', fn: () => $('#optionenDialog').close() },
   sicherungJetzt: { text: '', fn: async () => { const j = await apiRoh('sicherung/jetzt', {}); meldung(j.name ? 'Gesichert.' : 'Nichts zu sichern.', 'ok'); await sicherungListe(); } },
   pinsel: { text: 'Werkzeug: Pinsel', taste: 'N', fn: () => werkzeugSetzen('pinsel') },
+  kreisWahl: { text: 'Werkzeug: Kreis', taste: 'K', fn: () => werkzeugSetzen('kreis') },
   zauberstab: { text: 'Werkzeug: Zauberstab', taste: 'W', fn: () => werkzeugSetzen('zauberstab') },
   vergroessern: { text: 'Auswahl vergrößern', fn: () => auswahlWachsen(1) },
   verkleinern: { text: 'Auswahl verkleinern', fn: () => auswahlWachsen(-1) },
@@ -4776,7 +4899,7 @@ async function start() {
   setInterval(() => fetch('/api/puls').catch(() => status('Verbindung zum Dienst verloren – Programm neu starten.')), 10000);
   fetch('/api/puls');
   steuerung.addEventListener('change', kameraGrenzen);
-  window.v3dscan = { S, api, einpassen, werkzeugSetzen, punktAn, auswahlAnwenden, kamera, steuerung, renderer,
+  window.v3dscan = { S, api, einpassen, werkzeugSetzen, punktAn, auswahlAnwenden, kamera, steuerung, renderer, wuerfelTreffer,
     werkzeugOeffnen, werkzeugSchliessen, bandSetzen, formWaehlen, kaefigEckeAn, kaefigKanteAn, kaefigFlaecheAn, aktionAusfuehren };
   konsole('V3D Scan ' + z.fassung + ' bereit.');
 }
