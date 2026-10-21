@@ -11,7 +11,7 @@ import numpy as np
 
 from .o3d import o3d
 
-EINLESBAR = (".ptx", ".ply", ".pcd", ".xyz", ".xyzn", ".xyzrgb", ".pts", ".asc", ".txt",
+EINLESBAR = (".e57", ".ptx", ".ply", ".pcd", ".xyz", ".xyzn", ".xyzrgb", ".pts", ".asc", ".txt",
              ".csv", ".obj", ".stl", ".off", ".gltf", ".glb")
 AUSGEBBAR = ("ply", "pcd", "xyz", "asc")            # Punktwolke
 AUSGEBBAR_NETZ = ("stl", "obj", "ply", "off", "glb")  # Netz
@@ -260,6 +260,18 @@ def einlesen(pfad, name=None):
 
     if endung == ".ptx":
         return _ptx_einlesen(pfad, name)
+    if endung == ".e57":
+        from . import e57
+        d = e57.lesen(pfad)
+        rgb = None
+        if d["farben"] is not None:
+            rgb = np.clip(np.asarray(d["farben"]) * 255 + 0.5, 0, 255).astype(np.uint8)
+        elif d["intensitaet"] is not None:
+            g = np.clip(np.asarray(d["intensitaet"]) * 255 + 0.5, 0, 255).astype(np.uint8)
+            rgb = np.repeat(g[:, None], 3, axis=1)              # Intensitaet als Grauwert
+        if not len(d["xyz"]):
+            raise ValueError("Die E57-Datei enthält keine gültigen Punkte.")
+        return Scan(name, d["xyz"], rgb)
     if endung in (".asc", ".txt", ".csv"):
         xyz, rgb, nrm = _text_einlesen(pfad)
         return Scan(name, xyz, rgb, nrm)
