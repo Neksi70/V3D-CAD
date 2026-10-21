@@ -172,6 +172,8 @@ def auto_flaechen(X, T, flaechen=300, raster=9, kantenwinkel=0.0, fortschritt=No
     kante_mittel = float(np.mean(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)))
     weit = 0.6 * kante_mittel
     n = max(4, int(raster))
+    if glatt:
+        n = max(n, M_KP + 4)        # genug Abtastpunkte fuer die Kontrollpunkte (sonst schwingt der Ausgleich)
     if n % 2 == 0:
         n += 1                      # ungerade: Kantenmitte ist ein gemeinsamer Abtastpunkt
     t = np.linspace(0, 1, n)
@@ -250,8 +252,13 @@ def auto_flaechen(X, T, flaechen=300, raster=9, kantenwinkel=0.0, fortschritt=No
 
 
 # --- G1: gemeinsames Kontrollnetz an den Kanten -------------------------------------------------------
-M_KP = 7                                            # Kontrollpunkte je Richtung (kubisch)
-_KNOTEN = np.r_[[0.0] * 3, np.linspace(0, 1, M_KP - 2), [1.0] * 3]
+# Kontrollpunkte je Richtung (kubisch). Innere Knoten naeher an den Ecken (0,15 / 0,85): die Drillpunkte an
+# Ecken mit 3 oder 5 Nachbarflaechen koennen G1 zu beiden Kanten nicht exakt erfuellen - die engere erste
+# Knotenspanne haelt den Restknick naeher an der Ecke (Torus: max 16,6 -> 9,1 Grad, bei 25 % 6,5 -> 0,9).
+# Enger als ~0,1 wird instabil (0,05: Knicke > 80 Grad).
+_INNEN = (0.15, 0.35, 0.5, 0.65, 0.85)
+M_KP = len(_INNEN) + 4
+_KNOTEN = np.r_[[0.0] * 4, _INNEN, [1.0] * 4]
 
 
 def _basis(t, m=M_KP, p=3, knoten=_KNOTEN):
@@ -366,7 +373,7 @@ def _g1_flaeche(G, ecken, kp_rand, kp_quer, schluessel=None):
         gegen = Q[:, m - 1 - idx] if art == "u" else Q[m - 1 - idx, :]
         L = float(np.mean(np.linalg.norm(gegen - r, axis=1)))
         vz = np.sign((mitte - r.mean(0)) @ q[m // 2]) or 1.0
-        reihe = r + vz * q * (L / (3 * (m - 3)))
+        reihe = r + vz * q * (L * _INNEN[0] / 3)
         for i in range(1, m - 1):
             pos = (i, innen_idx) if art == "u" else (innen_idx, i)
             zweite.setdefault(pos, []).append(reihe[i])
