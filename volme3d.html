@@ -68682,7 +68682,8 @@ function _stlRenderDirs(list, grid, q){
 function _stlThumbEnqueue(f){ if(f._thumbDone||f._thumbQueued) return; f._thumbQueued=true; _stlThumbPending.push(f); _stlThumbPump(); }
 async function _stlThumbPump(){
   if(_stlThumbBusy) return; _stlThumbBusy=true;
-  while(_stlThumbPending.length){ const f=_stlThumbPending.shift(); try{ await _stlThumbOne(f); }catch(e){} }
+  // zwischen zwei Vorschauen dem Browser Luft lassen (Klicks/Scrollen bleiben flüssig)
+  while(_stlThumbPending.length){ const f=_stlThumbPending.shift(); try{ await _stlThumbOne(f); }catch(e){} await new Promise(r=>setTimeout(r,0)); }
   _stlThumbBusy=false;
 }
 async function _stlThumbOne(f){
@@ -68690,8 +68691,10 @@ async function _stlThumbOne(f){
   const key='v2|'+f.path+'|'+f.size+'|'+f.mtime;   // v2: alte (in Firefox schwarze) STL-Thumbs verwerfen → neu rendern
   let url=null; try{ url=await _stlIdbGet('thumbs',key); }catch(e){}
   if(!url){ try{ url=await _stlMakeThumb(f); }catch(e){ url=null; } if(url){ try{ await _stlIdbSet('thumbs',key,url); }catch(e){} } }
+  // '-big' = absichtlich übersprungen (zu groß fürs Rendern im Haupt-Thread), wird mitgecacht
+  const big = url==='-big'; if(big) url=null;
   f._thumbUrl=url;
-  if(f._thumbEl) f._thumbEl.innerHTML = url?`<img class="ds-thumb" src="${url}">`:'<div class="ds-nothumb">📦</div>';
+  if(f._thumbEl) f._thumbEl.innerHTML = url?`<img class="ds-thumb" src="${url}">`:(big?'<div class="ds-nothumb" title="Datei zu groß für eine Vorschau – Öffnen geht trotzdem">📦<div style="font-size:11px;opacity:.6;margin-top:4px">Vorschau zu groß</div></div>':'<div class="ds-nothumb">📦</div>');
 }
 function _u8ToB64(u8){ let s=''; const C=0x8000; for(let i=0;i<u8.length;i+=C){ s+=String.fromCharCode.apply(null,u8.subarray(i,i+C)); } return btoa(s); }
 function _parseOBJ(text){
@@ -68846,10 +68849,21 @@ function _renderGeoThumb(geo, zUp){
   geo.dispose(); mat.dispose();
   return url;
 }
+// Grenzen für Geometrie-Vorschauen: Parsen läuft im Haupt-Thread. Ein 50-MB-Scan-3MF
+// (entpackt mehrere 100 MB XML → DOMParser) fror die ganze Seite ein („Seite antwortet
+// nicht", 21.10.) — und weil nichts gecacht wurde, bei jedem Öffnen der Bibliothek erneut.
+const STLLIB_THUMB_MAX_XML = 40e6;    // entpackte .model-Bytes eines 3MF
+const STLLIB_THUMB_MAX_ASCII = 25e6;  // ASCII-STL (Regex-Parser + JS-Arrays)
+const STLLIB_THUMB_MAX_BIN = 200e6;   // binäre STL (schneller Single-Pass)
 async function _stlMakeThumb(f){
   const ext=(f.name.split('.').pop()||'').toLowerCase();
+  if(ext==='stl' && f.size>STLLIB_THUMB_MAX_BIN) return '-big';
   const buf=await _stlReadBytes(f);
-  if(ext==='stl') return _renderGeoThumb(parseSTL(buf), true);
+  if(ext==='stl'){
+    const isBin = buf.byteLength>=84 && buf.byteLength===84+new DataView(buf).getUint32(80,true)*50;
+    if(!isBin && buf.byteLength>STLLIB_THUMB_MAX_ASCII) return '-big';
+    return _renderGeoThumb(parseSTL(buf), true);
+  }
   if(ext==='obj') return _renderGeoThumb(_parseOBJ(new TextDecoder().decode(buf)), false);
   if(ext==='3mf'){
     if(typeof fflate==='undefined') return null;
@@ -68859,7 +68873,9 @@ async function _stlMakeThumb(f){
     const pn=Object.keys(pngs);
     const pick = pn.find(n=>/plate[_-]?1[^/]*\.png$/i.test(n)) || pn.find(n=>/metadata\/.*\.png$/i.test(n)) || pn.find(n=>/thumbnail/i.test(n)) || pn[0];
     if(pick && pngs[pick] && pngs[pick].length) return 'data:image/png;base64,'+_u8ToB64(pngs[pick]);
-    // 2) sonst Modell-XML rendern
+    // 2) sonst Modell-XML rendern — vorher nur die Größen lesen (filter→false entpackt nichts)
+    let xmlBytes=0; try{ fflate.unzipSync(u8,{filter:fl=>{ if(/\.model$/i.test(fl.name)) xmlBytes+=fl.originalSize||0; return false; }}); }catch(e){}
+    if(xmlBytes>STLLIB_THUMB_MAX_XML) return '-big';
     let models={}; try{ models=fflate.unzipSync(u8,{filter:fl=>/\.model$/i.test(fl.name)}); }catch(e){ models={}; }
     const g3=_parse3MFGeo(models);
     if(g3) return _renderGeoThumb(g3, true);
@@ -69453,8 +69469,11 @@ document.addEventListener('webkitfullscreenchange', _fsSync);
 })();
 
 // ===== CHANGELOG / VERSIONIERUNG =====
-const VOLME3D_VERSION = '1.18.230';
+const VOLME3D_VERSION = '1.18.231';
 const VOLME3D_CHANGELOG = [
+  { version:'1.18.231', date:'2026-10-21', changes:[
+    ['📚','<b>Bibliothek friert nicht mehr ein.</b> Sehr große Dateien ohne eingebautes Vorschaubild (z. B. ein 50-MB-Scan als 3MF) brachten beim Öffnen der Bibliothek die Meldung „Diese Seite antwortet nicht“ – bei jedem Öffnen wieder. Solche Dateien zeigen jetzt „Vorschau zu groß“ statt die Seite zu blockieren; <b>Öffnen</b> und <b>Drucken</b> funktionieren wie gewohnt.'],
+  ]},
   { version:'1.18.230', date:'2026-10-21', changes:[
     ['📝','<b>Neue Projekte heißen „Neues Projekt“ statt Fantasienamen.</b> Kein „Zesty Hopper“ oder „Mighty Tesla“ mehr: ein neues Projekt heißt <b>Neues Projekt</b>, weitere <b>Neues Projekt 2</b>, <b>3</b> … Beim Öffnen eines neuen Tabs (＋) bzw. bei <b>Neu</b> fragt V3D CAD gleich nach dem Namen – einfach eintippen oder mit Enter den Vorschlag übernehmen. Umbenennen geht weiter per Doppelklick auf den Tab.'],
   ]},
